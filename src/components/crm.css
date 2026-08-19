@@ -30,8 +30,8 @@
 .crm-rail-btn {
   display: grid;
   place-items: center;
-  width: 38px;
-  height: 38px;
+  width: 42px;
+  height: 42px;
   border: 0;
   border-radius: 999px;
   background: transparent;
@@ -46,6 +46,20 @@
   background: var(--lm-surface);
   color: var(--lm-ink);
   box-shadow: var(--lm-shadow-sm);
+}
+
+/* Foco de teclado, consistente en toda la bandeja/chat/panel: sin esto,
+   tabular por hilos, filtros y píldoras no deja ningún rastro visible. */
+.crm a:focus-visible,
+.crm button:focus-visible,
+.crm input:focus-visible,
+.crm [tabindex]:focus-visible {
+  outline: 2px solid var(--lm-link);
+  outline-offset: 2px;
+}
+
+.crm-thread:focus-visible {
+  outline-offset: -2px;
 }
 
 /* `minmax(0, …)` y `min-height: 0` en toda la cadena: sin ellos los ítems de
@@ -205,19 +219,35 @@
   position: relative;
 }
 
-/* Punto de estado de la IA, pegado al avatar. */
+/* Punto de estado de la IA, pegado al avatar. Relleno = IA respondiendo,
+   anillo hueco = pausada: la forma distingue el estado además del color,
+   para que no dependa solo de distinguir verde de ámbar. */
 .crm-thread-pip {
   position: absolute;
   right: -1px;
   bottom: -1px;
+  box-sizing: border-box;
   width: 11px;
   height: 11px;
-  border: 2px solid var(--lm-surface);
   border-radius: 999px;
+  box-shadow: 0 0 0 2px var(--lm-surface);
+}
+
+.crm-thread-pip[data-ai="on"] {
+  background: var(--lm-good);
+}
+
+.crm-thread-pip[data-ai="off"] {
+  background: var(--lm-surface);
+  border: 2px solid var(--lm-wait-ink);
 }
 
 .crm-thread[aria-current="true"] .crm-thread-pip {
-  border-color: var(--lm-ink);
+  box-shadow: 0 0 0 2px var(--lm-ink);
+}
+
+.crm-thread[aria-current="true"] .crm-thread-pip[data-ai="off"] {
+  background: var(--lm-ink);
 }
 
 .crm-thread[aria-current="true"] .lm-avatar {
@@ -252,7 +282,7 @@
 .crm-thread-time {
   flex-shrink: 0;
   color: var(--lm-muted);
-  font-size: 11px;
+  font-size: 11.5px;
 }
 
 .crm-thread-preview {
@@ -272,13 +302,14 @@
   display: grid;
   flex-shrink: 0;
   place-items: center;
-  min-width: 19px;
-  height: 19px;
+  min-width: 20px;
+  height: 20px;
   padding: 0 5px;
   border-radius: 999px;
-  background: var(--lm-hot);
+  /* --lm-hot da 3.8:1 con blanco encima; --lm-hot-ink llega a 5.7:1 (AA). */
+  background: var(--lm-hot-ink);
   color: #ffffff;
-  font-size: 11px;
+  font-size: 11.5px;
   font-weight: 600;
 }
 
@@ -288,7 +319,7 @@
   margin-top: 4px;
   max-width: 100%;
   color: var(--lm-muted);
-  font-size: 11px;
+  font-size: 11.5px;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -381,12 +412,12 @@
 
 .crm-pill[data-variant="danger"] {
   background: rgba(228, 80, 59, 0.12);
-  color: var(--lm-hot);
+  color: var(--lm-hot-ink);
 }
 
 .crm-pill[data-variant="danger"]:hover {
   background: rgba(228, 80, 59, 0.18);
-  color: var(--lm-hot);
+  color: var(--lm-hot-ink);
 }
 
 .crm-pill:disabled {
@@ -422,7 +453,7 @@
 }
 
 .crm-ai-band[data-on="true"] .crm-ai-text {
-  color: var(--lm-good);
+  color: var(--lm-good-ink);
 }
 
 .crm-ai-band[data-on="false"] .crm-ai-text {
@@ -449,12 +480,13 @@
 }
 
 .crm-ai-band .crm-pill[data-variant="danger"] {
-  background: var(--lm-hot);
+  /* --lm-hot da 3.8:1 con blanco encima; --lm-hot-ink llega a 5.7:1 (AA). */
+  background: var(--lm-hot-ink);
   color: #ffffff;
 }
 
 .crm-ai-band .crm-pill[data-variant="danger"]:hover {
-  background: #cf462f;
+  background: #9c331f;
   color: #ffffff;
 }
 
@@ -608,22 +640,22 @@
 
 .crm-tag[data-color="accent"] {
   background: rgba(74, 99, 240, 0.12);
-  color: var(--lm-link);
+  color: var(--lm-link-ink);
 }
 
 .crm-tag[data-color="success"] {
   background: rgba(34, 160, 107, 0.12);
-  color: var(--lm-good);
+  color: var(--lm-good-ink);
 }
 
 .crm-tag[data-color="warning"] {
   background: rgba(231, 154, 36, 0.16);
-  color: #a06a10;
+  color: var(--lm-wait-ink);
 }
 
 .crm-tag[data-color="danger"] {
   background: rgba(228, 80, 59, 0.12);
-  color: var(--lm-hot);
+  color: var(--lm-hot-ink);
 }
 
 .crm-tag-x {
@@ -664,7 +696,7 @@
 .crm-note-meta {
   margin: 6px 0 0;
   color: var(--lm-muted);
-  font-size: 11px;
+  font-size: 11.5px;
 }
 
 .crm-empty {

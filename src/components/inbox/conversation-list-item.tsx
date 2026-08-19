@@ -20,8 +20,10 @@ export function ConversationListItem({ conversation, isSelected, onSelect }: Con
         </span>
         <span
           className="crm-thread-pip"
+          data-ai={conversation.aiEnabled ? "on" : "off"}
+          role="img"
+          aria-label={conversation.aiEnabled ? "La IA responde" : "La IA está pausada"}
           title={conversation.aiEnabled ? "La IA responde" : "La IA está pausada"}
-          style={{ background: conversation.aiEnabled ? "var(--lm-good)" : "var(--lm-wait)" }}
         />
       </span>
 

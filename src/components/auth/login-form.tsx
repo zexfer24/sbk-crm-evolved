@@ -2,9 +2,10 @@
 
 import { useState, type FormEvent } from "react";
 import { useRouter } from "next/navigation";
-import { Button, Card, Input, Label } from "@heroui/react";
+import { Button, Input, Label } from "@heroui/react";
 import { MessageCircle } from "lucide-react";
 import { createClient } from "@/lib/supabase/client";
+import "@/components/auth/login.css";
 
 export function LoginForm() {
   const router = useRouter();
@@ -33,55 +34,59 @@ export function LoginForm() {
   }
 
   return (
-    <div className="min-h-screen w-full flex items-center justify-center bg-surface-secondary px-4">
-      <Card className="w-full max-w-sm">
-        <Card.Header className="flex flex-col items-center gap-2 pt-8">
-          <div className="flex h-12 w-12 items-center justify-center rounded-full bg-success/15 text-success">
-            <MessageCircle size={24} />
+    <div className="login-screen">
+      <div className="login-card lm-panel">
+        <div className="login-mark" aria-hidden="true">
+          <MessageCircle size={22} />
+        </div>
+        <h1 className="login-title lm-display">Liminal CRM</h1>
+        <p className="login-subtitle">Inicia sesión para entrar a la bandeja de entrada</p>
+
+        <form className="login-form" onSubmit={handleSubmit} noValidate>
+          <div className="login-field">
+            <Label htmlFor="email">Correo</Label>
+            <Input
+              id="email"
+              type="email"
+              autoComplete="email"
+              placeholder="jose@liminal.test"
+              value={email}
+              onChange={(e) => setEmail(e.target.value)}
+              required
+              fullWidth
+            />
           </div>
-          <Card.Title className="text-xl">Liminal CRM</Card.Title>
-          <Card.Description>Inicia sesión para entrar a la bandeja de entrada</Card.Description>
-        </Card.Header>
-        <Card.Content>
-          <form className="flex flex-col gap-4" onSubmit={handleSubmit}>
-            <div className="flex flex-col gap-1.5">
-              <Label htmlFor="email">Correo</Label>
-              <Input
-                id="email"
-                type="email"
-                autoComplete="email"
-                placeholder="jose@liminal.test"
-                value={email}
-                onChange={(e) => setEmail(e.target.value)}
-                required
-                fullWidth
-              />
-            </div>
-            <div className="flex flex-col gap-1.5">
-              <Label htmlFor="password">Contraseña</Label>
-              <Input
-                id="password"
-                type="password"
-                autoComplete="current-password"
-                placeholder="••••••••"
-                value={password}
-                onChange={(e) => setPassword(e.target.value)}
-                required
-                fullWidth
-              />
-            </div>
-            {error && <p className="text-sm text-danger">{error}</p>}
-            <Button type="submit" fullWidth isDisabled={isLoading}>
-              {isLoading ? "Entrando..." : "Entrar"}
-            </Button>
-          </form>
-          <p className="mt-4 text-center text-xs text-muted">
-            Demo local: jose@liminal.test · maria@liminal.test · carlos@liminal.test
-            <br />
-            Contraseña: Liminal123!
-          </p>
-        </Card.Content>
-      </Card>
+          <div className="login-field">
+            <Label htmlFor="password">Contraseña</Label>
+            <Input
+              id="password"
+              type="password"
+              autoComplete="current-password"
+              placeholder="••••••••"
+              value={password}
+              onChange={(e) => setPassword(e.target.value)}
+              required
+              fullWidth
+            />
+          </div>
+
+          {error && (
+            <p className="login-error" role="alert">
+              {error}
+            </p>
+          )}
+
+          <Button type="submit" fullWidth isDisabled={isLoading}>
+            {isLoading ? "Entrando..." : "Entrar"}
+          </Button>
+        </form>
+
+        <p className="login-demo">
+          Demo local: jose@liminal.test · maria@liminal.test · carlos@liminal.test
+          <br />
+          Contraseña: Liminal123!
+        </p>
+      </div>
     </div>
   );
 }

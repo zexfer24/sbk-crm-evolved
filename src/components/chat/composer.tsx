@@ -159,6 +159,7 @@ export function Composer({ conversation, templates, quickReplies, replyingTo, on
               isIconOnly
               isDisabled={!withinWindow || isUploading}
               onPress={() => fileInputRef.current?.click()}
+              aria-label={isUploading ? "Subiendo..." : "Adjuntar imagen, video o audio"}
             >
               <Paperclip size={18} />
             </Button>
@@ -168,7 +169,13 @@ export function Composer({ conversation, templates, quickReplies, replyingTo, on
 
         <Tooltip>
           <Tooltip.Trigger>
-            <Button variant="ghost" size="md" isIconOnly onPress={() => setIsTemplateModalOpen(true)}>
+            <Button
+              variant="ghost"
+              size="md"
+              isIconOnly
+              onPress={() => setIsTemplateModalOpen(true)}
+              aria-label="Plantillas preaprobadas"
+            >
               <AlignLeft size={18} />
             </Button>
           </Tooltip.Trigger>
@@ -177,7 +184,13 @@ export function Composer({ conversation, templates, quickReplies, replyingTo, on
 
         <Tooltip>
           <Tooltip.Trigger>
-            <Button variant="ghost" size="md" isIconOnly onPress={() => setIsQuickRepliesOpen(true)}>
+            <Button
+              variant="ghost"
+              size="md"
+              isIconOnly
+              onPress={() => setIsQuickRepliesOpen(true)}
+              aria-label="Mensajes rápidos"
+            >
               <Zap size={18} />
             </Button>
           </Tooltip.Trigger>
@@ -191,6 +204,8 @@ export function Composer({ conversation, templates, quickReplies, replyingTo, on
               size="md"
               isIconOnly
               onPress={() => setIsInternalNote((v) => !v)}
+              aria-pressed={isInternalNote}
+              aria-label={isInternalNote ? "Volver a respuesta normal" : "Nota interna"}
             >
               <StickyNote size={18} />
             </Button>
@@ -202,6 +217,7 @@ export function Composer({ conversation, templates, quickReplies, replyingTo, on
           value={text}
           onChange={(e) => setText(e.target.value)}
           onKeyDown={handleKeyDown}
+          aria-label={isInternalNote ? "Nota interna" : "Mensaje"}
           placeholder={
             !withinWindow
               ? "Ventana de 24h cerrada — usa una plantilla"
@@ -221,6 +237,7 @@ export function Composer({ conversation, templates, quickReplies, replyingTo, on
           isIconOnly
           isDisabled={!withinWindow || !text.trim() || isSending}
           onPress={handleSend}
+          aria-label={isSending ? "Enviando..." : "Enviar mensaje"}
         >
           <Send size={18} />
         </Button>

@@ -16,7 +16,11 @@
   /* Tinta */
   --lm-ink: #0c0d12;
   --lm-ink-soft: #474a60;
-  --lm-muted: #8b8fa6;
+  /* #656980 en vez del gris original (#8b8fa6): mismo tono, pero a 5.4:1
+     sobre blanco en vez de 3.2:1. El original fallaba WCAG AA (4.5:1) en
+     timestamps, previews y metadatos, que son casi todo el texto secundario
+     de la app. */
+  --lm-muted: #656980;
   --lm-line: #e4e6f1;
 
   /* Estados. El color no decora: dice en qué situación está algo. */
@@ -25,6 +29,15 @@
   --lm-good: #22a06b;
   --lm-wait: #e79a24;
   --lm-plum: #7c5cf5;
+
+  /* Versión "tinta" de cada estado: para texto sobre su propio fondo tenue
+     (tags, píldoras, badges) o como fondo sólido bajo texto blanco. Las
+     variantes de arriba solo alcanzan 3-4:1 en esos contextos —de sobra
+     para un punto o un ícono, no para texto AA (4.5:1). Estas sí cumplen. */
+  --lm-hot-ink: #b73c28;
+  --lm-wait-ink: #8f5c0d;
+  --lm-good-ink: #1a7a53;
+  --lm-link-ink: #3346c9;
 
   /* Elevación: sombras muy difusas, sin borde duro */
   --lm-shadow-sm: 0 1px 2px rgba(20, 22, 50, 0.05), 0 4px 10px -6px rgba(20, 22, 50, 0.12);
@@ -127,7 +140,7 @@
 /* Etiqueta de sección: pequeña, espaciada, en versalitas. */
 .lm-eyebrow {
   color: var(--lm-muted);
-  font-size: 10.5px;
+  font-size: 11px;
   font-weight: 600;
   letter-spacing: 0.07em;
   text-transform: uppercase;
@@ -183,8 +196,8 @@
   display: grid;
   flex-shrink: 0;
   place-items: center;
-  width: 34px;
-  height: 34px;
+  width: 36px;
+  height: 36px;
   border: 0;
   border-radius: 999px;
   background: transparent;
@@ -206,6 +219,11 @@
 .lm-icon-btn[data-active="true"] {
   background: var(--lm-ink);
   color: #ffffff;
+}
+
+.lm-icon-btn:focus-visible {
+  outline: 2px solid var(--lm-link);
+  outline-offset: 2px;
 }
 
 @media (prefers-reduced-motion: reduce) {
