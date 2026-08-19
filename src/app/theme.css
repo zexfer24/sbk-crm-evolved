@@ -1,0 +1,215 @@
+/* ==========================================================================
+   Tema Liminal
+   Una sola paleta para todo el CRM. La primera mitad declara los tokens
+   propios; la segunda los conecta con las variables de HeroUI, de forma que
+   los componentes que ya existen (botones, campos, avatares, modales)
+   adoptan la estética sin reescribir su marcado.
+   ========================================================================== */
+
+:root {
+  /* Superficies */
+  --lm-canvas: #e7e9f2;
+  --lm-canvas-edge: #dcdfee;
+  --lm-surface: #ffffff;
+  --lm-sunken: #eef0f8;
+
+  /* Tinta */
+  --lm-ink: #0c0d12;
+  --lm-ink-soft: #474a60;
+  --lm-muted: #8b8fa6;
+  --lm-line: #e4e6f1;
+
+  /* Estados. El color no decora: dice en qué situación está algo. */
+  --lm-hot: #e4503b;
+  --lm-link: #4a63f0;
+  --lm-good: #22a06b;
+  --lm-wait: #e79a24;
+  --lm-plum: #7c5cf5;
+
+  /* Elevación: sombras muy difusas, sin borde duro */
+  --lm-shadow-sm: 0 1px 2px rgba(20, 22, 50, 0.05), 0 4px 10px -6px rgba(20, 22, 50, 0.12);
+  --lm-shadow-md: 0 1px 2px rgba(20, 22, 50, 0.04), 0 18px 36px -24px rgba(20, 22, 50, 0.32);
+  --lm-shadow-lg: 0 2px 4px rgba(20, 22, 50, 0.04), 0 40px 72px -40px rgba(20, 22, 50, 0.38);
+
+  --lm-radius-card: 20px;
+  --lm-radius-panel: 30px;
+}
+
+/* --------------------------------------------------------------------------
+   Puente con HeroUI
+   Los componentes de la librería derivan casi todo de estas variables, así
+   que redefinirlas alcanza para que la bandeja, el chat y los modales usen
+   la misma paleta que el dashboard.
+   -------------------------------------------------------------------------- */
+@layer base {
+  :root,
+  .light,
+  .default,
+  [data-theme="light"],
+  [data-theme="default"] {
+    --background: var(--lm-canvas);
+    --foreground: var(--lm-ink);
+
+    --surface: var(--lm-surface);
+    --surface-foreground: var(--lm-ink);
+    --surface-secondary: var(--lm-sunken);
+    --surface-tertiary: var(--lm-canvas-edge);
+
+    --overlay: var(--lm-surface);
+    --overlay-foreground: var(--lm-ink);
+
+    --muted: var(--lm-muted);
+
+    --default: var(--lm-sunken);
+    --default-foreground: var(--lm-ink);
+
+    /* El acento es la píldora negra: lo activo se lee por contraste, no por color. */
+    --accent: var(--lm-ink);
+    --accent-foreground: #ffffff;
+
+    --field-background: var(--lm-sunken);
+    --field-foreground: var(--lm-ink);
+    --field-placeholder: var(--lm-muted);
+
+    --success: var(--lm-good);
+    --success-foreground: #ffffff;
+    --warning: var(--lm-wait);
+    --warning-foreground: var(--lm-ink);
+    --danger: var(--lm-hot);
+    --danger-foreground: #ffffff;
+
+    --border: var(--lm-line);
+    --separator: var(--lm-line);
+    --focus: var(--lm-link);
+    --link: var(--lm-link);
+
+    --radius: 0.875rem;
+    --field-radius: 999px;
+
+    --surface-shadow: var(--lm-shadow-sm);
+    --overlay-shadow: var(--lm-shadow-lg);
+    --field-shadow: none;
+  }
+}
+
+/* --------------------------------------------------------------------------
+   Utilidades compartidas
+   -------------------------------------------------------------------------- */
+
+/* Voz de titular: solo en itálica y con moderación. */
+.lm-display {
+  font-family: var(--font-display), var(--font-sans), system-ui, sans-serif;
+  font-style: italic;
+  font-weight: 600;
+  letter-spacing: -0.02em;
+}
+
+/* Cifras alineadas en columna: contadores, horas, duraciones. */
+.lm-num {
+  font-family: var(--font-mono), ui-monospace, monospace;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -0.02em;
+}
+
+/* Tarjeta flotante: la pieza base de toda la interfaz. */
+.lm-panel {
+  border-radius: var(--lm-radius-panel);
+  background: var(--lm-surface);
+  box-shadow: var(--lm-shadow-md);
+}
+
+.lm-panel-sm {
+  border-radius: var(--lm-radius-card);
+  background: var(--lm-surface);
+  box-shadow: var(--lm-shadow-sm);
+}
+
+/* Etiqueta de sección: pequeña, espaciada, en versalitas. */
+.lm-eyebrow {
+  color: var(--lm-muted);
+  font-size: 10.5px;
+  font-weight: 600;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+}
+
+/* Píldora informativa. El color se pasa desde el componente. */
+.lm-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 10px;
+  border-radius: 999px;
+  font-size: 11.5px;
+  font-weight: 500;
+  white-space: nowrap;
+}
+
+.lm-chip-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 999px;
+  background: currentColor;
+}
+
+/* Avatar de iniciales, el mismo en el tablero, la bandeja y el chat. */
+.lm-avatar {
+  display: grid;
+  flex-shrink: 0;
+  place-items: center;
+  width: 34px;
+  height: 34px;
+  border-radius: 999px;
+  background: var(--lm-sunken);
+  color: var(--lm-ink-soft);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.lm-avatar[data-size="sm"] {
+  width: 30px;
+  height: 30px;
+  font-size: 11px;
+}
+
+.lm-avatar[data-size="lg"] {
+  width: 44px;
+  height: 44px;
+  font-size: 14px;
+}
+
+/* Botón redondo de barra de herramientas. */
+.lm-icon-btn {
+  display: grid;
+  flex-shrink: 0;
+  place-items: center;
+  width: 34px;
+  height: 34px;
+  border: 0;
+  border-radius: 999px;
+  background: transparent;
+  color: var(--lm-ink-soft);
+  cursor: pointer;
+  transition: background 150ms ease, color 150ms ease;
+}
+
+.lm-icon-btn:hover {
+  background: var(--lm-sunken);
+  color: var(--lm-ink);
+}
+
+.lm-icon-btn:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
+}
+
+.lm-icon-btn[data-active="true"] {
+  background: var(--lm-ink);
+  color: #ffffff;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .lm-icon-btn {
+    transition: none;
+  }
+}

@@ -1,0 +1,1012 @@
+/* ==========================================================================
+   Dashboard
+   Los tokens y las utilidades compartidas viven en src/app/theme.css. Aquí
+   solo está lo que es propio de esta pantalla: el tablero de recorrido, el
+   gráfico de 24 h y los paneles de reclamos.
+   ========================================================================== */
+
+.dash {
+  flex: 1;
+  min-height: 100%;
+  background:
+    radial-gradient(120% 80% at 50% -10%, #f2f3fa 0%, transparent 60%),
+    var(--lm-canvas);
+  color: var(--lm-ink);
+  font-family: var(--font-sans), system-ui, sans-serif;
+  font-feature-settings: "cv11", "ss01";
+}
+
+.dash-display {
+  font-family: var(--font-display), var(--font-sans), system-ui, sans-serif;
+  font-style: italic;
+  font-weight: 600;
+  letter-spacing: -0.02em;
+}
+
+.dash-num {
+  font-family: var(--font-mono), ui-monospace, monospace;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -0.02em;
+}
+
+/* --------------------------------------------------------------------------
+   Estructura
+   -------------------------------------------------------------------------- */
+
+.dash-frame {
+  display: grid;
+  grid-template-columns: 72px minmax(0, 1fr);
+  min-height: 100vh;
+}
+
+.dash-main {
+  min-width: 0;
+  padding: 18px 26px 40px;
+}
+
+.dash-content {
+  display: flex;
+  flex-direction: column;
+  gap: 22px;
+  margin: 0 auto;
+  max-width: 1560px;
+}
+
+/* --------------------------------------------------------------------------
+   Rail lateral
+   -------------------------------------------------------------------------- */
+
+.dash-rail {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  padding: 22px 0 26px;
+}
+
+.dash-rail-spacer {
+  flex: 1;
+}
+
+.dash-rail-btn {
+  display: grid;
+  place-items: center;
+  width: 38px;
+  height: 38px;
+  border: 0;
+  border-radius: 999px;
+  background: transparent;
+  color: var(--lm-muted);
+  cursor: pointer;
+  text-decoration: none;
+  transition: background 160ms ease, color 160ms ease, box-shadow 160ms ease;
+}
+
+.dash-rail-btn:hover {
+  background: var(--lm-surface);
+  color: var(--lm-ink);
+  box-shadow: var(--lm-shadow-sm);
+}
+
+.dash-rail-btn[data-active="true"] {
+  background: var(--lm-surface);
+  color: var(--lm-ink);
+  box-shadow: var(--lm-shadow-sm);
+}
+
+/* --------------------------------------------------------------------------
+   Barra superior
+   -------------------------------------------------------------------------- */
+
+.dash-topbar {
+  display: flex;
+  align-items: center;
+  gap: 18px;
+  padding-bottom: 4px;
+}
+
+.dash-brand {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  font-size: 17px;
+  font-weight: 600;
+  letter-spacing: -0.03em;
+  white-space: nowrap;
+}
+
+.dash-brand-mark {
+  display: grid;
+  place-items: center;
+  width: 26px;
+  height: 26px;
+  border-radius: 9px;
+  background: var(--lm-ink);
+  color: #fff;
+}
+
+.dash-nav {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  flex: 1;
+  justify-content: center;
+  min-width: 0;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+
+.dash-nav::-webkit-scrollbar {
+  display: none;
+}
+
+.dash-nav-link {
+  padding: 9px 17px;
+  border-radius: 999px;
+  color: var(--lm-ink-soft);
+  font-size: 14px;
+  font-weight: 500;
+  white-space: nowrap;
+  text-decoration: none;
+  transition: background 160ms ease, color 160ms ease;
+}
+
+.dash-nav-link:hover {
+  background: rgba(255, 255, 255, 0.72);
+  color: var(--lm-ink);
+}
+
+.dash-nav-link[aria-current="page"] {
+  background: var(--lm-ink);
+  color: #fff;
+}
+
+.dash-topbar-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.dash-icon-btn {
+  position: relative;
+  display: grid;
+  place-items: center;
+  width: 38px;
+  height: 38px;
+  border: 0;
+  border-radius: 999px;
+  background: var(--lm-surface);
+  color: var(--lm-ink-soft);
+  box-shadow: var(--lm-shadow-sm);
+  cursor: pointer;
+  transition: transform 160ms ease, color 160ms ease;
+}
+
+.dash-icon-btn:hover {
+  color: var(--lm-ink);
+  transform: translateY(-1px);
+}
+
+.dash-icon-btn:disabled {
+  cursor: progress;
+  opacity: 0.55;
+  transform: none;
+}
+
+/* Misma pastilla, pero solo informativa: no invita a hacer clic. */
+.dash-icon-static {
+  cursor: default;
+  color: var(--lm-ink);
+}
+
+.dash-icon-static:hover {
+  transform: none;
+}
+
+/* --------------------------------------------------------------------------
+   Encabezado de página
+   -------------------------------------------------------------------------- */
+
+.dash-header {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 24px;
+  flex-wrap: wrap;
+  padding: 6px 4px 0;
+}
+
+.dash-title {
+  font-size: clamp(30px, 3.4vw, 46px);
+  line-height: 1.02;
+  margin: 0;
+}
+
+.dash-subtitle {
+  margin: 8px 0 0;
+  max-width: 46ch;
+  color: var(--lm-ink-soft);
+  font-size: 14px;
+  line-height: 1.5;
+}
+
+.dash-pulse {
+  display: flex;
+  align-items: center;
+  gap: 22px;
+}
+
+.dash-pulse-item {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.dash-pulse-value {
+  font-size: 26px;
+  font-weight: 500;
+  line-height: 1;
+}
+
+.dash-pulse-label {
+  color: var(--lm-muted);
+  font-size: 11px;
+  font-weight: 500;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.dash-pulse-rule {
+  width: 1px;
+  height: 30px;
+  background: var(--lm-canvas-edge);
+}
+
+/* --------------------------------------------------------------------------
+   Paneles
+   -------------------------------------------------------------------------- */
+
+.dash-panel {
+  border-radius: var(--lm-radius-panel);
+  background: var(--lm-surface);
+  box-shadow: var(--lm-shadow-md);
+}
+
+.dash-panel-head {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 22px 26px 14px;
+}
+
+.dash-panel-title {
+  margin: 0;
+  font-size: 17px;
+  font-weight: 600;
+  letter-spacing: -0.02em;
+}
+
+.dash-panel-note {
+  color: var(--lm-muted);
+  font-size: 12.5px;
+}
+
+.dash-panel-spacer {
+  flex: 1;
+}
+
+.dash-lower {
+  display: grid;
+  grid-template-columns: minmax(0, 1.35fr) minmax(0, 1fr);
+  gap: 22px;
+}
+
+/* --------------------------------------------------------------------------
+   Tablero del recorrido
+   -------------------------------------------------------------------------- */
+
+.dash-board {
+  padding: 22px 22px 24px;
+}
+
+.dash-board-head {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  flex-wrap: wrap;
+  padding: 0 4px 18px;
+}
+
+.dash-board-title {
+  margin: 0;
+  font-size: 17px;
+  font-weight: 600;
+  letter-spacing: -0.02em;
+}
+
+.dash-avatars {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex: 1;
+  justify-content: center;
+  flex-wrap: wrap;
+}
+
+.dash-avatar-stack {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 5px;
+}
+
+.dash-avatar {
+  display: grid;
+  place-items: center;
+  width: 40px;
+  height: 40px;
+  border: 2px solid var(--lm-surface);
+  border-radius: 999px;
+  background: var(--lm-sunken);
+  color: var(--lm-ink-soft);
+  font-size: 12.5px;
+  font-weight: 600;
+  box-shadow: var(--lm-shadow-sm);
+}
+
+.dash-avatar-count {
+  display: grid;
+  place-items: center;
+  min-width: 20px;
+  height: 20px;
+  padding: 0 5px;
+  border-radius: 999px;
+  color: #fff;
+  font-size: 11px;
+  font-weight: 600;
+}
+
+/* El canvas del flujo: fondo hundido sobre el que se dibujan los conectores */
+.dash-flow {
+  position: relative;
+  border-radius: 24px;
+  background: var(--lm-sunken);
+  padding: 18px 20px 16px;
+}
+
+.dash-flow-wires {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+  overflow: visible;
+}
+
+.dash-wire {
+  fill: none;
+  stroke-linecap: round;
+  opacity: 0.85;
+}
+
+.dash-wire-node {
+  stroke: var(--lm-sunken);
+  stroke-width: 2.5;
+}
+
+.dash-stages {
+  position: relative;
+  display: grid;
+  grid-template-columns: repeat(5, minmax(180px, 1fr));
+  /* El hueco entre columnas es donde se dibujan los hilos: necesita aire. */
+  gap: 30px;
+  z-index: 1;
+}
+
+.dash-stage {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.dash-stage-cards {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  border-radius: var(--lm-radius-card);
+  background: var(--lm-surface);
+  box-shadow: 0 1px 2px rgba(20, 22, 50, 0.05), 0 14px 26px -18px rgba(20, 22, 50, 0.35);
+  padding: 8px;
+  min-height: 108px;
+}
+
+/* Las columnas tienen alturas distintas a propósito —cuánta gente hay se lee
+   de un vistazo—, pero los rótulos se alinean todos en la misma base. */
+.dash-stage-foot {
+  display: flex;
+  align-items: baseline;
+  justify-content: center;
+  gap: 7px;
+  margin-top: auto;
+  padding: 14px 6px 2px;
+}
+
+.dash-stage-label {
+  font-size: 13.5px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+}
+
+/* Dos líneas reservadas: así los rótulos de todas las columnas caen a la
+   misma altura aunque el texto de cada uno sea más corto o más largo. */
+.dash-stage-caption {
+  margin: 2px 6px 0;
+  min-height: 2.7em;
+  color: var(--lm-muted);
+  font-size: 11.5px;
+  line-height: 1.35;
+  text-align: center;
+}
+
+.dash-stage-count {
+  color: var(--lm-muted);
+  font-size: 12px;
+}
+
+.dash-stage-alert {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  color: var(--lm-hot);
+  font-size: 11px;
+  font-weight: 600;
+}
+
+/* Tarjeta de cliente dentro de una etapa */
+.dash-card {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  width: 100%;
+  padding: 8px 10px 8px 8px;
+  border: 0;
+  border-radius: 14px;
+  background: transparent;
+  text-align: left;
+  text-decoration: none;
+  color: inherit;
+  cursor: pointer;
+  transition: background 140ms ease;
+}
+
+.dash-card:hover {
+  background: var(--lm-sunken);
+}
+
+.dash-card-avatar {
+  flex-shrink: 0;
+  display: grid;
+  place-items: center;
+  width: 30px;
+  height: 30px;
+  border-radius: 999px;
+  background: var(--lm-sunken);
+  color: var(--lm-ink-soft);
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.dash-card:hover .dash-card-avatar {
+  background: var(--lm-canvas-edge);
+}
+
+.dash-card-body {
+  min-width: 0;
+  flex: 1;
+}
+
+.dash-card-name {
+  display: block;
+  overflow: hidden;
+  font-size: 12.5px;
+  font-weight: 500;
+  line-height: 1.25;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.dash-card-meta {
+  display: block;
+  overflow: hidden;
+  margin-top: 1px;
+  color: var(--lm-muted);
+  font-size: 11px;
+  line-height: 1.3;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.dash-card-tick {
+  flex-shrink: 0;
+  width: 6px;
+  height: 6px;
+  border-radius: 999px;
+}
+
+.dash-stage-more {
+  padding: 6px 10px 2px;
+  color: var(--lm-muted);
+  font-size: 11.5px;
+}
+
+.dash-stage-empty {
+  display: grid;
+  place-items: center;
+  flex: 1;
+  padding: 16px 8px;
+  color: var(--lm-muted);
+  font-size: 11.5px;
+  text-align: center;
+}
+
+/* La etapa final se destaca con la píldora negra, como el resto del sistema */
+.dash-stage[data-terminal="true"] .dash-stage-cards {
+  background: var(--lm-ink);
+  box-shadow: none;
+}
+
+.dash-stage[data-terminal="true"] .dash-card-name {
+  color: #fff;
+}
+
+.dash-stage[data-terminal="true"] .dash-card-meta {
+  color: rgba(255, 255, 255, 0.55);
+}
+
+.dash-stage[data-terminal="true"] .dash-card-avatar {
+  background: rgba(255, 255, 255, 0.12);
+  color: rgba(255, 255, 255, 0.82);
+}
+
+.dash-stage[data-terminal="true"] .dash-card:hover {
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.dash-stage[data-terminal="true"] .dash-stage-empty,
+.dash-stage[data-terminal="true"] .dash-stage-more {
+  color: rgba(255, 255, 255, 0.5);
+}
+
+/* --------------------------------------------------------------------------
+   Gráfico de 24 horas
+   -------------------------------------------------------------------------- */
+
+.dash-legend {
+  display: flex;
+  align-items: center;
+  gap: 20px;
+  flex-wrap: wrap;
+  padding: 0 26px 6px;
+}
+
+.dash-legend-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+}
+
+.dash-legend-bar {
+  width: 9px;
+  height: 9px;
+  border-radius: 3px;
+}
+
+.dash-legend-line {
+  width: 14px;
+  height: 3px;
+  border-radius: 999px;
+}
+
+.dash-legend-label {
+  color: var(--lm-ink-soft);
+  font-size: 12.5px;
+}
+
+.dash-legend-value {
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.dash-chart {
+  padding: 4px 14px 22px;
+}
+
+.dash-chart-svg {
+  display: block;
+  width: 100%;
+  height: auto;
+  overflow: visible;
+}
+
+.dash-chart-grid {
+  stroke: var(--lm-line);
+  stroke-width: 1;
+}
+
+.dash-chart-axis {
+  stroke: var(--lm-canvas-edge);
+  stroke-width: 1;
+}
+
+.dash-chart-tick {
+  fill: var(--lm-muted);
+  font-size: 10px;
+}
+
+.dash-chart-bar {
+  rx: 3;
+}
+
+.dash-chart-line {
+  fill: none;
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.dash-chart-line-halo {
+  fill: none;
+  stroke-width: 5;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  opacity: 0.9;
+}
+
+/* --------------------------------------------------------------------------
+   Reclamos: cola
+   -------------------------------------------------------------------------- */
+
+.dash-queue {
+  display: flex;
+  flex-direction: column;
+  padding-bottom: 10px;
+}
+
+.dash-queue-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1.6fr) minmax(0, 1fr) minmax(0, 1fr) 64px;
+  align-items: center;
+  gap: 14px;
+  padding: 11px 26px;
+  border-radius: 0;
+  text-decoration: none;
+  color: inherit;
+  transition: background 140ms ease;
+}
+
+.dash-queue-row:hover {
+  background: var(--lm-sunken);
+}
+
+.dash-queue-head {
+  color: var(--lm-muted);
+  font-size: 10.5px;
+  font-weight: 600;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+  padding-top: 4px;
+  padding-bottom: 8px;
+}
+
+.dash-queue-head:hover {
+  background: transparent;
+}
+
+.dash-queue-client {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+
+.dash-queue-name {
+  overflow: hidden;
+  font-size: 13.5px;
+  font-weight: 500;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.dash-queue-cell {
+  overflow: hidden;
+  font-size: 12.5px;
+  color: var(--lm-ink-soft);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.dash-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 10px;
+  border-radius: 999px;
+  font-size: 11.5px;
+  font-weight: 500;
+  white-space: nowrap;
+}
+
+.dash-chip-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 999px;
+  background: currentColor;
+}
+
+.dash-queue-age {
+  justify-self: end;
+  font-size: 12.5px;
+  color: var(--lm-ink-soft);
+}
+
+.dash-queue-age[data-late="true"] {
+  color: var(--lm-hot);
+  font-weight: 600;
+}
+
+.dash-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  padding: 42px 26px 46px;
+  text-align: center;
+  color: var(--lm-muted);
+}
+
+.dash-empty-title {
+  color: var(--lm-ink);
+  font-size: 14px;
+  font-weight: 500;
+}
+
+.dash-empty-hint {
+  font-size: 12.5px;
+  max-width: 34ch;
+  line-height: 1.5;
+}
+
+/* --------------------------------------------------------------------------
+   Reclamos: estadística
+   -------------------------------------------------------------------------- */
+
+.dash-stats {
+  padding: 0 26px 26px;
+}
+
+.dash-bubbles {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 18px;
+  min-height: 168px;
+  padding: 10px 0 22px;
+  flex-wrap: wrap;
+}
+
+.dash-bubble {
+  display: grid;
+  place-items: center;
+  border-radius: 999px;
+  color: #fff;
+  text-align: center;
+  line-height: 1.05;
+}
+
+.dash-bubble-value {
+  display: block;
+  font-size: 26px;
+  font-weight: 500;
+}
+
+.dash-bubble-label {
+  display: block;
+  margin-top: 2px;
+  font-size: 11px;
+  font-weight: 500;
+  opacity: 0.85;
+}
+
+.dash-breakdown {
+  display: flex;
+  flex-direction: column;
+  gap: 11px;
+  padding-top: 18px;
+  border-top: 1px solid var(--lm-line);
+}
+
+.dash-breakdown-row {
+  display: grid;
+  grid-template-columns: minmax(72px, auto) minmax(0, 1fr) 28px;
+  align-items: center;
+  gap: 12px;
+}
+
+.dash-breakdown-label {
+  overflow: hidden;
+  font-size: 12.5px;
+  color: var(--lm-ink-soft);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.dash-meter {
+  display: block;
+  height: 6px;
+  border-radius: 999px;
+  background: var(--lm-sunken);
+  overflow: hidden;
+}
+
+.dash-meter-fill {
+  display: block;
+  height: 100%;
+  border-radius: 999px;
+}
+
+.dash-breakdown-value {
+  justify-self: end;
+  font-size: 12.5px;
+  color: var(--lm-ink);
+}
+
+.dash-stat-row {
+  display: flex;
+  gap: 10px;
+  padding: 0 26px 22px;
+}
+
+.dash-stat {
+  flex: 1;
+  min-width: 0;
+  padding: 13px 15px;
+  border-radius: 16px;
+  background: var(--lm-sunken);
+}
+
+.dash-stat-value {
+  font-size: 21px;
+  font-weight: 500;
+  line-height: 1.1;
+}
+
+.dash-stat-label {
+  margin-top: 3px;
+  color: var(--lm-muted);
+  font-size: 11px;
+  line-height: 1.3;
+}
+
+.dash-stat[data-tone="hot"] {
+  background: rgba(228, 80, 59, 0.09);
+}
+
+.dash-stat[data-tone="hot"] .dash-stat-value {
+  color: var(--lm-hot);
+}
+
+/* --------------------------------------------------------------------------
+   Base compartida
+   -------------------------------------------------------------------------- */
+
+.dash a:focus-visible,
+.dash button:focus-visible {
+  outline: 2px solid var(--lm-link);
+  outline-offset: 2px;
+}
+
+@media (max-width: 1180px) {
+  .dash-lower {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+@media (max-width: 1024px) {
+  .dash-flow {
+    overflow-x: auto;
+  }
+
+  .dash-stages {
+    grid-template-columns: repeat(5, 200px);
+  }
+
+  .dash-flow-wires {
+    display: none;
+  }
+}
+
+@media (max-width: 760px) {
+  .dash-frame {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .dash-rail {
+    display: none;
+  }
+
+  .dash-main {
+    padding: 16px 14px 32px;
+  }
+
+  .dash-brand-name {
+    display: none;
+  }
+
+  /* Con cuatro secciones en 200 px solo se veían dos: el menú se lleva su
+     propia línea a todo el ancho. */
+  .dash-topbar {
+    flex-wrap: wrap;
+    gap: 10px;
+  }
+
+  .dash-topbar-actions {
+    margin-left: auto;
+  }
+
+  .dash-nav {
+    order: 3;
+    flex: none;
+    width: 100%;
+    justify-content: flex-start;
+  }
+
+  .dash-panel-head {
+    flex-wrap: wrap;
+    gap: 4px 12px;
+  }
+
+  .dash-board-head {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 12px;
+  }
+
+  /* Una sola fila deslizable: apilar el equipo en tres filas come la pantalla. */
+  .dash-avatars {
+    flex-wrap: nowrap;
+    justify-content: flex-start;
+    width: 100%;
+    overflow-x: auto;
+    scrollbar-width: none;
+  }
+
+  .dash-avatar-stack {
+    flex-shrink: 0;
+  }
+
+  .dash-pulse {
+    gap: 16px;
+  }
+
+  .dash-queue-row {
+    grid-template-columns: minmax(0, 1fr) 60px;
+    padding-inline: 18px;
+  }
+
+  .dash-queue-row > .dash-queue-hide {
+    display: none;
+  }
+
+  .dash-stats,
+  .dash-stat-row {
+    padding-inline: 18px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .dash * {
+    transition-duration: 0.01ms !important;
+    animation-duration: 0.01ms !important;
+  }
+}

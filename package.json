@@ -1,5 +1,5 @@
 {
-  "name": "liminal-crm-scaffold",
+  "name": "liminal-crm",
   "version": "0.1.0",
   "private": true,
   "scripts": {
@@ -9,9 +9,19 @@
     "lint": "eslint"
   },
   "dependencies": {
+    "@heroui/react": "^3.2.4",
+    "@supabase/ssr": "^0.12.4",
+    "@supabase/supabase-js": "^2.112.3",
+    "ai": "^7.0.68",
+    "clsx": "^2.1.1",
+    "date-fns": "^4.4.0",
+    "framer-motion": "^13.1.0",
+    "lucide-react": "^1.32.0",
     "next": "16.3.1",
     "react": "19.2.8",
-    "react-dom": "19.2.8"
+    "react-dom": "19.2.8",
+    "server-only": "^0.0.1",
+    "zod": "^4.4.3"
   },
   "devDependencies": {
     "@tailwindcss/postcss": "^4",

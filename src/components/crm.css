@@ -1,0 +1,818 @@
+/* ==========================================================================
+   Bandeja, chat y panel de contexto
+   Tres paneles flotando sobre el lienzo lavanda, con el mismo rail y la
+   misma paleta que el dashboard. Los tokens vienen de src/app/theme.css.
+   ========================================================================== */
+
+.crm {
+  display: grid;
+  grid-template-columns: 72px minmax(0, 1fr);
+  height: 100vh;
+  overflow: hidden;
+  background:
+    radial-gradient(120% 80% at 50% -10%, #f2f3fa 0%, transparent 60%),
+    var(--lm-canvas);
+  color: var(--lm-ink);
+}
+
+.crm-rail {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  padding: 20px 0 24px;
+}
+
+.crm-rail-spacer {
+  flex: 1;
+}
+
+.crm-rail-btn {
+  display: grid;
+  place-items: center;
+  width: 38px;
+  height: 38px;
+  border: 0;
+  border-radius: 999px;
+  background: transparent;
+  color: var(--lm-muted);
+  cursor: pointer;
+  text-decoration: none;
+  transition: background 160ms ease, color 160ms ease, box-shadow 160ms ease;
+}
+
+.crm-rail-btn:hover,
+.crm-rail-btn[data-active="true"] {
+  background: var(--lm-surface);
+  color: var(--lm-ink);
+  box-shadow: var(--lm-shadow-sm);
+}
+
+/* `minmax(0, …)` y `min-height: 0` en toda la cadena: sin ellos los ítems de
+   grid conservan `min-height: auto`, crecen con los mensajes y empujan el
+   composer fuera de la pantalla en vez de dejar que el chat haga scroll. */
+.crm-columns {
+  display: grid;
+  grid-template-columns: 316px minmax(0, 1fr) 300px;
+  grid-template-rows: minmax(0, 1fr);
+  gap: 14px;
+  min-width: 0;
+  min-height: 0;
+  padding: 14px 16px 16px 0;
+}
+
+.crm-column {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+  border-radius: var(--lm-radius-panel);
+  background: var(--lm-surface);
+  box-shadow: var(--lm-shadow-md);
+}
+
+/* --------------------------------------------------------------------------
+   Bandeja
+   -------------------------------------------------------------------------- */
+
+.crm-inbox-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 18px 18px 12px;
+}
+
+.crm-inbox-title {
+  margin: 0;
+  font-size: 19px;
+  line-height: 1.1;
+}
+
+.crm-inbox-count {
+  color: var(--lm-muted);
+  font-size: 12.5px;
+}
+
+.crm-inbox-tools {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 0 18px 12px;
+}
+
+.crm-search {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 14px;
+  height: 38px;
+  border-radius: 999px;
+  background: var(--lm-sunken);
+  color: var(--lm-muted);
+}
+
+.crm-search-input {
+  flex: 1;
+  min-width: 0;
+  border: 0;
+  background: transparent;
+  color: var(--lm-ink);
+  font: inherit;
+  font-size: 13px;
+  outline: none;
+}
+
+.crm-search-input::placeholder {
+  color: var(--lm-muted);
+}
+
+.crm-filters {
+  display: flex;
+  gap: 6px;
+}
+
+.crm-filter {
+  padding: 7px 15px;
+  border: 0;
+  border-radius: 999px;
+  background: var(--lm-sunken);
+  color: var(--lm-ink-soft);
+  font-size: 12.5px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background 150ms ease, color 150ms ease;
+}
+
+.crm-filter:hover {
+  background: var(--lm-canvas-edge);
+}
+
+.crm-filter[aria-pressed="true"] {
+  background: var(--lm-ink);
+  color: #ffffff;
+}
+
+.crm-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  flex: 1;
+  min-height: 0;
+  padding: 0 10px 14px;
+  overflow-y: auto;
+  scrollbar-width: thin;
+}
+
+.crm-list-section {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 14px 8px 4px;
+}
+
+.crm-list-rule {
+  flex: 1;
+  height: 1px;
+  background: var(--lm-line);
+}
+
+/* Fila de conversación */
+.crm-thread {
+  display: flex;
+  align-items: flex-start;
+  gap: 11px;
+  width: 100%;
+  padding: 10px 10px 11px;
+  border: 0;
+  border-radius: 16px;
+  background: transparent;
+  text-align: left;
+  color: inherit;
+  cursor: pointer;
+  transition: background 140ms ease;
+}
+
+.crm-thread:hover {
+  background: var(--lm-sunken);
+}
+
+.crm-thread[aria-current="true"] {
+  background: var(--lm-ink);
+}
+
+.crm-thread-avatar {
+  position: relative;
+}
+
+/* Punto de estado de la IA, pegado al avatar. */
+.crm-thread-pip {
+  position: absolute;
+  right: -1px;
+  bottom: -1px;
+  width: 11px;
+  height: 11px;
+  border: 2px solid var(--lm-surface);
+  border-radius: 999px;
+}
+
+.crm-thread[aria-current="true"] .crm-thread-pip {
+  border-color: var(--lm-ink);
+}
+
+.crm-thread[aria-current="true"] .lm-avatar {
+  background: rgba(255, 255, 255, 0.14);
+  color: rgba(255, 255, 255, 0.9);
+}
+
+.crm-thread-body {
+  min-width: 0;
+  flex: 1;
+}
+
+.crm-thread-row {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.crm-thread-name {
+  overflow: hidden;
+  font-size: 13.5px;
+  font-weight: 500;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.crm-thread-name[data-unread="true"] {
+  font-weight: 600;
+}
+
+.crm-thread-time {
+  flex-shrink: 0;
+  color: var(--lm-muted);
+  font-size: 11px;
+}
+
+.crm-thread-preview {
+  overflow: hidden;
+  margin-top: 2px;
+  color: var(--lm-muted);
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.crm-thread-preview[data-unread="true"] {
+  color: var(--lm-ink-soft);
+}
+
+.crm-thread-badge {
+  display: grid;
+  flex-shrink: 0;
+  place-items: center;
+  min-width: 19px;
+  height: 19px;
+  padding: 0 5px;
+  border-radius: 999px;
+  background: var(--lm-hot);
+  color: #ffffff;
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.crm-thread-agent {
+  display: inline-block;
+  overflow: hidden;
+  margin-top: 4px;
+  max-width: 100%;
+  color: var(--lm-muted);
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.crm-thread[aria-current="true"] .crm-thread-name,
+.crm-thread[aria-current="true"] .crm-thread-time {
+  color: #ffffff;
+}
+
+.crm-thread[aria-current="true"] .crm-thread-preview,
+.crm-thread[aria-current="true"] .crm-thread-agent {
+  color: rgba(255, 255, 255, 0.6);
+}
+
+/* --------------------------------------------------------------------------
+   Chat
+   -------------------------------------------------------------------------- */
+
+.crm-chat-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 15px 20px;
+  border-bottom: 1px solid var(--lm-line);
+}
+
+.crm-chat-who {
+  display: flex;
+  align-items: center;
+  gap: 11px;
+  min-width: 0;
+}
+
+.crm-chat-name {
+  overflow: hidden;
+  font-size: 14.5px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.crm-chat-meta {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 1px;
+  color: var(--lm-muted);
+  font-size: 12px;
+}
+
+.crm-chat-actions {
+  display: flex;
+  flex-shrink: 0;
+  align-items: center;
+  gap: 8px;
+}
+
+.crm-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 7px 14px;
+  border: 0;
+  border-radius: 999px;
+  background: var(--lm-sunken);
+  color: var(--lm-ink-soft);
+  font-size: 12.5px;
+  font-weight: 500;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background 150ms ease, color 150ms ease;
+}
+
+.crm-pill:hover {
+  background: var(--lm-canvas-edge);
+  color: var(--lm-ink);
+}
+
+.crm-pill[data-variant="solid"] {
+  background: var(--lm-ink);
+  color: #ffffff;
+}
+
+.crm-pill[data-variant="solid"]:hover {
+  background: #23252f;
+  color: #ffffff;
+}
+
+.crm-pill[data-variant="danger"] {
+  background: rgba(228, 80, 59, 0.12);
+  color: var(--lm-hot);
+}
+
+.crm-pill[data-variant="danger"]:hover {
+  background: rgba(228, 80, 59, 0.18);
+  color: var(--lm-hot);
+}
+
+.crm-pill:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+
+/* Banda del estado de la IA */
+.crm-ai-band {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin: 12px 16px 0;
+  padding: 11px 15px;
+  border-radius: 18px;
+  background: var(--lm-sunken);
+}
+
+.crm-ai-band[data-on="true"] {
+  background: rgba(34, 160, 107, 0.1);
+}
+
+.crm-ai-band[data-on="false"] {
+  background: rgba(231, 154, 36, 0.13);
+}
+
+.crm-ai-text {
+  flex: 1;
+  min-width: 180px;
+  font-size: 12.5px;
+  font-weight: 500;
+}
+
+.crm-ai-band[data-on="true"] .crm-ai-text {
+  color: var(--lm-good);
+}
+
+.crm-ai-band[data-on="false"] .crm-ai-text {
+  color: #a06a10;
+}
+
+.crm-ai-hint {
+  width: 100%;
+  margin: 0;
+  color: var(--lm-muted);
+  font-size: 11.5px;
+  line-height: 1.4;
+}
+
+/* Sobre la banda de color, los botones necesitan fondo propio para leerse. */
+.crm-ai-band .crm-pill {
+  background: var(--lm-surface);
+  color: var(--lm-ink-soft);
+}
+
+.crm-ai-band .crm-pill:hover {
+  background: var(--lm-surface);
+  color: var(--lm-ink);
+}
+
+.crm-ai-band .crm-pill[data-variant="danger"] {
+  background: var(--lm-hot);
+  color: #ffffff;
+}
+
+.crm-ai-band .crm-pill[data-variant="danger"]:hover {
+  background: #cf462f;
+  color: #ffffff;
+}
+
+.crm-messages {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  flex: 1;
+  min-height: 0;
+  padding: 16px 20px 20px;
+  overflow-y: auto;
+  scrollbar-width: thin;
+}
+
+.crm-composer {
+  border-top: 1px solid var(--lm-line);
+  padding: 10px 16px 14px;
+}
+
+/* El campo de texto crece a varias líneas: la píldora completa no le sirve. */
+.crm-composer-input {
+  border-radius: 20px !important;
+  padding-inline: 16px !important;
+}
+
+/* Burbujas
+   La esquina recortada del lado del emisor es lo que indica quién habla; el
+   color solo distingue cliente, IA, asesor y nota interna. */
+.crm-bubble {
+  /* Sin esto la burbuja se niega a encoger y empuja fuera del chat al botón
+     de responder que lleva al lado. */
+  min-width: 0;
+  padding: 9px 14px;
+  border-radius: 18px;
+  font-size: 13.5px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.crm-bubble[data-from="customer"] {
+  border-bottom-left-radius: 6px;
+  background: var(--lm-sunken);
+  color: var(--lm-ink);
+}
+
+.crm-bubble[data-from="agent"] {
+  border-bottom-right-radius: 6px;
+  background: var(--lm-ink);
+  color: #ffffff;
+}
+
+.crm-bubble[data-from="ai"] {
+  border-bottom-right-radius: 6px;
+  background: rgba(74, 99, 240, 0.12);
+  color: #2c3ea8;
+}
+
+.crm-bubble[data-from="note"] {
+  border: 1px dashed rgba(231, 154, 36, 0.55);
+  border-bottom-right-radius: 6px;
+  background: rgba(231, 154, 36, 0.12);
+  color: #8a5a0d;
+}
+
+.crm-bubble-quote {
+  margin-bottom: 6px;
+  padding: 5px 9px;
+  border-left: 2px solid currentColor;
+  border-radius: 8px;
+  background: rgba(127, 127, 127, 0.14);
+  font-size: 11.5px;
+  line-height: 1.35;
+  opacity: 0.85;
+}
+
+.crm-system-note {
+  padding: 5px 12px;
+  border-radius: 999px;
+  background: var(--lm-sunken);
+  color: var(--lm-muted);
+  font-size: 11.5px;
+}
+
+/* --------------------------------------------------------------------------
+   Panel de contexto
+   -------------------------------------------------------------------------- */
+
+.crm-context-head {
+  padding: 16px 16px 14px;
+  border-bottom: 1px solid var(--lm-line);
+}
+
+.crm-context-body {
+  display: flex;
+  flex-direction: column;
+  gap: 22px;
+  flex: 1;
+  min-height: 0;
+  padding: 18px 16px 20px;
+  overflow-y: auto;
+  scrollbar-width: thin;
+}
+
+.crm-context-section {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.crm-context-name {
+  font-size: 14.5px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+}
+
+.crm-context-fact {
+  display: flex;
+  align-items: flex-start;
+  gap: 7px;
+  color: var(--lm-ink-soft);
+  font-size: 12.5px;
+  line-height: 1.4;
+}
+
+.crm-context-fact svg {
+  flex-shrink: 0;
+  margin-top: 2px;
+  color: var(--lm-muted);
+}
+
+.crm-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.crm-tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 5px 10px;
+  border: 0;
+  border-radius: 999px;
+  background: var(--lm-sunken);
+  color: var(--lm-ink-soft);
+  font-size: 11.5px;
+  font-weight: 500;
+  cursor: default;
+}
+
+.crm-tag[data-color="accent"] {
+  background: rgba(74, 99, 240, 0.12);
+  color: var(--lm-link);
+}
+
+.crm-tag[data-color="success"] {
+  background: rgba(34, 160, 107, 0.12);
+  color: var(--lm-good);
+}
+
+.crm-tag[data-color="warning"] {
+  background: rgba(231, 154, 36, 0.16);
+  color: #a06a10;
+}
+
+.crm-tag[data-color="danger"] {
+  background: rgba(228, 80, 59, 0.12);
+  color: var(--lm-hot);
+}
+
+.crm-tag-x {
+  display: grid;
+  place-items: center;
+  margin-right: -3px;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  opacity: 0.6;
+}
+
+.crm-tag-x:hover {
+  opacity: 1;
+}
+
+.crm-tag-add {
+  cursor: pointer;
+  border: 1px dashed var(--lm-canvas-edge);
+  background: transparent;
+  color: var(--lm-muted);
+}
+
+.crm-tag-add:hover {
+  border-color: var(--lm-muted);
+  color: var(--lm-ink-soft);
+}
+
+.crm-note {
+  padding: 11px 13px;
+  border-radius: 14px;
+  background: var(--lm-sunken);
+  font-size: 12.5px;
+  line-height: 1.5;
+}
+
+.crm-note-meta {
+  margin: 6px 0 0;
+  color: var(--lm-muted);
+  font-size: 11px;
+}
+
+.crm-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  padding: 40px 20px;
+  color: var(--lm-muted);
+  font-size: 12.5px;
+  text-align: center;
+}
+
+/* --------------------------------------------------------------------------
+   Responsive
+   -------------------------------------------------------------------------- */
+
+@media (max-width: 1280px) {
+  .crm-columns {
+    grid-template-columns: 288px minmax(0, 1fr) 268px;
+  }
+}
+
+@media (max-width: 1080px) {
+  .crm-columns {
+    grid-template-columns: 280px minmax(0, 1fr);
+  }
+
+  .crm-context {
+    display: none;
+  }
+}
+
+/* Un mensaje ocupa como mucho siete décimos del ancho, pero nunca fuerza al
+   chat a ensancharse: el `min-width: 0` deja que la burbuja y el botón de
+   responder se encojan en vez de desbordar. */
+.crm-msg {
+  max-width: 70%;
+  min-width: 0;
+}
+
+.crm-msg-row {
+  min-width: 0;
+  max-width: 100%;
+}
+
+.crm-messages img,
+.crm-messages video,
+.crm-messages audio {
+  max-width: 100%;
+}
+
+/* Botón de volver a la lista: solo tiene sentido cuando la bandeja no cabe
+   al lado del chat, así que en pantallas anchas no existe. */
+.crm-back {
+  display: none;
+}
+
+/* --------------------------------------------------------------------------
+   Pantallas de teléfono
+   Aquí el ancho manda: la cabecera se simplifica y el campo de texto se lleva
+   su propia línea, porque compartida con cinco botones no queda usable.
+   -------------------------------------------------------------------------- */
+@media (max-width: 540px) {
+  .crm-msg {
+    max-width: 88%;
+  }
+
+  .crm-chat-head {
+    padding: 12px 14px;
+  }
+
+  /* A quién está asignado ya se ve en la lista: aquí sobra y roba el ancho. */
+  .crm-chat-actions .lm-chip {
+    display: none;
+  }
+
+  .crm-chat-meta {
+    flex-wrap: wrap;
+    row-gap: 0;
+  }
+
+  /* Al envolverse, el punto separador quedaría colgando al final de la línea. */
+  .crm-chat-sep {
+    display: none;
+  }
+
+  .crm-messages {
+    padding: 14px 14px 16px;
+  }
+
+  .crm-composer {
+    padding-inline: 12px;
+  }
+
+  .crm-composer-row {
+    flex-wrap: wrap;
+  }
+
+  .crm-composer-input {
+    order: -1;
+    width: 100%;
+    margin-bottom: 8px;
+  }
+
+  .crm-ai-band {
+    margin-inline: 12px;
+  }
+}
+
+@media (max-width: 820px) {
+  /* El rail pasa de columna a barra superior: en móvil se sigue necesitando
+     llegar al dashboard y cerrar sesión. */
+  .crm {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: auto minmax(0, 1fr);
+  }
+
+  .crm-rail {
+    flex-direction: row;
+    gap: 4px;
+    padding: 10px 12px 0;
+  }
+
+  .crm-columns {
+    grid-template-columns: minmax(0, 1fr);
+    padding: 10px 12px 12px;
+  }
+
+  /* Lista y conversación se turnan: nunca las dos, nunca ninguna. */
+  .crm[data-view="chat"] .crm-inbox {
+    display: none;
+  }
+
+  .crm[data-view="list"] .crm-chat {
+    display: none;
+  }
+
+  .crm-back {
+    display: grid;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .crm-rail-btn,
+  .crm-thread,
+  .crm-filter,
+  .crm-pill {
+    transition: none;
+  }
+}
