@@ -177,6 +177,7 @@ export interface ModelPricing {
   inputPricePerMillion: number;
   outputPricePerMillion: number;
   updatedAt: string;
+  updatedBy: string | null;
 }
 
 /** Tokens consumidos en un día — un punto del gráfico de consumo. */

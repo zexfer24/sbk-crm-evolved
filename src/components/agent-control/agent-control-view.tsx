@@ -667,7 +667,10 @@ function ModelPricingRow({
       <div className="ac-model-row-head">
         <span className="ac-model-name">{usage.model}</span>
         <span className="ac-model-tokens dash-num">{usage.totalTokens.toLocaleString("es-VE")} tokens</span>
-        <span className="ac-model-usd dash-num">{usage.usdCost !== null ? formatUsd(usage.usdCost) : "sin tarifa"}</span>
+        <span className="ac-model-usd dash-num">
+          {usage.usdCost !== null ? formatUsd(usage.usdCost) : "sin tarifa"}
+          {usage.usdCost !== null && !pricing?.updatedBy && <span className="ac-model-usd-note"> · tarifa de ejemplo</span>}
+        </span>
       </div>
       <div className="ac-model-pricing">
         <label className="ac-pricing-field">

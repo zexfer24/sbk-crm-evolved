@@ -449,6 +449,7 @@ interface RawModelPricing {
   input_price_per_million: number;
   output_price_per_million: number;
   updated_at: string;
+  updated_by: string | null;
 }
 
 function mapModelPricing(row: RawModelPricing): ModelPricing {
@@ -457,6 +458,7 @@ function mapModelPricing(row: RawModelPricing): ModelPricing {
     inputPricePerMillion: row.input_price_per_million,
     outputPricePerMillion: row.output_price_per_million,
     updatedAt: row.updated_at,
+    updatedBy: row.updated_by,
   };
 }
 
@@ -464,7 +466,7 @@ function mapModelPricing(row: RawModelPricing): ModelPricing {
 export async function fetchModelPricing(supabase: SupabaseClient): Promise<ModelPricing[]> {
   const { data, error } = await supabase
     .from("model_pricing")
-    .select("model, input_price_per_million, output_price_per_million, updated_at")
+    .select("model, input_price_per_million, output_price_per_million, updated_at, updated_by")
     .order("model");
 
   if (error) throw error;
