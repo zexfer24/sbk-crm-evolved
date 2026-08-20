@@ -34,6 +34,127 @@ export type Database = {
   }
   public: {
     Tables: {
+      agent_settings: {
+        Row: {
+          ai_globally_enabled: boolean
+          id: boolean
+          updated_at: string
+          updated_by: string | null
+        }
+        Insert: {
+          ai_globally_enabled?: boolean
+          id?: boolean
+          updated_at?: string
+          updated_by?: string | null
+        }
+        Update: {
+          ai_globally_enabled?: boolean
+          id?: boolean
+          updated_at?: string
+          updated_by?: string | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "agent_settings_updated_by_fkey"
+            columns: ["updated_by"]
+            isOneToOne: false
+            referencedRelation: "agents"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      agent_suggestions: {
+        Row: {
+          agent_id: string
+          content: string
+          created_at: string
+          id: string
+          reviewed_at: string | null
+          reviewed_by: string | null
+          status: string
+        }
+        Insert: {
+          agent_id: string
+          content: string
+          created_at?: string
+          id?: string
+          reviewed_at?: string | null
+          reviewed_by?: string | null
+          status?: string
+        }
+        Update: {
+          agent_id?: string
+          content?: string
+          created_at?: string
+          id?: string
+          reviewed_at?: string | null
+          reviewed_by?: string | null
+          status?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "agent_suggestions_agent_id_fkey"
+            columns: ["agent_id"]
+            isOneToOne: false
+            referencedRelation: "agents"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "agent_suggestions_reviewed_by_fkey"
+            columns: ["reviewed_by"]
+            isOneToOne: false
+            referencedRelation: "agents"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      agent_turns: {
+        Row: {
+          action: string
+          conversation_id: string
+          created_at: string
+          id: string
+          input_tokens: number | null
+          intent: string | null
+          model: string | null
+          output_tokens: number | null
+          summary: string | null
+          total_tokens: number | null
+        }
+        Insert: {
+          action: string
+          conversation_id: string
+          created_at?: string
+          id?: string
+          input_tokens?: number | null
+          intent?: string | null
+          model?: string | null
+          output_tokens?: number | null
+          summary?: string | null
+          total_tokens?: number | null
+        }
+        Update: {
+          action?: string
+          conversation_id?: string
+          created_at?: string
+          id?: string
+          input_tokens?: number | null
+          intent?: string | null
+          model?: string | null
+          output_tokens?: number | null
+          summary?: string | null
+          total_tokens?: number | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "agent_turns_conversation_id_fkey"
+            columns: ["conversation_id"]
+            isOneToOne: false
+            referencedRelation: "conversations"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       agents: {
         Row: {
           avatar_url: string | null
@@ -42,6 +163,7 @@ export type Database = {
           full_name: string | null
           id: string
           is_active: boolean
+          last_assigned_at: string | null
           role: string
           updated_at: string
         }
@@ -52,6 +174,7 @@ export type Database = {
           full_name?: string | null
           id: string
           is_active?: boolean
+          last_assigned_at?: string | null
           role?: string
           updated_at?: string
         }
@@ -62,6 +185,7 @@ export type Database = {
           full_name?: string | null
           id?: string
           is_active?: boolean
+          last_assigned_at?: string | null
           role?: string
           updated_at?: string
         }
@@ -147,51 +271,75 @@ export type Database = {
       }
       conversations: {
         Row: {
+          active_tool: string | null
           ai_enabled: boolean
           assigned_agent_id: string | null
           contact_id: string
           created_at: string
           deal_closed_at: string | null
+          deal_payment_proof_url: string | null
           deal_status: string
+          deal_verified: boolean
+          deal_verified_at: string | null
+          deal_verified_by: string | null
           id: string
+          intent: string | null
+          journey_stage: string | null
           last_customer_message_at: string | null
           last_message_at: string | null
           last_message_preview: string | null
           status: string
           unread_count: number
           updated_at: string
+          welcome_sent_at: string | null
           whatsapp_channel_id: string
         }
         Insert: {
+          active_tool?: string | null
           ai_enabled?: boolean
           assigned_agent_id?: string | null
           contact_id: string
           created_at?: string
           deal_closed_at?: string | null
+          deal_payment_proof_url?: string | null
           deal_status?: string
+          deal_verified?: boolean
+          deal_verified_at?: string | null
+          deal_verified_by?: string | null
           id?: string
+          intent?: string | null
+          journey_stage?: string | null
           last_customer_message_at?: string | null
           last_message_at?: string | null
           last_message_preview?: string | null
           status?: string
           unread_count?: number
           updated_at?: string
+          welcome_sent_at?: string | null
           whatsapp_channel_id: string
         }
         Update: {
+          active_tool?: string | null
           ai_enabled?: boolean
           assigned_agent_id?: string | null
           contact_id?: string
           created_at?: string
           deal_closed_at?: string | null
+          deal_payment_proof_url?: string | null
           deal_status?: string
+          deal_verified?: boolean
+          deal_verified_at?: string | null
+          deal_verified_by?: string | null
           id?: string
+          intent?: string | null
+          journey_stage?: string | null
           last_customer_message_at?: string | null
           last_message_at?: string | null
           last_message_preview?: string | null
           status?: string
           unread_count?: number
           updated_at?: string
+          welcome_sent_at?: string | null
           whatsapp_channel_id?: string
         }
         Relationships: [
@@ -210,6 +358,13 @@ export type Database = {
             referencedColumns: ["id"]
           },
           {
+            foreignKeyName: "conversations_deal_verified_by_fkey"
+            columns: ["deal_verified_by"]
+            isOneToOne: false
+            referencedRelation: "agents"
+            referencedColumns: ["id"]
+          },
+          {
             foreignKeyName: "conversations_whatsapp_channel_id_fkey"
             columns: ["whatsapp_channel_id"]
             isOneToOne: false
@@ -217,6 +372,27 @@ export type Database = {
             referencedColumns: ["id"]
           },
         ]
+      }
+      exchange_rates: {
+        Row: {
+          fetched_at: string
+          rate_date: string
+          source: string
+          usd_to_ves: number
+        }
+        Insert: {
+          fetched_at?: string
+          rate_date: string
+          source?: string
+          usd_to_ves: number
+        }
+        Update: {
+          fetched_at?: string
+          rate_date?: string
+          source?: string
+          usd_to_ves?: number
+        }
+        Relationships: []
       }
       messages: {
         Row: {
@@ -291,6 +467,38 @@ export type Database = {
           },
         ]
       }
+      model_pricing: {
+        Row: {
+          input_price_per_million: number
+          model: string
+          output_price_per_million: number
+          updated_at: string
+          updated_by: string | null
+        }
+        Insert: {
+          input_price_per_million: number
+          model: string
+          output_price_per_million: number
+          updated_at?: string
+          updated_by?: string | null
+        }
+        Update: {
+          input_price_per_million?: number
+          model?: string
+          output_price_per_million?: number
+          updated_at?: string
+          updated_by?: string | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "model_pricing_updated_by_fkey"
+            columns: ["updated_by"]
+            isOneToOne: false
+            referencedRelation: "agents"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       notes: {
         Row: {
           agent_id: string | null
@@ -329,6 +537,154 @@ export type Database = {
             referencedColumns: ["id"]
           },
         ]
+      }
+      order_items: {
+        Row: {
+          description: string
+          id: string
+          order_id: string
+          product_id: string | null
+          quantity: number
+          unit_price: number
+        }
+        Insert: {
+          description: string
+          id?: string
+          order_id: string
+          product_id?: string | null
+          quantity?: number
+          unit_price: number
+        }
+        Update: {
+          description?: string
+          id?: string
+          order_id?: string
+          product_id?: string | null
+          quantity?: number
+          unit_price?: number
+        }
+        Relationships: [
+          {
+            foreignKeyName: "order_items_order_id_fkey"
+            columns: ["order_id"]
+            isOneToOne: false
+            referencedRelation: "orders"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "order_items_product_id_fkey"
+            columns: ["product_id"]
+            isOneToOne: false
+            referencedRelation: "products"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      orders: {
+        Row: {
+          bcv_rate: number | null
+          contact_id: string
+          created_at: string
+          currency: string
+          id: string
+          purchased_at: string
+          total_amount: number
+        }
+        Insert: {
+          bcv_rate?: number | null
+          contact_id: string
+          created_at?: string
+          currency?: string
+          id?: string
+          purchased_at?: string
+          total_amount: number
+        }
+        Update: {
+          bcv_rate?: number | null
+          contact_id?: string
+          created_at?: string
+          currency?: string
+          id?: string
+          purchased_at?: string
+          total_amount?: number
+        }
+        Relationships: [
+          {
+            foreignKeyName: "orders_contact_id_fkey"
+            columns: ["contact_id"]
+            isOneToOne: false
+            referencedRelation: "contacts"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      product_compatibility: {
+        Row: {
+          id: string
+          moto_brand: string
+          moto_model: string
+          product_id: string
+        }
+        Insert: {
+          id?: string
+          moto_brand: string
+          moto_model: string
+          product_id: string
+        }
+        Update: {
+          id?: string
+          moto_brand?: string
+          moto_model?: string
+          product_id?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "product_compatibility_product_id_fkey"
+            columns: ["product_id"]
+            isOneToOne: false
+            referencedRelation: "products"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      products: {
+        Row: {
+          brand: string | null
+          created_at: string
+          currency: string
+          description: string | null
+          id: string
+          is_active: boolean
+          name: string
+          price: number
+          stock_quantity: number
+          updated_at: string
+        }
+        Insert: {
+          brand?: string | null
+          created_at?: string
+          currency?: string
+          description?: string | null
+          id?: string
+          is_active?: boolean
+          name: string
+          price: number
+          stock_quantity?: number
+          updated_at?: string
+        }
+        Update: {
+          brand?: string | null
+          created_at?: string
+          currency?: string
+          description?: string | null
+          id?: string
+          is_active?: boolean
+          name?: string
+          price?: number
+          stock_quantity?: number
+          updated_at?: string
+        }
+        Relationships: []
       }
       quick_replies: {
         Row: {
@@ -461,6 +817,15 @@ export type Database = {
     }
     Functions: {
       is_agent: { Args: never; Returns: boolean }
+      message_activity_by_hour: {
+        Args: { from_ts: string; to_ts: string; tz?: string }
+        Returns: {
+          agent: number
+          ai: number
+          hour: number
+          inbound: number
+        }[]
+      }
     }
     Enums: {
       [_ in never]: never
