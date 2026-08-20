@@ -2,13 +2,20 @@ import type { SupabaseClient } from "@supabase/supabase-js";
 import { CRM_TIME_ZONE, currentDayRange } from "@/lib/time-zone";
 import type {
   Agent,
+  AgentSettings,
+  AgentSuggestion,
+  AgentTurn,
   Contact,
   Conversation,
   HourlyActivity,
   Message,
+  ModelPricing,
+  ModelUsageSummary,
   Note,
   QuickReply,
   Tag,
+  TokenUsageDay,
+  TokenUsageSummary,
   WhatsappChannel,
   WhatsappTemplate,
 } from "@/lib/types";
@@ -63,6 +70,10 @@ interface RawConversation {
   ai_enabled: boolean;
   deal_status: Conversation["dealStatus"];
   deal_closed_at: string | null;
+  deal_payment_proof_url: string | null;
+  deal_verified: boolean;
+  deal_verified_at: string | null;
+  deal_verified_by: RawAgent | null;
   last_customer_message_at: string | null;
   last_message_at: string | null;
   last_message_preview: string | null;
@@ -179,6 +190,10 @@ function mapConversation(row: RawConversation): Conversation {
     aiEnabled: row.ai_enabled,
     dealStatus: row.deal_status,
     dealClosedAt: row.deal_closed_at,
+    dealPaymentProofUrl: row.deal_payment_proof_url,
+    dealVerified: row.deal_verified,
+    dealVerifiedAt: row.deal_verified_at,
+    dealVerifiedBy: mapAgent(row.deal_verified_by),
     lastCustomerMessageAt: row.last_customer_message_at,
     lastMessageAt: row.last_message_at,
     lastMessagePreview: row.last_message_preview,
@@ -239,13 +254,15 @@ function mapTemplate(row: RawTemplate): WhatsappTemplate {
 
 const CONVERSATION_SELECT = `
   id, status, unread_count, ai_enabled, deal_status, deal_closed_at,
+  deal_payment_proof_url, deal_verified, deal_verified_at,
   last_customer_message_at, last_message_at, last_message_preview, created_at,
   journey_stage, intent, active_tool, welcome_sent_at,
   contact:contacts(id, phone_number, display_name, profile_name, avatar_url,
     cedula_type, cedula_number, state, city, address,
     contact_tags(tag:tags(id, label, color))),
   channel:whatsapp_channels(id, label, phone_number, phone_number_id, status),
-  assigned_agent:agents(id, display_name, full_name, avatar_url, role, is_active)
+  assigned_agent:agents!conversations_assigned_agent_id_fkey(id, display_name, full_name, avatar_url, role, is_active),
+  deal_verified_by:agents!conversations_deal_verified_by_fkey(id, display_name, full_name, avatar_url, role, is_active)
 `;
 
 export async function fetchConversations(supabase: SupabaseClient): Promise<Conversation[]> {
@@ -367,6 +384,17 @@ export async function fetchAgents(supabase: SupabaseClient): Promise<Agent[]> {
   return (data as RawAgent[]).map((row) => mapAgent(row)!);
 }
 
+/** Roster completo (activos e inactivos) para la sección "Control de agentes". */
+export async function fetchAllAgents(supabase: SupabaseClient): Promise<Agent[]> {
+  const { data, error } = await supabase
+    .from("agents")
+    .select("id, display_name, full_name, avatar_url, role, is_active")
+    .order("display_name");
+
+  if (error) throw error;
+  return (data as RawAgent[]).map((row) => mapAgent(row)!);
+}
+
 export async function fetchQuickReplies(supabase: SupabaseClient): Promise<QuickReply[]> {
   const { data, error } = await supabase
     .from("quick_replies")
@@ -374,6 +402,199 @@ export async function fetchQuickReplies(supabase: SupabaseClient): Promise<Quick
     .order("label");
   if (error) throw error;
   return (data as RawQuickReply[]).map(mapQuickReply);
+}
+
+interface RawAgentTurn {
+  id: string;
+  conversation_id: string;
+  intent: AgentTurn["intent"];
+  action: AgentTurn["action"];
+  summary: string | null;
+  model: string | null;
+  input_tokens: number | null;
+  output_tokens: number | null;
+  total_tokens: number | null;
+  created_at: string;
+}
+
+function mapAgentTurn(row: RawAgentTurn): AgentTurn {
+  return {
+    id: row.id,
+    conversationId: row.conversation_id,
+    intent: row.intent,
+    action: row.action,
+    summary: row.summary,
+    model: row.model,
+    inputTokens: row.input_tokens,
+    outputTokens: row.output_tokens,
+    totalTokens: row.total_tokens,
+    createdAt: row.created_at,
+  };
+}
+
+/** Últimos turnos del agente de IA en todo el CRM, para el feed en vivo del panel de control. */
+export async function fetchAgentTurns(supabase: SupabaseClient, limit = 30): Promise<AgentTurn[]> {
+  const { data, error } = await supabase
+    .from("agent_turns")
+    .select("id, conversation_id, intent, action, summary, model, input_tokens, output_tokens, total_tokens, created_at")
+    .order("created_at", { ascending: false })
+    .limit(limit);
+
+  if (error) throw error;
+  return (data as RawAgentTurn[]).map(mapAgentTurn);
+}
+
+interface RawModelPricing {
+  model: string;
+  input_price_per_million: number;
+  output_price_per_million: number;
+  updated_at: string;
+}
+
+function mapModelPricing(row: RawModelPricing): ModelPricing {
+  return {
+    model: row.model,
+    inputPricePerMillion: row.input_price_per_million,
+    outputPricePerMillion: row.output_price_per_million,
+    updatedAt: row.updated_at,
+  };
+}
+
+/** Tarifa por millón de tokens de cada modelo visto, para calcular costo en $USD. */
+export async function fetchModelPricing(supabase: SupabaseClient): Promise<ModelPricing[]> {
+  const { data, error } = await supabase
+    .from("model_pricing")
+    .select("model, input_price_per_million, output_price_per_million, updated_at")
+    .order("model");
+
+  if (error) throw error;
+  return (data as RawModelPricing[]).map(mapModelPricing);
+}
+
+interface RawTokenUsageRow {
+  model: string | null;
+  input_tokens: number | null;
+  output_tokens: number | null;
+  total_tokens: number | null;
+  created_at: string;
+}
+
+/**
+ * Consumo de tokens de los últimos `days` días: total, costo en $USD según
+ * model_pricing, serie diaria (últimos 14 días, zero-filled) y desglose por
+ * modelo. Se agrega en JS sobre las filas crudas, igual que el resto de
+ * data.ts — sin vistas SQL nuevas.
+ */
+export async function fetchTokenUsageSummary(supabase: SupabaseClient, days = 30): Promise<TokenUsageSummary> {
+  const since = new Date();
+  since.setDate(since.getDate() - days);
+
+  const [{ data: turnsData, error: turnsError }, pricing] = await Promise.all([
+    supabase
+      .from("agent_turns")
+      .select("model, input_tokens, output_tokens, total_tokens, created_at")
+      .gte("created_at", since.toISOString()),
+    fetchModelPricing(supabase),
+  ]);
+
+  if (turnsError) throw turnsError;
+
+  const priceByModel = new Map(pricing.map((p) => [p.model, p]));
+  const rows = (turnsData as RawTokenUsageRow[]).filter((row) => row.total_tokens !== null);
+
+  const byDayMap = new Map<string, number>();
+  const byModelMap = new Map<string, { inputTokens: number; outputTokens: number; totalTokens: number }>();
+
+  for (const row of rows) {
+    const day = row.created_at.slice(0, 10);
+    byDayMap.set(day, (byDayMap.get(day) ?? 0) + (row.total_tokens ?? 0));
+
+    const modelKey = row.model ?? "desconocido";
+    const current = byModelMap.get(modelKey) ?? { inputTokens: 0, outputTokens: 0, totalTokens: 0 };
+    current.inputTokens += row.input_tokens ?? 0;
+    current.outputTokens += row.output_tokens ?? 0;
+    current.totalTokens += row.total_tokens ?? 0;
+    byModelMap.set(modelKey, current);
+  }
+
+  const byDay: TokenUsageDay[] = [];
+  for (let i = 13; i >= 0; i -= 1) {
+    const date = new Date();
+    date.setDate(date.getDate() - i);
+    const key = date.toISOString().slice(0, 10);
+    byDay.push({ date: key, tokens: byDayMap.get(key) ?? 0 });
+  }
+
+  function usdCost(model: string, inputTokens: number, outputTokens: number): number | null {
+    const price = priceByModel.get(model);
+    if (!price) return null;
+    return (inputTokens / 1_000_000) * price.inputPricePerMillion + (outputTokens / 1_000_000) * price.outputPricePerMillion;
+  }
+
+  const byModel: ModelUsageSummary[] = Array.from(byModelMap.entries())
+    .map(([model, usage]) => ({
+      model,
+      totalTokens: usage.totalTokens,
+      inputTokens: usage.inputTokens,
+      outputTokens: usage.outputTokens,
+      usdCost: usdCost(model, usage.inputTokens, usage.outputTokens),
+    }))
+    .sort((a, b) => b.totalTokens - a.totalTokens);
+
+  const totalTokens = byModel.reduce((sum, m) => sum + m.totalTokens, 0);
+  const totalUsd = byModel.reduce((sum, m) => sum + (m.usdCost ?? 0), 0);
+
+  return { totalTokens, totalUsd, byDay, byModel };
+}
+
+interface RawAgentSuggestion {
+  id: string;
+  agent_id: string;
+  content: string;
+  status: AgentSuggestion["status"];
+  created_at: string;
+  reviewed_at: string | null;
+  reviewed_by: string | null;
+  agent: RawAgent | null;
+}
+
+function mapAgentSuggestion(row: RawAgentSuggestion): AgentSuggestion {
+  return {
+    id: row.id,
+    agentId: row.agent_id,
+    agentName: row.agent?.display_name ?? null,
+    content: row.content,
+    status: row.status,
+    createdAt: row.created_at,
+    reviewedAt: row.reviewed_at,
+    reviewedBy: row.reviewed_by,
+  };
+}
+
+/** Sugerencias de mejora del bot dejadas por asesores para el supervisor, más recientes primero. */
+export async function fetchAgentSuggestions(supabase: SupabaseClient, limit = 50): Promise<AgentSuggestion[]> {
+  const { data, error } = await supabase
+    .from("agent_suggestions")
+    .select(
+      `id, agent_id, content, status, created_at, reviewed_at, reviewed_by,
+       agent:agents(id, display_name, full_name, avatar_url, role, is_active)`
+    )
+    .order("created_at", { ascending: false })
+    .limit(limit);
+
+  if (error) throw error;
+  return (data as unknown as RawAgentSuggestion[]).map(mapAgentSuggestion);
+}
+
+export async function fetchAgentSettings(supabase: SupabaseClient): Promise<AgentSettings> {
+  const { data, error } = await supabase
+    .from("agent_settings")
+    .select("ai_globally_enabled")
+    .eq("id", true)
+    .single();
+
+  if (error) throw error;
+  return { aiGloballyEnabled: data.ai_globally_enabled };
 }
 
 export async function fetchCurrentAgent(supabase: SupabaseClient): Promise<Agent | null> {
