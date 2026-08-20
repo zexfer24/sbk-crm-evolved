@@ -1,0 +1,565 @@
+/* ==========================================================================
+   Control del agente de IA
+   Reusa la estructura .dash-* (rail, topbar, header) del dashboard. Solo lo
+   propio de este panel vive aquí: el interruptor global, la lista en vivo
+   de conversaciones con la IA, el feed de turnos y el simulador de prueba.
+   ========================================================================== */
+
+.ac-kill {
+  display: flex;
+  align-items: center;
+  gap: 18px;
+  flex-wrap: wrap;
+  padding: 20px 26px;
+}
+
+.ac-kill-status {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex: 1;
+  min-width: 220px;
+}
+
+.ac-kill-dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 999px;
+  background: var(--lm-good);
+  box-shadow: 0 0 0 4px rgba(34, 160, 107, 0.15);
+}
+
+.ac-kill[data-on="false"] .ac-kill-dot {
+  background: var(--lm-hot);
+  box-shadow: 0 0 0 4px rgba(228, 80, 59, 0.15);
+}
+
+.ac-kill-title {
+  font-size: 14.5px;
+  font-weight: 600;
+}
+
+.ac-kill-note {
+  color: var(--lm-muted);
+  font-size: 12.5px;
+}
+
+.ac-model-tag {
+  font-family: var(--font-mono), ui-monospace, monospace;
+  font-size: 11.5px;
+  color: var(--lm-ink-soft);
+  background: var(--lm-sunken);
+  padding: 4px 10px;
+  border-radius: 999px;
+}
+
+.ac-switch {
+  border: 0;
+  cursor: pointer;
+  width: 46px;
+  height: 26px;
+  border-radius: 999px;
+  background: var(--lm-hot);
+  position: relative;
+  transition: background 160ms ease;
+  flex-shrink: 0;
+}
+
+.ac-switch[data-on="true"] {
+  background: var(--lm-good);
+}
+
+.ac-switch::after {
+  content: "";
+  position: absolute;
+  top: 3px;
+  left: 3px;
+  width: 20px;
+  height: 20px;
+  border-radius: 999px;
+  background: #ffffff;
+  transition: transform 160ms ease;
+}
+
+.ac-switch[data-on="true"]::after {
+  transform: translateX(20px);
+}
+
+.ac-switch:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+/* --------------------------------------------------------------------------
+   Lista de conversaciones en vivo
+   -------------------------------------------------------------------------- */
+
+.ac-live-list {
+  display: flex;
+  flex-direction: column;
+  max-height: 480px;
+  overflow-y: auto;
+}
+
+.ac-live-empty {
+  padding: 24px 26px 28px;
+  color: var(--lm-muted);
+  font-size: 13px;
+}
+
+.ac-live-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 26px;
+  border-top: 1px solid var(--lm-line);
+}
+
+.ac-live-avatar {
+  display: grid;
+  place-items: center;
+  width: 32px;
+  height: 32px;
+  border-radius: 999px;
+  background: var(--lm-sunken);
+  font-size: 11px;
+  font-weight: 600;
+  flex-shrink: 0;
+}
+
+.ac-live-body {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.ac-live-name {
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.ac-live-meta {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  font-size: 11.5px;
+  color: var(--lm-muted);
+}
+
+.ac-live-actions {
+  display: flex;
+  gap: 6px;
+  flex-shrink: 0;
+}
+
+/* --------------------------------------------------------------------------
+   Badges de intención / etapa / acción
+   -------------------------------------------------------------------------- */
+
+.ac-badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.ac-badge[data-tone="link"] {
+  background: rgba(74, 99, 240, 0.12);
+  color: var(--lm-link-ink);
+}
+.ac-badge[data-tone="good"] {
+  background: rgba(34, 160, 107, 0.12);
+  color: var(--lm-good-ink);
+}
+.ac-badge[data-tone="wait"] {
+  background: rgba(231, 154, 36, 0.15);
+  color: var(--lm-wait-ink);
+}
+.ac-badge[data-tone="hot"] {
+  background: rgba(228, 80, 59, 0.12);
+  color: var(--lm-hot-ink);
+}
+.ac-badge[data-tone="plum"] {
+  background: rgba(124, 92, 245, 0.14);
+  color: #5a3fd6;
+}
+.ac-badge[data-tone="muted"] {
+  background: var(--lm-sunken);
+  color: var(--lm-ink-soft);
+}
+
+/* --------------------------------------------------------------------------
+   Feed de turnos
+   -------------------------------------------------------------------------- */
+
+.ac-feed {
+  display: flex;
+  flex-direction: column;
+  max-height: 480px;
+  overflow-y: auto;
+}
+
+.ac-feed-empty {
+  padding: 24px 26px 28px;
+  color: var(--lm-muted);
+  font-size: 13px;
+}
+
+.ac-feed-row {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  padding: 12px 26px;
+  border-top: 1px solid var(--lm-line);
+}
+
+.ac-feed-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.ac-feed-name {
+  font-size: 12.5px;
+  font-weight: 600;
+}
+
+.ac-feed-time {
+  margin-left: auto;
+  font-size: 11px;
+  color: var(--lm-muted);
+  font-family: var(--font-mono), ui-monospace, monospace;
+}
+
+.ac-feed-summary {
+  font-size: 12.5px;
+  color: var(--lm-ink-soft);
+  line-height: 1.45;
+}
+
+/* --------------------------------------------------------------------------
+   Simulador
+   -------------------------------------------------------------------------- */
+
+.ac-sim {
+  padding: 20px 26px 26px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.ac-sim-row {
+  display: flex;
+  gap: 10px;
+  align-items: flex-end;
+}
+
+.ac-sim-textarea {
+  flex: 1;
+  min-height: 44px;
+  max-height: 140px;
+  resize: vertical;
+  border: 1px solid var(--lm-line);
+  border-radius: 14px;
+  padding: 10px 14px;
+  font-size: 13.5px;
+  font-family: inherit;
+  background: var(--lm-surface);
+  color: var(--lm-ink);
+}
+
+.ac-sim-textarea:focus {
+  outline: 2px solid var(--lm-link);
+  outline-offset: 1px;
+}
+
+.ac-sim-hint {
+  font-size: 12px;
+  color: var(--lm-muted);
+}
+
+.ac-sim-error {
+  font-size: 12.5px;
+  color: var(--lm-hot-ink);
+  background: rgba(228, 80, 59, 0.08);
+  border-radius: 10px;
+  padding: 8px 12px;
+}
+
+.ac-sim-ok {
+  font-size: 12.5px;
+  color: var(--lm-good-ink);
+  background: rgba(34, 160, 107, 0.08);
+  border-radius: 10px;
+  padding: 8px 12px;
+}
+
+/* --------------------------------------------------------------------------
+   Pestañas: Control de IA / Agentes
+   -------------------------------------------------------------------------- */
+
+.ac-tabs {
+  display: flex;
+  gap: 4px;
+  margin: 4px 0 18px;
+  padding: 4px;
+  border-radius: 12px;
+  background: var(--lm-sunken);
+  width: fit-content;
+}
+
+.ac-tab-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  border: 0;
+  border-radius: 9px;
+  padding: 7px 14px;
+  background: transparent;
+  color: var(--lm-muted);
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.ac-tab-btn[data-active="true"] {
+  background: var(--lm-surface);
+  color: var(--lm-ink);
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.06);
+}
+
+.ac-tab-count {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 18px;
+  height: 18px;
+  padding: 0 5px;
+  border-radius: 999px;
+  background: var(--lm-sunken);
+  font-size: 10.5px;
+}
+
+.ac-tab-btn[data-active="true"] .ac-tab-count {
+  background: var(--lm-ink);
+  color: #ffffff;
+}
+
+/* --------------------------------------------------------------------------
+   Roster de agentes
+   -------------------------------------------------------------------------- */
+
+.ac-roster {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  gap: 12px;
+  padding: 18px 26px 24px;
+}
+
+.ac-agent-card {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 14px;
+  border: 1px solid var(--lm-line);
+  border-radius: 14px;
+  background: var(--lm-surface);
+}
+
+.ac-agent-card-head {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+}
+
+.ac-agent-card-who {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+  flex: 1;
+}
+
+.ac-agent-card-name {
+  font-size: 13.5px;
+  font-weight: 600;
+}
+
+.ac-agent-card-role {
+  font-size: 11px;
+  color: var(--lm-muted);
+}
+
+.ac-agent-card-toggle {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 4px;
+  flex-shrink: 0;
+}
+
+.ac-agent-card-toggle-label {
+  font-size: 10px;
+  color: var(--lm-muted);
+  text-align: right;
+  max-width: 90px;
+}
+
+.ac-agent-card-stats {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.ac-agent-card-chats {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding-top: 10px;
+  border-top: 1px solid var(--lm-line);
+}
+
+.ac-agent-card-chat {
+  font-size: 12px;
+  color: var(--lm-ink-soft);
+  text-decoration: none;
+}
+
+.ac-agent-card-chat:hover {
+  text-decoration: underline;
+}
+
+.ac-agent-card-chat[data-unread="true"] {
+  color: var(--lm-hot-ink);
+  font-weight: 600;
+}
+
+.ac-agent-card-chat-more {
+  font-size: 11.5px;
+  color: var(--lm-muted);
+}
+
+/* --------------------------------------------------------------------------
+   Consumo de tokens
+   -------------------------------------------------------------------------- */
+
+.ac-tokens-stats {
+  display: flex;
+  gap: 24px;
+  padding: 18px 26px 4px;
+  flex-wrap: wrap;
+}
+
+.ac-tokens-stat {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.ac-tokens-stat-value {
+  font-size: 22px;
+  font-weight: 600;
+}
+
+.ac-tokens-stat-label {
+  font-size: 12px;
+  color: var(--lm-muted);
+}
+
+.ac-model-list {
+  display: flex;
+  flex-direction: column;
+}
+
+.ac-model-row {
+  padding: 12px 26px;
+  border-top: 1px solid var(--lm-line);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.ac-model-row-head {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.ac-model-name {
+  font-family: var(--font-mono), ui-monospace, monospace;
+  font-size: 12.5px;
+  font-weight: 600;
+}
+
+.ac-model-tokens {
+  font-size: 12px;
+  color: var(--lm-ink-soft);
+}
+
+.ac-model-usd {
+  margin-left: auto;
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--lm-ink);
+}
+
+.ac-model-pricing {
+  display: flex;
+  align-items: flex-end;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.ac-pricing-field {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  font-size: 11px;
+  color: var(--lm-muted);
+}
+
+.ac-pricing-input {
+  width: 96px;
+  border: 1px solid var(--lm-line);
+  border-radius: 8px;
+  padding: 5px 8px;
+  font-size: 12.5px;
+  font-family: var(--font-mono), ui-monospace, monospace;
+  background: var(--lm-surface);
+  color: var(--lm-ink);
+}
+
+.ac-pricing-input:focus {
+  outline: 2px solid var(--lm-link);
+  outline-offset: 1px;
+}
+
+/* --------------------------------------------------------------------------
+   Sugerencias al supervisor
+   -------------------------------------------------------------------------- */
+
+.ac-suggest {
+  padding: 20px 26px 4px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.ac-suggest-row {
+  display: flex;
+  gap: 10px;
+  align-items: flex-end;
+}
+
+.ac-suggest-list {
+  display: flex;
+  flex-direction: column;
+}
