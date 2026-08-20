@@ -13,7 +13,8 @@
 ## Global Constraints
 
 - No automated test runner exists in this repo (`package.json` has no `vitest`/`jest`/`playwright`). Do not add one — it's out of scope. Verification is `npx tsc --noEmit` (type check) plus manual verification in `npm run dev`.
-- **Baseline TS error, not yours to fix:** `npx tsc --noEmit` on this branch already fails today with one pre-existing, unrelated error: `src/lib/data.ts(178,3): error TS2739: Type '{...}' is missing the following properties from type 'Conversation': dealPaymentProofUrl, dealVerified, dealVerifiedAt, dealVerifiedBy`. Every task's "run tsc" step must produce **exactly that one error and no others** — if you see a *different* or *additional* error touching a file you edited, that's yours to fix; the `dealVerified*` one is not.
+- **Baseline TS check:** `npx tsc --noEmit` on this branch is clean today (zero errors) — confirmed 2026-08-20. Every task's "run tsc" step must produce **zero errors** by the time that task is done (some intermediate steps *within* a task legitimately show transient errors from earlier steps in the same task — each such step says so explicitly; if a step's text doesn't say to expect an error, any error is yours to fix).
+- **Someone else is editing this repo in parallel, in this same working directory (not a worktree) — not on a branch related to this plan.** Their in-progress work (currently: a "sales module" — `src/app/ventas/`, `src/components/sales/`, edits to `chat-panel.tsx`, `format.ts`, `message-grouping.ts`, `close-sale-modal.tsx`, etc.) is uncommitted and must stay that way. Never run `git add -A`, `git add .`, `git stash`, `git checkout .`, or any other command that stages, stashes, or discards files this plan didn't touch. Every `git add` in this plan already names exact files — stick to that. If `git status` shows unrelated modified/untracked files before or after your task, that's expected and not yours to explain or fix. If a step's `npx tsc --noEmit` shows errors in files this plan never mentions, they belong to that parallel work — ignore them; judge your own step only by errors in files your task touched.
 - Money formatting: always via `formatUsd()` (Task 13), which renders `$X.XX` using `es-VE` locale — don't hand-roll `toFixed`/`$` string concatenation elsewhere.
 - Table/column naming: snake_case in SQL and in every `Raw*` interface in `data.ts`; camelCase in every exported TS type in `types.ts` and in component props/state. The `map*` functions in `data.ts` are the only place that crosses that boundary.
 - The `model` string that identifies a model everywhere (`agent_turns.model`, `model_pricing.model`, `ModelUsageSummary.model`) is always the `"provider/modelId"` format produced by `currentAgentModelLabel()` in `src/lib/ai/model.ts` (e.g. `"openai/gpt-5.6-luna"`). Never reformat or parse it.
@@ -28,8 +29,8 @@
 | `src/components/crm-shell.tsx` | Icon swap only |
 | `src/components/dashboard/dashboard-view.tsx` | Icon swap only |
 | `src/components/agent-control/agent-control-view.tsx` | Icon swap + two new sections + new state/handlers |
-| `supabase/migrations/20260819060000_agent_tokens_pricing.sql` | New — token columns + `model_pricing` table |
-| `supabase/migrations/20260819070000_agent_suggestions.sql` | New — `agent_suggestions` table |
+| `supabase/migrations/20260820010000_agent_tokens_pricing.sql` | New — token columns + `model_pricing` table |
+| `supabase/migrations/20260820020000_agent_suggestions.sql` | New — `agent_suggestions` table |
 | `supabase/seed.sql` | Append `model_pricing` placeholder rows |
 | `src/lib/supabase/database.types.ts` | Reflect both migrations |
 | `src/lib/types.ts` | Extend `AgentTurn`; add `ModelPricing`, `TokenUsageDay`, `ModelUsageSummary`, `TokenUsageSummary`, `AgentSuggestion(Status)` |
@@ -140,7 +141,7 @@ to:
 - [ ] **Step 4: Type-check**
 
 Run: `npx tsc --noEmit`
-Expected: only the pre-existing `dealVerified*` error from Global Constraints — no new errors.
+Expected: no errors in `crm-shell.tsx`, `dashboard-view.tsx`, or `agent-control-view.tsx` (ignore any error elsewhere — see Global Constraints on the parallel work in this repo).
 
 - [ ] **Step 5: Manual check**
 
@@ -163,7 +164,7 @@ EOF
 ### Task 2: Migración — tokens en `agent_turns` + tabla `model_pricing`
 
 **Files:**
-- Create: `supabase/migrations/20260819060000_agent_tokens_pricing.sql`
+- Create: `supabase/migrations/20260820010000_agent_tokens_pricing.sql`
 
 **Interfaces:**
 - Produces: columns `agent_turns.input_tokens` / `output_tokens` / `total_tokens` (all `integer`, nullable); table `public.model_pricing(model text pk, input_price_per_million numeric(10,4), output_price_per_million numeric(10,4), updated_at timestamptz, updated_by uuid)`.
@@ -213,7 +214,7 @@ Expected: migration runs without error; `npx supabase db diff` shows no drift.
 - [ ] **Step 3: Commit**
 
 ```bash
-git add supabase/migrations/20260819060000_agent_tokens_pricing.sql
+git add supabase/migrations/20260820010000_agent_tokens_pricing.sql
 git commit -m "$(cat <<'EOF'
 Añade columnas de tokens a agent_turns y tabla model_pricing
 
@@ -227,7 +228,7 @@ EOF
 ### Task 3: Migración — tabla `agent_suggestions`
 
 **Files:**
-- Create: `supabase/migrations/20260819070000_agent_suggestions.sql`
+- Create: `supabase/migrations/20260820020000_agent_suggestions.sql`
 
 **Interfaces:**
 - Produces: table `public.agent_suggestions(id uuid pk, agent_id uuid, content text, status text 'pending'|'reviewed', created_at timestamptz, reviewed_at timestamptz, reviewed_by uuid)`, published on `supabase_realtime`.
@@ -271,7 +272,7 @@ Expected: no errors; `select * from public.agent_suggestions limit 1;` in `npx s
 - [ ] **Step 3: Commit**
 
 ```bash
-git add supabase/migrations/20260819070000_agent_suggestions.sql
+git add supabase/migrations/20260820020000_agent_suggestions.sql
 git commit -m "$(cat <<'EOF'
 Añade tabla agent_suggestions para el panel de sugerencias al supervisor
 
@@ -520,7 +521,7 @@ Find the `messages: {` block (starts at line 324) and its closing, followed by `
 - [ ] **Step 4: Type-check**
 
 Run: `npx tsc --noEmit`
-Expected: only the pre-existing `dealVerified*` error — no new errors.
+Expected: no errors in `src/lib/supabase/database.types.ts` (ignore any error elsewhere — see Global Constraints on the parallel work in this repo).
 
 - [ ] **Step 5: Commit**
 
@@ -634,7 +635,7 @@ export interface AgentSuggestion {
 - [ ] **Step 2: Type-check**
 
 Run: `npx tsc --noEmit`
-Expected: new errors in `src/lib/data.ts` (its `mapAgentTurn`/`fetchAgentTurns` don't populate the new required `AgentTurn` fields yet) plus the pre-existing `dealVerified*` one — that's expected, Task 9 fixes it. Confirm no errors appear anywhere else (i.e. nothing outside `data.ts` broke).
+Expected: new errors in `src/lib/data.ts` (its `mapAgentTurn`/`fetchAgentTurns` don't populate the new required `AgentTurn` fields yet) — that's expected, Task 9 fixes it. Confirm no *other* file this plan has already touched (`crm-shell.tsx`, `dashboard-view.tsx`, `agent-control-view.tsx`, `database.types.ts`) shows a new error.
 
 - [ ] **Step 3: Commit**
 
@@ -694,7 +695,7 @@ export async function classifyIntent(messages: ModelMessage[]): Promise<Classify
 - [ ] **Step 2: Type-check**
 
 Run: `npx tsc --noEmit`
-Expected: a new error in `src/lib/ai/agent.ts` (`classifyIntent(history)` is used as if it returns `Intent`, not `ClassifyResult` — Task 8 fixes it), plus the pre-existing `dealVerified*` and the `data.ts` ones from Task 6. No other new errors.
+Expected: a new error in `src/lib/ai/agent.ts` (`classifyIntent(history)` is used as if it returns `Intent`, not `ClassifyResult` — Task 8 fixes it), plus the `data.ts` ones from Task 6 (still unfixed until Task 9). No other new errors in files this plan has touched.
 
 - [ ] **Step 3: Commit**
 
@@ -880,7 +881,7 @@ with:
 - [ ] **Step 6: Type-check**
 
 Run: `npx tsc --noEmit`
-Expected: the `agent.ts` error from Task 7 is gone. Remaining errors: only the `data.ts` ones from Task 6 and the pre-existing `dealVerified*` one.
+Expected: the `agent.ts` error from Task 7 is gone. Remaining: only the `data.ts` ones from Task 6 (still unfixed until Task 9) — no other new errors in files this plan has touched.
 
 - [ ] **Step 7: Manual verification**
 
@@ -1181,7 +1182,7 @@ import type {
 - [ ] **Step 3: Type-check**
 
 Run: `npx tsc --noEmit`
-Expected: the `data.ts` errors from Task 6 are gone. Only the pre-existing `dealVerified*` error remains.
+Expected: the `data.ts` errors from Task 6 are gone. No errors remain in any file this plan has touched.
 
 - [ ] **Step 4: Manual verification**
 
@@ -1252,7 +1253,7 @@ export async function updateModelPricing(
 - [ ] **Step 2: Type-check**
 
 Run: `npx tsc --noEmit`
-Expected: only the pre-existing `dealVerified*` error.
+Expected: no errors in `src/lib/mutations.ts`.
 
 - [ ] **Step 3: Commit**
 
@@ -1379,7 +1380,7 @@ function formatCompact(value: number): string {
 - [ ] **Step 2: Type-check**
 
 Run: `npx tsc --noEmit`
-Expected: only the pre-existing `dealVerified*` error.
+Expected: no errors in `src/components/agent-control/token-usage-chart.tsx`.
 
 - [ ] **Step 3: Commit**
 
@@ -2069,7 +2070,7 @@ function formatUsd(value: number): string {
 - [ ] **Step 10: Type-check**
 
 Run: `npx tsc --noEmit`
-Expected: only the pre-existing `dealVerified*` error — the whole feature compiles clean.
+Expected: no errors in any file this plan touched — the whole feature compiles clean.
 
 - [ ] **Step 11: Manual verification (this is the real test cycle — no unit tests exist for this UI)**
 
@@ -2097,7 +2098,7 @@ EOF
 
 ## Post-implementation checklist
 
-- [ ] `npx tsc --noEmit` across the whole repo shows only the pre-existing `dealVerified*` error.
+- [ ] `npx tsc --noEmit` shows no errors in any file this plan touched (errors in files belonging to the parallel sales-module work in progress are not this plan's concern).
 - [ ] `npm run lint` has no new violations in the files this plan touched.
 - [ ] All 13 tasks' manual verification steps passed in `npm run dev`.
 - [ ] Update the spec's "Riesgos / decisiones abiertas" note (or tell the user directly) that the seeded `model_pricing` rates are placeholders to be corrected from the panel.
