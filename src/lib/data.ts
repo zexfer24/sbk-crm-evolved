@@ -577,7 +577,7 @@ export async function fetchAgentSuggestions(supabase: SupabaseClient, limit = 50
     .from("agent_suggestions")
     .select(
       `id, agent_id, content, status, created_at, reviewed_at, reviewed_by,
-       agent:agents(id, display_name, full_name, avatar_url, role, is_active)`
+       agent:agents!agent_suggestions_agent_id_fkey(id, display_name, full_name, avatar_url, role, is_active)`
     )
     .order("created_at", { ascending: false })
     .limit(limit);
