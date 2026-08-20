@@ -157,3 +157,48 @@ insert into public.quick_replies (label, content) values
   ('Saludo inicial', '¡Hola! Gracias por escribirnos, ¿en qué te podemos ayudar?'),
   ('Pedir cédula y datos', 'Para procesar tu pedido necesito tu nombre completo, cédula y la dirección de entrega, por favor.'),
   ('Horario de atención', 'Nuestro horario de atención es de lunes a viernes de 8am a 6pm.');
+
+-- ============================================================================
+-- CATÁLOGO DE REPUESTOS (para que el agente de IA tenga qué buscar)
+-- ============================================================================
+insert into public.products (id, name, brand, price, currency, stock_quantity, description) values
+  ('eeeeeeee-0000-0000-0000-000000000001', 'Carburador PZ27', 'Genérico', 18.00, 'USD', 12, 'Carburador de 27mm, ajuste estándar para motos de 150-200cc.'),
+  ('eeeeeeee-0000-0000-0000-000000000002', 'Kit de arrastre (piñón + catalina + cadena)', 'DID', 35.50, 'USD', 5, 'Kit completo 428H, incluye piñón, catalina y cadena de 120 eslabones.'),
+  ('eeeeeeee-0000-0000-0000-000000000003', 'Bujía CR7HSA', 'NGK', 3.25, 'USD', 40, 'Bujía estándar de níquel, rosca corta.'),
+  ('eeeeeeee-0000-0000-0000-000000000004', 'Pastillas de freno delanteras', 'Genérico', 8.00, 'USD', 0, 'Juego de pastillas para disco delantero, calibre estándar.'),
+  ('eeeeeeee-0000-0000-0000-000000000005', 'Filtro de aceite', 'Genérico', 4.50, 'USD', 20, 'Filtro de aceite roscado, compatible con motor de 4 tiempos.');
+
+insert into public.product_compatibility (product_id, moto_brand, moto_model) values
+  ('eeeeeeee-0000-0000-0000-000000000001', 'Bera', 'SBR 200'),
+  ('eeeeeeee-0000-0000-0000-000000000001', 'Empire Keeway', 'TX 200'),
+  ('eeeeeeee-0000-0000-0000-000000000002', 'Suzuki', 'AX 100'),
+  ('eeeeeeee-0000-0000-0000-000000000003', 'Bera', 'SBR 200'),
+  ('eeeeeeee-0000-0000-0000-000000000003', 'Yamaha', 'Crypton'),
+  ('eeeeeeee-0000-0000-0000-000000000003', 'Suzuki', 'AX 100'),
+  ('eeeeeeee-0000-0000-0000-000000000004', 'Bera', 'SBR 200'),
+  ('eeeeeeee-0000-0000-0000-000000000005', 'Bera', 'SBR 200');
+
+-- ============================================================================
+-- HISTORIAL DE COMPRAS (para que la IA tenga contexto real en "devolución")
+-- ============================================================================
+insert into public.orders (id, contact_id, purchased_at, total_amount, currency, bcv_rate) values
+  ('ffffffff-0000-0000-0000-000000000001', 'cccccccc-0000-0000-0000-000000000001', now() - interval '10 days', 18.00, 'USD', 768.1200);
+
+insert into public.order_items (order_id, product_id, description, quantity, unit_price) values
+  ('ffffffff-0000-0000-0000-000000000001', 'eeeeeeee-0000-0000-0000-000000000001', 'Carburador PZ27', 1, 18.00);
+
+-- ============================================================================
+-- TASA BCV del día (para no depender de bcv.org.ve en la primera prueba)
+-- ============================================================================
+insert into public.exchange_rates (rate_date, usd_to_ves, source) values
+  (current_date, 775.3356, 'bcv.org.ve')
+on conflict (rate_date) do nothing;
+
+-- ============================================================================
+-- TARIFAS de modelo (placeholder — ajustar desde el panel de Control de IA
+-- antes de confiar en el $USD que muestra; estos valores son de ejemplo)
+-- ============================================================================
+insert into public.model_pricing (model, input_price_per_million, output_price_per_million) values
+  ('openai/gpt-5.6-luna', 1.2500, 10.0000),
+  ('google/gemini-3.1-flash-lite', 0.1000, 0.4000)
+on conflict (model) do nothing;
