@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { Bot, Inbox, LogOut, Receipt, Route, ShieldAlert, Users } from "lucide-react";
@@ -146,20 +146,36 @@ export function AgentControlView({
     }
   }, [supabase]);
 
+  const refreshTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const scheduleRefresh = useCallback(() => {
+    if (refreshTimeoutRef.current) clearTimeout(refreshTimeoutRef.current);
+    refreshTimeoutRef.current = setTimeout(() => {
+      refreshTimeoutRef.current = null;
+      refresh();
+    }, 750);
+  }, [refresh]);
+
+  useEffect(() => {
+    return () => {
+      if (refreshTimeoutRef.current) clearTimeout(refreshTimeoutRef.current);
+    };
+  }, []);
+
   useEffect(() => {
     const channel = supabase
       .channel("agent-control-live")
-      .on("postgres_changes", { event: "*", schema: "public", table: "conversations" }, () => refresh())
-      .on("postgres_changes", { event: "INSERT", schema: "public", table: "agent_turns" }, () => refresh())
-      .on("postgres_changes", { event: "UPDATE", schema: "public", table: "agent_settings" }, () => refresh())
-      .on("postgres_changes", { event: "UPDATE", schema: "public", table: "agents" }, () => refresh())
-      .on("postgres_changes", { event: "*", schema: "public", table: "agent_suggestions" }, () => refresh())
+      .on("postgres_changes", { event: "*", schema: "public", table: "conversations" }, () => scheduleRefresh())
+      .on("postgres_changes", { event: "INSERT", schema: "public", table: "agent_turns" }, () => scheduleRefresh())
+      .on("postgres_changes", { event: "UPDATE", schema: "public", table: "agent_settings" }, () => scheduleRefresh())
+      .on("postgres_changes", { event: "UPDATE", schema: "public", table: "agents" }, () => scheduleRefresh())
+      .on("postgres_changes", { event: "*", schema: "public", table: "agent_suggestions" }, () => scheduleRefresh())
       .subscribe();
 
     return () => {
       supabase.removeChannel(channel);
     };
-  }, [supabase, refresh]);
+  }, [supabase, scheduleRefresh]);
 
   async function toggleAgentActive(agent: Agent) {
     setTogglingAgentId(agent.id);
