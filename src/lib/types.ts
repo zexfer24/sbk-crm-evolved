@@ -44,7 +44,7 @@ export interface Contact {
 }
 
 export type ConversationStatus = "open" | "pending" | "closed";
-export type DealStatus = "none" | "in_progress" | "won" | "lost";
+export type DealStatus = "none" | "in_progress" | "won" | "lost" | "returned";
 
 /** Etapas del recorrido, en el orden en que las atraviesa un cliente. */
 export type JourneyStageId =
@@ -64,6 +64,10 @@ export interface Conversation {
   aiEnabled: boolean;
   dealStatus: DealStatus;
   dealClosedAt: string | null;
+  dealPaymentProofUrl: string | null;
+  dealVerified: boolean;
+  dealVerifiedAt: string | null;
+  dealVerifiedBy: Agent | null;
   lastCustomerMessageAt: string | null;
   lastMessageAt: string | null;
   lastMessagePreview: string | null;
@@ -94,6 +98,7 @@ export type MessageType =
   | "audio"
   | "video"
   | "document"
+  | "sticker"
   | "template"
   | "system_event";
 export type WhatsappMessageStatus = "sent" | "delivered" | "read" | "failed";
@@ -141,3 +146,72 @@ export interface QuickReply {
 }
 
 export type InboxFilter = "all" | "assigned";
+
+/** Qué categoría detectó la IA en el mensaje del cliente. */
+export type AgentIntent = "consulta_disponibilidad" | "devolucion" | "queja" | "otro";
+
+export type AgentTurnAction = "answered" | "escalated" | "error";
+
+/** Una fila de la bitácora de turnos del agente — alimenta el feed en vivo del panel de control. */
+export interface AgentTurn {
+  id: string;
+  conversationId: string;
+  intent: AgentIntent | null;
+  action: AgentTurnAction;
+  summary: string | null;
+  model: string | null;
+  inputTokens: number | null;
+  outputTokens: number | null;
+  totalTokens: number | null;
+  createdAt: string;
+}
+
+/** Interruptor global de la IA en todo el CRM. */
+export interface AgentSettings {
+  aiGloballyEnabled: boolean;
+}
+
+/** Tarifa en USD por millón de tokens para un modelo — usada para calcular el costo del consumo de la IA. */
+export interface ModelPricing {
+  model: string;
+  inputPricePerMillion: number;
+  outputPricePerMillion: number;
+  updatedAt: string;
+}
+
+/** Tokens consumidos en un día — un punto del gráfico de consumo. */
+export interface TokenUsageDay {
+  date: string;
+  tokens: number;
+}
+
+/** Consumo acumulado de un modelo, con su costo en USD si hay tarifa cargada. */
+export interface ModelUsageSummary {
+  model: string;
+  totalTokens: number;
+  inputTokens: number;
+  outputTokens: number;
+  usdCost: number | null;
+}
+
+/** Resumen de consumo de tokens para el panel de Control de IA. */
+export interface TokenUsageSummary {
+  totalTokens: number;
+  totalUsd: number;
+  byDay: TokenUsageDay[];
+  byModel: ModelUsageSummary[];
+}
+
+/** Sugerencia de un asesor humano al supervisor sobre cómo mejorar el bot. */
+export type AgentSuggestionStatus = "pending" | "reviewed";
+
+export interface AgentSuggestion {
+  id: string;
+  agentId: string;
+  agentName: string | null;
+  content: string;
+  status: AgentSuggestionStatus;
+  createdAt: string;
+  reviewedAt: string | null;
+  reviewedBy: string | null;
+}
