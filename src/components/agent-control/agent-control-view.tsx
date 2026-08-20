@@ -4,12 +4,41 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { Bot, Inbox, LogOut, Receipt, Route, ShieldAlert, Users } from "lucide-react";
-import type { Agent, AgentIntent, AgentSettings, AgentTurn, AgentTurnAction, Conversation } from "@/lib/types";
+import type {
+  Agent,
+  AgentIntent,
+  AgentSettings,
+  AgentSuggestion,
+  AgentTurn,
+  AgentTurnAction,
+  Conversation,
+  ModelPricing,
+  ModelUsageSummary,
+  TokenUsageSummary,
+} from "@/lib/types";
 import { createClient } from "@/lib/supabase/client";
-import { fetchAgentSettings, fetchAgentTurns, fetchAllAgents, fetchConversations } from "@/lib/data";
-import { setAgentActive, setAiEnabled, setAiGloballyEnabled, intervene } from "@/lib/mutations";
+import {
+  fetchAgentSettings,
+  fetchAgentSuggestions,
+  fetchAgentTurns,
+  fetchAllAgents,
+  fetchConversations,
+  fetchModelPricing,
+  fetchTokenUsageSummary,
+} from "@/lib/data";
+import {
+  createAgentSuggestion,
+  intervene,
+  markSuggestionReviewed,
+  setAgentActive,
+  setAiEnabled,
+  setAiGloballyEnabled,
+  updateModelPricing,
+} from "@/lib/mutations";
 import { contactName, initials } from "@/lib/dashboard";
+import { formatTime12h } from "@/lib/format";
 import { AgentsRosterPanel } from "@/components/agent-control/agent-roster-panel";
+import { TokenUsageChart } from "@/components/agent-control/token-usage-chart";
 import "@/components/dashboard/dashboard.css";
 import "@/components/agent-control/agent-control.css";
 
@@ -19,6 +48,9 @@ interface AgentControlViewProps {
   initialTurns: AgentTurn[];
   initialSettings: AgentSettings;
   initialAgents: Agent[];
+  initialTokenUsage: TokenUsageSummary;
+  initialPricing: ModelPricing[];
+  initialSuggestions: AgentSuggestion[];
   modelLabel: string;
 }
 
@@ -51,7 +83,7 @@ const ACTION_TONE: Record<AgentTurnAction, string> = {
 };
 
 function timeLabel(iso: string): string {
-  return new Date(iso).toLocaleTimeString("es-VE", { hour: "2-digit", minute: "2-digit" });
+  return formatTime12h(iso);
 }
 
 export function AgentControlView({
@@ -60,6 +92,9 @@ export function AgentControlView({
   initialTurns,
   initialSettings,
   initialAgents,
+  initialTokenUsage,
+  initialPricing,
+  initialSuggestions,
   modelLabel,
 }: AgentControlViewProps) {
   const router = useRouter();
@@ -70,6 +105,9 @@ export function AgentControlView({
   const [turns, setTurns] = useState(initialTurns);
   const [settings, setSettings] = useState(initialSettings);
   const [agents, setAgents] = useState(initialAgents);
+  const [tokenUsage, setTokenUsage] = useState(initialTokenUsage);
+  const [pricing, setPricing] = useState(initialPricing);
+  const [suggestions, setSuggestions] = useState(initialSuggestions);
   const [togglingKillSwitch, setTogglingKillSwitch] = useState(false);
   const [busyConversationId, setBusyConversationId] = useState<string | null>(null);
   const [togglingAgentId, setTogglingAgentId] = useState<string | null>(null);
@@ -80,18 +118,29 @@ export function AgentControlView({
   const [simError, setSimError] = useState<string | null>(null);
   const [simOk, setSimOk] = useState<string | null>(null);
 
+  const [suggestionText, setSuggestionText] = useState("");
+  const [sendingSuggestion, setSendingSuggestion] = useState(false);
+  const [resolvingSuggestionId, setResolvingSuggestionId] = useState<string | null>(null);
+
   const refresh = useCallback(async () => {
     try {
-      const [nextConversations, nextTurns, nextSettings, nextAgents] = await Promise.all([
-        fetchConversations(supabase),
-        fetchAgentTurns(supabase),
-        fetchAgentSettings(supabase),
-        fetchAllAgents(supabase),
-      ]);
+      const [nextConversations, nextTurns, nextSettings, nextAgents, nextTokenUsage, nextPricing, nextSuggestions] =
+        await Promise.all([
+          fetchConversations(supabase),
+          fetchAgentTurns(supabase),
+          fetchAgentSettings(supabase),
+          fetchAllAgents(supabase),
+          fetchTokenUsageSummary(supabase),
+          fetchModelPricing(supabase),
+          fetchAgentSuggestions(supabase),
+        ]);
       setConversations(nextConversations);
       setTurns(nextTurns);
       setSettings(nextSettings);
       setAgents(nextAgents);
+      setTokenUsage(nextTokenUsage);
+      setPricing(nextPricing);
+      setSuggestions(nextSuggestions);
     } catch {
       // El siguiente cambio en tiempo real reintentará la sincronización.
     }
@@ -104,6 +153,7 @@ export function AgentControlView({
       .on("postgres_changes", { event: "INSERT", schema: "public", table: "agent_turns" }, () => refresh())
       .on("postgres_changes", { event: "UPDATE", schema: "public", table: "agent_settings" }, () => refresh())
       .on("postgres_changes", { event: "UPDATE", schema: "public", table: "agents" }, () => refresh())
+      .on("postgres_changes", { event: "*", schema: "public", table: "agent_suggestions" }, () => refresh())
       .subscribe();
 
     return () => {
@@ -130,6 +180,8 @@ export function AgentControlView({
   );
 
   const conversationsById = useMemo(() => new Map(conversations.map((c) => [c.id, c])), [conversations]);
+
+  const pricingByModel = useMemo(() => new Map(pricing.map((p) => [p.model, p])), [pricing]);
 
   async function toggleKillSwitch() {
     setTogglingKillSwitch(true);
@@ -189,6 +241,33 @@ export function AgentControlView({
   async function signOut() {
     await supabase.auth.signOut();
     router.push("/login");
+  }
+
+  async function savePricing(model: string, inputPricePerMillion: number, outputPricePerMillion: number) {
+    await updateModelPricing(supabase, model, inputPricePerMillion, outputPricePerMillion, currentAgent);
+    await refresh();
+  }
+
+  async function sendSuggestion() {
+    if (!suggestionText.trim()) return;
+    setSendingSuggestion(true);
+    try {
+      await createAgentSuggestion(supabase, currentAgent, suggestionText.trim());
+      setSuggestionText("");
+      await refresh();
+    } finally {
+      setSendingSuggestion(false);
+    }
+  }
+
+  async function resolveSuggestion(id: string) {
+    setResolvingSuggestionId(id);
+    try {
+      await markSuggestionReviewed(supabase, id, currentAgent);
+      await refresh();
+    } finally {
+      setResolvingSuggestionId(null);
+    }
   }
 
   return (
@@ -412,6 +491,102 @@ export function AgentControlView({
 
             <section className="dash-panel">
               <div className="dash-panel-head">
+                <h2 className="dash-panel-title">Consumo de tokens</h2>
+                <span className="dash-panel-spacer" />
+                <span className="dash-panel-note">últimos 30 días</span>
+              </div>
+
+              <div className="ac-tokens-stats">
+                <div className="ac-tokens-stat">
+                  <span className="ac-tokens-stat-value dash-num">{tokenUsage.totalTokens.toLocaleString("es-VE")}</span>
+                  <span className="ac-tokens-stat-label">tokens totales</span>
+                </div>
+                <div className="ac-tokens-stat">
+                  <span className="ac-tokens-stat-value dash-num">{formatUsd(tokenUsage.totalUsd)}</span>
+                  <span className="ac-tokens-stat-label">equivalente en USD</span>
+                </div>
+              </div>
+
+              <TokenUsageChart data={tokenUsage.byDay} />
+
+              <div className="ac-model-list">
+                {tokenUsage.byModel.length === 0 ? (
+                  <p className="ac-live-empty">Todavía no hay consumo registrado.</p>
+                ) : (
+                  tokenUsage.byModel.map((usage) => (
+                    <ModelPricingRow
+                      key={usage.model}
+                      usage={usage}
+                      pricing={pricingByModel.get(usage.model)}
+                      onSave={savePricing}
+                    />
+                  ))
+                )}
+              </div>
+            </section>
+
+            <section className="dash-panel">
+              <div className="dash-panel-head">
+                <h2 className="dash-panel-title">Sugerencias al supervisor</h2>
+                <span className="dash-panel-spacer" />
+                <span className="dash-panel-note">
+                  {suggestions.filter((s) => s.status === "pending").length} pendientes
+                </span>
+              </div>
+
+              <div className="ac-suggest">
+                <div className="ac-suggest-row">
+                  <textarea
+                    className="ac-sim-textarea"
+                    placeholder="Ej: los clientes preguntan mucho por envíos a Maracaibo y el bot no sabe responder eso todavía."
+                    value={suggestionText}
+                    onChange={(e) => setSuggestionText(e.target.value)}
+                    disabled={sendingSuggestion}
+                  />
+                  <button
+                    className="crm-pill"
+                    data-variant="solid"
+                    type="button"
+                    onClick={sendSuggestion}
+                    disabled={sendingSuggestion || !suggestionText.trim()}
+                  >
+                    {sendingSuggestion ? "Enviando…" : "Enviar"}
+                  </button>
+                </div>
+
+                <div className="ac-suggest-list">
+                  {suggestions.length === 0 ? (
+                    <p className="ac-feed-empty">Todavía no hay sugerencias registradas.</p>
+                  ) : (
+                    suggestions.map((s) => (
+                      <div className="ac-feed-row" key={s.id}>
+                        <div className="ac-feed-head">
+                          <span className="ac-feed-name">{s.agentName ?? "Asesor"}</span>
+                          <span className="ac-badge" data-tone={s.status === "pending" ? "wait" : "good"}>
+                            {s.status === "pending" ? "Pendiente" : "Revisada"}
+                          </span>
+                          <span className="ac-feed-time">{timeLabel(s.createdAt)}</span>
+                          {s.status === "pending" && currentAgent.role !== "agent" && (
+                            <button
+                              className="crm-pill"
+                              type="button"
+                              onClick={() => resolveSuggestion(s.id)}
+                              disabled={resolvingSuggestionId === s.id}
+                            >
+                              Marcar revisada
+                            </button>
+                          )}
+                        </div>
+                        <p className="ac-feed-summary">{s.content}</p>
+                      </div>
+                    ))
+                  )}
+                </div>
+              </div>
+            </section>
+
+            <section className="dash-panel">
+              <div className="dash-panel-head">
                 <h2 className="dash-panel-title">Probar el agente</h2>
                 <span className="dash-panel-spacer" />
                 <span className="dash-panel-note">No sale nada por WhatsApp real</span>
@@ -460,4 +635,73 @@ export function AgentControlView({
       </div>
     </div>
   );
+}
+
+function ModelPricingRow({
+  usage,
+  pricing,
+  onSave,
+}: {
+  usage: ModelUsageSummary;
+  pricing: ModelPricing | undefined;
+  onSave: (model: string, inputPricePerMillion: number, outputPricePerMillion: number) => Promise<void>;
+}) {
+  const [inputPrice, setInputPrice] = useState(String(pricing?.inputPricePerMillion ?? ""));
+  const [outputPrice, setOutputPrice] = useState(String(pricing?.outputPricePerMillion ?? ""));
+  const [saving, setSaving] = useState(false);
+
+  async function save() {
+    const input = Number(inputPrice);
+    const output = Number(outputPrice);
+    if (!Number.isFinite(input) || !Number.isFinite(output) || input < 0 || output < 0) return;
+    setSaving(true);
+    try {
+      await onSave(usage.model, input, output);
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <div className="ac-model-row">
+      <div className="ac-model-row-head">
+        <span className="ac-model-name">{usage.model}</span>
+        <span className="ac-model-tokens dash-num">{usage.totalTokens.toLocaleString("es-VE")} tokens</span>
+        <span className="ac-model-usd dash-num">{usage.usdCost !== null ? formatUsd(usage.usdCost) : "sin tarifa"}</span>
+      </div>
+      <div className="ac-model-pricing">
+        <label className="ac-pricing-field">
+          $/1M input
+          <input
+            type="number"
+            step="0.0001"
+            min="0"
+            className="ac-pricing-input"
+            value={inputPrice}
+            onChange={(e) => setInputPrice(e.target.value)}
+            disabled={saving}
+          />
+        </label>
+        <label className="ac-pricing-field">
+          $/1M output
+          <input
+            type="number"
+            step="0.0001"
+            min="0"
+            className="ac-pricing-input"
+            value={outputPrice}
+            onChange={(e) => setOutputPrice(e.target.value)}
+            disabled={saving}
+          />
+        </label>
+        <button className="crm-pill" type="button" onClick={save} disabled={saving}>
+          {saving ? "Guardando…" : "Guardar"}
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function formatUsd(value: number): string {
+  return `$${value.toLocaleString("es-VE", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 }
