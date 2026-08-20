@@ -14,7 +14,8 @@
 
 - No automated test runner exists in this repo (`package.json` has no `vitest`/`jest`/`playwright`). Do not add one — it's out of scope. Verification is `npx tsc --noEmit` (type check) plus manual verification in `npm run dev`.
 - **Baseline TS check:** `npx tsc --noEmit` on this branch is clean today (zero errors) — confirmed 2026-08-20. Every task's "run tsc" step must produce **zero errors** by the time that task is done (some intermediate steps *within* a task legitimately show transient errors from earlier steps in the same task — each such step says so explicitly; if a step's text doesn't say to expect an error, any error is yours to fix).
-- **Someone else is editing this repo in parallel, in this same working directory (not a worktree) — not on a branch related to this plan.** Their in-progress work (currently: a "sales module" — `src/app/ventas/`, `src/components/sales/`, edits to `chat-panel.tsx`, `format.ts`, `message-grouping.ts`, `close-sale-modal.tsx`, etc.) is uncommitted and must stay that way. Never run `git add -A`, `git add .`, `git stash`, `git checkout .`, or any other command that stages, stashes, or discards files this plan didn't touch. Every `git add` in this plan already names exact files — stick to that. If `git status` shows unrelated modified/untracked files before or after your task, that's expected and not yours to explain or fix. If a step's `npx tsc --noEmit` shows errors in files this plan never mentions, they belong to that parallel work — ignore them; judge your own step only by errors in files your task touched.
+- **Someone else is editing this repo in parallel, in this same working directory (not a worktree) — not on a branch related to this plan, and it keeps moving while this plan executes.** Their in-progress work is uncommitted and must stay that way. As of this plan's last check it included: a "sales module" (`src/app/ventas/`, `src/components/sales/`, edits to `chat-panel.tsx`, `format.ts`, `message-grouping.ts`, `close-sale-modal.tsx`), a nav icon/link for it in `crm-shell.tsx`/`dashboard-view.tsx`/`agent-control-view.tsx` (a `Receipt` icon), and — inside `agent-control-view.tsx` and `page.tsx` themselves, files this plan also edits — a tabbed "Control de IA" / "Agentes" UI with an `AgentsRosterPanel` component, `fetchAllAgents`, `setAgentActive`, `initialAgents`, and a `Users` icon. **Never remove, rename, or restructure any of that** — only add what a task asks for, alongside it. Never run `git add -A`, `git add .`, `git stash`, `git checkout .`, or any other command that stages, stashes, or discards files this plan didn't touch. Every `git add` in this plan already names exact files — stick to that. If `git status` shows unrelated modified/untracked files before or after your task, that's expected and not yours to explain or fix. If a step's `npx tsc --noEmit` shows errors in files this plan never mentions, they belong to that parallel work — ignore them; judge your own step only by errors in files your task touched.
+- **This plan's own quoted line numbers and multi-line "current file" snippets are a snapshot and may already be stale by the time your task runs** — the parallel work above changes these same files while this plan executes. Before editing any file, re-read it fresh. Where a step gives you an exact block of text to find-and-replace, treat that block as the thing to locate by its content (it's chosen to be unique), not by the line number quoted next to it — if you can't find it verbatim, or find something close-but-not-exact, stop and report `NEEDS_CONTEXT` with what you actually see there rather than guessing or forcing it. Where a step says to append at the end of a file, append after whatever the current last line is, not after whatever this plan says the last line used to be.
 - Money formatting: always via `formatUsd()` (Task 13), which renders `$X.XX` using `es-VE` locale — don't hand-roll `toFixed`/`$` string concatenation elsewhere.
 - Table/column naming: snake_case in SQL and in every `Raw*` interface in `data.ts`; camelCase in every exported TS type in `types.ts` and in component props/state. The `map*` functions in `data.ts` are the only place that crosses that boundary.
 - The `model` string that identifies a model everywhere (`agent_turns.model`, `model_pricing.model`, `ModelUsageSummary.model`) is always the `"provider/modelId"` format produced by `currentAgentModelLabel()` in `src/lib/ai/model.ts` (e.g. `"openai/gpt-5.6-luna"`). Never reformat or parse it.
@@ -47,96 +48,25 @@
 ### Task 1: Ícono — `SlidersHorizontal` → `Bot`
 
 **Files:**
-- Modify: `src/components/crm-shell.tsx:6,157-159`
-- Modify: `src/components/dashboard/dashboard-view.tsx:6,115-117`
-- Modify: `src/components/agent-control/agent-control-view.tsx:6,183-185,196-198`
+- Modify: `src/components/crm-shell.tsx`
+- Modify: `src/components/dashboard/dashboard-view.tsx`
+- Modify: `src/components/agent-control/agent-control-view.tsx`
 
 **Interfaces:** None — pure presentational swap, no new props or exports.
 
-- [ ] **Step 1: Swap the import and both usages in `crm-shell.tsx`**
+Other in-progress work in this repo (see Global Constraints) has already added a `Receipt` icon/nav-link to all three of these files, so don't trust old line numbers — locate everything below by content instead. In each file, there is exactly one `lucide-react` import line and one-or-two JSX usages of `<SlidersHorizontal .../>` — that identifier is unique enough to find both reliably.
 
-Change line 6 from:
-```tsx
-import { Inbox, LogOut, MessageCircle, Route, SlidersHorizontal } from "lucide-react";
-```
-to:
-```tsx
-import { Bot, Inbox, LogOut, MessageCircle, Route } from "lucide-react";
-```
+- [ ] **Step 1: Swap the import and usage(s) in `crm-shell.tsx`**
 
-Change (around line 157-159):
-```tsx
-        <Link className="crm-rail-btn" href="/agent-control" aria-label="Control de IA">
-          <SlidersHorizontal size={17} />
-        </Link>
-```
-to:
-```tsx
-        <Link className="crm-rail-btn" href="/agent-control" aria-label="Control de IA">
-          <Bot size={17} />
-        </Link>
-```
+In the `lucide-react` import line, remove `SlidersHorizontal` and add `Bot`, keeping every other icon already in that list and keeping the list alphabetically sorted (`Bot` sorts first). Then replace every `<SlidersHorizontal size={N} />` in the file's JSX with `<Bot size={N} />` (same `size` value, nothing else about the surrounding element changes).
 
-- [ ] **Step 2: Swap the import and usage in `dashboard-view.tsx`**
+- [ ] **Step 2: Swap the import and usage(s) in `dashboard-view.tsx`**
 
-Change line 6 from:
-```tsx
-import { Inbox, LogOut, RefreshCw, Route, SlidersHorizontal, TriangleAlert } from "lucide-react";
-```
-to:
-```tsx
-import { Bot, Inbox, LogOut, RefreshCw, Route, TriangleAlert } from "lucide-react";
-```
+Same transformation as Step 1: `SlidersHorizontal` → `Bot` in the `lucide-react` import (alphabetically sorted, keep every other icon in the list), and every `<SlidersHorizontal size={N} />` → `<Bot size={N} />`.
 
-Change (around line 115-117):
-```tsx
-          <Link className="dash-rail-btn" href="/agent-control" aria-label="Control de IA">
-            <SlidersHorizontal size={17} />
-          </Link>
-```
-to:
-```tsx
-          <Link className="dash-rail-btn" href="/agent-control" aria-label="Control de IA">
-            <Bot size={17} />
-          </Link>
-```
+- [ ] **Step 3: Swap the import and usage(s) in `agent-control-view.tsx`**
 
-- [ ] **Step 3: Swap the import and both usages in `agent-control-view.tsx`**
-
-Change line 6 from:
-```tsx
-import { Inbox, LogOut, Route, ShieldAlert, SlidersHorizontal } from "lucide-react";
-```
-to:
-```tsx
-import { Bot, Inbox, LogOut, Route, ShieldAlert } from "lucide-react";
-```
-
-Change (around line 183-185):
-```tsx
-          <Link className="dash-rail-btn" href="/agent-control" data-active="true" aria-label="Control de IA">
-            <SlidersHorizontal size={17} />
-          </Link>
-```
-to:
-```tsx
-          <Link className="dash-rail-btn" href="/agent-control" data-active="true" aria-label="Control de IA">
-            <Bot size={17} />
-          </Link>
-```
-
-Change (around line 196-198):
-```tsx
-                <span className="dash-brand-mark" aria-hidden="true">
-                  <SlidersHorizontal size={14} />
-                </span>
-```
-to:
-```tsx
-                <span className="dash-brand-mark" aria-hidden="true">
-                  <Bot size={14} />
-                </span>
-```
+Same transformation again. This file has two JSX usages of `SlidersHorizontal` (one in the left nav rail, one in the topbar brand mark) — replace both, preserving each one's own `size` value.
 
 - [ ] **Step 4: Type-check**
 
@@ -208,8 +138,8 @@ grant select, insert, update, delete on public.model_pricing to authenticated, s
 
 - [ ] **Step 2: Apply it locally and verify the columns/table exist**
 
-Run: `npx supabase db reset` (or `npx supabase migration up` if you keep existing local data)
-Expected: migration runs without error; `npx supabase db diff` shows no drift.
+The local Supabase stack is already running (`supabase_db_Liminal_CRM`, up for a while) with live data from the parallel work described in Global Constraints — **never run `npx supabase db reset`**, it wipes that data. Run: `npx supabase migration up --local` (applies only this new, pending migration).
+Expected: migration runs without error. Verify with: `npx supabase db query --local "select column_name from information_schema.columns where table_name = 'agent_turns' and column_name like '%tokens'; select model from public.model_pricing;"` — should list the three token columns and return zero rows for `model_pricing` (empty table, expected — Task 4 seeds it).
 
 - [ ] **Step 3: Commit**
 
@@ -266,8 +196,8 @@ alter publication supabase_realtime add table public.agent_suggestions;
 
 - [ ] **Step 2: Apply and verify**
 
-Run: `npx supabase db reset`
-Expected: no errors; `select * from public.agent_suggestions limit 1;` in `npx supabase db psql` (or the Studio SQL editor) returns an empty result with the right columns.
+**Never run `npx supabase db reset`** (see Task 2, Step 2 — it would wipe the parallel work's live local data). Run: `npx supabase migration up --local`.
+Expected: no errors. Verify with: `npx supabase db query --local "select * from public.agent_suggestions limit 1;"` — returns an empty result with the right columns (no error about the table not existing).
 
 - [ ] **Step 3: Commit**
 
@@ -286,7 +216,7 @@ EOF
 ### Task 4: Seed — tarifas placeholder por modelo
 
 **Files:**
-- Modify: `supabase/seed.sql` (append at end, after line 195)
+- Modify: `supabase/seed.sql` (append at the current end of the file — see Global Constraints on stale line numbers)
 
 **Interfaces:**
 - Consumes: `model_pricing` table from Task 2.
@@ -309,8 +239,8 @@ on conflict (model) do nothing;
 
 - [ ] **Step 2: Apply and verify**
 
-Run: `npx supabase db reset`
-Expected: no errors; `select * from public.model_pricing;` returns the two seeded rows.
+**Never run `npx supabase db reset`** (see Task 2, Step 2), and do **not** re-run the whole `seed.sql` file against the live local DB either — most of its other inserts (contacts, conversations, messages, products, etc.) have no `on conflict` clause and will fail with duplicate-key errors against data that's already there. Instead, run only the two new rows directly: `npx supabase db query --local "insert into public.model_pricing (model, input_price_per_million, output_price_per_million) values ('openai/gpt-5.6-luna', 1.2500, 10.0000), ('google/gemini-3.1-flash-lite', 0.1000, 0.4000) on conflict (model) do nothing;"`
+Expected: no errors. Verify with: `npx supabase db query --local "select * from public.model_pricing;"` — returns the two seeded rows (plus any others already present).
 
 - [ ] **Step 3: Commit**
 
@@ -431,8 +361,32 @@ with:
 
 - [ ] **Step 2: Insert `agent_suggestions` right before the `agent_turns` block**
 
-Insert immediately after the closing `}` of `agent_settings` (before `agent_turns: {` on what is currently line 66):
+Line numbers in this file may have shifted from other in-progress work elsewhere in the repo (not yours to touch — see Global Constraints) — locate this anchor by its text, not by a line number. Find this exact, unique block (the end of `agent_settings`, right before `agent_turns: {` begins):
 ```ts
+        Relationships: [
+          {
+            foreignKeyName: "agent_settings_updated_by_fkey"
+            columns: ["updated_by"]
+            isOneToOne: false
+            referencedRelation: "agents"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      agent_turns: {
+```
+Insert the new `agent_suggestions` block right after that closing `}` and right before `agent_turns: {`, so the result reads:
+```ts
+        Relationships: [
+          {
+            foreignKeyName: "agent_settings_updated_by_fkey"
+            columns: ["updated_by"]
+            isOneToOne: false
+            referencedRelation: "agents"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       agent_suggestions: {
         Row: {
           agent_id: string
@@ -482,8 +436,30 @@ Insert immediately after the closing `}` of `agent_settings` (before `agent_turn
 
 - [ ] **Step 3: Insert `model_pricing` between `messages` and `notes`**
 
-Find the `messages: {` block (starts at line 324) and its closing, followed by `notes: {` (line 397). Insert a new `model_pricing` block between them:
+Again, locate this anchor by text, not by line number. Find this exact, unique block (the end of `messages`, right before `notes: {` begins):
 ```ts
+          {
+            foreignKeyName: "messages_sender_agent_id_fkey"
+            columns: ["sender_agent_id"]
+            isOneToOne: false
+            referencedRelation: "agents"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      notes: {
+```
+Insert the new `model_pricing` block right after that closing `}` and right before `notes: {`, so the result reads:
+```ts
+          {
+            foreignKeyName: "messages_sender_agent_id_fkey"
+            columns: ["sender_agent_id"]
+            isOneToOne: false
+            referencedRelation: "agents"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       model_pricing: {
         Row: {
           input_price_per_million: number
@@ -1216,7 +1192,7 @@ EOF
 
 - [ ] **Step 1: Append the three mutations at the end of the file**
 
-Add after the final `deleteQuickReply` function (end of file, after line 244):
+Append at the very end of the file, after whatever its current last function is:
 ```ts
 
 export async function createAgentSuggestion(supabase: SupabaseClient, agent: Agent, content: string) {
@@ -1399,7 +1375,7 @@ EOF
 ### Task 12: `agent-control.css` — estilos nuevos
 
 **Files:**
-- Modify: `src/components/agent-control/agent-control.css` (append at end, after line 303)
+- Modify: `src/components/agent-control/agent-control.css` (append at the current end of the file — see Global Constraints on stale line numbers)
 
 **Interfaces:**
 - Produces: `.ac-tokens-stats`, `.ac-tokens-stat`, `.ac-tokens-stat-value`, `.ac-tokens-stat-label`, `.ac-model-list`, `.ac-model-row`, `.ac-model-row-head`, `.ac-model-name`, `.ac-model-tokens`, `.ac-model-usd`, `.ac-model-pricing`, `.ac-pricing-field`, `.ac-pricing-input`, `.ac-suggest`, `.ac-suggest-row`, `.ac-suggest-list` — all consumed by Task 13's JSX. (The suggestions feed rows reuse the existing `.ac-feed-*` and `.ac-badge` classes already in this file — no duplication.)
@@ -1551,9 +1527,12 @@ EOF
 - Consumes: everything from Tasks 6, 9, 10, 11 (`TokenUsageSummary`, `ModelPricing`, `AgentSuggestion` types; `fetchTokenUsageSummary`, `fetchModelPricing`, `fetchAgentSuggestions`; `createAgentSuggestion`, `markSuggestionReviewed`, `updateModelPricing`; `TokenUsageChart`).
 - Produces: `AgentControlViewProps` gains `initialTokenUsage: TokenUsageSummary`, `initialPricing: ModelPricing[]`, `initialSuggestions: AgentSuggestion[]` — `page.tsx` is the only caller, updated in this same task.
 
-- [ ] **Step 1: Update `page.tsx` to fetch and pass the three new props**
+**Both files already carry unrelated, in-progress functionality from the parallel work described in Global Constraints: a tabbed "Control de IA" / "Agentes" UI, `AgentsRosterPanel`, `fetchAllAgents`, `setAgentActive`, `initialAgents`. Every instruction below is additive — read each anchor fresh in the live file first (per Global Constraints, this plan's snapshot may already be stale), and never remove or restructure anything you didn't add.** Task 1 already replaced `SlidersHorizontal` with `Bot` in this file — don't redo that.
 
-Replace the whole file:
+- [ ] **Step 1: Update `page.tsx` to also fetch and pass the three new props**
+
+Read the current file first — it already fetches `agents`/`fetchAllAgents` and passes `initialAgents`; keep all of that. Add three more entries to the `Promise.all` array and three more fetch imports, then pass three more props. The result should read like this (adjust only if the live file's roster-panel wiring differs from what's shown here — preserve that wiring, just add the token/pricing/suggestions pieces alongside it):
+
 ```tsx
 import { redirect } from "next/navigation";
 import { createClient } from "@/lib/supabase/server";
@@ -1561,6 +1540,7 @@ import {
   fetchAgentSettings,
   fetchAgentSuggestions,
   fetchAgentTurns,
+  fetchAllAgents,
   fetchConversations,
   fetchCurrentAgent,
   fetchModelPricing,
@@ -1572,15 +1552,17 @@ import { AgentControlView } from "@/components/agent-control/agent-control-view"
 export default async function AgentControlPage() {
   const supabase = await createClient();
 
-  const [currentAgent, conversations, turns, settings, tokenUsage, pricing, suggestions] = await Promise.all([
-    fetchCurrentAgent(supabase),
-    fetchConversations(supabase),
-    fetchAgentTurns(supabase),
-    fetchAgentSettings(supabase),
-    fetchTokenUsageSummary(supabase),
-    fetchModelPricing(supabase),
-    fetchAgentSuggestions(supabase),
-  ]);
+  const [currentAgent, conversations, turns, settings, agents, tokenUsage, pricing, suggestions] =
+    await Promise.all([
+      fetchCurrentAgent(supabase),
+      fetchConversations(supabase),
+      fetchAgentTurns(supabase),
+      fetchAgentSettings(supabase),
+      fetchAllAgents(supabase),
+      fetchTokenUsageSummary(supabase),
+      fetchModelPricing(supabase),
+      fetchAgentSuggestions(supabase),
+    ]);
 
   if (!currentAgent) {
     redirect("/login");
@@ -1592,6 +1574,7 @@ export default async function AgentControlPage() {
       initialConversations={conversations}
       initialTurns={turns}
       initialSettings={settings}
+      initialAgents={agents}
       initialTokenUsage={tokenUsage}
       initialPricing={pricing}
       initialSuggestions={suggestions}
@@ -1601,86 +1584,41 @@ export default async function AgentControlPage() {
 }
 ```
 
-- [ ] **Step 2: Update imports in `agent-control-view.tsx`**
+- [ ] **Step 2: Extend the type import in `agent-control-view.tsx`**
 
-Replace lines 1-13:
+Find the `import type { ... } from "@/lib/types";` line (currently a single line, something like `import type { Agent, AgentIntent, AgentSettings, AgentTurn, AgentTurnAction, Conversation } from "@/lib/types";`). Add `AgentSuggestion`, `ModelPricing`, `ModelUsageSummary`, and `TokenUsageSummary` to that list, keeping every name already there and keeping the whole list alphabetically sorted.
+
+- [ ] **Step 3: Extend the `@/lib/data` import**
+
+Find the `import { ... } from "@/lib/data";` line (currently includes at least `fetchAgentSettings`, `fetchAgentTurns`, `fetchAllAgents`, `fetchConversations`). Add `fetchAgentSuggestions`, `fetchModelPricing`, and `fetchTokenUsageSummary` to that list, keeping every name already there and keeping the whole list alphabetically sorted.
+
+- [ ] **Step 4: Extend the `@/lib/mutations` import**
+
+Find the `import { ... } from "@/lib/mutations";` line (currently includes at least `setAgentActive`, `setAiEnabled`, `setAiGloballyEnabled`, `intervene`). Add `createAgentSuggestion`, `markSuggestionReviewed`, and `updateModelPricing` to that list, keeping every name already there and keeping the whole list alphabetically sorted.
+
+- [ ] **Step 5: Add the `TokenUsageChart` import**
+
+Find this exact, unique line:
 ```tsx
-"use client";
-
-import { useCallback, useEffect, useMemo, useState } from "react";
-import Link from "next/link";
-import { useRouter } from "next/navigation";
-import { Inbox, LogOut, Route, ShieldAlert, SlidersHorizontal } from "lucide-react";
-import type { Agent, AgentIntent, AgentSettings, AgentTurn, AgentTurnAction, Conversation } from "@/lib/types";
-import { createClient } from "@/lib/supabase/client";
-import { fetchAgentSettings, fetchAgentTurns, fetchConversations } from "@/lib/data";
-import { setAiEnabled, setAiGloballyEnabled, intervene } from "@/lib/mutations";
-import { contactName, initials } from "@/lib/dashboard";
-import "@/components/dashboard/dashboard.css";
-import "@/components/agent-control/agent-control.css";
+import { AgentsRosterPanel } from "@/components/agent-control/agent-roster-panel";
 ```
-with:
+Add a new import line right after it:
 ```tsx
-"use client";
-
-import { useCallback, useEffect, useMemo, useState } from "react";
-import Link from "next/link";
-import { useRouter } from "next/navigation";
-import { Bot, Inbox, LogOut, Route, ShieldAlert } from "lucide-react";
-import type {
-  Agent,
-  AgentIntent,
-  AgentSettings,
-  AgentSuggestion,
-  AgentTurn,
-  AgentTurnAction,
-  Conversation,
-  ModelPricing,
-  ModelUsageSummary,
-  TokenUsageSummary,
-} from "@/lib/types";
-import { createClient } from "@/lib/supabase/client";
-import {
-  fetchAgentSettings,
-  fetchAgentSuggestions,
-  fetchAgentTurns,
-  fetchConversations,
-  fetchModelPricing,
-  fetchTokenUsageSummary,
-} from "@/lib/data";
-import {
-  createAgentSuggestion,
-  intervene,
-  markSuggestionReviewed,
-  setAiEnabled,
-  setAiGloballyEnabled,
-  updateModelPricing,
-} from "@/lib/mutations";
-import { contactName, initials } from "@/lib/dashboard";
+import { AgentsRosterPanel } from "@/components/agent-control/agent-roster-panel";
 import { TokenUsageChart } from "@/components/agent-control/token-usage-chart";
-import "@/components/dashboard/dashboard.css";
-import "@/components/agent-control/agent-control.css";
 ```
 
-- [ ] **Step 3: Extend `AgentControlViewProps`**
+- [ ] **Step 6: Extend `AgentControlViewProps`**
 
-Replace (lines 15-21):
+Find this exact, unique block (part of the props interface):
 ```tsx
-interface AgentControlViewProps {
-  currentAgent: Agent;
-  initialConversations: Conversation[];
-  initialTurns: AgentTurn[];
-  initialSettings: AgentSettings;
+  initialAgents: Agent[];
   modelLabel: string;
 }
 ```
-with:
+Replace it with:
 ```tsx
-interface AgentControlViewProps {
-  currentAgent: Agent;
-  initialConversations: Conversation[];
-  initialTurns: AgentTurn[];
-  initialSettings: AgentSettings;
+  initialAgents: Agent[];
   initialTokenUsage: TokenUsageSummary;
   initialPricing: ModelPricing[];
   initialSuggestions: AgentSuggestion[];
@@ -1688,81 +1626,73 @@ interface AgentControlViewProps {
 }
 ```
 
-- [ ] **Step 4: Update the component signature and add state**
+- [ ] **Step 7: Extend the component's destructured props**
 
-Replace (lines 53-73):
+Find this exact, unique block (the function signature):
 ```tsx
-export function AgentControlView({
-  currentAgent,
-  initialConversations,
-  initialTurns,
-  initialSettings,
+  initialAgents,
   modelLabel,
 }: AgentControlViewProps) {
-  const router = useRouter();
-  const supabase = useMemo(() => createClient(), []);
-
-  const [conversations, setConversations] = useState(initialConversations);
-  const [turns, setTurns] = useState(initialTurns);
-  const [settings, setSettings] = useState(initialSettings);
-  const [togglingKillSwitch, setTogglingKillSwitch] = useState(false);
-  const [busyConversationId, setBusyConversationId] = useState<string | null>(null);
-
-  const [simText, setSimText] = useState("");
-  const [simConversationId, setSimConversationId] = useState<string | null>(null);
-  const [simSending, setSimSending] = useState(false);
-  const [simError, setSimError] = useState<string | null>(null);
-  const [simOk, setSimOk] = useState<string | null>(null);
 ```
-with:
+Replace it with:
 ```tsx
-export function AgentControlView({
-  currentAgent,
-  initialConversations,
-  initialTurns,
-  initialSettings,
+  initialAgents,
   initialTokenUsage,
   initialPricing,
   initialSuggestions,
   modelLabel,
 }: AgentControlViewProps) {
-  const router = useRouter();
-  const supabase = useMemo(() => createClient(), []);
+```
 
-  const [conversations, setConversations] = useState(initialConversations);
-  const [turns, setTurns] = useState(initialTurns);
-  const [settings, setSettings] = useState(initialSettings);
+- [ ] **Step 8: Add state for tokens, pricing, and suggestions**
+
+Find this exact, unique block:
+```tsx
+  const [agents, setAgents] = useState(initialAgents);
+  const [togglingKillSwitch, setTogglingKillSwitch] = useState(false);
+```
+Replace it with:
+```tsx
+  const [agents, setAgents] = useState(initialAgents);
   const [tokenUsage, setTokenUsage] = useState(initialTokenUsage);
   const [pricing, setPricing] = useState(initialPricing);
   const [suggestions, setSuggestions] = useState(initialSuggestions);
   const [togglingKillSwitch, setTogglingKillSwitch] = useState(false);
-  const [busyConversationId, setBusyConversationId] = useState<string | null>(null);
+```
 
-  const [simText, setSimText] = useState("");
-  const [simConversationId, setSimConversationId] = useState<string | null>(null);
-  const [simSending, setSimSending] = useState(false);
-  const [simError, setSimError] = useState<string | null>(null);
+Then find this exact, unique block (the end of the existing simulator state, right before `refresh`):
+```tsx
+  const [simOk, setSimOk] = useState<string | null>(null);
+
+  const refresh = useCallback(async () => {
+```
+Replace it with:
+```tsx
   const [simOk, setSimOk] = useState<string | null>(null);
 
   const [suggestionText, setSuggestionText] = useState("");
   const [sendingSuggestion, setSendingSuggestion] = useState(false);
   const [resolvingSuggestionId, setResolvingSuggestionId] = useState<string | null>(null);
+
+  const refresh = useCallback(async () => {
 ```
 
-- [ ] **Step 5: Extend `refresh()` and the realtime subscription**
+- [ ] **Step 9: Extend `refresh()` and the realtime subscription**
 
-Replace (lines 75-101):
+Find this exact, unique block:
 ```tsx
   const refresh = useCallback(async () => {
     try {
-      const [nextConversations, nextTurns, nextSettings] = await Promise.all([
+      const [nextConversations, nextTurns, nextSettings, nextAgents] = await Promise.all([
         fetchConversations(supabase),
         fetchAgentTurns(supabase),
         fetchAgentSettings(supabase),
+        fetchAllAgents(supabase),
       ]);
       setConversations(nextConversations);
       setTurns(nextTurns);
       setSettings(nextSettings);
+      setAgents(nextAgents);
     } catch {
       // El siguiente cambio en tiempo real reintentará la sincronización.
     }
@@ -1774,6 +1704,7 @@ Replace (lines 75-101):
       .on("postgres_changes", { event: "*", schema: "public", table: "conversations" }, () => refresh())
       .on("postgres_changes", { event: "INSERT", schema: "public", table: "agent_turns" }, () => refresh())
       .on("postgres_changes", { event: "UPDATE", schema: "public", table: "agent_settings" }, () => refresh())
+      .on("postgres_changes", { event: "UPDATE", schema: "public", table: "agents" }, () => refresh())
       .subscribe();
 
     return () => {
@@ -1781,15 +1712,16 @@ Replace (lines 75-101):
     };
   }, [supabase, refresh]);
 ```
-with:
+Replace it with:
 ```tsx
   const refresh = useCallback(async () => {
     try {
-      const [nextConversations, nextTurns, nextSettings, nextTokenUsage, nextPricing, nextSuggestions] =
+      const [nextConversations, nextTurns, nextSettings, nextAgents, nextTokenUsage, nextPricing, nextSuggestions] =
         await Promise.all([
           fetchConversations(supabase),
           fetchAgentTurns(supabase),
           fetchAgentSettings(supabase),
+          fetchAllAgents(supabase),
           fetchTokenUsageSummary(supabase),
           fetchModelPricing(supabase),
           fetchAgentSuggestions(supabase),
@@ -1797,6 +1729,7 @@ with:
       setConversations(nextConversations);
       setTurns(nextTurns);
       setSettings(nextSettings);
+      setAgents(nextAgents);
       setTokenUsage(nextTokenUsage);
       setPricing(nextPricing);
       setSuggestions(nextSuggestions);
@@ -1811,6 +1744,7 @@ with:
       .on("postgres_changes", { event: "*", schema: "public", table: "conversations" }, () => refresh())
       .on("postgres_changes", { event: "INSERT", schema: "public", table: "agent_turns" }, () => refresh())
       .on("postgres_changes", { event: "UPDATE", schema: "public", table: "agent_settings" }, () => refresh())
+      .on("postgres_changes", { event: "UPDATE", schema: "public", table: "agents" }, () => refresh())
       .on("postgres_changes", { event: "*", schema: "public", table: "agent_suggestions" }, () => refresh())
       .subscribe();
 
@@ -1820,16 +1754,36 @@ with:
   }, [supabase, refresh]);
 ```
 
-- [ ] **Step 6: Add `pricingByModel` memo and the three new handlers**
+- [ ] **Step 10: Add the `pricingByModel` memo**
 
-Insert right after the `conversationsById` memo (after line 111, `const conversationsById = useMemo(...);`):
+Find this exact, unique line:
 ```tsx
+  const conversationsById = useMemo(() => new Map(conversations.map((c) => [c.id, c])), [conversations]);
+```
+Add a new line right after it:
+```tsx
+  const conversationsById = useMemo(() => new Map(conversations.map((c) => [c.id, c])), [conversations]);
 
   const pricingByModel = useMemo(() => new Map(pricing.map((p) => [p.model, p])), [pricing]);
 ```
 
-Insert right after the `signOut` function (after line 171, before the `return`):
+- [ ] **Step 11: Add the three new handlers**
+
+Find this exact, unique block (the end of `signOut`, right before the component's `return`):
 ```tsx
+  async function signOut() {
+    await supabase.auth.signOut();
+    router.push("/login");
+  }
+
+  return (
+```
+Replace it with:
+```tsx
+  async function signOut() {
+    await supabase.auth.signOut();
+    router.push("/login");
+  }
 
   async function savePricing(model: string, inputPricePerMillion: number, outputPricePerMillion: number) {
     await updateModelPricing(supabase, model, inputPricePerMillion, outputPricePerMillion, currentAgent);
@@ -1857,43 +1811,24 @@ Insert right after the `signOut` function (after line 171, before the `return`):
       setResolvingSuggestionId(null);
     }
   }
+
+  return (
 ```
 
-- [ ] **Step 7: Swap the icon usages (rail + brand mark)**
+- [ ] **Step 12: Insert the two new sections between "Actividad en vivo" and "Probar el agente"**
 
-Replace (around lines 183-185):
+Find this exact, unique block (the JSX title of the "Probar el agente" panel and the `</div>` that closes the two-column row right above it):
 ```tsx
-          <Link className="dash-rail-btn" href="/agent-control" data-active="true" aria-label="Control de IA">
-            <SlidersHorizontal size={17} />
-          </Link>
+            </div>
+
+            <section className="dash-panel">
+              <div className="dash-panel-head">
+                <h2 className="dash-panel-title">Probar el agente</h2>
 ```
-with:
+Replace it with (this keeps the same `</div>` and adds two full new `<section>` panels before the existing "Probar el agente" one, which is untouched below):
 ```tsx
-          <Link className="dash-rail-btn" href="/agent-control" data-active="true" aria-label="Control de IA">
-            <Bot size={17} />
-          </Link>
-```
+            </div>
 
-Replace (around lines 196-198):
-```tsx
-                <span className="dash-brand-mark" aria-hidden="true">
-                  <SlidersHorizontal size={14} />
-                </span>
-```
-with:
-```tsx
-                <span className="dash-brand-mark" aria-hidden="true">
-                  <Bot size={14} />
-                </span>
-```
-
-*(Note: this repeats Task 1's edit to this file. If Task 1 already landed, `SlidersHorizontal` and the import will already be `Bot` — skip re-applying an edit that's already in place; the end state is what matters.)*
-
-- [ ] **Step 8: Insert the two new sections between "Actividad en vivo" and "Probar el agente"**
-
-Find the closing `</div>` of `<div className="dash-lower">` (around line 354) followed by the `<section className="dash-panel">` that starts "Probar el agente" (around line 356). Insert these two new sections between them:
-
-```tsx
             <section className="dash-panel">
               <div className="dash-panel-head">
                 <h2 className="dash-panel-title">Consumo de tokens</h2>
@@ -1990,11 +1925,17 @@ Find the closing `</div>` of `<div className="dash-lower">` (around line 354) fo
               </div>
             </section>
 
+            <section className="dash-panel">
+              <div className="dash-panel-head">
+                <h2 className="dash-panel-title">Probar el agente</h2>
 ```
 
-- [ ] **Step 9: Add `ModelPricingRow` and `formatUsd` after the main component**
+If the live file's "Probar el agente" section sits inside a `{tab === "ia" && (<>...</>)}` block (as it does in the version this plan was last checked against), that's correct — these two new sections belong inside that same block, so the anchor above (which is entirely inside it) is the right insertion point. Do not move the new sections outside that block.
 
-Insert after the closing `}` of `AgentControlView` (end of file, currently line 395):
+- [ ] **Step 13: Add `ModelPricingRow` and `formatUsd` after the component**
+
+Find the end of the file — the component's closing `return ( ... );\n}` followed by nothing else (or by whatever the current last lines are). Append these two functions after the component's closing `}`:
+
 ```tsx
 
 function ModelPricingRow({
@@ -2067,22 +2008,23 @@ function formatUsd(value: number): string {
 }
 ```
 
-- [ ] **Step 10: Type-check**
+- [ ] **Step 14: Type-check**
 
 Run: `npx tsc --noEmit`
-Expected: no errors in any file this plan touched — the whole feature compiles clean.
+Expected: no errors in `src/components/agent-control/agent-control-view.tsx` or `src/app/agent-control/page.tsx`.
 
-- [ ] **Step 11: Manual verification (this is the real test cycle — no unit tests exist for this UI)**
+- [ ] **Step 15: Manual verification (this is the real test cycle — no unit tests exist for this UI)**
 
 Run `npm run dev`, sign in, open `/agent-control`, and check:
-1. The robot icon shows in the rail and topbar (from Task 1/Step 7).
-2. "Consumo de tokens" shows two stat tiles (tokens totales, equivalente en USD), a bar chart (may be all zeros / flat if no turns ran recently), and one row per model seen in `agent_turns` with editable `$/1M input`/`$/1M output` fields.
-3. Use the simulator ("Probar el agente") to send a message; after it completes, confirm the token stats and chart update (they refresh automatically via the `agent_turns` INSERT realtime subscription).
-4. Edit a model's `$/1M input` field, click Guardar, reload the page, and confirm the value persisted (it re-reads from `model_pricing` on load).
-5. In "Sugerencias al supervisor", type a suggestion and click Enviar — it should appear at the top of the list tagged "Pendiente".
-6. If `currentAgent.role` is `"agent"`, confirm there is **no** "Marcar revisada" button on any suggestion. If it's `"supervisor"` or `"admin"`, confirm the button appears on pending suggestions, and clicking it flips the badge to "Revisada" and hides the button.
+1. The "Control de IA" tab (default tab) still shows the kill switch, live conversations, and activity feed exactly as before, plus the two new sections.
+2. The "Agentes" tab (the roster panel from the parallel work) still works exactly as before — this task must not have touched it.
+3. "Consumo de tokens" shows two stat tiles (tokens totales, equivalente en USD), a bar chart (may be all zeros / flat if no turns ran recently), and one row per model seen in `agent_turns` with editable `$/1M input`/`$/1M output` fields.
+4. Use the simulator ("Probar el agente") to send a message; after it completes, confirm the token stats and chart update (they refresh automatically via the `agent_turns` INSERT realtime subscription).
+5. Edit a model's `$/1M input` field, click Guardar, reload the page, and confirm the value persisted (it re-reads from `model_pricing` on load).
+6. In "Sugerencias al supervisor", type a suggestion and click Enviar — it should appear at the top of the list tagged "Pendiente".
+7. If `currentAgent.role` is `"agent"`, confirm there is **no** "Marcar revisada" button on any suggestion. If it's `"supervisor"` or `"admin"`, confirm the button appears on pending suggestions, and clicking it flips the badge to "Revisada" and hides the button.
 
-- [ ] **Step 12: Commit**
+- [ ] **Step 16: Commit**
 
 ```bash
 git add src/app/agent-control/page.tsx src/components/agent-control/agent-control-view.tsx
