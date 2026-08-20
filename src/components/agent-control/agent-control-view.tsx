@@ -654,6 +654,7 @@ function ModelPricingRow({
   const [saving, setSaving] = useState(false);
 
   async function save() {
+    if (inputPrice.trim() === "" || outputPrice.trim() === "") return;
     const input = Number(inputPrice);
     const output = Number(outputPrice);
     if (!Number.isFinite(input) || !Number.isFinite(output) || input < 0 || output < 0) return;
@@ -700,7 +701,12 @@ function ModelPricingRow({
             disabled={saving}
           />
         </label>
-        <button className="crm-pill" type="button" onClick={save} disabled={saving}>
+        <button
+          className="crm-pill"
+          type="button"
+          onClick={save}
+          disabled={saving || !inputPrice.trim() || !outputPrice.trim()}
+        >
           {saving ? "Guardando…" : "Guardar"}
         </button>
       </div>
