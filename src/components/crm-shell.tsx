@@ -3,10 +3,10 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { Inbox, LogOut, MessageCircle, Route } from "lucide-react";
+import { Bot, Inbox, LogOut, MessageCircle, Receipt, Route } from "lucide-react";
 import type { Agent, Conversation, Message, Note, QuickReply, Tag, WhatsappTemplate } from "@/lib/types";
 import { createClient } from "@/lib/supabase/client";
-import { fetchConversations, fetchMessages, fetchNotes, fetchQuickReplies, fetchTemplates } from "@/lib/data";
+import { fetchConversations, fetchMessages, fetchNotes, fetchQuickReplies, fetchTags, fetchTemplates } from "@/lib/data";
 import { markConversationRead } from "@/lib/mutations";
 import { InboxSidebar } from "@/components/inbox/inbox-sidebar";
 import { ChatPanel } from "@/components/chat/chat-panel";
@@ -42,6 +42,7 @@ export function CrmShell({
   const [notes, setNotes] = useState<Note[]>([]);
   const [templates, setTemplates] = useState<WhatsappTemplate[]>([]);
   const [quickReplies, setQuickReplies] = useState<QuickReply[]>(initialQuickReplies);
+  const [tags, setTags] = useState<Tag[]>(allTags);
 
   // En pantallas estrechas la bandeja y la conversación no caben a la vez, así
   // que se turnan. En pantallas anchas este estado no afecta a nada.
@@ -65,11 +66,16 @@ export function CrmShell({
     }
   }, [supabase]);
 
-  // Mantiene la bandeja sincronizada entre todos los agentes conectados.
+  // Mantiene la bandeja sincronizada entre todos los agentes conectados. También
+  // escucha contact_tags: asignar/quitar una etiqueta no toca la fila de
+  // conversations, así que sin esto el chip de etiquetas no se actualizaría en vivo.
   useEffect(() => {
     const channel = supabase
       .channel("conversations-changes")
       .on("postgres_changes", { event: "*", schema: "public", table: "conversations" }, () => {
+        refreshConversations();
+      })
+      .on("postgres_changes", { event: "*", schema: "public", table: "contact_tags" }, () => {
         refreshConversations();
       })
       .subscribe();
@@ -93,17 +99,32 @@ export function CrmShell({
     };
   }, [supabase]);
 
-  // Carga el detalle de la conversación seleccionada y se suscribe a sus mensajes nuevos.
+  // Catálogo de etiquetas compartido entre agentes: se sincroniza en vivo.
+  useEffect(() => {
+    const channel = supabase
+      .channel("tags-changes")
+      .on("postgres_changes", { event: "*", schema: "public", table: "tags" }, () => {
+        fetchTags(supabase).then(setTags).catch(() => {});
+      })
+      .subscribe();
+
+    return () => {
+      supabase.removeChannel(channel);
+    };
+  }, [supabase]);
+
+  // Carga el detalle de la conversación seleccionada y se suscribe a sus mensajes y notas nuevas.
   useEffect(() => {
     if (!selectedId) return;
 
     let cancelled = false;
+    const conversation = conversations.find((c) => c.id === selectedId);
+    const contactId = conversation?.contact.id;
 
     (async () => {
-      const conversation = conversations.find((c) => c.id === selectedId);
       const [messagesData, notesData, templatesData] = await Promise.all([
         fetchMessages(supabase, selectedId),
-        conversation ? fetchNotes(supabase, conversation.contact.id) : Promise.resolve([]),
+        contactId ? fetchNotes(supabase, contactId) : Promise.resolve([]),
         conversation ? fetchTemplates(supabase, conversation.channel.id) : Promise.resolve([]),
       ]);
       if (cancelled) return;
@@ -116,7 +137,7 @@ export function CrmShell({
       }
     })();
 
-    const channel = supabase
+    const messagesChannel = supabase
       .channel(`messages-${selectedId}`)
       .on(
         "postgres_changes",
@@ -133,9 +154,25 @@ export function CrmShell({
       )
       .subscribe();
 
+    const notesChannel = contactId
+      ? supabase
+          .channel(`notes-${contactId}`)
+          .on(
+            "postgres_changes",
+            { event: "*", schema: "public", table: "notes", filter: `contact_id=eq.${contactId}` },
+            () => {
+              fetchNotes(supabase, contactId).then((data) => {
+                if (!cancelled) setNotes(data);
+              });
+            }
+          )
+          .subscribe()
+      : null;
+
     return () => {
       cancelled = true;
-      supabase.removeChannel(channel);
+      supabase.removeChannel(messagesChannel);
+      if (notesChannel) supabase.removeChannel(notesChannel);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedId, supabase]);
@@ -153,6 +190,12 @@ export function CrmShell({
         </Link>
         <Link className="crm-rail-btn" href="/inbox" data-active="true" aria-label="Bandeja">
           <Inbox size={17} />
+        </Link>
+        <Link className="crm-rail-btn" href="/ventas" aria-label="Ventas">
+          <Receipt size={17} />
+        </Link>
+        <Link className="crm-rail-btn" href="/agent-control" aria-label="Control de IA">
+          <Bot size={17} />
         </Link>
         <span className="crm-rail-spacer" />
         <button className="crm-rail-btn" type="button" onClick={signOut} aria-label="Cerrar sesión">
@@ -192,8 +235,9 @@ export function CrmShell({
           {selectedConversation && (
             <ContextPanel
               conversation={selectedConversation}
+              messages={messages}
               notes={notes}
-              allTags={allTags}
+              allTags={tags}
               currentAgent={currentAgent}
             />
           )}

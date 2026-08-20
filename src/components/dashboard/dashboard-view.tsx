@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { Inbox, LogOut, RefreshCw, Route, TriangleAlert } from "lucide-react";
+import { Bot, Inbox, LogOut, Receipt, RefreshCw, Route, TriangleAlert } from "lucide-react";
 import type { Agent, Conversation, HourlyActivity } from "@/lib/types";
 import { createClient } from "@/lib/supabase/client";
 import { fetchConversations, fetchTodayActivity } from "@/lib/data";
@@ -112,6 +112,12 @@ export function DashboardView({
           <Link className="dash-rail-btn" href="/inbox" aria-label="Bandeja">
             <Inbox size={17} />
           </Link>
+          <Link className="dash-rail-btn" href="/ventas" aria-label="Ventas">
+            <Receipt size={17} />
+          </Link>
+          <Link className="dash-rail-btn" href="/agent-control" aria-label="Control de IA">
+            <Bot size={17} />
+          </Link>
           <span className="dash-rail-spacer" />
           <button className="dash-rail-btn" type="button" onClick={signOut} aria-label="Cerrar sesión">
             <LogOut size={17} />
@@ -141,6 +147,12 @@ export function DashboardView({
                 <a className="dash-nav-link" href="#reclamos">
                   Reclamos
                 </a>
+                <Link className="dash-nav-link" href="/ventas">
+                  Ventas
+                </Link>
+                <Link className="dash-nav-link" href="/agent-control">
+                  Control IA
+                </Link>
               </nav>
 
               <div className="dash-topbar-actions">
@@ -151,7 +163,7 @@ export function DashboardView({
                   aria-label="Actualizar datos"
                   disabled={refreshing}
                 >
-                  <RefreshCw size={16} />
+                  <RefreshCw size={16} className={refreshing ? "dash-spin" : undefined} />
                 </button>
                 <span className="dash-icon-btn dash-icon-static" title={currentAgent.displayName}>
                   <span style={{ fontSize: 12, fontWeight: 600 }}>
