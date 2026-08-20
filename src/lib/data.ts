@@ -471,50 +471,42 @@ export async function fetchModelPricing(supabase: SupabaseClient): Promise<Model
   return (data as RawModelPricing[]).map(mapModelPricing);
 }
 
-interface RawTokenUsageRow {
-  model: string | null;
-  input_tokens: number | null;
-  output_tokens: number | null;
-  total_tokens: number | null;
-  created_at: string;
+interface RawAgentTokenUsageRow {
+  day: string;
+  model: string;
+  input_tokens: number;
+  output_tokens: number;
+  total_tokens: number;
 }
 
 /**
  * Consumo de tokens de los últimos `days` días: total, costo en $USD según
  * model_pricing, serie diaria (últimos 14 días, zero-filled) y desglose por
- * modelo. Se agrega en JS sobre las filas crudas, igual que el resto de
- * data.ts — sin vistas SQL nuevas.
+ * modelo. Se agrega en Postgres vía la función `agent_token_usage` (una fila
+ * por día×modelo) para no depender del límite de filas de PostgREST.
  */
 export async function fetchTokenUsageSummary(supabase: SupabaseClient, days = 30): Promise<TokenUsageSummary> {
-  const since = new Date();
-  since.setDate(since.getDate() - days);
-
-  const [{ data: turnsData, error: turnsError }, pricing] = await Promise.all([
-    supabase
-      .from("agent_turns")
-      .select("model, input_tokens, output_tokens, total_tokens, created_at")
-      .gte("created_at", since.toISOString()),
+  const [{ data: usageData, error: usageError }, pricing] = await Promise.all([
+    supabase.rpc("agent_token_usage", { days }),
     fetchModelPricing(supabase),
   ]);
 
-  if (turnsError) throw turnsError;
+  if (usageError) throw usageError;
 
   const priceByModel = new Map(pricing.map((p) => [p.model, p]));
-  const rows = (turnsData as RawTokenUsageRow[]).filter((row) => row.total_tokens !== null);
+  const rows = usageData as RawAgentTokenUsageRow[];
 
   const byDayMap = new Map<string, number>();
   const byModelMap = new Map<string, { inputTokens: number; outputTokens: number; totalTokens: number }>();
 
   for (const row of rows) {
-    const day = row.created_at.slice(0, 10);
-    byDayMap.set(day, (byDayMap.get(day) ?? 0) + (row.total_tokens ?? 0));
+    byDayMap.set(row.day, (byDayMap.get(row.day) ?? 0) + row.total_tokens);
 
-    const modelKey = row.model ?? "desconocido";
-    const current = byModelMap.get(modelKey) ?? { inputTokens: 0, outputTokens: 0, totalTokens: 0 };
-    current.inputTokens += row.input_tokens ?? 0;
-    current.outputTokens += row.output_tokens ?? 0;
-    current.totalTokens += row.total_tokens ?? 0;
-    byModelMap.set(modelKey, current);
+    const current = byModelMap.get(row.model) ?? { inputTokens: 0, outputTokens: 0, totalTokens: 0 };
+    current.inputTokens += row.input_tokens;
+    current.outputTokens += row.output_tokens;
+    current.totalTokens += row.total_tokens;
+    byModelMap.set(row.model, current);
   }
 
   const byDay: TokenUsageDay[] = [];
