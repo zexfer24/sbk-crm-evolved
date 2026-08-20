@@ -1,5 +1,5 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
-import type { Agent, CedulaType, MessageType, WhatsappTemplate } from "@/lib/types";
+import type { Agent, CedulaType, MessageType, TagColor, WhatsappTemplate } from "@/lib/types";
 
 async function insertSystemEvent(
   supabase: SupabaseClient,
@@ -161,6 +161,7 @@ export interface ContactSaleDetails {
   state: string | null;
   city: string | null;
   address: string | null;
+  paymentProofUrl: string | null;
 }
 
 export async function closeSaleWithContactInfo(
@@ -185,11 +186,53 @@ export async function closeSaleWithContactInfo(
 
   const { error: conversationError } = await supabase
     .from("conversations")
-    .update({ deal_status: "won", deal_closed_at: new Date().toISOString() })
+    .update({
+      deal_status: "won",
+      deal_closed_at: new Date().toISOString(),
+      deal_payment_proof_url: details.paymentProofUrl,
+      deal_verified: false,
+      deal_verified_at: null,
+      deal_verified_by: null,
+    })
     .eq("id", conversationId);
   if (conversationError) throw conversationError;
 
   await insertSystemEvent(supabase, conversationId, agent.id, `Venta cerrada por ${agent.displayName}`);
+}
+
+export async function verifySale(supabase: SupabaseClient, conversationId: string, agent: Agent) {
+  const { error } = await supabase
+    .from("conversations")
+    .update({ deal_verified: true, deal_verified_at: new Date().toISOString(), deal_verified_by: agent.id })
+    .eq("id", conversationId);
+  if (error) throw error;
+  await insertSystemEvent(supabase, conversationId, agent.id, `${agent.displayName} verificó el comprobante de pago`);
+}
+
+export async function returnSale(supabase: SupabaseClient, conversationId: string, agent: Agent) {
+  const { error } = await supabase
+    .from("conversations")
+    .update({ deal_status: "returned" })
+    .eq("id", conversationId);
+  if (error) throw error;
+  await insertSystemEvent(supabase, conversationId, agent.id, `${agent.displayName} registró una devolución sobre esta venta`);
+}
+
+/** "Elimina" la venta: la saca del feed de Ventas sin borrar la conversación ni su historial. */
+export async function deleteSale(supabase: SupabaseClient, conversationId: string, agent: Agent) {
+  const { error } = await supabase
+    .from("conversations")
+    .update({
+      deal_status: "none",
+      deal_closed_at: null,
+      deal_payment_proof_url: null,
+      deal_verified: false,
+      deal_verified_at: null,
+      deal_verified_by: null,
+    })
+    .eq("id", conversationId);
+  if (error) throw error;
+  await insertSystemEvent(supabase, conversationId, agent.id, `${agent.displayName} eliminó el registro de esta venta`);
 }
 
 export async function addTagToContact(supabase: SupabaseClient, contactId: string, tagId: string) {
@@ -215,6 +258,44 @@ export async function addNote(supabase: SupabaseClient, contactId: string, agent
   if (error) throw error;
 }
 
+export async function updateNote(supabase: SupabaseClient, noteId: string, content: string) {
+  const { error } = await supabase.from("notes").update({ content }).eq("id", noteId);
+  if (error) throw error;
+}
+
+export async function deleteNote(supabase: SupabaseClient, noteId: string) {
+  const { error } = await supabase.from("notes").delete().eq("id", noteId);
+  if (error) throw error;
+}
+
+export async function createTag(supabase: SupabaseClient, label: string, color: TagColor) {
+  const { error } = await supabase.from("tags").insert({ label, color });
+  if (error) throw error;
+}
+
+export async function updateTag(
+  supabase: SupabaseClient,
+  tagId: string,
+  label: string,
+  color: TagColor
+) {
+  const { error } = await supabase.from("tags").update({ label, color }).eq("id", tagId);
+  if (error) throw error;
+}
+
+export async function deleteTag(supabase: SupabaseClient, tagId: string) {
+  const { error } = await supabase.from("tags").delete().eq("id", tagId);
+  if (error) throw error;
+}
+
+export async function setAiGloballyEnabled(supabase: SupabaseClient, agent: Agent, enabled: boolean) {
+  const { error } = await supabase
+    .from("agent_settings")
+    .update({ ai_globally_enabled: enabled, updated_by: agent.id, updated_at: new Date().toISOString() })
+    .eq("id", true);
+  if (error) throw error;
+}
+
 export async function createQuickReply(supabase: SupabaseClient, label: string, content: string) {
   const { error } = await supabase.from("quick_replies").insert({ label, content });
   if (error) throw error;
@@ -232,5 +313,41 @@ export async function updateQuickReply(
 
 export async function deleteQuickReply(supabase: SupabaseClient, id: string) {
   const { error } = await supabase.from("quick_replies").delete().eq("id", id);
+  if (error) throw error;
+}
+
+/** is_active es el mismo campo que usa el escalamiento de la IA para elegir a quién asignar por turno. */
+export async function setAgentActive(supabase: SupabaseClient, agentId: string, isActive: boolean) {
+  const { error } = await supabase.from("agents").update({ is_active: isActive }).eq("id", agentId);
+  if (error) throw error;
+}
+
+export async function createAgentSuggestion(supabase: SupabaseClient, agent: Agent, content: string) {
+  const { error } = await supabase.from("agent_suggestions").insert({ agent_id: agent.id, content });
+  if (error) throw error;
+}
+
+export async function markSuggestionReviewed(supabase: SupabaseClient, suggestionId: string, reviewer: Agent) {
+  const { error } = await supabase
+    .from("agent_suggestions")
+    .update({ status: "reviewed", reviewed_at: new Date().toISOString(), reviewed_by: reviewer.id })
+    .eq("id", suggestionId);
+  if (error) throw error;
+}
+
+export async function updateModelPricing(
+  supabase: SupabaseClient,
+  model: string,
+  inputPricePerMillion: number,
+  outputPricePerMillion: number,
+  agent: Agent
+) {
+  const { error } = await supabase.from("model_pricing").upsert({
+    model,
+    input_price_per_million: inputPricePerMillion,
+    output_price_per_million: outputPricePerMillion,
+    updated_at: new Date().toISOString(),
+    updated_by: agent.id,
+  });
   if (error) throw error;
 }
