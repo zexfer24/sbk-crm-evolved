@@ -537,8 +537,9 @@ export async function fetchTokenUsageSummary(supabase: SupabaseClient, days = 30
 
   const totalTokens = byModel.reduce((sum, m) => sum + m.totalTokens, 0);
   const totalUsd = byModel.reduce((sum, m) => sum + (m.usdCost ?? 0), 0);
+  const hasUnpricedModels = byModel.some((m) => m.usdCost === null);
 
-  return { totalTokens, totalUsd, byDay, byModel };
+  return { totalTokens, totalUsd, hasUnpricedModels, byDay, byModel };
 }
 
 interface RawAgentSuggestion {

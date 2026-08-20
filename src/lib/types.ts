@@ -199,6 +199,7 @@ export interface ModelUsageSummary {
 export interface TokenUsageSummary {
   totalTokens: number;
   totalUsd: number;
+  hasUnpricedModels: boolean;
   byDay: TokenUsageDay[];
   byModel: ModelUsageSummary[];
 }

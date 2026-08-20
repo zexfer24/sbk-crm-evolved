@@ -502,7 +502,10 @@ export function AgentControlView({
                   <span className="ac-tokens-stat-label">tokens totales</span>
                 </div>
                 <div className="ac-tokens-stat">
-                  <span className="ac-tokens-stat-value dash-num">{formatUsd(tokenUsage.totalUsd)}</span>
+                  <span className="ac-tokens-stat-value dash-num">
+                    {tokenUsage.hasUnpricedModels ? "≥ " : ""}
+                    {formatUsd(tokenUsage.totalUsd)}
+                  </span>
                   <span className="ac-tokens-stat-label">equivalente en USD</span>
                 </div>
               </div>
