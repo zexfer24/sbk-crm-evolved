@@ -87,7 +87,14 @@ export function buildCatalogTool({ supabase, conversationId }: ToolDeps) {
       }
 
       return {
-        results: quoted.map(({ id: _id, ...rest }) => rest),
+        results: quoted.map((q) => ({
+          nombre: q.nombre,
+          marca: q.marca,
+          precioUsd: q.precioUsd,
+          precioBs: q.precioBs,
+          stock: q.stock,
+          compatibleCon: q.compatibleCon,
+        })),
         tasaBcvUsada: rate,
         tasaDesactualizada: isStale,
       };
