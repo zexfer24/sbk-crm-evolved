@@ -273,6 +273,7 @@ export type Database = {
         Row: {
           active_tool: string | null
           ai_enabled: boolean
+          ai_turn_running: boolean
           assigned_agent_id: string | null
           contact_id: string
           created_at: string
@@ -297,6 +298,7 @@ export type Database = {
         Insert: {
           active_tool?: string | null
           ai_enabled?: boolean
+          ai_turn_running?: boolean
           assigned_agent_id?: string | null
           contact_id: string
           created_at?: string
@@ -321,6 +323,7 @@ export type Database = {
         Update: {
           active_tool?: string | null
           ai_enabled?: boolean
+          ai_turn_running?: boolean
           assigned_agent_id?: string | null
           contact_id?: string
           created_at?: string
@@ -816,7 +819,18 @@ export type Database = {
       [_ in never]: never
     }
     Functions: {
+      agent_token_usage: {
+        Args: { days?: number }
+        Returns: {
+          day: string
+          input_tokens: number
+          model: string
+          output_tokens: number
+          total_tokens: number
+        }[]
+      }
       is_agent: { Args: never; Returns: boolean }
+      is_supervisor_or_admin: { Args: never; Returns: boolean }
       message_activity_by_hour: {
         Args: { from_ts: string; to_ts: string; tz?: string }
         Returns: {

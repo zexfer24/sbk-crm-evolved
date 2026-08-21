@@ -14,6 +14,7 @@ import {
 } from "@/lib/ai/prompt";
 import { buildCatalogTool, buildEscalateTool, buildOrderHistoryTool, type EscalationOutcome } from "@/lib/ai/tools";
 import { escalateConversation } from "@/lib/ai/escalate";
+import { withConversationTurnLock } from "@/lib/ai/conversation-lock";
 
 // ---------------------------------------------------------------------------
 // Orquestador del turno del agente: pipeline de dos fases (clasificar, luego
@@ -165,100 +166,106 @@ export async function runAgentTurn(conversationId: string): Promise<void> {
   // modelo. No depende de que el prompt "se acuerde" de quedarse callado.
   if (!settings?.ai_globally_enabled || !convo.ai_enabled || convo.assigned_agent_id) return;
 
-  await supabase
-    .from("conversations")
-    .update({ journey_stage: "classifying", active_tool: null })
-    .eq("id", conversationId);
+  // Lock por conversación: si dos webhooks casi simultáneos disparan el
+  // turno para la misma conversación (típico cuando el cliente manda varios
+  // mensajes seguidos), solo uno corre — el otro se salta en vez de generar
+  // una respuesta duplicada o un doble escalamiento.
+  await withConversationTurnLock(supabase, conversationId, async () => {
+    await supabase
+      .from("conversations")
+      .update({ journey_stage: "classifying", active_tool: null })
+      .eq("id", conversationId);
 
-  const history = await loadHistory(supabase, conversationId);
-  if (history.length === 0) return;
+    const history = await loadHistory(supabase, conversationId);
+    if (history.length === 0) return;
 
-  let intent: Intent;
-  let classifyTokens: TurnTokens;
-  try {
-    const classified = await classifyIntent(history);
-    intent = classified.intent;
-    classifyTokens = tokensFromUsage(classified.usage);
-  } catch (err) {
-    await logTurn(supabase, conversationId, null, "error", `Fallo al clasificar intención: ${errorMessage(err)}`, null);
-    return;
-  }
-
-  await supabase.from("conversations").update({ intent }).eq("id", conversationId);
-
-  const outcome: EscalationOutcome = { escalated: false };
-  const deps = { supabase, conversationId, contactId: convo.contact_id };
-
-  const tools: ToolSet =
-    intent === "devolucion"
-      ? { buscarHistorialCompras: buildOrderHistoryTool(deps), escalarAAsesor: buildEscalateTool(deps, outcome) }
-      : intent === "queja"
-        ? { escalarAAsesor: buildEscalateTool(deps, outcome) }
-        : { buscarRepuesto: buildCatalogTool(deps), escalarAAsesor: buildEscalateTool(deps, outcome) };
-
-  const { model, providerOptions } = getAgentModel("medium");
-
-  const agent = new ToolLoopAgent({
-    model,
-    instructions: instructionsFor(intent),
-    tools,
-    stopWhen: isStepCount(MAX_STEPS),
-    providerOptions,
-    onToolExecutionStart: async ({ toolCall }) => {
-      await supabase
-        .from("conversations")
-        .update({ journey_stage: "tool_running", active_tool: toolCall.toolName })
-        .eq("id", conversationId);
-    },
-    onToolExecutionEnd: async () => {
-      await supabase.from("conversations").update({ active_tool: null }).eq("id", conversationId);
-    },
-  });
-
-  let text = "";
-  let turnTokens = classifyTokens;
-  try {
-    const result = await agent.generate({ messages: history });
-    text = result.text ?? "";
-    turnTokens = addTokens(classifyTokens, tokensFromUsage(result.usage));
-  } catch (err) {
-    await logTurn(supabase, conversationId, intent, "error", errorMessage(err), classifyTokens);
-    await supabase.from("conversations").update({ active_tool: null }).eq("id", conversationId);
-    return;
-  }
-
-  // Red de seguridad: devolución y queja SIEMPRE terminan escaladas. Si el
-  // turno se quedó sin pasos sin lograrlo, se fuerza en código.
-  if (!outcome.escalated && (intent === "devolucion" || intent === "queja")) {
-    const forced = await escalateConversation(supabase, {
-      conversationId,
-      contactId: convo.contact_id,
-      motivo: intent,
-      resumen: "El turno de la IA se quedó sin pasos antes de escalar formalmente. Revisar el hilo completo.",
-    });
-    outcome.escalated = forced.escalated;
-    outcome.assignedAgentName = forced.assignedAgentName;
-    if (!text.trim()) {
-      text = "Dame un momentico, ya te paso con un asesor para que te ayude con esto.";
+    let intent: Intent;
+    let classifyTokens: TurnTokens;
+    try {
+      const classified = await classifyIntent(history);
+      intent = classified.intent;
+      classifyTokens = tokensFromUsage(classified.usage);
+    } catch (err) {
+      await logTurn(supabase, conversationId, null, "error", `Fallo al clasificar intención: ${errorMessage(err)}`, null);
+      return;
     }
-  }
 
-  if (text.trim()) {
-    await sendAgentReply(supabase, convo, text.trim());
-  }
+    await supabase.from("conversations").update({ intent }).eq("id", conversationId);
 
-  if (!outcome.escalated) {
-    await supabase.from("conversations").update({ journey_stage: null, active_tool: null }).eq("id", conversationId);
-  }
+    const outcome: EscalationOutcome = { escalated: false };
+    const deps = { supabase, conversationId, contactId: convo.contact_id };
 
-  await logTurn(
-    supabase,
-    conversationId,
-    intent,
-    outcome.escalated ? "escalated" : "answered",
-    outcome.escalated ? `Escalado a ${outcome.assignedAgentName ?? "(sin asesor disponible)"}. Motivo: ${outcome.motivo}.` : text,
-    turnTokens
-  );
+    const tools: ToolSet =
+      intent === "devolucion"
+        ? { buscarHistorialCompras: buildOrderHistoryTool(deps), escalarAAsesor: buildEscalateTool(deps, outcome) }
+        : intent === "queja"
+          ? { escalarAAsesor: buildEscalateTool(deps, outcome) }
+          : { buscarRepuesto: buildCatalogTool(deps), escalarAAsesor: buildEscalateTool(deps, outcome) };
+
+    const { model, providerOptions } = getAgentModel("medium");
+
+    const agent = new ToolLoopAgent({
+      model,
+      instructions: instructionsFor(intent),
+      tools,
+      stopWhen: isStepCount(MAX_STEPS),
+      providerOptions,
+      onToolExecutionStart: async ({ toolCall }) => {
+        await supabase
+          .from("conversations")
+          .update({ journey_stage: "tool_running", active_tool: toolCall.toolName })
+          .eq("id", conversationId);
+      },
+      onToolExecutionEnd: async () => {
+        await supabase.from("conversations").update({ active_tool: null }).eq("id", conversationId);
+      },
+    });
+
+    let text = "";
+    let turnTokens = classifyTokens;
+    try {
+      const result = await agent.generate({ messages: history });
+      text = result.text ?? "";
+      turnTokens = addTokens(classifyTokens, tokensFromUsage(result.usage));
+    } catch (err) {
+      await logTurn(supabase, conversationId, intent, "error", errorMessage(err), classifyTokens);
+      await supabase.from("conversations").update({ active_tool: null }).eq("id", conversationId);
+      return;
+    }
+
+    // Red de seguridad: devolución y queja SIEMPRE terminan escaladas. Si el
+    // turno se quedó sin pasos sin lograrlo, se fuerza en código.
+    if (!outcome.escalated && (intent === "devolucion" || intent === "queja")) {
+      const forced = await escalateConversation(supabase, {
+        conversationId,
+        contactId: convo.contact_id,
+        motivo: intent,
+        resumen: "El turno de la IA se quedó sin pasos antes de escalar formalmente. Revisar el hilo completo.",
+      });
+      outcome.escalated = forced.escalated;
+      outcome.assignedAgentName = forced.assignedAgentName;
+      if (!text.trim()) {
+        text = "Dame un momentico, ya te paso con un asesor para que te ayude con esto.";
+      }
+    }
+
+    if (text.trim()) {
+      await sendAgentReply(supabase, convo, text.trim());
+    }
+
+    if (!outcome.escalated) {
+      await supabase.from("conversations").update({ journey_stage: null, active_tool: null }).eq("id", conversationId);
+    }
+
+    await logTurn(
+      supabase,
+      conversationId,
+      intent,
+      outcome.escalated ? "escalated" : "answered",
+      outcome.escalated ? `Escalado a ${outcome.assignedAgentName ?? "(sin asesor disponible)"}. Motivo: ${outcome.motivo}.` : text,
+      turnTokens
+    );
+  });
 }
 
 /** Corre el turno para varias conversaciones a la vez (una tanda del webhook puede tocar varias). */
