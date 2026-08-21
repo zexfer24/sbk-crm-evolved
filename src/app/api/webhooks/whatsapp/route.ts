@@ -257,11 +257,32 @@ export async function POST(request: Request) {
             .select("id")
             .single();
 
-          if (conversationError || !newConversation) {
+          if (conversationError?.code === "23505") {
+            // Otra invocación concurrente de este mismo webhook (dos mensajes
+            // del mismo contacto nuevo llegando casi al mismo tiempo) ganó la
+            // carrera y ya creó la conversación -- se relee en vez de
+            // descartar este mensaje.
+            const { data: wonByOther } = await supabase
+              .from("conversations")
+              .select("id")
+              .eq("contact_id", contact.id)
+              .eq("whatsapp_channel_id", channel.id)
+              .maybeSingle<{ id: string }>();
+
+            if (!wonByOther) {
+              console.error(
+                "Webhook de WhatsApp: colisión al crear conversación pero no se encontró ninguna al releer",
+                conversationError
+              );
+              continue;
+            }
+            conversationId = wonByOther.id;
+          } else if (conversationError || !newConversation) {
             console.error("Webhook de WhatsApp: error al crear conversación", conversationError);
             continue;
+          } else {
+            conversationId = newConversation.id;
           }
-          conversationId = newConversation.id;
         }
 
         // Si el cliente citó uno de nuestros mensajes desde su WhatsApp,

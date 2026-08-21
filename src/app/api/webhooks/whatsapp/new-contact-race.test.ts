@@ -1,0 +1,171 @@
+import { describe, expect, it, vi } from "vitest";
+
+// `after()` de Next.js exige contexto de request real; en el test lo
+// ejecutamos inline para poder esperar sus efectos.
+vi.mock("next/server", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("next/server")>();
+  return {
+    ...actual,
+    after: (cb: () => unknown) => {
+      void cb();
+    },
+  };
+});
+
+vi.mock("@/lib/ai/agent", () => ({
+  runAgentTurnsFor: vi.fn(async () => {}),
+}));
+
+/**
+ * Simula la condición de carrera real: dos mensajes del MISMO contacto nuevo
+ * llegan en invocaciones "concurrentes" del webhook. Ambas leen "no existe
+ * conversación todavía", ambas intentan crear una -- la restricción única
+ * (contact_id, whatsapp_channel_id) de Postgres rechaza la segunda con
+ * 23505. Antes del fix, el código hacía `continue` y perdía ese mensaje en
+ * silencio. El fix debe releer la conversación ya creada por la otra
+ * invocación y seguir procesando el mensaje con ella.
+ */
+function createRacingFakeAdminClient() {
+  // Ya existe -- simula que OTRA invocación concurrente del webhook ya ganó
+  // la carrera y creó la conversación de este contacto nuevo un instante
+  // antes. La primera lectura de ESTA invocación, sin embargo, todavía no
+  // la ve (se disparó antes de que la otra transacción confirmara).
+  let conversationRow: { id: string; last_customer_message_at: string | null } | null = {
+    id: "conv-race-winner",
+    last_customer_message_at: null,
+  };
+  let selectCallsBeforeInsertWins = 1; // la primera lectura no ve la fila todavía
+  const insertedMessages = new Map<string, { id: string }>();
+  let nextMsgId = 1;
+
+  const client = {
+    from(table: string) {
+      if (table === "whatsapp_channels") {
+        return {
+          select: () => ({
+            eq: () => ({
+              maybeSingle: async () => ({
+                data: { id: "chan-1", phone_number_id: "1234567890", status: "connected" },
+                error: null,
+              }),
+            }),
+          }),
+        };
+      }
+
+      if (table === "contacts") {
+        return {
+          upsert: () => ({
+            select: () => ({ single: async () => ({ data: { id: "contact-1" }, error: null }) }),
+          }),
+        };
+      }
+
+      if (table === "conversations") {
+        return {
+          select: () => ({
+            eq: () => ({
+              eq: () => ({
+                maybeSingle: async () => {
+                  if (!conversationRow || selectCallsBeforeInsertWins > 0) {
+                    selectCallsBeforeInsertWins--;
+                    return { data: null, error: null };
+                  }
+                  return { data: conversationRow, error: null };
+                },
+              }),
+            }),
+          }),
+          insert: () => ({
+            select: () => ({
+              single: async () => {
+                if (conversationRow) {
+                  // Otra invocación "concurrente" ya creó la fila para este
+                  // contacto+canal -- Postgres rechazaría este insert.
+                  return {
+                    data: null,
+                    error: { code: "23505", message: "duplicate key value violates unique constraint" },
+                  };
+                }
+                conversationRow = { id: "conv-race-winner", last_customer_message_at: null };
+                return { data: { id: "conv-race-winner" }, error: null };
+              },
+            }),
+          }),
+          update: () => ({ eq: async () => ({ data: null, error: null }) }),
+        };
+      }
+
+      if (table === "messages") {
+        return {
+          select: () => ({ eq: () => ({ maybeSingle: async () => ({ data: null, error: null }) }) }),
+          insert: (row: { whatsapp_message_id: string; conversation_id: string }) => ({
+            select: () => ({
+              single: async () => {
+                const created = { id: `msg-${nextMsgId++}`, conversationId: row.conversation_id };
+                insertedMessages.set(row.whatsapp_message_id, created);
+                return { data: created, error: null };
+              },
+            }),
+          }),
+          update: () => ({ eq: async () => ({ data: null, error: null }) }),
+        };
+      }
+
+      throw new Error(`Fake Supabase: tabla no soportada en este test: ${table}`);
+    },
+    storage: { from: () => ({ upload: async () => ({ error: null }), getPublicUrl: () => ({ data: { publicUrl: "" } }) }) },
+  };
+
+  return { client, insertedMessages, getConversationRow: () => conversationRow };
+}
+
+const { client: fakeAdminClient, insertedMessages, getConversationRow } = createRacingFakeAdminClient();
+
+vi.mock("@/lib/supabase/admin", () => ({
+  createAdminClient: () => fakeAdminClient,
+}));
+
+function webhookBody(waMessageId: string) {
+  return {
+    entry: [
+      {
+        changes: [
+          {
+            field: "messages",
+            value: {
+              metadata: { phone_number_id: "1234567890" },
+              contacts: [{ profile: { name: "Cliente Nuevo" }, wa_id: "584129999999" }],
+              messages: [
+                {
+                  from: "584129999999",
+                  id: waMessageId,
+                  timestamp: String(Math.floor(Date.now() / 1000)),
+                  type: "text",
+                  text: { body: "hola" },
+                },
+              ],
+            },
+          },
+        ],
+      },
+    ],
+  };
+}
+
+function fakeRequest(body: unknown): Request {
+  const raw = JSON.stringify(body);
+  return { text: async () => raw, json: async () => body, headers: { get: () => null } } as unknown as Request;
+}
+
+describe("POST /api/webhooks/whatsapp — race al crear la conversación de un contacto nuevo", () => {
+  it("no descarta el mensaje: relee la conversación creada por la invocación concurrente que ganó la carrera", async () => {
+    const { POST } = await import("@/app/api/webhooks/whatsapp/route");
+
+    const response = await POST(fakeRequest(webhookBody("wamid.race-test-1")));
+
+    expect(response.status).toBe(200);
+    expect(insertedMessages.has("wamid.race-test-1")).toBe(true);
+    expect(getConversationRow()?.id).toBe("conv-race-winner");
+  });
+});
