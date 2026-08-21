@@ -7,6 +7,7 @@ import type {
   AgentTurn,
   Contact,
   Conversation,
+  ConversationQuote,
   HourlyActivity,
   Message,
   ModelPricing,
@@ -124,6 +125,16 @@ interface RawNote {
   agent: RawAgent | null;
 }
 
+interface RawConversationQuote {
+  id: string;
+  product_id: string | null;
+  product_name: string;
+  price_usd: number;
+  price_bs: number;
+  bcv_rate: number;
+  quoted_at: string;
+}
+
 interface RawTemplate {
   id: string;
   name: string;
@@ -237,6 +248,18 @@ function mapNote(row: RawNote): Note {
   };
 }
 
+function mapConversationQuote(row: RawConversationQuote): ConversationQuote {
+  return {
+    id: row.id,
+    productId: row.product_id,
+    productName: row.product_name,
+    priceUsd: row.price_usd,
+    priceBs: row.price_bs,
+    bcvRate: row.bcv_rate,
+    quotedAt: row.quoted_at,
+  };
+}
+
 function mapTemplate(row: RawTemplate): WhatsappTemplate {
   return {
     id: row.id,
@@ -346,6 +369,22 @@ export async function fetchNotes(supabase: SupabaseClient, contactId: string): P
 
   if (error) throw error;
   return (data as unknown as RawNote[]).map(mapNote);
+}
+
+/** Cotizaciones reales que la IA le dio al cliente en esta conversación, más recientes primero. */
+export async function fetchConversationQuotes(
+  supabase: SupabaseClient,
+  conversationId: string
+): Promise<ConversationQuote[]> {
+  const { data, error } = await supabase
+    .from("conversation_quotes")
+    .select("id, product_id, product_name, price_usd, price_bs, bcv_rate, quoted_at")
+    .eq("conversation_id", conversationId)
+    .order("quoted_at", { ascending: false })
+    .limit(20);
+
+  if (error) throw error;
+  return (data as RawConversationQuote[]).map(mapConversationQuote);
 }
 
 export async function fetchTemplates(

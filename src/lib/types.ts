@@ -195,6 +195,22 @@ export interface ModelUsageSummary {
   usdCost: number | null;
 }
 
+/**
+ * Un repuesto que la IA le cotizó al cliente en el chat (herramienta de
+ * catálogo), con el precio exacto en el momento de la cotización. Es lo que
+ * el agente elige al cerrar una venta -- el monto de la venta sale de acá,
+ * nunca se escribe a mano.
+ */
+export interface ConversationQuote {
+  id: string;
+  productId: string | null;
+  productName: string;
+  priceUsd: number;
+  priceBs: number;
+  bcvRate: number;
+  quotedAt: string;
+}
+
 /** Resumen de consumo de tokens para el panel de Control de IA. */
 export interface TokenUsageSummary {
   totalTokens: number;
