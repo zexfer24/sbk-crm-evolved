@@ -289,22 +289,49 @@ export async function fetchConversation(
   return data ? mapConversation(data as unknown as RawConversation) : null;
 }
 
+// PostgREST (el API REST de Supabase) limita cada respuesta a un máximo de
+// filas (1000 por defecto). Sin `.range()`, una conversación con más
+// mensajes que ese límite se trunca en silencio (sin error). Paginamos
+// explícitamente con este tamaño de página hasta agotar los resultados.
+const MESSAGES_PAGE_SIZE = 1000;
+
 export async function fetchMessages(
   supabase: SupabaseClient,
   conversationId: string
 ): Promise<Message[]> {
-  const { data, error } = await supabase
-    .from("messages")
-    .select(
-      `id, conversation_id, direction, sender_type, message_type, content, template_name,
-       media_url, is_internal_note, whatsapp_status, reply_to_message_id, created_at,
-       sender_agent:agents(id, display_name, full_name, avatar_url, role, is_active)`
-    )
-    .eq("conversation_id", conversationId)
-    .order("created_at", { ascending: true });
+  const allRows: RawMessage[] = [];
+  let from = 0;
 
-  if (error) throw error;
-  return (data as unknown as RawMessage[]).map(mapMessage);
+  // El orden por `created_at` ya es estable para la paginación en la
+  // práctica: `created_at` se asigna con `now()` al insertar y no se
+  // repite entre mensajes de una misma conversación en este esquema. Si
+  // en el futuro pudiera haber empates (p.ej. inserciones en lote con el
+  // mismo timestamp), habría que añadir un desempate secundario por `id`
+  // (que es un UUID, no ordenable de forma útil) o por una columna
+  // secuencial dedicada para garantizar `.range()` consistente entre páginas.
+  for (;;) {
+    const to = from + MESSAGES_PAGE_SIZE - 1;
+    const { data, error } = await supabase
+      .from("messages")
+      .select(
+        `id, conversation_id, direction, sender_type, message_type, content, template_name,
+         media_url, is_internal_note, whatsapp_status, reply_to_message_id, created_at,
+         sender_agent:agents(id, display_name, full_name, avatar_url, role, is_active)`
+      )
+      .eq("conversation_id", conversationId)
+      .order("created_at", { ascending: true })
+      .range(from, to);
+
+    if (error) throw error;
+
+    const page = (data as unknown as RawMessage[]) ?? [];
+    allRows.push(...page);
+
+    if (page.length < MESSAGES_PAGE_SIZE) break;
+    from += MESSAGES_PAGE_SIZE;
+  }
+
+  return allRows.map(mapMessage);
 }
 
 export async function fetchNotes(supabase: SupabaseClient, contactId: string): Promise<Note[]> {
