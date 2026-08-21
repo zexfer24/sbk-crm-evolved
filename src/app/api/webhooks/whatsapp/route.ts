@@ -1,4 +1,5 @@
-import { NextResponse } from "next/server";
+import { createHmac, timingSafeEqual } from "node:crypto";
+import { NextResponse, after } from "next/server";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { isWithin24hWindow } from "@/lib/whatsapp-window";
@@ -8,6 +9,7 @@ import {
   getMetaMediaUrl,
   sendWhatsappTemplate,
 } from "@/lib/whatsapp/meta-client";
+import { runAgentTurnsFor } from "@/lib/ai/agent";
 
 // ---------------------------------------------------------------------------
 // GET: handshake de verificación que exige Meta al registrar el webhook.
@@ -45,6 +47,7 @@ interface WebhookMessage {
   video?: WebhookMediaObject;
   audio?: WebhookMediaObject;
   document?: WebhookMediaObject;
+  sticker?: WebhookMediaObject;
   context?: { id: string };
 }
 
@@ -64,7 +67,7 @@ interface WebhookBody {
   entry?: { changes?: { field: string; value: WebhookChangeValue }[] }[];
 }
 
-const MEDIA_TYPES = ["image", "video", "audio", "document"] as const;
+const MEDIA_TYPES = ["image", "video", "audio", "document", "sticker"] as const;
 type MediaType = (typeof MEDIA_TYPES)[number];
 
 const EXTENSION_BY_MIME: Record<string, string> = {
@@ -147,11 +150,43 @@ async function sendWelcome(
 // POST: eventos entrantes — mensajes nuevos de clientes y actualizaciones de
 // estado (sent/delivered/read/failed) de mensajes que nosotros enviamos.
 // ---------------------------------------------------------------------------
+/**
+ * Verifica `X-Hub-Signature-256` contra WHATSAPP_APP_SECRET. Sin ese
+ * secreto configurado (ej. en desarrollo local, donde Meta nunca llega a
+ * llamar este endpoint) se deja pasar sin validar, con un aviso — pero una
+ * vez configurado, cualquier request sin firma válida se rechaza: cualquiera
+ * que descubra la URL del webhook podría inyectar mensajes falsos.
+ */
+function hasValidMetaSignature(rawBody: string, signatureHeader: string | null, appSecret: string): boolean {
+  if (!signatureHeader) return false;
+  const expected = "sha256=" + createHmac("sha256", appSecret).update(rawBody, "utf8").digest("hex");
+  const expectedBuf = Buffer.from(expected, "utf8");
+  const actualBuf = Buffer.from(signatureHeader, "utf8");
+  if (expectedBuf.length !== actualBuf.length) return false;
+  return timingSafeEqual(expectedBuf, actualBuf);
+}
+
 export async function POST(request: Request) {
-  const body = (await request.json()) as WebhookBody;
+  const rawBody = await request.text();
+  const appSecret = process.env.WHATSAPP_APP_SECRET;
+  if (appSecret) {
+    const signature = request.headers.get("x-hub-signature-256");
+    if (!hasValidMetaSignature(rawBody, signature, appSecret)) {
+      console.error("Webhook de WhatsApp: firma inválida o ausente, se rechaza el request.");
+      return NextResponse.json({ error: "Firma inválida." }, { status: 401 });
+    }
+  } else {
+    console.warn(
+      "Webhook de WhatsApp: WHATSAPP_APP_SECRET no configurado — no se valida la firma de Meta. Configúralo antes de producción."
+    );
+  }
+
+  const body = JSON.parse(rawBody) as WebhookBody;
   const supabase = createAdminClient();
   const accessToken = process.env.WHATSAPP_ACCESS_TOKEN;
   const greeted = new Set<string>();
+  const touchedByCustomer = new Set<string>();
+  const mediaDownloadTasks: (() => Promise<void>)[] = [];
 
   for (const entry of body.entry ?? []) {
     for (const change of entry.changes ?? []) {
@@ -243,7 +278,7 @@ export async function POST(request: Request) {
 
         let messageType: string = "text";
         let content: string | null = null;
-        let mediaUrl: string | null = null;
+        let pendingMediaId: string | null = null;
 
         if (message.type === "text") {
           content = message.text?.body ?? "";
@@ -251,43 +286,76 @@ export async function POST(request: Request) {
           messageType = message.type;
           const mediaObject = message[message.type as MediaType];
           content = mediaObject?.caption ?? null;
+          pendingMediaId = mediaObject?.id ?? null;
+        } else {
+          content = `[${message.type}] Tipo de mensaje no soportado todavía.`;
+        }
 
-          if (mediaObject?.id && accessToken) {
+        // media_url arranca en null incluso para mensajes multimedia: la
+        // descarga desde Meta se hace en mediaDownloadTasks, después de
+        // responder al webhook (ver el after() al final), para no arriesgar
+        // el timeout de Meta (~20s) con un archivo pesado. La UI ya avisa
+        // explícito si un mensaje multimedia se queda sin media_url.
+        const { data: insertedMessage, error: insertError } = await supabase
+          .from("messages")
+          .insert({
+            conversation_id: conversationId,
+            direction: "inbound",
+            sender_type: "customer",
+            message_type: messageType,
+            content,
+            media_url: null,
+            reply_to_message_id: replyToMessageId,
+            whatsapp_message_id: message.id,
+            created_at: new Date(Number(message.timestamp) * 1000).toISOString(),
+          })
+          .select("id")
+          .single();
+
+        if (insertError) {
+          if (insertError.code === "23505") {
+            // Meta reentregó este webhook (entrega "at-least-once" de la
+            // Cloud API): este mensaje ya se guardó en un intento anterior.
+            // No hay nada más que hacer para este mensaje puntual.
+            console.info(
+              `Webhook de WhatsApp: mensaje ${message.id} ya estaba guardado (reentrega de Meta), se ignora.`
+            );
+          } else {
+            console.error("Webhook de WhatsApp: error al guardar mensaje entrante", insertError);
+          }
+          continue;
+        }
+
+        if (pendingMediaId && accessToken) {
+          const messageDbId = insertedMessage.id;
+          const convId = conversationId;
+          const waMessageId = message.id;
+          const mediaId = pendingMediaId;
+          mediaDownloadTasks.push(async () => {
             try {
-              const { url, mimeType } = await getMetaMediaUrl(mediaObject.id, accessToken);
+              const { url, mimeType } = await getMetaMediaUrl(mediaId, accessToken);
               const bytes = await downloadMetaMedia(url, accessToken);
               const extension = EXTENSION_BY_MIME[mimeType] ?? "bin";
-              const path = `${conversationId}/${message.id}.${extension}`;
+              const path = `${convId}/${waMessageId}.${extension}`;
 
               const { error: uploadError } = await supabase.storage
                 .from("whatsapp-media")
                 .upload(path, bytes, { contentType: mimeType, upsert: true });
 
-              if (!uploadError) {
-                const { data: publicUrl } = supabase.storage.from("whatsapp-media").getPublicUrl(path);
-                mediaUrl = publicUrl.publicUrl;
-              } else {
+              if (uploadError) {
                 console.error("Webhook de WhatsApp: error al subir media a Storage", uploadError);
+                return;
               }
+
+              const { data: publicUrl } = supabase.storage.from("whatsapp-media").getPublicUrl(path);
+              await supabase.from("messages").update({ media_url: publicUrl.publicUrl }).eq("id", messageDbId);
             } catch (err) {
               console.error("Webhook de WhatsApp: error al descargar media de Meta", err);
             }
-          }
-        } else {
-          content = `[${message.type}] Tipo de mensaje no soportado todavía.`;
+          });
         }
 
-        await supabase.from("messages").insert({
-          conversation_id: conversationId,
-          direction: "inbound",
-          sender_type: "customer",
-          message_type: messageType,
-          content,
-          media_url: mediaUrl,
-          reply_to_message_id: replyToMessageId,
-          whatsapp_message_id: message.id,
-          created_at: new Date(Number(message.timestamp) * 1000).toISOString(),
-        });
+        touchedByCustomer.add(conversationId);
 
         // Una sola bienvenida por conversación aunque el cliente mande varios
         // mensajes seguidos y lleguen en el mismo lote del webhook.
@@ -297,6 +365,20 @@ export async function POST(request: Request) {
         }
       }
     }
+  }
+
+  // La descarga de media también corre después de responder a Meta —mismo
+  // motivo que el turno de IA: un archivo pesado no debe arriesgar el
+  // timeout del webhook (~20s), que dispararía un reintento de Meta.
+  if (mediaDownloadTasks.length > 0) {
+    after(() => Promise.allSettled(mediaDownloadTasks.map((task) => task())));
+  }
+
+  // El turno del agente de IA corre después de responder a Meta: el webhook
+  // debe ser rápido, y una tanda con varios mensajes del cliente dispara UN
+  // solo turno por conversación (no uno por mensaje).
+  if (touchedByCustomer.size > 0) {
+    after(() => runAgentTurnsFor(touchedByCustomer));
   }
 
   return NextResponse.json({ ok: true });
