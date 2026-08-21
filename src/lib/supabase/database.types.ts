@@ -269,6 +269,54 @@ export type Database = {
         }
         Relationships: []
       }
+      conversation_quotes: {
+        Row: {
+          bcv_rate: number
+          conversation_id: string
+          id: string
+          price_bs: number
+          price_usd: number
+          product_id: string | null
+          product_name: string
+          quoted_at: string
+        }
+        Insert: {
+          bcv_rate: number
+          conversation_id: string
+          id?: string
+          price_bs: number
+          price_usd: number
+          product_id?: string | null
+          product_name: string
+          quoted_at?: string
+        }
+        Update: {
+          bcv_rate?: number
+          conversation_id?: string
+          id?: string
+          price_bs?: number
+          price_usd?: number
+          product_id?: string | null
+          product_name?: string
+          quoted_at?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "conversation_quotes_conversation_id_fkey"
+            columns: ["conversation_id"]
+            isOneToOne: false
+            referencedRelation: "conversations"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "conversation_quotes_product_id_fkey"
+            columns: ["product_id"]
+            isOneToOne: false
+            referencedRelation: "products"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       conversations: {
         Row: {
           active_tool: string | null
@@ -289,6 +337,7 @@ export type Database = {
           last_customer_message_at: string | null
           last_message_at: string | null
           last_message_preview: string | null
+          order_id: string | null
           status: string
           unread_count: number
           updated_at: string
@@ -314,6 +363,7 @@ export type Database = {
           last_customer_message_at?: string | null
           last_message_at?: string | null
           last_message_preview?: string | null
+          order_id?: string | null
           status?: string
           unread_count?: number
           updated_at?: string
@@ -339,6 +389,7 @@ export type Database = {
           last_customer_message_at?: string | null
           last_message_at?: string | null
           last_message_preview?: string | null
+          order_id?: string | null
           status?: string
           unread_count?: number
           updated_at?: string
@@ -365,6 +416,13 @@ export type Database = {
             columns: ["deal_verified_by"]
             isOneToOne: false
             referencedRelation: "agents"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "conversations_order_id_fkey"
+            columns: ["order_id"]
+            isOneToOne: false
+            referencedRelation: "orders"
             referencedColumns: ["id"]
           },
           {
