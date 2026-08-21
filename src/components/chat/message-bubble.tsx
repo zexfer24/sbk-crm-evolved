@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { AudioLines, Bot, Download, FileText, Lock, RefreshCw, Reply as ReplyIcon } from "lucide-react";
+import { AudioLines, Bot, Download, FileText, ImageOff, Lock, RefreshCw, Reply as ReplyIcon } from "lucide-react";
 import type { Message } from "@/lib/types";
 import { formatMessageTime } from "@/lib/format";
 import { MediaThumb } from "@/components/chat/media-lightbox";
@@ -86,8 +86,29 @@ function senderLabel(message: Message): string {
   return message.senderAgent?.displayName ?? "Agente";
 }
 
-function MediaContent({ message }: { message: Message }) {
-  if (!message.mediaUrl) return null;
+const MEDIA_MESSAGE_TYPES = ["image", "video", "sticker", "audio", "document"] as const;
+
+/**
+ * El webhook de WhatsApp a veces crea el mensaje sin `media_url` (falló la
+ * descarga desde Meta). Antes esto rendía una burbuja completamente vacía
+ * —sin ícono, sin texto— indistinguible de un bug para el agente. Ahora se
+ * avisa explícitamente que el cliente mandó algo que no se pudo recibir.
+ */
+function MissingMedia() {
+  return (
+    <div className="crm-audio-error">
+      <ImageOff size={14} />
+      <span>El cliente envió un archivo que no se pudo recibir.</span>
+    </div>
+  );
+}
+
+export function MediaContent({ message }: { message: Message }) {
+  if (!message.mediaUrl) {
+    return MEDIA_MESSAGE_TYPES.includes(message.messageType as (typeof MEDIA_MESSAGE_TYPES)[number]) ? (
+      <MissingMedia />
+    ) : null;
+  }
   switch (message.messageType) {
     case "image":
     case "video":

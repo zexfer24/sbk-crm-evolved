@@ -1,8 +1,45 @@
 import { describe, expect, it } from "vitest";
 import { render, screen, fireEvent } from "@testing-library/react";
-import { AudioContent } from "@/components/chat/message-bubble";
+import { AudioContent, MediaContent } from "@/components/chat/message-bubble";
+import type { Message } from "@/lib/types";
 
 const AUDIO_URL = "https://example.com/nota-de-voz.ogg";
+
+function baseMessage(overrides: Partial<Message>): Message {
+  return {
+    id: "msg-1",
+    conversationId: "conv-1",
+    direction: "inbound",
+    senderType: "customer",
+    senderAgent: null,
+    messageType: "text",
+    content: null,
+    templateName: null,
+    mediaUrl: null,
+    isInternalNote: false,
+    whatsappStatus: null,
+    replyToMessageId: null,
+    createdAt: "2026-08-19T23:39:54.000Z",
+    ...overrides,
+  };
+}
+
+describe("MediaContent con mediaUrl nulo (falló la descarga desde WhatsApp)", () => {
+  it.each(["image", "video", "sticker", "audio", "document"] as const)(
+    "message_type=%s sin media_url muestra un aviso visible en vez de una burbuja vacía",
+    (messageType) => {
+      render(<MediaContent message={baseMessage({ messageType, mediaUrl: null })} />);
+      expect(screen.getByText(/no se pudo recibir/i)).toBeInTheDocument();
+    }
+  );
+
+  it("mensaje de texto normal (sin media) no muestra ningún aviso", () => {
+    const { container } = render(
+      <MediaContent message={baseMessage({ messageType: "text", content: "hola", mediaUrl: null })} />
+    );
+    expect(container).toBeEmptyDOMElement();
+  });
+});
 
 describe("AudioContent", () => {
   it("cuando el códec no es soportado (MEDIA_ERR_SRC_NOT_SUPPORTED) muestra un mensaje específico y no ofrece reintentar", () => {
