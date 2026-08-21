@@ -65,6 +65,9 @@ export interface Conversation {
   dealStatus: DealStatus;
   dealClosedAt: string | null;
   dealPaymentProofUrl: string | null;
+  /** Monto real de la venta, tomado de las cotizaciones que el agente seleccionó al cerrar. Null si aún no se cerró con ítems. */
+  dealAmount: number | null;
+  dealCurrency: string | null;
   dealVerified: boolean;
   dealVerifiedAt: string | null;
   dealVerifiedBy: Agent | null;

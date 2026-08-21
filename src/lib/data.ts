@@ -72,6 +72,7 @@ interface RawConversation {
   deal_status: Conversation["dealStatus"];
   deal_closed_at: string | null;
   deal_payment_proof_url: string | null;
+  order: { total_amount: number; currency: string } | null;
   deal_verified: boolean;
   deal_verified_at: string | null;
   deal_verified_by: RawAgent | null;
@@ -202,6 +203,8 @@ function mapConversation(row: RawConversation): Conversation {
     dealStatus: row.deal_status,
     dealClosedAt: row.deal_closed_at,
     dealPaymentProofUrl: row.deal_payment_proof_url,
+    dealAmount: row.order?.total_amount ?? null,
+    dealCurrency: row.order?.currency ?? null,
     dealVerified: row.deal_verified,
     dealVerifiedAt: row.deal_verified_at,
     dealVerifiedBy: mapAgent(row.deal_verified_by),
@@ -280,6 +283,7 @@ const CONVERSATION_SELECT = `
   deal_payment_proof_url, deal_verified, deal_verified_at,
   last_customer_message_at, last_message_at, last_message_preview, created_at,
   journey_stage, intent, active_tool, welcome_sent_at,
+  order:orders(total_amount, currency),
   contact:contacts(id, phone_number, display_name, profile_name, avatar_url,
     cedula_type, cedula_number, state, city, address,
     contact_tags(tag:tags(id, label, color))),

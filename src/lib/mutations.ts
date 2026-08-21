@@ -164,13 +164,48 @@ export interface ContactSaleDetails {
   paymentProofUrl: string | null;
 }
 
+/** Un renglón de la venta: viene directo de una cotización real de la IA (conversation_quotes), nunca a mano. */
+export interface SaleLineItem {
+  quoteId: string;
+  productId: string | null;
+  description: string;
+  unitPrice: number;
+  quantity: number;
+}
+
 export async function closeSaleWithContactInfo(
   supabase: SupabaseClient,
   conversationId: string,
   contactId: string,
   agent: Agent,
-  details: ContactSaleDetails
+  details: ContactSaleDetails,
+  items: SaleLineItem[],
+  bcvRate: number
 ) {
+  if (items.length === 0) {
+    throw new Error("Selecciona al menos un producto cotizado para poder cerrar la venta.");
+  }
+
+  const totalAmount = items.reduce((sum, item) => sum + item.unitPrice * item.quantity, 0);
+
+  const { data: order, error: orderError } = await supabase
+    .from("orders")
+    .insert({ contact_id: contactId, currency: "USD", total_amount: totalAmount, bcv_rate: bcvRate })
+    .select("id")
+    .single();
+  if (orderError || !order) throw orderError ?? new Error("No se pudo crear la orden de la venta.");
+
+  const { error: itemsError } = await supabase.from("order_items").insert(
+    items.map((item) => ({
+      order_id: order.id,
+      product_id: item.productId,
+      description: item.description,
+      quantity: item.quantity,
+      unit_price: item.unitPrice,
+    }))
+  );
+  if (itemsError) throw itemsError;
+
   const { error: contactError } = await supabase
     .from("contacts")
     .update({
@@ -193,11 +228,17 @@ export async function closeSaleWithContactInfo(
       deal_verified: false,
       deal_verified_at: null,
       deal_verified_by: null,
+      order_id: order.id,
     })
     .eq("id", conversationId);
   if (conversationError) throw conversationError;
 
-  await insertSystemEvent(supabase, conversationId, agent.id, `Venta cerrada por ${agent.displayName}`);
+  await insertSystemEvent(
+    supabase,
+    conversationId,
+    agent.id,
+    `Venta cerrada por ${agent.displayName} — $${totalAmount.toFixed(2)}`
+  );
 }
 
 export async function verifySale(supabase: SupabaseClient, conversationId: string, agent: Agent) {

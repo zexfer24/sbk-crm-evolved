@@ -97,6 +97,8 @@ function buildConversation(): Conversation {
     dealStatus: "none",
     dealClosedAt: null,
     dealPaymentProofUrl: null,
+    dealAmount: null,
+    dealCurrency: null,
     dealVerified: false,
     dealVerifiedAt: null,
     dealVerifiedBy: null,
