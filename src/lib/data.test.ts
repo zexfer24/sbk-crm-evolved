@@ -72,7 +72,7 @@ function createFakeSupabase(
   const client = {
     from(table: string) {
       return {
-        select(_columns: string) {
+        select() {
           return {
             eq(eqColumn: string, eqValue: string) {
               return {
