@@ -8,6 +8,7 @@ import type { Agent, Conversation, HourlyActivity } from "@/lib/types";
 import { createClient } from "@/lib/supabase/client";
 import { fetchConversations, fetchTodayActivity } from "@/lib/data";
 import { useClock } from "@/lib/use-clock";
+import { useDebouncedCallback } from "@/lib/use-debounced-callback";
 import {
   buildJourney,
   buildTicketStats,
@@ -69,21 +70,25 @@ export function DashboardView({
   }, [supabase, timeZone]);
 
   // El tablero sigue en vivo lo que pasa en la bandeja de todo el equipo.
+  // Con varios agentes con el dashboard abierto, cualquier cambio en
+  // CUALQUIER conversación dispara este refresh -- se agrupa para no
+  // encadenar un refetch completo por cada evento casi simultáneo.
+  const scheduleRefresh = useDebouncedCallback(refresh, 750);
   useEffect(() => {
     const channel = supabase
       .channel("dashboard-live")
       .on("postgres_changes", { event: "*", schema: "public", table: "conversations" }, () => {
-        refresh();
+        scheduleRefresh();
       })
       .on("postgres_changes", { event: "INSERT", schema: "public", table: "messages" }, () => {
-        refresh();
+        scheduleRefresh();
       })
       .subscribe();
 
     return () => {
       supabase.removeChannel(channel);
     };
-  }, [supabase, refresh]);
+  }, [supabase, scheduleRefresh]);
 
   const stages = useMemo(() => buildJourney(conversations, now), [conversations, now]);
   const stats = useMemo(() => buildTicketStats(conversations, now), [conversations, now]);
