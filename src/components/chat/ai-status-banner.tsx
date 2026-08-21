@@ -33,9 +33,6 @@ export function AiStatusBanner({ aiEnabled, isIntervening, onIntervene, onToggle
         {isIntervening ? "Interviniendo…" : "Intervenir"}
       </button>
 
-      <p className="crm-ai-hint">
-        Puedes dejar una nota interna o intervenir sin pausar la IA.
-      </p>
     </div>
   );
 }

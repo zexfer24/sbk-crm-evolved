@@ -132,10 +132,18 @@ export function ChatPanel({
       />
 
       <div className="crm-messages">
-        {renderItems.map((item) =>
-          item.kind === "media-group" ? (
-            <MediaGroup key={item.messages[0].id} messages={item.messages} />
-          ) : (
+        {renderItems.map((item) => {
+          if (item.kind === "date-separator") {
+            return (
+              <div className="crm-day-sep" key={`day-${item.key}`} role="separator">
+                <span>{item.label}</span>
+              </div>
+            );
+          }
+          if (item.kind === "media-group") {
+            return <MediaGroup key={item.messages[0].id} messages={item.messages} />;
+          }
+          return (
             <MessageBubble
               key={item.message.id}
               message={item.message}
@@ -144,8 +152,8 @@ export function ChatPanel({
               }
               onReply={setReplyingTo}
             />
-          )
-        )}
+          );
+        })}
         <div ref={bottomRef} />
       </div>
 

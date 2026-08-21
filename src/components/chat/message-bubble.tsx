@@ -1,6 +1,79 @@
-import { Bot, FileText, Lock, Reply as ReplyIcon } from "lucide-react";
+import { useState } from "react";
+import { AudioLines, Bot, Download, FileText, Lock, RefreshCw, Reply as ReplyIcon } from "lucide-react";
 import type { Message } from "@/lib/types";
 import { formatMessageTime } from "@/lib/format";
+import { MediaThumb } from "@/components/chat/media-lightbox";
+import { FormattedText } from "@/components/chat/formatted-text";
+
+// MediaError.MEDIA_ERR_SRC_NOT_SUPPORTED no siempre está disponible como
+// constante global en jsdom, así que usamos el literal con su significado documentado.
+const MEDIA_ERR_SRC_NOT_SUPPORTED = 4;
+
+/** Audio con caída controlada: si el archivo nunca cargó, ofrece reintentar en vez de mostrar un reproductor vacío. */
+export function AudioContent({ url }: { url: string }) {
+  const [failed, setFailed] = useState(false);
+  const [errorCode, setErrorCode] = useState<number | undefined>(undefined);
+  const [attempt, setAttempt] = useState(0);
+
+  if (failed) {
+    // Códec/contenedor no soportado por este navegador (ej. Opus/OGG en Safari):
+    // reintentar la misma url en el mismo navegador nunca va a funcionar.
+    if (errorCode === MEDIA_ERR_SRC_NOT_SUPPORTED) {
+      return (
+        <div className="crm-audio-error">
+          <AudioLines size={14} />
+          <span>Este navegador no puede reproducir este audio.</span>
+          <a
+            className="crm-audio-retry"
+            href={url}
+            target="_blank"
+            rel="noopener noreferrer"
+            aria-label="Descargar el audio"
+          >
+            <Download size={12} />
+            Descargar
+          </a>
+        </div>
+      );
+    }
+
+    return (
+      <div className="crm-audio-error">
+        <AudioLines size={14} />
+        <span>No se pudo cargar el audio.</span>
+        <button
+          type="button"
+          className="crm-audio-retry"
+          onClick={() => {
+            setFailed(false);
+            setErrorCode(undefined);
+            setAttempt((a) => a + 1);
+          }}
+          aria-label="Reintentar carga del audio"
+        >
+          <RefreshCw size={12} />
+          Reintentar
+        </button>
+      </div>
+    );
+  }
+
+  return (
+    // Los controles nativos de audio se colapsan/deforman por debajo de
+    // ~300px de ancho en Chrome/Edge — por eso el mínimo generoso acá.
+    <audio
+      key={attempt}
+      src={url}
+      controls
+      preload="metadata"
+      onError={(event) => {
+        setFailed(true);
+        setErrorCode(event.currentTarget.error?.code);
+      }}
+      className="mb-1 h-11 w-full min-w-[300px]"
+    />
+  );
+}
 
 function cx(...classes: (string | false | null | undefined)[]) {
   return classes.filter(Boolean).join(" ");
@@ -17,34 +90,29 @@ function MediaContent({ message }: { message: Message }) {
   if (!message.mediaUrl) return null;
   switch (message.messageType) {
     case "image":
-      return (
-        // eslint-disable-next-line @next/next/no-img-element
-        <img
-          src={message.mediaUrl}
-          alt={message.content ?? "Imagen"}
-          className="mb-1 max-h-72 w-full rounded-field object-cover"
-        />
-      );
     case "video":
-      return <video src={message.mediaUrl} controls className="mb-1 max-h-72 w-full rounded-field" />;
-    case "audio":
-      // Los controles nativos de audio se colapsan/deforman por debajo de
-      // ~300px de ancho en Chrome/Edge — por eso el mínimo generoso acá.
+    case "sticker":
       return (
-        <audio
-          src={message.mediaUrl}
-          controls
-          preload="metadata"
-          className="mb-1 h-11 w-full min-w-[300px]"
+        <MediaThumb
+          items={[
+            {
+              url: message.mediaUrl,
+              type: message.messageType === "video" ? "video" : "image",
+              caption: message.content,
+            },
+          ]}
+          index={0}
         />
       );
+    case "audio":
+      return <AudioContent url={message.mediaUrl} />;
     case "document":
       return (
         <a
           href={message.mediaUrl}
           target="_blank"
           rel="noopener noreferrer"
-          className="mb-1 flex items-center gap-2 rounded-field bg-black/5 px-2.5 py-2 text-xs underline"
+          className="crm-doc-link mb-1 flex items-center gap-2 px-2.5 py-2 text-xs underline"
         >
           <FileText size={14} />
           {message.content || "Ver documento"}
@@ -99,7 +167,11 @@ export function MessageBubble({ message, repliedMessage, onReply }: MessageBubbl
             <div className="crm-bubble-quote">
               <p className="font-medium">{senderLabel(repliedMessage)}</p>
               <p className="truncate">
-                {repliedMessage.content || `[${repliedMessage.messageType}]`}
+                {repliedMessage.content ? (
+                  <FormattedText text={repliedMessage.content} />
+                ) : (
+                  `[${repliedMessage.messageType}]`
+                )}
               </p>
             </div>
           )}
@@ -122,7 +194,7 @@ export function MessageBubble({ message, repliedMessage, onReply }: MessageBubbl
             </div>
           )}
           <MediaContent message={message} />
-          {message.content}
+          {message.content && <FormattedText text={message.content} />}
         </div>
 
         {onReply && (

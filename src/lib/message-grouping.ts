@@ -1,20 +1,25 @@
 import type { Message } from "@/lib/types";
+import { dayKey, formatDaySeparator } from "@/lib/format";
 
 const GROUP_WINDOW_MS = 2 * 60 * 1000;
 const GROUPABLE_TYPES = new Set(["image", "video"]);
 
 export type ChatRenderItem =
   | { kind: "message"; message: Message }
-  | { kind: "media-group"; messages: Message[] };
+  | { kind: "media-group"; messages: Message[] }
+  | { kind: "date-separator"; key: string; label: string };
 
 /**
  * Agrupa fotos/videos consecutivos del mismo emisor (enviados con pocos
  * minutos de diferencia) en una sola "galería" para mostrarlos como
- * carrusel deslizable en vez de burbujas sueltas.
+ * carrusel deslizable en vez de burbujas sueltas, e inserta un separador
+ * de fecha (como en WhatsApp Web) cada vez que cambia el día del calendario
+ * local, para saber siempre de qué fecha se está hablando.
  */
 export function groupMessagesForRender(messages: Message[]): ChatRenderItem[] {
   const items: ChatRenderItem[] = [];
   let buffer: Message[] = [];
+  let lastDayKey: string | null = null;
 
   function flush() {
     if (buffer.length === 0) return;
@@ -27,6 +32,13 @@ export function groupMessagesForRender(messages: Message[]): ChatRenderItem[] {
   }
 
   for (const message of messages) {
+    const key = dayKey(message.createdAt);
+    if (key !== lastDayKey) {
+      flush();
+      items.push({ kind: "date-separator", key, label: formatDaySeparator(message.createdAt) });
+      lastDayKey = key;
+    }
+
     const isGroupable =
       !message.replyToMessageId &&
       !message.isInternalNote &&
