@@ -1,0 +1,69 @@
+import "server-only";
+import type { SupabaseClient } from "@supabase/supabase-js";
+import type { Database, TablesUpdate } from "@/lib/supabase/database.types";
+import { claimNextAvailableAgent } from "@/lib/ai/claim-agent";
+
+// ---------------------------------------------------------------------------
+// Lógica compartida de escalamiento: la usa la herramienta que el modelo
+// puede invocar (src/lib/ai/tools.ts) y la red de seguridad del orquestador
+// (src/lib/ai/agent.ts) cuando el turno se queda sin pasos sin haber
+// escalado en un motivo que lo exige. Vive aparte para no duplicar el
+// reparto por turno ni la lógica de etiquetado de reclamos.
+// ---------------------------------------------------------------------------
+
+export const RECLAMO_CATEGORIES = ["Envío", "Pago", "Producto", "Atención", "Garantía"] as const;
+export type ReclamoCategory = (typeof RECLAMO_CATEGORIES)[number];
+export type EscalationMotivo = "devolucion" | "queja" | "intencion_compra";
+
+export interface EscalateResult {
+  escalated: boolean;
+  assignedAgentName?: string;
+  reason?: string;
+}
+
+export async function escalateConversation(
+  supabase: SupabaseClient<Database>,
+  params: {
+    conversationId: string;
+    contactId: string;
+    motivo: EscalationMotivo;
+    resumen: string;
+    categoriaReclamo?: ReclamoCategory;
+  }
+): Promise<EscalateResult> {
+  const { conversationId, contactId, motivo, resumen, categoriaReclamo } = params;
+
+  const candidate = await claimNextAvailableAgent(supabase);
+
+  if (!candidate) {
+    return { escalated: false, reason: "No hay asesores activos para asignar." };
+  }
+
+  const conversationUpdate: TablesUpdate<"conversations"> = {
+    ai_enabled: false,
+    assigned_agent_id: candidate.id,
+    journey_stage: "assigned",
+  };
+  if (motivo === "intencion_compra") conversationUpdate.deal_status = "in_progress";
+
+  await supabase.from("conversations").update(conversationUpdate).eq("id", conversationId);
+
+  await supabase.from("messages").insert({
+    conversation_id: conversationId,
+    direction: "outbound",
+    sender_type: "system",
+    message_type: "system_event",
+    is_internal_note: true,
+    content: `IA escaló a ${candidate.displayName}. Motivo: ${motivo}. ${resumen}`,
+  });
+
+  if (motivo === "queja") {
+    const label = `Reclamo · ${categoriaReclamo ?? "Atención"}`;
+    const { data: tag } = await supabase.from("tags").select("id").eq("label", label).maybeSingle();
+    if (tag) {
+      await supabase.from("contact_tags").upsert({ contact_id: contactId, tag_id: tag.id });
+    }
+  }
+
+  return { escalated: true, assignedAgentName: candidate.displayName };
+}
