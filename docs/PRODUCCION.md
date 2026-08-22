@@ -144,9 +144,22 @@ La IA arranca encendida. Antes de que hable con un cliente real:
 Node 20 la instalación avisa `EBADENGINE`. Está declarado en `engines` del
 `package.json` y fijado en el Dockerfile y en el CI.
 
-### En un servidor propio (lo más corto)
+### Desde tu máquina, a un servidor por SSH (lo más corto)
 
-Con el dominio ya apuntando al servidor y Docker instalado, son tres pasos:
+```bash
+cp .env.production.example .env.production   # y complétalo
+./scripts/deploy.sh usuario@tu-servidor
+```
+
+`deploy.sh` valida la configuración **antes de tocar el servidor**, comprueba
+que allá haya Docker y que el dominio le resuelva, copia el proyecto —sin
+`node_modules` ni `.git` ni respaldos—, levanta el stack, espera a que el CRM
+responda sano y verifica el TLS desde fuera. Si algo falla, para y dice qué
+mirar. Volver a correrlo actualiza el despliegue.
+
+El `.env.production` viaja aparte y queda en el servidor con permisos `600`.
+
+### En el propio servidor
 
 ```bash
 cp .env.production.example .env.production   # y complétalo
