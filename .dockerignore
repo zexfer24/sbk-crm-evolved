@@ -1,0 +1,15 @@
+node_modules
+.next
+.git
+.env*
+!.env.local.example
+backups
+docs
+scripts
+supabase/.branches
+supabase/.temp
+.agents
+.claude
+skills-lock.json
+*.log
+README.md

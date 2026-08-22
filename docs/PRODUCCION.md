@@ -136,7 +136,53 @@ La IA arranca encendida. Antes de que hable con un cliente real:
 
 ---
 
-## 7. Respaldos
+## 7. Desplegar la aplicación
+
+### Requisito: Node 22 o más
+
+`whatwg-url`, que entra como dependencia transitiva, exige `>=22.14`. Con
+Node 20 la instalación avisa `EBADENGINE`. Está declarado en `engines` del
+`package.json` y fijado en el Dockerfile y en el CI.
+
+### Con Docker
+
+```bash
+docker build -t liminal-crm \
+  --build-arg NEXT_PUBLIC_SUPABASE_URL="https://<proyecto>.supabase.co" \
+  --build-arg NEXT_PUBLIC_SUPABASE_ANON_KEY="<anon-key>" .
+
+docker run -d -p 3000:3000 --env-file .env.production --restart unless-stopped liminal-crm
+```
+
+Las `NEXT_PUBLIC_*` van como `--build-arg` **y** en el `.env.production`: se
+incrustan en el bundle al compilar, así que en tiempo de arranque ya es tarde.
+No son secretos — la anon key está pensada para viajar al navegador y la
+protege RLS. Lo que **nunca** va en un build-arg es la `SUPABASE_SERVICE_ROLE_KEY`.
+
+La imagen corre como usuario sin privilegios y trae `HEALTHCHECK` contra
+`/api/health`, así que el orquestador reinicia el contenedor solo si el CRM
+deja de alcanzar la base.
+
+### Sin Docker
+
+```bash
+npm ci && npm run build
+node .next/standalone/server.js     # con las variables en el entorno
+```
+
+Detrás de un reverse proxy (Caddy, nginx) que termine TLS. El webhook de Meta
+exige HTTPS.
+
+### Monitoreo
+
+Apunta un monitor externo —UptimeRobot, Better Stack, el que uses— a
+`https://<tu-dominio>/api/health` cada minuto. Devuelve **200** solo si el CRM
+alcanza la base y tiene sus variables; **503** en cualquier otro caso, con el
+detalle de qué falló. No expone versiones ni credenciales.
+
+---
+
+## 8. Respaldos
 
 Los scripts están hechos y **probados restaurando de verdad**:
 
@@ -184,7 +230,7 @@ guarda las rutas, no el contenido. Para eso:
 
 ---
 
-## 8. Lo que todavía no existe
+## 9. Lo que todavía no existe
 
 Honestidad sobre el estado, para que nadie se lleve una sorpresa:
 

@@ -1,0 +1,62 @@
+name: CI
+
+# Corre en cada push a main y en cada PR. La idea es que nada llegue a
+# producción sin que estas tres puertas hayan pasado.
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  verificar:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          # 22 y no 20: whatwg-url, que entra como dependencia transitiva,
+          # exige >=22.14 y con 20 npm avisa EBADENGINE.
+          node-version: "22"
+          cache: npm
+
+      - run: npm ci
+
+      - name: Tipos
+        run: npx tsc --noEmit
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Pruebas
+        run: npm run test
+
+      # Las NEXT_PUBLIC_* se incrustan al compilar, así que el build necesita
+      # valores aunque sean de mentira: acá solo se comprueba que compila, no
+      # se habla con ninguna base.
+      - name: Compilar
+        run: npm run build
+        env:
+          NEXT_PUBLIC_SUPABASE_URL: http://127.0.0.1:54321
+          NEXT_PUBLIC_SUPABASE_ANON_KEY: ci-anon-key
+          NEXT_PUBLIC_CRM_TIME_ZONE: America/Caracas
+
+  migraciones:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: supabase/setup-cli@v1
+        with:
+          version: latest
+
+      # Levanta Postgres y aplica migraciones y seeds desde cero. Es la
+      # comprobación de que el esquema se puede reconstruir con lo que hay en
+      # el repositorio, que es lo que hará el despliegue.
+      - name: Reconstruir la base desde cero
+        run: supabase db start
+
+      - name: Comprobar que quedó en pie
+        run: |
+          supabase db query --local "select public.agent_can_run()"
+          supabase db query --local "select public from storage.buckets where id = 'whatsapp-media'"
