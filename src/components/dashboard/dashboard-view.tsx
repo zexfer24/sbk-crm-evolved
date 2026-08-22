@@ -2,8 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 import Link from "next/link";
-import { useRouter } from "next/navigation";
-import { Bot, Inbox, LogOut, Receipt, RefreshCw, Route, TriangleAlert } from "lucide-react";
+import { RefreshCw, Route, TriangleAlert } from "lucide-react";
 import type { Agent, Conversation, HourlyActivity } from "@/lib/types";
 import { createClient } from "@/lib/supabase/client";
 import { fetchConversations, fetchTodayActivity } from "@/lib/data";
@@ -16,6 +15,7 @@ import {
   isActive,
   ticketQueue,
 } from "@/lib/dashboard";
+import { AppRail } from "@/components/app-rail";
 import { ActivityChart } from "@/components/dashboard/activity-chart";
 import { JourneyBoard } from "@/components/dashboard/journey-board";
 import { TicketQueuePanel } from "@/components/dashboard/ticket-queue";
@@ -45,7 +45,6 @@ export function DashboardView({
   initialActivity,
   timeZone,
 }: DashboardViewProps) {
-  const router = useRouter();
   const supabase = useMemo(() => createClient(), []);
 
   const [conversations, setConversations] = useState(initialConversations);
@@ -102,32 +101,10 @@ export function DashboardView({
 
   const load = useMemo(() => agentLoad(agents, conversations), [agents, conversations]);
 
-  async function signOut() {
-    await supabase.auth.signOut();
-    router.push("/login");
-  }
-
   return (
     <div className="dash">
       <div className="dash-frame">
-        <nav className="dash-rail" aria-label="Secciones">
-          <Link className="dash-rail-btn" href="/" data-active="true" aria-label="Recorrido">
-            <Route size={17} />
-          </Link>
-          <Link className="dash-rail-btn" href="/inbox" aria-label="Bandeja">
-            <Inbox size={17} />
-          </Link>
-          <Link className="dash-rail-btn" href="/ventas" aria-label="Ventas">
-            <Receipt size={17} />
-          </Link>
-          <Link className="dash-rail-btn" href="/agent-control" aria-label="Control de IA">
-            <Bot size={17} />
-          </Link>
-          <span className="dash-rail-spacer" />
-          <button className="dash-rail-btn" type="button" onClick={signOut} aria-label="Cerrar sesión">
-            <LogOut size={17} />
-          </button>
-        </nav>
+        <AppRail active="recorrido" />
 
         <main className="dash-main">
           <div className="dash-content">
@@ -152,8 +129,14 @@ export function DashboardView({
                 <a className="dash-nav-link" href="#reclamos">
                   Reclamos
                 </a>
+                <Link className="dash-nav-link" href="/clientes">
+                  Clientes
+                </Link>
                 <Link className="dash-nav-link" href="/ventas">
                   Ventas
+                </Link>
+                <Link className="dash-nav-link" href="/inventario">
+                  Inventario
                 </Link>
                 <Link className="dash-nav-link" href="/agent-control">
                   Control IA

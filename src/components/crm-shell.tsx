@@ -1,9 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useState } from "react";
-import Link from "next/link";
-import { useRouter } from "next/navigation";
-import { Bot, Inbox, LogOut, MessageCircle, Receipt, Route } from "lucide-react";
+import { MessageCircle } from "lucide-react";
 import type { Agent, Conversation, Message, Note, QuickReply, Tag, WhatsappTemplate } from "@/lib/types";
 import { createClient } from "@/lib/supabase/client";
 import { fetchConversations, fetchMessages, fetchNotes, fetchQuickReplies, fetchTags, fetchTemplates } from "@/lib/data";
@@ -18,8 +16,10 @@ import { useDebouncedCallback } from "@/lib/use-debounced-callback";
  */
 const REALTIME_DEBOUNCE_MS = 750;
 import { InboxSidebar } from "@/components/inbox/inbox-sidebar";
+import type { BcvRateSummary } from "@/components/inbox/bcv-rate-chip";
 import { ChatPanel } from "@/components/chat/chat-panel";
 import { ContextPanel } from "@/components/context-panel/context-panel";
+import { AppRail } from "@/components/app-rail";
 import "@/components/crm.css";
 
 interface CrmShellProps {
@@ -27,6 +27,8 @@ interface CrmShellProps {
   initialConversations: Conversation[];
   allTags: Tag[];
   initialQuickReplies: QuickReply[];
+  /** Tasa del BCV del día, ya resuelta en el servidor. Null si no se pudo obtener ninguna. */
+  bcvRate: BcvRateSummary | null;
   /** Hilo a abrir al entrar, por ejemplo al llegar desde una tarjeta del dashboard. */
   initialConversationId?: string;
 }
@@ -36,9 +38,9 @@ export function CrmShell({
   initialConversations,
   allTags,
   initialQuickReplies,
+  bcvRate,
   initialConversationId,
 }: CrmShellProps) {
-  const router = useRouter();
   const supabase = useMemo(() => createClient(), []);
 
   const [conversations, setConversations] = useState<Conversation[]>(initialConversations);
@@ -204,31 +206,9 @@ export function CrmShell({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedId, supabase]);
 
-  async function signOut() {
-    await supabase.auth.signOut();
-    router.push("/login");
-  }
-
   return (
     <div className="crm" data-view={mobileView}>
-      <nav className="crm-rail" aria-label="Secciones">
-        <Link className="crm-rail-btn" href="/" aria-label="Recorrido">
-          <Route size={17} />
-        </Link>
-        <Link className="crm-rail-btn" href="/inbox" data-active="true" aria-label="Bandeja">
-          <Inbox size={17} />
-        </Link>
-        <Link className="crm-rail-btn" href="/ventas" aria-label="Ventas">
-          <Receipt size={17} />
-        </Link>
-        <Link className="crm-rail-btn" href="/agent-control" aria-label="Control de IA">
-          <Bot size={17} />
-        </Link>
-        <span className="crm-rail-spacer" />
-        <button className="crm-rail-btn" type="button" onClick={signOut} aria-label="Cerrar sesión">
-          <LogOut size={17} />
-        </button>
-      </nav>
+      <AppRail active="bandeja" variant="crm" />
 
       <div className="crm-columns">
         <section className="crm-column crm-inbox">
@@ -237,6 +217,8 @@ export function CrmShell({
             selectedId={selectedId}
             onSelect={openConversation}
             currentAgent={currentAgent}
+            allTags={tags}
+            bcvRate={bcvRate}
           />
         </section>
 

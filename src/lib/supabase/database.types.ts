@@ -5,6 +5,7 @@ export type Json =
   | null
   | { [key: string]: Json | undefined }
   | Json[]
+
 export type Database = {
   graphql_public: {
     Tables: {
@@ -154,6 +155,7 @@ export type Database = {
       agent_turns: {
         Row: {
           action: string
+          cached_input_tokens: number | null
           conversation_id: string
           created_at: string
           customer_message: string | null
@@ -168,6 +170,7 @@ export type Database = {
         }
         Insert: {
           action: string
+          cached_input_tokens?: number | null
           conversation_id: string
           created_at?: string
           customer_message?: string | null
@@ -182,6 +185,7 @@ export type Database = {
         }
         Update: {
           action?: string
+          cached_input_tokens?: number | null
           conversation_id?: string
           created_at?: string
           customer_message?: string | null
@@ -431,7 +435,9 @@ export type Database = {
           journey_stage: string | null
           last_customer_message_at: string | null
           last_message_at: string | null
+          last_message_direction: string | null
           last_message_preview: string | null
+          last_message_status: string | null
           order_id: string | null
           status: string
           unread_count: number
@@ -457,7 +463,9 @@ export type Database = {
           journey_stage?: string | null
           last_customer_message_at?: string | null
           last_message_at?: string | null
+          last_message_direction?: string | null
           last_message_preview?: string | null
+          last_message_status?: string | null
           order_id?: string | null
           status?: string
           unread_count?: number
@@ -483,7 +491,9 @@ export type Database = {
           journey_stage?: string | null
           last_customer_message_at?: string | null
           last_message_at?: string | null
+          last_message_direction?: string | null
           last_message_preview?: string | null
+          last_message_status?: string | null
           order_id?: string | null
           status?: string
           unread_count?: number
@@ -532,18 +542,21 @@ export type Database = {
       exchange_rates: {
         Row: {
           fetched_at: string
+          fetched_on: string | null
           rate_date: string
           source: string
           usd_to_ves: number
         }
         Insert: {
           fetched_at?: string
+          fetched_on?: string | null
           rate_date: string
           source?: string
           usd_to_ves: number
         }
         Update: {
           fetched_at?: string
+          fetched_on?: string | null
           rate_date?: string
           source?: string
           usd_to_ves?: number
@@ -891,6 +904,7 @@ export type Database = {
           is_active: boolean
           name: string
           price: number
+          search_text: string | null
           stock_quantity: number
           updated_at: string
         }
@@ -1184,8 +1198,11 @@ export type Database = {
     }
   }
 }
+
 type DatabaseWithoutInternals = Omit<Database, "__InternalSupabase">
+
 type DefaultSchema = DatabaseWithoutInternals[Extract<keyof Database, "public">]
+
 export type Tables<
   DefaultSchemaTableNameOrOptions extends
     | keyof (DefaultSchema["Tables"] & DefaultSchema["Views"])
@@ -1214,6 +1231,7 @@ export type Tables<
       ? R
       : never
     : never
+
 export type TablesInsert<
   DefaultSchemaTableNameOrOptions extends
     | keyof DefaultSchema["Tables"]
@@ -1238,6 +1256,7 @@ export type TablesInsert<
       ? I
       : never
     : never
+
 export type TablesUpdate<
   DefaultSchemaTableNameOrOptions extends
     | keyof DefaultSchema["Tables"]
@@ -1262,6 +1281,7 @@ export type TablesUpdate<
       ? U
       : never
     : never
+
 export type Enums<
   DefaultSchemaEnumNameOrOptions extends
     | keyof DefaultSchema["Enums"]
@@ -1278,6 +1298,7 @@ export type Enums<
   : DefaultSchemaEnumNameOrOptions extends keyof DefaultSchema["Enums"]
     ? DefaultSchema["Enums"][DefaultSchemaEnumNameOrOptions]
     : never
+
 export type CompositeTypes<
   PublicCompositeTypeNameOrOptions extends
     | keyof DefaultSchema["CompositeTypes"]
@@ -1294,6 +1315,7 @@ export type CompositeTypes<
   : PublicCompositeTypeNameOrOptions extends keyof DefaultSchema["CompositeTypes"]
     ? DefaultSchema["CompositeTypes"][PublicCompositeTypeNameOrOptions]
     : never
+
 export const Constants = {
   graphql_public: {
     Enums: {},
@@ -1302,3 +1324,4 @@ export const Constants = {
     Enums: {},
   },
 } as const
+

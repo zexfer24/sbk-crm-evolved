@@ -1,0 +1,193 @@
+/* ==========================================================================
+   Inventario
+   Comparte con Clientes la barra de búsqueda (.cli-search), los filtros
+   (.cli-filters), las tarjetas de resumen (.cli-stat) y la paginación
+   (.cli-pager). Aquí solo vive la fila editable del repuesto y el bloque
+   del catálogo de motos.
+   ========================================================================== */
+
+.inv-list {
+  display: flex;
+  flex-direction: column;
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.inv-row {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding: 12px 26px;
+  border-top: 1px solid var(--lm-line);
+  flex-wrap: wrap;
+}
+
+.inv-row:hover {
+  background: var(--lm-sunken);
+}
+
+/* Un repuesto desactivado no existe para la IA: se ve apagado. */
+.inv-row[data-inactive="true"] .inv-identity {
+  opacity: 0.55;
+}
+
+.inv-identity {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  flex: 1 1 240px;
+  min-width: 0;
+}
+
+.inv-name {
+  font-size: 13.5px;
+  font-weight: 600;
+  color: var(--lm-ink);
+}
+
+.inv-facts {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  font-size: 11.5px;
+  color: var(--lm-muted);
+}
+
+.inv-brand {
+  padding: 1px 6px;
+  border: 1px solid var(--lm-line);
+  border-radius: 5px;
+}
+
+.inv-compat {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 260px;
+}
+
+.inv-compat-any {
+  font-style: italic;
+}
+
+.inv-field {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 92px;
+}
+
+.inv-input-wrap {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  padding: 5px 8px;
+  border: 1px solid var(--lm-line);
+  border-radius: 8px;
+  background: var(--lm-sunken);
+}
+
+.inv-input-wrap:focus-within {
+  border-color: var(--lm-link);
+}
+
+/* El color del stock repite el semáforo de `stockLevel`. */
+.inv-input-wrap[data-level="agotado"] {
+  border-color: var(--lm-hot-ink, var(--lm-line));
+}
+
+.inv-input-wrap[data-level="bajo"] {
+  border-color: var(--lm-wait-ink, var(--lm-line));
+}
+
+.inv-input-wrap input {
+  width: 62px;
+  border: none;
+  outline: none;
+  background: transparent;
+  color: var(--lm-ink);
+  font-size: 13px;
+  text-align: right;
+}
+
+.inv-input-wrap input:disabled {
+  opacity: 0.5;
+}
+
+.inv-saved {
+  color: var(--lm-good-ink, var(--lm-link));
+  flex-shrink: 0;
+}
+
+.inv-bs {
+  font-size: 11px;
+  color: var(--lm-muted);
+}
+
+.inv-status {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-left: auto;
+}
+
+/* --- Catálogo de motos ---------------------------------------------------- */
+
+.inv-catalog {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding: 16px 26px;
+}
+
+.inv-catalog-intro {
+  font-size: 12.5px;
+  color: var(--lm-muted);
+  max-width: 70ch;
+}
+
+.inv-catalog-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 10px;
+}
+
+.inv-catalog-cell {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 12px 14px;
+  border: 1px solid var(--lm-line);
+  border-radius: 10px;
+}
+
+.inv-catalog-cell span:first-child {
+  font-size: 19px;
+  font-weight: 600;
+  color: var(--lm-ink);
+}
+
+.inv-catalog-cell span:last-child {
+  font-size: 11.5px;
+  color: var(--lm-muted);
+}
+
+.inv-catalog-warning {
+  font-size: 12px;
+  color: var(--lm-wait-ink, var(--lm-muted));
+}
+
+/* --- Pantallas estrechas -------------------------------------------------- */
+
+@media (max-width: 760px) {
+  .inv-status {
+    margin-left: 0;
+    width: 100%;
+  }
+
+  .inv-compat {
+    max-width: 100%;
+  }
+}

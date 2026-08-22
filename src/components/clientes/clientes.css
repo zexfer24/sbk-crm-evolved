@@ -1,0 +1,513 @@
+/* ==========================================================================
+   Clientes
+   Reusa la estructura .dash-* (rail, topbar, header, panel), las píldoras
+   .crm-pill, las etiquetas .crm-tag y los badges .ac-badge del resto del
+   CRM. Aquí solo vive lo propio de la lista y de la ficha.
+   ========================================================================== */
+
+/* --- Barra de búsqueda y filtros ---------------------------------------- */
+
+.cli-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+  padding: 16px 26px;
+  border-bottom: 1px solid var(--lm-line);
+}
+
+.cli-search {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 1 1 260px;
+  min-width: 220px;
+  padding: 7px 11px;
+  border: 1px solid var(--lm-line);
+  border-radius: 9px;
+  background: var(--lm-sunken);
+  color: var(--lm-muted);
+}
+
+.cli-search:focus-within {
+  border-color: var(--lm-link);
+}
+
+.cli-search input {
+  flex: 1;
+  min-width: 0;
+  border: none;
+  outline: none;
+  background: transparent;
+  color: var(--lm-ink);
+  font-size: 13px;
+}
+
+.cli-search input::-webkit-search-cancel-button {
+  display: none;
+}
+
+.cli-search button {
+  display: grid;
+  place-items: center;
+  border: none;
+  background: transparent;
+  color: var(--lm-muted);
+  cursor: pointer;
+  padding: 2px;
+  border-radius: 5px;
+}
+
+.cli-search button:hover {
+  color: var(--lm-ink);
+}
+
+.cli-filters {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+/* Las píldoras de filtro son enlaces: el estado activo lo marca la URL. */
+.cli-filters .crm-pill[data-active="true"] {
+  border-color: var(--lm-link);
+  color: var(--lm-link);
+}
+
+.crm-pill[data-disabled="true"] {
+  opacity: 0.45;
+  pointer-events: none;
+}
+
+/* --- Lista --------------------------------------------------------------- */
+
+.cli-list {
+  display: flex;
+  flex-direction: column;
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.cli-row {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 12px 26px;
+  border-top: 1px solid var(--lm-line);
+  flex-wrap: wrap;
+}
+
+.cli-row:hover {
+  background: var(--lm-sunken);
+}
+
+.cli-row-main {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex: 1 1 260px;
+  min-width: 0;
+  text-decoration: none;
+  color: inherit;
+}
+
+.cli-avatar {
+  display: grid;
+  place-items: center;
+  flex-shrink: 0;
+  width: 34px;
+  height: 34px;
+  border-radius: 999px;
+  background: var(--lm-sunken);
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.cli-row:hover .cli-avatar {
+  background: var(--lm-raised, var(--lm-sunken));
+}
+
+.cli-identity {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+}
+
+.cli-name {
+  font-size: 13.5px;
+  font-weight: 600;
+  color: var(--lm-ink);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.cli-facts {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+  font-size: 11.5px;
+  color: var(--lm-muted);
+}
+
+.cli-fact {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.cli-tags {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 5px;
+  flex: 0 1 auto;
+}
+
+.cli-tags-more {
+  font-size: 11px;
+  color: var(--lm-muted);
+}
+
+.cli-money {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 2px;
+  min-width: 96px;
+}
+
+.cli-amount {
+  font-size: 13.5px;
+  font-weight: 600;
+  color: var(--lm-ink);
+}
+
+.cli-money-note {
+  font-size: 11px;
+  color: var(--lm-muted);
+}
+
+.cli-row-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.cli-last {
+  font-size: 11.5px;
+  color: var(--lm-muted);
+  min-width: 62px;
+  text-align: right;
+}
+
+/* --- Paginación ---------------------------------------------------------- */
+
+.cli-pager {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 14px;
+  padding: 16px 26px;
+  border-top: 1px solid var(--lm-line);
+}
+
+.cli-pager-note {
+  font-size: 12px;
+  color: var(--lm-muted);
+}
+
+/* --- Ficha --------------------------------------------------------------- */
+
+.cli-back {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  margin-bottom: 6px;
+  font-size: 12px;
+  color: var(--lm-muted);
+  text-decoration: none;
+}
+
+.cli-back:hover {
+  color: var(--lm-ink);
+}
+
+.cli-stats {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 12px;
+  margin-bottom: 16px;
+}
+
+.cli-stat {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 14px 16px;
+  border: 1px solid var(--lm-line);
+  border-radius: 12px;
+  background: var(--lm-panel, transparent);
+}
+
+.cli-stat-value {
+  font-size: 22px;
+  font-weight: 600;
+  color: var(--lm-ink);
+  line-height: 1.1;
+}
+
+.cli-stat-note {
+  font-size: 11.5px;
+  color: var(--lm-muted);
+}
+
+.cli-columns {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1.15fr);
+  gap: 16px;
+  align-items: start;
+}
+
+.cli-col {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  min-width: 0;
+}
+
+.cli-facts-block {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 16px 26px;
+}
+
+.cli-missing {
+  color: var(--lm-muted);
+  font-size: 12px;
+  font-style: italic;
+}
+
+.cli-profile-name {
+  font-size: 11.5px;
+  color: var(--lm-muted);
+}
+
+.cli-profile-name span {
+  color: var(--lm-ink);
+}
+
+/* --- Etiquetas en la ficha ----------------------------------------------- */
+
+.cli-tags-editor {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 16px 26px;
+}
+
+.cli-tags-add-label {
+  margin-top: 2px;
+}
+
+button.cli-tag-add {
+  cursor: pointer;
+  border-style: dashed;
+  gap: 4px;
+}
+
+button.cli-tag-add:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+/* --- Compras -------------------------------------------------------------- */
+
+.cli-purchases,
+.cli-threads {
+  display: flex;
+  flex-direction: column;
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.cli-purchase {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 14px 26px;
+  border-top: 1px solid var(--lm-line);
+}
+
+.cli-purchase-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.cli-purchase-date {
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--lm-ink);
+}
+
+.cli-purchase-items {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.cli-purchase-items li {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  font-size: 12px;
+  color: var(--lm-muted);
+}
+
+.cli-purchase-link {
+  align-self: flex-start;
+  font-size: 11.5px;
+  color: var(--lm-link);
+  text-decoration: none;
+}
+
+.cli-purchase-link:hover {
+  text-decoration: underline;
+}
+
+.cli-threads li a {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 12px 26px;
+  border-top: 1px solid var(--lm-line);
+  text-decoration: none;
+  color: inherit;
+}
+
+.cli-threads li a:hover {
+  background: var(--lm-sunken);
+}
+
+.cli-thread-date {
+  font-size: 12.5px;
+  color: var(--lm-ink);
+}
+
+/* --- Notas ---------------------------------------------------------------- */
+
+.cli-notes {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 16px 26px;
+}
+
+.cli-note-composer {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  align-items: flex-start;
+}
+
+.cli-note-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.cli-note {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  padding: 10px 12px;
+  border: 1px solid var(--lm-line);
+  border-radius: 9px;
+  background: var(--lm-sunken);
+}
+
+.cli-note-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.cli-note-author {
+  font-size: 11.5px;
+  font-weight: 600;
+  color: var(--lm-ink);
+}
+
+.cli-note-date {
+  font-size: 11px;
+  color: var(--lm-muted);
+}
+
+.cli-note-btn {
+  display: grid;
+  place-items: center;
+  padding: 3px;
+  border: none;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--lm-muted);
+  cursor: pointer;
+}
+
+.cli-note-btn:hover {
+  color: var(--lm-ink);
+}
+
+.cli-note-btn:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+.cli-note-body {
+  font-size: 12.5px;
+  color: var(--lm-ink);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.cli-note-edit {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.cli-note-edit-actions {
+  display: flex;
+  gap: 4px;
+}
+
+/* --- Pantallas estrechas -------------------------------------------------- */
+
+@media (max-width: 900px) {
+  .cli-columns {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .cli-money {
+    align-items: flex-start;
+    min-width: 0;
+  }
+
+  .cli-last {
+    text-align: left;
+    min-width: 0;
+  }
+}

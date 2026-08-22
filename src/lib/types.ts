@@ -74,6 +74,10 @@ export interface Conversation {
   lastCustomerMessageAt: string | null;
   lastMessageAt: string | null;
   lastMessagePreview: string | null;
+  /** De quién es el último mensaje. El doble check solo aplica a los salientes. */
+  lastMessageDirection: MessageDirection | null;
+  /** Estado de entrega del último mensaje saliente: null en los entrantes. */
+  lastMessageStatus: WhatsappMessageStatus | null;
   createdAt: string;
   /** Etapa reportada por el agente de IA. Null = se deduce del resto del estado. */
   journeyStage: JourneyStageId | null;
@@ -170,7 +174,14 @@ export interface Playbook {
   isActive: boolean;
 }
 
-export type InboxFilter = "all" | "assigned";
+/**
+ * Cortes de la bandeja. Los tres primeros son de administración (miran el
+ * trabajo de todo el equipo); los dos últimos son del asesor sobre lo suyo.
+ * `filtersForRole` decide cuáles se ofrecen a quién.
+ */
+export type InboxFilter = "all" | "unread" | "unassigned" | "assigned" | "mine" | "mine-unread";
+
+export type InboxSort = "recent" | "oldest";
 
 /** Qué categoría detectó la IA en el mensaje del cliente. */
 export type AgentIntent = "consulta_disponibilidad" | "devolucion" | "queja" | "otro";
@@ -193,6 +204,36 @@ export interface AgentTurn {
   /** Último mensaje del cliente del turno. Es lo que alimenta la lista de escenarios faltantes. */
   customerMessage: string | null;
   createdAt: string;
+}
+
+/**
+ * Rendimiento de una persona del equipo, en «Control de agentes».
+ *
+ * Cada número viene por partida doble: el del día en curso —para ver quién
+ * está cargado ahora— y el del período, para la foto sostenida.
+ */
+export interface AgentMetrics {
+  agentId: string;
+  /** Mensajes escritos a clientes. Las notas internas no cuentan: nadie las lee del otro lado. */
+  messagesToday: number;
+  messagesPeriod: number;
+  /** Conversaciones distintas en las que escribió, más allá de las que tenga asignadas ahora. */
+  conversationsToday: number;
+  conversationsPeriod: number;
+  salesToday: number;
+  salesPeriod: number;
+  /** Suma en USD de las ventas cerradas. Sale de las cotizaciones reales del chat. */
+  salesAmountToday: number;
+  salesAmountPeriod: number;
+  /** Comprobantes verificados. Solo supervisión puede hacerlo. */
+  verifiedToday: number;
+  verifiedPeriod: number;
+  /**
+   * Mediana de segundos entre que le asignan una conversación y manda su
+   * primer mensaje. Null si todavía no hay ninguna medida — el dato se
+   * empezó a registrar el 22/08/2026 y no se puede reconstruir hacia atrás.
+   */
+  firstReplyMedianSeconds: number | null;
 }
 
 /** Interruptor global de la IA en todo el CRM. */
@@ -265,4 +306,139 @@ export interface AgentSuggestion {
   createdAt: string;
   reviewedAt: string | null;
   reviewedBy: string | null;
+}
+
+// ---------------------------------------------------------------------------
+// Clientes
+//
+// La sección Clientes no agrega tablas: reordena lo que ya existe (contacts,
+// conversations, orders, order_items, notes) alrededor de la persona en vez
+// de alrededor del hilo de chat.
+// ---------------------------------------------------------------------------
+
+/** Un renglón de una compra, tal como quedó registrado al cerrar la venta. */
+export interface CustomerPurchaseItem {
+  description: string;
+  quantity: number;
+  unitPrice: number;
+}
+
+/** Una compra cerrada, ya cruzada con la conversación donde se cerró. */
+export interface CustomerPurchase {
+  orderId: string;
+  conversationId: string;
+  purchasedAt: string;
+  totalAmount: number;
+  currency: string;
+  verified: boolean;
+  items: CustomerPurchaseItem[];
+}
+
+/**
+ * Lo mínimo de una conversación que necesita el resumen del cliente. Se
+ * declara aparte de `Conversation` a propósito: el resumen se calcula sobre
+ * cientos de filas y no necesita etiquetas, canal, agente ni mensajes.
+ */
+export interface CustomerConversationRow {
+  id: string;
+  dealStatus: DealStatus;
+  dealClosedAt: string | null;
+  lastMessageAt: string | null;
+  orderTotal: number | null;
+  orderCurrency: string | null;
+  orderPurchasedAt: string | null;
+}
+
+/** Lo comercial de un cliente, calculado a partir de sus conversaciones. */
+export interface CustomerActivity {
+  /** Suma de las compras cerradas en USD. Las devueltas y las eliminadas no cuentan. */
+  totalSpentUsd: number;
+  purchaseCount: number;
+  lastPurchaseAt: string | null;
+  lastMessageAt: string | null;
+  conversationCount: number;
+  /** Conversación más reciente: a dónde lleva el botón "Abrir chat". */
+  latestConversationId: string | null;
+  /**
+   * Hubo compras en una moneda distinta de USD, así que `totalSpentUsd` no
+   * es el total real. La UI lo advierte en vez de sumar peras con manzanas.
+   */
+  hasNonUsdPurchases: boolean;
+}
+
+/** Una fila de la lista de Clientes. */
+export interface CustomerSummary {
+  contact: Contact;
+  activity: CustomerActivity;
+}
+
+/** La ficha completa de un cliente. */
+export interface CustomerDetail {
+  contact: Contact;
+  activity: CustomerActivity;
+  purchases: CustomerPurchase[];
+  conversations: CustomerConversationRow[];
+  notes: Note[];
+}
+
+// ---------------------------------------------------------------------------
+// Inventario
+//
+// `products` es el inventario que la herramienta de catálogo de la IA lee en
+// cada turno: lo que se edite acá es lo que la IA cotiza en el próximo
+// mensaje, sin recargas ni sincronizaciones intermedias.
+// ---------------------------------------------------------------------------
+
+export type ProductCurrency = "USD" | "VES";
+
+export interface ProductCompatibility {
+  id: string;
+  motoBrand: string;
+  motoModel: string;
+}
+
+export interface Product {
+  id: string;
+  name: string;
+  brand: string | null;
+  price: number;
+  currency: ProductCurrency;
+  stockQuantity: number;
+  description: string | null;
+  isActive: boolean;
+  updatedAt: string;
+  compatibility: ProductCompatibility[];
+}
+
+/**
+ * Tamaño del catálogo clon de motos (familias de motor, modelos comerciales,
+ * reglas de compatibilidad y jerga). No se edita desde el CRM: se importa del
+ * ERP. La sección lo muestra para que se vea qué tan cargado está lo que la
+ * IA usa para resolver compatibilidades.
+ */
+export interface MotoCatalogSummary {
+  engineFamilies: number;
+  commercialModels: number;
+  modelEngineLinks: number;
+  compatibilityRules: number;
+  searchSynonyms: number;
+}
+
+/**
+ * De dónde salió un renglón de la venta: de una cotización real que la IA le
+ * dio al cliente en el chat, o agregado a mano por el asesor desde el
+ * inventario. En los dos casos el precio viene del catálogo — nunca se
+ * escribe a mano.
+ */
+export type SaleItemOrigin = "quote" | "inventory";
+
+/** Un renglón de "lo que lleva el cliente" mientras se arma la venta. */
+export interface SaleCartItem {
+  /** Clave estable del renglón: el id de la cotización o el del producto. */
+  id: string;
+  origin: SaleItemOrigin;
+  productId: string | null;
+  description: string;
+  unitPriceUsd: number;
+  quantity: number;
 }

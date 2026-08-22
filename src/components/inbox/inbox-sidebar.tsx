@@ -1,16 +1,19 @@
 "use client";
 
 import { useMemo, useState } from "react";
-import { Search } from "lucide-react";
-import type { Agent, Conversation, InboxFilter } from "@/lib/types";
+import { ArrowDownWideNarrow, ArrowUpWideNarrow, Search, Tag as TagIcon } from "lucide-react";
+import type { Agent, Conversation, InboxFilter, InboxSort, Tag } from "@/lib/types";
 import { initials } from "@/lib/dashboard";
+import {
+  applyInboxFilters,
+  filtersForRole,
+  INBOX_FILTER_LABELS,
+  INBOX_SORT_LABELS,
+} from "@/lib/inbox-filters";
 import { ConversationListItem } from "@/components/inbox/conversation-list-item";
+import { BcvRateChip, type BcvRateSummary } from "@/components/inbox/bcv-rate-chip";
+import { FilterScroller } from "@/components/inbox/filter-scroller";
 import { SlidingPills } from "@/components/sliding-pills";
-
-const FILTERS: { value: InboxFilter; label: string }[] = [
-  { value: "all", label: "Todos" },
-  { value: "assigned", label: "Asignados" },
-];
 
 function SectionHeader({ label, count }: { label: string; count: number }) {
   return (
@@ -22,39 +25,75 @@ function SectionHeader({ label, count }: { label: string; count: number }) {
   );
 }
 
+/** Los filtros que separan leídos de no leídos ya vienen partidos: dividirlos otra vez sobraría. */
+const SPLIT_READ_UNREAD: InboxFilter[] = ["assigned", "mine"];
+
 interface InboxSidebarProps {
   conversations: Conversation[];
   selectedId: string | null;
   onSelect: (id: string) => void;
   currentAgent: Agent;
+  /** Todas las etiquetas creadas, para la barra de filtro por etiqueta. */
+  allTags: Tag[];
+  bcvRate: BcvRateSummary | null;
 }
 
-export function InboxSidebar({ conversations, selectedId, onSelect, currentAgent }: InboxSidebarProps) {
+export function InboxSidebar({
+  conversations,
+  selectedId,
+  onSelect,
+  currentAgent,
+  allTags,
+  bcvRate,
+}: InboxSidebarProps) {
+  const availableFilters = useMemo(() => filtersForRole(currentAgent.role), [currentAgent.role]);
+
   const [filter, setFilter] = useState<InboxFilter>("all");
   const [search, setSearch] = useState("");
+  const [sort, setSort] = useState<InboxSort>("recent");
+  const [tagId, setTagId] = useState<string | null>(null);
 
-  const filtered = useMemo(() => {
-    let list = conversations;
-    if (filter === "assigned") list = list.filter((c) => c.assignedAgent !== null);
+  const filterItems = useMemo(
+    () => availableFilters.map((value) => ({ value, label: INBOX_FILTER_LABELS[value] })),
+    [availableFilters]
+  );
 
-    const query = search.trim().toLowerCase();
-    if (query) {
-      list = list.filter((c) => {
-        const name = c.contact.displayName ?? c.contact.profileName ?? "";
-        return (
-          name.toLowerCase().includes(query) || c.contact.phoneNumber.toLowerCase().includes(query)
-        );
-      });
+  const filtered = useMemo(
+    () => applyInboxFilters(conversations, { filter, search, tagId, sort, viewer: currentAgent }),
+    [conversations, filter, search, tagId, sort, currentAgent]
+  );
+
+  // Solo tiene sentido ofrecer las etiquetas que alguien está usando: una
+  // barra con etiquetas que no filtran nada es ruido.
+  const usedTagIds = useMemo(() => {
+    const ids = new Set<string>();
+    for (const conversation of conversations) {
+      for (const tag of conversation.contact.tags) ids.add(tag.id);
     }
+    return ids;
+  }, [conversations]);
 
-    return list;
-  }, [conversations, filter, search]);
+  const visibleTags = useMemo(
+    () => allTags.filter((tag) => usedTagIds.has(tag.id)),
+    [allTags, usedTagIds]
+  );
 
-  // Dentro de "Asignados" se muestran dos secciones con encabezado propio:
-  // no leídos arriba, leídos abajo (cada una conserva el orden de más
-  // reciente a más antiguo).
-  const unreadGroup = filter === "assigned" ? filtered.filter((c) => c.unreadCount > 0) : [];
-  const readGroup = filter === "assigned" ? filtered.filter((c) => c.unreadCount === 0) : [];
+  const isSplit = SPLIT_READ_UNREAD.includes(filter);
+  const unreadGroup = isSplit ? filtered.filter((c) => c.unreadCount > 0) : [];
+  const readGroup = isSplit ? filtered.filter((c) => c.unreadCount === 0) : [];
+
+  function renderItems(list: Conversation[]) {
+    return list.map((conversation) => (
+      <ConversationListItem
+        key={conversation.id}
+        conversation={conversation}
+        isSelected={conversation.id === selectedId}
+        onSelect={() => onSelect(conversation.id)}
+      />
+    ));
+  }
+
+  const nextSort: InboxSort = sort === "recent" ? "oldest" : "recent";
 
   return (
     <>
@@ -69,68 +108,106 @@ export function InboxSidebar({ conversations, selectedId, onSelect, currentAgent
         <span className="crm-inbox-count lm-num">{filtered.length}</span>
       </header>
 
+      {bcvRate && <BcvRateChip rate={bcvRate} />}
+
       <div className="crm-inbox-tools">
-        <div className="crm-search">
-          <Search size={15} aria-hidden="true" />
-          <input
-            className="crm-search-input"
-            type="search"
-            value={search}
-            onChange={(e) => setSearch(e.target.value)}
-            placeholder="Buscar contacto o número"
-            aria-label="Buscar contacto o número"
-          />
+        {/* El orden vive acá y no junto a los filtros: la bandeja mide 316px
+            y esos 38px son la diferencia entre que las cuatro píldoras se
+            vean o queden cortadas. */}
+        <div className="crm-inbox-search-row">
+          <div className="crm-search">
+            <Search size={15} aria-hidden="true" />
+            <input
+              className="crm-search-input"
+              type="search"
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              placeholder="Buscar contacto o número"
+              aria-label="Buscar contacto o número"
+            />
+          </div>
+          <button
+            type="button"
+            className="lm-icon-btn crm-sort-btn"
+            onClick={() => setSort(nextSort)}
+            aria-label={`Ordenar: ${INBOX_SORT_LABELS[nextSort]}`}
+            title={INBOX_SORT_LABELS[sort]}
+          >
+            {sort === "recent" ? <ArrowDownWideNarrow size={16} /> : <ArrowUpWideNarrow size={16} />}
+          </button>
         </div>
 
-        <SlidingPills items={FILTERS} value={filter} onChange={setFilter} ariaLabel="Filtrar conversaciones" />
+        {/* Aun compactadas, cuatro píldoras van al límite del ancho. El
+            scroll queda de red de seguridad y el degradado del borde avisa
+            de que la fila sigue. */}
+        <FilterScroller className="crm-inbox-pills-scroll no-scrollbar">
+          <SlidingPills
+            items={filterItems}
+            value={filter}
+            onChange={setFilter}
+            ariaLabel="Filtrar conversaciones"
+            className="crm-inbox-pills"
+          />
+        </FilterScroller>
+
+        {visibleTags.length > 0 && (
+          <div className="crm-tag-filter" role="group" aria-label="Filtrar por etiqueta">
+            <button
+              type="button"
+              className="crm-tag crm-tag-btn"
+              data-active={tagId === null}
+              onClick={() => setTagId(null)}
+              aria-pressed={tagId === null}
+            >
+              <TagIcon size={11} />
+              Todas
+            </button>
+            {visibleTags.map((tag) => (
+              <button
+                key={tag.id}
+                type="button"
+                className="crm-tag crm-tag-btn"
+                data-color={tag.color}
+                data-active={tagId === tag.id}
+                // Volver a tocar la etiqueta activa quita el filtro: es el
+                // gesto que la gente prueba antes de buscar el botón "Todas".
+                onClick={() => setTagId(tagId === tag.id ? null : tag.id)}
+                aria-pressed={tagId === tag.id}
+              >
+                {tag.label}
+              </button>
+            ))}
+          </div>
+        )}
       </div>
 
       <div className="crm-list">
-        {filter === "assigned" ? (
+        {isSplit ? (
           <>
             {unreadGroup.length > 0 && (
               <>
                 <SectionHeader label="No leídos" count={unreadGroup.length} />
-                {unreadGroup.map((conversation) => (
-                  <ConversationListItem
-                    key={conversation.id}
-                    conversation={conversation}
-                    isSelected={conversation.id === selectedId}
-                    onSelect={() => onSelect(conversation.id)}
-                  />
-                ))}
+                {renderItems(unreadGroup)}
               </>
             )}
             {readGroup.length > 0 && (
               <>
                 <SectionHeader label="Leídos" count={readGroup.length} />
-                {readGroup.map((conversation) => (
-                  <ConversationListItem
-                    key={conversation.id}
-                    conversation={conversation}
-                    isSelected={conversation.id === selectedId}
-                    onSelect={() => onSelect(conversation.id)}
-                  />
-                ))}
+                {renderItems(readGroup)}
               </>
             )}
           </>
         ) : (
-          filtered.map((conversation) => (
-            <ConversationListItem
-              key={conversation.id}
-              conversation={conversation}
-              isSelected={conversation.id === selectedId}
-              onSelect={() => onSelect(conversation.id)}
-            />
-          ))
+          renderItems(filtered)
         )}
 
         {filtered.length === 0 && (
           <p className="crm-empty">
             {search.trim()
               ? "Ningún contacto coincide con esa búsqueda."
-              : "No hay conversaciones en este filtro."}
+              : tagId
+                ? "Ninguna conversación tiene esa etiqueta."
+                : "No hay conversaciones en este filtro."}
           </p>
         )}
       </div>

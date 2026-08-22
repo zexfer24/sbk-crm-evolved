@@ -105,6 +105,8 @@ function buildConversation(): Conversation {
     lastCustomerMessageAt: new Date().toISOString(),
     lastMessageAt: new Date().toISOString(),
     lastMessagePreview: null,
+    lastMessageDirection: null,
+    lastMessageStatus: null,
     createdAt: new Date().toISOString(),
     journeyStage: null,
     intent: null,
@@ -144,6 +146,7 @@ describe("CrmShell — debounce del refresh disparado por realtime", () => {
         initialConversations={[buildConversation()]}
         allTags={allTags}
         initialQuickReplies={initialQuickReplies}
+        bcvRate={null}
       />
     );
     fetchConversationsMock.mockClear(); // descarta cualquier llamada del render inicial
@@ -169,6 +172,7 @@ describe("CrmShell — debounce del refresh disparado por realtime", () => {
         initialConversations={[buildConversation()]}
         allTags={allTags}
         initialQuickReplies={initialQuickReplies}
+        bcvRate={null}
         initialConversationId="conv-1"
       />
     );

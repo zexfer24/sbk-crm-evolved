@@ -39,6 +39,7 @@ function conversation(connected: boolean): AgentConversation {
     contact_id: "contact-1",
     ai_enabled: true,
     assigned_agent_id: null,
+    welcome_sent_at: "2026-08-22T10:00:00Z",
     contact: { phone_number: "+584121112233" },
     channel: { phone_number_id: connected ? "pnid-1" : null, status: connected ? "connected" : "demo" },
   };

@@ -1,5 +1,13 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
-import type { Agent, CedulaType, MessageType, Playbook, TagColor, WhatsappTemplate } from "@/lib/types";
+import type {
+  Agent,
+  CedulaType,
+  MessageType,
+  Playbook,
+  SaleItemOrigin,
+  TagColor,
+  WhatsappTemplate,
+} from "@/lib/types";
 
 async function insertSystemEvent(
   supabase: SupabaseClient,
@@ -164,9 +172,15 @@ export interface ContactSaleDetails {
   paymentProofUrl: string | null;
 }
 
-/** Un renglón de la venta: viene directo de una cotización real de la IA (conversation_quotes), nunca a mano. */
+/**
+ * Un renglón de la venta. El precio viene siempre del catálogo —de la
+ * cotización que la IA le dio al cliente, o del inventario cuando el asesor
+ * lo agrega— nunca de un número escrito a mano.
+ */
 export interface SaleLineItem {
-  quoteId: string;
+  /** Clave del renglón: id de la cotización, o del producto si lo agregó el asesor. */
+  id: string;
+  origin: SaleItemOrigin;
   productId: string | null;
   description: string;
   unitPrice: number;
@@ -183,7 +197,7 @@ export async function closeSaleWithContactInfo(
   bcvRate: number
 ) {
   if (items.length === 0) {
-    throw new Error("Selecciona al menos un producto cotizado para poder cerrar la venta.");
+    throw new Error("Agrega al menos un repuesto para poder cerrar la venta.");
   }
 
   const totalAmount = items.reduce((sum, item) => sum + item.unitPrice * item.quantity, 0);
@@ -233,11 +247,22 @@ export async function closeSaleWithContactInfo(
     .eq("id", conversationId);
   if (conversationError) throw conversationError;
 
+  // El evento deja constancia de cuánto de la venta NO pasó por el chat.
+  // order_items no distingue la procedencia de cada renglón, así que este
+  // es el único rastro de que el asesor agregó algo a mano.
+  const agregados = items.filter((item) => item.origin === "inventory").length;
+  const detalleAgregados =
+    agregados === 0
+      ? ""
+      : agregados === 1
+        ? " (1 repuesto agregado por el asesor)"
+        : ` (${agregados} repuestos agregados por el asesor)`;
+
   await insertSystemEvent(
     supabase,
     conversationId,
     agent.id,
-    `Venta cerrada por ${agent.displayName} — $${totalAmount.toFixed(2)}`
+    `Venta cerrada por ${agent.displayName} — $${totalAmount.toFixed(2)}${detalleAgregados}`
   );
 }
 
@@ -439,5 +464,87 @@ export async function updateModelPricing(
     updated_at: new Date().toISOString(),
     updated_by: agent.id,
   });
+  if (error) throw error;
+}
+
+// ---------------------------------------------------------------------------
+// Clientes
+// ---------------------------------------------------------------------------
+
+/**
+ * Datos de la persona, editables desde la ficha del cliente.
+ *
+ * Son las mismas columnas que llena el cierre de venta; la diferencia es que
+ * acá se corrigen sin tener que cerrar una venta de nuevo. El comprobante de
+ * pago NO está: ese pertenece a la venta, no al perfil.
+ */
+export interface ContactProfileEdit {
+  displayName: string | null;
+  cedulaType: CedulaType | null;
+  cedulaNumber: string | null;
+  state: string | null;
+  city: string | null;
+  address: string | null;
+}
+
+/** Deja el campo en null cuando queda vacío: "" y null significan lo mismo acá, y null es lo que ya guarda el resto del CRM. */
+function orNull(value: string | null): string | null {
+  const text = value?.trim() ?? "";
+  return text ? text : null;
+}
+
+export async function updateContactProfile(
+  supabase: SupabaseClient,
+  contactId: string,
+  edit: ContactProfileEdit
+) {
+  const { error } = await supabase
+    .from("contacts")
+    .update({
+      display_name: orNull(edit.displayName),
+      cedula_type: edit.cedulaType,
+      cedula_number: orNull(edit.cedulaNumber),
+      state: orNull(edit.state),
+      city: orNull(edit.city),
+      address: orNull(edit.address),
+      updated_at: new Date().toISOString(),
+    })
+    .eq("id", contactId);
+
+  if (error) throw error;
+}
+
+// ---------------------------------------------------------------------------
+// Inventario
+//
+// Escriben sobre la misma tabla que lee la herramienta de catálogo del
+// agente: lo que se guarda acá es lo que la IA cotiza en el próximo turno.
+// ---------------------------------------------------------------------------
+
+export async function updateProductStock(supabase: SupabaseClient, productId: string, stockQuantity: number) {
+  const { error } = await supabase
+    .from("products")
+    .update({ stock_quantity: stockQuantity, updated_at: new Date().toISOString() })
+    .eq("id", productId);
+
+  if (error) throw error;
+}
+
+export async function updateProductPrice(supabase: SupabaseClient, productId: string, price: number) {
+  const { error } = await supabase
+    .from("products")
+    .update({ price, updated_at: new Date().toISOString() })
+    .eq("id", productId);
+
+  if (error) throw error;
+}
+
+/** Desactivar un repuesto lo saca del catálogo que ve la IA, sin borrar su historial de ventas. */
+export async function setProductActive(supabase: SupabaseClient, productId: string, isActive: boolean) {
+  const { error } = await supabase
+    .from("products")
+    .update({ is_active: isActive, updated_at: new Date().toISOString() })
+    .eq("id", productId);
+
   if (error) throw error;
 }

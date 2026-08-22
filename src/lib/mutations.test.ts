@@ -64,19 +64,19 @@ const CONTACT_DETAILS = {
   paymentProofUrl: "https://example.com/proof.jpg",
 };
 
-describe("closeSaleWithContactInfo — el monto sale de las cotizaciones seleccionadas", () => {
-  it("rechaza cerrar la venta sin al menos un producto cotizado seleccionado", async () => {
+describe("closeSaleWithContactInfo — el monto sale del catálogo, nunca de un número a mano", () => {
+  it("rechaza cerrar la venta sin un solo renglón", async () => {
     const { client } = createFakeSupabase();
     await expect(
       closeSaleWithContactInfo(client, "conv-1", "contact-1", AGENT, CONTACT_DETAILS, [], 40)
-    ).rejects.toThrow(/al menos un producto/i);
+    ).rejects.toThrow(/al menos un repuesto/i);
   });
 
-  it("crea la orden con el total exacto de las cotizaciones seleccionadas y enlaza la conversación", async () => {
+  it("crea la orden con el total exacto de los renglones y enlaza la conversación", async () => {
     const { client, calls } = createFakeSupabase();
     const items: SaleLineItem[] = [
-      { quoteId: "q-1", productId: "prod-1", description: "Carburador PZ27", unitPrice: 18, quantity: 1 },
-      { quoteId: "q-2", productId: "prod-2", description: "Kit de arrastre", unitPrice: 32.5, quantity: 2 },
+      { id: "q-1", origin: "quote", productId: "prod-1", description: "Carburador PZ27", unitPrice: 18, quantity: 1 },
+      { id: "prod-2", origin: "inventory", productId: "prod-2", description: "Kit de arrastre", unitPrice: 32.5, quantity: 2 },
     ];
 
     await closeSaleWithContactInfo(client, "conv-1", "contact-1", AGENT, CONTACT_DETAILS, items, 40);

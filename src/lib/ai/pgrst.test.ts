@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { pgrstLiteral } from "@/lib/ai/pgrst";
+import { orExpression, pgrstLiteral } from "@/lib/ai/pgrst";
 
 /**
  * El filtro `.or()` de PostgREST es un mini-lenguaje, no una cadena inerte:
@@ -33,5 +33,20 @@ describe("pgrstLiteral", () => {
     expect(literal.startsWith('"')).toBe(true);
     expect(literal.endsWith('"')).toBe(true);
     expect(literal.slice(1, -1)).not.toMatch(/(?<!\\)"/);
+  });
+});
+
+describe("orExpression", () => {
+  it("con un solo grupo devuelve la disyunción tal cual", () => {
+    expect(orExpression([["a.eq.1", "b.eq.2"]])).toBe("a.eq.1,b.eq.2");
+  });
+
+  it("distribuye dos grupos para que el resultado sea (a o b) Y (c o d)", () => {
+    expect(orExpression([["a", "b"], ["c", "d"]])).toBe("and(a,c),and(a,d),and(b,c),and(b,d)");
+  });
+
+  it("descarta los grupos vacíos en vez de dejar la consulta sin filas", () => {
+    expect(orExpression([["a", "b"], []])).toBe("a,b");
+    expect(orExpression([[], []])).toBe("");
   });
 });

@@ -1,6 +1,7 @@
 import type { Conversation } from "@/lib/types";
 import { contactName, initials } from "@/lib/dashboard";
 import { formatConversationTimestamp } from "@/lib/format";
+import { DeliveryCheck } from "@/components/chat/delivery-check";
 
 interface ConversationListItemProps {
   conversation: Conversation;
@@ -11,6 +12,10 @@ interface ConversationListItemProps {
 export function ConversationListItem({ conversation, isSelected, onSelect }: ConversationListItemProps) {
   const name = contactName(conversation);
   const isUnread = conversation.unreadCount > 0;
+  // El check habla de lo que mandamos nosotros. En un mensaje entrante no
+  // hay nada que confirmar: el estado es del emisor, y ahí el emisor es el cliente.
+  const showCheck = conversation.lastMessageDirection === "outbound";
+  const tags = conversation.contact.tags;
 
   return (
     <button className="crm-thread" type="button" onClick={onSelect} aria-current={isSelected}>
@@ -37,14 +42,23 @@ export function ConversationListItem({ conversation, isSelected, onSelect }: Con
           </span>
         </span>
 
-        <span className="crm-thread-row">
+        <span className="crm-thread-row crm-thread-row-preview">
+          {showCheck && <DeliveryCheck status={conversation.lastMessageStatus} size={13} />}
           <span className="crm-thread-preview" data-unread={isUnread}>
             {conversation.lastMessagePreview ?? "Sin mensajes todavía"}
           </span>
-          {isUnread && (
-            <span className="crm-thread-badge lm-num">{conversation.unreadCount}</span>
-          )}
+          {isUnread && <span className="crm-thread-badge lm-num">{conversation.unreadCount}</span>}
         </span>
+
+        {tags.length > 0 && (
+          <span className="crm-thread-tags">
+            {tags.map((tag) => (
+              <span className="crm-tag" data-color={tag.color} key={tag.id}>
+                {tag.label}
+              </span>
+            ))}
+          </span>
+        )}
 
         {conversation.assignedAgent && (
           <span className="crm-thread-agent">{conversation.assignedAgent.displayName}</span>

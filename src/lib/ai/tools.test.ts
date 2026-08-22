@@ -90,6 +90,42 @@ describe("buildCatalogTool — registro de cotizaciones", () => {
     });
   });
 
+  /**
+   * El precio le llega al modelo ya escrito, y los números crudos NO viajan.
+   * Si viajaran, el modelo podría reconvertirlos, redondearlos o "arreglar"
+   * el formato — que es exactamente donde alucina. Sin el número, no hay
+   * aritmética posible: solo copiar.
+   */
+  it("le entrega al modelo el precio ya escrito, sin los números crudos", async () => {
+    const { client } = createFakeSupabase([
+      {
+        id: "prod-1",
+        name: "Carburador PZ27",
+        brand: "Genérico",
+        price: 18.5,
+        currency: "USD",
+        stock_quantity: 12,
+        product_compatibility: [],
+      },
+    ]);
+
+    const tool = buildCatalogTool({
+      // @ts-expect-error -- fake mínimo
+      supabase: client,
+      conversationId: "conv-1",
+      contactId: "contact-1",
+    });
+
+    // @ts-expect-error -- la firma real de `execute` de `ai` es más genérica
+    const result = (await tool.execute({ query: "carburador" }, { toolCallId: "t1", messages: [] })) as {
+      results: Record<string, unknown>[];
+    };
+
+    expect(result.results[0].precio).toBe("$18,50 (Bs. 740,00)");
+    expect(result.results[0]).not.toHaveProperty("precioUsd");
+    expect(result.results[0]).not.toHaveProperty("precioBs");
+  });
+
   it("no inserta nada en conversation_quotes si la búsqueda no encontró resultados", async () => {
     const { client, insertedQuotes } = createFakeSupabase([]);
     const tool = buildCatalogTool({
@@ -138,9 +174,11 @@ describe("buildCatalogTool — tope de resultados", () => {
       hayMas?: boolean;
     };
 
-    // Se piden 11 —uno de más— para saber si quedó algo fuera sin contar el
-    // catálogo entero, pero al modelo solo le llegan 10.
-    expect(getAppliedLimit()).toBe(11);
+    // Se pide una ventana más ancha que el tope porque los términos se unen
+    // con OR y la consulta trae de más: primero se ordena por cuántos
+    // términos calzan y recién ahí se recorta, para que el recorte no se
+    // lleve justo el repuesto que el cliente buscaba. Al modelo le llegan 10.
+    expect(getAppliedLimit()).toBe(31);
     expect(result.results.length).toBe(10);
   });
 

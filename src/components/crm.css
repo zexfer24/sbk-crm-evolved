@@ -241,6 +241,33 @@
   gap: 8px;
 }
 
+/* El check y el contador no deben estirarse: la preview se queda con el resto. */
+.crm-thread-row-preview {
+  align-items: flex-start;
+  gap: 5px;
+}
+
+.crm-thread-row-preview .crm-thread-preview {
+  flex: 1;
+}
+
+.crm-thread-row-preview .crm-check {
+  margin-top: 3px;
+}
+
+/* Las etiquetas del contacto, para reconocer el hilo sin abrirlo. */
+.crm-thread-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-top: 5px;
+}
+
+.crm-thread-tags .crm-tag {
+  padding: 2px 7px;
+  font-size: 10.5px;
+}
+
 .crm-thread-name {
   overflow: hidden;
   font-size: 13.5px;
@@ -259,13 +286,19 @@
   font-size: 11.5px;
 }
 
+/* Dos renglones en vez de uno: con uno solo, la mayoría de los mensajes se
+   cortaban antes de decir de qué iban. El recorte lo hace -webkit-line-clamp,
+   que es lo único que corta por líneas con puntos suspensivos. */
 .crm-thread-preview {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
   overflow: hidden;
   margin-top: 2px;
   color: var(--lm-muted);
   font-size: 12px;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  line-height: 1.4;
 }
 
 .crm-thread-preview[data-unread="true"] {
@@ -1305,4 +1338,335 @@
   .crm-pill {
     transition: none;
   }
+}
+
+/* --------------------------------------------------------------------------
+   Estado de entrega (el doble check de WhatsApp)
+
+   Mismo código de colores que el teléfono: gris mientras el mensaje viaja,
+   azul cuando el cliente lo abrió, rojo si nunca llegó. El color no decora,
+   es el dato.
+   -------------------------------------------------------------------------- */
+.crm-check {
+  display: inline-flex;
+  flex-shrink: 0;
+  align-items: center;
+  color: var(--lm-muted);
+}
+
+.crm-check[data-status="read"] {
+  color: var(--lm-link);
+}
+
+.crm-check[data-status="failed"] {
+  color: var(--lm-hot-ink);
+}
+
+/* Pie de la burbuja: hora y check en la misma línea. */
+.crm-msg-foot {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+/* --------------------------------------------------------------------------
+   Filtros de la bandeja
+   -------------------------------------------------------------------------- */
+/* El buscador comparte fila con el botón de orden: así la fila de filtros se
+   queda con el ancho completo de la bandeja. */
+.crm-inbox-search-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.crm-inbox-search-row .crm-search {
+  min-width: 0;
+  flex: 1;
+}
+
+.crm-sort-btn {
+  width: 32px;
+  height: 32px;
+}
+
+/* Carril de los filtros. El degradado del borde derecho es la única pista de
+   que la fila sigue: sin él, la cuarta píldora simplemente no existe para
+   quien mira. Se apaga al llegar al final. */
+.crm-inbox-pills-scroll {
+  position: relative;
+  min-width: 0;
+  overflow-x: auto;
+  overscroll-behavior-x: contain;
+  -webkit-mask-image: linear-gradient(to right, #000 calc(100% - 24px), transparent 100%);
+  mask-image: linear-gradient(to right, #000 calc(100% - 24px), transparent 100%);
+}
+
+/* scrollend todavía no está en todos los navegadores; animation-timeline sí
+   resolvería esto, pero mientras tanto la máscara fija es preferible a que la
+   píldora del borde se vea cortada en seco. */
+@supports not (mask-image: linear-gradient(to right, #000, transparent)) {
+  .crm-inbox-pills-scroll {
+    -webkit-mask-image: none;
+    mask-image: none;
+  }
+}
+
+/* En la bandeja las píldoras van más apretadas que en el resto de la app:
+   son cuatro y el panel mide 316px. */
+.crm-inbox-pills .lm-pill {
+  padding: 6px 11px;
+  font-size: 12px;
+}
+
+/* Barra de etiquetas: cada una filtra la bandeja al tocarla. */
+.crm-tag-filter {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+}
+
+.crm-tag-btn {
+  border: 1px solid transparent;
+  cursor: pointer;
+  transition: border-color 150ms ease, opacity 150ms ease;
+}
+
+.crm-tag-btn:hover {
+  opacity: 0.85;
+}
+
+/* La etiqueta activa se marca con su propio color, no con un fondo ajeno:
+   así se sigue leyendo de qué etiqueta se trata mientras filtra. */
+.crm-tag-btn[data-active="true"] {
+  border-color: currentColor;
+  font-weight: 600;
+}
+
+.crm-tag-btn:focus-visible {
+  outline: 2px solid var(--lm-link);
+  outline-offset: 2px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .crm-tag-btn {
+    transition: none;
+  }
+}
+
+/* --------------------------------------------------------------------------
+   Tasa del BCV del día
+   -------------------------------------------------------------------------- */
+.crm-bcv {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 0 18px 10px;
+  padding: 7px 12px;
+  border-radius: 999px;
+  background: var(--lm-sunken);
+  color: var(--lm-ink-soft);
+  font-size: 12px;
+}
+
+.crm-bcv-label {
+  font-weight: 600;
+  letter-spacing: 0.04em;
+}
+
+.crm-bcv-rate {
+  color: var(--lm-ink);
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.crm-bcv-unit {
+  color: var(--lm-muted);
+  font-size: 11px;
+}
+
+.crm-bcv-date {
+  margin-left: auto;
+  color: var(--lm-muted);
+  font-size: 11px;
+}
+
+/* Sin conexión con el BCV se muestra la última guardada: se avisa, no se oculta. */
+.crm-bcv[data-stale="true"] {
+  background: rgba(231, 154, 36, 0.14);
+  color: var(--lm-wait-ink);
+}
+
+.crm-bcv[data-stale="true"] .crm-bcv-rate {
+  color: var(--lm-wait-ink);
+}
+
+/* --------------------------------------------------------------------------
+   Cierre de venta: lo que lleva el cliente
+   El asesor arma la lista (agrega, quita, ajusta cantidades) tomando lo que
+   la IA cotizó en el chat y lo que haga falta del inventario.
+   -------------------------------------------------------------------------- */
+
+.crm-cart-main {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  flex: 1;
+  min-width: 0;
+}
+
+.crm-cart-origin {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 10.5px;
+  color: var(--lm-muted);
+}
+
+.crm-cart-qty-input {
+  width: 38px;
+  padding: 2px 4px;
+  border: 1px solid var(--lm-border, var(--lm-muted));
+  border-radius: 6px;
+  background: transparent;
+  color: inherit;
+  font-size: 12.5px;
+  text-align: center;
+}
+
+.crm-cart-qty-input:focus {
+  outline: none;
+  border-color: var(--lm-link, var(--lm-accent));
+}
+
+.crm-cart-subtotal {
+  min-width: 62px;
+  text-align: right;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.crm-cart-remove {
+  display: grid;
+  place-items: center;
+  padding: 3px;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--lm-muted);
+  cursor: pointer;
+}
+
+.crm-cart-remove:hover {
+  color: var(--lm-hot-ink, var(--lm-danger, inherit));
+}
+
+.crm-cart-section {
+  margin-top: 6px;
+}
+
+.crm-cart-suggestions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.crm-cart-suggestion {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 9px;
+  border: 1px dashed var(--lm-border, var(--lm-muted));
+  border-radius: 999px;
+  background: transparent;
+  color: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.crm-cart-suggestion:hover {
+  border-style: solid;
+  border-color: var(--lm-link, var(--lm-accent));
+}
+
+.crm-cart-search {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  border: 1px solid var(--lm-border, var(--lm-muted));
+  border-radius: 9px;
+  color: var(--lm-muted);
+}
+
+.crm-cart-search:focus-within {
+  border-color: var(--lm-link, var(--lm-accent));
+}
+
+.crm-cart-search input {
+  flex: 1;
+  min-width: 0;
+  border: none;
+  outline: none;
+  background: transparent;
+  color: var(--lm-ink, inherit);
+  font-size: 13px;
+}
+
+.crm-cart-search input::-webkit-search-cancel-button {
+  display: none;
+}
+
+.crm-cart-results {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  border: 1px solid var(--lm-border, var(--lm-muted));
+  border-radius: 10px;
+  padding: 6px;
+}
+
+.crm-cart-result {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 8px;
+  border: none;
+  border-radius: 7px;
+  background: transparent;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.crm-cart-result:hover:not(:disabled) {
+  background: var(--lm-sunken, rgba(127, 127, 127, 0.08));
+}
+
+.crm-cart-result:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.crm-cart-result-main {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  flex: 1;
+  min-width: 0;
+}
+
+.crm-cart-result-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  font-size: 10.5px;
+  color: var(--lm-muted);
+}
+
+/* Un repuesto agotado se puede vender igual (puede haber existencia física
+   sin cargar), pero el asesor tiene que verlo. */
+.crm-cart-result-meta span[data-empty="true"] {
+  color: var(--lm-hot-ink, var(--lm-muted));
+  font-weight: 600;
 }

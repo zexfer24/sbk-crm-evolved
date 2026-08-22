@@ -60,6 +60,8 @@ function buildConversation(): Conversation {
     lastCustomerMessageAt: new Date().toISOString(),
     lastMessageAt: new Date().toISOString(),
     lastMessagePreview: null,
+    lastMessageDirection: null,
+    lastMessageStatus: null,
     createdAt: new Date().toISOString(),
     journeyStage: null,
     intent: null,

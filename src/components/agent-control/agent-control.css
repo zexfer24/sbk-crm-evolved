@@ -734,3 +734,93 @@
     transition: none;
   }
 }
+
+/* --------------------------------------------------------------------------
+   Métricas por agente
+   Rejilla de celdas compactas: el número de hoy grande, el del período al
+   lado en gris. La idea es leer la fila de un vistazo, no estudiarla.
+   -------------------------------------------------------------------------- */
+.ac-metrics {
+  display: grid;
+  /* Una métrica por fila dentro de la tarjeta: son angostas, y forzar dos
+     columnas parte los textos. */
+  grid-template-columns: 1fr;
+  gap: 6px;
+  padding-top: 10px;
+  border-top: 1px solid var(--lm-line);
+}
+
+.ac-metric {
+  display: grid;
+  /* Cuatro columnas para cuatro piezas: ícono, número de hoy, etiqueta y
+     acumulado. Con tres, el acumulado se iba a una segunda fila. */
+  grid-template-columns: auto auto 1fr auto;
+  align-items: baseline;
+  gap: 4px;
+  padding: 6px 8px;
+  border-radius: 10px;
+  background: var(--lm-bg, var(--lm-sunken));
+}
+
+/* La celda del tiempo de respuesta ocupa la fila entera: es la que se mira
+   primero y la que más varía de ancho. */
+.ac-metric[data-wide="true"] {
+  grid-column: 1 / -1;
+}
+
+.ac-metric-icon {
+  display: inline-flex;
+  align-items: center;
+  color: var(--lm-muted);
+  align-self: center;
+}
+
+.ac-metric-value {
+  color: var(--lm-ink);
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.ac-metric-label {
+  color: var(--lm-muted);
+  font-size: 10.5px;
+}
+
+/* El acumulado del período: presente pero en segundo plano. */
+.ac-metric-period {
+  justify-self: end;
+  color: var(--lm-muted);
+  font-size: 10.5px;
+  white-space: nowrap;
+}
+
+.ac-metric-empty {
+  grid-column: 2 / -1;
+  font-style: italic;
+}
+
+/* El color solo entra cuando dice algo: verde si vendió hoy, ámbar u hot si
+   el tiempo de respuesta se fue. En reposo todo queda neutro. */
+.ac-metric[data-tone="good"] .ac-metric-value {
+  color: var(--lm-good-ink);
+}
+
+.ac-metric[data-tone="wait"] .ac-metric-value {
+  color: var(--lm-wait-ink);
+}
+
+.ac-metric[data-tone="hot"] .ac-metric-value {
+  color: var(--lm-hot-ink);
+}
+
+.ac-metric[data-tone="good"] .ac-metric-icon {
+  color: var(--lm-good-ink);
+}
+
+.ac-metric[data-tone="wait"] .ac-metric-icon {
+  color: var(--lm-wait-ink);
+}
+
+.ac-metric[data-tone="hot"] .ac-metric-icon {
+  color: var(--lm-hot-ink);
+}

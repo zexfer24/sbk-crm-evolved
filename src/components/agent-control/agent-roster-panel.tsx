@@ -1,16 +1,22 @@
 "use client";
 
+import { useMemo } from "react";
 import Link from "next/link";
 import { MailWarning, MessageSquare } from "lucide-react";
-import type { Agent, Conversation } from "@/lib/types";
+import type { Agent, AgentMetrics, Conversation } from "@/lib/types";
 import { contactName, initials } from "@/lib/dashboard";
+import { AgentMetricsRow } from "@/components/agent-control/agent-metrics-row";
 
 interface AgentsRosterPanelProps {
   agents: Agent[];
   conversations: Conversation[];
+  metrics: AgentMetrics[];
   togglingAgentId: string | null;
   onToggleActive: (agent: Agent) => void;
 }
+
+/** Asesores primero: son los que se revisan a diario para repartir carga. */
+const ROLE_ORDER: Record<Agent["role"], number> = { agent: 0, supervisor: 1, admin: 2 };
 
 const ROLE_LABEL: Record<Agent["role"], string> = {
   agent: "Asesor",
@@ -18,8 +24,21 @@ const ROLE_LABEL: Record<Agent["role"], string> = {
   admin: "Administrador",
 };
 
-export function AgentsRosterPanel({ agents, conversations, togglingAgentId, onToggleActive }: AgentsRosterPanelProps) {
+export function AgentsRosterPanel({
+  agents,
+  conversations,
+  metrics,
+  togglingAgentId,
+  onToggleActive,
+}: AgentsRosterPanelProps) {
   const activeCount = agents.filter((a) => a.isActive).length;
+  const metricsByAgent = useMemo(() => new Map(metrics.map((m) => [m.agentId, m])), [metrics]);
+
+  // Asesores primero: son los que se miran a diario para repartir carga.
+  const ordered = useMemo(
+    () => [...agents].sort((a, b) => ROLE_ORDER[a.role] - ROLE_ORDER[b.role] || a.displayName.localeCompare(b.displayName)),
+    [agents]
+  );
 
   return (
     <section className="dash-panel">
@@ -37,7 +56,7 @@ export function AgentsRosterPanel({ agents, conversations, togglingAgentId, onTo
         </div>
       ) : (
         <div className="ac-roster">
-          {agents.map((agent) => {
+          {ordered.map((agent) => {
             const assigned = conversations.filter(
               (c) => c.assignedAgent?.id === agent.id && c.status !== "closed"
             );
@@ -84,6 +103,8 @@ export function AgentsRosterPanel({ agents, conversations, togglingAgentId, onTo
                     {unanswered.length} sin responder
                   </span>
                 </div>
+
+                <AgentMetricsRow metrics={metricsByAgent.get(agent.id)} role={agent.role} />
 
                 {assigned.length > 0 && (
                   <div className="ac-agent-card-chats">

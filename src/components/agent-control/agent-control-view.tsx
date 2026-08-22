@@ -1,13 +1,12 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import Link from "next/link";
-import { useRouter } from "next/navigation";
-import { Bot, Inbox, LogOut, Receipt, Route, ShieldAlert, Users, Zap } from "lucide-react";
+import { Bot, ShieldAlert, Users, Zap } from "lucide-react";
 import type {
   Agent,
   AgentIntent,
   AgentSettings,
+  AgentMetrics,
   AgentSuggestion,
   AgentTurn,
   AgentTurnAction,
@@ -23,6 +22,7 @@ import {
   fetchAgentSettings,
   fetchAgentSuggestions,
   fetchAgentTurns,
+  fetchAgentMetrics,
   fetchAllAgents,
   fetchConversations,
   fetchModelPricing,
@@ -45,6 +45,7 @@ import { formatTime12h } from "@/lib/format";
 import { AgentsRosterPanel } from "@/components/agent-control/agent-roster-panel";
 import { PlaybooksPanel } from "@/components/agent-control/playbooks-panel";
 import { SlidingPills } from "@/components/sliding-pills";
+import { AppRail, AppTopNav } from "@/components/app-rail";
 import { SpendCapPanel } from "@/components/agent-control/spend-cap-panel";
 import { TokenUsageChart } from "@/components/agent-control/token-usage-chart";
 // crm.css trae .crm-pill, que esta vista usa para los botones de acción de
@@ -63,6 +64,7 @@ interface AgentControlViewProps {
   initialTokenUsage: TokenUsageSummary;
   initialPricing: ModelPricing[];
   initialSuggestions: AgentSuggestion[];
+  initialAgentMetrics: AgentMetrics[];
   initialPlaybooks: Playbook[];
   initialUnmatchedTurns: AgentTurn[];
   initialQuickReplies: QuickReply[];
@@ -110,12 +112,12 @@ export function AgentControlView({
   initialTokenUsage,
   initialPricing,
   initialSuggestions,
+  initialAgentMetrics,
   initialPlaybooks,
   initialUnmatchedTurns,
   initialQuickReplies,
   modelLabel,
 }: AgentControlViewProps) {
-  const router = useRouter();
   const supabase = useMemo(() => createClient(), []);
 
   const [tab, setTab] = useState<AgentControlTab>("ia");
@@ -126,6 +128,7 @@ export function AgentControlView({
   const [tokenUsage, setTokenUsage] = useState(initialTokenUsage);
   const [pricing, setPricing] = useState(initialPricing);
   const [suggestions, setSuggestions] = useState(initialSuggestions);
+  const [agentMetrics, setAgentMetrics] = useState(initialAgentMetrics);
   const [playbooks, setPlaybooks] = useState(initialPlaybooks);
   const [unmatchedTurns, setUnmatchedTurns] = useState(initialUnmatchedTurns);
   const [togglingKillSwitch, setTogglingKillSwitch] = useState(false);
@@ -153,6 +156,7 @@ export function AgentControlView({
         nextPricing,
         nextSuggestions,
         nextPlaybooks,
+        nextAgentMetrics,
         nextUnmatched,
       ] = await Promise.all([
         fetchConversations(supabase),
@@ -163,6 +167,7 @@ export function AgentControlView({
         fetchModelPricing(supabase),
         fetchAgentSuggestions(supabase),
         fetchPlaybooks(supabase),
+        fetchAgentMetrics(supabase),
         fetchUnmatchedTurns(supabase),
       ]);
       setConversations(nextConversations);
@@ -173,6 +178,7 @@ export function AgentControlView({
       setPricing(nextPricing);
       setSuggestions(nextSuggestions);
       setPlaybooks(nextPlaybooks);
+      setAgentMetrics(nextAgentMetrics);
       setUnmatchedTurns(nextUnmatched);
     } catch {
       // El siguiente cambio en tiempo real reintentará la sincronización.
@@ -293,11 +299,6 @@ export function AgentControlView({
     }
   }
 
-  async function signOut() {
-    await supabase.auth.signOut();
-    router.push("/login");
-  }
-
   async function savePricing(model: string, inputPricePerMillion: number, outputPricePerMillion: number) {
     await updateModelPricing(supabase, model, inputPricePerMillion, outputPricePerMillion, currentAgent);
     await refresh();
@@ -328,24 +329,7 @@ export function AgentControlView({
   return (
     <div className="dash">
       <div className="dash-frame">
-        <nav className="dash-rail" aria-label="Secciones">
-          <Link className="dash-rail-btn" href="/" aria-label="Recorrido">
-            <Route size={17} />
-          </Link>
-          <Link className="dash-rail-btn" href="/inbox" aria-label="Bandeja">
-            <Inbox size={17} />
-          </Link>
-          <Link className="dash-rail-btn" href="/ventas" aria-label="Ventas">
-            <Receipt size={17} />
-          </Link>
-          <Link className="dash-rail-btn" href="/agent-control" data-active="true" aria-label="Control de IA">
-            <Bot size={17} />
-          </Link>
-          <span className="dash-rail-spacer" />
-          <button className="dash-rail-btn" type="button" onClick={signOut} aria-label="Cerrar sesión">
-            <LogOut size={17} />
-          </button>
-        </nav>
+        <AppRail active="control" />
 
         <main className="dash-main">
           <div className="dash-content">
@@ -357,20 +341,7 @@ export function AgentControlView({
                 <span className="dash-brand-name">Liminal</span>
               </p>
 
-              <nav className="dash-nav" aria-label="Navegación principal">
-                <Link className="dash-nav-link" href="/">
-                  Recorrido
-                </Link>
-                <Link className="dash-nav-link" href="/inbox">
-                  Bandeja
-                </Link>
-                <Link className="dash-nav-link" href="/ventas">
-                  Ventas
-                </Link>
-                <Link className="dash-nav-link" href="/agent-control" aria-current="page">
-                  Control IA
-                </Link>
-              </nav>
+              <AppTopNav active="control" />
 
               <div className="dash-topbar-actions">
                 <span className="dash-icon-btn dash-icon-static" title={currentAgent.displayName}>
@@ -393,7 +364,7 @@ export function AgentControlView({
                     ? "Interruptor general, qué está haciendo la IA ahora mismo, y un simulador para probarla sin necesidad de WhatsApp real."
                     : tab === "respuestas"
                       ? "Los casos que la IA ya sabe resolver con un texto tuyo, y los mensajes de clientes que todavía no calzan con ninguno."
-                      : "Cuántos asesores hay en la operación, quién está disponible para que la IA le pase conversaciones, y su carga actual."}
+                      : "Quién está disponible para que la IA le pase conversaciones, cuánta carga lleva encima y cómo viene rindiendo: hoy y en los últimos 30 días."}
                 </p>
               </div>
             </div>
@@ -693,6 +664,7 @@ export function AgentControlView({
               <AgentsRosterPanel
                 agents={agents}
                 conversations={conversations}
+                metrics={agentMetrics}
                 togglingAgentId={togglingAgentId}
                 onToggleActive={toggleAgentActive}
               />

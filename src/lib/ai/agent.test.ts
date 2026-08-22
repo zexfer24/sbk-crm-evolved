@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { Playbook } from "@/lib/types";
+import type { Intent } from "@/lib/ai/classify";
 
 // ---------------------------------------------------------------------------
 // Fake de Supabase acotado a lo que el orquestador realmente consulta.
@@ -108,8 +109,15 @@ vi.mock("@/lib/ai/send", () => ({
   sendAgentText: (...args: unknown[]) => sendAgentTextMock(...args),
 }));
 
-const classifyIntentMock = vi.fn(async () => ({
-  intent: "consulta_disponibilidad" as const,
+interface FakeUsage {
+  inputTokens: number;
+  outputTokens: number;
+  totalTokens: number;
+  inputTokenDetails?: { noCacheTokens: number; cacheReadTokens: number; cacheWriteTokens: number };
+}
+
+const classifyIntentMock = vi.fn<() => Promise<{ intent: Intent; usage: FakeUsage }>>(async () => ({
+  intent: "consulta_disponibilidad",
   usage: { inputTokens: 5, outputTokens: 1, totalTokens: 6 },
 }));
 vi.mock("@/lib/ai/classify", () => ({ classifyIntent: () => classifyIntentMock() }));
@@ -120,13 +128,18 @@ vi.mock("@/lib/ai/escalate", () => ({
   RECLAMO_CATEGORIES: ["Envío", "Pago", "Producto", "Atención", "Garantía"],
 }));
 
-const generateMock = vi.fn(async () => ({
+const generateMock = vi.fn<() => Promise<{ text: string; usage: FakeUsage }>>(async () => ({
   text: "respuesta redactada por el modelo",
   usage: { inputTokens: 20, outputTokens: 8, totalTokens: 28 },
 }));
+/** Opciones con las que se construyó el ToolLoopAgent: es donde viajan las instrucciones. */
+const agentOptions: { instructions: string; tools: Record<string, unknown> }[] = [];
 vi.mock("ai", async (importOriginal) => ({
   ...(await importOriginal<typeof import("ai")>()),
   ToolLoopAgent: class {
+    constructor(options: { instructions: string; tools: Record<string, unknown> }) {
+      agentOptions.push(options);
+    }
     generate = generateMock;
   },
 }));
@@ -143,6 +156,7 @@ vi.mock("@/lib/ai/tools", () => ({
 }));
 
 import { runAgentTurn } from "@/lib/ai/agent";
+import { OFF_TOPIC_REPLY, SYSTEM_PROMPT } from "@/lib/ai/prompt";
 
 function playbook(overrides: Partial<Playbook> = {}): Playbook {
   return {
@@ -168,6 +182,7 @@ beforeEach(() => {
     contact_id: "contact-1",
     ai_enabled: true,
     assigned_agent_id: null,
+    welcome_sent_at: "2026-08-22T10:00:00Z",
     contact: { phone_number: "+584121112233" },
     channel: { phone_number_id: null, status: "demo" },
   };
@@ -175,6 +190,7 @@ beforeEach(() => {
   state.historyOrderAscending = null;
   conversationUpdates.length = 0;
   agentTurnInserts.length = 0;
+  agentOptions.length = 0;
   vi.clearAllMocks();
   fetchActivePlaybooksMock.mockResolvedValue([]);
   matchPlaybookMock.mockResolvedValue({ playbook: null, usage: NO_USAGE });
@@ -329,5 +345,109 @@ describe("runAgentTurn — escenarios predeterminados", () => {
 
     expect(matchPlaybookMock).not.toHaveBeenCalled();
     expect(sendPlaybookReplyMock).not.toHaveBeenCalled();
+  });
+});
+
+describe("runAgentTurn — mensajes fuera de tema", () => {
+  /**
+   * Antes esto caía en "otro", que arranca el tool loop: el turno más caro
+   * que existe, gastado en alguien que no es un cliente. Ahora termina en la
+   * clasificación y el texto sale de una constante, sin costo de salida.
+   */
+  it("responde con el texto fijo y no llama al modelo redactor", async () => {
+    classifyIntentMock.mockResolvedValue({
+      intent: "fuera_de_tema",
+      usage: { inputTokens: 5, outputTokens: 1, totalTokens: 6 },
+    });
+
+    await runAgentTurn("conv-1");
+
+    expect(generateMock).not.toHaveBeenCalled();
+    expect(sendAgentTextMock).toHaveBeenCalledTimes(1);
+    expect(sendAgentTextMock.mock.calls[0][2]).toBe(OFF_TOPIC_REPLY);
+    expect(agentTurnInserts[0]).toMatchObject({ intent: "fuera_de_tema", action: "answered" });
+  });
+
+  /**
+   * Si alguien insiste, repetir la misma línea es un ping-pong que puede
+   * durar indefinidamente — y del otro lado bien puede haber otro bot. Se
+   * contesta una vez; a la segunda se calla, pero el turno igual queda en la
+   * bitácora para que se vea en el panel.
+   */
+  it("no vuelve a contestar si su última respuesta ya fue la redirección", async () => {
+    classifyIntentMock.mockResolvedValue({
+      intent: "fuera_de_tema",
+      usage: { inputTokens: 5, outputTokens: 1, totalTokens: 6 },
+    });
+    // Del más nuevo al más viejo, como los devuelve la consulta.
+    state.history = [
+      { sender_type: "customer", content: "dale va, ayúdame igual", is_internal_note: false },
+      { sender_type: "ai", content: OFF_TOPIC_REPLY, is_internal_note: false },
+      { sender_type: "customer", content: "escríbeme un poema", is_internal_note: false },
+    ];
+
+    await runAgentTurn("conv-1");
+
+    expect(sendAgentTextMock).not.toHaveBeenCalled();
+    expect(generateMock).not.toHaveBeenCalled();
+    expect(agentTurnInserts).toHaveLength(1);
+  });
+});
+
+describe("runAgentTurn — instrucciones que recibe el modelo", () => {
+  it("le pasa el bloque estático como prefijo exacto, para que el caché lo reconozca", async () => {
+    await runAgentTurn("conv-1");
+
+    expect(agentOptions).toHaveLength(1);
+    expect(agentOptions[0].instructions.startsWith(SYSTEM_PROMPT)).toBe(true);
+  });
+
+  /**
+   * La plantilla de bienvenida solo sale si WHATSAPP_WELCOME_TEMPLATE está
+   * configurada. Sin ella `welcome_sent_at` queda en null y no saluda nadie:
+   * el cliente recibiría su primera respuesta en seco.
+   */
+  it("manda saludar cuando la conversación nunca recibió bienvenida", async () => {
+    state.conversation = { ...state.conversation, welcome_sent_at: null };
+
+    await runAgentTurn("conv-1");
+
+    expect(agentOptions[0].instructions.slice(SYSTEM_PROMPT.length)).toMatch(/saluda/i);
+  });
+
+  it("no manda saludar si la bienvenida ya salió", async () => {
+    await runAgentTurn("conv-1");
+
+    expect(agentOptions[0].instructions.slice(SYSTEM_PROMPT.length)).not.toMatch(/saluda/i);
+  });
+});
+
+describe("runAgentTurn — tokens cacheados", () => {
+  /**
+   * La entrada cacheada se factura mucho más barata que la normal. Sin
+   * guardarla, el panel de costos cobra todo a precio completo y no hay
+   * forma de saber si el prompt está cacheando de verdad o si alguien lo
+   * rompió al editarlo.
+   */
+  it("registra cuántos tokens de entrada vinieron del caché", async () => {
+    generateMock.mockResolvedValue({
+      text: "respuesta redactada por el modelo",
+      usage: {
+        inputTokens: 2000,
+        outputTokens: 8,
+        totalTokens: 2008,
+        inputTokenDetails: { noCacheTokens: 400, cacheReadTokens: 1600, cacheWriteTokens: 0 },
+      },
+    });
+
+    await runAgentTurn("conv-1");
+
+    expect(agentTurnInserts[0]).toMatchObject({ cached_input_tokens: 1600 });
+  });
+
+  it("guarda cero cuando el proveedor no informa caché", async () => {
+    await runAgentTurn("conv-1");
+
+    expect(agentTurnInserts[0]).toMatchObject({ cached_input_tokens: 0 });
   });
 });

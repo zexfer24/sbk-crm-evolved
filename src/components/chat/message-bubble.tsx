@@ -3,6 +3,7 @@ import { AudioLines, Bot, Download, FileText, ImageOff, Lock, RefreshCw, Reply a
 import type { Message } from "@/lib/types";
 import { formatMessageTime } from "@/lib/format";
 import { MediaThumb } from "@/components/chat/media-lightbox";
+import { DeliveryCheck } from "@/components/chat/delivery-check";
 import { FormattedText } from "@/components/chat/formatted-text";
 
 // MediaError.MEDIA_ERR_SRC_NOT_SUPPORTED no siempre está disponible como
@@ -230,7 +231,10 @@ export function MessageBubble({ message, repliedMessage, onReply }: MessageBubbl
           </button>
         )}
       </div>
-      <span className="px-1 text-[11px] text-muted">{formatMessageTime(message.createdAt)}</span>
+      <span className="crm-msg-foot px-1 text-[11px] text-muted">
+        {formatMessageTime(message.createdAt)}
+        {!isCustomer && !isInternalNote && <DeliveryCheck status={message.whatsappStatus} size={13} />}
+      </span>
     </div>
   );
 }

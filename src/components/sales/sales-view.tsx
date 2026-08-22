@@ -1,20 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useState } from "react";
-import Link from "next/link";
-import { useRouter } from "next/navigation";
-import {
-  Bot,
-  CheckCheck,
-  Eye,
-  Inbox,
-  LogOut,
-  Receipt,
-  RotateCcw,
-  Route,
-  ShieldCheck,
-  Trash2,
-} from "lucide-react";
+import { CheckCheck, Eye, Receipt, RotateCcw, ShieldCheck, Trash2 } from "lucide-react";
 import type { Agent, Conversation } from "@/lib/types";
 import { createClient } from "@/lib/supabase/client";
 import { fetchConversations } from "@/lib/data";
@@ -22,6 +9,7 @@ import { deleteSale, returnSale, verifySale } from "@/lib/mutations";
 import { contactName, initials } from "@/lib/dashboard";
 import { formatFullDateTime } from "@/lib/format";
 import { SaleDetailModal } from "@/components/sales/sale-detail-modal";
+import { AppRail, AppTopNav } from "@/components/app-rail";
 import "@/components/dashboard/dashboard.css";
 import "@/components/agent-control/agent-control.css";
 import "@/components/crm.css";
@@ -33,7 +21,6 @@ interface SalesViewProps {
 }
 
 export function SalesView({ currentAgent, initialConversations }: SalesViewProps) {
-  const router = useRouter();
   const supabase = useMemo(() => createClient(), []);
 
   const [conversations, setConversations] = useState(initialConversations);
@@ -109,32 +96,10 @@ export function SalesView({ currentAgent, initialConversations }: SalesViewProps
     }
   }
 
-  async function signOut() {
-    await supabase.auth.signOut();
-    router.push("/login");
-  }
-
   return (
     <div className="dash">
       <div className="dash-frame">
-        <nav className="dash-rail" aria-label="Secciones">
-          <Link className="dash-rail-btn" href="/" aria-label="Recorrido">
-            <Route size={17} />
-          </Link>
-          <Link className="dash-rail-btn" href="/inbox" aria-label="Bandeja">
-            <Inbox size={17} />
-          </Link>
-          <Link className="dash-rail-btn" href="/ventas" data-active="true" aria-label="Ventas">
-            <Receipt size={17} />
-          </Link>
-          <Link className="dash-rail-btn" href="/agent-control" aria-label="Control de IA">
-            <Bot size={17} />
-          </Link>
-          <span className="dash-rail-spacer" />
-          <button className="dash-rail-btn" type="button" onClick={signOut} aria-label="Cerrar sesión">
-            <LogOut size={17} />
-          </button>
-        </nav>
+        <AppRail active="ventas" />
 
         <main className="dash-main">
           <div className="dash-content">
@@ -146,20 +111,7 @@ export function SalesView({ currentAgent, initialConversations }: SalesViewProps
                 <span className="dash-brand-name">Liminal</span>
               </p>
 
-              <nav className="dash-nav" aria-label="Navegación principal">
-                <Link className="dash-nav-link" href="/">
-                  Recorrido
-                </Link>
-                <Link className="dash-nav-link" href="/inbox">
-                  Bandeja
-                </Link>
-                <Link className="dash-nav-link" href="/ventas" aria-current="page">
-                  Ventas
-                </Link>
-                <Link className="dash-nav-link" href="/agent-control">
-                  Control IA
-                </Link>
-              </nav>
+              <AppTopNav active="ventas" />
 
               <div className="dash-topbar-actions">
                 <span className="dash-icon-btn dash-icon-static" title={currentAgent.displayName}>

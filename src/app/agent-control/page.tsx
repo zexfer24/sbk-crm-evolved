@@ -2,6 +2,7 @@ import { redirect } from "next/navigation";
 import { createClient } from "@/lib/supabase/server";
 import {
   fetchAgentSettings,
+  fetchAgentMetrics,
   fetchAgentSuggestions,
   fetchAgentTurns,
   fetchAllAgents,
@@ -28,6 +29,7 @@ export default async function AgentControlPage() {
     tokenUsage,
     pricing,
     suggestions,
+    agentMetrics,
     playbooks,
     unmatchedTurns,
     quickReplies,
@@ -40,6 +42,7 @@ export default async function AgentControlPage() {
     fetchTokenUsageSummary(supabase),
     fetchModelPricing(supabase),
     fetchAgentSuggestions(supabase),
+    fetchAgentMetrics(supabase),
     fetchPlaybooks(supabase),
     fetchUnmatchedTurns(supabase),
     fetchQuickReplies(supabase),
@@ -59,6 +62,7 @@ export default async function AgentControlPage() {
       initialTokenUsage={tokenUsage}
       initialPricing={pricing}
       initialSuggestions={suggestions}
+      initialAgentMetrics={agentMetrics}
       initialPlaybooks={playbooks}
       initialUnmatchedTurns={unmatchedTurns}
       initialQuickReplies={quickReplies}

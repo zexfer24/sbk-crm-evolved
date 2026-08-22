@@ -6,12 +6,7 @@ import type { Playbook } from "@/lib/types";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { classifyIntent, type Intent } from "@/lib/ai/classify";
 import { currentAgentModelLabel, getAgentModel } from "@/lib/ai/model";
-import {
-  AVAILABILITY_INSTRUCTIONS,
-  COMPLAINT_INSTRUCTIONS,
-  OTHER_INSTRUCTIONS,
-  RETURN_INSTRUCTIONS,
-} from "@/lib/ai/prompt";
+import { OFF_TOPIC_REPLY, buildInstructions } from "@/lib/ai/prompt";
 import { buildCatalogTool, buildEscalateTool, buildOrderHistoryTool, type EscalationOutcome } from "@/lib/ai/tools";
 import { escalateConversation } from "@/lib/ai/escalate";
 import { withConversationTurnLock } from "@/lib/ai/conversation-lock";
@@ -40,6 +35,14 @@ interface TurnTokens {
   inputTokens: number;
   outputTokens: number;
   totalTokens: number;
+  /**
+   * Parte de `inputTokens` que el proveedor sirvió desde su caché de prompts.
+   *
+   * Se guarda porque se factura mucho más barata y porque es la única señal
+   * de que el prefijo estático sigue cacheando: si alguien edita el prompt y
+   * rompe el prefijo, esto cae a cero y se ve en el panel.
+   */
+  cachedInputTokens: number;
 }
 
 function tokensFromUsage(usage: LanguageModelUsage): TurnTokens {
@@ -47,6 +50,7 @@ function tokensFromUsage(usage: LanguageModelUsage): TurnTokens {
     inputTokens: usage.inputTokens ?? 0,
     outputTokens: usage.outputTokens ?? 0,
     totalTokens: usage.totalTokens ?? 0,
+    cachedInputTokens: usage.inputTokenDetails?.cacheReadTokens ?? 0,
   };
 }
 
@@ -55,6 +59,7 @@ function addTokens(a: TurnTokens, b: TurnTokens): TurnTokens {
     inputTokens: a.inputTokens + b.inputTokens,
     outputTokens: a.outputTokens + b.outputTokens,
     totalTokens: a.totalTokens + b.totalTokens,
+    cachedInputTokens: a.cachedInputTokens + b.cachedInputTokens,
   };
 }
 
@@ -99,17 +104,27 @@ function lastCustomerMessage(history: ModelMessage[]): string | null {
   return null;
 }
 
-function instructionsFor(intent: Intent): string {
-  switch (intent) {
-    case "devolucion":
-      return RETURN_INSTRUCTIONS;
-    case "queja":
-      return COMPLAINT_INSTRUCTIONS;
-    case "otro":
-      return OTHER_INSTRUCTIONS;
-    default:
-      return AVAILABILITY_INSTRUCTIONS;
+/**
+ * ¿Le toca al agente saludar en este turno?
+ *
+ * La plantilla de bienvenida solo sale si WHATSAPP_WELCOME_TEMPLATE está
+ * configurada; sin esa variable `welcome_sent_at` se queda en null para
+ * siempre y nadie saluda nunca. Pero mirar solo esa columna haría que el
+ * agente saludara en CADA mensaje, así que se exige además que no haya
+ * respondido antes en esta conversación.
+ */
+function needsGreeting(welcomeSentAt: string | null, history: ModelMessage[]): boolean {
+  return !welcomeSentAt && !history.some((message) => message.role === "assistant");
+}
+
+/** true si nuestra última respuesta ya fue la redirección de fuera de tema. */
+function alreadyRedirected(history: ModelMessage[]): boolean {
+  for (let i = history.length - 1; i >= 0; i--) {
+    const message = history[i];
+    if (message.role !== "assistant") continue;
+    return message.content === OFF_TOPIC_REPLY;
   }
+  return false;
 }
 
 interface LogTurnParams {
@@ -131,6 +146,7 @@ async function logTurn(supabase: SupabaseClient<Database>, conversationId: strin
     input_tokens: params.tokens?.inputTokens ?? null,
     output_tokens: params.tokens?.outputTokens ?? null,
     total_tokens: params.tokens?.totalTokens ?? null,
+    cached_input_tokens: params.tokens?.cachedInputTokens ?? null,
     playbook_id: params.playbookId ?? null,
     customer_message: params.customerMessage ?? null,
   });
@@ -196,7 +212,7 @@ export async function runAgentTurn(conversationId: string): Promise<void> {
     supabase
       .from("conversations")
       .select(
-        "id, contact_id, ai_enabled, assigned_agent_id, contact:contacts(phone_number), channel:whatsapp_channels(phone_number_id, status)"
+        "id, contact_id, ai_enabled, assigned_agent_id, welcome_sent_at, contact:contacts(phone_number), channel:whatsapp_channels(phone_number_id, status)"
       )
       .eq("id", conversationId)
       .maybeSingle(),
@@ -256,6 +272,29 @@ export async function runAgentTurn(conversationId: string): Promise<void> {
 
     await supabase.from("conversations").update({ intent }).eq("id", conversationId);
 
+    // Fuera de tema: el turno termina acá. No se arma el tool loop —que es la
+    // parte cara— y el texto sale de una constante, así que no cuesta salida.
+    // A la segunda insistencia ni se responde: repetir la misma línea contra
+    // alguien que insiste (o contra otro bot) es un ping-pong sin final.
+    if (intent === "fuera_de_tema") {
+      const repetido = alreadyRedirected(history);
+      if (!repetido) await sendAgentText(supabase, convo, OFF_TOPIC_REPLY);
+
+      await supabase
+        .from("conversations")
+        .update({ journey_stage: null, active_tool: null })
+        .eq("id", conversationId);
+
+      await logTurn(supabase, conversationId, {
+        intent,
+        action: "answered",
+        summary: repetido ? "Fuera de tema, insistiendo: no se respondió." : OFF_TOPIC_REPLY,
+        tokens: classifyTokens,
+        customerMessage,
+      });
+      return;
+    }
+
     const outcome: EscalationOutcome = { escalated: false };
     const deps = { supabase, conversationId, contactId: convo.contact_id };
 
@@ -270,7 +309,7 @@ export async function runAgentTurn(conversationId: string): Promise<void> {
 
     const agent = new ToolLoopAgent({
       model,
-      instructions: instructionsFor(intent),
+      instructions: buildInstructions({ intent, needsGreeting: needsGreeting(convo.welcome_sent_at, history) }),
       tools,
       stopWhen: isStepCount(MAX_STEPS),
       providerOptions,

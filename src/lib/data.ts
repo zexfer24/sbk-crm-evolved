@@ -2,6 +2,7 @@ import type { SupabaseClient } from "@supabase/supabase-js";
 import { CRM_TIME_ZONE, currentDayRange } from "@/lib/time-zone";
 import type {
   Agent,
+  AgentMetrics,
   AgentSettings,
   AgentSuggestion,
   AgentTurn,
@@ -43,7 +44,7 @@ interface RawTag {
   color: Tag["color"];
 }
 
-interface RawContact {
+export interface RawContact {
   id: string;
   phone_number: string;
   display_name: string | null;
@@ -80,6 +81,8 @@ interface RawConversation {
   last_customer_message_at: string | null;
   last_message_at: string | null;
   last_message_preview: string | null;
+  last_message_direction: Conversation["lastMessageDirection"];
+  last_message_status: Conversation["lastMessageStatus"];
   created_at: string;
   journey_stage: Conversation["journeyStage"];
   intent: string | null;
@@ -166,7 +169,7 @@ function mapTag(row: RawTag): Tag {
   return { id: row.id, label: row.label, color: row.color };
 }
 
-function mapContact(row: RawContact): Contact {
+export function mapContact(row: RawContact): Contact {
   return {
     id: row.id,
     phoneNumber: row.phone_number,
@@ -212,6 +215,8 @@ function mapConversation(row: RawConversation): Conversation {
     lastCustomerMessageAt: row.last_customer_message_at,
     lastMessageAt: row.last_message_at,
     lastMessagePreview: row.last_message_preview,
+    lastMessageDirection: row.last_message_direction,
+    lastMessageStatus: row.last_message_status,
     createdAt: row.created_at,
     journeyStage: row.journey_stage,
     intent: row.intent,
@@ -282,7 +287,8 @@ function mapTemplate(row: RawTemplate): WhatsappTemplate {
 const CONVERSATION_SELECT = `
   id, status, unread_count, ai_enabled, deal_status, deal_closed_at,
   deal_payment_proof_url, deal_verified, deal_verified_at,
-  last_customer_message_at, last_message_at, last_message_preview, created_at,
+  last_customer_message_at, last_message_at, last_message_preview,
+  last_message_direction, last_message_status, created_at,
   journey_stage, intent, active_tool, welcome_sent_at,
   order:orders(total_amount, currency),
   contact:contacts(id, phone_number, display_name, profile_name, avatar_url,
@@ -464,6 +470,47 @@ export async function fetchAllAgents(supabase: SupabaseClient): Promise<Agent[]>
 
   if (error) throw error;
   return (data as RawAgent[]).map((row) => mapAgent(row)!);
+}
+
+interface RawAgentMetrics {
+  agent_id: string;
+  mensajes_hoy: number;
+  mensajes_periodo: number;
+  conversaciones_hoy: number;
+  conversaciones_periodo: number;
+  ventas_hoy: number;
+  ventas_periodo: number;
+  monto_hoy: string | number;
+  monto_periodo: string | number;
+  verificadas_hoy: number;
+  verificadas_periodo: number;
+  primera_respuesta_mediana_seg: string | number | null;
+}
+
+/**
+ * Rendimiento de cada persona del equipo. `days` define el período largo; el
+ * dato de «hoy» siempre es el día en curso en hora de Caracas.
+ */
+export async function fetchAgentMetrics(supabase: SupabaseClient, days = 30): Promise<AgentMetrics[]> {
+  const { data, error } = await supabase.rpc("agent_metrics", { p_days: days });
+  if (error) throw error;
+
+  // Postgres devuelve numeric como texto para no perder precisión.
+  return (data as RawAgentMetrics[]).map((row) => ({
+    agentId: row.agent_id,
+    messagesToday: row.mensajes_hoy,
+    messagesPeriod: row.mensajes_periodo,
+    conversationsToday: row.conversaciones_hoy,
+    conversationsPeriod: row.conversaciones_periodo,
+    salesToday: row.ventas_hoy,
+    salesPeriod: row.ventas_periodo,
+    salesAmountToday: Number(row.monto_hoy),
+    salesAmountPeriod: Number(row.monto_periodo),
+    verifiedToday: row.verificadas_hoy,
+    verifiedPeriod: row.verificadas_periodo,
+    firstReplyMedianSeconds:
+      row.primera_respuesta_mediana_seg === null ? null : Number(row.primera_respuesta_mediana_seg),
+  }));
 }
 
 export async function fetchQuickReplies(supabase: SupabaseClient): Promise<QuickReply[]> {
@@ -738,4 +785,24 @@ export async function fetchCurrentAgent(supabase: SupabaseClient): Promise<Agent
 
   if (error) throw error;
   return mapAgent(data as RawAgent | null);
+}
+
+/**
+ * La última tasa del BCV que haya guardada, por fecha de vigencia.
+ *
+ * A diferencia de `getBcvRate`, esto no sale a leer bcv.org.ve: solo consulta
+ * la tabla, así que se puede llamar desde el navegador. Lo usa el cierre de
+ * venta, que necesita la tasa para pasar a dólares un repuesto con precio en
+ * bolívares. Devuelve 0 si todavía no hay ninguna tasa cargada.
+ */
+export async function fetchLatestBcvRate(supabase: SupabaseClient): Promise<number> {
+  const { data, error } = await supabase
+    .from("exchange_rates")
+    .select("usd_to_ves")
+    .order("rate_date", { ascending: false })
+    .limit(1)
+    .maybeSingle();
+
+  if (error || !data) return 0;
+  return Number((data as { usd_to_ves: number }).usd_to_ves) || 0;
 }

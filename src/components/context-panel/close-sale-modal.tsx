@@ -1,14 +1,16 @@
 "use client";
 
 import { useEffect, useRef, useState, type ChangeEvent } from "react";
-import { Handshake, Minus, Plus, Upload, X } from "lucide-react";
+import { Handshake, Upload, X } from "lucide-react";
 import { Button, Input, Label, Modal, TextArea, toast } from "@heroui/react";
-import type { Agent, CedulaType, Contact, ConversationQuote, Message } from "@/lib/types";
+import type { Agent, CedulaType, Contact, Message, SaleCartItem } from "@/lib/types";
 import { VENEZUELA_STATES } from "@/lib/venezuela";
 import { createClient } from "@/lib/supabase/client";
-import { fetchConversationQuotes } from "@/lib/data";
+import { fetchLatestBcvRate } from "@/lib/data";
 import { MEDIA_BUCKET, mediaUrlFor } from "@/lib/storage";
-import { closeSaleWithContactInfo, type SaleLineItem } from "@/lib/mutations";
+import { closeSaleWithContactInfo } from "@/lib/mutations";
+import { cartToLineItems } from "@/lib/sale-cart";
+import { SaleItemsEditor } from "@/components/context-panel/sale-items-editor";
 
 interface CloseSaleModalProps {
   isOpen: boolean;
@@ -38,60 +40,33 @@ export function CloseSaleModal({
   const [isUploadingProof, setIsUploadingProof] = useState(false);
   const proofInputRef = useRef<HTMLInputElement>(null);
 
-  // El monto de la venta sale de lo que la IA realmente cotizó en este chat
-  // (conversation_quotes) — nunca se escribe a mano.
-  const [quotes, setQuotes] = useState<ConversationQuote[]>([]);
-  const [isLoadingQuotes, setIsLoadingQuotes] = useState(false);
-  const [quantities, setQuantities] = useState<Record<string, number>>({});
+  // Lo que lleva el cliente. El asesor lo arma: toma lo que la IA cotizó en
+  // el chat y agrega del inventario lo que haga falta. El precio siempre
+  // sale del catálogo — nunca se escribe a mano.
+  const [cart, setCart] = useState<SaleCartItem[]>([]);
+
+  // La tasa queda registrada en la orden para que el monto sea trazable
+  // aunque la tasa cambie después. Antes se tomaba de la primera cotización,
+  // así que una venta sin cotizaciones se guardaba con tasa 0.
+  const [bcvRate, setBcvRate] = useState(0);
 
   useEffect(() => {
     if (!isOpen) return;
     let cancelled = false;
 
-    async function loadQuotes() {
-      setIsLoadingQuotes(true);
-      try {
-        const data = await fetchConversationQuotes(createClient(), conversationId);
-        if (!cancelled) setQuotes(data);
-      } catch {
-        if (!cancelled) toast.danger("No se pudieron cargar las cotizaciones de este chat.");
-      } finally {
-        if (!cancelled) setIsLoadingQuotes(false);
-      }
-    }
-    void loadQuotes();
+    fetchLatestBcvRate(createClient())
+      .then((rate) => {
+        if (!cancelled) setBcvRate(rate);
+      })
+      .catch(() => {
+        // Sin tasa se puede cerrar igual: solo impide agregar repuestos con
+        // el precio en bolívares, que son la excepción.
+      });
 
     return () => {
       cancelled = true;
     };
-  }, [isOpen, conversationId]);
-
-  const selectedQuoteIds = Object.keys(quantities).filter((id) => quantities[id] > 0);
-  const selectedItems: SaleLineItem[] = selectedQuoteIds
-    .map((id) => quotes.find((q) => q.id === id))
-    .filter((q): q is ConversationQuote => q !== undefined)
-    .map((q) => ({
-      quoteId: q.id,
-      productId: q.productId,
-      description: q.productName,
-      unitPrice: q.priceUsd,
-      quantity: quantities[q.id],
-    }));
-  const totalUsd = selectedItems.reduce((sum, item) => sum + item.unitPrice * item.quantity, 0);
-  const bcvRateForClose = quotes[0]?.bcvRate ?? 0;
-
-  function toggleQuote(quoteId: string) {
-    setQuantities((prev) => {
-      const next = { ...prev };
-      if (next[quoteId] > 0) delete next[quoteId];
-      else next[quoteId] = 1;
-      return next;
-    });
-  }
-
-  function changeQuantity(quoteId: string, delta: number) {
-    setQuantities((prev) => ({ ...prev, [quoteId]: Math.max(1, (prev[quoteId] ?? 1) + delta) }));
-  }
+  }, [isOpen]);
 
   // Fotos que el cliente mandó por el chat — normalmente ahí está el comprobante.
   const customerImages = messages.filter(
@@ -128,8 +103,8 @@ export function CloseSaleModal({
       toast.danger("El nombre del cliente es obligatorio.");
       return;
     }
-    if (selectedItems.length === 0) {
-      toast.danger("Selecciona al menos un producto cotizado para cerrar la venta.");
+    if (cart.length === 0) {
+      toast.danger("Agrega al menos un repuesto para cerrar la venta.");
       return;
     }
     setIsSaving(true);
@@ -149,8 +124,8 @@ export function CloseSaleModal({
           address: address.trim() || null,
           paymentProofUrl,
         },
-        selectedItems,
-        bcvRateForClose
+        cartToLineItems(cart),
+        bcvRate
       );
       toast.success("¡Venta cerrada!");
       onOpenChange(false);
@@ -178,62 +153,12 @@ export function CloseSaleModal({
                 Completa los datos del cliente para dejar la venta registrada.
               </p>
 
-              <div className="flex flex-col gap-1.5">
-                <Label>¿Qué se vendió?</Label>
-                <p className="lm-hint">
-                  El monto sale de lo que la IA cotizó en este chat — elige qué se vendió, no lo escribas a mano.
-                </p>
-
-                {isLoadingQuotes && <p className="text-xs text-muted">Cargando cotizaciones...</p>}
-
-                {!isLoadingQuotes && quotes.length === 0 && (
-                  <p className="crm-quote-empty text-xs text-muted">
-                    La IA todavía no le cotizó ningún repuesto al cliente en este chat, así que no hay nada que
-                    seleccionar. Si la venta es de algo que no pasó por el catálogo, pídele a un supervisor que la
-                    registre.
-                  </p>
-                )}
-
-                {quotes.length > 0 && (
-                  <div className="crm-quote-list">
-                    {quotes.map((q) => {
-                      const isSelected = (quantities[q.id] ?? 0) > 0;
-                      return (
-                        <div key={q.id} className={`crm-quote-row${isSelected ? " is-selected" : ""}`}>
-                          <label className="crm-quote-checkbox">
-                            <input type="checkbox" checked={isSelected} onChange={() => toggleQuote(q.id)} />
-                            <span className="crm-quote-name">{q.productName}</span>
-                          </label>
-                          <span className="crm-quote-price">${q.priceUsd.toFixed(2)}</span>
-                          {isSelected && (
-                            <div className="crm-quote-qty">
-                              <button
-                                type="button"
-                                onClick={() => changeQuantity(q.id, -1)}
-                                aria-label={`Restar una unidad de ${q.productName}`}
-                              >
-                                <Minus size={12} />
-                              </button>
-                              <span className="lm-num">{quantities[q.id]}</span>
-                              <button
-                                type="button"
-                                onClick={() => changeQuantity(q.id, 1)}
-                                aria-label={`Agregar una unidad de ${q.productName}`}
-                              >
-                                <Plus size={12} />
-                              </button>
-                            </div>
-                          )}
-                        </div>
-                      );
-                    })}
-                    <div className="crm-quote-total">
-                      <span>Total</span>
-                      <span className="lm-num">${totalUsd.toFixed(2)}</span>
-                    </div>
-                  </div>
-                )}
-              </div>
+              <SaleItemsEditor
+                conversationId={conversationId}
+                cart={cart}
+                onChange={setCart}
+                bcvRate={bcvRate}
+              />
 
               <div className="flex flex-col gap-1.5">
                 <Label htmlFor="sale-name">Nombre</Label>
@@ -352,7 +277,7 @@ export function CloseSaleModal({
               <Button variant="secondary" onPress={() => onOpenChange(false)} isDisabled={isSaving}>
                 Cancelar
               </Button>
-              <Button variant="primary" onPress={handleSubmit} isDisabled={isSaving || selectedItems.length === 0}>
+              <Button variant="primary" onPress={handleSubmit} isDisabled={isSaving || cart.length === 0}>
                 {isSaving ? "Guardando..." : "Guardar y cerrar venta"}
               </Button>
             </Modal.Footer>

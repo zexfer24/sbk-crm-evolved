@@ -4,7 +4,8 @@ import { z } from "zod";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import type { Database } from "@/lib/supabase/database.types";
 import { getBcvRate } from "@/lib/ai/bcv";
-import { pgrstLiteral } from "@/lib/ai/pgrst";
+import { catalogFilter, rankByTerms, searchTerms } from "@/lib/ai/catalog-search";
+import { formatQuote } from "@/lib/ai/precio";
 import { RECLAMO_CATEGORIES, escalateConversation, type EscalationMotivo } from "@/lib/ai/escalate";
 
 /**
@@ -18,6 +19,16 @@ import { RECLAMO_CATEGORIES, escalateConversation, type EscalationMotivo } from 
  * WhatsApp. Si hay más, conviene que la IA pida precisar antes que enumerar.
  */
 const MAX_CATALOG_RESULTS = 10;
+
+/**
+ * Cuántas filas se le piden a la base antes de ordenar.
+ *
+ * La consulta une los términos con OR, así que trae de más a propósito:
+ * "bujía NGK" calza tanto la bujía de NGK como cualquier otra bujía. Se
+ * ordena por cuántos términos calzan y recién ahí se recorta a diez, para
+ * que el recorte no se lleve por delante justo el que el cliente buscaba.
+ */
+const CATALOG_FETCH_LIMIT = MAX_CATALOG_RESULTS * 3 + 1;
 
 interface ToolDeps {
   supabase: SupabaseClient<Database>;
@@ -46,26 +57,31 @@ export function buildCatalogTool({ supabase, conversationId }: ToolDeps) {
       motoModel: z.string().optional().describe("Modelo de la moto del cliente, si lo mencionó (ej. 'SBR 200')"),
     }),
     execute: async ({ query, motoBrand, motoModel }) => {
+      // Palabra por palabra y sin acentos: buscar la frase completa hacía que
+      // "bujía NGK" no encontrara la Bujía CR7HSA de NGK, y el agente
+      // respondiera con toda seguridad que no la tenemos. Ver catalog-search.ts.
+      const terms = searchTerms(query);
+      if (terms.length === 0) return { results: [] };
+
       // `query` lo redacta el modelo a partir de lo que escribe el cliente:
       // es entrada no confiable y el filtro `.or()` es un mini-lenguaje, no
       // una cadena inerte. Sin entrecomillar, una coma en el texto agrega
-      // condiciones a la consulta.
-      const term = pgrstLiteral(`%${query}%`);
-
-      // Se pide uno de más para saber si quedaron resultados fuera sin
-      // tener que contar el catálogo entero.
+      // condiciones a la consulta (lo hace catalogFilter).
       const { data: products, error } = await supabase
         .from("products")
-        .select("id, name, brand, price, currency, stock_quantity, product_compatibility(moto_brand, moto_model)")
+        .select(
+          "id, name, brand, price, currency, stock_quantity, search_text, product_compatibility(moto_brand, moto_model)"
+        )
         .eq("is_active", true)
-        .or(`name.ilike.${term},brand.ilike.${term}`)
-        .limit(MAX_CATALOG_RESULTS + 1);
+        .or(catalogFilter(terms))
+        .limit(CATALOG_FETCH_LIMIT);
 
       if (error) return { results: [], error: "No se pudo consultar el catálogo en este momento." };
 
-      const hayMas = (products?.length ?? 0) > MAX_CATALOG_RESULTS;
+      const ranked = rankByTerms(products ?? [], terms);
+      const hayMas = ranked.length > MAX_CATALOG_RESULTS;
 
-      let filtered = (products ?? []).slice(0, MAX_CATALOG_RESULTS);
+      let filtered = ranked.slice(0, MAX_CATALOG_RESULTS);
       if (motoBrand) {
         filtered = filtered.filter(
           (p) =>
@@ -111,11 +127,13 @@ export function buildCatalogTool({ supabase, conversationId }: ToolDeps) {
       }
 
       return {
+        // El precio va como texto ya escrito y los números crudos se quedan
+        // acá. Convertir o reformatear un número es aritmética, y es donde
+        // los modelos alucinan; sin el número no hay nada que calcular.
         results: quoted.map((q) => ({
           nombre: q.nombre,
           marca: q.marca,
-          precioUsd: q.precioUsd,
-          precioBs: q.precioBs,
+          precio: formatQuote(q.precioUsd, q.precioBs),
           stock: q.stock,
           compatibleCon: q.compatibleCon,
         })),
