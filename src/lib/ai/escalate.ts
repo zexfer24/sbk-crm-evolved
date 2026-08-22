@@ -13,7 +13,8 @@ import { claimNextAvailableAgent } from "@/lib/ai/claim-agent";
 
 export const RECLAMO_CATEGORIES = ["Envío", "Pago", "Producto", "Atención", "Garantía"] as const;
 export type ReclamoCategory = (typeof RECLAMO_CATEGORIES)[number];
-export type EscalationMotivo = "devolucion" | "queja" | "intencion_compra";
+/** `seguimiento`: postventa y logística — lo usan los escenarios predeterminados que piden un dato y pasan el caso a un humano. */
+export type EscalationMotivo = "devolucion" | "queja" | "intencion_compra" | "seguimiento";
 
 export interface EscalateResult {
   escalated: boolean;

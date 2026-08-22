@@ -5,7 +5,6 @@ export type Json =
   | null
   | { [key: string]: Json | undefined }
   | Json[]
-
 export type Database = {
   graphql_public: {
     Tables: {
@@ -113,11 +112,13 @@ export type Database = {
           action: string
           conversation_id: string
           created_at: string
+          customer_message: string | null
           id: string
           input_tokens: number | null
           intent: string | null
           model: string | null
           output_tokens: number | null
+          playbook_id: string | null
           summary: string | null
           total_tokens: number | null
         }
@@ -125,11 +126,13 @@ export type Database = {
           action: string
           conversation_id: string
           created_at?: string
+          customer_message?: string | null
           id?: string
           input_tokens?: number | null
           intent?: string | null
           model?: string | null
           output_tokens?: number | null
+          playbook_id?: string | null
           summary?: string | null
           total_tokens?: number | null
         }
@@ -137,11 +140,13 @@ export type Database = {
           action?: string
           conversation_id?: string
           created_at?: string
+          customer_message?: string | null
           id?: string
           input_tokens?: number | null
           intent?: string | null
           model?: string | null
           output_tokens?: number | null
+          playbook_id?: string | null
           summary?: string | null
           total_tokens?: number | null
         }
@@ -151,6 +156,13 @@ export type Database = {
             columns: ["conversation_id"]
             isOneToOne: false
             referencedRelation: "conversations"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "agent_turns_playbook_id_fkey"
+            columns: ["playbook_id"]
+            isOneToOne: false
+            referencedRelation: "ai_playbooks"
             referencedColumns: ["id"]
           },
         ]
@@ -187,6 +199,45 @@ export type Database = {
           is_active?: boolean
           last_assigned_at?: string | null
           role?: string
+          updated_at?: string
+        }
+        Relationships: []
+      }
+      ai_playbooks: {
+        Row: {
+          after_send: string
+          attachment_type: string | null
+          attachment_url: string | null
+          created_at: string
+          id: string
+          is_active: boolean
+          name: string
+          response_text: string
+          trigger_description: string
+          updated_at: string
+        }
+        Insert: {
+          after_send?: string
+          attachment_type?: string | null
+          attachment_url?: string | null
+          created_at?: string
+          id?: string
+          is_active?: boolean
+          name: string
+          response_text: string
+          trigger_description: string
+          updated_at?: string
+        }
+        Update: {
+          after_send?: string
+          attachment_type?: string | null
+          attachment_url?: string | null
+          created_at?: string
+          id?: string
+          is_active?: boolean
+          name?: string
+          response_text?: string
+          trigger_description?: string
           updated_at?: string
         }
         Relationships: []
@@ -455,6 +506,27 @@ export type Database = {
         }
         Relationships: []
       }
+      familias_motor: {
+        Row: {
+          codigo_motor: string
+          created_at: string
+          descripcion: string | null
+          id: number
+        }
+        Insert: {
+          codigo_motor: string
+          created_at?: string
+          descripcion?: string | null
+          id?: number
+        }
+        Update: {
+          codigo_motor?: string
+          created_at?: string
+          descripcion?: string | null
+          id?: number
+        }
+        Relationships: []
+      }
       messages: {
         Row: {
           content: string | null
@@ -559,6 +631,63 @@ export type Database = {
             referencedColumns: ["id"]
           },
         ]
+      }
+      modelo_motor_nexo: {
+        Row: {
+          familia_motor_id: number
+          modelo_comercial_id: number
+        }
+        Insert: {
+          familia_motor_id: number
+          modelo_comercial_id: number
+        }
+        Update: {
+          familia_motor_id?: number
+          modelo_comercial_id?: number
+        }
+        Relationships: [
+          {
+            foreignKeyName: "modelo_motor_nexo_familia_motor_id_fkey"
+            columns: ["familia_motor_id"]
+            isOneToOne: false
+            referencedRelation: "familias_motor"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "modelo_motor_nexo_modelo_comercial_id_fkey"
+            columns: ["modelo_comercial_id"]
+            isOneToOne: false
+            referencedRelation: "modelos_comerciales"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      modelos_comerciales: {
+        Row: {
+          anio_desde: number | null
+          anio_hasta: number | null
+          created_at: string
+          id: number
+          marca: string
+          modelo: string
+        }
+        Insert: {
+          anio_desde?: number | null
+          anio_hasta?: number | null
+          created_at?: string
+          id?: number
+          marca: string
+          modelo: string
+        }
+        Update: {
+          anio_desde?: number | null
+          anio_hasta?: number | null
+          created_at?: string
+          id?: number
+          marca?: string
+          modelo?: string
+        }
+        Relationships: []
       }
       notes: {
         Row: {
@@ -771,6 +900,73 @@ export type Database = {
         }
         Relationships: []
       }
+      repuesto_compatibilidad_modelo: {
+        Row: {
+          codprod: string
+          modelo_comercial_id: number
+        }
+        Insert: {
+          codprod: string
+          modelo_comercial_id: number
+        }
+        Update: {
+          codprod?: string
+          modelo_comercial_id?: number
+        }
+        Relationships: [
+          {
+            foreignKeyName: "repuesto_compatibilidad_modelo_modelo_comercial_id_fkey"
+            columns: ["modelo_comercial_id"]
+            isOneToOne: false
+            referencedRelation: "modelos_comerciales"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      repuesto_compatibilidad_motor: {
+        Row: {
+          codprod: string
+          familia_motor_id: number
+        }
+        Insert: {
+          codprod: string
+          familia_motor_id: number
+        }
+        Update: {
+          codprod?: string
+          familia_motor_id?: number
+        }
+        Relationships: [
+          {
+            foreignKeyName: "repuesto_compatibilidad_motor_familia_motor_id_fkey"
+            columns: ["familia_motor_id"]
+            isOneToOne: false
+            referencedRelation: "familias_motor"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      sinonimos_busqueda: {
+        Row: {
+          created_at: string
+          id: number
+          termino_catalogo: string
+          termino_jerga: string
+        }
+        Insert: {
+          created_at?: string
+          id?: number
+          termino_catalogo: string
+          termino_jerga: string
+        }
+        Update: {
+          created_at?: string
+          id?: number
+          termino_catalogo?: string
+          termino_jerga?: string
+        }
+        Relationships: []
+      }
       tags: {
         Row: {
           color: string
@@ -907,11 +1103,8 @@ export type Database = {
     }
   }
 }
-
 type DatabaseWithoutInternals = Omit<Database, "__InternalSupabase">
-
 type DefaultSchema = DatabaseWithoutInternals[Extract<keyof Database, "public">]
-
 export type Tables<
   DefaultSchemaTableNameOrOptions extends
     | keyof (DefaultSchema["Tables"] & DefaultSchema["Views"])
@@ -940,7 +1133,6 @@ export type Tables<
       ? R
       : never
     : never
-
 export type TablesInsert<
   DefaultSchemaTableNameOrOptions extends
     | keyof DefaultSchema["Tables"]
@@ -965,7 +1157,6 @@ export type TablesInsert<
       ? I
       : never
     : never
-
 export type TablesUpdate<
   DefaultSchemaTableNameOrOptions extends
     | keyof DefaultSchema["Tables"]
@@ -990,7 +1181,6 @@ export type TablesUpdate<
       ? U
       : never
     : never
-
 export type Enums<
   DefaultSchemaEnumNameOrOptions extends
     | keyof DefaultSchema["Enums"]
@@ -1007,7 +1197,6 @@ export type Enums<
   : DefaultSchemaEnumNameOrOptions extends keyof DefaultSchema["Enums"]
     ? DefaultSchema["Enums"][DefaultSchemaEnumNameOrOptions]
     : never
-
 export type CompositeTypes<
   PublicCompositeTypeNameOrOptions extends
     | keyof DefaultSchema["CompositeTypes"]
@@ -1024,7 +1213,6 @@ export type CompositeTypes<
   : PublicCompositeTypeNameOrOptions extends keyof DefaultSchema["CompositeTypes"]
     ? DefaultSchema["CompositeTypes"][PublicCompositeTypeNameOrOptions]
     : never
-
 export const Constants = {
   graphql_public: {
     Enums: {},
@@ -1033,4 +1221,3 @@ export const Constants = {
     Enums: {},
   },
 } as const
-

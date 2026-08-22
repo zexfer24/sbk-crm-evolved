@@ -2,8 +2,8 @@ import "server-only";
 import { ToolLoopAgent, isStepCount, type LanguageModelUsage, type ModelMessage, type ToolSet } from "ai";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import type { Database } from "@/lib/supabase/database.types";
+import type { Playbook } from "@/lib/types";
 import { createAdminClient } from "@/lib/supabase/admin";
-import { sendWhatsappText } from "@/lib/whatsapp/meta-client";
 import { classifyIntent, type Intent } from "@/lib/ai/classify";
 import { currentAgentModelLabel, getAgentModel } from "@/lib/ai/model";
 import {
@@ -15,23 +15,22 @@ import {
 import { buildCatalogTool, buildEscalateTool, buildOrderHistoryTool, type EscalationOutcome } from "@/lib/ai/tools";
 import { escalateConversation } from "@/lib/ai/escalate";
 import { withConversationTurnLock } from "@/lib/ai/conversation-lock";
+import { fetchActivePlaybooks, matchPlaybook } from "@/lib/ai/playbooks";
+import { sendAgentText, sendPlaybookReply, type AgentConversation } from "@/lib/ai/send";
 
 // ---------------------------------------------------------------------------
-// Orquestador del turno del agente: pipeline de dos fases (clasificar, luego
-// actuar con herramientas acotadas a esa intención). Se dispara una vez por
-// conversación desde el webhook de WhatsApp (ver runAgentTurnsFor).
+// Orquestador del turno del agente. Tres fases, en orden:
+//
+//   0. Reconocer si el mensaje calza con una respuesta predeterminada. Si
+//      calza, se envía ese texto tal cual y el turno termina ahí — sin
+//      clasificar ni redactar.
+//   1. Clasificar la intención (una de cuatro categorías genéricas).
+//   2. Actuar con las herramientas acotadas a esa intención.
+//
+// Se dispara una vez por conversación desde el webhook (ver runAgentTurnsFor).
 // ---------------------------------------------------------------------------
 
 const MAX_STEPS = 5;
-
-interface ConversationRow {
-  id: string;
-  contact_id: string;
-  ai_enabled: boolean;
-  assigned_agent_id: string | null;
-  contact: { phone_number: string };
-  channel: { phone_number_id: string | null; status: string };
-}
 
 function errorMessage(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
@@ -75,6 +74,15 @@ async function loadHistory(supabase: SupabaseClient<Database>, conversationId: s
   return messages;
 }
 
+/** Último mensaje del cliente del turno: es lo que se guarda en la bitácora para poder crear el escenario que faltó. */
+function lastCustomerMessage(history: ModelMessage[]): string | null {
+  for (let i = history.length - 1; i >= 0; i--) {
+    const message = history[i];
+    if (message.role === "user" && typeof message.content === "string") return message.content;
+  }
+  return null;
+}
+
 function instructionsFor(intent: Intent): string {
   switch (intent) {
     case "devolucion":
@@ -88,59 +96,75 @@ function instructionsFor(intent: Intent): string {
   }
 }
 
-async function sendAgentReply(supabase: SupabaseClient<Database>, conversation: ConversationRow, text: string) {
-  const isRealChannel = conversation.channel.status === "connected" && Boolean(conversation.channel.phone_number_id);
-  let whatsappMessageId: string | null = null;
-  let whatsappStatus: "sent" | null = null;
+interface LogTurnParams {
+  intent: Intent | null;
+  action: "answered" | "escalated" | "error";
+  summary: string;
+  tokens: TurnTokens | null;
+  playbookId?: string | null;
+  customerMessage?: string | null;
+}
 
-  if (isRealChannel) {
-    const accessToken = process.env.WHATSAPP_ACCESS_TOKEN;
-    if (accessToken) {
-      try {
-        const result = await sendWhatsappText(
-          conversation.channel.phone_number_id!,
-          accessToken,
-          conversation.contact.phone_number,
-          text
-        );
-        whatsappMessageId = result.whatsappMessageId;
-        whatsappStatus = "sent";
-      } catch (err) {
-        console.error("No se pudo enviar la respuesta de la IA por WhatsApp:", err);
-      }
-    } else {
-      console.warn(`Respuesta de la IA no enviada por WhatsApp en ${conversation.id}: falta WHATSAPP_ACCESS_TOKEN.`);
-    }
-  }
-
-  await supabase.from("messages").insert({
-    conversation_id: conversation.id,
-    direction: "outbound",
-    sender_type: "ai",
-    message_type: "text",
-    content: text,
-    whatsapp_message_id: whatsappMessageId,
-    whatsapp_status: whatsappStatus,
+async function logTurn(supabase: SupabaseClient<Database>, conversationId: string, params: LogTurnParams) {
+  await supabase.from("agent_turns").insert({
+    conversation_id: conversationId,
+    intent: params.intent,
+    action: params.action,
+    summary: params.summary.slice(0, 500),
+    model: currentAgentModelLabel(),
+    input_tokens: params.tokens?.inputTokens ?? null,
+    output_tokens: params.tokens?.outputTokens ?? null,
+    total_tokens: params.tokens?.totalTokens ?? null,
+    playbook_id: params.playbookId ?? null,
+    customer_message: params.customerMessage ?? null,
   });
 }
 
-async function logTurn(
+/**
+ * Ejecuta una respuesta predeterminada. No llama al modelo en ningún punto:
+ * el texto sale tal cual está guardado. El modelo eligió CUÁL responder;
+ * nunca CÓMO se redacta.
+ */
+async function runPlaybook(
   supabase: SupabaseClient<Database>,
-  conversationId: string,
-  intent: Intent | null,
-  action: "answered" | "escalated" | "error",
-  summary: string,
-  tokens: TurnTokens | null
-) {
-  await supabase.from("agent_turns").insert({
-    conversation_id: conversationId,
-    intent,
-    action,
-    summary: summary.slice(0, 500),
-    model: currentAgentModelLabel(),
-    input_tokens: tokens?.inputTokens ?? null,
-    output_tokens: tokens?.outputTokens ?? null,
-    total_tokens: tokens?.totalTokens ?? null,
+  conversation: AgentConversation,
+  playbook: Playbook,
+  tokens: TurnTokens,
+  customerMessage: string | null
+): Promise<void> {
+  await sendPlaybookReply(supabase, conversation, playbook);
+
+  if (playbook.afterSend === "escalate") {
+    const result = await escalateConversation(supabase, {
+      conversationId: conversation.id,
+      contactId: conversation.contact_id,
+      motivo: "seguimiento",
+      resumen: `Respuesta automática "${playbook.name}". Falta que un asesor continúe el caso.`,
+    });
+
+    await logTurn(supabase, conversation.id, {
+      intent: null,
+      action: "escalated",
+      summary: `Escenario "${playbook.name}" → ${result.assignedAgentName ?? "(sin asesor disponible)"}.`,
+      tokens,
+      playbookId: playbook.id,
+      customerMessage,
+    });
+    return;
+  }
+
+  await supabase
+    .from("conversations")
+    .update({ journey_stage: null, active_tool: null })
+    .eq("id", conversation.id);
+
+  await logTurn(supabase, conversation.id, {
+    intent: null,
+    action: "answered",
+    summary: `Escenario "${playbook.name}".`,
+    tokens,
+    playbookId: playbook.id,
+    customerMessage,
   });
 }
 
@@ -159,7 +183,7 @@ export async function runAgentTurn(conversationId: string): Promise<void> {
       .maybeSingle(),
   ]);
 
-  const convo = conversation as unknown as ConversationRow | null;
+  const convo = conversation as unknown as AgentConversation | null;
   if (!convo) return;
 
   // Guardrail duro: si algo dice que la IA no debe correr, no se llama al
@@ -179,14 +203,35 @@ export async function runAgentTurn(conversationId: string): Promise<void> {
     const history = await loadHistory(supabase, conversationId);
     if (history.length === 0) return;
 
+    const customerMessage = lastCustomerMessage(history);
+
+    // Fase 0 — ¿el mensaje calza con una respuesta ya redactada? Si calza, se
+    // envía tal cual y el turno termina acá: sale más rápido y más barato que
+    // clasificar y redactar, y el cliente recibe el texto oficial en vez de
+    // una versión que el modelo improvise.
+    const playbooks = await fetchActivePlaybooks(supabase);
+    const match = await matchPlaybook(history, playbooks);
+    const matchTokens = tokensFromUsage(match.usage);
+
+    if (match.playbook) {
+      await runPlaybook(supabase, convo, match.playbook, matchTokens, customerMessage);
+      return;
+    }
+
     let intent: Intent;
     let classifyTokens: TurnTokens;
     try {
       const classified = await classifyIntent(history);
       intent = classified.intent;
-      classifyTokens = tokensFromUsage(classified.usage);
+      classifyTokens = addTokens(matchTokens, tokensFromUsage(classified.usage));
     } catch (err) {
-      await logTurn(supabase, conversationId, null, "error", `Fallo al clasificar intención: ${errorMessage(err)}`, null);
+      await logTurn(supabase, conversationId, {
+        intent: null,
+        action: "error",
+        summary: `Fallo al clasificar intención: ${errorMessage(err)}`,
+        tokens: matchTokens,
+        customerMessage,
+      });
       return;
     }
 
@@ -228,7 +273,13 @@ export async function runAgentTurn(conversationId: string): Promise<void> {
       text = result.text ?? "";
       turnTokens = addTokens(classifyTokens, tokensFromUsage(result.usage));
     } catch (err) {
-      await logTurn(supabase, conversationId, intent, "error", errorMessage(err), classifyTokens);
+      await logTurn(supabase, conversationId, {
+        intent,
+        action: "error",
+        summary: errorMessage(err),
+        tokens: classifyTokens,
+        customerMessage,
+      });
       await supabase.from("conversations").update({ active_tool: null }).eq("id", conversationId);
       return;
     }
@@ -250,21 +301,22 @@ export async function runAgentTurn(conversationId: string): Promise<void> {
     }
 
     if (text.trim()) {
-      await sendAgentReply(supabase, convo, text.trim());
+      await sendAgentText(supabase, convo, text.trim());
     }
 
     if (!outcome.escalated) {
       await supabase.from("conversations").update({ journey_stage: null, active_tool: null }).eq("id", conversationId);
     }
 
-    await logTurn(
-      supabase,
-      conversationId,
+    await logTurn(supabase, conversationId, {
       intent,
-      outcome.escalated ? "escalated" : "answered",
-      outcome.escalated ? `Escalado a ${outcome.assignedAgentName ?? "(sin asesor disponible)"}. Motivo: ${outcome.motivo}.` : text,
-      turnTokens
-    );
+      action: outcome.escalated ? "escalated" : "answered",
+      summary: outcome.escalated
+        ? `Escalado a ${outcome.assignedAgentName ?? "(sin asesor disponible)"}. Motivo: ${outcome.motivo}.`
+        : text,
+      tokens: turnTokens,
+      customerMessage,
+    });
   });
 }
 

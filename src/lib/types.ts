@@ -148,6 +148,28 @@ export interface QuickReply {
   content: string;
 }
 
+/**
+ * `link` anexa la URL al texto (sirve para cualquier URL: catálogo web,
+ * Drive, una carpeta compartida). Los otros tres hacen que Meta descargue
+ * el archivo, así que exigen una URL directa al archivo y pública.
+ */
+export type PlaybookAttachmentType = "link" | "image" | "document" | "video";
+
+/** `wait`: queda a la espera del cliente. `escalate`: pasa a un asesor. */
+export type PlaybookAfterSend = "wait" | "escalate";
+
+/** Respuesta predeterminada que la IA envía verbatim al reconocer el escenario. */
+export interface Playbook {
+  id: string;
+  name: string;
+  triggerDescription: string;
+  responseText: string;
+  attachmentUrl: string | null;
+  attachmentType: PlaybookAttachmentType | null;
+  afterSend: PlaybookAfterSend;
+  isActive: boolean;
+}
+
 export type InboxFilter = "all" | "assigned";
 
 /** Qué categoría detectó la IA en el mensaje del cliente. */
