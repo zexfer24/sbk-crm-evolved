@@ -36,18 +36,21 @@ export type Database = {
       agent_settings: {
         Row: {
           ai_globally_enabled: boolean
+          daily_spend_cap_usd: number | null
           id: boolean
           updated_at: string
           updated_by: string | null
         }
         Insert: {
           ai_globally_enabled?: boolean
+          daily_spend_cap_usd?: number | null
           id?: boolean
           updated_at?: string
           updated_by?: string | null
         }
         Update: {
           ai_globally_enabled?: boolean
+          daily_spend_cap_usd?: number | null
           id?: boolean
           updated_at?: string
           updated_by?: string | null
@@ -1073,6 +1076,8 @@ export type Database = {
       [_ in never]: never
     }
     Functions: {
+      agent_can_run: { Args: never; Returns: boolean }
+      agent_spend_today: { Args: never; Returns: number }
       agent_token_usage: {
         Args: { days?: number }
         Returns: {

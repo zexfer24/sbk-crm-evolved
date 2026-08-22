@@ -6,16 +6,25 @@ import type { Playbook } from "@/lib/types";
 // ---------------------------------------------------------------------------
 interface FakeState {
   aiGloballyEnabled: boolean;
+  /** Lo que devuelve la función agent_can_run() de la base. */
+  canRun: boolean;
   conversation: Record<string, unknown> | null;
   history: { sender_type: string; content: string | null; is_internal_note: boolean }[];
 }
 
-const state: FakeState = { aiGloballyEnabled: true, conversation: null, history: [] };
+const state: FakeState = { aiGloballyEnabled: true, canRun: true, conversation: null, history: [] };
 const conversationUpdates: Record<string, unknown>[] = [];
 const agentTurnInserts: Record<string, unknown>[] = [];
 
 function createFakeSupabase() {
   return {
+    rpc(fn: string) {
+      // Igual que la función SQL: junta el interruptor global y el tope de gasto.
+      if (fn === "agent_can_run") {
+        return Promise.resolve({ data: state.aiGloballyEnabled && state.canRun, error: null });
+      }
+      throw new Error(`Fake Supabase: rpc no soportada: ${fn}`);
+    },
     from(table: string) {
       if (table === "agent_settings") {
         return {
@@ -141,6 +150,7 @@ const NO_USAGE = { inputTokens: 3, outputTokens: 1, totalTokens: 4 };
 
 beforeEach(() => {
   state.aiGloballyEnabled = true;
+  state.canRun = true;
   state.conversation = {
     id: "conv-1",
     contact_id: "contact-1",
@@ -252,6 +262,23 @@ describe("runAgentTurn — escenarios predeterminados", () => {
 
     expect(matchPlaybookMock).not.toHaveBeenCalled();
     expect(sendPlaybookReplyMock).not.toHaveBeenCalled();
+  });
+
+  /**
+   * El tope de gasto vive en la base (agent_can_run) para que la respuesta
+   * sea la misma sin importar quién pregunte. Alcanzado el tope, el turno no
+   * llama al modelo: ni para reconocer escenario ni para clasificar.
+   */
+  it("no corre el turno cuando ya se alcanzó el tope de gasto del día", async () => {
+    state.canRun = false;
+    fetchActivePlaybooksMock.mockResolvedValue([playbook()]);
+
+    await runAgentTurn("conv-1");
+
+    expect(matchPlaybookMock).not.toHaveBeenCalled();
+    expect(classifyIntentMock).not.toHaveBeenCalled();
+    expect(sendPlaybookReplyMock).not.toHaveBeenCalled();
+    expect(sendAgentTextMock).not.toHaveBeenCalled();
   });
 
   it("no reconoce escenarios si la conversación ya tiene un asesor asignado", async () => {

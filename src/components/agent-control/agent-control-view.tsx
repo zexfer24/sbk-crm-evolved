@@ -37,6 +37,7 @@ import {
   setAgentActive,
   setAiEnabled,
   setAiGloballyEnabled,
+  setDailySpendCap,
   updateModelPricing,
 } from "@/lib/mutations";
 import { contactName, initials } from "@/lib/dashboard";
@@ -44,6 +45,7 @@ import { formatTime12h } from "@/lib/format";
 import { AgentsRosterPanel } from "@/components/agent-control/agent-roster-panel";
 import { PlaybooksPanel } from "@/components/agent-control/playbooks-panel";
 import { SlidingPills } from "@/components/sliding-pills";
+import { SpendCapPanel } from "@/components/agent-control/spend-cap-panel";
 import { TokenUsageChart } from "@/components/agent-control/token-usage-chart";
 // crm.css trae .crm-pill, que esta vista usa para los botones de acción de
 // cada conversación. Sin este import quedaban sin estilo: el ícono se
@@ -236,10 +238,15 @@ export function AgentControlView({
     const next = !settings.aiGloballyEnabled;
     try {
       await setAiGloballyEnabled(supabase, currentAgent, next);
-      setSettings({ aiGloballyEnabled: next });
+      setSettings((s) => ({ ...s, aiGloballyEnabled: next }));
     } finally {
       setTogglingKillSwitch(false);
     }
+  }
+
+  async function saveSpendCap(capUsd: number | null) {
+    await setDailySpendCap(supabase, currentAgent, capUsd);
+    setSettings((s) => ({ ...s, dailySpendCapUsd: capUsd }));
   }
 
   async function pauseAi(conversationId: string) {
@@ -432,6 +439,12 @@ export function AgentControlView({
                 aria-label="Interruptor global de la IA"
               />
             </section>
+
+            <SpendCapPanel
+              settings={settings}
+              canEdit={currentAgent.role === "supervisor" || currentAgent.role === "admin"}
+              onSave={saveSpendCap}
+            />
 
             <div className="dash-lower">
               <section className="dash-panel">

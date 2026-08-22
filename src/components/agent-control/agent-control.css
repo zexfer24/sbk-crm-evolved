@@ -672,3 +672,65 @@
   font-size: 11.5px;
   line-height: 1.45;
 }
+
+/* --------------------------------------------------------------------------
+   Tope de gasto diario de la IA
+   -------------------------------------------------------------------------- */
+.ac-cap-body {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 0 26px 22px;
+}
+
+.ac-cap-note {
+  color: var(--lm-muted);
+  font-size: 12.5px;
+  line-height: 1.5;
+  max-width: 74ch;
+}
+
+.ac-cap-note strong {
+  color: var(--lm-ink);
+  font-weight: 600;
+}
+
+/* Al alcanzarse el tope la IA está detenida: se lee como aviso, no como dato. */
+.ac-cap[data-reached="true"] .ac-cap-note strong {
+  color: var(--lm-hot);
+}
+
+.ac-cap-bar {
+  height: 6px;
+  border-radius: 999px;
+  background: var(--lm-sunken);
+  overflow: hidden;
+}
+
+.ac-cap-bar-fill {
+  display: block;
+  height: 100%;
+  width: 100%;
+  transform-origin: left center;
+  border-radius: 999px;
+  background: var(--lm-good);
+  transition: transform 240ms var(--lm-ease-out);
+}
+
+.ac-cap[data-reached="true"] .ac-cap-bar-fill {
+  background: var(--lm-hot);
+}
+
+.ac-cap-form {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  max-width: 320px;
+  color: var(--lm-muted);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ac-cap-bar-fill {
+    transition: none;
+  }
+}

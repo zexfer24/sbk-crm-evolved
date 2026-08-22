@@ -198,6 +198,10 @@ export interface AgentTurn {
 /** Interruptor global de la IA en todo el CRM. */
 export interface AgentSettings {
   aiGloballyEnabled: boolean;
+  /** Gasto máximo por día en USD. Null = sin tope. Al alcanzarlo la IA para hasta el día siguiente. */
+  dailySpendCapUsd: number | null;
+  /** Gasto de la IA en el día en curso, hora de Caracas. */
+  spentTodayUsd: number;
 }
 
 /** Tarifa en USD por millón de tokens para un modelo — usada para calcular el costo del consumo de la IA. */

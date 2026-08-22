@@ -711,14 +711,17 @@ export async function fetchAgentSuggestions(supabase: SupabaseClient, limit = 50
 }
 
 export async function fetchAgentSettings(supabase: SupabaseClient): Promise<AgentSettings> {
-  const { data, error } = await supabase
-    .from("agent_settings")
-    .select("ai_globally_enabled")
-    .eq("id", true)
-    .single();
+  const [{ data, error }, { data: spentToday }] = await Promise.all([
+    supabase.from("agent_settings").select("ai_globally_enabled, daily_spend_cap_usd").eq("id", true).single(),
+    supabase.rpc("agent_spend_today"),
+  ]);
 
   if (error) throw error;
-  return { aiGloballyEnabled: data.ai_globally_enabled };
+  return {
+    aiGloballyEnabled: data.ai_globally_enabled,
+    dailySpendCapUsd: data.daily_spend_cap_usd === null ? null : Number(data.daily_spend_cap_usd),
+    spentTodayUsd: Number(spentToday ?? 0),
+  };
 }
 
 export async function fetchCurrentAgent(supabase: SupabaseClient): Promise<Agent | null> {

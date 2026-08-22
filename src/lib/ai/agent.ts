@@ -172,8 +172,11 @@ async function runPlaybook(
 export async function runAgentTurn(conversationId: string): Promise<void> {
   const supabase = createAdminClient();
 
-  const [{ data: settings }, { data: conversation }] = await Promise.all([
-    supabase.from("agent_settings").select("ai_globally_enabled").eq("id", true).maybeSingle(),
+  const [{ data: canRun }, { data: conversation }] = await Promise.all([
+    // agent_can_run junta el interruptor global y el tope de gasto del día.
+    // La decisión vive en la base para que sea la misma la pregunte quien la
+    // pregunte, y para que el tope se levante solo al cambiar el día.
+    supabase.rpc("agent_can_run"),
     supabase
       .from("conversations")
       .select(
@@ -188,7 +191,7 @@ export async function runAgentTurn(conversationId: string): Promise<void> {
 
   // Guardrail duro: si algo dice que la IA no debe correr, no se llama al
   // modelo. No depende de que el prompt "se acuerde" de quedarse callado.
-  if (!settings?.ai_globally_enabled || !convo.ai_enabled || convo.assigned_agent_id) return;
+  if (!canRun || !convo.ai_enabled || convo.assigned_agent_id) return;
 
   // Lock por conversación: si dos webhooks casi simultáneos disparan el
   // turno para la misma conversación (típico cuando el cliente manda varios

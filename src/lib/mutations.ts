@@ -337,6 +337,15 @@ export async function setAiGloballyEnabled(supabase: SupabaseClient, agent: Agen
   if (error) throw error;
 }
 
+/** `null` quita el tope. RLS deja escribir agent_settings solo a supervisor/admin. */
+export async function setDailySpendCap(supabase: SupabaseClient, agent: Agent, capUsd: number | null) {
+  const { error } = await supabase
+    .from("agent_settings")
+    .update({ daily_spend_cap_usd: capUsd, updated_by: agent.id, updated_at: new Date().toISOString() })
+    .eq("id", true);
+  if (error) throw error;
+}
+
 export async function createQuickReply(supabase: SupabaseClient, label: string, content: string) {
   const { error } = await supabase.from("quick_replies").insert({ label, content });
   if (error) throw error;

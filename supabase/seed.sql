@@ -3,6 +3,24 @@
 -- ---------------------------------------------------------------------------
 
 -- ============================================================================
+-- Freno de seguridad: este archivo crea tres usuarios con una contraseña
+-- publicada acá mismo. Correrlo contra la base del negocio entregaría acceso
+-- al CRM a cualquiera que lea el repositorio.
+--
+-- Se aborta si la base muestra señales de ser real: un canal de WhatsApp
+-- conectado, o mensajes que Meta haya entregado de verdad. En una base de
+-- desarrollo recién creada no hay ni lo uno ni lo otro, así que no estorba.
+-- ============================================================================
+do $$
+begin
+  if exists (select 1 from public.whatsapp_channels where status = 'connected')
+     or exists (select 1 from public.messages where whatsapp_message_id is not null) then
+    raise exception
+      'seed.sql es solo para desarrollo y esta base tiene datos reales (un canal conectado o mensajes entregados por Meta). Abortado: crearía usuarios con la contraseña que está escrita en el propio archivo.';
+  end if;
+end $$;
+
+-- ============================================================================
 -- AGENTES (auth.users + auth.identities + public.agents)
 -- Contraseña para los 3: Liminal123!
 -- ============================================================================
