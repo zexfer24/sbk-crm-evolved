@@ -296,10 +296,13 @@ guarda las rutas, no el contenido. Para eso:
 
 Honestidad sobre el estado, para que nadie se lleve una sorpresa:
 
-- **No hay alertas automáticas.** Existe `/api/health` para que un monitor
-  externo (UptimeRobot, Better Stack, el que sea) revise el servicio y avise,
-  pero los errores de la aplicación siguen yendo a `console.error` y a
-  `agent_turns`. Para rastrear excepciones hace falta un Sentry o equivalente.
+- **No hay agregador de registros configurado.** El código ya emite una línea
+  JSON por evento (`{"level","event","ts",...}`), lista para que Loki, Datadog
+  o CloudWatch la indexen sin parsear texto, y oculta solo los valores
+  sensibles. Falta apuntar un recolector a la salida del contenedor y armar
+  las alertas. Los eventos que merecen una: `cola_encolar_fallido`,
+  `cola_turno_fallido`, `webhook_sin_secreto_en_produccion` y
+  `webhook_firma_invalida`.
 - **Un solo token de WhatsApp** para todos los canales. Con más de un número
   hay que extender `whatsapp_channels`.
 - **La PII no está cifrada en reposo.** Cédula, dirección y teléfono se

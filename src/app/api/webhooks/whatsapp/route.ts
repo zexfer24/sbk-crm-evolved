@@ -11,6 +11,7 @@ import {
 } from "@/lib/whatsapp/meta-client";
 import { enqueueAgentTurns, processQueuedTurns } from "@/lib/ai/queue";
 import { MEDIA_BUCKET, mediaUrlFor } from "@/lib/storage";
+import { log } from "@/lib/log";
 
 // ---------------------------------------------------------------------------
 // GET: handshake de verificación que exige Meta al registrar el webhook.
@@ -180,7 +181,7 @@ export async function POST(request: Request) {
   if (appSecret) {
     const signature = request.headers.get("x-hub-signature-256");
     if (!hasValidMetaSignature(rawBody, signature, appSecret)) {
-      console.error("Webhook de WhatsApp: firma inválida o ausente, se rechaza el request.");
+      log.error("webhook_firma_invalida");
       return NextResponse.json({ error: "Firma inválida." }, { status: 401 });
     }
   } else if (process.env.NODE_ENV === "production") {
@@ -189,14 +190,10 @@ export async function POST(request: Request) {
     // quedar abierto porque alguien olvidó definir una variable: se
     // rechaza y queda registrado, en vez de procesar mensajes inventados
     // que le harían responder a la IA y consumir cuota del modelo.
-    console.error(
-      "Webhook de WhatsApp: WHATSAPP_APP_SECRET no configurado en producción — se rechaza el request sin procesarlo."
-    );
+    log.error("webhook_sin_secreto_en_produccion");
     return NextResponse.json({ error: "Webhook mal configurado." }, { status: 503 });
   } else {
-    console.warn(
-      "Webhook de WhatsApp: WHATSAPP_APP_SECRET no configurado — no se valida la firma de Meta. Configúralo antes de producción."
-    );
+    log.warn("webhook_sin_verificacion_de_firma");
   }
 
   const body = JSON.parse(rawBody) as WebhookBody;
@@ -212,9 +209,7 @@ export async function POST(request: Request) {
   });
 
   if (allowed === false) {
-    console.error(
-      `Webhook de WhatsApp: más de ${WEBHOOK_RATE_LIMIT} eventos en ${WEBHOOK_RATE_WINDOW_SECONDS}s, se descarta este lote.`
-    );
+    log.warn("webhook_limitado", { limite: WEBHOOK_RATE_LIMIT, ventanaSegundos: WEBHOOK_RATE_WINDOW_SECONDS });
     return NextResponse.json({ ok: true, throttled: true });
   }
   const accessToken = process.env.WHATSAPP_ACCESS_TOKEN;

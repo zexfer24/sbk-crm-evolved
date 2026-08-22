@@ -3,6 +3,7 @@ import type { SupabaseClient } from "@supabase/supabase-js";
 import type { Database } from "@/lib/supabase/database.types";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { runAgentTurn } from "@/lib/ai/agent";
+import { errorText, log } from "@/lib/log";
 
 // ---------------------------------------------------------------------------
 // Cola de turnos del agente.
@@ -15,10 +16,6 @@ import { runAgentTurn } from "@/lib/ai/agent";
 /** Tope de turnos por pasada. Evita que una tanda grande agote el tiempo de la petición. */
 const MAX_PER_RUN = 10;
 
-function errorMessage(err: unknown): string {
-  return err instanceof Error ? err.message : String(err);
-}
-
 export async function enqueueAgentTurns(
   supabase: SupabaseClient<Database>,
   conversationIds: Iterable<string>
@@ -28,7 +25,8 @@ export async function enqueueAgentTurns(
     if (error) {
       // Encolar es lo único que no puede fallar en silencio: si esto no
       // queda registrado, el cliente se queda sin respuesta y nadie lo sabe.
-      console.error(`No se pudo encolar el turno de la conversación ${conversationId}:`, error);
+      // Este evento merece una alerta en el agregador.
+      log.error("cola_encolar_fallido", { conversationId, detail: error.message });
     }
   }
 }
@@ -52,7 +50,7 @@ export async function processQueuedTurns(limit = MAX_PER_RUN): Promise<QueueRunR
     const { data: conversationId, error } = await supabase.rpc("claim_agent_turn", {});
 
     if (error) {
-      console.error("No se pudo tomar el siguiente turno de la cola:", error);
+      log.error("cola_reclamar_fallido", { detail: error.message });
       break;
     }
     if (!conversationId) break; // Cola vacía.
@@ -62,8 +60,8 @@ export async function processQueuedTurns(limit = MAX_PER_RUN): Promise<QueueRunR
       await supabase.rpc("finish_agent_turn", { p_conversation_id: conversationId });
       result.processed++;
     } catch (err) {
-      const detail = errorMessage(err);
-      console.error(`Falló el turno de la conversación ${conversationId}:`, detail);
+      const detail = errorText(err);
+      log.error("cola_turno_fallido", { conversationId, detail });
       await supabase.rpc("finish_agent_turn", { p_conversation_id: conversationId, p_error: detail });
       result.failed++;
     }
