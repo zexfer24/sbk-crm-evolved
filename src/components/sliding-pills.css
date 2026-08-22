@@ -22,7 +22,7 @@
   display: inline-flex;
   gap: 6px;
   /* Una sola propiedad animada, compuesta en la GPU. */
-  transition: clip-path 240ms var(--lm-ease-in-out);
+  transition: clip-path 180ms var(--lm-ease-in-out);
   pointer-events: none;
 }
 
