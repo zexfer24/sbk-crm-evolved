@@ -39,3 +39,9 @@ yarn-error.log*
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+
+# herramental local de skills: .claude/skills son symlinks con rutas
+# absolutas de esta máquina, no sirven en ninguna otra.
+/.agents/
+/.claude/skills/
+skills-lock.json
