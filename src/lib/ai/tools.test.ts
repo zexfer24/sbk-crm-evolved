@@ -18,6 +18,8 @@ interface FakeProductRow {
 
 function createFakeSupabase(products: FakeProductRow[]) {
   const insertedQuotes: Record<string, unknown>[] = [];
+  /** Tope que la consulta le pidió a la base, o null si no pidió ninguno. */
+  let appliedLimit: number | null = null;
 
   const client = {
     from(table: string) {
@@ -25,7 +27,12 @@ function createFakeSupabase(products: FakeProductRow[]) {
         return {
           select: () => ({
             eq: () => ({
-              or: async () => ({ data: products, error: null }),
+              or: () => ({
+                limit: async (n: number) => {
+                  appliedLimit = n;
+                  return { data: products.slice(0, n), error: null };
+                },
+              }),
             }),
           }),
         };
@@ -42,7 +49,7 @@ function createFakeSupabase(products: FakeProductRow[]) {
     },
   };
 
-  return { client, insertedQuotes };
+  return { client, insertedQuotes, getAppliedLimit: () => appliedLimit };
 }
 
 describe("buildCatalogTool — registro de cotizaciones", () => {
@@ -96,5 +103,99 @@ describe("buildCatalogTool — registro de cotizaciones", () => {
     await tool.execute({ query: "algo que no existe" }, { toolCallId: "t1", messages: [] });
 
     expect(insertedQuotes).toHaveLength(0);
+  });
+});
+
+describe("buildCatalogTool — tope de resultados", () => {
+  /**
+   * Sin tope, un término genérico devolvía el catálogo entero al contexto del
+   * modelo: nombre, marca, precios, stock y compatibilidades de cada
+   * producto. Con cientos de repuestos eso multiplica el costo del turno, y
+   * se repite en cada paso del tool loop.
+   */
+  it("le pide un tope a la base en vez de traer todo el catálogo", async () => {
+    const muchos = Array.from({ length: 200 }, (_, i) => ({
+      id: `prod-${i}`,
+      name: `Repuesto ${i}`,
+      brand: "Genérico",
+      price: 10,
+      currency: "USD" as const,
+      stock_quantity: 3,
+      product_compatibility: [],
+    }));
+    const { client, getAppliedLimit } = createFakeSupabase(muchos);
+
+    const tool = buildCatalogTool({
+      // @ts-expect-error -- fake mínimo suficiente para este test
+      supabase: client,
+      conversationId: "conv-1",
+      contactId: "contact-1",
+    });
+
+    // @ts-expect-error -- firma simplificada del test
+    const result = (await tool.execute({ query: "a" }, { toolCallId: "t1", messages: [] })) as {
+      results: unknown[];
+      hayMas?: boolean;
+    };
+
+    // Se piden 26 —uno de más— para saber si quedó algo fuera sin contar el
+    // catálogo entero, pero al modelo solo le llegan 25.
+    expect(getAppliedLimit()).toBe(26);
+    expect(result.results.length).toBe(25);
+  });
+
+  it("avisa al modelo cuando hubo que recortar, para que pida precisar", async () => {
+    const muchos = Array.from({ length: 200 }, (_, i) => ({
+      id: `prod-${i}`,
+      name: `Repuesto ${i}`,
+      brand: "Genérico",
+      price: 10,
+      currency: "USD" as const,
+      stock_quantity: 3,
+      product_compatibility: [],
+    }));
+    const { client } = createFakeSupabase(muchos);
+
+    const tool = buildCatalogTool({
+      // @ts-expect-error -- fake mínimo
+      supabase: client,
+      conversationId: "conv-1",
+      contactId: "contact-1",
+    });
+
+    // @ts-expect-error -- firma simplificada
+    const result = (await tool.execute({ query: "a" }, { toolCallId: "t1", messages: [] })) as {
+      hayMas?: boolean;
+    };
+
+    expect(result.hayMas).toBe(true);
+  });
+
+  it("con pocos resultados no dice que haya más", async () => {
+    const { client } = createFakeSupabase([
+      {
+        id: "prod-1",
+        name: "Carburador PZ27",
+        brand: "Genérico",
+        price: 18,
+        currency: "USD",
+        stock_quantity: 12,
+        product_compatibility: [],
+      },
+    ]);
+
+    const tool = buildCatalogTool({
+      // @ts-expect-error -- fake mínimo
+      supabase: client,
+      conversationId: "conv-1",
+      contactId: "contact-1",
+    });
+
+    // @ts-expect-error -- firma simplificada
+    const result = (await tool.execute({ query: "carburador" }, { toolCallId: "t1", messages: [] })) as {
+      hayMas?: boolean;
+    };
+
+    expect(result.hayMas).toBe(false);
   });
 });

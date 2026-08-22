@@ -47,6 +47,11 @@
   --lm-radius-card: 20px;
   --lm-radius-panel: 30px;
 
+  /* Cuánto mete su texto un campo hacia adentro: el mismo px-3 que traen los
+     campos de HeroUI. La etiqueta y la ayuda se cuelgan de este valor para
+     que los tres arranquen en la misma línea. */
+  --lm-field-pad-x: 12px;
+
   /* Movimiento. Las curvas nativas de CSS son demasiado suaves para UI: se
      sienten flojas. Estas son las mismas que ya usaba el dashboard, ahora
      con nombre para que no se reinventen en cada archivo. */
@@ -109,6 +114,61 @@
     --overlay-shadow: var(--lm-shadow-lg);
     --field-shadow: none;
   }
+}
+
+/* --------------------------------------------------------------------------
+   Campos de formulario
+
+   El campo mete su texto 12px hacia adentro; la etiqueta y la ayuda arrancaban
+   pegadas al borde. En una columna eso se lee como un zigzag: etiqueta a 0,
+   texto adentro a 12, ayuda de vuelta a 0. Un solo margen para los tres.
+   -------------------------------------------------------------------------- */
+
+.label {
+  padding-inline-start: var(--lm-field-pad-x);
+}
+
+/* Ahí la etiqueta va al lado del control, no encima: sangrarla lo separaría. */
+[data-slot="checkbox"] .label,
+[data-slot="radio"] .label,
+[data-slot="switch"] .label {
+  padding-inline-start: 0;
+}
+
+/* Ayuda debajo del campo: la letra chica que explica para qué sirve. */
+.lm-hint {
+  padding-inline-start: var(--lm-field-pad-x);
+  color: var(--lm-muted);
+  font-size: 11.5px;
+  line-height: 1.45;
+}
+
+/* Un campo de varias líneas no puede ser una píldora: con el radio de 999px
+   las esquinas se curvan hasta la mitad del alto y se comen el primer y el
+   último renglón. */
+.textarea {
+  border-radius: var(--radius);
+}
+
+/* Los <select> nativos se venían escribiendo a mano en cada archivo, cada uno
+   con su propio padding. Este los deja del mismo alto y con el texto en la
+   misma línea que los demás campos. */
+.lm-select {
+  /* Sin ancho propio: en una columna se estira solo, y en una fila (el V/E de
+     la cédula) manda el ancho que le ponga quien lo usa. */
+  padding: 8px var(--lm-field-pad-x);
+  /* Sin borde, como los campos de HeroUI: acá un campo se lee por el fondo
+     hundido. Un borde de 1px además correría el texto un píxel. */
+  border: 0;
+  border-radius: var(--field-radius);
+  background: var(--field-background);
+  color: var(--field-foreground);
+  font-size: 14px;
+}
+
+.lm-select:focus-visible {
+  outline: 2px solid var(--lm-link);
+  outline-offset: 2px;
 }
 
 /* --------------------------------------------------------------------------

@@ -180,7 +180,7 @@ export function CloseSaleModal({
 
               <div className="flex flex-col gap-1.5">
                 <Label>¿Qué se vendió?</Label>
-                <p className="text-xs text-muted">
+                <p className="lm-hint">
                   El monto sale de lo que la IA cotizó en este chat — elige qué se vendió, no lo escribas a mano.
                 </p>
 
@@ -252,7 +252,7 @@ export function CloseSaleModal({
                     id="sale-cedula-type"
                     value={cedulaType}
                     onChange={(e) => setCedulaType(e.target.value as CedulaType)}
-                    className="w-20 rounded-field border border-border bg-field px-2 text-sm text-field-foreground"
+                    className="w-20 lm-select"
                   >
                     <option value="V">V</option>
                     <option value="E">E</option>
@@ -273,7 +273,7 @@ export function CloseSaleModal({
                   id="sale-state"
                   value={state}
                   onChange={(e) => setState(e.target.value)}
-                  className="w-full rounded-field border border-border bg-field px-3 py-2 text-sm text-field-foreground"
+                  className="w-full lm-select"
                 >
                   <option value="">Selecciona un estado...</option>
                   {VENEZUELA_STATES.map((s) => (
@@ -315,7 +315,7 @@ export function CloseSaleModal({
                   <>
                     {customerImages.length > 0 && (
                       <>
-                        <p className="text-xs text-muted">Fotos que envió el cliente por el chat:</p>
+                        <p className="lm-hint">Fotos que envió el cliente por el chat:</p>
                         <div className="crm-proof-picker">
                           {customerImages.map((m) => (
                             <button

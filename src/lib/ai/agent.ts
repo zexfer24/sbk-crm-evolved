@@ -58,16 +58,26 @@ function addTokens(a: TurnTokens, b: TurnTokens): TurnTokens {
   };
 }
 
+/** Mensajes que se le pasan al modelo. Más de esto encarece el turno sin aportar contexto útil. */
+const HISTORY_LIMIT = 30;
+
+/**
+ * Últimos mensajes de la conversación, en orden cronológico.
+ *
+ * Se piden DESCENDENTES y se invierten. Pedirlos ascendentes con `limit`
+ * traía los treinta MÁS ANTIGUOS: en un cliente recurrente la IA leía la
+ * conversación de hace semanas y no veía el mensaje que tenía que responder.
+ */
 async function loadHistory(supabase: SupabaseClient<Database>, conversationId: string): Promise<ModelMessage[]> {
   const { data } = await supabase
     .from("messages")
     .select("sender_type, content, is_internal_note")
     .eq("conversation_id", conversationId)
-    .order("created_at", { ascending: true })
-    .limit(30);
+    .order("created_at", { ascending: false })
+    .limit(HISTORY_LIMIT);
 
   const messages: ModelMessage[] = [];
-  for (const row of data ?? []) {
+  for (const row of [...(data ?? [])].reverse()) {
     if (row.is_internal_note || row.sender_type === "system" || !row.content) continue;
     messages.push({ role: row.sender_type === "customer" ? "user" : "assistant", content: row.content });
   }
@@ -297,9 +307,13 @@ export async function runAgentTurn(conversationId: string): Promise<void> {
         resumen: "El turno de la IA se quedó sin pasos antes de escalar formalmente. Revisar el hilo completo.",
       });
       outcome.escalated = forced.escalated;
-      outcome.assignedAgentName = forced.assignedAgentName;
+      outcome.assignedAgentName = forced.assignedAgentName ?? undefined;
       if (!text.trim()) {
-        text = "Dame un momentico, ya te paso con un asesor para que te ayude con esto.";
+        // Sin asesores no se promete lo que no va a pasar: nadie va a
+        // contestar en un minuto si no hay nadie trabajando.
+        text = forced.unassigned
+          ? "Ya dejé tu caso registrado para que lo revise un asesor. En cuanto haya alguien disponible te escriben por acá."
+          : "Dame un momentico, ya te paso con un asesor para que te ayude con esto.";
       }
     }
 

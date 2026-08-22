@@ -319,7 +319,7 @@ export function PlaybooksPanel({ playbooks, unmatchedTurns, quickReplies, canEdi
                     placeholder="Postventa Cashea"
                     fullWidth
                   />
-                  <span className="ac-pb-hint">Solo lo ves tú. Sirve para reconocerlo en esta lista.</span>
+                  <span className="lm-hint">Solo lo ves tú. Sirve para reconocerlo en esta lista.</span>
                 </div>
 
                 <div className="flex flex-col gap-1.5">
@@ -332,7 +332,7 @@ export function PlaybooksPanel({ playbooks, unmatchedTurns, quickReplies, canEdi
                     rows={2}
                     fullWidth
                   />
-                  <span className="ac-pb-hint">
+                  <span className="lm-hint">
                     Descríbelo como se lo explicarías a un asesor nuevo. Es lo único que la IA usa para decidir si esta
                     respuesta corresponde.
                   </span>
@@ -347,7 +347,7 @@ export function PlaybooksPanel({ playbooks, unmatchedTurns, quickReplies, canEdi
                     rows={5}
                     fullWidth
                   />
-                  <span className="ac-pb-hint">Se envía tal cual, palabra por palabra.</span>
+                  <span className="lm-hint">Se envía tal cual, palabra por palabra.</span>
                 </div>
 
                 <div className="flex flex-col gap-1.5">
@@ -385,7 +385,7 @@ export function PlaybooksPanel({ playbooks, unmatchedTurns, quickReplies, canEdi
                         onChange={(e) =>
                           setDraft({ ...draft, attachmentType: e.target.value as PlaybookAttachmentType })
                         }
-                        className="rounded-field border border-border bg-field px-2 py-1.5 text-sm text-field-foreground"
+                        className="lm-select"
                         aria-label="Cómo se envía el adjunto"
                       >
                         <option value="link">Link — la dirección va escrita en el mensaje</option>
@@ -394,7 +394,7 @@ export function PlaybooksPanel({ playbooks, unmatchedTurns, quickReplies, canEdi
                         <option value="video">Video — se adjunta el archivo</option>
                       </select>
                       {draft.attachmentType !== "link" && (
-                        <span className="ac-pb-hint">
+                        <span className="lm-hint">
                           Para adjuntar el archivo, la dirección tiene que llevar directo a él y abrirse sin pedir
                           permiso. Un catálogo en una página web o en una carpeta compartida no sirve así: para esos usa
                           la opción <strong>Link</strong>.
@@ -410,12 +410,12 @@ export function PlaybooksPanel({ playbooks, unmatchedTurns, quickReplies, canEdi
                     id="pb-after"
                     value={draft.afterSend}
                     onChange={(e) => setDraft({ ...draft, afterSend: e.target.value as PlaybookAfterSend })}
-                    className="rounded-field border border-border bg-field px-2 py-1.5 text-sm text-field-foreground"
+                    className="lm-select"
                   >
                     <option value="wait">Queda esperando la respuesta del cliente</option>
                     <option value="escalate">Pasa la conversación a un asesor</option>
                   </select>
-                  <span className="ac-pb-hint">
+                  <span className="lm-hint">
                     Elige pasar a un asesor cuando la respuesta pide un dato que alguien tiene que revisar, como la
                     cédula para buscar una guía de envío.
                   </span>

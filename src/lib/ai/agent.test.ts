@@ -10,9 +10,16 @@ interface FakeState {
   canRun: boolean;
   conversation: Record<string, unknown> | null;
   history: { sender_type: string; content: string | null; is_internal_note: boolean }[];
+  historyOrderAscending: boolean | null;
 }
 
-const state: FakeState = { aiGloballyEnabled: true, canRun: true, conversation: null, history: [] };
+const state: FakeState = {
+  aiGloballyEnabled: true,
+  canRun: true,
+  conversation: null,
+  history: [],
+  historyOrderAscending: null,
+};
 const conversationUpdates: Record<string, unknown>[] = [];
 const agentTurnInserts: Record<string, unknown>[] = [];
 
@@ -58,7 +65,12 @@ function createFakeSupabase() {
         return {
           select: () => ({
             eq: () => ({
-              order: () => ({ limit: async () => ({ data: state.history }) }),
+              // Se guarda cómo se pidió el orden: la IA tiene que leer los
+              // mensajes MÁS RECIENTES, no los más antiguos.
+              order: (_col: string, opts: { ascending: boolean }) => {
+                state.historyOrderAscending = opts.ascending;
+                return { limit: async () => ({ data: state.history }) };
+              },
             }),
           }),
         };
@@ -160,6 +172,7 @@ beforeEach(() => {
     channel: { phone_number_id: null, status: "demo" },
   };
   state.history = [{ sender_type: "customer", content: "hola quiero accesorios", is_internal_note: false }];
+  state.historyOrderAscending = null;
   conversationUpdates.length = 0;
   agentTurnInserts.length = 0;
   vi.clearAllMocks();
@@ -174,6 +187,33 @@ beforeEach(() => {
     usage: { inputTokens: 20, outputTokens: 8, totalTokens: 28 },
   });
   escalateConversationMock.mockResolvedValue({ escalated: true, assignedAgentName: "María" });
+});
+
+describe("runAgentTurn — historial", () => {
+  /**
+   * Con `ascending: true` y `limit(30)` se traían los TREINTA MÁS ANTIGUOS.
+   * En un cliente recurrente eso significa que la IA lee la conversación de
+   * hace semanas y nunca ve el mensaje al que tiene que responder.
+   */
+  it("lee los mensajes más recientes, no los primeros de la conversación", async () => {
+    await runAgentTurn("conv-1");
+
+    expect(state.historyOrderAscending).toBe(false);
+  });
+
+  it("se los pasa al modelo en orden cronológico, del más viejo al más nuevo", async () => {
+    // Tal como los devuelve la consulta: del más nuevo al más viejo.
+    state.history = [
+      { sender_type: "customer", content: "para una Bera", is_internal_note: false },
+      { sender_type: "customer", content: "tienen carburador", is_internal_note: false },
+      { sender_type: "customer", content: "hola", is_internal_note: false },
+    ];
+
+    await runAgentTurn("conv-1");
+
+    const enviados = matchPlaybookMock.mock.calls[0][0] as { content: string }[];
+    expect(enviados.map((m) => m.content)).toEqual(["hola", "tienen carburador", "para una Bera"]);
+  });
 });
 
 describe("runAgentTurn — escenarios predeterminados", () => {

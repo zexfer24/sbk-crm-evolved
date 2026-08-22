@@ -17,8 +17,12 @@ export type ReclamoCategory = (typeof RECLAMO_CATEGORIES)[number];
 export type EscalationMotivo = "devolucion" | "queja" | "intencion_compra" | "seguimiento";
 
 export interface EscalateResult {
+  /** El caso salió de manos de la IA. Es true aunque no haya habido a quién asignárselo. */
   escalated: boolean;
-  assignedAgentName?: string;
+  /** Null cuando no había ningún asesor activo. */
+  assignedAgentName?: string | null;
+  /** El caso quedó esperando a que alguien entre a trabajar. */
+  unassigned?: boolean;
   reason?: string;
 }
 
@@ -36,13 +40,14 @@ export async function escalateConversation(
 
   const candidate = await claimNextAvailableAgent(supabase);
 
-  if (!candidate) {
-    return { escalated: false, reason: "No hay asesores activos para asignar." };
-  }
-
+  // Sin asesores la IA se pausa IGUAL. Dejarla encendida era peor por los dos
+  // lados: cada mensaje del cliente disparaba otro turno completo que volvía
+  // a intentar escalar y volvía a fallar —gasto puro— y el caso seguía sin
+  // aparecer en ningún lado. Pausada y en 'assigned' queda esperando en la
+  // bandeja a que alguien entre a trabajar.
   const conversationUpdate: TablesUpdate<"conversations"> = {
     ai_enabled: false,
-    assigned_agent_id: candidate.id,
+    assigned_agent_id: candidate?.id ?? null,
     journey_stage: "assigned",
   };
   if (motivo === "intencion_compra") conversationUpdate.deal_status = "in_progress";
@@ -55,7 +60,9 @@ export async function escalateConversation(
     sender_type: "system",
     message_type: "system_event",
     is_internal_note: true,
-    content: `IA escaló a ${candidate.displayName}. Motivo: ${motivo}. ${resumen}`,
+    content: candidate
+      ? `IA escaló a ${candidate.displayName}. Motivo: ${motivo}. ${resumen}`
+      : `IA escaló sin asesores disponibles: nadie tiene asignada esta conversación todavía. Motivo: ${motivo}. ${resumen}`,
   });
 
   if (motivo === "queja") {
@@ -66,5 +73,12 @@ export async function escalateConversation(
     }
   }
 
-  return { escalated: true, assignedAgentName: candidate.displayName };
+  return candidate
+    ? { escalated: true, assignedAgentName: candidate.displayName }
+    : {
+        escalated: true,
+        assignedAgentName: null,
+        unassigned: true,
+        reason: "No había asesores activos: la conversación quedó esperando en la bandeja.",
+      };
 }

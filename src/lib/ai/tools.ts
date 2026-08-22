@@ -7,6 +7,16 @@ import { getBcvRate } from "@/lib/ai/bcv";
 import { pgrstLiteral } from "@/lib/ai/pgrst";
 import { RECLAMO_CATEGORIES, escalateConversation, type EscalationMotivo } from "@/lib/ai/escalate";
 
+/**
+ * Tope de repuestos que se le pasan al modelo de una vez.
+ *
+ * Sin tope, un término genérico —«repuesto», «moto», «aceite»— metía el
+ * catálogo entero en el contexto, con precios, stock y compatibilidades de
+ * cada producto, y se repetía en cada paso del tool loop. Veinticinco alcanzan
+ * de sobra para responder o para pedirle al cliente que precise.
+ */
+const MAX_CATALOG_RESULTS = 25;
+
 interface ToolDeps {
   supabase: SupabaseClient<Database>;
   conversationId: string;
@@ -40,15 +50,20 @@ export function buildCatalogTool({ supabase, conversationId }: ToolDeps) {
       // condiciones a la consulta.
       const term = pgrstLiteral(`%${query}%`);
 
+      // Se pide uno de más para saber si quedaron resultados fuera sin
+      // tener que contar el catálogo entero.
       const { data: products, error } = await supabase
         .from("products")
         .select("id, name, brand, price, currency, stock_quantity, product_compatibility(moto_brand, moto_model)")
         .eq("is_active", true)
-        .or(`name.ilike.${term},brand.ilike.${term}`);
+        .or(`name.ilike.${term},brand.ilike.${term}`)
+        .limit(MAX_CATALOG_RESULTS + 1);
 
       if (error) return { results: [], error: "No se pudo consultar el catálogo en este momento." };
 
-      let filtered = products ?? [];
+      const hayMas = (products?.length ?? 0) > MAX_CATALOG_RESULTS;
+
+      let filtered = (products ?? []).slice(0, MAX_CATALOG_RESULTS);
       if (motoBrand) {
         filtered = filtered.filter(
           (p) =>
@@ -104,6 +119,14 @@ export function buildCatalogTool({ supabase, conversationId }: ToolDeps) {
         })),
         tasaBcvUsada: rate,
         tasaDesactualizada: isStale,
+        hayMas,
+        // Se le dice en palabras qué hacer con el recorte: si no, el modelo
+        // enumera los que le llegaron como si fueran todo el catálogo.
+        ...(hayMas
+          ? {
+              instruccionParaTuRespuesta: `Hay más resultados de los que caben acá. Muestra estos y pídele al cliente que precise (marca del repuesto, modelo de su moto) en vez de dar a entender que esto es todo lo que hay.`,
+            }
+          : {}),
       };
     },
   });
@@ -174,10 +197,17 @@ export function buildEscalateTool({ supabase, conversationId, contactId }: ToolD
 
       outcome.escalated = result.escalated;
       outcome.motivo = motivo;
-      outcome.assignedAgentName = result.assignedAgentName;
+      outcome.assignedAgentName = result.assignedAgentName ?? undefined;
       outcome.reason = result.reason;
 
-      return result;
+      // El modelo redacta el cierre con esto, así que se le dice en palabras
+      // qué prometer: sin asesores no puede decir «ya te atienden».
+      return {
+        ...result,
+        instruccionParaTuRespuesta: result.unassigned
+          ? "No hay ningún asesor conectado ahora. Dile al cliente que su caso quedó registrado y que le escriben apenas haya alguien disponible. NO prometas que lo atienden enseguida."
+          : `Ya está asignado a ${result.assignedAgentName}. Dile al cliente que un asesor lo va a atender.`,
+      };
     },
   });
 }
