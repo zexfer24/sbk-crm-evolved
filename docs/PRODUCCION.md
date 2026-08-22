@@ -136,14 +136,59 @@ La IA arranca encendida. Antes de que hable con un cliente real:
 
 ---
 
-## 7. Lo que todavía no existe
+## 7. Respaldos
+
+Los scripts están hechos y **probados restaurando de verdad**:
+
+```bash
+export DATABASE_URL="postgresql://usuario:clave@host:5432/postgres"
+
+./scripts/backup.sh                     # deja backups/liminal-<fecha>.sql.gz
+./scripts/restore.sh backups/liminal-20260822-030000.sql.gz
+```
+
+En cron, un respaldo diario a las 3 de la mañana:
+
+```cron
+0 3 * * * cd /ruta/al/crm && DATABASE_URL='...' BACKUP_DIR=/var/backups/liminal ./scripts/backup.sh >> /var/log/liminal-backup.log 2>&1
+```
+
+`RETENTION_DAYS` (30 por defecto) controla cuántos días se guardan.
+
+### Prueba de restauración
+
+Se verificó el ciclo entero contra la base local: respaldar, **tirar el
+esquema `public` completo** y restaurar. Todo volvió — 5 conversaciones, 18
+mensajes, 31 familias de motor, 3 usuarios, 12 funciones, 40 políticas RLS,
+9 triggers, y el bucket seguía privado.
+
+De esa prueba salieron tres fallas que ningún script sin probar detecta:
+
+1. Volcar los esquemas `auth` o `storage` completos aborta con *"must be
+   owner of table"* por tablas internas de Supabase.
+2. El `--clean` de `pg_dump` aborta a mitad porque un trigger de `auth.users`
+   depende de una función de `public`, y deja la base **peor que antes**.
+3. El volcado ya trae su `CREATE SCHEMA public`, así que el restore debe
+   tirar el esquema sin recrearlo.
+
+**Repite esta prueba contra una base de repuesto cada tanto.** Un respaldo que
+nunca se restauró no es un respaldo.
+
+### Lo que los scripts NO respaldan
+
+Los **archivos del bucket** (fotos, audios, comprobantes). `storage.objects`
+guarda las rutas, no el contenido. Para eso:
+
+- Supabase gestionado: los respaldos del plan ya lo cubren.
+- Self-hosted: incluye el volumen de Storage en el respaldo del servidor.
+
+---
+
+## 8. Lo que todavía no existe
 
 Honestidad sobre el estado, para que nadie se lleve una sorpresa:
 
-- **No hay backups.** Es lo más urgente de esta lista: ahí viven las
-  conversaciones y las ventas del negocio. Supabase gestionado los trae según
-  el plan; si es self-hosted, hay que montar `pg_dump` programado y **probar
-  una restauración**, porque un backup que nunca se restauró no es un backup.
+- **Alertas.** Ver más abajo.
 - **No hay alertas.** Los errores van a `console.error` y a `agent_turns`. Si
   el webhook empieza a fallar un lunes en la mañana, nadie se entera hasta que
   un cliente reclame. Hace falta un Sentry o equivalente.
@@ -163,6 +208,7 @@ Honestidad sobre el estado, para que nadie se lleve una sorpresa:
 
 Con todo configurado, esta lista debe pasar entera:
 
+- [ ] Una restauración de prueba devuelve los datos completos
 - [ ] `npm run build` sin errores ni warnings
 - [ ] `select count(*) from supabase_migrations.schema_migrations` devuelve 22
 - [ ] El bucket `whatsapp-media` es privado (`public = false`)
