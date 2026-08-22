@@ -58,8 +58,14 @@ function addTokens(a: TurnTokens, b: TurnTokens): TurnTokens {
   };
 }
 
-/** Mensajes que se le pasan al modelo. Más de esto encarece el turno sin aportar contexto útil. */
-const HISTORY_LIMIT = 30;
+/**
+ * Mensajes que se le pasan al modelo.
+ *
+ * Quince cubren de sobra el ida y vuelta de una consulta por WhatsApp, que
+ * es lo que el agente necesita para responder. Subirlo encarece cada turno
+ * —el historial viaja en las tres fases— sin aportar contexto que se use.
+ */
+const HISTORY_LIMIT = 15;
 
 /**
  * Últimos mensajes de la conversación, en orden cronológico.

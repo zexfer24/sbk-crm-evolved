@@ -12,10 +12,12 @@ import { RECLAMO_CATEGORIES, escalateConversation, type EscalationMotivo } from 
  *
  * Sin tope, un término genérico —«repuesto», «moto», «aceite»— metía el
  * catálogo entero en el contexto, con precios, stock y compatibilidades de
- * cada producto, y se repetía en cada paso del tool loop. Veinticinco alcanzan
- * de sobra para responder o para pedirle al cliente que precise.
+ * cada producto, y se repetía en cada paso del tool loop.
+ *
+ * Diez no es solo por costo: nadie lee veinticinco repuestos en un mensaje de
+ * WhatsApp. Si hay más, conviene que la IA pida precisar antes que enumerar.
  */
-const MAX_CATALOG_RESULTS = 25;
+const MAX_CATALOG_RESULTS = 10;
 
 interface ToolDeps {
   supabase: SupabaseClient<Database>;

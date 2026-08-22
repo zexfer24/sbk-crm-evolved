@@ -138,10 +138,10 @@ describe("buildCatalogTool — tope de resultados", () => {
       hayMas?: boolean;
     };
 
-    // Se piden 26 —uno de más— para saber si quedó algo fuera sin contar el
-    // catálogo entero, pero al modelo solo le llegan 25.
-    expect(getAppliedLimit()).toBe(26);
-    expect(result.results.length).toBe(25);
+    // Se piden 11 —uno de más— para saber si quedó algo fuera sin contar el
+    // catálogo entero, pero al modelo solo le llegan 10.
+    expect(getAppliedLimit()).toBe(11);
+    expect(result.results.length).toBe(10);
   });
 
   it("avisa al modelo cuando hubo que recortar, para que pida precisar", async () => {
