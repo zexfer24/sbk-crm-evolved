@@ -15,7 +15,8 @@ vi.mock("next/server", async (importOriginal) => {
 
 vi.mock("@/lib/ai/queue", () => ({
   enqueueAgentTurns: vi.fn(async () => {}),
-  processQueuedTurns: vi.fn(async () => ({ processed: 0, failed: 0 })),
+  // Sin mockear esta, el test esperaría de verdad la ventana de silencio.
+  processAfterDebounce: vi.fn(async () => ({ processed: 0, failed: 0 })),
 }));
 
 vi.mock("@/lib/whatsapp/meta-client", async (importOriginal) => {

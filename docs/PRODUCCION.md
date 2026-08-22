@@ -53,7 +53,7 @@ real, pero la regla simple es: **el seed no se toca en producción**.
 **Verificación:**
 
 ```sql
-select count(*) from supabase_migrations.schema_migrations;  -- 23
+select count(*) from supabase_migrations.schema_migrations;  -- 24
 select public from storage.buckets where id = 'whatsapp-media';  -- false
 select public.agent_can_run();  -- true
 ```
@@ -240,6 +240,20 @@ contra una base real y se comprobó de punta a punta.
 De ahí salió `extra_hosts`, que hace falta si Supabase corre en el mismo
 servidor: en Linux `host.docker.internal` no existe sin esa línea.
 
+### Ráfagas de mensajes
+
+Meta entrega casi siempre **un POST por mensaje**. Sin nada que lo modere, un
+cliente que escribe «hola» / «quiero un carburador» / «para una Bera» recibía
+tres respuestas sueltas, cada una sin el contexto de las siguientes.
+
+La cola espera **6 segundos de silencio** antes de atender: cada mensaje nuevo
+corre esa ventana hacia adelante, así que una ráfaga termina siendo un solo
+turno con el hilo completo. Y si el cliente escribe justo mientras la IA está
+respondiendo, el turno vuelve a la cola en vez de descartarse.
+
+El valor está en `DEBOUNCE_SECONDS` (`src/lib/ai/queue.ts`). Por debajo de 5
+casi no agrupa; por encima de 15 el cliente cree que lo ignoraste.
+
 ### Cron de la cola de turnos
 
 Los turnos de la IA se encolan y se procesan aparte, para que un reinicio a
@@ -349,7 +363,7 @@ Con todo configurado, esta lista debe pasar entera:
 
 - [ ] Una restauración de prueba devuelve los datos completos
 - [ ] `npm run build` sin errores ni warnings
-- [ ] `select count(*) from supabase_migrations.schema_migrations` devuelve 23
+- [ ] `select count(*) from supabase_migrations.schema_migrations` devuelve 24
 - [ ] El bucket `whatsapp-media` es privado (`public = false`)
 - [ ] Una URL directa al bucket responde 400
 - [ ] `/api/media/...` sin sesión responde 401

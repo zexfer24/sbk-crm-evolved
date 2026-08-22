@@ -116,6 +116,8 @@ export type Database = {
           conversation_id: string
           enqueued_at: string
           last_error: string | null
+          process_after: string
+          rerun_requested: boolean
           started_at: string | null
           status: string
         }
@@ -124,6 +126,8 @@ export type Database = {
           conversation_id: string
           enqueued_at?: string
           last_error?: string | null
+          process_after?: string
+          rerun_requested?: boolean
           started_at?: string | null
           status?: string
         }
@@ -132,6 +136,8 @@ export type Database = {
           conversation_id?: string
           enqueued_at?: string
           last_error?: string | null
+          process_after?: string
+          rerun_requested?: boolean
           started_at?: string | null
           status?: string
         }
@@ -1143,11 +1149,15 @@ export type Database = {
         Returns: string
       }
       enqueue_agent_turn: {
-        Args: { p_conversation_id: string }
+        Args: { p_conversation_id: string; p_debounce_seconds?: number }
         Returns: undefined
       }
       finish_agent_turn: {
-        Args: { p_conversation_id: string; p_error?: string }
+        Args: {
+          p_conversation_id: string
+          p_debounce_seconds?: number
+          p_error?: string
+        }
         Returns: undefined
       }
       is_agent: { Args: never; Returns: boolean }

@@ -9,7 +9,7 @@ import {
   getMetaMediaUrl,
   sendWhatsappTemplate,
 } from "@/lib/whatsapp/meta-client";
-import { enqueueAgentTurns, processQueuedTurns } from "@/lib/ai/queue";
+import { enqueueAgentTurns, processAfterDebounce } from "@/lib/ai/queue";
 import { MEDIA_BUCKET, mediaUrlFor } from "@/lib/storage";
 import { log } from "@/lib/log";
 
@@ -429,7 +429,10 @@ export async function POST(request: Request) {
   // con varios mensajes del mismo cliente deja un solo pendiente.
   if (touchedByCustomer.size > 0) {
     await enqueueAgentTurns(supabase, touchedByCustomer);
-    after(() => processQueuedTurns());
+    // Se espera la ventana de silencio antes de atender: Meta manda un POST
+    // por mensaje, y sin esperar el cliente recibiría una respuesta por
+    // frase, cada una sin el contexto de las siguientes.
+    after(() => processAfterDebounce());
   }
 
   return NextResponse.json({ ok: true });

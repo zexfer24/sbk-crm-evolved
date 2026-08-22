@@ -16,12 +16,28 @@ import { errorText, log } from "@/lib/log";
 /** Tope de turnos por pasada. Evita que una tanda grande agote el tiempo de la petición. */
 const MAX_PER_RUN = 10;
 
+/**
+ * Silencio que se espera antes de atender un chat.
+ *
+ * Meta entrega casi siempre un POST por mensaje, así que sin esto un cliente
+ * que escribe en ráfaga recibe una respuesta por frase, cada una sin el
+ * contexto de las siguientes. Seis segundos alcanzan para que termine de
+ * tipear y siguen leyéndose como una respuesta inmediata.
+ */
+export const DEBOUNCE_SECONDS = 6;
+
+/** Margen para no despertar justo en el borde y encontrar la ventana sin vencer. */
+const WAKE_MARGIN_MS = 500;
+
 export async function enqueueAgentTurns(
   supabase: SupabaseClient<Database>,
   conversationIds: Iterable<string>
 ): Promise<void> {
   for (const conversationId of new Set(conversationIds)) {
-    const { error } = await supabase.rpc("enqueue_agent_turn", { p_conversation_id: conversationId });
+    const { error } = await supabase.rpc("enqueue_agent_turn", {
+      p_conversation_id: conversationId,
+      p_debounce_seconds: DEBOUNCE_SECONDS,
+    });
     if (error) {
       // Encolar es lo único que no puede fallar en silencio: si esto no
       // queda registrado, el cliente se queda sin respuesta y nadie lo sabe.
@@ -34,6 +50,19 @@ export async function enqueueAgentTurns(
 export interface QueueRunResult {
   processed: number;
   failed: number;
+}
+
+/**
+ * Espera a que venza la ventana de silencio y recién ahí procesa.
+ *
+ * Lo llama el webhook después de responderle a Meta. Con varios mensajes
+ * seguidos quedan varias esperas en curso, y no pasa nada: cada mensaje corre
+ * la ventana hacia adelante, así que las primeras despiertan, no encuentran
+ * nada vencido y se van. La última es la que atiende, ya con todo el hilo.
+ */
+export async function processAfterDebounce(): Promise<QueueRunResult> {
+  await new Promise((resolve) => setTimeout(resolve, DEBOUNCE_SECONDS * 1000 + WAKE_MARGIN_MS));
+  return processQueuedTurns();
 }
 
 /**
@@ -57,7 +86,12 @@ export async function processQueuedTurns(limit = MAX_PER_RUN): Promise<QueueRunR
 
     try {
       await runAgentTurn(conversationId);
-      await supabase.rpc("finish_agent_turn", { p_conversation_id: conversationId });
+      // Si el cliente escribió mientras corría el turno, finish_agent_turn no
+      // borra la fila: la devuelve a la cola con la ventana corrida.
+      await supabase.rpc("finish_agent_turn", {
+        p_conversation_id: conversationId,
+        p_debounce_seconds: DEBOUNCE_SECONDS,
+      });
       result.processed++;
     } catch (err) {
       const detail = errorText(err);
