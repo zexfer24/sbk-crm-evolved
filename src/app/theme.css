@@ -46,6 +46,12 @@
 
   --lm-radius-card: 20px;
   --lm-radius-panel: 30px;
+
+  /* Movimiento. Las curvas nativas de CSS son demasiado suaves para UI: se
+     sienten flojas. Estas son las mismas que ya usaba el dashboard, ahora
+     con nombre para que no se reinventen en cada archivo. */
+  --lm-ease-out: cubic-bezier(0.16, 1, 0.3, 1);
+  --lm-ease-in-out: cubic-bezier(0.77, 0, 0.175, 1);
 }
 
 /* --------------------------------------------------------------------------

@@ -305,51 +305,10 @@
    Pestañas: Control de IA / Agentes
    -------------------------------------------------------------------------- */
 
+/* La apariencia la da data-tone="segmented" en sliding-pills.css; acá solo
+   la separación con el resto de la página. */
 .ac-tabs {
-  display: flex;
-  gap: 4px;
   margin: 4px 0 18px;
-  padding: 4px;
-  border-radius: 12px;
-  background: var(--lm-sunken);
-  width: fit-content;
-}
-
-.ac-tab-btn {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  border: 0;
-  border-radius: 9px;
-  padding: 7px 14px;
-  background: transparent;
-  color: var(--lm-muted);
-  font-size: 13px;
-  font-weight: 600;
-  cursor: pointer;
-}
-
-.ac-tab-btn[data-active="true"] {
-  background: var(--lm-surface);
-  color: var(--lm-ink);
-  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.06);
-}
-
-.ac-tab-count {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  min-width: 18px;
-  height: 18px;
-  padding: 0 5px;
-  border-radius: 999px;
-  background: var(--lm-sunken);
-  font-size: 10.5px;
-}
-
-.ac-tab-btn[data-active="true"] .ac-tab-count {
-  background: var(--lm-ink);
-  color: #ffffff;
 }
 
 /* --------------------------------------------------------------------------

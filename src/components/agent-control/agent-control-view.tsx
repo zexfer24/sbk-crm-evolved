@@ -43,6 +43,7 @@ import { contactName, initials } from "@/lib/dashboard";
 import { formatTime12h } from "@/lib/format";
 import { AgentsRosterPanel } from "@/components/agent-control/agent-roster-panel";
 import { PlaybooksPanel } from "@/components/agent-control/playbooks-panel";
+import { SlidingPills } from "@/components/sliding-pills";
 import { TokenUsageChart } from "@/components/agent-control/token-usage-chart";
 import "@/components/dashboard/dashboard.css";
 import "@/components/agent-control/agent-control.css";
@@ -386,43 +387,19 @@ export function AgentControlView({
               </div>
             </div>
 
-            <div className="ac-tabs" role="tablist" aria-label="Secciones de control">
-              <button
-                type="button"
-                role="tab"
-                aria-selected={tab === "ia"}
-                className="ac-tab-btn"
-                data-active={tab === "ia"}
-                onClick={() => setTab("ia")}
-              >
-                Control de IA
-              </button>
-              <button
-                type="button"
-                role="tab"
-                aria-selected={tab === "respuestas"}
-                className="ac-tab-btn"
-                data-active={tab === "respuestas"}
-                onClick={() => setTab("respuestas")}
-              >
-                <Zap size={13} />
-                Respuestas
-                <span className="ac-tab-count">{playbooks.length}</span>
-              </button>
-              <button
-                type="button"
-                role="tab"
-                aria-selected={tab === "agentes"}
-                className="ac-tab-btn"
-                data-active={tab === "agentes"}
-                onClick={() => setTab("agentes")}
-              >
-                <Users size={13} />
-                Agentes
-                <span className="ac-tab-count">{agents.length}</span>
-              </button>
-            </div>
-
+            <SlidingPills
+              className="ac-tabs"
+              tone="segmented"
+              variant="tablist"
+              ariaLabel="Secciones de control"
+              value={tab}
+              onChange={setTab}
+              items={[
+                { value: "ia", label: "Control de IA" },
+                { value: "respuestas", label: "Respuestas", icon: <Zap size={13} />, count: playbooks.length },
+                { value: "agentes", label: "Agentes", icon: <Users size={13} />, count: agents.length },
+              ]}
+            />
             {tab === "ia" && (
             <>
             <section className="dash-panel ac-kill" data-on={settings.aiGloballyEnabled}>

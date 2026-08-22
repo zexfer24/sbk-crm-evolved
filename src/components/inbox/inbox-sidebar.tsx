@@ -5,6 +5,7 @@ import { Search } from "lucide-react";
 import type { Agent, Conversation, InboxFilter } from "@/lib/types";
 import { initials } from "@/lib/dashboard";
 import { ConversationListItem } from "@/components/inbox/conversation-list-item";
+import { SlidingPills } from "@/components/sliding-pills";
 
 const FILTERS: { value: InboxFilter; label: string }[] = [
   { value: "all", label: "Todos" },
@@ -81,19 +82,7 @@ export function InboxSidebar({ conversations, selectedId, onSelect, currentAgent
           />
         </div>
 
-        <div className="crm-filters">
-          {FILTERS.map((f) => (
-            <button
-              key={f.value}
-              className="crm-filter"
-              type="button"
-              aria-pressed={filter === f.value}
-              onClick={() => setFilter(f.value)}
-            >
-              {f.label}
-            </button>
-          ))}
-        </div>
+        <SlidingPills items={FILTERS} value={filter} onChange={setFilter} ariaLabel="Filtrar conversaciones" />
       </div>
 
       <div className="crm-list">

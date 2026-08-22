@@ -141,32 +141,6 @@
   color: var(--lm-muted);
 }
 
-.crm-filters {
-  display: flex;
-  gap: 6px;
-}
-
-.crm-filter {
-  padding: 7px 15px;
-  border: 0;
-  border-radius: 999px;
-  background: var(--lm-sunken);
-  color: var(--lm-ink-soft);
-  font-size: 12.5px;
-  font-weight: 500;
-  cursor: pointer;
-  transition: background 150ms ease, color 150ms ease;
-}
-
-.crm-filter:hover {
-  background: var(--lm-canvas-edge);
-}
-
-.crm-filter[aria-pressed="true"] {
-  background: var(--lm-ink);
-  color: #ffffff;
-}
-
 .crm-list {
   display: flex;
   flex-direction: column;
@@ -1328,7 +1302,6 @@
 @media (prefers-reduced-motion: reduce) {
   .crm-rail-btn,
   .crm-thread,
-  .crm-filter,
   .crm-pill {
     transition: none;
   }

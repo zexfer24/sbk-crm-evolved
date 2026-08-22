@@ -1,0 +1,133 @@
+/* --------------------------------------------------------------------------
+   Píldoras con selección deslizante (ver sliding-pills.tsx)
+
+   Dos filas superpuestas y idénticas en tamaño: la de abajo es la real (la
+   que recibe clics y foco), la de arriba está pintada en estado activo y
+   recortada con clip-path para que solo asome la opción seleccionada.
+   -------------------------------------------------------------------------- */
+.lm-pills {
+  position: relative;
+  display: inline-flex;
+  gap: 6px;
+  isolation: isolate;
+  /* Sin esto se estira cuando el padre es un flex/grid con stretch, y el
+     fondo del control segmentado se va hasta el borde de la página. */
+  width: fit-content;
+  align-self: flex-start;
+}
+
+.lm-pills-active {
+  position: absolute;
+  inset: 0;
+  display: inline-flex;
+  gap: 6px;
+  /* Una sola propiedad animada, compuesta en la GPU. */
+  transition: clip-path 240ms var(--lm-ease-in-out);
+  pointer-events: none;
+}
+
+.lm-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 7px 15px;
+  border: 0;
+  border-radius: 999px;
+  background: var(--lm-sunken);
+  color: var(--lm-ink-soft);
+  font-size: 12.5px;
+  font-weight: 500;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: background 150ms var(--lm-ease-out);
+}
+
+.lm-pills-active .lm-pill {
+  background: var(--lm-ink);
+  color: #ffffff;
+  cursor: default;
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .lm-pills > .lm-pill:hover {
+    background: var(--lm-canvas-edge);
+  }
+}
+
+.lm-pills > .lm-pill:active {
+  transform: scale(0.97);
+}
+
+.lm-pill:focus-visible {
+  outline: 2px solid var(--lm-link-ink);
+  outline-offset: 2px;
+}
+
+.lm-pill-count {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 18px;
+  height: 18px;
+  padding: 0 5px;
+  border-radius: 999px;
+  background: var(--lm-sunken);
+  color: var(--lm-ink-soft);
+  font-size: 11px;
+  font-weight: 600;
+}
+
+/* --------------------------------------------------------------------------
+   Variante segmentada: la fila vive sobre un fondo hundido y la selección es
+   una tarjeta clara, no una píldora oscura. Misma mecánica de recorte.
+   -------------------------------------------------------------------------- */
+.lm-pills[data-tone="segmented"] {
+  gap: 4px;
+  padding: 4px;
+  border-radius: 12px;
+  background: var(--lm-sunken);
+}
+
+.lm-pills[data-tone="segmented"] .lm-pills-active {
+  padding: 4px;
+  gap: 4px;
+}
+
+.lm-pills[data-tone="segmented"] .lm-pill {
+  border-radius: 9px;
+  padding: 7px 14px;
+  background: transparent;
+  color: var(--lm-muted);
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.lm-pills[data-tone="segmented"] .lm-pills-active .lm-pill {
+  background: var(--lm-surface);
+  color: var(--lm-ink);
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.06);
+}
+
+.lm-pills[data-tone="segmented"] .lm-pills-active .lm-pill-count {
+  background: var(--lm-ink);
+  color: #ffffff;
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .lm-pills[data-tone="segmented"] > .lm-pill:hover {
+    background: transparent;
+    color: var(--lm-ink);
+  }
+}
+
+/* El deslizamiento es lo único que se quita: el cambio de selección sigue
+   siendo visible, solo que instantáneo. */
+@media (prefers-reduced-motion: reduce) {
+  .lm-pills-active {
+    transition: none;
+  }
+
+  .lm-pills > .lm-pill:active {
+    transform: none;
+  }
+}
