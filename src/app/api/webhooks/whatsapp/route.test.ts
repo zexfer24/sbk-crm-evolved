@@ -30,6 +30,9 @@ interface FakeMessageRow {
   id: string;
 }
 
+/** Lo que responde el límite de tasa; un test lo pone en false para probar el freno. */
+let rateLimitAllows = true;
+
 function createFakeAdminClient() {
   const insertedMessages = new Map<string, FakeMessageRow>();
   const mediaUpdates: { id: string; mediaUrl: string }[] = [];
@@ -136,6 +139,12 @@ function createFakeAdminClient() {
 
       throw new Error(`Fake Supabase: tabla no soportada en este test: ${table}`);
     },
+    // El límite de tasa vive en la base; acá siempre deja pasar salvo que un
+    // test diga lo contrario.
+    rpc: async (fn: string) => {
+      if (fn === "rate_limit_allow") return { data: rateLimitAllows, error: null };
+      throw new Error(`Fake Supabase: rpc no soportada en este test: ${fn}`);
+    },
     storage: {
       from() {
         return {
@@ -237,6 +246,26 @@ describe("POST /api/webhooks/whatsapp — idempotencia", () => {
     expect(insertedMessages.size).toBe(1);
     // ...ni disparar un segundo turno de la IA para esa conversación.
     expect(runAgentTurnsFor).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("POST /api/webhooks/whatsapp — límite de tasa", () => {
+  /**
+   * Se responde 200 y no 429 a propósito: un error hace que Meta reintente
+   * el mismo lote, que es exactamente lo que se está tratando de frenar.
+   */
+  it("pasado el límite descarta el lote sin guardar nada y sin pedirle a Meta que reintente", async () => {
+    rateLimitAllows = false;
+    try {
+      const { POST } = await import("@/app/api/webhooks/whatsapp/route");
+      const waMessageId = "wamid.pasado-el-limite";
+      const response = await POST(fakeRequest(webhookBody(waMessageId)));
+
+      expect(response.status).toBe(200);
+      expect(insertedMessages.has(waMessageId)).toBe(false);
+    } finally {
+      rateLimitAllows = true;
+    }
   });
 });
 

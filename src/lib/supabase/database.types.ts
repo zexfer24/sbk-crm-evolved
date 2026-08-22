@@ -903,6 +903,21 @@ export type Database = {
         }
         Relationships: []
       }
+      rate_limit_hits: {
+        Row: {
+          bucket: string
+          hit_at: string
+        }
+        Insert: {
+          bucket: string
+          hit_at?: string
+        }
+        Update: {
+          bucket?: string
+          hit_at?: string
+        }
+        Relationships: []
+      }
       repuesto_compatibilidad_modelo: {
         Row: {
           codprod: string
@@ -1098,6 +1113,10 @@ export type Database = {
           hour: number
           inbound: number
         }[]
+      }
+      rate_limit_allow: {
+        Args: { p_bucket: string; p_limit: number; p_window_seconds: number }
+        Returns: boolean
       }
     }
     Enums: {

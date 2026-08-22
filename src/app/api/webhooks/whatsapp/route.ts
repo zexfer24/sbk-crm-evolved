@@ -68,6 +68,12 @@ interface WebhookBody {
   entry?: { changes?: { field: string; value: WebhookChangeValue }[] }[];
 }
 
+// Techo de eventos por minuto. Holgado para el tráfico de una repuestera
+// —Meta agrupa varios mensajes por lote— y suficiente para cortar un bucle
+// de reintentos antes de que dispare cientos de turnos de IA.
+const WEBHOOK_RATE_LIMIT = Number(process.env.WHATSAPP_WEBHOOK_RATE_LIMIT ?? 120);
+const WEBHOOK_RATE_WINDOW_SECONDS = 60;
+
 const MEDIA_TYPES = ["image", "video", "audio", "document", "sticker"] as const;
 type MediaType = (typeof MEDIA_TYPES)[number];
 
@@ -195,6 +201,22 @@ export async function POST(request: Request) {
 
   const body = JSON.parse(rawBody) as WebhookBody;
   const supabase = createAdminClient();
+
+  // Freno de avalancha. Se responde 200 igual que en el camino normal: un
+  // 429 haría que Meta reintente el mismo lote, que es justo lo contrario de
+  // lo que se busca. El evento se descarta y queda el registro.
+  const { data: allowed } = await supabase.rpc("rate_limit_allow", {
+    p_bucket: "whatsapp-webhook",
+    p_limit: WEBHOOK_RATE_LIMIT,
+    p_window_seconds: WEBHOOK_RATE_WINDOW_SECONDS,
+  });
+
+  if (allowed === false) {
+    console.error(
+      `Webhook de WhatsApp: más de ${WEBHOOK_RATE_LIMIT} eventos en ${WEBHOOK_RATE_WINDOW_SECONDS}s, se descarta este lote.`
+    );
+    return NextResponse.json({ ok: true, throttled: true });
+  }
   const accessToken = process.env.WHATSAPP_ACCESS_TOKEN;
   const greeted = new Set<string>();
   const touchedByCustomer = new Set<string>();

@@ -114,6 +114,8 @@ function createRacingFakeAdminClient() {
 
       throw new Error(`Fake Supabase: tabla no soportada en este test: ${table}`);
     },
+    // El límite de tasa no es lo que este test ejercita: siempre deja pasar.
+    rpc: async () => ({ data: true, error: null }),
     storage: { from: () => ({ upload: async () => ({ error: null }), getPublicUrl: () => ({ data: { publicUrl: "" } }) }) },
   };
 
