@@ -32,9 +32,13 @@ yarn-error.log*
 
 # env files (can opt-in for committing if needed)
 .env*
-# ...menos la plantilla, que no lleva ningún valor y es la única lista de
+# ...menos las plantillas, que no llevan ningún valor y son la única lista de
 # variables que tiene quien clone el repo.
 !.env.local.example
+!.env.production.example
+
+# Respaldos de la base: nunca al repositorio.
+/backups/
 
 # vercel
 .vercel

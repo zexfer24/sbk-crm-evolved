@@ -11,8 +11,8 @@ verifica.
 
 ## 1. Variables de entorno
 
-Copia `.env.local.example` y complétalo. Las que **no pueden faltar** en
-producción:
+Para producción, copia `.env.production.example`. Las que **no pueden faltar**:
+
 
 | Variable | Por qué |
 |---|---|
@@ -144,7 +144,42 @@ La IA arranca encendida. Antes de que hable con un cliente real:
 Node 20 la instalación avisa `EBADENGINE`. Está declarado en `engines` del
 `package.json` y fijado en el Dockerfile y en el CI.
 
-### Con Docker
+### En un servidor propio (lo más corto)
+
+Con el dominio ya apuntando al servidor y Docker instalado, son tres pasos:
+
+```bash
+cp .env.production.example .env.production   # y complétalo
+./scripts/preflight.sh                       # revisa antes de arrancar
+docker compose --env-file .env.production up -d
+```
+
+El `--env-file` no sobra: sin él Compose lee `.env` para resolver los `${...}`
+del archivo, `DOMAIN` llega vacío y Caddy no pide certificado para ningún
+dominio.
+
+`preflight.sh` no deja pasar lo que se puede detectar sin encender nada: una
+variable que falta, la anon key puesta donde va el service role, la URL de
+Supabase apuntando todavía a localhost, un `CRON_SECRET` de juguete o una
+versión de Node insuficiente. Sale con error si algo de eso pasa.
+
+`docker compose` levanta tres cosas:
+
+- **app** — el CRM, con `HEALTHCHECK` contra `/api/health`.
+- **caddy** — TLS automático de Let's Encrypt, más cabeceras de seguridad. Por
+  eso el dominio tiene que resolver a este servidor **antes** de arrancar: si
+  no, el certificado no se emite.
+- **cron** — procesa cada 5 minutos lo que quede pendiente en la cola de
+  turnos.
+
+**Verificación:**
+
+```bash
+docker compose --env-file .env.production ps   # los tres arriba, app en "healthy"
+curl https://<tu-dominio>/api/health    # 200
+```
+
+### Solo la imagen, sin compose
 
 ```bash
 docker build -t liminal-crm \

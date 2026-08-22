@@ -1,0 +1,32 @@
+# Caddy saca y renueva el certificado TLS solo con que el dominio apunte a
+# este servidor. El webhook de Meta exige HTTPS.
+
+{$DOMAIN} {
+	reverse_proxy app:3000
+
+	encode gzip zstd
+
+	header {
+		# El CRM no se muestra dentro de un iframe ajeno.
+		X-Frame-Options DENY
+		X-Content-Type-Options nosniff
+		Referrer-Policy strict-origin-when-cross-origin
+		# HSTS: un año, subdominios incluidos. Quítalo si aún estás probando
+		# con el dominio, porque el navegador lo recuerda.
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		# Esta cabecera delata la versión del servidor sin darle nada al usuario.
+		-Server
+	}
+
+	# El health check no ensucia el log de accesos: son 1440 peticiones al día
+	# que no dicen nada cuando todo va bien.
+	@health path /api/health
+	log_skip @health
+
+	log {
+		output file /data/access.log {
+			roll_size 10MB
+			roll_keep 5
+		}
+	}
+}

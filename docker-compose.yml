@@ -1,0 +1,82 @@
+# =============================================================================
+# Liminal CRM en un servidor propio.
+#
+#   cp .env.production.example .env.production   # y complétalo
+#   docker compose --env-file .env.production up -d
+#
+# El `--env-file` no sobra: sin él, Compose usa `.env` para resolver los
+# ${...} de este archivo y DOMAIN llegaría vacío, con lo que Caddy no pediría
+# certificado para ningún dominio. Comprobado: sin el flag avisa que las
+# variables no están definidas.
+#
+# Caddy saca y renueva el certificado TLS solo, con que el dominio apunte al
+# servidor. El webhook de Meta exige HTTPS, así que esto no es opcional.
+#
+# La base NO está acá: se asume Supabase (gestionado o en otro servidor). Meter
+# Postgres en este compose obligaría a resolver sus respaldos y su disco en el
+# mismo sitio, y esas son decisiones aparte.
+# =============================================================================
+
+services:
+  app:
+    build:
+      context: .
+      args:
+        # Las NEXT_PUBLIC_* se incrustan al compilar: en tiempo de arranque ya
+        # es tarde, por eso van también acá.
+        NEXT_PUBLIC_SUPABASE_URL: ${NEXT_PUBLIC_SUPABASE_URL}
+        NEXT_PUBLIC_SUPABASE_ANON_KEY: ${NEXT_PUBLIC_SUPABASE_ANON_KEY}
+        NEXT_PUBLIC_CRM_TIME_ZONE: ${NEXT_PUBLIC_CRM_TIME_ZONE:-America/Caracas}
+    restart: unless-stopped
+    env_file: .env.production
+    expose:
+      - "3000"
+    healthcheck:
+      test:
+        - CMD
+        - node
+        - -e
+        - "fetch('http://127.0.0.1:3000/api/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
+      interval: 30s
+      timeout: 5s
+      start_period: 20s
+      retries: 3
+
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      # Caddy pide el certificado para este dominio.
+      DOMAIN: ${DOMAIN}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      app:
+        condition: service_healthy
+
+  # Procesa lo que quedó pendiente en la cola de turnos: el proceso que murió a
+  # mitad, o el turno que falló y espera otro intento. El camino normal es que
+  # el propio webhook procese lo que encola; esto es la red de seguridad.
+  cron:
+    image: alpine:3
+    restart: unless-stopped
+    env_file: .env.production
+    depends_on:
+      app:
+        condition: service_healthy
+    command: >
+      sh -c "apk add --no-cache curl >/dev/null &&
+             while true; do
+               sleep 300;
+               curl -fsS -X POST http://app:3000/api/cron/process-queue
+                 -H \"Authorization: Bearer $$CRON_SECRET\" >/dev/null || true;
+             done"
+
+volumes:
+  caddy_data:
+  caddy_config:
