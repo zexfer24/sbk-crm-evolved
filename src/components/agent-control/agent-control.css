@@ -569,3 +569,134 @@
   color: var(--lm-muted);
   font-size: 11px;
 }
+
+/* --------------------------------------------------------------------------
+   Respuestas predeterminadas de la IA (playbooks)
+   -------------------------------------------------------------------------- */
+.ac-pb-intro {
+  color: var(--lm-muted);
+  font-size: 12.5px;
+  line-height: 1.5;
+  max-width: 74ch;
+  margin-bottom: 12px;
+}
+
+.ac-pb-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.ac-pb-list {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+  gap: 10px;
+}
+
+.ac-pb-card {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 14px;
+  border: 1px solid var(--lm-line);
+  border-radius: 14px;
+  background: var(--lm-surface);
+}
+
+/* Un escenario apagado sigue visible pero se lee como inactivo. */
+.ac-pb-card[data-active="false"] {
+  opacity: 0.55;
+}
+
+.ac-pb-card-head {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+}
+
+.ac-pb-card-who {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+  flex: 1;
+}
+
+.ac-pb-card-name {
+  color: var(--lm-ink);
+  font-size: 13.5px;
+  font-weight: 600;
+}
+
+.ac-pb-card-trigger {
+  color: var(--lm-muted);
+  font-size: 11.5px;
+  line-height: 1.45;
+}
+
+.ac-pb-card-response {
+  color: var(--lm-ink);
+  font-size: 12.5px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  padding: 10px;
+  border-radius: 10px;
+  background: var(--lm-bg);
+  border: 1px solid var(--lm-line);
+  /* El texto puede ser largo: se recorta a cuatro líneas en la tarjeta. */
+  display: -webkit-box;
+  -webkit-line-clamp: 4;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.ac-pb-card-foot {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.ac-pb-missing {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.ac-pb-missing-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 12px;
+  border: 1px solid var(--lm-line);
+  border-radius: 10px;
+  background: var(--lm-surface);
+}
+
+.ac-pb-missing-text {
+  flex: 1;
+  min-width: 0;
+  color: var(--lm-ink);
+  font-size: 12.5px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ac-pb-import-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 12px;
+  border: 1px solid var(--lm-line);
+  border-radius: 10px;
+  background: var(--lm-surface);
+}
+
+.ac-pb-hint {
+  color: var(--lm-muted);
+  font-size: 11.5px;
+  line-height: 1.45;
+}

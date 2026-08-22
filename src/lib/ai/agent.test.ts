@@ -33,7 +33,7 @@ function createFakeSupabase() {
             eq: () => ({ maybeSingle: async () => ({ data: state.conversation }) }),
           }),
           update: (values: Record<string, unknown>) => ({
-            eq: (_col: string, _id: string) => {
+            eq: () => {
               // Adquisición del lock: encadena un segundo .eq() y un .select().
               if (values.ai_turn_running === true) {
                 return { eq: () => ({ select: async () => ({ data: [{ id: "conv-1" }] }) }) };

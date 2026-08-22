@@ -188,6 +188,10 @@ export interface AgentTurn {
   inputTokens: number | null;
   outputTokens: number | null;
   totalTokens: number | null;
+  /** Escenario que resolvió el turno. Null = no coincidió ninguno y respondió el flujo genérico. */
+  playbookId: string | null;
+  /** Último mensaje del cliente del turno. Es lo que alimenta la lista de escenarios faltantes. */
+  customerMessage: string | null;
   createdAt: string;
 }
 

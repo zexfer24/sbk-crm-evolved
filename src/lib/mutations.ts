@@ -1,5 +1,5 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
-import type { Agent, CedulaType, MessageType, TagColor, WhatsappTemplate } from "@/lib/types";
+import type { Agent, CedulaType, MessageType, Playbook, TagColor, WhatsappTemplate } from "@/lib/types";
 
 async function insertSystemEvent(
   supabase: SupabaseClient,
@@ -354,6 +354,46 @@ export async function updateQuickReply(
 
 export async function deleteQuickReply(supabase: SupabaseClient, id: string) {
   const { error } = await supabase.from("quick_replies").delete().eq("id", id);
+  if (error) throw error;
+}
+
+// ---------------------------------------------------------------------------
+// Escenarios de la IA (respuestas predeterminadas). RLS solo deja escribir a
+// supervisores y admins: esto es lo que la IA le dice sola a los clientes.
+// ---------------------------------------------------------------------------
+
+/** Campos editables de un escenario. `id` e `isActive` se manejan aparte. */
+export type PlaybookDraft = Omit<Playbook, "id" | "isActive">;
+
+function playbookRow(draft: PlaybookDraft) {
+  return {
+    name: draft.name,
+    trigger_description: draft.triggerDescription,
+    response_text: draft.responseText,
+    attachment_url: draft.attachmentUrl,
+    attachment_type: draft.attachmentType,
+    after_send: draft.afterSend,
+  };
+}
+
+export async function createPlaybook(supabase: SupabaseClient, draft: PlaybookDraft) {
+  const { error } = await supabase.from("ai_playbooks").insert(playbookRow(draft));
+  if (error) throw error;
+}
+
+export async function updatePlaybook(supabase: SupabaseClient, id: string, draft: PlaybookDraft) {
+  const { error } = await supabase.from("ai_playbooks").update(playbookRow(draft)).eq("id", id);
+  if (error) throw error;
+}
+
+export async function deletePlaybook(supabase: SupabaseClient, id: string) {
+  const { error } = await supabase.from("ai_playbooks").delete().eq("id", id);
+  if (error) throw error;
+}
+
+/** Apagar un escenario lo saca del reconocimiento sin perder el texto. */
+export async function setPlaybookActive(supabase: SupabaseClient, id: string, isActive: boolean) {
+  const { error } = await supabase.from("ai_playbooks").update({ is_active: isActive }).eq("id", id);
   if (error) throw error;
 }
 

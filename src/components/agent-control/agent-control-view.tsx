@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { Bot, Inbox, LogOut, Receipt, Route, ShieldAlert, Users } from "lucide-react";
+import { Bot, Inbox, LogOut, Receipt, Route, ShieldAlert, Users, Zap } from "lucide-react";
 import type {
   Agent,
   AgentIntent,
@@ -14,6 +14,8 @@ import type {
   Conversation,
   ModelPricing,
   ModelUsageSummary,
+  Playbook,
+  QuickReply,
   TokenUsageSummary,
 } from "@/lib/types";
 import { createClient } from "@/lib/supabase/client";
@@ -24,7 +26,9 @@ import {
   fetchAllAgents,
   fetchConversations,
   fetchModelPricing,
+  fetchPlaybooks,
   fetchTokenUsageSummary,
+  fetchUnmatchedTurns,
 } from "@/lib/data";
 import {
   createAgentSuggestion,
@@ -38,6 +42,7 @@ import {
 import { contactName, initials } from "@/lib/dashboard";
 import { formatTime12h } from "@/lib/format";
 import { AgentsRosterPanel } from "@/components/agent-control/agent-roster-panel";
+import { PlaybooksPanel } from "@/components/agent-control/playbooks-panel";
 import { TokenUsageChart } from "@/components/agent-control/token-usage-chart";
 import "@/components/dashboard/dashboard.css";
 import "@/components/agent-control/agent-control.css";
@@ -51,10 +56,13 @@ interface AgentControlViewProps {
   initialTokenUsage: TokenUsageSummary;
   initialPricing: ModelPricing[];
   initialSuggestions: AgentSuggestion[];
+  initialPlaybooks: Playbook[];
+  initialUnmatchedTurns: AgentTurn[];
+  initialQuickReplies: QuickReply[];
   modelLabel: string;
 }
 
-type AgentControlTab = "ia" | "agentes";
+type AgentControlTab = "ia" | "respuestas" | "agentes";
 
 const INTENT_LABEL: Record<AgentIntent, string> = {
   consulta_disponibilidad: "Consulta",
@@ -95,6 +103,9 @@ export function AgentControlView({
   initialTokenUsage,
   initialPricing,
   initialSuggestions,
+  initialPlaybooks,
+  initialUnmatchedTurns,
+  initialQuickReplies,
   modelLabel,
 }: AgentControlViewProps) {
   const router = useRouter();
@@ -108,6 +119,8 @@ export function AgentControlView({
   const [tokenUsage, setTokenUsage] = useState(initialTokenUsage);
   const [pricing, setPricing] = useState(initialPricing);
   const [suggestions, setSuggestions] = useState(initialSuggestions);
+  const [playbooks, setPlaybooks] = useState(initialPlaybooks);
+  const [unmatchedTurns, setUnmatchedTurns] = useState(initialUnmatchedTurns);
   const [togglingKillSwitch, setTogglingKillSwitch] = useState(false);
   const [busyConversationId, setBusyConversationId] = useState<string | null>(null);
   const [togglingAgentId, setTogglingAgentId] = useState<string | null>(null);
@@ -124,16 +137,27 @@ export function AgentControlView({
 
   const refresh = useCallback(async () => {
     try {
-      const [nextConversations, nextTurns, nextSettings, nextAgents, nextTokenUsage, nextPricing, nextSuggestions] =
-        await Promise.all([
-          fetchConversations(supabase),
-          fetchAgentTurns(supabase),
-          fetchAgentSettings(supabase),
-          fetchAllAgents(supabase),
-          fetchTokenUsageSummary(supabase),
-          fetchModelPricing(supabase),
-          fetchAgentSuggestions(supabase),
-        ]);
+      const [
+        nextConversations,
+        nextTurns,
+        nextSettings,
+        nextAgents,
+        nextTokenUsage,
+        nextPricing,
+        nextSuggestions,
+        nextPlaybooks,
+        nextUnmatched,
+      ] = await Promise.all([
+        fetchConversations(supabase),
+        fetchAgentTurns(supabase),
+        fetchAgentSettings(supabase),
+        fetchAllAgents(supabase),
+        fetchTokenUsageSummary(supabase),
+        fetchModelPricing(supabase),
+        fetchAgentSuggestions(supabase),
+        fetchPlaybooks(supabase),
+        fetchUnmatchedTurns(supabase),
+      ]);
       setConversations(nextConversations);
       setTurns(nextTurns);
       setSettings(nextSettings);
@@ -141,6 +165,8 @@ export function AgentControlView({
       setTokenUsage(nextTokenUsage);
       setPricing(nextPricing);
       setSuggestions(nextSuggestions);
+      setPlaybooks(nextPlaybooks);
+      setUnmatchedTurns(nextUnmatched);
     } catch {
       // El siguiente cambio en tiempo real reintentará la sincronización.
     }
@@ -170,6 +196,7 @@ export function AgentControlView({
       .on("postgres_changes", { event: "UPDATE", schema: "public", table: "agent_settings" }, () => scheduleRefresh())
       .on("postgres_changes", { event: "UPDATE", schema: "public", table: "agents" }, () => scheduleRefresh())
       .on("postgres_changes", { event: "*", schema: "public", table: "agent_suggestions" }, () => scheduleRefresh())
+      .on("postgres_changes", { event: "*", schema: "public", table: "ai_playbooks" }, () => scheduleRefresh())
       .subscribe();
 
     return () => {
@@ -343,12 +370,18 @@ export function AgentControlView({
             <div className="dash-header">
               <div>
                 <h1 className="dash-title dash-display">
-                  {tab === "ia" ? "Control del agente de IA" : "Control de agentes"}
+                  {tab === "ia"
+                    ? "Control del agente de IA"
+                    : tab === "respuestas"
+                      ? "Respuestas predeterminadas"
+                      : "Control de agentes"}
                 </h1>
                 <p className="dash-subtitle">
                   {tab === "ia"
                     ? "Interruptor general, qué está haciendo la IA ahora mismo, y un simulador para probarla sin necesidad de WhatsApp real."
-                    : "Cuántos asesores hay en la operación, quién está disponible para que la IA le pase conversaciones, y su carga actual."}
+                    : tab === "respuestas"
+                      ? "Los casos que la IA ya sabe resolver con un texto tuyo, y los mensajes de clientes que todavía no calzan con ninguno."
+                      : "Cuántos asesores hay en la operación, quién está disponible para que la IA le pase conversaciones, y su carga actual."}
                 </p>
               </div>
             </div>
@@ -363,6 +396,18 @@ export function AgentControlView({
                 onClick={() => setTab("ia")}
               >
                 Control de IA
+              </button>
+              <button
+                type="button"
+                role="tab"
+                aria-selected={tab === "respuestas"}
+                className="ac-tab-btn"
+                data-active={tab === "respuestas"}
+                onClick={() => setTab("respuestas")}
+              >
+                <Zap size={13} />
+                Respuestas
+                <span className="ac-tab-count">{playbooks.length}</span>
               </button>
               <button
                 type="button"
@@ -639,6 +684,15 @@ export function AgentControlView({
               </div>
             </section>
             </>
+            )}
+
+            {tab === "respuestas" && (
+              <PlaybooksPanel
+                playbooks={playbooks}
+                unmatchedTurns={unmatchedTurns}
+                quickReplies={initialQuickReplies}
+                canEdit={currentAgent.role === "supervisor" || currentAgent.role === "admin"}
+              />
             )}
 
             {tab === "agentes" && (

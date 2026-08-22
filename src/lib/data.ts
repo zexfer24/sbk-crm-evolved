@@ -13,6 +13,7 @@ import type {
   ModelPricing,
   ModelUsageSummary,
   Note,
+  Playbook,
   QuickReply,
   Tag,
   TokenUsageDay,
@@ -484,8 +485,13 @@ interface RawAgentTurn {
   input_tokens: number | null;
   output_tokens: number | null;
   total_tokens: number | null;
+  playbook_id: string | null;
+  customer_message: string | null;
   created_at: string;
 }
+
+const AGENT_TURN_COLUMNS =
+  "id, conversation_id, intent, action, summary, model, input_tokens, output_tokens, total_tokens, playbook_id, customer_message, created_at";
 
 function mapAgentTurn(row: RawAgentTurn): AgentTurn {
   return {
@@ -498,6 +504,8 @@ function mapAgentTurn(row: RawAgentTurn): AgentTurn {
     inputTokens: row.input_tokens,
     outputTokens: row.output_tokens,
     totalTokens: row.total_tokens,
+    playbookId: row.playbook_id,
+    customerMessage: row.customer_message,
     createdAt: row.created_at,
   };
 }
@@ -506,7 +514,58 @@ function mapAgentTurn(row: RawAgentTurn): AgentTurn {
 export async function fetchAgentTurns(supabase: SupabaseClient, limit = 30): Promise<AgentTurn[]> {
   const { data, error } = await supabase
     .from("agent_turns")
-    .select("id, conversation_id, intent, action, summary, model, input_tokens, output_tokens, total_tokens, created_at")
+    .select(AGENT_TURN_COLUMNS)
+    .order("created_at", { ascending: false })
+    .limit(limit);
+
+  if (error) throw error;
+  return (data as RawAgentTurn[]).map(mapAgentTurn);
+}
+
+interface RawPlaybook {
+  id: string;
+  name: string;
+  trigger_description: string;
+  response_text: string;
+  attachment_url: string | null;
+  attachment_type: Playbook["attachmentType"];
+  after_send: Playbook["afterSend"];
+  is_active: boolean;
+}
+
+const PLAYBOOK_COLUMNS =
+  "id, name, trigger_description, response_text, attachment_url, attachment_type, after_send, is_active";
+
+function mapPlaybook(row: RawPlaybook): Playbook {
+  return {
+    id: row.id,
+    name: row.name,
+    triggerDescription: row.trigger_description,
+    responseText: row.response_text,
+    attachmentUrl: row.attachment_url,
+    attachmentType: row.attachment_type,
+    afterSend: row.after_send,
+    isActive: row.is_active,
+  };
+}
+
+/** Todos los escenarios, activos e inactivos: el panel administra ambos. */
+export async function fetchPlaybooks(supabase: SupabaseClient): Promise<Playbook[]> {
+  const { data, error } = await supabase.from("ai_playbooks").select(PLAYBOOK_COLUMNS).order("name");
+  if (error) throw error;
+  return (data as RawPlaybook[]).map(mapPlaybook);
+}
+
+/**
+ * Turnos que no coincidieron con ningún escenario: son los escenarios que
+ * faltan por crear, dichos con las palabras reales de los clientes.
+ */
+export async function fetchUnmatchedTurns(supabase: SupabaseClient, limit = 20): Promise<AgentTurn[]> {
+  const { data, error } = await supabase
+    .from("agent_turns")
+    .select(AGENT_TURN_COLUMNS)
+    .is("playbook_id", null)
+    .not("customer_message", "is", null)
     .order("created_at", { ascending: false })
     .limit(limit);
 
