@@ -31,6 +31,11 @@ services:
     env_file: .env.production
     expose:
       - "3000"
+    # Solo hace falta si Supabase corre en el MISMO servidor (self-hosted):
+    # en Linux, host.docker.internal no existe sin esto. Con Supabase
+    # gestionado la URL es pública y esta línea no molesta.
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     healthcheck:
       test:
         - CMD

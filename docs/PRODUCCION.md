@@ -221,6 +221,25 @@ node .next/standalone/server.js     # con las variables en el entorno
 Detrás de un reverse proxy (Caddy, nginx) que termine TLS. El webhook de Meta
 exige HTTPS.
 
+### El stack ya se probó entero
+
+No solo la sintaxis del compose: se levantaron los tres servicios juntos
+contra una base real y se comprobó de punta a punta.
+
+| Comprobación | Resultado |
+|---|---|
+| `app` alcanza la base y queda `healthy` | ✅ |
+| HTTPS a través de Caddy | 200 |
+| HTTP redirige a HTTPS | 308 |
+| HSTS, `X-Frame-Options`, `nosniff` | presentes |
+| Cabecera `Server` oculta | ✅ |
+| El login no filtra credenciales | ✅ |
+| El cron procesa la cola con su token | `{"ok":true}` |
+| El cron sin token | 401 |
+
+De ahí salió `extra_hosts`, que hace falta si Supabase corre en el mismo
+servidor: en Linux `host.docker.internal` no existe sin esa línea.
+
 ### Cron de la cola de turnos
 
 Los turnos de la IA se encolan y se procesan aparte, para que un reinicio a
