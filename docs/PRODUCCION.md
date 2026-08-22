@@ -1,0 +1,175 @@
+# Puesta en producción
+
+Estado del código: listo. Lo que falta es infraestructura y credenciales, que
+solo puede poner quien tenga las cuentas.
+
+Este documento es la lista de lo que hay que hacer, en orden, con la forma de
+comprobar cada paso. Nada de "debería funcionar": cada punto trae cómo se
+verifica.
+
+---
+
+## 1. Variables de entorno
+
+Copia `.env.local.example` y complétalo. Las que **no pueden faltar** en
+producción:
+
+| Variable | Por qué |
+|---|---|
+| `NEXT_PUBLIC_SUPABASE_URL` | Instancia de producción, no la local |
+| `NEXT_PUBLIC_SUPABASE_ANON_KEY` | Clave pública del cliente |
+| `SUPABASE_SERVICE_ROLE_KEY` | Solo servidor. **Nunca** en el navegador |
+| `WHATSAPP_APP_SECRET` | Sin ella el webhook responde 503 y no procesa nada |
+| `WHATSAPP_ACCESS_TOKEN` | Token permanente de System User, no el temporal del panel |
+| `WHATSAPP_PHONE_NUMBER_ID` | Del número de WhatsApp Business |
+| `WHATSAPP_BUSINESS_ACCOUNT_ID` | De la cuenta WABA |
+| `WHATSAPP_WEBHOOK_VERIFY_TOKEN` | El que registres en Meta |
+| `OPENAI_API_KEY` | O `GOOGLE_GENERATIVE_AI_API_KEY` según el proveedor |
+| `AI_AGENT_PROVIDER` / `AI_AGENT_MODEL` | Proveedor y modelo del agente |
+
+**El token de Meta caduca.** El que da el panel de desarrollo dura 24 horas.
+Genera uno permanente desde un System User en Business Manager, o la IA dejará
+de responder al día siguiente sin decir por qué.
+
+**Verificación:** arranca la app y entra a `/agent-control`. La etiqueta del
+modelo arriba a la derecha debe mostrar el proveedor y modelo que configuraste.
+
+---
+
+## 2. Base de datos
+
+```bash
+supabase link --project-ref <ref-de-produccion>
+supabase db push
+```
+
+`db push` aplica las migraciones. **No corras `db reset` contra producción**:
+borra todo.
+
+El seed (`supabase/seed.sql`) crea tres usuarios con una contraseña que está
+escrita en el propio archivo. Tiene un freno que aborta si detecta una base
+real, pero la regla simple es: **el seed no se toca en producción**.
+
+**Verificación:**
+
+```sql
+select count(*) from supabase_migrations.schema_migrations;  -- 22
+select public from storage.buckets where id = 'whatsapp-media';  -- false
+select public.agent_can_run();  -- true
+```
+
+### Datos que sí van en producción
+
+- `supabase/seeds/moto_catalog_seed.sql` — catálogo de motos. Va.
+- `supabase/seeds/ai_playbooks.sql` — las cinco respuestas de la IA. Va, pero
+  revisa los textos desde el panel antes de encender la IA: son un borrador.
+- `supabase/seed.sql` — **no va.**
+
+### Tarifas del modelo
+
+`model_pricing` viene con precios de ejemplo. Ajústalos desde
+`/agent-control` con los reales de tu proveedor, o el costo que muestre el
+panel será ficción y el tope de gasto no protegerá lo que crees.
+
+---
+
+## 3. Usuarios reales
+
+Crea las cuentas del equipo desde Supabase Auth (invitación por correo). La
+fila en `public.agents` se crea sola al registrarse.
+
+Asigna los roles a mano:
+
+```sql
+update public.agents set role = 'supervisor' where id = '<uuid>';
+```
+
+Los roles importan: `supervisor`/`admin` son los únicos que pueden verificar
+ventas, revertirlas, cambiar tarifas, mover el tope de gasto y editar las
+respuestas de la IA. Un `agent` no puede, y eso está respaldado en RLS, no
+solo en la interfaz.
+
+**Verificación:** entra con una cuenta `agent` y comprueba que en
+`/agent-control > Respuestas` no aparecen los botones de editar.
+
+---
+
+## 4. Canal de WhatsApp
+
+```sql
+insert into public.whatsapp_channels (display_name, phone_number, phone_number_id, waba_id, status)
+values ('Principal', '+58...', '<phone_number_id>', '<waba_id>', 'connected');
+```
+
+Mientras `status` no sea `'connected'`, el CRM simula los envíos: guarda el
+mensaje pero no lo manda. Sirve para probar sin gastar.
+
+---
+
+## 5. Webhook
+
+Registra en Meta: `https://<tu-dominio>/api/webhooks/whatsapp`, con el
+`verify_token` que pusiste en la variable.
+
+Necesita **HTTPS y dominio público**. No funciona con `localhost`; en
+desarrollo se usa un túnel (`cloudflared tunnel --url http://localhost:3000`).
+
+**Verificación:** el handshake de Meta debe dar verde al registrar. Después,
+manda un mensaje real al número y comprueba que aparece en la bandeja.
+
+---
+
+## 6. Antes de encender la IA
+
+La IA arranca encendida. Antes de que hable con un cliente real:
+
+1. **Revisa las cinco respuestas** en `/agent-control > Respuestas`. Los
+   textos del seed son un borrador.
+2. **Configura los links** de catálogo y niveles de Cashea, que quedaron
+   vacíos a propósito.
+3. **Pon un tope de gasto diario.** Sin tope, una ráfaga de mensajes gasta sin
+   límite. Empieza conservador; el panel muestra cuánto se lleva consumido.
+4. **Prueba con el simulador** de `/agent-control`, que corre sobre una
+   conversación de prueba y nunca toca un número real.
+5. **Ten a mano el interruptor global**, que apaga la IA en todo el CRM de una
+   vez.
+
+---
+
+## 7. Lo que todavía no existe
+
+Honestidad sobre el estado, para que nadie se lleve una sorpresa:
+
+- **No hay backups.** Es lo más urgente de esta lista: ahí viven las
+  conversaciones y las ventas del negocio. Supabase gestionado los trae según
+  el plan; si es self-hosted, hay que montar `pg_dump` programado y **probar
+  una restauración**, porque un backup que nunca se restauró no es un backup.
+- **No hay alertas.** Los errores van a `console.error` y a `agent_turns`. Si
+  el webhook empieza a fallar un lunes en la mañana, nadie se entera hasta que
+  un cliente reclame. Hace falta un Sentry o equivalente.
+- **El turno de la IA no es recuperable.** Corre en `after()`, en el mismo
+  proceso y sin cola. Si el servidor se reinicia justo mientras responde, esa
+  respuesta se pierde en silencio. A esta escala es tolerable, pero hay que
+  saberlo.
+- **Un solo token de WhatsApp** para todos los canales. Con más de un número
+  hay que extender `whatsapp_channels`.
+- **La PII no está cifrada en reposo.** Cédula, dirección y teléfono se
+  guardan en claro. Están protegidos por RLS y por la sesión, pero quien
+  tenga acceso a la base los ve.
+
+---
+
+## Comprobación final
+
+Con todo configurado, esta lista debe pasar entera:
+
+- [ ] `npm run build` sin errores ni warnings
+- [ ] `select count(*) from supabase_migrations.schema_migrations` devuelve 22
+- [ ] El bucket `whatsapp-media` es privado (`public = false`)
+- [ ] Una URL directa al bucket responde 400
+- [ ] `/api/media/...` sin sesión responde 401
+- [ ] Un mensaje real llega del número de WhatsApp a la bandeja
+- [ ] Una foto enviada desde el CRM llega al teléfono del cliente
+- [ ] Una foto que manda el cliente se ve en la bandeja
+- [ ] Con la IA encendida, un mensaje de prueba obtiene respuesta
+- [ ] El tope de gasto está configurado y el panel muestra el consumo
