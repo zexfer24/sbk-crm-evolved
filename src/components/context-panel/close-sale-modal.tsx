@@ -7,6 +7,7 @@ import type { Agent, CedulaType, Contact, ConversationQuote, Message } from "@/l
 import { VENEZUELA_STATES } from "@/lib/venezuela";
 import { createClient } from "@/lib/supabase/client";
 import { fetchConversationQuotes } from "@/lib/data";
+import { MEDIA_BUCKET, mediaUrlFor } from "@/lib/storage";
 import { closeSaleWithContactInfo, type SaleLineItem } from "@/lib/mutations";
 
 interface CloseSaleModalProps {
@@ -105,14 +106,16 @@ export function CloseSaleModal({
     setIsUploadingProof(true);
     try {
       const supabase = createClient();
-      const path = `payment-proofs/${conversationId}/${Date.now()}-${file.name}`;
+      // Un comprobante de pago lleva datos bancarios del cliente: ruta
+      // aleatoria y bucket privado, nunca el nombre del archivo.
+      const extension = file.name.includes(".") ? `.${file.name.split(".").pop()}` : "";
+      const path = `payment-proofs/${conversationId}/${crypto.randomUUID()}${extension}`;
       const { error: uploadError } = await supabase.storage
-        .from("whatsapp-media")
+        .from(MEDIA_BUCKET)
         .upload(path, file, { contentType: file.type });
       if (uploadError) throw uploadError;
 
-      const { data: publicUrl } = supabase.storage.from("whatsapp-media").getPublicUrl(path);
-      setPaymentProofUrl(publicUrl.publicUrl);
+      setPaymentProofUrl(mediaUrlFor(path));
     } catch {
       toast.danger("No se pudo subir el comprobante.");
     } finally {

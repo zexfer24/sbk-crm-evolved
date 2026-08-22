@@ -10,6 +10,7 @@ import {
   sendWhatsappTemplate,
 } from "@/lib/whatsapp/meta-client";
 import { runAgentTurnsFor } from "@/lib/ai/agent";
+import { MEDIA_BUCKET, mediaUrlFor } from "@/lib/storage";
 
 // ---------------------------------------------------------------------------
 // GET: handshake de verificación que exige Meta al registrar el webhook.
@@ -371,7 +372,7 @@ export async function POST(request: Request) {
               const path = `${convId}/${waMessageId}.${extension}`;
 
               const { error: uploadError } = await supabase.storage
-                .from("whatsapp-media")
+                .from(MEDIA_BUCKET)
                 .upload(path, bytes, { contentType: mimeType, upsert: true });
 
               if (uploadError) {
@@ -379,8 +380,7 @@ export async function POST(request: Request) {
                 return;
               }
 
-              const { data: publicUrl } = supabase.storage.from("whatsapp-media").getPublicUrl(path);
-              await supabase.from("messages").update({ media_url: publicUrl.publicUrl }).eq("id", messageDbId);
+              await supabase.from("messages").update({ media_url: mediaUrlFor(path) }).eq("id", messageDbId);
             } catch (err) {
               console.error("Webhook de WhatsApp: error al descargar media de Meta", err);
             }

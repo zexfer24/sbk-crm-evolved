@@ -362,9 +362,11 @@ describe("POST /api/webhooks/whatsapp — media asíncrona", () => {
       // encolado la tarea; esperamos un microtask para que termine.
       await new Promise((resolve) => setTimeout(resolve, 0));
 
+      // Se guarda la ruta propia del CRM y no una URL del bucket: el bucket
+      // es privado y una URL firmada guardada en la base vencería.
       expect(mediaUpdates).toContainEqual({
         id: insertedRow!.id,
-        mediaUrl: "https://example.com/media",
+        mediaUrl: `/api/media/conv-1/${waMessageId}.jpg`,
       });
     } finally {
       process.env.WHATSAPP_ACCESS_TOKEN = previousToken;

@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
 import { fetchConversation, fetchCurrentAgent } from "@/lib/data";
 import type { MessageType } from "@/lib/types";
+import { signedUrlForSending } from "@/lib/media-link";
 import {
   MetaApiError,
   sendWhatsappMedia,
@@ -95,12 +96,22 @@ export async function POST(request: Request) {
           templateLanguage ?? "es"
         );
       } else if (kind === "media") {
+        // El bucket es privado: Meta necesita un enlace firmado, no la ruta
+        // del CRM, que le pediría una sesión que no tiene.
+        const link = await signedUrlForSending(mediaUrl!);
+        if (!link) {
+          return NextResponse.json(
+            { error: "No se pudo preparar el archivo para enviarlo por WhatsApp." },
+            { status: 500 }
+          );
+        }
+
         result = await sendWhatsappMedia(
           conversation.channel.phoneNumberId!,
           accessToken,
           conversation.contact.phoneNumber,
           mediaType as "image" | "video" | "audio" | "document",
-          mediaUrl!,
+          link,
           content,
           replyToWamid
         );

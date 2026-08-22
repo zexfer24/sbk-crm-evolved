@@ -6,6 +6,7 @@ import { Button, Input, Label, Modal, TextArea, toast } from "@heroui/react";
 import type { AgentTurn, Playbook, PlaybookAfterSend, PlaybookAttachmentType, QuickReply } from "@/lib/types";
 import { createClient } from "@/lib/supabase/client";
 import { createPlaybook, deletePlaybook, setPlaybookActive, updatePlaybook } from "@/lib/mutations";
+import { MEDIA_BUCKET, mediaUrlFor } from "@/lib/storage";
 
 interface PlaybooksPanelProps {
   playbooks: Playbook[];
@@ -119,23 +120,20 @@ export function PlaybooksPanel({ playbooks, unmatchedTurns, quickReplies, canEdi
     setIsUploading(true);
     try {
       const supabase = createClient();
-      // El bucket es público: una ruta con marca de tiempo y el nombre del
-      // archivo se puede adivinar probando milisegundos. Un id aleatorio la
-      // vuelve inenumerable, igual que hace el webhook con el multimedia
-      // entrante, que usa los UUID de conversación y mensaje.
+      // Ruta con id aleatorio: ni siquiera dentro de un bucket privado
+      // conviene que el nombre del archivo insinúe qué hay adentro.
       const extension = file.name.includes(".") ? file.name.split(".").pop() : null;
       const path = `playbooks/${crypto.randomUUID()}${extension ? `.${extension}` : ""}`;
-      const { error } = await supabase.storage.from("whatsapp-media").upload(path, file, { contentType: file.type });
+      const { error } = await supabase.storage.from(MEDIA_BUCKET).upload(path, file, { contentType: file.type });
       if (error) throw error;
 
-      const { data } = supabase.storage.from("whatsapp-media").getPublicUrl(path);
       const type: PlaybookAttachmentType = file.type.startsWith("image/")
         ? "image"
         : file.type.startsWith("video/")
           ? "video"
           : "document";
 
-      setDraft((d) => ({ ...d, attachmentUrl: data.publicUrl, attachmentType: type }));
+      setDraft((d) => ({ ...d, attachmentUrl: mediaUrlFor(path), attachmentType: type }));
     } catch {
       toast.danger("No se pudo subir el archivo.");
     } finally {

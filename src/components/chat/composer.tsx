@@ -8,6 +8,7 @@ import type { Conversation, Message, MessageType, QuickReply, WhatsappTemplate }
 import { isWithin24hWindow } from "@/lib/whatsapp-window";
 import { createClient } from "@/lib/supabase/client";
 import { sendMediaMessage, sendMessage, sendTemplateMessage } from "@/lib/mutations";
+import { MEDIA_BUCKET, mediaUrlFor } from "@/lib/storage";
 import { TemplatePickerModal } from "@/components/chat/template-picker-modal";
 import { QuickRepliesModal } from "@/components/chat/quick-replies-modal";
 import { WindowCountdown } from "@/components/chat/window-countdown";
@@ -121,16 +122,18 @@ export function Composer({ conversation, templates, quickReplies, replyingTo, on
       const supabase = createClient();
       for (let i = 0; i < pendingFiles.length; i++) {
         const { file, mediaType } = pendingFiles[i];
-        const path = `outbound/${conversation.id}/${Date.now()}-${file.name}`;
+        // Id aleatorio y no el nombre del archivo: el bucket es privado,
+        // pero una ruta adivinable seguiría siendo una pista de más.
+        const extension = file.name.includes(".") ? `.${file.name.split(".").pop()}` : "";
+        const path = `outbound/${conversation.id}/${crypto.randomUUID()}${extension}`;
         const { error: uploadError } = await supabase.storage
-          .from("whatsapp-media")
+          .from(MEDIA_BUCKET)
           .upload(path, file, { contentType: file.type });
         if (uploadError) throw uploadError;
 
-        const { data: publicUrl } = supabase.storage.from("whatsapp-media").getPublicUrl(path);
         await sendMediaMessage(
           conversation.id,
-          publicUrl.publicUrl,
+          mediaUrlFor(path),
           mediaType,
           i === 0 ? text.trim() || undefined : undefined,
           i === 0 ? (replyingTo?.id ?? null) : null

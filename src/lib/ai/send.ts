@@ -3,6 +3,7 @@ import type { SupabaseClient } from "@supabase/supabase-js";
 import type { Database } from "@/lib/supabase/database.types";
 import type { Playbook } from "@/lib/types";
 import { sendWhatsappMedia, sendWhatsappText } from "@/lib/whatsapp/meta-client";
+import { signedUrlForSending } from "@/lib/media-link";
 
 // ---------------------------------------------------------------------------
 // Envío de las respuestas del agente. Vive aparte del orquestador porque el
@@ -84,12 +85,17 @@ async function sendAgentMedia(
 
   if (accessToken) {
     try {
+      // El bucket es privado: Meta necesita un enlace firmado. Si el adjunto
+      // apunta a una URL de fuera, se manda tal cual.
+      const link = await signedUrlForSending(url);
+      if (!link) throw new Error(`No se pudo preparar el adjunto ${url} para enviarlo.`);
+
       const result = await sendWhatsappMedia(
         conversation.channel.phone_number_id!,
         accessToken,
         conversation.contact.phone_number,
         mediaType,
-        url
+        link
       );
       whatsappMessageId = result.whatsappMessageId;
       whatsappStatus = "sent";
