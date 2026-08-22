@@ -1,17 +1,23 @@
+"use client";
+
 import type { TokenUsageDay } from "@/lib/types";
 import { gridValuesFor } from "@/lib/chart-scale";
+import { useElementWidth } from "@/lib/use-element-width";
 
-const W = 640;
 const H = 160;
-const PAD = { top: 12, right: 10, bottom: 24, left: 44 };
-const PLOT_W = W - PAD.left - PAD.right;
+// `left` es el espacio que ocupan las etiquetas del eje; el resto del panel
+// arranca en el borde del SVG, así que el gráfico ya no flota desalineado.
+const PAD = { top: 12, right: 10, bottom: 24, left: 40 };
 const PLOT_H = H - PAD.top - PAD.bottom;
+const FALLBACK_W = 640;
 
 interface TokenUsageChartProps {
   data: TokenUsageDay[];
 }
 
 export function TokenUsageChart({ data }: TokenUsageChartProps) {
+  const [ref, W] = useElementWidth<HTMLDivElement>(FALLBACK_W);
+  const PLOT_W = W - PAD.left - PAD.right;
   const step = PLOT_W / data.length;
   const peak = Math.max(1, ...data.map((d) => d.tokens));
   const scaleY = (value: number) => PAD.top + PLOT_H - (value / peak) * PLOT_H;
@@ -21,9 +27,11 @@ export function TokenUsageChart({ data }: TokenUsageChartProps) {
   const total = data.reduce((sum, d) => sum + d.tokens, 0);
 
   return (
-    <div className="dash-chart">
+    <div className="dash-chart" ref={ref}>
       <svg
         viewBox={`0 0 ${W} ${H}`}
+        width={W}
+        height={H}
         className="dash-chart-svg"
         role="img"
         aria-label={`Tokens consumidos por día, últimos ${data.length} días. Total: ${total}.`}

@@ -1,13 +1,15 @@
+"use client";
+
 import type { HourlyActivity } from "@/lib/types";
 import { gridValuesFor } from "@/lib/chart-scale";
+import { useElementWidth } from "@/lib/use-element-width";
 
-// Lienzo fijo que luego escala con el ancho del panel.
-const W = 720;
+// El lienzo mide lo mismo que el panel: dibujar a escala 1:1 evita que el
+// margen interno se multiplique y deje el eje corrido del resto del texto.
 const H = 224;
 const PAD = { top: 16, right: 14, bottom: 28, left: 36 };
-const PLOT_W = W - PAD.left - PAD.right;
 const PLOT_H = H - PAD.top - PAD.bottom;
-const STEP = PLOT_W / 24;
+const FALLBACK_W = 720;
 
 interface ActivityChartProps {
   data: HourlyActivity[];
@@ -16,6 +18,10 @@ interface ActivityChartProps {
 }
 
 export function ActivityChart({ data, timeZone }: ActivityChartProps) {
+  const [ref, W] = useElementWidth<HTMLDivElement>(FALLBACK_W);
+  const PLOT_W = W - PAD.left - PAD.right;
+  const STEP = PLOT_W / 24;
+
   const totals = data.reduce(
     (acc, h) => ({
       inbound: acc.inbound + h.inbound,
@@ -47,9 +53,11 @@ export function ActivityChart({ data, timeZone }: ActivityChartProps) {
         <LegendItem color="var(--lm-ink)" label="Respondió un asesor" value={totals.agent} shape="bar" />
       </div>
 
-      <div className="dash-chart">
+      <div className="dash-chart" ref={ref}>
         <svg
           viewBox={`0 0 ${W} ${H}`}
+          width={W}
+          height={H}
           className="dash-chart-svg"
           role="img"
           aria-label={`Actividad de hoy: ${totals.inbound} mensajes recibidos, ${totals.ai} respondidos por la IA y ${totals.agent} por un asesor.`}

@@ -689,8 +689,11 @@
   font-weight: 600;
 }
 
+/* Margen y no padding: el gráfico mide su contenedor para dibujarse a
+   escala 1:1, y clientWidth incluiría el padding, así que la medida saldría
+   más ancha que el espacio real. Los 26px son la columna de texto del panel. */
 .dash-chart {
-  padding: 4px 14px 22px;
+  margin: 4px 26px 22px;
 }
 
 .dash-chart-svg {
@@ -710,9 +713,11 @@
   stroke-width: 1;
 }
 
+/* 12px porque el gráfico ya no escala: antes el viewBox lo agrandaba y
+   10,5px terminaban leyéndose como ~25. */
 .dash-chart-tick {
   fill: var(--lm-muted);
-  font-size: 10.5px;
+  font-size: 12px;
 }
 
 .dash-chart-bar {

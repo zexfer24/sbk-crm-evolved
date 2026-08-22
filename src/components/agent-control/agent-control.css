@@ -523,6 +523,13 @@
   flex-direction: column;
 }
 
+/* .ac-feed-empty trae sus propios 26px laterales porque en «Actividad en
+   vivo» cuelga directo del panel. Acá ya los pone .ac-suggest, y sumados
+   dejaban el texto 26px más adentro que el resto del bloque. */
+.ac-suggest-list .ac-feed-empty {
+  padding-inline: 0;
+}
+
 .ac-model-usd-note {
   font-weight: 400;
   color: var(--lm-muted);
@@ -532,11 +539,14 @@
 /* --------------------------------------------------------------------------
    Respuestas predeterminadas de la IA (playbooks)
    -------------------------------------------------------------------------- */
+/* Los 26px laterales son la columna de texto del panel: los fija
+   .dash-panel-head y todo lo que va debajo tiene que respetarlos. */
 .ac-pb-intro {
   color: var(--lm-muted);
   font-size: 12.5px;
   line-height: 1.5;
   max-width: 74ch;
+  padding: 0 26px;
   margin-bottom: 12px;
 }
 
@@ -544,6 +554,7 @@
   display: flex;
   flex-wrap: wrap;
   gap: 8px;
+  padding: 0 26px;
   margin-bottom: 12px;
 }
 
@@ -551,6 +562,7 @@
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
   gap: 10px;
+  padding: 0 26px 24px;
 }
 
 .ac-pb-card {
@@ -621,6 +633,7 @@
   display: flex;
   flex-direction: column;
   gap: 6px;
+  padding: 0 26px 24px;
 }
 
 .ac-pb-missing-row {
