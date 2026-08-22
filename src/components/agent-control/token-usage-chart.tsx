@@ -1,4 +1,5 @@
 import type { TokenUsageDay } from "@/lib/types";
+import { gridValuesFor } from "@/lib/chart-scale";
 
 const W = 640;
 const H = 160;
@@ -16,7 +17,7 @@ export function TokenUsageChart({ data }: TokenUsageChartProps) {
   const scaleY = (value: number) => PAD.top + PLOT_H - (value / peak) * PLOT_H;
   const centerX = (index: number) => PAD.left + step * index + step / 2;
   const barWidth = Math.min(step * 0.55, 22);
-  const gridValues = [0, peak / 2, peak];
+  const gridValues = gridValuesFor(peak);
   const total = data.reduce((sum, d) => sum + d.tokens, 0);
 
   return (

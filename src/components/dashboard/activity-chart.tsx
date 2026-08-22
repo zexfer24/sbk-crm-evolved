@@ -1,4 +1,5 @@
 import type { HourlyActivity } from "@/lib/types";
+import { gridValuesFor } from "@/lib/chart-scale";
 
 // Lienzo fijo que luego escala con el ancho del panel.
 const W = 720;
@@ -29,7 +30,7 @@ export function ActivityChart({ data, timeZone }: ActivityChartProps) {
   const centerX = (index: number) => PAD.left + STEP * index + STEP / 2;
   const barWidth = Math.min(STEP * 0.5, 15);
 
-  const gridValues = [0, peak / 2, peak];
+  const gridValues = gridValuesFor(peak);
   const inboundPath = smoothPath(data.map((hour, index) => [centerX(index), scaleY(hour.inbound)]));
 
   return (

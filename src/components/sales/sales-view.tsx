@@ -4,6 +4,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import {
+  Bot,
   CheckCheck,
   Eye,
   Inbox,
@@ -12,7 +13,6 @@ import {
   RotateCcw,
   Route,
   ShieldCheck,
-  SlidersHorizontal,
   Trash2,
 } from "lucide-react";
 import type { Agent, Conversation } from "@/lib/types";
@@ -128,7 +128,7 @@ export function SalesView({ currentAgent, initialConversations }: SalesViewProps
             <Receipt size={17} />
           </Link>
           <Link className="dash-rail-btn" href="/agent-control" aria-label="Control de IA">
-            <SlidersHorizontal size={17} />
+            <Bot size={17} />
           </Link>
           <span className="dash-rail-spacer" />
           <button className="dash-rail-btn" type="button" onClick={signOut} aria-label="Cerrar sesión">

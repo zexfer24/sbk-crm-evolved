@@ -45,6 +45,10 @@ import { AgentsRosterPanel } from "@/components/agent-control/agent-roster-panel
 import { PlaybooksPanel } from "@/components/agent-control/playbooks-panel";
 import { SlidingPills } from "@/components/sliding-pills";
 import { TokenUsageChart } from "@/components/agent-control/token-usage-chart";
+// crm.css trae .crm-pill, que esta vista usa para los botones de acción de
+// cada conversación. Sin este import quedaban sin estilo: el ícono se
+// apilaba encima del texto y no se veían como botones.
+import "@/components/crm.css";
 import "@/components/dashboard/dashboard.css";
 import "@/components/agent-control/agent-control.css";
 
