@@ -73,7 +73,7 @@ create table public.ai_playbooks (
   trigger_description text not null,
   response_text text not null,
   attachment_url text,
-  attachment_type text check (attachment_type in ('image', 'document', 'video')),
+  attachment_type text check (attachment_type in ('link', 'image', 'document', 'video')),
   after_send text not null default 'wait' check (after_send in ('wait', 'escalate')),
   is_active boolean not null default true,
   created_at timestamptz not null default now(),
@@ -91,8 +91,30 @@ prompt de matching sea entendible y que los fallos sean depurables a
 simple vista.
 
 `ai_playbooks_attachment_pair` evita el estado a medias (una URL sin tipo
-no se puede enviar por la Cloud API, que exige saber si es `image`,
-`document` o `video`).
+no se sabe cómo enviar).
+
+### `link` vs. archivo adjunto
+
+Los catálogos de SBK son **links que configura el cliente**, no archivos
+subidos, y son varios: el escenario que coincida decide cuál link sale.
+Esto obliga a distinguir dos formas de enviar una URL, porque la Cloud API
+las trata distinto:
+
+| `attachment_type` | Cómo se envía | Cuándo usarlo |
+|---|---|---|
+| `link` | La URL se anexa al final de `response_text`, como texto | Cualquier URL: catálogo web, Drive, Instagram, una carpeta compartida |
+| `image` · `document` · `video` | `sendWhatsappMedia`, y **Meta descarga el archivo** desde la URL | Solo si la URL apunta directo al archivo (`.pdf`, `.jpg`) y es pública sin login |
+
+La distinción no es cosmética: si Jose pega un link de Google Drive o de
+una página web y el sistema intenta mandarlo como `document`, **Meta
+rechaza el envío** porque no puede descargar un archivo de ahí. `link` es
+el valor por defecto del formulario justamente porque es el que siempre
+funciona.
+
+Un catálogo por escenario: "Catálogo de accesorios", "Catálogo de cascos",
+etc., cada uno con su `trigger_description`. El reconocimiento elige cuál,
+igual que con cualquier otro escenario — no hace falta ninguna lógica
+especial para catálogos.
 
 `after_send` en inglés, igual que `agent_turns.action`.
 
@@ -164,14 +186,14 @@ cliente, como punto de partida editable desde el panel:
 | Postventa Cashea | `wait` | — |
 | Guía de envío · Cashea | `escalate` | — |
 | Guía de envío · compra directa | `escalate` | — |
-| Catálogo general | `wait` | documento |
-| Niveles de Cashea | `wait` | imagen |
+| Catálogo general | `wait` | `link` |
+| Niveles de Cashea | `wait` | `link` |
 
 Los textos de la semilla son un borrador razonable; el cliente los ajusta
 desde el panel sin redeploy. Las dos filas con adjunto quedan con
-`attachment_url` nulo hasta que el cliente suba los archivos — un
-escenario sin adjunto envía solo su texto, así que la semilla es válida
-desde el minuto cero.
+`attachment_url` nulo hasta que Jose configure sus links — un escenario
+sin adjunto envía solo su texto, así que la semilla es válida desde el
+minuto cero.
 
 ## El turno del agente
 
@@ -239,8 +261,11 @@ La asimetría de costo justifica sesgar el prompt hacia `ninguno`.
 
 `runPlaybook` no llama al modelo en ningún punto:
 
-1. Envía `response_text` **tal cual**, sin pasarlo por el modelo.
-2. Si hay adjunto, lo envía como mensaje aparte vía `sendWhatsappMedia`.
+1. Envía `response_text` **tal cual**, sin pasarlo por el modelo. Si el
+   adjunto es de tipo `link`, la URL va anexada al final de ese mismo
+   mensaje.
+2. Si el adjunto es `image` / `document` / `video`, lo envía como mensaje
+   aparte vía `sendWhatsappMedia`.
 3. Según `after_send`:
    - `wait` → `journey_stage = null`, `active_tool = null`. Fin del turno.
    - `escalate` → `escalateConversation(...)` con `motivo: "seguimiento"`
@@ -290,8 +315,8 @@ para los adjuntos.
 | "Realicé una compra por Cashea" | Postventa Cashea | Texto · `wait` |
 | "No me han enviado la guía" *(mencionó Cashea antes)* | Guía · Cashea | Pide cédula del titular · `escalate` |
 | "No me han enviado la guía" *(sin mencionar Cashea)* | Guía · compra directa | Pide nombre y apellido · `escalate` |
-| "Quiero accesorios" | Catálogo general | Texto + PDF · `wait` |
-| "Información de los niveles de Cashea" | Niveles de Cashea | Texto + imagen · `wait` |
+| "Quiero accesorios" | Catálogo general | Texto + link del catálogo · `wait` |
+| "Información de los niveles de Cashea" | Niveles de Cashea | Texto + link · `wait` |
 
 La bifurcación Cashea / compra directa **no necesita un motor de reglas**:
 son dos escenarios independientes, y como `matchPlaybook` recibe el
@@ -310,9 +335,15 @@ indicador de adjunto y de `after_send`, con editar y borrar. Solo
 supervisor/admin ve los controles de escritura (RLS lo bloquea igual del
 lado del servidor).
 
-**Formulario**: nombre · cuándo aplica · texto de la respuesta · adjunto
-(sube a `whatsapp-media` con el mismo patrón que `composer.tsx:130`) ·
+**Formulario**: nombre · cuándo aplica · texto de la respuesta · adjunto ·
 qué hacer después.
+
+El campo de adjunto ofrece las dos vías: **pegar un link** (opción por
+defecto, la que va a usar Jose para los catálogos) o **subir un archivo**
+a `whatsapp-media`, con el mismo patrón que `composer.tsx:130`. Subir un
+archivo fija `attachment_type` según el MIME; pegar un link lo deja en
+`link` salvo que el usuario elija explícitamente otro tipo, con un aviso
+de que Meta debe poder descargar el archivo directo desde esa URL.
 
 **Importar desde mensajes rápidos**: selector de `quick_replies` que copia
 `label` → `name` y `content` → `response_text`. Copia, no vínculo: a
@@ -379,8 +410,10 @@ Vitest, archivos junto al código (patrón de `tools.test.ts`,
 - El turno registra `playbook_id` y `customer_message` en ambos caminos.
 
 `src/lib/ai/send.test.ts` (nuevo)
-- Un escenario con adjunto inserta dos mensajes (texto + media) con el
-  `message_type` correcto.
+- Un escenario con adjunto `link` inserta **un** mensaje, con la URL
+  anexada al texto.
+- Un escenario con adjunto `document` inserta **dos** mensajes (texto +
+  media) con el `message_type` correcto.
 - Canal simulado: inserta en `messages` sin llamar a la Cloud API.
 
 ## Archivos
