@@ -27,7 +27,7 @@ import { sendAgentText, sendPlaybookReply, type AgentConversation } from "@/lib/
 //   1. Clasificar la intención (una de cuatro categorías genéricas).
 //   2. Actuar con las herramientas acotadas a esa intención.
 //
-// Se dispara una vez por conversación desde el webhook (ver runAgentTurnsFor).
+// Lo dispara la cola, una vez por conversación (ver src/lib/ai/queue.ts).
 // ---------------------------------------------------------------------------
 
 const MAX_STEPS = 5;
@@ -323,7 +323,6 @@ export async function runAgentTurn(conversationId: string): Promise<void> {
   });
 }
 
-/** Corre el turno para varias conversaciones a la vez (una tanda del webhook puede tocar varias). */
-export async function runAgentTurnsFor(conversationIds: Iterable<string>): Promise<void> {
-  await Promise.all([...new Set(conversationIds)].map((id) => runAgentTurn(id)));
-}
+// El disparo en lote vive ahora en src/lib/ai/queue.ts: el webhook encola y
+// la cola procesa de a uno. Correr varios turnos en paralelo desde acá dejaba
+// las respuestas sin registro si el proceso moría a mitad.

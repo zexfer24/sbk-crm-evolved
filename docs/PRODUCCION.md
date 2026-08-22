@@ -53,7 +53,7 @@ real, pero la regla simple es: **el seed no se toca en producción**.
 **Verificación:**
 
 ```sql
-select count(*) from supabase_migrations.schema_migrations;  -- 22
+select count(*) from supabase_migrations.schema_migrations;  -- 23
 select public from storage.buckets where id = 'whatsapp-media';  -- false
 select public.agent_can_run();  -- true
 ```
@@ -173,6 +173,33 @@ node .next/standalone/server.js     # con las variables en el entorno
 Detrás de un reverse proxy (Caddy, nginx) que termine TLS. El webhook de Meta
 exige HTTPS.
 
+### Cron de la cola de turnos
+
+Los turnos de la IA se encolan y se procesan aparte, para que un reinicio a
+mitad de camino no se lleve la respuesta de un cliente. El camino normal es
+que el propio webhook procese lo que encola; el cron es la red de seguridad
+para lo que ese camino no cubre — el proceso que murió a mitad, o el turno
+que falló y espera otro intento.
+
+Define `CRON_SECRET` (una cadena larga y aleatoria) y llama cada 5 minutos:
+
+```cron
+*/5 * * * * curl -fsS -X POST https://<tu-dominio>/api/cron/process-queue -H "Authorization: Bearer $CRON_SECRET" > /dev/null
+```
+
+Sin `CRON_SECRET` el endpoint responde 503 y no procesa nada: dispara turnos
+de IA, o sea gasto, así que falla cerrado siempre.
+
+Para ver qué quedó atascado:
+
+```sql
+select conversation_id, status, attempts, last_error from public.agent_turn_queue;
+```
+
+Una fila en `failed` con 3 intentos ya no se reintenta sola: revisa
+`last_error` y, si corresponde, vuelve a encolarla con
+`select public.enqueue_agent_turn('<conversation_id>')`.
+
 ### Monitoreo
 
 Apunta un monitor externo —UptimeRobot, Better Stack, el que uses— a
@@ -238,10 +265,6 @@ Honestidad sobre el estado, para que nadie se lleve una sorpresa:
   externo (UptimeRobot, Better Stack, el que sea) revise el servicio y avise,
   pero los errores de la aplicación siguen yendo a `console.error` y a
   `agent_turns`. Para rastrear excepciones hace falta un Sentry o equivalente.
-- **El turno de la IA no es recuperable.** Corre en `after()`, en el mismo
-  proceso y sin cola. Si el servidor se reinicia justo mientras responde, esa
-  respuesta se pierde en silencio. A esta escala es tolerable, pero hay que
-  saberlo.
 - **Un solo token de WhatsApp** para todos los canales. Con más de un número
   hay que extender `whatsapp_channels`.
 - **La PII no está cifrada en reposo.** Cédula, dirección y teléfono se
@@ -256,7 +279,7 @@ Con todo configurado, esta lista debe pasar entera:
 
 - [ ] Una restauración de prueba devuelve los datos completos
 - [ ] `npm run build` sin errores ni warnings
-- [ ] `select count(*) from supabase_migrations.schema_migrations` devuelve 22
+- [ ] `select count(*) from supabase_migrations.schema_migrations` devuelve 23
 - [ ] El bucket `whatsapp-media` es privado (`public = false`)
 - [ ] Una URL directa al bucket responde 400
 - [ ] `/api/media/...` sin sesión responde 401

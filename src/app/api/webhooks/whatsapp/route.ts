@@ -9,7 +9,7 @@ import {
   getMetaMediaUrl,
   sendWhatsappTemplate,
 } from "@/lib/whatsapp/meta-client";
-import { runAgentTurnsFor } from "@/lib/ai/agent";
+import { enqueueAgentTurns, processQueuedTurns } from "@/lib/ai/queue";
 import { MEDIA_BUCKET, mediaUrlFor } from "@/lib/storage";
 
 // ---------------------------------------------------------------------------
@@ -428,11 +428,13 @@ export async function POST(request: Request) {
     after(() => Promise.allSettled(mediaDownloadTasks.map((task) => task())));
   }
 
-  // El turno del agente de IA corre después de responder a Meta: el webhook
-  // debe ser rápido, y una tanda con varios mensajes del cliente dispara UN
-  // solo turno por conversación (no uno por mensaje).
+  // El turno se encola ANTES de responder a Meta y se procesa después: el
+  // webhook sigue siendo rápido, pero si el proceso muere a mitad del turno
+  // la conversación queda pendiente en la cola en vez de perderse. Una tanda
+  // con varios mensajes del mismo cliente deja un solo pendiente.
   if (touchedByCustomer.size > 0) {
-    after(() => runAgentTurnsFor(touchedByCustomer));
+    await enqueueAgentTurns(supabase, touchedByCustomer);
+    after(() => processQueuedTurns());
   }
 
   return NextResponse.json({ ok: true });

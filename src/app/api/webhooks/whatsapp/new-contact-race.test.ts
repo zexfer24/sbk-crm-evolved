@@ -13,7 +13,7 @@ vi.mock("next/server", async (importOriginal) => {
 });
 
 vi.mock("@/lib/ai/agent", () => ({
-  runAgentTurnsFor: vi.fn(async () => {}),
+  runAgentTurn: vi.fn(async () => {}),
 }));
 
 /**

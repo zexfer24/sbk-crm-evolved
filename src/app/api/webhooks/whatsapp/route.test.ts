@@ -13,8 +13,9 @@ vi.mock("next/server", async (importOriginal) => {
   };
 });
 
-vi.mock("@/lib/ai/agent", () => ({
-  runAgentTurnsFor: vi.fn(async () => {}),
+vi.mock("@/lib/ai/queue", () => ({
+  enqueueAgentTurns: vi.fn(async () => {}),
+  processQueuedTurns: vi.fn(async () => ({ processed: 0, failed: 0 })),
 }));
 
 vi.mock("@/lib/whatsapp/meta-client", async (importOriginal) => {
@@ -230,22 +231,22 @@ function fakeRequest(body: unknown, headers: Record<string, string> = {}): Reque
 describe("POST /api/webhooks/whatsapp — idempotencia", () => {
   it("no duplica el mensaje ni vuelve a disparar el turno de la IA si Meta reentrega el mismo webhook", async () => {
     const { POST } = await import("@/app/api/webhooks/whatsapp/route");
-    const { runAgentTurnsFor } = await import("@/lib/ai/agent");
+    const { enqueueAgentTurns } = await import("@/lib/ai/queue");
 
     const waMessageId = "wamid.idempotencia-test-1";
 
     const first = await POST(fakeRequest(webhookBody(waMessageId)));
     expect(first.status).toBe(200);
     expect(insertedMessages.size).toBe(1);
-    expect(runAgentTurnsFor).toHaveBeenCalledTimes(1);
+    expect(enqueueAgentTurns).toHaveBeenCalledTimes(1);
 
     const second = await POST(fakeRequest(webhookBody(waMessageId)));
     expect(second.status).toBe(200);
 
     // La reentrega no debe insertar una segunda fila...
     expect(insertedMessages.size).toBe(1);
-    // ...ni disparar un segundo turno de la IA para esa conversación.
-    expect(runAgentTurnsFor).toHaveBeenCalledTimes(1);
+    // ...ni volver a encolar un turno para esa conversación.
+    expect(enqueueAgentTurns).toHaveBeenCalledTimes(1);
   });
 });
 

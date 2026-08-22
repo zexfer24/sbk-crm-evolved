@@ -110,6 +110,41 @@ export type Database = {
           },
         ]
       }
+      agent_turn_queue: {
+        Row: {
+          attempts: number
+          conversation_id: string
+          enqueued_at: string
+          last_error: string | null
+          started_at: string | null
+          status: string
+        }
+        Insert: {
+          attempts?: number
+          conversation_id: string
+          enqueued_at?: string
+          last_error?: string | null
+          started_at?: string | null
+          status?: string
+        }
+        Update: {
+          attempts?: number
+          conversation_id?: string
+          enqueued_at?: string
+          last_error?: string | null
+          started_at?: string | null
+          status?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "agent_turn_queue_conversation_id_fkey"
+            columns: ["conversation_id"]
+            isOneToOne: true
+            referencedRelation: "conversations"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       agent_turns: {
         Row: {
           action: string
@@ -1102,6 +1137,18 @@ export type Database = {
           output_tokens: number
           total_tokens: number
         }[]
+      }
+      claim_agent_turn: {
+        Args: { p_max_attempts?: number; p_stale_seconds?: number }
+        Returns: string
+      }
+      enqueue_agent_turn: {
+        Args: { p_conversation_id: string }
+        Returns: undefined
+      }
+      finish_agent_turn: {
+        Args: { p_conversation_id: string; p_error?: string }
+        Returns: undefined
       }
       is_agent: { Args: never; Returns: boolean }
       is_supervisor_or_admin: { Args: never; Returns: boolean }
