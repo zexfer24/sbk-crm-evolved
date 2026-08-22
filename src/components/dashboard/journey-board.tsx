@@ -110,7 +110,7 @@ export function JourneyBoard({ stages, now }: JourneyBoardProps) {
                 {visible.length === 0 ? (
                   <p className="dash-stage-empty">Sin nadie aquí</p>
                 ) : (
-                  visible.map((conversation) => {
+                  visible.map((conversation, cardIndex) => {
                     const waited = minutesInStage(conversation, now);
                     const late = waited >= stage.stallMinutes;
                     const name = contactName(conversation);
@@ -122,6 +122,7 @@ export function JourneyBoard({ stages, now }: JourneyBoardProps) {
                         key={conversation.id}
                         href={`/inbox?conversation=${conversation.id}`}
                         title={detail ? `${name} · ${detail}` : name}
+                        style={{ animationDelay: `${cardIndex * 45}ms` }}
                       >
                         <span className="dash-card-avatar" aria-hidden="true">
                           {initials(name)}

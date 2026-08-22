@@ -43,7 +43,7 @@ export function TicketQueuePanel({ tickets, now }: TicketQueuePanelProps) {
             <span style={{ justifySelf: "end" }}>Espera</span>
           </div>
 
-          {rows.map((conversation) => {
+          {rows.map((conversation, rowIndex) => {
             const name = contactName(conversation);
             const waited = minutesInStage(conversation, now);
             const reason = ticketTagsOf(conversation).map(ticketCategory).join(", ");
@@ -53,6 +53,7 @@ export function TicketQueuePanel({ tickets, now }: TicketQueuePanelProps) {
                 className="dash-queue-row"
                 key={conversation.id}
                 href={`/inbox?conversation=${conversation.id}`}
+                style={{ animationDelay: `${rowIndex * 45}ms` }}
               >
                 <span className="dash-queue-client">
                   <span className="dash-card-avatar" aria-hidden="true">
