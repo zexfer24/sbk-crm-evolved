@@ -1,25 +1,38 @@
 "use client";
 
 import { useState } from "react";
-import { Handshake, IdCard, MapPin, Phone, Plus, Radio, X } from "lucide-react";
+import { Check, Handshake, IdCard, MapPin, Pencil, Phone, Plus, Radio, Settings2, Trash2, X } from "lucide-react";
 import { Button, TextArea, toast } from "@heroui/react";
-import type { Agent, Conversation, Note, Tag } from "@/lib/types";
+import type { Agent, Conversation, Message, Note, Tag } from "@/lib/types";
 import { createClient } from "@/lib/supabase/client";
-import { addNote, addTagToContact, removeTagFromContact } from "@/lib/mutations";
+import {
+  addNote,
+  addTagToContact,
+  deleteNote,
+  removeTagFromContact,
+  updateNote,
+} from "@/lib/mutations";
 import { formatFullDateTime } from "@/lib/format";
 import { CloseSaleModal } from "@/components/context-panel/close-sale-modal";
+import { ManageTagsModal } from "@/components/context-panel/manage-tags-modal";
 
 interface ContextPanelProps {
   conversation: Conversation;
+  messages: Message[];
   notes: Note[];
   allTags: Tag[];
   currentAgent: Agent;
 }
 
-export function ContextPanel({ conversation, notes, allTags, currentAgent }: ContextPanelProps) {
+export function ContextPanel({ conversation, messages, notes, allTags, currentAgent }: ContextPanelProps) {
   const [noteDraft, setNoteDraft] = useState("");
   const [isSavingNote, setIsSavingNote] = useState(false);
   const [isCloseSaleOpen, setIsCloseSaleOpen] = useState(false);
+  const [isManageTagsOpen, setIsManageTagsOpen] = useState(false);
+  const [editingNoteId, setEditingNoteId] = useState<string | null>(null);
+  const [editingNoteDraft, setEditingNoteDraft] = useState("");
+  const [isSavingEdit, setIsSavingEdit] = useState(false);
+  const [deletingNoteId, setDeletingNoteId] = useState<string | null>(null);
 
   const contact = conversation.contact;
   const contactTagIds = new Set(contact.tags.map((t) => t.id));
@@ -61,6 +74,38 @@ export function ContextPanel({ conversation, notes, allTags, currentAgent }: Con
     }
   }
 
+  function startEditNote(note: Note) {
+    setEditingNoteId(note.id);
+    setEditingNoteDraft(note.content);
+  }
+
+  async function handleSaveEditNote() {
+    const content = editingNoteDraft.trim();
+    if (!content || !editingNoteId) return;
+    setIsSavingEdit(true);
+    try {
+      const supabase = createClient();
+      await updateNote(supabase, editingNoteId, content);
+      setEditingNoteId(null);
+    } catch {
+      toast.danger("No se pudo editar la nota.");
+    } finally {
+      setIsSavingEdit(false);
+    }
+  }
+
+  async function handleDeleteNote(noteId: string) {
+    setDeletingNoteId(noteId);
+    try {
+      const supabase = createClient();
+      await deleteNote(supabase, noteId);
+    } catch {
+      toast.danger("No se pudo borrar la nota.");
+    } finally {
+      setDeletingNoteId(null);
+    }
+  }
+
   return (
     <>
       <div className="crm-context-head">
@@ -81,7 +126,10 @@ export function ContextPanel({ conversation, notes, allTags, currentAgent }: Con
         conversationId={conversation.id}
         contact={contact}
         agent={currentAgent}
+        messages={messages}
       />
+
+      <ManageTagsModal isOpen={isManageTagsOpen} onOpenChange={setIsManageTagsOpen} tags={allTags} />
 
       <div className="crm-context-body">
         <section className="crm-context-section">
@@ -111,7 +159,18 @@ export function ContextPanel({ conversation, notes, allTags, currentAgent }: Con
         </section>
 
         <section className="crm-context-section">
-          <p className="lm-eyebrow">Etiquetas</p>
+          <div className="flex items-center justify-between">
+            <p className="lm-eyebrow">Etiquetas</p>
+            <button
+              type="button"
+              className="crm-manage-tags-btn"
+              onClick={() => setIsManageTagsOpen(true)}
+              aria-label="Gestionar etiquetas"
+            >
+              <Settings2 size={13} />
+              Gestionar
+            </button>
+          </div>
           <div className="crm-tags">
             {contact.tags.map((tag) => (
               <span className="crm-tag" key={tag.id} data-color={tag.color}>
@@ -156,6 +215,7 @@ export function ContextPanel({ conversation, notes, allTags, currentAgent }: Con
             placeholder="Anota algo sobre este contacto…"
             rows={3}
             fullWidth
+            className="crm-textarea"
           />
           <Button
             size="sm"
@@ -168,14 +228,68 @@ export function ContextPanel({ conversation, notes, allTags, currentAgent }: Con
           </Button>
 
           <div className="flex flex-col gap-2">
-            {notes.map((note) => (
-              <div className="crm-note" key={note.id}>
-                <p style={{ margin: 0, whiteSpace: "pre-wrap" }}>{note.content}</p>
-                <p className="crm-note-meta">
-                  {note.agent?.displayName ?? "Agente"} · {formatFullDateTime(note.createdAt)}
-                </p>
-              </div>
-            ))}
+            {notes.map((note) => {
+              const isEditing = editingNoteId === note.id;
+              const canManage = note.agent?.id === currentAgent.id || currentAgent.role !== "agent";
+              return (
+                <div className="crm-note" key={note.id}>
+                  <div className="crm-note-head">
+                    <p className="crm-note-author">{note.agent?.displayName ?? "Agente"}</p>
+                    {canManage && !isEditing && (
+                      <div className="crm-note-actions">
+                        <button
+                          type="button"
+                          className="crm-note-action-btn"
+                          onClick={() => startEditNote(note)}
+                          aria-label="Editar nota"
+                        >
+                          <Pencil size={12} />
+                        </button>
+                        <button
+                          type="button"
+                          className="crm-note-action-btn"
+                          onClick={() => handleDeleteNote(note.id)}
+                          disabled={deletingNoteId === note.id}
+                          aria-label="Borrar nota"
+                        >
+                          <Trash2 size={12} />
+                        </button>
+                      </div>
+                    )}
+                  </div>
+
+                  {isEditing ? (
+                    <div className="flex flex-col gap-1.5">
+                      <TextArea
+                        value={editingNoteDraft}
+                        onChange={(e) => setEditingNoteDraft(e.target.value)}
+                        rows={3}
+                        fullWidth
+                        className="crm-textarea"
+                      />
+                      <div className="flex justify-end gap-2">
+                        <Button size="sm" variant="ghost" onPress={() => setEditingNoteId(null)}>
+                          Cancelar
+                        </Button>
+                        <Button
+                          size="sm"
+                          variant="secondary"
+                          isDisabled={!editingNoteDraft.trim() || isSavingEdit}
+                          onPress={handleSaveEditNote}
+                        >
+                          <Check size={13} />
+                          Guardar
+                        </Button>
+                      </div>
+                    </div>
+                  ) : (
+                    <p style={{ margin: 0, whiteSpace: "pre-wrap" }}>{note.content}</p>
+                  )}
+
+                  <p className="crm-note-meta">{formatFullDateTime(note.createdAt)}</p>
+                </div>
+              );
+            })}
             {notes.length === 0 && (
               <p style={{ color: "var(--lm-muted)", fontSize: 12, margin: 0 }}>Sin notas todavía.</p>
             )}
