@@ -98,7 +98,7 @@ en `supabase_realtime` para que la bandeja se sincronice en vivo entre agentes.
 
 Ya está implementada y conectada (ver `.env.local`: `WHATSAPP_ACCESS_TOKEN`,
 `WHATSAPP_PHONE_NUMBER_ID`, `WHATSAPP_BUSINESS_ACCOUNT_ID`,
-`WHATSAPP_WEBHOOK_VERIFY_TOKEN`):
+`WHATSAPP_WEBHOOK_VERIFY_TOKEN`, `WHATSAPP_APP_SECRET`):
 
 - `src/app/api/webhooks/whatsapp/route.ts` — recibe mensajes entrantes
   (texto y multimedia, con reply nativo) y actualizaciones de estado
@@ -120,6 +120,19 @@ secreto de cada uno.
 El webhook necesita una URL pública para que Meta le llegue (no funciona con
 `localhost` a secas) — en desarrollo se puede usar un túnel temporal como
 `cloudflared tunnel --url http://localhost:3000`.
+
+### `WHATSAPP_APP_SECRET` es obligatoria en producción
+
+El webhook verifica la firma `X-Hub-Signature-256` de cada request contra
+esta variable (el "app secret" de la app de Meta, en Configuración >
+Básica). **Si no está definida, el webhook acepta cualquier POST** — se
+deja pasar a propósito para que funcione en local, donde Meta nunca llega
+a llamar el endpoint, y queda avisado en consola.
+
+Desplegar sin ella significa que cualquiera que descubra la URL del
+webhook puede inyectar mensajes falsos, hacer que la IA le responda a
+clientes inventados y gastar la cuota del modelo. Configúrala antes de
+apuntar Meta a producción.
 
 ## Desplegar en un VPS (self-hosted)
 
