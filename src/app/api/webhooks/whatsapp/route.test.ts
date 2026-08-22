@@ -247,7 +247,7 @@ describe("POST /api/webhooks/whatsapp — firma de Meta", () => {
     return "sha256=" + createHmac("sha256", secret).update(rawBody, "utf8").digest("hex");
   }
 
-  it("sin WHATSAPP_APP_SECRET configurado, procesa el request sin exigir firma (compatibilidad local)", async () => {
+  it("sin WHATSAPP_APP_SECRET, fuera de producción procesa el request sin exigir firma", async () => {
     const previousSecret = process.env.WHATSAPP_APP_SECRET;
     delete process.env.WHATSAPP_APP_SECRET;
 
@@ -258,6 +258,29 @@ describe("POST /api/webhooks/whatsapp — firma de Meta", () => {
       expect(response.status).toBe(200);
       expect(insertedMessages.has(waMessageId)).toBe(true);
     } finally {
+      if (previousSecret === undefined) delete process.env.WHATSAPP_APP_SECRET;
+      else process.env.WHATSAPP_APP_SECRET = previousSecret;
+    }
+  });
+
+  /**
+   * En producción el endpoint no puede quedar abierto por una variable que
+   * alguien olvidó definir: sin secreto no hay forma de saber si el evento
+   * viene de Meta, así que se rechaza en vez de procesar.
+   */
+  it("sin WHATSAPP_APP_SECRET, en producción rechaza con 503 y no guarda nada", async () => {
+    const previousSecret = process.env.WHATSAPP_APP_SECRET;
+    delete process.env.WHATSAPP_APP_SECRET;
+    vi.stubEnv("NODE_ENV", "production");
+
+    try {
+      const { POST } = await import("@/app/api/webhooks/whatsapp/route");
+      const waMessageId = "wamid.sin-secreto-en-produccion";
+      const response = await POST(fakeRequest(webhookBody(waMessageId)));
+      expect(response.status).toBe(503);
+      expect(insertedMessages.has(waMessageId)).toBe(false);
+    } finally {
+      vi.unstubAllEnvs();
       if (previousSecret === undefined) delete process.env.WHATSAPP_APP_SECRET;
       else process.env.WHATSAPP_APP_SECRET = previousSecret;
     }

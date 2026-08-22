@@ -169,12 +169,23 @@ function hasValidMetaSignature(rawBody: string, signatureHeader: string | null, 
 export async function POST(request: Request) {
   const rawBody = await request.text();
   const appSecret = process.env.WHATSAPP_APP_SECRET;
+
   if (appSecret) {
     const signature = request.headers.get("x-hub-signature-256");
     if (!hasValidMetaSignature(rawBody, signature, appSecret)) {
       console.error("Webhook de WhatsApp: firma inválida o ausente, se rechaza el request.");
       return NextResponse.json({ error: "Firma inválida." }, { status: 401 });
     }
+  } else if (process.env.NODE_ENV === "production") {
+    // Sin secreto no hay forma de distinguir un evento de Meta de uno que
+    // mandó cualquiera que conozca la URL. En producción eso no puede
+    // quedar abierto porque alguien olvidó definir una variable: se
+    // rechaza y queda registrado, en vez de procesar mensajes inventados
+    // que le harían responder a la IA y consumir cuota del modelo.
+    console.error(
+      "Webhook de WhatsApp: WHATSAPP_APP_SECRET no configurado en producción — se rechaza el request sin procesarlo."
+    );
+    return NextResponse.json({ error: "Webhook mal configurado." }, { status: 503 });
   } else {
     console.warn(
       "Webhook de WhatsApp: WHATSAPP_APP_SECRET no configurado — no se valida la firma de Meta. Configúralo antes de producción."

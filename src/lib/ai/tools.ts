@@ -4,6 +4,7 @@ import { z } from "zod";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import type { Database } from "@/lib/supabase/database.types";
 import { getBcvRate } from "@/lib/ai/bcv";
+import { pgrstLiteral } from "@/lib/ai/pgrst";
 import { RECLAMO_CATEGORIES, escalateConversation, type EscalationMotivo } from "@/lib/ai/escalate";
 
 interface ToolDeps {
@@ -33,11 +34,17 @@ export function buildCatalogTool({ supabase, conversationId }: ToolDeps) {
       motoModel: z.string().optional().describe("Modelo de la moto del cliente, si lo mencionó (ej. 'SBR 200')"),
     }),
     execute: async ({ query, motoBrand, motoModel }) => {
+      // `query` lo redacta el modelo a partir de lo que escribe el cliente:
+      // es entrada no confiable y el filtro `.or()` es un mini-lenguaje, no
+      // una cadena inerte. Sin entrecomillar, una coma en el texto agrega
+      // condiciones a la consulta.
+      const term = pgrstLiteral(`%${query}%`);
+
       const { data: products, error } = await supabase
         .from("products")
         .select("id, name, brand, price, currency, stock_quantity, product_compatibility(moto_brand, moto_model)")
         .eq("is_active", true)
-        .or(`name.ilike.%${query}%,brand.ilike.%${query}%`);
+        .or(`name.ilike.${term},brand.ilike.${term}`);
 
       if (error) return { results: [], error: "No se pudo consultar el catálogo en este momento." };
 

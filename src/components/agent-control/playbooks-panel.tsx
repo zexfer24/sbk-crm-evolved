@@ -119,7 +119,12 @@ export function PlaybooksPanel({ playbooks, unmatchedTurns, quickReplies, canEdi
     setIsUploading(true);
     try {
       const supabase = createClient();
-      const path = `playbooks/${Date.now()}-${file.name}`;
+      // El bucket es público: una ruta con marca de tiempo y el nombre del
+      // archivo se puede adivinar probando milisegundos. Un id aleatorio la
+      // vuelve inenumerable, igual que hace el webhook con el multimedia
+      // entrante, que usa los UUID de conversación y mensaje.
+      const extension = file.name.includes(".") ? file.name.split(".").pop() : null;
+      const path = `playbooks/${crypto.randomUUID()}${extension ? `.${extension}` : ""}`;
       const { error } = await supabase.storage.from("whatsapp-media").upload(path, file, { contentType: file.type });
       if (error) throw error;
 
