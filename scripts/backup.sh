@@ -46,6 +46,17 @@ echo "Respaldando en $TARGET ..."
 #     dejando la base peor que antes. Limpiar es tarea de restore.sh, que
 #     rehace el esquema entero de una vez.
 #
+#  3. Nada de `--no-privileges`. Sin los GRANT, la base restaura todos los
+#     datos pero `service_role` y `authenticated` no pueden leer nada: la
+#     aplicación queda en pie contra una base que le dice que no. Se detectó
+#     porque /api/health empezó a responder 503 después de restaurar.
+#
+#  4. Se filtran las `ALTER DEFAULT PRIVILEGES`: el rol de conexión no puede
+#     cambiar los privilegios por defecto de otro rol y la restauración muere
+#     con "permission denied to change default privileges". Solo afectan a
+#     objetos FUTUROS; los GRANT de las tablas restauradas van aparte y esos
+#     sí se conservan.
+#
 # `--table` y `--schema` no se combinan: al pasar `--table`, pg_dump ignora
 # el `--schema`. De ahí que sean dos invocaciones.
 #
@@ -53,15 +64,15 @@ echo "Respaldando en $TARGET ..."
 # se respalda aparte (ver docs/PRODUCCION.md).
 {
   pg_dump "$DATABASE_URL" \
-    --quote-all-identifiers --no-owner --no-privileges \
+    --quote-all-identifiers --no-owner \
     --schema=public
 
   # Idempotente: si el usuario ya existe en el destino, no rompe.
   pg_dump "$DATABASE_URL" \
-    --data-only --inserts --on-conflict-do-nothing --no-owner --no-privileges \
+    --data-only --inserts --on-conflict-do-nothing --no-owner \
     --table=auth.users --table=auth.identities \
     --table=storage.buckets --table=storage.objects
-} | gzip -9 > "$TARGET"
+} | grep -v '^ALTER DEFAULT PRIVILEGES' | gzip -9 > "$TARGET"
 
 # Un archivo vacío o truncado no es un respaldo: se verifica que el gzip esté
 # íntegro y que el volcado tenga contenido antes de dar el paso por bueno.

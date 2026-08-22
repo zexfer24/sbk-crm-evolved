@@ -81,11 +81,16 @@ export function LoginForm() {
           </Button>
         </form>
 
-        <p className="login-demo">
-          Demo local: jose@liminal.test · maria@liminal.test · carlos@liminal.test
-          <br />
-          Contraseña: Liminal123!
-        </p>
+        {/* Acá vivían las credenciales de demo. Se quitaron: publicarlas en
+            la puerta de entrada del CRM entregaba tres cuentas válidas a
+            cualquiera que abriera la página.
+
+            No alcanzó con esconderlas tras `NODE_ENV !== "production"` —
+            comprobado buscándolas en el bundle compilado, seguían ahí. Un
+            literal que está en el código puede terminar en el navegador,
+            así que la única garantía es que no esté.
+
+            Las de desarrollo están en el README. */}
       </div>
     </div>
   );

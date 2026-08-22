@@ -188,10 +188,10 @@ guarda las rutas, no el contenido. Para eso:
 
 Honestidad sobre el estado, para que nadie se lleve una sorpresa:
 
-- **Alertas.** Ver más abajo.
-- **No hay alertas.** Los errores van a `console.error` y a `agent_turns`. Si
-  el webhook empieza a fallar un lunes en la mañana, nadie se entera hasta que
-  un cliente reclame. Hace falta un Sentry o equivalente.
+- **No hay alertas automáticas.** Existe `/api/health` para que un monitor
+  externo (UptimeRobot, Better Stack, el que sea) revise el servicio y avise,
+  pero los errores de la aplicación siguen yendo a `console.error` y a
+  `agent_turns`. Para rastrear excepciones hace falta un Sentry o equivalente.
 - **El turno de la IA no es recuperable.** Corre en `after()`, en el mismo
   proceso y sin cola. Si el servidor se reinicia justo mientras responde, esa
   respuesta se pierde en silencio. A esta escala es tolerable, pero hay que
