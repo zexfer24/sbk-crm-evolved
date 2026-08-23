@@ -192,6 +192,36 @@ docker compose --env-file .env.production ps   # los tres arriba, app en "health
 curl https://<tu-dominio>/api/health    # 200
 ```
 
+### En Dokploy
+
+Dokploy despliega desde un repositorio Git, así que el proyecto tiene que estar
+en uno. Privado: el `.env.production` no se versiona, pero el código sí es del
+negocio.
+
+Create Service → **Compose**, Provider **Git**, Compose Path
+`./docker-compose.dokploy.yml`. Lo de `.env.production` se pega en la pestaña
+**Environment** —de ahí Dokploy arma el `.env` que lee el stack—, y el dominio
+va en **Domains**, apuntando al servicio `app`, puerto 3000, con Let's Encrypt.
+
+Ese compose es este mismo stack menos Caddy: Dokploy ya trae Traefik en los
+puertos 80 y 443, y dejar Caddy no es redundante sino que impide que el stack
+levante. Las cabeceras de seguridad que ponía el Caddyfile las pone ahora la
+propia aplicación, en `headers()` de `next.config.ts`, así que ya no dependen
+de qué proxy haya delante.
+
+El DNS tiene que apuntar al servidor **antes** de desplegar, igual que con
+Caddy: el certificado se emite al arrancar.
+
+`preflight.sh` no corre en Dokploy —no hay `.env.production` allá—, así que
+pásalo localmente contra tu copia antes de pegar las variables en el panel.
+
+**Verificación:**
+
+```bash
+curl -I https://<tu-dominio>          # 200, con strict-transport-security
+curl https://<tu-dominio>/api/health  # 200
+```
+
 ### Solo la imagen, sin compose
 
 ```bash

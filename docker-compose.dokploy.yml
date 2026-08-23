@@ -1,24 +1,30 @@
 # =============================================================================
-# Liminal CRM en un servidor propio.
+# Liminal CRM en Dokploy.
 #
-# Para Dokploy hay otro archivo: `docker-compose.dokploy.yml`. Este de acá
-# levanta su propio Caddy y allá no sirve, porque Traefik ya ocupa el 80 y el
-# 443.
+# En Dokploy: Create Service → Compose → Provider Git → Compose Path
+# `./docker-compose.dokploy.yml`. Las variables se pegan en la pestaña
+# Environment; el dominio se añade en la pestaña Domains apuntando al servicio
+# `app`, puerto 3000.
 #
-#   cp .env.production.example .env.production   # y complétalo
-#   docker compose --env-file .env.production up -d
+# Tres diferencias con `docker-compose.yml` (el de servidor propio), y las tres
+# son por cómo trabaja Dokploy:
 #
-# El `--env-file` no sobra: sin él, Compose usa `.env` para resolver los
-# ${...} de este archivo y DOMAIN llegaría vacío, con lo que Caddy no pediría
-# certificado para ningún dominio. Comprobado: sin el flag avisa que las
-# variables no están definidas.
+#   1. Sin Caddy. Dokploy ya tiene Traefik ocupando los puertos 80 y 443, con
+#      Let's Encrypt automático. Dejar Caddy acá no es redundante: el stack no
+#      levanta, porque los puertos ya están tomados. Lo que se pierde son las
+#      cabeceras de seguridad que ponía el Caddyfile, y por eso ahora las pone
+#      la propia aplicación (ver `headers()` en next.config.ts).
 #
-# Caddy saca y renueva el certificado TLS solo, con que el dominio apunte al
-# servidor. El webhook de Meta exige HTTPS, así que esto no es opcional.
+#   2. `env_file: .env` y no `.env.production`. Dokploy escribe lo de la
+#      pestaña Environment en un `.env` dentro del directorio del proyecto. El
+#      nombre `.env.production` no lo conoce, y un `env_file` que no existe
+#      aborta el arranque.
 #
-# La base NO está acá: se asume Supabase (gestionado o en otro servidor). Meter
-# Postgres en este compose obligaría a resolver sus respaldos y su disco en el
-# mismo sitio, y esas son decisiones aparte.
+#   3. La app vive en dos redes. `default` para alcanzar a Redis; la externa
+#      `dokploy-network` para que Traefik la encuentre. Sin la segunda, el
+#      dominio responde 502 aunque el contenedor esté sano.
+#
+# La base NO está acá: se asume Supabase (gestionado o en otro servidor).
 # =============================================================================
 
 services:
@@ -27,17 +33,23 @@ services:
       context: .
       args:
         # Las NEXT_PUBLIC_* se incrustan al compilar: en tiempo de arranque ya
-        # es tarde, por eso van también acá.
+        # es tarde, por eso van también acá. Salen del `.env` que arma Dokploy.
         NEXT_PUBLIC_SUPABASE_URL: ${NEXT_PUBLIC_SUPABASE_URL}
         NEXT_PUBLIC_SUPABASE_ANON_KEY: ${NEXT_PUBLIC_SUPABASE_ANON_KEY}
         NEXT_PUBLIC_CRM_TIME_ZONE: ${NEXT_PUBLIC_CRM_TIME_ZONE:-America/Caracas}
     restart: unless-stopped
-    env_file: .env.production
+    env_file: .env
     expose:
       - "3000"
     depends_on:
       redis:
         condition: service_healthy
+    networks:
+      # Redis y el cron hablan con la app por acá.
+      - default
+      # Traefik enruta el dominio por acá. Es la red que crea Dokploy al
+      # instalarse; por eso es `external`.
+      - dokploy-network
     # Solo hace falta si Supabase corre en el MISMO servidor (self-hosted):
     # en Linux, host.docker.internal no existe sin esto. Con Supabase
     # gestionado la URL es pública y esta línea no molesta.
@@ -63,6 +75,9 @@ services:
     command: redis-server --appendonly yes
     volumes:
       - redis_data:/data
+    networks:
+      # Solo en la red interna: fuera del alcance de Traefik y de internet.
+      - default
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 10s
@@ -70,30 +85,18 @@ services:
       retries: 5
     # Sin `ports`: solo la app la alcanza, por la red interna de Compose.
 
-  caddy:
-    image: caddy:2-alpine
-    restart: unless-stopped
-    ports:
-      - "80:80"
-      - "443:443"
-    environment:
-      # Caddy pide el certificado para este dominio.
-      DOMAIN: ${DOMAIN}
-    volumes:
-      - ./Caddyfile:/etc/caddy/Caddyfile:ro
-      - caddy_data:/data
-      - caddy_config:/config
-    depends_on:
-      app:
-        condition: service_healthy
-
   # Procesa lo que quedó pendiente en la cola de turnos: el proceso que murió a
   # mitad, o el turno que falló y espera otro intento. El camino normal es que
   # el propio webhook procese lo que encola; esto es la red de seguridad.
+  #
+  # Dokploy también trae Schedules propios, pero este servicio ya está probado
+  # y no depende de configuración fuera del repositorio.
   cron:
     image: alpine:3
     restart: unless-stopped
-    env_file: .env.production
+    env_file: .env
+    networks:
+      - default
     depends_on:
       app:
         condition: service_healthy
@@ -106,6 +109,8 @@ services:
              done"
 
 volumes:
-  caddy_data:
-  caddy_config:
   redis_data:
+
+networks:
+  dokploy-network:
+    external: true

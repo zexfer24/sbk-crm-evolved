@@ -1,10 +1,43 @@
 import type { NextConfig } from "next";
 
+// Las mismas cabeceras que ponía el Caddyfile. Detrás del Traefik de Dokploy
+// no hay Caddy que las añada, y Traefik no las pone por su cuenta: puestas
+// acá viajan igual sea cual sea el proxy que haya delante.
+const cabecerasDeSeguridad = [
+  // El CRM no se muestra dentro de un iframe ajeno.
+  { key: "X-Frame-Options", value: "DENY" },
+  { key: "X-Content-Type-Options", value: "nosniff" },
+  { key: "Referrer-Policy", value: "strict-origin-when-cross-origin" },
+];
+
+// HSTS: un año, subdominios incluidos. Solo en producción, porque el
+// navegador lo recuerda: emitirla desde un túnel de demo deja ese dominio
+// forzado a HTTPS durante un año, y eso no se deshace desde el servidor.
+const hsts = {
+  key: "Strict-Transport-Security",
+  value: "max-age=31536000; includeSubDomains",
+};
+
 const nextConfig: NextConfig = {
   // Empaqueta en .next/standalone solo lo que el servidor necesita para
   // correr, dependencias incluidas. Es lo que permite que la imagen de
   // Docker no arrastre node_modules entero (ver Dockerfile).
   output: "standalone",
+
+  // `X-Powered-By: Next.js` delata el framework sin darle nada al usuario.
+  poweredByHeader: false,
+
+  async headers() {
+    return [
+      {
+        source: "/:path*",
+        headers:
+          process.env.NODE_ENV === "production"
+            ? [...cabecerasDeSeguridad, hsts]
+            : cabecerasDeSeguridad,
+      },
+    ];
+  },
 
   // Dominios desde los que se permite cargar los recursos de desarrollo
   // (/_next/static, HMR). Next los bloquea por defecto para cualquier origen

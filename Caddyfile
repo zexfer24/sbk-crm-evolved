@@ -1,5 +1,10 @@
 # Caddy saca y renueva el certificado TLS solo con que el dominio apunte a
 # este servidor. El webhook de Meta exige HTTPS.
+#
+# Estas cabeceras también las pone la aplicación (`headers()` en
+# next.config.ts), para que no se pierdan detrás de un proxy que no las añada
+# —el Traefik de Dokploy, por ejemplo—. No se duplican: `header` en Caddy
+# reemplaza, no acumula.
 
 {$DOMAIN} {
 	reverse_proxy app:3000
