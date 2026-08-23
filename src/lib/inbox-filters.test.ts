@@ -246,4 +246,84 @@ describe("applyInboxFilters — los criterios se acumulan", () => {
 
     expect(original).toEqual(copia);
   });
+
+  // Antes el buscador solo miraba nombre y número: para volver a un chat había
+  // que acordarse de quién era, no servía acordarse de qué se habló.
+  describe("buscar por lo que se dijo adentro", () => {
+    it("deja pasar la conversación cuyo historial coincide, aunque el nombre no", () => {
+      const nombra = conversation({ id: "bujia" });
+      const habla = conversation({ id: "otro" });
+
+      const result = applyInboxFilters([nombra, habla], {
+        filter: "all",
+        search: "bujía",
+        tagId: null,
+        sort: "recent",
+        viewer: ANA,
+        messageHitIds: new Set(["otro"]),
+      });
+
+      expect(result.map((x) => x.id).sort()).toEqual(["bujia", "otro"]);
+    });
+
+    it("sin coincidencias en el historial se comporta como antes", () => {
+      const result = applyInboxFilters([conversation({ id: "ana" }), conversation({ id: "beto" })], {
+        filter: "all",
+        search: "ana",
+        tagId: null,
+        sort: "recent",
+        viewer: ANA,
+        messageHitIds: new Set(),
+      });
+
+      expect(result.map((x) => x.id)).toEqual(["ana"]);
+    });
+
+    // La consulta al servidor tarda: mientras no llega, el buscador tiene que
+    // seguir filtrando por nombre en vez de quedarse en blanco.
+    it("funciona sin el conjunto de coincidencias, que llega después", () => {
+      const result = applyInboxFilters([conversation({ id: "ana" }), conversation({ id: "beto" })], {
+        filter: "all",
+        search: "ana",
+        tagId: null,
+        sort: "recent",
+        viewer: ANA,
+      });
+
+      expect(result.map((x) => x.id)).toEqual(["ana"]);
+    });
+
+    it("busca el nombre sin acentos: quien escribe \"jose\" espera encontrar a José", () => {
+      const josé = conversation({ id: "jose-perez" });
+      josé.contact.displayName = "José Pérez";
+
+      const result = applyInboxFilters([josé, conversation({ id: "otro" })], {
+        filter: "all",
+        search: "JOSE",
+        tagId: null,
+        sort: "recent",
+        viewer: ANA,
+        messageHitIds: new Set(),
+      });
+
+      expect(result.map((x) => x.id)).toEqual(["jose-perez"]);
+    });
+
+    // El corte por rol manda sobre la búsqueda: encontrar una palabra en el
+    // chat de otro asesor no puede meterlo en la bandeja "Míos".
+    it("una coincidencia en el historial no salta el filtro de la bandeja", () => {
+      const deBeto = conversation({ id: "de-beto", assignedAgent: BETO });
+
+      const result = applyInboxFilters([deBeto], {
+        filter: "mine",
+        search: "bujia",
+        tagId: null,
+        sort: "recent",
+        viewer: ANA,
+        messageHitIds: new Set(["de-beto"]),
+      });
+
+      expect(result).toEqual([]);
+    });
+  });
 });

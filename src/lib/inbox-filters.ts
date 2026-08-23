@@ -1,5 +1,6 @@
 import type { Agent, AgentRole, Conversation, InboxFilter, InboxSort } from "@/lib/types";
 import { contactName } from "@/lib/dashboard";
+import { normalizeForSearch } from "@/lib/message-search";
 
 /**
  * Qué bandejas ve cada quien.
@@ -32,6 +33,12 @@ export const INBOX_SORT_LABELS: Record<InboxSort, string> = {
 export interface InboxCriteria {
   filter: InboxFilter;
   search: string;
+  /**
+   * Conversaciones donde el texto buscado aparece dentro de algún mensaje.
+   * Lo resuelve Postgres, no el navegador: acá solo llegan los ids. Null
+   * mientras la consulta está en vuelo o cuando no hay nada que buscar.
+   */
+  messageHitIds?: ReadonlySet<string> | null;
   /** Etiqueta elegida en la barra de etiquetas. Null = sin filtrar por etiqueta. */
   tagId: string | null;
   sort: InboxSort;
@@ -59,10 +66,23 @@ function matchesFilter(conversation: Conversation, filter: InboxFilter, viewer: 
   }
 }
 
-function matchesSearch(conversation: Conversation, query: string): boolean {
+/**
+ * Tres formas de encontrar un chat: por quién es, por su número, o por algo
+ * que se dijo adentro. Las dos primeras se resuelven acá con lo que ya está en
+ * memoria; la tercera llega resuelta desde la base.
+ *
+ * El nombre se compara sin acentos igual que los mensajes: quien busca "jose"
+ * espera encontrar a José.
+ */
+function matchesSearch(
+  conversation: Conversation,
+  query: string,
+  messageHitIds: ReadonlySet<string> | null | undefined
+): boolean {
   if (!query) return true;
-  const name = contactName(conversation).toLowerCase();
-  return name.includes(query) || conversation.contact.phoneNumber.toLowerCase().includes(query);
+  if (normalizeForSearch(contactName(conversation)).includes(query)) return true;
+  if (conversation.contact.phoneNumber.toLowerCase().includes(query)) return true;
+  return messageHitIds?.has(conversation.id) ?? false;
 }
 
 function matchesTag(conversation: Conversation, tagId: string | null): boolean {
@@ -84,15 +104,15 @@ function sortValue(conversation: Conversation): number | null {
 
 export function applyInboxFilters(
   conversations: Conversation[],
-  { filter, search, tagId, sort, viewer }: InboxCriteria
+  { filter, search, tagId, sort, viewer, messageHitIds }: InboxCriteria
 ): Conversation[] {
-  const query = search.trim().toLowerCase();
+  const query = normalizeForSearch(search).trim();
 
   const list = conversations.filter(
     (conversation) =>
       matchesFilter(conversation, filter, viewer) &&
       matchesTag(conversation, tagId) &&
-      matchesSearch(conversation, query)
+      matchesSearch(conversation, query, messageHitIds)
   );
 
   // Copia: ordenar in situ reordenaría la lista que vive en el estado de React.

@@ -1,7 +1,14 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { render, screen, fireEvent, within } from "@testing-library/react";
 import type { Agent, Conversation, Tag } from "@/lib/types";
 import { InboxSidebar } from "@/components/inbox/inbox-sidebar";
+
+// La bandeja abre un cliente de Supabase para buscar dentro de los mensajes.
+// Acá no se prueba esa búsqueda —tiene sus propias pruebas en message-search—,
+// solo hace falta que crearlo no explote por falta de variables de entorno.
+vi.mock("@/lib/supabase/client", () => ({
+  createClient: () => ({ rpc: vi.fn().mockResolvedValue({ data: [], error: null }) }),
+}));
 
 const TAG_VIP: Tag = { id: "t-vip", label: "VIP", color: "accent" };
 const TAG_MOROSO: Tag = { id: "t-moroso", label: "Moroso", color: "danger" };
@@ -97,9 +104,15 @@ describe("InboxSidebar — qué filtros ve cada rol", () => {
   });
 });
 
-describe("InboxSidebar — filtrar por etiqueta", () => {
-  it("solo ofrece las etiquetas que alguna conversación está usando", () => {
-    const { container } = render(
+/** El filtro por categoría vive en un menú: abrirlo es parte del gesto. */
+function abrirMenúDeCategorías(): HTMLElement {
+  fireEvent.click(screen.getByRole("button", { name: /categoría/i }));
+  return screen.getByRole("menu", { name: "Filtrar por categoría" });
+}
+
+describe("InboxSidebar — filtrar por categoría", () => {
+  it("solo ofrece las categorías que alguna conversación está usando", () => {
+    render(
       <InboxSidebar
         conversations={[conversation({ id: "sola", tags: [TAG_VIP] })]}
         selectedId={null}
@@ -110,28 +123,49 @@ describe("InboxSidebar — filtrar por etiqueta", () => {
       />
     );
 
-    const barra = container.querySelector(".crm-tag-filter") as HTMLElement;
-    expect(within(barra).getByText("VIP")).toBeTruthy();
-    expect(within(barra).queryByText("Moroso")).toBeNull();
+    const menú = abrirMenúDeCategorías();
+    expect(within(menú).getByText("VIP")).toBeTruthy();
+    expect(within(menú).queryByText("Moroso")).toBeNull();
   });
 
-  it("al tocar una etiqueta deja solo las conversaciones que la llevan", () => {
+  it("al elegir una categoría deja solo las conversaciones que la llevan", () => {
     const { container } = renderSidebar(JEFA);
-    const barra = container.querySelector(".crm-tag-filter") as HTMLElement;
 
-    fireEvent.click(within(barra).getByText("VIP"));
+    fireEvent.click(within(abrirMenúDeCategorías()).getByText("VIP"));
 
     expect(visibleIds(container)).toEqual(["sin-duena"]);
   });
 
-  it("tocar de nuevo la etiqueta activa quita el filtro", () => {
+  it("elegir de nuevo la categoría activa quita el filtro", () => {
     const { container } = renderSidebar(JEFA);
-    const barra = container.querySelector(".crm-tag-filter") as HTMLElement;
 
-    fireEvent.click(within(barra).getByText("VIP"));
-    fireEvent.click(within(barra).getByText("VIP"));
+    fireEvent.click(within(abrirMenúDeCategorías()).getByText("VIP"));
+    fireEvent.click(within(abrirMenúDeCategorías()).getByText("VIP"));
 
     expect(visibleIds(container)).toHaveLength(3);
+  });
+
+  it("el menú se cierra al elegir, para no tapar la lista que acaba de filtrar", () => {
+    renderSidebar(JEFA);
+
+    fireEvent.click(within(abrirMenúDeCategorías()).getByText("VIP"));
+
+    expect(screen.queryByRole("menu", { name: "Filtrar por categoría" })).toBeNull();
+  });
+
+  it("sin categorías en uso no ofrece el botón: un menú vacío no filtra nada", () => {
+    render(
+      <InboxSidebar
+        conversations={[conversation({ id: "pelada" })]}
+        selectedId={null}
+        onSelect={() => {}}
+        currentAgent={JEFA}
+        allTags={ALL_TAGS}
+        bcvRate={null}
+      />
+    );
+
+    expect(screen.queryByRole("button", { name: /categoría/i })).toBeNull();
   });
 });
 

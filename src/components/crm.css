@@ -1419,39 +1419,96 @@
   font-size: 12px;
 }
 
-/* Barra de etiquetas: cada una filtra la bandeja al tocarla. */
-.crm-tag-filter {
+/* Filtro por categoría: un botón al lado del de orden que despliega la lista.
+   Antes era una fila de píldoras bajo el buscador; pasadas cinco o seis se
+   partía en tres renglones y se comía la lista de conversaciones. */
+.crm-tag-menu {
+  position: relative;
+  flex-shrink: 0;
+}
+
+.crm-tag-menu-panel {
+  position: absolute;
+  top: calc(100% + 6px);
+  right: 0;
+  z-index: 20;
   display: flex;
-  flex-wrap: wrap;
-  gap: 5px;
+  flex-direction: column;
+  gap: 2px;
+  /* Ni más angosto que el botón ni más ancho que la bandeja: las etiquetas
+     largas ("Reclamo · Garantía") mandan, hasta ese tope. */
+  min-width: 200px;
+  max-width: 276px;
+  max-height: 320px;
+  padding: 6px;
+  overflow-y: auto;
+  border-radius: var(--lm-radius-card);
+  background: var(--lm-surface);
+  box-shadow: var(--lm-shadow-lg);
 }
 
-.crm-tag-btn {
-  border: 1px solid transparent;
+.crm-tag-menu-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 9px;
+  border: 0;
+  border-radius: 11px;
+  background: transparent;
+  color: var(--lm-ink);
+  font: inherit;
+  font-size: 12.5px;
+  text-align: left;
   cursor: pointer;
-  transition: border-color 150ms ease, opacity 150ms ease;
 }
 
-.crm-tag-btn:hover {
-  opacity: 0.85;
+.crm-tag-menu-item:hover {
+  background: var(--lm-sunken);
 }
 
-/* La etiqueta activa se marca con su propio color, no con un fondo ajeno:
-   así se sigue leyendo de qué etiqueta se trata mientras filtra. */
-.crm-tag-btn[data-active="true"] {
-  border-color: currentColor;
+.crm-tag-menu-item:focus-visible {
+  outline: 2px solid var(--lm-link);
+  outline-offset: -2px;
+}
+
+/* Ancho fijo aunque no haya tilde: sin esto las filas marcadas se corren
+   ocho píxeles respecto de las demás y la columna deja de ser columna. */
+.crm-tag-menu-check {
+  display: grid;
+  flex-shrink: 0;
+  place-items: center;
+  width: 14px;
+  color: var(--lm-ink);
+}
+
+/* La etiqueta dentro del menú no se recorta con puntos suspensivos: la gracia
+   del menú es poder leer la categoría entera antes de elegirla. */
+.crm-tag-menu-item .crm-tag {
+  white-space: normal;
+}
+
+/* El fragmento que coincide con la búsqueda ocupa el lugar de la preview.
+   Se distingue del texto normal para que se entienda que no es el último
+   mensaje del chat sino el que hizo aparecer la conversación en la lista. */
+.crm-thread-preview[data-hit="true"] {
+  font-style: italic;
+}
+
+.crm-thread-mark {
+  border-radius: 3px;
+  /* Amarillo teñido y no relleno: el resaltado tiene que verse dentro de una
+     línea de 11px sin convertirse en el elemento más ruidoso de la bandeja. */
+  background: color-mix(in srgb, var(--lm-wait) 30%, transparent);
+  color: inherit;
+  font-style: normal;
   font-weight: 600;
 }
 
-.crm-tag-btn:focus-visible {
-  outline: 2px solid var(--lm-link);
-  outline-offset: 2px;
-}
-
-@media (prefers-reduced-motion: reduce) {
-  .crm-tag-btn {
-    transition: none;
-  }
+/* Sobre el hilo seleccionado el fondo ya es la tinta: el amarillo tenue se
+   pierde ahí, así que el resaltado pasa a ser el propio color de la marca. */
+.crm-thread[aria-current="true"] .crm-thread-mark {
+  background: color-mix(in srgb, var(--lm-wait) 45%, transparent);
+  color: var(--lm-on-ink);
 }
 
 /* --------------------------------------------------------------------------
