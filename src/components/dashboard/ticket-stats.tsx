@@ -44,13 +44,13 @@ export function TicketStatsPanel({ stats }: TicketStatsPanelProps) {
             <Bubble
               value={stats.open}
               label="Abiertos"
-              color="var(--lm-hot-ink)"
+              color="var(--lm-hot-fill)"
               size={bubbleSize(stats.open, peak)}
             />
             <Bubble
               value={stats.resolved}
               label="Resueltos"
-              color="var(--lm-link-ink)"
+              color="var(--lm-link-fill)"
               size={bubbleSize(stats.resolved, peak)}
             />
           </div>

@@ -39,6 +39,36 @@
   --lm-good-ink: #1a7a53;
   --lm-link-ink: #3346c9;
 
+  /* Lo que se pinta ENCIMA de un fondo --lm-ink (píldora activa, burbuja del
+     asesor, hilo seleccionado). En claro la tinta es casi negra y encima va
+     blanco; en oscuro la tinta es casi blanca y encima tiene que ir el
+     lienzo. Se guarda como componentes sueltos —no como color— para que cada
+     regla conserve su propia opacidad: rgb(var(--lm-on-ink-rgb) / 0.6). */
+  --lm-on-ink-rgb: 255 255 255;
+  --lm-on-ink: rgb(var(--lm-on-ink-rgb));
+  /* El hover de la píldora oscura: un paso más claro que --lm-ink en claro,
+     un paso más oscuro en oscuro. Siempre "se aleja del fondo". */
+  --lm-ink-hover: #23252f;
+
+  /* Halo del borde superior del lienzo y velo de hover sobre él. Los dos son
+     luz: en oscuro no se invierten, se apagan. */
+  --lm-glow: #f2f3fa;
+  --lm-wash: rgba(255, 255, 255, 0.72);
+
+  /* Relleno sólido de un estado (badge de no leídos, burbuja de reclamos,
+     contador de carga): el color va de fondo y encima siempre hay texto
+     blanco. No es el mismo papel que las variantes "-ink", que son texto
+     sobre un fondo teñido. En el tema claro los dos valores coinciden —un
+     rojo medio sirve para ambas cosas—; en el oscuro se separan, porque ahí
+     el texto teñido tiene que aclararse y el relleno tiene que seguir
+     oscuro para que el blanco encima se lea. */
+  --lm-hot-fill: #b73c28;
+  --lm-hot-fill-hover: #9c331f;
+  --lm-wait-fill: #8f5c0d;
+  --lm-good-fill: #1a7a53;
+  --lm-link-fill: #3346c9;
+  --lm-on-fill: #ffffff;
+
   /* Elevación: sombras muy difusas, sin borde duro */
   --lm-shadow-sm: 0 1px 2px rgba(20, 22, 50, 0.05), 0 4px 10px -6px rgba(20, 22, 50, 0.12);
   --lm-shadow-md: 0 1px 2px rgba(20, 22, 50, 0.04), 0 18px 36px -24px rgba(20, 22, 50, 0.32);
@@ -57,6 +87,81 @@
      con nombre para que no se reinventen en cada archivo. */
   --lm-ease-out: cubic-bezier(0.16, 1, 0.3, 1);
   --lm-ease-in-out: cubic-bezier(0.77, 0, 0.175, 1);
+}
+
+/* --------------------------------------------------------------------------
+   Tema oscuro
+
+   No es la paleta clara con los valores negados: eso deja grises sucios y
+   estados chillones. Las superficies se reconstruyen desde un azul muy
+   oscuro —el mismo tono de --lm-ink, para que la app siga sintiéndose del
+   mismo material— y los estados se aclaran, porque un rojo que se lee bien
+   sobre blanco desaparece sobre negro.
+
+   Se declara con `:root[data-theme="dark"]` (0,2,0) en vez de solo
+   `[data-theme="dark"]` (0,1,0): el bloque claro de más arriba engancha en
+   `:root`, y con igual especificidad ganaría el que viniera último en el
+   archivo cada vez que alguien reordene. `.dark` va al lado porque es el
+   selector que usa HeroUI internamente.
+   -------------------------------------------------------------------------- */
+:root[data-theme="dark"],
+:root.dark {
+  /* Superficies. El lienzo es lo más oscuro y las tarjetas flotan encima:
+     misma jerarquía que en claro, invertida. */
+  --lm-canvas: #0b0c12;
+  --lm-canvas-edge: #14161f;
+  --lm-surface: #171923;
+  --lm-sunken: #21232f;
+
+  /* Tinta. #f1f2f7 y no blanco puro: sobre un fondo casi negro el blanco
+     puro vibra y cansa en textos largos como el historial del chat. */
+  --lm-ink: #f1f2f7;
+  --lm-ink-soft: #b9bccb;
+  /* 5.9:1 sobre --lm-surface. Es el color de horas, previews y metadatos,
+     que es casi todo el texto secundario: tiene que cumplir AA igual que su
+     contraparte clara. */
+  --lm-muted: #9498aa;
+  --lm-line: #292c3a;
+
+  /* Estados, un paso más claros. Los mismos tonos, subidos de luminosidad
+     hasta despegarse del fondo. */
+  --lm-hot: #ff6f58;
+  --lm-link: #7f92ff;
+  --lm-good: #3ecb92;
+  --lm-wait: #f0ad3c;
+  --lm-plum: #a78bfa;
+
+  /* Texto sobre su propio fondo teñido. Acá los tintes son manchas oscuras,
+     así que estos suben en vez de bajar: son más claros que el estado, no
+     más oscuros. */
+  --lm-hot-ink: #ff9280;
+  --lm-wait-ink: #f5c56e;
+  --lm-good-ink: #5fdaa9;
+  --lm-link-ink: #a3b0ff;
+
+  /* Sobre --lm-ink (ahora casi blanco) va el lienzo, no blanco. */
+  --lm-on-ink-rgb: 11 12 18;
+  --lm-ink-hover: #dcdee9;
+
+  /* Rellenos sólidos: acá sí se separan de las variantes "-ink". Estos
+     llevan --lm-on-fill (blanco) encima, así que siguen siendo oscuros
+     aunque el fondo de la app lo sea; los "-ink" de arriba son claros. */
+  --lm-hot-fill: #c5402a;
+  --lm-hot-fill-hover: #a83422;
+  --lm-wait-fill: #9a6410;
+  --lm-good-fill: #17754e;
+  --lm-link-fill: #4054d8;
+
+  /* El halo deja de ser un blanco que ilumina y pasa a ser un azul apenas
+     más claro que el lienzo; el velo de hover baja a un roce de luz. */
+  --lm-glow: #171a28;
+  --lm-wash: rgba(255, 255, 255, 0.05);
+
+  /* Sombras: sobre un fondo oscuro una sombra difusa no se ve. Se compensa
+     subiendo la opacidad y apoyándose en el propio negro del lienzo. */
+  --lm-shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.5), 0 4px 10px -6px rgba(0, 0, 0, 0.7);
+  --lm-shadow-md: 0 1px 2px rgba(0, 0, 0, 0.45), 0 18px 36px -24px rgba(0, 0, 0, 0.9);
+  --lm-shadow-lg: 0 2px 4px rgba(0, 0, 0, 0.5), 0 40px 72px -40px rgba(0, 0, 0, 0.95);
 }
 
 /* --------------------------------------------------------------------------
@@ -113,6 +218,19 @@
     --surface-shadow: var(--lm-shadow-sm);
     --overlay-shadow: var(--lm-shadow-lg);
     --field-shadow: none;
+  }
+
+  /* Lo que cambia de rol en oscuro. El resto ya apunta a tokens --lm-* que
+     el bloque de arriba redefinió, así que se hereda solo. */
+  :root[data-theme="dark"],
+  :root.dark {
+    --accent: var(--lm-ink);
+    /* El acento sigue siendo "se lee por contraste": la píldora activa pasa
+       de negra sobre claro a clara sobre oscuro, y el texto la acompaña. */
+    --accent-foreground: var(--lm-canvas);
+    --warning-foreground: #1a1204;
+    --success-foreground: #04150d;
+    --danger-foreground: #ffffff;
   }
 }
 

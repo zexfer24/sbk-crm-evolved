@@ -9,7 +9,7 @@
   flex: 1;
   min-height: 100%;
   background:
-    radial-gradient(120% 80% at 50% -10%, #f2f3fa 0%, transparent 60%),
+    radial-gradient(120% 80% at 50% -10%, var(--lm-glow) 0%, transparent 60%),
     var(--lm-canvas);
   color: var(--lm-ink);
   font-family: var(--font-sans), system-ui, sans-serif;
@@ -126,7 +126,7 @@
   height: 26px;
   border-radius: 9px;
   background: var(--lm-ink);
-  color: #fff;
+  color: var(--lm-on-ink);
 }
 
 .dash-nav {
@@ -156,7 +156,7 @@
 }
 
 .dash-nav-link:hover {
-  background: rgba(255, 255, 255, 0.72);
+  background: var(--lm-wash);
   color: var(--lm-ink);
 }
 
@@ -166,7 +166,7 @@
 
 .dash-nav-link[aria-current="page"] {
   background: var(--lm-ink);
-  color: #fff;
+  color: var(--lm-on-ink);
 }
 
 .dash-topbar-actions {
@@ -452,7 +452,7 @@
   gap: 8px;
   border-radius: var(--lm-radius-card);
   background: var(--lm-surface);
-  box-shadow: 0 1px 2px rgba(20, 22, 50, 0.05), 0 14px 26px -18px rgba(20, 22, 50, 0.35);
+  box-shadow: var(--lm-shadow-md);
   padding: 8px;
   min-height: 108px;
 }
@@ -628,25 +628,25 @@
 }
 
 .dash-stage[data-terminal="true"] .dash-card-name {
-  color: #fff;
+  color: var(--lm-on-ink);
 }
 
 .dash-stage[data-terminal="true"] .dash-card-meta {
-  color: rgba(255, 255, 255, 0.55);
+  color: rgb(var(--lm-on-ink-rgb) / 0.55);
 }
 
 .dash-stage[data-terminal="true"] .dash-card-avatar {
-  background: rgba(255, 255, 255, 0.12);
-  color: rgba(255, 255, 255, 0.82);
+  background: rgb(var(--lm-on-ink-rgb) / 0.12);
+  color: rgb(var(--lm-on-ink-rgb) / 0.82);
 }
 
 .dash-stage[data-terminal="true"] .dash-card:hover {
-  background: rgba(255, 255, 255, 0.08);
+  background: rgb(var(--lm-on-ink-rgb) / 0.08);
 }
 
 .dash-stage[data-terminal="true"] .dash-stage-empty,
 .dash-stage[data-terminal="true"] .dash-stage-more {
-  color: rgba(255, 255, 255, 0.5);
+  color: rgb(var(--lm-on-ink-rgb) / 0.5);
 }
 
 /* --------------------------------------------------------------------------

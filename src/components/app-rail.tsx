@@ -4,6 +4,7 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { Bot, Inbox, LogOut, Package, Receipt, Route, Users } from "lucide-react";
 import { createClient } from "@/lib/supabase/client";
+import { ThemeToggle } from "@/components/theme-toggle";
 
 /**
  * La barra lateral de secciones.
@@ -60,6 +61,8 @@ export function AppRail({ active, variant = "dash" }: AppRailProps) {
       ))}
 
       <span className={`${variant}-rail-spacer`} />
+
+      <ThemeToggle variant={variant} />
 
       <button className={`${variant}-rail-btn`} type="button" onClick={signOut} aria-label="Cerrar sesión">
         <LogOut size={17} />

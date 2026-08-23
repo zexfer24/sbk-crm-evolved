@@ -12,7 +12,7 @@
   justify-content: center;
   padding: 24px;
   background:
-    radial-gradient(120% 80% at 50% -10%, #f2f3fa 0%, transparent 60%),
+    radial-gradient(120% 80% at 50% -10%, var(--lm-glow) 0%, transparent 60%),
     var(--lm-canvas);
 }
 

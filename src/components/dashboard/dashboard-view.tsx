@@ -23,11 +23,12 @@ import { TicketStatsPanel } from "@/components/dashboard/ticket-stats";
 import "@/components/dashboard/dashboard.css";
 
 /** Umbrales de carga por asesor: verde hasta 3 casos, ámbar hasta 6, rojo arriba.
- *  Usa las variantes "-ink": son las que dan 4.5:1+ con el texto blanco del badge. */
+ *  Usa las variantes "-fill": el color va de fondo con texto blanco encima, y
+ *  son las que dan 4.5:1+ en los dos temas. */
 const LOAD_THRESHOLDS = [
-  { max: 3, color: "var(--lm-good-ink)" },
-  { max: 6, color: "var(--lm-wait-ink)" },
-  { max: Number.POSITIVE_INFINITY, color: "var(--lm-hot-ink)" },
+  { max: 3, color: "var(--lm-good-fill)" },
+  { max: 6, color: "var(--lm-wait-fill)" },
+  { max: Number.POSITIVE_INFINITY, color: "var(--lm-hot-fill)" },
 ];
 
 interface DashboardViewProps {

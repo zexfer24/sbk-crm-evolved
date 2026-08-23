@@ -10,7 +10,7 @@
   height: 100vh;
   overflow: hidden;
   background:
-    radial-gradient(120% 80% at 50% -10%, #f2f3fa 0%, transparent 60%),
+    radial-gradient(120% 80% at 50% -10%, var(--lm-glow) 0%, transparent 60%),
     var(--lm-canvas);
   color: var(--lm-ink);
 }
@@ -225,8 +225,8 @@
 }
 
 .crm-thread[aria-current="true"] .lm-avatar {
-  background: rgba(255, 255, 255, 0.14);
-  color: rgba(255, 255, 255, 0.9);
+  background: rgb(var(--lm-on-ink-rgb) / 0.14);
+  color: rgb(var(--lm-on-ink-rgb) / 0.9);
 }
 
 .crm-thread-body {
@@ -313,9 +313,9 @@
   height: 20px;
   padding: 0 5px;
   border-radius: 999px;
-  /* --lm-hot da 3.8:1 con blanco encima; --lm-hot-ink llega a 5.7:1 (AA). */
-  background: var(--lm-hot-ink);
-  color: #ffffff;
+  /* --lm-hot da 3.8:1 con blanco encima; --lm-hot-fill llega a 5.7:1 (AA). */
+  background: var(--lm-hot-fill);
+  color: var(--lm-on-fill);
   font-size: 11.5px;
   font-weight: 600;
 }
@@ -333,12 +333,12 @@
 
 .crm-thread[aria-current="true"] .crm-thread-name,
 .crm-thread[aria-current="true"] .crm-thread-time {
-  color: #ffffff;
+  color: var(--lm-on-ink);
 }
 
 .crm-thread[aria-current="true"] .crm-thread-preview,
 .crm-thread[aria-current="true"] .crm-thread-agent {
-  color: rgba(255, 255, 255, 0.6);
+  color: rgb(var(--lm-on-ink-rgb) / 0.6);
 }
 
 /* --------------------------------------------------------------------------
@@ -409,12 +409,12 @@
 
 .crm-pill[data-variant="solid"] {
   background: var(--lm-ink);
-  color: #ffffff;
+  color: var(--lm-on-ink);
 }
 
 .crm-pill[data-variant="solid"]:hover {
-  background: #23252f;
-  color: #ffffff;
+  background: var(--lm-ink-hover);
+  color: var(--lm-on-ink);
 }
 
 .crm-pill[data-variant="danger"] {
@@ -480,14 +480,14 @@
 }
 
 .crm-ai-band .crm-pill[data-variant="danger"] {
-  /* --lm-hot da 3.8:1 con blanco encima; --lm-hot-ink llega a 5.7:1 (AA). */
-  background: var(--lm-hot-ink);
-  color: #ffffff;
+  /* --lm-hot da 3.8:1 con blanco encima; --lm-hot-fill llega a 5.7:1 (AA). */
+  background: var(--lm-hot-fill);
+  color: var(--lm-on-fill);
 }
 
 .crm-ai-band .crm-pill[data-variant="danger"]:hover {
-  background: #9c331f;
-  color: #ffffff;
+  background: var(--lm-hot-fill-hover);
+  color: var(--lm-on-fill);
 }
 
 .crm-messages {
@@ -598,7 +598,7 @@
 .crm-bubble[data-from="agent"] {
   border-bottom-right-radius: 6px;
   background: var(--lm-ink);
-  color: #ffffff;
+  color: var(--lm-on-ink);
 }
 
 .crm-bubble[data-from="ai"] {

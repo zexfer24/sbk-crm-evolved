@@ -44,7 +44,7 @@
 
 .lm-pills-active .lm-pill {
   background: var(--lm-ink);
-  color: #ffffff;
+  color: var(--lm-on-ink);
   cursor: default;
 }
 
@@ -105,12 +105,12 @@
 .lm-pills[data-tone="segmented"] .lm-pills-active .lm-pill {
   background: var(--lm-surface);
   color: var(--lm-ink);
-  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.06);
+  box-shadow: var(--lm-shadow-sm);
 }
 
 .lm-pills[data-tone="segmented"] .lm-pills-active .lm-pill-count {
   background: var(--lm-ink);
-  color: #ffffff;
+  color: var(--lm-on-ink);
 }
 
 @media (hover: hover) and (pointer: fine) {
