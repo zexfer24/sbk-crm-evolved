@@ -8,7 +8,10 @@ vi.mock("ai", async (importOriginal) => ({
 }));
 
 vi.mock("@/lib/ai/model", () => ({
-  getAgentModel: () => ({ model: "modelo-falso" }),
+  getAgentModel: (effort: string) => ({
+    model: "modelo-falso",
+    providerOptions: { openai: { reasoningEffort: effort } },
+  }),
 }));
 
 import { INTENT_VALUES, classifyIntent } from "@/lib/ai/classify";
@@ -37,5 +40,23 @@ describe("classifyIntent", () => {
     const call = generateObjectMock.mock.calls[0][0] as { enum: string[]; output: string };
     expect(call.output).toBe("enum");
     expect(call.enum).toEqual([...INTENT_VALUES]);
+  });
+
+  /**
+   * Clasificar devuelve UNA palabra de un enum: razonar de más no mejora la
+   * respuesta, solo agrega tokens de razonamiento facturables y latencia. Se
+   * pide esfuerzo bajo, pero pedirlo no basta — hay que trasladárselo al
+   * proveedor en la llamada, o el modelo usa su valor por defecto.
+   */
+  it("le traslada al proveedor el esfuerzo de razonamiento bajo", async () => {
+    generateObjectMock.mockResolvedValue({
+      object: "consulta_disponibilidad",
+      usage: { inputTokens: 10, outputTokens: 2, totalTokens: 12 },
+    });
+
+    await classifyIntent(HISTORY);
+
+    const call = generateObjectMock.mock.calls[0][0] as { providerOptions?: unknown };
+    expect(call.providerOptions).toEqual({ openai: { reasoningEffort: "low" } });
   });
 });

@@ -39,10 +39,11 @@ export interface ClassifyResult {
 }
 
 export async function classifyIntent(messages: ModelMessage[]): Promise<ClassifyResult> {
-  const { model } = getAgentModel("low");
+  const { model, providerOptions } = getAgentModel("low");
 
   const { object, usage } = await generateObject({
     model,
+    providerOptions,
     output: "enum",
     enum: INTENT_VALUES as unknown as string[],
     system: CLASSIFY_PROMPT,

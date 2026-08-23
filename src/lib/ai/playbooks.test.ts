@@ -9,7 +9,10 @@ vi.mock("ai", async (importOriginal) => ({
 }));
 
 vi.mock("@/lib/ai/model", () => ({
-  getAgentModel: () => ({ model: "modelo-falso" }),
+  getAgentModel: (effort: string) => ({
+    model: "modelo-falso",
+    providerOptions: { openai: { reasoningEffort: effort } },
+  }),
 }));
 
 import { matchPlaybook } from "@/lib/ai/playbooks";
@@ -96,5 +99,21 @@ describe("matchPlaybook", () => {
 
     expect(result.playbook).toBeNull();
     expect(result.usage.totalTokens).toBe(0);
+  });
+});
+
+describe("matchPlaybook · costo del turno", () => {
+  /**
+   * El reconocimiento de escenario corre en TODOS los turnos y devuelve un
+   * nombre de una lista cerrada. Razonar de más ahí se paga en cada mensaje
+   * que entra, sin mejorar la elección.
+   */
+  it("le traslada al proveedor el esfuerzo de razonamiento bajo", async () => {
+    generateObjectMock.mockResolvedValue({ object: "saludo", usage: USAGE });
+
+    await matchPlaybook(HISTORY, [playbook("saludo")]);
+
+    const call = generateObjectMock.mock.calls[0][0] as { providerOptions?: unknown };
+    expect(call.providerOptions).toEqual({ openai: { reasoningEffort: "low" } });
   });
 });

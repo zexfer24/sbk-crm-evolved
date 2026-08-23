@@ -80,11 +80,12 @@ export async function matchPlaybook(history: ModelMessage[], playbooks: Playbook
   // Sin escenarios cargados no hay nada que elegir: se ahorra la llamada.
   if (playbooks.length === 0) return { playbook: null, usage: ZERO_USAGE };
 
-  const { model } = getAgentModel("low");
+  const { model, providerOptions } = getAgentModel("low");
 
   try {
     const { object, usage } = await generateObject({
       model,
+      providerOptions,
       output: "enum",
       enum: [...playbooks.map((p) => p.name), NO_MATCH],
       system: buildPrompt(playbooks),
