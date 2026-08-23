@@ -4,7 +4,17 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { MessageCircle } from "lucide-react";
 import type { Agent, Conversation, Message, Note, QuickReply, Tag, WhatsappTemplate } from "@/lib/types";
 import { createClient } from "@/lib/supabase/client";
-import { fetchConversations, fetchMessages, fetchNotes, fetchQuickReplies, fetchTags, fetchTemplates } from "@/lib/data";
+import {
+  CHAT_MESSAGES_WINDOW,
+  INBOX_CONVERSATIONS_LIMIT,
+  fetchConversations,
+  fetchMessages,
+  fetchMessagesBefore,
+  fetchNotes,
+  fetchQuickReplies,
+  fetchTags,
+  fetchTemplates,
+} from "@/lib/data";
 import { markConversationRead } from "@/lib/mutations";
 import { useDebouncedCallback } from "@/lib/use-debounced-callback";
 
@@ -68,9 +78,34 @@ export function CrmShell({
 
   const selectedConversation = conversations.find((c) => c.id === selectedId) ?? null;
 
+  // Al abrir un chat solo se traen los últimos mensajes. Esto pide el tramo
+  // anterior cuando el asesor lo pide, y recuerda cuándo ya no queda nada
+  // atrás para dejar de ofrecerlo.
+  const [reachedStart, setReachedStart] = useState(false);
+  const [loadingOlder, setLoadingOlder] = useState(false);
+
+  const loadOlderMessages = useCallback(async () => {
+    const oldest = messages[0];
+    if (!selectedId || !oldest || loadingOlder) return;
+
+    setLoadingOlder(true);
+    try {
+      const older = await fetchMessagesBefore(supabase, selectedId, oldest.createdAt);
+      if (older.length === 0) {
+        setReachedStart(true);
+        return;
+      }
+      setMessages((current) => [...older, ...current]);
+    } catch {
+      // Falló el tramo viejo: el chat sigue usable con lo que ya está cargado.
+    } finally {
+      setLoadingOlder(false);
+    }
+  }, [supabase, selectedId, messages, loadingOlder]);
+
   const refreshConversations = useCallback(async () => {
     try {
-      const data = await fetchConversations(supabase);
+      const data = await fetchConversations(supabase, { limit: INBOX_CONVERSATIONS_LIMIT });
       setConversations(data);
     } catch {
       // El siguiente cambio en tiempo real reintentará la sincronización.
@@ -139,11 +174,12 @@ export function CrmShell({
 
     (async () => {
       const [messagesData, notesData, templatesData] = await Promise.all([
-        fetchMessages(supabase, selectedId),
+        fetchMessages(supabase, selectedId, { limit: CHAT_MESSAGES_WINDOW }),
         contactId ? fetchNotes(supabase, contactId) : Promise.resolve([]),
         conversation ? fetchTemplates(supabase, conversation.channel.id) : Promise.resolve([]),
       ]);
       if (cancelled) return;
+      setReachedStart(messagesData.length < CHAT_MESSAGES_WINDOW);
       setMessages(messagesData);
       setNotes(notesData);
       setTemplates(templatesData);
@@ -161,7 +197,7 @@ export function CrmShell({
       if (messagesRefreshTimeout) clearTimeout(messagesRefreshTimeout);
       messagesRefreshTimeout = setTimeout(() => {
         messagesRefreshTimeout = null;
-        fetchMessages(supabase, conversationId).then((data) => {
+        fetchMessages(supabase, conversationId, { limit: CHAT_MESSAGES_WINDOW }).then((data) => {
           if (!cancelled) setMessages(data);
         });
       }, REALTIME_DEBOUNCE_MS);
@@ -230,6 +266,9 @@ export function CrmShell({
               templates={templates}
               quickReplies={quickReplies}
               currentAgent={currentAgent}
+              hasOlderMessages={!reachedStart}
+              loadingOlderMessages={loadingOlder}
+              onLoadOlderMessages={loadOlderMessages}
               onBack={() => setMobileView("list")}
             />
           ) : (

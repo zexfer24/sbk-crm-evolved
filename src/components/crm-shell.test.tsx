@@ -55,8 +55,11 @@ const fetchConversationsMock = vi.fn().mockResolvedValue([]);
 const fetchMessagesMock = vi.fn().mockResolvedValue([]);
 
 vi.mock("@/lib/data", () => ({
+  CHAT_MESSAGES_WINDOW: 100,
+  INBOX_CONVERSATIONS_LIMIT: 200,
   fetchConversations: (...args: unknown[]) => fetchConversationsMock(...args),
   fetchMessages: (...args: unknown[]) => fetchMessagesMock(...args),
+  fetchMessagesBefore: vi.fn().mockResolvedValue([]),
   fetchNotes: vi.fn().mockResolvedValue([]),
   fetchQuickReplies: vi.fn().mockResolvedValue([]),
   fetchTags: vi.fn().mockResolvedValue([]),

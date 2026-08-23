@@ -1,6 +1,12 @@
 import { redirect } from "next/navigation";
 import { createClient } from "@/lib/supabase/server";
-import { fetchConversations, fetchCurrentAgent, fetchQuickReplies, fetchTags } from "@/lib/data";
+import {
+  INBOX_CONVERSATIONS_LIMIT,
+  fetchConversations,
+  fetchCurrentAgent,
+  fetchQuickReplies,
+  fetchTags,
+} from "@/lib/data";
 import { getBcvRate } from "@/lib/ai/bcv";
 import { CrmShell } from "@/components/crm-shell";
 import type { BcvRateSummary } from "@/components/inbox/bcv-rate-chip";
@@ -24,7 +30,7 @@ export default async function InboxPage({ searchParams }: PageProps<"/inbox">) {
   const [{ conversation }, currentAgent, conversations, tags, quickReplies, bcvRate] = await Promise.all([
     searchParams,
     fetchCurrentAgent(supabase),
-    fetchConversations(supabase),
+    fetchConversations(supabase, { limit: INBOX_CONVERSATIONS_LIMIT }),
     fetchTags(supabase),
     fetchQuickReplies(supabase),
     loadBcvRate(supabase),

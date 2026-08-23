@@ -1727,3 +1727,31 @@
   color: var(--lm-hot-ink, var(--lm-muted));
   font-weight: 600;
 }
+
+/* Acceso al historial anterior al tramo que se carga al abrir el chat. */
+.crm-older-row {
+  display: flex;
+  justify-content: center;
+  padding: 4px 0 10px;
+}
+
+.crm-older-btn {
+  border: 1px solid var(--lm-border);
+  background: var(--lm-panel);
+  color: var(--lm-muted);
+  border-radius: 999px;
+  padding: 5px 14px;
+  font-size: 12px;
+  cursor: pointer;
+  transition: color 120ms ease, border-color 120ms ease;
+}
+
+.crm-older-btn:hover:not(:disabled) {
+  color: var(--lm-fg);
+  border-color: var(--lm-border-strong);
+}
+
+.crm-older-btn:disabled {
+  cursor: default;
+  opacity: 0.6;
+}

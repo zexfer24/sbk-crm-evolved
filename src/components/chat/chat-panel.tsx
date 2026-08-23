@@ -19,6 +19,10 @@ interface ChatPanelProps {
   templates: WhatsappTemplate[];
   quickReplies: QuickReply[];
   currentAgent: Agent;
+  /** Queda historial más viejo que el que se está mostrando. */
+  hasOlderMessages?: boolean;
+  loadingOlderMessages?: boolean;
+  onLoadOlderMessages?: () => void;
   /** Vuelve a la lista. Solo se muestra cuando la bandeja no cabe al lado. */
   onBack: () => void;
 }
@@ -29,6 +33,9 @@ export function ChatPanel({
   templates,
   quickReplies,
   currentAgent,
+  hasOlderMessages = false,
+  loadingOlderMessages = false,
+  onLoadOlderMessages,
   onBack,
 }: ChatPanelProps) {
   const [isIntervening, setIsIntervening] = useState(false);
@@ -132,6 +139,18 @@ export function ChatPanel({
       />
 
       <div className="crm-messages">
+        {hasOlderMessages && onLoadOlderMessages && (
+          <div className="crm-older-row">
+            <button
+              type="button"
+              className="crm-older-btn"
+              onClick={onLoadOlderMessages}
+              disabled={loadingOlderMessages}
+            >
+              {loadingOlderMessages ? "Cargando…" : "Ver mensajes anteriores"}
+            </button>
+          </div>
+        )}
         {renderItems.map((item) => {
           if (item.kind === "date-separator") {
             return (

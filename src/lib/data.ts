@@ -304,14 +304,64 @@ const CONVERSATION_SELECT = `
   deal_closed_by:agents!conversations_deal_closed_by_fkey(id, display_name, full_name, avatar_url, role, is_active)
 `;
 
-export async function fetchConversations(supabase: SupabaseClient): Promise<Conversation[]> {
-  const { data, error } = await supabase
-    .from("conversations")
-    .select(CONVERSATION_SELECT)
-    .order("last_message_at", { ascending: false, nullsFirst: false });
+// Mismo tope de filas que en `fetchMessages`, por el mismo motivo: sin
+// `.range()`, PostgREST corta la respuesta al llegar a su límite y devuelve
+// `error: null`. La bandeja se vería normal, sin las conversaciones más
+// viejas y sin nada que delatara la pérdida.
+export const CONVERSATIONS_PAGE_SIZE = 1000;
 
-  if (error) throw error;
-  return (data as unknown as RawConversation[]).map(mapConversation);
+/**
+ * Cuántas conversaciones carga la bandeja. Alcanza de sobra para la lista
+ * que el asesor recorre; lo que quede más atrás se encuentra por la búsqueda,
+ * que consulta contra la base y no contra lo que ya está en pantalla.
+ */
+export const INBOX_CONVERSATIONS_LIMIT = 200;
+
+export interface FetchConversationsOptions {
+  /**
+   * Cuántas conversaciones traer, de la más reciente hacia atrás.
+   *
+   * Sin este tope se pide el histórico completo, y cada fila arrastra siete
+   * relaciones (contacto con sus etiquetas, canal, pedido y tres vínculos de
+   * agente). Para pintar una bandeja no hace falta: quien la mira trabaja
+   * sobre lo de arriba. Las vistas que sí necesitan el total —métricas del
+   * panel, ventas— lo omiten a propósito.
+   */
+  limit?: number;
+}
+
+export async function fetchConversations(
+  supabase: SupabaseClient,
+  options: FetchConversationsOptions = {}
+): Promise<Conversation[]> {
+  const { limit } = options;
+  const rows: RawConversation[] = [];
+  let from = 0;
+
+  for (;;) {
+    // Con tope pedido, la última página se recorta para no traer de más.
+    const pageSize = limit
+      ? Math.min(CONVERSATIONS_PAGE_SIZE, limit - rows.length)
+      : CONVERSATIONS_PAGE_SIZE;
+
+    const { data, error } = await supabase
+      .from("conversations")
+      .select(CONVERSATION_SELECT)
+      .order("last_message_at", { ascending: false, nullsFirst: false })
+      .range(from, from + pageSize - 1);
+
+    if (error) throw error;
+
+    const page = (data as unknown as RawConversation[]) ?? [];
+    rows.push(...page);
+
+    // Página incompleta: no hay más filas que pedir.
+    if (page.length < pageSize) break;
+    if (limit && rows.length >= limit) break;
+    from += pageSize;
+  }
+
+  return rows.map(mapConversation);
 }
 
 export async function fetchConversation(
@@ -334,10 +384,69 @@ export async function fetchConversation(
 // explícitamente con este tamaño de página hasta agotar los resultados.
 const MESSAGES_PAGE_SIZE = 1000;
 
+const MESSAGE_SELECT = `id, conversation_id, direction, sender_type, message_type, content, template_name,
+         media_url, is_internal_note, whatsapp_status, reply_to_message_id, created_at,
+         sender_agent:agents(id, display_name, full_name, avatar_url, role, is_active)`;
+
+/**
+ * Cuántos mensajes se pintan al abrir un chat.
+ *
+ * Abrir una conversación traía su historial completo: en un hilo viejo son
+ * miles de filas que viajan al navegador cada vez que se hace clic, para
+ * mostrar una pantalla que entra en pocas decenas. Lo anterior sigue estando
+ * y se pide con `fetchMessagesBefore` al subir.
+ */
+export const CHAT_MESSAGES_WINDOW = 100;
+
+export interface FetchMessagesOptions {
+  /** Trae solo los últimos N mensajes, en orden cronológico. */
+  limit?: number;
+}
+
+/**
+ * Los últimos `limit` mensajes anteriores a `beforeCreatedAt`, en orden
+ * cronológico. Es lo que permite acotar la ventana inicial sin esconderle
+ * nada al asesor: el historial viejo se carga cuando lo pide.
+ */
+export async function fetchMessagesBefore(
+  supabase: SupabaseClient,
+  conversationId: string,
+  beforeCreatedAt: string,
+  limit: number = CHAT_MESSAGES_WINDOW
+): Promise<Message[]> {
+  const { data, error } = await supabase
+    .from("messages")
+    .select(MESSAGE_SELECT)
+    .eq("conversation_id", conversationId)
+    .order("created_at", { ascending: false })
+    .lt("created_at", beforeCreatedAt)
+    .limit(limit);
+
+  if (error) throw error;
+
+  // Se piden DESCENDENTES —los más nuevos de ese tramo— y se invierten para
+  // que la conversación se lea de arriba hacia abajo.
+  return [...((data as unknown as RawMessage[]) ?? [])].reverse().map(mapMessage);
+}
+
 export async function fetchMessages(
   supabase: SupabaseClient,
-  conversationId: string
+  conversationId: string,
+  options: FetchMessagesOptions = {}
 ): Promise<Message[]> {
+  // Ventana: una sola consulta, sin recorrer el historial entero.
+  if (options.limit) {
+    const { data, error } = await supabase
+      .from("messages")
+      .select(MESSAGE_SELECT)
+      .eq("conversation_id", conversationId)
+      .order("created_at", { ascending: false })
+      .limit(options.limit);
+
+    if (error) throw error;
+    return [...((data as unknown as RawMessage[]) ?? [])].reverse().map(mapMessage);
+  }
+
   const allRows: RawMessage[] = [];
   let from = 0;
 
@@ -352,11 +461,7 @@ export async function fetchMessages(
     const to = from + MESSAGES_PAGE_SIZE - 1;
     const { data, error } = await supabase
       .from("messages")
-      .select(
-        `id, conversation_id, direction, sender_type, message_type, content, template_name,
-         media_url, is_internal_note, whatsapp_status, reply_to_message_id, created_at,
-         sender_agent:agents(id, display_name, full_name, avatar_url, role, is_active)`
-      )
+      .select(MESSAGE_SELECT)
       .eq("conversation_id", conversationId)
       .order("created_at", { ascending: true })
       .range(from, to);
