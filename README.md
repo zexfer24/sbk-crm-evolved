@@ -1,4 +1,4 @@
-# Liminal CRM
+# SBK Motorcycles CRM
 
 CRM multiagente para ventas por WhatsApp con automatización de IA. Bandeja de
 entrada compartida, control de la ventana de 24h de WhatsApp, plantillas de
@@ -43,9 +43,9 @@ Abre [http://localhost:3000](http://localhost:3000). Te redirige a `/login`.
 
 | Correo | Contraseña | Rol |
 |---|---|---|
-| `jose@liminal.test` | `Liminal123!` | supervisor |
-| `maria@liminal.test` | `Liminal123!` | agent (aparece como "ASESOR 2") |
-| `carlos@liminal.test` | `Liminal123!` | agent (aparece como "ASESOR 3") |
+| `jose@sbk.test` | `SbkDemo123!` | supervisor |
+| `maria@sbk.test` | `SbkDemo123!` | agent (aparece como "ASESOR 2") |
+| `carlos@sbk.test` | `SbkDemo123!` | agent (aparece como "ASESOR 3") |
 
 Los datos de prueba (`supabase/seed.sql`) incluyen 5 conversaciones ya armadas
 para poder probar cada caso sin tener la conexión real a Meta:

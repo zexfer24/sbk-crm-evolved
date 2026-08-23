@@ -94,7 +94,7 @@ export function InventarioView({
                 <span className="dash-brand-mark" aria-hidden="true">
                   <Package size={14} />
                 </span>
-                <span className="dash-brand-name">Liminal</span>
+                <span className="dash-brand-name">SBK Motorcycles</span>
               </p>
 
               <AppTopNav active="inventario" />

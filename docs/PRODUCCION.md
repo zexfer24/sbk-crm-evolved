@@ -225,11 +225,11 @@ curl https://<tu-dominio>/api/health  # 200
 ### Solo la imagen, sin compose
 
 ```bash
-docker build -t liminal-crm \
+docker build -t sbk-motorcycles-crm \
   --build-arg NEXT_PUBLIC_SUPABASE_URL="https://<proyecto>.supabase.co" \
   --build-arg NEXT_PUBLIC_SUPABASE_ANON_KEY="<anon-key>" .
 
-docker run -d -p 3000:3000 --env-file .env.production --restart unless-stopped liminal-crm
+docker run -d -p 3000:3000 --env-file .env.production --restart unless-stopped sbk-motorcycles-crm
 ```
 
 Las `NEXT_PUBLIC_*` van como `--build-arg` **y** en el `.env.production`: se
@@ -327,14 +327,14 @@ Los scripts están hechos y **probados restaurando de verdad**:
 ```bash
 export DATABASE_URL="postgresql://usuario:clave@host:5432/postgres"
 
-./scripts/backup.sh                     # deja backups/liminal-<fecha>.sql.gz
-./scripts/restore.sh backups/liminal-20260822-030000.sql.gz
+./scripts/backup.sh                     # deja backups/sbk-<fecha>.sql.gz
+./scripts/restore.sh backups/sbk-20260822-030000.sql.gz
 ```
 
 En cron, un respaldo diario a las 3 de la mañana:
 
 ```cron
-0 3 * * * cd /ruta/al/crm && DATABASE_URL='...' BACKUP_DIR=/var/backups/liminal ./scripts/backup.sh >> /var/log/liminal-backup.log 2>&1
+0 3 * * * cd /ruta/al/crm && DATABASE_URL='...' BACKUP_DIR=/var/backups/sbk ./scripts/backup.sh >> /var/log/sbk-backup.log 2>&1
 ```
 
 `RETENTION_DAYS` (30 por defecto) controla cuántos días se guardan.

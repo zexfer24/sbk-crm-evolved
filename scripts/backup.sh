@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# Respaldo de la base de Liminal CRM.
+# Respaldo de la base de SBK Motorcycles CRM.
 #
 # Ahí viven las conversaciones y las ventas del negocio: es el dato que no se
 # puede volver a generar. Corre con cron y guarda una copia comprimida por
@@ -8,7 +8,7 @@
 #
 #   ./scripts/backup.sh                      # usa DATABASE_URL del entorno
 #   DATABASE_URL=postgres://... ./scripts/backup.sh
-#   BACKUP_DIR=/var/backups/liminal ./scripts/backup.sh
+#   BACKUP_DIR=/var/backups/sbk ./scripts/backup.sh
 #
 # Restaurar: ./scripts/restore.sh <archivo.sql.gz>
 #
@@ -29,7 +29,7 @@ command -v pg_dump >/dev/null 2>&1 || { echo "ERROR: pg_dump no está instalado.
 mkdir -p "$BACKUP_DIR"
 
 STAMP="$(date +%Y%m%d-%H%M%S)"
-TARGET="$BACKUP_DIR/liminal-$STAMP.sql.gz"
+TARGET="$BACKUP_DIR/sbk-$STAMP.sql.gz"
 
 echo "Respaldando en $TARGET ..."
 
@@ -92,7 +92,7 @@ fi
 
 echo "Listo: $TARGET ($(numfmt --to=iec "$SIZE" 2>/dev/null || echo "$SIZE bytes"))"
 
-DELETED=$(find "$BACKUP_DIR" -name 'liminal-*.sql.gz' -mtime "+$RETENTION_DAYS" -print -delete | wc -l)
+DELETED=$(find "$BACKUP_DIR" -name 'sbk-*.sql.gz' -mtime "+$RETENTION_DAYS" -print -delete | wc -l)
 [[ "$DELETED" -gt 0 ]] && echo "Se borraron $DELETED respaldos de más de $RETENTION_DAYS días."
 
 exit 0

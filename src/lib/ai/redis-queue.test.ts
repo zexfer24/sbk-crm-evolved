@@ -9,7 +9,7 @@ import { createAgentQueue, createTurnSlots } from "@/lib/ai/redis-queue";
 // atiendan la misma conversación. Un doble falso en memoria no prueba eso:
 // probaría el doble. Sin REDIS_URL en el entorno, se saltan.
 //
-//   docker run -d --name liminal_redis -p 6379:6379 redis:7-alpine \
+//   docker run -d --name sbk_redis -p 6379:6379 redis:7-alpine \
 //     redis-server --appendonly yes
 // ---------------------------------------------------------------------------
 

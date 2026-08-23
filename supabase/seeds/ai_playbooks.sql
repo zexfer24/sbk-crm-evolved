@@ -1,7 +1,7 @@
 -- ============================================================================
 -- Respuestas predeterminadas de la IA — punto de partida
 --
--- Los cinco casos que SBK Motors ya resuelve a mano hoy. Los textos son un
+-- Los cinco casos que SBK Motorcycles ya resuelve a mano hoy. Los textos son un
 -- borrador: se editan desde el panel (/agent-control > Respuestas), sin
 -- necesidad de tocar este archivo ni volver a desplegar.
 --

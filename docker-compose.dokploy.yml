@@ -1,5 +1,5 @@
 # =============================================================================
-# Liminal CRM en Dokploy.
+# SBK Motorcycles CRM en Dokploy.
 #
 # En Dokploy: Create Service → Compose → Provider Git → Compose Path
 # `./docker-compose.dokploy.yml`. Las variables se pegan en la pestaña

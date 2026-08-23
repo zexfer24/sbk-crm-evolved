@@ -77,7 +77,7 @@ NODE_MAJOR=$(node -p "process.versions.node.split('.')[0]" 2>/dev/null || echo 0
   || falla "Node $NODE_MAJOR — hace falta 22 o más (whatwg-url lo exige)"
 
 # La contraseña de demo llegó a estar en el bundle: se comprueba que no vuelva.
-if grep -rq "Liminal123" src/ 2>/dev/null; then
+if grep -rq "SbkDemo123" src/ 2>/dev/null; then
   falla "La contraseña de demo aparece en src/ — no puede viajar al navegador"
 else
   ok "Sin credenciales de demo en el código"

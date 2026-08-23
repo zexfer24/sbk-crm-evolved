@@ -109,7 +109,7 @@ export function SalesView({ currentAgent, initialConversations }: SalesViewProps
                 <span className="dash-brand-mark" aria-hidden="true">
                   <Receipt size={14} />
                 </span>
-                <span className="dash-brand-name">Liminal</span>
+                <span className="dash-brand-name">SBK Motorcycles</span>
               </p>
 
               <AppTopNav active="ventas" />

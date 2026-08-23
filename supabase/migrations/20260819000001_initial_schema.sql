@@ -1,4 +1,4 @@
--- Liminal CRM - Esquema inicial
+-- SBK Motorcycles CRM - Esquema inicial
 -- Multiagente + WhatsApp (Meta Cloud API) + IA
 -- ---------------------------------------------------------------------------
 

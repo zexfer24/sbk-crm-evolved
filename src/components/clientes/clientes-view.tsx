@@ -96,7 +96,7 @@ export function ClientesView({ currentAgent, customers, total, params }: Cliente
                 <span className="dash-brand-mark" aria-hidden="true">
                   <Users size={14} />
                 </span>
-                <span className="dash-brand-name">Liminal</span>
+                <span className="dash-brand-name">SBK Motorcycles</span>
               </p>
 
               <AppTopNav active="clientes" />

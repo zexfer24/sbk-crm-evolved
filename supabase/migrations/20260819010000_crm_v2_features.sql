@@ -1,4 +1,4 @@
--- Liminal CRM - Segunda tanda de features
+-- SBK Motorcycles CRM - Segunda tanda de features
 -- Datos de cliente (Venezuela), citas de mensajes, multimedia, mensajes rápidos.
 -- ---------------------------------------------------------------------------
 

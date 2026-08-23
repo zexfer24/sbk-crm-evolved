@@ -24,7 +24,7 @@ const familjenGrotesk = Familjen_Grotesk({
 });
 
 export const metadata: Metadata = {
-  title: "Liminal CRM",
+  title: "SBK Motorcycles CRM",
   description: "CRM multiagente para ventas por WhatsApp con automatización de IA",
 };
 

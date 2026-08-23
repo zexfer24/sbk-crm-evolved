@@ -20,7 +20,7 @@ export const INTENT_VALUES = [
 ] as const;
 export type Intent = (typeof INTENT_VALUES)[number];
 
-const CLASSIFY_PROMPT = `Clasifica la intención del cliente en esta conversación de WhatsApp con SBK Motors, una repuestera de motos en Venezuela, según el ÚLTIMO mensaje del cliente y el contexto previo.
+const CLASSIFY_PROMPT = `Clasifica la intención del cliente en esta conversación de WhatsApp con SBK Motorcycles, una repuestera de motos en Venezuela, según el ÚLTIMO mensaje del cliente y el contexto previo.
 
 Categorías:
 - consulta_disponibilidad: pregunta por un repuesto — existencia, precio, compatibilidad con su moto.

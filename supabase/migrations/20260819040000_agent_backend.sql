@@ -1,5 +1,5 @@
 -- ============================================================================
--- Backend del agente de IA (SBK Motors)
+-- Backend del agente de IA (SBK Motorcycles)
 --
 -- Catálogo de repuestos, historial de compras, caché de la tasa BCV, turno de
 -- asesores para el escalamiento, bitácora de turnos del agente (panel de

@@ -39,7 +39,7 @@ export function LoginForm() {
         <div className="login-mark" aria-hidden="true">
           <MessageCircle size={22} />
         </div>
-        <h1 className="login-title lm-display">Liminal CRM</h1>
+        <h1 className="login-title lm-display">SBK Motorcycles CRM</h1>
         <p className="login-subtitle">Inicia sesión para entrar a la bandeja de entrada</p>
 
         <form className="login-form" onSubmit={handleSubmit} noValidate>

@@ -3,7 +3,7 @@
 # Despliegue a un servidor propio por SSH.
 #
 #   ./scripts/deploy.sh usuario@servidor
-#   ./scripts/deploy.sh usuario@servidor /opt/liminal    # ruta destino
+#   ./scripts/deploy.sh usuario@servidor /opt/sbk-motorcycles-crm    # ruta destino
 #
 # Qué hace, en orden:
 #   1. Valida .env.production acá, antes de tocar el servidor.
@@ -17,7 +17,7 @@
 set -uo pipefail
 
 HOST="${1:-}"
-REMOTE_DIR="${2:-/opt/liminal-crm}"
+REMOTE_DIR="${2:-/opt/sbk-motorcycles-crm}"
 
 if [[ -z "$HOST" ]]; then
   echo "Uso: $0 usuario@servidor [ruta-destino]" >&2

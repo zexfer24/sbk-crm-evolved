@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 #
-# Restaura un respaldo de Liminal CRM.
+# Restaura un respaldo de SBK Motorcycles CRM.
 #
-#   ./scripts/restore.sh backups/liminal-20260822-030000.sql.gz
+#   ./scripts/restore.sh backups/sbk-20260822-030000.sql.gz
 #
 # SOBRESCRIBE la base de destino. Pide confirmación escrita salvo que se pase
 # --yes, para que no se ejecute de memoria contra la base equivocada.

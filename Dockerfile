@@ -1,8 +1,8 @@
 # =============================================================================
-# Imagen de producción de Liminal CRM.
+# Imagen de producción de SBK Motorcycles CRM.
 #
-#   docker build -t liminal-crm .
-#   docker run -p 3000:3000 --env-file .env.production liminal-crm
+#   docker build -t sbk-motorcycles-crm .
+#   docker run -p 3000:3000 --env-file .env.production sbk-motorcycles-crm
 #
 # Tres etapas para que la imagen final no cargue con el código fuente ni con
 # las dependencias de compilación.

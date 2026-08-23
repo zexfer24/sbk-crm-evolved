@@ -1,4 +1,4 @@
--- Liminal CRM - Datos de prueba
+-- SBK Motorcycles CRM - Datos de prueba
 -- Permite probar el CRM completo sin tener aún la conexión real a Meta.
 -- ---------------------------------------------------------------------------
 
@@ -22,7 +22,7 @@ end $$;
 
 -- ============================================================================
 -- AGENTES (auth.users + auth.identities + public.agents)
--- Contraseña para los 3: Liminal123!
+-- Contraseña para los 3: SbkDemo123!
 -- ============================================================================
 insert into auth.users (
   instance_id, id, aud, role, email, encrypted_password, email_confirmed_at,
@@ -30,26 +30,26 @@ insert into auth.users (
   created_at, updated_at, confirmation_token, email_change, email_change_token_new, recovery_token
 ) values
   ('00000000-0000-0000-0000-000000000000', '11111111-1111-1111-1111-111111111111', 'authenticated', 'authenticated',
-   'jose@liminal.test', crypt('Liminal123!', gen_salt('bf')), now(), now(),
+   'jose@sbk.test', crypt('SbkDemo123!', gen_salt('bf')), now(), now(),
    '{"provider":"email","providers":["email"]}', '{"display_name":"JOSE RIERA","full_name":"Jose Riera"}',
    now(), now(), '', '', '', ''),
   ('00000000-0000-0000-0000-000000000000', '22222222-2222-2222-2222-222222222222', 'authenticated', 'authenticated',
-   'maria@liminal.test', crypt('Liminal123!', gen_salt('bf')), now(), now(),
+   'maria@sbk.test', crypt('SbkDemo123!', gen_salt('bf')), now(), now(),
    '{"provider":"email","providers":["email"]}', '{"display_name":"ASESOR 2","full_name":"Maria Gomez"}',
    now(), now(), '', '', '', ''),
   ('00000000-0000-0000-0000-000000000000', '33333333-3333-3333-3333-333333333333', 'authenticated', 'authenticated',
-   'carlos@liminal.test', crypt('Liminal123!', gen_salt('bf')), now(), now(),
+   'carlos@sbk.test', crypt('SbkDemo123!', gen_salt('bf')), now(), now(),
    '{"provider":"email","providers":["email"]}', '{"display_name":"ASESOR 3","full_name":"Carlos Ibarra"}',
    now(), now(), '', '', '', '');
 
 insert into auth.identities (id, provider_id, user_id, identity_data, provider, last_sign_in_at, created_at, updated_at)
 values
   (gen_random_uuid(), '11111111-1111-1111-1111-111111111111', '11111111-1111-1111-1111-111111111111',
-   jsonb_build_object('sub', '11111111-1111-1111-1111-111111111111', 'email', 'jose@liminal.test'), 'email', now(), now(), now()),
+   jsonb_build_object('sub', '11111111-1111-1111-1111-111111111111', 'email', 'jose@sbk.test'), 'email', now(), now(), now()),
   (gen_random_uuid(), '22222222-2222-2222-2222-222222222222', '22222222-2222-2222-2222-222222222222',
-   jsonb_build_object('sub', '22222222-2222-2222-2222-222222222222', 'email', 'maria@liminal.test'), 'email', now(), now(), now()),
+   jsonb_build_object('sub', '22222222-2222-2222-2222-222222222222', 'email', 'maria@sbk.test'), 'email', now(), now(), now()),
   (gen_random_uuid(), '33333333-3333-3333-3333-333333333333', '33333333-3333-3333-3333-333333333333',
-   jsonb_build_object('sub', '33333333-3333-3333-3333-333333333333', 'email', 'carlos@liminal.test'), 'email', now(), now(), now());
+   jsonb_build_object('sub', '33333333-3333-3333-3333-333333333333', 'email', 'carlos@sbk.test'), 'email', now(), now(), now());
 
 -- El trigger on_auth_user_created ya creó las filas en public.agents.
 -- Ajustamos el rol de Jose a supervisor.

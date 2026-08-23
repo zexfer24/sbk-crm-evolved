@@ -63,7 +63,7 @@ export function fetchBcvHtml(url: string): Promise<string> {
       url,
       {
         ca: certificateAuthorities(),
-        headers: { "User-Agent": "Mozilla/5.0 (compatible; LiminalCRM/1.0)" },
+        headers: { "User-Agent": "Mozilla/5.0 (compatible; SbkMotorcyclesCRM/1.0)" },
         timeout: TIMEOUT_MS,
       },
       (response) => {

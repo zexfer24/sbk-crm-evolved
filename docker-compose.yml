@@ -1,5 +1,5 @@
 # =============================================================================
-# Liminal CRM en un servidor propio.
+# SBK Motorcycles CRM en un servidor propio.
 #
 # Para Dokploy hay otro archivo: `docker-compose.dokploy.yml`. Este de acá
 # levanta su propio Caddy y allá no sirve, porque Traefik ya ocupa el 80 y el

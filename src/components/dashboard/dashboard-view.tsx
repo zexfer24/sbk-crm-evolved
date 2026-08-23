@@ -114,7 +114,7 @@ export function DashboardView({
                 <span className="dash-brand-mark" aria-hidden="true">
                   <Route size={14} />
                 </span>
-                <span className="dash-brand-name">Liminal</span>
+                <span className="dash-brand-name">SBK Motorcycles</span>
               </p>
 
               <nav className="dash-nav" aria-label="Navegación principal">

@@ -6,7 +6,7 @@ Rama: `feat/dashboard-recorrido-cliente`
 
 ## Contexto
 
-El cliente (Jose Mujica, SBK Motors) pidió que la IA "lea, analice y
+El cliente (Jose Mujica, SBK Motorcycles) pidió que la IA "lea, analice y
 contextualice para dar una respuesta rápida basada en las respuestas
 predeterminadas que ya tengo". Los ejemplos que dio:
 

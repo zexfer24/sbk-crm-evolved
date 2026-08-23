@@ -338,7 +338,7 @@ export function AgentControlView({
                 <span className="dash-brand-mark" aria-hidden="true">
                   <Bot size={14} />
                 </span>
-                <span className="dash-brand-name">Liminal</span>
+                <span className="dash-brand-name">SBK Motorcycles</span>
               </p>
 
               <AppTopNav active="control" />

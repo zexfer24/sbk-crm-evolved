@@ -50,7 +50,7 @@ export interface EscalationOutcome {
 export function buildCatalogTool({ supabase, conversationId }: ToolDeps) {
   return tool({
     description:
-      "Busca repuestos en el catálogo real de SBK Motors por nombre o marca del repuesto, y opcionalmente filtra por marca/modelo de la moto del cliente. Devuelve precio en USD y Bs (tasa BCV del día) y el stock disponible. Si no devuelve nada, ese repuesto no existe en el catálogo — no te lo inventes.",
+      "Busca repuestos en el catálogo real de SBK Motorcycles por nombre o marca del repuesto, y opcionalmente filtra por marca/modelo de la moto del cliente. Devuelve precio en USD y Bs (tasa BCV del día) y el stock disponible. Si no devuelve nada, ese repuesto no existe en el catálogo — no te lo inventes.",
     inputSchema: z.object({
       query: z.string().describe("Qué repuesto busca el cliente, ej. 'carburador', 'bujía NGK', 'kit de arrastre'"),
       motoBrand: z.string().optional().describe("Marca de la moto del cliente, si la mencionó (ej. 'Bera')"),
