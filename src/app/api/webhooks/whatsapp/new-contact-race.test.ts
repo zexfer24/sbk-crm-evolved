@@ -12,6 +12,16 @@ vi.mock("next/server", async (importOriginal) => {
   };
 });
 
+// Esta prueba mira la carrera al crear el contacto, no la cola: se sustituye
+// para no exigir un Redis levantado.
+vi.mock("@/lib/ai/queue", () => ({
+  DEBOUNCE_SECONDS: 6,
+  enqueueAgentTurns: vi.fn(async () => {}),
+  pendingAgentTurns: vi.fn(async () => 0),
+  processAfterDebounce: vi.fn(async () => ({ processed: 0, failed: 0, deferred: 0 })),
+  processQueuedTurns: vi.fn(async () => ({ processed: 0, failed: 0, deferred: 0 })),
+}));
+
 vi.mock("@/lib/ai/agent", () => ({
   runAgentTurn: vi.fn(async () => {}),
 }));

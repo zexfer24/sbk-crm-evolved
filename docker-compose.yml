@@ -31,6 +31,9 @@ services:
     env_file: .env.production
     expose:
       - "3000"
+    depends_on:
+      redis:
+        condition: service_healthy
     # Solo hace falta si Supabase corre en el MISMO servidor (self-hosted):
     # en Linux, host.docker.internal no existe sin esto. Con Supabase
     # gestionado la URL es pública y esta línea no molesta.
@@ -46,6 +49,22 @@ services:
       timeout: 5s
       start_period: 20s
       retries: 3
+
+  # Cola de turnos del agente. `--appendonly yes` no es opcional: sin
+  # persistencia, un reinicio se lleva los turnos pendientes y esos clientes
+  # se quedan sin respuesta.
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    command: redis-server --appendonly yes
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+    # Sin `ports`: solo la app la alcanza, por la red interna de Compose.
 
   caddy:
     image: caddy:2-alpine
@@ -85,3 +104,4 @@ services:
 volumes:
   caddy_data:
   caddy_config:
+  redis_data:

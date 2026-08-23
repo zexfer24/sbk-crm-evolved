@@ -1,7 +1,6 @@
 import "server-only";
-import type { SupabaseClient } from "@supabase/supabase-js";
-import type { Database } from "@/lib/supabase/database.types";
-import { createAdminClient } from "@/lib/supabase/admin";
+import { getRedis } from "@/lib/redis";
+import { createAgentQueue, createTurnSlots } from "@/lib/ai/redis-queue";
 import { runAgentTurn } from "@/lib/ai/agent";
 import { errorText, log } from "@/lib/log";
 
@@ -11,6 +10,9 @@ import { errorText, log } from "@/lib/log";
 // El webhook encola y sigue; procesar es un paso aparte. Así un reinicio en
 // mitad de un turno deja la conversación pendiente en vez de perderla: la
 // recoge el intento siguiente o el cron.
+//
+// El almacenamiento es Redis (ver redis-queue.ts), que además impone el tope
+// de turnos simultáneos de TODO el sistema, no de cada instancia.
 // ---------------------------------------------------------------------------
 
 /** Tope de turnos por pasada. Evita que una tanda grande agote el tiempo de la petición. */
@@ -29,27 +31,77 @@ export const DEBOUNCE_SECONDS = 6;
 /** Margen para no despertar justo en el borde y encontrar la ventana sin vencer. */
 const WAKE_MARGIN_MS = 500;
 
+/**
+ * Cuántos turnos pueden estar hablando con el modelo a la vez.
+ *
+ * Cada webhook dispara su propia pasada, así que sin un tope compartido un
+ * pico de mensajes se convierte en decenas de llamadas simultáneas al
+ * proveedor: responde con rate limit y los turnos empiezan a fallar en
+ * cadena, gastando reintentos. Se lee en cada pasada para poder ajustarlo
+ * sin recompilar la imagen.
+ */
+function maxConcurrentTurns(): number {
+  const configurado = Number(process.env.AGENT_MAX_CONCURRENT_TURNS);
+  return Number.isFinite(configurado) && configurado > 0 ? configurado : 3;
+}
+
+/**
+ * Cuánto vale un cupo antes de darse por abandonado. Tiene que superar
+ * cómodamente el turno más lento; si no, dos procesos podrían creerse dueños
+ * del mismo cupo.
+ */
+const TURN_LEASE_SECONDS = 180;
+
+/** Espera corta cuando no hay cupo: el turno vuelve a la cola, no se pierde. */
+const RETRY_WHEN_BUSY_SECONDS = 3;
+
+/** Espera antes de reintentar un turno que falló. */
+const RETRY_AFTER_ERROR_SECONDS = 30;
+
+/**
+ * Intentos antes de abandonar una conversación.
+ *
+ * Una que rompe siempre —un mensaje que el modelo rechaza, un dato corrupto—
+ * se quedaría reclamando cupos indefinidamente y empujando al resto hacia
+ * atrás. Se abandona con un registro de error, que es lo que hace falta para
+ * ir a mirarla.
+ */
+const MAX_ATTEMPTS = 3;
+
+export interface EnqueueOptions {
+  /** Ventana de silencio. Se baja a cero en pruebas y en el cron de recuperación. */
+  debounceSeconds?: number;
+}
+
 export async function enqueueAgentTurns(
-  supabase: SupabaseClient<Database>,
-  conversationIds: Iterable<string>
+  conversationIds: Iterable<string>,
+  options: EnqueueOptions = {}
 ): Promise<void> {
+  const debounce = options.debounceSeconds ?? DEBOUNCE_SECONDS;
+  const cola = createAgentQueue(getRedis());
+
   for (const conversationId of new Set(conversationIds)) {
-    const { error } = await supabase.rpc("enqueue_agent_turn", {
-      p_conversation_id: conversationId,
-      p_debounce_seconds: DEBOUNCE_SECONDS,
-    });
-    if (error) {
+    try {
+      await cola.enqueue(conversationId, debounce);
+    } catch (err) {
       // Encolar es lo único que no puede fallar en silencio: si esto no
       // queda registrado, el cliente se queda sin respuesta y nadie lo sabe.
       // Este evento merece una alerta en el agregador.
-      log.error("cola_encolar_fallido", { conversationId, detail: error.message });
+      log.error("cola_encolar_fallido", { conversationId, detail: errorText(err) });
     }
   }
+}
+
+/** Turnos esperando en la cola. */
+export async function pendingAgentTurns(): Promise<number> {
+  return createAgentQueue(getRedis()).pending();
 }
 
 export interface QueueRunResult {
   processed: number;
   failed: number;
+  /** Turnos que no encontraron cupo y volvieron a la cola. */
+  deferred: number;
 }
 
 /**
@@ -68,38 +120,65 @@ export async function processAfterDebounce(): Promise<QueueRunResult> {
 /**
  * Procesa turnos pendientes hasta agotar la cola o llegar al tope.
  *
- * No lanza: un turno que falla marca su fila y deja seguir a los demás. La
- * fila queda con el error a la vista y se reintenta hasta agotar los intentos.
+ * No lanza: un turno que falla vuelve a la cola y deja seguir a los demás.
+ * Los turnos corren en paralelo hasta el tope de cupos —el histórico era uno
+ * detrás de otro, y con el modelo tardando segundos eso hacía esperar a
+ * clientes que no tenían nada que ver entre sí.
  */
 export async function processQueuedTurns(limit = MAX_PER_RUN): Promise<QueueRunResult> {
-  const supabase = createAdminClient();
-  const result: QueueRunResult = { processed: 0, failed: 0 };
+  const redis = getRedis();
+  const cola = createAgentQueue(redis);
+  const cupos = createTurnSlots(redis, {
+    max: maxConcurrentTurns(),
+    leaseSeconds: TURN_LEASE_SECONDS,
+  });
 
-  for (let i = 0; i < limit; i++) {
-    const { data: conversationId, error } = await supabase.rpc("claim_agent_turn", {});
+  const result: QueueRunResult = { processed: 0, failed: 0, deferred: 0 };
 
-    if (error) {
-      log.error("cola_reclamar_fallido", { detail: error.message });
-      break;
-    }
-    if (!conversationId) break; // Cola vacía.
+  async function atender(): Promise<void> {
+    while (result.processed + result.failed + result.deferred < limit) {
+      let conversationId: string | null;
+      try {
+        conversationId = await cola.claimDue();
+      } catch (err) {
+        log.error("cola_reclamar_fallido", { detail: errorText(err) });
+        return;
+      }
+      if (!conversationId) return; // Cola vacía.
 
-    try {
-      await runAgentTurn(conversationId);
-      // Si el cliente escribió mientras corría el turno, finish_agent_turn no
-      // borra la fila: la devuelve a la cola con la ventana corrida.
-      await supabase.rpc("finish_agent_turn", {
-        p_conversation_id: conversationId,
-        p_debounce_seconds: DEBOUNCE_SECONDS,
-      });
-      result.processed++;
-    } catch (err) {
-      const detail = errorText(err);
-      log.error("cola_turno_fallido", { conversationId, detail });
-      await supabase.rpc("finish_agent_turn", { p_conversation_id: conversationId, p_error: detail });
-      result.failed++;
+      const cupo = await cupos.acquire();
+      if (!cupo) {
+        // Sistema al tope: se devuelve para el próximo intento. Este worker
+        // se retira; insistir solo gastaría viajes a Redis.
+        await cola.enqueue(conversationId, RETRY_WHEN_BUSY_SECONDS);
+        result.deferred++;
+        return;
+      }
+
+      try {
+        await runAgentTurn(conversationId);
+        await cola.clearFailures(conversationId);
+        result.processed++;
+      } catch (err) {
+        const detail = errorText(err);
+        const intentos = await cola.recordFailure(conversationId);
+        result.failed++;
+
+        if (intentos >= MAX_ATTEMPTS) {
+          log.error("cola_turno_abandonado", { conversationId, intentos, detail });
+        } else {
+          log.error("cola_turno_fallido", { conversationId, intentos, detail });
+          await cola.enqueue(conversationId, RETRY_AFTER_ERROR_SECONDS);
+        }
+      } finally {
+        // Pase lo que pase, el cupo se devuelve: retenerlo tras un fallo
+        // iría cerrando el sistema turno a turno.
+        await cupos.release(cupo);
+      }
     }
   }
+
+  await Promise.all(Array.from({ length: maxConcurrentTurns() }, () => atender()));
 
   return result;
 }

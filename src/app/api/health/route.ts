@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { createAdminClient } from "@/lib/supabase/admin";
+import { getRedis } from "@/lib/redis";
 
 // ---------------------------------------------------------------------------
 // Estado del servicio, para que un monitor externo avise cuando algo se cae
@@ -32,6 +33,20 @@ async function checkDatabase(): Promise<CheckResult> {
 }
 
 /**
+ * La cola del agente. Sin Redis el CRM levanta y las pantallas cargan, pero
+ * ningún mensaje entrante llega a atenderse: es una caída silenciosa, del
+ * tipo que se descubre por el reclamo de un cliente.
+ */
+async function checkQueue(): Promise<CheckResult> {
+  try {
+    await getRedis().ping();
+    return { ok: true };
+  } catch {
+    return { ok: false, detail: "sin conexión" };
+  }
+}
+
+/**
  * Variables sin las cuales el CRM arranca pero no hace su trabajo. Se informa
  * cuáles faltan por nombre —no su valor— porque es exactamente el dato que
  * hace falta para arreglarlo.
@@ -41,6 +56,7 @@ function checkConfig(): CheckResult & { missing: string[] } {
     "NEXT_PUBLIC_SUPABASE_URL",
     "NEXT_PUBLIC_SUPABASE_ANON_KEY",
     "SUPABASE_SERVICE_ROLE_KEY",
+    "REDIS_URL",
   ];
 
   // En producción el webhook se rechaza sin esta variable, así que su
@@ -52,14 +68,15 @@ function checkConfig(): CheckResult & { missing: string[] } {
 }
 
 export async function GET() {
-  const [database, config] = [await checkDatabase(), checkConfig()];
-  const healthy = database.ok && config.ok;
+  const [database, queue, config] = [await checkDatabase(), await checkQueue(), checkConfig()];
+  const healthy = database.ok && queue.ok && config.ok;
 
   return NextResponse.json(
     {
       status: healthy ? "ok" : "degraded",
       checks: {
         database: database.ok ? "ok" : `fallo: ${database.detail}`,
+        queue: queue.ok ? "ok" : `fallo: ${queue.detail}`,
         config: config.ok ? "ok" : `faltan variables: ${config.missing.join(", ")}`,
       },
       timestamp: new Date().toISOString(),

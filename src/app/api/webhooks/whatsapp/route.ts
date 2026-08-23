@@ -428,7 +428,7 @@ export async function POST(request: Request) {
   // la conversación queda pendiente en la cola en vez de perderse. Una tanda
   // con varios mensajes del mismo cliente deja un solo pendiente.
   if (touchedByCustomer.size > 0) {
-    await enqueueAgentTurns(supabase, touchedByCustomer);
+    await enqueueAgentTurns(touchedByCustomer);
     // Se espera la ventana de silencio antes de atender: Meta manda un POST
     // por mensaje, y sin esperar el cliente recibiría una respuesta por
     // frase, cada una sin el contexto de las siguientes.
