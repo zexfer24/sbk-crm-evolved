@@ -97,13 +97,22 @@ services:
     depends_on:
       app:
         condition: service_healthy
-    command: >
-      sh -c "apk add --no-cache curl >/dev/null &&
-             while true; do
-               sleep 300;
-               curl -fsS -X POST http://app:3000/api/cron/process-queue
-                 -H \"Authorization: Bearer $$CRON_SECRET\" >/dev/null || true;
-             done"
+    command:
+      - sh
+      - -c
+      # Bloque literal (|) y no plegado (>): con `>` las líneas más indentadas
+      # del curl NO se pliegan, el salto de línea sobrevive y la cabecera
+      # Authorization termina ejecutándose como un comando aparte. Resultado:
+      # el cron pegaba sin token (401) y la cola se quedaba sin red de
+      # seguridad. Acá cada línea es un comando completo y la continuación
+      # del curl es explícita con `\`.
+      - |
+        apk add --no-cache curl >/dev/null
+        while true; do
+          sleep 300
+          curl -fsS -X POST http://app:3000/api/cron/process-queue \
+            -H "Authorization: Bearer $$CRON_SECRET" >/dev/null || true
+        done
 
 volumes:
   caddy_data:
