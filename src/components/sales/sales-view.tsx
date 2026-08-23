@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { CheckCheck, Eye, Receipt, RotateCcw, ShieldCheck, Trash2 } from "lucide-react";
 import type { Agent, Conversation } from "@/lib/types";
+import { PAYMENT_METHOD_LABELS } from "@/lib/types";
 import { createClient } from "@/lib/supabase/client";
 import { fetchConversations } from "@/lib/data";
 import { deleteSale, returnSale, verifySale } from "@/lib/mutations";
@@ -155,7 +156,13 @@ export function SalesView({ currentAgent, initialConversations }: SalesViewProps
                           <span className="sales-row-name">{name}</span>
                           <span className="sales-row-meta">
                             {formatFullDateTime(sale.dealClosedAt ?? sale.createdAt)}
-                            {sale.assignedAgent && ` · ${sale.assignedAgent.displayName}`}
+                            {/* Quién CERRÓ, no quién tiene asignado el hilo: es
+                                lo que se le paga a alguien. Se nombra el rol en
+                                el texto para que no se confunda con el asesor
+                                asignado, que es lo que se mostraba antes. */}
+                            {sale.dealClosedBy && ` · Cerró ${sale.dealClosedBy.displayName}`}
+                            {sale.dealPaymentMethod &&
+                              ` · ${PAYMENT_METHOD_LABELS[sale.dealPaymentMethod]}`}
                           </span>
                         </div>
 

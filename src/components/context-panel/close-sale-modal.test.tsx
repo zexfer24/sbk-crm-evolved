@@ -114,6 +114,11 @@ function submitButton() {
   return screen.getByRole("button", { name: /guardar y cerrar venta/i });
 }
 
+/** Con qué pagó el cliente: sin esto la venta no se puede cerrar. */
+async function elegirMétodoDePago(user: ReturnType<typeof userEvent.setup>, valor = "pago_movil") {
+  await user.selectOptions(screen.getByLabelText("Método de pago"), valor);
+}
+
 function itemsSentToClose() {
   return closeSaleWithContactInfo.mock.calls[0][5];
 }
@@ -143,6 +148,7 @@ describe("CloseSaleModal — el asesor arma la venta, pero el precio lo pone el 
 
     await user.click(screen.getByText("Carburador PZ27"));
     await user.type(screen.getByLabelText("Nombre"), "Cliente Demo");
+    await elegirMétodoDePago(user);
     await user.click(submitButton());
 
     await waitFor(() => expect(closeSaleWithContactInfo).toHaveBeenCalledTimes(1));
@@ -170,6 +176,7 @@ describe("CloseSaleModal — el asesor arma la venta, pero el precio lo pone el 
     await user.click(screen.getByText("Bujía CR7HSA"));
 
     await user.type(screen.getByLabelText("Nombre"), "Cliente Demo");
+    await elegirMétodoDePago(user);
     await user.click(submitButton());
 
     await waitFor(() => expect(closeSaleWithContactInfo).toHaveBeenCalledTimes(1));
@@ -196,6 +203,7 @@ describe("CloseSaleModal — el asesor arma la venta, pero el precio lo pone el 
     await user.click(screen.getByLabelText("Quitar Carburador PZ27 de la venta"));
 
     await user.type(screen.getByLabelText("Nombre"), "Cliente Demo");
+    await elegirMétodoDePago(user);
     await user.click(submitButton());
 
     await waitFor(() => expect(closeSaleWithContactInfo).toHaveBeenCalledTimes(1));
@@ -214,6 +222,7 @@ describe("CloseSaleModal — el asesor arma la venta, pero el precio lo pone el 
     await user.click(screen.getByLabelText("Agregar una unidad de Carburador PZ27"));
 
     await user.type(screen.getByLabelText("Nombre"), "Cliente Demo");
+    await elegirMétodoDePago(user);
     await user.click(submitButton());
 
     await waitFor(() => expect(closeSaleWithContactInfo).toHaveBeenCalledTimes(1));
@@ -230,6 +239,7 @@ describe("CloseSaleModal — el asesor arma la venta, pero el precio lo pone el 
     await user.click(screen.getByLabelText("Restar una unidad de Carburador PZ27"));
 
     await user.type(screen.getByLabelText("Nombre"), "Cliente Demo");
+    await elegirMétodoDePago(user);
     await user.click(submitButton());
 
     await waitFor(() => expect(closeSaleWithContactInfo).toHaveBeenCalledTimes(1));
@@ -249,9 +259,55 @@ describe("CloseSaleModal — el asesor arma la venta, pero el precio lo pone el 
     await user.click(screen.getByText("Bujía CR7HSA"));
 
     await user.type(screen.getByLabelText("Nombre"), "Cliente Demo");
+    await elegirMétodoDePago(user);
     await user.click(submitButton());
 
     await waitFor(() => expect(closeSaleWithContactInfo).toHaveBeenCalledTimes(1));
     expect(closeSaleWithContactInfo.mock.calls[0][6]).toBe(40);
+  });
+
+  // El método de pago quedaba en el comprobante, es decir, en una imagen que
+  // hay que abrir una por una para saber con qué pagó cada cliente.
+  it("no deja cerrar la venta sin decir con qué se pagó", async () => {
+    const user = userEvent.setup();
+    renderModal();
+    await waitForQuotes();
+
+    await user.click(screen.getByText("Carburador PZ27"));
+    await user.type(screen.getByLabelText("Nombre"), "Cliente Demo");
+
+    expect(submitButton()).toBeDisabled();
+  });
+
+  it("no elige un método por defecto: la mitad de las ventas quedarían mal registradas", async () => {
+    renderModal();
+    await waitForQuotes();
+
+    expect(screen.getByLabelText("Método de pago")).toHaveValue("");
+  });
+
+  it("manda el método elegido junto con el resto de los datos del cliente", async () => {
+    const user = userEvent.setup();
+    renderModal();
+    await waitForQuotes();
+
+    await user.click(screen.getByText("Carburador PZ27"));
+    await user.type(screen.getByLabelText("Nombre"), "Cliente Demo");
+    await elegirMétodoDePago(user, "zelle");
+    await user.click(submitButton());
+
+    await waitFor(() => expect(closeSaleWithContactInfo).toHaveBeenCalledTimes(1));
+    expect(closeSaleWithContactInfo.mock.calls[0][4]).toMatchObject({ paymentMethod: "zelle" });
+  });
+
+  // Quien cierra tiene que ver a nombre de quién queda antes de confirmar,
+  // pero no puede cambiarlo: sale de la sesión, no de un campo.
+  it("muestra quién cierra la venta y no deja editarlo", async () => {
+    renderModal();
+    await waitForQuotes();
+
+    const campo = screen.getByLabelText("Cierra la venta");
+    expect(campo).toHaveValue(AGENT.displayName);
+    expect(campo).toBeDisabled();
   });
 });

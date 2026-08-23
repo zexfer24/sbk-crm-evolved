@@ -46,6 +46,19 @@ export interface Contact {
 export type ConversationStatus = "open" | "pending" | "closed";
 export type DealStatus = "none" | "in_progress" | "won" | "lost" | "returned";
 
+/** Con qué pagó el cliente. Se elige al cerrar la venta y después no se toca. */
+export type PaymentMethod = "pago_movil" | "transferencia" | "zelle" | "cashea";
+
+export const PAYMENT_METHOD_LABELS: Record<PaymentMethod, string> = {
+  pago_movil: "Pago Móvil",
+  transferencia: "Transferencia Bancaria",
+  zelle: "Zelle",
+  cashea: "Cashea",
+};
+
+/** El orden en que se ofrecen en el selector del cierre. */
+export const PAYMENT_METHODS: PaymentMethod[] = ["pago_movil", "transferencia", "zelle", "cashea"];
+
 /** Etapas del recorrido, en el orden en que las atraviesa un cliente. */
 export type JourneyStageId =
   | "first_contact"
@@ -71,6 +84,13 @@ export interface Conversation {
   dealVerified: boolean;
   dealVerifiedAt: string | null;
   dealVerifiedBy: Agent | null;
+  /** Con qué pagó el cliente. Null en las ventas cerradas antes de que existiera el campo. */
+  dealPaymentMethod: PaymentMethod | null;
+  /**
+   * Quién cerró la venta. No es el agente asignado: el hilo puede reasignarse
+   * después, o puede cerrarlo el supervisor sobre una conversación ajena.
+   */
+  dealClosedBy: Agent | null;
   lastCustomerMessageAt: string | null;
   lastMessageAt: string | null;
   lastMessagePreview: string | null;

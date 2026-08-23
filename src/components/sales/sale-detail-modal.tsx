@@ -1,9 +1,10 @@
 "use client";
 
-import { CheckCheck, IdCard, MapPin, Phone, RotateCcw, ShieldCheck, Trash2 } from "lucide-react";
+import { CheckCheck, CreditCard, IdCard, MapPin, Phone, RotateCcw, ShieldCheck, Trash2, UserCheck } from "lucide-react";
 import Link from "next/link";
 import { Button, Modal } from "@heroui/react";
 import type { Conversation } from "@/lib/types";
+import { PAYMENT_METHOD_LABELS } from "@/lib/types";
 import { formatFullDateTime } from "@/lib/format";
 import { contactName } from "@/lib/dashboard";
 import { MediaThumb } from "@/components/chat/media-lightbox";
@@ -78,6 +79,25 @@ export function SaleDetailModal({
                     <span>{[contact.address, location].filter(Boolean).join(" — ")}</span>
                   </p>
                 )}
+                <p className="flex items-center gap-2">
+                  <CreditCard size={13} className="text-muted" />
+                  <span>
+                    {sale.dealPaymentMethod
+                      ? PAYMENT_METHOD_LABELS[sale.dealPaymentMethod]
+                      : "Método de pago sin registrar"}
+                  </span>
+                </p>
+                <p className="flex items-center gap-2">
+                  <UserCheck size={13} className="text-muted" />
+                  {/* Las ventas cerradas antes de que existiera el campo no
+                      dejaron autor recuperable: se dice, en vez de atribuirlas
+                      al asesor asignado, que no es lo mismo. */}
+                  <span>
+                    {sale.dealClosedBy
+                      ? `Cerrada por ${sale.dealClosedBy.displayName}`
+                      : "Cerrada por un asesor sin registrar"}
+                  </span>
+                </p>
               </div>
 
               {sale.dealVerified && (

@@ -102,6 +102,8 @@ function buildConversation(): Conversation {
     dealVerified: false,
     dealVerifiedAt: null,
     dealVerifiedBy: null,
+    dealPaymentMethod: null,
+    dealClosedBy: null,
     lastCustomerMessageAt: new Date().toISOString(),
     lastMessageAt: new Date().toISOString(),
     lastMessagePreview: null,

@@ -425,6 +425,8 @@ export type Database = {
           contact_id: string
           created_at: string
           deal_closed_at: string | null
+          deal_closed_by: string | null
+          deal_payment_method: string | null
           deal_payment_proof_url: string | null
           deal_status: string
           deal_verified: boolean
@@ -453,6 +455,8 @@ export type Database = {
           contact_id: string
           created_at?: string
           deal_closed_at?: string | null
+          deal_closed_by?: string | null
+          deal_payment_method?: string | null
           deal_payment_proof_url?: string | null
           deal_status?: string
           deal_verified?: boolean
@@ -481,6 +485,8 @@ export type Database = {
           contact_id?: string
           created_at?: string
           deal_closed_at?: string | null
+          deal_closed_by?: string | null
+          deal_payment_method?: string | null
           deal_payment_proof_url?: string | null
           deal_status?: string
           deal_verified?: boolean
@@ -514,6 +520,13 @@ export type Database = {
             columns: ["contact_id"]
             isOneToOne: false
             referencedRelation: "contacts"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "conversations_deal_closed_by_fkey"
+            columns: ["deal_closed_by"]
+            isOneToOne: false
+            referencedRelation: "agents"
             referencedColumns: ["id"]
           },
           {
@@ -1189,6 +1202,16 @@ export type Database = {
         Args: { p_bucket: string; p_limit: number; p_window_seconds: number }
         Returns: boolean
       }
+      search_conversations_by_message: {
+        Args: { p_limit?: number; p_query: string }
+        Returns: {
+          content: string
+          conversation_id: string
+          created_at: string
+          message_id: string
+        }[]
+      }
+      whatsapp_status_rank: { Args: { status: string }; Returns: number }
     }
     Enums: {
       [_ in never]: never

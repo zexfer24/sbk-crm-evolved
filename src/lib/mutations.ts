@@ -3,11 +3,13 @@ import type {
   Agent,
   CedulaType,
   MessageType,
+  PaymentMethod,
   Playbook,
   SaleItemOrigin,
   TagColor,
   WhatsappTemplate,
 } from "@/lib/types";
+import { PAYMENT_METHOD_LABELS } from "@/lib/types";
 
 async function insertSystemEvent(
   supabase: SupabaseClient,
@@ -170,6 +172,8 @@ export interface ContactSaleDetails {
   city: string | null;
   address: string | null;
   paymentProofUrl: string | null;
+  /** Con qué pagó. Obligatorio al cerrar; después no se edita. */
+  paymentMethod: PaymentMethod;
 }
 
 /**
@@ -242,6 +246,10 @@ export async function closeSaleWithContactInfo(
       deal_verified: false,
       deal_verified_at: null,
       deal_verified_by: null,
+      deal_payment_method: details.paymentMethod,
+      // Quién cerró, no quién tiene asignada la conversación: el hilo puede
+      // reasignarse después, o puede cerrarlo el supervisor sobre uno ajeno.
+      deal_closed_by: agent.id,
       order_id: order.id,
     })
     .eq("id", conversationId);
@@ -262,7 +270,7 @@ export async function closeSaleWithContactInfo(
     supabase,
     conversationId,
     agent.id,
-    `Venta cerrada por ${agent.displayName} — $${totalAmount.toFixed(2)}${detalleAgregados}`
+    `Venta cerrada por ${agent.displayName} — $${totalAmount.toFixed(2)} · ${PAYMENT_METHOD_LABELS[details.paymentMethod]}${detalleAgregados}`
   );
 }
 
@@ -295,6 +303,8 @@ export async function deleteSale(supabase: SupabaseClient, conversationId: strin
       deal_verified: false,
       deal_verified_at: null,
       deal_verified_by: null,
+      deal_payment_method: null,
+      deal_closed_by: null,
     })
     .eq("id", conversationId);
   if (error) throw error;

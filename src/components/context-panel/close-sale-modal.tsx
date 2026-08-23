@@ -3,7 +3,8 @@
 import { useEffect, useRef, useState, type ChangeEvent } from "react";
 import { Handshake, Upload, X } from "lucide-react";
 import { Button, Input, Label, Modal, TextArea, toast } from "@heroui/react";
-import type { Agent, CedulaType, Contact, Message, SaleCartItem } from "@/lib/types";
+import type { Agent, CedulaType, Contact, Message, PaymentMethod, SaleCartItem } from "@/lib/types";
+import { PAYMENT_METHOD_LABELS, PAYMENT_METHODS } from "@/lib/types";
 import { VENEZUELA_STATES } from "@/lib/venezuela";
 import { createClient } from "@/lib/supabase/client";
 import { fetchLatestBcvRate } from "@/lib/data";
@@ -36,6 +37,9 @@ export function CloseSaleModal({
   const [city, setCity] = useState(contact.city ?? "");
   const [address, setAddress] = useState(contact.address ?? "");
   const [paymentProofUrl, setPaymentProofUrl] = useState<string | null>(null);
+  // Sin valor inicial a propósito: si arrancara en "Pago Móvil", la mitad de
+  // las ventas quedarían registradas con el método que nadie eligió.
+  const [paymentMethod, setPaymentMethod] = useState<PaymentMethod | "">("");
   const [isSaving, setIsSaving] = useState(false);
   const [isUploadingProof, setIsUploadingProof] = useState(false);
   const proofInputRef = useRef<HTMLInputElement>(null);
@@ -107,6 +111,10 @@ export function CloseSaleModal({
       toast.danger("Agrega al menos un repuesto para cerrar la venta.");
       return;
     }
+    if (!paymentMethod) {
+      toast.danger("Elige con qué pagó el cliente.");
+      return;
+    }
     setIsSaving(true);
     try {
       const supabase = createClient();
@@ -123,6 +131,7 @@ export function CloseSaleModal({
           city: city.trim() || null,
           address: address.trim() || null,
           paymentProofUrl,
+          paymentMethod,
         },
         cartToLineItems(cart),
         bcvRate
@@ -220,6 +229,32 @@ export function CloseSaleModal({
               </div>
 
               <div className="flex flex-col gap-1.5">
+                <Label htmlFor="sale-payment-method">Método de pago</Label>
+                <select
+                  id="sale-payment-method"
+                  value={paymentMethod}
+                  onChange={(e) => setPaymentMethod(e.target.value as PaymentMethod)}
+                  className="w-full lm-select"
+                >
+                  <option value="">Selecciona un método...</option>
+                  {PAYMENT_METHODS.map((method) => (
+                    <option key={method} value={method}>
+                      {PAYMENT_METHOD_LABELS[method]}
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              <div className="flex flex-col gap-1.5">
+                <Label htmlFor="sale-closed-by">Cierra la venta</Label>
+                {/* Deshabilitado y no oculto: quien cierra tiene que ver a
+                    nombre de quién queda antes de confirmar. Sale de la sesión
+                    —no de la asignación de la conversación— y no se elige. */}
+                <Input id="sale-closed-by" value={agent.displayName} disabled fullWidth />
+                <p className="lm-hint">Queda registrado a tu nombre y después no se puede cambiar.</p>
+              </div>
+
+              <div className="flex flex-col gap-1.5">
                 <Label>Comprobante de pago</Label>
 
                 {paymentProofUrl ? (
@@ -277,7 +312,11 @@ export function CloseSaleModal({
               <Button variant="secondary" onPress={() => onOpenChange(false)} isDisabled={isSaving}>
                 Cancelar
               </Button>
-              <Button variant="primary" onPress={handleSubmit} isDisabled={isSaving || cart.length === 0}>
+              <Button
+                variant="primary"
+                onPress={handleSubmit}
+                isDisabled={isSaving || cart.length === 0 || !paymentMethod}
+              >
                 {isSaving ? "Guardando..." : "Guardar y cerrar venta"}
               </Button>
             </Modal.Footer>

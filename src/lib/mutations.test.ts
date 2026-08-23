@@ -62,6 +62,7 @@ const CONTACT_DETAILS = {
   city: "Barinas",
   address: "Calle Falsa 123",
   paymentProofUrl: "https://example.com/proof.jpg",
+  paymentMethod: "pago_movil" as const,
 };
 
 describe("closeSaleWithContactInfo — el monto sale del catálogo, nunca de un número a mano", () => {

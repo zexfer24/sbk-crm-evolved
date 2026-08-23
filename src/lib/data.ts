@@ -78,6 +78,8 @@ interface RawConversation {
   deal_verified: boolean;
   deal_verified_at: string | null;
   deal_verified_by: RawAgent | null;
+  deal_payment_method: Conversation["dealPaymentMethod"];
+  deal_closed_by: RawAgent | null;
   last_customer_message_at: string | null;
   last_message_at: string | null;
   last_message_preview: string | null;
@@ -212,6 +214,8 @@ function mapConversation(row: RawConversation): Conversation {
     dealVerified: row.deal_verified,
     dealVerifiedAt: row.deal_verified_at,
     dealVerifiedBy: mapAgent(row.deal_verified_by),
+    dealPaymentMethod: row.deal_payment_method,
+    dealClosedBy: mapAgent(row.deal_closed_by),
     lastCustomerMessageAt: row.last_customer_message_at,
     lastMessageAt: row.last_message_at,
     lastMessagePreview: row.last_message_preview,
@@ -286,7 +290,7 @@ function mapTemplate(row: RawTemplate): WhatsappTemplate {
 
 const CONVERSATION_SELECT = `
   id, status, unread_count, ai_enabled, deal_status, deal_closed_at,
-  deal_payment_proof_url, deal_verified, deal_verified_at,
+  deal_payment_proof_url, deal_verified, deal_verified_at, deal_payment_method,
   last_customer_message_at, last_message_at, last_message_preview,
   last_message_direction, last_message_status, created_at,
   journey_stage, intent, active_tool, welcome_sent_at,
@@ -296,7 +300,8 @@ const CONVERSATION_SELECT = `
     contact_tags(tag:tags(id, label, color))),
   channel:whatsapp_channels(id, label, phone_number, phone_number_id, status),
   assigned_agent:agents!conversations_assigned_agent_id_fkey(id, display_name, full_name, avatar_url, role, is_active),
-  deal_verified_by:agents!conversations_deal_verified_by_fkey(id, display_name, full_name, avatar_url, role, is_active)
+  deal_verified_by:agents!conversations_deal_verified_by_fkey(id, display_name, full_name, avatar_url, role, is_active),
+  deal_closed_by:agents!conversations_deal_closed_by_fkey(id, display_name, full_name, avatar_url, role, is_active)
 `;
 
 export async function fetchConversations(supabase: SupabaseClient): Promise<Conversation[]> {
