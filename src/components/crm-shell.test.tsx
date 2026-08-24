@@ -3,21 +3,35 @@ import { render, act } from "@testing-library/react";
 import { CrmShell } from "@/components/crm-shell";
 import type { Agent, Conversation, QuickReply, Tag } from "@/lib/types";
 
-type ChannelHandler = (payload: unknown) => void;
+type RealtimeEvent = "INSERT" | "UPDATE" | "DELETE";
+type ChannelHandler = (payload: { eventType: RealtimeEvent; new: Record<string, unknown> }) => void;
+
+interface Subscription {
+  event: RealtimeEvent | "*";
+  handler: ChannelHandler;
+}
 
 /**
  * Fake mínimo del cliente realtime de Supabase: registra los handlers por
- * tabla para poder disparar eventos "postgres_changes" desde el test, igual
- * que haría Supabase al llegar un cambio real.
+ * tabla —y por tipo de evento— para poder disparar eventos "postgres_changes"
+ * desde el test, igual que haría Supabase al llegar un cambio real.
+ *
+ * Respetar el tipo de evento no es un detalle: un canal suscrito solo a
+ * INSERT no debe ver los UPDATE, y ese es justamente el fallo que estos
+ * tests cuidan.
  */
 function createFakeSupabase() {
-  const handlersByTable = new Map<string, ChannelHandler[]>();
+  const subscriptionsByTable = new Map<string, Subscription[]>();
 
   const channel = {
-    on(_event: string, filter: { table: string }, handler: ChannelHandler) {
-      const list = handlersByTable.get(filter.table) ?? [];
-      list.push(handler);
-      handlersByTable.set(filter.table, list);
+    on(
+      _type: string,
+      config: { event: RealtimeEvent | "*"; table: string },
+      handler: ChannelHandler
+    ) {
+      const list = subscriptionsByTable.get(config.table) ?? [];
+      list.push({ event: config.event, handler });
+      subscriptionsByTable.set(config.table, list);
       return channel;
     },
     subscribe() {
@@ -31,8 +45,14 @@ function createFakeSupabase() {
       removeChannel: () => {},
       auth: { signOut: vi.fn() },
     },
-    trigger(table: string) {
-      for (const handler of handlersByTable.get(table) ?? []) handler({ new: {} });
+    trigger(
+      table: string,
+      eventType: RealtimeEvent = "INSERT",
+      row: Record<string, unknown> = {}
+    ) {
+      for (const { event, handler } of subscriptionsByTable.get(table) ?? []) {
+        if (event === "*" || event === eventType) handler({ eventType, new: row });
+      }
     },
   };
 }
@@ -66,8 +86,10 @@ vi.mock("@/lib/data", () => ({
   fetchTemplates: vi.fn().mockResolvedValue([]),
 }));
 
+const markConversationReadMock = vi.fn().mockResolvedValue(undefined);
+
 vi.mock("@/lib/mutations", () => ({
-  markConversationRead: vi.fn().mockResolvedValue(undefined),
+  markConversationRead: (...args: unknown[]) => markConversationReadMock(...args),
 }));
 
 function buildConversation(): Conversation {
@@ -136,6 +158,7 @@ beforeEach(() => {
   fake = createFakeSupabase();
   fetchConversationsMock.mockClear();
   fetchMessagesMock.mockClear();
+  markConversationReadMock.mockClear();
   vi.useFakeTimers();
 });
 
@@ -157,9 +180,9 @@ describe("CrmShell — debounce del refresh disparado por realtime", () => {
     fetchConversationsMock.mockClear(); // descarta cualquier llamada del render inicial
 
     act(() => {
-      fake.trigger("conversations");
-      fake.trigger("conversations");
-      fake.trigger("conversations");
+      fake.trigger("conversations", "UPDATE");
+      fake.trigger("conversations", "UPDATE");
+      fake.trigger("conversations", "UPDATE");
     });
     expect(fetchConversationsMock).not.toHaveBeenCalled();
 
@@ -185,9 +208,9 @@ describe("CrmShell — debounce del refresh disparado por realtime", () => {
     fetchMessagesMock.mockClear();
 
     act(() => {
-      fake.trigger("messages");
-      fake.trigger("messages");
-      fake.trigger("messages");
+      fake.trigger("messages", "INSERT");
+      fake.trigger("messages", "INSERT");
+      fake.trigger("messages", "INSERT");
     });
     expect(fetchMessagesMock).not.toHaveBeenCalled();
 
@@ -196,5 +219,88 @@ describe("CrmShell — debounce del refresh disparado por realtime", () => {
     });
 
     expect(fetchMessagesMock).toHaveBeenCalledTimes(1);
+  });
+});
+
+/**
+ * Helper: monta la shell con una conversación abierta y deja resolver la
+ * carga inicial, que es lo que todos los tests de mensajes necesitan antes
+ * de poder disparar eventos de realtime.
+ */
+async function renderWithOpenConversation() {
+  render(
+    <CrmShell
+      currentAgent={currentAgent}
+      initialConversations={[buildConversation()]}
+      allTags={allTags}
+      initialQuickReplies={initialQuickReplies}
+      bcvRate={null}
+      initialConversationId="conv-1"
+    />
+  );
+  await act(async () => {});
+  fetchMessagesMock.mockClear();
+  markConversationReadMock.mockClear();
+}
+
+describe("CrmShell — el chat sigue los cambios sobre mensajes ya guardados", () => {
+  it("repinta el chat cuando un mensaje de la conversación abierta se actualiza", async () => {
+    await renderWithOpenConversation();
+
+    // Lo que hace el after() del webhook al terminar de bajar el archivo de
+    // Meta: la fila ya existe y se le rellena media_url.
+    act(() => {
+      fake.trigger("messages", "UPDATE", {
+        direction: "inbound",
+        media_url: "/api/media/conv-1/wamid.jpg",
+      });
+    });
+
+    await act(async () => {
+      vi.advanceTimersByTime(750);
+    });
+
+    expect(fetchMessagesMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("repinta el chat cuando WhatsApp confirma la entrega de un mensaje saliente", async () => {
+    await renderWithOpenConversation();
+
+    // Lo que hace el webhook con value.statuses: UPDATE de whatsapp_status
+    // sobre la fila del mensaje que ya se envió.
+    act(() => {
+      fake.trigger("messages", "UPDATE", {
+        direction: "outbound",
+        whatsapp_status: "read",
+      });
+    });
+
+    await act(async () => {
+      vi.advanceTimersByTime(750);
+    });
+
+    expect(fetchMessagesMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("no da por leída la conversación porque un mensaje entrante se haya actualizado", async () => {
+    await renderWithOpenConversation();
+
+    // El agente puede tener el chat abierto en otra pestaña, o haberlo dejado
+    // atrás: rellenar media_url no es que alguien haya leído nada.
+    act(() => {
+      fake.trigger("messages", "UPDATE", { direction: "inbound", media_url: "/api/media/x.jpg" });
+    });
+
+    expect(markConversationReadMock).not.toHaveBeenCalled();
+  });
+
+  it("sí da por leída la conversación cuando entra un mensaje nuevo del cliente", async () => {
+    await renderWithOpenConversation();
+
+    act(() => {
+      fake.trigger("messages", "INSERT", { direction: "inbound" });
+    });
+
+    expect(markConversationReadMock).toHaveBeenCalledTimes(1);
   });
 });

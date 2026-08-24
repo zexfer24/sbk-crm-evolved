@@ -203,15 +203,24 @@ export function CrmShell({
       }, REALTIME_DEBOUNCE_MS);
     }
 
+    // "*" y no "INSERT": media_url llega tarde —el webhook guarda el mensaje
+    // sin archivo para contestarle a Meta dentro de sus 20s y baja el archivo
+    // después, en un after()— y los checks de entrega (sent/delivered/read)
+    // que confirma WhatsApp también son UPDATE sobre una fila que ya existe.
+    // Escuchando solo INSERT, la burbuja se quedaba clavada en "no se pudo
+    // recibir" y el doble check nunca avanzaba.
     const messagesChannel = supabase
       .channel(`messages-${selectedId}`)
       .on(
         "postgres_changes",
-        { event: "INSERT", schema: "public", table: "messages", filter: `conversation_id=eq.${selectedId}` },
+        { event: "*", schema: "public", table: "messages", filter: `conversation_id=eq.${selectedId}` },
         (payload) => {
           const row = payload.new as Record<string, unknown>;
           scheduleMessagesRefresh();
-          if (row.direction === "inbound") {
+          // Dar por leído es cosa de mensajes nuevos. Rellenar el archivo de
+          // uno viejo no significa que nadie lo haya mirado, y marcarlo aquí
+          // escribiría en conversations por cada descarga que termina.
+          if (payload.eventType === "INSERT" && row.direction === "inbound") {
             markConversationRead(supabase, selectedId).catch(() => {});
           }
         }
