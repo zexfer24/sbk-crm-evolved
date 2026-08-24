@@ -1755,3 +1755,48 @@
   cursor: default;
   opacity: 0.6;
 }
+
+/* Un chat apartado a mano se ve pendiente igual que uno con mensajes nuevos,
+   pero no tiene ningún número que mostrar: el punto ocupa el lugar del
+   contador sin afirmar que llegó nada. */
+.crm-thread-dot {
+  display: block;
+  flex-shrink: 0;
+  width: 9px;
+  height: 9px;
+  margin: 0 5px;
+  border-radius: 999px;
+  background: var(--lm-hot-fill);
+}
+
+/* Menú contextual de la conversación. Va anclado al punto donde se pidió —el
+   cursor, o el dedo—, así que se posiciona en coordenadas de pantalla. */
+.crm-context-menu {
+  position: fixed;
+  z-index: 60;
+  display: flex;
+  flex-direction: column;
+  min-width: 190px;
+  padding: 4px;
+  border: 1px solid var(--lm-line);
+  border-radius: 10px;
+  background: var(--lm-surface);
+  box-shadow: 0 10px 30px rgb(0 0 0 / 18%);
+}
+
+.crm-context-menu button {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 8px 10px;
+  border-radius: 7px;
+  color: var(--lm-ink);
+  font-size: 13.5px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.crm-context-menu button:hover,
+.crm-context-menu button:focus-visible {
+  background: var(--lm-sunken);
+}

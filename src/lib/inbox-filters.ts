@@ -48,7 +48,7 @@ export interface InboxCriteria {
 
 function matchesFilter(conversation: Conversation, filter: InboxFilter, viewer: Agent): boolean {
   const isMine = conversation.assignedAgent?.id === viewer.id;
-  const isUnread = conversation.unreadCount > 0;
+  const isUnread = conversation.unreadCount > 0 || conversation.manuallyUnread;
 
   switch (filter) {
     case "all":

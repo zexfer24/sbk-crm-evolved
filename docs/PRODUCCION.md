@@ -53,7 +53,7 @@ real, pero la regla simple es: **el seed no se toca en producción**.
 **Verificación:**
 
 ```sql
-select count(*) from supabase_migrations.schema_migrations;  -- 30
+select count(*) from supabase_migrations.schema_migrations;  -- 31
 select public from storage.buckets where id = 'whatsapp-media';  -- false
 select public.agent_can_run();  -- true
 ```
@@ -393,7 +393,7 @@ Con todo configurado, esta lista debe pasar entera:
 
 - [ ] Una restauración de prueba devuelve los datos completos
 - [ ] `npm run build` sin errores ni warnings
-- [ ] `select count(*) from supabase_migrations.schema_migrations` devuelve 30
+- [ ] `select count(*) from supabase_migrations.schema_migrations` devuelve 31
 - [ ] El bucket `whatsapp-media` es privado (`public = false`)
 - [ ] Una URL directa al bucket responde 400
 - [ ] `/api/media/...` sin sesión responde 401

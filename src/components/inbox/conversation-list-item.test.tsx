@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { render, screen } from "@testing-library/react";
+import { render, screen, fireEvent } from "@testing-library/react";
 import type { Conversation, Tag } from "@/lib/types";
 import { ConversationListItem } from "@/components/inbox/conversation-list-item";
 
@@ -25,6 +25,7 @@ function buildConversation(overrides: Partial<Conversation> = {}): Conversation 
       tags: [],
     },
     unreadCount: 0,
+    manuallyUnread: false,
     assignedAgent: null,
     aiEnabled: true,
     lastMessageAt: "2026-08-22T10:00:00Z",
@@ -110,5 +111,41 @@ describe("ConversationListItem — etiquetas y preview", () => {
   it("muestra el contador de no leídos", () => {
     renderItem({ unreadCount: 3 });
     expect(screen.getByText("3")).toBeTruthy();
+  });
+});
+
+describe("un chat apartado a mano se ve sin leer, pero sin inventar mensajes", () => {
+  it("resalta el nombre aunque el contador esté en cero", () => {
+    renderItem({ unreadCount: 0, manuallyUnread: true });
+    expect(screen.getByText("Laura Fernández")).toHaveAttribute("data-unread", "true");
+  });
+
+  it("marca el chat sin escribir un número que no corresponde a ningún mensaje", () => {
+    renderItem({ unreadCount: 0, manuallyUnread: true });
+    expect(screen.getByLabelText("Sin leer")).toBeInTheDocument();
+    expect(screen.queryByText("1")).not.toBeInTheDocument();
+  });
+
+  it("cuando sí hay mensajes nuevos, el contador manda", () => {
+    renderItem({ unreadCount: 3, manuallyUnread: true });
+    expect(screen.getByText("3")).toBeInTheDocument();
+  });
+});
+
+describe("menú contextual de la conversación", () => {
+  it("el click derecho pide el menú en vez del menú del navegador", () => {
+    let asked = 0;
+    render(
+      <ConversationListItem
+        conversation={buildConversation()}
+        isSelected={false}
+        onSelect={() => {}}
+        onOpenMenu={() => { asked += 1; }}
+      />
+    );
+
+    fireEvent.contextMenu(screen.getByRole("button"));
+
+    expect(asked).toBe(1);
   });
 });

@@ -70,6 +70,7 @@ interface RawConversation {
   id: string;
   status: Conversation["status"];
   unread_count: number;
+  manually_unread: boolean;
   ai_enabled: boolean;
   deal_status: Conversation["dealStatus"];
   deal_closed_at: string | null;
@@ -204,6 +205,7 @@ function mapConversation(row: RawConversation): Conversation {
     channel: mapChannel(row.channel),
     status: row.status,
     unreadCount: row.unread_count,
+    manuallyUnread: row.manually_unread,
     assignedAgent: mapAgent(row.assigned_agent),
     aiEnabled: row.ai_enabled,
     dealStatus: row.deal_status,
@@ -289,7 +291,7 @@ function mapTemplate(row: RawTemplate): WhatsappTemplate {
 // ---------------------------------------------------------------------------
 
 const CONVERSATION_SELECT = `
-  id, status, unread_count, ai_enabled, deal_status, deal_closed_at,
+  id, status, unread_count, manually_unread, ai_enabled, deal_status, deal_closed_at,
   deal_payment_proof_url, deal_verified, deal_verified_at, deal_payment_method,
   last_customer_message_at, last_message_at, last_message_preview,
   last_message_direction, last_message_status, created_at,

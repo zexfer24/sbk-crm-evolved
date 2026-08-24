@@ -15,7 +15,7 @@ import {
   fetchTags,
   fetchTemplates,
 } from "@/lib/data";
-import { markConversationRead } from "@/lib/mutations";
+import { markConversationRead, markConversationUnread } from "@/lib/mutations";
 import { useDebouncedCallback } from "@/lib/use-debounced-callback";
 
 /**
@@ -114,6 +114,47 @@ export function CrmShell({
 
   const scheduleRefreshConversations = useDebouncedCallback(refreshConversations, REALTIME_DEBOUNCE_MS);
 
+  /**
+   * Apartar y desapartar un chat desde el menú de la bandeja.
+   *
+   * El estado local se mueve antes que la base: el asesor acaba de elegir la
+   * acción en un menú y espera verla aplicada, no esperar el viaje de ida y
+   * vuelta. Si la escritura falla, el refetch devuelve la lista a la verdad.
+   */
+  const markUnread = useCallback(
+    async (conversationId: string) => {
+      setConversations((current) =>
+        current.map((c) => (c.id === conversationId ? { ...c, manuallyUnread: true } : c))
+      );
+      // Un chat apartado que sigue abierto se contradice a sí mismo: el
+      // asesor lo está leyendo. Se cierra, como en WhatsApp.
+      setSelectedId((current) => (current === conversationId ? null : current));
+      setMobileView("list");
+      try {
+        await markConversationUnread(supabase, conversationId);
+      } catch {
+        refreshConversations();
+      }
+    },
+    [supabase, refreshConversations]
+  );
+
+  const markRead = useCallback(
+    async (conversationId: string) => {
+      setConversations((current) =>
+        current.map((c) =>
+          c.id === conversationId ? { ...c, manuallyUnread: false, unreadCount: 0 } : c
+        )
+      );
+      try {
+        await markConversationRead(supabase, conversationId);
+      } catch {
+        refreshConversations();
+      }
+    },
+    [supabase, refreshConversations]
+  );
+
   // Mantiene la bandeja sincronizada entre todos los agentes conectados. También
   // escucha contact_tags: asignar/quitar una etiqueta no toca la fila de
   // conversations, así que sin esto el chip de etiquetas no se actualizaría en vivo.
@@ -184,7 +225,9 @@ export function CrmShell({
       setNotes(notesData);
       setTemplates(templatesData);
 
-      if (conversation && conversation.unreadCount > 0) {
+      // También cuando el contador está en cero: el chat puede estar apartado
+      // a mano, y abrirlo es exactamente lo que deshace ese apartado.
+      if (conversation && (conversation.unreadCount > 0 || conversation.manuallyUnread)) {
         markConversationRead(supabase, selectedId).catch(() => {});
       }
     })();
@@ -264,6 +307,8 @@ export function CrmShell({
             currentAgent={currentAgent}
             allTags={tags}
             bcvRate={bcvRate}
+            onMarkUnread={markUnread}
+            onMarkRead={markRead}
           />
         </section>
 

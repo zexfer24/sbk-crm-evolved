@@ -442,6 +442,7 @@ export type Database = {
           last_message_status: string | null
           order_id: string | null
           status: string
+          manually_unread: boolean
           unread_count: number
           updated_at: string
           welcome_sent_at: string | null
@@ -472,6 +473,7 @@ export type Database = {
           last_message_status?: string | null
           order_id?: string | null
           status?: string
+          manually_unread?: boolean
           unread_count?: number
           updated_at?: string
           welcome_sent_at?: string | null
@@ -502,6 +504,7 @@ export type Database = {
           last_message_status?: string | null
           order_id?: string | null
           status?: string
+          manually_unread?: boolean
           unread_count?: number
           updated_at?: string
           welcome_sent_at?: string | null

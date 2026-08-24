@@ -24,6 +24,7 @@ const JEFA = agent("jefa", "admin");
 function conversation(over: {
   id: string;
   unreadCount?: number;
+  manuallyUnread?: boolean;
   assignedAgent?: Agent | null;
   tags?: Tag[];
 }): Conversation {
@@ -43,6 +44,7 @@ function conversation(over: {
       tags: over.tags ?? [],
     },
     unreadCount: over.unreadCount ?? 0,
+    manuallyUnread: over.manuallyUnread ?? false,
     assignedAgent: over.assignedAgent ?? null,
     aiEnabled: true,
     lastMessageAt: "2026-08-22T10:00:00Z",
@@ -178,5 +180,68 @@ describe("InboxSidebar — orden", () => {
     fireEvent.click(botón);
 
     expect(screen.getByRole("button", { name: "Ordenar: Más recientes primero" })).toBeTruthy();
+  });
+});
+
+/** El hilo entero: click derecho sobre un chat, elegir la acción, y que llegue. */
+describe("apartar un chat desde el menú de la bandeja", () => {
+  function renderWithMenu(over: { onMarkUnread?: (id: string) => void; onMarkRead?: (id: string) => void } = {}) {
+    const onMarkUnread = vi.fn();
+    const onMarkRead = vi.fn();
+    render(
+      <InboxSidebar
+        conversations={[
+          conversation({ id: "leido" }),
+          conversation({ id: "apartado", manuallyUnread: true }),
+        ]}
+        selectedId={null}
+        onSelect={() => {}}
+        currentAgent={JEFA}
+        allTags={ALL_TAGS}
+        bcvRate={null}
+        onMarkUnread={over.onMarkUnread ?? onMarkUnread}
+        onMarkRead={over.onMarkRead ?? onMarkRead}
+      />
+    );
+    return { onMarkUnread, onMarkRead };
+  }
+
+  function threadNamed(id: string): HTMLElement {
+    return screen.getByText(id).closest("button") as HTMLElement;
+  }
+
+  it("no hay ningún menú abierto hasta que alguien lo pide", () => {
+    renderWithMenu();
+    expect(screen.queryByRole("menu")).not.toBeInTheDocument();
+  });
+
+  it("el click derecho sobre un chat leído ofrece apartarlo, y apartarlo llega con su id", () => {
+    const { onMarkUnread } = renderWithMenu();
+
+    fireEvent.contextMenu(threadNamed("leido"));
+    fireEvent.click(screen.getByRole("menuitem", { name: /marcar como no leído/i }));
+
+    expect(onMarkUnread).toHaveBeenCalledWith("leido");
+    expect(screen.queryByRole("menu")).not.toBeInTheDocument();
+  });
+
+  it("sobre un chat ya apartado, el menú ofrece lo contrario", () => {
+    const { onMarkRead } = renderWithMenu();
+
+    fireEvent.contextMenu(threadNamed("apartado"));
+    fireEvent.click(screen.getByRole("menuitem", { name: /^marcar como leído$/i }));
+
+    expect(onMarkRead).toHaveBeenCalledWith("apartado");
+  });
+
+  it("el menú se abre sobre el chat que se pidió, no sobre el anterior", () => {
+    const { onMarkUnread } = renderWithMenu();
+
+    fireEvent.contextMenu(threadNamed("leido"));
+    fireEvent.keyDown(document, { key: "Escape" });
+    fireEvent.contextMenu(threadNamed("apartado"));
+    fireEvent.click(screen.getByRole("menuitem", { name: /^marcar como leído$/i }));
+
+    expect(onMarkUnread).not.toHaveBeenCalled();
   });
 });

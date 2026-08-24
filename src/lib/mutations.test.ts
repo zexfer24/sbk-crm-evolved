@@ -1,7 +1,12 @@
 import { describe, expect, it } from "vitest";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import type { Agent } from "@/lib/types";
-import { closeSaleWithContactInfo, type SaleLineItem } from "@/lib/mutations";
+import {
+  closeSaleWithContactInfo,
+  markConversationRead,
+  markConversationUnread,
+  type SaleLineItem,
+} from "@/lib/mutations";
 
 const AGENT: Agent = {
   id: "agent-1",
@@ -101,5 +106,32 @@ describe("closeSaleWithContactInfo — el monto sale del catálogo, nunca de un 
       deal_status: "won",
       order_id: "order-1",
     });
+  });
+});
+
+/**
+ * Apartar un chat y volver a darlo por leído son la misma acción invertida.
+ * Lo que estos tests fijan es que ninguna de las dos toque `unread_count`
+ * para mentir: apartar no inventa un mensaje, y dar por leído sí tiene que
+ * limpiar las dos señales a la vez —si no, un chat apartado seguiría en
+ * "Sin leer" para siempre después de abrirlo.
+ */
+describe("marcar una conversación como no leída", () => {
+  it("aparta el chat sin tocar el contador de mensajes sin leer", async () => {
+    const { client, calls } = createFakeSupabase();
+
+    await markConversationUnread(client, "conv-1");
+
+    const update = calls.find((c) => c.table === "conversations" && c.op === "update");
+    expect(update?.payload).toEqual({ manually_unread: true });
+  });
+
+  it("darla por leída limpia el contador y el apartado a la vez", async () => {
+    const { client, calls } = createFakeSupabase();
+
+    await markConversationRead(client, "conv-1");
+
+    const update = calls.find((c) => c.table === "conversations" && c.op === "update");
+    expect(update?.payload).toEqual({ unread_count: 0, manually_unread: false });
   });
 });

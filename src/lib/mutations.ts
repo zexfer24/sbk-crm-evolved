@@ -93,10 +93,29 @@ export async function sendMediaMessage(
   });
 }
 
+/**
+ * Dar el chat por leído limpia las dos señales de "sin leer": los mensajes
+ * que el cliente mandó y el apartado que puso el asesor a mano. Si solo se
+ * bajara el contador, un chat apartado seguiría en "Sin leer" para siempre
+ * por más veces que se abriera.
+ */
 export async function markConversationRead(supabase: SupabaseClient, conversationId: string) {
   const { error } = await supabase
     .from("conversations")
-    .update({ unread_count: 0 })
+    .update({ unread_count: 0, manually_unread: false })
+    .eq("id", conversationId);
+  if (error) throw error;
+}
+
+/**
+ * Aparta el chat para volver después. No toca `unread_count` a propósito:
+ * ese número cuenta mensajes que el cliente mandó y nadie leyó, y subirlo a
+ * 1 pondría en la bandeja un mensaje que no existe.
+ */
+export async function markConversationUnread(supabase: SupabaseClient, conversationId: string) {
+  const { error } = await supabase
+    .from("conversations")
+    .update({ manually_unread: true })
     .eq("id", conversationId);
   if (error) throw error;
 }

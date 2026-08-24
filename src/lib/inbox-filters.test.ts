@@ -16,6 +16,7 @@ const BETO = agent("beto");
 function conversation(over: {
   id: string;
   unreadCount?: number;
+  manuallyUnread?: boolean;
   assignedAgent?: Agent | null;
   lastMessageAt?: string | null;
   tags?: Tag[];
@@ -23,6 +24,7 @@ function conversation(over: {
   return {
     id: over.id,
     unreadCount: over.unreadCount ?? 0,
+    manuallyUnread: over.manuallyUnread ?? false,
     assignedAgent: over.assignedAgent ?? null,
     // Ojo: `?? default` convertiría un null explícito en fecha. Acá null
     // significa "esta conversación nunca tuvo un mensaje".
@@ -325,5 +327,43 @@ describe("applyInboxFilters — los criterios se acumulan", () => {
 
       expect(result).toEqual([]);
     });
+  });
+});
+
+/**
+ * Marcar un chat como no leído a mano no inventa mensajes: `unread_count`
+ * sigue en 0 porque de verdad no quedó nada por leer. Lo que la bandeja
+ * tiene que entender es que "sin leer" ya no significa solo "tiene mensajes
+ * nuevos", sino también "alguien lo dejó apartado a propósito".
+ */
+describe("no leído puesto a mano", () => {
+  it("aparece en 'Sin leer' aunque no tenga mensajes nuevos", () => {
+    const apartada = conversation({ id: "apartada", unreadCount: 0, manuallyUnread: true });
+    const leida = conversation({ id: "leida", unreadCount: 0 });
+
+    const result = applyInboxFilters([apartada, leida], {
+      filter: "unread",
+      search: "",
+      tagId: null,
+      sort: "recent",
+      viewer: agent("ana", "admin"),
+    });
+
+    expect(result.map((c) => c.id)).toEqual(["apartada"]);
+  });
+
+  it("aparece en 'Míos sin leer' si además es del asesor que mira", () => {
+    const mia = conversation({ id: "mia", unreadCount: 0, manuallyUnread: true, assignedAgent: ANA });
+    const ajena = conversation({ id: "ajena", unreadCount: 0, manuallyUnread: true, assignedAgent: BETO });
+
+    const result = applyInboxFilters([mia, ajena], {
+      filter: "mine-unread",
+      search: "",
+      tagId: null,
+      sort: "recent",
+      viewer: ANA,
+    });
+
+    expect(result.map((c) => c.id)).toEqual(["mia"]);
   });
 });

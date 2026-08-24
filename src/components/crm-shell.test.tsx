@@ -97,11 +97,14 @@ vi.mock("@/lib/data", () => ({
 
 const markConversationReadMock = vi.fn().mockResolvedValue(undefined);
 
+const markConversationUnreadMock = vi.fn().mockResolvedValue(undefined);
+
 vi.mock("@/lib/mutations", () => ({
   markConversationRead: (...args: unknown[]) => markConversationReadMock(...args),
+  markConversationUnread: (...args: unknown[]) => markConversationUnreadMock(...args),
 }));
 
-function buildConversation(): Conversation {
+function buildConversation(overrides: Partial<Conversation> = {}): Conversation {
   return {
     id: "conv-1",
     contact: {
@@ -126,6 +129,7 @@ function buildConversation(): Conversation {
     },
     status: "open",
     unreadCount: 0,
+    manuallyUnread: false,
     assignedAgent: null,
     aiEnabled: false,
     dealStatus: "none",
@@ -148,6 +152,7 @@ function buildConversation(): Conversation {
     intent: null,
     activeTool: null,
     welcomeSentAt: null,
+    ...overrides,
   };
 }
 
@@ -169,6 +174,7 @@ beforeEach(() => {
   fetchMessagesMock.mockClear();
   fetchMessagesMock.mockResolvedValue([]); // cada test decide qué mensajes hay
   markConversationReadMock.mockClear();
+  markConversationUnreadMock.mockClear();
   vi.useFakeTimers();
 });
 
@@ -369,5 +375,23 @@ describe("CrmShell — el doble check avanza en vivo", () => {
 
     expect(screen.queryByLabelText("Enviado")).not.toBeInTheDocument();
     expect(screen.getByLabelText("Leído")).toBeInTheDocument();
+  });
+});
+
+describe("CrmShell — abrir un chat apartado a mano lo da por leído", () => {
+  it("limpia el apartado aunque no queden mensajes sin leer", async () => {
+    render(
+      <CrmShell
+        currentAgent={currentAgent}
+        initialConversations={[buildConversation({ unreadCount: 0, manuallyUnread: true })]}
+        allTags={allTags}
+        initialQuickReplies={initialQuickReplies}
+        bcvRate={null}
+        initialConversationId="conv-1"
+      />
+    );
+    await act(async () => {});
+
+    expect(markConversationReadMock).toHaveBeenCalledTimes(1);
   });
 });

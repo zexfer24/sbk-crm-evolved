@@ -46,6 +46,7 @@ function buildConversation(): Conversation {
     },
     status: "open",
     unreadCount: 0,
+    manuallyUnread: false,
     assignedAgent: null,
     aiEnabled: false,
     dealStatus: "none",

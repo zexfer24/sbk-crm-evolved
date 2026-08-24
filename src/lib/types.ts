@@ -73,6 +73,13 @@ export interface Conversation {
   channel: WhatsappChannel;
   status: ConversationStatus;
   unreadCount: number;
+  /**
+   * El asesor apartó el chat a propósito para volver después, aunque no le
+   * quede ningún mensaje por leer. Va aparte de `unreadCount` justamente
+   * para no inventar un mensaje que no existe: el contador sigue diciendo
+   * la verdad y la bandeja combina las dos cosas.
+   */
+  manuallyUnread: boolean;
   assignedAgent: Agent | null;
   aiEnabled: boolean;
   dealStatus: DealStatus;

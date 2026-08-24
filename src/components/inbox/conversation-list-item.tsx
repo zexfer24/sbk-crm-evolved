@@ -1,14 +1,27 @@
-import { Fragment } from "react";
+import { Fragment, useRef } from "react";
 import type { Conversation } from "@/lib/types";
 import { contactName, initials } from "@/lib/dashboard";
 import { formatConversationTimestamp } from "@/lib/format";
 import { highlightSegments, snippetAround, type MessageHit } from "@/lib/message-search";
 import { DeliveryCheck } from "@/components/chat/delivery-check";
 
+/**
+ * Cuánto hay que mantener el dedo para que salga el menú. Medio segundo es
+ * lo que usan Android e iOS: más corto lo dispara un scroll que arranca
+ * lento, más largo se siente roto.
+ */
+const LONG_PRESS_MS = 500;
+
 interface ConversationListItemProps {
   conversation: Conversation;
   isSelected: boolean;
   onSelect: () => void;
+  /**
+   * Pide el menú contextual en un punto de la pantalla. En escritorio lo
+   * dispara el click derecho; en el teléfono, donde no hay click derecho,
+   * mantener el dedo encima.
+   */
+  onOpenMenu?: (position: { x: number; y: number }) => void;
   /** Mensaje del historial que coincide con lo buscado. Null si no hay búsqueda o si la coincidencia fue por nombre o número. */
   messageHit?: MessageHit | null;
   /** Palabras a resaltar dentro del fragmento. */
@@ -19,11 +32,15 @@ export function ConversationListItem({
   conversation,
   isSelected,
   onSelect,
+  onOpenMenu,
   messageHit = null,
   searchTerms = [],
 }: ConversationListItemProps) {
   const name = contactName(conversation);
-  const isUnread = conversation.unreadCount > 0;
+  // Dos caminos para lo mismo: quedaron mensajes por leer, o el asesor lo
+  // apartó a propósito para volver. El chat se ve igual de pendiente en los
+  // dos casos, pero solo el primero tiene un número que mostrar.
+  const isUnread = conversation.unreadCount > 0 || conversation.manuallyUnread;
   // El check habla de lo que mandamos nosotros. En un mensaje entrante no
   // hay nada que confirmar: el estado es del emisor, y ahí el emisor es el cliente.
   const showCheck = conversation.lastMessageDirection === "outbound";
@@ -35,8 +52,55 @@ export function ConversationListItem({
   // calla, porque describe el último mensaje y ya no es lo que se está viendo.
   const hitSnippet = messageHit ? snippetAround(messageHit.content, searchTerms) : null;
 
+  // Una pulsación larga termina soltando el dedo, y soltar el dedo es un
+  // click: sin esto, el menú se abriría y detrás se abriría la conversación.
+  const longPressTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const longPressFired = useRef(false);
+
+  function cancelLongPress() {
+    if (longPressTimer.current) {
+      clearTimeout(longPressTimer.current);
+      longPressTimer.current = null;
+    }
+  }
+
   return (
-    <button className="crm-thread" type="button" onClick={onSelect} aria-current={isSelected}>
+    <button
+      className="crm-thread"
+      type="button"
+      aria-current={isSelected}
+      onClick={() => {
+        if (longPressFired.current) {
+          longPressFired.current = false;
+          return;
+        }
+        onSelect();
+      }}
+      onContextMenu={
+        onOpenMenu &&
+        ((event) => {
+          event.preventDefault();
+          onOpenMenu({ x: event.clientX, y: event.clientY });
+        })
+      }
+      onTouchStart={
+        onOpenMenu &&
+        ((event) => {
+          const touch = event.touches[0];
+          if (!touch) return;
+          const { clientX: x, clientY: y } = touch;
+          longPressFired.current = false;
+          cancelLongPress();
+          longPressTimer.current = setTimeout(() => {
+            longPressFired.current = true;
+            onOpenMenu({ x, y });
+          }, LONG_PRESS_MS);
+        })
+      }
+      onTouchMove={onOpenMenu && cancelLongPress}
+      onTouchEnd={onOpenMenu && cancelLongPress}
+      onTouchCancel={onOpenMenu && cancelLongPress}
+    >
       <span className="crm-thread-avatar">
         <span className="lm-avatar" aria-hidden="true">
           {initials(name)}
@@ -77,7 +141,13 @@ export function ConversationListItem({
                 )
               : (conversation.lastMessagePreview ?? "Sin mensajes todavía")}
           </span>
-          {isUnread && <span className="crm-thread-badge lm-num">{conversation.unreadCount}</span>}
+          {conversation.unreadCount > 0 ? (
+            <span className="crm-thread-badge lm-num">{conversation.unreadCount}</span>
+          ) : (
+            isUnread && (
+              <span className="crm-thread-dot" role="img" aria-label="Sin leer" title="Sin leer" />
+            )
+          )}
         </span>
 
         {tags.length > 0 && (

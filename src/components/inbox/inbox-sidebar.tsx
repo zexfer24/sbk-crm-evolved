@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { ArrowDownWideNarrow, ArrowUpWideNarrow, Search } from "lucide-react";
 import type { Agent, Conversation, InboxFilter, InboxSort, Tag } from "@/lib/types";
 import { initials } from "@/lib/dashboard";
@@ -18,6 +18,7 @@ import {
 } from "@/lib/message-search";
 import { createClient } from "@/lib/supabase/client";
 import { ConversationListItem } from "@/components/inbox/conversation-list-item";
+import { ConversationContextMenu } from "@/components/inbox/conversation-context-menu";
 import { BcvRateChip, type BcvRateSummary } from "@/components/inbox/bcv-rate-chip";
 import { FilterScroller } from "@/components/inbox/filter-scroller";
 import { TagFilterMenu } from "@/components/inbox/tag-filter-menu";
@@ -55,6 +56,9 @@ interface InboxSidebarProps {
   /** Todas las etiquetas creadas, para la barra de filtro por etiqueta. */
   allTags: Tag[];
   bcvRate: BcvRateSummary | null;
+  /** Aparta el chat para volver después. Sin esto no se ofrece el menú. */
+  onMarkUnread?: (conversationId: string) => void;
+  onMarkRead?: (conversationId: string) => void;
 }
 
 export function InboxSidebar({
@@ -64,6 +68,8 @@ export function InboxSidebar({
   currentAgent,
   allTags,
   bcvRate,
+  onMarkUnread,
+  onMarkRead,
 }: InboxSidebarProps) {
   const availableFilters = useMemo(() => filtersForRole(currentAgent.role), [currentAgent.role]);
 
@@ -71,6 +77,17 @@ export function InboxSidebar({
   const [search, setSearch] = useState("");
   const [sort, setSort] = useState<InboxSort>("recent");
   const [tagId, setTagId] = useState<string | null>(null);
+
+  // Qué conversación abrió el menú y dónde. Se guarda la conversación entera
+  // y no solo su id porque el menú necesita saber si ya está sin leer para
+  // ofrecer la acción que corresponde.
+  const [menu, setMenu] = useState<{
+    conversation: Conversation;
+    position: { x: number; y: number };
+  } | null>(null);
+
+  const closeMenu = useCallback(() => setMenu(null), []);
+  const canOpenMenu = Boolean(onMarkUnread && onMarkRead);
 
   // Coincidencias dentro del historial, resueltas por Postgres. Se guardan por
   // separado de la lista: la lista es la verdad de la bandeja y esto es solo
@@ -173,6 +190,9 @@ export function InboxSidebar({
         conversation={conversation}
         isSelected={conversation.id === selectedId}
         onSelect={() => onSelect(conversation.id)}
+        onOpenMenu={
+          canOpenMenu ? (position) => setMenu({ conversation, position }) : undefined
+        }
         messageHit={messageHits.get(conversation.id) ?? null}
         searchTerms={terms}
       />
@@ -270,6 +290,16 @@ export function InboxSidebar({
           </p>
         )}
       </div>
+
+      {menu && (
+        <ConversationContextMenu
+          position={menu.position}
+          isUnread={menu.conversation.unreadCount > 0 || menu.conversation.manuallyUnread}
+          onMarkUnread={() => onMarkUnread?.(menu.conversation.id)}
+          onMarkRead={() => onMarkRead?.(menu.conversation.id)}
+          onClose={closeMenu}
+        />
+      )}
     </>
   );
 }
