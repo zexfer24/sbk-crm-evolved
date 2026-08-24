@@ -1,14 +1,15 @@
 import { describe, expect, it, vi, beforeEach } from "vitest";
-import { render, screen } from "@testing-library/react";
+import { render, screen, fireEvent } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { Composer } from "@/components/chat/composer";
 import type { Conversation } from "@/lib/types";
 
 const sendMessageMock = vi.fn().mockResolvedValue(undefined);
+const sendMediaMessageMock = vi.fn().mockResolvedValue(undefined);
 
 vi.mock("@/lib/mutations", () => ({
   sendMessage: (...args: unknown[]) => sendMessageMock(...args),
-  sendMediaMessage: vi.fn().mockResolvedValue(undefined),
+  sendMediaMessage: (...args: unknown[]) => sendMediaMessageMock(...args),
   sendTemplateMessage: vi.fn().mockResolvedValue(undefined),
 }));
 
@@ -180,4 +181,103 @@ describe("Composer — el cuadro responde al enviar, sin esperar al servidor", (
   // rechazo de `sendMessage` aunque el `catch` del Composer lo atienda —se
   // verificó que corre y que restaura el texto—. No se deja un test en rojo
   // ni uno que finja cubrirlo.
+});
+
+/**
+ * Pegar es como llega la mayoría de las capturas: el asesor recorta la
+ * pantalla y hace Ctrl+V. Tener que guardar el archivo primero para después
+ * buscarlo con el clip es un rodeo que nadie hace.
+ */
+describe("Composer — pegar con Ctrl+V", () => {
+  function pegar(target: HTMLElement, files: File[], text = "") {
+    fireEvent.paste(target, {
+      clipboardData: {
+        files,
+        items: files.map((file) => ({ kind: "file", type: file.type, getAsFile: () => file })),
+        getData: () => text,
+      },
+    });
+  }
+
+  const foto = (nombre: string) =>
+    new File([new Uint8Array([1, 2, 3])], nombre, { type: "image/png" });
+
+  it("una captura pegada queda lista para enviar, con su vista previa", () => {
+    renderComposer();
+    const textarea = screen.getByRole("textbox", { name: "Mensaje" });
+
+    pegar(textarea, [foto("captura.png")]);
+
+    expect(screen.getByRole("button", { name: "Quitar captura.png" })).toBeInTheDocument();
+  });
+
+  it("pegar varias fotos de una vez las adjunta todas", () => {
+    renderComposer();
+    const textarea = screen.getByRole("textbox", { name: "Mensaje" });
+
+    pegar(textarea, [foto("una.png"), foto("dos.png"), foto("tres.png")]);
+
+    expect(screen.getByRole("button", { name: "Quitar una.png" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Quitar dos.png" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Quitar tres.png" })).toBeInTheDocument();
+  });
+
+  it("pegar texto sigue siendo pegar texto y no adjunta nada", () => {
+    renderComposer();
+    const textarea = screen.getByRole("textbox", { name: "Mensaje" });
+
+    pegar(textarea, [], "¿Tienen el carburador?");
+
+    expect(screen.queryByRole("button", { name: /^Quitar / })).not.toBeInTheDocument();
+  });
+});
+
+describe("Composer — mandar varias fotos de una vez", () => {
+  const foto = (nombre: string) => new File([new Uint8Array([1, 2, 3])], nombre, { type: "image/png" });
+
+  function pegar(target: HTMLElement, files: File[]) {
+    fireEvent.paste(target, {
+      clipboardData: { files, items: [], getData: () => "" },
+    });
+  }
+
+  it("manda una por una y respeta el orden en que se adjuntaron", async () => {
+    sendMediaMessageMock.mockClear();
+    const user = userEvent.setup();
+    renderComposer();
+    const textarea = screen.getByRole("textbox", { name: "Mensaje" });
+
+    pegar(textarea, [foto("primera.png"), foto("segunda.png"), foto("tercera.png")]);
+    await user.click(screen.getByRole("button", { name: /enviar/i }));
+
+    await vi.waitFor(() => expect(sendMediaMessageMock).toHaveBeenCalledTimes(3));
+
+    // El pie va solo en la primera: repetirlo en cada foto se lo manda tres
+    // veces al cliente por WhatsApp.
+    const captions = sendMediaMessageMock.mock.calls.map((c) => c[3]);
+    expect(captions.filter((c) => c !== undefined)).toHaveLength(0);
+  });
+});
+
+/**
+ * Windows y macOS nombran igual toda captura que va al portapapeles. Pegar
+ * tres seguidas deja tres adjuntos llamados "image.png", y si el botón de
+ * quitar solo dice el nombre, no hay forma de saber cuál se está quitando —
+ * ni mirando, ni con un lector de pantalla.
+ */
+describe("Composer — varias capturas con el mismo nombre", () => {
+  it("distingue los adjuntos que comparten nombre", () => {
+    renderComposer();
+    const textarea = screen.getByRole("textbox", { name: "Mensaje" });
+    const captura = () => new File([new Uint8Array([1])], "image.png", { type: "image/png" });
+
+    fireEvent.paste(textarea, {
+      clipboardData: { files: [captura(), captura(), captura()], items: [], getData: () => "" },
+    });
+
+    const botones = screen.getAllByRole("button", { name: /^Quitar / });
+    expect(botones).toHaveLength(3);
+    const nombres = botones.map((b) => b.getAttribute("aria-label"));
+    expect(new Set(nombres).size).toBe(3);
+  });
 });

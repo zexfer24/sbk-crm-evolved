@@ -1,6 +1,13 @@
 "use client";
 
-import { useEffect, useRef, useState, type ChangeEvent, type KeyboardEvent } from "react";
+import {
+  useEffect,
+  useRef,
+  useState,
+  type ChangeEvent,
+  type ClipboardEvent,
+  type KeyboardEvent,
+} from "react";
 import { AlignLeft, FileText, Lock, Paperclip, Send, X, Zap } from "lucide-react";
 import { Button, TextArea, Tooltip } from "@heroui/react";
 import { toast } from "@heroui/react";
@@ -35,6 +42,22 @@ interface PendingFile {
   previewUrl: string | null;
 }
 
+/**
+ * Cómo nombrar el botón de quitar un adjunto.
+ *
+ * Windows y macOS le ponen el mismo nombre a toda captura que va al
+ * portapapeles, así que pegar tres seguidas deja tres "image.png". Con solo
+ * el nombre no hay manera de saber cuál se está quitando —ni mirando, ni con
+ * un lector de pantalla—, así que en ese caso se añade la posición. Cuando
+ * los nombres ya distinguen, se deja el nombre limpio.
+ */
+function etiquetaQuitar(pending: PendingFile, index: number, todos: PendingFile[]): string {
+  const repetido = todos.some((otro) => otro.id !== pending.id && otro.file.name === pending.file.name);
+  return repetido
+    ? `Quitar ${pending.file.name} (${index + 1} de ${todos.length})`
+    : `Quitar ${pending.file.name}`;
+}
+
 export function Composer({ conversation, templates, quickReplies, replyingTo, onCancelReply }: ComposerProps) {
   const [text, setText] = useState("");
   const [isSending, setIsSending] = useState(false);
@@ -42,6 +65,8 @@ export function Composer({ conversation, templates, quickReplies, replyingTo, on
   const [isTemplateModalOpen, setIsTemplateModalOpen] = useState(false);
   const [isQuickRepliesOpen, setIsQuickRepliesOpen] = useState(false);
   const [pendingFiles, setPendingFiles] = useState<PendingFile[]>([]);
+  /** Cuántos archivos del lote ya subieron, para que la espera no sea muda. */
+  const [uploadedCount, setUploadedCount] = useState(0);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const withinWindow = isWithin24hWindow(conversation.lastCustomerMessageAt);
@@ -93,9 +118,7 @@ export function Composer({ conversation, templates, quickReplies, replyingTo, on
     setIsQuickRepliesOpen(false);
   }
 
-  function handleFileSelected(event: ChangeEvent<HTMLInputElement>) {
-    const files = Array.from(event.target.files ?? []);
-    event.target.value = "";
+  function addFiles(files: File[]) {
     if (files.length === 0) return;
 
     const next: PendingFile[] = files.map((file) => {
@@ -108,6 +131,32 @@ export function Composer({ conversation, templates, quickReplies, replyingTo, on
       };
     });
     setPendingFiles((prev) => [...prev, ...next]);
+  }
+
+  function handleFileSelected(event: ChangeEvent<HTMLInputElement>) {
+    const files = Array.from(event.target.files ?? []);
+    event.target.value = "";
+    addFiles(files);
+  }
+
+  /**
+   * Ctrl+V con una captura en el portapapeles.
+   *
+   * Es como llega la mayoría de las imágenes en una conversación de ventas:
+   * el asesor recorta la pantalla y pega. Obligarlo a guardar el archivo
+   * primero para después buscarlo con el clip es un rodeo que nadie hace.
+   *
+   * Solo se intercepta cuando el portapapeles trae archivos. Pegar texto —lo
+   * que más se pega— sigue siendo asunto del navegador, con su deshacer y su
+   * posición del cursor intactos.
+   */
+  function handlePaste(event: ClipboardEvent<HTMLTextAreaElement>) {
+    if (!withinWindow) return;
+    const files = Array.from(event.clipboardData?.files ?? []);
+    if (files.length === 0) return;
+
+    event.preventDefault();
+    addFiles(files);
   }
 
   function removePendingFile(id: string) {
@@ -126,23 +175,35 @@ export function Composer({ conversation, templates, quickReplies, replyingTo, on
   async function handleSendFiles() {
     if (pendingFiles.length === 0 || isUploading) return;
     setIsUploading(true);
+    setUploadedCount(0);
     try {
       const supabase = createClient();
-      for (let i = 0; i < pendingFiles.length; i++) {
-        const { file, mediaType } = pendingFiles[i];
-        // Id aleatorio y no el nombre del archivo: el bucket es privado,
-        // pero una ruta adivinable seguiría siendo una pista de más.
-        const extension = file.name.includes(".") ? `.${file.name.split(".").pop()}` : "";
-        const path = `outbound/${conversation.id}/${crypto.randomUUID()}${extension}`;
-        const { error: uploadError } = await supabase.storage
-          .from(MEDIA_BUCKET)
-          .upload(path, file, { contentType: file.type });
-        if (uploadError) throw uploadError;
 
+      // Las subidas no dependen unas de otras: encadenarlas hacía que cinco
+      // fotos fueran cinco esperas seguidas. En paralelo es una sola espera,
+      // la de la más lenta.
+      const uploaded = await Promise.all(
+        pendingFiles.map(async ({ file, mediaType }) => {
+          // Id aleatorio y no el nombre del archivo: el bucket es privado,
+          // pero una ruta adivinable seguiría siendo una pista de más.
+          const extension = file.name.includes(".") ? `.${file.name.split(".").pop()}` : "";
+          const path = `outbound/${conversation.id}/${crypto.randomUUID()}${extension}`;
+          const { error: uploadError } = await supabase.storage
+            .from(MEDIA_BUCKET)
+            .upload(path, file, { contentType: file.type });
+          if (uploadError) throw uploadError;
+          setUploadedCount((done) => done + 1);
+          return { url: mediaUrlFor(path), mediaType };
+        })
+      );
+
+      // Los envíos sí van uno detrás de otro: el cliente tiene que verlas en
+      // el mismo orden en que se adjuntaron, y en paralelo llegarían barajadas.
+      for (let i = 0; i < uploaded.length; i++) {
         await sendMediaMessage(
           conversation.id,
-          mediaUrlFor(path),
-          mediaType,
+          uploaded[i].url,
+          uploaded[i].mediaType,
           i === 0 ? text.trim() || undefined : undefined,
           i === 0 ? (replyingTo?.id ?? null) : null
         );
@@ -236,9 +297,15 @@ export function Composer({ conversation, templates, quickReplies, replyingTo, on
         </div>
       )}
 
+      {pendingFiles.length > 0 && isUploading && (
+        <p className="crm-attach-progress lm-num" role="status">
+          Subiendo {Math.min(uploadedCount + 1, pendingFiles.length)} de {pendingFiles.length}…
+        </p>
+      )}
+
       {pendingFiles.length > 0 && (
         <div className="crm-attach-preview">
-          {pendingFiles.map((p) => (
+          {pendingFiles.map((p, index) => (
             <div className="crm-attach-item" key={p.id}>
               {p.previewUrl && p.mediaType === "image" && (
                 // eslint-disable-next-line @next/next/no-img-element
@@ -257,7 +324,7 @@ export function Composer({ conversation, templates, quickReplies, replyingTo, on
                 type="button"
                 className="crm-attach-remove"
                 onClick={() => removePendingFile(p.id)}
-                aria-label={`Quitar ${p.file.name}`}
+                aria-label={etiquetaQuitar(p, index, pendingFiles)}
                 disabled={isUploading}
               >
                 <X size={12} />
@@ -322,6 +389,7 @@ export function Composer({ conversation, templates, quickReplies, replyingTo, on
         <TextArea
           value={text}
           onChange={(e) => setText(e.target.value)}
+          onPaste={handlePaste}
           onKeyDown={handleKeyDown}
           aria-label="Mensaje"
           placeholder={

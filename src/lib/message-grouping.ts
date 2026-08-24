@@ -39,11 +39,16 @@ export function groupMessagesForRender(messages: Message[]): ChatRenderItem[] {
       lastDayKey = key;
     }
 
+    // No se exige `mediaUrl`. El webhook guarda la foto con la columna en
+    // null para poder contestarle a Meta dentro de sus ~20s y baja el archivo
+    // después; durante esos segundos la foto existe y todavía no tiene
+    // archivo. Pedirlo aquí partía la galería en pedazos —cinco fotos con dos
+    // a medio bajar quedaban como cinco burbujas sueltas— y dejaba sin
+    // contador justo el momento en el que se quiere saber cuántas llegaron.
     const isGroupable =
       !message.replyToMessageId &&
       !message.isInternalNote &&
-      GROUPABLE_TYPES.has(message.messageType) &&
-      !!message.mediaUrl;
+      GROUPABLE_TYPES.has(message.messageType);
 
     const last = buffer[buffer.length - 1];
     const sameBucket =

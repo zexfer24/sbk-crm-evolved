@@ -1853,3 +1853,26 @@
 .skel-bubble { height: 40px; border-radius: 14px; }
 .skel-bubble[data-side="in"] { align-self: flex-start; }
 .skel-bubble[data-side="out"] { align-self: flex-end; }
+
+/* Foto del grupo que todavía se está descargando de Meta. No es un fallo:
+   es el hueco que deja el webhook al guardar la fila antes que el archivo. */
+.crm-thumb-pending {
+  display: grid;
+  place-items: center;
+  color: var(--lm-muted);
+  background: var(--lm-sunken);
+  border-radius: 10px;
+  animation: skel-pulse 1.4s ease-in-out infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .crm-thumb-pending { animation: none; }
+}
+
+/* Cuántos archivos del lote van subidos. Mandar cinco fotos tarda, y una
+   espera muda se lee como que el botón no hizo nada. */
+.crm-attach-progress {
+  padding: 6px 12px 0;
+  color: var(--lm-muted);
+  font-size: 12px;
+}
