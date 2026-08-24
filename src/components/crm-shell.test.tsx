@@ -99,7 +99,14 @@ vi.mock("@/components/context-panel/context-panel", () => ({ ContextPanel: () =>
 const fetchConversationsMock = vi.fn().mockResolvedValue([]);
 const fetchMessagesMock = vi.fn().mockResolvedValue([]);
 
+const fetchAgentSettingsMock = vi.fn().mockResolvedValue({
+  aiGloballyEnabled: true,
+  dailySpendCapUsd: null,
+  spentTodayUsd: 0,
+});
+
 vi.mock("@/lib/data", () => ({
+  fetchAgentSettings: (...args: unknown[]) => fetchAgentSettingsMock(...args),
   CHAT_MESSAGES_WINDOW: 100,
   INBOX_CONVERSATIONS_LIMIT: 200,
   fetchConversations: (...args: unknown[]) => fetchConversationsMock(...args),
@@ -182,6 +189,7 @@ const currentAgent: Agent = {
 };
 
 const allTags: Tag[] = [];
+const agentSettings = { aiGloballyEnabled: true, dailySpendCapUsd: null, spentTodayUsd: 0 };
 const initialQuickReplies: QuickReply[] = [];
 
 beforeEach(() => {
@@ -191,6 +199,7 @@ beforeEach(() => {
   fetchMessagesMock.mockResolvedValue([]); // cada test decide qué mensajes hay
   markConversationReadMock.mockClear();
   markConversationUnreadMock.mockClear();
+  fetchAgentSettingsMock.mockClear();
   vi.useFakeTimers();
 });
 
@@ -207,6 +216,7 @@ describe("CrmShell — debounce del refresh disparado por realtime", () => {
         allTags={allTags}
         initialQuickReplies={initialQuickReplies}
         bcvRate={null}
+        initialAgentSettings={agentSettings}
       />
     );
     fetchConversationsMock.mockClear(); // descarta cualquier llamada del render inicial
@@ -233,6 +243,7 @@ describe("CrmShell — debounce del refresh disparado por realtime", () => {
         allTags={allTags}
         initialQuickReplies={initialQuickReplies}
         bcvRate={null}
+        initialAgentSettings={agentSettings}
         initialConversationId="conv-1"
       />
     );
@@ -267,6 +278,7 @@ async function renderWithOpenConversation() {
       allTags={allTags}
       initialQuickReplies={initialQuickReplies}
       bcvRate={null}
+      initialAgentSettings={agentSettings}
       initialConversationId="conv-1"
     />
   );
@@ -372,6 +384,7 @@ describe("CrmShell — el doble check avanza en vivo", () => {
         allTags={allTags}
         initialQuickReplies={initialQuickReplies}
         bcvRate={null}
+        initialAgentSettings={agentSettings}
         initialConversationId="conv-1"
       />
     );
@@ -403,6 +416,7 @@ describe("CrmShell — abrir un chat apartado a mano lo da por leído", () => {
         allTags={allTags}
         initialQuickReplies={initialQuickReplies}
         bcvRate={null}
+        initialAgentSettings={agentSettings}
         initialConversationId="conv-1"
       />
     );
@@ -428,6 +442,7 @@ describe("CrmShell — cambiar de conversación no muestra el chat anterior", ()
         allTags={allTags}
         initialQuickReplies={initialQuickReplies}
         bcvRate={null}
+        initialAgentSettings={agentSettings}
         initialConversationId="conv-1"
       />
     );
@@ -477,6 +492,7 @@ describe("CrmShell — la bandeja no se refresca contra una pestaña que nadie m
         allTags={allTags}
         initialQuickReplies={initialQuickReplies}
         bcvRate={null}
+        initialAgentSettings={agentSettings}
       />
     );
     fetchConversationsMock.mockClear();
@@ -500,6 +516,7 @@ describe("CrmShell — la bandeja no se refresca contra una pestaña que nadie m
         allTags={allTags}
         initialQuickReplies={initialQuickReplies}
         bcvRate={null}
+        initialAgentSettings={agentSettings}
       />
     );
     fetchConversationsMock.mockClear();
@@ -516,5 +533,33 @@ describe("CrmShell — la bandeja no se refresca contra una pestaña que nadie m
     });
 
     expect(fetchConversationsMock).toHaveBeenCalledTimes(1);
+  });
+});
+
+/**
+ * El interruptor general de la IA se toca desde Control de IA, que es otra
+ * pantalla. Sin escucharlo, el cartel de la bandeja se queda con lo que
+ * había al cargar — que es exactamente cómo llegó a decir "la IA sigue
+ * respondiendo" con la IA apagada para todo el CRM.
+ */
+describe("CrmShell — el interruptor general de la IA se sigue en vivo", () => {
+  it("al cambiar agent_settings vuelve a preguntar por el estado de la IA", async () => {
+    render(
+      <CrmShell
+        currentAgent={currentAgent}
+        initialConversations={[buildConversation()]}
+        allTags={allTags}
+        initialQuickReplies={initialQuickReplies}
+        bcvRate={null}
+        initialAgentSettings={agentSettings}
+      />
+    );
+    fetchAgentSettingsMock.mockClear();
+
+    await act(async () => {
+      fake.trigger("agent_settings", "UPDATE");
+    });
+
+    expect(fetchAgentSettingsMock).toHaveBeenCalledTimes(1);
   });
 });

@@ -6,6 +6,7 @@ import {
   fetchCurrentAgent,
   fetchQuickReplies,
   fetchTags,
+  fetchAgentSettings,
 } from "@/lib/data";
 import { getBcvRate } from "@/lib/ai/bcv";
 import { CrmShell } from "@/components/crm-shell";
@@ -27,14 +28,16 @@ async function loadBcvRate(supabase: Awaited<ReturnType<typeof createClient>>): 
 export default async function InboxPage({ searchParams }: PageProps<"/inbox">) {
   const supabase = await createClient();
 
-  const [{ conversation }, currentAgent, conversations, tags, quickReplies, bcvRate] = await Promise.all([
-    searchParams,
-    fetchCurrentAgent(supabase),
-    fetchConversations(supabase, { limit: INBOX_CONVERSATIONS_LIMIT }),
-    fetchTags(supabase),
-    fetchQuickReplies(supabase),
-    loadBcvRate(supabase),
-  ]);
+  const [{ conversation }, currentAgent, conversations, tags, quickReplies, bcvRate, agentSettings] =
+    await Promise.all([
+      searchParams,
+      fetchCurrentAgent(supabase),
+      fetchConversations(supabase, { limit: INBOX_CONVERSATIONS_LIMIT }),
+      fetchTags(supabase),
+      fetchQuickReplies(supabase),
+      loadBcvRate(supabase),
+      fetchAgentSettings(supabase),
+    ]);
 
   if (!currentAgent) {
     redirect("/login");
@@ -51,6 +54,7 @@ export default async function InboxPage({ searchParams }: PageProps<"/inbox">) {
       initialQuickReplies={quickReplies}
       bcvRate={bcvRate}
       initialConversationId={requestedId}
+      initialAgentSettings={agentSettings}
     />
   );
 }

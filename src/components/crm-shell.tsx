@@ -2,7 +2,16 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { MessageCircle } from "lucide-react";
-import type { Agent, Conversation, Message, Note, QuickReply, Tag, WhatsappTemplate } from "@/lib/types";
+import type {
+  Agent,
+  AgentSettings,
+  Conversation,
+  Message,
+  Note,
+  QuickReply,
+  Tag,
+  WhatsappTemplate,
+} from "@/lib/types";
 import { createClient } from "@/lib/supabase/client";
 import {
   CHAT_MESSAGES_WINDOW,
@@ -14,6 +23,7 @@ import {
   fetchQuickReplies,
   fetchTags,
   fetchTemplates,
+  fetchAgentSettings,
 } from "@/lib/data";
 import { markConversationRead, markConversationUnread } from "@/lib/mutations";
 import { useDebouncedCallback } from "@/lib/use-debounced-callback";
@@ -41,6 +51,12 @@ interface CrmShellProps {
   bcvRate: BcvRateSummary | null;
   /** Hilo a abrir al entrar, por ejemplo al llegar desde una tarjeta del dashboard. */
   initialConversationId?: string;
+  /**
+   * Interruptor general de la IA y tope de gasto, resueltos en el servidor.
+   * El cartel de cada conversación los necesita para no anunciar que la IA
+   * responde cuando está apagada para todo el CRM.
+   */
+  initialAgentSettings: AgentSettings;
 }
 
 export function CrmShell({
@@ -50,6 +66,7 @@ export function CrmShell({
   initialQuickReplies,
   bcvRate,
   initialConversationId,
+  initialAgentSettings,
 }: CrmShellProps) {
   const supabase = useMemo(() => createClient(), []);
 
@@ -77,6 +94,29 @@ export function CrmShell({
   const [templates, setTemplates] = useState<WhatsappTemplate[]>([]);
   const [quickReplies, setQuickReplies] = useState<QuickReply[]>(initialQuickReplies);
   const [tags, setTags] = useState<Tag[]>(allTags);
+  const [agentSettings, setAgentSettings] = useState<AgentSettings>(initialAgentSettings);
+
+  // El interruptor general se toca desde Control de IA, que es otra pantalla:
+  // sin escucharlo, el cartel de la bandeja se quedaría con lo que había al
+  // cargar y volvería a mentir hasta que alguien recargue.
+  useEffect(() => {
+    const channel = supabase
+      .channel("agent-settings-changes")
+      .on("postgres_changes", { event: "*", schema: "public", table: "agent_settings" }, () => {
+        fetchAgentSettings(supabase).then(setAgentSettings).catch(() => {});
+      })
+      .subscribe();
+
+    return () => {
+      supabase.removeChannel(channel);
+    };
+  }, [supabase]);
+
+  // El tope se mide igual que en `agent_can_run()`: sin tope configurado no
+  // hay nada que alcanzar.
+  const spendCapReached =
+    agentSettings.dailySpendCapUsd !== null &&
+    agentSettings.spentTodayUsd >= agentSettings.dailySpendCapUsd;
 
   // En pantallas estrechas la bandeja y la conversación no caben a la vez, así
   // que se turnan. En pantallas anchas este estado no afecta a nada.
@@ -388,6 +428,8 @@ export function CrmShell({
               quickReplies={quickReplies}
               currentAgent={currentAgent}
               loadingMessages={loadingMessages}
+              aiGloballyEnabled={agentSettings.aiGloballyEnabled}
+              spendCapReached={spendCapReached}
               hasOlderMessages={!reachedStart}
               loadingOlderMessages={loadingOlder}
               onLoadOlderMessages={loadOlderMessages}

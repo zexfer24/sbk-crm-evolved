@@ -24,6 +24,9 @@ interface ChatPanelProps {
   loadingOlderMessages?: boolean;
   /** El hilo todavía viene en camino: se pinta un esqueleto en vez de un vacío. */
   loadingMessages?: boolean;
+  /** El interruptor general del CRM y el tope de gasto, para que el cartel de la IA no mienta. */
+  aiGloballyEnabled: boolean;
+  spendCapReached: boolean;
   onLoadOlderMessages?: () => void;
   /** Vuelve a la lista. Solo se muestra cuando la bandeja no cabe al lado. */
   onBack: () => void;
@@ -38,6 +41,8 @@ export function ChatPanel({
   hasOlderMessages = false,
   loadingOlderMessages = false,
   loadingMessages = false,
+  aiGloballyEnabled,
+  spendCapReached,
   onLoadOlderMessages,
   onBack,
 }: ChatPanelProps) {
@@ -161,6 +166,8 @@ export function ChatPanel({
 
       <AiStatusBanner
         aiEnabled={conversation.aiEnabled}
+        aiGloballyEnabled={aiGloballyEnabled}
+        spendCapReached={spendCapReached}
         isIntervening={isIntervening}
         onIntervene={handleIntervene}
         onToggleAi={handleToggleAi}

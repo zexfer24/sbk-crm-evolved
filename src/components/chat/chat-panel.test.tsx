@@ -46,6 +46,8 @@ function renderPanel(messages: Message[]) {
       templates={[]}
       quickReplies={[]}
       currentAgent={AGENTE}
+      aiGloballyEnabled
+      spendCapReached={false}
       onBack={() => {}}
     />
   );
