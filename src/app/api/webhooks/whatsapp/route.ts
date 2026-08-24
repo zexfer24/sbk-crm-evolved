@@ -51,6 +51,12 @@ interface WebhookMessage {
   document?: WebhookMediaObject;
   sticker?: WebhookMediaObject;
   context?: { id: string };
+  /**
+   * Solo viene en los `type: "unsupported"`: es el motivo por el que Meta no
+   * pudo entregar el mensaje (131051 "Message type unknown", 131060 "This
+   * message is currently unavailable").
+   */
+  errors?: { code: number; title?: string; message?: string }[];
 }
 
 interface WebhookStatus {
@@ -246,6 +252,26 @@ export async function POST(request: Request) {
       }
 
       for (const message of value.messages) {
+        // `unsupported` no es algo que el cliente haya escrito: es Meta
+        // avisando de que hay algo que su API no sabe representar. Llega,
+        // entre otros casos, junto a las fotos cuando el cliente manda
+        // varias de una vez — y ahí las fotos vienen en el mismo lote y se
+        // guardan perfectamente, así que el aviso no aporta nada.
+        //
+        // Guardarlo ponía en el chat una burbuja con jerga ("[unsupported]
+        // Tipo de mensaje no soportado todavía") que el asesor no sabe qué
+        // hacer con ella, y que además se mete entre las fotos y le parte la
+        // galería. Queda en el log del servidor, que es donde sirve.
+        if (message.type === "unsupported") {
+          const motivo = message.errors?.[0];
+          console.info(
+            `Webhook de WhatsApp: Meta marcó el mensaje ${message.id} como no representable` +
+              (motivo ? ` (${motivo.code}: ${motivo.title ?? "sin título"})` : "") +
+              ". No se guarda: no es contenido del cliente."
+          );
+          continue;
+        }
+
         const profileName = value.contacts?.find((c) => c.wa_id === message.from)?.profile?.name ?? null;
         const phoneNumber = `+${message.from}`;
 

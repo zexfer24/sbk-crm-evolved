@@ -32,6 +32,9 @@ interface FakeMessageRow {
   id: string;
 }
 
+/** Filas completas que llegaron a `messages.insert`, para poder mirar qué se guardó. */
+const insertedRows: Record<string, unknown>[] = [];
+
 /** Lo que responde el límite de tasa; un test lo pone en false para probar el freno. */
 let rateLimitAllows = true;
 
@@ -106,7 +109,7 @@ function createFakeAdminClient() {
               },
             };
           },
-          insert(row: { whatsapp_message_id: string }) {
+          insert(row: { whatsapp_message_id: string; type?: string }) {
             return {
               select() {
                 return {
@@ -122,6 +125,7 @@ function createFakeAdminClient() {
                     }
                     const created = { id: `msg-${nextId++}` };
                     insertedMessages.set(row.whatsapp_message_id, created);
+                    insertedRows.push(row as unknown as Record<string, unknown>);
                     return { data: created, error: null };
                   },
                 };
@@ -402,5 +406,78 @@ describe("POST /api/webhooks/whatsapp — media asíncrona", () => {
     } finally {
       process.env.WHATSAPP_ACCESS_TOKEN = previousToken;
     }
+  });
+});
+
+/**
+ * Lote tal como lo manda Meta cuando el cliente envía varias fotos juntas:
+ * un mensaje `unsupported` —el aviso propio de Meta de que hay algo que su
+ * API no sabe representar, con su array `errors`— y detrás las fotos, que
+ * llegan perfectamente.
+ */
+function webhookAlbumBody(prefijo: string) {
+  const timestamp = String(Math.floor(Date.now() / 1000));
+  return {
+    entry: [
+      {
+        changes: [
+          {
+            field: "messages",
+            value: {
+              metadata: { phone_number_id: "1234567890" },
+              contacts: [{ profile: { name: "Cliente Demo" }, wa_id: "584120000000" }],
+              messages: [
+                {
+                  from: "584120000000",
+                  id: `${prefijo}-unsupported`,
+                  timestamp,
+                  type: "unsupported",
+                  errors: [
+                    {
+                      code: 131051,
+                      title: "Message type unknown",
+                      message: "Message type is not currently supported",
+                    },
+                  ],
+                },
+                {
+                  from: "584120000000",
+                  id: `${prefijo}-foto-1`,
+                  timestamp,
+                  type: "image",
+                  image: { id: "media-1", mime_type: "image/jpeg" },
+                },
+                {
+                  from: "584120000000",
+                  id: `${prefijo}-foto-2`,
+                  timestamp,
+                  type: "image",
+                  image: { id: "media-2", mime_type: "image/jpeg" },
+                },
+              ],
+            },
+          },
+        ],
+      },
+    ],
+  };
+}
+
+describe("POST /api/webhooks/whatsapp — el aviso 'unsupported' de Meta", () => {
+  it("no ensucia el chat con jerga técnica, y las fotos del lote sí se guardan", async () => {
+    const { POST } = await import("@/app/api/webhooks/whatsapp/route");
+    insertedRows.length = 0;
+
+    const response = await POST(fakeRequest(webhookAlbumBody("wamid.album-1")));
+    expect(response.status).toBe(200);
+
+    // Las dos fotos llegan enteras.
+    expect(insertedMessages.has("wamid.album-1-foto-1")).toBe(true);
+    expect(insertedMessages.has("wamid.album-1-foto-2")).toBe(true);
+
+    // El aviso de Meta no es un mensaje del cliente: no se guarda como tal.
+    expect(insertedMessages.has("wamid.album-1-unsupported")).toBe(false);
+    const textos = insertedRows.map((r) => String(r.content ?? ""));
+    expect(textos.some((t) => t.includes("no soportado"))).toBe(false);
   });
 });
