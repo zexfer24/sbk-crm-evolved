@@ -5,7 +5,6 @@ import {
   useRef,
   useState,
   type ChangeEvent,
-  type ClipboardEvent,
   type KeyboardEvent,
 } from "react";
 import { AlignLeft, FileText, Lock, Paperclip, Send, X, Zap } from "lucide-react";
@@ -16,6 +15,7 @@ import { isWithin24hWindow } from "@/lib/whatsapp-window";
 import { createClient } from "@/lib/supabase/client";
 import { sendMediaMessage, sendMessage, sendTemplateMessage } from "@/lib/mutations";
 import { MEDIA_BUCKET, mediaUrlFor } from "@/lib/storage";
+import { MediaThumb, type MediaItem } from "@/components/chat/media-lightbox";
 import { TemplatePickerModal } from "@/components/chat/template-picker-modal";
 import { QuickRepliesModal } from "@/components/chat/quick-replies-modal";
 import { WindowCountdown } from "@/components/chat/window-countdown";
@@ -68,8 +68,26 @@ export function Composer({ conversation, templates, quickReplies, replyingTo, on
   /** Cuántos archivos del lote ya subieron, para que la espera no sea muda. */
   const [uploadedCount, setUploadedCount] = useState(0);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
 
   const withinWindow = isWithin24hWindow(conversation.lastCustomerMessageAt);
+
+  /**
+   * El cuadro se estira con lo que se escribe.
+   *
+   * Estaba fijo en `rows={1}`: Shift+Enter sí metía el salto de línea, pero
+   * el cuadro seguía mostrando un renglón, así que escribir un mensaje de
+   * tres líneas era escribir a ciegas. Se mide el contenido y se ajusta el
+   * alto, con el tope que ya ponía el CSS para que no se coma el chat.
+   */
+  useEffect(() => {
+    const textarea = textareaRef.current;
+    if (!textarea) return;
+    // A cero primero: si no, el alto anterior es el suelo y el cuadro solo
+    // sabría crecer, nunca volver a encogerse al borrar.
+    textarea.style.height = "0px";
+    textarea.style.height = `${textarea.scrollHeight}px`;
+  }, [text]);
 
   // Libera los object URLs de preview al desmontar o al reemplazar la lista.
   useEffect(() => {
@@ -150,13 +168,51 @@ export function Composer({ conversation, templates, quickReplies, replyingTo, on
    * que más se pega— sigue siendo asunto del navegador, con su deshacer y su
    * posición del cursor intactos.
    */
-  function handlePaste(event: ClipboardEvent<HTMLTextAreaElement>) {
+  /**
+   * Ctrl+V con una captura en el portapapeles.
+   *
+   * Se escucha en el documento y no en el cuadro de texto. Nadie hace clic
+   * dentro del cuadro antes de pegar: recorta la pantalla y pulsa Ctrl+V. Si
+   * el foco quedó en el botón del clip, en la lista de conversaciones o en
+   * ningún lado, el evento nunca llega al textarea — que es exactamente el
+   * "no se pega" que se ve al usarlo.
+   *
+   * Uno solo y no dos: el evento del textarea burbujea hasta acá, así que
+   * tener las dos escuchas adjuntaba cada captura por duplicado.
+   *
+   * Solo se actúa cuando el portapapeles trae archivos, así que copiar y
+   * pegar texto en cualquier otro campo de la pantalla sigue igual, con su
+   * deshacer y la posición del cursor intactos.
+   */
+  useEffect(() => {
     if (!withinWindow) return;
-    const files = Array.from(event.clipboardData?.files ?? []);
-    if (files.length === 0) return;
 
-    event.preventDefault();
-    addFiles(files);
+    function onDocumentPaste(event: globalThis.ClipboardEvent) {
+      // Con un modal encima, el pegado es de quien esté trabajando ahí.
+      if (isTemplateModalOpen || isQuickRepliesOpen) return;
+      const files = Array.from(event.clipboardData?.files ?? []);
+      if (files.length === 0) return;
+
+      event.preventDefault();
+      addFiles(files);
+    }
+
+    document.addEventListener("paste", onDocumentPaste);
+    return () => document.removeEventListener("paste", onDocumentPaste);
+  }, [withinWindow, isTemplateModalOpen, isQuickRepliesOpen]);
+
+  // Lo que puede abrirse en grande: los adjuntos con vista previa. Se guarda
+  // qué posición ocupa cada uno para que abrir el tercero abra el tercero.
+  const previewItems: MediaItem[] = [];
+  const previewIndexById = new Map<string, number>();
+  for (const pending of pendingFiles) {
+    if (!pending.previewUrl) continue;
+    previewIndexById.set(pending.id, previewItems.length);
+    previewItems.push({
+      url: pending.previewUrl,
+      type: pending.mediaType === "video" ? "video" : "image",
+      caption: pending.file.name,
+    });
   }
 
   function removePendingFile(id: string) {
@@ -307,12 +363,11 @@ export function Composer({ conversation, templates, quickReplies, replyingTo, on
         <div className="crm-attach-preview">
           {pendingFiles.map((p, index) => (
             <div className="crm-attach-item" key={p.id}>
-              {p.previewUrl && p.mediaType === "image" && (
-                // eslint-disable-next-line @next/next/no-img-element
-                <img src={p.previewUrl} alt={p.file.name} />
-              )}
-              {p.previewUrl && p.mediaType === "video" && (
-                <video src={p.previewUrl} muted playsInline preload="metadata" />
+              {/* Se abre en grande con el mismo visor del chat: antes de
+                  soltar una foto uno quiere comprobar que es la correcta y
+                  que se lee lo que muestra, y la miniatura no da para eso. */}
+              {p.previewUrl && (
+                <MediaThumb items={previewItems} index={previewIndexById.get(p.id) ?? 0} />
               )}
               {!p.previewUrl && (
                 <div className="crm-attach-doc">
@@ -387,9 +442,9 @@ export function Composer({ conversation, templates, quickReplies, replyingTo, on
         </Tooltip>
 
         <TextArea
+          ref={textareaRef}
           value={text}
           onChange={(e) => setText(e.target.value)}
-          onPaste={handlePaste}
           onKeyDown={handleKeyDown}
           aria-label="Mensaje"
           placeholder={

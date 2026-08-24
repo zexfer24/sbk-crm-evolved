@@ -281,3 +281,53 @@ describe("Composer — varias capturas con el mismo nombre", () => {
     expect(new Set(nombres).size).toBe(3);
   });
 });
+
+describe("Composer — lo que faltaba para escribir y adjuntar cómodo", () => {
+  const foto = (nombre: string) => new File([new Uint8Array([1])], nombre, { type: "image/png" });
+
+  it("pegar funciona aunque el cursor no esté dentro del cuadro de texto", () => {
+    renderComposer();
+
+    // Nadie hace clic en el cuadro antes de pegar: se recorta la pantalla y
+    // se pulsa Ctrl+V. Si el foco quedó en el botón del clip, o en ningún
+    // lado, el evento llega al documento y no al textarea.
+    fireEvent.paste(document.body, {
+      clipboardData: { files: [foto("captura.png")], items: [], getData: () => "" },
+    });
+
+    expect(screen.getByRole("button", { name: "Quitar captura.png" })).toBeInTheDocument();
+  });
+
+  it("la vista previa se puede abrir en grande antes de mandarla", () => {
+    renderComposer();
+    const textarea = screen.getByRole("textbox", { name: "Mensaje" });
+    fireEvent.paste(textarea, {
+      clipboardData: { files: [foto("captura.png")], items: [], getData: () => "" },
+    });
+
+    // Antes de soltar la foto uno quiere comprobar que es la correcta y que
+    // se lee lo que muestra: la miniatura es demasiado chica para eso.
+    const miniatura = screen.getByRole("button", { name: /ver la foto/i });
+    fireEvent.click(miniatura);
+
+    expect(screen.getByRole("dialog")).toBeInTheDocument();
+  });
+
+  it("el cuadro crece al escribir en varias líneas en vez de mostrar solo una", () => {
+    // jsdom no maquetea, así que el alto real lo tiene que dar la prueba.
+    const original = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "scrollHeight");
+    Object.defineProperty(HTMLElement.prototype, "scrollHeight", { configurable: true, get: () => 88 });
+
+    try {
+      renderComposer();
+      const textarea = screen.getByRole("textbox", { name: "Mensaje" }) as HTMLTextAreaElement;
+
+      const salto = String.fromCharCode(10);
+      fireEvent.change(textarea, { target: { value: `primera${salto}segunda${salto}tercera` } });
+
+      expect(textarea.style.height).toBe("88px");
+    } finally {
+      if (original) Object.defineProperty(HTMLElement.prototype, "scrollHeight", original);
+    }
+  });
+});
