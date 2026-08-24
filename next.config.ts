@@ -27,6 +27,24 @@ const nextConfig: NextConfig = {
   // `X-Powered-By: Next.js` delata el framework sin darle nada al usuario.
   poweredByHeader: false,
 
+  experimental: {
+    // Cuánto vale lo que ya se trajo del servidor antes de volver a pedirlo.
+    //
+    // Todas las rutas del CRM son dinámicas, y ahí el valor por defecto es 0:
+    // saltar a Clientes y volver a Bandeja rearma la bandeja entera desde
+    // cero, aunque hayan pasado tres segundos. Con 30s ese ida y vuelta es
+    // inmediato, que es como el asesor usa el CRM de verdad — salta entre
+    // secciones todo el tiempo.
+    //
+    // 30s y no más porque la bandeja es un dato vivo. Aun así no se queda
+    // vieja: mientras está montada, las suscripciones de realtime la
+    // mantienen al día, así que esto solo cubre el hueco de la navegación.
+    staleTimes: {
+      dynamic: 30,
+      static: 180,
+    },
+  },
+
   async headers() {
     return [
       {

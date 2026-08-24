@@ -1800,3 +1800,43 @@
 .crm-context-menu button:focus-visible {
   background: var(--lm-sunken);
 }
+
+/* ---------------------------------------------------------------------------
+   Esqueletos de carga
+   Un bloque que respira mientras llega el contenido. El brillo se apaga si
+   quien mira pidió menos movimiento: un pulso constante en toda la pantalla
+   es justo lo que esa preferencia existe para evitar.
+   --------------------------------------------------------------------------- */
+.skel {
+  display: block;
+  border-radius: 8px;
+  background: var(--lm-sunken);
+  animation: skel-pulse 1.4s ease-in-out infinite;
+}
+
+@keyframes skel-pulse {
+  50% { opacity: 0.45; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .skel { animation: none; }
+}
+
+.skel-rows {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 16px;
+}
+
+.skel-title { width: 168px; height: 26px; }
+.skel-row { height: 62px; border-radius: 12px; }
+.skel-thread { height: 74px; border-radius: 12px; }
+
+.skel-topbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 16px 16px 0;
+}
