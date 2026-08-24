@@ -68,6 +68,8 @@ vi.mock("next/navigation", () => ({
   useRouter: () => ({ push: vi.fn() }),
 }));
 
+let inboxProps: { conversations: Conversation[] } | null = null;
+
 vi.mock("@/components/inbox/inbox-sidebar", () => ({
   InboxSidebar: ({
     conversations,
@@ -75,7 +77,8 @@ vi.mock("@/components/inbox/inbox-sidebar", () => ({
   }: {
     conversations: Conversation[];
     onSelect: (id: string) => void;
-  }) => (
+  }) => ((inboxProps = { conversations }),
+  (
     <>
       {conversations.map((c) => (
         <button key={c.id} type="button" onClick={() => onSelect(c.id)}>
@@ -83,7 +86,7 @@ vi.mock("@/components/inbox/inbox-sidebar", () => ({
         </button>
       ))}
     </>
-  ),
+  )),
 }));
 vi.mock("@/components/chat/chat-panel", () => ({
   ChatPanel: ({ messages }: { messages: Message[] }) => (
@@ -562,5 +565,185 @@ describe("CrmShell — el interruptor general de la IA se sigue en vivo", () => 
     });
 
     expect(fetchAgentSettingsMock).toHaveBeenCalledTimes(1);
+  });
+});
+
+/**
+ * Cada evento de realtime pedía la bandeja entera: 200 conversaciones con
+ * siete relaciones cada una, unos 230 KB medidos. Y los eventos no son pocos
+ * —cada confirmación de entrega toca la conversación, así que un solo mensaje
+ * saliente genera tres—, multiplicado por los agentes conectados.
+ *
+ * El evento ya trae la fila nueva. Cuando lo que cambió son datos propios de
+ * la conversación, no hace falta volver a pedir nada: se aplica y listo. El
+ * refetch queda para lo que el evento no puede traer —una conversación que no
+ * estaba, o un cambio que arrastra relaciones (el agente asignado, la venta)—.
+ */
+describe("CrmShell — la bandeja no se rearma entera por cada cambio", () => {
+  function filaDeConversacion(over: Record<string, unknown> = {}) {
+    return {
+      id: "conv-1",
+      unread_count: 3,
+      manually_unread: false,
+      ai_enabled: false,
+      status: "open",
+      assigned_agent_id: null,
+      deal_status: "none",
+      deal_verified: false,
+      last_message_at: "2026-08-24T15:00:00.000Z",
+      last_message_preview: "¿Tienen el carburador?",
+      last_message_direction: "inbound",
+      last_message_status: null,
+      last_customer_message_at: "2026-08-24T15:00:00.000Z",
+      journey_stage: null,
+      intent: null,
+      active_tool: null,
+      welcome_sent_at: null,
+      ...over,
+    };
+  }
+
+  function montar() {
+    render(
+      <CrmShell
+        currentAgent={currentAgent}
+        initialConversations={[buildConversation()]}
+        allTags={allTags}
+        initialQuickReplies={initialQuickReplies}
+        bcvRate={null}
+        initialAgentSettings={agentSettings}
+      />
+    );
+    fetchConversationsMock.mockClear();
+  }
+
+  it("un cambio propio de la conversación no vuelve a pedir la bandeja", async () => {
+    montar();
+
+    act(() => {
+      fake.trigger("conversations", "UPDATE", filaDeConversacion());
+    });
+    await act(async () => {
+      vi.advanceTimersByTime(750);
+    });
+
+    expect(fetchConversationsMock).not.toHaveBeenCalled();
+  });
+
+  it("pero sí aplica lo que cambió: el contador de no leídos queda al día", async () => {
+    montar();
+
+    act(() => {
+      fake.trigger("conversations", "UPDATE", filaDeConversacion({ unread_count: 7 }));
+    });
+
+    // La bandeja está mockeada, así que se mira lo que se le pasó.
+    expect(inboxProps?.conversations[0].unreadCount).toBe(7);
+  });
+
+  it("una conversación que no estaba en la lista sí obliga a pedirla", async () => {
+    montar();
+
+    act(() => {
+      fake.trigger("conversations", "INSERT", filaDeConversacion({ id: "conv-nueva" }));
+    });
+    await act(async () => {
+      vi.advanceTimersByTime(750);
+    });
+
+    expect(fetchConversationsMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("cambiar de agente asignado obliga a pedirla: el evento no trae quién es", async () => {
+    montar();
+
+    act(() => {
+      fake.trigger("conversations", "UPDATE", filaDeConversacion({ assigned_agent_id: "agent-9" }));
+    });
+    await act(async () => {
+      vi.advanceTimersByTime(750);
+    });
+
+    expect(fetchConversationsMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("cerrar la venta obliga a pedirla: el monto vive en otra tabla", async () => {
+    montar();
+
+    act(() => {
+      fake.trigger("conversations", "UPDATE", filaDeConversacion({ deal_status: "won" }));
+    });
+    await act(async () => {
+      vi.advanceTimersByTime(750);
+    });
+
+    expect(fetchConversationsMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("una etiqueta puesta o quitada obliga a pedirla: no viaja en la fila", async () => {
+    montar();
+
+    act(() => {
+      fake.trigger("contact_tags", "INSERT", {});
+    });
+    await act(async () => {
+      vi.advanceTimersByTime(750);
+    });
+
+    expect(fetchConversationsMock).toHaveBeenCalledTimes(1);
+  });
+});
+
+/**
+ * Aplicar los cambios en memoria quita la red que había: antes, cualquier
+ * desincronización se corregía sola en el siguiente refetch. Si un campo se
+ * queda sin mapear, ahora la bandeja mostraría el valor viejo para siempre.
+ * Una pasada de fondo, espaciada, devuelve esa reparación sin volver al
+ * coste de antes.
+ */
+describe("CrmShell — red de seguridad contra la deriva", () => {
+  it("cada tanto vuelve a pedir la bandeja aunque no haya pasado nada", async () => {
+    render(
+      <CrmShell
+        currentAgent={currentAgent}
+        initialConversations={[buildConversation()]}
+        allTags={allTags}
+        initialQuickReplies={initialQuickReplies}
+        bcvRate={null}
+        initialAgentSettings={agentSettings}
+      />
+    );
+    fetchConversationsMock.mockClear();
+
+    await act(async () => {
+      vi.advanceTimersByTime(5 * 60 * 1000);
+    });
+
+    expect(fetchConversationsMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("no la pide si nadie está mirando la pestaña", async () => {
+    Object.defineProperty(document, "hidden", { configurable: true, get: () => true });
+    try {
+      render(
+        <CrmShell
+          currentAgent={currentAgent}
+          initialConversations={[buildConversation()]}
+          allTags={allTags}
+          initialQuickReplies={initialQuickReplies}
+          bcvRate={null}
+          initialAgentSettings={agentSettings}
+        />
+      );
+      fetchConversationsMock.mockClear();
+
+      await act(async () => {
+        vi.advanceTimersByTime(5 * 60 * 1000);
+      });
+
+      expect(fetchConversationsMock).not.toHaveBeenCalled();
+    } finally {
+      Object.defineProperty(document, "hidden", { configurable: true, get: () => false });
+    }
   });
 });
