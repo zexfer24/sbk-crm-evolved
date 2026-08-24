@@ -68,7 +68,23 @@ vi.mock("next/navigation", () => ({
   useRouter: () => ({ push: vi.fn() }),
 }));
 
-vi.mock("@/components/inbox/inbox-sidebar", () => ({ InboxSidebar: () => null }));
+vi.mock("@/components/inbox/inbox-sidebar", () => ({
+  InboxSidebar: ({
+    conversations,
+    onSelect,
+  }: {
+    conversations: Conversation[];
+    onSelect: (id: string) => void;
+  }) => (
+    <>
+      {conversations.map((c) => (
+        <button key={c.id} type="button" onClick={() => onSelect(c.id)}>
+          abrir {c.id}
+        </button>
+      ))}
+    </>
+  ),
+}));
 vi.mock("@/components/chat/chat-panel", () => ({
   ChatPanel: ({ messages }: { messages: Message[] }) => (
     <>
@@ -393,5 +409,45 @@ describe("CrmShell — abrir un chat apartado a mano lo da por leído", () => {
     await act(async () => {});
 
     expect(markConversationReadMock).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("CrmShell — cambiar de conversación no muestra el chat anterior", () => {
+  it("suelta los mensajes del chat viejo apenas se elige otro", async () => {
+    const deLaUna = { ...outboundMessage("read"), id: "m-uno", content: "Mensaje de la conversación uno" };
+    const deLaDos = { ...outboundMessage("sent"), id: "m-dos", content: "Mensaje de la conversación dos" };
+
+    fetchMessagesMock.mockResolvedValue([deLaUna]);
+    render(
+      <CrmShell
+        currentAgent={currentAgent}
+        initialConversations={[
+          buildConversation(),
+          buildConversation({ id: "conv-2", contact: { ...buildConversation().contact, id: "contact-2" } }),
+        ]}
+        allTags={allTags}
+        initialQuickReplies={initialQuickReplies}
+        bcvRate={null}
+        initialConversationId="conv-1"
+      />
+    );
+    await act(async () => {});
+    expect(screen.getByText("Mensaje de la conversación uno")).toBeInTheDocument();
+
+    // El fetch del chat nuevo queda en vuelo a propósito: es justo el hueco
+    // en el que el asesor estaba viendo la conversación equivocada.
+    let resolverElFetch: (m: Message[]) => void = () => {};
+    fetchMessagesMock.mockReturnValue(new Promise<Message[]>((r) => { resolverElFetch = r; }));
+
+    act(() => {
+      screen.getByRole("button", { name: "abrir conv-2" }).click();
+    });
+
+    expect(screen.queryByText("Mensaje de la conversación uno")).not.toBeInTheDocument();
+
+    await act(async () => {
+      resolverElFetch([deLaDos]);
+    });
+    expect(screen.getByText("Mensaje de la conversación dos")).toBeInTheDocument();
   });
 });

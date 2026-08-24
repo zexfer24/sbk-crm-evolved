@@ -22,6 +22,8 @@ interface ChatPanelProps {
   /** Queda historial más viejo que el que se está mostrando. */
   hasOlderMessages?: boolean;
   loadingOlderMessages?: boolean;
+  /** El hilo todavía viene en camino: se pinta un esqueleto en vez de un vacío. */
+  loadingMessages?: boolean;
   onLoadOlderMessages?: () => void;
   /** Vuelve a la lista. Solo se muestra cuando la bandeja no cabe al lado. */
   onBack: () => void;
@@ -35,6 +37,7 @@ export function ChatPanel({
   currentAgent,
   hasOlderMessages = false,
   loadingOlderMessages = false,
+  loadingMessages = false,
   onLoadOlderMessages,
   onBack,
 }: ChatPanelProps) {
@@ -139,6 +142,21 @@ export function ChatPanel({
       />
 
       <div className="crm-messages">
+        {loadingMessages && (
+          // Un chat vacío y un chat que todavía no llegó se ven igual, y no
+          // son lo mismo: sin esto, abrir una conversación parpadea en
+          // "no hay nada acá" antes de mostrar la conversación.
+          <div className="skel-chat" role="status" aria-busy="true" aria-label="Cargando la conversación">
+            {[68, 44, 92, 56].map((ancho, i) => (
+              <span
+                className="skel skel-bubble"
+                data-side={i % 2 === 0 ? "in" : "out"}
+                style={{ width: `${ancho}%` }}
+                key={i}
+              />
+            ))}
+          </div>
+        )}
         {hasOlderMessages && onLoadOlderMessages && (
           <div className="crm-older-row">
             <button

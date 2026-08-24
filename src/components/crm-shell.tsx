@@ -59,8 +59,21 @@ export function CrmShell({
       initialConversations[0]?.id ??
       null
   );
-  const [messages, setMessages] = useState<Message[]>([]);
-  const [notes, setNotes] = useState<Note[]>([]);
+  /**
+   * El hilo cargado, con la conversación a la que pertenece pegada al lado.
+   *
+   * Guardar el id junto a los mensajes —en vez de vaciar la lista al cambiar
+   * de chat— hace imposible por construcción que se vean los mensajes de una
+   * conversación bajo el nombre de otra: si el id no coincide con el chat
+   * abierto, lo que hay guardado sencillamente no es de este hilo.
+   */
+  const [loadedThread, setLoadedThread] = useState<{
+    conversationId: string;
+    messages: Message[];
+    notes: Note[];
+    /** No queda nada más viejo que traer en este hilo. */
+    reachedStart: boolean;
+  } | null>(null);
   const [templates, setTemplates] = useState<WhatsappTemplate[]>([]);
   const [quickReplies, setQuickReplies] = useState<QuickReply[]>(initialQuickReplies);
   const [tags, setTags] = useState<Tag[]>(allTags);
@@ -81,27 +94,38 @@ export function CrmShell({
   // Al abrir un chat solo se traen los últimos mensajes. Esto pide el tramo
   // anterior cuando el asesor lo pide, y recuerda cuándo ya no queda nada
   // atrás para dejar de ofrecerlo.
-  const [reachedStart, setReachedStart] = useState(false);
   const [loadingOlder, setLoadingOlder] = useState(false);
 
+  const isLoadedThread = loadedThread?.conversationId === selectedId;
+  const messages = isLoadedThread ? loadedThread.messages : [];
+  const notes = isLoadedThread ? loadedThread.notes : [];
+  const reachedStart = isLoadedThread ? loadedThread.reachedStart : false;
+  /** El hilo abierto todavía no llegó: el panel muestra un esqueleto, no un vacío. */
+  const loadingMessages = selectedId !== null && !isLoadedThread;
+
   const loadOlderMessages = useCallback(async () => {
-    const oldest = messages[0];
+    // Se lee del estado y no de `messages`: ese es un derivado condicional, y
+    // depender de él recrearía este callback en cada render.
+    const oldest =
+      loadedThread?.conversationId === selectedId ? loadedThread.messages[0] : undefined;
     if (!selectedId || !oldest || loadingOlder) return;
 
     setLoadingOlder(true);
     try {
       const older = await fetchMessagesBefore(supabase, selectedId, oldest.createdAt);
-      if (older.length === 0) {
-        setReachedStart(true);
-        return;
-      }
-      setMessages((current) => [...older, ...current]);
+      setLoadedThread((current) => {
+        // El asesor pudo cambiar de chat mientras esto viajaba: lo que llegó
+        // es de otro hilo y no tiene dónde ir.
+        if (current?.conversationId !== selectedId) return current;
+        if (older.length === 0) return { ...current, reachedStart: true };
+        return { ...current, messages: [...older, ...current.messages] };
+      });
     } catch {
       // Falló el tramo viejo: el chat sigue usable con lo que ya está cargado.
     } finally {
       setLoadingOlder(false);
     }
-  }, [supabase, selectedId, messages, loadingOlder]);
+  }, [supabase, selectedId, loadedThread, loadingOlder]);
 
   const refreshConversations = useCallback(async () => {
     try {
@@ -213,6 +237,7 @@ export function CrmShell({
     const conversation = conversations.find((c) => c.id === selectedId);
     const contactId = conversation?.contact.id;
 
+
     (async () => {
       const [messagesData, notesData, templatesData] = await Promise.all([
         fetchMessages(supabase, selectedId, { limit: CHAT_MESSAGES_WINDOW }),
@@ -220,9 +245,12 @@ export function CrmShell({
         conversation ? fetchTemplates(supabase, conversation.channel.id) : Promise.resolve([]),
       ]);
       if (cancelled) return;
-      setReachedStart(messagesData.length < CHAT_MESSAGES_WINDOW);
-      setMessages(messagesData);
-      setNotes(notesData);
+      setLoadedThread({
+        conversationId,
+        messages: messagesData,
+        notes: notesData,
+        reachedStart: messagesData.length < CHAT_MESSAGES_WINDOW,
+      });
       setTemplates(templatesData);
 
       // También cuando el contador está en cero: el chat puede estar apartado
@@ -241,7 +269,10 @@ export function CrmShell({
       messagesRefreshTimeout = setTimeout(() => {
         messagesRefreshTimeout = null;
         fetchMessages(supabase, conversationId, { limit: CHAT_MESSAGES_WINDOW }).then((data) => {
-          if (!cancelled) setMessages(data);
+          if (cancelled) return;
+          setLoadedThread((current) =>
+            current?.conversationId === conversationId ? { ...current, messages: data } : current
+          );
         });
       }, REALTIME_DEBOUNCE_MS);
     }
@@ -278,7 +309,10 @@ export function CrmShell({
             { event: "*", schema: "public", table: "notes", filter: `contact_id=eq.${contactId}` },
             () => {
               fetchNotes(supabase, contactId).then((data) => {
-                if (!cancelled) setNotes(data);
+                if (cancelled) return;
+                setLoadedThread((current) =>
+                  current?.conversationId === conversationId ? { ...current, notes: data } : current
+                );
               });
             }
           )
@@ -320,6 +354,7 @@ export function CrmShell({
               templates={templates}
               quickReplies={quickReplies}
               currentAgent={currentAgent}
+              loadingMessages={loadingMessages}
               hasOlderMessages={!reachedStart}
               loadingOlderMessages={loadingOlder}
               onLoadOlderMessages={loadOlderMessages}

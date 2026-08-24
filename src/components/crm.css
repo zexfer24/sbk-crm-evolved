@@ -1840,3 +1840,16 @@
   gap: 16px;
   padding: 16px 16px 0;
 }
+
+/* Esqueleto del hilo: burbujas alternadas para que el bloque tenga la forma
+   de una conversación y no la de una lista cualquiera. */
+.skel-chat {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 16px;
+}
+
+.skel-bubble { height: 40px; border-radius: 14px; }
+.skel-bubble[data-side="in"] { align-self: flex-start; }
+.skel-bubble[data-side="out"] { align-self: flex-end; }
