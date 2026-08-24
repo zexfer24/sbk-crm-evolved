@@ -58,12 +58,20 @@ export function Composer({ conversation, templates, quickReplies, replyingTo, on
     const content = text.trim();
     if (!content || isSending) return;
 
+    // El cuadro se vacía antes de que salga nada, no después de que vuelva.
+    // Enviar es el gesto que más se repite en el CRM, y dejar el texto puesto
+    // mientras el servidor contesta hace que el Enter parezca no haber
+    // entrado — con la reacción natural de volver a pulsarlo.
+    const replyTo = replyingTo?.id ?? null;
+    setText("");
+    onCancelReply();
     setIsSending(true);
     try {
-      await sendMessage(conversation.id, content, false, replyingTo?.id ?? null);
-      setText("");
-      onCancelReply();
+      await sendMessage(conversation.id, content, false, replyTo);
     } catch (err) {
+      // Lo escrito no se pierde por un fallo de red: vuelve al cuadro tal
+      // cual, listo para reintentar.
+      setText((current) => (current ? current : content));
       toast.danger(err instanceof Error ? err.message : "No se pudo enviar el mensaje.");
     } finally {
       setIsSending(false);
