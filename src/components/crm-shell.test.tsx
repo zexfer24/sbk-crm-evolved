@@ -1,7 +1,8 @@
 import { describe, expect, it, vi, beforeEach, afterEach } from "vitest";
-import { render, act } from "@testing-library/react";
+import { render, act, screen } from "@testing-library/react";
 import { CrmShell } from "@/components/crm-shell";
-import type { Agent, Conversation, QuickReply, Tag } from "@/lib/types";
+import { MessageBubble } from "@/components/chat/message-bubble";
+import type { Agent, Conversation, Message, QuickReply, Tag } from "@/lib/types";
 
 type RealtimeEvent = "INSERT" | "UPDATE" | "DELETE";
 type ChannelHandler = (payload: { eventType: RealtimeEvent; new: Record<string, unknown> }) => void;
@@ -68,7 +69,15 @@ vi.mock("next/navigation", () => ({
 }));
 
 vi.mock("@/components/inbox/inbox-sidebar", () => ({ InboxSidebar: () => null }));
-vi.mock("@/components/chat/chat-panel", () => ({ ChatPanel: () => null }));
+vi.mock("@/components/chat/chat-panel", () => ({
+  ChatPanel: ({ messages }: { messages: Message[] }) => (
+    <>
+      {messages.map((message) => (
+        <MessageBubble key={message.id} message={message} />
+      ))}
+    </>
+  ),
+}));
 vi.mock("@/components/context-panel/context-panel", () => ({ ContextPanel: () => null }));
 
 const fetchConversationsMock = vi.fn().mockResolvedValue([]);
@@ -158,6 +167,7 @@ beforeEach(() => {
   fake = createFakeSupabase();
   fetchConversationsMock.mockClear();
   fetchMessagesMock.mockClear();
+  fetchMessagesMock.mockResolvedValue([]); // cada test decide qué mensajes hay
   markConversationReadMock.mockClear();
   vi.useFakeTimers();
 });
@@ -302,5 +312,62 @@ describe("CrmShell — el chat sigue los cambios sobre mensajes ya guardados", (
     });
 
     expect(markConversationReadMock).toHaveBeenCalledTimes(1);
+  });
+});
+
+function outboundMessage(whatsappStatus: Message["whatsappStatus"]): Message {
+  return {
+    id: "msg-1",
+    conversationId: "conv-1",
+    direction: "outbound",
+    senderType: "agent",
+    senderAgent: null,
+    messageType: "text",
+    content: "Buenas, ¿en qué te ayudo?",
+    templateName: null,
+    mediaUrl: null,
+    isInternalNote: false,
+    whatsappStatus,
+    replyToMessageId: null,
+    createdAt: "2026-08-24T12:00:00.000Z",
+  };
+}
+
+/**
+ * El circuito completo del doble check —webhook de statuses → UPDATE sobre
+ * messages → realtime → burbuja— nunca se ejercitó en producción: el día que
+ * se escribió esto no había ni un solo mensaje saliente. Este test lo recorre
+ * entero por el lado del cliente, desde el evento de realtime hasta el icono.
+ */
+describe("CrmShell — el doble check avanza en vivo", () => {
+  it("pasa de 'Enviado' a 'Leído' cuando WhatsApp confirma la lectura", async () => {
+    fetchMessagesMock.mockResolvedValue([outboundMessage("sent")]);
+
+    render(
+      <CrmShell
+        currentAgent={currentAgent}
+        initialConversations={[buildConversation()]}
+        allTags={allTags}
+        initialQuickReplies={initialQuickReplies}
+        bcvRate={null}
+        initialConversationId="conv-1"
+      />
+    );
+    await act(async () => {});
+
+    expect(screen.getByLabelText("Enviado")).toBeInTheDocument();
+
+    // Meta confirma la lectura: el webhook hace UPDATE de whatsapp_status
+    // sobre la fila que ya existe, y la base la reemite por realtime.
+    fetchMessagesMock.mockResolvedValue([outboundMessage("read")]);
+    act(() => {
+      fake.trigger("messages", "UPDATE", { direction: "outbound", whatsapp_status: "read" });
+    });
+    await act(async () => {
+      vi.advanceTimersByTime(750);
+    });
+
+    expect(screen.queryByLabelText("Enviado")).not.toBeInTheDocument();
+    expect(screen.getByLabelText("Leído")).toBeInTheDocument();
   });
 });
