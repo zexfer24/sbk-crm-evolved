@@ -362,6 +362,7 @@ function outboundMessage(whatsappStatus: Message["whatsappStatus"]): Message {
     mediaUrl: null,
     isInternalNote: false,
     whatsappStatus,
+    reactionEmoji: null,
     replyToMessageId: null,
     createdAt: "2026-08-24T12:00:00.000Z",
   };

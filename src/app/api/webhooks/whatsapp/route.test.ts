@@ -35,6 +35,9 @@ interface FakeMessageRow {
 /** Filas completas que llegaron a `messages.insert`, para poder mirar qué se guardó. */
 const insertedRows: Record<string, unknown>[] = [];
 
+/** UPDATE de reacción: por qué columna se buscó, con qué valor, y qué emoji se puso. */
+const reactionUpdates: { column: string; value: string; emoji: string | null }[] = [];
+
 /** Lo que responde el límite de tasa; un test lo pone en false para probar el freno. */
 let rateLimitAllows = true;
 
@@ -132,10 +135,13 @@ function createFakeAdminClient() {
               },
             };
           },
-          update(patch: { media_url?: string }) {
+          update(patch: { media_url?: string; reaction_emoji?: string | null }) {
             return {
-              eq: async (_column: string, id: string) => {
+              eq: async (column: string, id: string) => {
                 if (patch.media_url) mediaUpdates.push({ id, mediaUrl: patch.media_url });
+                if ("reaction_emoji" in patch) {
+                  reactionUpdates.push({ column, value: id, emoji: patch.reaction_emoji ?? null });
+                }
                 return { data: null, error: null };
               },
             };
@@ -479,5 +485,67 @@ describe("POST /api/webhooks/whatsapp — el aviso 'unsupported' de Meta", () =>
     expect(insertedMessages.has("wamid.album-1-unsupported")).toBe(false);
     const textos = insertedRows.map((r) => String(r.content ?? ""));
     expect(textos.some((t) => t.includes("no soportado"))).toBe(false);
+  });
+});
+
+/** Lote con una reacción, tal como la manda Meta: evento aparte con a qué mensaje y con qué emoji. */
+function webhookReactionBody(waMessageId: string, emoji: string, reaccionadoId: string) {
+  return {
+    entry: [
+      {
+        changes: [
+          {
+            field: "messages",
+            value: {
+              metadata: { phone_number_id: "1234567890" },
+              contacts: [{ profile: { name: "Cliente Demo" }, wa_id: "584120000000" }],
+              messages: [
+                {
+                  from: "584120000000",
+                  id: waMessageId,
+                  timestamp: String(Math.floor(Date.now() / 1000)),
+                  type: "reaction",
+                  reaction: { message_id: reaccionadoId, emoji },
+                },
+              ],
+            },
+          },
+        ],
+      },
+    ],
+  };
+}
+
+describe("POST /api/webhooks/whatsapp — reacciones con emoji", () => {
+  it("pega el emoji al mensaje al que reacciona, sin ensuciar el hilo con un mensaje nuevo", async () => {
+    const { POST } = await import("@/app/api/webhooks/whatsapp/route");
+    reactionUpdates.length = 0;
+    insertedRows.length = 0;
+
+    const response = await POST(
+      fakeRequest(webhookReactionBody("wamid.reaccion-1", "👍", "wamid.mensaje-nuestro"))
+    );
+    expect(response.status).toBe(200);
+
+    expect(reactionUpdates).toEqual([
+      { column: "whatsapp_message_id", value: "wamid.mensaje-nuestro", emoji: "👍" },
+    ]);
+
+    // Una reacción no es un mensaje: no aparece como burbuja en la conversación.
+    expect(insertedMessages.has("wamid.reaccion-1")).toBe(false);
+    const textos = insertedRows.map((r) => String(r.content ?? ""));
+    expect(textos.some((t) => t.includes("no soportado"))).toBe(false);
+  });
+
+  it("quitar la reacción la borra, en vez de dejar el emoji viejo pegado", async () => {
+    const { POST } = await import("@/app/api/webhooks/whatsapp/route");
+    reactionUpdates.length = 0;
+
+    // Meta manda el retiro como una reacción con el emoji vacío.
+    await POST(fakeRequest(webhookReactionBody("wamid.reaccion-2", "", "wamid.mensaje-nuestro")));
+
+    expect(reactionUpdates).toEqual([
+      { column: "whatsapp_message_id", value: "wamid.mensaje-nuestro", emoji: null },
+    ]);
   });
 });

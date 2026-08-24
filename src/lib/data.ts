@@ -107,6 +107,7 @@ interface RawMessage {
   media_url: string | null;
   is_internal_note: boolean;
   whatsapp_status: Message["whatsappStatus"];
+  reaction_emoji: string | null;
   reply_to_message_id: string | null;
   created_at: string;
   sender_agent: RawAgent | null;
@@ -244,6 +245,7 @@ function mapMessage(row: RawMessage): Message {
     mediaUrl: row.media_url,
     isInternalNote: row.is_internal_note,
     whatsappStatus: row.whatsapp_status,
+    reactionEmoji: row.reaction_emoji,
     replyToMessageId: row.reply_to_message_id,
     createdAt: row.created_at,
   };
@@ -387,7 +389,7 @@ export async function fetchConversation(
 const MESSAGES_PAGE_SIZE = 1000;
 
 const MESSAGE_SELECT = `id, conversation_id, direction, sender_type, message_type, content, template_name,
-         media_url, is_internal_note, whatsapp_status, reply_to_message_id, created_at,
+         media_url, is_internal_note, whatsapp_status, reaction_emoji, reply_to_message_id, created_at,
          sender_agent:agents(id, display_name, full_name, avatar_url, role, is_active)`;
 
 /**

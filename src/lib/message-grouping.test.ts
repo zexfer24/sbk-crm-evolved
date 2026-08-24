@@ -18,6 +18,7 @@ function media(over: Partial<Message> & { messageType?: MessageType } = {}): Mes
     mediaUrl: `/api/media/foto-${reloj}.jpg`,
     isInternalNote: false,
     whatsappStatus: null,
+    reactionEmoji: null,
     replyToMessageId: null,
     createdAt: new Date(Date.UTC(2026, 7, 24, 12, 0, 0) + reloj).toISOString(),
     ...over,

@@ -26,7 +26,7 @@ function mensaje(over: Partial<Message>): Message {
   return {
     id: "m-1", conversationId: "conv-1", direction: "inbound", senderType: "customer",
     senderAgent: null, messageType: "text", content: "hola", templateName: null, mediaUrl: null,
-    isInternalNote: false, whatsappStatus: null, replyToMessageId: null,
+    isInternalNote: false, whatsappStatus: null, reactionEmoji: null, replyToMessageId: null,
     createdAt: "2026-08-24T12:00:00.000Z", ...over,
   };
 }

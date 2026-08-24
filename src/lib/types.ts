@@ -149,6 +149,11 @@ export interface Message {
   mediaUrl: string | null;
   isInternalNote: boolean;
   whatsappStatus: WhatsappMessageStatus | null;
+  /**
+   * Emoji con el que el cliente reaccionó a este mensaje. Null si no
+   * reaccionó o si quitó la reacción.
+   */
+  reactionEmoji: string | null;
   replyToMessageId: string | null;
   createdAt: string;
 }

@@ -615,6 +615,7 @@ export type Database = {
           sender_type: string
           template_name: string | null
           whatsapp_message_id: string | null
+          reaction_emoji: string | null
           whatsapp_status: string | null
         }
         Insert: {
@@ -631,6 +632,7 @@ export type Database = {
           sender_type: string
           template_name?: string | null
           whatsapp_message_id?: string | null
+          reaction_emoji?: string | null
           whatsapp_status?: string | null
         }
         Update: {
@@ -647,6 +649,7 @@ export type Database = {
           sender_type?: string
           template_name?: string | null
           whatsapp_message_id?: string | null
+          reaction_emoji?: string | null
           whatsapp_status?: string | null
         }
         Relationships: [

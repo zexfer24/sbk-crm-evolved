@@ -1908,3 +1908,32 @@ button.crm-bubble-quote:hover {
     box-shadow: 0 0 0 3px var(--lm-hot-fill);
   }
 }
+
+/* La reacción del cliente, colgando del borde de la burbuja como en WhatsApp.
+   Pegada al mensaje y no en el flujo del hilo: es algo que le pasa a ese
+   mensaje, no un mensaje más. */
+.crm-bubble-reaction {
+  position: absolute;
+  right: 8px;
+  bottom: -11px;
+  display: grid;
+  place-items: center;
+  min-width: 22px;
+  height: 22px;
+  padding: 0 4px;
+  border: 1px solid var(--lm-line);
+  border-radius: 999px;
+  background: var(--lm-surface);
+  font-size: 12px;
+  line-height: 1;
+}
+
+/* La burbuja pasa a ser el marco de referencia de la reacción, y se reserva
+   el hueco de abajo para que no pise el mensaje siguiente. */
+.crm-bubble {
+  position: relative;
+}
+
+.crm-msg:has(.crm-bubble-reaction) {
+  margin-bottom: 10px;
+}

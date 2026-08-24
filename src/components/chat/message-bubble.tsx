@@ -262,6 +262,19 @@ export function MessageBubble({
           )}
           <MediaContent message={message} />
           {message.content && <FormattedText text={message.content} />}
+
+          {/* Colgando del borde de abajo, como en WhatsApp: la reacción es
+              algo que le pasa a este mensaje, no un mensaje aparte. */}
+          {message.reactionEmoji && (
+            <span
+              className="crm-bubble-reaction"
+              role="img"
+              aria-label={`El cliente reaccionó con ${message.reactionEmoji}`}
+              title={`Reaccionó con ${message.reactionEmoji}`}
+            >
+              {message.reactionEmoji}
+            </span>
+          )}
         </div>
 
         {onReply && (

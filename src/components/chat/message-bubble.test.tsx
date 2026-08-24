@@ -18,6 +18,7 @@ function baseMessage(overrides: Partial<Message>): Message {
     mediaUrl: null,
     isInternalNote: false,
     whatsappStatus: null,
+    reactionEmoji: null,
     replyToMessageId: null,
     createdAt: "2026-08-19T23:39:54.000Z",
     ...overrides,
@@ -187,5 +188,19 @@ describe("MessageBubble — en el teléfono no hay click derecho", () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+});
+
+describe("MessageBubble — la reacción del cliente", () => {
+  it("se ve pegada al mensaje al que reaccionó", () => {
+    render(<MessageBubble message={baseMessage({ content: "Te lo dejo en 45$", reactionEmoji: "👍" })} />);
+
+    const reaccion = screen.getByRole("img", { name: /reaccionó con 👍/i });
+    expect(reaccion).toHaveTextContent("👍");
+  });
+
+  it("un mensaje sin reacción no muestra nada", () => {
+    render(<MessageBubble message={baseMessage({ content: "Te lo dejo en 45$" })} />);
+    expect(screen.queryByRole("img", { name: /reaccionó con/i })).not.toBeInTheDocument();
   });
 });

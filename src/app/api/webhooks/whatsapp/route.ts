@@ -51,6 +51,8 @@ interface WebhookMessage {
   document?: WebhookMediaObject;
   sticker?: WebhookMediaObject;
   context?: { id: string };
+  /** Solo en los `type: "reaction"`: a qué mensaje reacciona y con qué emoji. */
+  reaction?: { message_id: string; emoji?: string };
   /**
    * Solo viene en los `type: "unsupported"`: es el motivo por el que Meta no
    * pudo entregar el mensaje (131051 "Message type unknown", 131060 "This
@@ -262,6 +264,27 @@ export async function POST(request: Request) {
         // Tipo de mensaje no soportado todavía") que el asesor no sabe qué
         // hacer con ella, y que además se mete entre las fotos y le parte la
         // galería. Queda en el log del servidor, que es donde sirve.
+        // Una reacción no es un mensaje: es algo que le pasa a un mensaje que
+        // ya está en el hilo. Meta la manda como evento aparte, diciendo a
+        // cuál reacciona y con qué emoji, así que se guarda pegada a esa fila
+        // en vez de abrir una burbuja nueva — igual que se ve en WhatsApp.
+        //
+        // El emoji vacío es cómo Meta dice que la quitaron: vuelve a null.
+        if (message.type === "reaction" && message.reaction) {
+          const emoji = message.reaction.emoji?.trim() || null;
+          const { error: reactionError } = await supabase
+            .from("messages")
+            .update({ reaction_emoji: emoji })
+            .eq("whatsapp_message_id", message.reaction.message_id);
+
+          if (reactionError) {
+            console.error("Webhook de WhatsApp: error al guardar la reacción", reactionError);
+          }
+          // No se encola turno de IA: reaccionar con un pulgar no es una
+          // pregunta que haya que contestar.
+          continue;
+        }
+
         if (message.type === "unsupported") {
           const motivo = message.errors?.[0];
           console.info(
