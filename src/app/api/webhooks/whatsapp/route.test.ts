@@ -549,3 +549,89 @@ describe("POST /api/webhooks/whatsapp — reacciones con emoji", () => {
     ]);
   });
 });
+
+function webhookTypedBody(waMessageId: string, extra: Record<string, unknown>) {
+  return {
+    entry: [
+      {
+        changes: [
+          {
+            field: "messages",
+            value: {
+              metadata: { phone_number_id: "1234567890" },
+              contacts: [{ profile: { name: "Cliente Demo" }, wa_id: "584120000000" }],
+              messages: [
+                {
+                  from: "584120000000",
+                  id: waMessageId,
+                  timestamp: String(Math.floor(Date.now() / 1000)),
+                  ...extra,
+                },
+              ],
+            },
+          },
+        ],
+      },
+    ],
+  };
+}
+
+/**
+ * Un cliente que manda su ubicación está diciendo dónde entregarle. Que eso
+ * llegue como "[location] Tipo de mensaje no soportado todavía" es perder el
+ * dato y encima dejar al asesor sin saber que hay algo que mirar.
+ */
+describe("POST /api/webhooks/whatsapp — ubicación y otros tipos", () => {
+  it("la ubicación llega con su enlace al mapa, no como jerga", async () => {
+    const { POST } = await import("@/app/api/webhooks/whatsapp/route");
+    insertedRows.length = 0;
+
+    await POST(
+      fakeRequest(
+        webhookTypedBody("wamid.ubicacion-1", {
+          type: "location",
+          location: { latitude: 10.0678, longitude: -69.3467, name: "Casa", address: "Av. Lara" },
+        })
+      )
+    );
+
+    const fila = insertedRows.find((r) => r.whatsapp_message_id === "wamid.ubicacion-1");
+    const texto = String(fila?.content ?? "");
+    expect(texto).not.toContain("no soportado");
+    expect(texto).toContain("10.0678");
+    expect(texto).toContain("-69.3467");
+    expect(texto).toContain("Casa");
+    // Con el enlace, tocarlo abre el mapa en vez de tener que copiar números.
+    expect(texto).toMatch(/https:\/\/(www\.)?google\.com\/maps/);
+  });
+
+  it("una ubicación sin nombre igual llega con sus coordenadas", async () => {
+    const { POST } = await import("@/app/api/webhooks/whatsapp/route");
+    insertedRows.length = 0;
+
+    await POST(
+      fakeRequest(
+        webhookTypedBody("wamid.ubicacion-2", {
+          type: "location",
+          location: { latitude: 10.5, longitude: -69.5 },
+        })
+      )
+    );
+
+    const texto = String(insertedRows.find((r) => r.whatsapp_message_id === "wamid.ubicacion-2")?.content ?? "");
+    expect(texto).not.toContain("no soportado");
+    expect(texto).toContain("10.5");
+  });
+
+  it("un tipo que no conocemos se explica en castellano, sin corchetes técnicos", async () => {
+    const { POST } = await import("@/app/api/webhooks/whatsapp/route");
+    insertedRows.length = 0;
+
+    await POST(fakeRequest(webhookTypedBody("wamid.raro-1", { type: "order" })));
+
+    const texto = String(insertedRows.find((r) => r.whatsapp_message_id === "wamid.raro-1")?.content ?? "");
+    expect(texto).not.toContain("no soportado");
+    expect(texto).not.toContain("[order]");
+    expect(texto.toLowerCase()).toContain("cliente");
+  });
+});

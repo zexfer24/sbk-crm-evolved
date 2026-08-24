@@ -53,6 +53,8 @@ interface WebhookMessage {
   context?: { id: string };
   /** Solo en los `type: "reaction"`: a qué mensaje reacciona y con qué emoji. */
   reaction?: { message_id: string; emoji?: string };
+  location?: { latitude: number; longitude: number; name?: string; address?: string };
+  contacts?: { name?: { formatted_name?: string }; phones?: { phone?: string }[] }[];
   /**
    * Solo viene en los `type: "unsupported"`: es el motivo por el que Meta no
    * pudo entregar el mensaje (131051 "Message type unknown", 131060 "This
@@ -82,6 +84,38 @@ interface WebhookBody {
 // de reintentos antes de que dispare cientos de turnos de IA.
 const WEBHOOK_RATE_LIMIT = Number(process.env.WHATSAPP_WEBHOOK_RATE_LIMIT ?? 120);
 const WEBHOOK_RATE_WINDOW_SECONDS = 60;
+
+/**
+ * Cómo contar en el chat lo que no es texto ni un archivo.
+ *
+ * Antes, todo lo que no fuera texto o multimedia caía en un mismo cajón y se
+ * guardaba como "[location] Tipo de mensaje no soportado todavía". Eso son
+ * dos pérdidas a la vez: el dato —un cliente que manda su ubicación está
+ * diciendo dónde entregarle— y la confianza, porque el asesor lee jerga que
+ * no le dice qué hacer y termina ignorando el mensaje.
+ */
+function describirUbicacion(location: NonNullable<WebhookMessage["location"]>): string {
+  const { latitude, longitude, name, address } = location;
+  // El enlace primero en importancia pero al final del texto: es lo que se
+  // toca, y así no parte la frase.
+  const mapa = `https://www.google.com/maps/search/?api=1&query=${latitude},${longitude}`;
+  const donde = [name, address].filter(Boolean).join(" — ");
+
+  return donde
+    ? `📍 El cliente compartió una ubicación: ${donde} (${latitude}, ${longitude}) ${mapa}`
+    : `📍 El cliente compartió una ubicación (${latitude}, ${longitude}) ${mapa}`;
+}
+
+function describirContactos(contacts: NonNullable<WebhookMessage["contacts"]>): string {
+  const nombres = contacts
+    .map((c) => c.name?.formatted_name ?? c.phones?.[0]?.phone)
+    .filter(Boolean)
+    .join(", ");
+
+  return nombres
+    ? `👤 El cliente compartió un contacto: ${nombres}`
+    : "👤 El cliente compartió un contacto.";
+}
 
 const MEDIA_TYPES = ["image", "video", "audio", "document", "sticker"] as const;
 type MediaType = (typeof MEDIA_TYPES)[number];
@@ -386,8 +420,17 @@ export async function POST(request: Request) {
           const mediaObject = message[message.type as MediaType];
           content = mediaObject?.caption ?? null;
           pendingMediaId = mediaObject?.id ?? null;
+        } else if (message.type === "location" && message.location) {
+          content = describirUbicacion(message.location);
+        } else if (message.type === "contacts" && message.contacts?.length) {
+          content = describirContactos(message.contacts);
         } else {
-          content = `[${message.type}] Tipo de mensaje no soportado todavía.`;
+          // Queda algo que el CRM todavía no sabe pintar —una encuesta, un
+          // pedido del catálogo—. Se dice en castellano y se apunta a dónde
+          // mirarlo: el asesor tiene el mismo chat en su teléfono.
+          content =
+            "El cliente envió un mensaje que el CRM todavía no sabe mostrar. " +
+            "Se puede ver desde WhatsApp en el teléfono.";
         }
 
         // media_url arranca en null incluso para mensajes multimedia: la

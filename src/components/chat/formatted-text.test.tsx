@@ -57,3 +57,42 @@ describe("FormattedText", () => {
     expect(container.querySelector("strong")).toBeNull();
   });
 });
+
+/**
+ * Los enlaces llegan todo el día: el que manda el cliente con una referencia,
+ * y ahora también el del mapa cuando comparte su ubicación. Como texto plano
+ * hay que seleccionarlo y copiarlo a mano, que con un mapa es directamente
+ * inservible.
+ */
+describe("FormattedText — enlaces", () => {
+  it("convierte una dirección web en un enlace que se puede tocar", () => {
+    render(<FormattedText text="Mirá esto https://sbk.motorcycles/catalogo" />);
+
+    const enlace = screen.getByRole("link", { name: "https://sbk.motorcycles/catalogo" });
+    expect(enlace).toHaveAttribute("href", "https://sbk.motorcycles/catalogo");
+  });
+
+  it("abre en otra pestaña sin dejar que la página destino toque la nuestra", () => {
+    render(<FormattedText text="https://ejemplo.com" />);
+
+    const enlace = screen.getByRole("link");
+    expect(enlace).toHaveAttribute("target", "_blank");
+    expect(enlace).toHaveAttribute("rel", expect.stringContaining("noopener"));
+  });
+
+  it("respeta el texto de alrededor", () => {
+    const { container } = render(<FormattedText text="antes https://ejemplo.com después" />);
+    expect(container.textContent).toBe("antes https://ejemplo.com después");
+  });
+
+  it("no convierte en enlace algo que no es una dirección web", () => {
+    render(<FormattedText text="escribime a javascript:alert(1) o a ftp://viejo" />);
+    expect(screen.queryByRole("link")).not.toBeInTheDocument();
+  });
+
+  it("el enlace convive con el formato de WhatsApp", () => {
+    render(<FormattedText text="*Mirá* https://ejemplo.com" />);
+    expect(screen.getByRole("link")).toBeInTheDocument();
+    expect(screen.getByText("Mirá").tagName).toBe("STRONG");
+  });
+});

@@ -1937,3 +1937,11 @@ button.crm-bubble-quote:hover {
 .crm-msg:has(.crm-bubble-reaction) {
   margin-bottom: 10px;
 }
+
+/* Enlace dentro de un mensaje. Subrayado y no solo de otro color: dentro de
+   una burbuja de color, el color solo no alcanza para distinguirlo. */
+.crm-msg-link {
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  word-break: break-all;
+}
