@@ -451,3 +451,70 @@ describe("CrmShell — cambiar de conversación no muestra el chat anterior", ()
     expect(screen.getByText("Mensaje de la conversación dos")).toBeInTheDocument();
   });
 });
+
+/**
+ * Un asesor deja el CRM abierto en una pestaña todo el día. Cada evento de
+ * realtime dispara un refetch de la bandeja entera —200 conversaciones, unos
+ * 230 KB— y con varios agentes conectados eso es trabajo constante que nadie
+ * está mirando. Mientras la pestaña está oculta se calla, y al volver se
+ * pone al día de una vez.
+ */
+describe("CrmShell — la bandeja no se refresca contra una pestaña que nadie mira", () => {
+  function ocultarPestana(hidden: boolean) {
+    Object.defineProperty(document, "hidden", { configurable: true, get: () => hidden });
+    document.dispatchEvent(new Event("visibilitychange"));
+  }
+
+  afterEach(() => {
+    Object.defineProperty(document, "hidden", { configurable: true, get: () => false });
+  });
+
+  it("con la pestaña oculta, un cambio en realtime no dispara el refetch", async () => {
+    render(
+      <CrmShell
+        currentAgent={currentAgent}
+        initialConversations={[buildConversation()]}
+        allTags={allTags}
+        initialQuickReplies={initialQuickReplies}
+        bcvRate={null}
+      />
+    );
+    fetchConversationsMock.mockClear();
+
+    act(() => ocultarPestana(true));
+    act(() => {
+      fake.trigger("conversations", "UPDATE");
+    });
+    await act(async () => {
+      vi.advanceTimersByTime(750);
+    });
+
+    expect(fetchConversationsMock).not.toHaveBeenCalled();
+  });
+
+  it("al volver a la pestaña se pone al día de una sola vez", async () => {
+    render(
+      <CrmShell
+        currentAgent={currentAgent}
+        initialConversations={[buildConversation()]}
+        allTags={allTags}
+        initialQuickReplies={initialQuickReplies}
+        bcvRate={null}
+      />
+    );
+    fetchConversationsMock.mockClear();
+
+    act(() => ocultarPestana(true));
+    act(() => {
+      fake.trigger("conversations", "UPDATE");
+      fake.trigger("conversations", "UPDATE");
+      fake.trigger("conversations", "UPDATE");
+    });
+
+    await act(async () => {
+      ocultarPestana(false);
+    });
+
+    expect(fetchConversationsMock).toHaveBeenCalledTimes(1);
+  });
+});

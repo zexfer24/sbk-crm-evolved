@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { MessageCircle } from "lucide-react";
 import type { Agent, Conversation, Message, Note, QuickReply, Tag, WhatsappTemplate } from "@/lib/types";
 import { createClient } from "@/lib/supabase/client";
@@ -139,6 +139,39 @@ export function CrmShell({
   const scheduleRefreshConversations = useDebouncedCallback(refreshConversations, REALTIME_DEBOUNCE_MS);
 
   /**
+   * Quedó un cambio sin atender porque la pestaña no estaba a la vista.
+   *
+   * Un asesor deja el CRM abierto todo el día en una pestaña de fondo, y cada
+   * evento de realtime dispara un refetch de la bandeja entera —doscientas
+   * conversaciones, unos 230 KB—. Multiplicado por los agentes conectados, es
+   * trabajo constante que nadie está mirando y que le quita aire al que sí
+   * tiene el CRM delante. Mientras no se ve, se anota; al volver, una sola
+   * puesta al día.
+   */
+  const pendingWhileHidden = useRef(false);
+
+  const requestRefreshConversations = useCallback(() => {
+    if (typeof document !== "undefined" && document.hidden) {
+      pendingWhileHidden.current = true;
+      return;
+    }
+    scheduleRefreshConversations();
+  }, [scheduleRefreshConversations]);
+
+  useEffect(() => {
+    function onVisibilityChange() {
+      if (document.hidden || !pendingWhileHidden.current) return;
+      pendingWhileHidden.current = false;
+      // Directo y no por el agrupador: al volver a la pestaña se quiere la
+      // bandeja al día ya, no tres cuartos de segundo después.
+      refreshConversations();
+    }
+
+    document.addEventListener("visibilitychange", onVisibilityChange);
+    return () => document.removeEventListener("visibilitychange", onVisibilityChange);
+  }, [refreshConversations]);
+
+  /**
    * Apartar y desapartar un chat desde el menú de la bandeja.
    *
    * El estado local se mueve antes que la base: el asesor acaba de elegir la
@@ -188,17 +221,17 @@ export function CrmShell({
     const channel = supabase
       .channel("conversations-changes")
       .on("postgres_changes", { event: "*", schema: "public", table: "conversations" }, () => {
-        scheduleRefreshConversations();
+        requestRefreshConversations();
       })
       .on("postgres_changes", { event: "*", schema: "public", table: "contact_tags" }, () => {
-        scheduleRefreshConversations();
+        requestRefreshConversations();
       })
       .subscribe();
 
     return () => {
       supabase.removeChannel(channel);
     };
-  }, [supabase, scheduleRefreshConversations]);
+  }, [supabase, requestRefreshConversations]);
 
   // Mensajes rápidos compartidos entre agentes: se sincronizan en vivo.
   useEffect(() => {
