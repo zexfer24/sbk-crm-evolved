@@ -1,6 +1,6 @@
-import { describe, expect, it } from "vitest";
-import { render, screen, fireEvent } from "@testing-library/react";
-import { AudioContent, MediaContent } from "@/components/chat/message-bubble";
+import { describe, expect, it, vi } from "vitest";
+import { render, screen, fireEvent, act } from "@testing-library/react";
+import { AudioContent, MediaContent, MessageBubble } from "@/components/chat/message-bubble";
 import type { Message } from "@/lib/types";
 
 const AUDIO_URL = "https://example.com/nota-de-voz.ogg";
@@ -84,5 +84,108 @@ describe("AudioContent", () => {
 
     expect(screen.getByText("No se pudo cargar el audio.")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /reintentar/i })).toBeInTheDocument();
+  });
+});
+
+describe("MessageBubble — llegar hasta el mensaje citado", () => {
+  it("la burbuja lleva su id encima para poder encontrarla en la conversación", () => {
+    const { container } = render(<MessageBubble message={baseMessage({ id: "msg-42", content: "hola" })} />);
+    expect(container.querySelector('[data-message-id="msg-42"]')).not.toBeNull();
+  });
+
+  it("tocar la cita pide ir hasta el mensaje original", () => {
+    const onJumpToQuoted = vi.fn();
+    const citado = baseMessage({ id: "msg-viejo", content: "¿Tienen el carburador PZ27?" });
+
+    render(
+      <MessageBubble
+        message={baseMessage({ id: "msg-nuevo", content: "Sí, tenemos", replyToMessageId: "msg-viejo" })}
+        repliedMessage={citado}
+        onJumpToQuoted={onJumpToQuoted}
+      />
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: /ir al mensaje citado/i }));
+
+    expect(onJumpToQuoted).toHaveBeenCalledWith("msg-viejo");
+  });
+
+  it("sin a dónde saltar, la cita no finge ser un botón", () => {
+    render(
+      <MessageBubble
+        message={baseMessage({ content: "Sí", replyToMessageId: "msg-viejo" })}
+        repliedMessage={baseMessage({ id: "msg-viejo", content: "¿Hay?" })}
+      />
+    );
+    expect(screen.queryByRole("button", { name: /ir al mensaje citado/i })).not.toBeInTheDocument();
+  });
+});
+
+describe("MessageBubble — click derecho sobre el mensaje", () => {
+  it("ofrece responder, y responder cita ese mensaje", () => {
+    const onReply = vi.fn();
+    const message = baseMessage({ id: "msg-7", content: "¿Cuánto sale?" });
+
+    render(<MessageBubble message={message} onReply={onReply} />);
+    fireEvent.contextMenu(screen.getByText("¿Cuánto sale?"));
+    fireEvent.click(screen.getByRole("menuitem", { name: /responder/i }));
+
+    expect(onReply).toHaveBeenCalledWith(message);
+  });
+
+  it("sobre una foto ofrece además copiarla", () => {
+    render(
+      <MessageBubble
+        message={baseMessage({ id: "msg-8", messageType: "image", mediaUrl: "/api/media/foto.jpg" })}
+        onReply={vi.fn()}
+      />
+    );
+
+    fireEvent.contextMenu(screen.getByRole("button", { name: /ver la foto/i }));
+
+    expect(screen.getByRole("menuitem", { name: /copiar (la )?imagen/i })).toBeInTheDocument();
+  });
+
+  it("sobre un mensaje de solo texto no ofrece copiar imagen", () => {
+    render(<MessageBubble message={baseMessage({ content: "solo texto" })} onReply={vi.fn()} />);
+    fireEvent.contextMenu(screen.getByText("solo texto"));
+    expect(screen.queryByRole("menuitem", { name: /copiar (la )?imagen/i })).not.toBeInTheDocument();
+  });
+});
+
+describe("MessageBubble — en el teléfono no hay click derecho", () => {
+  it("mantener el dedo sobre el mensaje abre el mismo menú", () => {
+    vi.useFakeTimers();
+    try {
+      render(<MessageBubble message={baseMessage({ content: "¿Cuánto sale?" })} onReply={vi.fn()} />);
+
+      const burbuja = screen.getByText("¿Cuánto sale?");
+      fireEvent.touchStart(burbuja, { touches: [{ clientX: 40, clientY: 120 }] });
+      act(() => {
+        vi.advanceTimersByTime(500);
+      });
+
+      expect(screen.getByRole("menuitem", { name: /responder/i })).toBeInTheDocument();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("un desplazamiento no abre el menú: el dedo estaba pasando, no eligiendo", () => {
+    vi.useFakeTimers();
+    try {
+      render(<MessageBubble message={baseMessage({ content: "¿Cuánto sale?" })} onReply={vi.fn()} />);
+
+      const burbuja = screen.getByText("¿Cuánto sale?");
+      fireEvent.touchStart(burbuja, { touches: [{ clientX: 40, clientY: 120 }] });
+      fireEvent.touchMove(burbuja);
+      act(() => {
+        vi.advanceTimersByTime(500);
+      });
+
+      expect(screen.queryByRole("menu")).not.toBeInTheDocument();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

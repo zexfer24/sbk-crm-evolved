@@ -1,16 +1,10 @@
-import { Fragment, useRef } from "react";
+import { Fragment } from "react";
 import type { Conversation } from "@/lib/types";
 import { contactName, initials } from "@/lib/dashboard";
 import { formatConversationTimestamp } from "@/lib/format";
 import { highlightSegments, snippetAround, type MessageHit } from "@/lib/message-search";
 import { DeliveryCheck } from "@/components/chat/delivery-check";
-
-/**
- * Cuánto hay que mantener el dedo para que salga el menú. Medio segundo es
- * lo que usan Android e iOS: más corto lo dispara un scroll que arranca
- * lento, más largo se siente roto.
- */
-const LONG_PRESS_MS = 500;
+import { useLongPress } from "@/lib/use-long-press";
 
 interface ConversationListItemProps {
   conversation: Conversation;
@@ -52,17 +46,7 @@ export function ConversationListItem({
   // calla, porque describe el último mensaje y ya no es lo que se está viendo.
   const hitSnippet = messageHit ? snippetAround(messageHit.content, searchTerms) : null;
 
-  // Una pulsación larga termina soltando el dedo, y soltar el dedo es un
-  // click: sin esto, el menú se abriría y detrás se abriría la conversación.
-  const longPressTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const longPressFired = useRef(false);
-
-  function cancelLongPress() {
-    if (longPressTimer.current) {
-      clearTimeout(longPressTimer.current);
-      longPressTimer.current = null;
-    }
-  }
+  const longPress = useLongPress((position) => onOpenMenu?.(position));
 
   return (
     <button
@@ -70,10 +54,9 @@ export function ConversationListItem({
       type="button"
       aria-current={isSelected}
       onClick={() => {
-        if (longPressFired.current) {
-          longPressFired.current = false;
-          return;
-        }
+        // Soltar el dedo tras una pulsación larga también es un click: sin
+        // esto se abriría el menú y detrás la conversación.
+        if (longPress.consumeClick()) return;
         onSelect();
       }}
       onContextMenu={
@@ -83,23 +66,7 @@ export function ConversationListItem({
           onOpenMenu({ x: event.clientX, y: event.clientY });
         })
       }
-      onTouchStart={
-        onOpenMenu &&
-        ((event) => {
-          const touch = event.touches[0];
-          if (!touch) return;
-          const { clientX: x, clientY: y } = touch;
-          longPressFired.current = false;
-          cancelLongPress();
-          longPressTimer.current = setTimeout(() => {
-            longPressFired.current = true;
-            onOpenMenu({ x, y });
-          }, LONG_PRESS_MS);
-        })
-      }
-      onTouchMove={onOpenMenu && cancelLongPress}
-      onTouchEnd={onOpenMenu && cancelLongPress}
-      onTouchCancel={onOpenMenu && cancelLongPress}
+      {...(onOpenMenu ? longPress.handlers : {})}
     >
       <span className="crm-thread-avatar">
         <span className="lm-avatar" aria-hidden="true">

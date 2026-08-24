@@ -1,7 +1,12 @@
+"use client";
+
+import { useState } from "react";
 import { ImageDown } from "lucide-react";
 import type { Message } from "@/lib/types";
 import { formatMessageTime } from "@/lib/format";
 import { MediaThumb, type MediaItem } from "@/components/chat/media-lightbox";
+import { MessageContextMenu } from "@/components/chat/message-context-menu";
+import { useLongPress } from "@/lib/use-long-press";
 
 function cx(...classes: (string | false | null | undefined)[]) {
   return classes.filter(Boolean).join(" ");
@@ -28,6 +33,10 @@ function nombreDelMonton(messages: Message[]): string {
 export function MediaGroup({ messages }: { messages: Message[] }) {
   const isCustomer = messages[0].direction === "inbound";
   const last = messages[messages.length - 1];
+
+  // El menú es de una foto concreta, no del montón: copiar "la galería" no
+  // significa nada. Se guarda cuál se señaló junto a dónde se pidió.
+  const [menu, setMenu] = useState<{ message: Message; position: { x: number; y: number } } | null>(null);
 
   // El lightbox solo puede abrir lo que ya tiene archivo, así que su lista es
   // la de los descargados. Se guarda el índice que le toca a cada mensaje
@@ -68,13 +77,61 @@ export function MediaGroup({ messages }: { messages: Message[] }) {
               </div>
             );
           }
-          return <MediaThumb key={message.id} items={items} index={index} className="crm-thumb-sm" />;
+          return (
+            <GalleryThumb
+              key={message.id}
+              message={message}
+              items={items}
+              index={index}
+              onOpenMenu={(position) => setMenu({ message, position })}
+            />
+          );
         })}
       </div>
+
+      {menu && (
+        <MessageContextMenu
+          position={menu.position}
+          message={menu.message}
+          onClose={() => setMenu(null)}
+        />
+      )}
       <span className="px-1 text-[11px] text-muted">
         {nombreDelMonton(messages)}
         {enCamino > 0 && ` · ${enCamino} en camino`} · {formatMessageTime(last.createdAt)}
       </span>
+    </div>
+  );
+}
+
+/**
+ * Una miniatura de la galería con su menú propio. Va aparte porque la
+ * pulsación larga necesita estado, y un hook no puede vivir dentro del
+ * `map` que pinta la galería.
+ */
+function GalleryThumb({
+  message,
+  items,
+  index,
+  onOpenMenu,
+}: {
+  message: Message;
+  items: MediaItem[];
+  index: number;
+  onOpenMenu: (position: { x: number; y: number }) => void;
+}) {
+  const longPress = useLongPress(onOpenMenu);
+
+  return (
+    <div
+      className="contents"
+      onContextMenu={(event) => {
+        event.preventDefault();
+        onOpenMenu({ x: event.clientX, y: event.clientY });
+      }}
+      {...longPress.handlers}
+    >
+      <MediaThumb items={items} index={index} className="crm-thumb-sm" key={message.id} />
     </div>
   );
 }

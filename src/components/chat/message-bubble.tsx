@@ -2,8 +2,10 @@ import { useState } from "react";
 import { AudioLines, Bot, Download, FileText, ImageOff, Lock, RefreshCw, Reply as ReplyIcon } from "lucide-react";
 import type { Message } from "@/lib/types";
 import { formatMessageTime } from "@/lib/format";
+import { useLongPress } from "@/lib/use-long-press";
 import { MediaThumb } from "@/components/chat/media-lightbox";
 import { DeliveryCheck } from "@/components/chat/delivery-check";
+import { MessageContextMenu } from "@/components/chat/message-context-menu";
 import { FormattedText } from "@/components/chat/formatted-text";
 
 // MediaError.MEDIA_ERR_SRC_NOT_SUPPORTED no siempre está disponible como
@@ -149,9 +151,28 @@ interface MessageBubbleProps {
   message: Message;
   repliedMessage?: Message | null;
   onReply?: (message: Message) => void;
+  /**
+   * Lleva la conversación hasta el mensaje citado. Sin esto la cita se
+   * queda como lo que era: un recorte que dice de qué se hablaba, pero que
+   * no lleva a ningún lado.
+   */
+  onJumpToQuoted?: (messageId: string) => void;
+  /** Se acaba de llegar hasta acá desde una cita: se señala un momento. */
+  isHighlighted?: boolean;
 }
 
-export function MessageBubble({ message, repliedMessage, onReply }: MessageBubbleProps) {
+export function MessageBubble({
+  message,
+  repliedMessage,
+  onReply,
+  onJumpToQuoted,
+  isHighlighted = false,
+}: MessageBubbleProps) {
+  // Antes del retorno de `system_event`: un hook no puede quedar detrás de
+  // una salida temprana.
+  const [menuAt, setMenuAt] = useState<{ x: number; y: number } | null>(null);
+  const longPress = useLongPress(setMenuAt);
+
   if (message.messageType === "system_event") {
     return (
       <div className="flex justify-center py-1">
@@ -168,10 +189,17 @@ export function MessageBubble({ message, repliedMessage, onReply }: MessageBubbl
 
   return (
     <div
+      data-message-id={message.id}
+      data-highlight={isHighlighted || undefined}
       className={cx(
         "group crm-msg flex flex-col gap-1",
         isCustomer ? "items-start self-start" : "items-end self-end"
       )}
+      onContextMenu={(event) => {
+        event.preventDefault();
+        setMenuAt({ x: event.clientX, y: event.clientY });
+      }}
+      {...longPress.handlers}
     >
       {!isCustomer && (
         <span className="px-1 text-[11px] font-medium tracking-wide text-muted uppercase">
@@ -185,18 +213,35 @@ export function MessageBubble({ message, repliedMessage, onReply }: MessageBubbl
             isCustomer ? "customer" : isInternalNote ? "note" : isAi ? "ai" : "agent"
           }
         >
-          {repliedMessage && (
-            <div className="crm-bubble-quote">
-              <p className="font-medium">{senderLabel(repliedMessage)}</p>
-              <p className="truncate">
-                {repliedMessage.content ? (
-                  <FormattedText text={repliedMessage.content} />
-                ) : (
-                  `[${repliedMessage.messageType}]`
-                )}
-              </p>
-            </div>
-          )}
+          {repliedMessage &&
+            (onJumpToQuoted ? (
+              <button
+                type="button"
+                className="crm-bubble-quote"
+                onClick={() => onJumpToQuoted(repliedMessage.id)}
+                aria-label={`Ir al mensaje citado de ${senderLabel(repliedMessage)}`}
+              >
+                <span className="font-medium">{senderLabel(repliedMessage)}</span>
+                <span className="truncate">
+                  {repliedMessage.content ? (
+                    <FormattedText text={repliedMessage.content} />
+                  ) : (
+                    `[${repliedMessage.messageType}]`
+                  )}
+                </span>
+              </button>
+            ) : (
+              <div className="crm-bubble-quote">
+                <p className="font-medium">{senderLabel(repliedMessage)}</p>
+                <p className="truncate">
+                  {repliedMessage.content ? (
+                    <FormattedText text={repliedMessage.content} />
+                  ) : (
+                    `[${repliedMessage.messageType}]`
+                  )}
+                </p>
+              </div>
+            ))}
 
           {message.messageType === "template" && (
             <div className="mb-1 flex items-center gap-1.5 text-xs opacity-80">
@@ -231,6 +276,15 @@ export function MessageBubble({ message, repliedMessage, onReply }: MessageBubbl
           </button>
         )}
       </div>
+      {menuAt && (
+        <MessageContextMenu
+          position={menuAt}
+          message={message}
+          onReply={onReply}
+          onClose={() => setMenuAt(null)}
+        />
+      )}
+
       <span className="crm-msg-foot px-1 text-[11px] text-muted">
         {formatMessageTime(message.createdAt)}
         {!isCustomer && !isInternalNote && <DeliveryCheck status={message.whatsappStatus} size={13} />}

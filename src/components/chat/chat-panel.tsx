@@ -44,6 +44,31 @@ export function ChatPanel({
   const [isIntervening, setIsIntervening] = useState(false);
   const [replyingTo, setReplyingTo] = useState<Message | null>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
+  const listRef = useRef<HTMLDivElement>(null);
+
+  /** Mensaje al que se acaba de saltar desde una cita, para señalarlo. */
+  const [jumpedToId, setJumpedToId] = useState<string | null>(null);
+
+  /**
+   * Lleva la conversación hasta el mensaje citado.
+   *
+   * Una cita dice de qué se hablaba, pero en un hilo largo saber "de qué" sin
+   * poder volver "a dónde" sirve de poco: el asesor termina desplazando a
+   * mano hasta encontrarlo.
+   *
+   * Al abrir un chat solo se cargan los últimos mensajes, así que el citado
+   * puede haber quedado más atrás. En ese caso se dice, en vez de que el
+   * clic no haga nada y parezca que está roto.
+   */
+  function jumpToMessage(messageId: string) {
+    const target = listRef.current?.querySelector(`[data-message-id="${messageId}"]`);
+    if (!target) {
+      toast.danger("Ese mensaje quedó más atrás: cargá los mensajes anteriores para verlo.");
+      return;
+    }
+    target.scrollIntoView({ block: "center", behavior: "smooth" });
+    setJumpedToId(messageId);
+  }
 
   const messagesById = useMemo(() => new Map(messages.map((m) => [m.id, m])), [messages]);
   const renderItems = useMemo(() => groupMessagesForRender(messages), [messages]);
@@ -141,7 +166,7 @@ export function ChatPanel({
         onToggleAi={handleToggleAi}
       />
 
-      <div className="crm-messages">
+      <div className="crm-messages" ref={listRef}>
         {loadingMessages && (
           // Un chat vacío y un chat que todavía no llegó se ven igual, y no
           // son lo mismo: sin esto, abrir una conversación parpadea en
@@ -188,6 +213,8 @@ export function ChatPanel({
                 item.message.replyToMessageId ? (messagesById.get(item.message.replyToMessageId) ?? null) : null
               }
               onReply={setReplyingTo}
+              onJumpToQuoted={jumpToMessage}
+              isHighlighted={item.message.id === jumpedToId}
             />
           );
         })}

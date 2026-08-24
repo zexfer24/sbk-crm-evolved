@@ -1876,3 +1876,35 @@
   color: var(--lm-muted);
   font-size: 12px;
 }
+
+/* La cita es un botón cuando lleva a algún lado, pero tiene que seguir
+   viéndose como el recorte que era: sin borde, sin fondo de botón. */
+button.crm-bubble-quote {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  text-align: left;
+  cursor: pointer;
+}
+
+button.crm-bubble-quote:hover {
+  filter: brightness(0.96);
+}
+
+/* Al llegar desde una cita, el mensaje se señala un momento: sin esto uno
+   aterriza en mitad de la conversación sin saber en cuál de todos cayó. */
+.crm-msg[data-highlight="true"] .crm-bubble {
+  animation: crm-msg-found 1.8s ease-out;
+}
+
+@keyframes crm-msg-found {
+  0%, 40% { box-shadow: 0 0 0 3px var(--lm-hot-fill); }
+  100% { box-shadow: 0 0 0 0 transparent; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .crm-msg[data-highlight="true"] .crm-bubble {
+    animation: none;
+    box-shadow: 0 0 0 3px var(--lm-hot-fill);
+  }
+}
