@@ -1314,16 +1314,29 @@ export async function fetchAgentSettings(supabase: SupabaseClient): Promise<Agen
   };
 }
 
+/**
+ * Quién está usando el CRM.
+ *
+ * Sale de la sesión que ya viaja en la cookie y no de `auth.getUser()`, que
+ * es una llamada a GoTrue de ~841 ms de media (medido: 300 ms–3,5 s, 53–82 %
+ * de un núcleo) en cada carga de página.
+ *
+ * No es más débil: el id de la cookie solo se usa para CONSULTAR, y esa
+ * consulta viaja con el mismo token a PostgREST, que verifica su firma y
+ * aplica RLS. Con una cookie inventada la consulta se rechaza y no vuelve
+ * ninguna fila; con una cookie legítima, `sub` no se puede cambiar sin
+ * romper la firma. El agente que se devuelve sale de la base, no del token.
+ */
 export async function fetchCurrentAgent(supabase: SupabaseClient): Promise<Agent | null> {
   const {
-    data: { user },
-  } = await supabase.auth.getUser();
-  if (!user) return null;
+    data: { session },
+  } = await supabase.auth.getSession();
+  if (!session) return null;
 
   const { data, error } = await supabase
     .from("agents")
     .select("id, display_name, full_name, avatar_url, role, is_active")
-    .eq("id", user.id)
+    .eq("id", session.user.id)
     .maybeSingle();
 
   if (error) throw error;

@@ -20,17 +20,31 @@ const SIGNED_URL_TTL_SECONDS = 60;
 
 export async function GET(_request: Request, context: { params: Promise<{ path: string[] }> }) {
   const supabase = await createClient();
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
 
-  if (!user) {
+  // La sesión se lee de la cookie y no con `auth.getUser()`: esa ruta pega a
+  // GoTrue (~841 ms medidos) y acá se llama UNA VEZ POR ARCHIVO, así que
+  // abrir un chat con diez fotos eran diez llamadas.
+  //
+  // El portón no se movió de sitio: lo que autoriza es la consulta de abajo,
+  // que viaja a PostgREST con este mismo token. Si el token no está firmado,
+  // PostgREST la rechaza y no vuelve ninguna fila -> 403. Y `sub` no se puede
+  // cambiar sin romper la firma, así que el id que se consulta es el del
+  // dueño de la sesión y no uno elegido por quien pide.
+  const {
+    data: { session },
+  } = await supabase.auth.getSession();
+
+  if (!session) {
     return NextResponse.json({ error: "No autenticado." }, { status: 401 });
   }
 
   // Tener sesión en Supabase no basta: el CRM exige además una fila activa
   // en `agents`, igual que el resto de las políticas.
-  const { data: agent } = await supabase.from("agents").select("id").eq("id", user.id).maybeSingle();
+  const { data: agent } = await supabase
+    .from("agents")
+    .select("id")
+    .eq("id", session.user.id)
+    .maybeSingle();
   if (!agent) {
     return NextResponse.json({ error: "Sin acceso." }, { status: 403 });
   }
