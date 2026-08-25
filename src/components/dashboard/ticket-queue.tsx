@@ -63,7 +63,7 @@ export function TicketQueuePanel({ tickets, now }: TicketQueuePanelProps) {
                 </span>
 
                 <span className="dash-queue-cell dash-queue-hide">
-                  <span className="dash-chip" style={{ background: "rgba(228,80,59,.1)", color: "var(--lm-hot-ink)" }}>
+                  <span className="dash-chip" style={{ background: "rgb(var(--lm-hot-rgb) / 0.1)", color: "var(--lm-hot-ink)" }}>
                     <span className="dash-chip-dot" />
                     {reason}
                   </span>

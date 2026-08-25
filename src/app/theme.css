@@ -23,8 +23,14 @@
   --lm-muted: #656980;
   --lm-line: #e4e6f1;
 
-  /* Estados. El color no decora: dice en qué situación está algo. */
-  --lm-hot: #e4503b;
+  /* Estados. El color no decora: dice en qué situación está algo.
+     El rojo es el carmesí del logo de SBK Motors, no un bermellón cualquiera:
+     es el único sitio donde la marca entra a la paleta funcional. */
+  --lm-hot: #e02d44;
+  /* Componentes sueltos del carmesí, para los fondos teñidos
+     (rgb(var(--lm-hot-rgb) / 0.12)): así los tintes siguen al tema en vez de
+     quedarse con el rojo claro sobre fondo oscuro. */
+  --lm-hot-rgb: 224 45 68;
   --lm-link: #4a63f0;
   --lm-good: #22a06b;
   --lm-wait: #e79a24;
@@ -34,7 +40,7 @@
      (tags, píldoras, badges) o como fondo sólido bajo texto blanco. Las
      variantes de arriba solo alcanzan 3-4:1 en esos contextos —de sobra
      para un punto o un ícono, no para texto AA (4.5:1). Estas sí cumplen. */
-  --lm-hot-ink: #b73c28;
+  --lm-hot-ink: #b01d31;
   --lm-wait-ink: #8f5c0d;
   --lm-good-ink: #1a7a53;
   --lm-link-ink: #3346c9;
@@ -54,6 +60,10 @@
      luz: en oscuro no se invierten, se apagan. */
   --lm-glow: #f2f3fa;
   --lm-wash: rgba(255, 255, 255, 0.72);
+  /* El barrido de luz de los esqueletos de carga. Aparte de --lm-wash porque
+     tienen papeles distintos: este pasa por encima de un bloque hundido, y
+     con la opacidad del velo de hover deslumbraría. */
+  --lm-shimmer: rgba(255, 255, 255, 0.55);
 
   /* Relleno sólido de un estado (badge de no leídos, burbuja de reclamos,
      contador de carga): el color va de fondo y encima siempre hay texto
@@ -62,8 +72,8 @@
      rojo medio sirve para ambas cosas—; en el oscuro se separan, porque ahí
      el texto teñido tiene que aclararse y el relleno tiene que seguir
      oscuro para que el blanco encima se lea. */
-  --lm-hot-fill: #b73c28;
-  --lm-hot-fill-hover: #9c331f;
+  --lm-hot-fill: #b01d31;
+  --lm-hot-fill-hover: #92182a;
   --lm-wait-fill: #8f5c0d;
   --lm-good-fill: #1a7a53;
   --lm-link-fill: #3346c9;
@@ -125,7 +135,8 @@
 
   /* Estados, un paso más claros. Los mismos tonos, subidos de luminosidad
      hasta despegarse del fondo. */
-  --lm-hot: #ff6f58;
+  --lm-hot: #ff6b78;
+  --lm-hot-rgb: 255 107 120;
   --lm-link: #7f92ff;
   --lm-good: #3ecb92;
   --lm-wait: #f0ad3c;
@@ -134,7 +145,7 @@
   /* Texto sobre su propio fondo teñido. Acá los tintes son manchas oscuras,
      así que estos suben en vez de bajar: son más claros que el estado, no
      más oscuros. */
-  --lm-hot-ink: #ff9280;
+  --lm-hot-ink: #ff929c;
   --lm-wait-ink: #f5c56e;
   --lm-good-ink: #5fdaa9;
   --lm-link-ink: #a3b0ff;
@@ -146,8 +157,8 @@
   /* Rellenos sólidos: acá sí se separan de las variantes "-ink". Estos
      llevan --lm-on-fill (blanco) encima, así que siguen siendo oscuros
      aunque el fondo de la app lo sea; los "-ink" de arriba son claros. */
-  --lm-hot-fill: #c5402a;
-  --lm-hot-fill-hover: #a83422;
+  --lm-hot-fill: #c22638;
+  --lm-hot-fill-hover: #a51e2f;
   --lm-wait-fill: #9a6410;
   --lm-good-fill: #17754e;
   --lm-link-fill: #4054d8;
@@ -156,6 +167,7 @@
      más claro que el lienzo; el velo de hover baja a un roce de luz. */
   --lm-glow: #171a28;
   --lm-wash: rgba(255, 255, 255, 0.05);
+  --lm-shimmer: rgba(255, 255, 255, 0.06);
 
   /* Sombras: sobre un fondo oscuro una sombra difusa no se ve. Se compensa
      subiendo la opacidad y apoyándose en el propio negro del lienzo. */
@@ -387,7 +399,13 @@
   background: transparent;
   color: var(--lm-ink-soft);
   cursor: pointer;
-  transition: background 150ms ease, color 150ms ease;
+  transition: background 150ms ease, color 150ms ease, transform 120ms var(--lm-ease-out);
+}
+
+/* El botón acusa el dedo: se hunde apenas y vuelve solo. Los botones de
+   HeroUI ya lo hacen por su cuenta; esto empareja a los hechos a mano. */
+.lm-icon-btn:active:not(:disabled) {
+  transform: scale(0.92);
 }
 
 .lm-icon-btn:hover {
@@ -410,8 +428,30 @@
   outline-offset: 2px;
 }
 
+/* Los dos iconos del interruptor de tema conviven en el DOM (ver
+   theme-toggle.tsx: el servidor no sabe qué tema toca) y acá se muestra el
+   que corresponde. El icono enseña a dónde lleva el botón: luna en claro,
+   sol en oscuro. */
+.lm-icon-sun {
+  display: none;
+}
+
+:root[data-theme="dark"] .lm-icon-sun,
+:root.dark .lm-icon-sun {
+  display: block;
+}
+
+:root[data-theme="dark"] .lm-icon-moon,
+:root.dark .lm-icon-moon {
+  display: none;
+}
+
 @media (prefers-reduced-motion: reduce) {
   .lm-icon-btn {
     transition: none;
+  }
+
+  .lm-icon-btn:active:not(:disabled) {
+    transform: none;
   }
 }
