@@ -460,7 +460,85 @@ export async function setPlaybookActive(supabase: SupabaseClient, id: string, is
   if (error) throw error;
 }
 
-/** is_active es el mismo campo que usa el escalamiento de la IA para elegir a quién asignar por turno. */
+// ---------------------------------------------------------------------------
+// Interruptores de herramientas del agente. RLS solo deja escribir a
+// supervisores y admins; las filas las siembran las migraciones, no la app.
+// ---------------------------------------------------------------------------
+
+export async function setAgentToolEnabled(supabase: SupabaseClient, agent: Agent, key: string, enabled: boolean) {
+  const { error } = await supabase
+    .from("agent_tools")
+    .update({ is_enabled: enabled, updated_by: agent.id })
+    .eq("key", key);
+  if (error) throw error;
+}
+
+// ---------------------------------------------------------------------------
+// Biblioteca de conocimiento de la IA. RLS solo deja escribir a supervisores
+// y admins: es la información con la que la IA redacta frente a clientes.
+// ---------------------------------------------------------------------------
+
+export async function createKnowledgeCategory(supabase: SupabaseClient, name: string, description: string | null) {
+  const { error } = await supabase.from("knowledge_categories").insert({ name, description });
+  if (error) throw error;
+}
+
+/** Borra también sus entradas (on delete cascade): quien la borra ve la advertencia en el panel. */
+export async function deleteKnowledgeCategory(supabase: SupabaseClient, id: string) {
+  const { error } = await supabase.from("knowledge_categories").delete().eq("id", id);
+  if (error) throw error;
+}
+
+/** Campos editables de una entrada. `id` e `isActive` se manejan aparte. */
+export interface KnowledgeEntryDraft {
+  categoryId: string;
+  title: string;
+  content: string;
+  sourceFilename: string | null;
+}
+
+function knowledgeEntryRow(draft: KnowledgeEntryDraft, agent: Agent) {
+  return {
+    category_id: draft.categoryId,
+    title: draft.title,
+    content: draft.content,
+    source_filename: draft.sourceFilename,
+    updated_by: agent.id,
+  };
+}
+
+export async function createKnowledgeEntry(supabase: SupabaseClient, agent: Agent, draft: KnowledgeEntryDraft) {
+  const { error } = await supabase.from("knowledge_entries").insert(knowledgeEntryRow(draft, agent));
+  if (error) throw error;
+}
+
+export async function updateKnowledgeEntry(
+  supabase: SupabaseClient,
+  agent: Agent,
+  id: string,
+  draft: KnowledgeEntryDraft
+) {
+  const { error } = await supabase.from("knowledge_entries").update(knowledgeEntryRow(draft, agent)).eq("id", id);
+  if (error) throw error;
+}
+
+/** Apagar una entrada la esconde de la IA sin perder el texto. */
+export async function setKnowledgeEntryActive(supabase: SupabaseClient, id: string, isActive: boolean) {
+  const { error } = await supabase.from("knowledge_entries").update({ is_active: isActive }).eq("id", id);
+  if (error) throw error;
+}
+
+export async function deleteKnowledgeEntry(supabase: SupabaseClient, id: string) {
+  const { error } = await supabase.from("knowledge_entries").delete().eq("id", id);
+  if (error) throw error;
+}
+
+/**
+ * is_active hace dos cosas con el mismo interruptor: saca al agente del
+ * reparto por turno de la IA y le corta la entrada al CRM (el login, las
+ * páginas y el envío de mensajes lo comprueban). Apagar a alguien acá es
+ * dejarlo fuera de la operación completa, no solo del reparto.
+ */
 export async function setAgentActive(supabase: SupabaseClient, agentId: string, isActive: boolean) {
   const { error } = await supabase.from("agents").update({ is_active: isActive }).eq("id", agentId);
   if (error) throw error;

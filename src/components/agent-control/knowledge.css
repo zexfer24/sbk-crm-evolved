@@ -1,0 +1,50 @@
+/* Biblioteca de conocimiento — complementa agent-control.css, no lo pisa. */
+
+.kb-filter {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  padding: 0 26px 12px;
+}
+
+.kb-chip {
+  border: 1px solid var(--lm-line);
+  background: transparent;
+  color: var(--lm-muted);
+  font-size: 12px;
+  font-weight: 500;
+  padding: 4px 10px;
+  border-radius: 999px;
+  cursor: pointer;
+  transition: background 0.15s ease, color 0.15s ease, border-color 0.15s ease;
+}
+
+.kb-chip:hover {
+  color: var(--lm-ink);
+}
+
+.kb-chip[data-active="true"] {
+  background: var(--lm-ink);
+  border-color: var(--lm-ink);
+  color: var(--lm-on-ink);
+}
+
+/* El cuerpo de una entrada puede ser un documento entero: en la tarjeta se
+   muestra el comienzo y el resto vive en el editor. */
+.kb-entry-content {
+  display: -webkit-box;
+  -webkit-line-clamp: 4;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.kb-file-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  max-width: 200px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}

@@ -206,6 +206,35 @@ export interface Playbook {
   isActive: boolean;
 }
 
+/** Herramienta del agente de IA con su interruptor del panel. Las filas las siembran las migraciones. */
+export interface AgentTool {
+  /** Contrato con el código (src/lib/ai/agent-tools.ts): no se renombra. */
+  key: string;
+  name: string;
+  description: string;
+  isEnabled: boolean;
+}
+
+/** Sección de la biblioteca de conocimiento. Las crea el equipo según cómo divida su información. */
+export interface KnowledgeCategory {
+  id: string;
+  name: string;
+  description: string | null;
+}
+
+/** Un tema que la IA puede consultar. El contenido es información con la que redacta, no un texto que envía verbatim. */
+export interface KnowledgeEntry {
+  id: string;
+  categoryId: string;
+  categoryName: string;
+  title: string;
+  content: string;
+  /** Nombre del archivo (.md/.txt) del que se importó el contenido, si vino de uno. */
+  sourceFilename: string | null;
+  isActive: boolean;
+  updatedAt: string;
+}
+
 /**
  * Cortes de la bandeja. Los tres primeros son de administración (miran el
  * trabajo de todo el equipo); los dos últimos son del asesor sobre lo suyo.

@@ -1,16 +1,19 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Bot, ShieldAlert, Users, Zap } from "lucide-react";
+import { BookOpen, Bot, ShieldAlert, Users, Wrench, Zap } from "lucide-react";
 import type {
   Agent,
   AgentIntent,
   AgentSettings,
   AgentMetrics,
   AgentSuggestion,
+  AgentTool,
   AgentTurn,
   AgentTurnAction,
   Conversation,
+  KnowledgeCategory,
+  KnowledgeEntry,
   ModelPricing,
   ModelUsageSummary,
   Playbook,
@@ -21,10 +24,13 @@ import { createClient } from "@/lib/supabase/client";
 import {
   fetchAgentSettings,
   fetchAgentSuggestions,
+  fetchAgentTools,
   fetchAgentTurns,
   fetchAgentMetrics,
   fetchAllAgents,
   fetchConversations,
+  fetchKnowledgeCategories,
+  fetchKnowledgeEntries,
   fetchModelPricing,
   fetchPlaybooks,
   fetchTokenUsageSummary,
@@ -35,6 +41,7 @@ import {
   intervene,
   markSuggestionReviewed,
   setAgentActive,
+  setAgentToolEnabled,
   setAiEnabled,
   setAiGloballyEnabled,
   setDailySpendCap,
@@ -43,6 +50,8 @@ import {
 import { contactName, initials } from "@/lib/dashboard";
 import { formatTime12h } from "@/lib/format";
 import { AgentsRosterPanel } from "@/components/agent-control/agent-roster-panel";
+import { AgentToolsPanel } from "@/components/agent-control/agent-tools-panel";
+import { KnowledgePanel } from "@/components/agent-control/knowledge-panel";
 import { PlaybooksPanel } from "@/components/agent-control/playbooks-panel";
 import { SlidingPills } from "@/components/sliding-pills";
 import { AppRail, AppTopNav } from "@/components/app-rail";
@@ -68,10 +77,13 @@ interface AgentControlViewProps {
   initialPlaybooks: Playbook[];
   initialUnmatchedTurns: AgentTurn[];
   initialQuickReplies: QuickReply[];
+  initialAgentTools: AgentTool[];
+  initialKnowledgeCategories: KnowledgeCategory[];
+  initialKnowledgeEntries: KnowledgeEntry[];
   modelLabel: string;
 }
 
-type AgentControlTab = "ia" | "respuestas" | "agentes";
+type AgentControlTab = "ia" | "respuestas" | "biblioteca" | "herramientas" | "agentes";
 
 const INTENT_LABEL: Record<AgentIntent, string> = {
   consulta_disponibilidad: "Consulta",
@@ -99,6 +111,26 @@ const ACTION_TONE: Record<AgentTurnAction, string> = {
   error: "hot",
 };
 
+const TAB_TITLE: Record<AgentControlTab, string> = {
+  ia: "Control del agente de IA",
+  respuestas: "Respuestas predeterminadas",
+  biblioteca: "Biblioteca de conocimiento",
+  herramientas: "Herramientas de la IA",
+  agentes: "Control de agentes",
+};
+
+const TAB_SUBTITLE: Record<AgentControlTab, string> = {
+  ia: "Interruptor general, qué está haciendo la IA ahora mismo, y un simulador para probarla sin necesidad de WhatsApp real.",
+  respuestas:
+    "Los casos que la IA ya sabe resolver con un texto tuyo, y los mensajes de clientes que todavía no calzan con ninguno.",
+  biblioteca:
+    "Lo que la IA sabe de la tienda más allá del catálogo: envíos, pagos, garantías, horarios… Escríbelo o importa un .md y la IA lo usa al responder.",
+  herramientas:
+    "Enciende o apaga cada capacidad de la IA por separado, sin apagarla completa: ella sigue atendiendo con lo que tenga disponible.",
+  agentes:
+    "Quién está disponible para que la IA le pase conversaciones, cuánta carga lleva encima y cómo viene rindiendo: hoy y en los últimos 30 días.",
+};
+
 function timeLabel(iso: string): string {
   return formatTime12h(iso);
 }
@@ -116,6 +148,9 @@ export function AgentControlView({
   initialPlaybooks,
   initialUnmatchedTurns,
   initialQuickReplies,
+  initialAgentTools,
+  initialKnowledgeCategories,
+  initialKnowledgeEntries,
   modelLabel,
 }: AgentControlViewProps) {
   const supabase = useMemo(() => createClient(), []);
@@ -131,9 +166,13 @@ export function AgentControlView({
   const [agentMetrics, setAgentMetrics] = useState(initialAgentMetrics);
   const [playbooks, setPlaybooks] = useState(initialPlaybooks);
   const [unmatchedTurns, setUnmatchedTurns] = useState(initialUnmatchedTurns);
+  const [agentTools, setAgentTools] = useState(initialAgentTools);
+  const [knowledgeCategories, setKnowledgeCategories] = useState(initialKnowledgeCategories);
+  const [knowledgeEntries, setKnowledgeEntries] = useState(initialKnowledgeEntries);
   const [togglingKillSwitch, setTogglingKillSwitch] = useState(false);
   const [busyConversationId, setBusyConversationId] = useState<string | null>(null);
   const [togglingAgentId, setTogglingAgentId] = useState<string | null>(null);
+  const [togglingToolKey, setTogglingToolKey] = useState<string | null>(null);
 
   const [simText, setSimText] = useState("");
   const [simConversationId, setSimConversationId] = useState<string | null>(null);
@@ -158,6 +197,9 @@ export function AgentControlView({
         nextPlaybooks,
         nextAgentMetrics,
         nextUnmatched,
+        nextAgentTools,
+        nextKnowledgeCategories,
+        nextKnowledgeEntries,
       ] = await Promise.all([
         fetchConversations(supabase),
         fetchAgentTurns(supabase),
@@ -169,6 +211,9 @@ export function AgentControlView({
         fetchPlaybooks(supabase),
         fetchAgentMetrics(supabase),
         fetchUnmatchedTurns(supabase),
+        fetchAgentTools(supabase),
+        fetchKnowledgeCategories(supabase),
+        fetchKnowledgeEntries(supabase),
       ]);
       setConversations(nextConversations);
       setTurns(nextTurns);
@@ -180,6 +225,9 @@ export function AgentControlView({
       setPlaybooks(nextPlaybooks);
       setAgentMetrics(nextAgentMetrics);
       setUnmatchedTurns(nextUnmatched);
+      setAgentTools(nextAgentTools);
+      setKnowledgeCategories(nextKnowledgeCategories);
+      setKnowledgeEntries(nextKnowledgeEntries);
     } catch {
       // El siguiente cambio en tiempo real reintentará la sincronización.
     }
@@ -210,12 +258,25 @@ export function AgentControlView({
       .on("postgres_changes", { event: "UPDATE", schema: "public", table: "agents" }, () => scheduleRefresh())
       .on("postgres_changes", { event: "*", schema: "public", table: "agent_suggestions" }, () => scheduleRefresh())
       .on("postgres_changes", { event: "*", schema: "public", table: "ai_playbooks" }, () => scheduleRefresh())
+      .on("postgres_changes", { event: "UPDATE", schema: "public", table: "agent_tools" }, () => scheduleRefresh())
+      .on("postgres_changes", { event: "*", schema: "public", table: "knowledge_categories" }, () => scheduleRefresh())
+      .on("postgres_changes", { event: "*", schema: "public", table: "knowledge_entries" }, () => scheduleRefresh())
       .subscribe();
 
     return () => {
       supabase.removeChannel(channel);
     };
   }, [supabase, scheduleRefresh]);
+
+  async function toggleTool(tool: AgentTool) {
+    setTogglingToolKey(tool.key);
+    try {
+      await setAgentToolEnabled(supabase, currentAgent, tool.key, !tool.isEnabled);
+      await refresh();
+    } finally {
+      setTogglingToolKey(null);
+    }
+  }
 
   async function toggleAgentActive(agent: Agent) {
     setTogglingAgentId(agent.id);
@@ -352,20 +413,8 @@ export function AgentControlView({
 
             <div className="dash-header">
               <div>
-                <h1 className="dash-title dash-display">
-                  {tab === "ia"
-                    ? "Control del agente de IA"
-                    : tab === "respuestas"
-                      ? "Respuestas predeterminadas"
-                      : "Control de agentes"}
-                </h1>
-                <p className="dash-subtitle">
-                  {tab === "ia"
-                    ? "Interruptor general, qué está haciendo la IA ahora mismo, y un simulador para probarla sin necesidad de WhatsApp real."
-                    : tab === "respuestas"
-                      ? "Los casos que la IA ya sabe resolver con un texto tuyo, y los mensajes de clientes que todavía no calzan con ninguno."
-                      : "Quién está disponible para que la IA le pase conversaciones, cuánta carga lleva encima y cómo viene rindiendo: hoy y en los últimos 30 días."}
-                </p>
+                <h1 className="dash-title dash-display">{TAB_TITLE[tab]}</h1>
+                <p className="dash-subtitle">{TAB_SUBTITLE[tab]}</p>
               </div>
             </div>
 
@@ -379,6 +428,18 @@ export function AgentControlView({
               items={[
                 { value: "ia", label: "Control de IA" },
                 { value: "respuestas", label: "Respuestas", icon: <Zap size={13} />, count: playbooks.length },
+                {
+                  value: "biblioteca",
+                  label: "Biblioteca",
+                  icon: <BookOpen size={13} />,
+                  count: knowledgeEntries.length,
+                },
+                {
+                  value: "herramientas",
+                  label: "Herramientas",
+                  icon: <Wrench size={13} />,
+                  count: agentTools.length,
+                },
                 { value: "agentes", label: "Agentes", icon: <Users size={13} />, count: agents.length },
               ]}
             />
@@ -657,6 +718,24 @@ export function AgentControlView({
                 unmatchedTurns={unmatchedTurns}
                 quickReplies={initialQuickReplies}
                 canEdit={currentAgent.role === "supervisor" || currentAgent.role === "admin"}
+              />
+            )}
+
+            {tab === "biblioteca" && (
+              <KnowledgePanel
+                currentAgent={currentAgent}
+                categories={knowledgeCategories}
+                entries={knowledgeEntries}
+                canEdit={currentAgent.role === "supervisor" || currentAgent.role === "admin"}
+              />
+            )}
+
+            {tab === "herramientas" && (
+              <AgentToolsPanel
+                tools={agentTools}
+                canEdit={currentAgent.role === "supervisor" || currentAgent.role === "admin"}
+                togglingKey={togglingToolKey}
+                onToggle={toggleTool}
               />
             )}
 

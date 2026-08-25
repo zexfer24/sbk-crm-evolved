@@ -4,10 +4,13 @@ import {
   fetchAgentSettings,
   fetchAgentMetrics,
   fetchAgentSuggestions,
+  fetchAgentTools,
   fetchAgentTurns,
   fetchAllAgents,
   fetchConversations,
   fetchCurrentAgent,
+  fetchKnowledgeCategories,
+  fetchKnowledgeEntries,
   fetchModelPricing,
   fetchPlaybooks,
   fetchQuickReplies,
@@ -33,6 +36,9 @@ export default async function AgentControlPage() {
     playbooks,
     unmatchedTurns,
     quickReplies,
+    agentTools,
+    knowledgeCategories,
+    knowledgeEntries,
   ] = await Promise.all([
     fetchCurrentAgent(supabase),
     fetchConversations(supabase),
@@ -46,6 +52,9 @@ export default async function AgentControlPage() {
     fetchPlaybooks(supabase),
     fetchUnmatchedTurns(supabase),
     fetchQuickReplies(supabase),
+    fetchAgentTools(supabase),
+    fetchKnowledgeCategories(supabase),
+    fetchKnowledgeEntries(supabase),
   ]);
 
   if (!currentAgent) {
@@ -66,6 +75,9 @@ export default async function AgentControlPage() {
       initialPlaybooks={playbooks}
       initialUnmatchedTurns={unmatchedTurns}
       initialQuickReplies={quickReplies}
+      initialAgentTools={agentTools}
+      initialKnowledgeCategories={knowledgeCategories}
+      initialKnowledgeEntries={knowledgeEntries}
       modelLabel={currentAgentModelLabel()}
     />
   );

@@ -5,11 +5,14 @@ import type {
   AgentMetrics,
   AgentSettings,
   AgentSuggestion,
+  AgentTool,
   AgentTurn,
   Contact,
   Conversation,
   ConversationQuote,
   HourlyActivity,
+  KnowledgeCategory,
+  KnowledgeEntry,
   Message,
   ModelPricing,
   ModelUsageSummary,
@@ -715,6 +718,80 @@ export async function fetchPlaybooks(supabase: SupabaseClient): Promise<Playbook
   const { data, error } = await supabase.from("ai_playbooks").select(PLAYBOOK_COLUMNS).order("name");
   if (error) throw error;
   return (data as RawPlaybook[]).map(mapPlaybook);
+}
+
+interface RawAgentTool {
+  key: string;
+  name: string;
+  description: string;
+  is_enabled: boolean;
+}
+
+/** Los interruptores por herramienta del agente. Las filas las siembran las migraciones, no el panel. */
+export async function fetchAgentTools(supabase: SupabaseClient): Promise<AgentTool[]> {
+  const { data, error } = await supabase
+    .from("agent_tools")
+    .select("key, name, description, is_enabled")
+    .order("name");
+
+  if (error) throw error;
+  return (data as RawAgentTool[]).map((row) => ({
+    key: row.key,
+    name: row.name,
+    description: row.description,
+    isEnabled: row.is_enabled,
+  }));
+}
+
+interface RawKnowledgeCategory {
+  id: string;
+  name: string;
+  description: string | null;
+}
+
+export async function fetchKnowledgeCategories(supabase: SupabaseClient): Promise<KnowledgeCategory[]> {
+  const { data, error } = await supabase
+    .from("knowledge_categories")
+    .select("id, name, description")
+    .order("name");
+
+  if (error) throw error;
+  return (data as RawKnowledgeCategory[]).map((row) => ({
+    id: row.id,
+    name: row.name,
+    description: row.description,
+  }));
+}
+
+interface RawKnowledgeEntry {
+  id: string;
+  category_id: string;
+  title: string;
+  content: string;
+  source_filename: string | null;
+  is_active: boolean;
+  updated_at: string;
+  category: { name: string } | null;
+}
+
+/** Todas las entradas, activas e inactivas: el panel administra ambas. La IA filtra por su cuenta (ver knowledge.ts). */
+export async function fetchKnowledgeEntries(supabase: SupabaseClient): Promise<KnowledgeEntry[]> {
+  const { data, error } = await supabase
+    .from("knowledge_entries")
+    .select("id, category_id, title, content, source_filename, is_active, updated_at, category:knowledge_categories(name)")
+    .order("updated_at", { ascending: false });
+
+  if (error) throw error;
+  return (data as unknown as RawKnowledgeEntry[]).map((row) => ({
+    id: row.id,
+    categoryId: row.category_id,
+    categoryName: row.category?.name ?? "Sin categoría",
+    title: row.title,
+    content: row.content,
+    sourceFilename: row.source_filename,
+    isActive: row.is_active,
+    updatedAt: row.updated_at,
+  }));
 }
 
 /**
