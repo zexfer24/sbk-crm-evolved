@@ -160,6 +160,54 @@ describe("useLiveConversations — el evento se aplica en memoria cuando alcanza
   });
 });
 
+/**
+ * Lo que el evento no trae —quién es el asesor, cuánto fue la venta— obligaba
+ * a rearmar la lista entera para poner al día una línea. Con `fetchRow` se
+ * pide esa línea: ~1 KB en vez de la ventana completa.
+ */
+describe("useLiveConversations — un cambio con relaciones cuesta una fila", () => {
+  const fetchRowMock = vi.fn((id: string) =>
+    Promise.resolve(buildConversation({ id, assignedAgent: { id: "agent-9", displayName: "Luis" } }))
+  );
+
+  beforeEach(() => {
+    fetchRowMock.mockClear();
+  });
+
+  it("pide la fila y no la lista", async () => {
+    const { result } = renderHook(() =>
+      useLiveConversations(fake.supabase, [buildConversation()], {
+        fetcher: fetcherMock,
+        fetchRow: fetchRowMock,
+      })
+    );
+
+    act(() => {
+      fake.trigger("conversations", "UPDATE", filaDeConversacion({ assigned_agent_id: "agent-9" }));
+    });
+    await act(async () => {
+      vi.advanceTimersByTime(750);
+    });
+
+    expect(fetchRowMock).toHaveBeenCalledWith("conv-1");
+    expect(fetcherMock).not.toHaveBeenCalled();
+    expect(result.current.conversations[0].assignedAgent?.displayName).toBe("Luis");
+  });
+
+  it("sin fetchRow se cae al refresco de lista, como antes de tenerlo", async () => {
+    montar();
+
+    act(() => {
+      fake.trigger("conversations", "UPDATE", filaDeConversacion({ assigned_agent_id: "agent-9" }));
+    });
+    await act(async () => {
+      vi.advanceTimersByTime(750);
+    });
+
+    expect(fetcherMock).toHaveBeenCalledTimes(1);
+  });
+});
+
 describe("useLiveConversations — no trabaja contra una pestaña que nadie mira", () => {
   function ocultarPestana(hidden: boolean) {
     Object.defineProperty(document, "hidden", { configurable: true, get: () => hidden });

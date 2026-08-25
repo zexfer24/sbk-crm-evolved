@@ -465,6 +465,14 @@ export interface FetchConversationsOptions {
    * que no crece con el histórico) o `contactIds`/`ids` (una lista concreta).
    */
   limit?: number;
+  /**
+   * Desde qué fila empezar. Es lo que convierte «traer una página más» en una
+   * petición del tamaño de una página: sin esto, la bandeja pedía `limit`
+   * creciente desde la fila 0 y volvía a bajar todo lo que ya tenía — seis
+   * bajadas de scroll costaban 135 KB y 1,2 s, más que las 200 filas de una
+   * sola vez que se quiso eliminar.
+   */
+  offset?: number;
   /** Solo lo que no está cerrado: el tablero y el roster miran el trabajo vivo. */
   activeOnly?: boolean;
   /** Solo las conversaciones de estos contactos (los reclamos, una búsqueda). */
@@ -477,14 +485,13 @@ export async function fetchConversations(
   supabase: SupabaseClient,
   options: FetchConversationsOptions = {}
 ): Promise<ConversationSummary[]> {
-  const { limit, activeOnly, contactIds, ids } = options;
+  const { limit, offset = 0, activeOnly, contactIds, ids } = options;
 
   // `.in()` con lista vacía no es una consulta válida en PostgREST, y acá
   // además significa «nada que buscar»: no hay filas que devolver.
   if ((contactIds && contactIds.length === 0) || (ids && ids.length === 0)) return [];
 
   const rows: RawConversationSummary[] = [];
-  let from = 0;
 
   for (;;) {
     // Con tope pedido, la última página se recorta para no traer de más.
@@ -501,6 +508,7 @@ export async function fetchConversations(
     if (contactIds) request = request.in("contact_id", contactIds);
     if (ids) request = request.in("id", ids);
 
+    const from = offset + rows.length;
     const { data, error } = await request.range(from, from + pageSize - 1);
 
     if (error) throw error;
@@ -511,10 +519,31 @@ export async function fetchConversations(
     // Página incompleta: no hay más filas que pedir.
     if (page.length < pageSize) break;
     if (limit && rows.length >= limit) break;
-    from += pageSize;
   }
 
   return rows.map(mapConversationSummary);
+}
+
+/**
+ * Una sola fila de lista, por id.
+ *
+ * Es la contraparte de `fetchConversation` para las vistas que solo pintan
+ * filas: cuando el evento de tiempo real trae un cambio que la fila no
+ * resuelve sola —cambió el asesor asignado, se cerró la venta—, esto cuesta
+ * ~1 KB en vez de volver a bajar la lista entera.
+ */
+export async function fetchConversationRow(
+  supabase: SupabaseClient,
+  conversationId: string
+): Promise<ConversationSummary | null> {
+  const { data, error } = await supabase
+    .from("conversations")
+    .select(CONVERSATION_LIST_SELECT)
+    .eq("id", conversationId)
+    .maybeSingle();
+
+  if (error) throw error;
+  return data ? mapConversationSummary(data as unknown as RawConversationSummary) : null;
 }
 
 export async function fetchConversation(

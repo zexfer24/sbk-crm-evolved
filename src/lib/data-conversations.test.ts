@@ -155,6 +155,25 @@ describe("fetchConversations", () => {
   });
 
   /**
+   * Bajar por la bandeja tiene que costar una página.
+   *
+   * Sin `offset`, «traer 30 más» se pedía como `limit` creciente desde la
+   * fila 0: la sexta bajada volvía a bajar 180 filas —135 KB, 1,2 s medidos
+   * en producción— para mostrar 30 nuevas.
+   */
+  it("con offset pide solo la página siguiente", async () => {
+    const { client, calls } = createFakeSupabase(
+      Array.from({ length: 200 }, (_, i) => makeRow(i))
+    );
+
+    const result = await fetchConversations(client, { offset: 30, limit: 30 });
+
+    expect(calls).toEqual([{ from: 30, to: 59 }]);
+    expect(result).toHaveLength(30);
+    expect(result[0].id).toBe("conv-30");
+  });
+
+  /**
    * El tablero y el roster piden solo el trabajo vivo: su costo depende de la
    * carga del día, no de cuántos meses de histórico acumule el CRM.
    */

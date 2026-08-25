@@ -68,16 +68,20 @@ vi.mock("next/navigation", () => ({
   useRouter: () => ({ push: vi.fn() }),
 }));
 
-let inboxProps: { conversations: Conversation[] } | null = null;
+let inboxProps: { conversations: Conversation[]; hasMore: boolean } | null = null;
 
 vi.mock("@/components/inbox/inbox-sidebar", () => ({
   InboxSidebar: ({
     conversations,
     onSelect,
+    hasMore,
+    onLoadMore,
   }: {
     conversations: Conversation[];
     onSelect: (id: string) => void;
-  }) => ((inboxProps = { conversations }),
+    hasMore: boolean;
+    onLoadMore: () => void;
+  }) => ((inboxProps = { conversations, hasMore }),
   (
     <>
       {conversations.map((c) => (
@@ -85,6 +89,11 @@ vi.mock("@/components/inbox/inbox-sidebar", () => ({
           abrir {c.id}
         </button>
       ))}
+      {hasMore && (
+        <button type="button" onClick={onLoadMore}>
+          cargar más
+        </button>
+      )}
     </>
   )),
 }));
@@ -107,6 +116,10 @@ const fetchConversationMock = vi.fn(
   (_supabase: unknown, id: string) => Promise.resolve(buildConversation({ id }))
 );
 const fetchInboxCountsMock = vi.fn().mockResolvedValue({ unread: 0, mine: 0, unassigned: 0 });
+// La fila suelta que se pide cuando el evento trae un cambio con relaciones.
+const fetchConversationRowMock = vi.fn(
+  (_supabase: unknown, id: string) => Promise.resolve(buildConversation({ id }))
+);
 
 const fetchAgentSettingsMock = vi.fn().mockResolvedValue({
   aiGloballyEnabled: true,
@@ -120,6 +133,8 @@ vi.mock("@/lib/data", () => ({
   INBOX_PAGE_SIZE: 30,
   fetchConversation: (...args: unknown[]) =>
     fetchConversationMock(...(args as [unknown, string])),
+  fetchConversationRow: (...args: unknown[]) =>
+    fetchConversationRowMock(...(args as [unknown, string])),
   fetchConversations: (...args: unknown[]) => fetchConversationsMock(...args),
   fetchInboxCounts: (...args: unknown[]) => fetchInboxCountsMock(...args),
   fetchMessages: (...args: unknown[]) => fetchMessagesMock(...args),
@@ -209,6 +224,7 @@ beforeEach(() => {
   fake = createFakeSupabase();
   fetchConversationsMock.mockClear();
   fetchConversationMock.mockClear();
+  fetchConversationRowMock.mockClear();
   fetchInboxCountsMock.mockClear();
   fetchMessagesMock.mockClear();
   fetchMessagesMock.mockResolvedValue([]); // cada test decide qué mensajes hay
@@ -676,7 +692,7 @@ describe("CrmShell — la bandeja no se rearma entera por cada cambio", () => {
     expect(fetchConversationsMock).toHaveBeenCalledTimes(1);
   });
 
-  it("cambiar de agente asignado obliga a pedirla: el evento no trae quién es", async () => {
+  it("cambiar de agente asignado pide esa fila, no la bandeja", async () => {
     montar();
 
     act(() => {
@@ -686,10 +702,14 @@ describe("CrmShell — la bandeja no se rearma entera por cada cambio", () => {
       vi.advanceTimersByTime(750);
     });
 
-    expect(fetchConversationsMock).toHaveBeenCalledTimes(1);
+    // El evento trae el id del asesor, no quién es: hay que ir a buscarlo.
+    // Pero es una línea de la lista, no la lista.
+    expect(fetchConversationRowMock).toHaveBeenCalledTimes(1);
+    expect(fetchConversationRowMock.mock.calls[0][1]).toBe("conv-1");
+    expect(fetchConversationsMock).not.toHaveBeenCalled();
   });
 
-  it("cerrar la venta obliga a pedirla: el monto vive en otra tabla", async () => {
+  it("cerrar la venta pide esa fila: el monto vive en otra tabla", async () => {
     montar();
 
     act(() => {
@@ -699,7 +719,27 @@ describe("CrmShell — la bandeja no se rearma entera por cada cambio", () => {
       vi.advanceTimersByTime(750);
     });
 
-    expect(fetchConversationsMock).toHaveBeenCalledTimes(1);
+    expect(fetchConversationRowMock).toHaveBeenCalledTimes(1);
+    expect(fetchConversationsMock).not.toHaveBeenCalled();
+  });
+
+  it("la fila que vuelve reemplaza a la vieja en la bandeja", async () => {
+    montar();
+    fetchConversationRowMock.mockResolvedValueOnce(
+      buildConversation({
+        id: "conv-1",
+        assignedAgent: { ...currentAgent, id: "agent-9", displayName: "Luis" },
+      })
+    );
+
+    act(() => {
+      fake.trigger("conversations", "UPDATE", filaDeConversacion({ assigned_agent_id: "agent-9" }));
+    });
+    await act(async () => {
+      vi.advanceTimersByTime(750);
+    });
+
+    expect(inboxProps?.conversations[0].assignedAgent?.displayName).toBe("Luis");
   });
 
   it("una etiqueta puesta o quitada obliga a pedirla: no viaja en la fila", async () => {
@@ -713,6 +753,100 @@ describe("CrmShell — la bandeja no se rearma entera por cada cambio", () => {
     });
 
     expect(fetchConversationsMock).toHaveBeenCalledTimes(1);
+  });
+});
+
+/**
+ * Bajar por la bandeja pedía `limit` creciente desde la fila 0 y reemplazaba
+ * la lista: seis bajadas costaban 135 KB y 1,2 s medidos en producción — más
+ * que las 200 filas de una sola vez que se quiso eliminar. Cada tirada tiene
+ * que costar una página, sin importar cuántas se lleven bajadas.
+ */
+describe("CrmShell — bajar por la bandeja cuesta una página, no todo otra vez", () => {
+  /** Una bandeja llena hasta el tope de la primera página: hay más detrás. */
+  function paginaLlena(desde: number) {
+    return Array.from({ length: 30 }, (_, i) => buildConversation({ id: `conv-${desde + i}` }));
+  }
+
+  it("pide la página siguiente por desplazamiento y la pega al final", async () => {
+    render(
+      <CrmShell
+        currentAgent={currentAgent}
+        initialConversations={paginaLlena(0)}
+        initialInboxCounts={inboxCounts}
+        allTags={allTags}
+        initialQuickReplies={initialQuickReplies}
+        bcvRate={null}
+        initialAgentSettings={agentSettings}
+      />
+    );
+    fetchConversationsMock.mockClear();
+    fetchConversationsMock.mockResolvedValueOnce(paginaLlena(30));
+
+    await act(async () => {
+      screen.getByRole("button", { name: "cargar más" }).click();
+    });
+
+    expect(fetchConversationsMock).toHaveBeenCalledTimes(1);
+    expect(fetchConversationsMock.mock.calls[0][1]).toEqual({ offset: 30, limit: 30 });
+    // Concatenadas, no reemplazadas: las primeras 30 siguen ahí.
+    expect(inboxProps?.conversations).toHaveLength(60);
+    expect(inboxProps?.conversations[0].id).toBe("conv-0");
+    expect(inboxProps?.conversations[59].id).toBe("conv-59");
+  });
+
+  it("una página corta cierra el ofrecimiento: no hay nada más atrás", async () => {
+    render(
+      <CrmShell
+        currentAgent={currentAgent}
+        initialConversations={paginaLlena(0)}
+        initialInboxCounts={inboxCounts}
+        allTags={allTags}
+        initialQuickReplies={initialQuickReplies}
+        bcvRate={null}
+        initialAgentSettings={agentSettings}
+      />
+    );
+    fetchConversationsMock.mockResolvedValueOnce([buildConversation({ id: "conv-30" })]);
+
+    await act(async () => {
+      screen.getByRole("button", { name: "cargar más" }).click();
+    });
+
+    expect(inboxProps?.conversations).toHaveLength(31);
+    expect(inboxProps?.hasMore).toBe(false);
+  });
+
+  it("el refresco en vivo pide solo la cabecera y conserva lo que se bajó", async () => {
+    render(
+      <CrmShell
+        currentAgent={currentAgent}
+        initialConversations={paginaLlena(0)}
+        initialInboxCounts={inboxCounts}
+        allTags={allTags}
+        initialQuickReplies={initialQuickReplies}
+        bcvRate={null}
+        initialAgentSettings={agentSettings}
+      />
+    );
+    fetchConversationsMock.mockResolvedValueOnce(paginaLlena(30));
+    await act(async () => {
+      screen.getByRole("button", { name: "cargar más" }).click();
+    });
+    fetchConversationsMock.mockClear();
+
+    // Una conversación que no estaba: es lo que obliga a preguntar por la lista.
+    fetchConversationsMock.mockResolvedValueOnce(paginaLlena(0));
+    act(() => {
+      fake.trigger("conversations", "INSERT", { id: "conv-nueva" });
+    });
+    await act(async () => {
+      vi.advanceTimersByTime(750);
+    });
+
+    // Una página, no las 60 que hay en pantalla.
+    expect(fetchConversationsMock.mock.calls[0][1]).toEqual({ limit: 30 });
+    expect(inboxProps?.conversations).toHaveLength(60);
   });
 });
 

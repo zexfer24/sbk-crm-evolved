@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import type { Dispatch, SetStateAction } from "react";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import type { ConversationSummary } from "@/lib/types";
@@ -8,11 +8,18 @@ import { useLiveRefresh } from "@/lib/use-live-refresh";
 
 export interface UseLiveConversationsOptions {
   /**
-   * Qué lista mantiene viva esta vista. Cada vista pide lo suyo —la bandeja
-   * su ventana paginada, el tablero el trabajo vivo más los reclamos— y el
-   * hook solo se ocupa de cuándo volver a pedirla.
+   * Qué lista mantiene viva esta vista. Recibe lo que hay en pantalla ahora y
+   * devuelve lo que debe quedar: así la bandeja puede refrescar solo la
+   * cabecera y conservar las páginas que el asesor bajó, en vez de volver a
+   * pedir toda la ventana en cada evento.
    */
-  fetcher: () => Promise<ConversationSummary[]>;
+  fetcher: (current: ConversationSummary[]) => Promise<ConversationSummary[]>;
+  /**
+   * Trae una conversación suelta por id. Sin esto, un cambio que la fila no
+   * resuelve sola (el asesor asignado, la venta) obliga a rearmar la lista
+   * entera para actualizar una línea.
+   */
+  fetchRow?: (id: string) => Promise<ConversationSummary | null>;
   /**
    * Escuchar también contact_tags. Solo para las vistas que pintan etiquetas
    * (la bandeja, los reclamos del tablero): no viajan en la fila de la
@@ -32,60 +39,122 @@ export interface LiveConversations {
 }
 
 /**
+ * Qué hace falta para poner al día una fila que acaba de cambiar.
+ *
+ * - `applied`: el evento traía todo; ya se aplicó en memoria.
+ * - `row`: la fila está en la lista pero el cambio arrastra relaciones que el
+ *   evento no trae (quién es el asesor, cuánto fue la venta). Alcanza con
+ *   volver a pedir esa fila.
+ * - `list`: la conversación no está en la lista —es nueva, o estaba fuera de
+ *   la ventana cargada— y hay que preguntarle a la vista qué debe mostrar.
+ */
+type RowOutcome = "applied" | "row" | "list";
+
+/**
  * La lista de conversaciones mantenida al día por realtime, al costo mínimo.
  *
- * Cada evento de realtime pedía la lista entera: 200+ conversaciones con
- * siete relaciones cada una, unos 230 KB medidos, multiplicado por cada
- * pestaña abierta en cada vista (bandeja, tablero, ventas, control de IA).
- * Pero el evento ya trae la fila nueva: cuando lo que cambió son datos
- * propios de la conversación —el contador de no leídos, la vista previa, el
- * estado de entrega, el interruptor de la IA— no hay nada que volver a
- * pedir: se aplica y listo. En la práctica eso es casi todo el tráfico.
+ * Cada evento de realtime pedía la lista entera. Pero el evento ya trae la
+ * fila nueva: cuando lo que cambió son datos propios de la conversación —el
+ * contador de no leídos, la vista previa, el estado de entrega, el
+ * interruptor de la IA— no hay nada que volver a pedir: se aplica y listo.
+ * En la práctica eso es casi todo el tráfico.
  *
- * El refetch queda para lo que el evento no puede resolver:
- *   - Una conversación que no estaba en la lista (no trae contacto ni canal).
- *   - Un cambio de agente asignado: la fila trae el id, no el agente.
- *   - Una venta cerrada o verificada: el monto vive en `orders`.
- *   - Cualquier cosa de `contact_tags`: las etiquetas no viajan en la fila.
+ * De lo que queda, casi todo es una fila concreta que ya está en pantalla y
+ * cambió de asesor o de venta: eso se resuelve pidiendo esa fila (~1 KB).
+ * Solo lo que la lista no puede ni conocer —una conversación que no estaba—
+ * llega hasta el `fetcher` de la vista.
  */
 export function useLiveConversations(
   supabase: SupabaseClient,
   initialConversations: ConversationSummary[],
-  { fetcher, watchContactTags = false, channelName = "conversations-live" }: UseLiveConversationsOptions
+  {
+    fetcher,
+    fetchRow,
+    watchContactTags = false,
+    channelName = "conversations-live",
+  }: UseLiveConversationsOptions
 ): LiveConversations {
   const [conversations, setConversations] = useState<ConversationSummary[]>(initialConversations);
 
+  // Lo que hay en pantalla, legible desde los handlers de realtime y desde el
+  // refresco sin volver a atar la suscripción en cada cambio de la lista.
+  const conversationsRef = useRef(conversations);
+  useEffect(() => {
+    conversationsRef.current = conversations;
+  });
+
   const refreshConversations = useCallback(async () => {
     try {
-      const data = await fetcher();
-      setConversations(data);
+      setConversations(await fetcher(conversationsRef.current));
     } catch {
       // El siguiente cambio en tiempo real reintentará la sincronización.
     }
   }, [fetcher]);
 
-  const requestRefresh = useLiveRefresh(refreshConversations);
+  /** Filas concretas anotadas para volver a pedir en la próxima pasada. */
+  const pendingRowIds = useRef(new Set<string>());
+  /** Quedó algo que la lista no puede resolver fila por fila. */
+  const pendingList = useRef(false);
 
   /**
-   * Aplica en memoria un cambio que ya viene entero en el evento. Devuelve
-   * false cuando no puede resolverlo solo, y ahí sí se refresca.
+   * Una pasada de puesta al día. Atiende lo anotado desde el último paso: las
+   * filas sueltas si solo hubo eso, y la lista completa cuando hizo falta —o
+   * cuando llega la pasada de fondo periódica, que no trae nada anotado.
    */
-  const applyConversationRow = useCallback((row: Record<string, unknown>): boolean => {
-    const id = typeof row.id === "string" ? row.id : null;
-    if (!id) return false;
+  const runRefresh = useCallback(async () => {
+    const rowIds = [...pendingRowIds.current];
+    pendingRowIds.current.clear();
+    const wantsList = pendingList.current || rowIds.length === 0;
+    pendingList.current = false;
 
-    let resuelto = false;
+    if (wantsList) await refreshConversations();
+
+    if (rowIds.length > 0 && fetchRow) {
+      try {
+        const rows = await Promise.all(rowIds.map((id) => fetchRow(id)));
+        const byId = new Map(rows.filter((row) => row !== null).map((row) => [row.id, row]));
+        if (byId.size > 0) {
+          setConversations((current) => current.map((c) => byId.get(c.id) ?? c));
+        }
+      } catch {
+        // Lo repara la pasada de fondo.
+      }
+    }
+  }, [refreshConversations, fetchRow]);
+
+  const requestRefresh = useLiveRefresh(runRefresh);
+
+  const requestListRefresh = useCallback(() => {
+    pendingList.current = true;
+    requestRefresh();
+  }, [requestRefresh]);
+
+  /**
+   * Aplica en memoria un cambio que ya viene entero en el evento, y dice qué
+   * queda por hacer cuando no alcanza.
+   */
+  const applyConversationRow = useCallback((row: Record<string, unknown>): RowOutcome => {
+    const id = typeof row.id === "string" ? row.id : null;
+    if (!id) return "list";
+
+    let outcome: RowOutcome = "list";
     setConversations((current) => {
       const actual = current.find((c) => c.id === id);
+      // No está en la lista: puede ser nueva, o vieja y recién movida hacia
+      // arriba. Solo la vista sabe qué le corresponde mostrar.
       if (!actual) return current;
 
-      // Lo que no viaja en la fila: si cambió, hay que ir a buscarlo.
+      // Lo que no viaja en la fila: si cambió, hay que ir a buscarlo — pero
+      // solo esa fila, no la lista.
       const cambioElAsignado = (row.assigned_agent_id ?? null) !== (actual.assignedAgent?.id ?? null);
       const cambioLaVenta =
         row.deal_status !== actual.dealStatus || row.deal_verified !== actual.dealVerified;
-      if (cambioElAsignado || cambioLaVenta) return current;
+      if (cambioElAsignado || cambioLaVenta) {
+        outcome = "row";
+        return current;
+      }
 
-      resuelto = true;
+      outcome = "applied";
       return current.map((c) =>
         c.id === id
           ? {
@@ -108,25 +177,33 @@ export function useLiveConversations(
       );
     });
 
-    return resuelto;
+    return outcome;
   }, []);
 
   useEffect(() => {
     const channel = supabase
       .channel(channelName)
       .on("postgres_changes", { event: "*", schema: "public", table: "conversations" }, (payload) => {
-        // Un UPDATE que se resuelve con lo que ya trae el evento no necesita
-        // pedir nada. Todo lo demás —altas, bajas, o lo que arrastre
-        // relaciones— sigue yendo por el refresco completo.
-        if (payload.eventType === "UPDATE" && applyConversationRow(payload.new as Record<string, unknown>)) {
-          return;
+        if (payload.eventType === "UPDATE") {
+          const outcome = applyConversationRow(payload.new as Record<string, unknown>);
+          if (outcome === "applied") return;
+          // Sin `fetchRow` la vista no sabe pedir de a una: se cae al refresco
+          // de lista, que es como funcionaba antes de tenerlo.
+          if (outcome === "row" && fetchRow) {
+            const id = (payload.new as { id?: unknown }).id;
+            if (typeof id === "string") {
+              pendingRowIds.current.add(id);
+              requestRefresh();
+              return;
+            }
+          }
         }
-        requestRefresh();
+        requestListRefresh();
       });
 
     if (watchContactTags) {
       channel.on("postgres_changes", { event: "*", schema: "public", table: "contact_tags" }, () => {
-        requestRefresh();
+        requestListRefresh();
       });
     }
 
@@ -135,7 +212,15 @@ export function useLiveConversations(
     return () => {
       supabase.removeChannel(channel);
     };
-  }, [supabase, channelName, watchContactTags, requestRefresh, applyConversationRow]);
+  }, [
+    supabase,
+    channelName,
+    watchContactTags,
+    requestRefresh,
+    requestListRefresh,
+    applyConversationRow,
+    fetchRow,
+  ]);
 
   return { conversations, setConversations, refreshConversations };
 }

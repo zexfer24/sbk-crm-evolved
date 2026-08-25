@@ -29,6 +29,7 @@ import {
   fetchAgentTurns,
   fetchAgentMetrics,
   fetchAllAgents,
+  fetchConversationRow,
   fetchConversations,
   fetchKnowledgeCategories,
   fetchKnowledgeEntries,
@@ -168,8 +169,12 @@ export function AgentControlView({
     () => fetchConversations(supabase, { activeOnly: true }),
     [supabase]
   );
+  // Un cambio de asesor o de venta sobre una conversación que ya está en el
+  // panel se resuelve pidiendo esa fila, no rearmando la lista entera.
+  const fetchRow = useCallback((id: string) => fetchConversationRow(supabase, id), [supabase]);
   const { conversations, refreshConversations } = useLiveConversations(supabase, initialConversations, {
     fetcher,
+    fetchRow,
     channelName: "agent-control-conversations",
   });
   const [turns, setTurns] = useState(initialTurns);

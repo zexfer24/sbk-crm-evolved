@@ -17,6 +17,7 @@ import {
   CHAT_MESSAGES_WINDOW,
   INBOX_PAGE_SIZE,
   fetchConversation,
+  fetchConversationRow,
   fetchConversations,
   fetchInboxCounts,
   fetchMessages,
@@ -49,6 +50,23 @@ import { ContextPanel } from "@/components/context-panel/context-panel";
 import { AppRail } from "@/components/app-rail";
 import "@/components/crm.css";
 
+/**
+ * Une dos tramos de la lista sin repetir: el primero manda.
+ *
+ * Sirve para las dos costuras de la bandeja paginada. Al refrescar en vivo,
+ * `mergeById(cabecera, actual)` deja mandar lo recién traído y conserva las
+ * páginas viejas. Al bajar una página, `mergeById(actual, página)` la pega al
+ * final. En los dos casos, una conversación que se movió entre medias aparece
+ * una sola vez.
+ */
+function mergeById(
+  first: ConversationSummary[],
+  second: ConversationSummary[]
+): ConversationSummary[] {
+  const seen = new Set(first.map((c) => c.id));
+  return [...first, ...second.filter((c) => !seen.has(c.id))];
+}
+
 interface CrmShellProps {
   currentAgent: Agent;
   initialConversations: ConversationSummary[];
@@ -80,56 +98,73 @@ export function CrmShell({
 }: CrmShellProps) {
   const supabase = useMemo(() => createClient(), []);
 
-  /**
-   * Hasta dónde está paginada la bandeja. Crece de a una página cuando el
-   * asesor llega al fondo, y cada refresco en vivo vuelve a pedir la ventana
-   * completa hasta acá: así el costo lo decide lo que el asesor quiso ver,
-   * no el tamaño del histórico.
-   */
-  const [listLimit, setListLimit] = useState(
-    Math.max(INBOX_PAGE_SIZE, initialConversations.length)
-  );
   const [loadingMore, setLoadingMore] = useState(false);
+  /** La última página vino corta: no queda nada más atrás que ofrecer. */
+  const [reachedEnd, setReachedEnd] = useState(initialConversations.length < INBOX_PAGE_SIZE);
   const [inboxCounts, setInboxCounts] = useState<InboxCounts>(initialInboxCounts);
 
-  // Cada refetch de la lista aprovecha el viaje para refrescar los
-  // contadores del panel de inicio: cambian por los mismos eventos.
-  const fetchInboxWindow = useCallback(async () => {
-    const [rows, counts] = await Promise.all([
-      fetchConversations(supabase, { limit: listLimit }),
-      fetchInboxCounts(supabase, currentAgent.id),
-    ]);
-    setInboxCounts(counts);
-    return rows;
-  }, [supabase, listLimit, currentAgent.id]);
+  /**
+   * El refresco en vivo pide solo la cabecera y conserva lo que el asesor
+   * bajó. Antes rearmaba la ventana entera: quien había bajado seis veces
+   * pagaba 135 KB y 1,2 s en cada evento que no se resolviera en memoria.
+   * La cabecera basta porque una conversación con movimiento sube al tope, y
+   * lo que cambia sin subir se pide de a una fila (`fetchRow`).
+   *
+   * De paso refresca los contadores del panel de inicio: cambian por los
+   * mismos eventos y el viaje ya está hecho.
+   */
+  const fetchInboxHead = useCallback(
+    async (current: ConversationSummary[]) => {
+      const [head, counts] = await Promise.all([
+        fetchConversations(supabase, { limit: INBOX_PAGE_SIZE }),
+        fetchInboxCounts(supabase, currentAgent.id),
+      ]);
+      setInboxCounts(counts);
+      return mergeById(head, current);
+    },
+    [supabase, currentAgent.id]
+  );
+
+  const fetchInboxRow = useCallback(
+    (id: string) => fetchConversationRow(supabase, id),
+    [supabase]
+  );
 
   // La lista viva: aplica en memoria lo que el evento ya trae, agrupa los
   // refetch inevitables, y no trabaja contra una pestaña que nadie mira.
   const { conversations, setConversations, refreshConversations } = useLiveConversations(
     supabase,
     initialConversations,
-    { fetcher: fetchInboxWindow, watchContactTags: true, channelName: "conversations-changes" }
+    {
+      fetcher: fetchInboxHead,
+      fetchRow: fetchInboxRow,
+      watchContactTags: true,
+      channelName: "conversations-changes",
+    }
   );
 
-  // Una página que llegó completa sugiere que hay más detrás. Puede fallar en
-  // el borde exacto (el histórico mide justo la ventana): el único costo es
-  // ofrecer un «cargar más» que trae cero filas nuevas.
-  const hasMoreConversations = conversations.length >= listLimit;
+  const loadedCount = conversations.length;
 
   const loadMoreConversations = useCallback(async () => {
-    if (loadingMore) return;
+    if (loadingMore || reachedEnd) return;
     setLoadingMore(true);
     try {
-      const nextLimit = listLimit + INBOX_PAGE_SIZE;
-      const rows = await fetchConversations(supabase, { limit: nextLimit });
-      setListLimit(nextLimit);
-      setConversations(rows);
+      // El desplazamiento sale de cuántas hay en pantalla, no de un contador
+      // de páginas: si mientras tanto entró una conversación nueva arriba o
+      // desapareció una, la cuenta se corrige sola y `mergeById` descarta lo
+      // que vuelva repetido.
+      const page = await fetchConversations(supabase, {
+        offset: loadedCount,
+        limit: INBOX_PAGE_SIZE,
+      });
+      if (page.length < INBOX_PAGE_SIZE) setReachedEnd(true);
+      if (page.length > 0) setConversations((current) => mergeById(current, page));
     } catch {
       // La bandeja sigue con lo que ya tiene; el próximo intento reintenta.
     } finally {
       setLoadingMore(false);
     }
-  }, [supabase, listLimit, loadingMore, setConversations]);
+  }, [supabase, loadedCount, loadingMore, reachedEnd, setConversations]);
 
   // Sin conversación de inicio no se abre ninguna: abrir la primera de la
   // lista ponía al asesor a leer un chat que no eligió —y lo daba por leído—
@@ -568,7 +603,7 @@ export function CrmShell({
             bcvRate={bcvRate}
             onMarkUnread={markUnread}
             onMarkRead={markRead}
-            hasMore={hasMoreConversations}
+            hasMore={!reachedEnd}
             loadingMore={loadingMore}
             onLoadMore={loadMoreConversations}
           />
