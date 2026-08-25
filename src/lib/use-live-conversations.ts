@@ -3,23 +3,23 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { Dispatch, SetStateAction } from "react";
 import type { SupabaseClient } from "@supabase/supabase-js";
-import type { ConversationSummary } from "@/lib/types";
+import type { BoardConversation, ConversationSummary } from "@/lib/types";
 import { useLiveRefresh } from "@/lib/use-live-refresh";
 
-export interface UseLiveConversationsOptions {
+export interface UseLiveConversationsOptions<T extends BoardConversation> {
   /**
    * Qué lista mantiene viva esta vista. Recibe lo que hay en pantalla ahora y
    * devuelve lo que debe quedar: así la bandeja puede refrescar solo la
    * cabecera y conservar las páginas que el asesor bajó, en vez de volver a
    * pedir toda la ventana en cada evento.
    */
-  fetcher: (current: ConversationSummary[]) => Promise<ConversationSummary[]>;
+  fetcher: (current: T[]) => Promise<T[]>;
   /**
    * Trae una conversación suelta por id. Sin esto, un cambio que la fila no
    * resuelve sola (el asesor asignado, la venta) obliga a rearmar la lista
    * entera para actualizar una línea.
    */
-  fetchRow?: (id: string) => Promise<ConversationSummary | null>;
+  fetchRow?: (id: string) => Promise<T | null>;
   /**
    * Escuchar también contact_tags. Solo para las vistas que pintan etiquetas
    * (la bandeja, los reclamos del tablero): no viajan en la fila de la
@@ -30,10 +30,10 @@ export interface UseLiveConversationsOptions {
   channelName?: string;
 }
 
-export interface LiveConversations {
-  conversations: ConversationSummary[];
+export interface LiveConversations<T extends BoardConversation> {
+  conversations: T[];
   /** Para los ajustes optimistas de la propia vista (marcar leído, etc.). */
-  setConversations: Dispatch<SetStateAction<ConversationSummary[]>>;
+  setConversations: Dispatch<SetStateAction<T[]>>;
   /** Refetch inmediato, sin agrupar: tras una mutación que no puede esperar. */
   refreshConversations: () => Promise<void>;
 }
@@ -64,17 +64,17 @@ type RowOutcome = "applied" | "row" | "list";
  * Solo lo que la lista no puede ni conocer —una conversación que no estaba—
  * llega hasta el `fetcher` de la vista.
  */
-export function useLiveConversations(
+export function useLiveConversations<T extends BoardConversation>(
   supabase: SupabaseClient,
-  initialConversations: ConversationSummary[],
+  initialConversations: T[],
   {
     fetcher,
     fetchRow,
     watchContactTags = false,
     channelName = "conversations-live",
-  }: UseLiveConversationsOptions
-): LiveConversations {
-  const [conversations, setConversations] = useState<ConversationSummary[]>(initialConversations);
+  }: UseLiveConversationsOptions<T>
+): LiveConversations<T> {
+  const [conversations, setConversations] = useState<T[]>(initialConversations);
 
   // Lo que hay en pantalla, legible desde los handlers de realtime y desde el
   // refresco sin volver a atar la suscripción en cada cambio de la lista.
@@ -155,26 +155,29 @@ export function useLiveConversations(
       }
 
       outcome = "applied";
-      return current.map((c) =>
-        c.id === id
-          ? {
-              ...c,
-              unreadCount: row.unread_count as number,
-              manuallyUnread: row.manually_unread as boolean,
-              aiEnabled: row.ai_enabled as boolean,
-              status: row.status as ConversationSummary["status"],
-              lastMessageAt: row.last_message_at as string | null,
-              lastMessagePreview: row.last_message_preview as string | null,
-              lastMessageDirection: row.last_message_direction as ConversationSummary["lastMessageDirection"],
-              lastMessageStatus: row.last_message_status as ConversationSummary["lastMessageStatus"],
-              lastCustomerMessageAt: row.last_customer_message_at as string | null,
-              journeyStage: row.journey_stage as ConversationSummary["journeyStage"],
-              intent: row.intent as string | null,
-              activeTool: row.active_tool as string | null,
-              welcomeSentAt: row.welcome_sent_at as string | null,
-            }
-          : c
-      );
+      // El evento trae la fila entera de `conversations`, así que se aplican
+      // también los tres campos que solo pinta la bandeja: para el tablero
+      // son datos de más que nunca lee, y para la bandeja son la diferencia
+      // entre una vista previa al día y una vieja. De ahí el `as T`: lo que
+      // sale es la fila de esta vista con algún campo extra, nunca con uno
+      // de menos.
+      const patch: Partial<ConversationSummary> = {
+        unreadCount: row.unread_count as number,
+        manuallyUnread: row.manually_unread as boolean,
+        aiEnabled: row.ai_enabled as boolean,
+        status: row.status as ConversationSummary["status"],
+        lastMessageAt: row.last_message_at as string | null,
+        lastMessagePreview: row.last_message_preview as string | null,
+        lastMessageDirection: row.last_message_direction as ConversationSummary["lastMessageDirection"],
+        lastMessageStatus: row.last_message_status as ConversationSummary["lastMessageStatus"],
+        lastCustomerMessageAt: row.last_customer_message_at as string | null,
+        journeyStage: row.journey_stage as ConversationSummary["journeyStage"],
+        intent: row.intent as string | null,
+        activeTool: row.active_tool as string | null,
+        welcomeSentAt: row.welcome_sent_at as string | null,
+      };
+
+      return current.map((c) => (c.id === id ? ({ ...c, ...patch } as T) : c));
     });
 
     return outcome;

@@ -12,7 +12,7 @@ import type {
   AgentTool,
   AgentTurn,
   AgentTurnAction,
-  ConversationSummary,
+  BoardConversation,
   KnowledgeCategory,
   KnowledgeEntry,
   ModelPricing,
@@ -29,8 +29,8 @@ import {
   fetchAgentTurns,
   fetchAgentMetrics,
   fetchAllAgents,
-  fetchConversationRow,
-  fetchConversations,
+  fetchBoardConversationRow,
+  fetchBoardConversations,
   fetchKnowledgeCategories,
   fetchKnowledgeEntries,
   fetchModelPricing,
@@ -70,7 +70,7 @@ import "@/components/agent-control/agent-control.css";
 
 interface AgentControlViewProps {
   currentAgent: Agent;
-  initialConversations: ConversationSummary[];
+  initialConversations: BoardConversation[];
   initialTurns: AgentTurn[];
   initialSettings: AgentSettings;
   initialAgents: Agent[];
@@ -166,12 +166,15 @@ export function AgentControlView({
   // roster no miran conversaciones cerradas, y pedir el histórico completo
   // hacía crecer este panel con cada cliente nuevo.
   const fetcher = useCallback(
-    () => fetchConversations(supabase, { activeOnly: true }),
+    () => fetchBoardConversations(supabase, { activeOnly: true }),
     [supabase]
   );
   // Un cambio de asesor o de venta sobre una conversación que ya está en el
   // panel se resuelve pidiendo esa fila, no rearmando la lista entera.
-  const fetchRow = useCallback((id: string) => fetchConversationRow(supabase, id), [supabase]);
+  const fetchRow = useCallback(
+    (id: string) => fetchBoardConversationRow(supabase, id),
+    [supabase]
+  );
   const { conversations, refreshConversations } = useLiveConversations(supabase, initialConversations, {
     fetcher,
     fetchRow,

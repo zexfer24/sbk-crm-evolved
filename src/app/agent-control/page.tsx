@@ -7,7 +7,7 @@ import {
   fetchAgentTools,
   fetchAgentTurns,
   fetchAllAgents,
-  fetchConversations,
+  fetchBoardConversations,
   fetchCurrentAgent,
   fetchKnowledgeCategories,
   fetchKnowledgeEntries,
@@ -43,7 +43,7 @@ export default async function AgentControlPage() {
     fetchCurrentAgent(supabase),
     // Solo el trabajo vivo: el panel muestra la cola de la IA y el roster,
     // ninguno de los cuales mira conversaciones cerradas.
-    fetchConversations(supabase, { activeOnly: true }),
+    fetchBoardConversations(supabase, { activeOnly: true }),
     fetchAgentTurns(supabase),
     fetchAgentSettings(supabase),
     fetchAllAgents(supabase),

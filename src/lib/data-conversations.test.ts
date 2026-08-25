@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { SupabaseClient } from "@supabase/supabase-js";
-import { CONVERSATIONS_PAGE_SIZE, fetchConversations } from "@/lib/data";
+import { CONVERSATIONS_PAGE_SIZE, fetchBoardConversations, fetchConversations } from "@/lib/data";
 
 // ---------------------------------------------------------------------------
 // Fake de SupabaseClient para la cadena de fetchConversations
@@ -89,10 +89,13 @@ function createFakeSupabase(rows: ReturnType<typeof makeRow>[]) {
     };
   }
 
+  const selects: string[] = [];
+
   const client = {
     from() {
       return {
-        select() {
+        select(query: string) {
+          selects.push(query);
           return {
             order() {
               return builder(rows);
@@ -103,7 +106,7 @@ function createFakeSupabase(rows: ReturnType<typeof makeRow>[]) {
     },
   };
 
-  return { client: client as unknown as SupabaseClient, calls, filters };
+  return { client: client as unknown as SupabaseClient, calls, filters, selects };
 }
 
 describe("fetchConversations", () => {
@@ -186,6 +189,37 @@ describe("fetchConversations", () => {
 
     expect(filters).toContainEqual({ op: "neq", column: "status", value: "closed" });
     expect(result).toHaveLength(9);
+  });
+
+  /**
+   * El tablero y Control de IA piden TODO el trabajo abierto de una vez para
+   * contar por etapa y por asesor: cientos de filas, y cada campo se paga en
+   * cada una. Medido: 320,9 KB por petición. Lo que no cuentan ni pintan no
+   * puede viajar — sobre todo `contact_tags(tag:tags(...))`, que PostgREST
+   * resuelve con un lateral por fila.
+   */
+  it("la fila del tablero no arrastra ni la vista previa ni las etiquetas", async () => {
+    const { client, selects } = createFakeSupabase([makeRow(0)]);
+
+    await fetchBoardConversations(client, { activeOnly: true });
+
+    const select = selects[0];
+    expect(select).not.toContain("contact_tags");
+    expect(select).not.toContain("last_message_preview");
+    expect(select).not.toContain("last_message_status");
+    expect(select).not.toContain("avatar_url");
+    // Pero sí lo que el recorrido necesita para ubicar la conversación.
+    expect(select).toContain("journey_stage");
+    expect(select).toContain("assigned_agent");
+  });
+
+  it("la fila de la bandeja sí las lleva: pinta una línea de chat", async () => {
+    const { client, selects } = createFakeSupabase([makeRow(0)]);
+
+    await fetchConversations(client, { limit: 30 });
+
+    expect(selects[0]).toContain("contact_tags");
+    expect(selects[0]).toContain("last_message_preview");
   });
 
   /**

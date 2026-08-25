@@ -1,5 +1,5 @@
 import Link from "next/link";
-import type { ConversationSummary } from "@/lib/types";
+import type { BoardConversation, TicketTagsByContact } from "@/lib/types";
 import {
   compactDuration,
   contactName,
@@ -14,11 +14,13 @@ const LATE_MINUTES = 60 * 24;
 const MAX_ROWS = 7;
 
 interface TicketQueuePanelProps {
-  tickets: ConversationSummary[];
+  tickets: BoardConversation[];
   now: number;
+  /** El motivo de cada reclamo sale de acá: no viaja en la fila (ver types.ts). */
+  ticketTags: TicketTagsByContact;
 }
 
-export function TicketQueuePanel({ tickets, now }: TicketQueuePanelProps) {
+export function TicketQueuePanel({ tickets, now, ticketTags }: TicketQueuePanelProps) {
   const rows = tickets.slice(0, MAX_ROWS);
 
   return (
@@ -46,7 +48,7 @@ export function TicketQueuePanel({ tickets, now }: TicketQueuePanelProps) {
           {rows.map((conversation, rowIndex) => {
             const name = contactName(conversation);
             const waited = minutesInStage(conversation, now);
-            const reason = ticketTagsOf(conversation).map(ticketCategory).join(", ");
+            const reason = ticketTagsOf(conversation, ticketTags).map(ticketCategory).join(", ");
 
             return (
               <Link

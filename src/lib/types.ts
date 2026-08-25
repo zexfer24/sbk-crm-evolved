@@ -38,15 +38,23 @@ export interface Tag {
 export type CedulaType = "V" | "E";
 
 /**
- * El contacto tal como lo pinta una fila de lista: quién es y sus etiquetas.
- * La cédula y la dirección son de la ficha, no de la fila — se cargan con el
- * detalle al abrir la conversación.
+ * Lo mínimo para poner un nombre en una tarjeta. El tablero y el roster
+ * pintan iniciales y nombre, nada más: cargarles el avatar y las etiquetas
+ * de cada contacto multiplicaba una respuesta que ya trae cientos de filas.
  */
-export interface ContactSummary {
+export interface ContactName {
   id: string;
   phoneNumber: string;
   displayName: string | null;
   profileName: string | null;
+}
+
+/**
+ * El contacto tal como lo pinta una fila de la bandeja: quién es y sus
+ * etiquetas. La cédula y la dirección son de la ficha, no de la fila — se
+ * cargan con el detalle al abrir la conversación.
+ */
+export interface ContactSummary extends ContactName {
   avatarUrl: string | null;
   tags: Tag[];
 }
@@ -84,15 +92,19 @@ export type JourneyStageId =
   | "assigned";
 
 /**
- * Una conversación tal como la ven las listas: la fila de la bandeja, las
- * tarjetas del tablero, el roster. Es la forma que viaja por decenas en cada
- * respuesta, así que solo lleva lo que alguna lista pinta o filtra. Todo lo
- * demás —el canal, la ficha del contacto, el detalle de la venta— vive en
- * `Conversation` y se pide al abrir el chat, una conversación a la vez.
+ * La fila que miran el tablero y Control de IA: en qué punto del recorrido
+ * está la conversación, de quién es y hace cuánto que no se mueve.
+ *
+ * Es la forma más liviana, y a propósito: esas dos vistas piden TODO el
+ * trabajo abierto de una vez —cientos de filas— para contar por etapa y por
+ * asesor. Lo que no cuentan ni pintan no viaja: ni la vista previa del
+ * último mensaje, ni el estado de entrega, ni el avatar, ni las etiquetas
+ * del contacto (los reclamos llegan por `TicketTagsByContact`, que son unas
+ * pocas filas en vez de una relación anidada por cada conversación).
  */
-export interface ConversationSummary {
+export interface BoardConversation {
   id: string;
-  contact: ContactSummary;
+  contact: ContactName;
   status: ConversationStatus;
   unreadCount: number;
   /**
@@ -109,11 +121,6 @@ export interface ConversationSummary {
   dealVerified: boolean;
   lastCustomerMessageAt: string | null;
   lastMessageAt: string | null;
-  lastMessagePreview: string | null;
-  /** De quién es el último mensaje. El doble check solo aplica a los salientes. */
-  lastMessageDirection: MessageDirection | null;
-  /** Estado de entrega del último mensaje saliente: null en los entrantes. */
-  lastMessageStatus: WhatsappMessageStatus | null;
   createdAt: string;
   /** Etapa reportada por el agente de IA. Null = se deduce del resto del estado. */
   journeyStage: JourneyStageId | null;
@@ -124,6 +131,34 @@ export interface ConversationSummary {
   /** Última vez que se envió el mensaje de bienvenida. */
   welcomeSentAt: string | null;
 }
+
+/**
+ * La fila de la bandeja: lo del tablero más lo que hace falta para pintar
+ * una línea de chat —la vista previa, el doble check, el avatar y las
+ * etiquetas—. La bandeja carga de a 30, así que puede permitírselo.
+ *
+ * Todo lo demás —el canal, la ficha del contacto, el detalle de la venta—
+ * vive en `Conversation` y se pide al abrir el chat, una a la vez.
+ */
+export interface ConversationSummary extends BoardConversation {
+  contact: ContactSummary;
+  lastMessagePreview: string | null;
+  /** De quién es el último mensaje. El doble check solo aplica a los salientes. */
+  lastMessageDirection: MessageDirection | null;
+  /** Estado de entrega del último mensaje saliente: null en los entrantes. */
+  lastMessageStatus: WhatsappMessageStatus | null;
+}
+
+/**
+ * Qué etiquetas de reclamo tiene cada contacto, por id de contacto.
+ *
+ * Un reclamo es un contacto etiquetado (ver `lib/dashboard.ts`), y las
+ * etiquetas de reclamo son un puñado. Traerlas aparte cuesta dos consultas
+ * chicas y planas; traerlas embebidas costaba una relación anidada
+ * (`contact_tags(tag:tags(...))`) que PostgREST resuelve con un lateral por
+ * fila, en cada una de las cientos de filas del tablero.
+ */
+export type TicketTagsByContact = ReadonlyMap<string, Tag[]>;
 
 /** La conversación completa, la que abre el chat. Se pide de a una por id. */
 export interface Conversation extends ConversationSummary {

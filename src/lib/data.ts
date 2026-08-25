@@ -1,5 +1,6 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { pgrstLiteral } from "@/lib/ai/pgrst";
+import { isTicketTag } from "@/lib/dashboard";
 import { CRM_TIME_ZONE, currentDayRange } from "@/lib/time-zone";
 import type {
   Agent,
@@ -9,7 +10,9 @@ import type {
   AgentSuggestion,
   AgentTool,
   AgentTurn,
+  BoardConversation,
   Contact,
+  ContactName,
   ContactSummary,
   Conversation,
   ConversationQuote,
@@ -25,6 +28,7 @@ import type {
   QuickReply,
   Sale,
   Tag,
+  TicketTagsByContact,
   TokenUsageDay,
   TokenUsageSummary,
   WhatsappChannel,
@@ -79,16 +83,19 @@ interface RawAgentRef {
   display_name: string;
 }
 
-export interface RawContactSummary {
+interface RawContactName {
   id: string;
   phone_number: string;
   display_name: string | null;
   profile_name: string | null;
+}
+
+export interface RawContactSummary extends RawContactName {
   avatar_url: string | null;
   contact_tags: { tag: RawTag }[] | null;
 }
 
-interface RawConversationSummary {
+interface RawBoardConversation {
   id: string;
   status: Conversation["status"];
   unread_count: number;
@@ -98,16 +105,20 @@ interface RawConversationSummary {
   deal_verified: boolean;
   last_customer_message_at: string | null;
   last_message_at: string | null;
-  last_message_preview: string | null;
-  last_message_direction: Conversation["lastMessageDirection"];
-  last_message_status: Conversation["lastMessageStatus"];
   created_at: string;
   journey_stage: Conversation["journeyStage"];
   intent: string | null;
   active_tool: string | null;
   welcome_sent_at: string | null;
-  contact: RawContactSummary;
+  contact: RawContactName;
   assigned_agent: RawAgentRef | null;
+}
+
+interface RawConversationSummary extends RawBoardConversation {
+  last_message_preview: string | null;
+  last_message_direction: Conversation["lastMessageDirection"];
+  last_message_status: Conversation["lastMessageStatus"];
+  contact: RawContactSummary;
 }
 
 interface RawSale {
@@ -253,21 +264,27 @@ function mapAgentRef(row: RawAgentRef | null): AgentRef | null {
   return { id: row.id, displayName: row.display_name };
 }
 
-export function mapContactSummary(row: RawContactSummary): ContactSummary {
+function mapContactName(row: RawContactName): ContactName {
   return {
     id: row.id,
     phoneNumber: row.phone_number,
     displayName: row.display_name,
     profileName: row.profile_name,
+  };
+}
+
+export function mapContactSummary(row: RawContactSummary): ContactSummary {
+  return {
+    ...mapContactName(row),
     avatarUrl: row.avatar_url,
     tags: (row.contact_tags ?? []).map((ct) => mapTag(ct.tag)),
   };
 }
 
-function mapConversationSummary(row: RawConversationSummary): ConversationSummary {
+function mapBoardConversation(row: RawBoardConversation): BoardConversation {
   return {
     id: row.id,
-    contact: mapContactSummary(row.contact),
+    contact: mapContactName(row.contact),
     status: row.status,
     unreadCount: row.unread_count,
     manuallyUnread: row.manually_unread,
@@ -277,14 +294,21 @@ function mapConversationSummary(row: RawConversationSummary): ConversationSummar
     dealVerified: row.deal_verified,
     lastCustomerMessageAt: row.last_customer_message_at,
     lastMessageAt: row.last_message_at,
-    lastMessagePreview: row.last_message_preview,
-    lastMessageDirection: row.last_message_direction,
-    lastMessageStatus: row.last_message_status,
     createdAt: row.created_at,
     journeyStage: row.journey_stage,
     intent: row.intent,
     activeTool: row.active_tool,
     welcomeSentAt: row.welcome_sent_at,
+  };
+}
+
+function mapConversationSummary(row: RawConversationSummary): ConversationSummary {
+  return {
+    ...mapBoardConversation(row),
+    contact: mapContactSummary(row.contact),
+    lastMessagePreview: row.last_message_preview,
+    lastMessageDirection: row.last_message_direction,
+    lastMessageStatus: row.last_message_status,
   };
 }
 
@@ -410,16 +434,38 @@ function mapTemplate(row: RawTemplate): WhatsappTemplate {
 // ---------------------------------------------------------------------------
 
 /**
- * La fila de lista: lo que pintan la bandeja, el tablero y el roster, y nada
- * más. El select completo (`CONVERSATION_DETAIL_SELECT`) arrastraba siete
- * relaciones por fila —235 KB medidos en una lista de 200— para paneles que
- * solo se abren de a una conversación.
+ * Lo común a toda fila de lista. El select completo
+ * (`CONVERSATION_DETAIL_SELECT`) arrastraba siete relaciones por fila —235 KB
+ * medidos en una lista de 200— para paneles que solo se abren de a una
+ * conversación.
  */
-const CONVERSATION_LIST_SELECT = `
+const CONVERSATION_BOARD_COLUMNS = `
   id, status, unread_count, manually_unread, ai_enabled, deal_status, deal_verified,
-  last_customer_message_at, last_message_at, last_message_preview,
-  last_message_direction, last_message_status, created_at,
-  journey_stage, intent, active_tool, welcome_sent_at,
+  last_customer_message_at, last_message_at, created_at,
+  journey_stage, intent, active_tool, welcome_sent_at
+`;
+
+/**
+ * La fila del tablero y de Control de IA. Un solo embebido, y plano.
+ *
+ * Esas vistas piden todo el trabajo abierto de una vez para contar por etapa
+ * y por asesor, así que cada campo se paga cientos de veces. Fuera quedan la
+ * vista previa del último mensaje (el campo más gordo, y ninguna de las dos
+ * lo pinta), el estado de entrega, el avatar y —sobre todo— las etiquetas
+ * del contacto: `contact_tags(tag:tags(...))` es una relación anidada que
+ * PostgREST resuelve con un lateral por fila. Los reclamos llegan por
+ * `fetchTicketTags`, que son dos consultas planas y chicas.
+ */
+const CONVERSATION_BOARD_SELECT = `
+  ${CONVERSATION_BOARD_COLUMNS},
+  contact:contacts(id, phone_number, display_name, profile_name),
+  assigned_agent:agents!conversations_assigned_agent_id_fkey(id, display_name)
+`;
+
+/** La fila de la bandeja: la del tablero más lo que pinta una línea de chat. */
+const CONVERSATION_LIST_SELECT = `
+  ${CONVERSATION_BOARD_COLUMNS},
+  last_message_preview, last_message_direction, last_message_status,
   contact:contacts(id, phone_number, display_name, profile_name, avatar_url,
     contact_tags(tag:tags(id, label, color))),
   assigned_agent:agents!conversations_assigned_agent_id_fkey(id, display_name)
@@ -481,17 +527,20 @@ export interface FetchConversationsOptions {
   ids?: string[];
 }
 
-export async function fetchConversations(
+/**
+ * El recorrido de páginas, común a las dos formas de fila. Devuelve las filas
+ * crudas para que cada llamador las mapee con lo que pidió.
+ */
+async function fetchConversationRows<Raw>(
   supabase: SupabaseClient,
-  options: FetchConversationsOptions = {}
-): Promise<ConversationSummary[]> {
-  const { limit, offset = 0, activeOnly, contactIds, ids } = options;
-
+  select: string,
+  { limit, offset = 0, activeOnly, contactIds, ids }: FetchConversationsOptions
+): Promise<Raw[]> {
   // `.in()` con lista vacía no es una consulta válida en PostgREST, y acá
   // además significa «nada que buscar»: no hay filas que devolver.
   if ((contactIds && contactIds.length === 0) || (ids && ids.length === 0)) return [];
 
-  const rows: RawConversationSummary[] = [];
+  const rows: Raw[] = [];
 
   for (;;) {
     // Con tope pedido, la última página se recorta para no traer de más.
@@ -501,7 +550,7 @@ export async function fetchConversations(
 
     let request = supabase
       .from("conversations")
-      .select(CONVERSATION_LIST_SELECT)
+      .select(select)
       .order("last_message_at", { ascending: false, nullsFirst: false });
 
     if (activeOnly) request = request.neq("status", "closed");
@@ -513,7 +562,7 @@ export async function fetchConversations(
 
     if (error) throw error;
 
-    const page = (data as unknown as RawConversationSummary[]) ?? [];
+    const page = (data as unknown as Raw[]) ?? [];
     rows.push(...page);
 
     // Página incompleta: no hay más filas que pedir.
@@ -521,7 +570,32 @@ export async function fetchConversations(
     if (limit && rows.length >= limit) break;
   }
 
+  return rows;
+}
+
+export async function fetchConversations(
+  supabase: SupabaseClient,
+  options: FetchConversationsOptions = {}
+): Promise<ConversationSummary[]> {
+  const rows = await fetchConversationRows<RawConversationSummary>(
+    supabase,
+    CONVERSATION_LIST_SELECT,
+    options
+  );
   return rows.map(mapConversationSummary);
+}
+
+/** La misma consulta, con la fila liviana del tablero y de Control de IA. */
+export async function fetchBoardConversations(
+  supabase: SupabaseClient,
+  options: FetchConversationsOptions = {}
+): Promise<BoardConversation[]> {
+  const rows = await fetchConversationRows<RawBoardConversation>(
+    supabase,
+    CONVERSATION_BOARD_SELECT,
+    options
+  );
+  return rows.map(mapBoardConversation);
 }
 
 /**
@@ -544,6 +618,21 @@ export async function fetchConversationRow(
 
   if (error) throw error;
   return data ? mapConversationSummary(data as unknown as RawConversationSummary) : null;
+}
+
+/** La misma fila suelta, en la forma liviana del tablero. */
+export async function fetchBoardConversationRow(
+  supabase: SupabaseClient,
+  conversationId: string
+): Promise<BoardConversation | null> {
+  const { data, error } = await supabase
+    .from("conversations")
+    .select(CONVERSATION_BOARD_SELECT)
+    .eq("id", conversationId)
+    .maybeSingle();
+
+  if (error) throw error;
+  return data ? mapBoardConversation(data as unknown as RawBoardConversation) : null;
 }
 
 export async function fetchConversation(
@@ -655,30 +744,54 @@ const SALE_SELECT = `
 `;
 
 /**
- * Ids de contactos etiquetados como reclamo («Reclamo · …», ver dashboard.ts).
+ * Qué etiquetas de reclamo tiene cada contacto («Reclamo · …», ver
+ * dashboard.ts).
  *
- * Dos consultas chicas en vez de un join anidado en PostgREST: la tabla de
- * etiquetas tiene decenas de filas y los contactos etiquetados como reclamo
+ * Dos consultas chicas y planas en vez de embeber `contact_tags(tag:tags())`
+ * en cada fila del tablero: esa es una relación anidada que PostgREST
+ * resuelve con un lateral por fila, y el tablero pide cientos. Acá el
+ * catálogo de etiquetas tiene decenas de filas y los contactos con reclamo
  * son pocos. Es el mismo patrón de dos pasos que `fetchBuyerContactIds` en
  * la sección Clientes.
+ *
+ * El catálogo se trae entero y se filtra con `isTicketTag`, el mismo
+ * criterio que usa la vista: un `ilike 'reclamo%'` en SQL no ignora los
+ * acentos y se dejaría fuera una etiqueta escrita «Réclamo».
  */
-async function fetchTicketContactIds(supabase: SupabaseClient): Promise<string[]> {
+export async function fetchTicketTags(supabase: SupabaseClient): Promise<TicketTagsByContact> {
   const { data: tagRows, error: tagError } = await supabase
     .from("tags")
-    .select("id")
-    .ilike("label", "reclamo%");
+    .select("id, label, color");
 
   if (tagError) throw tagError;
-  const tagIds = ((tagRows ?? []) as { id: string }[]).map((row) => row.id);
-  if (tagIds.length === 0) return [];
+
+  const ticketTags = new Map(
+    ((tagRows ?? []) as RawTag[]).map(mapTag).filter(isTicketTag).map((tag) => [tag.id, tag])
+  );
+  if (ticketTags.size === 0) return new Map();
 
   const { data: linkRows, error: linkError } = await supabase
     .from("contact_tags")
-    .select("contact_id")
-    .in("tag_id", tagIds);
+    .select("contact_id, tag_id")
+    .in("tag_id", [...ticketTags.keys()]);
 
   if (linkError) throw linkError;
-  return [...new Set(((linkRows ?? []) as { contact_id: string }[]).map((row) => row.contact_id))];
+
+  const byContact = new Map<string, Tag[]>();
+  for (const link of (linkRows ?? []) as { contact_id: string; tag_id: string }[]) {
+    const tag = ticketTags.get(link.tag_id);
+    if (!tag) continue;
+    const current = byContact.get(link.contact_id);
+    if (current) current.push(tag);
+    else byContact.set(link.contact_id, [tag]);
+  }
+
+  return byContact;
+}
+
+export interface DashboardConversations {
+  conversations: BoardConversation[];
+  ticketTags: TicketTagsByContact;
 }
 
 /**
@@ -689,16 +802,20 @@ async function fetchTicketContactIds(supabase: SupabaseClient): Promise<string[]
  */
 export async function fetchDashboardConversations(
   supabase: SupabaseClient
-): Promise<ConversationSummary[]> {
-  const ticketContactIds = await fetchTicketContactIds(supabase);
+): Promise<DashboardConversations> {
+  const ticketTags = await fetchTicketTags(supabase);
+  const ticketContactIds = [...ticketTags.keys()];
 
   const [active, tickets] = await Promise.all([
-    fetchConversations(supabase, { activeOnly: true }),
-    fetchConversations(supabase, { contactIds: ticketContactIds }),
+    fetchBoardConversations(supabase, { activeOnly: true }),
+    fetchBoardConversations(supabase, { contactIds: ticketContactIds }),
   ]);
 
   const seen = new Set(active.map((c) => c.id));
-  return [...active, ...tickets.filter((c) => !seen.has(c.id))];
+  return {
+    conversations: [...active, ...tickets.filter((c) => !seen.has(c.id))],
+    ticketTags,
+  };
 }
 
 export async function fetchSales(supabase: SupabaseClient): Promise<Sale[]> {

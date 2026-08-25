@@ -3,9 +3,13 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { RefreshCw, Route, TriangleAlert } from "lucide-react";
-import type { Agent, ConversationSummary, HourlyActivity } from "@/lib/types";
+import type { Agent, BoardConversation, HourlyActivity, TicketTagsByContact } from "@/lib/types";
 import { createClient } from "@/lib/supabase/client";
-import { fetchConversationRow, fetchDashboardConversations, fetchTodayActivity } from "@/lib/data";
+import {
+  fetchBoardConversationRow,
+  fetchDashboardConversations,
+  fetchTodayActivity,
+} from "@/lib/data";
 import { useClock } from "@/lib/use-clock";
 import { useLiveConversations } from "@/lib/use-live-conversations";
 import { useLiveRefresh } from "@/lib/use-live-refresh";
@@ -35,7 +39,9 @@ const LOAD_THRESHOLDS = [
 interface DashboardViewProps {
   currentAgent: Agent;
   agents: Agent[];
-  initialConversations: ConversationSummary[];
+  initialConversations: BoardConversation[];
+  /** Qué contactos tienen etiqueta de reclamo: no viaja en la fila (ver types.ts). */
+  initialTicketTags: TicketTagsByContact;
   initialActivity: HourlyActivity[];
   timeZone: string;
 }
@@ -44,6 +50,7 @@ export function DashboardView({
   currentAgent,
   agents,
   initialConversations,
+  initialTicketTags,
   initialActivity,
   timeZone,
 }: DashboardViewProps) {
@@ -54,10 +61,23 @@ export function DashboardView({
   // escucha contact_tags. Lo que pide es el trabajo vivo más los reclamos —
   // nunca el histórico: con 600 conversaciones ya eran 235 KB por refetch, y
   // el costo crecía con cada cliente nuevo.
-  const fetcher = useCallback(() => fetchDashboardConversations(supabase), [supabase]);
+  const [ticketTags, setTicketTags] = useState<TicketTagsByContact>(initialTicketTags);
+
+  // Las etiquetas de reclamo llegan por su propio camino —dos consultas
+  // planas— y no embebidas en cada una de las cientos de filas del tablero.
+  // El mismo viaje que rearma la lista las trae al día.
+  const fetcher = useCallback(async () => {
+    const { conversations, ticketTags: tags } = await fetchDashboardConversations(supabase);
+    setTicketTags(tags);
+    return conversations;
+  }, [supabase]);
+
   // Un cambio de asesor o de venta sobre una conversación que ya está en el
   // tablero se resuelve pidiendo esa fila, no rearmando el tablero entero.
-  const fetchRow = useCallback((id: string) => fetchConversationRow(supabase, id), [supabase]);
+  const fetchRow = useCallback(
+    (id: string) => fetchBoardConversationRow(supabase, id),
+    [supabase]
+  );
   const { conversations, refreshConversations } = useLiveConversations(supabase, initialConversations, {
     fetcher,
     fetchRow,
@@ -104,8 +124,14 @@ export function DashboardView({
   }, [refreshConversations, refreshActivity]);
 
   const stages = useMemo(() => buildJourney(conversations, now), [conversations, now]);
-  const stats = useMemo(() => buildTicketStats(conversations, now), [conversations, now]);
-  const tickets = useMemo(() => ticketQueue(conversations, now), [conversations, now]);
+  const stats = useMemo(
+    () => buildTicketStats(conversations, now, ticketTags),
+    [conversations, now, ticketTags]
+  );
+  const tickets = useMemo(
+    () => ticketQueue(conversations, now, ticketTags),
+    [conversations, now, ticketTags]
+  );
 
   const countIn = (id: string) => stages.find((s) => s.id === id)?.conversations.length ?? 0;
   const arriving = countIn("first_contact");
@@ -231,7 +257,7 @@ export function DashboardView({
             </div>
 
             <div className="dash-lower" id="reclamos">
-              <TicketQueuePanel tickets={tickets} now={now} />
+              <TicketQueuePanel tickets={tickets} now={now} ticketTags={ticketTags} />
               <TicketStatsPanel stats={stats} />
             </div>
           </div>
@@ -251,7 +277,7 @@ function PulseItem({ value, label }: { value: number; label: string }) {
 }
 
 /** Casos abiertos por asesor, el equipo ordenado de más a menos cargado. */
-function agentLoad(agents: Agent[], conversations: ConversationSummary[]) {
+function agentLoad(agents: Agent[], conversations: BoardConversation[]) {
   return agents
     .map((agent) => ({
       agent,

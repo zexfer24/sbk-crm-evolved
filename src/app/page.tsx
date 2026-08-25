@@ -7,7 +7,7 @@ import { DashboardView } from "@/components/dashboard/dashboard-view";
 export default async function DashboardPage() {
   const supabase = await createClient();
 
-  const [currentAgent, agents, conversations, activity] = await Promise.all([
+  const [currentAgent, agents, dashboard, activity] = await Promise.all([
     fetchCurrentAgent(supabase),
     fetchAgents(supabase),
     fetchDashboardConversations(supabase),
@@ -22,7 +22,8 @@ export default async function DashboardPage() {
     <DashboardView
       currentAgent={currentAgent}
       agents={agents}
-      initialConversations={conversations}
+      initialConversations={dashboard.conversations}
+      initialTicketTags={dashboard.ticketTags}
       initialActivity={activity}
       timeZone={CRM_TIME_ZONE}
     />

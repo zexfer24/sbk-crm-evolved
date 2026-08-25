@@ -1,4 +1,10 @@
-import type { AgentRef, ConversationSummary, JourneyStageId, Tag } from "@/lib/types";
+import type {
+  AgentRef,
+  BoardConversation,
+  JourneyStageId,
+  Tag,
+  TicketTagsByContact,
+} from "@/lib/types";
 
 // ---------------------------------------------------------------------------
 // Reclamos
@@ -33,12 +39,26 @@ export function ticketCategory(tag: Tag): string {
   return tail.length > 0 ? tail : "General";
 }
 
-export function ticketTagsOf(conversation: ConversationSummary): Tag[] {
-  return conversation.contact.tags.filter(isTicketTag);
+/**
+ * Las etiquetas de reclamo de una conversación.
+ *
+ * Salen de un mapa por contacto y no de la propia fila: el tablero pide
+ * cientos de conversaciones de una vez, y embeberle a cada una sus etiquetas
+ * cuesta un lateral por fila en PostgREST. El mapa son dos consultas planas
+ * (ver `fetchTicketTags`).
+ */
+export function ticketTagsOf(
+  conversation: Pick<BoardConversation, "contact">,
+  ticketTags: TicketTagsByContact
+): Tag[] {
+  return ticketTags.get(conversation.contact.id) ?? [];
 }
 
-export function isTicket(conversation: ConversationSummary): boolean {
-  return ticketTagsOf(conversation).length > 0;
+export function isTicket(
+  conversation: Pick<BoardConversation, "contact">,
+  ticketTags: TicketTagsByContact
+): boolean {
+  return ticketTagsOf(conversation, ticketTags).length > 0;
 }
 
 // ---------------------------------------------------------------------------
@@ -55,7 +75,7 @@ export interface JourneyStage {
   caption: string;
   /** Minutos a partir de los cuales una conversación en esta etapa se considera atascada. */
   stallMinutes: number;
-  conversations: ConversationSummary[];
+  conversations: BoardConversation[];
   stalled: number;
 }
 
@@ -96,11 +116,11 @@ const STAGE_DEFINITIONS: Omit<JourneyStage, "conversations" | "stalled">[] = [
 export const TERMINAL_STAGE: JourneyStageId = "assigned";
 
 /** El tablero solo muestra recorridos vivos: lo cerrado ya no está en camino. */
-export function isActive(conversation: ConversationSummary): boolean {
+export function isActive(conversation: BoardConversation): boolean {
   return conversation.status !== "closed";
 }
 
-export function stageOf(conversation: ConversationSummary): JourneyStageId {
+export function stageOf(conversation: BoardConversation): JourneyStageId {
   if (conversation.journeyStage) return conversation.journeyStage;
 
   if (conversation.assignedAgent) return "assigned";
@@ -114,18 +134,18 @@ export function stageOf(conversation: ConversationSummary): JourneyStageId {
 }
 
 /** El último mensaje del hilo sigue siendo del cliente: nadie contestó. */
-export function awaitingReply(conversation: ConversationSummary): boolean {
+export function awaitingReply(conversation: BoardConversation): boolean {
   if (!conversation.lastCustomerMessageAt) return false;
   if (!conversation.lastMessageAt) return true;
   return new Date(conversation.lastMessageAt) <= new Date(conversation.lastCustomerMessageAt);
 }
 
-export function minutesInStage(conversation: ConversationSummary, now: number): number {
+export function minutesInStage(conversation: BoardConversation, now: number): number {
   const since = conversation.lastMessageAt ?? conversation.createdAt;
   return (now - new Date(since).getTime()) / 60000;
 }
 
-export function buildJourney(conversations: ConversationSummary[], now: number): JourneyStage[] {
+export function buildJourney(conversations: BoardConversation[], now: number): JourneyStage[] {
   const active = conversations.filter(isActive);
 
   return STAGE_DEFINITIONS.map((definition) => {
@@ -142,7 +162,7 @@ export function buildJourney(conversations: ConversationSummary[], now: number):
  * Qué se muestra bajo el nombre en la tarjeta: lo más útil de esa etapa.
  * En "clasificando" interesa la intención; en "herramienta", cuál corre.
  */
-export function stageDetail(conversation: ConversationSummary, stage: JourneyStageId): string | null {
+export function stageDetail(conversation: BoardConversation, stage: JourneyStageId): string | null {
   if (stage === "tool_running") return conversation.activeTool;
   if (stage === "classifying") return conversation.intent;
   if (stage === "assigned") return conversation.assignedAgent?.displayName ?? null;
@@ -178,18 +198,22 @@ export interface TicketStats {
   byAgent: TicketAgentStat[];
 }
 
-function isResolved(conversation: ConversationSummary): boolean {
+function isResolved(conversation: BoardConversation): boolean {
   return conversation.status === "closed";
 }
 
-export function buildTicketStats(conversations: ConversationSummary[], now: number): TicketStats {
-  const tickets = conversations.filter(isTicket);
+export function buildTicketStats(
+  conversations: BoardConversation[],
+  now: number,
+  ticketTags: TicketTagsByContact
+): TicketStats {
+  const tickets = conversations.filter((c) => isTicket(c, ticketTags));
   const open = tickets.filter((c) => !isResolved(c));
   const resolved = tickets.filter(isResolved);
 
   const categories = new Map<string, TicketCategoryStat>();
   for (const ticket of tickets) {
-    for (const tag of ticketTagsOf(ticket)) {
+    for (const tag of ticketTagsOf(ticket, ticketTags)) {
       const label = ticketCategory(tag);
       const stat = categories.get(label) ?? { label, total: 0, open: 0, resolved: 0 };
       stat.total += 1;
@@ -225,9 +249,13 @@ export function buildTicketStats(conversations: ConversationSummary[], now: numb
 }
 
 /** Reclamos abiertos ordenados por urgencia: primero los que llevan más tiempo callados. */
-export function ticketQueue(conversations: ConversationSummary[], now: number): ConversationSummary[] {
+export function ticketQueue(
+  conversations: BoardConversation[],
+  now: number,
+  ticketTags: TicketTagsByContact
+): BoardConversation[] {
   return conversations
-    .filter((c) => isTicket(c) && !isResolved(c))
+    .filter((c) => isTicket(c, ticketTags) && !isResolved(c))
     .sort((a, b) => minutesInStage(b, now) - minutesInStage(a, now));
 }
 
