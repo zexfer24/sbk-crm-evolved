@@ -20,6 +20,16 @@ export function ThemeToggle({ variant = "dash" }: { variant?: "crm" | "dash" }) 
   const isDark = resolved === "dark";
   const label = isDark ? "Cambiar a modo claro" : "Cambiar a modo oscuro";
 
+  // Los dos iconos van siempre en el DOM y el CSS muestra uno según
+  // `data-theme`. Elegirlo acá con `isDark ? <Sun/> : <Moon/>` rompía la
+  // hidratación: el servidor no conoce el tema (vive en localStorage) y
+  // asumía claro, así que en oscuro React encontraba el icono equivocado y
+  // regeneraba el árbol entero en cada carga. El CSS sí acierta desde el
+  // primer pintado, porque el script del <head> ya dejó `data-theme` puesto.
+  //
+  // `suppressHydrationWarning`: la etiqueta y aria-pressed siguen calculados
+  // en el cliente y difieren del HTML del servidor un instante; son atributos
+  // (no estructura), así que basta con silenciar el aviso en este botón.
   return (
     <button
       className={`${variant}-rail-btn`}
@@ -28,8 +38,10 @@ export function ThemeToggle({ variant = "dash" }: { variant?: "crm" | "dash" }) 
       aria-label={label}
       title={label}
       aria-pressed={isDark}
+      suppressHydrationWarning
     >
-      {isDark ? <Sun size={17} /> : <Moon size={17} />}
+      <Sun size={17} className="lm-icon-sun" aria-hidden="true" />
+      <Moon size={17} className="lm-icon-moon" aria-hidden="true" />
     </button>
   );
 }

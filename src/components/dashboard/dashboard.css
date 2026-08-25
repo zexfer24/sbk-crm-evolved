@@ -52,6 +52,45 @@
   max-width: 1560px;
 }
 
+/* Entrada de sección: los bloques suben apenas y en orden de lectura. Corta
+   y de pocos píxeles a propósito —se cambia de sección decenas de veces al
+   día, y una entrada que se nota a la quinta vez ya está estorbando. También
+   la hace el esqueleto, así el clic responde con el mismo gesto que el
+   contenido que llega detrás. */
+.dash-content > * {
+  animation: dash-content-rise 240ms var(--lm-ease-out) both;
+}
+
+.dash-content > *:nth-child(2) {
+  animation-delay: 40ms;
+}
+
+.dash-content > *:nth-child(3) {
+  animation-delay: 80ms;
+}
+
+.dash-content > *:nth-child(n + 4) {
+  animation-delay: 110ms;
+}
+
+@keyframes dash-content-rise {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  /* El escalonado se queda; el desplazamiento se va. */
+  .dash-content > * {
+    animation-name: dash-content-fade;
+  }
+
+  @keyframes dash-content-fade {
+    from { opacity: 0; }
+  }
+}
+
 /* --------------------------------------------------------------------------
    Rail lateral
    -------------------------------------------------------------------------- */
@@ -68,6 +107,17 @@
   flex: 1;
 }
 
+/* La placa SBK que encabeza el rail. La sombra la despega apenas del lienzo,
+   como a los botones activos, para que se lea parte del mismo material. */
+.dash-rail-brand {
+  display: grid;
+  place-items: center;
+  margin-bottom: 10px;
+  line-height: 0;
+  border-radius: 9px;
+  box-shadow: var(--lm-shadow-sm);
+}
+
 .dash-rail-btn {
   display: grid;
   place-items: center;
@@ -79,7 +129,10 @@
   color: var(--lm-muted);
   cursor: pointer;
   text-decoration: none;
-  transition: background 160ms ease, color 160ms ease, box-shadow 160ms ease;
+  /* transform en la lista: sin él, el scale del :active entra y sale a
+     golpe seco en vez de hundirse y volver. */
+  transition: background 160ms ease, color 160ms ease, box-shadow 160ms ease,
+    transform 120ms var(--lm-ease-out);
 }
 
 .dash-rail-btn:hover {
@@ -976,7 +1029,7 @@
 }
 
 .dash-stat[data-tone="hot"] {
-  background: rgba(228, 80, 59, 0.09);
+  background: rgb(var(--lm-hot-rgb) / 0.09);
 }
 
 .dash-stat[data-tone="hot"] .dash-stat-value {

@@ -3,8 +3,8 @@
 import { useState, type FormEvent } from "react";
 import { useRouter } from "next/navigation";
 import { Button, Input, Label } from "@heroui/react";
-import { MessageCircle } from "lucide-react";
 import { createClient } from "@/lib/supabase/client";
+import { SbkMark } from "@/components/sbk-logo";
 import "@/components/auth/login.css";
 
 export function LoginForm() {
@@ -37,7 +37,7 @@ export function LoginForm() {
     <div className="login-screen">
       <div className="login-card lm-panel">
         <div className="login-mark" aria-hidden="true">
-          <MessageCircle size={22} />
+          <SbkMark size={56} />
         </div>
         <h1 className="login-title lm-display">SBK Motorcycles CRM</h1>
         <p className="login-subtitle">Inicia sesión para entrar a la bandeja de entrada</p>
@@ -77,6 +77,7 @@ export function LoginForm() {
           )}
 
           <Button type="submit" fullWidth isDisabled={isLoading}>
+            {isLoading && <span className="login-spinner" aria-hidden="true" />}
             {isLoading ? "Entrando..." : "Entrar"}
           </Button>
         </form>

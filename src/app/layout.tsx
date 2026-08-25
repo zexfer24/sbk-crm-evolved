@@ -1,4 +1,4 @@
-import type { Metadata } from "next";
+import type { Metadata, Viewport } from "next";
 import { Familjen_Grotesk, Geist, Geist_Mono } from "next/font/google";
 import { Toast } from "@heroui/react";
 import "./globals.css";
@@ -26,6 +26,16 @@ const familjenGrotesk = Familjen_Grotesk({
 export const metadata: Metadata = {
   title: "SBK Motorcycles CRM",
   description: "CRM multiagente para ventas por WhatsApp con automatización de IA",
+};
+
+// El color de la interfaz del navegador (barra de pestañas en móvil, marco en
+// PWA) acompaña al lienzo en vez de quedarse blanco. Sigue al sistema, no al
+// interruptor de la app: es lo único que estas media queries saben ver.
+export const viewport: Viewport = {
+  themeColor: [
+    { media: "(prefers-color-scheme: light)", color: "#e7e9f2" },
+    { media: "(prefers-color-scheme: dark)", color: "#0b0c12" },
+  ],
 };
 
 export default function RootLayout({ children }: LayoutProps<"/">) {

@@ -4,6 +4,7 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { Bot, Inbox, LogOut, Package, Receipt, Route, Users } from "lucide-react";
 import { createClient } from "@/lib/supabase/client";
+import { SbkMark } from "@/components/sbk-logo";
 import { ThemeToggle } from "@/components/theme-toggle";
 
 /**
@@ -47,6 +48,12 @@ export function AppRail({ active, variant = "dash" }: AppRailProps) {
 
   return (
     <nav className={`${variant}-rail`} aria-label="Secciones">
+      {/* La marca ancla la columna, pero no navega: "Recorrido" ya es el
+          primer botón y un segundo camino a la misma ruta solo confunde. */}
+      <span className={`${variant}-rail-brand`}>
+        <SbkMark size={32} />
+      </span>
+
       {SECTIONS.map(({ id, href, label, Icon }) => (
         <Link
           key={id}

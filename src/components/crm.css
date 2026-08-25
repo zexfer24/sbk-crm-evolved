@@ -27,6 +27,16 @@
   flex: 1;
 }
 
+/* La placa SBK que encabeza el rail, igual que en las pantallas enmarcadas. */
+.crm-rail-brand {
+  display: grid;
+  place-items: center;
+  margin-bottom: 10px;
+  line-height: 0;
+  border-radius: 9px;
+  box-shadow: var(--lm-shadow-sm);
+}
+
 .crm-rail-btn {
   display: grid;
   place-items: center;
@@ -38,7 +48,13 @@
   color: var(--lm-muted);
   cursor: pointer;
   text-decoration: none;
-  transition: background 160ms ease, color 160ms ease, box-shadow 160ms ease;
+  transition: background 160ms ease, color 160ms ease, box-shadow 160ms ease,
+    transform 120ms var(--lm-ease-out);
+}
+
+/* El mismo hundirse-y-volver que el resto de los botones de la app. */
+.crm-rail-btn:active {
+  transform: scale(0.92);
 }
 
 .crm-rail-btn:hover,
@@ -73,6 +89,14 @@
   min-width: 0;
   min-height: 0;
   padding: 14px 16px 16px 0;
+  /* Solo opacidad y más corta que la entrada de las demás secciones: la
+     bandeja es el puesto de trabajo, no una tarjeta que se presenta. El
+     fundido tapa el corte esqueleto→datos, nada más. */
+  animation: crm-columns-fade 180ms ease-out both;
+}
+
+@keyframes crm-columns-fade {
+  from { opacity: 0; }
 }
 
 .crm-column {
@@ -418,12 +442,12 @@
 }
 
 .crm-pill[data-variant="danger"] {
-  background: rgba(228, 80, 59, 0.12);
+  background: rgb(var(--lm-hot-rgb) / 0.12);
   color: var(--lm-hot-ink);
 }
 
 .crm-pill[data-variant="danger"]:hover {
-  background: rgba(228, 80, 59, 0.18);
+  background: rgb(var(--lm-hot-rgb) / 0.18);
   color: var(--lm-hot-ink);
 }
 
@@ -755,6 +779,14 @@
   padding: 64px 16px 32px;
   background: rgba(10, 11, 20, 0.82);
   backdrop-filter: blur(6px);
+  /* El fondo oscurece en un suspiro y la foto crece desde el 96%: sin esto
+     el visor cae encima de la conversación de un fotograma a otro. Solo hay
+     entrada: al cerrar, React desmonta y no queda nada que animar. */
+  animation: crm-viewer-in 180ms ease-out both;
+}
+
+@keyframes crm-viewer-in {
+  from { opacity: 0; }
 }
 
 .crm-viewer-bar {
@@ -783,11 +815,15 @@
   background: rgba(255, 255, 255, 0.12);
   color: #ffffff;
   cursor: pointer;
-  transition: background 150ms ease;
+  transition: background 150ms ease, transform 120ms var(--lm-ease-out);
 }
 
 .crm-viewer-btn:hover {
   background: rgba(255, 255, 255, 0.22);
+}
+
+.crm-viewer-btn:active {
+  transform: scale(0.92);
 }
 
 .crm-viewer-nav {
@@ -801,10 +837,15 @@
   background: rgba(255, 255, 255, 0.12);
   color: #ffffff;
   cursor: pointer;
+  transition: background 150ms ease, transform 120ms var(--lm-ease-out);
 }
 
 .crm-viewer-nav:hover {
   background: rgba(255, 255, 255, 0.22);
+}
+
+.crm-viewer-nav:active {
+  transform: scale(0.92);
 }
 
 .crm-viewer-stage {
@@ -815,6 +856,16 @@
   min-width: 0;
   max-width: 100%;
   max-height: 100%;
+  /* Un pelo más tarde y desde más cerca que el fondo: la foto es lo que se
+     vino a ver, y llegar "creciendo hacia uno" la separa del velo. */
+  animation: crm-viewer-stage-in 220ms var(--lm-ease-out) both;
+}
+
+@keyframes crm-viewer-stage-in {
+  from {
+    opacity: 0;
+    transform: scale(0.96);
+  }
 }
 
 .crm-viewer-stage img,
@@ -823,6 +874,13 @@
   max-height: calc(100vh - 140px);
   border-radius: 14px;
   object-fit: contain;
+  /* Al pasar de una foto a otra el elemento se remonta: este fundido corto
+     tapa el corte. Solo opacidad, y tan breve que aguanta flechazos rápidos. */
+  animation: crm-viewer-media-in 140ms ease-out both;
+}
+
+@keyframes crm-viewer-media-in {
+  from { opacity: 0; }
 }
 
 .crm-viewer-caption {
@@ -956,7 +1014,7 @@
 }
 
 .crm-tag[data-color="danger"] {
-  background: rgba(228, 80, 59, 0.12);
+  background: rgb(var(--lm-hot-rgb) / 0.12);
   color: var(--lm-hot-ink);
 }
 
@@ -1203,6 +1261,141 @@
 }
 
 /* --------------------------------------------------------------------------
+   Panel del agente
+   Lo que ocupa la columna del chat cuando no hay conversación abierta: el
+   resumen del día del asesor, calculado con la lista que ya está en memoria.
+   -------------------------------------------------------------------------- */
+.crm-agent-home {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 40px 32px;
+  text-align: center;
+}
+
+.crm-agent-home-mark {
+  margin-bottom: 18px;
+  border-radius: 13px;
+  box-shadow: var(--lm-shadow-md);
+  line-height: 0;
+}
+
+.crm-agent-home-title {
+  margin: 0;
+  font-size: 24px;
+}
+
+.crm-agent-home-sub {
+  margin: 6px 0 0;
+  color: var(--lm-ink-soft);
+  font-size: 13.5px;
+  line-height: 1.4;
+}
+
+.crm-agent-stats {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+  width: 100%;
+  max-width: 400px;
+  margin-top: 24px;
+}
+
+.crm-agent-stat {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+  padding: 14px 10px;
+  border-radius: 16px;
+  background: var(--lm-sunken);
+}
+
+.crm-agent-stat-value {
+  font-size: 22px;
+  font-weight: 600;
+}
+
+.crm-agent-ai {
+  margin-top: 18px;
+}
+
+.crm-agent-ai[data-tone="good"] {
+  background: rgba(34, 160, 107, 0.12);
+  color: var(--lm-good-ink);
+}
+
+.crm-agent-ai[data-tone="wait"] {
+  background: rgba(231, 154, 36, 0.14);
+  color: var(--lm-wait-ink);
+}
+
+.crm-agent-hint {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  margin: 26px 0 0;
+  color: var(--lm-muted);
+  font-size: 12.5px;
+}
+
+/* La columna de contexto sin chat abierto: nombra lo que va a haber ahí para
+   que el panel en blanco no se lea como un fallo de carga. */
+.crm-context-empty {
+  margin: auto;
+  color: var(--lm-muted);
+  font-size: 12px;
+}
+
+/* --------------------------------------------------------------------------
+   Barra de progreso del hilo
+   Corre pegada bajo la cabecera mientras llegan los mensajes de un chat
+   recién abierto: la cabecera responde al clic al instante y la barra dice
+   que el resto viene en camino.
+   -------------------------------------------------------------------------- */
+.crm-progress {
+  position: relative;
+  flex-shrink: 0;
+  height: 3px;
+  overflow: hidden;
+  background: var(--lm-sunken);
+}
+
+.crm-progress-runner {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  width: 30%;
+  border-radius: 999px;
+  background: var(--lm-hot);
+  animation: crm-progress-sweep 1.1s var(--lm-ease-in-out) infinite;
+}
+
+/* De -100% de su propio ancho a 340%: entra por la izquierda y sale entera
+   por la derecha (30% × 3.4 ≈ el ancho completo de la pista). */
+@keyframes crm-progress-sweep {
+  from { transform: translateX(-100%); }
+  to { transform: translateX(340%); }
+}
+
+.crm-loading-note {
+  margin: auto;
+  color: var(--lm-muted);
+  font-size: 12.5px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  /* El barrido se cambia por una respiración quieta: mismo aviso, sin viaje. */
+  .crm-progress-runner {
+    width: 100%;
+    animation: skel-pulse 1.4s ease-in-out infinite;
+  }
+}
+
+/* --------------------------------------------------------------------------
    Responsive
    -------------------------------------------------------------------------- */
 
@@ -1327,8 +1520,44 @@
     display: none;
   }
 
+  /* La conversación entra desde la derecha y la lista vuelve desde la
+     izquierda: el desplazamiento dice hacia dónde quedó lo que se dejó de
+     ver, como apilar y desapilar. Pocos píxeles y 200ms: en móvil se salta
+     entre lista y chat todo el día, y esto tiene que sentirse, no verse.
+     Solo acá adentro: en escritorio las dos columnas conviven y animarlas
+     al cambiar de hilo movería la pantalla entera con cada clic. */
+  .crm[data-view="chat"] .crm-chat {
+    animation: crm-view-push 200ms var(--lm-ease-out) both;
+  }
+
+  .crm[data-view="list"] .crm-inbox {
+    animation: crm-view-pop 200ms var(--lm-ease-out) both;
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    /* El turno sigue viéndose (fundido); el desplazamiento se va. */
+    .crm[data-view="chat"] .crm-chat,
+    .crm[data-view="list"] .crm-inbox {
+      animation-name: crm-columns-fade;
+    }
+  }
+
   .crm-back {
     display: grid;
+  }
+}
+
+@keyframes crm-view-push {
+  from {
+    opacity: 0;
+    transform: translateX(16px);
+  }
+}
+
+@keyframes crm-view-pop {
+  from {
+    opacity: 0;
+    transform: translateX(-16px);
   }
 }
 
@@ -1337,6 +1566,19 @@
   .crm-thread,
   .crm-pill {
     transition: none;
+  }
+
+  /* El visor conserva sus fundidos (son solo opacidad y evitan el golpe de
+     un fotograma a otro); lo que se apaga es el crecimiento de la foto y el
+     hundirse de los botones. */
+  .crm-viewer-stage {
+    animation-name: crm-viewer-in;
+  }
+
+  .crm-viewer-btn:active,
+  .crm-viewer-nav:active,
+  .crm-rail-btn:active {
+    transform: none;
   }
 }
 
@@ -1808,10 +2050,27 @@
    es justo lo que esa preferencia existe para evitar.
    --------------------------------------------------------------------------- */
 .skel {
+  position: relative;
   display: block;
+  overflow: hidden;
   border-radius: 8px;
   background: var(--lm-sunken);
-  animation: skel-pulse 1.4s ease-in-out infinite;
+}
+
+/* Barrido de luz en vez de pulso: la luz que recorre el bloque se lee como
+   "algo viene en camino", mientras que el parpadeo se lee como "algo espera".
+   Es una capa que se mueve con transform, así que no repinta el bloque. */
+.skel::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(100deg, transparent 25%, var(--lm-shimmer) 50%, transparent 75%);
+  transform: translateX(-100%);
+  animation: skel-sweep 1.4s ease-in-out infinite;
+}
+
+@keyframes skel-sweep {
+  to { transform: translateX(100%); }
 }
 
 @keyframes skel-pulse {
@@ -1819,7 +2078,8 @@
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .skel { animation: none; }
+  /* El bloque gris quieto ya dice "cargando"; el barrido es lo que sobra. */
+  .skel::after { animation: none; }
 }
 
 .skel-rows {
@@ -1840,19 +2100,6 @@
   gap: 16px;
   padding: 16px 16px 0;
 }
-
-/* Esqueleto del hilo: burbujas alternadas para que el bloque tenga la forma
-   de una conversación y no la de una lista cualquiera. */
-.skel-chat {
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
-  padding: 16px;
-}
-
-.skel-bubble { height: 40px; border-radius: 14px; }
-.skel-bubble[data-side="in"] { align-self: flex-start; }
-.skel-bubble[data-side="out"] { align-self: flex-end; }
 
 /* Foto del grupo que todavía se está descargando de Meta. No es un fallo:
    es el hueco que deja el webhook al guardar la fila antes que el archivo. */

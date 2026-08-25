@@ -120,8 +120,24 @@ export function useTheme() {
     } catch {
       // Sin almacenamiento el cambio vale para esta pestaña y nada más.
     }
-    applyTheme(resolveTheme(next));
-    notify();
+    const apply = () => {
+      applyTheme(resolveTheme(next));
+      notify();
+    };
+
+    // Fundido cruzado del documento al cambiar el tema: sin él, toda la
+    // pantalla cambia de color en un fotograma, que es el golpe visual más
+    // brusco que da la app. Solo en el interruptor —los cambios que llegan
+    // del sistema o de otra pestaña no ocurren delante del usuario y no hay
+    // nada que amortiguar—, y solo si el navegador sabe hacerlo.
+    const doc = document as Document & { startViewTransition?: (cb: () => void) => unknown };
+    const reduceMotion =
+      typeof matchMedia === "function" && matchMedia("(prefers-reduced-motion: reduce)").matches;
+    if (doc.startViewTransition && !reduceMotion) {
+      doc.startViewTransition(apply);
+    } else {
+      apply();
+    }
   }, []);
 
   return { preference, resolved: resolveTheme(preference), setPreference };
