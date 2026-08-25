@@ -160,6 +160,13 @@ interface MessageBubbleProps {
   onJumpToQuoted?: (messageId: string) => void;
   /** Se acaba de llegar hasta acá desde una cita: se señala un momento. */
   isHighlighted?: boolean;
+  /**
+   * En un canal real, un mensaje saliente sin estado todavía está en camino
+   * a Meta (el envío corre después de responder al asesor) y merece el
+   * relojito de WhatsApp. En un canal de demo el estado se queda null para
+   * siempre y no significa nada: ahí no se pinta.
+   */
+  pendingDelivery?: boolean;
 }
 
 export function MessageBubble({
@@ -168,6 +175,7 @@ export function MessageBubble({
   onReply,
   onJumpToQuoted,
   isHighlighted = false,
+  pendingDelivery = false,
 }: MessageBubbleProps) {
   // Antes del retorno de `system_event`: un hook no puede quedar detrás de
   // una salida temprana.
@@ -301,7 +309,9 @@ export function MessageBubble({
 
       <span className="crm-msg-foot px-1 text-[11px] text-muted">
         {formatMessageTime(message.createdAt)}
-        {!isCustomer && !isInternalNote && <DeliveryCheck status={message.whatsappStatus} size={13} />}
+        {!isCustomer && !isInternalNote && (
+          <DeliveryCheck status={message.whatsappStatus} pending={pendingDelivery} size={13} />
+        )}
       </span>
     </div>
   );

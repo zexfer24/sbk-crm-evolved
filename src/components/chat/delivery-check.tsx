@@ -1,4 +1,4 @@
-import { AlertCircle, Check, CheckCheck } from "lucide-react";
+import { AlertCircle, Check, CheckCheck, Clock } from "lucide-react";
 import type { WhatsappMessageStatus } from "@/lib/types";
 
 /**
@@ -16,10 +16,23 @@ const LABELS: Record<WhatsappMessageStatus, string> = {
 interface DeliveryCheckProps {
   status: WhatsappMessageStatus | null;
   size?: number;
+  /**
+   * Sin estado + pending: el relojito de "va en camino". Es el estado en que
+   * nace un mensaje de canal real —el envío a Meta corre después de contestar
+   * al asesor— y dura hasta que Meta confirma ('sent') o rechaza ('failed').
+   */
+  pending?: boolean;
 }
 
-export function DeliveryCheck({ status, size = 14 }: DeliveryCheckProps) {
-  if (!status) return null;
+export function DeliveryCheck({ status, size = 14, pending = false }: DeliveryCheckProps) {
+  if (!status) {
+    if (!pending) return null;
+    return (
+      <span className="crm-check" data-status="pending" role="img" aria-label="Enviando…" title="Enviando…">
+        <Clock size={size} />
+      </span>
+    );
+  }
 
   const label = LABELS[status];
 

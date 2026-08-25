@@ -1,6 +1,7 @@
-import { NextResponse } from "next/server";
+import { NextResponse, after } from "next/server";
 import { createClient } from "@/lib/supabase/server";
-import { fetchConversation, fetchCurrentAgent } from "@/lib/data";
+import { fetchCurrentAgent } from "@/lib/data";
+import { log, errorText } from "@/lib/log";
 import type { MessageType } from "@/lib/types";
 import { signedUrlForSending } from "@/lib/media-link";
 import {
@@ -22,6 +23,36 @@ interface SendMessageBody {
   mediaType?: MessageType;
 }
 
+/** Lo único que el envío necesita de la conversación: a quién y por qué canal. */
+interface SendConversation {
+  id: string;
+  contact: { phone_number: string };
+  channel: { phone_number_id: string | null; status: string };
+}
+
+/**
+ * Un fallo de Meta que puede pasar solo: un 5xx suyo o la red que no llegó
+ * (ETIMEDOUT contra Meta se ve seguido desde este servidor). Un 4xx es un
+ * rechazo con motivo —plantilla inválida, ventana de 24 h vencida— y
+ * reintentarlo daría lo mismo.
+ */
+function isTransientMetaFailure(err: unknown): boolean {
+  return !(err instanceof MetaApiError) || err.status >= 500;
+}
+
+/** Un solo reintento: más intentos sobre un timeout arriesgan duplicar el mensaje al cliente. */
+const RETRY_DELAY_MS = 2000;
+
+async function sendWithRetry(send: () => Promise<{ whatsappMessageId: string }>) {
+  try {
+    return await send();
+  } catch (err) {
+    if (!isTransientMetaFailure(err)) throw err;
+    await new Promise((resolve) => setTimeout(resolve, RETRY_DELAY_MS));
+    return await send();
+  }
+}
+
 export async function POST(request: Request) {
   const body = (await request.json()) as SendMessageBody;
   const { conversationId, kind, content, isInternalNote, templateName, templateLanguage, mediaUrl } =
@@ -29,7 +60,12 @@ export async function POST(request: Request) {
   const mediaType = body.mediaType as "image" | "video" | "audio" | "document" | undefined;
   const replyToMessageId = body.replyToMessageId ?? null;
 
-  if (!conversationId || (kind === "text" && !content) || (kind === "media" && !mediaUrl)) {
+  if (
+    !conversationId ||
+    (kind === "text" && !content) ||
+    (kind === "media" && !mediaUrl) ||
+    (kind === "template" && !templateName)
+  ) {
     return NextResponse.json({ error: "Solicitud inválida." }, { status: 400 });
   }
 
@@ -44,8 +80,16 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: "Tu acceso al CRM está desactivado." }, { status: 403 });
   }
 
-  const conversation = await fetchConversation(supabase, conversationId);
-  if (!conversation) {
+  // Solo lo que hace falta para enviar: el asesor está esperando esta
+  // respuesta con el mensaje ya escrito, no es momento de armar la ficha
+  // completa con sus siete relaciones.
+  const { data: conversationRow, error: conversationError } = await supabase
+    .from("conversations")
+    .select("id, contact:contacts(phone_number), channel:whatsapp_channels(phone_number_id, status)")
+    .eq("id", conversationId)
+    .maybeSingle();
+  const conversation = conversationRow as unknown as SendConversation | null;
+  if (conversationError || !conversation) {
     return NextResponse.json({ error: "Conversación no encontrada." }, { status: 404 });
   }
 
@@ -69,81 +113,25 @@ export async function POST(request: Request) {
     return NextResponse.json({ ok: true, id: note.id });
   }
 
-  // Si estamos citando un mensaje que sí llegó/salió por WhatsApp de verdad,
-  // resolvemos su wamid para mandar la cita como reply nativo en Meta.
-  let replyToWamid: string | null = null;
-  if (replyToMessageId) {
-    const { data: repliedMessage } = await supabase
-      .from("messages")
-      .select("whatsapp_message_id")
-      .eq("id", replyToMessageId)
-      .maybeSingle();
-    replyToWamid = repliedMessage?.whatsapp_message_id ?? null;
+  const isRealChannel = conversation.channel.status === "connected" && conversation.channel.phone_number_id;
+
+  // Falta de configuración: mejor un error inmediato que un mensaje que se
+  // guarda y muere en silencio en segundo plano.
+  const accessToken = process.env.WHATSAPP_ACCESS_TOKEN;
+  if (isRealChannel && !accessToken) {
+    return NextResponse.json(
+      { error: "El canal está marcado como conectado pero falta WHATSAPP_ACCESS_TOKEN en el servidor." },
+      { status: 500 }
+    );
   }
 
-  const isRealChannel = conversation.channel.status === "connected" && conversation.channel.phoneNumberId;
-  let whatsappMessageId: string | null = null;
-  let whatsappStatus: "sent" | null = null;
-
-  if (isRealChannel) {
-    const accessToken = process.env.WHATSAPP_ACCESS_TOKEN;
-    if (!accessToken) {
-      return NextResponse.json(
-        { error: "El canal está marcado como conectado pero falta WHATSAPP_ACCESS_TOKEN en el servidor." },
-        { status: 500 }
-      );
-    }
-
-    try {
-      let result;
-      if (kind === "template") {
-        result = await sendWhatsappTemplate(
-          conversation.channel.phoneNumberId!,
-          accessToken,
-          conversation.contact.phoneNumber,
-          templateName!,
-          templateLanguage ?? "es"
-        );
-      } else if (kind === "media") {
-        // El bucket es privado: Meta necesita un enlace firmado, no la ruta
-        // del CRM, que le pediría una sesión que no tiene.
-        const link = await signedUrlForSending(mediaUrl!);
-        if (!link) {
-          return NextResponse.json(
-            { error: "No se pudo preparar el archivo para enviarlo por WhatsApp." },
-            { status: 500 }
-          );
-        }
-
-        result = await sendWhatsappMedia(
-          conversation.channel.phoneNumberId!,
-          accessToken,
-          conversation.contact.phoneNumber,
-          mediaType as "image" | "video" | "audio" | "document",
-          link,
-          content,
-          replyToWamid
-        );
-      } else {
-        result = await sendWhatsappText(
-          conversation.channel.phoneNumberId!,
-          accessToken,
-          conversation.contact.phoneNumber,
-          content!,
-          replyToWamid
-        );
-      }
-      whatsappMessageId = result.whatsappMessageId;
-      whatsappStatus = "sent";
-    } catch (err) {
-      const message =
-        err instanceof MetaApiError ? err.message : "No se pudo enviar el mensaje por WhatsApp.";
-      return NextResponse.json({ error: message }, { status: 502 });
-    }
-  }
-
-  // Se devuelve el id de la fila insertada: la cola de envío del navegador lo
-  // usa para saber cuándo el mensaje real ya llegó al hilo y retirar el suyo.
+  // El mensaje se guarda ANTES de hablar con Meta y el asesor recibe su
+  // respuesta ya: con la latencia hacia Meta desde este servidor (4 s de
+  // media, 14 de pico, ETIMEDOUT incluidos), esperar la Graph API tenía al
+  // equipo mirando un relojito por cada mensaje. El estado nace null —el
+  // mismo "en camino" del check de WhatsApp— y el envío real corre después
+  // de responder: al confirmar Meta pasa a 'sent' y el check aparece por
+  // realtime; si Meta lo rechaza pasa a 'failed' y la burbuja lo cuenta.
   const { data: inserted, error } = await supabase
     .from("messages")
     .insert({
@@ -155,13 +143,86 @@ export async function POST(request: Request) {
       content: content ?? null,
       template_name: kind === "template" ? templateName : null,
       media_url: kind === "media" ? mediaUrl : null,
-      whatsapp_message_id: whatsappMessageId,
-      whatsapp_status: whatsappStatus,
+      whatsapp_message_id: null,
+      whatsapp_status: null,
       reply_to_message_id: replyToMessageId,
     })
     .select("id")
     .single();
 
   if (error) return NextResponse.json({ error: error.message }, { status: 500 });
+
+  if (isRealChannel) {
+    const messageId = inserted.id as string;
+    const phoneNumberId = conversation.channel.phone_number_id!;
+    const toPhoneNumber = conversation.contact.phone_number;
+
+    after(async () => {
+      try {
+        // Si estamos citando un mensaje que sí llegó/salió por WhatsApp de
+        // verdad, resolvemos su wamid para mandar la cita como reply nativo.
+        let replyToWamid: string | null = null;
+        if (replyToMessageId) {
+          const { data: repliedMessage } = await supabase
+            .from("messages")
+            .select("whatsapp_message_id")
+            .eq("id", replyToMessageId)
+            .maybeSingle();
+          replyToWamid = repliedMessage?.whatsapp_message_id ?? null;
+        }
+
+        let result;
+        if (kind === "template") {
+          result = await sendWithRetry(() =>
+            sendWhatsappTemplate(phoneNumberId, accessToken!, toPhoneNumber, templateName!, templateLanguage ?? "es")
+          );
+        } else if (kind === "media") {
+          // El bucket es privado: Meta necesita un enlace firmado, no la ruta
+          // del CRM, que le pediría una sesión que no tiene.
+          const link = await signedUrlForSending(mediaUrl!);
+          if (!link) throw new Error("No se pudo preparar el archivo para enviarlo por WhatsApp.");
+
+          result = await sendWithRetry(() =>
+            sendWhatsappMedia(
+              phoneNumberId,
+              accessToken!,
+              toPhoneNumber,
+              mediaType as "image" | "video" | "audio" | "document",
+              link,
+              content,
+              replyToWamid
+            )
+          );
+        } else {
+          result = await sendWithRetry(() =>
+            sendWhatsappText(phoneNumberId, accessToken!, toPhoneNumber, content!, replyToWamid)
+          );
+        }
+
+        const { error: updateError } = await supabase
+          .from("messages")
+          .update({ whatsapp_message_id: result.whatsappMessageId, whatsapp_status: "sent" })
+          .eq("id", messageId);
+        if (updateError) {
+          // El mensaje SÍ salió pero el CRM no pudo anotarlo: se queda sin
+          // check y sin wamid, así que los avisos de entrega del webhook no
+          // van a encontrarlo. Queda registrado para poder explicarlo.
+          log.error("send.confirm_update_failed", { messageId, detail: updateError.message });
+        }
+      } catch (err) {
+        await supabase.from("messages").update({ whatsapp_status: "failed" }).eq("id", messageId);
+        log.error("send.meta_failed", {
+          messageId,
+          conversationId,
+          kind,
+          detail: errorText(err),
+          metaStatus: err instanceof MetaApiError ? err.status : null,
+        });
+      }
+    });
+  }
+
+  // Se devuelve el id de la fila insertada: la cola de envío del navegador lo
+  // usa para saber cuándo el mensaje real ya llegó al hilo y retirar el suyo.
   return NextResponse.json({ ok: true, id: inserted.id });
 }

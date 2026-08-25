@@ -249,6 +249,7 @@ export function ChatPanel({
               onReply={setReplyingTo}
               onJumpToQuoted={jumpToMessage}
               isHighlighted={item.message.id === jumpedToId}
+              pendingDelivery={conversation.channel.status === "connected"}
             />
           );
         })}

@@ -5,7 +5,6 @@ import type { Agent, Message } from "@/lib/types";
 import type { OutboxItem } from "@/lib/outbox";
 import { formatMessageTime } from "@/lib/format";
 import { FormattedText } from "@/components/chat/formatted-text";
-import { DeliveryCheck } from "@/components/chat/delivery-check";
 import { QuotedText, QuotedThumb } from "@/components/chat/quoted-content";
 
 interface OutboxBubbleProps {
@@ -83,15 +82,14 @@ export function OutboxBubble({ item, currentAgent, quotedMessage, onRetry, onDis
       ) : (
         <span className="crm-msg-foot px-1 text-[11px] text-muted">
           {formatMessageTime(item.createdAt)}
-          {item.status === "sent" ? (
-            <DeliveryCheck status="sent" size={13} />
-          ) : (
-            // "En cola" y "enviando" se ven igual a propósito: para el asesor
-            // las dos significan "va en camino", y el matiz técnico no ayuda.
-            <span className="crm-check" role="img" aria-label="Enviando…" title="Enviando…">
-              <Clock size={13} />
-            </span>
-          )}
+          {/* "En cola", "enviando" y "aceptado" se ven igual a propósito: el
+              servidor acepta el mensaje antes de hablar con Meta, así que
+              hasta que el mensaje real llegue por tiempo real con su estado,
+              lo honesto sigue siendo "va en camino". El check lo pone la
+              burbuja real cuando Meta confirma. */}
+          <span className="crm-check" role="img" aria-label="Enviando…" title="Enviando…">
+            <Clock size={13} />
+          </span>
         </span>
       )}
     </div>
