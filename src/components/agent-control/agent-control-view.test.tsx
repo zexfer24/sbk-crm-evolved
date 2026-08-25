@@ -47,7 +47,9 @@ vi.mock("@/lib/data", () => ({
   fetchUnmatchedTurns: vi.fn(async () => []),
 }));
 
-const setAiGloballyEnabledMock = vi.fn(async (..._args: unknown[]) => {});
+const setAiGloballyEnabledMock = vi.fn(async (...args: unknown[]) => {
+  void args;
+});
 
 vi.mock("@/lib/mutations", () => ({
   createAgentSuggestion: vi.fn(async () => {}),

@@ -11,11 +11,6 @@ export default async function ClienteFichaPage({ params }: { params: Promise<{ i
   if (!currentAgent) {
     redirect("/login");
   }
-  // El mismo interruptor que saca al agente del reparto de la IA le corta el
-  // CRM: desactivado no pasa de aquí. La pantalla de destino cierra la sesión.
-  if (!currentAgent.isActive) {
-    redirect("/acceso-desactivado");
-  }
 
   const [detail, allTags] = await Promise.all([fetchCustomerDetail(supabase, id), fetchTags(supabase)]);
   if (!detail) {

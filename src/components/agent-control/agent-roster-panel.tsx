@@ -12,12 +12,6 @@ interface AgentsRosterPanelProps {
   conversations: Conversation[];
   metrics: AgentMetrics[];
   togglingAgentId: string | null;
-  /**
-   * Quién está mirando el panel. El interruptor apaga el acceso completo al
-   * CRM, así que sobre uno mismo se bloquea: apagarse a sí mismo es quedarse
-   * fuera sin nadie que te vuelva a encender.
-   */
-  currentAgentId: string;
   onToggleActive: (agent: Agent) => void;
 }
 
@@ -35,7 +29,6 @@ export function AgentsRosterPanel({
   conversations,
   metrics,
   togglingAgentId,
-  currentAgentId,
   onToggleActive,
 }: AgentsRosterPanelProps) {
   const activeCount = agents.filter((a) => a.isActive).length;
@@ -53,7 +46,7 @@ export function AgentsRosterPanel({
         <h2 className="dash-panel-title">Agentes en la operación</h2>
         <span className="dash-panel-spacer" />
         <span className="dash-panel-note">
-          {agents.length} en total · {activeCount} activos
+          {agents.length} en total · {activeCount} en el reparto
         </span>
       </div>
 
@@ -82,26 +75,25 @@ export function AgentsRosterPanel({
                   </div>
 
                   <div className="ac-agent-card-toggle">
+                    {/* El interruptor SOLO gobierna el reparto de la IA: apagado,
+                        la IA no le asigna chats nuevos. El acceso al CRM no se
+                        toca — atarlo acá dejó una vez al dueño fuera de su
+                        propio CRM, dos veces en doce horas. Por lo mismo, ya
+                        no se bloquea sobre la propia fila: apagarse a sí mismo
+                        es un caso real y no encierra a nadie. */}
                     <span className="ac-agent-card-toggle-label">
-                      {agent.isActive ? "Activo" : "Acceso desactivado"}
+                      {agent.isActive ? "Recibe chats de la IA" : "Fuera del reparto"}
                     </span>
                     <button
                       className="ac-switch"
                       type="button"
                       data-on={agent.isActive}
                       onClick={() => onToggleActive(agent)}
-                      disabled={isToggling || agent.id === currentAgentId}
-                      title={
-                        agent.id === currentAgentId
-                          ? "No puedes desactivar tu propio acceso"
-                          : undefined
-                      }
+                      disabled={isToggling}
                       aria-label={
-                        agent.id === currentAgentId
-                          ? "No puedes desactivar tu propio acceso"
-                          : agent.isActive
-                            ? `Desactivar a ${agent.displayName}: la IA no le asignará chats y no podrá entrar al CRM`
-                            : `Reactivar a ${agent.displayName}: vuelve al reparto de la IA y recupera el acceso al CRM`
+                        agent.isActive
+                          ? `Sacar a ${agent.displayName} del reparto: la IA no le asignará chats nuevos`
+                          : `Devolver a ${agent.displayName} al reparto de la IA`
                       }
                     />
                   </div>
