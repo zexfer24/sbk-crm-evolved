@@ -164,6 +164,16 @@ export function ChatPanel({
         </div>
       </header>
 
+      {loadingMessages && (
+        // Un chat vacío y un chat que todavía no llegó se ven igual, y no son
+        // lo mismo: sin esto, abrir una conversación parpadea en "no hay nada
+        // acá" antes de mostrar la conversación. La cabecera ya está pintada
+        // —sale de la lista— y esta barra bajo ella dice que el resto viene.
+        <div className="crm-progress" role="status" aria-busy="true" aria-label="Cargando la conversación">
+          <span className="crm-progress-runner" />
+        </div>
+      )}
+
       <AiStatusBanner
         aiEnabled={conversation.aiEnabled}
         aiGloballyEnabled={aiGloballyEnabled}
@@ -174,21 +184,7 @@ export function ChatPanel({
       />
 
       <div className="crm-messages" ref={listRef}>
-        {loadingMessages && (
-          // Un chat vacío y un chat que todavía no llegó se ven igual, y no
-          // son lo mismo: sin esto, abrir una conversación parpadea en
-          // "no hay nada acá" antes de mostrar la conversación.
-          <div className="skel-chat" role="status" aria-busy="true" aria-label="Cargando la conversación">
-            {[68, 44, 92, 56].map((ancho, i) => (
-              <span
-                className="skel skel-bubble"
-                data-side={i % 2 === 0 ? "in" : "out"}
-                style={{ width: `${ancho}%` }}
-                key={i}
-              />
-            ))}
-          </div>
-        )}
+        {loadingMessages && <p className="crm-loading-note">Cargando mensajes…</p>}
         {hasOlderMessages && onLoadOlderMessages && (
           <div className="crm-older-row">
             <button

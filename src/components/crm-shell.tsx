@@ -1,7 +1,6 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { MessageCircle } from "lucide-react";
 import type {
   Agent,
   AgentSettings,
@@ -47,6 +46,7 @@ const REALTIME_DEBOUNCE_MS = 750;
  */
 const SAFETY_REFRESH_MS = 5 * 60 * 1000;
 import { InboxSidebar } from "@/components/inbox/inbox-sidebar";
+import { AgentHomePanel } from "@/components/inbox/agent-home-panel";
 import type { BcvRateSummary } from "@/components/inbox/bcv-rate-chip";
 import { ChatPanel } from "@/components/chat/chat-panel";
 import { ContextPanel } from "@/components/context-panel/context-panel";
@@ -82,10 +82,12 @@ export function CrmShell({
   const supabase = useMemo(() => createClient(), []);
 
   const [conversations, setConversations] = useState<Conversation[]>(initialConversations);
+  // Sin conversación de inicio no se abre ninguna: abrir la primera de la
+  // lista ponía al asesor a leer un chat que no eligió —y lo daba por leído—
+  // antes de decidir nada. El id explícito (llegar desde una tarjeta del
+  // dashboard) sí abre directo, porque ahí la elección ya está hecha.
   const [selectedId, setSelectedId] = useState<string | null>(
-    initialConversations.find((c) => c.id === initialConversationId)?.id ??
-      initialConversations[0]?.id ??
-      null
+    initialConversations.find((c) => c.id === initialConversationId)?.id ?? null
   );
   /**
    * El hilo cargado, con la conversación a la que pertenece pegada al lado.
@@ -524,15 +526,16 @@ export function CrmShell({
               onBack={() => setMobileView("list")}
             />
           ) : (
-            <div className="crm-empty" style={{ margin: "auto" }}>
-              <MessageCircle size={28} strokeWidth={1.6} />
-              <p>Elige una conversación para empezar</p>
-            </div>
+            <AgentHomePanel
+              currentAgent={currentAgent}
+              conversations={conversations}
+              agentSettings={agentSettings}
+            />
           )}
         </section>
 
         <aside className="crm-column crm-context">
-          {selectedConversation && (
+          {selectedConversation ? (
             <ContextPanel
               conversation={selectedConversation}
               messages={messages}
@@ -540,6 +543,10 @@ export function CrmShell({
               allTags={tags}
               currentAgent={currentAgent}
             />
+          ) : (
+            // Sin esto la columna queda como un panel blanco sin explicación:
+            // parece un fallo de carga, no un lugar esperando contenido.
+            <p className="crm-context-empty">Datos del cliente</p>
           )}
         </aside>
       </div>
