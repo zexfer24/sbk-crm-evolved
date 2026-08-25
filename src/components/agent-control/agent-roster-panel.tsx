@@ -2,7 +2,7 @@
 
 import { useMemo } from "react";
 import Link from "next/link";
-import { MailWarning, MessageSquare } from "lucide-react";
+import { Inbox, MailWarning, MessageSquare } from "lucide-react";
 import type { Agent, AgentMetrics, Conversation } from "@/lib/types";
 import { contactName, initials } from "@/lib/dashboard";
 import { AgentMetricsRow } from "@/components/agent-control/agent-metrics-row";
@@ -40,22 +40,80 @@ export function AgentsRosterPanel({
     [agents]
   );
 
+  // La cola que nadie tiene: chats abiertos sin asesor. Es la pregunta previa
+  // a repartir carga — qué está en manos de la IA o esperando que alguien lo
+  // tome.
+  const unassigned = useMemo(
+    () =>
+      conversations
+        .filter((c) => !c.assignedAgent && c.status !== "closed")
+        .sort(
+          (a, b) =>
+            new Date(b.lastMessageAt ?? b.createdAt).getTime() - new Date(a.lastMessageAt ?? a.createdAt).getTime()
+        ),
+    [conversations]
+  );
+  const unassignedUnread = unassigned.filter((c) => c.unreadCount > 0);
+
   return (
     <section className="dash-panel">
       <div className="dash-panel-head">
         <h2 className="dash-panel-title">Agentes en la operación</h2>
         <span className="dash-panel-spacer" />
         <span className="dash-panel-note">
-          {agents.length} en total · {activeCount} en el reparto
+          {agents.length} en total · {activeCount} en el reparto · {unassigned.length} sin asignar
         </span>
       </div>
 
-      {agents.length === 0 ? (
+      {agents.length === 0 && unassigned.length === 0 ? (
         <div className="dash-empty">
           <p className="dash-empty-title">Todavía no hay agentes registrados</p>
         </div>
       ) : (
         <div className="ac-roster">
+          <div className="ac-agent-card" data-unassigned="true">
+            <div className="ac-agent-card-head">
+              <span className="ac-live-avatar" aria-hidden="true">
+                <Inbox size={16} />
+              </span>
+              <div className="ac-agent-card-who">
+                <span className="ac-agent-card-name">Sin asignar</span>
+                <span className="ac-agent-card-role">En manos de la IA o esperando asesor</span>
+              </div>
+            </div>
+
+            <div className="ac-agent-card-stats">
+              <span className="ac-badge" data-tone="link">
+                <MessageSquare size={11} />
+                {unassigned.length} abiertos
+              </span>
+              <span className="ac-badge" data-tone={unassignedUnread.length > 0 ? "hot" : "muted"}>
+                <MailWarning size={11} />
+                {unassignedUnread.length} sin responder
+              </span>
+            </div>
+
+            {unassigned.length === 0 ? (
+              <p className="ac-live-empty">No hay chats sin asignar en este momento.</p>
+            ) : (
+              // Todos, no los primeros cinco como en las tarjetas de asesor:
+              // esto es una cola de trabajo, y una cola con elementos
+              // escondidos no sirve para repartir.
+              <div className="ac-agent-card-chats">
+                {unassigned.map((c) => (
+                  <Link
+                    key={c.id}
+                    href={`/inbox?conversation=${c.id}`}
+                    className="ac-agent-card-chat"
+                    data-unread={c.unreadCount > 0}
+                  >
+                    {contactName(c)}
+                  </Link>
+                ))}
+              </div>
+            )}
+          </div>
+
           {ordered.map((agent) => {
             const assigned = conversations.filter(
               (c) => c.assignedAgent?.id === agent.id && c.status !== "closed"
