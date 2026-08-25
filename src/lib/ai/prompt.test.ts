@@ -88,6 +88,20 @@ describe("sufijo dinámico del turno", () => {
     expect(conSaludo).toMatch(/saluda/i);
     expect(sinSaludo).not.toMatch(/saluda/i);
   });
+
+  /**
+   * Con el catálogo apagado desde el panel, el riesgo es que el modelo
+   * cotice de memoria. El aviso viaja en el sufijo — nunca antes del bloque
+   * estático, que tiene que seguir siendo prefijo exacto para el caché.
+   */
+  it("avisa cuando la búsqueda de catálogo está apagada, sin romper el prefijo", () => {
+    const sinCatalogo = buildInstructions({ ...TURN, missingCatalog: true });
+    const conCatalogo = buildInstructions({ ...TURN, missingCatalog: false });
+
+    expect(sinCatalogo.startsWith(SYSTEM_PROMPT)).toBe(true);
+    expect(sinCatalogo.slice(SYSTEM_PROMPT.length)).toMatch(/catálogo está apagada/);
+    expect(conCatalogo.slice(SYSTEM_PROMPT.length)).not.toMatch(/catálogo está apagada/);
+  });
 });
 
 describe("formato de WhatsApp", () => {

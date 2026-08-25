@@ -8,6 +8,8 @@ import { classifyIntent, type Intent } from "@/lib/ai/classify";
 import { currentAgentModelLabel, getAgentModel } from "@/lib/ai/model";
 import { OFF_TOPIC_REPLY, buildInstructions } from "@/lib/ai/prompt";
 import { buildCatalogTool, buildEscalateTool, buildOrderHistoryTool, type EscalationOutcome } from "@/lib/ai/tools";
+import { TOOL_KEYS, fetchEnabledToolKeys } from "@/lib/ai/agent-tools";
+import { buildKnowledgeTool } from "@/lib/ai/knowledge";
 import { escalateConversation } from "@/lib/ai/escalate";
 import { withConversationTurnLock } from "@/lib/ai/conversation-lock";
 import { fetchActivePlaybooks, matchPlaybook } from "@/lib/ai/playbooks";
@@ -244,7 +246,12 @@ export async function runAgentTurn(conversationId: string): Promise<void> {
     // envía tal cual y el turno termina acá: sale más rápido y más barato que
     // clasificar y redactar, y el cliente recibe el texto oficial en vez de
     // una versión que el modelo improvise.
-    const playbooks = await fetchActivePlaybooks(supabase);
+    // Los interruptores del panel se leen junto con los escenarios: ambos
+    // son configuración que el equipo cambia en vivo y el turno respeta.
+    const [playbooks, enabledTools] = await Promise.all([
+      fetchActivePlaybooks(supabase),
+      fetchEnabledToolKeys(supabase),
+    ]);
     const match = await matchPlaybook(history, playbooks);
     const matchTokens = tokensFromUsage(match.usage);
 
@@ -298,18 +305,30 @@ export async function runAgentTurn(conversationId: string): Promise<void> {
     const outcome: EscalationOutcome = { escalated: false };
     const deps = { supabase, conversationId, contactId: convo.contact_id };
 
-    const tools: ToolSet =
-      intent === "devolucion"
-        ? { buscarHistorialCompras: buildOrderHistoryTool(deps), escalarAAsesor: buildEscalateTool(deps, outcome) }
-        : intent === "queja"
-          ? { escalarAAsesor: buildEscalateTool(deps, outcome) }
-          : { buscarRepuesto: buildCatalogTool(deps), escalarAAsesor: buildEscalateTool(deps, outcome) };
+    // Escalar no tiene interruptor: es la única salida hacia un humano. El
+    // resto entra solo si su interruptor del panel está encendido.
+    const tools: ToolSet = { escalarAAsesor: buildEscalateTool(deps, outcome) };
+    if (intent === "devolucion") {
+      if (enabledTools.has(TOOL_KEYS.orderHistory)) tools.buscarHistorialCompras = buildOrderHistoryTool(deps);
+    } else if (intent !== "queja") {
+      if (enabledTools.has(TOOL_KEYS.catalog)) tools.buscarRepuesto = buildCatalogTool(deps);
+    }
+    if (enabledTools.has(TOOL_KEYS.knowledge)) tools.consultarBiblioteca = buildKnowledgeTool(deps);
+
+    // Con el catálogo apagado en un caso de consulta, el riesgo es que el
+    // modelo cotice de memoria: se le avisa en las instrucciones del turno.
+    const missingCatalog =
+      !enabledTools.has(TOOL_KEYS.catalog) && (intent === "consulta_disponibilidad" || intent === "otro");
 
     const { model, providerOptions } = getAgentModel("medium");
 
     const agent = new ToolLoopAgent({
       model,
-      instructions: buildInstructions({ intent, needsGreeting: needsGreeting(convo.welcome_sent_at, history) }),
+      instructions: buildInstructions({
+        intent,
+        needsGreeting: needsGreeting(convo.welcome_sent_at, history),
+        missingCatalog,
+      }),
       tools,
       stopWhen: isStepCount(MAX_STEPS),
       providerOptions,

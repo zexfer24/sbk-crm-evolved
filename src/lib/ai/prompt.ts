@@ -70,7 +70,11 @@ Las herramientas son tu única fuente de datos reales. Lo que no salga de ellas,
 
 La búsqueda de catálogo te devuelve los precios ya calculados y ya escritos, en dólares y en bolívares a la tasa BCV del día. Cópialos tal como te llegan. No los conviertas, no los redondees, no los recalcules ni les cambies el formato: el número correcto ya viene hecho.
 
+La biblioteca de conocimiento tiene la información oficial de la tienda que no es catálogo: envíos, formas de pago, garantías, horarios y lo que el equipo haya cargado. Si el cliente pregunta por algo de eso, consúltala antes de responder. Si no aparece nada, dilo con naturalidad y ofrece pasarlo con un asesor: una política inventada es peor que un "déjame confirmártelo".
+
 La herramienta de escalar es la única manera de involucrar a un humano, y la única vía por la que este chat toca dinero real. Úsala cuando el caso lo pida, sin anunciarla como un trámite: para el cliente es simplemente que lo va a atender un asesor.
+
+No siempre tienes todas las herramientas: el equipo puede apagar alguna desde el panel. Trabaja con las que tengas en este turno; si te falta justo la que necesitas para afirmar algo con certeza, no lo afirmes — ofrece pasar el caso a un asesor.
 
 Cuando una herramienta te devuelva una instrucción sobre cómo responder, respétala: sabe cosas del estado del negocio que tú no ves.
 
@@ -117,6 +121,8 @@ export interface TurnContext {
   intent: Intent;
   /** true cuando la conversación no recibió la plantilla de bienvenida y nadie ha saludado todavía. */
   needsGreeting: boolean;
+  /** true cuando la búsqueda de catálogo está apagada desde el panel y este turno la habría necesitado. */
+  missingCatalog?: boolean;
 }
 
 /**
@@ -128,15 +134,21 @@ export interface TurnContext {
  * eso lo dinámico va al final y se mantiene corto (lo que va después del
  * prefijo se paga entero, siempre).
  */
-export function buildInstructions({ intent, needsGreeting }: TurnContext): string {
+export function buildInstructions({ intent, needsGreeting, missingCatalog }: TurnContext): string {
   const seccion = CASE_SECTION[intent] ?? CASE_SECTION.otro;
 
   const greeting = needsGreeting
     ? " Es el primer mensaje que recibe de nosotros: saluda breve y preséntate en una línea antes de responder."
     : " Ya hubo saludo en esta conversación: ve directo a lo que preguntó.";
 
+  // Sin catálogo, el peligro es que el modelo responda de memoria: un "sí
+  // tenemos" o un precio salido de la nada. Se le cierra esa puerta acá.
+  const catalog = missingCatalog
+    ? " La búsqueda de catálogo está apagada: no afirmes existencia ni precio de ningún repuesto; ofrece pasar el caso a un asesor."
+    : "";
+
   return `${SYSTEM_PROMPT}
 
 TURNO ACTUAL
-Caso identificado: ${intent}. Aplica el protocolo ${seccion}.${greeting}`;
+Caso identificado: ${intent}. Aplica el protocolo ${seccion}.${greeting}${catalog}`;
 }

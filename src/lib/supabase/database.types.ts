@@ -111,6 +111,41 @@ export type Database = {
           },
         ]
       }
+      agent_tools: {
+        Row: {
+          description: string
+          is_enabled: boolean
+          key: string
+          name: string
+          updated_at: string
+          updated_by: string | null
+        }
+        Insert: {
+          description: string
+          is_enabled?: boolean
+          key: string
+          name: string
+          updated_at?: string
+          updated_by?: string | null
+        }
+        Update: {
+          description?: string
+          is_enabled?: boolean
+          key?: string
+          name?: string
+          updated_at?: string
+          updated_by?: string | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "agent_tools_updated_by_fkey"
+            columns: ["updated_by"]
+            isOneToOne: false
+            referencedRelation: "agents"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       agent_turn_queue: {
         Row: {
           attempts: number
@@ -599,6 +634,81 @@ export type Database = {
           id?: number
         }
         Relationships: []
+      }
+      knowledge_categories: {
+        Row: {
+          created_at: string
+          description: string | null
+          id: string
+          name: string
+          updated_at: string
+        }
+        Insert: {
+          created_at?: string
+          description?: string | null
+          id?: string
+          name: string
+          updated_at?: string
+        }
+        Update: {
+          created_at?: string
+          description?: string | null
+          id?: string
+          name?: string
+          updated_at?: string
+        }
+        Relationships: []
+      }
+      knowledge_entries: {
+        Row: {
+          category_id: string
+          content: string
+          created_at: string
+          id: string
+          is_active: boolean
+          source_filename: string | null
+          title: string
+          updated_at: string
+          updated_by: string | null
+        }
+        Insert: {
+          category_id: string
+          content: string
+          created_at?: string
+          id?: string
+          is_active?: boolean
+          source_filename?: string | null
+          title: string
+          updated_at?: string
+          updated_by?: string | null
+        }
+        Update: {
+          category_id?: string
+          content?: string
+          created_at?: string
+          id?: string
+          is_active?: boolean
+          source_filename?: string | null
+          title?: string
+          updated_at?: string
+          updated_by?: string | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "knowledge_entries_category_id_fkey"
+            columns: ["category_id"]
+            isOneToOne: false
+            referencedRelation: "knowledge_categories"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "knowledge_entries_updated_by_fkey"
+            columns: ["updated_by"]
+            isOneToOne: false
+            referencedRelation: "agents"
+            referencedColumns: ["id"]
+          },
+        ]
       }
       messages: {
         Row: {

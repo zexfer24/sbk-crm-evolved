@@ -12,6 +12,8 @@ interface FakeState {
   conversation: Record<string, unknown> | null;
   history: { sender_type: string; content: string | null; is_internal_note: boolean }[];
   historyOrderAscending: boolean | null;
+  /** Claves encendidas en public.agent_tools. */
+  enabledToolKeys: string[];
 }
 
 const state: FakeState = {
@@ -20,6 +22,7 @@ const state: FakeState = {
   conversation: null,
   history: [],
   historyOrderAscending: null,
+  enabledToolKeys: [],
 };
 const conversationUpdates: Record<string, unknown>[] = [];
 const agentTurnInserts: Record<string, unknown>[] = [];
@@ -73,6 +76,14 @@ function createFakeSupabase() {
                 return { limit: async () => ({ data: state.history }) };
               },
             }),
+          }),
+        };
+      }
+
+      if (table === "agent_tools") {
+        return {
+          select: () => ({
+            eq: async () => ({ data: state.enabledToolKeys.map((key) => ({ key })), error: null }),
           }),
         };
       }
@@ -155,6 +166,10 @@ vi.mock("@/lib/ai/tools", () => ({
   buildOrderHistoryTool: () => ({}),
 }));
 
+vi.mock("@/lib/ai/knowledge", () => ({
+  buildKnowledgeTool: () => ({}),
+}));
+
 import { runAgentTurn } from "@/lib/ai/agent";
 import { OFF_TOPIC_REPLY, SYSTEM_PROMPT } from "@/lib/ai/prompt";
 
@@ -188,6 +203,7 @@ beforeEach(() => {
   };
   state.history = [{ sender_type: "customer", content: "hola quiero accesorios", is_internal_note: false }];
   state.historyOrderAscending = null;
+  state.enabledToolKeys = ["buscar_repuesto", "buscar_historial_compras", "consultar_biblioteca"];
   conversationUpdates.length = 0;
   agentTurnInserts.length = 0;
   agentOptions.length = 0;
@@ -419,6 +435,64 @@ describe("runAgentTurn — instrucciones que recibe el modelo", () => {
     await runAgentTurn("conv-1");
 
     expect(agentOptions[0].instructions.slice(SYSTEM_PROMPT.length)).not.toMatch(/saluda/i);
+  });
+});
+
+describe("runAgentTurn — interruptores de herramientas", () => {
+  it("con todo encendido, una consulta lleva catálogo, biblioteca y escalamiento", async () => {
+    await runAgentTurn("conv-1");
+
+    expect(Object.keys(agentOptions[0].tools).sort()).toEqual([
+      "buscarRepuesto",
+      "consultarBiblioteca",
+      "escalarAAsesor",
+    ]);
+  });
+
+  /**
+   * El pedido que motivó los interruptores: apagar la consulta de productos
+   * sin apagar la IA. El turno corre, pero sin la herramienta — y con la
+   * instrucción explícita de no cotizar de memoria, que es el riesgo real.
+   */
+  it("con el catálogo apagado, el turno corre sin esa herramienta y avisa al modelo", async () => {
+    state.enabledToolKeys = ["buscar_historial_compras", "consultar_biblioteca"];
+
+    await runAgentTurn("conv-1");
+
+    expect(agentOptions[0].tools).not.toHaveProperty("buscarRepuesto");
+    expect(agentOptions[0].instructions.slice(SYSTEM_PROMPT.length)).toMatch(/catálogo está apagada/);
+  });
+
+  it("con la biblioteca apagada, la herramienta no viaja", async () => {
+    state.enabledToolKeys = ["buscar_repuesto", "buscar_historial_compras"];
+
+    await runAgentTurn("conv-1");
+
+    expect(agentOptions[0].tools).not.toHaveProperty("consultarBiblioteca");
+    expect(agentOptions[0].tools).toHaveProperty("buscarRepuesto");
+  });
+
+  /** Escalar no tiene interruptor: es la única salida hacia un humano. */
+  it("escalar a un asesor viaja siempre, aunque todo lo demás esté apagado", async () => {
+    state.enabledToolKeys = [];
+
+    await runAgentTurn("conv-1");
+
+    expect(agentOptions[0].tools).toHaveProperty("escalarAAsesor");
+    expect(Object.keys(agentOptions[0].tools)).toHaveLength(1);
+  });
+
+  it("en una devolución, el historial de compras respeta su interruptor", async () => {
+    classifyIntentMock.mockResolvedValue({
+      intent: "devolucion",
+      usage: { inputTokens: 5, outputTokens: 1, totalTokens: 6 },
+    });
+    state.enabledToolKeys = ["buscar_repuesto", "consultar_biblioteca"];
+
+    await runAgentTurn("conv-1");
+
+    expect(agentOptions[0].tools).not.toHaveProperty("buscarHistorialCompras");
+    expect(agentOptions[0].tools).toHaveProperty("escalarAAsesor");
   });
 });
 
