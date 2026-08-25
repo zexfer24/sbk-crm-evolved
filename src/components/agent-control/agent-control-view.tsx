@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { Button, Modal } from "@heroui/react";
 import { BookOpen, Bot, ShieldAlert, Users, Wrench, Zap } from "lucide-react";
 import type {
   Agent,
@@ -177,6 +178,7 @@ export function AgentControlView({
   const [knowledgeCategories, setKnowledgeCategories] = useState(initialKnowledgeCategories);
   const [knowledgeEntries, setKnowledgeEntries] = useState(initialKnowledgeEntries);
   const [togglingKillSwitch, setTogglingKillSwitch] = useState(false);
+  const [confirmingAiOn, setConfirmingAiOn] = useState(false);
   const [busyConversationId, setBusyConversationId] = useState<string | null>(null);
   const [togglingAgentId, setTogglingAgentId] = useState<string | null>(null);
   const [togglingToolKey, setTogglingToolKey] = useState<string | null>(null);
@@ -292,12 +294,27 @@ export function AgentControlView({
 
   const pricingByModel = useMemo(() => new Map(pricing.map((p) => [p.model, p])), [pricing]);
 
-  async function toggleKillSwitch() {
+  /**
+   * Apagar es inmediato: es el freno de emergencia y no se le pone un paso
+   * más. Encender pasa por confirmación: es el único botón del CRM que le
+   * escribe a clientes reales sin revisión previa, y ya se encendió por
+   * error una vez — en el minuto que tardó en notarse salieron dos
+   * respuestas automáticas a un cliente de verdad.
+   */
+  function toggleKillSwitch() {
+    if (!settings.aiGloballyEnabled) {
+      setConfirmingAiOn(true);
+      return;
+    }
+    void switchAi(false);
+  }
+
+  async function switchAi(next: boolean) {
     setTogglingKillSwitch(true);
-    const next = !settings.aiGloballyEnabled;
     try {
       await setAiGloballyEnabled(supabase, currentAgent, next);
       setSettings((s) => ({ ...s, aiGloballyEnabled: next }));
+      setConfirmingAiOn(false);
     } finally {
       setTogglingKillSwitch(false);
     }
@@ -465,6 +482,41 @@ export function AgentControlView({
                 aria-label="Interruptor global de la IA"
               />
             </section>
+
+            <Modal isOpen={confirmingAiOn} onOpenChange={(open) => !open && setConfirmingAiOn(false)}>
+              <Modal.Backdrop>
+                <Modal.Container size="sm" placement="center">
+                  <Modal.Dialog>
+                    <Modal.Header>
+                      <Modal.Heading>¿Encender la IA para todo el CRM?</Modal.Heading>
+                      <Modal.CloseTrigger />
+                    </Modal.Header>
+                    <Modal.Body className="flex flex-col gap-2">
+                      <p className="text-sm">
+                        Al encenderla, la IA puede escribirle ahora mismo a{" "}
+                        <strong className="lm-num">{liveConversations.length}</strong>{" "}
+                        {liveConversations.length === 1
+                          ? "conversación activa"
+                          : "conversaciones activas"}{" "}
+                        sin asesor asignado — clientes reales, sin revisión previa.
+                      </p>
+                      <p className="text-xs text-muted">
+                        Si venías a apagar algo, este no es el botón: la IA está apagada ahora.
+                      </p>
+                    </Modal.Body>
+                    <Modal.Footer className="justify-end gap-2">
+                      <Button size="sm" variant="secondary" onPress={() => setConfirmingAiOn(false)}>
+                        Cancelar
+                      </Button>
+                      <Button size="sm" isDisabled={togglingKillSwitch} onPress={() => void switchAi(true)}>
+                        <Zap size={14} />
+                        Encender la IA
+                      </Button>
+                    </Modal.Footer>
+                  </Modal.Dialog>
+                </Modal.Container>
+              </Modal.Backdrop>
+            </Modal>
 
             <SpendCapPanel
               settings={settings}
