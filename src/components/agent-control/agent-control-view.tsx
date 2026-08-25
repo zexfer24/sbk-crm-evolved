@@ -745,6 +745,7 @@ export function AgentControlView({
                 conversations={conversations}
                 metrics={agentMetrics}
                 togglingAgentId={togglingAgentId}
+                currentAgentId={currentAgent.id}
                 onToggleActive={toggleAgentActive}
               />
             )}

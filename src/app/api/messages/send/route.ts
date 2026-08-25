@@ -38,6 +38,11 @@ export async function POST(request: Request) {
   if (!agent) {
     return NextResponse.json({ error: "No autenticado." }, { status: 401 });
   }
+  // El mismo interruptor que lo saca del reparto de la IA le corta el CRM:
+  // un agente desactivado no puede seguir escribiéndole a los clientes.
+  if (!agent.isActive) {
+    return NextResponse.json({ error: "Tu acceso al CRM está desactivado." }, { status: 403 });
+  }
 
   const conversation = await fetchConversation(supabase, conversationId);
   if (!conversation) {

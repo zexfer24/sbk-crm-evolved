@@ -20,15 +20,33 @@ export function LoginForm() {
     setIsLoading(true);
 
     const supabase = createClient();
-    const { error: signInError } = await supabase.auth.signInWithPassword({ email, password });
-
-    setIsLoading(false);
+    const { data, error: signInError } = await supabase.auth.signInWithPassword({ email, password });
 
     if (signInError) {
+      setIsLoading(false);
       setError("Correo o contraseña incorrectos.");
       return;
     }
 
+    // La contraseña puede estar bien y el usuario apagado igual: el mismo
+    // interruptor que lo saca del reparto de la IA le corta el CRM. Se cierra
+    // la sesión recién abierta y se dice acá, con la puerta en la mano — no
+    // tras un rebote de redirects sin explicación.
+    if (data.user) {
+      const { data: agentRow } = await supabase
+        .from("agents")
+        .select("is_active")
+        .eq("id", data.user.id)
+        .maybeSingle();
+      if (agentRow && agentRow.is_active === false) {
+        await supabase.auth.signOut();
+        setIsLoading(false);
+        setError("Tu acceso al CRM está desactivado. Habla con un supervisor para que te reactive.");
+        return;
+      }
+    }
+
+    setIsLoading(false);
     router.push("/");
     router.refresh();
   }

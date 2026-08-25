@@ -12,6 +12,12 @@ interface AgentsRosterPanelProps {
   conversations: Conversation[];
   metrics: AgentMetrics[];
   togglingAgentId: string | null;
+  /**
+   * Quién está mirando el panel. El interruptor apaga el acceso completo al
+   * CRM, así que sobre uno mismo se bloquea: apagarse a sí mismo es quedarse
+   * fuera sin nadie que te vuelva a encender.
+   */
+  currentAgentId: string;
   onToggleActive: (agent: Agent) => void;
 }
 
@@ -29,6 +35,7 @@ export function AgentsRosterPanel({
   conversations,
   metrics,
   togglingAgentId,
+  currentAgentId,
   onToggleActive,
 }: AgentsRosterPanelProps) {
   const activeCount = agents.filter((a) => a.isActive).length;
@@ -46,7 +53,7 @@ export function AgentsRosterPanel({
         <h2 className="dash-panel-title">Agentes en la operación</h2>
         <span className="dash-panel-spacer" />
         <span className="dash-panel-note">
-          {agents.length} en total · {activeCount} disponibles para la IA
+          {agents.length} en total · {activeCount} activos
         </span>
       </div>
 
@@ -76,18 +83,25 @@ export function AgentsRosterPanel({
 
                   <div className="ac-agent-card-toggle">
                     <span className="ac-agent-card-toggle-label">
-                      {agent.isActive ? "Disponible para la IA" : "No disponible"}
+                      {agent.isActive ? "Activo" : "Acceso desactivado"}
                     </span>
                     <button
                       className="ac-switch"
                       type="button"
                       data-on={agent.isActive}
                       onClick={() => onToggleActive(agent)}
-                      disabled={isToggling}
+                      disabled={isToggling || agent.id === currentAgentId}
+                      title={
+                        agent.id === currentAgentId
+                          ? "No puedes desactivar tu propio acceso"
+                          : undefined
+                      }
                       aria-label={
-                        agent.isActive
-                          ? `Quitar a ${agent.displayName} de la asignación automática de la IA`
-                          : `Poner a ${agent.displayName} disponible para la asignación automática de la IA`
+                        agent.id === currentAgentId
+                          ? "No puedes desactivar tu propio acceso"
+                          : agent.isActive
+                            ? `Desactivar a ${agent.displayName}: la IA no le asignará chats y no podrá entrar al CRM`
+                            : `Reactivar a ${agent.displayName}: vuelve al reparto de la IA y recupera el acceso al CRM`
                       }
                     />
                   </div>
