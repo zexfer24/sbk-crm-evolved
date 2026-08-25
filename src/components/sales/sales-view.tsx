@@ -1,12 +1,12 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useMemo, useState } from "react";
 import { CheckCheck, Eye, Receipt, RotateCcw, ShieldCheck, Trash2 } from "lucide-react";
 import type { Agent, Conversation } from "@/lib/types";
 import { PAYMENT_METHOD_LABELS } from "@/lib/types";
 import { createClient } from "@/lib/supabase/client";
-import { fetchConversations } from "@/lib/data";
 import { deleteSale, returnSale, verifySale } from "@/lib/mutations";
+import { useLiveConversations } from "@/lib/use-live-conversations";
 import { contactName, initials } from "@/lib/dashboard";
 import { formatFullDateTime } from "@/lib/format";
 import { SaleDetailModal } from "@/components/sales/sale-detail-modal";
@@ -24,29 +24,19 @@ interface SalesViewProps {
 export function SalesView({ currentAgent, initialConversations }: SalesViewProps) {
   const supabase = useMemo(() => createClient(), []);
 
-  const [conversations, setConversations] = useState(initialConversations);
+  // Antes cada evento de conversations —cada mensaje del equipo— refetcheaba
+  // acá el histórico completo, sin agrupar y aun con la pestaña oculta. Al
+  // hook solo lo hacen refetchear los cambios de venta (el monto vive en
+  // `orders`); el resto del tráfico se resuelve en memoria sin pedir nada.
+  const { conversations, refreshConversations: refresh } = useLiveConversations(
+    supabase,
+    initialConversations,
+    { channelName: "sales-conversations" }
+  );
+
   const [detailId, setDetailId] = useState<string | null>(null);
   const [busyId, setBusyId] = useState<string | null>(null);
   const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
-
-  const refresh = useCallback(async () => {
-    try {
-      setConversations(await fetchConversations(supabase));
-    } catch {
-      // El siguiente cambio en tiempo real reintentará la sincronización.
-    }
-  }, [supabase]);
-
-  useEffect(() => {
-    const channel = supabase
-      .channel("sales-changes")
-      .on("postgres_changes", { event: "*", schema: "public", table: "conversations" }, () => refresh())
-      .subscribe();
-
-    return () => {
-      supabase.removeChannel(channel);
-    };
-  }, [supabase, refresh]);
 
   const sales = useMemo(
     () =>

@@ -5,9 +5,10 @@ import Link from "next/link";
 import { RefreshCw, Route, TriangleAlert } from "lucide-react";
 import type { Agent, Conversation, HourlyActivity } from "@/lib/types";
 import { createClient } from "@/lib/supabase/client";
-import { fetchConversations, fetchTodayActivity } from "@/lib/data";
+import { fetchTodayActivity } from "@/lib/data";
 import { useClock } from "@/lib/use-clock";
-import { useDebouncedCallback } from "@/lib/use-debounced-callback";
+import { useLiveConversations } from "@/lib/use-live-conversations";
+import { useLiveRefresh } from "@/lib/use-live-refresh";
 import {
   buildJourney,
   buildTicketStats,
@@ -48,47 +49,53 @@ export function DashboardView({
 }: DashboardViewProps) {
   const supabase = useMemo(() => createClient(), []);
 
-  const [conversations, setConversations] = useState(initialConversations);
+  // El tablero sigue en vivo lo que pasa en la bandeja de todo el equipo.
+  // Los reclamos salen de las etiquetas del contacto, por eso también se
+  // escucha contact_tags. El hook aplica en memoria lo que el evento ya trae
+  // y agrupa los refetch inevitables — antes, cada mensaje del equipo era un
+  // refetch completo del histórico en cada tablero abierto, incluso oculto.
+  const { conversations, refreshConversations } = useLiveConversations(supabase, initialConversations, {
+    watchContactTags: true,
+    channelName: "dashboard-conversations",
+  });
+
   const [activity, setActivity] = useState(initialActivity);
   const [refreshing, setRefreshing] = useState(false);
   const now = useClock();
 
-  const refresh = useCallback(async () => {
-    setRefreshing(true);
+  const refreshActivity = useCallback(async () => {
     try {
-      const [nextConversations, nextActivity] = await Promise.all([
-        fetchConversations(supabase),
-        fetchTodayActivity(supabase, timeZone),
-      ]);
-      setConversations(nextConversations);
-      setActivity(nextActivity);
+      setActivity(await fetchTodayActivity(supabase, timeZone));
     } catch {
       // El siguiente cambio en tiempo real reintentará la sincronización.
-    } finally {
-      setRefreshing(false);
     }
   }, [supabase, timeZone]);
 
-  // El tablero sigue en vivo lo que pasa en la bandeja de todo el equipo.
-  // Con varios agentes con el dashboard abierto, cualquier cambio en
-  // CUALQUIER conversación dispara este refresh -- se agrupa para no
-  // encadenar un refetch completo por cada evento casi simultáneo.
-  const scheduleRefresh = useDebouncedCallback(refresh, 750);
+  // La gráfica de actividad cuenta mensajes por hora: lo suyo son los INSERT
+  // de messages, no la lista de conversaciones. Separarlo evita que cada
+  // mensaje entrante refetchee el histórico completo de conversaciones.
+  const requestActivityRefresh = useLiveRefresh(refreshActivity);
   useEffect(() => {
     const channel = supabase
-      .channel("dashboard-live")
-      .on("postgres_changes", { event: "*", schema: "public", table: "conversations" }, () => {
-        scheduleRefresh();
-      })
+      .channel("dashboard-activity")
       .on("postgres_changes", { event: "INSERT", schema: "public", table: "messages" }, () => {
-        scheduleRefresh();
+        requestActivityRefresh();
       })
       .subscribe();
 
     return () => {
       supabase.removeChannel(channel);
     };
-  }, [supabase, scheduleRefresh]);
+  }, [supabase, requestActivityRefresh]);
+
+  const refresh = useCallback(async () => {
+    setRefreshing(true);
+    try {
+      await Promise.all([refreshConversations(), refreshActivity()]);
+    } finally {
+      setRefreshing(false);
+    }
+  }, [refreshConversations, refreshActivity]);
 
   const stages = useMemo(() => buildJourney(conversations, now), [conversations, now]);
   const stats = useMemo(() => buildTicketStats(conversations, now), [conversations, now]);

@@ -15,7 +15,6 @@ import { createClient } from "@/lib/supabase/client";
 import {
   CHAT_MESSAGES_WINDOW,
   INBOX_CONVERSATIONS_LIMIT,
-  fetchConversations,
   fetchMessages,
   fetchMessagesBefore,
   fetchNotes,
@@ -35,26 +34,8 @@ import {
   sendableHeads,
   type OutboxItem,
 } from "@/lib/outbox";
-import { useDebouncedCallback } from "@/lib/use-debounced-callback";
-
-/**
- * Ventana de agrupación para refrescos disparados por tiempo real. Un
- * cliente que manda varios mensajes seguidos, o varios agentes moviendo
- * conversaciones a la vez, no deben disparar un refetch completo por cada
- * evento — mismo valor que ya usa el panel de Control de IA.
- */
-const REALTIME_DEBOUNCE_MS = 750;
-
-/**
- * Cada cuánto se rearma la bandeja entera aunque no haya pasado nada.
- *
- * Aplicar los cambios en memoria quitó la red que había: antes, cualquier
- * desincronización se corregía sola en el refetch siguiente. Si un campo se
- * queda sin mapear, sin esto la bandeja mostraría el valor viejo hasta que
- * alguien recargue. Cinco minutos devuelve esa reparación por muy poco: es
- * un refresco cada cinco minutos en vez de uno por cada evento.
- */
-const SAFETY_REFRESH_MS = 5 * 60 * 1000;
+import { useLiveConversations } from "@/lib/use-live-conversations";
+import { REALTIME_DEBOUNCE_MS } from "@/lib/use-live-refresh";
 import { InboxSidebar } from "@/components/inbox/inbox-sidebar";
 import { AgentHomePanel } from "@/components/inbox/agent-home-panel";
 import type { BcvRateSummary } from "@/components/inbox/bcv-rate-chip";
@@ -91,7 +72,13 @@ export function CrmShell({
 }: CrmShellProps) {
   const supabase = useMemo(() => createClient(), []);
 
-  const [conversations, setConversations] = useState<Conversation[]>(initialConversations);
+  // La lista viva: aplica en memoria lo que el evento ya trae, agrupa los
+  // refetch inevitables, y no trabaja contra una pestaña que nadie mira.
+  const { conversations, setConversations, refreshConversations } = useLiveConversations(
+    supabase,
+    initialConversations,
+    { limit: INBOX_CONVERSATIONS_LIMIT, watchContactTags: true, channelName: "conversations-changes" }
+  );
   // Sin conversación de inicio no se abre ninguna: abrir la primera de la
   // lista ponía al asesor a leer un chat que no eligió —y lo daba por leído—
   // antes de decidir nada. El id explícito (llegar desde una tarjeta del
@@ -267,119 +254,6 @@ export function CrmShell({
     }
   }, [supabase, selectedId, loadedThread, loadingOlder]);
 
-  const refreshConversations = useCallback(async () => {
-    try {
-      const data = await fetchConversations(supabase, { limit: INBOX_CONVERSATIONS_LIMIT });
-      setConversations(data);
-    } catch {
-      // El siguiente cambio en tiempo real reintentará la sincronización.
-    }
-  }, [supabase]);
-
-  const scheduleRefreshConversations = useDebouncedCallback(refreshConversations, REALTIME_DEBOUNCE_MS);
-
-  /**
-   * Aplica en memoria un cambio que ya viene entero en el evento.
-   *
-   * Cada evento de realtime pedía la bandeja completa: 200 conversaciones con
-   * siete relaciones cada una, unos 230 KB medidos. Y los eventos no son
-   * pocos —además de cada mensaje, cada confirmación de entrega toca la
-   * conversación, así que un solo mensaje saliente genera tres—, multiplicado
-   * por los agentes conectados.
-   *
-   * Pero el evento ya trae la fila nueva. Cuando lo que cambió son datos
-   * propios de la conversación, no hay nada que volver a pedir.
-   *
-   * Devuelve false cuando no puede resolverlo solo, y ahí sí se refresca:
-   * una conversación que no estaba en la lista (el evento no trae ni el
-   * contacto ni el canal), o un cambio que arrastra algo de otra tabla —quién
-   * quedó asignado, o una venta cuyo monto vive en `orders`—.
-   */
-  const applyConversationRow = useCallback((row: Record<string, unknown>): boolean => {
-    const id = typeof row.id === "string" ? row.id : null;
-    if (!id) return false;
-
-    let resuelto = false;
-    setConversations((current) => {
-      const actual = current.find((c) => c.id === id);
-      if (!actual) return current;
-
-      // Lo que no viaja en la fila: si cambió, hay que ir a buscarlo.
-      const cambioElAsignado = (row.assigned_agent_id ?? null) !== (actual.assignedAgent?.id ?? null);
-      const cambioLaVenta =
-        row.deal_status !== actual.dealStatus || row.deal_verified !== actual.dealVerified;
-      if (cambioElAsignado || cambioLaVenta) return current;
-
-      resuelto = true;
-      return current.map((c) =>
-        c.id === id
-          ? {
-              ...c,
-              unreadCount: row.unread_count as number,
-              manuallyUnread: row.manually_unread as boolean,
-              aiEnabled: row.ai_enabled as boolean,
-              status: row.status as Conversation["status"],
-              lastMessageAt: row.last_message_at as string | null,
-              lastMessagePreview: row.last_message_preview as string | null,
-              lastMessageDirection: row.last_message_direction as Conversation["lastMessageDirection"],
-              lastMessageStatus: row.last_message_status as Conversation["lastMessageStatus"],
-              lastCustomerMessageAt: row.last_customer_message_at as string | null,
-              journeyStage: row.journey_stage as Conversation["journeyStage"],
-              intent: row.intent as string | null,
-              activeTool: row.active_tool as string | null,
-              welcomeSentAt: row.welcome_sent_at as string | null,
-            }
-          : c
-      );
-    });
-
-    return resuelto;
-  }, []);
-
-  /**
-   * Quedó un cambio sin atender porque la pestaña no estaba a la vista.
-   *
-   * Un asesor deja el CRM abierto todo el día en una pestaña de fondo, y cada
-   * evento de realtime dispara un refetch de la bandeja entera —doscientas
-   * conversaciones, unos 230 KB—. Multiplicado por los agentes conectados, es
-   * trabajo constante que nadie está mirando y que le quita aire al que sí
-   * tiene el CRM delante. Mientras no se ve, se anota; al volver, una sola
-   * puesta al día.
-   */
-  const pendingWhileHidden = useRef(false);
-
-  const requestRefreshConversations = useCallback(() => {
-    if (typeof document !== "undefined" && document.hidden) {
-      pendingWhileHidden.current = true;
-      return;
-    }
-    scheduleRefreshConversations();
-  }, [scheduleRefreshConversations]);
-
-  // Red de seguridad contra la deriva. No corre con la pestaña oculta: ahí ya
-  // se anota el pendiente y se pone al día al volver.
-  useEffect(() => {
-    const timer = setInterval(() => {
-      if (typeof document !== "undefined" && document.hidden) return;
-      refreshConversations();
-    }, SAFETY_REFRESH_MS);
-
-    return () => clearInterval(timer);
-  }, [refreshConversations]);
-
-  useEffect(() => {
-    function onVisibilityChange() {
-      if (document.hidden || !pendingWhileHidden.current) return;
-      pendingWhileHidden.current = false;
-      // Directo y no por el agrupador: al volver a la pestaña se quiere la
-      // bandeja al día ya, no tres cuartos de segundo después.
-      refreshConversations();
-    }
-
-    document.addEventListener("visibilitychange", onVisibilityChange);
-    return () => document.removeEventListener("visibilitychange", onVisibilityChange);
-  }, [refreshConversations]);
-
   /**
    * Apartar y desapartar un chat desde el menú de la bandeja.
    *
@@ -402,7 +276,7 @@ export function CrmShell({
         refreshConversations();
       }
     },
-    [supabase, refreshConversations]
+    [supabase, refreshConversations, setConversations]
   );
 
   const markRead = useCallback(
@@ -418,37 +292,8 @@ export function CrmShell({
         refreshConversations();
       }
     },
-    [supabase, refreshConversations]
+    [supabase, refreshConversations, setConversations]
   );
-
-  // Mantiene la bandeja sincronizada entre todos los agentes conectados. También
-  // escucha contact_tags: asignar/quitar una etiqueta no toca la fila de
-  // conversations, así que sin esto el chip de etiquetas no se actualizaría en vivo.
-  // Con 400 chats/día y varios agentes conectados, agrupar estos refrescos evita
-  // saturar la base con un refetch completo por cada evento casi simultáneo.
-  useEffect(() => {
-    const channel = supabase
-      .channel("conversations-changes")
-      .on("postgres_changes", { event: "*", schema: "public", table: "conversations" }, (payload) => {
-        // Un UPDATE que se resuelve con lo que ya trae el evento no necesita
-        // pedir nada. Todo lo demás —altas, bajas, o lo que arrastre
-        // relaciones— sigue yendo por el refresco completo.
-        if (payload.eventType === "UPDATE" && applyConversationRow(payload.new as Record<string, unknown>)) {
-          return;
-        }
-        requestRefreshConversations();
-      })
-      // Las etiquetas no viajan en la fila de la conversación: viven en
-      // contact_tags, así que acá no hay nada que aplicar en memoria.
-      .on("postgres_changes", { event: "*", schema: "public", table: "contact_tags" }, () => {
-        requestRefreshConversations();
-      })
-      .subscribe();
-
-    return () => {
-      supabase.removeChannel(channel);
-    };
-  }, [supabase, requestRefreshConversations, applyConversationRow]);
 
   // Mensajes rápidos compartidos entre agentes: se sincronizan en vivo.
   useEffect(() => {

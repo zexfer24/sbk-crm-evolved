@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { BookOpen, Bot, ShieldAlert, Users, Wrench, Zap } from "lucide-react";
 import type {
   Agent,
@@ -28,7 +28,6 @@ import {
   fetchAgentTurns,
   fetchAgentMetrics,
   fetchAllAgents,
-  fetchConversations,
   fetchKnowledgeCategories,
   fetchKnowledgeEntries,
   fetchModelPricing,
@@ -49,6 +48,8 @@ import {
 } from "@/lib/mutations";
 import { contactName, initials } from "@/lib/dashboard";
 import { formatTime12h } from "@/lib/format";
+import { useLiveConversations } from "@/lib/use-live-conversations";
+import { useLiveRefresh } from "@/lib/use-live-refresh";
 import { AgentsRosterPanel } from "@/components/agent-control/agent-roster-panel";
 import { AgentToolsPanel } from "@/components/agent-control/agent-tools-panel";
 import { KnowledgePanel } from "@/components/agent-control/knowledge-panel";
@@ -156,7 +157,13 @@ export function AgentControlView({
   const supabase = useMemo(() => createClient(), []);
 
   const [tab, setTab] = useState<AgentControlTab>("ia");
-  const [conversations, setConversations] = useState(initialConversations);
+  // La lista viva de conversaciones va por su propio carril: el hook aplica
+  // en memoria lo que el evento ya trae y solo refetchea lo que arrastra
+  // relaciones. Antes, cada mensaje del equipo disparaba acá el refetch de
+  // TODO el panel (trece consultas), incluso con la pestaña oculta.
+  const { conversations, refreshConversations } = useLiveConversations(supabase, initialConversations, {
+    channelName: "agent-control-conversations",
+  });
   const [turns, setTurns] = useState(initialTurns);
   const [settings, setSettings] = useState(initialSettings);
   const [agents, setAgents] = useState(initialAgents);
@@ -184,10 +191,10 @@ export function AgentControlView({
   const [sendingSuggestion, setSendingSuggestion] = useState(false);
   const [resolvingSuggestionId, setResolvingSuggestionId] = useState<string | null>(null);
 
+  // Todo lo del panel menos las conversaciones, que van por su propio carril.
   const refresh = useCallback(async () => {
     try {
       const [
-        nextConversations,
         nextTurns,
         nextSettings,
         nextAgents,
@@ -201,7 +208,6 @@ export function AgentControlView({
         nextKnowledgeCategories,
         nextKnowledgeEntries,
       ] = await Promise.all([
-        fetchConversations(supabase),
         fetchAgentTurns(supabase),
         fetchAgentSettings(supabase),
         fetchAllAgents(supabase),
@@ -215,7 +221,6 @@ export function AgentControlView({
         fetchKnowledgeCategories(supabase),
         fetchKnowledgeEntries(supabase),
       ]);
-      setConversations(nextConversations);
       setTurns(nextTurns);
       setSettings(nextSettings);
       setAgents(nextAgents);
@@ -233,26 +238,13 @@ export function AgentControlView({
     }
   }, [supabase]);
 
-  const refreshTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-
-  const scheduleRefresh = useCallback(() => {
-    if (refreshTimeoutRef.current) clearTimeout(refreshTimeoutRef.current);
-    refreshTimeoutRef.current = setTimeout(() => {
-      refreshTimeoutRef.current = null;
-      refresh();
-    }, 750);
-  }, [refresh]);
-
-  useEffect(() => {
-    return () => {
-      if (refreshTimeoutRef.current) clearTimeout(refreshTimeoutRef.current);
-    };
-  }, []);
+  // Agrupado y consciente de la pestaña: los eventos de estas tablas no
+  // deben costar trece consultas cada uno en un panel que nadie está mirando.
+  const scheduleRefresh = useLiveRefresh(refresh);
 
   useEffect(() => {
     const channel = supabase
       .channel("agent-control-live")
-      .on("postgres_changes", { event: "*", schema: "public", table: "conversations" }, () => scheduleRefresh())
       .on("postgres_changes", { event: "INSERT", schema: "public", table: "agent_turns" }, () => scheduleRefresh())
       .on("postgres_changes", { event: "UPDATE", schema: "public", table: "agent_settings" }, () => scheduleRefresh())
       .on("postgres_changes", { event: "UPDATE", schema: "public", table: "agents" }, () => scheduleRefresh())
@@ -320,7 +312,9 @@ export function AgentControlView({
     setBusyConversationId(conversationId);
     try {
       await setAiEnabled(supabase, conversationId, currentAgent, false);
-      await refresh();
+      // La conversación cambió por una acción de quien mira: se refresca ya,
+      // sin esperar a que el evento de realtime dé la vuelta.
+      await Promise.all([refresh(), refreshConversations()]);
     } finally {
       setBusyConversationId(null);
     }
@@ -330,7 +324,7 @@ export function AgentControlView({
     setBusyConversationId(conversationId);
     try {
       await intervene(supabase, conversationId, currentAgent);
-      await refresh();
+      await Promise.all([refresh(), refreshConversations()]);
     } finally {
       setBusyConversationId(null);
     }
