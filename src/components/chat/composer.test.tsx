@@ -4,11 +4,10 @@ import userEvent from "@testing-library/user-event";
 import { Composer } from "@/components/chat/composer";
 import type { Conversation } from "@/lib/types";
 
-const sendMessageMock = vi.fn().mockResolvedValue(undefined);
 const sendMediaMessageMock = vi.fn().mockResolvedValue(undefined);
+const onSendTextMock = vi.fn();
 
 vi.mock("@/lib/mutations", () => ({
-  sendMessage: (...args: unknown[]) => sendMessageMock(...args),
   sendMediaMessage: (...args: unknown[]) => sendMediaMessageMock(...args),
   sendTemplateMessage: vi.fn().mockResolvedValue(undefined),
 }));
@@ -84,6 +83,7 @@ function renderComposer() {
       quickReplies={[]}
       replyingTo={null}
       onCancelReply={vi.fn()}
+      onSendText={onSendTextMock}
     />
   );
 }
@@ -153,17 +153,16 @@ describe("Composer - atajos de teclado de formato", () => {
 });
 
 /**
- * Enviar es lo que más se repite en todo el CRM. Si el cuadro se queda con el
- * texto puesto hasta que contesta el servidor, el asesor no sabe si su Enter
- * entró: el gesto no acusa recibo, y la reacción natural es volver a pulsar.
+ * Enviar es lo que más se repite en todo el CRM. El cuadro ya no espera al
+ * servidor para nada: entrega el texto a la cola del shell y se vacía en el
+ * acto. La espera y los fallos se cuentan en la burbuja provisional del hilo,
+ * que sobrevive aunque el asesor cambie de chat.
  */
-describe("Composer — el cuadro responde al enviar, sin esperar al servidor", () => {
-  beforeEach(() => sendMessageMock.mockReset().mockResolvedValue(undefined));
+describe("Composer — el cuadro entrega a la cola y se vacía en el acto", () => {
+  beforeEach(() => onSendTextMock.mockClear());
 
-  it("vacía el cuadro apenas se envía, con el envío todavía en vuelo", async () => {
+  it("vacía el cuadro apenas se envía y le entrega el texto a la cola", async () => {
     const user = userEvent.setup();
-    let terminarElEnvio: () => void = () => {};
-    sendMessageMock.mockReturnValue(new Promise<void>((r) => { terminarElEnvio = r; }));
 
     renderComposer();
     const textarea = screen.getByRole("textbox", { name: "Mensaje" }) as HTMLTextAreaElement;
@@ -171,16 +170,18 @@ describe("Composer — el cuadro responde al enviar, sin esperar al servidor", (
     await user.keyboard("{Enter}");
 
     expect(textarea.value).toBe("");
-
-    terminarElEnvio();
+    expect(onSendTextMock).toHaveBeenCalledWith("¿Tienen el carburador PZ27?", null);
   });
 
-  // Queda sin cubrir que el texto vuelva al cuadro cuando el envío falla.
-  // El comportamiento está implementado y comprobado a mano, pero el test se
-  // cae por el entorno y no por el código: vitest da por no manejado el
-  // rechazo de `sendMessage` aunque el `catch` del Composer lo atienda —se
-  // verificó que corre y que restaura el texto—. No se deja un test en rojo
-  // ni uno que finja cubrirlo.
+  it("con el cuadro vacío, Enter no encola nada", async () => {
+    const user = userEvent.setup();
+
+    renderComposer();
+    await user.click(screen.getByRole("textbox", { name: "Mensaje" }));
+    await user.keyboard("{Enter}");
+
+    expect(onSendTextMock).not.toHaveBeenCalled();
+  });
 });
 
 /**

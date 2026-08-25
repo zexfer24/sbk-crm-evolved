@@ -7,6 +7,7 @@ import { MediaThumb } from "@/components/chat/media-lightbox";
 import { DeliveryCheck } from "@/components/chat/delivery-check";
 import { MessageContextMenu } from "@/components/chat/message-context-menu";
 import { FormattedText } from "@/components/chat/formatted-text";
+import { QuotedText, QuotedThumb } from "@/components/chat/quoted-content";
 
 // MediaError.MEDIA_ERR_SRC_NOT_SUPPORTED no siempre está disponible como
 // constante global en jsdom, así que usamos el literal con su significado documentado.
@@ -214,6 +215,8 @@ export function MessageBubble({
           }
         >
           {repliedMessage &&
+            // La miniatura enseña cuál foto se citó — la exacta, no la primera
+            // del montón — y el clic lleva hasta ella dentro del hilo.
             (onJumpToQuoted ? (
               <button
                 type="button"
@@ -221,25 +224,23 @@ export function MessageBubble({
                 onClick={() => onJumpToQuoted(repliedMessage.id)}
                 aria-label={`Ir al mensaje citado de ${senderLabel(repliedMessage)}`}
               >
-                <span className="font-medium">{senderLabel(repliedMessage)}</span>
-                <span className="truncate">
-                  {repliedMessage.content ? (
-                    <FormattedText text={repliedMessage.content} />
-                  ) : (
-                    `[${repliedMessage.messageType}]`
-                  )}
+                <span className="crm-quote-col">
+                  <span className="font-medium">{senderLabel(repliedMessage)}</span>
+                  <span className="truncate">
+                    <QuotedText message={repliedMessage} />
+                  </span>
                 </span>
+                <QuotedThumb message={repliedMessage} />
               </button>
             ) : (
               <div className="crm-bubble-quote">
-                <p className="font-medium">{senderLabel(repliedMessage)}</p>
-                <p className="truncate">
-                  {repliedMessage.content ? (
-                    <FormattedText text={repliedMessage.content} />
-                  ) : (
-                    `[${repliedMessage.messageType}]`
-                  )}
-                </p>
+                <span className="crm-quote-col">
+                  <span className="font-medium">{senderLabel(repliedMessage)}</span>
+                  <span className="truncate">
+                    <QuotedText message={repliedMessage} />
+                  </span>
+                </span>
+                <QuotedThumb message={repliedMessage} />
               </div>
             ))}
 

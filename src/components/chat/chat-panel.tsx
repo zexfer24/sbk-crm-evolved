@@ -4,6 +4,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { ArrowLeft, UserPlus, UserMinus } from "lucide-react";
 import { toast } from "@heroui/react";
 import type { Agent, Conversation, Message, QuickReply, WhatsappTemplate } from "@/lib/types";
+import type { OutboxItem } from "@/lib/outbox";
 import { createClient } from "@/lib/supabase/client";
 import { contactName, initials } from "@/lib/dashboard";
 import { assignToMe, intervene, setAiEnabled, unassign } from "@/lib/mutations";
@@ -11,6 +12,7 @@ import { groupMessagesForRender } from "@/lib/message-grouping";
 import { AiStatusBanner } from "@/components/chat/ai-status-banner";
 import { MessageBubble } from "@/components/chat/message-bubble";
 import { MediaGroup } from "@/components/chat/media-group";
+import { OutboxBubble } from "@/components/chat/outbox-bubble";
 import { Composer } from "@/components/chat/composer";
 
 interface ChatPanelProps {
@@ -30,6 +32,16 @@ interface ChatPanelProps {
   onLoadOlderMessages?: () => void;
   /** Vuelve a la lista. Solo se muestra cuando la bandeja no cabe al lado. */
   onBack: () => void;
+  /**
+   * Los mensajes de esta conversación que todavía son de la cola de envío:
+   * en camino, o caídos y esperando el reintento. Viven en el shell para que
+   * cambiar de chat no los pierda.
+   */
+  outboxItems?: OutboxItem[];
+  /** Encola un texto para esta conversación. */
+  onSendText: (content: string, replyToMessageId: string | null) => void;
+  onRetryOutbox?: (localId: string) => void;
+  onDiscardOutbox?: (localId: string) => void;
 }
 
 export function ChatPanel({
@@ -45,6 +57,10 @@ export function ChatPanel({
   spendCapReached,
   onLoadOlderMessages,
   onBack,
+  outboxItems = [],
+  onSendText,
+  onRetryOutbox,
+  onDiscardOutbox,
 }: ChatPanelProps) {
   const [isIntervening, setIsIntervening] = useState(false);
   const [replyingTo, setReplyingTo] = useState<Message | null>(null);
@@ -78,6 +94,12 @@ export function ChatPanel({
   const messagesById = useMemo(() => new Map(messages.map((m) => [m.id, m])), [messages]);
   const renderItems = useMemo(() => groupMessagesForRender(messages), [messages]);
 
+  // Un enviado cuyo mensaje real ya está en el hilo no se pinta dos veces: el
+  // real manda, y el shell lo retirará de la cola en su próximo repaso.
+  const visibleOutbox = outboxItems.filter(
+    (item) => !(item.sentMessageId && messagesById.has(item.sentMessageId))
+  );
+
   // Limpia la cita pendiente al cambiar de conversación (ajuste de estado
   // durante el render, en vez de un efecto, siguiendo la guía de React).
   const [lastConversationId, setLastConversationId] = useState(conversation.id);
@@ -88,7 +110,9 @@ export function ChatPanel({
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ block: "end" });
-  }, [messages.length, conversation.id]);
+    // También al encolar: la burbuja provisional es el acuse del Enter y
+    // tiene que quedar a la vista en el acto.
+  }, [messages.length, visibleOutbox.length, conversation.id]);
 
   async function handleIntervene() {
     setIsIntervening(true);
@@ -206,7 +230,14 @@ export function ChatPanel({
             );
           }
           if (item.kind === "media-group") {
-            return <MediaGroup key={item.messages[0].id} messages={item.messages} />;
+            return (
+              <MediaGroup
+                key={item.messages[0].id}
+                messages={item.messages}
+                onReply={setReplyingTo}
+                highlightedMessageId={jumpedToId}
+              />
+            );
           }
           return (
             <MessageBubble
@@ -221,6 +252,16 @@ export function ChatPanel({
             />
           );
         })}
+        {visibleOutbox.map((item) => (
+          <OutboxBubble
+            key={item.localId}
+            item={item}
+            currentAgent={currentAgent}
+            quotedMessage={item.replyToMessageId ? (messagesById.get(item.replyToMessageId) ?? null) : null}
+            onRetry={(localId) => onRetryOutbox?.(localId)}
+            onDiscard={(localId) => onDiscardOutbox?.(localId)}
+          />
+        ))}
         <div ref={bottomRef} />
       </div>
 
@@ -230,6 +271,7 @@ export function ChatPanel({
         quickReplies={quickReplies}
         replyingTo={replyingTo}
         onCancelReply={() => setReplyingTo(null)}
+        onSendText={onSendText}
       />
     </>
   );

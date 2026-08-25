@@ -2,6 +2,7 @@ import { describe, expect, it, vi, beforeEach } from "vitest";
 import { render, screen, fireEvent } from "@testing-library/react";
 import { ChatPanel } from "@/components/chat/chat-panel";
 import type { Agent, Conversation, Message } from "@/lib/types";
+import type { OutboxItem } from "@/lib/outbox";
 
 vi.mock("@/lib/supabase/client", () => ({ createClient: () => ({}) }));
 vi.mock("@/lib/mutations", () => ({
@@ -38,7 +39,10 @@ const conversacion = {
   channel: { id: "ch-1", label: "Principal", phoneNumber: "+58", phoneNumberId: "p1", status: "connected" },
 } as unknown as Conversation;
 
-function renderPanel(messages: Message[]) {
+function renderPanel(
+  messages: Message[],
+  extra: Partial<Pick<Parameters<typeof ChatPanel>[0], "outboxItems" | "onRetryOutbox" | "onDiscardOutbox">> = {}
+) {
   return render(
     <ChatPanel
       conversation={conversacion}
@@ -49,11 +53,18 @@ function renderPanel(messages: Message[]) {
       aiGloballyEnabled
       spendCapReached={false}
       onBack={() => {}}
+      onSendText={() => {}}
+      {...extra}
     />
   );
 }
 
-beforeEach(() => dangerToast.mockClear());
+beforeEach(() => {
+  dangerToast.mockClear();
+  // jsdom no trae scrollIntoView, y el panel lo llama al montar para dejar
+  // el final del hilo a la vista. Cada test que lo afirma pone el suyo.
+  Element.prototype.scrollIntoView = vi.fn();
+});
 
 /**
  * Una cita dice de qué se hablaba, pero en un hilo largo saber "de qué" sin
@@ -91,5 +102,97 @@ describe("ChatPanel — llegar hasta el mensaje citado", () => {
       fireEvent.click(cita);
       expect(dangerToast).toHaveBeenCalled();
     }
+  });
+
+  it("una foto citada dentro de una galería también es un destino al que llegar", () => {
+    const scrollIntoView = vi.fn();
+    Element.prototype.scrollIntoView = scrollIntoView;
+
+    const foto = (id: string) =>
+      mensaje({ id, messageType: "image", content: null, mediaUrl: `/api/media/${id}.jpg` });
+
+    const { container } = renderPanel([
+      foto("foto-1"),
+      foto("foto-2"),
+      mensaje({ id: "m-cita", content: "Esa, la segunda", replyToMessageId: "foto-2" }),
+    ]);
+
+    scrollIntoView.mockClear();
+    fireEvent.click(screen.getByRole("button", { name: /ir al mensaje citado/i }));
+
+    // Aterriza en la segunda foto en concreto, no en el montón entero.
+    expect(scrollIntoView).toHaveBeenCalled();
+    expect(container.querySelector('[data-message-id="foto-2"][data-highlight="true"]')).not.toBeNull();
+    expect(container.querySelector('[data-message-id="foto-1"][data-highlight="true"]')).toBeNull();
+  });
+});
+
+/**
+ * Cuando el cliente manda cinco fotos, "responder al mensaje" no alcanza:
+ * la consulta suele ser sobre UNA de las cinco, y hay que poder citarla.
+ */
+describe("ChatPanel — citar una foto concreta de la galería", () => {
+  it("cada foto de la galería tiene su propio botón de responder", () => {
+    const foto = (id: string) =>
+      mensaje({ id, messageType: "image", content: null, mediaUrl: `/api/media/${id}.jpg` });
+
+    renderPanel([foto("foto-1"), foto("foto-2"), foto("foto-3")]);
+
+    expect(screen.getAllByRole("button", { name: /responder citando esta foto/i })).toHaveLength(3);
+  });
+});
+
+/**
+ * Entre el Enter y el mensaje real hay un viaje al servidor. La burbuja
+ * provisional lo cuenta: relojito mientras va en camino, y si el envío cae,
+ * el aviso con reintentar y descartar — en el chat al que pertenece.
+ */
+describe("ChatPanel — la cola de envío a la vista", () => {
+  function pendiente(over: Partial<OutboxItem> = {}): OutboxItem {
+    return {
+      localId: "local-1",
+      conversationId: "conv-1",
+      content: "¿Sigue disponible?",
+      replyToMessageId: null,
+      status: "sending",
+      error: null,
+      createdAt: "2026-08-24T12:00:00.000Z",
+      sentMessageId: null,
+      ...over,
+    };
+  }
+
+  it("un envío en camino se muestra al instante, con su relojito", () => {
+    renderPanel([], { outboxItems: [pendiente()] });
+
+    expect(screen.getByText("¿Sigue disponible?")).toBeInTheDocument();
+    expect(screen.getByRole("img", { name: "Enviando…" })).toBeInTheDocument();
+  });
+
+  it("un envío caído muestra el aviso con reintentar y descartar", () => {
+    const onRetry = vi.fn();
+    const onDiscard = vi.fn();
+    renderPanel([], {
+      outboxItems: [pendiente({ status: "failed", error: "Sin conexión" })],
+      onRetryOutbox: onRetry,
+      onDiscardOutbox: onDiscard,
+    });
+
+    expect(screen.getByRole("alert")).toHaveTextContent(/no se envió/i);
+
+    fireEvent.click(screen.getByRole("button", { name: /reintentar el envío/i }));
+    expect(onRetry).toHaveBeenCalledWith("local-1");
+
+    fireEvent.click(screen.getByRole("button", { name: /descartar el mensaje/i }));
+    expect(onDiscard).toHaveBeenCalledWith("local-1");
+  });
+
+  it("un enviado cuyo mensaje real ya está en el hilo no se pinta dos veces", () => {
+    renderPanel(
+      [mensaje({ id: "m-real", direction: "outbound", senderType: "agent", content: "¿Sigue disponible?" })],
+      { outboxItems: [pendiente({ status: "sent", sentMessageId: "m-real" })] }
+    );
+
+    expect(screen.getAllByText("¿Sigue disponible?")).toHaveLength(1);
   });
 });

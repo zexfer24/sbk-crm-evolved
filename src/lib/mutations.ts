@@ -45,16 +45,19 @@ interface SendMessagePayload {
   mediaType?: MessageType;
 }
 
-async function postSendMessage(payload: SendMessagePayload) {
+async function postSendMessage(payload: SendMessagePayload): Promise<string | null> {
   const res = await fetch("/api/messages/send", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(payload),
   });
+  const body = await res.json().catch(() => null);
   if (!res.ok) {
-    const body = await res.json().catch(() => null);
     throw new Error(body?.error ?? "No se pudo enviar el mensaje.");
   }
+  // El id de la fila insertada: la cola de envío lo usa para saber cuándo el
+  // mensaje real ya está en el hilo y retirar su burbuja provisional.
+  return typeof body?.id === "string" ? body.id : null;
 }
 
 export async function sendMessage(
@@ -62,8 +65,8 @@ export async function sendMessage(
   content: string,
   isInternalNote: boolean,
   replyToMessageId?: string | null
-) {
-  await postSendMessage({ conversationId, kind: "text", content, isInternalNote, replyToMessageId });
+): Promise<string | null> {
+  return postSendMessage({ conversationId, kind: "text", content, isInternalNote, replyToMessageId });
 }
 
 export async function sendTemplateMessage(conversationId: string, template: WhatsappTemplate) {

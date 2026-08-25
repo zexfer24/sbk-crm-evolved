@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import { ImageDown } from "lucide-react";
+import { ImageDown, Reply } from "lucide-react";
 import type { Message } from "@/lib/types";
 import { formatMessageTime } from "@/lib/format";
 import { MediaThumb, type MediaItem } from "@/components/chat/media-lightbox";
@@ -29,8 +29,20 @@ function nombreDelMonton(messages: Message[]): string {
   return `${total} archivos`;
 }
 
+interface MediaGroupProps {
+  messages: Message[];
+  /**
+   * Citar una foto concreta del montón. Sin esto, responder a "las cinco
+   * fotos" obligaba a describir cuál con palabras; con esto, cada miniatura
+   * se puede citar por sí sola, como en WhatsApp.
+   */
+  onReply?: (message: Message) => void;
+  /** A qué foto se acaba de saltar desde una cita, para señalarla. */
+  highlightedMessageId?: string | null;
+}
+
 /** Varias fotos/videos seguidos del mismo emisor, mostrados como galería deslizable. */
-export function MediaGroup({ messages }: { messages: Message[] }) {
+export function MediaGroup({ messages, onReply, highlightedMessageId = null }: MediaGroupProps) {
   const isCustomer = messages[0].direction === "inbound";
   const last = messages[messages.length - 1];
 
@@ -69,6 +81,7 @@ export function MediaGroup({ messages }: { messages: Message[] }) {
               <div
                 className="crm-thumb-sm crm-thumb-pending"
                 key={message.id}
+                data-message-id={message.id}
                 role="img"
                 aria-label="Archivo en camino"
                 title="Todavía se está descargando"
@@ -83,6 +96,8 @@ export function MediaGroup({ messages }: { messages: Message[] }) {
               message={message}
               items={items}
               index={index}
+              isHighlighted={message.id === highlightedMessageId}
+              onReply={onReply}
               onOpenMenu={(position) => setMenu({ message, position })}
             />
           );
@@ -93,6 +108,7 @@ export function MediaGroup({ messages }: { messages: Message[] }) {
         <MessageContextMenu
           position={menu.position}
           message={menu.message}
+          onReply={onReply}
           onClose={() => setMenu(null)}
         />
       )}
@@ -108,30 +124,55 @@ export function MediaGroup({ messages }: { messages: Message[] }) {
  * Una miniatura de la galería con su menú propio. Va aparte porque la
  * pulsación larga necesita estado, y un hook no puede vivir dentro del
  * `map` que pinta la galería.
+ *
+ * El envoltorio es un div de verdad (no `display: contents`): lleva el
+ * `data-message-id` al que salta una cita —un elemento sin caja no se puede
+ * desplazar a la vista— y ancla el botón de responder que aparece encima.
  */
 function GalleryThumb({
   message,
   items,
   index,
+  isHighlighted,
+  onReply,
   onOpenMenu,
 }: {
   message: Message;
   items: MediaItem[];
   index: number;
+  isHighlighted: boolean;
+  onReply?: (message: Message) => void;
   onOpenMenu: (position: { x: number; y: number }) => void;
 }) {
   const longPress = useLongPress(onOpenMenu);
+  const cosa = message.messageType === "video" ? "este video" : "esta foto";
 
   return (
     <div
-      className="contents"
+      className="crm-thumb-wrap"
+      data-message-id={message.id}
+      data-highlight={isHighlighted || undefined}
       onContextMenu={(event) => {
         event.preventDefault();
         onOpenMenu({ x: event.clientX, y: event.clientY });
       }}
       {...longPress.handlers}
     >
-      <MediaThumb items={items} index={index} className="crm-thumb-sm" key={message.id} />
+      <MediaThumb items={items} index={index} className="crm-thumb-sm" />
+      {onReply && (
+        <button
+          type="button"
+          className="crm-thumb-reply"
+          onClick={(event) => {
+            event.stopPropagation();
+            onReply(message);
+          }}
+          aria-label={`Responder citando ${cosa}`}
+          title={`Responder citando ${cosa}`}
+        >
+          <Reply size={13} />
+        </button>
+      )}
     </div>
   );
 }

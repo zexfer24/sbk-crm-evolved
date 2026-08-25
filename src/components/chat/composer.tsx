@@ -13,9 +13,10 @@ import { toast } from "@heroui/react";
 import type { Conversation, Message, MessageType, QuickReply, WhatsappTemplate } from "@/lib/types";
 import { isWithin24hWindow } from "@/lib/whatsapp-window";
 import { createClient } from "@/lib/supabase/client";
-import { sendMediaMessage, sendMessage, sendTemplateMessage } from "@/lib/mutations";
+import { sendMediaMessage, sendTemplateMessage } from "@/lib/mutations";
 import { MEDIA_BUCKET, mediaUrlFor } from "@/lib/storage";
 import { MediaThumb, type MediaItem } from "@/components/chat/media-lightbox";
+import { QuotedThumb, quotedTypeLabel } from "@/components/chat/quoted-content";
 import { TemplatePickerModal } from "@/components/chat/template-picker-modal";
 import { QuickRepliesModal } from "@/components/chat/quick-replies-modal";
 import { WindowCountdown } from "@/components/chat/window-countdown";
@@ -26,6 +27,13 @@ interface ComposerProps {
   quickReplies: QuickReply[];
   replyingTo: Message | null;
   onCancelReply: () => void;
+  /**
+   * Entrega el texto a la cola de envío del CRM y vuelve enseguida. El cuadro
+   * no espera al servidor ni se entera de si falló: la burbuja provisional en
+   * el hilo es la que cuenta esa historia, y la cola sigue entregando aunque
+   * el asesor se vaya a otro chat.
+   */
+  onSendText: (content: string, replyToMessageId: string | null) => void;
 }
 
 function mediaTypeFromMime(mime: string): MessageType {
@@ -58,9 +66,8 @@ function etiquetaQuitar(pending: PendingFile, index: number, todos: PendingFile[
     : `Quitar ${pending.file.name}`;
 }
 
-export function Composer({ conversation, templates, quickReplies, replyingTo, onCancelReply }: ComposerProps) {
+export function Composer({ conversation, templates, quickReplies, replyingTo, onCancelReply, onSendText }: ComposerProps) {
   const [text, setText] = useState("");
-  const [isSending, setIsSending] = useState(false);
   const [isUploading, setIsUploading] = useState(false);
   const [isTemplateModalOpen, setIsTemplateModalOpen] = useState(false);
   const [isQuickRepliesOpen, setIsQuickRepliesOpen] = useState(false);
@@ -97,28 +104,19 @@ export function Composer({ conversation, templates, quickReplies, replyingTo, on
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  async function handleSend() {
+  function handleSend() {
     const content = text.trim();
-    if (!content || isSending) return;
+    if (!content) return;
 
-    // El cuadro se vacía antes de que salga nada, no después de que vuelva.
-    // Enviar es el gesto que más se repite en el CRM, y dejar el texto puesto
-    // mientras el servidor contesta hace que el Enter parezca no haber
-    // entrado — con la reacción natural de volver a pulsarlo.
+    // El cuadro se vacía en el acto y el mensaje pasa a la cola del CRM.
+    // Enviar es el gesto que más se repite acá, y el acuse tiene que ser
+    // inmediato: la burbuja provisional aparece en el hilo al instante, y si
+    // el envío falla, el aviso y el reintento viven en esa burbuja — no en
+    // este cuadro, que para entonces puede estar mostrando otro chat.
     const replyTo = replyingTo?.id ?? null;
     setText("");
     onCancelReply();
-    setIsSending(true);
-    try {
-      await sendMessage(conversation.id, content, false, replyTo);
-    } catch (err) {
-      // Lo escrito no se pierde por un fallo de red: vuelve al cuadro tal
-      // cual, listo para reintentar.
-      setText((current) => (current ? current : content));
-      toast.danger(err instanceof Error ? err.message : "No se pudo enviar el mensaje.");
-    } finally {
-      setIsSending(false);
-    }
+    onSendText(content, replyTo);
   }
 
   async function handleSelectTemplate(template: WhatsappTemplate) {
@@ -341,13 +339,18 @@ export function Composer({ conversation, templates, quickReplies, replyingTo, on
 
       {replyingTo && (
         <div className="crm-reply-strip mx-3 mt-2 flex items-center justify-between gap-2 border-l-2 border-accent bg-default px-3 py-1.5 text-xs">
-          <div className="min-w-0">
-            <p className="font-medium text-accent">
-              Respondiendo a {replyingTo.direction === "inbound" ? "cliente" : replyingTo.senderAgent?.displayName ?? "agente"}
-            </p>
-            <p className="truncate text-muted">{replyingTo.content || `[${replyingTo.messageType}]`}</p>
+          {/* Con la miniatura se ve cuál foto se está citando: cuando el
+              cliente mandó cinco, "Foto" a secas no distingue ninguna. */}
+          <div className="flex min-w-0 items-center gap-2">
+            <QuotedThumb message={replyingTo} />
+            <div className="min-w-0">
+              <p className="font-medium text-accent">
+                Respondiendo a {replyingTo.direction === "inbound" ? "cliente" : replyingTo.senderAgent?.displayName ?? "agente"}
+              </p>
+              <p className="truncate text-muted">{replyingTo.content || quotedTypeLabel(replyingTo)}</p>
+            </div>
           </div>
-          <button type="button" onClick={onCancelReply} className="shrink-0 text-muted hover:text-foreground">
+          <button type="button" onClick={onCancelReply} className="shrink-0 text-muted hover:text-foreground" aria-label="Cancelar la cita">
             <X size={14} />
           </button>
         </div>
@@ -464,11 +467,9 @@ export function Composer({ conversation, templates, quickReplies, replyingTo, on
           variant="primary"
           size="md"
           isIconOnly
-          isDisabled={
-            !withinWindow || isSending || isUploading || (pendingFiles.length === 0 && !text.trim())
-          }
+          isDisabled={!withinWindow || isUploading || (pendingFiles.length === 0 && !text.trim())}
           onPress={pendingFiles.length > 0 ? handleSendFiles : handleSend}
-          aria-label={isSending || isUploading ? "Enviando..." : "Enviar mensaje"}
+          aria-label={isUploading ? "Enviando..." : "Enviar mensaje"}
           className="shrink-0"
         >
           <Send size={18} />

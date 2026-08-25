@@ -639,6 +639,9 @@
 }
 
 .crm-bubble-quote {
+  display: flex;
+  align-items: center;
+  gap: 8px;
   margin-bottom: 6px;
   padding: 5px 9px;
   border-left: 2px solid currentColor;
@@ -647,6 +650,25 @@
   font-size: 11.5px;
   line-height: 1.35;
   opacity: 0.85;
+}
+
+/* Quién dijo qué, en columna, dejando el resto del ancho a la miniatura. */
+.crm-quote-col {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-width: 0;
+  text-align: left;
+}
+
+/* La miniatura de la foto citada — la exacta, no una cualquiera. Chica y a la
+   derecha, como en WhatsApp: la cita sigue siendo un recorte, no una galería. */
+.crm-quote-thumb {
+  width: 38px;
+  height: 38px;
+  flex-shrink: 0;
+  border-radius: 6px;
+  object-fit: cover;
 }
 
 /* --------------------------------------------------------------------------
@@ -2127,8 +2149,6 @@
 /* La cita es un botón cuando lleva a algún lado, pero tiene que seguir
    viéndose como el recorte que era: sin borde, sin fondo de botón. */
 button.crm-bubble-quote {
-  display: flex;
-  flex-direction: column;
   width: 100%;
   text-align: left;
   cursor: pointer;
@@ -2154,6 +2174,95 @@ button.crm-bubble-quote:hover {
     animation: none;
     box-shadow: 0 0 0 3px var(--lm-hot-fill);
   }
+}
+
+/* Cada foto de la galería con su envoltorio de verdad: es el destino al que
+   salta una cita (un display:contents no tiene caja que desplazar a la vista)
+   y el ancla del botón de responder que flota encima. */
+.crm-thumb-wrap {
+  position: relative;
+}
+
+.crm-thumb-reply {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  display: grid;
+  place-items: center;
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  background: rgba(20, 20, 20, 0.55);
+  color: #fff;
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 0.15s ease;
+}
+
+.crm-thumb-wrap:hover .crm-thumb-reply,
+.crm-thumb-reply:focus-visible {
+  opacity: 1;
+}
+
+/* En táctil no hay hover: ahí el camino es la pulsación larga, que abre el
+   menú con "Responder", así que el botón flotante no hace falta. */
+@media (hover: none) {
+  .crm-thumb-reply {
+    display: none;
+  }
+}
+
+/* Al llegar desde una cita hasta una foto de la galería, se señala esa foto
+   en concreto — no el montón — igual que se señala una burbuja. */
+.crm-thumb-wrap[data-highlight="true"] .crm-thumb {
+  animation: crm-msg-found 1.8s ease-out;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .crm-thumb-wrap[data-highlight="true"] .crm-thumb {
+    animation: none;
+    box-shadow: 0 0 0 3px var(--lm-hot-fill);
+  }
+}
+
+/* --------------------------------------------------------------------------
+   Cola de envío
+   La burbuja provisional entre el Enter y el mensaje real: relojito mientras
+   va en camino, y si el envío falla, el aviso con sus dos gestos.
+   -------------------------------------------------------------------------- */
+
+.crm-bubble[data-failed="true"] {
+  opacity: 0.75;
+  outline: 1px dashed var(--lm-hot-ink);
+  outline-offset: 1px;
+}
+
+.crm-outbox-failed {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 4px;
+  color: var(--lm-hot-ink);
+  font-size: 11px;
+}
+
+.crm-outbox-action {
+  display: grid;
+  place-items: center;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+}
+
+.crm-outbox-action:hover {
+  background: var(--lm-sunken);
 }
 
 /* La reacción del cliente, colgando del borde de la burbuja como en WhatsApp.

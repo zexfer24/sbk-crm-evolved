@@ -24,7 +24,17 @@ import {
   fetchTemplates,
   fetchAgentSettings,
 } from "@/lib/data";
-import { markConversationRead, markConversationUnread } from "@/lib/mutations";
+import { markConversationRead, markConversationUnread, sendMessage } from "@/lib/mutations";
+import {
+  discardItem,
+  enqueueText,
+  markFailed,
+  markSent,
+  pruneDelivered,
+  retryItem,
+  sendableHeads,
+  type OutboxItem,
+} from "@/lib/outbox";
 import { useDebouncedCallback } from "@/lib/use-debounced-callback";
 
 /**
@@ -136,6 +146,83 @@ export function CrmShell({
   const [mobileView, setMobileView] = useState<"list" | "chat">(
     initialConversationId ? "chat" : "list"
   );
+
+  /**
+   * La cola de envío de textos. Vive acá y no en el cuadro de texto a
+   * propósito: el composer se desmonta al cambiar de chat, y un envío en
+   * vuelo atado a él moría con el cambio — el texto volvía al cuadro de un
+   * chat que ya no estaba abierto, o se perdía. Desde acá, el mensaje se
+   * entrega (o falla a la vista, con su reintento) sin importar por dónde
+   * ande el asesor.
+   */
+  const [outbox, setOutbox] = useState<OutboxItem[]>([]);
+  /** Los envíos que ya salieron por la red, para no dispararlos dos veces. */
+  const outboxInFlight = useRef(new Set<string>());
+
+  const enqueueOutboxText = useCallback(
+    (conversationId: string, content: string, replyToMessageId: string | null) => {
+      setOutbox((queue) => enqueueText(queue, conversationId, content, replyToMessageId));
+    },
+    []
+  );
+
+  const retryOutboxItem = useCallback((localId: string) => {
+    setOutbox((queue) => retryItem(queue, localId));
+  }, []);
+
+  const discardOutboxItem = useCallback((localId: string) => {
+    setOutbox((queue) => discardItem(queue, localId));
+  }, []);
+
+  // El motor de la cola: cada cambio en ella dispara, si toca, los envíos que
+  // siguen. Dentro de una conversación va uno a la vez —el que está en vuelo
+  // sigue siendo la cabeza y frena a los suyos— para que el cliente lea los
+  // mensajes en el orden en que se escribieron; entre conversaciones no hay
+  // orden que cuidar y avanzan en paralelo. El estado solo cambia cuando el
+  // servidor contesta: quién está en vuelo lo recuerda el ref, no el estado.
+  useEffect(() => {
+    for (const head of sendableHeads(outbox)) {
+      if (outboxInFlight.current.has(head.localId)) continue;
+      const localId = head.localId;
+      outboxInFlight.current.add(localId);
+
+      sendMessage(head.conversationId, head.content, false, head.replyToMessageId)
+        .then((sentMessageId) => {
+          setOutbox((queue) => markSent(queue, localId, sentMessageId));
+        })
+        .catch((err: unknown) => {
+          setOutbox((queue) =>
+            markFailed(queue, localId, err instanceof Error ? err.message : null)
+          );
+        })
+        .finally(() => {
+          outboxInFlight.current.delete(localId);
+        });
+    }
+  }, [outbox]);
+
+  // Cuando el mensaje real ya llegó al hilo por tiempo real, su burbuja
+  // provisional sobra y se retira de la cola. Es un ajuste de estado durante
+  // el render —el patrón de la guía de React, como el de ChatPanel al cambiar
+  // de conversación—: pruneDelivered devuelve la misma referencia cuando no
+  // hay nada que limpiar, así que no hay bucle.
+  if (loadedThread) {
+    const presentes = new Set(loadedThread.messages.map((m) => m.id));
+    const limpia = pruneDelivered(outbox, presentes);
+    if (limpia !== outbox) setOutbox(limpia);
+  }
+
+  // Cerrar la pestaña con mensajes sin entregar los perdería en silencio:
+  // el navegador pregunta antes, que es lo único que puede hacerse por ellos.
+  const hayEnviosPendientes = outbox.some((item) => item.status !== "sent");
+  useEffect(() => {
+    if (!hayEnviosPendientes) return;
+    function onBeforeUnload(event: BeforeUnloadEvent) {
+      event.preventDefault();
+    }
+    window.addEventListener("beforeunload", onBeforeUnload);
+    return () => window.removeEventListener("beforeunload", onBeforeUnload);
+  }, [hayEnviosPendientes]);
 
   function openConversation(id: string) {
     setSelectedId(id);
@@ -524,6 +611,12 @@ export function CrmShell({
               loadingOlderMessages={loadingOlder}
               onLoadOlderMessages={loadOlderMessages}
               onBack={() => setMobileView("list")}
+              outboxItems={outbox.filter((item) => item.conversationId === selectedConversation.id)}
+              onSendText={(content, replyToMessageId) =>
+                enqueueOutboxText(selectedConversation.id, content, replyToMessageId)
+              }
+              onRetryOutbox={retryOutboxItem}
+              onDiscardOutbox={discardOutboxItem}
             />
           ) : (
             <AgentHomePanel

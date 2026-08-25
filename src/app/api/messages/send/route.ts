@@ -46,18 +46,22 @@ export async function POST(request: Request) {
 
   // Nota interna: nunca sale por WhatsApp, solo queda registrada en el CRM.
   if (isInternalNote) {
-    const { error } = await supabase.from("messages").insert({
-      conversation_id: conversationId,
-      direction: "outbound",
-      sender_type: "agent",
-      sender_agent_id: agent.id,
-      message_type: "text",
-      content: content ?? "",
-      is_internal_note: true,
-      reply_to_message_id: replyToMessageId,
-    });
+    const { data: note, error } = await supabase
+      .from("messages")
+      .insert({
+        conversation_id: conversationId,
+        direction: "outbound",
+        sender_type: "agent",
+        sender_agent_id: agent.id,
+        message_type: "text",
+        content: content ?? "",
+        is_internal_note: true,
+        reply_to_message_id: replyToMessageId,
+      })
+      .select("id")
+      .single();
     if (error) return NextResponse.json({ error: error.message }, { status: 500 });
-    return NextResponse.json({ ok: true });
+    return NextResponse.json({ ok: true, id: note.id });
   }
 
   // Si estamos citando un mensaje que sí llegó/salió por WhatsApp de verdad,
@@ -133,20 +137,26 @@ export async function POST(request: Request) {
     }
   }
 
-  const { error } = await supabase.from("messages").insert({
-    conversation_id: conversationId,
-    direction: "outbound",
-    sender_type: "agent",
-    sender_agent_id: agent.id,
-    message_type: kind === "template" ? "template" : kind === "media" ? mediaType : "text",
-    content: content ?? null,
-    template_name: kind === "template" ? templateName : null,
-    media_url: kind === "media" ? mediaUrl : null,
-    whatsapp_message_id: whatsappMessageId,
-    whatsapp_status: whatsappStatus,
-    reply_to_message_id: replyToMessageId,
-  });
+  // Se devuelve el id de la fila insertada: la cola de envío del navegador lo
+  // usa para saber cuándo el mensaje real ya llegó al hilo y retirar el suyo.
+  const { data: inserted, error } = await supabase
+    .from("messages")
+    .insert({
+      conversation_id: conversationId,
+      direction: "outbound",
+      sender_type: "agent",
+      sender_agent_id: agent.id,
+      message_type: kind === "template" ? "template" : kind === "media" ? mediaType : "text",
+      content: content ?? null,
+      template_name: kind === "template" ? templateName : null,
+      media_url: kind === "media" ? mediaUrl : null,
+      whatsapp_message_id: whatsappMessageId,
+      whatsapp_status: whatsappStatus,
+      reply_to_message_id: replyToMessageId,
+    })
+    .select("id")
+    .single();
 
   if (error) return NextResponse.json({ error: error.message }, { status: 500 });
-  return NextResponse.json({ ok: true });
+  return NextResponse.json({ ok: true, id: inserted.id });
 }
