@@ -1,5 +1,5 @@
 import Link from "next/link";
-import type { Conversation } from "@/lib/types";
+import type { ConversationSummary } from "@/lib/types";
 import {
   compactDuration,
   contactName,
@@ -14,7 +14,7 @@ const LATE_MINUTES = 60 * 24;
 const MAX_ROWS = 7;
 
 interface TicketQueuePanelProps {
-  tickets: Conversation[];
+  tickets: ConversationSummary[];
   now: number;
 }
 

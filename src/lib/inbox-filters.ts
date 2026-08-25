@@ -1,4 +1,4 @@
-import type { Agent, AgentRole, Conversation, InboxFilter, InboxSort } from "@/lib/types";
+import type { Agent, AgentRole, ConversationSummary, InboxFilter, InboxSort } from "@/lib/types";
 import { contactName } from "@/lib/dashboard";
 import { normalizeForSearch } from "@/lib/message-search";
 
@@ -46,7 +46,7 @@ export interface InboxCriteria {
   viewer: Agent;
 }
 
-function matchesFilter(conversation: Conversation, filter: InboxFilter, viewer: Agent): boolean {
+function matchesFilter(conversation: ConversationSummary, filter: InboxFilter, viewer: Agent): boolean {
   const isMine = conversation.assignedAgent?.id === viewer.id;
   const isUnread = conversation.unreadCount > 0 || conversation.manuallyUnread;
 
@@ -75,7 +75,7 @@ function matchesFilter(conversation: Conversation, filter: InboxFilter, viewer: 
  * espera encontrar a José.
  */
 function matchesSearch(
-  conversation: Conversation,
+  conversation: ConversationSummary,
   query: string,
   messageHitIds: ReadonlySet<string> | null | undefined
 ): boolean {
@@ -85,7 +85,7 @@ function matchesSearch(
   return messageHitIds?.has(conversation.id) ?? false;
 }
 
-function matchesTag(conversation: Conversation, tagId: string | null): boolean {
+function matchesTag(conversation: ConversationSummary, tagId: string | null): boolean {
   if (!tagId) return true;
   return conversation.contact.tags.some((tag) => tag.id === tagId);
 }
@@ -96,16 +96,16 @@ function matchesTag(conversation: Conversation, tagId: string | null): boolean {
  * final: da igual si se está mirando lo más nuevo o lo más viejo, ahí no hay
  * nada que leer.
  */
-function sortValue(conversation: Conversation): number | null {
+function sortValue(conversation: ConversationSummary): number | null {
   if (!conversation.lastMessageAt) return null;
   const time = new Date(conversation.lastMessageAt).getTime();
   return Number.isNaN(time) ? null : time;
 }
 
 export function applyInboxFilters(
-  conversations: Conversation[],
+  conversations: ConversationSummary[],
   { filter, search, tagId, sort, viewer, messageHitIds }: InboxCriteria
-): Conversation[] {
+): ConversationSummary[] {
   const query = normalizeForSearch(search).trim();
 
   const list = conversations.filter(

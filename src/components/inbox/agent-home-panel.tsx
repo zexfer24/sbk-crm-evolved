@@ -1,5 +1,6 @@
 import { ArrowLeft } from "lucide-react";
-import type { Agent, AgentSettings, Conversation } from "@/lib/types";
+import type { Agent, AgentSettings } from "@/lib/types";
+import type { InboxCounts } from "@/lib/data";
 import { SbkMark } from "@/components/sbk-logo";
 
 /**
@@ -10,21 +11,20 @@ import { SbkMark } from "@/components/sbk-logo";
  * antes de decidir nada. Ahora se entra a un resumen propio y el primer chat
  * abierto es siempre una elección.
  *
- * Todos los números salen de la lista que ya está en memoria: este panel no
- * pide nada al servidor, así que aparece junto con la bandeja.
+ * Los números llegan contados por la base (`fetchInboxCounts`): la lista en
+ * memoria es una ventana paginada, y contar sobre una ventana mentiría en
+ * cuanto el asesor tuviera más conversaciones que las cargadas.
  */
 export function AgentHomePanel({
   currentAgent,
-  conversations,
+  counts,
   agentSettings,
 }: {
   currentAgent: Agent;
-  conversations: Conversation[];
+  counts: InboxCounts;
   agentSettings: AgentSettings;
 }) {
-  const unread = conversations.filter((c) => c.unreadCount > 0 || c.manuallyUnread).length;
-  const mine = conversations.filter((c) => c.assignedAgent?.id === currentAgent.id).length;
-  const unassigned = conversations.filter((c) => !c.assignedAgent).length;
+  const { unread, mine, unassigned } = counts;
 
   const spendCapReached =
     agentSettings.dailySpendCapUsd !== null &&

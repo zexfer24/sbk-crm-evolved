@@ -66,6 +66,28 @@ function makeRow(index: number) {
 
 function createFakeSupabase(rows: ReturnType<typeof makeRow>[]) {
   const calls: RangeCall[] = [];
+  const filters: { op: string; column: string; value: unknown }[] = [];
+
+  // Builder encadenable como el de PostgREST: los filtros se anotan y el
+  // range final resuelve sobre las filas que quedaron.
+  function builder(current: ReturnType<typeof makeRow>[]) {
+    return {
+      neq(column: string, value: unknown) {
+        filters.push({ op: "neq", column, value });
+        return builder(current.filter((row) => (row as Record<string, unknown>)[column] !== value));
+      },
+      in(column: string, values: unknown[]) {
+        filters.push({ op: "in", column, value: values });
+        return builder(
+          current.filter((row) => values.includes((row as Record<string, unknown>)[column]))
+        );
+      },
+      range(from: number, to: number) {
+        calls.push({ from, to });
+        return Promise.resolve({ data: current.slice(from, to + 1), error: null });
+      },
+    };
+  }
 
   const client = {
     from() {
@@ -73,12 +95,7 @@ function createFakeSupabase(rows: ReturnType<typeof makeRow>[]) {
         select() {
           return {
             order() {
-              return {
-                range(from: number, to: number) {
-                  calls.push({ from, to });
-                  return Promise.resolve({ data: rows.slice(from, to + 1), error: null });
-                },
-              };
+              return builder(rows);
             },
           };
         },
@@ -86,7 +103,7 @@ function createFakeSupabase(rows: ReturnType<typeof makeRow>[]) {
     },
   };
 
-  return { client: client as unknown as SupabaseClient, calls };
+  return { client: client as unknown as SupabaseClient, calls, filters };
 }
 
 describe("fetchConversations", () => {
@@ -135,5 +152,34 @@ describe("fetchConversations", () => {
 
     expect(result).toHaveLength(10);
     expect(calls).toHaveLength(1);
+  });
+
+  /**
+   * El tablero y el roster piden solo el trabajo vivo: su costo depende de la
+   * carga del día, no de cuántos meses de histórico acumule el CRM.
+   */
+  it("con activeOnly deja lo cerrado en la base, no lo filtra el navegador", async () => {
+    const rows = Array.from({ length: 10 }, (_, i) => makeRow(i));
+    rows[3] = { ...rows[3], status: "closed" as never };
+    const { client, filters } = createFakeSupabase(rows);
+
+    const result = await fetchConversations(client, { activeOnly: true });
+
+    expect(filters).toContainEqual({ op: "neq", column: "status", value: "closed" });
+    expect(result).toHaveLength(9);
+  });
+
+  /**
+   * `.in()` con lista vacía no es una consulta válida en PostgREST, y acá
+   * además significa «nada que buscar»: se resuelve sin ir a la red.
+   */
+  it("con una lista vacía de ids o contactos responde vacío sin consultar", async () => {
+    const { client, calls } = createFakeSupabase(
+      Array.from({ length: 10 }, (_, i) => makeRow(i))
+    );
+
+    expect(await fetchConversations(client, { contactIds: [] })).toEqual([]);
+    expect(await fetchConversations(client, { ids: [] })).toEqual([]);
+    expect(calls).toHaveLength(0);
   });
 });

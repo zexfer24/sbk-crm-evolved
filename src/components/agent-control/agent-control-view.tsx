@@ -12,7 +12,7 @@ import type {
   AgentTool,
   AgentTurn,
   AgentTurnAction,
-  Conversation,
+  ConversationSummary,
   KnowledgeCategory,
   KnowledgeEntry,
   ModelPricing,
@@ -29,6 +29,7 @@ import {
   fetchAgentTurns,
   fetchAgentMetrics,
   fetchAllAgents,
+  fetchConversations,
   fetchKnowledgeCategories,
   fetchKnowledgeEntries,
   fetchModelPricing,
@@ -68,7 +69,7 @@ import "@/components/agent-control/agent-control.css";
 
 interface AgentControlViewProps {
   currentAgent: Agent;
-  initialConversations: Conversation[];
+  initialConversations: ConversationSummary[];
   initialTurns: AgentTurn[];
   initialSettings: AgentSettings;
   initialAgents: Agent[];
@@ -160,9 +161,15 @@ export function AgentControlView({
   const [tab, setTab] = useState<AgentControlTab>("ia");
   // La lista viva de conversaciones va por su propio carril: el hook aplica
   // en memoria lo que el evento ya trae y solo refetchea lo que arrastra
-  // relaciones. Antes, cada mensaje del equipo disparaba acá el refetch de
-  // TODO el panel (trece consultas), incluso con la pestaña oculta.
+  // relaciones. Se pide únicamente el trabajo vivo: la cola de la IA y el
+  // roster no miran conversaciones cerradas, y pedir el histórico completo
+  // hacía crecer este panel con cada cliente nuevo.
+  const fetcher = useCallback(
+    () => fetchConversations(supabase, { activeOnly: true }),
+    [supabase]
+  );
   const { conversations, refreshConversations } = useLiveConversations(supabase, initialConversations, {
+    fetcher,
     channelName: "agent-control-conversations",
   });
   const [turns, setTurns] = useState(initialTurns);
@@ -289,8 +296,6 @@ export function AgentControlView({
         .sort((a, b) => new Date(b.lastMessageAt ?? b.createdAt).getTime() - new Date(a.lastMessageAt ?? a.createdAt).getTime()),
     [conversations]
   );
-
-  const conversationsById = useMemo(() => new Map(conversations.map((c) => [c.id, c])), [conversations]);
 
   const pricingByModel = useMemo(() => new Map(pricing.map((p) => [p.model, p])), [pricing]);
 
@@ -597,8 +602,10 @@ export function AgentControlView({
                     <p className="ac-feed-empty">Todavía no ha corrido ningún turno del agente.</p>
                   ) : (
                     turns.map((t) => {
-                      const conversation = conversationsById.get(t.conversationId);
-                      const name = conversation ? contactName(conversation) : "Conversación de prueba";
+                      // El nombre viaja con el turno: buscarlo en la lista de
+                      // conversaciones fallaba en cuanto el hilo se cerraba y
+                      // salía de la lista del panel.
+                      const name = t.contactName ?? "Conversación de prueba";
                       return (
                         <div className="ac-feed-row" key={t.id}>
                           <div className="ac-feed-head">

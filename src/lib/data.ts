@@ -1,15 +1,19 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
+import { pgrstLiteral } from "@/lib/ai/pgrst";
 import { CRM_TIME_ZONE, currentDayRange } from "@/lib/time-zone";
 import type {
   Agent,
   AgentMetrics,
+  AgentRef,
   AgentSettings,
   AgentSuggestion,
   AgentTool,
   AgentTurn,
   Contact,
+  ContactSummary,
   Conversation,
   ConversationQuote,
+  ConversationSummary,
   HourlyActivity,
   KnowledgeCategory,
   KnowledgeEntry,
@@ -19,6 +23,7 @@ import type {
   Note,
   Playbook,
   QuickReply,
+  Sale,
   Tag,
   TokenUsageDay,
   TokenUsageSummary,
@@ -67,6 +72,57 @@ interface RawChannel {
   phone_number: string;
   phone_number_id: string | null;
   status: WhatsappChannel["status"];
+}
+
+interface RawAgentRef {
+  id: string;
+  display_name: string;
+}
+
+export interface RawContactSummary {
+  id: string;
+  phone_number: string;
+  display_name: string | null;
+  profile_name: string | null;
+  avatar_url: string | null;
+  contact_tags: { tag: RawTag }[] | null;
+}
+
+interface RawConversationSummary {
+  id: string;
+  status: Conversation["status"];
+  unread_count: number;
+  manually_unread: boolean;
+  ai_enabled: boolean;
+  deal_status: Conversation["dealStatus"];
+  deal_verified: boolean;
+  last_customer_message_at: string | null;
+  last_message_at: string | null;
+  last_message_preview: string | null;
+  last_message_direction: Conversation["lastMessageDirection"];
+  last_message_status: Conversation["lastMessageStatus"];
+  created_at: string;
+  journey_stage: Conversation["journeyStage"];
+  intent: string | null;
+  active_tool: string | null;
+  welcome_sent_at: string | null;
+  contact: RawContactSummary;
+  assigned_agent: RawAgentRef | null;
+}
+
+interface RawSale {
+  id: string;
+  deal_status: Conversation["dealStatus"];
+  deal_closed_at: string | null;
+  deal_payment_proof_url: string | null;
+  deal_verified: boolean;
+  deal_verified_at: string | null;
+  deal_payment_method: Conversation["dealPaymentMethod"];
+  created_at: string;
+  order: { total_amount: number; currency: string } | null;
+  contact: RawContact;
+  deal_verified_by: RawAgentRef | null;
+  deal_closed_by: RawAgentRef | null;
 }
 
 interface RawConversation {
@@ -192,6 +248,64 @@ export function mapContact(row: RawContact): Contact {
   };
 }
 
+function mapAgentRef(row: RawAgentRef | null): AgentRef | null {
+  if (!row) return null;
+  return { id: row.id, displayName: row.display_name };
+}
+
+export function mapContactSummary(row: RawContactSummary): ContactSummary {
+  return {
+    id: row.id,
+    phoneNumber: row.phone_number,
+    displayName: row.display_name,
+    profileName: row.profile_name,
+    avatarUrl: row.avatar_url,
+    tags: (row.contact_tags ?? []).map((ct) => mapTag(ct.tag)),
+  };
+}
+
+function mapConversationSummary(row: RawConversationSummary): ConversationSummary {
+  return {
+    id: row.id,
+    contact: mapContactSummary(row.contact),
+    status: row.status,
+    unreadCount: row.unread_count,
+    manuallyUnread: row.manually_unread,
+    assignedAgent: mapAgentRef(row.assigned_agent),
+    aiEnabled: row.ai_enabled,
+    dealStatus: row.deal_status,
+    dealVerified: row.deal_verified,
+    lastCustomerMessageAt: row.last_customer_message_at,
+    lastMessageAt: row.last_message_at,
+    lastMessagePreview: row.last_message_preview,
+    lastMessageDirection: row.last_message_direction,
+    lastMessageStatus: row.last_message_status,
+    createdAt: row.created_at,
+    journeyStage: row.journey_stage,
+    intent: row.intent,
+    activeTool: row.active_tool,
+    welcomeSentAt: row.welcome_sent_at,
+  };
+}
+
+function mapSale(row: RawSale): Sale {
+  return {
+    id: row.id,
+    contact: mapContact(row.contact),
+    dealStatus: row.deal_status,
+    dealClosedAt: row.deal_closed_at,
+    dealPaymentProofUrl: row.deal_payment_proof_url,
+    dealAmount: row.order?.total_amount ?? null,
+    dealCurrency: row.order?.currency ?? null,
+    dealVerified: row.deal_verified,
+    dealVerifiedAt: row.deal_verified_at,
+    dealVerifiedBy: mapAgentRef(row.deal_verified_by),
+    dealPaymentMethod: row.deal_payment_method,
+    dealClosedBy: mapAgentRef(row.deal_closed_by),
+    createdAt: row.created_at,
+  };
+}
+
 function mapChannel(row: RawChannel): WhatsappChannel {
   return {
     id: row.id,
@@ -295,7 +409,24 @@ function mapTemplate(row: RawTemplate): WhatsappTemplate {
 // Queries
 // ---------------------------------------------------------------------------
 
-const CONVERSATION_SELECT = `
+/**
+ * La fila de lista: lo que pintan la bandeja, el tablero y el roster, y nada
+ * más. El select completo (`CONVERSATION_DETAIL_SELECT`) arrastraba siete
+ * relaciones por fila —235 KB medidos en una lista de 200— para paneles que
+ * solo se abren de a una conversación.
+ */
+const CONVERSATION_LIST_SELECT = `
+  id, status, unread_count, manually_unread, ai_enabled, deal_status, deal_verified,
+  last_customer_message_at, last_message_at, last_message_preview,
+  last_message_direction, last_message_status, created_at,
+  journey_stage, intent, active_tool, welcome_sent_at,
+  contact:contacts(id, phone_number, display_name, profile_name, avatar_url,
+    contact_tags(tag:tags(id, label, color))),
+  assigned_agent:agents!conversations_assigned_agent_id_fkey(id, display_name)
+`;
+
+/** La conversación entera, para el chat abierto: canal, ficha del contacto y venta. */
+const CONVERSATION_DETAIL_SELECT = `
   id, status, unread_count, manually_unread, ai_enabled, deal_status, deal_closed_at,
   deal_payment_proof_url, deal_verified, deal_verified_at, deal_payment_method,
   last_customer_message_at, last_message_at, last_message_preview,
@@ -318,31 +449,41 @@ const CONVERSATION_SELECT = `
 export const CONVERSATIONS_PAGE_SIZE = 1000;
 
 /**
- * Cuántas conversaciones carga la bandeja. Alcanza de sobra para la lista
- * que el asesor recorre; lo que quede más atrás se encuentra por la búsqueda,
- * que consulta contra la base y no contra lo que ya está en pantalla.
+ * Cuántas conversaciones carga la bandeja por tirada: lo que entra en
+ * pantalla y un poco más. Al llegar al fondo se pide la siguiente tanda; lo
+ * que quede más atrás también se encuentra por la búsqueda, que consulta
+ * contra la base y no contra lo que ya está en pantalla.
  */
-export const INBOX_CONVERSATIONS_LIMIT = 200;
+export const INBOX_PAGE_SIZE = 30;
 
 export interface FetchConversationsOptions {
   /**
    * Cuántas conversaciones traer, de la más reciente hacia atrás.
    *
-   * Sin este tope se pide el histórico completo, y cada fila arrastra siete
-   * relaciones (contacto con sus etiquetas, canal, pedido y tres vínculos de
-   * agente). Para pintar una bandeja no hace falta: quien la mira trabaja
-   * sobre lo de arriba. Las vistas que sí necesitan el total —métricas del
-   * panel, ventas— lo omiten a propósito.
+   * Sin tope se recorre lo que el filtro deje pasar, así que toda llamada
+   * sin `limit` debe acotar por otro lado: `activeOnly` (el trabajo vivo,
+   * que no crece con el histórico) o `contactIds`/`ids` (una lista concreta).
    */
   limit?: number;
+  /** Solo lo que no está cerrado: el tablero y el roster miran el trabajo vivo. */
+  activeOnly?: boolean;
+  /** Solo las conversaciones de estos contactos (los reclamos, una búsqueda). */
+  contactIds?: string[];
+  /** Solo estas conversaciones (las coincidencias de la búsqueda por mensaje). */
+  ids?: string[];
 }
 
 export async function fetchConversations(
   supabase: SupabaseClient,
   options: FetchConversationsOptions = {}
-): Promise<Conversation[]> {
-  const { limit } = options;
-  const rows: RawConversation[] = [];
+): Promise<ConversationSummary[]> {
+  const { limit, activeOnly, contactIds, ids } = options;
+
+  // `.in()` con lista vacía no es una consulta válida en PostgREST, y acá
+  // además significa «nada que buscar»: no hay filas que devolver.
+  if ((contactIds && contactIds.length === 0) || (ids && ids.length === 0)) return [];
+
+  const rows: RawConversationSummary[] = [];
   let from = 0;
 
   for (;;) {
@@ -351,15 +492,20 @@ export async function fetchConversations(
       ? Math.min(CONVERSATIONS_PAGE_SIZE, limit - rows.length)
       : CONVERSATIONS_PAGE_SIZE;
 
-    const { data, error } = await supabase
+    let request = supabase
       .from("conversations")
-      .select(CONVERSATION_SELECT)
-      .order("last_message_at", { ascending: false, nullsFirst: false })
-      .range(from, from + pageSize - 1);
+      .select(CONVERSATION_LIST_SELECT)
+      .order("last_message_at", { ascending: false, nullsFirst: false });
+
+    if (activeOnly) request = request.neq("status", "closed");
+    if (contactIds) request = request.in("contact_id", contactIds);
+    if (ids) request = request.in("id", ids);
+
+    const { data, error } = await request.range(from, from + pageSize - 1);
 
     if (error) throw error;
 
-    const page = (data as unknown as RawConversation[]) ?? [];
+    const page = (data as unknown as RawConversationSummary[]) ?? [];
     rows.push(...page);
 
     // Página incompleta: no hay más filas que pedir.
@@ -368,7 +514,7 @@ export async function fetchConversations(
     from += pageSize;
   }
 
-  return rows.map(mapConversation);
+  return rows.map(mapConversationSummary);
 }
 
 export async function fetchConversation(
@@ -377,12 +523,180 @@ export async function fetchConversation(
 ): Promise<Conversation | null> {
   const { data, error } = await supabase
     .from("conversations")
-    .select(CONVERSATION_SELECT)
+    .select(CONVERSATION_DETAIL_SELECT)
     .eq("id", conversationId)
     .maybeSingle();
 
   if (error) throw error;
   return data ? mapConversation(data as unknown as RawConversation) : null;
+}
+
+/**
+ * Los contadores del panel de inicio del asesor. Antes se contaban sobre la
+ * lista cargada; con la bandeja paginada la lista es una ventana, y contar
+ * sobre una ventana miente. Esto le pregunta a la base tres conteos sin
+ * filas (`head: true`), que cuestan lo mismo con 600 conversaciones que con
+ * 60.000.
+ */
+export interface InboxCounts {
+  unread: number;
+  mine: number;
+  unassigned: number;
+}
+
+export async function fetchInboxCounts(
+  supabase: SupabaseClient,
+  viewerId: string
+): Promise<InboxCounts> {
+  const count = () =>
+    supabase.from("conversations").select("id", { count: "exact", head: true });
+
+  const [unread, mine, unassigned] = await Promise.all([
+    count().or("unread_count.gt.0,manually_unread.eq.true"),
+    count().eq("assigned_agent_id", viewerId),
+    count().is("assigned_agent_id", null),
+  ]);
+
+  const first = [unread, mine, unassigned].find((r) => r.error);
+  if (first?.error) throw first.error;
+
+  return {
+    unread: unread.count ?? 0,
+    mine: mine.count ?? 0,
+    unassigned: unassigned.count ?? 0,
+  };
+}
+
+/** Tope de contactos que aporta la búsqueda por nombre o número. */
+export const CONTACT_SEARCH_LIMIT = 40;
+
+/**
+ * Las conversaciones que responden a una búsqueda, estén o no cargadas en la
+ * bandeja. Con la lista paginada, buscar solo sobre lo que está en pantalla
+ * escondería justo lo que se busca: lo viejo. Se combinan los dos caminos
+ * que ya existen —el contacto (nombre, número) acá y el contenido de los
+ * mensajes vía `search_conversations_by_message`, cuyos ids llegan en
+ * `messageHitIds`— y se devuelven como filas de lista normales.
+ *
+ * El nombre se compara como en la sección Clientes (`ilike` sin quitar
+ * acentos): «jose» no encuentra a «José» si no está ya cargado en pantalla,
+ * donde el filtro en memoria sí lo normaliza.
+ */
+export async function searchConversationSummaries(
+  supabase: SupabaseClient,
+  query: string,
+  messageHitIds: string[]
+): Promise<ConversationSummary[]> {
+  const term = pgrstLiteral(`%${query}%`);
+
+  const { data, error } = await supabase
+    .from("contacts")
+    .select("id")
+    .or(`display_name.ilike.${term},profile_name.ilike.${term},phone_number.ilike.${term}`)
+    .limit(CONTACT_SEARCH_LIMIT);
+
+  if (error) throw error;
+  const contactIds = ((data ?? []) as { id: string }[]).map((row) => row.id);
+
+  const [byContact, byMessage] = await Promise.all([
+    fetchConversations(supabase, { contactIds, limit: CONTACT_SEARCH_LIMIT }),
+    fetchConversations(supabase, { ids: messageHitIds }),
+  ]);
+
+  const seen = new Set(byContact.map((c) => c.id));
+  return [...byContact, ...byMessage.filter((c) => !seen.has(c.id))];
+}
+
+/**
+ * Las ventas cerradas (ganadas o devueltas), más recientes primero.
+ *
+ * Es la consulta que la sección Ventas hacía al revés: pedía el histórico
+ * completo de conversaciones para quedarse con las vendidas. El filtro ahora
+ * es de la base, y la fila trae la ficha del contacto que el detalle de la
+ * venta sí muestra — pero ni canal, ni etiquetas, ni nada de bandeja.
+ */
+const SALE_SELECT = `
+  id, deal_status, deal_closed_at, deal_payment_proof_url, deal_verified,
+  deal_verified_at, deal_payment_method, created_at,
+  order:orders(total_amount, currency),
+  contact:contacts(id, phone_number, display_name, profile_name, avatar_url,
+    cedula_type, cedula_number, state, city, address),
+  deal_verified_by:agents!conversations_deal_verified_by_fkey(id, display_name),
+  deal_closed_by:agents!conversations_deal_closed_by_fkey(id, display_name)
+`;
+
+/**
+ * Ids de contactos etiquetados como reclamo («Reclamo · …», ver dashboard.ts).
+ *
+ * Dos consultas chicas en vez de un join anidado en PostgREST: la tabla de
+ * etiquetas tiene decenas de filas y los contactos etiquetados como reclamo
+ * son pocos. Es el mismo patrón de dos pasos que `fetchBuyerContactIds` en
+ * la sección Clientes.
+ */
+async function fetchTicketContactIds(supabase: SupabaseClient): Promise<string[]> {
+  const { data: tagRows, error: tagError } = await supabase
+    .from("tags")
+    .select("id")
+    .ilike("label", "reclamo%");
+
+  if (tagError) throw tagError;
+  const tagIds = ((tagRows ?? []) as { id: string }[]).map((row) => row.id);
+  if (tagIds.length === 0) return [];
+
+  const { data: linkRows, error: linkError } = await supabase
+    .from("contact_tags")
+    .select("contact_id")
+    .in("tag_id", tagIds);
+
+  if (linkError) throw linkError;
+  return [...new Set(((linkRows ?? []) as { contact_id: string }[]).map((row) => row.contact_id))];
+}
+
+/**
+ * Lo que mira el tablero: el trabajo vivo (nada cerrado) más los reclamos,
+ * abiertos o resueltos — la estadística de reclamos compara los dos. Ninguno
+ * de los dos conjuntos crece con el histórico de conversaciones: uno es la
+ * carga del día y el otro son contactos etiquetados a mano.
+ */
+export async function fetchDashboardConversations(
+  supabase: SupabaseClient
+): Promise<ConversationSummary[]> {
+  const ticketContactIds = await fetchTicketContactIds(supabase);
+
+  const [active, tickets] = await Promise.all([
+    fetchConversations(supabase, { activeOnly: true }),
+    fetchConversations(supabase, { contactIds: ticketContactIds }),
+  ]);
+
+  const seen = new Set(active.map((c) => c.id));
+  return [...active, ...tickets.filter((c) => !seen.has(c.id))];
+}
+
+export async function fetchSales(supabase: SupabaseClient): Promise<Sale[]> {
+  const rows: RawSale[] = [];
+  let from = 0;
+
+  // Paginado por el mismo motivo que `fetchConversations`: PostgREST corta
+  // en silencio. El día que las ventas pasen de mil, la sección pedirá
+  // ventana propia; mientras tanto esto no las pierde.
+  for (;;) {
+    const { data, error } = await supabase
+      .from("conversations")
+      .select(SALE_SELECT)
+      .in("deal_status", ["won", "returned"])
+      .order("deal_closed_at", { ascending: false, nullsFirst: false })
+      .range(from, from + CONVERSATIONS_PAGE_SIZE - 1);
+
+    if (error) throw error;
+
+    const page = (data as unknown as RawSale[]) ?? [];
+    rows.push(...page);
+
+    if (page.length < CONVERSATIONS_PAGE_SIZE) break;
+    from += CONVERSATIONS_PAGE_SIZE;
+  }
+
+  return rows.map(mapSale);
 }
 
 // PostgREST (el API REST de Supabase) limita cada respuesta a un máximo de
@@ -652,15 +966,24 @@ interface RawAgentTurn {
   playbook_id: string | null;
   customer_message: string | null;
   created_at: string;
+  conversation: {
+    contact: { display_name: string | null; profile_name: string | null; phone_number: string } | null;
+  } | null;
 }
 
-const AGENT_TURN_COLUMNS =
-  "id, conversation_id, intent, action, summary, model, input_tokens, output_tokens, total_tokens, playbook_id, customer_message, created_at";
+// El nombre del contacto viaja con el turno: el feed lo mostraba buscando la
+// conversación en la lista completa del CRM, que era justo la lista que había
+// que dejar de cargar. Son 30 filas con tres campos, no un join caro.
+const AGENT_TURN_COLUMNS = `id, conversation_id, intent, action, summary, model, input_tokens,
+  output_tokens, total_tokens, playbook_id, customer_message, created_at,
+  conversation:conversations(contact:contacts(display_name, profile_name, phone_number))`;
 
 function mapAgentTurn(row: RawAgentTurn): AgentTurn {
+  const contact = row.conversation?.contact ?? null;
   return {
     id: row.id,
     conversationId: row.conversation_id,
+    contactName: contact ? contact.display_name ?? contact.profile_name ?? contact.phone_number : null,
     intent: row.intent,
     action: row.action,
     summary: row.summary,
@@ -683,7 +1006,7 @@ export async function fetchAgentTurns(supabase: SupabaseClient, limit = 30): Pro
     .limit(limit);
 
   if (error) throw error;
-  return (data as RawAgentTurn[]).map(mapAgentTurn);
+  return (data as unknown as RawAgentTurn[]).map(mapAgentTurn);
 }
 
 interface RawPlaybook {
@@ -808,7 +1131,7 @@ export async function fetchUnmatchedTurns(supabase: SupabaseClient, limit = 20):
     .limit(limit);
 
   if (error) throw error;
-  return (data as RawAgentTurn[]).map(mapAgentTurn);
+  return (data as unknown as RawAgentTurn[]).map(mapAgentTurn);
 }
 
 interface RawModelPricing {

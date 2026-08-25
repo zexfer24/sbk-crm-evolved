@@ -1,6 +1,6 @@
 import { redirect } from "next/navigation";
 import { createClient } from "@/lib/supabase/server";
-import { fetchAgents, fetchConversations, fetchCurrentAgent, fetchTodayActivity } from "@/lib/data";
+import { fetchAgents, fetchCurrentAgent, fetchDashboardConversations, fetchTodayActivity } from "@/lib/data";
 import { CRM_TIME_ZONE } from "@/lib/time-zone";
 import { DashboardView } from "@/components/dashboard/dashboard-view";
 
@@ -10,7 +10,7 @@ export default async function DashboardPage() {
   const [currentAgent, agents, conversations, activity] = await Promise.all([
     fetchCurrentAgent(supabase),
     fetchAgents(supabase),
-    fetchConversations(supabase),
+    fetchDashboardConversations(supabase),
     fetchTodayActivity(supabase, CRM_TIME_ZONE),
   ]);
 

@@ -1,8 +1,16 @@
 export type AgentRole = "agent" | "supervisor" | "admin";
 
-export interface Agent {
+/**
+ * Lo mínimo para nombrar a un asesor en una fila de lista. Las filas de la
+ * bandeja viajan por decenas en cada respuesta: cargar acá el perfil completo
+ * multiplicaba el payload sin que ninguna lista lo mostrara.
+ */
+export interface AgentRef {
   id: string;
   displayName: string;
+}
+
+export interface Agent extends AgentRef {
   fullName: string | null;
   avatarUrl: string | null;
   role: AgentRole;
@@ -29,18 +37,26 @@ export interface Tag {
 
 export type CedulaType = "V" | "E";
 
-export interface Contact {
+/**
+ * El contacto tal como lo pinta una fila de lista: quién es y sus etiquetas.
+ * La cédula y la dirección son de la ficha, no de la fila — se cargan con el
+ * detalle al abrir la conversación.
+ */
+export interface ContactSummary {
   id: string;
   phoneNumber: string;
   displayName: string | null;
   profileName: string | null;
   avatarUrl: string | null;
+  tags: Tag[];
+}
+
+export interface Contact extends ContactSummary {
   cedulaType: CedulaType | null;
   cedulaNumber: string | null;
   state: string | null;
   city: string | null;
   address: string | null;
-  tags: Tag[];
 }
 
 export type ConversationStatus = "open" | "pending" | "closed";
@@ -67,10 +83,16 @@ export type JourneyStageId =
   | "tool_running"
   | "assigned";
 
-export interface Conversation {
+/**
+ * Una conversación tal como la ven las listas: la fila de la bandeja, las
+ * tarjetas del tablero, el roster. Es la forma que viaja por decenas en cada
+ * respuesta, así que solo lleva lo que alguna lista pinta o filtra. Todo lo
+ * demás —el canal, la ficha del contacto, el detalle de la venta— vive en
+ * `Conversation` y se pide al abrir el chat, una conversación a la vez.
+ */
+export interface ConversationSummary {
   id: string;
-  contact: Contact;
-  channel: WhatsappChannel;
+  contact: ContactSummary;
   status: ConversationStatus;
   unreadCount: number;
   /**
@@ -80,24 +102,11 @@ export interface Conversation {
    * la verdad y la bandeja combina las dos cosas.
    */
   manuallyUnread: boolean;
-  assignedAgent: Agent | null;
+  assignedAgent: AgentRef | null;
   aiEnabled: boolean;
   dealStatus: DealStatus;
-  dealClosedAt: string | null;
-  dealPaymentProofUrl: string | null;
-  /** Monto real de la venta, tomado de las cotizaciones que el agente seleccionó al cerrar. Null si aún no se cerró con ítems. */
-  dealAmount: number | null;
-  dealCurrency: string | null;
+  /** Viaja en la fila porque el refresco en vivo compara con él para saber si la venta cambió. */
   dealVerified: boolean;
-  dealVerifiedAt: string | null;
-  dealVerifiedBy: Agent | null;
-  /** Con qué pagó el cliente. Null en las ventas cerradas antes de que existiera el campo. */
-  dealPaymentMethod: PaymentMethod | null;
-  /**
-   * Quién cerró la venta. No es el agente asignado: el hilo puede reasignarse
-   * después, o puede cerrarlo el supervisor sobre una conversación ajena.
-   */
-  dealClosedBy: Agent | null;
   lastCustomerMessageAt: string | null;
   lastMessageAt: string | null;
   lastMessagePreview: string | null;
@@ -114,6 +123,49 @@ export interface Conversation {
   activeTool: string | null;
   /** Última vez que se envió el mensaje de bienvenida. */
   welcomeSentAt: string | null;
+}
+
+/** La conversación completa, la que abre el chat. Se pide de a una por id. */
+export interface Conversation extends ConversationSummary {
+  contact: Contact;
+  channel: WhatsappChannel;
+  assignedAgent: Agent | null;
+  dealClosedAt: string | null;
+  dealPaymentProofUrl: string | null;
+  /** Monto real de la venta, tomado de las cotizaciones que el agente seleccionó al cerrar. Null si aún no se cerró con ítems. */
+  dealAmount: number | null;
+  dealCurrency: string | null;
+  dealVerifiedAt: string | null;
+  dealVerifiedBy: Agent | null;
+  /** Con qué pagó el cliente. Null en las ventas cerradas antes de que existiera el campo. */
+  dealPaymentMethod: PaymentMethod | null;
+  /**
+   * Quién cerró la venta. No es el agente asignado: el hilo puede reasignarse
+   * después, o puede cerrarlo el supervisor sobre una conversación ajena.
+   */
+  dealClosedBy: Agent | null;
+}
+
+/**
+ * Una venta cerrada, para la sección Ventas. Antes esa sección cargaba el
+ * histórico completo de conversaciones para quedarse con las ganadas: esto es
+ * la consulta al revés — solo las vendidas, con la ficha del contacto que el
+ * detalle de la venta sí muestra y sin nada de bandeja.
+ */
+export interface Sale {
+  id: string;
+  contact: Contact;
+  dealStatus: DealStatus;
+  dealClosedAt: string | null;
+  dealPaymentProofUrl: string | null;
+  dealAmount: number | null;
+  dealCurrency: string | null;
+  dealVerified: boolean;
+  dealVerifiedAt: string | null;
+  dealVerifiedBy: AgentRef | null;
+  dealPaymentMethod: PaymentMethod | null;
+  dealClosedBy: AgentRef | null;
+  createdAt: string;
 }
 
 /** Un tramo del gráfico de 24 h: qué pasó en esa hora del día. */
@@ -253,6 +305,8 @@ export type AgentTurnAction = "answered" | "escalated" | "error";
 export interface AgentTurn {
   id: string;
   conversationId: string;
+  /** Con quién fue el turno. Null en los turnos de prueba, sin conversación real. */
+  contactName: string | null;
   intent: AgentIntent | null;
   action: AgentTurnAction;
   summary: string | null;

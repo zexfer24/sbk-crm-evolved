@@ -2,7 +2,8 @@
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { ArrowDownWideNarrow, ArrowUpWideNarrow, Search } from "lucide-react";
-import type { Agent, Conversation, InboxFilter, InboxSort, Tag } from "@/lib/types";
+import type { Agent, ConversationSummary, InboxFilter, InboxSort, Tag } from "@/lib/types";
+import { searchConversationSummaries } from "@/lib/data";
 import { initials } from "@/lib/dashboard";
 import {
   applyInboxFilters,
@@ -49,7 +50,7 @@ function SectionHeader({ label, count }: { label: string; count: number }) {
 const SPLIT_READ_UNREAD: InboxFilter[] = ["assigned", "mine"];
 
 interface InboxSidebarProps {
-  conversations: Conversation[];
+  conversations: ConversationSummary[];
   selectedId: string | null;
   onSelect: (id: string) => void;
   currentAgent: Agent;
@@ -59,6 +60,10 @@ interface InboxSidebarProps {
   /** Aparta el chat para volver después. Sin esto no se ofrece el menú. */
   onMarkUnread?: (conversationId: string) => void;
   onMarkRead?: (conversationId: string) => void;
+  /** La ventana cargada llegó completa: probablemente haya más detrás. */
+  hasMore?: boolean;
+  loadingMore?: boolean;
+  onLoadMore?: () => void;
 }
 
 export function InboxSidebar({
@@ -70,6 +75,9 @@ export function InboxSidebar({
   bcvRate,
   onMarkUnread,
   onMarkRead,
+  hasMore = false,
+  loadingMore = false,
+  onLoadMore,
 }: InboxSidebarProps) {
   const availableFilters = useMemo(() => filtersForRole(currentAgent.role), [currentAgent.role]);
 
@@ -82,7 +90,7 @@ export function InboxSidebar({
   // y no solo su id porque el menú necesita saber si ya está sin leer para
   // ofrecer la acción que corresponde.
   const [menu, setMenu] = useState<{
-    conversation: Conversation;
+    conversation: ConversationSummary;
     position: { x: number; y: number };
   } | null>(null);
 
@@ -93,6 +101,10 @@ export function InboxSidebar({
   // separado de la lista: la lista es la verdad de la bandeja y esto es solo
   // un cedazo más que se le aplica encima.
   //
+  // `remote` son las conversaciones que responden a la búsqueda pero no están
+  // en la ventana paginada: con la bandeja cargando 30 filas, buscar solo
+  // sobre lo cargado escondería justo lo viejo que se busca.
+  //
   // Se guarda junto a la búsqueda que las pidió, no sueltas. Al escribir
   // "bujía" sobre una búsqueda anterior de "aceite", los resultados de aceite
   // seguirían filtrando la bandeja durante los 300 ms de espera: la lista
@@ -100,7 +112,8 @@ export function InboxSidebar({
   const [hitState, setHitState] = useState<{
     query: string;
     hits: ReadonlyMap<string, MessageHit>;
-  }>({ query: "", hits: SIN_COINCIDENCIAS });
+    remote: ConversationSummary[];
+  }>({ query: "", hits: SIN_COINCIDENCIAS, remote: [] });
 
   const supabase = useMemo(() => createClient(), []);
 
@@ -114,15 +127,15 @@ export function InboxSidebar({
     // dos búsquedas se cruzan en el camino.
     let cancelled = false;
     const timer = setTimeout(() => {
-      searchConversationsByMessage(supabase, trimmedSearch)
-        .then((hits) => {
-          if (!cancelled) setHitState({ query: trimmedSearch, hits });
-        })
-        .catch(() => {
-          // Buscar por mensaje es un extra: si falla, el buscador sigue
-          // encontrando por nombre y por número como siempre.
-          if (!cancelled) setHitState({ query: trimmedSearch, hits: SIN_COINCIDENCIAS });
-        });
+      (async () => {
+        const hits = await searchConversationsByMessage(supabase, trimmedSearch);
+        const remote = await searchConversationSummaries(supabase, trimmedSearch, [...hits.keys()]);
+        if (!cancelled) setHitState({ query: trimmedSearch, hits, remote });
+      })().catch(() => {
+        // Buscar contra la base es un extra: si falla, el buscador sigue
+        // encontrando por nombre y por número sobre lo ya cargado.
+        if (!cancelled) setHitState({ query: trimmedSearch, hits: SIN_COINCIDENCIAS, remote: [] });
+      });
     }, MESSAGE_SEARCH_DEBOUNCE_MS);
 
     return () => {
@@ -131,7 +144,16 @@ export function InboxSidebar({
     };
   }, [supabase, trimmedSearch]);
 
-  const messageHits = hitState.query === trimmedSearch ? hitState.hits : SIN_COINCIDENCIAS;
+  const searchIsCurrent = hitState.query === trimmedSearch;
+  const messageHits = searchIsCurrent ? hitState.hits : SIN_COINCIDENCIAS;
+
+  // Lo cargado manda: sus filas están al día por realtime. Lo remoto solo
+  // aporta las conversaciones que la ventana no tiene.
+  const searchableConversations = useMemo(() => {
+    if (!searchIsCurrent || hitState.remote.length === 0) return conversations;
+    const loaded = new Set(conversations.map((c) => c.id));
+    return [...conversations, ...hitState.remote.filter((c) => !loaded.has(c.id))];
+  }, [conversations, searchIsCurrent, hitState.remote]);
 
   const filterItems = useMemo(
     () => availableFilters.map((value) => ({ value, label: INBOX_FILTER_LABELS[value] })),
@@ -164,7 +186,7 @@ export function InboxSidebar({
 
   const filtered = useMemo(
     () =>
-      applyInboxFilters(conversations, {
+      applyInboxFilters(searchableConversations, {
         filter,
         search,
         tagId: activeTagId,
@@ -172,7 +194,7 @@ export function InboxSidebar({
         viewer: currentAgent,
         messageHitIds,
       }),
-    [conversations, filter, search, activeTagId, sort, currentAgent, messageHitIds]
+    [searchableConversations, filter, search, activeTagId, sort, currentAgent, messageHitIds]
   );
 
   // Las palabras a resaltar en el fragmento. Se calculan una vez por búsqueda
@@ -183,7 +205,18 @@ export function InboxSidebar({
   const unreadGroup = isSplit ? filtered.filter((c) => c.unreadCount > 0) : [];
   const readGroup = isSplit ? filtered.filter((c) => c.unreadCount === 0) : [];
 
-  function renderItems(list: Conversation[]) {
+  // Pide la siguiente página al acercarse al fondo. Solo sin búsqueda activa:
+  // buscando, el fondo de la lista son los resultados, no el histórico.
+  const handleListScroll = useCallback(
+    (event: React.UIEvent<HTMLDivElement>) => {
+      if (!onLoadMore || !hasMore || loadingMore || trimmedSearch) return;
+      const el = event.currentTarget;
+      if (el.scrollHeight - el.scrollTop - el.clientHeight < 200) onLoadMore();
+    },
+    [onLoadMore, hasMore, loadingMore, trimmedSearch]
+  );
+
+  function renderItems(list: ConversationSummary[]) {
     return list.map((conversation) => (
       <ConversationListItem
         key={conversation.id}
@@ -260,7 +293,7 @@ export function InboxSidebar({
         </FilterScroller>
       </div>
 
-      <div className="crm-list">
+      <div className="crm-list" onScroll={handleListScroll}>
         {isSplit ? (
           <>
             {unreadGroup.length > 0 && (
@@ -288,6 +321,19 @@ export function InboxSidebar({
                 ? "Ninguna conversación tiene esa categoría."
                 : "No hay conversaciones en este filtro."}
           </p>
+        )}
+
+        {/* Red de seguridad del scroll: si la lista filtrada quedó corta y no
+            genera desplazamiento, el botón sigue ofreciendo el resto. */}
+        {hasMore && onLoadMore && !trimmedSearch && (
+          <button
+            type="button"
+            className="crm-pill crm-load-more"
+            onClick={onLoadMore}
+            disabled={loadingMore}
+          >
+            {loadingMore ? "Cargando…" : "Cargar más conversaciones"}
+          </button>
         )}
       </div>
 

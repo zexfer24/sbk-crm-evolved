@@ -2,7 +2,7 @@ import { describe, expect, it, vi, beforeEach, afterEach } from "vitest";
 import { act, renderHook } from "@testing-library/react";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { useLiveConversations } from "@/lib/use-live-conversations";
-import type { Conversation } from "@/lib/types";
+import type { ConversationSummary } from "@/lib/types";
 
 /**
  * El hook es el carril compartido por las cuatro vistas que siguen la lista
@@ -39,13 +39,11 @@ function createFakeSupabase() {
   };
 }
 
-const fetchConversationsMock = vi.fn().mockResolvedValue([]);
+// El hook ya no decide qué pedir: cada vista le pasa su fetcher. En el test
+// eso simplifica todo — se cuenta cuántas veces el hook decidió refetchear.
+const fetcherMock = vi.fn().mockResolvedValue([]);
 
-vi.mock("@/lib/data", () => ({
-  fetchConversations: (...args: unknown[]) => fetchConversationsMock(...args),
-}));
-
-function buildConversation(overrides: Partial<Conversation> = {}): Conversation {
+function buildConversation(overrides: Partial<ConversationSummary> = {}): ConversationSummary {
   return {
     id: "conv-1",
     contact: {
@@ -54,19 +52,7 @@ function buildConversation(overrides: Partial<Conversation> = {}): Conversation 
       displayName: "Cliente de Prueba",
       profileName: "Cliente",
       avatarUrl: null,
-      cedulaType: null,
-      cedulaNumber: null,
-      state: null,
-      city: null,
-      address: null,
       tags: [],
-    },
-    channel: {
-      id: "channel-1",
-      label: "Principal",
-      phoneNumber: "+58000000000",
-      phoneNumberId: "phone-id-1",
-      status: "connected",
     },
     status: "open",
     unreadCount: 0,
@@ -74,15 +60,7 @@ function buildConversation(overrides: Partial<Conversation> = {}): Conversation 
     assignedAgent: null,
     aiEnabled: false,
     dealStatus: "none",
-    dealClosedAt: null,
-    dealPaymentProofUrl: null,
-    dealAmount: null,
-    dealCurrency: null,
     dealVerified: false,
-    dealVerifiedAt: null,
-    dealVerifiedBy: null,
-    dealPaymentMethod: null,
-    dealClosedBy: null,
     lastCustomerMessageAt: "2026-08-24T15:00:00.000Z",
     lastMessageAt: "2026-08-24T15:00:00.000Z",
     lastMessagePreview: null,
@@ -124,7 +102,7 @@ let fake: ReturnType<typeof createFakeSupabase>;
 
 beforeEach(() => {
   fake = createFakeSupabase();
-  fetchConversationsMock.mockClear();
+  fetcherMock.mockClear();
   vi.useFakeTimers();
 });
 
@@ -134,7 +112,9 @@ afterEach(() => {
 });
 
 function montar() {
-  return renderHook(() => useLiveConversations(fake.supabase, [buildConversation()]));
+  return renderHook(() =>
+    useLiveConversations(fake.supabase, [buildConversation()], { fetcher: fetcherMock })
+  );
 }
 
 describe("useLiveConversations — el evento se aplica en memoria cuando alcanza", () => {
@@ -148,7 +128,7 @@ describe("useLiveConversations — el evento se aplica en memoria cuando alcanza
       vi.advanceTimersByTime(750);
     });
 
-    expect(fetchConversationsMock).not.toHaveBeenCalled();
+    expect(fetcherMock).not.toHaveBeenCalled();
     expect(result.current.conversations[0].unreadCount).toBe(7);
   });
 
@@ -162,7 +142,7 @@ describe("useLiveConversations — el evento se aplica en memoria cuando alcanza
       vi.advanceTimersByTime(750);
     });
 
-    expect(fetchConversationsMock).toHaveBeenCalledTimes(1);
+    expect(fetcherMock).toHaveBeenCalledTimes(1);
   });
 
   it("una conversación nueva obliga a pedirla, y varios eventos son un solo refetch", async () => {
@@ -176,7 +156,7 @@ describe("useLiveConversations — el evento se aplica en memoria cuando alcanza
       vi.advanceTimersByTime(750);
     });
 
-    expect(fetchConversationsMock).toHaveBeenCalledTimes(1);
+    expect(fetcherMock).toHaveBeenCalledTimes(1);
   });
 });
 
@@ -197,12 +177,12 @@ describe("useLiveConversations — no trabaja contra una pestaña que nadie mira
     await act(async () => {
       vi.advanceTimersByTime(750);
     });
-    expect(fetchConversationsMock).not.toHaveBeenCalled();
+    expect(fetcherMock).not.toHaveBeenCalled();
 
     await act(async () => {
       ocultarPestana(false);
     });
-    expect(fetchConversationsMock).toHaveBeenCalledTimes(1);
+    expect(fetcherMock).toHaveBeenCalledTimes(1);
   });
 });
 
@@ -217,12 +197,15 @@ describe("useLiveConversations — contact_tags es opcional", () => {
       vi.advanceTimersByTime(750);
     });
 
-    expect(fetchConversationsMock).not.toHaveBeenCalled();
+    expect(fetcherMock).not.toHaveBeenCalled();
   });
 
   it("con watchContactTags, sí: las etiquetas no viajan en la fila", async () => {
     renderHook(() =>
-      useLiveConversations(fake.supabase, [buildConversation()], { watchContactTags: true })
+      useLiveConversations(fake.supabase, [buildConversation()], {
+        fetcher: fetcherMock,
+        watchContactTags: true,
+      })
     );
 
     act(() => {
@@ -232,6 +215,6 @@ describe("useLiveConversations — contact_tags es opcional", () => {
       vi.advanceTimersByTime(750);
     });
 
-    expect(fetchConversationsMock).toHaveBeenCalledTimes(1);
+    expect(fetcherMock).toHaveBeenCalledTimes(1);
   });
 });

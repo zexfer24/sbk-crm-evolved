@@ -3,7 +3,7 @@
 import { CheckCheck, CreditCard, IdCard, MapPin, Phone, RotateCcw, ShieldCheck, Trash2, UserCheck } from "lucide-react";
 import Link from "next/link";
 import { Button, Modal } from "@heroui/react";
-import type { Conversation } from "@/lib/types";
+import type { Sale } from "@/lib/types";
 import { PAYMENT_METHOD_LABELS } from "@/lib/types";
 import { formatFullDateTime } from "@/lib/format";
 import { contactName } from "@/lib/dashboard";
@@ -12,7 +12,7 @@ import { MediaThumb } from "@/components/chat/media-lightbox";
 interface SaleDetailModalProps {
   isOpen: boolean;
   onOpenChange: (open: boolean) => void;
-  sale: Conversation | null;
+  sale: Sale | null;
   busy: boolean;
   confirmingDelete: boolean;
   onVerify: (id: string) => void;

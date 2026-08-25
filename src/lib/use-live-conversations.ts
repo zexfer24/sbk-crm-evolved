@@ -3,13 +3,16 @@
 import { useCallback, useEffect, useState } from "react";
 import type { Dispatch, SetStateAction } from "react";
 import type { SupabaseClient } from "@supabase/supabase-js";
-import type { Conversation } from "@/lib/types";
-import { fetchConversations } from "@/lib/data";
+import type { ConversationSummary } from "@/lib/types";
 import { useLiveRefresh } from "@/lib/use-live-refresh";
 
 export interface UseLiveConversationsOptions {
-  /** Tope de filas; sin él se trae el histórico completo (métricas, ventas). */
-  limit?: number;
+  /**
+   * Qué lista mantiene viva esta vista. Cada vista pide lo suyo —la bandeja
+   * su ventana paginada, el tablero el trabajo vivo más los reclamos— y el
+   * hook solo se ocupa de cuándo volver a pedirla.
+   */
+  fetcher: () => Promise<ConversationSummary[]>;
   /**
    * Escuchar también contact_tags. Solo para las vistas que pintan etiquetas
    * (la bandeja, los reclamos del tablero): no viajan en la fila de la
@@ -21,9 +24,9 @@ export interface UseLiveConversationsOptions {
 }
 
 export interface LiveConversations {
-  conversations: Conversation[];
+  conversations: ConversationSummary[];
   /** Para los ajustes optimistas de la propia vista (marcar leído, etc.). */
-  setConversations: Dispatch<SetStateAction<Conversation[]>>;
+  setConversations: Dispatch<SetStateAction<ConversationSummary[]>>;
   /** Refetch inmediato, sin agrupar: tras una mutación que no puede esperar. */
   refreshConversations: () => Promise<void>;
 }
@@ -47,19 +50,19 @@ export interface LiveConversations {
  */
 export function useLiveConversations(
   supabase: SupabaseClient,
-  initialConversations: Conversation[],
-  { limit, watchContactTags = false, channelName = "conversations-live" }: UseLiveConversationsOptions = {}
+  initialConversations: ConversationSummary[],
+  { fetcher, watchContactTags = false, channelName = "conversations-live" }: UseLiveConversationsOptions
 ): LiveConversations {
-  const [conversations, setConversations] = useState<Conversation[]>(initialConversations);
+  const [conversations, setConversations] = useState<ConversationSummary[]>(initialConversations);
 
   const refreshConversations = useCallback(async () => {
     try {
-      const data = await fetchConversations(supabase, limit ? { limit } : {});
+      const data = await fetcher();
       setConversations(data);
     } catch {
       // El siguiente cambio en tiempo real reintentará la sincronización.
     }
-  }, [supabase, limit]);
+  }, [fetcher]);
 
   const requestRefresh = useLiveRefresh(refreshConversations);
 
@@ -90,13 +93,13 @@ export function useLiveConversations(
               unreadCount: row.unread_count as number,
               manuallyUnread: row.manually_unread as boolean,
               aiEnabled: row.ai_enabled as boolean,
-              status: row.status as Conversation["status"],
+              status: row.status as ConversationSummary["status"],
               lastMessageAt: row.last_message_at as string | null,
               lastMessagePreview: row.last_message_preview as string | null,
-              lastMessageDirection: row.last_message_direction as Conversation["lastMessageDirection"],
-              lastMessageStatus: row.last_message_status as Conversation["lastMessageStatus"],
+              lastMessageDirection: row.last_message_direction as ConversationSummary["lastMessageDirection"],
+              lastMessageStatus: row.last_message_status as ConversationSummary["lastMessageStatus"],
               lastCustomerMessageAt: row.last_customer_message_at as string | null,
-              journeyStage: row.journey_stage as Conversation["journeyStage"],
+              journeyStage: row.journey_stage as ConversationSummary["journeyStage"],
               intent: row.intent as string | null,
               activeTool: row.active_tool as string | null,
               welcomeSentAt: row.welcome_sent_at as string | null,

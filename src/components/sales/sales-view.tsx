@@ -2,11 +2,11 @@
 
 import { useMemo, useState } from "react";
 import { CheckCheck, Eye, Receipt, RotateCcw, ShieldCheck, Trash2 } from "lucide-react";
-import type { Agent, Conversation } from "@/lib/types";
+import type { Agent, Sale } from "@/lib/types";
 import { PAYMENT_METHOD_LABELS } from "@/lib/types";
 import { createClient } from "@/lib/supabase/client";
 import { deleteSale, returnSale, verifySale } from "@/lib/mutations";
-import { useLiveConversations } from "@/lib/use-live-conversations";
+import { useLiveSales } from "@/lib/use-live-sales";
 import { contactName, initials } from "@/lib/dashboard";
 import { formatFullDateTime } from "@/lib/format";
 import { SaleDetailModal } from "@/components/sales/sale-detail-modal";
@@ -18,35 +18,30 @@ import "@/components/sales/sales.css";
 
 interface SalesViewProps {
   currentAgent: Agent;
-  initialConversations: Conversation[];
+  initialSales: Sale[];
 }
 
-export function SalesView({ currentAgent, initialConversations }: SalesViewProps) {
+export function SalesView({ currentAgent, initialSales }: SalesViewProps) {
   const supabase = useMemo(() => createClient(), []);
 
-  // Antes cada evento de conversations —cada mensaje del equipo— refetcheaba
-  // acá el histórico completo, sin agrupar y aun con la pestaña oculta. Al
-  // hook solo lo hacen refetchear los cambios de venta (el monto vive en
-  // `orders`); el resto del tráfico se resuelve en memoria sin pedir nada.
-  const { conversations, refreshConversations: refresh } = useLiveConversations(
-    supabase,
-    initialConversations,
-    { channelName: "sales-conversations" }
-  );
+  // La sección pide solo las ventas (filtradas en la base), no el histórico
+  // completo de conversaciones para filtrarlo acá. El hook refetchea cuando
+  // un evento toca una venta y descarta el tráfico de bandeja.
+  const { sales: liveSales, refreshSales: refresh } = useLiveSales(supabase, initialSales);
 
   const [detailId, setDetailId] = useState<string | null>(null);
   const [busyId, setBusyId] = useState<string | null>(null);
   const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
 
+  // El orden lo decide el cierre; `fetchSales` ya lo trae así, pero se
+  // reafirma para que un refetch parcial no lo desarme.
   const sales = useMemo(
     () =>
-      conversations
-        .filter((c) => c.dealStatus === "won" || c.dealStatus === "returned")
-        .sort(
-          (a, b) =>
-            new Date(b.dealClosedAt ?? b.createdAt).getTime() - new Date(a.dealClosedAt ?? a.createdAt).getTime()
-        ),
-    [conversations]
+      [...liveSales].sort(
+        (a, b) =>
+          new Date(b.dealClosedAt ?? b.createdAt).getTime() - new Date(a.dealClosedAt ?? a.createdAt).getTime()
+      ),
+    [liveSales]
   );
 
   const detailSale = sales.find((s) => s.id === detailId) ?? null;

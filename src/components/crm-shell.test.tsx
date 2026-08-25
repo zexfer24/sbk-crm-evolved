@@ -101,6 +101,12 @@ vi.mock("@/components/context-panel/context-panel", () => ({ ContextPanel: () =>
 
 const fetchConversationsMock = vi.fn().mockResolvedValue([]);
 const fetchMessagesMock = vi.fn().mockResolvedValue([]);
+// El detalle del chat abierto se pide por id: se responde con la conversación
+// construida para ese id, como haría la base.
+const fetchConversationMock = vi.fn(
+  (_supabase: unknown, id: string) => Promise.resolve(buildConversation({ id }))
+);
+const fetchInboxCountsMock = vi.fn().mockResolvedValue({ unread: 0, mine: 0, unassigned: 0 });
 
 const fetchAgentSettingsMock = vi.fn().mockResolvedValue({
   aiGloballyEnabled: true,
@@ -111,8 +117,11 @@ const fetchAgentSettingsMock = vi.fn().mockResolvedValue({
 vi.mock("@/lib/data", () => ({
   fetchAgentSettings: (...args: unknown[]) => fetchAgentSettingsMock(...args),
   CHAT_MESSAGES_WINDOW: 100,
-  INBOX_CONVERSATIONS_LIMIT: 200,
+  INBOX_PAGE_SIZE: 30,
+  fetchConversation: (...args: unknown[]) =>
+    fetchConversationMock(...(args as [unknown, string])),
   fetchConversations: (...args: unknown[]) => fetchConversationsMock(...args),
+  fetchInboxCounts: (...args: unknown[]) => fetchInboxCountsMock(...args),
   fetchMessages: (...args: unknown[]) => fetchMessagesMock(...args),
   fetchMessagesBefore: vi.fn().mockResolvedValue([]),
   fetchNotes: vi.fn().mockResolvedValue([]),
@@ -194,10 +203,13 @@ const currentAgent: Agent = {
 const allTags: Tag[] = [];
 const agentSettings = { aiGloballyEnabled: true, dailySpendCapUsd: null, spentTodayUsd: 0 };
 const initialQuickReplies: QuickReply[] = [];
+const inboxCounts = { unread: 0, mine: 0, unassigned: 0 };
 
 beforeEach(() => {
   fake = createFakeSupabase();
   fetchConversationsMock.mockClear();
+  fetchConversationMock.mockClear();
+  fetchInboxCountsMock.mockClear();
   fetchMessagesMock.mockClear();
   fetchMessagesMock.mockResolvedValue([]); // cada test decide qué mensajes hay
   markConversationReadMock.mockClear();
@@ -216,6 +228,7 @@ describe("CrmShell — debounce del refresh disparado por realtime", () => {
       <CrmShell
         currentAgent={currentAgent}
         initialConversations={[buildConversation()]}
+        initialInboxCounts={inboxCounts}
         allTags={allTags}
         initialQuickReplies={initialQuickReplies}
         bcvRate={null}
@@ -243,6 +256,7 @@ describe("CrmShell — debounce del refresh disparado por realtime", () => {
       <CrmShell
         currentAgent={currentAgent}
         initialConversations={[buildConversation()]}
+        initialInboxCounts={inboxCounts}
         allTags={allTags}
         initialQuickReplies={initialQuickReplies}
         bcvRate={null}
@@ -278,6 +292,7 @@ async function renderWithOpenConversation() {
     <CrmShell
       currentAgent={currentAgent}
       initialConversations={[buildConversation()]}
+      initialInboxCounts={inboxCounts}
       allTags={allTags}
       initialQuickReplies={initialQuickReplies}
       bcvRate={null}
@@ -385,6 +400,7 @@ describe("CrmShell — el doble check avanza en vivo", () => {
       <CrmShell
         currentAgent={currentAgent}
         initialConversations={[buildConversation()]}
+        initialInboxCounts={inboxCounts}
         allTags={allTags}
         initialQuickReplies={initialQuickReplies}
         bcvRate={null}
@@ -417,6 +433,7 @@ describe("CrmShell — abrir un chat apartado a mano lo da por leído", () => {
       <CrmShell
         currentAgent={currentAgent}
         initialConversations={[buildConversation({ unreadCount: 0, manuallyUnread: true })]}
+        initialInboxCounts={inboxCounts}
         allTags={allTags}
         initialQuickReplies={initialQuickReplies}
         bcvRate={null}
@@ -443,6 +460,7 @@ describe("CrmShell — cambiar de conversación no muestra el chat anterior", ()
           buildConversation(),
           buildConversation({ id: "conv-2", contact: { ...buildConversation().contact, id: "contact-2" } }),
         ]}
+        initialInboxCounts={inboxCounts}
         allTags={allTags}
         initialQuickReplies={initialQuickReplies}
         bcvRate={null}
@@ -493,6 +511,7 @@ describe("CrmShell — la bandeja no se refresca contra una pestaña que nadie m
       <CrmShell
         currentAgent={currentAgent}
         initialConversations={[buildConversation()]}
+        initialInboxCounts={inboxCounts}
         allTags={allTags}
         initialQuickReplies={initialQuickReplies}
         bcvRate={null}
@@ -517,6 +536,7 @@ describe("CrmShell — la bandeja no se refresca contra una pestaña que nadie m
       <CrmShell
         currentAgent={currentAgent}
         initialConversations={[buildConversation()]}
+        initialInboxCounts={inboxCounts}
         allTags={allTags}
         initialQuickReplies={initialQuickReplies}
         bcvRate={null}
@@ -552,6 +572,7 @@ describe("CrmShell — el interruptor general de la IA se sigue en vivo", () => 
       <CrmShell
         currentAgent={currentAgent}
         initialConversations={[buildConversation()]}
+        initialInboxCounts={inboxCounts}
         allTags={allTags}
         initialQuickReplies={initialQuickReplies}
         bcvRate={null}
@@ -608,6 +629,7 @@ describe("CrmShell — la bandeja no se rearma entera por cada cambio", () => {
       <CrmShell
         currentAgent={currentAgent}
         initialConversations={[buildConversation()]}
+        initialInboxCounts={inboxCounts}
         allTags={allTags}
         initialQuickReplies={initialQuickReplies}
         bcvRate={null}
@@ -707,6 +729,7 @@ describe("CrmShell — red de seguridad contra la deriva", () => {
       <CrmShell
         currentAgent={currentAgent}
         initialConversations={[buildConversation()]}
+        initialInboxCounts={inboxCounts}
         allTags={allTags}
         initialQuickReplies={initialQuickReplies}
         bcvRate={null}
@@ -729,6 +752,7 @@ describe("CrmShell — red de seguridad contra la deriva", () => {
         <CrmShell
           currentAgent={currentAgent}
           initialConversations={[buildConversation()]}
+          initialInboxCounts={inboxCounts}
           allTags={allTags}
           initialQuickReplies={initialQuickReplies}
           bcvRate={null}

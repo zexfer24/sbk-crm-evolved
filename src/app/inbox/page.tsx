@@ -1,9 +1,10 @@
 import { redirect } from "next/navigation";
 import { createClient } from "@/lib/supabase/server";
 import {
-  INBOX_CONVERSATIONS_LIMIT,
+  INBOX_PAGE_SIZE,
   fetchConversations,
   fetchCurrentAgent,
+  fetchInboxCounts,
   fetchQuickReplies,
   fetchTags,
   fetchAgentSettings,
@@ -28,20 +29,23 @@ async function loadBcvRate(supabase: Awaited<ReturnType<typeof createClient>>): 
 export default async function InboxPage({ searchParams }: PageProps<"/inbox">) {
   const supabase = await createClient();
 
-  const [{ conversation }, currentAgent, conversations, tags, quickReplies, bcvRate, agentSettings] =
+  // Quién mira va primero: los contadores del panel de inicio se cuentan
+  // para esa persona («tuyas» depende del asesor, no de la bandeja).
+  const currentAgent = await fetchCurrentAgent(supabase);
+  if (!currentAgent) {
+    redirect("/login");
+  }
+
+  const [{ conversation }, conversations, inboxCounts, tags, quickReplies, bcvRate, agentSettings] =
     await Promise.all([
       searchParams,
-      fetchCurrentAgent(supabase),
-      fetchConversations(supabase, { limit: INBOX_CONVERSATIONS_LIMIT }),
+      fetchConversations(supabase, { limit: INBOX_PAGE_SIZE }),
+      fetchInboxCounts(supabase, currentAgent.id),
       fetchTags(supabase),
       fetchQuickReplies(supabase),
       loadBcvRate(supabase),
       fetchAgentSettings(supabase),
     ]);
-
-  if (!currentAgent) {
-    redirect("/login");
-  }
 
   // El dashboard enlaza cada tarjeta con ?conversation=<id> para abrir el hilo directo.
   const requestedId = typeof conversation === "string" ? conversation : undefined;
@@ -50,6 +54,7 @@ export default async function InboxPage({ searchParams }: PageProps<"/inbox">) {
     <CrmShell
       currentAgent={currentAgent}
       initialConversations={conversations}
+      initialInboxCounts={inboxCounts}
       allTags={tags}
       initialQuickReplies={quickReplies}
       bcvRate={bcvRate}

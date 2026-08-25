@@ -1,4 +1,4 @@
-import type { Agent, Conversation, JourneyStageId, Tag } from "@/lib/types";
+import type { AgentRef, ConversationSummary, JourneyStageId, Tag } from "@/lib/types";
 
 // ---------------------------------------------------------------------------
 // Reclamos
@@ -33,11 +33,11 @@ export function ticketCategory(tag: Tag): string {
   return tail.length > 0 ? tail : "General";
 }
 
-export function ticketTagsOf(conversation: Conversation): Tag[] {
+export function ticketTagsOf(conversation: ConversationSummary): Tag[] {
   return conversation.contact.tags.filter(isTicketTag);
 }
 
-export function isTicket(conversation: Conversation): boolean {
+export function isTicket(conversation: ConversationSummary): boolean {
   return ticketTagsOf(conversation).length > 0;
 }
 
@@ -55,7 +55,7 @@ export interface JourneyStage {
   caption: string;
   /** Minutos a partir de los cuales una conversación en esta etapa se considera atascada. */
   stallMinutes: number;
-  conversations: Conversation[];
+  conversations: ConversationSummary[];
   stalled: number;
 }
 
@@ -96,11 +96,11 @@ const STAGE_DEFINITIONS: Omit<JourneyStage, "conversations" | "stalled">[] = [
 export const TERMINAL_STAGE: JourneyStageId = "assigned";
 
 /** El tablero solo muestra recorridos vivos: lo cerrado ya no está en camino. */
-export function isActive(conversation: Conversation): boolean {
+export function isActive(conversation: ConversationSummary): boolean {
   return conversation.status !== "closed";
 }
 
-export function stageOf(conversation: Conversation): JourneyStageId {
+export function stageOf(conversation: ConversationSummary): JourneyStageId {
   if (conversation.journeyStage) return conversation.journeyStage;
 
   if (conversation.assignedAgent) return "assigned";
@@ -114,18 +114,18 @@ export function stageOf(conversation: Conversation): JourneyStageId {
 }
 
 /** El último mensaje del hilo sigue siendo del cliente: nadie contestó. */
-export function awaitingReply(conversation: Conversation): boolean {
+export function awaitingReply(conversation: ConversationSummary): boolean {
   if (!conversation.lastCustomerMessageAt) return false;
   if (!conversation.lastMessageAt) return true;
   return new Date(conversation.lastMessageAt) <= new Date(conversation.lastCustomerMessageAt);
 }
 
-export function minutesInStage(conversation: Conversation, now: number): number {
+export function minutesInStage(conversation: ConversationSummary, now: number): number {
   const since = conversation.lastMessageAt ?? conversation.createdAt;
   return (now - new Date(since).getTime()) / 60000;
 }
 
-export function buildJourney(conversations: Conversation[], now: number): JourneyStage[] {
+export function buildJourney(conversations: ConversationSummary[], now: number): JourneyStage[] {
   const active = conversations.filter(isActive);
 
   return STAGE_DEFINITIONS.map((definition) => {
@@ -142,7 +142,7 @@ export function buildJourney(conversations: Conversation[], now: number): Journe
  * Qué se muestra bajo el nombre en la tarjeta: lo más útil de esa etapa.
  * En "clasificando" interesa la intención; en "herramienta", cuál corre.
  */
-export function stageDetail(conversation: Conversation, stage: JourneyStageId): string | null {
+export function stageDetail(conversation: ConversationSummary, stage: JourneyStageId): string | null {
   if (stage === "tool_running") return conversation.activeTool;
   if (stage === "classifying") return conversation.intent;
   if (stage === "assigned") return conversation.assignedAgent?.displayName ?? null;
@@ -162,7 +162,7 @@ export interface TicketCategoryStat {
 }
 
 export interface TicketAgentStat {
-  agent: Agent;
+  agent: AgentRef;
   open: number;
 }
 
@@ -178,11 +178,11 @@ export interface TicketStats {
   byAgent: TicketAgentStat[];
 }
 
-function isResolved(conversation: Conversation): boolean {
+function isResolved(conversation: ConversationSummary): boolean {
   return conversation.status === "closed";
 }
 
-export function buildTicketStats(conversations: Conversation[], now: number): TicketStats {
+export function buildTicketStats(conversations: ConversationSummary[], now: number): TicketStats {
   const tickets = conversations.filter(isTicket);
   const open = tickets.filter((c) => !isResolved(c));
   const resolved = tickets.filter(isResolved);
@@ -225,7 +225,7 @@ export function buildTicketStats(conversations: Conversation[], now: number): Ti
 }
 
 /** Reclamos abiertos ordenados por urgencia: primero los que llevan más tiempo callados. */
-export function ticketQueue(conversations: Conversation[], now: number): Conversation[] {
+export function ticketQueue(conversations: ConversationSummary[], now: number): ConversationSummary[] {
   return conversations
     .filter((c) => isTicket(c) && !isResolved(c))
     .sort((a, b) => minutesInStage(b, now) - minutesInStage(a, now));
@@ -235,7 +235,10 @@ export function ticketQueue(conversations: Conversation[], now: number): Convers
 // Utilidades de presentación
 // ---------------------------------------------------------------------------
 
-export function contactName(conversation: Conversation): string {
+/** Estructural a propósito: sirve igual para la fila de bandeja, la venta o la conversación completa. */
+export function contactName(conversation: {
+  contact: { displayName: string | null; profileName: string | null; phoneNumber: string };
+}): string {
   return (
     conversation.contact.displayName ??
     conversation.contact.profileName ??

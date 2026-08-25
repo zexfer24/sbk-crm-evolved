@@ -3,13 +3,13 @@
 import { useMemo } from "react";
 import Link from "next/link";
 import { Inbox, MailWarning, MessageSquare } from "lucide-react";
-import type { Agent, AgentMetrics, Conversation } from "@/lib/types";
+import type { Agent, AgentMetrics, ConversationSummary } from "@/lib/types";
 import { contactName, initials } from "@/lib/dashboard";
 import { AgentMetricsRow } from "@/components/agent-control/agent-metrics-row";
 
 interface AgentsRosterPanelProps {
   agents: Agent[];
-  conversations: Conversation[];
+  conversations: ConversationSummary[];
   metrics: AgentMetrics[];
   togglingAgentId: string | null;
   onToggleActive: (agent: Agent) => void;

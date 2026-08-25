@@ -1282,6 +1282,14 @@
   text-align: center;
 }
 
+/* El «cargar más» del fondo de la bandeja: centrado y con aire, porque marca
+   el final de lo cargado, no una acción de una fila. */
+.crm-load-more {
+  align-self: center;
+  margin: 10px auto 14px;
+  display: flex;
+}
+
 /* --------------------------------------------------------------------------
    Panel del agente
    Lo que ocupa la columna del chat cuando no hay conversación abierta: el

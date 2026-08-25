@@ -1,5 +1,5 @@
 import { Fragment } from "react";
-import type { Conversation } from "@/lib/types";
+import type { ConversationSummary } from "@/lib/types";
 import { contactName, initials } from "@/lib/dashboard";
 import { formatConversationTimestamp } from "@/lib/format";
 import { highlightSegments, snippetAround, type MessageHit } from "@/lib/message-search";
@@ -7,7 +7,7 @@ import { DeliveryCheck } from "@/components/chat/delivery-check";
 import { useLongPress } from "@/lib/use-long-press";
 
 interface ConversationListItemProps {
-  conversation: Conversation;
+  conversation: ConversationSummary;
   isSelected: boolean;
   onSelect: () => void;
   /**

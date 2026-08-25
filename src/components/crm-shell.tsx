@@ -5,6 +5,7 @@ import type {
   Agent,
   AgentSettings,
   Conversation,
+  ConversationSummary,
   Message,
   Note,
   QuickReply,
@@ -14,7 +15,10 @@ import type {
 import { createClient } from "@/lib/supabase/client";
 import {
   CHAT_MESSAGES_WINDOW,
-  INBOX_CONVERSATIONS_LIMIT,
+  INBOX_PAGE_SIZE,
+  fetchConversation,
+  fetchConversations,
+  fetchInboxCounts,
   fetchMessages,
   fetchMessagesBefore,
   fetchNotes,
@@ -22,6 +26,7 @@ import {
   fetchTags,
   fetchTemplates,
   fetchAgentSettings,
+  type InboxCounts,
 } from "@/lib/data";
 import { markConversationRead, markConversationUnread, sendMessage } from "@/lib/mutations";
 import {
@@ -46,7 +51,9 @@ import "@/components/crm.css";
 
 interface CrmShellProps {
   currentAgent: Agent;
-  initialConversations: Conversation[];
+  initialConversations: ConversationSummary[];
+  /** Los contadores del panel de inicio, ya contados en el servidor. */
+  initialInboxCounts: InboxCounts;
   allTags: Tag[];
   initialQuickReplies: QuickReply[];
   /** Tasa del BCV del día, ya resuelta en el servidor. Null si no se pudo obtener ninguna. */
@@ -64,6 +71,7 @@ interface CrmShellProps {
 export function CrmShell({
   currentAgent,
   initialConversations,
+  initialInboxCounts,
   allTags,
   initialQuickReplies,
   bcvRate,
@@ -72,20 +80,64 @@ export function CrmShell({
 }: CrmShellProps) {
   const supabase = useMemo(() => createClient(), []);
 
+  /**
+   * Hasta dónde está paginada la bandeja. Crece de a una página cuando el
+   * asesor llega al fondo, y cada refresco en vivo vuelve a pedir la ventana
+   * completa hasta acá: así el costo lo decide lo que el asesor quiso ver,
+   * no el tamaño del histórico.
+   */
+  const [listLimit, setListLimit] = useState(
+    Math.max(INBOX_PAGE_SIZE, initialConversations.length)
+  );
+  const [loadingMore, setLoadingMore] = useState(false);
+  const [inboxCounts, setInboxCounts] = useState<InboxCounts>(initialInboxCounts);
+
+  // Cada refetch de la lista aprovecha el viaje para refrescar los
+  // contadores del panel de inicio: cambian por los mismos eventos.
+  const fetchInboxWindow = useCallback(async () => {
+    const [rows, counts] = await Promise.all([
+      fetchConversations(supabase, { limit: listLimit }),
+      fetchInboxCounts(supabase, currentAgent.id),
+    ]);
+    setInboxCounts(counts);
+    return rows;
+  }, [supabase, listLimit, currentAgent.id]);
+
   // La lista viva: aplica en memoria lo que el evento ya trae, agrupa los
   // refetch inevitables, y no trabaja contra una pestaña que nadie mira.
   const { conversations, setConversations, refreshConversations } = useLiveConversations(
     supabase,
     initialConversations,
-    { limit: INBOX_CONVERSATIONS_LIMIT, watchContactTags: true, channelName: "conversations-changes" }
+    { fetcher: fetchInboxWindow, watchContactTags: true, channelName: "conversations-changes" }
   );
+
+  // Una página que llegó completa sugiere que hay más detrás. Puede fallar en
+  // el borde exacto (el histórico mide justo la ventana): el único costo es
+  // ofrecer un «cargar más» que trae cero filas nuevas.
+  const hasMoreConversations = conversations.length >= listLimit;
+
+  const loadMoreConversations = useCallback(async () => {
+    if (loadingMore) return;
+    setLoadingMore(true);
+    try {
+      const nextLimit = listLimit + INBOX_PAGE_SIZE;
+      const rows = await fetchConversations(supabase, { limit: nextLimit });
+      setListLimit(nextLimit);
+      setConversations(rows);
+    } catch {
+      // La bandeja sigue con lo que ya tiene; el próximo intento reintenta.
+    } finally {
+      setLoadingMore(false);
+    }
+  }, [supabase, listLimit, loadingMore, setConversations]);
+
   // Sin conversación de inicio no se abre ninguna: abrir la primera de la
   // lista ponía al asesor a leer un chat que no eligió —y lo daba por leído—
   // antes de decidir nada. El id explícito (llegar desde una tarjeta del
-  // dashboard) sí abre directo, porque ahí la elección ya está hecha.
-  const [selectedId, setSelectedId] = useState<string | null>(
-    initialConversations.find((c) => c.id === initialConversationId)?.id ?? null
-  );
+  // dashboard) sí abre directo, porque ahí la elección ya está hecha — y se
+  // respeta aunque el hilo no esté en la ventana cargada: el detalle se pide
+  // por id, no se busca en la lista.
+  const [selectedId, setSelectedId] = useState<string | null>(initialConversationId ?? null);
   /**
    * El hilo cargado, con la conversación a la que pertenece pegada al lado.
    *
@@ -216,7 +268,43 @@ export function CrmShell({
     setMobileView("chat");
   }
 
-  const selectedConversation = conversations.find((c) => c.id === selectedId) ?? null;
+  /**
+   * La conversación completa del chat abierto (canal, ficha, venta), pedida
+   * por id al seleccionarla. La lista ya no la trae: sus filas son filas de
+   * bandeja, y cargar el detalle de 30 conversaciones para abrir una era el
+   * grueso del payload medido.
+   */
+  const [detail, setDetail] = useState<Conversation | null>(null);
+
+  const selectedSummary = conversations.find((c) => c.id === selectedId) ?? null;
+
+  // El detalle llega una vez; lo que cambia en vivo (contador, vista previa,
+  // estado, etiquetas) sigue llegando por la lista y se le superpone. Lo que
+  // la fila no trae (asignación, venta) lo refresca el listener del detalle.
+  const selectedConversation: Conversation | null =
+    detail && detail.id === selectedId
+      ? selectedSummary
+        ? {
+            ...detail,
+            status: selectedSummary.status,
+            unreadCount: selectedSummary.unreadCount,
+            manuallyUnread: selectedSummary.manuallyUnread,
+            aiEnabled: selectedSummary.aiEnabled,
+            dealStatus: selectedSummary.dealStatus,
+            dealVerified: selectedSummary.dealVerified,
+            lastCustomerMessageAt: selectedSummary.lastCustomerMessageAt,
+            lastMessageAt: selectedSummary.lastMessageAt,
+            lastMessagePreview: selectedSummary.lastMessagePreview,
+            lastMessageDirection: selectedSummary.lastMessageDirection,
+            lastMessageStatus: selectedSummary.lastMessageStatus,
+            journeyStage: selectedSummary.journeyStage,
+            intent: selectedSummary.intent,
+            activeTool: selectedSummary.activeTool,
+            welcomeSentAt: selectedSummary.welcomeSentAt,
+            contact: { ...detail.contact, tags: selectedSummary.contact.tags },
+          }
+        : detail
+      : null;
 
   // Al abrir un chat solo se traen los últimos mensajes. Esto pide el tramo
   // anterior cuando el asesor lo pide, y recuerda cuándo ya no queda nada
@@ -329,29 +417,68 @@ export function CrmShell({
     const conversationId = selectedId;
 
     let cancelled = false;
-    const conversation = conversations.find((c) => c.id === selectedId);
-    const contactId = conversation?.contact.id;
+    // La fila que la bandeja tiene de este hilo, si lo tiene: es la que está
+    // al día por realtime, así que manda sobre el detalle para decidir si el
+    // chat estaba sin leer o apartado.
+    const summaryAtOpen = conversations.find((c) => c.id === conversationId);
+    // Las notas se suscriben recién cuando el detalle dice quién es el
+    // contacto; la variable vive acá para que el cleanup la alcance.
+    let notesChannel: ReturnType<typeof supabase.channel> | null = null;
 
+    function refreshNotes(contactId: string) {
+      fetchNotes(supabase, contactId).then((data) => {
+        if (cancelled) return;
+        setLoadedThread((current) =>
+          current?.conversationId === conversationId ? { ...current, notes: data } : current
+        );
+      });
+    }
 
     (async () => {
-      const [messagesData, notesData, templatesData] = await Promise.all([
-        fetchMessages(supabase, selectedId, { limit: CHAT_MESSAGES_WINDOW }),
-        contactId ? fetchNotes(supabase, contactId) : Promise.resolve([]),
-        conversation ? fetchTemplates(supabase, conversation.channel.id) : Promise.resolve([]),
+      // El detalle y los mensajes viajan en paralelo; las plantillas y las
+      // notas esperan al detalle, que es quien sabe el canal y el contacto.
+      const [detailData, messagesData] = await Promise.all([
+        fetchConversation(supabase, conversationId),
+        fetchMessages(supabase, conversationId, { limit: CHAT_MESSAGES_WINDOW }),
       ]);
       if (cancelled) return;
+
+      if (!detailData) {
+        // El hilo ya no existe, o el enlace vino con un id inválido: dejarlo
+        // seleccionado sería una pantalla de carga eterna.
+        setSelectedId((current) => (current === conversationId ? null : current));
+        setMobileView("list");
+        return;
+      }
+
+      setDetail(detailData);
       setLoadedThread({
         conversationId,
         messages: messagesData,
-        notes: notesData,
+        notes: [],
         reachedStart: messagesData.length < CHAT_MESSAGES_WINDOW,
       });
-      setTemplates(templatesData);
+
+      const contactId = detailData.contact.id;
+      refreshNotes(contactId);
+      fetchTemplates(supabase, detailData.channel.id).then((data) => {
+        if (!cancelled) setTemplates(data);
+      });
+
+      notesChannel = supabase
+        .channel(`notes-${contactId}`)
+        .on(
+          "postgres_changes",
+          { event: "*", schema: "public", table: "notes", filter: `contact_id=eq.${contactId}` },
+          () => refreshNotes(contactId)
+        )
+        .subscribe();
 
       // También cuando el contador está en cero: el chat puede estar apartado
       // a mano, y abrirlo es exactamente lo que deshace ese apartado.
-      if (conversation && (conversation.unreadCount > 0 || conversation.manuallyUnread)) {
-        markConversationRead(supabase, selectedId).catch(() => {});
+      const flags = summaryAtOpen ?? detailData;
+      if (flags.unreadCount > 0 || flags.manuallyUnread) {
+        markConversationRead(supabase, conversationId).catch(() => {});
       }
     })();
 
@@ -368,6 +495,21 @@ export function CrmShell({
           setLoadedThread((current) =>
             current?.conversationId === conversationId ? { ...current, messages: data } : current
           );
+        });
+      }, REALTIME_DEBOUNCE_MS);
+    }
+
+    // La fila de la lista no trae la asignación ni la venta: cuando cambian,
+    // el detalle del chat abierto se vuelve a pedir por id. Debounced igual
+    // que los mensajes para no refetchear por cada UPDATE encadenado.
+    let detailRefreshTimeout: ReturnType<typeof setTimeout> | null = null;
+    function scheduleDetailRefresh() {
+      if (detailRefreshTimeout) clearTimeout(detailRefreshTimeout);
+      detailRefreshTimeout = setTimeout(() => {
+        detailRefreshTimeout = null;
+        fetchConversation(supabase, conversationId).then((data) => {
+          if (cancelled || !data) return;
+          setDetail((current) => (current?.id === conversationId || current === null ? data : current));
         });
       }, REALTIME_DEBOUNCE_MS);
     }
@@ -394,29 +536,17 @@ export function CrmShell({
           }
         }
       )
+      .on(
+        "postgres_changes",
+        { event: "UPDATE", schema: "public", table: "conversations", filter: `id=eq.${selectedId}` },
+        () => scheduleDetailRefresh()
+      )
       .subscribe();
-
-    const notesChannel = contactId
-      ? supabase
-          .channel(`notes-${contactId}`)
-          .on(
-            "postgres_changes",
-            { event: "*", schema: "public", table: "notes", filter: `contact_id=eq.${contactId}` },
-            () => {
-              fetchNotes(supabase, contactId).then((data) => {
-                if (cancelled) return;
-                setLoadedThread((current) =>
-                  current?.conversationId === conversationId ? { ...current, notes: data } : current
-                );
-              });
-            }
-          )
-          .subscribe()
-      : null;
 
     return () => {
       cancelled = true;
       if (messagesRefreshTimeout) clearTimeout(messagesRefreshTimeout);
+      if (detailRefreshTimeout) clearTimeout(detailRefreshTimeout);
       supabase.removeChannel(messagesChannel);
       if (notesChannel) supabase.removeChannel(notesChannel);
     };
@@ -438,6 +568,9 @@ export function CrmShell({
             bcvRate={bcvRate}
             onMarkUnread={markUnread}
             onMarkRead={markRead}
+            hasMore={hasMoreConversations}
+            loadingMore={loadingMore}
+            onLoadMore={loadMoreConversations}
           />
         </section>
 
@@ -463,10 +596,14 @@ export function CrmShell({
               onRetryOutbox={retryOutboxItem}
               onDiscardOutbox={discardOutboxItem}
             />
+          ) : selectedId ? (
+            // El detalle del hilo está en camino. Sin este estado intermedio,
+            // el panel de inicio parpadearía entre el clic y la respuesta.
+            <p className="crm-empty">Abriendo la conversación…</p>
           ) : (
             <AgentHomePanel
               currentAgent={currentAgent}
-              conversations={conversations}
+              counts={inboxCounts}
               agentSettings={agentSettings}
             />
           )}

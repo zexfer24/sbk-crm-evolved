@@ -41,7 +41,9 @@ export default async function AgentControlPage() {
     knowledgeEntries,
   ] = await Promise.all([
     fetchCurrentAgent(supabase),
-    fetchConversations(supabase),
+    // Solo el trabajo vivo: el panel muestra la cola de la IA y el roster,
+    // ninguno de los cuales mira conversaciones cerradas.
+    fetchConversations(supabase, { activeOnly: true }),
     fetchAgentTurns(supabase),
     fetchAgentSettings(supabase),
     fetchAllAgents(supabase),

@@ -3,9 +3,9 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { RefreshCw, Route, TriangleAlert } from "lucide-react";
-import type { Agent, Conversation, HourlyActivity } from "@/lib/types";
+import type { Agent, ConversationSummary, HourlyActivity } from "@/lib/types";
 import { createClient } from "@/lib/supabase/client";
-import { fetchTodayActivity } from "@/lib/data";
+import { fetchDashboardConversations, fetchTodayActivity } from "@/lib/data";
 import { useClock } from "@/lib/use-clock";
 import { useLiveConversations } from "@/lib/use-live-conversations";
 import { useLiveRefresh } from "@/lib/use-live-refresh";
@@ -35,7 +35,7 @@ const LOAD_THRESHOLDS = [
 interface DashboardViewProps {
   currentAgent: Agent;
   agents: Agent[];
-  initialConversations: Conversation[];
+  initialConversations: ConversationSummary[];
   initialActivity: HourlyActivity[];
   timeZone: string;
 }
@@ -51,10 +51,12 @@ export function DashboardView({
 
   // El tablero sigue en vivo lo que pasa en la bandeja de todo el equipo.
   // Los reclamos salen de las etiquetas del contacto, por eso también se
-  // escucha contact_tags. El hook aplica en memoria lo que el evento ya trae
-  // y agrupa los refetch inevitables — antes, cada mensaje del equipo era un
-  // refetch completo del histórico en cada tablero abierto, incluso oculto.
+  // escucha contact_tags. Lo que pide es el trabajo vivo más los reclamos —
+  // nunca el histórico: con 600 conversaciones ya eran 235 KB por refetch, y
+  // el costo crecía con cada cliente nuevo.
+  const fetcher = useCallback(() => fetchDashboardConversations(supabase), [supabase]);
   const { conversations, refreshConversations } = useLiveConversations(supabase, initialConversations, {
+    fetcher,
     watchContactTags: true,
     channelName: "dashboard-conversations",
   });
@@ -245,7 +247,7 @@ function PulseItem({ value, label }: { value: number; label: string }) {
 }
 
 /** Casos abiertos por asesor, el equipo ordenado de más a menos cargado. */
-function agentLoad(agents: Agent[], conversations: Conversation[]) {
+function agentLoad(agents: Agent[], conversations: ConversationSummary[]) {
   return agents
     .map((agent) => ({
       agent,
