@@ -32,6 +32,17 @@ services:
         NEXT_PUBLIC_SUPABASE_ANON_KEY: ${NEXT_PUBLIC_SUPABASE_ANON_KEY}
         NEXT_PUBLIC_CRM_TIME_ZONE: ${NEXT_PUBLIC_CRM_TIME_ZONE:-America/Caracas}
     restart: unless-stopped
+    # Techos de recursos: el servidor también corre el stack de Supabase, y
+    # sin límites un proceso desbocado se lo lleva entero (pasó con la
+    # introspección de PostgREST). Los techos contienen, no reparten; la
+    # reserva de memoria marca el mínimo vital de la app.
+    deploy:
+      resources:
+        limits:
+          cpus: "2"
+          memory: 2G
+        reservations:
+          memory: 512M
     env_file: .env.production
     expose:
       - "3000"
@@ -60,6 +71,15 @@ services:
   redis:
     image: redis:7-alpine
     restart: unless-stopped
+    # La cola de turnos son pocos KB: si Redis llegara a este techo es que
+    # algo anda muy mal, y mejor que se note acá y no en el resto del server.
+    deploy:
+      resources:
+        limits:
+          cpus: "0.5"
+          memory: 256M
+        reservations:
+          memory: 32M
     command: redis-server --appendonly yes
     volumes:
       - redis_data:/data
@@ -73,6 +93,11 @@ services:
   caddy:
     image: caddy:2-alpine
     restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          cpus: "0.5"
+          memory: 128M
     ports:
       - "80:80"
       - "443:443"
@@ -93,6 +118,13 @@ services:
   cron:
     image: alpine:3
     restart: unless-stopped
+    # Un sleep y un curl cada 5 minutos: cualquier cosa por encima de este
+    # techo no es este servicio.
+    deploy:
+      resources:
+        limits:
+          cpus: "0.2"
+          memory: 64M
     env_file: .env.production
     depends_on:
       app:
