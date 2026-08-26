@@ -1,7 +1,9 @@
 import { NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
 import { fetchBacklogConversationIds, fetchCurrentAgent } from "@/lib/data";
-import { enqueueAgentTurns } from "@/lib/ai/queue";
+import { enqueueAgentTurns, pendingAgentTurns } from "@/lib/ai/queue";
+import { acquireSweepLock } from "@/lib/ai/redis-queue";
+import { getRedis } from "@/lib/redis";
 import { errorText, log } from "@/lib/log";
 
 // ---------------------------------------------------------------------------
@@ -31,6 +33,20 @@ export const dynamic = "force-dynamic";
  */
 const SPACING_SECONDS = 1;
 
+/**
+ * Cuánto vale el lock del barrido.
+ *
+ * El 26 de agosto de 2026 el barrido se disparó dos veces con dos minutos y
+ * medio de diferencia —139 conversaciones y después 129— porque el botón no
+ * tiene memoria de que ya se pulsó. Con la tanda a medio drenar, el segundo
+ * pulso re-encoló todo lo que no había salido.
+ *
+ * Media hora es lo que tarda una tanda normal en drenar al ritmo del cron. Si
+ * alguien necesita relanzar antes, el mensaje de error le dice cuántos turnos
+ * quedan pendientes, que es el dato con el que se decide.
+ */
+const SWEEP_LOCK_SECONDS = 1800;
+
 export async function POST() {
   const supabase = await createClient();
 
@@ -53,6 +69,21 @@ export async function POST() {
   if (!canRun) {
     log.warn("atraso_no_encolado", { agentId: agent.id, motivo: "agent_can_run devolvió false" });
     return NextResponse.json({ ok: true, enqueued: 0, reason: "La IA no está habilitada." });
+  }
+
+  // Una tanda a la vez. Va ANTES de consultar el atraso: si ya hay una en
+  // curso, ni siquiera hace falta preguntar qué habría que encolar.
+  const redis = getRedis();
+  if (!(await acquireSweepLock(redis, SWEEP_LOCK_SECONDS))) {
+    const pendientes = await pendingAgentTurns();
+    log.warn("atraso_ya_en_curso", { agentId: agent.id, pendientes });
+    return NextResponse.json(
+      {
+        error: `Ya hay un repaso del atraso en curso, con ${pendientes} turnos todavía en cola. Espera a que termine antes de lanzar otro.`,
+        pending: pendientes,
+      },
+      { status: 409 }
+    );
   }
 
   let conversationIds: string[];
