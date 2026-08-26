@@ -44,6 +44,16 @@ function previousDay(isoDate: string): string {
 }
 
 /**
+ * Cuántos días calendario separan dos fechas ISO cortas. Se usa para decir en
+ * voz alta qué tan vieja es la tasa con la que se está cotizando.
+ */
+export function daysBetween(from: string, to: string): number {
+  const start = new Date(`${from}T12:00:00Z`).getTime();
+  const end = new Date(`${to}T12:00:00Z`).getTime();
+  return Math.round((end - start) / 86_400_000);
+}
+
+/**
  * ¿Hay que volver a leer bcv.org.ve, o sirve todavía lo guardado?
  *
  * Se decide por la fecha de LECTURA, no por la de vigencia: un sábado la tasa

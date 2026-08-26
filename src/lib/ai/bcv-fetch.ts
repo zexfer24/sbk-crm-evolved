@@ -1,15 +1,27 @@
 import "server-only";
 import https from "node:https";
 import tls from "node:tls";
+import { SECTIGO_PUBLIC_SERVER_AUTHENTICATION_CA_DV_R36 } from "@/lib/ai/bcv-intermediate-ca";
 
 // ---------------------------------------------------------------------------
 // Descarga de bcv.org.ve
 //
 // El sitio del BCV sirve su certificado sin la cadena intermedia. Los
-// navegadores la reconstruyen solos; Node no, y `fetch` falla con
-// UNABLE_TO_VERIFY_LEAF_SIGNATURE contra su lista de CAs compilada (120
-// certificados). El almacén del sistema operativo sí suele tener ese
-// intermedio, así que se usan las dos listas juntas.
+// navegadores la reconstruyen solos yendo a buscarla; Node no, y falla con
+// UNABLE_TO_VERIFY_LEAF_SIGNATURE.
+//
+// Este fichero decía antes que el almacén del sistema "suele tener ese
+// intermedio" y por eso juntaba `default` + `system`. Era falso: los almacenes
+// de CAs guardan RAÍCES, y un intermedio no está ahí. Sumar dos listas de
+// raíces no puede aportar un eslabón que ninguna contiene, así que la tasa
+// quedó congelada tres días en producción con este código puesto. En Windows
+// funcionaba de casualidad —el almacén del sistema acumula los intermedios que
+// el propio sistema ya bajó—, y por eso pasó en desarrollo y falló en el
+// contenedor. Medido: con solo raíces (120 certificados) falla; sumando el
+// intermedio, responde 200.
+//
+// El intermedio viaja con nosotros, en `bcv-intermediate-ca.ts`, que explica de
+// dónde salió y cómo repetirlo.
 //
 // Esto va acá y no en un flag de arranque (--use-system-ca) a propósito: Next
 // atiende las peticiones en un proceso hijo, y los flags de la línea de
@@ -18,7 +30,8 @@ import tls from "node:tls";
 // resolverlo en el propio cliente HTTP, funciona igual en la máquina de
 // desarrollo y en el contenedor, sin configuración.
 //
-// Se sigue verificando el certificado: no se desactiva TLS en ningún caso.
+// Se sigue verificando el certificado —cadena y nombre del host—: no se
+// desactiva TLS en ningún caso.
 // ---------------------------------------------------------------------------
 
 /**
@@ -38,19 +51,34 @@ type TlsWithCACertificates = typeof tls & {
  */
 let cachedCa: string[] | null = null;
 
-function certificateAuthorities(): string[] | undefined {
+/**
+ * Las raíces de confianza más el intermedio que el BCV no manda.
+ *
+ * El intermedio va SIEMPRE, incluso si los almacenes no se pueden leer: es
+ * justamente la pieza que decide si la conexión funciona. Las raíces se suman
+ * para no perder la confianza normal del sistema — sin ellas, `ca` reemplazaría
+ * el almacén por completo y quedaría un único ancla.
+ */
+function certificateAuthorities(): string[] {
   if (cachedCa) return cachedCa;
 
   const getCACertificates = (tls as TlsWithCACertificates).getCACertificates;
-  // En un runtime más viejo se sigue adelante sin CAs extra: fallará como
-  // antes y se usará la última tasa guardada.
-  if (typeof getCACertificates !== "function") return undefined;
+  const roots =
+    typeof getCACertificates === "function"
+      ? // En un runtime sin esta API se sigue con el intermedio solo: es poco,
+        // pero es la pieza que falta, no la que sobra.
+        safeStores(getCACertificates)
+      : [];
 
+  cachedCa = [...roots, SECTIGO_PUBLIC_SERVER_AUTHENTICATION_CA_DV_R36];
+  return cachedCa;
+}
+
+function safeStores(getCACertificates: (store: CACertificateStore) => string[]): string[] {
   try {
-    cachedCa = [...getCACertificates("default"), ...getCACertificates("system")];
-    return cachedCa;
+    return [...getCACertificates("default"), ...getCACertificates("system")];
   } catch {
-    return undefined;
+    return [];
   }
 }
 

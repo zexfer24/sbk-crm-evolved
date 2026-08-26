@@ -1,8 +1,9 @@
 import "server-only";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import type { Database } from "@/lib/supabase/database.types";
-import { shouldRefetchBcv, venezuelaDate } from "@/lib/bcv-schedule";
+import { daysBetween, shouldRefetchBcv, venezuelaDate } from "@/lib/bcv-schedule";
 import { fetchBcvHtml } from "@/lib/ai/bcv-fetch";
+import { BCV_LEAF_EXPIRES_ON } from "@/lib/ai/bcv-intermediate-ca";
 
 // ---------------------------------------------------------------------------
 // Tasa oficial del BCV, leída directo de bcv.org.ve (sin servicios de
@@ -112,11 +113,29 @@ export async function getBcvRate(supabase: SupabaseClient<Database>): Promise<Bc
     });
     return { rate, rateDate: valueDate, isStale: false };
   } catch (err) {
-    console.error("No se pudo leer la tasa BCV en vivo, se usa la última guardada:", err);
-
     if (!cached) {
+      console.error(
+        "[BCV] Lectura en vivo fallida y no hay ninguna tasa guardada: no se puede cotizar en bolívares.",
+        err
+      );
       throw new Error("No hay ninguna tasa BCV guardada y la lectura en vivo falló. No se puede cotizar en bolívares.");
     }
+
+    // El aviso lleva la antigüedad porque es lo que distingue "el BCV tardó un
+    // segundo de más" de "llevamos días cotizando con una tasa muerta". Sin ese
+    // número, los dos casos se leen igual en el log — y el segundo pasó tres
+    // días sin que nadie lo notara.
+    const staleDays = daysBetween(cached.rate_date, today);
+    console.error(
+      `[BCV] Lectura en vivo fallida: se cotiza con la tasa del ${cached.rate_date}` +
+        `, ${staleDays} día(s) de antigüedad.` +
+        (staleDays >= 2
+          ? ` ATENCIÓN: son precios viejos. Si se repite, revisar la cadena TLS` +
+            ` (src/lib/ai/bcv-intermediate-ca.ts; la hoja del BCV caduca ${BCV_LEAF_EXPIRES_ON}).`
+          : ""),
+      err
+    );
+
     return { rate: Number(cached.usd_to_ves), rateDate: cached.rate_date, isStale: true };
   }
 }

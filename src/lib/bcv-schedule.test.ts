@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { shouldRefetchBcv, venezuelaDate, weekdayOf } from "@/lib/bcv-schedule";
+import { daysBetween, shouldRefetchBcv, venezuelaDate, weekdayOf } from "@/lib/bcv-schedule";
 
 // Semana de referencia, para no contar días a mano en cada caso:
 const VIERNES = "2026-08-21";
@@ -7,6 +7,35 @@ const SABADO = "2026-08-22";
 const DOMINGO = "2026-08-23";
 const LUNES = "2026-08-24";
 const MARTES = "2026-08-25";
+
+/**
+ * Es el número que hace que el aviso del log sirva: distingue "el BCV tardó de
+ * más una vez" de "llevamos tres días cotizando con una tasa muerta".
+ */
+describe("daysBetween", () => {
+  it("cuenta los días entre dos fechas", () => {
+    expect(daysBetween(SABADO, MARTES)).toBe(3);
+    expect(daysBetween(VIERNES, SABADO)).toBe(1);
+  });
+
+  it("el mismo día son cero", () => {
+    expect(daysBetween(LUNES, LUNES)).toBe(0);
+  });
+
+  /**
+   * El sábado el BCV publica la tasa del lunes, así que la fecha de vigencia
+   * puede estar en el futuro. Ahí la cuenta da negativo, y eso es correcto: no
+   * es una tasa vieja, es una que todavía no empezó a regir.
+   */
+  it("da negativo cuando la tasa rige a futuro", () => {
+    expect(daysBetween(LUNES, SABADO)).toBe(-2);
+  });
+
+  /** Cruza el fin de mes sin contar a mano. */
+  it("cruza el cambio de mes", () => {
+    expect(daysBetween("2026-08-30", "2026-09-02")).toBe(3);
+  });
+});
 
 describe("weekdayOf", () => {
   it("ubica bien los días de la semana de referencia", () => {
