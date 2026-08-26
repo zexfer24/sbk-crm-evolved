@@ -2,6 +2,7 @@ import "server-only";
 import { getRedis } from "@/lib/redis";
 import { createAgentQueue, createTurnSlots } from "@/lib/ai/redis-queue";
 import { runAgentTurn } from "@/lib/ai/agent";
+import { isNonRetryable } from "@/lib/ai/turn-delivery";
 import { errorText, log } from "@/lib/log";
 
 // ---------------------------------------------------------------------------
@@ -35,10 +36,16 @@ const WAKE_MARGIN_MS = 500;
  * Cuántos turnos pueden estar hablando con el modelo a la vez.
  *
  * Cada webhook dispara su propia pasada, así que sin un tope compartido un
- * pico de mensajes se convierte en decenas de llamadas simultáneas al
- * proveedor: responde con rate limit y los turnos empiezan a fallar en
- * cadena, gastando reintentos. Se lee en cada pasada para poder ajustarlo
- * sin recompilar la imagen.
+ * pico de mensajes se convierte en decenas de turnos simultáneos. Se lee en
+ * cada pasada para poder ajustarlo sin recompilar la imagen.
+ *
+ * OJO: esto cuenta TURNOS, no peticiones al proveedor. Un turno gasta hasta
+ * siete —escenario, clasificación y hasta cinco pasos del tool loop—, así
+ * que este número nunca sirvió para no chocar con el rate limit: tres turnos
+ * podían ser veintiuna peticiones en el mismo minuto. Quien controla el
+ * ritmo hacia el proveedor es src/lib/ai/rate-limit.ts, y es el único sitio
+ * donde se controla. Este tope sigue siendo útil por otra cosa: acota cuánta
+ * conversación tiene el sistema abierta a la vez.
  */
 function maxConcurrentTurns(): number {
   const configurado = Number(process.env.AGENT_MAX_CONCURRENT_TURNS);
@@ -134,7 +141,9 @@ export async function processAfterDebounce(): Promise<QueueRunResult> {
 /**
  * Procesa turnos pendientes hasta agotar la cola o llegar al tope.
  *
- * No lanza: un turno que falla vuelve a la cola y deja seguir a los demás.
+ * No lanza: un turno que falla vuelve a la cola y deja seguir a los demás,
+ * salvo el que ya le habló al cliente — ese se abandona en vez de volver,
+ * para no mandarle el mismo mensaje dos veces.
  * Los turnos corren en paralelo hasta el tope de cupos —el histórico era uno
  * detrás de otro, y con el modelo tardando segundos eso hacía esperar a
  * clientes que no tenían nada que ver entre sí.
@@ -175,8 +184,19 @@ export async function processQueuedTurns(limit = MAX_PER_RUN): Promise<QueueRunR
         result.processed++;
       } catch (err) {
         const detail = errorText(err);
-        const intentos = await cola.recordFailure(conversationId);
         result.failed++;
+
+        // Hay fallos que volver a intentar empeora. El turno que ya le puso
+        // algo delante al cliente es el caso: reintentarlo le manda el mismo
+        // mensaje otra vez. Se registra y se abandona, sin gastar los
+        // intentos ni ocupar la cola. Ver turn-delivery.ts.
+        if (isNonRetryable(err)) {
+          await cola.clearFailures(conversationId);
+          log.error("cola_turno_no_reintentable", { conversationId, detail });
+          continue;
+        }
+
+        const intentos = await cola.recordFailure(conversationId);
 
         if (intentos >= MAX_ATTEMPTS) {
           log.error("cola_turno_abandonado", { conversationId, intentos, detail });

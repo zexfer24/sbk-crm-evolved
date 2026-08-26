@@ -9,7 +9,8 @@ vi.mock("@/lib/whatsapp/meta-client", () => ({
   sendWhatsappMedia: (...args: unknown[]) => sendWhatsappMediaMock(...(args as [])),
 }));
 
-import { sendPlaybookReply, type AgentConversation } from "@/lib/ai/send";
+import { sendPlaybookReply } from "@/lib/ai/send";
+import type { TurnTarget } from "@/lib/ai/turn-target";
 
 interface InsertedMessage {
   message_type: string;
@@ -33,16 +34,13 @@ function createFakeSupabase() {
   return { client, inserted };
 }
 
-function conversation(connected: boolean): AgentConversation {
+function conversation(connected: boolean): TurnTarget {
   return {
-    id: "conv-1",
-    contact_id: "contact-1",
-    ai_enabled: true,
-    assigned_agent_id: null,
-    welcome_sent_at: "2026-08-22T10:00:00Z",
-    last_customer_message_at: new Date().toISOString(),
-    contact: { phone_number: "+584121112233" },
-    channel: { phone_number_id: connected ? "pnid-1" : null, status: connected ? "connected" : "demo" },
+    conversationId: "conv-1",
+    contactId: "contact-1",
+    phoneNumber: "+584121112233",
+    phoneNumberId: connected ? "pnid-1" : null,
+    channelStatus: connected ? "connected" : "demo",
   };
 }
 

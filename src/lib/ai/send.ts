@@ -2,6 +2,7 @@ import "server-only";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import type { Database } from "@/lib/supabase/database.types";
 import type { Playbook } from "@/lib/types";
+import type { TurnTarget } from "@/lib/ai/turn-target";
 import { sendWhatsappMedia, sendWhatsappText } from "@/lib/whatsapp/meta-client";
 import { signedUrlForSending } from "@/lib/media-link";
 
@@ -10,33 +11,27 @@ import { signedUrlForSending } from "@/lib/media-link";
 // turno tiene dos formas de responder: el texto que redacta el modelo, y el
 // texto ya escrito de un escenario (que puede llevar adjunto).
 //
+// Todo lo de acá recibe un TurnTarget, no una conversación suelta: el chat, el
+// cliente y el número viajan juntos en un objeto congelado que se verificó al
+// abrir el turno (ver turn-target.ts). Es lo que hace imposible por
+// construcción combinar el texto de un turno con el destinatario de otro.
+//
 // En un canal simulado (demo, o sin access token) el mensaje igual se guarda
 // en `messages` aunque no salga por WhatsApp: es lo que hace utilizable el
 // simulador del panel de control.
 // ---------------------------------------------------------------------------
 
-export interface AgentConversation {
-  id: string;
-  contact_id: string;
-  ai_enabled: boolean;
-  assigned_agent_id: string | null;
-  /** null cuando nunca salió la plantilla de bienvenida: es lo que decide si el agente saluda. */
-  welcome_sent_at: string | null;
-  /** Decide si Meta todavía acepta texto libre en este chat. Ver withinFreeformWindow. */
-  last_customer_message_at: string | null;
-  contact: { phone_number: string };
-  channel: { phone_number_id: string | null; status: string };
-}
+export type { AgentConversation, TurnTarget } from "@/lib/ai/turn-target";
 
 type MediaKind = "image" | "video" | "document";
 
-function accessTokenFor(conversation: AgentConversation): string | null {
-  const isRealChannel = conversation.channel.status === "connected" && Boolean(conversation.channel.phone_number_id);
+function accessTokenFor(target: TurnTarget): string | null {
+  const isRealChannel = target.channelStatus === "connected" && Boolean(target.phoneNumberId);
   if (!isRealChannel) return null;
 
   const accessToken = process.env.WHATSAPP_ACCESS_TOKEN;
   if (!accessToken) {
-    console.warn(`Respuesta de la IA no enviada por WhatsApp en ${conversation.id}: falta WHATSAPP_ACCESS_TOKEN.`);
+    console.warn(`Respuesta de la IA no enviada por WhatsApp en ${target.conversationId}: falta WHATSAPP_ACCESS_TOKEN.`);
     return null;
   }
   return accessToken;
@@ -44,21 +39,16 @@ function accessTokenFor(conversation: AgentConversation): string | null {
 
 export async function sendAgentText(
   supabase: SupabaseClient<Database>,
-  conversation: AgentConversation,
+  target: TurnTarget,
   text: string
 ): Promise<void> {
-  const accessToken = accessTokenFor(conversation);
+  const accessToken = accessTokenFor(target);
   let whatsappMessageId: string | null = null;
   let whatsappStatus: "sent" | null = null;
 
   if (accessToken) {
     try {
-      const result = await sendWhatsappText(
-        conversation.channel.phone_number_id!,
-        accessToken,
-        conversation.contact.phone_number,
-        text
-      );
+      const result = await sendWhatsappText(target.phoneNumberId!, accessToken, target.phoneNumber, text);
       whatsappMessageId = result.whatsappMessageId;
       whatsappStatus = "sent";
     } catch (err) {
@@ -67,7 +57,7 @@ export async function sendAgentText(
   }
 
   await supabase.from("messages").insert({
-    conversation_id: conversation.id,
+    conversation_id: target.conversationId,
     direction: "outbound",
     sender_type: "ai",
     message_type: "text",
@@ -79,11 +69,11 @@ export async function sendAgentText(
 
 async function sendAgentMedia(
   supabase: SupabaseClient<Database>,
-  conversation: AgentConversation,
+  target: TurnTarget,
   mediaType: MediaKind,
   url: string
 ): Promise<void> {
-  const accessToken = accessTokenFor(conversation);
+  const accessToken = accessTokenFor(target);
   let whatsappMessageId: string | null = null;
   let whatsappStatus: "sent" | null = null;
 
@@ -95,9 +85,9 @@ async function sendAgentMedia(
       if (!link) throw new Error(`No se pudo preparar el adjunto ${url} para enviarlo.`);
 
       const result = await sendWhatsappMedia(
-        conversation.channel.phone_number_id!,
+        target.phoneNumberId!,
         accessToken,
-        conversation.contact.phone_number,
+        target.phoneNumber,
         mediaType,
         link
       );
@@ -112,7 +102,7 @@ async function sendAgentMedia(
   }
 
   await supabase.from("messages").insert({
-    conversation_id: conversation.id,
+    conversation_id: target.conversationId,
     direction: "outbound",
     sender_type: "ai",
     message_type: mediaType,
@@ -132,7 +122,7 @@ async function sendAgentMedia(
  */
 export async function sendPlaybookReply(
   supabase: SupabaseClient<Database>,
-  conversation: AgentConversation,
+  target: TurnTarget,
   playbook: Playbook
 ): Promise<void> {
   const { attachmentUrl, attachmentType } = playbook;
@@ -142,9 +132,9 @@ export async function sendPlaybookReply(
       ? `${playbook.responseText}\n\n${attachmentUrl}`
       : playbook.responseText;
 
-  await sendAgentText(supabase, conversation, text);
+  await sendAgentText(supabase, target, text);
 
   if (attachmentUrl && attachmentType && attachmentType !== "link") {
-    await sendAgentMedia(supabase, conversation, attachmentType, attachmentUrl);
+    await sendAgentMedia(supabase, target, attachmentType, attachmentUrl);
   }
 }

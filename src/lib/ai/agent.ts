@@ -13,8 +13,10 @@ import { buildKnowledgeTool } from "@/lib/ai/knowledge";
 import { escalateConversation } from "@/lib/ai/escalate";
 import { withConversationTurnLock } from "@/lib/ai/conversation-lock";
 import { fetchActivePlaybooks, matchPlaybook } from "@/lib/ai/playbooks";
-import { sendAgentText, sendPlaybookReply, type AgentConversation } from "@/lib/ai/send";
-import { log } from "@/lib/log";
+import { sendAgentText, sendPlaybookReply } from "@/lib/ai/send";
+import { buildTurnTarget, type AgentConversation, type TurnTarget } from "@/lib/ai/turn-target";
+import { NonRetryableTurnError, newTurnDelivery, type TurnDelivery } from "@/lib/ai/turn-delivery";
+import { errorText, log } from "@/lib/log";
 import { withinFreeformWindow } from "@/lib/dashboard";
 
 // ---------------------------------------------------------------------------
@@ -27,6 +29,11 @@ import { withinFreeformWindow } from "@/lib/dashboard";
 //   2. Actuar con las herramientas acotadas a esa intención.
 //
 // Lo dispara la cola, una vez por conversación (ver src/lib/ai/queue.ts).
+//
+// A quién le hablamos no se deduce en ningún paso: se verifica una vez al
+// abrir el turno y viaja como un TurnTarget congelado hasta el envío (ver
+// turn-target.ts). Ninguna de las tres fases recibe un id suelto que pueda
+// venir de otro lado.
 // ---------------------------------------------------------------------------
 
 const MAX_STEPS = 5;
@@ -210,26 +217,31 @@ function tagSummary(tags: Tag[]): string {
  */
 async function runPlaybook(
   supabase: SupabaseClient<Database>,
-  conversation: AgentConversation,
+  target: TurnTarget,
+  entrega: TurnDelivery,
   playbook: Playbook,
   tokens: TurnTokens,
   customerMessage: string | null
 ): Promise<void> {
-  await sendPlaybookReply(supabase, conversation, playbook);
+  // Se marca ANTES de enviar: si el envío falla a mitad no sabemos si el
+  // mensaje salió, y ante la duda el turno deja de ser reintentable. Ver
+  // turn-delivery.ts.
+  entrega.intentado = true;
+  await sendPlaybookReply(supabase, target, playbook);
 
   // Se etiqueta siempre que el escenario responda, escale o no: un escenario
   // que deja al cliente esperando también puede querer dejar marcado el caso.
-  await applyPlaybookTags(supabase, conversation.id, conversation.contact_id, playbook.tags);
+  await applyPlaybookTags(supabase, target.conversationId, target.contactId, playbook.tags);
 
   if (playbook.afterSend === "escalate") {
     const result = await escalateConversation(supabase, {
-      conversationId: conversation.id,
-      contactId: conversation.contact_id,
+      conversationId: target.conversationId,
+      contactId: target.contactId,
       motivo: "seguimiento",
       resumen: `Respuesta automática "${playbook.name}". Falta que un asesor continúe el caso.`,
     });
 
-    await logTurn(supabase, conversation.id, {
+    await logTurn(supabase, target.conversationId, {
       intent: null,
       action: "escalated",
       summary: `Escenario "${playbook.name}" → ${result.assignedAgentName ?? "(sin asesor disponible)"}.${tagSummary(playbook.tags)}`,
@@ -243,9 +255,9 @@ async function runPlaybook(
   await supabase
     .from("conversations")
     .update({ journey_stage: null, active_tool: null })
-    .eq("id", conversation.id);
+    .eq("id", target.conversationId);
 
-  await logTurn(supabase, conversation.id, {
+  await logTurn(supabase, target.conversationId, {
     intent: null,
     action: "answered",
     summary: `Escenario "${playbook.name}".${tagSummary(playbook.tags)}`,
@@ -255,7 +267,212 @@ async function runPlaybook(
   });
 }
 
-/** Corre el turno del agente para UNA conversación. No lanza: cualquier fallo queda registrado en agent_turns. */
+/**
+ * Las tres fases del turno, con el destinatario ya verificado.
+ *
+ * Corre dentro del lock de conversación. Todo lo que le hable al cliente
+ * pasa por `entrega`, que es lo que decide si un fallo posterior se puede
+ * reintentar o no.
+ */
+async function runTurnPhases(
+  supabase: SupabaseClient<Database>,
+  target: TurnTarget,
+  convo: AgentConversation,
+  entrega: TurnDelivery
+): Promise<void> {
+  const conversationId = target.conversationId;
+
+  await supabase
+    .from("conversations")
+    .update({ journey_stage: "classifying", active_tool: null })
+    .eq("id", conversationId);
+
+  const history = await loadHistory(supabase, conversationId);
+  if (history.length === 0) return;
+
+  const customerMessage = lastCustomerMessage(history);
+
+  // Fase 0 — ¿el mensaje calza con una respuesta ya redactada? Si calza, se
+  // envía tal cual y el turno termina acá: sale más rápido y más barato que
+  // clasificar y redactar, y el cliente recibe el texto oficial en vez de
+  // una versión que el modelo improvise.
+  // Los interruptores del panel se leen junto con los escenarios: ambos
+  // son configuración que el equipo cambia en vivo y el turno respeta.
+  const [playbooks, enabledTools] = await Promise.all([
+    fetchActivePlaybooks(supabase),
+    fetchEnabledToolKeys(supabase),
+  ]);
+  const match = await matchPlaybook(history, playbooks);
+  const matchTokens = tokensFromUsage(match.usage);
+
+  if (match.playbook) {
+    await runPlaybook(supabase, target, entrega, match.playbook, matchTokens, customerMessage);
+    return;
+  }
+
+  let intent: Intent;
+  let classifyTokens: TurnTokens;
+  try {
+    const classified = await classifyIntent(history);
+    intent = classified.intent;
+    classifyTokens = addTokens(matchTokens, tokensFromUsage(classified.usage));
+  } catch (err) {
+    // Clasificar es lo único que se reintenta ante rate limit, y si aun así
+    // falla el turno termina acá SIN responder. No hay intención por defecto:
+    // adivinarla mandaría un mensaje genérico a alguien que preguntó algo
+    // concreto, que es peor que no contestar. El caso queda en la bitácora
+    // con action "error" para que un humano lo retome.
+    await logTurn(supabase, conversationId, {
+      intent: null,
+      action: "error",
+      summary: `Fallo al clasificar intención: ${errorMessage(err)}`,
+      tokens: matchTokens,
+      customerMessage,
+    });
+    return;
+  }
+
+  await supabase.from("conversations").update({ intent }).eq("id", conversationId);
+
+  // Fuera de tema: el turno termina acá. No se arma el tool loop —que es la
+  // parte cara— y el texto sale de una constante, así que no cuesta salida.
+  // A la segunda insistencia ni se responde: repetir la misma línea contra
+  // alguien que insiste (o contra otro bot) es un ping-pong sin final.
+  if (intent === "fuera_de_tema") {
+    const repetido = alreadyRedirected(history);
+    if (!repetido) {
+      entrega.intentado = true;
+      await sendAgentText(supabase, target, OFF_TOPIC_REPLY);
+    }
+
+    await supabase
+      .from("conversations")
+      .update({ journey_stage: null, active_tool: null })
+      .eq("id", conversationId);
+
+    await logTurn(supabase, conversationId, {
+      intent,
+      action: "answered",
+      summary: repetido ? "Fuera de tema, insistiendo: no se respondió." : OFF_TOPIC_REPLY,
+      tokens: classifyTokens,
+      customerMessage,
+    });
+    return;
+  }
+
+  const outcome: EscalationOutcome = { escalated: false };
+  const deps = { supabase, conversationId, contactId: target.contactId };
+
+  // Escalar no tiene interruptor: es la única salida hacia un humano. El
+  // resto entra solo si su interruptor del panel está encendido.
+  const tools: ToolSet = { escalarAAsesor: buildEscalateTool(deps, outcome) };
+  if (intent === "devolucion") {
+    if (enabledTools.has(TOOL_KEYS.orderHistory)) tools.buscarHistorialCompras = buildOrderHistoryTool(deps);
+  } else if (intent !== "queja") {
+    if (enabledTools.has(TOOL_KEYS.catalog)) tools.buscarRepuesto = buildCatalogTool(deps);
+  }
+  if (enabledTools.has(TOOL_KEYS.knowledge)) tools.consultarBiblioteca = buildKnowledgeTool(deps);
+
+  // Con el catálogo apagado en un caso de consulta, el riesgo es que el
+  // modelo cotice de memoria: se le avisa en las instrucciones del turno.
+  const missingCatalog =
+    !enabledTools.has(TOOL_KEYS.catalog) && (intent === "consulta_disponibilidad" || intent === "otro");
+
+  const { model, providerOptions } = getAgentModel("medium");
+
+  const agent = new ToolLoopAgent({
+    model,
+    instructions: buildInstructions({
+      intent,
+      needsGreeting: needsGreeting(convo.welcome_sent_at, history),
+      missingCatalog,
+    }),
+    tools,
+    stopWhen: isStepCount(MAX_STEPS),
+    providerOptions,
+    // El reintento vive en el control de ritmo, que espera en segundos y
+    // respeta Retry-After. El del SDK reintenta a ~2 s, o sea dentro de la
+    // misma ventana de un minuto que acaba de rechazar la petición: no
+    // recupera nada y gasta el doble de cuota. Ver rate-limit.ts.
+    maxRetries: 0,
+    onToolExecutionStart: async ({ toolCall }) => {
+      await supabase
+        .from("conversations")
+        .update({ journey_stage: "tool_running", active_tool: toolCall.toolName })
+        .eq("id", conversationId);
+    },
+    onToolExecutionEnd: async () => {
+      await supabase.from("conversations").update({ active_tool: null }).eq("id", conversationId);
+    },
+  });
+
+  let text = "";
+  let turnTokens = classifyTokens;
+  try {
+    const result = await agent.generate({ messages: history });
+    text = result.text ?? "";
+    turnTokens = addTokens(classifyTokens, tokensFromUsage(result.usage));
+  } catch (err) {
+    await logTurn(supabase, conversationId, {
+      intent,
+      action: "error",
+      summary: errorMessage(err),
+      tokens: classifyTokens,
+      customerMessage,
+    });
+    await supabase.from("conversations").update({ active_tool: null }).eq("id", conversationId);
+    return;
+  }
+
+  // Red de seguridad: devolución y queja SIEMPRE terminan escaladas. Si el
+  // turno se quedó sin pasos sin lograrlo, se fuerza en código.
+  if (!outcome.escalated && (intent === "devolucion" || intent === "queja")) {
+    const forced = await escalateConversation(supabase, {
+      conversationId,
+      contactId: target.contactId,
+      motivo: intent,
+      resumen: "El turno de la IA se quedó sin pasos antes de escalar formalmente. Revisar el hilo completo.",
+    });
+    outcome.escalated = forced.escalated;
+    outcome.assignedAgentName = forced.assignedAgentName ?? undefined;
+    if (!text.trim()) {
+      // Sin asesores no se promete lo que no va a pasar: nadie va a
+      // contestar en un minuto si no hay nadie trabajando.
+      text = forced.unassigned
+        ? "Ya dejé tu caso registrado para que lo revise un asesor. En cuanto haya alguien disponible te escriben por acá."
+        : "Dame un momentico, ya te paso con un asesor para que te ayude con esto.";
+    }
+  }
+
+  if (text.trim()) {
+    entrega.intentado = true;
+    await sendAgentText(supabase, target, text.trim());
+  }
+
+  if (!outcome.escalated) {
+    await supabase.from("conversations").update({ journey_stage: null, active_tool: null }).eq("id", conversationId);
+  }
+
+  await logTurn(supabase, conversationId, {
+    intent,
+    action: outcome.escalated ? "escalated" : "answered",
+    summary: outcome.escalated
+      ? `Escalado a ${outcome.assignedAgentName ?? "(sin asesor disponible)"}. Motivo: ${outcome.motivo}.`
+      : text,
+    tokens: turnTokens,
+    customerMessage,
+  });
+}
+
+/**
+ * Corre el turno del agente para UNA conversación.
+ *
+ * Puede lanzar, y la cola cuenta con eso: un fallo antes de responder vuelve
+ * a la cola para otro intento. Lo que NO vuelve es un fallo posterior a haber
+ * intentado entregarle algo al cliente — ese sale como NonRetryableTurnError
+ * y la cola lo abandona, porque reintentarlo mandaría el mismo mensaje dos
+ * veces (ver turn-delivery.ts).
+ */
 export async function runAgentTurn(conversationId: string): Promise<void> {
   const supabase = createAdminClient();
 
@@ -295,177 +512,40 @@ export async function runAgentTurn(conversationId: string): Promise<void> {
     return;
   }
 
+  // A quién le vamos a hablar se fija ACÁ, una sola vez, contra el id que
+  // pidió la cola. De acá en adelante nada vuelve a resolver el destinatario:
+  // el mismo objeto congelado llega al envío. Si no cuadra, el turno no
+  // envía nada y no se reintenta — una identidad rota no se arregla sola, y
+  // reintentarla solo gasta cupos.
+  let target: TurnTarget;
+  try {
+    target = buildTurnTarget(conversationId, convo);
+  } catch (err) {
+    log.error("turno_identidad_no_verificable", { conversationId, detail: errorText(err) });
+    throw new NonRetryableTurnError(conversationId, errorText(err), { cause: err });
+  }
+
   // Lock por conversación: si dos webhooks casi simultáneos disparan el
   // turno para la misma conversación (típico cuando el cliente manda varios
   // mensajes seguidos), solo uno corre — el otro se salta en vez de generar
   // una respuesta duplicada o un doble escalamiento.
   await withConversationTurnLock(supabase, conversationId, async () => {
-    await supabase
-      .from("conversations")
-      .update({ journey_stage: "classifying", active_tool: null })
-      .eq("id", conversationId);
-
-    const history = await loadHistory(supabase, conversationId);
-    if (history.length === 0) return;
-
-    const customerMessage = lastCustomerMessage(history);
-
-    // Fase 0 — ¿el mensaje calza con una respuesta ya redactada? Si calza, se
-    // envía tal cual y el turno termina acá: sale más rápido y más barato que
-    // clasificar y redactar, y el cliente recibe el texto oficial en vez de
-    // una versión que el modelo improvise.
-    // Los interruptores del panel se leen junto con los escenarios: ambos
-    // son configuración que el equipo cambia en vivo y el turno respeta.
-    const [playbooks, enabledTools] = await Promise.all([
-      fetchActivePlaybooks(supabase),
-      fetchEnabledToolKeys(supabase),
-    ]);
-    const match = await matchPlaybook(history, playbooks);
-    const matchTokens = tokensFromUsage(match.usage);
-
-    if (match.playbook) {
-      await runPlaybook(supabase, convo, match.playbook, matchTokens, customerMessage);
-      return;
-    }
-
-    let intent: Intent;
-    let classifyTokens: TurnTokens;
+    const entrega = newTurnDelivery();
     try {
-      const classified = await classifyIntent(history);
-      intent = classified.intent;
-      classifyTokens = addTokens(matchTokens, tokensFromUsage(classified.usage));
+      await runTurnPhases(supabase, target, convo, entrega);
     } catch (err) {
-      await logTurn(supabase, conversationId, {
-        intent: null,
-        action: "error",
-        summary: `Fallo al clasificar intención: ${errorMessage(err)}`,
-        tokens: matchTokens,
-        customerMessage,
-      });
-      return;
-    }
+      if (!entrega.intentado) throw err;
 
-    await supabase.from("conversations").update({ intent }).eq("id", conversationId);
-
-    // Fuera de tema: el turno termina acá. No se arma el tool loop —que es la
-    // parte cara— y el texto sale de una constante, así que no cuesta salida.
-    // A la segunda insistencia ni se responde: repetir la misma línea contra
-    // alguien que insiste (o contra otro bot) es un ping-pong sin final.
-    if (intent === "fuera_de_tema") {
-      const repetido = alreadyRedirected(history);
-      if (!repetido) await sendAgentText(supabase, convo, OFF_TOPIC_REPLY);
-
-      await supabase
-        .from("conversations")
-        .update({ journey_stage: null, active_tool: null })
-        .eq("id", conversationId);
-
-      await logTurn(supabase, conversationId, {
-        intent,
-        action: "answered",
-        summary: repetido ? "Fuera de tema, insistiendo: no se respondió." : OFF_TOPIC_REPLY,
-        tokens: classifyTokens,
-        customerMessage,
-      });
-      return;
-    }
-
-    const outcome: EscalationOutcome = { escalated: false };
-    const deps = { supabase, conversationId, contactId: convo.contact_id };
-
-    // Escalar no tiene interruptor: es la única salida hacia un humano. El
-    // resto entra solo si su interruptor del panel está encendido.
-    const tools: ToolSet = { escalarAAsesor: buildEscalateTool(deps, outcome) };
-    if (intent === "devolucion") {
-      if (enabledTools.has(TOOL_KEYS.orderHistory)) tools.buscarHistorialCompras = buildOrderHistoryTool(deps);
-    } else if (intent !== "queja") {
-      if (enabledTools.has(TOOL_KEYS.catalog)) tools.buscarRepuesto = buildCatalogTool(deps);
-    }
-    if (enabledTools.has(TOOL_KEYS.knowledge)) tools.consultarBiblioteca = buildKnowledgeTool(deps);
-
-    // Con el catálogo apagado en un caso de consulta, el riesgo es que el
-    // modelo cotice de memoria: se le avisa en las instrucciones del turno.
-    const missingCatalog =
-      !enabledTools.has(TOOL_KEYS.catalog) && (intent === "consulta_disponibilidad" || intent === "otro");
-
-    const { model, providerOptions } = getAgentModel("medium");
-
-    const agent = new ToolLoopAgent({
-      model,
-      instructions: buildInstructions({
-        intent,
-        needsGreeting: needsGreeting(convo.welcome_sent_at, history),
-        missingCatalog,
-      }),
-      tools,
-      stopWhen: isStepCount(MAX_STEPS),
-      providerOptions,
-      onToolExecutionStart: async ({ toolCall }) => {
-        await supabase
-          .from("conversations")
-          .update({ journey_stage: "tool_running", active_tool: toolCall.toolName })
-          .eq("id", conversationId);
-      },
-      onToolExecutionEnd: async () => {
-        await supabase.from("conversations").update({ active_tool: null }).eq("id", conversationId);
-      },
-    });
-
-    let text = "";
-    let turnTokens = classifyTokens;
-    try {
-      const result = await agent.generate({ messages: history });
-      text = result.text ?? "";
-      turnTokens = addTokens(classifyTokens, tokensFromUsage(result.usage));
-    } catch (err) {
-      await logTurn(supabase, conversationId, {
-        intent,
-        action: "error",
-        summary: errorMessage(err),
-        tokens: classifyTokens,
-        customerMessage,
-      });
-      await supabase.from("conversations").update({ active_tool: null }).eq("id", conversationId);
-      return;
-    }
-
-    // Red de seguridad: devolución y queja SIEMPRE terminan escaladas. Si el
-    // turno se quedó sin pasos sin lograrlo, se fuerza en código.
-    if (!outcome.escalated && (intent === "devolucion" || intent === "queja")) {
-      const forced = await escalateConversation(supabase, {
+      // El mensaje ya salió (o pudo haber salido) y lo que falló es un paso
+      // posterior: actualizar la conversación, escalar, escribir la bitácora.
+      // Reintentar el turno lo reenviaría. Se registra y se abandona.
+      log.error("turno_fallo_tras_envio", { conversationId, detail: errorText(err) });
+      throw new NonRetryableTurnError(
         conversationId,
-        contactId: convo.contact_id,
-        motivo: intent,
-        resumen: "El turno de la IA se quedó sin pasos antes de escalar formalmente. Revisar el hilo completo.",
-      });
-      outcome.escalated = forced.escalated;
-      outcome.assignedAgentName = forced.assignedAgentName ?? undefined;
-      if (!text.trim()) {
-        // Sin asesores no se promete lo que no va a pasar: nadie va a
-        // contestar en un minuto si no hay nadie trabajando.
-        text = forced.unassigned
-          ? "Ya dejé tu caso registrado para que lo revise un asesor. En cuanto haya alguien disponible te escriben por acá."
-          : "Dame un momentico, ya te paso con un asesor para que te ayude con esto.";
-      }
+        `El turno falló después de intentar entregar un mensaje; no se reintenta para no duplicarlo: ${errorText(err)}`,
+        { cause: err }
+      );
     }
-
-    if (text.trim()) {
-      await sendAgentText(supabase, convo, text.trim());
-    }
-
-    if (!outcome.escalated) {
-      await supabase.from("conversations").update({ journey_stage: null, active_tool: null }).eq("id", conversationId);
-    }
-
-    await logTurn(supabase, conversationId, {
-      intent,
-      action: outcome.escalated ? "escalated" : "answered",
-      summary: outcome.escalated
-        ? `Escalado a ${outcome.assignedAgentName ?? "(sin asesor disponible)"}. Motivo: ${outcome.motivo}.`
-        : text,
-      tokens: turnTokens,
-      customerMessage,
-    });
   });
 }
 
