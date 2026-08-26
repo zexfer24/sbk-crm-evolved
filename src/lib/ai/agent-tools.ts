@@ -1,6 +1,7 @@
 import "server-only";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import type { Database } from "@/lib/supabase/database.types";
+import { TOOL_KEYS } from "@/lib/agent-tool-keys";
 
 // ---------------------------------------------------------------------------
 // Interruptores por herramienta del agente.
@@ -11,12 +12,9 @@ import type { Database } from "@/lib/supabase/database.types";
 // es la única salida hacia un humano y no debe poder apagarse por descuido.
 // ---------------------------------------------------------------------------
 
-/** Claves de public.agent_tools. Contrato con la migración que las siembra: no se renombran. */
-export const TOOL_KEYS = {
-  catalog: "buscar_repuesto",
-  orderHistory: "buscar_historial_compras",
-  knowledge: "consultar_biblioteca",
-} as const;
+// Las claves viven en un módulo isomorfo (src/lib/agent-tool-keys.ts): el
+// panel también las necesita y este archivo es server-only.
+export { TOOL_KEYS } from "@/lib/agent-tool-keys";
 
 /**
  * Claves de las herramientas encendidas ahora mismo.

@@ -1,8 +1,9 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { Button, Modal } from "@heroui/react";
+import { Button, Modal, toast } from "@heroui/react";
 import { BookOpen, Bot, ShieldAlert, Users, Wrench, Zap } from "lucide-react";
+import type { BacklogCounts } from "@/lib/data";
 import type {
   Agent,
   AgentIntent,
@@ -35,6 +36,7 @@ import {
   fetchKnowledgeCategories,
   fetchKnowledgeEntries,
   fetchModelPricing,
+  fetchBacklogCounts,
   fetchPlaybooks,
   fetchTokenUsageSummary,
   fetchUnmatchedTurns,
@@ -51,6 +53,7 @@ import {
   updateModelPricing,
 } from "@/lib/mutations";
 import { contactName, initials } from "@/lib/dashboard";
+import { TOOL_KEYS } from "@/lib/agent-tool-keys";
 import { formatTime12h } from "@/lib/format";
 import { useLiveConversations } from "@/lib/use-live-conversations";
 import { useLiveRefresh } from "@/lib/use-live-refresh";
@@ -91,6 +94,23 @@ interface AgentControlViewProps {
 }
 
 type AgentControlTab = "ia" | "respuestas" | "biblioteca" | "herramientas" | "agentes";
+
+// ---------------------------------------------------------------------------
+// Ritmo del repaso del atraso, para poder decírselo a quien aprieta el botón.
+// Espeja MAX_PER_RUN de src/lib/ai/queue.ts y el intervalo del cron de
+// docs/PRODUCCION.md. Es una estimación que se muestra, no un parámetro: si
+// alguno de los dos cambia, acá solo se desactualiza el texto.
+// ---------------------------------------------------------------------------
+const TURNOS_POR_PASADA = 10;
+const MINUTOS_ENTRE_PASADAS = 5;
+
+function duracionDelLote(conversaciones: number): string {
+  const minutos = Math.ceil(conversaciones / TURNOS_POR_PASADA) * MINUTOS_ENTRE_PASADAS;
+  if (minutos <= 5) return "unos minutos";
+  if (minutos < 60) return `unos ${minutos} minutos`;
+  const horas = Math.round((minutos / 60) * 2) / 2;
+  return horas === 1 ? "una hora" : `unas ${horas.toLocaleString("es-VE")} horas`;
+}
 
 const INTENT_LABEL: Record<AgentIntent, string> = {
   consulta_disponibilidad: "Consulta",
@@ -198,6 +218,10 @@ export function AgentControlView({
   const [knowledgeEntries, setKnowledgeEntries] = useState(initialKnowledgeEntries);
   const [togglingKillSwitch, setTogglingKillSwitch] = useState(false);
   const [confirmingAiOn, setConfirmingAiOn] = useState(false);
+  // null mientras se cuenta. El diálogo no deja encender hasta tener el
+  // número: encender a ciegas es exactamente lo que ya pasó una vez.
+  const [backlog, setBacklog] = useState<BacklogCounts | null>(null);
+  const [backlogFailed, setBacklogFailed] = useState(false);
   const [busyConversationId, setBusyConversationId] = useState<string | null>(null);
   const [togglingAgentId, setTogglingAgentId] = useState<string | null>(null);
   const [togglingToolKey, setTogglingToolKey] = useState<string | null>(null);
@@ -304,6 +328,28 @@ export function AgentControlView({
     }
   }
 
+  /**
+   * Qué tan manca está la IA ahora mismo. Sin biblioteca y sin catálogo saluda
+   * bien y no puede responder casi nada de fondo: termina pasando el caso a un
+   * asesor. Con 117 conversaciones eso no es una respuesta automática, es un
+   * reparto de trabajo, y quien aprieta el botón tiene que saberlo antes.
+   */
+  const carenciaDeLaIa = useMemo(() => {
+    const bibliotecaVacia = knowledgeEntries.length === 0;
+    const catalogoApagado = !agentTools.some((tool) => tool.key === TOOL_KEYS.catalog && tool.isEnabled);
+
+    if (bibliotecaVacia && catalogoApagado) {
+      return "La biblioteca de conocimiento está vacía y la consulta de productos está apagada: la IA va a saludar bien y terminar pasando casi todo a un asesor.";
+    }
+    if (bibliotecaVacia) {
+      return "La biblioteca de conocimiento está vacía: la IA no va a poder responder nada sobre envíos, pagos ni garantías.";
+    }
+    if (catalogoApagado) {
+      return "La consulta de productos está apagada: la IA no va a poder decir si hay un repuesto ni cuánto cuesta.";
+    }
+    return null;
+  }, [agentTools, knowledgeEntries]);
+
   const liveConversations = useMemo(
     () =>
       conversations
@@ -323,7 +369,16 @@ export function AgentControlView({
    */
   function toggleKillSwitch() {
     if (!settings.aiGloballyEnabled) {
+      // El número se cuenta en la base cada vez que se abre el diálogo. Antes
+      // se mostraba el largo de la lista cargada en memoria, que es otra cosa:
+      // decía a cuántas conversaciones PODRÍA escribirles cuando el cliente
+      // volviera a escribir, no a cuántas les va a escribir ahora mismo.
+      setBacklog(null);
+      setBacklogFailed(false);
       setConfirmingAiOn(true);
+      void fetchBacklogCounts(supabase)
+        .then(setBacklog)
+        .catch(() => setBacklogFailed(true));
       return;
     }
     void switchAi(false);
@@ -334,6 +389,18 @@ export function AgentControlView({
     try {
       await setAiGloballyEnabled(supabase, currentAgent, next);
       setSettings((s) => ({ ...s, aiGloballyEnabled: next }));
+
+      if (next) {
+        // El interruptor ya quedó encendido. Si el repaso falla, la IA sigue
+        // atendiendo lo que entre de ahora en adelante —el comportamiento de
+        // siempre— y el atraso se queda esperando: se avisa y no se revierte,
+        // porque apagar la IA por su cuenta sería una sorpresa peor.
+        const response = await fetch("/api/agent/backlog", { method: "POST" });
+        if (!response.ok) {
+          toast.danger("La IA quedó encendida, pero no se pudo repasar lo que ya estaba esperando.");
+        }
+      }
+
       setConfirmingAiOn(false);
     } finally {
       setTogglingKillSwitch(false);
@@ -512,14 +579,47 @@ export function AgentControlView({
                       <Modal.CloseTrigger />
                     </Modal.Header>
                     <Modal.Body className="flex flex-col gap-2">
-                      <p className="text-sm">
-                        Al encenderla, la IA puede escribirle ahora mismo a{" "}
-                        <strong className="lm-num">{liveConversations.length}</strong>{" "}
-                        {liveConversations.length === 1
-                          ? "conversación activa"
-                          : "conversaciones activas"}{" "}
-                        sin asesor asignado — clientes reales, sin revisión previa.
-                      </p>
+                      {backlogFailed ? (
+                        <p className="text-sm">
+                          No se pudo contar cuántas conversaciones están esperando respuesta. Cierra y
+                          vuelve a intentar: encender sin ese número es disparar a ciegas.
+                        </p>
+                      ) : backlog === null ? (
+                        <p className="text-sm text-muted">Contando cuántas conversaciones están esperando…</p>
+                      ) : (
+                        <>
+                          <p className="text-sm">
+                            Ahora mismo hay <strong className="lm-num">{backlog.inWindow}</strong>{" "}
+                            {backlog.inWindow === 1
+                              ? "conversación esperando respuesta"
+                              : "conversaciones esperando respuesta"}{" "}
+                            dentro de la ventana de 24 h.{" "}
+                            <strong>
+                              {backlog.inWindow === 1 ? "Le va a escribir" : "Les va a escribir a todas"}
+                            </strong>{" "}
+                            — clientes reales, sin revisión previa.
+                          </p>
+
+                          {backlog.inWindow > 0 && (
+                            <p className="text-xs text-muted">
+                              No salen de golpe: unas {TURNOS_POR_PASADA} cada {MINUTOS_ENTRE_PASADAS} minutos,{" "}
+                              {duracionDelLote(backlog.inWindow)} el lote completo. Apagar la IA detiene en
+                              seco lo que quede sin enviar.
+                            </p>
+                          )}
+
+                          {backlog.outOfWindow > 0 && (
+                            <p className="text-xs text-muted">
+                              Otras <strong className="lm-num">{backlog.outOfWindow}</strong> llevan más de
+                              24 h esperando: a esas <strong>no</strong> les escribe. Pasado ese punto
+                              WhatsApp solo acepta una plantilla aprobada.
+                            </p>
+                          )}
+
+                          {carenciaDeLaIa && <p className="ac-kill-warn">{carenciaDeLaIa}</p>}
+                        </>
+                      )}
+
                       <p className="text-xs text-muted">
                         Si venías a apagar algo, este no es el botón: la IA está apagada ahora.
                       </p>
@@ -528,7 +628,11 @@ export function AgentControlView({
                       <Button size="sm" variant="secondary" onPress={() => setConfirmingAiOn(false)}>
                         Cancelar
                       </Button>
-                      <Button size="sm" isDisabled={togglingKillSwitch} onPress={() => void switchAi(true)}>
+                      <Button
+                        size="sm"
+                        isDisabled={togglingKillSwitch || backlog === null}
+                        onPress={() => void switchAi(true)}
+                      >
                         <Zap size={14} />
                         Encender la IA
                       </Button>

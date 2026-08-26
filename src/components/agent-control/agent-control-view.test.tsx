@@ -1,5 +1,5 @@
 import { describe, expect, it, vi, beforeEach } from "vitest";
-import { render, screen, fireEvent } from "@testing-library/react";
+import { render, screen, fireEvent, waitFor } from "@testing-library/react";
 import { AgentControlView } from "@/components/agent-control/agent-control-view";
 import type { Agent, AgentSettings, Conversation } from "@/lib/types";
 
@@ -32,8 +32,11 @@ vi.mock("@/lib/supabase/client", () => ({
   },
 }));
 
+const fetchBacklogCountsMock = vi.fn(async () => ({ inWindow: 117, outOfWindow: 174 }));
+
 vi.mock("@/lib/data", () => ({
   fetchAgentSettings: vi.fn(async () => ({ aiGloballyEnabled: true, dailySpendCapUsd: null, spentTodayUsd: 0 })),
+  fetchBacklogCounts: () => fetchBacklogCountsMock(),
   fetchAgentSuggestions: vi.fn(async () => []),
   fetchAgentTools: vi.fn(async () => []),
   fetchAgentTurns: vi.fn(async () => []),
@@ -151,37 +154,79 @@ function montar(settings: AgentSettings) {
 const apagada: AgentSettings = { aiGloballyEnabled: false, dailySpendCapUsd: null, spentTodayUsd: 0 };
 const encendida: AgentSettings = { aiGloballyEnabled: true, dailySpendCapUsd: null, spentTodayUsd: 0 };
 
+const backlogFetch = vi.fn(async () => ({ ok: true, json: async () => ({ ok: true, enqueued: 117 }) }));
+
 beforeEach(() => {
   setAiGloballyEnabledMock.mockClear();
+  backlogFetch.mockClear();
+  fetchBacklogCountsMock.mockClear();
+  fetchBacklogCountsMock.mockResolvedValue({ inWindow: 117, outOfWindow: 174 });
+  vi.stubGlobal("fetch", backlogFetch);
 });
 
+/** Abre el diálogo y espera a que llegue la cuenta del atraso. */
+async function abrirConfirmacion() {
+  fireEvent.click(screen.getByRole("button", { name: "Interruptor global de la IA" }));
+  await screen.findByText(/117/);
+}
+
 describe("AgentControlView — encender la IA global pide confirmación", () => {
-  it("el clic no enciende nada: abre el diálogo y dice a cuántas conversaciones puede escribir", () => {
+  /**
+   * El número tiene que salir de la base y no del largo de la lista cargada:
+   * son cosas distintas. La lista dice a cuántas PODRÍA escribirles cuando el
+   * cliente vuelva a escribir; esto dice a cuántas les escribe ahora mismo.
+   */
+  it("el clic no enciende nada: abre el diálogo y consulta cuántas están esperando", async () => {
     montar(apagada);
 
-    fireEvent.click(screen.getByRole("button", { name: "Interruptor global de la IA" }));
+    await abrirConfirmacion();
 
     expect(setAiGloballyEnabledMock).not.toHaveBeenCalled();
     expect(screen.getByText("¿Encender la IA para todo el CRM?")).toBeInTheDocument();
-    expect(screen.getByText("2")).toBeInTheDocument();
+    expect(fetchBacklogCountsMock).toHaveBeenCalled();
+    expect(screen.getByText("117")).toBeInTheDocument();
   });
 
-  it("confirmar sí enciende", async () => {
+  /** La prueba de que la guarda de la ventana está viva: si esto no se ve, no está filtrando. */
+  it("dice cuántas quedan fuera de la ventana de 24 h y que a esas no les escribe", async () => {
+    montar(apagada);
+
+    await abrirConfirmacion();
+
+    expect(screen.getByText("174")).toBeInTheDocument();
+    expect(screen.getByText(/les escribe\. Pasado ese punto WhatsApp solo acepta una plantilla aprobada/)).toBeInTheDocument();
+  });
+
+  /** Encender a ciegas es exactamente lo que ya pasó una vez. */
+  it("no deja encender mientras la cuenta no haya llegado", () => {
+    let resolver: (value: { inWindow: number; outOfWindow: number }) => void = () => {};
+    fetchBacklogCountsMock.mockReturnValue(new Promise((resolve) => { resolver = resolve; }));
     montar(apagada);
 
     fireEvent.click(screen.getByRole("button", { name: "Interruptor global de la IA" }));
+
+    expect(screen.getByRole("button", { name: /Encender la IA/ })).toBeDisabled();
+    resolver({ inWindow: 0, outOfWindow: 0 });
+  });
+
+  it("confirmar enciende y dispara el repaso del atraso", async () => {
+    montar(apagada);
+
+    await abrirConfirmacion();
     fireEvent.click(screen.getByRole("button", { name: /Encender la IA/ }));
 
     expect(setAiGloballyEnabledMock).toHaveBeenCalledWith(expect.anything(), currentAgent, true);
+    await waitFor(() => expect(backlogFetch).toHaveBeenCalledWith("/api/agent/backlog", { method: "POST" }));
   });
 
-  it("cancelar deja todo como estaba", () => {
+  it("cancelar deja todo como estaba y no repasa nada", async () => {
     montar(apagada);
 
-    fireEvent.click(screen.getByRole("button", { name: "Interruptor global de la IA" }));
+    await abrirConfirmacion();
     fireEvent.click(screen.getByRole("button", { name: "Cancelar" }));
 
     expect(setAiGloballyEnabledMock).not.toHaveBeenCalled();
+    expect(backlogFetch).not.toHaveBeenCalled();
   });
 
   it("apagar NO pregunta: es el freno de emergencia", () => {
@@ -191,5 +236,6 @@ describe("AgentControlView — encender la IA global pide confirmación", () => 
 
     expect(setAiGloballyEnabledMock).toHaveBeenCalledWith(expect.anything(), currentAgent, false);
     expect(screen.queryByText("¿Encender la IA para todo el CRM?")).not.toBeInTheDocument();
+    expect(backlogFetch).not.toHaveBeenCalled();
   });
 });
