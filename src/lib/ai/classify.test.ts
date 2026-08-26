@@ -8,9 +8,11 @@ vi.mock("ai", async (importOriginal) => ({
 }));
 
 vi.mock("@/lib/ai/model", () => ({
-  getAgentModel: (effort: string) => ({
-    model: "modelo-falso",
-    providerOptions: { openai: { reasoningEffort: effort } },
+  // getClassifierModel fija el esfuerzo bajo por dentro: el llamador ya no
+  // lo elige, solo dice qué fase pide la llamada.
+  getClassifierModel: (fase: string) => ({
+    model: `modelo-falso:${fase}`,
+    providerOptions: { openai: { reasoningEffort: "low" } },
   }),
 }));
 

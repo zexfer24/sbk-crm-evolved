@@ -1,6 +1,6 @@
 import "server-only";
 import { generateObject, type LanguageModelUsage, type ModelMessage } from "ai";
-import { getAgentModel } from "@/lib/ai/model";
+import { getClassifierModel } from "@/lib/ai/model";
 
 // ---------------------------------------------------------------------------
 // Fase 1 del turno: clasificación obligatoria, barata y rápida — separada del
@@ -39,11 +39,16 @@ export interface ClassifyResult {
 }
 
 export async function classifyIntent(messages: ModelMessage[]): Promise<ClassifyResult> {
-  const { model, providerOptions } = getAgentModel("low");
+  const { model, providerOptions } = getClassifierModel("clasificar");
 
   const { object, usage } = await generateObject({
     model,
     providerOptions,
+    // El reintento del SDK (dos, separados por ~2 s) es veneno para un
+    // límite que se mide por minuto: vuelve a pegar dentro de la misma
+    // ventana que acaba de rechazar. Reintentar es cosa del control de
+    // ritmo, que espera en segundos y respeta Retry-After.
+    maxRetries: 0,
     output: "enum",
     enum: INTENT_VALUES as unknown as string[],
     system: CLASSIFY_PROMPT,

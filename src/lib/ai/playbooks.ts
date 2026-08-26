@@ -3,7 +3,8 @@ import { generateObject, type LanguageModelUsage, type ModelMessage } from "ai";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import type { Database } from "@/lib/supabase/database.types";
 import type { Playbook, PlaybookAfterSend, PlaybookAttachmentType, Tag, TagColor } from "@/lib/types";
-import { getAgentModel } from "@/lib/ai/model";
+import { getClassifierModel } from "@/lib/ai/model";
+import { errorText, log } from "@/lib/log";
 
 // ---------------------------------------------------------------------------
 // Reconocimiento de escenario: fase 0 del turno. Elige cuál respuesta
@@ -107,12 +108,14 @@ export async function matchPlaybook(history: ModelMessage[], playbooks: Playbook
   // Sin escenarios cargados no hay nada que elegir: se ahorra la llamada.
   if (playbooks.length === 0) return { playbook: null, usage: ZERO_USAGE };
 
-  const { model, providerOptions } = getAgentModel("low");
+  const { model, providerOptions } = getClassifierModel("escenario");
 
   try {
     const { object, usage } = await generateObject({
       model,
       providerOptions,
+      // Ver classify.ts: el reintento lo hace el control de ritmo, no el SDK.
+      maxRetries: 0,
       output: "enum",
       enum: [...playbooks.map((p) => p.name), NO_MATCH],
       system: buildPrompt(playbooks),
@@ -121,7 +124,12 @@ export async function matchPlaybook(history: ModelMessage[], playbooks: Playbook
 
     return { playbook: playbooks.find((p) => p.name === object) ?? null, usage };
   } catch (err) {
-    console.error("Falló el reconocimiento de escenario, el turno sigue por el flujo genérico:", err);
+    // Registro estructurado y no console.error: este catch se traga
+    // CUALQUIER fallo del proveedor, rate limit incluido, y el turno
+    // sigue como si no hubiera escenarios. Enterrado en texto suelto,
+    // un 429 acá era invisible: solo se veía cuando volvía a pegar en la
+    // fase siguiente, que es la que sí aborta el turno.
+    log.error("escenario_reconocimiento_fallido", { detail: errorText(err) });
     return { playbook: null, usage: ZERO_USAGE };
   }
 }
