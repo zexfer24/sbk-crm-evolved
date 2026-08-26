@@ -239,4 +239,54 @@ describe("processAfterDebounce", () => {
     expect(resultado.processed).toBe(1);
     expect(await pendingAgentTurns()).toBe(4);
   });
+
+  /**
+   * `limit` era una sugerencia con una carrera dentro.
+   *
+   * Los trabajadores decidían si quedaba sitio mirando los contadores de
+   * `result`, que sólo suben DESPUÉS del turno. Con limit=1 los tres veían
+   * "0 < 1", los tres reclamaban y los tres arrancaban: el techo real era
+   * maxConcurrentTurns, no limit. Y de ese límite depende que un mensaje
+   * entrante no drene el atraso de otros.
+   *
+   * Con turnos lentos la ventana de la carrera se abre del todo: sin la
+   * reserva previa, los tres entran antes de que ninguno termine.
+   */
+  it("respeta el límite aunque los turnos tarden y los trabajadores se solapen", async () => {
+    if (!disponible) return;
+
+    let simultaneos = 0;
+    let pico = 0;
+    runAgentTurnMock.mockImplementation(async () => {
+      simultaneos++;
+      pico = Math.max(pico, simultaneos);
+      await new Promise((r) => setTimeout(r, 40));
+      simultaneos--;
+    });
+
+    await enqueueAgentTurns(["c1", "c2", "c3", "c4", "c5", "c6"], { debounceSeconds: 0 });
+
+    const resultado = await processQueuedTurns(1);
+
+    expect(runAgentTurnMock).toHaveBeenCalledTimes(1);
+    expect(pico).toBe(1);
+    expect(resultado.processed).toBe(1);
+    // Los otros cinco siguen esperando: no se reclamaron y se tiraron.
+    expect(await pendingAgentTurns()).toBe(5);
+  });
+
+  /** Un límite de dos con tres trabajadores: dos, ni uno más. */
+  it("no se pasa del límite con más trabajadores que presupuesto", async () => {
+    if (!disponible) return;
+    runAgentTurnMock.mockImplementation(async () => {
+      await new Promise((r) => setTimeout(r, 30));
+    });
+
+    await enqueueAgentTurns(["c1", "c2", "c3", "c4", "c5", "c6"], { debounceSeconds: 0 });
+
+    await processQueuedTurns(2);
+
+    expect(runAgentTurnMock).toHaveBeenCalledTimes(2);
+    expect(await pendingAgentTurns()).toBe(4);
+  });
 });

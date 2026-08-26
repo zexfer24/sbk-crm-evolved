@@ -1,6 +1,6 @@
 import "server-only";
 import { getRedis } from "@/lib/redis";
-import { createAgentQueue, createTurnPace, createTurnSlots } from "@/lib/ai/redis-queue";
+import { createAgentQueue, createTurnPace, createTurnSlots, releaseSweepLock } from "@/lib/ai/redis-queue";
 import { runAgentTurn } from "@/lib/ai/agent";
 import { isNonRetryable } from "@/lib/ai/turn-delivery";
 import { errorText, log } from "@/lib/log";
@@ -136,6 +136,34 @@ export async function enqueueAgentTurns(
   }
 }
 
+/**
+ * Descarta todo lo que la IA tenía pendiente. Devuelve cuántos turnos eran.
+ *
+ * Es la mitad que le faltaba al botón de apagado. Apagar escribía
+ * `ai_globally_enabled = false` y nada más: la cola se quedaba llena, y esos
+ * turnos se iban reclamando uno a uno para salir por la puerta de atrás de
+ * runAgentTurn sin dejar rastro. Peor todavía si alguien volvía a encender
+ * antes de que se drenara — la tanda vieja salía de golpe, con un contexto de
+ * hace media hora.
+ *
+ * Se descarta y no se guarda a propósito: un turno pendiente es "hay que
+ * contestarle a este cliente lo que dijo hace un rato", y cuanto más rato
+ * pasa menos cierto es. Si el cliente sigue esperando, vuelve a escribir y
+ * entra por el webhook con el hilo fresco.
+ *
+ * También suelta el lock del barrido: apagar tiene que dejar el sistema listo
+ * para volver a encenderse, no bloqueado media hora por una tanda que ya no
+ * existe.
+ */
+export async function stopAgentQueue(): Promise<{ discarded: number }> {
+  const redis = getRedis();
+  const descartados = await createAgentQueue(redis).purge();
+  await releaseSweepLock(redis);
+
+  log.warn("cola_purgada", { descartados });
+  return { discarded: descartados };
+}
+
 /** Turnos esperando en la cola. */
 export async function pendingAgentTurns(): Promise<number> {
   return createAgentQueue(getRedis()).pending();
@@ -194,16 +222,40 @@ export async function processQueuedTurns(limit = MAX_PER_RUN): Promise<QueueRunR
 
   const result: QueueRunResult = { processed: 0, failed: 0, deferred: 0 };
 
+  /**
+   * Lugares del presupuesto ya tomados, contando los turnos que todavía no
+   * terminaron.
+   *
+   * Mirar `result` para decidir si queda sitio era una carrera: sus contadores
+   * suben DESPUÉS del turno, así que con limit=1 los tres trabajadores veían
+   * "0 < 1", los tres reclamaban y los tres arrancaban. `limit` no era un
+   * límite sino una sugerencia que se pasaba hasta en maxConcurrentTurns-1 por
+   * pasada — y el límite del webhook, que es lo que evita que un mensaje
+   * entrante drene el atraso de otros, se apoya justo en eso.
+   *
+   * Reservar antes de reclamar lo cierra sin necesidad de nada atómico: el
+   * incremento y la comprobación no tienen ningún `await` en medio, así que
+   * ningún otro trabajador puede colarse entre los dos.
+   */
+  let tomados = 0;
+
   async function atender(): Promise<void> {
-    while (result.processed + result.failed + result.deferred < limit) {
+    for (;;) {
+      if (tomados >= limit) return;
+      tomados++;
+
       let conversationId: string | null;
       try {
         conversationId = await cola.claimDue();
       } catch (err) {
+        tomados--; // No se llegó a atender nada: el lugar vuelve al presupuesto.
         log.error("cola_reclamar_fallido", { detail: errorText(err) });
         return;
       }
-      if (!conversationId) return; // Cola vacía.
+      if (!conversationId) {
+        tomados--; // Cola vacía: idem.
+        return;
+      }
 
       // El presupuesto del minuto se pide ANTES del cupo: pedir el cupo
       // primero lo tendría retenido durante una comprobación que puede decir
