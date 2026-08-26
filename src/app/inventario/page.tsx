@@ -5,17 +5,25 @@ import { fetchInventoryTotals, fetchMotoCatalogSummary, fetchProductsPage } from
 import { parseInventoryParams } from "@/lib/inventory";
 import { getBcvRate } from "@/lib/ai/bcv";
 import { InventarioView } from "@/components/inventario/inventario-view";
+import type { BcvRateSummary } from "@/components/inbox/bcv-rate-chip";
 
 /**
  * La tasa es un dato de apoyo para mostrar el precio en bolívares: si no se
  * puede obtener, el inventario tiene que abrir igual y mostrar solo dólares.
+ *
+ * Viaja con su fecha y con si está vieja, no como número suelto: acá se
+ * calculan precios, y un número sin fecha no deja distinguir la tasa de hoy de
+ * una de hace tres días. Es exactamente lo que pasó — la bandeja avisaba y esta
+ * pantalla no.
  */
-async function loadRate(supabase: Awaited<ReturnType<typeof createClient>>): Promise<number> {
+async function loadRate(
+  supabase: Awaited<ReturnType<typeof createClient>>
+): Promise<BcvRateSummary | null> {
   try {
-    const { rate } = await getBcvRate(supabase);
-    return rate;
+    const { rate, rateDate, isStale } = await getBcvRate(supabase);
+    return { rate, rateDate, isStale };
   } catch {
-    return 0;
+    return null;
   }
 }
 

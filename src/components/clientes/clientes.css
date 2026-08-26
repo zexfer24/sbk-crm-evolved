@@ -265,6 +265,19 @@
   color: var(--lm-muted);
 }
 
+/* Tasa vieja: se avisa, no se oculta. Mismo ámbar que el chip de la bandeja
+   (.crm-bcv[data-stale="true"]), para que signifique lo mismo en las dos
+   pantallas. */
+.cli-stat[data-stale="true"] {
+  border-color: rgba(231, 154, 36, 0.45);
+  background: rgba(231, 154, 36, 0.14);
+}
+
+.cli-stat[data-stale="true"] .cli-stat-value,
+.cli-stat[data-stale="true"] .cli-stat-note {
+  color: var(--lm-wait-ink);
+}
+
 .cli-columns {
   display: grid;
   grid-template-columns: minmax(0, 1fr) minmax(0, 1.15fr);

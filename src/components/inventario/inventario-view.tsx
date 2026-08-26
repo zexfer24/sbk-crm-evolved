@@ -17,6 +17,7 @@ import { initials } from "@/lib/dashboard";
 import { AppRail, AppTopNav } from "@/components/app-rail";
 import { UrlSearchBox } from "@/components/url-search-box";
 import { ProductoFila } from "@/components/inventario/producto-fila";
+import type { BcvRateSummary } from "@/components/inbox/bcv-rate-chip";
 import "@/components/dashboard/dashboard.css";
 import "@/components/agent-control/agent-control.css";
 import "@/components/crm.css";
@@ -25,6 +26,28 @@ import "@/components/inventario/inventario.css";
 
 const FILTERS: InventoryFilter[] = ["todos", "agotados", "bajo-stock", "inactivos"];
 const SORTS: InventorySort[] = ["nombre", "stock", "precio"];
+
+/**
+ * Qué dice la tarjeta de la tasa debajo del número.
+ *
+ * Siempre lleva la fecha, y avisa cuando el BCV no contestó. Antes decía solo
+ * "Con la que se calculan los bolívares" sobre un número sin fecha: el CRM pasó
+ * tres días cotizando con una tasa vieja y esta pantalla lo mostraba como si
+ * nada.
+ */
+function rateNote(bcvRate: BcvRateSummary | null): string {
+  if (!bcvRate) return "Sin tasa disponible ahora mismo: los precios van solo en dólares.";
+
+  // Mediodía UTC para que el día no se corra al formatear en otra zona.
+  const day = new Date(`${bcvRate.rateDate}T12:00:00Z`).toLocaleDateString("es-VE", {
+    day: "numeric",
+    month: "short",
+  });
+
+  return bcvRate.isStale
+    ? `Del ${day}. No se pudo consultar al BCV: los bolívares pueden estar desactualizados.`
+    : `Del ${day}. Con la que se calculan los bolívares.`;
+}
 
 /** Bajo un filtro, "no hay repuestos" sería falso: lo que no hay es repuestos en ese estado. */
 const EMPTY_BY_FILTER: Record<InventoryFilter, { title: string; hint: string }> = {
@@ -53,7 +76,8 @@ interface InventarioViewProps {
   totals: InventoryTotals;
   catalog: MotoCatalogSummary;
   params: InventoryParams;
-  bcvRate: number;
+  /** Null cuando no hay ninguna tasa: el inventario abre igual, solo en dólares. */
+  bcvRate: BcvRateSummary | null;
 }
 
 export function InventarioView({
@@ -65,6 +89,9 @@ export function InventarioView({
   params,
   bcvRate,
 }: InventarioViewProps) {
+  // Cero significa "sin tasa" para el cálculo de precios: `priceInBs` ya lo
+  // trata así y deja la fila en dólares.
+  const rate = bcvRate?.rate ?? 0;
   const pages = inventoryTotalPages(total);
   const desde = total === 0 ? 0 : (params.page - 1) * INVENTORY_PAGE_SIZE + 1;
   const hasta = Math.min(params.page * INVENTORY_PAGE_SIZE, total);
@@ -132,12 +159,13 @@ export function InventarioView({
                 <span className="lm-num cli-stat-value">{totals.bajos}</span>
                 <span className="cli-stat-note">Quedan pocas unidades.</span>
               </div>
-              <div className="cli-stat">
+              {/* La fecha va pegada al número a propósito: con esta tasa se
+                  calculan precios, y una tasa de hace tres días se ve idéntica
+                  a la de hoy si solo se muestra el número. */}
+              <div className="cli-stat" data-stale={bcvRate?.isStale ? "true" : undefined}>
                 <span className="lm-eyebrow">Tasa BCV</span>
-                <span className="lm-num cli-stat-value">{bcvRate > 0 ? bcvRate.toFixed(2) : "—"}</span>
-                <span className="cli-stat-note">
-                  {bcvRate > 0 ? "Con la que se calculan los bolívares." : "Sin tasa disponible ahora mismo."}
-                </span>
+                <span className="lm-num cli-stat-value">{bcvRate ? bcvRate.rate.toFixed(2) : "—"}</span>
+                <span className="cli-stat-note">{rateNote(bcvRate)}</span>
               </div>
             </div>
 
@@ -196,7 +224,7 @@ export function InventarioView({
               ) : (
                 <ul className="inv-list">
                   {products.map((product) => (
-                    <ProductoFila key={product.id} product={product} bcvRate={bcvRate} />
+                    <ProductoFila key={product.id} product={product} bcvRate={rate} />
                   ))}
                 </ul>
               )}
