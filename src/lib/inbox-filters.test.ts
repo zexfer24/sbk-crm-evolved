@@ -19,6 +19,8 @@ function conversation(over: {
   manuallyUnread?: boolean;
   assignedAgent?: Agent | null;
   lastMessageAt?: string | null;
+  lastCustomerMessageAt?: string | null;
+  status?: Conversation["status"];
   tags?: Tag[];
 }): Conversation {
   return {
@@ -26,9 +28,12 @@ function conversation(over: {
     unreadCount: over.unreadCount ?? 0,
     manuallyUnread: over.manuallyUnread ?? false,
     assignedAgent: over.assignedAgent ?? null,
+    status: over.status ?? "open",
     // Ojo: `?? default` convertiría un null explícito en fecha. Acá null
     // significa "esta conversación nunca tuvo un mensaje".
     lastMessageAt: "lastMessageAt" in over ? over.lastMessageAt : "2026-08-22T10:00:00Z",
+    lastCustomerMessageAt:
+      "lastCustomerMessageAt" in over ? over.lastCustomerMessageAt : null,
     contact: {
       id: `c-${over.id}`,
       phoneNumber: "+58000",
@@ -47,15 +52,21 @@ function conversation(over: {
 
 describe("filtersForRole", () => {
   it("le da al administrador los filtros de toda la bandeja", () => {
-    expect(filtersForRole("admin")).toEqual(["all", "unread", "unassigned", "assigned"]);
+    expect(filtersForRole("admin")).toEqual([
+      "all",
+      "unanswered",
+      "unread",
+      "unassigned",
+      "assigned",
+    ]);
   });
 
   it("trata al supervisor como administrador", () => {
     expect(filtersForRole("supervisor")).toEqual(filtersForRole("admin"));
   });
 
-  it("al asesor solo le ofrece lo suyo", () => {
-    expect(filtersForRole("agent")).toEqual(["all", "mine", "mine-unread"]);
+  it("al asesor le ofrece lo suyo y el trabajo libre que nadie contestó", () => {
+    expect(filtersForRole("agent")).toEqual(["all", "unanswered", "mine", "mine-unread"]);
   });
 
   it("cada filtro tiene etiqueta", () => {
@@ -110,6 +121,101 @@ describe("applyInboxFilters — filtro por bandeja", () => {
 
   it("'mine-unread' cruza dueño y no leídas", () => {
     expect(ids("mine-unread")).toEqual(["de-ana-no-leida"]);
+  });
+});
+
+/**
+ * El corte que busca trabajo que se puede agarrar ahora mismo: nadie lo
+ * contestó y nadie lo tomó. Es el único de la bandeja del asesor que no habla
+ * de lo suyo, justamente porque sirve para elegir el próximo chat.
+ */
+describe("applyInboxFilters — 'unanswered'", () => {
+  const CLIENTE_HABLÓ = "2026-08-22T10:00:00Z";
+  const NOSOTROS_DESPUÉS = "2026-08-22T11:00:00Z";
+
+  function ids(todas: Conversation[]) {
+    return applyInboxFilters(todas, {
+      filter: "unanswered",
+      search: "",
+      tagId: null,
+      sort: "recent",
+      viewer: ANA,
+    }).map((c) => c.id);
+  }
+
+  it("deja la libre cuyo último mensaje sigue siendo del cliente", () => {
+    const libre = conversation({
+      id: "libre",
+      lastCustomerMessageAt: CLIENTE_HABLÓ,
+      lastMessageAt: CLIENTE_HABLÓ,
+    });
+
+    expect(ids([libre])).toEqual(["libre"]);
+  });
+
+  it("descarta la que ya tiene asesor, aunque nadie le haya contestado", () => {
+    const tomada = conversation({
+      id: "tomada",
+      assignedAgent: BETO,
+      lastCustomerMessageAt: CLIENTE_HABLÓ,
+      lastMessageAt: CLIENTE_HABLÓ,
+    });
+
+    expect(ids([tomada])).toEqual([]);
+  });
+
+  it("descarta la libre que ya fue contestada: el último mensaje es nuestro", () => {
+    const contestada = conversation({
+      id: "contestada",
+      lastCustomerMessageAt: CLIENTE_HABLÓ,
+      lastMessageAt: NOSOTROS_DESPUÉS,
+    });
+
+    expect(ids([contestada])).toEqual([]);
+  });
+
+  it("descarta la cerrada: un hilo cerrado no es trabajo pendiente", () => {
+    const cerrada = conversation({
+      id: "cerrada",
+      status: "closed",
+      lastCustomerMessageAt: CLIENTE_HABLÓ,
+      lastMessageAt: CLIENTE_HABLÓ,
+    });
+
+    expect(ids([cerrada])).toEqual([]);
+  });
+
+  it("descarta la que nunca recibió un mensaje del cliente: no hay nada que contestar", () => {
+    const muda = conversation({ id: "muda", lastCustomerMessageAt: null });
+
+    expect(ids([muda])).toEqual([]);
+  });
+
+  /**
+   * El hilo abierto por una plantilla saliente que el cliente todavía no
+   * contestó tampoco entra: `lastMessageAt` null con un mensaje del cliente
+   * registrado es la conversación recién creada por el webhook, y ahí sí
+   * estamos en deuda.
+   */
+  it("cuenta como sin contestar el hilo entrante que aún no tiene último mensaje", () => {
+    const reciénLlegada = conversation({
+      id: "recien",
+      lastCustomerMessageAt: CLIENTE_HABLÓ,
+      lastMessageAt: null,
+    });
+
+    expect(ids([reciénLlegada])).toEqual(["recien"]);
+  });
+
+  it("no le importa si está leída o no: leerla no es contestarla", () => {
+    const leída = conversation({
+      id: "leida",
+      unreadCount: 0,
+      lastCustomerMessageAt: CLIENTE_HABLÓ,
+      lastMessageAt: CLIENTE_HABLÓ,
+    });
+
+    expect(ids([leída])).toEqual(["leida"]);
   });
 });
 

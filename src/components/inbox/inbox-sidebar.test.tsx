@@ -1,6 +1,7 @@
-import { describe, expect, it, vi } from "vitest";
-import { render, screen, fireEvent, within } from "@testing-library/react";
+import { describe, expect, it, vi, beforeEach } from "vitest";
+import { render, screen, fireEvent, within, waitFor } from "@testing-library/react";
 import type { Agent, Conversation, Tag } from "@/lib/types";
+import { fetchConversations } from "@/lib/data";
 import { InboxSidebar } from "@/components/inbox/inbox-sidebar";
 
 // La bandeja abre un cliente de Supabase para buscar dentro de los mensajes.
@@ -9,6 +10,17 @@ import { InboxSidebar } from "@/components/inbox/inbox-sidebar";
 vi.mock("@/lib/supabase/client", () => ({
   createClient: () => ({ rpc: vi.fn().mockResolvedValue({ data: [], error: null }) }),
 }));
+
+// "Sin contestar" le pregunta a la base por el conjunto entero, no a la ventana
+// cargada. Acá se controla qué contesta esa consulta.
+vi.mock("@/lib/data", () => ({
+  fetchConversations: vi.fn().mockResolvedValue([]),
+  searchConversationSummaries: vi.fn().mockResolvedValue([]),
+}));
+
+beforeEach(() => {
+  vi.mocked(fetchConversations).mockReset().mockResolvedValue([]);
+});
 
 const TAG_VIP: Tag = { id: "t-vip", label: "VIP", color: "accent" };
 const TAG_MOROSO: Tag = { id: "t-moroso", label: "Moroso", color: "danger" };
@@ -26,10 +38,14 @@ function conversation(over: {
   unreadCount?: number;
   manuallyUnread?: boolean;
   assignedAgent?: Agent | null;
+  lastCustomerMessageAt?: string | null;
+  status?: Conversation["status"];
   tags?: Tag[];
 }): Conversation {
   return {
     id: over.id,
+    status: over.status ?? "open",
+    lastCustomerMessageAt: over.lastCustomerMessageAt ?? null,
     contact: {
       id: `c-${over.id}`,
       phoneNumber: "+58 412 000 0000",
@@ -54,9 +70,21 @@ function conversation(over: {
   } as unknown as Conversation;
 }
 
+/**
+ * El helper fija `lastMessageAt` en esta fecha. Pasar la misma como último
+ * mensaje del cliente es decir "el último mensaje del hilo es suyo": nadie
+ * contestó.
+ */
+const ESPERANDO = "2026-08-22T10:00:00Z";
+
 const CONVERSATIONS = [
   conversation({ id: "sin-duena", unreadCount: 2, tags: [TAG_VIP] }),
-  conversation({ id: "de-ana", assignedAgent: ANA, tags: [TAG_MOROSO] }),
+  conversation({
+    id: "de-ana",
+    assignedAgent: ANA,
+    tags: [TAG_MOROSO],
+    lastCustomerMessageAt: ESPERANDO,
+  }),
   conversation({ id: "de-ana-sin-leer", assignedAgent: ANA, unreadCount: 1 }),
 ];
 
@@ -97,12 +125,96 @@ function pillLabels(): string[] {
 describe("InboxSidebar — qué filtros ve cada rol", () => {
   it("al administrador le ofrece los cortes de toda la bandeja", () => {
     renderSidebar(JEFA);
-    expect(pillLabels()).toEqual(["Todos", "Sin leer", "Sin asignar", "Asignados"]);
+    expect(pillLabels()).toEqual([
+      "Todos",
+      "Sin contestar",
+      "Sin leer",
+      "Sin asignar",
+      "Asignados",
+    ]);
   });
 
-  it("al asesor solo le ofrece lo suyo, sin los cortes de administración", () => {
+  it("al asesor le ofrece lo suyo y el trabajo libre, sin los cortes de administración", () => {
     renderSidebar(ANA);
-    expect(pillLabels()).toEqual(["Todos", "Míos", "Míos sin leer"]);
+    expect(pillLabels()).toEqual(["Todos", "Sin contestar", "Míos", "Míos sin leer"]);
+  });
+});
+
+/**
+ * El punto entero del filtro: encontrar el chat libre que nadie contestó,
+ * esté o no en las 30 filas que la bandeja tiene cargadas. Filtrar en memoria
+ * escondería justo al que se busca — el viejo, el que lleva días esperando.
+ */
+describe("InboxSidebar — 'Sin contestar' sale a buscar a la base", () => {
+  function elegirSinContestar() {
+    const filtros = screen.getByRole("group", { name: "Filtrar conversaciones" });
+    fireEvent.click(within(filtros).getAllByRole("button", { name: "Sin contestar" })[0]);
+  }
+
+  it("trae el chat libre sin contestar que no estaba en la ventana cargada", async () => {
+    const viejo = conversation({ id: "olvidado", lastCustomerMessageAt: ESPERANDO });
+    vi.mocked(fetchConversations).mockResolvedValue([viejo]);
+
+    const { container } = renderSidebar(JEFA);
+    elegirSinContestar();
+
+    await waitFor(() => expect(visibleIds(container)).toEqual(["olvidado"]));
+    expect(fetchConversations).toHaveBeenCalledWith(expect.anything(), {
+      activeOnly: true,
+      unassignedOnly: true,
+      awaitingReplyOnly: true,
+    });
+  });
+
+  it("no consulta mientras el filtro no está elegido", () => {
+    renderSidebar(JEFA);
+    expect(fetchConversations).not.toHaveBeenCalled();
+  });
+
+  /**
+   * Lo que llega de la base es una foto; lo cargado está vivo por realtime. Si
+   * alguien toma el chat mientras la lista está abierta, la fila viva manda y
+   * la conversación sale del filtro sola.
+   */
+  it("la fila cargada le gana a la que trajo la consulta", async () => {
+    // La base la devolvió libre, pero para cuando llegó la respuesta Ana ya la
+    // había tomado y realtime actualizó la fila cargada. Manda esa: si ganara
+    // la foto de la base, "de-ana" aparecería en la lista.
+    const fotoVieja = conversation({ id: "de-ana", lastCustomerMessageAt: ESPERANDO });
+    vi.mocked(fetchConversations).mockResolvedValue([fotoVieja]);
+
+    const { container } = renderSidebar(JEFA);
+    elegirSinContestar();
+
+    await waitFor(() => expect(fetchConversations).toHaveBeenCalled());
+    expect(visibleIds(container)).toEqual([]);
+  });
+
+  /** Con el conjunto entero ya en pantalla, ofrecer "cargar más" es mentir. */
+  it("no ofrece cargar más: la consulta ya trajo todo lo que hay", async () => {
+    vi.mocked(fetchConversations).mockResolvedValue([
+      conversation({ id: "olvidado", lastCustomerMessageAt: ESPERANDO }),
+    ]);
+
+    render(
+      <InboxSidebar
+        conversations={CONVERSATIONS}
+        selectedId={null}
+        onSelect={() => {}}
+        currentAgent={JEFA}
+        allTags={ALL_TAGS}
+        bcvRate={null}
+        hasMore
+        onLoadMore={() => {}}
+      />
+    );
+
+    expect(screen.getByRole("button", { name: /cargar más/i })).toBeTruthy();
+    elegirSinContestar();
+
+    await waitFor(() =>
+      expect(screen.queryByRole("button", { name: /cargar más/i })).toBeNull()
+    );
   });
 });
 

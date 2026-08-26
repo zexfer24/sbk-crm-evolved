@@ -1,5 +1,5 @@
 import type { Agent, AgentRole, ConversationSummary, InboxFilter, InboxSort } from "@/lib/types";
-import { contactName } from "@/lib/dashboard";
+import { awaitingReply, contactName } from "@/lib/dashboard";
 import { normalizeForSearch } from "@/lib/message-search";
 
 /**
@@ -8,9 +8,15 @@ import { normalizeForSearch } from "@/lib/message-search";
  * El administrador supervisa el trabajo de todos, así que necesita cortes por
  * estado global: qué falta por leer, qué no tiene dueño, qué ya está repartido.
  * El asesor no administra a nadie — sus cortes son sobre lo suyo.
+ *
+ * `unanswered` es la excepción y va en las dos listas: no es un corte de
+ * supervisión ni de propiedad sino la pila de la que se agarra el próximo
+ * chat, y eso le sirve igual al que reparte que al que atiende. Va segundo
+ * porque se usa como se usa "Todos" —para elegir qué abrir—, no al final
+ * junto a los cortes de administración.
  */
-const ADMIN_FILTERS: InboxFilter[] = ["all", "unread", "unassigned", "assigned"];
-const AGENT_FILTERS: InboxFilter[] = ["all", "mine", "mine-unread"];
+const ADMIN_FILTERS: InboxFilter[] = ["all", "unanswered", "unread", "unassigned", "assigned"];
+const AGENT_FILTERS: InboxFilter[] = ["all", "unanswered", "mine", "mine-unread"];
 
 export function filtersForRole(role: AgentRole): InboxFilter[] {
   return role === "agent" ? AGENT_FILTERS : ADMIN_FILTERS;
@@ -18,6 +24,9 @@ export function filtersForRole(role: AgentRole): InboxFilter[] {
 
 export const INBOX_FILTER_LABELS: Record<InboxFilter, string> = {
   all: "Todos",
+  // Sin el "Todos" delante: al lado de "Sin leer" y "Sin asignar" no agrega
+  // significado, y la bandeja mide 316px — cinco píldoras ya van al límite.
+  unanswered: "Sin contestar",
   unread: "Sin leer",
   unassigned: "Sin asignar",
   assigned: "Asignados",
@@ -59,6 +68,16 @@ function matchesFilter(conversation: ConversationSummary, filter: InboxFilter, v
       return conversation.assignedAgent === null;
     case "assigned":
       return conversation.assignedAgent !== null;
+    // Trabajo que se puede agarrar ahora mismo: nadie contestó y nadie lo
+    // tomó. Se vuelve a comprobar acá aunque la base ya haya filtrado, porque
+    // la lista mezcla filas de la consulta con filas vivas de la bandeja: si
+    // alguien toma el chat mientras la lista está abierta, sale solo.
+    case "unanswered":
+      return (
+        conversation.assignedAgent === null &&
+        conversation.status !== "closed" &&
+        awaitingReply(conversation)
+      );
     case "mine":
       return isMine;
     case "mine-unread":

@@ -19,6 +19,9 @@ function makeRow(index: number) {
   return {
     id: `conv-${index}`,
     status: "open" as const,
+    assigned_agent_id: null as string | null,
+    // Columna generada: la calcula Postgres a partir de los dos timestamps.
+    awaiting_reply: false,
     unread_count: 0,
     ai_enabled: true,
     deal_status: null,
@@ -75,6 +78,16 @@ function createFakeSupabase(rows: ReturnType<typeof makeRow>[]) {
       neq(column: string, value: unknown) {
         filters.push({ op: "neq", column, value });
         return builder(current.filter((row) => (row as Record<string, unknown>)[column] !== value));
+      },
+      eq(column: string, value: unknown) {
+        filters.push({ op: "eq", column, value });
+        return builder(current.filter((row) => (row as Record<string, unknown>)[column] === value));
+      },
+      is(column: string, value: unknown) {
+        filters.push({ op: "is", column, value });
+        return builder(
+          current.filter((row) => ((row as Record<string, unknown>)[column] ?? null) === value)
+        );
       },
       in(column: string, values: unknown[]) {
         filters.push({ op: "in", column, value: values });
@@ -220,6 +233,31 @@ describe("fetchConversations", () => {
 
     expect(selects[0]).toContain("contact_tags");
     expect(selects[0]).toContain("last_message_preview");
+  });
+
+  /**
+   * El filtro "Sin contestar" no puede resolverse sobre la ventana cargada: el
+   * chat libre que nadie contestó hace tres semanas está cientos de filas más
+   * abajo, y filtrar 30 filas en el navegador lo escondería justo a él. Los
+   * tres cortes viajan a la base, que los resuelve con un índice parcial.
+   */
+  it("con los cortes de 'sin contestar' pregunta por los tres a la base", async () => {
+    const rows = Array.from({ length: 6 }, (_, i) => makeRow(i));
+    rows[0] = { ...rows[0], awaiting_reply: true };
+    rows[1] = { ...rows[1], awaiting_reply: true, assigned_agent_id: "ana" };
+    rows[2] = { ...rows[2], awaiting_reply: true, status: "closed" as never };
+    const { client, filters } = createFakeSupabase(rows);
+
+    const result = await fetchConversations(client, {
+      activeOnly: true,
+      unassignedOnly: true,
+      awaitingReplyOnly: true,
+    });
+
+    expect(filters).toContainEqual({ op: "eq", column: "awaiting_reply", value: true });
+    expect(filters).toContainEqual({ op: "is", column: "assigned_agent_id", value: null });
+    expect(filters).toContainEqual({ op: "neq", column: "status", value: "closed" });
+    expect(result.map((c) => c.id)).toEqual(["conv-0"]);
   });
 
   /**

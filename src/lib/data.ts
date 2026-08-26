@@ -508,7 +508,9 @@ export interface FetchConversationsOptions {
    *
    * Sin tope se recorre lo que el filtro deje pasar, así que toda llamada
    * sin `limit` debe acotar por otro lado: `activeOnly` (el trabajo vivo,
-   * que no crece con el histórico) o `contactIds`/`ids` (una lista concreta).
+   * que no crece con el histórico), `unassignedOnly`/`awaitingReplyOnly`
+   * (subconjuntos suyos, más chicos todavía) o `contactIds`/`ids` (una lista
+   * concreta).
    */
   limit?: number;
   /**
@@ -521,6 +523,15 @@ export interface FetchConversationsOptions {
   offset?: number;
   /** Solo lo que no está cerrado: el tablero y el roster miran el trabajo vivo. */
   activeOnly?: boolean;
+  /** Solo las que no tiene nadie: el trabajo libre, disponible para agarrar. */
+  unassignedOnly?: boolean;
+  /**
+   * Solo aquellas cuyo último mensaje sigue siendo del cliente.
+   *
+   * Se apoya en la columna generada `awaiting_reply`: la condición compara dos
+   * columnas de la misma fila y PostgREST solo filtra contra literales.
+   */
+  awaitingReplyOnly?: boolean;
   /** Solo las conversaciones de estos contactos (los reclamos, una búsqueda). */
   contactIds?: string[];
   /** Solo estas conversaciones (las coincidencias de la búsqueda por mensaje). */
@@ -534,7 +545,15 @@ export interface FetchConversationsOptions {
 async function fetchConversationRows<Raw>(
   supabase: SupabaseClient,
   select: string,
-  { limit, offset = 0, activeOnly, contactIds, ids }: FetchConversationsOptions
+  {
+    limit,
+    offset = 0,
+    activeOnly,
+    unassignedOnly,
+    awaitingReplyOnly,
+    contactIds,
+    ids,
+  }: FetchConversationsOptions
 ): Promise<Raw[]> {
   // `.in()` con lista vacía no es una consulta válida en PostgREST, y acá
   // además significa «nada que buscar»: no hay filas que devolver.
@@ -554,6 +573,8 @@ async function fetchConversationRows<Raw>(
       .order("last_message_at", { ascending: false, nullsFirst: false });
 
     if (activeOnly) request = request.neq("status", "closed");
+    if (unassignedOnly) request = request.is("assigned_agent_id", null);
+    if (awaitingReplyOnly) request = request.eq("awaiting_reply", true);
     if (contactIds) request = request.in("contact_id", contactIds);
     if (ids) request = request.in("id", ids);
 

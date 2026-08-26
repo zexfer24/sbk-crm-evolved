@@ -323,11 +323,20 @@ export interface KnowledgeEntry {
 }
 
 /**
- * Cortes de la bandeja. Los tres primeros son de administración (miran el
- * trabajo de todo el equipo); los dos últimos son del asesor sobre lo suyo.
+ * Cortes de la bandeja. `unread`, `unassigned` y `assigned` son de
+ * administración (miran el trabajo de todo el equipo); `mine` y `mine-unread`
+ * son del asesor sobre lo suyo. `unanswered` —libre y sin contestar— es el
+ * único que ven los dos: es de dónde se saca el próximo chat.
  * `filtersForRole` decide cuáles se ofrecen a quién.
  */
-export type InboxFilter = "all" | "unread" | "unassigned" | "assigned" | "mine" | "mine-unread";
+export type InboxFilter =
+  | "all"
+  | "unanswered"
+  | "unread"
+  | "unassigned"
+  | "assigned"
+  | "mine"
+  | "mine-unread";
 
 export type InboxSort = "recent" | "oldest";
 

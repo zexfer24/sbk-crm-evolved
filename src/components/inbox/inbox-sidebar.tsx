@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { ArrowDownWideNarrow, ArrowUpWideNarrow, Search } from "lucide-react";
 import type { Agent, ConversationSummary, InboxFilter, InboxSort, Tag } from "@/lib/types";
-import { searchConversationSummaries } from "@/lib/data";
+import { fetchConversations, searchConversationSummaries } from "@/lib/data";
 import { initials } from "@/lib/dashboard";
 import {
   applyInboxFilters,
@@ -147,13 +147,66 @@ export function InboxSidebar({
   const searchIsCurrent = hitState.query === trimmedSearch;
   const messageHits = searchIsCurrent ? hitState.hits : SIN_COINCIDENCIAS;
 
-  // Lo cargado manda: sus filas están al día por realtime. Lo remoto solo
-  // aporta las conversaciones que la ventana no tiene.
+  /**
+   * "Sin contestar" es el único corte que no se puede resolver sobre la
+   * ventana cargada. La bandeja tiene 30 filas en memoria y arriba están las
+   * que se movieron hace poco; este filtro busca lo contrario —el chat que
+   * lleva días quieto porque nadie lo tocó—, así que justo lo que interesa
+   * queda fuera de la ventana. El conjunto se le pide entero a la base.
+   */
+  const resolvedOnServer = filter === "unanswered";
+
+  /**
+   * Lo que contestó la base. Null mientras no se pidió nunca; al volver al
+   * filtro se conserva lo anterior hasta que llegue lo nuevo, para no vaciar
+   * la lista en el camino.
+   */
+  const [serverRows, setServerRows] = useState<ConversationSummary[] | null>(null);
+
+  useEffect(() => {
+    if (!resolvedOnServer) return;
+
+    // Mismo motivo que en la búsqueda: lo que hay que evitar no es que la
+    // respuesta llegue, sino que una vieja pise a una nueva.
+    let cancelled = false;
+    (async () => {
+      // Sin `limit` a propósito: las tres condiciones ya acotan la consulta a
+      // la pila de trabajo libre pendiente, que no crece con el histórico.
+      const rows = await fetchConversations(supabase, {
+        activeOnly: true,
+        unassignedOnly: true,
+        awaitingReplyOnly: true,
+      });
+      if (!cancelled) setServerRows(rows);
+    })().catch(() => {
+      // Si la consulta falla, el filtro sigue valiendo sobre lo cargado: se
+      // verán menos chats, no ninguno.
+      if (!cancelled) setServerRows([]);
+    });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [supabase, resolvedOnServer]);
+
+  // Lo cargado manda: sus filas están al día por realtime. Lo de la base solo
+  // aporta las conversaciones que la ventana no tiene —las viejas, que son
+  // justo las que estos dos caminos buscan—.
   const searchableConversations = useMemo(() => {
-    if (!searchIsCurrent || hitState.remote.length === 0) return conversations;
-    const loaded = new Set(conversations.map((c) => c.id));
-    return [...conversations, ...hitState.remote.filter((c) => !loaded.has(c.id))];
-  }, [conversations, searchIsCurrent, hitState.remote]);
+    const extra: ConversationSummary[] = [];
+    if (searchIsCurrent) extra.push(...hitState.remote);
+    if (resolvedOnServer && serverRows) extra.push(...serverRows);
+    if (extra.length === 0) return conversations;
+
+    const seen = new Set(conversations.map((c) => c.id));
+    const merged = [...conversations];
+    for (const conversation of extra) {
+      if (seen.has(conversation.id)) continue;
+      seen.add(conversation.id);
+      merged.push(conversation);
+    }
+    return merged;
+  }, [conversations, searchIsCurrent, hitState.remote, resolvedOnServer, serverRows]);
 
   const filterItems = useMemo(
     () => availableFilters.map((value) => ({ value, label: INBOX_FILTER_LABELS[value] })),
@@ -205,15 +258,21 @@ export function InboxSidebar({
   const unreadGroup = isSplit ? filtered.filter((c) => c.unreadCount > 0) : [];
   const readGroup = isSplit ? filtered.filter((c) => c.unreadCount === 0) : [];
 
-  // Pide la siguiente página al acercarse al fondo. Solo sin búsqueda activa:
-  // buscando, el fondo de la lista son los resultados, no el histórico.
+  /**
+   * Bajar por la bandeja solo pagina cuando lo que se ve es la bandeja.
+   * Buscando, el fondo de la lista son los resultados; en un filtro que
+   * resuelve la base, es el conjunto entero. En los dos casos pedir la página
+   * siguiente del histórico traería filas que el filtro va a descartar.
+   */
+  const paginates = Boolean(onLoadMore) && !trimmedSearch && !resolvedOnServer;
+
   const handleListScroll = useCallback(
     (event: React.UIEvent<HTMLDivElement>) => {
-      if (!onLoadMore || !hasMore || loadingMore || trimmedSearch) return;
+      if (!paginates || !hasMore || loadingMore) return;
       const el = event.currentTarget;
-      if (el.scrollHeight - el.scrollTop - el.clientHeight < 200) onLoadMore();
+      if (el.scrollHeight - el.scrollTop - el.clientHeight < 200) onLoadMore?.();
     },
-    [onLoadMore, hasMore, loadingMore, trimmedSearch]
+    [paginates, onLoadMore, hasMore, loadingMore]
   );
 
   function renderItems(list: ConversationSummary[]) {
@@ -319,13 +378,17 @@ export function InboxSidebar({
               ? "Ninguna conversación coincide con esa búsqueda, ni por contacto ni por lo que se habló."
               : activeTagId
                 ? "Ninguna conversación tiene esa categoría."
-                : "No hay conversaciones en este filtro."}
+                : // Sin esto, mientras la consulta viaja la bandeja afirmaría
+                  // que no hay nada — y suele haber.
+                  resolvedOnServer && serverRows === null
+                  ? "Buscando…"
+                  : "No hay conversaciones en este filtro."}
           </p>
         )}
 
         {/* Red de seguridad del scroll: si la lista filtrada quedó corta y no
             genera desplazamiento, el botón sigue ofreciendo el resto. */}
-        {hasMore && onLoadMore && !trimmedSearch && (
+        {hasMore && paginates && (
           <button
             type="button"
             className="crm-pill crm-load-more"
