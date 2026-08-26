@@ -2,7 +2,7 @@ import "server-only";
 import { generateObject, type LanguageModelUsage, type ModelMessage } from "ai";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import type { Database } from "@/lib/supabase/database.types";
-import type { Playbook, PlaybookAfterSend, PlaybookAttachmentType } from "@/lib/types";
+import type { Playbook, PlaybookAfterSend, PlaybookAttachmentType, Tag, TagColor } from "@/lib/types";
 import { getAgentModel } from "@/lib/ai/model";
 
 // ---------------------------------------------------------------------------
@@ -28,10 +28,24 @@ export interface PlaybookMatch {
   usage: LanguageModelUsage;
 }
 
+/** Fila de `ai_playbook_tags` con su etiqueta embebida, tal como llega de PostgREST. */
+interface RawPlaybookTag {
+  tag: { id: string; label: string; color: string } | null;
+}
+
+/**
+ * Las etiquetas viajan embebidas y no en una segunda consulta porque acá son
+ * unas pocas decenas de filas en total —los escenarios se cuentan con los
+ * dedos— y esto corre una vez por turno. El caso que obliga a separar (el
+ * lateral por fila sobre cientos de filas, ver CONVERSATION_BOARD_SELECT en
+ * src/lib/data.ts) no es este.
+ */
 export async function fetchActivePlaybooks(supabase: SupabaseClient<Database>): Promise<Playbook[]> {
   const { data, error } = await supabase
     .from("ai_playbooks")
-    .select("id, name, trigger_description, response_text, attachment_url, attachment_type, after_send, is_active")
+    .select(
+      "id, name, trigger_description, response_text, attachment_url, attachment_type, after_send, is_active, ai_playbook_tags(tag:tags(id, label, color))"
+    )
     .eq("is_active", true)
     .order("name");
 
@@ -41,7 +55,7 @@ export async function fetchActivePlaybooks(supabase: SupabaseClient<Database>): 
   }
 
   // Los CHECK de la tabla no viajan al tipo generado (llegan como `text`),
-  // pero garantizan que estos dos valores están dentro de la unión.
+  // pero garantizan que estos valores están dentro de la unión.
   return (data ?? []).map((row) => ({
     id: row.id,
     name: row.name,
@@ -51,7 +65,20 @@ export async function fetchActivePlaybooks(supabase: SupabaseClient<Database>): 
     attachmentType: row.attachment_type as PlaybookAttachmentType | null,
     afterSend: row.after_send as PlaybookAfterSend,
     isActive: row.is_active,
+    tags: playbookTags(row as unknown as { ai_playbook_tags: RawPlaybookTag[] | null }),
   }));
+}
+
+/**
+ * `tag` puede llegar en null si la etiqueta se borró entre la consulta y la
+ * respuesta. La clave foránea con cascada hace que esa fila desaparezca sola,
+ * así que es una carrera, no un estado guardado — se descarta y ya.
+ */
+function playbookTags(row: { ai_playbook_tags: RawPlaybookTag[] | null }): Tag[] {
+  return (row.ai_playbook_tags ?? [])
+    .map((link) => link.tag)
+    .filter((tag): tag is NonNullable<RawPlaybookTag["tag"]> => tag !== null)
+    .map((tag) => ({ id: tag.id, label: tag.label, color: tag.color as TagColor }));
 }
 
 function buildPrompt(playbooks: Playbook[]): string {

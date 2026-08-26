@@ -14,6 +14,8 @@ interface FakeState {
   historyOrderAscending: boolean | null;
   /** Claves encendidas en public.agent_tools. */
   enabledToolKeys: string[];
+  /** Qué devuelve el upsert de contact_tags. Sirve para probar que un fallo etiquetando no frena el turno. */
+  tagUpsertError: { message: string } | null;
 }
 
 const state: FakeState = {
@@ -23,9 +25,17 @@ const state: FakeState = {
   history: [],
   historyOrderAscending: null,
   enabledToolKeys: [],
+  tagUpsertError: null,
 };
 const conversationUpdates: Record<string, unknown>[] = [];
 const agentTurnInserts: Record<string, unknown>[] = [];
+const contactTagUpserts: { rows: unknown; options: unknown }[] = [];
+/**
+ * Bitácora del orden real de los tres pasos del escenario. El requisito no es
+ * solo que las tres cosas pasen: es que la etiqueta esté puesta ANTES de que
+ * el asesor reciba el caso.
+ */
+const pasos: string[] = [];
 
 function createFakeSupabase() {
   return {
@@ -85,6 +95,16 @@ function createFakeSupabase() {
           select: () => ({
             eq: async () => ({ data: state.enabledToolKeys.map((key) => ({ key })), error: null }),
           }),
+        };
+      }
+
+      if (table === "contact_tags") {
+        return {
+          upsert: (rows: unknown, options: unknown) => {
+            contactTagUpserts.push({ rows, options });
+            pasos.push("etiquetar");
+            return Promise.resolve({ data: null, error: state.tagUpsertError });
+          },
         };
       }
 
@@ -183,6 +203,7 @@ function playbook(overrides: Partial<Playbook> = {}): Playbook {
     attachmentType: null,
     afterSend: "wait",
     isActive: true,
+    tags: [],
     ...overrides,
   };
 }
@@ -204,8 +225,11 @@ beforeEach(() => {
   state.history = [{ sender_type: "customer", content: "hola quiero accesorios", is_internal_note: false }];
   state.historyOrderAscending = null;
   state.enabledToolKeys = ["buscar_repuesto", "buscar_historial_compras", "consultar_biblioteca"];
+  state.tagUpsertError = null;
   conversationUpdates.length = 0;
   agentTurnInserts.length = 0;
+  contactTagUpserts.length = 0;
+  pasos.length = 0;
   agentOptions.length = 0;
   vi.clearAllMocks();
   fetchActivePlaybooksMock.mockResolvedValue([]);
@@ -218,7 +242,13 @@ beforeEach(() => {
     text: "respuesta redactada por el modelo",
     usage: { inputTokens: 20, outputTokens: 8, totalTokens: 28 },
   });
-  escalateConversationMock.mockResolvedValue({ escalated: true, assignedAgentName: "María" });
+  sendPlaybookReplyMock.mockImplementation(async () => {
+    pasos.push("responder");
+  });
+  escalateConversationMock.mockImplementation(async () => {
+    pasos.push("escalar");
+    return { escalated: true, assignedAgentName: "María" };
+  });
 });
 
 describe("runAgentTurn — historial", () => {
@@ -361,6 +391,98 @@ describe("runAgentTurn — escenarios predeterminados", () => {
 
     expect(matchPlaybookMock).not.toHaveBeenCalled();
     expect(sendPlaybookReplyMock).not.toHaveBeenCalled();
+  });
+});
+
+describe("runAgentTurn — etiquetas del escenario", () => {
+  const ENVIO = { id: "tag-envio", label: "Envio", color: "accent" as const };
+  const PENDIENTE = { id: "tag-pendiente", label: "pendiente-venta", color: "warning" as const };
+
+  function conEtiquetas(tags: { id: string; label: string; color: "accent" | "warning" }[], afterSend: "wait" | "escalate" = "wait") {
+    const pb = playbook({ tags, afterSend });
+    fetchActivePlaybooksMock.mockResolvedValue([pb]);
+    matchPlaybookMock.mockResolvedValue({ playbook: pb, usage: NO_USAGE });
+    return pb;
+  }
+
+  it("etiqueta el contacto con todas las etiquetas del escenario", async () => {
+    conEtiquetas([ENVIO, PENDIENTE]);
+
+    await runAgentTurn("conv-1");
+
+    expect(contactTagUpserts).toHaveLength(1);
+    expect(contactTagUpserts[0].rows).toEqual([
+      { contact_id: "contact-1", tag_id: "tag-envio" },
+      { contact_id: "contact-1", tag_id: "tag-pendiente" },
+    ]);
+  });
+
+  /**
+   * El escenario puede dispararse muchas veces con el mismo contacto. Sin
+   * esto, cada repetición le pisaría la fecha a una etiqueta que ya estaba.
+   */
+  it("no pisa una etiqueta que el contacto ya tenía", async () => {
+    conEtiquetas([ENVIO]);
+
+    await runAgentTurn("conv-1");
+
+    expect(contactTagUpserts[0].options).toEqual({ ignoreDuplicates: true });
+  });
+
+  /**
+   * Lo pidió el cliente en estos términos: "etiquetar el chat antes de
+   * pasarlo a un asesor". Si el orden se invierte, el asesor abre el caso sin
+   * clasificar y lo ve cambiar después.
+   */
+  it("etiqueta ANTES de escalar, y ambas cosas después de responder", async () => {
+    conEtiquetas([ENVIO], "escalate");
+
+    await runAgentTurn("conv-1");
+
+    expect(pasos).toEqual(["responder", "etiquetar", "escalar"]);
+  });
+
+  it("un escenario en 'wait' también etiqueta: no hace falta que escale", async () => {
+    conEtiquetas([ENVIO], "wait");
+
+    await runAgentTurn("conv-1");
+
+    expect(pasos).toEqual(["responder", "etiquetar"]);
+    expect(escalateConversationMock).not.toHaveBeenCalled();
+  });
+
+  /** El escenario que existía antes de esta función tiene que seguir funcionando igual. */
+  it("un escenario sin etiquetas no toca contact_tags", async () => {
+    conEtiquetas([]);
+
+    await runAgentTurn("conv-1");
+
+    expect(contactTagUpserts).toHaveLength(0);
+    expect(sendPlaybookReplyMock).toHaveBeenCalledTimes(1);
+  });
+
+  /**
+   * El mensaje al cliente ya salió cuando esto corre. Un fallo etiquetando no
+   * puede impedir que el caso llegue a un humano — eso sería cambiar una
+   * marca de color por un cliente sin atender.
+   */
+  it("si el etiquetado falla, el escalamiento sigue adelante igual", async () => {
+    state.tagUpsertError = { message: "permiso denegado" };
+    conEtiquetas([ENVIO], "escalate");
+
+    await runAgentTurn("conv-1");
+
+    expect(escalateConversationMock).toHaveBeenCalledTimes(1);
+    expect(agentTurnInserts[0].action).toBe("escalated");
+  });
+
+  /** Un id en la bitácora no le dice nada a quien la lee: van los nombres. */
+  it("deja en la bitácora del turno qué etiquetas puso", async () => {
+    conEtiquetas([ENVIO, PENDIENTE]);
+
+    await runAgentTurn("conv-1");
+
+    expect(agentTurnInserts[0].summary).toContain("Etiquetas: Envio, pendiente-venta.");
   });
 });
 

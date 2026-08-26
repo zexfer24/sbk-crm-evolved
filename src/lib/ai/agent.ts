@@ -2,7 +2,7 @@ import "server-only";
 import { ToolLoopAgent, isStepCount, type LanguageModelUsage, type ModelMessage, type ToolSet } from "ai";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import type { Database } from "@/lib/supabase/database.types";
-import type { Playbook } from "@/lib/types";
+import type { Playbook, Tag } from "@/lib/types";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { classifyIntent, type Intent } from "@/lib/ai/classify";
 import { currentAgentModelLabel, getAgentModel } from "@/lib/ai/model";
@@ -14,6 +14,7 @@ import { escalateConversation } from "@/lib/ai/escalate";
 import { withConversationTurnLock } from "@/lib/ai/conversation-lock";
 import { fetchActivePlaybooks, matchPlaybook } from "@/lib/ai/playbooks";
 import { sendAgentText, sendPlaybookReply, type AgentConversation } from "@/lib/ai/send";
+import { log } from "@/lib/log";
 
 // ---------------------------------------------------------------------------
 // Orquestador del turno del agente. Tres fases, en orden:
@@ -155,9 +156,56 @@ async function logTurn(supabase: SupabaseClient<Database>, conversationId: strin
 }
 
 /**
+ * Aplica al contacto las etiquetas configuradas en el escenario.
+ *
+ * No lanza. Cuando esto corre, el mensaje al cliente YA salió: un fallo
+ * etiquetando no puede tumbar el turno ni, sobre todo, impedir que el caso
+ * llegue a un asesor. Pero sí queda registrado — que es exactamente lo que
+ * no hacía el etiquetado de reclamos de escalate.ts, donde una etiqueta que
+ * no aparecía se saltaba en silencio.
+ *
+ * `ignoreDuplicates` porque la etiqueta ya puesta se respeta: el escenario
+ * puede dispararse varias veces con el mismo contacto y no tiene sentido
+ * pisarle la fecha a una marca que ya estaba.
+ */
+async function applyPlaybookTags(
+  supabase: SupabaseClient<Database>,
+  conversationId: string,
+  contactId: string,
+  tags: Tag[]
+): Promise<void> {
+  if (tags.length === 0) return;
+
+  const { error } = await supabase
+    .from("contact_tags")
+    .upsert(
+      tags.map((tag) => ({ contact_id: contactId, tag_id: tag.id })),
+      { ignoreDuplicates: true }
+    );
+
+  if (error) {
+    log.error("escenario_etiquetado_fallido", {
+      conversationId,
+      tagIds: tags.map((tag) => tag.id).join(","),
+      detail: error.message,
+    });
+  }
+}
+
+/** Sufijo para la bitácora: qué quedó etiquetado, por nombre. Vacío si no había etiquetas. */
+function tagSummary(tags: Tag[]): string {
+  return tags.length === 0 ? "" : ` Etiquetas: ${tags.map((tag) => tag.label).join(", ")}.`;
+}
+
+/**
  * Ejecuta una respuesta predeterminada. No llama al modelo en ningún punto:
  * el texto sale tal cual está guardado. El modelo eligió CUÁL responder;
  * nunca CÓMO se redacta.
+ *
+ * El orden de los tres pasos —responder, etiquetar, escalar— no es
+ * indistinto. Etiquetar va ANTES de escalar para que el asesor abra el chat
+ * ya clasificado y no lo vea cambiar de color debajo del cursor; y va
+ * después de responder porque el cliente esperando es lo primero.
  */
 async function runPlaybook(
   supabase: SupabaseClient<Database>,
@@ -167,6 +215,10 @@ async function runPlaybook(
   customerMessage: string | null
 ): Promise<void> {
   await sendPlaybookReply(supabase, conversation, playbook);
+
+  // Se etiqueta siempre que el escenario responda, escale o no: un escenario
+  // que deja al cliente esperando también puede querer dejar marcado el caso.
+  await applyPlaybookTags(supabase, conversation.id, conversation.contact_id, playbook.tags);
 
   if (playbook.afterSend === "escalate") {
     const result = await escalateConversation(supabase, {
@@ -179,7 +231,7 @@ async function runPlaybook(
     await logTurn(supabase, conversation.id, {
       intent: null,
       action: "escalated",
-      summary: `Escenario "${playbook.name}" → ${result.assignedAgentName ?? "(sin asesor disponible)"}.`,
+      summary: `Escenario "${playbook.name}" → ${result.assignedAgentName ?? "(sin asesor disponible)"}.${tagSummary(playbook.tags)}`,
       tokens,
       playbookId: playbook.id,
       customerMessage,
@@ -195,7 +247,7 @@ async function runPlaybook(
   await logTurn(supabase, conversation.id, {
     intent: null,
     action: "answered",
-    summary: `Escenario "${playbook.name}".`,
+    summary: `Escenario "${playbook.name}".${tagSummary(playbook.tags)}`,
     tokens,
     playbookId: playbook.id,
     customerMessage,

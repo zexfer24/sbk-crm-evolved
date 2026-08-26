@@ -428,8 +428,8 @@ export async function deleteQuickReply(supabase: SupabaseClient, id: string) {
 // supervisores y admins: esto es lo que la IA le dice sola a los clientes.
 // ---------------------------------------------------------------------------
 
-/** Campos editables de un escenario. `id` e `isActive` se manejan aparte. */
-export type PlaybookDraft = Omit<Playbook, "id" | "isActive">;
+/** Campos editables de un escenario. `id` e `isActive` se manejan aparte, y las etiquetas viven en su propia tabla. */
+export type PlaybookDraft = Omit<Playbook, "id" | "isActive" | "tags">;
 
 function playbookRow(draft: PlaybookDraft) {
   return {

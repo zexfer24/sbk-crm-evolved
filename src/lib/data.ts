@@ -1185,10 +1185,11 @@ interface RawPlaybook {
   attachment_type: Playbook["attachmentType"];
   after_send: Playbook["afterSend"];
   is_active: boolean;
+  ai_playbook_tags: { tag: RawTag | null }[] | null;
 }
 
 const PLAYBOOK_COLUMNS =
-  "id, name, trigger_description, response_text, attachment_url, attachment_type, after_send, is_active";
+  "id, name, trigger_description, response_text, attachment_url, attachment_type, after_send, is_active, ai_playbook_tags(tag:tags(id, label, color))";
 
 function mapPlaybook(row: RawPlaybook): Playbook {
   return {
@@ -1200,6 +1201,12 @@ function mapPlaybook(row: RawPlaybook): Playbook {
     attachmentType: row.attachment_type,
     afterSend: row.after_send,
     isActive: row.is_active,
+    // `tag` en null es la carrera entre esta consulta y alguien borrando la
+    // etiqueta: la cascada se lleva la fila, así que no hay nada que mostrar.
+    tags: (row.ai_playbook_tags ?? [])
+      .map((link) => link.tag)
+      .filter((tag): tag is RawTag => tag !== null)
+      .map(mapTag),
   };
 }
 
@@ -1207,7 +1214,11 @@ function mapPlaybook(row: RawPlaybook): Playbook {
 export async function fetchPlaybooks(supabase: SupabaseClient): Promise<Playbook[]> {
   const { data, error } = await supabase.from("ai_playbooks").select(PLAYBOOK_COLUMNS).order("name");
   if (error) throw error;
-  return (data as RawPlaybook[]).map(mapPlaybook);
+  // El doble paso por `unknown` es el mismo de las otras lecturas con
+  // relación anidada de este archivo: PostgREST devuelve `tag` como objeto,
+  // pero el tipo generado infiere un arreglo para un embebido a través de
+  // una tabla puente. Ver `contact_tags(tag:tags(...))` en RawConversation.
+  return (data as unknown as RawPlaybook[]).map(mapPlaybook);
 }
 
 interface RawAgentTool {

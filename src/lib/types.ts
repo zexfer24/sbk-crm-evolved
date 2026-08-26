@@ -291,6 +291,15 @@ export interface Playbook {
   attachmentType: PlaybookAttachmentType | null;
   afterSend: PlaybookAfterSend;
   isActive: boolean;
+  /**
+   * Etiquetas que se aplican cuando este escenario responde, escale o no.
+   *
+   * Se llevan enteras y no como ids sueltos porque los dos lectores las
+   * necesitan escritas: el panel pinta la píldora con su color, y la
+   * bitácora del turno anota por nombre qué quedó etiquetado (un id en el
+   * registro no le dice nada a quien lo lee).
+   */
+  tags: Tag[];
 }
 
 /** Herramienta del agente de IA con su interruptor del panel. Las filas las siembran las migraciones. */

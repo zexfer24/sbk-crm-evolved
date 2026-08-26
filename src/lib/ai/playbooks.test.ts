@@ -29,6 +29,7 @@ function playbook(name: string, overrides: Partial<Playbook> = {}): Playbook {
     attachmentType: null,
     afterSend: "wait",
     isActive: true,
+    tags: [],
     ...overrides,
   };
 }
