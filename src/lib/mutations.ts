@@ -428,8 +428,14 @@ export async function deleteQuickReply(supabase: SupabaseClient, id: string) {
 // supervisores y admins: esto es lo que la IA le dice sola a los clientes.
 // ---------------------------------------------------------------------------
 
-/** Campos editables de un escenario. `id` e `isActive` se manejan aparte, y las etiquetas viven en su propia tabla. */
-export type PlaybookDraft = Omit<Playbook, "id" | "isActive" | "tags">;
+/**
+ * Campos editables de un escenario. `id` e `isActive` se manejan aparte.
+ *
+ * Las etiquetas entran como ids y no como `Tag[]`: la relación guarda ids, y
+ * pedirle al formulario que arrastre el nombre y el color de vuelta solo
+ * abriría la puerta a guardar un nombre que ya no es el de esa etiqueta.
+ */
+export type PlaybookDraft = Omit<Playbook, "id" | "isActive" | "tags"> & { tagIds: string[] };
 
 function playbookRow(draft: PlaybookDraft) {
   return {
@@ -442,14 +448,58 @@ function playbookRow(draft: PlaybookDraft) {
   };
 }
 
+/**
+ * Deja la relación de etiquetas igual a la del borrador, quitando lo que
+ * sobra y agregando lo que falta.
+ *
+ * El atajo obvio —borrar todas e insertarlas de nuevo— deja una ventana en la
+ * que el escenario no tiene ninguna, y si el insert falla ahí se queda: un
+ * escenario que responde sin etiquetar y nadie se entera hasta leer un caso
+ * mal clasificado. Calcular la diferencia no toca las filas que se quedan.
+ */
+async function syncPlaybookTags(supabase: SupabaseClient, playbookId: string, tagIds: string[]) {
+  const { data, error: readError } = await supabase
+    .from("ai_playbook_tags")
+    .select("tag_id")
+    .eq("playbook_id", playbookId);
+  if (readError) throw readError;
+
+  const actuales = new Set((data ?? []).map((row) => row.tag_id as string));
+  const pedidas = new Set(tagIds);
+
+  const sobran = [...actuales].filter((tagId) => !pedidas.has(tagId));
+  if (sobran.length > 0) {
+    const { error } = await supabase
+      .from("ai_playbook_tags")
+      .delete()
+      .eq("playbook_id", playbookId)
+      .in("tag_id", sobran);
+    if (error) throw error;
+  }
+
+  const faltan = tagIds.filter((tagId) => !actuales.has(tagId));
+  if (faltan.length > 0) {
+    const { error } = await supabase
+      .from("ai_playbook_tags")
+      .insert(faltan.map((tagId) => ({ playbook_id: playbookId, tag_id: tagId })));
+    if (error) throw error;
+  }
+}
+
 export async function createPlaybook(supabase: SupabaseClient, draft: PlaybookDraft) {
-  const { error } = await supabase.from("ai_playbooks").insert(playbookRow(draft));
+  const { data, error } = await supabase
+    .from("ai_playbooks")
+    .insert(playbookRow(draft))
+    .select("id")
+    .single();
   if (error) throw error;
+  await syncPlaybookTags(supabase, data.id as string, draft.tagIds);
 }
 
 export async function updatePlaybook(supabase: SupabaseClient, id: string, draft: PlaybookDraft) {
   const { error } = await supabase.from("ai_playbooks").update(playbookRow(draft)).eq("id", id);
   if (error) throw error;
+  await syncPlaybookTags(supabase, id, draft.tagIds);
 }
 
 export async function deletePlaybook(supabase: SupabaseClient, id: string) {

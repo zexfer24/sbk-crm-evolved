@@ -19,6 +19,7 @@ import type {
   ModelUsageSummary,
   Playbook,
   QuickReply,
+  Tag,
   TokenUsageSummary,
 } from "@/lib/types";
 import { createClient } from "@/lib/supabase/client";
@@ -84,6 +85,8 @@ interface AgentControlViewProps {
   initialAgentTools: AgentTool[];
   initialKnowledgeCategories: KnowledgeCategory[];
   initialKnowledgeEntries: KnowledgeEntry[];
+  /** Catálogo de etiquetas del CRM: lo elige el formulario de escenarios. */
+  initialTags: Tag[];
   modelLabel: string;
 }
 
@@ -155,6 +158,7 @@ export function AgentControlView({
   initialAgentTools,
   initialKnowledgeCategories,
   initialKnowledgeEntries,
+  initialTags,
   modelLabel,
 }: AgentControlViewProps) {
   const supabase = useMemo(() => createClient(), []);
@@ -267,6 +271,9 @@ export function AgentControlView({
       .on("postgres_changes", { event: "UPDATE", schema: "public", table: "agents" }, () => scheduleRefresh())
       .on("postgres_changes", { event: "*", schema: "public", table: "agent_suggestions" }, () => scheduleRefresh())
       .on("postgres_changes", { event: "*", schema: "public", table: "ai_playbooks" }, () => scheduleRefresh())
+      // Las etiquetas de un escenario viven en su propia tabla: sin esto, el
+      // guardado que solo las cambia llegaría después del refresco y no se vería.
+      .on("postgres_changes", { event: "*", schema: "public", table: "ai_playbook_tags" }, () => scheduleRefresh())
       .on("postgres_changes", { event: "UPDATE", schema: "public", table: "agent_tools" }, () => scheduleRefresh())
       .on("postgres_changes", { event: "*", schema: "public", table: "knowledge_categories" }, () => scheduleRefresh())
       .on("postgres_changes", { event: "*", schema: "public", table: "knowledge_entries" }, () => scheduleRefresh())
@@ -778,6 +785,7 @@ export function AgentControlView({
                 playbooks={playbooks}
                 unmatchedTurns={unmatchedTurns}
                 quickReplies={initialQuickReplies}
+                tags={initialTags}
                 canEdit={currentAgent.role === "supervisor" || currentAgent.role === "admin"}
               />
             )}

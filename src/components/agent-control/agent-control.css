@@ -824,3 +824,47 @@
 .ac-metric[data-tone="hot"] .ac-metric-icon {
   color: var(--lm-hot-ink);
 }
+
+/* --------------------------------------------------------------------------
+   Elección de etiquetas del escenario
+
+   Botones que se pintan como la etiqueta real, para que quien los elige vea
+   exactamente lo que le va a quedar al cliente en la bandeja. Sin elegir se
+   apagan en vez de cambiar de forma: el color ES la identidad de la etiqueta,
+   y sustituirlo por un gris uniforme obligaría a leerlas una por una.
+   -------------------------------------------------------------------------- */
+
+.ac-pb-tagpick {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.ac-pb-tagpick-item {
+  border: 1px solid transparent;
+  border-radius: 999px;
+  padding: 2px;
+  background: none;
+  cursor: pointer;
+  line-height: 0;
+  transition: opacity 0.12s ease, border-color 0.12s ease;
+}
+
+.ac-pb-tagpick-item[aria-pressed="false"] {
+  opacity: 0.42;
+}
+
+.ac-pb-tagpick-item[aria-pressed="false"]:hover {
+  opacity: 0.75;
+}
+
+/* La elegida lleva anillo además de opacidad: en una lista de diez etiquetas
+   de colores distintos, "la más brillante" no se distingue de un vistazo. */
+.ac-pb-tagpick-item[aria-pressed="true"] {
+  border-color: var(--lm-ink-soft);
+}
+
+.ac-pb-tagpick-item:focus-visible {
+  outline: 2px solid var(--lm-link-ink);
+  outline-offset: 1px;
+}

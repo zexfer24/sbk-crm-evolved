@@ -130,6 +130,7 @@ function montar(settings: AgentSettings) {
       currentAgent={currentAgent}
       initialConversations={[liveConversation("conv-1"), liveConversation("conv-2")]}
       initialTurns={[]}
+      initialTags={[]}
       initialSettings={settings}
       initialAgents={[currentAgent]}
       initialTokenUsage={{ totalTokens: 0, totalUsd: 0, hasUnpricedModels: false, byDay: [], byModel: [] }}

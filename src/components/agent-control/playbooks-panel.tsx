@@ -3,7 +3,7 @@
 import { useRef, useState, type ChangeEvent } from "react";
 import { Link2, MessageSquarePlus, Paperclip, Pencil, Plus, Trash2, Upload, Zap } from "lucide-react";
 import { Button, Input, Label, Modal, TextArea, toast } from "@heroui/react";
-import type { AgentTurn, Playbook, PlaybookAfterSend, PlaybookAttachmentType, QuickReply } from "@/lib/types";
+import type { AgentTurn, Playbook, PlaybookAfterSend, PlaybookAttachmentType, QuickReply, Tag } from "@/lib/types";
 import { createClient } from "@/lib/supabase/client";
 import { createPlaybook, deletePlaybook, setPlaybookActive, updatePlaybook } from "@/lib/mutations";
 import { MEDIA_BUCKET, mediaUrlFor } from "@/lib/storage";
@@ -12,6 +12,8 @@ interface PlaybooksPanelProps {
   playbooks: Playbook[];
   unmatchedTurns: AgentTurn[];
   quickReplies: QuickReply[];
+  /** El catálogo completo de etiquetas del CRM: es de donde se elige, no se crean acá. */
+  tags: Tag[];
   canEdit: boolean;
 }
 
@@ -34,6 +36,7 @@ interface DraftState {
   attachmentUrl: string;
   attachmentType: PlaybookAttachmentType | "";
   afterSend: PlaybookAfterSend;
+  tagIds: string[];
 }
 
 const EMPTY_DRAFT: DraftState = {
@@ -43,9 +46,10 @@ const EMPTY_DRAFT: DraftState = {
   attachmentUrl: "",
   attachmentType: "",
   afterSend: "wait",
+  tagIds: [],
 };
 
-export function PlaybooksPanel({ playbooks, unmatchedTurns, quickReplies, canEdit }: PlaybooksPanelProps) {
+export function PlaybooksPanel({ playbooks, unmatchedTurns, quickReplies, tags, canEdit }: PlaybooksPanelProps) {
   const [editingId, setEditingId] = useState<string | null>(null);
   const [draft, setDraft] = useState<DraftState>(EMPTY_DRAFT);
   const [isFormOpen, setIsFormOpen] = useState(false);
@@ -72,8 +76,18 @@ export function PlaybooksPanel({ playbooks, unmatchedTurns, quickReplies, canEdi
       attachmentUrl: playbook.attachmentUrl ?? "",
       attachmentType: playbook.attachmentType ?? "",
       afterSend: playbook.afterSend,
+      tagIds: playbook.tags.map((tag) => tag.id),
     });
     setIsFormOpen(true);
+  }
+
+  function toggleTag(tagId: string) {
+    setDraft((current) => ({
+      ...current,
+      tagIds: current.tagIds.includes(tagId)
+        ? current.tagIds.filter((id) => id !== tagId)
+        : [...current.tagIds, tagId],
+    }));
   }
 
   async function handleSave() {
@@ -96,6 +110,7 @@ export function PlaybooksPanel({ playbooks, unmatchedTurns, quickReplies, canEdi
         attachmentUrl: url || null,
         attachmentType: type,
         afterSend: draft.afterSend,
+        tagIds: draft.tagIds,
       };
 
       if (editingId) {
@@ -239,6 +254,11 @@ export function PlaybooksPanel({ playbooks, unmatchedTurns, quickReplies, canEdi
                       {ATTACHMENT_LABEL[playbook.attachmentType]}
                     </span>
                   )}
+                  {playbook.tags.map((tag) => (
+                    <span className="crm-tag" data-color={tag.color} key={tag.id}>
+                      {tag.label}
+                    </span>
+                  ))}
                   <span className="dash-panel-spacer" />
                   {canEdit && (
                     <>
@@ -419,6 +439,40 @@ export function PlaybooksPanel({ playbooks, unmatchedTurns, quickReplies, canEdi
                     Elige pasar a un asesor cuando la respuesta pide un dato que alguien tiene que revisar, como la
                     cédula para buscar una guía de envío.
                   </span>
+                </div>
+
+                <div className="flex flex-col gap-1.5">
+                  <Label>Etiquetas que deja puestas</Label>
+                  {tags.length === 0 ? (
+                    <span className="lm-hint">
+                      Todavía no hay etiquetas creadas. Se crean desde la ficha de cualquier cliente, en Etiquetas.
+                    </span>
+                  ) : (
+                    <>
+                      <div className="ac-pb-tagpick">
+                        {tags.map((tag) => {
+                          const elegida = draft.tagIds.includes(tag.id);
+                          return (
+                            <button
+                              key={tag.id}
+                              type="button"
+                              className="ac-pb-tagpick-item"
+                              aria-pressed={elegida}
+                              onClick={() => toggleTag(tag.id)}
+                            >
+                              <span className="crm-tag" data-color={tag.color}>
+                                {tag.label}
+                              </span>
+                            </button>
+                          );
+                        })}
+                      </div>
+                      <span className="lm-hint">
+                        Se le ponen al cliente cada vez que este escenario responda, pase o no la conversación a un
+                        asesor. Puedes elegir varias, o ninguna.
+                      </span>
+                    </>
+                  )}
                 </div>
               </Modal.Body>
 

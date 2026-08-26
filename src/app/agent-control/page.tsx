@@ -14,6 +14,7 @@ import {
   fetchModelPricing,
   fetchPlaybooks,
   fetchQuickReplies,
+  fetchTags,
   fetchTokenUsageSummary,
   fetchUnmatchedTurns,
 } from "@/lib/data";
@@ -39,6 +40,7 @@ export default async function AgentControlPage() {
     agentTools,
     knowledgeCategories,
     knowledgeEntries,
+    tags,
   ] = await Promise.all([
     fetchCurrentAgent(supabase),
     // Solo el trabajo vivo: el panel muestra la cola de la IA y el roster,
@@ -57,6 +59,7 @@ export default async function AgentControlPage() {
     fetchAgentTools(supabase),
     fetchKnowledgeCategories(supabase),
     fetchKnowledgeEntries(supabase),
+    fetchTags(supabase),
   ]);
 
   if (!currentAgent) {
@@ -80,6 +83,7 @@ export default async function AgentControlPage() {
       initialAgentTools={agentTools}
       initialKnowledgeCategories={knowledgeCategories}
       initialKnowledgeEntries={knowledgeEntries}
+      initialTags={tags}
       modelLabel={currentAgentModelLabel()}
     />
   );
