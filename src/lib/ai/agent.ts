@@ -15,6 +15,7 @@ import { withConversationTurnLock } from "@/lib/ai/conversation-lock";
 import { fetchActivePlaybooks, matchPlaybook } from "@/lib/ai/playbooks";
 import { sendAgentText, sendPlaybookReply, type AgentConversation } from "@/lib/ai/send";
 import { log } from "@/lib/log";
+import { withinFreeformWindow } from "@/lib/dashboard";
 
 // ---------------------------------------------------------------------------
 // Orquestador del turno del agente. Tres fases, en orden:
@@ -266,7 +267,7 @@ export async function runAgentTurn(conversationId: string): Promise<void> {
     supabase
       .from("conversations")
       .select(
-        "id, contact_id, ai_enabled, assigned_agent_id, welcome_sent_at, contact:contacts(phone_number), channel:whatsapp_channels(phone_number_id, status)"
+        "id, contact_id, ai_enabled, assigned_agent_id, welcome_sent_at, last_customer_message_at, contact:contacts(phone_number), channel:whatsapp_channels(phone_number_id, status)"
       )
       .eq("id", conversationId)
       .maybeSingle(),
@@ -278,6 +279,21 @@ export async function runAgentTurn(conversationId: string): Promise<void> {
   // Guardrail duro: si algo dice que la IA no debe correr, no se llama al
   // modelo. No depende de que el prompt "se acuerde" de quedarse callado.
   if (!canRun || !convo.ai_enabled || convo.assigned_agent_id) return;
+
+  // Pasadas 24 h del último mensaje del cliente, Meta rechaza el texto libre:
+  // solo entra una plantilla aprobada, y no hay ninguna configurada. Sin esta
+  // comprobación el turno correría completo —clasificar, herramientas,
+  // redactar— para producir un mensaje que el cliente no va a ver nunca y una
+  // fila en `messages` diciendo que salió.
+  //
+  // Va acá y no solo en la consulta que elige a quién atender porque entre
+  // encolar y atender pasa tiempo: el repaso del atraso drena a lo largo de
+  // una hora, y una conversación encolada en la hora 23 cruza el borde en el
+  // medio. La consulta filtra un instante; esto cubre el hueco.
+  if (!withinFreeformWindow(convo.last_customer_message_at)) {
+    log.warn("turno_fuera_de_ventana", { conversationId });
+    return;
+  }
 
   // Lock por conversación: si dos webhooks casi simultáneos disparan el
   // turno para la misma conversación (típico cuando el cliente manda varios

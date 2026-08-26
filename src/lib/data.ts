@@ -1,6 +1,6 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { pgrstLiteral } from "@/lib/ai/pgrst";
-import { isTicketTag } from "@/lib/dashboard";
+import { freeformWindowCutoff, isTicketTag } from "@/lib/dashboard";
 import { CRM_TIME_ZONE, currentDayRange } from "@/lib/time-zone";
 import type {
   Agent,
@@ -1447,6 +1447,96 @@ export async function fetchAgentSuggestions(supabase: SupabaseClient, limit = 50
 
   if (error) throw error;
   return (data as unknown as RawAgentSuggestion[]).map(mapAgentSuggestion);
+}
+
+// ---------------------------------------------------------------------------
+// El atraso que la IA puede atender al encenderse
+//
+// Encender el interruptor global NO tocaba nada de lo que ya estaba
+// esperando: enqueueAgentTurns solo se llama desde el webhook, o sea cuando
+// entra un mensaje nuevo. La IA arrancaba a contestarle a quien escribiera de
+// ahí en adelante y el atraso se quedaba intacto.
+//
+// El corte lo resuelve Postgres con la columna generada `awaiting_reply` y el
+// índice parcial `conversations_free_unanswered_idx`, cuyo predicado son
+// exactamente las tres primeras condiciones de acá.
+// ---------------------------------------------------------------------------
+
+/**
+ * Trabajo libre sin contestar que la IA tiene permitido tomar: nadie
+ * respondió, nadie lo tomó, no está cerrado y la IA está encendida en ese
+ * chat. Falta el corte de la ventana, que lo pone cada llamador porque los
+ * dos lados —dentro y fuera— se cuentan por separado.
+ */
+function unansweredFreeWork(
+  supabase: SupabaseClient,
+  select: string,
+  options?: { count: "exact"; head: true }
+) {
+  return supabase
+    .from("conversations")
+    .select(select, options)
+    .eq("awaiting_reply", true)
+    .is("assigned_agent_id", null)
+    .neq("status", "closed")
+    .eq("ai_enabled", true);
+}
+
+/**
+ * Las conversaciones a las que la IA le va a escribir si se enciende ahora.
+ *
+ * El corte de las 24 h va en el WHERE y no en una comprobación posterior a
+ * propósito: fuera de la ventana Meta rechaza el texto libre, y lo que no
+ * entra por esta consulta no puede recibir nada. Que sea una condición del
+ * `WHERE` significa que no hay una rama del código donde alguien pueda
+ * saltársela.
+ *
+ * El orden es el más reciente primero: quien escribió hace un rato tiene
+ * muchas más chances de seguir del otro lado del teléfono que quien escribió
+ * hace veintitrés horas. Se ordena por `last_message_at` y no por
+ * `last_customer_message_at` porque en una conversación sin contestar son el
+ * mismo instante, y así el índice parcial también sirve para ordenar.
+ */
+export async function fetchBacklogConversationIds(
+  supabase: SupabaseClient,
+  now: number = Date.now()
+): Promise<string[]> {
+  const { data, error } = await unansweredFreeWork(supabase, "id")
+    .gt("last_customer_message_at", freeformWindowCutoff(now))
+    .order("last_message_at", { ascending: false, nullsFirst: false });
+
+  if (error) throw error;
+  return ((data ?? []) as unknown as { id: string }[]).map((row) => row.id);
+}
+
+export interface BacklogCounts {
+  /** Se les puede escribir ahora mismo. Es el número que el diálogo de encendido tiene que decir. */
+  inWindow: number;
+  /**
+   * Están esperando igual, pero fuera de la ventana de 24 h. No se les
+   * escribe. Se cuenta y se muestra porque es la prueba de que la guarda
+   * está viva: el día que esto diga cero habiendo conversaciones viejas sin
+   * contestar, algo se rompió.
+   */
+  outOfWindow: number;
+}
+
+/** Los dos números del diálogo, contados en la base y no estimados sobre lo que el navegador tenga cargado. */
+export async function fetchBacklogCounts(
+  supabase: SupabaseClient,
+  now: number = Date.now()
+): Promise<BacklogCounts> {
+  const cutoff = freeformWindowCutoff(now);
+
+  const [dentro, fuera] = await Promise.all([
+    unansweredFreeWork(supabase, "id", { count: "exact", head: true }).gt("last_customer_message_at", cutoff),
+    unansweredFreeWork(supabase, "id", { count: "exact", head: true }).lte("last_customer_message_at", cutoff),
+  ]);
+
+  if (dentro.error) throw dentro.error;
+  if (fuera.error) throw fuera.error;
+
+  return { inWindow: dentro.count ?? 0, outOfWindow: fuera.count ?? 0 };
 }
 
 export async function fetchAgentSettings(supabase: SupabaseClient): Promise<AgentSettings> {

@@ -71,6 +71,17 @@ const MAX_ATTEMPTS = 3;
 export interface EnqueueOptions {
   /** Ventana de silencio. Se baja a cero en pruebas y en el cron de recuperación. */
   debounceSeconds?: number;
+  /**
+   * Segundos que se le suman a cada conversación respecto de la anterior.
+   *
+   * No es un freno: quien limita el ritmo es MAX_PER_RUN. Existe para fijar
+   * el ORDEN. La cola es un conjunto ordenado por instante de vencimiento, y
+   * con vencimientos idénticos Redis los devuelve por orden alfabético del
+   * id — o sea, al azar. Separarlos un segundo hace que se atiendan en el
+   * orden en que llegaron acá, que para el repaso del atraso importa: el
+   * más reciente primero.
+   */
+  spacingSeconds?: number;
 }
 
 export async function enqueueAgentTurns(
@@ -78,17 +89,20 @@ export async function enqueueAgentTurns(
   options: EnqueueOptions = {}
 ): Promise<void> {
   const debounce = options.debounceSeconds ?? DEBOUNCE_SECONDS;
+  const spacing = options.spacingSeconds ?? 0;
   const cola = createAgentQueue(getRedis());
 
+  let posicion = 0;
   for (const conversationId of new Set(conversationIds)) {
     try {
-      await cola.enqueue(conversationId, debounce);
+      await cola.enqueue(conversationId, debounce + posicion * spacing);
     } catch (err) {
       // Encolar es lo único que no puede fallar en silencio: si esto no
       // queda registrado, el cliente se queda sin respuesta y nadie lo sabe.
       // Este evento merece una alerta en el agregador.
       log.error("cola_encolar_fallido", { conversationId, detail: errorText(err) });
     }
+    posicion++;
   }
 }
 

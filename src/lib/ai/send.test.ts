@@ -40,6 +40,7 @@ function conversation(connected: boolean): AgentConversation {
     ai_enabled: true,
     assigned_agent_id: null,
     welcome_sent_at: "2026-08-22T10:00:00Z",
+    last_customer_message_at: new Date().toISOString(),
     contact: { phone_number: "+584121112233" },
     channel: { phone_number_id: connected ? "pnid-1" : null, status: connected ? "connected" : "demo" },
   };

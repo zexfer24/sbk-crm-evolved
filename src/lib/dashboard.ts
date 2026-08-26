@@ -133,6 +133,35 @@ export function stageOf(conversation: BoardConversation): JourneyStageId {
   return conversation.aiEnabled ? "classifying" : "inquiry";
 }
 
+/**
+ * La ventana de texto libre de WhatsApp.
+ *
+ * Meta solo acepta un mensaje escrito por nosotros dentro de las 24 h
+ * siguientes al último mensaje del cliente. Pasado ese punto lo único que
+ * entra es una plantilla aprobada, y hoy no hay ninguna configurada
+ * (WHATSAPP_WELCOME_TEMPLATE está vacía). O sea que fuera de la ventana no
+ * hay nada que enviar: el intento se rechaza y el cliente no recibe nada.
+ */
+export const FREEFORM_WINDOW_HOURS = 24;
+
+/** El instante a partir del cual un mensaje del cliente todavía habilita texto libre. */
+export function freeformWindowCutoff(now: number = Date.now()): string {
+  return new Date(now - FREEFORM_WINDOW_HOURS * 60 * 60 * 1000).toISOString();
+}
+
+/**
+ * ¿Se le puede escribir texto libre a esta conversación ahora mismo?
+ *
+ * Sin mensaje del cliente devuelve false. Falla cerrado a propósito: el costo
+ * de equivocarse hacia el "sí" es un mensaje rechazado por Meta que el
+ * cliente nunca ve, y del que solo queda una fila en `messages` diciendo que
+ * salió.
+ */
+export function withinFreeformWindow(lastCustomerMessageAt: string | null, now: number = Date.now()): boolean {
+  if (!lastCustomerMessageAt) return false;
+  return new Date(lastCustomerMessageAt).getTime() > now - FREEFORM_WINDOW_HOURS * 60 * 60 * 1000;
+}
+
 /** El último mensaje del hilo sigue siendo del cliente: nadie contestó. */
 export function awaitingReply(conversation: BoardConversation): boolean {
   if (!conversation.lastCustomerMessageAt) return false;

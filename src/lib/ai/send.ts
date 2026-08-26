@@ -22,6 +22,8 @@ export interface AgentConversation {
   assigned_agent_id: string | null;
   /** null cuando nunca salió la plantilla de bienvenida: es lo que decide si el agente saluda. */
   welcome_sent_at: string | null;
+  /** Decide si Meta todavía acepta texto libre en este chat. Ver withinFreeformWindow. */
+  last_customer_message_at: string | null;
   contact: { phone_number: string };
   channel: { phone_number_id: string | null; status: string };
 }

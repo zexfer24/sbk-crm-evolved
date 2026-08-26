@@ -219,6 +219,7 @@ beforeEach(() => {
     ai_enabled: true,
     assigned_agent_id: null,
     welcome_sent_at: "2026-08-22T10:00:00Z",
+    last_customer_message_at: new Date().toISOString(),
     contact: { phone_number: "+584121112233" },
     channel: { phone_number_id: null, status: "demo" },
   };
@@ -275,6 +276,65 @@ describe("runAgentTurn — historial", () => {
 
     const enviados = matchPlaybookMock.mock.calls[0][0] as { content: string }[];
     expect(enviados.map((m) => m.content)).toEqual(["hola", "tienen carburador", "para una Bera"]);
+  });
+});
+
+describe("runAgentTurn — ventana de 24 h de Meta", () => {
+  const HACE_25_HORAS = () => new Date(Date.now() - 25 * 60 * 60 * 1000).toISOString();
+
+  /**
+   * Fuera de la ventana Meta solo acepta una plantilla aprobada, y no hay
+   * ninguna configurada. Sin esta guarda el turno corría completo —clasificar,
+   * herramientas, redactar— para producir un mensaje que el cliente nunca ve
+   * y una fila en `messages` diciendo que salió.
+   */
+  it("no atiende una conversación cuyo último mensaje del cliente tiene más de 24 h", async () => {
+    state.conversation = { ...state.conversation, last_customer_message_at: HACE_25_HORAS() };
+
+    await runAgentTurn("conv-1");
+
+    expect(matchPlaybookMock).not.toHaveBeenCalled();
+    expect(classifyIntentMock).not.toHaveBeenCalled();
+    expect(sendAgentTextMock).not.toHaveBeenCalled();
+    expect(sendPlaybookReplyMock).not.toHaveBeenCalled();
+  });
+
+  /**
+   * El caso que motiva que la guarda esté acá y no solo en la consulta que
+   * elige a quién atender: el repaso del atraso encola de una vez y drena a lo
+   * largo de una hora, así que una conversación puede cruzar el borde entre
+   * que se encoló y que le toca el turno.
+   */
+  it("tampoco la atiende si un escenario coincidiría", async () => {
+    const pb = playbook();
+    fetchActivePlaybooksMock.mockResolvedValue([pb]);
+    matchPlaybookMock.mockResolvedValue({ playbook: pb, usage: NO_USAGE });
+    state.conversation = { ...state.conversation, last_customer_message_at: HACE_25_HORAS() };
+
+    await runAgentTurn("conv-1");
+
+    expect(sendPlaybookReplyMock).not.toHaveBeenCalled();
+  });
+
+  /** Sin ningún mensaje del cliente no hay ventana abierta: falla cerrado. */
+  it("no atiende una conversación sin ningún mensaje del cliente", async () => {
+    state.conversation = { ...state.conversation, last_customer_message_at: null };
+
+    await runAgentTurn("conv-1");
+
+    expect(matchPlaybookMock).not.toHaveBeenCalled();
+    expect(sendAgentTextMock).not.toHaveBeenCalled();
+  });
+
+  it("dentro de la ventana atiende con normalidad", async () => {
+    state.conversation = {
+      ...state.conversation,
+      last_customer_message_at: new Date(Date.now() - 23 * 60 * 60 * 1000).toISOString(),
+    };
+
+    await runAgentTurn("conv-1");
+
+    expect(sendAgentTextMock).toHaveBeenCalledTimes(1);
   });
 });
 
