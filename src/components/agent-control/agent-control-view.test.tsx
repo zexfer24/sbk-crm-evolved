@@ -154,7 +154,11 @@ function montar(settings: AgentSettings) {
 const apagada: AgentSettings = { aiGloballyEnabled: false, dailySpendCapUsd: null, spentTodayUsd: 0 };
 const encendida: AgentSettings = { aiGloballyEnabled: true, dailySpendCapUsd: null, spentTodayUsd: 0 };
 
-const backlogFetch = vi.fn(async () => ({ ok: true, json: async () => ({ ok: true, enqueued: 117 }) }));
+const backlogFetch = vi.fn(async (url: string) =>
+  url === "/api/agent/stop"
+    ? { ok: true, json: async () => ({ ok: true, discarded: 12 }) }
+    : { ok: true, json: async () => ({ ok: true, enqueued: 117 }) }
+);
 
 beforeEach(() => {
   setAiGloballyEnabledMock.mockClear();
@@ -229,13 +233,23 @@ describe("AgentControlView — encender la IA global pide confirmación", () => 
     expect(backlogFetch).not.toHaveBeenCalled();
   });
 
-  it("apagar NO pregunta: es el freno de emergencia", () => {
+  /**
+   * Apagar tiene que parar TODO, no sólo escribir el interruptor.
+   *
+   * Escribiéndolo a secas quedaban vivas la cola llena y los turnos en vuelo,
+   * y el dueño veía salir mensajes después de haber apagado. La ruta hace las
+   * dos cosas en una sola operación; el componente no puede purgar Redis por
+   * su cuenta.
+   */
+  it("apagar NO pregunta y para también lo que estaba en cola", async () => {
     montar(encendida);
 
     fireEvent.click(screen.getByRole("button", { name: "Interruptor global de la IA" }));
 
-    expect(setAiGloballyEnabledMock).toHaveBeenCalledWith(expect.anything(), currentAgent, false);
+    await waitFor(() => expect(backlogFetch).toHaveBeenCalledWith("/api/agent/stop", { method: "POST" }));
     expect(screen.queryByText("¿Encender la IA para todo el CRM?")).not.toBeInTheDocument();
-    expect(backlogFetch).not.toHaveBeenCalled();
+    // El interruptor no se escribe por separado: iría por detrás de la purga.
+    expect(setAiGloballyEnabledMock).not.toHaveBeenCalled();
+    expect(backlogFetch).not.toHaveBeenCalledWith("/api/agent/backlog", { method: "POST" });
   });
 });

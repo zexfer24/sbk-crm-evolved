@@ -120,12 +120,29 @@ function porId(id: string): ChatFalso {
 // `conversations`: las tres guardas viejas en verde.
 // ---------------------------------------------------------------------------
 
+/**
+ * Cuántas veces queda encendido el interruptor antes de "apagarse".
+ *
+ * `Infinity` = nunca se apaga. Un número = las primeras N consultas dicen que
+ * sí y el resto que no, que es como se simula al dueño pulsando el botón a
+ * mitad de turno: la primera consulta es la de apertura y la última la de
+ * justo antes de enviar.
+ */
+let consultasAntesDeApagar = Number.POSITIVE_INFINITY;
+/** A partir de qué consulta el interruptor deja de poder consultarse. */
+let consultasAntesDeRomperse = Number.POSITIVE_INFINITY;
+let consultasDelInterruptor = 0;
+
 function createFakeSupabase() {
   return {
-    rpc: (fn: string) =>
-      fn === "agent_can_run"
-        ? Promise.resolve({ data: true, error: null })
-        : Promise.reject(new Error(`rpc no soportada: ${fn}`)),
+    rpc: (fn: string) => {
+      if (fn !== "agent_can_run") return Promise.reject(new Error(`rpc no soportada: ${fn}`));
+      consultasDelInterruptor++;
+      if (consultasDelInterruptor > consultasAntesDeRomperse) {
+        return Promise.reject(new Error("se cayó la conexión con la base"));
+      }
+      return Promise.resolve({ data: consultasDelInterruptor <= consultasAntesDeApagar, error: null });
+    },
     from(table: string) {
       if (table === "conversations") {
         return {
@@ -268,6 +285,9 @@ import { humanHasWritten } from "@/lib/ai/human-handled";
 
 beforeEach(() => {
   enviados.length = 0;
+  consultasAntesDeApagar = Number.POSITIVE_INFINITY;
+  consultasAntesDeRomperse = Number.POSITIVE_INFINITY;
+  consultasDelInterruptor = 0;
 });
 
 describe("la IA no le escribe a un cliente que está hablando con un asesor", () => {
@@ -344,5 +364,51 @@ describe("humanHasWritten", () => {
     } as never;
 
     await expect(humanHasWritten(roto, "conv-1")).rejects.toThrow(/no se pudo comprobar/i);
+  });
+});
+
+describe("el interruptor global para lo que ya está en vuelo", () => {
+  /**
+   * El dueño apagó la IA y los mensajes siguieron saliendo.
+   *
+   * El interruptor se miraba UNA vez, al abrir el turno, y después venían el
+   * reconocimiento de escenario, la clasificación, hasta cinco pasos de tool
+   * loop y el envío. Entre esa mirada y el envío pasan decenas de segundos, y
+   * con tres turnos concurrentes apagar dejaba salir hasta tres mensajes más.
+   *
+   * Acá el interruptor está encendido cuando el turno abre y apagado cuando
+   * llega al envío, que es exactamente lo que pasa si alguien pulsa el botón
+   * mientras el modelo redacta.
+   */
+  it("no envía si se apagó mientras el turno corría", async () => {
+    // La primera consulta (apertura) dice que sí; la del envío, que no.
+    consultasAntesDeApagar = 1;
+
+    await runAgentTurn(CHAT_SIN_TOCAR.id);
+
+    expect(enviados).toEqual([]);
+    // Y se comprobó más de una vez: si sólo mirara al abrir, esto sería 1.
+    expect(consultasDelInterruptor).toBeGreaterThan(1);
+  });
+
+  /**
+   * Falla cerrado. Un botón de pánico que ante la duda sigue adelante no es un
+   * botón de pánico.
+   */
+  it("no envía si el interruptor no se puede consultar", async () => {
+    // La apertura del turno pasa; la consulta de justo antes de enviar
+    // revienta. Ante la duda, no se envía.
+    consultasAntesDeRomperse = 1;
+
+    await runAgentTurn(CHAT_SIN_TOCAR.id);
+
+    expect(enviados).toEqual([]);
+  });
+
+  /** Encendido de principio a fin: el turno llega y envía, como siempre. */
+  it("envía con normalidad si nadie apaga nada", async () => {
+    await runAgentTurn(CHAT_SIN_TOCAR.id);
+
+    expect(enviados).toHaveLength(1);
   });
 });

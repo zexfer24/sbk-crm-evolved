@@ -40,6 +40,8 @@ const reactionUpdates: { column: string; value: string; emoji: string | null }[]
 
 /** Lo que responde el límite de tasa; un test lo pone en false para probar el freno. */
 let rateLimitAllows = true;
+/** El interruptor global. Se apaga en el test que comprueba que no se encola nada. */
+let aiCanRun = true;
 
 function createFakeAdminClient() {
   const insertedMessages = new Map<string, FakeMessageRow>();
@@ -155,6 +157,9 @@ function createFakeAdminClient() {
     // test diga lo contrario.
     rpc: async (fn: string) => {
       if (fn === "rate_limit_allow") return { data: rateLimitAllows, error: null };
+      // Con la IA apagada el webhook no encola: la cola dejaba de ser el
+      // reflejo de lo que la IA iba a hacer y crecía con el interruptor abajo.
+      if (fn === "agent_can_run") return { data: aiCanRun, error: null };
       throw new Error(`Fake Supabase: rpc no soportada en este test: ${fn}`);
     },
     storage: {
@@ -258,6 +263,33 @@ describe("POST /api/webhooks/whatsapp — idempotencia", () => {
     expect(insertedMessages.size).toBe(1);
     // ...ni volver a encolar un turno para esa conversación.
     expect(enqueueAgentTurns).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("POST /api/webhooks/whatsapp — interruptor global", () => {
+  /**
+   * Con la IA apagada, el webhook seguía encolando en cada mensaje entrante.
+   * Esos turnos se reclamaban después para salir por la puerta de atrás de
+   * runAgentTurn sin dejar rastro, y mientras tanto la cola crecía con el
+   * interruptor abajo — así que el dueño creía tener la IA parada y la cola
+   * decía otra cosa. Peor si alguien encendía: salía todo de golpe.
+   */
+  it("no encola nada con la IA apagada, pero sigue guardando el mensaje", async () => {
+    const { POST } = await import("@/app/api/webhooks/whatsapp/route");
+    const { enqueueAgentTurns } = await import("@/lib/ai/queue");
+    vi.mocked(enqueueAgentTurns).mockClear();
+
+    aiCanRun = false;
+    try {
+      const response = await POST(fakeRequest(webhookBody("wamid.ia-apagada-1")));
+
+      expect(response.status).toBe(200);
+      // El mensaje del cliente se guarda igual: la bandeja lo tiene que ver.
+      expect(insertedMessages.has("wamid.ia-apagada-1")).toBe(true);
+      expect(enqueueAgentTurns).not.toHaveBeenCalled();
+    } finally {
+      aiCanRun = true;
+    }
   });
 });
 

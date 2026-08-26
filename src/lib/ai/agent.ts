@@ -201,6 +201,35 @@ async function applyPlaybookTags(
   }
 }
 
+/**
+ * ¿La IA sigue encendida AHORA?
+ *
+ * El interruptor se miraba una sola vez, al abrir el turno, y después el turno
+ * corría entero: reconocer escenario, clasificar, hasta cinco pasos del tool
+ * loop y enviar. Entre esa comprobación y el envío pasan decenas de segundos
+ * —más desde que los reintentos esperan en segundos—, así que apagar la IA no
+ * paraba nada de lo que ya estaba en vuelo: hasta tres turnos seguían y le
+ * escribían al cliente igual. El dueño apagaba y los mensajes seguían saliendo.
+ *
+ * Volver a preguntar justo antes de hablar es lo que convierte el interruptor
+ * en un freno de emergencia de verdad. Lo que ya se gastó en el modelo se
+ * gastó; lo que no pasa es que el cliente lo reciba.
+ *
+ * Falla cerrado: si no se puede preguntar, no se envía. Un botón de pánico que
+ * ante la duda sigue adelante no es un botón de pánico.
+ */
+async function stillEnabled(supabase: SupabaseClient<Database>, conversationId: string): Promise<boolean> {
+  try {
+    const { data, error } = await supabase.rpc("agent_can_run");
+    if (error) throw new Error(error.message);
+    if (!data) log.warn("turno_abortado_por_interruptor", { conversationId });
+    return Boolean(data);
+  } catch (err) {
+    log.error("turno_interruptor_no_consultable", { conversationId, detail: errorText(err) });
+    return false;
+  }
+}
+
 /** Sufijo para la bitácora: qué quedó etiquetado, por nombre. Vacío si no había etiquetas. */
 function tagSummary(tags: Tag[]): string {
   return tags.length === 0 ? "" : ` Etiquetas: ${tags.map((tag) => tag.label).join(", ")}.`;
@@ -224,6 +253,10 @@ async function runPlaybook(
   tokens: TurnTokens,
   customerMessage: string | null
 ): Promise<void> {
+  // Última mirada al interruptor antes de hablarle al cliente. Si se apagó
+  // mientras el modelo elegía el escenario, el turno termina acá sin enviar.
+  if (!(await stillEnabled(supabase, target.conversationId))) return;
+
   // Se marca ANTES de enviar: si el envío falla a mitad no sabemos si el
   // mensaje salió, y ante la duda el turno deja de ser reintentable. Ver
   // turn-delivery.ts.
@@ -342,6 +375,7 @@ async function runTurnPhases(
   if (intent === "fuera_de_tema") {
     const repetido = alreadyRedirected(history);
     if (!repetido) {
+      if (!(await stillEnabled(supabase, conversationId))) return;
       entrega.intentado = true;
       await sendAgentText(supabase, target, OFF_TOPIC_REPLY);
     }
@@ -446,6 +480,11 @@ async function runTurnPhases(
   }
 
   if (text.trim()) {
+    // Acá es donde más se nota: entre abrir el turno y llegar a esta línea
+    // pasaron el reconocimiento de escenario, la clasificación y hasta cinco
+    // pasos de tool loop. Es el punto del turno más lejano al momento en que
+    // se miró el interruptor.
+    if (!(await stillEnabled(supabase, conversationId))) return;
     entrega.intentado = true;
     await sendAgentText(supabase, target, text.trim());
   }
@@ -496,7 +535,13 @@ export async function runAgentTurn(conversationId: string): Promise<void> {
 
   // Guardrail duro: si algo dice que la IA no debe correr, no se llama al
   // modelo. No depende de que el prompt "se acuerde" de quedarse callado.
-  if (!canRun || !convo.ai_enabled || convo.assigned_agent_id) return;
+  if (!canRun) {
+    // Antes era un `return` mudo. Con la cola llena y la IA apagada, los
+    // turnos se reclamaban y desaparecían sin dejar rastro de por qué.
+    log.info("turno_saltado_ia_apagada", { conversationId });
+    return;
+  }
+  if (!convo.ai_enabled || convo.assigned_agent_id) return;
 
   // Un chat que ya tocó una persona es de esa persona.
   //

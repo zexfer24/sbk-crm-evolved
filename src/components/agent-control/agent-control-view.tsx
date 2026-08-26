@@ -387,18 +387,47 @@ export function AgentControlView({
   async function switchAi(next: boolean) {
     setTogglingKillSwitch(true);
     try {
-      await setAiGloballyEnabled(supabase, currentAgent, next);
-      setSettings((s) => ({ ...s, aiGloballyEnabled: next }));
+      if (!next) {
+        // Apagar NO es escribir el interruptor y ya. Eso dejaba vivos los
+        // turnos en vuelo y la cola llena, y el dueño veía salir mensajes
+        // después de haber apagado. La ruta apaga y vacía lo pendiente en la
+        // misma operación. Ver src/app/api/agent/stop/route.ts.
+        const response = await fetch("/api/agent/stop", { method: "POST" });
+        const payload = (await response.json().catch(() => null)) as {
+          discarded?: number | null;
+          warning?: string;
+        } | null;
 
-      if (next) {
-        // El interruptor ya quedó encendido. Si el repaso falla, la IA sigue
-        // atendiendo lo que entre de ahora en adelante —el comportamiento de
-        // siempre— y el atraso se queda esperando: se avisa y no se revierte,
-        // porque apagar la IA por su cuenta sería una sorpresa peor.
-        const response = await fetch("/api/agent/backlog", { method: "POST" });
         if (!response.ok) {
-          toast.danger("La IA quedó encendida, pero no se pudo repasar lo que ya estaba esperando.");
+          toast.danger("No se pudo apagar la IA. Vuelve a intentarlo.");
+          return;
         }
+
+        setSettings((s) => ({ ...s, aiGloballyEnabled: false }));
+
+        if (payload?.warning) toast.danger(payload.warning);
+        else if (payload?.discarded) {
+          toast.info(
+            payload.discarded === 1
+              ? "IA apagada. Se descartó 1 turno que estaba esperando."
+              : `IA apagada. Se descartaron ${payload.discarded} turnos que estaban esperando.`
+          );
+        }
+
+        setConfirmingAiOn(false);
+        return;
+      }
+
+      await setAiGloballyEnabled(supabase, currentAgent, true);
+      setSettings((s) => ({ ...s, aiGloballyEnabled: true }));
+
+      // El interruptor ya quedó encendido. Si el repaso falla, la IA sigue
+      // atendiendo lo que entre de ahora en adelante —el comportamiento de
+      // siempre— y el atraso se queda esperando: se avisa y no se revierte,
+      // porque apagar la IA por su cuenta sería una sorpresa peor.
+      const response = await fetch("/api/agent/backlog", { method: "POST" });
+      if (!response.ok) {
+        toast.danger("La IA quedó encendida, pero no se pudo repasar lo que ya estaba esperando.");
       }
 
       setConfirmingAiOn(false);

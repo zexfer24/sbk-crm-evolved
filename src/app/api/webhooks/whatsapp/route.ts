@@ -520,6 +520,16 @@ export async function POST(request: Request) {
   // la conversación queda pendiente en la cola en vez de perderse. Una tanda
   // con varios mensajes del mismo cliente deja un solo pendiente.
   if (touchedByCustomer.size > 0) {
+    // Con la IA apagada no se encola. Antes se encolaba igual y los turnos se
+    // reclamaban para salir por la puerta de atrás de runAgentTurn: trabajo
+    // invisible, y una cola que crecía mientras el dueño creía tener la IA
+    // parada. Se pregunta una vez por lote, no una por conversación.
+    const { data: canRun } = await supabase.rpc("agent_can_run");
+    if (!canRun) {
+      log.info("webhook_no_encola_ia_apagada", { conversaciones: touchedByCustomer.size });
+      return NextResponse.json({ ok: true });
+    }
+
     await enqueueAgentTurns(touchedByCustomer);
     // Se espera la ventana de silencio antes de atender: Meta manda un POST
     // por mensaje, y sin esperar el cliente recibiría una respuesta por

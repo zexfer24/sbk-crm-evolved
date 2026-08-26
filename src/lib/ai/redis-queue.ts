@@ -68,6 +68,8 @@ export interface AgentQueue {
   recordFailure(conversationId: string): Promise<number>;
   /** Borra la cuenta de fallos tras un turno bien atendido. */
   clearFailures(conversationId: string): Promise<void>;
+  /** Vacía la cola entera y devuelve cuántos turnos se descartaron. */
+  purge(): Promise<number>;
 }
 
 /**
@@ -105,6 +107,12 @@ export function createAgentQueue(redis: Redis): AgentQueue {
 
     async clearFailures(conversationId) {
       await redis.del(failureKey(conversationId));
+    },
+
+    async purge() {
+      const pendientes = await redis.zcard(QUEUE_KEY);
+      await redis.del(QUEUE_KEY);
+      return pendientes;
     },
   };
 }
