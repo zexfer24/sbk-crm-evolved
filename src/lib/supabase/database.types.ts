@@ -286,6 +286,39 @@ export type Database = {
         }
         Relationships: []
       }
+      ai_playbook_tags: {
+        Row: {
+          created_at: string
+          playbook_id: string
+          tag_id: string
+        }
+        Insert: {
+          created_at?: string
+          playbook_id: string
+          tag_id: string
+        }
+        Update: {
+          created_at?: string
+          playbook_id?: string
+          tag_id?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "ai_playbook_tags_playbook_id_fkey"
+            columns: ["playbook_id"]
+            isOneToOne: false
+            referencedRelation: "ai_playbooks"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "ai_playbook_tags_tag_id_fkey"
+            columns: ["tag_id"]
+            isOneToOne: false
+            referencedRelation: "tags"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       ai_playbooks: {
         Row: {
           after_send: string
