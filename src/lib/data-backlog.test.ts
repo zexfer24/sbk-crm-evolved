@@ -17,13 +17,20 @@ interface Filtro {
 }
 
 interface Consulta {
+  tabla: string;
   filtros: Filtro[];
   orden: { columna: string; opciones: unknown } | null;
   opciones: unknown;
 }
 
-function createFakeSupabase(count = 0) {
+/**
+ * `humanos` son los ids que en `messages` tienen un mensaje de asesor: los
+ * chats que una persona ya está atendiendo y que el atraso tiene que dejar
+ * fuera. Ver src/lib/ai/human-handled.ts.
+ */
+function createFakeSupabase(count = 0, humanos: string[] = []) {
   const consultas: Consulta[] = [];
+  const filas = Array.from({ length: count }, (_, i) => ({ id: `conv-${i}` }));
 
   function builder(consulta: Consulta) {
     const api = {
@@ -47,22 +54,30 @@ function createFakeSupabase(count = 0) {
         consulta.filtros.push({ op: "lte", columna, valor });
         return api;
       },
+      in: (columna: string, valor: unknown) => {
+        consulta.filtros.push({ op: "in", columna, valor });
+        return api;
+      },
       order: (columna: string, opciones: unknown) => {
         consulta.orden = { columna, opciones };
         return api;
       },
       // Se resuelve como promesa cuando la consulta se espera sin .order().
       then: (resolve: (value: { data: unknown[]; error: null; count: number }) => unknown) =>
-        resolve({ data: [], error: null, count }),
+        resolve(
+          consulta.tabla === "messages"
+            ? { data: humanos.map((id) => ({ conversation_id: id })), error: null, count: humanos.length }
+            : { data: filas, error: null, count }
+        ),
     };
     return api;
   }
 
   const client = {
-    from() {
+    from(tabla: string) {
       return {
         select: (_columns: string, opciones?: unknown) => {
-          const consulta: Consulta = { filtros: [], orden: null, opciones };
+          const consulta: Consulta = { tabla, filtros: [], orden: null, opciones };
           consultas.push(consulta);
           return builder(consulta);
         },
@@ -107,6 +122,18 @@ describe("fetchBacklogConversationIds", () => {
       opciones: { ascending: false, nullsFirst: false },
     });
   });
+
+  /**
+   * Las tres condiciones del WHERE no distinguen un chat sin atender de uno
+   * que una persona está atendiendo: los asesores contestan sin asignarse la
+   * conversación, y `awaiting_reply` describe igual de bien a alguien que
+   * respondió "Ok" a su asesor.
+   */
+  it("deja fuera los chats donde ya escribió un asesor", async () => {
+    const { client } = createFakeSupabase(5, ["conv-1", "conv-3"]);
+
+    expect(await fetchBacklogConversationIds(client, AHORA)).toEqual(["conv-0", "conv-2", "conv-4"]);
+  });
 });
 
 describe("fetchBacklogCounts", () => {
@@ -138,12 +165,15 @@ describe("fetchBacklogCounts", () => {
     });
   });
 
-  it("pide solo la cuenta, sin traerse las filas", async () => {
+  /**
+   * Lo de fuera de la ventana sigue siendo un count(*): no se le descuenta
+   * nada porque no se le escribe a nadie de ahí.
+   */
+  it("lo de fuera de la ventana se cuenta sin traer filas", async () => {
     const { client, consultas } = createFakeSupabase();
 
     await fetchBacklogCounts(client, AHORA);
 
-    expect(consultas[0].opciones).toEqual({ count: "exact", head: true });
     expect(consultas[1].opciones).toEqual({ count: "exact", head: true });
   });
 
@@ -151,6 +181,20 @@ describe("fetchBacklogCounts", () => {
     const { client } = createFakeSupabase(7);
 
     expect(await fetchBacklogCounts(client, AHORA)).toEqual({ inWindow: 7, outOfWindow: 7 });
+  });
+
+  /**
+   * El número que engañó al dueño el 26 de agosto de 2026.
+   *
+   * El diálogo dijo 139 y 22 de esas conversaciones las estaba atendiendo un
+   * asesor. El número que se muestra antes de pulsar tiene que ser el de los
+   * clientes a los que de verdad se les va a escribir, o el consentimiento
+   * que da el dueño es sobre otra cosa.
+   */
+  it("no cuenta los chats que ya está atendiendo un asesor", async () => {
+    const { client } = createFakeSupabase(7, ["conv-0", "conv-1", "conv-2"]);
+
+    expect(await fetchBacklogCounts(client, AHORA)).toEqual({ inWindow: 4, outOfWindow: 7 });
   });
 
   /** El corte sale de una sola constante: la ventana de Meta no se copia a mano en dos sitios. */

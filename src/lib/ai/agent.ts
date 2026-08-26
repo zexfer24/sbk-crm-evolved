@@ -12,6 +12,7 @@ import { TOOL_KEYS, fetchEnabledToolKeys } from "@/lib/ai/agent-tools";
 import { buildKnowledgeTool } from "@/lib/ai/knowledge";
 import { escalateConversation } from "@/lib/ai/escalate";
 import { withConversationTurnLock } from "@/lib/ai/conversation-lock";
+import { humanHasWritten } from "@/lib/ai/human-handled";
 import { fetchActivePlaybooks, matchPlaybook } from "@/lib/ai/playbooks";
 import { sendAgentText, sendPlaybookReply } from "@/lib/ai/send";
 import { buildTurnTarget, type AgentConversation, type TurnTarget } from "@/lib/ai/turn-target";
@@ -496,6 +497,24 @@ export async function runAgentTurn(conversationId: string): Promise<void> {
   // Guardrail duro: si algo dice que la IA no debe correr, no se llama al
   // modelo. No depende de que el prompt "se acuerde" de quedarse callado.
   if (!canRun || !convo.ai_enabled || convo.assigned_agent_id) return;
+
+  // Un chat que ya tocó una persona es de esa persona.
+  //
+  // Va acá, en el turno, y no solo en la consulta que arma el atraso, porque
+  // este es el cuello por donde pasan TODOS los caminos: el barrido, el
+  // webhook, el cron de recuperación y el simulador. El 26 de agosto de 2026
+  // la IA le escribió a 22 clientes que estaban hablando con un asesor, y no
+  // llegaron por el barrido nada más: cualquier mensaje entrante de un chat
+  // atendido lo encolaba igual. Arreglar solo el barrido habría dejado esa
+  // puerta abierta.
+  //
+  // Se comprueba en cada turno y no una vez al encolar porque entre encolar y
+  // atender pasa tiempo, y ese es justo el rato en el que un asesor puede
+  // meterse en la conversación. Ver human-handled.ts.
+  if (await humanHasWritten(supabase, conversationId)) {
+    log.warn("turno_chat_de_una_persona", { conversationId });
+    return;
+  }
 
   // Pasadas 24 h del último mensaje del cliente, Meta rechaza el texto libre:
   // solo entra una plantilla aprobada, y no hay ninguna configurada. Sin esta

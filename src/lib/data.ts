@@ -1,5 +1,6 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { pgrstLiteral } from "@/lib/ai/pgrst";
+import { conversationsWrittenByHumans } from "@/lib/ai/human-handled";
 import { freeformWindowCutoff, isTicketTag } from "@/lib/dashboard";
 import { CRM_TIME_ZONE, currentDayRange } from "@/lib/time-zone";
 import type {
@@ -1506,7 +1507,21 @@ export async function fetchBacklogConversationIds(
     .order("last_message_at", { ascending: false, nullsFirst: false });
 
   if (error) throw error;
-  return ((data ?? []) as unknown as { id: string }[]).map((row) => row.id);
+  const ids = ((data ?? []) as unknown as { id: string }[]).map((row) => row.id);
+
+  // Las tres condiciones de arriba no distinguen un chat sin atender de uno
+  // que una persona está atendiendo: los asesores contestan sin asignarse la
+  // conversación, y "el último mensaje es del cliente" describe igual de bien
+  // a alguien que respondió "Ok" a su asesor. El 26 de agosto de 2026 eso
+  // metió 22 chats atendidos en una tanda de 139. Ver human-handled.ts.
+  //
+  // La guarda de verdad está en el turno, que es por donde pasan todos los
+  // caminos. Esto es lo que evita llenar la cola de trabajo que el turno va a
+  // descartar uno por uno — y, sobre todo, lo que hace que el número del
+  // diálogo de encendido diga la verdad: al dueño se le dijo 139 cuando 22 de
+  // esas eran de sus asesores.
+  const deHumanos = await conversationsWrittenByHumans(supabase, ids);
+  return ids.filter((id) => !deHumanos.has(id));
 }
 
 export interface BacklogCounts {
@@ -1528,15 +1543,25 @@ export async function fetchBacklogCounts(
 ): Promise<BacklogCounts> {
   const cutoff = freeformWindowCutoff(now);
 
+  // Se piden los ids y no un count(*) porque el número que importa —el que
+  // lee el dueño antes de pulsar— tiene que descontar los chats que ya tocó
+  // una persona, y eso no se puede expresar en un `head: true`. Son un puñado
+  // de filas: el índice parcial deja adentro solo el trabajo libre pendiente.
   const [dentro, fuera] = await Promise.all([
-    unansweredFreeWork(supabase, "id", { count: "exact", head: true }).gt("last_customer_message_at", cutoff),
+    unansweredFreeWork(supabase, "id").gt("last_customer_message_at", cutoff),
     unansweredFreeWork(supabase, "id", { count: "exact", head: true }).lte("last_customer_message_at", cutoff),
   ]);
 
   if (dentro.error) throw dentro.error;
   if (fuera.error) throw fuera.error;
 
-  return { inWindow: dentro.count ?? 0, outOfWindow: fuera.count ?? 0 };
+  const idsDentro = ((dentro.data ?? []) as unknown as { id: string }[]).map((row) => row.id);
+  const deHumanos = await conversationsWrittenByHumans(supabase, idsDentro);
+
+  return {
+    inWindow: idsDentro.filter((id) => !deHumanos.has(id)).length,
+    outOfWindow: fuera.count ?? 0,
+  };
 }
 
 export async function fetchAgentSettings(supabase: SupabaseClient): Promise<AgentSettings> {

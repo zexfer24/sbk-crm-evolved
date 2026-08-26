@@ -16,6 +16,11 @@ interface FakeState {
   enabledToolKeys: string[];
   /** Qué devuelve el upsert de contact_tags. Sirve para probar que un fallo etiquetando no frena el turno. */
   tagUpsertError: { message: string } | null;
+  /**
+   * Mensajes de asesor humano en la conversación. Con uno solo, el turno no
+   * corre: el chat es de esa persona. Ver src/lib/ai/human-handled.ts.
+   */
+  humanMessages: { id: string }[];
 }
 
 const state: FakeState = {
@@ -26,6 +31,7 @@ const state: FakeState = {
   historyOrderAscending: null,
   enabledToolKeys: [],
   tagUpsertError: null,
+  humanMessages: [],
 };
 const conversationUpdates: Record<string, unknown>[] = [];
 const agentTurnInserts: Record<string, unknown>[] = [];
@@ -85,6 +91,8 @@ function createFakeSupabase() {
                 state.historyOrderAscending = opts.ascending;
                 return { limit: async () => ({ data: state.history }) };
               },
+              // Segundo .eq(): la comprobación de si un asesor escribió acá.
+              eq: () => ({ limit: async () => ({ data: state.humanMessages, error: null }) }),
             }),
           }),
         };
@@ -227,6 +235,7 @@ beforeEach(() => {
   state.historyOrderAscending = null;
   state.enabledToolKeys = ["buscar_repuesto", "buscar_historial_compras", "consultar_biblioteca"];
   state.tagUpsertError = null;
+  state.humanMessages = [];
   conversationUpdates.length = 0;
   agentTurnInserts.length = 0;
   contactTagUpserts.length = 0;

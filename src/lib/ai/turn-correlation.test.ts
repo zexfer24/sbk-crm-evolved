@@ -113,6 +113,10 @@ function createFakeSupabase() {
                   data: [{ sender_type: "customer", content: porId(id).mensaje, is_internal_note: false }],
                 }),
               }),
+              // Ningún asesor escribió en estos chats: son conversaciones que
+              // la IA sí tiene permitido atender. Lo contrario se prueba en
+              // human-handled.test.ts.
+              eq: () => ({ limit: async () => ({ data: [], error: null }) }),
             }),
           }),
         };
