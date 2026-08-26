@@ -1,6 +1,6 @@
 import "server-only";
 import { getRedis } from "@/lib/redis";
-import { createAgentQueue, createTurnSlots } from "@/lib/ai/redis-queue";
+import { createAgentQueue, createTurnPace, createTurnSlots } from "@/lib/ai/redis-queue";
 import { runAgentTurn } from "@/lib/ai/agent";
 import { isNonRetryable } from "@/lib/ai/turn-delivery";
 import { errorText, log } from "@/lib/log";
@@ -53,6 +53,26 @@ function maxConcurrentTurns(): number {
 }
 
 /**
+ * Turnos que pueden SALIR por minuto, en todo el sistema.
+ *
+ * Es un freno distinto del de cupos y hace falta que sean los dos. Los cupos
+ * limitan cuántos turnos corren A LA VEZ; esto limita cuántos terminan por
+ * minuto. Con tres cupos y turnos de siete segundos caben veinticinco turnos
+ * en un minuto sin que el tope de cupos se pase ni una vez — que es
+ * exactamente lo que pasó el 26 de agosto de 2026, cuando salieron ocho
+ * mensajes en un minuto con AGENT_MAX_CONCURRENT_TURNS en 3.
+ *
+ * Cuatro por minuto es deliberadamente lento. El valor de que sea lento es
+ * que apagar el interruptor alcance a frenar algo: a este ritmo, una tanda
+ * equivocada son cuatro clientes antes de que alguien reaccione, no
+ * veinticuatro.
+ */
+function maxTurnsPerMinute(): number {
+  const configurado = Number(process.env.AGENT_MAX_TURNS_PER_MINUTE);
+  return Number.isFinite(configurado) && configurado > 0 ? configurado : 4;
+}
+
+/**
  * Cuánto vale un cupo antes de darse por abandonado. Tiene que superar
  * cómodamente el turno más lento; si no, dos procesos podrían creerse dueños
  * del mismo cupo.
@@ -61,6 +81,9 @@ const TURN_LEASE_SECONDS = 180;
 
 /** Espera corta cuando no hay cupo: el turno vuelve a la cola, no se pierde. */
 const RETRY_WHEN_BUSY_SECONDS = 3;
+
+/** Espera cuando lo que se agotó es el presupuesto del minuto, no los cupos. */
+const RETRY_WHEN_PACED_SECONDS = 20;
 
 /** Espera antes de reintentar un turno que falló. */
 const RETRY_AFTER_ERROR_SECONDS = 30;
@@ -132,10 +155,22 @@ export interface QueueRunResult {
  * seguidos quedan varias esperas en curso, y no pasa nada: cada mensaje corre
  * la ventana hacia adelante, así que las primeras despiertan, no encuentran
  * nada vencido y se van. La última es la que atiende, ya con todo el hilo.
+ *
+ * `limit` es lo que arregla el agujero del 26 de agosto de 2026. Esto corría
+ * sin límite, o sea con el MAX_PER_RUN de diez, sobre la cola COMPARTIDA: cada
+ * mensaje entrante de WhatsApp drenaba hasta diez turnos del atraso. El
+ * comentario del barrido decía que el drenado lo hacía el cron, diez turnos
+ * cada cinco minutos, y que esa lentitud era el freno de emergencia — pero el
+ * mecanismo no estaba conectado y el ritmo lo terminaba poniendo el tráfico
+ * entrante. En cuatro minutos entraron veintisiete mensajes de clientes y
+ * salieron veinticuatro respuestas.
+ *
+ * Ahora el webhook drena como mucho lo que él mismo encoló: un mensaje
+ * entrante puede provocar un turno, no diez.
  */
-export async function processAfterDebounce(): Promise<QueueRunResult> {
+export async function processAfterDebounce(limit = MAX_PER_RUN): Promise<QueueRunResult> {
   await new Promise((resolve) => setTimeout(resolve, DEBOUNCE_SECONDS * 1000 + WAKE_MARGIN_MS));
-  return processQueuedTurns();
+  return processQueuedTurns(limit);
 }
 
 /**
@@ -155,6 +190,7 @@ export async function processQueuedTurns(limit = MAX_PER_RUN): Promise<QueueRunR
     max: maxConcurrentTurns(),
     leaseSeconds: TURN_LEASE_SECONDS,
   });
+  const ritmo = createTurnPace(redis, { maxPerMinute: maxTurnsPerMinute() });
 
   const result: QueueRunResult = { processed: 0, failed: 0, deferred: 0 };
 
@@ -168,6 +204,18 @@ export async function processQueuedTurns(limit = MAX_PER_RUN): Promise<QueueRunR
         return;
       }
       if (!conversationId) return; // Cola vacía.
+
+      // El presupuesto del minuto se pide ANTES del cupo: pedir el cupo
+      // primero lo tendría retenido durante una comprobación que puede decir
+      // que no, y con tres cupos eso se nota.
+      if (!(await ritmo.tryConsume())) {
+        // Se devuelve a la cola con la espera del minuto: volver antes solo
+        // gastaría viajes a Redis para recibir el mismo no.
+        await cola.enqueue(conversationId, RETRY_WHEN_PACED_SECONDS);
+        result.deferred++;
+        log.info("cola_ritmo_al_tope", { conversationId, tope: maxTurnsPerMinute() });
+        return;
+      }
 
       const cupo = await cupos.acquire();
       if (!cupo) {

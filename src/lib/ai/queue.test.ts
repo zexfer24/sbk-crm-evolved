@@ -30,6 +30,9 @@ import {
 beforeAll(async () => {
   // Tope bajo a propósito: hace visible el límite sin alargar la prueba.
   process.env.AGENT_MAX_CONCURRENT_TURNS = "2";
+  // Alto por defecto para que el tope por minuto no interfiera con las
+  // pruebas que miden otra cosa; el suyo lo baja a mano.
+  process.env.AGENT_MAX_TURNS_PER_MINUTE = "100";
   redis = new Redis(REDIS_URL, { lazyConnect: true, maxRetriesPerRequest: 1, db: REDIS_DB });
   try {
     await redis.connect();
@@ -166,5 +169,74 @@ describe("processQueuedTurns", () => {
     const segunda = await processQueuedTurns();
 
     expect(segunda.processed).toBe(1);
+  });
+});
+
+describe("tope de turnos por minuto", () => {
+  /**
+   * El freno que faltaba el 26 de agosto de 2026.
+   *
+   * Ese día salieron ocho mensajes en el minuto de las 16:35 con
+   * AGENT_MAX_CONCURRENT_TURNS en 3, y ningún tope se pasó: los cupos limitan
+   * turnos SIMULTÁNEOS, y con turnos de siete segundos caben veinticinco en
+   * un minuto. Contar mensajes por minuto es lo único que acota cuánto sale
+   * mientras alguien se da cuenta y apaga el interruptor.
+   */
+  it("no deja salir más turnos por minuto que el tope, y devuelve el resto a la cola", async () => {
+    if (!disponible) return;
+    process.env.AGENT_MAX_TURNS_PER_MINUTE = "3";
+    try {
+      await enqueueAgentTurns(["c1", "c2", "c3", "c4", "c5", "c6"], { debounceSeconds: 0 });
+
+      const resultado = await processQueuedTurns();
+
+      expect(runAgentTurnMock).toHaveBeenCalledTimes(3);
+      expect(resultado.processed).toBe(3);
+      // Lo que no salió no se pierde: vuelve a la cola para el minuto próximo.
+      expect(resultado.deferred).toBeGreaterThan(0);
+      expect(await pendingAgentTurns()).toBeGreaterThan(0);
+    } finally {
+      process.env.AGENT_MAX_TURNS_PER_MINUTE = "100";
+    }
+  });
+
+  /**
+   * El tope es de TODO el sistema, no de cada pasada: si fuera por pasada,
+   * cada webhook entrante traería su propio presupuesto y no frenaría nada,
+   * que es justo lo que pasó con el drenado.
+   */
+  it("el tope es compartido entre pasadas simultáneas", async () => {
+    if (!disponible) return;
+    process.env.AGENT_MAX_TURNS_PER_MINUTE = "2";
+    try {
+      await enqueueAgentTurns(["c1", "c2", "c3", "c4", "c5", "c6"], { debounceSeconds: 0 });
+
+      await Promise.all([processQueuedTurns(), processQueuedTurns(), processQueuedTurns()]);
+
+      expect(runAgentTurnMock).toHaveBeenCalledTimes(2);
+    } finally {
+      process.env.AGENT_MAX_TURNS_PER_MINUTE = "100";
+    }
+  });
+});
+
+describe("processAfterDebounce", () => {
+  /**
+   * La causa 2 del incidente: esto corría con el MAX_PER_RUN de diez sobre la
+   * cola COMPARTIDA, así que cada mensaje entrante de WhatsApp drenaba hasta
+   * diez turnos del atraso. En cuatro minutos entraron veintisiete mensajes y
+   * salieron veinticuatro respuestas: el ritmo lo puso el tráfico entrante, no
+   * el cron que el comentario del barrido decía que lo ponía.
+   */
+  it("drena como mucho el límite que le pasa el webhook", async () => {
+    if (!disponible) return;
+    await enqueueAgentTurns(["c1", "c2", "c3", "c4", "c5"], { debounceSeconds: 0 });
+
+    // El webhook le pasa el tamaño de SU lote: un mensaje entrante, un turno.
+    const resultado = await processQueuedTurns(1);
+
+    expect(runAgentTurnMock).toHaveBeenCalledTimes(1);
+    expect(resultado.processed).toBe(1);
+    expect(await pendingAgentTurns()).toBe(4);
   });
 });

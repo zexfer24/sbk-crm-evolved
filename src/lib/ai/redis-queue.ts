@@ -23,6 +23,8 @@ import { randomUUID } from "crypto";
 
 const QUEUE_KEY = "liminal:agent:turns";
 const SLOTS_KEY = "liminal:agent:slots";
+const PACE_KEY = "liminal:agent:ritmo";
+const SWEEP_LOCK_KEY = "liminal:agent:barrido";
 
 /**
  * Toma el turno vencido que lleva más tiempo esperando y lo saca de la cola,
@@ -105,6 +107,86 @@ export function createAgentQueue(redis: Redis): AgentQueue {
       await redis.del(failureKey(conversationId));
     },
   };
+}
+
+/**
+ * Consume un turno del presupuesto de la ventana, si queda.
+ *
+ * Misma forma que los cupos —limpiar, contar y añadir en una sola operación—
+ * porque el problema es el mismo: varias instancias mirando a la vez verían
+ * todas que queda lugar.
+ */
+const CONSUME_PACE_SCRIPT = `
+redis.call('ZREMRANGEBYSCORE', KEYS[1], '-inf', ARGV[1])
+if redis.call('ZCARD', KEYS[1]) >= tonumber(ARGV[2]) then return false end
+redis.call('ZADD', KEYS[1], ARGV[3], ARGV[4])
+redis.call('PEXPIRE', KEYS[1], ARGV[5])
+return ARGV[4]
+`;
+
+export interface TurnPace {
+  /** true si el turno puede correr ahora. false = la ventana está llena. */
+  tryConsume(): Promise<boolean>;
+  /** Turnos gastados en la ventana actual. Para los registros. */
+  used(): Promise<number>;
+}
+
+/**
+ * Tope de turnos por minuto en TODO el sistema.
+ *
+ * El tope de cupos limita turnos SIMULTÁNEOS, que no es lo mismo y por eso no
+ * frenó nada el 26 de agosto de 2026: con tres cupos y turnos de siete
+ * segundos caben veinticinco turnos en un minuto. Salieron ocho mensajes en
+ * el minuto de las 16:35 sin que ningún tope se pasara, porque ninguno contaba
+ * mensajes por minuto.
+ *
+ * Este es el freno que hace que apagar el interruptor sirva de algo: acota
+ * cuánto puede salir mientras alguien se da cuenta y reacciona.
+ */
+export function createTurnPace(redis: Redis, options: { maxPerMinute: number }): TurnPace {
+  const ventanaMs = 60_000;
+
+  return {
+    async tryConsume() {
+      const ahora = Date.now();
+      const otorgado = await redis.eval(
+        CONSUME_PACE_SCRIPT,
+        1,
+        PACE_KEY,
+        ahora - ventanaMs,
+        options.maxPerMinute,
+        ahora,
+        randomUUID(),
+        ventanaMs * 2
+      );
+      return typeof otorgado === "string";
+    },
+
+    async used() {
+      await redis.zremrangebyscore(PACE_KEY, "-inf", Date.now() - ventanaMs);
+      return redis.zcard(PACE_KEY);
+    },
+  };
+}
+
+/**
+ * Lock del barrido del atraso.
+ *
+ * El 26 de agosto el barrido se disparó dos veces con dos minutos y medio de
+ * diferencia (139 y 129 conversaciones) porque el botón no tiene memoria de
+ * que ya se pulsó. Con el atraso a medio drenar, volver a pulsarlo re-encola
+ * todo lo que no salió todavía.
+ *
+ * El TTL es la red contra el proceso que muere con el lock puesto: sin él, un
+ * reinicio desafortunado deja el barrido bloqueado para siempre.
+ */
+export async function acquireSweepLock(redis: Redis, ttlSeconds: number): Promise<boolean> {
+  const puesto = await redis.set(SWEEP_LOCK_KEY, String(Date.now()), "EX", ttlSeconds, "NX");
+  return puesto === "OK";
+}
+
+export async function releaseSweepLock(redis: Redis): Promise<void> {
+  await redis.del(SWEEP_LOCK_KEY);
 }
 
 export interface TurnSlotsOptions {

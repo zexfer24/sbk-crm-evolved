@@ -524,7 +524,9 @@ export async function POST(request: Request) {
     // Se espera la ventana de silencio antes de atender: Meta manda un POST
     // por mensaje, y sin esperar el cliente recibiría una respuesta por
     // frase, cada una sin el contexto de las siguientes.
-    after(() => processAfterDebounce());
+    // Se le pasa el tamaño del lote: este webhook drena lo que ÉL encoló y
+    // no el atraso general. Ver processAfterDebounce.
+    after(() => processAfterDebounce(touchedByCustomer.size));
   }
 
   return NextResponse.json({ ok: true });
