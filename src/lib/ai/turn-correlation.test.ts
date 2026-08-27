@@ -416,6 +416,21 @@ describe("verificación de identidad", () => {
     expect(() => buildTurnTarget("conv-ana", fila({ contact_id: "" }))).toThrow(TurnIdentityError);
   });
 
+  /**
+   * Tener algo guardado no es tener un teléfono. Un contacto con '+undefined'
+   * pasaba esta comprobación —la cadena no está vacía— y el turno corría
+   * entero para producir una llamada a Meta con destinatario vacío: `toWaId`
+   * le quita todo lo que no es dígito y no queda nada.
+   */
+  it.each([["+undefined"], ["undefined"], ["584120000001"], ["+CO.1550555583222997"], ["+"]])(
+    "rechaza un contacto cuyo número no es un teléfono: %s",
+    (phone_number) => {
+      expect(() => buildTurnTarget("conv-ana", fila({ contact: { phone_number } }))).toThrow(
+        TurnIdentityError
+      );
+    }
+  );
+
   /** Congelado: nada puede reapuntarlo a otro chat a mitad de turno. */
   it("entrega un destinatario que no se puede modificar", () => {
     const target = buildTurnTarget("conv-ana", fila());

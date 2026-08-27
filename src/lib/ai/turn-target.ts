@@ -1,4 +1,5 @@
 import "server-only";
+import { isDeliverablePhoneNumber } from "@/lib/whatsapp/phone";
 
 // ---------------------------------------------------------------------------
 // Identidad del turno: a qué chat y a qué cliente le estamos hablando.
@@ -87,6 +88,17 @@ export function buildTurnTarget(expectedConversationId: string, convo: AgentConv
   const phoneNumber = convo.contact?.phone_number;
   if (!phoneNumber) {
     throw new TurnIdentityError(expectedConversationId, "el contacto no trae número de teléfono");
+  }
+  // Tener algo guardado no es tener un teléfono. Un contacto con '+undefined'
+  // pasaba esta comprobación y el turno corría entero —clasificar,
+  // herramientas, redactar— para producir una llamada a Meta con destinatario
+  // vacío. La identidad rota no se arregla sola, así que el turno no se
+  // reintenta: sale como NonRetryableTurnError y deja de gastar cupos.
+  if (!isDeliverablePhoneNumber(phoneNumber)) {
+    throw new TurnIdentityError(
+      expectedConversationId,
+      `el contacto tiene "${phoneNumber}" donde debería ir un teléfono de WhatsApp`
+    );
   }
 
   return Object.freeze({

@@ -11,6 +11,7 @@ import {
 } from "@/lib/whatsapp/meta-client";
 import { debounceSecondsFor, enqueueAgentTurns, processAfterDebounce } from "@/lib/ai/queue";
 import { MEDIA_BUCKET, mediaUrlFor } from "@/lib/storage";
+import { phoneNumberFromWaId } from "@/lib/whatsapp/phone";
 import { log } from "@/lib/log";
 
 // ---------------------------------------------------------------------------
@@ -40,7 +41,12 @@ interface WebhookMediaObject {
 }
 
 interface WebhookMessage {
-  from: string;
+  /**
+   * Identificador del remitente. Opcional en el tipo aunque la documentación
+   * lo dé por seguro: hay mensajes reales que llegan sin él, y darlo por hecho
+   * es lo que metió la cadena '+undefined' en la base. Ver phoneNumberFromWaId.
+   */
+  from?: string;
   id: string;
   timestamp: string;
   type: string;
@@ -383,8 +389,32 @@ export async function POST(request: Request) {
           continue;
         }
 
+        // Un remitente que no es un teléfono no entra. Esta línea era
+        // `const phoneNumber = \`+${message.from}\`` y con `from` ausente
+        // producía la cadena '+undefined', que se guardaba como si fuera un
+        // número: un chat que se ve, que se abre y al que es imposible
+        // entregarle nada. Uno de 1.197 contactos quedó así.
+        //
+        // Se descarta el mensaje en vez de inventarle una identidad al
+        // remitente. Un contacto en este CRM ES un teléfono de WhatsApp —de
+        // ahí cuelgan la conversación, el envío y la ventana de 24 h— y
+        // sostener a medias uno que no lo es produce justo lo que se está
+        // arreglando: un chat sin salida que el asesor descubre reintentando.
+        //
+        // El registro lleva el identificador crudo. No es PII: se llega acá
+        // precisamente porque no es un teléfono, y sin él la próxima vez habría
+        // que volver a decodificar wamids a mano para saber qué pasó.
+        const phoneNumber = phoneNumberFromWaId(message.from);
+        if (!phoneNumber) {
+          log.error("webhook_remitente_sin_telefono", {
+            whatsappMessageId: message.id,
+            tipo: message.type,
+            remitente: message.from ?? null,
+          });
+          continue;
+        }
+
         const profileName = value.contacts?.find((c) => c.wa_id === message.from)?.profile?.name ?? null;
-        const phoneNumber = `+${message.from}`;
 
         const { data: contact, error: contactError } = await supabase
           .from("contacts")

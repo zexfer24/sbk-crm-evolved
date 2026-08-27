@@ -899,3 +899,88 @@ describe("POST /api/webhooks/whatsapp — por qué no se entregó", () => {
     });
   });
 });
+
+// ---------------------------------------------------------------------------
+// El remitente que no es un teléfono
+//
+// `const phoneNumber = \`+${message.from}\`` con `from` ausente produce la
+// cadena '+undefined' y la guarda como número de contacto. Uno de los 1.197
+// contactos quedó así: un chat que se ve, que se abre y al que es imposible
+// entregarle nada.
+// ---------------------------------------------------------------------------
+describe("POST /api/webhooks/whatsapp — un remitente que no es un teléfono", () => {
+  function mensajeDe(from: unknown, id: string) {
+    return {
+      entry: [
+        {
+          changes: [
+            {
+              field: "messages",
+              value: {
+                metadata: { phone_number_id: "1234567890" },
+                contacts: [{ profile: { name: "Cliente Demo" }, wa_id: "584120000000" }],
+                messages: [
+                  {
+                    ...(from === undefined ? {} : { from }),
+                    id,
+                    timestamp: String(Math.floor(Date.now() / 1000)),
+                    type: "text",
+                    text: { body: "buenas, ¿tienen frenos?" },
+                  },
+                ],
+              },
+            },
+          ],
+        },
+      ],
+    };
+  }
+
+  beforeEach(async () => {
+    insertedRows.length = 0;
+    const { enqueueAgentTurns } = await import("@/lib/ai/queue");
+    vi.mocked(enqueueAgentTurns).mockClear();
+  });
+
+  /** El espía de la cola, ya tipado, para no repetir el import en cada caso. */
+  async function colaEspiada() {
+    const { enqueueAgentTurns } = await import("@/lib/ai/queue");
+    return vi.mocked(enqueueAgentTurns);
+  }
+
+  it("no guarda nada cuando el mensaje llega sin remitente", async () => {
+    const { POST } = await import("@/app/api/webhooks/whatsapp/route");
+    const enqueueAgentTurnsMock = await colaEspiada();
+
+    const response = await POST(fakeRequest(mensajeDe(undefined, "wamid.sin-remitente-1")));
+
+    // 200 igual: a Meta no se le pide que reintente algo que no vamos a poder
+    // procesar nunca.
+    expect(response.status).toBe(200);
+    expect(insertedRows).toHaveLength(0);
+    expect(enqueueAgentTurnsMock).not.toHaveBeenCalled();
+  });
+
+  /**
+   * El identificador que destapó el caso: decodificado de los wamid de sus
+   * mensajes, el emisor era 'CO.1550555583222997'. Con la línea vieja habría
+   * quedado guardado como '+CO.1550555583222997'.
+   */
+  it("tampoco guarda un identificador de la Cloud API que no es un número", async () => {
+    const { POST } = await import("@/app/api/webhooks/whatsapp/route");
+
+    await POST(fakeRequest(mensajeDe("CO.1550555583222997", "wamid.remitente-raro-1")));
+
+    expect(insertedRows).toHaveLength(0);
+  });
+
+  it("un remitente normal se sigue guardando igual", async () => {
+    const { POST } = await import("@/app/api/webhooks/whatsapp/route");
+    const enqueueAgentTurnsMock = await colaEspiada();
+
+    await POST(fakeRequest(mensajeDe("584120000000", "wamid.remitente-bueno-1")));
+
+    expect(insertedRows).toHaveLength(1);
+    expect(enqueueAgentTurnsMock).toHaveBeenCalledTimes(1);
+  });
+});

@@ -50,6 +50,8 @@ const insertedRows: Record<string, unknown>[] = [];
 const messageUpdates: Record<string, unknown>[] = [];
 
 let channelRow: { phone_number_id: string | null; status: string };
+/** El teléfono del contacto de la conversación. Se ensucia en un test a propósito. */
+let contactPhone: string;
 
 function createFakeClient() {
   return {
@@ -63,7 +65,7 @@ function createFakeClient() {
                   maybeSingle: async () => ({
                     data: {
                       id: "conv-1",
-                      contact: { phone_number: "+58123456789" },
+                      contact: { phone_number: contactPhone },
                       channel: channelRow,
                     },
                     error: null,
@@ -132,6 +134,7 @@ beforeEach(() => {
   insertedRows.length = 0;
   messageUpdates.length = 0;
   channelRow = { phone_number_id: "1234567890", status: "connected" };
+  contactPhone = "+58123456789";
   sendWhatsappTextMock.mockReset();
   sendWhatsappTextMock.mockResolvedValue({ whatsappMessageId: "wamid.OK" });
   process.env.WHATSAPP_ACCESS_TOKEN = "token-de-prueba";
@@ -247,5 +250,63 @@ describe("POST /api/messages/send — el asesor no espera a Meta", () => {
 
     expect(res.status).toBe(500);
     expect(insertedRows).toHaveLength(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// El chat sin número
+//
+// Un contacto de los 1.197 tiene la cadena '+undefined' donde debería ir su
+// teléfono: el webhook hacía `+${message.from}` sin comprobar que `from`
+// existiera. Todo envío a ese chat falla, y el asesor sólo veía el triángulo
+// rojo — así que reintentaba.
+// ---------------------------------------------------------------------------
+describe("POST /api/messages/send — un chat al que es imposible entregar", () => {
+  it("no acepta el envío cuando el contacto no tiene un teléfono de verdad", async () => {
+    contactPhone = "+undefined";
+
+    const response = await POST(sendRequest());
+
+    expect(response.status).toBe(422);
+    // Nada guardado y nada intentado: la fila y el triángulo rojo son
+    // precisamente lo que hay que dejar de producir.
+    expect(insertedRows).toHaveLength(0);
+    expect(sendWhatsappTextMock).not.toHaveBeenCalled();
+  });
+
+  /** El único arreglo posible está fuera del CRM, así que hay que decirlo. */
+  it("le dice al asesor qué hacer, no sólo que no se pudo", async () => {
+    contactPhone = "+undefined";
+
+    const body = (await (await POST(sendRequest())).json()) as { error: string };
+
+    expect(body.error).toContain("+undefined");
+    expect(body.error).toMatch(/pídele el número al cliente/i);
+  });
+
+  /**
+   * La nota interna nunca sale por WhatsApp: es del CRM. Bloquearla sería
+   * quitarle al equipo el único sitio donde puede dejar constancia de un chat
+   * que justamente no se puede contestar.
+   */
+  it("la nota interna sigue funcionando en ese mismo chat", async () => {
+    contactPhone = "+undefined";
+
+    const response = await POST(sendRequest({ isInternalNote: true, content: "Sin número bueno." }));
+
+    expect(response.status).toBe(200);
+    expect(insertedRows).toHaveLength(1);
+    expect(insertedRows[0]).toMatchObject({ is_internal_note: true });
+  });
+
+  /** En un canal simulado no hay Meta a quien enviarle, así que no hay nada que cortar. */
+  it("en un canal de demo no bloquea nada", async () => {
+    contactPhone = "+undefined";
+    channelRow = { phone_number_id: null, status: "demo" };
+
+    const response = await POST(sendRequest());
+
+    expect(response.status).toBe(200);
+    expect(insertedRows).toHaveLength(1);
   });
 });

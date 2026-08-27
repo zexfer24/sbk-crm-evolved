@@ -4,6 +4,7 @@ import { fetchCurrentAgent } from "@/lib/data";
 import { log, errorText } from "@/lib/log";
 import type { MessageType } from "@/lib/types";
 import { signedUrlForSending } from "@/lib/media-link";
+import { isDeliverablePhoneNumber } from "@/lib/whatsapp/phone";
 import {
   MetaApiError,
   metaErrorCode,
@@ -117,6 +118,30 @@ export async function POST(request: Request) {
     return NextResponse.json(
       { error: "El canal está marcado como conectado pero falta WHATSAPP_ACCESS_TOKEN en el servidor." },
       { status: 500 }
+    );
+  }
+
+  // Un chat cuyo contacto no tiene un teléfono de verdad no tiene a dónde
+  // enviar, y eso no lo arregla reintentar. Se corta ANTES de insertar la
+  // fila: dejar el mensaje guardado y que falle en segundo plano es lo que
+  // produce el triángulo rojo que el asesor reintenta cinco veces.
+  //
+  // Se le dice qué hacer, no sólo que no se puede. El único arreglo posible
+  // está fuera del CRM: pedirle el número al cliente por otra vía.
+  if (isRealChannel && !isDeliverablePhoneNumber(conversation.contact.phone_number)) {
+    log.warn("send.contacto_sin_telefono", {
+      conversationId,
+      // Es la razón exacta por la que no se puede enviar y no es un teléfono
+      // —de serlo, no estaríamos acá— así que va entera al registro.
+      guardado: conversation.contact.phone_number,
+    });
+    return NextResponse.json(
+      {
+        error:
+          `Este chat no tiene un número de WhatsApp válido (quedó guardado como "${conversation.contact.phone_number}"), ` +
+          "así que no hay a dónde entregar el mensaje. Pídele el número al cliente por otra vía y corrígelo en su ficha.",
+      },
+      { status: 422 }
     );
   }
 
