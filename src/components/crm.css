@@ -1641,6 +1641,21 @@
   gap: 4px;
 }
 
+/* El motivo del fallo, escrito debajo del mensaje que no salió.
+   Mismo color que el triángulo del check: son la misma noticia. El ancho lo
+   pone .crm-msg (70% del hilo), así que un texto largo de Meta parte en
+   varias líneas en vez de estirar la columna. Alineado a la derecha porque
+   sólo aparece en mensajes salientes, que van a ese lado. */
+.crm-msg-failure {
+  display: block;
+  max-width: 100%;
+  margin-top: 2px;
+  color: var(--lm-hot-ink);
+  line-height: 1.35;
+  text-align: right;
+  overflow-wrap: anywhere;
+}
+
 /* --------------------------------------------------------------------------
    Filtros de la bandeja
    -------------------------------------------------------------------------- */

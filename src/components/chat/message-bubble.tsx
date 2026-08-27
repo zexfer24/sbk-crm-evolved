@@ -310,9 +310,23 @@ export function MessageBubble({
       <span className="crm-msg-foot px-1 text-[11px] text-muted">
         {formatMessageTime(message.createdAt)}
         {!isCustomer && !isInternalNote && (
-          <DeliveryCheck status={message.whatsappStatus} pending={pendingDelivery} size={13} />
+          <DeliveryCheck
+            status={message.whatsappStatus}
+            detail={message.whatsappError}
+            pending={pendingDelivery}
+            size={13}
+          />
         )}
       </span>
+
+      {/* El motivo, escrito, no sólo en el tooltip del icono.
+          El triángulo rojo a secas sugiere una sola cosa —reintentar— y el
+          asesor la hacía cinco veces seguidas contra un número que no existe.
+          Puesto en palabras debajo del mensaje, "el número no está en WhatsApp"
+          y "pasaron 24 h" dejan de verse igual. */}
+      {!isCustomer && !isInternalNote && message.whatsappStatus === "failed" && message.whatsappError && (
+        <span className="crm-msg-failure px-1 text-[11px]">{message.whatsappError}</span>
+      )}
     </div>
   );
 }

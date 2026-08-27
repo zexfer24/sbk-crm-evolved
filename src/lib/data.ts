@@ -3,6 +3,7 @@ import { pgrstLiteral } from "@/lib/ai/pgrst";
 import { conversationsWrittenByHumans } from "@/lib/ai/human-handled";
 import { freeformWindowCutoff, isTicketTag } from "@/lib/dashboard";
 import { CRM_TIME_ZONE, currentDayRange } from "@/lib/time-zone";
+import { failureReason } from "@/lib/whatsapp/failure-reason";
 import type {
   Agent,
   AgentMetrics,
@@ -178,6 +179,8 @@ interface RawMessage {
   media_url: string | null;
   is_internal_note: boolean;
   whatsapp_status: Message["whatsappStatus"];
+  whatsapp_error_code: number | null;
+  whatsapp_error_detail: string | null;
   reaction_emoji: string | null;
   reply_to_message_id: string | null;
   created_at: string;
@@ -387,6 +390,7 @@ function mapMessage(row: RawMessage): Message {
     mediaUrl: row.media_url,
     isInternalNote: row.is_internal_note,
     whatsappStatus: row.whatsapp_status,
+    whatsappError: failureReason(row.whatsapp_error_code, row.whatsapp_error_detail),
     reactionEmoji: row.reaction_emoji,
     replyToMessageId: row.reply_to_message_id,
     createdAt: row.created_at,
@@ -874,7 +878,8 @@ export async function fetchSales(supabase: SupabaseClient): Promise<Sale[]> {
 const MESSAGES_PAGE_SIZE = 1000;
 
 const MESSAGE_SELECT = `id, conversation_id, direction, sender_type, message_type, content, template_name,
-         media_url, is_internal_note, whatsapp_status, reaction_emoji, reply_to_message_id, created_at,
+         media_url, is_internal_note, whatsapp_status, whatsapp_error_code, whatsapp_error_detail,
+         reaction_emoji, reply_to_message_id, created_at,
          sender_agent:agents(id, display_name, full_name, avatar_url, role, is_active)`;
 
 /**

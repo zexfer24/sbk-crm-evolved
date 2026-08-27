@@ -18,6 +18,7 @@ function baseMessage(overrides: Partial<Message>): Message {
     mediaUrl: null,
     isInternalNote: false,
     whatsappStatus: null,
+    whatsappError: null,
     reactionEmoji: null,
     replyToMessageId: null,
     createdAt: "2026-08-19T23:39:54.000Z",
@@ -202,5 +203,63 @@ describe("MessageBubble — la reacción del cliente", () => {
   it("un mensaje sin reacción no muestra nada", () => {
     render(<MessageBubble message={baseMessage({ content: "Te lo dejo en 45$" })} />);
     expect(screen.queryByRole("img", { name: /reaccionó con/i })).not.toBeInTheDocument();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// El triángulo rojo que no explicaba nada
+//
+// El asesor reintentó cinco veces seguidas contra un contacto cuyo número era
+// la cadena '+undefined'. No hizo nada raro: un triángulo rojo a secas sugiere
+// exactamente una cosa, y es reintentar.
+// ---------------------------------------------------------------------------
+describe("MessageBubble — un envío que falló dice por qué", () => {
+  const fallido = (whatsappError: string | null) =>
+    baseMessage({
+      direction: "outbound",
+      senderType: "agent",
+      messageType: "text",
+      content: "Buenas, ¿te llegó el pedido?",
+      whatsappStatus: "failed",
+      whatsappError,
+    });
+
+  it("escribe el motivo debajo del mensaje, no sólo en el tooltip", () => {
+    render(<MessageBubble message={fallido("El número no está en WhatsApp.")} />);
+
+    expect(screen.getByText("El número no está en WhatsApp.")).toBeInTheDocument();
+  });
+
+  /** Que el motivo esté escrito no quita que el icono lo lleve para quien pase por encima. */
+  it("el icono de entrega también carga el motivo", () => {
+    render(<MessageBubble message={fallido("El número no está en WhatsApp.")} />);
+
+    expect(
+      screen.getByLabelText("No se pudo entregar: El número no está en WhatsApp.")
+    ).toBeInTheDocument();
+  });
+
+  /** Un fallo sin motivo sigue siendo un fallo: el icono no puede desaparecer. */
+  it("sin motivo, el icono conserva su etiqueta de siempre", () => {
+    render(<MessageBubble message={fallido(null)} />);
+
+    expect(screen.getByLabelText("No se pudo entregar")).toBeInTheDocument();
+  });
+
+  it("un mensaje entregado no muestra ningún motivo", () => {
+    render(
+      <MessageBubble
+        message={baseMessage({
+          direction: "outbound",
+          senderType: "agent",
+          content: "Ya te lo aparto.",
+          whatsappStatus: "delivered",
+          whatsappError: null,
+        })}
+      />
+    );
+
+    expect(screen.getByLabelText("Recibido")).toBeInTheDocument();
+    expect(screen.queryByText(/no está en WhatsApp/)).not.toBeInTheDocument();
   });
 });

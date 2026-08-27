@@ -1,5 +1,5 @@
 import { createHmac } from "node:crypto";
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 
 // `after()` de Next.js exige contexto de request real; en el test lo
 // ejecutamos inline para poder esperar sus efectos.
@@ -45,6 +45,8 @@ const insertedRows: Record<string, unknown>[] = [];
 
 /** UPDATE de reacción: por qué columna se buscó, con qué valor, y qué emoji se puso. */
 const reactionUpdates: { column: string; value: string; emoji: string | null }[] = [];
+/** Los UPDATE de estado de entrega, con lo que se guardó del fallo. */
+const statusUpdates: { wamid: string; patch: Record<string, unknown> }[] = [];
 
 /** Lo que responde el límite de tasa; un test lo pone en false para probar el freno. */
 let rateLimitAllows = true;
@@ -145,14 +147,30 @@ function createFakeAdminClient() {
               },
             };
           },
-          update(patch: { media_url?: string; reaction_emoji?: string | null }) {
+          update(patch: {
+            media_url?: string;
+            reaction_emoji?: string | null;
+            whatsapp_status?: string;
+          }) {
             return {
-              eq: async (column: string, id: string) => {
+              eq: (column: string, id: string) => {
                 if (patch.media_url) mediaUpdates.push({ id, mediaUrl: patch.media_url });
                 if ("reaction_emoji" in patch) {
                   reactionUpdates.push({ column, value: id, emoji: patch.reaction_emoji ?? null });
                 }
-                return { data: null, error: null };
+                if ("whatsapp_status" in patch) {
+                  statusUpdates.push({ wamid: id, patch: patch as Record<string, unknown> });
+                }
+
+                // PostgREST devuelve un builder: se puede esperar tal cual o
+                // pedirle `.select()` para recuperar las filas tocadas. El
+                // webhook usa las dos formas, así que el doble también.
+                return Object.assign(Promise.resolve({ data: null, error: null }), {
+                  select: async () => ({
+                    data: [{ id: "msg-1", conversation_id: "conv-1" }],
+                    error: null,
+                  }),
+                });
               },
             };
           },
@@ -789,5 +807,95 @@ describe("POST /api/webhooks/whatsapp — ubicación y otros tipos", () => {
     expect(texto).not.toContain("no soportado");
     expect(texto).not.toContain("[order]");
     expect(texto.toLowerCase()).toContain("cliente");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// El motivo del fallo de entrega
+//
+// Meta manda el código y el motivo en el webhook de estado. Se estaban
+// tirando: sólo se guardaba la palabra 'failed', que en la burbuja es un
+// triángulo rojo sin explicación. El asesor hace lo único que un triángulo
+// rojo sugiere —reintentar— cinco veces seguidas contra un número que no
+// existe.
+// ---------------------------------------------------------------------------
+describe("POST /api/webhooks/whatsapp — por qué no se entregó", () => {
+  function estadoBody(status: string, errors?: unknown[]) {
+    return {
+      entry: [
+        {
+          changes: [
+            {
+              field: "messages",
+              value: {
+                metadata: { phone_number_id: "1234567890" },
+                statuses: [{ id: "wamid.saliente-1", status, ...(errors ? { errors } : {}) }],
+              },
+            },
+          ],
+        },
+      ],
+    };
+  }
+
+  beforeEach(() => {
+    statusUpdates.length = 0;
+  });
+
+  it("guarda el código y el motivo cuando Meta rechaza el mensaje", async () => {
+    const { POST } = await import("@/app/api/webhooks/whatsapp/route");
+
+    await POST(
+      fakeRequest(
+        estadoBody("failed", [
+          {
+            code: 131026,
+            title: "Message undeliverable",
+            error_data: { details: "Message Undeliverable." },
+          },
+        ])
+      )
+    );
+
+    expect(statusUpdates).toHaveLength(1);
+    expect(statusUpdates[0]).toMatchObject({
+      wamid: "wamid.saliente-1",
+      patch: {
+        whatsapp_status: "failed",
+        whatsapp_error_code: 131026,
+        whatsapp_error_detail: "Message Undeliverable.",
+      },
+    });
+  });
+
+  /**
+   * Meta manda hasta tres textos y no siempre los tres. `error_data.details`
+   * es el que dice algo concreto; `title` es la etiqueta de catálogo.
+   */
+  it("cae al texto más específico que haya venido", async () => {
+    const { POST } = await import("@/app/api/webhooks/whatsapp/route");
+
+    await POST(fakeRequest(estadoBody("failed", [{ code: 131047, title: "Re-engagement message" }])));
+
+    expect(statusUpdates[0].patch).toMatchObject({
+      whatsapp_error_code: 131047,
+      whatsapp_error_detail: "Re-engagement message",
+    });
+  });
+
+  /**
+   * Un estado que no es 'failed' limpia el motivo. Si un mensaje llegara a
+   * remontar, un motivo viejo colgado debajo sería peor que ninguno.
+   */
+  it("no deja el motivo pegado cuando el mensaje sí llegó", async () => {
+    const { POST } = await import("@/app/api/webhooks/whatsapp/route");
+
+    await POST(fakeRequest(estadoBody("delivered")));
+
+    expect(statusUpdates[0].patch).toMatchObject({
+      whatsapp_status: "delivered",
+      whatsapp_error_code: null,
+      whatsapp_error_detail: null,
+    });
   });
 });

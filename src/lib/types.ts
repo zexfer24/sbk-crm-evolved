@@ -237,6 +237,17 @@ export interface Message {
   isInternalNote: boolean;
   whatsappStatus: WhatsappMessageStatus | null;
   /**
+   * Por qué Meta no pudo entregarlo, en palabras. Null salvo cuando
+   * `whatsappStatus` es 'failed' — y aun ahí puede faltar, si el fallo llegó
+   * sin motivo.
+   *
+   * Es lo que convierte el triángulo rojo en algo accionable: "el número no
+   * existe" se arregla pidiéndole el número al cliente, "pasaron 24 h" se
+   * arregla esperando a que vuelva a escribir. Sin esto los dos se ven igual y
+   * el asesor reintenta, que no arregla ninguno de los dos.
+   */
+  whatsappError: string | null;
+  /**
    * Emoji con el que el cliente reaccionó a este mensaje. Null si no
    * reaccionó o si quitó la reacción.
    */

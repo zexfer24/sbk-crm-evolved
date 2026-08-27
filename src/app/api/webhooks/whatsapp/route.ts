@@ -66,6 +66,19 @@ interface WebhookMessage {
 interface WebhookStatus {
   id: string;
   status: "sent" | "delivered" | "read" | "failed";
+  /**
+   * Sólo en los `status: "failed"`: por qué Meta no lo entregó.
+   *
+   * Venía llegando desde siempre y se tiraba. Es la diferencia entre "no se
+   * envió" y "el número no existe", que son dos problemas con dos arreglos
+   * distintos y que hasta ahora se veían igual en la burbuja.
+   */
+  errors?: {
+    code: number;
+    title?: string;
+    message?: string;
+    error_data?: { details?: string };
+  }[];
 }
 
 interface WebhookChangeValue {
@@ -77,6 +90,19 @@ interface WebhookChangeValue {
 
 interface WebhookBody {
   entry?: { changes?: { field: string; value: WebhookChangeValue }[] }[];
+}
+
+/**
+ * El motivo del fallo, del más específico al más genérico.
+ *
+ * Meta manda hasta tres textos para el mismo error y no siempre los tres.
+ * `error_data.details` es el que dice algo concreto ("Message failed to send
+ * because there were one or more errors related to your payment method");
+ * `title` es la etiqueta de catálogo. Quedarse con el primero que venga en ese
+ * orden es lo que hace que la burbuja diga algo útil.
+ */
+function metaFailureText(fallo: NonNullable<WebhookStatus["errors"]>[number]): string {
+  return fallo.error_data?.details ?? fallo.message ?? fallo.title ?? `Error ${fallo.code} de Meta.`;
 }
 
 // Techo de eventos por minuto. Holgado para el tráfico de una repuestera
@@ -273,10 +299,30 @@ export async function POST(request: Request) {
       const value = change.value;
 
       for (const status of value.statuses ?? []) {
-        await supabase
+        const fallo = status.status === "failed" ? status.errors?.[0] : undefined;
+        // Se limpian cuando el estado no es 'failed': si un mensaje llegara a
+        // remontar, un motivo viejo colgado debajo sería peor que ninguno.
+        const { data: afectados } = await supabase
           .from("messages")
-          .update({ whatsapp_status: status.status })
-          .eq("whatsapp_message_id", status.id);
+          .update({
+            whatsapp_status: status.status,
+            whatsapp_error_code: fallo?.code ?? null,
+            whatsapp_error_detail: fallo ? metaFailureText(fallo) : null,
+          })
+          .eq("whatsapp_message_id", status.id)
+          .select("id, conversation_id");
+
+        if (fallo) {
+          // Este era el registro que faltaba: el fallo de entrega sólo existía
+          // como una columna con la palabra 'failed'. Para diagnosticarlo había
+          // que llegar por la base de datos.
+          log.error("mensaje_no_entregado", {
+            whatsappMessageId: status.id,
+            conversationId: afectados?.[0]?.conversation_id ?? null,
+            codigo: fallo.code,
+            detalle: metaFailureText(fallo),
+          });
+        }
       }
 
       if (!value.messages?.length) continue;

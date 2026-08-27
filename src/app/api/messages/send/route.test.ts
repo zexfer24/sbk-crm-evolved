@@ -175,7 +175,37 @@ describe("POST /api/messages/send — el asesor no espera a Meta", () => {
     await flush();
 
     expect(sendWhatsappTextMock).toHaveBeenCalledTimes(1);
-    expect(messageUpdates).toContainEqual({ id: "msg-1", whatsapp_status: "failed" });
+    expect(messageUpdates).toContainEqual({
+      id: "msg-1",
+      whatsapp_status: "failed",
+      // Sin `details` de Meta no hay código, pero el motivo se guarda igual:
+      // es lo que el asesor lee debajo del triángulo rojo.
+      whatsapp_error_code: null,
+      whatsapp_error_detail: "Fuera de la ventana de 24 horas.",
+    });
+  });
+
+  /**
+   * El código no es el status HTTP. 131026 ("ese número no recibe mensajes") y
+   * 131047 ("pasaron 24 h") llegan los dos como un 400: sin el código de Meta,
+   * los dos fallos son indistinguibles.
+   */
+  it("guarda el código de Meta cuando viene en el cuerpo del rechazo", async () => {
+    sendWhatsappTextMock.mockRejectedValue(
+      new MetaApiError("Message Undeliverable.", 400, {
+        error: { code: 131026, message: "Message Undeliverable." },
+      })
+    );
+
+    await POST(sendRequest());
+    await flush();
+
+    expect(messageUpdates).toContainEqual({
+      id: "msg-1",
+      whatsapp_status: "failed",
+      whatsapp_error_code: 131026,
+      whatsapp_error_detail: "Message Undeliverable.",
+    });
   });
 
   it("un fallo de red reintenta una vez y, si sale, queda 'sent'", async () => {

@@ -14,6 +14,21 @@ export class MetaApiError extends Error {
   }
 }
 
+/**
+ * Código de error de Meta dentro de un fallo de la Graph API, si vino.
+ *
+ * OJO: no es `status`. `status` es el HTTP —400, 401, 500— y sirve para saber
+ * si reintentar. El código de Meta es lo que dice QUÉ pasó: 131026 es "ese
+ * número no recibe mensajes" y 131047 es "pasaron 24 h", y los dos llegan como
+ * un 400. Sin este número, los dos fallos son indistinguibles.
+ */
+export function metaErrorCode(err: unknown): number | null {
+  if (!(err instanceof MetaApiError)) return null;
+  const details = err.details as { error?: { code?: unknown } } | null | undefined;
+  const code = details?.error?.code;
+  return typeof code === "number" ? code : null;
+}
+
 /** Deja solo dígitos: formato que la Cloud API espera para `to` (sin "+", sin espacios). */
 export function toWaId(phoneNumber: string): string {
   return phoneNumber.replace(/[^\d]/g, "");

@@ -3,8 +3,9 @@ import type { SupabaseClient } from "@supabase/supabase-js";
 import type { Database } from "@/lib/supabase/database.types";
 import type { Playbook } from "@/lib/types";
 import type { TurnTarget } from "@/lib/ai/turn-target";
-import { sendWhatsappMedia, sendWhatsappText } from "@/lib/whatsapp/meta-client";
+import { metaErrorCode, sendWhatsappMedia, sendWhatsappText } from "@/lib/whatsapp/meta-client";
 import { signedUrlForSending } from "@/lib/media-link";
+import { errorText, log } from "@/lib/log";
 
 // ---------------------------------------------------------------------------
 // Envío de las respuestas del agente. Vive aparte del orquestador porque el
@@ -37,24 +38,67 @@ function accessTokenFor(target: TurnTarget): string | null {
   return accessToken;
 }
 
+/**
+ * Resultado de intentar entregar algo por WhatsApp, listo para guardar.
+ *
+ * El fallo se guardaba como `whatsapp_status: null`, que es el mismo valor con
+ * el que nace un mensaje que va en camino: en la burbuja quedaba un relojito
+ * para siempre. Un mensaje que Meta rechazó tiene que verse rechazado, y con
+ * el motivo — que es lo que decide si reintentar sirve de algo.
+ */
+interface DeliveryOutcome {
+  whatsapp_message_id: string | null;
+  whatsapp_status: "sent" | "failed" | null;
+  whatsapp_error_code: number | null;
+  whatsapp_error_detail: string | null;
+}
+
+/** Canal simulado: no se intentó nada, así que no hay ni éxito ni fallo que contar. */
+const NO_ENVIADO: DeliveryOutcome = {
+  whatsapp_message_id: null,
+  whatsapp_status: null,
+  whatsapp_error_code: null,
+  whatsapp_error_detail: null,
+};
+
+async function entregar(
+  target: TurnTarget,
+  enviar: (accessToken: string) => Promise<{ whatsappMessageId: string }>
+): Promise<DeliveryOutcome> {
+  const accessToken = accessTokenFor(target);
+  if (!accessToken) return NO_ENVIADO;
+
+  try {
+    const { whatsappMessageId } = await enviar(accessToken);
+    return {
+      whatsapp_message_id: whatsappMessageId,
+      whatsapp_status: "sent",
+      whatsapp_error_code: null,
+      whatsapp_error_detail: null,
+    };
+  } catch (err) {
+    log.error("ia_envio_fallido", {
+      conversationId: target.conversationId,
+      codigo: metaErrorCode(err),
+      detalle: errorText(err),
+    });
+    return {
+      whatsapp_message_id: null,
+      whatsapp_status: "failed",
+      whatsapp_error_code: metaErrorCode(err),
+      whatsapp_error_detail: errorText(err),
+    };
+  }
+}
+
 export async function sendAgentText(
   supabase: SupabaseClient<Database>,
   target: TurnTarget,
   text: string
 ): Promise<void> {
-  const accessToken = accessTokenFor(target);
-  let whatsappMessageId: string | null = null;
-  let whatsappStatus: "sent" | null = null;
-
-  if (accessToken) {
-    try {
-      const result = await sendWhatsappText(target.phoneNumberId!, accessToken, target.phoneNumber, text);
-      whatsappMessageId = result.whatsappMessageId;
-      whatsappStatus = "sent";
-    } catch (err) {
-      console.error("No se pudo enviar la respuesta de la IA por WhatsApp:", err);
-    }
-  }
+  const entrega = await entregar(target, (accessToken) =>
+    sendWhatsappText(target.phoneNumberId!, accessToken, target.phoneNumber, text)
+  );
 
   await supabase.from("messages").insert({
     conversation_id: target.conversationId,
@@ -62,8 +106,7 @@ export async function sendAgentText(
     sender_type: "ai",
     message_type: "text",
     content: text,
-    whatsapp_message_id: whatsappMessageId,
-    whatsapp_status: whatsappStatus,
+    ...entrega,
   });
 }
 
@@ -73,33 +116,17 @@ async function sendAgentMedia(
   mediaType: MediaKind,
   url: string
 ): Promise<void> {
-  const accessToken = accessTokenFor(target);
-  let whatsappMessageId: string | null = null;
-  let whatsappStatus: "sent" | null = null;
+  // Lo más probable acá es que Meta no haya podido descargar el archivo desde
+  // la URL configurada. El texto ya salió, así que el cliente no se queda sin
+  // respuesta — pero el adjunto que no llegó tiene que verse como no llegado.
+  const entrega = await entregar(target, async (accessToken) => {
+    // El bucket es privado: Meta necesita un enlace firmado. Si el adjunto
+    // apunta a una URL de fuera, se manda tal cual.
+    const link = await signedUrlForSending(url);
+    if (!link) throw new Error(`No se pudo preparar el adjunto ${url} para enviarlo.`);
 
-  if (accessToken) {
-    try {
-      // El bucket es privado: Meta necesita un enlace firmado. Si el adjunto
-      // apunta a una URL de fuera, se manda tal cual.
-      const link = await signedUrlForSending(url);
-      if (!link) throw new Error(`No se pudo preparar el adjunto ${url} para enviarlo.`);
-
-      const result = await sendWhatsappMedia(
-        target.phoneNumberId!,
-        accessToken,
-        target.phoneNumber,
-        mediaType,
-        link
-      );
-      whatsappMessageId = result.whatsappMessageId;
-      whatsappStatus = "sent";
-    } catch (err) {
-      // Lo más probable acá es que Meta no haya podido descargar el archivo
-      // desde la URL configurada. El texto ya salió, así que el cliente no
-      // se queda sin respuesta.
-      console.error("No se pudo enviar el adjunto de la IA por WhatsApp:", err);
-    }
-  }
+    return sendWhatsappMedia(target.phoneNumberId!, accessToken, target.phoneNumber, mediaType, link);
+  });
 
   await supabase.from("messages").insert({
     conversation_id: target.conversationId,
@@ -107,8 +134,7 @@ async function sendAgentMedia(
     sender_type: "ai",
     message_type: mediaType,
     media_url: url,
-    whatsapp_message_id: whatsappMessageId,
-    whatsapp_status: whatsappStatus,
+    ...entrega,
   });
 }
 

@@ -6,6 +6,7 @@ import type { MessageType } from "@/lib/types";
 import { signedUrlForSending } from "@/lib/media-link";
 import {
   MetaApiError,
+  metaErrorCode,
   sendWhatsappMedia,
   sendWhatsappTemplate,
   sendWhatsappText,
@@ -204,13 +205,24 @@ export async function POST(request: Request) {
           log.error("send.confirm_update_failed", { messageId, detail: updateError.message });
         }
       } catch (err) {
-        await supabase.from("messages").update({ whatsapp_status: "failed" }).eq("id", messageId);
+        // El motivo se guarda con el estado, no sólo en el registro: quien
+        // tiene que decidir si reintentar es el asesor que está mirando la
+        // burbuja, y hasta ahora lo único que veía era un triángulo rojo.
+        await supabase
+          .from("messages")
+          .update({
+            whatsapp_status: "failed",
+            whatsapp_error_code: metaErrorCode(err),
+            whatsapp_error_detail: errorText(err),
+          })
+          .eq("id", messageId);
         log.error("send.meta_failed", {
           messageId,
           conversationId,
           kind,
           detail: errorText(err),
           metaStatus: err instanceof MetaApiError ? err.status : null,
+          metaCode: metaErrorCode(err),
         });
       }
     });

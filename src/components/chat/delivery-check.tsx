@@ -22,9 +22,16 @@ interface DeliveryCheckProps {
    * al asesor— y dura hasta que Meta confirma ('sent') o rechaza ('failed').
    */
   pending?: boolean;
+  /**
+   * Por qué no se entregó, cuando el estado es 'failed'.
+   *
+   * Se suma a la etiqueta del icono en vez de reemplazarla: quien pasa por
+   * encima del triángulo quiere las dos cosas, qué pasó y por qué.
+   */
+  detail?: string | null;
 }
 
-export function DeliveryCheck({ status, size = 14, pending = false }: DeliveryCheckProps) {
+export function DeliveryCheck({ status, size = 14, pending = false, detail = null }: DeliveryCheckProps) {
   if (!status) {
     if (!pending) return null;
     return (
@@ -34,7 +41,7 @@ export function DeliveryCheck({ status, size = 14, pending = false }: DeliveryCh
     );
   }
 
-  const label = LABELS[status];
+  const label = detail ? `${LABELS[status]}: ${detail}` : LABELS[status];
 
   return (
     <span className="crm-check" data-status={status} role="img" aria-label={label} title={label}>
