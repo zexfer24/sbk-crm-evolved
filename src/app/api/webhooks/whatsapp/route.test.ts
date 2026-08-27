@@ -13,11 +13,19 @@ vi.mock("next/server", async (importOriginal) => {
   };
 });
 
-vi.mock("@/lib/ai/queue", () => ({
-  enqueueAgentTurns: vi.fn(async () => {}),
-  // Sin mockear esta, el test esperaría de verdad la ventana de silencio.
-  processAfterDebounce: vi.fn(async () => ({ processed: 0, failed: 0, deferred: 0 })),
-}));
+// debounceSecondsFor es una función pura sobre el texto del mensaje: no toca
+// Redis, así que se deja la de verdad — es justo lo que estas pruebas miran.
+vi.mock("@/lib/ai/queue", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/lib/ai/queue")>();
+  return {
+    DEBOUNCE_SECONDS: actual.DEBOUNCE_SECONDS,
+    DEBOUNCE_SHORT_SECONDS: actual.DEBOUNCE_SHORT_SECONDS,
+    debounceSecondsFor: actual.debounceSecondsFor,
+    enqueueAgentTurns: vi.fn(async () => {}),
+    // Sin mockear esta, el test esperaría de verdad la ventana de silencio.
+    processAfterDebounce: vi.fn(async () => ({ processed: 0, failed: 0, deferred: 0 })),
+  };
+});
 
 vi.mock("@/lib/whatsapp/meta-client", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@/lib/whatsapp/meta-client")>();
@@ -263,6 +271,122 @@ describe("POST /api/webhooks/whatsapp — idempotencia", () => {
     expect(insertedMessages.size).toBe(1);
     // ...ni volver a encolar un turno para esa conversación.
     expect(enqueueAgentTurns).toHaveBeenCalledTimes(1);
+  });
+});
+
+/**
+ * El debounce era de seis segundos para todo el mundo, y son seis segundos
+ * FIJOS delante de cada respuesta: con el objetivo de cuatro que pide el dueño
+ * se comían el presupuesto entero antes de que el modelo leyera nada.
+ *
+ * Acá se comprueba la parte que le toca al webhook: elegir la ventana según
+ * cómo venga el mensaje, y encolar y drenar cada ventana por su lado. El
+ * criterio en sí vive en debounceSecondsFor y se prueba en debounce.test.ts.
+ */
+describe("POST /api/webhooks/whatsapp — ventana de silencio adaptativa", () => {
+  /** Un lote con los textos dados, todos del mismo contacto. */
+  function loteDeTextos(textos: { id: string; body: string }[]) {
+    return {
+      entry: [
+        {
+          changes: [
+            {
+              field: "messages",
+              value: {
+                metadata: { phone_number_id: "1234567890" },
+                contacts: [{ profile: { name: "Cliente Demo" }, wa_id: "584120000000" }],
+                messages: textos.map(({ id, body }) => ({
+                  from: "584120000000",
+                  id,
+                  timestamp: String(Math.floor(Date.now() / 1000)),
+                  type: "text",
+                  text: { body },
+                })),
+              },
+            },
+          ],
+        },
+      ],
+    };
+  }
+
+  it("le da la ventana larga al arranque de una ráfaga", async () => {
+    const { POST } = await import("@/app/api/webhooks/whatsapp/route");
+    const { enqueueAgentTurns, processAfterDebounce, DEBOUNCE_SECONDS } = await import("@/lib/ai/queue");
+    vi.mocked(enqueueAgentTurns).mockClear();
+    vi.mocked(processAfterDebounce).mockClear();
+
+    await POST(fakeRequest(loteDeTextos([{ id: "wamid.ventana-larga-1", body: "buenas" }])));
+
+    expect(enqueueAgentTurns).toHaveBeenCalledWith(expect.anything(), {
+      debounceSeconds: DEBOUNCE_SECONDS,
+    });
+    // La pasada tiene que esperar la MISMA ventana con la que se encoló, o
+    // despierta antes de que el turno venza y se va con las manos vacías.
+    expect(processAfterDebounce).toHaveBeenCalledWith(1, DEBOUNCE_SECONDS);
+  });
+
+  it("le da la ventana corta a una pregunta terminada", async () => {
+    const { POST } = await import("@/app/api/webhooks/whatsapp/route");
+    const { enqueueAgentTurns, processAfterDebounce, DEBOUNCE_SHORT_SECONDS } = await import(
+      "@/lib/ai/queue"
+    );
+    vi.mocked(enqueueAgentTurns).mockClear();
+    vi.mocked(processAfterDebounce).mockClear();
+
+    await POST(
+      fakeRequest(
+        loteDeTextos([{ id: "wamid.ventana-corta-1", body: "¿Tienen bujía para una Empire Owen?" }])
+      )
+    );
+
+    expect(enqueueAgentTurns).toHaveBeenCalledWith(expect.anything(), {
+      debounceSeconds: DEBOUNCE_SHORT_SECONDS,
+    });
+    expect(processAfterDebounce).toHaveBeenCalledWith(1, DEBOUNCE_SHORT_SECONDS);
+  });
+
+  /**
+   * Meta agrupa varios mensajes en un mismo POST. Lo que decide la ventana es
+   * cómo TERMINÓ la ráfaga, no cómo empezó: si el cliente arrancó con "buenas"
+   * y cerró con la pregunta completa, ya no hay nada que esperar.
+   */
+  it("en un lote del mismo chat manda el último mensaje", async () => {
+    const { POST } = await import("@/app/api/webhooks/whatsapp/route");
+    const { enqueueAgentTurns, DEBOUNCE_SHORT_SECONDS } = await import("@/lib/ai/queue");
+    vi.mocked(enqueueAgentTurns).mockClear();
+
+    await POST(
+      fakeRequest(
+        loteDeTextos([
+          { id: "wamid.rafaga-1", body: "buenas" },
+          { id: "wamid.rafaga-2", body: "necesito una cadena para" },
+          { id: "wamid.rafaga-3", body: "una Bera BR 200, ¿cuánto cuesta?" },
+        ])
+      )
+    );
+
+    // Una sola conversación tocada, con la ventana del último mensaje.
+    expect(enqueueAgentTurns).toHaveBeenCalledTimes(1);
+    expect(enqueueAgentTurns).toHaveBeenCalledWith(expect.anything(), {
+      debounceSeconds: DEBOUNCE_SHORT_SECONDS,
+    });
+  });
+
+  /**
+   * Una foto sin pie casi siempre viene seguida del "¿cuánto cuesta?".
+   * Responderle a la foto sola es responder sin la pregunta.
+   */
+  it("espera la ventana larga con una foto sin pie", async () => {
+    const { POST } = await import("@/app/api/webhooks/whatsapp/route");
+    const { enqueueAgentTurns, DEBOUNCE_SECONDS } = await import("@/lib/ai/queue");
+    vi.mocked(enqueueAgentTurns).mockClear();
+
+    await POST(fakeRequest(webhookImageBody("wamid.foto-sin-pie-1")));
+
+    expect(enqueueAgentTurns).toHaveBeenCalledWith(expect.anything(), {
+      debounceSeconds: DEBOUNCE_SECONDS,
+    });
   });
 });
 

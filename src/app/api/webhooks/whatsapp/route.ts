@@ -9,7 +9,7 @@ import {
   getMetaMediaUrl,
   sendWhatsappTemplate,
 } from "@/lib/whatsapp/meta-client";
-import { enqueueAgentTurns, processAfterDebounce } from "@/lib/ai/queue";
+import { debounceSecondsFor, enqueueAgentTurns, processAfterDebounce } from "@/lib/ai/queue";
 import { MEDIA_BUCKET, mediaUrlFor } from "@/lib/storage";
 import { log } from "@/lib/log";
 
@@ -256,7 +256,15 @@ export async function POST(request: Request) {
   }
   const accessToken = process.env.WHATSAPP_ACCESS_TOKEN;
   const greeted = new Set<string>();
-  const touchedByCustomer = new Set<string>();
+  /**
+   * Conversaciones que recibieron un mensaje en este lote, con la ventana de
+   * silencio que le toca a cada una.
+   *
+   * El valor es el del ÚLTIMO mensaje del lote para esa conversación: si el
+   * cliente arrancó con "buenas" y cerró con la pregunta completa, lo que vale
+   * es cómo terminó la ráfaga, no cómo empezó.
+   */
+  const touchedByCustomer = new Map<string, number>();
   const mediaDownloadTasks: (() => Promise<void>)[] = [];
 
   for (const entry of body.entry ?? []) {
@@ -412,13 +420,24 @@ export async function POST(request: Request) {
         let messageType: string = "text";
         let content: string | null = null;
         let pendingMediaId: string | null = null;
+        /**
+         * Lo que el cliente TECLEÓ, que no siempre es `content`.
+         *
+         * De acá sale la ventana de silencio, y la diferencia importa: el texto
+         * con el que el CRM representa una ubicación compartida lo escribimos
+         * nosotros, así que mirarlo para adivinar si el cliente terminó de
+         * escribir no dice nada. Sin texto propio se espera la ventana larga.
+         */
+        let customerText: string | null = null;
 
         if (message.type === "text") {
           content = message.text?.body ?? "";
+          customerText = content;
         } else if ((MEDIA_TYPES as readonly string[]).includes(message.type)) {
           messageType = message.type;
           const mediaObject = message[message.type as MediaType];
           content = mediaObject?.caption ?? null;
+          customerText = content;
           pendingMediaId = mediaObject?.id ?? null;
         } else if (message.type === "location" && message.location) {
           content = describirUbicacion(message.location);
@@ -496,7 +515,7 @@ export async function POST(request: Request) {
           });
         }
 
-        touchedByCustomer.add(conversationId);
+        touchedByCustomer.set(conversationId, debounceSecondsFor(customerText));
 
         // Una sola bienvenida por conversación aunque el cliente mande varios
         // mensajes seguidos y lleguen en el mismo lote del webhook.
@@ -530,13 +549,30 @@ export async function POST(request: Request) {
       return NextResponse.json({ ok: true });
     }
 
-    await enqueueAgentTurns(touchedByCustomer);
     // Se espera la ventana de silencio antes de atender: Meta manda un POST
     // por mensaje, y sin esperar el cliente recibiría una respuesta por
     // frase, cada una sin el contexto de las siguientes.
-    // Se le pasa el tamaño del lote: este webhook drena lo que ÉL encoló y
-    // no el atraso general. Ver processAfterDebounce.
-    after(() => processAfterDebounce(touchedByCustomer.size));
+    //
+    // Las dos ventanas se encolan y se drenan por separado. Una sola pasada
+    // no sirve: si esperara la corta, las de la ventana larga todavía no
+    // habrían vencido y se quedarían para el cron —cinco minutos— y si
+    // esperara la larga, las cortas habrían perdido justo lo que se les
+    // ahorró. Ver debounceSecondsFor.
+    //
+    // A cada pasada se le pasa el tamaño de SU grupo: entre las dos drenan
+    // como mucho lo que este webhook encoló, que es lo que evita que un
+    // mensaje entrante se lleve por delante el atraso de otros.
+    const porVentana = new Map<number, string[]>();
+    for (const [conversationId, ventana] of touchedByCustomer) {
+      const grupo = porVentana.get(ventana);
+      if (grupo) grupo.push(conversationId);
+      else porVentana.set(ventana, [conversationId]);
+    }
+
+    for (const [ventana, conversaciones] of porVentana) {
+      await enqueueAgentTurns(conversaciones, { debounceSeconds: ventana });
+      after(() => processAfterDebounce(conversaciones.length, ventana));
+    }
   }
 
   return NextResponse.json({ ok: true });

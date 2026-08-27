@@ -20,14 +20,81 @@ import { errorText, log } from "@/lib/log";
 const MAX_PER_RUN = 10;
 
 /**
- * Silencio que se espera antes de atender un chat.
+ * Silencio que se espera antes de atender un chat cuando el mensaje parece
+ * quedar a medias.
  *
  * Meta entrega casi siempre un POST por mensaje, así que sin esto un cliente
  * que escribe en ráfaga recibe una respuesta por frase, cada una sin el
  * contexto de las siguientes. Seis segundos alcanzan para que termine de
- * tipear y siguen leyéndose como una respuesta inmediata.
+ * tipear.
  */
 export const DEBOUNCE_SECONDS = 6;
+
+/**
+ * Silencio para el mensaje que ya dice lo que tenía que decir.
+ *
+ * El debounce no es gratis: son segundos fijos que se le suman a TODAS las
+ * respuestas, y con el objetivo de cuatro segundos que pide el dueño, seis
+ * fijos se comen el presupuesto entero antes de que el modelo haya leído
+ * nada. Pero quitarlo devuelve el problema que vino a resolver.
+ *
+ * La salida no es elegir uno de los dos números: es dejar de aplicarle el
+ * mismo a los dos casos. "buenas" y "necesito una para" son el arranque de
+ * una ráfaga y esperan los seis segundos completos; "¿Tienen bujía para una
+ * Empire Owen?" es una pregunta terminada y no gana nada esperando.
+ *
+ * Dos segundos y no cero: la ráfaga también existe DESPUÉS de una pregunta
+ * completa —el cliente agrega la marca de la moto en un segundo mensaje— y
+ * dos segundos cubren ese caso sin que se note como espera.
+ */
+export const DEBOUNCE_SHORT_SECONDS = 2;
+
+/**
+ * Puntuación de cierre, aunque después venga un emoji o un espacio.
+ *
+ * "¿Cuánto cuesta? 🏍️" cierra igual que "¿Cuánto cuesta?", y en WhatsApp el
+ * emoji al final es la norma, no la excepción.
+ */
+const CIERRA_LA_IDEA = /[.?!…][^\p{L}\p{N}]*$/u;
+
+/**
+ * Palabras con las que nadie termina un mensaje. Si el texto acaba en una de
+ * estas, el cliente está a mitad de la frase y sigue tecleando — da igual lo
+ * largo que sea lo que lleve escrito.
+ */
+const CONECTOR_AL_FINAL =
+  /(?:^|\s)(?:y|o|u|e|pero|que|de|del|al|para|por|con|sin|en|el|la|los|las|un|una|unos|unas|mi|tu|su|me|te|se|lo|le|si|como|cuando|donde|porque|es|son|está|están|tengo|necesito|quiero|busco)\s*$/iu;
+
+/**
+ * A partir de cuántos caracteres un mensaje se defiende solo aunque no lleve
+ * puntuación. En WhatsApp casi nadie puntúa, así que la longitud es la única
+ * señal que queda: nadie escribe cuarenta caracteres para cortarse a la mitad
+ * si no terminó en un conector.
+ */
+const LARGO_QUE_SE_DEFIENDE_SOLO = 40;
+
+/**
+ * Cuánto silencio esperar antes de atender, según lo que acaba de escribir el
+ * cliente.
+ *
+ * `texto` es lo que el cliente TECLEÓ —el cuerpo de un mensaje de texto o el
+ * pie de una foto—, no lo que el CRM redactó para representar una ubicación o
+ * un contacto compartido. Sin texto propio se espera la ventana completa: una
+ * foto suelta casi siempre viene seguida del "¿cuánto cuesta?".
+ */
+export function debounceSecondsFor(texto: string | null | undefined): number {
+  const limpio = texto?.trim();
+  if (!limpio) return DEBOUNCE_SECONDS;
+
+  // El conector manda sobre todo lo demás: "necesito una cadena para" tiene
+  // veinticinco caracteres y termina en preposición — está a medias, seguro.
+  if (CONECTOR_AL_FINAL.test(limpio)) return DEBOUNCE_SECONDS;
+
+  if (CIERRA_LA_IDEA.test(limpio)) return DEBOUNCE_SHORT_SECONDS;
+  if (limpio.length >= LARGO_QUE_SE_DEFIENDE_SOLO) return DEBOUNCE_SHORT_SECONDS;
+
+  return DEBOUNCE_SECONDS;
+}
 
 /** Margen para no despertar justo en el borde y encontrar la ventana sin vencer. */
 const WAKE_MARGIN_MS = 500;
@@ -184,6 +251,11 @@ export interface QueueRunResult {
  * la ventana hacia adelante, así que las primeras despiertan, no encuentran
  * nada vencido y se van. La última es la que atiende, ya con todo el hilo.
  *
+ * `debounceSeconds` tiene que ser el MISMO con el que se encoló, o la pasada
+ * despierta antes de que el turno venza y se va con las manos vacías. Como el
+ * webhook usa dos ventanas distintas según cómo venga el mensaje (ver
+ * debounceSecondsFor), lanza una pasada por ventana y no una sola.
+ *
  * `limit` es lo que arregla el agujero del 26 de agosto de 2026. Esto corría
  * sin límite, o sea con el MAX_PER_RUN de diez, sobre la cola COMPARTIDA: cada
  * mensaje entrante de WhatsApp drenaba hasta diez turnos del atraso. El
@@ -196,8 +268,11 @@ export interface QueueRunResult {
  * Ahora el webhook drena como mucho lo que él mismo encoló: un mensaje
  * entrante puede provocar un turno, no diez.
  */
-export async function processAfterDebounce(limit = MAX_PER_RUN): Promise<QueueRunResult> {
-  await new Promise((resolve) => setTimeout(resolve, DEBOUNCE_SECONDS * 1000 + WAKE_MARGIN_MS));
+export async function processAfterDebounce(
+  limit = MAX_PER_RUN,
+  debounceSeconds = DEBOUNCE_SECONDS
+): Promise<QueueRunResult> {
+  await new Promise((resolve) => setTimeout(resolve, debounceSeconds * 1000 + WAKE_MARGIN_MS));
   return processQueuedTurns(limit);
 }
 
