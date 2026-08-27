@@ -348,6 +348,14 @@ describe("runAgentTurn — ventana de 24 h de Meta", () => {
 });
 
 describe("runAgentTurn — escenarios predeterminados", () => {
+  /**
+   * Lo que el escenario ahorra es la parte cara: redactar con el tool loop.
+   *
+   * La clasificación de intención ya no se ahorra, y es a propósito — sale en
+   * paralelo con el reconocimiento de escenario para no encadenar dos esperas
+   * de dos segundos. En el camino de escenario esa llamada se desperdicia; son
+   * unos centavos a cambio de dos segundos en TODOS los turnos.
+   */
   it("cuando un escenario coincide, responde con él y no llama al modelo redactor", async () => {
     const pb = playbook();
     fetchActivePlaybooksMock.mockResolvedValue([pb]);
@@ -357,8 +365,35 @@ describe("runAgentTurn — escenarios predeterminados", () => {
 
     expect(sendPlaybookReplyMock).toHaveBeenCalledTimes(1);
     expect(sendPlaybookReplyMock.mock.calls[0][2]).toEqual(pb);
-    expect(classifyIntentMock).not.toHaveBeenCalled();
     expect(generateMock).not.toHaveBeenCalled();
+  });
+
+  it("clasifica en paralelo en vez de esperar a saber si hay escenario", async () => {
+    const pb = playbook();
+    fetchActivePlaybooksMock.mockResolvedValue([pb]);
+    matchPlaybookMock.mockResolvedValue({ playbook: pb, usage: NO_USAGE });
+
+    await runAgentTurn("conv-1");
+
+    expect(classifyIntentMock).toHaveBeenCalledTimes(1);
+  });
+
+  /**
+   * El riesgo de lanzarlas juntas: clasificar SÍ lanza ante un fallo del
+   * proveedor, y su excepción no puede llevarse por delante un escenario que
+   * el otro brazo reconoció perfectamente. En serie no podía pasar —el
+   * escenario ya había ganado el turno—, así que es un modo de fallo nuevo.
+   */
+  it("un fallo al clasificar no tumba el escenario que sí se reconoció", async () => {
+    const pb = playbook();
+    fetchActivePlaybooksMock.mockResolvedValue([pb]);
+    matchPlaybookMock.mockResolvedValue({ playbook: pb, usage: NO_USAGE });
+    classifyIntentMock.mockRejectedValue(new Error("429 del proveedor"));
+
+    await runAgentTurn("conv-1");
+
+    expect(sendPlaybookReplyMock).toHaveBeenCalledTimes(1);
+    expect(agentTurnInserts[0]).toMatchObject({ playbook_id: "pb-1", action: "answered" });
   });
 
   it("registra en la bitácora qué escenario resolvió el turno y con qué mensaje del cliente", async () => {
@@ -373,7 +408,9 @@ describe("runAgentTurn — escenarios predeterminados", () => {
       playbook_id: "pb-1",
       customer_message: "hola quiero accesorios",
       action: "answered",
-      total_tokens: 4,
+      // Escenario + clasificación: la segunda ya se pagó aunque su resultado
+      // no se use, y el panel de gasto tiene que verla.
+      total_tokens: 10,
     });
   });
 

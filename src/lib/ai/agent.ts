@@ -21,12 +21,12 @@ import { errorText, log } from "@/lib/log";
 import { withinFreeformWindow } from "@/lib/dashboard";
 
 // ---------------------------------------------------------------------------
-// Orquestador del turno del agente. Tres fases, en orden:
+// Orquestador del turno del agente. Dos tiempos:
 //
-//   0. Reconocer si el mensaje calza con una respuesta predeterminada. Si
-//      calza, se envía ese texto tal cual y el turno termina ahí — sin
-//      clasificar ni redactar.
-//   1. Clasificar la intención (una de cuatro categorías genéricas).
+//   0 y 1. En PARALELO, porque no dependen una de la otra: reconocer si el
+//      mensaje calza con una respuesta predeterminada, y clasificar la
+//      intención (una de cinco categorías genéricas). Si calza un escenario,
+//      se envía ese texto tal cual y el turno termina ahí, sin redactar.
 //   2. Actuar con las herramientas acotadas a esa intención.
 //
 // Lo dispara la cola, una vez por conversación (ver src/lib/ai/queue.ts).
@@ -326,31 +326,61 @@ async function runTurnPhases(
 
   const customerMessage = lastCustomerMessage(history);
 
-  // Fase 0 — ¿el mensaje calza con una respuesta ya redactada? Si calza, se
-  // envía tal cual y el turno termina acá: sale más rápido y más barato que
-  // clasificar y redactar, y el cliente recibe el texto oficial en vez de
-  // una versión que el modelo improvise.
+  // Fases 0 y 1 — ¿el mensaje calza con una respuesta ya redactada, y qué
+  // caso es? Si calza un escenario, se envía tal cual y el turno termina ahí:
+  // el cliente recibe el texto oficial en vez de una versión que el modelo
+  // improvise.
   // Los interruptores del panel se leen junto con los escenarios: ambos
   // son configuración que el equipo cambia en vivo y el turno respeta.
   const [playbooks, enabledTools] = await Promise.all([
     fetchActivePlaybooks(supabase),
     fetchEnabledToolKeys(supabase),
   ]);
-  const match = await matchPlaybook(history, playbooks);
+
+  // Las dos clasificaciones salen JUNTAS y no una detrás de la otra.
+  //
+  // Encadenadas eran unos dos segundos cada una —medidos contra el proveedor
+  // desde este servidor— o sea cuatro segundos de reloj antes de que el
+  // modelo empezara a redactar. Y no había ninguna razón para el orden: no
+  // comparten nada, las dos leen el mismo historial y ninguna usa el
+  // resultado de la otra. Eran secuenciales porque se escribieron una después
+  // de la otra. En paralelo cuestan lo que cuesta la más lenta.
+  //
+  // Lo que sí cambia es el precio del camino de escenario: antes, un
+  // escenario reconocido terminaba el turno en UNA llamada, y ahora la
+  // clasificación ya salió igual. Es el precio de los dos segundos, y se
+  // compensa poniéndole a AI_CLASSIFIER_MODEL un modelo pequeño — la costura
+  // ya existe en model.ts y hoy está vacía.
+  //
+  // No se fusionaron en una sola llamada con dos campos, que ahorraría
+  // también esa llamada: son dos enums con criterios distintos y prompts
+  // distintos, y juntarlos degrada los dos a la vez sin forma de saber cuál.
+  // Con esta forma, cada uno se puede mover de modelo por su cuenta.
+  const [match, classified] = await Promise.all([
+    // matchPlaybook nunca lanza: un fallo del proveedor deja el turno por el
+    // flujo genérico. classifyIntent sí, y su fallo aborta el turno — así que
+    // se captura acá para que no se lleve por delante un escenario que quizá
+    // sí reconoció.
+    matchPlaybook(history, playbooks),
+    classifyIntent(history).then(
+      (result) => ({ ok: true as const, result }),
+      (err: unknown) => ({ ok: false as const, err })
+    ),
+  ]);
+
   const matchTokens = tokensFromUsage(match.usage);
+  // La clasificación ya se pagó, calce o no un escenario: se cuenta siempre o
+  // el panel de gasto informaría de menos justo en el camino más frecuente.
+  const classifiedTokens = classified.ok
+    ? addTokens(matchTokens, tokensFromUsage(classified.result.usage))
+    : matchTokens;
 
   if (match.playbook) {
-    await runPlaybook(supabase, target, entrega, match.playbook, matchTokens, customerMessage);
+    await runPlaybook(supabase, target, entrega, match.playbook, classifiedTokens, customerMessage);
     return;
   }
 
-  let intent: Intent;
-  let classifyTokens: TurnTokens;
-  try {
-    const classified = await classifyIntent(history);
-    intent = classified.intent;
-    classifyTokens = addTokens(matchTokens, tokensFromUsage(classified.usage));
-  } catch (err) {
+  if (!classified.ok) {
     // Clasificar es lo único que se reintenta ante rate limit, y si aun así
     // falla el turno termina acá SIN responder. No hay intención por defecto:
     // adivinarla mandaría un mensaje genérico a alguien que preguntó algo
@@ -359,12 +389,15 @@ async function runTurnPhases(
     await logTurn(supabase, conversationId, {
       intent: null,
       action: "error",
-      summary: `Fallo al clasificar intención: ${errorMessage(err)}`,
-      tokens: matchTokens,
+      summary: `Fallo al clasificar intención: ${errorMessage(classified.err)}`,
+      tokens: classifiedTokens,
       customerMessage,
     });
     return;
   }
+
+  const intent: Intent = classified.result.intent;
+  const classifyTokens = classifiedTokens;
 
   await supabase.from("conversations").update({ intent }).eq("id", conversationId);
 
