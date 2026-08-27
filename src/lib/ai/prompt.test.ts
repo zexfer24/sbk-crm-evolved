@@ -153,6 +153,66 @@ describe("la hora del turno", () => {
   });
 });
 
+/**
+ * Pedido explícito del dueño: el agente no se presenta como IA. De 58 mensajes
+ * de la primera noche, 31 decían "Soy el asistente automatizado de SBK
+ * Motorcycles" — la fórmula salía directo de este archivo, que se la enseñaba
+ * en dos sitios y se la mandaba usar en un tercero.
+ *
+ * La otra mitad de la regla es igual de importante y no se negocia: tampoco
+ * afirma ser una persona. Callar la tecnología es una cosa; jurar que del otro
+ * lado hay alguien del mostrador es otra.
+ */
+describe("identidad: ni IA ni persona", () => {
+  /**
+   * El bloque sin la línea que prohíbe estas palabras. Que aparezcan EN la
+   * prohibición es correcto; lo que no puede haber es una frase que se las
+   * ponga en la boca.
+   */
+  const SIN_LA_PROHIBICION = SYSTEM_PROMPT.split(/\r?\n/)
+    .filter((linea) => !linea.startsWith("Nunca te describas como"))
+    .join("\n");
+
+  const FORMULAS_PROHIBIDAS = [
+    /asistente virtual/i,
+    /asistente automatizado/i,
+    /inteligencia artificial/i,
+    /soy un bot/i,
+    /respuesta automática/i,
+  ];
+
+  it.each(FORMULAS_PROHIBIDAS)("el prompt no le enseña la fórmula %s", (patron) => {
+    expect(SIN_LA_PROHIBICION).not.toMatch(patron);
+  });
+
+  it("prohíbe nombrar la tecnología", () => {
+    expect(SYSTEM_PROMPT).toMatch(/Nunca te describas como asistente/);
+    expect(SYSTEM_PROMPT).toMatch(/inteligencia artificial/i);
+  });
+
+  /** Sin esto, "no digas que eres una IA" se lee como "di que eres humano". */
+  it("prohíbe también hacerse pasar por una persona", () => {
+    expect(SYSTEM_PROMPT).toMatch(/Tampoco afirmes ser una persona concreta/);
+  });
+
+  /**
+   * Quien pide hablar con una persona no quiere una frase: quiere una persona.
+   * La salida honesta es escalar, y el prompt tiene que decirlo ahí mismo.
+   */
+  it("manda escalar cuando el cliente insiste en hablar con alguien del equipo", () => {
+    expect(SYSTEM_PROMPT).toMatch(/insiste en hablar con alguien del equipo/);
+    expect(SYSTEM_PROMPT).toMatch(/pásale el caso a un asesor/);
+  });
+
+  /** El saludo de bienvenida era el otro sitio donde salía la fórmula. */
+  it("el saludo dice de dónde escribe, no qué es", () => {
+    const conSaludo = buildInstructions({ ...TURN, needsGreeting: true }).slice(SYSTEM_PROMPT.length);
+
+    expect(conSaludo).toMatch(/le escribes de SBK Motorcycles/);
+    expect(conSaludo).not.toMatch(/preséntate/);
+  });
+});
+
 describe("formato de WhatsApp", () => {
   it("instruye explícitamente a no usar doble asterisco (Markdown)", () => {
     expect(SYSTEM_PROMPT).toMatch(/un solo asterisco/);

@@ -195,7 +195,7 @@ export function buildOrderHistoryTool({ supabase, contactId }: ToolDeps) {
 export function buildEscalateTool({ supabase, conversationId, contactId }: ToolDeps, outcome: EscalationOutcome) {
   return tool({
     description:
-      "Escala la conversación a un asesor humano: pausa la IA, asigna al asesor con más tiempo sin recibir un cliente nuevo, y deja un resumen para que no tenga que volver a preguntar todo. Es la única forma de tocar dinero real (devoluciones, ventas) o reclamos — la IA nunca los resuelve sola.",
+      "Escala la conversación a un asesor de la tienda: pausa la IA, asigna al asesor con más tiempo sin recibir un cliente nuevo, y deja un resumen para que no tenga que volver a preguntar todo. Es la única forma de tocar dinero real (devoluciones, ventas) o reclamos — la IA nunca los resuelve sola.",
     inputSchema: z.object({
       motivo: z.enum(["devolucion", "queja", "intencion_compra"]),
       resumen: z
