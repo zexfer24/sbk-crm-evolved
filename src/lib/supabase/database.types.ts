@@ -760,6 +760,8 @@ export type Database = {
           whatsapp_message_id: string | null
           reaction_emoji: string | null
           whatsapp_status: string | null
+          whatsapp_error_code: number | null
+          whatsapp_error_detail: string | null
         }
         Insert: {
           content?: string | null
@@ -777,6 +779,8 @@ export type Database = {
           whatsapp_message_id?: string | null
           reaction_emoji?: string | null
           whatsapp_status?: string | null
+          whatsapp_error_code?: number | null
+          whatsapp_error_detail?: string | null
         }
         Update: {
           content?: string | null
@@ -794,6 +798,8 @@ export type Database = {
           whatsapp_message_id?: string | null
           reaction_emoji?: string | null
           whatsapp_status?: string | null
+          whatsapp_error_code?: number | null
+          whatsapp_error_detail?: string | null
         }
         Relationships: [
           {
