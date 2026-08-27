@@ -46,3 +46,31 @@ export function currentDayRange(timeZone: string, now: Date = new Date()): { fro
   const from = new Date(startOfDay - offset);
   return { from, to: new Date(from.getTime() + 24 * 60 * 60 * 1000) };
 }
+
+/**
+ * Fecha y hora del instante dado, escritas en la zona del equipo.
+ *
+ * Existe porque el proceso NO corre en esa zona. El contenedor arranca con
+ * `TZ` vacía, o sea en UTC: a las ocho de la noche en Barinas, `new Date()`
+ * dentro de la app ya dice medianoche del día siguiente. Cuatro horas de
+ * diferencia cruzan los tres saludos —y en el borde también el día de la
+ * semana— así que cualquier texto que hable de la hora tiene que pasar por
+ * acá y no por el reloj del proceso.
+ *
+ * Se le pasa `timeZone` a Intl en lugar de arreglar `TZ` en la imagen a
+ * propósito: la zona del negocio ya está configurada en este archivo, y una
+ * variable del sistema operativo la duplicaría. Dos fuentes para el mismo
+ * dato terminan discrepando el día que alguien cambia una sola.
+ */
+export function formatCrmDateTime(instant: Date = new Date(), timeZone: string = CRM_TIME_ZONE): string {
+  return new Intl.DateTimeFormat("es-VE", {
+    timeZone,
+    weekday: "long",
+    day: "numeric",
+    month: "long",
+    year: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+    hour12: true,
+  }).format(instant);
+}

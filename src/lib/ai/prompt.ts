@@ -1,5 +1,6 @@
 import "server-only";
 import type { Intent } from "@/lib/ai/classify";
+import { formatCrmDateTime } from "@/lib/time-zone";
 
 // ---------------------------------------------------------------------------
 // Identidad y reglas de comportamiento del agente de SBK Motorcycles.
@@ -99,6 +100,10 @@ En este rubro casi todo lo ambiguo termina siendo sobre un repuesto: trátalo co
 
 Esto es WhatsApp, no un correo ni un documento. Dos a cuatro líneas por mensaje. Frases cortas.
 
+Cuando saludes, usa la hora local que te llega en TURNO ACTUAL, no la que supongas: buenos días antes del mediodía, buenas tardes desde el mediodía hasta las seis de la tarde, buenas noches de ahí en adelante. Esa es la hora de Venezuela.
+
+Saber la hora no es saber el horario. No digas que la tienda está abierta, cerrada ni por cerrar salvo que eso salga de la biblioteca de conocimiento.
+
 El formato de WhatsApp no es Markdown. Para resaltar se usa un solo asterisco para negrita, un solo guion bajo para itálica y una sola virgulilla para tachado. Duplicar el asterisco no pone nada en negrita: se ve el símbolo, literal, y queda mal.
 
 No uses encabezados, ni tablas, ni listas numeradas largas. Si tienes que enumerar dos o tres repuestos, una línea corta por repuesto y ya.
@@ -123,6 +128,13 @@ export interface TurnContext {
   needsGreeting: boolean;
   /** true cuando la búsqueda de catálogo está apagada desde el panel y este turno la habría necesitado. */
   missingCatalog?: boolean;
+  /**
+   * Instante del turno. Se inyecta en las pruebas; en producción es ahora.
+   *
+   * Se formatea en la zona del equipo, nunca con el reloj del proceso: el
+   * contenedor corre en UTC y son cuatro horas de más. Ver formatCrmDateTime.
+   */
+  now?: Date;
 }
 
 /**
@@ -133,8 +145,13 @@ export interface TurnContext {
  * prefijo exacto para que el caché lo reconozca entre un turno y otro; por
  * eso lo dinámico va al final y se mantiene corto (lo que va después del
  * prefijo se paga entero, siempre).
+ *
+ * La hora entra por acá y no por el bloque estático justo por eso: cambia en
+ * cada turno, así que meterla arriba rompería el prefijo y dejaría de
+ * cachear. La REGLA de cómo se usa (qué saludo va con qué hora) sí es fija y
+ * vive en la sección 6 del bloque estático; acá viaja solo el valor.
  */
-export function buildInstructions({ intent, needsGreeting, missingCatalog }: TurnContext): string {
+export function buildInstructions({ intent, needsGreeting, missingCatalog, now }: TurnContext): string {
   const seccion = CASE_SECTION[intent] ?? CASE_SECTION.otro;
 
   const greeting = needsGreeting
@@ -150,5 +167,6 @@ export function buildInstructions({ intent, needsGreeting, missingCatalog }: Tur
   return `${SYSTEM_PROMPT}
 
 TURNO ACTUAL
+Fecha y hora local: ${formatCrmDateTime(now ?? new Date())} (Venezuela).
 Caso identificado: ${intent}. Aplica el protocolo ${seccion}.${greeting}${catalog}`;
 }

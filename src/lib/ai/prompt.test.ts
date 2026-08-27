@@ -104,6 +104,55 @@ describe("sufijo dinámico del turno", () => {
   });
 });
 
+/**
+ * El dueño reportó "buenos días" a las tres de la tarde. La causa era que el
+ * prompt no mencionaba la hora en ninguna parte: el modelo la adivinaba, y a
+ * veces acertaba. Estas pruebas cubren las dos mitades del arreglo — la regla,
+ * que es fija y va en el bloque cacheado, y el valor, que cambia cada turno.
+ */
+describe("la hora del turno", () => {
+  it("el sufijo trae la hora local de Venezuela, no la del proceso", () => {
+    // 19:12 UTC son las 15:12 en Caracas. Sin zona explícita, el contenedor
+    // —que corre en UTC— habría dicho las siete de la noche.
+    const sufijo = buildInstructions({ ...TURN, now: new Date("2026-08-27T19:12:00Z") }).slice(
+      SYSTEM_PROMPT.length
+    );
+
+    expect(sufijo).toContain("3:12 p. m.");
+    expect(sufijo).toContain("27 de agosto de 2026");
+    expect(sufijo).not.toContain("7:12 p. m.");
+  });
+
+  /**
+   * La hora cambia en cada turno: si entrara en el bloque estático, el prefijo
+   * dejaría de repetirse byte por byte y el caché no entraría nunca más.
+   */
+  it("la hora va en el sufijo y NUNCA en el bloque cacheado", () => {
+    const manana = buildInstructions({ ...TURN, now: new Date("2026-08-27T13:00:00Z") });
+    const noche = buildInstructions({ ...TURN, now: new Date("2026-08-28T01:00:00Z") });
+
+    expect(manana.startsWith(SYSTEM_PROMPT)).toBe(true);
+    expect(noche.startsWith(SYSTEM_PROMPT)).toBe(true);
+    expect(manana).not.toEqual(noche);
+  });
+
+  /** La regla sí es fija, así que vive arriba y se cachea con el resto. */
+  it("la regla de qué saludo va con qué hora está en el bloque estático", () => {
+    expect(SYSTEM_PROMPT).toMatch(/buenos días/i);
+    expect(SYSTEM_PROMPT).toMatch(/buenas tardes/i);
+    expect(SYSTEM_PROMPT).toMatch(/buenas noches/i);
+  });
+
+  /**
+   * Saber la hora invita a deducir el horario, y el horario no está en ningún
+   * lado: la biblioteca de conocimiento sigue vacía. Un "ya cerramos" inventado
+   * a las nueve de la noche es peor que no decir nada.
+   */
+  it("prohíbe deducir el horario de la tienda a partir de la hora", () => {
+    expect(SYSTEM_PROMPT).toMatch(/Saber la hora no es saber el horario/);
+  });
+});
+
 describe("formato de WhatsApp", () => {
   it("instruye explícitamente a no usar doble asterisco (Markdown)", () => {
     expect(SYSTEM_PROMPT).toMatch(/un solo asterisco/);
