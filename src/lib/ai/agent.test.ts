@@ -167,10 +167,14 @@ vi.mock("@/lib/ai/escalate", () => ({
   RECLAMO_CATEGORIES: ["Envío", "Pago", "Producto", "Atención", "Garantía"],
 }));
 
-const generateMock = vi.fn<() => Promise<{ text: string; usage: FakeUsage }>>(async () => ({
-  text: "respuesta redactada por el modelo",
-  usage: { inputTokens: 20, outputTokens: 8, totalTokens: 28 },
-}));
+/** `steps` es lo que el turno mira para saber cuántos pasos gastó de verdad. */
+const generateMock = vi.fn<() => Promise<{ text: string; usage: FakeUsage; steps: unknown[] }>>(
+  async () => ({
+    text: "respuesta redactada por el modelo",
+    usage: { inputTokens: 20, outputTokens: 8, totalTokens: 28 },
+    steps: [{}, {}],
+  })
+);
 /** Opciones con las que se construyó el ToolLoopAgent: es donde viajan las instrucciones. */
 const agentOptions: { instructions: string; tools: Record<string, unknown> }[] = [];
 vi.mock("ai", async (importOriginal) => ({
@@ -251,6 +255,7 @@ beforeEach(() => {
   generateMock.mockResolvedValue({
     text: "respuesta redactada por el modelo",
     usage: { inputTokens: 20, outputTokens: 8, totalTokens: 28 },
+    steps: [{}, {}],
   });
   sendPlaybookReplyMock.mockImplementation(async () => {
     pasos.push("responder");
@@ -740,6 +745,7 @@ describe("runAgentTurn — tokens cacheados", () => {
         totalTokens: 2008,
         inputTokenDetails: { noCacheTokens: 400, cacheReadTokens: 1600, cacheWriteTokens: 0 },
       },
+      steps: [{}, {}],
     });
 
     await runAgentTurn("conv-1");
@@ -751,5 +757,94 @@ describe("runAgentTurn — tokens cacheados", () => {
     await runAgentTurn("conv-1");
 
     expect(agentTurnInserts[0]).toMatchObject({ cached_input_tokens: 0 });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Tiempos del turno
+//
+// El dueño pide respuesta en cuatro segundos. Para discutir ese número hay que
+// saber dónde se van los que se van, y hasta ahora averiguarlo era restar a
+// mano dos columnas de `messages`, conversación por conversación.
+// ---------------------------------------------------------------------------
+describe("runAgentTurn — tiempos del turno", () => {
+  /** La línea estructurada que emite el turno, ya parseada. */
+  function leerTiempos(spy: ReturnType<typeof vi.spyOn>): Record<string, unknown> | null {
+    for (const [linea] of spy.mock.calls) {
+      if (typeof linea !== "string") continue;
+      const evento = JSON.parse(linea) as Record<string, unknown>;
+      if (evento.event === "turno_tiempos") return evento;
+    }
+    return null;
+  }
+
+  it("registra cuánto tardó cada tramo y cuántos pasos gastó", async () => {
+    const spy = vi.spyOn(console, "log").mockImplementation(() => {});
+    try {
+      await runAgentTurn("conv-1");
+
+      const tiempos = leerTiempos(spy);
+      expect(tiempos).not.toBeNull();
+      expect(tiempos).toMatchObject({
+        conversationId: "conv-1",
+        // Dos pasos del mock, contra el techo de cinco: es el dato que
+        // contesta si MAX_STEPS = 5 es generoso o justo.
+        pasos: 2,
+        maxPasos: 5,
+        entregado: true,
+      });
+      expect(typeof tiempos?.clasificacionMs).toBe("number");
+      expect(typeof tiempos?.redaccionMs).toBe("number");
+      expect(typeof tiempos?.envioMs).toBe("number");
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  /**
+   * `esperaMs` es la ventana de silencio más la cola: el tramo que no se ve
+   * desde dentro del turno y donde se fue casi todo el tiempo de la primera
+   * noche (media de 4.521 s, con el tope de un turno por minuto puesto).
+   */
+  it("mide también la espera desde el mensaje del cliente", async () => {
+    state.conversation = {
+      ...state.conversation,
+      last_customer_message_at: new Date(Date.now() - 8000).toISOString(),
+    };
+
+    const spy = vi.spyOn(console, "log").mockImplementation(() => {});
+    try {
+      await runAgentTurn("conv-1");
+
+      const tiempos = leerTiempos(spy);
+      expect(tiempos?.esperaMs).toBeGreaterThanOrEqual(8000);
+      // El total es lo que mira el dueño: del mensaje del cliente a la
+      // respuesta enviada, espera incluida.
+      expect(tiempos?.totalMs).toBeGreaterThanOrEqual(tiempos?.esperaMs as number);
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  /**
+   * En `finally`: el turno que revienta a los veinte segundos es justo el que
+   * hay que poder ver, y es el que se perdería si esto colgara del camino
+   * feliz.
+   */
+  it("registra los tiempos aunque el turno termine sin responder", async () => {
+    generateMock.mockRejectedValue(new Error("el proveedor falló"));
+
+    const spy = vi.spyOn(console, "log").mockImplementation(() => {});
+    try {
+      await runAgentTurn("conv-1");
+
+      const tiempos = leerTiempos(spy);
+      expect(tiempos).not.toBeNull();
+      expect(tiempos).toMatchObject({ entregado: false, pasos: null });
+      // El tramo que falló también se mide: cuánto tardó en fallar importa.
+      expect(typeof tiempos?.redaccionMs).toBe("number");
+    } finally {
+      spy.mockRestore();
+    }
   });
 });

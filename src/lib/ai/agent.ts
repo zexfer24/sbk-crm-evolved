@@ -43,6 +43,58 @@ function errorMessage(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
 }
 
+// ---------------------------------------------------------------------------
+// Cuánto tarda un turno, por tramo.
+//
+// El dueño quiere respuesta en cuatro segundos. Para discutir ese número hace
+// falta saber dónde se van los que se van, y hasta ahora la única forma de
+// averiguarlo era restar a mano dos columnas de `messages` conversación por
+// conversación. Una línea por turno lo deja en un grep.
+//
+// Va al registro y no a una tabla a propósito: es una medida de operación, no
+// un dato del negocio. No merece una migración, no merece crecer sin límite en
+// Postgres, y el sitio donde se mira es el mismo donde ya se miran los fallos.
+// ---------------------------------------------------------------------------
+interface TurnTiming {
+  /** Del mensaje del cliente al arranque del turno: ventana de silencio más cola. */
+  esperaMs: number | null;
+  /** Escenario y clasificación, que corren juntos: tarda lo que la más lenta. */
+  clasificacionMs: number | null;
+  /** El tool loop entero, incluidas las herramientas que haya usado. */
+  redaccionMs: number | null;
+  /** Lo que cuesta entregarlo: la Graph API de Meta manda acá. */
+  envioMs: number | null;
+  /** Pasos del tool loop que el turno gastó de verdad, contra el techo MAX_STEPS. */
+  pasos: number | null;
+}
+
+type TimingPhase = "clasificacionMs" | "redaccionMs" | "envioMs";
+
+function newTurnTiming(lastCustomerMessageAt: string | null): TurnTiming {
+  const desde = lastCustomerMessageAt ? Date.parse(lastCustomerMessageAt) : NaN;
+
+  return {
+    esperaMs: Number.isNaN(desde) ? null : Date.now() - desde,
+    clasificacionMs: null,
+    redaccionMs: null,
+    envioMs: null,
+    pasos: null,
+  };
+}
+
+/**
+ * Corre `fn` y anota cuánto tardó. Mide también cuando lanza: un tramo que
+ * falló después de veinte segundos es justo el que hay que ver.
+ */
+async function medir<T>(tiempos: TurnTiming, fase: TimingPhase, fn: () => Promise<T>): Promise<T> {
+  const t0 = Date.now();
+  try {
+    return await fn();
+  } finally {
+    tiempos[fase] = Date.now() - t0;
+  }
+}
+
 interface TurnTokens {
   inputTokens: number;
   outputTokens: number;
@@ -251,7 +303,8 @@ async function runPlaybook(
   entrega: TurnDelivery,
   playbook: Playbook,
   tokens: TurnTokens,
-  customerMessage: string | null
+  customerMessage: string | null,
+  tiempos: TurnTiming
 ): Promise<void> {
   // Última mirada al interruptor antes de hablarle al cliente. Si se apagó
   // mientras el modelo elegía el escenario, el turno termina acá sin enviar.
@@ -261,7 +314,7 @@ async function runPlaybook(
   // mensaje salió, y ante la duda el turno deja de ser reintentable. Ver
   // turn-delivery.ts.
   entrega.intentado = true;
-  await sendPlaybookReply(supabase, target, playbook);
+  await medir(tiempos, "envioMs", () => sendPlaybookReply(supabase, target, playbook));
 
   // Se etiqueta siempre que el escenario responda, escale o no: un escenario
   // que deja al cliente esperando también puede querer dejar marcado el caso.
@@ -312,7 +365,8 @@ async function runTurnPhases(
   supabase: SupabaseClient<Database>,
   target: TurnTarget,
   convo: AgentConversation,
-  entrega: TurnDelivery
+  entrega: TurnDelivery,
+  tiempos: TurnTiming
 ): Promise<void> {
   const conversationId = target.conversationId;
 
@@ -356,17 +410,19 @@ async function runTurnPhases(
   // también esa llamada: son dos enums con criterios distintos y prompts
   // distintos, y juntarlos degrada los dos a la vez sin forma de saber cuál.
   // Con esta forma, cada uno se puede mover de modelo por su cuenta.
-  const [match, classified] = await Promise.all([
-    // matchPlaybook nunca lanza: un fallo del proveedor deja el turno por el
-    // flujo genérico. classifyIntent sí, y su fallo aborta el turno — así que
-    // se captura acá para que no se lleve por delante un escenario que quizá
-    // sí reconoció.
-    matchPlaybook(history, playbooks),
-    classifyIntent(history).then(
-      (result) => ({ ok: true as const, result }),
-      (err: unknown) => ({ ok: false as const, err })
-    ),
-  ]);
+  const [match, classified] = await medir(tiempos, "clasificacionMs", () =>
+    Promise.all([
+      // matchPlaybook nunca lanza: un fallo del proveedor deja el turno por el
+      // flujo genérico. classifyIntent sí, y su fallo aborta el turno — así que
+      // se captura acá para que no se lleve por delante un escenario que quizá
+      // sí reconoció.
+      matchPlaybook(history, playbooks),
+      classifyIntent(history).then(
+        (result) => ({ ok: true as const, result }),
+        (err: unknown) => ({ ok: false as const, err })
+      ),
+    ])
+  );
 
   const matchTokens = tokensFromUsage(match.usage);
   // La clasificación ya se pagó, calce o no un escenario: se cuenta siempre o
@@ -376,7 +432,15 @@ async function runTurnPhases(
     : matchTokens;
 
   if (match.playbook) {
-    await runPlaybook(supabase, target, entrega, match.playbook, classifiedTokens, customerMessage);
+    await runPlaybook(
+      supabase,
+      target,
+      entrega,
+      match.playbook,
+      classifiedTokens,
+      customerMessage,
+      tiempos
+    );
     return;
   }
 
@@ -410,7 +474,7 @@ async function runTurnPhases(
     if (!repetido) {
       if (!(await stillEnabled(supabase, conversationId))) return;
       entrega.intentado = true;
-      await sendAgentText(supabase, target, OFF_TOPIC_REPLY);
+      await medir(tiempos, "envioMs", () => sendAgentText(supabase, target, OFF_TOPIC_REPLY));
     }
 
     await supabase
@@ -477,8 +541,16 @@ async function runTurnPhases(
   let text = "";
   let turnTokens = classifyTokens;
   try {
-    const result = await agent.generate({ messages: history });
+    const result = await medir(tiempos, "redaccionMs", () => agent.generate({ messages: history }));
     text = result.text ?? "";
+    // Cuántos pasos gastó de verdad, contra el techo de MAX_STEPS. Sin este
+    // número, "cinco es generoso" es una opinión: lo que se sabía del turno
+    // era su coste total, que no distingue un paso caro de cuatro baratos.
+    //
+    // Con `?.` aunque el tipo diga que siempre viene: esto es telemetría, y
+    // ninguna medición puede tumbar la respuesta que está midiendo. Si el SDK
+    // deja de traerlo, se pierde el dato y el cliente recibe su mensaje igual.
+    tiempos.pasos = result.steps?.length ?? null;
     turnTokens = addTokens(classifyTokens, tokensFromUsage(result.usage));
   } catch (err) {
     await logTurn(supabase, conversationId, {
@@ -519,7 +591,7 @@ async function runTurnPhases(
     // se miró el interruptor.
     if (!(await stillEnabled(supabase, conversationId))) return;
     entrega.intentado = true;
-    await sendAgentText(supabase, target, text.trim());
+    await medir(tiempos, "envioMs", () => sendAgentText(supabase, target, text.trim()));
   }
 
   if (!outcome.escalated) {
@@ -628,8 +700,11 @@ export async function runAgentTurn(conversationId: string): Promise<void> {
   // una respuesta duplicada o un doble escalamiento.
   await withConversationTurnLock(supabase, conversationId, async () => {
     const entrega = newTurnDelivery();
+    const tiempos = newTurnTiming(convo.last_customer_message_at);
+    const arranque = Date.now();
+
     try {
-      await runTurnPhases(supabase, target, convo, entrega);
+      await runTurnPhases(supabase, target, convo, entrega, tiempos);
     } catch (err) {
       if (!entrega.intentado) throw err;
 
@@ -642,6 +717,20 @@ export async function runAgentTurn(conversationId: string): Promise<void> {
         `El turno falló después de intentar entregar un mensaje; no se reintenta para no duplicarlo: ${errorText(err)}`,
         { cause: err }
       );
+    } finally {
+      // En `finally` y no al final del camino feliz: el turno que revienta a
+      // los veinte segundos es justo el que hay que poder ver. Un turno que
+      // salió temprano —sin historial, con el interruptor abajo— deja sus
+      // tramos en null, que también dice algo.
+      log.info("turno_tiempos", {
+        conversationId,
+        ...tiempos,
+        turnoMs: Date.now() - arranque,
+        // Del mensaje del cliente a acá: es el número que mira el dueño.
+        totalMs: tiempos.esperaMs === null ? null : tiempos.esperaMs + (Date.now() - arranque),
+        maxPasos: MAX_STEPS,
+        entregado: entrega.intentado,
+      });
     }
   });
 }
