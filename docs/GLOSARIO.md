@@ -1,0 +1,163 @@
+# Glosario de archivos
+
+Mapa módulo por módulo del proyecto. Su propósito es que orquestador y
+subagentes ubiquen el código relevante sin releer el proyecto entero.
+
+**Regla de mantenimiento:** todo cambio que cree, mueva o cambie el propósito
+de un archivo actualiza su línea aquí, en el mismo commit.
+
+Convención de tests: cada módulo lleva su `*.test.ts(x)` al lado, con el mismo
+nombre. Los tests sin módulo propio (`data-*.test.ts`, `queue-limit`,
+`queue-spacing`, `debounce`, `turn-correlation`, `dashboard-tickets`,
+`conversation-quotes`) prueban facetas del módulo vecino que nombran.
+
+---
+
+## Raíz
+
+| Archivo | Qué es |
+|---|---|
+| `next.config.ts` | Cabeceras de seguridad (antes en Caddyfile), `output: standalone`, `staleTimes` de navegación, orígenes de dev para túneles |
+| `src/proxy.ts` | Middleware de Next: refresco de sesión + quién puede ver cada página (delega en `lib/supabase/middleware`) |
+| `Dockerfile` / `docker-compose.yml` | Imagen standalone sin privilegios con HEALTHCHECK; stack app + caddy + cron |
+| `docker-compose.dokploy.yml` | El mismo stack menos Caddy (Dokploy trae Traefik) |
+| `Caddyfile` | TLS automático y cabeceras cuando el proxy es Caddy |
+| `moto_catalog_schema.sql` / `moto_catalog_data.sql` | Fuente del catálogo de motos/repuestos (5.438 productos); de aquí salen la migración y el seed del catálogo |
+| `vitest.config.ts` / `vitest.setup.ts` / `vitest.server-only-stub.ts` | Vitest con entorno `node` por defecto (los tests de UI declaran jsdom por docblock); `testTimeout` 15s contra la contención de workers; stub que anula `server-only` en pruebas |
+| `liminalwork.md` | Metodología de trabajo (fuente de la skill `liminalwork`) |
+| `AGENTS.md` | Aviso de `next dev`: esta versión de Next 16 difiere de los datos de entrenamiento; leer `node_modules/next/dist/docs/` |
+| `CREDENCIALES.txt`, `.env.local*` | Solo en disco, ignorados por git; lo versionado son los `.example` |
+
+## `src/app` — páginas (App Router)
+
+| Ruta | Qué es |
+|---|---|
+| `page.tsx` | Redirección de entrada (a `/login` o `/inbox`) |
+| `layout.tsx`, `globals.css`, `theme.css` | Marco global y tokens de tema claro/oscuro |
+| `inbox/` (+`[id]/`) | Bandeja compartida: la página arma datos iniciales y monta `crm-shell` |
+| `clientes/` | Directorio de clientes (ficha, notas, etiquetas, historial comercial) |
+| `inventario/` | Inventario: lo que se ve aquí es lo que la IA cotiza (misma tabla `products`) |
+| `ventas/` | Ventas cerradas: verificación y reversión (supervisor) |
+| `agent-control/` | Panel de control de la IA |
+| `login/` | Acceso |
+
+## `src/app/api` — rutas de servidor
+
+| Ruta | Qué es |
+|---|---|
+| `webhooks/whatsapp/route.ts` | Entrada de Meta: handshake, verificación de firma HMAC, mensajes entrantes (texto/multimedia/reply), estados de envío; escribe con service role y encola turnos. `new-contact-race.test.ts` cubre la carrera de contacto nuevo |
+| `messages/send/route.ts` | Envío del composer: canal `connected` → Cloud API real (con reintentos solo ante 5xx/red); si no, simulado. El token nunca toca el navegador |
+| `cron/process-queue/route.ts` | Red de seguridad de la cola de turnos (cada 5 min); exige `CRON_SECRET`, falla cerrado con 503. Resguardo en `route.test.ts`: los caminos cerrados afirman que la cola NO se llamó |
+| `agent/backlog/route.ts` | Repaso del atraso al encender la IA: encola lo que quedó esperando mientras estuvo apagada. Resguardo en `route.test.ts` (incluye el DEFECTO CONOCIDO D1: el lock queda tomado 30 min en los caminos que no encolan) |
+| `agent/stop/route.ts` | Freno de emergencia: apaga la IA y también lo que ya estaba en marcha. Resguardo en `route.test.ts`: orden interruptor→purga, degradación con Redis caído, línea de auditoría `ia_apagada` |
+| `dev/simulate-message/route.ts` | Simulador del panel: mensaje entrante sin pasar por Meta, turno síncrono. Su test afirma que la guarda de producción corta ANTES de tocar dependencia alguna |
+| `media/[...path]/route.ts` | Sirve el bucket privado `whatsapp-media` con la sesión del CRM por delante. Resguardo en `route.test.ts`: 401 sin sesión sin llegar a firmar, y el path viaja sin sanear (DEFECTO CONOCIDO D5) |
+| `health/route.ts` | 200 solo si alcanza la base y tiene sus variables; para el monitor externo. Su test afirma los CÓDIGOS HTTP (lo único que leen monitor y HEALTHCHECK), no solo el JSON |
+| `workflows/` | (dentro de `dev/`) utilidades de desarrollo |
+
+## `src/lib` — núcleo compartido
+
+| Archivo | Qué es |
+|---|---|
+| `types.ts` | Tipos de dominio de toda la app (formas mínimas por vista, a propósito) |
+| `data.ts` | Capa de LECTURA de la bandeja/chat contra Supabase (55K; mapea filas crudas a tipos de dominio) |
+| `mutations.ts` | Capa de ESCRITURA: enviar, asignar, etiquetar, cerrar venta, eventos de sistema en la burbuja |
+| `customers.ts` / `customers-data.ts` | Sección Clientes: lógica pura (URL, paginación, gasto) / consultas alrededor de la persona |
+| `inventory.ts` / `inventory-data.ts` / `inventory-freshness.ts` | Sección Inventario: lógica pura / consultas a `products` / cuán viejo es el inventario antes de que la IA lo cotice |
+| `dashboard.ts` / `dashboard-tickets.test.ts` | Reclamos (contacto etiquetado "Reclamo*"), ventana de 24h (`withinFreeformWindow`), recorrido |
+| `inbox-filters.ts` | Qué bandejas ve cada quien: cortes del admin vs. cortes del asesor |
+| `message-search.ts` | Buscar conversaciones por lo que se dijo adentro (no solo nombre/número) |
+| `message-grouping.ts` | Galerías de fotos/videos consecutivos y separadores de fecha |
+| `outbox.ts` | Cola de envío del composer (pura, sin red): reintento, descarte, limpieza |
+| `sale-cart.ts` | Carrito de la venta en curso: lo cotizado por la IA más lo agregado a mano |
+| `playbook-price.ts` | Detecta escenarios con precio escrito a mano (que envejece sin que nadie lo toque) |
+| `bcv-schedule.ts` | Cuándo volver a preguntar la tasa al BCV (no publica todos los días) |
+| `chart-scale.ts` | Líneas de referencia de los gráficos |
+| `format.ts` | Formatos de hora/moneda coherentes en toda la app |
+| `time-zone.ts` | Una sola zona horaria: la del equipo (`NEXT_PUBLIC_CRM_TIME_ZONE`), no la del navegador |
+| `venezuela.ts` | Los 24 estados |
+| `storage.ts` | La URL que se guarda en `messages.media_url`: relativa al CRM, no al bucket |
+| `media-link.ts` | URL firmada de 10 min para que Meta descargue el adjunto saliente |
+| `whatsapp-window.ts` | La regla de las 24h de Meta |
+| `redis.ts` | Conexión compartida a Redis (una por proceso) |
+| `log.ts` | Registro estructurado JSON (`{"level","event","ts",...}`), eventos en español, oculta valores sensibles |
+| `agent-tool-keys.ts` | Claves de `agent_tools` sin `server-only`, para que el panel las use |
+| `use-clock.ts`, `use-debounced-callback.ts`, `use-element-width.ts`, `use-long-press.ts`, `use-theme.ts` | Hooks utilitarios (reloj cuantizado, agrupación de refrescos, ancho real, long-press, tema) |
+| `use-live-conversations.ts` / `use-live-refresh.ts` / `use-live-sales.ts` | Realtime: mantener bandeja/ventas al día aplicando eventos en memoria y agrupando refetches |
+
+## `src/lib/ai` — el agente vendedor
+
+| Archivo | Qué es |
+|---|---|
+| `agent.ts` | Orquestador del turno: fase 0 (escenario) ‖ fase 1 (intención) en paralelo → tool loop (máx. 5 pasos); mide tiempos por tramo |
+| `queue.ts` | Cola de turnos: el webhook encola y sigue; debounce adaptativo (6s ráfaga / 2s pregunta cerrada, `CIERRA_LA_IDEA`) |
+| `redis-queue.ts` | La cola en Redis con scripts Lua atómicos: cupos globales, ritmo, sweep lock |
+| `conversation-lock.ts` | Un solo turno de IA por conversación (`ai_turn_running`) |
+| `turn-target.ts` | Identidad congelada del turno: a qué chat/cliente se le habla; cierra el riesgo de cruzar respuestas |
+| `turn-delivery.ts` | Barrera contra el doble envío: un turno que ya respondió no se reintenta |
+| `rate-limit.ts` | El único cuello hacia el proveedor del modelo: cuenta PETICIONES, no turnos |
+| `classify.ts` | Fase 1: clasificación barata de intención; decide qué herramientas recibe el modelo |
+| `playbooks.ts` | Fase 0: reconocimiento de escenario (respuestas predeterminadas del supervisor, enviadas tal cual; no se repiten en 6h) |
+| `prompt.ts` | Identidad y reglas del agente: un solo bloque idéntico en todos los turnos (cacheable) |
+| `tools.ts` | Herramientas del tool loop: catálogo, historial de pedidos, escalar; topes de resultados |
+| `agent-tools.ts` | Interruptores por herramienta, en la base, cambiables en vivo |
+| `catalog-search.ts` / `knowledge-search.ts` | La parte que se equivoca en silencio: cómo se arma la búsqueda en catálogo/biblioteca |
+| `knowledge.ts` | Consulta de la biblioteca (políticas, garantías, horarios): información para REDACTAR, no respuestas |
+| `escalate.ts` / `claim-agent.ts` | Escalamiento a humano; reclamo atómico del asesor menos recién asignado |
+| `human-handled.ts` | La IA no entra donde ya escribió una persona (sin `server-only` a propósito: lo usa `data.ts`) |
+| `greeting-window.ts` | El saludo lo decide el reloj de Barinas, no el mensaje (falla real del 27-08: "¡Buenos días!" a las 10 pm) |
+| `send.ts` | Envío de las respuestas del turno (texto redactado o escenario con adjunto) |
+| `precio.ts` | Formato de precios en código, no en el prompt: la aritmética no se le confía al modelo |
+| `model.ts` | Selección de proveedor/modelo por `.env` (prod: OpenAI; dev: Gemini); clasificador puede ir aparte |
+| `bcv.ts` / `bcv-fetch.ts` / `bcv-intermediate-ca.ts` | Tasa oficial del BCV leída de su web; con el certificado intermedio que su servidor no manda. Tests: `bcv.test.ts` (parseo contra el fixture real de `__fixtures__/bcv-home-2026-08-28.html`, con `it.todo` del defecto D1: punto decimal → tasa ×100), `bcv-cache.test.ts` (caché/refresco/respaldo `isStale`), `bcv-fetch.test.ts` (TLS/HTTP sin red) |
+| `__fixtures__/` | Capturas literales de bcv.org.ve, sin editar; `.gitattributes` en la raíz las protege de la normalización CRLF/LF (las regex del parseo miden distancias en caracteres) |
+| `pgrst.ts` | Entrecomillado seguro para filtros `.or()` de PostgREST (anti-inyección) |
+| `fake-redis.ts` | Redis en memoria SOLO para pruebas que no dependen de la atomicidad Lua |
+
+## `src/lib/supabase` y `src/lib/whatsapp`
+
+| Archivo | Qué es |
+|---|---|
+| `supabase/admin.ts` | Cliente service_role (bypassa RLS); solo rutas de servidor sin sesión |
+| `supabase/client.ts` / `server.ts` | Clientes anon para navegador / Server Components |
+| `supabase/middleware.ts` | Sesión desde la cookie sin preguntarle a GoTrue en cada petición; redirecciones de acceso |
+| `supabase/database.types.ts` | Tipos generados del schema |
+| `whatsapp/meta-client.ts` | Cliente server-only de la Graph API: texto, plantillas, multimedia, reply, descarga de media |
+| `whatsapp/failure-reason.ts` | Del código de error de Meta a una frase accionable para el asesor |
+| `whatsapp/phone.ts` | Qué cuenta como número escribible (la falla del `+undefined`) |
+
+## `src/components`
+
+**Shell:** `crm-shell.tsx` (cliente raíz de la bandeja: estado, realtime, outbox, navegación — 26K, el componente más cargado), `app-rail` (navegación entre secciones), `url-search-box` (buscador sincronizado con la URL), `sliding-pills` (píldoras de filtro), `context-menu`, `theme-toggle`, `section-skeleton`, `sbk-logo`, `crm.css` (49K, estilos del CRM).
+
+**chat/:** `chat-panel` (historial + composer), `composer` (texto, adjuntos, quick replies, plantillas — 19K), `message-bubble`, `outbox-bubble` (en cola/fallido con reintento), `media-group` + `media-lightbox` (galerías), `formatted-text` (negritas estilo WhatsApp), `quoted-content` (cita), `message-context-menu`, `template-picker-modal` (reabrir fuera de 24h), `quick-replies-modal`, `window-countdown` (cuenta atrás de 24h), `delivery-check` (palomitas), `ai-status-banner`.
+
+**inbox/:** `inbox-sidebar` (lista con filtros y buscador), `conversation-list-item`, `filter-scroller`, `tag-filter-menu`, `conversation-context-menu`, `agent-home-panel`, `bcv-rate-chip`.
+
+**context-panel/:** `context-panel` (ficha del contacto junto al chat), `close-sale-modal` (cierre de venta + datos de cédula/dirección), `sale-items-editor` (carrito), `manage-tags-modal`.
+
+**agent-control/:** `agent-control-view` (42K — la vista más grande del proyecto: interruptores, métricas, simulador, tarifas), `playbooks-panel` (escenarios), `knowledge-panel` (biblioteca), `agent-tools-panel`, `spend-cap-panel` (tope de gasto), `agent-roster-panel` (reparto entre asesores), `agent-metrics-row`, `token-usage-chart`.
+
+**dashboard/:** `dashboard-view`, `journey-board` (recorrido del cliente), `activity-chart`, `ticket-queue`, `ticket-stats`.
+
+**sales/:** `sales-view`, `sale-detail-modal`. **clientes/:** `clientes-view`, `cliente-ficha`, `cliente-datos-panel`, `cliente-notas`, `cliente-etiquetas`. **inventario/:** `inventario-view`, `producto-fila`. **auth/:** `login-form`.
+
+## `supabase/`
+
+| Qué | Dónde |
+|---|---|
+| Migraciones (45, timestampeadas) | `migrations/` — regla: commit propio con `[migración]` en el título |
+| Seed de demo (3 usuarios, 5 conversaciones) | `seed.sql` — **no va a producción** |
+| Catálogo y escenarios para producción | `seeds/moto_catalog_seed.sql`, `seeds/ai_playbooks.sql` |
+| Config del stack local | `config.toml` |
+
+## `scripts/` y `docs/`
+
+| Archivo | Qué es |
+|---|---|
+| `scripts/deploy.sh` | Despliegue por SSH: valida antes de tocar el servidor, copia, levanta, verifica TLS |
+| `scripts/preflight.sh` | Frena config rota antes de arrancar (claves cruzadas, URLs locales, secretos de juguete) |
+| `scripts/backup.sh` / `restore.sh` | Respaldo/restauración probados de verdad (solo `public`; el bucket no entra) |
+| `scripts/generar-iconos.mjs` | Iconos de la app |
+| `docs/PRODUCCION.md` | LA guía de puesta en producción, paso a paso con verificación |
+| `docs/superpowers/plans`, `specs/` | Planes y specs de diseño históricos (decisiones documentadas) |

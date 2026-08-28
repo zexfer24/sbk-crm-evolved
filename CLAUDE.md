@@ -1,3 +1,131 @@
+# CLAUDE.md
+
+This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+
+# SBK Motorcycles CRM
+
+CRM multiagente de ventas por WhatsApp para una tienda de motos y repuestos en
+Venezuela (equipo en Barinas, zona horaria `America/Caracas`, tasa BCV como
+referencia cambiaria). Bandeja compartida en tiempo real + un agente de IA
+vendedor que responde solo, cotiza contra el inventario real y escala a los
+asesores humanos. Conectado de verdad a la WhatsApp Cloud API de Meta.
+
+**Mapa del código:** `docs/GLOSARIO.md` — módulo por módulo, qué hace cada
+archivo. Consultarlo antes de buscar a ciegas; actualizar su línea en el mismo
+commit que toque un archivo.
+
+**Puesta en producción:** `docs/PRODUCCION.md` — la guía completa, con la
+verificación de cada paso. El despliegue real corre en un VPS administrado por
+otro Claude; los commits se le entregan con un reporte (ver Convenciones).
+
+## Comandos
+
+```bash
+npm run dev                        # Next dev (Supabase local: npx supabase start / db reset)
+rtk npm run test                   # Suite completa (vitest run)
+rtk npx vitest run <ruta>          # Un solo archivo de test
+rtk npm run lint                   # ESLint
+rtk npx tsc --noEmit               # Tipos
+rtk proxy npm run build            # Build — ¡NUNCA `rtk next build`! (ver Trampas)
+```
+
+CI (`.github/workflows/ci.yml`): tipos + lint + tests + build, y en paralelo
+reconstruye la base desde cero con las migraciones y seeds del repo.
+
+## Arquitectura
+
+**Camino de un mensaje entrante** (el flujo que explica la mitad del código):
+
+1. `api/webhooks/whatsapp` verifica la firma HMAC de Meta, escribe
+   mensaje/contacto/conversación con el cliente admin (service role, sin
+   sesión) y **encola** el turno de IA. Nunca procesa en línea.
+2. La cola (`lib/ai/queue.ts` + `redis-queue.ts`, Redis con scripts Lua)
+   espera silencio antes de atender: 6 s si el mensaje parece ráfaga a medias,
+   2 s si cierra la idea. Impone cupos globales de turnos simultáneos y por
+   minuto. `api/cron/process-queue` (cada 5 min, `CRON_SECRET`) es la red de
+   seguridad para turnos huérfanos.
+3. El turno (`lib/ai/agent.ts`) corre en paralelo la fase 0 (¿calza un
+   escenario/playbook del supervisor? → se envía tal cual) y la fase 1
+   (clasificar intención → define qué herramientas recibe el modelo), y solo
+   entonces el tool loop (máx. 5 pasos: catálogo, biblioteca, historial,
+   escalar).
+4. El envío sale por `lib/whatsapp/meta-client.ts` (server-only). Canal no
+   `connected` = envío simulado (demo sin gastar).
+
+**Frenos del agente**, todos independientes: lock por conversación, cupos
+globales en Redis, rate limit de peticiones hacia el proveedor
+(`rate-limit.ts`), tope de gasto diario, interruptor global, interruptor por
+herramienta, y la regla "si un humano ya escribió en el chat, la IA no entra"
+(`human-handled.ts`). `turn-target.ts` congela a quién se le habla;
+`turn-delivery.ts` impide el doble envío en reintentos.
+
+**Frontend:** App Router con una página por sección; `components/crm-shell.tsx`
+es el cliente raíz de la bandeja (estado, suscripciones realtime de Supabase,
+outbox de envíos). Lecturas en `lib/data.ts` y `lib/*-data.ts`; escrituras en
+`lib/mutations.ts`. La lógica con reglas de negocio vive separada de React en
+módulos puros (`inbox-filters`, `outbox`, `sale-cart`, `customers`,
+`inventory`…) precisamente para poder probarla sin levantar nada.
+
+**Base:** Supabase self-hosted (Postgres + Auth + Realtime + Storage). RLS
+activo pero compartido —cualquier agente autenticado lee/escribe todo; no es
+multi-tenant— salvo las acciones sensibles, que exigen rol
+supervisor/admin **en RLS**, no solo en la interfaz. El bucket
+`whatsapp-media` es privado: el multimedia se sirve por `api/media/[...path]`
+con sesión. Inventario y catálogo de la IA son la MISMA tabla `products`, sin
+copia intermedia.
+
+## Convenciones
+
+- **Todo en español**: commits, comentarios, logs (`lib/log.ts`, eventos como
+  `cola_turno_fallido`), UI. Los comentarios explican el porqué y la historia
+  (fallas reales con fecha), no el qué.
+- **Commits narrativos**: una frase que dice el efecto observable ("El panel
+  marca los escenarios que llevan un precio escrito a mano"), no `feat: ...`.
+- **`[migración]` en el título** de todo commit que agregue una migración, y
+  la migración va en commit separado del código que la usa. Omitirlo ya tiró
+  producción 6 minutos en hora pico.
+- **Tests al lado del módulo** (`foo.ts` + `foo.test.ts`). Un cambio de lógica
+  trae su test en el mismo commit.
+- **Entrega a producción**: preguntar en qué commit está producción antes de
+  calcular qué migraciones aplicar (`produccion..HEAD`, nunca el HEAD local), y
+  redactar el reporte de entrega por commit para el Claude del VPS.
+- **Metodología de trabajo**: todo cambio entra por la skill `liminalwork`
+  (plan aprobado → subagentes → reportes → tests). Sin plan no se implementa.
+
+## Trampas conocidas
+
+- `rtk next build` **reporta éxito sin construir**. Compilar siempre con
+  `rtk proxy npm run build` y verificar el timestamp de `.next/BUILD_ID`.
+- `rtk git commit -m` se rompe con comillas simples en el mensaje: los
+  mensajes largos van con `git commit -F <archivo>` (sin rtk).
+- **La suite en Windows corre con `pool: forks` + `isolate: true`**: un
+  proceso nuevo por archivo, hasta 7 en paralelo sobre 8 núcleos. La
+  contención que eso producía se atacó el 28/8/2026: `testTimeout` 15s como
+  red de seguridad (`slowTestThreshold: 1000` delata la degradación), entorno
+  `node` por defecto —solo los tests que usan DOM declaran
+  `/** @vitest-environment jsdom */`—, `userEvent.setup({delay: null,
+  pointerEventsCheck: 0})` en los tests de teclado, y los tests de rutas
+  importan en `beforeAll` con las ramas pesadas mockeadas. Aun así: si un
+  archivo falla en la suite y pasa aislado (`rtk npx vitest run <ruta>`), es
+  contención, no regresión. Palancas locales de diagnóstico:
+  `VITEST_MAX_WORKERS=4` y `--no-file-parallelism`.
+- **Un `vi.mock` con `importOriginal()` arrastra el grafo ENTERO del módulo
+  real** (mockear `@/lib/ai/queue` cargaba los dos SDK de IA e ioredis para
+  leer dos constantes). En tests de rutas: mockear también `@/lib/ai/agent` y
+  `@/lib/redis`, e importar el route una sola vez en `beforeAll`. Si se añade
+  a `queue.ts` un export que el webhook use, actualizar las DOS fábricas
+  (`route.test.ts` y `new-contact-race.test.ts`).
+- El stack Supabase self-hosted es `supabase-squad` (se clona de
+  `zexfer24/supabase-squad`, no vive en este repo). Studio/meta corren en su
+  perfil `admin`: un 503 en el panel significa levantar esos contenedores, no
+  tocar Envoy.
+- `supabase/seed.sql` **no va a producción** (trae usuarios con contraseña
+  escrita); los seeds de catálogo y playbooks sí.
+- Sin `WHATSAPP_APP_SECRET` el webhook acepta cualquier POST (a propósito,
+  solo para local). En producción es obligatoria — igual que `CRON_SECRET`.
+
+---
+
 # RTK (Rust Token Killer) - Token-Optimized Commands
 
 ## Golden Rule
