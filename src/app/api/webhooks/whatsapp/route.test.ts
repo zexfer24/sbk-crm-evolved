@@ -1,5 +1,5 @@
 import { createHmac } from "node:crypto";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 
 // `after()` de Next.js exige contexto de request real; en el test lo
 // ejecutamos inline para poder esperar sus efectos.
@@ -26,6 +26,23 @@ vi.mock("@/lib/ai/queue", async (importOriginal) => {
     processAfterDebounce: vi.fn(async () => ({ processed: 0, failed: 0, deferred: 0 })),
   };
 });
+
+// La fábrica de arriba llama a importOriginal(), que carga el queue.ts real.
+// Ese módulo importa @/lib/ai/agent (los SDK de IA + ~20 módulos) sólo para
+// runAgentTurn, que este test nunca ejercita: se corta acá para que el
+// primer `await import(...)` no cargue en frío ese grafo entero.
+vi.mock("@/lib/ai/agent", () => ({
+  runAgentTurn: vi.fn(),
+}));
+
+// Mismo motivo: queue.ts importa getRedis de acá sólo para encolar/drenar,
+// que este test tiene mockeado en @/lib/ai/queue. Se saca ioredis del grafo
+// y de paso delata cualquier uso inesperado: el webhook no debe tocar Redis.
+vi.mock("@/lib/redis", () => ({
+  getRedis: vi.fn(() => {
+    throw new Error("El test del webhook no debe tocar Redis");
+  }),
+}));
 
 vi.mock("@/lib/whatsapp/meta-client", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@/lib/whatsapp/meta-client")>();
@@ -270,11 +287,47 @@ function fakeRequest(body: unknown, headers: Record<string, string> = {}): Reque
   } as unknown as Request;
 }
 
+// ---------------------------------------------------------------------------
+// Módulos importados una sola vez para todo el archivo.
+//
+// El route lee WHATSAPP_APP_SECRET, NODE_ENV y WHATSAPP_ACCESS_TOKEN DENTRO
+// de las funciones (route.ts ~línea 253, ~261 y ~289), no en ámbito de
+// módulo — por eso las pruebas de abajo que manipulan esas variables de
+// entorno (process.env, vi.stubEnv) siguen valiendo con el módulo importado
+// UNA sola vez acá, en vez de con un `await import(...)` por prueba. La
+// única lectura en ámbito de módulo es WHATSAPP_WEBHOOK_RATE_LIMIT (~línea
+// 117), que ninguna prueba de este archivo toca.
+//
+// Antes había 33 `await import(...)` repartidos por las pruebas: cada uno
+// reevaluaba la fábrica de vi.mock("@/lib/ai/queue", importOriginal), que
+// carga el queue.ts real para quedarse sólo con tres exports puros. Ese
+// costo repetido caía dentro de los timeouts de las primeras pruebas, y un
+// timeout a mitad de resolver la fábrica hacía que la siguiente importación
+// concurrente del mismo mock recibiera el módulo real en vez del mockeado.
+let POST: typeof import("@/app/api/webhooks/whatsapp/route").POST;
+let enqueueAgentTurns: typeof import("@/lib/ai/queue").enqueueAgentTurns;
+let processAfterDebounce: typeof import("@/lib/ai/queue").processAfterDebounce;
+let DEBOUNCE_SECONDS: typeof import("@/lib/ai/queue").DEBOUNCE_SECONDS;
+let DEBOUNCE_SHORT_SECONDS: typeof import("@/lib/ai/queue").DEBOUNCE_SHORT_SECONDS;
+
+beforeAll(async () => {
+  ({ POST } = await import("@/app/api/webhooks/whatsapp/route"));
+  ({ enqueueAgentTurns, processAfterDebounce, DEBOUNCE_SECONDS, DEBOUNCE_SHORT_SECONDS } = await import(
+    "@/lib/ai/queue"
+  ));
+});
+
+/** Limpieza uniforme del estado compartido a nivel de módulo, antes de cada prueba. */
+beforeEach(() => {
+  insertedRows.length = 0;
+  reactionUpdates.length = 0;
+  statusUpdates.length = 0;
+  vi.mocked(enqueueAgentTurns).mockClear();
+  vi.mocked(processAfterDebounce).mockClear();
+});
+
 describe("POST /api/webhooks/whatsapp — idempotencia", () => {
   it("no duplica el mensaje ni vuelve a disparar el turno de la IA si Meta reentrega el mismo webhook", async () => {
-    const { POST } = await import("@/app/api/webhooks/whatsapp/route");
-    const { enqueueAgentTurns } = await import("@/lib/ai/queue");
-
     const waMessageId = "wamid.idempotencia-test-1";
 
     const first = await POST(fakeRequest(webhookBody(waMessageId)));
@@ -329,11 +382,6 @@ describe("POST /api/webhooks/whatsapp — ventana de silencio adaptativa", () =>
   }
 
   it("le da la ventana larga al arranque de una ráfaga", async () => {
-    const { POST } = await import("@/app/api/webhooks/whatsapp/route");
-    const { enqueueAgentTurns, processAfterDebounce, DEBOUNCE_SECONDS } = await import("@/lib/ai/queue");
-    vi.mocked(enqueueAgentTurns).mockClear();
-    vi.mocked(processAfterDebounce).mockClear();
-
     await POST(fakeRequest(loteDeTextos([{ id: "wamid.ventana-larga-1", body: "buenas" }])));
 
     expect(enqueueAgentTurns).toHaveBeenCalledWith(expect.anything(), {
@@ -345,13 +393,6 @@ describe("POST /api/webhooks/whatsapp — ventana de silencio adaptativa", () =>
   });
 
   it("le da la ventana corta a una pregunta terminada", async () => {
-    const { POST } = await import("@/app/api/webhooks/whatsapp/route");
-    const { enqueueAgentTurns, processAfterDebounce, DEBOUNCE_SHORT_SECONDS } = await import(
-      "@/lib/ai/queue"
-    );
-    vi.mocked(enqueueAgentTurns).mockClear();
-    vi.mocked(processAfterDebounce).mockClear();
-
     await POST(
       fakeRequest(
         loteDeTextos([{ id: "wamid.ventana-corta-1", body: "¿Tienen bujía para una Empire Owen?" }])
@@ -370,10 +411,6 @@ describe("POST /api/webhooks/whatsapp — ventana de silencio adaptativa", () =>
    * y cerró con la pregunta completa, ya no hay nada que esperar.
    */
   it("en un lote del mismo chat manda el último mensaje", async () => {
-    const { POST } = await import("@/app/api/webhooks/whatsapp/route");
-    const { enqueueAgentTurns, DEBOUNCE_SHORT_SECONDS } = await import("@/lib/ai/queue");
-    vi.mocked(enqueueAgentTurns).mockClear();
-
     await POST(
       fakeRequest(
         loteDeTextos([
@@ -396,10 +433,6 @@ describe("POST /api/webhooks/whatsapp — ventana de silencio adaptativa", () =>
    * Responderle a la foto sola es responder sin la pregunta.
    */
   it("espera la ventana larga con una foto sin pie", async () => {
-    const { POST } = await import("@/app/api/webhooks/whatsapp/route");
-    const { enqueueAgentTurns, DEBOUNCE_SECONDS } = await import("@/lib/ai/queue");
-    vi.mocked(enqueueAgentTurns).mockClear();
-
     await POST(fakeRequest(webhookImageBody("wamid.foto-sin-pie-1")));
 
     expect(enqueueAgentTurns).toHaveBeenCalledWith(expect.anything(), {
@@ -417,10 +450,6 @@ describe("POST /api/webhooks/whatsapp — interruptor global", () => {
    * decía otra cosa. Peor si alguien encendía: salía todo de golpe.
    */
   it("no encola nada con la IA apagada, pero sigue guardando el mensaje", async () => {
-    const { POST } = await import("@/app/api/webhooks/whatsapp/route");
-    const { enqueueAgentTurns } = await import("@/lib/ai/queue");
-    vi.mocked(enqueueAgentTurns).mockClear();
-
     aiCanRun = false;
     try {
       const response = await POST(fakeRequest(webhookBody("wamid.ia-apagada-1")));
@@ -443,7 +472,6 @@ describe("POST /api/webhooks/whatsapp — límite de tasa", () => {
   it("pasado el límite descarta el lote sin guardar nada y sin pedirle a Meta que reintente", async () => {
     rateLimitAllows = false;
     try {
-      const { POST } = await import("@/app/api/webhooks/whatsapp/route");
       const waMessageId = "wamid.pasado-el-limite";
       const response = await POST(fakeRequest(webhookBody(waMessageId)));
 
@@ -467,7 +495,6 @@ describe("POST /api/webhooks/whatsapp — firma de Meta", () => {
     delete process.env.WHATSAPP_APP_SECRET;
 
     try {
-      const { POST } = await import("@/app/api/webhooks/whatsapp/route");
       const waMessageId = "wamid.firma-sin-secreto";
       const response = await POST(fakeRequest(webhookBody(waMessageId)));
       expect(response.status).toBe(200);
@@ -489,7 +516,6 @@ describe("POST /api/webhooks/whatsapp — firma de Meta", () => {
     vi.stubEnv("NODE_ENV", "production");
 
     try {
-      const { POST } = await import("@/app/api/webhooks/whatsapp/route");
       const waMessageId = "wamid.sin-secreto-en-produccion";
       const response = await POST(fakeRequest(webhookBody(waMessageId)));
       expect(response.status).toBe(503);
@@ -506,7 +532,6 @@ describe("POST /api/webhooks/whatsapp — firma de Meta", () => {
     process.env.WHATSAPP_APP_SECRET = APP_SECRET;
 
     try {
-      const { POST } = await import("@/app/api/webhooks/whatsapp/route");
       const waMessageId = "wamid.firma-valida";
       const body = webhookBody(waMessageId);
       const signature = sign(JSON.stringify(body), APP_SECRET);
@@ -525,7 +550,6 @@ describe("POST /api/webhooks/whatsapp — firma de Meta", () => {
     process.env.WHATSAPP_APP_SECRET = APP_SECRET;
 
     try {
-      const { POST } = await import("@/app/api/webhooks/whatsapp/route");
       const waMessageId = "wamid.firma-ausente";
       const response = await POST(fakeRequest(webhookBody(waMessageId)));
       expect(response.status).toBe(401);
@@ -541,7 +565,6 @@ describe("POST /api/webhooks/whatsapp — firma de Meta", () => {
     process.env.WHATSAPP_APP_SECRET = APP_SECRET;
 
     try {
-      const { POST } = await import("@/app/api/webhooks/whatsapp/route");
       const waMessageId = "wamid.firma-invalida";
       const body = webhookBody(waMessageId);
 
@@ -563,7 +586,6 @@ describe("POST /api/webhooks/whatsapp — media asíncrona", () => {
     process.env.WHATSAPP_ACCESS_TOKEN = "test-token";
 
     try {
-      const { POST } = await import("@/app/api/webhooks/whatsapp/route");
       const waMessageId = "wamid.media-async-test-1";
 
       const response = await POST(fakeRequest(webhookImageBody(waMessageId)));
@@ -645,9 +667,6 @@ function webhookAlbumBody(prefijo: string) {
 
 describe("POST /api/webhooks/whatsapp — el aviso 'unsupported' de Meta", () => {
   it("no ensucia el chat con jerga técnica, y las fotos del lote sí se guardan", async () => {
-    const { POST } = await import("@/app/api/webhooks/whatsapp/route");
-    insertedRows.length = 0;
-
     const response = await POST(fakeRequest(webhookAlbumBody("wamid.album-1")));
     expect(response.status).toBe(200);
 
@@ -692,10 +711,6 @@ function webhookReactionBody(waMessageId: string, emoji: string, reaccionadoId: 
 
 describe("POST /api/webhooks/whatsapp — reacciones con emoji", () => {
   it("pega el emoji al mensaje al que reacciona, sin ensuciar el hilo con un mensaje nuevo", async () => {
-    const { POST } = await import("@/app/api/webhooks/whatsapp/route");
-    reactionUpdates.length = 0;
-    insertedRows.length = 0;
-
     const response = await POST(
       fakeRequest(webhookReactionBody("wamid.reaccion-1", "👍", "wamid.mensaje-nuestro"))
     );
@@ -712,9 +727,6 @@ describe("POST /api/webhooks/whatsapp — reacciones con emoji", () => {
   });
 
   it("quitar la reacción la borra, en vez de dejar el emoji viejo pegado", async () => {
-    const { POST } = await import("@/app/api/webhooks/whatsapp/route");
-    reactionUpdates.length = 0;
-
     // Meta manda el retiro como una reacción con el emoji vacío.
     await POST(fakeRequest(webhookReactionBody("wamid.reaccion-2", "", "wamid.mensaje-nuestro")));
 
@@ -757,9 +769,6 @@ function webhookTypedBody(waMessageId: string, extra: Record<string, unknown>) {
  */
 describe("POST /api/webhooks/whatsapp — ubicación y otros tipos", () => {
   it("la ubicación llega con su enlace al mapa, no como jerga", async () => {
-    const { POST } = await import("@/app/api/webhooks/whatsapp/route");
-    insertedRows.length = 0;
-
     await POST(
       fakeRequest(
         webhookTypedBody("wamid.ubicacion-1", {
@@ -780,9 +789,6 @@ describe("POST /api/webhooks/whatsapp — ubicación y otros tipos", () => {
   });
 
   it("una ubicación sin nombre igual llega con sus coordenadas", async () => {
-    const { POST } = await import("@/app/api/webhooks/whatsapp/route");
-    insertedRows.length = 0;
-
     await POST(
       fakeRequest(
         webhookTypedBody("wamid.ubicacion-2", {
@@ -798,9 +804,6 @@ describe("POST /api/webhooks/whatsapp — ubicación y otros tipos", () => {
   });
 
   it("un tipo que no conocemos se explica en castellano, sin corchetes técnicos", async () => {
-    const { POST } = await import("@/app/api/webhooks/whatsapp/route");
-    insertedRows.length = 0;
-
     await POST(fakeRequest(webhookTypedBody("wamid.raro-1", { type: "order" })));
 
     const texto = String(insertedRows.find((r) => r.whatsapp_message_id === "wamid.raro-1")?.content ?? "");
@@ -838,13 +841,7 @@ describe("POST /api/webhooks/whatsapp — por qué no se entregó", () => {
     };
   }
 
-  beforeEach(() => {
-    statusUpdates.length = 0;
-  });
-
   it("guarda el código y el motivo cuando Meta rechaza el mensaje", async () => {
-    const { POST } = await import("@/app/api/webhooks/whatsapp/route");
-
     await POST(
       fakeRequest(
         estadoBody("failed", [
@@ -873,8 +870,6 @@ describe("POST /api/webhooks/whatsapp — por qué no se entregó", () => {
    * es el que dice algo concreto; `title` es la etiqueta de catálogo.
    */
   it("cae al texto más específico que haya venido", async () => {
-    const { POST } = await import("@/app/api/webhooks/whatsapp/route");
-
     await POST(fakeRequest(estadoBody("failed", [{ code: 131047, title: "Re-engagement message" }])));
 
     expect(statusUpdates[0].patch).toMatchObject({
@@ -888,8 +883,6 @@ describe("POST /api/webhooks/whatsapp — por qué no se entregó", () => {
    * remontar, un motivo viejo colgado debajo sería peor que ninguno.
    */
   it("no deja el motivo pegado cuando el mensaje sí llegó", async () => {
-    const { POST } = await import("@/app/api/webhooks/whatsapp/route");
-
     await POST(fakeRequest(estadoBody("delivered")));
 
     expect(statusUpdates[0].patch).toMatchObject({
@@ -936,29 +929,14 @@ describe("POST /api/webhooks/whatsapp — un remitente que no es un teléfono", 
     };
   }
 
-  beforeEach(async () => {
-    insertedRows.length = 0;
-    const { enqueueAgentTurns } = await import("@/lib/ai/queue");
-    vi.mocked(enqueueAgentTurns).mockClear();
-  });
-
-  /** El espía de la cola, ya tipado, para no repetir el import en cada caso. */
-  async function colaEspiada() {
-    const { enqueueAgentTurns } = await import("@/lib/ai/queue");
-    return vi.mocked(enqueueAgentTurns);
-  }
-
   it("no guarda nada cuando el mensaje llega sin remitente", async () => {
-    const { POST } = await import("@/app/api/webhooks/whatsapp/route");
-    const enqueueAgentTurnsMock = await colaEspiada();
-
     const response = await POST(fakeRequest(mensajeDe(undefined, "wamid.sin-remitente-1")));
 
     // 200 igual: a Meta no se le pide que reintente algo que no vamos a poder
     // procesar nunca.
     expect(response.status).toBe(200);
     expect(insertedRows).toHaveLength(0);
-    expect(enqueueAgentTurnsMock).not.toHaveBeenCalled();
+    expect(enqueueAgentTurns).not.toHaveBeenCalled();
   });
 
   /**
@@ -967,20 +945,15 @@ describe("POST /api/webhooks/whatsapp — un remitente que no es un teléfono", 
    * quedado guardado como '+CO.1550555583222997'.
    */
   it("tampoco guarda un identificador de la Cloud API que no es un número", async () => {
-    const { POST } = await import("@/app/api/webhooks/whatsapp/route");
-
     await POST(fakeRequest(mensajeDe("CO.1550555583222997", "wamid.remitente-raro-1")));
 
     expect(insertedRows).toHaveLength(0);
   });
 
   it("un remitente normal se sigue guardando igual", async () => {
-    const { POST } = await import("@/app/api/webhooks/whatsapp/route");
-    const enqueueAgentTurnsMock = await colaEspiada();
-
     await POST(fakeRequest(mensajeDe("584120000000", "wamid.remitente-bueno-1")));
 
     expect(insertedRows).toHaveLength(1);
-    expect(enqueueAgentTurnsMock).toHaveBeenCalledTimes(1);
+    expect(enqueueAgentTurns).toHaveBeenCalledTimes(1);
   });
 });
