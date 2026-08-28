@@ -4,6 +4,8 @@ import type { SupabaseClient } from "@supabase/supabase-js";
 import type { Database } from "@/lib/supabase/database.types";
 import type { Playbook, PlaybookAfterSend, PlaybookAttachmentType, Tag, TagColor } from "@/lib/types";
 import { getClassifierModel } from "@/lib/ai/model";
+import { playbooksAtTime } from "@/lib/ai/greeting-window";
+import { formatCrmDateTime } from "@/lib/time-zone";
 import { errorText, log } from "@/lib/log";
 
 // ---------------------------------------------------------------------------
@@ -143,10 +145,12 @@ function playbookTags(row: { ai_playbook_tags: RawPlaybookTag[] | null }): Tag[]
     .map((tag) => ({ id: tag.id, label: tag.label, color: tag.color as TagColor }));
 }
 
-function buildPrompt(playbooks: Playbook[]): string {
+function buildPrompt(playbooks: Playbook[], now: Date): string {
   const catalog = playbooks.map((p) => `- ${p.name}: ${p.triggerDescription}`).join("\n");
 
   return `Eres el clasificador de una repuestera de motos en Venezuela que atiende por WhatsApp. Tienes respuestas ya redactadas para ciertas situaciones. Tu única tarea es decidir cuál de ellas corresponde al ÚLTIMO mensaje del cliente, tomando en cuenta todo el contexto previo de la conversación.
+
+Fecha y hora local: ${formatCrmDateTime(now)} (Venezuela). Varios disparadores están escritos como franjas horarias: compruébalos contra ESA hora, no contra las palabras del cliente. Alguien puede escribir "buenas noches" a las once de la mañana.
 
 Escenarios disponibles:
 ${catalog}
@@ -165,9 +169,24 @@ Responde solo con el nombre exacto del escenario, o con "${NO_MATCH}".`;
  * que la conversación siga por el flujo genérico, que es el comportamiento
  * que había antes de que existieran los escenarios.
  */
-export async function matchPlaybook(history: ModelMessage[], playbooks: Playbook[]): Promise<PlaybookMatch> {
-  // Sin escenarios cargados no hay nada que elegir: se ahorra la llamada.
-  if (playbooks.length === 0) return { playbook: null, usage: ZERO_USAGE };
+export async function matchPlaybook(
+  history: ModelMessage[],
+  playbooks: Playbook[],
+  now: Date = new Date()
+): Promise<PlaybookMatch> {
+  // La hora se decide acá y no se le pregunta al modelo. De 14 saludos del 27
+  // de agosto de 2026, 4 salieron con el saludo equivocado —"¡Buenos días!" a
+  // las diez de la noche— porque esta función no sabía qué hora era: los tres
+  // saludos entraban juntos al enum y el único cuyo disparador describe la
+  // FORMA del mensaje ("solo con hola o cualquier saludo") calzaba a toda
+  // hora. Filtrar antes le quita la opción imposible en vez de corregirle la
+  // respuesta después. Ver greeting-window.ts.
+  const candidatos = playbooksAtTime(playbooks, now);
+
+  // Sin escenarios que puedan salir ahora no hay nada que elegir: se ahorra la
+  // llamada y el turno sigue por el flujo genérico, que redacta con la hora
+  // correcta (va en TURNO ACTUAL, ver prompt.ts).
+  if (candidatos.length === 0) return { playbook: null, usage: ZERO_USAGE };
 
   const { model, providerOptions } = getClassifierModel("escenario");
 
@@ -178,12 +197,12 @@ export async function matchPlaybook(history: ModelMessage[], playbooks: Playbook
       // Ver classify.ts: el reintento lo hace el control de ritmo, no el SDK.
       maxRetries: 0,
       output: "enum",
-      enum: [...playbooks.map((p) => p.name), NO_MATCH],
-      system: buildPrompt(playbooks),
+      enum: [...candidatos.map((p) => p.name), NO_MATCH],
+      system: buildPrompt(candidatos, now),
       messages: history,
     });
 
-    return { playbook: playbooks.find((p) => p.name === object) ?? null, usage };
+    return { playbook: candidatos.find((p) => p.name === object) ?? null, usage };
   } catch (err) {
     // Registro estructurado y no console.error: este catch se traga
     // CUALQUIER fallo del proveedor, rate limit incluido, y el turno

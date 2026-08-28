@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { INTENT_VALUES } from "@/lib/ai/classify";
 import { OFF_TOPIC_REPLY, SYSTEM_PROMPT, buildInstructions } from "@/lib/ai/prompt";
+import { greetingWindow } from "@/lib/ai/greeting-window";
 
 /**
  * Estimación conservadora de caracteres por token para español.
@@ -141,6 +142,20 @@ describe("la hora del turno", () => {
     expect(SYSTEM_PROMPT).toMatch(/buenos días/i);
     expect(SYSTEM_PROMPT).toMatch(/buenas tardes/i);
     expect(SYSTEM_PROMPT).toMatch(/buenas noches/i);
+  });
+
+  /**
+   * Hay dos caminos que saludan y tienen que decir lo mismo a la misma hora: el
+   * escenario ya redactado del panel y esta regla, que es la que sigue el
+   * modelo cuando no calza ningún escenario. El borde de los escenarios lo
+   * escribió el dueño en sus disparadores —la tarde llega "hasta las 7:00pm"—
+   * y vive en greetingWindow. La regla decía "hasta las seis": entre las seis y
+   * las siete, los dos caminos se contradecían.
+   */
+  it("pone el borde entre tarde y noche donde lo ponen los escenarios", () => {
+    expect(greetingWindow("¡Buenas tardes! ¿En qué podemos ayudarle?")?.to).toBe(19 * 60);
+    expect(SYSTEM_PROMPT).toMatch(/hasta las siete de la noche/);
+    expect(SYSTEM_PROMPT).not.toMatch(/hasta las seis de la tarde/);
   });
 
   /**

@@ -62,6 +62,30 @@ export function currentDayRange(timeZone: string, now: Date = new Date()): { fro
  * variable del sistema operativo la duplicaría. Dos fuentes para el mismo
  * dato terminan discrepando el día que alguien cambia una sola.
  */
+/**
+ * Minuto del día en la zona del equipo: 0 es medianoche, 1439 las 11:59 pm.
+ *
+ * Es la misma hora que `formatCrmDateTime` escribe en palabras, pero en un
+ * número con el que se puede comparar. Existe porque hay decisiones que se
+ * toman con la hora y no se le pueden delegar al modelo — cuál de los tres
+ * saludos puede salir, por ejemplo (ver greeting-window.ts).
+ */
+export function crmMinuteOfDay(instant: Date = new Date(), timeZone: string = CRM_TIME_ZONE): number {
+  const parts = new Intl.DateTimeFormat("en-US", {
+    timeZone,
+    hour12: false,
+    hour: "2-digit",
+    minute: "2-digit",
+  }).formatToParts(instant);
+
+  const get = (type: Intl.DateTimeFormatPartTypes) =>
+    Number(parts.find((part) => part.type === type)?.value ?? 0);
+
+  // `hour12: false` devuelve "24" para la medianoche en algunos motores; el
+  // resto de este archivo hace el mismo módulo por la misma razón.
+  return (get("hour") % 24) * 60 + get("minute");
+}
+
 export function formatCrmDateTime(instant: Date = new Date(), timeZone: string = CRM_TIME_ZONE): string {
   return new Intl.DateTimeFormat("es-VE", {
     timeZone,
