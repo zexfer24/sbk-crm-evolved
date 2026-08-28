@@ -107,16 +107,23 @@ export interface InventoryTotals {
   activos: number;
   agotados: number;
   bajos: number;
+  /**
+   * El `updated_at` más reciente de todo el catálogo, o null si no hay
+   * ninguno. Es la antigüedad del inventario entero: si el más nuevo tiene
+   * cuatro días, la sincronización no está corriendo.
+   */
+  updatedAt: string | null;
 }
 
 export async function fetchInventoryTotals(supabase: SupabaseClient): Promise<InventoryTotals> {
   const countOnly = () => supabase.from("products").select("id", { count: "exact", head: true });
 
-  const [productos, activos, agotados, bajos] = await Promise.all([
+  const [productos, activos, agotados, bajos, ultimo] = await Promise.all([
     countOnly(),
     countOnly().eq("is_active", true),
     countOnly().eq("is_active", true).lte("stock_quantity", 0),
     countOnly().eq("is_active", true).gt("stock_quantity", 0).lte("stock_quantity", LOW_STOCK_THRESHOLD),
+    supabase.from("products").select("updated_at").order("updated_at", { ascending: false }).limit(1).maybeSingle(),
   ]);
 
   for (const result of [productos, activos, agotados, bajos]) {
@@ -128,6 +135,9 @@ export async function fetchInventoryTotals(supabase: SupabaseClient): Promise<In
     activos: activos.count ?? 0,
     agotados: agotados.count ?? 0,
     bajos: bajos.count ?? 0,
+    // La antigüedad es un dato de apoyo: si esta consulta falla, la sección
+    // tiene que abrir igual y decir que no se sabe de cuándo son los datos.
+    updatedAt: (ultimo.data as { updated_at: string } | null)?.updated_at ?? null,
   };
 }
 

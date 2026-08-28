@@ -7,6 +7,8 @@ import { getBcvRate } from "@/lib/ai/bcv";
 import { catalogFilter, rankByTerms, searchTerms } from "@/lib/ai/catalog-search";
 import { formatQuote } from "@/lib/ai/precio";
 import { RECLAMO_CATEGORIES, escalateConversation, type EscalationMotivo } from "@/lib/ai/escalate";
+import { inventoryAgeInstruction, inventoryFreshness } from "@/lib/inventory-freshness";
+import { log } from "@/lib/log";
 
 /**
  * Tope de repuestos que se le pasan al modelo de una vez.
@@ -29,6 +31,28 @@ const MAX_CATALOG_RESULTS = 10;
  * que el recorte no se lleve por delante justo el que el cliente buscaba.
  */
 const CATALOG_FETCH_LIMIT = MAX_CATALOG_RESULTS * 3 + 1;
+
+/**
+ * Se le dice en palabras qué hacer con el recorte: si no, el modelo enumera
+ * los que le llegaron como si fueran todo el catálogo.
+ */
+const RECORTE_INSTRUCTION =
+  "Hay más resultados de los que caben acá. Muestra estos y pídele al cliente que precise (marca del repuesto, modelo de su moto) en vez de dar a entender que esto es todo lo que hay.";
+
+/**
+ * Un repuesto activo en cero se sigue cotizando —el cliente pregunta por el
+ * precio igual— pero no se ofrece como disponible. La regla ya está en el
+ * prompt; acá viaja pegada al resultado, que es lo que el modelo tiene
+ * delante en el momento de redactar.
+ */
+const SIN_STOCK_INSTRUCTION =
+  "Alguno de estos repuestos está en cero: de ese NO digas que hay ni lo ofrezcas como disponible. Dilo claro y ofrece pasarle el caso a un asesor por si viene reposición.";
+
+/** El `updated_at` más viejo del grupo, o null si ninguna fila trae fecha. */
+function oldestUpdate(rows: { updated_at?: string | null }[]): string | null {
+  const fechas = rows.map((row) => row.updated_at).filter((fecha): fecha is string => Boolean(fecha));
+  return fechas.length === 0 ? null : fechas.reduce((viejo, fecha) => (fecha < viejo ? fecha : viejo));
+}
 
 interface ToolDeps {
   supabase: SupabaseClient<Database>;
@@ -70,7 +94,7 @@ export function buildCatalogTool({ supabase, conversationId }: ToolDeps) {
       const { data: products, error } = await supabase
         .from("products")
         .select(
-          "id, name, brand, price, currency, stock_quantity, search_text, product_compatibility(moto_brand, moto_model)"
+          "id, name, brand, price, currency, stock_quantity, updated_at, search_text, product_compatibility(moto_brand, moto_model)"
         )
         .eq("is_active", true)
         .or(catalogFilter(terms))
@@ -109,6 +133,31 @@ export function buildCatalogTool({ supabase, conversationId }: ToolDeps) {
         compatibleCon: p.product_compatibility.map((c) => `${c.moto_brand} ${c.moto_model}`),
       }));
 
+      // La antigüedad se mide por el repuesto MÁS VIEJO de los que se están
+      // cotizando: la respuesta es tan confiable como el peor dato que lleva
+      // dentro. Quedarse con el más reciente dejaría pasar justo el que puede
+      // estar vendido.
+      const freshness = inventoryFreshness(oldestUpdate(filtered));
+      if (freshness.isStale) {
+        // El mismo aviso que el del BCV y por la misma razón: una función
+        // degradada que no se nota es peor que una que falla. Sin esta línea,
+        // "el inventario lleva días congelado" solo se ve consultando la base.
+        log.warn("inventario_desactualizado", {
+          conversationId,
+          dias: freshness.ageDays,
+          desde: freshness.updatedAt,
+        });
+      }
+
+      // Las advertencias se juntan en una sola instrucción: el modelo lee una
+      // frase, no un formulario. Van primero las que limitan lo que puede
+      // prometer y de última la del recorte, que es de forma.
+      const instrucciones = [
+        quoted.some((q) => q.stock <= 0) ? SIN_STOCK_INSTRUCTION : null,
+        inventoryAgeInstruction(freshness),
+        hayMas ? RECORTE_INSTRUCTION : null,
+      ].filter((linea): linea is string => linea !== null);
+
       // El monto de una venta sale de lo que se cotizó acá, no de un número
       // que el agente escriba a mano al cerrar -- por eso se deja registro
       // de cada resultado que el modelo efectivamente vio, con el precio
@@ -139,14 +188,9 @@ export function buildCatalogTool({ supabase, conversationId }: ToolDeps) {
         })),
         tasaBcvUsada: rate,
         tasaDesactualizada: isStale,
+        inventarioDesactualizado: freshness.isStale,
         hayMas,
-        // Se le dice en palabras qué hacer con el recorte: si no, el modelo
-        // enumera los que le llegaron como si fueran todo el catálogo.
-        ...(hayMas
-          ? {
-              instruccionParaTuRespuesta: `Hay más resultados de los que caben acá. Muestra estos y pídele al cliente que precise (marca del repuesto, modelo de su moto) en vez de dar a entender que esto es todo lo que hay.`,
-            }
-          : {}),
+        ...(instrucciones.length > 0 ? { instruccionParaTuRespuesta: instrucciones.join(" ") } : {}),
       };
     },
   });

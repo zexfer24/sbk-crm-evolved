@@ -13,6 +13,8 @@ interface FakeProductRow {
   price: number;
   currency: "USD" | "VES";
   stock_quantity: number;
+  /** Opcional: sin fecha, la herramienta no puede saber la antigüedad y no avisa de nada. */
+  updated_at?: string;
   product_compatibility: { moto_brand: string; moto_model: string }[];
 }
 
@@ -235,5 +237,134 @@ describe("buildCatalogTool — tope de resultados", () => {
     };
 
     expect(result.hayMas).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// La antigüedad del inventario
+//
+// El catálogo se cargó el 24 de agosto de 2026 y no se volvió a tocar: la
+// sincronización vive en una aplicación del dueño y todavía no corre. La
+// herramienta estaba apagada justamente por eso, y encenderla sin que la IA
+// sepa con qué está cotizando cambiaría "precio viejo en 2 escenarios" por
+// "precio viejo en 5.438 filas". Lo que más pesa no es el precio: es que un
+// stock de hace cuatro días le haga prometer al cliente algo ya vendido.
+// ---------------------------------------------------------------------------
+
+/** Un producto con la antigüedad que se quiera, listo para pasarle al fake. */
+function producto(overrides: Partial<FakeProductRow> & { id: string }): FakeProductRow {
+  return {
+    name: "Carburador PZ27",
+    brand: "Genérico",
+    price: 18,
+    currency: "USD",
+    stock_quantity: 12,
+    product_compatibility: [],
+    ...overrides,
+  };
+}
+
+function haceDias(dias: number): string {
+  return new Date(Date.now() - dias * 24 * 60 * 60 * 1000).toISOString();
+}
+
+async function cotizar(products: FakeProductRow[]) {
+  const { client } = createFakeSupabase(products);
+  const tool = buildCatalogTool({
+    // @ts-expect-error -- fake mínimo
+    supabase: client,
+    conversationId: "conv-1",
+    contactId: "contact-1",
+  });
+
+  // @ts-expect-error -- firma simplificada del test
+  return (await tool.execute({ query: "carburador" }, { toolCallId: "t1", messages: [] })) as {
+    results: { stock: number }[];
+    inventarioDesactualizado?: boolean;
+    instruccionParaTuRespuesta?: string;
+  };
+}
+
+describe("buildCatalogTool — qué tan viejo es lo que está cotizando", () => {
+  it("con el inventario de hoy afirma con normalidad, sin advertencias", async () => {
+    const result = await cotizar([producto({ id: "prod-1", updated_at: haceDias(0) })]);
+
+    expect(result.inventarioDesactualizado).toBe(false);
+    expect(result.instruccionParaTuRespuesta).toBeUndefined();
+  });
+
+  it("con el inventario de hace una semana se lo dice al modelo, con la antigüedad y el asesor", async () => {
+    const result = await cotizar([producto({ id: "prod-1", updated_at: haceDias(7) })]);
+
+    expect(result.inventarioDesactualizado).toBe(true);
+    expect(result.instruccionParaTuRespuesta).toMatch(/7 días/);
+    expect(result.instruccionParaTuRespuesta).toMatch(/asesor/i);
+    expect(result.instruccionParaTuRespuesta).toMatch(/no afirmes/i);
+  });
+
+  /**
+   * Un dato es tan viejo como el más viejo que se está afirmando: si de tres
+   * repuestos cotizados uno lleva una semana sin tocarse, la respuesta entera
+   * lleva esa reserva. Al revés —quedarse con el más nuevo— dejaría pasar
+   * justo el que puede estar vendido.
+   */
+  it("mide por el resultado más viejo, no por el más reciente", async () => {
+    const result = await cotizar([
+      producto({ id: "prod-1", updated_at: haceDias(0) }),
+      producto({ id: "prod-2", name: "Carburador PZ30", updated_at: haceDias(9) }),
+    ]);
+
+    expect(result.inventarioDesactualizado).toBe(true);
+    expect(result.instruccionParaTuRespuesta).toMatch(/9 días/);
+  });
+
+  /** Sin fecha en la fila no se inventa una antigüedad ni se calla: no hay nada que afirmar sobre eso. */
+  it("sin fecha de actualización no da el inventario por viejo", async () => {
+    const result = await cotizar([producto({ id: "prod-1" })]);
+
+    expect(result.inventarioDesactualizado).toBe(false);
+  });
+
+  it("deja registro en el servidor cuando cotiza con datos viejos", async () => {
+    const escrito: string[] = [];
+    const spy = vi.spyOn(console, "error").mockImplementation((line: unknown) => {
+      escrito.push(String(line));
+    });
+
+    await cotizar([producto({ id: "prod-1", updated_at: haceDias(4) })]);
+    spy.mockRestore();
+
+    const aviso = escrito.map((line) => JSON.parse(line)).find((l) => l.event === "inventario_desactualizado");
+    expect(aviso).toMatchObject({ level: "warn", dias: 4 });
+  });
+});
+
+describe("buildCatalogTool — un repuesto en cero no se ofrece como disponible", () => {
+  /**
+   * El stock viaja al modelo tal cual (un repuesto activo en cero se sigue
+   * cotizando, ver aiVisibility), y el prompt ya dice que hay que avisar. Pero
+   * el prompt es el guion, no la cerradura: acá se le dice con el resultado en
+   * la mano, que es lo que el modelo tiene delante cuando redacta.
+   */
+  it("se lo dice al modelo en palabras cuando alguno viene en cero", async () => {
+    const result = await cotizar([producto({ id: "prod-1", stock_quantity: 0, updated_at: haceDias(0) })]);
+
+    expect(result.results[0].stock).toBe(0);
+    expect(result.instruccionParaTuRespuesta).toMatch(/cero/i);
+    expect(result.instruccionParaTuRespuesta).toMatch(/asesor/i);
+  });
+
+  it("no dice nada de eso cuando todos tienen unidades", async () => {
+    const result = await cotizar([producto({ id: "prod-1", stock_quantity: 4, updated_at: haceDias(0) })]);
+
+    expect(result.instruccionParaTuRespuesta).toBeUndefined();
+  });
+
+  /** Las dos advertencias son independientes y pueden salir juntas. */
+  it("con un repuesto en cero y el inventario viejo, avisa de las dos cosas", async () => {
+    const result = await cotizar([producto({ id: "prod-1", stock_quantity: 0, updated_at: haceDias(5) })]);
+
+    expect(result.instruccionParaTuRespuesta).toMatch(/cero/i);
+    expect(result.instruccionParaTuRespuesta).toMatch(/5 días/);
   });
 });

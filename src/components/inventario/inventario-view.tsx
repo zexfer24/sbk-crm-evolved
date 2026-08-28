@@ -13,6 +13,7 @@ import {
   type InventorySort,
 } from "@/lib/inventory";
 import type { InventoryTotals } from "@/lib/inventory-data";
+import { freshnessNote, freshnessValue, inventoryFreshness } from "@/lib/inventory-freshness";
 import { initials } from "@/lib/dashboard";
 import { AppRail, AppTopNav } from "@/components/app-rail";
 import { UrlSearchBox } from "@/components/url-search-box";
@@ -92,6 +93,7 @@ export function InventarioView({
   // Cero significa "sin tasa" para el cálculo de precios: `priceInBs` ya lo
   // trata así y deja la fila en dólares.
   const rate = bcvRate?.rate ?? 0;
+  const freshness = inventoryFreshness(totals.updatedAt);
   const pages = inventoryTotalPages(total);
   const desde = total === 0 ? 0 : (params.page - 1) * INVENTORY_PAGE_SIZE + 1;
   const hasta = Math.min(params.page * INVENTORY_PAGE_SIZE, total);
@@ -158,6 +160,15 @@ export function InventarioView({
                 <span className="lm-eyebrow">Bajo stock</span>
                 <span className="lm-num cli-stat-value">{totals.bajos}</span>
                 <span className="cli-stat-note">Quedan pocas unidades.</span>
+              </div>
+              {/* La antigüedad del catálogo, por la misma razón que la fecha de
+                  la tasa: la sincronización vive en una aplicación aparte y
+                  puede llevar días sin correr sin que nada lo delate. Un stock
+                  de hace cuatro días le hace prometer a la IA algo ya vendido. */}
+              <div className="cli-stat" data-stale={freshness.isStale ? "true" : undefined}>
+                <span className="lm-eyebrow">Actualizado</span>
+                <span className="lm-num cli-stat-value">{freshnessValue(freshness)}</span>
+                <span className="cli-stat-note">{freshnessNote(freshness)}</span>
               </div>
               {/* La fecha va pegada al número a propósito: con esta tasa se
                   calculan precios, y una tasa de hace tres días se ve idéntica
