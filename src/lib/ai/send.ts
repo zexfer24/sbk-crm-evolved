@@ -139,12 +139,28 @@ async function sendAgentMedia(
 }
 
 /**
- * Envía la respuesta de un escenario: el texto **tal cual está guardado**,
- * y el adjunto si lo tiene.
+ * El texto que un escenario le pone delante al cliente, tal como sale.
+ *
+ * Vive aparte del envío porque hay un segundo lector: el turno lo compara
+ * contra su última respuesta para no mandar dos veces el mismo escenario (ver
+ * `alreadySentPlaybook` en agent.ts). Componer el enlace en dos sitios era
+ * exactamente la forma de que esa comparación dejara de reconocer su propio
+ * mensaje el día que uno de los dos cambiara.
  *
  * Un adjunto `link` se anexa al texto en vez de mandarse como archivo:
- * Meta solo puede adjuntar URLs que apunte directo a un archivo público, y
+ * Meta solo puede adjuntar URLs que apunten directo a un archivo público, y
  * los catálogos suelen ser páginas web o carpetas compartidas.
+ */
+export function playbookMessageText(playbook: Playbook): string {
+  const { attachmentUrl, attachmentType } = playbook;
+  return attachmentType === "link" && attachmentUrl
+    ? `${playbook.responseText}\n\n${attachmentUrl}`
+    : playbook.responseText;
+}
+
+/**
+ * Envía la respuesta de un escenario: el texto **tal cual está guardado**,
+ * y el adjunto si lo tiene.
  */
 export async function sendPlaybookReply(
   supabase: SupabaseClient<Database>,
@@ -153,12 +169,7 @@ export async function sendPlaybookReply(
 ): Promise<void> {
   const { attachmentUrl, attachmentType } = playbook;
 
-  const text =
-    attachmentType === "link" && attachmentUrl
-      ? `${playbook.responseText}\n\n${attachmentUrl}`
-      : playbook.responseText;
-
-  await sendAgentText(supabase, target, text);
+  await sendAgentText(supabase, target, playbookMessageText(playbook));
 
   if (attachmentUrl && attachmentType && attachmentType !== "link") {
     await sendAgentMedia(supabase, target, attachmentType, attachmentUrl);

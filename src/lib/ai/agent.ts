@@ -13,8 +13,8 @@ import { buildKnowledgeTool } from "@/lib/ai/knowledge";
 import { escalateConversation } from "@/lib/ai/escalate";
 import { withConversationTurnLock } from "@/lib/ai/conversation-lock";
 import { humanHasWritten } from "@/lib/ai/human-handled";
-import { fetchActivePlaybooks, matchPlaybook } from "@/lib/ai/playbooks";
-import { sendAgentText, sendPlaybookReply } from "@/lib/ai/send";
+import { fetchActivePlaybooks, matchPlaybook, playbookSentRecently } from "@/lib/ai/playbooks";
+import { playbookMessageText, sendAgentText, sendPlaybookReply } from "@/lib/ai/send";
 import { buildTurnTarget, type AgentConversation, type TurnTarget } from "@/lib/ai/turn-target";
 import { NonRetryableTurnError, newTurnDelivery, type TurnDelivery } from "@/lib/ai/turn-delivery";
 import { errorText, log } from "@/lib/log";
@@ -187,6 +187,32 @@ function alreadyRedirected(history: ModelMessage[]): boolean {
     const message = history[i];
     if (message.role !== "assistant") continue;
     return message.content === OFF_TOPIC_REPLY;
+  }
+  return false;
+}
+
+/**
+ * ¿Nuestra última respuesta ya fue este mismo escenario?
+ *
+ * Segunda red, no la principal: la que decide es la ventana de seis horas
+ * contra `agent_turns` (ver playbookSentRecently). Esta cubre el hueco que
+ * aquella tiene por construcción — si el turno murió entre el envío y la
+ * bitácora (`turno_fallo_tras_envio`), `agent_turns` no tiene la fila pero el
+ * mensaje sí salió, y el historial lo prueba.
+ *
+ * Cuesta cero: el historial ya está cargado, así que se pregunta primero y a
+ * menudo ahorra la consulta.
+ *
+ * La comparación es contra el texto tal como SALE —con el enlace pegado
+ * abajo si el escenario lo lleva—, porque es eso lo que quedó guardado en el
+ * historial. De ahí que el compositor viva en send.ts y no acá.
+ */
+function alreadySentPlaybook(history: ModelMessage[], playbook: Playbook): boolean {
+  const enviado = playbookMessageText(playbook);
+  for (let i = history.length - 1; i >= 0; i--) {
+    const message = history[i];
+    if (message.role !== "assistant") continue;
+    return message.content === enviado;
   }
   return false;
 }
@@ -510,17 +536,37 @@ async function runTurnPhases(
     ? addTokens(matchTokens, tokensFromUsage(classified.result.usage))
     : matchTokens;
 
+  // Un escenario reconocido termina el turno... salvo que ya haya salido hace
+  // poco en este mismo chat. En ese caso el turno NO se queda callado: cae al
+  // flujo genérico, que es el que puede contestar lo que el cliente preguntó
+  // después. Repetir el texto oficial no responde nada; redactar, sí.
+  //
+  // Dos redes, y se preguntan en este orden porque la primera es gratis: el
+  // historial ya está en memoria, la ventana cuesta una consulta.
   if (match.playbook) {
-    await runPlaybook(
-      supabase,
-      target,
-      entrega,
-      match.playbook,
-      classifiedTokens,
-      customerMessage,
-      tiempos
-    );
-    return;
+    const fueLaUltimaRespuesta = alreadySentPlaybook(history, match.playbook);
+    const yaSalioHacePoco =
+      fueLaUltimaRespuesta ||
+      (await playbookSentRecently(supabase, conversationId, match.playbook.id));
+
+    if (!yaSalioHacePoco) {
+      await runPlaybook(
+        supabase,
+        target,
+        entrega,
+        match.playbook,
+        classifiedTokens,
+        customerMessage,
+        tiempos
+      );
+      return;
+    }
+
+    log.info("escenario_no_se_repite", {
+      conversationId,
+      escenario: match.playbook.name,
+      motivo: fueLaUltimaRespuesta ? "fue_la_ultima_respuesta" : "ventana_de_6h",
+    });
   }
 
   if (!classified.ok) {

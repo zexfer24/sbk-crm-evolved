@@ -144,16 +144,24 @@ vi.mock("@/lib/supabase/admin", () => ({ createAdminClient: () => createFakeSupa
 
 const matchPlaybookMock = vi.fn();
 const fetchActivePlaybooksMock = vi.fn(async () => [] as Playbook[]);
+/** Si este escenario ya salió en este chat dentro de la ventana de repetición. */
+const playbookSentRecentlyMock = vi.fn<(...args: unknown[]) => Promise<boolean>>(async () => false);
 vi.mock("@/lib/ai/playbooks", () => ({
   matchPlaybook: (...args: unknown[]) => matchPlaybookMock(...args),
   fetchActivePlaybooks: () => fetchActivePlaybooksMock(),
+  playbookSentRecently: (...args: unknown[]) => playbookSentRecentlyMock(...args),
 }));
 
 type AnyMock = (...args: unknown[]) => Promise<unknown>;
 
 const sendPlaybookReplyMock = vi.fn<AnyMock>(async () => undefined);
 const sendAgentTextMock = vi.fn<AnyMock>(async () => undefined);
-vi.mock("@/lib/ai/send", () => ({
+// Los envíos se fingen; `playbookMessageText` no. Es lo que compone el texto
+// que sale, y el turno lo usa para reconocer su propio mensaje en el
+// historial: fingirlo acá sería escribir dos veces la misma regla y probar la
+// copia. Ver alreadySentPlaybook en agent.ts.
+vi.mock("@/lib/ai/send", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/lib/ai/send")>()),
   sendPlaybookReply: (...args: unknown[]) => sendPlaybookReplyMock(...args),
   sendAgentText: (...args: unknown[]) => sendAgentTextMock(...args),
 }));
@@ -260,6 +268,7 @@ beforeEach(() => {
   vi.clearAllMocks();
   fetchActivePlaybooksMock.mockResolvedValue([]);
   matchPlaybookMock.mockResolvedValue({ playbook: null, usage: NO_USAGE });
+  playbookSentRecentlyMock.mockResolvedValue(false);
   classifyIntentMock.mockResolvedValue({
     intent: "consulta_disponibilidad",
     usage: { inputTokens: 5, outputTokens: 1, totalTokens: 6 },
@@ -383,6 +392,148 @@ describe("runAgentTurn — escenarios predeterminados", () => {
     expect(sendPlaybookReplyMock).toHaveBeenCalledTimes(1);
     expect(sendPlaybookReplyMock.mock.calls[0][2]).toEqual(pb);
     expect(generateMock).not.toHaveBeenCalled();
+  });
+
+  /**
+   * El escenario se manda una vez, no una por mensaje.
+   *
+   * El reconocimiento mira el hilo entero y elige el escenario que calza con
+   * la conversación, así que mientras se siga hablando del catálogo el mismo
+   * escenario vuelve a ganar en cada turno. Sin guarda, el cliente recibía el
+   * mismo texto una y otra vez: preguntaba algo, le llegaba otra vez el
+   * catálogo, repreguntaba, y otra vez.
+   *
+   * Es la misma guarda que ya tenía la redirección de fuera de tema, con la
+   * misma regla: si nuestra última respuesta fue ESA, no se repite.
+   */
+  it("no repite el escenario que acaba de mandar: sigue por el flujo genérico", async () => {
+    const pb = playbook();
+    fetchActivePlaybooksMock.mockResolvedValue([pb]);
+    matchPlaybookMock.mockResolvedValue({ playbook: pb, usage: NO_USAGE });
+    // Del más nuevo al más viejo, como los devuelve la consulta.
+    state.history = [
+      { sender_type: "customer", content: "y tienen para una AX100?", is_internal_note: false },
+      { sender_type: "ai", content: pb.responseText, is_internal_note: false },
+      { sender_type: "customer", content: "me pasas el catálogo?", is_internal_note: false },
+    ];
+
+    await runAgentTurn("conv-1");
+
+    expect(sendPlaybookReplyMock).not.toHaveBeenCalled();
+    // No se queda callado: el cliente preguntó algo y el turno lo contesta.
+    expect(generateMock).toHaveBeenCalledTimes(1);
+  });
+
+  /**
+   * El caso que la guarda del historial NO alcanza a ver, y que es justo el
+   * que produce el bucle.
+   *
+   * Frenar el escenario hace que el turno caiga al flujo genérico y conteste
+   * con otra cosa. En el turno siguiente, nuestra última respuesta ya no es el
+   * catálogo sino esa otra cosa — así que el historial dice "no lo mandé" y el
+   * escenario vuelve a salir. Catálogo, genérico, catálogo, genérico. La
+   * ventana de seis horas es la que corta eso, porque no mira la última
+   * respuesta sino si el escenario salió hace poco.
+   */
+  it("no lo manda si ya salió hace poco, aunque en el medio hayamos dicho otra cosa", async () => {
+    const pb = playbook();
+    fetchActivePlaybooksMock.mockResolvedValue([pb]);
+    matchPlaybookMock.mockResolvedValue({ playbook: pb, usage: NO_USAGE });
+    playbookSentRecentlyMock.mockResolvedValue(true);
+    // Del más nuevo al más viejo, como los devuelve la consulta.
+    state.history = [
+      { sender_type: "customer", content: "Talla s", is_internal_note: false },
+      { sender_type: "ai", content: "Tenemos varios modelos, ¿cuál te interesa?", is_internal_note: false },
+      { sender_type: "customer", content: "Precio y si hay talla s", is_internal_note: false },
+      { sender_type: "ai", content: pb.responseText, is_internal_note: false },
+      { sender_type: "customer", content: "me pasas el catálogo?", is_internal_note: false },
+    ];
+
+    await runAgentTurn("conv-1");
+
+    expect(sendPlaybookReplyMock).not.toHaveBeenCalled();
+    // Y el cliente no se queda sin respuesta: contesta el flujo genérico.
+    expect(generateMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("pregunta por la ventana con el escenario y la conversación de este turno", async () => {
+    const pb = playbook();
+    fetchActivePlaybooksMock.mockResolvedValue([pb]);
+    matchPlaybookMock.mockResolvedValue({ playbook: pb, usage: NO_USAGE });
+
+    await runAgentTurn("conv-1");
+
+    expect(playbookSentRecentlyMock).toHaveBeenCalledWith(expect.anything(), "conv-1", pb.id);
+  });
+
+  /**
+   * La consulta cuesta un viaje a la base y el historial ya está en memoria:
+   * si el propio hilo ya delata la repetición, no hace falta preguntar.
+   */
+  it("no gasta la consulta cuando el historial ya delata la repetición", async () => {
+    const pb = playbook();
+    fetchActivePlaybooksMock.mockResolvedValue([pb]);
+    matchPlaybookMock.mockResolvedValue({ playbook: pb, usage: NO_USAGE });
+    state.history = [
+      { sender_type: "customer", content: "y tienen para una AX100?", is_internal_note: false },
+      { sender_type: "ai", content: pb.responseText, is_internal_note: false },
+      { sender_type: "customer", content: "me pasas el catálogo?", is_internal_note: false },
+    ];
+
+    await runAgentTurn("conv-1");
+
+    expect(playbookSentRecentlyMock).not.toHaveBeenCalled();
+  });
+
+  /**
+   * Ninguna de las dos redes es "una vez por conversación". Pasada la ventana,
+   * el cliente que vuelve a pedir el catálogo lo está pidiendo de verdad y
+   * tiene que recibirlo —con su adjunto, que es lo único que el flujo
+   * genérico no sabe mandar—.
+   */
+  it("fuera de la ventana sí lo manda de nuevo", async () => {
+    const pb = playbook();
+    fetchActivePlaybooksMock.mockResolvedValue([pb]);
+    matchPlaybookMock.mockResolvedValue({ playbook: pb, usage: NO_USAGE });
+    state.history = [
+      { sender_type: "customer", content: "me lo pasas otra vez?", is_internal_note: false },
+      { sender_type: "ai", content: "Sí, tenemos ese filtro en stock.", is_internal_note: false },
+      { sender_type: "customer", content: "tienen filtro de aceite?", is_internal_note: false },
+      { sender_type: "ai", content: pb.responseText, is_internal_note: false },
+      { sender_type: "customer", content: "me pasas el catálogo?", is_internal_note: false },
+    ];
+
+    await runAgentTurn("conv-1");
+
+    expect(sendPlaybookReplyMock).toHaveBeenCalledTimes(1);
+  });
+
+  /**
+   * Con adjunto de tipo enlace, lo que sale por WhatsApp es el texto MÁS la
+   * URL pegada abajo — eso es lo que queda guardado en el historial, y es
+   * contra eso que hay que comparar. Comparando solo contra `responseText`,
+   * la guarda no reconocía su propio mensaje y el catálogo salía otra vez.
+   */
+  it("reconoce su mensaje aunque el escenario lleve un enlace pegado", async () => {
+    const pb = playbook({
+      attachmentType: "link",
+      attachmentUrl: "https://sbk.example/catalogo",
+    });
+    fetchActivePlaybooksMock.mockResolvedValue([pb]);
+    matchPlaybookMock.mockResolvedValue({ playbook: pb, usage: NO_USAGE });
+    state.history = [
+      { sender_type: "customer", content: "gracias!", is_internal_note: false },
+      {
+        sender_type: "ai",
+        content: `${pb.responseText}\n\n${pb.attachmentUrl}`,
+        is_internal_note: false,
+      },
+      { sender_type: "customer", content: "me pasas el catálogo?", is_internal_note: false },
+    ];
+
+    await runAgentTurn("conv-1");
+
+    expect(sendPlaybookReplyMock).not.toHaveBeenCalled();
   });
 
   it("clasifica en paralelo en vez de esperar a saber si hay escenario", async () => {

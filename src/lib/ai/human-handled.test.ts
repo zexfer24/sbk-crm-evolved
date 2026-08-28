@@ -211,7 +211,11 @@ vi.mock("@/lib/supabase/admin", () => ({ createAdminClient: () => createFakeSupa
 
 /** Todo lo que la IA le mandó a un cliente. Si esto no está vacío, salió algo. */
 const enviados: { conversationId: string; text: string }[] = [];
-vi.mock("@/lib/ai/send", () => ({
+// `playbookMessageText` no se finge: es lo que compone el texto que sale, y el
+// turno lo usa para reconocer su propio mensaje en el historial y no repetir
+// un escenario. Ver alreadySentPlaybook en agent.ts.
+vi.mock("@/lib/ai/send", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/lib/ai/send")>()),
   sendAgentText: async (_s: unknown, target: { conversationId: string }, text: string) => {
     enviados.push({ conversationId: target.conversationId, text });
   },
@@ -243,6 +247,8 @@ vi.mock("@/lib/ai/playbooks", () => ({
     usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 },
   }),
   fetchActivePlaybooks: async () => [],
+  // Nunca repetido: acá se mide la guarda del asesor, no la de la repetición.
+  playbookSentRecently: async () => false,
 }));
 
 vi.mock("@/lib/ai/classify", () => ({

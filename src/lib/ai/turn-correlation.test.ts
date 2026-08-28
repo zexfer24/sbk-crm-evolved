@@ -156,7 +156,11 @@ vi.mock("@/lib/ai/playbooks", () => ({
 
 /** Lo que de verdad se le mandó a cada cliente: texto y destinatario, juntos. */
 const enviados: { target: TurnTarget; text: string }[] = [];
-vi.mock("@/lib/ai/send", () => ({
+// `playbookMessageText` no se finge: es lo que compone el texto que sale, y el
+// turno lo usa para reconocer su propio mensaje en el historial y no repetir
+// un escenario. Ver alreadySentPlaybook en agent.ts.
+vi.mock("@/lib/ai/send", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/lib/ai/send")>()),
   sendAgentText: async (_supabase: unknown, target: TurnTarget, text: string) => {
     enviados.push({ target, text });
   },

@@ -16,6 +16,67 @@ import { errorText, log } from "@/lib/log";
 /** Valor del enum que el modelo elige cuando ningún escenario aplica. */
 const NO_MATCH = "ninguno";
 
+/**
+ * Cuánto tiene que pasar para que un escenario pueda repetirse en el mismo
+ * chat.
+ *
+ * El 27 de agosto de 2026 un cliente recibió el MISMO mensaje cinco veces en
+ * 68 minutos. El emparejador no falló: el disparador que el equipo escribió
+ * ("pregunta por cascos, modelos disponibles o tallas") captura también las
+ * preguntas de seguimiento, y el cliente dijo "talla" en los cinco mensajes.
+ * En 24 h eso fueron 25 repeticiones exactas sobre 202 mensajes: un 12 %.
+ *
+ * Esto no arregla el disparador —eso lo escribe el dueño desde el panel— ni lo
+ * intenta: es la red que hace que una regla mal escrita no pueda convertirse
+ * en un cliente recibiendo lo mismo cinco veces.
+ *
+ * Seis horas y no una: el escenario frenado no deja al cliente en silencio,
+ * el turno cae al flujo genérico y le contesta con lo que sepa. O sea que
+ * pasarse de largo cuesta poco —una respuesta redactada en vez del texto
+ * oficial— y quedarse corto cuesta lo del incidente. Lo único que se pierde
+ * de verdad es el adjunto, que solo viaja con el escenario; por eso no es
+ * "una vez por conversación": el que vuelve mañana a pedir el catálogo lo
+ * recibe.
+ */
+const PLAYBOOK_COOLDOWN_HOURS = 6;
+
+/**
+ * ¿Este escenario ya salió en este chat hace poco?
+ *
+ * Se pregunta contra `agent_turns`, que es donde queda registrado cada
+ * escenario que se envió, con su `playbook_id`. El índice
+ * `agent_turns_conversation_id_idx` es (conversation_id, created_at desc), así
+ * que la consulta toca solo las filas de esta conversación.
+ *
+ * Falla CERRADO: si no se puede preguntar, se da por repetido. Cuesta barato
+ * equivocarse hacia ese lado —el turno sigue por el flujo genérico y el
+ * cliente igual recibe una respuesta—, y equivocarse hacia el otro es
+ * exactamente el incidente.
+ */
+export async function playbookSentRecently(
+  supabase: SupabaseClient<Database>,
+  conversationId: string,
+  playbookId: string,
+  now: number = Date.now()
+): Promise<boolean> {
+  const desde = new Date(now - PLAYBOOK_COOLDOWN_HOURS * 60 * 60 * 1000).toISOString();
+
+  const { data, error } = await supabase
+    .from("agent_turns")
+    .select("id")
+    .eq("conversation_id", conversationId)
+    .eq("playbook_id", playbookId)
+    .gt("created_at", desde)
+    .limit(1);
+
+  if (error) {
+    log.error("escenario_repeticion_no_consultable", { conversationId, detail: error.message });
+    return true;
+  }
+
+  return (data ?? []).length > 0;
+}
+
 const ZERO_USAGE: LanguageModelUsage = {
   inputTokens: 0,
   outputTokens: 0,

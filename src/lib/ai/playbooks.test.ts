@@ -17,7 +17,7 @@ vi.mock("@/lib/ai/model", () => ({
   }),
 }));
 
-import { matchPlaybook } from "@/lib/ai/playbooks";
+import { matchPlaybook, playbookSentRecently } from "@/lib/ai/playbooks";
 
 const USAGE = { inputTokens: 10, outputTokens: 2, totalTokens: 12 };
 
@@ -118,5 +118,90 @@ describe("matchPlaybook · costo del turno", () => {
 
     const call = generateObjectMock.mock.calls[0][0] as { providerOptions?: unknown };
     expect(call.providerOptions).toEqual({ openai: { reasoningEffort: "low" } });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// La ventana de repetición
+// ---------------------------------------------------------------------------
+
+interface Filtro {
+  op: string;
+  columna: string;
+  valor: unknown;
+}
+
+/** Fake de la cadena `.from().select().eq().eq().gt().limit()`. */
+function fakeSupabase(filas: { id: string }[], error: { message: string } | null = null) {
+  const filtros: Filtro[] = [];
+  const tablas: string[] = [];
+
+  const cadena = {
+    eq: (columna: string, valor: unknown) => {
+      filtros.push({ op: "eq", columna, valor });
+      return cadena;
+    },
+    gt: (columna: string, valor: unknown) => {
+      filtros.push({ op: "gt", columna, valor });
+      return cadena;
+    },
+    limit: async () => ({ data: error ? null : filas, error }),
+  };
+
+  const client = {
+    from: (tabla: string) => {
+      tablas.push(tabla);
+      return { select: () => cadena };
+    },
+  };
+
+  return { client: client as never, filtros, tablas };
+}
+
+const AHORA = Date.parse("2026-08-27T16:30:00.000Z");
+
+describe("playbookSentRecently — un escenario no se repite en el mismo chat", () => {
+  it("dice que sí cuando la bitácora tiene un envío dentro de la ventana", async () => {
+    const { client } = fakeSupabase([{ id: "turno-1" }]);
+
+    expect(await playbookSentRecently(client, "conv-1", "pb-1", AHORA)).toBe(true);
+  });
+
+  it("dice que no cuando no hay ninguno", async () => {
+    const { client } = fakeSupabase([]);
+
+    expect(await playbookSentRecently(client, "conv-1", "pb-1", AHORA)).toBe(false);
+  });
+
+  /**
+   * Los tres cortes son el contrato: ESTE escenario, en ESTA conversación,
+   * dentro de la ventana. Quitar cualquiera lo convierte en otra pregunta —
+   * sin `playbook_id` frenaría escenarios distintos, sin `conversation_id`
+   * frenaría el chat de otro cliente.
+   */
+  it("pregunta por este escenario, en esta conversación y dentro de las seis horas", async () => {
+    const { client, filtros, tablas } = fakeSupabase([]);
+
+    await playbookSentRecently(client, "conv-1", "pb-1", AHORA);
+
+    expect(tablas).toEqual(["agent_turns"]);
+    expect(filtros).toContainEqual({ op: "eq", columna: "conversation_id", valor: "conv-1" });
+    expect(filtros).toContainEqual({ op: "eq", columna: "playbook_id", valor: "pb-1" });
+    expect(filtros).toContainEqual({
+      op: "gt",
+      columna: "created_at",
+      valor: "2026-08-27T10:30:00.000Z",
+    });
+  });
+
+  /**
+   * Falla cerrado. Cuesta barato equivocarse hacia acá —el turno sigue por el
+   * flujo genérico y el cliente igual recibe respuesta— y equivocarse hacia el
+   * otro lado es el incidente del 27 de agosto.
+   */
+  it("si la consulta falla, da el escenario por repetido", async () => {
+    const { client } = fakeSupabase([], { message: "connection reset" });
+
+    expect(await playbookSentRecently(client, "conv-1", "pb-1", AHORA)).toBe(true);
   });
 });
