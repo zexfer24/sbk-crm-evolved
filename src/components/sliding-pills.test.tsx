@@ -1,3 +1,4 @@
+/** @vitest-environment jsdom */
 import { describe, expect, it, vi } from "vitest";
 import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
@@ -20,7 +21,11 @@ describe("SlidingPills", () => {
     const onChange = vi.fn();
     render(<SlidingPills items={ITEMS} value="all" onChange={onChange} ariaLabel="Filtros" />);
 
-    await userEvent.click(screen.getByRole("button", { name: "Asignados" }));
+    // `delay: null` y `pointerEventsCheck: 0`: sin salto de macrotarea por
+    // pulsación ni `getComputedStyle` subiendo el árbol en cada click — bajo
+    // la CPU contendida de esta máquina (28/8/2026) eso revienta timeouts.
+    const user = userEvent.setup({ delay: null, pointerEventsCheck: 0 });
+    await user.click(screen.getByRole("button", { name: "Asignados" }));
 
     expect(onChange).toHaveBeenCalledWith("assigned");
   });

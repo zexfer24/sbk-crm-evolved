@@ -1,3 +1,4 @@
+/** @vitest-environment jsdom */
 import { describe, expect, it, vi, beforeEach } from "vitest";
 import { render, screen, fireEvent } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
@@ -76,6 +77,17 @@ function buildConversation(): Conversation {
   };
 }
 
+/**
+ * `userEvent.setup()` por defecto mete un `setTimeout(0)` entre cada
+ * pulsación y hace `pointerEventsCheck` (sube el árbol con
+ * `getComputedStyle`) en cada click. Bajo CPU contendida — varios agentes
+ * corriendo en paralelo en esta máquina el 28/8/2026 — eso revienta el
+ * timeout de la prueba. No hay usuario real esperando ese delay.
+ */
+function crearUsuario() {
+  return userEvent.setup({ delay: null, pointerEventsCheck: 0 });
+}
+
 function renderComposer() {
   return render(
     <Composer
@@ -95,7 +107,7 @@ describe("Composer - atajos de teclado de formato", () => {
   });
 
   it("Ctrl+B envuelve la selección en *negrita*", async () => {
-    const user = userEvent.setup();
+    const user = crearUsuario();
     renderComposer();
     const textarea = screen.getByRole("textbox", { name: "Mensaje" }) as HTMLTextAreaElement;
 
@@ -109,7 +121,7 @@ describe("Composer - atajos de teclado de formato", () => {
   });
 
   it("Ctrl+I envuelve la selección en _itálica_", async () => {
-    const user = userEvent.setup();
+    const user = crearUsuario();
     renderComposer();
     const textarea = screen.getByRole("textbox", { name: "Mensaje" }) as HTMLTextAreaElement;
 
@@ -123,7 +135,7 @@ describe("Composer - atajos de teclado de formato", () => {
   });
 
   it("Ctrl+Shift+X envuelve la selección en ~tachado~", async () => {
-    const user = userEvent.setup();
+    const user = crearUsuario();
     renderComposer();
     const textarea = screen.getByRole("textbox", { name: "Mensaje" }) as HTMLTextAreaElement;
 
@@ -137,6 +149,12 @@ describe("Composer - atajos de teclado de formato", () => {
   });
 
   it("sin selección (cursor solo), Ctrl+B inserta el par vacío con el cursor en medio", async () => {
+    // No usa crearUsuario(): con `delay: null` el textarea no llega a
+    // re-renderizar la posición del cursor entre el `type` y el atajo de
+    // teclado (Ctrl+B se dispara antes de que React asiente la selección),
+    // y `selectionStart`/`selectionEnd` quedan en 7 en vez de 6. Verificado
+    // reproducible corriendo la prueba dos veces (28/8/2026). Se deja con el
+    // `userEvent.setup()` por defecto para no perder cobertura real.
     const user = userEvent.setup();
     renderComposer();
     const textarea = screen.getByRole("textbox", { name: "Mensaje" }) as HTMLTextAreaElement;
@@ -163,7 +181,7 @@ describe("Composer — el cuadro entrega a la cola y se vacía en el acto", () =
   beforeEach(() => onSendTextMock.mockClear());
 
   it("vacía el cuadro apenas se envía y le entrega el texto a la cola", async () => {
-    const user = userEvent.setup();
+    const user = crearUsuario();
 
     renderComposer();
     const textarea = screen.getByRole("textbox", { name: "Mensaje" }) as HTMLTextAreaElement;
@@ -175,7 +193,7 @@ describe("Composer — el cuadro entrega a la cola y se vacía en el acto", () =
   });
 
   it("con el cuadro vacío, Enter no encola nada", async () => {
-    const user = userEvent.setup();
+    const user = crearUsuario();
 
     renderComposer();
     await user.click(screen.getByRole("textbox", { name: "Mensaje" }));
@@ -245,7 +263,7 @@ describe("Composer — mandar varias fotos de una vez", () => {
 
   it("manda una por una y respeta el orden en que se adjuntaron", async () => {
     sendMediaMessageMock.mockClear();
-    const user = userEvent.setup();
+    const user = crearUsuario();
     renderComposer();
     const textarea = screen.getByRole("textbox", { name: "Mensaje" });
 

@@ -1,3 +1,4 @@
+/** @vitest-environment jsdom */
 import { describe, expect, it, vi, beforeEach } from "vitest";
 import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
@@ -114,6 +115,19 @@ function submitButton() {
   return screen.getByRole("button", { name: /guardar y cerrar venta/i });
 }
 
+/**
+ * `userEvent.setup()` por defecto mete un `setTimeout(0)` (salto de
+ * macrotarea) entre cada pulsación y hace `pointerEventsCheck` (que sube el
+ * árbol con `getComputedStyle`) en cada click. Con la CPU contendida — varios
+ * agentes corriendo en paralelo en esta máquina el 28/8/2026 — esos costos
+ * multiplicados por decenas de interacciones revientan el timeout de la
+ * prueba. Sin usuarios reales de por medio no hace falta simular el delay
+ * entre teclas ni repetir el chequeo de puntero en cada click.
+ */
+function crearUsuario() {
+  return userEvent.setup({ delay: null, pointerEventsCheck: 0 });
+}
+
 /** Con qué pagó el cliente: sin esto la venta no se puede cerrar. */
 async function elegirMétodoDePago(user: ReturnType<typeof userEvent.setup>, valor = "pago_movil") {
   await user.selectOptions(screen.getByLabelText("Método de pago"), valor);
@@ -142,7 +156,7 @@ describe("CloseSaleModal — el asesor arma la venta, pero el precio lo pone el 
   });
 
   it("cierra la venta con la cotización que el asesor tomó del chat", async () => {
-    const user = userEvent.setup();
+    const user = crearUsuario();
     renderModal();
     await waitForQuotes();
 
@@ -167,7 +181,7 @@ describe("CloseSaleModal — el asesor arma la venta, pero el precio lo pone el 
   // Lo que faltaba: el cliente agrega algo al final que nunca pasó por el
   // chat, y antes eso obligaba a no cerrar la venta.
   it("deja agregar un repuesto del inventario que la IA nunca cotizó", async () => {
-    const user = userEvent.setup();
+    const user = crearUsuario();
     renderModal();
     await waitForQuotes();
 
@@ -193,7 +207,7 @@ describe("CloseSaleModal — el asesor arma la venta, pero el precio lo pone el 
   });
 
   it("deja quitar un renglón que ya no lleva el cliente", async () => {
-    const user = userEvent.setup();
+    const user = crearUsuario();
     renderModal();
     await waitForQuotes();
 
@@ -213,7 +227,7 @@ describe("CloseSaleModal — el asesor arma la venta, pero el precio lo pone el 
   });
 
   it("deja subir la cantidad y el monto la sigue", async () => {
-    const user = userEvent.setup();
+    const user = crearUsuario();
     renderModal();
     await waitForQuotes();
 
@@ -230,7 +244,7 @@ describe("CloseSaleModal — el asesor arma la venta, pero el precio lo pone el 
   });
 
   it("nunca baja de una unidad por más que se reste", async () => {
-    const user = userEvent.setup();
+    const user = crearUsuario();
     renderModal();
     await waitForQuotes();
 
@@ -251,7 +265,7 @@ describe("CloseSaleModal — el asesor arma la venta, pero el precio lo pone el 
   // dejaba de ser trazable.
   it("guarda la venta con la tasa del BCV vigente, aunque no haya cotizaciones", async () => {
     fetchConversationQuotes.mockResolvedValueOnce([]);
-    const user = userEvent.setup();
+    const user = crearUsuario();
     renderModal();
 
     await user.type(screen.getByLabelText("Buscar repuesto en el inventario"), "bujía");
@@ -269,7 +283,7 @@ describe("CloseSaleModal — el asesor arma la venta, pero el precio lo pone el 
   // El método de pago quedaba en el comprobante, es decir, en una imagen que
   // hay que abrir una por una para saber con qué pagó cada cliente.
   it("no deja cerrar la venta sin decir con qué se pagó", async () => {
-    const user = userEvent.setup();
+    const user = crearUsuario();
     renderModal();
     await waitForQuotes();
 
@@ -287,7 +301,7 @@ describe("CloseSaleModal — el asesor arma la venta, pero el precio lo pone el 
   });
 
   it("manda el método elegido junto con el resto de los datos del cliente", async () => {
-    const user = userEvent.setup();
+    const user = crearUsuario();
     renderModal();
     await waitForQuotes();
 
