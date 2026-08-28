@@ -165,28 +165,32 @@ describe("InboxSidebar — 'Sin contestar' sale a buscar a la base", () => {
       activeOnly: true,
       unassignedOnly: true,
       awaitingReplyOnly: true,
-      neverRepliedOnly: true,
     });
   });
 
   /**
-   * La foto que trae la base pasa igual por el filtro en memoria. No es
-   * paranoia: entre que la consulta sale y la respuesta llega, un asesor puede
-   * haber contestado —y la fila viva de la bandeja lo sabe antes que esta—.
+   * `hasReply` es un flag vitalicio (lo enciende la IA, el asesor o hasta la
+   * plantilla de bienvenida automática, y nunca se apaga) que el backfill dejó
+   * encendido en casi todo el histórico. Antes se sumaba `neverRepliedOnly` a
+   * la consulta para no repetir acá el chat que un asesor ya había atendido a
+   * mano, pero eso vació la píldora en producción el 28/8/2026: el chat que la
+   * IA contestó hace días y al que el cliente volvió a escribir —trabajo
+   * pendiente de verdad— quedaba oculto para siempre. Lo que importa es que
+   * el último mensaje del hilo vuelva a ser del cliente, no si alguna vez
+   * hubo respuesta.
    */
-  it("descarta el hilo ya contestado aunque la consulta lo devuelva", async () => {
-    const contestado = conversation({
-      id: "ya-atendido",
+  it("muestra el hilo que trae la consulta aunque el cliente ya haya recibido respuesta antes", async () => {
+    const vuelveAEscribir = conversation({
+      id: "responde-de-nuevo",
       hasReply: true,
       lastCustomerMessageAt: ESPERANDO,
     });
-    vi.mocked(fetchConversations).mockResolvedValue([contestado]);
+    vi.mocked(fetchConversations).mockResolvedValue([vuelveAEscribir]);
 
     const { container } = renderSidebar(JEFA);
     elegirSinContestar();
 
-    await waitFor(() => expect(fetchConversations).toHaveBeenCalled());
-    expect(visibleIds(container)).toEqual([]);
+    await waitFor(() => expect(visibleIds(container)).toEqual(["responde-de-nuevo"]));
   });
 
   it("no consulta mientras el filtro no está elegido", () => {

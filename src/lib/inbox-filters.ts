@@ -74,18 +74,24 @@ function matchesFilter(conversation: ConversationSummary, filter: InboxFilter, v
     // alguien toma el chat —o le contesta— mientras la lista está abierta,
     // sale solo.
     //
-    // `!hasReply` no es redundante con `awaitingReply`. La segunda solo dice
-    // que el último mensaje del hilo es del cliente, y eso describe igual de
-    // bien un chat que un asesor ya respondió a mano —sin asignárselo, que es
-    // como trabajan— y al que el cliente le contestó "Ok". Esos chats son
-    // viejos, así que caían al final de la lista: había que bajar hasta el
-    // fondo para encontrarse con conversaciones ya respondidas. Es el mismo
-    // agujero que src/lib/ai/human-handled.ts documentó para la IA.
+    // Hubo un intento de sumar `!hasReply` a esta condición (80b66b5), para no
+    // mostrar al fondo de la lista chats que un asesor ya había respondido a
+    // mano —sin asignárselos, que es como trabajan— y a los que el cliente
+    // solo contestó "Ok". La intención era buena, pero `hasReply` es un flag
+    // vitalicio: lo enciende cualquier salida que no sea del sistema —la IA,
+    // el asesor, hasta la plantilla de bienvenida automática que sale con la
+    // IA apagada— y nunca se apaga, y el backfill lo dejó encendido en casi
+    // todo el histórico. Con esa condición sumada, "Sin contestar" quedó
+    // vacío en producción el 28/8/2026: el pendiente real —la IA contestó
+    // hace días, el cliente volvió a escribir, nadie respondió eso— quedaba
+    // oculto para siempre. La respuesta pendiente se define solo con
+    // `awaitingReply` (último mensaje del hilo es del cliente); segmentar por
+    // `hasReply` —para no tapar con lo viejo lo recién llegado— es trabajo de
+    // la píldora, no de este filtro excluyente.
     case "unanswered":
       return (
         conversation.assignedAgent === null &&
         conversation.status !== "closed" &&
-        !conversation.hasReply &&
         awaitingReply(conversation)
       );
     case "mine":

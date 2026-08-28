@@ -239,16 +239,14 @@ describe("fetchConversations", () => {
   });
 
   /**
-   * El filtro "Sin contestar" no puede resolverse sobre la ventana cargada: el
-   * chat libre que nadie contestó hace tres semanas está cientos de filas más
-   * abajo, y filtrar 30 filas en el navegador lo escondería justo a él. Los
-   * cuatro cortes viajan a la base, que los resuelve con un índice parcial.
-   *
-   * `has_reply` es el cuarto y no sobra: sin él entraba el chat que un asesor
-   * ya respondió a mano y al que el cliente le contestó "Ok" — el último
-   * mensaje vuelve a ser suyo, pero contestado está.
+   * `neverRepliedOnly` sigue existiendo en esta capa aunque la bandeja ya no
+   * lo use para "Sin contestar" (ese filtro volvió a sus tres condiciones:
+   * awaiting_reply + sin asesor + no cerrada — ver inbox-filters.ts y
+   * inbox-sidebar.tsx). `has_reply` es un flag vitalicio que la segmentación
+   * por píldora reutilizará más adelante (entrega 2); acá solo se confirma
+   * que la opción sigue traduciéndose al filtro correcto en PostgREST.
    */
-  it("con los cortes de 'sin contestar' pregunta por los cuatro a la base", async () => {
+  it("con neverRepliedOnly, pregunta a la base también por has_reply", async () => {
     const rows = Array.from({ length: 6 }, (_, i) => makeRow(i));
     rows[0] = { ...rows[0], awaiting_reply: true };
     rows[1] = { ...rows[1], awaiting_reply: true, assigned_agent_id: "ana" };

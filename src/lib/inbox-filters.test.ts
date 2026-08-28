@@ -177,18 +177,19 @@ describe("applyInboxFilters — 'unanswered'", () => {
   });
 
   /**
-   * El caso que llenaba el fondo de la lista.
-   *
-   * Los asesores de SBK contestan sin asignarse la conversación —nada en el
-   * CRM se lo pide—, así que "sin asesor" nunca significó "sin atender". El
-   * cliente responde "Ok" a lo que le dijeron, el último mensaje del hilo
-   * vuelve a ser suyo, y un chat ya resuelto reaparecía como trabajo libre.
-   * Y como son chats viejos quedaban al FINAL de la lista: había que bajar
-   * hasta el fondo para encontrarse con ellos. Es el mismo agujero que
-   * src/lib/ai/human-handled.ts documentó para la IA el 26 de agosto de 2026;
-   * la píldora nunca recibió la guarda.
+   * `hasReply` es un flag vitalicio: lo enciende cualquier salida que no sea
+   * del sistema —la IA, el asesor, hasta la plantilla de bienvenida
+   * automática que sale con la IA apagada— y nunca se apaga. Hubo un intento
+   * (80b66b5) de sumarlo a esta condición para no mostrar al fondo de la
+   * lista chats que un asesor ya había respondido a mano. La intención era
+   * buena, pero como el backfill dejó ese flag encendido en casi todo el
+   * histórico, "Sin contestar" quedó vacío en producción el 28/8/2026: un
+   * chat que la IA respondió hace días y al que el cliente volvió a
+   * escribir —trabajo pendiente de verdad— quedaba oculto para siempre. Lo
+   * que importa es si el último mensaje del hilo es del cliente, no si
+   * alguna vez se le contestó.
    */
-  it("descarta el hilo que ya recibió respuesta, aunque el cliente haya vuelto a escribir", () => {
+  it("muestra el hilo donde el cliente volvió a escribir aunque alguna vez se le haya respondido", () => {
     const atendida = conversation({
       id: "atendida",
       hasReply: true,
@@ -196,7 +197,34 @@ describe("applyInboxFilters — 'unanswered'", () => {
       lastMessageAt: CLIENTE_HABLÓ,
     });
 
-    expect(ids([atendida])).toEqual([]);
+    expect(ids([atendida])).toEqual(["atendida"]);
+  });
+
+  /**
+   * El escenario exacto que vació la píldora en producción el 28/8/2026: la
+   * IA le contestó al cliente hace varios días, el cliente volvió a escribir
+   * después, y ese mensaje —el último del hilo— nunca recibió respuesta.
+   * `hasReply` está encendido desde la respuesta vieja de la IA y así se
+   * queda para siempre; lo que decide si hay trabajo pendiente es que
+   * `lastMessageAt` sea otra vez del cliente.
+   */
+  it("muestra el chat donde la IA contestó hace días y el cliente volvió a escribir sin que nadie le respondiera", () => {
+    // No hay campo para "cuándo fue la última respuesta": `hasReply` es un
+    // booleano vitalicio, sin fecha. Lo único que distingue este chat de uno
+    // recién llegado es que `hasReply` ya está en true — la IA respondió en
+    // algún momento del pasado — y que, aun así, el último mensaje del hilo
+    // (`lastMessageAt` == `lastCustomerMessageAt`) es del cliente, escrito
+    // después de esa respuesta.
+    const CLIENTE_VOLVIÓ_A_ESCRIBIR = "2026-08-27T15:30:00Z";
+
+    const pendienteDeVerdad = conversation({
+      id: "pendiente-de-verdad",
+      hasReply: true,
+      lastCustomerMessageAt: CLIENTE_VOLVIÓ_A_ESCRIBIR,
+      lastMessageAt: CLIENTE_VOLVIÓ_A_ESCRIBIR,
+    });
+
+    expect(ids([pendienteDeVerdad])).toEqual(["pendiente-de-verdad"]);
   });
 
   it("descarta la cerrada: un hilo cerrado no es trabajo pendiente", () => {

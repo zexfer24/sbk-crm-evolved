@@ -172,11 +172,14 @@ export function InboxSidebar({
     (async () => {
       // Sin `limit` a propósito: las tres condiciones ya acotan la consulta a
       // la pila de trabajo libre pendiente, que no crece con el histórico.
+      //
+      // Sin `neverRepliedOnly`: la opción sigue existiendo en data.ts para la
+      // segmentación por píldora (entrega 2), pero acá vaciaba el filtro en
+      // producción (ver el comentario de "unanswered" en inbox-filters.ts).
       const rows = await fetchConversations(supabase, {
         activeOnly: true,
         unassignedOnly: true,
         awaitingReplyOnly: true,
-        neverRepliedOnly: true,
       });
       if (!cancelled) setServerRows(rows);
     })().catch(() => {
