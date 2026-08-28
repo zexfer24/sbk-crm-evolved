@@ -86,6 +86,22 @@ export function SlidingPills<T extends string>({
     return () => observer.disconnect();
   }, [measure]);
 
+  // El contenedor es `width: fit-content`, con tope en el espacio disponible
+  // del panel: en cuanto la fila ya desborda (el carril scrollea, ver
+  // crm-inbox-pills-scroll), ese ancho queda fijo y agrandar la píldora
+  // activa —el conteo de "Pendientes" pasando de un dígito a dos, o de dos a
+  // tres— no lo mueve. El observer de arriba no se entera y el recorte queda
+  // corrido respecto del botón real. Se observa también el botón activo, que
+  // sí cambia de ancho con su propio contenido.
+  useLayoutEffect(() => {
+    const button = buttonRefs.current.get(value) ?? null;
+    if (!button || typeof ResizeObserver === "undefined") return;
+
+    const observer = new ResizeObserver(measure);
+    observer.observe(button);
+    return () => observer.disconnect();
+  }, [measure, value]);
+
   const isTablist = variant === "tablist";
 
   function renderRow(active: boolean) {
