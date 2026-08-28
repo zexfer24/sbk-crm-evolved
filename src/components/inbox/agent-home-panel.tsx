@@ -24,7 +24,7 @@ export function AgentHomePanel({
   counts: InboxCounts;
   agentSettings: AgentSettings;
 }) {
-  const { unread, mine, unassigned } = counts;
+  const { pending, pendingStale, mine } = counts;
 
   const spendCapReached =
     agentSettings.dailySpendCapUsd !== null &&
@@ -48,16 +48,16 @@ export function AgentHomePanel({
 
       <div className="crm-agent-stats">
         <div className="crm-agent-stat">
-          <span className="crm-agent-stat-value lm-num">{unread}</span>
-          <span className="lm-eyebrow">Sin leer</span>
+          <span className="crm-agent-stat-value lm-num">{pending}</span>
+          <span className="lm-eyebrow">Pendientes</span>
+        </div>
+        <div className="crm-agent-stat">
+          <span className="crm-agent-stat-value lm-num">{pendingStale}</span>
+          <span className="lm-eyebrow">Esperando +24 h</span>
         </div>
         <div className="crm-agent-stat">
           <span className="crm-agent-stat-value lm-num">{mine}</span>
           <span className="lm-eyebrow">Tuyas</span>
-        </div>
-        <div className="crm-agent-stat">
-          <span className="crm-agent-stat-value lm-num">{unassigned}</span>
-          <span className="lm-eyebrow">Sin asignar</span>
         </div>
       </div>
 

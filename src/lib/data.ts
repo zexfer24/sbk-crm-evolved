@@ -544,12 +544,50 @@ export interface FetchConversationsOptions {
   /**
    * Solo aquellas donde nunca salió una respuesta.
    *
-   * Acompaña a `awaitingReplyOnly` en el filtro "Sin contestar" y no es lo
-   * mismo: "el último mensaje es del cliente" también describe un chat que un
-   * asesor ya respondió a mano y al que el cliente le contestó "Ok". Ver
-   * `has_reply` en la migración 20260827020000.
+   * Se apoya en `has_reply` (migración 20260827020000), una columna
+   * vitalicia: una vez en `true` no vuelve a `false`, así que no distingue
+   * "hace falta responder ahora" de "alguna vez se respondió" — un chat
+   * contestado hace meses la sigue teniendo en `true` aunque hoy esté
+   * esperando de nuevo. Por eso NO sirve como corte de "sin atender": ese fue
+   * el plan de la entrega 2 (segmentar la píldora por `has_reply`), y
+   * probarlo así vació la píldora en producción el 28/8/2026. La decisión de
+   * ese día reemplazó esa entrega por la partición en `buildInboxSections`
+   * (src/lib/inbox-sections.ts), que corta por la ventana de 24 h de Meta —
+   * un corte de tiempo, no de historial.
+   *
+   * La opción se conserva como herramienta disponible; hoy ningún filtro de
+   * la bandeja la usa (ver `inbox-filters.ts`).
    */
   neverRepliedOnly?: boolean;
+  /**
+   * Corta el subconjunto "pendiente" (pensado para usarse junto a
+   * `awaitingReplyOnly`) por la ventana de 24 h de WhatsApp: `"fresh"` trae
+   * lo que sigue dentro (se le puede escribir texto libre ahora mismo),
+   * `"stale"` lo que ya se salió — la sección "Esperando +24 h" de
+   * `inbox-sections.ts`.
+   *
+   * Mismo corte que `freeformWindowCutoff`/`withinFreeformWindow`
+   * (src/lib/dashboard.ts) y mismo operador estricto que usa
+   * `fetchBacklogCounts` más abajo: `gt` para "dentro", todo lo demás para
+   * "fuera". En el instante exacto del corte `withinFreeformWindow` ya
+   * devuelve `false`, así que ese instante tiene que caer del lado de
+   * `"stale"` y no repetirse en los dos lados.
+   *
+   * `"stale"` incluye además `last_customer_message_at is null`: sin fecha
+   * del cliente no hay ventana abierta, mismo criterio de "fallar cerrado"
+   * que usan `withinFreeformWindow` y la partición de `buildInboxSections`.
+   * En la práctica no debería darse para filas con `awaiting_reply` en
+   * `true` — la columna generada exige `last_customer_message_at is not
+   * null` — pero la opción es genérica y no asume que siempre se combine con
+   * `awaitingReplyOnly`.
+   */
+  pendingWindow?: "fresh" | "stale";
+  /**
+   * Instante contra el que se calcula el corte de `pendingWindow`. Por
+   * defecto `Date.now()`; existe para que los tests puedan fijarlo, igual que
+   * en `fetchBacklogConversationIds`/`fetchBacklogCounts`.
+   */
+  now?: number;
   /** Solo las conversaciones de estos contactos (los reclamos, una búsqueda). */
   contactIds?: string[];
   /** Solo estas conversaciones (las coincidencias de la búsqueda por mensaje). */
@@ -570,6 +608,8 @@ async function fetchConversationRows<Raw>(
     unassignedOnly,
     awaitingReplyOnly,
     neverRepliedOnly,
+    pendingWindow,
+    now,
     contactIds,
     ids,
   }: FetchConversationsOptions
@@ -577,6 +617,12 @@ async function fetchConversationRows<Raw>(
   // `.in()` con lista vacía no es una consulta válida en PostgREST, y acá
   // además significa «nada que buscar»: no hay filas que devolver.
   if ((contactIds && contactIds.length === 0) || (ids && ids.length === 0)) return [];
+
+  // Se calcula una sola vez, antes de paginar: recalcularlo en cada vuelta
+  // del `for` movería el corte mientras la bandeja todavía está bajando
+  // páginas, y una fila podría quedar "fresh" en una página y "stale" en la
+  // siguiente.
+  const pendingWindowCutoff = pendingWindow ? freeformWindowCutoff(now) : undefined;
 
   const rows: Raw[] = [];
 
@@ -595,6 +641,16 @@ async function fetchConversationRows<Raw>(
     if (unassignedOnly) request = request.is("assigned_agent_id", null);
     if (awaitingReplyOnly) request = request.eq("awaiting_reply", true);
     if (neverRepliedOnly) request = request.eq("has_reply", false);
+    if (pendingWindow === "fresh") {
+      request = request.gt("last_customer_message_at", pendingWindowCutoff!);
+    } else if (pendingWindow === "stale") {
+      // `last_customer_message_at is null` cae acá: sin fecha del cliente no
+      // hay ventana abierta (fallar cerrado), mismo criterio que
+      // `withinFreeformWindow` y `buildInboxSections` (inbox-sections.ts).
+      request = request.or(
+        `last_customer_message_at.lte.${pendingWindowCutoff},last_customer_message_at.is.null`
+      );
+    }
     if (contactIds) request = request.in("contact_id", contactIds);
     if (ids) request = request.in("id", ids);
 
@@ -691,38 +747,60 @@ export async function fetchConversation(
 }
 
 /**
- * Los contadores del panel de inicio del asesor. Antes se contaban sobre la
+ * Los contadores de las píldoras de la bandeja. Antes se contaban sobre la
  * lista cargada; con la bandeja paginada la lista es una ventana, y contar
  * sobre una ventana miente. Esto le pregunta a la base tres conteos sin
  * filas (`head: true`), que cuestan lo mismo con 600 conversaciones que con
  * 60.000.
+ *
+ * Forma fija desde la reforma del 28/8/2026 (tres píldoras: "Pendientes",
+ * "Lo mío", "Todos"). Reemplaza a `unread`/`unassigned`, que ya no tienen
+ * píldora propia — sus consumidores se adaptan en otra entrega.
  */
 export interface InboxCounts {
-  unread: number;
+  /**
+   * Total de la píldora "Pendientes": `awaiting_reply and status <>
+   * 'closed'`, sin condición de asesor (a propósito — ver la migración
+   * 20260828020000). Cuenta contra toda la base, no contra lo que la bandeja
+   * tenga cargado.
+   */
+  pending: number;
+  /** El subconjunto de `pending` que ya se salió de la ventana de 24 h de Meta: la sección "Esperando +24 h". */
+  pendingStale: number;
+  /** Asignadas al asesor que mira la pantalla: la píldora "Lo mío". */
   mine: number;
-  unassigned: number;
 }
 
 export async function fetchInboxCounts(
   supabase: SupabaseClient,
-  viewerId: string
+  viewerId: string,
+  now: number = Date.now()
 ): Promise<InboxCounts> {
+  const cutoff = freeformWindowCutoff(now);
   const count = () =>
     supabase.from("conversations").select("id", { count: "exact", head: true });
 
-  const [unread, mine, unassigned] = await Promise.all([
-    count().or("unread_count.gt.0,manually_unread.eq.true"),
+  const [pending, pendingStale, mine] = await Promise.all([
+    count().eq("awaiting_reply", true).neq("status", "closed"),
+    // Mismo predicado de "Pendientes" más el corte de ventana invertido, con
+    // el mismo criterio de "fallar cerrado" que `withinFreeformWindow`: lo
+    // sin fecha de cliente también cuenta como fuera de la ventana. En la
+    // práctica `awaiting_reply` ya garantiza la fecha no nula (columna
+    // generada), pero el filtro no depende de esa garantía.
+    count()
+      .eq("awaiting_reply", true)
+      .neq("status", "closed")
+      .or(`last_customer_message_at.lte.${cutoff},last_customer_message_at.is.null`),
     count().eq("assigned_agent_id", viewerId),
-    count().is("assigned_agent_id", null),
   ]);
 
-  const first = [unread, mine, unassigned].find((r) => r.error);
+  const first = [pending, pendingStale, mine].find((r) => r.error);
   if (first?.error) throw first.error;
 
   return {
-    unread: unread.count ?? 0,
+    pending: pending.count ?? 0,
+    pendingStale: pendingStale.count ?? 0,
     mine: mine.count ?? 0,
-    unassigned: unassigned.count ?? 0,
   };
 }
 

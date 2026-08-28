@@ -1,6 +1,11 @@
 import { describe, expect, it } from "vitest";
 import type { Agent, Conversation, Tag } from "@/lib/types";
-import { applyInboxFilters, filtersForRole, INBOX_FILTER_LABELS } from "@/lib/inbox-filters";
+import {
+  applyInboxFilters,
+  DEFAULT_INBOX_FILTER,
+  filtersForRole,
+  INBOX_FILTER_LABELS,
+} from "@/lib/inbox-filters";
 
 const TAG_MOROSO: Tag = { id: "tag-moroso", label: "Moroso", color: "danger" };
 const TAG_VIP: Tag = { id: "tag-vip", label: "VIP", color: "accent" };
@@ -53,22 +58,16 @@ function conversation(over: {
 }
 
 describe("filtersForRole", () => {
-  it("le da al administrador los filtros de toda la bandeja", () => {
-    expect(filtersForRole("admin")).toEqual([
-      "all",
-      "unanswered",
-      "unread",
-      "unassigned",
-      "assigned",
-    ]);
+  it("le da al administrador las tres píldoras", () => {
+    expect(filtersForRole("admin")).toEqual(["pending", "mine", "all"]);
   });
 
   it("trata al supervisor como administrador", () => {
     expect(filtersForRole("supervisor")).toEqual(filtersForRole("admin"));
   });
 
-  it("al asesor le ofrece lo suyo y el trabajo libre que nadie contestó", () => {
-    expect(filtersForRole("agent")).toEqual(["all", "unanswered", "mine", "mine-unread"]);
+  it("al asesor le ofrece las mismas tres píldoras", () => {
+    expect(filtersForRole("agent")).toEqual(["pending", "mine", "all"]);
   });
 
   it("cada filtro tiene etiqueta", () => {
@@ -77,6 +76,24 @@ describe("filtersForRole", () => {
         expect(INBOX_FILTER_LABELS[filter]).toBeTruthy();
       }
     }
+  });
+
+  // Guardia anti-crecimiento: la reforma del 28/8/2026 bajó de cinco píldoras
+  // a tres a propósito —los cortes por leído/asignado eran guardas poco
+  // fiables (ver inbox-filters.ts, case "pending"). Este test no valida
+  // comportamiento nuevo, valida que nadie vuelva a sumar píldoras sin pensarlo:
+  // si un rol necesita un corte propio, que sea una decisión de producto
+  // explícita, no un agregado silencioso a `filtersForRole`.
+  it("ningún rol vuelve a tener más de tres píldoras", () => {
+    for (const role of ["admin", "supervisor", "agent"] as const) {
+      expect(filtersForRole(role).length).toBeLessThanOrEqual(3);
+    }
+  });
+});
+
+describe("DEFAULT_INBOX_FILTER", () => {
+  it("al entrar a la bandeja se ve lo que falta por atender", () => {
+    expect(DEFAULT_INBOX_FILTER).toBe("pending");
   });
 });
 
@@ -101,18 +118,6 @@ describe("applyInboxFilters — filtro por bandeja", () => {
     expect(ids("all")).toHaveLength(4);
   });
 
-  it("'unread' deja solo las que tienen mensajes sin leer, de quien sean", () => {
-    expect(ids("unread")).toEqual(["sin-asignar", "de-ana-no-leida", "de-beto"]);
-  });
-
-  it("'unassigned' deja solo las que no tienen dueño", () => {
-    expect(ids("unassigned")).toEqual(["sin-asignar"]);
-  });
-
-  it("'assigned' deja las de cualquier asesor, pero ninguna huérfana", () => {
-    expect(ids("assigned")).toEqual(["de-ana-leida", "de-ana-no-leida", "de-beto"]);
-  });
-
   it("'mine' deja las del asesor que mira, leídas y no leídas", () => {
     expect(ids("mine")).toEqual(["de-ana-leida", "de-ana-no-leida"]);
   });
@@ -120,24 +125,26 @@ describe("applyInboxFilters — filtro por bandeja", () => {
   it("'mine' cambia según quién mira", () => {
     expect(ids("mine", BETO)).toEqual(["de-beto"]);
   });
-
-  it("'mine-unread' cruza dueño y no leídas", () => {
-    expect(ids("mine-unread")).toEqual(["de-ana-no-leida"]);
-  });
 });
 
+// Los casos de `manuallyUnread` que dependían de los filtros `unread` y
+// `mine-unread` (retirados en la reforma del 28/8/2026) se fueron de acá: su
+// conducta —que marcar un chat como no leído a mano lo saque en las
+// secciones correspondientes— vive ahora en inbox-sections.test.ts.
+
 /**
- * El corte que busca trabajo que se puede agarrar ahora mismo: nadie lo
- * contestó y nadie lo tomó. Es el único de la bandeja del asesor que no habla
- * de lo suyo, justamente porque sirve para elegir el próximo chat.
+ * El corte que busca trabajo que falta por atender. Antes se llamaba
+ * "unanswered" y solo dejaba pasar lo que además no tenía asesor asignado;
+ * la reforma del 28/8/2026 lo renombró a "pending" y le quitó esa condición
+ * de asignación (ver el comentario del case en inbox-filters.ts).
  */
-describe("applyInboxFilters — 'unanswered'", () => {
+describe("applyInboxFilters — 'pending'", () => {
   const CLIENTE_HABLÓ = "2026-08-22T10:00:00Z";
   const NOSOTROS_DESPUÉS = "2026-08-22T11:00:00Z";
 
   function ids(todas: Conversation[]) {
     return applyInboxFilters(todas, {
-      filter: "unanswered",
+      filter: "pending",
       search: "",
       tagId: null,
       sort: "recent",
@@ -155,7 +162,13 @@ describe("applyInboxFilters — 'unanswered'", () => {
     expect(ids([libre])).toEqual(["libre"]);
   });
 
-  it("descarta la que ya tiene asesor, aunque nadie le haya contestado", () => {
+  // Invertido en la reforma del 28/8/2026: antes esta conversación se
+  // descartaba por tener asesor asignado. Pero `assignedAgent` no es una
+  // guarda confiable —los asesores de SBK contestan sin asignarse el chat
+  // (ver human-handled.ts:17-21)— y con esa condición puesta, el caso más
+  // grave de todos —un chat escalado o asignado al que nadie le respondió—
+  // quedaba invisible. Ahora debe verse igual que la libre.
+  it("muestra la que ya tiene asesor, aunque nadie le haya contestado", () => {
     const tomada = conversation({
       id: "tomada",
       assignedAgent: BETO,
@@ -163,7 +176,7 @@ describe("applyInboxFilters — 'unanswered'", () => {
       lastMessageAt: CLIENTE_HABLÓ,
     });
 
-    expect(ids([tomada])).toEqual([]);
+    expect(ids([tomada])).toEqual(["tomada"]);
   });
 
   it("descarta la libre que ya fue contestada: el último mensaje es nuestro", () => {
@@ -225,6 +238,27 @@ describe("applyInboxFilters — 'unanswered'", () => {
     });
 
     expect(ids([pendienteDeVerdad])).toEqual(["pendiente-de-verdad"]);
+  });
+
+  /**
+   * El caso completo que motivó retirar `assignedAgent === null` del filtro:
+   * un chat que además está escalado o asignado a un asesor. Con la
+   * condición de asignación puesta, este era el pendiente que se perdía —el
+   * más grave, porque alguien ya lo tomó y aun así nadie contestó lo último
+   * que escribió el cliente.
+   */
+  it("muestra el chat asignado donde la IA contestó hace días y el cliente volvió a escribir sin que nadie le respondiera", () => {
+    const CLIENTE_VOLVIÓ_A_ESCRIBIR = "2026-08-27T15:30:00Z";
+
+    const escaladoSinRespuesta = conversation({
+      id: "escalado-sin-respuesta",
+      assignedAgent: BETO,
+      hasReply: true,
+      lastCustomerMessageAt: CLIENTE_VOLVIÓ_A_ESCRIBIR,
+      lastMessageAt: CLIENTE_VOLVIÓ_A_ESCRIBIR,
+    });
+
+    expect(ids([escaladoSinRespuesta])).toEqual(["escalado-sin-respuesta"]);
   });
 
   it("descarta la cerrada: un hilo cerrado no es trabajo pendiente", () => {
@@ -380,7 +414,7 @@ describe("applyInboxFilters — los criterios se acumulan", () => {
     const d = conversation({ id: "d", assignedAgent: BETO, unreadCount: 1, tags: [TAG_VIP] });
 
     const result = applyInboxFilters([a, b, c, d], {
-      filter: "mine-unread",
+      filter: "mine",
       search: "",
       tagId: TAG_VIP.id,
       sort: "oldest",
@@ -486,43 +520,5 @@ describe("applyInboxFilters — los criterios se acumulan", () => {
 
       expect(result).toEqual([]);
     });
-  });
-});
-
-/**
- * Marcar un chat como no leído a mano no inventa mensajes: `unread_count`
- * sigue en 0 porque de verdad no quedó nada por leer. Lo que la bandeja
- * tiene que entender es que "sin leer" ya no significa solo "tiene mensajes
- * nuevos", sino también "alguien lo dejó apartado a propósito".
- */
-describe("no leído puesto a mano", () => {
-  it("aparece en 'Sin leer' aunque no tenga mensajes nuevos", () => {
-    const apartada = conversation({ id: "apartada", unreadCount: 0, manuallyUnread: true });
-    const leida = conversation({ id: "leida", unreadCount: 0 });
-
-    const result = applyInboxFilters([apartada, leida], {
-      filter: "unread",
-      search: "",
-      tagId: null,
-      sort: "recent",
-      viewer: agent("ana", "admin"),
-    });
-
-    expect(result.map((c) => c.id)).toEqual(["apartada"]);
-  });
-
-  it("aparece en 'Míos sin leer' si además es del asesor que mira", () => {
-    const mia = conversation({ id: "mia", unreadCount: 0, manuallyUnread: true, assignedAgent: ANA });
-    const ajena = conversation({ id: "ajena", unreadCount: 0, manuallyUnread: true, assignedAgent: BETO });
-
-    const result = applyInboxFilters([mia, ajena], {
-      filter: "mine-unread",
-      search: "",
-      tagId: null,
-      sort: "recent",
-      viewer: ANA,
-    });
-
-    expect(result.map((c) => c.id)).toEqual(["mia"]);
   });
 });

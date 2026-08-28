@@ -169,6 +169,24 @@ export function awaitingReply(conversation: BoardConversation): boolean {
   return new Date(conversation.lastMessageAt) <= new Date(conversation.lastCustomerMessageAt);
 }
 
+/**
+ * ¿Esta conversación es un "pendiente atascado" — nadie contestó y ya pasó
+ * la ventana de 24 h?
+ *
+ * Es el contrato compartido entre el Dashboard y las secciones de la
+ * bandeja: la sección "Esperando +24 h" de `buildInboxSections`
+ * (inbox-sections.ts) y `fetchBacklogCounts` (data.ts) miden la misma vara
+ * con `withinFreeformWindow(lastCustomerMessageAt)`. Antes de esto el
+ * Dashboard usaba su propio reloj (`minutesInStage`, que mira
+ * `lastMessageAt ?? createdAt`): dos fórmulas para la misma frase, dos
+ * números que podían contradecirse en pantalla. Cambiar el criterio acá
+ * cambia las dos vistas a la vez — que es el punto: que no puedan volver a
+ * divergir.
+ */
+export function isStalePending(conversation: BoardConversation, now: number = Date.now()): boolean {
+  return awaitingReply(conversation) && !withinFreeformWindow(conversation.lastCustomerMessageAt, now);
+}
+
 export function minutesInStage(conversation: BoardConversation, now: number): number {
   const since = conversation.lastMessageAt ?? conversation.createdAt;
   return (now - new Date(since).getTime()) / 60000;
@@ -219,7 +237,12 @@ export interface TicketStats {
   total: number;
   open: number;
   resolved: number;
-  /** Reclamos abiertos donde el cliente escribió hace más de 24 h y nadie respondió. */
+  /**
+   * Reclamos abiertos que además son un "pendiente atascado" —
+   * `isStalePending` — bajo el mismo criterio que usa la bandeja para
+   * "Esperando +24 h". Ojo: esto solo cuenta RECLAMOS (contactos
+   * etiquetados "Reclamo*"), no todos los pendientes atascados del CRM.
+   */
   unanswered: number;
   /** Antigüedad media, en horas, de los reclamos abiertos. */
   averageOpenHours: number;
@@ -270,7 +293,7 @@ export function buildTicketStats(
     total: tickets.length,
     open: open.length,
     resolved: resolved.length,
-    unanswered: open.filter((c) => awaitingReply(c) && minutesInStage(c, now) >= 60 * 24).length,
+    unanswered: open.filter((c) => isStalePending(c, now)).length,
     averageOpenHours: open.length > 0 ? totalOpenHours / open.length : 0,
     categories: [...categories.values()].sort((a, b) => b.total - a.total),
     byAgent: [...agents.values()].sort((a, b) => b.open - a.open),

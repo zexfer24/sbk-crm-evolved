@@ -119,6 +119,10 @@ copia intermedia.
   `zexfer24/supabase-squad`, no vive en este repo). Studio/meta corren en su
   perfil `admin`: un 503 en el panel significa levantar esos contenedores, no
   tocar Envoy.
+- **`has_reply` es vitalicio** (lo enciende la IA, el asesor y la bienvenida
+  automática; nunca se apaga): NO sirve como corte de "sin atender" — usarlo
+  así vació la píldora de la bandeja en producción el 28/8/2026. La
+  separación nuevo/viejo se hace por la ventana de 24h (`inbox-sections.ts`).
 - `supabase/seed.sql` **no va a producción** (trae usuarios con contraseña
   escrita); los seeds de catálogo y playbooks sí.
 - Sin `WHATSAPP_APP_SECRET` el webhook acepta cualquier POST (a propósito,

@@ -127,9 +127,17 @@ export interface BoardConversation {
    * internas.
    *
    * Es lo que separa "nadie contestó nunca" de "el último mensaje es del
-   * cliente", que es lo único que sabe `awaitingReply()`. El filtro "Sin
-   * contestar" necesita lo primero: un chat que un asesor ya respondió a mano
-   * vuelve a tener el último mensaje del cliente en cuanto este dice "Ok".
+   * cliente", que es lo único que sabe `awaitingReply()`. Pero es vitalicio:
+   * una vez en `true` no vuelve a `false`, así que no sirve como corte de
+   * "sin atender" — un chat contestado hace meses lo sigue teniendo en
+   * `true` aunque hoy esté esperando de nuevo. Ese fue el plan de la entrega
+   * 2 (partir la píldora "Sin contestar" por este campo); probarlo así vació
+   * la píldora en producción el 28/8/2026, y la decisión de ese día lo
+   * reemplazó por la partición en `buildInboxSections`
+   * (src/lib/inbox-sections.ts), que corta por la ventana de 24 h de Meta —
+   * un corte de tiempo, no de historial. El campo se conserva porque
+   * `neverRepliedOnly` (src/lib/data.ts) lo sigue usando como herramienta
+   * disponible.
    */
   hasReply: boolean;
   createdAt: string;
@@ -354,20 +362,17 @@ export interface KnowledgeEntry {
 }
 
 /**
- * Cortes de la bandeja. `unread`, `unassigned` y `assigned` son de
- * administración (miran el trabajo de todo el equipo); `mine` y `mine-unread`
- * son del asesor sobre lo suyo. `unanswered` —libre y sin contestar— es el
- * único que ven los dos: es de dónde se saca el próximo chat.
- * `filtersForRole` decide cuáles se ofrecen a quién.
+ * Cortes de la bandeja. Reforma del 28/8/2026: de cinco píldoras que
+ * distinguían leído/asignado se pasó a tres iguales para todos los roles —
+ * `pending` (lo que falta por atender), `mine` (lo del asesor que mira) y
+ * `all`. Se retiraron `unread`, `unassigned`, `assigned` y `mine-unread`:
+ * el corte por asignación no servía de guarda (ver el comentario del case
+ * `pending` en inbox-filters.ts) y la separación nuevo/viejo pasó a las
+ * secciones por ventana de 24h (`src/lib/inbox-sections.ts`), no a un filtro
+ * excluyente. `filtersForRole` sigue existiendo como punto de entrada por si
+ * mañana un rol necesita un corte propio.
  */
-export type InboxFilter =
-  | "all"
-  | "unanswered"
-  | "unread"
-  | "unassigned"
-  | "assigned"
-  | "mine"
-  | "mine-unread";
+export type InboxFilter = "pending" | "mine" | "all";
 
 export type InboxSort = "recent" | "oldest";
 

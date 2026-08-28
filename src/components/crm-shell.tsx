@@ -72,6 +72,15 @@ interface CrmShellProps {
   initialConversations: ConversationSummary[];
   /** Los contadores del panel de inicio, ya contados en el servidor. */
   initialInboxCounts: InboxCounts;
+  /**
+   * Las filas de "Pendientes" (fresh + stale) ya resueltas en el servidor.
+   * Siembra `InboxSidebar` para que la píldora abra con datos en vez del
+   * cartel "Buscando…"; el efecto de red del montar los refresca igual.
+   * Opcional (y no `[]` por defecto acá arriba, sino en el destructuring de
+   * abajo) para no obligar a cada instanciación existente de `CrmShell` a
+   * conocer este dato nuevo.
+   */
+  initialPendingConversations?: ConversationSummary[];
   allTags: Tag[];
   initialQuickReplies: QuickReply[];
   /** Tasa del BCV del día, ya resuelta en el servidor. Null si no se pudo obtener ninguna. */
@@ -90,6 +99,7 @@ export function CrmShell({
   currentAgent,
   initialConversations,
   initialInboxCounts,
+  initialPendingConversations = [],
   allTags,
   initialQuickReplies,
   bcvRate,
@@ -606,6 +616,8 @@ export function CrmShell({
             hasMore={!reachedEnd}
             loadingMore={loadingMore}
             onLoadMore={loadMoreConversations}
+            counts={inboxCounts}
+            initialPendingRows={initialPendingConversations}
           />
         </section>
 

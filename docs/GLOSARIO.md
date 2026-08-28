@@ -64,8 +64,9 @@ nombre. Los tests sin módulo propio (`data-*.test.ts`, `queue-limit`,
 | `mutations.ts` | Capa de ESCRITURA: enviar, asignar, etiquetar, cerrar venta, eventos de sistema en la burbuja |
 | `customers.ts` / `customers-data.ts` | Sección Clientes: lógica pura (URL, paginación, gasto) / consultas alrededor de la persona |
 | `inventory.ts` / `inventory-data.ts` / `inventory-freshness.ts` | Sección Inventario: lógica pura / consultas a `products` / cuán viejo es el inventario antes de que la IA lo cotice |
-| `dashboard.ts` / `dashboard-tickets.test.ts` | Reclamos (contacto etiquetado "Reclamo*"), ventana de 24h (`withinFreeformWindow`), recorrido |
-| `inbox-filters.ts` | Qué bandejas ve cada quien: cortes del admin vs. cortes del asesor |
+| `dashboard.ts` / `dashboard-tickets.test.ts` | Reclamos (contacto etiquetado "Reclamo*"), ventana de 24h (`withinFreeformWindow`), recorrido, y `isStalePending` — el predicado compartido entre el Dashboard y las secciones de la bandeja (su test de contrato impide que las dos vistas se contradigan) |
+| `inbox-filters.ts` | Las tres píldoras de la bandeja (Pendientes/Míos/Todos), iguales para todos los roles; `DEFAULT_INBOX_FILTER = "pending"`. `pending` = abierta ∧ el cliente habló último, sin condición de asesor ni de `has_reply`. La guardia anti-crecimiento (máx. 3 píldoras) vive en su test |
+| `inbox-sections.ts` | Partición pura de la lista de bandeja en secciones por píldora (Nuevos/Esperando en `pending`, No leídos/Leídos en `mine`, una sola en `all`); no reordena, respeta el sort activo |
 | `message-search.ts` | Buscar conversaciones por lo que se dijo adentro (no solo nombre/número) |
 | `message-grouping.ts` | Galerías de fotos/videos consecutivos y separadores de fecha |
 | `outbox.ts` | Cola de envío del composer (pura, sin red): reintento, descarte, limpieza |
@@ -132,7 +133,7 @@ nombre. Los tests sin módulo propio (`data-*.test.ts`, `queue-limit`,
 
 **chat/:** `chat-panel` (historial + composer), `composer` (texto, adjuntos, quick replies, plantillas — 19K), `message-bubble`, `outbox-bubble` (en cola/fallido con reintento), `media-group` + `media-lightbox` (galerías), `formatted-text` (negritas estilo WhatsApp), `quoted-content` (cita), `message-context-menu`, `template-picker-modal` (reabrir fuera de 24h), `quick-replies-modal`, `window-countdown` (cuenta atrás de 24h), `delivery-check` (palomitas), `ai-status-banner`.
 
-**inbox/:** `inbox-sidebar` (lista con filtros y buscador), `conversation-list-item`, `filter-scroller`, `tag-filter-menu`, `conversation-context-menu`, `agent-home-panel`, `bcv-rate-chip`.
+**inbox/:** `inbox-sidebar` (tres píldoras con Pendientes por defecto; secciones por ventana de 24h vía `inbox-sections`; dos consultas al servidor fresh/stale; contador de píldora desde la base; el buscador salta a "Todos"), `conversation-list-item`, `filter-scroller`, `tag-filter-menu`, `conversation-context-menu`, `agent-home-panel` (panel de inicio: Pendientes / Esperando +24 h / Tuyas — mismo idioma que las píldoras), `bcv-rate-chip`.
 
 **context-panel/:** `context-panel` (ficha del contacto junto al chat), `close-sale-modal` (cierre de venta + datos de cédula/dirección), `sale-items-editor` (carrito), `manage-tags-modal`.
 
@@ -146,7 +147,7 @@ nombre. Los tests sin módulo propio (`data-*.test.ts`, `queue-limit`,
 
 | Qué | Dónde |
 |---|---|
-| Migraciones (45, timestampeadas) | `migrations/` — regla: commit propio con `[migración]` en el título |
+| Migraciones (46, timestampeadas) | `migrations/` — regla: commit propio con `[migración]` en el título |
 | Seed de demo (3 usuarios, 5 conversaciones) | `seed.sql` — **no va a producción** |
 | Catálogo y escenarios para producción | `seeds/moto_catalog_seed.sql`, `seeds/ai_playbooks.sql` |
 | Config del stack local | `config.toml` |

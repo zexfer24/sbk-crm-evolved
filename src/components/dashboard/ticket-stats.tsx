@@ -58,7 +58,7 @@ export function TicketStatsPanel({ stats }: TicketStatsPanelProps) {
           <div className="dash-stat-row">
             <div className="dash-stat" data-tone={stats.unanswered > 0 ? "hot" : undefined}>
               <p className="dash-stat-value dash-num">{stats.unanswered}</p>
-              <p className="dash-stat-label">Sin respuesta hace más de 24 h</p>
+              <p className="dash-stat-label">Reclamos sin respuesta +24 h</p>
             </div>
             <div className="dash-stat">
               <p className="dash-stat-value dash-num">{formatAge(stats.averageOpenHours)}</p>

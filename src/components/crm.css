@@ -1282,6 +1282,36 @@
   text-align: center;
 }
 
+/* El vacío de "Pendientes" es el único vacío de la bandeja que es una buena
+   noticia: la cola quedó en cero. Lleva la misma marca que AgentHomePanel
+   (SbkMark) para que se sienta un cierre del día y no un genérico "no hay
+   nada" — más aire arriba, texto un tono más oscuro que el resto de los
+   vacíos (ink-soft en vez de muted), y nada más. Ninguna confeti, ningún
+   color de "éxito": el asesor lo va a ver seguido, no una vez al año. */
+.crm-empty-pending {
+  gap: 10px;
+  padding-top: 48px;
+  color: var(--lm-ink-soft);
+  animation: crm-empty-pending-in 220ms var(--lm-ease-out) both;
+}
+
+.crm-empty-mark {
+  box-shadow: var(--lm-shadow-sm);
+}
+
+@keyframes crm-empty-pending-in {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .crm-empty-pending {
+    animation: none;
+  }
+}
+
 /* El «cargar más» del fondo de la bandeja: centrado y con aire, porque marca
    el final de lo cargado, no una acción de una fila. */
 .crm-load-more {

@@ -9,6 +9,7 @@ import {
   fetchTags,
   fetchAgentSettings,
 } from "@/lib/data";
+import { PENDING_STALE_LIMIT } from "@/lib/inbox-sections";
 import { getBcvRate } from "@/lib/ai/bcv";
 import { CrmShell } from "@/components/crm-shell";
 import type { BcvRateSummary } from "@/components/inbox/bcv-rate-chip";
@@ -36,16 +37,40 @@ export default async function InboxPage({ searchParams }: PageProps<"/inbox">) {
     redirect("/login");
   }
 
-  const [{ conversation }, conversations, inboxCounts, tags, quickReplies, bcvRate, agentSettings] =
-    await Promise.all([
-      searchParams,
-      fetchConversations(supabase, { limit: INBOX_PAGE_SIZE }),
-      fetchInboxCounts(supabase, currentAgent.id),
-      fetchTags(supabase),
-      fetchQuickReplies(supabase),
-      loadBcvRate(supabase),
-      fetchAgentSettings(supabase),
-    ]);
+  const [
+    { conversation },
+    conversations,
+    inboxCounts,
+    pendingFresh,
+    pendingStale,
+    tags,
+    quickReplies,
+    bcvRate,
+    agentSettings,
+  ] = await Promise.all([
+    searchParams,
+    fetchConversations(supabase, { limit: INBOX_PAGE_SIZE }),
+    fetchInboxCounts(supabase, currentAgent.id),
+    // Las mismas dos ventanas que `InboxSidebar` le pide a la base al montar
+    // (ver inbox-sidebar.tsx). Resolverlas acá evita que la bandeja abra en
+    // "Pendientes" —el filtro por defecto— mostrando el cartel "Buscando…"
+    // mientras el efecto de red hace el mismo viaje desde el navegador.
+    fetchConversations(supabase, {
+      activeOnly: true,
+      awaitingReplyOnly: true,
+      pendingWindow: "fresh",
+    }),
+    fetchConversations(supabase, {
+      activeOnly: true,
+      awaitingReplyOnly: true,
+      pendingWindow: "stale",
+      limit: PENDING_STALE_LIMIT,
+    }),
+    fetchTags(supabase),
+    fetchQuickReplies(supabase),
+    loadBcvRate(supabase),
+    fetchAgentSettings(supabase),
+  ]);
 
   // El dashboard enlaza cada tarjeta con ?conversation=<id> para abrir el hilo directo.
   const requestedId = typeof conversation === "string" ? conversation : undefined;
@@ -55,6 +80,7 @@ export default async function InboxPage({ searchParams }: PageProps<"/inbox">) {
       currentAgent={currentAgent}
       initialConversations={conversations}
       initialInboxCounts={inboxCounts}
+      initialPendingConversations={[...pendingFresh, ...pendingStale]}
       allTags={tags}
       initialQuickReplies={quickReplies}
       bcvRate={bcvRate}
