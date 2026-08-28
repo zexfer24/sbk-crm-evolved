@@ -1,0 +1,6 @@
+# Los fixtures HTML del BCV se guardan tal cual llegaron del sitio, sin que
+# Git normalice fin de línea. Las regex de src/lib/ai/bcv.ts miden distancias
+# en caracteres (p. ej. `[\s\S]{0,600}`) sobre el HTML; si Git convirtiera
+# LF<->CRLF entre Windows y el CI Linux, esas distancias cambiarían y las
+# regex podrían dejar de casar en un entorno sí y en el otro no.
+src/lib/ai/__fixtures__/*.html -text
