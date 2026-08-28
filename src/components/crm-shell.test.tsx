@@ -116,7 +116,7 @@ const fetchMessagesMock = vi.fn().mockResolvedValue([]);
 const fetchConversationMock = vi.fn(
   (_supabase: unknown, id: string) => Promise.resolve(buildConversation({ id }))
 );
-const fetchInboxCountsMock = vi.fn().mockResolvedValue({ pending: 0, pendingStale: 0, mine: 0 });
+const fetchInboxCountsMock = vi.fn().mockResolvedValue({ pending: 0, pendingStale: 0, mine: 0, unread: 0 });
 // La fila suelta que se pide cuando el evento trae un cambio con relaciones.
 const fetchConversationRowMock = vi.fn(
   (_supabase: unknown, id: string) => Promise.resolve(buildConversation({ id }))
@@ -220,7 +220,7 @@ const currentAgent: Agent = {
 const allTags: Tag[] = [];
 const agentSettings = { aiGloballyEnabled: true, dailySpendCapUsd: null, spentTodayUsd: 0 };
 const initialQuickReplies: QuickReply[] = [];
-const inboxCounts = { pending: 0, pendingStale: 0, mine: 0 };
+const inboxCounts = { pending: 0, pendingStale: 0, mine: 0, unread: 0 };
 
 beforeEach(() => {
   fake = createFakeSupabase();

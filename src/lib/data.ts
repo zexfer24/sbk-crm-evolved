@@ -563,8 +563,13 @@ export interface FetchConversationsOptions {
    * Corta el subconjunto "pendiente" (pensado para usarse junto a
    * `awaitingReplyOnly`) por la ventana de 24 h de WhatsApp: `"fresh"` trae
    * lo que sigue dentro (se le puede escribir texto libre ahora mismo),
-   * `"stale"` lo que ya se salió — la sección "Esperando +24 h" de
-   * `inbox-sections.ts`.
+   * `"stale"` lo que ya se salió.
+   *
+   * Alimentaba la sección "Esperando +24 h" de `inbox-sections.ts`, que la
+   * reforma de píldoras Todos/No leídas/Mías retira de la bandeja. La opción
+   * queda igual que `neverRepliedOnly`: documentada y viva para quien la
+   * necesite (`pendingStale` de `InboxCounts` la sigue usando para el panel
+   * de inicio), sin consumidor propio en la bandeja.
    *
    * Mismo corte que `freeformWindowCutoff`/`withinFreeformWindow`
    * (src/lib/dashboard.ts) y mismo operador estricto que usa
@@ -592,6 +597,21 @@ export interface FetchConversationsOptions {
   contactIds?: string[];
   /** Solo estas conversaciones (las coincidencias de la búsqueda por mensaje). */
   ids?: string[];
+  /**
+   * Solo lo que tiene algo sin leer: `unread_count > 0 OR manually_unread` —
+   * la misma definición de `isUnread` que usa el frontend. Sin condición de
+   * estado a propósito, igual que `assignedTo`: una conversación CERRADA con
+   * mensajes sin leer sigue sin leer, así que la píldora "No leídas" también
+   * la muestra.
+   */
+  unreadOnly?: boolean;
+  /**
+   * Solo las asignadas a este perfil: la píldora "Mías". Sin condición de
+   * estado a propósito — es cola y archivo personal a la vez, paridad con
+   * `counts.mine` y con el corte que ya vivía en memoria antes de esta
+   * entrega.
+   */
+  assignedTo?: string;
 }
 
 /**
@@ -612,6 +632,8 @@ async function fetchConversationRows<Raw>(
     now,
     contactIds,
     ids,
+    unreadOnly,
+    assignedTo,
   }: FetchConversationsOptions
 ): Promise<Raw[]> {
   // `.in()` con lista vacía no es una consulta válida en PostgREST, y acá
@@ -653,6 +675,8 @@ async function fetchConversationRows<Raw>(
     }
     if (contactIds) request = request.in("contact_id", contactIds);
     if (ids) request = request.in("id", ids);
+    if (unreadOnly) request = request.or("unread_count.gt.0,manually_unread.is.true");
+    if (assignedTo) request = request.eq("assigned_agent_id", assignedTo);
 
     const from = offset + rows.length;
     const { data, error } = await request.range(from, from + pageSize - 1);
@@ -749,26 +773,35 @@ export async function fetchConversation(
 /**
  * Los contadores de las píldoras de la bandeja. Antes se contaban sobre la
  * lista cargada; con la bandeja paginada la lista es una ventana, y contar
- * sobre una ventana miente. Esto le pregunta a la base tres conteos sin
+ * sobre una ventana miente. Esto le pregunta a la base cuatro conteos sin
  * filas (`head: true`), que cuestan lo mismo con 600 conversaciones que con
  * 60.000.
  *
- * Forma fija desde la reforma del 28/8/2026 (tres píldoras: "Pendientes",
- * "Lo mío", "Todos"). Reemplaza a `unread`/`unassigned`, que ya no tienen
- * píldora propia — sus consumidores se adaptan en otra entrega.
+ * `pending`/`pendingStale` datan de la reforma del 28/8/2026 (píldoras
+ * "Pendientes"/"Lo mío"/"Todos") y ya no tienen píldora propia en la
+ * bandeja —la retiró la reforma siguiente, a Todos/No leídas/Mías—, pero
+ * el panel de inicio los sigue usando: se conservan intactos. `unread` es
+ * el conteo de esa reforma nueva, para la píldora "No leídas".
  */
 export interface InboxCounts {
   /**
-   * Total de la píldora "Pendientes": `awaiting_reply and status <>
-   * 'closed'`, sin condición de asesor (a propósito — ver la migración
-   * 20260828020000). Cuenta contra toda la base, no contra lo que la bandeja
-   * tenga cargado.
+   * Total de la píldora "Pendientes" (panel de inicio): `awaiting_reply and
+   * status <> 'closed'`, sin condición de asesor (a propósito — ver la
+   * migración 20260828020000). Cuenta contra toda la base, no contra lo que
+   * la bandeja tenga cargado.
    */
   pending: number;
-  /** El subconjunto de `pending` que ya se salió de la ventana de 24 h de Meta: la sección "Esperando +24 h". */
+  /** El subconjunto de `pending` que ya se salió de la ventana de 24 h de Meta (panel de inicio). */
   pendingStale: number;
-  /** Asignadas al asesor que mira la pantalla: la píldora "Lo mío". */
+  /** Asignadas al asesor que mira la pantalla: la píldora "Mías". */
   mine: number;
+  /**
+   * Total de la píldora "No leídas": mismo predicado OR que `unreadOnly` de
+   * `FetchConversationsOptions` (`unread_count > 0 OR manually_unread`), sin
+   * condición de estado a propósito — una conversación cerrada con mensajes
+   * sin leer sigue contando.
+   */
+  unread: number;
 }
 
 export async function fetchInboxCounts(
@@ -780,7 +813,7 @@ export async function fetchInboxCounts(
   const count = () =>
     supabase.from("conversations").select("id", { count: "exact", head: true });
 
-  const [pending, pendingStale, mine] = await Promise.all([
+  const [pending, pendingStale, mine, unread] = await Promise.all([
     count().eq("awaiting_reply", true).neq("status", "closed"),
     // Mismo predicado de "Pendientes" más el corte de ventana invertido, con
     // el mismo criterio de "fallar cerrado" que `withinFreeformWindow`: lo
@@ -792,15 +825,19 @@ export async function fetchInboxCounts(
       .neq("status", "closed")
       .or(`last_customer_message_at.lte.${cutoff},last_customer_message_at.is.null`),
     count().eq("assigned_agent_id", viewerId),
+    // Al final del Promise.all para no correr los índices que ya usan los
+    // tests de "pending"/"pendingStale"/"mine".
+    count().or("unread_count.gt.0,manually_unread.is.true"),
   ]);
 
-  const first = [pending, pendingStale, mine].find((r) => r.error);
+  const first = [pending, pendingStale, mine, unread].find((r) => r.error);
   if (first?.error) throw first.error;
 
   return {
     pending: pending.count ?? 0,
     pendingStale: pendingStale.count ?? 0,
     mine: mine.count ?? 0,
+    unread: unread.count ?? 0,
   };
 }
 

@@ -29,6 +29,8 @@ interface FilaConteo {
   status: string;
   assigned_agent_id: string | null;
   last_customer_message_at: string | null;
+  unread_count: number;
+  manually_unread: boolean;
 }
 
 function createFakeSupabase(rows: FilaConteo[]) {
@@ -59,8 +61,9 @@ function createFakeSupabase(rows: FilaConteo[]) {
           )
         );
       },
-      // Fake mínimo: solo entiende las cláusulas que emite fetchInboxCounts
-      // para `pendingStale` (`columna.lte.valor` y `columna.is.null`).
+      // Fake mínimo: entiende las cláusulas que emite fetchInboxCounts para
+      // `pendingStale` (`columna.lte.valor` y `columna.is.null`) y para
+      // `unread` (`columna.gt.valor` y `columna.is.true`).
       or(clause: string) {
         consulta.filtros.push({ op: "or", column: "", value: clause });
         const conditions = clause.split(",").map((raw) => {
@@ -72,8 +75,13 @@ function createFakeSupabase(rows: FilaConteo[]) {
           current.filter((row) =>
             conditions.some(({ column, op, value }) => {
               const cell = (row as unknown as Record<string, unknown>)[column];
-              if (op === "is") return value === "null" ? cell == null : cell === value;
+              if (op === "is") {
+                if (value === "null") return cell == null;
+                if (value === "true") return cell === true;
+                return cell === value;
+              }
               if (op === "lte") return cell != null && (cell as string) <= value;
+              if (op === "gt") return cell != null && (cell as number) > Number(value);
               throw new Error(`operador "${op}" no soportado por el fake de .or()`);
             })
           )
@@ -116,6 +124,8 @@ function filas(): FilaConteo[] {
       status: "open",
       assigned_agent_id: null,
       last_customer_message_at: DESPUES_DEL_CORTE,
+      unread_count: 0,
+      manually_unread: false,
     },
     // Pendiente, fuera de la ventana, CON asesor — cuenta igual: "Pendientes"
     // no exige "sin asesor" (migración 20260828020000).
@@ -125,14 +135,19 @@ function filas(): FilaConteo[] {
       status: "open",
       assigned_agent_id: "ana",
       last_customer_message_at: ANTES_DEL_CORTE,
+      unread_count: 0,
+      manually_unread: false,
     },
-    // awaiting_reply, pero cerrada: no es "Pendientes".
+    // awaiting_reply, pero cerrada: no es "Pendientes". Sí trae mensajes sin
+    // leer: cuenta para "unread" (decisión de diseño — ver el test de abajo).
     {
       id: "conv-2",
       awaiting_reply: true,
       status: "closed",
       assigned_agent_id: null,
       last_customer_message_at: ANTES_DEL_CORTE,
+      unread_count: 4,
+      manually_unread: false,
     },
     // No está esperando respuesta, pero es del viewer: cuenta para "mine".
     {
@@ -141,15 +156,20 @@ function filas(): FilaConteo[] {
       status: "open",
       assigned_agent_id: "viewer-1",
       last_customer_message_at: null,
+      unread_count: 0,
+      manually_unread: false,
     },
     // Pendiente, del viewer, sin fecha de cliente: cae en "stale" (falla
-    // cerrado) y también en "mine".
+    // cerrado) y también en "mine". Apartada a mano: cuenta también para
+    // "unread", aunque el contador esté en cero.
     {
       id: "conv-4",
       awaiting_reply: true,
       status: "open",
       assigned_agent_id: "viewer-1",
       last_customer_message_at: null,
+      unread_count: 0,
+      manually_unread: true,
     },
   ];
 }
@@ -195,7 +215,30 @@ describe("fetchInboxCounts", () => {
     expect(consultas[2].opciones).toEqual({ count: "exact", head: true });
   });
 
-  it("devuelve los tres números, cada uno contra su propio subconjunto", async () => {
+  /**
+   * `unread` va al final del `Promise.all` para no correr los índices que
+   * los tres tests de arriba ya afirman por posición (`consultas[0..2]`).
+   * Sin condición de estado, a propósito: una conversación CERRADA con
+   * mensajes sin leer (conv-2) sigue contando — es la misma decisión que
+   * `unreadOnly` de `fetchConversations` (ver data-conversations.test.ts).
+   */
+  it('"unread" pregunta por el OR de unread_count/manually_unread, sin condición de estado, y cierra el Promise.all', async () => {
+    const { client, consultas } = createFakeSupabase(filas());
+
+    await fetchInboxCounts(client, "viewer-1", AHORA);
+
+    expect(consultas).toHaveLength(4);
+    expect(consultas[3].filtros).toEqual([
+      {
+        op: "or",
+        column: "",
+        value: "unread_count.gt.0,manually_unread.is.true",
+      },
+    ]);
+    expect(consultas[3].opciones).toEqual({ count: "exact", head: true });
+  });
+
+  it("devuelve los cuatro números, cada uno contra su propio subconjunto", async () => {
     const { client } = createFakeSupabase(filas());
 
     const result = await fetchInboxCounts(client, "viewer-1", AHORA);
@@ -203,6 +246,8 @@ describe("fetchInboxCounts", () => {
     // pending: conv-0, conv-1, conv-4 (awaiting_reply y no cerrada).
     // pendingStale: de esos, conv-1 (fuera de ventana) y conv-4 (sin fecha).
     // mine: conv-3 y conv-4 (assigned_agent_id === "viewer-1").
-    expect(result).toEqual({ pending: 3, pendingStale: 2, mine: 2 });
+    // unread: conv-2 (cerrada, pero con unread_count > 0 — a propósito, no
+    // exige status abierto) y conv-4 (manually_unread).
+    expect(result).toEqual({ pending: 3, pendingStale: 2, mine: 2, unread: 2 });
   });
 });

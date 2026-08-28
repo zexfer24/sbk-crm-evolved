@@ -27,6 +27,7 @@ function makeRow(index: number) {
     // inserción y dice si de acá salió alguna respuesta alguna vez.
     has_reply: false,
     unread_count: 0,
+    manually_unread: false,
     ai_enabled: true,
     deal_status: null,
     deal_closed_at: null,
@@ -117,10 +118,11 @@ function createFakeSupabase(rows: ReturnType<typeof makeRow>[]) {
           })
         );
       },
-      // Fake mínimo de `.or()`: solo entiende las cláusulas que emite data.ts
-      // para `pendingWindow: "stale"` (`columna.lte.valor` y
-      // `columna.is.null`, separadas por coma). Alcanza para lo que se prueba
-      // acá, no para PostgREST en general.
+      // Fake mínimo de `.or()`: entiende las cláusulas que emite data.ts para
+      // `pendingWindow: "stale"` (`columna.lte.valor` y `columna.is.null`) y
+      // para `unreadOnly` (`columna.gt.valor` y `columna.is.true`), separadas
+      // por coma. Alcanza para lo que se prueba acá, no para PostgREST en
+      // general.
       or(clause: string) {
         filters.push({ op: "or", column: "", value: clause });
         const conditions = clause.split(",").map((raw) => {
@@ -131,8 +133,13 @@ function createFakeSupabase(rows: ReturnType<typeof makeRow>[]) {
           current.filter((row) =>
             conditions.some(({ column, op, value }) => {
               const cell = (row as Record<string, unknown>)[column];
-              if (op === "is") return value === "null" ? cell == null : cell === value;
+              if (op === "is") {
+                if (value === "null") return cell == null;
+                if (value === "true") return cell === true;
+                return cell === value;
+              }
               if (op === "lte") return cell != null && cell <= value;
+              if (op === "gt") return cell != null && (cell as number) > Number(value);
               throw new Error(`operador "${op}" no soportado por el fake de .or()`);
             })
           )
@@ -322,6 +329,53 @@ describe("fetchConversations", () => {
     expect(await fetchConversations(client, { contactIds: [] })).toEqual([]);
     expect(await fetchConversations(client, { ids: [] })).toEqual([]);
     expect(calls).toHaveLength(0);
+  });
+
+  /**
+   * "No leídas": el mismo predicado que `isUnread` (inbox-sections.ts) y que
+   * el índice parcial de la migración 20260828030000, sin condición de
+   * estado a propósito — una conversación cerrada con mensajes sin leer
+   * sigue sin leer.
+   */
+  it("con unreadOnly emite el OR de unread_count/manually_unread y deja lo cerrado con algo sin leer", async () => {
+    const rows = [
+      { ...makeRow(0), unread_count: 3 }, // sin leer por contador
+      { ...makeRow(1), unread_count: 0, manually_unread: true }, // sin leer a mano
+      { ...makeRow(2), unread_count: 0, manually_unread: false }, // leído
+      {
+        ...makeRow(3),
+        unread_count: 2,
+        status: "closed" as never,
+      }, // cerrada con mensajes sin leer: sigue contando
+    ];
+    const { client, filters } = createFakeSupabase(rows);
+
+    const result = await fetchConversations(client, { unreadOnly: true });
+
+    expect(filters).toContainEqual({
+      op: "or",
+      column: "",
+      value: "unread_count.gt.0,manually_unread.is.true",
+    });
+    expect(result.map((c) => c.id).sort()).toEqual(["conv-0", "conv-1", "conv-3"]);
+  });
+
+  /**
+   * "Mías": sin condición de estado, a propósito — es cola y archivo
+   * personal a la vez (paridad con `InboxCounts.mine`).
+   */
+  it("con assignedTo emite eq(assigned_agent_id, id) y deja lo cerrado asignado a ese perfil", async () => {
+    const rows = [
+      { ...makeRow(0), assigned_agent_id: "ana" },
+      { ...makeRow(1), assigned_agent_id: "beto" },
+      { ...makeRow(2), assigned_agent_id: "ana", status: "closed" as never },
+    ];
+    const { client, filters } = createFakeSupabase(rows);
+
+    const result = await fetchConversations(client, { assignedTo: "ana" });
+
+    expect(filters).toContainEqual({ op: "eq", column: "assigned_agent_id", value: "ana" });
+    expect(result.map((c) => c.id).sort()).toEqual(["conv-0", "conv-2"]);
   });
 
   describe("pendingWindow", () => {
