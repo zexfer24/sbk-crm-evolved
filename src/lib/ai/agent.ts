@@ -282,6 +282,86 @@ async function stillEnabled(supabase: SupabaseClient<Database>, conversationId: 
   }
 }
 
+/**
+ * ¿Se metió una persona entre la apertura del turno y este envío?
+ *
+ * `runAgentTurn` ya preguntó esto al abrir. Que acá vuelva a decir que sí
+ * significa necesariamente que el asesor escribió MIENTRAS el turno corría —no
+ * hay otra lectura posible, porque si hubiera escrito antes el turno no habría
+ * llegado hasta acá—. De ahí que el evento sea propio y no el
+ * `turno_chat_de_una_persona` de la apertura: uno cuenta chats que la IA no
+ * tocó, este cuenta carreras perdidas.
+ *
+ * Falla cerrado igual que la comprobación de apertura, y por el mismo motivo:
+ * no contestar deja a un cliente esperando un rato más; contestar encima de un
+ * asesor le escribe a alguien que está a mitad de una venta.
+ */
+async function humanWroteMeanwhile(
+  supabase: SupabaseClient<Database>,
+  conversationId: string,
+  fase: SendPhase
+): Promise<boolean> {
+  try {
+    if (!(await humanHasWritten(supabase, conversationId))) return false;
+  } catch (err) {
+    log.error("turno_persona_no_consultable", { conversationId, fase, detail: errorText(err) });
+    return true;
+  }
+
+  log.warn("turno_persona_se_adelanto", { conversationId, fase });
+  return true;
+}
+
+/** Desde qué punto del turno se está intentando hablar. Viaja al registro. */
+type SendPhase = "escenario" | "fuera_de_tema" | "redaccion";
+
+/**
+ * La única puerta por la que un turno le pone algo delante al cliente.
+ *
+ * Los tres caminos que hablan —escenario, redirección de fuera de tema y
+ * texto redactado— repetían el mismo trío: comprobar, marcar `intentado`,
+ * medir el envío. Tres copias de una regla es una regla que se olvida en el
+ * cuarto camino, y el 27 de agosto de 2026 se olvidó algo peor: la
+ * comprobación del asesor NO estaba en el trío. Se miraba una sola vez, al
+ * abrir el turno, y entre esa mirada y el envío pasan de 3 a 10 segundos
+ * (clasificar 2,2–3,5 s, redactar 3,5–6,5 s, entregar 0,83–1,14 s, medido en
+ * producción). Un asesor entró en ese hueco y la IA le escribió encima, en
+ * medio de una venta que estaba cerrando.
+ *
+ * Ahora los tres caminos pasan por acá y no hay ninguno que pueda saltarse
+ * las guardas: esta función es la dueña de `entrega.intentado` y del tramo
+ * `envioMs`, así que un envío que la esquive no queda ni marcado como
+ * intentado ni medido — y eso se ve.
+ *
+ * Queda una ventana irreducible: la que dura la llamada a Meta, ~1 s. Cerrarla
+ * del todo exigiría un candado que tomara también el asesor al escribir desde
+ * el CRM. Lo que se cerró es el hueco de 3–10 s, que es donde vivía el
+ * incidente.
+ *
+ * Devuelve si el mensaje salió. `false` significa que una guarda lo frenó y
+ * que el turno no llegó a intentar nada: sigue siendo reintentable.
+ */
+async function deliver(
+  supabase: SupabaseClient<Database>,
+  target: TurnTarget,
+  entrega: TurnDelivery,
+  tiempos: TurnTiming,
+  fase: SendPhase,
+  enviar: () => Promise<void>
+): Promise<boolean> {
+  const { conversationId } = target;
+
+  if (!(await stillEnabled(supabase, conversationId))) return false;
+  if (await humanWroteMeanwhile(supabase, conversationId, fase)) return false;
+
+  // Se marca ANTES de enviar: si el envío falla a mitad no sabemos si el
+  // mensaje salió, y ante la duda el turno deja de ser reintentable. Ver
+  // turn-delivery.ts.
+  entrega.intentado = true;
+  await medir(tiempos, "envioMs", enviar);
+  return true;
+}
+
 /** Sufijo para la bitácora: qué quedó etiquetado, por nombre. Vacío si no había etiquetas. */
 function tagSummary(tags: Tag[]): string {
   return tags.length === 0 ? "" : ` Etiquetas: ${tags.map((tag) => tag.label).join(", ")}.`;
@@ -306,15 +386,14 @@ async function runPlaybook(
   customerMessage: string | null,
   tiempos: TurnTiming
 ): Promise<void> {
-  // Última mirada al interruptor antes de hablarle al cliente. Si se apagó
-  // mientras el modelo elegía el escenario, el turno termina acá sin enviar.
-  if (!(await stillEnabled(supabase, target.conversationId))) return;
-
-  // Se marca ANTES de enviar: si el envío falla a mitad no sabemos si el
-  // mensaje salió, y ante la duda el turno deja de ser reintentable. Ver
-  // turn-delivery.ts.
-  entrega.intentado = true;
-  await medir(tiempos, "envioMs", () => sendPlaybookReply(supabase, target, playbook));
+  // Última mirada a las guardas antes de hablarle al cliente. Si la IA se apagó
+  // —o si un asesor se metió— mientras el modelo elegía el escenario, el turno
+  // termina acá sin enviar y sin etiquetar ni escalar: todo lo que sigue
+  // acompaña a un mensaje que no salió.
+  const salió = await deliver(supabase, target, entrega, tiempos, "escenario", () =>
+    sendPlaybookReply(supabase, target, playbook)
+  );
+  if (!salió) return;
 
   // Se etiqueta siempre que el escenario responda, escale o no: un escenario
   // que deja al cliente esperando también puede querer dejar marcado el caso.
@@ -472,9 +551,10 @@ async function runTurnPhases(
   if (intent === "fuera_de_tema") {
     const repetido = alreadyRedirected(history);
     if (!repetido) {
-      if (!(await stillEnabled(supabase, conversationId))) return;
-      entrega.intentado = true;
-      await medir(tiempos, "envioMs", () => sendAgentText(supabase, target, OFF_TOPIC_REPLY));
+      const salió = await deliver(supabase, target, entrega, tiempos, "fuera_de_tema", () =>
+        sendAgentText(supabase, target, OFF_TOPIC_REPLY)
+      );
+      if (!salió) return;
     }
 
     await supabase
@@ -588,10 +668,11 @@ async function runTurnPhases(
     // Acá es donde más se nota: entre abrir el turno y llegar a esta línea
     // pasaron el reconocimiento de escenario, la clasificación y hasta cinco
     // pasos de tool loop. Es el punto del turno más lejano al momento en que
-    // se miró el interruptor.
-    if (!(await stillEnabled(supabase, conversationId))) return;
-    entrega.intentado = true;
-    await medir(tiempos, "envioMs", () => sendAgentText(supabase, target, text.trim()));
+    // se miraron las guardas al abrirlo.
+    const salió = await deliver(supabase, target, entrega, tiempos, "redaccion", () =>
+      sendAgentText(supabase, target, text.trim())
+    );
+    if (!salió) return;
   }
 
   if (!outcome.escalated) {

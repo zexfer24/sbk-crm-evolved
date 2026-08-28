@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Playbook } from "@/lib/types";
 import type { Intent } from "@/lib/ai/classify";
 
@@ -21,6 +21,8 @@ interface FakeState {
    * corre: el chat es de esa persona. Ver src/lib/ai/human-handled.ts.
    */
   humanMessages: { id: string }[];
+  /** Fallo al preguntar si escribió una persona. La guarda falla cerrado. */
+  humanMessagesError: { message: string } | null;
 }
 
 const state: FakeState = {
@@ -32,6 +34,7 @@ const state: FakeState = {
   enabledToolKeys: [],
   tagUpsertError: null,
   humanMessages: [],
+  humanMessagesError: null,
 };
 const conversationUpdates: Record<string, unknown>[] = [];
 const agentTurnInserts: Record<string, unknown>[] = [];
@@ -92,7 +95,14 @@ function createFakeSupabase() {
                 return { limit: async () => ({ data: state.history }) };
               },
               // Segundo .eq(): la comprobación de si un asesor escribió acá.
-              eq: () => ({ limit: async () => ({ data: state.humanMessages, error: null }) }),
+              // Se lee `state` en el momento de la llamada, no al construir el
+              // fake: es lo que deja que un asesor "entre" a mitad de turno.
+              eq: () => ({
+                limit: async () => ({
+                  data: state.humanMessagesError ? null : state.humanMessages,
+                  error: state.humanMessagesError,
+                }),
+              }),
             }),
           }),
         };
@@ -204,6 +214,7 @@ vi.mock("@/lib/ai/knowledge", () => ({
 
 import { runAgentTurn } from "@/lib/ai/agent";
 import { OFF_TOPIC_REPLY, SYSTEM_PROMPT } from "@/lib/ai/prompt";
+import { log } from "@/lib/log";
 
 function playbook(overrides: Partial<Playbook> = {}): Playbook {
   return {
@@ -240,6 +251,7 @@ beforeEach(() => {
   state.enabledToolKeys = ["buscar_repuesto", "buscar_historial_compras", "consultar_biblioteca"];
   state.tagUpsertError = null;
   state.humanMessages = [];
+  state.humanMessagesError = null;
   conversationUpdates.length = 0;
   agentTurnInserts.length = 0;
   contactTagUpserts.length = 0;
@@ -594,6 +606,178 @@ describe("runAgentTurn — etiquetas del escenario", () => {
     await runAgentTurn("conv-1");
 
     expect(agentTurnInserts[0].summary).toContain("Etiquetas: Envio, pendiente-venta.");
+  });
+});
+
+/**
+ * La carrera del 27 de agosto de 2026, reconstruida con los tiempos medidos
+ * ese día en producción.
+ *
+ * Conversación c2b0a79b:
+ *
+ *   16:30:26.892  ASESOR  «Nos queda 1 talla ese»
+ *   16:30:29.585  IA      «Catálogo cascos 🪖 …»   ← 2,7 s después, encima
+ *
+ * `runAgentTurn` preguntaba `humanHasWritten` al ABRIR el turno y no volvía a
+ * preguntarlo nunca. Entre esa mirada y el envío pasan de 3 a 10 segundos
+ * (`turno_tiempos` de ese día: clasificar 2,2–3,5 s, redactar 3,5–6,5 s,
+ * entregar 0,83–1,14 s). El asesor entró justo ahí.
+ *
+ * El reloj se controla a mano para que los tramos duren lo que duraron: sin
+ * eso la prueba diría "el asesor escribió en algún momento", que es una
+ * afirmación mucho más débil que "escribió dentro del hueco real".
+ */
+describe("runAgentTurn — un asesor se mete mientras el turno corre", () => {
+  const APERTURA = Date.parse("2026-08-27T16:30:19.900Z");
+  /** Fin de la clasificación: 2,2 s, el tramo más rápido que se midió. */
+  const FIN_CLASIFICACION = APERTURA + 2_200;
+  /** El instante exacto en que el asesor mandó «Nos queda 1 talla ese». */
+  const ASESOR_ESCRIBE = Date.parse("2026-08-27T16:30:26.892Z");
+  /** Fin de la redacción: 6,5 s, el tramo más lento que se midió. */
+  const FIN_REDACCION = APERTURA + 8_700;
+
+  let reloj = APERTURA;
+
+  beforeEach(() => {
+    reloj = APERTURA;
+    vi.spyOn(Date, "now").mockImplementation(() => reloj);
+  });
+
+  // El reloj vuelve a ser el de verdad al salir: un `Date.now` congelado que
+  // se filtre al resto del archivo rompe las pruebas de tiempos del turno.
+  afterEach(() => {
+    vi.mocked(Date.now).mockRestore();
+  });
+
+  /** El asesor escribe en medio de la redacción, como pasó de verdad. */
+  function elAsesorEntraRedactando() {
+    generateMock.mockImplementation(async () => {
+      reloj = ASESOR_ESCRIBE;
+      state.humanMessages = [{ id: "msg-del-asesor" }];
+      reloj = FIN_REDACCION;
+      return {
+        text: "Claro, tenemos varios cascos disponibles.",
+        usage: { inputTokens: 20, outputTokens: 8, totalTokens: 28 },
+        steps: [{}, {}],
+      };
+    });
+  }
+
+  function laClasificacionTarda() {
+    classifyIntentMock.mockImplementation(async () => {
+      reloj = FIN_CLASIFICACION;
+      return {
+        intent: "consulta_disponibilidad" as const,
+        usage: { inputTokens: 5, outputTokens: 1, totalTokens: 6 },
+      };
+    });
+  }
+
+  it("no envía el texto redactado: el asesor escribió dentro del hueco", async () => {
+    laClasificacionTarda();
+    elAsesorEntraRedactando();
+
+    await runAgentTurn("conv-1");
+
+    // Que el modelo SÍ haya redactado es la mitad que importa: prueba que el
+    // turno llegó hasta el envío y se frenó ahí, no que murió al abrirse por
+    // la guarda que ya existía.
+    expect(generateMock).toHaveBeenCalledTimes(1);
+    expect(sendAgentTextMock).not.toHaveBeenCalled();
+  });
+
+  /** Sin asesor de por medio el mismo turno, con los mismos tiempos, sí habla. */
+  it("con el hueco vacío el mismo turno sí envía", async () => {
+    laClasificacionTarda();
+    generateMock.mockImplementation(async () => {
+      reloj = FIN_REDACCION;
+      return {
+        text: "Claro, tenemos varios cascos disponibles.",
+        usage: { inputTokens: 20, outputTokens: 8, totalTokens: 28 },
+        steps: [{}, {}],
+      };
+    });
+
+    await runAgentTurn("conv-1");
+
+    expect(sendAgentTextMock).toHaveBeenCalledTimes(1);
+  });
+
+  /**
+   * El evento va aparte de `turno_chat_de_una_persona` —el frenado al abrir—
+   * porque cuentan cosas distintas: aquel cuenta chats que la IA no tocó, este
+   * cuenta carreras perdidas. Es el número con el que se mide si el hueco
+   * sigue abierto.
+   */
+  it("deja en el registro un evento propio, distinto del frenado al abrir", async () => {
+    const warn = vi.spyOn(log, "warn");
+    laClasificacionTarda();
+    elAsesorEntraRedactando();
+
+    await runAgentTurn("conv-1");
+
+    expect(warn).toHaveBeenCalledWith("turno_persona_se_adelanto", {
+      conversationId: "conv-1",
+      fase: "redaccion",
+    });
+    expect(warn).not.toHaveBeenCalledWith("turno_chat_de_una_persona", expect.anything());
+  });
+
+  /** El camino más corto del turno tiene la misma puerta que el más largo. */
+  it("tampoco sale el escenario si el asesor se adelantó mientras se reconocía", async () => {
+    const pb = playbook();
+    fetchActivePlaybooksMock.mockResolvedValue([pb]);
+    matchPlaybookMock.mockImplementation(async () => {
+      reloj = ASESOR_ESCRIBE;
+      state.humanMessages = [{ id: "msg-del-asesor" }];
+      return { playbook: pb, usage: NO_USAGE };
+    });
+
+    await runAgentTurn("conv-1");
+
+    expect(sendPlaybookReplyMock).not.toHaveBeenCalled();
+    // Ni etiqueta ni escala: todo eso acompaña a un mensaje que no salió.
+    expect(contactTagUpserts).toHaveLength(0);
+    expect(escalateConversationMock).not.toHaveBeenCalled();
+  });
+
+  it("tampoco sale la redirección de fuera de tema", async () => {
+    classifyIntentMock.mockImplementation(async () => {
+      reloj = ASESOR_ESCRIBE;
+      state.humanMessages = [{ id: "msg-del-asesor" }];
+      return {
+        intent: "fuera_de_tema" as const,
+        usage: { inputTokens: 5, outputTokens: 1, totalTokens: 6 },
+      };
+    });
+
+    await runAgentTurn("conv-1");
+
+    expect(sendAgentTextMock).not.toHaveBeenCalled();
+  });
+
+  /**
+   * Misma regla que la comprobación de apertura: si no se puede preguntar, no
+   * se escribe. El costo de los dos lados no se parece — no contestar deja a
+   * un cliente esperando un rato más; contestar encima de un asesor le escribe
+   * a alguien que está a mitad de una venta.
+   */
+  it("si no se puede comprobar quién escribió, no envía", async () => {
+    laClasificacionTarda();
+    generateMock.mockImplementation(async () => {
+      state.humanMessagesError = { message: "connection reset" };
+      reloj = FIN_REDACCION;
+      return {
+        text: "Claro, tenemos varios cascos disponibles.",
+        usage: { inputTokens: 20, outputTokens: 8, totalTokens: 28 },
+        steps: [{}, {}],
+      };
+    });
+
+    await runAgentTurn("conv-1");
+
+    expect(generateMock).toHaveBeenCalledTimes(1);
+    expect(sendAgentTextMock).not.toHaveBeenCalled();
   });
 });
 
