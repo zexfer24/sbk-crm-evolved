@@ -1,3 +1,4 @@
+/** @vitest-environment jsdom */
 import { describe, expect, it, vi, beforeEach, afterEach } from "vitest";
 import { render, act, screen } from "@testing-library/react";
 import { CrmShell } from "@/components/crm-shell";

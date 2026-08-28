@@ -5,10 +5,26 @@ import react from "@vitejs/plugin-react";
 export default defineConfig({
   plugins: [react()],
   test: {
-    environment: "jsdom",
+    // 28/8/2026: de los ~79 archivos de test solo ~19 tocan el DOM; los demás
+    // construían un jsdom que nunca usaban, pagando su costo de CPU en cada
+    // proceso del pool de forks. El default pasa a "node" y las pruebas que
+    // sí necesitan DOM lo declaran explícitamente con
+    // `/** @vitest-environment jsdom */` como primera línea del archivo.
+    environment: "node",
     setupFiles: ["./vitest.setup.ts"],
     globals: true,
     css: false,
+    // 28/8/2026: con pool "forks" + isolate true (los defaults), cada archivo
+    // corre en un proceso aislado con su propio jsdom, y en Windows de 8
+    // núcleos hasta 7 corren a la vez compitiendo por CPU. Los 5000ms por
+    // defecto alcanzan cuando la máquina está libre, pero expiran en los
+    // archivos caros en cuanto hay carga real (no es una regresión del test,
+    // es contención). Subimos el presupuesto como red de seguridad sin tocar
+    // el paralelismo, y bajamos el umbral de "lento" a 1s para que el
+    // reporter haga visible la degradación en vez de que el margen la esconda.
+    testTimeout: 15000,
+    hookTimeout: 15000,
+    slowTestThreshold: 1000,
   },
   resolve: {
     alias: {
