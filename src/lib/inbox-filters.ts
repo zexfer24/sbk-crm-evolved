@@ -71,11 +71,21 @@ function matchesFilter(conversation: ConversationSummary, filter: InboxFilter, v
     // Trabajo que se puede agarrar ahora mismo: nadie contestó y nadie lo
     // tomó. Se vuelve a comprobar acá aunque la base ya haya filtrado, porque
     // la lista mezcla filas de la consulta con filas vivas de la bandeja: si
-    // alguien toma el chat mientras la lista está abierta, sale solo.
+    // alguien toma el chat —o le contesta— mientras la lista está abierta,
+    // sale solo.
+    //
+    // `!hasReply` no es redundante con `awaitingReply`. La segunda solo dice
+    // que el último mensaje del hilo es del cliente, y eso describe igual de
+    // bien un chat que un asesor ya respondió a mano —sin asignárselo, que es
+    // como trabajan— y al que el cliente le contestó "Ok". Esos chats son
+    // viejos, así que caían al final de la lista: había que bajar hasta el
+    // fondo para encontrarse con conversaciones ya respondidas. Es el mismo
+    // agujero que src/lib/ai/human-handled.ts documentó para la IA.
     case "unanswered":
       return (
         conversation.assignedAgent === null &&
         conversation.status !== "closed" &&
+        !conversation.hasReply &&
         awaitingReply(conversation)
       );
     case "mine":

@@ -176,6 +176,7 @@ export function InboxSidebar({
         activeOnly: true,
         unassignedOnly: true,
         awaitingReplyOnly: true,
+        neverRepliedOnly: true,
       });
       if (!cancelled) setServerRows(rows);
     })().catch(() => {

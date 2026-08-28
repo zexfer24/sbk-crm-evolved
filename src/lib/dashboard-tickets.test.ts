@@ -41,6 +41,7 @@ function conversacion(over: Partial<BoardConversation> = {}): BoardConversation 
     dealStatus: "none",
     dealVerified: false,
     lastCustomerMessageAt: new Date(AHORA - HORA).toISOString(),
+    hasReply: false,
     lastMessageAt: new Date(AHORA - HORA).toISOString(),
     createdAt: new Date(AHORA - 10 * HORA).toISOString(),
     journeyStage: null,

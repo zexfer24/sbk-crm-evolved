@@ -20,11 +20,13 @@ function conversation(over: {
   assignedAgent?: Agent | null;
   lastMessageAt?: string | null;
   lastCustomerMessageAt?: string | null;
+  hasReply?: boolean;
   status?: Conversation["status"];
   tags?: Tag[];
 }): Conversation {
   return {
     id: over.id,
+    hasReply: over.hasReply ?? false,
     unreadCount: over.unreadCount ?? 0,
     manuallyUnread: over.manuallyUnread ?? false,
     assignedAgent: over.assignedAgent ?? null,
@@ -172,6 +174,29 @@ describe("applyInboxFilters — 'unanswered'", () => {
     });
 
     expect(ids([contestada])).toEqual([]);
+  });
+
+  /**
+   * El caso que llenaba el fondo de la lista.
+   *
+   * Los asesores de SBK contestan sin asignarse la conversación —nada en el
+   * CRM se lo pide—, así que "sin asesor" nunca significó "sin atender". El
+   * cliente responde "Ok" a lo que le dijeron, el último mensaje del hilo
+   * vuelve a ser suyo, y un chat ya resuelto reaparecía como trabajo libre.
+   * Y como son chats viejos quedaban al FINAL de la lista: había que bajar
+   * hasta el fondo para encontrarse con ellos. Es el mismo agujero que
+   * src/lib/ai/human-handled.ts documentó para la IA el 26 de agosto de 2026;
+   * la píldora nunca recibió la guarda.
+   */
+  it("descarta el hilo que ya recibió respuesta, aunque el cliente haya vuelto a escribir", () => {
+    const atendida = conversation({
+      id: "atendida",
+      hasReply: true,
+      lastCustomerMessageAt: CLIENTE_HABLÓ,
+      lastMessageAt: CLIENTE_HABLÓ,
+    });
+
+    expect(ids([atendida])).toEqual([]);
   });
 
   it("descarta la cerrada: un hilo cerrado no es trabajo pendiente", () => {

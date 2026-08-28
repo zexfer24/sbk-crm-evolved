@@ -121,6 +121,17 @@ export interface BoardConversation {
   dealVerified: boolean;
   lastCustomerMessageAt: string | null;
   lastMessageAt: string | null;
+  /**
+   * Alguna vez salió de acá una respuesta que el cliente pueda leer, de un
+   * asesor o de la IA. No cuentan los eventos de sistema ni las notas
+   * internas.
+   *
+   * Es lo que separa "nadie contestó nunca" de "el último mensaje es del
+   * cliente", que es lo único que sabe `awaitingReply()`. El filtro "Sin
+   * contestar" necesita lo primero: un chat que un asesor ya respondió a mano
+   * vuelve a tener el último mensaje del cliente en cuanto este dice "Ok".
+   */
+  hasReply: boolean;
   createdAt: string;
   /** Etapa reportada por el agente de IA. Null = se deduce del resto del estado. */
   journeyStage: JourneyStageId | null;

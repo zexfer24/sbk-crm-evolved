@@ -107,6 +107,7 @@ interface RawBoardConversation {
   deal_verified: boolean;
   last_customer_message_at: string | null;
   last_message_at: string | null;
+  has_reply: boolean;
   created_at: string;
   journey_stage: Conversation["journeyStage"];
   intent: string | null;
@@ -158,6 +159,7 @@ interface RawConversation {
   last_message_preview: string | null;
   last_message_direction: Conversation["lastMessageDirection"];
   last_message_status: Conversation["lastMessageStatus"];
+  has_reply: boolean;
   created_at: string;
   journey_stage: Conversation["journeyStage"];
   intent: string | null;
@@ -298,6 +300,7 @@ function mapBoardConversation(row: RawBoardConversation): BoardConversation {
     dealVerified: row.deal_verified,
     lastCustomerMessageAt: row.last_customer_message_at,
     lastMessageAt: row.last_message_at,
+    hasReply: row.has_reply,
     createdAt: row.created_at,
     journeyStage: row.journey_stage,
     intent: row.intent,
@@ -369,6 +372,7 @@ function mapConversation(row: RawConversation): Conversation {
     lastMessagePreview: row.last_message_preview,
     lastMessageDirection: row.last_message_direction,
     lastMessageStatus: row.last_message_status,
+    hasReply: row.has_reply,
     createdAt: row.created_at,
     journeyStage: row.journey_stage,
     intent: row.intent,
@@ -446,7 +450,7 @@ function mapTemplate(row: RawTemplate): WhatsappTemplate {
  */
 const CONVERSATION_BOARD_COLUMNS = `
   id, status, unread_count, manually_unread, ai_enabled, deal_status, deal_verified,
-  last_customer_message_at, last_message_at, created_at,
+  last_customer_message_at, last_message_at, has_reply, created_at,
   journey_stage, intent, active_tool, welcome_sent_at
 `;
 
@@ -481,7 +485,7 @@ const CONVERSATION_DETAIL_SELECT = `
   id, status, unread_count, manually_unread, ai_enabled, deal_status, deal_closed_at,
   deal_payment_proof_url, deal_verified, deal_verified_at, deal_payment_method,
   last_customer_message_at, last_message_at, last_message_preview,
-  last_message_direction, last_message_status, created_at,
+  last_message_direction, last_message_status, has_reply, created_at,
   journey_stage, intent, active_tool, welcome_sent_at,
   order:orders(total_amount, currency),
   contact:contacts(id, phone_number, display_name, profile_name, avatar_url,
@@ -537,6 +541,15 @@ export interface FetchConversationsOptions {
    * columnas de la misma fila y PostgREST solo filtra contra literales.
    */
   awaitingReplyOnly?: boolean;
+  /**
+   * Solo aquellas donde nunca salió una respuesta.
+   *
+   * Acompaña a `awaitingReplyOnly` en el filtro "Sin contestar" y no es lo
+   * mismo: "el último mensaje es del cliente" también describe un chat que un
+   * asesor ya respondió a mano y al que el cliente le contestó "Ok". Ver
+   * `has_reply` en la migración 20260827020000.
+   */
+  neverRepliedOnly?: boolean;
   /** Solo las conversaciones de estos contactos (los reclamos, una búsqueda). */
   contactIds?: string[];
   /** Solo estas conversaciones (las coincidencias de la búsqueda por mensaje). */
@@ -556,6 +569,7 @@ async function fetchConversationRows<Raw>(
     activeOnly,
     unassignedOnly,
     awaitingReplyOnly,
+    neverRepliedOnly,
     contactIds,
     ids,
   }: FetchConversationsOptions
@@ -580,6 +594,7 @@ async function fetchConversationRows<Raw>(
     if (activeOnly) request = request.neq("status", "closed");
     if (unassignedOnly) request = request.is("assigned_agent_id", null);
     if (awaitingReplyOnly) request = request.eq("awaiting_reply", true);
+    if (neverRepliedOnly) request = request.eq("has_reply", false);
     if (contactIds) request = request.in("contact_id", contactIds);
     if (ids) request = request.in("id", ids);
 

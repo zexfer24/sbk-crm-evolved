@@ -62,6 +62,7 @@ function buildConversation(overrides: Partial<ConversationSummary> = {}): Conver
     dealStatus: "none",
     dealVerified: false,
     lastCustomerMessageAt: "2026-08-24T15:00:00.000Z",
+    hasReply: false,
     lastMessageAt: "2026-08-24T15:00:00.000Z",
     lastMessagePreview: null,
     lastMessageDirection: null,

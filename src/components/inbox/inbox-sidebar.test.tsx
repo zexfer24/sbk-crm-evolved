@@ -39,6 +39,7 @@ function conversation(over: {
   manuallyUnread?: boolean;
   assignedAgent?: Agent | null;
   lastCustomerMessageAt?: string | null;
+  hasReply?: boolean;
   status?: Conversation["status"];
   tags?: Tag[];
 }): Conversation {
@@ -46,6 +47,7 @@ function conversation(over: {
     id: over.id,
     status: over.status ?? "open",
     lastCustomerMessageAt: over.lastCustomerMessageAt ?? null,
+    hasReply: over.hasReply ?? false,
     contact: {
       id: `c-${over.id}`,
       phoneNumber: "+58 412 000 0000",
@@ -163,7 +165,28 @@ describe("InboxSidebar — 'Sin contestar' sale a buscar a la base", () => {
       activeOnly: true,
       unassignedOnly: true,
       awaitingReplyOnly: true,
+      neverRepliedOnly: true,
     });
+  });
+
+  /**
+   * La foto que trae la base pasa igual por el filtro en memoria. No es
+   * paranoia: entre que la consulta sale y la respuesta llega, un asesor puede
+   * haber contestado —y la fila viva de la bandeja lo sabe antes que esta—.
+   */
+  it("descarta el hilo ya contestado aunque la consulta lo devuelva", async () => {
+    const contestado = conversation({
+      id: "ya-atendido",
+      hasReply: true,
+      lastCustomerMessageAt: ESPERANDO,
+    });
+    vi.mocked(fetchConversations).mockResolvedValue([contestado]);
+
+    const { container } = renderSidebar(JEFA);
+    elegirSinContestar();
+
+    await waitFor(() => expect(fetchConversations).toHaveBeenCalled());
+    expect(visibleIds(container)).toEqual([]);
   });
 
   it("no consulta mientras el filtro no está elegido", () => {

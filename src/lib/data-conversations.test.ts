@@ -22,6 +22,9 @@ function makeRow(index: number) {
     assigned_agent_id: null as string | null,
     // Columna generada: la calcula Postgres a partir de los dos timestamps.
     awaiting_reply: false,
+    // Real, no generada: vive en `messages`. La mantiene el trigger de
+    // inserción y dice si de acá salió alguna respuesta alguna vez.
+    has_reply: false,
     unread_count: 0,
     ai_enabled: true,
     deal_status: null,
@@ -239,22 +242,29 @@ describe("fetchConversations", () => {
    * El filtro "Sin contestar" no puede resolverse sobre la ventana cargada: el
    * chat libre que nadie contestó hace tres semanas está cientos de filas más
    * abajo, y filtrar 30 filas en el navegador lo escondería justo a él. Los
-   * tres cortes viajan a la base, que los resuelve con un índice parcial.
+   * cuatro cortes viajan a la base, que los resuelve con un índice parcial.
+   *
+   * `has_reply` es el cuarto y no sobra: sin él entraba el chat que un asesor
+   * ya respondió a mano y al que el cliente le contestó "Ok" — el último
+   * mensaje vuelve a ser suyo, pero contestado está.
    */
-  it("con los cortes de 'sin contestar' pregunta por los tres a la base", async () => {
+  it("con los cortes de 'sin contestar' pregunta por los cuatro a la base", async () => {
     const rows = Array.from({ length: 6 }, (_, i) => makeRow(i));
     rows[0] = { ...rows[0], awaiting_reply: true };
     rows[1] = { ...rows[1], awaiting_reply: true, assigned_agent_id: "ana" };
     rows[2] = { ...rows[2], awaiting_reply: true, status: "closed" as never };
+    rows[3] = { ...rows[3], awaiting_reply: true, has_reply: true };
     const { client, filters } = createFakeSupabase(rows);
 
     const result = await fetchConversations(client, {
       activeOnly: true,
       unassignedOnly: true,
       awaitingReplyOnly: true,
+      neverRepliedOnly: true,
     });
 
     expect(filters).toContainEqual({ op: "eq", column: "awaiting_reply", value: true });
+    expect(filters).toContainEqual({ op: "eq", column: "has_reply", value: false });
     expect(filters).toContainEqual({ op: "is", column: "assigned_agent_id", value: null });
     expect(filters).toContainEqual({ op: "neq", column: "status", value: "closed" });
     expect(result.map((c) => c.id)).toEqual(["conv-0"]);
