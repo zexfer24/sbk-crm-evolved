@@ -1,15 +1,21 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 // La salud del CRM se mide contra sus dependencias reales; acá se sustituyen
 // para poder simular que alguna está caída.
 const pingMock = vi.fn(async () => "PONG");
 vi.mock("@/lib/redis", () => ({ getRedis: () => ({ ping: pingMock }) }));
 
+// Mismo patrón que pingMock: mock mutable para poder simular que la base
+// también se cae, no solo la cola.
+const adminSingleMock = vi.fn(async (): Promise<{
+  data: { id: boolean } | null;
+  error: { message: string } | null;
+}> => ({ data: { id: true }, error: null }));
 vi.mock("@/lib/supabase/admin", () => ({
   createAdminClient: () => ({
     from: () => ({
       select: () => ({
-        eq: () => ({ single: async () => ({ data: { id: true }, error: null }) }),
+        eq: () => ({ single: adminSingleMock }),
       }),
     }),
   }),
@@ -27,9 +33,15 @@ const ENV_REQUERIDO = {
 beforeEach(() => {
   pingMock.mockReset();
   pingMock.mockResolvedValue("PONG");
+  adminSingleMock.mockReset();
+  adminSingleMock.mockResolvedValue({ data: { id: true }, error: null });
   for (const [clave, valor] of Object.entries(ENV_REQUERIDO)) {
     vi.stubEnv(clave, valor);
   }
+});
+
+afterEach(() => {
+  vi.unstubAllEnvs();
 });
 
 describe("GET /api/health", () => {
@@ -37,6 +49,7 @@ describe("GET /api/health", () => {
     const response = await GET();
     const body = await response.json();
 
+    expect(response.status).toBe(200);
     expect(body.status).toBe("ok");
     expect(body.checks.queue).toBe("ok");
   });
@@ -52,6 +65,7 @@ describe("GET /api/health", () => {
     const response = await GET();
     const body = await response.json();
 
+    expect(response.status).toBe(503);
     expect(body.status).toBe("degraded");
     expect(body.checks.queue).not.toBe("ok");
   });
@@ -64,5 +78,32 @@ describe("GET /api/health", () => {
 
     expect(body.status).toBe("degraded");
     expect(JSON.stringify(body)).toContain("REDIS_URL");
+  });
+
+  /**
+   * El monitor externo y el HEALTHCHECK del contenedor deciden por el código
+   * HTTP, no por el cuerpo. Si la base no responde, el endpoint tiene que
+   * devolver 503 aunque el resto de las dependencias esté sana.
+   */
+  it("se declara degradado con 503 si la base no responde", async () => {
+    adminSingleMock.mockResolvedValue({ data: null, error: { message: "consulta rechazada" } });
+
+    const response = await GET();
+    const body = await response.json();
+
+    expect(response.status).toBe(503);
+    expect(body.status).toBe("degraded");
+    expect(body.checks.database).not.toBe("ok");
+  });
+
+  it("se declara degradado en producción si falta el secreto de WhatsApp", async () => {
+    vi.stubEnv("NODE_ENV", "production");
+
+    const response = await GET();
+    const body = await response.json();
+
+    expect(response.status).toBe(503);
+    expect(body.status).toBe("degraded");
+    expect(JSON.stringify(body)).toContain("WHATSAPP_APP_SECRET");
   });
 });
