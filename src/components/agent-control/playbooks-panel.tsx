@@ -1,12 +1,13 @@
 "use client";
 
 import { useRef, useState, type ChangeEvent } from "react";
-import { Link2, MessageSquarePlus, Paperclip, Pencil, Plus, Trash2, Upload, Zap } from "lucide-react";
+import { AlertTriangle, Link2, MessageSquarePlus, Paperclip, Pencil, Plus, Trash2, Upload, Zap } from "lucide-react";
 import { Button, Input, Label, Modal, TextArea, toast } from "@heroui/react";
 import type { AgentTurn, Playbook, PlaybookAfterSend, PlaybookAttachmentType, QuickReply, Tag } from "@/lib/types";
 import { createClient } from "@/lib/supabase/client";
 import { createPlaybook, deletePlaybook, setPlaybookActive, updatePlaybook } from "@/lib/mutations";
 import { MEDIA_BUCKET, mediaUrlFor } from "@/lib/storage";
+import { hasHardcodedPrice } from "@/lib/playbook-price";
 
 interface PlaybooksPanelProps {
   playbooks: Playbook[];
@@ -245,6 +246,15 @@ export function PlaybooksPanel({ playbooks, unmatchedTurns, quickReplies, tags, 
                 <p className="ac-pb-card-response">{playbook.responseText}</p>
 
                 <div className="ac-pb-card-foot">
+                  {/* El texto sale tal cual: un precio escrito acá adentro no se
+                      actualiza con el inventario ni con la tasa. No se bloquea
+                      nada, solo se marca para que se revise. */}
+                  {hasHardcodedPrice(playbook.responseText) && (
+                    <span className="ac-badge" data-tone="wait" title="Este texto lleva un precio escrito a mano: no se actualiza solo. Revísalo.">
+                      <AlertTriangle size={11} />
+                      Precio a mano
+                    </span>
+                  )}
                   <span className="ac-badge" data-tone={playbook.afterSend === "escalate" ? "plum" : "muted"}>
                     {AFTER_SEND_LABEL[playbook.afterSend]}
                   </span>
