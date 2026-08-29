@@ -909,6 +909,98 @@ describe("CrmShell — bajar por la bandeja cuesta una página, no todo otra vez
 });
 
 /**
+ * `loadMoreConversations` guardaba su candado en `useState`: dos eventos de
+ * scroll que llegan en el mismo frame ven el mismo estado (React no repinta
+ * entre ellos), los dos pasan la guarda y disparan dos consultas con el
+ * mismo cursor. Migrado a `useInboxPager` el 29/8/2026 (ver el comentario
+ * grande del hook, invariante "un solo ref manda"): el candado ahora es un
+ * ref síncrono, así que una ráfaga entera solo pide una página.
+ */
+describe("CrmShell — una ráfaga de scroll en 'Todos' pide una sola página", () => {
+  function paginaLlena(desde: number) {
+    return Array.from({ length: 30 }, (_, i) => buildConversation({ id: `conv-${desde + i}` }));
+  }
+
+  it("dos 'cargar más' antes del repintado disparan UNA sola llamada, y el siguiente pide el cursor de la página 2", async () => {
+    const primeraPagina = paginaLlena(0);
+    render(
+      <CrmShell
+        currentAgent={currentAgent}
+        initialConversations={primeraPagina}
+        initialInboxCounts={inboxCounts}
+        allTags={allTags}
+        initialQuickReplies={initialQuickReplies}
+        bcvRate={null}
+        initialAgentSettings={agentSettings}
+      />
+    );
+    fetchConversationsMock.mockClear();
+
+    let resolverSegunda: (rows: ReturnType<typeof buildConversation>[]) => void = () => {};
+    fetchConversationsMock.mockReturnValueOnce(
+      new Promise((resolve) => {
+        resolverSegunda = resolve;
+      })
+    );
+
+    // Ráfaga de scroll: dos disparos antes de que la primera petición resuelva.
+    await act(async () => {
+      screen.getByRole("button", { name: "cargar más" }).click();
+      screen.getByRole("button", { name: "cargar más" }).click();
+    });
+
+    expect(fetchConversationsMock).toHaveBeenCalledTimes(1);
+
+    const segundaPagina = paginaLlena(30);
+    await act(async () => {
+      resolverSegunda(segundaPagina);
+    });
+
+    fetchConversationsMock.mockResolvedValueOnce([]);
+    await act(async () => {
+      screen.getByRole("button", { name: "cargar más" }).click();
+    });
+
+    const ultimaFilaPrimera = primeraPagina[primeraPagina.length - 1];
+    const ultimaFilaSegunda = segundaPagina[segundaPagina.length - 1];
+    expect(fetchConversationsMock).toHaveBeenCalledTimes(2);
+    expect(fetchConversationsMock.mock.calls[1][1]).toEqual({
+      cursor: { lastMessageAt: ultimaFilaSegunda.lastMessageAt, id: ultimaFilaSegunda.id },
+      limit: 30,
+    });
+    // Nunca vuelve al cursor de la página 1: sería releer lo mismo dos veces.
+    expect(fetchConversationsMock.mock.calls[1][1]).not.toEqual({
+      cursor: { lastMessageAt: ultimaFilaPrimera.lastMessageAt, id: ultimaFilaPrimera.id },
+      limit: 30,
+    });
+  });
+
+  it("hasMore sigue verdadero tras la ráfaga si la única página que llegó vino llena", async () => {
+    render(
+      <CrmShell
+        currentAgent={currentAgent}
+        initialConversations={paginaLlena(0)}
+        initialInboxCounts={inboxCounts}
+        allTags={allTags}
+        initialQuickReplies={initialQuickReplies}
+        bcvRate={null}
+        initialAgentSettings={agentSettings}
+      />
+    );
+    fetchConversationsMock.mockClear();
+    fetchConversationsMock.mockResolvedValueOnce(paginaLlena(30)); // llena: pageSize completo
+
+    await act(async () => {
+      screen.getByRole("button", { name: "cargar más" }).click();
+      screen.getByRole("button", { name: "cargar más" }).click();
+    });
+
+    expect(fetchConversationsMock).toHaveBeenCalledTimes(1);
+    expect(inboxProps?.hasMore).toBe(true);
+  });
+});
+
+/**
  * Aplicar los cambios en memoria quita la red que había: antes, cualquier
  * desincronización se corregía sola en el siguiente refetch. Si un campo se
  * queda sin mapear, ahora la bandeja mostraría el valor viejo para siempre.

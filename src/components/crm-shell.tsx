@@ -29,7 +29,7 @@ import {
   fetchAgentSettings,
   type InboxCounts,
 } from "@/lib/data";
-import { cursorAfterPage, mergeById, type ConversationCursor } from "@/lib/inbox-paging";
+import { cursorAfterPage, mergeById } from "@/lib/inbox-paging";
 import { markConversationRead, markConversationUnread, sendMessage } from "@/lib/mutations";
 import {
   discardItem,
@@ -41,6 +41,7 @@ import {
   sendableHeads,
   type OutboxItem,
 } from "@/lib/outbox";
+import { useInboxPager } from "@/lib/use-inbox-pager";
 import { useLiveConversations } from "@/lib/use-live-conversations";
 import { REALTIME_DEBOUNCE_MS } from "@/lib/use-live-refresh";
 import { InboxSidebar } from "@/components/inbox/inbox-sidebar";
@@ -92,9 +93,6 @@ export function CrmShell({
 }: CrmShellProps) {
   const supabase = useMemo(() => createClient(), []);
 
-  const [loadingMore, setLoadingMore] = useState(false);
-  /** La última página vino corta: no queda nada más atrás que ofrecer. */
-  const [reachedEnd, setReachedEnd] = useState(initialConversations.length < INBOX_PAGE_SIZE);
   const [inboxCounts, setInboxCounts] = useState<InboxCounts>(initialInboxCounts);
 
   /**
@@ -156,39 +154,23 @@ export function CrmShell({
   );
 
   /**
-   * El punto desde donde retomar la próxima página: la última fila de la
-   * última página recibida (`inbox-paging.ts`), no un contador de posición.
-   * Un `offset` se rompe apenas una fila cruza el borde de página mientras
-   * el asesor sigue bajando la lista —sube al tope y corre a todas las de
-   * abajo una posición— y la página siguiente, pedida por número de fila,
-   * salta justo la que cruzó (confirmado en producción el 29/8/2026: la
-   * píldora "Todos" reordenaba ~3 veces/minuto y esas filas no volvían
-   * nunca). El cursor pide "lo que sigue después de esta fila", así que un
-   * reordenamiento en el medio no le afecta. Vive en un ref y no en estado:
-   * no pinta nada, y guardarlo en estado dispararía un render de más en cada
-   * página.
+   * Paginación por cursor de "Todos", vía `useInboxPager` (ver el comentario
+   * grande del hook para el porqué de cada guarda). La primera página ya la
+   * resolvió el servidor —viene en `initialConversations`—, así que se siembra
+   * en vez de volver a pedirla: `sessionKey` fija evita que el shell reabra
+   * sesión propia, cosa que este pager sembrado no necesita.
    */
-  const cursorRef = useRef<ConversationCursor | null>(cursorAfterPage(initialConversations));
-
-  const loadMoreConversations = useCallback(async () => {
-    if (loadingMore || reachedEnd) return;
-    setLoadingMore(true);
-    try {
-      const page = await fetchConversations(supabase, {
-        cursor: cursorRef.current ?? undefined,
-        limit: INBOX_PAGE_SIZE,
-      });
-      if (page.length < INBOX_PAGE_SIZE) setReachedEnd(true);
-      if (page.length > 0) {
-        cursorRef.current = cursorAfterPage(page);
-        setConversations((current) => mergeById(current, page));
-      }
-    } catch {
-      // La bandeja sigue con lo que ya tiene; el próximo intento reintenta.
-    } finally {
-      setLoadingMore(false);
-    }
-  }, [supabase, loadingMore, reachedEnd, setConversations]);
+  const allPager = useInboxPager({
+    sessionKey: "all",
+    pageSize: INBOX_PAGE_SIZE,
+    seed: {
+      cursor: cursorAfterPage(initialConversations),
+      reachedEnd: initialConversations.length < INBOX_PAGE_SIZE,
+    },
+    fetchPage: (cursor) =>
+      fetchConversations(supabase, { cursor: cursor ?? undefined, limit: INBOX_PAGE_SIZE }),
+    onPage: (page) => setConversations((current) => mergeById(current, page)),
+  });
 
   // Sin conversación de inicio no se abre ninguna: abrir la primera de la
   // lista ponía al asesor a leer un chat que no eligió —y lo daba por leído—
@@ -640,9 +622,9 @@ export function CrmShell({
             bcvRate={bcvRate}
             onMarkUnread={markUnread}
             onMarkRead={markRead}
-            hasMore={!reachedEnd}
-            loadingMore={loadingMore}
-            onLoadMore={loadMoreConversations}
+            hasMore={allPager.hasMore}
+            loadingMore={allPager.loadingMore}
+            onLoadMore={allPager.loadMore}
             counts={inboxCounts}
             initialUnreadRows={initialUnreadConversations}
           />

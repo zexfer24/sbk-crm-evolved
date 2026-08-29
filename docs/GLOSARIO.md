@@ -131,7 +131,7 @@ nombre. Los tests sin módulo propio (`data-*.test.ts`, `queue-limit`,
 
 ## `src/components`
 
-**Shell:** `crm-shell.tsx` (cliente raíz de la bandeja: estado, realtime, outbox, navegación — 26K, el componente más cargado; `loadMoreConversations` pagina por cursor —`cursorRef`, `inbox-paging.ts`— y no por `offset`), `app-rail` (navegación entre secciones), `url-search-box` (buscador sincronizado con la URL), `sliding-pills` (píldoras de filtro), `context-menu`, `theme-toggle`, `section-skeleton`, `sbk-logo`, `crm.css` (49K, estilos del CRM).
+**Shell:** `crm-shell.tsx` (cliente raíz de la bandeja: estado, realtime, outbox, navegación — 26K, el componente más cargado; la paginación de "Todos" es `useInboxPager` sembrado con la primera página que resuelve el servidor — el shell ya no guarda `cursorRef` ni banderas propias, una ráfaga de scroll disparaba varias consultas con el mismo cursor), `app-rail` (navegación entre secciones), `url-search-box` (buscador sincronizado con la URL), `sliding-pills` (píldoras de filtro), `context-menu`, `theme-toggle`, `section-skeleton`, `sbk-logo`, `crm.css` (49K, estilos del CRM).
 
 **chat/:** `chat-panel` (historial + composer), `composer` (texto, adjuntos, quick replies, plantillas — 19K), `message-bubble`, `outbox-bubble` (en cola/fallido con reintento), `media-group` + `media-lightbox` (galerías), `formatted-text` (negritas estilo WhatsApp), `quoted-content` (cita), `message-context-menu`, `template-picker-modal` (reabrir fuera de 24h), `quick-replies-modal`, `window-countdown` (cuenta atrás de 24h), `delivery-check` (palomitas), `ai-status-banner`.
 
