@@ -125,7 +125,11 @@ function sendRequest(body: Record<string, unknown> = {}) {
   });
 }
 
-/** Deja terminar la cadena async del after() inline. */
+/**
+ * Deja terminar la cadena async del after() inline. Solo para aserciones
+ * NEGATIVAS (nada debió pasar): para hechos positivos se espera con
+ * vi.waitFor, no con un tick que bajo carga se queda corto (29/8/2026).
+ */
 async function flush() {
   await new Promise((resolve) => setTimeout(resolve, 0));
 }
@@ -161,31 +165,37 @@ describe("POST /api/messages/send — el asesor no espera a Meta", () => {
 
   it("cuando Meta confirma, la fila pasa a 'sent' con su wamid", async () => {
     await POST(sendRequest());
-    await flush();
 
+    await vi.waitFor(
+      () =>
+        expect(messageUpdates).toContainEqual({
+          id: "msg-1",
+          whatsapp_message_id: "wamid.OK",
+          whatsapp_status: "sent",
+        }),
+      { timeout: 5000 }
+    );
     expect(sendWhatsappTextMock).toHaveBeenCalledTimes(1);
-    expect(messageUpdates).toContainEqual({
-      id: "msg-1",
-      whatsapp_message_id: "wamid.OK",
-      whatsapp_status: "sent",
-    });
   });
 
   it("un rechazo de Meta (4xx) marca 'failed' sin reintentar: repetirlo daría lo mismo", async () => {
     sendWhatsappTextMock.mockRejectedValue(new MetaApiError("Fuera de la ventana de 24 horas.", 400, null));
 
     await POST(sendRequest());
-    await flush();
 
+    await vi.waitFor(
+      () =>
+        expect(messageUpdates).toContainEqual({
+          id: "msg-1",
+          whatsapp_status: "failed",
+          // Sin `details` de Meta no hay código, pero el motivo se guarda igual:
+          // es lo que el asesor lee debajo del triángulo rojo.
+          whatsapp_error_code: null,
+          whatsapp_error_detail: "Fuera de la ventana de 24 horas.",
+        }),
+      { timeout: 5000 }
+    );
     expect(sendWhatsappTextMock).toHaveBeenCalledTimes(1);
-    expect(messageUpdates).toContainEqual({
-      id: "msg-1",
-      whatsapp_status: "failed",
-      // Sin `details` de Meta no hay código, pero el motivo se guarda igual:
-      // es lo que el asesor lee debajo del triángulo rojo.
-      whatsapp_error_code: null,
-      whatsapp_error_detail: "Fuera de la ventana de 24 horas.",
-    });
   });
 
   /**
@@ -201,14 +211,17 @@ describe("POST /api/messages/send — el asesor no espera a Meta", () => {
     );
 
     await POST(sendRequest());
-    await flush();
 
-    expect(messageUpdates).toContainEqual({
-      id: "msg-1",
-      whatsapp_status: "failed",
-      whatsapp_error_code: 131026,
-      whatsapp_error_detail: "Message Undeliverable.",
-    });
+    await vi.waitFor(
+      () =>
+        expect(messageUpdates).toContainEqual({
+          id: "msg-1",
+          whatsapp_status: "failed",
+          whatsapp_error_code: 131026,
+          whatsapp_error_detail: "Message Undeliverable.",
+        }),
+      { timeout: 5000 }
+    );
   });
 
   it("un fallo de red reintenta una vez y, si sale, queda 'sent'", async () => {

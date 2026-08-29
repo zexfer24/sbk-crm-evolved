@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from "vitest";
+import { beforeAll, describe, expect, it, vi } from "vitest";
 
 // `after()` de Next.js exige contexto de request real; en el test lo
 // ejecutamos inline para poder esperar sus efectos.
@@ -31,6 +31,15 @@ vi.mock("@/lib/ai/queue", async (importOriginal) => {
 
 vi.mock("@/lib/ai/agent", () => ({
   runAgentTurn: vi.fn(async () => {}),
+}));
+
+// Espejo de route.test.ts (ver CLAUDE.md, Trampas): el importOriginal de la
+// fábrica de @/lib/ai/queue cargaba ioredis real por esta vía. El webhook no
+// debe tocar Redis: si lo intenta, que lo delate.
+vi.mock("@/lib/redis", () => ({
+  getRedis: vi.fn(() => {
+    throw new Error("El test del webhook no debe tocar Redis");
+  }),
 }));
 
 /**
@@ -177,10 +186,17 @@ function fakeRequest(body: unknown): Request {
   return { text: async () => raw, json: async () => body, headers: { get: () => null } } as unknown as Request;
 }
 
+let POST: typeof import("@/app/api/webhooks/whatsapp/route").POST;
+
+// La carga en frío del grafo del webhook caía dentro del presupuesto del
+// único test y bajo carga lo tumbaba (timeout 15 s reproducido 2/2 el
+// 29/8/2026); en beforeAll con presupuesto propio.
+beforeAll(async () => {
+  ({ POST } = await import("@/app/api/webhooks/whatsapp/route"));
+}, 30_000);
+
 describe("POST /api/webhooks/whatsapp — race al crear la conversación de un contacto nuevo", () => {
   it("no descarta el mensaje: relee la conversación creada por la invocación concurrente que ganó la carrera", async () => {
-    const { POST } = await import("@/app/api/webhooks/whatsapp/route");
-
     const response = await POST(fakeRequest(webhookBody("wamid.race-test-1")));
 
     expect(response.status).toBe(200);

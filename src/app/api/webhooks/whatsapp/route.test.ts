@@ -310,12 +310,15 @@ let processAfterDebounce: typeof import("@/lib/ai/queue").processAfterDebounce;
 let DEBOUNCE_SECONDS: typeof import("@/lib/ai/queue").DEBOUNCE_SECONDS;
 let DEBOUNCE_SHORT_SECONDS: typeof import("@/lib/ai/queue").DEBOUNCE_SHORT_SECONDS;
 
+// 29/8/2026: bajo inanición extrema de CPU la carga en frío del grafo
+// (cuatro fábricas con importOriginal) superó los 15 s del hookTimeout; el
+// hook recibe presupuesto propio.
 beforeAll(async () => {
   ({ POST } = await import("@/app/api/webhooks/whatsapp/route"));
   ({ enqueueAgentTurns, processAfterDebounce, DEBOUNCE_SECONDS, DEBOUNCE_SHORT_SECONDS } = await import(
     "@/lib/ai/queue"
   ));
-});
+}, 30_000);
 
 /** Limpieza uniforme del estado compartido a nivel de módulo, antes de cada prueba. */
 beforeEach(() => {
@@ -594,17 +597,20 @@ describe("POST /api/webhooks/whatsapp — media asíncrona", () => {
       const insertedRow = insertedMessages.get(waMessageId);
       expect(insertedRow).toBeDefined();
 
-      // La descarga corre en el after() mockeado (inline, no bloqueante) —
-      // para cuando POST resuelve, el after() síncrono ya debería haber
-      // encolado la tarea; esperamos un microtask para que termine.
-      await new Promise((resolve) => setTimeout(resolve, 0));
-
       // Se guarda la ruta propia del CRM y no una URL del bucket: el bucket
       // es privado y una URL firmada guardada en la base vencería.
-      expect(mediaUpdates).toContainEqual({
-        id: insertedRow!.id,
-        mediaUrl: `/api/media/conv-1/${waMessageId}.jpg`,
-      });
+      //
+      // La descarga corre en el after() mockeado (inline). Se espera el hecho —
+      // la actualización del media_url — y no un tick del event loop: el tick
+      // único se quedaba corto bajo carga (fallas intermitentes 28-29/8/2026).
+      await vi.waitFor(
+        () =>
+          expect(mediaUpdates).toContainEqual({
+            id: insertedRow!.id,
+            mediaUrl: `/api/media/conv-1/${waMessageId}.jpg`,
+          }),
+        { timeout: 5000 }
+      );
     } finally {
       process.env.WHATSAPP_ACCESS_TOKEN = previousToken;
     }

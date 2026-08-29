@@ -1,6 +1,6 @@
 // @vitest-environment node
 import { EventEmitter } from "node:events";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { SECTIGO_PUBLIC_SERVER_AUTHENTICATION_CA_DV_R36 as INTERMEDIO_BCV } from "@/lib/ai/bcv-intermediate-ca";
 
 // ---------------------------------------------------------------------------
@@ -134,6 +134,14 @@ function mockearTls(opciones: OpcionesTls) {
 async function importarBcvFetch() {
   return await import("@/lib/ai/bcv-fetch");
 }
+
+// 29/8/2026: el primer test pagaba la transformación y carga en frío del
+// grafo dentro de su propio presupuesto y bajo carga se quedaba sin tiempo.
+// Este import solo calienta la caché de transformación (vi.resetModules la
+// deja intacta); cada test sigue reevaluando el módulo con su propio doMock.
+beforeAll(async () => {
+  await import("@/lib/ai/bcv-fetch");
+}, 30_000);
 
 beforeEach(() => {
   vi.resetModules();

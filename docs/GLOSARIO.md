@@ -45,7 +45,7 @@ nombre. Los tests sin módulo propio (`data-*.test.ts`, `queue-limit`,
 
 | Ruta | Qué es |
 |---|---|
-| `webhooks/whatsapp/route.ts` | Entrada de Meta: handshake, verificación de firma HMAC, mensajes entrantes (texto/multimedia/reply), estados de envío; escribe con service role y encola turnos. `new-contact-race.test.ts` cubre la carrera de contacto nuevo |
+| `webhooks/whatsapp/route.ts` | Entrada de Meta: handshake, verificación de firma HMAC, mensajes entrantes (texto/multimedia/reply), estados de envío; escribe con service role y encola turnos. `new-contact-race.test.ts` cubre la carrera de contacto nuevo — comparte con `route.test.ts` el espejo de mocks (incluido `@/lib/redis`) y la importación del route en `beforeAll` |
 | `messages/send/route.ts` | Envío del composer: canal `connected` → Cloud API real (con reintentos solo ante 5xx/red); si no, simulado. El token nunca toca el navegador |
 | `cron/process-queue/route.ts` | Red de seguridad de la cola de turnos (cada 5 min); exige `CRON_SECRET`, falla cerrado con 503. Resguardo en `route.test.ts`: los caminos cerrados afirman que la cola NO se llamó |
 | `agent/backlog/route.ts` | Repaso del atraso al encender la IA: encola lo que quedó esperando mientras estuvo apagada. Resguardo en `route.test.ts` (incluye el DEFECTO CONOCIDO D1: el lock queda tomado 30 min en los caminos que no encolan) |
