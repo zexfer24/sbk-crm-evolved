@@ -125,9 +125,10 @@ copia intermedia.
   real** (mockear `@/lib/ai/queue` cargaba los dos SDK de IA e ioredis para
   leer dos constantes). En tests de rutas: mockear también `@/lib/ai/agent` y
   `@/lib/redis`, e importar el route una sola vez en `beforeAll`.
-  `route.test.ts` y `new-contact-race.test.ts` ya mantienen sus fábricas en
-  espejo completo (incluido el mock de `@/lib/redis` en las dos); si se
-  añade a `queue.ts` un export que el webhook use, actualizar ambas.
+  `route.test.ts`, `new-contact-race.test.ts` y `welcome-race.test.ts` ya
+  mantienen sus fábricas en espejo completo (incluido el mock de
+  `@/lib/redis` en las tres); si se añade a `queue.ts` un export que el
+  webhook use, actualizar las tres.
 - El stack Supabase self-hosted es `supabase-squad` (se clona de
   `zexfer24/supabase-squad`, no vive en este repo). Studio/meta corren en su
   perfil `admin`: un 503 en el panel significa levantar esos contenedores, no

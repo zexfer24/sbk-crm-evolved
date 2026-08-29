@@ -1,4 +1,7 @@
-const WINDOW_MS = 24 * 60 * 60 * 1000;
+// Exportada para que otros módulos (claimWelcome en el webhook, que reclama
+// el envío de la bienvenida contra este mismo corte de 24h) no dupliquen el
+// número.
+export const WINDOW_MS = 24 * 60 * 60 * 1000;
 
 /**
  * Meta exige que el texto libre solo se envíe dentro de las 24h posteriores

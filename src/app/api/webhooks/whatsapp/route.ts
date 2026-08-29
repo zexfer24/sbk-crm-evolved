@@ -2,17 +2,19 @@ import { createHmac, timingSafeEqual } from "node:crypto";
 import { NextResponse, after } from "next/server";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { createAdminClient } from "@/lib/supabase/admin";
-import { isWithin24hWindow } from "@/lib/whatsapp-window";
+import { WINDOW_MS, isWithin24hWindow } from "@/lib/whatsapp-window";
 import {
   MetaApiError,
   downloadMetaMedia,
   getMetaMediaUrl,
+  metaErrorCode,
   sendWhatsappTemplate,
 } from "@/lib/whatsapp/meta-client";
 import { debounceSecondsFor, enqueueAgentTurns, processAfterDebounce } from "@/lib/ai/queue";
 import { MEDIA_BUCKET, mediaUrlFor } from "@/lib/storage";
 import { phoneNumberFromWaId } from "@/lib/whatsapp/phone";
-import { log } from "@/lib/log";
+import { pgrstLiteral } from "@/lib/ai/pgrst";
+import { log, errorText } from "@/lib/log";
 
 // ---------------------------------------------------------------------------
 // GET: handshake de verificación que exige Meta al registrar el webhook.
@@ -173,11 +175,51 @@ const EXTENSION_BY_MIME: Record<string, string> = {
 //
 // La plantilla se configura con WHATSAPP_WELCOME_TEMPLATE. Sin esa variable
 // no se envía nada: el CRM nunca inventa el texto que le llega a un cliente.
+//
+// La decisión de "¿ya se saludó?" es de la base, no de esta invocación
+// (29/8/2026): antes vivía en un Set en memoria del POST, y dos webhooks casi
+// simultáneos de Meta para un contacto nuevo son dos invocaciones con dos
+// Sets — ambas veían la ventana cerrada y mandaban la plantilla dos veces.
+// Ver claimWelcome.
 // ---------------------------------------------------------------------------
 interface WelcomeChannel {
   id: string;
   phone_number_id: string | null;
   status: string;
+}
+
+/**
+ * Reclama el envío de la bienvenida sellando `welcome_sent_at` ANTES de
+ * enviar nada. El UPDATE condicional es la carrera entera: dos invocaciones
+ * concurrentes mandan la misma consulta, y Postgres —bajo READ COMMITTED—
+ * reevalúa el WHERE contra la fila ya actualizada por la primera que
+ * confirma; la segunda ve 0 filas afectadas y pierde limpio, sin tocar nada.
+ *
+ * El corte de 24h en el `.or()` (welcome_sent_at nulo O sellado hace más de
+ * 24h) no bloquea el re-saludo legítimo: cuando `windowWasClosed` es true por
+ * haber pasado 24h sin mensajes del cliente, el sello anterior —si lo hay—
+ * también tiene más de 24h, así que sigue calificando.
+ *
+ * Falla cerrado: un error de red o de la base al reclamar no manda la
+ * plantilla. Un reclamo que no se puede verificar no es un reclamo.
+ */
+async function claimWelcome(supabase: SupabaseClient, conversationId: string): Promise<boolean> {
+  const now = new Date();
+  const staleBefore = new Date(now.getTime() - WINDOW_MS).toISOString();
+
+  const { data, error } = await supabase
+    .from("conversations")
+    .update({ welcome_sent_at: now.toISOString() })
+    .eq("id", conversationId)
+    .or(`welcome_sent_at.is.null,welcome_sent_at.lt.${pgrstLiteral(staleBefore)}`)
+    .select("id");
+
+  if (error) {
+    log.error("bienvenida_reclamo_fallido", { conversationId, detalle: errorText(error) });
+    return false;
+  }
+
+  return (data?.length ?? 0) > 0;
 }
 
 async function sendWelcome(
@@ -190,10 +232,18 @@ async function sendWelcome(
   const templateName = process.env.WHATSAPP_WELCOME_TEMPLATE;
   if (!templateName) return;
 
+  // Las comprobaciones de configuración van ANTES del reclamo: una plantilla
+  // sin configurar o un canal desconectado no debe sellar la fecha — si se
+  // arregla la configuración después, ese cliente tiene que poder recibir la
+  // bienvenida igual.
   if (channel.status !== "connected" || !channel.phone_number_id || !accessToken) {
-    console.warn(
-      `Bienvenida no enviada en la conversación ${conversationId}: el canal no está conectado o falta WHATSAPP_ACCESS_TOKEN.`
-    );
+    log.warn("bienvenida_canal_no_disponible", { conversationId });
+    return;
+  }
+
+  const claimed = await claimWelcome(supabase, conversationId);
+  if (!claimed) {
+    log.info("bienvenida_ya_reclamada", { conversationId });
     return;
   }
 
@@ -218,13 +268,21 @@ async function sendWelcome(
       whatsapp_status: "sent",
     });
 
-    await supabase
-      .from("conversations")
-      .update({ welcome_sent_at: new Date().toISOString() })
-      .eq("id", conversationId);
+    // Sin update final: el sello ya quedó puesto al reclamar, arriba.
   } catch (err) {
-    const detail = err instanceof MetaApiError ? err.message : String(err);
-    console.error(`Bienvenida no enviada en la conversación ${conversationId}: ${detail}`);
+    if (err instanceof MetaApiError) {
+      // Meta contestó rechazando la plantilla: no salió nada. Se devuelve el
+      // sello a null para que el próximo mensaje del cliente pueda
+      // reintentar la bienvenida.
+      await supabase.from("conversations").update({ welcome_sent_at: null }).eq("id", conversationId);
+      log.error("bienvenida_rechazada_por_meta", { conversationId, codigo: metaErrorCode(err) ?? err.status });
+    } else {
+      // Fallo de red, timeout, o el insert de la fila de mensaje: no hay
+      // forma de saber si la plantilla salió. Misma doctrina que
+      // turn-delivery.ts — ante la duda se da por salido, así que el sello
+      // se queda puesto.
+      log.error("bienvenida_fallo_ambiguo", { conversationId, detalle: errorText(err) });
+    }
   }
 }
 
@@ -287,7 +345,6 @@ export async function POST(request: Request) {
     return NextResponse.json({ ok: true, throttled: true });
   }
   const accessToken = process.env.WHATSAPP_ACCESS_TOKEN;
-  const greeted = new Set<string>();
   /**
    * Conversaciones que recibieron un mensaje en este lote, con la ventana de
    * silencio que le toca a cada una.
@@ -593,12 +650,12 @@ export async function POST(request: Request) {
 
         touchedByCustomer.set(conversationId, debounceSecondsFor(customerText));
 
-        // Una sola bienvenida por conversación aunque el cliente mande varios
-        // mensajes seguidos y lleguen en el mismo lote del webhook.
-        if (windowWasClosed && !greeted.has(conversationId)) {
-          greeted.add(conversationId);
-          await sendWelcome(supabase, channel, conversationId, phoneNumber, accessToken);
-        }
+        // La decisión de si ya se saludó es de la base (claimWelcome sobre
+        // welcome_sent_at), no de la memoria de esta invocación: así una
+        // sola bienvenida sobrevive tanto a varios mensajes del cliente en
+        // el mismo lote como a dos invocaciones concurrentes del webhook
+        // (29/8/2026).
+        if (windowWasClosed) await sendWelcome(supabase, channel, conversationId, phoneNumber, accessToken);
       }
     }
   }
