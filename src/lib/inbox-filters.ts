@@ -52,6 +52,31 @@ export const INBOX_SORT_LABELS: Record<InboxSort, string> = {
 export const SERVER_FILTER_LIMIT = 200;
 
 /**
+ * Si la consulta de una píldora resuelta en servidor se quedó corta: recortó
+ * en silencio (ver el comentario de `SERVER_FILTER_LIMIT` y el aviso en
+ * `inbox-sidebar.tsx`).
+ *
+ * `rowCount === limit` y no `>=`: la consulta lleva el mismo tope, así que
+ * nunca puede traer más filas que él. Si trajo MENOS que el tope pero el
+ * contador exacto dice que hay más, no es un recorte —es una carrera entre
+ * el contador (`fetchInboxCounts`) y la consulta de filas (`fetchConversations`),
+ * dos viajes a la base que no se piden atómicos—: no se acusa recorte sin
+ * evidencia de recorte.
+ *
+ * Producción (29/8/2026) reportó un pico de 54 filas contra el tope de 200:
+ * hay margen hoy, pero el recorte era mudo — si algún día una píldora sí
+ * llega al tope, nadie se entera de que quedó gente afuera. Esto no sube el
+ * tope a ciegas; lo convierte en un aviso visible cuando de verdad ocurre.
+ */
+export function serverFilterTruncated(
+  rowCount: number,
+  total: number | undefined,
+  limit = SERVER_FILTER_LIMIT
+): boolean {
+  return rowCount === limit && total !== undefined && total > limit;
+}
+
+/**
  * LA definición de "sin leer": la misma que pinta el badge de cada fila en
  * la lista y la que arma la sub-sección "Sin leer" dentro de "Mías"
  * (`inbox-sections.ts`). Corte GLOBAL de equipo —no importa quién mira—:

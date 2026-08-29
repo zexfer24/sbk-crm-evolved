@@ -400,6 +400,63 @@ describe("InboxSidebar — conteo de la píldora 'No leídas'", () => {
   });
 });
 
+/**
+ * `SERVER_FILTER_LIMIT` recorta en silencio la consulta de "No leídas"/
+ * "Mías" (`inbox-filters.ts`): la píldora no ofrece "cargar más" para esas
+ * dos, así que sin este cartel nadie se entera de que quedó gente afuera.
+ * Se prueba contra "No leídas" — el mismo mecanismo cubre "Mías" por
+ * `serverFilterTruncated`, ya probado en `inbox-filters.test.ts`.
+ */
+describe("InboxSidebar — aviso de recorte del tope de servidor", () => {
+  /** `SERVER_FILTER_LIMIT` filas, justo lo máximo que la consulta puede traer. */
+  function filaDeTope(): Conversation[] {
+    return Array.from({ length: SERVER_FILTER_LIMIT }, (_, i) =>
+      conversation({ id: `tope-${i}`, unreadCount: 1 })
+    );
+  }
+
+  it("aparece cuando la consulta trajo el tope entero y el contador exacto dice que hay más", async () => {
+    mockServerRows({ unread: filaDeTope() });
+
+    const { container } = render(
+      <InboxSidebar
+        conversations={[]}
+        selectedId={null}
+        onSelect={() => {}}
+        currentAgent={JEFA}
+        allTags={ALL_TAGS}
+        bcvRate={null}
+        counts={{ pending: 0, pendingStale: 0, mine: 0, unread: 847 }}
+      />
+    );
+
+    expect(
+      await screen.findByText(`Mostrando las ${SERVER_FILTER_LIMIT} más recientes de 847`)
+    ).toBeTruthy();
+    expect(container.querySelector(".crm-list-truncated")).toBeTruthy();
+  });
+
+  it("no aparece cuando la consulta trajo menos filas que el tope, aunque el contador diga más", async () => {
+    const pocas = [conversation({ id: "una-de-54", unreadCount: 1 })];
+    mockServerRows({ unread: pocas });
+
+    const { container } = render(
+      <InboxSidebar
+        conversations={[]}
+        selectedId={null}
+        onSelect={() => {}}
+        currentAgent={JEFA}
+        allTags={ALL_TAGS}
+        bcvRate={null}
+        counts={{ pending: 0, pendingStale: 0, mine: 0, unread: 54 }}
+      />
+    );
+
+    await waitFor(() => expect(fetchConversations).toHaveBeenCalled());
+    expect(container.querySelector(".crm-list-truncated")).toBeNull();
+  });
+});
+
 describe("InboxSidebar — vacío de 'No leídas'", () => {
   it("dice que todo quedó leído, con la clase celebratoria", async () => {
     const { container } = render(

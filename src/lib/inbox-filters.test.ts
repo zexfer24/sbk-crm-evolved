@@ -6,6 +6,7 @@ import {
   filtersForRole,
   INBOX_FILTER_LABELS,
   isUnread,
+  serverFilterTruncated,
 } from "@/lib/inbox-filters";
 
 const TAG_MOROSO: Tag = { id: "tag-moroso", label: "Moroso", color: "danger" };
@@ -180,6 +181,32 @@ describe("applyInboxFilters — 'unread'", () => {
     const deOtroSinLeer = conversation({ id: "de-otro-sin-leer", unreadCount: 1, assignedAgent: BETO });
 
     expect(ids([deOtroSinLeer])).toEqual(["de-otro-sin-leer"]);
+  });
+});
+
+describe("serverFilterTruncated", () => {
+  it("acusa recorte: la consulta trajo justo el tope y el contador dice que hay más", () => {
+    expect(serverFilterTruncated(200, 847)).toBe(true);
+  });
+
+  it("no acusa recorte cuando la consulta trajo todo lo que hay: filas y contador coinciden", () => {
+    expect(serverFilterTruncated(54, 54)).toBe(false);
+  });
+
+  // Trajo menos que el tope, así que no puede haber recortado nada — un
+  // contador más alto acá es una carrera entre `fetchInboxCounts` y
+  // `fetchConversations` (dos viajes a la base, no uno atómico), no evidencia
+  // de que la consulta se quedó corta.
+  it("no acusa recorte con menos filas que el tope, aunque el contador diga más (carrera de contador)", () => {
+    expect(serverFilterTruncated(54, 847)).toBe(false);
+  });
+
+  it("no acusa recorte si el contador coincide justo con el tope: no quedó nadie afuera", () => {
+    expect(serverFilterTruncated(200, 200)).toBe(false);
+  });
+
+  it("no acusa recorte sin contador disponible: sin dato no hay acusación", () => {
+    expect(serverFilterTruncated(200, undefined)).toBe(false);
   });
 });
 

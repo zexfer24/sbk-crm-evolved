@@ -12,6 +12,7 @@ import {
   INBOX_FILTER_LABELS,
   INBOX_SORT_LABELS,
   isUnread,
+  serverFilterTruncated,
   SERVER_FILTER_LIMIT,
 } from "@/lib/inbox-filters";
 import { buildInboxSections } from "@/lib/inbox-sections";
@@ -358,6 +359,21 @@ export function InboxSidebar({
    */
   const unreadCleared = filter === "unread" && !trimmedSearch && !activeTagId && !searching;
 
+  /**
+   * El conteo exacto de la píldora activa (`fetchInboxCounts`, mismo dato
+   * que ya se muestra en el número de la píldora "No leídas") contra las
+   * filas que de verdad trajo la consulta de esa píldora. Sirve para avisar
+   * el recorte silencioso de `SERVER_FILTER_LIMIT`: la consulta nunca ofrece
+   * "cargar más" (ver `paginates`), así que sin este aviso una cola que
+   * llegue al tope simplemente perdería gente sin que nadie se entere —el
+   * recorte que ya admitía el comentario de `SERVER_FILTER_LIMIT` en
+   * `inbox-filters.ts`, y que el pico de producción del 29/8/2026 (54 filas
+   * contra el tope de 200) dejó con margen hoy pero no para siempre.
+   */
+  const resolvedTotal = filter === "unread" ? counts?.unread : filter === "mine" ? counts?.mine : undefined;
+  const truncated =
+    resolvedOnServer && resolvedRows != null && serverFilterTruncated(resolvedRows.length, resolvedTotal);
+
   const handleListScroll = useCallback(
     (event: React.UIEvent<HTMLDivElement>) => {
       if (!paginates || !hasMore || loadingMore) return;
@@ -513,6 +529,12 @@ export function InboxSidebar({
                         // leídas".
                         "No tienes conversaciones asignadas."
                       : "No hay conversaciones en este filtro."}
+          </p>
+        )}
+
+        {truncated && (
+          <p className="crm-list-truncated">
+            Mostrando las {SERVER_FILTER_LIMIT} más recientes de {resolvedTotal}
           </p>
         )}
 
