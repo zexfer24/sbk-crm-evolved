@@ -228,6 +228,69 @@ describe("identidad: ni IA ni persona", () => {
   });
 });
 
+/**
+ * El tool loop entrega hasta cuatro herramientas (ver tools.ts): catálogo,
+ * biblioteca, historial de compras y escalar. El prompt tiene que nombrar
+ * las cuatro para que el modelo sepa cuándo usar cada una — si falta una,
+ * el modelo la ignora aunque el loop se la entregue.
+ */
+describe("sección 4 — las cuatro herramientas", () => {
+  it("nombra el catálogo", () => {
+    expect(SYSTEM_PROMPT).toMatch(/búsqueda de catálogo/i);
+  });
+
+  it("nombra la biblioteca de conocimiento", () => {
+    expect(SYSTEM_PROMPT).toMatch(/biblioteca de conocimiento/i);
+  });
+
+  it("nombra el historial de compras", () => {
+    expect(SYSTEM_PROMPT).toMatch(/historial de compras/i);
+  });
+
+  it("nombra la herramienta de escalar", () => {
+    expect(SYSTEM_PROMPT).toMatch(/herramienta de escalar/i);
+  });
+
+  /** Solo lectura: nunca aprueba ni procesa la devolución o el reclamo. */
+  it("el historial de compras se presenta como solo lectura, sin poder de aprobar", () => {
+    expect(SYSTEM_PROMPT).toMatch(/Es solo lectura/);
+    expect(SYSTEM_PROMPT).toMatch(/Nunca aprueba ni procesa nada/);
+  });
+});
+
+/**
+ * El catálogo puede venir con la tasa BCV o el inventario desactualizados
+ * (tasaDesactualizada / inventarioDesactualizado en tools.ts). El prompt
+ * anterior prometía "la tasa BCV del día", una certeza que la herramienta no
+ * siempre puede sostener: sin esta regla, el modelo pasaba un dato viejo como
+ * si fuera confirmado.
+ */
+describe("sección 4 — datos viejos no son una confirmación", () => {
+  it("ya no promete la tasa del día", () => {
+    expect(SYSTEM_PROMPT).not.toMatch(/tasa BCV del día/);
+  });
+
+  it("manda dar los datos viejos como lo último registrado, no como confirmación, y ofrecer un asesor", () => {
+    expect(SYSTEM_PROMPT).toMatch(/lo último registrado, no como una confirmación/);
+    expect(SYSTEM_PROMPT).toMatch(/ofrece que un asesor lo confirme/);
+  });
+});
+
+/**
+ * El clasificador define "otro" como preguntas de tienda que no encajan
+ * limpio: horarios, ubicación, formas de pago, seguimiento de un pedido
+ * (ver classify.ts). Antes el prompt solo decía "trátalo como disponibilidad",
+ * así que una pregunta de horario terminaba en una búsqueda de catálogo que
+ * nunca iba a responderla.
+ */
+describe("sección 5.5 — otro consulta la biblioteca cuando es sobre la tienda", () => {
+  it("manda consultar la biblioteca de conocimiento antes de responder", () => {
+    const seccion55 = SYSTEM_PROMPT.slice(SYSTEM_PROMPT.indexOf("5.5 Otro"));
+
+    expect(seccion55).toMatch(/biblioteca de conocimiento/i);
+  });
+});
+
 describe("formato de WhatsApp", () => {
   it("instruye explícitamente a no usar doble asterisco (Markdown)", () => {
     expect(SYSTEM_PROMPT).toMatch(/un solo asterisco/);
