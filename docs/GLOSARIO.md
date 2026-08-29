@@ -86,6 +86,7 @@ nombre. Los tests sin módulo propio (`data-*.test.ts`, `queue-limit`,
 | `agent-tool-keys.ts` | Claves de `agent_tools` sin `server-only`, para que el panel las use |
 | `use-clock.ts`, `use-debounced-callback.ts`, `use-element-width.ts`, `use-long-press.ts`, `use-theme.ts` | Hooks utilitarios (reloj cuantizado, agrupación de refrescos, ancho real, long-press, tema) |
 | `use-live-conversations.ts` / `use-live-refresh.ts` / `use-live-sales.ts` | Realtime: mantener bandeja/ventas al día aplicando eventos en memoria y agrupando refetches |
+| `use-inbox-pager.ts` | El paginador por cursor de la bandeja, uno solo para las tres píldoras (29/8/2026): cursor + candado en vuelo + sesión + `reachedEnd` + estado de la primera página (loading/ready/error). Todo lo que decide se lee de un ref y no del render: dos eventos de scroll del mismo frame veían el mismo snapshot y disparaban dos consultas con el mismo cursor. Nació de una revisión que encontró la misma máquina escrita dos veces —`cursorRef`+flags en el shell, `serverRows`+`serverSessionRef`+`serverBusyRef` en el sidebar— endurecida a medias en cada copia. El shell lo usa sembrado (`seed`); el sidebar, uno por píldora (`sessionKey`). Un fallo NUNCA enciende `reachedEnd`: por eso existe `status: 'error'` con `retry()` |
 
 ## `src/lib/ai` — el agente vendedor
 
