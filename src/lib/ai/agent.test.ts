@@ -53,6 +53,12 @@ function createFakeSupabase() {
       if (fn === "agent_can_run") {
         return Promise.resolve({ data: state.aiGloballyEnabled && state.canRun, error: null });
       }
+      // Lock por conversación (conversation-lock.ts): siempre libre, siempre
+      // se puede renovar y soltar. Este archivo prueba UN solo turno a la
+      // vez, así que el lock nunca es el protagonista acá.
+      if (fn === "ai_turn_lock_acquire") return Promise.resolve({ data: true, error: null });
+      if (fn === "ai_turn_lock_renew") return Promise.resolve({ data: true, error: null });
+      if (fn === "ai_turn_lock_release") return Promise.resolve({ data: true, error: null });
       throw new Error(`Fake Supabase: rpc no soportada: ${fn}`);
     },
     from(table: string) {
@@ -73,10 +79,6 @@ function createFakeSupabase() {
           }),
           update: (values: Record<string, unknown>) => ({
             eq: () => {
-              // Adquisición del lock: encadena un segundo .eq() y un .select().
-              if (values.ai_turn_running === true) {
-                return { eq: () => ({ select: async () => ({ data: [{ id: "conv-1" }] }) }) };
-              }
               conversationUpdates.push(values);
               return Promise.resolve({ data: null, error: null });
             },

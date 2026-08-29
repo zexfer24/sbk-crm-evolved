@@ -63,6 +63,16 @@ function createFakeSupabase() {
   return {
     rpc(fn: string) {
       if (fn === "agent_can_run") return Promise.resolve({ data: true, error: null });
+      // Lock por conversación (conversation-lock.ts): el acquire OTORGA
+      // SIEMPRE, a propósito — no es un lock de verdad. "mantiene separados
+      // los turnos aunque corran entrelazados" corre el mismo lote dos
+      // veces A LA VEZ y depende de que las dos pasadas por cada
+      // conversación corran; un lock real dejaría fuera a una de las dos y
+      // la prueba dejaría de probar el cruce que le importa (el aislamiento
+      // por conversationId, no la exclusión mutua del lock).
+      if (fn === "ai_turn_lock_acquire") return Promise.resolve({ data: true, error: null });
+      if (fn === "ai_turn_lock_renew") return Promise.resolve({ data: true, error: null });
+      if (fn === "ai_turn_lock_release") return Promise.resolve({ data: true, error: null });
       throw new Error(`Fake Supabase: rpc no soportada: ${fn}`);
     },
     from(table: string) {
@@ -89,10 +99,6 @@ function createFakeSupabase() {
           }),
           update: (values: Record<string, unknown>) => ({
             eq: (_col: string, id: string) => {
-              // Adquisición del lock: encadena un segundo .eq() y un .select().
-              if (values.ai_turn_running === true) {
-                return { eq: () => ({ select: async () => ({ data: [{ id }] }) }) };
-              }
               // El corte simulado pega acá: es una escritura que el turno hace
               // DESPUÉS de responderle al cliente (limpiar journey_stage).
               if (values.journey_stage === null && fallaDespuesDelEnvioEn.has(id)) {

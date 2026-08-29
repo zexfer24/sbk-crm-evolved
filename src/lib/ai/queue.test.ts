@@ -26,6 +26,7 @@ import {
   pendingAgentTurns,
   processQueuedTurns,
 } from "@/lib/ai/queue";
+import { ConversationBusyError } from "@/lib/ai/conversation-lock";
 
 beforeAll(async () => {
   // Tope bajo a propósito: hace visible el límite sin alargar la prueba.
@@ -154,6 +155,45 @@ describe("processQueuedTurns", () => {
     }
 
     expect(await pendingAgentTurns()).toBe(0);
+  });
+
+  /**
+   * Encontrar la conversación tomada (ver conversation-lock.ts) no es un
+   * fallo del turno: es la carrera normal entre dos webhooks casi
+   * simultáneos. La cola la pospone en vez de contarla como fallida.
+   */
+  it("pospone —no falla— el turno cuya conversación está tomada", async () => {
+    if (!disponible) return;
+    runAgentTurnMock.mockImplementation(async () => {
+      throw new ConversationBusyError("conv-1");
+    });
+
+    await enqueueAgentTurns(["conv-1"], { debounceSeconds: 0 });
+    const resultado = await processQueuedTurns();
+
+    expect(resultado.deferred).toBe(1);
+    expect(resultado.failed).toBe(0);
+    expect(await pendingAgentTurns()).toBe(1);
+  });
+
+  /**
+   * Contraste con "abandona la conversación que falla una y otra vez": esa
+   * prueba de arriba consume MAX_ATTEMPTS y termina abandonando. Encontrar
+   * el lock tomado no gasta ese presupuesto — puede pasar indefinidamente
+   * mientras el otro turno sigue vivo, sin que la conversación se abandone.
+   */
+  it("el turno pospuesto por lock no gasta los intentos", async () => {
+    if (!disponible) return;
+    runAgentTurnMock.mockImplementation(async () => {
+      throw new ConversationBusyError("conv-1");
+    });
+
+    for (let intento = 0; intento < 5; intento++) {
+      await enqueueAgentTurns(["conv-1"], { debounceSeconds: 0 });
+      await processQueuedTurns();
+    }
+
+    expect(await pendingAgentTurns()).toBe(1);
   });
 
   it("no deja cupos tomados después de un turno que falló", async () => {

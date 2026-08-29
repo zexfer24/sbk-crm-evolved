@@ -3,6 +3,7 @@ import { getRedis } from "@/lib/redis";
 import { createAgentQueue, createTurnPace, createTurnSlots, releaseSweepLock } from "@/lib/ai/redis-queue";
 import { runAgentTurn } from "@/lib/ai/agent";
 import { isNonRetryable } from "@/lib/ai/turn-delivery";
+import { isConversationBusy } from "@/lib/ai/conversation-lock";
 import { errorText, log } from "@/lib/log";
 
 // ---------------------------------------------------------------------------
@@ -154,6 +155,16 @@ const RETRY_WHEN_PACED_SECONDS = 20;
 
 /** Espera antes de reintentar un turno que falló. */
 const RETRY_AFTER_ERROR_SECONDS = 30;
+
+/**
+ * Espera antes de reintentar un turno que encontró la conversación tomada.
+ *
+ * Con un lease de 90s (TURN_LOCK_LEASE_SECONDS en conversation-lock.ts) caben
+ * como mucho unos tres intentos antes de que el lock quede libre por vencido
+ * — no hace falta reintentar más seguido: el presupuesto del minuto
+ * (maxTurnsPerMinute) ya se gastó antes de llegar siquiera al lock.
+ */
+const RETRY_WHEN_LOCKED_SECONDS = 30;
 
 /**
  * Intentos antes de abandonar una conversación.
@@ -358,6 +369,18 @@ export async function processQueuedTurns(limit = MAX_PER_RUN): Promise<QueueRunR
         await cola.clearFailures(conversationId);
         result.processed++;
       } catch (err) {
+        // La conversación ya tenía un turno de IA en curso (ver
+        // conversation-lock.ts): no es un fallo del turno, es una carrera
+        // normal entre dos webhooks casi simultáneos. Vuelve a la cola sin
+        // gastar intentos ni contar como fallido — a diferencia de un error
+        // de verdad, esto se resuelve solo apenas el otro turno termine.
+        if (isConversationBusy(err)) {
+          await cola.enqueue(conversationId, RETRY_WHEN_LOCKED_SECONDS);
+          result.deferred++;
+          log.info("cola_turno_pospuesto_lock", { conversationId });
+          continue;
+        }
+
         const detail = errorText(err);
         result.failed++;
 

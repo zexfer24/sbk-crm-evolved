@@ -136,6 +136,11 @@ let consultasDelInterruptor = 0;
 function createFakeSupabase() {
   return {
     rpc: (fn: string) => {
+      // Lock por conversación (conversation-lock.ts): siempre libre. No debe
+      // contar para `consultasDelInterruptor`, que solo mide agent_can_run.
+      if (fn === "ai_turn_lock_acquire") return Promise.resolve({ data: true, error: null });
+      if (fn === "ai_turn_lock_renew") return Promise.resolve({ data: true, error: null });
+      if (fn === "ai_turn_lock_release") return Promise.resolve({ data: true, error: null });
       if (fn !== "agent_can_run") return Promise.reject(new Error(`rpc no soportada: ${fn}`));
       consultasDelInterruptor++;
       if (consultasDelInterruptor > consultasAntesDeRomperse) {
@@ -166,11 +171,8 @@ function createFakeSupabase() {
               },
             }),
           }),
-          update: (values: Record<string, unknown>) => ({
-            eq: (_c: string, id: string) =>
-              values.ai_turn_running === true
-                ? { eq: () => ({ select: async () => ({ data: [{ id }] }) }) }
-                : Promise.resolve({ data: null, error: null }),
+          update: () => ({
+            eq: () => Promise.resolve({ data: null, error: null }),
           }),
         };
       }

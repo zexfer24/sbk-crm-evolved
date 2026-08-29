@@ -52,10 +52,11 @@ reconstruye la base desde cero con las migraciones y seeds del repo.
 4. El envío sale por `lib/whatsapp/meta-client.ts` (server-only). Canal no
    `connected` = envío simulado (demo sin gastar).
 
-**Frenos del agente**, todos independientes: lock por conversación, cupos
-globales en Redis, rate limit de peticiones hacia el proveedor
-(`rate-limit.ts`), tope de gasto diario, interruptor global, interruptor por
-herramienta, y la regla "si un humano ya escribió en el chat, la IA no entra"
+**Frenos del agente**, todos independientes: lock por conversación con lease
+que se renueva solo, cupos globales en Redis, rate limit de peticiones hacia
+el proveedor (`rate-limit.ts`), tope de gasto diario, interruptor global,
+interruptor por herramienta, y la regla "si un humano ya escribió en el chat,
+la IA no entra"
 (`human-handled.ts`). `turn-target.ts` congela a quién se le habla;
 `turn-delivery.ts` impide el doble envío en reintentos.
 
