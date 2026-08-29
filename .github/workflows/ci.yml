@@ -37,8 +37,14 @@ jobs:
       - name: Lint
         run: npm run lint
 
+      # Sin paralelismo de archivos: la contención del pool de forks que en
+      # Windows de 8 núcleos ya obligó a subir testTimeout a 15s (ver
+      # vitest.config.ts) es peor en el runner de 2 núcleos — el run #29
+      # (29/8/2026), primero en llegar a esta puerta, cayó aquí con la suite
+      # verde en local. Un archivo a la vez cuesta minutos de reloj, no
+      # veredictos falsos.
       - name: Pruebas
-        run: npm run test
+        run: npm run test -- --no-file-parallelism
 
       # Las NEXT_PUBLIC_* se incrustan al compilar, así que el build necesita
       # valores aunque sean de mentira: acá solo se comprueba que compila, no
