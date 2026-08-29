@@ -1,15 +1,16 @@
 "use client";
 
-import { Fragment, useCallback, useEffect, useMemo, useState } from "react";
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ArrowDownWideNarrow, ArrowUpWideNarrow, Search } from "lucide-react";
 import type { Agent, ConversationSummary, InboxFilter, InboxSort, Tag } from "@/lib/types";
 import {
   fetchConversations,
   INBOX_PAGE_SIZE,
   searchConversationSummaries,
+  type FetchConversationsOptions,
   type InboxCounts,
 } from "@/lib/data";
-import { cursorAfterPage, type ConversationCursor } from "@/lib/inbox-paging";
+import { cursorAfterPage, mergeById, type ConversationCursor } from "@/lib/inbox-paging";
 import { initials } from "@/lib/dashboard";
 import {
   applyInboxFilters,
@@ -45,6 +46,28 @@ const MESSAGE_SEARCH_DEBOUNCE_MS = 300;
 
 /** Constante y no `new Map()` en cada render: es dependencia de un useMemo. */
 const SIN_COINCIDENCIAS: ReadonlyMap<string, MessageHit> = new Map();
+
+/**
+ * Arma las opciones de `fetchConversations` para la píldora que resuelve en
+ * el servidor: `unreadOnly` para "No leídas", `assignedTo` para "Mías",
+ * ambas con el mismo `INBOX_PAGE_SIZE` y, si se pasa cursor, la página
+ * siguiente en vez de la primera.
+ *
+ * Función de módulo y no un ternario repetido en el efecto de primera
+ * página y en `loadMoreServerRows`: cada uno traía su propia copia del mismo
+ * ternario (hallazgo de la revisión de código del 29/8/2026), y que la
+ * página 2+ se armara distinto de la página 1 —un campo que uno actualiza y
+ * el otro olvida— quedaba a un descuido de distancia. Con un solo lugar es
+ * imposible que diverjan.
+ */
+function pillQueryOptions(
+  filter: InboxFilter,
+  agentId: string,
+  cursor?: ConversationCursor | null
+): FetchConversationsOptions {
+  const page = { limit: INBOX_PAGE_SIZE, cursor: cursor ?? undefined };
+  return filter === "unread" ? { ...page, unreadOnly: true } : { ...page, assignedTo: agentId };
+}
 
 function SectionHeader({ label, count }: { label: string; count: number }) {
   return (
@@ -227,6 +250,25 @@ export function InboxSidebar({
   const resolvedState = serverRows?.filter === filter ? serverRows : null;
   const resolvedRows = resolvedState?.rows ?? null;
 
+  /**
+   * Sesión de consulta de la píldora activa: cada corrida del efecto de
+   * primera página (montar, cambiar de píldora) abre una sesión nueva, y
+   * cualquier respuesta de una sesión anterior se descarta al llegar — es lo
+   * que impide que una página vieja de "No leídas" se pegue sobre la primera
+   * página fresca tras salir y volver (la guarda por `filter` no alcanza: la
+   * clausura vieja también decía "unread"). Hallazgos H1/H2 de la revisión de
+   * código del 29/8/2026.
+   */
+  const serverSessionRef = useRef(0);
+  /**
+   * Hay una página (primera o siguiente) en vuelo. Es un ref y no estado a
+   * propósito: los eventos de scroll llegan en ráfaga dentro del mismo frame
+   * y un snapshot de render (`loadingMore`) todavía diría false para todos —
+   * el candado tiene que cerrarse de forma síncrona en el primer disparo
+   * (hallazgo H3).
+   */
+  const serverBusyRef = useRef(false);
+
   useEffect(() => {
     if (!resolvedOnServer) return;
 
@@ -235,7 +277,17 @@ export function InboxSidebar({
     // PRIMERA página (sin cursor): cambiar de píldora —la dependencia
     // `filter`— arranca de cero, igual que "Todos" arranca de cero al
     // montar el shell.
+    //
+    // La sesión se abre ACÁ, antes de salir a la red: si esta misma corrida
+    // se cancela (cambia el filtro, se desmonta) antes de que la promesa
+    // resuelva, la respuesta tardía se reconoce como vieja por el número de
+    // sesión y no por `cancelled` solo — `cancelled` no sobrevive a un
+    // segundo cambio de píldora que vuelva al mismo filtro (H2: la clausura
+    // de la segunda corrida en "unread" también dice "unread").
     let cancelled = false;
+    const session = ++serverSessionRef.current;
+    serverBusyRef.current = true;
+
     (async () => {
       // Una consulta por píldora, cada una resuelta por su propio índice
       // (ver la migración `20260829010000_conversations_cursor_idx.sql`):
@@ -244,28 +296,26 @@ export function InboxSidebar({
       // `SERVER_FILTER_LIMIT` (200) como tope sin "cargar más", un recorte
       // silencioso que un pico de cola dejaba mudo. La reforma del
       // 29/8/2026 las pasa a paginar por cursor, igual que "Todos".
-      const rows = await fetchConversations(
-        supabase,
-        filter === "unread"
-          ? { unreadOnly: true, limit: INBOX_PAGE_SIZE }
-          : { assignedTo: currentAgent.id, limit: INBOX_PAGE_SIZE }
-      );
-      if (!cancelled) {
-        setServerRows({
-          filter,
-          rows,
-          cursor: cursorAfterPage(rows),
-          reachedEnd: rows.length < INBOX_PAGE_SIZE,
-          loadingMore: false,
-        });
-      }
+      const rows = await fetchConversations(supabase, pillQueryOptions(filter, currentAgent.id));
+      if (cancelled || session !== serverSessionRef.current) return;
+      // La sesión sigue vigente: es dueña de cerrar el candado. Se libera
+      // ANTES del `setServerRows` de abajo para que un "cargar más" que
+      // llegue a disparar en el mismo tick ya vea el estado correcto.
+      serverBusyRef.current = false;
+      setServerRows({
+        filter,
+        rows,
+        cursor: cursorAfterPage(rows),
+        reachedEnd: rows.length < INBOX_PAGE_SIZE,
+        loadingMore: false,
+      });
     })().catch(() => {
+      if (cancelled || session !== serverSessionRef.current) return;
+      serverBusyRef.current = false;
       // Si la consulta falla, el filtro sigue valiendo sobre lo cargado: se
       // verán menos chats, no ninguno. Sin cursor y con `reachedEnd`: no
       // tiene sentido ofrecer "cargar más" sobre una página que nunca llegó.
-      if (!cancelled) {
-        setServerRows({ filter, rows: [], cursor: null, reachedEnd: true, loadingMore: false });
-      }
+      setServerRows({ filter, rows: [], cursor: null, reachedEnd: true, loadingMore: false });
     });
 
     return () => {
@@ -285,6 +335,14 @@ export function InboxSidebar({
    */
   const loadMoreServerRows = useCallback(async () => {
     if (!resolvedOnServer) return;
+    // Candado síncrono en ref, PRIMERA guarda: varios eventos de scroll en
+    // el mismo frame (o scroll + clic) ven todos `loadingMore` en false —es
+    // un snapshot de render— y dispararían 2-3 fetches idénticos con el
+    // mismo cursor antes de que React repinte (H3). También cierra la mitad
+    // de H1: mientras la primera página del efecto de arriba sigue en
+    // vuelo, el candado ya está cerrado y acá no se dispara nada hasta que
+    // esa página resuelva.
+    if (serverBusyRef.current) return;
     // La consulta de la píldora activa sigue en vuelo o ya se fue a otra
     // píldora: sin un cursor de ESTA píldora no hay página siguiente que
     // pedir con seguridad.
@@ -292,28 +350,32 @@ export function InboxSidebar({
     if (serverRows.reachedEnd || serverRows.loadingMore) return;
 
     const { cursor } = serverRows;
+    // Sesión propia de este pedido de página: si la píldora cambia y vuelve
+    // (H2) mientras esta página sigue en vuelo, la respuesta llega con una
+    // sesión vieja (`serverSessionRef.current` ya avanzó, lo abrió el efecto
+    // de primera página al volver) y se descarta sin tocar ni el candado ni
+    // `serverRows` — la sesión nueva ya es dueña de las dos cosas.
+    const session = serverSessionRef.current;
+    serverBusyRef.current = true;
     setServerRows((current) =>
       current && current.filter === filter ? { ...current, loadingMore: true } : current
     );
 
     try {
-      const page = await fetchConversations(
-        supabase,
-        filter === "unread"
-          ? { unreadOnly: true, cursor: cursor ?? undefined, limit: INBOX_PAGE_SIZE }
-          : { assignedTo: currentAgent.id, cursor: cursor ?? undefined, limit: INBOX_PAGE_SIZE }
-      );
+      const page = await fetchConversations(supabase, pillQueryOptions(filter, currentAgent.id, cursor));
+      if (session !== serverSessionRef.current) return;
+      serverBusyRef.current = false;
       setServerRows((current) => {
         // La píldora pudo cambiar mientras esta página viajaba.
         if (!current || current.filter !== filter) return current;
         // Se pega sobre `current.rows` y NO sobre una copia capturada antes
         // de la llamada: un `patchServerRows` que llegue mientras la página
         // viaja (abrir un chat lo marca leído al instante) vive en `current`,
-        // y pegarla sobre la copia vieja desharía ese parche. Deduplicado por
-        // id como `mergeById` (crm-shell.tsx): si la primera página se
-        // volvió a pedir mientras esta viajaba, nada se pinta dos veces.
-        const seen = new Set(current.rows.map((row) => row.id));
-        const rows = [...current.rows, ...page.filter((row) => !seen.has(row.id))];
+        // y pegarla sobre la copia vieja desharía ese parche. `mergeById`
+        // (`src/lib/inbox-paging.ts`, compartida con `crm-shell.tsx`)
+        // deduplica por id: si la primera página se volvió a pedir mientras
+        // esta viajaba, nada se pinta dos veces.
+        const rows = mergeById(current.rows, page);
         return {
           filter,
           rows,
@@ -323,6 +385,8 @@ export function InboxSidebar({
         };
       });
     } catch {
+      if (session !== serverSessionRef.current) return;
+      serverBusyRef.current = false;
       // La lista se queda con lo que ya tiene; el próximo scroll o clic
       // reintenta.
       setServerRows((current) =>

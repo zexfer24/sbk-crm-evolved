@@ -32,3 +32,26 @@ export function cursorAfterPage(rows: ConversationSummary[]): ConversationCursor
   if (!last) return null;
   return { lastMessageAt: last.lastMessageAt, id: last.id };
 }
+
+/**
+ * Une dos tramos de la lista sin repetir: el primero manda.
+ *
+ * Sirve para las costuras de toda bandeja paginada. Al refrescar en vivo,
+ * `mergeById(cabecera, actual)` deja mandar lo recién traído y conserva las
+ * páginas viejas. Al bajar una página, `mergeById(actual, página)` la pega al
+ * final. En los dos casos, una conversación que se movió entre medias aparece
+ * una sola vez.
+ *
+ * Vivía duplicada: `crm-shell.tsx` (paginación de "Todos") y el
+ * dedupe-append de `loadMoreServerRows` en `inbox-sidebar.tsx` ("No leídas"/
+ * "Mías") reimplementaban el mismo invariante cada una por su cuenta — dos
+ * copias del "la primera gana, sin repetidos" podían divergir sin que nada lo
+ * avisara. Se unificó acá el 29/8/2026, a raíz de una revisión de código.
+ */
+export function mergeById(
+  first: ConversationSummary[],
+  second: ConversationSummary[]
+): ConversationSummary[] {
+  const seen = new Set(first.map((c) => c.id));
+  return [...first, ...second.filter((c) => !seen.has(c.id))];
+}

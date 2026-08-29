@@ -29,7 +29,7 @@ import {
   fetchAgentSettings,
   type InboxCounts,
 } from "@/lib/data";
-import { cursorAfterPage, type ConversationCursor } from "@/lib/inbox-paging";
+import { cursorAfterPage, mergeById, type ConversationCursor } from "@/lib/inbox-paging";
 import { markConversationRead, markConversationUnread, sendMessage } from "@/lib/mutations";
 import {
   discardItem,
@@ -50,23 +50,6 @@ import { ChatPanel } from "@/components/chat/chat-panel";
 import { ContextPanel } from "@/components/context-panel/context-panel";
 import { AppRail } from "@/components/app-rail";
 import "@/components/crm.css";
-
-/**
- * Une dos tramos de la lista sin repetir: el primero manda.
- *
- * Sirve para las dos costuras de la bandeja paginada. Al refrescar en vivo,
- * `mergeById(cabecera, actual)` deja mandar lo recién traído y conserva las
- * páginas viejas. Al bajar una página, `mergeById(actual, página)` la pega al
- * final. En los dos casos, una conversación que se movió entre medias aparece
- * una sola vez.
- */
-function mergeById(
-  first: ConversationSummary[],
-  second: ConversationSummary[]
-): ConversationSummary[] {
-  const seen = new Set(first.map((c) => c.id));
-  return [...first, ...second.filter((c) => !seen.has(c.id))];
-}
 
 interface CrmShellProps {
   currentAgent: Agent;

@@ -463,6 +463,171 @@ describe("InboxSidebar — 'No leídas' y 'Mías' paginan por cursor", () => {
   });
 });
 
+/**
+ * Tres carreras de la revisión de código del 29/8/2026 (H1/H2/H3), cerradas
+ * con `serverSessionRef`/`serverBusyRef` en `inbox-sidebar.tsx`: sesión por
+ * corrida del efecto de primera página + candado síncrono para "cargar más".
+ */
+describe("InboxSidebar — carreras de servidor (revisión de código 29/8/2026)", () => {
+  /** `INBOX_PAGE_SIZE` filas, para forzar una página llena. */
+  function paginaLlena(prefix: string, count = INBOX_PAGE_SIZE): Conversation[] {
+    const base = new Date("2026-08-20T12:00:00Z").getTime();
+    return Array.from({ length: count }, (_, i) =>
+      conversation({
+        id: `${prefix}-${i}`,
+        unreadCount: 1,
+        lastMessageAt: new Date(base - i * 60_000).toISOString(),
+      })
+    );
+  }
+
+  /** Promesa controlada a mano: simula una respuesta que tarda en llegar. */
+  function diferida<T>() {
+    let resolve!: (value: T) => void;
+    const promise = new Promise<T>((r) => {
+      resolve = r;
+    });
+    return { promise, resolve };
+  }
+
+  it("H3 — dos disparos de 'cargar más' en ráfaga piden UNA sola página 2", async () => {
+    const primera = paginaLlena("u");
+    let segundaLlamadas = 0;
+    const segunda = diferida<Conversation[]>();
+
+    vi.mocked(fetchConversations).mockImplementation(async (_supabase, options) => {
+      if (!options?.unreadOnly) return [];
+      if (!options.cursor) return primera;
+      segundaLlamadas += 1;
+      return segunda.promise;
+    });
+
+    render(
+      <InboxSidebar
+        conversations={[]}
+        selectedId={null}
+        onSelect={() => {}}
+        currentAgent={JEFA}
+        allTags={ALL_TAGS}
+        bcvRate={null}
+      />
+    );
+
+    const botón = await screen.findByRole("button", { name: /cargar más/i });
+    // Dos eventos de scroll (o scroll + clic) en el mismo frame: los dos
+    // disparan antes de que React repinte `loadingMore`.
+    fireEvent.click(botón);
+    fireEvent.click(botón);
+
+    await waitFor(() => expect(segundaLlamadas).toBe(1));
+
+    // Deja la promesa resuelta para no ensuciar el próximo test con una
+    // actualización de estado fuera de acto.
+    segunda.resolve([]);
+    await waitFor(() => expect(fetchConversations).toHaveBeenCalled());
+  });
+
+  it("H1 — con la primera página aún en vuelo, 'cargar más' no dispara nada; al resolver, sí funciona", async () => {
+    const primeraPágina = diferida<Conversation[]>();
+    let segundaLlamadas = 0;
+
+    vi.mocked(fetchConversations).mockImplementation(async (_supabase, options) => {
+      if (!options?.unreadOnly) return [];
+      if (options.cursor) {
+        segundaLlamadas += 1;
+        return [];
+      }
+      return primeraPágina.promise;
+    });
+
+    // Sembrada con página llena: el botón "Cargar más" ya está visible aunque
+    // la consulta de red del efecto siga sin resolver (mismo escenario que
+    // describe el hallazgo: la bandeja abre sembrada y el botón ya se ve).
+    render(
+      <InboxSidebar
+        conversations={[]}
+        selectedId={null}
+        onSelect={() => {}}
+        currentAgent={JEFA}
+        allTags={ALL_TAGS}
+        bcvRate={null}
+        initialUnreadRows={paginaLlena("sem")}
+      />
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: /cargar más/i }));
+
+    // Deja correr las microtasks pendientes sin que la primera página
+    // resuelva: si el candado no cerrara, acá ya habría un fetch de más.
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(segundaLlamadas).toBe(0);
+    expect(fetchConversations).toHaveBeenCalledTimes(1);
+
+    primeraPágina.resolve(paginaLlena("fresca"));
+    await waitFor(() => expect(fetchConversations).toHaveBeenCalledTimes(1));
+
+    fireEvent.click(screen.getByRole("button", { name: /cargar más/i }));
+    await waitFor(() => expect(segundaLlamadas).toBe(1));
+  });
+
+  it("H2 — al volver a 'No leídas', una respuesta vieja de 'cargar más' no pisa la página fresca ni envenena reachedEnd", async () => {
+    const primeraUnread = paginaLlena("u1");
+    const fresca = paginaLlena("u2");
+    const páginaViejaDeMás = diferida<Conversation[]>();
+    let noCursorLlamadas = 0;
+
+    vi.mocked(fetchConversations).mockImplementation(async (_supabase, options) => {
+      if (options?.assignedTo) return [];
+      if (!options?.unreadOnly) return [];
+      if (options.cursor) return páginaViejaDeMás.promise;
+      noCursorLlamadas += 1;
+      return noCursorLlamadas === 1 ? primeraUnread : fresca;
+    });
+
+    const { container } = render(
+      <InboxSidebar
+        conversations={[]}
+        selectedId={null}
+        onSelect={() => {}}
+        currentAgent={JEFA}
+        allTags={ALL_TAGS}
+        bcvRate={null}
+      />
+    );
+
+    const botón = await screen.findByRole("button", { name: /cargar más/i });
+    fireEvent.click(botón); // pide la página 2 de "No leídas"; queda diferida.
+
+    irA("Mías");
+    await waitFor(() =>
+      expect(screen.queryByText("No tienes conversaciones asignadas.")).toBeTruthy()
+    );
+
+    irA("No leídas");
+    await waitFor(() => expect(visibleIds(container)).toHaveLength(INBOX_PAGE_SIZE));
+    // Solo la página fresca ("u2-*"), nada de la vieja ("u1-*") todavía sin
+    // resolver.
+    expect(visibleIds(container).every((id) => id.startsWith("u2-"))).toBe(true);
+
+    // La respuesta vieja de "cargar más" llega recién ahora, con una sesión
+    // que ya no es la vigente (se abrieron dos sesiones nuevas: "Mías" y el
+    // regreso a "No leídas").
+    páginaViejaDeMás.resolve([conversation({ id: "vieja-que-no-debe-verse" })]);
+    await Promise.resolve();
+    await Promise.resolve();
+
+    // No se coló ni pisó la lista fresca.
+    expect(visibleIds(container)).toHaveLength(INBOX_PAGE_SIZE);
+    expect(visibleIds(container)).not.toContain("vieja-que-no-debe-verse");
+
+    // `reachedEnd` no quedó envenenado por la página vieja (que hubiera sido
+    // corta y hubiera apagado "Cargar más"): la página fresca vino llena, así
+    // que el botón sigue ofreciéndose.
+    expect(screen.getByRole("button", { name: /cargar más/i })).toBeTruthy();
+  });
+});
+
 describe("InboxSidebar — 'Buscando…' al cambiar de píldora", () => {
   it("muestra 'Buscando…' al pasar a 'Mías' mientras esa consulta no resuelve", async () => {
     renderSidebar(JEFA); // "No leídas" resuelve enseguida: el mock por defecto contesta [].

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { cursorAfterPage } from "@/lib/inbox-paging";
+import { cursorAfterPage, mergeById } from "@/lib/inbox-paging";
 import type { ConversationSummary } from "@/lib/types";
 
 function row(id: string, lastMessageAt: string | null): ConversationSummary {
@@ -49,5 +49,40 @@ describe("cursorAfterPage", () => {
 
   it("con la página vacía no hay cursor: no queda página siguiente que pedir", () => {
     expect(cursorAfterPage([])).toBeNull();
+  });
+});
+
+describe("mergeById", () => {
+  it("la primera fila gana cuando el mismo id aparece en los dos tramos", () => {
+    const primero = [row("conv-1", "2026-08-29T10:00:00.000Z")];
+    const segundo = [row("conv-1", "2026-08-29T09:00:00.000Z")];
+
+    const [única] = mergeById(primero, segundo);
+    expect(única.lastMessageAt).toBe("2026-08-29T10:00:00.000Z");
+  });
+
+  it("no repite ids: una fila que aparece en los dos tramos queda una sola vez", () => {
+    const primero = [row("conv-1", null), row("conv-2", null)];
+    const segundo = [row("conv-2", null), row("conv-3", null)];
+
+    expect(mergeById(primero, segundo).map((c) => c.id)).toEqual(["conv-1", "conv-2", "conv-3"]);
+  });
+
+  it("conserva el orden: primero entero, luego lo nuevo del segundo tramo", () => {
+    const primero = [row("conv-2", null), row("conv-1", null)];
+    const segundo = [row("conv-1", null), row("conv-3", null), row("conv-4", null)];
+
+    expect(mergeById(primero, segundo).map((c) => c.id)).toEqual([
+      "conv-2",
+      "conv-1",
+      "conv-3",
+      "conv-4",
+    ]);
+  });
+
+  it("con el segundo tramo vacío, devuelve el primero tal cual", () => {
+    const primero = [row("conv-1", null), row("conv-2", null)];
+
+    expect(mergeById(primero, [])).toEqual(primero);
   });
 });

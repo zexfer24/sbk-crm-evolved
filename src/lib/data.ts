@@ -531,7 +531,7 @@ export interface FetchConversationsOptions {
    * la lista —sube al tope y corre a todas las de abajo una posición— y la
    * página siguiente, pedida por número de fila, salta justo la que cruzó.
    * Confirmado en producción: la píldora "Todos" reordenaba ~3 veces/minuto
-   * y esas filas no volvían nunca (`mergeById`, en `crm-shell.tsx`,
+   * y esas filas no volvían nunca (`mergeById`, en `src/lib/inbox-paging.ts`,
    * deduplica lo que llega; no recupera lo que jamás se pidió). El cursor
    * por valor no depende de la posición: pide "lo que sigue después de esta
    * fila, en este orden", así que un reordenamiento en el medio no le afecta.
