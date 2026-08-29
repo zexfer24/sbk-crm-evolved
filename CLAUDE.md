@@ -100,21 +100,33 @@ copia intermedia.
   mensajes largos van con `git commit -F <archivo>` (sin rtk).
 - **La suite en Windows corre con `pool: forks` + `isolate: true`**: un
   proceso nuevo por archivo, hasta 7 en paralelo sobre 8 núcleos. La
-  contención que eso producía se atacó el 28/8/2026: `testTimeout` 15s como
-  red de seguridad (`slowTestThreshold: 1000` delata la degradación), entorno
+  contención que eso producía se atacó el 28/8/2026 (`testTimeout` 15s como
+  red de seguridad, `slowTestThreshold: 1000` delata la degradación, entorno
   `node` por defecto —solo los tests que usan DOM declaran
   `/** @vitest-environment jsdom */`—, `userEvent.setup({delay: null,
-  pointerEventsCheck: 0})` en los tests de teclado, y los tests de rutas
-  importan en `beforeAll` con las ramas pesadas mockeadas. Aun así: si un
-  archivo falla en la suite y pasa aislado (`rtk npx vitest run <ruta>`), es
-  contención, no regresión. Palancas locales de diagnóstico:
-  `VITEST_MAX_WORKERS=4` y `--no-file-parallelism`.
+  pointerEventsCheck: 0})` en los tests de teclado, tests de rutas
+  importando en `beforeAll`) y se cerró el 29/8/2026: los archivos que aún
+  caían bajo carga dependían de plazos de reloj de pared que no escalan —
+  el `testTimeout` de 15s NUNCA gobernó los `waitFor` de Testing Library
+  (traían 1000 ms de fábrica), ese era el hueco real. Ahora
+  `asyncUtilTimeout: 5000` en `vitest.setup.ts` (solo jsdom) cubre esos
+  `waitFor`, los tests de rutas esperan el hecho con `vi.waitFor({timeout:
+  5000})` en vez de un `setTimeout(0)`, las cargas en frío pesadas
+  (`new-contact-race.test.ts`, `bcv-fetch.test.ts`) calientan su grafo en un
+  `beforeAll` con 30s propios, y Babel solo transforma `.tsx`/`.jsx`. Sigue
+  vigente el diagnóstico: si un archivo falla en la suite y pasa aislado
+  (`rtk npx vitest run <ruta>`) es contención, no regresión; palancas
+  locales de diagnóstico: `VITEST_MAX_WORKERS=4` y `--no-file-parallelism`.
+  Reproducido y verificado con quemadores de CPU a prioridad AboveNormal:
+  12 quemadores tumban cualquier presupuesto e impiden arrancar workers —
+  esa dosis es reproductor del mecanismo, no criterio de verde.
 - **Un `vi.mock` con `importOriginal()` arrastra el grafo ENTERO del módulo
   real** (mockear `@/lib/ai/queue` cargaba los dos SDK de IA e ioredis para
   leer dos constantes). En tests de rutas: mockear también `@/lib/ai/agent` y
-  `@/lib/redis`, e importar el route una sola vez en `beforeAll`. Si se añade
-  a `queue.ts` un export que el webhook use, actualizar las DOS fábricas
-  (`route.test.ts` y `new-contact-race.test.ts`).
+  `@/lib/redis`, e importar el route una sola vez en `beforeAll`.
+  `route.test.ts` y `new-contact-race.test.ts` ya mantienen sus fábricas en
+  espejo completo (incluido el mock de `@/lib/redis` en las dos); si se
+  añade a `queue.ts` un export que el webhook use, actualizar ambas.
 - El stack Supabase self-hosted es `supabase-squad` (se clona de
   `zexfer24/supabase-squad`, no vive en este repo). Studio/meta corren en su
   perfil `admin`: un 503 en el panel significa levantar esos contenedores, no
