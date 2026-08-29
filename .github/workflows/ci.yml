@@ -22,6 +22,15 @@ jobs:
 
       - run: npm ci
 
+      # Los tipos globales de Next (PageProps, LayoutProps…) no viven en el
+      # repo: los genera Next en `.next/types`, y `next-env.d.ts` está
+      # gitignorado. En un checkout limpio `tsc` fallaba aunque el código
+      # estuviera sano — este paso faltó desde el estreno del workflow y CI
+      # estuvo rojo en "Tipos" al menos del run #23 al #28 (29/8/2026) sin
+      # que ninguna otra puerta llegara a correr.
+      - name: Generar tipos de Next
+        run: npx next typegen
+
       - name: Tipos
         run: npx tsc --noEmit
 
