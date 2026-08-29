@@ -3,7 +3,7 @@ import { describe, expect, it, vi, beforeEach } from "vitest";
 import { render, screen, fireEvent, within, waitFor } from "@testing-library/react";
 import type { Agent, Conversation, Tag } from "@/lib/types";
 import { fetchConversations } from "@/lib/data";
-import { PENDING_STALE_LIMIT } from "@/lib/inbox-sections";
+import { SERVER_FILTER_LIMIT } from "@/lib/inbox-filters";
 import { InboxSidebar } from "@/components/inbox/inbox-sidebar";
 
 // La bandeja abre un cliente de Supabase para buscar dentro de los mensajes.
@@ -13,9 +13,8 @@ vi.mock("@/lib/supabase/client", () => ({
   createClient: () => ({ rpc: vi.fn().mockResolvedValue({ data: [], error: null }) }),
 }));
 
-// "Pendientes" le pregunta a la base por el conjunto entero (partido en la
-// ventana fresca y la vieja), no a la ventana cargada. Acá se controla qué
-// contesta esa consulta.
+// "No leídas" y "Mías" le preguntan a la base por el conjunto entero, no a
+// la ventana cargada. Acá se controla qué contesta esa consulta.
 vi.mock("@/lib/data", () => ({
   fetchConversations: vi.fn().mockResolvedValue([]),
   searchConversationSummaries: vi.fn().mockResolvedValue([]),
@@ -26,15 +25,17 @@ beforeEach(() => {
 });
 
 /**
- * Responde según qué ventana pidió la consulta. Sin esto, dar la misma
- * `mockResolvedValue` a las dos llamadas (fresh y stale) duplicaría cada fila
- * que se quisiera simular: en producción una conversación cae en una sola de
- * las dos ventanas, nunca en las dos.
+ * Responde según qué píldora pidió la consulta: `unreadOnly` para "No
+ * leídas", `assignedTo` para "Mías". Sin esto, dar la misma
+ * `mockResolvedValue` a las dos llamadas confundiría cuál fila pertenece a
+ * cuál píldora — en producción una fila puede calzar en las dos consultas a
+ * la vez (un chat mío y sin leer), pero cada una la trae solo bajo su propia
+ * condición.
  */
-function mockPending(over: { fresh?: Conversation[]; stale?: Conversation[] } = {}) {
+function mockServerRows(over: { unread?: Conversation[]; mine?: Conversation[] } = {}) {
   vi.mocked(fetchConversations).mockImplementation(async (_supabase, options) => {
-    if (options?.pendingWindow === "fresh") return over.fresh ?? [];
-    if (options?.pendingWindow === "stale") return over.stale ?? [];
+    if (options?.unreadOnly) return over.unread ?? [];
+    if (options?.assignedTo) return over.mine ?? [];
     return [];
   });
 }
@@ -50,36 +51,21 @@ function agent(id: string, role: Agent["role"]): Agent {
 const ANA = agent("ana", "agent");
 const JEFA = agent("jefa", "admin");
 
-/**
- * El helper fija `lastMessageAt` en esta fecha, muy anterior a "hoy": toda
- * conversación que la use como `lastCustomerMessageAt` cae del lado
- * "Esperando +24 h" / "stale" sin ambigüedad.
- */
-const ESPERANDO = "2026-08-22T10:00:00Z";
-
 function conversation(over: {
   id: string;
   unreadCount?: number;
   manuallyUnread?: boolean;
   assignedAgent?: Agent | null;
-  lastCustomerMessageAt?: string | null;
-  /**
-   * Por defecto igual a `lastCustomerMessageAt` (o a ESPERANDO si tampoco se
-   * pidió ese): el último mensaje del hilo es del cliente, nadie contestó —
-   * el caso que más se usa en este archivo. Pasar un valor posterior simula
-   * que alguien ya le respondió.
-   */
-  lastMessageAt?: string | null;
-  hasReply?: boolean;
   status?: Conversation["status"];
   tags?: Tag[];
+  lastMessageAt?: string | null;
 }): Conversation {
   return {
     id: over.id,
     status: over.status ?? "open",
-    lastCustomerMessageAt: over.lastCustomerMessageAt ?? null,
-    lastMessageAt: "lastMessageAt" in over ? (over.lastMessageAt ?? null) : (over.lastCustomerMessageAt ?? ESPERANDO),
-    hasReply: over.hasReply ?? false,
+    lastCustomerMessageAt: null,
+    lastMessageAt: "lastMessageAt" in over ? (over.lastMessageAt ?? null) : "2026-08-20T10:00:00Z",
+    hasReply: false,
     contact: {
       id: `c-${over.id}`,
       phoneNumber: "+58 412 000 0000",
@@ -104,15 +90,8 @@ function conversation(over: {
 }
 
 const CONVERSATIONS = [
-  // Sin `lastCustomerMessageAt`: `awaitingReply` falla cerrado (false), así
-  // que esta conversación nunca cae en "Pendientes" pese a no tener dueño.
-  conversation({ id: "sin-duena", unreadCount: 2, tags: [TAG_VIP] }),
-  conversation({
-    id: "de-ana",
-    assignedAgent: ANA,
-    tags: [TAG_MOROSO],
-    lastCustomerMessageAt: ESPERANDO,
-  }),
+  conversation({ id: "con-vip", unreadCount: 2, tags: [TAG_VIP] }),
+  conversation({ id: "de-ana", assignedAgent: ANA, tags: [TAG_MOROSO] }),
   conversation({ id: "de-ana-sin-leer", assignedAgent: ANA, unreadCount: 1 }),
 ];
 
@@ -163,33 +142,37 @@ function activePillLabel(): string | undefined {
   return boton?.textContent ?? undefined;
 }
 
-function irATodos() {
+function irA(nombre: string) {
   const filtros = screen.getByRole("group", { name: "Filtrar conversaciones" });
-  fireEvent.click(within(filtros).getAllByRole("button", { name: "Todos" })[0]);
+  fireEvent.click(within(filtros).getAllByRole("button", { name: nombre })[0]);
+}
+
+function irATodos() {
+  irA("Todos");
 }
 
 describe("InboxSidebar — qué filtros ve cada rol", () => {
-  it("al administrador le ofrece las tres píldoras", () => {
+  it("al administrador le ofrece las tres píldoras, en ese orden", () => {
     renderSidebar(JEFA);
-    expect(pillLabels()).toEqual(["Pendientes", "Míos", "Todos"]);
+    expect(pillLabels()).toEqual(["No leídas", "Mías", "Todos"]);
   });
 
   it("al asesor le ofrece las mismas tres píldoras", () => {
     renderSidebar(ANA);
-    expect(pillLabels()).toEqual(["Pendientes", "Míos", "Todos"]);
+    expect(pillLabels()).toEqual(["No leídas", "Mías", "Todos"]);
   });
 });
 
 /**
- * Los cortes viejos (por leído y por asignado) se retiraron con la reforma
- * de píldoras: "Sin leer", "Sin asignar", "Asignados" y "Míos sin leer" ya
- * no tienen botón propio — quedaron fusionados en las sub-secciones de
- * "Pendientes" y "Míos" (`inbox-sections.ts`). Este test existe para que no
- * vuelvan por descuido si alguien reintroduce uno de esos cortes sin darse
- * cuenta de que ya tiene otro lugar.
+ * Los cortes viejos (por leído, por asignado, y "Pendientes" —retirado de la
+ * bandeja en esta misma reforma—) no tienen botón propio. Reintroducir
+ * alguno como píldora es decisión consciente del operador, no un descuido de
+ * refactor. Este test vigila BOTONES y no texto suelto en la pantalla porque
+ * "Sin leer" sí existe dentro de la bandeja: como encabezado de sección
+ * dentro de "Mías" (`inbox-sections.ts`), no como filtro.
  */
 describe("InboxSidebar — los cortes viejos no vuelven", () => {
-  const RETIRADOS = ["Sin leer", "Sin asignar", "Asignados", "Míos sin leer"];
+  const RETIRADOS = ["Pendientes", "Sin leer", "Sin asignar", "Asignados", "Míos sin leer"];
 
   it.each(RETIRADOS)("no ofrece la píldora «%s» al administrador", (nombre) => {
     renderSidebar(JEFA);
@@ -202,83 +185,88 @@ describe("InboxSidebar — los cortes viejos no vuelven", () => {
   });
 });
 
-/**
- * El punto entero del filtro: encontrar el chat pendiente esté o no en las
- * 30 filas que la bandeja tiene cargadas. Filtrar en memoria escondería
- * justo al que se busca — el viejo, el que lleva días esperando. Como
- * "Pendientes" es el filtro por defecto, la consulta sale sola al montar.
- */
-describe("InboxSidebar — 'Pendientes' sale a buscar a la base", () => {
-  it("consulta la base al montar, porque abre en 'Pendientes'", () => {
-    renderSidebar(JEFA);
-    expect(fetchConversations).toHaveBeenCalled();
-  });
-
-  it("hace dos consultas: la ventana fresca sin tope, la vieja con PENDING_STALE_LIMIT", () => {
+describe("InboxSidebar — 'No leídas' y 'Mías' salen a buscar a la base", () => {
+  it("al abrir en 'No leídas' (filtro por defecto), pide unreadOnly con el tope compartido", () => {
     renderSidebar(JEFA);
 
-    expect(fetchConversations).toHaveBeenCalledTimes(2);
-    // Sin `unassignedOnly`: un chat asignado al que nadie le respondió sigue
-    // siendo pendiente (ver inbox-filters.ts). Sin `neverRepliedOnly`: esa
-    // opción vació la píldora en producción el 28/8/2026.
-    expect(fetchConversations).toHaveBeenNthCalledWith(1, expect.anything(), {
-      activeOnly: true,
-      awaitingReplyOnly: true,
-      pendingWindow: "fresh",
-    });
-    expect(fetchConversations).toHaveBeenNthCalledWith(2, expect.anything(), {
-      activeOnly: true,
-      awaitingReplyOnly: true,
-      pendingWindow: "stale",
-      limit: PENDING_STALE_LIMIT,
+    expect(fetchConversations).toHaveBeenCalledWith(expect.anything(), {
+      unreadOnly: true,
+      limit: SERVER_FILTER_LIMIT,
     });
   });
 
-  it("trae el chat libre sin contestar que no estaba en la ventana cargada", async () => {
-    const viejo = conversation({ id: "olvidado", lastCustomerMessageAt: ESPERANDO });
-    mockPending({ stale: [viejo] });
+  it("al pasar a 'Mías', pide assignedTo con el id de quien mira y el mismo tope", () => {
+    renderSidebar(JEFA);
+    irA("Mías");
 
-    const { container } = renderSidebar(JEFA);
-
-    await waitFor(() => expect(visibleIds(container)).toContain("olvidado"));
+    expect(fetchConversations).toHaveBeenCalledWith(expect.anything(), {
+      assignedTo: JEFA.id,
+      limit: SERVER_FILTER_LIMIT,
+    });
   });
 
   /**
-   * `hasReply` es un flag vitalicio (lo enciende la IA, el asesor o hasta la
-   * plantilla de bienvenida automática, y nunca se apaga) que el backfill dejó
-   * encendido en casi todo el histórico. Antes se sumaba `neverRepliedOnly` a
-   * la consulta para no repetir acá el chat que un asesor ya había atendido a
-   * mano, pero eso vació la píldora en producción el 28/8/2026: el chat que la
-   * IA contestó hace días y al que el cliente volvió a escribir —trabajo
-   * pendiente de verdad— quedaba oculto para siempre. Lo que importa es que
-   * el último mensaje del hilo vuelva a ser del cliente, no si alguna vez
-   * hubo respuesta.
+   * El bug que motiva la reforma: antes "Míos" filtraba solo la ventana de
+   * ~30 filas en memoria, así que un cliente viejo asignado a este asesor
+   * pero fuera de esa ventana desaparecía de su propia píldora. Ahora "Mías"
+   * le pregunta a la base por el conjunto entero.
    */
-  it("muestra el hilo que trae la consulta aunque el cliente ya haya recibido respuesta antes", async () => {
-    const vuelveAEscribir = conversation({
-      id: "responde-de-nuevo",
-      hasReply: true,
-      lastCustomerMessageAt: ESPERANDO,
-    });
-    mockPending({ stale: [vuelveAEscribir] });
+  it("el chat asignado y viejo aparece en 'Mías' vía servidor aunque no esté en memoria", async () => {
+    const viejoDeAna = conversation({ id: "viejo-de-ana", assignedAgent: ANA });
+    mockServerRows({ mine: [viejoDeAna] });
 
-    const { container } = renderSidebar(JEFA);
+    const { container } = renderSidebar(ANA);
+    irA("Mías");
 
-    await waitFor(() => expect(visibleIds(container)).toContain("responde-de-nuevo"));
+    await waitFor(() => expect(visibleIds(container)).toContain("viejo-de-ana"));
+  });
+
+  /** Cerrar una conversación no es leerla. */
+  it("una conversación cerrada con mensajes sin leer aparece en 'No leídas'", async () => {
+    const cerrada = conversation({ id: "cerrada-sin-leer", unreadCount: 3, status: "closed" });
+    const { container } = render(
+      <InboxSidebar
+        conversations={[cerrada]}
+        selectedId={null}
+        onSelect={() => {}}
+        currentAgent={JEFA}
+        allTags={ALL_TAGS}
+        bcvRate={null}
+      />
+    );
+
+    await waitFor(() => expect(visibleIds(container)).toContain("cerrada-sin-leer"));
+  });
+
+  /** Apartar a mano cuenta igual que tener mensajes sin abrir (`isUnread`). */
+  it("una conversación apartada a mano, con el contador en cero, aparece en 'No leídas'", async () => {
+    const apartada = conversation({ id: "apartada", manuallyUnread: true, unreadCount: 0 });
+    const { container } = render(
+      <InboxSidebar
+        conversations={[apartada]}
+        selectedId={null}
+        onSelect={() => {}}
+        currentAgent={JEFA}
+        allTags={ALL_TAGS}
+        bcvRate={null}
+      />
+    );
+
+    await waitFor(() => expect(visibleIds(container)).toContain("apartada"));
   });
 
   /**
-   * `page.tsx` resuelve las dos ventanas en el servidor y las pasa como
-   * `initialPendingRows` para que la bandeja no abra con el cartel
+   * `page.tsx` resuelve la consulta de "No leídas" en el servidor y la pasa
+   * como `initialUnreadRows` para que la bandeja no abra con el cartel
    * "Buscando…" mientras el efecto de red (arriba) hace el mismo viaje otra
    * vez. La consulta del mock nunca resuelve en este test a propósito: si la
    * fila apareciera solo por la semilla, seguiría visible sin depender de
    * que esa promesa llegue a resolver.
    */
-  it("con initialPendingRows, la fila sembrada se ve antes de que la consulta resuelva", () => {
+  it("con initialUnreadRows, la fila sembrada se ve antes de que la consulta resuelva", () => {
     vi.mocked(fetchConversations).mockImplementation(() => new Promise(() => {}));
 
-    const sembrada = conversation({ id: "sembrada", lastCustomerMessageAt: ESPERANDO });
+    const sembrada = conversation({ id: "sembrada", unreadCount: 1 });
 
     const { container } = render(
       <InboxSidebar
@@ -288,7 +276,7 @@ describe("InboxSidebar — 'Pendientes' sale a buscar a la base", () => {
         currentAgent={JEFA}
         allTags={ALL_TAGS}
         bcvRate={null}
-        initialPendingRows={[sembrada]}
+        initialUnreadRows={[sembrada]}
       />
     );
 
@@ -297,23 +285,19 @@ describe("InboxSidebar — 'Pendientes' sale a buscar a la base", () => {
 
   /**
    * Lo que llega de la base es una foto; lo cargado está vivo por realtime.
-   * Antes esta divergencia se armaba con la asignación (la base decía "sin
-   * dueño", lo cargado decía "de Ana"), pero esa condición ya no filtra
-   * "Pendientes". La divergencia ahora es que alguien ya respondió: la fila
-   * viva tiene nuestra respuesta como último mensaje del hilo —
-   * `awaitingReply` da falso— aunque la foto de la base todavía la haya
-   * traído como pendiente.
+   * Acá la foto vieja todavía trae la conversación con un contador de sin
+   * leer, mientras la fila viva ya la tiene en cero: si la fila viva
+   * perdiera, "de-ana-sin-leer" seguiría en la lista.
    */
-  it("la fila cargada le gana a la que trajo la consulta", async () => {
-    const RESPONDIDO = "2026-08-22T11:00:00Z"; // una hora después de ESPERANDO.
+  it("cuando una conversación está en memoria y en la consulta del servidor, manda la de memoria", async () => {
     const vivo = conversation({
-      id: "de-ana",
+      id: "de-ana-sin-leer",
       assignedAgent: ANA,
-      lastCustomerMessageAt: ESPERANDO,
-      lastMessageAt: RESPONDIDO, // el último mensaje del hilo ya es nuestro.
+      unreadCount: 0,
+      manuallyUnread: false,
     });
-    const fotoVieja = conversation({ id: "de-ana", lastCustomerMessageAt: ESPERANDO }); // sin `lastMessageAt` propio: la base todavía la ve pendiente.
-    mockPending({ stale: [fotoVieja] });
+    const fotoVieja = conversation({ id: "de-ana-sin-leer", assignedAgent: ANA, unreadCount: 5 });
+    mockServerRows({ unread: [fotoVieja] });
 
     const { container } = render(
       <InboxSidebar
@@ -329,11 +313,10 @@ describe("InboxSidebar — 'Pendientes' sale a buscar a la base", () => {
     await waitFor(() => expect(fetchConversations).toHaveBeenCalled());
     await waitFor(() => expect(visibleIds(container)).toEqual([]));
   });
+});
 
-  /** Con el conjunto entero ya en pantalla, ofrecer "cargar más" es mentir. */
-  it("no ofrece cargar más: 'Pendientes' ya trajo todo lo que hay", async () => {
-    mockPending({ stale: [conversation({ id: "olvidado", lastCustomerMessageAt: ESPERANDO })] });
-
+describe("InboxSidebar — sin 'cargar más' en las píldoras de servidor", () => {
+  it("no ofrece cargar más en 'No leídas'", async () => {
     render(
       <InboxSidebar
         conversations={CONVERSATIONS}
@@ -347,67 +330,47 @@ describe("InboxSidebar — 'Pendientes' sale a buscar a la base", () => {
       />
     );
 
-    await waitFor(() =>
-      expect(screen.queryByRole("button", { name: /cargar más/i })).toBeNull()
-    );
+    await waitFor(() => expect(fetchConversations).toHaveBeenCalled());
+    expect(screen.queryByRole("button", { name: /cargar más/i })).toBeNull();
   });
-});
 
-describe("InboxSidebar — secciones de 'Pendientes'", () => {
-  it("pinta los dos encabezados de sección, cada uno con su conteo", () => {
-    const ahora = Date.now();
-    const nuevo = conversation({
-      id: "nuevo",
-      lastCustomerMessageAt: new Date(ahora - 60_000).toISOString(),
-      lastMessageAt: new Date(ahora - 60_000).toISOString(),
-    });
-    const viejo = conversation({ id: "viejo", lastCustomerMessageAt: ESPERANDO });
-
+  it("no ofrece cargar más en 'Mías'", async () => {
     render(
       <InboxSidebar
-        conversations={[nuevo, viejo]}
+        conversations={CONVERSATIONS}
         selectedId={null}
         onSelect={() => {}}
         currentAgent={JEFA}
         allTags={ALL_TAGS}
         bcvRate={null}
+        hasMore
+        onLoadMore={() => {}}
       />
     );
+    irA("Mías");
 
-    expect(screen.getByText("Nuevos · últimas 24 h")).toBeTruthy();
-    expect(screen.getByText("Esperando +24 h")).toBeTruthy();
-
-    const conteos = Array.from(document.querySelectorAll(".crm-list-section .lm-num")).map(
-      (el) => el.textContent
-    );
-    expect(conteos).toEqual(["1", "1"]);
-  });
-
-  it("oculta el encabezado de la sección que queda vacía", () => {
-    const nuevo = conversation({
-      id: "nuevo",
-      lastCustomerMessageAt: new Date().toISOString(),
-      lastMessageAt: new Date().toISOString(),
-    });
-
-    render(
-      <InboxSidebar
-        conversations={[nuevo]}
-        selectedId={null}
-        onSelect={() => {}}
-        currentAgent={JEFA}
-        allTags={ALL_TAGS}
-        bcvRate={null}
-      />
-    );
-
-    expect(screen.getByText("Nuevos · últimas 24 h")).toBeTruthy();
-    expect(screen.queryByText("Esperando +24 h")).toBeNull();
+    await waitFor(() => expect(fetchConversations).toHaveBeenCalledWith(expect.anything(), {
+      assignedTo: JEFA.id,
+      limit: SERVER_FILTER_LIMIT,
+    }));
+    expect(screen.queryByRole("button", { name: /cargar más/i })).toBeNull();
   });
 });
 
-describe("InboxSidebar — conteo de la píldora 'Pendientes'", () => {
-  it("viene de la prop counts, no de las filas visibles", () => {
+describe("InboxSidebar — 'Buscando…' al cambiar de píldora", () => {
+  it("muestra 'Buscando…' al pasar a 'Mías' mientras esa consulta no resuelve", async () => {
+    renderSidebar(JEFA); // "No leídas" resuelve enseguida: el mock por defecto contesta [].
+    await waitFor(() => expect(fetchConversations).toHaveBeenCalled());
+
+    vi.mocked(fetchConversations).mockImplementation(() => new Promise(() => {}));
+    irA("Mías");
+
+    expect(screen.getByText("Buscando…")).toBeTruthy();
+  });
+});
+
+describe("InboxSidebar — conteo de la píldora 'No leídas'", () => {
+  it("viene de counts.unread, y no aparece en ninguna otra píldora aunque counts.mine exista", async () => {
     const { container } = render(
       <InboxSidebar
         conversations={CONVERSATIONS}
@@ -416,28 +379,30 @@ describe("InboxSidebar — conteo de la píldora 'Pendientes'", () => {
         currentAgent={JEFA}
         allTags={ALL_TAGS}
         bcvRate={null}
-        counts={{ pending: 42, pendingStale: 10, mine: 3 }}
+        counts={{ pending: 5, pendingStale: 2, mine: 3, unread: 42 }}
       />
     );
+    await waitFor(() => expect(fetchConversations).toHaveBeenCalled());
 
-    // Solo "de-ana" está cargada como pendiente (1 fila): si el número
-    // viniera de lo visible, nunca aparecería "42".
+    // SlidingPills duplica la fila de botones para animar el recorte (ver
+    // `pillLabels`): el número real aparece dos veces en el DOM, una por
+    // copia. Lo que importa es que sea siempre "42" y nunca el de otra
+    // píldora.
     const conteos = Array.from(container.querySelectorAll(".lm-pill-count")).map(
       (el) => el.textContent
     );
-    expect(conteos).toContain("42");
+    expect(conteos).toEqual(["42", "42"]);
   });
 
   it("sin la prop counts, ninguna píldora muestra número", () => {
     const { container } = renderSidebar(JEFA);
-
     expect(container.querySelectorAll(".lm-pill-count")).toHaveLength(0);
   });
 });
 
-describe("InboxSidebar — vacío de 'Pendientes'", () => {
-  it("dice que no queda nadie esperando respuesta", async () => {
-    render(
+describe("InboxSidebar — vacío de 'No leídas'", () => {
+  it("dice que todo quedó leído, con la clase celebratoria", async () => {
+    const { container } = render(
       <InboxSidebar
         conversations={[]}
         selectedId={null}
@@ -448,21 +413,39 @@ describe("InboxSidebar — vacío de 'Pendientes'", () => {
       />
     );
 
-    expect(
-      await screen.findByText("Todo contestado. No quedó nadie esperando respuesta.")
-    ).toBeTruthy();
+    expect(await screen.findByText("Todo leído. No quedó nada nuevo por revisar.")).toBeTruthy();
+    expect(container.querySelector(".crm-empty-unread")).toBeTruthy();
+  });
+});
+
+describe("InboxSidebar — vacío de 'Mías'", () => {
+  it("dice que no tiene nada asignado, sin la clase celebratoria", async () => {
+    const { container } = render(
+      <InboxSidebar
+        conversations={[]}
+        selectedId={null}
+        onSelect={() => {}}
+        currentAgent={JEFA}
+        allTags={ALL_TAGS}
+        bcvRate={null}
+      />
+    );
+    irA("Mías");
+
+    expect(await screen.findByText("No tienes conversaciones asignadas.")).toBeTruthy();
+    expect(container.querySelector(".crm-empty-unread")).toBeNull();
   });
 });
 
 /**
  * Buscar dentro de un filtro estrecho devuelve vacío sin explicación: un
- * chat que no es "Pendientes" ni "Míos" no aparece aunque el nombre o el
- * mensaje coincidan. Al primer carácter la píldora salta a "Todos".
+ * chat ya leído no aparece en "No leídas" aunque el nombre o el mensaje
+ * coincidan. Al primer carácter la píldora salta a "Todos".
  */
 describe("InboxSidebar — buscar mueve la píldora activa a 'Todos'", () => {
   it("al escribir el primer carácter, si el filtro no era 'Todos', salta a 'Todos'", () => {
     renderSidebar(ANA);
-    expect(activePillLabel()).toBe("Pendientes");
+    expect(activePillLabel()).toBe("No leídas");
 
     fireEvent.change(screen.getByPlaceholderText("Buscar contacto, número o mensaje"), {
       target: { value: "a" },
@@ -493,6 +476,37 @@ describe("InboxSidebar — buscar mueve la píldora activa a 'Todos'", () => {
   });
 });
 
+/**
+ * Abrir un chat es leerlo. `patchServerRows` (inbox-sidebar.tsx) adelanta
+ * ese efecto sobre la fila que solo vive en la consulta del servidor, para
+ * que salga de "No leídas" sin esperar a que se vuelva a consultar.
+ */
+describe("InboxSidebar — abrir un chat de servidor lo saca de 'No leídas'", () => {
+  it("la fila que solo llegó por la consulta desaparece de la lista al seleccionarla", async () => {
+    const soloEnServidor = conversation({ id: "solo-en-servidor", unreadCount: 3 });
+    mockServerRows({ unread: [soloEnServidor] });
+
+    const onSelect = vi.fn();
+    const { container } = render(
+      <InboxSidebar
+        conversations={[]}
+        selectedId={null}
+        onSelect={onSelect}
+        currentAgent={JEFA}
+        allTags={ALL_TAGS}
+        bcvRate={null}
+      />
+    );
+
+    await waitFor(() => expect(visibleIds(container)).toContain("solo-en-servidor"));
+
+    fireEvent.click(screen.getByText("solo-en-servidor"));
+
+    expect(onSelect).toHaveBeenCalledWith("solo-en-servidor");
+    await waitFor(() => expect(visibleIds(container)).not.toContain("solo-en-servidor"));
+  });
+});
+
 /** El filtro por categoría vive en un menú: abrirlo es parte del gesto. */
 function abrirMenúDeCategorías(): HTMLElement {
   fireEvent.click(screen.getByRole("button", { name: /categoría/i }));
@@ -519,14 +533,14 @@ describe("InboxSidebar — filtrar por categoría", () => {
 
   it("al elegir una categoría deja solo las conversaciones que la llevan", () => {
     const { container } = renderSidebar(JEFA);
-    // El filtro por categoría se prueba sobre "Todos": el default
-    // "Pendientes" ya excluiría "sin-duena" (sin `lastCustomerMessageAt`)
-    // antes incluso de aplicar la etiqueta.
+    // El filtro por categoría se prueba sobre "Todos": el default "No
+    // leídas" ya excluiría "de-ana" (leída, sin apartar) antes incluso de
+    // aplicar la etiqueta.
     irATodos();
 
     fireEvent.click(within(abrirMenúDeCategorías()).getByText("VIP"));
 
-    expect(visibleIds(container)).toEqual(["sin-duena"]);
+    expect(visibleIds(container)).toEqual(["con-vip"]);
   });
 
   it("elegir de nuevo la categoría activa quita el filtro", () => {
@@ -595,9 +609,9 @@ describe("apartar un chat desde el menú de la bandeja", () => {
         onMarkRead={over.onMarkRead ?? onMarkRead}
       />
     );
-    // Estas conversaciones no tienen `lastCustomerMessageAt`, así que bajo
-    // el filtro por defecto ("Pendientes") no se verían — lo que se prueba
-    // acá es el menú contextual, no el filtro, así que se mira sobre "Todos".
+    // "leido" no tiene nada sin leer: bajo el filtro por defecto ("No
+    // leídas") no se vería — lo que se prueba acá es el menú contextual, no
+    // el filtro, así que se mira sobre "Todos".
     irATodos();
     return { onMarkUnread, onMarkRead };
   }

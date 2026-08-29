@@ -438,9 +438,10 @@ describe("fetchConversations", () => {
     });
 
     /**
-     * La sección "Esperando +24 h" pide `PENDING_STALE_LIMIT` filas
-     * (inbox-sections.ts): `pendingWindow` tiene que poder combinarse con
-     * `limit` como cualquier otro filtro.
+     * `pendingWindow` ya no tiene consumidor en la bandeja (la píldora
+     * "Pendientes" salió en la reforma del 28/8/2026; queda disponible como
+     * `neverRepliedOnly`), pero mientras exista tiene que poder combinarse
+     * con `limit` como cualquier otro filtro.
      */
     it('pendingWindow "stale" respeta el limit explícito', async () => {
       const rows = Array.from({ length: 10 }, (_, i) => conFecha(i, ANTES_DEL_CORTE));

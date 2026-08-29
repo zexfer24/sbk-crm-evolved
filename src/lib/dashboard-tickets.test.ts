@@ -3,17 +3,12 @@ import type { SupabaseClient } from "@supabase/supabase-js";
 import { fetchTicketTags } from "@/lib/data";
 import {
   buildTicketStats,
-  isStalePending,
   isTicket,
   ticketCategory,
   ticketQueue,
   ticketTagsOf,
 } from "@/lib/dashboard";
-// Import de test únicamente: verifica que `isStalePending` (Dashboard) y
-// `buildInboxSections` (bandeja) clasifiquen la misma conversación de la
-// misma forma. No se toca inbox-sections.ts.
-import { buildInboxSections } from "@/lib/inbox-sections";
-import type { BoardConversation, ConversationSummary, Tag, TicketTagsByContact } from "@/lib/types";
+import type { BoardConversation, Tag, TicketTagsByContact } from "@/lib/types";
 
 /**
  * Un reclamo no es una entidad aparte: es un contacto etiquetado. Las
@@ -144,69 +139,13 @@ describe("estadística de reclamos", () => {
 });
 
 // ---------------------------------------------------------------------------
-// Contrato compartido: Dashboard y bandeja miden "pendiente atascado" igual
-//
-// `isStalePending` (Dashboard) y la sección "Esperando +24 h" que arma
-// `buildInboxSections` (bandeja, inbox-sections.ts) tienen que clasificar la
-// misma conversación de la misma forma. Antes de esta tarea usaban relojes
-// distintos (`minutesInStage` vs. `withinFreeformWindow`) y podían
-// contradecirse en pantalla. Este test es el que impide que vuelvan a
-// divergir: si alguien cambia uno de los dos criterios sin tocar el otro,
-// rompe acá.
+// El contrato compartido "isStalePending y buildInboxSections miden lo
+// mismo" que vivía acá se retiró con la reforma del 28/8/2026 (tarde): la
+// bandeja ya no parte por la ventana de 24h —esa píldora ("pending") salió
+// de inbox-sections.ts—, así que ya no hay dos relojes que puedan divergir.
+// `isStalePending` sigue siendo del dashboard (`dashboard.ts`) y sus propios
+// tests (arriba, en "estadística de reclamos") quedan intactos.
 // ---------------------------------------------------------------------------
-
-/**
- * Conversación mínima que satisface tanto `BoardConversation` (lo que pide
- * `isStalePending`) como `ConversationSummary` (lo que pide
- * `buildInboxSections`), para poder pasar el mismo objeto a las dos
- * funciones.
- */
-function conversacionCompartida(over: Partial<ConversationSummary> = {}): ConversationSummary {
-  return {
-    ...conversacion(over),
-    lastMessagePreview: null,
-    lastMessageDirection: null,
-    lastMessageStatus: null,
-    contact: {
-      ...conversacion().contact,
-      avatarUrl: null,
-      tags: [],
-    },
-    ...over,
-  };
-}
-
-describe("isStalePending y buildInboxSections miden lo mismo", () => {
-  it("pendiente fuera de la ventana de 24 h: atascado para las dos", () => {
-    const fueraDeVentana = conversacionCompartida({
-      id: "fuera",
-      lastMessageAt: null, // nadie contestó, awaitingReply queda en true
-      lastCustomerMessageAt: new Date(AHORA - 25 * HORA).toISOString(),
-    });
-
-    expect(isStalePending(fueraDeVentana, AHORA)).toBe(true);
-
-    const secciones = buildInboxSections("pending", [fueraDeVentana], new Date(AHORA));
-    expect(secciones).toHaveLength(1);
-    expect(secciones[0].label).toBe("Esperando +24 h");
-    expect(secciones[0].conversations).toEqual([fueraDeVentana]);
-  });
-
-  it("pendiente dentro de la ventana de 24 h: no atascado para ninguna", () => {
-    const dentroDeVentana = conversacionCompartida({
-      id: "dentro",
-      lastMessageAt: null,
-      lastCustomerMessageAt: new Date(AHORA - 1 * HORA).toISOString(),
-    });
-
-    expect(isStalePending(dentroDeVentana, AHORA)).toBe(false);
-
-    const secciones = buildInboxSections("pending", [dentroDeVentana], new Date(AHORA));
-    expect(secciones).toHaveLength(1);
-    expect(secciones[0].label).toBe("Nuevos · últimas 24 h");
-    expect(secciones[0].conversations).toEqual([dentroDeVentana]);
-  });
-});
 
 // ---------------------------------------------------------------------------
 // El armado del mapa

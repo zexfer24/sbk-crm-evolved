@@ -9,7 +9,7 @@ import {
   fetchTags,
   fetchAgentSettings,
 } from "@/lib/data";
-import { PENDING_STALE_LIMIT } from "@/lib/inbox-sections";
+import { SERVER_FILTER_LIMIT } from "@/lib/inbox-filters";
 import { getBcvRate } from "@/lib/ai/bcv";
 import { CrmShell } from "@/components/crm-shell";
 import type { BcvRateSummary } from "@/components/inbox/bcv-rate-chip";
@@ -41,8 +41,7 @@ export default async function InboxPage({ searchParams }: PageProps<"/inbox">) {
     { conversation },
     conversations,
     inboxCounts,
-    pendingFresh,
-    pendingStale,
+    unreadConversations,
     tags,
     quickReplies,
     bcvRate,
@@ -51,21 +50,13 @@ export default async function InboxPage({ searchParams }: PageProps<"/inbox">) {
     searchParams,
     fetchConversations(supabase, { limit: INBOX_PAGE_SIZE }),
     fetchInboxCounts(supabase, currentAgent.id),
-    // Las mismas dos ventanas que `InboxSidebar` le pide a la base al montar
-    // (ver inbox-sidebar.tsx). Resolverlas acá evita que la bandeja abra en
-    // "Pendientes" —el filtro por defecto— mostrando el cartel "Buscando…"
-    // mientras el efecto de red hace el mismo viaje desde el navegador.
-    fetchConversations(supabase, {
-      activeOnly: true,
-      awaitingReplyOnly: true,
-      pendingWindow: "fresh",
-    }),
-    fetchConversations(supabase, {
-      activeOnly: true,
-      awaitingReplyOnly: true,
-      pendingWindow: "stale",
-      limit: PENDING_STALE_LIMIT,
-    }),
+    // Misma consulta que `InboxSidebar` le pide a la base al montar en la
+    // píldora "No leídas" (ver inbox-sidebar.tsx). Resolverla acá evita que
+    // la bandeja abra en esa píldora —el filtro por defecto— mostrando el
+    // cartel "Buscando…" mientras el efecto de red hace el mismo viaje desde
+    // el navegador. Antes eran dos consultas (fresh/stale de "Pendientes");
+    // la reforma a No leídas/Mías/Todos las deja en una sola.
+    fetchConversations(supabase, { unreadOnly: true, limit: SERVER_FILTER_LIMIT }),
     fetchTags(supabase),
     fetchQuickReplies(supabase),
     loadBcvRate(supabase),
@@ -80,7 +71,7 @@ export default async function InboxPage({ searchParams }: PageProps<"/inbox">) {
       currentAgent={currentAgent}
       initialConversations={conversations}
       initialInboxCounts={inboxCounts}
-      initialPendingConversations={[...pendingFresh, ...pendingStale]}
+      initialUnreadConversations={unreadConversations}
       allTags={tags}
       initialQuickReplies={quickReplies}
       bcvRate={bcvRate}

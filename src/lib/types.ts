@@ -362,17 +362,26 @@ export interface KnowledgeEntry {
 }
 
 /**
- * Cortes de la bandeja. Reforma del 28/8/2026: de cinco píldoras que
- * distinguían leído/asignado se pasó a tres iguales para todos los roles —
- * `pending` (lo que falta por atender), `mine` (lo del asesor que mira) y
- * `all`. Se retiraron `unread`, `unassigned`, `assigned` y `mine-unread`:
- * el corte por asignación no servía de guarda (ver el comentario del case
- * `pending` en inbox-filters.ts) y la separación nuevo/viejo pasó a las
- * secciones por ventana de 24h (`src/lib/inbox-sections.ts`), no a un filtro
- * excluyente. `filtersForRole` sigue existiendo como punto de entrada por si
+ * Cortes de la bandeja. Primera reforma (28/8/2026, mañana): de cinco
+ * píldoras que distinguían leído/asignado se pasó a tres iguales para todos
+ * los roles — `pending`, `mine`, `all` — porque el corte por asignación no
+ * servía de guarda (ver el historial en el comentario del case `pending` que
+ * tenía inbox-filters.ts) y la separación nuevo/viejo se movió a las
+ * secciones por ventana de 24h.
+ *
+ * Segunda reforma (28/8/2026, misma tarde, pedido directo del operador):
+ * `pending` se retira de la bandeja. Su corte —trabajo que lleva más de 24h
+ * sin respuesta— no desaparece, sigue vivo en `dashboard.ts`
+ * (`awaitingReply`/`isStalePending`) y en el AgentHomePanel; deja de ser una
+ * píldora de la lista de chats. En su lugar vuelve el corte por lectura como
+ * `unread` — decisión consciente, no un regreso automático a lo viejo: esta
+ * vez es GLOBAL de equipo (`unreadCount > 0 || manuallyUnread`, ver
+ * `isUnread` en inbox-filters.ts), no por usuario, y una conversación
+ * CERRADA con mensajes sin leer sí aparece ahí — cerrar el chat no es
+ * leerlo. `filtersForRole` sigue existiendo como punto de entrada por si
  * mañana un rol necesita un corte propio.
  */
-export type InboxFilter = "pending" | "mine" | "all";
+export type InboxFilter = "unread" | "mine" | "all";
 
 export type InboxSort = "recent" | "oldest";
 

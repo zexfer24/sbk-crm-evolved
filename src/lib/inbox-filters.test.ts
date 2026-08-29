@@ -5,6 +5,7 @@ import {
   DEFAULT_INBOX_FILTER,
   filtersForRole,
   INBOX_FILTER_LABELS,
+  isUnread,
 } from "@/lib/inbox-filters";
 
 const TAG_MOROSO: Tag = { id: "tag-moroso", label: "Moroso", color: "danger" };
@@ -59,7 +60,7 @@ function conversation(over: {
 
 describe("filtersForRole", () => {
   it("le da al administrador las tres píldoras", () => {
-    expect(filtersForRole("admin")).toEqual(["pending", "mine", "all"]);
+    expect(filtersForRole("admin")).toEqual(["unread", "mine", "all"]);
   });
 
   it("trata al supervisor como administrador", () => {
@@ -67,7 +68,7 @@ describe("filtersForRole", () => {
   });
 
   it("al asesor le ofrece las mismas tres píldoras", () => {
-    expect(filtersForRole("agent")).toEqual(["pending", "mine", "all"]);
+    expect(filtersForRole("agent")).toEqual(["unread", "mine", "all"]);
   });
 
   it("cada filtro tiene etiqueta", () => {
@@ -80,7 +81,7 @@ describe("filtersForRole", () => {
 
   // Guardia anti-crecimiento: la reforma del 28/8/2026 bajó de cinco píldoras
   // a tres a propósito —los cortes por leído/asignado eran guardas poco
-  // fiables (ver inbox-filters.ts, case "pending"). Este test no valida
+  // fiables (ver inbox-filters.ts, case "unread"). Este test no valida
   // comportamiento nuevo, valida que nadie vuelva a sumar píldoras sin pensarlo:
   // si un rol necesita un corte propio, que sea una decisión de producto
   // explícita, no un agregado silencioso a `filtersForRole`.
@@ -92,8 +93,8 @@ describe("filtersForRole", () => {
 });
 
 describe("DEFAULT_INBOX_FILTER", () => {
-  it("al entrar a la bandeja se ve lo que falta por atender", () => {
-    expect(DEFAULT_INBOX_FILTER).toBe("pending");
+  it("al entrar a la bandeja se ve lo que nadie ha leído todavía", () => {
+    expect(DEFAULT_INBOX_FILTER).toBe("unread");
   });
 });
 
@@ -127,24 +128,18 @@ describe("applyInboxFilters — filtro por bandeja", () => {
   });
 });
 
-// Los casos de `manuallyUnread` que dependían de los filtros `unread` y
-// `mine-unread` (retirados en la reforma del 28/8/2026) se fueron de acá: su
-// conducta —que marcar un chat como no leído a mano lo saque en las
-// secciones correspondientes— vive ahora en inbox-sections.test.ts.
-
 /**
- * El corte que busca trabajo que falta por atender. Antes se llamaba
- * "unanswered" y solo dejaba pasar lo que además no tenía asesor asignado;
- * la reforma del 28/8/2026 lo renombró a "pending" y le quitó esa condición
- * de asignación (ver el comentario del case en inbox-filters.ts).
+ * El corte "pending" (trabajo con más de 24h sin respuesta, antes llamado
+ * "unanswered") y sus ~11 casos de borde —hasReply vitalicio, sin dueño,
+ * escalado sin respuesta, cerrada, muda, etc.— se retiraron de acá con la
+ * reforma del 28/8/2026 (tarde): esa conducta ya no vive en la bandeja, vive
+ * en `dashboard.ts` (`awaitingReply`/`isStalePending`) y se prueba en
+ * `dashboard-tickets.test.ts` y `data-conversations.test.ts`.
  */
-describe("applyInboxFilters — 'pending'", () => {
-  const CLIENTE_HABLÓ = "2026-08-22T10:00:00Z";
-  const NOSOTROS_DESPUÉS = "2026-08-22T11:00:00Z";
-
+describe("applyInboxFilters — 'unread'", () => {
   function ids(todas: Conversation[]) {
     return applyInboxFilters(todas, {
-      filter: "pending",
+      filter: "unread",
       search: "",
       tagId: null,
       sort: "recent",
@@ -152,157 +147,47 @@ describe("applyInboxFilters — 'pending'", () => {
     }).map((c) => c.id);
   }
 
-  it("deja la libre cuyo último mensaje sigue siendo del cliente", () => {
-    const libre = conversation({
-      id: "libre",
-      lastCustomerMessageAt: CLIENTE_HABLÓ,
-      lastMessageAt: CLIENTE_HABLÓ,
-    });
+  it("aparece si tiene mensajes sin leer", () => {
+    const conMensajesSinLeer = conversation({ id: "con-mensajes", unreadCount: 3 });
 
-    expect(ids([libre])).toEqual(["libre"]);
+    expect(ids([conMensajesSinLeer])).toEqual(["con-mensajes"]);
   });
 
-  // Invertido en la reforma del 28/8/2026: antes esta conversación se
-  // descartaba por tener asesor asignado. Pero `assignedAgent` no es una
-  // guarda confiable —los asesores de SBK contestan sin asignarse el chat
-  // (ver human-handled.ts:17-21)— y con esa condición puesta, el caso más
-  // grave de todos —un chat escalado o asignado al que nadie le respondió—
-  // quedaba invisible. Ahora debe verse igual que la libre.
-  it("muestra la que ya tiene asesor, aunque nadie le haya contestado", () => {
-    const tomada = conversation({
-      id: "tomada",
-      assignedAgent: BETO,
-      lastCustomerMessageAt: CLIENTE_HABLÓ,
-      lastMessageAt: CLIENTE_HABLÓ,
-    });
+  it("aparece si está apartada a mano, aunque el contador esté en 0", () => {
+    const apartada = conversation({ id: "apartada", unreadCount: 0, manuallyUnread: true });
 
-    expect(ids([tomada])).toEqual(["tomada"]);
+    expect(ids([apartada])).toEqual(["apartada"]);
   });
 
-  it("descarta la libre que ya fue contestada: el último mensaje es nuestro", () => {
-    const contestada = conversation({
-      id: "contestada",
-      lastCustomerMessageAt: CLIENTE_HABLÓ,
-      lastMessageAt: NOSOTROS_DESPUÉS,
-    });
+  it("no aparece la leída: contador en 0 y sin apartar a mano", () => {
+    const leída = conversation({ id: "leida", unreadCount: 0, manuallyUnread: false });
 
-    expect(ids([contestada])).toEqual([]);
+    expect(ids([leída])).toEqual([]);
   });
 
-  /**
-   * `hasReply` es un flag vitalicio: lo enciende cualquier salida que no sea
-   * del sistema —la IA, el asesor, hasta la plantilla de bienvenida
-   * automática que sale con la IA apagada— y nunca se apaga. Hubo un intento
-   * (80b66b5) de sumarlo a esta condición para no mostrar al fondo de la
-   * lista chats que un asesor ya había respondido a mano. La intención era
-   * buena, pero como el backfill dejó ese flag encendido en casi todo el
-   * histórico, "Sin contestar" quedó vacío en producción el 28/8/2026: un
-   * chat que la IA respondió hace días y al que el cliente volvió a
-   * escribir —trabajo pendiente de verdad— quedaba oculto para siempre. Lo
-   * que importa es si el último mensaje del hilo es del cliente, no si
-   * alguna vez se le contestó.
-   */
-  it("muestra el hilo donde el cliente volvió a escribir aunque alguna vez se le haya respondido", () => {
-    const atendida = conversation({
-      id: "atendida",
-      hasReply: true,
-      lastCustomerMessageAt: CLIENTE_HABLÓ,
-      lastMessageAt: CLIENTE_HABLÓ,
-    });
+  // Decisión de diseño del operador (28/8/2026): cerrar un chat no es
+  // leerlo. Una conversación cerrada con mensajes sin abrir sigue siendo
+  // trabajo de lectura pendiente, así que aparece igual que una abierta.
+  it("una conversación cerrada con mensajes sin leer aparece igual", () => {
+    const cerradaSinLeer = conversation({ id: "cerrada-sin-leer", unreadCount: 1, status: "closed" });
 
-    expect(ids([atendida])).toEqual(["atendida"]);
+    expect(ids([cerradaSinLeer])).toEqual(["cerrada-sin-leer"]);
   });
 
-  /**
-   * El escenario exacto que vació la píldora en producción el 28/8/2026: la
-   * IA le contestó al cliente hace varios días, el cliente volvió a escribir
-   * después, y ese mensaje —el último del hilo— nunca recibió respuesta.
-   * `hasReply` está encendido desde la respuesta vieja de la IA y así se
-   * queda para siempre; lo que decide si hay trabajo pendiente es que
-   * `lastMessageAt` sea otra vez del cliente.
-   */
-  it("muestra el chat donde la IA contestó hace días y el cliente volvió a escribir sin que nadie le respondiera", () => {
-    // No hay campo para "cuándo fue la última respuesta": `hasReply` es un
-    // booleano vitalicio, sin fecha. Lo único que distingue este chat de uno
-    // recién llegado es que `hasReply` ya está en true — la IA respondió en
-    // algún momento del pasado — y que, aun así, el último mensaje del hilo
-    // (`lastMessageAt` == `lastCustomerMessageAt`) es del cliente, escrito
-    // después de esa respuesta.
-    const CLIENTE_VOLVIÓ_A_ESCRIBIR = "2026-08-27T15:30:00Z";
+  // Corte GLOBAL de equipo, no por usuario: a quién esté asignada no cambia
+  // si aparece en "No leídas".
+  it("la asignación no influye: asignada a otro y sin leer aparece igual", () => {
+    const deOtroSinLeer = conversation({ id: "de-otro-sin-leer", unreadCount: 1, assignedAgent: BETO });
 
-    const pendienteDeVerdad = conversation({
-      id: "pendiente-de-verdad",
-      hasReply: true,
-      lastCustomerMessageAt: CLIENTE_VOLVIÓ_A_ESCRIBIR,
-      lastMessageAt: CLIENTE_VOLVIÓ_A_ESCRIBIR,
-    });
-
-    expect(ids([pendienteDeVerdad])).toEqual(["pendiente-de-verdad"]);
+    expect(ids([deOtroSinLeer])).toEqual(["de-otro-sin-leer"]);
   });
+});
 
-  /**
-   * El caso completo que motivó retirar `assignedAgent === null` del filtro:
-   * un chat que además está escalado o asignado a un asesor. Con la
-   * condición de asignación puesta, este era el pendiente que se perdía —el
-   * más grave, porque alguien ya lo tomó y aun así nadie contestó lo último
-   * que escribió el cliente.
-   */
-  it("muestra el chat asignado donde la IA contestó hace días y el cliente volvió a escribir sin que nadie le respondiera", () => {
-    const CLIENTE_VOLVIÓ_A_ESCRIBIR = "2026-08-27T15:30:00Z";
-
-    const escaladoSinRespuesta = conversation({
-      id: "escalado-sin-respuesta",
-      assignedAgent: BETO,
-      hasReply: true,
-      lastCustomerMessageAt: CLIENTE_VOLVIÓ_A_ESCRIBIR,
-      lastMessageAt: CLIENTE_VOLVIÓ_A_ESCRIBIR,
-    });
-
-    expect(ids([escaladoSinRespuesta])).toEqual(["escalado-sin-respuesta"]);
-  });
-
-  it("descarta la cerrada: un hilo cerrado no es trabajo pendiente", () => {
-    const cerrada = conversation({
-      id: "cerrada",
-      status: "closed",
-      lastCustomerMessageAt: CLIENTE_HABLÓ,
-      lastMessageAt: CLIENTE_HABLÓ,
-    });
-
-    expect(ids([cerrada])).toEqual([]);
-  });
-
-  it("descarta la que nunca recibió un mensaje del cliente: no hay nada que contestar", () => {
-    const muda = conversation({ id: "muda", lastCustomerMessageAt: null });
-
-    expect(ids([muda])).toEqual([]);
-  });
-
-  /**
-   * El hilo abierto por una plantilla saliente que el cliente todavía no
-   * contestó tampoco entra: `lastMessageAt` null con un mensaje del cliente
-   * registrado es la conversación recién creada por el webhook, y ahí sí
-   * estamos en deuda.
-   */
-  it("cuenta como sin contestar el hilo entrante que aún no tiene último mensaje", () => {
-    const reciénLlegada = conversation({
-      id: "recien",
-      lastCustomerMessageAt: CLIENTE_HABLÓ,
-      lastMessageAt: null,
-    });
-
-    expect(ids([reciénLlegada])).toEqual(["recien"]);
-  });
-
-  it("no le importa si está leída o no: leerla no es contestarla", () => {
-    const leída = conversation({
-      id: "leida",
-      unreadCount: 0,
-      lastCustomerMessageAt: CLIENTE_HABLÓ,
-      lastMessageAt: CLIENTE_HABLÓ,
-    });
-
-    expect(ids([leída])).toEqual(["leida"]);
+describe("isUnread", () => {
+  it("es la misma definición que usa el filtro 'unread': contador o marca manual", () => {
+    expect(isUnread(conversation({ id: "a", unreadCount: 1 }))).toBe(true);
+    expect(isUnread(conversation({ id: "b", manuallyUnread: true }))).toBe(true);
+    expect(isUnread(conversation({ id: "c" }))).toBe(false);
   });
 });
 

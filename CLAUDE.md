@@ -121,8 +121,11 @@ copia intermedia.
   tocar Envoy.
 - **`has_reply` es vitalicio** (lo enciende la IA, el asesor y la bienvenida
   automática; nunca se apaga): NO sirve como corte de "sin atender" — usarlo
-  así vació la píldora de la bandeja en producción el 28/8/2026. La
-  separación nuevo/viejo se hace por la ventana de 24h (`inbox-sections.ts`).
+  así vació la píldora de la bandeja en producción el 28/8/2026. La píldora
+  "No leídas" de la bandeja usa `unread_count`/`manually_unread`
+  (`isUnread` en `inbox-filters.ts`), no `has_reply`. La ventana de 24h sin
+  respuesta sigue existiendo, pero ya no en la bandeja: vive en
+  `dashboard.ts` (`isStalePending`) y el `AgentHomePanel`.
 - `supabase/seed.sql` **no va a producción** (trae usuarios con contraseña
   escrita); los seeds de catálogo y playbooks sí.
 - Sin `WHATSAPP_APP_SECRET` el webhook acepta cualquier POST (a propósito,

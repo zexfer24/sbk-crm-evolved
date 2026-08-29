@@ -2,6 +2,7 @@ import { Fragment } from "react";
 import type { ConversationSummary } from "@/lib/types";
 import { contactName, initials } from "@/lib/dashboard";
 import { formatConversationTimestamp } from "@/lib/format";
+import { isUnread as computeIsUnread } from "@/lib/inbox-filters";
 import { highlightSegments, snippetAround, type MessageHit } from "@/lib/message-search";
 import { DeliveryCheck } from "@/components/chat/delivery-check";
 import { useLongPress } from "@/lib/use-long-press";
@@ -33,8 +34,9 @@ export function ConversationListItem({
   const name = contactName(conversation);
   // Dos caminos para lo mismo: quedaron mensajes por leer, o el asesor lo
   // apartó a propósito para volver. El chat se ve igual de pendiente en los
-  // dos casos, pero solo el primero tiene un número que mostrar.
-  const isUnread = conversation.unreadCount > 0 || conversation.manuallyUnread;
+  // dos casos, pero solo el primero tiene un número que mostrar. Misma
+  // definición que la píldora "No leídas" (`isUnread` de inbox-filters.ts).
+  const isUnread = computeIsUnread(conversation);
   // El check habla de lo que mandamos nosotros. En un mensaje entrante no
   // hay nada que confirmar: el estado es del emisor, y ahí el emisor es el cliente.
   const showCheck = conversation.lastMessageDirection === "outbound";

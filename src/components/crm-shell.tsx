@@ -73,14 +73,14 @@ interface CrmShellProps {
   /** Los contadores del panel de inicio, ya contados en el servidor. */
   initialInboxCounts: InboxCounts;
   /**
-   * Las filas de "Pendientes" (fresh + stale) ya resueltas en el servidor.
-   * Siembra `InboxSidebar` para que la píldora abra con datos en vez del
-   * cartel "Buscando…"; el efecto de red del montar los refresca igual.
-   * Opcional (y no `[]` por defecto acá arriba, sino en el destructuring de
-   * abajo) para no obligar a cada instanciación existente de `CrmShell` a
-   * conocer este dato nuevo.
+   * Las filas de "No leídas" ya resueltas en el servidor. Siembra
+   * `InboxSidebar` para que la píldora abra con datos en vez del cartel
+   * "Buscando…"; el efecto de red del montar los refresca igual. Opcional (y
+   * no `[]` por defecto acá arriba, sino en el destructuring de abajo) para
+   * no obligar a cada instanciación existente de `CrmShell` a conocer este
+   * dato nuevo.
    */
-  initialPendingConversations?: ConversationSummary[];
+  initialUnreadConversations?: ConversationSummary[];
   allTags: Tag[];
   initialQuickReplies: QuickReply[];
   /** Tasa del BCV del día, ya resuelta en el servidor. Null si no se pudo obtener ninguna. */
@@ -99,7 +99,7 @@ export function CrmShell({
   currentAgent,
   initialConversations,
   initialInboxCounts,
-  initialPendingConversations = [],
+  initialUnreadConversations = [],
   allTags,
   initialQuickReplies,
   bcvRate,
@@ -139,6 +139,24 @@ export function CrmShell({
     (id: string) => fetchConversationRow(supabase, id),
     [supabase]
   );
+
+  /**
+   * Vuelve a pedir los contadores de las píldoras, sin tocar la lista.
+   *
+   * Marcar leído/no leído aplica el cambio en memoria por el camino corto de
+   * `useLiveConversations` (`applyConversationRow`, use-live-conversations.ts
+   * líneas 157-193 devuelve "applied" y no llega a `fetchInboxHead`), así que
+   * el contador de "No leídas" quedaría con el valor viejo hasta la pasada de
+   * fondo de 5 minutos si nadie lo pide de nuevo a mano.
+   */
+  const refreshInboxCounts = useCallback(async () => {
+    try {
+      setInboxCounts(await fetchInboxCounts(supabase, currentAgent.id));
+    } catch {
+      // Los contadores se quedan con el valor anterior; el próximo evento en
+      // vivo o la próxima mutación reintenta.
+    }
+  }, [supabase, currentAgent.id]);
 
   // La lista viva: aplica en memoria lo que el evento ya trae, agrupa los
   // refetch inevitables, y no trabaja contra una pestaña que nadie mira.
@@ -405,11 +423,14 @@ export function CrmShell({
       setMobileView("list");
       try {
         await markConversationUnread(supabase, conversationId);
+        // La fila ya se movió sola en memoria; lo que falta es que la
+        // píldora "No leídas" refleje el nuevo total (ver refreshInboxCounts).
+        refreshInboxCounts();
       } catch {
         refreshConversations();
       }
     },
-    [supabase, refreshConversations, setConversations]
+    [supabase, refreshConversations, refreshInboxCounts, setConversations]
   );
 
   const markRead = useCallback(
@@ -421,11 +442,12 @@ export function CrmShell({
       );
       try {
         await markConversationRead(supabase, conversationId);
+        refreshInboxCounts();
       } catch {
         refreshConversations();
       }
     },
-    [supabase, refreshConversations, setConversations]
+    [supabase, refreshConversations, refreshInboxCounts, setConversations]
   );
 
   // Mensajes rápidos compartidos entre agentes: se sincronizan en vivo.
@@ -523,7 +545,11 @@ export function CrmShell({
       // a mano, y abrirlo es exactamente lo que deshace ese apartado.
       const flags = summaryAtOpen ?? detailData;
       if (flags.unreadCount > 0 || flags.manuallyUnread) {
-        markConversationRead(supabase, conversationId).catch(() => {});
+        // Abrir el chat es lo que lo saca de "No leídas": la píldora tiene
+        // que enterarse ahora, no en la pasada de fondo (ver refreshInboxCounts).
+        markConversationRead(supabase, conversationId)
+          .then(refreshInboxCounts)
+          .catch(() => {});
       }
     })();
 
@@ -577,7 +603,12 @@ export function CrmShell({
           // uno viejo no significa que nadie lo haya mirado, y marcarlo aquí
           // escribiría en conversations por cada descarga que termina.
           if (payload.eventType === "INSERT" && row.direction === "inbound") {
-            markConversationRead(supabase, selectedId).catch(() => {});
+            // Mismo motivo que al abrir el chat: el mensaje entra y sale
+            // leído al toque porque el chat ya está abierto, y la píldora
+            // tiene que verlo sin esperar la pasada de fondo.
+            markConversationRead(supabase, selectedId)
+              .then(refreshInboxCounts)
+              .catch(() => {});
           }
         }
       )
@@ -617,7 +648,7 @@ export function CrmShell({
             loadingMore={loadingMore}
             onLoadMore={loadMoreConversations}
             counts={inboxCounts}
-            initialPendingRows={initialPendingConversations}
+            initialUnreadRows={initialUnreadConversations}
           />
         </section>
 

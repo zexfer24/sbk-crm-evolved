@@ -69,7 +69,13 @@ vi.mock("next/navigation", () => ({
   useRouter: () => ({ push: vi.fn() }),
 }));
 
-let inboxProps: { conversations: Conversation[]; hasMore: boolean } | null = null;
+let inboxProps: {
+  conversations: Conversation[];
+  hasMore: boolean;
+  /** Capturado para el test de "marcar leído vuelve a pedir los contadores". */
+  onMarkRead?: (id: string) => void;
+  counts?: unknown;
+} | null = null;
 
 vi.mock("@/components/inbox/inbox-sidebar", () => ({
   InboxSidebar: ({
@@ -77,12 +83,16 @@ vi.mock("@/components/inbox/inbox-sidebar", () => ({
     onSelect,
     hasMore,
     onLoadMore,
+    onMarkRead,
+    counts,
   }: {
     conversations: Conversation[];
     onSelect: (id: string) => void;
     hasMore: boolean;
     onLoadMore: () => void;
-  }) => ((inboxProps = { conversations, hasMore }),
+    onMarkRead?: (id: string) => void;
+    counts?: unknown;
+  }) => ((inboxProps = { conversations, hasMore, onMarkRead, counts }),
   (
     <>
       {conversations.map((c) => (
@@ -605,6 +615,43 @@ describe("CrmShell — el interruptor general de la IA se sigue en vivo", () => 
     });
 
     expect(fetchAgentSettingsMock).toHaveBeenCalledTimes(1);
+  });
+});
+
+/**
+ * `markRead`/`markUnread` aplican el cambio en memoria por el camino corto
+ * de `useLiveConversations` (no pasan por `fetchInboxHead`), así que el
+ * contador de la píldora "No leídas" se quedaría con el valor viejo hasta la
+ * pasada de fondo de 5 minutos si nadie lo pidiera de nuevo a mano. Por eso
+ * `markRead` llama a `refreshInboxCounts` tras la escritura (crm-shell.tsx).
+ */
+describe("CrmShell — marcar leído vuelve a pedir los contadores", () => {
+  it("tras marcar leída una conversación, fetchInboxCounts se llama de nuevo y el estado se actualiza", async () => {
+    render(
+      <CrmShell
+        currentAgent={currentAgent}
+        initialConversations={[buildConversation({ id: "conv-1", unreadCount: 3 })]}
+        initialInboxCounts={inboxCounts}
+        allTags={allTags}
+        initialQuickReplies={initialQuickReplies}
+        bcvRate={null}
+        initialAgentSettings={agentSettings}
+      />
+    );
+    fetchInboxCountsMock.mockClear();
+    const contadoresActualizados = { pending: 1, pendingStale: 0, mine: 2, unread: 5 };
+    fetchInboxCountsMock.mockResolvedValueOnce(contadoresActualizados);
+
+    await act(async () => {
+      await inboxProps?.onMarkRead?.("conv-1");
+    });
+    // `refreshInboxCounts` no se espera dentro de `markRead` (es
+    // deliberadamente "fire and forget"): una vuelta más de microtareas deja
+    // que su propio fetch y el `setInboxCounts` que sigue terminen de correr.
+    await act(async () => {});
+
+    expect(fetchInboxCountsMock).toHaveBeenCalledTimes(1);
+    expect(inboxProps?.counts).toEqual(contadoresActualizados);
   });
 });
 

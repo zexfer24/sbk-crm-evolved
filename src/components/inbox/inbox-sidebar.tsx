@@ -3,7 +3,7 @@
 import { Fragment, useCallback, useEffect, useMemo, useState } from "react";
 import { ArrowDownWideNarrow, ArrowUpWideNarrow, Search } from "lucide-react";
 import type { Agent, ConversationSummary, InboxFilter, InboxSort, Tag } from "@/lib/types";
-import { fetchConversations, searchConversationSummaries } from "@/lib/data";
+import { fetchConversations, searchConversationSummaries, type InboxCounts } from "@/lib/data";
 import { initials } from "@/lib/dashboard";
 import {
   applyInboxFilters,
@@ -11,8 +11,10 @@ import {
   filtersForRole,
   INBOX_FILTER_LABELS,
   INBOX_SORT_LABELS,
+  isUnread,
+  SERVER_FILTER_LIMIT,
 } from "@/lib/inbox-filters";
-import { buildInboxSections, PENDING_STALE_LIMIT } from "@/lib/inbox-sections";
+import { buildInboxSections } from "@/lib/inbox-sections";
 import {
   MESSAGE_SEARCH_MIN_LENGTH,
   searchConversationsByMessage,
@@ -66,18 +68,19 @@ interface InboxSidebarProps {
   onLoadMore?: () => void;
   /**
    * Conteos honestos de cada píldora, contra la base entera y no contra la
-   * ventana cargada. Los arma el shell (`fetchInboxCounts`, otra tarea); sin
-   * la prop, la píldora "Pendientes" no muestra número — mentir con el
-   * tamaño de la ventana cargada es peor que no mostrar nada.
+   * ventana cargada. Los arma el shell (`fetchInboxCounts`). Solo
+   * "No leídas" los usa (ver `filterItems`): sin la prop no muestra número
+   * — mentir con el tamaño de la ventana cargada es peor que no mostrar
+   * nada.
    */
-  counts?: { pending: number; pendingStale: number; mine: number };
+  counts?: InboxCounts;
   /**
-   * Filas de "Pendientes" (fresh + stale) ya resueltas en el servidor, para
-   * sembrar el estado que llena esa píldora. Sin esto, la bandeja abre en
-   * Pendientes mostrando "Buscando…" hasta que responda el efecto de abajo,
-   * aunque el servidor ya tuviera los datos a mano.
+   * Filas de "No leídas" ya resueltas en el servidor, para sembrar el
+   * estado que llena esa píldora. Sin esto, la bandeja abre en No leídas
+   * mostrando "Buscando…" hasta que responda el efecto de abajo, aunque el
+   * servidor ya tuviera los datos a mano.
    */
-  initialPendingRows?: ConversationSummary[];
+  initialUnreadRows?: ConversationSummary[];
 }
 
 export function InboxSidebar({
@@ -93,7 +96,7 @@ export function InboxSidebar({
   loadingMore = false,
   onLoadMore,
   counts,
-  initialPendingRows,
+  initialUnreadRows,
 }: InboxSidebarProps) {
   const availableFilters = useMemo(() => filtersForRole(currentAgent.role), [currentAgent.role]);
 
@@ -165,30 +168,39 @@ export function InboxSidebar({
   const messageHits = searchIsCurrent ? hitState.hits : SIN_COINCIDENCIAS;
 
   /**
-   * "Pendientes" es el único corte que no se puede resolver sobre la ventana
-   * cargada. La bandeja tiene 30 filas en memoria y arriba están las que se
-   * movieron hace poco; este filtro busca lo contrario —el chat que lleva
-   * horas o días quieto porque nadie lo tocó—, así que justo lo que interesa
-   * queda fuera de la ventana. El conjunto se le pide a la base, partido en
-   * las dos ventanas de `inbox-sections.ts` (ver el efecto más abajo).
+   * "No leídas" y "Mías" son los dos cortes que no se pueden resolver sobre
+   * la ventana cargada. La bandeja tiene 30 filas en memoria y arriba están
+   * las que se movieron hace poco; los dos filtros buscan también lo que no
+   * se movió —un chat sin leer que quedó atrás, o un cliente viejo asignado
+   * a este asesor—, así que justo lo que interesa puede quedar fuera de la
+   * ventana. El conjunto se le pide a la base (ver el efecto más abajo).
    */
-  const resolvedOnServer = filter === "pending";
+  const resolvedOnServer = filter === "unread" || filter === "mine";
 
   /**
-   * Lo que contestó la base. Al volver al filtro se conserva lo anterior
-   * hasta que llegue lo nuevo, para no vaciar la lista en el camino.
+   * Lo que contestó la base, junto con qué píldora lo pidió.
    *
-   * Arranca sembrado con `initialPendingRows` cuando el servidor ya trajo
-   * esas filas (ver la prop): la bandeja abre en Pendientes con datos en vez
-   * del cartel "Buscando…". Sin semilla arranca en `[]`, no en `null` —el
-   * caso sin prop ya no distingue "nunca se pidió" de "la base contestó
-   * vacío", pero con `page.tsx` resolviendo siempre las dos ventanas en el
-   * servidor ese matiz dejó de hacer falta en el uso real. El efecto de red
-   * de abajo corre igual y pisa la semilla con lo que responda la base.
+   * Guardar el filtro junto a las filas —y no las filas sueltas— es lo que
+   * evita que la respuesta de una consulta se muestre bajo la píldora
+   * equivocada: sin esto, al pasar de "No leídas" a "Mías" las filas viejas
+   * de "No leídas" seguirían pintadas mientras la consulta nueva viaja
+   * (mismo motivo que separa `hitState` de la búsqueda por consulta).
+   *
+   * Arranca sembrado con `initialUnreadRows` cuando el servidor ya trajo
+   * esas filas (ver la prop): la bandeja abre en "No leídas" —el filtro por
+   * defecto— con datos en vez del cartel "Buscando…". El efecto de red de
+   * abajo corre igual y pisa la semilla con lo que responda la base.
    */
-  const [serverRows, setServerRows] = useState<ConversationSummary[] | null>(
-    initialPendingRows ?? []
-  );
+  const [serverRows, setServerRows] = useState<{
+    filter: InboxFilter;
+    rows: ConversationSummary[];
+  } | null>(initialUnreadRows ? { filter: "unread", rows: initialUnreadRows } : null);
+
+  // Solo las filas que corresponden a la píldora activa: si `serverRows`
+  // quedó con la respuesta de la píldora anterior (la consulta nueva sigue
+  // en vuelo), se trata como si no hubiera nada todavía y la lista muestra
+  // "Buscando…" en vez de las filas de la píldora que se acaba de dejar.
+  const resolvedRows = serverRows?.filter === filter ? serverRows.rows : null;
 
   useEffect(() => {
     if (!resolvedOnServer) return;
@@ -197,47 +209,52 @@ export function InboxSidebar({
     // respuesta llegue, sino que una vieja pise a una nueva.
     let cancelled = false;
     (async () => {
-      // Dos consultas en paralelo, una por sección de `buildInboxSections`:
-      //
-      // - "fresh" (dentro de la ventana de 24h de Meta): sin `limit` a
-      //   propósito, la acota el tráfico de un solo día, que no crece con el
-      //   histórico.
-      // - "stale" (fuera de la ventana): sí puede crecer con el histórico si
-      //   algo queda sin tocar por mucho tiempo, así que lleva
-      //   `PENDING_STALE_LIMIT` como tope conservador.
-      //
-      // Sin `unassignedOnly`: esta reforma retira la condición de "sin
-      // dueño" del filtro `pending` (ver el comentario en
-      // inbox-filters.ts) — un chat asignado al que nadie le respondió es
-      // pendiente igual.
-      //
-      // Sin `neverRepliedOnly`: la opción sigue existiendo en data.ts para
-      // otro uso, pero acá vaciaba el filtro en producción (ver el
-      // comentario del case `pending` en inbox-filters.ts).
-      const [fresh, stale] = await Promise.all([
-        fetchConversations(supabase, {
-          activeOnly: true,
-          awaitingReplyOnly: true,
-          pendingWindow: "fresh",
-        }),
-        fetchConversations(supabase, {
-          activeOnly: true,
-          awaitingReplyOnly: true,
-          pendingWindow: "stale",
-          limit: PENDING_STALE_LIMIT,
-        }),
-      ]);
-      if (!cancelled) setServerRows([...fresh, ...stale]);
+      // Una consulta por píldora, cada una resuelta por su propio índice
+      // (ver las migraciones de "No leídas" y "Mías"): `unreadOnly` para
+      // "No leídas", `assignedTo` para "Mías". Las dos comparten
+      // `SERVER_FILTER_LIMIT` como tope: recorta sin ofrecer "cargar más",
+      // misma aceptación que tenía `PENDING_STALE_LIMIT` (100) en la
+      // reforma anterior — un tope conservador mientras no haya dato real de
+      // producción sobre cuánto crece cada cola.
+      const rows = await fetchConversations(
+        supabase,
+        filter === "unread"
+          ? { unreadOnly: true, limit: SERVER_FILTER_LIMIT }
+          : { assignedTo: currentAgent.id, limit: SERVER_FILTER_LIMIT }
+      );
+      if (!cancelled) setServerRows({ filter, rows });
     })().catch(() => {
       // Si la consulta falla, el filtro sigue valiendo sobre lo cargado: se
       // verán menos chats, no ninguno.
-      if (!cancelled) setServerRows([]);
+      if (!cancelled) setServerRows({ filter, rows: [] });
     });
 
     return () => {
       cancelled = true;
     };
-  }, [supabase, resolvedOnServer]);
+  }, [supabase, resolvedOnServer, filter, currentAgent.id]);
+
+  /**
+   * Parcha en memoria la fila que solo vive en la consulta del servidor: el
+   * estado optimista del shell (`markUnread`/`markRead` en crm-shell.tsx)
+   * solo toca su lista `conversations`, y una fila cargada acá por
+   * `unreadOnly`/`assignedTo` no está ahí. Sin esto, abrir un chat viejo
+   * desde "No leídas" lo dejaría marcado como sin leer hasta el próximo
+   * viaje a la base.
+   *
+   * Efecto deliberado de usarla en `onSelect`: la fila sale sola de "No
+   * leídas" al abrirla, sin esperar a que la píldora se vuelva a consultar.
+   */
+  const patchServerRows = useCallback((id: string, patch: Partial<ConversationSummary>) => {
+    setServerRows((current) => {
+      if (!current) return current;
+      const index = current.rows.findIndex((c) => c.id === id);
+      if (index === -1) return current;
+      const rows = current.rows.slice();
+      rows[index] = { ...rows[index], ...patch };
+      return { ...current, rows };
+    });
+  }, []);
 
   // Lo cargado manda: sus filas están al día por realtime. Lo de la base solo
   // aporta las conversaciones que la ventana no tiene —las viejas, que son
@@ -245,7 +262,7 @@ export function InboxSidebar({
   const searchableConversations = useMemo(() => {
     const extra: ConversationSummary[] = [];
     if (searchIsCurrent) extra.push(...hitState.remote);
-    if (resolvedOnServer && serverRows) extra.push(...serverRows);
+    if (resolvedOnServer && resolvedRows) extra.push(...resolvedRows);
     if (extra.length === 0) return conversations;
 
     const seen = new Set(conversations.map((c) => c.id));
@@ -256,17 +273,19 @@ export function InboxSidebar({
       merged.push(conversation);
     }
     return merged;
-  }, [conversations, searchIsCurrent, hitState.remote, resolvedOnServer, serverRows]);
+  }, [conversations, searchIsCurrent, hitState.remote, resolvedOnServer, resolvedRows]);
 
-  // Solo "Pendientes" lleva conteo: es la única píldora que no se puede
-  // deducir de lo cargado (ver `counts` en las props). Las demás se quedan
-  // sin número antes que mostrar uno que solo cuenta la ventana en memoria.
+  // Solo "No leídas" lleva conteo. `counts.mine` existe (D5) pero es volumen
+  // histórico del asesor —incluye lo cerrado, lo que archivó hace meses—, no
+  // una cola por atender: al lado de la píldora sería ruido, no información.
+  // El panel de inicio ya lo enseña bajo su propio nombre ("Tuyas"), que es
+  // donde ese número sí responde una pregunta que alguien se está haciendo.
   const filterItems = useMemo(
     () =>
       availableFilters.map((value) => ({
         value,
         label: INBOX_FILTER_LABELS[value],
-        count: value === "pending" ? counts?.pending : undefined,
+        count: value === "unread" ? counts?.unread : undefined,
       })),
     [availableFilters, counts]
   );
@@ -313,9 +332,10 @@ export function InboxSidebar({
   const terms = useMemo(() => searchTerms(trimmedSearch), [trimmedSearch]);
 
   // Un solo camino para las tres píldoras: `buildInboxSections` decide si hay
-  // que partir la lista (pending, mine) o dejarla entera y sin encabezado
-  // (all). `new Date()` y no un valor memoizado: la ventana de 24 h de
-  // "Nuevos" se recalcula en cada render, igual que hace `awaitingReply`.
+  // que partir la lista (mine, en Sin leer/Leídas) o dejarla entera y sin
+  // encabezado (unread, all). `new Date()` y no un valor memoizado: la firma
+  // se comparte con la reforma anterior aunque ningún caso la use hoy (ver
+  // el comentario de `now` en inbox-sections.ts).
   const sections = buildInboxSections(filter, filtered, new Date());
 
   /**
@@ -326,15 +346,17 @@ export function InboxSidebar({
    */
   const paginates = Boolean(onLoadMore) && !trimmedSearch && !resolvedOnServer;
 
+  /** Está esperando la respuesta del servidor para la píldora activa. */
+  const searching = resolvedOnServer && resolvedRows === null;
+
   /**
-   * El único vacío de la bandeja que es una buena noticia: la cola de
-   * "Pendientes" quedó en cero. Se aísla de los demás vacíos (búsqueda sin
+   * El único vacío de la bandeja que es una buena noticia: la cola de "No
+   * leídas" quedó en cero. Se aísla de los demás vacíos (búsqueda sin
    * resultados, categoría sin uso, "Buscando…") porque es el único que
-   * amerita el trato propio de `crm-empty-pending` en crm.css — los otros
-   * son ausencias neutras, esta es un cierre.
+   * amerita el trato propio de `crm-empty-unread` en crm.css — los otros son
+   * ausencias neutras, esta es un cierre.
    */
-  const pendingCleared =
-    filter === "pending" && !trimmedSearch && !activeTagId && !(resolvedOnServer && serverRows === null);
+  const unreadCleared = filter === "unread" && !trimmedSearch && !activeTagId && !searching;
 
   const handleListScroll = useCallback(
     (event: React.UIEvent<HTMLDivElement>) => {
@@ -345,13 +367,26 @@ export function InboxSidebar({
     [paginates, onLoadMore, hasMore, loadingMore]
   );
 
+  /**
+   * Abrir un chat es leerlo. `patchServerRows` adelanta ese efecto sobre la
+   * copia que vive en la consulta del servidor —la fila viva de
+   * `conversations` ya lo hace por su cuenta en el shell (`markConversationRead`
+   * al abrir, en crm-shell.tsx)— para que un chat viejo, visto solo por
+   * "No leídas" vía servidor, salga de esa píldora sin esperar a que se
+   * vuelva a consultar.
+   */
+  function handleSelect(conversation: ConversationSummary) {
+    patchServerRows(conversation.id, { unreadCount: 0, manuallyUnread: false });
+    onSelect(conversation.id);
+  }
+
   function renderItems(list: ConversationSummary[]) {
     return list.map((conversation) => (
       <ConversationListItem
         key={conversation.id}
         conversation={conversation}
         isSelected={conversation.id === selectedId}
-        onSelect={() => onSelect(conversation.id)}
+        onSelect={() => handleSelect(conversation)}
         onOpenMenu={
           canOpenMenu ? (position) => setMenu({ conversation, position }) : undefined
         }
@@ -376,7 +411,7 @@ export function InboxSidebar({
           El conteo de cabecera que había acá contaba `filtered.length`: la
           ventana cargada, no la bandeja real. Con paginación esa cuenta
           mentía apenas se filtraba algo que la base tenía y la ventana no.
-          El número honesto ahora vive en la píldora "Pendientes" (prop
+          El número honesto ahora vive en la píldora "No leídas" (prop
           `counts`, ver `filterItems`); las demás píldoras se quedan sin
           número antes que repetir la misma mentira.
         */}
@@ -387,7 +422,7 @@ export function InboxSidebar({
 
       <div className="crm-inbox-tools">
         {/* El orden vive acá y no junto a los filtros: la bandeja mide 316px
-            y esos 38px son la diferencia entre que las cuatro píldoras se
+            y esos 38px son la diferencia entre que las tres píldoras se
             vean o queden cortadas. */}
         <div className="crm-inbox-search-row">
           <div className="crm-search">
@@ -400,11 +435,11 @@ export function InboxSidebar({
                 const value = e.target.value;
                 setSearch(value);
                 // Buscar dentro de un filtro estrecho devuelve vacío sin
-                // explicación: "sin-duena" preguntando por Ana no está en
-                // "Pendientes" aunque exista. Al primer carácter la píldora
+                // explicación: un cliente viejo, ya leído, no aparece en
+                // "No leídas" aunque exista. Al primer carácter la píldora
                 // salta a "Todos" para que la búsqueda mire toda la bandeja,
                 // y se queda ahí al limpiar el cuadro — volver sola a
-                // "Pendientes" escondería de nuevo lo que se acaba de
+                // "No leídas" escondería de nuevo lo que se acaba de
                 // encontrar.
                 if (value.length > 0 && filter !== "all") setFilter("all");
               }}
@@ -426,7 +461,7 @@ export function InboxSidebar({
           </button>
         </div>
 
-        {/* Aun compactadas, cuatro píldoras van al límite del ancho. El
+        {/* Aun compactadas, tres píldoras van al límite del ancho. El
             scroll queda de red de seguridad y el degradado del borde avisa
             de que la fila sigue. */}
         <FilterScroller className="crm-inbox-pills-scroll no-scrollbar">
@@ -451,16 +486,16 @@ export function InboxSidebar({
         ))}
 
         {filtered.length === 0 && (
-          <p className={pendingCleared ? "crm-empty crm-empty-pending" : "crm-empty"}>
+          <p className={unreadCleared ? "crm-empty crm-empty-unread" : "crm-empty"}>
             {trimmedSearch
               ? "Ninguna conversación coincide con esa búsqueda, ni por contacto ni por lo que se habló."
               : activeTagId
                 ? "Ninguna conversación tiene esa categoría."
                 : // Sin esto, mientras la consulta viaja la bandeja afirmaría
                   // que no hay nada — y suele haber.
-                  resolvedOnServer && serverRows === null
+                  searching
                   ? "Buscando…"
-                  : pendingCleared
+                  : unreadCleared
                     ? (
                       // Mismo trato que AgentHomePanel (la marca de la casa):
                       // es el momento de recompensa del día del asesor, no un
@@ -469,10 +504,15 @@ export function InboxSidebar({
                       // que se sienta un cierre.
                       <>
                         <SbkMark size={40} className="crm-empty-mark" />
-                        <span>Todo contestado. No quedó nadie esperando respuesta.</span>
+                        <span>Todo leído. No quedó nada nuevo por revisar.</span>
                       </>
                     )
-                    : "No hay conversaciones en este filtro."}
+                    : filter === "mine"
+                      ? // Vacío neutro y no festivo: no tener nada asignado no
+                        // es un logro del día, a diferencia de vaciar "No
+                        // leídas".
+                        "No tienes conversaciones asignadas."
+                      : "No hay conversaciones en este filtro."}
           </p>
         )}
 
@@ -493,9 +533,15 @@ export function InboxSidebar({
       {menu && (
         <ConversationContextMenu
           position={menu.position}
-          isUnread={menu.conversation.unreadCount > 0 || menu.conversation.manuallyUnread}
-          onMarkUnread={() => onMarkUnread?.(menu.conversation.id)}
-          onMarkRead={() => onMarkRead?.(menu.conversation.id)}
+          isUnread={isUnread(menu.conversation)}
+          onMarkUnread={() => {
+            patchServerRows(menu.conversation.id, { manuallyUnread: true });
+            onMarkUnread?.(menu.conversation.id);
+          }}
+          onMarkRead={() => {
+            patchServerRows(menu.conversation.id, { unreadCount: 0, manuallyUnread: false });
+            onMarkRead?.(menu.conversation.id);
+          }}
           onClose={closeMenu}
         />
       )}

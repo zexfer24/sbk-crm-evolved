@@ -1,45 +1,26 @@
-import type { ConversationSummary } from "@/lib/types";
-import { withinFreeformWindow } from "@/lib/dashboard";
+import type { ConversationSummary, InboxFilter } from "@/lib/types";
+import { isUnread } from "@/lib/inbox-filters";
 
 /**
- * Los tres cortes de la reforma de píldoras: pendientes de responder (con
- * las dos sub-secciones de la ventana de 24h), lo mío, y todo.
+ * Los tres cortes de la bandeja tras la reforma del 28/8/2026 (tarde):
+ * "No leídas" (sección única, corte global de equipo), "Mías" (partida en
+ * Sin leer/Leídas) y "Todos" (sección única). El corte por ventana de 24h
+ * —"pendientes"— ya no vive acá: se retiró de la bandeja y quedó en
+ * `dashboard.ts` y el AgentHomePanel.
  *
- * Local a este módulo a propósito: `InboxFilter` (src/lib/types.ts) todavía
- * conserva los miembros viejos (`unread`, `unassigned`, `assigned`,
- * `mine-unread`) mientras otra tarea en paralelo lo reduce a estas tres
- * píldoras. Cuando converja, este tipo puede volver a ser un alias de
- * `InboxFilter` sin tocar el resto del archivo.
+ * `InboxFilter` (src/lib/types.ts) ya converge con este módulo: la
+ * convergencia que el comentario viejo de acá prometía —cuando la reforma
+ * del corte pending/mine/all terminara de asentarse— ya pasó.
  */
-export type SectionableFilter = "pending" | "mine" | "all";
 
 /**
  * Un grupo de filas dentro de la lista de la bandeja. `label: null` significa
- * "sin encabezado": la píldora "Todos" no subdivide nada.
+ * "sin encabezado": las píldoras "No leídas" y "Todos" no subdividen nada.
  */
 export interface InboxSection {
   id: string;
   label: string | null;
   conversations: ConversationSummary[];
-}
-
-/**
- * Tope de filas que la bandeja le va a pedir a la base para la sección
- * "Esperando +24 h" (la de "pending"). Valor conservador inicial: el
- * operador lo va a ajustar con el dato real de producción (cuántas
- * conversaciones libres quedan sin respuesta pasadas las 24 h) — pregunta
- * operativa pendiente.
- *
- * Este módulo NO aplica el límite: es una regla de la consulta que alimenta
- * la lista, no de esta función pura. Vive acá para que el número quede junto
- * a la sección a la que pertenece en vez de enterrado en `data.ts`.
- */
-export const PENDING_STALE_LIMIT = 100;
-
-function isUnread(conversation: ConversationSummary): boolean {
-  // Misma semántica que `matchesFilter` en inbox-filters.ts: un chat sin
-  // mensajes por leer pero apartado a mano sigue contando como no leído.
-  return conversation.unreadCount > 0 || conversation.manuallyUnread;
 }
 
 function section(id: string, label: string | null, conversations: ConversationSummary[]): InboxSection | null {
@@ -53,39 +34,28 @@ function section(id: string, label: string | null, conversations: ConversationSu
  * orden de entrada dentro de cada sección (decisión aprobada — las secciones
  * respetan el botón de orden de la bandeja).
  */
-export function buildInboxSections(
-  filter: SectionableFilter,
-  conversations: ConversationSummary[],
-  now: Date
-): InboxSection[] {
+// `now` ya no lo usa ninguna rama —el corte por ventana de 24h se fue con
+// `pending`— pero se conserva en la firma: los tres cortes comparten una
+// sola función y cambiarla por rama según quién la necesita es más costura
+// de la que vale forzar hoy.
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
+export function buildInboxSections(filter: InboxFilter, conversations: ConversationSummary[], now: Date): InboxSection[] {
   switch (filter) {
-    case "pending": {
-      const nowMs = now.getTime();
-      const nuevos: ConversationSummary[] = [];
-      const esperando: ConversationSummary[] = [];
-
-      for (const conversation of conversations) {
-        // `withinFreeformWindow` falla cerrado con `lastCustomerMessageAt`
-        // null (devuelve false): sin fecha del cliente no hay ventana
-        // abierta, así que esas filas caen directo en "Esperando +24 h".
-        if (withinFreeformWindow(conversation.lastCustomerMessageAt, nowMs)) {
-          nuevos.push(conversation);
-        } else {
-          esperando.push(conversation);
-        }
-      }
-
-      return [
-        section("nuevos", "Nuevos · últimas 24 h", nuevos),
-        section("esperando", "Esperando +24 h", esperando),
-      ].filter((s): s is InboxSection => s !== null);
-    }
+    case "unread":
+      // Sección única sin encabezado, igual que "all": la ventana de 24h es
+      // deuda de respuesta, un concepto del dashboard, no de lectura; y
+      // subdividir "No leídas" por apartadas-a-mano duplicaría lo que el
+      // badge de cada fila ya dice.
+      return [{ id: "no-leidas", label: null, conversations }];
 
     case "mine": {
-      const noLeidos = conversations.filter(isUnread);
-      const leidos = conversations.filter((c) => !isUnread(c));
+      // Dentro de "Mías", esta partición es la heredera de la vieja píldora
+      // "Míos sin leer". No se llama "No leídas" para no repetir el nombre
+      // de la píldora vecina.
+      const sinLeer = conversations.filter(isUnread);
+      const leidas = conversations.filter((c) => !isUnread(c));
 
-      return [section("no-leidos", "No leídos", noLeidos), section("leidos", "Leídos", leidos)].filter(
+      return [section("sin-leer", "Sin leer", sinLeer), section("leidas", "Leídas", leidas)].filter(
         (s): s is InboxSection => s !== null
       );
     }

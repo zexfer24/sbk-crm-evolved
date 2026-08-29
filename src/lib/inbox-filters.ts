@@ -1,22 +1,23 @@
 import type { Agent, AgentRole, ConversationSummary, InboxFilter, InboxSort } from "@/lib/types";
-import { awaitingReply, contactName } from "@/lib/dashboard";
+import { contactName } from "@/lib/dashboard";
 import { normalizeForSearch } from "@/lib/message-search";
 
 /**
  * Qué bandejas ve cada quien.
  *
- * Reforma del 28/8/2026: antes el administrador tenía cinco cortes propios
- * (todo, sin contestar, sin leer, sin asignar, asignados) y el asesor cuatro
- * (todo, sin contestar, lo suyo, lo suyo sin leer). Los cortes por
- * leído/asignado resultaron ser guardas poco fiables —ver el comentario del
- * case `pending` más abajo— así que se bajó a tres píldoras iguales para
- * todos los roles: `pending`, `mine`, `all`.
+ * Primera reforma del 28/8/2026 (mañana): antes el administrador tenía cinco
+ * cortes propios (todo, sin contestar, sin leer, sin asignar, asignados) y
+ * el asesor cuatro (todo, sin contestar, lo suyo, lo suyo sin leer). Los
+ * cortes por leído/asignado resultaron ser guardas poco fiables, así que se
+ * bajó a tres píldoras iguales para todos los roles.
  *
- * La función se conserva igual como costura: si mañana un rol necesita un
- * corte propio, el punto de entrada por rol ya existe y no hay que inventar
- * de nuevo el mecanismo, solo la lista.
+ * Segunda reforma (misma tarde, pedido del operador): `pending` sale de la
+ * bandeja (su corte sigue en dashboard.ts y el AgentHomePanel) y entra
+ * `unread`. La que abre va primera — hoy "No leídas" — y "Todos" cierra a la
+ * derecha, adonde salta la búsqueda al escribir. Si el operador pide otro
+ * orden mañana, es una línea acá.
  */
-const DEFAULT_FILTERS: InboxFilter[] = ["pending", "mine", "all"];
+const DEFAULT_FILTERS: InboxFilter[] = ["unread", "mine", "all"];
 
 // El parámetro no se usa a propósito: es la costura descrita arriba.
 // eslint-disable-next-line @typescript-eslint/no-unused-vars
@@ -25,18 +26,40 @@ export function filtersForRole(_role: AgentRole): InboxFilter[] {
 }
 
 export const INBOX_FILTER_LABELS: Record<InboxFilter, string> = {
-  pending: "Pendientes",
-  mine: "Míos",
+  unread: "No leídas",
+  mine: "Mías",
   all: "Todos",
 };
 
-/** Al entrar a la bandeja se ve lo que falta por atender, no todo el ruido. */
-export const DEFAULT_INBOX_FILTER: InboxFilter = "pending";
+/** Al entrar a la bandeja se ve lo que nadie ha leído todavía. */
+export const DEFAULT_INBOX_FILTER: InboxFilter = "unread";
 
 export const INBOX_SORT_LABELS: Record<InboxSort, string> = {
   recent: "Más recientes primero",
   oldest: "Más viejos primero",
 };
+
+/**
+ * Tope de filas que la bandeja le pide a la base para las píldoras que se
+ * resuelven en servidor —"No leídas" y "Mías"— (`unreadOnly`/`assignedTo` en
+ * `data.ts`). Valor conservador inicial: el operador lo va a ajustar con el
+ * dato real de producción — pregunta operativa pendiente.
+ *
+ * Este módulo NO aplica el límite: es una regla de la consulta que alimenta
+ * la lista, no de las funciones puras de acá. Vive junto a las píldoras a
+ * las que pertenece en vez de enterrado en `data.ts`.
+ */
+export const SERVER_FILTER_LIMIT = 200;
+
+/**
+ * LA definición de "sin leer": la misma que pinta el badge de cada fila en
+ * la lista y la que arma la sub-sección "Sin leer" dentro de "Mías"
+ * (`inbox-sections.ts`). Corte GLOBAL de equipo —no importa quién mira—:
+ * apartar un chat a mano cuenta igual que tener mensajes sin abrir.
+ */
+export function isUnread(conversation: ConversationSummary): boolean {
+  return conversation.unreadCount > 0 || conversation.manuallyUnread;
+}
 
 export interface InboxCriteria {
   filter: InboxFilter;
@@ -60,38 +83,40 @@ function matchesFilter(conversation: ConversationSummary, filter: InboxFilter, v
       return true;
     case "mine":
       return conversation.assignedAgent?.id === viewer.id;
-    // Trabajo que falta por atender. Se vuelve a comprobar acá aunque la base
-    // ya haya filtrado, porque la lista mezcla filas de la consulta con filas
-    // vivas de la bandeja: si alguien le contesta mientras la lista está
-    // abierta, sale solo.
+    // Se vuelve a comprobar en memoria aunque la base ya haya filtrado
+    // (`unreadOnly` en data.ts), porque la lista mezcla filas de la consulta
+    // con filas vivas de la bandeja: si alguien lee el chat mientras la
+    // lista está abierta, sale solo.
     //
-    // Esta condición pasó por tres actos.
+    // Esta píldora tiene historia. Pasó por tres actos como `pending` antes
+    // de que existiera, y un cuarto que la trajo de vuelta.
     //
-    // (a) 80b66b5 sumó `!hasReply` para no mostrar al fondo de la lista chats
-    // que un asesor ya había respondido a mano —sin asignárselos, que es como
-    // trabajan— y a los que el cliente solo contestó "Ok". La intención era
-    // buena, pero `hasReply` es un flag vitalicio: lo enciende cualquier
-    // salida que no sea del sistema —la IA, el asesor, hasta la plantilla de
-    // bienvenida automática que sale con la IA apagada— y nunca se apaga, y
-    // el backfill lo dejó encendido en casi todo el histórico. Con esa
-    // condición sumada, la píldora quedó vacía en producción el 28/8/2026: el
-    // pendiente real —la IA contestó hace días, el cliente volvió a
-    // escribir, nadie respondió eso— quedaba oculto para siempre.
+    // (a) 80b66b5 sumó `!hasReply` a lo que entonces se llamaba "sin
+    // contestar", para no mostrar chats que un asesor ya había respondido a
+    // mano. La intención era buena, pero `hasReply` es un flag vitalicio —lo
+    // enciende cualquier salida que no sea del sistema y nunca se apaga— y
+    // el backfill lo dejó encendido en casi todo el histórico: la píldora
+    // quedó vacía en producción el 28/8/2026.
     //
-    // (b) El hotfix del mismo día devolvió el filtro a tres condiciones: sin
-    // dueño, abierta, y `awaitingReply` (último mensaje del hilo es del
-    // cliente).
+    // (b) El hotfix del mismo día devolvió el filtro a sin dueño + abierta +
+    // `awaitingReply`.
     //
-    // (c) Esta reforma retira también la condición de "sin dueño"
-    // (`assignedAgent === null`). No es un ajuste cosmético: ese campo no es
-    // confiable —los asesores de SBK contestan sin asignarse la conversación,
-    // ver `human-handled.ts:17-21`— y con él puesto, un chat escalado o
-    // asignado al que nadie le respondió quedaba fuera del pendiente aunque
-    // fuera el más grave de todos. La separación entre lo recién llegado y lo
-    // viejo ya no es trabajo de este filtro excluyente: vive en las secciones
-    // por ventana de 24h (`src/lib/inbox-sections.ts`).
-    case "pending":
-      return conversation.status !== "closed" && awaitingReply(conversation);
+    // (c) Una reforma posterior, esa misma mañana, retiró también "sin
+    // dueño": los asesores de SBK contestan sin asignarse el chat (ver
+    // `human-handled.ts:17-21`), así que ese campo no servía de guarda. El
+    // filtro quedó como `pending`: abierta + `awaitingReply`.
+    //
+    // (d) Esta reforma, la misma tarde y por pedido directo del operador,
+    // retira `pending` de la bandeja: ese corte —trabajo con más de 24h sin
+    // respuesta— sigue vivo en `dashboard.ts` (`awaitingReply`/
+    // `isStalePending`) y en el AgentHomePanel, pero deja de ser una píldora
+    // de la lista de chats. En su lugar vuelve el corte por lectura, ahora
+    // GLOBAL de equipo (no por usuario como el viejo "Míos sin leer") y
+    // deliberadamente indiferente a si el chat está cerrado: cerrar una
+    // conversación no es leerla, así que una cerrada con mensajes sin abrir
+    // sigue apareciendo acá.
+    case "unread":
+      return isUnread(conversation);
   }
 }
 

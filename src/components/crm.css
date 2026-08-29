@@ -1282,24 +1282,26 @@
   text-align: center;
 }
 
-/* El vacío de "Pendientes" es el único vacío de la bandeja que es una buena
-   noticia: la cola quedó en cero. Lleva la misma marca que AgentHomePanel
-   (SbkMark) para que se sienta un cierre del día y no un genérico "no hay
-   nada" — más aire arriba, texto un tono más oscuro que el resto de los
-   vacíos (ink-soft en vez de muted), y nada más. Ninguna confeti, ningún
-   color de "éxito": el asesor lo va a ver seguido, no una vez al año. */
-.crm-empty-pending {
+/* El vacío de "No leídas" es el único vacío de la bandeja que es una buena
+   noticia: no quedó nada nuevo por revisar. Heredero del vacío de
+   "Pendientes" (reforma del 28/8/2026, tarde, a las píldoras No leídas/Mías/
+   Todos) — mismo trato, misma marca que AgentHomePanel (SbkMark) para que se
+   sienta un cierre del día y no un genérico "no hay nada" — más aire arriba,
+   texto un tono más oscuro que el resto de los vacíos (ink-soft en vez de
+   muted), y nada más. Ninguna confeti, ningún color de "éxito": el asesor lo
+   va a ver seguido, no una vez al año. */
+.crm-empty-unread {
   gap: 10px;
   padding-top: 48px;
   color: var(--lm-ink-soft);
-  animation: crm-empty-pending-in 220ms var(--lm-ease-out) both;
+  animation: crm-empty-unread-in 220ms var(--lm-ease-out) both;
 }
 
 .crm-empty-mark {
   box-shadow: var(--lm-shadow-sm);
 }
 
-@keyframes crm-empty-pending-in {
+@keyframes crm-empty-unread-in {
   from {
     opacity: 0;
     transform: translateY(4px);
@@ -1307,7 +1309,7 @@
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .crm-empty-pending {
+  .crm-empty-unread {
     animation: none;
   }
 }
