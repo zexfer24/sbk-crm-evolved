@@ -149,13 +149,14 @@ describe("Composer - atajos de teclado de formato", () => {
   });
 
   it("sin selección (cursor solo), Ctrl+B inserta el par vacío con el cursor en medio", async () => {
-    // No usa crearUsuario(): con `delay: null` el textarea no llega a
-    // re-renderizar la posición del cursor entre el `type` y el atajo de
-    // teclado (Ctrl+B se dispara antes de que React asiente la selección),
-    // y `selectionStart`/`selectionEnd` quedan en 7 en vez de 6. Verificado
-    // reproducible corriendo la prueba dos veces (28/8/2026). Se deja con el
-    // `userEvent.setup()` por defecto para no perder cobertura real.
-    const user = userEvent.setup();
+    // Este test peleó dos veces la misma carrera: el 28/8/2026 se le quitó
+    // `delay: null` porque el cursor quedaba en 7 en vez de 6, y el
+    // 29/8/2026 el runner de CI (más lento que las máquinas de 8 núcleos)
+    // falló igual con los delays reales. La causa era del componente —
+    // `setSelectionRange` diferido a un rAF que corría contra el commit de
+    // React— y se arregló ahí con `flushSync`; el test vuelve al usuario
+    // estándar de la casa porque ya no hay carrera que esconder.
+    const user = crearUsuario();
     renderComposer();
     const textarea = screen.getByRole("textbox", { name: "Mensaje" }) as HTMLTextAreaElement;
 

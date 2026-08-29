@@ -7,6 +7,7 @@ import {
   type ChangeEvent,
   type KeyboardEvent,
 } from "react";
+import { flushSync } from "react-dom";
 import { AlignLeft, FileText, Lock, Paperclip, Send, X, Zap } from "lucide-react";
 import { Button, TextArea, Tooltip } from "@heroui/react";
 import { toast } from "@heroui/react";
@@ -284,13 +285,19 @@ export function Composer({ conversation, templates, quickReplies, replyingTo, on
     const end = textarea.selectionEnd;
     const selected = text.slice(start, end);
     const newText = `${text.slice(0, start)}${marker}${selected}${marker}${text.slice(end)}`;
-    setText(newText);
+
+    // flushSync y no requestAnimationFrame: el rAF corría en carrera contra
+    // el commit de React, y si llegaba primero, el navegador reponía el
+    // cursor al final al asentar el valor nuevo del textarea controlado. En
+    // las máquinas de 8 núcleos el commit casi siempre ganaba; el runner de
+    // CI perdió la carrera en cada corrida (29/8/2026) y el cursor quedaba
+    // después del par de marcadores en vez de en medio. Con el commit
+    // forzado síncrono, posicionar el cursor justo después es determinista.
+    flushSync(() => setText(newText));
 
     const newStart = start + marker.length;
     const newEnd = newStart + selected.length;
-    requestAnimationFrame(() => {
-      textarea.setSelectionRange(newStart, newEnd);
-    });
+    textarea.setSelectionRange(newStart, newEnd);
   }
 
   function handleKeyDown(event: KeyboardEvent<HTMLTextAreaElement>) {
