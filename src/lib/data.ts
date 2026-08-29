@@ -512,6 +512,23 @@ export const CONVERSATIONS_PAGE_SIZE = 1000;
  */
 export const INBOX_PAGE_SIZE = 30;
 
+/** Las dos columnas del orden de la bandeja, en la fila CRUDA. */
+interface CursorableRow {
+  id: string;
+  last_message_at: string | null;
+}
+
+/**
+ * El cursor que retoma DESPUÉS de esta fila. Gemelo crudo de
+ * `cursorAfterPage` (src/lib/inbox-paging.ts): los dos deben dar el mismo
+ * valor para la misma fila, y lo hacen porque el timestamp viaja como el
+ * string crudo de Supabase — pasarlo por `Date` pierde microsegundos y
+ * rompe el desempate por igualdad exacta.
+ */
+function cursorFromRow(row: CursorableRow): ConversationCursor {
+  return { lastMessageAt: row.last_message_at, id: row.id };
+}
+
 export interface FetchConversationsOptions {
   /**
    * Cuántas conversaciones traer, de la más reciente hacia atrás.
@@ -535,6 +552,13 @@ export interface FetchConversationsOptions {
    * deduplica lo que llega; no recupera lo que jamás se pidió). El cursor
    * por valor no depende de la posición: pide "lo que sigue después de esta
    * fila, en este orden", así que un reordenamiento en el medio no le afecta.
+   *
+   * Solo gobierna la PRIMERA página interna de `fetchConversationRows`: de
+   * ahí en más lo reemplaza el cursor de continuación (`cursorFromRow`,
+   * calculado con la última fila de cada página interna) — el mismo
+   * problema de posición que resolvió esto en la carga entre páginas
+   * EXTERNAS (`crm-shell.tsx`) también existía puertas adentro, en el
+   * recorrido de `>1000` filas del tablero y Control de IA (29/8/2026).
    */
   cursor?: ConversationCursor;
   /** Solo lo que no está cerrado: el tablero y el roster miran el trabajo vivo. */
@@ -624,8 +648,19 @@ export interface FetchConversationsOptions {
 /**
  * El recorrido de páginas, común a las dos formas de fila. Devuelve las filas
  * crudas para que cada llamador las mapee con lo que pidió.
+ *
+ * El recorrido INTERNO (las llamadas sin `limit`: tablero y Control de IA
+ * vía `fetchBoardConversations`, y cualquier `fetchConversations` que junte
+ * más de `CONVERSATIONS_PAGE_SIZE` filas) también avanza por cursor desde el
+ * 29/8/2026: cada página interna pide `range(0, pageSize-1)` con el
+ * predicado armado desde la última fila de la página anterior
+ * (`cursorFromRow`), no un `range(rows.length, …)` posicional. Ese `from`
+ * contaba posiciones sobre un conjunto que se movía entre peticiones — si
+ * una fila SALÍA del conjunto (un chat que se cierra con `activeOnly`) entre
+ * dos páginas internas, la fila que quedaba justo en el borde no la pedía
+ * ninguna página: pérdida silenciosa, sin error.
  */
-async function fetchConversationRows<Raw>(
+async function fetchConversationRows<Raw extends CursorableRow>(
   supabase: SupabaseClient,
   select: string,
   {
@@ -654,6 +689,14 @@ async function fetchConversationRows<Raw>(
   const pendingWindowCutoff = pendingWindow ? freeformWindowCutoff(now) : undefined;
 
   const rows: Raw[] = [];
+
+  // El cursor de ENTRADA (`options.cursor`) gobierna solo la primera vuelta
+  // de este `for`. De ahí en más lo REEMPLAZA el de continuación (calculado
+  // al final de cada vuelta, con la última fila de esa página): es un punto
+  // más abajo en el mismo orden total, no uno adicional — sumar los dos
+  // cursores multiplicaría los términos del `.or()` sin cambiar el conjunto
+  // que describen.
+  let pageCursor = cursor;
 
   for (;;) {
     // Con tope pedido, la última página se recorta para no traer de más.
@@ -702,10 +745,10 @@ async function fetchConversationRows<Raw>(
     }
     if (unreadOnly) orGroups.push(["unread_count.gt.0", "manually_unread.is.true"]);
 
-    if (cursor) {
-      const idLiteral = pgrstLiteral(cursor.id);
-      if (cursor.lastMessageAt !== null) {
-        const dateLiteral = pgrstLiteral(cursor.lastMessageAt);
+    if (pageCursor) {
+      const idLiteral = pgrstLiteral(pageCursor.id);
+      if (pageCursor.lastMessageAt !== null) {
+        const dateLiteral = pgrstLiteral(pageCursor.lastMessageAt);
         // Verificado contra PostgREST local el 29/8/2026: filas con
         // `last_message_at` estrictamente menor, o igual con `id` menor
         // (el desempate), o en la zona nula (que ordena al final y sería
@@ -725,8 +768,14 @@ async function fetchConversationRows<Raw>(
 
     if (orGroups.length > 0) request = request.or(orExpression(orGroups));
 
-    const from = rows.length;
-    const { data, error } = await request.range(from, from + pageSize - 1);
+    // Siempre desde 0: lo que ya se entregó lo descarta el PREDICADO del
+    // cursor, no una posición. Contar filas sobre un conjunto que se mueve
+    // entre peticiones (`range(rows.length, …)`) era justo lo que perdía la
+    // fila del borde cuando algo salía del conjunto activo a mitad de
+    // camino. `pageSize` se sigue calculando igual arriba: el cursor
+    // garantiza que las páginas no se solapan, así que el tope exacto
+    // (`limit`) se preserva sin necesidad de contar posiciones.
+    const { data, error } = await request.range(0, pageSize - 1);
 
     if (error) throw error;
 
@@ -736,6 +785,11 @@ async function fetchConversationRows<Raw>(
     // Página incompleta: no hay más filas que pedir.
     if (page.length < pageSize) break;
     if (limit && rows.length >= limit) break;
+
+    // Solo se llega acá con la página COMPLETA (page.length === pageSize, y
+    // pageSize >= 1): la última fila existe siempre, el cursor de
+    // continuación no puede quedar nulo.
+    pageCursor = cursorFromRow(page[page.length - 1]);
   }
 
   return rows;

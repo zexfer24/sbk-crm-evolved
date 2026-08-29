@@ -159,11 +159,21 @@ function evalCond(row: Row, cond: Cond): boolean {
   }
 }
 
-/** Un término de nivel superior: una condición sola, o `and(...)` de varias. */
+/**
+ * Un término de nivel superior: una condición sola, o `and(...)` de varias.
+ *
+ * RECURSIVO a propósito: `orExpression` (src/lib/ai/pgrst.ts) produce
+ * `and(a,and(b,c))` al distribuir dos disyunciones (por ejemplo `unreadOnly`
+ * × el cursor de continuación) — cada término del `and(...)` externo puede
+ * ser a su vez otro `and(...)`. Un desarmado de un solo nivel manda ese
+ * término anidado a `evalCond` con una columna corrupta (`"and(last_message_at"`)
+ * y `evalCond` devuelve `false` en silencio: filtraría de más sin que ningún
+ * test lo notara.
+ */
 function evalTerm(row: Row, term: string): boolean {
   if (term.startsWith("and(") && term.endsWith(")")) {
     const inner = term.slice(4, -1);
-    return splitTopLevel(inner).every((raw) => evalCond(row, parseCondition(raw)));
+    return splitTopLevel(inner).every((raw) => evalTerm(row, raw));
   }
   return evalCond(row, parseCondition(term));
 }
@@ -185,66 +195,79 @@ function compareRows(a: Row, b: Row, sorts: SortSpec[]): number {
   return 0;
 }
 
-function createFakeSupabase(rows: Row[]) {
+function createFakeSupabase(rows: Row[], onRange?: (callIndex: number) => void) {
   const calls: RangeCall[] = [];
   const filters: { op: string; column: string; value: unknown }[] = [];
 
   // Builder encadenable como el de PostgREST: los filtros y los `.order()`
-  // se anotan, y el `.range()` final ordena de verdad y resuelve sobre las
-  // filas que quedaron — reproduce el reordenamiento real que sufre la
-  // bandeja cuando una fila sube al tope mientras se pagina.
-  function builder(current: Row[], sorts: SortSpec[]) {
+  // solo se ANOTAN (predicados diferidos, no un `current: Row[]` que se va
+  // filtrando de inmediato) — la evaluación real ocurre recién en
+  // `.range()`, sobre el estado de `rows` EN ESE INSTANTE. Es a propósito:
+  // PostgREST resuelve filtro+rango como una sola consulta atómica contra el
+  // estado de la base al momento de la petición, no como pasos de cliente
+  // que se van aplicando uno a uno según se arma la cadena. Con filtrado
+  // inmediato, `onRange` mutando la fila llegaría siempre tarde para afectar
+  // a SU PROPIA página (la cadena de filtros de esa página ya se evaluó
+  // antes de llegar a `.range()`) y el reordenamiento/cierre a mitad de
+  // camino nunca se reproduciría en el fake.
+  function builder(preds: Array<(row: Row) => boolean>, sorts: SortSpec[]) {
     return {
       order(column: string, opts?: { ascending?: boolean; nullsFirst?: boolean }) {
         const ascending = opts?.ascending ?? true;
         const nullsFirst = opts?.nullsFirst ?? ascending;
-        return builder(current, [...sorts, { column, ascending, nullsFirst }]);
+        return builder(preds, [...sorts, { column, ascending, nullsFirst }]);
       },
       neq(column: string, value: unknown) {
         filters.push({ op: "neq", column, value });
         return builder(
-          current.filter((row) => (row as Record<string, unknown>)[column] !== value),
+          [...preds, (row) => (row as Record<string, unknown>)[column] !== value],
           sorts
         );
       },
       eq(column: string, value: unknown) {
         filters.push({ op: "eq", column, value });
         return builder(
-          current.filter((row) => (row as Record<string, unknown>)[column] === value),
+          [...preds, (row) => (row as Record<string, unknown>)[column] === value],
           sorts
         );
       },
       is(column: string, value: unknown) {
         filters.push({ op: "is", column, value });
         return builder(
-          current.filter((row) => ((row as Record<string, unknown>)[column] ?? null) === value),
+          [...preds, (row) => ((row as Record<string, unknown>)[column] ?? null) === value],
           sorts
         );
       },
       in(column: string, values: unknown[]) {
         filters.push({ op: "in", column, value: values });
         return builder(
-          current.filter((row) => values.includes((row as Record<string, unknown>)[column])),
+          [...preds, (row) => values.includes((row as Record<string, unknown>)[column])],
           sorts
         );
       },
       gt(column: string, value: unknown) {
         filters.push({ op: "gt", column, value });
         return builder(
-          current.filter((row) => {
-            const cell = (row as Record<string, unknown>)[column];
-            return cell != null && cell > (value as string);
-          }),
+          [
+            ...preds,
+            (row) => {
+              const cell = (row as Record<string, unknown>)[column];
+              return cell != null && cell > (value as string);
+            },
+          ],
           sorts
         );
       },
       lte(column: string, value: unknown) {
         filters.push({ op: "lte", column, value });
         return builder(
-          current.filter((row) => {
-            const cell = (row as Record<string, unknown>)[column];
-            return cell != null && cell <= (value as string);
-          }),
+          [
+            ...preds,
+            (row) => {
+              const cell = (row as Record<string, unknown>)[column];
+              return cell != null && cell <= (value as string);
+            },
+          ],
           sorts
         );
       },
@@ -256,13 +279,20 @@ function createFakeSupabase(rows: Row[]) {
         filters.push({ op: "or", column: "", value: clause });
         const terms = splitTopLevel(clause);
         return builder(
-          current.filter((row) => terms.some((term) => evalTerm(row, term))),
+          [...preds, (row) => terms.some((term) => evalTerm(row, term))],
           sorts
         );
       },
       range(from: number, to: number) {
+        // Se invoca ANTES de registrar la llamada y ANTES de evaluar los
+        // predicados: mutar en `onRange(1)` es "la tabla cambió entre la
+        // página interna 1 y la 2", y esa mutación tiene que quedar visible
+        // para el filtrado de ESTA MISMA petición (la que está a punto de
+        // resolver), tal como pasaría contra una base real.
+        onRange?.(calls.length);
         calls.push({ from, to });
-        const sorted = [...current].sort((a, b) => compareRows(a, b, sorts));
+        const filtered = rows.filter((row) => preds.every((pred) => pred(row)));
+        const sorted = filtered.sort((a, b) => compareRows(a, b, sorts));
         return Promise.resolve({ data: sorted.slice(from, to + 1), error: null });
       },
     };
@@ -275,7 +305,7 @@ function createFakeSupabase(rows: Row[]) {
       return {
         select(query: string) {
           selects.push(query);
-          return builder(rows, []);
+          return builder([], []);
         },
       };
     },
@@ -616,6 +646,174 @@ describe("fetchConversations", () => {
 
       expect(page2.map((c) => c.id).sort()).toEqual(sinFecha.map((r) => r.id).sort());
       expect(page2.every((c) => c.lastMessageAt === null)).toBe(true);
+    });
+  });
+
+  describe("recorrido interno multipágina (continuación por cursor)", () => {
+    /**
+     * EL ROJO PRINCIPAL. `fetchBoardConversations`/`fetchConversations` sin
+     * `limit` (el tablero, Control de IA) recorren internamente varias
+     * páginas de `CONVERSATIONS_PAGE_SIZE`. Antes del 29/8/2026 cada vuelta
+     * pedía `range(rows.length, rows.length + pageSize - 1)`: una posición
+     * sobre un conjunto que se mueve entre peticiones. Si una fila SALE del
+     * conjunto activo entre la página interna 1 y la 2 (acá, `conv-1249` se
+     * cierra justo ahí), todo lo que queda por debajo de su posición vieja
+     * se corre una fila hacia arriba en el conjunto YA filtrado — y la
+     * página 2, pedida por posición, salta exactamente la fila que quedó en
+     * el borde (`conv-249`) sin que ninguna otra página vuelva a pedirla:
+     * pérdida silenciosa, sin error.
+     */
+    it("la fila del borde no se pierde cuando otra fila sale del conjunto activo entre páginas internas", async () => {
+      const total = 1250;
+      const filas = Array.from({ length: total }, (_, i) => makeRow(i));
+      const { client } = createFakeSupabase(filas, (callIndex) => {
+        if (callIndex === 1) {
+          filas.find((r) => r.id === "conv-1249")!.status = "closed" as never;
+        }
+      });
+
+      const result = await fetchBoardConversations(client, { activeOnly: true });
+      const ids = result.map((c) => c.id);
+
+      expect(ids).toContain("conv-249");
+      expect(new Set(ids).size).toBe(1250);
+    });
+
+    /**
+     * El límite exacto sigue funcionando con el nuevo `range(0, pageSize-1)`
+     * en cada vuelta: cada página interna pide desde 0 sobre el conjunto ya
+     * restringido por el cursor de continuación, no desde una posición
+     * acumulada.
+     */
+    it("respeta el límite exacto y cada página interna empieza en range(0, …)", async () => {
+      const total = 2500;
+      const filas = Array.from({ length: total }, (_, i) => makeRow(i));
+      const { client, calls } = createFakeSupabase(filas);
+
+      const result = await fetchConversations(client, { limit: 1200 });
+
+      expect(calls).toEqual([
+        { from: 0, to: 999 },
+        { from: 0, to: 199 },
+      ]);
+      expect(new Set(result.map((c) => c.id)).size).toBe(1200);
+      expect(result[0].id).toBe("conv-2499");
+      expect(result[1199].id).toBe("conv-1300");
+      expect(cursorAfterPage(result)).toEqual({
+        lastMessageAt: result[1199].lastMessageAt,
+        id: result[1199].id,
+      });
+    });
+
+    /**
+     * La continuación interna reemplaza al cursor de entrada (acá no hay
+     * ninguno) y se distribuye junto con `unreadOnly` en un solo `.or()`,
+     * igual que ya se prueba para el cursor de entrada más arriba. Los
+     * timestamps con microsegundos (`ceros a la izquierda`, sin pasar por
+     * `Date`) verifican que la continuación viaja con el string crudo, no
+     * con algo redondeado.
+     *
+     * Este test EXIGE el `evalTerm` recursivo del Paso 1: el segundo `.or()`
+     * cruza `unreadOnly` (2 términos) con el cursor (3 términos, uno de
+     * ellos ya un `and(...)` en sí mismo) — el término del medio queda como
+     * `and(unread_i,and(last_message_at.eq...,id.lt...))`, dos niveles de
+     * anidado. Un `evalTerm` de un solo nivel manda ese `and(...)` interno a
+     * `evalCond` con una columna corrupta y lo descarta en silencio.
+     */
+    it("la continuación hereda el predicado distribuido con unreadOnly y conserva el timestamp crudo", async () => {
+      const total = 1100;
+      const filas = Array.from({ length: total }, (_, i) => ({
+        ...makeRow(i),
+        unread_count: 1,
+        last_message_at: `2026-08-29T10:00:00.${String(i).padStart(6, "0")}+00:00`,
+      }));
+      const { client, filters } = createFakeSupabase(filas);
+
+      const result = await fetchConversations(client, { unreadOnly: true });
+
+      const orFilters = filters.filter((f) => f.op === "or");
+      expect(orFilters[0]).toEqual({
+        op: "or",
+        column: "",
+        value: "unread_count.gt.0,manually_unread.is.true",
+      });
+
+      // conv-100 es la última fila de la página 1 (1000 filas, de conv-1099
+      // a conv-100 en orden descendente): el cursor de continuación retoma
+      // justo después de ella.
+      const cursorRow = filas.find((r) => r.id === "conv-100")!;
+      const dateLiteral = `"${cursorRow.last_message_at}"`;
+      const cursorTerms = [
+        `last_message_at.lt.${dateLiteral}`,
+        `and(last_message_at.eq.${dateLiteral},id.lt."conv-100")`,
+        `last_message_at.is.null`,
+      ];
+      const expectedSegundoOr = ["unread_count.gt.0", "manually_unread.is.true"]
+        .flatMap((termino) => cursorTerms.map((c) => `and(${termino},${c})`))
+        .join(",");
+
+      expect(orFilters[1]).toEqual({ op: "or", column: "", value: expectedSegundoOr });
+      expect(result).toHaveLength(1100);
+      expect(result[0].lastMessageAt).toBe(filas.find((r) => r.id === "conv-1099")!.last_message_at);
+    });
+
+    /**
+     * Límite aceptado, documentado acá con honestidad: una fila que SUBE al
+     * tope entre páginas internas (recibe un mensaje nuevo) queda por
+     * encima de todo lo ya recorrido — el cursor de continuación, forward
+     * only, no vuelve para atrás a buscarla. Es el mismo límite que ya
+     * tiene el cursor externo entre cargas (`inbox-paging.ts`): esa fila
+     * llega por realtime o en la carga siguiente, no en esta. Lo que SÍ
+     * corrige esta entrega es que ya no se entrega dos veces la fila del
+     * borde antiguo (acá, `conv-250`, que la posición vieja repetía en la
+     * página 2 del código posicional).
+     */
+    it("una fila que sube al tope entre páginas internas no se entrega dos veces", async () => {
+      const total = 1250;
+      const filas = Array.from({ length: total }, (_, i) => makeRow(i));
+      const { client } = createFakeSupabase(filas, (callIndex) => {
+        if (callIndex === 1) {
+          filas.find((r) => r.id === "conv-100")!.last_message_at = new Date(2030, 0, 1).toISOString();
+        }
+      });
+
+      const result = await fetchConversations(client);
+      const ids = result.map((c) => c.id);
+
+      expect(new Set(ids).size).toBe(ids.length);
+      expect(ids).toContain("conv-249");
+      expect(result).toHaveLength(1249);
+      expect(ids).not.toContain("conv-100");
+    });
+
+    /**
+     * Red de seguridad, no reproduce un bug conocido: el barrido interno
+     * tiene que poder cruzar de la zona con fecha a la zona nula Y seguir
+     * paginando DENTRO de la zona nula (rama `else` del cursor —
+     * `cursorFromRow` con `lastMessageAt: null` —, sin cobertura hasta esta
+     * entrega).
+     */
+    it("cruza a la zona nula y sigue paginando dentro de ella con el predicado de la rama nula", async () => {
+      const conFecha = Array.from({ length: 1000 }, (_, i) => makeRow(i));
+      const sinFecha = Array.from({ length: 1100 }, (_, i) => ({
+        ...makeRow(10000 + i),
+        id: `conv-null-${String(i).padStart(4, "0")}`,
+        last_message_at: null as string | null,
+      }));
+      const filas = [...conFecha, ...sinFecha];
+      const { client, filters } = createFakeSupabase(filas);
+
+      const result = await fetchConversations(client);
+
+      expect(result).toHaveLength(2100);
+      expect(result.slice(1000).every((c) => c.lastMessageAt === null)).toBe(true);
+
+      const orFilters = filters.filter((f) => f.op === "or");
+      expect(orFilters[1]).toEqual({
+        op: "or",
+        column: "",
+        value: `and(last_message_at.is.null,id.lt."conv-null-0100")`,
+      });
     });
   });
 
