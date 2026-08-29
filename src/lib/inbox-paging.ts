@@ -55,3 +55,46 @@ export function mergeById(
   const seen = new Set(first.map((c) => c.id));
   return [...first, ...second.filter((c) => !seen.has(c.id))];
 }
+
+/**
+ * Une una cabecera FRESCA con lo acumulado y suelta lo que salió del
+ * conjunto. Para "Todos" alcanza `mergeById` —de ahí no sale nadie—; en
+ * "No leídas"/"Mías" la pertenencia es un predicado y las filas SÍ se van
+ * (otro asesor lee el chat, o se lo reasignan).
+ *
+ * Por POSICIÓN e id, nunca por fecha: lo acumulado está en el orden del
+ * servidor, así que la fila acumulada más profunda que la cabecera todavía
+ * trae marca hasta dónde alcanza la cabecera. Lo que está por encima de ese
+ * punto y no viene en la cabecera, salió del conjunto; lo que está por
+ * debajo solo se hundió y se conserva. Comparar `lastMessageAt` como texto
+ * es incorrecto (`.5Z` > `.55Z`) y pasarlo por `new Date()` pierde los
+ * microsegundos con los que este cursor desempata contra la base.
+ */
+export function reconcileHead(
+  fresh: ConversationSummary[],
+  accumulated: ConversationSummary[],
+  options: { freshIsComplete: boolean }
+): ConversationSummary[] {
+  if (options.freshIsComplete) return fresh;
+
+  const freshIds = new Set(fresh.map((c) => c.id));
+
+  let últimoÍndiceCubierto = -1;
+  for (let i = accumulated.length - 1; i >= 0; i--) {
+    if (freshIds.has(accumulated[i].id)) {
+      últimoÍndiceCubierto = i;
+      break;
+    }
+  }
+
+  // Sin ninguna fila de `accumulated` presente en la cabecera no hay punto
+  // de referencia común: no sabemos si lo acumulado se hundió más allá de
+  // lo que la cabecera alcanza a ver o si de verdad salió del conjunto. Ante
+  // esa duda no se suelta nada — conservador a propósito, para no vaciar la
+  // lista por un desfase transitorio (p. ej. una cabecera pedida a mitad de
+  // una ráfaga de reordenamientos).
+  if (últimoÍndiceCubierto === -1) return mergeById(fresh, accumulated);
+
+  const cola = accumulated.filter((c, i) => i > últimoÍndiceCubierto && !freshIds.has(c.id));
+  return [...fresh, ...cola];
+}
