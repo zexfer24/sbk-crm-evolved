@@ -587,10 +587,17 @@ export async function deleteKnowledgeEntry(supabase: SupabaseClient, id: string)
 }
 
 /**
- * is_active hace dos cosas con el mismo interruptor: saca al agente del
- * reparto por turno de la IA y le corta la entrada al CRM (el login, las
- * páginas y el envío de mensajes lo comprueban). Apagar a alguien acá es
- * dejarlo fuera de la operación completa, no solo del reparto.
+ * Este comentario prometía que `is_active` cortaba la entrada al CRM (login,
+ * páginas, envío de mensajes). Eso lo eliminó la migración
+ * 20260825040000_agent_switch_only_gates_ai.sql (25/8/2026): `is_agent()` ya
+ * no exige `is_active` y el trigger `no_self_deactivation` no existe.
+ * Apagado o no, el asesor sigue entrando al CRM y trabajando.
+ *
+ * Hoy el interruptor solo hace dos cosas: saca al agente del reparto
+ * automático de la IA (`claimNextAvailableAgent`, que filtra
+ * `is_active = true`) y lo saca de la lista de asesores del panel de inicio
+ * (`fetchAgents`). Sacar a alguien de verdad de la operación es borrar o
+ * banear su cuenta en auth, no este interruptor.
  */
 export async function setAgentActive(supabase: SupabaseClient, agentId: string, isActive: boolean) {
   const { error } = await supabase.from("agents").update({ is_active: isActive }).eq("id", agentId);
