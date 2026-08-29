@@ -3,7 +3,15 @@ import { defineConfig } from "vitest/config";
 import react from "@vitejs/plugin-react";
 
 export default defineConfig({
-  plugins: [react()],
+  plugins: [
+    // 29/8/2026: el include de fábrica del plugin es /\.[tj]sx?$/ — pasaba por
+    // Babel todo .ts del grafo, incluidos los ~62 archivos de test de entorno
+    // node y el grueso de src/lib, que no pueden contener JSX. Ese costo se
+    // paga en el cuello de transformación que comparte toda la suite. esbuild
+    // sigue compilando el TypeScript plano; Babel queda solo donde puede haber
+    // JSX. Este config no afecta a `next dev/build`.
+    react({ include: /\.[tj]sx$/ }),
+  ],
   test: {
     // 28/8/2026: de los ~79 archivos de test solo ~19 tocan el DOM; los demás
     // construían un jsdom que nunca usaban, pagando su costo de CPU en cada
