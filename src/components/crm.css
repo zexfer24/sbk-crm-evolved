@@ -1322,20 +1322,6 @@
   display: flex;
 }
 
-/* Aviso del recorte silencioso de SERVER_FILTER_LIMIT (`inbox-filters.ts`):
-   "No leídas"/"Mías" no ofrecen "cargar más" (la consulta ya trajo el
-   conjunto entero que puede traer), así que si la píldora llega al tope no
-   hay ningún control que lo delate — antes de esta reforma (29/8/2026) el
-   recorte era mudo. Texto informativo y no un vacío: no usa `crm-empty`. */
-.crm-list-truncated {
-  align-self: center;
-  margin: 10px auto 14px;
-  padding: 0 20px;
-  color: var(--lm-muted);
-  font-size: 12px;
-  text-align: center;
-}
-
 /* --------------------------------------------------------------------------
    Panel del agente
    Lo que ocupa la columna del chat cuando no hay conversación abierta: el

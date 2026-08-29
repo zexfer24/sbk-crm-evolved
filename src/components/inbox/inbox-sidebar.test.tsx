@@ -2,8 +2,7 @@
 import { describe, expect, it, vi, beforeEach } from "vitest";
 import { render, screen, fireEvent, within, waitFor } from "@testing-library/react";
 import type { Agent, Conversation, Tag } from "@/lib/types";
-import { fetchConversations } from "@/lib/data";
-import { SERVER_FILTER_LIMIT } from "@/lib/inbox-filters";
+import { fetchConversations, INBOX_PAGE_SIZE } from "@/lib/data";
 import { InboxSidebar } from "@/components/inbox/inbox-sidebar";
 
 // La bandeja abre un cliente de Supabase para buscar dentro de los mensajes.
@@ -14,10 +13,14 @@ vi.mock("@/lib/supabase/client", () => ({
 }));
 
 // "No leídas" y "Mías" le preguntan a la base por el conjunto entero, no a
-// la ventana cargada. Acá se controla qué contesta esa consulta.
+// la ventana cargada; ahora paginan por cursor igual que "Todos" —mismo
+// `INBOX_PAGE_SIZE`—, así que el mock necesita el valor real (no el de
+// `@/lib/inbox-filters`, que ya no lo tiene) para que las aserciones de
+// `limit` calcen con lo que de verdad pide `inbox-sidebar.tsx`.
 vi.mock("@/lib/data", () => ({
   fetchConversations: vi.fn().mockResolvedValue([]),
   searchConversationSummaries: vi.fn().mockResolvedValue([]),
+  INBOX_PAGE_SIZE: 30,
 }));
 
 beforeEach(() => {
@@ -186,22 +189,22 @@ describe("InboxSidebar — los cortes viejos no vuelven", () => {
 });
 
 describe("InboxSidebar — 'No leídas' y 'Mías' salen a buscar a la base", () => {
-  it("al abrir en 'No leídas' (filtro por defecto), pide unreadOnly con el tope compartido", () => {
+  it("al abrir en 'No leídas' (filtro por defecto), pide unreadOnly con la primera página", () => {
     renderSidebar(JEFA);
 
     expect(fetchConversations).toHaveBeenCalledWith(expect.anything(), {
       unreadOnly: true,
-      limit: SERVER_FILTER_LIMIT,
+      limit: INBOX_PAGE_SIZE,
     });
   });
 
-  it("al pasar a 'Mías', pide assignedTo con el id de quien mira y el mismo tope", () => {
+  it("al pasar a 'Mías', pide assignedTo con el id de quien mira y la misma primera página", () => {
     renderSidebar(JEFA);
     irA("Mías");
 
     expect(fetchConversations).toHaveBeenCalledWith(expect.anything(), {
       assignedTo: JEFA.id,
-      limit: SERVER_FILTER_LIMIT,
+      limit: INBOX_PAGE_SIZE,
     });
   });
 
@@ -315,45 +318,148 @@ describe("InboxSidebar — 'No leídas' y 'Mías' salen a buscar a la base", () 
   });
 });
 
-describe("InboxSidebar — sin 'cargar más' en las píldoras de servidor", () => {
-  it("no ofrece cargar más en 'No leídas'", async () => {
-    render(
+/**
+ * `SERVER_FILTER_LIMIT` recortaba en silencio la consulta de "No leídas"/
+ * "Mías": esas dos píldoras no ofrecían "cargar más" — la consulta ya había
+ * traído todo lo que el tope de 200 dejaba traer —, así que una cola que
+ * llegara al tope perdía gente sin que nadie se enterara (el aviso de
+ * `serverFilterTruncated`, ya retirado). La reforma del 29/8/2026 las pasa a
+ * paginar por cursor (`inbox-paging.ts`), igual que "Todos": ahora SÍ
+ * ofrecen "cargar más", y el cursor de la página siguiente es la última fila
+ * ACUMULADA (`cursorAfterPage`), no la de la página que acaba de llegar sola.
+ */
+describe("InboxSidebar — 'No leídas' y 'Mías' paginan por cursor", () => {
+  /** `INBOX_PAGE_SIZE` filas, para forzar una página llena: la que sí ofrece "cargar más". */
+  function paginaLlena(prefix: string, count = INBOX_PAGE_SIZE): Conversation[] {
+    const base = new Date("2026-08-20T12:00:00Z").getTime();
+    return Array.from({ length: count }, (_, i) =>
+      conversation({
+        id: `${prefix}-${i}`,
+        unreadCount: 1,
+        lastMessageAt: new Date(base - i * 60_000).toISOString(),
+      })
+    );
+  }
+
+  it("la primera página no lleva cursor; 'cargar más' aparece cuando vino llena", async () => {
+    mockServerRows({ unread: paginaLlena("u") });
+
+    const { container } = render(
       <InboxSidebar
-        conversations={CONVERSATIONS}
+        conversations={[]}
         selectedId={null}
         onSelect={() => {}}
         currentAgent={JEFA}
         allTags={ALL_TAGS}
         bcvRate={null}
-        hasMore
-        onLoadMore={() => {}}
       />
     );
 
-    await waitFor(() => expect(fetchConversations).toHaveBeenCalled());
-    expect(screen.queryByRole("button", { name: /cargar más/i })).toBeNull();
+    await waitFor(() => expect(visibleIds(container)).toHaveLength(INBOX_PAGE_SIZE));
+    expect(fetchConversations).toHaveBeenCalledWith(expect.anything(), {
+      unreadOnly: true,
+      limit: INBOX_PAGE_SIZE,
+    });
+    expect(screen.getByRole("button", { name: /cargar más/i })).toBeTruthy();
   });
 
-  it("no ofrece cargar más en 'Mías'", async () => {
-    render(
+  it("al pedir más, la llamada lleva el cursor de la última fila acumulada, y las páginas se acumulan sin repetir ni perder filas", async () => {
+    const primera = paginaLlena("u");
+    const segunda = [conversation({ id: "u-extra-1", unreadCount: 1 })];
+    let segundaLlamada: unknown;
+
+    vi.mocked(fetchConversations).mockImplementation(async (_supabase, options) => {
+      if (!options?.unreadOnly) return [];
+      if (!options.cursor) return primera;
+      segundaLlamada = options;
+      return segunda;
+    });
+
+    const { container } = render(
       <InboxSidebar
-        conversations={CONVERSATIONS}
+        conversations={[]}
         selectedId={null}
         onSelect={() => {}}
         currentAgent={JEFA}
         allTags={ALL_TAGS}
         bcvRate={null}
-        hasMore
-        onLoadMore={() => {}}
+      />
+    );
+
+    await waitFor(() => expect(visibleIds(container)).toHaveLength(INBOX_PAGE_SIZE));
+
+    fireEvent.click(screen.getByRole("button", { name: /cargar más/i }));
+
+    // El cursor es la última fila ACUMULADA (la última de la primera
+    // página), no un valor sacado de otro lado.
+    const última = primera[primera.length - 1];
+    await waitFor(() =>
+      expect(segundaLlamada).toMatchObject({
+        unreadOnly: true,
+        limit: INBOX_PAGE_SIZE,
+        cursor: { lastMessageAt: última.lastMessageAt, id: última.id },
+      })
+    );
+
+    // Las 30 de la primera página siguen, más la de la segunda: nada se
+    // repite ni se pierde.
+    await waitFor(() => expect(visibleIds(container)).toHaveLength(INBOX_PAGE_SIZE + 1));
+    expect(visibleIds(container)).toContain("u-extra-1");
+  });
+
+  it("página corta: 'reachedEnd' no ofrece 'cargar más' ni vuelve a pedir", async () => {
+    const pocas = [conversation({ id: "una-de-pocas", unreadCount: 1 })];
+    mockServerRows({ unread: pocas });
+
+    render(
+      <InboxSidebar
+        conversations={[]}
+        selectedId={null}
+        onSelect={() => {}}
+        currentAgent={JEFA}
+        allTags={ALL_TAGS}
+        bcvRate={null}
+      />
+    );
+
+    await waitFor(() => expect(fetchConversations).toHaveBeenCalledTimes(1));
+    expect(screen.queryByRole("button", { name: /cargar más/i })).toBeNull();
+  });
+
+  it("'Mías' pide la página siguiente con assignedTo y el mismo cursor acumulado", async () => {
+    const primera = paginaLlena("m");
+    let segundaLlamada: unknown;
+
+    vi.mocked(fetchConversations).mockImplementation(async (_supabase, options) => {
+      if (!options?.assignedTo) return [];
+      if (!options.cursor) return primera;
+      segundaLlamada = options;
+      return [];
+    });
+
+    render(
+      <InboxSidebar
+        conversations={[]}
+        selectedId={null}
+        onSelect={() => {}}
+        currentAgent={JEFA}
+        allTags={ALL_TAGS}
+        bcvRate={null}
       />
     );
     irA("Mías");
 
-    await waitFor(() => expect(fetchConversations).toHaveBeenCalledWith(expect.anything(), {
-      assignedTo: JEFA.id,
-      limit: SERVER_FILTER_LIMIT,
-    }));
-    expect(screen.queryByRole("button", { name: /cargar más/i })).toBeNull();
+    await waitFor(() => expect(screen.getByRole("button", { name: /cargar más/i })).toBeTruthy());
+    fireEvent.click(screen.getByRole("button", { name: /cargar más/i }));
+
+    const última = primera[primera.length - 1];
+    await waitFor(() =>
+      expect(segundaLlamada).toMatchObject({
+        assignedTo: JEFA.id,
+        limit: INBOX_PAGE_SIZE,
+        cursor: { lastMessageAt: última.lastMessageAt, id: última.id },
+      })
+    );
   });
 });
 
@@ -397,63 +503,6 @@ describe("InboxSidebar — conteo de la píldora 'No leídas'", () => {
   it("sin la prop counts, ninguna píldora muestra número", () => {
     const { container } = renderSidebar(JEFA);
     expect(container.querySelectorAll(".lm-pill-count")).toHaveLength(0);
-  });
-});
-
-/**
- * `SERVER_FILTER_LIMIT` recorta en silencio la consulta de "No leídas"/
- * "Mías" (`inbox-filters.ts`): la píldora no ofrece "cargar más" para esas
- * dos, así que sin este cartel nadie se entera de que quedó gente afuera.
- * Se prueba contra "No leídas" — el mismo mecanismo cubre "Mías" por
- * `serverFilterTruncated`, ya probado en `inbox-filters.test.ts`.
- */
-describe("InboxSidebar — aviso de recorte del tope de servidor", () => {
-  /** `SERVER_FILTER_LIMIT` filas, justo lo máximo que la consulta puede traer. */
-  function filaDeTope(): Conversation[] {
-    return Array.from({ length: SERVER_FILTER_LIMIT }, (_, i) =>
-      conversation({ id: `tope-${i}`, unreadCount: 1 })
-    );
-  }
-
-  it("aparece cuando la consulta trajo el tope entero y el contador exacto dice que hay más", async () => {
-    mockServerRows({ unread: filaDeTope() });
-
-    const { container } = render(
-      <InboxSidebar
-        conversations={[]}
-        selectedId={null}
-        onSelect={() => {}}
-        currentAgent={JEFA}
-        allTags={ALL_TAGS}
-        bcvRate={null}
-        counts={{ pending: 0, pendingStale: 0, mine: 0, unread: 847 }}
-      />
-    );
-
-    expect(
-      await screen.findByText(`Mostrando las ${SERVER_FILTER_LIMIT} más recientes de 847`)
-    ).toBeTruthy();
-    expect(container.querySelector(".crm-list-truncated")).toBeTruthy();
-  });
-
-  it("no aparece cuando la consulta trajo menos filas que el tope, aunque el contador diga más", async () => {
-    const pocas = [conversation({ id: "una-de-54", unreadCount: 1 })];
-    mockServerRows({ unread: pocas });
-
-    const { container } = render(
-      <InboxSidebar
-        conversations={[]}
-        selectedId={null}
-        onSelect={() => {}}
-        currentAgent={JEFA}
-        allTags={ALL_TAGS}
-        bcvRate={null}
-        counts={{ pending: 0, pendingStale: 0, mine: 0, unread: 54 }}
-      />
-    );
-
-    await waitFor(() => expect(fetchConversations).toHaveBeenCalled());
-    expect(container.querySelector(".crm-list-truncated")).toBeNull();
   });
 });
 

@@ -9,7 +9,6 @@ import {
   fetchTags,
   fetchAgentSettings,
 } from "@/lib/data";
-import { SERVER_FILTER_LIMIT } from "@/lib/inbox-filters";
 import { getBcvRate } from "@/lib/ai/bcv";
 import { CrmShell } from "@/components/crm-shell";
 import type { BcvRateSummary } from "@/components/inbox/bcv-rate-chip";
@@ -51,12 +50,14 @@ export default async function InboxPage({ searchParams }: PageProps<"/inbox">) {
     fetchConversations(supabase, { limit: INBOX_PAGE_SIZE }),
     fetchInboxCounts(supabase, currentAgent.id),
     // Misma consulta que `InboxSidebar` le pide a la base al montar en la
-    // píldora "No leídas" (ver inbox-sidebar.tsx). Resolverla acá evita que
-    // la bandeja abra en esa píldora —el filtro por defecto— mostrando el
-    // cartel "Buscando…" mientras el efecto de red hace el mismo viaje desde
-    // el navegador. Antes eran dos consultas (fresh/stale de "Pendientes");
-    // la reforma a No leídas/Mías/Todos las deja en una sola.
-    fetchConversations(supabase, { unreadOnly: true, limit: SERVER_FILTER_LIMIT }),
+    // píldora "No leídas" (ver inbox-sidebar.tsx): primera página, mismo
+    // tamaño (`INBOX_PAGE_SIZE`) que usa esa píldora para paginar por
+    // cursor. Resolverla acá evita que la bandeja abra en esa píldora —el
+    // filtro por defecto— mostrando el cartel "Buscando…" mientras el
+    // efecto de red hace el mismo viaje desde el navegador. Antes eran dos
+    // consultas (fresh/stale de "Pendientes"); la reforma a No leídas/Mías/
+    // Todos las deja en una sola.
+    fetchConversations(supabase, { unreadOnly: true, limit: INBOX_PAGE_SIZE }),
     fetchTags(supabase),
     fetchQuickReplies(supabase),
     loadBcvRate(supabase),

@@ -3,7 +3,13 @@
 import { Fragment, useCallback, useEffect, useMemo, useState } from "react";
 import { ArrowDownWideNarrow, ArrowUpWideNarrow, Search } from "lucide-react";
 import type { Agent, ConversationSummary, InboxFilter, InboxSort, Tag } from "@/lib/types";
-import { fetchConversations, searchConversationSummaries, type InboxCounts } from "@/lib/data";
+import {
+  fetchConversations,
+  INBOX_PAGE_SIZE,
+  searchConversationSummaries,
+  type InboxCounts,
+} from "@/lib/data";
+import { cursorAfterPage, type ConversationCursor } from "@/lib/inbox-paging";
 import { initials } from "@/lib/dashboard";
 import {
   applyInboxFilters,
@@ -12,8 +18,6 @@ import {
   INBOX_FILTER_LABELS,
   INBOX_SORT_LABELS,
   isUnread,
-  serverFilterTruncated,
-  SERVER_FILTER_LIMIT,
 } from "@/lib/inbox-filters";
 import { buildInboxSections } from "@/lib/inbox-sections";
 import {
@@ -179,7 +183,12 @@ export function InboxSidebar({
   const resolvedOnServer = filter === "unread" || filter === "mine";
 
   /**
-   * Lo que contestó la base, junto con qué píldora lo pidió.
+   * Lo que contestó la base, junto con qué píldora lo pidió, y la
+   * paginación propia de esa consulta: `cursor` para pedir la página
+   * siguiente (`cursorAfterPage`, `inbox-paging.ts` — la última fila
+   * ACUMULADA, no la de la última página sola), `reachedEnd` cuando la
+   * última página vino corta (no hay más que pedir), `loadingMore` mientras
+   * esa página viaja.
    *
    * Guardar el filtro junto a las filas —y no las filas sueltas— es lo que
    * evita que la respuesta de una consulta se muestre bajo la píldora
@@ -190,50 +199,137 @@ export function InboxSidebar({
    * Arranca sembrado con `initialUnreadRows` cuando el servidor ya trajo
    * esas filas (ver la prop): la bandeja abre en "No leídas" —el filtro por
    * defecto— con datos en vez del cartel "Buscando…". El efecto de red de
-   * abajo corre igual y pisa la semilla con lo que responda la base.
+   * abajo corre igual y pisa la semilla con lo que responda la base (misma
+   * primera página, mismo tamaño: `INBOX_PAGE_SIZE`).
    */
   const [serverRows, setServerRows] = useState<{
     filter: InboxFilter;
     rows: ConversationSummary[];
-  } | null>(initialUnreadRows ? { filter: "unread", rows: initialUnreadRows } : null);
+    cursor: ConversationCursor | null;
+    reachedEnd: boolean;
+    loadingMore: boolean;
+  } | null>(
+    initialUnreadRows
+      ? {
+          filter: "unread",
+          rows: initialUnreadRows,
+          cursor: cursorAfterPage(initialUnreadRows),
+          reachedEnd: initialUnreadRows.length < INBOX_PAGE_SIZE,
+          loadingMore: false,
+        }
+      : null
+  );
 
-  // Solo las filas que corresponden a la píldora activa: si `serverRows`
+  // Solo el estado que corresponde a la píldora activa: si `serverRows`
   // quedó con la respuesta de la píldora anterior (la consulta nueva sigue
   // en vuelo), se trata como si no hubiera nada todavía y la lista muestra
   // "Buscando…" en vez de las filas de la píldora que se acaba de dejar.
-  const resolvedRows = serverRows?.filter === filter ? serverRows.rows : null;
+  const resolvedState = serverRows?.filter === filter ? serverRows : null;
+  const resolvedRows = resolvedState?.rows ?? null;
 
   useEffect(() => {
     if (!resolvedOnServer) return;
 
     // Mismo motivo que en la búsqueda: lo que hay que evitar no es que la
-    // respuesta llegue, sino que una vieja pise a una nueva.
+    // respuesta llegue, sino que una vieja pise a una nueva. Siempre pide la
+    // PRIMERA página (sin cursor): cambiar de píldora —la dependencia
+    // `filter`— arranca de cero, igual que "Todos" arranca de cero al
+    // montar el shell.
     let cancelled = false;
     (async () => {
       // Una consulta por píldora, cada una resuelta por su propio índice
-      // (ver las migraciones de "No leídas" y "Mías"): `unreadOnly` para
-      // "No leídas", `assignedTo` para "Mías". Las dos comparten
-      // `SERVER_FILTER_LIMIT` como tope: recorta sin ofrecer "cargar más",
-      // misma aceptación que tenía `PENDING_STALE_LIMIT` (100) en la
-      // reforma anterior — un tope conservador mientras no haya dato real de
-      // producción sobre cuánto crece cada cola.
+      // (ver la migración `20260829010000_conversations_cursor_idx.sql`):
+      // `unreadOnly` para "No leídas", `assignedTo` para "Mías". Mismo
+      // tamaño de página que "Todos" (`INBOX_PAGE_SIZE`): antes compartían
+      // `SERVER_FILTER_LIMIT` (200) como tope sin "cargar más", un recorte
+      // silencioso que un pico de cola dejaba mudo. La reforma del
+      // 29/8/2026 las pasa a paginar por cursor, igual que "Todos".
       const rows = await fetchConversations(
         supabase,
         filter === "unread"
-          ? { unreadOnly: true, limit: SERVER_FILTER_LIMIT }
-          : { assignedTo: currentAgent.id, limit: SERVER_FILTER_LIMIT }
+          ? { unreadOnly: true, limit: INBOX_PAGE_SIZE }
+          : { assignedTo: currentAgent.id, limit: INBOX_PAGE_SIZE }
       );
-      if (!cancelled) setServerRows({ filter, rows });
+      if (!cancelled) {
+        setServerRows({
+          filter,
+          rows,
+          cursor: cursorAfterPage(rows),
+          reachedEnd: rows.length < INBOX_PAGE_SIZE,
+          loadingMore: false,
+        });
+      }
     })().catch(() => {
       // Si la consulta falla, el filtro sigue valiendo sobre lo cargado: se
-      // verán menos chats, no ninguno.
-      if (!cancelled) setServerRows({ filter, rows: [] });
+      // verán menos chats, no ninguno. Sin cursor y con `reachedEnd`: no
+      // tiene sentido ofrecer "cargar más" sobre una página que nunca llegó.
+      if (!cancelled) {
+        setServerRows({ filter, rows: [], cursor: null, reachedEnd: true, loadingMore: false });
+      }
     });
 
     return () => {
       cancelled = true;
     };
   }, [supabase, resolvedOnServer, filter, currentAgent.id]);
+
+  /**
+   * "Cargar más" de las píldoras de servidor: pide la página siguiente con
+   * el cursor de la última fila ACUMULADA y la agrega al final. Lee
+   * `serverRows` (no un `current` dentro del `setState`) porque el cursor
+   * hace falta ANTES de la llamada, para armar la consulta — por eso esta
+   * función depende de `serverRows` y se recrea en cada página nueva, igual
+   * que `loadMoreConversations` en `crm-shell.tsx` depende de `cursorRef`
+   * (acá no puede vivir en un ref: cambia con cada respuesta y sí hace
+   * falta pintar `loadingMore`).
+   */
+  const loadMoreServerRows = useCallback(async () => {
+    if (!resolvedOnServer) return;
+    // La consulta de la píldora activa sigue en vuelo o ya se fue a otra
+    // píldora: sin un cursor de ESTA píldora no hay página siguiente que
+    // pedir con seguridad.
+    if (!serverRows || serverRows.filter !== filter) return;
+    if (serverRows.reachedEnd || serverRows.loadingMore) return;
+
+    const { cursor } = serverRows;
+    setServerRows((current) =>
+      current && current.filter === filter ? { ...current, loadingMore: true } : current
+    );
+
+    try {
+      const page = await fetchConversations(
+        supabase,
+        filter === "unread"
+          ? { unreadOnly: true, cursor: cursor ?? undefined, limit: INBOX_PAGE_SIZE }
+          : { assignedTo: currentAgent.id, cursor: cursor ?? undefined, limit: INBOX_PAGE_SIZE }
+      );
+      setServerRows((current) => {
+        // La píldora pudo cambiar mientras esta página viajaba.
+        if (!current || current.filter !== filter) return current;
+        // Se pega sobre `current.rows` y NO sobre una copia capturada antes
+        // de la llamada: un `patchServerRows` que llegue mientras la página
+        // viaja (abrir un chat lo marca leído al instante) vive en `current`,
+        // y pegarla sobre la copia vieja desharía ese parche. Deduplicado por
+        // id como `mergeById` (crm-shell.tsx): si la primera página se
+        // volvió a pedir mientras esta viajaba, nada se pinta dos veces.
+        const seen = new Set(current.rows.map((row) => row.id));
+        const rows = [...current.rows, ...page.filter((row) => !seen.has(row.id))];
+        return {
+          filter,
+          rows,
+          cursor: page.length > 0 ? cursorAfterPage(page) : current.cursor,
+          reachedEnd: page.length < INBOX_PAGE_SIZE,
+          loadingMore: false,
+        };
+      });
+    } catch {
+      // La lista se queda con lo que ya tiene; el próximo scroll o clic
+      // reintenta.
+      setServerRows((current) =>
+        current && current.filter === filter ? { ...current, loadingMore: false } : current
+      );
+    }
+  }, [supabase, resolvedOnServer, filter, currentAgent.id, serverRows]);
 
   /**
    * Parcha en memoria la fila que solo vive en la consulta del servidor: el
@@ -341,11 +437,22 @@ export function InboxSidebar({
 
   /**
    * Bajar por la bandeja solo pagina cuando lo que se ve es la bandeja.
-   * Buscando, el fondo de la lista son los resultados; en un filtro que
-   * resuelve la base, es el conjunto entero. En los dos casos pedir la página
-   * siguiente del histórico traería filas que el filtro va a descartar.
+   * Buscando, el fondo de la lista son los resultados; los dos caminos de
+   * paginación —el de "Todos" (props del shell: `hasMore`/`onLoadMore`/
+   * `loadingMore`, cursor en `crm-shell.tsx`) y el de "No leídas"/"Mías"
+   * (cursor propio de acá, `serverRows`/`loadMoreServerRows`)— se excluyen
+   * entre sí: cada píldora pagina por un solo camino a la vez.
    */
-  const paginates = Boolean(onLoadMore) && !trimmedSearch && !resolvedOnServer;
+  const paginatesLocally = Boolean(onLoadMore) && !trimmedSearch && !resolvedOnServer;
+  const paginatesOnServer = resolvedOnServer && !trimmedSearch;
+
+  const serverHasMore = paginatesOnServer && resolvedState ? !resolvedState.reachedEnd : false;
+  const serverLoadingMore = resolvedState?.loadingMore ?? false;
+
+  /** Qué "cargar más" corresponde a la píldora activa, sea cual sea su camino. */
+  const effectiveHasMore = paginatesLocally ? hasMore : serverHasMore;
+  const effectiveLoadingMore = paginatesLocally ? loadingMore : serverLoadingMore;
+  const triggerLoadMore = paginatesLocally ? onLoadMore : loadMoreServerRows;
 
   /** Está esperando la respuesta del servidor para la píldora activa. */
   const searching = resolvedOnServer && resolvedRows === null;
@@ -359,28 +466,13 @@ export function InboxSidebar({
    */
   const unreadCleared = filter === "unread" && !trimmedSearch && !activeTagId && !searching;
 
-  /**
-   * El conteo exacto de la píldora activa (`fetchInboxCounts`, mismo dato
-   * que ya se muestra en el número de la píldora "No leídas") contra las
-   * filas que de verdad trajo la consulta de esa píldora. Sirve para avisar
-   * el recorte silencioso de `SERVER_FILTER_LIMIT`: la consulta nunca ofrece
-   * "cargar más" (ver `paginates`), así que sin este aviso una cola que
-   * llegue al tope simplemente perdería gente sin que nadie se entere —el
-   * recorte que ya admitía el comentario de `SERVER_FILTER_LIMIT` en
-   * `inbox-filters.ts`, y que el pico de producción del 29/8/2026 (54 filas
-   * contra el tope de 200) dejó con margen hoy pero no para siempre.
-   */
-  const resolvedTotal = filter === "unread" ? counts?.unread : filter === "mine" ? counts?.mine : undefined;
-  const truncated =
-    resolvedOnServer && resolvedRows != null && serverFilterTruncated(resolvedRows.length, resolvedTotal);
-
   const handleListScroll = useCallback(
     (event: React.UIEvent<HTMLDivElement>) => {
-      if (!paginates || !hasMore || loadingMore) return;
+      if (!effectiveHasMore || effectiveLoadingMore) return;
       const el = event.currentTarget;
-      if (el.scrollHeight - el.scrollTop - el.clientHeight < 200) onLoadMore?.();
+      if (el.scrollHeight - el.scrollTop - el.clientHeight < 200) triggerLoadMore?.();
     },
-    [paginates, onLoadMore, hasMore, loadingMore]
+    [effectiveHasMore, effectiveLoadingMore, triggerLoadMore]
   );
 
   /**
@@ -532,22 +624,21 @@ export function InboxSidebar({
           </p>
         )}
 
-        {truncated && (
-          <p className="crm-list-truncated">
-            Mostrando las {SERVER_FILTER_LIMIT} más recientes de {resolvedTotal}
-          </p>
-        )}
-
         {/* Red de seguridad del scroll: si la lista filtrada quedó corta y no
-            genera desplazamiento, el botón sigue ofreciendo el resto. */}
-        {hasMore && paginates && (
+            genera desplazamiento, el botón sigue ofreciendo el resto. Sirve
+            a las dos formas de paginar (`paginatesLocally`/`paginatesOnServer`):
+            "cargar más" ya es la señal visible de que queda más — el cartel
+            de recorte que tenía esta línea (`crm-list-truncated`, tarea del
+            29/8/2026 anterior a esta) dejó de hacer falta apenas "No leídas"
+            y "Mías" también pudieron ofrecerlo. */}
+        {effectiveHasMore && (
           <button
             type="button"
             className="crm-pill crm-load-more"
-            onClick={onLoadMore}
-            disabled={loadingMore}
+            onClick={triggerLoadMore}
+            disabled={effectiveLoadingMore}
           >
-            {loadingMore ? "Cargando…" : "Cargar más conversaciones"}
+            {effectiveLoadingMore ? "Cargando…" : "Cargar más conversaciones"}
           </button>
         )}
       </div>
