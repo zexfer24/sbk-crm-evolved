@@ -1,6 +1,6 @@
 /** @vitest-environment jsdom */
 import { describe, expect, it, vi, beforeEach } from "vitest";
-import { render, screen, fireEvent } from "@testing-library/react";
+import { render, screen, fireEvent, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { Composer } from "@/components/chat/composer";
 import type { Conversation } from "@/lib/types";
@@ -271,7 +271,9 @@ describe("Composer — mandar varias fotos de una vez", () => {
     pegar(textarea, [foto("primera.png"), foto("segunda.png"), foto("tercera.png")]);
     await user.click(screen.getByRole("button", { name: /enviar/i }));
 
-    await vi.waitFor(() => expect(sendMediaMessageMock).toHaveBeenCalledTimes(3));
+    // vi.waitFor no tiene configuración global de timeout en Vitest 4; el
+    // waitFor de Testing Library hereda los 5 s del setup — un solo punto de política.
+    await waitFor(() => expect(sendMediaMessageMock).toHaveBeenCalledTimes(3));
 
     // El pie va solo en la primera: repetirlo en cada foto se lo manda tres
     // veces al cliente por WhatsApp.

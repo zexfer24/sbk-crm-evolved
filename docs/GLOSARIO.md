@@ -23,7 +23,7 @@ nombre. Los tests sin módulo propio (`data-*.test.ts`, `queue-limit`,
 | `docker-compose.dokploy.yml` | El mismo stack menos Caddy (Dokploy trae Traefik) |
 | `Caddyfile` | TLS automático y cabeceras cuando el proxy es Caddy |
 | `moto_catalog_schema.sql` / `moto_catalog_data.sql` | Fuente del catálogo de motos/repuestos (5.438 productos); de aquí salen la migración y el seed del catálogo |
-| `vitest.config.ts` / `vitest.setup.ts` / `vitest.server-only-stub.ts` | Vitest con entorno `node` por defecto (los tests de UI declaran jsdom por docblock); `testTimeout` 15s contra la contención de workers; stub que anula `server-only` en pruebas |
+| `vitest.config.ts` / `vitest.setup.ts` / `vitest.server-only-stub.ts` | Vitest con entorno `node` por defecto (los tests de UI declaran jsdom por docblock); `testTimeout` 15s contra la contención de workers; stub que anula `server-only` en pruebas; `vitest.setup.ts` sube el `asyncUtilTimeout` de los `waitFor`/`findBy` de Testing Library a 5 s (solo jsdom) para que la espera escale con la carga en vez del 1 s de fábrica |
 | `liminalwork.md` | Metodología de trabajo (fuente de la skill `liminalwork`) |
 | `AGENTS.md` | Aviso de `next dev`: esta versión de Next 16 difiere de los datos de entrenamiento; leer `node_modules/next/dist/docs/` |
 | `CREDENCIALES.txt`, `.env.local*` | Solo en disco, ignorados por git; lo versionado son los `.example` |
