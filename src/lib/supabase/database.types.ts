@@ -488,6 +488,8 @@ export type Database = {
         Row: {
           active_tool: string | null
           ai_enabled: boolean
+          ai_turn_lock_token: string | null
+          ai_turn_lock_until: string | null
           ai_turn_running: boolean
           assigned_agent_id: string | null
           contact_id: string
@@ -519,6 +521,8 @@ export type Database = {
         Insert: {
           active_tool?: string | null
           ai_enabled?: boolean
+          ai_turn_lock_token?: string | null
+          ai_turn_lock_until?: string | null
           ai_turn_running?: boolean
           assigned_agent_id?: string | null
           contact_id: string
@@ -550,6 +554,8 @@ export type Database = {
         Update: {
           active_tool?: string | null
           ai_enabled?: boolean
+          ai_turn_lock_token?: string | null
+          ai_turn_lock_until?: string | null
           ai_turn_running?: boolean
           assigned_agent_id?: string | null
           contact_id?: string
@@ -1325,6 +1331,18 @@ export type Database = {
           output_tokens: number
           total_tokens: number
         }[]
+      }
+      ai_turn_lock_acquire: {
+        Args: { p_conversation_id: string; p_lease_seconds: number; p_token: string }
+        Returns: boolean
+      }
+      ai_turn_lock_release: {
+        Args: { p_conversation_id: string; p_token: string }
+        Returns: boolean
+      }
+      ai_turn_lock_renew: {
+        Args: { p_conversation_id: string; p_lease_seconds: number; p_token: string }
+        Returns: boolean
       }
       claim_agent_turn: {
         Args: { p_max_attempts?: number; p_stale_seconds?: number }

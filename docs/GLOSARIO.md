@@ -148,7 +148,7 @@ nombre. Los tests sin módulo propio (`data-*.test.ts`, `queue-limit`,
 
 | Qué | Dónde |
 |---|---|
-| Migraciones (45, timestampeadas) | `migrations/` — regla: commit propio con `[migración]` en el título |
+| Migraciones (46, timestampeadas) | `migrations/` — regla: commit propio con `[migración]` en el título |
 | Seed de demo (3 usuarios, 5 conversaciones) | `seed.sql` — **no va a producción** |
 | Catálogo y escenarios para producción | `seeds/moto_catalog_seed.sql`, `seeds/ai_playbooks.sql` |
 | Config del stack local | `config.toml` |
