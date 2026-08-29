@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { CONVERSATIONS_PAGE_SIZE, fetchBoardConversations, fetchConversations } from "@/lib/data";
 import { freeformWindowCutoff } from "@/lib/dashboard";
+import { cursorAfterPage } from "@/lib/inbox-paging";
 
 // ---------------------------------------------------------------------------
 // Fake de SupabaseClient para la cadena de fetchConversations
@@ -39,7 +40,7 @@ function makeRow(index: number) {
     deal_payment_method: null,
     deal_closed_by: null,
     last_customer_message_at: null as string | null,
-    last_message_at: new Date(2024, 0, 1, 0, 0, index).toISOString(),
+    last_message_at: new Date(2024, 0, 1, 0, 0, index).toISOString() as string | null,
     last_message_preview: `preview ${index}`,
     last_message_direction: null,
     last_message_status: null,
@@ -72,32 +73,159 @@ function makeRow(index: number) {
   };
 }
 
-function createFakeSupabase(rows: ReturnType<typeof makeRow>[]) {
+type Row = ReturnType<typeof makeRow>;
+
+interface SortSpec {
+  column: string;
+  ascending: boolean;
+  nullsFirst: boolean;
+}
+
+/**
+ * Divide una expresión de `.or()` por sus comas de nivel superior, sin
+ * partir las que quedan dentro de un `and(...)` anidado ni las que vinieran
+ * dentro de un literal entrecomillado (los timestamps con cursor no traen
+ * comas, pero sí `+` y `:` — la comilla es lo único que hay que respetar acá).
+ */
+function splitTopLevel(clause: string): string[] {
+  const parts: string[] = [];
+  let depth = 0;
+  let inQuotes = false;
+  let current = "";
+  for (let i = 0; i < clause.length; i++) {
+    const ch = clause[i];
+    if (ch === '"' && clause[i - 1] !== "\\") inQuotes = !inQuotes;
+    if (!inQuotes) {
+      if (ch === "(") depth++;
+      if (ch === ")") depth--;
+      if (ch === "," && depth === 0) {
+        parts.push(current);
+        current = "";
+        continue;
+      }
+    }
+    current += ch;
+  }
+  if (current) parts.push(current);
+  return parts;
+}
+
+interface Cond {
+  column: string;
+  op: string;
+  value: string;
+}
+
+/** `columna.operador.valor`, con el valor opcionalmente entrecomillado (`pgrstLiteral`). */
+function parseCondition(raw: string): Cond {
+  const firstDot = raw.indexOf(".");
+  const column = raw.slice(0, firstDot);
+  const rest = raw.slice(firstDot + 1);
+  const secondDot = rest.indexOf(".");
+  const op = rest.slice(0, secondDot);
+  let value = rest.slice(secondDot + 1);
+  if (value.startsWith('"') && value.endsWith('"')) {
+    value = value.slice(1, -1).replace(/\\"/g, '"').replace(/\\\\/g, "\\");
+  }
+  return { column, op, value };
+}
+
+function compareCell(cell: unknown, value: string): number {
+  if (typeof cell === "number") {
+    const num = Number(value);
+    return cell < num ? -1 : cell > num ? 1 : 0;
+  }
+  const str = String(cell);
+  return str < value ? -1 : str > value ? 1 : 0;
+}
+
+function evalCond(row: Row, cond: Cond): boolean {
+  const cell = (row as Record<string, unknown>)[cond.column];
+  switch (cond.op) {
+    case "is":
+      if (cond.value === "null") return cell == null;
+      if (cond.value === "true") return cell === true;
+      return cell === cond.value;
+    case "eq":
+      return cell != null && compareCell(cell, cond.value) === 0;
+    case "lt":
+      return cell != null && compareCell(cell, cond.value) < 0;
+    case "lte":
+      return cell != null && compareCell(cell, cond.value) <= 0;
+    case "gt":
+      return cell != null && compareCell(cell, cond.value) > 0;
+    default:
+      throw new Error(`operador "${cond.op}" no soportado por el fake de .or()`);
+  }
+}
+
+/** Un término de nivel superior: una condición sola, o `and(...)` de varias. */
+function evalTerm(row: Row, term: string): boolean {
+  if (term.startsWith("and(") && term.endsWith(")")) {
+    const inner = term.slice(4, -1);
+    return splitTopLevel(inner).every((raw) => evalCond(row, parseCondition(raw)));
+  }
+  return evalCond(row, parseCondition(term));
+}
+
+function compareRows(a: Row, b: Row, sorts: SortSpec[]): number {
+  for (const { column, ascending, nullsFirst } of sorts) {
+    const av = (a as Record<string, unknown>)[column];
+    const bv = (b as Record<string, unknown>)[column];
+    const aNull = av == null;
+    const bNull = bv == null;
+    if (aNull && bNull) continue;
+    if (aNull) return nullsFirst ? -1 : 1;
+    if (bNull) return nullsFirst ? 1 : -1;
+    if (av === bv) continue;
+    const lt = (av as string) < (bv as string);
+    if (ascending) return lt ? -1 : 1;
+    return lt ? 1 : -1;
+  }
+  return 0;
+}
+
+function createFakeSupabase(rows: Row[]) {
   const calls: RangeCall[] = [];
   const filters: { op: string; column: string; value: unknown }[] = [];
 
-  // Builder encadenable como el de PostgREST: los filtros se anotan y el
-  // range final resuelve sobre las filas que quedaron.
-  function builder(current: ReturnType<typeof makeRow>[]) {
+  // Builder encadenable como el de PostgREST: los filtros y los `.order()`
+  // se anotan, y el `.range()` final ordena de verdad y resuelve sobre las
+  // filas que quedaron — reproduce el reordenamiento real que sufre la
+  // bandeja cuando una fila sube al tope mientras se pagina.
+  function builder(current: Row[], sorts: SortSpec[]) {
     return {
+      order(column: string, opts?: { ascending?: boolean; nullsFirst?: boolean }) {
+        const ascending = opts?.ascending ?? true;
+        const nullsFirst = opts?.nullsFirst ?? ascending;
+        return builder(current, [...sorts, { column, ascending, nullsFirst }]);
+      },
       neq(column: string, value: unknown) {
         filters.push({ op: "neq", column, value });
-        return builder(current.filter((row) => (row as Record<string, unknown>)[column] !== value));
+        return builder(
+          current.filter((row) => (row as Record<string, unknown>)[column] !== value),
+          sorts
+        );
       },
       eq(column: string, value: unknown) {
         filters.push({ op: "eq", column, value });
-        return builder(current.filter((row) => (row as Record<string, unknown>)[column] === value));
+        return builder(
+          current.filter((row) => (row as Record<string, unknown>)[column] === value),
+          sorts
+        );
       },
       is(column: string, value: unknown) {
         filters.push({ op: "is", column, value });
         return builder(
-          current.filter((row) => ((row as Record<string, unknown>)[column] ?? null) === value)
+          current.filter((row) => ((row as Record<string, unknown>)[column] ?? null) === value),
+          sorts
         );
       },
       in(column: string, values: unknown[]) {
         filters.push({ op: "in", column, value: values });
         return builder(
-          current.filter((row) => values.includes((row as Record<string, unknown>)[column]))
+          current.filter((row) => values.includes((row as Record<string, unknown>)[column])),
+          sorts
         );
       },
       gt(column: string, value: unknown) {
@@ -106,7 +234,8 @@ function createFakeSupabase(rows: ReturnType<typeof makeRow>[]) {
           current.filter((row) => {
             const cell = (row as Record<string, unknown>)[column];
             return cell != null && cell > (value as string);
-          })
+          }),
+          sorts
         );
       },
       lte(column: string, value: unknown) {
@@ -115,39 +244,26 @@ function createFakeSupabase(rows: ReturnType<typeof makeRow>[]) {
           current.filter((row) => {
             const cell = (row as Record<string, unknown>)[column];
             return cell != null && cell <= (value as string);
-          })
+          }),
+          sorts
         );
       },
-      // Fake mínimo de `.or()`: entiende las cláusulas que emite data.ts para
-      // `pendingWindow: "stale"` (`columna.lte.valor` y `columna.is.null`) y
-      // para `unreadOnly` (`columna.gt.valor` y `columna.is.true`), separadas
-      // por coma. Alcanza para lo que se prueba acá, no para PostgREST en
-      // general.
+      // Fake mínimo de `.or()`: entiende las cláusulas que emite `orExpression`
+      // (src/lib/ai/pgrst.ts) — condiciones sueltas `columna.operador.valor`
+      // y `and(...)` anidado, valores opcionalmente entrecomillados con
+      // `pgrstLiteral` — para lo que se prueba acá, no PostgREST en general.
       or(clause: string) {
         filters.push({ op: "or", column: "", value: clause });
-        const conditions = clause.split(",").map((raw) => {
-          const [column, op, ...rest] = raw.split(".");
-          return { column, op, value: rest.join(".") };
-        });
+        const terms = splitTopLevel(clause);
         return builder(
-          current.filter((row) =>
-            conditions.some(({ column, op, value }) => {
-              const cell = (row as Record<string, unknown>)[column];
-              if (op === "is") {
-                if (value === "null") return cell == null;
-                if (value === "true") return cell === true;
-                return cell === value;
-              }
-              if (op === "lte") return cell != null && cell <= value;
-              if (op === "gt") return cell != null && (cell as number) > Number(value);
-              throw new Error(`operador "${op}" no soportado por el fake de .or()`);
-            })
-          )
+          current.filter((row) => terms.some((term) => evalTerm(row, term))),
+          sorts
         );
       },
       range(from: number, to: number) {
         calls.push({ from, to });
-        return Promise.resolve({ data: current.slice(from, to + 1), error: null });
+        const sorted = [...current].sort((a, b) => compareRows(a, b, sorts));
+        return Promise.resolve({ data: sorted.slice(from, to + 1), error: null });
       },
     };
   }
@@ -159,11 +275,7 @@ function createFakeSupabase(rows: ReturnType<typeof makeRow>[]) {
       return {
         select(query: string) {
           selects.push(query);
-          return {
-            order() {
-              return builder(rows);
-            },
-          };
+          return builder(rows, []);
         },
       };
     },
@@ -223,20 +335,35 @@ describe("fetchConversations", () => {
   /**
    * Bajar por la bandeja tiene que costar una página.
    *
-   * Sin `offset`, «traer 30 más» se pedía como `limit` creciente desde la
-   * fila 0: la sexta bajada volvía a bajar 180 filas —135 KB, 1,2 s medidos
-   * en producción— para mostrar 30 nuevas.
+   * El cursor (última fila de la página anterior) reemplazó al `offset` de
+   * posición el 29/8/2026: pide "lo que sigue después de esta fila" en vez
+   * de "la fila número N", así que un reordenamiento en el medio no le
+   * afecta (ver el bloque "reordenamiento durante la paginación" más abajo).
    */
-  it("con offset pide solo la página siguiente", async () => {
-    const { client, calls } = createFakeSupabase(
-      Array.from({ length: 200 }, (_, i) => makeRow(i))
-    );
+  it("con cursor pide solo la página siguiente, filtrando por el valor de la última fila recibida", async () => {
+    const rows = Array.from({ length: 200 }, (_, i) => makeRow(i));
+    const { client, calls, filters } = createFakeSupabase(rows);
 
-    const result = await fetchConversations(client, { offset: 30, limit: 30 });
+    // La página anterior terminó en conv-170 (índice 170 de 0..199, la fila
+    // número 30 en el orden descendente): ese es el cursor con el que se
+    // pide la siguiente.
+    const cursor = { lastMessageAt: rows[170].last_message_at, id: "conv-170" };
 
-    expect(calls).toEqual([{ from: 30, to: 59 }]);
+    const result = await fetchConversations(client, { cursor, limit: 30 });
+
+    expect(filters).toContainEqual({
+      op: "or",
+      column: "",
+      value:
+        `last_message_at.lt."${cursor.lastMessageAt}",` +
+        `and(last_message_at.eq."${cursor.lastMessageAt}",id.lt."conv-170"),` +
+        `last_message_at.is.null`,
+    });
+    expect(calls).toEqual([{ from: 0, to: 29 }]);
     expect(result).toHaveLength(30);
-    expect(result[0].id).toBe("conv-30");
+    // Todo lo que sigue al cursor en el orden descendente: conv-169..conv-140.
+    expect(result[0].id).toBe("conv-169");
+    expect(result[29].id).toBe("conv-140");
   });
 
   /**
@@ -376,6 +503,120 @@ describe("fetchConversations", () => {
 
     expect(filters).toContainEqual({ op: "eq", column: "assigned_agent_id", value: "ana" });
     expect(result.map((c) => c.id).sort()).toEqual(["conv-0", "conv-2"]);
+  });
+
+  describe("reordenamiento durante la paginación (bug de producción, 29/8/2026)", () => {
+    /**
+     * Reproduce el bug confirmado en producción: la píldora "Todos" pagina
+     * con `offset`. Si una conversación fuera de las dos primeras páginas
+     * recibe un mensaje y sube al tope mientras el asesor sigue bajando la
+     * lista, todas las de abajo se corren una posición — la página
+     * siguiente, pedida por `offset`, salta justo la fila que cruzó el borde
+     * y esa fila no vuelve nunca (`mergeById` deduplica lo que llega, no
+     * recupera lo que jamás se pidió). Producción reordenaba ~3 veces/minuto.
+     *
+     * ROJO confirmado antes de esta prueba (con `{ offset: 30, limit: 30 }`
+     * en vez de `{ cursor, limit: 30 }` para la página 2, el camino que
+     * usaba `crm-shell.tsx:184-187`):
+     *
+     *   AssertionError: expected [ 'conv-40' ] to deeply equal []
+     *
+     * `conv-40` es la fila en la posición 59 original: al subir `conv-29` al
+     * tope, todo lo de encima de su posición vieja se corre una fila hacia
+     * abajo, y `offset: 30` —que cuenta posiciones, no valores— deja de
+     * llegar hasta ella.
+     */
+    it("con cursor, una fila que sube al tope no hace perder ninguna fila de la ventana ya recorrida", async () => {
+      const total = 100;
+      const initialRows = Array.from({ length: total }, (_, i) => makeRow(i));
+      const { client } = createFakeSupabase(initialRows);
+
+      // Página 1: las 30 más recientes (índices 99..70) — la carga inicial
+      // de la bandeja.
+      const page1 = await fetchConversations(client, { limit: 30 });
+
+      // Las posiciones 0-59 originales, antes de que nada se mueva: índices
+      // 99..40, 60 filas.
+      const originalTop60Ids = Array.from({ length: 60 }, (_, i) => `conv-${99 - i}`);
+
+      // Mientras el asesor sigue bajando, la fila de la posición ~70 (índice
+      // 29, en la página 3) recibe un mensaje: sube al tope.
+      const rowThatJumps = initialRows.find((r) => r.id === "conv-29")!;
+      rowThatJumps.last_message_at = new Date(2030, 0, 1).toISOString();
+
+      // Página 2 por cursor: la última fila que se vio, no una posición.
+      const cursor = cursorAfterPage(page1)!;
+      const page2 = await fetchConversations(client, { cursor, limit: 30 });
+
+      const seen = new Set(page1.map((c) => c.id));
+      const union = [...page1, ...page2.filter((c) => !seen.has(c.id))];
+      const unionIds = new Set(union.map((c) => c.id));
+
+      const faltantes = originalTop60Ids.filter((id) => !unionIds.has(id));
+      expect(faltantes).toEqual([]);
+    });
+
+    /**
+     * 3 empates reales de `last_message_at` conviven en 1.851 filas de
+     * producción (29/8/2026): el cursor NECESITA desempatar por `id`, o dos
+     * filas con la misma fecha en el borde de página pueden repetirse o
+     * perderse entre una página y la siguiente.
+     */
+    it("con empates de last_message_at en el borde de página, el desempate por id no pierde ni repite filas", async () => {
+      const rows = Array.from({ length: 40 }, (_, i) => makeRow(i));
+      // Posiciones 29/30/31 (índices 10/9/8, ya que el orden descendente
+      // hace pos = 39 - índice) comparten la misma fecha: cruzan justo el
+      // borde de una página de 30.
+      const fechaEmpate = rows[10].last_message_at;
+      rows[9] = { ...rows[9], last_message_at: fechaEmpate };
+      rows[8] = { ...rows[8], last_message_at: fechaEmpate };
+      const { client } = createFakeSupabase(rows);
+
+      const page1 = await fetchConversations(client, { limit: 30 });
+      const cursor = cursorAfterPage(page1)!;
+      const page2 = await fetchConversations(client, { cursor, limit: 30 });
+
+      const page1Ids = page1.map((c) => c.id);
+      const page2Ids = page2.map((c) => c.id);
+
+      // Ninguna repetida entre página 1 y 2.
+      expect(page1Ids.filter((id) => page2Ids.includes(id))).toEqual([]);
+      // Ninguna perdida: las 40 filas están, entre las dos páginas.
+      expect(new Set([...page1Ids, ...page2Ids]).size).toBe(40);
+      expect(page1Ids).toHaveLength(30);
+      expect(page2Ids).toHaveLength(10);
+    });
+
+    /**
+     * Las filas sin `last_message_at` ordenan al final (`nulls last`). El
+     * cursor tiene que poder cruzar de la zona con fecha a la zona nula:
+     * sin el tercer término del predicado (`last_message_at.is.null`), esas
+     * filas quedarían inalcanzables desde cualquier página con cursor
+     * no-nulo.
+     */
+    it("el cursor cruza de la zona con fecha a la zona nula y trae todas las filas sin fecha", async () => {
+      const conFecha = Array.from({ length: 20 }, (_, i) => makeRow(i));
+      const sinFecha = Array.from({ length: 15 }, (_, i) => ({
+        ...makeRow(1000 + i),
+        id: `conv-null-${i}`,
+        last_message_at: null,
+      }));
+      const rows = [...conFecha, ...sinFecha];
+      const { client } = createFakeSupabase(rows);
+
+      const page1 = await fetchConversations(client, { limit: 20 });
+      // La página 1 agota la zona con fecha: sus 20 filas son exactamente
+      // `conFecha`, en orden descendente.
+      expect(page1.map((c) => c.id).sort()).toEqual(
+        conFecha.map((r) => r.id).sort()
+      );
+
+      const cursor = cursorAfterPage(page1)!;
+      const page2 = await fetchConversations(client, { cursor, limit: 20 });
+
+      expect(page2.map((c) => c.id).sort()).toEqual(sinFecha.map((r) => r.id).sort());
+      expect(page2.every((c) => c.lastMessageAt === null)).toBe(true);
+    });
   });
 
   describe("pendingWindow", () => {

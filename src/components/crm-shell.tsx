@@ -29,6 +29,7 @@ import {
   fetchAgentSettings,
   type InboxCounts,
 } from "@/lib/data";
+import { cursorAfterPage, type ConversationCursor } from "@/lib/inbox-paging";
 import { markConversationRead, markConversationUnread, sendMessage } from "@/lib/mutations";
 import {
   discardItem,
@@ -171,28 +172,40 @@ export function CrmShell({
     }
   );
 
-  const loadedCount = conversations.length;
+  /**
+   * El punto desde donde retomar la próxima página: la última fila de la
+   * última página recibida (`inbox-paging.ts`), no un contador de posición.
+   * Un `offset` se rompe apenas una fila cruza el borde de página mientras
+   * el asesor sigue bajando la lista —sube al tope y corre a todas las de
+   * abajo una posición— y la página siguiente, pedida por número de fila,
+   * salta justo la que cruzó (confirmado en producción el 29/8/2026: la
+   * píldora "Todos" reordenaba ~3 veces/minuto y esas filas no volvían
+   * nunca). El cursor pide "lo que sigue después de esta fila", así que un
+   * reordenamiento en el medio no le afecta. Vive en un ref y no en estado:
+   * no pinta nada, y guardarlo en estado dispararía un render de más en cada
+   * página.
+   */
+  const cursorRef = useRef<ConversationCursor | null>(cursorAfterPage(initialConversations));
 
   const loadMoreConversations = useCallback(async () => {
     if (loadingMore || reachedEnd) return;
     setLoadingMore(true);
     try {
-      // El desplazamiento sale de cuántas hay en pantalla, no de un contador
-      // de páginas: si mientras tanto entró una conversación nueva arriba o
-      // desapareció una, la cuenta se corrige sola y `mergeById` descarta lo
-      // que vuelva repetido.
       const page = await fetchConversations(supabase, {
-        offset: loadedCount,
+        cursor: cursorRef.current ?? undefined,
         limit: INBOX_PAGE_SIZE,
       });
       if (page.length < INBOX_PAGE_SIZE) setReachedEnd(true);
-      if (page.length > 0) setConversations((current) => mergeById(current, page));
+      if (page.length > 0) {
+        cursorRef.current = cursorAfterPage(page);
+        setConversations((current) => mergeById(current, page));
+      }
     } catch {
       // La bandeja sigue con lo que ya tiene; el próximo intento reintenta.
     } finally {
       setLoadingMore(false);
     }
-  }, [supabase, loadedCount, loadingMore, reachedEnd, setConversations]);
+  }, [supabase, loadingMore, reachedEnd, setConversations]);
 
   // Sin conversación de inicio no se abre ninguna: abrir la primera de la
   // lista ponía al asesor a leer un chat que no eligió —y lo daba por leído—

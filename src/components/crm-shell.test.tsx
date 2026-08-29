@@ -818,11 +818,12 @@ describe("CrmShell — bajar por la bandeja cuesta una página, no todo otra vez
     return Array.from({ length: 30 }, (_, i) => buildConversation({ id: `conv-${desde + i}` }));
   }
 
-  it("pide la página siguiente por desplazamiento y la pega al final", async () => {
+  it("pide la página siguiente por cursor (última fila cargada) y la pega al final", async () => {
+    const primeraPagina = paginaLlena(0);
     render(
       <CrmShell
         currentAgent={currentAgent}
-        initialConversations={paginaLlena(0)}
+        initialConversations={primeraPagina}
         initialInboxCounts={inboxCounts}
         allTags={allTags}
         initialQuickReplies={initialQuickReplies}
@@ -838,7 +839,14 @@ describe("CrmShell — bajar por la bandeja cuesta una página, no todo otra vez
     });
 
     expect(fetchConversationsMock).toHaveBeenCalledTimes(1);
-    expect(fetchConversationsMock.mock.calls[0][1]).toEqual({ offset: 30, limit: 30 });
+    // No un desplazamiento: la última fila que se cargó, en valor. Un
+    // desplazamiento se rompe apenas una fila cruza el borde de página
+    // mientras el asesor sigue bajando (ver `inbox-paging.ts`).
+    const ultimaFilaCargada = primeraPagina[primeraPagina.length - 1];
+    expect(fetchConversationsMock.mock.calls[0][1]).toEqual({
+      cursor: { lastMessageAt: ultimaFilaCargada.lastMessageAt, id: ultimaFilaCargada.id },
+      limit: 30,
+    });
     // Concatenadas, no reemplazadas: las primeras 30 siguen ahí.
     expect(inboxProps?.conversations).toHaveLength(60);
     expect(inboxProps?.conversations[0].id).toBe("conv-0");

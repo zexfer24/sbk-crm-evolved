@@ -1,7 +1,8 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
-import { pgrstLiteral } from "@/lib/ai/pgrst";
+import { orExpression, pgrstLiteral } from "@/lib/ai/pgrst";
 import { conversationsWrittenByHumans } from "@/lib/ai/human-handled";
 import { freeformWindowCutoff, isTicketTag } from "@/lib/dashboard";
+import type { ConversationCursor } from "@/lib/inbox-paging";
 import { CRM_TIME_ZONE, currentDayRange } from "@/lib/time-zone";
 import { failureReason } from "@/lib/whatsapp/failure-reason";
 import type {
@@ -523,13 +524,19 @@ export interface FetchConversationsOptions {
    */
   limit?: number;
   /**
-   * Desde qué fila empezar. Es lo que convierte «traer una página más» en una
-   * petición del tamaño de una página: sin esto, la bandeja pedía `limit`
-   * creciente desde la fila 0 y volvía a bajar todo lo que ya tenía — seis
-   * bajadas de scroll costaban 135 KB y 1,2 s, más que las 200 filas de una
-   * sola vez que se quiso eliminar.
+   * Desde dónde retomar: la última fila de la última página recibida
+   * (`cursorAfterPage`, `src/lib/inbox-paging.ts`). Reemplaza a un `offset`
+   * de posición (retirado el 29/8/2026): un cursor de posición se rompe
+   * apenas una fila cruza el borde de página mientras alguien sigue bajando
+   * la lista —sube al tope y corre a todas las de abajo una posición— y la
+   * página siguiente, pedida por número de fila, salta justo la que cruzó.
+   * Confirmado en producción: la píldora "Todos" reordenaba ~3 veces/minuto
+   * y esas filas no volvían nunca (`mergeById`, en `crm-shell.tsx`,
+   * deduplica lo que llega; no recupera lo que jamás se pidió). El cursor
+   * por valor no depende de la posición: pide "lo que sigue después de esta
+   * fila, en este orden", así que un reordenamiento en el medio no le afecta.
    */
-  offset?: number;
+  cursor?: ConversationCursor;
   /** Solo lo que no está cerrado: el tablero y el roster miran el trabajo vivo. */
   activeOnly?: boolean;
   /** Solo las que no tiene nadie: el trabajo libre, disponible para agarrar. */
@@ -623,7 +630,7 @@ async function fetchConversationRows<Raw>(
   select: string,
   {
     limit,
-    offset = 0,
+    cursor,
     activeOnly,
     unassignedOnly,
     awaitingReplyOnly,
@@ -654,10 +661,17 @@ async function fetchConversationRows<Raw>(
       ? Math.min(CONVERSATIONS_PAGE_SIZE, limit - rows.length)
       : CONVERSATIONS_PAGE_SIZE;
 
+    // Orden canónico de la bandeja: `last_message_at desc nulls last`, y
+    // `id desc` como desempate. Sin el segundo `.order()` el empate queda
+    // arbitrario para PostgREST — confirmado contra la base real: hay 3
+    // empates de `last_message_at` en 1.851 filas (29/8/2026) — y un cursor
+    // que solo mira `last_message_at` podría repetir o saltar cualquiera de
+    // esas filas empatadas entre una página y la siguiente.
     let request = supabase
       .from("conversations")
       .select(select)
-      .order("last_message_at", { ascending: false, nullsFirst: false });
+      .order("last_message_at", { ascending: false, nullsFirst: false })
+      .order("id", { ascending: false });
 
     if (activeOnly) request = request.neq("status", "closed");
     if (unassignedOnly) request = request.is("assigned_agent_id", null);
@@ -665,20 +679,53 @@ async function fetchConversationRows<Raw>(
     if (neverRepliedOnly) request = request.eq("has_reply", false);
     if (pendingWindow === "fresh") {
       request = request.gt("last_customer_message_at", pendingWindowCutoff!);
-    } else if (pendingWindow === "stale") {
-      // `last_customer_message_at is null` cae acá: sin fecha del cliente no
-      // hay ventana abierta (fallar cerrado), mismo criterio que
-      // `withinFreeformWindow` y `buildInboxSections` (inbox-sections.ts).
-      request = request.or(
-        `last_customer_message_at.lte.${pendingWindowCutoff},last_customer_message_at.is.null`
-      );
     }
     if (contactIds) request = request.in("contact_id", contactIds);
     if (ids) request = request.in("id", ids);
-    if (unreadOnly) request = request.or("unread_count.gt.0,manually_unread.is.true");
     if (assignedTo) request = request.eq("assigned_agent_id", assignedTo);
 
-    const from = offset + rows.length;
+    // PostgREST junta con AND los parámetros repetidos de forma poco
+    // predecible: dos `.or()` en la misma consulta no son fiables
+    // (`orExpression`, src/lib/ai/pgrst.ts). `pendingWindow: "stale"`,
+    // `unreadOnly` y el cursor son disyunciones propias; se acumulan acá y
+    // se emiten juntas en una sola llamada.
+    const orGroups: string[][] = [];
+
+    if (pendingWindow === "stale") {
+      // `last_customer_message_at is null` cae acá: sin fecha del cliente no
+      // hay ventana abierta (fallar cerrado), mismo criterio que
+      // `withinFreeformWindow` y `buildInboxSections` (inbox-sections.ts).
+      orGroups.push([
+        `last_customer_message_at.lte.${pendingWindowCutoff}`,
+        "last_customer_message_at.is.null",
+      ]);
+    }
+    if (unreadOnly) orGroups.push(["unread_count.gt.0", "manually_unread.is.true"]);
+
+    if (cursor) {
+      const idLiteral = pgrstLiteral(cursor.id);
+      if (cursor.lastMessageAt !== null) {
+        const dateLiteral = pgrstLiteral(cursor.lastMessageAt);
+        // Verificado contra PostgREST local el 29/8/2026: filas con
+        // `last_message_at` estrictamente menor, o igual con `id` menor
+        // (el desempate), o en la zona nula (que ordena al final y sería
+        // inalcanzable desde cualquier página con cursor no-nulo si faltara
+        // este tercer término).
+        orGroups.push([
+          `last_message_at.lt.${dateLiteral}`,
+          `and(last_message_at.eq.${dateLiteral},id.lt.${idLiteral})`,
+          "last_message_at.is.null",
+        ]);
+      } else {
+        // El cursor ya está en la zona nula: lo que sigue es solo lo demás
+        // sin fecha, desempatado por `id`.
+        orGroups.push([`and(last_message_at.is.null,id.lt.${idLiteral})`]);
+      }
+    }
+
+    if (orGroups.length > 0) request = request.or(orExpression(orGroups));
+
+    const from = rows.length;
     const { data, error } = await request.range(from, from + pageSize - 1);
 
     if (error) throw error;
