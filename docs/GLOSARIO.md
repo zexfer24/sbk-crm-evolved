@@ -92,7 +92,7 @@ nombre. Los tests sin módulo propio (`data-*.test.ts`, `queue-limit`,
 
 | Archivo | Qué es |
 |---|---|
-| `agent.ts` | Orquestador del turno: fase 0 (escenario) ‖ fase 1 (intención) en paralelo → tool loop (máx. 5 pasos); mide tiempos por tramo |
+| `agent.ts` | Orquestador del turno: fase 0 (escenario) ‖ fase 1 (intención) en paralelo → tool loop (máx. 5 pasos); mide tiempos por tramo. Antes de hablarle al cliente, `deliver()` confirma que el lock de `conversation-lock.ts` sigue siendo suyo (renovación fenceada por token); si lo perdió, no envía y queda `turno_lock_perdido_sin_enviar` |
 | `queue.ts` | Cola de turnos: el webhook encola y sigue; debounce adaptativo (6s ráfaga / 2s pregunta cerrada, `CIERRA_LA_IDEA`); el turno que encuentra la conversación tomada se pospone 30s y vuelve a la cola (`deferred`), sin gastar intentos ni contar como atendido |
 | `redis-queue.ts` | La cola en Redis con scripts Lua atómicos: cupos globales, ritmo, sweep lock |
 | `conversation-lock.ts` | Un solo turno de IA por conversación, con lease de 90s en `ai_turn_lock_until` + dueño en `ai_turn_lock_token`, renovado cada 30s por el propio turno y soltado solo por quien lo tomó; un proceso que muere deja la conversación libre en ≤90s en vez de para siempre; encontrarlo tomado ya no es silencio, es `ConversationBusyError` |

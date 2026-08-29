@@ -11,7 +11,7 @@ import { buildCatalogTool, buildEscalateTool, buildOrderHistoryTool, type Escala
 import { TOOL_KEYS, fetchEnabledToolKeys } from "@/lib/ai/agent-tools";
 import { buildKnowledgeTool } from "@/lib/ai/knowledge";
 import { escalateConversation } from "@/lib/ai/escalate";
-import { withConversationTurnLock } from "@/lib/ai/conversation-lock";
+import { withConversationTurnLock, type TurnLease } from "@/lib/ai/conversation-lock";
 import { humanHasWritten } from "@/lib/ai/human-handled";
 import { fetchActivePlaybooks, matchPlaybook, playbookSentRecently } from "@/lib/ai/playbooks";
 import { playbookMessageText, sendAgentText, sendPlaybookReply } from "@/lib/ai/send";
@@ -371,11 +371,22 @@ async function deliver(
   supabase: SupabaseClient<Database>,
   target: TurnTarget,
   entrega: TurnDelivery,
+  lease: TurnLease,
   tiempos: TurnTiming,
   fase: SendPhase,
   enviar: () => Promise<void>
 ): Promise<boolean> {
   const { conversationId } = target;
+
+  // `confirmar()` es a la vez renovación y verificación de propiedad:
+  // renovar justo antes de hablar es lo que evita que el lease se venza en
+  // el segundo más caro del turno. La ventana irreducible que queda es la de
+  // la llamada a Meta (~1 s), la misma ya documentada arriba para la guarda
+  // del asesor.
+  if (!(await lease.confirmar())) {
+    log.warn("turno_lock_perdido_sin_enviar", { conversationId, fase });
+    return false;
+  }
 
   if (!(await stillEnabled(supabase, conversationId))) return false;
   if (await humanWroteMeanwhile(supabase, conversationId, fase)) return false;
@@ -407,6 +418,7 @@ async function runPlaybook(
   supabase: SupabaseClient<Database>,
   target: TurnTarget,
   entrega: TurnDelivery,
+  lease: TurnLease,
   playbook: Playbook,
   tokens: TurnTokens,
   customerMessage: string | null,
@@ -416,7 +428,7 @@ async function runPlaybook(
   // —o si un asesor se metió— mientras el modelo elegía el escenario, el turno
   // termina acá sin enviar y sin etiquetar ni escalar: todo lo que sigue
   // acompaña a un mensaje que no salió.
-  const salió = await deliver(supabase, target, entrega, tiempos, "escenario", () =>
+  const salió = await deliver(supabase, target, entrega, lease, tiempos, "escenario", () =>
     sendPlaybookReply(supabase, target, playbook)
   );
   if (!salió) return;
@@ -471,6 +483,7 @@ async function runTurnPhases(
   target: TurnTarget,
   convo: AgentConversation,
   entrega: TurnDelivery,
+  lease: TurnLease,
   tiempos: TurnTiming
 ): Promise<void> {
   const conversationId = target.conversationId;
@@ -554,6 +567,7 @@ async function runTurnPhases(
         supabase,
         target,
         entrega,
+        lease,
         match.playbook,
         classifiedTokens,
         customerMessage,
@@ -597,7 +611,7 @@ async function runTurnPhases(
   if (intent === "fuera_de_tema") {
     const repetido = alreadyRedirected(history);
     if (!repetido) {
-      const salió = await deliver(supabase, target, entrega, tiempos, "fuera_de_tema", () =>
+      const salió = await deliver(supabase, target, entrega, lease, tiempos, "fuera_de_tema", () =>
         sendAgentText(supabase, target, OFF_TOPIC_REPLY)
       );
       if (!salió) return;
@@ -715,7 +729,7 @@ async function runTurnPhases(
     // pasaron el reconocimiento de escenario, la clasificación y hasta cinco
     // pasos de tool loop. Es el punto del turno más lejano al momento en que
     // se miraron las guardas al abrirlo.
-    const salió = await deliver(supabase, target, entrega, tiempos, "redaccion", () =>
+    const salió = await deliver(supabase, target, entrega, lease, tiempos, "redaccion", () =>
       sendAgentText(supabase, target, text.trim())
     );
     if (!salió) return;
@@ -825,13 +839,13 @@ export async function runAgentTurn(conversationId: string): Promise<void> {
   // turno para la misma conversación (típico cuando el cliente manda varios
   // mensajes seguidos), solo uno corre — el otro se salta en vez de generar
   // una respuesta duplicada o un doble escalamiento.
-  await withConversationTurnLock(supabase, conversationId, async () => {
+  await withConversationTurnLock(supabase, conversationId, async (lease) => {
     const entrega = newTurnDelivery();
     const tiempos = newTurnTiming(convo.last_customer_message_at);
     const arranque = Date.now();
 
     try {
-      await runTurnPhases(supabase, target, convo, entrega, tiempos);
+      await runTurnPhases(supabase, target, convo, entrega, lease, tiempos);
     } catch (err) {
       if (!entrega.intentado) throw err;
 

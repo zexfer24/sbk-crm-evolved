@@ -23,6 +23,11 @@ interface FakeState {
   humanMessages: { id: string }[];
   /** Fallo al preguntar si escribió una persona. La guarda falla cerrado. */
   humanMessagesError: { message: string } | null;
+  /**
+   * Qué devuelve `ai_turn_lock_renew` (conversation-lock.ts). `true` de
+   * fábrica: el lock nunca es el protagonista salvo en su propio describe.
+   */
+  turnLockRenewResult: { data: boolean | null; error: { message: string } | null };
 }
 
 const state: FakeState = {
@@ -35,6 +40,7 @@ const state: FakeState = {
   tagUpsertError: null,
   humanMessages: [],
   humanMessagesError: null,
+  turnLockRenewResult: { data: true, error: null },
 };
 const conversationUpdates: Record<string, unknown>[] = [];
 const agentTurnInserts: Record<string, unknown>[] = [];
@@ -57,7 +63,11 @@ function createFakeSupabase() {
       // se puede renovar y soltar. Este archivo prueba UN solo turno a la
       // vez, así que el lock nunca es el protagonista acá.
       if (fn === "ai_turn_lock_acquire") return Promise.resolve({ data: true, error: null });
-      if (fn === "ai_turn_lock_renew") return Promise.resolve({ data: true, error: null });
+      if (fn === "ai_turn_lock_renew") {
+        return state.turnLockRenewResult.error
+          ? Promise.reject(new Error(state.turnLockRenewResult.error.message))
+          : Promise.resolve({ data: state.turnLockRenewResult.data, error: null });
+      }
       if (fn === "ai_turn_lock_release") return Promise.resolve({ data: true, error: null });
       throw new Error(`Fake Supabase: rpc no soportada: ${fn}`);
     },
@@ -262,6 +272,7 @@ beforeEach(() => {
   state.tagUpsertError = null;
   state.humanMessages = [];
   state.humanMessagesError = null;
+  state.turnLockRenewResult = { data: true, error: null };
   conversationUpdates.length = 0;
   agentTurnInserts.length = 0;
   contactTagUpserts.length = 0;
@@ -931,6 +942,41 @@ describe("runAgentTurn — un asesor se mete mientras el turno corre", () => {
 
     expect(generateMock).toHaveBeenCalledTimes(1);
     expect(sendAgentTextMock).not.toHaveBeenCalled();
+  });
+});
+
+/**
+ * `lease.confirmar()` es la guarda más nueva de `deliver()`, y va PRIMERO:
+ * si el lock ya no es nuestro, la conversación puede ser de otro turno (o de
+ * uno resucitado tras un TTL vencido) y ni siquiera tiene sentido preguntar
+ * el interruptor o si un asesor se metió.
+ */
+describe("runAgentTurn — el turno confirma que el lock sigue siendo suyo antes de hablar", () => {
+  it("no envía nada si el lock ya no es suyo", async () => {
+    state.turnLockRenewResult = { data: false, error: null };
+
+    await runAgentTurn("conv-1");
+
+    expect(sendAgentTextMock).not.toHaveBeenCalled();
+    expect(sendPlaybookReplyMock).not.toHaveBeenCalled();
+    expect(agentTurnInserts.some((row) => row.action === "answered")).toBe(false);
+  });
+
+  /**
+   * Falla cerrado, igual que el resto de las guardas del envío: ante la duda
+   * de si el lock sigue siendo nuestro, no se sigue hablando. El error se
+   * deja pasar (con `.catch`) porque, a diferencia del `data: false` de
+   * arriba, acá el RPC mismo revienta: `confirmar()` no lo atrapa, así que
+   * el turno vuelve a la cola como reintentable — lo que sí importa acá es
+   * que no llegó a enviar nada.
+   */
+  it("un fallo al confirmar el lock tampoco envía", async () => {
+    state.turnLockRenewResult = { data: null, error: { message: "conexión perdida" } };
+
+    await runAgentTurn("conv-1").catch(() => undefined);
+
+    expect(sendAgentTextMock).not.toHaveBeenCalled();
+    expect(sendPlaybookReplyMock).not.toHaveBeenCalled();
   });
 });
 
