@@ -75,6 +75,8 @@ let inboxProps: {
   /** Capturado para el test de "marcar leído vuelve a pedir los contadores". */
   onMarkRead?: (id: string) => void;
   counts?: unknown;
+  /** Capturado para el test de que la semilla de "Pendientes" llega hasta acá. */
+  initialPendingRows?: Conversation[];
 } | null = null;
 
 vi.mock("@/components/inbox/inbox-sidebar", () => ({
@@ -85,6 +87,7 @@ vi.mock("@/components/inbox/inbox-sidebar", () => ({
     onLoadMore,
     onMarkRead,
     counts,
+    initialPendingRows,
   }: {
     conversations: Conversation[];
     onSelect: (id: string) => void;
@@ -92,7 +95,8 @@ vi.mock("@/components/inbox/inbox-sidebar", () => ({
     onLoadMore: () => void;
     onMarkRead?: (id: string) => void;
     counts?: unknown;
-  }) => ((inboxProps = { conversations, hasMore, onMarkRead, counts }),
+    initialPendingRows?: Conversation[];
+  }) => ((inboxProps = { conversations, hasMore, onMarkRead, counts, initialPendingRows }),
   (
     <>
       {conversations.map((c) => (
@@ -307,6 +311,32 @@ describe("CrmShell — debounce del refresh disparado por realtime", () => {
     });
 
     expect(fetchMessagesMock).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("CrmShell — semilla de la píldora que abre por defecto", () => {
+  it("pasa initialPendingConversations a InboxSidebar como initialPendingRows", () => {
+    const filaSembrada = buildConversation({ id: "conv-pendiente" });
+
+    render(
+      <CrmShell
+        currentAgent={currentAgent}
+        initialConversations={[buildConversation()]}
+        initialInboxCounts={inboxCounts}
+        initialPendingConversations={[filaSembrada]}
+        allTags={allTags}
+        initialQuickReplies={initialQuickReplies}
+        bcvRate={null}
+        initialAgentSettings={agentSettings}
+      />
+    );
+
+    // La reforma del 30/8/2026 devolvió el filtro por defecto de "No leídas"
+    // a "Pendientes" (231 chats leídos y sin responder no aparecían en
+    // ninguna píldora); esta semilla es lo que evita que esa píldora abra
+    // con el cartel "Buscando…" mientras el efecto de red del sidebar hace
+    // el mismo viaje desde el navegador.
+    expect(inboxProps?.initialPendingRows).toEqual([filaSembrada]);
   });
 });
 

@@ -58,14 +58,19 @@ interface CrmShellProps {
   /** Los contadores del panel de inicio, ya contados en el servidor. */
   initialInboxCounts: InboxCounts;
   /**
-   * Las filas de "No leídas" ya resueltas en el servidor. Siembra
-   * `InboxSidebar` para que la píldora abra con datos en vez del cartel
-   * "Buscando…"; el efecto de red del montar los refresca igual. Opcional (y
-   * no `[]` por defecto acá arriba, sino en el destructuring de abajo) para
-   * no obligar a cada instanciación existente de `CrmShell` a conocer este
-   * dato nuevo.
+   * Las filas de la píldora que abre por defecto ya resueltas en el
+   * servidor. Siembra `InboxSidebar` para que esa píldora abra con datos en
+   * vez del cartel "Buscando…"; el efecto de red del montar los refresca
+   * igual. Opcional (y no `[]` por defecto acá arriba, sino en el
+   * destructuring de abajo) para no obligar a cada instanciación existente
+   * de `CrmShell` a conocer este dato nuevo.
+   *
+   * Se llamó `initialUnreadConversations` mientras la píldora por defecto
+   * era "No leídas"; la reforma del 30/8/2026 devolvió el filtro por
+   * defecto a "Pendientes" (231 chats leídos y sin responder no aparecían en
+   * ninguna píldora) y el nombre se actualizó con ella.
    */
-  initialUnreadConversations?: ConversationSummary[];
+  initialPendingConversations?: ConversationSummary[];
   allTags: Tag[];
   initialQuickReplies: QuickReply[];
   /** Tasa del BCV del día, ya resuelta en el servidor. Null si no se pudo obtener ninguna. */
@@ -84,7 +89,7 @@ export function CrmShell({
   currentAgent,
   initialConversations,
   initialInboxCounts,
-  initialUnreadConversations = [],
+  initialPendingConversations = [],
   allTags,
   initialQuickReplies,
   bcvRate,
@@ -650,7 +655,7 @@ export function CrmShell({
             // `allPager` que ya presta las tres props de arriba.
             lastPageFailed={allPager.lastPageFailed}
             counts={inboxCounts}
-            initialUnreadRows={initialUnreadConversations}
+            initialPendingRows={initialPendingConversations}
             livePulse={livePulse}
           />
         </section>
