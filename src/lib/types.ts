@@ -380,8 +380,19 @@ export interface KnowledgeEntry {
  * CERRADA con mensajes sin leer sí aparece ahí — cerrar el chat no es
  * leerlo. `filtersForRole` sigue existiendo como punto de entrada por si
  * mañana un rol necesita un corte propio.
+ *
+ * Tercera reforma (30/8/2026, pedido directo del operador, medida contra
+ * producción, no contra intuición): `pending` vuelve, y no es un regreso a
+ * ciegas a lo de antes de la segunda reforma. El dato que lo trajo: contra
+ * la base real, "No leídas" resultó ser un subconjunto ESTRICTO de
+ * "Pendientes" (`awaiting_reply and status <> 'closed'`) — 282 filas contra
+ * 51, cero filas de "No leídas" por fuera de "Pendientes". Los 231 chats
+ * leídos-y-sin-responder no tenían ninguna píldora que los alcanzara: solo
+ * vivían en "Todos", enterrados por el orden por recencia. `pending` entra
+ * como cuarta píldora y pasa a ser la que abre la bandeja; `unread` sigue
+ * exactamente como la dejó la segunda reforma.
  */
-export type InboxFilter = "unread" | "mine" | "all";
+export type InboxFilter = "pending" | "unread" | "mine" | "all";
 
 export type InboxSort = "recent" | "oldest";
 

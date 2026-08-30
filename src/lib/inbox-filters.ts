@@ -1,5 +1,5 @@
 import type { Agent, AgentRole, ConversationSummary, InboxFilter, InboxSort } from "@/lib/types";
-import { contactName } from "@/lib/dashboard";
+import { awaitingReply, contactName } from "@/lib/dashboard";
 import { normalizeForSearch } from "@/lib/message-search";
 
 /**
@@ -16,8 +16,16 @@ import { normalizeForSearch } from "@/lib/message-search";
  * `unread`. La que abre va primera — hoy "No leídas" — y "Todos" cierra a la
  * derecha, adonde salta la búsqueda al escribir. Si el operador pide otro
  * orden mañana, es una línea acá.
+ *
+ * Tercera reforma (30/8/2026, pedido del operador, medida contra
+ * producción): `pending` vuelve como cuarta píldora y pasa a ser la que
+ * abre la bandeja. Motivo: "No leídas" es un subconjunto estricto de
+ * "Pendientes" (282 filas contra 51, cero fuera), así que 231 chats
+ * leídos-y-sin-responder no tenían ninguna píldora que los alcanzara — solo
+ * aparecían en "Todos", perdidos en el orden por recencia. Orden final:
+ * `pending`, `unread`, `mine`, `all`.
  */
-const DEFAULT_FILTERS: InboxFilter[] = ["unread", "mine", "all"];
+const DEFAULT_FILTERS: InboxFilter[] = ["pending", "unread", "mine", "all"];
 
 // El parámetro no se usa a propósito: es la costura descrita arriba.
 // eslint-disable-next-line @typescript-eslint/no-unused-vars
@@ -26,13 +34,19 @@ export function filtersForRole(_role: AgentRole): InboxFilter[] {
 }
 
 export const INBOX_FILTER_LABELS: Record<InboxFilter, string> = {
+  pending: "Pendientes",
   unread: "No leídas",
   mine: "Mías",
   all: "Todos",
 };
 
-/** Al entrar a la bandeja se ve lo que nadie ha leído todavía. */
-export const DEFAULT_INBOX_FILTER: InboxFilter = "unread";
+/**
+ * Al entrar a la bandeja se ve el trabajo pendiente de respuesta —no lo sin
+ * leer—: la reforma del 30/8/2026 midió que "Pendientes" es la píldora que
+ * de verdad cubre el trabajo abierto (ver el comentario de `InboxFilter` en
+ * types.ts).
+ */
+export const DEFAULT_INBOX_FILTER: InboxFilter = "pending";
 
 export const INBOX_SORT_LABELS: Record<InboxSort, string> = {
   recent: "Más recientes primero",
@@ -75,9 +89,14 @@ function matchesFilter(conversation: ConversationSummary, filter: InboxFilter, v
     // (`unreadOnly` en data.ts), porque la lista mezcla filas de la consulta
     // con filas vivas de la bandeja: si alguien lee el chat mientras la
     // lista está abierta, sale solo.
+    case "unread":
+      return isUnread(conversation);
+    // Se vuelve a comprobar en memoria por la misma razón que "unread": la
+    // lista mezcla filas de la consulta —que ya filtró por `activeOnly` y
+    // `awaitingReplyOnly` en data.ts— con filas vivas de la bandeja.
     //
     // Esta píldora tiene historia. Pasó por tres actos como `pending` antes
-    // de que existiera, y un cuarto que la trajo de vuelta.
+    // de que existiera, un cuarto que la trajo de vuelta.
     //
     // (a) 80b66b5 sumó `!hasReply` a lo que entonces se llamaba "sin
     // contestar", para no mostrar chats que un asesor ya había respondido a
@@ -94,17 +113,31 @@ function matchesFilter(conversation: ConversationSummary, filter: InboxFilter, v
     // `human-handled.ts:17-21`), así que ese campo no servía de guarda. El
     // filtro quedó como `pending`: abierta + `awaitingReply`.
     //
-    // (d) Esta reforma, la misma tarde y por pedido directo del operador,
-    // retira `pending` de la bandeja: ese corte —trabajo con más de 24h sin
-    // respuesta— sigue vivo en `dashboard.ts` (`awaitingReply`/
-    // `isStalePending`) y en el AgentHomePanel, pero deja de ser una píldora
-    // de la lista de chats. En su lugar vuelve el corte por lectura, ahora
+    // (d) Esa misma tarde, por pedido directo del operador, `pending` se
+    // retiró de la bandeja: ese corte —trabajo con más de 24h sin
+    // respuesta— siguió vivo en `dashboard.ts` (`awaitingReply`/
+    // `isStalePending`) y en el AgentHomePanel, pero dejó de ser una píldora
+    // de la lista de chats. En su lugar entró el corte por lectura, ahora
     // GLOBAL de equipo (no por usuario como el viejo "Míos sin leer") y
     // deliberadamente indiferente a si el chat está cerrado: cerrar una
     // conversación no es leerla, así que una cerrada con mensajes sin abrir
-    // sigue apareciendo acá.
-    case "unread":
-      return isUnread(conversation);
+    // sigue apareciendo en "unread".
+    //
+    // (e) 30/8/2026, pedido directo del operador, esta vez medido contra
+    // producción: `pending` vuelve. "No leídas" resultó ser un subconjunto
+    // ESTRICTO de "Pendientes" —282 filas contra 51, cero filas de "No
+    // leídas" por fuera de "Pendientes"— así que los 231 chats
+    // leídos-y-sin-responder quedaban sin ninguna píldora que los
+    // alcanzara: solo vivían en "Todos", enterrados por el orden por
+    // recencia. Vuelve con el mismo predicado del acto (c) —abierta +
+    // `awaitingReply`— porque ese predicado nunca fue el problema: el
+    // problema fue sacarlo de la bandeja. `awaitingReply` se importa de
+    // `dashboard.ts`, que sigue siendo el dueño del corte de 24h
+    // (`isStalePending`) para el Dashboard y el AgentHomePanel — esta
+    // píldora no reinventa esa definición, solo la reintroduce en la lista
+    // de chats.
+    case "pending":
+      return conversation.status !== "closed" && awaitingReply(conversation);
   }
 }
 

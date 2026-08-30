@@ -59,16 +59,16 @@ function conversation(over: {
 }
 
 describe("filtersForRole", () => {
-  it("le da al administrador las tres píldoras", () => {
-    expect(filtersForRole("admin")).toEqual(["unread", "mine", "all"]);
+  it("le da al administrador las cuatro píldoras", () => {
+    expect(filtersForRole("admin")).toEqual(["pending", "unread", "mine", "all"]);
   });
 
   it("trata al supervisor como administrador", () => {
     expect(filtersForRole("supervisor")).toEqual(filtersForRole("admin"));
   });
 
-  it("al asesor le ofrece las mismas tres píldoras", () => {
-    expect(filtersForRole("agent")).toEqual(["unread", "mine", "all"]);
+  it("al asesor le ofrece las mismas cuatro píldoras", () => {
+    expect(filtersForRole("agent")).toEqual(["pending", "unread", "mine", "all"]);
   });
 
   it("cada filtro tiene etiqueta", () => {
@@ -79,22 +79,36 @@ describe("filtersForRole", () => {
     }
   });
 
-  // Guardia anti-crecimiento: la reforma del 28/8/2026 bajó de cinco píldoras
-  // a tres a propósito —los cortes por leído/asignado eran guardas poco
-  // fiables (ver inbox-filters.ts, case "unread"). Este test no valida
-  // comportamiento nuevo, valida que nadie vuelva a sumar píldoras sin pensarlo:
-  // si un rol necesita un corte propio, que sea una decisión de producto
-  // explícita, no un agregado silencioso a `filtersForRole`.
-  it("ningún rol vuelve a tener más de tres píldoras", () => {
+  // Guardia anti-crecimiento: la reforma del 28/8/2026 (mañana) bajó de cinco
+  // píldoras a tres a propósito —los cortes por leído/asignado eran guardas
+  // poco fiables (ver inbox-filters.ts, case "unread"). Este test no valida
+  // comportamiento nuevo, valida que nadie vuelva a sumar píldoras sin
+  // pensarlo: si un rol necesita un corte propio, que sea una decisión de
+  // producto explícita, no un agregado silencioso a `filtersForRole`.
+  //
+  // El tope subió de tres a cuatro el 30/8/2026, y es la MISMA guardia, no
+  // una relajada: la reforma de esa fecha trajo de vuelta `pending` por una
+  // decisión de producto explícita del operador, medida contra producción
+  // (282 filas de "Pendientes" contra 51 de "No leídas", 231 chats
+  // leídos-y-sin-responder que no aparecían en ninguna píldora — ver el
+  // comentario de `case "pending"` en inbox-filters.ts). El tope se mueve
+  // cuando hay una decisión así detrás, nunca por default.
+  it("ningún rol vuelve a tener más de cuatro píldoras", () => {
     for (const role of ["admin", "supervisor", "agent"] as const) {
-      expect(filtersForRole(role).length).toBeLessThanOrEqual(3);
+      expect(filtersForRole(role).length).toBeLessThanOrEqual(4);
     }
   });
 });
 
 describe("DEFAULT_INBOX_FILTER", () => {
-  it("al entrar a la bandeja se ve lo que nadie ha leído todavía", () => {
-    expect(DEFAULT_INBOX_FILTER).toBe("unread");
+  it("al entrar a la bandeja se ve el trabajo pendiente de respuesta", () => {
+    expect(DEFAULT_INBOX_FILTER).toBe("pending");
+  });
+
+  it("es una de las píldoras que ofrece cada rol", () => {
+    for (const role of ["admin", "supervisor", "agent"] as const) {
+      expect(filtersForRole(role)).toContain(DEFAULT_INBOX_FILTER);
+    }
   });
 });
 
@@ -129,13 +143,75 @@ describe("applyInboxFilters — filtro por bandeja", () => {
 });
 
 /**
- * El corte "pending" (trabajo con más de 24h sin respuesta, antes llamado
- * "unanswered") y sus ~11 casos de borde —hasReply vitalicio, sin dueño,
- * escalado sin respuesta, cerrada, muda, etc.— se retiraron de acá con la
- * reforma del 28/8/2026 (tarde): esa conducta ya no vive en la bandeja, vive
- * en `dashboard.ts` (`awaitingReply`/`isStalePending`) y se prueba en
- * `dashboard-tickets.test.ts` y `data-conversations.test.ts`.
+ * El corte "pending" ANTIGUO (trabajo con más de 24h sin respuesta, antes
+ * llamado "unanswered") y sus ~11 casos de borde —hasReply vitalicio, sin
+ * dueño, escalado sin respuesta, muda, etc.— se retiraron de acá con la
+ * reforma del 28/8/2026 (tarde) y quedaron en `dashboard.ts`
+ * (`awaitingReply`/`isStalePending`), probados en `dashboard-tickets.test.ts`
+ * y `data-conversations.test.ts`. Eso sigue así: la ventana de 24h no vuelve
+ * a la bandeja.
+ *
+ * Lo que sí volvió con la reforma del 30/8/2026 es la píldora `pending` de
+ * la bandeja —ver el describe de abajo—, con un predicado deliberadamente
+ * más simple que el `isStalePending` del Dashboard: abierta + `awaitingReply`,
+ * sin ventana de tiempo. El porqué está en el acto (e) del comentario de
+ * `case "pending"` en inbox-filters.ts.
  */
+describe("applyInboxFilters — 'pending'", () => {
+  function ids(todas: Conversation[]) {
+    return applyInboxFilters(todas, {
+      filter: "pending",
+      search: "",
+      tagId: null,
+      sort: "recent",
+      viewer: ANA,
+    }).map((c) => c.id);
+  }
+
+  it("aparece la abierta que está esperando respuesta del cliente", () => {
+    const esperando = conversation({
+      id: "esperando",
+      lastMessageAt: "2026-08-20T10:00:00Z",
+      lastCustomerMessageAt: "2026-08-22T10:00:00Z",
+    });
+
+    expect(ids([esperando])).toEqual(["esperando"]);
+  });
+
+  it("no aparece la cerrada, aunque el último mensaje sea del cliente", () => {
+    const cerradaEsperando = conversation({
+      id: "cerrada-esperando",
+      status: "closed",
+      lastMessageAt: "2026-08-20T10:00:00Z",
+      lastCustomerMessageAt: "2026-08-22T10:00:00Z",
+    });
+
+    expect(ids([cerradaEsperando])).toEqual([]);
+  });
+
+  it("no aparece la abierta ya contestada: el último mensaje no es del cliente", () => {
+    const yaContestada = conversation({
+      id: "ya-contestada",
+      lastMessageAt: "2026-08-22T10:00:00Z",
+      lastCustomerMessageAt: "2026-08-20T10:00:00Z",
+    });
+
+    expect(ids([yaContestada])).toEqual([]);
+  });
+
+  // `awaitingReply` (dashboard.ts) falla cerrado sin mensaje del cliente: una
+  // conversación que nunca recibió nada de él no es "trabajo esperando
+  // respuesta", es una conversación sin abrir todavía.
+  it("no aparece sin lastCustomerMessageAt: awaitingReply falla cerrado", () => {
+    const sinMensajeDeCliente = conversation({
+      id: "sin-mensaje-cliente",
+      lastCustomerMessageAt: null,
+    });
+
+    expect(ids([sinMensajeDeCliente])).toEqual([]);
+  });
+});
+
 describe("applyInboxFilters — 'unread'", () => {
   function ids(todas: Conversation[]) {
     return applyInboxFilters(todas, {
