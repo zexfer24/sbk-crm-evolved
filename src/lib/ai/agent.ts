@@ -17,6 +17,7 @@ import { fetchActivePlaybooks, matchPlaybook, playbookSentRecently } from "@/lib
 import { playbookMessageText, sendAgentText, sendPlaybookReply } from "@/lib/ai/send";
 import { buildTurnTarget, type AgentConversation, type TurnTarget } from "@/lib/ai/turn-target";
 import { NonRetryableTurnError, newTurnDelivery, type TurnDelivery } from "@/lib/ai/turn-delivery";
+import { recordHandoff } from "@/lib/ai/handoffs";
 import { errorText, log } from "@/lib/log";
 import { withinFreeformWindow } from "@/lib/dashboard";
 
@@ -385,11 +386,18 @@ async function deliver(
   // del asesor.
   if (!(await lease.confirmar())) {
     log.warn("turno_lock_perdido_sin_enviar", { conversationId, fase });
+    await recordHandoff(supabase, { conversationId, toKind: "unassigned", reason: "lock_perdido" });
     return false;
   }
 
-  if (!(await stillEnabled(supabase, conversationId))) return false;
-  if (await humanWroteMeanwhile(supabase, conversationId, fase)) return false;
+  if (!(await stillEnabled(supabase, conversationId))) {
+    await recordHandoff(supabase, { conversationId, toKind: "unassigned", reason: "pausada" });
+    return false;
+  }
+  if (await humanWroteMeanwhile(supabase, conversationId, fase)) {
+    await recordHandoff(supabase, { conversationId, toKind: "human", reason: "humano_se_adelanto" });
+    return false;
+  }
 
   // Se marca ANTES de enviar: si el envío falla a mitad no sabemos si el
   // mensaje salió, y ante la duda el turno deja de ser reintentable. Ver
@@ -777,6 +785,9 @@ export async function runAgentTurn(conversationId: string): Promise<void> {
   ]);
 
   const convo = conversation as unknown as AgentConversation | null;
+  // Sin fila no hay traspaso que registrar: `conversation_id` tiene FK contra
+  // `conversations`, así que un insert acá se rechazaría solo. La única
+  // salida silenciosa de este turno que no deja bitácora, y es correcto.
   if (!convo) return;
 
   // Guardrail duro: si algo dice que la IA no debe correr, no se llama al
@@ -785,9 +796,25 @@ export async function runAgentTurn(conversationId: string): Promise<void> {
     // Antes era un `return` mudo. Con la cola llena y la IA apagada, los
     // turnos se reclamaban y desaparecían sin dejar rastro de por qué.
     log.info("turno_saltado_ia_apagada", { conversationId });
+    await recordHandoff(supabase, { conversationId, toKind: "unassigned", reason: "agente_no_puede_correr" });
     return;
   }
-  if (!convo.ai_enabled || convo.assigned_agent_id) return;
+  // Partido en dos para poder registrar cuál de las dos causas fue: el orden
+  // de evaluación —primero `ai_enabled`, después `assigned_agent_id`— y el
+  // efecto observable —return sin enviar nada— quedan idénticos a antes.
+  if (!convo.ai_enabled) {
+    await recordHandoff(supabase, { conversationId, toKind: "unassigned", reason: "pausada" });
+    return;
+  }
+  if (convo.assigned_agent_id) {
+    await recordHandoff(supabase, {
+      conversationId,
+      toKind: "human",
+      reason: "asignada",
+      toId: convo.assigned_agent_id,
+    });
+    return;
+  }
 
   // Un chat que ya tocó una persona es de esa persona.
   //
@@ -804,6 +831,7 @@ export async function runAgentTurn(conversationId: string): Promise<void> {
   // meterse en la conversación. Ver human-handled.ts.
   if (await humanHasWritten(supabase, conversationId)) {
     log.warn("turno_chat_de_una_persona", { conversationId });
+    await recordHandoff(supabase, { conversationId, toKind: "human", reason: "humano_intervino" });
     return;
   }
 
@@ -819,6 +847,7 @@ export async function runAgentTurn(conversationId: string): Promise<void> {
   // medio. La consulta filtra un instante; esto cubre el hueco.
   if (!withinFreeformWindow(convo.last_customer_message_at)) {
     log.warn("turno_fuera_de_ventana", { conversationId });
+    await recordHandoff(supabase, { conversationId, toKind: "unassigned", reason: "fuera_de_ventana" });
     return;
   }
 
@@ -832,6 +861,11 @@ export async function runAgentTurn(conversationId: string): Promise<void> {
     target = buildTurnTarget(conversationId, convo);
   } catch (err) {
     log.error("turno_identidad_no_verificable", { conversationId, detail: errorText(err) });
+    await recordHandoff(supabase, {
+      conversationId,
+      toKind: "unassigned",
+      reason: "identidad_no_verificable",
+    });
     throw new NonRetryableTurnError(conversationId, errorText(err), { cause: err });
   }
 
@@ -853,6 +887,7 @@ export async function runAgentTurn(conversationId: string): Promise<void> {
       // posterior: actualizar la conversación, escalar, escribir la bitácora.
       // Reintentar el turno lo reenviaría. Se registra y se abandona.
       log.error("turno_fallo_tras_envio", { conversationId, detail: errorText(err) });
+      await recordHandoff(supabase, { conversationId, toKind: "unassigned", reason: "entrega_fallida" });
       throw new NonRetryableTurnError(
         conversationId,
         `El turno falló después de intentar entregar un mensaje; no se reintenta para no duplicarlo: ${errorText(err)}`,

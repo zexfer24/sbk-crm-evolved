@@ -69,6 +69,13 @@ function createFakeSupabase() {
           : Promise.resolve({ data: state.turnLockRenewResult.data, error: null });
       }
       if (fn === "ai_turn_lock_release") return Promise.resolve({ data: true, error: null });
+      // Bitácora de traspasos (handoffs.ts). Acá solo tiene que NO explotar:
+      // qué fila escribe cada salida se prueba en handoffs.test.ts, que para
+      // eso captura los parámetros. Si este caso falta, el fake lanza por la
+      // línea de abajo, `recordHandoff` se traga la excepción —es su
+      // contrato— y deja un `traspaso_no_registrado` en el registro, que es
+      // justo lo que rompía el resguardo de "esta rama no loguea nada".
+      if (fn === "record_handoff") return Promise.resolve({ data: "handoff-1", error: null });
       throw new Error(`Fake Supabase: rpc no soportada: ${fn}`);
     },
     from(table: string) {
@@ -383,6 +390,113 @@ describe("runAgentTurn — ventana de 24 h de Meta", () => {
     await runAgentTurn("conv-1");
 
     expect(sendAgentTextMock).toHaveBeenCalledTimes(1);
+  });
+
+  /**
+   * Sin esto en el registro, un chat que se quedó fuera de ventana es
+   * indistinguible de uno que la IA nunca intentó atender: el mismo silencio.
+   */
+  it("deja en el registro el evento turno_fuera_de_ventana", async () => {
+    const warn = vi.spyOn(log, "warn");
+    state.conversation = { ...state.conversation, last_customer_message_at: HACE_25_HORAS() };
+
+    await runAgentTurn("conv-1");
+
+    expect(warn).toHaveBeenCalledWith("turno_fuera_de_ventana", { conversationId: "conv-1" });
+  });
+});
+
+/**
+ * Salidas de apertura de `runAgentTurn`, previas a cualquier intento de
+ * hablar con el cliente. Antes de la tarea "Ningún lead invisible" estas
+ * corrían sin resguardo: nada impedía que otra tarea les cambiara el
+ * comportamiento —loguear de más, loguear de menos, dejar de frenar— sin que
+ * ninguna prueba se enterara. Cada caso deja constancia además del hecho que
+ * más importa: que no se le mandó nada al cliente.
+ */
+describe("runAgentTurn — salidas silenciosas de apertura", () => {
+  /**
+   * La fila puede desaparecer entre que la cola encoló el id y que le tocó el
+   * turno: un chat borrado, una migración de datos. Sin la fila no hay nada
+   * que atender, y el turno no deja rastro porque no llegó a abrir nada.
+   */
+  it("si la conversación no existe, no hace nada y no lanza", async () => {
+    state.conversation = null;
+
+    await expect(runAgentTurn("conv-1")).resolves.toBeUndefined();
+
+    expect(matchPlaybookMock).not.toHaveBeenCalled();
+    expect(classifyIntentMock).not.toHaveBeenCalled();
+    expect(sendAgentTextMock).not.toHaveBeenCalled();
+    expect(sendPlaybookReplyMock).not.toHaveBeenCalled();
+  });
+
+  /**
+   * Antes era un `return` mudo: con la cola llena y la IA apagada, los turnos
+   * se reclamaban y desaparecían sin dejar rastro de por qué (ver el
+   * comentario de `runAgentTurn` en agent.ts). El evento es lo que distingue
+   * "no había nada que responder" de "algo impidió responder".
+   */
+  it("con el interruptor global apagado, deja turno_saltado_ia_apagada en el registro", async () => {
+    const info = vi.spyOn(log, "info");
+    state.canRun = false;
+
+    await runAgentTurn("conv-1");
+
+    expect(info).toHaveBeenCalledWith("turno_saltado_ia_apagada", { conversationId: "conv-1" });
+    expect(matchPlaybookMock).not.toHaveBeenCalled();
+    expect(sendAgentTextMock).not.toHaveBeenCalled();
+    expect(sendPlaybookReplyMock).not.toHaveBeenCalled();
+  });
+
+  /**
+   * `ai_enabled` (apagado en ESTE chat) y `assigned_agent_id` (chat ya de un
+   * asesor) comparten la misma línea — `if (!convo.ai_enabled ||
+   * convo.assigned_agent_id) return;` — y esa línea no loguea nada. La
+   * variante de `assigned_agent_id` ya tenía prueba; ésta cierra la otra
+   * mitad de la condición y deja constancia de que, hoy, ninguna de las dos
+   * causas deja rastro en el registro — así que si alguna vez hace falta
+   * distinguirlas, hay que separar la condición primero.
+   */
+  it("con ai_enabled=false en el chat, no corre nada y no deja ningún evento en el registro", async () => {
+    const info = vi.spyOn(log, "info");
+    const warn = vi.spyOn(log, "warn");
+    const error = vi.spyOn(log, "error");
+    state.conversation = { ...state.conversation, ai_enabled: false };
+
+    await runAgentTurn("conv-1");
+
+    expect(matchPlaybookMock).not.toHaveBeenCalled();
+    expect(sendAgentTextMock).not.toHaveBeenCalled();
+    expect(sendPlaybookReplyMock).not.toHaveBeenCalled();
+    expect(info).not.toHaveBeenCalled();
+    expect(warn).not.toHaveBeenCalled();
+    expect(error).not.toHaveBeenCalled();
+  });
+
+  /**
+   * Un contacto sin teléfono utilizable —borrado entre la consulta y la
+   * respuesta, o con un dato corrupto— es la identidad rota que buildTurnTarget
+   * corta antes de que el turno corra entero para terminar en una llamada a
+   * Meta con destinatario vacío. No se reintenta: una identidad rota no se
+   * arregla sola, así que sale como NonRetryableTurnError.
+   */
+  it("si la identidad del turno no se puede verificar, no envía nada y sale como NonRetryableTurnError", async () => {
+    const error = vi.spyOn(log, "error");
+    state.conversation = { ...state.conversation, contact: { phone_number: "" } };
+
+    await expect(runAgentTurn("conv-1")).rejects.toMatchObject({
+      name: "NonRetryableTurnError",
+      conversationId: "conv-1",
+    });
+
+    expect(error).toHaveBeenCalledWith(
+      "turno_identidad_no_verificable",
+      expect.objectContaining({ conversationId: "conv-1" })
+    );
+    expect(matchPlaybookMock).not.toHaveBeenCalled();
+    expect(sendAgentTextMock).not.toHaveBeenCalled();
+    expect(sendPlaybookReplyMock).not.toHaveBeenCalled();
   });
 });
 
@@ -977,6 +1091,56 @@ describe("runAgentTurn — el turno confirma que el lock sigue siendo suyo antes
 
     expect(sendAgentTextMock).not.toHaveBeenCalled();
     expect(sendPlaybookReplyMock).not.toHaveBeenCalled();
+  });
+
+  /**
+   * El evento es lo que permite distinguir, leyendo el registro, "el lock ya
+   * no era nuestro" de cualquier otra guarda de `deliver()` que también
+   * termina en un envío que no salió. `fase` dice en qué tramo del turno
+   * pasó — acá "redaccion", porque el flujo por defecto de las pruebas de
+   * este archivo no calza ningún escenario.
+   */
+  it("deja en el registro el evento turno_lock_perdido_sin_enviar con la fase donde se perdió", async () => {
+    const warn = vi.spyOn(log, "warn");
+    state.turnLockRenewResult = { data: false, error: null };
+
+    await runAgentTurn("conv-1");
+
+    expect(warn).toHaveBeenCalledWith("turno_lock_perdido_sin_enviar", {
+      conversationId: "conv-1",
+      fase: "redaccion",
+    });
+  });
+});
+
+/**
+ * Guarda (b) de `deliver()`: la misma pregunta del interruptor que se hizo al
+ * abrir el turno (`agent_can_run`), repetida justo antes de hablar. Entre
+ * abrir el turno y llegar acá pasan de tres a diez segundos —clasificar,
+ * redactar—, y apagar el interruptor en ese hueco tiene que frenar el envío
+ * igual que lo frena si se apaga antes de empezar.
+ */
+describe("runAgentTurn — el interruptor se vuelve a revisar justo antes de enviar", () => {
+  it("si se apaga mientras el turno redacta, no envía nada", async () => {
+    const warn = vi.spyOn(log, "warn");
+    generateMock.mockImplementation(async () => {
+      // Igual que la carrera del asesor: el interruptor cambia DESPUÉS de
+      // abrir el turno, mientras el modelo todavía está redactando.
+      state.canRun = false;
+      return {
+        text: "respuesta redactada por el modelo",
+        usage: { inputTokens: 20, outputTokens: 8, totalTokens: 28 },
+        steps: [{}, {}],
+      };
+    });
+
+    await runAgentTurn("conv-1");
+
+    // El modelo sí redactó: el turno llegó hasta el envío y se frenó ahí,
+    // no antes por la guarda de apertura que ya existía.
+    expect(generateMock).toHaveBeenCalledTimes(1);
+    expect(sendAgentTextMock).not.toHaveBeenCalled();
+    expect(warn).toHaveBeenCalledWith("turno_abortado_por_interruptor", { conversationId: "conv-1" });
   });
 });
 
