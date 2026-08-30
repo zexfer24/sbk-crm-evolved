@@ -744,6 +744,68 @@ describe("InboxSidebar — vacío de 'Mías'", () => {
 });
 
 /**
+ * A.T5 (revisión de código del 29/8/2026): antes de esta reforma, un fallo
+ * transitorio de la primera página se disfrazaba de "Todo leído" —
+ * `useInboxPager` ya cierra la mitad del bug (`reachedEnd` nunca se
+ * enciende en un camino de error, ver `use-inbox-pager.ts`), lo que falta
+ * probar acá es que el sidebar cuenta la verdad: cartel propio, sin festejo,
+ * con salida.
+ */
+describe("InboxSidebar — fallo de la primera página (A.T5)", () => {
+  it("avisa que no se pudo traer la bandeja, sin festejar 'Todo leído', y Reintentar vuelve a pedir", async () => {
+    vi.mocked(fetchConversations).mockRejectedValueOnce(new Error("network"));
+
+    const { container } = render(
+      <InboxSidebar
+        conversations={[]}
+        selectedId={null}
+        onSelect={() => {}}
+        currentAgent={JEFA}
+        allTags={ALL_TAGS}
+        bcvRate={null}
+      />
+    );
+
+    expect(await screen.findByText("No se pudo traer la bandeja.")).toBeTruthy();
+    expect(screen.queryByText("Todo leído. No quedó nada nuevo por revisar.")).toBeNull();
+    expect(container.querySelector(".crm-empty-unread")).toBeNull();
+
+    const recuperada = conversation({ id: "recuperada-tras-reintentar", unreadCount: 1 });
+    vi.mocked(fetchConversations).mockResolvedValueOnce([recuperada]);
+
+    fireEvent.click(screen.getByRole("button", { name: "Reintentar" }));
+
+    await waitFor(() => expect(visibleIds(container)).toContain("recuperada-tras-reintentar"));
+    expect(screen.queryByText("No se pudo traer la bandeja.")).toBeNull();
+  });
+
+  it("con filas ya sembradas, el fallo de la primera página las deja en pantalla y avisa sin taparlas", async () => {
+    vi.mocked(fetchConversations).mockRejectedValue(new Error("network"));
+
+    const sembradaQueSobrevive = conversation({ id: "sembrada-que-sobrevive-2", unreadCount: 1 });
+
+    const { container } = render(
+      <InboxSidebar
+        conversations={CONVERSATIONS}
+        selectedId={null}
+        onSelect={() => {}}
+        currentAgent={JEFA}
+        allTags={ALL_TAGS}
+        bcvRate={null}
+        initialUnreadRows={[sembradaQueSobrevive]}
+      />
+    );
+
+    expect(visibleIds(container)).toContain("sembrada-que-sobrevive-2");
+
+    expect(await screen.findByText("No se pudo traer la bandeja.")).toBeTruthy();
+    // El aviso no reemplaza la lista: la fila sembrada sigue ahí al lado.
+    expect(visibleIds(container)).toContain("sembrada-que-sobrevive-2");
+    expect(screen.queryByText("Todo leído. No quedó nada nuevo por revisar.")).toBeNull();
+  });
+});
+
+/**
  * Buscar dentro de un filtro estrecho devuelve vacío sin explicación: un
  * chat ya leído no aparece en "No leídas" aunque el nombre o el mensaje
  * coincidan. Al primer carácter la píldora salta a "Todos".

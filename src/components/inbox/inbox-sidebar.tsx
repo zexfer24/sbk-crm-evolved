@@ -388,17 +388,56 @@ export function InboxSidebar({
    */
   const paginatesLocally = Boolean(onLoadMore) && !trimmedSearch && !resolvedOnServer;
 
-  /** Un solo paginador para el fondo de la lista, venga de donde venga. */
+  /**
+   * Un solo paginador para el fondo de la lista, venga de donde venga.
+   *
+   * `status: "ready"` y `retry` en no-op para el camino local NO son un
+   * descuido: esa rama solo se activa cuando `!resolvedOnServer` (prop
+   * `hasMore`/`onLoadMore` del shell, la píldora "Todos"), y "Todos" abre
+   * con su primera página ya resuelta en el servidor (`initialConversations`
+   * en `crm-shell.tsx`, sembrada en `allPager` vía `useInboxPager`) — el
+   * hook nunca sale a la red por esa primera página, así que jamás puede
+   * fallarla. Un error de primera página es, por construcción, imposible en
+   * este camino: no hay nada que `retry()` deba hacer.
+   */
   const pager: InboxPagerView = useMemo(
     () =>
       paginatesLocally
-        ? { hasMore, loadingMore, lastPageFailed: false, loadMore: () => onLoadMore?.() }
+        ? {
+            status: "ready",
+            hasMore,
+            loadingMore,
+            lastPageFailed: false,
+            loadMore: () => onLoadMore?.(),
+            retry: () => {},
+          }
         : serverPager,
     [paginatesLocally, hasMore, loadingMore, onLoadMore, serverPager]
   );
 
-  /** Está esperando la respuesta del servidor para la píldora activa. */
-  const searching = resolvedOnServer && resolvedRows === null;
+  /**
+   * La primera página de la píldora activa no pudo traerse (A.T5, revisión
+   * de código del 29/8/2026): antes esto no se distinguía de "sin nada que
+   * mostrar todavía" y un fallo transitorio terminaba pintando el festejo
+   * "Todo leído" — el error quedaba disfrazado y sin salida. `pager.status`
+   * solo llega a "error" desde `serverPager` ("No leídas"/"Mías"): el camino
+   * local de "Todos" siempre reporta "ready" por construcción (ver el
+   * comentario del `pager` de arriba), así que esta bandera nunca se
+   * enciende ahí.
+   */
+  const pagerFailed = pager.status === "error";
+
+  /**
+   * Está esperando la respuesta del servidor para la píldora activa. Un
+   * fallo YA es una respuesta (mala, pero respuesta): sin el `&& !pagerFailed`
+   * de acá, una primera página que rechaza sin sembrado previo dejaría
+   * "Buscando…" pintado para siempre —`resolvedRows` nunca deja de ser
+   * `null` porque `useInboxPager` no llama a `onPage` en su camino de
+   * error—, y con sembrado, filtrando este caso aparte es lo que le abre
+   * paso a `pagerFailed` antes de que `unreadCleared` (que se apoya en
+   * `searching`) tenga oportunidad de festejar sobre un error.
+   */
+  const searching = resolvedOnServer && resolvedRows === null && !pagerFailed;
 
   /**
    * El único vacío de la bandeja que es una buena noticia: la cola de "No
@@ -406,8 +445,17 @@ export function InboxSidebar({
    * resultados, categoría sin uso, "Buscando…") porque es el único que
    * amerita el trato propio de `crm-empty-unread` en crm.css — los otros son
    * ausencias neutras, esta es un cierre.
+   *
+   * `&& !pagerFailed`: sin esto, una primera página que falla dejando la
+   * píldora vacía (nada sembrado, nada acumulado) se leería como "se vació
+   * la cola" en vez de "no se pudo consultar" — exactamente el bug que
+   * motivó A.T5. El bloque de render de abajo revisa `pagerFailed` ANTES
+   * que este festejo de todos modos (precedencia error > buscando > vacío),
+   * pero esta bandera se mantiene honesta por su cuenta para que nadie la
+   * lea en otro lugar y se lleve el festejo mentiroso con ella.
    */
-  const unreadCleared = filter === "unread" && !trimmedSearch && !activeTagId && !searching;
+  const unreadCleared =
+    filter === "unread" && !trimmedSearch && !activeTagId && !searching && !pagerFailed;
 
   const handleListScroll = useCallback(
     (event: React.UIEvent<HTMLDivElement>) => {
@@ -536,9 +584,26 @@ export function InboxSidebar({
           </Fragment>
         ))}
 
+        {/*
+          Precedencia error > buscando > vacío (A.T5, revisión de código del
+          29/8/2026): antes un fallo de la primera página no se distinguía de
+          "no hay nada" y terminaba pintando el festejo "Todo leído" —
+          `pagerFailed` se decide arriba de `searching` y `unreadCleared`
+          justamente para que ningún vacío neutro ni festivo pueda ganarle al
+          error, aunque alguien reordene las ramas de abajo sin leer esto:
+          este bloque solo entra a la cadena `trimmedSearch`/`activeTagId`/
+          `searching`/`unreadCleared` cuando `pagerFailed` ya es falso.
+        */}
         {filtered.length === 0 && (
           <p className={unreadCleared ? "crm-empty crm-empty-unread" : "crm-empty"}>
-            {trimmedSearch
+            {pagerFailed ? (
+              <>
+                <span>No se pudo traer la bandeja.</span>
+                <button type="button" className="crm-pill" onClick={pager.retry}>
+                  Reintentar
+                </button>
+              </>
+            ) : trimmedSearch
               ? "Ninguna conversación coincide con esa búsqueda, ni por contacto ni por lo que se habló."
               : activeTagId
                 ? "Ninguna conversación tiene esa categoría."
@@ -564,6 +629,23 @@ export function InboxSidebar({
                         // leídas".
                         "No tienes conversaciones asignadas."
                       : "No hay conversaciones en este filtro."}
+          </p>
+        )}
+
+        {/*
+          Mismo fallo que arriba, pero con filas YA pintadas encima (sembradas
+          o de una carga anterior): el error no puede vaciarlas, así que en
+          vez del cartel de página completa esto es un aviso angosto al pie,
+          en el mismo lugar donde iría "cargar más" — y nunca compiten por el
+          espacio: mientras `pagerFailed` es cierto, `pager.hasMore` es falso
+          (`status` no es "ready"), así que el botón de abajo no aparece.
+        */}
+        {filtered.length > 0 && pagerFailed && (
+          <p className="crm-empty crm-pager-error">
+            <span>No se pudo traer la bandeja.</span>
+            <button type="button" className="crm-pill" onClick={pager.retry}>
+              Reintentar
+            </button>
           </p>
         )}
 

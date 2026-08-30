@@ -21,17 +21,25 @@ export interface UseInboxPagerOptions {
   seed?: { cursor: ConversationCursor | null; reachedEnd: boolean };
 }
 
+/**
+ * `status` y `retry` vivían solo en `InboxPager` (la vista completa del
+ * hook) y no en `InboxPagerView` (lo que consume `inbox-sidebar.tsx`): el
+ * sidebar pintaba el fallo de primera página como si nunca hubiera pasado
+ * (A.T5, revisión de código del 29/8/2026) porque ni siquiera tenía cómo
+ * leerlo. Ahora la vista pública lleva los dos campos y `InboxPager` queda
+ * como alias — todo pager, sembrado o no, local o de servidor, expone la
+ * forma completa.
+ */
 export interface InboxPagerView {
+  status: "loading" | "ready" | "error";
   hasMore: boolean;
   loadingMore: boolean;
   lastPageFailed: boolean;
   loadMore: () => void;
-}
-
-export interface InboxPager extends InboxPagerView {
-  status: "loading" | "ready" | "error";
   retry: () => void;
 }
+
+export type InboxPager = InboxPagerView;
 
 /**
  * Todo lo que decide el paginador, en un solo lugar. Ver el comentario largo
