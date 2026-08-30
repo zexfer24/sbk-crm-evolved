@@ -9,14 +9,31 @@ import { describe, expect, it, vi, beforeEach } from "vitest";
 
 // `vi.hoisted` porque `vi.mock` se eleva sobre cualquier `const` normal: sin
 // esto, la fábrica ve `processQueuedTurnsMock` antes de que exista (TDZ).
-const { processQueuedTurnsMock } = vi.hoisted(() => ({
+const { processQueuedTurnsMock, reconcileOrphanTurnsMock } = vi.hoisted(() => ({
   processQueuedTurnsMock: vi.fn(async () => ({ processed: 2, failed: 1, deferred: 0 })),
+  reconcileOrphanTurnsMock: vi.fn(async () => ({
+    revisadas: 5,
+    yaEnCola: 1,
+    bloqueadasPorLock: 1,
+    encoladas: 3,
+  })),
 }));
 
-// Fábrica completa, sin `importOriginal`: el módulo real arrastra el agente
-// de IA, sus SDKs e ioredis. Nada de eso hace falta para probar la guarda.
+// Fábricas completas, sin `importOriginal`: el módulo real de la cola
+// arrastra el agente de IA, sus SDKs e ioredis, y el del reconciliador
+// arrastra la cola (mismo problema, un nivel más abajo) más
+// @/lib/supabase/admin. Nada de eso hace falta para probar la guarda.
 vi.mock("@/lib/ai/queue", () => ({
   processQueuedTurns: processQueuedTurnsMock,
+}));
+vi.mock("@/lib/ai/reconciler", () => ({
+  reconcileOrphanTurns: reconcileOrphanTurnsMock,
+}));
+
+// Cliente de juguete: alcanza con que exista, porque a quien se le pasa
+// -reconcileOrphanTurns- está mockeado entero y no lo va a usar de verdad.
+vi.mock("@/lib/supabase/admin", () => ({
+  createAdminClient: () => ({ marker: "admin-fake" }),
 }));
 
 import { POST } from "./route";
@@ -33,6 +50,7 @@ describe("POST /api/cron/process-queue — el portón que dispara gasto", () => 
     // Sin esto, la aserción "no se llamó" de un test cae en falso positivo
     // (o falso negativo) por las llamadas acumuladas de tests anteriores.
     processQueuedTurnsMock.mockClear();
+    reconcileOrphanTurnsMock.mockClear();
   });
 
   it("sin CRON_SECRET configurado, responde 503 y no toca la cola", async () => {
@@ -45,6 +63,7 @@ describe("POST /api/cron/process-queue — el portón que dispara gasto", () => 
 
       expect(response.status).toBe(503);
       expect(processQueuedTurnsMock).not.toHaveBeenCalled();
+      expect(reconcileOrphanTurnsMock).not.toHaveBeenCalled();
     } finally {
       errorSpy.mockRestore();
       if (previousSecret === undefined) delete process.env.CRON_SECRET;
@@ -62,6 +81,7 @@ describe("POST /api/cron/process-queue — el portón que dispara gasto", () => 
 
       expect(response.status).toBe(503);
       expect(processQueuedTurnsMock).not.toHaveBeenCalled();
+      expect(reconcileOrphanTurnsMock).not.toHaveBeenCalled();
     } finally {
       errorSpy.mockRestore();
       if (previousSecret === undefined) delete process.env.CRON_SECRET;
@@ -78,6 +98,7 @@ describe("POST /api/cron/process-queue — el portón que dispara gasto", () => 
 
       expect(response.status).toBe(401);
       expect(processQueuedTurnsMock).not.toHaveBeenCalled();
+      expect(reconcileOrphanTurnsMock).not.toHaveBeenCalled();
     } finally {
       if (previousSecret === undefined) delete process.env.CRON_SECRET;
       else process.env.CRON_SECRET = previousSecret;
@@ -95,6 +116,7 @@ describe("POST /api/cron/process-queue — el portón que dispara gasto", () => 
 
       expect(response.status).toBe(401);
       expect(processQueuedTurnsMock).not.toHaveBeenCalled();
+      expect(reconcileOrphanTurnsMock).not.toHaveBeenCalled();
     } finally {
       if (previousSecret === undefined) delete process.env.CRON_SECRET;
       else process.env.CRON_SECRET = previousSecret;
@@ -110,6 +132,7 @@ describe("POST /api/cron/process-queue — el portón que dispara gasto", () => 
 
       expect(response.status).toBe(401);
       expect(processQueuedTurnsMock).not.toHaveBeenCalled();
+      expect(reconcileOrphanTurnsMock).not.toHaveBeenCalled();
     } finally {
       if (previousSecret === undefined) delete process.env.CRON_SECRET;
       else process.env.CRON_SECRET = previousSecret;
@@ -125,13 +148,14 @@ describe("POST /api/cron/process-queue — el portón que dispara gasto", () => 
 
       expect(response.status).toBe(401);
       expect(processQueuedTurnsMock).not.toHaveBeenCalled();
+      expect(reconcileOrphanTurnsMock).not.toHaveBeenCalled();
     } finally {
       if (previousSecret === undefined) delete process.env.CRON_SECRET;
       else process.env.CRON_SECRET = previousSecret;
     }
   });
 
-  it("Authorization: Bearer <secreto> correcto procesa la cola y devuelve el resultado tal cual", async () => {
+  it("Authorization: Bearer <secreto> correcto reconcilia, procesa la cola y devuelve los dos resúmenes", async () => {
     const previousSecret = process.env.CRON_SECRET;
     process.env.CRON_SECRET = "secreto-cron";
 
@@ -140,8 +164,45 @@ describe("POST /api/cron/process-queue — el portón que dispara gasto", () => 
       const body = await response.json();
 
       expect(response.status).toBe(200);
+      expect(reconcileOrphanTurnsMock).toHaveBeenCalledTimes(1);
       expect(processQueuedTurnsMock).toHaveBeenCalledTimes(1);
-      expect(body).toEqual({ ok: true, processed: 2, failed: 1, deferred: 0 });
+      expect(body).toEqual({
+        ok: true,
+        reconciled: { revisadas: 5, yaEnCola: 1, bloqueadasPorLock: 1, encoladas: 3 },
+        processed: 2,
+        failed: 1,
+        deferred: 0,
+      });
+    } finally {
+      if (previousSecret === undefined) delete process.env.CRON_SECRET;
+      else process.env.CRON_SECRET = previousSecret;
+    }
+  });
+
+  /**
+   * El orden no es casual: reconciliar ANTES de drenar deja que lo que el
+   * reconciliador reencola en esta pasada se atienda en esta MISMA llamada
+   * (encola con debounce cero). Al revés, lo reconciliado esperaría los
+   * cinco minutos hasta el próximo disparo del cron — el retraso que el
+   * reconciliador vino a evitar.
+   */
+  it("reconcilia ANTES de drenar la cola, no al revés", async () => {
+    const previousSecret = process.env.CRON_SECRET;
+    process.env.CRON_SECRET = "secreto-cron";
+    const orden: string[] = [];
+    reconcileOrphanTurnsMock.mockImplementationOnce(async () => {
+      orden.push("reconciliar");
+      return { revisadas: 0, yaEnCola: 0, bloqueadasPorLock: 0, encoladas: 0 };
+    });
+    processQueuedTurnsMock.mockImplementationOnce(async () => {
+      orden.push("drenar");
+      return { processed: 0, failed: 0, deferred: 0 };
+    });
+
+    try {
+      await POST(sendRequest({ authorization: "Bearer secreto-cron" }));
+
+      expect(orden).toEqual(["reconciliar", "drenar"]);
     } finally {
       if (previousSecret === undefined) delete process.env.CRON_SECRET;
       else process.env.CRON_SECRET = previousSecret;
@@ -164,6 +225,7 @@ describe("POST /api/cron/process-queue — el portón que dispara gasto", () => 
 
       expect(response.status).toBe(401);
       expect(processQueuedTurnsMock).not.toHaveBeenCalled();
+      expect(reconcileOrphanTurnsMock).not.toHaveBeenCalled();
     } finally {
       if (previousSecret === undefined) delete process.env.CRON_SECRET;
       else process.env.CRON_SECRET = previousSecret;
