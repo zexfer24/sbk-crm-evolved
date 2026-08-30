@@ -96,6 +96,21 @@ export function CrmShell({
   const [inboxCounts, setInboxCounts] = useState<InboxCounts>(initialInboxCounts);
 
   /**
+   * Sube cada vez que `fetchInboxHead` trae una cabecera fresca de la base
+   * (disparado por realtime, por la pasada de fondo, o por un refresco
+   * manual tras una mutación fallida). Es el pulso que `InboxSidebar` usa
+   * para saber que algo cambió y volver a consultar SU PROPIA cabecera —
+   * "No leídas"/"Mías" son consultas aparte (`unreadOnly`/`assignedTo` en
+   * `data.ts`) que este mismo canal de realtime no toca, ver el efecto junto
+   * a `serverRows` en inbox-sidebar.tsx — sin abrir un canal de realtime
+   * propio para esa píldora. Un contador y no un booleano: dos pulsos
+   * seguidos (dos eventos de realtime muy pegados) deben disparar dos
+   * reconciliaciones, y un booleano que ya está en `true` no dispara nada la
+   * segunda vez.
+   */
+  const [livePulse, setLivePulse] = useState(0);
+
+  /**
    * El refresco en vivo pide solo la cabecera y conserva lo que el asesor
    * bajó. Antes rearmaba la ventana entera: quien había bajado seis veces
    * pagaba 135 KB y 1,2 s en cada evento que no se resolviera en memoria.
@@ -103,7 +118,10 @@ export function CrmShell({
    * lo que cambia sin subir se pide de a una fila (`fetchRow`).
    *
    * De paso refresca los contadores del panel de inicio: cambian por los
-   * mismos eventos y el viaje ya está hecho.
+   * mismos eventos y el viaje ya está hecho. Y de paso sube `livePulse`: es
+   * la señal de que la base tiene algo nuevo, que "No leídas"/"Mías" también
+   * necesitan aunque esta consulta en sí (`fetchConversations` sin filtro)
+   * no las mire.
    */
   const fetchInboxHead = useCallback(
     async (current: ConversationSummary[]) => {
@@ -112,6 +130,7 @@ export function CrmShell({
         fetchInboxCounts(supabase, currentAgent.id),
       ]);
       setInboxCounts(counts);
+      setLivePulse((p) => p + 1);
       return mergeById(head, current);
     },
     [supabase, currentAgent.id]
@@ -632,6 +651,7 @@ export function CrmShell({
             lastPageFailed={allPager.lastPageFailed}
             counts={inboxCounts}
             initialUnreadRows={initialUnreadConversations}
+            livePulse={livePulse}
           />
         </section>
 

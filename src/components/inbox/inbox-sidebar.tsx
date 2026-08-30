@@ -1,6 +1,6 @@
 "use client";
 
-import { Fragment, useCallback, useEffect, useMemo, useState } from "react";
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ArrowDownWideNarrow, ArrowUpWideNarrow, Search } from "lucide-react";
 import type { Agent, ConversationSummary, InboxFilter, InboxSort, Tag } from "@/lib/types";
 import {
@@ -10,7 +10,7 @@ import {
   type FetchConversationsOptions,
   type InboxCounts,
 } from "@/lib/data";
-import { mergeById, type ConversationCursor } from "@/lib/inbox-paging";
+import { mergeById, reconcileHead, type ConversationCursor } from "@/lib/inbox-paging";
 import { useInboxPager, type InboxPagerView } from "@/lib/use-inbox-pager";
 import { initials } from "@/lib/dashboard";
 import {
@@ -121,6 +121,17 @@ interface InboxSidebarProps {
    * servidor ya tuviera los datos a mano.
    */
   initialUnreadRows?: ConversationSummary[];
+  /**
+   * Se incrementa cada vez que el pulso vivo del shell (`fetchInboxHead` en
+   * crm-shell.tsx) trae una cabecera fresca para "Todos". Es el eco que
+   * usan "No leídas"/"Mías" para saber que algo cambió en la base y volver a
+   * consultar SU propia cabecera (ver el efecto junto a `serverRows` más
+   * abajo) — sin esto quedan con datos viejos hasta que el asesor sale y
+   * reentra al filtro. Opcional y con valor por defecto para no obligar a
+   * cada instancia existente de `InboxSidebar` a conocerlo (p. ej. tests que
+   * no ejercitan este camino).
+   */
+  livePulse?: number;
 }
 
 export function InboxSidebar({
@@ -138,6 +149,7 @@ export function InboxSidebar({
   lastPageFailed = false,
   counts,
   initialUnreadRows,
+  livePulse = 0,
 }: InboxSidebarProps) {
   const availableFilters = useMemo(() => filtersForRole(currentAgent.role), [currentAgent.role]);
 
@@ -304,6 +316,75 @@ export function InboxSidebar({
       return { ...current, rows };
     });
   }, []);
+
+  /** Qué pulso ya se atendió, para no reaccionar al valor con el que se montó. */
+  const livePulseRef = useRef(livePulse);
+
+  /**
+   * Eco del pulso vivo del shell sobre la píldora de servidor ACTIVA.
+   *
+   * `patchServerRows` (arriba) solo cubre lo que hace ESTE asesor —abrir un
+   * chat, apartarlo—. Lo que hace OTRO asesor (leer el chat, que se lo
+   * reasignen) le llega a `conversations` ("Todos", en crm-shell.tsx) por el
+   * canal de realtime de `useLiveConversations`, pero `serverRows` es una
+   * consulta aparte que ese canal no toca: una conversación vieja, sin
+   * leer, que ya salió de la ventana de "Todos" puede vivir SOLO acá, y
+   * "Todos" nunca la ve pasar para avisar. Hallazgo de la revisión de
+   * código del 29/8/2026.
+   *
+   * Se reusa el pulso del shell —`livePulse` sube cada vez que
+   * `fetchInboxHead` trae una cabecera fresca— en vez de abrir un canal de
+   * realtime propio para esta píldora: el repo ya tiene uno solo por vista
+   * y duplicarlo sería la misma deuda que unificó `mergeById`/
+   * `reconcileHead` el mismo día. Se descartó también parchar la fila en
+   * memoria con el payload del evento (como hace `applyConversationRow` con
+   * "Todos"): esa fila puede no estar en ningún lado más que acá, así que
+   * no hay evento local que parchar — hay que volver a preguntarle a la
+   * base la cabecera de ESTA píldora.
+   *
+   * `reconcileHead` y no `mergeById`: acá sí hay que soltar filas —una
+   * conversación que el compañero acaba de leer debe desaparecer de "No
+   * leídas" sin que yo cambie de filtro—. `freshIsComplete` viaja SIEMPRE en
+   * `false`: la cabecera que se pide acá tiene el mismo tamaño que la
+   * primera página (`pillQueryOptions` sin cursor), nunca el conjunto
+   * entero, así que no puede tratarse como completa aunque `serverPager` ya
+   * haya llegado a `reachedEnd` — un asesor que bajó cuatro páginas tiene
+   * más filas acumuladas que las que esta cabecera puede ver, y marcarla
+   * completa las borraría todas. La reconciliación por posición es la que
+   * de verdad evita perderlas (ver el comentario grande de `reconcileHead`
+   * en `inbox-paging.ts`).
+   *
+   * No pasa por `serverPager`: es una consulta aparte que nunca toca su
+   * candado, su cursor ni su `reachedEnd`. Y solo corre con la píldora
+   * activa y con filas ya cargadas (`resolvedState`): sin eso se pagaría una
+   * consulta extra por cada pulso aunque nadie esté mirando "No leídas"/
+   * "Mías", o aunque la píldora todavía no haya resuelto su propia primera
+   * página.
+   */
+  useEffect(() => {
+    if (livePulse === livePulseRef.current) return;
+    livePulseRef.current = livePulse;
+
+    if (!resolvedOnServer || !resolvedState || resolvedState.rows.length === 0) return;
+
+    const pillFilter = filter;
+
+    fetchConversations(supabase, pillQueryOptions(pillFilter, currentAgent.id, null))
+      .then((fresh) => {
+        setServerRows((current) => {
+          // Cambié de píldora (o esta ya no es la consulta activa) mientras
+          // la cabecera viajaba: esta respuesta no tiene dónde pintarse.
+          if (!current || current.filter !== pillFilter) return current;
+          return {
+            filter: pillFilter,
+            rows: reconcileHead(fresh, current.rows, { freshIsComplete: false }),
+          };
+        });
+      })
+      .catch(() => {
+        // Lo repara el próximo pulso, o el asesor reentrando a la píldora.
+      });
+  }, [livePulse, resolvedOnServer, resolvedState, filter, currentAgent.id, supabase]);
 
   // Lo cargado manda: sus filas están al día por realtime. Lo de la base solo
   // aporta las conversaciones que la ventana no tiene —las viejas, que son

@@ -663,6 +663,264 @@ describe("InboxSidebar — carreras de servidor (revisión de código 29/8/2026)
   });
 });
 
+/**
+ * El hallazgo de la revisión de código del 29/8/2026: `serverRows` es
+ * invisible para realtime — una conversación de "No leídas"/"Mías"
+ * modificada por otro asesor se quedaba con los datos viejos hasta que se
+ * reentraba a la píldora, porque `patchServerRows` solo cubre lo que hace
+ * ESTE asesor. El eco del pulso vivo del shell (`livePulse`, ver el efecto
+ * junto a `serverRows` en inbox-sidebar.tsx) es lo que cierra ese hueco: al
+ * subir, la píldora activa vuelve a pedir su cabecera y la reconcilia con
+ * `reconcileHead`.
+ */
+describe("InboxSidebar — el pulso vivo reconcilia las píldoras de servidor", () => {
+  /** `INBOX_PAGE_SIZE` filas, para forzar una página llena. */
+  function paginaLlena(prefix: string, count = INBOX_PAGE_SIZE): Conversation[] {
+    const base = new Date("2026-08-20T12:00:00Z").getTime();
+    return Array.from({ length: count }, (_, i) =>
+      conversation({
+        id: `${prefix}-${i}`,
+        unreadCount: 1,
+        lastMessageAt: new Date(base - i * 60_000).toISOString(),
+      })
+    );
+  }
+
+  it("una fila que otro asesor leyó desaparece de 'No leídas' sin que el asesor cambie de píldora", async () => {
+    const conv1 = conversation({ id: "conv-1", unreadCount: 1 });
+    const conv2 = conversation({ id: "conv-2", unreadCount: 1 });
+    // Ancla, no relleno: `reconcileHead` (`inbox-paging.ts`) reconoce que
+    // "conv-2" salió del conjunto porque "conv-3" —más profundo en lo
+    // acumulado— SIGUE viniendo en la cabecera fresca. Sin una fila más
+    // profunda que la cabecera todavía traiga, la posición de "conv-2" (la
+    // última de lo acumulado) sería indistinguible de una fila que solo se
+    // hundió más allá de lo que esta cabecera —del tamaño de una página—
+    // alcanza a ver, y `reconcileHead` la conserva a propósito ante esa
+    // duda (ver su comentario grande y su test "cabecera sin ninguna fila
+    // conocida").
+    const conv3 = conversation({ id: "conv-3", unreadCount: 1 });
+    let llamadas = 0;
+    vi.mocked(fetchConversations).mockImplementation(async (_supabase, options) => {
+      if (!options?.unreadOnly) return [];
+      llamadas += 1;
+      // Primera llamada: la primera página, con las tres filas. Segunda
+      // llamada (el pulso): la cabecera fresca, donde "conv-2" ya no viene
+      // — alguien más la leyó — pero "conv-3" sigue.
+      return llamadas === 1 ? [conv1, conv2, conv3] : [conv1, conv3];
+    });
+
+    const { container, rerender } = render(
+      <InboxSidebar
+        conversations={[]}
+        selectedId={null}
+        onSelect={() => {}}
+        currentAgent={JEFA}
+        allTags={ALL_TAGS}
+        bcvRate={null}
+        livePulse={0}
+      />
+    );
+
+    await waitFor(() => expect(visibleIds(container)).toEqual(["conv-1", "conv-2", "conv-3"]));
+
+    rerender(
+      <InboxSidebar
+        conversations={[]}
+        selectedId={null}
+        onSelect={() => {}}
+        currentAgent={JEFA}
+        allTags={ALL_TAGS}
+        bcvRate={null}
+        livePulse={1}
+      />
+    );
+
+    // El asesor se queda en "No leídas": nada lo saca del filtro.
+    expect(activePillLabel()).toBe("No leídas");
+    await waitFor(() => expect(visibleIds(container)).toEqual(["conv-1", "conv-3"]));
+  });
+
+  it("una fila que solo se hundió (sigue en el conjunto, más abajo) no se pierde", async () => {
+    // Página llena (30 filas): hay más abajo que la cabecera fresca —de
+    // tamaño igual a una sola página— no puede ver entera.
+    const primera = paginaLlena("u");
+    const nueva = conversation({ id: "nueva", unreadCount: 1 });
+    let llamadas = 0;
+    vi.mocked(fetchConversations).mockImplementation(async (_supabase, options) => {
+      if (!options?.unreadOnly) return [];
+      llamadas += 1;
+      if (llamadas === 1) return primera;
+      // La cabecera fresca del pulso: una fila nueva empujó a la primera de
+      // la página original una posición hacia abajo, pero esa primera fila
+      // sigue estando — no salió del conjunto, solo se hundió.
+      return [nueva, primera[0]];
+    });
+
+    const { container, rerender } = render(
+      <InboxSidebar
+        conversations={[]}
+        selectedId={null}
+        onSelect={() => {}}
+        currentAgent={JEFA}
+        allTags={ALL_TAGS}
+        bcvRate={null}
+        livePulse={0}
+      />
+    );
+
+    await waitFor(() => expect(visibleIds(container)).toHaveLength(INBOX_PAGE_SIZE));
+
+    rerender(
+      <InboxSidebar
+        conversations={[]}
+        selectedId={null}
+        onSelect={() => {}}
+        currentAgent={JEFA}
+        allTags={ALL_TAGS}
+        bcvRate={null}
+        livePulse={1}
+      />
+    );
+
+    await waitFor(() => expect(visibleIds(container)).toContain("nueva"));
+    // Las 30 originales siguen todas: ninguna se perdió por hundirse.
+    for (const fila of primera) {
+      expect(visibleIds(container)).toContain(fila.contact.displayName);
+    }
+    expect(visibleIds(container)).toHaveLength(INBOX_PAGE_SIZE + 1);
+  });
+
+  it("con varias páginas bajadas, el pulso no borra las filas de abajo", async () => {
+    const primera = paginaLlena("u");
+    const segunda = [conversation({ id: "u-extra-1", unreadCount: 1 })];
+    let llamadasSinCursor = 0;
+
+    vi.mocked(fetchConversations).mockImplementation(async (_supabase, options) => {
+      if (!options?.unreadOnly) return [];
+      if (options.cursor) return segunda; // "cargar más": la página 2.
+      llamadasSinCursor += 1;
+      // Primera llamada: primera página. Pulso: la misma cabecera de
+      // siempre (nadie cambió nada) — la página 2, ya bajada, no vuelve a
+      // pedirse ni debe desaparecer.
+      return primera;
+    });
+
+    const { container, rerender } = render(
+      <InboxSidebar
+        conversations={[]}
+        selectedId={null}
+        onSelect={() => {}}
+        currentAgent={JEFA}
+        allTags={ALL_TAGS}
+        bcvRate={null}
+        livePulse={0}
+      />
+    );
+
+    await waitFor(() => expect(visibleIds(container)).toHaveLength(INBOX_PAGE_SIZE));
+    fireEvent.click(screen.getByRole("button", { name: /cargar más/i }));
+    await waitFor(() => expect(visibleIds(container)).toContain("u-extra-1"));
+    expect(visibleIds(container)).toHaveLength(INBOX_PAGE_SIZE + 1);
+
+    rerender(
+      <InboxSidebar
+        conversations={[]}
+        selectedId={null}
+        onSelect={() => {}}
+        currentAgent={JEFA}
+        allTags={ALL_TAGS}
+        bcvRate={null}
+        livePulse={1}
+      />
+    );
+
+    await waitFor(() => expect(llamadasSinCursor).toBe(2));
+    // La fila de la página 2, más profunda que lo que la cabecera del pulso
+    // alcanza a ver, se conserva.
+    expect(visibleIds(container)).toContain("u-extra-1");
+    expect(visibleIds(container)).toHaveLength(INBOX_PAGE_SIZE + 1);
+  });
+
+  it("cambiar de píldora mientras la cabecera del pulso viaja no pinta la respuesta vieja", async () => {
+    const conv1 = conversation({ id: "conv-1", unreadCount: 1 });
+    const { promise: cabeceraDelPulso, resolve: resolverCabeceraDelPulso } = (() => {
+      let resolve!: (value: Conversation[]) => void;
+      const promise = new Promise<Conversation[]>((r) => {
+        resolve = r;
+      });
+      return { promise, resolve };
+    })();
+
+    let llamadasSinCursorUnread = 0;
+    vi.mocked(fetchConversations).mockImplementation(async (_supabase, options) => {
+      if (options?.assignedTo) return [];
+      if (!options?.unreadOnly) return [];
+      llamadasSinCursorUnread += 1;
+      if (llamadasSinCursorUnread === 1) return [conv1];
+      // Segunda llamada, y SOLO la segunda: el pulso pide la cabecera
+      // fresca y se queda colgada, el asesor cambia de píldora antes de que
+      // resuelva. Atarla a la cuenta exacta —y no a "cualquier llamada
+      // después de la primera"— importa: al volver a "No leídas" más abajo,
+      // `useInboxPager` dispara SU PROPIA primera página de esa nueva
+      // sesión (cambia `sessionKey`), una consulta legítima e
+      // independiente del pulso que colgó. Sin este corte, esa consulta
+      // agarraría la misma promesa ya resuelta con el valor viejo del
+      // pulso —dos peticiones distintas no pueden compartir una sola
+      // promesa— y el test fallaría por un defecto del mock, no del
+      // código bajo prueba.
+      if (llamadasSinCursorUnread === 2) return cabeceraDelPulso;
+      return [conv1];
+    });
+
+    const { container, rerender } = render(
+      <InboxSidebar
+        conversations={[]}
+        selectedId={null}
+        onSelect={() => {}}
+        currentAgent={JEFA}
+        allTags={ALL_TAGS}
+        bcvRate={null}
+        livePulse={0}
+      />
+    );
+
+    await waitFor(() => expect(visibleIds(container)).toEqual(["conv-1"]));
+
+    rerender(
+      <InboxSidebar
+        conversations={[]}
+        selectedId={null}
+        onSelect={() => {}}
+        currentAgent={JEFA}
+        allTags={ALL_TAGS}
+        bcvRate={null}
+        livePulse={1}
+      />
+    );
+    await waitFor(() => expect(llamadasSinCursorUnread).toBe(2));
+
+    // El asesor cambia de píldora antes de que la cabecera del pulso resuelva.
+    irA("Mías");
+    await waitFor(() =>
+      expect(screen.queryByText("No tienes conversaciones asignadas.")).toBeTruthy()
+    );
+
+    // La cabecera vieja llega tarde, ya sin dueño.
+    resolverCabeceraDelPulso([conversation({ id: "vieja-que-no-debe-verse", unreadCount: 1 })]);
+    await Promise.resolve();
+    await Promise.resolve();
+
+    // "Mías" sigue vacía: la respuesta de "No leídas" no se coló acá.
+    expect(screen.queryByText("No tienes conversaciones asignadas.")).toBeTruthy();
+    expect(visibleIds(container)).not.toContain("vieja-que-no-debe-verse");
+
+    // Y al volver a "No leídas", tampoco quedó pisada por la respuesta vieja.
+    irA("No leídas");
+    await waitFor(() => expect(visibleIds(container)).toEqual(["conv-1"]));
+    expect(visibleIds(container)).not.toContain("vieja-que-no-debe-verse");
+  });
+});
+
 describe("InboxSidebar — 'Buscando…' al cambiar de píldora", () => {
   it("muestra 'Buscando…' al pasar a 'Mías' mientras esa consulta no resuelve", async () => {
     renderSidebar(JEFA); // "No leídas" resuelve enseguida: el mock por defecto contesta [].
