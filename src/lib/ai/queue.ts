@@ -3,6 +3,7 @@ import { getRedis } from "@/lib/redis";
 import { createAgentQueue, createTurnPace, createTurnSlots, releaseSweepLock } from "@/lib/ai/redis-queue";
 import { runAgentTurn } from "@/lib/ai/agent";
 import { isNonRetryable } from "@/lib/ai/turn-delivery";
+import { recordHandoffAdmin } from "@/lib/ai/handoffs";
 import { isConversationBusy } from "@/lib/ai/conversation-lock";
 import { errorText, log } from "@/lib/log";
 
@@ -398,6 +399,20 @@ export async function processQueuedTurns(limit = MAX_PER_RUN): Promise<QueueRunR
 
         if (intentos >= MAX_ATTEMPTS) {
           log.error("cola_turno_abandonado", { conversationId, intentos, detail });
+
+          // Acá se acababa el camino: tres intentos fallidos y la conversación
+          // se quedaba esperando una respuesta que ya no iba a llegar, sin que
+          // nadie quedara a cargo ni apareciera en ninguna píldora de la
+          // bandeja. El abandono sigue siendo el mismo —no se reintenta más—,
+          // pero ahora deja dicho que quedó sin dueño. No se registra el
+          // camino de `isNonRetryable`: esos ya se registran en agent.ts con
+          // su razón exacta (identidad no verificable / entrega fallida), y
+          // duplicarlos acá pondría dos filas para un solo hecho.
+          await recordHandoffAdmin({
+            conversationId,
+            toKind: "unassigned",
+            reason: "abandonado",
+          });
         } else {
           log.error("cola_turno_fallido", { conversationId, intentos, detail });
           await cola.enqueue(conversationId, RETRY_AFTER_ERROR_SECONDS);

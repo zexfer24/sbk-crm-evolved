@@ -20,6 +20,19 @@ const runAgentTurnMock = vi.fn(async (id: string) => {
 vi.mock("@/lib/ai/agent", () => ({ runAgentTurn: (id: string) => runAgentTurnMock(id) }));
 vi.mock("@/lib/redis", () => ({ getRedis: () => redis }));
 
+// La bitácora de traspasos se sustituye entera (fábrica completa, sin
+// `importOriginal`) por la razón de siempre en este repo: el módulo real
+// arrastra `@/lib/supabase/admin`, que sin las variables de Supabase en el
+// entorno construye un cliente que lanza. Acá interesa QUÉ traspaso pide la
+// cola, no que llegue a Postgres.
+const recordHandoffAdminMock = vi.fn(async (input: unknown) => {
+  void input;
+  return true;
+});
+vi.mock("@/lib/ai/handoffs", () => ({
+  recordHandoffAdmin: (input: unknown) => recordHandoffAdminMock(input),
+}));
+
 import {
   DEBOUNCE_SECONDS,
   enqueueAgentTurns,
@@ -27,6 +40,8 @@ import {
   processQueuedTurns,
 } from "@/lib/ai/queue";
 import { ConversationBusyError } from "@/lib/ai/conversation-lock";
+import { NonRetryableTurnError } from "@/lib/ai/turn-delivery";
+import { log } from "@/lib/log";
 
 beforeAll(async () => {
   // Tope bajo a propósito: hace visible el límite sin alargar la prueba.
@@ -209,6 +224,140 @@ describe("processQueuedTurns", () => {
     const segunda = await processQueuedTurns();
 
     expect(segunda.processed).toBe(1);
+  });
+
+  /**
+   * MAX_ATTEMPTS vale 3 en queue.ts. Con menos de eso el fallo todavía se
+   * reintenta: se registra como "fallido", no como "abandonado", y vuelve a
+   * la cola con la espera de RETRY_AFTER_ERROR_SECONDS.
+   */
+  it("con menos de 3 intentos, registra cola_turno_fallido y re-encola", async () => {
+    if (!disponible) return;
+    // Sin `clearMocks` global en este archivo, el espía persiste entre
+    // pruebas una vez creado: sin este `mockClear()`, un evento disparado por
+    // una prueba anterior de este mismo describe contaminaría las
+    // aserciones `not.toHaveBeenCalledWith` de acá.
+    const error = vi.spyOn(log, "error");
+    error.mockClear();
+    recordHandoffAdminMock.mockClear();
+    runAgentTurnMock.mockImplementation(async () => {
+      throw new Error("el modelo no respondió");
+    });
+
+    await enqueueAgentTurns(["conv-1"], { debounceSeconds: 0 });
+    await processQueuedTurns();
+
+    expect(error).toHaveBeenCalledWith("cola_turno_fallido", {
+      conversationId: "conv-1",
+      intentos: 1,
+      detail: "el modelo no respondió",
+    });
+    expect(error).not.toHaveBeenCalledWith("cola_turno_abandonado", expect.anything());
+    expect(await pendingAgentTurns()).toBe(1);
+    // Todavía queda un intento por delante: la conversación NO se suelta, así
+    // que no debe aparecer como huérfana en la bandeja.
+    expect(recordHandoffAdminMock).not.toHaveBeenCalled();
+  });
+
+  /**
+   * Al tercer intento fallido (MAX_ATTEMPTS) la conversación se abandona: se
+   * registra como error para que un humano la retome, y no vuelve a la cola —
+   * a diferencia de "devuelve a la cola el turno que falló" (un solo intento)
+   * y de "abandona la conversación que falla una y otra vez" (que mide el
+   * resultado final tras varias tandas, no el evento de este intento puntual).
+   */
+  it("al tercer intento fallido, registra cola_turno_abandonado y NO re-encola", async () => {
+    if (!disponible) return;
+    // Sin `clearMocks` global en este archivo, el espía persiste entre
+    // pruebas una vez creado: sin este `mockClear()`, un evento disparado por
+    // una prueba anterior de este mismo describe contaminaría las
+    // aserciones `not.toHaveBeenCalledWith` de acá.
+    const error = vi.spyOn(log, "error");
+    error.mockClear();
+    recordHandoffAdminMock.mockClear();
+    runAgentTurnMock.mockImplementation(async () => {
+      throw new Error("el modelo no respondió");
+    });
+
+    for (let intento = 0; intento < 3; intento++) {
+      await enqueueAgentTurns(["conv-1"], { debounceSeconds: 0 });
+      await processQueuedTurns();
+    }
+
+    expect(error).toHaveBeenCalledWith("cola_turno_abandonado", {
+      conversationId: "conv-1",
+      intentos: 3,
+      detail: "el modelo no respondió",
+    });
+    expect(await pendingAgentTurns()).toBe(0);
+    // El abandono deja de ser terminal y mudo: la conversación queda anotada
+    // como sin dueño para que la bandeja pueda mostrarla. Sale de la cola
+    // igual que antes (pendingAgentTurns en 0), pero ya no desaparece.
+    expect(recordHandoffAdminMock).toHaveBeenCalledWith({
+      conversationId: "conv-1",
+      toKind: "unassigned",
+      reason: "abandonado",
+    });
+  });
+
+  /**
+   * El caso que turn-delivery.ts existe para cerrar: un fallo DESPUÉS de
+   * haberle entregado algo al cliente no se puede reintentar sin arriesgar
+   * mandarle el mismo mensaje dos veces. La cola lo distingue de un fallo
+   * cualquiera por su clase (`isNonRetryable`), lo registra con su propio
+   * evento, limpia el contador de intentos —para que no le queden pegados a
+   * la conversación si vuelve a fallar por otra causa más adelante— y no lo
+   * devuelve a la cola.
+   */
+  it("un NonRetryableTurnError registra cola_turno_no_reintentable, limpia los intentos y no re-encola", async () => {
+    if (!disponible) return;
+    // Sin `clearMocks` global en este archivo, el espía persiste entre
+    // pruebas una vez creado: sin este `mockClear()`, un evento disparado por
+    // una prueba anterior de este mismo describe contaminaría las
+    // aserciones `not.toHaveBeenCalledWith` de acá.
+    const error = vi.spyOn(log, "error");
+    error.mockClear();
+
+    // Dos fallos comunes primero, para dejar un contador de intentos > 0 en
+    // la conversación. Si clearFailures no lo reseteara, el próximo fallo
+    // normal de conv-1 heredaría este conteo en vez de arrancar en cero.
+    runAgentTurnMock.mockImplementation(async () => {
+      throw new Error("corte de red pasajero");
+    });
+    await enqueueAgentTurns(["conv-1"], { debounceSeconds: 0 });
+    await processQueuedTurns();
+    await enqueueAgentTurns(["conv-1"], { debounceSeconds: 0 });
+    await processQueuedTurns();
+
+    runAgentTurnMock.mockImplementation(async () => {
+      throw new NonRetryableTurnError("conv-1", "el turno ya le había entregado algo al cliente");
+    });
+    await enqueueAgentTurns(["conv-1"], { debounceSeconds: 0 });
+    const resultado = await processQueuedTurns();
+
+    expect(error).toHaveBeenCalledWith("cola_turno_no_reintentable", {
+      conversationId: "conv-1",
+      detail: "el turno ya le había entregado algo al cliente",
+    });
+    // No es "abandonado" (eso hubiera hecho falta llegar a 3 intentos
+    // comunes) ni "fallido" (eso lo habría re-encolado).
+    expect(error).not.toHaveBeenCalledWith("cola_turno_abandonado", expect.anything());
+    expect(resultado.failed).toBe(1);
+    expect(await pendingAgentTurns()).toBe(0);
+
+    // El contador quedó en cero: un fallo común de conv-1 después de esto
+    // arranca en el intento 1, no en el 3 que hubiera heredado sin el reset.
+    runAgentTurnMock.mockImplementation(async () => {
+      throw new Error("otro corte de red pasajero");
+    });
+    await enqueueAgentTurns(["conv-1"], { debounceSeconds: 0 });
+    await processQueuedTurns();
+
+    expect(error).toHaveBeenCalledWith("cola_turno_fallido", {
+      conversationId: "conv-1",
+      intentos: 1,
+      detail: "otro corte de red pasajero",
+    });
   });
 });
 
