@@ -103,6 +103,28 @@ copia intermedia.
 - **Metodología de trabajo**: todo cambio entra por la skill `liminalwork`
   (plan aprobado → subagentes → reportes → tests). Sin plan no se implementa.
 
+## La invariante "ningún lead invisible"
+
+La reforma que arrancó el 30/8/2026 se gobierna por una sola regla, y todo
+código que decida no atender una conversación tiene que respetarla:
+
+> Toda conversación con `awaiting_reply = true` tiene exactamente un dueño y
+> una hora límite de respuesta. Ninguna salida del sistema deja una
+> conversación esperando sin dueño ni fecha.
+
+Su forma final —`owner_kind` + `response_due_at` en `conversations`— nace en
+la Etapa 2. En la Etapa 1 esas columnas NO existen todavía, así que la
+invariante no se puede consultar tal cual: lo que corre hoy es su proxy, que
+es la tabla de bitácora `conversation_handoffs` (migración
+20260830040000). Cada salida silenciosa del turno, de la cola y del webhook
+deja ahí una fila con su razón, y el lead sin dueño es el que tiene como
+última fila un `to_kind = 'unassigned'` y sigue con `awaiting_reply`.
+
+La consecuencia práctica para cualquiera que toque `lib/ai/`: **un `return`
+que abandona una conversación sin escribir su traspaso es un bug**, aunque
+la decisión de callarse sea la correcta. Callarse está bien; callarse sin
+dejar rastro es lo que hacía desaparecer leads.
+
 ## Trampas conocidas
 
 - `rtk next build` **reporta éxito sin construir**. Compilar siempre con

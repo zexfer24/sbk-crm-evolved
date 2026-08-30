@@ -48,12 +48,12 @@ vecino que nombran.
 |---|---|
 | `webhooks/whatsapp/route.ts` | Entrada de Meta: handshake, verificación de firma HMAC, mensajes entrantes (texto/multimedia/reply), estados de envío; escribe con service role y encola turnos. La bienvenida automática se reclama en la base (`claimWelcome` sella `conversations.welcome_sent_at` con un UPDATE condicional antes de enviar; se devuelve a `null` solo si Meta rechaza la plantilla), no en memoria de la invocación. `new-contact-race.test.ts` cubre la carrera de contacto nuevo y `welcome-race.test.ts` la carrera de la bienvenida — los tres archivos comparten el espejo de mocks (incluido `@/lib/redis`) y la importación del route en `beforeAll` |
 | `messages/send/route.ts` | Envío del composer: canal `connected` → Cloud API real (con reintentos solo ante 5xx/red); si no, simulado. El token nunca toca el navegador |
-| `cron/process-queue/route.ts` | Red de seguridad de la cola de turnos (cada 5 min); exige `CRON_SECRET`, falla cerrado con 503. Resguardo en `route.test.ts`: los caminos cerrados afirman que la cola NO se llamó |
+| `cron/process-queue/route.ts` | Red de seguridad de la cola de turnos (cada 5 min); exige `CRON_SECRET`, falla cerrado con 503. Resguardo en `route.test.ts`: los caminos cerrados afirman que ni la cola ni el reconciliador se llamaron. Desde el 30/8/2026 reconcilia ANTES de drenar, para que lo rescatado se atienda en la misma pasada y no espere otros 5 min |
 | `agent/backlog/route.ts` | Repaso del atraso al encender la IA: encola lo que quedó esperando mientras estuvo apagada. Resguardo en `route.test.ts` (incluye el DEFECTO CONOCIDO D1: el lock queda tomado 30 min en los caminos que no encolan) |
 | `agent/stop/route.ts` | Freno de emergencia: apaga la IA y también lo que ya estaba en marcha. Resguardo en `route.test.ts`: orden interruptor→purga, degradación con Redis caído, línea de auditoría `ia_apagada` |
 | `dev/simulate-message/route.ts` | Simulador del panel: mensaje entrante sin pasar por Meta, turno síncrono. Su test afirma que la guarda de producción corta ANTES de tocar dependencia alguna |
 | `media/[...path]/route.ts` | Sirve el bucket privado `whatsapp-media` con la sesión del CRM por delante. Resguardo en `route.test.ts`: 401 sin sesión sin llegar a firmar, y el path viaja sin sanear (DEFECTO CONOCIDO D5) |
-| `health/route.ts` | 200 solo si alcanza la base y tiene sus variables; para el monitor externo. Su test afirma los CÓDIGOS HTTP (lo único que leen monitor y HEALTHCHECK), no solo el JSON |
+| `health/route.ts` | 200 solo si alcanza la base y tiene sus variables; para el monitor externo. Su test afirma los CÓDIGOS HTTP (lo único que leen monitor y HEALTHCHECK), no solo el JSON. Desde el 30/8/2026 informa además `unassigned_waiting` (vía la RPC `unassigned_waiting_count`, expuesto SIN sesión por decisión del operador) y `redis_persistence`: ninguno de los dos cambia el código HTTP — un lead esperando no es una caída |
 | `workflows/` | (dentro de `dev/`) utilidades de desarrollo |
 
 ## `src/lib` — núcleo compartido
@@ -101,6 +101,8 @@ vecino que nombran.
 | `conversation-lock.ts` | Un solo turno de IA por conversación, con lease de 90s en `ai_turn_lock_until` + dueño en `ai_turn_lock_token`, renovado cada 30s por el propio turno y soltado solo por quien lo tomó; un proceso que muere deja la conversación libre en ≤90s en vez de para siempre; encontrarlo tomado ya no es silencio, es `ConversationBusyError` |
 | `turn-target.ts` | Identidad congelada del turno: a qué chat/cliente se le habla; cierra el riesgo de cruzar respuestas |
 | `turn-delivery.ts` | Barrera contra el doble envío: un turno que ya respondió no se reintenta |
+| `reconciler.ts` | La red de seguridad del lado de Postgres: si Redis perdió un turno, nadie lo reencola nunca porque el único que encola es el webhook. Busca en la base lo que sigue esperando, descarta lo que ya está en cola, con lock vigente o atendido por una persona, y reencola hasta 50 por pasada |
+| `handoffs.ts` | La bitácora de traspasos: cada salida silenciosa (turno, cola, webhook) deja dicho a quién pasó la conversación y por qué. `recordHandoff` para quien ya tiene cliente; `recordHandoffAdmin` se fabrica el suyo. NUNCA lanzan: registrar el traspaso no puede tumbar un turno |
 | `rate-limit.ts` | El único cuello hacia el proveedor del modelo: cuenta PETICIONES, no turnos |
 | `classify.ts` | Fase 1: clasificación barata de intención; decide qué herramientas recibe el modelo |
 | `playbooks.ts` | Fase 0: reconocimiento de escenario (respuestas predeterminadas del supervisor, enviadas tal cual; no se repiten en 6h) |
@@ -152,11 +154,12 @@ vecino que nombran.
 
 | Qué | Dónde |
 |---|---|
-| Migraciones (49, timestampeadas) | `migrations/` — regla: commit propio con `[migración]` en el título |
+| Migraciones (50, timestampeadas) | `migrations/` — regla: commit propio con `[migración]` en el título. El número es el CONTEO, no una secuencia: los archivos van por fecha (`20260830040000_…`), y leerlo como "la próxima es la 51" ya hizo que un plan pidiera crear `051_…`, que se habría ordenado antes que todo 2026 |
 | Seed de demo (3 usuarios, 5 conversaciones) | `seed.sql` — **no va a producción** |
 | Catálogo y escenarios para producción | `seeds/moto_catalog_seed.sql`, `seeds/ai_playbooks.sql` |
 | Config del stack local | `config.toml` |
-| Test de permisos de funciones `security definer` | `tests/permisos_funciones.sql` — falla si alguna queda ejecutable por `anon` fuera de la lista blanca (`is_agent`, `is_supervisor_or_admin`) |
+| Test de permisos de funciones `security definer` | `tests/permisos_funciones.sql` — falla si alguna queda ejecutable por `anon` fuera de la lista blanca (`is_agent`, `is_supervisor_or_admin`). Agrupa por a quién debe quedarle el acceso: `service_role` (cerradas también a `authenticated`) y `authenticated` |
+| Bitácora de traspasos | `migrations/20260830040000_conversation_handoffs.sql` — tabla `conversation_handoffs` + `record_handoff()`. La razón es `text` con CHECK (no enum) porque las Etapas 2 y 3 la amplían; `record_handoff` está concedida SOLO a `service_role` hasta que la Etapa 2 traiga los botones que corren como `authenticated` |
 
 ## `scripts/` y `docs/`
 
