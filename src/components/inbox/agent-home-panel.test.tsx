@@ -31,7 +31,7 @@ describe("AgentHomePanel", () => {
     render(
       <AgentHomePanel
         currentAgent={currentAgent}
-        counts={{ pending: 4, pendingStale: 3, mine: 2, unread: 0 }}
+        counts={{ pending: 4, pendingStale: 3, mine: 2, unread: 0, unassigned: 0 }}
         agentSettings={agentSettings}
       />
     );
@@ -48,7 +48,7 @@ describe("AgentHomePanel", () => {
     render(
       <AgentHomePanel
         currentAgent={currentAgent}
-        counts={{ pending: 0, pendingStale: 0, mine: 0, unread: 0 }}
+        counts={{ pending: 0, pendingStale: 0, mine: 0, unread: 0, unassigned: 0 }}
         agentSettings={agentSettings}
       />
     );

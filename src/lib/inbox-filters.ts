@@ -25,7 +25,10 @@ import { normalizeForSearch } from "@/lib/message-search";
  * aparecían en "Todos", perdidos en el orden por recencia. Orden final:
  * `pending`, `unread`, `mine`, `all`.
  */
-const DEFAULT_FILTERS: InboxFilter[] = ["pending", "unread", "mine", "all"];
+// "Sin dueño" va junto a "Pendientes" y no al final: las dos hablan de
+// trabajo que espera, y la nueva es la más urgente de las dos —son los chats
+// que el sistema soltó, no los que simplemente no se han contestado.
+const DEFAULT_FILTERS: InboxFilter[] = ["pending", "unassigned", "unread", "mine", "all"];
 
 // El parámetro no se usa a propósito: es la costura descrita arriba.
 // eslint-disable-next-line @typescript-eslint/no-unused-vars
@@ -35,6 +38,7 @@ export function filtersForRole(_role: AgentRole): InboxFilter[] {
 
 export const INBOX_FILTER_LABELS: Record<InboxFilter, string> = {
   pending: "Pendientes",
+  unassigned: "Sin dueño",
   unread: "No leídas",
   mine: "Mías",
   all: "Todos",
@@ -63,6 +67,46 @@ export function isUnread(conversation: ConversationSummary): boolean {
   return conversation.unreadCount > 0 || conversation.manuallyUnread;
 }
 
+/**
+ * Un traspaso de `conversation_handoffs`, en la forma mínima que hace falta
+ * para decidir "sin dueño": a quién pasó y cuándo. `toKind`/`createdAt` y no
+ * los nombres crudos de la columna (`to_kind`/`created_at`) porque esto es
+ * lógica de negocio, no una fila de base — el llamador (`fetchUnassignedConversations`
+ * en data.ts) hace ese mapeo mínimo.
+ */
+export interface HandoffKind {
+  toKind: string;
+  createdAt: string;
+}
+
+/** El traspaso más reciente, o `null` si la lista viene vacía. */
+function latestHandoff(handoffs: readonly HandoffKind[]): HandoffKind | null {
+  return handoffs.reduce<HandoffKind | null>(
+    (latest, current) => (!latest || current.createdAt > latest.createdAt ? current : latest),
+    null
+  );
+}
+
+/**
+ * "Sin dueño" (T1.6 del plan "Ningún lead invisible", 30/8/2026): la
+ * conversación sigue esperando respuesta del cliente Y el traspaso MÁS
+ * RECIENTE de su bitácora fue a `unassigned` — el sistema la soltó y nadie
+ * la retomó desde entonces. Si después de ese traspaso hubo otro —a `ai` o a
+ * `human`— alguien ya la agarró y esto deja de ser cierto, aunque el
+ * traspaso a `unassigned` siga ahí, más atrás en la historia: por eso se
+ * compara SIEMPRE contra el más reciente (`latestHandoff`), nunca contra
+ * "¿hay algún traspaso a unassigned en la lista?".
+ *
+ * Pura y sin Supabase a propósito, como `isUnread`: la usa
+ * `fetchUnassignedConversations` (data.ts) sobre lo que ya trajo la base
+ * —`awaiting_reply` más el único traspaso más reciente, embebido con
+ * `embedLatestHandoff`— y se prueba acá con traspasos fabricados a mano, sin
+ * levantar nada.
+ */
+export function isUnassignedLead(awaitingReply: boolean, handoffs: readonly HandoffKind[]): boolean {
+  return awaitingReply && latestHandoff(handoffs)?.toKind === "unassigned";
+}
+
 export interface InboxCriteria {
   filter: InboxFilter;
   search: string;
@@ -82,6 +126,19 @@ export interface InboxCriteria {
 function matchesFilter(conversation: ConversationSummary, filter: InboxFilter, viewer: Agent): boolean {
   switch (filter) {
     case "all":
+      return true;
+    // La única píldora que NO se puede volver a comprobar en memoria: si una
+    // conversación quedó sin dueño se decide con su bitácora de traspasos, y
+    // `ConversationSummary` no la trae (son otra tabla y hasta 18 razones
+    // distintas por fila). Las filas llegan ya filtradas por
+    // `fetchUnassignedConversations`, así que acá se dejan pasar tal cual.
+    //
+    // La consecuencia, y hay que conocerla: una conversación que alguien
+    // reclama con la lista abierta NO desaparece sola de esta píldora como sí
+    // pasa en "No leídas" — se va en la próxima consulta o al recargar. Es el
+    // precio de que el corte viva en otra tabla, y desaparece en la Etapa 2,
+    // cuando `owner_kind` sea una columna de `conversations` como las demás.
+    case "unassigned":
       return true;
     case "mine":
       return conversation.assignedAgent?.id === viewer.id;

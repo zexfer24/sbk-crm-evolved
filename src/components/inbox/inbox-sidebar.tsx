@@ -5,6 +5,7 @@ import { ArrowDownWideNarrow, ArrowUpWideNarrow, Search } from "lucide-react";
 import type { Agent, ConversationSummary, InboxFilter, InboxSort, Tag } from "@/lib/types";
 import {
   fetchConversations,
+  fetchUnassignedConversations,
   INBOX_PAGE_SIZE,
   searchConversationSummaries,
   type FetchConversationsOptions,
@@ -85,6 +86,13 @@ function pillQueryOptions(
       return { ...page, unreadOnly: true };
     case "mine":
       return { ...page, assignedTo: agentId };
+    case "unassigned":
+      // No pasa por acá: "Sin dueño" no es un corte de columnas de
+      // `conversations` sino de la última fila de `conversation_handoffs`, y
+      // lo resuelve `fetchUnassignedConversations` en una consulta propia
+      // (ver `fetchPage` más abajo). Misma razón que "all" para lanzar en vez
+      // de devolver una consulta mal armada.
+      throw new Error('pillQueryOptions: "unassigned" se resuelve con fetchUnassignedConversations');
     case "all":
       // `resolvedOnServer` (más abajo) nunca deja pasar `"all"` hasta acá:
       // "Todos" pagina localmente sobre `conversations` (props del shell),
@@ -259,7 +267,8 @@ export function InboxSidebar({
    * reforma del 30/8/2026, junto con la píldora (ver `case "pending"` en
    * `inbox-filters.ts` para el dato que la trajo de vuelta).
    */
-  const resolvedOnServer = filter === "pending" || filter === "unread" || filter === "mine";
+  const resolvedOnServer =
+    filter === "pending" || filter === "unread" || filter === "mine" || filter === "unassigned";
 
   /**
    * Lo que contestó la base, junto con qué píldora lo pidió. La paginación
@@ -319,7 +328,16 @@ export function InboxSidebar({
     sessionKey: `${filter}:${currentAgent.id}`,
     pageSize: INBOX_PAGE_SIZE,
     fetchPage: (cursor) =>
-      fetchConversations(supabase, pillQueryOptions(filter, currentAgent.id, cursor)),
+      // "Sin dueño" no pagina por cursor: su consulta resuelve el conjunto
+      // completo de una vez (son los chats que el sistema soltó — si esa
+      // lista es larga, el problema no es la paginación). Se devuelve todo en
+      // la primera página y vacío en cualquier siguiente, que es como el
+      // pager entiende "ya no hay más".
+      filter === "unassigned"
+        ? cursor
+          ? Promise.resolve([])
+          : fetchUnassignedConversations(supabase)
+        : fetchConversations(supabase, pillQueryOptions(filter, currentAgent.id, cursor)),
     onPage: (rows, mode) =>
       setServerRows((current) => {
         if (mode === "first") return { filter, rows };
@@ -402,7 +420,19 @@ export function InboxSidebar({
 
     const pillFilter = filter;
 
-    fetchConversations(supabase, pillQueryOptions(pillFilter, currentAgent.id, null))
+    // "Sin dueño" es la excepción a todo lo de arriba: su consulta no pagina
+    // —resuelve el conjunto entero— así que la respuesta SÍ es completa, y
+    // `reconcileHead` puede quedarse solo con lo que sigue calificando. Es lo
+    // que hace que un chat reclamado por un asesor desaparezca de la píldora
+    // en el mismo pulso, sin esperar a recargar. Además hay que llamarla por
+    // su propia vía: `pillQueryOptions` LANZA para esta píldora, y hacerlo
+    // dentro de este efecto rompería el render.
+    const esSinDueno = pillFilter === "unassigned";
+    const consulta = esSinDueno
+      ? fetchUnassignedConversations(supabase)
+      : fetchConversations(supabase, pillQueryOptions(pillFilter, currentAgent.id, null));
+
+    consulta
       .then((fresh) => {
         setServerRows((current) => {
           // Cambié de píldora (o esta ya no es la consulta activa) mientras
@@ -410,7 +440,7 @@ export function InboxSidebar({
           if (!current || current.filter !== pillFilter) return current;
           return {
             filter: pillFilter,
-            rows: reconcileHead(fresh, current.rows, { freshIsComplete: false }),
+            rows: reconcileHead(fresh, current.rows, { freshIsComplete: esSinDueno }),
           };
         });
       })
@@ -452,7 +482,14 @@ export function InboxSidebar({
       availableFilters.map((value) => ({
         value,
         label: INBOX_FILTER_LABELS[value],
-        count: value === "pending" ? counts?.pending : value === "unread" ? counts?.unread : undefined,
+        count:
+          value === "pending"
+            ? counts?.pending
+            : value === "unread"
+              ? counts?.unread
+              : value === "unassigned"
+                ? counts?.unassigned
+                : undefined,
       })),
     [availableFilters, counts]
   );

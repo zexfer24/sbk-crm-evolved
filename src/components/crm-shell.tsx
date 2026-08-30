@@ -164,6 +164,65 @@ export function CrmShell({
     }
   }, [supabase, currentAgent.id]);
 
+  /**
+   * "Sin dueño" en vivo (T1.6): un canal PROPIO y angosto, no el genérico de
+   * `conversations` que ya usa `useLiveConversations` más abajo — a
+   * propósito. `conversation_handoffs` es una bitácora de EVENTOS, así que
+   * "algo cambió" ahí no se puede reconciliar en memoria como una fila de
+   * `conversations` (no hay "la fila tal cambió a tal valor", hay "se
+   * insertó un traspaso más"): la única respuesta correcta es volver a
+   * preguntarle a la base el conjunto entero. Por eso este canal no aplica
+   * nada en memoria — sube `livePulse`, y quien tiene la píldora abierta
+   * (`inbox-sidebar.tsx`) rehace su consulta y se queda con lo que siga
+   * calificando. El dato no se guarda dos veces.
+   *
+   * Suscrito SOLO a los INSERT con `to_kind = 'unassigned'` —el filtro va en
+   * la suscripción misma, no se aplica después— para no meterle ruido: cada
+   * mensaje entrante toca `conversations`, no `conversation_handoffs`, así
+   * que este canal se queda callado el resto del tiempo. Debounced con el
+   * mismo margen que el resto de los refrescos agrupados del shell
+   * (`REALTIME_DEBOUNCE_MS`, 750 ms) por si el reconciliador o el cron
+   * insertan varios traspasos seguidos.
+   *
+   * No cubre la dirección contraria (un traspaso de `unassigned` a `ai`/
+   * `human`, es decir "ya se la agarraron"): ese INSERT tiene
+   * `to_kind` distinto de `unassigned` y este filtro no lo ve pasar. Se
+   * repara igual en la próxima carga de la página o el próximo traspaso A
+   * `unassigned` que sí dispare este canal — no hay pérdida de datos, solo
+   * una demora en que la lista deje de contar una conversación que ya
+   * atendieron. Cerrar esa ventana entera es la Etapa 2 del plan (un
+   * `owner_kind` en vivo sobre `conversations`, no un traspaso a mirar en
+   * retrospectiva).
+   */
+  useEffect(() => {
+    let timeout: ReturnType<typeof setTimeout> | null = null;
+
+    const channel = supabase
+      .channel("unassigned-handoffs")
+      .on(
+        "postgres_changes",
+        {
+          event: "INSERT",
+          schema: "public",
+          table: "conversation_handoffs",
+          filter: "to_kind=eq.unassigned",
+        },
+        () => {
+          if (timeout) clearTimeout(timeout);
+          timeout = setTimeout(() => {
+            timeout = null;
+            setLivePulse((n) => n + 1);
+          }, REALTIME_DEBOUNCE_MS);
+        }
+      )
+      .subscribe();
+
+    return () => {
+      if (timeout) clearTimeout(timeout);
+      supabase.removeChannel(channel);
+    };
+  }, [supabase]);
+
   // La lista viva: aplica en memoria lo que el evento ya trae, agrupa los
   // refetch inevitables, y no trabaja contra una pestaña que nadie mira.
   const { conversations, setConversations, refreshConversations } = useLiveConversations(

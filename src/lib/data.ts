@@ -2,6 +2,7 @@ import type { SupabaseClient } from "@supabase/supabase-js";
 import { orExpression, pgrstLiteral } from "@/lib/ai/pgrst";
 import { conversationsWrittenByHumans } from "@/lib/ai/human-handled";
 import { freeformWindowCutoff, isTicketTag } from "@/lib/dashboard";
+import { isUnassignedLead } from "@/lib/inbox-filters";
 import type { ConversationCursor } from "@/lib/inbox-paging";
 import { CRM_TIME_ZONE, currentDayRange } from "@/lib/time-zone";
 import { failureReason } from "@/lib/whatsapp/failure-reason";
@@ -647,6 +648,24 @@ export interface FetchConversationsOptions {
    * entrega.
    */
   assignedTo?: string;
+  /**
+   * Para la píldora "Sin dueño" (T1.6, plan "Ningún lead invisible"): cuando
+   * el `select` de la llamada embebe `conversation_handoffs(...)`, esto
+   * encadena `.order(..., {referencedTable}).limit(1, {referencedTable})`
+   * para que PostgREST entregue SOLO el traspaso MÁS RECIENTE de cada conversación,
+   * no la bitácora entera.
+   *
+   * Por qué esto no es un N+1 ni una consulta que fuerza el paginador (la
+   * advertencia de T1.6): PostgREST resuelve "top 1 por grupo" en una
+   * relación embebida con un LATERAL por fila, indexado por
+   * `conversation_handoffs_conversation_id_created_at_idx` (la migración de
+   * T1.1) — sigue siendo UNA consulta SQL, nunca recorre la bitácora
+   * completa, y las filas que la piden ya llegaron acotadas por
+   * `awaitingReplyOnly` antes de llegar acá. `false`/`undefined` (todo
+   * llamador existente) no agrega ninguna cláusula nueva: el comportamiento
+   * de los otros cuatro cortes queda exactamente igual.
+   */
+  embedLatestHandoff?: boolean;
 }
 
 /**
@@ -680,6 +699,7 @@ async function fetchConversationRows<Raw extends CursorableRow>(
     ids,
     unreadOnly,
     assignedTo,
+    embedLatestHandoff,
   }: FetchConversationsOptions
 ): Promise<Raw[]> {
   // `.in()` con lista vacía no es una consulta válida en PostgREST, y acá
@@ -730,6 +750,18 @@ async function fetchConversationRows<Raw extends CursorableRow>(
     if (contactIds) request = request.in("contact_id", contactIds);
     if (ids) request = request.in("id", ids);
     if (assignedTo) request = request.eq("assigned_agent_id", assignedTo);
+    if (embedLatestHandoff) {
+      // Sin esto, `conversation_handoffs(...)` embebido en el `select` trae
+      // TODA la bitácora de cada conversación. Con esto, Postgres resuelve
+      // el LATERAL con el índice `(conversation_id, created_at desc)` y
+      // entrega solo la fila más reciente — ver el comentario de
+      // `embedLatestHandoff` en `FetchConversationsOptions`.
+      // `referencedTable` y no `foreignTable`: el segundo está deprecado en
+      // postgrest-js a favor del primero, mismo significado.
+      request = request
+        .order("created_at", { referencedTable: "conversation_handoffs", ascending: false })
+        .limit(1, { referencedTable: "conversation_handoffs" });
+    }
 
     // PostgREST junta con AND los parámetros repetidos de forma poco
     // predecible: dos `.or()` en la misma consulta no son fiables
@@ -827,6 +859,79 @@ export async function fetchBoardConversations(
   return rows.map(mapBoardConversation);
 }
 
+/** La forma cruda de un candidato a "Sin dueño": lo justo para decidir, nada de lo que pinta la fila. */
+interface RawUnassignedCandidate {
+  id: string;
+  last_message_at: string | null;
+  awaiting_reply: boolean;
+  /** A lo sumo un elemento: `embedLatestHandoff` lo garantiza (ver `FetchConversationsOptions`). */
+  conversation_handoffs: { to_kind: string; created_at: string }[];
+}
+
+/**
+ * Los ids de la píldora "Sin dueño" (T1.6 del plan "Ningún lead invisible"):
+ * `awaiting_reply = true` cuyo ÚLTIMO traspaso en `conversation_handoffs` fue
+ * a `unassigned` — el sistema soltó la conversación y nadie la retomó desde
+ * entonces.
+ *
+ * CAMINO (a) del reporte de T1.6, no (b): candidatos acotados por
+ * `awaiting_reply = true` (el mismo filtro e índice parcial que ya usa
+ * "Pendientes", ver `fetchInboxCounts`), cruzados con el traspaso más
+ * reciente de cada uno EN LA MISMA consulta gracias a
+ * `embedLatestHandoff` — nunca se toca la bitácora completa (la advertencia
+ * de T1.6 sobre timeouts contra 10.000 filas), y `fetchConversationRows` es
+ * el mismo motor con paginación por cursor que usan los otros cuatro cortes:
+ * si algún día los candidatos pasan de `CONVERSATIONS_PAGE_SIZE`, sigue
+ * paginando solo internamente, sin ningún tope arbitrario acá. Por eso esto
+ * entrega el conjunto REAL completo — conteo y lista a la vez — y no una
+ * primera página recortada.
+ *
+ * `isUnassignedLead` (inbox-filters.ts) es la única regla de negocio: pura,
+ * sin Supabase, probada aparte con traspasos fabricados a mano.
+ *
+ * Lo que SÍ queda fuera del alcance de esta tarea: la paginación
+ * INCREMENTAL de esta píldora desde el navegador. Eso vive en
+ * `inbox-sidebar.tsx` (`pillQueryOptions`/`resolvedOnServer`, el mismo
+ * mecanismo que ya usan "Pendientes"/"No leídas"/"Mías") y ese archivo no
+ * está entre los que T1.6 puede tocar — ver el reporte de la tarea.
+ */
+async function fetchUnassignedConversationIds(supabase: SupabaseClient): Promise<string[]> {
+  const rows = await fetchConversationRows<RawUnassignedCandidate>(
+    supabase,
+    "id, last_message_at, awaiting_reply, conversation_handoffs(to_kind, created_at)",
+    { awaitingReplyOnly: true, embedLatestHandoff: true }
+  );
+
+  return rows
+    .filter((row) =>
+      isUnassignedLead(
+        row.awaiting_reply,
+        row.conversation_handoffs.map((h) => ({ toKind: h.to_kind, createdAt: h.created_at }))
+      )
+    )
+    .map((row) => row.id);
+}
+
+/**
+ * Las conversaciones de "Sin dueño", ya en la forma de fila de bandeja.
+ *
+ * Dos consultas y no una: los ids acá arriba (con la bitácora embebida) y
+ * las filas completas acá abajo, vía `fetchConversations(..., { ids })` —
+ * `CONVERSATION_LIST_SELECT` (la fila que de verdad pinta la lista, viaja
+ * por decenas en cada respuesta) no tiene por qué cargar
+ * `conversation_handoffs` para dibujarse.
+ *
+ * Sirve para las dos cosas que pide la píldora: la lista (esto) y el
+ * contador (`.length` de esto, o de `fetchUnassignedConversationIds` si solo
+ * hace falta el número).
+ */
+export async function fetchUnassignedConversations(
+  supabase: SupabaseClient
+): Promise<ConversationSummary[]> {
+  const ids = await fetchUnassignedConversationIds(supabase);
+  return fetchConversations(supabase, { ids });
+}
+
 /**
  * Una sola fila de lista, por id.
  *
@@ -914,6 +1019,18 @@ export interface InboxCounts {
    * sin leer sigue contando.
    */
   unread: number;
+  /**
+   * Total de la píldora "Sin dueño": conversaciones que siguen esperando y
+   * cuya ÚLTIMA fila de `conversation_handoffs` las dejó sin nadie a cargo.
+   *
+   * Es el único contador que no sale de un `count` de Postgres sino del
+   * largo de la lista ya resuelta, y es a propósito: el corte no es una
+   * columna de `conversations` —vive en la bitácora— así que contar y listar
+   * cuestan lo mismo. Traer el conjunto y medirlo evita dos consultas que
+   * podrían además contradecirse entre sí. En la Etapa 2, con `owner_kind`
+   * como columna, vuelve a ser un `count` igual que sus vecinos.
+   */
+  unassigned: number;
 }
 
 export async function fetchInboxCounts(
@@ -925,7 +1042,7 @@ export async function fetchInboxCounts(
   const count = () =>
     supabase.from("conversations").select("id", { count: "exact", head: true });
 
-  const [pending, pendingStale, mine, unread] = await Promise.all([
+  const [pending, pendingStale, mine, unread, sinDueno] = await Promise.all([
     count().eq("awaiting_reply", true).neq("status", "closed"),
     // Mismo predicado de "Pendientes" más el corte de ventana invertido, con
     // el mismo criterio de "fallar cerrado" que `withinFreeformWindow`: lo
@@ -940,6 +1057,10 @@ export async function fetchInboxCounts(
     // Al final del Promise.all para no correr los índices que ya usan los
     // tests de "pending"/"pendingStale"/"mine".
     count().or("unread_count.gt.0,manually_unread.is.true"),
+    // Al final por el mismo motivo que `unread`: no compite con los índices
+    // que las otras tres acaban de usar. Devuelve ids, no un conteo — ver el
+    // comentario de `unassigned` en InboxCounts.
+    fetchUnassignedConversationIds(supabase),
   ]);
 
   const first = [pending, pendingStale, mine, unread].find((r) => r.error);
@@ -950,6 +1071,7 @@ export async function fetchInboxCounts(
     pendingStale: pendingStale.count ?? 0,
     mine: mine.count ?? 0,
     unread: unread.count ?? 0,
+    unassigned: sinDueno.length,
   };
 }
 

@@ -67,6 +67,14 @@ export function buildInboxSections(filter: InboxFilter, conversations: Conversat
       ].filter((s): s is InboxSection => s !== null);
     }
 
+    // Sección única sin encabezado: dentro de "Sin dueño" todas las filas
+    // comparten lo único que importa —nadie está a cargo—, y partirlas por
+    // lectura repetiría lo que el badge de cada fila ya dice. Por qué las
+    // soltó (la IA apagada, la ventana vencida, tres intentos fallidos) es
+    // información de la bitácora, no de la lista.
+    case "unassigned":
+      return [{ id: "sin-dueno", label: null, conversations }];
+
     case "unread":
       // Sección única sin encabezado, igual que "all": la ventana de 24h es
       // deuda de respuesta, un concepto del dashboard, no de lectura; y

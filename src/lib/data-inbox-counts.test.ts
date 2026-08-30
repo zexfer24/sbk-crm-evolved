@@ -87,9 +87,45 @@ function createFakeSupabase(rows: FilaConteo[]) {
           )
         );
       },
-      // Se resuelve como promesa: `count: "exact", head: true` no trae filas.
-      then(resolve: (value: { count: number; error: null }) => unknown) {
-        return resolve({ count: current.length, error: null });
+      // La consulta de "Sin dueño" (`fetchUnassignedConversationIds`) no es un
+      // conteo: pide filas con la bitácora embebida y ordena/limita esa
+      // relación. Acá esos tres solo tienen que no romper la cadena — lo que
+      // el corte decide se prueba en `data-unassigned-conversations.test.ts`,
+      // contra un doble que sí modela la bitácora.
+      order() {
+        return builder(consulta, current);
+      },
+      range(desde: number, hasta: number) {
+        return builder(consulta, current.slice(desde, hasta + 1));
+      },
+      limit() {
+        return builder(consulta, current);
+      },
+      in(column: string, values: unknown[]) {
+        consulta.filtros.push({ op: "in", column, value: values });
+        return builder(
+          consulta,
+          current.filter((row) =>
+            values.includes((row as unknown as Record<string, unknown>)[column])
+          )
+        );
+      },
+      // Se resuelve como promesa. Para los cuatro conteos, `count: "exact",
+      // head: true` no trae filas; para la consulta de "Sin dueño" se
+      // devuelven las filas con la bitácora vacía, que es lo que hace que
+      // ninguna califique y el contador dé 0 en este archivo.
+      then(
+        resolve: (value: {
+          count: number;
+          data: Record<string, unknown>[];
+          error: null;
+        }) => unknown
+      ) {
+        return resolve({
+          count: current.length,
+          data: current.map((row) => ({ ...row, conversation_handoffs: [] })),
+          error: null,
+        });
       },
     };
     return api;
@@ -216,18 +252,22 @@ describe("fetchInboxCounts", () => {
   });
 
   /**
-   * `unread` va al final del `Promise.all` para no correr los índices que
-   * los tres tests de arriba ya afirman por posición (`consultas[0..2]`).
+   * `unread` va cerca del final del `Promise.all` para no correr los índices
+   * que los tres tests de arriba ya afirman por posición (`consultas[0..2]`).
    * Sin condición de estado, a propósito: una conversación CERRADA con
    * mensajes sin leer (conv-2) sigue contando — es la misma decisión que
    * `unreadOnly` de `fetchConversations` (ver data-conversations.test.ts).
+   *
+   * Son CINCO consultas desde el 30/8/2026, no cuatro: la quinta es la de
+   * "Sin dueño", y va última porque no es un conteo —pide filas con la
+   * bitácora embebida— y porque es la única que toca otra tabla.
    */
-  it('"unread" pregunta por el OR de unread_count/manually_unread, sin condición de estado, y cierra el Promise.all', async () => {
+  it('"unread" pregunta por el OR de unread_count/manually_unread, sin condición de estado', async () => {
     const { client, consultas } = createFakeSupabase(filas());
 
     await fetchInboxCounts(client, "viewer-1", AHORA);
 
-    expect(consultas).toHaveLength(4);
+    expect(consultas).toHaveLength(5);
     expect(consultas[3].filtros).toEqual([
       {
         op: "or",
@@ -238,7 +278,7 @@ describe("fetchInboxCounts", () => {
     expect(consultas[3].opciones).toEqual({ count: "exact", head: true });
   });
 
-  it("devuelve los cuatro números, cada uno contra su propio subconjunto", async () => {
+  it("devuelve los cinco números, cada uno contra su propio subconjunto", async () => {
     const { client } = createFakeSupabase(filas());
 
     const result = await fetchInboxCounts(client, "viewer-1", AHORA);
@@ -248,6 +288,6 @@ describe("fetchInboxCounts", () => {
     // mine: conv-3 y conv-4 (assigned_agent_id === "viewer-1").
     // unread: conv-2 (cerrada, pero con unread_count > 0 — a propósito, no
     // exige status abierto) y conv-4 (manually_unread).
-    expect(result).toEqual({ pending: 3, pendingStale: 2, mine: 2, unread: 2 });
+    expect(result).toEqual({ pending: 3, pendingStale: 2, mine: 2, unread: 2, unassigned: 0 });
   });
 });

@@ -182,14 +182,14 @@ function irATodos() {
 }
 
 describe("InboxSidebar — qué filtros ve cada rol", () => {
-  it("al administrador le ofrece las cuatro píldoras, en ese orden", () => {
+  it("al administrador le ofrece las cinco píldoras, en ese orden", () => {
     renderSidebar(JEFA);
-    expect(pillLabels()).toEqual(["Pendientes", "No leídas", "Mías", "Todos"]);
+    expect(pillLabels()).toEqual(["Pendientes", "Sin dueño", "No leídas", "Mías", "Todos"]);
   });
 
-  it("al asesor le ofrece las mismas cuatro píldoras", () => {
+  it("al asesor le ofrece las mismas cinco píldoras", () => {
     renderSidebar(ANA);
-    expect(pillLabels()).toEqual(["Pendientes", "No leídas", "Mías", "Todos"]);
+    expect(pillLabels()).toEqual(["Pendientes", "Sin dueño", "No leídas", "Mías", "Todos"]);
   });
 });
 
@@ -1163,20 +1163,26 @@ describe("InboxSidebar — conteo de las píldoras 'Pendientes' y 'No leídas'",
         currentAgent={JEFA}
         allTags={ALL_TAGS}
         bcvRate={null}
-        counts={{ pending: 5, pendingStale: 2, mine: 3, unread: 42 }}
+        counts={{ pending: 5, pendingStale: 2, mine: 3, unread: 42, unassigned: 0 }}
       />
     );
     await waitFor(() => expect(fetchConversations).toHaveBeenCalled());
 
     // SlidingPills duplica la fila de botones para animar el recorte (ver
     // `pillLabels`): cada número real aparece dos veces en el DOM, una por
-    // copia. Orden de las píldoras: Pendientes, No leídas, Mías, Todos — las
-    // dos últimas no llevan `count`, así que no aportan ningún `<span>`; ni
-    // `counts.mine` (3) ni `counts.pendingStale` (2) deben colarse acá.
+    // copia. Orden de las píldoras: Pendientes, Sin dueño, No leídas, Mías,
+    // Todos — las dos últimas no llevan `count`, así que no aportan ningún
+    // `<span>`; ni `counts.mine` (3) ni `counts.pendingStale` (2) deben
+    // colarse acá.
+    //
+    // "Sin dueño" muestra 0 y no se esconde a propósito: un cero ahí es una
+    // afirmación —"no hay ningún lead suelto"— y es justo el número que la
+    // reforma quiere que el equipo pueda mirar de un vistazo. Esconderlo
+    // haría que "todo en orden" y "todavía no cargó" se vieran igual.
     const conteos = Array.from(container.querySelectorAll(".lm-pill-count")).map(
       (el) => el.textContent
     );
-    expect(conteos).toEqual(["5", "42", "5", "42"]);
+    expect(conteos).toEqual(["5", "0", "42", "5", "0", "42"]);
   });
 
   it("sin la prop counts, ninguna píldora muestra número", () => {

@@ -172,8 +172,31 @@ function createConteoFake(rows: FilaConteo[]) {
           )
         );
       },
-      then(resolve: (value: { count: number; error: null }) => unknown) {
-        return resolve({ count: current.length, error: null });
+      // La quinta consulta de `fetchInboxCounts` desde el 30/8/2026 ("Sin
+      // dueño") no es un conteo: pide filas y ordena. Acá solo tiene que no
+      // romper la cadena — este archivo mide el contrato de la ventana de
+      // 24 h, no el de esa píldora.
+      order() {
+        return builder(current);
+      },
+      limit() {
+        return builder(current);
+      },
+      range(desde: number, hasta: number) {
+        return builder(current.slice(desde, hasta + 1));
+      },
+      then(
+        resolve: (value: {
+          count: number;
+          data: Record<string, unknown>[];
+          error: null;
+        }) => unknown
+      ) {
+        return resolve({
+          count: current.length,
+          data: current.map((row) => ({ ...row, conversation_handoffs: [] })),
+          error: null,
+        });
       },
     };
   }

@@ -77,6 +77,8 @@ let inboxProps: {
   counts?: unknown;
   /** Capturado para el test de que la semilla de "Pendientes" llega hasta acá. */
   initialPendingRows?: Conversation[];
+  /** El pulso de tiempo real: lo mueve, entre otros, el canal de traspasos. */
+  livePulse?: number;
 } | null = null;
 
 vi.mock("@/components/inbox/inbox-sidebar", () => ({
@@ -88,6 +90,7 @@ vi.mock("@/components/inbox/inbox-sidebar", () => ({
     onMarkRead,
     counts,
     initialPendingRows,
+    livePulse,
   }: {
     conversations: Conversation[];
     onSelect: (id: string) => void;
@@ -96,7 +99,15 @@ vi.mock("@/components/inbox/inbox-sidebar", () => ({
     onMarkRead?: (id: string) => void;
     counts?: unknown;
     initialPendingRows?: Conversation[];
-  }) => ((inboxProps = { conversations, hasMore, onMarkRead, counts, initialPendingRows }),
+    livePulse?: number;
+  }) => ((inboxProps = {
+    conversations,
+    hasMore,
+    onMarkRead,
+    counts,
+    initialPendingRows,
+    livePulse,
+  }),
   (
     <>
       {conversations.map((c) => (
@@ -130,11 +141,13 @@ const fetchMessagesMock = vi.fn().mockResolvedValue([]);
 const fetchConversationMock = vi.fn(
   (_supabase: unknown, id: string) => Promise.resolve(buildConversation({ id }))
 );
-const fetchInboxCountsMock = vi.fn().mockResolvedValue({ pending: 0, pendingStale: 0, mine: 0, unread: 0 });
+const fetchInboxCountsMock = vi.fn().mockResolvedValue({ pending: 0, pendingStale: 0, mine: 0, unread: 0, unassigned: 0 });
 // La fila suelta que se pide cuando el evento trae un cambio con relaciones.
 const fetchConversationRowMock = vi.fn(
   (_supabase: unknown, id: string) => Promise.resolve(buildConversation({ id }))
 );
+// "Sin dueño" (T1.6): el canal de `conversation_handoffs` la vuelve a pedir entera.
+const fetchUnassignedConversationsMock = vi.fn().mockResolvedValue([]);
 
 const fetchAgentSettingsMock = vi.fn().mockResolvedValue({
   aiGloballyEnabled: true,
@@ -152,6 +165,7 @@ vi.mock("@/lib/data", () => ({
     fetchConversationRowMock(...(args as [unknown, string])),
   fetchConversations: (...args: unknown[]) => fetchConversationsMock(...args),
   fetchInboxCounts: (...args: unknown[]) => fetchInboxCountsMock(...args),
+  fetchUnassignedConversations: (...args: unknown[]) => fetchUnassignedConversationsMock(...args),
   fetchMessages: (...args: unknown[]) => fetchMessagesMock(...args),
   fetchMessagesBefore: vi.fn().mockResolvedValue([]),
   fetchNotes: vi.fn().mockResolvedValue([]),
@@ -234,7 +248,7 @@ const currentAgent: Agent = {
 const allTags: Tag[] = [];
 const agentSettings = { aiGloballyEnabled: true, dailySpendCapUsd: null, spentTodayUsd: 0 };
 const initialQuickReplies: QuickReply[] = [];
-const inboxCounts = { pending: 0, pendingStale: 0, mine: 0, unread: 0 };
+const inboxCounts = { pending: 0, pendingStale: 0, mine: 0, unread: 0, unassigned: 0 };
 
 beforeEach(() => {
   fake = createFakeSupabase();
@@ -242,6 +256,7 @@ beforeEach(() => {
   fetchConversationMock.mockClear();
   fetchConversationRowMock.mockClear();
   fetchInboxCountsMock.mockClear();
+  fetchUnassignedConversationsMock.mockClear();
   fetchMessagesMock.mockClear();
   fetchMessagesMock.mockResolvedValue([]); // cada test decide qué mensajes hay
   markConversationReadMock.mockClear();
@@ -311,6 +326,45 @@ describe("CrmShell — debounce del refresh disparado por realtime", () => {
     });
 
     expect(fetchMessagesMock).toHaveBeenCalledTimes(1);
+  });
+
+  // T1.6: el canal de "Sin dueño" es propio y angosto (conversation_handoffs,
+  // no conversations) — este test cubre que agrupa igual que los otros dos,
+  // no que el filtro `to_kind=eq.unassigned` se aplique de verdad (ese filtro
+  // lo resuelve Supabase del lado del servidor; el fake de este archivo no lo
+  // reproduce, ver createFakeSupabase arriba).
+  it("agrupa varios traspasos a 'unassigned' seguidos en un solo refetch de 'Sin dueño'", async () => {
+    render(
+      <CrmShell
+        currentAgent={currentAgent}
+        initialConversations={[buildConversation()]}
+        initialInboxCounts={inboxCounts}
+        allTags={allTags}
+        initialQuickReplies={initialQuickReplies}
+        bcvRate={null}
+        initialAgentSettings={agentSettings}
+      />
+    );
+    const pulsoInicial = inboxProps?.livePulse ?? 0;
+
+    act(() => {
+      fake.trigger("conversation_handoffs", "INSERT");
+      fake.trigger("conversation_handoffs", "INSERT");
+      fake.trigger("conversation_handoffs", "INSERT");
+    });
+    // Antes del debounce no se movió nada: tres traspasos seguidos (los que
+    // deja el reconciliador o un lote del webhook con la IA apagada) no son
+    // tres refrescos.
+    expect(inboxProps?.livePulse ?? 0).toBe(pulsoInicial);
+
+    await act(async () => {
+      vi.advanceTimersByTime(750);
+    });
+
+    // Y después, UN solo pulso. El shell no se queda con la lista: sube el
+    // pulso y quien tenga abierta la píldora "Sin dueño" (InboxSidebar)
+    // rehace su consulta. Guardarla acá además sería guardarla dos veces.
+    expect(inboxProps?.livePulse ?? 0).toBe(pulsoInicial + 1);
   });
 });
 
@@ -669,7 +723,7 @@ describe("CrmShell — marcar leído vuelve a pedir los contadores", () => {
       />
     );
     fetchInboxCountsMock.mockClear();
-    const contadoresActualizados = { pending: 1, pendingStale: 0, mine: 2, unread: 5 };
+    const contadoresActualizados = { pending: 1, pendingStale: 0, mine: 2, unread: 5, unassigned: 0 };
     fetchInboxCountsMock.mockResolvedValueOnce(contadoresActualizados);
 
     await act(async () => {

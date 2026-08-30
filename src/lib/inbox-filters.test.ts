@@ -5,7 +5,9 @@ import {
   DEFAULT_INBOX_FILTER,
   filtersForRole,
   INBOX_FILTER_LABELS,
+  isUnassignedLead,
   isUnread,
+  type HandoffKind,
 } from "@/lib/inbox-filters";
 
 const TAG_MOROSO: Tag = { id: "tag-moroso", label: "Moroso", color: "danger" };
@@ -59,16 +61,16 @@ function conversation(over: {
 }
 
 describe("filtersForRole", () => {
-  it("le da al administrador las cuatro píldoras", () => {
-    expect(filtersForRole("admin")).toEqual(["pending", "unread", "mine", "all"]);
+  it("le da al administrador las cinco píldoras", () => {
+    expect(filtersForRole("admin")).toEqual(["pending", "unassigned", "unread", "mine", "all"]);
   });
 
   it("trata al supervisor como administrador", () => {
     expect(filtersForRole("supervisor")).toEqual(filtersForRole("admin"));
   });
 
-  it("al asesor le ofrece las mismas cuatro píldoras", () => {
-    expect(filtersForRole("agent")).toEqual(["pending", "unread", "mine", "all"]);
+  it("al asesor le ofrece las mismas cinco píldoras", () => {
+    expect(filtersForRole("agent")).toEqual(["pending", "unassigned", "unread", "mine", "all"]);
   });
 
   it("cada filtro tiene etiqueta", () => {
@@ -93,9 +95,18 @@ describe("filtersForRole", () => {
   // leídos-y-sin-responder que no aparecían en ninguna píldora — ver el
   // comentario de `case "pending"` en inbox-filters.ts). El tope se mueve
   // cuando hay una decisión así detrás, nunca por default.
-  it("ningún rol vuelve a tener más de cuatro píldoras", () => {
+  //
+  // Y de cuatro a cinco ese mismo día, con la misma vara: "Sin dueño" es la
+  // píldora de la reforma "ningún lead invisible" (Etapa 1, ver CLAUDE.md).
+  // No es un corte más de los que ya se veían: son los chats que el SISTEMA
+  // soltó —la IA apagada, la ventana de 24 h vencida, tres intentos
+  // fallidos—, que hasta ahora no aparecían en ninguna píldora porque
+  // ninguna corta por eso. Es el único lugar de la interfaz donde la
+  // bitácora de traspasos se ve; sin ella, la Etapa 1 escribe un registro
+  // que nadie lee.
+  it("ningún rol vuelve a tener más de cinco píldoras", () => {
     for (const role of ["admin", "supervisor", "agent"] as const) {
-      expect(filtersForRole(role).length).toBeLessThanOrEqual(4);
+      expect(filtersForRole(role).length).toBeLessThanOrEqual(5);
     }
   });
 });
@@ -264,6 +275,71 @@ describe("isUnread", () => {
     expect(isUnread(conversation({ id: "a", unreadCount: 1 }))).toBe(true);
     expect(isUnread(conversation({ id: "b", manuallyUnread: true }))).toBe(true);
     expect(isUnread(conversation({ id: "c" }))).toBe(false);
+  });
+});
+
+/**
+ * T1.6 del plan "Ningún lead invisible": la píldora "Sin dueño" sobre la
+ * bitácora de traspasos (`conversation_handoffs`). No pasa por
+ * `applyInboxFilters`/`matchesFilter` como pending/unread/mine/all —esos
+ * cuatro se pueden recalcular sobre lo que ya tiene cargado
+ * `ConversationSummary`; "sin dueño" depende de una tabla que ninguna fila de
+ * la bandeja trae hoy— así que se prueba directo la regla pura que usa
+ * `fetchUnassignedConversations` (data.ts) sobre lo que la base ya le
+ * entrega acotado (`awaiting_reply` más el traspaso más reciente).
+ */
+describe("isUnassignedLead", () => {
+  function handoff(toKind: string, createdAt: string): HandoffKind {
+    return { toKind, createdAt };
+  }
+
+  it("aparece: awaiting_reply y el traspaso a unassigned sin ninguno posterior", () => {
+    const handoffs = [
+      handoff("human", "2026-08-29T10:00:00Z"),
+      handoff("unassigned", "2026-08-30T10:00:00Z"),
+    ];
+
+    expect(isUnassignedLead(true, handoffs)).toBe(true);
+  });
+
+  it("no aparece: hubo un traspaso posterior a ai", () => {
+    const handoffs = [
+      handoff("unassigned", "2026-08-30T10:00:00Z"),
+      handoff("ai", "2026-08-30T11:00:00Z"),
+    ];
+
+    expect(isUnassignedLead(true, handoffs)).toBe(false);
+  });
+
+  it("no aparece: hubo un traspaso posterior a human", () => {
+    const handoffs = [
+      handoff("unassigned", "2026-08-30T10:00:00Z"),
+      handoff("human", "2026-08-30T11:00:00Z"),
+    ];
+
+    expect(isUnassignedLead(true, handoffs)).toBe(false);
+  });
+
+  it("no aparece sin awaiting_reply, aunque el último traspaso sea a unassigned", () => {
+    const handoffs = [handoff("unassigned", "2026-08-30T10:00:00Z")];
+
+    expect(isUnassignedLead(false, handoffs)).toBe(false);
+  });
+
+  it("no aparece sin ningún traspaso todavía: no hay 'última fila' que sea unassigned", () => {
+    expect(isUnassignedLead(true, [])).toBe(false);
+  });
+
+  it("el orden de la lista no importa: siempre gana por fecha, no por posición", () => {
+    // El traspaso a unassigned llega SEGUNDO en el arreglo aunque sea el más
+    // VIEJO: si la función mirara el último elemento en vez del más reciente
+    // por `createdAt`, se equivocaría acá.
+    const handoffs = [
+      handoff("human", "2026-08-30T11:00:00Z"),
+      handoff("unassigned", "2026-08-30T10:00:00Z"),
+    ];
+
+    expect(isUnassignedLead(true, handoffs)).toBe(false);
   });
 });
 

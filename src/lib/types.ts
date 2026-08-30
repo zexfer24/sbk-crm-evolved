@@ -395,7 +395,7 @@ export interface KnowledgeEntry {
  * como cuarta píldora y pasa a ser la que abre la bandeja; `unread` sigue
  * exactamente como la dejó la segunda reforma.
  */
-export type InboxFilter = "pending" | "unread" | "mine" | "all";
+export type InboxFilter = "pending" | "unread" | "mine" | "all" | "unassigned";
 
 export type InboxSort = "recent" | "oldest";
 
