@@ -27,11 +27,11 @@ const agentSettings: AgentSettings = {
 };
 
 describe("AgentHomePanel", () => {
-  it("pinta los tres números con el vocabulario de las píldoras", () => {
+  it("pinta los cuatro números con el vocabulario de las píldoras", () => {
     render(
       <AgentHomePanel
         currentAgent={currentAgent}
-        counts={{ pending: 4, pendingStale: 3, mine: 2, unread: 0, unassigned: 0 }}
+        counts={{ pending: 4, pendingStale: 3, mine: 2, unread: 0, unassigned: 7 }}
         agentSettings={agentSettings}
       />
     );
@@ -42,6 +42,37 @@ describe("AgentHomePanel", () => {
     expect(screen.getByText("Esperando +24 h")).toBeInTheDocument();
     expect(screen.getByText("2")).toBeInTheDocument();
     expect(screen.getByText("Tuyas")).toBeInTheDocument();
+    expect(screen.getByText("7")).toBeInTheDocument();
+    expect(screen.getByText("Sin dueño")).toBeInTheDocument();
+  });
+
+  /**
+   * El KPI de la reforma se tiñe SOLO cuando hay algo suelto. En cero se ve
+   * como sus vecinas a propósito: el objetivo es que ese número viva en cero,
+   * y una alarma permanente es la forma más rápida de que el equipo deje de
+   * mirarla. Se afirma el atributo y no el color porque el color vive en
+   * crm.css y esto prueba la decisión, no la hoja de estilos.
+   */
+  it("destaca 'Sin dueño' solo cuando hay leads sueltos", () => {
+    const { rerender, container } = render(
+      <AgentHomePanel
+        currentAgent={currentAgent}
+        counts={{ pending: 0, pendingStale: 0, mine: 0, unread: 0, unassigned: 0 }}
+        agentSettings={agentSettings}
+      />
+    );
+
+    expect(container.querySelector('.crm-agent-stat[data-alerta="true"]')).toBeNull();
+
+    rerender(
+      <AgentHomePanel
+        currentAgent={currentAgent}
+        counts={{ pending: 0, pendingStale: 0, mine: 0, unread: 0, unassigned: 1 }}
+        agentSettings={agentSettings}
+      />
+    );
+
+    expect(container.querySelector('.crm-agent-stat[data-alerta="true"]')).not.toBeNull();
   });
 
   it("saluda al asesor por su nombre", () => {

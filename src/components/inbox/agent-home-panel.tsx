@@ -24,7 +24,7 @@ export function AgentHomePanel({
   counts: InboxCounts;
   agentSettings: AgentSettings;
 }) {
-  const { pending, pendingStale, mine } = counts;
+  const { pending, pendingStale, mine, unassigned } = counts;
 
   const spendCapReached =
     agentSettings.dailySpendCapUsd !== null &&
@@ -58,6 +58,23 @@ export function AgentHomePanel({
         <div className="crm-agent-stat">
           <span className="crm-agent-stat-value lm-num">{mine}</span>
           <span className="lm-eyebrow">Tuyas</span>
+        </div>
+        {/*
+          El KPI de la reforma "ningún lead invisible": chats que el sistema
+          soltó —la IA apagada, la ventana de 24 h vencida, tres intentos
+          fallidos— y que siguen esperando sin que nadie quede a cargo. Es el
+          número que decide si la Etapa 2 del plan arranca, así que tiene que
+          estar donde el equipo lo vea todos los días y no solo en
+          /api/health.
+
+          Se muestra siempre, también en cero, por lo mismo que su píldora en
+          la bandeja: un cero acá es una afirmación —"no hay ningún lead
+          suelto"— y esconderlo haría que "todo en orden" y "todavía no
+          cargó" se vieran igual.
+        */}
+        <div className="crm-agent-stat" data-alerta={unassigned > 0}>
+          <span className="crm-agent-stat-value lm-num">{unassigned}</span>
+          <span className="lm-eyebrow">Sin dueño</span>
         </div>
       </div>
 

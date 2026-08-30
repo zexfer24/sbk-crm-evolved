@@ -1367,9 +1367,13 @@
   line-height: 1.4;
 }
 
+/* Cuatro tarjetas desde el 30/8/2026 ("Sin dueño", el KPI de la reforma
+   "ningún lead invisible"). En 2x2 y no en una fila de cuatro: dentro de los
+   400 px de ancho del panel, cuatro columnas dejaban los números en ~90 px y
+   las etiquetas partidas en dos líneas. */
 .crm-agent-stats {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 10px;
   width: 100%;
   max-width: 400px;
@@ -1389,6 +1393,16 @@
 .crm-agent-stat-value {
   font-size: 22px;
   font-weight: 600;
+}
+
+/* Un lead que el sistema soltó y nadie retomó pide atención, así que la
+   tarjeta se tiñe — pero solo cuando hay alguno. En cero se queda igual que
+   sus vecinas: el objetivo de la reforma es que ese número viva en cero, y
+   pintarlo de amarillo siempre convertiría el estado normal en una alarma
+   permanente, que es la forma más rápida de que nadie vuelva a mirarla. */
+.crm-agent-stat[data-alerta="true"] {
+  background: rgba(231, 154, 36, 0.14);
+  color: var(--lm-wait-ink);
 }
 
 .crm-agent-ai {
