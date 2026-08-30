@@ -58,6 +58,12 @@ psql "$DATABASE_URL" -v ON_ERROR_STOP=1 --quiet \
   -c 'drop schema if exists public cascade;'
 
 echo "Restaurando ..."
+# Este pipe NO tiene el bug de verificar-respaldo.sh (revisado el 30/8/2026
+# al arreglar ese caso): ahí el problema era un consumidor que corta la
+# tubería apenas encuentra lo que busca (`grep -q`), y un SIGPIPE del
+# productor se leía como respaldo corrupto. Acá `psql` no corta nada — lee
+# TODO el volcado para ejecutar cada sentencia, así que drena la tubería
+# entera pase lo que pase, y `gzip` nunca recibe SIGPIPE.
 gzip -dc "$ARCHIVE" | psql "$DATABASE_URL" -v ON_ERROR_STOP=1 --quiet
 
 echo "Restauración terminada. Comprueba que la base quedó como esperabas:"

@@ -90,6 +90,16 @@ ssh "$HOST" "cd '$REMOTE_DIR' && docker compose --env-file .env.production up -d
 
 echo "  Esperando a que el CRM responda sano ..."
 SANO=false
+# El `head -1` de acá NO tiene el bug de scripts/verificar-respaldo.sh (un
+# `grep -q`/`head` que corta la tubería y hace pasar un SIGPIPE del productor
+# por "falló"), revisado el 30/8/2026 al arreglar ese caso: este script corre
+# con `set -uo pipefail` (sin `-e`, así que nada aborta solo), y la tubería
+# con `head -1` va DENTRO del comando remoto entre comillas — la ejecuta el
+# shell del servidor, no este, así que el `pipefail` local ni le aplica. Y
+# aunque aplicara, la salida de `docker compose ps` para un solo servicio es
+# unas pocas líneas, muy por debajo del buffer de 64 KB de la tubería: nunca
+# le da tiempo a `head` a cerrar antes de que `docker compose` termine de
+# escribir solo.
 for _ in $(seq 1 30); do
   ESTADO=$(ssh "$HOST" "cd '$REMOTE_DIR' && docker compose --env-file .env.production ps --format json app 2>/dev/null | head -1" || echo "")
   if echo "$ESTADO" | grep -q '"Health":"healthy"'; then SANO=true; break; fi

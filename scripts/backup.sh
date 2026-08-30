@@ -14,6 +14,11 @@
 #
 set -euo pipefail
 
+# Resuelto contra la ubicación del propio script, no contra el directorio de
+# trabajo: este script corre por cron, que no siempre invoca desde la raíz
+# del repo.
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
 BACKUP_DIR="${BACKUP_DIR:-./backups}"
 RETENTION_DAYS="${RETENTION_DAYS:-30}"
 
@@ -74,22 +79,23 @@ echo "Respaldando en $TARGET ..."
     --table=storage.buckets --table=storage.objects
 } | grep -v '^ALTER DEFAULT PRIVILEGES' | gzip -9 > "$TARGET"
 
-# Un archivo vacío o truncado no es un respaldo: se verifica que el gzip esté
-# íntegro y que el volcado tenga contenido antes de dar el paso por bueno.
-gzip -t "$TARGET"
+# La verificación (gzip íntegro, tamaño mínimo, contiene tablas) vive en
+# verificar-respaldo.sh. Acá solo se decide qué hacer si falla: el 29/8/2026
+# este mismo bloque hacía `rm -f "$TARGET"` sobre un respaldo que en realidad
+# estaba íntegro (ver el comentario de verificar-respaldo.sh para la causa
+# exacta), así que ya no se borra nada — un respaldo que el verificador
+# rechaza se aparta con sufijo `.sospechoso` para que alguien lo mire antes
+# de perderlo.
+if ! "$SCRIPT_DIR/verificar-respaldo.sh" "$TARGET"; then
+  SOSPECHOSO="$TARGET.sospechoso"
+  mv "$TARGET" "$SOSPECHOSO"
+  echo "ERROR: el respaldo no pasó la verificación. Se apartó SIN BORRAR en:" >&2
+  echo "  $SOSPECHOSO" >&2
+  echo "Revísalo a mano (gzip -t, gzip -dc | less) antes de descartarlo." >&2
+  exit 1
+fi
+
 SIZE=$(wc -c < "$TARGET")
-if [[ "$SIZE" -lt 1024 ]]; then
-  echo "ERROR: el respaldo pesa $SIZE bytes, algo falló." >&2
-  rm -f "$TARGET"
-  exit 1
-fi
-
-if ! gzip -dc "$TARGET" | grep -q "CREATE TABLE"; then
-  echo "ERROR: el respaldo no contiene definiciones de tabla." >&2
-  rm -f "$TARGET"
-  exit 1
-fi
-
 echo "Listo: $TARGET ($(numfmt --to=iec "$SIZE" 2>/dev/null || echo "$SIZE bytes"))"
 
 DELETED=$(find "$BACKUP_DIR" -name 'sbk-*.sql.gz' -mtime "+$RETENTION_DAYS" -print -delete | wc -l)
