@@ -287,6 +287,41 @@ describe("InboxSidebar — 'No leídas' y 'Mías' salen a buscar a la base", () 
   });
 
   /**
+   * `useInboxPager` nunca llama a `onPage` cuando la primera página falla
+   * (`status: "error"`, sin tocar `reachedEnd` ni las filas ya pintadas —
+   * ver el comentario grande de `use-inbox-pager.ts` sobre el bug "Todo
+   * leído" del 29/8/2026). Acá se verifica el efecto que le importa a quien
+   * mira la bandeja: una falla de red no borra lo que la semilla ya trajo.
+   */
+  it("el fallo de la primera página no borra las filas sembradas", async () => {
+    vi.mocked(fetchConversations).mockRejectedValue(new Error("network"));
+
+    const sembradaQueSobrevive = conversation({ id: "sembrada-que-sobrevive", unreadCount: 1 });
+
+    const { container } = render(
+      <InboxSidebar
+        conversations={CONVERSATIONS}
+        selectedId={null}
+        onSelect={() => {}}
+        currentAgent={JEFA}
+        allTags={ALL_TAGS}
+        bcvRate={null}
+        initialUnreadRows={[sembradaQueSobrevive]}
+      />
+    );
+
+    expect(visibleIds(container)).toContain("sembrada-que-sobrevive");
+
+    await waitFor(() => expect(fetchConversations).toHaveBeenCalled());
+    // Deja correr las microtasks del `.catch` sin que nada más pise el
+    // estado: la fila sembrada sigue ahí después de que la falla resuelve.
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(visibleIds(container)).toContain("sembrada-que-sobrevive");
+  });
+
+  /**
    * Lo que llega de la base es una foto; lo cargado está vivo por realtime.
    * Acá la foto vieja todavía trae la conversación con un contador de sin
    * leer, mientras la fila viva ya la tiene en cero: si la fila viva
@@ -464,9 +499,12 @@ describe("InboxSidebar — 'No leídas' y 'Mías' paginan por cursor", () => {
 });
 
 /**
- * Tres carreras de la revisión de código del 29/8/2026 (H1/H2/H3), cerradas
- * con `serverSessionRef`/`serverBusyRef` en `inbox-sidebar.tsx`: sesión por
- * corrida del efecto de primera página + candado síncrono para "cargar más".
+ * Tres carreras de la revisión de código del 29/8/2026 (H1/H2/H3). Ya no
+ * las cierra una máquina propia de `inbox-sidebar.tsx`: las cierra
+ * `useInboxPager` (`src/lib/use-inbox-pager.ts`, con sus propios tests) —
+ * sesión por corrida de primera página + candado síncrono para "cargar más".
+ * Lo que queda acá es integración: que el sidebar, montado de verdad, se
+ * comporte como el hook promete.
  */
 describe("InboxSidebar — carreras de servidor (revisión de código 29/8/2026)", () => {
   /** `INBOX_PAGE_SIZE` filas, para forzar una página llena. */
@@ -527,7 +565,7 @@ describe("InboxSidebar — carreras de servidor (revisión de código 29/8/2026)
     await waitFor(() => expect(fetchConversations).toHaveBeenCalled());
   });
 
-  it("H1 — con la primera página aún en vuelo, 'cargar más' no dispara nada; al resolver, sí funciona", async () => {
+  it("H1 — con la primera página aún en vuelo no ofrece 'cargar más'; al resolver con página llena, aparece y funciona", async () => {
     const primeraPágina = diferida<Conversation[]>();
     let segundaLlamadas = 0;
 
@@ -540,9 +578,12 @@ describe("InboxSidebar — carreras de servidor (revisión de código 29/8/2026)
       return primeraPágina.promise;
     });
 
-    // Sembrada con página llena: el botón "Cargar más" ya está visible aunque
-    // la consulta de red del efecto siga sin resolver (mismo escenario que
-    // describe el hallazgo: la bandeja abre sembrada y el botón ya se ve).
+    // Sembrada con página llena: antes el botón "Cargar más" ya aparecía
+    // sobre la semilla mientras la consulta real seguía en vuelo, y un
+    // candado lo neutralizaba en silencio si alguien llegaba a tocarlo.
+    // `useInboxPager` arranca la píldora en estado "loading" (no recibe
+    // `seed`) y no ofrece nada hasta que esa primera página resuelve de
+    // verdad — el botón ahora ni aparece.
     render(
       <InboxSidebar
         conversations={[]}
@@ -555,19 +596,13 @@ describe("InboxSidebar — carreras de servidor (revisión de código 29/8/2026)
       />
     );
 
-    fireEvent.click(screen.getByRole("button", { name: /cargar más/i }));
-
-    // Deja correr las microtasks pendientes sin que la primera página
-    // resuelva: si el candado no cerrara, acá ya habría un fetch de más.
-    await Promise.resolve();
-    await Promise.resolve();
+    expect(screen.queryByRole("button", { name: /cargar más/i })).toBeNull();
     expect(segundaLlamadas).toBe(0);
-    expect(fetchConversations).toHaveBeenCalledTimes(1);
 
     primeraPágina.resolve(paginaLlena("fresca"));
-    await waitFor(() => expect(fetchConversations).toHaveBeenCalledTimes(1));
+    const botón = await screen.findByRole("button", { name: /cargar más/i });
 
-    fireEvent.click(screen.getByRole("button", { name: /cargar más/i }));
+    fireEvent.click(botón);
     await waitFor(() => expect(segundaLlamadas).toBe(1));
   });
 

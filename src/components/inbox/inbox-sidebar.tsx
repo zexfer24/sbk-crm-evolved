@@ -1,6 +1,6 @@
 "use client";
 
-import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Fragment, useCallback, useEffect, useMemo, useState } from "react";
 import { ArrowDownWideNarrow, ArrowUpWideNarrow, Search } from "lucide-react";
 import type { Agent, ConversationSummary, InboxFilter, InboxSort, Tag } from "@/lib/types";
 import {
@@ -10,7 +10,8 @@ import {
   type FetchConversationsOptions,
   type InboxCounts,
 } from "@/lib/data";
-import { cursorAfterPage, mergeById, type ConversationCursor } from "@/lib/inbox-paging";
+import { mergeById, type ConversationCursor } from "@/lib/inbox-paging";
+import { useInboxPager, type InboxPagerView } from "@/lib/use-inbox-pager";
 import { initials } from "@/lib/dashboard";
 import {
   applyInboxFilters,
@@ -53,12 +54,12 @@ const SIN_COINCIDENCIAS: ReadonlyMap<string, MessageHit> = new Map();
  * ambas con el mismo `INBOX_PAGE_SIZE` y, si se pasa cursor, la página
  * siguiente en vez de la primera.
  *
- * Función de módulo y no un ternario repetido en el efecto de primera
- * página y en `loadMoreServerRows`: cada uno traía su propia copia del mismo
- * ternario (hallazgo de la revisión de código del 29/8/2026), y que la
- * página 2+ se armara distinto de la página 1 —un campo que uno actualiza y
- * el otro olvida— quedaba a un descuido de distancia. Con un solo lugar es
- * imposible que diverjan.
+ * Función de módulo y no un ternario repetido en cada llamada a `fetchPage`
+ * de `useInboxPager`: antes vivía duplicado entre el efecto de primera
+ * página y `loadMoreServerRows` (hallazgo de la revisión de código del
+ * 29/8/2026), y que la página 2+ se armara distinto de la página 1 —un
+ * campo que uno actualiza y el otro olvida— quedaba a un descuido de
+ * distancia. Con un solo lugar es imposible que diverjan.
  */
 function pillQueryOptions(
   filter: InboxFilter,
@@ -206,12 +207,10 @@ export function InboxSidebar({
   const resolvedOnServer = filter === "unread" || filter === "mine";
 
   /**
-   * Lo que contestó la base, junto con qué píldora lo pidió, y la
-   * paginación propia de esa consulta: `cursor` para pedir la página
-   * siguiente (`cursorAfterPage`, `inbox-paging.ts` — la última fila
-   * ACUMULADA, no la de la última página sola), `reachedEnd` cuando la
-   * última página vino corta (no hay más que pedir), `loadingMore` mientras
-   * esa página viaja.
+   * Lo que contestó la base, junto con qué píldora lo pidió. La paginación
+   * propia de esa consulta —cursor, candado en vuelo, sesión, `reachedEnd`—
+   * ya no vive acá: la lleva `useInboxPager` (ver `serverPager` más abajo).
+   * Acá solo queda pintar filas.
    *
    * Guardar el filtro junto a las filas —y no las filas sueltas— es lo que
    * evita que la respuesta de una consulta se muestre bajo la píldora
@@ -221,27 +220,14 @@ export function InboxSidebar({
    *
    * Arranca sembrado con `initialUnreadRows` cuando el servidor ya trajo
    * esas filas (ver la prop): la bandeja abre en "No leídas" —el filtro por
-   * defecto— con datos en vez del cartel "Buscando…". El efecto de red de
-   * abajo corre igual y pisa la semilla con lo que responda la base (misma
-   * primera página, mismo tamaño: `INBOX_PAGE_SIZE`).
+   * defecto— con datos en vez del cartel "Buscando…". El hook de abajo pide
+   * su propia primera página igual y pisa la semilla con lo que responda la
+   * base (misma primera página, mismo tamaño: `INBOX_PAGE_SIZE`).
    */
   const [serverRows, setServerRows] = useState<{
     filter: InboxFilter;
     rows: ConversationSummary[];
-    cursor: ConversationCursor | null;
-    reachedEnd: boolean;
-    loadingMore: boolean;
-  } | null>(
-    initialUnreadRows
-      ? {
-          filter: "unread",
-          rows: initialUnreadRows,
-          cursor: cursorAfterPage(initialUnreadRows),
-          reachedEnd: initialUnreadRows.length < INBOX_PAGE_SIZE,
-          loadingMore: false,
-        }
-      : null
-  );
+  } | null>(initialUnreadRows ? { filter: "unread", rows: initialUnreadRows } : null);
 
   // Solo el estado que corresponde a la píldora activa: si `serverRows`
   // quedó con la respuesta de la píldora anterior (la consulta nueva sigue
@@ -251,149 +237,39 @@ export function InboxSidebar({
   const resolvedRows = resolvedState?.rows ?? null;
 
   /**
-   * Sesión de consulta de la píldora activa: cada corrida del efecto de
-   * primera página (montar, cambiar de píldora) abre una sesión nueva, y
-   * cualquier respuesta de una sesión anterior se descarta al llegar — es lo
-   * que impide que una página vieja de "No leídas" se pegue sobre la primera
-   * página fresca tras salir y volver (la guarda por `filter` no alcanza: la
-   * clausura vieja también decía "unread"). Hallazgos H1/H2 de la revisión de
-   * código del 29/8/2026.
+   * El único paginador de "No leídas"/"Mías": cursor, candado en vuelo,
+   * sesión y `reachedEnd` viven en `useInboxPager` (`src/lib/use-inbox-pager.ts`,
+   * que también sirve a "Todos" en el shell) — ahí quedó la historia de las
+   * tres carreras que una revisión de código encontró el 29/8/2026 (H1/H2/H3:
+   * primera página en vuelo, píldora que vuelve mientras una página vieja
+   * sigue viajando, y ráfaga de "cargar más"), y ahí se prueban. Acá solo
+   * queda decidir DÓNDE cae cada página: la primera reemplaza `serverRows`
+   * entero (una píldora nueva no hereda filas de la anterior); las
+   * siguientes se pegan con `mergeById` sobre `current.rows` y NO sobre una
+   * copia capturada antes de la llamada — un `patchServerRows` que llegue
+   * mientras la página viaja (abrir un chat lo marca leído al instante) vive
+   * en `current`, y pegarla sobre la copia vieja desharía ese parche.
+   *
+   * El hook NO recibe `seed`: `initialUnreadRows` son filas para pintar de
+   * una vez, no una página resuelta con cursor. El hook pide su propia
+   * primera página igual, y hasta que resuelva no ofrece "cargar más" —antes
+   * el botón podía aparecer sobre la semilla mientras la consulta de verdad
+   * seguía en vuelo, con el candado neutralizándolo en silencio; ahora
+   * simplemente no aparece (ver `pager` más abajo).
    */
-  const serverSessionRef = useRef(0);
-  /**
-   * Hay una página (primera o siguiente) en vuelo. Es un ref y no estado a
-   * propósito: los eventos de scroll llegan en ráfaga dentro del mismo frame
-   * y un snapshot de render (`loadingMore`) todavía diría false para todos —
-   * el candado tiene que cerrarse de forma síncrona en el primer disparo
-   * (hallazgo H3).
-   */
-  const serverBusyRef = useRef(false);
-
-  useEffect(() => {
-    if (!resolvedOnServer) return;
-
-    // Mismo motivo que en la búsqueda: lo que hay que evitar no es que la
-    // respuesta llegue, sino que una vieja pise a una nueva. Siempre pide la
-    // PRIMERA página (sin cursor): cambiar de píldora —la dependencia
-    // `filter`— arranca de cero, igual que "Todos" arranca de cero al
-    // montar el shell.
-    //
-    // La sesión se abre ACÁ, antes de salir a la red: si esta misma corrida
-    // se cancela (cambia el filtro, se desmonta) antes de que la promesa
-    // resuelva, la respuesta tardía se reconoce como vieja por el número de
-    // sesión y no por `cancelled` solo — `cancelled` no sobrevive a un
-    // segundo cambio de píldora que vuelva al mismo filtro (H2: la clausura
-    // de la segunda corrida en "unread" también dice "unread").
-    let cancelled = false;
-    const session = ++serverSessionRef.current;
-    serverBusyRef.current = true;
-
-    (async () => {
-      // Una consulta por píldora, cada una resuelta por su propio índice
-      // (ver la migración `20260829010000_conversations_cursor_idx.sql`):
-      // `unreadOnly` para "No leídas", `assignedTo` para "Mías". Mismo
-      // tamaño de página que "Todos" (`INBOX_PAGE_SIZE`): antes compartían
-      // `SERVER_FILTER_LIMIT` (200) como tope sin "cargar más", un recorte
-      // silencioso que un pico de cola dejaba mudo. La reforma del
-      // 29/8/2026 las pasa a paginar por cursor, igual que "Todos".
-      const rows = await fetchConversations(supabase, pillQueryOptions(filter, currentAgent.id));
-      if (cancelled || session !== serverSessionRef.current) return;
-      // La sesión sigue vigente: es dueña de cerrar el candado. Se libera
-      // ANTES del `setServerRows` de abajo para que un "cargar más" que
-      // llegue a disparar en el mismo tick ya vea el estado correcto.
-      serverBusyRef.current = false;
-      setServerRows({
-        filter,
-        rows,
-        cursor: cursorAfterPage(rows),
-        reachedEnd: rows.length < INBOX_PAGE_SIZE,
-        loadingMore: false,
-      });
-    })().catch(() => {
-      if (cancelled || session !== serverSessionRef.current) return;
-      serverBusyRef.current = false;
-      // Si la consulta falla, el filtro sigue valiendo sobre lo cargado: se
-      // verán menos chats, no ninguno. Sin cursor y con `reachedEnd`: no
-      // tiene sentido ofrecer "cargar más" sobre una página que nunca llegó.
-      setServerRows({ filter, rows: [], cursor: null, reachedEnd: true, loadingMore: false });
-    });
-
-    return () => {
-      cancelled = true;
-    };
-  }, [supabase, resolvedOnServer, filter, currentAgent.id]);
-
-  /**
-   * "Cargar más" de las píldoras de servidor: pide la página siguiente con
-   * el cursor de la última fila ACUMULADA y la agrega al final. Lee
-   * `serverRows` (no un `current` dentro del `setState`) porque el cursor
-   * hace falta ANTES de la llamada, para armar la consulta — por eso esta
-   * función depende de `serverRows` y se recrea en cada página nueva, igual
-   * que `loadMoreConversations` en `crm-shell.tsx` depende de `cursorRef`
-   * (acá no puede vivir en un ref: cambia con cada respuesta y sí hace
-   * falta pintar `loadingMore`).
-   */
-  const loadMoreServerRows = useCallback(async () => {
-    if (!resolvedOnServer) return;
-    // Candado síncrono en ref, PRIMERA guarda: varios eventos de scroll en
-    // el mismo frame (o scroll + clic) ven todos `loadingMore` en false —es
-    // un snapshot de render— y dispararían 2-3 fetches idénticos con el
-    // mismo cursor antes de que React repinte (H3). También cierra la mitad
-    // de H1: mientras la primera página del efecto de arriba sigue en
-    // vuelo, el candado ya está cerrado y acá no se dispara nada hasta que
-    // esa página resuelva.
-    if (serverBusyRef.current) return;
-    // La consulta de la píldora activa sigue en vuelo o ya se fue a otra
-    // píldora: sin un cursor de ESTA píldora no hay página siguiente que
-    // pedir con seguridad.
-    if (!serverRows || serverRows.filter !== filter) return;
-    if (serverRows.reachedEnd || serverRows.loadingMore) return;
-
-    const { cursor } = serverRows;
-    // Sesión propia de este pedido de página: si la píldora cambia y vuelve
-    // (H2) mientras esta página sigue en vuelo, la respuesta llega con una
-    // sesión vieja (`serverSessionRef.current` ya avanzó, lo abrió el efecto
-    // de primera página al volver) y se descarta sin tocar ni el candado ni
-    // `serverRows` — la sesión nueva ya es dueña de las dos cosas.
-    const session = serverSessionRef.current;
-    serverBusyRef.current = true;
-    setServerRows((current) =>
-      current && current.filter === filter ? { ...current, loadingMore: true } : current
-    );
-
-    try {
-      const page = await fetchConversations(supabase, pillQueryOptions(filter, currentAgent.id, cursor));
-      if (session !== serverSessionRef.current) return;
-      serverBusyRef.current = false;
+  const serverPager = useInboxPager({
+    enabled: resolvedOnServer,
+    sessionKey: `${filter}:${currentAgent.id}`,
+    pageSize: INBOX_PAGE_SIZE,
+    fetchPage: (cursor) =>
+      fetchConversations(supabase, pillQueryOptions(filter, currentAgent.id, cursor)),
+    onPage: (rows, mode) =>
       setServerRows((current) => {
-        // La píldora pudo cambiar mientras esta página viajaba.
+        if (mode === "first") return { filter, rows };
         if (!current || current.filter !== filter) return current;
-        // Se pega sobre `current.rows` y NO sobre una copia capturada antes
-        // de la llamada: un `patchServerRows` que llegue mientras la página
-        // viaja (abrir un chat lo marca leído al instante) vive en `current`,
-        // y pegarla sobre la copia vieja desharía ese parche. `mergeById`
-        // (`src/lib/inbox-paging.ts`, compartida con `crm-shell.tsx`)
-        // deduplica por id: si la primera página se volvió a pedir mientras
-        // esta viajaba, nada se pinta dos veces.
-        const rows = mergeById(current.rows, page);
-        return {
-          filter,
-          rows,
-          cursor: page.length > 0 ? cursorAfterPage(page) : current.cursor,
-          reachedEnd: page.length < INBOX_PAGE_SIZE,
-          loadingMore: false,
-        };
-      });
-    } catch {
-      if (session !== serverSessionRef.current) return;
-      serverBusyRef.current = false;
-      // La lista se queda con lo que ya tiene; el próximo scroll o clic
-      // reintenta.
-      setServerRows((current) =>
-        current && current.filter === filter ? { ...current, loadingMore: false } : current
-      );
-    }
-  }, [supabase, resolvedOnServer, filter, currentAgent.id, serverRows]);
+        return { filter, rows: mergeById(current.rows, rows) };
+      }),
+  });
 
   /**
    * Parcha en memoria la fila que solo vive en la consulta del servidor: el
@@ -503,20 +379,23 @@ export function InboxSidebar({
    * Bajar por la bandeja solo pagina cuando lo que se ve es la bandeja.
    * Buscando, el fondo de la lista son los resultados; los dos caminos de
    * paginación —el de "Todos" (props del shell: `hasMore`/`onLoadMore`/
-   * `loadingMore`, cursor en `crm-shell.tsx`) y el de "No leídas"/"Mías"
-   * (cursor propio de acá, `serverRows`/`loadMoreServerRows`)— se excluyen
-   * entre sí: cada píldora pagina por un solo camino a la vez.
+   * `loadingMore`) y el de "No leídas"/"Mías" (`serverPager`, arriba)— se
+   * excluyen entre sí: cada píldora pagina por un solo camino a la vez.
+   * Buscar siempre salta el filtro a "Todos" (ver el buscador más arriba) y
+   * se queda ahí mientras dura, así que las dos ramas nunca compiten por el
+   * mismo filtro al mismo tiempo — no hace falta descartar `trimmedSearch`
+   * acá aparte.
    */
   const paginatesLocally = Boolean(onLoadMore) && !trimmedSearch && !resolvedOnServer;
-  const paginatesOnServer = resolvedOnServer && !trimmedSearch;
 
-  const serverHasMore = paginatesOnServer && resolvedState ? !resolvedState.reachedEnd : false;
-  const serverLoadingMore = resolvedState?.loadingMore ?? false;
-
-  /** Qué "cargar más" corresponde a la píldora activa, sea cual sea su camino. */
-  const effectiveHasMore = paginatesLocally ? hasMore : serverHasMore;
-  const effectiveLoadingMore = paginatesLocally ? loadingMore : serverLoadingMore;
-  const triggerLoadMore = paginatesLocally ? onLoadMore : loadMoreServerRows;
+  /** Un solo paginador para el fondo de la lista, venga de donde venga. */
+  const pager: InboxPagerView = useMemo(
+    () =>
+      paginatesLocally
+        ? { hasMore, loadingMore, lastPageFailed: false, loadMore: () => onLoadMore?.() }
+        : serverPager,
+    [paginatesLocally, hasMore, loadingMore, onLoadMore, serverPager]
+  );
 
   /** Está esperando la respuesta del servidor para la píldora activa. */
   const searching = resolvedOnServer && resolvedRows === null;
@@ -532,11 +411,11 @@ export function InboxSidebar({
 
   const handleListScroll = useCallback(
     (event: React.UIEvent<HTMLDivElement>) => {
-      if (!effectiveHasMore || effectiveLoadingMore) return;
+      if (!pager.hasMore || pager.loadingMore) return;
       const el = event.currentTarget;
-      if (el.scrollHeight - el.scrollTop - el.clientHeight < 200) triggerLoadMore?.();
+      if (el.scrollHeight - el.scrollTop - el.clientHeight < 200) pager.loadMore();
     },
-    [effectiveHasMore, effectiveLoadingMore, triggerLoadMore]
+    [pager]
   );
 
   /**
@@ -690,19 +569,19 @@ export function InboxSidebar({
 
         {/* Red de seguridad del scroll: si la lista filtrada quedó corta y no
             genera desplazamiento, el botón sigue ofreciendo el resto. Sirve
-            a las dos formas de paginar (`paginatesLocally`/`paginatesOnServer`):
+            a las dos formas de paginar (`pager`, sea local o de servidor):
             "cargar más" ya es la señal visible de que queda más — el cartel
             de recorte que tenía esta línea (`crm-list-truncated`, tarea del
             29/8/2026 anterior a esta) dejó de hacer falta apenas "No leídas"
             y "Mías" también pudieron ofrecerlo. */}
-        {effectiveHasMore && (
+        {pager.hasMore && (
           <button
             type="button"
             className="crm-pill crm-load-more"
-            onClick={triggerLoadMore}
-            disabled={effectiveLoadingMore}
+            onClick={pager.loadMore}
+            disabled={pager.loadingMore}
           >
-            {effectiveLoadingMore ? "Cargando…" : "Cargar más conversaciones"}
+            {pager.loadingMore ? "Cargando…" : "Cargar más conversaciones"}
           </button>
         )}
       </div>
