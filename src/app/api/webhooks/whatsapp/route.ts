@@ -11,6 +11,7 @@ import {
   sendWhatsappTemplate,
 } from "@/lib/whatsapp/meta-client";
 import { debounceSecondsFor, enqueueAgentTurns, processAfterDebounce } from "@/lib/ai/queue";
+import { recordHandoff } from "@/lib/ai/handoffs";
 import { MEDIA_BUCKET, mediaUrlFor } from "@/lib/storage";
 import { phoneNumberFromWaId } from "@/lib/whatsapp/phone";
 import { pgrstLiteral } from "@/lib/ai/pgrst";
@@ -679,6 +680,27 @@ export async function POST(request: Request) {
     const { data: canRun } = await supabase.rpc("agent_can_run");
     if (!canRun) {
       log.info("webhook_no_encola_ia_apagada", { conversaciones: touchedByCustomer.size });
+
+      // El mensaje ya quedó guardado arriba, pero sin turno nadie queda a
+      // cargo de estas conversaciones: se deja la fila que dice que el
+      // sistema soltó esto y por qué, en vez de que el lead desaparezca sin
+      // rastro. `recordHandoff` nunca lanza, así que no hace falta try/catch
+      // acá ni arriesga la respuesta rápida a Meta.
+      //
+      // Razón única `agente_no_puede_correr` a propósito: `agent_can_run()`
+      // ya fusiona en un solo booleano "IA apagada globalmente" y "tope de
+      // gasto del día alcanzado" (ver 20260822010000_ai_daily_spend_cap.sql);
+      // separarlas acá exigiría otra consulta en este camino caliente.
+      await Promise.all(
+        [...touchedByCustomer.keys()].map((conversationId) =>
+          recordHandoff(supabase, {
+            conversationId,
+            toKind: "unassigned",
+            reason: "agente_no_puede_correr",
+          })
+        )
+      );
+
       return NextResponse.json({ ok: true });
     }
 
