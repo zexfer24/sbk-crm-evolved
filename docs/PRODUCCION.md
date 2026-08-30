@@ -53,7 +53,7 @@ real, pero la regla simple es: **el seed no se toca en producción**.
 **Verificación:**
 
 ```sql
-select count(*) from supabase_migrations.schema_migrations;  -- 46
+select count(*) from supabase_migrations.schema_migrations;  -- 49
 select public from storage.buckets where id = 'whatsapp-media';  -- false
 select public.agent_can_run();  -- true
 ```
@@ -63,9 +63,12 @@ select public.agent_can_run();  -- true
 La migración `20260829020000_conversations_turn_lock_lease.sql` agrega dos
 columnas a `conversations` (`ai_turn_lock_until`, `ai_turn_lock_token`) y tres
 funciones — `ai_turn_lock_acquire`, `ai_turn_lock_renew`, `ai_turn_lock_release`
-—, todas `security definer`, revocadas a `public` y concedidas solo a
-`service_role`: ningún camino con sesión de usuario debe poder trabar ni
-destrabar la IA de un chat ajeno.
+—, todas `security definer`: ningún camino con sesión de usuario debe poder
+trabar ni destrabar la IA de un chat ajeno. Esta migración las dejó
+revocadas a `public` y concedidas a `service_role`, pero eso solo, por sí
+solo, **no** las cerraba — ver "Permisos de las funciones `security
+definer`" más abajo. Lo que hoy las cierra de verdad es
+`20260830010000_security_definer_revoke_roles.sql`.
 
 **Regla dura: esta migración tiene que estar aplicada y visible en PostgREST
 antes de desplegar el código que la usa** (commit "El lock de turno de la IA
@@ -80,14 +83,18 @@ select column_name from information_schema.columns
 where table_schema = 'public' and table_name = 'conversations'
   and column_name in ('ai_turn_lock_until', 'ai_turn_lock_token');
 
--- Las tres funciones existen y solo service_role puede ejecutarlas
+-- Las tres funciones existen
 select routine_name from information_schema.routines
 where routine_schema = 'public'
   and routine_name in ('ai_turn_lock_acquire', 'ai_turn_lock_renew', 'ai_turn_lock_release');
-
-select has_function_privilege('service_role', 'public.ai_turn_lock_acquire(uuid, text, integer)', 'execute');  -- true
-select has_function_privilege('authenticated', 'public.ai_turn_lock_acquire(uuid, text, integer)', 'execute'); -- false
 ```
+
+Los permisos de estas tres (y de toda otra función `security definer` de
+`public`) se verifican con la consulta única de la sección siguiente — no con
+`has_function_privilege` función por función. Esta misma página llegó a
+afirmar acá que `ai_turn_lock_acquire` le daba `false` a `authenticated`;
+hasta el 30/8/2026 el resultado real era `true`, y ese check daba una
+tranquilidad que no existía (ver más abajo).
 
 Y una llamada real por PostgREST, con la service key, contra un uuid que no
 existe:
@@ -108,6 +115,98 @@ Debe responder `false` (el `update` no encontró la fila) — **no un 404**. Un
 posterior), el mecanismo nuevo la ignora, y las conversaciones que hoy estén
 trabadas por un turno zombi se descongelan solas al desplegar — sin acción
 manual.
+
+### Permisos de las funciones `security definer`
+
+Auditoría en el VPS el 30/8/2026: las **17 funciones `security definer`** del
+esquema `public` eran ejecutables por `anon` y `authenticated`.
+`security definer` salta RLS — no hay política que frene una llamada así — y
+la anon key es pública: viaja al navegador. Con la anon key y sin sesión,
+`POST /rest/v1/rpc/agent_metrics {"p_days":1}` devolvía HTTP 200 con métricas
+por asesor, ventas y montos; `ai_turn_lock_acquire` dejaba tomar el lock de
+una conversación real y silenciarla para la IA; `claim_agent_turn(integer,
+integer)`, que no tiene argumentos obligatorios, dejaba robar turnos de la
+cola de IA.
+
+**Causa raíz — dos vías de privilegio, no una:** Postgres —no Supabase—
+concede de fábrica `EXECUTE` a toda función nueva al pseudo-rol `PUBLIC`.
+Encima, Supabase deja puesto en `public` un `alter default privileges ...
+grant execute on functions to anon, authenticated, service_role` (visible en
+`pg_default_acl`; lo tienen los roles `postgres` y `supabase_admin`), que le
+da a `anon`/`authenticated` un grant explícito, aparte del de `PUBLIC`.
+Mientras cualquiera de las dos vías siga abierta, `has_function_privilege
+('anon', ...)` da `true` — `anon` hereda de `PUBLIC` — así que **hacen falta
+los dos revokes, y ninguno alcanza solo**:
+`revoke execute ... from public` corta la primera vía pero deja la segunda
+intacta; `revoke execute ... from anon, authenticated` corta la segunda pero
+deja la primera intacta. Las migraciones que quisieron cerrar esto
+probaron una vía cada una y ninguna cerró nada:
+`20260829020000_conversations_turn_lock_lease.sql:113-115` solo tenía el
+revoke de `public` (por eso las tres funciones del lock sí quedaron cerradas
+a `anon` — les faltaba la otra mitad, pero esa mitad ya la tenían);
+`20260822040000_agent_turn_queue.sql:115-119` ni siquiera tiene un `revoke`,
+solo grants. La primera versión de
+`20260830010000_security_definer_revoke_roles.sql`, aplicada contra una
+base real el 30/8/2026, cometió el error inverso: solo tenía el revoke de
+`anon, authenticated` y por eso catorce de las diecisiete funciones
+siguieron abiertas a `anon` pese a "verse" cerrada en el `.sql` — un revoke
+incompleto se lee igual de bien que uno completo, así que **la verificación
+tiene que medir `has_function_privilege` contra la base, nunca leer el
+archivo**.
+
+Lo cerraron tres migraciones del 30/8/2026:
+
+- `20260830010000_security_definer_revoke_roles.sql` — los dos revokes por
+  firma (`public` y `anon, authenticated`) más el `grant` explícito a quien
+  conserva el acceso, para las 18 funciones que toca, y
+  `notify pgrst, 'reload schema'`.
+- `20260830020000_funciones_denegar_por_defecto.sql` — cambia el default de
+  `public` para que las funciones futuras nazcan cerradas. No repara ninguna
+  función existente; eso lo hace la anterior.
+- `20260830030000_agent_metrics_guarda.sql` — `agent_metrics` verifica
+  `is_agent()` desde adentro, como segunda línea de defensa detrás del
+  revoke, por si un `grant` futuro la vuelve a abrir.
+
+**No verifiques función por función.** Una sola consulta recorre todas las
+`security definer` de `public` y muestra qué puede ejecutar cada rol:
+
+```sql
+select
+  p.proname as funcion,
+  pg_get_function_identity_arguments(p.oid) as argumentos,
+  has_function_privilege('anon', p.oid, 'execute') as anon,
+  has_function_privilege('authenticated', p.oid, 'execute') as authenticated,
+  has_function_privilege('service_role', p.oid, 'execute') as service_role
+from pg_proc p
+join pg_namespace n on n.oid = p.pronamespace
+where n.nspname = 'public'
+  and p.prosecdef
+order by anon desc, authenticated desc, p.proname;
+```
+
+Qué se espera ver:
+
+- **`anon` en `false` en todas las filas salvo `is_agent` e
+  `is_supervisor_or_admin`.** Esas dos tienen que seguir en `true` para los
+  tres roles a propósito: 49 políticas de RLS vivas las invocan y 48 no
+  llevan cláusula `TO` (o sea que corren `TO public`, para todos los roles
+  incluido `anon`). Revocarle `EXECUTE` a `anon` sobre `is_agent` convierte
+  una consulta anónima a `contacts` (que hoy devuelve 0 filas) en un `42501
+  permission denied for function is_agent`; revocárselo a `authenticated`
+  tumba el CRM para todo el equipo. Si aparecen en `true`, es lo correcto —
+  no las "arregles".
+- **`authenticated` en `false`** para `ai_turn_lock_acquire`,
+  `ai_turn_lock_renew`, `ai_turn_lock_release`, `claim_agent_turn`,
+  `enqueue_agent_turn`, `finish_agent_turn` y `rate_limit_allow`: el grupo
+  que solo llama `service_role` vía `createAdminClient()`.
+- **`authenticated` en `true`** para `agent_metrics`, `agent_can_run` y
+  `agent_spend_today`: el navegador sí las llama, siempre con sesión de
+  asesor. Que una ruta corra en el servidor no basta para service_role —
+  `src/app/api/agent/backlog/route.ts:50` arma su cliente con
+  `createClient()` de `@/lib/supabase/server` (anon key + cookie de sesión),
+  así que viaja como `authenticated`, y por eso `agent_can_run` no se pudo
+  cerrar del todo.
+- **`service_role` en `true` en todas las filas**, sin excepción.
 
 ### Datos que sí van en producción
 
@@ -451,7 +550,7 @@ Con todo configurado, esta lista debe pasar entera:
 
 - [ ] Una restauración de prueba devuelve los datos completos
 - [ ] `npm run build` sin errores ni warnings
-- [ ] `select count(*) from supabase_migrations.schema_migrations` devuelve 46
+- [ ] `select count(*) from supabase_migrations.schema_migrations` devuelve 49
 - [ ] El bucket `whatsapp-media` es privado (`public = false`)
 - [ ] Una URL directa al bucket responde 400
 - [ ] `/api/media/...` sin sesión responde 401
@@ -460,3 +559,6 @@ Con todo configurado, esta lista debe pasar entera:
 - [ ] Una foto que manda el cliente se ve en la bandeja
 - [ ] Con la IA encendida, un mensaje de prueba obtiene respuesta
 - [ ] El tope de gasto está configurado y el panel muestra el consumo
+- [ ] `/agent-control` sigue mostrando las métricas por asesor (es lo que se
+      rompe si alguien revoca `authenticated` de `agent_metrics` por error,
+      creyendo que hay que cerrarla igual que las del lock de turno)

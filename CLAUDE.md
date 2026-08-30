@@ -85,6 +85,16 @@ copia intermedia.
 - **`[migración]` en el título** de todo commit que agregue una migración, y
   la migración va en commit separado del código que la usa. Omitirlo ya tiró
   producción 6 minutos en hora pico.
+- **Toda función `security definer` nueva en `public` nace con los DOS
+  revokes explícitos por firma —`revoke execute ... from public` y
+  `revoke execute ... from anon, authenticated`— más el `grant` a quien sí
+  la necesita, en la misma migración que la crea.** El privilegio llega por
+  dos vías independientes (el `EXECUTE` de fábrica de Postgres a `PUBLIC`, y
+  el `alter default privileges` de Supabase que se lo da además a
+  `anon`/`authenticated`), y ninguno de los dos revokes alcanza solo (ver
+  Trampas). Excepción permanente: `is_agent()` e `is_supervisor_or_admin()`
+  no se revocan nunca, ni de `PUBLIC` — 49 políticas de RLS `TO public` las
+  invocan.
 - **Tests al lado del módulo** (`foo.ts` + `foo.test.ts`). Un cambio de lógica
   trae su test en el mismo commit.
 - **Entrega a producción**: preguntar en qué commit está producción antes de
@@ -144,6 +154,32 @@ copia intermedia.
   escrita); los seeds de catálogo y playbooks sí.
 - Sin `WHATSAPP_APP_SECRET` el webhook acepta cualquier POST (a propósito,
   solo para local). En producción es obligatoria — igual que `CRON_SECRET`.
+- **Cerrar una función `security definer` a `anon` exige LOS DOS revokes, no
+  uno.** El privilegio llega por dos vías independientes: el `EXECUTE` de
+  fábrica que Postgres —no Supabase— concede a toda función nueva al
+  pseudo-rol `PUBLIC`, y el `alter default privileges ... grant execute on
+  functions to anon, authenticated, service_role` que Supabase deja puesto
+  en `public` (visible en `pg_default_acl`), que además le da un grant
+  explícito a `anon`/`authenticated`. `revoke execute ... from public` corta
+  la primera vía pero no la segunda; `revoke execute ... from anon,
+  authenticated` corta la segunda pero no la primera —mientras quede
+  cualquiera de las dos, `has_function_privilege('anon', ...)` sigue dando
+  `true`, porque `anon` hereda de `PUBLIC`—. Hacen falta las dos sentencias,
+  y después un `grant` explícito a quien deba conservar el acceso (el
+  revoke de `PUBLIC` también se lo saca a quien lo tenía solo por ahí). Este
+  error, con solo una de las dos vías cortada, ya expuso métricas de negocio
+  (`agent_metrics`), el lock de turno de la IA y la cola de turnos a
+  internet, sin sesión, el 30/8/2026 — dos migraciones distintas probaron
+  una vía cada una y ninguna cerró nada; se detectó recién midiendo con
+  `has_function_privilege` contra la base, no leyendo el `.sql`.
+- **"Código de servidor" no es sinónimo de `service_role`.** El rol de
+  Postgres con el que viaja una llamada lo decide el cliente Supabase que se
+  usó, no dónde corre el archivo: `@/lib/supabase/server` (`createClient()`)
+  es anon key + cookie de sesión → rol `authenticated`; solo
+  `@/lib/supabase/admin` (`createAdminClient()`) es `service_role`. Un route
+  handler puede ser perfectamente `authenticated`:
+  `src/app/api/agent/backlog/route.ts:50` lo es, y por eso `agent_can_run` no
+  se pudo cerrar a `service_role`.
 
 ---
 

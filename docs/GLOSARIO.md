@@ -83,6 +83,7 @@ nombre. Los tests sin módulo propio (`data-*.test.ts`, `queue-limit`,
 | `whatsapp-window.ts` | La regla de las 24h de Meta |
 | `redis.ts` | Conexión compartida a Redis (una por proceso) |
 | `log.ts` | Registro estructurado JSON (`{"level","event","ts",...}`), eventos en español, oculta valores sensibles |
+| `permisos-funciones.test.ts` | Guardián estático: lee las migraciones de `supabase/migrations` y falla si una función `security definer` nueva no trae su `revoke execute ... from anon, authenticated` explícito por firma en la misma migración que la crea |
 | `agent-tool-keys.ts` | Claves de `agent_tools` sin `server-only`, para que el panel las use |
 | `use-clock.ts`, `use-debounced-callback.ts`, `use-element-width.ts`, `use-long-press.ts`, `use-theme.ts` | Hooks utilitarios (reloj cuantizado, agrupación de refrescos, ancho real, long-press, tema) |
 | `use-live-conversations.ts` / `use-live-refresh.ts` / `use-live-sales.ts` | Realtime: mantener bandeja/ventas al día aplicando eventos en memoria y agrupando refetches |
@@ -149,10 +150,11 @@ nombre. Los tests sin módulo propio (`data-*.test.ts`, `queue-limit`,
 
 | Qué | Dónde |
 |---|---|
-| Migraciones (46, timestampeadas) | `migrations/` — regla: commit propio con `[migración]` en el título |
+| Migraciones (49, timestampeadas) | `migrations/` — regla: commit propio con `[migración]` en el título |
 | Seed de demo (3 usuarios, 5 conversaciones) | `seed.sql` — **no va a producción** |
 | Catálogo y escenarios para producción | `seeds/moto_catalog_seed.sql`, `seeds/ai_playbooks.sql` |
 | Config del stack local | `config.toml` |
+| Test de permisos de funciones `security definer` | `tests/permisos_funciones.sql` — falla si alguna queda ejecutable por `anon` fuera de la lista blanca (`is_agent`, `is_supervisor_or_admin`) |
 
 ## `scripts/` y `docs/`
 
@@ -161,6 +163,7 @@ nombre. Los tests sin módulo propio (`data-*.test.ts`, `queue-limit`,
 | `scripts/deploy.sh` | Despliegue por SSH: valida antes de tocar el servidor, copia, levanta, verifica TLS |
 | `scripts/preflight.sh` | Frena config rota antes de arrancar (claves cruzadas, URLs locales, secretos de juguete) |
 | `scripts/backup.sh` / `restore.sh` | Respaldo/restauración probados de verdad (solo `public`; el bucket no entra) |
+| `scripts/verificar-respaldo.sh` | Verifica un `.sql.gz` (gzip íntegro, tamaño, `CREATE TABLE`) sin borrar ni mover nada — aísla el `pipefail` para que un SIGPIPE del productor no se lea como corrupción (bug del 29/8/2026) |
 | `scripts/generar-iconos.mjs` | Iconos de la app |
 | `docs/PRODUCCION.md` | LA guía de puesta en producción, paso a paso con verificación |
 | `docs/superpowers/plans`, `specs/` | Planes y specs de diseño históricos (decisiones documentadas) |
