@@ -7,6 +7,7 @@ import {
   fetchInboxCounts,
   fetchQuickReplies,
   fetchTags,
+  fetchTagsInUse,
   fetchAgentSettings,
 } from "@/lib/data";
 import { getBcvRate } from "@/lib/ai/bcv";
@@ -42,6 +43,7 @@ export default async function InboxPage({ searchParams }: PageProps<"/inbox">) {
     inboxCounts,
     pendingConversations,
     tags,
+    tagsInUse,
     quickReplies,
     bcvRate,
     agentSettings,
@@ -63,6 +65,14 @@ export default async function InboxPage({ searchParams }: PageProps<"/inbox">) {
     // el corte fresh/stale que tenía antes de la reforma anterior.
     fetchConversations(supabase, { activeOnly: true, awaitingReplyOnly: true, limit: INBOX_PAGE_SIZE }),
     fetchTags(supabase),
+    // Las etiquetas EN USO para la barra de filtro de la bandeja
+    // (`InboxSidebar.allTags`, ver `crm-shell.tsx`): antes ese componente
+    // derivaba "en uso" recorriendo `conversations` arriba —la ventana
+    // cargada, ~30 filas— así que una etiqueta aplicada a un contacto fuera
+    // de esa ventana no aparecía nunca en la barra (reforma del 30/8/2026;
+    // `fetchTags`, arriba, sigue sirviendo al gestor de etiquetas de
+    // `ContextPanel`, que necesita ver también las que nadie usa todavía).
+    fetchTagsInUse(supabase),
     fetchQuickReplies(supabase),
     loadBcvRate(supabase),
     fetchAgentSettings(supabase),
@@ -78,6 +88,7 @@ export default async function InboxPage({ searchParams }: PageProps<"/inbox">) {
       initialInboxCounts={inboxCounts}
       initialPendingConversations={pendingConversations}
       allTags={tags}
+      tagsInUse={tagsInUse}
       initialQuickReplies={quickReplies}
       bcvRate={bcvRate}
       initialConversationId={requestedId}

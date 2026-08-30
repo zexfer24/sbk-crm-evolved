@@ -2,7 +2,7 @@
 import { describe, expect, it, vi, beforeEach } from "vitest";
 import { render, screen, fireEvent, within, waitFor } from "@testing-library/react";
 import type { Agent, Conversation, Tag } from "@/lib/types";
-import { fetchConversations, INBOX_PAGE_SIZE } from "@/lib/data";
+import { fetchConversations, fetchUnassignedConversations, INBOX_PAGE_SIZE } from "@/lib/data";
 import { InboxSidebar } from "@/components/inbox/inbox-sidebar";
 
 // La bandeja abre un cliente de Supabase para buscar dentro de los mensajes.
@@ -19,12 +19,14 @@ vi.mock("@/lib/supabase/client", () => ({
 // `limit` calcen con lo que de verdad pide `inbox-sidebar.tsx`.
 vi.mock("@/lib/data", () => ({
   fetchConversations: vi.fn().mockResolvedValue([]),
+  fetchUnassignedConversations: vi.fn().mockResolvedValue([]),
   searchConversationSummaries: vi.fn().mockResolvedValue([]),
   INBOX_PAGE_SIZE: 30,
 }));
 
 beforeEach(() => {
   vi.mocked(fetchConversations).mockReset().mockResolvedValue([]);
+  vi.mocked(fetchUnassignedConversations).mockReset().mockResolvedValue([]);
 });
 
 /**
@@ -1474,7 +1476,21 @@ function abrirMenúDeCategorías(): HTMLElement {
 }
 
 describe("InboxSidebar — filtrar por categoría", () => {
-  it("solo ofrece las categorías que alguna conversación está usando", () => {
+  /**
+   * Reforma del 30/8/2026 (`inbox-sidebar.tsx:499` de la versión previa a
+   * esta tarea): antes este test se llamaba "solo ofrece las categorías que
+   * alguna conversación está usando" y el componente mismo derivaba "en uso"
+   * recorriendo `conversations` —la ventana cargada, ~30 filas—, así que
+   * "Moroso" (sin ninguna conversación cargada que la lleve) no aparecía en
+   * el menú. Ese filtrado se movió a `fetchTagsInUse` (`src/lib/data.ts`,
+   * fuera del alcance de esta tarea): `allTags` YA llega resuelto contra la
+   * base entera, sembrado desde `page.tsx`, y el componente ofrece
+   * exactamente lo que recibe ahí. Es el corazón del arreglo: una etiqueta
+   * que solo usan conversaciones fuera de la ventana —el caso típico de las
+   * que aplica la IA sola, más abajo en la lista— antes no aparecía nunca en
+   * la barra.
+   */
+  it("ofrece una etiqueta aunque ninguna conversación cargada la tenga", () => {
     render(
       <InboxSidebar
         conversations={[conversation({ id: "sola", tags: [TAG_VIP] })]}
@@ -1488,7 +1504,10 @@ describe("InboxSidebar — filtrar por categoría", () => {
 
     const menú = abrirMenúDeCategorías();
     expect(within(menú).getByText("VIP")).toBeTruthy();
-    expect(within(menú).queryByText("Moroso")).toBeNull();
+    // "Moroso" no la lleva ninguna conversación de `conversations` (arriba):
+    // sigue apareciendo porque viene en `allTags`, sin importar qué hay
+    // cargado en pantalla.
+    expect(within(menú).getByText("Moroso")).toBeTruthy();
   });
 
   it("al elegir una categoría deja solo las conversaciones que la llevan", () => {
@@ -1521,10 +1540,126 @@ describe("InboxSidebar — filtrar por categoría", () => {
     expect(screen.queryByRole("menu", { name: "Filtrar por categoría" })).toBeNull();
   });
 
-  it("sin categorías en uso no ofrece el botón: un menú vacío no filtra nada", () => {
+  /**
+   * Mismo cambio de contrato que el test de arriba: antes decía "sin
+   * categorías en uso" y probaba conversaciones sin etiqueta con `allTags`
+   * no vacío (el componente vaciaba el menú por su cuenta). Ahora el vacío
+   * lo decide quien llama —`allTags` mismo, no las conversaciones cargadas—
+   * así que el escenario que prueba "menú vacío" es `allTags={[]}`.
+   */
+  it("con allTags vacío no ofrece el botón: un menú vacío no filtra nada", () => {
     render(
       <InboxSidebar
         conversations={[conversation({ id: "pelada" })]}
+        selectedId={null}
+        onSelect={() => {}}
+        currentAgent={JEFA}
+        allTags={[]}
+        bcvRate={null}
+      />
+    );
+
+    expect(screen.queryByRole("button", { name: /categoría/i })).toBeNull();
+  });
+});
+
+describe("InboxSidebar — etiqueta activa resuelve en el servidor", () => {
+  /**
+   * Decisión del 30/8/2026: con etiqueta activa, TODAS las píldoras se
+   * resuelven en el servidor, incluida "Todos" — antes `pillQueryOptions`
+   * lanzaba para `"all"` a propósito, y esa píldora paginaba solo en
+   * memoria sobre `conversations` (la ventana cargada). Sin este cambio,
+   * "Todos" + etiqueta seguiría mostrando nada más que las etiquetas de esa
+   * ventana, el mismo sesgo que la reforma de la barra le saca al filtro.
+   */
+  it("elegir una etiqueta pide al servidor una consulta que incluye ese tagId", async () => {
+    renderSidebar(JEFA);
+    irATodos();
+
+    fireEvent.click(within(abrirMenúDeCategorías()).getByText("VIP"));
+
+    await waitFor(() =>
+      expect(fetchConversations).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.objectContaining({ tagId: "t-vip" })
+      )
+    );
+  });
+
+  it("'Todos' + etiqueta se resuelve en servidor, no en memoria sobre la ventana cargada", async () => {
+    // Con la etiqueta activa, solo la consulta "Todos + tagId" (sin
+    // `awaitingReplyOnly`/`unreadOnly`/`assignedTo`) trae esta fila — no
+    // está en `CONVERSATIONS` (la ventana cargada de `renderSidebar`), así
+    // que solo puede aparecer si la petición viajó de verdad al servidor.
+    const deServidor = conversation({ id: "de-servidor", tags: [TAG_VIP] });
+    vi.mocked(fetchConversations).mockImplementation(async (_supabase, options) => {
+      const esTodosConEtiqueta =
+        options?.tagId === "t-vip" &&
+        !options?.awaitingReplyOnly &&
+        !options?.unreadOnly &&
+        !options?.assignedTo;
+      return esTodosConEtiqueta ? [deServidor] : [];
+    });
+
+    const { container } = renderSidebar(JEFA);
+    irATodos();
+
+    fireEvent.click(within(abrirMenúDeCategorías()).getByText("VIP"));
+
+    await waitFor(() => expect(visibleIds(container)).toContain("de-servidor"));
+  });
+
+  /**
+   * `sessionKey` de `useInboxPager` lleva la etiqueta activa (`${filter}:
+   * ${currentAgent.id}:${activeTagId ?? ""}`): cambiar de etiqueta abre
+   * sesión nueva y la primera página de la etiqueta que entra REEMPLAZA
+   * `serverRows` entero, no se pega a lo que ya había. Sin la etiqueta en el
+   * `sessionKey`, cambiar de "VIP" a "Moroso" sin cambiar de píldora no
+   * abriría sesión nueva y la fila de "VIP" seguiría en `serverRows` hasta
+   * la próxima "cargar más".
+   */
+  it("cambiar de etiqueta no arrastra las filas de la anterior", async () => {
+    const deVip = conversation({ id: "de-vip-servidor", tags: [TAG_VIP] });
+    const deMoroso = conversation({ id: "de-moroso-servidor", tags: [TAG_MOROSO] });
+    vi.mocked(fetchConversations).mockImplementation(async (_supabase, options) => {
+      if (options?.tagId === "t-vip") return [deVip];
+      if (options?.tagId === "t-moroso") return [deMoroso];
+      return [];
+    });
+
+    const { container } = renderSidebar(JEFA);
+    irATodos();
+
+    fireEvent.click(within(abrirMenúDeCategorías()).getByText("VIP"));
+    await waitFor(() => expect(visibleIds(container)).toContain("de-vip-servidor"));
+
+    fireEvent.click(within(abrirMenúDeCategorías()).getByText("Moroso"));
+    await waitFor(() => expect(visibleIds(container)).toContain("de-moroso-servidor"));
+    expect(visibleIds(container)).not.toContain("de-vip-servidor");
+  });
+
+  /**
+   * "Sin dueño" es el punto que más fácil se queda sin etiquetar, porque no
+   * pasa por `pillQueryOptions`: tiene su propia vía,
+   * `fetchUnassignedConversations`.
+   *
+   * Lo que se afirma acá es que la etiqueta llega hasta LA CONSULTA, no que
+   * las filas de más se escondan al pintar. La diferencia importa: como
+   * `matchesTag` filtra igual en memoria (`applyInboxFilters`), un test que
+   * solo mirara la lista visible se quedaría en verde aunque la etiqueta
+   * nunca saliera del navegador — y entonces esta píldora se traería el
+   * conjunto entero de "Sin dueño" en cada pulso vivo para descartar la
+   * mayor parte, dejando además filas que no se van a pintar dando vueltas
+   * por `serverRows`.
+   */
+  it("'Sin dueño' + etiqueta baja la etiqueta hasta la consulta", async () => {
+    const conDueVip = conversation({ id: "sin-dueno-vip", tags: [TAG_VIP] });
+    const sinEtiqueta = conversation({ id: "sin-dueno-pelado" });
+    vi.mocked(fetchUnassignedConversations).mockResolvedValue([conDueVip, sinEtiqueta]);
+
+    const { container } = render(
+      <InboxSidebar
+        conversations={[]}
         selectedId={null}
         onSelect={() => {}}
         currentAgent={JEFA}
@@ -1532,8 +1667,23 @@ describe("InboxSidebar — filtrar por categoría", () => {
         bcvRate={null}
       />
     );
+    irA("Sin dueño");
 
-    expect(screen.queryByRole("button", { name: /categoría/i })).toBeNull();
+    await waitFor(() => expect(visibleIds(container)).toContain("sin-dueno-pelado"));
+    // Sin etiqueta elegida, la consulta no lleva ninguna.
+    expect(vi.mocked(fetchUnassignedConversations).mock.calls.at(-1)?.[1]).toEqual({
+      tagId: undefined,
+    });
+
+    vi.mocked(fetchUnassignedConversations).mockResolvedValue([conDueVip]);
+    fireEvent.click(within(abrirMenúDeCategorías()).getByText("VIP"));
+
+    await waitFor(() =>
+      expect(vi.mocked(fetchUnassignedConversations).mock.calls.at(-1)?.[1]).toEqual({
+        tagId: TAG_VIP.id,
+      })
+    );
+    await waitFor(() => expect(visibleIds(container)).toEqual(["sin-dueno-vip"]));
   });
 });
 

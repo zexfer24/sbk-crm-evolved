@@ -71,7 +71,32 @@ interface CrmShellProps {
    * ninguna píldora) y el nombre se actualizó con ella.
    */
   initialPendingConversations?: ConversationSummary[];
+  /**
+   * TODAS las etiquetas creadas, incluidas las que nadie usa todavía:
+   * `ContextPanel` (`ManageTagsModal` y la lista de "aplicar etiqueta" al
+   * contacto) necesita poder ofrecer una categoría recién creada aunque
+   * ningún contacto la lleve aún. `fetchTags` (`@/lib/data`), sembrada desde
+   * `page.tsx`.
+   */
   allTags: Tag[];
+  /**
+   * Las etiquetas EN USO, para la barra de filtro de `InboxSidebar`
+   * (`InboxSidebar.allTags` — mismo nombre de prop, lista distinta a
+   * propósito: ver el comentario de esa prop en `inbox-sidebar.tsx`).
+   * `fetchTagsInUse` (`@/lib/data`), sembrada desde `page.tsx`.
+   *
+   * Reforma del 30/8/2026: antes `InboxSidebar` recibía `allTags` (arriba) y
+   * derivaba "en uso" recorriendo la ventana cargada (`conversations`, ~30
+   * filas) — una etiqueta aplicada a un contacto fuera de esa ventana no
+   * aparecía nunca en la barra, y como la IA suele etiquetar conversaciones
+   * que atiende sola, más abajo en la lista, el sesgo se notaba justo con
+   * las suyas. Opcional, con `allTags` de respaldo (todas, no solo las
+   * usadas) para no obligar a cada instanciación existente de `CrmShell` a
+   * conocer esta prop nueva — producción siempre la pasa explícita (ver
+   * `page.tsx`); las pruebas que no la pasan (`InboxSidebar` va mockeado en
+   * `crm-shell.test.tsx`) quedan con el respaldo sin que les importe.
+   */
+  tagsInUse?: Tag[];
   initialQuickReplies: QuickReply[];
   /** Tasa del BCV del día, ya resuelta en el servidor. Null si no se pudo obtener ninguna. */
   bcvRate: BcvRateSummary | null;
@@ -91,6 +116,7 @@ export function CrmShell({
   initialInboxCounts,
   initialPendingConversations = [],
   allTags,
+  tagsInUse = allTags,
   initialQuickReplies,
   bcvRate,
   initialConversationId,
@@ -701,7 +727,10 @@ export function CrmShell({
             selectedId={selectedId}
             onSelect={openConversation}
             currentAgent={currentAgent}
-            allTags={tags}
+            // `tagsInUse`, no el estado `tags` de abajo (ese alimenta a
+            // `ContextPanel`, que necesita ver TODAS las etiquetas — ver el
+            // comentario de la prop `tagsInUse` en `CrmShellProps`).
+            allTags={tagsInUse}
             bcvRate={bcvRate}
             onMarkUnread={markUnread}
             onMarkRead={markRead}

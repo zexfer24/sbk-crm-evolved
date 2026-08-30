@@ -530,6 +530,25 @@ function cursorFromRow(row: CursorableRow): ConversationCursor {
   return { lastMessageAt: row.last_message_at, id: row.id };
 }
 
+/**
+ * Tope de contactos que resuelve el filtro por etiqueta (`tagId`, más abajo).
+ *
+ * El filtro se resuelve en dos pasos —los `contact_id` de la etiqueta,
+ * después por `contactIds`— en vez de un embed filtrado sobre
+ * `conversations` (ver el comentario de `tagId`). El primer paso pasa por
+ * `contact_tags`, una tabla puente sin paginado propio en este archivo, así
+ * que igual que `CONTACT_SEARCH_LIMIT` para la búsqueda por nombre, el tope
+ * es explícito y no exhaustivo: hoy (30/8/2026, medido contra la base local)
+ * son 9 etiquetas con 4 en uso y como mucho un contacto por etiqueta, muy
+ * por debajo del tope. Una etiqueta que algún día supere los 1000 contactos
+ * dejaría fuera de este filtro las conversaciones de los que no entraron en
+ * esa página — sin orden explícito en la consulta, cuáles quedan fuera no
+ * está definido. Aceptable para un chip de filtro de bandeja (recorta, no
+ * audita); una necesidad de conjunto completo pediría paginar `contact_tags`
+ * entero, como hace `fetchSales` con `conversations`.
+ */
+export const TAG_FILTER_CONTACT_LIMIT = 1000;
+
 export interface FetchConversationsOptions {
   /**
    * Cuántas conversaciones traer, de la más reciente hacia atrás.
@@ -634,6 +653,31 @@ export interface FetchConversationsOptions {
   /** Solo estas conversaciones (las coincidencias de la búsqueda por mensaje). */
   ids?: string[];
   /**
+   * Solo las conversaciones cuyo contacto tiene esta etiqueta (la píldora de
+   * etiqueta de la barra de la bandeja).
+   *
+   * Se resuelve ANTES de tocar `conversations`: primero los `contact_id` que
+   * tienen la etiqueta (`contact_tags`, acotada por
+   * `TAG_FILTER_CONTACT_LIMIT`), después por `contactIds` — el mismo camino
+   * que ya usa `searchConversationSummaries`. A propósito NO se resuelve con
+   * un embed `contact:contacts!inner(contact_tags!inner(tag_id))` filtrado
+   * en el `select` de la lista: un embed `!inner` filtrado recorta los HIJOS
+   * a los que casan, así que cada fila de conversación volvería con SOLO la
+   * etiqueta filtrada en `contact.tags`, no con las demás que también tiene
+   * ese contacto — la bandeja perdería los otros chips de color de esa
+   * conversación. Comprobado el 30/8/2026 contra la base local con el
+   * equivalente en `tags` (`fetchTagsInUse`, más abajo): un `!inner` sobre
+   * una relación to-many devuelve una fila por PADRE con todos sus hijos que
+   * casan, no una por hijo — así que el riesgo de recorte real está del lado
+   * de filtrar `conversations` con la etiqueta adentro del embed, no de leer
+   * `tags`/`contact_tags` sueltas como hace este camino.
+   *
+   * Si `contactIds` también viene puesto (hoy ningún llamador combina los
+   * dos), el resultado es la INTERSECCIÓN: los contactos de la etiqueta que
+   * además están en la lista pedida.
+   */
+  tagId?: string;
+  /**
    * Solo lo que tiene algo sin leer: `unread_count > 0 OR manually_unread` —
    * la misma definición de `isUnread` que usa el frontend. Sin condición de
    * estado a propósito, igual que `assignedTo`: una conversación CERRADA con
@@ -700,11 +744,46 @@ async function fetchConversationRows<Raw extends CursorableRow>(
     unreadOnly,
     assignedTo,
     embedLatestHandoff,
+    tagId,
   }: FetchConversationsOptions
 ): Promise<Raw[]> {
+  // `tagId` se resuelve primero, contra `contact_tags`, y de ahí en más viaja
+  // como un `contactIds` más — ver el comentario de `tagId` en
+  // `FetchConversationsOptions` sobre por qué NO es un embed filtrado en el
+  // `select` de abajo. Si `contactIds` también vino puesto, el resultado es
+  // la intersección de los dos.
+  let resolvedContactIds = contactIds;
+  if (tagId) {
+    const { data: tagLinks, error: tagLinksError } = await supabase
+      .from("contact_tags")
+      .select("contact_id")
+      .eq("tag_id", tagId)
+      // El orden importa solo cuando la etiqueta pasa el tope, pero entonces
+      // importa mucho: sin `order`, cuáles contactos quedan afuera lo decide
+      // el plan de Postgres y puede cambiar entre dos consultas seguidas —la
+      // misma etiqueta mostraría chats distintos sin que nadie tocara nada.
+      // Por fecha de etiquetado descendente, lo que queda afuera es lo más
+      // viejo, que es coherente con una bandeja que ordena por lo reciente.
+      .order("created_at", { ascending: false })
+      .limit(TAG_FILTER_CONTACT_LIMIT);
+
+    if (tagLinksError) throw tagLinksError;
+
+    const taggedContactIds = ((tagLinks ?? []) as { contact_id: string }[]).map(
+      (row) => row.contact_id
+    );
+    resolvedContactIds = resolvedContactIds
+      ? resolvedContactIds.filter((id) => taggedContactIds.includes(id))
+      : taggedContactIds;
+  }
+
   // `.in()` con lista vacía no es una consulta válida en PostgREST, y acá
   // además significa «nada que buscar»: no hay filas que devolver.
-  if ((contactIds && contactIds.length === 0) || (ids && ids.length === 0)) return [];
+  if (
+    (resolvedContactIds && resolvedContactIds.length === 0) ||
+    (ids && ids.length === 0)
+  )
+    return [];
 
   // Se calcula una sola vez, antes de paginar: recalcularlo en cada vuelta
   // del `for` movería el corte mientras la bandeja todavía está bajando
@@ -747,7 +826,7 @@ async function fetchConversationRows<Raw extends CursorableRow>(
     if (pendingWindow === "fresh") {
       request = request.gt("last_customer_message_at", pendingWindowCutoff!);
     }
-    if (contactIds) request = request.in("contact_id", contactIds);
+    if (resolvedContactIds) request = request.in("contact_id", resolvedContactIds);
     if (ids) request = request.in("id", ids);
     if (assignedTo) request = request.eq("assigned_agent_id", assignedTo);
     if (embedLatestHandoff) {
@@ -926,10 +1005,17 @@ async function fetchUnassignedConversationIds(supabase: SupabaseClient): Promise
  * hace falta el número).
  */
 export async function fetchUnassignedConversations(
-  supabase: SupabaseClient
+  supabase: SupabaseClient,
+  { tagId }: { tagId?: string } = {}
 ): Promise<ConversationSummary[]> {
   const ids = await fetchUnassignedConversationIds(supabase);
-  return fetchConversations(supabase, { ids });
+  // La etiqueta baja hasta la consulta y no se filtra después en el
+  // componente: son dos cortes de base (los ids sin dueño y los contactos con
+  // la etiqueta) y `fetchConversations` ya sabe combinarlos. Filtrarlo arriba
+  // significaría traerse el conjunto entero de "Sin dueño" para descartar la
+  // mayor parte en el navegador, y dejaría circulando por el estado filas que
+  // no se van a pintar.
+  return fetchConversations(supabase, { ids, tagId });
 }
 
 /**
@@ -1384,6 +1470,47 @@ export async function fetchTags(supabase: SupabaseClient): Promise<Tag[]> {
   const { data, error } = await supabase.from("tags").select("id, label, color").order("label");
   if (error) throw error;
   return (data as RawTag[]).map(mapTag);
+}
+
+/**
+ * Las etiquetas que de verdad tiene aplicadas algún contacto, ordenadas por
+ * `label` igual que `fetchTags`.
+ *
+ * Es la que alimenta la barra de etiquetas de la bandeja: esa barra se
+ * deducía de `conversations` en memoria (las ~30 filas de la ventana
+ * cargada, `inbox-sidebar.tsx:499`), así que una etiqueta aplicada a un chat
+ * fuera de esa ventana no aparecía nunca — y la IA suele etiquetar
+ * conversaciones que atiende sola, más abajo en la lista, así que el sesgo
+ * se notaba justo con las suyas. `fetchTags` (arriba) sigue sirviendo al
+ * gestor de etiquetas, que necesita ver también las que nadie usa todavía;
+ * esta consulta es a propósito la que las descarta.
+ *
+ * Se resuelve con el embed interno `tags?select=...,contact_tags!inner(...)`
+ * en vez de dos consultas planas (el patrón de `fetchTicketTags`): acá basta
+ * con SABER que el vínculo existe, no con leerlo, así que un solo viaje con
+ * `!inner` alcanza. Verificado contra la base local el 30/8/2026 (9
+ * etiquetas, 4 en uso, un contacto por etiqueta): un embed `!inner` sobre una
+ * relación to-many devuelve UNA fila por padre (`tags`), no una por hijo —
+ * dos vínculos de la misma etiqueta no duplicarían la fila. El `Set` de abajo
+ * es igual la red de seguridad: barato, y no depende de que ese
+ * comportamiento de PostgREST se mantenga si algún día cambia la versión.
+ */
+export async function fetchTagsInUse(supabase: SupabaseClient): Promise<Tag[]> {
+  const { data, error } = await supabase
+    .from("tags")
+    .select("id, label, color, contact_tags!inner(contact_id)")
+    .order("label");
+
+  if (error) throw error;
+
+  const seen = new Set<string>();
+  const tags: Tag[] = [];
+  for (const row of data as RawTag[]) {
+    if (seen.has(row.id)) continue;
+    seen.add(row.id);
+    tags.push(mapTag(row));
+  }
+  return tags;
 }
 
 /**

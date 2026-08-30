@@ -72,13 +72,20 @@ const SIN_COINCIDENCIAS: ReadonlyMap<string, MessageHit> = new Map();
  * cubrir el resto. Un `switch` sin `default` sobre un union sí lo caza: el
  * día que se sume una quinta píldora, falta un `case` y la build no
  * compila.
+ *
+ * `tagId` (reforma del 30/8/2026, barra de etiquetas) viaja en `page` y de
+ * ahí a CADA rama que sí construye una consulta: la etiqueta activa no
+ * reemplaza el corte de la píldora, se le suma — "Pendientes" + etiqueta
+ * sigue siendo pendiente Y con esa etiqueta. `"all"` es la excepción: ahí la
+ * etiqueta ES el único corte (ver ese caso, abajo).
  */
 function pillQueryOptions(
   filter: InboxFilter,
   agentId: string,
-  cursor?: ConversationCursor | null
+  cursor: ConversationCursor | null | undefined,
+  tagId: string | null
 ): FetchConversationsOptions {
-  const page = { limit: INBOX_PAGE_SIZE, cursor: cursor ?? undefined };
+  const page = { limit: INBOX_PAGE_SIZE, cursor: cursor ?? undefined, tagId: tagId ?? undefined };
   switch (filter) {
     case "pending":
       return { ...page, activeOnly: true, awaitingReplyOnly: true };
@@ -90,18 +97,28 @@ function pillQueryOptions(
       // No pasa por acá: "Sin dueño" no es un corte de columnas de
       // `conversations` sino de la última fila de `conversation_handoffs`, y
       // lo resuelve `fetchUnassignedConversations` en una consulta propia
-      // (ver `fetchPage` más abajo). Misma razón que "all" para lanzar en vez
-      // de devolver una consulta mal armada.
+      // (ver `fetchPage` más abajo) que NO acepta `tagId` — se compone en
+      // memoria ahí mismo. Misma razón que "all" sin etiqueta para lanzar en
+      // vez de devolver una consulta mal armada.
       throw new Error('pillQueryOptions: "unassigned" se resuelve con fetchUnassignedConversations');
     case "all":
-      // `resolvedOnServer` (más abajo) nunca deja pasar `"all"` hasta acá:
-      // "Todos" pagina localmente sobre `conversations` (props del shell),
-      // nunca vía `pillQueryOptions`. La rama existe solo porque el `switch`
-      // es exhaustivo a propósito (ver el comentario de arriba) — y ante una
-      // llamada que ya se sabe fuera de contrato, lanzar es más honesto que
-      // devolver una consulta que nadie pidió y que además estaría mal
-      // armada (sin ningún corte real).
-      throw new Error('pillQueryOptions: "all" no resuelve en el servidor por esta vía');
+      // Reforma del 30/8/2026: `resolvedOnServer` (más abajo) deja pasar
+      // `"all"` hasta acá SOLO cuando hay etiqueta activa — sin eso, "Todos"
+      // + etiqueta seguiría filtrando en memoria nada más que las ~30 filas
+      // de la ventana cargada (`conversations`, props del shell), exactamente
+      // el sesgo que esta reforma le saca a la barra de etiquetas. Con
+      // etiqueta, la etiqueta ES el único corte real de esta consulta —
+      // "Todos" no tiene ningún otro—, y ya viaja en `page`.
+      //
+      // Sin etiqueta, "Todos" sigue paginando localmente y nunca llega hasta
+      // acá: la rama sigue lanzando ante esa llamada fuera de contrato, más
+      // honesto que devolver una consulta sin ningún corte real. Existe
+      // igual porque el `switch` es exhaustivo a propósito (ver el
+      // comentario de arriba).
+      if (!tagId) {
+        throw new Error('pillQueryOptions: "all" solo resuelve en el servidor con una etiqueta activa');
+      }
+      return page;
   }
 }
 
@@ -120,7 +137,16 @@ interface InboxSidebarProps {
   selectedId: string | null;
   onSelect: (id: string) => void;
   currentAgent: Agent;
-  /** Todas las etiquetas creadas, para la barra de filtro por etiqueta. */
+  /**
+   * Las etiquetas EN USO (`fetchTagsInUse`, `src/lib/data.ts`), para la barra
+   * de filtro por etiqueta — no todas las creadas: una barra con etiquetas
+   * que no filtran nada es ruido. Se resuelve contra la base entera y no
+   * contra `conversations` (la ventana cargada abajo): antes de la reforma
+   * del 30/8/2026 este componente derivaba "en uso" recorriendo esa ventana,
+   * y una etiqueta aplicada a un contacto fuera de ella no aparecía nunca en
+   * la barra — el sesgo se notaba con las conversaciones que atiende sola la
+   * IA, que suelen quedar más abajo en la lista.
+   */
   allTags: Tag[];
   bcvRate: BcvRateSummary | null;
   /** Aparta el chat para volver después. Sin esto no se ofrece el menú. */
@@ -256,6 +282,28 @@ export function InboxSidebar({
   const searchIsCurrent = hitState.query === trimmedSearch;
   const messageHits = searchIsCurrent ? hitState.hits : SIN_COINCIDENCIAS;
 
+  // Solo tiene sentido ofrecer las etiquetas que alguien está usando: una
+  // barra con etiquetas que no filtran nada es ruido. Antes esa condición se
+  // recalculaba acá recorriendo `conversations` —la ventana cargada, ~30
+  // filas— buscando qué etiquetas aparecían en ella: una etiqueta aplicada a
+  // un contacto fuera de esa ventana no aparecía nunca en la barra, aunque sí
+  // se viera en pantalla en `searchableConversations` (más abajo), que además
+  // suma lo resuelto en servidor. Como la IA suele etiquetar conversaciones
+  // que atiende sola —más abajo en la lista, fuera de la ventana—, el sesgo
+  // se notaba justo con las suyas (diagnóstico del 30/8/2026,
+  // `inbox-sidebar.tsx:499` de esa versión). Ahora "en uso" se resuelve
+  // contra la base entera, no contra la ventana: `allTags` YA es el
+  // resultado de `fetchTagsInUse` (`src/lib/data.ts`), sembrado desde
+  // `page.tsx` — acá no queda nada que derivar, la prop ES la lista.
+  const visibleTags = allTags;
+
+  // Una categoría que dejó de usarse no puede quedar filtrando en silencio: la
+  // bandeja se vería vacía sin un control visible que lo explique. Se resuelve
+  // al leer y no borrando el estado, porque si la categoría vuelve a usarse
+  // —alguien la aplica de nuevo a un contacto— el filtro sigue donde estaba.
+  const activeTagId =
+    tagId !== null && visibleTags.some((tag) => tag.id === tagId) ? tagId : null;
+
   /**
    * "Pendientes", "No leídas" y "Mías" son los tres cortes que no se pueden
    * resolver sobre la ventana cargada. La bandeja tiene 30 filas en memoria
@@ -266,9 +314,20 @@ export function InboxSidebar({
    * le pide a la base (ver el efecto más abajo). `pending` se suma acá en la
    * reforma del 30/8/2026, junto con la píldora (ver `case "pending"` en
    * `inbox-filters.ts` para el dato que la trajo de vuelta).
+   *
+   * Con etiqueta activa (misma reforma, más tarde el mismo día), hasta
+   * "Todos" se suma: sin esto, "Todos" + etiqueta seguiría paginando en
+   * memoria sobre la ventana cargada, el mismo sesgo que esta reforma le
+   * saca a la barra (ver el comentario de `visibleTags`, arriba). Las otras
+   * tres píldoras ya resolvían en servidor con o sin etiqueta; para ellas
+   * esta condición no cambia nada.
    */
   const resolvedOnServer =
-    filter === "pending" || filter === "unread" || filter === "mine" || filter === "unassigned";
+    filter === "pending" ||
+    filter === "unread" ||
+    filter === "mine" ||
+    filter === "unassigned" ||
+    activeTagId !== null;
 
   /**
    * Lo que contestó la base, junto con qué píldora lo pidió. La paginación
@@ -325,7 +384,14 @@ export function InboxSidebar({
    */
   const serverPager = useInboxPager({
     enabled: resolvedOnServer,
-    sessionKey: `${filter}:${currentAgent.id}`,
+    // La etiqueta activa entra al `sessionKey` (reforma del 30/8/2026): sin
+    // esto, cambiar de etiqueta sin cambiar de píldora no abriría sesión
+    // nueva en `useInboxPager` y las filas ya cargadas de la etiqueta
+    // anterior seguirían pegadas en `serverRows` —`mergeById` solo agrega,
+    // nunca saca— hasta la próxima "cargar más". Con sesión nueva, la
+    // primera página de la etiqueta que entra REEMPLAZA `serverRows` entero
+    // (ver `onPage`, abajo): ninguna fila de la anterior sobrevive.
+    sessionKey: `${filter}:${currentAgent.id}:${activeTagId ?? ""}`,
     pageSize: INBOX_PAGE_SIZE,
     fetchPage: (cursor) =>
       // "Sin dueño" no pagina por cursor: su consulta resuelve el conjunto
@@ -336,8 +402,8 @@ export function InboxSidebar({
       filter === "unassigned"
         ? cursor
           ? Promise.resolve([])
-          : fetchUnassignedConversations(supabase)
-        : fetchConversations(supabase, pillQueryOptions(filter, currentAgent.id, cursor)),
+          : fetchUnassignedConversations(supabase, { tagId: activeTagId ?? undefined })
+        : fetchConversations(supabase, pillQueryOptions(filter, currentAgent.id, cursor, activeTagId)),
     onPage: (rows, mode) =>
       setServerRows((current) => {
         if (mode === "first") return { filter, rows };
@@ -419,6 +485,10 @@ export function InboxSidebar({
     if (!resolvedOnServer || !resolvedState || resolvedState.rows.length === 0) return;
 
     const pillFilter = filter;
+    // Capturada junto con `pillFilter`, mismo motivo: si la etiqueta cambia
+    // mientras esta consulta viaja, la respuesta se pinta con la etiqueta
+    // que la pidió, no con la que quedó activa al resolver.
+    const pillTagId = activeTagId;
 
     // "Sin dueño" es la excepción a todo lo de arriba: su consulta no pagina
     // —resuelve el conjunto entero— así que la respuesta SÍ es completa, y
@@ -427,10 +497,16 @@ export function InboxSidebar({
     // en el mismo pulso, sin esperar a recargar. Además hay que llamarla por
     // su propia vía: `pillQueryOptions` LANZA para esta píldora, y hacerlo
     // dentro de este efecto rompería el render.
+    //
+    // La etiqueta viaja también en este eco, y no como un filtro aplicado
+    // después: sin ella, un pulso vivo con "Sin dueño" + etiqueta activa
+    // volvería a pegar en `serverRows` el conjunto SIN filtrar. `matchesTag`
+    // lo escondería igual al pintar, pero `serverRows`/`resolvedRows`
+    // quedarían con filas de más hasta el próximo pulso.
     const esSinDueno = pillFilter === "unassigned";
     const consulta = esSinDueno
-      ? fetchUnassignedConversations(supabase)
-      : fetchConversations(supabase, pillQueryOptions(pillFilter, currentAgent.id, null));
+      ? fetchUnassignedConversations(supabase, { tagId: pillTagId ?? undefined })
+      : fetchConversations(supabase, pillQueryOptions(pillFilter, currentAgent.id, null, pillTagId));
 
     consulta
       .then((fresh) => {
@@ -447,7 +523,7 @@ export function InboxSidebar({
       .catch(() => {
         // Lo repara el próximo pulso, o el asesor reentrando a la píldora.
       });
-  }, [livePulse, resolvedOnServer, resolvedState, filter, currentAgent.id, supabase]);
+  }, [livePulse, resolvedOnServer, resolvedState, filter, activeTagId, currentAgent.id, supabase]);
 
   // Lo cargado manda: sus filas están al día por realtime. Lo de la base solo
   // aporta las conversaciones que la ventana no tiene —las viejas, que son
@@ -493,28 +569,6 @@ export function InboxSidebar({
       })),
     [availableFilters, counts]
   );
-
-  // Solo tiene sentido ofrecer las etiquetas que alguien está usando: una
-  // barra con etiquetas que no filtran nada es ruido.
-  const usedTagIds = useMemo(() => {
-    const ids = new Set<string>();
-    for (const conversation of conversations) {
-      for (const tag of conversation.contact.tags) ids.add(tag.id);
-    }
-    return ids;
-  }, [conversations]);
-
-  const visibleTags = useMemo(
-    () => allTags.filter((tag) => usedTagIds.has(tag.id)),
-    [allTags, usedTagIds]
-  );
-
-  // Una categoría que dejó de usarse no puede quedar filtrando en silencio: la
-  // bandeja se vería vacía sin un control visible que lo explique. Se resuelve
-  // al leer y no borrando el estado, porque si la categoría vuelve a usarse
-  // —alguien la aplica de nuevo a un contacto— el filtro sigue donde estaba.
-  const activeTagId =
-    tagId !== null && visibleTags.some((tag) => tag.id === tagId) ? tagId : null;
 
   const messageHitIds = useMemo(() => new Set(messageHits.keys()), [messageHits]);
 
