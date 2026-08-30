@@ -75,3 +75,18 @@ jobs:
         run: |
           supabase db query --local "select public.agent_can_run()"
           supabase db query --local "select public from storage.buckets where id = 'whatsapp-media'"
+
+      # Auditoría del 30/8/2026: con la anon key pública y sin sesión,
+      # `agent_metrics` devolvía HTTP 200 con métricas de ventas por asesor,
+      # porque Supabase deja de fábrica toda función `security definer` nueva
+      # ejecutable por `anon`. `supabase db query --local` corre como
+      # superusuario y no ve ese agujero (los privilegios de rol no aplican
+      # a quien los tiene todos) — por eso este paso conecta como el rol
+      # `postgres` normal, vía psql directo, para que `has_function_privilege`
+      # mida lo mismo que mide un cliente real de PostgREST. `psql` viene
+      # instalado de fábrica en el runner de ubuntu.
+      - name: Permisos de funciones security definer
+        run: |
+          psql "postgresql://postgres:postgres@127.0.0.1:54322/postgres" \
+            -v ON_ERROR_STOP=1 \
+            -f supabase/tests/permisos_funciones.sql
