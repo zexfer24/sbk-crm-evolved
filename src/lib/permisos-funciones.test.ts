@@ -61,8 +61,10 @@ import { describe, expect, it } from "vitest";
 
 const LISTA_BLANCA = new Set(["is_agent", "is_supervisor_or_admin"]);
 
-// Las 17 funciones `security definer` conocidas en el esquema `public` a
-// fecha 30/8/2026. Sirve para comprobar que el parser de abajo no se está
+// Las 18 funciones `security definer` conocidas en el esquema `public` a
+// fecha 30/8/2026 (17 + record_handoff, sumada en
+// 20260830040000_conversation_handoffs.sql — T1.1 del plan "Ningún lead
+// invisible"). Sirve para comprobar que el parser de abajo no se está
 // quedando corto: si algún día detecta menos de estas, el guardián dejó de
 // proteger algo y hay que enterarse antes de confiar en el resultado.
 const FUNCIONES_SECURITY_DEFINER_CONOCIDAS = [
@@ -83,6 +85,7 @@ const FUNCIONES_SECURITY_DEFINER_CONOCIDAS = [
   "ai_turn_lock_acquire",
   "ai_turn_lock_renew",
   "ai_turn_lock_release",
+  "record_handoff",
 ].sort();
 
 const DIR_MIGRACIONES = path.resolve(__dirname, "../../supabase/migrations");

@@ -113,7 +113,16 @@ declare
     'public.claim_agent_turn(integer, integer)',
     'public.enqueue_agent_turn(uuid, integer)',
     'public.finish_agent_turn(uuid, text, integer)',
-    'public.rate_limit_allow(text, integer, integer)'
+    'public.rate_limit_allow(text, integer, integer)',
+    -- record_handoff (20260830040000, T1.1 "Ningún lead invisible"): la
+    -- escriben el turno, la cola, el webhook y el reconciliador, y los cuatro
+    -- corren con createAdminClient(). Va acá y NO en el grupo authenticated
+    -- porque es security definer —quien la ejecuta se salta la RLS de
+    -- conversation_handoffs—, así que un grant de más es capacidad de
+    -- fabricar traspasos falsos. La Etapa 2 (botones reclamar/cerrar/devolver
+    -- a IA, que sí corren como authenticated) la moverá al otro grupo en la
+    -- misma migración que le dé el grant.
+    'public.record_handoff(uuid, text, text, text, uuid, uuid, text)'
   ];
   f text;
   errores text := '';

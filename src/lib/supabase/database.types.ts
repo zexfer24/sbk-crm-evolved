@@ -436,6 +436,50 @@ export type Database = {
         }
         Relationships: []
       }
+      conversation_handoffs: {
+        Row: {
+          conversation_id: string
+          created_at: string
+          created_by: string
+          from_id: string | null
+          from_kind: string | null
+          id: string
+          reason: string
+          to_id: string | null
+          to_kind: string
+        }
+        Insert: {
+          conversation_id: string
+          created_at?: string
+          created_by?: string
+          from_id?: string | null
+          from_kind?: string | null
+          id?: string
+          reason: string
+          to_id?: string | null
+          to_kind: string
+        }
+        Update: {
+          conversation_id?: string
+          created_at?: string
+          created_by?: string
+          from_id?: string | null
+          from_kind?: string | null
+          id?: string
+          reason?: string
+          to_id?: string | null
+          to_kind?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "conversation_handoffs_conversation_id_fkey"
+            columns: ["conversation_id"]
+            isOneToOne: false
+            referencedRelation: "conversations"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       conversation_quotes: {
         Row: {
           bcv_rate: number
@@ -1375,6 +1419,18 @@ export type Database = {
         Args: { p_bucket: string; p_limit: number; p_window_seconds: number }
         Returns: boolean
       }
+      record_handoff: {
+        Args: {
+          p_conversation_id: string
+          p_created_by?: string
+          p_from_id?: string
+          p_from_kind?: string
+          p_reason: string
+          p_to_id?: string
+          p_to_kind: string
+        }
+        Returns: string
+      }
       search_conversations_by_message: {
         Args: { p_limit?: number; p_query: string }
         Returns: {
@@ -1383,6 +1439,10 @@ export type Database = {
           created_at: string
           message_id: string
         }[]
+      }
+      unassigned_waiting_count: {
+        Args: Record<PropertyKey, never>
+        Returns: number
       }
       whatsapp_status_rank: { Args: { status: string }; Returns: number }
     }
