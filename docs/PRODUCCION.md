@@ -53,10 +53,61 @@ real, pero la regla simple es: **el seed no se toca en producción**.
 **Verificación:**
 
 ```sql
-select count(*) from supabase_migrations.schema_migrations;  -- 31
+select count(*) from supabase_migrations.schema_migrations;  -- 46
 select public from storage.buckets where id = 'whatsapp-media';  -- false
 select public.agent_can_run();  -- true
 ```
+
+### El lease del lock de turno de la IA
+
+La migración `20260829020000_conversations_turn_lock_lease.sql` agrega dos
+columnas a `conversations` (`ai_turn_lock_until`, `ai_turn_lock_token`) y tres
+funciones — `ai_turn_lock_acquire`, `ai_turn_lock_renew`, `ai_turn_lock_release`
+—, todas `security definer`, revocadas a `public` y concedidas solo a
+`service_role`: ningún camino con sesión de usuario debe poder trabar ni
+destrabar la IA de un chat ajeno.
+
+**Regla dura: esta migración tiene que estar aplicada y visible en PostgREST
+antes de desplegar el código que la usa** (commit "El lock de turno de la IA
+vence solo: un proceso muerto ya no deja muda una conversación"). Si
+PostgREST no recargó el esquema, cada turno de IA falla al intentar tomar el
+lock. La migración termina en `notify pgrst, 'reload schema'`, así que
+normalmente se entera sola — pero verifícalo, no lo des por hecho:
+
+```sql
+-- Las dos columnas existen
+select column_name from information_schema.columns
+where table_schema = 'public' and table_name = 'conversations'
+  and column_name in ('ai_turn_lock_until', 'ai_turn_lock_token');
+
+-- Las tres funciones existen y solo service_role puede ejecutarlas
+select routine_name from information_schema.routines
+where routine_schema = 'public'
+  and routine_name in ('ai_turn_lock_acquire', 'ai_turn_lock_renew', 'ai_turn_lock_release');
+
+select has_function_privilege('service_role', 'public.ai_turn_lock_acquire(uuid, text, integer)', 'execute');  -- true
+select has_function_privilege('authenticated', 'public.ai_turn_lock_acquire(uuid, text, integer)', 'execute'); -- false
+```
+
+Y una llamada real por PostgREST, con la service key, contra un uuid que no
+existe:
+
+```bash
+curl -X POST "https://<tu-proyecto>.supabase.co/rest/v1/rpc/ai_turn_lock_acquire" \
+  -H "apikey: $SUPABASE_SERVICE_ROLE_KEY" \
+  -H "Authorization: Bearer $SUPABASE_SERVICE_ROLE_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"p_conversation_id":"00000000-0000-0000-0000-000000000000","p_token":"chequeo","p_lease_seconds":90}'
+```
+
+Debe responder `false` (el `update` no encontró la fila) — **no un 404**. Un
+404 acá es la señal de que PostgREST todavía no recargó el esquema.
+
+**Lo que NO hace falta:** ningún `UPDATE` de reparación sobre
+`ai_turn_running`. Esa columna queda (obsoleta, se elimina en una migración
+posterior), el mecanismo nuevo la ignora, y las conversaciones que hoy estén
+trabadas por un turno zombi se descongelan solas al desplegar — sin acción
+manual.
 
 ### Datos que sí van en producción
 
@@ -133,6 +184,13 @@ La IA arranca encendida. Antes de que hable con un cliente real:
    conversación de prueba y nunca toca un número real.
 5. **Ten a mano el interruptor global**, que apaga la IA en todo el CRM de una
    vez.
+
+Si un turno se cae a mitad de camino (crash, redeploy), la conversación queda
+bloqueada como máximo 90 segundos —`TURN_LOCK_LEASE_SECONDS` en
+`src/lib/ai/conversation-lock.ts`— y no para siempre como con el booleano de
+antes. Mientras el turno sigue vivo, un latido renueva ese lease cada 30
+segundos (`TURN_LOCK_RENEW_SECONDS`), así que un turno normal nunca lo deja
+vencer.
 
 ---
 
@@ -393,7 +451,7 @@ Con todo configurado, esta lista debe pasar entera:
 
 - [ ] Una restauración de prueba devuelve los datos completos
 - [ ] `npm run build` sin errores ni warnings
-- [ ] `select count(*) from supabase_migrations.schema_migrations` devuelve 31
+- [ ] `select count(*) from supabase_migrations.schema_migrations` devuelve 46
 - [ ] El bucket `whatsapp-media` es privado (`public = false`)
 - [ ] Una URL directa al bucket responde 400
 - [ ] `/api/media/...` sin sesión responde 401
