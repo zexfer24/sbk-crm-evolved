@@ -90,3 +90,15 @@ jobs:
           psql "postgresql://postgres:postgres@127.0.0.1:54322/postgres" \
             -v ON_ERROR_STOP=1 \
             -f supabase/tests/permisos_funciones.sql
+
+      # La invariante "ningún lead invisible" (ver CLAUDE.md). Va acá y no en
+      # vitest porque el número que verifica lo calcula una función SQL, y
+      # porque su gemelo en TypeScript —`isUnassignedLead`, el que arma la
+      # píldora de la bandeja— tiene su propio archivo de contrato con los
+      # MISMOS casos: si las dos definiciones se separan, uno de los dos se
+      # pone rojo. Corre en transacción con rollback, no ensucia la base.
+      - name: Invariante "ningún lead invisible"
+        run: |
+          psql "postgresql://postgres:postgres@127.0.0.1:54322/postgres" \
+            -v ON_ERROR_STOP=1 \
+            -f supabase/tests/invariante_leads.sql
