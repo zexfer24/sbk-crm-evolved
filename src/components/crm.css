@@ -1325,7 +1325,9 @@
 /* Aviso de "no se pudo traer la bandeja" (A.T5, 29/8/2026) cuando ya hay
    filas pintadas encima: mismo lugar al pie que `.crm-load-more`, pero
    angosto en vez del `.crm-empty` de página completa — no puede tapar lo que
-   el asesor ya estaba leyendo. */
+   el asesor ya estaba leyendo. La reusa A.T4 (mismo día) para el aviso de
+   "no se pudo traer la página siguiente": misma forma, mismo lugar, distinto
+   mensaje y sin las filas viejas afectadas. */
 .crm-pager-error {
   flex-direction: row;
   padding: 10px 20px;

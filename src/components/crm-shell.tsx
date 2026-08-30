@@ -625,6 +625,11 @@ export function CrmShell({
             hasMore={allPager.hasMore}
             loadingMore={allPager.loadingMore}
             onLoadMore={allPager.loadMore}
+            // A.T4 (29/8/2026): si la página siguiente de "Todos" se cae,
+            // el sidebar necesita saberlo para avisar en vez de seguir
+            // ofreciendo "Cargar más" como si nada hubiera pasado — mismo
+            // `allPager` que ya presta las tres props de arriba.
+            lastPageFailed={allPager.lastPageFailed}
             counts={inboxCounts}
             initialUnreadRows={initialUnreadConversations}
           />

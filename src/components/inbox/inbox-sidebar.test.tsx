@@ -806,6 +806,105 @@ describe("InboxSidebar — fallo de la primera página (A.T5)", () => {
 });
 
 /**
+ * A.T4: `useInboxPager` ya distinguía este caso (`lastPageFailed`, ver el
+ * comentario grande de `use-inbox-pager.ts`) desde A.T5, pero hasta esta
+ * tarea nadie lo leía — el pie de la bandeja seguía diciendo "Cargar más
+ * conversaciones" como si la petición nunca hubiera fallado.
+ */
+describe("InboxSidebar — fallo de una página siguiente (A.T4)", () => {
+  function paginaLlena(prefix: string, count = INBOX_PAGE_SIZE): Conversation[] {
+    const base = new Date("2026-08-20T12:00:00Z").getTime();
+    return Array.from({ length: count }, (_, i) =>
+      conversation({
+        id: `${prefix}-${i}`,
+        unreadCount: 1,
+        lastMessageAt: new Date(base - i * 60_000).toISOString(),
+      })
+    );
+  }
+
+  /**
+   * Vía "No leídas" (resuelve por `serverPager`). Reintentar debe pedir la
+   * MISMA página: el cursor no se movió porque la respuesta que falló nunca
+   * llegó a actualizarlo (ver el comentario grande de `use-inbox-pager.ts`).
+   */
+  it("con filas ya cargadas, si la página siguiente falla el pie avisa y ofrece reintentar en vez de 'Cargar más'; reintentar pide la misma página y las filas nuevas aparecen", async () => {
+    const primera = paginaLlena("u");
+    const segunda = [conversation({ id: "u-extra-1", unreadCount: 1 })];
+    const cursoresConCursor: unknown[] = [];
+
+    vi.mocked(fetchConversations).mockImplementation(async (_supabase, options) => {
+      if (!options?.unreadOnly) return [];
+      if (!options.cursor) return primera;
+      cursoresConCursor.push(options.cursor);
+      if (cursoresConCursor.length === 1) throw new Error("network");
+      return segunda;
+    });
+
+    const { container } = render(
+      <InboxSidebar
+        conversations={[]}
+        selectedId={null}
+        onSelect={() => {}}
+        currentAgent={JEFA}
+        allTags={ALL_TAGS}
+        bcvRate={null}
+      />
+    );
+
+    await waitFor(() => expect(visibleIds(container)).toHaveLength(INBOX_PAGE_SIZE));
+
+    fireEvent.click(screen.getByRole("button", { name: /cargar más/i }));
+
+    expect(await screen.findByText("No se pudo traer la página siguiente.")).toBeTruthy();
+    expect(screen.queryByText("Cargar más conversaciones")).toBeNull();
+
+    fireEvent.click(screen.getByRole("button", { name: "Reintentar" }));
+
+    await waitFor(() => expect(visibleIds(container)).toContain("u-extra-1"));
+    expect(screen.queryByText("No se pudo traer la página siguiente.")).toBeNull();
+
+    // Las dos llamadas que llevaron cursor pidieron la MISMA página.
+    expect(cursoresConCursor).toHaveLength(2);
+    expect(cursoresConCursor[0]).toEqual(cursoresConCursor[1]);
+  });
+
+  /**
+   * "Todos" pagina localmente (props `hasMore`/`loadingMore`/`onLoadMore`
+   * del shell): la decisión (b) del plan hace que el shell también pase
+   * `lastPageFailed` (de su propio `allPager`) para que este camino avise
+   * igual que "No leídas"/"Mías". Acá se prueba la mitad que le toca al
+   * sidebar — que la prop, en `true`, se pinta y que reintentar llama
+   * `onLoadMore` (en producción, `allPager.loadMore`) y no alguna función de
+   * reintentar-primera-página, que no aplica en este caso.
+   */
+  it("en 'Todos' (paginación local), con hasMore y lastPageFailed el pie avisa y Reintentar llama a onLoadMore", () => {
+    const onLoadMore = vi.fn();
+    render(
+      <InboxSidebar
+        conversations={CONVERSATIONS}
+        selectedId={null}
+        onSelect={() => {}}
+        currentAgent={JEFA}
+        allTags={ALL_TAGS}
+        bcvRate={null}
+        hasMore
+        loadingMore={false}
+        lastPageFailed
+        onLoadMore={onLoadMore}
+      />
+    );
+    irATodos();
+
+    expect(screen.getByText("No se pudo traer la página siguiente.")).toBeTruthy();
+    expect(screen.queryByText("Cargar más conversaciones")).toBeNull();
+
+    fireEvent.click(screen.getByRole("button", { name: "Reintentar" }));
+    expect(onLoadMore).toHaveBeenCalledTimes(1);
+  });
+});
+
+/**
  * Buscar dentro de un filtro estrecho devuelve vacío sin explicación: un
  * chat ya leído no aparece en "No leídas" aunque el nombre o el mensaje
  * coincidan. Al primer carácter la píldora salta a "Todos".

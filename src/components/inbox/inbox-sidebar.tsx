@@ -96,6 +96,17 @@ interface InboxSidebarProps {
   loadingMore?: boolean;
   onLoadMore?: () => void;
   /**
+   * La página siguiente de "Todos" falló (A.T4, 29/8/2026). El shell la
+   * expone acá desde `allPager.lastPageFailed` —el mismo `useInboxPager` que
+   * ya presta `hasMore`/`onLoadMore`— para que el pie de la lista pueda
+   * avisar y ofrecer reintentar en vez de seguir diciendo "Cargar más" como
+   * si la petición nunca hubiera fallado. "No leídas"/"Mías" no la
+   * necesitan: tienen su propio `serverPager` con el mismo campo (ver
+   * `pager` más abajo). Por defecto `false`: un consumidor que no la pasa
+   * nunca ve el aviso, igual que antes de esta tarea.
+   */
+  lastPageFailed?: boolean;
+  /**
    * Conteos honestos de cada píldora, contra la base entera y no contra la
    * ventana cargada. Los arma el shell (`fetchInboxCounts`). Solo
    * "No leídas" los usa (ver `filterItems`): sin la prop no muestra número
@@ -124,6 +135,7 @@ export function InboxSidebar({
   hasMore = false,
   loadingMore = false,
   onLoadMore,
+  lastPageFailed = false,
   counts,
   initialUnreadRows,
 }: InboxSidebarProps) {
@@ -399,6 +411,15 @@ export function InboxSidebar({
    * hook nunca sale a la red por esa primera página, así que jamás puede
    * fallarla. Un error de primera página es, por construcción, imposible en
    * este camino: no hay nada que `retry()` deba hacer.
+   *
+   * `lastPageFailed` es distinto: a "Todos" SÍ le puede fallar una página
+   * SIGUIENTE (cargó la primera, la segunda se cae), el mismo caso que
+   * "No leídas"/"Mías" resuelven con `serverPager`. Por eso viene de la prop
+   * (A.T4, 29/8/2026) y no hardcodeada en `false` como los otros dos campos.
+   * Y por eso `loadMore` de esta rama es lo que hay que reintentar —nunca
+   * `retry()`, que en este camino no hace nada—: el cursor de "Todos" vive en
+   * `allPager` (crm-shell.tsx) y no se movió con el fallo, así que volver a
+   * llamar `onLoadMore()` pide exactamente la misma página que se cayó.
    */
   const pager: InboxPagerView = useMemo(
     () =>
@@ -407,12 +428,12 @@ export function InboxSidebar({
             status: "ready",
             hasMore,
             loadingMore,
-            lastPageFailed: false,
+            lastPageFailed,
             loadMore: () => onLoadMore?.(),
             retry: () => {},
           }
         : serverPager,
-    [paginatesLocally, hasMore, loadingMore, onLoadMore, serverPager]
+    [paginatesLocally, hasMore, loadingMore, lastPageFailed, onLoadMore, serverPager]
   );
 
   /**
@@ -655,8 +676,28 @@ export function InboxSidebar({
             "cargar más" ya es la señal visible de que queda más — el cartel
             de recorte que tenía esta línea (`crm-list-truncated`, tarea del
             29/8/2026 anterior a esta) dejó de hacer falta apenas "No leídas"
-            y "Mías" también pudieron ofrecerlo. */}
-        {pager.hasMore && (
+            y "Mías" también pudieron ofrecerlo.
+
+            A.T4 (29/8/2026): cuando la que se cayó fue la página SIGUIENTE
+            —no la primera, esa la cubre `pagerFailed` arriba— el botón deja
+            de fingir que no pasó nada. `pager.hasMore` sigue en `true`
+            porque el fallo no toca `reachedEnd` (ver `use-inbox-pager.ts`),
+            así que este bloque es el único lugar donde decidir cuál de los
+            dos pintar; nunca compiten por espacio con el cartel de arriba
+            porque ahí `pager.hasMore` es `false` (el error de primera
+            página deja `status: "error"`, y `hasMore` exige `"ready"`).
+            Reintentar llama a `pager.loadMore` —NO `pager.retry`—: el cursor
+            no se movió con el fallo, así que repetir la misma llamada pide
+            exactamente la página que se cayó. */}
+        {pager.hasMore && pager.lastPageFailed && (
+          <p className="crm-empty crm-pager-error">
+            <span>No se pudo traer la página siguiente.</span>
+            <button type="button" className="crm-pill" onClick={pager.loadMore}>
+              Reintentar
+            </button>
+          </p>
+        )}
+        {pager.hasMore && !pager.lastPageFailed && (
           <button
             type="button"
             className="crm-pill crm-load-more"
