@@ -133,11 +133,14 @@ export interface BoardConversation {
    * `true` aunque hoy esté esperando de nuevo. Ese fue el plan de la entrega
    * 2 (partir la píldora "Sin contestar" por este campo); probarlo así vació
    * la píldora en producción el 28/8/2026, y la decisión de ese día lo
-   * reemplazó por la partición en `buildInboxSections`
-   * (src/lib/inbox-sections.ts), que corta por la ventana de 24 h de Meta —
-   * un corte de tiempo, no de historial. El campo se conserva porque
-   * `neverRepliedOnly` (src/lib/data.ts) lo sigue usando como herramienta
-   * disponible.
+   * reemplazó por un corte de tiempo, no de historial: la ventana de 24 h de
+   * Meta (`isStalePending`, src/lib/dashboard.ts). Ese corte de tiempo nunca
+   * volvió a vivir en la bandeja —ni siquiera con el regreso de la píldora
+   * "Pendientes" el 30/8/2026, que la partición de `buildInboxSections`
+   * (src/lib/inbox-sections.ts) resuelve por LECTURA, no por ventana—; sigue
+   * siendo terreno exclusivo del Dashboard y el `AgentHomePanel`. El campo
+   * se conserva porque `neverRepliedOnly` (src/lib/data.ts) lo sigue usando
+   * como herramienta disponible.
    */
   hasReply: boolean;
   createdAt: string;

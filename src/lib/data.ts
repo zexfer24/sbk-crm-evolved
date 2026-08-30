@@ -596,11 +596,14 @@ export interface FetchConversationsOptions {
    * lo que sigue dentro (se le puede escribir texto libre ahora mismo),
    * `"stale"` lo que ya se salió.
    *
-   * Alimentaba la sección "Esperando +24 h" de `inbox-sections.ts`, que la
-   * reforma de píldoras Todos/No leídas/Mías retira de la bandeja. La opción
-   * queda igual que `neverRepliedOnly`: documentada y viva para quien la
-   * necesite (`pendingStale` de `InboxCounts` la sigue usando para el panel
-   * de inicio), sin consumidor propio en la bandeja.
+   * Alimentaba la sección "Esperando +24 h" de `inbox-sections.ts` hasta el
+   * 28/8/2026 (tarde), cuando la reforma de píldoras Todos/No leídas/Mías la
+   * retiró de la bandeja. La píldora "Pendientes" volvió a la bandeja el
+   * 30/8/2026, pero partida por LECTURA (`buildInboxSections`, case
+   * "pending"), no por esta ventana — la opción sigue sin consumidor propio
+   * en la bandeja, viva para quien la necesite igual que `neverRepliedOnly`
+   * (`pendingStale` de `InboxCounts` la sigue usando para el panel de
+   * inicio).
    *
    * Mismo corte que `freeformWindowCutoff`/`withinFreeformWindow`
    * (src/lib/dashboard.ts) y mismo operador estricto que usa
@@ -611,11 +614,12 @@ export interface FetchConversationsOptions {
    *
    * `"stale"` incluye además `last_customer_message_at is null`: sin fecha
    * del cliente no hay ventana abierta, mismo criterio de "fallar cerrado"
-   * que usan `withinFreeformWindow` y la partición de `buildInboxSections`.
-   * En la práctica no debería darse para filas con `awaiting_reply` en
-   * `true` — la columna generada exige `last_customer_message_at is not
-   * null` — pero la opción es genérica y no asume que siempre se combine con
-   * `awaitingReplyOnly`.
+   * que usa `withinFreeformWindow` (YA NO la partición de
+   * `buildInboxSections`, que desde el 30/8/2026 no corta por ventana de
+   * 24h — ver `ventana-24h-contrato.test.ts`). En la práctica no debería
+   * darse para filas con `awaiting_reply` en `true` — la columna generada
+   * exige `last_customer_message_at is not null` — pero la opción es
+   * genérica y no asume que siempre se combine con `awaitingReplyOnly`.
    */
   pendingWindow?: "fresh" | "stale";
   /**
@@ -737,7 +741,10 @@ async function fetchConversationRows<Raw extends CursorableRow>(
     if (pendingWindow === "stale") {
       // `last_customer_message_at is null` cae acá: sin fecha del cliente no
       // hay ventana abierta (fallar cerrado), mismo criterio que
-      // `withinFreeformWindow` y `buildInboxSections` (inbox-sections.ts).
+      // `withinFreeformWindow` (dashboard.ts) — YA NO `buildInboxSections`
+      // (inbox-sections.ts), que desde el 30/8/2026 parte "Pendientes" por
+      // lectura, no por ventana de 24h. Lo que hoy amarra esta pata con la
+      // de memoria es `ventana-24h-contrato.test.ts`.
       orGroups.push([
         `last_customer_message_at.lte.${pendingWindowCutoff}`,
         "last_customer_message_at.is.null",
@@ -879,17 +886,21 @@ export async function fetchConversation(
  * 60.000.
  *
  * `pending`/`pendingStale` datan de la reforma del 28/8/2026 (píldoras
- * "Pendientes"/"Lo mío"/"Todos") y ya no tienen píldora propia en la
- * bandeja —la retiró la reforma siguiente, a Todos/No leídas/Mías—, pero
- * el panel de inicio los sigue usando: se conservan intactos. `unread` es
- * el conteo de esa reforma nueva, para la píldora "No leídas".
+ * "Pendientes"/"Lo mío"/"Todos"). La reforma siguiente esa misma tarde le
+ * quitó a `pending` su píldora en la bandeja (quedó Todos/No leídas/Mías) y
+ * lo dejó solo para el panel de inicio; la tercera reforma, el 30/8/2026,
+ * se la devolvió —medida contra producción: "No leídas" resultó subconjunto
+ * ESTRICTO de "Pendientes", así que 231 chats leídos-y-sin-responder no
+ * tenían ninguna píldora que los alcanzara—, así que hoy `pending` sirve a
+ * las dos vistas otra vez. `unread` es el conteo de la segunda reforma,
+ * para la píldora "No leídas".
  */
 export interface InboxCounts {
   /**
-   * Total de la píldora "Pendientes" (panel de inicio): `awaiting_reply and
-   * status <> 'closed'`, sin condición de asesor (a propósito — ver la
-   * migración 20260828020000). Cuenta contra toda la base, no contra lo que
-   * la bandeja tenga cargado.
+   * Total de la píldora "Pendientes" (bandeja y panel de inicio):
+   * `awaiting_reply and status <> 'closed'`, sin condición de asesor (a
+   * propósito — ver la migración 20260828020000). Cuenta contra toda la
+   * base, no contra lo que la bandeja tenga cargado.
    */
   pending: number;
   /** El subconjunto de `pending` que ya se salió de la ventana de 24 h de Meta (panel de inicio). */

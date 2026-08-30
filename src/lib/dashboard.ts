@@ -173,15 +173,23 @@ export function awaitingReply(conversation: BoardConversation): boolean {
  * ¿Esta conversación es un "pendiente atascado" — nadie contestó y ya pasó
  * la ventana de 24 h?
  *
- * Es el contrato compartido entre el Dashboard y las secciones de la
- * bandeja: la sección "Esperando +24 h" de `buildInboxSections`
- * (inbox-sections.ts) y `fetchBacklogCounts` (data.ts) miden la misma vara
- * con `withinFreeformWindow(lastCustomerMessageAt)`. Antes de esto el
- * Dashboard usaba su propio reloj (`minutesInStage`, que mira
- * `lastMessageAt ?? createdAt`): dos fórmulas para la misma frase, dos
- * números que podían contradecirse en pantalla. Cambiar el criterio acá
- * cambia las dos vistas a la vez — que es el punto: que no puedan volver a
- * divergir.
+ * Antes de esto el Dashboard usaba su propio reloj (`minutesInStage`, que
+ * mira `lastMessageAt ?? createdAt`): dos fórmulas para la misma frase, dos
+ * números que podían contradecirse en pantalla. `isStalePending` unificó el
+ * criterio con `withinFreeformWindow(lastCustomerMessageAt)`.
+ *
+ * Llegó a tener una tercera pata: hasta el 28/8/2026 (tarde) la sección
+ * "Esperando +24 h" de `buildInboxSections` (inbox-sections.ts) medía la
+ * misma vara, y un test de contrato las mantenía de acuerdo. Esa tarde la
+ * reforma le quitó a la bandeja la píldora "Pendientes" entera —con ella se
+ * fue esa sección y el test— y el criterio quedó vivo solo acá y en el
+ * panel de inicio. La píldora "Pendientes" volvió a la bandeja el
+ * 30/8/2026, pero partida por LECTURA (`buildInboxSections`, case
+ * "pending"), no por esta ventana: `inbox-sections.ts` ya no es una pata de
+ * este contrato. Las patas de hoy —`isStalePending` en memoria,
+ * `fetchInboxCounts.pendingStale` y `fetchConversations({pendingWindow})`,
+ * ambas en `data.ts`— las amarra `src/lib/ventana-24h-contrato.test.ts`,
+ * repuesto ese mismo 30/8/2026.
  */
 export function isStalePending(conversation: BoardConversation, now: number = Date.now()): boolean {
   return awaitingReply(conversation) && !withinFreeformWindow(conversation.lastCustomerMessageAt, now);

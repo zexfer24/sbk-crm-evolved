@@ -149,7 +149,11 @@ copia intermedia.
   "No leídas" de la bandeja usa `unread_count`/`manually_unread`
   (`isUnread` en `inbox-filters.ts`), no `has_reply`. La ventana de 24h sin
   respuesta sigue existiendo, pero ya no en la bandeja: vive en
-  `dashboard.ts` (`isStalePending`) y el `AgentHomePanel`.
+  `dashboard.ts` (`isStalePending`) y el `AgentHomePanel`. (30/8/2026: la
+  bandeja recuperó una píldora "Pendientes" —y es la que abre por
+  default—, pero corta por `awaiting_reply` + conversación abierta
+  [`inbox-filters.ts`], no por `has_reply` ni por la ventana de 24h; esta
+  trampa sigue vigente tal cual está escrita arriba.)
 - `supabase/seed.sql` **no va a producción** (trae usuarios con contraseña
   escrita); los seeds de catálogo y playbooks sí.
 - Sin `WHATSAPP_APP_SECRET` el webhook acepta cualquier POST (a propósito,
