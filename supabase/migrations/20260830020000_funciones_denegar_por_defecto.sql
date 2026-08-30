@@ -1,0 +1,53 @@
+-- ============================================================================
+-- Las funciones nuevas del esquema public nacen cerradas, no abiertas
+--
+-- Supabase deja puesto de fábrica un `alter default privileges ... grant
+-- execute on functions to anon, authenticated, service_role` sobre el
+-- esquema public (verificado el 30/8/2026 en `pg_default_acl` de producción:
+-- lo tienen los roles `postgres` y `supabase_admin`). Consecuencia real: toda
+-- función que se crea de ahí en más queda ejecutable por `anon` —el rol de
+-- la clave pública que viaja al navegador— sin que nadie escriba un `grant`
+-- a propósito. Eso ya pasó factura: el 30/8/2026 `agent_metrics` devolvió
+-- HTTP 200 con métricas por asesor, ventas y montos a una llamada sin
+-- sesión, simplemente porque nació con el default de Supabase puesto.
+--
+-- La migración 20260830010000 (en paralelo a esta) cierra lo que ya existe
+-- hoy. Esta migración no toca ni una función: cambia el default para que las
+-- de mañana nazcan denegadas.
+-- ============================================================================
+
+alter default privileges in schema public
+  revoke execute on functions from anon, authenticated;
+
+-- ---------------------------------------------------------------------------
+-- Tres cosas que esta línea NO garantiza, para quien la lea en seis meses:
+--
+-- 1. Es sólo hacia adelante. No cierra ninguna función existente —para eso
+--    está 20260830010000, que corre por separado.
+--
+-- 2. `alter default privileges` graba el default bajo el rol que ejecuta la
+--    sentencia, y las migraciones corren como `postgres`. La entrada de
+--    `supabase_admin` en `pg_default_acl` sigue intacta. Una función que
+--    termine creada por ese rol —la propia plataforma, en una actualización
+--    de Supabase— puede volver a nacer abierta sin que esta migración se
+--    entere.
+--
+-- 3. Por (2), lo que de verdad sostiene esto no es esta línea sino el test
+--    de permisos que recorre `pg_proc` + `has_function_privilege` y falla si
+--    aparece una función `security definer` ejecutable por `anon` fuera de
+--    la lista blanca (`is_agent`, `is_supervisor_or_admin`). Esta migración
+--    es el cinturón; ese test es los tirantes.
+--
+-- Efecto práctico para quien escriba migraciones de acá en adelante: una
+-- función nueva que SÍ deba llamarse desde el navegador ya no hereda nada.
+-- Necesita su propio `grant execute on function ... to authenticated;`
+-- explícito en la misma migración que la crea.
+--
+-- Advertencia aparte, para no repetir el error de "completar" este archivo:
+-- `is_agent()` e `is_supervisor_or_admin()` no se tocan jamás. 49 políticas
+-- de RLS `to public` las invocan; revocarles EXECUTE a `anon` convierte una
+-- consulta anónima que hoy devuelve 0 filas en un `42501 permission denied
+-- for function is_agent`, y revocárselo a `authenticated` tumba el CRM
+-- entero. Esta migración no las toca —sólo cambia defaults de objetos
+-- futuros—, pero quede escrito.
+-- ---------------------------------------------------------------------------
