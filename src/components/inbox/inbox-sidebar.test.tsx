@@ -28,15 +28,18 @@ beforeEach(() => {
 });
 
 /**
- * Responde según qué píldora pidió la consulta: `unreadOnly` para "No
- * leídas", `assignedTo` para "Mías". Sin esto, dar la misma
- * `mockResolvedValue` a las dos llamadas confundiría cuál fila pertenece a
- * cuál píldora — en producción una fila puede calzar en las dos consultas a
- * la vez (un chat mío y sin leer), pero cada una la trae solo bajo su propia
- * condición.
+ * Responde según qué píldora pidió la consulta: `awaitingReplyOnly` para
+ * "Pendientes", `unreadOnly` para "No leídas", `assignedTo` para "Mías". Sin
+ * esto, dar la misma `mockResolvedValue` a las tres llamadas confundiría cuál
+ * fila pertenece a cuál píldora — en producción una fila puede calzar en más
+ * de una consulta a la vez (un chat mío, sin leer y sin responder), pero cada
+ * una la trae solo bajo su propia condición.
  */
-function mockServerRows(over: { unread?: Conversation[]; mine?: Conversation[] } = {}) {
+function mockServerRows(
+  over: { pending?: Conversation[]; unread?: Conversation[]; mine?: Conversation[] } = {}
+) {
   vi.mocked(fetchConversations).mockImplementation(async (_supabase, options) => {
+    if (options?.awaitingReplyOnly) return over.pending ?? [];
     if (options?.unreadOnly) return over.unread ?? [];
     if (options?.assignedTo) return over.mine ?? [];
     return [];
@@ -62,11 +65,19 @@ function conversation(over: {
   status?: Conversation["status"];
   tags?: Tag[];
   lastMessageAt?: string | null;
+  /**
+   * Sin fecha del cliente, `awaitingReply` (dashboard.ts) da `false` por
+   * definición: por eso ninguna conversación de este constructor satisface
+   * el corte de "Pendientes" salvo que se pase explícitamente. Los tests que
+   * sí necesitan pasar ese corte usan `pendingConversation` (más abajo) en
+   * vez de fijar este campo a mano en cada caso.
+   */
+  lastCustomerMessageAt?: string | null;
 }): Conversation {
   return {
     id: over.id,
     status: over.status ?? "open",
-    lastCustomerMessageAt: null,
+    lastCustomerMessageAt: over.lastCustomerMessageAt ?? null,
     lastMessageAt: "lastMessageAt" in over ? (over.lastMessageAt ?? null) : "2026-08-20T10:00:00Z",
     hasReply: false,
     contact: {
@@ -90,6 +101,22 @@ function conversation(over: {
     lastMessageDirection: "inbound",
     lastMessageStatus: null,
   } as unknown as Conversation;
+}
+
+/**
+ * Atajo para una conversación que SÍ satisface `awaitingReply` (dashboard.ts)
+ * — el mismo predicado que `matchesFilter` (inbox-filters.ts) vuelve a
+ * comprobar en memoria para la píldora "Pendientes", incluso sobre filas que
+ * ya vienen filtradas del servidor. `lastCustomerMessageAt` igual a
+ * `lastMessageAt` (el default de `conversation()`) alcanza: la igualdad
+ * cuenta como "todavía esperando" (`<=`, no `<`).
+ */
+function pendingConversation(over: Parameters<typeof conversation>[0]): Conversation {
+  const base = conversation(over);
+  return {
+    ...base,
+    lastCustomerMessageAt: over.lastCustomerMessageAt ?? base.lastMessageAt ?? "2026-08-20T10:00:00Z",
+  } as Conversation;
 }
 
 const CONVERSATIONS = [
@@ -155,27 +182,30 @@ function irATodos() {
 }
 
 describe("InboxSidebar — qué filtros ve cada rol", () => {
-  it("al administrador le ofrece las tres píldoras, en ese orden", () => {
+  it("al administrador le ofrece las cuatro píldoras, en ese orden", () => {
     renderSidebar(JEFA);
-    expect(pillLabels()).toEqual(["No leídas", "Mías", "Todos"]);
+    expect(pillLabels()).toEqual(["Pendientes", "No leídas", "Mías", "Todos"]);
   });
 
-  it("al asesor le ofrece las mismas tres píldoras", () => {
+  it("al asesor le ofrece las mismas cuatro píldoras", () => {
     renderSidebar(ANA);
-    expect(pillLabels()).toEqual(["No leídas", "Mías", "Todos"]);
+    expect(pillLabels()).toEqual(["Pendientes", "No leídas", "Mías", "Todos"]);
   });
 });
 
 /**
- * Los cortes viejos (por leído, por asignado, y "Pendientes" —retirado de la
- * bandeja en esta misma reforma—) no tienen botón propio. Reintroducir
- * alguno como píldora es decisión consciente del operador, no un descuido de
- * refactor. Este test vigila BOTONES y no texto suelto en la pantalla porque
- * "Sin leer" sí existe dentro de la bandeja: como encabezado de sección
- * dentro de "Mías" (`inbox-sections.ts`), no como filtro.
+ * Los cortes viejos por leído y por asignado no tienen botón propio.
+ * Reintroducir alguno como píldora es decisión consciente del operador, no
+ * un descuido de refactor. "Pendientes" salió de esta lista de retirados: la
+ * reforma del 30/8/2026 la trajo de vuelta como píldora real (ver `case
+ * "pending"` en inbox-filters.ts para el dato que la justifica) — tiene su
+ * propia cobertura más abajo. Este test vigila BOTONES y no texto suelto en
+ * la pantalla porque "Sin leer" sí existe dentro de la bandeja: como
+ * encabezado de sección dentro de "Mías" y de "Pendientes"
+ * (`inbox-sections.ts`), no como filtro.
  */
 describe("InboxSidebar — los cortes viejos no vuelven", () => {
-  const RETIRADOS = ["Pendientes", "Sin leer", "Sin asignar", "Asignados", "Míos sin leer"];
+  const RETIRADOS = ["Sin leer", "Sin asignar", "Asignados", "Míos sin leer"];
 
   it.each(RETIRADOS)("no ofrece la píldora «%s» al administrador", (nombre) => {
     renderSidebar(JEFA);
@@ -188,9 +218,10 @@ describe("InboxSidebar — los cortes viejos no vuelven", () => {
   });
 });
 
-describe("InboxSidebar — 'No leídas' y 'Mías' salen a buscar a la base", () => {
-  it("al abrir en 'No leídas' (filtro por defecto), pide unreadOnly con la primera página", () => {
+describe("InboxSidebar — 'Pendientes', 'No leídas' y 'Mías' salen a buscar a la base", () => {
+  it("al pasar a 'No leídas', pide unreadOnly con la primera página", () => {
     renderSidebar(JEFA);
+    irA("No leídas");
 
     expect(fetchConversations).toHaveBeenCalledWith(expect.anything(), {
       unreadOnly: true,
@@ -237,6 +268,10 @@ describe("InboxSidebar — 'No leídas' y 'Mías' salen a buscar a la base", () 
         bcvRate={null}
       />
     );
+    // El filtro por defecto pasó a "Pendientes" (30/8/2026), que excluye lo
+    // cerrado (`status !== "closed"`); hay que entrar a "No leídas" a
+    // propósito para probar SU regla, que es la contraria.
+    irA("No leídas");
 
     await waitFor(() => expect(visibleIds(container)).toContain("cerrada-sin-leer"));
   });
@@ -254,22 +289,27 @@ describe("InboxSidebar — 'No leídas' y 'Mías' salen a buscar a la base", () 
         bcvRate={null}
       />
     );
+    irA("No leídas");
 
     await waitFor(() => expect(visibleIds(container)).toContain("apartada"));
   });
 
   /**
-   * `page.tsx` resuelve la consulta de "No leídas" en el servidor y la pasa
-   * como `initialUnreadRows` para que la bandeja no abra con el cartel
+   * `crm-shell.tsx` resuelve la consulta de "Pendientes" —el filtro por
+   * defecto desde el 30/8/2026— en el servidor y la pasa como
+   * `initialPendingRows` para que la bandeja no abra con el cartel
    * "Buscando…" mientras el efecto de red (arriba) hace el mismo viaje otra
    * vez. La consulta del mock nunca resuelve en este test a propósito: si la
    * fila apareciera solo por la semilla, seguiría visible sin depender de
-   * que esa promesa llegue a resolver.
+   * que esa promesa llegue a resolver. `pendingConversation` y no
+   * `conversation`: la fila sembrada también pasa por `matchesFilter` en
+   * memoria (inbox-filters.ts), así que tiene que satisfacer `awaitingReply`
+   * para que la semilla se vea.
    */
-  it("con initialUnreadRows, la fila sembrada se ve antes de que la consulta resuelva", () => {
+  it("con initialPendingRows, la fila sembrada se ve antes de que la consulta resuelva", () => {
     vi.mocked(fetchConversations).mockImplementation(() => new Promise(() => {}));
 
-    const sembrada = conversation({ id: "sembrada", unreadCount: 1 });
+    const sembrada = pendingConversation({ id: "sembrada", unreadCount: 1 });
 
     const { container } = render(
       <InboxSidebar
@@ -279,7 +319,7 @@ describe("InboxSidebar — 'No leídas' y 'Mías' salen a buscar a la base", () 
         currentAgent={JEFA}
         allTags={ALL_TAGS}
         bcvRate={null}
-        initialUnreadRows={[sembrada]}
+        initialPendingRows={[sembrada]}
       />
     );
 
@@ -296,7 +336,7 @@ describe("InboxSidebar — 'No leídas' y 'Mías' salen a buscar a la base", () 
   it("el fallo de la primera página no borra las filas sembradas", async () => {
     vi.mocked(fetchConversations).mockRejectedValue(new Error("network"));
 
-    const sembradaQueSobrevive = conversation({ id: "sembrada-que-sobrevive", unreadCount: 1 });
+    const sembradaQueSobrevive = pendingConversation({ id: "sembrada-que-sobrevive", unreadCount: 1 });
 
     const { container } = render(
       <InboxSidebar
@@ -306,7 +346,7 @@ describe("InboxSidebar — 'No leídas' y 'Mías' salen a buscar a la base", () 
         currentAgent={JEFA}
         allTags={ALL_TAGS}
         bcvRate={null}
-        initialUnreadRows={[sembradaQueSobrevive]}
+        initialPendingRows={[sembradaQueSobrevive]}
       />
     );
 
@@ -347,6 +387,7 @@ describe("InboxSidebar — 'No leídas' y 'Mías' salen a buscar a la base", () 
         bcvRate={null}
       />
     );
+    irA("No leídas");
 
     await waitFor(() => expect(fetchConversations).toHaveBeenCalled());
     await waitFor(() => expect(visibleIds(container)).toEqual([]));
@@ -362,6 +403,10 @@ describe("InboxSidebar — 'No leídas' y 'Mías' salen a buscar a la base", () 
  * paginar por cursor (`inbox-paging.ts`), igual que "Todos": ahora SÍ
  * ofrecen "cargar más", y el cursor de la página siguiente es la última fila
  * ACUMULADA (`cursorAfterPage`), no la de la página que acaba de llegar sola.
+ * "Pendientes" se suma a las dos con la reforma del 30/8/2026: usa el mismo
+ * `serverPager` (ver `pillQueryOptions` en inbox-sidebar.tsx), así que
+ * hereda la paginación por cursor sin código propio — su cobertura vive en
+ * el describe de "Pendientes" más abajo.
  */
 describe("InboxSidebar — 'No leídas' y 'Mías' paginan por cursor", () => {
   /** `INBOX_PAGE_SIZE` filas, para forzar una página llena: la que sí ofrece "cargar más". */
@@ -389,6 +434,7 @@ describe("InboxSidebar — 'No leídas' y 'Mías' paginan por cursor", () => {
         bcvRate={null}
       />
     );
+    irA("No leídas");
 
     await waitFor(() => expect(visibleIds(container)).toHaveLength(INBOX_PAGE_SIZE));
     expect(fetchConversations).toHaveBeenCalledWith(expect.anything(), {
@@ -420,6 +466,7 @@ describe("InboxSidebar — 'No leídas' y 'Mías' paginan por cursor", () => {
         bcvRate={null}
       />
     );
+    irA("No leídas");
 
     await waitFor(() => expect(visibleIds(container)).toHaveLength(INBOX_PAGE_SIZE));
 
@@ -456,8 +503,20 @@ describe("InboxSidebar — 'No leídas' y 'Mías' paginan por cursor", () => {
         bcvRate={null}
       />
     );
+    irA("No leídas");
 
-    await waitFor(() => expect(fetchConversations).toHaveBeenCalledTimes(1));
+    // Dos llamadas en total: la de "Pendientes" —filtro por defecto, en
+    // vuelo con la respuesta vacía de `mockServerRows` para lo que no pidió
+    // `unreadOnly`— más la de "No leídas" tras el clic. Se cuentan las que sí
+    // llevan `unreadOnly` para que la de "Pendientes" no ensucie lo que este
+    // test vigila: que `reachedEnd` no dispare una SEGUNDA llamada a
+    // "No leídas".
+    await waitFor(() => {
+      const llamadasUnread = vi
+        .mocked(fetchConversations)
+        .mock.calls.filter(([, options]) => options?.unreadOnly);
+      expect(llamadasUnread).toHaveLength(1);
+    });
     expect(screen.queryByRole("button", { name: /cargar más/i })).toBeNull();
   });
 
@@ -499,6 +558,138 @@ describe("InboxSidebar — 'No leídas' y 'Mías' paginan por cursor", () => {
 });
 
 /**
+ * Cobertura propia de "Pendientes" (reforma del 30/8/2026): la píldora que
+ * abre la bandeja por defecto, medida contra producción — "No leídas" es
+ * subconjunto estricto de "Pendientes" (282 filas contra 51), así que los
+ * 231 chats leídos-y-sin-responder solo vivían en "Todos" hasta esta
+ * reforma. El resto del contrato con el servidor (paginación por cursor,
+ * carreras, pulso vivo) ya lo comparte con "No leídas"/"Mías" vía el mismo
+ * `serverPager`/`pillQueryOptions` — esta sección no lo repite, solo prueba
+ * lo que es propio de esta píldora: qué pide, y el caso que la trajo de
+ * vuelta.
+ */
+describe("InboxSidebar — 'Pendientes' resuelve en el servidor y parte en dos secciones", () => {
+  it("al abrir en 'Pendientes' (filtro por defecto), pide activeOnly y awaitingReplyOnly con la primera página", () => {
+    renderSidebar(JEFA);
+
+    expect(fetchConversations).toHaveBeenCalledWith(expect.anything(), {
+      activeOnly: true,
+      awaitingReplyOnly: true,
+      limit: INBOX_PAGE_SIZE,
+    });
+  });
+
+  /**
+   * Mismo patrón que "No leídas"/"Mías" (ver el describe de paginación por
+   * cursor): "Pendientes" pasa por el mismo `serverPager`, así que hereda la
+   * paginación por cursor sin código propio. Alcanza con un caso, no los tres
+   * H1/H2/H3 — esos ya prueban el mecanismo genérico, no algo específico de
+   * esta píldora.
+   */
+  it("pagina por cursor: la página llena ofrece 'cargar más' y la siguiente pide el cursor de la última fila acumulada", async () => {
+    function paginaLlenaPendiente(prefix: string, count = INBOX_PAGE_SIZE): Conversation[] {
+      const base = new Date("2026-08-20T12:00:00Z").getTime();
+      return Array.from({ length: count }, (_, i) =>
+        pendingConversation({
+          id: `${prefix}-${i}`,
+          lastMessageAt: new Date(base - i * 60_000).toISOString(),
+        })
+      );
+    }
+
+    const primera = paginaLlenaPendiente("p");
+    const segunda = [pendingConversation({ id: "p-extra-1" })];
+    let segundaLlamada: unknown;
+
+    vi.mocked(fetchConversations).mockImplementation(async (_supabase, options) => {
+      if (!options?.awaitingReplyOnly) return [];
+      if (!options.cursor) return primera;
+      segundaLlamada = options;
+      return segunda;
+    });
+
+    const { container } = render(
+      <InboxSidebar
+        conversations={[]}
+        selectedId={null}
+        onSelect={() => {}}
+        currentAgent={JEFA}
+        allTags={ALL_TAGS}
+        bcvRate={null}
+      />
+    );
+
+    await waitFor(() => expect(visibleIds(container)).toHaveLength(INBOX_PAGE_SIZE));
+    fireEvent.click(screen.getByRole("button", { name: /cargar más/i }));
+
+    const última = primera[primera.length - 1];
+    await waitFor(() =>
+      expect(segundaLlamada).toMatchObject({
+        activeOnly: true,
+        awaitingReplyOnly: true,
+        limit: INBOX_PAGE_SIZE,
+        cursor: { lastMessageAt: última.lastMessageAt, id: última.id },
+      })
+    );
+
+    await waitFor(() => expect(visibleIds(container)).toHaveLength(INBOX_PAGE_SIZE + 1));
+    expect(visibleIds(container)).toContain("p-extra-1");
+  });
+
+  it("las dos secciones se pintan: 'Sin abrir' (con lo sin leer) y 'Leídas sin responder'", async () => {
+    const sinAbrir = pendingConversation({ id: "pendiente-sin-abrir", unreadCount: 2 });
+    const leidaSinResponder = pendingConversation({ id: "pendiente-leida-sin-responder" });
+    mockServerRows({ pending: [sinAbrir, leidaSinResponder] });
+
+    const { container } = render(
+      <InboxSidebar
+        conversations={[]}
+        selectedId={null}
+        onSelect={() => {}}
+        currentAgent={JEFA}
+        allTags={ALL_TAGS}
+        bcvRate={null}
+      />
+    );
+
+    await waitFor(() => expect(visibleIds(container)).toHaveLength(2));
+    const encabezados = Array.from(
+      container.querySelectorAll(".crm-list-section .lm-eyebrow:not(.lm-num)")
+    ).map((el) => el.textContent);
+    expect(encabezados).toEqual(["Sin abrir", "Leídas sin responder"]);
+  });
+
+  /**
+   * El caso que motiva la reforma entera: antes de esta tarea, una
+   * conversación ya LEÍDA (nada sin abrir) pero sin responder no aparecía en
+   * ninguna píldora — "No leídas" la excluye por estar leída, y no había
+   * ninguna otra que mirara `awaiting_reply`. Vive en "Pendientes" desde el
+   * 30/8/2026.
+   */
+  it("una conversación LEÍDA y sin responder aparece en 'Pendientes' — antes no aparecía en ninguna píldora", async () => {
+    const leidaSinResponder = pendingConversation({
+      id: "leida-y-sin-responder",
+      unreadCount: 0,
+      manuallyUnread: false,
+    });
+    mockServerRows({ pending: [leidaSinResponder] });
+
+    const { container } = render(
+      <InboxSidebar
+        conversations={[]}
+        selectedId={null}
+        onSelect={() => {}}
+        currentAgent={JEFA}
+        allTags={ALL_TAGS}
+        bcvRate={null}
+      />
+    );
+
+    await waitFor(() => expect(visibleIds(container)).toContain("leida-y-sin-responder"));
+  });
+});
+
+/**
  * Tres carreras de la revisión de código del 29/8/2026 (H1/H2/H3). Ya no
  * las cierra una máquina propia de `inbox-sidebar.tsx`: las cierra
  * `useInboxPager` (`src/lib/use-inbox-pager.ts`, con sus propios tests) —
@@ -507,11 +698,20 @@ describe("InboxSidebar — 'No leídas' y 'Mías' paginan por cursor", () => {
  * comporte como el hook promete.
  */
 describe("InboxSidebar — carreras de servidor (revisión de código 29/8/2026)", () => {
-  /** `INBOX_PAGE_SIZE` filas, para forzar una página llena. */
+  /**
+   * `INBOX_PAGE_SIZE` filas, para forzar una página llena.
+   *
+   * `pendingConversation` y no `conversation`: H1 (más abajo) siembra sobre
+   * la píldora por defecto, que desde el 30/8/2026 es "Pendientes" y no
+   * "No leídas" — sin esto las filas de H1 no pasarían `matchesFilter` en
+   * memoria y el test vería la lista vacía en vez de la semilla. H3 y H2
+   * navegan a "No leídas" antes de mirar la lista, así que para esos dos da
+   * igual: `unreadCount: 1` alcanza para `isUnread` con o sin la fecha extra.
+   */
   function paginaLlena(prefix: string, count = INBOX_PAGE_SIZE): Conversation[] {
     const base = new Date("2026-08-20T12:00:00Z").getTime();
     return Array.from({ length: count }, (_, i) =>
-      conversation({
+      pendingConversation({
         id: `${prefix}-${i}`,
         unreadCount: 1,
         lastMessageAt: new Date(base - i * 60_000).toISOString(),
@@ -550,6 +750,7 @@ describe("InboxSidebar — carreras de servidor (revisión de código 29/8/2026)
         bcvRate={null}
       />
     );
+    irA("No leídas");
 
     const botón = await screen.findByRole("button", { name: /cargar más/i });
     // Dos eventos de scroll (o scroll + clic) en el mismo frame: los dos
@@ -565,12 +766,20 @@ describe("InboxSidebar — carreras de servidor (revisión de código 29/8/2026)
     await waitFor(() => expect(fetchConversations).toHaveBeenCalled());
   });
 
+  /**
+   * H1 se prueba sobre la píldora que abre por defecto —"Pendientes" desde
+   * el 30/8/2026, antes "No leídas"— porque es justo la interacción entre
+   * la semilla (`initialPendingRows`) y el primer render lo que está en
+   * juego: si el test navegara a otra píldora primero, `useInboxPager`
+   * abriría una sesión nueva SIN semilla, y dejaría de probar lo que dice el
+   * título.
+   */
   it("H1 — con la primera página aún en vuelo no ofrece 'cargar más'; al resolver con página llena, aparece y funciona", async () => {
     const primeraPágina = diferida<Conversation[]>();
     let segundaLlamadas = 0;
 
     vi.mocked(fetchConversations).mockImplementation(async (_supabase, options) => {
-      if (!options?.unreadOnly) return [];
+      if (!options?.awaitingReplyOnly) return [];
       if (options.cursor) {
         segundaLlamadas += 1;
         return [];
@@ -592,7 +801,7 @@ describe("InboxSidebar — carreras de servidor (revisión de código 29/8/2026)
         currentAgent={JEFA}
         allTags={ALL_TAGS}
         bcvRate={null}
-        initialUnreadRows={paginaLlena("sem")}
+        initialPendingRows={paginaLlena("sem")}
       />
     );
 
@@ -630,6 +839,7 @@ describe("InboxSidebar — carreras de servidor (revisión de código 29/8/2026)
         bcvRate={null}
       />
     );
+    irA("No leídas");
 
     const botón = await screen.findByRole("button", { name: /cargar más/i });
     fireEvent.click(botón); // pide la página 2 de "No leídas"; queda diferida.
@@ -674,6 +884,12 @@ describe("InboxSidebar — carreras de servidor (revisión de código 29/8/2026)
  * `reconcileHead`.
  */
 describe("InboxSidebar — el pulso vivo reconcilia las píldoras de servidor", () => {
+  // Los cuatro tests de este bloque prueban "No leídas" en concreto (título
+  // de cada uno): el filtro por defecto pasó a "Pendientes" (30/8/2026), así
+  // que cada uno entra a "No leídas" a propósito antes de la primera
+  // aserción — el mecanismo del pulso es genérico (cualquier píldora de
+  // servidor lo usa), pero estos casos fijan uno para no probar tres cosas
+  // en simultáneo.
   /** `INBOX_PAGE_SIZE` filas, para forzar una página llena. */
   function paginaLlena(prefix: string, count = INBOX_PAGE_SIZE): Conversation[] {
     const base = new Date("2026-08-20T12:00:00Z").getTime();
@@ -720,6 +936,7 @@ describe("InboxSidebar — el pulso vivo reconcilia las píldoras de servidor", 
         livePulse={0}
       />
     );
+    irA("No leídas");
 
     await waitFor(() => expect(visibleIds(container)).toEqual(["conv-1", "conv-2", "conv-3"]));
 
@@ -767,6 +984,7 @@ describe("InboxSidebar — el pulso vivo reconcilia las píldoras de servidor", 
         livePulse={0}
       />
     );
+    irA("No leídas");
 
     await waitFor(() => expect(visibleIds(container)).toHaveLength(INBOX_PAGE_SIZE));
 
@@ -816,6 +1034,7 @@ describe("InboxSidebar — el pulso vivo reconcilia las píldoras de servidor", 
         livePulse={0}
       />
     );
+    irA("No leídas");
 
     await waitFor(() => expect(visibleIds(container)).toHaveLength(INBOX_PAGE_SIZE));
     fireEvent.click(screen.getByRole("button", { name: /cargar más/i }));
@@ -883,6 +1102,7 @@ describe("InboxSidebar — el pulso vivo reconcilia las píldoras de servidor", 
         livePulse={0}
       />
     );
+    irA("No leídas");
 
     await waitFor(() => expect(visibleIds(container)).toEqual(["conv-1"]));
 
@@ -923,7 +1143,7 @@ describe("InboxSidebar — el pulso vivo reconcilia las píldoras de servidor", 
 
 describe("InboxSidebar — 'Buscando…' al cambiar de píldora", () => {
   it("muestra 'Buscando…' al pasar a 'Mías' mientras esa consulta no resuelve", async () => {
-    renderSidebar(JEFA); // "No leídas" resuelve enseguida: el mock por defecto contesta [].
+    renderSidebar(JEFA); // "Pendientes" (filtro por defecto) resuelve enseguida: el mock por defecto contesta [].
     await waitFor(() => expect(fetchConversations).toHaveBeenCalled());
 
     vi.mocked(fetchConversations).mockImplementation(() => new Promise(() => {}));
@@ -933,8 +1153,8 @@ describe("InboxSidebar — 'Buscando…' al cambiar de píldora", () => {
   });
 });
 
-describe("InboxSidebar — conteo de la píldora 'No leídas'", () => {
-  it("viene de counts.unread, y no aparece en ninguna otra píldora aunque counts.mine exista", async () => {
+describe("InboxSidebar — conteo de las píldoras 'Pendientes' y 'No leídas'", () => {
+  it("vienen de counts.pending y counts.unread; 'Mías' y 'Todos' se quedan sin número", async () => {
     const { container } = render(
       <InboxSidebar
         conversations={CONVERSATIONS}
@@ -949,13 +1169,14 @@ describe("InboxSidebar — conteo de la píldora 'No leídas'", () => {
     await waitFor(() => expect(fetchConversations).toHaveBeenCalled());
 
     // SlidingPills duplica la fila de botones para animar el recorte (ver
-    // `pillLabels`): el número real aparece dos veces en el DOM, una por
-    // copia. Lo que importa es que sea siempre "42" y nunca el de otra
-    // píldora.
+    // `pillLabels`): cada número real aparece dos veces en el DOM, una por
+    // copia. Orden de las píldoras: Pendientes, No leídas, Mías, Todos — las
+    // dos últimas no llevan `count`, así que no aportan ningún `<span>`; ni
+    // `counts.mine` (3) ni `counts.pendingStale` (2) deben colarse acá.
     const conteos = Array.from(container.querySelectorAll(".lm-pill-count")).map(
       (el) => el.textContent
     );
-    expect(conteos).toEqual(["42", "42"]);
+    expect(conteos).toEqual(["5", "42", "5", "42"]);
   });
 
   it("sin la prop counts, ninguna píldora muestra número", () => {
@@ -976,6 +1197,7 @@ describe("InboxSidebar — vacío de 'No leídas'", () => {
         bcvRate={null}
       />
     );
+    irA("No leídas");
 
     expect(await screen.findByText("Todo leído. No quedó nada nuevo por revisar.")).toBeTruthy();
     expect(container.querySelector(".crm-empty-unread")).toBeTruthy();
@@ -1008,6 +1230,11 @@ describe("InboxSidebar — vacío de 'Mías'", () => {
  * enciende en un camino de error, ver `use-inbox-pager.ts`), lo que falta
  * probar acá es que el sidebar cuenta la verdad: cartel propio, sin festejo,
  * con salida.
+ *
+ * Se prueba sobre el filtro por defecto sin navegar a ningún otro —
+ * "Pendientes" desde el 30/8/2026— porque es justo la primera página de ESE
+ * pager la que falla al montar; por eso `recuperada`/`sembradaQueSobrevive`
+ * usan `pendingConversation` y no `conversation`.
  */
 describe("InboxSidebar — fallo de la primera página (A.T5)", () => {
   it("avisa que no se pudo traer la bandeja, sin festejar 'Todo leído', y Reintentar vuelve a pedir", async () => {
@@ -1028,7 +1255,7 @@ describe("InboxSidebar — fallo de la primera página (A.T5)", () => {
     expect(screen.queryByText("Todo leído. No quedó nada nuevo por revisar.")).toBeNull();
     expect(container.querySelector(".crm-empty-unread")).toBeNull();
 
-    const recuperada = conversation({ id: "recuperada-tras-reintentar", unreadCount: 1 });
+    const recuperada = pendingConversation({ id: "recuperada-tras-reintentar", unreadCount: 1 });
     vi.mocked(fetchConversations).mockResolvedValueOnce([recuperada]);
 
     fireEvent.click(screen.getByRole("button", { name: "Reintentar" }));
@@ -1040,7 +1267,7 @@ describe("InboxSidebar — fallo de la primera página (A.T5)", () => {
   it("con filas ya sembradas, el fallo de la primera página las deja en pantalla y avisa sin taparlas", async () => {
     vi.mocked(fetchConversations).mockRejectedValue(new Error("network"));
 
-    const sembradaQueSobrevive = conversation({ id: "sembrada-que-sobrevive-2", unreadCount: 1 });
+    const sembradaQueSobrevive = pendingConversation({ id: "sembrada-que-sobrevive-2", unreadCount: 1 });
 
     const { container } = render(
       <InboxSidebar
@@ -1050,7 +1277,7 @@ describe("InboxSidebar — fallo de la primera página (A.T5)", () => {
         currentAgent={JEFA}
         allTags={ALL_TAGS}
         bcvRate={null}
-        initialUnreadRows={[sembradaQueSobrevive]}
+        initialPendingRows={[sembradaQueSobrevive]}
       />
     );
 
@@ -1109,6 +1336,7 @@ describe("InboxSidebar — fallo de una página siguiente (A.T4)", () => {
         bcvRate={null}
       />
     );
+    irA("No leídas");
 
     await waitFor(() => expect(visibleIds(container)).toHaveLength(INBOX_PAGE_SIZE));
 
@@ -1170,7 +1398,7 @@ describe("InboxSidebar — fallo de una página siguiente (A.T4)", () => {
 describe("InboxSidebar — buscar mueve la píldora activa a 'Todos'", () => {
   it("al escribir el primer carácter, si el filtro no era 'Todos', salta a 'Todos'", () => {
     renderSidebar(ANA);
-    expect(activePillLabel()).toBe("No leídas");
+    expect(activePillLabel()).toBe("Pendientes");
 
     fireEvent.change(screen.getByPlaceholderText("Buscar contacto, número o mensaje"), {
       target: { value: "a" },
@@ -1222,6 +1450,7 @@ describe("InboxSidebar — abrir un chat de servidor lo saca de 'No leídas'", (
         bcvRate={null}
       />
     );
+    irA("No leídas");
 
     await waitFor(() => expect(visibleIds(container)).toContain("solo-en-servidor"));
 
@@ -1258,9 +1487,9 @@ describe("InboxSidebar — filtrar por categoría", () => {
 
   it("al elegir una categoría deja solo las conversaciones que la llevan", () => {
     const { container } = renderSidebar(JEFA);
-    // El filtro por categoría se prueba sobre "Todos": el default "No
-    // leídas" ya excluiría "de-ana" (leída, sin apartar) antes incluso de
-    // aplicar la etiqueta.
+    // El filtro por categoría se prueba sobre "Todos": el default
+    // "Pendientes" ya excluiría "de-ana" (sin fecha de cliente, no cuenta
+    // como esperando respuesta) antes incluso de aplicar la etiqueta.
     irATodos();
 
     fireEvent.click(within(abrirMenúDeCategorías()).getByText("VIP"));
@@ -1334,9 +1563,9 @@ describe("apartar un chat desde el menú de la bandeja", () => {
         onMarkRead={over.onMarkRead ?? onMarkRead}
       />
     );
-    // "leido" no tiene nada sin leer: bajo el filtro por defecto ("No
-    // leídas") no se vería — lo que se prueba acá es el menú contextual, no
-    // el filtro, así que se mira sobre "Todos".
+    // "leido" no tiene fecha de cliente ni nada sin leer: bajo el filtro por
+    // defecto ("Pendientes") no se vería — lo que se prueba acá es el menú
+    // contextual, no el filtro, así que se mira sobre "Todos".
     irATodos();
     return { onMarkUnread, onMarkRead };
   }

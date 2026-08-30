@@ -50,9 +50,10 @@ const SIN_COINCIDENCIAS: ReadonlyMap<string, MessageHit> = new Map();
 
 /**
  * Arma las opciones de `fetchConversations` para la píldora que resuelve en
- * el servidor: `unreadOnly` para "No leídas", `assignedTo` para "Mías",
- * ambas con el mismo `INBOX_PAGE_SIZE` y, si se pasa cursor, la página
- * siguiente en vez de la primera.
+ * el servidor: `activeOnly` + `awaitingReplyOnly` para "Pendientes",
+ * `unreadOnly` para "No leídas", `assignedTo` para "Mías", las tres con el
+ * mismo `INBOX_PAGE_SIZE` y, si se pasa cursor, la página siguiente en vez
+ * de la primera.
  *
  * Función de módulo y no un ternario repetido en cada llamada a `fetchPage`
  * de `useInboxPager`: antes vivía duplicado entre el efecto de primera
@@ -60,6 +61,16 @@ const SIN_COINCIDENCIAS: ReadonlyMap<string, MessageHit> = new Map();
  * 29/8/2026), y que la página 2+ se armara distinto de la página 1 —un
  * campo que uno actualiza y el otro olvida— quedaba a un descuido de
  * distancia. Con un solo lugar es imposible que diverjan.
+ *
+ * `switch` exhaustivo y no el ternario de antes (reforma del 30/8/2026, al
+ * sumar `pending` al union `InboxFilter`): el ternario de dos ramas mandaba
+ * cualquier filtro que no fuera `"unread"` a la rama `assignedTo` —con
+ * `pending` nuevo, hubiera caído ahí en silencio, pidiendo la cola de un
+ * asesor cuando lo que se quería era la cola de todo el equipo, y `tsc` no
+ * tiene forma de avisar de un ternario que "siempre" tiene una rama para
+ * cubrir el resto. Un `switch` sin `default` sobre un union sí lo caza: el
+ * día que se sume una quinta píldora, falta un `case` y la build no
+ * compila.
  */
 function pillQueryOptions(
   filter: InboxFilter,
@@ -67,7 +78,23 @@ function pillQueryOptions(
   cursor?: ConversationCursor | null
 ): FetchConversationsOptions {
   const page = { limit: INBOX_PAGE_SIZE, cursor: cursor ?? undefined };
-  return filter === "unread" ? { ...page, unreadOnly: true } : { ...page, assignedTo: agentId };
+  switch (filter) {
+    case "pending":
+      return { ...page, activeOnly: true, awaitingReplyOnly: true };
+    case "unread":
+      return { ...page, unreadOnly: true };
+    case "mine":
+      return { ...page, assignedTo: agentId };
+    case "all":
+      // `resolvedOnServer` (más abajo) nunca deja pasar `"all"` hasta acá:
+      // "Todos" pagina localmente sobre `conversations` (props del shell),
+      // nunca vía `pillQueryOptions`. La rama existe solo porque el `switch`
+      // es exhaustivo a propósito (ver el comentario de arriba) — y ante una
+      // llamada que ya se sabe fuera de contrato, lanzar es más honesto que
+      // devolver una consulta que nadie pidió y que además estaría mal
+      // armada (sin ningún corte real).
+      throw new Error('pillQueryOptions: "all" no resuelve en el servidor por esta vía');
+  }
 }
 
 function SectionHeader({ label, count }: { label: string; count: number }) {
@@ -100,36 +127,37 @@ interface InboxSidebarProps {
    * expone acá desde `allPager.lastPageFailed` —el mismo `useInboxPager` que
    * ya presta `hasMore`/`onLoadMore`— para que el pie de la lista pueda
    * avisar y ofrecer reintentar en vez de seguir diciendo "Cargar más" como
-   * si la petición nunca hubiera fallado. "No leídas"/"Mías" no la
-   * necesitan: tienen su propio `serverPager` con el mismo campo (ver
-   * `pager` más abajo). Por defecto `false`: un consumidor que no la pasa
-   * nunca ve el aviso, igual que antes de esta tarea.
+   * si la petición nunca hubiera fallado. "Pendientes"/"No leídas"/"Mías" no
+   * la necesitan: cada una tiene su propio `serverPager` con el mismo campo
+   * (ver `pager` más abajo). Por defecto `false`: un consumidor que no la
+   * pasa nunca ve el aviso, igual que antes de esta tarea.
    */
   lastPageFailed?: boolean;
   /**
    * Conteos honestos de cada píldora, contra la base entera y no contra la
    * ventana cargada. Los arma el shell (`fetchInboxCounts`). Solo
-   * "No leídas" los usa (ver `filterItems`): sin la prop no muestra número
-   * — mentir con el tamaño de la ventana cargada es peor que no mostrar
-   * nada.
+   * "Pendientes" y "No leídas" los usan (ver `filterItems`): sin la prop no
+   * muestran número — mentir con el tamaño de la ventana cargada es peor que
+   * no mostrar nada.
    */
   counts?: InboxCounts;
   /**
-   * Filas de "No leídas" ya resueltas en el servidor, para sembrar el
-   * estado que llena esa píldora. Sin esto, la bandeja abre en No leídas
-   * mostrando "Buscando…" hasta que responda el efecto de abajo, aunque el
-   * servidor ya tuviera los datos a mano.
+   * Filas de "Pendientes" ya resueltas en el servidor, para sembrar el
+   * estado que llena esa píldora. Sin esto, la bandeja abre en "Pendientes"
+   * —el filtro por defecto desde la reforma del 30/8/2026— mostrando
+   * "Buscando…" hasta que responda el efecto de abajo, aunque el servidor ya
+   * tuviera los datos a mano.
    */
-  initialUnreadRows?: ConversationSummary[];
+  initialPendingRows?: ConversationSummary[];
   /**
    * Se incrementa cada vez que el pulso vivo del shell (`fetchInboxHead` en
-   * crm-shell.tsx) trae una cabecera fresca para "Todos". Es el eco que
-   * usan "No leídas"/"Mías" para saber que algo cambió en la base y volver a
-   * consultar SU propia cabecera (ver el efecto junto a `serverRows` más
-   * abajo) — sin esto quedan con datos viejos hasta que el asesor sale y
-   * reentra al filtro. Opcional y con valor por defecto para no obligar a
-   * cada instancia existente de `InboxSidebar` a conocerlo (p. ej. tests que
-   * no ejercitan este camino).
+   * crm-shell.tsx) trae una cabecera fresca para "Todos". Es el eco que usan
+   * "Pendientes"/"No leídas"/"Mías" para saber que algo cambió en la base y
+   * volver a consultar SU propia cabecera (ver el efecto junto a
+   * `serverRows` más abajo) — sin esto quedan con datos viejos hasta que el
+   * asesor sale y reentra al filtro. Opcional y con valor por defecto para
+   * no obligar a cada instancia existente de `InboxSidebar` a conocerlo (p.
+   * ej. tests que no ejercitan este camino).
    */
   livePulse?: number;
 }
@@ -148,7 +176,7 @@ export function InboxSidebar({
   onLoadMore,
   lastPageFailed = false,
   counts,
-  initialUnreadRows,
+  initialPendingRows,
   livePulse = 0,
 }: InboxSidebarProps) {
   const availableFilters = useMemo(() => filtersForRole(currentAgent.role), [currentAgent.role]);
@@ -221,14 +249,17 @@ export function InboxSidebar({
   const messageHits = searchIsCurrent ? hitState.hits : SIN_COINCIDENCIAS;
 
   /**
-   * "No leídas" y "Mías" son los dos cortes que no se pueden resolver sobre
-   * la ventana cargada. La bandeja tiene 30 filas en memoria y arriba están
-   * las que se movieron hace poco; los dos filtros buscan también lo que no
-   * se movió —un chat sin leer que quedó atrás, o un cliente viejo asignado
-   * a este asesor—, así que justo lo que interesa puede quedar fuera de la
-   * ventana. El conjunto se le pide a la base (ver el efecto más abajo).
+   * "Pendientes", "No leídas" y "Mías" son los tres cortes que no se pueden
+   * resolver sobre la ventana cargada. La bandeja tiene 30 filas en memoria
+   * y arriba están las que se movieron hace poco; los tres filtros buscan
+   * también lo que no se movió —un chat abierto y sin responder que quedó
+   * atrás, uno sin leer, o un cliente viejo asignado a este asesor—, así que
+   * justo lo que interesa puede quedar fuera de la ventana. El conjunto se
+   * le pide a la base (ver el efecto más abajo). `pending` se suma acá en la
+   * reforma del 30/8/2026, junto con la píldora (ver `case "pending"` en
+   * `inbox-filters.ts` para el dato que la trajo de vuelta).
    */
-  const resolvedOnServer = filter === "unread" || filter === "mine";
+  const resolvedOnServer = filter === "pending" || filter === "unread" || filter === "mine";
 
   /**
    * Lo que contestó la base, junto con qué píldora lo pidió. La paginación
@@ -242,16 +273,17 @@ export function InboxSidebar({
    * de "No leídas" seguirían pintadas mientras la consulta nueva viaja
    * (mismo motivo que separa `hitState` de la búsqueda por consulta).
    *
-   * Arranca sembrado con `initialUnreadRows` cuando el servidor ya trajo
-   * esas filas (ver la prop): la bandeja abre en "No leídas" —el filtro por
-   * defecto— con datos en vez del cartel "Buscando…". El hook de abajo pide
-   * su propia primera página igual y pisa la semilla con lo que responda la
-   * base (misma primera página, mismo tamaño: `INBOX_PAGE_SIZE`).
+   * Arranca sembrado con `initialPendingRows` cuando el servidor ya trajo
+   * esas filas (ver la prop): la bandeja abre en "Pendientes" —el filtro por
+   * defecto desde la reforma del 30/8/2026— con datos en vez del cartel
+   * "Buscando…". El hook de abajo pide su propia primera página igual y pisa
+   * la semilla con lo que responda la base (misma primera página, mismo
+   * tamaño: `INBOX_PAGE_SIZE`).
    */
   const [serverRows, setServerRows] = useState<{
     filter: InboxFilter;
     rows: ConversationSummary[];
-  } | null>(initialUnreadRows ? { filter: "unread", rows: initialUnreadRows } : null);
+  } | null>(initialPendingRows ? { filter: "pending", rows: initialPendingRows } : null);
 
   // Solo el estado que corresponde a la píldora activa: si `serverRows`
   // quedó con la respuesta de la píldora anterior (la consulta nueva sigue
@@ -261,8 +293,9 @@ export function InboxSidebar({
   const resolvedRows = resolvedState?.rows ?? null;
 
   /**
-   * El único paginador de "No leídas"/"Mías": cursor, candado en vuelo,
-   * sesión y `reachedEnd` viven en `useInboxPager` (`src/lib/use-inbox-pager.ts`,
+   * El único paginador de "Pendientes"/"No leídas"/"Mías": cursor, candado
+   * en vuelo, sesión y `reachedEnd` viven en `useInboxPager`
+   * (`src/lib/use-inbox-pager.ts`,
    * que también sirve a "Todos" en el shell) — ahí quedó la historia de las
    * tres carreras que una revisión de código encontró el 29/8/2026 (H1/H2/H3:
    * primera página en vuelo, píldora que vuelve mientras una página vieja
@@ -274,7 +307,7 @@ export function InboxSidebar({
    * mientras la página viaja (abrir un chat lo marca leído al instante) vive
    * en `current`, y pegarla sobre la copia vieja desharía ese parche.
    *
-   * El hook NO recibe `seed`: `initialUnreadRows` son filas para pintar de
+   * El hook NO recibe `seed`: `initialPendingRows` son filas para pintar de
    * una vez, no una página resuelta con cursor. El hook pide su propia
    * primera página igual, y hasta que resuelva no ofrece "cargar más" —antes
    * el botón podía aparecer sobre la semilla mientras la consulta de verdad
@@ -357,9 +390,9 @@ export function InboxSidebar({
    * No pasa por `serverPager`: es una consulta aparte que nunca toca su
    * candado, su cursor ni su `reachedEnd`. Y solo corre con la píldora
    * activa y con filas ya cargadas (`resolvedState`): sin eso se pagaría una
-   * consulta extra por cada pulso aunque nadie esté mirando "No leídas"/
-   * "Mías", o aunque la píldora todavía no haya resuelto su propia primera
-   * página.
+   * consulta extra por cada pulso aunque nadie esté mirando "Pendientes"/
+   * "No leídas"/"Mías", o aunque la píldora todavía no haya resuelto su
+   * propia primera página.
    */
   useEffect(() => {
     if (livePulse === livePulseRef.current) return;
@@ -405,17 +438,21 @@ export function InboxSidebar({
     return merged;
   }, [conversations, searchIsCurrent, hitState.remote, resolvedOnServer, resolvedRows]);
 
-  // Solo "No leídas" lleva conteo. `counts.mine` existe (D5) pero es volumen
-  // histórico del asesor —incluye lo cerrado, lo que archivó hace meses—, no
-  // una cola por atender: al lado de la píldora sería ruido, no información.
-  // El panel de inicio ya lo enseña bajo su propio nombre ("Tuyas"), que es
-  // donde ese número sí responde una pregunta que alguien se está haciendo.
+  // "Pendientes" y "No leídas" llevan conteo (`counts.pending`/`counts.unread`,
+  // ambos ya honestos contra la base entera — ver `fetchInboxCounts`).
+  // "Mías" no: `counts.mine` existe (D5) pero es volumen histórico del
+  // asesor —incluye lo cerrado, lo que archivó hace meses—, no una cola por
+  // atender: al lado de la píldora sería ruido, no información. El panel de
+  // inicio ya lo enseña bajo su propio nombre ("Tuyas"), que es donde ese
+  // número sí responde una pregunta que alguien se está haciendo. "Todos" no
+  // lleva conteo por el motivo de siempre (ver el comentario junto a
+  // `crm-inbox-head` más abajo).
   const filterItems = useMemo(
     () =>
       availableFilters.map((value) => ({
         value,
         label: INBOX_FILTER_LABELS[value],
-        count: value === "unread" ? counts?.unread : undefined,
+        count: value === "pending" ? counts?.pending : value === "unread" ? counts?.unread : undefined,
       })),
     [availableFilters, counts]
   );
@@ -472,8 +509,9 @@ export function InboxSidebar({
    * Bajar por la bandeja solo pagina cuando lo que se ve es la bandeja.
    * Buscando, el fondo de la lista son los resultados; los dos caminos de
    * paginación —el de "Todos" (props del shell: `hasMore`/`onLoadMore`/
-   * `loadingMore`) y el de "No leídas"/"Mías" (`serverPager`, arriba)— se
-   * excluyen entre sí: cada píldora pagina por un solo camino a la vez.
+   * `loadingMore`) y el de "Pendientes"/"No leídas"/"Mías" (`serverPager`,
+   * arriba)— se excluyen entre sí: cada píldora pagina por un solo camino a
+   * la vez.
    * Buscar siempre salta el filtro a "Todos" (ver el buscador más arriba) y
    * se queda ahí mientras dura, así que las dos ramas nunca compiten por el
    * mismo filtro al mismo tiempo — no hace falta descartar `trimmedSearch`
@@ -495,8 +533,9 @@ export function InboxSidebar({
    *
    * `lastPageFailed` es distinto: a "Todos" SÍ le puede fallar una página
    * SIGUIENTE (cargó la primera, la segunda se cae), el mismo caso que
-   * "No leídas"/"Mías" resuelven con `serverPager`. Por eso viene de la prop
-   * (A.T4, 29/8/2026) y no hardcodeada en `false` como los otros dos campos.
+   * "Pendientes"/"No leídas"/"Mías" resuelven con `serverPager`. Por eso
+   * viene de la prop (A.T4, 29/8/2026) y no hardcodeada en `false` como los
+   * otros dos campos.
    * Y por eso `loadMore` de esta rama es lo que hay que reintentar —nunca
    * `retry()`, que en este camino no hace nada—: el cursor de "Todos" vive en
    * `allPager` (crm-shell.tsx) y no se movió con el fallo, así que volver a
@@ -522,10 +561,10 @@ export function InboxSidebar({
    * de código del 29/8/2026): antes esto no se distinguía de "sin nada que
    * mostrar todavía" y un fallo transitorio terminaba pintando el festejo
    * "Todo leído" — el error quedaba disfrazado y sin salida. `pager.status`
-   * solo llega a "error" desde `serverPager` ("No leídas"/"Mías"): el camino
-   * local de "Todos" siempre reporta "ready" por construcción (ver el
-   * comentario del `pager` de arriba), así que esta bandera nunca se
-   * enciende ahí.
+   * solo llega a "error" desde `serverPager`
+   * ("Pendientes"/"No leídas"/"Mías"): el camino local de "Todos" siempre
+   * reporta "ready" por construcción (ver el comentario del `pager` de
+   * arriba), así que esta bandera nunca se enciende ahí.
    */
   const pagerFailed = pager.status === "error";
 
@@ -612,9 +651,9 @@ export function InboxSidebar({
           El conteo de cabecera que había acá contaba `filtered.length`: la
           ventana cargada, no la bandeja real. Con paginación esa cuenta
           mentía apenas se filtraba algo que la base tenía y la ventana no.
-          El número honesto ahora vive en la píldora "No leídas" (prop
-          `counts`, ver `filterItems`); las demás píldoras se quedan sin
-          número antes que repetir la misma mentira.
+          El número honesto ahora vive en las píldoras "Pendientes" y "No
+          leídas" (prop `counts`, ver `filterItems`); "Mías" y "Todos" se
+          quedan sin número antes que repetir la misma mentira.
         */}
         <span style={{ flex: 1 }} />
       </header>
