@@ -48,9 +48,14 @@
 begin;
 
 -- Datos propios, con ids fijos para poder afirmar sobre ellos. `awaiting_reply`
--- es una columna GENERADA (20260825050000): vale true cuando hay mensaje del
--- cliente y el último del hilo sigue siendo suyo, así que se induce poniendo
--- `last_message_at <= last_customer_message_at`.
+-- es una columna GENERADA (20260825050000, redefinida por 20260905010000):
+-- vale true cuando hay mensaje del cliente y nadie dio una respuesta real
+-- después. Hasta el 4/9/2026 se inducía con `last_message_at <=
+-- last_customer_message_at` (cualquier mensaje apagaba "esperando"); desde
+-- 20260905010000 (T0.1, 5/9/2026) SOLO la apaga `last_reply_at`, así que acá
+-- se induce dejando `last_reply_at`/`last_reply_sender` en null (nadie
+-- respondió) salvo en el caso 5, donde se simula la respuesta real del
+-- asesor fijando esas dos columnas.
 -- Un contacto por caso: `conversations` tiene único (contact_id,
 -- whatsapp_channel_id), así que cinco conversaciones sobre el mismo canal
 -- necesitan cinco contactos distintos.
@@ -65,28 +70,37 @@ insert into public.whatsapp_channels (id, label, phone_number) values
   ('22222222-2222-2222-2222-222222222222', 'Canal de prueba', '+580000000000');
 
 insert into public.conversations
-  (id, contact_id, whatsapp_channel_id, last_customer_message_at, last_message_at)
+  (id, contact_id, whatsapp_channel_id, last_customer_message_at, last_message_at,
+   last_reply_at, last_reply_sender)
 values
   -- caso 1 · soltada y nunca recuperada → CUENTA
   ('aaaaaaaa-0000-0000-0000-000000000001',
    '11111111-1111-1111-1111-111111111101', '22222222-2222-2222-2222-222222222222',
-   now() - interval '2 hours', now() - interval '2 hours'),
+   now() - interval '2 hours', now() - interval '2 hours',
+   null, null),
   -- caso 2 · soltada y DESPUÉS rescatada por el reconciliador → NO cuenta
   ('aaaaaaaa-0000-0000-0000-000000000002',
    '11111111-1111-1111-1111-111111111102', '22222222-2222-2222-2222-222222222222',
-   now() - interval '2 hours', now() - interval '2 hours'),
+   now() - interval '2 hours', now() - interval '2 hours',
+   null, null),
   -- caso 3 · soltada y después tomada por una persona → NO cuenta
   ('aaaaaaaa-0000-0000-0000-000000000003',
    '11111111-1111-1111-1111-111111111103', '22222222-2222-2222-2222-222222222222',
-   now() - interval '2 hours', now() - interval '2 hours'),
+   now() - interval '2 hours', now() - interval '2 hours',
+   null, null),
   -- caso 4 · sin ninguna fila de bitácora → NO cuenta (nunca se soltó)
   ('aaaaaaaa-0000-0000-0000-000000000004',
    '11111111-1111-1111-1111-111111111104', '22222222-2222-2222-2222-222222222222',
-   now() - interval '2 hours', now() - interval '2 hours'),
-  -- caso 5 · soltada, pero el asesor YA contestó → NO cuenta: no espera a nadie
+   now() - interval '2 hours', now() - interval '2 hours',
+   null, null),
+  -- caso 5 · soltada, pero el asesor YA contestó → NO cuenta: no espera a nadie.
+  -- last_reply_at/last_reply_sender simulan la respuesta real (T0.1,
+  -- 20260905010000): sin ellos, `last_message_at` más nuevo que
+  -- `last_customer_message_at` ya no alcanza para apagar awaiting_reply.
   ('aaaaaaaa-0000-0000-0000-000000000005',
    '11111111-1111-1111-1111-111111111105', '22222222-2222-2222-2222-222222222222',
-   now() - interval '2 hours', now() - interval '1 minute');
+   now() - interval '2 hours', now() - interval '1 minute',
+   now() - interval '1 minute', 'agent');
 
 -- Los traspasos. El `created_at` explícito y separado en el tiempo es
 -- deliberado: lo que decide es la fila MÁS RECIENTE, no el orden de inserción.
