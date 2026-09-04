@@ -22,6 +22,8 @@ function row(id: string, lastMessageAt: string | null): ConversationSummary {
     dealVerified: false,
     lastCustomerMessageAt: null,
     lastMessageAt,
+    lastReplyAt: null,
+    lastReplySender: null,
     hasReply: false,
     createdAt: "2024-01-01T00:00:00.000Z",
     journeyStage: null,

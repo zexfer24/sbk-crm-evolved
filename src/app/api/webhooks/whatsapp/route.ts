@@ -267,6 +267,10 @@ async function sendWelcome(
       template_name: templateName,
       whatsapp_message_id: whatsappMessageId,
       whatsapp_status: "sent",
+      // No cuenta como respuesta real (T0.1, 20260905010000): el trigger
+      // handle_new_message no mueve last_reply_at para un is_auto_reply, así
+      // que la bienvenida nunca apaga "esperando respuesta" por sí sola.
+      is_auto_reply: true,
     });
 
     // Sin update final: el sello ya quedó puesto al reclamar, arriba.

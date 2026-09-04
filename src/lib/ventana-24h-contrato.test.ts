@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { fetchConversations, fetchInboxCounts } from "@/lib/data";
 import { awaitingReply, freeformWindowCutoff, isStalePending, withinFreeformWindow } from "@/lib/dashboard";
+import { isWithin24hWindow } from "@/lib/whatsapp-window";
 import type { BoardConversation } from "@/lib/types";
 
 // ---------------------------------------------------------------------------
@@ -34,8 +35,13 @@ import type { BoardConversation } from "@/lib/types";
 //      `fetchConversations` con `pendingWindow: "stale"`/`"fresh"`,
 //      `src/lib/data.ts:737-745`): el mismo par de términos, empujado al
 //      acumulador `orGroups`.
+//   4. OTRA IMPLEMENTACIÓN EN MEMORIA (`isWithin24hWindow`,
+//      `src/lib/whatsapp-window.ts`), agregada el 5/9/2026 (T0.2): la que usa
+//      `claimWelcome` del webhook para decidir si el cliente que vuelve
+//      merece otra bienvenida. Vive en otro archivo, con su propia constante
+//      (`WINDOW_MS`), y hasta ahora nada la ataba a las otras tres.
 //
-// Las tres comparten el mismo `now` fijo y el mismo `freeformWindowCutoff`.
+// Las cuatro comparten el mismo `now` fijo y el mismo `freeformWindowCutoff`.
 // Si alguien cambia el operador de una sola pata (`>` por `>=` en
 // `dashboard.ts`, o `.lte` por `.lt` en `data.ts`, o corre el cutoff una
 // hora en cualquiera de los dos lados) sin tocar la otra, el mismo chat
@@ -65,6 +71,10 @@ function fila(over: Partial<BoardConversation> = {}): BoardConversation {
     dealVerified: false,
     lastCustomerMessageAt: iso(AHORA - HORA),
     lastMessageAt: null,
+    // Por defecto nadie respondió todavía (T0.2, 5/9/2026): es lo único que
+    // mira `awaitingReply` desde que dejó de comparar contra `lastMessageAt`.
+    lastReplyAt: null,
+    lastReplySender: null,
     hasReply: false,
     createdAt: iso(AHORA - 10 * HORA),
     journeyStage: null,
@@ -75,10 +85,10 @@ function fila(over: Partial<BoardConversation> = {}): BoardConversation {
   };
 }
 
-// Tabla representativa alrededor del borde. `lastMessageAt: null` en las que
-// siguen "esperando" (así `awaitingReply` da `true` sin depender de una
-// segunda fecha relativa) y `lastMessageAt` posterior en la que ya se
-// contestó.
+// Tabla representativa alrededor del borde. `lastReplyAt: null` (el default
+// de `fila()`) en las que siguen "esperando" y `lastReplyAt` posterior al
+// mensaje del cliente en la que ya se contestó (T0.2, 5/9/2026 — antes de
+// esa migración alcanzaba con `lastMessageAt` posterior; ver `YA_CONTESTADA`).
 const ANTES_DEL_CORTE = fila({ id: "antes-del-corte", lastCustomerMessageAt: iso(CUTOFF_MS - 1) });
 const EXACTO_EN_EL_CORTE = fila({ id: "exacto-en-el-corte", lastCustomerMessageAt: iso(CUTOFF_MS) });
 const JUSTO_DESPUES_DEL_CORTE = fila({
@@ -97,6 +107,11 @@ const YA_CONTESTADA = fila({
   id: "ya-contestada",
   lastCustomerMessageAt: iso(CUTOFF_MS - 50 * HORA),
   lastMessageAt: iso(CUTOFF_MS - 40 * HORA), // posterior al mensaje del cliente: ya se respondió.
+  // T0.2 (5/9/2026): lo que apaga "esperando" es `lastReplyAt`, no
+  // `lastMessageAt` — sin esto, `awaitingReply` la seguiría contando como
+  // pendiente pese al nombre de esta constante.
+  lastReplyAt: iso(CUTOFF_MS - 40 * HORA),
+  lastReplySender: "agent",
 });
 
 const TABLA: BoardConversation[] = [
@@ -395,6 +410,40 @@ describe("el borde exacto, en memoria (dashboard.ts)", () => {
       expect(isStalePending(SIN_FECHA_DE_CLIENTE, AHORA)).toBe(false);
     }
   );
+});
+
+/**
+ * Cuarta pata (T0.2, 5/9/2026): `isWithin24hWindow` (`whatsapp-window.ts`) es
+ * la implementación que usa `claimWelcome` del webhook para decidir si el
+ * cliente que vuelve merece otra bienvenida — un criterio de ventana de 24h
+ * totalmente aparte de `withinFreeformWindow` (`dashboard.ts`), escrito en
+ * otro archivo, con su propia constante (`WINDOW_MS`). Antes de este caso
+ * nada obligaba a las dos implementaciones a seguir midiendo la misma vara;
+ * si alguien corriera el cutoff de una sin tocar la otra, el webhook y la
+ * bandeja discreparían sobre si un cliente "todavía está dentro de la
+ * ventana" exactamente en el mismo estilo que ya pasó una vez con las otras
+ * tres patas (ver la cabecera de este archivo).
+ */
+describe("leg 4 (isWithin24hWindow, whatsapp-window.ts) contra leg 1 (withinFreeformWindow)", () => {
+  it("coincide en los mismos bordes exactos que leg 1: antes/exacto/después del corte y sin fecha", () => {
+    const AHORA_DATE = new Date(AHORA);
+
+    for (const fila of [ANTES_DEL_CORTE, EXACTO_EN_EL_CORTE, JUSTO_DESPUES_DEL_CORTE, SIN_FECHA_DE_CLIENTE]) {
+      expect(isWithin24hWindow(fila.lastCustomerMessageAt, AHORA_DATE)).toBe(
+        withinFreeformWindow(fila.lastCustomerMessageAt, AHORA)
+      );
+    }
+  });
+
+  it("mismo criterio sobre TODA la tabla, no solo los bordes elegidos a mano", () => {
+    const AHORA_DATE = new Date(AHORA);
+
+    for (const fila of TABLA) {
+      expect(isWithin24hWindow(fila.lastCustomerMessageAt, AHORA_DATE)).toBe(
+        withinFreeformWindow(fila.lastCustomerMessageAt, AHORA)
+      );
+    }
+  });
 });
 
 describe("leg 1 (memoria) contra leg 2 (fetchInboxCounts.pendingStale)", () => {

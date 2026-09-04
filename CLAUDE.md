@@ -175,7 +175,14 @@ dejar rastro es lo que hacía desaparecer leads.
   bandeja recuperó una píldora "Pendientes" —y es la que abre por
   default—, pero corta por `awaiting_reply` + conversación abierta
   [`inbox-filters.ts`], no por `has_reply` ni por la ventana de 24h; esta
-  trampa sigue vigente tal cual está escrita arriba.)
+  trampa sigue vigente tal cual está escrita arriba.) Desde la migración
+  20260905010000 (T0.1, 5/9/2026) `awaiting_reply` deja de compararse contra
+  "el último mensaje" y pasa a compararse contra `last_reply_at`:
+  **`awaiting_reply` se apaga SOLO con una respuesta real —no con notas,
+  eventos de sistema, bienvenida ni envíos `failed`— desde 20260905010000.**
+  En memoria eso es `awaitingReply()` (`dashboard.ts`) comparando
+  `lastReplyAt` contra `lastCustomerMessageAt`, ya no `lastMessageAt` contra
+  `lastCustomerMessageAt`.
 - `supabase/seed.sql` **no va a producción** (trae usuarios con contraseña
   escrita); los seeds de catálogo y playbooks sí.
 - Sin `WHATSAPP_APP_SECRET` el webhook acepta cualquier POST (a propósito,

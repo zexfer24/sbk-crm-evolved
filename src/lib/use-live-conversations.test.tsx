@@ -63,6 +63,8 @@ function buildConversation(overrides: Partial<ConversationSummary> = {}): Conver
     dealStatus: "none",
     dealVerified: false,
     lastCustomerMessageAt: "2026-08-24T15:00:00.000Z",
+    lastReplyAt: null,
+    lastReplySender: null,
     hasReply: false,
     lastMessageAt: "2026-08-24T15:00:00.000Z",
     lastMessagePreview: null,
@@ -92,6 +94,8 @@ function filaDeConversacion(over: Record<string, unknown> = {}) {
     last_message_direction: "inbound",
     last_message_status: null,
     last_customer_message_at: "2026-08-24T15:00:00.000Z",
+    last_reply_at: null,
+    last_reply_sender: null,
     journey_stage: null,
     intent: null,
     active_tool: null,
@@ -132,6 +136,25 @@ describe("useLiveConversations — el evento se aplica en memoria cuando alcanza
 
     expect(fetcherMock).not.toHaveBeenCalled();
     expect(result.current.conversations[0].unreadCount).toBe(7);
+  });
+
+  it("un UPDATE con last_reply_at se aplica en memoria, sin pedir la lista", async () => {
+    const { result } = montar();
+
+    act(() => {
+      fake.trigger(
+        "conversations",
+        "UPDATE",
+        filaDeConversacion({ last_reply_at: "2026-08-24T16:00:00.000Z", last_reply_sender: "agent" })
+      );
+    });
+    await act(async () => {
+      vi.advanceTimersByTime(750);
+    });
+
+    expect(fetcherMock).not.toHaveBeenCalled();
+    expect(result.current.conversations[0].lastReplyAt).toBe("2026-08-24T16:00:00.000Z");
+    expect(result.current.conversations[0].lastReplySender).toBe("agent");
   });
 
   it("cambiar de agente asignado obliga a pedirla: el evento no trae quién es", async () => {

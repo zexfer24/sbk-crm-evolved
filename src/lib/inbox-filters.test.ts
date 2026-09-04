@@ -28,6 +28,14 @@ function conversation(over: {
   assignedAgent?: Agent | null;
   lastMessageAt?: string | null;
   lastCustomerMessageAt?: string | null;
+  /**
+   * La respuesta real (T0.2, 5/9/2026): lo único que mira `awaitingReply`
+   * (dashboard.ts) desde que dejó de comparar contra `lastMessageAt`. Por
+   * defecto null — "nadie respondió" — salvo que el caso lo necesite
+   * explícito (ver "ya-contestada" más abajo).
+   */
+  lastReplyAt?: string | null;
+  lastReplySender?: "agent" | "ai" | null;
   hasReply?: boolean;
   status?: Conversation["status"];
   tags?: Tag[];
@@ -44,6 +52,8 @@ function conversation(over: {
     lastMessageAt: "lastMessageAt" in over ? over.lastMessageAt : "2026-08-22T10:00:00Z",
     lastCustomerMessageAt:
       "lastCustomerMessageAt" in over ? over.lastCustomerMessageAt : null,
+    lastReplyAt: "lastReplyAt" in over ? over.lastReplyAt : null,
+    lastReplySender: over.lastReplySender ?? null,
     contact: {
       id: `c-${over.id}`,
       phoneNumber: "+58000",
@@ -200,11 +210,14 @@ describe("applyInboxFilters — 'pending'", () => {
     expect(ids([cerradaEsperando])).toEqual([]);
   });
 
-  it("no aparece la abierta ya contestada: el último mensaje no es del cliente", () => {
+  it("no aparece la abierta ya contestada: hubo una respuesta real después del mensaje del cliente", () => {
     const yaContestada = conversation({
       id: "ya-contestada",
       lastMessageAt: "2026-08-22T10:00:00Z",
       lastCustomerMessageAt: "2026-08-20T10:00:00Z",
+      // T0.2: lo que apaga "esperando" es `lastReplyAt`, no `lastMessageAt`.
+      lastReplyAt: "2026-08-22T10:00:00Z",
+      lastReplySender: "agent",
     });
 
     expect(ids([yaContestada])).toEqual([]);

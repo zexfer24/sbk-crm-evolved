@@ -171,6 +171,8 @@ export function useLiveConversations<T extends BoardConversation>(
         lastMessageDirection: row.last_message_direction as ConversationSummary["lastMessageDirection"],
         lastMessageStatus: row.last_message_status as ConversationSummary["lastMessageStatus"],
         lastCustomerMessageAt: row.last_customer_message_at as string | null,
+        lastReplyAt: row.last_reply_at as string | null,
+        lastReplySender: row.last_reply_sender as ConversationSummary["lastReplySender"],
         hasReply: row.has_reply as boolean,
         journeyStage: row.journey_stage as ConversationSummary["journeyStage"],
         intent: row.intent as string | null,

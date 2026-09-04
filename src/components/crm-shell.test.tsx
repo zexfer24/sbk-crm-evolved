@@ -222,6 +222,8 @@ function buildConversation(overrides: Partial<Conversation> = {}): Conversation 
     dealPaymentMethod: null,
     dealClosedBy: null,
     lastCustomerMessageAt: new Date().toISOString(),
+    lastReplyAt: null,
+    lastReplySender: null,
     hasReply: false,
     lastMessageAt: new Date().toISOString(),
     lastMessagePreview: null,

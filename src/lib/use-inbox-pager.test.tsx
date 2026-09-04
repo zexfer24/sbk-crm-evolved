@@ -44,6 +44,8 @@ function row(id: string, lastMessageAt = "2026-08-29T12:00:00.000Z"): Conversati
     dealStatus: "none",
     dealVerified: false,
     lastCustomerMessageAt: lastMessageAt,
+    lastReplyAt: null,
+    lastReplySender: null,
     hasReply: false,
     lastMessageAt,
     lastMessagePreview: null,

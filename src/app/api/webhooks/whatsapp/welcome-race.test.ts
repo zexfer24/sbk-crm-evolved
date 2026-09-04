@@ -330,6 +330,12 @@ describe("POST /api/webhooks/whatsapp — la bienvenida se reclama en la base", 
 
     expect(sendWhatsappTemplate).toHaveBeenCalledTimes(1);
     expect(fake.templateRows).toHaveLength(1);
+    // T0.2 (5/9/2026): la bienvenida no cuenta como respuesta real — el
+    // trigger handle_new_message no mueve last_reply_at para un
+    // is_auto_reply, así que sin esta marca la bienvenida apagaría
+    // "esperando respuesta" sin que el cliente hubiera recibido nada de un
+    // humano ni de la IA de verdad.
+    expect(fake.templateRows[0].is_auto_reply).toBe(true);
   });
 
   it("dos mensajes del mismo contacto en el mismo lote mandan una sola bienvenida", async () => {

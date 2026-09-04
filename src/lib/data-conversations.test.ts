@@ -41,6 +41,10 @@ function makeRow(index: number) {
     deal_closed_by: null,
     last_customer_message_at: null as string | null,
     last_message_at: new Date(2024, 0, 1, 0, 0, index).toISOString() as string | null,
+    // La "última respuesta real" (T0.1/T0.2, 5/9/2026): por defecto nadie
+    // respondió todavía, como toda fila recién creada.
+    last_reply_at: null as string | null,
+    last_reply_sender: null as "agent" | "ai" | null,
     last_message_preview: `preview ${index}`,
     last_message_direction: null,
     last_message_status: null,
@@ -440,6 +444,45 @@ describe("fetchConversations", () => {
 
     expect(selects[0]).toContain("contact_tags");
     expect(selects[0]).toContain("last_message_preview");
+  });
+
+  /**
+   * T0.2 del plan "La bandeja que no pierde" (5/9/2026): la "última respuesta
+   * real" (T0.1, migración 20260905010000) tiene que viajar en las dos filas
+   * de lista —tablero y bandeja comparten `CONVERSATION_BOARD_COLUMNS`— y el
+   * mapeo la conserva CRUDA, sin pasar por `new Date` (igual que el resto de
+   * fechas de esta fila).
+   */
+  it("last_reply_at/last_reply_sender viajan en el select y el mapeo los conserva crudos", async () => {
+    const conRespuesta = {
+      ...makeRow(0),
+      last_reply_at: "2026-09-04T10:00:00.000Z",
+      last_reply_sender: "agent" as const,
+    };
+    const { client: clientTablero, selects: selectsTablero } = createFakeSupabase([conRespuesta]);
+    const { client: clientBandeja, selects: selectsBandeja } = createFakeSupabase([conRespuesta]);
+
+    const [tablero] = await fetchBoardConversations(clientTablero, { activeOnly: true });
+    const [bandeja] = await fetchConversations(clientBandeja, { limit: 30 });
+
+    expect(selectsTablero[0]).toContain("last_reply_at");
+    expect(selectsTablero[0]).toContain("last_reply_sender");
+    expect(selectsBandeja[0]).toContain("last_reply_at");
+    expect(selectsBandeja[0]).toContain("last_reply_sender");
+
+    expect(tablero.lastReplyAt).toBe("2026-09-04T10:00:00.000Z");
+    expect(tablero.lastReplySender).toBe("agent");
+    expect(bandeja.lastReplyAt).toBe("2026-09-04T10:00:00.000Z");
+    expect(bandeja.lastReplySender).toBe("agent");
+  });
+
+  it("sin respuesta todavía, las dos columnas nuevas mapean a null", async () => {
+    const { client } = createFakeSupabase([makeRow(0)]);
+
+    const [fila] = await fetchConversations(client, { limit: 30 });
+
+    expect(fila.lastReplyAt).toBeNull();
+    expect(fila.lastReplySender).toBeNull();
   });
 
   /**

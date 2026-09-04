@@ -116,6 +116,8 @@ function liveConversation(id: string): Conversation {
     dealPaymentMethod: null,
     dealClosedBy: null,
     lastCustomerMessageAt: "2026-08-25T15:00:00.000Z",
+    lastReplyAt: null,
+    lastReplySender: null,
     hasReply: false,
     lastMessageAt: "2026-08-25T15:00:00.000Z",
     lastMessagePreview: null,

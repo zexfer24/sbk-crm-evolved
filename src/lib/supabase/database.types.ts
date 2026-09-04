@@ -554,6 +554,8 @@ export type Database = {
           last_message_direction: string | null
           last_message_preview: string | null
           last_message_status: string | null
+          last_reply_at: string | null
+          last_reply_sender: string | null
           order_id: string | null
           status: string
           manually_unread: boolean
@@ -587,6 +589,8 @@ export type Database = {
           last_message_direction?: string | null
           last_message_preview?: string | null
           last_message_status?: string | null
+          last_reply_at?: string | null
+          last_reply_sender?: string | null
           order_id?: string | null
           status?: string
           manually_unread?: boolean
@@ -620,6 +624,8 @@ export type Database = {
           last_message_direction?: string | null
           last_message_preview?: string | null
           last_message_status?: string | null
+          last_reply_at?: string | null
+          last_reply_sender?: string | null
           order_id?: string | null
           status?: string
           manually_unread?: boolean
@@ -801,6 +807,7 @@ export type Database = {
           direction: string
           id: string
           is_internal_note: boolean
+          is_auto_reply: boolean
           media_url: string | null
           message_type: string
           reply_to_message_id: string | null
@@ -820,6 +827,7 @@ export type Database = {
           direction: string
           id?: string
           is_internal_note?: boolean
+          is_auto_reply?: boolean
           media_url?: string | null
           message_type?: string
           reply_to_message_id?: string | null
@@ -839,6 +847,7 @@ export type Database = {
           direction?: string
           id?: string
           is_internal_note?: boolean
+          is_auto_reply?: boolean
           media_url?: string | null
           message_type?: string
           reply_to_message_id?: string | null

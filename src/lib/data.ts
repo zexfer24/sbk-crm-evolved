@@ -109,6 +109,8 @@ interface RawBoardConversation {
   deal_verified: boolean;
   last_customer_message_at: string | null;
   last_message_at: string | null;
+  last_reply_at: BoardConversation["lastReplyAt"];
+  last_reply_sender: BoardConversation["lastReplySender"];
   has_reply: boolean;
   created_at: string;
   journey_stage: Conversation["journeyStage"];
@@ -158,6 +160,8 @@ interface RawConversation {
   deal_closed_by: RawAgent | null;
   last_customer_message_at: string | null;
   last_message_at: string | null;
+  last_reply_at: BoardConversation["lastReplyAt"];
+  last_reply_sender: BoardConversation["lastReplySender"];
   last_message_preview: string | null;
   last_message_direction: Conversation["lastMessageDirection"];
   last_message_status: Conversation["lastMessageStatus"];
@@ -302,6 +306,10 @@ function mapBoardConversation(row: RawBoardConversation): BoardConversation {
     dealVerified: row.deal_verified,
     lastCustomerMessageAt: row.last_customer_message_at,
     lastMessageAt: row.last_message_at,
+    // Crudas, sin `new Date`: lo mismo que ya hacían el resto de las fechas
+    // de esta fila — la conversión a `Date` queda para quien las consuma.
+    lastReplyAt: row.last_reply_at,
+    lastReplySender: row.last_reply_sender,
     hasReply: row.has_reply,
     createdAt: row.created_at,
     journeyStage: row.journey_stage,
@@ -371,6 +379,8 @@ function mapConversation(row: RawConversation): Conversation {
     dealClosedBy: mapAgent(row.deal_closed_by),
     lastCustomerMessageAt: row.last_customer_message_at,
     lastMessageAt: row.last_message_at,
+    lastReplyAt: row.last_reply_at,
+    lastReplySender: row.last_reply_sender,
     lastMessagePreview: row.last_message_preview,
     lastMessageDirection: row.last_message_direction,
     lastMessageStatus: row.last_message_status,
@@ -452,7 +462,7 @@ function mapTemplate(row: RawTemplate): WhatsappTemplate {
  */
 const CONVERSATION_BOARD_COLUMNS = `
   id, status, unread_count, manually_unread, ai_enabled, deal_status, deal_verified,
-  last_customer_message_at, last_message_at, has_reply, created_at,
+  last_customer_message_at, last_message_at, last_reply_at, last_reply_sender, has_reply, created_at,
   journey_stage, intent, active_tool, welcome_sent_at
 `;
 
@@ -486,7 +496,7 @@ const CONVERSATION_LIST_SELECT = `
 const CONVERSATION_DETAIL_SELECT = `
   id, status, unread_count, manually_unread, ai_enabled, deal_status, deal_closed_at,
   deal_payment_proof_url, deal_verified, deal_verified_at, deal_payment_method,
-  last_customer_message_at, last_message_at, last_message_preview,
+  last_customer_message_at, last_message_at, last_reply_at, last_reply_sender, last_message_preview,
   last_message_direction, last_message_status, has_reply, created_at,
   journey_stage, intent, active_tool, welcome_sent_at,
   order:orders(total_amount, currency),

@@ -122,6 +122,23 @@ export interface BoardConversation {
   lastCustomerMessageAt: string | null;
   lastMessageAt: string | null;
   /**
+   * Cuándo salió la última RESPUESTA REAL hacia el cliente: un asesor o la
+   * IA, sin contar una nota interna, un evento de sistema, la bienvenida
+   * automática ni un envío que Meta rechazó (`whatsapp_status='failed'`).
+   * Null si nadie respondió todavía (o si la única respuesta que hubo se
+   * invalidó).
+   *
+   * Es lo único que `awaitingReply()` compara contra `lastCustomerMessageAt`
+   * desde la migración 20260905010000 (T0.1, "La bandeja que no pierde").
+   * Antes de esa fecha `awaitingReply()` comparaba contra `lastMessageAt`,
+   * que avanza con CUALQUIER mensaje visible — por eso una nota, un evento
+   * de sistema, la bienvenida o un envío rechazado por Meta apagaban
+   * "esperando respuesta" sin que el cliente hubiera recibido nada.
+   */
+  lastReplyAt: string | null;
+  /** Quién dio la última respuesta real (ver `lastReplyAt`). Null si nadie ha respondido todavía. */
+  lastReplySender: "agent" | "ai" | null;
+  /**
    * Alguna vez salió de acá una respuesta que el cliente pueda leer, de un
    * asesor o de la IA. No cuentan los eventos de sistema ni las notas
    * internas.

@@ -64,6 +64,8 @@ function buildConversation(): Conversation {
     dealClosedBy: null,
     // Reciente, para que la ventana de 24h esté abierta y el textarea no esté deshabilitado.
     lastCustomerMessageAt: new Date().toISOString(),
+    lastReplyAt: null,
+    lastReplySender: null,
     hasReply: false,
     lastMessageAt: new Date().toISOString(),
     lastMessagePreview: null,

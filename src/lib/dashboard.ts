@@ -162,11 +162,24 @@ export function withinFreeformWindow(lastCustomerMessageAt: string | null, now: 
   return new Date(lastCustomerMessageAt).getTime() > now - FREEFORM_WINDOW_HOURS * 60 * 60 * 1000;
 }
 
-/** El último mensaje del hilo sigue siendo del cliente: nadie contestó. */
+/**
+ * Nadie dio una respuesta real desde el último mensaje del cliente.
+ *
+ * Compara `lastReplyAt` contra `lastCustomerMessageAt`, no `lastMessageAt`:
+ * hasta el 4/9/2026 comparaba contra `lastMessageAt`, que avanzaba con
+ * CUALQUIER mensaje visible —una nota interna, un evento de sistema, la
+ * bienvenida automática o un envío que Meta rechazó también lo movían— y
+ * apagaba "esperando respuesta" sin que el cliente hubiera recibido nada de
+ * nadie. Desde la migración 20260905010000 (T0.1, "La bandeja que no
+ * pierde") solo lo apaga una respuesta real de un asesor o la IA. Mismo
+ * operador `<=` que usa la columna generada `awaiting_reply` en la base
+ * (ver esa migración): `lastReplyAt` null cuenta como "todavía esperando",
+ * igual que un `lastReplyAt` que quedó antes del último mensaje del cliente.
+ */
 export function awaitingReply(conversation: BoardConversation): boolean {
   if (!conversation.lastCustomerMessageAt) return false;
-  if (!conversation.lastMessageAt) return true;
-  return new Date(conversation.lastMessageAt) <= new Date(conversation.lastCustomerMessageAt);
+  if (!conversation.lastReplyAt) return true;
+  return new Date(conversation.lastReplyAt) <= new Date(conversation.lastCustomerMessageAt);
 }
 
 /**
