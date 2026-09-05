@@ -829,7 +829,7 @@ export async function POST(request: Request) {
 
         const { data: existingConversation } = await supabase
           .from("conversations")
-          .select("id, last_customer_message_at, status, ai_enabled, referral")
+          .select("id, last_customer_message_at, status, ai_enabled, assigned_agent_id, referral")
           .eq("contact_id", contact.id)
           .eq("whatsapp_channel_id", channel.id)
           .maybeSingle<{
@@ -837,6 +837,7 @@ export async function POST(request: Request) {
             last_customer_message_at: string | null;
             status: string;
             ai_enabled: boolean;
+            assigned_agent_id: string | null;
             referral: unknown;
           }>();
 
@@ -877,14 +878,22 @@ export async function POST(request: Request) {
                 .single();
 
               // La IA sigue en el estado en que quedó al cerrar el chat: el
-              // sistema no la reactiva sola. Sin IA y sin asesor asignado,
-              // la conversación queda `unassigned` -- visible en "Sin
-              // dueño" -- en vez de perderse otra vez detrás de un `status`
-              // que ninguna píldora vuelve a leer. `recordHandoff` nunca
-              // lanza, así que esto no arriesga la respuesta al webhook.
+              // sistema no la reactiva sola. Anexo A2 (5/9/2026): si la IA
+              // seguía encendida, vuelve a ella (`ai`, como siempre); si no,
+              // pero el chat YA tenía asesor (`assigned_agent_id`), la
+              // conversación es SUYA -- se le devuelve con `human` + su id,
+              // no `unassigned` -- porque ese es el estado normal tras una
+              // escalación o un cierre manual, y decir "sin dueño" ahí era
+              // mentira de la bitácora, no una decisión. Solo sin ninguna de
+              // las dos cosas queda de verdad sin dueño. `recordHandoff`
+              // nunca lanza, así que esto no arriesga la respuesta al webhook.
               await recordHandoff(supabase, {
                 conversationId,
-                toKind: existingConversation.ai_enabled ? "ai" : "unassigned",
+                ...(existingConversation.ai_enabled
+                  ? { toKind: "ai" }
+                  : existingConversation.assigned_agent_id
+                    ? { toKind: "human", toId: existingConversation.assigned_agent_id }
+                    : { toKind: "unassigned" }),
                 reason: "reabierta_por_cliente",
               });
             }

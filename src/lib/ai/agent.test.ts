@@ -567,12 +567,13 @@ describe("runAgentTurn — salidas silenciosas de apertura", () => {
 
   /**
    * `ai_enabled` (apagado en ESTE chat) y `assigned_agent_id` (chat ya de un
-   * asesor) comparten la misma línea — `if (!convo.ai_enabled ||
-   * convo.assigned_agent_id) return;` — y esa línea no loguea nada. La
-   * variante de `assigned_agent_id` ya tenía prueba; ésta cierra la otra
-   * mitad de la condición y deja constancia de que, hoy, ninguna de las dos
-   * causas deja rastro en el registro — así que si alguna vez hace falta
-   * distinguirlas, hay que separar la condición primero.
+   * asesor) son dos guardas separadas que registran su propio traspaso
+   * (`pausada`/`asignada` — ver `handoffs.test.ts`), pero ninguna de las dos
+   * deja nada en `log`: la bitácora vive en `conversation_handoffs`, no en
+   * los logs. Anexo A2 (5/9/2026): el orden entre ellas se invirtió
+   * (`assigned_agent_id` se mira primero), pero este caso no tiene asesor
+   * asignado, así que sigue cayendo en la misma rama de siempre —
+   * `pausada`/`unassigned`— y esta prueba no necesita tocarse.
    */
   it("con ai_enabled=false en el chat, no corre nada y no deja ningún evento en el registro", async () => {
     const info = vi.spyOn(log, "info");

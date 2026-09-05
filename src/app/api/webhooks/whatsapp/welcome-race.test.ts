@@ -59,8 +59,10 @@ interface FakeConversationRow {
   // T2.1 (5/9/2026), espejo de route.test.ts: opcionales porque ninguna
   // prueba de este archivo ejercita la reapertura de una conversación
   // cerrada -- por defecto se comportan como "abierta, IA encendida".
+  // `assigned_agent_id` se sumó en el anexo A2 (5/9/2026), mismo motivo.
   status?: string;
   ai_enabled?: boolean;
+  assigned_agent_id?: string | null;
 }
 
 /**

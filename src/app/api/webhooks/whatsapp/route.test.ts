@@ -84,6 +84,10 @@ function createFakeAdminClient() {
     last_customer_message_at: new Date().toISOString(),
     status: "open",
     ai_enabled: true,
+    // Anexo A2 (5/9/2026): la fila por defecto trae `assigned_agent_id: null`
+    // a propósito -- los casos existentes de reapertura no tienen asesor, y
+    // solo el caso nuevo de "cerrada con asesor" lo pisa con `setConversationRow`.
+    assigned_agent_id: null as string | null,
   };
   const conversationUpdates: { id: string; patch: Record<string, unknown> }[] = [];
   /** Cada llamada a la RPC `record_handoff`, con sus parámetros. */
@@ -308,6 +312,7 @@ function createFakeAdminClient() {
         last_customer_message_at: new Date().toISOString(),
         status: "open",
         ai_enabled: true,
+        assigned_agent_id: null,
       };
     },
     setChannelRows: (rows: { id: string; phone_number: string; status: string }[]) => {
@@ -1354,6 +1359,29 @@ describe("POST /api/webhooks/whatsapp — el cliente vuelve sobre una conversaci
       expect.objectContaining({
         p_conversation_id: "conv-1",
         p_to_kind: "unassigned",
+        p_reason: "reabierta_por_cliente",
+      })
+    );
+  });
+
+  /**
+   * Anexo A2 (5/9/2026): con la IA apagada PERO un asesor ya asignado al
+   * chat, el traspaso es suyo -- `human` + su id --, no `unassigned`. Antes
+   * de A2 el destino se decidía solo mirando `ai_enabled`, así que este caso
+   * caía en el de arriba y una conversación con dueño quedaba en la
+   * bitácora como si no lo tuviera.
+   */
+  it("con la IA apagada pero un asesor ya asignado, la devuelve a ESE asesor", async () => {
+    setConversationRow({ status: "closed", ai_enabled: false, assigned_agent_id: "agent-7" });
+
+    await POST(fakeRequest(webhookBody("wamid.reabre-con-asesor-1")));
+
+    expect(conversationUpdates).toContainEqual({ id: "conv-1", patch: { status: "open" } });
+    expect(handoffCalls).toContainEqual(
+      expect.objectContaining({
+        p_conversation_id: "conv-1",
+        p_to_kind: "human",
+        p_to_id: "agent-7",
         p_reason: "reabierta_por_cliente",
       })
     );

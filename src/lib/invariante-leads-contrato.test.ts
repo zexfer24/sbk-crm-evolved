@@ -116,4 +116,17 @@ describe('contrato de "sin dueño" — los mismos casos que invariante_leads.sql
   it("caso 7 · escalada sin asesores y la IA se despidió con is_auto_reply: CUENTA", () => {
     expect(isUnassignedLead(true, [traspaso("unassigned", 9)])).toBe(true);
   });
+
+  /**
+   * Caso 8 (anexo A2, 5/9/2026): la misma historia del caso 6 —cerrada por un
+   * asesor, el cliente vuelve a escribir— pero acá el chat SÍ tenía asesor
+   * asignado. El webhook ahora deja `reabierta_por_cliente` con destino
+   * `human`, no `unassigned` (ver `webhooks/whatsapp/route.ts`): sigue
+   * teniendo dueño, pasar por `closed` en el medio no cambia eso.
+   */
+  it("caso 8 · cerrada, el cliente volvió y la conversación tenía asesor: NO CUENTA", () => {
+    expect(
+      isUnassignedLead(true, [traspaso("closed", 180), traspaso("human", 10)])
+    ).toBe(false);
+  });
 });

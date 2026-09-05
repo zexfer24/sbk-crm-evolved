@@ -59,17 +59,21 @@ function createRacingFakeAdminClient() {
   let conversationRow: {
     id: string;
     last_customer_message_at: string | null;
-    // T2.1 (5/9/2026): el webhook lee estos dos campos para decidir si hay
-    // que reabrir una conversación cerrada. Espejo de route.test.ts: acá
-    // ninguna fila queda `closed`, así que ese camino nunca se ejercita, pero
-    // la forma de la fila fake se mantiene igual a la real.
+    // T2.1 (5/9/2026): el webhook lee estos campos para decidir si hay que
+    // reabrir una conversación cerrada. `assigned_agent_id` se sumó en el
+    // anexo A2 (5/9/2026) para decidir a QUIÉN se la devuelve. Espejo de
+    // route.test.ts: acá ninguna fila queda `closed`, así que ese camino
+    // nunca se ejercita, pero la forma de la fila fake se mantiene igual a
+    // la real.
     status: string;
     ai_enabled: boolean;
+    assigned_agent_id: string | null;
   } | null = {
     id: "conv-race-winner",
     last_customer_message_at: null,
     status: "open",
     ai_enabled: true,
+    assigned_agent_id: null,
   };
   let selectCallsBeforeInsertWins = 1; // la primera lectura no ve la fila todavía
   const insertedMessages = new Map<string, { id: string }>();
@@ -129,6 +133,7 @@ function createRacingFakeAdminClient() {
                   last_customer_message_at: null,
                   status: "open",
                   ai_enabled: true,
+                  assigned_agent_id: null,
                 };
                 return { data: { id: "conv-race-winner" }, error: null };
               },

@@ -937,13 +937,16 @@ export async function runAgentTurn(conversationId: string): Promise<void> {
     await recordHandoff(supabase, { conversationId, toKind: "unassigned", reason: "agente_no_puede_correr" });
     return;
   }
-  // Partido en dos para poder registrar cuál de las dos causas fue: el orden
-  // de evaluación —primero `ai_enabled`, después `assigned_agent_id`— y el
-  // efecto observable —return sin enviar nada— quedan idénticos a antes.
-  if (!convo.ai_enabled) {
-    await recordHandoff(supabase, { conversationId, toKind: "unassigned", reason: "pausada" });
-    return;
-  }
+  // Partido en dos para poder registrar cuál de las dos causas fue. El orden
+  // CAMBIÓ el 5/9/2026 (anexo A2): antes se miraba primero `ai_enabled`, así
+  // que un chat con dueño (`assigned_agent_id`) y la IA apagada —el estado
+  // normal tras una escalación o un cierre manual, no un caso raro— caía en
+  // la rama de `pausada`/`unassigned` sin que importara que tenía asesor: la
+  // bitácora decía "sin dueño" de una conversación que sí lo tenía. Ahora se
+  // mira primero `assigned_agent_id`: un chat asignado registra `asignada`/
+  // `human` aunque la IA esté apagada en él, que es justo el caso que este
+  // reordenamiento vino a corregir. El efecto observable —return sin enviar
+  // nada— no cambia, solo qué dice el traspaso.
   if (convo.assigned_agent_id) {
     await recordHandoff(supabase, {
       conversationId,
@@ -951,6 +954,10 @@ export async function runAgentTurn(conversationId: string): Promise<void> {
       reason: "asignada",
       toId: convo.assigned_agent_id,
     });
+    return;
+  }
+  if (!convo.ai_enabled) {
+    await recordHandoff(supabase, { conversationId, toKind: "unassigned", reason: "pausada" });
     return;
   }
 

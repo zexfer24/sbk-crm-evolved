@@ -57,13 +57,16 @@ begin;
 -- respondió) salvo en el caso 5, donde se simula la respuesta real del
 -- asesor fijando esas dos columnas.
 -- Un contacto por caso: `conversations` tiene único (contact_id,
--- whatsapp_channel_id), así que siete conversaciones sobre el mismo canal
--- necesitan siete contactos distintos. El caso 6 (T2.1, 5/9/2026) suma
+-- whatsapp_channel_id), así que ocho conversaciones sobre el mismo canal
+-- necesitan ocho contactos distintos. El caso 6 (T2.1, 5/9/2026) suma
 -- `cerrada_por_asesor`/`reabierta_por_cliente` a la lista de razones que
 -- puede escribir esta bitácora: nace de 20260905030000. El caso 7 (anexo A1,
 -- 5/9/2026) es la despedida de la IA al escalar sin asesores: sale con
 -- `is_auto_reply = true` (misma marca que la bienvenida automática, T0.1) y
--- por eso NO apaga `awaiting_reply` aunque el cliente la haya recibido.
+-- por eso NO apaga `awaiting_reply` aunque el cliente la haya recibido. El
+-- caso 8 (anexo A2, 5/9/2026) es el mismo cierre/reapertura del caso 6 pero
+-- con un asesor YA asignado al chat: el webhook la reabre con destino
+-- `human` en vez de `unassigned`, así que NO cuenta -- tiene dueño.
 insert into public.contacts (id, phone_number) values
   ('11111111-1111-1111-1111-111111111101', '+580000000001'),
   ('11111111-1111-1111-1111-111111111102', '+580000000002'),
@@ -71,7 +74,8 @@ insert into public.contacts (id, phone_number) values
   ('11111111-1111-1111-1111-111111111104', '+580000000004'),
   ('11111111-1111-1111-1111-111111111105', '+580000000005'),
   ('11111111-1111-1111-1111-111111111106', '+580000000006'),
-  ('11111111-1111-1111-1111-111111111107', '+580000000007');
+  ('11111111-1111-1111-1111-111111111107', '+580000000007'),
+  ('11111111-1111-1111-1111-111111111108', '+580000000008');
 
 insert into public.whatsapp_channels (id, label, phone_number) values
   ('22222222-2222-2222-2222-222222222222', 'Canal de prueba', '+580000000000');
@@ -150,23 +154,49 @@ values
    'Ya dejé tu caso registrado para que lo revise un asesor. En cuanto haya alguien disponible te escriben por acá.',
    true, 'sent', now() - interval '9 minutes');
 
+-- Caso 8 · cerrada, el cliente volvió y la conversación tenía asesor (anexo
+-- A2, 5/9/2026): NO CUENTA. Hace falta un asesor de verdad para la FK de
+-- `assigned_agent_id` (references public.agents, que a su vez referencia
+-- auth.users) -- mismo patrón mínimo que usa `pins.sql`: insertar en
+-- auth.users dispara handle_new_agent() (security definer) y crea la fila
+-- espejo en public.agents. `awaiting_reply` queda en `true` (esperando) con
+-- `last_reply_at` en null, igual que los casos 1-6, porque acá no importa
+-- decidir por el trigger: lo que se prueba es que un último traspaso
+-- `human` con dueño no cuenta como sin dueño, sin importar el `closed` de
+-- en medio.
+insert into auth.users (id, email, raw_user_meta_data) values
+  ('c9c9c9c9-0000-0000-0000-000000000001', 'asesor-caso8@sbk.test', jsonb_build_object('display_name', 'Asesor (caso 8)'));
+
+insert into public.conversations
+  (id, contact_id, whatsapp_channel_id, assigned_agent_id, ai_enabled,
+   last_customer_message_at, last_message_at, last_reply_at, last_reply_sender)
+values
+  ('aaaaaaaa-0000-0000-0000-000000000008',
+   '11111111-1111-1111-1111-111111111108', '22222222-2222-2222-2222-222222222222',
+   'c9c9c9c9-0000-0000-0000-000000000001', false,
+   now() - interval '10 minutes', now() - interval '10 minutes',
+   null, null);
+
 -- Los traspasos. El `created_at` explícito y separado en el tiempo es
 -- deliberado: lo que decide es la fila MÁS RECIENTE, no el orden de inserción.
-insert into public.conversation_handoffs (conversation_id, to_kind, reason, created_at) values
-  ('aaaaaaaa-0000-0000-0000-000000000001', 'unassigned', 'agente_no_puede_correr', now() - interval '90 minutes'),
+insert into public.conversation_handoffs (conversation_id, to_kind, to_id, reason, created_at) values
+  ('aaaaaaaa-0000-0000-0000-000000000001', 'unassigned', null, 'agente_no_puede_correr', now() - interval '90 minutes'),
 
-  ('aaaaaaaa-0000-0000-0000-000000000002', 'unassigned', 'abandonado',  now() - interval '90 minutes'),
-  ('aaaaaaaa-0000-0000-0000-000000000002', 'ai',         'reabierto',   now() - interval '30 minutes'),
+  ('aaaaaaaa-0000-0000-0000-000000000002', 'unassigned', null, 'abandonado',  now() - interval '90 minutes'),
+  ('aaaaaaaa-0000-0000-0000-000000000002', 'ai',         null, 'reabierto',   now() - interval '30 minutes'),
 
-  ('aaaaaaaa-0000-0000-0000-000000000003', 'unassigned', 'fuera_de_ventana', now() - interval '90 minutes'),
-  ('aaaaaaaa-0000-0000-0000-000000000003', 'human',      'reclamado',        now() - interval '30 minutes'),
+  ('aaaaaaaa-0000-0000-0000-000000000003', 'unassigned', null, 'fuera_de_ventana', now() - interval '90 minutes'),
+  ('aaaaaaaa-0000-0000-0000-000000000003', 'human',      null, 'reclamado',        now() - interval '30 minutes'),
 
-  ('aaaaaaaa-0000-0000-0000-000000000005', 'unassigned', 'entrega_fallida', now() - interval '90 minutes'),
+  ('aaaaaaaa-0000-0000-0000-000000000005', 'unassigned', null, 'entrega_fallida', now() - interval '90 minutes'),
 
-  ('aaaaaaaa-0000-0000-0000-000000000006', 'closed',     'cerrada_por_asesor',  now() - interval '3 hours'),
-  ('aaaaaaaa-0000-0000-0000-000000000006', 'unassigned', 'reabierta_por_cliente', now() - interval '10 minutes'),
+  ('aaaaaaaa-0000-0000-0000-000000000006', 'closed',     null, 'cerrada_por_asesor',  now() - interval '3 hours'),
+  ('aaaaaaaa-0000-0000-0000-000000000006', 'unassigned', null, 'reabierta_por_cliente', now() - interval '10 minutes'),
 
-  ('aaaaaaaa-0000-0000-0000-000000000007', 'unassigned', 'escalada_sin_asesor', now() - interval '9 minutes');
+  ('aaaaaaaa-0000-0000-0000-000000000007', 'unassigned', null, 'escalada_sin_asesor', now() - interval '9 minutes'),
+
+  ('aaaaaaaa-0000-0000-0000-000000000008', 'closed', null, 'cerrada_por_asesor', now() - interval '3 hours'),
+  ('aaaaaaaa-0000-0000-0000-000000000008', 'human', 'c9c9c9c9-0000-0000-0000-000000000001', 'reabierta_por_cliente', now() - interval '10 minutes');
 
 do $$
 declare
@@ -242,6 +272,27 @@ begin
   if obtenido <> 0 then
     errores := errores ||
       E'\n  - la conversación rescatada por el reconciliador (un `reabierto` encima de un `unassigned`) sigue contando como sin dueño: el KPI solo sabría subir.';
+  end if;
+
+  -- Caso 8, explícito y con nombre propio (anexo A2, 5/9/2026): la misma
+  -- historia del caso 6 (cerrada por un asesor y reabierta por el cliente),
+  -- pero acá el chat SÍ tenía asesor asignado -- el webhook deja
+  -- `reabierta_por_cliente` con destino `human`, no `unassigned`. Sin la
+  -- corrección de A2 este caso contaría igual que el 6, porque el destino
+  -- se decidía solo por `ai_enabled` y nunca miraba `assigned_agent_id`.
+  select count(*)::integer into obtenido
+  from public.conversations c
+  where c.id = 'aaaaaaaa-0000-0000-0000-000000000008'
+    and c.awaiting_reply
+    and (
+      select h.to_kind from public.conversation_handoffs h
+      where h.conversation_id = c.id
+      order by h.created_at desc, h.id desc limit 1
+    ) = 'unassigned';
+
+  if obtenido <> 0 then
+    errores := errores ||
+      E'\n  - la conversación cerrada, reabierta por el cliente y CON asesor asignado cuenta como sin dueño (debía quedar `human`).';
   end if;
 
   -- La invariante propiamente dicha, en su forma de Etapa 1: toda

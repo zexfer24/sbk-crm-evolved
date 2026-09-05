@@ -292,6 +292,29 @@ describe("runAgentTurn — traspasos registrados en cada salida silenciosa", () 
     });
   });
 
+  /**
+   * Anexo A2 (5/9/2026): el estado normal tras una escalación o un cierre
+   * manual es justo este -- IA apagada Y un asesor ya asignado. `openTurn`
+   * mira `assigned_agent_id` ANTES que `ai_enabled` desde este anexo, así
+   * que el traspaso tiene que ser `asignada`/`human`, nunca `pausada`. Antes
+   * del reordenamiento este caso caía en `pausada`/`unassigned` -- una
+   * conversación CON dueño quedando en la bitácora como si no lo tuviera.
+   */
+  it("asignada: ai_enabled=false Y un asesor ya asignado, gana el asesor (no pausada)", async () => {
+    state.conversation = baseConversation({ ai_enabled: false, assigned_agent_id: "asesor-42" });
+
+    await runAgentTurn("conv-1");
+
+    expect(handoffCalls).toHaveLength(1);
+    expect(handoffCalls[0]).toMatchObject({
+      p_conversation_id: "conv-1",
+      p_to_kind: "human",
+      p_reason: "asignada",
+      p_to_id: "asesor-42",
+    });
+    expect(handoffCalls.some((c) => c.p_reason === "pausada")).toBe(false);
+  });
+
   it("humano_intervino: un asesor ya había escrito antes de abrir el turno", async () => {
     state.humanMessages = [{ id: "msg-del-asesor" }];
 
