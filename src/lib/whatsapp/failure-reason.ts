@@ -27,10 +27,46 @@ const MOTIVOS_CONOCIDOS: Record<number, string> = {
   131049: "Meta no entregó el mensaje para cuidar la experiencia del usuario.",
   131051: "Meta no sabe entregar este tipo de mensaje.",
   131053: "Meta no pudo procesar el archivo adjunto.",
-  132000: "La plantilla no coincide con lo que Meta tiene aprobado.",
+  132000: "La plantilla no coincide con lo que Meta tiene aprobado (le sobran o faltan variables).",
   132001: "La plantilla no existe o no está aprobada en ese idioma.",
   133010: "El número de la tienda no está registrado en la Cloud API.",
   190: "El token de acceso venció: hay que renovarlo en el servidor.",
+
+  // -------------------------------------------------------------------------
+  // Tabla completa T3.3 (5/9/2026). Los códigos que Meta agrupa bajo el mismo
+  // motivo en su documentación llevan la misma frase acá: distinguirlos no le
+  // suma nada al asesor, que necesita saber QUÉ hacer, no el número exacto.
+  // -------------------------------------------------------------------------
+
+  // El cliente cerró la puerta él mismo: no hay nada que reintentar.
+  131050:
+    "El cliente dejó de aceptar mensajes de marketing de este número por WhatsApp. Puede seguir escribiendo él, pero no se le puede reenviar publicidad.",
+
+  // Ritmo de envío hacia ESE número, no hacia la cuenta entera.
+  131056:
+    "Se mandaron demasiados mensajes seguidos a este mismo número en poco tiempo. Espera un momento antes de reintentar.",
+
+  // Cupo de la cuenta/app frente a Meta, no de este chat en particular.
+  130429: "Se alcanzó el límite de mensajes que Meta deja enviar por ahora. Espera unos minutos y reintenta.",
+  80007: "Se alcanzó el límite de mensajes que Meta deja enviar por ahora. Espera unos minutos y reintenta.",
+  4: "Se alcanzó el límite de peticiones que Meta deja hacer por ahora. Espera unos minutos y reintenta.",
+
+  // Plantilla: el problema no es el envío, es la plantilla misma.
+  132012:
+    "Los datos que se pusieron en la plantilla no tienen el formato que espera (una fecha, un monto). Revísalos y reintenta.",
+  132015:
+    "Meta pausó esta plantilla por baja calidad: no se puede enviar hasta que mejore o se cree una nueva.",
+  132016:
+    "Meta deshabilitó esta plantilla para siempre por baja calidad repetida: hay que crear una plantilla nueva.",
+
+  // El número o la cuenta del negocio, no este mensaje en particular.
+  131037: "El número de WhatsApp del negocio tiene una restricción de Meta y no puede enviar. Revisa el Administrador Comercial.",
+  131031:
+    "La cuenta de WhatsApp del negocio quedó restringida o deshabilitada por Meta. Revisa el Administrador Comercial.",
+  368: "La cuenta de WhatsApp del negocio quedó restringida o deshabilitada por Meta. Revisa el Administrador Comercial.",
+
+  131064:
+    "La cuenta llegó a su límite de envío por plantillas de mala calidad repetidas. Hay que mejorar la calidad de las plantillas antes de seguir mandando.",
 };
 
 /**
@@ -49,5 +85,21 @@ export function failureReason(code: number | null, detail: string | null): strin
   if (texto) return code === null ? texto : `${texto} (código ${code})`;
   if (code !== null) return `Meta rechazó el envío con el código ${code}.`;
 
+  return null;
+}
+
+/**
+ * Las acciones que la frase de arriba puede sugerir y que además tienen un
+ * gesto concreto en la interfaz — hoy solo una: la ventana de 24 h vencida
+ * (131047) se arregla abriendo el selector de plantillas, no reintentando.
+ * El resto de los motivos ya dice qué hacer en la propia frase (esperar,
+ * revisar el Administrador Comercial, pedir el número), pero no tienen un
+ * botón que hacer desde la burbuja.
+ */
+export type FailureAction = "abrir_plantillas";
+
+/** Acción sugerida para el código, o null si la frase ya se basta sola. */
+export function failureAction(code: number | null): FailureAction | null {
+  if (code === 131047) return "abrir_plantillas";
   return null;
 }

@@ -10,7 +10,13 @@ interface FakeState {
   /** Lo que devuelve la función agent_can_run() de la base. */
   canRun: boolean;
   conversation: Record<string, unknown> | null;
-  history: { sender_type: string; content: string | null; is_internal_note: boolean }[];
+  history: {
+    sender_type: string;
+    content: string | null;
+    is_internal_note: boolean;
+    /** T3.2 (5/9/2026): loadHistory salta 'unsupported' explícito, sin depender de que content sea null. */
+    message_type?: string;
+  }[];
   historyOrderAscending: boolean | null;
   /** Claves encendidas en public.agent_tools. */
   enabledToolKeys: string[];
@@ -28,6 +34,12 @@ interface FakeState {
    * fábrica: el lock nunca es el protagonista salvo en su propio describe.
    */
   turnLockRenewResult: { data: boolean | null; error: { message: string } | null };
+  /**
+   * El wamid del último mensaje ENTRANTE (T3.1, 4/9/2026): lo que
+   * `fireTypingIndicator` necesita para el "message_id" que Meta exige.
+   * `null` simula un chat sin ningún mensaje entrante con wamid.
+   */
+  lastInboundWamid: string | null;
 }
 
 const state: FakeState = {
@@ -41,6 +53,7 @@ const state: FakeState = {
   humanMessages: [],
   humanMessagesError: null,
   turnLockRenewResult: { data: true, error: null },
+  lastInboundWamid: "wamid.ULTIMO_ENTRANTE",
 };
 const conversationUpdates: Record<string, unknown>[] = [];
 const agentTurnInserts: Record<string, unknown>[] = [];
@@ -121,13 +134,25 @@ function createFakeSupabase() {
                 state.historyOrderAscending = opts.ascending;
                 return { limit: async () => ({ data: state.history }) };
               },
-              // Segundo .eq(): la comprobación de si un asesor escribió acá.
-              // Se lee `state` en el momento de la llamada, no al construir el
-              // fake: es lo que deja que un asesor "entre" a mitad de turno.
+              // Segundo .eq(): dos consumidores distintos comparten esta forma
+              // (conversation_id + un segundo filtro) y se distinguen por qué
+              // llaman DESPUÉS — humanHasWritten sigue con `.limit()` directo;
+              // `lastInboundWamid` (T3.1, 4/9/2026) encadena
+              // `.order().limit().maybeSingle()`. Se lee `state` en el momento
+              // de la llamada, no al construir el fake: es lo que deja que un
+              // asesor "entre" a mitad de turno.
               eq: () => ({
                 limit: async () => ({
                   data: state.humanMessagesError ? null : state.humanMessages,
                   error: state.humanMessagesError,
+                }),
+                order: () => ({
+                  limit: () => ({
+                    maybeSingle: async () => ({
+                      data: state.lastInboundWamid ? { whatsapp_message_id: state.lastInboundWamid } : null,
+                      error: null,
+                    }),
+                  }),
                 }),
               }),
             }),
@@ -262,6 +287,12 @@ vi.mock("@/lib/ai/knowledge", () => ({
   buildKnowledgeTool: () => ({}),
 }));
 
+/** "Escribiendo…" hacia Meta (T3.1, 4/9/2026): nunca lanza, así que el mock tampoco. */
+const sendTypingIndicatorMock = vi.fn().mockResolvedValue(undefined);
+vi.mock("@/lib/whatsapp/meta-client", () => ({
+  sendTypingIndicator: (...args: unknown[]) => sendTypingIndicatorMock(...args),
+}));
+
 import { runAgentTurn } from "@/lib/ai/agent";
 import { OFF_TOPIC_REPLY, SYSTEM_PROMPT } from "@/lib/ai/prompt";
 import { log } from "@/lib/log";
@@ -303,6 +334,8 @@ beforeEach(() => {
   state.humanMessages = [];
   state.humanMessagesError = null;
   state.turnLockRenewResult = { data: true, error: null };
+  state.lastInboundWamid = "wamid.ULTIMO_ENTRANTE";
+  sendTypingIndicatorMock.mockClear();
   conversationUpdates.length = 0;
   agentTurnInserts.length = 0;
   contactTagUpserts.length = 0;
@@ -356,6 +389,50 @@ describe("runAgentTurn — historial", () => {
 
     const enviados = matchPlaybookMock.mock.calls[0][0] as { content: string }[];
     expect(enviados.map((m) => m.content)).toEqual(["hola", "tienen carburador", "para una Bera"]);
+  });
+
+  /**
+   * T3.2 (5/9/2026): 'unsupported' es Meta avisando que hay algo que el CRM
+   * no sabe representar (content ya queda null en la base para ese tipo,
+   * pero el filtro es explícito por `message_type`, no por esa nulidad) — no
+   * es contenido del cliente ni una respuesta nuestra, así que no debe
+   * meterse en el contexto que lee el modelo.
+   */
+  it("salta los mensajes 'unsupported' del historial", async () => {
+    // El fake simula la consulta DESCENDENTE (más nuevo primero), igual que
+    // Postgres: loadHistory la invierte para pasarle al modelo el orden
+    // cronológico. Se escribe acá en el mismo orden que devuelve la base.
+    state.history = [
+      { sender_type: "customer", content: "¿tienen aceite 20w50?", is_internal_note: false, message_type: "text" },
+      { sender_type: "customer", content: null, is_internal_note: false, message_type: "unsupported" },
+      { sender_type: "customer", content: "hola", is_internal_note: false, message_type: "text" },
+    ];
+
+    await runAgentTurn("conv-1");
+
+    const enviados = matchPlaybookMock.mock.calls[0][0] as { content: string }[];
+    expect(enviados.map((m) => m.content)).toEqual(["hola", "¿tienen aceite 20w50?"]);
+  });
+
+  /**
+   * Un pedido del catálogo (T3.2, 5/9/2026) entra al historial con el mismo
+   * resumen en español que el webhook ya dejó en `content` — no hace falta
+   * releer `payload` acá, el resumen ya es el texto que el modelo necesita.
+   */
+  it("usa el resumen en español de un pedido del catálogo", async () => {
+    state.history = [
+      {
+        sender_type: "customer",
+        content: "🛒 El cliente envió un pedido del catálogo (1 producto):\n- 2x SKU-1 (USD 10.00 c/u)\nTotal: USD 20.00",
+        is_internal_note: false,
+        message_type: "order",
+      },
+    ];
+
+    await runAgentTurn("conv-1");
+
+    const enviados = matchPlaybookMock.mock.calls[0][0] as { content: string }[];
+    expect(enviados[0].content).toContain("Total: USD 20.00");
   });
 });
 
@@ -1591,5 +1668,116 @@ describe("runAgentTurn — un solo traspaso por salida cuando la escalación for
       p_to_kind: "unassigned",
       p_reason: "rechazado_por_meta",
     });
+  });
+});
+
+/**
+ * "Escribiendo…" hacia el cliente (T3.1, 4/9/2026): se dispara justo al
+ * arrancar el tool loop, y solo cuando de verdad hay a quién avisarle — canal
+ * conectado, dentro de la ventana de 24h y con un mensaje entrante al que
+ * apuntar. Ninguno de los tests de arriba lo dispara: su canal por defecto es
+ * `demo` (ver beforeEach), así que este describe es el único que lo activa a
+ * propósito.
+ */
+describe("runAgentTurn — 'escribiendo…' hacia el cliente", () => {
+  beforeEach(() => {
+    state.conversation = {
+      ...state.conversation,
+      channel: { phone_number_id: "phone-id-1", status: "connected" },
+    };
+    process.env.WHATSAPP_ACCESS_TOKEN = "token-de-prueba";
+  });
+
+  afterEach(() => {
+    delete process.env.WHATSAPP_ACCESS_TOKEN;
+  });
+
+  it("lo dispara sin esperar a que el modelo termine de redactar, con el wamid del último mensaje entrante", async () => {
+    const ordenDeLlamadas: string[] = [];
+    sendTypingIndicatorMock.mockImplementation(async () => {
+      ordenDeLlamadas.push("typing");
+    });
+    // El modelo queda deliberadamente colgado: si el typing dependiera de que
+    // `generate` termine (o corriera DESPUÉS de él), este test se quedaría
+    // esperando para siempre en el primer `waitFor` de abajo.
+    let resolverGenerate: () => void = () => {};
+    generateMock.mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          resolverGenerate = () => {
+            ordenDeLlamadas.push("generate");
+            resolve({
+              text: "respuesta redactada por el modelo",
+              usage: { inputTokens: 20, outputTokens: 8, totalTokens: 28 },
+              steps: [{}, {}],
+            });
+          };
+        })
+    );
+
+    const turno = runAgentTurn("conv-1");
+
+    await vi.waitFor(() => expect(sendTypingIndicatorMock).toHaveBeenCalledTimes(1));
+    expect(sendTypingIndicatorMock).toHaveBeenCalledWith("phone-id-1", "token-de-prueba", "wamid.ULTIMO_ENTRANTE");
+    // El aviso ya llegó y el modelo TODAVÍA no devolvió nada: no lo esperó.
+    expect(ordenDeLlamadas).toEqual(["typing"]);
+
+    resolverGenerate();
+    await turno;
+
+    expect(ordenDeLlamadas).toEqual(["typing", "generate"]);
+  });
+
+  it("no lo dispara cuando el escenario responde: ese camino no redacta con el modelo", async () => {
+    const pb = playbook();
+    fetchActivePlaybooksMock.mockResolvedValue([pb]);
+    matchPlaybookMock.mockResolvedValue({ playbook: pb, usage: NO_USAGE });
+
+    await runAgentTurn("conv-1");
+
+    expect(sendTypingIndicatorMock).not.toHaveBeenCalled();
+  });
+
+  it("no lo dispara fuera de la ventana de 24h de Meta", async () => {
+    state.conversation = {
+      ...state.conversation,
+      last_customer_message_at: new Date(Date.now() - 25 * 60 * 60 * 1000).toISOString(),
+    };
+
+    await runAgentTurn("conv-1");
+
+    expect(sendTypingIndicatorMock).not.toHaveBeenCalled();
+  });
+
+  it("no lo dispara con el canal simulado (no 'connected')", async () => {
+    state.conversation = { ...state.conversation, channel: { phone_number_id: null, status: "demo" } };
+
+    await runAgentTurn("conv-1");
+
+    expect(sendTypingIndicatorMock).not.toHaveBeenCalled();
+  });
+
+  it("no lo dispara sin WHATSAPP_ACCESS_TOKEN en el servidor", async () => {
+    delete process.env.WHATSAPP_ACCESS_TOKEN;
+
+    await runAgentTurn("conv-1");
+
+    expect(sendTypingIndicatorMock).not.toHaveBeenCalled();
+  });
+
+  it("no lo dispara sin ningún mensaje entrante con wamid", async () => {
+    state.lastInboundWamid = null;
+
+    await runAgentTurn("conv-1");
+
+    expect(sendTypingIndicatorMock).not.toHaveBeenCalled();
+  });
+
+  it("un fallo del typing no aborta el turno: el cliente igual recibe la respuesta", async () => {
+    sendTypingIndicatorMock.mockRejectedValue(new Error("no debería pasar, pero si pasa no debe tumbar el turno"));
+
+    await runAgentTurn("conv-1");
+
+    expect(sendAgentTextMock).toHaveBeenCalledTimes(1);
   });
 });

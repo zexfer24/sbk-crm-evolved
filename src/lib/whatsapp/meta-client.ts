@@ -1,6 +1,9 @@
 // Cliente server-only para la WhatsApp Cloud API (Meta). Nunca importar desde
 // un componente cliente: usa el access token del canal vía variables de entorno.
 
+import { errorText, log } from "@/lib/log";
+import type { WhatsappTemplateComponent } from "@/lib/whatsapp/template-variables";
+
 const GRAPH_API_VERSION = process.env.WHATSAPP_GRAPH_API_VERSION ?? "v21.0";
 
 export class MetaApiError extends Error {
@@ -85,7 +88,13 @@ export async function sendWhatsappTemplate(
   accessToken: string,
   to: string,
   templateName: string,
-  languageCode: string
+  languageCode: string,
+  // Parámetros posicionales del cuerpo (y de la cabecera, si la plantilla
+  // lleva una): sin esto, una plantilla con variables salía con sus
+  // `{{1}}`/`{{2}}` literales delante del cliente (T3.3, 5/9/2026). Opcional
+  // y omitido del payload cuando la plantilla no tiene ninguna: Meta rechaza
+  // `components: []` en plantillas sin parámetros.
+  components?: WhatsappTemplateComponent[]
 ): Promise<SendResult> {
   const json = await callGraphApi(phoneNumberId, accessToken, {
     to: toWaId(to),
@@ -93,6 +102,7 @@ export async function sendWhatsappTemplate(
     template: {
       name: templateName,
       language: { code: languageCode },
+      ...(components && components.length > 0 ? { components } : {}),
     },
   });
   return { whatsappMessageId: json.messages[0].id };
@@ -141,4 +151,65 @@ export async function downloadMetaMedia(url: string, accessToken: string): Promi
   if (!res.ok) throw new MetaApiError("No se pudo descargar el archivo multimedia.", res.status, null);
   const buffer = await res.arrayBuffer();
   return new Uint8Array(buffer);
+}
+
+// ---------------------------------------------------------------------------
+// Señales hacia el cliente que no son mensajes (T3.1, 4/9/2026): el doble
+// check azul y "escribiendo…". Van al mismo endpoint que un envío normal
+// (`/messages`), pero acá el fallo NUNCA puede romper nada — un check que no
+// llegó o un typing que no se disparó no le impide a la bandeja ni al turno
+// de la IA seguir. Por eso, a diferencia del resto de este archivo, estas dos
+// funciones no lanzan `MetaApiError`: atrapan su propio fallo y solo dejan
+// constancia en el registro. El "message_id" que exige Meta en los dos casos
+// es el wamid del mensaje ENTRANTE al que se está respondiendo — es cómo la
+// Cloud API sabe a qué chat apunta el check o el indicador, sin volver a
+// pedir el número del cliente.
+// ---------------------------------------------------------------------------
+
+async function notifyGraphApi(
+  phoneNumberId: string,
+  accessToken: string,
+  body: Record<string, unknown>,
+  evento: string
+): Promise<void> {
+  try {
+    const res = await fetch(`https://graph.facebook.com/${GRAPH_API_VERSION}/${phoneNumberId}/messages`, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ messaging_product: "whatsapp", ...body }),
+    });
+    if (!res.ok) {
+      const json = await res.json().catch(() => null);
+      log.warn(evento, { status: res.status, detail: json?.error?.message ?? null });
+    }
+  } catch (err) {
+    log.warn(evento, { detail: errorText(err) });
+  }
+}
+
+/** El doble check azul: le confirma a Meta que el mensaje del cliente ya se leyó. */
+export async function markWhatsappRead(phoneNumberId: string, accessToken: string, wamid: string): Promise<void> {
+  await notifyGraphApi(
+    phoneNumberId,
+    accessToken,
+    { status: "read", message_id: wamid },
+    "whatsapp_marcar_leido_fallido"
+  );
+}
+
+/**
+ * "Escribiendo…" del lado del cliente. Meta lo apaga solo —al llegar la
+ * respuesta o a los 25 s, lo que pase primero—, así que solo tiene sentido
+ * dispararlo justo antes de ponerse a redactar de verdad.
+ */
+export async function sendTypingIndicator(phoneNumberId: string, accessToken: string, wamid: string): Promise<void> {
+  await notifyGraphApi(
+    phoneNumberId,
+    accessToken,
+    { status: "read", message_id: wamid, typing_indicator: { type: "text" } },
+    "whatsapp_typing_fallido"
+  );
 }

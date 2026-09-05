@@ -37,6 +37,7 @@ import type {
   TokenUsageDay,
   TokenUsageSummary,
   WhatsappChannel,
+  WhatsappChannelHealth,
   WhatsappTemplate,
 } from "@/lib/types";
 
@@ -81,6 +82,15 @@ interface RawChannel {
   phone_number: string;
   phone_number_id: string | null;
   status: WhatsappChannel["status"];
+}
+
+interface RawChannelHealth {
+  id: string;
+  label: string;
+  quality_rating: string | null;
+  messaging_limit: string | null;
+  account_restrictions: Record<string, unknown> | null;
+  health_updated_at: string | null;
 }
 
 interface RawAgentRef {
@@ -172,6 +182,8 @@ interface RawConversation {
   intent: string | null;
   active_tool: string | null;
   welcome_sent_at: string | null;
+  /** De qué anuncio "Click to WhatsApp" vino, para el banner de la cabecera del chat (T3.2, 5/9/2026). */
+  referral: Conversation["referral"];
   contact: RawContact;
   channel: RawChannel;
   assigned_agent: RawAgent | null;
@@ -192,6 +204,8 @@ interface RawMessage {
   whatsapp_error_detail: string | null;
   reaction_emoji: string | null;
   reply_to_message_id: string | null;
+  /** Datos crudos del tipo de mensaje sin columna propia (T3.2, 5/9/2026). */
+  payload: Message["payload"];
   created_at: string;
   sender_agent: RawAgent | null;
 }
@@ -358,6 +372,17 @@ function mapChannel(row: RawChannel): WhatsappChannel {
   };
 }
 
+function mapChannelHealth(row: RawChannelHealth): WhatsappChannelHealth {
+  return {
+    id: row.id,
+    label: row.label,
+    qualityRating: row.quality_rating,
+    messagingLimit: row.messaging_limit,
+    accountRestrictions: row.account_restrictions,
+    healthUpdatedAt: row.health_updated_at,
+  };
+}
+
 function mapConversation(row: RawConversation): Conversation {
   return {
     id: row.id,
@@ -391,6 +416,7 @@ function mapConversation(row: RawConversation): Conversation {
     intent: row.intent,
     activeTool: row.active_tool,
     welcomeSentAt: row.welcome_sent_at,
+    referral: row.referral,
   };
 }
 
@@ -408,8 +434,10 @@ function mapMessage(row: RawMessage): Message {
     isInternalNote: row.is_internal_note,
     whatsappStatus: row.whatsapp_status,
     whatsappError: failureReason(row.whatsapp_error_code, row.whatsapp_error_detail),
+    whatsappErrorCode: row.whatsapp_error_code,
     reactionEmoji: row.reaction_emoji,
     replyToMessageId: row.reply_to_message_id,
+    payload: row.payload,
     createdAt: row.created_at,
   };
 }
@@ -499,7 +527,7 @@ const CONVERSATION_DETAIL_SELECT = `
   deal_payment_proof_url, deal_verified, deal_verified_at, deal_payment_method,
   last_customer_message_at, last_message_at, last_reply_at, last_reply_sender, last_message_preview,
   last_message_direction, last_message_status, has_reply, created_at,
-  journey_stage, intent, active_tool, welcome_sent_at,
+  journey_stage, intent, active_tool, welcome_sent_at, referral,
   order:orders(total_amount, currency),
   contact:contacts(id, phone_number, display_name, profile_name, avatar_url,
     cedula_type, cedula_number, state, city, address,
@@ -1510,7 +1538,7 @@ const MESSAGES_PAGE_SIZE = 1000;
 
 const MESSAGE_SELECT = `id, conversation_id, direction, sender_type, message_type, content, template_name,
          media_url, is_internal_note, whatsapp_status, whatsapp_error_code, whatsapp_error_detail,
-         reaction_emoji, reply_to_message_id, created_at,
+         reaction_emoji, reply_to_message_id, payload, created_at,
          sender_agent:agents(id, display_name, full_name, avatar_url, role, is_active)`;
 
 /**
@@ -1645,6 +1673,41 @@ export async function fetchTemplates(
 
   if (error) throw error;
   return (data as RawTemplate[]).map(mapTemplate);
+}
+
+/**
+ * La salud del número de WhatsApp (T3.4, 5/9/2026): calidad, límite de
+ * mensajería, restricciones de cuenta y cuándo llegó el último webhook de
+ * cualquiera de esas dos cosas. Prefiere el canal `connected` -- el que de
+ * verdad envía -- y si no hay ninguno (demo, o a mitad de la puesta en
+ * producción) cae al primero que exista, para que el panel tenga algo que
+ * enseñar en vez de desaparecer. Null solo si no hay ningún canal creado.
+ */
+export async function fetchWhatsappChannelHealth(
+  supabase: SupabaseClient
+): Promise<WhatsappChannelHealth | null> {
+  const columns = "id, label, quality_rating, messaging_limit, account_restrictions, health_updated_at";
+
+  const { data: connected, error: connectedError } = await supabase
+    .from("whatsapp_channels")
+    .select(columns)
+    .eq("status", "connected")
+    .order("created_at", { ascending: true })
+    .limit(1);
+
+  if (connectedError) throw connectedError;
+  const connectedRow = (connected as RawChannelHealth[] | null)?.[0];
+  if (connectedRow) return mapChannelHealth(connectedRow);
+
+  const { data, error } = await supabase
+    .from("whatsapp_channels")
+    .select(columns)
+    .order("created_at", { ascending: true })
+    .limit(1);
+
+  if (error) throw error;
+  const row = (data as RawChannelHealth[] | null)?.[0];
+  return row ? mapChannelHealth(row) : null;
 }
 
 export async function fetchTags(supabase: SupabaseClient): Promise<Tag[]> {

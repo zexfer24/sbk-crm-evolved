@@ -20,6 +20,8 @@ import { NonRetryableTurnError, newTurnDelivery, type TurnDelivery } from "@/lib
 import { recordHandoff } from "@/lib/ai/handoffs";
 import { errorText, log } from "@/lib/log";
 import { withinFreeformWindow } from "@/lib/dashboard";
+import { isWithin24hWindow } from "@/lib/whatsapp-window";
+import { sendTypingIndicator } from "@/lib/whatsapp/meta-client";
 
 // ---------------------------------------------------------------------------
 // Orquestador del turno del agente. Dos tiempos:
@@ -147,14 +149,22 @@ const HISTORY_LIMIT = 15;
 async function loadHistory(supabase: SupabaseClient<Database>, conversationId: string): Promise<ModelMessage[]> {
   const { data } = await supabase
     .from("messages")
-    .select("sender_type, content, is_internal_note")
+    .select("sender_type, content, is_internal_note, message_type")
     .eq("conversation_id", conversationId)
     .order("created_at", { ascending: false })
     .limit(HISTORY_LIMIT);
 
   const messages: ModelMessage[] = [];
   for (const row of [...(data ?? [])].reverse()) {
-    if (row.is_internal_note || row.sender_type === "system" || !row.content) continue;
+    // 'unsupported' (T3.2, 5/9/2026) es Meta avisando de un tipo que el CRM
+    // no sabe representar: `content` ya queda null en la base, pero el
+    // filtro es explícito y no depende de esa nulidad — un mensaje que el
+    // asesor no puede leer en la burbuja tampoco debe entrar al contexto del
+    // modelo. Un 'order' SÍ entra: su `content` ya es el resumen en español
+    // que arma el webhook (ítems y total), así que no necesita tratamiento
+    // aparte acá.
+    if (row.is_internal_note || row.sender_type === "system" || row.message_type === "unsupported" || !row.content)
+      continue;
     messages.push({ role: row.sender_type === "customer" ? "user" : "assistant", content: row.content });
   }
   return messages;
@@ -167,6 +177,59 @@ function lastCustomerMessage(history: ModelMessage[]): string | null {
     if (message.role === "user" && typeof message.content === "string") return message.content;
   }
   return null;
+}
+
+/**
+ * El wamid del último mensaje ENTRANTE de la conversación (T3.1, 4/9/2026):
+ * es el "message_id" que la Cloud API exige para mostrar "escribiendo…" — no
+ * hay forma de dispararlo sin apuntar a un mensaje concreto. Consulta aparte
+ * de `loadHistory`: esa trae texto para el modelo, no wamids, y esto solo
+ * hace falta cuando SÍ se va a redactar con el tool loop.
+ */
+async function lastInboundWamid(
+  supabase: SupabaseClient<Database>,
+  conversationId: string
+): Promise<string | null> {
+  const { data } = await supabase
+    .from("messages")
+    .select("whatsapp_message_id")
+    .eq("conversation_id", conversationId)
+    .eq("direction", "inbound")
+    .order("created_at", { ascending: false })
+    .limit(1)
+    .maybeSingle();
+  return (data?.whatsapp_message_id as string | null | undefined) ?? null;
+}
+
+/**
+ * Le avisa al cliente que el agente está redactando (T3.1, 4/9/2026), solo
+ * dentro de la ventana de 24h de Meta y solo con el canal real conectado —
+ * fuera de ahí no hay a quién avisarle, o Meta lo rechazaría igual que
+ * rechaza el texto libre. Nunca lanza ni se espera: `sendTypingIndicator` ya
+ * atrapa su propio fallo (ver meta-client.ts), y un typing que se demora no
+ * puede sumarle latencia a la redacción real.
+ */
+function fireTypingIndicator(
+  supabase: SupabaseClient<Database>,
+  target: TurnTarget,
+  lastCustomerMessageAt: string | null
+): void {
+  if (!isWithin24hWindow(lastCustomerMessageAt)) return;
+  if (target.channelStatus !== "connected" || !target.phoneNumberId) return;
+  const accessToken = process.env.WHATSAPP_ACCESS_TOKEN;
+  if (!accessToken) return;
+
+  void lastInboundWamid(supabase, target.conversationId)
+    .then((wamid) => {
+      if (!wamid) return;
+      return sendTypingIndicator(target.phoneNumberId!, accessToken, wamid);
+    })
+    // Red de más: `sendTypingIndicator` ya no lanza (ver meta-client.ts), pero
+    // la consulta del wamid sí podría fallar contra la base. Cualquiera de
+    // las dos cosas es un aviso que no salió, nunca un turno que se cae.
+    .catch((err) => {
+      log.warn("turno_typing_fallido", { conversationId: target.conversationId, detail: errorText(err) });
+    });
 }
 
 /**
@@ -740,6 +803,11 @@ async function runTurnPhases(
   let text = "";
   let turnTokens = classifyTokens;
   try {
+    // "Escribiendo…" hacia el cliente (T3.1, 4/9/2026), justo al arrancar la
+    // parte cara del turno. No se espera: un typing que tarda no puede
+    // sumarle latencia a la redacción real, y su propio fallo ya queda
+    // contenido en meta-client.ts.
+    fireTypingIndicator(supabase, target, convo.last_customer_message_at);
     const result = await medir(tiempos, "redaccionMs", () => agent.generate({ messages: history }));
     text = result.text ?? "";
     // Cuántos pasos gastó de verdad, contra el techo de MAX_STEPS. Sin este

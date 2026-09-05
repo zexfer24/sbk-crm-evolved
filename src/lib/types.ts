@@ -27,6 +27,22 @@ export interface WhatsappChannel {
   status: ChannelStatus;
 }
 
+/**
+ * Salud del canal (T3.4, 5/9/2026): lo que llega por
+ * `phone_number_quality_update`/`account_update`, aparte de los datos de
+ * conexión de arriba. Todo null hasta el primer webhook de esos dos tipos —
+ * la tarjeta "Salud del número" de Control de IA lo pinta como "sin datos"
+ * en vez de fingir una calidad que Meta nunca reportó.
+ */
+export interface WhatsappChannelHealth {
+  id: string;
+  label: string;
+  qualityRating: string | null;
+  messagingLimit: string | null;
+  accountRestrictions: Record<string, unknown> | null;
+  healthUpdatedAt: string | null;
+}
+
 export type TagColor = "default" | "accent" | "success" | "warning" | "danger";
 
 export interface Tag {
@@ -218,6 +234,14 @@ export interface Conversation extends ConversationSummary {
    * después, o puede cerrarlo el supervisor sobre una conversación ajena.
    */
   dealClosedBy: Agent | null;
+  /**
+   * De qué anuncio "Click to WhatsApp" vino esta conversación (T3.2,
+   * 5/9/2026). Null si no vino de un anuncio. Solo vive en `Conversation`
+   * (el detalle, para el banner de la cabecera del chat) y no en
+   * `BoardConversation`/`ConversationSummary`: la bandeja no lo pinta, y es
+   * jsonb que no vale la pena arrastrar en cada fila de la lista.
+   */
+  referral: ConversationReferral | null;
 }
 
 /**
@@ -260,8 +284,56 @@ export type MessageType =
   | "document"
   | "sticker"
   | "template"
-  | "system_event";
-export type WhatsappMessageStatus = "sent" | "delivered" | "read" | "failed";
+  | "system_event"
+  | "interactive"
+  | "order"
+  | "unsupported";
+export type WhatsappMessageStatus = "sent" | "delivered" | "read" | "played" | "failed";
+
+/**
+ * Un ítem de un pedido armado desde el catálogo de WhatsApp
+ * (`messages.payload.productItems`, T3.2, 5/9/2026). Meta no manda el
+ * nombre del producto, solo el `productRetailerId` (el SKU dado de alta en
+ * el catálogo).
+ */
+export interface OrderPayloadItem {
+  productRetailerId: string;
+  quantity: number;
+  itemPrice: number;
+  currency: string;
+}
+
+/**
+ * `messages.payload`, tipado con el mínimo que la burbuja necesita pintar
+ * (T3.2, 5/9/2026): jsonb sin esquema fijo en la base porque cambia según el
+ * tipo de mensaje, pero cada tipo que la UI sabe representar tiene su forma
+ * acá. El resto (el tipo real cuando `messageType='unsupported'`, o
+ * `referredProduct` de un anuncio) viaja en la fila pero no tiene lector
+ * propio todavía.
+ */
+export interface MessagePayload {
+  /** Solo cuando `messageType === 'interactive'` y vino de un botón/lista. */
+  type?: "button_reply" | "list_reply" | "button" | string;
+  /** El id de Meta del botón/ítem de lista respondido. */
+  id?: string;
+  /** El payload configurado en la plantilla, cuando la respuesta fue a un botón de plantilla. */
+  template?: string;
+  /** Solo cuando `messageType === 'order'`. */
+  catalogId?: string;
+  productItems?: OrderPayloadItem[];
+}
+
+/**
+ * De qué anuncio "Click to WhatsApp" vino la conversación
+ * (`conversations.referral`, T3.2, 5/9/2026). `receivedAt` es lo que compara
+ * el banner de la cabecera del chat contra la ventana de 72 h — no es un
+ * campo que mande Meta, se guarda al recibir el mensaje que trae `referral`.
+ */
+export interface ConversationReferral {
+  headline: string | null;
+  sourceUrl: string | null;
+  receivedAt: string;
+}
 
 export interface Message {
   id: string;
@@ -287,11 +359,25 @@ export interface Message {
    */
   whatsappError: string | null;
   /**
+   * El código numérico de Meta detrás de `whatsappError` (T3.3, 5/9/2026).
+   * `whatsappError` ya es la frase para el asesor; esto es lo que necesita la
+   * burbuja para decidir si el motivo tiene, además, un botón que hacer algo
+   * (hoy solo 131047 → abrir el selector de plantillas) — ver
+   * `failureAction` en `whatsapp/failure-reason.ts`.
+   */
+  whatsappErrorCode: number | null;
+  /**
    * Emoji con el que el cliente reaccionó a este mensaje. Null si no
    * reaccionó o si quitó la reacción.
    */
   reactionEmoji: string | null;
   replyToMessageId: string | null;
+  /**
+   * Datos crudos del tipo de mensaje sin columna propia (T3.2, 5/9/2026): el
+   * botón/ítem respondido, el pedido del catálogo, el producto referido de un
+   * anuncio, o el tipo real de Meta cuando `messageType === 'unsupported'`.
+   */
+  payload: MessagePayload | null;
   createdAt: string;
 }
 
@@ -304,7 +390,10 @@ export interface Note {
 }
 
 export type TemplateCategory = "utility" | "marketing" | "authentication";
-export type TemplateStatus = "approved" | "pending" | "rejected";
+// 'paused'/'disabled' se suman en T3.4 (5/9/2026, migración 20260905060000):
+// Meta pausa una plantilla por quejas repetidas antes de deshabilitarla del
+// todo, y el webhook `message_template_status_update` los guarda tal cual.
+export type TemplateStatus = "approved" | "pending" | "rejected" | "paused" | "disabled";
 
 export interface WhatsappTemplate {
   id: string;

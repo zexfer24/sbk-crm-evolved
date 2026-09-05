@@ -1,6 +1,7 @@
 import { createHmac, timingSafeEqual } from "node:crypto";
 import { NextResponse, after } from "next/server";
 import type { SupabaseClient } from "@supabase/supabase-js";
+import type { Json } from "@/lib/supabase/database.types";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { WINDOW_MS, isWithin24hWindow } from "@/lib/whatsapp-window";
 import {
@@ -59,11 +60,49 @@ interface WebhookMessage {
   audio?: WebhookMediaObject;
   document?: WebhookMediaObject;
   sticker?: WebhookMediaObject;
-  context?: { id: string };
+  context?: {
+    id: string;
+    /**
+     * Solo cuando el mensaje llega en respuesta a un anuncio "Click to
+     * WhatsApp" que referenciaba un producto puntual del catálogo (distinto
+     * de `message.referral`, que es el anuncio en general).
+     */
+    referred_product?: { catalog_id: string; product_retailer_id: string };
+  };
   /** Solo en los `type: "reaction"`: a qué mensaje reacciona y con qué emoji. */
   reaction?: { message_id: string; emoji?: string };
   location?: { latitude: number; longitude: number; name?: string; address?: string };
   contacts?: { name?: { formatted_name?: string }; phones?: { phone?: string }[] }[];
+  /** Solo en `type: "interactive"`: la respuesta a un botón o a un ítem de lista. */
+  interactive?: {
+    type: "button_reply" | "list_reply";
+    button_reply?: { id: string; title: string };
+    list_reply?: { id: string; title: string; description?: string };
+  };
+  /** Solo en `type: "button"`: la respuesta al botón rápido de una plantilla. */
+  button?: { payload: string; text: string };
+  /** Solo en `type: "order"`: un pedido armado desde el catálogo de WhatsApp. */
+  order?: {
+    catalog_id: string;
+    product_items: { product_retailer_id: string; quantity: number; item_price: number; currency: string }[];
+    text?: string;
+  };
+  /**
+   * Solo en el mensaje que origina una conversación desde un anuncio "Click
+   * to WhatsApp": de qué anuncio vino. Se guarda en `conversations.referral`,
+   * no en este mensaje puntual.
+   */
+  referral?: {
+    source_url?: string;
+    source_type?: string;
+    source_id?: string;
+    headline?: string;
+    body?: string;
+    media_type?: string;
+    image_url?: string;
+    video_url?: string;
+    ctwa_clid?: string;
+  };
   /**
    * Solo viene en los `type: "unsupported"`: es el motivo por el que Meta no
    * pudo entregar el mensaje (131051 "Message type unknown", 131060 "This
@@ -74,7 +113,7 @@ interface WebhookMessage {
 
 interface WebhookStatus {
   id: string;
-  status: "sent" | "delivered" | "read" | "failed";
+  status: "sent" | "delivered" | "read" | "played" | "failed";
   /**
    * Sólo en los `status: "failed"`: por qué Meta no lo entregó.
    *
@@ -95,10 +134,44 @@ interface WebhookChangeValue {
   contacts?: { profile?: { name?: string }; wa_id: string }[];
   messages?: WebhookMessage[];
   statuses?: WebhookStatus[];
+  /**
+   * Errores a nivel de cuenta que Meta manda sueltos en el `value`, aparte de
+   * los `errors` por mensaje (WebhookMessage) o por estado (WebhookStatus).
+   */
+  errors?: { code: number; title?: string; message?: string }[];
 }
 
 interface WebhookBody {
   entry?: { changes?: { field: string; value: WebhookChangeValue }[] }[];
+}
+
+// ---------------------------------------------------------------------------
+// T3.4: los otros tres `field` que manda el webhook de la WABA además de
+// `messages`. Ninguno de los tres trae `metadata.phone_number_id` -- por eso
+// llevan su propia forma de payload en vez de sumarse a WebhookChangeValue, y
+// el canal se resuelve por número de teléfono (ver resolveHealthChannel).
+// ---------------------------------------------------------------------------
+interface WebhookTemplateStatusValue {
+  event?: string;
+  message_template_id?: number;
+  message_template_name?: string;
+  message_template_language?: string;
+  reason?: string;
+}
+
+interface WebhookQualityValue {
+  display_phone_number?: string;
+  event?: string;
+  current_limit?: string;
+  /** No todas las versiones del webhook lo mandan; cuando existe, es más fiable que derivarlo del event. */
+  quality_rating?: string;
+}
+
+interface WebhookAccountUpdateValue {
+  phone_number?: string;
+  event?: string;
+  ban_info?: { waba_ban_state?: string; waba_ban_date?: string };
+  restriction_info?: { restriction_type?: string; expiration?: string }[];
 }
 
 /**
@@ -150,6 +223,36 @@ function describirContactos(contacts: NonNullable<WebhookMessage["contacts"]>): 
   return nombres
     ? `👤 El cliente compartió un contacto: ${nombres}`
     : "👤 El cliente compartió un contacto.";
+}
+
+/**
+ * El resumen en español de un pedido armado desde el catálogo de WhatsApp.
+ *
+ * Meta no manda el nombre del producto, solo el `product_retailer_id` (el
+ * SKU que se le dio de alta en el catálogo) — buscarlo contra `products`
+ * queda fuera de esta tarea. El total se agrupa por moneda porque el pedido
+ * lo permite, aunque en la práctica siempre sea una sola.
+ */
+function describirPedido(order: NonNullable<WebhookMessage["order"]>): string {
+  const items = order.product_items ?? [];
+  const totalPorMoneda = new Map<string, number>();
+  const lineas = items.map((item) => {
+    const moneda = item.currency || "USD";
+    const precio = Number(item.item_price) || 0;
+    totalPorMoneda.set(moneda, (totalPorMoneda.get(moneda) ?? 0) + item.quantity * precio);
+    return `- ${item.quantity}x ${item.product_retailer_id} (${moneda} ${precio.toFixed(2)} c/u)`;
+  });
+
+  const totales = [...totalPorMoneda.entries()]
+    .map(([moneda, total]) => `${moneda} ${total.toFixed(2)}`)
+    .join(", ");
+
+  const encabezado =
+    items.length === 1
+      ? "🛒 El cliente envió un pedido del catálogo (1 producto):"
+      : `🛒 El cliente envió un pedido del catálogo (${items.length} productos):`;
+
+  return [encabezado, ...lineas, totales ? `Total: ${totales}` : null].filter(Boolean).join("\n");
 }
 
 const MEDIA_TYPES = ["image", "video", "audio", "document", "sticker"] as const;
@@ -292,6 +395,194 @@ async function sendWelcome(
 }
 
 // ---------------------------------------------------------------------------
+// T3.4: salud del número y estado de plantillas.
+//
+// `message_template_status_update`, `phone_number_quality_update` y
+// `account_update` viajan por el mismo webhook de la WABA que `messages`,
+// pero -- a diferencia de `messages` -- ninguno trae
+// `metadata.phone_number_id`: los dos últimos traen un número de teléfono en
+// texto libre (`display_phone_number`/`phone_number`), que Meta a veces
+// formatea distinto al que se guardó al registrar el canal (con o sin '+',
+// con espacios); el primero no trae número en absoluto, porque una
+// plantilla es de la cuenta de negocio (WABA), no de un número puntual.
+// ---------------------------------------------------------------------------
+
+/** Solo dígitos, para comparar números de teléfono sin depender del formato. */
+function soloDigitos(value: string | null | undefined): string {
+  return (value ?? "").replace(/\D/g, "");
+}
+
+/**
+ * Resuelve a qué canal pertenece un evento de calidad/cuenta: primero por
+ * coincidencia de dígitos contra `whatsapp_channels.phone_number`, y si no
+ * hay coincidencia -- o el evento no trae número, como pasa siempre con
+ * `message_template_status_update`, que no llega hasta acá -- por el único
+ * canal `connected`. Null si no hay ninguno de los dos.
+ */
+async function resolveHealthChannel(
+  supabase: SupabaseClient,
+  phoneNumberLike: string | null | undefined
+): Promise<string | null> {
+  const { data: rows } = await supabase.from("whatsapp_channels").select("id, phone_number, status");
+  const channels = (rows as { id: string; phone_number: string; status: string }[] | null) ?? [];
+
+  const digits = soloDigitos(phoneNumberLike);
+  if (digits) {
+    const match = channels.find((c) => soloDigitos(c.phone_number) === digits);
+    if (match) return match.id;
+  }
+
+  const connected = channels.find((c) => c.status === "connected");
+  return connected?.id ?? null;
+}
+
+/**
+ * `phone_number_quality_update` no siempre manda un `quality_rating`
+ * explícito (verificado contra la documentación de Meta, 5/9/2026: el campo
+ * estable es `event` + `current_limit`). Cuando falta, se deriva del evento:
+ * FLAGGED es la señal roja de verdad; UNFLAGGED/UPGRADE son la mejora;
+ * DOWNGRADE es la advertencia intermedia.
+ */
+function deriveQualityRating(event: string | undefined): string | null {
+  switch (event) {
+    case "FLAGGED":
+      return "RED";
+    case "UNFLAGGED":
+    case "UPGRADE":
+      return "GREEN";
+    case "DOWNGRADE":
+      return "YELLOW";
+    default:
+      return null;
+  }
+}
+
+async function handleQualityUpdate(supabase: SupabaseClient, value: WebhookQualityValue): Promise<void> {
+  const channelId = await resolveHealthChannel(supabase, value.display_phone_number);
+  if (!channelId) {
+    log.warn("calidad_numero_sin_canal", { telefono: value.display_phone_number ?? null });
+    return;
+  }
+
+  const qualityRating = value.quality_rating ?? deriveQualityRating(value.event);
+
+  const { error } = await supabase
+    .from("whatsapp_channels")
+    .update({
+      quality_rating: qualityRating,
+      messaging_limit: value.current_limit ?? null,
+      health_updated_at: new Date().toISOString(),
+    })
+    .eq("id", channelId);
+
+  if (error) {
+    console.error("Webhook de WhatsApp: error al guardar la calidad del número", error);
+    return;
+  }
+
+  // FLAGGED es Meta avisando que el número está en riesgo de perder límite de
+  // mensajería o de ser restringido; RED es la misma señal ya resuelta a
+  // rating. Se registra en error porque es exactamente lo que hace que un
+  // número dejé de entregar sin que nadie lo note hasta el reclamo de un
+  // cliente.
+  if (value.event === "FLAGGED" || qualityRating === "RED") {
+    log.error("calidad_numero_degradada", {
+      canalId: channelId,
+      evento: value.event ?? null,
+      calidad: qualityRating,
+      limite: value.current_limit ?? null,
+    });
+  }
+}
+
+async function handleAccountUpdate(supabase: SupabaseClient, value: WebhookAccountUpdateValue): Promise<void> {
+  const channelId = await resolveHealthChannel(supabase, value.phone_number);
+  if (!channelId) {
+    log.warn("cuenta_whatsapp_sin_canal", { telefono: value.phone_number ?? null });
+    return;
+  }
+
+  const hayRestriccion = Boolean(value.ban_info || value.restriction_info?.length);
+  const accountRestrictions = hayRestriccion
+    ? { ban_info: value.ban_info ?? null, restriction_info: value.restriction_info ?? null }
+    : null;
+
+  const { error } = await supabase
+    .from("whatsapp_channels")
+    .update({
+      account_restrictions: accountRestrictions,
+      health_updated_at: new Date().toISOString(),
+    })
+    .eq("id", channelId);
+
+  if (error) {
+    console.error("Webhook de WhatsApp: error al guardar la restricción de cuenta", error);
+    return;
+  }
+
+  // VERIFIED_ACCOUNT es la única noticia buena de este evento; el resto
+  // (restricción, violación, deshabilitada) es justo lo que un asesor no
+  // puede ver por ningún otro lado hasta que el número deja de enviar.
+  if (value.event && value.event !== "VERIFIED_ACCOUNT") {
+    log.error("cuenta_whatsapp_restringida", { canalId: channelId, evento: value.event });
+  }
+}
+
+/**
+ * Mapea el `event` de Meta al valor cerrado que admite `templates.status`
+ * (CHECK ampliado en 20260905060000 para admitir 'paused'/'disabled', que
+ * antes de esta migración no existían). `PENDING_DELETION`/`IN_APPEAL`/
+ * `DELETED` no tienen un estado propio a propósito: mientras se apela o se
+ * borra, la plantilla sigue mostrando el último estado real que sí importa
+ * para decidir si se puede enviar (aprobada/pausada/rechazada/deshabilitada).
+ */
+function mapTemplateStatus(event: string | undefined): string | null {
+  switch (event) {
+    case "APPROVED":
+      return "approved";
+    case "PENDING":
+      return "pending";
+    case "REJECTED":
+      return "rejected";
+    case "PAUSED":
+      return "paused";
+    case "DISABLED":
+      return "disabled";
+    default:
+      return null;
+  }
+}
+
+async function handleTemplateStatusUpdate(
+  supabase: SupabaseClient,
+  value: WebhookTemplateStatusValue
+): Promise<void> {
+  const { message_template_name: name, message_template_language: language, event, reason } = value;
+  if (!name || !language) return;
+
+  const status = mapTemplateStatus(event);
+  if (!status) {
+    log.info("plantilla_evento_sin_mapeo", { name, language, evento: event ?? null });
+    return;
+  }
+
+  const { error } = await supabase.from("templates").update({ status }).eq("name", name).eq("language", language);
+
+  if (error) {
+    console.error("Webhook de WhatsApp: error al actualizar el estado de la plantilla", error);
+    return;
+  }
+
+  // Pausada, deshabilitada o rechazada son las tres formas en las que una
+  // plantilla deja de poder enviarse -- y sin este aviso, el primer síntoma
+  // era un envío rechazado por Meta con un código que no dice "tu plantilla
+  // se cayó", sino un 132001/132012 genérico.
+  if (status === "paused" || status === "disabled" || status === "rejected") {
+    log.error("plantilla_estado_degradado", { name, language, evento: event ?? null, motivo: reason ?? null });
+  }
+}
+
+// ---------------------------------------------------------------------------
 // POST: eventos entrantes — mensajes nuevos de clientes y actualizaciones de
 // estado (sent/delivered/read/failed) de mensajes que nosotros enviamos.
 // ---------------------------------------------------------------------------
@@ -363,14 +654,42 @@ export async function POST(request: Request) {
 
   for (const entry of body.entry ?? []) {
     for (const change of entry.changes ?? []) {
+      // T3.4: los otros tres `field` de la WABA (salud del número y estado
+      // de plantillas). No traen mensajes de cliente: se atienden aparte y
+      // no entran al resto del bucle, que sigue siendo el camino de
+      // 'messages'.
+      if (change.field === "message_template_status_update") {
+        await handleTemplateStatusUpdate(supabase, change.value as unknown as WebhookTemplateStatusValue);
+        continue;
+      }
+      if (change.field === "phone_number_quality_update") {
+        await handleQualityUpdate(supabase, change.value as unknown as WebhookQualityValue);
+        continue;
+      }
+      if (change.field === "account_update") {
+        await handleAccountUpdate(supabase, change.value as unknown as WebhookAccountUpdateValue);
+        continue;
+      }
+
       if (change.field !== "messages") continue;
       const value = change.value;
+
+      // Errores de cuenta que Meta manda sueltos en el `value` (distintos de
+      // los que van dentro de un mensaje o de un estado puntual). Antes no se
+      // miraban en absoluto: quedaban en el JSON crudo del webhook, que nadie
+      // lee salvo que ya sospeche que algo falló.
+      for (const errorDeValue of value.errors ?? []) {
+        log.error("webhook_error_meta", {
+          codigo: errorDeValue.code,
+          detalle: errorDeValue.message ?? errorDeValue.title ?? null,
+        });
+      }
 
       for (const status of value.statuses ?? []) {
         const fallo = status.status === "failed" ? status.errors?.[0] : undefined;
         // Se limpian cuando el estado no es 'failed': si un mensaje llegara a
         // remontar, un motivo viejo colgado debajo sería peor que ninguno.
-        const { data: afectados } = await supabase
+        const { data: afectados, error: statusUpdateError } = await supabase
           .from("messages")
           .update({
             whatsapp_status: status.status,
@@ -379,6 +698,17 @@ export async function POST(request: Request) {
           })
           .eq("whatsapp_message_id", status.id)
           .select("id, conversation_id");
+
+        if (statusUpdateError) {
+          // Antes este `error` se tiraba en silencio: un fallo acá (por
+          // ejemplo el trigger que impide retroceder el doble check) no
+          // frenaba el webhook, pero tampoco quedaba ningún rastro de que
+          // el estado de un mensaje no se pudo actualizar.
+          log.error("webhook_error_actualizar_estado", {
+            whatsappMessageId: status.id,
+            detalle: errorText(statusUpdateError),
+          });
+        }
 
         if (fallo) {
           // Este era el registro que faltaba: el fallo de entrega sólo existía
@@ -499,7 +829,7 @@ export async function POST(request: Request) {
 
         const { data: existingConversation } = await supabase
           .from("conversations")
-          .select("id, last_customer_message_at, status, ai_enabled")
+          .select("id, last_customer_message_at, status, ai_enabled, referral")
           .eq("contact_id", contact.id)
           .eq("whatsapp_channel_id", channel.id)
           .maybeSingle<{
@@ -507,6 +837,7 @@ export async function POST(request: Request) {
             last_customer_message_at: string | null;
             status: string;
             ai_enabled: boolean;
+            referral: unknown;
           }>();
 
         if (existingConversation) {
@@ -594,6 +925,53 @@ export async function POST(request: Request) {
           }
         }
 
+        // El anuncio "Click to WhatsApp" del que vino esta conversación
+        // (message.referral, distinto de context.referred_product más abajo:
+        // ese es un producto puntual, esto es el anuncio en general). Meta lo
+        // manda en el mensaje que origina el hilo. Se guarda en la
+        // conversación, no en el mensaje, porque el banner de la cabecera del
+        // chat necesita mostrarlo aunque el asesor esté viendo un mensaje
+        // posterior. El guardado es a lo sumo una vez por conversación
+        // (`existingConversation?.referral` ya puesto corta el resto): sin
+        // esa guarda, una reentrega de Meta (entrega "at-least-once") o un
+        // segundo mensaje del mismo lote con el mismo `referral` volvería a
+        // insertar el evento de sistema.
+        if (message.referral && !existingConversation?.referral) {
+          const referral = {
+            sourceUrl: message.referral.source_url ?? null,
+            sourceType: message.referral.source_type ?? null,
+            sourceId: message.referral.source_id ?? null,
+            headline: message.referral.headline ?? null,
+            body: message.referral.body ?? null,
+            mediaType: message.referral.media_type ?? null,
+            imageUrl: message.referral.image_url ?? null,
+            videoUrl: message.referral.video_url ?? null,
+            ctwaClid: message.referral.ctwa_clid ?? null,
+            receivedAt: new Date().toISOString(),
+          };
+
+          const { error: referralError } = await supabase
+            .from("conversations")
+            .update({ referral })
+            .eq("id", conversationId);
+
+          if (referralError) {
+            console.error("Webhook de WhatsApp: error al guardar el referral del anuncio", referralError);
+          } else {
+            await supabase
+              .from("messages")
+              .insert({
+                conversation_id: conversationId,
+                direction: "outbound",
+                sender_type: "system",
+                message_type: "system_event",
+                content: `Llegó desde el anuncio "${referral.headline ?? referral.sourceUrl ?? "sin título"}"`,
+              })
+              .select("id")
+              .single();
+          }
+        }
+
         // Si el cliente citó uno de nuestros mensajes desde su WhatsApp,
         // reflejamos esa cita dentro del CRM.
         let replyToMessageId: string | null = null;
@@ -618,6 +996,13 @@ export async function POST(request: Request) {
          * escribir no dice nada. Sin texto propio se espera la ventana larga.
          */
         let customerText: string | null = null;
+        /**
+         * Datos crudos del tipo de mensaje que no tienen columna propia (T3.2,
+         * 20260905050000): qué botón/ítem respondió, el payload de la
+         * plantilla, los ítems de un pedido, o el tipo real de Meta cuando
+         * `messageType` cae a 'unsupported'.
+         */
+        let payload: Record<string, unknown> | null = null;
 
         if (message.type === "text") {
           content = message.text?.body ?? "";
@@ -632,13 +1017,64 @@ export async function POST(request: Request) {
           content = describirUbicacion(message.location);
         } else if (message.type === "contacts" && message.contacts?.length) {
           content = describirContactos(message.contacts);
+        } else if (message.type === "interactive" && message.interactive) {
+          // Respuesta a un botón o a un ítem de lista de un mensaje
+          // interactivo que le mandamos. `id`/`title` son del botón o de la
+          // fila de la lista, según cuál haya venido.
+          const reply =
+            message.interactive.type === "list_reply"
+              ? message.interactive.list_reply
+              : message.interactive.button_reply;
+          if (reply) {
+            messageType = "interactive";
+            content = `Respondió: ${reply.title}`;
+            customerText = reply.title;
+            payload = { type: message.interactive.type, id: reply.id };
+          } else {
+            messageType = "unsupported";
+            payload = { type: message.type };
+          }
+        } else if (message.type === "button" && message.button) {
+          // Respuesta al botón rápido de una PLANTILLA (distinto del botón de
+          // un mensaje interactivo): mismo tratamiento en el chat, pero el
+          // payload que trae es el configurado en la plantilla, no un id de
+          // Meta -- se guarda aparte para no confundir los dos orígenes.
+          messageType = "interactive";
+          content = `Respondió: ${message.button.text}`;
+          customerText = message.button.text;
+          payload = { type: "button", template: message.button.payload };
+        } else if (message.type === "order" && message.order) {
+          messageType = "order";
+          content = describirPedido(message.order);
+          customerText = message.order.text ?? null;
+          payload = {
+            catalogId: message.order.catalog_id,
+            productItems: message.order.product_items,
+          };
         } else {
           // Queda algo que el CRM todavía no sabe pintar —una encuesta, un
-          // pedido del catálogo—. Se dice en castellano y se apunta a dónde
-          // mirarlo: el asesor tiene el mismo chat en su teléfono.
-          content =
-            "El cliente envió un mensaje que el CRM todavía no sabe mostrar. " +
-            "Se puede ver desde WhatsApp en el teléfono.";
+          // mensaje de un tipo nuevo que Meta agregó—. Antes esto se
+          // guardaba con una frase fija en `content`; ahora `content` queda
+          // null y el tipo real de Meta va en `payload.type` (F10), sin
+          // inventar prosa sobre algo que no se entiende. El asesor tiene el
+          // mismo chat en su teléfono.
+          messageType = "unsupported";
+          payload = { type: message.type };
+        }
+
+        // Un anuncio "Click to WhatsApp" que referenciaba un producto
+        // puntual del catálogo (distinto de message.referral, que es el
+        // anuncio en general y ya se atendió arriba, a nivel de
+        // conversación). Se funde con el payload que ya se haya calculado
+        // para este mensaje, sea cual sea su tipo.
+        if (message.context?.referred_product) {
+          payload = {
+            ...(payload ?? {}),
+            referredProduct: {
+              catalogId: message.context.referred_product.catalog_id,
+              productRetailerId: message.context.referred_product.product_retailer_id,
+            },
+          };
         }
 
         // media_url arranca en null incluso para mensajes multimedia: la
@@ -655,6 +1091,7 @@ export async function POST(request: Request) {
             message_type: messageType,
             content,
             media_url: null,
+            payload: payload as Json | null,
             reply_to_message_id: replyToMessageId,
             whatsapp_message_id: message.id,
             created_at: new Date(Number(message.timestamp) * 1000).toISOString(),

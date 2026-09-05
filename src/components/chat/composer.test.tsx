@@ -1,16 +1,19 @@
 /** @vitest-environment jsdom */
-import { describe, expect, it, vi, beforeEach } from "vitest";
-import { render, screen, fireEvent, waitFor } from "@testing-library/react";
+import { describe, expect, it, vi, beforeEach, afterEach } from "vitest";
+import { render, screen, fireEvent, waitFor, act } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { Composer } from "@/components/chat/composer";
 import type { Conversation } from "@/lib/types";
 
 const sendMediaMessageMock = vi.fn().mockResolvedValue(undefined);
 const onSendTextMock = vi.fn();
+/** T3.1 (4/9/2026): "escribiendo…" hacia Meta. Nunca lanza, así que el mock tampoco. */
+const sendTypingSignalMock = vi.fn().mockResolvedValue(undefined);
 
 vi.mock("@/lib/mutations", () => ({
   sendMediaMessage: (...args: unknown[]) => sendMediaMessageMock(...args),
   sendTemplateMessage: vi.fn().mockResolvedValue(undefined),
+  sendTypingSignal: (...args: unknown[]) => sendTypingSignalMock(...args),
 }));
 
 vi.mock("@/lib/supabase/client", () => ({
@@ -76,6 +79,7 @@ function buildConversation(): Conversation {
     intent: null,
     activeTool: null,
     welcomeSentAt: null,
+    referral: null,
   };
 }
 
@@ -354,5 +358,98 @@ describe("Composer — lo que faltaba para escribir y adjuntar cómodo", () => {
     } finally {
       if (original) Object.defineProperty(HTMLElement.prototype, "scrollHeight", original);
     }
+  });
+});
+
+/**
+ * "Escribiendo…" hacia Meta (T3.1, 4/9/2026). Meta apaga el indicador solo a
+ * los 25 s (o al llegar la respuesta), así que una redacción que se alarga
+ * necesita el aviso renovado antes de que expire — pero sin repetirlo en
+ * cada tecla: eso sería una llamada por carácter en vez de una por ventana
+ * de 20 s.
+ */
+describe("Composer — indicador de \"escribiendo…\" hacia Meta", () => {
+  beforeEach(() => {
+    sendTypingSignalMock.mockClear();
+    vi.useFakeTimers();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("dispara en el primer carácter", () => {
+    renderComposer();
+    const textarea = screen.getByRole("textbox", { name: "Mensaje" });
+
+    act(() => {
+      fireEvent.change(textarea, { target: { value: "h" } });
+    });
+
+    expect(sendTypingSignalMock).toHaveBeenCalledTimes(1);
+    expect(sendTypingSignalMock).toHaveBeenCalledWith("conv-1");
+  });
+
+  it("un disparo por ventana de 20 s, no uno por tecla", () => {
+    renderComposer();
+    const textarea = screen.getByRole("textbox", { name: "Mensaje" });
+
+    act(() => {
+      fireEvent.change(textarea, { target: { value: "h" } });
+      fireEvent.change(textarea, { target: { value: "ho" } });
+      fireEvent.change(textarea, { target: { value: "hol" } });
+      fireEvent.change(textarea, { target: { value: "hola" } });
+    });
+
+    expect(sendTypingSignalMock).toHaveBeenCalledTimes(1);
+
+    act(() => {
+      vi.advanceTimersByTime(20_000);
+    });
+
+    // La renovación a los 20 s, ni una más ni una menos por las teclas del medio.
+    expect(sendTypingSignalMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("se detiene al vaciar el cuadro", () => {
+    renderComposer();
+    const textarea = screen.getByRole("textbox", { name: "Mensaje" });
+
+    act(() => {
+      fireEvent.change(textarea, { target: { value: "hola" } });
+    });
+    expect(sendTypingSignalMock).toHaveBeenCalledTimes(1);
+
+    act(() => {
+      fireEvent.change(textarea, { target: { value: "" } });
+    });
+    sendTypingSignalMock.mockClear();
+
+    act(() => {
+      vi.advanceTimersByTime(30_000);
+    });
+
+    expect(sendTypingSignalMock).not.toHaveBeenCalled();
+  });
+
+  it("se detiene al enviar el mensaje", () => {
+    renderComposer();
+    const textarea = screen.getByRole("textbox", { name: "Mensaje" });
+
+    act(() => {
+      fireEvent.change(textarea, { target: { value: "hola" } });
+    });
+    expect(sendTypingSignalMock).toHaveBeenCalledTimes(1);
+
+    act(() => {
+      fireEvent.keyDown(textarea, { key: "Enter" });
+    });
+    sendTypingSignalMock.mockClear();
+
+    act(() => {
+      vi.advanceTimersByTime(30_000);
+    });
+
+    expect(sendTypingSignalMock).not.toHaveBeenCalled();
   });
 });

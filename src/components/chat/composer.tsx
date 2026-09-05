@@ -13,8 +13,9 @@ import { Button, TextArea, Tooltip } from "@heroui/react";
 import { toast } from "@heroui/react";
 import type { Conversation, Message, MessageType, QuickReply, WhatsappTemplate } from "@/lib/types";
 import { isWithin24hWindow } from "@/lib/whatsapp-window";
+import { contactName } from "@/lib/dashboard";
 import { createClient } from "@/lib/supabase/client";
-import { sendMediaMessage, sendTemplateMessage } from "@/lib/mutations";
+import { sendMediaMessage, sendTemplateMessage, sendTypingSignal } from "@/lib/mutations";
 import { MEDIA_BUCKET, mediaUrlFor } from "@/lib/storage";
 import { MediaThumb, type MediaItem } from "@/components/chat/media-lightbox";
 import { QuotedThumb, quotedTypeLabel } from "@/components/chat/quoted-content";
@@ -35,6 +36,17 @@ interface ComposerProps {
    * el asesor se vaya a otro chat.
    */
   onSendText: (content: string, replyToMessageId: string | null) => void;
+  /**
+   * Un pedido de abrir el selector de plantillas que viene de AFUERA del
+   * composer (T3.3, 5/9/2026): la burbuja de un mensaje rechazado por Meta
+   * con código 131047 (ventana de 24 h vencida) ofrece un botón para abrirlo
+   * directo, sin que el asesor tenga que ir a buscarlo. Es una señal por
+   * CONTADOR y no un booleano: cada incremento (venga o no el modal ya
+   * abierto) es un pedido nuevo de abrirlo, así que dos clics seguidos desde
+   * dos burbujas distintas no se pisan entre sí. Opcional y en 0 por
+   * defecto: no cambia nada para quien no lo use.
+   */
+  openTemplateModalSignal?: number;
 }
 
 function mediaTypeFromMime(mime: string): MessageType {
@@ -67,7 +79,15 @@ function etiquetaQuitar(pending: PendingFile, index: number, todos: PendingFile[
     : `Quitar ${pending.file.name}`;
 }
 
-export function Composer({ conversation, templates, quickReplies, replyingTo, onCancelReply, onSendText }: ComposerProps) {
+export function Composer({
+  conversation,
+  templates,
+  quickReplies,
+  replyingTo,
+  onCancelReply,
+  onSendText,
+  openTemplateModalSignal,
+}: ComposerProps) {
   const [text, setText] = useState("");
   const [isUploading, setIsUploading] = useState(false);
   const [isTemplateModalOpen, setIsTemplateModalOpen] = useState(false);
@@ -97,6 +117,52 @@ export function Composer({ conversation, templates, quickReplies, replyingTo, on
     textarea.style.height = `${textarea.scrollHeight}px`;
   }, [text]);
 
+  /**
+   * "Escribiendo…" hacia el cliente (T3.1, 4/9/2026): arranca en el primer
+   * carácter y se renueva cada 20 s mientras quede texto — Meta apaga el
+   * indicador solo, a los 25 s o al llegar la respuesta, lo que pase primero,
+   * así que una redacción que se alarga más que eso necesita que se le avise
+   * de nuevo antes de que expire.
+   *
+   * Un debounce clásico (trailing edge, como `use-debounced-callback.ts`) no
+   * sirve para esto: mientras el asesor sigue tecleando sin pausa el debounce
+   * nunca dispara, que es justo lo contrario de lo que hace falta acá. Por
+   * eso el aviso es un intervalo fijo y no un debounce, y la dependencia es
+   * la PRESENCIA de texto (`hasText`), no `text` en sí: si dependiera del
+   * texto, cada tecla reiniciaría el intervalo y el aviso nunca llegaría a
+   * los 20 s.
+   */
+  const hasText = text.trim().length > 0;
+  useEffect(() => {
+    if (!withinWindow || !hasText) return;
+
+    sendTypingSignal(conversation.id);
+    const interval = setInterval(() => {
+      sendTypingSignal(conversation.id);
+    }, 20_000);
+
+    // Se detiene al enviar o al vaciar el cuadro: los dos casos apagan
+    // `hasText`, que es lo único que dispara este cleanup.
+    return () => clearInterval(interval);
+  }, [conversation.id, withinWindow, hasText]);
+
+  /**
+   * Abre el selector cuando llega un pedido desde afuera (T3.3, 5/9/2026):
+   * ver `openTemplateModalSignal` en `ComposerProps`. Se ignora el primer
+   * render (la señal nace en 0 y no debe abrir nada al montar) comparando
+   * contra la referencia del valor anterior.
+   */
+  const previousSignalRef = useRef(openTemplateModalSignal);
+  useEffect(() => {
+    if (
+      openTemplateModalSignal !== undefined &&
+      openTemplateModalSignal !== previousSignalRef.current
+    ) {
+      setIsTemplateModalOpen(true);
+    }
+    previousSignalRef.current = openTemplateModalSignal;
+  }, [openTemplateModalSignal]);
+
   // Libera los object URLs de preview al desmontar o al reemplazar la lista.
   useEffect(() => {
     return () => {
@@ -120,9 +186,9 @@ export function Composer({ conversation, templates, quickReplies, replyingTo, on
     onSendText(content, replyTo);
   }
 
-  async function handleSelectTemplate(template: WhatsappTemplate) {
+  async function handleSelectTemplate(template: WhatsappTemplate, variables: string[]) {
     try {
-      await sendTemplateMessage(conversation.id, template);
+      await sendTemplateMessage(conversation.id, template, variables);
       setIsTemplateModalOpen(false);
       toast.success(`Plantilla "${template.name}" enviada`);
     } catch (err) {
@@ -487,6 +553,8 @@ export function Composer({ conversation, templates, quickReplies, replyingTo, on
         isOpen={isTemplateModalOpen}
         onOpenChange={setIsTemplateModalOpen}
         templates={templates}
+        contactName={contactName(conversation)}
+        conversationId={conversation.id}
         onSelect={handleSelectTemplate}
       />
       <QuickRepliesModal

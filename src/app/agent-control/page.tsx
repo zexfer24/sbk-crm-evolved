@@ -17,6 +17,7 @@ import {
   fetchTags,
   fetchTokenUsageSummary,
   fetchUnmatchedTurns,
+  fetchWhatsappChannelHealth,
 } from "@/lib/data";
 import { currentAgentModelLabel } from "@/lib/ai/model";
 import { AgentControlView } from "@/components/agent-control/agent-control-view";
@@ -41,6 +42,7 @@ export default async function AgentControlPage() {
     knowledgeCategories,
     knowledgeEntries,
     tags,
+    channelHealth,
   ] = await Promise.all([
     fetchCurrentAgent(supabase),
     // Solo el trabajo vivo: el panel muestra la cola de la IA y el roster,
@@ -60,6 +62,7 @@ export default async function AgentControlPage() {
     fetchKnowledgeCategories(supabase),
     fetchKnowledgeEntries(supabase),
     fetchTags(supabase),
+    fetchWhatsappChannelHealth(supabase),
   ]);
 
   if (!currentAgent) {
@@ -84,6 +87,7 @@ export default async function AgentControlPage() {
       initialKnowledgeCategories={knowledgeCategories}
       initialKnowledgeEntries={knowledgeEntries}
       initialTags={tags}
+      initialChannelHealth={channelHealth}
       modelLabel={currentAgentModelLabel()}
     />
   );

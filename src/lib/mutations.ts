@@ -40,6 +40,12 @@ interface SendMessagePayload {
   isInternalNote?: boolean;
   templateName?: string;
   templateLanguage?: string;
+  /**
+   * Valores de las variables posicionales de la plantilla ({{1}}, {{2}}...),
+   * en orden (T3.3, 5/9/2026). La ruta las usa para armar los `components`
+   * que exige la Graph API y para sustituirlas en el `content` que se guarda.
+   */
+  variables?: string[];
   replyToMessageId?: string | null;
   mediaUrl?: string;
   mediaType?: MessageType;
@@ -69,13 +75,20 @@ export async function sendMessage(
   return postSendMessage({ conversationId, kind: "text", content, isInternalNote, replyToMessageId });
 }
 
-export async function sendTemplateMessage(conversationId: string, template: WhatsappTemplate) {
+export async function sendTemplateMessage(
+  conversationId: string,
+  template: WhatsappTemplate,
+  variables: string[] = []
+) {
   await postSendMessage({
     conversationId,
     kind: "template",
+    // El cuerpo tal cual, con sus `{{n}}` sin sustituir: la ruta hace la
+    // sustitución (una sola vez, del lado del servidor) antes de guardarlo.
     content: template.bodyPreview,
     templateName: template.name,
     templateLanguage: template.language,
+    variables,
   });
 }
 
@@ -108,6 +121,23 @@ export async function markConversationRead(supabase: SupabaseClient, conversatio
     .update({ unread_count: 0, manually_unread: false })
     .eq("id", conversationId);
   if (error) throw error;
+}
+
+/**
+ * El doble check azul hacia el cliente (T3.1, 4/9/2026): avisa a Meta que el
+ * asesor de verdad leyó el chat. Es un efecto APARTE de `markConversationRead`
+ * de arriba —esa apaga la píldora "No leídas" DENTRO del CRM— y por eso
+ * `crm-shell.tsx` llama a las dos juntas, nunca a esta en su lugar. Nunca
+ * lanza: la ruta de servidor ya no rompe nada por su cuenta (ver
+ * `meta-client.ts`), y un `fetch` que no llega tampoco puede tumbar la
+ * bandeja por un check que no salió.
+ */
+export async function sendReadReceipt(conversationId: string): Promise<void> {
+  try {
+    await fetch(`/api/conversations/${conversationId}/read`, { method: "POST" });
+  } catch {
+    // Nunca rompe: ver el comentario de arriba.
+  }
 }
 
 /**
@@ -744,6 +774,19 @@ export async function closeConversation(conversationId: string): Promise<void> {
 /** Reabre a mano una conversación cerrada, dejándola a cargo de quien la reabrió. */
 export async function reopenConversation(conversationId: string): Promise<void> {
   await postConversationAction(conversationId, "reopen");
+}
+
+/**
+ * "Escribiendo…" hacia el cliente, mientras el asesor redacta en el composer
+ * (T3.1, 4/9/2026). Nunca lanza: un typing que no salió no puede interrumpir
+ * al asesor a mitad de un mensaje, igual que `sendReadReceipt` de arriba.
+ */
+export async function sendTypingSignal(conversationId: string): Promise<void> {
+  try {
+    await fetch(`/api/conversations/${conversationId}/typing`, { method: "POST" });
+  } catch {
+    // Nunca rompe: ver el comentario de arriba.
+  }
 }
 
 // ---------------------------------------------------------------------------

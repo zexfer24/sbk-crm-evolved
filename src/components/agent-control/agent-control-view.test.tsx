@@ -128,6 +128,7 @@ function liveConversation(id: string): Conversation {
     intent: null,
     activeTool: null,
     welcomeSentAt: null,
+    referral: null,
   };
 }
 

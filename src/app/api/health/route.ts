@@ -12,8 +12,10 @@ import { getRedis } from "@/lib/redis";
 //
 // T1.7 ("Ningún lead invisible") sumó dos datos INFORMATIVOS que no tocan el
 // código HTTP: `unassigned_waiting` (leads esperando sin dueño) y
-// `redis_persistence` (si la cola sobrevive un reinicio). Ver sus funciones
-// más abajo para qué mide cada uno y qué no.
+// `redis_persistence` (si la cola sobrevive un reinicio). T3.4 (5/9/2026)
+// suma otros dos, mismo trato: `channel_quality`/`channel_messaging_limit`
+// (lo que Meta reportó de la salud del número). Ver sus funciones más abajo
+// para qué mide cada uno y qué no.
 //
 // No expone nada que sirva a un tercero: ni versiones, ni credenciales, ni
 // nombres de host, ni ids/teléfonos/nombres de clientes — el CONTEO de
@@ -154,17 +156,66 @@ function checkConfig(): CheckResult & { missing: string[] } {
   return { ok: missing.length === 0, missing };
 }
 
+interface ChannelHealthRow {
+  quality_rating: string | null;
+  messaging_limit: string | null;
+}
+
+/**
+ * channel_quality/channel_messaging_limit (T3.4, 5/9/2026) — lo que Meta
+ * reportó del número por `phone_number_quality_update`. Puramente
+ * informativo, como `unassigned_waiting` y `redis_persistence`: ninguno de
+ * los dos decide el código HTTP, porque un número que baja de calidad sigue
+ * entregando mensajes hasta que Meta lo restrinja de verdad.
+ *
+ * Prefiere el canal `connected` -- el que de verdad envía -- y si no hay
+ * ninguno cae al primero que exista, mismo criterio que
+ * `fetchWhatsappChannelHealth` (`src/lib/data.ts`), que alimenta con el
+ * mismo dato la tarjeta "Salud del número" de Control de IA. Null si nunca
+ * llegó el webhook, o si no hay ningún canal creado todavía.
+ */
+async function checkChannelHealth(): Promise<{ qualityRating: string | null; messagingLimit: string | null }> {
+  try {
+    const supabase = createAdminClient();
+    const columns = "quality_rating, messaging_limit";
+
+    const { data: connected } = await supabase
+      .from("whatsapp_channels")
+      .select(columns)
+      .eq("status", "connected")
+      .order("created_at", { ascending: true })
+      .limit(1);
+
+    const connectedRow = (connected as ChannelHealthRow[] | null)?.[0];
+    if (connectedRow) {
+      return { qualityRating: connectedRow.quality_rating, messagingLimit: connectedRow.messaging_limit };
+    }
+
+    const { data } = await supabase
+      .from("whatsapp_channels")
+      .select(columns)
+      .order("created_at", { ascending: true })
+      .limit(1);
+
+    const row = (data as ChannelHealthRow[] | null)?.[0];
+    return { qualityRating: row?.quality_rating ?? null, messagingLimit: row?.messaging_limit ?? null };
+  } catch {
+    return { qualityRating: null, messagingLimit: null };
+  }
+}
+
 export async function GET() {
-  const [database, queue, config, unassignedWaiting, redisPersistence] = [
+  const [database, queue, config, unassignedWaiting, redisPersistence, channelHealth] = [
     await checkDatabase(),
     await checkQueue(),
     checkConfig(),
     await checkUnassignedWaiting(),
     await checkRedisPersistence(),
+    await checkChannelHealth(),
   ];
-  // Los tres de siempre deciden el código HTTP. Los dos nuevos son
-  // informativos a propósito (ver sus comentarios): ni un lead esperando ni
-  // un Redis sin AOF son una caída del servicio.
+  // Los tres de siempre deciden el código HTTP. Los demás son informativos a
+  // propósito (ver sus comentarios): ni un lead esperando, ni un Redis sin
+  // AOF, ni la calidad del número son una caída del servicio.
   const healthy = database.ok && queue.ok && config.ok;
 
   return NextResponse.json(
@@ -177,6 +228,8 @@ export async function GET() {
       },
       unassigned_waiting: unassignedWaiting.ok ? unassignedWaiting.count : `fallo: ${unassignedWaiting.detail}`,
       redis_persistence: redisPersistence.ok ? redisPersistence.appendonly : `fallo: ${redisPersistence.detail}`,
+      channel_quality: channelHealth.qualityRating,
+      channel_messaging_limit: channelHealth.messagingLimit,
       timestamp: new Date().toISOString(),
     },
     { status: healthy ? 200 : 503 }

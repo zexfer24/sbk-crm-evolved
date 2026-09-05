@@ -89,18 +89,60 @@ function createFakeAdminClient() {
   /** Cada llamada a la RPC `record_handoff`, con sus parámetros. */
   const handoffCalls: Record<string, unknown>[] = [];
 
+  // T3.4 (5/9/2026): la lista de canales que ve resolveHealthChannel cuando
+  // pide `.select("id, phone_number, status")` SIN `.eq()` -- distinto del
+  // camino de siempre (`.select(...).eq("phone_number_id", ...).maybeSingle()`
+  // para el mensaje entrante), que sigue devolviendo su fila fija de abajo.
+  // Mutable con setter/reset propios, mismo patrón que conversationRow.
+  let channelRows: { id: string; phone_number: string; status: string }[] = [
+    { id: "chan-1", phone_number: "+15550001234", status: "connected" },
+  ];
+  const channelUpdates: { id: string; patch: Record<string, unknown> }[] = [];
+  const templateUpdates: { name: string; language: string; patch: Record<string, unknown> }[] = [];
+
   const client = {
     from(table: string) {
       if (table === "whatsapp_channels") {
         return {
           select() {
+            // Doble uso, igual que el `.update()` de `messages` más abajo: el
+            // camino de siempre encadena `.eq(...).maybeSingle()`; T3.4 hace
+            // `await` directo sin `.eq()` para traer la lista completa.
+            return Object.assign(
+              Promise.resolve({ data: channelRows.map((r) => ({ ...r })), error: null }),
+              {
+                eq() {
+                  return {
+                    maybeSingle: async () => ({
+                      data: { id: "chan-1", phone_number_id: "1234567890", status: "connected" },
+                      error: null,
+                    }),
+                  };
+                },
+              }
+            );
+          },
+          update(patch: Record<string, unknown>) {
             return {
-              eq() {
+              eq: (_col: string, id: string) => {
+                channelUpdates.push({ id, patch });
+                return Promise.resolve({ data: null, error: null });
+              },
+            };
+          },
+        };
+      }
+
+      if (table === "templates") {
+        return {
+          update(patch: Record<string, unknown>) {
+            return {
+              eq(_col1: string, name: string) {
                 return {
-                  maybeSingle: async () => ({
-                    data: { id: "chan-1", phone_number_id: "1234567890", status: "connected" },
-                    error: null,
-                  }),
+                  eq(_col2: string, language: string) {
+                    templateUpdates.push({ name, language, patch });
+                    return Promise.resolve({ data: null, error: null });
+                  },
                 };
               },
             };
@@ -255,6 +297,8 @@ function createFakeAdminClient() {
     mediaUpdates,
     conversationUpdates,
     handoffCalls,
+    channelUpdates,
+    templateUpdates,
     setConversationRow: (patch: Partial<typeof conversationRow>) => {
       conversationRow = { ...conversationRow, ...patch };
     },
@@ -266,6 +310,12 @@ function createFakeAdminClient() {
         ai_enabled: true,
       };
     },
+    setChannelRows: (rows: { id: string; phone_number: string; status: string }[]) => {
+      channelRows = rows;
+    },
+    resetChannelRows: () => {
+      channelRows = [{ id: "chan-1", phone_number: "+15550001234", status: "connected" }];
+    },
   };
 }
 
@@ -275,6 +325,10 @@ const {
   mediaUpdates,
   conversationUpdates,
   handoffCalls,
+  channelUpdates,
+  templateUpdates,
+  setChannelRows,
+  resetChannelRows,
   setConversationRow,
   resetConversationRow,
 } = createFakeAdminClient();
@@ -386,7 +440,10 @@ beforeEach(() => {
   statusUpdates.length = 0;
   conversationUpdates.length = 0;
   handoffCalls.length = 0;
+  channelUpdates.length = 0;
+  templateUpdates.length = 0;
   resetConversationRow();
+  resetChannelRows();
   vi.mocked(enqueueAgentTurns).mockClear();
   vi.mocked(processAfterDebounce).mockClear();
 });
@@ -871,13 +928,247 @@ describe("POST /api/webhooks/whatsapp — ubicación y otros tipos", () => {
     expect(texto).toContain("10.5");
   });
 
-  it("un tipo que no conocemos se explica en castellano, sin corchetes técnicos", async () => {
-    await POST(fakeRequest(webhookTypedBody("wamid.raro-1", { type: "order" })));
+  /**
+   * T3.2 (5/9/2026): antes esto guardaba una frase fija en castellano
+   * ("El cliente envió un mensaje que el CRM todavía no sabe mostrar…").
+   * Desde 20260905050000, `message_type` pasa a 'unsupported' con `content`
+   * null y el tipo real de Meta en `payload.type` — sin inventar prosa sobre
+   * algo que no se entiende. ("order" dejó de ser el caso de este test
+   * porque ahora tiene su propio tratamiento, ver más abajo.)
+   */
+  it("un tipo que no conocemos queda con content null y el tipo real en payload", async () => {
+    await POST(fakeRequest(webhookTypedBody("wamid.raro-1", { type: "poll" })));
 
-    const texto = String(insertedRows.find((r) => r.whatsapp_message_id === "wamid.raro-1")?.content ?? "");
-    expect(texto).not.toContain("no soportado");
-    expect(texto).not.toContain("[order]");
-    expect(texto.toLowerCase()).toContain("cliente");
+    const fila = insertedRows.find((r) => r.whatsapp_message_id === "wamid.raro-1");
+    expect(fila?.message_type).toBe("unsupported");
+    expect(fila?.content).toBeNull();
+    expect(fila?.payload).toEqual({ type: "poll" });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// T3.2 (5/9/2026, migración 20260905050000): entrantes completos — botones,
+// listas, pedidos, anuncios, "reproducido".
+// ---------------------------------------------------------------------------
+describe("POST /api/webhooks/whatsapp — respuesta a un botón o a un ítem de lista", () => {
+  it("botón (interactive.button_reply): content 'Respondió: …', customerText el título, payload con el id", async () => {
+    await POST(
+      fakeRequest(
+        webhookTypedBody("wamid.boton-1", {
+          type: "interactive",
+          interactive: { type: "button_reply", button_reply: { id: "btn-si", title: "Sí, me interesa" } },
+        })
+      )
+    );
+
+    const fila = insertedRows.find((r) => r.whatsapp_message_id === "wamid.boton-1");
+    expect(fila?.message_type).toBe("interactive");
+    expect(fila?.content).toBe("Respondió: Sí, me interesa");
+    expect(fila?.payload).toEqual({ type: "button_reply", id: "btn-si" });
+  });
+
+  it("lista (interactive.list_reply): mismo tratamiento, con el id/título de la fila elegida", async () => {
+    await POST(
+      fakeRequest(
+        webhookTypedBody("wamid.lista-1", {
+          type: "interactive",
+          interactive: {
+            type: "list_reply",
+            list_reply: { id: "fila-3", title: "Cambio de aceite", description: "Sintético 20w50" },
+          },
+        })
+      )
+    );
+
+    const fila = insertedRows.find((r) => r.whatsapp_message_id === "wamid.lista-1");
+    expect(fila?.message_type).toBe("interactive");
+    expect(fila?.content).toBe("Respondió: Cambio de aceite");
+    expect(fila?.payload).toEqual({ type: "list_reply", id: "fila-3" });
+  });
+
+  it("botón de plantilla (type: button): mismo tratamiento, payload.template con el payload de la plantilla", async () => {
+    await POST(
+      fakeRequest(
+        webhookTypedBody("wamid.boton-plantilla-1", {
+          type: "button",
+          button: { payload: "PLANTILLA-PAYLOAD-1", text: "Confirmar" },
+        })
+      )
+    );
+
+    const fila = insertedRows.find((r) => r.whatsapp_message_id === "wamid.boton-plantilla-1");
+    expect(fila?.message_type).toBe("interactive");
+    expect(fila?.content).toBe("Respondió: Confirmar");
+    expect(fila?.payload).toEqual({ type: "button", template: "PLANTILLA-PAYLOAD-1" });
+  });
+});
+
+describe("POST /api/webhooks/whatsapp — pedido del catálogo", () => {
+  it("resumen en español con ítems y total; customerText es order.text cuando viene", async () => {
+    await POST(
+      fakeRequest(
+        webhookTypedBody("wamid.pedido-1", {
+          type: "order",
+          order: {
+            catalog_id: "catalogo-1",
+            product_items: [
+              { product_retailer_id: "SKU-1", quantity: 2, item_price: 10, currency: "USD" },
+              { product_retailer_id: "SKU-2", quantity: 1, item_price: 5, currency: "USD" },
+            ],
+            text: "¿me lo pueden traer hoy?",
+          },
+        })
+      )
+    );
+
+    const fila = insertedRows.find((r) => r.whatsapp_message_id === "wamid.pedido-1");
+    expect(fila?.message_type).toBe("order");
+    const contenido = String(fila?.content ?? "");
+    expect(contenido).toContain("SKU-1");
+    expect(contenido).toContain("SKU-2");
+    expect(contenido).toContain("Total: USD 25.00");
+    expect(fila?.payload).toMatchObject({ catalogId: "catalogo-1" });
+
+    // Espera la ventana CORTA: el pedido trae un texto propio del cliente
+    // ("¿me lo pueden traer hoy?"), como cualquier caption con texto.
+    expect(enqueueAgentTurns).toHaveBeenCalledWith(expect.anything(), {
+      debounceSeconds: DEBOUNCE_SHORT_SECONDS,
+    });
+  });
+
+  it("sin order.text, customerText queda null y se espera la ventana larga (como un caption vacío)", async () => {
+    await POST(
+      fakeRequest(
+        webhookTypedBody("wamid.pedido-2", {
+          type: "order",
+          order: {
+            catalog_id: "catalogo-1",
+            product_items: [{ product_retailer_id: "SKU-1", quantity: 1, item_price: 10, currency: "USD" }],
+          },
+        })
+      )
+    );
+
+    expect(enqueueAgentTurns).toHaveBeenCalledWith(expect.anything(), {
+      debounceSeconds: DEBOUNCE_SECONDS,
+    });
+  });
+});
+
+/** Lote con `context.referred_product`: el cliente respondió a un anuncio que referenciaba un producto puntual del catálogo. */
+describe("POST /api/webhooks/whatsapp — producto referido de un anuncio", () => {
+  it("context.referred_product se funde en el payload del mensaje, sea cual sea su tipo", async () => {
+    await POST(
+      fakeRequest(
+        webhookTypedBody("wamid.producto-referido-1", {
+          type: "text",
+          text: { body: "¿cuánto cuesta esa bujía?" },
+          context: {
+            id: "wamid.no-existe",
+            referred_product: { catalog_id: "catalogo-1", product_retailer_id: "SKU-9" },
+          },
+        })
+      )
+    );
+
+    const fila = insertedRows.find((r) => r.whatsapp_message_id === "wamid.producto-referido-1");
+    expect(fila?.payload).toEqual({
+      referredProduct: { catalogId: "catalogo-1", productRetailerId: "SKU-9" },
+    });
+  });
+});
+
+describe("POST /api/webhooks/whatsapp — de qué anuncio vino la conversación", () => {
+  it("message.referral guarda conversations.referral y deja el evento 'Llegó desde el anuncio'", async () => {
+    await POST(
+      fakeRequest(
+        webhookTypedBody("wamid.referral-1", {
+          type: "text",
+          text: { body: "hola, vi su anuncio" },
+          referral: {
+            source_url: "https://fb.me/anuncio-1",
+            source_type: "ad",
+            headline: "Repuestos SBK al mejor precio",
+          },
+        })
+      )
+    );
+
+    expect(conversationUpdates).toContainEqual(
+      expect.objectContaining({
+        id: "conv-1",
+        patch: expect.objectContaining({
+          referral: expect.objectContaining({
+            headline: "Repuestos SBK al mejor precio",
+            sourceUrl: "https://fb.me/anuncio-1",
+          }),
+        }),
+      })
+    );
+    expect(
+      insertedRows.some(
+        (r) =>
+          r.sender_type === "system" &&
+          typeof r.content === "string" &&
+          r.content.includes('Llegó desde el anuncio "Repuestos SBK al mejor precio"')
+      )
+    ).toBe(true);
+  });
+});
+
+describe("POST /api/webhooks/whatsapp — 'played', una nota de voz reproducida", () => {
+  it("guarda whatsapp_status: 'played' igual que cualquier otro estado", async () => {
+    await POST(
+      fakeRequest({
+        entry: [
+          {
+            changes: [
+              {
+                field: "messages",
+                value: {
+                  metadata: { phone_number_id: "1234567890" },
+                  statuses: [{ id: "wamid.nota-de-voz-1", status: "played" }],
+                },
+              },
+            ],
+          },
+        ],
+      })
+    );
+
+    expect(statusUpdates).toContainEqual(
+      expect.objectContaining({ wamid: "wamid.nota-de-voz-1", patch: expect.objectContaining({ whatsapp_status: "played" }) })
+    );
+  });
+});
+
+describe("POST /api/webhooks/whatsapp — value.errors y el error del update de estados", () => {
+  it("value.errors deja webhook_error_meta en el log", async () => {
+    const spy = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      await POST(
+        fakeRequest({
+          entry: [
+            {
+              changes: [
+                {
+                  field: "messages",
+                  value: {
+                    metadata: { phone_number_id: "1234567890" },
+                    errors: [{ code: 999, title: "Error de cuenta" }],
+                  },
+                },
+              ],
+            },
+          ],
+        })
+      );
+
+      const eventos = spy.mock.calls.map((call) => JSON.parse(String(call[0])));
+      expect(eventos.some((e) => e.event === "webhook_error_meta" && e.codigo === 999)).toBe(true);
+    } finally {
+      spy.mockRestore();
+    }
   });
 });
 
@@ -1081,5 +1372,257 @@ describe("POST /api/webhooks/whatsapp — el cliente vuelve sobre una conversaci
 
     expect(conversationUpdates).toHaveLength(0);
     expect(handoffCalls.some((c) => c.p_reason === "reabierta_por_cliente")).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// T3.4 (5/9/2026): salud del número y estado de plantillas.
+//
+// Los tres payloads de acá abajo siguen el vocabulario real de Meta
+// (verificado contra la documentación y ejemplos oficiales el 5/9/2026):
+// `message_template_status_update` no trae número de teléfono -- una
+// plantilla es de la cuenta de negocio, no de un número puntual --,
+// mientras que `phone_number_quality_update` y `account_update` sí, y el
+// canal se resuelve por coincidencia de dígitos contra
+// `whatsapp_channels.phone_number` (fake sembrado con "+15550001234").
+// ---------------------------------------------------------------------------
+function webhookFieldBody(field: string, value: Record<string, unknown>) {
+  return { entry: [{ changes: [{ field, value }] }] };
+}
+
+describe("POST /api/webhooks/whatsapp — estado de una plantilla", () => {
+  it("una plantilla rechazada actualiza templates.status por nombre e idioma", async () => {
+    const response = await POST(
+      fakeRequest(
+        webhookFieldBody("message_template_status_update", {
+          event: "REJECTED",
+          message_template_id: 1234567890123,
+          message_template_name: "bienvenida_sbk",
+          message_template_language: "es",
+          reason: "INVALID_FORMAT",
+        })
+      )
+    );
+
+    expect(response.status).toBe(200);
+    expect(templateUpdates).toContainEqual({
+      name: "bienvenida_sbk",
+      language: "es",
+      patch: { status: "rejected" },
+    });
+  });
+
+  it("aprobada guarda 'approved' sin dejar aviso de error", async () => {
+    const spy = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      await POST(
+        fakeRequest(
+          webhookFieldBody("message_template_status_update", {
+            event: "APPROVED",
+            message_template_name: "confirmacion_pedido",
+            message_template_language: "es",
+          })
+        )
+      );
+
+      expect(templateUpdates).toContainEqual({
+        name: "confirmacion_pedido",
+        language: "es",
+        patch: { status: "approved" },
+      });
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  /**
+   * PAUSED y DISABLED son las dos formas en las que Meta apaga una
+   * plantilla por quejas repetidas -- el plan pide `log.error` en las dos,
+   * más REJECTED (ya cubierto arriba).
+   */
+  it("pausada por quejas: guarda 'paused' y deja un log.error", async () => {
+    const spy = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      await POST(
+        fakeRequest(
+          webhookFieldBody("message_template_status_update", {
+            event: "PAUSED",
+            message_template_name: "seguimiento_cotizacion",
+            message_template_language: "es",
+            reason: "NEGATIVE_FEEDBACK",
+          })
+        )
+      );
+
+      expect(templateUpdates).toContainEqual({
+        name: "seguimiento_cotizacion",
+        language: "es",
+        patch: { status: "paused" },
+      });
+      expect(spy).toHaveBeenCalledWith(expect.stringContaining("plantilla_estado_degradado"));
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it("deshabilitada: guarda 'disabled' y deja un log.error", async () => {
+    const spy = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      await POST(
+        fakeRequest(
+          webhookFieldBody("message_template_status_update", {
+            event: "DISABLED",
+            message_template_name: "seguimiento_cotizacion",
+            message_template_language: "es",
+          })
+        )
+      );
+
+      expect(templateUpdates).toContainEqual({
+        name: "seguimiento_cotizacion",
+        language: "es",
+        patch: { status: "disabled" },
+      });
+      expect(spy).toHaveBeenCalledWith(expect.stringContaining("plantilla_estado_degradado"));
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it("un evento sin mapeo (PENDING_DELETION) no toca templates.status", async () => {
+    await POST(
+      fakeRequest(
+        webhookFieldBody("message_template_status_update", {
+          event: "PENDING_DELETION",
+          message_template_name: "promo_vieja",
+          message_template_language: "es",
+        })
+      )
+    );
+
+    expect(templateUpdates.some((u) => u.name === "promo_vieja")).toBe(false);
+  });
+});
+
+describe("POST /api/webhooks/whatsapp — calidad del número", () => {
+  it("FLAGGED guarda calidad RED, el límite y deja un log.error", async () => {
+    const spy = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      const response = await POST(
+        fakeRequest(
+          webhookFieldBody("phone_number_quality_update", {
+            display_phone_number: "15550001234",
+            event: "FLAGGED",
+            current_limit: "TIER_1K",
+          })
+        )
+      );
+
+      expect(response.status).toBe(200);
+      expect(channelUpdates).toHaveLength(1);
+      expect(channelUpdates[0].id).toBe("chan-1");
+      expect(channelUpdates[0].patch).toMatchObject({ quality_rating: "RED", messaging_limit: "TIER_1K" });
+      expect(typeof channelUpdates[0].patch.health_updated_at).toBe("string");
+      expect(spy).toHaveBeenCalledWith(expect.stringContaining("calidad_numero_degradada"));
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it("UPGRADE deriva calidad GREEN y no deja aviso de error", async () => {
+    const spy = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      await POST(
+        fakeRequest(
+          webhookFieldBody("phone_number_quality_update", {
+            display_phone_number: "15550001234",
+            event: "UPGRADE",
+            current_limit: "TIER_10K",
+          })
+        )
+      );
+
+      expect(channelUpdates[0].patch).toMatchObject({ quality_rating: "GREEN", messaging_limit: "TIER_10K" });
+      expect(spy).not.toHaveBeenCalledWith(expect.stringContaining("calidad_numero_degradada"));
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it("sin canal que coincida y sin ninguno conectado, no actualiza nada", async () => {
+    setChannelRows([{ id: "chan-otro", phone_number: "+58412000000", status: "disconnected" }]);
+
+    await POST(
+      fakeRequest(
+        webhookFieldBody("phone_number_quality_update", {
+          display_phone_number: "15550001234",
+          event: "DOWNGRADE",
+          current_limit: "TIER_250",
+        })
+      )
+    );
+
+    expect(channelUpdates).toHaveLength(0);
+  });
+});
+
+describe("POST /api/webhooks/whatsapp — restricción de cuenta", () => {
+  it("una restricción con número que coincide guarda account_restrictions y deja un log.error", async () => {
+    const spy = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      const response = await POST(
+        fakeRequest(
+          webhookFieldBody("account_update", {
+            phone_number: "15550001234",
+            event: "ACCOUNT_RESTRICTION",
+            restriction_info: [
+              { restriction_type: "RESTRICTED_BIZ_INITIATED_MESSAGING", expiration: "2026-09-10T00:00:00+00:00" },
+            ],
+          })
+        )
+      );
+
+      expect(response.status).toBe(200);
+      expect(channelUpdates).toHaveLength(1);
+      expect(channelUpdates[0].id).toBe("chan-1");
+      expect(channelUpdates[0].patch.account_restrictions).toMatchObject({
+        restriction_info: [{ restriction_type: "RESTRICTED_BIZ_INITIATED_MESSAGING" }],
+      });
+      expect(spy).toHaveBeenCalledWith(expect.stringContaining("cuenta_whatsapp_restringida"));
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it("un número sin coincidencia cae al único canal connected", async () => {
+    await POST(
+      fakeRequest(
+        webhookFieldBody("account_update", {
+          phone_number: "9999999999",
+          event: "ACCOUNT_VIOLATION",
+        })
+      )
+    );
+
+    expect(channelUpdates).toHaveLength(1);
+    expect(channelUpdates[0].id).toBe("chan-1");
+  });
+
+  it("VERIFIED_ACCOUNT no deja aviso de error", async () => {
+    const spy = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      await POST(
+        fakeRequest(
+          webhookFieldBody("account_update", {
+            phone_number: "15550001234",
+            event: "VERIFIED_ACCOUNT",
+          })
+        )
+      );
+
+      expect(spy).not.toHaveBeenCalledWith(expect.stringContaining("cuenta_whatsapp_restringida"));
+    } finally {
+      spy.mockRestore();
+    }
   });
 });

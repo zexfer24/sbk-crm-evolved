@@ -36,6 +36,7 @@ import {
   markConversationUnread,
   reopenConversation,
   sendMessage,
+  sendReadReceipt,
 } from "@/lib/mutations";
 import { decideReadOnArrival, shouldFlushDeferred } from "@/lib/read-on-arrival";
 import {
@@ -727,6 +728,10 @@ export function CrmShell({
         markConversationRead(supabase, conversationId)
           .then(refreshInboxCounts)
           .catch(() => {});
+        // El doble check azul (T3.1, 4/9/2026) es un efecto aparte hacia
+        // Meta, no hacia el CRM: abrir el chat es "de verdad se leyó", así
+        // que viaja junto con el marcado de arriba.
+        sendReadReceipt(conversationId);
       }
     })();
 
@@ -775,6 +780,11 @@ export function CrmShell({
       markConversationRead(supabase, conversationId)
         .then(refreshInboxCounts)
         .catch(() => {});
+      // Mismo motivo que al abrir el chat: esto solo corre cuando de verdad
+      // se marca leído (el chat al frente y con foco, o recién recuperó el
+      // foco con algo pendiente) — nunca en el apartado/desapartado a mano de
+      // markRead/markUnread, que no prueban que el asesor haya mirado nada.
+      sendReadReceipt(conversationId);
     }
 
     // Se enteran del regreso por cualquiera de las dos señales: cambiar de

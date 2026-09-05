@@ -20,8 +20,10 @@ function baseMessage(overrides: Partial<Message>): Message {
     isInternalNote: false,
     whatsappStatus: null,
     whatsappError: null,
+    whatsappErrorCode: null,
     reactionEmoji: null,
     replyToMessageId: null,
+    payload: null,
     createdAt: "2026-08-19T23:39:54.000Z",
     ...overrides,
   };
@@ -262,5 +264,148 @@ describe("MessageBubble — un envío que falló dice por qué", () => {
 
     expect(screen.getByLabelText("Recibido")).toBeInTheDocument();
     expect(screen.queryByText(/no está en WhatsApp/)).not.toBeInTheDocument();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// La acción sugerida del fallo (T3.3, 5/9/2026)
+//
+// 131047 (ventana de 24 h vencida) es el único motivo que hoy tiene un gesto
+// propio: abrir el selector de plantillas desde la misma burbuja, en vez de
+// mandar al asesor a buscarlo con el ícono de la barra.
+// ---------------------------------------------------------------------------
+describe("MessageBubble — la acción sugerida del fallo", () => {
+  const fallidoConCodigo = (whatsappErrorCode: number | null, whatsappError: string | null) =>
+    baseMessage({
+      direction: "outbound",
+      senderType: "agent",
+      messageType: "text",
+      content: "Buenas, ¿te llegó el pedido?",
+      whatsappStatus: "failed",
+      whatsappErrorCode,
+      whatsappError,
+    });
+
+  it("131047 (ventana vencida) ofrece abrir el selector de plantillas", () => {
+    const onOpenTemplatePicker = vi.fn();
+    render(
+      <MessageBubble
+        message={fallidoConCodigo(131047, "Pasaron más de 24 h desde el último mensaje del cliente.")}
+        onOpenTemplatePicker={onOpenTemplatePicker}
+      />
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: /abrir plantillas/i }));
+
+    expect(onOpenTemplatePicker).toHaveBeenCalledTimes(1);
+  });
+
+  it("sin el callback, no ofrece el botón aunque el código sea 131047", () => {
+    render(<MessageBubble message={fallidoConCodigo(131047, "Pasaron más de 24 h.")} />);
+
+    expect(screen.queryByRole("button", { name: /abrir plantillas/i })).not.toBeInTheDocument();
+  });
+
+  it("un motivo sin acción propia (número inexistente) no ofrece ningún botón", () => {
+    const onOpenTemplatePicker = vi.fn();
+    render(
+      <MessageBubble
+        message={fallidoConCodigo(131026, "El número no está en WhatsApp.")}
+        onOpenTemplatePicker={onOpenTemplatePicker}
+      />
+    );
+
+    expect(screen.queryByRole("button", { name: /abrir plantillas/i })).not.toBeInTheDocument();
+  });
+
+  it("un mensaje entregado no ofrece ningún botón de acción", () => {
+    const onOpenTemplatePicker = vi.fn();
+    render(
+      <MessageBubble
+        message={baseMessage({
+          direction: "outbound",
+          senderType: "agent",
+          content: "Ya te lo aparto.",
+          whatsappStatus: "delivered",
+        })}
+        onOpenTemplatePicker={onOpenTemplatePicker}
+      />
+    );
+
+    expect(screen.queryByRole("button", { name: /abrir plantillas/i })).not.toBeInTheDocument();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// T3.2 (5/9/2026): entrantes completos — botones, listas, pedidos, "reproducido"
+// ---------------------------------------------------------------------------
+describe("MessageBubble — chip 'respondió a' de un botón o ítem de lista", () => {
+  it("muestra el título de la respuesta, no el id de Meta", () => {
+    render(
+      <MessageBubble
+        message={baseMessage({
+          messageType: "interactive",
+          content: "Respondió: Sí, me interesa",
+          payload: { type: "button_reply", id: "btn-si" },
+        })}
+      />
+    );
+
+    expect(screen.getByText("Respondió a: Sí, me interesa")).toBeInTheDocument();
+    // El content crudo ("Respondió: Sí, me interesa") no se repite aparte:
+    // el chip ya lo dice, dos veces sería ruido.
+    expect(screen.queryByText("Respondió: Sí, me interesa")).not.toBeInTheDocument();
+  });
+});
+
+describe("MessageBubble — tarjeta de pedido del catálogo", () => {
+  it("pinta los ítems y el total, no el resumen en prosa de content", () => {
+    render(
+      <MessageBubble
+        message={baseMessage({
+          messageType: "order",
+          content: "🛒 El cliente envió un pedido del catálogo (2 productos):\n- 2x SKU-1 (USD 10.00 c/u)\n- 1x SKU-2 (USD 5.00 c/u)\nTotal: USD 25.00",
+          payload: {
+            catalogId: "catalogo-1",
+            productItems: [
+              { productRetailerId: "SKU-1", quantity: 2, itemPrice: 10, currency: "USD" },
+              { productRetailerId: "SKU-2", quantity: 1, itemPrice: 5, currency: "USD" },
+            ],
+          },
+        })}
+      />
+    );
+
+    expect(screen.getByText(/SKU-1/)).toBeInTheDocument();
+    expect(screen.getByText(/SKU-2/)).toBeInTheDocument();
+    expect(screen.getByText("Total: USD 25.00")).toBeInTheDocument();
+    // El resumen en prosa de content no se pinta aparte: la tarjeta ya lo dice.
+    expect(screen.queryByText(/El cliente envió un pedido del catálogo/)).not.toBeInTheDocument();
+  });
+
+  it("sin ítems en el payload no rompe: no pinta ninguna tarjeta", () => {
+    const { container } = render(
+      <MessageBubble message={baseMessage({ messageType: "order", content: "pedido raro", payload: null })} />
+    );
+    expect(container.querySelector(".crm-order-card")).toBeNull();
+  });
+});
+
+describe("MessageBubble — el doble check con 'played' (nota de voz reproducida)", () => {
+  it("lleva un ícono y una etiqueta propios, distintos de 'Leído'", () => {
+    render(
+      <MessageBubble
+        message={baseMessage({
+          direction: "outbound",
+          senderType: "agent",
+          messageType: "audio",
+          mediaUrl: "/api/media/nota.ogg",
+          whatsappStatus: "played",
+        })}
+      />
+    );
+
+    expect(screen.getByLabelText("Reproducido")).toBeInTheDocument();
+    expect(screen.queryByLabelText("Leído")).not.toBeInTheDocument();
   });
 });

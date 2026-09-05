@@ -22,6 +22,7 @@ import type {
   QuickReply,
   Tag,
   TokenUsageSummary,
+  WhatsappChannelHealth,
 } from "@/lib/types";
 import { createClient } from "@/lib/supabase/client";
 import {
@@ -63,6 +64,7 @@ import { KnowledgePanel } from "@/components/agent-control/knowledge-panel";
 import { PlaybooksPanel } from "@/components/agent-control/playbooks-panel";
 import { SlidingPills } from "@/components/sliding-pills";
 import { AppRail, AppTopNav } from "@/components/app-rail";
+import { ChannelHealthPanel } from "@/components/agent-control/channel-health-panel";
 import { SpendCapPanel } from "@/components/agent-control/spend-cap-panel";
 import { TokenUsageChart } from "@/components/agent-control/token-usage-chart";
 // crm.css trae .crm-pill, que esta vista usa para los botones de acción de
@@ -90,6 +92,12 @@ interface AgentControlViewProps {
   initialKnowledgeEntries: KnowledgeEntry[];
   /** Catálogo de etiquetas del CRM: lo elige el formulario de escenarios. */
   initialTags: Tag[];
+  /**
+   * Salud del número (T3.4, 5/9/2026). Opcional y con default null: no vive
+   * en el ciclo de refresco del resto del panel (informativa, sin canal de
+   * realtime propio) y los tests existentes de esta vista no la pasan.
+   */
+  initialChannelHealth?: WhatsappChannelHealth | null;
   modelLabel: string;
 }
 
@@ -179,6 +187,7 @@ export function AgentControlView({
   initialKnowledgeCategories,
   initialKnowledgeEntries,
   initialTags,
+  initialChannelHealth = null,
   modelLabel,
 }: AgentControlViewProps) {
   const supabase = useMemo(() => createClient(), []);
@@ -676,6 +685,8 @@ export function AgentControlView({
               canEdit={currentAgent.role === "supervisor" || currentAgent.role === "admin"}
               onSave={saveSpendCap}
             />
+
+            <ChannelHealthPanel health={initialChannelHealth} />
 
             <div className="dash-lower">
               <section className="dash-panel">

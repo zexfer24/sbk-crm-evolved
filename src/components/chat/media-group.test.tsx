@@ -21,8 +21,10 @@ function media(over: Partial<Message> & { messageType?: MessageType } = {}): Mes
     isInternalNote: false,
     whatsappStatus: null,
     whatsappError: null,
+    whatsappErrorCode: null,
     reactionEmoji: null,
     replyToMessageId: null,
+    payload: null,
     createdAt: "2026-08-24T12:00:00.000Z",
     ...over,
   };

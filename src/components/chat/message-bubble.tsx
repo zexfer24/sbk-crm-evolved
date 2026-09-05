@@ -1,8 +1,20 @@
 import { useState } from "react";
-import { AudioLines, Bot, Download, FileText, ImageOff, Lock, RefreshCw, Reply as ReplyIcon } from "lucide-react";
+import {
+  AudioLines,
+  Bot,
+  CornerUpLeft,
+  Download,
+  FileText,
+  ImageOff,
+  Lock,
+  RefreshCw,
+  Reply as ReplyIcon,
+  ShoppingCart,
+} from "lucide-react";
 import type { Message } from "@/lib/types";
 import { formatMessageTime } from "@/lib/format";
 import { useLongPress } from "@/lib/use-long-press";
+import { failureAction } from "@/lib/whatsapp/failure-reason";
 import { MediaThumb } from "@/components/chat/media-lightbox";
 import { DeliveryCheck } from "@/components/chat/delivery-check";
 import { MessageContextMenu } from "@/components/chat/message-context-menu";
@@ -90,6 +102,17 @@ function senderLabel(message: Message): string {
   return message.senderAgent?.displayName ?? "Agente";
 }
 
+/**
+ * El título del botón/ítem de lista que el cliente respondió (T3.2, 5/9/2026).
+ * El webhook ya deja `content = "Respondió: {title}"`; se recorta ese prefijo
+ * en vez de duplicar el título en `payload` (que solo trae el `id` de Meta).
+ */
+function respondedTitle(message: Message): string {
+  const prefix = "Respondió: ";
+  if (message.content?.startsWith(prefix)) return message.content.slice(prefix.length);
+  return message.content ?? message.payload?.id ?? "";
+}
+
 const MEDIA_MESSAGE_TYPES = ["image", "video", "sticker", "audio", "document"] as const;
 
 /**
@@ -148,6 +171,41 @@ export function MediaContent({ message }: { message: Message }) {
   }
 }
 
+/**
+ * Un pedido armado desde el catálogo de WhatsApp (T3.2, 5/9/2026):
+ * `message.payload.productItems`, no `message.content` — el content ya
+ * trae el mismo resumen en prosa (lo que ve el asesor si abre el chat en su
+ * teléfono), pero acá se pinta estructurado, ítem por ítem. Meta no manda
+ * el nombre del producto, solo el `productRetailerId` (el SKU del catálogo).
+ */
+function OrderCard({ message }: { message: Message }) {
+  const items = message.payload?.productItems ?? [];
+  if (items.length === 0) return null;
+
+  const totalPorMoneda = new Map<string, number>();
+  for (const item of items) {
+    totalPorMoneda.set(item.currency, (totalPorMoneda.get(item.currency) ?? 0) + item.quantity * item.itemPrice);
+  }
+  const totales = [...totalPorMoneda.entries()].map(([moneda, total]) => `${moneda} ${total.toFixed(2)}`).join(", ");
+
+  return (
+    <div className="crm-order-card mb-1 flex flex-col gap-1 rounded-md border border-current/15 p-2 text-xs">
+      <div className="flex items-center gap-1.5 font-medium">
+        <ShoppingCart size={13} />
+        <span>Pedido del catálogo</span>
+      </div>
+      <ul className="flex flex-col gap-0.5">
+        {items.map((item, index) => (
+          <li key={`${item.productRetailerId}-${index}`}>
+            {item.quantity}x {item.productRetailerId} — {item.currency} {item.itemPrice.toFixed(2)} c/u
+          </li>
+        ))}
+      </ul>
+      <div className="font-medium">Total: {totales}</div>
+    </div>
+  );
+}
+
 interface MessageBubbleProps {
   message: Message;
   repliedMessage?: Message | null;
@@ -167,6 +225,13 @@ interface MessageBubbleProps {
    * siempre y no significa nada: ahí no se pinta.
    */
   pendingDelivery?: boolean;
+  /**
+   * Abre el selector de plantillas desde la burbuja (T3.3, 5/9/2026): la
+   * única acción con gesto propio que ofrece `failureAction` hoy es
+   * 131047 (ventana de 24 h vencida). Sin este callback la burbuja igual
+   * muestra el motivo en palabras — solo no ofrece el atajo.
+   */
+  onOpenTemplatePicker?: () => void;
 }
 
 export function MessageBubble({
@@ -176,6 +241,7 @@ export function MessageBubble({
   onJumpToQuoted,
   isHighlighted = false,
   pendingDelivery = false,
+  onOpenTemplatePicker,
 }: MessageBubbleProps) {
   // Antes del retorno de `system_event`: un hook no puede quedar detrás de
   // una salida temprana.
@@ -258,6 +324,13 @@ export function MessageBubble({
               <span>Plantilla: {message.templateName}</span>
             </div>
           )}
+          {message.messageType === "interactive" && (
+            <div className="mb-1 flex items-center gap-1.5 text-xs opacity-80">
+              <CornerUpLeft size={13} />
+              <span>Respondió a: {respondedTitle(message)}</span>
+            </div>
+          )}
+          {message.messageType === "order" && <OrderCard message={message} />}
           {isAi && (
             <div className="mb-1 flex items-center gap-1.5 text-xs opacity-70">
               <Bot size={13} />
@@ -270,7 +343,12 @@ export function MessageBubble({
             </div>
           )}
           <MediaContent message={message} />
-          {message.content && <FormattedText text={message.content} />}
+          {/* El contenido crudo ya se muestra distinto para estos dos tipos —
+              el chip "Respondió a" y la tarjeta de pedido de arriba— así que
+              acá se omite para no repetir la misma frase dos veces. */}
+          {message.content &&
+            message.messageType !== "interactive" &&
+            message.messageType !== "order" && <FormattedText text={message.content} />}
 
           {/* Colgando del borde de abajo, como en WhatsApp: la reacción es
               algo que le pasa a este mensaje, no un mensaje aparte. */}
@@ -327,6 +405,24 @@ export function MessageBubble({
       {!isCustomer && !isInternalNote && message.whatsappStatus === "failed" && message.whatsappError && (
         <span className="crm-msg-failure px-1 text-[11px]">{message.whatsappError}</span>
       )}
+
+      {/* La acción con gesto propio (T3.3, 5/9/2026): hoy solo la ventana de
+          24 h vencida (131047) tiene un atajo que hacer desde acá mismo —
+          abrir el selector de plantillas — en vez de mandar al asesor a
+          buscarlo con el ícono de la barra. */}
+      {!isCustomer &&
+        !isInternalNote &&
+        message.whatsappStatus === "failed" &&
+        onOpenTemplatePicker &&
+        failureAction(message.whatsappErrorCode) === "abrir_plantillas" && (
+          <button
+            type="button"
+            className="crm-msg-failure-action px-1 text-[11px] underline underline-offset-2"
+            onClick={onOpenTemplatePicker}
+          >
+            Abrir plantillas
+          </button>
+        )}
     </div>
   );
 }

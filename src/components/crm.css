@@ -531,6 +531,22 @@
   color: var(--lm-on-fill);
 }
 
+/* Banner "llegó desde el anuncio" (T3.2, 5/9/2026): informativo, no un
+   estado que pida acción — por eso un tono neutro, no el ámbar/verde de la
+   banda de la IA. Desaparece solo pasadas 72 h (isReferralFresh). */
+.crm-referral-banner {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 10px 16px 0;
+  padding: 6px 14px;
+  border-radius: 999px;
+  background: var(--lm-sunken);
+  color: var(--lm-ink-soft);
+  font-size: 12.5px;
+  font-weight: 500;
+}
+
 .crm-ai-band .crm-pill[data-variant="danger"]:hover {
   background: var(--lm-hot-fill-hover);
   color: var(--lm-on-fill);
@@ -1733,6 +1749,21 @@
   line-height: 1.35;
   text-align: right;
   overflow-wrap: anywhere;
+}
+
+/* La acción sugerida del fallo (T3.3, 5/9/2026): un botón de texto, no una
+   frase más — se distingue por el color de acento y el cursor, para que se
+   note que hay algo que hacer y no solo algo que leer. */
+.crm-msg-failure-action {
+  display: block;
+  margin-top: 2px;
+  color: var(--lm-accent, var(--lm-link, inherit));
+  cursor: pointer;
+  background: none;
+  border: none;
+  padding: 0 4px;
+  text-align: right;
+  width: 100%;
 }
 
 /* --------------------------------------------------------------------------

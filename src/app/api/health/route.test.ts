@@ -27,17 +27,41 @@ const conversationsCountMock = vi.fn(async (): Promise<{
   error: { message: string } | null;
 }> => ({ data: 0, error: null }));
 
+// T3.4 (5/9/2026): la consulta a whatsapp_channels de checkChannelHealth().
+// Sin canal (`data: []`) por defecto -- el caso "sin datos todavía". El
+// mismo mock sirve para las dos llamadas posibles (la que filtra por
+// `connected` y, si esa vino vacía, la de respaldo sin filtro): `.eq()` y
+// `.order()` son no-ops encadenables, solo `.limit()` resuelve.
+const channelHealthMock = vi.fn(async (): Promise<{
+  data: { quality_rating: string | null; messaging_limit: string | null }[] | null;
+  error: { message: string } | null;
+}> => ({ data: [], error: null }));
+
 vi.mock("@/lib/supabase/admin", () => ({
   createAdminClient: () => ({
     rpc: (fn: string) => {
       if (fn === "unassigned_waiting_count") return conversationsCountMock();
       throw new Error(`Fake Supabase: rpc no soportada: ${fn}`);
     },
-    from: () => ({
-      select: () => ({
-        eq: () => ({ single: adminSingleMock }),
-      }),
-    }),
+    from: (table: string) => {
+      if (table === "whatsapp_channels") {
+        return {
+          select: () => {
+            const chain = {
+              eq: () => chain,
+              order: () => chain,
+              limit: () => channelHealthMock(),
+            };
+            return chain;
+          },
+        };
+      }
+      return {
+        select: () => ({
+          eq: () => ({ single: adminSingleMock }),
+        }),
+      };
+    },
   }),
 }));
 
@@ -59,6 +83,8 @@ beforeEach(() => {
   adminSingleMock.mockResolvedValue({ data: { id: true }, error: null });
   conversationsCountMock.mockReset();
   conversationsCountMock.mockResolvedValue({ data: 0, error: null });
+  channelHealthMock.mockReset();
+  channelHealthMock.mockResolvedValue({ data: [], error: null });
   for (const [clave, valor] of Object.entries(ENV_REQUERIDO)) {
     vi.stubEnv(clave, valor);
   }
@@ -182,5 +208,34 @@ describe("GET /api/health", () => {
     expect(response.status).toBe(503);
     expect(body.status).toBe("degraded");
     expect(JSON.stringify(body)).toContain("WHATSAPP_APP_SECRET");
+  });
+
+  /**
+   * T3.4 (5/9/2026): calidad y límite del número, informativos como
+   * unassigned_waiting y redis_persistence -- un número degradado sigue
+   * entregando mensajes hasta que Meta lo restrinja de verdad, así que no
+   * puede tumbar el código HTTP.
+   */
+  it("expone channel_quality y channel_messaging_limit cuando el canal ya tiene datos", async () => {
+    channelHealthMock.mockResolvedValueOnce({
+      data: [{ quality_rating: "GREEN", messaging_limit: "TIER_1K" }],
+      error: null,
+    });
+
+    const response = await GET();
+    const body = await response.json();
+
+    expect(response.status).toBe(200);
+    expect(body.channel_quality).toBe("GREEN");
+    expect(body.channel_messaging_limit).toBe("TIER_1K");
+  });
+
+  it("sin ningún webhook de calidad todavía, expone null en los dos campos sin degradar el código", async () => {
+    const response = await GET();
+    const body = await response.json();
+
+    expect(response.status).toBe(200);
+    expect(body.channel_quality).toBeNull();
+    expect(body.channel_messaging_limit).toBeNull();
   });
 });

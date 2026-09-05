@@ -736,6 +736,43 @@
 }
 
 /* --------------------------------------------------------------------------
+   Salud del número (T3.4, 5/9/2026)
+   -------------------------------------------------------------------------- */
+.ac-channel-health-body {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 0 26px 22px;
+}
+
+.ac-channel-health-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--lm-ink);
+  font-size: 12.5px;
+}
+
+.ac-channel-health-value {
+  color: var(--lm-muted);
+  font-size: 12.5px;
+}
+
+.ac-channel-health-warn {
+  color: var(--lm-hot-ink);
+  font-size: 12px;
+  line-height: 1.5;
+  max-width: 74ch;
+}
+
+.ac-channel-health-note {
+  color: var(--lm-muted);
+  font-size: 11.5px;
+  line-height: 1.5;
+  max-width: 74ch;
+}
+
+/* --------------------------------------------------------------------------
    Métricas por agente
    Rejilla de celdas compactas: el número de hoy grande, el del período al
    lado en gris. La idea es leer la fila de un vistazo, no estudiarla.

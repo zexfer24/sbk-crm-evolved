@@ -21,12 +21,14 @@ vi.mock("next/server", async (importOriginal) => {
 });
 
 const sendWhatsappTextMock = vi.fn();
+const sendWhatsappTemplateMock = vi.fn();
 
 vi.mock("@/lib/whatsapp/meta-client", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@/lib/whatsapp/meta-client")>();
   return {
     ...actual,
     sendWhatsappText: (...args: unknown[]) => sendWhatsappTextMock(...args),
+    sendWhatsappTemplate: (...args: unknown[]) => sendWhatsappTemplateMock(...args),
   };
 });
 
@@ -141,6 +143,8 @@ beforeEach(() => {
   contactPhone = "+58123456789";
   sendWhatsappTextMock.mockReset();
   sendWhatsappTextMock.mockResolvedValue({ whatsappMessageId: "wamid.OK" });
+  sendWhatsappTemplateMock.mockReset();
+  sendWhatsappTemplateMock.mockResolvedValue({ whatsappMessageId: "wamid.PLANTILLA" });
   process.env.WHATSAPP_ACCESS_TOKEN = "token-de-prueba";
 });
 
@@ -321,5 +325,74 @@ describe("POST /api/messages/send — un chat al que es imposible entregar", () 
 
     expect(response.status).toBe(200);
     expect(insertedRows).toHaveLength(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Plantillas con variables (T3.3, 5/9/2026)
+//
+// El cuerpo que llega en `content` trae sus `{{n}}` sin sustituir (así lo
+// manda `sendTemplateMessage` en mutations.ts, con el `body_preview` tal
+// cual). La ruta sustituye ANTES de guardar —la burbuja tiene que mostrar el
+// mensaje real que le llegó al cliente, no el molde— y arma los
+// `components` posicionales que la Graph API exige para que Meta rellene lo
+// mismo del otro lado.
+// ---------------------------------------------------------------------------
+describe("POST /api/messages/send — plantillas con variables", () => {
+  function templateRequest(body: Record<string, unknown> = {}) {
+    return new Request("http://crm.example/api/messages/send", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        conversationId: "conv-1",
+        kind: "template",
+        templateName: "pedido_listo",
+        templateLanguage: "es",
+        content: "Hola {{1}}, tu repuesto {{2}} ya está listo.",
+        variables: ["Pedro", "el carburador PZ27"],
+        ...body,
+      }),
+    });
+  }
+
+  it("guarda en content el cuerpo con las variables ya sustituidas, no el molde con {{n}}", async () => {
+    await POST(templateRequest());
+
+    expect(insertedRows[0]).toMatchObject({
+      message_type: "template",
+      content: "Hola Pedro, tu repuesto el carburador PZ27 ya está listo.",
+    });
+  });
+
+  it("arma el component body posicional y se lo pasa a sendWhatsappTemplate", async () => {
+    await POST(templateRequest());
+
+    await vi.waitFor(() => expect(sendWhatsappTemplateMock).toHaveBeenCalledTimes(1), { timeout: 5000 });
+    const args = sendWhatsappTemplateMock.mock.calls[0];
+    // (phoneNumberId, accessToken, to, templateName, languageCode, components)
+    expect(args[3]).toBe("pedido_listo");
+    expect(args[4]).toBe("es");
+    expect(args[5]).toEqual([
+      {
+        type: "body",
+        parameters: [
+          { type: "text", text: "Pedro" },
+          { type: "text", text: "el carburador PZ27" },
+        ],
+      },
+    ]);
+  });
+
+  it("una plantilla sin variables no manda components y guarda el cuerpo tal cual", async () => {
+    await POST(
+      templateRequest({
+        content: "Gracias por tu compra.",
+        variables: [],
+      })
+    );
+
+    expect(insertedRows[0]).toMatchObject({ content: "Gracias por tu compra." });
+    await vi.waitFor(() => expect(sendWhatsappTemplateMock).toHaveBeenCalledTimes(1), { timeout: 5000 });
+    expect(sendWhatsappTemplateMock.mock.calls[0][5]).toBeUndefined();
   });
 });

@@ -1,15 +1,22 @@
-import { AlertCircle, Check, CheckCheck, Clock } from "lucide-react";
+import { AlertCircle, Check, CheckCheck, Clock, PlayCircle } from "lucide-react";
 import type { WhatsappMessageStatus } from "@/lib/types";
 
 /**
  * El doble check de WhatsApp. Es el mismo lenguaje que el agente ya conoce de
  * su teléfono, así que se respeta al pie: un check es "salió de acá", dos son
  * "llegó al teléfono", dos azules son "lo abrió". Sin colores inventados.
+ *
+ * 'played' (T3.2, 5/9/2026) es propio de las notas de voz: Meta lo manda
+ * cuando el cliente reproduce el audio que le enviamos, un paso más adelante
+ * que "leído" (ver `whatsapp_status_rank()` en la base). Lleva un ícono
+ * distinto en vez de un tercer check para no inventar un color que WhatsApp
+ * no usa.
  */
 const LABELS: Record<WhatsappMessageStatus, string> = {
   sent: "Enviado",
   delivered: "Recibido",
   read: "Leído",
+  played: "Reproducido",
   failed: "No se pudo entregar",
 };
 
@@ -49,6 +56,8 @@ export function DeliveryCheck({ status, size = 14, pending = false, detail = nul
         <AlertCircle size={size} />
       ) : status === "sent" ? (
         <Check size={size} />
+      ) : status === "played" ? (
+        <PlayCircle size={size} />
       ) : (
         <CheckCheck size={size} />
       )}

@@ -254,6 +254,11 @@ values ('Principal', '+58...', '<phone_number_id>', '<waba_id>', 'connected');
 Mientras `status` no sea `'connected'`, el CRM simula los envíos: guarda el
 mensaje pero no lo manda. Sirve para probar sin gastar.
 
+El doble check azul y "escribiendo…" (T3.1, 4/9/2026) usan el mismo
+`WHATSAPP_ACCESS_TOKEN` y el mismo `phone_number_id` que un envío normal —no
+hace falta ninguna variable nueva— y **no consumen cupo de conversación**:
+Meta no las factura como los mensajes de plantilla/texto.
+
 ---
 
 ## 5. Webhook
@@ -266,6 +271,16 @@ desarrollo se usa un túnel (`cloudflared tunnel --url http://localhost:3000`).
 
 **Verificación:** el handshake de Meta debe dar verde al registrar. Después,
 manda un mensaje real al número y comprueba que aparece en la bandeja.
+
+**Salud del número y estado de plantillas (T3.4, paso manual del operador):**
+en el panel de Meta for Developers, dentro de la app → WhatsApp →
+Configuration → Webhook fields, suscribir además de `messages` estos tres
+campos: `message_template_status_update`, `phone_number_quality_update` y
+`account_update`. Sin suscribirlos, el CRM sigue funcionando igual —son
+puramente informativos— pero la tarjeta "Salud del número" de Control de IA
+(`/agent-control`) se queda en "sin datos" para siempre, y una plantilla
+pausada o un número en riesgo de perder límite de mensajería no se van a
+notar hasta que un cliente reclame.
 
 ---
 

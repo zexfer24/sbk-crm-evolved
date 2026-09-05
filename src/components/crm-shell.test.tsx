@@ -179,9 +179,13 @@ const markConversationReadMock = vi.fn().mockResolvedValue(undefined);
 
 const markConversationUnreadMock = vi.fn().mockResolvedValue(undefined);
 
+/** El doble check azul hacia Meta (T3.1, 4/9/2026): nunca lanza, así que el mock tampoco. */
+const sendReadReceiptMock = vi.fn().mockResolvedValue(undefined);
+
 vi.mock("@/lib/mutations", () => ({
   markConversationRead: (...args: unknown[]) => markConversationReadMock(...args),
   markConversationUnread: (...args: unknown[]) => markConversationUnreadMock(...args),
+  sendReadReceipt: (...args: unknown[]) => sendReadReceiptMock(...args),
 }));
 
 function buildConversation(overrides: Partial<Conversation> = {}): Conversation {
@@ -235,6 +239,7 @@ function buildConversation(overrides: Partial<Conversation> = {}): Conversation 
     intent: null,
     activeTool: null,
     welcomeSentAt: null,
+    referral: null,
     ...overrides,
   };
 }
@@ -264,6 +269,7 @@ beforeEach(() => {
   fetchMessagesMock.mockResolvedValue([]); // cada test decide qué mensajes hay
   markConversationReadMock.mockClear();
   markConversationUnreadMock.mockClear();
+  sendReadReceiptMock.mockClear();
   fetchAgentSettingsMock.mockClear();
   // Foco de la ventana por defecto: jsdom, a diferencia de un navegador real,
   // arranca sin foco (`document.hasFocus()` en `false` mientras nada haya
@@ -476,6 +482,7 @@ describe("CrmShell — el chat sigue los cambios sobre mensajes ya guardados", (
     });
 
     expect(markConversationReadMock).not.toHaveBeenCalled();
+    expect(sendReadReceiptMock).not.toHaveBeenCalled();
   });
 
   it("sí da por leída la conversación cuando entra un mensaje nuevo del cliente", async () => {
@@ -486,6 +493,9 @@ describe("CrmShell — el chat sigue los cambios sobre mensajes ya guardados", (
     });
 
     expect(markConversationReadMock).toHaveBeenCalledTimes(1);
+    // El doble check azul (T3.1, 4/9/2026) viaja junto con el marcado del
+    // CRM: el chat sigue abierto delante del asesor, así que de verdad se leyó.
+    expect(sendReadReceiptMock).toHaveBeenCalledTimes(1);
   });
 });
 
@@ -516,6 +526,8 @@ describe("CrmShell — un chat abierto en una pestaña oculta no marca leído lo
     });
 
     expect(markConversationReadMock).not.toHaveBeenCalled();
+    // Con la pestaña oculta tampoco se avisó a Meta: nadie miró el mensaje todavía.
+    expect(sendReadReceiptMock).not.toHaveBeenCalled();
   });
 
   it("al volver la pestaña, el chat que sigue abierto se marca leído exactamente una vez", async () => {
@@ -529,6 +541,7 @@ describe("CrmShell — un chat abierto en una pestaña oculta no marca leído lo
 
     act(() => ocultarPestana(false));
     expect(markConversationReadMock).toHaveBeenCalledTimes(1);
+    expect(sendReadReceiptMock).toHaveBeenCalledTimes(1);
 
     // Un segundo regreso (otro "visibilitychange" o "focus") no repite el
     // marcado: ya no queda nada pendiente.
@@ -536,6 +549,7 @@ describe("CrmShell — un chat abierto en una pestaña oculta no marca leído lo
       window.dispatchEvent(new Event("focus"));
     });
     expect(markConversationReadMock).toHaveBeenCalledTimes(1);
+    expect(sendReadReceiptMock).toHaveBeenCalledTimes(1);
   });
 
   it("si cambió de chat mientras estaba oculta, volver a la pestaña no marca el chat viejo", async () => {
@@ -590,8 +604,10 @@ function outboundMessage(whatsappStatus: Message["whatsappStatus"]): Message {
     isInternalNote: false,
     whatsappStatus,
     whatsappError: null,
+    whatsappErrorCode: null,
     reactionEmoji: null,
     replyToMessageId: null,
+    payload: null,
     createdAt: "2026-08-24T12:00:00.000Z",
   };
 }
@@ -654,6 +670,9 @@ describe("CrmShell — abrir un chat apartado a mano lo da por leído", () => {
     await act(async () => {});
 
     expect(markConversationReadMock).toHaveBeenCalledTimes(1);
+    // Abrir un chat apartado a mano SÍ es "de verdad se leyó": el asesor lo
+    // acaba de abrir y lo tiene delante. El doble check azul viaja igual.
+    expect(sendReadReceiptMock).toHaveBeenCalledTimes(1);
   });
 });
 

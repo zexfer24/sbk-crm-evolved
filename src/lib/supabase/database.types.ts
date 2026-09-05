@@ -558,6 +558,7 @@ export type Database = {
           last_reply_at: string | null
           last_reply_sender: string | null
           order_id: string | null
+          referral: Json | null
           status: string
           manually_unread: boolean
           unread_count: number
@@ -593,6 +594,7 @@ export type Database = {
           last_reply_at?: string | null
           last_reply_sender?: string | null
           order_id?: string | null
+          referral?: Json | null
           status?: string
           manually_unread?: boolean
           unread_count?: number
@@ -628,6 +630,7 @@ export type Database = {
           last_reply_at?: string | null
           last_reply_sender?: string | null
           order_id?: string | null
+          referral?: Json | null
           status?: string
           manually_unread?: boolean
           unread_count?: number
@@ -811,6 +814,7 @@ export type Database = {
           is_auto_reply: boolean
           media_url: string | null
           message_type: string
+          payload: Json | null
           reply_to_message_id: string | null
           sender_agent_id: string | null
           sender_type: string
@@ -831,6 +835,7 @@ export type Database = {
           is_auto_reply?: boolean
           media_url?: string | null
           message_type?: string
+          payload?: Json | null
           reply_to_message_id?: string | null
           sender_agent_id?: string | null
           sender_type: string
@@ -851,6 +856,7 @@ export type Database = {
           is_auto_reply?: boolean
           media_url?: string | null
           message_type?: string
+          payload?: Json | null
           reply_to_message_id?: string | null
           sender_agent_id?: string | null
           sender_type?: string
@@ -1333,36 +1339,48 @@ export type Database = {
       whatsapp_channels: {
         Row: {
           access_token_secret_ref: string | null
+          account_restrictions: Json | null
           created_at: string
+          health_updated_at: string | null
           id: string
           is_active: boolean
           label: string
+          messaging_limit: string | null
           phone_number: string
           phone_number_id: string | null
+          quality_rating: string | null
           status: string
           updated_at: string
           waba_id: string | null
         }
         Insert: {
           access_token_secret_ref?: string | null
+          account_restrictions?: Json | null
           created_at?: string
+          health_updated_at?: string | null
           id?: string
           is_active?: boolean
           label: string
+          messaging_limit?: string | null
           phone_number: string
           phone_number_id?: string | null
+          quality_rating?: string | null
           status?: string
           updated_at?: string
           waba_id?: string | null
         }
         Update: {
           access_token_secret_ref?: string | null
+          account_restrictions?: Json | null
           created_at?: string
+          health_updated_at?: string | null
           id?: string
           is_active?: boolean
           label?: string
+          messaging_limit?: string | null
           phone_number?: string
           phone_number_id?: string | null
+          quality_rating?: string | null
           status?: string
           updated_at?: string
           waba_id?: string | null

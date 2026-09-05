@@ -19,8 +19,10 @@ function media(over: Partial<Message> & { messageType?: MessageType } = {}): Mes
     isInternalNote: false,
     whatsappStatus: null,
     whatsappError: null,
+    whatsappErrorCode: null,
     reactionEmoji: null,
     replyToMessageId: null,
+    payload: null,
     createdAt: new Date(Date.UTC(2026, 7, 24, 12, 0, 0) + reloj).toISOString(),
     ...over,
   };

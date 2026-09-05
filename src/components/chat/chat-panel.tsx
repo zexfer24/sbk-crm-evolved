@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
-import { ArrowLeft, Lock, Unlock, UserPlus, UserMinus } from "lucide-react";
+import { ArrowLeft, Lock, Megaphone, Unlock, UserPlus, UserMinus } from "lucide-react";
 import { toast } from "@heroui/react";
 import type { Agent, Conversation, Message, QuickReply, WhatsappTemplate } from "@/lib/types";
 import type { OutboxItem } from "@/lib/outbox";
@@ -21,6 +21,20 @@ import { MessageBubble } from "@/components/chat/message-bubble";
 import { MediaGroup } from "@/components/chat/media-group";
 import { OutboxBubble } from "@/components/chat/outbox-bubble";
 import { Composer } from "@/components/chat/composer";
+
+/**
+ * Cuánto dura el banner de "llegó desde el anuncio" en la cabecera del chat
+ * (T3.2, 5/9/2026): pasadas 72 h desde que se recibió el `referral`, el
+ * origen ya no es información fresca para el asesor y el banner deja de
+ * pintarse — la fila sigue guardada en `conversations.referral`, solo se deja
+ * de mostrar.
+ */
+const REFERRAL_BANNER_WINDOW_MS = 72 * 60 * 60 * 1000;
+
+function isReferralFresh(referral: Conversation["referral"], now: Date = new Date()): boolean {
+  if (!referral) return false;
+  return now.getTime() - new Date(referral.receivedAt).getTime() < REFERRAL_BANNER_WINDOW_MS;
+}
 
 interface ChatPanelProps {
   conversation: Conversation;
@@ -73,6 +87,20 @@ export function ChatPanel({
   const [replyingTo, setReplyingTo] = useState<Message | null>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
   const listRef = useRef<HTMLDivElement>(null);
+
+  /**
+   * Pedido de abrir el selector de plantillas desde una burbuja (T3.3,
+   * 5/9/2026): un envío rechazado con el código 131047 (ventana de 24 h
+   * vencida) ofrece un botón que abre el mismo selector del composer, sin
+   * que el asesor tenga que ir a buscarlo con el ícono de la barra. Un
+   * contador y no un booleano: el composer lo mira con `openTemplateModalSignal`
+   * y solo lo mira para saber si CAMBIÓ, así que dos pedidos seguidos (dos
+   * burbujas fallidas distintas) abren el modal las dos veces.
+   */
+  const [templateModalSignal, setTemplateModalSignal] = useState(0);
+  function handleOpenTemplatePicker() {
+    setTemplateModalSignal((n) => n + 1);
+  }
 
   /** Mensaje al que se acaba de saltar desde una cita, para señalarlo. */
   const [jumpedToId, setJumpedToId] = useState<string | null>(null);
@@ -226,6 +254,19 @@ export function ChatPanel({
         </div>
       </header>
 
+      {/* De qué anuncio "Click to WhatsApp" vino este cliente (T3.2, 5/9/2026),
+          mientras el dato siga fresco: pasadas 72 h deja de pintarse aunque
+          `conversations.referral` se conserve. */}
+      {isReferralFresh(conversation.referral) && (
+        <div className="crm-referral-banner" role="note">
+          <Megaphone size={14} />
+          <span>
+            Llegó desde el anuncio
+            {conversation.referral?.headline ? ` "${conversation.referral.headline}"` : ""}
+          </span>
+        </div>
+      )}
+
       {loadingMessages && (
         // Un chat vacío y un chat que todavía no llegó se ven igual, y no son
         // lo mismo: sin esto, abrir una conversación parpadea en "no hay nada
@@ -288,6 +329,7 @@ export function ChatPanel({
               onJumpToQuoted={jumpToMessage}
               isHighlighted={item.message.id === jumpedToId}
               pendingDelivery={conversation.channel.status === "connected"}
+              onOpenTemplatePicker={handleOpenTemplatePicker}
             />
           );
         })}
@@ -311,6 +353,7 @@ export function ChatPanel({
         replyingTo={replyingTo}
         onCancelReply={() => setReplyingTo(null)}
         onSendText={onSendText}
+        openTemplateModalSignal={templateModalSignal}
       />
     </>
   );

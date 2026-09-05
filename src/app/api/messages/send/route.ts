@@ -12,6 +12,7 @@ import {
   sendWhatsappTemplate,
   sendWhatsappText,
 } from "@/lib/whatsapp/meta-client";
+import { buildTemplateBodyComponents, substituteTemplateVariables } from "@/lib/whatsapp/template-variables";
 
 interface SendMessageBody {
   conversationId: string;
@@ -20,6 +21,13 @@ interface SendMessageBody {
   isInternalNote?: boolean;
   templateName?: string;
   templateLanguage?: string;
+  /**
+   * Valores de las variables posicionales de la plantilla ({{1}}, {{2}}...),
+   * en el mismo orden en que aparecen en `body_preview` (T3.3, 5/9/2026).
+   * `content` sigue llegando con el cuerpo SIN sustituir — acá se sustituye
+   * antes de guardarlo, y se arman los `components` para la Graph API.
+   */
+  variables?: string[];
   replyToMessageId?: string | null;
   mediaUrl?: string;
   mediaType?: MessageType;
@@ -61,6 +69,15 @@ export async function POST(request: Request) {
     body;
   const mediaType = body.mediaType as "image" | "video" | "audio" | "document" | undefined;
   const replyToMessageId = body.replyToMessageId ?? null;
+  // Solo tienen sentido cuando `kind === "template"`; en el resto de los
+  // envíos viajan vacías y no hacen nada.
+  const templateVariables = kind === "template" ? (body.variables ?? []) : [];
+  // El `content` que llega es el cuerpo CRUDO de la plantilla (con sus
+  // `{{n}}` si los tiene): se sustituye una sola vez acá antes de guardarlo,
+  // para que la burbuja del chat muestre el mensaje real que le llegó al
+  // cliente y no el molde con los huecos a la vista.
+  const templateContent =
+    kind === "template" && content ? substituteTemplateVariables(content, templateVariables) : content;
 
   if (
     !conversationId ||
@@ -160,7 +177,7 @@ export async function POST(request: Request) {
       sender_type: "agent",
       sender_agent_id: agent.id,
       message_type: kind === "template" ? "template" : kind === "media" ? mediaType : "text",
-      content: content ?? null,
+      content: (kind === "template" ? templateContent : content) ?? null,
       template_name: kind === "template" ? templateName : null,
       media_url: kind === "media" ? mediaUrl : null,
       whatsapp_message_id: null,
@@ -194,7 +211,14 @@ export async function POST(request: Request) {
         let result;
         if (kind === "template") {
           result = await sendWithRetry(() =>
-            sendWhatsappTemplate(phoneNumberId, accessToken!, toPhoneNumber, templateName!, templateLanguage ?? "es")
+            sendWhatsappTemplate(
+              phoneNumberId,
+              accessToken!,
+              toPhoneNumber,
+              templateName!,
+              templateLanguage ?? "es",
+              buildTemplateBodyComponents(templateVariables)
+            )
           );
         } else if (kind === "media") {
           // El bucket es privado: Meta necesita un enlace firmado, no la ruta

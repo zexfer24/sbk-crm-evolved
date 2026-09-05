@@ -30,7 +30,8 @@ function mensaje(over: Partial<Message>): Message {
   return {
     id: "m-1", conversationId: "conv-1", direction: "inbound", senderType: "customer",
     senderAgent: null, messageType: "text", content: "hola", templateName: null, mediaUrl: null,
-    isInternalNote: false, whatsappStatus: null, whatsappError: null, reactionEmoji: null, replyToMessageId: null,
+    isInternalNote: false, whatsappStatus: null, whatsappError: null, whatsappErrorCode: null, reactionEmoji: null, replyToMessageId: null,
+    payload: null,
     createdAt: "2026-08-24T12:00:00.000Z", ...over,
   };
 }
@@ -222,5 +223,42 @@ describe("ChatPanel — cerrar y reabrir desde la cabecera", () => {
 
     expect(reopenConversation).toHaveBeenCalledWith("conv-1");
     expect(screen.queryByRole("button", { name: /^cerrar$/i })).not.toBeInTheDocument();
+  });
+});
+
+/** Banner "llegó desde el anuncio" en la cabecera (T3.2, 5/9/2026). */
+describe("ChatPanel — banner de anuncio en la cabecera", () => {
+  it("con un referral reciente, muestra el titular del anuncio", () => {
+    renderPanel([], {
+      conversation: {
+        ...conversacion,
+        referral: {
+          headline: "Repuestos SBK al mejor precio",
+          sourceUrl: "https://fb.me/anuncio-1",
+          receivedAt: new Date().toISOString(),
+        },
+      } as unknown as Conversation,
+    });
+
+    expect(screen.getByText(/Repuestos SBK al mejor precio/)).toBeInTheDocument();
+  });
+
+  it("pasadas 72 h, deja de mostrarse aunque el referral siga guardado", () => {
+    const haceCuatroDias = new Date(Date.now() - 96 * 60 * 60 * 1000).toISOString();
+    renderPanel([], {
+      conversation: {
+        ...conversacion,
+        referral: { headline: "Anuncio viejo", sourceUrl: null, receivedAt: haceCuatroDias },
+      } as unknown as Conversation,
+    });
+
+    expect(screen.queryByText(/Anuncio viejo/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/Llegó desde el anuncio/)).not.toBeInTheDocument();
+  });
+
+  it("sin referral, no muestra ningún banner", () => {
+    renderPanel([], { conversation: { ...conversacion, referral: null } as unknown as Conversation });
+
+    expect(screen.queryByText(/Llegó desde el anuncio/)).not.toBeInTheDocument();
   });
 });
