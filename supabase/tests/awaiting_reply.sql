@@ -9,10 +9,14 @@
 -- la IA rechazado por Meta apagaban "esperando respuesta" sin que el cliente
 -- hubiera recibido nada. Ahora `awaiting_reply` compara contra `last_reply_at`
 -- —que solo avanza con una respuesta real, visible, ni automática ni
--- rechazada— y este archivo recorre paso a paso los ocho casos que la
--- reforma existe para arreglar, en el orden en que ocurrirían en una
--- conversación real. Mismo estilo que invariante_leads.sql: transacción con
--- rollback, `raise exception` en cada aserción que falla, no ensucia la base.
+-- rechazada— y este archivo recorre paso a paso los casos que la reforma
+-- existe para arreglar, en el orden en que ocurrirían en una conversación
+-- real: los ocho de T0.1 (pasos 1 a 9, el 9 es solo el CHECK de
+-- conversation_handoffs.reason) más los dos que suma la migración
+-- 20260905070000 (pasos 10 y 11, anexo B1, 5/9/2026: marcar is_auto_reply
+-- después de insertado también recalcula). Mismo estilo que
+-- invariante_leads.sql: transacción con rollback, `raise exception` en cada
+-- aserción que falla, no ensucia la base.
 --
 -- Los `created_at` de los mensajes van EXPLÍCITOS y crecientes (t0, t0 + 5
 -- min, t0 + 10 min...) y no por default now(): dentro de una misma
@@ -23,13 +27,19 @@
 -- distinguir "antes" de "después" (se detectó así: los pasos 6 y 8a fallaban
 -- en la primera versión de este archivo, que sí usaba default now()).
 --
+-- Los pasos 10 y 11 (migración 20260905070000, anexo B1, 5/9/2026) suman el
+-- caso que A1 dejó como deuda y B1 cierra: marcar `is_auto_reply = true`
+-- SOBRE UN MENSAJE YA INSERTADO tiene que hacer recalcular a
+-- handle_message_status_change() igual que ya hacía un rechazo de Meta, no
+-- solo cuando el mensaje nace con la marca puesta.
+--
 -- Corre en el job `migraciones` de CI, contra la base reconstruida desde
 -- cero, en el mismo paso que invariante_leads.sql y permisos_funciones.sql.
 -- ===========================================================================
 
 begin;
 
--- Un canal, un contacto, una conversación: los ocho pasos son sobre el MISMO
+-- Un canal, un contacto, una conversación: los once pasos son sobre el MISMO
 -- hilo, en orden cronológico, así que alcanza con una sola conversación.
 insert into public.whatsapp_channels (id, label, phone_number) values
   ('33333333-3333-3333-3333-333333333333', 'Canal de prueba awaiting_reply', '+580000000010');
@@ -46,11 +56,14 @@ declare
   conv_id uuid := '55555555-5555-5555-5555-555555555555';
   t0 timestamptz := now() - interval '2 hours';
   msg_id uuid;
+  msg6_id uuid;
+  msg10_id uuid;
   errores text := '';
   v_awaiting boolean;
   v_preview text;
   v_last_message_at timestamptz;
   v_reply_sender text;
+  v_reply_at timestamptz;
 begin
   -- -------------------------------------------------------------------------
   -- Paso 1 · el cliente escribe → awaiting_reply = true
@@ -121,7 +134,8 @@ begin
   -- Paso 6 · salida de la IA aceptada → false, last_reply_sender = 'ai'
   -- -------------------------------------------------------------------------
   insert into public.messages (conversation_id, direction, sender_type, message_type, content, whatsapp_status, created_at)
-  values (conv_id, 'outbound', 'ai', 'text', 'La Bera 200 sí está disponible, cuesta 1.850$', 'sent', t0 + interval '25 minutes');
+  values (conv_id, 'outbound', 'ai', 'text', 'La Bera 200 sí está disponible, cuesta 1.850$', 'sent', t0 + interval '25 minutes')
+  returning id into msg6_id;
 
   select awaiting_reply, last_reply_sender into v_awaiting, v_reply_sender
   from public.conversations where id = conv_id;
@@ -173,6 +187,91 @@ begin
   exception when check_violation then
     errores := errores || E'\n  - paso 9: insertar un traspaso con reason=''escalada'' violó el CHECK de conversation_handoffs.reason.';
   end;
+
+  -- -------------------------------------------------------------------------
+  -- Paso 10 · migración 20260905070000 (anexo B1, 5/9/2026): marcar
+  -- is_auto_reply = true SOBRE UN MENSAJE YA INSERTADO también tiene que
+  -- hacer recalcular last_reply_at/last_reply_sender/awaiting_reply, no solo
+  -- un rechazo de Meta.
+  --
+  -- La respuesta del asesor del paso 8a quedó 'failed' en 8b (Meta la
+  -- rechazó), así que NO sigue en pie: no sirve como "la respuesta real
+  -- anterior" que este paso necesita para poder distinguir "volvió a la que
+  -- seguía en pie" de "volvió a null". Por eso se siembra PRIMERO una
+  -- respuesta real del asesor que si quede 'sent' (t0 + 40 min), y recién
+  -- después el entrante del cliente y la salida de la IA que se va a marcar.
+  -- -------------------------------------------------------------------------
+  insert into public.messages (conversation_id, direction, sender_type, message_type, content, whatsapp_status, created_at)
+  values (conv_id, 'outbound', 'agent', 'text', 'Te confirmo el pago móvil', 'sent', t0 + interval '40 minutes');
+
+  select awaiting_reply, last_reply_sender into v_awaiting, v_reply_sender
+  from public.conversations where id = conv_id;
+  if v_awaiting is distinct from false then
+    errores := errores || format(E'\n  - paso 10a (respuesta real del asesor, sent): awaiting_reply = %s, se esperaba false.', v_awaiting);
+  end if;
+  if v_reply_sender is distinct from 'agent' then
+    errores := errores || format(E'\n  - paso 10a (respuesta real del asesor, sent): last_reply_sender = %s, se esperaba ''agent''.', v_reply_sender);
+  end if;
+
+  insert into public.messages (conversation_id, direction, sender_type, message_type, content, created_at)
+  values (conv_id, 'inbound', 'customer', 'text', '¿Y para cuándo la entrega?', t0 + interval '45 minutes');
+
+  select awaiting_reply into v_awaiting from public.conversations where id = conv_id;
+  if v_awaiting is distinct from true then
+    errores := errores || format(E'\n  - paso 10b (cliente vuelve a escribir): awaiting_reply = %s, se esperaba true.', v_awaiting);
+  end if;
+
+  insert into public.messages (conversation_id, direction, sender_type, message_type, content, whatsapp_status, created_at)
+  values (conv_id, 'outbound', 'ai', 'text', 'La entrega es en 48 horas hábiles', 'sent', t0 + interval '50 minutes')
+  returning id into msg10_id;
+
+  select awaiting_reply, last_reply_sender into v_awaiting, v_reply_sender
+  from public.conversations where id = conv_id;
+  if v_awaiting is distinct from false then
+    errores := errores || format(E'\n  - paso 10c (salida de IA aceptada): awaiting_reply = %s, se esperaba false.', v_awaiting);
+  end if;
+  if v_reply_sender is distinct from 'ai' then
+    errores := errores || format(E'\n  - paso 10c (salida de IA aceptada): last_reply_sender = %s, se esperaba ''ai''.', v_reply_sender);
+  end if;
+
+  -- Ahora el UPDATE que ejercita B1: esa misma salida de la IA se marca
+  -- is_auto_reply después de insertada (como haría B2 tras descubrir que no
+  -- hay asesor). El trigger tiene que recalcular con la respuesta real que
+  -- sigue en pie ANTES de este mensaje: la del asesor en t0 + 40 min (10a),
+  -- no la del paso 8a (quedó 'failed' en 8b, no sirve).
+  update public.messages set is_auto_reply = true where id = msg10_id;
+
+  select awaiting_reply, last_reply_at, last_reply_sender into v_awaiting, v_reply_at, v_reply_sender
+  from public.conversations where id = conv_id;
+  if v_awaiting is distinct from true then
+    errores := errores || format(E'\n  - paso 10d (is_auto_reply=true sobre la respuesta vigente): awaiting_reply = %s, se esperaba true.', v_awaiting);
+  end if;
+  if v_reply_at is distinct from t0 + interval '40 minutes' then
+    errores := errores || format(E'\n  - paso 10d (is_auto_reply=true sobre la respuesta vigente): last_reply_at = %s, se esperaba t0 + 40 minutes (la respuesta del asesor de 10a, que sigue en pie).', v_reply_at);
+  end if;
+  if v_reply_sender is distinct from 'agent' then
+    errores := errores || format(E'\n  - paso 10d (is_auto_reply=true sobre la respuesta vigente): last_reply_sender = %s, se esperaba ''agent''.', v_reply_sender);
+  end if;
+
+  -- -------------------------------------------------------------------------
+  -- Paso 11 · el mismo UPDATE sobre un mensaje que NO era la respuesta
+  -- vigente (el del paso 6, ya reemplazado por respuestas posteriores) no
+  -- mueve nada: la condición `c.last_reply_at = new.created_at` del trigger
+  -- lo protege.
+  -- -------------------------------------------------------------------------
+  update public.messages set is_auto_reply = true where id = msg6_id;
+
+  select awaiting_reply, last_reply_at, last_reply_sender into v_awaiting, v_reply_at, v_reply_sender
+  from public.conversations where id = conv_id;
+  if v_awaiting is distinct from true then
+    errores := errores || format(E'\n  - paso 11 (is_auto_reply=true sobre un mensaje que no era la respuesta vigente): awaiting_reply = %s, se esperaba true (sin cambios).', v_awaiting);
+  end if;
+  if v_reply_at is distinct from t0 + interval '40 minutes' then
+    errores := errores || format(E'\n  - paso 11 (is_auto_reply=true sobre un mensaje que no era la respuesta vigente): last_reply_at = %s, se esperaba que no cambiara (t0 + 40 minutes).', v_reply_at);
+  end if;
+  if v_reply_sender is distinct from 'agent' then
+    errores := errores || format(E'\n  - paso 11 (is_auto_reply=true sobre un mensaje que no era la respuesta vigente): last_reply_sender = %s, se esperaba que no cambiara (''agent'').', v_reply_sender);
+  end if;
 
   if errores <> '' then
     raise exception E'awaiting_reply / última respuesta real rotos:%', errores;

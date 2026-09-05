@@ -50,6 +50,31 @@ El seed (`supabase/seed.sql`) crea tres usuarios con una contraseña que está
 escrita en el propio archivo. Tiene un freno que aborta si detecta una base
 real, pero la regla simple es: **el seed no se toca en producción**.
 
+**`20260905070000_auto_reply_recalcula`** (anexo B1, "Bandeja que no
+pierde", 5/9/2026): su backfill marca `is_auto_reply = true` en la despedida
+de las escalaciones sin asesor guardadas ANTES del anexo A1 —conversaciones
+que hoy `awaiting_reply` da en `false` porque esa despedida quedó registrada
+como si fuera una respuesta real, cuando el cliente seguía esperando a una
+persona. Tras aplicarla van a REAPARECER en "Pendientes" y "Sin dueño"
+escalaciones viejas sin asesor, y **eso es lo correcto**: avísale al equipo
+antes de aplicarla, para que no lea el salto en esas píldoras como un bug.
+Para medir cuántas filas va a tocar antes de aplicarla:
+
+```sql
+select count(*)
+from public.messages m
+join public.conversations c on c.id = m.conversation_id
+where c.journey_stage = 'assigned'
+  and not c.ai_enabled
+  and c.assigned_agent_id is null
+  and c.status <> 'closed'
+  and not c.awaiting_reply
+  and c.last_reply_sender = 'ai'
+  and m.direction = 'outbound' and m.sender_type = 'ai'
+  and not m.is_internal_note and not m.is_auto_reply
+  and m.created_at = c.last_reply_at;
+```
+
 **Verificación:**
 
 ```sql

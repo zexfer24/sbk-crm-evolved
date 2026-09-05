@@ -59,7 +59,7 @@
 --
 -- Ninguna de las dos funciones filtra nada por sí sola: son un booleano
 -- sobre quién pregunta, el filtro lo pone la política que las usa. La
--- aserción 5 de abajo es la prueba en vivo de esto — no es decorativa, es la
+-- aserción 6 de abajo es la prueba en vivo de esto — no es decorativa, es la
 -- que demuestra por qué la lista blanca tiene que seguir teniendo estas dos
 -- funciones y ninguna más. Que nadie las saque "por consistencia" con las
 -- demás.
@@ -181,7 +181,50 @@ end $$;
 
 
 -- ---------------------------------------------------------------------------
--- 4. No-regresión de las intocables: is_agent() e is_supervisor_or_admin()
+-- 4. Funciones de trigger — cerradas a anon y authenticated, sin exigirle
+--    nada a service_role. handle_new_message() y
+--    handle_message_status_change() son `returns trigger`: nadie las llama
+--    por RPC, las dispara Postgres solo (INSERT/UPDATE sobre messages), y
+--    Postgres NO comprueba EXECUTE al DISPARAR un trigger —solo al CREARLO,
+--    contra el dueño de la tabla—, así que ningún rol necesita un grant
+--    explícito para que sigan funcionando; pedirle EXECUTE a service_role
+--    acá sería una aserción sin sentido.
+--
+--    Medido contra la base local antes de escribir este grupo: las dos ya
+--    estaban cerradas a anon y authenticated desde
+--    20260830010000_security_definer_revoke_roles.sql (que sí las revocó de
+--    las dos vías, `public` y `anon, authenticated`), simplemente nunca
+--    habían entrado a este archivo por nombre. La migración 20260905070000
+--    (anexo B1, 5/9/2026) reemplaza handle_message_status_change() con
+--    `create or replace` — que conserva el ACL— y no encontró ningún hallazgo
+--    que corregir.
+-- ---------------------------------------------------------------------------
+do $$
+declare
+  funciones text[] := array[
+    'public.handle_new_message()',
+    'public.handle_message_status_change()'
+  ];
+  f text;
+  errores text := '';
+begin
+  foreach f in array funciones loop
+    if has_function_privilege('anon', f::regprocedure, 'EXECUTE') then
+      errores := errores || format(E'\n  - %s: anon puede ejecutarla y NO debería (función de trigger, nadie necesita EXECUTE sobre ella)', f);
+    end if;
+    if has_function_privilege('authenticated', f::regprocedure, 'EXECUTE') then
+      errores := errores || format(E'\n  - %s: authenticated puede ejecutarla y NO debería (función de trigger, nadie necesita EXECUTE sobre ella)', f);
+    end if;
+  end loop;
+
+  if errores <> '' then
+    raise exception E'Permisos incorrectos en el grupo de funciones de trigger:%', errores;
+  end if;
+end $$;
+
+
+-- ---------------------------------------------------------------------------
+-- 5. No-regresión de las intocables: is_agent() e is_supervisor_or_admin()
 --    siguen ejecutables por los tres roles. Ver LA TRAMPA al inicio del
 --    archivo — esto NO es un descuido si algún día alguien intenta "cerrar"
 --    estas dos por consistencia con las de arriba.
@@ -212,7 +255,7 @@ end $$;
 
 
 -- ---------------------------------------------------------------------------
--- 5. La prueba de que la no-regresión de arriba importa de verdad: una
+-- 6. La prueba de que la no-regresión de arriba importa de verdad: una
 --    consulta anónima a una tabla con RLS "to public using (is_agent())"
 --    tiene que devolver 0 filas y NO reventar con 42501. Si is_agent()
 --    perdiera EXECUTE para anon, esta misma consulta pasaría de "0 filas" a
