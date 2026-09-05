@@ -2393,3 +2393,30 @@ button.crm-bubble-quote:hover {
   text-underline-offset: 2px;
   word-break: break-all;
 }
+
+/* --------------------------------------------------------------------------
+   Píldora de ventana de 24h en la fila de la bandeja (T1.6, 5/9/2026)
+
+   Solo aparece cuando la conversación está `awaitingReply`: es la cuenta
+   atrás de Meta vista de reojo, sin abrir el chat. Colores semánticos del
+   tema, igual que `.crm-check`/`.crm-tag` — nunca el acento, que en este
+   tema es la píldora de filtro activa y no significa urgencia.
+   -------------------------------------------------------------------------- */
+.crm-thread-window {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  width: fit-content;
+  margin-top: 5px;
+  color: var(--lm-muted);
+  font-size: 11px;
+  font-weight: 500;
+}
+
+.crm-thread-window[data-urgency="warning"] {
+  color: var(--lm-wait-ink);
+}
+
+.crm-thread-window[data-urgency="danger"] {
+  color: var(--lm-hot-ink);
+}

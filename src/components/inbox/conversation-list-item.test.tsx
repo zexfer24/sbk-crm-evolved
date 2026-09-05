@@ -1,5 +1,5 @@
 /** @vitest-environment jsdom */
-import { describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { render, screen, fireEvent } from "@testing-library/react";
 import type { Conversation, Tag } from "@/lib/types";
 import { ConversationListItem } from "@/components/inbox/conversation-list-item";
@@ -130,6 +130,64 @@ describe("un chat apartado a mano se ve sin leer, pero sin inventar mensajes", (
   it("cuando sí hay mensajes nuevos, el contador manda", () => {
     renderItem({ unreadCount: 3, manuallyUnread: true });
     expect(screen.getByText("3")).toBeInTheDocument();
+  });
+});
+
+describe("ConversationListItem — píldora de ventana de 24h", () => {
+  // `now` fijo con vi.setSystemTime: `useClock` cuantiza el reloj a partir de
+  // Date.now(), y al montar el componente `subscribe()` recalcula el
+  // snapshot contra la hora falsa antes de la primera pintura.
+  const NOW = new Date("2026-09-04T12:00:00.000Z");
+
+  beforeEach(() => {
+    vi.useFakeTimers();
+    vi.setSystemTime(NOW);
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("sin chip cuando la conversación no está esperando respuesta", () => {
+    const { container } = renderItem({
+      // La respuesta real llegó DESPUÉS del último mensaje del cliente: no espera.
+      lastCustomerMessageAt: "2026-09-04T06:00:00.000Z",
+      lastReplyAt: "2026-09-04T07:00:00.000Z",
+    });
+    expect(container.querySelector(".crm-thread-window")).toBeNull();
+  });
+
+  it("píldora neutra con margen de sobra (18 h)", () => {
+    // Hace 6h que escribió el cliente: quedan 18h de las 24h de la ventana.
+    const { container } = renderItem({
+      lastCustomerMessageAt: "2026-09-04T06:00:00.000Z",
+      lastReplyAt: null,
+    });
+    const chip = container.querySelector(".crm-thread-window");
+    expect(chip).toHaveAttribute("data-urgency", "neutral");
+    expect(chip).toHaveTextContent("18 h");
+  });
+
+  it("píldora ámbar bajo las 4h (3 h)", () => {
+    // Hace 21h que escribió el cliente: quedan 3h antes de que Meta cierre la ventana.
+    const { container } = renderItem({
+      lastCustomerMessageAt: "2026-09-03T15:00:00.000Z",
+      lastReplyAt: null,
+    });
+    const chip = container.querySelector(".crm-thread-window");
+    expect(chip).toHaveAttribute("data-urgency", "warning");
+    expect(chip).toHaveTextContent("3 h");
+  });
+
+  it("píldora roja cuando la ventana ya cerró", () => {
+    // Hace 25h que escribió el cliente: la ventana de 24h ya cerró.
+    const { container } = renderItem({
+      lastCustomerMessageAt: "2026-09-03T11:00:00.000Z",
+      lastReplyAt: null,
+    });
+    const chip = container.querySelector(".crm-thread-window");
+    expect(chip).toHaveAttribute("data-urgency", "danger");
+    expect(chip).toHaveTextContent("cerrada");
   });
 });
 

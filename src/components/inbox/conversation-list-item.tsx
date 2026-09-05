@@ -1,11 +1,31 @@
 import { Fragment } from "react";
+import { Clock } from "lucide-react";
 import type { ConversationSummary } from "@/lib/types";
-import { contactName, initials } from "@/lib/dashboard";
+import { awaitingReply, contactName, initials } from "@/lib/dashboard";
 import { formatConversationTimestamp } from "@/lib/format";
 import { isUnread as computeIsUnread } from "@/lib/inbox-filters";
 import { highlightSegments, snippetAround, type MessageHit } from "@/lib/message-search";
+import { hoursUntilWindowCloses } from "@/lib/whatsapp-window";
 import { DeliveryCheck } from "@/components/chat/delivery-check";
+import { useClock } from "@/lib/use-clock";
 import { useLongPress } from "@/lib/use-long-press";
+
+/**
+ * Cuánto le queda a la ventana de 24h, en la forma compacta de la píldora de
+ * la fila: neutro mientras sobra margen, ámbar bajo las 4h (mismo corte que
+ * `WindowCountdown` en el chat, que se pone en ámbar bajo 2h — acá el umbral
+ * es más generoso porque la fila se ve de reojo, sin abrir el chat), rojo si
+ * la ventana ya cerró y solo entra una plantilla.
+ */
+function windowChip(
+  lastCustomerMessageAt: string | null,
+  now: Date
+): { label: string; urgency: "neutral" | "warning" | "danger" } {
+  const hours = hoursUntilWindowCloses(lastCustomerMessageAt, now);
+  if (hours <= 0) return { label: "cerrada", urgency: "danger" };
+  if (hours < 4) return { label: `${Math.max(1, Math.round(hours))} h`, urgency: "warning" };
+  return { label: `${Math.round(hours)} h`, urgency: "neutral" };
+}
 
 interface ConversationListItemProps {
   conversation: ConversationSummary;
@@ -47,6 +67,12 @@ export function ConversationListItem({
   // usuario sin saber por qué el chat está en la lista. El check de entrega se
   // calla, porque describe el último mensaje y ya no es lo que se está viendo.
   const hitSnippet = messageHit ? snippetAround(messageHit.content, searchTerms) : null;
+
+  // Al minuto, no al segundo: que la píldora avance sola sin que cada fila de
+  // la bandeja se vuelva a pintar en cada tick de reloj.
+  const clockMinute = useClock();
+  const isAwaitingReply = awaitingReply(conversation);
+  const chip = isAwaitingReply ? windowChip(conversation.lastCustomerMessageAt, new Date(clockMinute)) : null;
 
   const longPress = useLongPress((position) => onOpenMenu?.(position));
 
@@ -126,6 +152,13 @@ export function ConversationListItem({
                 {tag.label}
               </span>
             ))}
+          </span>
+        )}
+
+        {chip && (
+          <span className="crm-thread-window" data-urgency={chip.urgency}>
+            <Clock size={11} aria-hidden="true" />
+            {chip.label}
           </span>
         )}
 
