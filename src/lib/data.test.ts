@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { SupabaseClient } from "@supabase/supabase-js";
-import { fetchMessages } from "@/lib/data";
+import { fetchMessages, searchConversationSummaries } from "@/lib/data";
 
 // ---------------------------------------------------------------------------
 // Fake SupabaseClient: simula el query builder encadenable que usa
@@ -181,5 +181,97 @@ describe("fetchMessages", () => {
 
     // No debe haber intentado pedir una tercera página tras el error.
     expect(getCalls()).toHaveLength(2);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// searchConversationSummaries — F13: el buscador de la bandeja deja de
+// depender de que el contacto esté cargado en pantalla para encontrarlo sin
+// acentos. Antes filtraba `display_name`/`profile_name`/`phone_number` con un
+// `ilike` directo contra lo que la persona escribió: "jose" no encontraba a
+// "José" salvo que ya estuviera en memoria, donde el filtro sí normalizaba.
+// Ahora filtra `search_text.ilike.%<normalizado>%` (la columna generada de
+// 20260905020000_contacts_search_unaccent.sql) con el término pasado por
+// `normalizeForSearch` — el mismo criterio que usa `immutable_unaccent` en la
+// base para no acentos/mayúsculas.
+//
+// El fake solo implementa la mesa `contacts`: con `contactIds: []` (porque la
+// consulta a contacts no matcheó nada) y `messageHitIds: []`, las dos
+// llamadas internas a `fetchConversations` cortan por el `.in()` vacío antes
+// de tocar `conversations` (ver el comentario "`.in()` con lista vacía..." en
+// `fetchConversationRows`), así que no hace falta simular esa mesa acá.
+// ---------------------------------------------------------------------------
+
+describe("searchConversationSummaries", () => {
+  function fakeContactsSearch() {
+    let capturedFilter: string | undefined;
+    let capturedLimit: number | undefined;
+
+    const builder = {
+      select: () => builder,
+      or: (filter: string) => {
+        capturedFilter = filter;
+        return builder;
+      },
+      limit: (n: number) => {
+        capturedLimit = n;
+        return Promise.resolve({ data: [], error: null });
+      },
+    };
+
+    const client = {
+      from: (table: string) => {
+        if (table !== "contacts") {
+          throw new Error(`el fake de este test solo conoce la mesa "contacts", pidieron "${table}"`);
+        }
+        return builder;
+      },
+    };
+
+    return {
+      client: client as unknown as SupabaseClient,
+      getFilter: () => capturedFilter,
+      getLimit: () => capturedLimit,
+    };
+  }
+
+  it("normaliza acentos y mayúsculas antes de armar el filtro contra search_text", async () => {
+    const { client, getFilter } = fakeContactsSearch();
+
+    await searchConversationSummaries(client, "José", []);
+
+    expect(getFilter()).toBe('search_text.ilike."%jose%"');
+  });
+
+  it("aplana también la ñ, igual que el diccionario unaccent de Postgres", async () => {
+    const { client, getFilter } = fakeContactsSearch();
+
+    await searchConversationSummaries(client, "Muñeca", []);
+
+    expect(getFilter()).toBe('search_text.ilike."%muneca%"');
+  });
+
+  it("un término que ya venía en minúsculas y sin acentos no cambia", async () => {
+    const { client, getFilter } = fakeContactsSearch();
+
+    await searchConversationSummaries(client, "bujia", []);
+
+    expect(getFilter()).toBe('search_text.ilike."%bujia%"');
+  });
+
+  it("pide como mucho CONTACT_SEARCH_LIMIT contactos", async () => {
+    const { client, getLimit } = fakeContactsSearch();
+
+    await searchConversationSummaries(client, "jose", []);
+
+    expect(getLimit()).toBe(40);
+  });
+
+  it("sin coincidencias de contacto ni de mensaje, devuelve la lista vacía sin tocar conversations", async () => {
+    const { client } = fakeContactsSearch();
+
+    const result = await searchConversationSummaries(client, "nadie", []);
+
+    expect(result).toEqual([]);
   });
 });

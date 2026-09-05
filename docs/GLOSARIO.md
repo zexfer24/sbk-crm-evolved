@@ -132,7 +132,7 @@ vecino que nombran.
 | `supabase/admin.ts` | Cliente service_role (bypassa RLS); solo rutas de servidor sin sesión |
 | `supabase/client.ts` / `server.ts` | Clientes anon para navegador / Server Components |
 | `supabase/middleware.ts` | Sesión desde la cookie sin preguntarle a GoTrue en cada petición; redirecciones de acceso |
-| `supabase/database.types.ts` | Tipos generados del schema (a mano cuando `supabase gen types` no está disponible; ver T0.2, 5/9/2026, que le agregó `conversations.last_reply_at`/`last_reply_sender` y `messages.is_auto_reply`) |
+| `supabase/database.types.ts` | Tipos generados del schema (a mano cuando `supabase gen types` no está disponible; ver T0.2, 5/9/2026, que le agregó `conversations.last_reply_at`/`last_reply_sender` y `messages.is_auto_reply`; T1.7, mismo día, le agrega `contacts.search_text` solo en `Row` —generada, no se puede insertar/actualizar—, igual que ya está tipado `products.search_text`) |
 | `whatsapp/meta-client.ts` | Cliente server-only de la Graph API: texto, plantillas, multimedia, reply, descarga de media |
 | `whatsapp/failure-reason.ts` | Del código de error de Meta a una frase accionable para el asesor |
 | `whatsapp/phone.ts` | Qué cuenta como número escribible (la falla del `+undefined`) |

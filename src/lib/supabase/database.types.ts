@@ -403,6 +403,7 @@ export type Database = {
           id: string
           phone_number: string
           profile_name: string | null
+          search_text: string | null
           state: string | null
           updated_at: string
         }

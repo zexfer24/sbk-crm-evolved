@@ -1252,21 +1252,29 @@ export const CONTACT_SEARCH_LIMIT = 40;
  * mensajes vía `search_conversations_by_message`, cuyos ids llegan en
  * `messageHitIds`— y se devuelven como filas de lista normales.
  *
- * El nombre se compara como en la sección Clientes (`ilike` sin quitar
- * acentos): «jose» no encuentra a «José» si no está ya cargado en pantalla,
- * donde el filtro en memoria sí lo normaliza.
+ * El nombre se compara sin acentos ni mayúsculas (F13, 5/9/2026): «jose»
+ * encuentra a «José» aunque el contacto no esté cargado en pantalla. Antes
+ * comparaba `display_name`/`profile_name`/`phone_number` con un `ilike`
+ * directo —lo que la sección Clientes sigue haciendo— y solo el filtro en
+ * memoria de la bandeja normalizaba; por eso la búsqueda contra la base
+ * (esta función) no encontraba lo que ya había salido de la ventana
+ * cargada. `contacts.search_text` (20260905020000) es esas tres columnas
+ * juntas, sin acentos y en minúsculas, con `public.immutable_unaccent` —el
+ * mismo wrapper de `products.search_text`/`messages.search_text`—, y
+ * `normalizeForSearch` (`message-search.ts`) normaliza el término en el
+ * cliente con el mismo criterio para que la comparación calce.
  */
 export async function searchConversationSummaries(
   supabase: SupabaseClient,
   query: string,
   messageHitIds: string[]
 ): Promise<ConversationSummary[]> {
-  const term = pgrstLiteral(`%${query}%`);
+  const term = pgrstLiteral(`%${normalizeForSearch(query)}%`);
 
   const { data, error } = await supabase
     .from("contacts")
     .select("id")
-    .or(`display_name.ilike.${term},profile_name.ilike.${term},phone_number.ilike.${term}`)
+    .or(`search_text.ilike.${term}`)
     .limit(CONTACT_SEARCH_LIMIT);
 
   if (error) throw error;
