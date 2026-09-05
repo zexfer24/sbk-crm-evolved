@@ -183,4 +183,4 @@ vecino que nombran.
 | `scripts/generar-iconos.mjs` | Iconos de la app |
 | `docs/PRODUCCION.md` | LA guía de puesta en producción, paso a paso con verificación |
 | `docs/superpowers/plans`, `specs/` | Planes y specs de diseño históricos (decisiones documentadas) |
-| `docs/planes/` | Planes aprobados bajo la metodología `liminalwork`, fuente de verdad de cada corrida de implementación (`2026-09-04-bandeja-que-no-pierde.md`: las cuatro etapas de la reforma de la bandeja, con el prompt del orquestador al lado) |
+| `docs/planes/` | Planes aprobados bajo la metodología `liminalwork`, fuente de verdad de cada corrida de implementación (`2026-09-04-bandeja-que-no-pierde.md`: las cuatro etapas de la reforma de la bandeja, con el prompt del orquestador al lado; `2026-09-05-anexo-bandeja-que-no-pierde.md`: los dos hallazgos de esa corrida que cambiaban el plan y el operador aprobó corregir —la despedida de la IA al escalar sin asesores como `is_auto_reply` [A1] y la reapertura por el cliente traspasando al asesor asignado [A2]—, sin migraciones) |
