@@ -1,13 +1,20 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
-import { ArrowLeft, UserPlus, UserMinus } from "lucide-react";
+import { ArrowLeft, Lock, Unlock, UserPlus, UserMinus } from "lucide-react";
 import { toast } from "@heroui/react";
 import type { Agent, Conversation, Message, QuickReply, WhatsappTemplate } from "@/lib/types";
 import type { OutboxItem } from "@/lib/outbox";
 import { createClient } from "@/lib/supabase/client";
 import { contactName, initials } from "@/lib/dashboard";
-import { assignToMe, intervene, setAiEnabled, unassign } from "@/lib/mutations";
+import {
+  assignToMe,
+  closeConversation,
+  intervene,
+  reopenConversation,
+  setAiEnabled,
+  unassign,
+} from "@/lib/mutations";
 import { groupMessagesForRender } from "@/lib/message-grouping";
 import { AiStatusBanner } from "@/components/chat/ai-status-banner";
 import { MessageBubble } from "@/components/chat/message-bubble";
@@ -149,6 +156,29 @@ export function ChatPanel({
     }
   }
 
+  /**
+   * Cerrar/reabrir desde la cabecera del chat (T2.1, 5/9/2026): misma acción
+   * que ofrece el menú contextual de la bandeja, disponible también con el
+   * chat ya abierto. `closeConversation`/`reopenConversation` pasan por su
+   * propia ruta con cliente admin — ver la cabecera de esos dos módulos en
+   * `mutations.ts` — así que acá no hace falta el cliente de sesión.
+   */
+  async function handleCloseConversation() {
+    try {
+      await closeConversation(conversation.id);
+    } catch {
+      toast.danger("No se pudo cerrar la conversación.");
+    }
+  }
+
+  async function handleReopenConversation() {
+    try {
+      await reopenConversation(conversation.id);
+    } catch {
+      toast.danger("No se pudo reabrir la conversación.");
+    }
+  }
+
   const name = contactName(conversation);
 
   return (
@@ -184,6 +214,14 @@ export function ChatPanel({
           <button className="crm-pill" type="button" onClick={handleAssignmentToggle}>
             {conversation.assignedAgent ? <UserMinus size={14} /> : <UserPlus size={14} />}
             {conversation.assignedAgent ? "Desasignar" : "Asignarme"}
+          </button>
+          <button
+            className="crm-pill"
+            type="button"
+            onClick={conversation.status === "closed" ? handleReopenConversation : handleCloseConversation}
+          >
+            {conversation.status === "closed" ? <Unlock size={14} /> : <Lock size={14} />}
+            {conversation.status === "closed" ? "Reabrir" : "Cerrar"}
           </button>
         </div>
       </header>

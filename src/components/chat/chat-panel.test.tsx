@@ -8,7 +8,9 @@ import type { OutboxItem } from "@/lib/outbox";
 vi.mock("@/lib/supabase/client", () => ({ createClient: () => ({}) }));
 vi.mock("@/lib/mutations", () => ({
   assignToMe: vi.fn(),
+  closeConversation: vi.fn(),
   intervene: vi.fn(),
+  reopenConversation: vi.fn(),
   setAiEnabled: vi.fn(),
   unassign: vi.fn(),
 }));
@@ -34,7 +36,7 @@ function mensaje(over: Partial<Message>): Message {
 }
 
 const conversacion = {
-  id: "conv-1", aiEnabled: false, assignedAgent: null, lastCustomerMessageAt: new Date().toISOString(),
+  id: "conv-1", status: "open", aiEnabled: false, assignedAgent: null, lastCustomerMessageAt: new Date().toISOString(),
   contact: { id: "c-1", phoneNumber: "+58412", displayName: "Laura", profileName: null, avatarUrl: null,
     cedulaType: null, cedulaNumber: null, state: null, city: null, address: null, tags: [] },
   channel: { id: "ch-1", label: "Principal", phoneNumber: "+58", phoneNumberId: "p1", status: "connected" },
@@ -42,7 +44,9 @@ const conversacion = {
 
 function renderPanel(
   messages: Message[],
-  extra: Partial<Pick<Parameters<typeof ChatPanel>[0], "outboxItems" | "onRetryOutbox" | "onDiscardOutbox">> = {}
+  extra: Partial<
+    Pick<Parameters<typeof ChatPanel>[0], "outboxItems" | "onRetryOutbox" | "onDiscardOutbox" | "conversation">
+  > = {}
 ) {
   return render(
     <ChatPanel
@@ -195,5 +199,28 @@ describe("ChatPanel — la cola de envío a la vista", () => {
     );
 
     expect(screen.getAllByText("¿Sigue disponible?")).toHaveLength(1);
+  });
+});
+
+/** Cerrar/reabrir desde la cabecera del chat (T2.1, 5/9/2026): misma acción que el menú de la bandeja. */
+describe("ChatPanel — cerrar y reabrir desde la cabecera", () => {
+  it("con la conversación abierta, ofrece cerrar", async () => {
+    const { closeConversation } = await import("@/lib/mutations");
+    renderPanel([]);
+
+    fireEvent.click(screen.getByRole("button", { name: /^cerrar$/i }));
+
+    expect(closeConversation).toHaveBeenCalledWith("conv-1");
+    expect(screen.queryByRole("button", { name: /^reabrir$/i })).not.toBeInTheDocument();
+  });
+
+  it("con la conversación cerrada, ofrece reabrir", async () => {
+    const { reopenConversation } = await import("@/lib/mutations");
+    renderPanel([], { conversation: { ...conversacion, status: "closed" } as unknown as Conversation });
+
+    fireEvent.click(screen.getByRole("button", { name: /^reabrir$/i }));
+
+    expect(reopenConversation).toHaveBeenCalledWith("conv-1");
+    expect(screen.queryByRole("button", { name: /^cerrar$/i })).not.toBeInTheDocument();
   });
 });

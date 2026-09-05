@@ -499,14 +499,65 @@ export async function POST(request: Request) {
 
         const { data: existingConversation } = await supabase
           .from("conversations")
-          .select("id, last_customer_message_at")
+          .select("id, last_customer_message_at, status, ai_enabled")
           .eq("contact_id", contact.id)
           .eq("whatsapp_channel_id", channel.id)
-          .maybeSingle<{ id: string; last_customer_message_at: string | null }>();
+          .maybeSingle<{
+            id: string;
+            last_customer_message_at: string | null;
+            status: string;
+            ai_enabled: boolean;
+          }>();
 
         if (existingConversation) {
           conversationId = existingConversation.id;
           windowWasClosed = !isWithin24hWindow(existingConversation.last_customer_message_at);
+
+          // T2.1 (5/9/2026): un asesor había cerrado este chat y el cliente
+          // volvió a escribir. Antes esto se guardaba igual, pero la fila
+          // seguía en `status = 'closed'` -- invisible para "Pendientes"
+          // (status <> 'closed') y para cualquier otra píldora que descuente
+          // lo cerrado -- así que el mensaje entraba al hilo sin que nadie se
+          // enterara de que hacía falta contestar. Se reabre ANTES del
+          // insert de más abajo, para que ese mensaje ya caiga sobre una
+          // conversación abierta.
+          if (existingConversation.status === "closed") {
+            const { error: reopenError } = await supabase
+              .from("conversations")
+              .update({ status: "open" })
+              .eq("id", conversationId);
+
+            if (reopenError) {
+              console.error(
+                "Webhook de WhatsApp: error al reabrir conversación cerrada",
+                reopenError
+              );
+            } else {
+              await supabase
+                .from("messages")
+                .insert({
+                  conversation_id: conversationId,
+                  direction: "outbound",
+                  sender_type: "system",
+                  message_type: "system_event",
+                  content: "El cliente volvió a escribir",
+                })
+                .select("id")
+                .single();
+
+              // La IA sigue en el estado en que quedó al cerrar el chat: el
+              // sistema no la reactiva sola. Sin IA y sin asesor asignado,
+              // la conversación queda `unassigned` -- visible en "Sin
+              // dueño" -- en vez de perderse otra vez detrás de un `status`
+              // que ninguna píldora vuelve a leer. `recordHandoff` nunca
+              // lanza, así que esto no arriesga la respuesta al webhook.
+              await recordHandoff(supabase, {
+                conversationId,
+                toKind: existingConversation.ai_enabled ? "ai" : "unassigned",
+                reason: "reabierta_por_cliente",
+              });
+            }
+          }
         } else {
           windowWasClosed = true;
           const { data: newConversation, error: conversationError } = await supabase

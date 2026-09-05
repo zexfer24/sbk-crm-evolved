@@ -30,7 +30,13 @@ import {
   type InboxCounts,
 } from "@/lib/data";
 import { cursorAfterPage, mergeById } from "@/lib/inbox-paging";
-import { markConversationRead, markConversationUnread, sendMessage } from "@/lib/mutations";
+import {
+  closeConversation,
+  markConversationRead,
+  markConversationUnread,
+  reopenConversation,
+  sendMessage,
+} from "@/lib/mutations";
 import { decideReadOnArrival, shouldFlushDeferred } from "@/lib/read-on-arrival";
 import {
   discardItem,
@@ -573,6 +579,46 @@ export function CrmShell({
     [supabase, refreshConversations, refreshInboxCounts, setConversations]
   );
 
+  /**
+   * Cerrar y reabrir desde el menú de la bandeja (T2.1, 5/9/2026). Mismo
+   * patrón optimista que `markUnread`/`markRead`: el estado local se mueve
+   * antes que la base y un refetch corrige si la escritura falla. El
+   * traspaso que la ruta deja en `conversation_handoffs` no necesita
+   * reflejo acá — la fila lo pinta a través de `status`, que ya viaja por
+   * el canal de realtime de "Todos" (outcome "applied" en
+   * use-live-conversations.ts) sin que este componente sepa nada de
+   * bitácoras.
+   */
+  const handleCloseConversation = useCallback(
+    async (conversationId: string) => {
+      setConversations((current) =>
+        current.map((c) => (c.id === conversationId ? { ...c, status: "closed" } : c))
+      );
+      try {
+        await closeConversation(conversationId);
+        refreshInboxCounts();
+      } catch {
+        refreshConversations();
+      }
+    },
+    [refreshConversations, refreshInboxCounts, setConversations]
+  );
+
+  const handleReopenConversation = useCallback(
+    async (conversationId: string) => {
+      setConversations((current) =>
+        current.map((c) => (c.id === conversationId ? { ...c, status: "open" } : c))
+      );
+      try {
+        await reopenConversation(conversationId);
+        refreshInboxCounts();
+      } catch {
+        refreshConversations();
+      }
+    },
+    [refreshConversations, refreshInboxCounts, setConversations]
+  );
+
   // Mensajes rápidos compartidos entre agentes: se sincronizan en vivo.
   useEffect(() => {
     const channel = supabase
@@ -818,6 +864,8 @@ export function CrmShell({
             bcvRate={bcvRate}
             onMarkUnread={markUnread}
             onMarkRead={markRead}
+            onCloseConversation={handleCloseConversation}
+            onReopenConversation={handleReopenConversation}
             hasMore={allPager.hasMore}
             loadingMore={allPager.loadingMore}
             onLoadMore={allPager.loadMore}

@@ -74,7 +74,16 @@ export type HandoffReason =
   // de que el turno ya había pasado todas las guardas de deliver(). El
   // cliente no recibió nada; no se reintenta para no arriesgar un duplicado
   // si el rechazo fue parcial.
-  | "rechazado_por_meta";
+  | "rechazado_por_meta"
+  // T2.1: un asesor cerró la conversación a mano desde el menú de la
+  // bandeja o la cabecera del chat (close/route.ts).
+  | "cerrada_por_asesor"
+  // T2.1: un asesor reabrió a mano una conversación cerrada (reopen/route.ts).
+  | "reabierta_por_asesor"
+  // T2.1: el cliente le escribió a una conversación que estaba cerrada; el
+  // webhook la reabre sola ANTES de guardar el mensaje entrante, para que no
+  // quede invisible detrás de un status que ninguna píldora vuelve a mirar.
+  | "reabierta_por_cliente";
 
 export interface HandoffInput {
   conversationId: string;

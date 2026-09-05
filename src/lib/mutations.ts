@@ -715,6 +715,37 @@ export async function setProductActive(supabase: SupabaseClient, productId: stri
 
   if (error) throw error;
 }
+
+// ---------------------------------------------------------------------------
+// Cerrar y reabrir una conversación (T2.1, 5/9/2026).
+//
+// A diferencia del resto de este archivo, estas dos NO tocan Supabase
+// directo desde el navegador: `record_handoff()` está concedida SOLO a
+// `service_role` (20260830040000_conversation_handoffs.sql), así que el
+// cierre pasa por una ruta del servidor que comprueba la sesión y recién
+// ahí abre un cliente admin para esa RPC — mismo patrón que
+// `postSendMessage` de más arriba, que por la misma razón (el token de Meta
+// no puede viajar al navegador) tampoco corre en el cliente.
+// ---------------------------------------------------------------------------
+
+async function postConversationAction(conversationId: string, action: "close" | "reopen"): Promise<void> {
+  const res = await fetch(`/api/conversations/${conversationId}/${action}`, { method: "POST" });
+  if (!res.ok) {
+    const body = await res.json().catch(() => null);
+    throw new Error(body?.error ?? "No se pudo actualizar la conversación.");
+  }
+}
+
+/** Cierra la conversación: sale de "Pendientes" y de las píldoras que descuentan lo cerrado. */
+export async function closeConversation(conversationId: string): Promise<void> {
+  await postConversationAction(conversationId, "close");
+}
+
+/** Reabre a mano una conversación cerrada, dejándola a cargo de quien la reabrió. */
+export async function reopenConversation(conversationId: string): Promise<void> {
+  await postConversationAction(conversationId, "reopen");
+}
+
 // ---------------------------------------------------------------------------
 // Pines de conversación (T2.2 del plan "La bandeja que no pierde", 5/9/2026)
 //

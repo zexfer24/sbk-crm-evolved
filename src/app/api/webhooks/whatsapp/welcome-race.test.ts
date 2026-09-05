@@ -56,6 +56,11 @@ interface FakeConversationRow {
   id: string;
   last_customer_message_at: string | null;
   welcome_sent_at: string | null;
+  // T2.1 (5/9/2026), espejo de route.test.ts: opcionales porque ninguna
+  // prueba de este archivo ejercita la reapertura de una conversación
+  // cerrada -- por defecto se comportan como "abierta, IA encendida".
+  status?: string;
+  ai_enabled?: boolean;
 }
 
 /**
@@ -124,7 +129,13 @@ function createWelcomeRaceFakeAdminClient() {
                     error: { code: "23505", message: "duplicate key value violates unique constraint" },
                   };
                 }
-                conversationRow = { id: "conv-1", last_customer_message_at: null, welcome_sent_at: null };
+                conversationRow = {
+                  id: "conv-1",
+                  last_customer_message_at: null,
+                  welcome_sent_at: null,
+                  status: "open",
+                  ai_enabled: true,
+                };
                 return { data: { id: "conv-1" }, error: null };
               },
             }),

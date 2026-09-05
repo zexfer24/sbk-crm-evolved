@@ -87,4 +87,19 @@ describe('contrato de "sin dueño" — los mismos casos que invariante_leads.sql
       isUnassignedLead(true, [traspaso("ai", 30), traspaso("unassigned", 90)])
     ).toBe(false);
   });
+
+  /**
+   * T2.1 (5/9/2026): un asesor cerró la conversación y el cliente volvió a
+   * escribir con la IA apagada en ese chat. El webhook la reabre sola y deja
+   * `reabierta_por_cliente` con destino `unassigned` (ver
+   * webhooks/whatsapp/route.ts) por ENCIMA del `closed` que dejó el cierre —
+   * el traspaso más reciente manda, igual que en el caso 2. Pasar por
+   * `closed` en el medio no blinda a la conversación de contar como sin
+   * dueño: es el mismo caso 6 de `invariante_leads.sql`.
+   */
+  it("caso 6 · cerrada y el cliente volvió con la IA apagada: CUENTA", () => {
+    expect(
+      isUnassignedLead(true, [traspaso("closed", 180), traspaso("unassigned", 10)])
+    ).toBe(true);
+  });
 });

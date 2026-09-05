@@ -56,9 +56,20 @@ function createRacingFakeAdminClient() {
   // la carrera y creó la conversación de este contacto nuevo un instante
   // antes. La primera lectura de ESTA invocación, sin embargo, todavía no
   // la ve (se disparó antes de que la otra transacción confirmara).
-  let conversationRow: { id: string; last_customer_message_at: string | null } | null = {
+  let conversationRow: {
+    id: string;
+    last_customer_message_at: string | null;
+    // T2.1 (5/9/2026): el webhook lee estos dos campos para decidir si hay
+    // que reabrir una conversación cerrada. Espejo de route.test.ts: acá
+    // ninguna fila queda `closed`, así que ese camino nunca se ejercita, pero
+    // la forma de la fila fake se mantiene igual a la real.
+    status: string;
+    ai_enabled: boolean;
+  } | null = {
     id: "conv-race-winner",
     last_customer_message_at: null,
+    status: "open",
+    ai_enabled: true,
   };
   let selectCallsBeforeInsertWins = 1; // la primera lectura no ve la fila todavía
   const insertedMessages = new Map<string, { id: string }>();
@@ -113,7 +124,12 @@ function createRacingFakeAdminClient() {
                     error: { code: "23505", message: "duplicate key value violates unique constraint" },
                   };
                 }
-                conversationRow = { id: "conv-race-winner", last_customer_message_at: null };
+                conversationRow = {
+                  id: "conv-race-winner",
+                  last_customer_message_at: null,
+                  status: "open",
+                  ai_enabled: true,
+                };
                 return { data: { id: "conv-race-winner" }, error: null };
               },
             }),

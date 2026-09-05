@@ -75,6 +75,20 @@ function createFakeAdminClient() {
   const mediaUpdates: { id: string; mediaUrl: string }[] = [];
   let nextId = 1;
 
+  // T2.1 (5/9/2026): la fila de conversación que devuelve el SELECT de
+  // "¿existe ya?". Mutable y con setter/reset propios para que las pruebas
+  // de reapertura (más abajo) puedan simular una conversación `closed` sin
+  // afectar a las demás, que esperan la conversación abierta de siempre.
+  let conversationRow = {
+    id: "conv-1",
+    last_customer_message_at: new Date().toISOString(),
+    status: "open",
+    ai_enabled: true,
+  };
+  const conversationUpdates: { id: string; patch: Record<string, unknown> }[] = [];
+  /** Cada llamada a la RPC `record_handoff`, con sus parámetros. */
+  const handoffCalls: Record<string, unknown>[] = [];
+
   const client = {
     from(table: string) {
       if (table === "whatsapp_channels") {
@@ -114,20 +128,27 @@ function createFakeAdminClient() {
                 return {
                   eq() {
                     return {
-                      maybeSingle: async () => ({
-                        // Ventana abierta a propósito: evita que el test dependa
-                        // de la lógica de bienvenida (fuera de alcance acá).
-                        data: { id: "conv-1", last_customer_message_at: new Date().toISOString() },
-                        error: null,
-                      }),
+                      // Ventana abierta a propósito: evita que el test dependa
+                      // de la lógica de bienvenida (fuera de alcance acá).
+                      maybeSingle: async () => ({ data: { ...conversationRow }, error: null }),
                     };
                   },
                 };
               },
             };
           },
-          update() {
-            return { eq: async () => ({ data: null, error: null }) };
+          update(patch: Record<string, unknown>) {
+            return {
+              eq: async (_col: string, id: string) => {
+                conversationUpdates.push({ id, patch });
+                // T2.1: la reapertura del webhook relee `status` en la misma
+                // invocación cuando un lote trae varios mensajes del mismo
+                // contacto — sin esto, el segundo mensaje del lote vería la
+                // fila todavía `closed` y dispararía un segundo traspaso.
+                if (typeof patch.status === "string") conversationRow.status = patch.status;
+                return { data: null, error: null };
+              },
+            };
           },
         };
       }
@@ -141,12 +162,20 @@ function createFakeAdminClient() {
               },
             };
           },
-          insert(row: { whatsapp_message_id: string; type?: string }) {
+          insert(row: { whatsapp_message_id?: string; type?: string }) {
             return {
               select() {
                 return {
                   single: async () => {
-                    if (insertedMessages.has(row.whatsapp_message_id)) {
+                    // Solo un wamid de verdad puede chocar: Postgres no
+                    // considera duplicados dos NULL bajo una unique
+                    // constraint, y acá pasa lo mismo con el evento de
+                    // sistema de la reapertura (T2.1), que no trae
+                    // whatsapp_message_id — sin este `if` colisionaría contra
+                    // sí mismo entre pruebas (el Map de este cliente vive
+                    // para todo el archivo, no se limpia en cada test).
+                    const wamid = row.whatsapp_message_id;
+                    if (wamid && insertedMessages.has(wamid)) {
                       return {
                         data: null,
                         error: {
@@ -156,7 +185,7 @@ function createFakeAdminClient() {
                       };
                     }
                     const created = { id: `msg-${nextId++}` };
-                    insertedMessages.set(row.whatsapp_message_id, created);
+                    if (wamid) insertedMessages.set(wamid, created);
                     insertedRows.push(row as unknown as Record<string, unknown>);
                     return { data: created, error: null };
                   },
@@ -198,11 +227,16 @@ function createFakeAdminClient() {
     },
     // El límite de tasa vive en la base; acá siempre deja pasar salvo que un
     // test diga lo contrario.
-    rpc: async (fn: string) => {
+    rpc: async (fn: string, params?: Record<string, unknown>) => {
       if (fn === "rate_limit_allow") return { data: rateLimitAllows, error: null };
       // Con la IA apagada el webhook no encola: la cola dejaba de ser el
       // reflejo de lo que la IA iba a hacer y crecía con el interruptor abajo.
       if (fn === "agent_can_run") return { data: aiCanRun, error: null };
+      // T2.1: la reapertura de una conversación cerrada deja su traspaso acá.
+      if (fn === "record_handoff") {
+        handoffCalls.push(params ?? {});
+        return { data: "handoff-1", error: null };
+      }
       throw new Error(`Fake Supabase: rpc no soportada en este test: ${fn}`);
     },
     storage: {
@@ -215,10 +249,35 @@ function createFakeAdminClient() {
     },
   };
 
-  return { client, insertedMessages, mediaUpdates };
+  return {
+    client,
+    insertedMessages,
+    mediaUpdates,
+    conversationUpdates,
+    handoffCalls,
+    setConversationRow: (patch: Partial<typeof conversationRow>) => {
+      conversationRow = { ...conversationRow, ...patch };
+    },
+    resetConversationRow: () => {
+      conversationRow = {
+        id: "conv-1",
+        last_customer_message_at: new Date().toISOString(),
+        status: "open",
+        ai_enabled: true,
+      };
+    },
+  };
 }
 
-const { client: fakeAdminClient, insertedMessages, mediaUpdates } = createFakeAdminClient();
+const {
+  client: fakeAdminClient,
+  insertedMessages,
+  mediaUpdates,
+  conversationUpdates,
+  handoffCalls,
+  setConversationRow,
+  resetConversationRow,
+} = createFakeAdminClient();
 
 vi.mock("@/lib/supabase/admin", () => ({
   createAdminClient: () => fakeAdminClient,
@@ -325,6 +384,9 @@ beforeEach(() => {
   insertedRows.length = 0;
   reactionUpdates.length = 0;
   statusUpdates.length = 0;
+  conversationUpdates.length = 0;
+  handoffCalls.length = 0;
+  resetConversationRow();
   vi.mocked(enqueueAgentTurns).mockClear();
   vi.mocked(processAfterDebounce).mockClear();
 });
@@ -961,5 +1023,63 @@ describe("POST /api/webhooks/whatsapp — un remitente que no es un teléfono", 
 
     expect(insertedRows).toHaveLength(1);
     expect(enqueueAgentTurns).toHaveBeenCalledTimes(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// T2.1 (5/9/2026): el cliente vuelve a escribir sobre una conversación que un
+// asesor había cerrado. Antes el mensaje entraba igual, pero la fila seguía
+// `status = 'closed'` -- invisible para "Pendientes" y para cualquier otra
+// píldora que descuente lo cerrado. El webhook la reabre sola, ANTES de
+// guardar ese mensaje, y deja el traspaso `reabierta_por_cliente`.
+// ---------------------------------------------------------------------------
+describe("POST /api/webhooks/whatsapp — el cliente vuelve sobre una conversación cerrada", () => {
+  it("con la IA encendida, reabre, avisa en el hilo y el traspaso vuelve a la IA", async () => {
+    setConversationRow({ status: "closed", ai_enabled: true });
+
+    const response = await POST(fakeRequest(webhookBody("wamid.reabre-con-ia-1")));
+
+    expect(response.status).toBe(200);
+    expect(conversationUpdates).toContainEqual({ id: "conv-1", patch: { status: "open" } });
+    expect(
+      insertedRows.some((r) => r.sender_type === "system" && r.content === "El cliente volvió a escribir")
+    ).toBe(true);
+    expect(handoffCalls).toContainEqual(
+      expect.objectContaining({
+        p_conversation_id: "conv-1",
+        p_to_kind: "ai",
+        p_reason: "reabierta_por_cliente",
+      })
+    );
+  });
+
+  it("con la IA apagada en el chat, la deja sin dueño en vez de reactivarla sola", async () => {
+    setConversationRow({ status: "closed", ai_enabled: false });
+
+    await POST(fakeRequest(webhookBody("wamid.reabre-sin-ia-1")));
+
+    expect(conversationUpdates).toContainEqual({ id: "conv-1", patch: { status: "open" } });
+    expect(handoffCalls).toContainEqual(
+      expect.objectContaining({
+        p_conversation_id: "conv-1",
+        p_to_kind: "unassigned",
+        p_reason: "reabierta_por_cliente",
+      })
+    );
+  });
+
+  /**
+   * La mutación manual prevista para esta tarea (T2.1, ver el plan): si
+   * alguien quita la reapertura del webhook, este test se pone rojo en las
+   * DOS aserciones que importan -- el UPDATE de `status` Y el traspaso --
+   * no solo en una, para que no baste con revertir a medias.
+   */
+  it("una conversación abierta no dispara ningún UPDATE ni traspaso de reapertura", async () => {
+    setConversationRow({ status: "open", ai_enabled: true });
+
+    await POST(fakeRequest(webhookBody("wamid.no-reabre-1")));
+
+    expect(conversationUpdates).toHaveLength(0);
+    expect(handoffCalls.some((c) => c.p_reason === "reabierta_por_cliente")).toBe(false);
   });
 });
