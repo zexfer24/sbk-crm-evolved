@@ -113,3 +113,13 @@ jobs:
           psql "postgresql://postgres:postgres@127.0.0.1:54322/postgres" \
             -v ON_ERROR_STOP=1 \
             -f supabase/tests/awaiting_reply.sql
+
+      # F13 (5/9/2026): la bandeja busca contactos sin acentos ni mayúsculas.
+      # contacts.search_text reutiliza public.immutable_unaccent, el mismo
+      # wrapper de products.search_text (20260822100000) y
+      # messages.search_text (20260822110000).
+      - name: contacts.search_text encuentra sin acentos
+        run: |
+          psql "postgresql://postgres:postgres@127.0.0.1:54322/postgres" \
+            -v ON_ERROR_STOP=1 \
+            -f supabase/tests/contacts_search.sql
