@@ -57,14 +57,17 @@ begin;
 -- respondió) salvo en el caso 5, donde se simula la respuesta real del
 -- asesor fijando esas dos columnas.
 -- Un contacto por caso: `conversations` tiene único (contact_id,
--- whatsapp_channel_id), así que cinco conversaciones sobre el mismo canal
--- necesitan cinco contactos distintos.
+-- whatsapp_channel_id), así que seis conversaciones sobre el mismo canal
+-- necesitan seis contactos distintos. El caso 6 (T2.1, 5/9/2026) suma
+-- `cerrada_por_asesor`/`reabierta_por_cliente` a la lista de razones que
+-- puede escribir esta bitácora: nace de 20260905030000.
 insert into public.contacts (id, phone_number) values
   ('11111111-1111-1111-1111-111111111101', '+580000000001'),
   ('11111111-1111-1111-1111-111111111102', '+580000000002'),
   ('11111111-1111-1111-1111-111111111103', '+580000000003'),
   ('11111111-1111-1111-1111-111111111104', '+580000000004'),
-  ('11111111-1111-1111-1111-111111111105', '+580000000005');
+  ('11111111-1111-1111-1111-111111111105', '+580000000005'),
+  ('11111111-1111-1111-1111-111111111106', '+580000000006');
 
 insert into public.whatsapp_channels (id, label, phone_number) values
   ('22222222-2222-2222-2222-222222222222', 'Canal de prueba', '+580000000000');
@@ -100,7 +103,16 @@ values
   ('aaaaaaaa-0000-0000-0000-000000000005',
    '11111111-1111-1111-1111-111111111105', '22222222-2222-2222-2222-222222222222',
    now() - interval '2 hours', now() - interval '1 minute',
-   now() - interval '1 minute', 'agent');
+   now() - interval '1 minute', 'agent'),
+  -- caso 6 · un asesor la había cerrado y el cliente volvió a escribir con
+  -- la IA apagada (T2.1, 5/9/2026): el webhook la reabre sola y deja
+  -- `reabierta_por_cliente` con destino `unassigned` (ver
+  -- webhooks/whatsapp/route.ts) — sigue esperando y quedó sin dueño →
+  -- CUENTA, aunque haya pasado por `closed` en el medio.
+  ('aaaaaaaa-0000-0000-0000-000000000006',
+   '11111111-1111-1111-1111-111111111106', '22222222-2222-2222-2222-222222222222',
+   now() - interval '10 minutes', now() - interval '10 minutes',
+   null, null);
 
 -- Los traspasos. El `created_at` explícito y separado en el tiempo es
 -- deliberado: lo que decide es la fila MÁS RECIENTE, no el orden de inserción.
@@ -113,11 +125,14 @@ insert into public.conversation_handoffs (conversation_id, to_kind, reason, crea
   ('aaaaaaaa-0000-0000-0000-000000000003', 'unassigned', 'fuera_de_ventana', now() - interval '90 minutes'),
   ('aaaaaaaa-0000-0000-0000-000000000003', 'human',      'reclamado',        now() - interval '30 minutes'),
 
-  ('aaaaaaaa-0000-0000-0000-000000000005', 'unassigned', 'entrega_fallida', now() - interval '90 minutes');
+  ('aaaaaaaa-0000-0000-0000-000000000005', 'unassigned', 'entrega_fallida', now() - interval '90 minutes'),
+
+  ('aaaaaaaa-0000-0000-0000-000000000006', 'closed',     'cerrada_por_asesor',  now() - interval '3 hours'),
+  ('aaaaaaaa-0000-0000-0000-000000000006', 'unassigned', 'reabierta_por_cliente', now() - interval '10 minutes');
 
 do $$
 declare
-  esperado integer := 1;  -- solo el caso 1
+  esperado integer := 2;  -- el caso 1 y el caso 6
   obtenido integer;
   errores text := '';
   fila record;
@@ -127,6 +142,28 @@ begin
   if obtenido <> esperado then
     errores := errores || format(
       E'\n  - unassigned_waiting_count() devolvió %s y debía devolver %s.', obtenido, esperado);
+  end if;
+
+  -- Caso 6, explícito y con nombre propio (T2.1, 5/9/2026): pasar por
+  -- `closed` en el medio no debe blindar a una conversación de contar como
+  -- sin dueño. Si alguien filtrara unassigned_waiting_count() por
+  -- `status <> 'closed'` en vez de mirar solo el último traspaso, esta
+  -- fila seguiría contando bien -- pero si alguien mirara el status ACTUAL
+  -- en vez del último traspaso para decidir "sin dueño", este es el caso
+  -- que lo delata.
+  select count(*)::integer into obtenido
+  from public.conversations c
+  where c.id = 'aaaaaaaa-0000-0000-0000-000000000006'
+    and c.awaiting_reply
+    and (
+      select h.to_kind from public.conversation_handoffs h
+      where h.conversation_id = c.id
+      order by h.created_at desc, h.id desc limit 1
+    ) = 'unassigned';
+
+  if obtenido <> 1 then
+    errores := errores ||
+      E'\n  - la conversación cerrada y luego reabierta por el cliente (reabierta_por_cliente) no cuenta como sin dueño.';
   end if;
 
   -- Caso 2 explícito y con nombre propio: es el que se le escapa a la
@@ -163,7 +200,7 @@ begin
         order by h.created_at desc, h.id desc limit 1
       ) = 'unassigned'
   loop
-    if fila.id <> 'aaaaaaaa-0000-0000-0000-000000000001' then
+    if fila.id not in ('aaaaaaaa-0000-0000-0000-000000000001', 'aaaaaaaa-0000-0000-0000-000000000006') then
       errores := errores || format(
         E'\n  - la conversación %s quedó sin dueño y el conteo no la ve.', fila.id);
     end if;
