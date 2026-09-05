@@ -31,6 +31,7 @@ import {
 } from "@/lib/data";
 import { cursorAfterPage, mergeById } from "@/lib/inbox-paging";
 import { markConversationRead, markConversationUnread, sendMessage } from "@/lib/mutations";
+import { decideReadOnArrival, shouldFlushDeferred } from "@/lib/read-on-arrival";
 import {
   discardItem,
   enqueueText,
@@ -692,10 +693,17 @@ export function CrmShell({
           if (payload.eventType === "INSERT" && row.direction === "inbound") {
             // Mismo motivo que al abrir el chat: el mensaje entra y sale
             // leído al toque porque el chat ya está abierto, y la píldora
-            // tiene que verlo sin esperar la pasada de fondo.
-            markConversationRead(supabase, selectedId)
-              .then(refreshInboxCounts)
-              .catch(() => {});
+            // tiene que verlo sin esperar la pasada de fondo — pero solo si
+            // de verdad está abierto delante del asesor ahora mismo.
+            const decision = decideReadOnArrival({
+              visibilityState: document.hidden ? "hidden" : "visible",
+              hasFocus: document.hasFocus(),
+            });
+            if (decision === "mark") {
+              markReadNow();
+            } else {
+              pendingRead = true;
+            }
           }
         }
       )
@@ -715,6 +723,37 @@ export function CrmShell({
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedId, supabase]);
+    // T1.1 (4/9/2026): lo que llega mientras el asesor no está mirando este
+    // chat de verdad —pestaña de fondo, o esta ventana sin el foco— no se
+    // puede dar por leído todavía. Antes, el INSERT marcaba leído sin
+    // preguntar nada: con dos pestañas abiertas (una al frente, esta de
+    // fondo con el mismo chat) un mensaje nuevo apagaba "No leídas" en la de
+    // atrás sin que nadie lo hubiera visto — F5 en la de adelante lo
+    // delataba, porque ahí la píldora seguía encendida.
+    let pendingRead = false;
+
+    function markReadNow() {
+      markConversationRead(supabase, conversationId)
+        .then(refreshInboxCounts)
+        .catch(() => {});
+    }
+
+    // Se enteran del regreso por cualquiera de las dos señales: cambiar de
+    // pestaña dispara "visibilitychange"; volver a esta ventana desde otra
+    // (la pestaña ya estaba al frente, solo faltaba el foco) dispara "focus".
+    function onPresenceReturn() {
+      if (!pendingRead) return;
+      // `document.hidden` y no `visibilityState` directo: es la misma señal
+      // que ya usa `use-live-refresh.ts` para la pestaña oculta, y las dos
+      // viajan sincronizadas en todo navegador real.
+      if (!shouldFlushDeferred(document.hidden ? "hidden" : "visible")) return;
+      pendingRead = false;
+      markReadNow();
+    }
+
+    document.addEventListener("visibilitychange", onPresenceReturn);
+    window.addEventListener("focus", onPresenceReturn);
+
 
   return (
     <div className="crm" data-view={mobileView}>
@@ -753,6 +792,8 @@ export function CrmShell({
             <ChatPanel
               conversation={selectedConversation}
               messages={messages}
+      document.removeEventListener("visibilitychange", onPresenceReturn);
+      window.removeEventListener("focus", onPresenceReturn);
               templates={templates}
               quickReplies={quickReplies}
               currentAgent={currentAgent}

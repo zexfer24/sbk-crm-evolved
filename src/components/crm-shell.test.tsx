@@ -60,6 +60,7 @@ function createFakeSupabase() {
 }
 
 let fake: ReturnType<typeof createFakeSupabase>;
+let hasFocusSpy: ReturnType<typeof vi.spyOn>;
 
 vi.mock("@/lib/supabase/client", () => ({
   createClient: () => fake.supabase,
@@ -264,11 +265,18 @@ beforeEach(() => {
   markConversationReadMock.mockClear();
   markConversationUnreadMock.mockClear();
   fetchAgentSettingsMock.mockClear();
+  // Foco de la ventana por defecto: jsdom, a diferencia de un navegador real,
+  // arranca sin foco (`document.hasFocus()` en `false` mientras nada haya
+  // llamado `.focus()`), y los tests de T1.1 más abajo son los únicos que
+  // necesitan mover esta señal — todo lo demás asume una pestaña normal, al
+  // frente y con el foco.
+  hasFocusSpy = vi.spyOn(document, "hasFocus").mockReturnValue(true);
   vi.useFakeTimers();
 });
 
 afterEach(() => {
   vi.useRealTimers();
+  hasFocusSpy.mockRestore();
 });
 
 describe("CrmShell — debounce del refresh disparado por realtime", () => {
@@ -478,6 +486,93 @@ describe("CrmShell — el chat sigue los cambios sobre mensajes ya guardados", (
     });
 
     expect(markConversationReadMock).toHaveBeenCalledTimes(1);
+  });
+});
+
+/**
+ * T1.1 ("La bandeja que no pierde", 4/9/2026): un chat abierto en una
+ * pestaña oculta no puede dar por leído lo que entra. Antes, el INSERT
+ * marcaba leído sin preguntar nada — con dos pestañas abiertas (una al
+ * frente, esta de fondo con el mismo chat) un mensaje nuevo apagaba "No
+ * leídas" en la de atrás sin que nadie lo hubiera visto; F5 en la de
+ * adelante lo delataba porque ahí la píldora seguía encendida.
+ */
+describe("CrmShell — un chat abierto en una pestaña oculta no marca leído lo que entra", () => {
+  function ocultarPestana(hidden: boolean) {
+    Object.defineProperty(document, "hidden", { configurable: true, get: () => hidden });
+    document.dispatchEvent(new Event("visibilitychange"));
+  }
+
+  afterEach(() => {
+    Object.defineProperty(document, "hidden", { configurable: true, get: () => false });
+  });
+
+  it("con la pestaña oculta, un mensaje nuevo del cliente no marca leído", async () => {
+    await renderWithOpenConversation();
+    ocultarPestana(true);
+
+    act(() => {
+      fake.trigger("messages", "INSERT", { direction: "inbound" });
+    });
+
+    expect(markConversationReadMock).not.toHaveBeenCalled();
+  });
+
+  it("al volver la pestaña, el chat que sigue abierto se marca leído exactamente una vez", async () => {
+    await renderWithOpenConversation();
+    ocultarPestana(true);
+
+    act(() => {
+      fake.trigger("messages", "INSERT", { direction: "inbound" });
+    });
+    expect(markConversationReadMock).not.toHaveBeenCalled();
+
+    act(() => ocultarPestana(false));
+    expect(markConversationReadMock).toHaveBeenCalledTimes(1);
+
+    // Un segundo regreso (otro "visibilitychange" o "focus") no repite el
+    // marcado: ya no queda nada pendiente.
+    act(() => {
+      window.dispatchEvent(new Event("focus"));
+    });
+    expect(markConversationReadMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("si cambió de chat mientras estaba oculta, volver a la pestaña no marca el chat viejo", async () => {
+    fetchMessagesMock.mockResolvedValue([]);
+    render(
+      <CrmShell
+        currentAgent={currentAgent}
+        initialConversations={[buildConversation(), buildConversation({ id: "conv-2" })]}
+        initialInboxCounts={inboxCounts}
+        allTags={allTags}
+        initialQuickReplies={initialQuickReplies}
+        bcvRate={null}
+        initialAgentSettings={agentSettings}
+        initialConversationId="conv-1"
+      />
+    );
+    await act(async () => {});
+    markConversationReadMock.mockClear();
+
+    ocultarPestana(true);
+    act(() => {
+      fake.trigger("messages", "INSERT", { direction: "inbound" });
+    });
+    expect(markConversationReadMock).not.toHaveBeenCalled();
+
+    // Cambia de chat mientras seguía oculta: el efecto de "conv-1" se limpia
+    // (sus oyentes de visibilitychange/focus se sueltan) y el de "conv-2"
+    // arranca sin nada pendiente.
+    await act(async () => {
+      screen.getByRole("button", { name: "abrir conv-2" }).click();
+    });
+
+    act(() => ocultarPestana(false));
+
+    // Ni el chat viejo (conv-1, el que quedó pendiente) ni ningún otro:
+    // los oyentes de conv-1 se soltaron al cambiar de chat.
+    expect(markConversationReadMock).not.toHaveBeenCalled();
   });
 });
 
