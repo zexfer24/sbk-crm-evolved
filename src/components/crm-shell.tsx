@@ -45,6 +45,7 @@ import {
 import { useInboxPager } from "@/lib/use-inbox-pager";
 import { useLiveConversations } from "@/lib/use-live-conversations";
 import { REALTIME_DEBOUNCE_MS } from "@/lib/use-live-refresh";
+import { nextRealtimeAction, type RealtimeStatus } from "@/lib/realtime-status";
 import { InboxSidebar } from "@/components/inbox/inbox-sidebar";
 import { AgentHomePanel } from "@/components/inbox/agent-home-panel";
 import type { BcvRateSummary } from "@/components/inbox/bcv-rate-chip";
@@ -109,6 +110,36 @@ interface CrmShellProps {
    * responde cuando está apagada para todo el CRM.
    */
   initialAgentSettings: AgentSettings;
+}
+
+/**
+ * Callback común de `channel.subscribe` para los canales de este archivo que
+ * solo necesitan reaccionar a una caída y a la reconexión (F9, 4/9/2026): el
+ * resto de canales, hasta ahora, ignoraba el estado del WebSocket — si se
+ * caía y reconectaba solo, la vista se quedaba con lo último que alcanzó a
+ * bajar hasta que algo más disparara un refetch. `onResync` es lo que hay
+ * que rehacer al volver (pedir el catálogo entero, en la mayoría de estos
+ * canales angostos).
+ *
+ * Guarda el estado anterior en un cierre propio de cada llamada —no en un
+ * ref del componente— porque cada canal de este archivo se suscribe una vez
+ * por efecto y este helper se invoca una vez por canal: no hace falta
+ * compartir el estado entre canales distintos.
+ */
+function realtimeStatusHandler(channelName: string, onResync: () => void) {
+  let previousStatus: RealtimeStatus | null = null;
+  return (status: RealtimeStatus) => {
+    const action = nextRealtimeAction(previousStatus, status);
+    previousStatus = status;
+    if (action === "log_down") {
+      // `log.ts` es `server-only`: no se puede importar desde un componente
+      // cliente. `console.warn` con el mismo nombre de evento deja el rastro
+      // sin arrastrar ese módulo al navegador.
+      console.warn("realtime_canal_caido", { channelName, status });
+    } else if (action === "resync") {
+      onResync();
+    }
+  };
 }
 
 export function CrmShell({
@@ -242,7 +273,7 @@ export function CrmShell({
           }, REALTIME_DEBOUNCE_MS);
         }
       )
-      .subscribe();
+      .subscribe(realtimeStatusHandler("unassigned-handoffs", () => setLivePulse((n) => n + 1)));
 
     return () => {
       if (timeout) clearTimeout(timeout);
@@ -318,7 +349,11 @@ export function CrmShell({
       .on("postgres_changes", { event: "*", schema: "public", table: "agent_settings" }, () => {
         fetchAgentSettings(supabase).then(setAgentSettings).catch(() => {});
       })
-      .subscribe();
+      .subscribe(
+        realtimeStatusHandler("agent-settings-changes", () => {
+          fetchAgentSettings(supabase).then(setAgentSettings).catch(() => {});
+        })
+      );
 
     return () => {
       supabase.removeChannel(channel);
@@ -545,7 +580,11 @@ export function CrmShell({
       .on("postgres_changes", { event: "*", schema: "public", table: "quick_replies" }, () => {
         fetchQuickReplies(supabase).then(setQuickReplies).catch(() => {});
       })
-      .subscribe();
+      .subscribe(
+        realtimeStatusHandler("quick-replies-changes", () => {
+          fetchQuickReplies(supabase).then(setQuickReplies).catch(() => {});
+        })
+      );
 
     return () => {
       supabase.removeChannel(channel);
@@ -559,7 +598,11 @@ export function CrmShell({
       .on("postgres_changes", { event: "*", schema: "public", table: "tags" }, () => {
         fetchTags(supabase).then(setTags).catch(() => {});
       })
-      .subscribe();
+      .subscribe(
+        realtimeStatusHandler("tags-changes", () => {
+          fetchTags(supabase).then(setTags).catch(() => {});
+        })
+      );
 
     return () => {
       supabase.removeChannel(channel);
@@ -673,6 +716,37 @@ export function CrmShell({
       }, REALTIME_DEBOUNCE_MS);
     }
 
+    // T1.1 (4/9/2026): lo que llega mientras el asesor no está mirando este
+    // chat de verdad —pestaña de fondo, o esta ventana sin el foco— no se
+    // puede dar por leído todavía. Antes, el INSERT marcaba leído sin
+    // preguntar nada: con dos pestañas abiertas (una al frente, esta de
+    // fondo con el mismo chat) un mensaje nuevo apagaba "No leídas" en la de
+    // atrás sin que nadie lo hubiera visto — F5 en la de adelante lo
+    // delataba, porque ahí la píldora seguía encendida.
+    let pendingRead = false;
+
+    function markReadNow() {
+      markConversationRead(supabase, conversationId)
+        .then(refreshInboxCounts)
+        .catch(() => {});
+    }
+
+    // Se enteran del regreso por cualquiera de las dos señales: cambiar de
+    // pestaña dispara "visibilitychange"; volver a esta ventana desde otra
+    // (la pestaña ya estaba al frente, solo faltaba el foco) dispara "focus".
+    function onPresenceReturn() {
+      if (!pendingRead) return;
+      // `document.hidden` y no `visibilityState` directo: es la misma señal
+      // que ya usa `use-live-refresh.ts` para la pestaña oculta, y las dos
+      // viajan sincronizadas en todo navegador real.
+      if (!shouldFlushDeferred(document.hidden ? "hidden" : "visible")) return;
+      pendingRead = false;
+      markReadNow();
+    }
+
+    document.addEventListener("visibilitychange", onPresenceReturn);
+    window.addEventListener("focus", onPresenceReturn);
+
     // "*" y no "INSERT": media_url llega tarde —el webhook guarda el mensaje
     // sin archivo para contestarle a Meta dentro de sus 20s y baja el archivo
     // después, en un after()— y los checks de entrega (sent/delivered/read)
@@ -712,48 +786,19 @@ export function CrmShell({
         { event: "UPDATE", schema: "public", table: "conversations", filter: `id=eq.${selectedId}` },
         () => scheduleDetailRefresh()
       )
-      .subscribe();
+      .subscribe(realtimeStatusHandler(`messages-${selectedId}`, () => scheduleMessagesRefresh()));
 
     return () => {
       cancelled = true;
       if (messagesRefreshTimeout) clearTimeout(messagesRefreshTimeout);
       if (detailRefreshTimeout) clearTimeout(detailRefreshTimeout);
+      document.removeEventListener("visibilitychange", onPresenceReturn);
+      window.removeEventListener("focus", onPresenceReturn);
       supabase.removeChannel(messagesChannel);
       if (notesChannel) supabase.removeChannel(notesChannel);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedId, supabase]);
-    // T1.1 (4/9/2026): lo que llega mientras el asesor no está mirando este
-    // chat de verdad —pestaña de fondo, o esta ventana sin el foco— no se
-    // puede dar por leído todavía. Antes, el INSERT marcaba leído sin
-    // preguntar nada: con dos pestañas abiertas (una al frente, esta de
-    // fondo con el mismo chat) un mensaje nuevo apagaba "No leídas" en la de
-    // atrás sin que nadie lo hubiera visto — F5 en la de adelante lo
-    // delataba, porque ahí la píldora seguía encendida.
-    let pendingRead = false;
-
-    function markReadNow() {
-      markConversationRead(supabase, conversationId)
-        .then(refreshInboxCounts)
-        .catch(() => {});
-    }
-
-    // Se enteran del regreso por cualquiera de las dos señales: cambiar de
-    // pestaña dispara "visibilitychange"; volver a esta ventana desde otra
-    // (la pestaña ya estaba al frente, solo faltaba el foco) dispara "focus".
-    function onPresenceReturn() {
-      if (!pendingRead) return;
-      // `document.hidden` y no `visibilityState` directo: es la misma señal
-      // que ya usa `use-live-refresh.ts` para la pestaña oculta, y las dos
-      // viajan sincronizadas en todo navegador real.
-      if (!shouldFlushDeferred(document.hidden ? "hidden" : "visible")) return;
-      pendingRead = false;
-      markReadNow();
-    }
-
-    document.addEventListener("visibilitychange", onPresenceReturn);
-    window.addEventListener("focus", onPresenceReturn);
-
 
   return (
     <div className="crm" data-view={mobileView}>
@@ -792,8 +837,6 @@ export function CrmShell({
             <ChatPanel
               conversation={selectedConversation}
               messages={messages}
-      document.removeEventListener("visibilitychange", onPresenceReturn);
-      window.removeEventListener("focus", onPresenceReturn);
               templates={templates}
               quickReplies={quickReplies}
               currentAgent={currentAgent}

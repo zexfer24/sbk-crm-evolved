@@ -5,6 +5,7 @@ import type { Dispatch, SetStateAction } from "react";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import type { BoardConversation, ConversationSummary } from "@/lib/types";
 import { useLiveRefresh } from "@/lib/use-live-refresh";
+import { nextRealtimeAction, type RealtimeStatus } from "@/lib/realtime-status";
 
 export interface UseLiveConversationsOptions<T extends BoardConversation> {
   /**
@@ -213,7 +214,23 @@ export function useLiveConversations<T extends BoardConversation>(
       });
     }
 
-    channel.subscribe();
+    // Estado anterior de ESTE canal, para saber si un `SUBSCRIBED` es la
+    // conexión inicial o una reconexión tras una caída (F9, 4/9/2026): sin
+    // esto, el WebSocket podía caerse y reconectar solo sin que la vista se
+    // enterara de haberse perdido eventos mientras tanto.
+    let previousStatus: RealtimeStatus | null = null;
+    channel.subscribe((status) => {
+      const action = nextRealtimeAction(previousStatus, status);
+      previousStatus = status;
+      if (action === "log_down") {
+        // `log.ts` es `server-only`: no se puede importar desde un hook que
+        // corre en el navegador. `console.warn` con el mismo nombre de
+        // evento deja el rastro sin arrastrar ese módulo al cliente.
+        console.warn("realtime_canal_caido", { channelName, status });
+      } else if (action === "resync") {
+        requestListRefresh();
+      }
+    });
 
     return () => {
       supabase.removeChannel(channel);
