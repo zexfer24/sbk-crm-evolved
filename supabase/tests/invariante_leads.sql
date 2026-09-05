@@ -57,17 +57,21 @@ begin;
 -- respondió) salvo en el caso 5, donde se simula la respuesta real del
 -- asesor fijando esas dos columnas.
 -- Un contacto por caso: `conversations` tiene único (contact_id,
--- whatsapp_channel_id), así que seis conversaciones sobre el mismo canal
--- necesitan seis contactos distintos. El caso 6 (T2.1, 5/9/2026) suma
+-- whatsapp_channel_id), así que siete conversaciones sobre el mismo canal
+-- necesitan siete contactos distintos. El caso 6 (T2.1, 5/9/2026) suma
 -- `cerrada_por_asesor`/`reabierta_por_cliente` a la lista de razones que
--- puede escribir esta bitácora: nace de 20260905030000.
+-- puede escribir esta bitácora: nace de 20260905030000. El caso 7 (anexo A1,
+-- 5/9/2026) es la despedida de la IA al escalar sin asesores: sale con
+-- `is_auto_reply = true` (misma marca que la bienvenida automática, T0.1) y
+-- por eso NO apaga `awaiting_reply` aunque el cliente la haya recibido.
 insert into public.contacts (id, phone_number) values
   ('11111111-1111-1111-1111-111111111101', '+580000000001'),
   ('11111111-1111-1111-1111-111111111102', '+580000000002'),
   ('11111111-1111-1111-1111-111111111103', '+580000000003'),
   ('11111111-1111-1111-1111-111111111104', '+580000000004'),
   ('11111111-1111-1111-1111-111111111105', '+580000000005'),
-  ('11111111-1111-1111-1111-111111111106', '+580000000006');
+  ('11111111-1111-1111-1111-111111111106', '+580000000006'),
+  ('11111111-1111-1111-1111-111111111107', '+580000000007');
 
 insert into public.whatsapp_channels (id, label, phone_number) values
   ('22222222-2222-2222-2222-222222222222', 'Canal de prueba', '+580000000000');
@@ -114,6 +118,38 @@ values
    now() - interval '10 minutes', now() - interval '10 minutes',
    null, null);
 
+-- Caso 7 · escalada sin asesores y la IA se despidió con `is_auto_reply`
+-- (anexo A1, 5/9/2026): CUENTA. Insert aparte porque necesita dos columnas
+-- que los otros seis casos no tocan —`ai_enabled = false` y
+-- `journey_stage = 'assigned'`, tal como los deja `escalate.ts` cuando
+-- escala sin candidato— y a propósito SIN `last_customer_message_at`/
+-- `last_message_at`/`last_reply_at` escritos a mano: los deja el trigger
+-- `handle_new_message` a partir de los dos mensajes que se insertan más
+-- abajo, para que sea la regla real la que decida, no un valor fabricado.
+insert into public.conversations
+  (id, contact_id, whatsapp_channel_id, ai_enabled, journey_stage)
+values
+  ('aaaaaaaa-0000-0000-0000-000000000007',
+   '11111111-1111-1111-1111-111111111107', '22222222-2222-2222-2222-222222222222',
+   false, 'assigned');
+
+-- Los dos mensajes del caso 7, en orden: el entrante del cliente (fija
+-- `last_customer_message_at` vía el trigger) y después el saliente de la IA
+-- con `is_auto_reply = true` (visible, pero el trigger lo excluye de
+-- "respuesta real": no toca `last_reply_at`/`last_reply_sender`, que se
+-- quedan en null). Si `is_auto_reply` no existiera o valiera `false` acá,
+-- este insert apagaría `awaiting_reply` solo y el caso dejaría de contar —
+-- que es exactamente el bug que corrige el anexo A1.
+insert into public.messages
+  (conversation_id, direction, sender_type, message_type, content, is_auto_reply, whatsapp_status, created_at)
+values
+  ('aaaaaaaa-0000-0000-0000-000000000007', 'inbound', 'customer', 'text',
+   'Hola, ¿tienen el kit de arrastre para una Bera SBR 200?', false, null,
+   now() - interval '10 minutes'),
+  ('aaaaaaaa-0000-0000-0000-000000000007', 'outbound', 'ai', 'text',
+   'Ya dejé tu caso registrado para que lo revise un asesor. En cuanto haya alguien disponible te escriben por acá.',
+   true, 'sent', now() - interval '9 minutes');
+
 -- Los traspasos. El `created_at` explícito y separado en el tiempo es
 -- deliberado: lo que decide es la fila MÁS RECIENTE, no el orden de inserción.
 insert into public.conversation_handoffs (conversation_id, to_kind, reason, created_at) values
@@ -128,11 +164,13 @@ insert into public.conversation_handoffs (conversation_id, to_kind, reason, crea
   ('aaaaaaaa-0000-0000-0000-000000000005', 'unassigned', 'entrega_fallida', now() - interval '90 minutes'),
 
   ('aaaaaaaa-0000-0000-0000-000000000006', 'closed',     'cerrada_por_asesor',  now() - interval '3 hours'),
-  ('aaaaaaaa-0000-0000-0000-000000000006', 'unassigned', 'reabierta_por_cliente', now() - interval '10 minutes');
+  ('aaaaaaaa-0000-0000-0000-000000000006', 'unassigned', 'reabierta_por_cliente', now() - interval '10 minutes'),
+
+  ('aaaaaaaa-0000-0000-0000-000000000007', 'unassigned', 'escalada_sin_asesor', now() - interval '9 minutes');
 
 do $$
 declare
-  esperado integer := 2;  -- el caso 1 y el caso 6
+  esperado integer := 3;  -- el caso 1, el caso 6 y el caso 7
   obtenido integer;
   errores text := '';
   fila record;
@@ -164,6 +202,27 @@ begin
   if obtenido <> 1 then
     errores := errores ||
       E'\n  - la conversación cerrada y luego reabierta por el cliente (reabierta_por_cliente) no cuenta como sin dueño.';
+  end if;
+
+  -- Caso 7, explícito y con nombre propio (anexo A1, 5/9/2026): la despedida
+  -- de la IA al escalar sin asesores lleva `is_auto_reply = true`, así que el
+  -- trigger no la cuenta como respuesta real y `awaiting_reply` se queda en
+  -- `true`. Si alguien volviera a guardar ese mensaje sin la marca —o el
+  -- trigger dejara de respetarla— esta conversación se apagaría sola y este
+  -- bloque es el que lo delata.
+  select count(*)::integer into obtenido
+  from public.conversations c
+  where c.id = 'aaaaaaaa-0000-0000-0000-000000000007'
+    and c.awaiting_reply
+    and (
+      select h.to_kind from public.conversation_handoffs h
+      where h.conversation_id = c.id
+      order by h.created_at desc, h.id desc limit 1
+    ) = 'unassigned';
+
+  if obtenido <> 1 then
+    errores := errores ||
+      E'\n  - la escalación sin asesores (is_auto_reply en la despedida de la IA) no cuenta como sin dueño.';
   end if;
 
   -- Caso 2 explícito y con nombre propio: es el que se le escapa a la
@@ -200,7 +259,11 @@ begin
         order by h.created_at desc, h.id desc limit 1
       ) = 'unassigned'
   loop
-    if fila.id not in ('aaaaaaaa-0000-0000-0000-000000000001', 'aaaaaaaa-0000-0000-0000-000000000006') then
+    if fila.id not in (
+      'aaaaaaaa-0000-0000-0000-000000000001',
+      'aaaaaaaa-0000-0000-0000-000000000006',
+      'aaaaaaaa-0000-0000-0000-000000000007'
+    ) then
       errores := errores || format(
         E'\n  - la conversación %s quedó sin dueño y el conteo no la ve.', fila.id);
     end if;

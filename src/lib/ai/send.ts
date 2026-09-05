@@ -99,10 +99,25 @@ async function entregar(
   }
 }
 
+/** Opciones de `sendAgentText`, todas opcionales para no romper a los llamadores existentes. */
+export interface SendAgentTextOptions {
+  /**
+   * El mensaje es un automatismo, no una respuesta real (anexo A1, 5/9/2026):
+   * misma marca que ya lleva la plantilla de bienvenida (T0.1). Hoy la usa la
+   * despedida de la IA al escalar sin asesores — "ya dejé tu caso
+   * registrado…" no es que alguien haya atendido al cliente, y el trigger
+   * `handle_new_message` la respeta para no apagar `last_reply_at`/
+   * `awaiting_reply`. Default `false`: cualquier otro texto del agente sigue
+   * contando como respuesta real, como siempre.
+   */
+  isAutoReply?: boolean;
+}
+
 export async function sendAgentText(
   supabase: SupabaseClient<Database>,
   target: TurnTarget,
-  text: string
+  text: string,
+  opciones?: SendAgentTextOptions
 ): Promise<DeliveryOutcome> {
   const entrega = await entregar(target, (accessToken) =>
     sendWhatsappText(target.phoneNumberId!, accessToken, target.phoneNumber, text)
@@ -114,6 +129,7 @@ export async function sendAgentText(
     sender_type: "ai",
     message_type: "text",
     content: text,
+    is_auto_reply: opciones?.isAutoReply ?? false,
     ...entrega,
   });
 

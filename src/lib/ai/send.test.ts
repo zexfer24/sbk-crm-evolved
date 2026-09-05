@@ -18,6 +18,7 @@ interface InsertedMessage {
   message_type: string;
   content: string | null;
   media_url?: string | null;
+  is_auto_reply?: boolean;
 }
 
 function createFakeSupabase() {
@@ -186,6 +187,32 @@ describe("sendAgentText — el outcome vuelve", () => {
 
     expect(outcome.whatsapp_status).toBe("failed");
     expect(outcome.whatsapp_error_code).toBe(131047);
+  });
+});
+
+/**
+ * Anexo A1 (5/9/2026): `sendAgentText` gana `opciones?.isAutoReply`, la
+ * misma marca que ya lleva la bienvenida automática (T0.1). La usa la
+ * despedida de la IA al escalar sin asesores, para que el trigger
+ * `handle_new_message` no la cuente como respuesta real.
+ */
+describe("sendAgentText — is_auto_reply", () => {
+  it("sin opciones, inserta is_auto_reply: false", async () => {
+    const { client, inserted } = createFakeSupabase();
+
+    // @ts-expect-error -- fake mínimo
+    await sendAgentText(client, conversation(false), "hola");
+
+    expect(inserted[0].is_auto_reply).toBe(false);
+  });
+
+  it("con { isAutoReply: true }, inserta is_auto_reply: true", async () => {
+    const { client, inserted } = createFakeSupabase();
+
+    // @ts-expect-error -- fake mínimo
+    await sendAgentText(client, conversation(false), "Ya dejé tu caso registrado…", { isAutoReply: true });
+
+    expect(inserted[0].is_auto_reply).toBe(true);
   });
 });
 

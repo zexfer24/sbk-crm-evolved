@@ -842,6 +842,10 @@ async function runTurnPhases(
     });
     outcome.escalated = forced.escalated;
     outcome.assignedAgentName = forced.assignedAgentName ?? undefined;
+    // Copiado también acá (anexo A1, 5/9/2026): esta es la red de seguridad,
+    // no la herramienta que el modelo invoca — sin este campo, el envío de
+    // abajo no tendría cómo saber si la despedida se quedó sin nadie detrás.
+    outcome.unassigned = forced.unassigned;
     if (!text.trim()) {
       // Sin asesores no se promete lo que no va a pasar: nadie va a
       // contestar en un minuto si no hay nadie trabajando.
@@ -856,8 +860,18 @@ async function runTurnPhases(
     // pasaron el reconocimiento de escenario, la clasificación y hasta cinco
     // pasos de tool loop. Es el punto del turno más lejano al momento en que
     // se miraron las guardas al abrirlo.
+    // `isAutoReply` (anexo A1, 5/9/2026): una despedida sin nadie detrás no
+    // es una respuesta. Cubre los DOS caminos por los que la IA se despide al
+    // escalar sin asesores: el texto fijo de la red de seguridad de arriba y
+    // el que redacta el propio modelo tras leer `instruccionParaTuRespuesta`
+    // de la herramienta (`tools.ts`). El cliente sigue esperando a una
+    // persona, así que el trigger `handle_new_message` no debe apagar
+    // `awaiting_reply` con este mensaje — de ahí la misma marca que ya lleva
+    // la bienvenida automática (T0.1).
     const salida = await deliver(supabase, target, entrega, lease, tiempos, "redaccion", () =>
-      sendAgentText(supabase, target, text.trim())
+      sendAgentText(supabase, target, text.trim(), {
+        isAutoReply: outcome.escalated && outcome.unassigned === true,
+      })
     );
     if (!salida) return;
     // `outcome.escalated` es la bandera: `escalateConversation` SIEMPRE deja

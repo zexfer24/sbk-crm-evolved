@@ -229,14 +229,17 @@ function matchesFilter(conversation: ConversationSummary, filter: InboxFilter, v
     // La fórmula, calcada del predicado del servidor (`escalatedOnly`,
     // data.ts): escalada a un humano (`journeyStage === "assigned"`) con la
     // IA ya apagada, abierta, Y (nadie del equipo respondió de verdad
-    // ["distinct from 'agent'"] O el cliente sigue esperando). El "o" con
-    // `awaitingReply` no es redundante: la IA manda un mensaje de cortesía
-    // al escalar sin asesores disponibles ("Dejé tu caso registrado… no hay
-    // asesores"), y ESE mensaje sí cuenta como respuesta real —
-    // `lastReplySender` queda en `"ai"` y `awaitingReply` se apaga— sin que
-    // ningún humano haya escrito nada. Sin el `lastReplySender !== "agent"`
-    // de este lado, esa conversación desaparecería de "Escaladas" apenas la
-    // IA se despide, aunque siga sin dueño de carne y hueso.
+    // ["distinct from 'agent'"] O el cliente sigue esperando).
+    //
+    // Desde el anexo A1 (5/9/2026) la despedida de la IA al escalar sin
+    // asesores YA NO apaga `awaitingReply`: sale con `is_auto_reply = true`
+    // (misma marca que la bienvenida automática, T0.1) y el trigger
+    // `handle_new_message` la excluye de "respuesta real". El "o" con
+    // `awaitingReply` deja de ser el que rescataba ese caso, pero SE
+    // CONSERVA igual: la pata `lastReplySender !== "agent"` sigue cubriendo
+    // conversaciones escaladas de antes de A1 (con la cortesía ya contada
+    // como respuesta en su momento) y cualquier otra respuesta de la IA
+    // previa a la escalación misma.
     case "escalated":
       return (
         conversation.journeyStage === "assigned" &&

@@ -182,7 +182,10 @@ dejar rastro es lo que hacía desaparecer leads.
   eventos de sistema, bienvenida ni envíos `failed`— desde 20260905010000.**
   En memoria eso es `awaitingReply()` (`dashboard.ts`) comparando
   `lastReplyAt` contra `lastCustomerMessageAt`, ya no `lastMessageAt` contra
-  `lastCustomerMessageAt`.
+  `lastCustomerMessageAt`. La despedida de la IA al escalar sin asesores
+  también es `is_auto_reply` (anexo A1, 5/9/2026) y por eso NO apaga
+  `awaiting_reply`: el cliente sigue esperando a una persona, aunque haya
+  recibido la cortesía.
 - `supabase/seed.sql` **no va a producción** (trae usuarios con contraseña
   escrita); los seeds de catálogo y playbooks sí.
 - Sin `WHATSAPP_APP_SECRET` el webhook acepta cualquier POST (a propósito,

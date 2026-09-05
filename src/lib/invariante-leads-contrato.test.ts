@@ -102,4 +102,18 @@ describe('contrato de "sin dueño" — los mismos casos que invariante_leads.sql
       isUnassignedLead(true, [traspaso("closed", 180), traspaso("unassigned", 10)])
     ).toBe(true);
   });
+
+  /**
+   * Caso 7 (anexo A1, 5/9/2026): la IA escaló sin asesores disponibles y se
+   * despidió con el mensaje de cortesía. Ese mensaje sale con
+   * `is_auto_reply = true` (misma marca que la bienvenida automática, T0.1),
+   * así que el trigger `handle_new_message` NO lo cuenta como respuesta
+   * real: `awaiting_reply` se queda en `true` — el `true` del primer
+   * argumento acá abajo es exactamente ese hecho — y el traspaso más
+   * reciente sigue siendo `unassigned`/`escalada_sin_asesor`, que deja
+   * `escalate.ts` desde T0.3.
+   */
+  it("caso 7 · escalada sin asesores y la IA se despidió con is_auto_reply: CUENTA", () => {
+    expect(isUnassignedLead(true, [traspaso("unassigned", 9)])).toBe(true);
+  });
 });

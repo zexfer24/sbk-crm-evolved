@@ -66,6 +66,13 @@ export interface EscalationOutcome {
   motivo?: EscalationMotivo;
   assignedAgentName?: string;
   reason?: string;
+  /**
+   * La escalación quedó sin ningún asesor disponible (anexo A1, 5/9/2026).
+   * El orquestador la usa para decidir si el mensaje final es una despedida
+   * sin nadie detrás —que no cuenta como respuesta real, `isAutoReply: true`
+   * en `sendAgentText`— o una escalación con asesor de verdad.
+   */
+  unassigned?: boolean;
 }
 
 // ---------------------------------------------------------------------------
@@ -263,6 +270,7 @@ export function buildEscalateTool({ supabase, conversationId, contactId }: ToolD
       outcome.motivo = motivo;
       outcome.assignedAgentName = result.assignedAgentName ?? undefined;
       outcome.reason = result.reason;
+      outcome.unassigned = result.unassigned;
 
       // El modelo redacta el cierre con esto, así que se le dice en palabras
       // qué prometer: sin asesores no puede decir «ya te atienden».

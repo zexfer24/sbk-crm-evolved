@@ -277,9 +277,23 @@ vi.mock("@/lib/ai/model", () => ({
   currentAgentModelLabel: () => "fake/modelo",
 }));
 
+/**
+ * `buildEscalateTool` real (`tools.ts`) es lo que copia `result.unassigned`
+ * al `outcome` cuando el MODELO invoca la herramienta durante el tool loop.
+ * Acá el tool loop entero está fingido (`generateMock` no ejecuta ninguna
+ * herramienta de verdad), así que para simular "el modelo llamó a
+ * `escalarAAsesor`" un test puntual sobrescribe este mock para que mute el
+ * `outcome` que le llega — el mismo objeto que `runTurnPhases` construye
+ * ANTES de invocar `agent.generate()`, así que mutarlo acá tiene el mismo
+ * efecto observable que si la herramienta hubiera corrido de verdad
+ * (anexo A1, 5/9/2026).
+ */
+const buildEscalateToolMock = vi.fn<(deps: unknown, outcome: Record<string, unknown>) => Record<string, never>>(
+  () => ({})
+);
 vi.mock("@/lib/ai/tools", () => ({
   buildCatalogTool: () => ({}),
-  buildEscalateTool: () => ({}),
+  buildEscalateTool: (deps: unknown, outcome: Record<string, unknown>) => buildEscalateToolMock(deps, outcome),
   buildOrderHistoryTool: () => ({}),
 }));
 
@@ -1668,6 +1682,100 @@ describe("runAgentTurn — un solo traspaso por salida cuando la escalación for
       p_to_kind: "unassigned",
       p_reason: "rechazado_por_meta",
     });
+  });
+});
+
+/**
+ * Anexo A1 (5/9/2026): la despedida de la IA al escalar sin asesores no
+ * cuenta como respuesta real. Cubre los dos caminos por los que la IA se
+ * despide sin nadie detrás —la red de seguridad de devolución/queja, y el
+ * modelo que redacta su propia despedida tras invocar la herramienta— y los
+ * dos controles: con asesor asignado, y una respuesta que ni siquiera
+ * escaló.
+ */
+describe("runAgentTurn — anexo A1: is_auto_reply en la despedida de la IA al escalar sin asesores", () => {
+  it("(a) red de seguridad de queja sin asesores: el texto fijo sale con isAutoReply true", async () => {
+    classifyIntentMock.mockResolvedValue({
+      intent: "queja",
+      usage: { inputTokens: 5, outputTokens: 1, totalTokens: 6 },
+    });
+    // El modelo no redacta nada (tool loop agotado sin escalar de verdad):
+    // el texto que sale es el fijo que arma la red de seguridad.
+    generateMock.mockResolvedValueOnce({
+      text: "",
+      usage: { inputTokens: 20, outputTokens: 0, totalTokens: 20 },
+      steps: [{}],
+    });
+    escalateConversationMock.mockImplementation(async () => {
+      pasos.push("escalar");
+      return { escalated: true, assignedAgentName: null, unassigned: true };
+    });
+
+    await runAgentTurn("conv-1");
+
+    expect(sendAgentTextMock).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.anything(),
+      "Ya dejé tu caso registrado para que lo revise un asesor. En cuanto haya alguien disponible te escriben por acá.",
+      { isAutoReply: true }
+    );
+  });
+
+  it("(b) el modelo llama a escalarAAsesor, queda sin asesor y redacta su propia despedida: isAutoReply true", async () => {
+    // Simula lo que haría la herramienta real (`buildEscalateTool`) si el
+    // modelo la invocara durante el tool loop: mutar el `outcome` que le
+    // llegó ANTES de que `agent.generate()` devuelva texto.
+    buildEscalateToolMock.mockImplementationOnce((_deps, outcome) => {
+      outcome.escalated = true;
+      outcome.assignedAgentName = undefined;
+      outcome.unassigned = true;
+      pasos.push("escalar");
+      return {};
+    });
+    generateMock.mockResolvedValueOnce({
+      text: "Ya dejé tu caso registrado, en cuanto haya alguien libre te escribe.",
+      usage: { inputTokens: 20, outputTokens: 12, totalTokens: 32 },
+      steps: [{}, {}],
+    });
+
+    await runAgentTurn("conv-1");
+
+    expect(sendAgentTextMock).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.anything(),
+      "Ya dejé tu caso registrado, en cuanto haya alguien libre te escribe.",
+      { isAutoReply: true }
+    );
+  });
+
+  it("(c) escalación CON asesor: isAutoReply falso o ausente", async () => {
+    buildEscalateToolMock.mockImplementationOnce((_deps, outcome) => {
+      outcome.escalated = true;
+      outcome.assignedAgentName = "María";
+      outcome.unassigned = false;
+      pasos.push("escalar");
+      return {};
+    });
+    generateMock.mockResolvedValueOnce({
+      text: "Ya te paso con María, ella te ayuda con esto.",
+      usage: { inputTokens: 20, outputTokens: 12, totalTokens: 32 },
+      steps: [{}, {}],
+    });
+
+    await runAgentTurn("conv-1");
+
+    const llamada = sendAgentTextMock.mock.calls[0];
+    expect(llamada[2]).toBe("Ya te paso con María, ella te ayuda con esto.");
+    const opciones = llamada[3] as { isAutoReply?: boolean } | undefined;
+    expect(opciones?.isAutoReply).not.toBe(true);
+  });
+
+  it("(d) respuesta normal sin escalar: sin la marca", async () => {
+    await runAgentTurn("conv-1");
+
+    const llamada = sendAgentTextMock.mock.calls[0];
+    const opciones = llamada[3] as { isAutoReply?: boolean } | undefined;
+    expect(opciones?.isAutoReply).not.toBe(true);
   });
 });
 
