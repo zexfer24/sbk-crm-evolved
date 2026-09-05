@@ -132,3 +132,13 @@ jobs:
           psql "postgresql://postgres:postgres@127.0.0.1:54322/postgres" \
             -v ON_ERROR_STOP=1 \
             -f supabase/tests/pins.sql
+
+      # T3.2 (5/9/2026): 'played' (nota de voz reproducida) tiene que rankear
+      # por encima de 'read' en whatsapp_status_rank(), o keep_whatsapp_status_
+      # moving_forward() dejaría que un "leído" tardío de Meta retrocediera el
+      # doble check sobre un "reproducido" que el asesor ya vio en pantalla.
+      - name: whatsapp_status -- 'played' no retrocede
+        run: |
+          psql "postgresql://postgres:postgres@127.0.0.1:54322/postgres" \
+            -v ON_ERROR_STOP=1 \
+            -f supabase/tests/whatsapp_status_forward.sql
