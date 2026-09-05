@@ -174,6 +174,18 @@
   padding: 0 10px 14px;
   overflow-y: auto;
   scrollbar-width: thin;
+  /* Explícito y no confiado al default del navegador (T1.2, 4/9/2026): con
+     el sentinel de IntersectionObserver agregando filas por debajo del
+     punto donde está mirando el asesor, el anclaje de scroll es lo que evita
+     que la lista salte bajo su dedo/rueda al crecer. */
+  overflow-anchor: auto;
+}
+
+/* Blanco del IntersectionObserver que dispara "cargar más" (ver
+   inbox-sidebar.tsx). 1px y no 0: un elemento sin alto no siempre entra al
+   cálculo de intersección en todos los navegadores. */
+.crm-list-sentinel {
+  height: 1px;
 }
 
 .crm-list-section {

@@ -689,14 +689,58 @@ export function InboxSidebar({
   const unreadCleared =
     filter === "unread" && !trimmedSearch && !activeTagId && !searching && !pagerFailed;
 
-  const handleListScroll = useCallback(
-    (event: React.UIEvent<HTMLDivElement>) => {
-      if (!pager.hasMore || pager.loadingMore) return;
-      const el = event.currentTarget;
-      if (el.scrollHeight - el.scrollTop - el.clientHeight < 200) pager.loadMore();
-    },
-    [pager]
-  );
+  /** `.crm-list`, para servir de `root` al `IntersectionObserver` de abajo:
+   * sin un root explícito, el observer mide contra el viewport de la
+   * ventana, no contra el contenedor con su propio scroll. */
+  const listRef = useRef<HTMLDivElement | null>(null);
+  /** El sentinel de 1px al fondo de la lista (ver el JSX, antes de avisos/botón). */
+  const sentinelRef = useRef<HTMLDivElement | null>(null);
+
+  /**
+   * Reemplaza el `handleListScroll` de antes (F7, 4/9/2026): ese medía
+   * `scrollHeight - scrollTop - clientHeight < 200` en cada evento de
+   * scroll, y con la rueda a velocidad normal en una lista de cientos de
+   * filas el fondo vacío alcanzaba a pintarse un instante antes de que la
+   * carga lo llenara — la carrera la ganaba el scroll. Un
+   * `IntersectionObserver` con `rootMargin: "0px 0px 150% 0px"` dispara con
+   * página y media de margen, antes de que el sentinel entre siquiera al
+   * viewport real de `.crm-list`.
+   *
+   * El efecto se recrea entero —nuevo observer, nueva observación— cada vez
+   * que cambia `hasMore`/`loadingMore`/`lastPageFailed`/`loadMore`: la
+   * primera observación de un `IntersectionObserver` SIEMPRE entrega una
+   * entrada inicial con el estado de intersección vigente (parte del
+   * estándar, no un detalle de esta implementación), así que recrear el
+   * observer justo cuando una página termina de cargar (`loadingMore` pasa
+   * de `true` a `false`) reobserva el sentinel y dispara esa entrada de
+   * una — es el re-armado que encadena páginas solas cuando la lista quedó
+   * corta y el sentinel sigue visible, sin que el asesor mueva la rueda.
+   *
+   * `typeof IntersectionObserver === "undefined"` corta el efecto sin tocar
+   * nada: el botón "Cargar más" (más abajo en el JSX) sigue siendo la única
+   * vía en un navegador sin soporte — no se compensa a mano acá.
+   */
+  useEffect(() => {
+    if (typeof IntersectionObserver === "undefined") return;
+    const root = listRef.current;
+    const sentinel = sentinelRef.current;
+    if (!root || !sentinel) return;
+
+    const observer = new IntersectionObserver(
+      (entries) => {
+        if (!pager.hasMore || pager.loadingMore || pager.lastPageFailed) return;
+        if (entries.some((entry) => entry.isIntersecting)) pager.loadMore();
+      },
+      { root, rootMargin: "0px 0px 150% 0px" }
+    );
+
+    observer.observe(sentinel);
+    return () => observer.disconnect();
+    // `pager` entero y no sus cuatro campos sueltos: es un objeto memoizado
+    // (`useMemo` de más arriba) que solo cambia de identidad cuando alguno de
+    // ellos cambia, así que la frecuencia de recreación del efecto es la
+    // misma — esta forma es la que ESLint reconoce como completa.
+  }, [pager]);
 
   /**
    * Abrir un chat es leerlo. `patchServerRows` adelanta ese efecto sobre la
@@ -806,7 +850,7 @@ export function InboxSidebar({
         </FilterScroller>
       </div>
 
-      <div className="crm-list" onScroll={handleListScroll}>
+      <div className="crm-list" ref={listRef}>
         {sections.map((section) => (
           <Fragment key={section.id}>
             {section.label !== null && (
@@ -877,6 +921,12 @@ export function InboxSidebar({
             <span>No se pudo traer la bandeja.</span>
             <button type="button" className="crm-pill" onClick={pager.retry}>
               Reintentar
+        {/* Blanco del IntersectionObserver de arriba: 1px, invisible, al
+            final de las filas y antes de cualquier aviso o botón — así
+            "intersecta" apenas el fondo real de la lista se acerca, sin
+            competir por espacio con el resto del pie. */}
+        <div className="crm-list-sentinel" ref={sentinelRef} aria-hidden />
+
             </button>
           </p>
         )}

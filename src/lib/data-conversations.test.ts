@@ -1,6 +1,11 @@
 import { describe, expect, it } from "vitest";
 import type { SupabaseClient } from "@supabase/supabase-js";
-import { CONVERSATIONS_PAGE_SIZE, fetchBoardConversations, fetchConversations } from "@/lib/data";
+import {
+  CONVERSATIONS_PAGE_SIZE,
+  INBOX_PAGE_SIZE,
+  fetchBoardConversations,
+  fetchConversations,
+} from "@/lib/data";
 import { freeformWindowCutoff } from "@/lib/dashboard";
 import { cursorAfterPage } from "@/lib/inbox-paging";
 
@@ -940,3 +945,32 @@ describe("fetchConversations", () => {
     });
   });
 });
+
+/**
+ * T1.2 del plan "Bandeja que no pierde" (4/9/2026, scroll infinito, F7): sube
+ * `INBOX_PAGE_SIZE` de 30 a 50 — con 30, el margen adelantado del
+ * `IntersectionObserver` (`rootMargin: "0px 0px 150% 0px"` en
+ * inbox-sidebar.tsx) alcanzaba a pedir la SEGUNDA página antes de que la
+ * primera terminara de pintarse en pantallas altas, encadenando cargas de
+ * más. El símbolo lo consumen `pillQueryOptions` (inbox-sidebar.tsx, con su
+ * propio mock en inbox-sidebar.test.tsx sincronizado a mano al mismo valor)
+ * y la siembra de `page.tsx`/`crm-shell.tsx`; acá se prueba contra la fuente
+ * real —sin mockear `@/lib/data`— que el valor que de verdad gobierna la
+ * paginación es 50, y que ese número viaja hasta el `.range()` real de
+ * `fetchConversations` y no solo hasta un mock desincronizado.
+ */
+describe("INBOX_PAGE_SIZE", () => {
+  it("vale 50 y es el límite real que fetchConversations aplica en una sola consulta", async () => {
+    expect(INBOX_PAGE_SIZE).toBe(50);
+
+    const { client, calls } = createFakeSupabase(
+      Array.from({ length: 5000 }, (_, i) => makeRow(i))
+    );
+
+    const result = await fetchConversations(client, { limit: INBOX_PAGE_SIZE });
+
+    expect(result).toHaveLength(INBOX_PAGE_SIZE);
+    expect(calls).toEqual([{ from: 0, to: INBOX_PAGE_SIZE - 1 }]);
+  });
+});
+

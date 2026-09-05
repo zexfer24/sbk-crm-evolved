@@ -521,7 +521,7 @@ export const CONVERSATIONS_PAGE_SIZE = 1000;
  * que quede más atrás también se encuentra por la búsqueda, que consulta
  * contra la base y no contra lo que ya está en pantalla.
  */
-export const INBOX_PAGE_SIZE = 30;
+export const INBOX_PAGE_SIZE = 50;
 
 /** Las dos columnas del orden de la bandeja, en la fila CRUDA. */
 interface CursorableRow {

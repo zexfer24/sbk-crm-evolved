@@ -1,5 +1,5 @@
 /** @vitest-environment jsdom */
-import { describe, expect, it, vi, beforeEach } from "vitest";
+import { describe, expect, it, vi, beforeEach, afterEach } from "vitest";
 import { render, screen, fireEvent, within, waitFor } from "@testing-library/react";
 import type { Agent, Conversation, Tag } from "@/lib/types";
 import { fetchConversations, fetchUnassignedConversations, INBOX_PAGE_SIZE } from "@/lib/data";
@@ -21,7 +21,7 @@ vi.mock("@/lib/data", () => ({
   fetchConversations: vi.fn().mockResolvedValue([]),
   fetchUnassignedConversations: vi.fn().mockResolvedValue([]),
   searchConversationSummaries: vi.fn().mockResolvedValue([]),
-  INBOX_PAGE_SIZE: 30,
+  INBOX_PAGE_SIZE: 50,
 }));
 
 beforeEach(() => {
@@ -1765,3 +1765,198 @@ describe("apartar un chat desde el menú de la bandeja", () => {
     expect(onMarkUnread).not.toHaveBeenCalled();
   });
 });
+
+/**
+ * F7 (T1.2 del plan "Bandeja que no pierde", 4/9/2026): el sentinel de
+ * `IntersectionObserver` reemplaza al `handleListScroll` de antes (umbral de
+ * 200px de scroll restante), que en listas largas con la rueda a velocidad
+ * normal alcanzaba a pintar el fondo vacío un instante antes de que la carga
+ * lo llenara. jsdom no implementa `IntersectionObserver`: se sustituye por
+ * una clase mínima (mismo patrón que `FakeResizeObserver` en
+ * sliding-pills.test.tsx) que solo registra su callback para que el test
+ * pueda "intersectar" el sentinel a mano, sin depender de layout real ni de
+ * un evento de scroll.
+ *
+ * Se prueba sobre "Todos" (paginación local: props `hasMore`/`loadingMore`/
+ * `lastPageFailed`/`onLoadMore`) porque ahí el estado del pager es directo
+ * —una prop, no una promesa que hay que esperar—, y el efecto bajo prueba
+ * consume exactamente esas cuatro señales sin que importe de qué camino
+ * vengan (el mismo `pager` que usa "Pendientes"/"No leídas"/"Mías" vía
+ * `serverPager`, ver el comentario grande de `pager` en inbox-sidebar.tsx).
+ */
+describe("InboxSidebar — el sentinel de IntersectionObserver dispara la carga (F7)", () => {
+  class IntersectionObserverMock {
+    static instances: IntersectionObserverMock[] = [];
+    callback: IntersectionObserverCallback;
+    options?: IntersectionObserverInit;
+    observed = new Set<Element>();
+
+    constructor(callback: IntersectionObserverCallback, options?: IntersectionObserverInit) {
+      this.callback = callback;
+      this.options = options;
+      IntersectionObserverMock.instances.push(this);
+    }
+
+    observe(el: Element) {
+      this.observed.add(el);
+    }
+    unobserve(el: Element) {
+      this.observed.delete(el);
+    }
+    disconnect() {
+      this.observed.clear();
+    }
+  }
+
+  beforeEach(() => {
+    IntersectionObserverMock.instances = [];
+    vi.stubGlobal("IntersectionObserver", IntersectionObserverMock);
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  /**
+   * El efecto de inbox-sidebar.tsx recrea el observer entero —nuevo
+   * `new IntersectionObserver(...)`, nueva `.observe()`— cada vez que cambia
+   * `hasMore`/`loadingMore`/`lastPageFailed`/`loadMore` (ver ese comentario
+   * grande): por eso "intersectar" acá siempre apunta a la instancia MÁS
+   * RECIENTE, la única que sigue observando de verdad tras un re-render que
+   * cambió alguna de esas señales.
+   */
+  function intersectSentinel(isIntersecting = true) {
+    const instance = IntersectionObserverMock.instances.at(-1);
+    if (!instance) throw new Error("Ningún IntersectionObserver se creó todavía");
+    instance.callback(
+      [{ isIntersecting } as IntersectionObserverEntry],
+      instance as unknown as IntersectionObserver
+    );
+  }
+
+  function renderTodos(props: {
+    hasMore?: boolean;
+    loadingMore?: boolean;
+    lastPageFailed?: boolean;
+    onLoadMore?: () => void;
+  }) {
+    const result = render(
+      <InboxSidebar
+        conversations={CONVERSATIONS}
+        selectedId={null}
+        onSelect={() => {}}
+        currentAgent={JEFA}
+        allTags={ALL_TAGS}
+        bcvRate={null}
+        hasMore={props.hasMore ?? true}
+        loadingMore={props.loadingMore ?? false}
+        lastPageFailed={props.lastPageFailed ?? false}
+        onLoadMore={props.onLoadMore}
+      />
+    );
+    irATodos();
+    return result;
+  }
+
+  it("visible, con hasMore y sin nada en curso, llama a onLoadMore una vez", () => {
+    const onLoadMore = vi.fn();
+    renderTodos({ onLoadMore });
+
+    intersectSentinel(true);
+
+    expect(onLoadMore).toHaveBeenCalledTimes(1);
+  });
+
+  it("con loadingMore, intersectar no llama a onLoadMore", () => {
+    const onLoadMore = vi.fn();
+    renderTodos({ loadingMore: true, onLoadMore });
+
+    intersectSentinel(true);
+
+    expect(onLoadMore).not.toHaveBeenCalled();
+  });
+
+  it("con lastPageFailed, intersectar no llama a onLoadMore", () => {
+    const onLoadMore = vi.fn();
+    renderTodos({ lastPageFailed: true, onLoadMore });
+
+    intersectSentinel(true);
+
+    expect(onLoadMore).not.toHaveBeenCalled();
+  });
+
+  it("sin intersección (isIntersecting: false), no llama a onLoadMore", () => {
+    const onLoadMore = vi.fn();
+    renderTodos({ onLoadMore });
+
+    intersectSentinel(false);
+
+    expect(onLoadMore).not.toHaveBeenCalled();
+  });
+
+  /**
+   * El re-armado: tras resolver una página (`loadingMore` vuelve a `false`),
+   * si el sentinel sigue "visible" —la lista quedó corta y no llenó el
+   * contenedor— la carga siguiente sale sola, sin ningún evento de scroll.
+   * El efecto se recreó al cambiar `loadingMore` dos veces (true, luego
+   * false otra vez): la instancia más reciente es la que hay que
+   * intersectar para comprobarlo.
+   */
+  it("tras terminar una carga con el sentinel aún visible, encadena una segunda sin scroll", () => {
+    const onLoadMore = vi.fn();
+    const { rerender } = renderTodos({ loadingMore: false, onLoadMore });
+
+    intersectSentinel(true);
+    expect(onLoadMore).toHaveBeenCalledTimes(1);
+
+    // La página pedida se pone en vuelo...
+    rerender(
+      <InboxSidebar
+        conversations={CONVERSATIONS}
+        selectedId={null}
+        onSelect={() => {}}
+        currentAgent={JEFA}
+        allTags={ALL_TAGS}
+        bcvRate={null}
+        hasMore
+        loadingMore
+        onLoadMore={onLoadMore}
+      />
+    );
+    // ...y termina: `loadingMore` vuelve a `false` con el sentinel todavía
+    // visible (la lista siguió corta).
+    rerender(
+      <InboxSidebar
+        conversations={CONVERSATIONS}
+        selectedId={null}
+        onSelect={() => {}}
+        currentAgent={JEFA}
+        allTags={ALL_TAGS}
+        bcvRate={null}
+        hasMore
+        loadingMore={false}
+        onLoadMore={onLoadMore}
+      />
+    );
+
+    intersectSentinel(true);
+    expect(onLoadMore).toHaveBeenCalledTimes(2);
+  });
+
+  it("sin IntersectionObserver global (navegador sin soporte), no explota y el botón 'Cargar más' sigue ofreciéndose", () => {
+    vi.unstubAllGlobals();
+    const original = (globalThis as { IntersectionObserver?: unknown }).IntersectionObserver;
+    delete (globalThis as { IntersectionObserver?: unknown }).IntersectionObserver;
+
+    try {
+      const onLoadMore = vi.fn();
+      renderTodos({ onLoadMore });
+
+      expect(screen.getByRole("button", { name: /cargar más/i })).toBeTruthy();
+      expect(onLoadMore).not.toHaveBeenCalled();
+    } finally {
+      (globalThis as { IntersectionObserver?: unknown }).IntersectionObserver = original;
+    }
+  });
+});
+
