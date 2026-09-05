@@ -710,3 +710,53 @@ describe("applyInboxFilters — los criterios se acumulan", () => {
     });
   });
 });
+
+/**
+ * T2.2 del plan "La bandeja que no pierde" (5/9/2026): hasta tres chats
+ * fijados por asesor (`conversation_pins`). `pinnedIds` no es un filtro más
+ * —una conversación fijada que no calza con la píldora activa sigue sin
+ * aparecer— es un segundo criterio de orden que se aplica DESPUÉS del `sort`
+ * normal: los fijados suben como grupo, sin desordenar entre ellos ni entre
+ * el resto de la lista.
+ */
+describe("applyInboxFilters — 'pinnedIds' pone los fijados primero", () => {
+  const vieja = conversation({ id: "vieja", lastMessageAt: "2026-08-01T10:00:00Z" });
+  const nueva = conversation({ id: "nueva", lastMessageAt: "2026-08-22T10:00:00Z" });
+  const media = conversation({ id: "media", lastMessageAt: "2026-08-10T10:00:00Z" });
+  const todas = [vieja, nueva, media];
+
+  function ids(pinnedIds?: ReadonlySet<string>, sort: "recent" | "oldest" = "recent") {
+    return applyInboxFilters(todas, {
+      filter: "all",
+      search: "",
+      tagId: null,
+      sort,
+      viewer: ANA,
+      pinnedIds,
+    }).map((c) => c.id);
+  }
+
+  it("sin pinnedIds el orden no cambia respecto al de antes de esta tarea", () => {
+    expect(ids()).toEqual(["nueva", "media", "vieja"]);
+  });
+
+  it("con un conjunto vacío tampoco cambia nada", () => {
+    expect(ids(new Set())).toEqual(["nueva", "media", "vieja"]);
+  });
+
+  it("la fijada más vieja sube por encima de las dos no fijadas, aunque sean más nuevas", () => {
+    expect(ids(new Set(["vieja"]))).toEqual(["vieja", "nueva", "media"]);
+  });
+
+  it("con dos fijadas, las dos van primero respetando entre ellas el orden por fecha", () => {
+    expect(ids(new Set(["vieja", "media"]))).toEqual(["media", "vieja", "nueva"]);
+  });
+
+  it("respeta el orden interno también en 'oldest': entre fijadas, la más vieja primero", () => {
+    expect(ids(new Set(["nueva", "vieja"]), "oldest")).toEqual(["vieja", "nueva", "media"]);
+  });
+
+  it("un id fijado que no está en la lista no rompe nada", () => {
+    expect(ids(new Set(["fantasma"]))).toEqual(["nueva", "media", "vieja"]);
+  });
+});

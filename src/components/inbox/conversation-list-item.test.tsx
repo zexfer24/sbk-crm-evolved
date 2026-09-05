@@ -37,12 +37,13 @@ function buildConversation(overrides: Partial<Conversation> = {}): Conversation 
   } as unknown as Conversation;
 }
 
-function renderItem(overrides: Partial<Conversation> = {}) {
+function renderItem(overrides: Partial<Conversation> = {}, options: { isPinned?: boolean } = {}) {
   return render(
     <ConversationListItem
       conversation={buildConversation(overrides)}
       isSelected={false}
       onSelect={() => {}}
+      isPinned={options.isPinned}
     />
   );
 }
@@ -206,5 +207,22 @@ describe("menú contextual de la conversación", () => {
     fireEvent.contextMenu(screen.getByRole("button"));
 
     expect(asked).toBe(1);
+  });
+});
+
+/**
+ * T2.2 (5/9/2026): el pin es solo un adorno junto al nombre -- el orden
+ * (fijadas primero) lo decide `applyInboxFilters` (inbox-filters.ts), no
+ * este componente.
+ */
+describe("ConversationListItem — indicador de fijada", () => {
+  it("no pinta el ícono cuando no está fijada", () => {
+    renderItem({}, { isPinned: false });
+    expect(screen.queryByLabelText("Fijada")).not.toBeInTheDocument();
+  });
+
+  it("pinta el ícono junto al nombre cuando está fijada", () => {
+    renderItem({}, { isPinned: true });
+    expect(screen.getByLabelText("Fijada")).toBeInTheDocument();
   });
 });

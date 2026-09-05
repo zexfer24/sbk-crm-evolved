@@ -316,6 +316,16 @@
   font-weight: 600;
 }
 
+/* Pin de "fijada" (T2.2, 5/9/2026): adorna el nombre, no reemplaza el orden
+   -- eso lo decide applyInboxFilters (inbox-filters.ts), no este ícono. */
+.crm-thread-pin {
+  position: relative;
+  top: 1.5px;
+  margin-right: 3px;
+  color: var(--lm-accent, var(--lm-muted));
+  vertical-align: middle;
+}
+
 .crm-thread-time {
   flex-shrink: 0;
   color: var(--lm-muted);

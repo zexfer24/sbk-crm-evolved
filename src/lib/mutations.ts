@@ -715,3 +715,36 @@ export async function setProductActive(supabase: SupabaseClient, productId: stri
 
   if (error) throw error;
 }
+// ---------------------------------------------------------------------------
+// Pines de conversación (T2.2 del plan "La bandeja que no pierde", 5/9/2026)
+//
+// `agentId` viaja explícito en el `.eq()`/insert aunque la RLS de
+// `conversation_pins` (`agent_id = auth.uid()`) ya baste para que un agente
+// no pueda tocar los pines de otro: mismo motivo que `fetchPinnedIds`
+// (data.ts) — la condición explícita es la que un mock de test puede
+// afirmar, y no depende de que el fake reproduzca RLS.
+//
+// El error del cuarto pin (el trigger `conversation_pins_limit_before_insert`
+// de 20260905040000_conversation_pins.sql) sube tal cual: no se traduce acá
+// a nada más simple porque el mensaje que trae ya está en español y listo
+// para mostrarse. `inbox-sidebar.tsx` decide qué hacer si falla (revertir el
+// optimismo y refrescar).
+// ---------------------------------------------------------------------------
+
+/** Fija una conversación para el agente que la pide. Falla si ya tiene tres. */
+export async function pinConversation(supabase: SupabaseClient, agentId: string, conversationId: string) {
+  const { error } = await supabase
+    .from("conversation_pins")
+    .insert({ agent_id: agentId, conversation_id: conversationId });
+  if (error) throw error;
+}
+
+/** Desfija una conversación. No falla si ya estaba desfijada: no hay nada que deshacer. */
+export async function unpinConversation(supabase: SupabaseClient, agentId: string, conversationId: string) {
+  const { error } = await supabase
+    .from("conversation_pins")
+    .delete()
+    .eq("agent_id", agentId)
+    .eq("conversation_id", conversationId);
+  if (error) throw error;
+}

@@ -5,12 +5,14 @@ import { ArrowDownWideNarrow, ArrowUpWideNarrow, Search } from "lucide-react";
 import type { Agent, ConversationSummary, InboxFilter, InboxSort, Tag } from "@/lib/types";
 import {
   fetchConversations,
+  fetchPinnedIds,
   fetchUnassignedConversations,
   INBOX_PAGE_SIZE,
   searchConversationSummaries,
   type FetchConversationsOptions,
   type InboxCounts,
 } from "@/lib/data";
+import { pinConversation, unpinConversation } from "@/lib/mutations";
 import { mergeById, reconcileHead, type ConversationCursor } from "@/lib/inbox-paging";
 import { useInboxPager, type InboxPagerView } from "@/lib/use-inbox-pager";
 import { initials } from "@/lib/dashboard";
@@ -48,6 +50,22 @@ const MESSAGE_SEARCH_DEBOUNCE_MS = 300;
 
 /** Constante y no `new Map()` en cada render: es dependencia de un useMemo. */
 const SIN_COINCIDENCIAS: ReadonlyMap<string, MessageHit> = new Map();
+
+/**
+ * Dónde vive la preferencia de píldora y orden de CADA agente (T2.2 del plan
+ * "La bandeja que no pierde", 5/9/2026). Por agente y no una sola clave
+ * global: dos personas turnándose el mismo navegador (un puesto compartido)
+ * no deberían pisarse la píldora que cada una prefiere.
+ */
+function inboxPrefsStorageKey(agentId: string): string {
+  return `sbk:inbox:${agentId}`;
+}
+
+/** Lo que se guarda bajo `inboxPrefsStorageKey`. */
+interface StoredInboxPrefs {
+  filter?: string;
+  sort?: string;
+}
 
 /**
  * Arma las opciones de `fetchConversations` para la píldora que resuelve en
@@ -185,6 +203,13 @@ interface InboxSidebarProps {
   /** Aparta el chat para volver después. Sin esto no se ofrece el menú. */
   onMarkUnread?: (conversationId: string) => void;
   onMarkRead?: (conversationId: string) => void;
+  /**
+   * Cerrar/reabrir desde el menú contextual (T2.1, 5/9/2026). Opcionales,
+   * igual que `onMarkUnread`/`onMarkRead`: sin el callback correspondiente
+   * `ConversationContextMenu` simplemente no ofrece esa acción.
+   */
+  onCloseConversation?: (conversationId: string) => void;
+  onReopenConversation?: (conversationId: string) => void;
   /** La ventana cargada llegó completa: probablemente haya más detrás. */
   hasMore?: boolean;
   loadingMore?: boolean;
@@ -238,6 +263,8 @@ export function InboxSidebar({
   bcvRate,
   onMarkUnread,
   onMarkRead,
+  onCloseConversation,
+  onReopenConversation,
   hasMore = false,
   loadingMore = false,
   onLoadMore,
@@ -253,6 +280,63 @@ export function InboxSidebar({
   const [search, setSearch] = useState("");
   const [sort, setSort] = useState<InboxSort>("recent");
   const [tagId, setTagId] = useState<string | null>(null);
+
+  /**
+   * Recordar la píldora y el orden entre sesiones (T2.2, 5/9/2026). Se lee
+   * UNA sola vez al montar, en un efecto y nunca en el render: el servidor
+   * (SSR de este "use client") no tiene `localStorage`, así que leerlo
+   * durante el render reventaría ahí. `didLoadPrefsRef` deja que el efecto
+   * de ESCRITURA (más abajo) se salte por completo su primera pasada — sin
+   * esto, ese efecto escribiría los defaults de vuelta al storage un
+   * instante antes de que este efecto de lectura alcance a restaurar el
+   * valor guardado, porque los dos corren en el mismo commit inicial con el
+   * estado todavía viejo.
+   */
+  const didLoadPrefsRef = useRef(false);
+
+  useEffect(() => {
+    try {
+      const raw = localStorage.getItem(inboxPrefsStorageKey(currentAgent.id));
+      if (raw) {
+        const stored = JSON.parse(raw) as StoredInboxPrefs;
+        // `INBOX_FILTER_LABELS` ya conoce las seis píldoras válidas: es más
+        // confiable que `availableFilters` para esto, porque una preferencia
+        // guardada con un rol no debería quedar huérfana si el rol cambia.
+        if (stored.filter && Object.prototype.hasOwnProperty.call(INBOX_FILTER_LABELS, stored.filter)) {
+          // Sincroniza React con lo que ya vive en localStorage al montar —
+          // no hay otra forma de traer un valor externo adentro salvo un
+          // setState directo acá; mismo caso que use-inbox-pager.ts:167.
+          // eslint-disable-next-line react-hooks/set-state-in-effect
+          setFilter(stored.filter as InboxFilter);
+        }
+        if (stored.sort === "recent" || stored.sort === "oldest") {
+          setSort(stored.sort);
+        }
+      }
+    } catch {
+      // Modo incógnito o almacenamiento bloqueado: se queda en
+      // DEFAULT_INBOX_FILTER/"recent", que ya trae useState de arriba.
+    }
+  }, [currentAgent.id]);
+
+  useEffect(() => {
+    if (!didLoadPrefsRef.current) {
+      // Primera pasada: es la que corresponde al montaje, y lo que hay que
+      // hacer en el montaje es LEER (efecto de arriba), no escribir. Todas
+      // las pasadas siguientes sí son un cambio real (restaurado o elegido a
+      // mano) y sí se guardan.
+      didLoadPrefsRef.current = true;
+      return;
+    }
+    try {
+      localStorage.setItem(
+        inboxPrefsStorageKey(currentAgent.id),
+        JSON.stringify({ filter, sort } satisfies StoredInboxPrefs)
+      );
+    } catch {
+      // Sin almacenamiento, la preferencia vale solo para esta pestaña.
+    }
+  }, [currentAgent.id, filter, sort]);
 
   // Qué conversación abrió el menú y dónde. Se guarda la conversación entera
   // y no solo su id porque el menú necesita saber si ya está sin leer para
@@ -284,6 +368,65 @@ export function InboxSidebar({
   }>({ query: "", hits: SIN_COINCIDENCIAS, remote: [] });
 
   const supabase = useMemo(() => createClient(), []);
+
+  /**
+   * Hasta tres conversaciones fijadas por el agente que mira (T2.2, 5/9/2026,
+   * `conversation_pins`). Se resuelve acá y no en `crm-shell.tsx` porque es
+   * autocontenido: no hay ninguna columna nueva en `ConversationSummary` que
+   * el shell tenga que empezar a cargar, alcanza con este `Set` de ids.
+   */
+  const [pinnedIds, setPinnedIds] = useState<Set<string>>(() => new Set());
+
+  useEffect(() => {
+    let cancelled = false;
+    fetchPinnedIds(supabase, currentAgent.id)
+      .then((ids) => {
+        if (!cancelled) setPinnedIds(ids);
+      })
+      .catch(() => {
+        // Sin pines la bandeja sigue funcionando igual, solo sin la
+        // fijación hasta el próximo intento (cambiar de píldora no lo
+        // reintenta: es un fetch de montaje, no ligado al filtro activo).
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [supabase, currentAgent.id]);
+
+  /**
+   * Fijar/desfijar, con el mismo patrón optimista que `markUnread`/`markRead`
+   * en `crm-shell.tsx`: el estado local se mueve antes que la base, y si la
+   * escritura falla —el trigger del cuarto pin, u otra cosa— el catch relee
+   * `conversation_pins` para devolver `pinnedIds` a la verdad ("refresco tras
+   * mutar", sin abrir un canal de realtime nuevo para esto).
+   */
+  const pinConversationById = useCallback(
+    (conversationId: string) => {
+      setPinnedIds((current) => new Set(current).add(conversationId));
+      pinConversation(supabase, currentAgent.id, conversationId).catch(() => {
+        fetchPinnedIds(supabase, currentAgent.id)
+          .then(setPinnedIds)
+          .catch(() => {});
+      });
+    },
+    [supabase, currentAgent.id]
+  );
+
+  const unpinConversationById = useCallback(
+    (conversationId: string) => {
+      setPinnedIds((current) => {
+        const next = new Set(current);
+        next.delete(conversationId);
+        return next;
+      });
+      unpinConversation(supabase, currentAgent.id, conversationId).catch(() => {
+        fetchPinnedIds(supabase, currentAgent.id)
+          .then(setPinnedIds)
+          .catch(() => {});
+      });
+    },
+    [supabase, currentAgent.id]
+  );
 
   const trimmedSearch = search.trim();
 
@@ -658,8 +801,9 @@ export function InboxSidebar({
         sort,
         viewer: currentAgent,
         messageHitIds,
+        pinnedIds,
       }),
-    [searchableConversations, filter, search, activeTagId, sort, currentAgent, messageHitIds]
+    [searchableConversations, filter, search, activeTagId, sort, currentAgent, messageHitIds, pinnedIds]
   );
 
   // Las palabras a resaltar en el fragmento. Se calculan una vez por búsqueda
@@ -844,6 +988,7 @@ export function InboxSidebar({
         }
         messageHit={messageHits.get(conversation.id) ?? null}
         searchTerms={terms}
+        isPinned={pinnedIds.has(conversation.id)}
       />
     ));
   }
@@ -1059,6 +1204,27 @@ export function InboxSidebar({
             patchServerRows(menu.conversation.id, { unreadCount: 0, manuallyUnread: false });
             onMarkRead?.(menu.conversation.id);
           }}
+          isConversationClosed={menu.conversation.status === "closed"}
+          onCloseConversation={
+            onCloseConversation
+              ? () => {
+                  patchServerRows(menu.conversation.id, { status: "closed" });
+                  onCloseConversation(menu.conversation.id);
+                }
+              : undefined
+          }
+          onReopenConversation={
+            onReopenConversation
+              ? () => {
+                  patchServerRows(menu.conversation.id, { status: "open" });
+                  onReopenConversation(menu.conversation.id);
+                }
+              : undefined
+          }
+          isPinned={pinnedIds.has(menu.conversation.id)}
+          pinLimitReached={pinnedIds.size >= 3 && !pinnedIds.has(menu.conversation.id)}
+          onPin={() => pinConversationById(menu.conversation.id)}
+          onUnpin={() => unpinConversationById(menu.conversation.id)}
           onClose={closeMenu}
         />
       )}

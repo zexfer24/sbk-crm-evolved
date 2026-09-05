@@ -2,7 +2,8 @@
 import { describe, expect, it, vi, beforeEach, afterEach } from "vitest";
 import { render, screen, fireEvent, within, waitFor } from "@testing-library/react";
 import type { Agent, Conversation, Tag } from "@/lib/types";
-import { fetchConversations, fetchUnassignedConversations, INBOX_PAGE_SIZE } from "@/lib/data";
+import { fetchConversations, fetchPinnedIds, fetchUnassignedConversations, INBOX_PAGE_SIZE } from "@/lib/data";
+import { pinConversation, unpinConversation } from "@/lib/mutations";
 import { InboxSidebar } from "@/components/inbox/inbox-sidebar";
 
 // La bandeja abre un cliente de Supabase para buscar dentro de los mensajes.
@@ -21,12 +22,27 @@ vi.mock("@/lib/data", () => ({
   fetchConversations: vi.fn().mockResolvedValue([]),
   fetchUnassignedConversations: vi.fn().mockResolvedValue([]),
   searchConversationSummaries: vi.fn().mockResolvedValue([]),
+  // T2.2 (5/9/2026): hasta tres chats fijados por asesor. Por defecto sin
+  // ninguno fijado -- los tests de pines lo resuelven aparte con
+  // mockResolvedValueOnce/mockImplementation.
+  fetchPinnedIds: vi.fn().mockResolvedValue(new Set()),
   INBOX_PAGE_SIZE: 50,
+}));
+
+// T2.2: fijar/desfijar llaman a mutations.ts directo (no a una ruta de
+// servidor, a diferencia de cerrar/reabrir de T2.1) -- se mockean para que
+// ningún test real toque Supabase.
+vi.mock("@/lib/mutations", () => ({
+  pinConversation: vi.fn().mockResolvedValue(undefined),
+  unpinConversation: vi.fn().mockResolvedValue(undefined),
 }));
 
 beforeEach(() => {
   vi.mocked(fetchConversations).mockReset().mockResolvedValue([]);
   vi.mocked(fetchUnassignedConversations).mockReset().mockResolvedValue([]);
+  vi.mocked(fetchPinnedIds).mockReset().mockResolvedValue(new Set());
+  vi.mocked(pinConversation).mockReset().mockResolvedValue(undefined);
+  vi.mocked(unpinConversation).mockReset().mockResolvedValue(undefined);
 });
 
 /**
@@ -2149,5 +2165,92 @@ describe('InboxSidebar — "Más antiguas" resuelve en el servidor (T1.3)', () =
     await waitFor(() => expect(visibleIds(container)).toContain("pendiente-vieja-servidor"));
     // La de "recent" no sobrevive al cambio de sesión.
     expect(visibleIds(container)).not.toContain("pendiente-reciente-servidor");
+  });
+});
+
+/**
+ * T2.2 del plan "La bandeja que no pierde" (5/9/2026): la píldora y el orden
+ * activos se recuerdan entre sesiones bajo `sbk:inbox:{agentId}`. El entorno
+ * de este archivo (Node + jsdom) NO trae un `localStorage` global de verdad
+ * —Node 22+ define su propio `localStorage` experimental que pisa el de
+ * jsdom y lo deja `undefined` sin `--localstorage-file`, confirmado
+ * directamente contra este runner— así que cada test que necesita
+ * almacenamiento real instala uno falso con `vi.stubGlobal`, y el que prueba
+ * justamente la AUSENCIA de almacenamiento no instala nada: ya es el estado
+ * por defecto de este entorno, el mismo que corrieron sin quejarse los otros
+ * 71 tests de este archivo.
+ */
+describe("InboxSidebar — recuerda la píldora y el orden (T2.2)", () => {
+  function fakeLocalStorage() {
+    const store = new Map<string, string>();
+    return {
+      getItem: (key: string) => (store.has(key) ? (store.get(key) as string) : null),
+      setItem: (key: string, value: string) => {
+        store.set(key, value);
+      },
+      removeItem: (key: string) => {
+        store.delete(key);
+      },
+      clear: () => {
+        store.clear();
+      },
+      key: () => null,
+      get length() {
+        return store.size;
+      },
+    } satisfies Storage;
+  }
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("cambiar de píldora y de orden los guarda bajo sbk:inbox:{agentId}", async () => {
+    const storage = fakeLocalStorage();
+    vi.stubGlobal("localStorage", storage);
+
+    renderSidebar(JEFA);
+    irA("Mías");
+    fireEvent.click(screen.getByRole("button", { name: "Ordenar: Más viejos primero" }));
+
+    await waitFor(() => {
+      const raw = storage.getItem(`sbk:inbox:${JEFA.id}`);
+      expect(raw).not.toBeNull();
+      expect(JSON.parse(raw as string)).toEqual({ filter: "mine", sort: "oldest" });
+    });
+  });
+
+  it("al volver a montar, restaura la píldora y el orden guardados", async () => {
+    const storage = fakeLocalStorage();
+    storage.setItem(`sbk:inbox:${JEFA.id}`, JSON.stringify({ filter: "mine", sort: "oldest" }));
+    vi.stubGlobal("localStorage", storage);
+
+    renderSidebar(JEFA);
+
+    // "Mías" + "oldest" restaurados disparan la consulta correspondiente sin
+    // que nadie haya tocado ni la píldora ni el botón de orden.
+    await waitFor(() =>
+      expect(fetchConversations).toHaveBeenCalledWith(expect.anything(), {
+        assignedTo: JEFA.id,
+        limit: INBOX_PAGE_SIZE,
+        order: "oldest",
+      })
+    );
+  });
+
+  it("un valor guardado inválido (no-JSON) no rompe nada: sigue en los defaults", async () => {
+    const storage = fakeLocalStorage();
+    storage.setItem(`sbk:inbox:${JEFA.id}`, "esto no es JSON");
+    vi.stubGlobal("localStorage", storage);
+
+    expect(() => renderSidebar(JEFA)).not.toThrow();
+    await waitFor(() => expect(pillLabels()).toContain("Pendientes"));
+  });
+
+  it("sin localStorage disponible no rompe ni al montar ni al cambiar de píldora", () => {
+    // Sin vi.stubGlobal: se prueba contra el estado real de este entorno,
+    // que ya es "sin almacenamiento" (ver el comentario de cabecera).
+    expect(() => renderSidebar(JEFA)).not.toThrow();
+    expect(() => irATodos()).not.toThrow();
   });
 });

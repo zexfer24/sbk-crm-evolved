@@ -1,5 +1,5 @@
 import { Fragment } from "react";
-import { Clock } from "lucide-react";
+import { Clock, Pin } from "lucide-react";
 import type { ConversationSummary } from "@/lib/types";
 import { awaitingReply, contactName, initials } from "@/lib/dashboard";
 import { formatConversationTimestamp } from "@/lib/format";
@@ -41,6 +41,13 @@ interface ConversationListItemProps {
   messageHit?: MessageHit | null;
   /** Palabras a resaltar dentro del fragmento. */
   searchTerms?: string[];
+  /**
+   * El agente que mira la fijó (T2.2 del plan "La bandeja que no pierde",
+   * 5/9/2026, `conversation_pins`). Solo pinta un pequeño ícono junto al
+   * nombre — el orden (fijadas primero) lo decide `applyInboxFilters`
+   * (`inbox-filters.ts`), no este componente.
+   */
+  isPinned?: boolean;
 }
 
 export function ConversationListItem({
@@ -50,6 +57,7 @@ export function ConversationListItem({
   onOpenMenu,
   messageHit = null,
   searchTerms = [],
+  isPinned = false,
 }: ConversationListItemProps) {
   const name = contactName(conversation);
   // Dos caminos para lo mismo: quedaron mensajes por leer, o el asesor lo
@@ -112,6 +120,14 @@ export function ConversationListItem({
       <span className="crm-thread-body">
         <span className="crm-thread-row">
           <span className="crm-thread-name" data-unread={isUnread}>
+            {isPinned && (
+              <Pin
+                size={11}
+                className="crm-thread-pin"
+                aria-label="Fijada"
+                role="img"
+              />
+            )}
             {name}
           </span>
           <span className="crm-thread-time lm-num">

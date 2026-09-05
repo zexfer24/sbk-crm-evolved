@@ -136,6 +136,17 @@ export interface InboxCriteria {
   sort: InboxSort;
   /** Quién está mirando la bandeja: define qué es "mío". */
   viewer: Agent;
+  /**
+   * Conversaciones fijadas por QUIEN MIRA (T2.2 del plan "La bandeja que no
+   * pierde", 5/9/2026, hasta tres por agente — `conversation_pins`,
+   * `fetchPinnedIds` en data.ts). Van primero, como grupo, sin alterar el
+   * orden interno entre ellas ni entre el resto: es un segundo `sort`
+   * (estable) encima del que ya decide `sort`/`sortValue`, no un filtro — un
+   * chat fijado que no calza con la píldora activa sigue sin aparecer.
+   * Opcional y sin default en la firma para no obligar a cada llamador
+   * existente (los tests de acá abajo que no ejercitan pines) a conocerlo.
+   */
+  pinnedIds?: ReadonlySet<string>;
 }
 
 function matchesFilter(conversation: ConversationSummary, filter: InboxFilter, viewer: Agent): boolean {
@@ -274,7 +285,7 @@ function sortValue(conversation: ConversationSummary): number | null {
 
 export function applyInboxFilters(
   conversations: ConversationSummary[],
-  { filter, search, tagId, sort, viewer, messageHitIds }: InboxCriteria
+  { filter, search, tagId, sort, viewer, messageHitIds, pinnedIds }: InboxCriteria
 ): ConversationSummary[] {
   const query = normalizeForSearch(search).trim();
 
@@ -286,7 +297,7 @@ export function applyInboxFilters(
   );
 
   // Copia: ordenar in situ reordenaría la lista que vive en el estado de React.
-  return list.slice().sort((a, b) => {
+  const sorted = list.slice().sort((a, b) => {
     const left = sortValue(a);
     const right = sortValue(b);
 
@@ -296,4 +307,15 @@ export function applyInboxFilters(
 
     return sort === "recent" ? right - left : left - right;
   });
+
+  if (!pinnedIds || pinnedIds.size === 0) return sorted;
+
+  // Segundo `sort`, ESTABLE, sobre el resultado ya ordenado: mueve los
+  // fijados arriba como grupo sin tocar el orden relativo dentro de cada
+  // grupo — `Array.prototype.sort` es estable desde ES2019, así que dos
+  // conversaciones igual de "fijadas" (las dos sí, o las dos no) conservan
+  // el orden que ya traían de la ordenación por fecha de arriba.
+  return sorted
+    .slice()
+    .sort((a, b) => Number(pinnedIds.has(b.id)) - Number(pinnedIds.has(a.id)));
 }

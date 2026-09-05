@@ -5,6 +5,8 @@ import {
   closeSaleWithContactInfo,
   markConversationRead,
   markConversationUnread,
+  pinConversation,
+  unpinConversation,
   type SaleLineItem,
 } from "@/lib/mutations";
 
@@ -133,5 +135,73 @@ describe("marcar una conversación como no leída", () => {
 
     const update = calls.find((c) => c.table === "conversations" && c.op === "update");
     expect(update?.payload).toEqual({ unread_count: 0, manually_unread: false });
+  });
+});
+
+/**
+ * T2.2 del plan "La bandeja que no pierde" (5/9/2026): hasta tres chats
+ * fijados por asesor. `pinConversation`/`unpinConversation` no arman la
+ * regla del tope de tres —eso vive en el trigger
+ * `conversation_pins_limit_before_insert` de la migración
+ * 20260905040000_conversation_pins.sql, y lo verifica `supabase/tests/pins.sql`
+ * contra la base real—; lo único que estos tests fijan es que el par
+ * agente/conversación viaja tal cual a la tabla, y que un error de la base
+ * (el del cuarto pin, u otro cualquiera) sube sin que la función lo trague.
+ */
+describe("pinConversation / unpinConversation", () => {
+  function createFakePinsSupabase() {
+    const calls: { op: "insert" | "delete"; agentId: string; conversationId: string }[] = [];
+
+    const client = {
+      from(table: string) {
+        if (table !== "conversation_pins") {
+          throw new Error(`Fake Supabase: tabla no soportada en este test: ${table}`);
+        }
+        return {
+          insert: async (payload: { agent_id: string; conversation_id: string }) => {
+            calls.push({ op: "insert", agentId: payload.agent_id, conversationId: payload.conversation_id });
+            return { error: null };
+          },
+          delete: () => ({
+            eq: (_col1: string, agentId: string) => ({
+              eq: async (_col2: string, conversationId: string) => {
+                calls.push({ op: "delete", agentId, conversationId });
+                return { error: null };
+              },
+            }),
+          }),
+        };
+      },
+    };
+
+    return { client: client as unknown as SupabaseClient, calls };
+  }
+
+  it("fija: inserta el par agente/conversación", async () => {
+    const { client, calls } = createFakePinsSupabase();
+
+    await pinConversation(client, "agent-1", "conv-9");
+
+    expect(calls).toEqual([{ op: "insert", agentId: "agent-1", conversationId: "conv-9" }]);
+  });
+
+  it("propaga el error del cuarto pin en vez de tragárselo", async () => {
+    const client = {
+      from: () => ({
+        insert: async () => ({
+          error: new Error("Ya tenés tres conversaciones fijadas. Desfijá una para poder fijar esta."),
+        }),
+      }),
+    } as unknown as SupabaseClient;
+
+    await expect(pinConversation(client, "agent-1", "conv-9")).rejects.toThrow(/tres conversaciones fijadas/);
+  });
+
+  it("desfija: borra por agente Y conversación, no solo por conversación", async () => {
+    const { client, calls } = createFakePinsSupabase();
+
+    await unpinConversation(client, "agent-1", "conv-9");
+
+    expect(calls).toEqual([{ op: "delete", agentId: "agent-1", conversationId: "conv-9" }]);
   });
 });

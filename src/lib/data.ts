@@ -1307,6 +1307,33 @@ export async function fetchInboxCounts(
   };
 }
 
+/**
+ * Los ids que el agente que mira tiene fijados (T2.2 del plan "La bandeja
+ * que no pierde", 5/9/2026): `conversation_pins`, hasta tres por agente.
+ *
+ * `agentId` viaja explícito en el `.eq()`, aunque la RLS de la tabla
+ * (`agent_id = auth.uid()`) ya filtra lo mismo del lado de la base — mismo
+ * patrón que `fetchInboxCounts(supabase, viewerId, ...)`: la condición
+ * explícita es lo que un mock de `supabase.from(...).select(...).eq(...)` en
+ * los tests puede afirmar con `toHaveBeenCalledWith`, y no depende de que el
+ * fake reproduzca RLS.
+ *
+ * Devuelve un `Set`, no un arreglo: `applyInboxFilters` (inbox-filters.ts)
+ * solo necesita responder "¿está fijada?" por id, y un `Set` es lo que esa
+ * pregunta pide sin tener que armarlo de nuevo en cada llamador.
+ */
+export async function fetchPinnedIds(
+  supabase: SupabaseClient,
+  agentId: string
+): Promise<Set<string>> {
+  const { data, error } = await supabase
+    .from("conversation_pins")
+    .select("conversation_id")
+    .eq("agent_id", agentId);
+  if (error) throw error;
+  return new Set((data ?? []).map((row) => row.conversation_id as string));
+}
+
 /** Tope de contactos que aporta la búsqueda por nombre o número. */
 export const CONTACT_SEARCH_LIMIT = 40;
 
