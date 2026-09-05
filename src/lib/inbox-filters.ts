@@ -28,7 +28,21 @@ import { normalizeForSearch } from "@/lib/message-search";
 // "Sin dueño" va junto a "Pendientes" y no al final: las dos hablan de
 // trabajo que espera, y la nueva es la más urgente de las dos —son los chats
 // que el sistema soltó, no los que simplemente no se han contestado.
-const DEFAULT_FILTERS: InboxFilter[] = ["pending", "unassigned", "unread", "mine", "all"];
+//
+// "Escaladas" (T1.5, 5/9/2026) entra justo después, tercera de las seis:
+// también es trabajo que el sistema apartó para un humano —a diferencia de
+// "Sin dueño", que mira la bitácora de traspasos, esta mira si YA hay un
+// asesor a cargo (`journeyStage === "assigned"`) que todavía no le escribió
+// de verdad al cliente. Antes de "No leídas"/"Mías"/"Todos" porque, igual
+// que "Pendientes" y "Sin dueño", es cola de trabajo que espera, no archivo.
+const DEFAULT_FILTERS: InboxFilter[] = [
+  "pending",
+  "unassigned",
+  "escalated",
+  "unread",
+  "mine",
+  "all",
+];
 
 // El parámetro no se usa a propósito: es la costura descrita arriba.
 // eslint-disable-next-line @typescript-eslint/no-unused-vars
@@ -39,6 +53,7 @@ export function filtersForRole(_role: AgentRole): InboxFilter[] {
 export const INBOX_FILTER_LABELS: Record<InboxFilter, string> = {
   pending: "Pendientes",
   unassigned: "Sin dueño",
+  escalated: "Escaladas",
   unread: "No leídas",
   mine: "Mías",
   all: "Todos",
@@ -195,6 +210,29 @@ function matchesFilter(conversation: ConversationSummary, filter: InboxFilter, v
     // de chats.
     case "pending":
       return conversation.status !== "closed" && awaitingReply(conversation);
+    // "Escaladas" (T1.5, 5/9/2026): igual que "unread"/"mine"/"pending", se
+    // vuelve a comprobar en memoria aunque la base ya haya filtrado
+    // (`escalatedOnly` en data.ts), porque la lista mezcla filas de la
+    // consulta con filas vivas de la bandeja.
+    //
+    // La fórmula, calcada del predicado del servidor (`escalatedOnly`,
+    // data.ts): escalada a un humano (`journeyStage === "assigned"`) con la
+    // IA ya apagada, abierta, Y (nadie del equipo respondió de verdad
+    // ["distinct from 'agent'"] O el cliente sigue esperando). El "o" con
+    // `awaitingReply` no es redundante: la IA manda un mensaje de cortesía
+    // al escalar sin asesores disponibles ("Dejé tu caso registrado… no hay
+    // asesores"), y ESE mensaje sí cuenta como respuesta real —
+    // `lastReplySender` queda en `"ai"` y `awaitingReply` se apaga— sin que
+    // ningún humano haya escrito nada. Sin el `lastReplySender !== "agent"`
+    // de este lado, esa conversación desaparecería de "Escaladas" apenas la
+    // IA se despide, aunque siga sin dueño de carne y hueso.
+    case "escalated":
+      return (
+        conversation.journeyStage === "assigned" &&
+        !conversation.aiEnabled &&
+        conversation.status !== "closed" &&
+        (conversation.lastReplySender !== "agent" || awaitingReply(conversation))
+      );
   }
 }
 

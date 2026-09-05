@@ -27,11 +27,11 @@ const agentSettings: AgentSettings = {
 };
 
 describe("AgentHomePanel", () => {
-  it("pinta los cuatro números con el vocabulario de las píldoras", () => {
+  it("pinta los cinco números con el vocabulario de las píldoras", () => {
     render(
       <AgentHomePanel
         currentAgent={currentAgent}
-        counts={{ pending: 4, pendingStale: 3, mine: 2, unread: 0, unassigned: 7 }}
+        counts={{ pending: 4, pendingStale: 3, mine: 2, unread: 0, unassigned: 7, escalated: 5 }}
         agentSettings={agentSettings}
       />
     );
@@ -44,6 +44,10 @@ describe("AgentHomePanel", () => {
     expect(screen.getByText("Tuyas")).toBeInTheDocument();
     expect(screen.getByText("7")).toBeInTheDocument();
     expect(screen.getByText("Sin dueño")).toBeInTheDocument();
+    // T1.5 (5/9/2026): la tarjeta "Esperando asesor", con el mismo número que
+    // la píldora "Escaladas" de la bandeja.
+    expect(screen.getByText("5")).toBeInTheDocument();
+    expect(screen.getByText("Esperando asesor")).toBeInTheDocument();
   });
 
   /**
@@ -57,7 +61,7 @@ describe("AgentHomePanel", () => {
     const { rerender, container } = render(
       <AgentHomePanel
         currentAgent={currentAgent}
-        counts={{ pending: 0, pendingStale: 0, mine: 0, unread: 0, unassigned: 0 }}
+        counts={{ pending: 0, pendingStale: 0, mine: 0, unread: 0, unassigned: 0, escalated: 0 }}
         agentSettings={agentSettings}
       />
     );
@@ -67,7 +71,7 @@ describe("AgentHomePanel", () => {
     rerender(
       <AgentHomePanel
         currentAgent={currentAgent}
-        counts={{ pending: 0, pendingStale: 0, mine: 0, unread: 0, unassigned: 1 }}
+        counts={{ pending: 0, pendingStale: 0, mine: 0, unread: 0, unassigned: 1, escalated: 0 }}
         agentSettings={agentSettings}
       />
     );
@@ -75,11 +79,30 @@ describe("AgentHomePanel", () => {
     expect(container.querySelector('.crm-agent-stat[data-alerta="true"]')).not.toBeNull();
   });
 
+  /**
+   * "Esperando asesor" (T1.5, 5/9/2026) NUNCA lleva `data-alerta`, ni en
+   * cero ni con número: a diferencia de "Sin dueño", una escalación no es
+   * por sí sola un lead perdido — recién escalada es lo esperable. Se
+   * comprueba con un valor alto para que un futuro `data-alerta={escalated >
+   * 0}` copiado sin pensar de "Sin dueño" ponga esto en rojo.
+   */
+  it("'Esperando asesor' nunca se destaca con data-alerta", () => {
+    const { container } = render(
+      <AgentHomePanel
+        currentAgent={currentAgent}
+        counts={{ pending: 0, pendingStale: 0, mine: 0, unread: 0, unassigned: 0, escalated: 9 }}
+        agentSettings={agentSettings}
+      />
+    );
+
+    expect(container.querySelectorAll('.crm-agent-stat[data-alerta="true"]')).toHaveLength(0);
+  });
+
   it("saluda al asesor por su nombre", () => {
     render(
       <AgentHomePanel
         currentAgent={currentAgent}
-        counts={{ pending: 0, pendingStale: 0, mine: 0, unread: 0, unassigned: 0 }}
+        counts={{ pending: 0, pendingStale: 0, mine: 0, unread: 0, unassigned: 0, escalated: 0 }}
         agentSettings={agentSettings}
       />
     );

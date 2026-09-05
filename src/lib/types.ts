@@ -411,8 +411,23 @@ export interface KnowledgeEntry {
  * vivían en "Todos", enterrados por el orden por recencia. `pending` entra
  * como cuarta píldora y pasa a ser la que abre la bandeja; `unread` sigue
  * exactamente como la dejó la segunda reforma.
+ *
+ * Ese mismo día entró una quinta: "Sin dueño" (`unassigned`), la píldora
+ * de la reforma "ningún lead invisible" (Etapa 1, ver CLAUDE.md) — los
+ * chats que el SISTEMA soltó (la IA apagada, la ventana vencida, tres
+ * intentos fallidos), leídos contra la bitácora de traspasos.
+ *
+ * Sexta el 5/9/2026 (T1.5 del plan "La bandeja que no pierde"): "Escaladas"
+ * (`escalated`). No mira la bitácora como "Sin dueño": mira el estado VIVO
+ * de la conversación ya escalada a un humano (`journeyStage`/`aiEnabled`) y
+ * separa la que sigue sin que un asesor le haya escrito de verdad al
+ * cliente —incluida la que la IA "cerró" con un mensaje de cortesía antes
+ * de apagarse, que sí cuenta como respuesta real a efectos de
+ * `awaiting_reply` pero no vino de un humano— de la que ya recibió una
+ * respuesta suya y dejó de esperar. Ver `matchesFilter` (inbox-filters.ts)
+ * para la fórmula exacta y el porqué de `lastReplySender`.
  */
-export type InboxFilter = "pending" | "unread" | "mine" | "all" | "unassigned";
+export type InboxFilter = "pending" | "unread" | "mine" | "all" | "unassigned" | "escalated";
 
 export type InboxSort = "recent" | "oldest";
 

@@ -140,6 +140,17 @@ interface FilaConteo {
   last_customer_message_at: string | null;
   unread_count: number;
   manually_unread: boolean;
+  /**
+   * T1.5 (5/9/2026): las tres columnas que mira el conteo nuevo de
+   * "Escaladas" — `fetchInboxCounts` corre esa quinta consulta contra
+   * cualquier fake suyo, así que este archivo la necesita aunque no sea su
+   * contrato (el de acá es la ventana de 24h). Ninguna fila de `TABLA` tiene
+   * `journeyStage: "assigned"`, así que "escalated" da 0 en todos los tests
+   * de este archivo — el punto es que la consulta no reviente, no medirla.
+   */
+  journey_stage: string | null;
+  ai_enabled: boolean;
+  last_reply_sender: string | null;
 }
 
 function toFilaConteo(c: BoardConversation): FilaConteo {
@@ -151,6 +162,9 @@ function toFilaConteo(c: BoardConversation): FilaConteo {
     last_customer_message_at: c.lastCustomerMessageAt,
     unread_count: c.unreadCount,
     manually_unread: c.manuallyUnread,
+    journey_stage: c.journeyStage,
+    ai_enabled: c.aiEnabled,
+    last_reply_sender: c.lastReplySender,
   };
 }
 
@@ -182,6 +196,10 @@ function createConteoFake(rows: FilaConteo[]) {
               }
               if (op === "lte") return cell != null && (cell as string) <= value;
               if (op === "gt") return cell != null && (cell as number) > Number(value);
+              // T1.5 (5/9/2026): la quinta consulta de `fetchInboxCounts`
+              // ("Escaladas") arma `last_reply_sender.neq.agent` dentro del
+              // `.or()` — ver data.ts y data-inbox-counts.test.ts.
+              if (op === "neq") return cell !== value;
               throw new Error(`operador "${op}" no soportado por el fake de .or()`);
             })
           )
@@ -561,6 +579,9 @@ describe("el `.is.null` defensivo: mismo cutoff, misma pata de la base en las do
     last_customer_message_at: null,
     unread_count: 0,
     manually_unread: false,
+    journey_stage: null,
+    ai_enabled: true,
+    last_reply_sender: null,
   };
   const FILA_DEFENSIVA_RAW: RawRow = {
     ...toRawRow(fila({ id: FILA_DEFENSIVA_CONTEO.id, lastCustomerMessageAt: null })),

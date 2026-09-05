@@ -738,6 +738,35 @@ export interface FetchConversationsOptions {
    */
   assignedTo?: string;
   /**
+   * Solo la píldora "Escaladas" (T1.5 del plan "La bandeja que no pierde",
+   * 5/9/2026): `journey_stage = 'assigned' and ai_enabled = false and
+   * status <> 'closed' and (last_reply_sender is distinct from 'agent' or
+   * awaiting_reply)` — mismo predicado que `matchesFilter` (inbox-filters.ts)
+   * vuelve a comprobar en memoria, y el mismo que cuenta `fetchInboxCounts`.
+   *
+   * Las primeras tres condiciones son `.eq()`/`.neq()` normales; la última
+   * viaja como un grupo más de `orGroups` (ver más abajo) porque es una
+   * disyunción propia, igual que `unreadOnly`/`pendingWindow: "stale"`.
+   *
+   * `last_reply_sender is distinct from 'agent'` no se traduce con `.neq()`
+   * a secas: en SQL, comparar con `<>` contra una fila con `last_reply_sender
+   * null` da `null` (ni verdadero ni falso), así que haría falta un
+   * `last_reply_sender.is.null` aparte para no perder esas filas — y por eso
+   * el grupo de abajo lleva los dos términos. `awaiting_reply` entra en el
+   * mismo OR (no como condición aparte con AND) porque el matiz que trajo
+   * esta píldora es justo ese: la IA manda un mensaje de cortesía al escalar
+   * sin asesores disponibles, que SÍ cuenta como respuesta real
+   * (`last_reply_sender = 'ai'`, `awaiting_reply` se apaga) sin que ningún
+   * humano haya escrito nada — sin el `or`, esa conversación desaparecería
+   * de "Escaladas" apenas la IA se despide.
+   *
+   * Usa el índice parcial `conversations_escalated_idx` (migración
+   * 20260905010000, T0.1): su predicado (`journey_stage = 'assigned' and not
+   * ai_enabled and status <> 'closed'`) calza exacto con las primeras tres
+   * condiciones de acá.
+   */
+  escalatedOnly?: boolean;
+  /**
    * Para la píldora "Sin dueño" (T1.6, plan "Ningún lead invisible"): cuando
    * el `select` de la llamada embebe `conversation_handoffs(...)`, esto
    * encadena `.order(..., {referencedTable}).limit(1, {referencedTable})`
@@ -789,6 +818,7 @@ async function fetchConversationRows<Raw extends CursorableRow>(
     ids,
     unreadOnly,
     assignedTo,
+    escalatedOnly,
     embedLatestHandoff,
     tagId,
   }: FetchConversationsOptions
@@ -882,6 +912,12 @@ async function fetchConversationRows<Raw extends CursorableRow>(
     if (resolvedContactIds) request = request.in("contact_id", resolvedContactIds);
     if (ids) request = request.in("id", ids);
     if (assignedTo) request = request.eq("assigned_agent_id", assignedTo);
+    if (escalatedOnly) {
+      request = request
+        .eq("journey_stage", "assigned")
+        .eq("ai_enabled", false)
+        .neq("status", "closed");
+    }
     if (embedLatestHandoff) {
       // Sin esto, `conversation_handoffs(...)` embebido en el `select` trae
       // TODA la bitácora de cada conversación. Con esto, Postgres resuelve
@@ -915,6 +951,13 @@ async function fetchConversationRows<Raw extends CursorableRow>(
       ]);
     }
     if (unreadOnly) orGroups.push(["unread_count.gt.0", "manually_unread.is.true"]);
+    if (escalatedOnly) {
+      orGroups.push([
+        "last_reply_sender.neq.agent",
+        "last_reply_sender.is.null",
+        "awaiting_reply.is.true",
+      ]);
+    }
 
     if (pageCursor) {
       const idLiteral = pgrstLiteral(pageCursor.id);
@@ -1152,9 +1195,10 @@ export async function fetchConversation(
 /**
  * Los contadores de las píldoras de la bandeja. Antes se contaban sobre la
  * lista cargada; con la bandeja paginada la lista es una ventana, y contar
- * sobre una ventana miente. Esto le pregunta a la base cuatro conteos sin
+ * sobre una ventana miente. Esto le pregunta a la base cinco conteos sin
  * filas (`head: true`), que cuestan lo mismo con 600 conversaciones que con
- * 60.000.
+ * 60.000, más la lista de "Sin dueño" (que sí trae filas — ver su comentario
+ * más abajo).
  *
  * `pending`/`pendingStale` datan de la reforma del 28/8/2026 (píldoras
  * "Pendientes"/"Lo mío"/"Todos"). La reforma siguiente esa misma tarde le
@@ -1164,7 +1208,8 @@ export async function fetchConversation(
  * ESTRICTO de "Pendientes", así que 231 chats leídos-y-sin-responder no
  * tenían ninguna píldora que los alcanzara—, así que hoy `pending` sirve a
  * las dos vistas otra vez. `unread` es el conteo de la segunda reforma,
- * para la píldora "No leídas".
+ * para la píldora "No leídas". `escalated` es de T1.5 (5/9/2026, plan "La
+ * bandeja que no pierde"), para la píldora "Escaladas".
  */
 export interface InboxCounts {
   /**
@@ -1197,6 +1242,17 @@ export interface InboxCounts {
    * como columna, vuelve a ser un `count` igual que sus vecinos.
    */
   unassigned: number;
+  /**
+   * Total de la píldora "Escaladas" (T1.5, 5/9/2026): mismo predicado que
+   * `escalatedOnly` de `FetchConversationsOptions` y que `matchesFilter`
+   * (inbox-filters.ts) — `journey_stage = 'assigned' and ai_enabled = false
+   * and status <> 'closed' and (last_reply_sender is distinct from 'agent'
+   * or awaiting_reply)`. A diferencia de `unassigned`, este SÍ es un `count`
+   * de Postgres: el corte vive en columnas de `conversations`
+   * (`journey_stage`/`ai_enabled`/`last_reply_sender`/`awaiting_reply`), no
+   * en la bitácora de traspasos.
+   */
+  escalated: number;
 }
 
 export async function fetchInboxCounts(
@@ -1208,7 +1264,7 @@ export async function fetchInboxCounts(
   const count = () =>
     supabase.from("conversations").select("id", { count: "exact", head: true });
 
-  const [pending, pendingStale, mine, unread, sinDueno] = await Promise.all([
+  const [pending, pendingStale, mine, unread, escalated, sinDueno] = await Promise.all([
     count().eq("awaiting_reply", true).neq("status", "closed"),
     // Mismo predicado de "Pendientes" más el corte de ventana invertido, con
     // el mismo criterio de "fallar cerrado" que `withinFreeformWindow`: lo
@@ -1223,13 +1279,22 @@ export async function fetchInboxCounts(
     // Al final del Promise.all para no correr los índices que ya usan los
     // tests de "pending"/"pendingStale"/"mine".
     count().or("unread_count.gt.0,manually_unread.is.true"),
+    // "Escaladas" (T1.5, 5/9/2026), después de "unread" por el mismo motivo:
+    // mismo predicado que `escalatedOnly` (`FetchConversationsOptions`) y que
+    // `matchesFilter` (inbox-filters.ts) — ver el comentario de `escalated`
+    // en `InboxCounts` para el porqué del `or` final.
+    count()
+      .eq("journey_stage", "assigned")
+      .eq("ai_enabled", false)
+      .neq("status", "closed")
+      .or("last_reply_sender.neq.agent,last_reply_sender.is.null,awaiting_reply.is.true"),
     // Al final por el mismo motivo que `unread`: no compite con los índices
-    // que las otras tres acaban de usar. Devuelve ids, no un conteo — ver el
-    // comentario de `unassigned` en InboxCounts.
+    // que las otras cuatro acaban de usar. Devuelve ids, no un conteo — ver
+    // el comentario de `unassigned` en InboxCounts.
     fetchUnassignedConversationIds(supabase),
   ]);
 
-  const first = [pending, pendingStale, mine, unread].find((r) => r.error);
+  const first = [pending, pendingStale, mine, unread, escalated].find((r) => r.error);
   if (first?.error) throw first.error;
 
   return {
@@ -1237,6 +1302,7 @@ export async function fetchInboxCounts(
     pendingStale: pendingStale.count ?? 0,
     mine: mine.count ?? 0,
     unread: unread.count ?? 0,
+    escalated: escalated.count ?? 0,
     unassigned: sinDueno.length,
   };
 }

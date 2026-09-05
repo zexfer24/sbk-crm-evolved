@@ -2,10 +2,11 @@ import type { ConversationSummary, InboxFilter } from "@/lib/types";
 import { isUnread } from "@/lib/inbox-filters";
 
 /**
- * Los cuatro cortes de la bandeja tras la reforma del 30/8/2026: "Pendientes"
- * (partida en Sin abrir/Leídas sin responder), "No leídas" (sección única,
- * corte global de equipo), "Mías" (partida en Sin leer/Leídas) y "Todos"
- * (sección única).
+ * Los cortes de la bandeja: "Pendientes" (partida en Sin abrir/Leídas sin
+ * responder), "Sin dueño" (sección única) y "Escaladas" (partida en Sin
+ * asesor/Con asesor, T1.5 del plan "La bandeja que no pierde", 5/9/2026),
+ * "No leídas" (sección única, corte global de equipo), "Mías" (partida en
+ * Sin leer/Leídas) y "Todos" (sección única).
  *
  * Historia de "Pendientes" acá: la reforma del 28/8/2026 (tarde) la había
  * sacado de la bandeja entera —el corte por ventana de 24h vivía solo en
@@ -81,6 +82,23 @@ export function buildInboxSections(filter: InboxFilter, conversations: Conversat
       // subdividir "No leídas" por apartadas-a-mano duplicaría lo que el
       // badge de cada fila ya dice.
       return [{ id: "no-leidas", label: null, conversations }];
+
+    // "Escaladas" (T1.5, 5/9/2026): partida por si YA hay un asesor a cargo
+    // o no, que es justo lo que decide qué tan urgente es cada fila —"Sin
+    // asesor" es trabajo que nadie tomó todavía, "Con asesor" es trabajo que
+    // alguien tiene pero no ha respondido de verdad—. Distinto criterio de
+    // partición que "pending"/"mine" (que parten por LECTURA): acá lo que
+    // importa es si hay una persona a cargo, no si el asesor ya abrió el
+    // chat.
+    case "escalated": {
+      const sinAsesor = conversations.filter((c) => c.assignedAgent === null);
+      const conAsesor = conversations.filter((c) => c.assignedAgent !== null);
+
+      return [
+        section("escalada-sin-asesor", "Sin asesor", sinAsesor),
+        section("escalada-con-asesor", "Con asesor", conAsesor),
+      ].filter((s): s is InboxSection => s !== null);
+    }
 
     case "mine": {
       // Dentro de "Mías", esta partición es la heredera de la vieja píldora

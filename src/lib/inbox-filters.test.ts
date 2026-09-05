@@ -39,6 +39,10 @@ function conversation(over: {
   hasReply?: boolean;
   status?: Conversation["status"];
   tags?: Tag[];
+  /** T1.5 (5/9/2026): lo que mira `case "escalated"` de `matchesFilter`. */
+  journeyStage?: Conversation["journeyStage"];
+  /** T1.5 (5/9/2026): default `true` — "no escalada" es el caso común del resto de este archivo. */
+  aiEnabled?: boolean;
 }): Conversation {
   return {
     id: over.id,
@@ -54,6 +58,8 @@ function conversation(over: {
       "lastCustomerMessageAt" in over ? over.lastCustomerMessageAt : null,
     lastReplyAt: "lastReplyAt" in over ? over.lastReplyAt : null,
     lastReplySender: over.lastReplySender ?? null,
+    journeyStage: over.journeyStage ?? null,
+    aiEnabled: over.aiEnabled ?? true,
     contact: {
       id: `c-${over.id}`,
       phoneNumber: "+58000",
@@ -71,16 +77,23 @@ function conversation(over: {
 }
 
 describe("filtersForRole", () => {
-  it("le da al administrador las cinco píldoras", () => {
-    expect(filtersForRole("admin")).toEqual(["pending", "unassigned", "unread", "mine", "all"]);
+  it("le da al administrador las seis píldoras, en ese orden", () => {
+    expect(filtersForRole("admin")).toEqual([
+      "pending",
+      "unassigned",
+      "escalated",
+      "unread",
+      "mine",
+      "all",
+    ]);
   });
 
   it("trata al supervisor como administrador", () => {
     expect(filtersForRole("supervisor")).toEqual(filtersForRole("admin"));
   });
 
-  it("al asesor le ofrece las mismas cinco píldoras", () => {
-    expect(filtersForRole("agent")).toEqual(["pending", "unassigned", "unread", "mine", "all"]);
+  it("al asesor le ofrece las mismas seis píldoras", () => {
+    expect(filtersForRole("agent")).toEqual(filtersForRole("admin"));
   });
 
   it("cada filtro tiene etiqueta", () => {
@@ -114,9 +127,17 @@ describe("filtersForRole", () => {
   // ninguna corta por eso. Es el único lugar de la interfaz donde la
   // bitácora de traspasos se ve; sin ella, la Etapa 1 escribe un registro
   // que nadie lee.
-  it("ningún rol vuelve a tener más de cinco píldoras", () => {
+  //
+  // De cinco a seis el 5/9/2026 (T1.5 del plan "La bandeja que no pierde"):
+  // "Escaladas". Tampoco es un corte reciclado — a diferencia de "Sin
+  // dueño", que lee la bitácora de traspasos, esta lee el estado VIVO de la
+  // conversación (`journeyStage`/`aiEnabled`/`lastReplySender`) para separar
+  // lo escalado a un humano que sigue sin una respuesta REAL de alguien del
+  // equipo. El tope sube otra vez porque hay, de nuevo, una decisión de
+  // producto explícita detrás — no porque el guardia se haya relajado.
+  it("ningún rol vuelve a tener más de seis píldoras", () => {
     for (const role of ["admin", "supervisor", "agent"] as const) {
-      expect(filtersForRole(role).length).toBeLessThanOrEqual(5);
+      expect(filtersForRole(role).length).toBeLessThanOrEqual(6);
     }
   });
 });
@@ -288,6 +309,123 @@ describe("isUnread", () => {
     expect(isUnread(conversation({ id: "a", unreadCount: 1 }))).toBe(true);
     expect(isUnread(conversation({ id: "b", manuallyUnread: true }))).toBe(true);
     expect(isUnread(conversation({ id: "c" }))).toBe(false);
+  });
+});
+
+/**
+ * T1.5 del plan "La bandeja que no pierde" (5/9/2026): la píldora
+ * "Escaladas". A diferencia de "Sin dueño" (más abajo), que lee la bitácora
+ * de traspasos, esta se resuelve enteramente sobre columnas de
+ * `ConversationSummary` (`journeyStage`/`aiEnabled`/`status`/
+ * `lastReplySender`/`awaitingReply`), así que sí pasa por `applyInboxFilters`
+ * como "pending"/"unread"/"mine".
+ *
+ * El matiz que motiva el `|| awaitingReply(c)` de `case "escalated"`
+ * (inbox-filters.ts): al escalar sin asesores disponibles, la IA manda un
+ * mensaje de cortesía ("Dejé tu caso registrado… no hay asesores") que SÍ
+ * cuenta como respuesta real —`lastReplySender` queda en `"ai"`,
+ * `awaitingReply` se apaga— sin que ningún humano haya escrito nada. Los seis
+ * casos de acá son los que pide el plan.
+ */
+describe("applyInboxFilters — 'escalated'", () => {
+  function ids(todas: Conversation[]) {
+    return applyInboxFilters(todas, {
+      filter: "escalated",
+      search: "",
+      tagId: null,
+      sort: "recent",
+      viewer: ANA,
+    }).map((c) => c.id);
+  }
+
+  it("escalada sin asesor: la IA se despidió con el mensaje de cortesía y ya no espera — aparece igual", () => {
+    const escaladaSinAsesor = conversation({
+      id: "escalada-sin-asesor",
+      journeyStage: "assigned",
+      aiEnabled: false,
+      assignedAgent: null,
+      lastCustomerMessageAt: "2026-09-04T10:00:00Z",
+      lastReplyAt: "2026-09-04T10:05:00Z",
+      lastReplySender: "ai",
+    });
+
+    expect(ids([escaladaSinAsesor])).toEqual(["escalada-sin-asesor"]);
+  });
+
+  it("con asesor, sin que nadie responda todavía: aparece", () => {
+    const conAsesorSinResponder = conversation({
+      id: "con-asesor-sin-responder",
+      journeyStage: "assigned",
+      aiEnabled: false,
+      assignedAgent: ANA,
+      lastCustomerMessageAt: "2026-09-04T10:00:00Z",
+      lastReplyAt: null,
+      lastReplySender: null,
+    });
+
+    expect(ids([conAsesorSinResponder])).toEqual(["con-asesor-sin-responder"]);
+  });
+
+  it("con asesor que ya respondió de verdad y el cliente no volvió: sale de la píldora", () => {
+    const conAsesorQueRespondio = conversation({
+      id: "con-asesor-que-respondio",
+      journeyStage: "assigned",
+      aiEnabled: false,
+      assignedAgent: ANA,
+      lastCustomerMessageAt: "2026-09-04T10:00:00Z",
+      lastReplyAt: "2026-09-04T10:05:00Z",
+      lastReplySender: "agent",
+    });
+
+    expect(ids([conAsesorQueRespondio])).toEqual([]);
+  });
+
+  it("el asesor respondió, pero el cliente volvió a escribir después: vuelve a aparecer", () => {
+    const clienteVolvio = conversation({
+      id: "cliente-volvio",
+      journeyStage: "assigned",
+      aiEnabled: false,
+      assignedAgent: ANA,
+      // El asesor contestó primero...
+      lastReplyAt: "2026-09-04T10:05:00Z",
+      lastReplySender: "agent",
+      // ...pero el cliente escribió de nuevo DESPUÉS de esa respuesta:
+      // `awaitingReply` (dashboard.ts) vuelve a `true` aunque `lastReplySender`
+      // siga en "agent" — el `|| awaitingReply(c)` es justo lo que rescata
+      // este caso.
+      lastCustomerMessageAt: "2026-09-04T11:00:00Z",
+    });
+
+    expect(ids([clienteVolvio])).toEqual(["cliente-volvio"]);
+  });
+
+  it("cerrada: no aparece aunque el resto del estado siga calzando", () => {
+    const cerrada = conversation({
+      id: "escalada-cerrada",
+      journeyStage: "assigned",
+      aiEnabled: false,
+      assignedAgent: null,
+      status: "closed",
+      lastCustomerMessageAt: "2026-09-04T10:00:00Z",
+      lastReplyAt: null,
+      lastReplySender: null,
+    });
+
+    expect(ids([cerrada])).toEqual([]);
+  });
+
+  it("con la IA todavía encendida: no es una escalación real, no aparece", () => {
+    const iaEncendida = conversation({
+      id: "ia-encendida",
+      journeyStage: "assigned",
+      aiEnabled: true,
+      assignedAgent: null,
+      lastCustomerMessageAt: "2026-09-04T10:00:00Z",
+      lastReplyAt: null,
+      lastReplySender: null,
+    });
+
+    expect(ids([iaEncendida])).toEqual([]);
   });
 });
 

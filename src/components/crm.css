@@ -1769,7 +1769,12 @@
 }
 
 /* En la bandeja las píldoras van más apretadas que en el resto de la app:
-   son cuatro y el panel mide 316px. */
+   son seis (T1.5, 5/9/2026: "Escaladas" las subió de cinco a seis) y el
+   panel mide 316px. El carril (`.crm-inbox-pills-scroll`, arriba) es lo que
+   evita que se partan en dos renglones; el tamaño chico de acá es lo que
+   deja ver ENTERAS a las tres primeras ("Pendientes", "Sin dueño",
+   "Escaladas" — las tres de trabajo que espera, ver `DEFAULT_FILTERS` en
+   inbox-filters.ts) antes de que el degradado avise que sigue la fila. */
 .crm-inbox-pills .lm-pill {
   padding: 6px 11px;
   font-size: 12px;

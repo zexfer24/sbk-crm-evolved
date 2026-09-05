@@ -111,6 +111,13 @@ function pillQueryOptions(
       return { ...page, unreadOnly: true };
     case "mine":
       return { ...page, assignedTo: agentId };
+    // "Escaladas" (T1.5, 5/9/2026): `escalatedOnly` arma en `data.ts` el
+    // mismo predicado que vuelve a comprobar `matchesFilter`
+    // (inbox-filters.ts) en memoria — journey_stage/ai_enabled/status/
+    // last_reply_sender/awaiting_reply, columnas todas de `conversations`,
+    // así que a diferencia de "unassigned" (más abajo) sí pasa por acá.
+    case "escalated":
+      return { ...page, escalatedOnly: true };
     case "unassigned":
       // No pasa por acá: "Sin dueño" no es un corte de columnas de
       // `conversations` sino de la última fila de `conversation_handoffs`, y
@@ -339,7 +346,9 @@ export function InboxSidebar({
    * justo lo que interesa puede quedar fuera de la ventana. El conjunto se
    * le pide a la base (ver el efecto más abajo). `pending` se suma acá en la
    * reforma del 30/8/2026, junto con la píldora (ver `case "pending"` en
-   * `inbox-filters.ts` para el dato que la trajo de vuelta).
+   * `inbox-filters.ts` para el dato que la trajo de vuelta). `escalated` se
+   * suma el 5/9/2026 (T1.5) por el mismo motivo: una escalación vieja puede
+   * haber quedado fuera de la ventana cargada tanto como un pendiente viejo.
    *
    * Con etiqueta activa (misma reforma, más tarde el mismo día), hasta
    * "Todos" se suma: sin esto, "Todos" + etiqueta seguiría paginando en
@@ -361,6 +370,11 @@ export function InboxSidebar({
     filter === "unread" ||
     filter === "mine" ||
     filter === "unassigned" ||
+    // "Escaladas" (T1.5, 5/9/2026): mismo motivo que "Pendientes"/"No
+    // leídas"/"Mías" — el corte mira columnas que la ventana cargada no
+    // garantiza tener representadas (una escalación vieja puede haber
+    // quedado atrás, fuera de las ~30 filas en memoria).
+    filter === "escalated" ||
     activeTagId !== null ||
     sort === "oldest";
 
@@ -605,15 +619,15 @@ export function InboxSidebar({
     return merged;
   }, [conversations, searchIsCurrent, hitState.remote, resolvedOnServer, resolvedRows]);
 
-  // "Pendientes" y "No leídas" llevan conteo (`counts.pending`/`counts.unread`,
-  // ambos ya honestos contra la base entera — ver `fetchInboxCounts`).
-  // "Mías" no: `counts.mine` existe (D5) pero es volumen histórico del
-  // asesor —incluye lo cerrado, lo que archivó hace meses—, no una cola por
-  // atender: al lado de la píldora sería ruido, no información. El panel de
-  // inicio ya lo enseña bajo su propio nombre ("Tuyas"), que es donde ese
-  // número sí responde una pregunta que alguien se está haciendo. "Todos" no
-  // lleva conteo por el motivo de siempre (ver el comentario junto a
-  // `crm-inbox-head` más abajo).
+  // "Pendientes", "No leídas" y "Escaladas" llevan conteo
+  // (`counts.pending`/`counts.unread`/`counts.escalated`, todos honestos
+  // contra la base entera — ver `fetchInboxCounts`). "Mías" no: `counts.mine`
+  // existe (D5) pero es volumen histórico del asesor —incluye lo cerrado, lo
+  // que archivó hace meses—, no una cola por atender: al lado de la píldora
+  // sería ruido, no información. El panel de inicio ya lo enseña bajo su
+  // propio nombre ("Tuyas"), que es donde ese número sí responde una
+  // pregunta que alguien se está haciendo. "Todos" no lleva conteo por el
+  // motivo de siempre (ver el comentario junto a `crm-inbox-head` más abajo).
   const filterItems = useMemo(
     () =>
       availableFilters.map((value) => ({
@@ -626,7 +640,9 @@ export function InboxSidebar({
               ? counts?.unread
               : value === "unassigned"
                 ? counts?.unassigned
-                : undefined,
+                : value === "escalated"
+                  ? counts?.escalated
+                  : undefined,
       })),
     [availableFilters, counts]
   );

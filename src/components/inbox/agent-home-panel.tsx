@@ -24,7 +24,7 @@ export function AgentHomePanel({
   counts: InboxCounts;
   agentSettings: AgentSettings;
 }) {
-  const { pending, pendingStale, mine, unassigned } = counts;
+  const { pending, pendingStale, mine, unassigned, escalated } = counts;
 
   const spendCapReached =
     agentSettings.dailySpendCapUsd !== null &&
@@ -75,6 +75,20 @@ export function AgentHomePanel({
         <div className="crm-agent-stat" data-alerta={unassigned > 0}>
           <span className="crm-agent-stat-value lm-num">{unassigned}</span>
           <span className="lm-eyebrow">Sin dueño</span>
+        </div>
+        {/*
+          "Esperando asesor" (T1.5 del plan "La bandeja que no pierde",
+          5/9/2026): el mismo número que la píldora "Escaladas" de la
+          bandeja — escalado a un humano y todavía sin una respuesta REAL de
+          alguien del equipo (ver `matchesFilter`/`escalatedOnly` para la
+          fórmula completa, con el matiz del mensaje de cortesía de la IA).
+          Sin el tinte de alarma de "Sin dueño": una escalación recién hecha
+          es normal, no un lead perdido — se pinta distinto solo si además
+          nadie la reclama, y eso ya lo cuenta "Sin dueño".
+        */}
+        <div className="crm-agent-stat">
+          <span className="crm-agent-stat-value lm-num">{escalated}</span>
+          <span className="lm-eyebrow">Esperando asesor</span>
         </div>
       </div>
 

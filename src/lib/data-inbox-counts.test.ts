@@ -4,12 +4,16 @@ import { fetchInboxCounts } from "@/lib/data";
 import { freeformWindowCutoff } from "@/lib/dashboard";
 
 // ---------------------------------------------------------------------------
-// Los tres conteos de la reforma de píldoras del 28/8/2026: "Pendientes" (con
-// o sin asesor — a propósito, ver la migración 20260828020000), su
-// subconjunto fuera de la ventana de 24 h ("Esperando +24 h"), y "Lo mío".
-// El fake reproduce `.from("conversations").select("id", {count, head})`
-// encadenado con `.eq()/.neq()/.is()/.or()`, resolviendo como PostgREST
-// resolvería un `count: "exact", head: true`: sin filas, solo el número.
+// Los conteos de las píldoras de la bandeja: "Pendientes" (con o sin asesor
+// — a propósito, ver la migración 20260828020000) y su subconjunto fuera de
+// la ventana de 24 h ("Esperando +24 h"), de la reforma del 28/8/2026;
+// "Lo mío" y "No leídas" de las reformas siguientes; "Escaladas" (T1.5, plan
+// "La bandeja que no pierde", 5/9/2026). "Sin dueño" no entra acá — no es un
+// conteo de Postgres, es el largo de una lista, y su fake vive en
+// `data-unassigned-conversations.test.ts`. El fake reproduce
+// `.from("conversations").select("id", {count, head})` encadenado con
+// `.eq()/.neq()/.is()/.or()`, resolviendo como PostgREST resolvería un
+// `count: "exact", head: true`: sin filas, solo el número.
 // ---------------------------------------------------------------------------
 
 interface Filtro {
@@ -31,6 +35,10 @@ interface FilaConteo {
   last_customer_message_at: string | null;
   unread_count: number;
   manually_unread: boolean;
+  /** T1.5 (5/9/2026): las tres columnas que mira el conteo de "Escaladas". */
+  journey_stage: string | null;
+  ai_enabled: boolean;
+  last_reply_sender: string | null;
 }
 
 function createFakeSupabase(rows: FilaConteo[]) {
@@ -82,6 +90,11 @@ function createFakeSupabase(rows: FilaConteo[]) {
               }
               if (op === "lte") return cell != null && (cell as string) <= value;
               if (op === "gt") return cell != null && (cell as number) > Number(value);
+              // T1.5 (5/9/2026): el conteo de "Escaladas" arma
+              // `last_reply_sender.neq.agent` dentro del `.or()` (junto con
+              // `.is.null` y `.is.true`) para expresar "is distinct from
+              // 'agent'" — ver el comentario de `escalated` en data.ts.
+              if (op === "neq") return cell !== value;
               throw new Error(`operador "${op}" no soportado por el fake de .or()`);
             })
           )
@@ -151,6 +164,14 @@ const CUTOFF = freeformWindowCutoff(AHORA);
 const DESPUES_DEL_CORTE = new Date(Date.parse(CUTOFF) + 1000).toISOString();
 const ANTES_DEL_CORTE = new Date(Date.parse(CUTOFF) - 1000).toISOString();
 
+/**
+ * Campos por defecto de "Escaladas" (T1.5, 5/9/2026) para las filas que no
+ * tienen nada que ver con esa píldora: `journey_stage: null` ya excluye por
+ * sí solo (no es `'assigned'`), así que estas cinco filas no cuentan para
+ * "escalated" pase lo que pase con el resto de sus campos.
+ */
+const SIN_ESCALAR = { journey_stage: null, ai_enabled: true, last_reply_sender: null };
+
 function filas(): FilaConteo[] {
   return [
     // Pendiente, dentro de la ventana, sin asesor.
@@ -162,6 +183,7 @@ function filas(): FilaConteo[] {
       last_customer_message_at: DESPUES_DEL_CORTE,
       unread_count: 0,
       manually_unread: false,
+      ...SIN_ESCALAR,
     },
     // Pendiente, fuera de la ventana, CON asesor — cuenta igual: "Pendientes"
     // no exige "sin asesor" (migración 20260828020000).
@@ -173,6 +195,7 @@ function filas(): FilaConteo[] {
       last_customer_message_at: ANTES_DEL_CORTE,
       unread_count: 0,
       manually_unread: false,
+      ...SIN_ESCALAR,
     },
     // awaiting_reply, pero cerrada: no es "Pendientes". Sí trae mensajes sin
     // leer: cuenta para "unread" (decisión de diseño — ver el test de abajo).
@@ -184,6 +207,7 @@ function filas(): FilaConteo[] {
       last_customer_message_at: ANTES_DEL_CORTE,
       unread_count: 4,
       manually_unread: false,
+      ...SIN_ESCALAR,
     },
     // No está esperando respuesta, pero es del viewer: cuenta para "mine".
     {
@@ -194,6 +218,7 @@ function filas(): FilaConteo[] {
       last_customer_message_at: null,
       unread_count: 0,
       manually_unread: false,
+      ...SIN_ESCALAR,
     },
     // Pendiente, del viewer, sin fecha de cliente: cae en "stale" (falla
     // cerrado) y también en "mine". Apartada a mano: cuenta también para
@@ -206,6 +231,37 @@ function filas(): FilaConteo[] {
       last_customer_message_at: null,
       unread_count: 0,
       manually_unread: true,
+      ...SIN_ESCALAR,
+    },
+    // Escalada sin asesor: la IA se despidió con el mensaje de cortesía
+    // (`last_reply_sender: 'ai'`) y ya no espera — cuenta igual, por el `or`
+    // con `awaiting_reply` que el conteo comparte con `matchesFilter`.
+    {
+      id: "conv-5",
+      awaiting_reply: false,
+      status: "open",
+      assigned_agent_id: null,
+      last_customer_message_at: DESPUES_DEL_CORTE,
+      unread_count: 0,
+      manually_unread: false,
+      journey_stage: "assigned",
+      ai_enabled: false,
+      last_reply_sender: "ai",
+    },
+    // Escalada CON asesor que ya respondió de verdad y el cliente no volvió:
+    // no cuenta — es el caso que prueba que el `neq`/`is.null` no se traga
+    // de más.
+    {
+      id: "conv-6",
+      awaiting_reply: false,
+      status: "open",
+      assigned_agent_id: "beto",
+      last_customer_message_at: ANTES_DEL_CORTE,
+      unread_count: 0,
+      manually_unread: false,
+      journey_stage: "assigned",
+      ai_enabled: false,
+      last_reply_sender: "agent",
     },
   ];
 }
@@ -258,16 +314,17 @@ describe("fetchInboxCounts", () => {
    * mensajes sin leer (conv-2) sigue contando — es la misma decisión que
    * `unreadOnly` de `fetchConversations` (ver data-conversations.test.ts).
    *
-   * Son CINCO consultas desde el 30/8/2026, no cuatro: la quinta es la de
-   * "Sin dueño", y va última porque no es un conteo —pide filas con la
-   * bitácora embebida— y porque es la única que toca otra tabla.
+   * Son SEIS consultas desde el 5/9/2026 (T1.5), no cinco: la nueva es
+   * "Escaladas" (consultas[4], ver el test de abajo); "Sin dueño" sigue
+   * última porque no es un conteo —pide filas con la bitácora embebida— y
+   * porque es la única que toca otra tabla.
    */
   it('"unread" pregunta por el OR de unread_count/manually_unread, sin condición de estado', async () => {
     const { client, consultas } = createFakeSupabase(filas());
 
     await fetchInboxCounts(client, "viewer-1", AHORA);
 
-    expect(consultas).toHaveLength(5);
+    expect(consultas).toHaveLength(6);
     expect(consultas[3].filtros).toEqual([
       {
         op: "or",
@@ -278,7 +335,31 @@ describe("fetchInboxCounts", () => {
     expect(consultas[3].opciones).toEqual({ count: "exact", head: true });
   });
 
-  it("devuelve los cinco números, cada uno contra su propio subconjunto", async () => {
+  /**
+   * "Escaladas" (T1.5, 5/9/2026): las primeras tres condiciones son `.eq()`/
+   * `.neq()` normales —mismo predicado que usa `conversations_escalated_idx`
+   * (migración 20260905010000)—, y la cuarta ("is distinct from 'agent' or
+   * awaiting_reply") viaja en un solo `.or()`, igual que "unread" arriba.
+   */
+  it('"escalated" pregunta por journey_stage/ai_enabled/status y el OR final', async () => {
+    const { client, consultas } = createFakeSupabase(filas());
+
+    await fetchInboxCounts(client, "viewer-1", AHORA);
+
+    expect(consultas[4].filtros).toEqual([
+      { op: "eq", column: "journey_stage", value: "assigned" },
+      { op: "eq", column: "ai_enabled", value: false },
+      { op: "neq", column: "status", value: "closed" },
+      {
+        op: "or",
+        column: "",
+        value: "last_reply_sender.neq.agent,last_reply_sender.is.null,awaiting_reply.is.true",
+      },
+    ]);
+    expect(consultas[4].opciones).toEqual({ count: "exact", head: true });
+  });
+
+  it("devuelve los seis números, cada uno contra su propio subconjunto", async () => {
     const { client } = createFakeSupabase(filas());
 
     const result = await fetchInboxCounts(client, "viewer-1", AHORA);
@@ -288,6 +369,16 @@ describe("fetchInboxCounts", () => {
     // mine: conv-3 y conv-4 (assigned_agent_id === "viewer-1").
     // unread: conv-2 (cerrada, pero con unread_count > 0 — a propósito, no
     // exige status abierto) y conv-4 (manually_unread).
-    expect(result).toEqual({ pending: 3, pendingStale: 2, mine: 2, unread: 2, unassigned: 0 });
+    // escalated: conv-5 (escalada sin asesor, la IA se despidió con la
+    // cortesía) — NO conv-6 (con asesor que ya respondió de verdad y el
+    // cliente no volvió).
+    expect(result).toEqual({
+      pending: 3,
+      pendingStale: 2,
+      mine: 2,
+      unread: 2,
+      escalated: 1,
+      unassigned: 0,
+    });
   });
 });

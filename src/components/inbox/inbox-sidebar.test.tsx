@@ -75,12 +75,19 @@ function conversation(over: {
    * vez de fijar este campo a mano en cada caso.
    */
   lastCustomerMessageAt?: string | null;
+  /** T1.5 (5/9/2026): lo que mira `case "escalated"` de `matchesFilter`. */
+  journeyStage?: Conversation["journeyStage"];
+  aiEnabled?: boolean;
+  lastReplyAt?: string | null;
+  lastReplySender?: "agent" | "ai" | null;
 }): Conversation {
   return {
     id: over.id,
     status: over.status ?? "open",
     lastCustomerMessageAt: over.lastCustomerMessageAt ?? null,
     lastMessageAt: "lastMessageAt" in over ? (over.lastMessageAt ?? null) : "2026-08-20T10:00:00Z",
+    lastReplyAt: over.lastReplyAt ?? null,
+    lastReplySender: over.lastReplySender ?? null,
     hasReply: false,
     contact: {
       id: `c-${over.id}`,
@@ -98,11 +105,26 @@ function conversation(over: {
     unreadCount: over.unreadCount ?? 0,
     manuallyUnread: over.manuallyUnread ?? false,
     assignedAgent: over.assignedAgent ?? null,
-    aiEnabled: true,
+    journeyStage: over.journeyStage ?? null,
+    aiEnabled: over.aiEnabled ?? true,
     lastMessagePreview: "hola",
     lastMessageDirection: "inbound",
     lastMessageStatus: null,
   } as unknown as Conversation;
+}
+
+/**
+ * Atajo para una conversación que SÍ satisface `case "escalated"` de
+ * `matchesFilter` (T1.5, 5/9/2026): escalada a un humano, IA apagada,
+ * abierta y sin que ningún asesor le haya respondido de verdad todavía
+ * (`lastReplySender: null`) — el caso más simple, "sin asesor".
+ */
+function escalatedConversation(over: Parameters<typeof conversation>[0]): Conversation {
+  return conversation({
+    journeyStage: "assigned",
+    aiEnabled: false,
+    ...over,
+  });
 }
 
 /**
@@ -184,14 +206,28 @@ function irATodos() {
 }
 
 describe("InboxSidebar — qué filtros ve cada rol", () => {
-  it("al administrador le ofrece las cinco píldoras, en ese orden", () => {
+  it("al administrador le ofrece las seis píldoras, en ese orden", () => {
     renderSidebar(JEFA);
-    expect(pillLabels()).toEqual(["Pendientes", "Sin dueño", "No leídas", "Mías", "Todos"]);
+    expect(pillLabels()).toEqual([
+      "Pendientes",
+      "Sin dueño",
+      "Escaladas",
+      "No leídas",
+      "Mías",
+      "Todos",
+    ]);
   });
 
-  it("al asesor le ofrece las mismas cinco píldoras", () => {
+  it("al asesor le ofrece las mismas seis píldoras", () => {
     renderSidebar(ANA);
-    expect(pillLabels()).toEqual(["Pendientes", "Sin dueño", "No leídas", "Mías", "Todos"]);
+    expect(pillLabels()).toEqual([
+      "Pendientes",
+      "Sin dueño",
+      "Escaladas",
+      "No leídas",
+      "Mías",
+      "Todos",
+    ]);
   });
 });
 
@@ -692,6 +728,85 @@ describe("InboxSidebar — 'Pendientes' resuelve en el servidor y parte en dos s
 });
 
 /**
+ * Cobertura propia de "Escaladas" (T1.5 del plan "La bandeja que no pierde",
+ * 5/9/2026): la sexta píldora, entre "Sin dueño" y "No leídas". El resto del
+ * contrato con el servidor (paginación por cursor, pulso vivo) ya lo
+ * comparte con "Pendientes"/"No leídas"/"Mías" vía el mismo
+ * `serverPager`/`pillQueryOptions` — acá solo lo propio de esta píldora.
+ */
+describe("InboxSidebar — 'Escaladas' resuelve en el servidor y parte en dos secciones", () => {
+  it("al pasar a 'Escaladas', pide escalatedOnly con la primera página", () => {
+    renderSidebar(JEFA);
+    irA("Escaladas");
+
+    expect(fetchConversations).toHaveBeenCalledWith(expect.anything(), {
+      escalatedOnly: true,
+      limit: INBOX_PAGE_SIZE,
+    });
+  });
+
+  it("las dos secciones se pintan: 'Sin asesor' y 'Con asesor'", async () => {
+    const sinAsesor = escalatedConversation({ id: "escalada-sin-asesor" });
+    const conAsesor = escalatedConversation({ id: "escalada-con-asesor", assignedAgent: ANA });
+    vi.mocked(fetchConversations).mockImplementation(async (_supabase, options) => {
+      if (!options?.escalatedOnly) return [];
+      return [sinAsesor, conAsesor];
+    });
+
+    const { container } = render(
+      <InboxSidebar
+        conversations={[]}
+        selectedId={null}
+        onSelect={() => {}}
+        currentAgent={JEFA}
+        allTags={ALL_TAGS}
+        bcvRate={null}
+      />
+    );
+    irA("Escaladas");
+
+    await waitFor(() => expect(visibleIds(container)).toHaveLength(2));
+    const encabezados = Array.from(
+      container.querySelectorAll(".crm-list-section .lm-eyebrow:not(.lm-num)")
+    ).map((el) => el.textContent);
+    expect(encabezados).toEqual(["Sin asesor", "Con asesor"]);
+  });
+
+  /**
+   * El matiz que motivó el `|| awaitingReply` de `matchesFilter`
+   * (inbox-filters.ts): la IA se despide con un mensaje de cortesía al
+   * escalar sin asesores disponibles, y eso apaga `awaitingReply` sin que
+   * ningún humano haya escrito nada — la fila tiene que seguir viéndose acá.
+   */
+  it("una escalada sin asesor, donde la IA ya se despidió con la cortesía, sigue apareciendo", async () => {
+    const seDespidioLaIA = escalatedConversation({
+      id: "se-despidio-la-ia",
+      lastCustomerMessageAt: "2026-09-04T10:00:00Z",
+      lastReplyAt: "2026-09-04T10:05:00Z",
+      lastReplySender: "ai",
+    });
+    vi.mocked(fetchConversations).mockImplementation(async (_supabase, options) => {
+      if (!options?.escalatedOnly) return [];
+      return [seDespidioLaIA];
+    });
+
+    const { container } = render(
+      <InboxSidebar
+        conversations={[]}
+        selectedId={null}
+        onSelect={() => {}}
+        currentAgent={JEFA}
+        allTags={ALL_TAGS}
+        bcvRate={null}
+      />
+    );
+    irA("Escaladas");
+
+    await waitFor(() => expect(visibleIds(container)).toContain("se-despidio-la-ia"));
+  });
+});
+
+/**
  * Tres carreras de la revisión de código del 29/8/2026 (H1/H2/H3). Ya no
  * las cierra una máquina propia de `inbox-sidebar.tsx`: las cierra
  * `useInboxPager` (`src/lib/use-inbox-pager.ts`, con sus propios tests) —
@@ -1155,8 +1270,8 @@ describe("InboxSidebar — 'Buscando…' al cambiar de píldora", () => {
   });
 });
 
-describe("InboxSidebar — conteo de las píldoras 'Pendientes' y 'No leídas'", () => {
-  it("vienen de counts.pending y counts.unread; 'Mías' y 'Todos' se quedan sin número", async () => {
+describe("InboxSidebar — conteo de las píldoras 'Pendientes', 'Sin dueño', 'Escaladas' y 'No leídas'", () => {
+  it("vienen de counts.pending/unassigned/escalated/unread; 'Mías' y 'Todos' se quedan sin número", async () => {
     const { container } = render(
       <InboxSidebar
         conversations={CONVERSATIONS}
@@ -1165,17 +1280,17 @@ describe("InboxSidebar — conteo de las píldoras 'Pendientes' y 'No leídas'",
         currentAgent={JEFA}
         allTags={ALL_TAGS}
         bcvRate={null}
-        counts={{ pending: 5, pendingStale: 2, mine: 3, unread: 42, unassigned: 0 }}
+        counts={{ pending: 5, pendingStale: 2, mine: 3, unread: 42, unassigned: 0, escalated: 7 }}
       />
     );
     await waitFor(() => expect(fetchConversations).toHaveBeenCalled());
 
     // SlidingPills duplica la fila de botones para animar el recorte (ver
     // `pillLabels`): cada número real aparece dos veces en el DOM, una por
-    // copia. Orden de las píldoras: Pendientes, Sin dueño, No leídas, Mías,
-    // Todos — las dos últimas no llevan `count`, así que no aportan ningún
-    // `<span>`; ni `counts.mine` (3) ni `counts.pendingStale` (2) deben
-    // colarse acá.
+    // copia. Orden de las píldoras: Pendientes, Sin dueño, Escaladas, No
+    // leídas, Mías, Todos — las dos últimas no llevan `count`, así que no
+    // aportan ningún `<span>`; ni `counts.mine` (3) ni `counts.pendingStale`
+    // (2) deben colarse acá.
     //
     // "Sin dueño" muestra 0 y no se esconde a propósito: un cero ahí es una
     // afirmación —"no hay ningún lead suelto"— y es justo el número que la
@@ -1184,7 +1299,7 @@ describe("InboxSidebar — conteo de las píldoras 'Pendientes' y 'No leídas'",
     const conteos = Array.from(container.querySelectorAll(".lm-pill-count")).map(
       (el) => el.textContent
     );
-    expect(conteos).toEqual(["5", "0", "42", "5", "0", "42"]);
+    expect(conteos).toEqual(["5", "0", "7", "42", "5", "0", "7", "42"]);
   });
 
   it("sin la prop counts, ninguna píldora muestra número", () => {

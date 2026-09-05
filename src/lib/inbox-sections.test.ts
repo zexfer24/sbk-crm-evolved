@@ -1,17 +1,22 @@
 import { describe, expect, it } from "vitest";
-import type { ConversationSummary } from "@/lib/types";
+import type { Agent, ConversationSummary } from "@/lib/types";
 import { buildInboxSections } from "@/lib/inbox-sections";
+
+const ANA: Agent = { id: "ana", displayName: "Ana", fullName: null, avatarUrl: null, role: "agent", isActive: true };
 
 /** Conversación mínima: solo los campos que miran las secciones. */
 function conversation(over: {
   id: string;
   unreadCount?: number;
   manuallyUnread?: boolean;
+  /** T1.5 (5/9/2026): lo que parte "escalated" en Sin asesor/Con asesor. */
+  assignedAgent?: Agent | null;
 }): ConversationSummary {
   return {
     id: over.id,
     unreadCount: over.unreadCount ?? 0,
     manuallyUnread: over.manuallyUnread ?? false,
+    assignedAgent: over.assignedAgent ?? null,
     contact: {
       id: `c-${over.id}`,
       phoneNumber: "+58000",
@@ -99,6 +104,60 @@ describe("buildInboxSections — unread", () => {
     const sections = buildInboxSections("unread", [b, a], NOW);
 
     expect(sections[0].conversations.map((x) => x.id)).toEqual(["b", "a"]);
+  });
+});
+
+/**
+ * T1.5 del plan "La bandeja que no pierde" (5/9/2026): distinto criterio de
+ * partición que "pending"/"mine" (que parten por LECTURA) — acá importa si
+ * YA hay un asesor a cargo, no si abrió el chat.
+ */
+describe("buildInboxSections — escalated", () => {
+  it("arma dos secciones: Sin asesor y Con asesor", () => {
+    const sinAsesor = conversation({ id: "sin-asesor" });
+    const conAsesor = conversation({ id: "con-asesor", assignedAgent: ANA });
+
+    const sections = buildInboxSections("escalated", [sinAsesor, conAsesor], NOW);
+
+    expect(sections).toHaveLength(2);
+    expect(sections[0]).toMatchObject({
+      id: "escalada-sin-asesor",
+      label: "Sin asesor",
+      conversations: [sinAsesor],
+    });
+    expect(sections[1]).toMatchObject({
+      id: "escalada-con-asesor",
+      label: "Con asesor",
+      conversations: [conAsesor],
+    });
+  });
+
+  it("una sección vacía no produce entrada", () => {
+    const conAsesor = conversation({ id: "con-asesor", assignedAgent: ANA });
+
+    const sections = buildInboxSections("escalated", [conAsesor], NOW);
+
+    expect(sections).toHaveLength(1);
+    expect(sections[0].label).toBe("Con asesor");
+  });
+
+  it("la otra sección vacía tampoco produce entrada", () => {
+    const sinAsesor = conversation({ id: "sin-asesor" });
+
+    const sections = buildInboxSections("escalated", [sinAsesor], NOW);
+
+    expect(sections).toHaveLength(1);
+    expect(sections[0].label).toBe("Sin asesor");
+  });
+
+  it("preserva el orden de entrada dentro de cada sección", () => {
+    const a = conversation({ id: "a", assignedAgent: ANA });
+    const b = conversation({ id: "b", assignedAgent: ANA });
+    const c = conversation({ id: "c", assignedAgent: ANA });
+
+    const sections = buildInboxSections("escalated", [a, b, c], NOW);
+
+    expect(sections[0].conversations.map((x) => x.id)).toEqual(["a", "b", "c"]);
   });
 });
 
