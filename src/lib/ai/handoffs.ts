@@ -64,7 +64,17 @@ export type HandoffReason =
   // Falló después de haber intentado entregar: no se reintenta para no duplicar.
   | "entrega_fallida"
   // El reconciliador encontró una conversación esperando que nadie tenía.
-  | "reabierto";
+  | "reabierto"
+  // T0.3: escalateConversation() encontró un asesor libre y se lo asignó.
+  | "escalada"
+  // T0.3: escalateConversation() escaló igual, pero no había ningún asesor
+  // activo — la conversación queda "assigned" sin `assigned_agent_id`.
+  | "escalada_sin_asesor"
+  // T0.3: Meta rechazó el envío de la IA (whatsapp_status = 'failed') después
+  // de que el turno ya había pasado todas las guardas de deliver(). El
+  // cliente no recibió nada; no se reintenta para no arriesgar un duplicado
+  // si el rechazo fue parcial.
+  | "rechazado_por_meta";
 
 export interface HandoffInput {
   conversationId: string;

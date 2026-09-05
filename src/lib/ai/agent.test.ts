@@ -45,6 +45,8 @@ const state: FakeState = {
 const conversationUpdates: Record<string, unknown>[] = [];
 const agentTurnInserts: Record<string, unknown>[] = [];
 const contactTagUpserts: { rows: unknown; options: unknown }[] = [];
+/** Cada llamada a la RPC `record_handoff`, con los parámetros que le llegaron. */
+const handoffCalls: Record<string, unknown>[] = [];
 /**
  * Bitácora del orden real de los tres pasos del escenario. El requisito no es
  * solo que las tres cosas pasen: es que la etiqueta esté puesta ANTES de que
@@ -54,7 +56,7 @@ const pasos: string[] = [];
 
 function createFakeSupabase() {
   return {
-    rpc(fn: string) {
+    rpc(fn: string, params?: Record<string, unknown>) {
       // Igual que la función SQL: junta el interruptor global y el tope de gasto.
       if (fn === "agent_can_run") {
         return Promise.resolve({ data: state.aiGloballyEnabled && state.canRun, error: null });
@@ -69,13 +71,19 @@ function createFakeSupabase() {
           : Promise.resolve({ data: state.turnLockRenewResult.data, error: null });
       }
       if (fn === "ai_turn_lock_release") return Promise.resolve({ data: true, error: null });
-      // Bitácora de traspasos (handoffs.ts). Acá solo tiene que NO explotar:
-      // qué fila escribe cada salida se prueba en handoffs.test.ts, que para
-      // eso captura los parámetros. Si este caso falta, el fake lanza por la
-      // línea de abajo, `recordHandoff` se traga la excepción —es su
-      // contrato— y deja un `traspaso_no_registrado` en el registro, que es
-      // justo lo que rompía el resguardo de "esta rama no loguea nada".
-      if (fn === "record_handoff") return Promise.resolve({ data: "handoff-1", error: null });
+      // Bitácora de traspasos (handoffs.ts). La mayoría de las salidas de
+      // este archivo solo necesitan que esto NO explote —qué fila escribe
+      // cada salida silenciosa se prueba a fondo en handoffs.test.ts—, pero
+      // T0.3 sí necesita mirar los parámetros acá: la salida
+      // `rechazado_por_meta` (rechazo de Meta en el camino de escenario) es
+      // más natural de cubrir en este archivo, que ya tiene el escenario
+      // encendido con `matchPlaybookMock`. Si este caso faltara, el fake
+      // lanza por la línea de abajo, `recordHandoff` se traga la excepción
+      // —es su contrato— y deja un `traspaso_no_registrado` en el registro.
+      if (fn === "record_handoff") {
+        handoffCalls.push(params ?? {});
+        return Promise.resolve({ data: "handoff-1", error: null });
+      }
       throw new Error(`Fake Supabase: rpc no soportada: ${fn}`);
     },
     from(table: string) {
@@ -173,8 +181,23 @@ vi.mock("@/lib/ai/playbooks", () => ({
 
 type AnyMock = (...args: unknown[]) => Promise<unknown>;
 
-const sendPlaybookReplyMock = vi.fn<AnyMock>(async () => undefined);
-const sendAgentTextMock = vi.fn<AnyMock>(async () => undefined);
+/**
+ * T0.3: `sendAgentText`/`sendPlaybookReply` dejaron de ser `Promise<void>` —
+ * devuelven el `DeliveryOutcome` que agent.ts mira para saber si Meta
+ * rechazó el envío. Un mock que resolviera `undefined` haría que `deliver()`
+ * tratara CUALQUIER envío como bloqueado por una guarda (`if (!salida)
+ * return`), así que el valor por defecto tiene que ser un outcome de verdad
+ * — el mismo que produce un canal simulado (`whatsapp_status: null`, ni
+ * enviado ni rechazado).
+ */
+const OUTCOME_NO_ENVIADO = {
+  whatsapp_message_id: null,
+  whatsapp_status: null as "sent" | "failed" | null,
+  whatsapp_error_code: null,
+  whatsapp_error_detail: null,
+};
+const sendPlaybookReplyMock = vi.fn<AnyMock>(async () => OUTCOME_NO_ENVIADO);
+const sendAgentTextMock = vi.fn<AnyMock>(async () => OUTCOME_NO_ENVIADO);
 // Los envíos se fingen; `playbookMessageText` no. Es lo que compone el texto
 // que sale, y el turno lo usa para reconocer su propio mensaje en el
 // historial: fingirlo acá sería escribir dos veces la misma regla y probar la
@@ -284,6 +307,7 @@ beforeEach(() => {
   agentTurnInserts.length = 0;
   contactTagUpserts.length = 0;
   pasos.length = 0;
+  handoffCalls.length = 0;
   agentOptions.length = 0;
   vi.clearAllMocks();
   fetchActivePlaybooksMock.mockResolvedValue([]);
@@ -300,6 +324,7 @@ beforeEach(() => {
   });
   sendPlaybookReplyMock.mockImplementation(async () => {
     pasos.push("responder");
+    return OUTCOME_NO_ENVIADO;
   });
   escalateConversationMock.mockImplementation(async () => {
     pasos.push("escalar");
@@ -733,6 +758,48 @@ describe("runAgentTurn — escenarios predeterminados", () => {
 
     expect(escalateConversationMock).not.toHaveBeenCalled();
     expect(conversationUpdates).toContainEqual(expect.objectContaining({ journey_stage: null }));
+  });
+
+  /**
+   * T0.3: hasta ahora un rechazo de Meta en el camino de escenario no frenaba
+   * nada — el turno etiquetaba, escalaba (si tocaba) y escribía `agent_turns`
+   * como si el cliente hubiera recibido el catálogo, aunque `messages` ya
+   * dijera `whatsapp_status: 'failed'`. Con la respuesta del tool loop se
+   * cubre en `handoffs.test.ts`; esto cierra el otro consumidor nombrado en
+   * el plan.
+   */
+  it("rechazado_por_meta: el escenario sale rechazado por Meta, no se etiqueta ni se escala", async () => {
+    const warn = vi.spyOn(log, "warn");
+    const pb = playbook({
+      afterSend: "escalate",
+      tags: [{ id: "tag-envio", label: "Envio", color: "accent" as const }],
+    });
+    fetchActivePlaybooksMock.mockResolvedValue([pb]);
+    matchPlaybookMock.mockResolvedValue({ playbook: pb, usage: NO_USAGE });
+    sendPlaybookReplyMock.mockImplementation(async () => ({
+      whatsapp_message_id: null,
+      whatsapp_status: "failed" as const,
+      whatsapp_error_code: 131047,
+      whatsapp_error_detail: "Meta rechazó el envío",
+    }));
+
+    await runAgentTurn("conv-1");
+
+    expect(sendPlaybookReplyMock).toHaveBeenCalledTimes(1);
+    // Ni la etiqueta ni el escalamiento acompañan a un mensaje que no salió.
+    expect(contactTagUpserts).toHaveLength(0);
+    expect(escalateConversationMock).not.toHaveBeenCalled();
+    expect(agentTurnInserts).toHaveLength(0);
+    expect(warn).toHaveBeenCalledWith("turno_rechazado_por_meta", {
+      conversationId: "conv-1",
+      codigo: 131047,
+    });
+    expect(handoffCalls).toHaveLength(1);
+    expect(handoffCalls[0]).toMatchObject({
+      p_conversation_id: "conv-1",
+      p_to_kind: "unassigned",
+      p_reason: "rechazado_por_meta",
+    });
   });
 
   it("sin escenarios cargados, el turno sigue por el flujo genérico de siempre", async () => {
@@ -1188,6 +1255,43 @@ describe("runAgentTurn — mensajes fuera de tema", () => {
     expect(generateMock).not.toHaveBeenCalled();
     expect(agentTurnInserts).toHaveLength(1);
   });
+
+  /**
+   * Corrección 5/9/2026: T0.3 conectó `rejectedByMeta()` en el escenario de
+   * fase 0 y en la respuesta final del tool loop, pero se le olvidó el
+   * tercer consumidor de `sendAgentText` — esta redirección. Era un `return`
+   * que abandonaba la conversación sin traspaso: exactamente el bug que la
+   * invariante de CLAUDE.md prohíbe.
+   */
+  it("rechazado_por_meta: la redirección de fuera de tema sale rechazada por Meta, sin segundo envío", async () => {
+    const warn = vi.spyOn(log, "warn");
+    classifyIntentMock.mockResolvedValue({
+      intent: "fuera_de_tema",
+      usage: { inputTokens: 5, outputTokens: 1, totalTokens: 6 },
+    });
+    sendAgentTextMock.mockResolvedValueOnce({
+      whatsapp_message_id: null,
+      whatsapp_status: "failed" as const,
+      whatsapp_error_code: 131047,
+      whatsapp_error_detail: "Meta rechazó el envío",
+    });
+
+    await runAgentTurn("conv-1");
+
+    expect(sendAgentTextMock).toHaveBeenCalledTimes(1);
+    // El turno termina en el rechazo: no llega a escribir agent_turns.
+    expect(agentTurnInserts).toHaveLength(0);
+    expect(warn).toHaveBeenCalledWith("turno_rechazado_por_meta", {
+      conversationId: "conv-1",
+      codigo: 131047,
+    });
+    expect(handoffCalls).toHaveLength(1);
+    expect(handoffCalls[0]).toMatchObject({
+      p_conversation_id: "conv-1",
+      p_to_kind: "unassigned",
+      p_reason: "rechazado_por_meta",
+    });
+  });
 });
 
 describe("runAgentTurn — instrucciones que recibe el modelo", () => {
@@ -1393,5 +1497,99 @@ describe("runAgentTurn — tiempos del turno", () => {
     } finally {
       spy.mockRestore();
     }
+  });
+});
+
+/**
+ * Corrección 5/9/2026 (HUECO 2). En devolución/queja, la escalación forzada
+ * (`escalateConversation`) corre ANTES del envío final y ya deja su propio
+ * traspaso —`escalada` con asesor, `escalada_sin_asesor` sin uno—. Si ese
+ * envío final es justo el que Meta rechaza, `rejectedByMeta()` no debe
+ * escribir un SEGUNDO traspaso `unassigned`: como el conteo "Sin dueño" mira
+ * la ÚLTIMA fila de `conversation_handoffs`, una conversación que sí quedó
+ * con asesor asignado aparecería como sin dueño. Un solo traspaso por
+ * salida, el más específico.
+ */
+describe("runAgentTurn — un solo traspaso por salida cuando la escalación forzada y el rechazo de Meta coinciden", () => {
+  /**
+   * El mock de `escalateConversation` no ejecuta el código real de
+   * escalate.ts (está reemplazado por `vi.mock`), así que para probar "un
+   * solo recordHandoff" hay que dejar que ESTE mock deje su traspaso, tal
+   * como lo hace la función real ANTES de devolver.
+   */
+  it("queja escalada a un asesor + envío final rechazado por Meta: un solo recordHandoff, el de la escalación", async () => {
+    const warn = vi.spyOn(log, "warn");
+    classifyIntentMock.mockResolvedValue({
+      intent: "queja",
+      usage: { inputTokens: 5, outputTokens: 1, totalTokens: 6 },
+    });
+    escalateConversationMock.mockImplementation(async (...args: unknown[]) => {
+      const [supabaseArg, params] = args as [
+        { rpc: (fn: string, params: Record<string, unknown>) => Promise<unknown> },
+        { conversationId: string },
+      ];
+      pasos.push("escalar");
+      // Espeja lo que hace escalate.ts de verdad: deja su propio traspaso
+      // ANTES de devolver, con el asesor ya asignado.
+      await supabaseArg.rpc("record_handoff", {
+        p_conversation_id: params.conversationId,
+        p_to_kind: "human",
+        p_reason: "escalada",
+        p_to_id: "asesor-42",
+      });
+      return { escalated: true, assignedAgentName: "María" };
+    });
+    sendAgentTextMock.mockResolvedValueOnce({
+      whatsapp_message_id: null,
+      whatsapp_status: "failed" as const,
+      whatsapp_error_code: 131047,
+      whatsapp_error_detail: "Meta rechazó el envío",
+    });
+
+    await runAgentTurn("conv-1");
+
+    expect(escalateConversationMock).toHaveBeenCalledTimes(1);
+    expect(sendAgentTextMock).toHaveBeenCalledTimes(1);
+    // Exactamente UN traspaso, y es el de la escalación — no un segundo
+    // `rechazado_por_meta` que lo pisara.
+    expect(handoffCalls).toHaveLength(1);
+    expect(handoffCalls[0]).toMatchObject({
+      p_conversation_id: "conv-1",
+      p_to_kind: "human",
+      p_reason: "escalada",
+      p_to_id: "asesor-42",
+    });
+    // El rechazo de Meta sí se ve en el registro: solo se omite la bitácora.
+    expect(warn).toHaveBeenCalledWith("turno_rechazado_por_meta", {
+      conversationId: "conv-1",
+      codigo: 131047,
+      traspaso_omitido: "escalada_previa",
+    });
+  });
+
+  /** El caso que ya existía (cubierto también en handoffs.test.ts) sigue igual: sin escalación previa, el rechazo de Meta registra su propio traspaso. */
+  it("sin escalación previa, el rechazo de Meta en el tool loop sigue registrando rechazado_por_meta", async () => {
+    const warn = vi.spyOn(log, "warn");
+    sendAgentTextMock.mockResolvedValueOnce({
+      whatsapp_message_id: null,
+      whatsapp_status: "failed" as const,
+      whatsapp_error_code: 131047,
+      whatsapp_error_detail: "Meta rechazó el envío",
+    });
+
+    await runAgentTurn("conv-1");
+
+    expect(escalateConversationMock).not.toHaveBeenCalled();
+    expect(sendAgentTextMock).toHaveBeenCalledTimes(1);
+    expect(warn).toHaveBeenCalledWith("turno_rechazado_por_meta", {
+      conversationId: "conv-1",
+      codigo: 131047,
+    });
+    expect(handoffCalls).toHaveLength(1);
+    expect(handoffCalls[0]).toMatchObject({
+      p_conversation_id: "conv-1",
+      p_to_kind: "unassigned",
+      p_reason: "rechazado_por_meta",
+    });
   });
 });

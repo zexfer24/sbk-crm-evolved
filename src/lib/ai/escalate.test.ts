@@ -10,10 +10,19 @@ import { escalateConversation } from "@/lib/ai/escalate";
 interface Estado {
   conversationUpdates: Record<string, unknown>[];
   notas: string[];
+  /** Cada llamada a la RPC `record_handoff` (ver handoffs.ts), con sus parámetros. */
+  handoffs: Record<string, unknown>[];
+  /**
+   * Orden real en que ocurrieron los tres pasos: update → nota → traspaso.
+   * T0.3 le agregó el traspaso a `escalateConversation`, y el requisito no es
+   * solo que ocurra, sino que quede DETRÁS de un estado ya consistente (la
+   * conversación actualizada y la nota ya escrita), no a mitad de escribirlo.
+   */
+  pasos: string[];
 }
 
 function createFakeSupabase(): { client: unknown; estado: Estado } {
-  const estado: Estado = { conversationUpdates: [], notas: [] };
+  const estado: Estado = { conversationUpdates: [], notas: [], handoffs: [], pasos: [] };
 
   const client = {
     from(table: string) {
@@ -21,6 +30,7 @@ function createFakeSupabase(): { client: unknown; estado: Estado } {
         return {
           update(values: Record<string, unknown>) {
             estado.conversationUpdates.push(values);
+            estado.pasos.push("update");
             return { eq: async () => ({ data: null, error: null }) };
           },
         };
@@ -29,6 +39,7 @@ function createFakeSupabase(): { client: unknown; estado: Estado } {
         return {
           insert(row: { content?: string }) {
             estado.notas.push(row.content ?? "");
+            estado.pasos.push("nota");
             return Promise.resolve({ data: null, error: null });
           },
         };
@@ -40,6 +51,12 @@ function createFakeSupabase(): { client: unknown; estado: Estado } {
         return { upsert: async () => ({ data: null, error: null }) };
       }
       throw new Error(`Fake Supabase: tabla no soportada: ${table}`);
+    },
+    rpc(fn: string, params?: Record<string, unknown>) {
+      if (fn !== "record_handoff") throw new Error(`Fake Supabase: rpc no soportada: ${fn}`);
+      estado.handoffs.push(params ?? {});
+      estado.pasos.push("traspaso");
+      return Promise.resolve({ data: "handoff-1", error: null });
     },
   };
 
@@ -68,6 +85,43 @@ describe("escalateConversation", () => {
       assigned_agent_id: "agent-1",
       journey_stage: "assigned",
     });
+  });
+
+  /**
+   * T0.3: el escalamiento es una salida silenciosa más de la IA —la
+   * conversación deja de correr por el turno— y hasta ahora no dejaba fila
+   * en `conversation_handoffs`. Con candidato, el traspaso va a la persona
+   * exacta que se lo llevó (`toId`), no solo a "human" en general.
+   */
+  it("con un asesor disponible, registra el traspaso a 'human' con su toId y razón 'escalada'", async () => {
+    claimNextAvailableAgentMock.mockResolvedValue({ id: "agent-1", displayName: "María" });
+    const { client, estado } = createFakeSupabase();
+
+    // @ts-expect-error -- fake mínimo
+    await escalateConversation(client, PARAMS);
+
+    expect(estado.handoffs).toHaveLength(1);
+    expect(estado.handoffs[0]).toMatchObject({
+      p_conversation_id: "conv-1",
+      p_to_kind: "human",
+      p_to_id: "agent-1",
+      p_reason: "escalada",
+    });
+  });
+
+  /**
+   * El orden importa: la bitácora tiene que quedar DETRÁS de un estado ya
+   * consistente (conversación actualizada, nota ya escrita), no a mitad de
+   * escribirlo — igual que ya exigía el orden etiquetar→escalar en agent.ts.
+   */
+  it("escribe en el orden update → nota → traspaso", async () => {
+    claimNextAvailableAgentMock.mockResolvedValue({ id: "agent-1", displayName: "María" });
+    const { client, estado } = createFakeSupabase();
+
+    // @ts-expect-error -- fake mínimo
+    await escalateConversation(client, PARAMS);
+
+    expect(estado.pasos).toEqual(["update", "nota", "traspaso"]);
   });
 
   /**
@@ -123,6 +177,37 @@ describe("escalateConversation", () => {
       const result = await escalateConversation(client, PARAMS);
 
       expect(result.escalated).toBe(true);
+    });
+
+    /**
+     * Sin candidato el traspaso es a "unassigned", no a "human": nadie quedó
+     * a cargo de verdad, y es justo lo que hace que esta conversación
+     * aparezca en la píldora "Sin dueño" del panel de inicio.
+     */
+    it("registra el traspaso a 'unassigned' con razón 'escalada_sin_asesor'", async () => {
+      claimNextAvailableAgentMock.mockResolvedValue(null);
+      const { client, estado } = createFakeSupabase();
+
+      // @ts-expect-error -- fake mínimo
+      await escalateConversation(client, PARAMS);
+
+      expect(estado.handoffs).toHaveLength(1);
+      expect(estado.handoffs[0]).toMatchObject({
+        p_conversation_id: "conv-1",
+        p_to_kind: "unassigned",
+        p_reason: "escalada_sin_asesor",
+      });
+      expect(estado.handoffs[0].p_to_id).toBeUndefined();
+    });
+
+    it("sin asesor también respeta el orden update → nota → traspaso", async () => {
+      claimNextAvailableAgentMock.mockResolvedValue(null);
+      const { client, estado } = createFakeSupabase();
+
+      // @ts-expect-error -- fake mínimo
+      await escalateConversation(client, PARAMS);
+
+      expect(estado.pasos).toEqual(["update", "nota", "traspaso"]);
     });
   });
 });

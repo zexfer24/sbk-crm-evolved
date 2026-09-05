@@ -2,6 +2,7 @@ import "server-only";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import type { Database, TablesUpdate } from "@/lib/supabase/database.types";
 import { claimNextAvailableAgent } from "@/lib/ai/claim-agent";
+import { recordHandoff } from "@/lib/ai/handoffs";
 
 // ---------------------------------------------------------------------------
 // Lógica compartida de escalamiento: la usa la herramienta que el modelo
@@ -64,6 +65,18 @@ export async function escalateConversation(
       ? `IA escaló a ${candidate.displayName}. Motivo: ${motivo}. ${resumen}`
       : `IA escaló sin asesores disponibles: nadie tiene asignada esta conversación todavía. Motivo: ${motivo}. ${resumen}`,
   });
+
+  // T0.3: el escalamiento es una salida silenciosa más de la IA (la
+  // conversación deja de correr por el turno), así que también le toca su
+  // fila de traspaso. Va DESPUÉS del update y de la nota — mismo orden que
+  // ya tenían los tres pasos de esta función — para que la bitácora quede
+  // detrás de un estado que ya es consistente, no a mitad de escribirlo.
+  await recordHandoff(
+    supabase,
+    candidate
+      ? { conversationId, toKind: "human", toId: candidate.id, reason: "escalada" }
+      : { conversationId, toKind: "unassigned", reason: "escalada_sin_asesor" }
+  );
 
   if (motivo === "queja") {
     const label = `Reclamo · ${categoriaReclamo ?? "Atención"}`;

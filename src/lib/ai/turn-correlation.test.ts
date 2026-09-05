@@ -162,6 +162,19 @@ vi.mock("@/lib/ai/playbooks", () => ({
 
 /** Lo que de verdad se le mandó a cada cliente: texto y destinatario, juntos. */
 const enviados: { target: TurnTarget; text: string }[] = [];
+/**
+ * T0.3: `sendAgentText`/`sendPlaybookReply` devuelven el `DeliveryOutcome`
+ * que `deliver()` mira para saber si Meta rechazó el envío. Este archivo no
+ * prueba ese mecanismo (lo hacen `agent.test.ts`/`handoffs.test.ts`); acá el
+ * outcome solo tiene que ser "sent" para no leerse como bloqueado por una
+ * guarda ni como rechazo de Meta.
+ */
+const OUTCOME_ENVIADO = {
+  whatsapp_message_id: "wamid.falso",
+  whatsapp_status: "sent" as const,
+  whatsapp_error_code: null,
+  whatsapp_error_detail: null,
+};
 // `playbookMessageText` no se finge: es lo que compone el texto que sale, y el
 // turno lo usa para reconocer su propio mensaje en el historial y no repetir
 // un escenario. Ver alreadySentPlaybook en agent.ts.
@@ -169,8 +182,9 @@ vi.mock("@/lib/ai/send", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@/lib/ai/send")>()),
   sendAgentText: async (_supabase: unknown, target: TurnTarget, text: string) => {
     enviados.push({ target, text });
+    return OUTCOME_ENVIADO;
   },
-  sendPlaybookReply: async () => undefined,
+  sendPlaybookReply: async () => OUTCOME_ENVIADO,
 }));
 
 /**

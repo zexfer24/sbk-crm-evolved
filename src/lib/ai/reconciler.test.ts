@@ -335,6 +335,36 @@ describe("reconcileOrphanTurns — el tope de la pasada", () => {
   });
 });
 
+describe("reconcileOrphanTurns — el predicado no mira conversation_handoffs (T0.3)", () => {
+  /**
+   * T0.3 amplió el CHECK de `conversation_handoffs.reason` con `escalada`,
+   * `escalada_sin_asesor` y `rechazado_por_meta`. El fake de este archivo ni
+   * siquiera modela esa tabla para lectura (`createFakeSupabase` solo la
+   * usa como destino de `record_handoff`, nunca como fuente de un `select`):
+   * si el reconciliador alguna vez empezara a filtrar por `reason` o
+   * `to_kind`, este test seguiría en verde por accidente y el fake tendría
+   * que fallar en cambio. Lo que sí prueba de verdad es que una conversación
+   * en el mismo estado de siempre (awaiting_reply, sin asesor, IA
+   * encendida) se rescata igual sin que importe CUÁL fue el traspaso que la
+   * dejó huérfana — el reconciliador nunca pregunta eso.
+   */
+  it("una huérfana por 'rechazado_por_meta' se rescata igual que cualquier otra: el motivo anterior no entra en el predicado", async () => {
+    const rows = [baseRow("conv-rechazada-por-meta")];
+    const { client, handoffCalls } = createFakeSupabase(rows);
+
+    const resultado = await reconcileOrphanTurns(client, AHORA);
+
+    expect(resultado.encoladas).toBe(1);
+    expect(await pendingAgentTurns()).toBe(1);
+    expect(handoffCalls).toHaveLength(1);
+    expect(handoffCalls[0]).toMatchObject({
+      p_conversation_id: "conv-rechazada-por-meta",
+      p_to_kind: "ai",
+      p_reason: "reabierto",
+    });
+  });
+});
+
 describe("reconcileOrphanTurns — sin candidatas", () => {
   it("sin nada que cumpla el predicado, no toca la cola ni escribe traspasos", async () => {
     const { client, handoffCalls } = createFakeSupabase([]);

@@ -91,6 +91,20 @@ function lockIsActive(until: string | null, now: number): boolean {
  * en cero, para que una pasada de reconciliación fallida no tumbe el resto
  * del cron (que todavía tiene que drenar la cola).
  */
+/**
+ * T0.3 (5/9/2026): el CHECK de `conversation_handoffs.reason` sumó
+ * `escalada`, `escalada_sin_asesor` y `rechazado_por_meta`. Ninguna de las
+ * tres le cambia nada a esta función: el predicado de abajo nunca lee
+ * `conversation_handoffs` —ni `reason` ni `to_kind`—, solo columnas de
+ * `conversations` (`awaiting_reply`, `assigned_agent_id`, `status`,
+ * `ai_enabled`, `last_customer_message_at`). Una conversación que quedó
+ * huérfana por `rechazado_por_meta` se rescata exactamente igual que una que
+ * quedó huérfana por `entrega_fallida` o por `pausada`: lo único que importa
+ * es en qué estado quedó la fila de `conversations`, no por qué motivo llegó
+ * ahí. (El único lugar del sistema que sí mira `to_kind` —nunca `reason`— es
+ * `unassigned_waiting_count()`, el KPI de "Sin dueño"; ver
+ * 20260830040000_conversation_handoffs.sql.)
+ */
 export async function reconcileOrphanTurns(
   supabase: SupabaseClient,
   now: number = Date.now()

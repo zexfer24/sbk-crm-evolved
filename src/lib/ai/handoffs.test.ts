@@ -126,8 +126,30 @@ vi.mock("@/lib/ai/playbooks", () => ({
 
 type AnyMock = (...args: unknown[]) => Promise<unknown>;
 
-const sendPlaybookReplyMock = vi.fn<AnyMock>(async () => undefined);
-const sendAgentTextMock = vi.fn<AnyMock>(async () => undefined);
+/**
+ * T0.3: `sendAgentText`/`sendPlaybookReply` devuelven el `DeliveryOutcome`
+ * que `deliver()` mira para decidir si Meta rechazó el envío. Un mock que
+ * resolviera `undefined` haría que TODO envío se leyera como bloqueado por
+ * una guarda — el valor por defecto tiene que ser un outcome de verdad, el
+ * mismo que produce un canal simulado.
+ */
+const OUTCOME_NO_ENVIADO = {
+  whatsapp_message_id: null,
+  whatsapp_status: null as "sent" | "failed" | null,
+  whatsapp_error_code: null,
+  whatsapp_error_detail: null,
+};
+/** El mismo outcome, pero como si Meta lo hubiera rechazado — para la salida `rechazado_por_meta`. */
+function outcomeRechazado(codigo: number | null = 131047) {
+  return {
+    whatsapp_message_id: null,
+    whatsapp_status: "failed" as const,
+    whatsapp_error_code: codigo,
+    whatsapp_error_detail: "Meta rechazó el envío",
+  };
+}
+const sendPlaybookReplyMock = vi.fn<AnyMock>(async () => OUTCOME_NO_ENVIADO);
+const sendAgentTextMock = vi.fn<AnyMock>(async () => OUTCOME_NO_ENVIADO);
 vi.mock("@/lib/ai/send", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@/lib/ai/send")>()),
   sendPlaybookReply: (...args: unknown[]) => sendPlaybookReplyMock(...args),
@@ -183,6 +205,7 @@ vi.mock("@/lib/ai/knowledge", () => ({
 }));
 
 import { runAgentTurn } from "@/lib/ai/agent";
+import { log } from "@/lib/log";
 
 function baseConversation(overrides: Record<string, unknown> = {}) {
   return {
@@ -382,6 +405,34 @@ describe("runAgentTurn — traspasos registrados en cada salida silenciosa", () 
       p_conversation_id: "conv-1",
       p_to_kind: "unassigned",
       p_reason: "entrega_fallida",
+    });
+  });
+
+  /**
+   * T0.3: hasta ahora un rechazo de Meta (`whatsapp_status: "failed"`) no
+   * frenaba nada — el turno seguía como si hubiera respondido (`logTurn`
+   * "answered", `journey_stage` reseteado), y la conversación quedaba sin
+   * dueño en la bitácora aunque el cliente no hubiera recibido el mensaje.
+   * Este caso cubre la respuesta del tool loop (la más lejana al momento en
+   * que se miraron las guardas de apertura); `agent.test.ts` cubre el mismo
+   * mecanismo para el camino de escenario de fase 0.
+   */
+  it("rechazado_por_meta: la respuesta del tool loop sale rechazada por Meta", async () => {
+    const warn = vi.spyOn(log, "warn");
+    sendAgentTextMock.mockResolvedValueOnce(outcomeRechazado(131047));
+
+    await runAgentTurn("conv-1");
+
+    expect(sendAgentTextMock).toHaveBeenCalledTimes(1);
+    expect(warn).toHaveBeenCalledWith("turno_rechazado_por_meta", {
+      conversationId: "conv-1",
+      codigo: 131047,
+    });
+    expect(handoffCalls).toHaveLength(1);
+    expect(handoffCalls[0]).toMatchObject({
+      p_conversation_id: "conv-1",
+      p_to_kind: "unassigned",
+      p_reason: "rechazado_por_meta",
     });
   });
 });

@@ -14,7 +14,7 @@ import { escalateConversation } from "@/lib/ai/escalate";
 import { withConversationTurnLock, type TurnLease } from "@/lib/ai/conversation-lock";
 import { humanHasWritten } from "@/lib/ai/human-handled";
 import { fetchActivePlaybooks, matchPlaybook, playbookSentRecently } from "@/lib/ai/playbooks";
-import { playbookMessageText, sendAgentText, sendPlaybookReply } from "@/lib/ai/send";
+import { playbookMessageText, sendAgentText, sendPlaybookReply, type DeliveryOutcome } from "@/lib/ai/send";
 import { buildTurnTarget, type AgentConversation, type TurnTarget } from "@/lib/ai/turn-target";
 import { NonRetryableTurnError, newTurnDelivery, type TurnDelivery } from "@/lib/ai/turn-delivery";
 import { recordHandoff } from "@/lib/ai/handoffs";
@@ -365,18 +365,22 @@ type SendPhase = "escenario" | "fuera_de_tema" | "redaccion";
  * el CRM. Lo que se cerró es el hueco de 3–10 s, que es donde vivía el
  * incidente.
  *
- * Devuelve si el mensaje salió. `false` significa que una guarda lo frenó y
- * que el turno no llegó a intentar nada: sigue siendo reintentable.
+ * Devuelve el resultado de `enviar()`, o `null` si una guarda lo frenó antes
+ * de intentar nada: en ese caso el turno sigue siendo reintentable. Genérico
+ * en `T` desde T0.3: los tres caminos que llaman acá mandan una `enviar` que
+ * devuelve `DeliveryOutcome` (`sendAgentText`/`sendPlaybookReply`), y quien
+ * llama necesita ese valor para mirar `whatsapp_status` — antes `deliver`
+ * devolvía un `boolean` que se comía el resultado real del envío.
  */
-async function deliver(
+async function deliver<T>(
   supabase: SupabaseClient<Database>,
   target: TurnTarget,
   entrega: TurnDelivery,
   lease: TurnLease,
   tiempos: TurnTiming,
   fase: SendPhase,
-  enviar: () => Promise<void>
-): Promise<boolean> {
+  enviar: () => Promise<T>
+): Promise<T | null> {
   const { conversationId } = target;
 
   // `confirmar()` es a la vez renovación y verificación de propiedad:
@@ -387,23 +391,68 @@ async function deliver(
   if (!(await lease.confirmar())) {
     log.warn("turno_lock_perdido_sin_enviar", { conversationId, fase });
     await recordHandoff(supabase, { conversationId, toKind: "unassigned", reason: "lock_perdido" });
-    return false;
+    return null;
   }
 
   if (!(await stillEnabled(supabase, conversationId))) {
     await recordHandoff(supabase, { conversationId, toKind: "unassigned", reason: "pausada" });
-    return false;
+    return null;
   }
   if (await humanWroteMeanwhile(supabase, conversationId, fase)) {
     await recordHandoff(supabase, { conversationId, toKind: "human", reason: "humano_se_adelanto" });
-    return false;
+    return null;
   }
 
   // Se marca ANTES de enviar: si el envío falla a mitad no sabemos si el
   // mensaje salió, y ante la duda el turno deja de ser reintentable. Ver
   // turn-delivery.ts.
   entrega.intentado = true;
-  await medir(tiempos, "envioMs", enviar);
+  return await medir(tiempos, "envioMs", enviar);
+}
+
+/**
+ * ¿Meta rechazó de plano el envío que ya pasó todas las guardas de `deliver`?
+ *
+ * Un `whatsapp_status: "failed"` acá es distinto de cualquier guarda de
+ * arriba: no es que el turno decidiera callarse, es que SÍ intentó hablar y
+ * el proveedor lo rechazó — el cliente se quedó exactamente igual de sin
+ * respuesta, pero antes de T0.3 el turno seguía como si hubiera contestado
+ * (`logTurn` con action "answered", `journey_stage` reseteado): la
+ * conversación quedaba sin dueño en la bitácora aunque el mensaje nunca
+ * hubiera llegado. No se reintenta — reintentar no arregla un rechazo del
+ * proveedor y arriesga mandarlo dos veces si Meta lo aceptó a medias.
+ *
+ * `yaEscalada` (5/9/2026): en el tool loop, devolución/queja terminan
+ * SIEMPRE escaladas —por el modelo con la herramienta, o por la red de
+ * seguridad forzada más abajo— y `escalateConversation` ya deja su propio
+ * traspaso (`escalada` con asesor, `escalada_sin_asesor` sin uno) ANTES de
+ * que se intente el envío final. Si ese envío es justo el que Meta rechaza,
+ * escribir ADEMÁS `rechazado_por_meta` con `toKind: "unassigned"` pisaría esa
+ * fila: como el conteo "Sin dueño" mira la ÚLTIMA fila de
+ * `conversation_handoffs`, una conversación que sí quedó con asesor asignado
+ * aparecería como sin dueño. Un solo traspaso por salida, el más específico:
+ * con `yaEscalada` en true se deja el `log.warn` —Meta sí rechazó, y eso
+ * tiene que verse— pero no se vuelve a llamar a `recordHandoff`.
+ */
+async function rejectedByMeta(
+  supabase: SupabaseClient<Database>,
+  conversationId: string,
+  entrega: DeliveryOutcome,
+  yaEscalada = false
+): Promise<boolean> {
+  if (entrega.whatsapp_status !== "failed") return false;
+
+  if (yaEscalada) {
+    log.warn("turno_rechazado_por_meta", {
+      conversationId,
+      codigo: entrega.whatsapp_error_code,
+      traspaso_omitido: "escalada_previa",
+    });
+    return true;
+  }
+
+  log.warn("turno_rechazado_por_meta", { conversationId, codigo: entrega.whatsapp_error_code });
+  await recordHandoff(supabase, { conversationId, toKind: "unassigned", reason: "rechazado_por_meta" });
   return true;
 }
 
@@ -436,10 +485,11 @@ async function runPlaybook(
   // —o si un asesor se metió— mientras el modelo elegía el escenario, el turno
   // termina acá sin enviar y sin etiquetar ni escalar: todo lo que sigue
   // acompaña a un mensaje que no salió.
-  const salió = await deliver(supabase, target, entrega, lease, tiempos, "escenario", () =>
+  const salida = await deliver(supabase, target, entrega, lease, tiempos, "escenario", () =>
     sendPlaybookReply(supabase, target, playbook)
   );
-  if (!salió) return;
+  if (!salida) return;
+  if (await rejectedByMeta(supabase, target.conversationId, salida)) return;
 
   // Se etiqueta siempre que el escenario responda, escale o no: un escenario
   // que deja al cliente esperando también puede querer dejar marcado el caso.
@@ -623,6 +673,7 @@ async function runTurnPhases(
         sendAgentText(supabase, target, OFF_TOPIC_REPLY)
       );
       if (!salió) return;
+      if (await rejectedByMeta(supabase, conversationId, salió)) return;
     }
 
     await supabase
@@ -737,10 +788,15 @@ async function runTurnPhases(
     // pasaron el reconocimiento de escenario, la clasificación y hasta cinco
     // pasos de tool loop. Es el punto del turno más lejano al momento en que
     // se miraron las guardas al abrirlo.
-    const salió = await deliver(supabase, target, entrega, lease, tiempos, "redaccion", () =>
+    const salida = await deliver(supabase, target, entrega, lease, tiempos, "redaccion", () =>
       sendAgentText(supabase, target, text.trim())
     );
-    if (!salió) return;
+    if (!salida) return;
+    // `outcome.escalated` es la bandera: `escalateConversation` SIEMPRE deja
+    // su traspaso antes de devolver (por el tool del modelo o por la red de
+    // seguridad de arriba), así que si ya está en true acá el dueño de la
+    // conversación ya quedó fijado y un rechazo de Meta no debe pisarlo.
+    if (await rejectedByMeta(supabase, conversationId, salida, outcome.escalated)) return;
   }
 
   if (!outcome.escalated) {

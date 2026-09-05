@@ -45,8 +45,16 @@ function accessTokenFor(target: TurnTarget): string | null {
  * el que nace un mensaje que va en camino: en la burbuja quedaba un relojito
  * para siempre. Un mensaje que Meta rechazó tiene que verse rechazado, y con
  * el motivo — que es lo que decide si reintentar sirve de algo.
+ *
+ * Exportado desde T0.3: `sendAgentText`/`sendAgentMedia` ya no devuelven
+ * `Promise<void>` — el turno (agent.ts) necesita mirar `whatsapp_status` para
+ * registrar el traspaso `rechazado_por_meta` cuando Meta rechaza un envío que
+ * ya pasó todas las guardas de `deliver()`. Antes ese rechazo quedaba escrito
+ * en `messages` pero el turno seguía como si hubiera respondido: la
+ * conversación quedaba sin dueño en la bitácora aunque el cliente no
+ * hubiera recibido nada.
  */
-interface DeliveryOutcome {
+export interface DeliveryOutcome {
   whatsapp_message_id: string | null;
   whatsapp_status: "sent" | "failed" | null;
   whatsapp_error_code: number | null;
@@ -95,7 +103,7 @@ export async function sendAgentText(
   supabase: SupabaseClient<Database>,
   target: TurnTarget,
   text: string
-): Promise<void> {
+): Promise<DeliveryOutcome> {
   const entrega = await entregar(target, (accessToken) =>
     sendWhatsappText(target.phoneNumberId!, accessToken, target.phoneNumber, text)
   );
@@ -108,6 +116,8 @@ export async function sendAgentText(
     content: text,
     ...entrega,
   });
+
+  return entrega;
 }
 
 async function sendAgentMedia(
@@ -115,7 +125,7 @@ async function sendAgentMedia(
   target: TurnTarget,
   mediaType: MediaKind,
   url: string
-): Promise<void> {
+): Promise<DeliveryOutcome> {
   // Lo más probable acá es que Meta no haya podido descargar el archivo desde
   // la URL configurada. El texto ya salió, así que el cliente no se queda sin
   // respuesta — pero el adjunto que no llegó tiene que verse como no llegado.
@@ -136,6 +146,8 @@ async function sendAgentMedia(
     media_url: url,
     ...entrega,
   });
+
+  return entrega;
 }
 
 /**
@@ -161,17 +173,25 @@ export function playbookMessageText(playbook: Playbook): string {
 /**
  * Envía la respuesta de un escenario: el texto **tal cual está guardado**,
  * y el adjunto si lo tiene.
+ *
+ * Devuelve el `DeliveryOutcome` del TEXTO, no del adjunto (T0.3): el texto es
+ * la respuesta propiamente dicha — si Meta la rechaza, el turno tiene que
+ * enterarse y registrar el traspaso. El adjunto que falla ya se loguea aparte
+ * dentro de `entregar()` y no deja al cliente sin respuesta (el texto salió
+ * antes), así que no vale la pena complicar el tipo de retorno con los dos.
  */
 export async function sendPlaybookReply(
   supabase: SupabaseClient<Database>,
   target: TurnTarget,
   playbook: Playbook
-): Promise<void> {
+): Promise<DeliveryOutcome> {
   const { attachmentUrl, attachmentType } = playbook;
 
-  await sendAgentText(supabase, target, playbookMessageText(playbook));
+  const entrega = await sendAgentText(supabase, target, playbookMessageText(playbook));
 
   if (attachmentUrl && attachmentType && attachmentType !== "link") {
     await sendAgentMedia(supabase, target, attachmentType, attachmentUrl);
   }
+
+  return entrega;
 }
