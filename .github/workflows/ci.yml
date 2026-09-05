@@ -123,3 +123,12 @@ jobs:
           psql "postgresql://postgres:postgres@127.0.0.1:54322/postgres" \
             -v ON_ERROR_STOP=1 \
             -f supabase/tests/contacts_search.sql
+
+      # T2.2 (5/9/2026): hasta tres chats fijados por asesor. El trigger
+      # conversation_pins_limit_before_insert rechaza el cuarto pin, y la
+      # política RLS aísla los pines de cada agente de los del resto.
+      - name: conversation_pins -- tope de tres y aislamiento por agente
+        run: |
+          psql "postgresql://postgres:postgres@127.0.0.1:54322/postgres" \
+            -v ON_ERROR_STOP=1 \
+            -f supabase/tests/pins.sql
