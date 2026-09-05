@@ -184,6 +184,16 @@ function evalTerm(row: Row, term: string): boolean {
     const inner = term.slice(4, -1);
     return splitTopLevel(inner).every((raw) => evalTerm(row, raw));
   }
+  // Negación al estilo PostgREST (`columna.not.operador.valor`): la emite el
+  // cursor ascendente en zona nula (T1.3, "Más antiguas", 5/9/2026) con
+  // `last_message_at.not.is.null` para cruzar hacia la zona con fecha, que en
+  // ese orden queda DESPUÉS de la nula. Ningún cursor descendente la necesita
+  // (ver `data.ts`), así que hasta esta tarea el fake no la entendía.
+  const negado = term.match(/^([a-zA-Z_]+)\.not\.(.+)$/);
+  if (negado) {
+    const [, column, resto] = negado;
+    return !evalCond(row, parseCondition(`${column}.${resto}`));
+  }
   return evalCond(row, parseCondition(term));
 }
 
@@ -974,3 +984,110 @@ describe("INBOX_PAGE_SIZE", () => {
   });
 });
 
+/**
+ * T1.3 del plan "Bandeja que no pierde" (5/9/2026): la píldora "Más
+ * antiguas" pide la conversación más vieja de TODA la base, no solo invierte
+ * en memoria las ~30 filas ya cargadas. `order: "oldest"` da vuelta el orden
+ * base (`last_message_at asc nulls first, id asc`) y el cursor de
+ * continuación, que se arma distinto porque la zona nula cambia de lugar:
+ * en descendente va al final, en ascendente va al principio — ver el
+ * comentario de `order` en `FetchConversationsOptions` (src/lib/data.ts)
+ * para el detalle completo, incluida la verificación contra PostgREST local.
+ *
+ * Los cuatro predicados de acá (desc/asc × fecha/nulo) capturan el `.or()`
+ * LITERAL que arma cada combinación — los dos descendentes ya estaban
+ * ejercitados de otra forma más arriba (paginación real, cruce de zona); acá
+ * quedan los cuatro lado a lado, con el mismo cursor de entrada, para que se
+ * lea de un vistazo que uno es el espejo exacto del otro.
+ */
+describe("fetchConversations — cursor con order: \"oldest\" (T1.3, píldora \"Más antiguas\")", () => {
+  it('order "recent" (default) + cursor con fecha: last_message_at.lt/eq(...,id.lt)/is.null', async () => {
+    const rows = [makeRow(0), makeRow(1)];
+    const { client, filters } = createFakeSupabase(rows);
+    const cursor = { lastMessageAt: rows[0].last_message_at, id: "conv-0" };
+
+    await fetchConversations(client, { cursor });
+
+    expect(filters).toContainEqual({
+      op: "or",
+      column: "",
+      value:
+        `last_message_at.lt."${cursor.lastMessageAt}",` +
+        `and(last_message_at.eq."${cursor.lastMessageAt}",id.lt."conv-0"),` +
+        `last_message_at.is.null`,
+    });
+  });
+
+  it('order "recent" (default) + cursor en zona nula (va al FINAL en desc): and(is.null,id.lt), sin más términos', async () => {
+    const rows = [makeRow(0)];
+    const { client, filters } = createFakeSupabase(rows);
+    const cursor = { lastMessageAt: null, id: "conv-0" };
+
+    await fetchConversations(client, { cursor });
+
+    expect(filters).toContainEqual({
+      op: "or",
+      column: "",
+      value: `and(last_message_at.is.null,id.lt."conv-0")`,
+    });
+  });
+
+  it('order "oldest" + cursor con fecha: last_message_at.gt/eq(...,id.gt), sin término de zona nula (ya quedó atrás)', async () => {
+    const rows = [makeRow(0), makeRow(1)];
+    const { client, filters } = createFakeSupabase(rows);
+    const cursor = { lastMessageAt: rows[0].last_message_at, id: "conv-0" };
+
+    await fetchConversations(client, { cursor, order: "oldest" });
+
+    expect(filters).toContainEqual({
+      op: "or",
+      column: "",
+      value:
+        `last_message_at.gt."${cursor.lastMessageAt}",` +
+        `and(last_message_at.eq."${cursor.lastMessageAt}",id.gt."conv-0")`,
+    });
+  });
+
+  it('order "oldest" + cursor en zona nula (va al PRINCIPIO en asc): and(is.null,id.gt) OR not.is.null, para cruzar hacia la zona con fecha', async () => {
+    const rows = [makeRow(0)];
+    const { client, filters } = createFakeSupabase(rows);
+    const cursor = { lastMessageAt: null, id: "conv-0" };
+
+    await fetchConversations(client, { cursor, order: "oldest" });
+
+    expect(filters).toContainEqual({
+      op: "or",
+      column: "",
+      value: `and(last_message_at.is.null,id.gt."conv-0"),last_message_at.not.is.null`,
+    });
+  });
+
+  /**
+   * No solo la cadena: acá se comprueba que el predicado ascendente de
+   * verdad recorre las dos zonas en el orden correcto, igual que ya se
+   * probaba para el descendente ("el cursor cruza de la zona con fecha a la
+   * zona nula...", más arriba). La página 1 agota la zona nula (que en
+   * ascendente va PRIMERO) y la página 2, por cursor, cruza hacia la zona
+   * con fecha y la trae completa.
+   */
+  it('con order "oldest", el cursor agota primero la zona nula y luego cruza a la zona con fecha', async () => {
+    const sinFecha = Array.from({ length: 15 }, (_, i) => ({
+      ...makeRow(1000 + i),
+      id: `conv-null-${String(i).padStart(2, "0")}`,
+      last_message_at: null as string | null,
+    }));
+    const conFecha = Array.from({ length: 20 }, (_, i) => makeRow(i));
+    const rows = [...sinFecha, ...conFecha];
+    const { client } = createFakeSupabase(rows);
+
+    const page1 = await fetchConversations(client, { limit: 15, order: "oldest" });
+    expect(page1.map((c) => c.id).sort()).toEqual(sinFecha.map((r) => r.id).sort());
+    expect(page1.every((c) => c.lastMessageAt === null)).toBe(true);
+
+    const cursor = cursorAfterPage(page1)!;
+    const page2 = await fetchConversations(client, { cursor, limit: 20, order: "oldest" });
+
+    expect(page2.map((c) => c.id).sort()).toEqual(conFecha.map((r) => r.id).sort());
+    expect(page2.every((c) => c.lastMessageAt !== null)).toBe(true);
+  });
+});

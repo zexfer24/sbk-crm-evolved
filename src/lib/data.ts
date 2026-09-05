@@ -4,6 +4,7 @@ import { conversationsWrittenByHumans } from "@/lib/ai/human-handled";
 import { freeformWindowCutoff, isTicketTag } from "@/lib/dashboard";
 import { isUnassignedLead } from "@/lib/inbox-filters";
 import type { ConversationCursor } from "@/lib/inbox-paging";
+import { normalizeForSearch } from "@/lib/message-search";
 import { CRM_TIME_ZONE, currentDayRange } from "@/lib/time-zone";
 import { failureReason } from "@/lib/whatsapp/failure-reason";
 import type {
@@ -591,6 +592,40 @@ export interface FetchConversationsOptions {
    * recorrido de `>1000` filas del tablero y Control de IA (29/8/2026).
    */
   cursor?: ConversationCursor;
+  /**
+   * El orden de la bandeja: `"recent"` (default, hoy el único) es
+   * `last_message_at desc nulls last, id desc`. `"oldest"` (T1.3 del plan
+   * "Bandeja que no pierde", 5/9/2026, píldora "Más antiguas") es el mismo
+   * orden pero DADO VUELTA: `last_message_at asc nulls first, id asc` — la
+   * conversación más vieja de TODA la base, no solo de la ventana cargada.
+   *
+   * El cursor de continuación (más abajo, junto a `pageCursor`) se arma
+   * distinto según este valor porque la posición de la zona nula se invierte
+   * con el orden: en descendente la zona nula va AL FINAL (`nullsFirst:
+   * false`) y en ascendente va AL PRINCIPIO (`nullsFirst: true`). Verificado
+   * contra PostgREST local el 5/9/2026 con filas fabricadas a mano (dos sin
+   * `last_message_at` y dos con la misma fecha, para forzar los dos cruces
+   * de zona y el desempate por `id`):
+   *
+   *   - Cursor en la zona con fecha (p. ej. `{lastMessageAt: "2020-01-01...",
+   *     id: "...003"}` con un empate en `...004`): `or=(last_message_at.gt."2020-01-01...",
+   *     and(last_message_at.eq."2020-01-01...",id.gt."...003"))` devolvió
+   *     `...004` (el empate, por `id` mayor) y de ahí en más todo lo
+   *     posterior, SIN los nulos — correcto: en ascendente la zona nula ya
+   *     quedó atrás, un cursor con fecha no necesita volver a buscarla.
+   *   - Cursor en la zona nula (`{lastMessageAt: null, id: "...001"}`):
+   *     `or=(and(last_message_at.is.null,id.gt."...001"),last_message_at.not.is.null)`
+   *     devolvió el resto de la zona nula (por `id` mayor) Y TODA la zona con
+   *     fecha — correcto: sin el segundo término (`not.is.null`) el cursor
+   *     nunca cruzaría de la zona nula, que ordena primero, a la zona con
+   *     fecha, que ordena después.
+   *
+   * Es la imagen especular de lo que ya hace el cursor descendente: ahí un
+   * cursor con fecha SÍ necesita un tercer término (`last_message_at.is.null`)
+   * para cruzar hacia la zona nula, que en ese orden va al final; acá es el
+   * cursor SIN fecha el que necesita el término extra, por la razón simétrica.
+   */
+  order?: "recent" | "oldest";
   /** Solo lo que no está cerrado: el tablero y el roster miran el trabajo vivo. */
   activeOnly?: boolean;
   /** Solo las que no tiene nadie: el trabajo libre, disponible para agarrar. */
@@ -743,6 +778,7 @@ async function fetchConversationRows<Raw extends CursorableRow>(
   {
     limit,
     cursor,
+    order = "recent",
     activeOnly,
     unassignedOnly,
     awaitingReplyOnly,
@@ -823,11 +859,18 @@ async function fetchConversationRows<Raw extends CursorableRow>(
     // empates de `last_message_at` en 1.851 filas (29/8/2026) — y un cursor
     // que solo mira `last_message_at` podría repetir o saltar cualquiera de
     // esas filas empatadas entre una página y la siguiente.
+    //
+    // Con `order: "oldest"` (T1.3, "Más antiguas") el mismo orden se da
+    // vuelta entero, columna por columna: ascendente y con la zona nula AL
+    // PRINCIPIO en vez de al final. Es el mismo desempate por `id`, solo que
+    // en la otra dirección — ver el comentario de `order` en
+    // `FetchConversationsOptions` para el porqué del cursor más abajo.
+    const ascending = order === "oldest";
     let request = supabase
       .from("conversations")
       .select(select)
-      .order("last_message_at", { ascending: false, nullsFirst: false })
-      .order("id", { ascending: false });
+      .order("last_message_at", { ascending, nullsFirst: ascending })
+      .order("id", { ascending });
 
     if (activeOnly) request = request.neq("status", "closed");
     if (unassignedOnly) request = request.is("assigned_agent_id", null);
@@ -877,15 +920,42 @@ async function fetchConversationRows<Raw extends CursorableRow>(
       const idLiteral = pgrstLiteral(pageCursor.id);
       if (pageCursor.lastMessageAt !== null) {
         const dateLiteral = pgrstLiteral(pageCursor.lastMessageAt);
-        // Verificado contra PostgREST local el 29/8/2026: filas con
-        // `last_message_at` estrictamente menor, o igual con `id` menor
-        // (el desempate), o en la zona nula (que ordena al final y sería
-        // inalcanzable desde cualquier página con cursor no-nulo si faltara
-        // este tercer término).
+        if (ascending) {
+          // "Más antiguas" (T1.3, 5/9/2026): filas con `last_message_at`
+          // estrictamente mayor, o igual con `id` mayor (el desempate). Sin
+          // tercer término para la zona nula: en ascendente esa zona va AL
+          // PRINCIPIO, así que un cursor que YA tiene fecha significa que la
+          // zona nula entera quedó atrás — nada que volver a buscar ahí.
+          // Verificado contra PostgREST local el 5/9/2026 (ver el comentario
+          // de `order` en `FetchConversationsOptions`).
+          orGroups.push([
+            `last_message_at.gt.${dateLiteral}`,
+            `and(last_message_at.eq.${dateLiteral},id.gt.${idLiteral})`,
+          ]);
+        } else {
+          // Verificado contra PostgREST local el 29/8/2026: filas con
+          // `last_message_at` estrictamente menor, o igual con `id` menor
+          // (el desempate), o en la zona nula (que ordena al final y sería
+          // inalcanzable desde cualquier página con cursor no-nulo si faltara
+          // este tercer término).
+          orGroups.push([
+            `last_message_at.lt.${dateLiteral}`,
+            `and(last_message_at.eq.${dateLiteral},id.lt.${idLiteral})`,
+            "last_message_at.is.null",
+          ]);
+        }
+      } else if (ascending) {
+        // El cursor sigue en la zona nula, pero acá esa zona va AL
+        // PRINCIPIO: lo que falta es el resto de la zona nula (desempatada
+        // por `id`) Y, a continuación, TODA la zona con fecha —sin el
+        // segundo término (`not.is.null`) el cursor jamás cruzaría hacia
+        // ella—. Simétrico al `else` de abajo, que resuelve el mismo cruce
+        // para el orden descendente (ahí no hace falta: la zona con fecha ya
+        // se agotó antes de llegar a la nula). Verificado contra PostgREST
+        // local el 5/9/2026.
         orGroups.push([
-          `last_message_at.lt.${dateLiteral}`,
-          `and(last_message_at.eq.${dateLiteral},id.lt.${idLiteral})`,
-          "last_message_at.is.null",
+          `and(last_message_at.is.null,id.gt.${idLiteral})`,
+          "last_message_at.not.is.null",
         ]);
       } else {
         // El cursor ya está en la zona nula: lo que sigue es solo lo demás

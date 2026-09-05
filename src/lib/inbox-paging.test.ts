@@ -144,4 +144,27 @@ describe("reconcileHead", () => {
 
     expect(reconcileHead([], accumulated, { freshIsComplete: true })).toEqual([]);
   });
+
+  /**
+   * T1.3 del plan "Bandeja que no pierde" (5/9/2026): con `order: "oldest"`
+   * ("Más antiguas"), `accumulated`/`fresh` llegan en orden ASCENDENTE en vez
+   * de descendente — pero `reconcileHead` nunca mira `lastMessageAt`, solo
+   * POSICIÓN dentro de `accumulated` y coincidencia de `id` contra `fresh`
+   * (ver el comentario grande de la función, ampliado en esta tarea). El
+   * mismo escenario que "la fila que otro asesor leyó desaparece" (arriba),
+   * con fechas que crecen en vez de decrecer, prueba que el algoritmo no
+   * distingue un sentido del otro.
+   */
+  it('con datos en orden ascendente ("Más antiguas"), la fila que salió del predicado desaparece igual', () => {
+    const accumulated = [
+      row("conv-1", "2020-01-01T00:00:00.000Z"),
+      row("conv-2", "2020-01-02T00:00:00.000Z"),
+      row("conv-3", "2020-01-03T00:00:00.000Z"),
+    ];
+    // conv-2 ya no viene en la cabecera fresca: salió del conjunto.
+    const fresh = [row("conv-1", "2020-01-01T00:00:00.000Z"), row("conv-3", "2020-01-03T00:00:00.000Z")];
+
+    const resultado = reconcileHead(fresh, accumulated, { freshIsComplete: false });
+    expect(resultado.map((c) => c.id)).toEqual(["conv-1", "conv-3"]);
+  });
 });

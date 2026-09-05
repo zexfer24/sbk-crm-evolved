@@ -78,14 +78,32 @@ const SIN_COINCIDENCIAS: ReadonlyMap<string, MessageHit> = new Map();
  * reemplaza el corte de la píldora, se le suma — "Pendientes" + etiqueta
  * sigue siendo pendiente Y con esa etiqueta. `"all"` es la excepción: ahí la
  * etiqueta ES el único corte (ver ese caso, abajo).
+ *
+ * `sort` (T1.3 del plan "Bandeja que no pierde", 5/9/2026, píldora "Más
+ * antiguas") viaja igual que `tagId`: en `page`, para las cuatro ramas —
+ * "Pendientes" + "Más antiguas" tiene que traer la conversación pendiente
+ * más VIEJA de toda la base, no solo invertir el orden de lo ya cargado.
+ * `fetchConversations` (`src/lib/data.ts`) entiende `order: "recent" |
+ * "oldest"` y arma el cursor de continuación en el sentido que corresponda.
  */
 function pillQueryOptions(
   filter: InboxFilter,
   agentId: string,
   cursor: ConversationCursor | null | undefined,
-  tagId: string | null
+  tagId: string | null,
+  sort: InboxSort
 ): FetchConversationsOptions {
-  const page = { limit: INBOX_PAGE_SIZE, cursor: cursor ?? undefined, tagId: tagId ?? undefined };
+  const page = {
+    limit: INBOX_PAGE_SIZE,
+    cursor: cursor ?? undefined,
+    tagId: tagId ?? undefined,
+    // `undefined` y no `sort` a secas cuando es `"recent"`: mismo patrón que
+    // `cursor`/`tagId` acá arriba — `"recent"` es el default de
+    // `fetchConversations` (`src/lib/data.ts`), así que mandarlo explícito no
+    // cambiaría nada en la consulta pero SÍ en cada `toHaveBeenCalledWith`
+    // existente que compara el objeto de opciones exacto.
+    order: sort === "oldest" ? ("oldest" as const) : undefined,
+  };
   switch (filter) {
     case "pending":
       return { ...page, activeOnly: true, awaitingReplyOnly: true };
@@ -98,8 +116,8 @@ function pillQueryOptions(
       // `conversations` sino de la última fila de `conversation_handoffs`, y
       // lo resuelve `fetchUnassignedConversations` en una consulta propia
       // (ver `fetchPage` más abajo) que NO acepta `tagId` — se compone en
-      // memoria ahí mismo. Misma razón que "all" sin etiqueta para lanzar en
-      // vez de devolver una consulta mal armada.
+      // memoria ahí mismo. Misma razón que "all" sin etiqueta ni orden
+      // invertido para lanzar en vez de devolver una consulta mal armada.
       throw new Error('pillQueryOptions: "unassigned" se resuelve con fetchUnassignedConversations');
     case "all":
       // Reforma del 30/8/2026: `resolvedOnServer` (más abajo) deja pasar
@@ -110,13 +128,21 @@ function pillQueryOptions(
       // etiqueta, la etiqueta ES el único corte real de esta consulta —
       // "Todos" no tiene ningún otro—, y ya viaja en `page`.
       //
-      // Sin etiqueta, "Todos" sigue paginando localmente y nunca llega hasta
-      // acá: la rama sigue lanzando ante esa llamada fuera de contrato, más
-      // honesto que devolver una consulta sin ningún corte real. Existe
-      // igual porque el `switch` es exhaustivo a propósito (ver el
-      // comentario de arriba).
-      if (!tagId) {
-        throw new Error('pillQueryOptions: "all" solo resuelve en el servidor con una etiqueta activa');
+      // T1.3 (5/9/2026) suma la segunda vía: con `sort === "oldest"`,
+      // "Todos" también resuelve acá aunque no haya etiqueta — mismo motivo,
+      // "Todos" + "Más antiguas" necesita la conversación más vieja de TODA
+      // la base, y la ventana cargada localmente solo tiene las ~30 más
+      // recientes. `page.order` ya lleva el sentido invertido.
+      //
+      // Sin etiqueta y con `sort === "recent"`, "Todos" sigue paginando
+      // localmente y nunca llega hasta acá: la rama sigue lanzando ante esa
+      // llamada fuera de contrato, más honesto que devolver una consulta sin
+      // ningún corte real. Existe igual porque el `switch` es exhaustivo a
+      // propósito (ver el comentario de arriba).
+      if (!tagId && sort !== "oldest") {
+        throw new Error(
+          'pillQueryOptions: "all" solo resuelve en el servidor con una etiqueta activa o con sort "oldest"'
+        );
       }
       return page;
   }
@@ -321,13 +347,22 @@ export function InboxSidebar({
    * saca a la barra (ver el comentario de `visibleTags`, arriba). Las otras
    * tres píldoras ya resolvían en servidor con o sin etiqueta; para ellas
    * esta condición no cambia nada.
+   *
+   * Con `sort === "oldest"` (T1.3, 5/9/2026, píldora "Más antiguas") "Todos"
+   * se suma por la misma razón que la etiqueta: la ventana cargada solo
+   * tiene las ~30 conversaciones más recientes, así que invertir el orden EN
+   * MEMORIA (lo que hacía `applyInboxFilters` antes de esta tarea, y sigue
+   * haciendo para las demás píldoras) mostraría "la más vieja de esas 30",
+   * no la más vieja de toda la base — exactamente el motivo por el que la
+   * etiqueta activa fuerza el mismo camino, arriba.
    */
   const resolvedOnServer =
     filter === "pending" ||
     filter === "unread" ||
     filter === "mine" ||
     filter === "unassigned" ||
-    activeTagId !== null;
+    activeTagId !== null ||
+    sort === "oldest";
 
   /**
    * Lo que contestó la base, junto con qué píldora lo pidió. La paginación
@@ -391,19 +426,30 @@ export function InboxSidebar({
     // nunca saca— hasta la próxima "cargar más". Con sesión nueva, la
     // primera página de la etiqueta que entra REEMPLAZA `serverRows` entero
     // (ver `onPage`, abajo): ninguna fila de la anterior sobrevive.
-    sessionKey: `${filter}:${currentAgent.id}:${activeTagId ?? ""}`,
+    //
+    // `sort` entra por el mismo motivo (T1.3, 5/9/2026): cambiar de "Más
+    // recientes" a "Más antiguas" sin esto seguiría paginando con el cursor
+    // que ya se había armado para el otro sentido —un cursor descendente no
+    // sirve para seguir bajando en ascendente, y viceversa— y las filas ya
+    // acumuladas del orden anterior quedarían pegadas en `serverRows`.
+    sessionKey: `${filter}:${currentAgent.id}:${activeTagId ?? ""}:${sort}`,
     pageSize: INBOX_PAGE_SIZE,
     fetchPage: (cursor) =>
       // "Sin dueño" no pagina por cursor: su consulta resuelve el conjunto
       // completo de una vez (son los chats que el sistema soltó — si esa
       // lista es larga, el problema no es la paginación). Se devuelve todo en
       // la primera página y vacío en cualquier siguiente, que es como el
-      // pager entiende "ya no hay más".
+      // pager entiende "ya no hay más". Tampoco atiende `sort`: no tiene
+      // sentido "la más vieja sin dueño primero" para una lista que ya
+      // resuelve completa de una sola vez, sin cursor que invertir.
       filter === "unassigned"
         ? cursor
           ? Promise.resolve([])
           : fetchUnassignedConversations(supabase, { tagId: activeTagId ?? undefined })
-        : fetchConversations(supabase, pillQueryOptions(filter, currentAgent.id, cursor, activeTagId)),
+        : fetchConversations(
+            supabase,
+            pillQueryOptions(filter, currentAgent.id, cursor, activeTagId, sort)
+          ),
     onPage: (rows, mode) =>
       setServerRows((current) => {
         if (mode === "first") return { filter, rows };
@@ -489,6 +535,9 @@ export function InboxSidebar({
     // mientras esta consulta viaja, la respuesta se pinta con la etiqueta
     // que la pidió, no con la que quedó activa al resolver.
     const pillTagId = activeTagId;
+    // Mismo motivo otra vez (T1.3, 5/9/2026): si el orden cambia mientras
+    // esta cabecera viaja, se pinta con el orden que la pidió.
+    const pillSort = sort;
 
     // "Sin dueño" es la excepción a todo lo de arriba: su consulta no pagina
     // —resuelve el conjunto entero— así que la respuesta SÍ es completa, y
@@ -506,7 +555,10 @@ export function InboxSidebar({
     const esSinDueno = pillFilter === "unassigned";
     const consulta = esSinDueno
       ? fetchUnassignedConversations(supabase, { tagId: pillTagId ?? undefined })
-      : fetchConversations(supabase, pillQueryOptions(pillFilter, currentAgent.id, null, pillTagId));
+      : fetchConversations(
+          supabase,
+          pillQueryOptions(pillFilter, currentAgent.id, null, pillTagId, pillSort)
+        );
 
     consulta
       .then((fresh) => {
@@ -523,7 +575,16 @@ export function InboxSidebar({
       .catch(() => {
         // Lo repara el próximo pulso, o el asesor reentrando a la píldora.
       });
-  }, [livePulse, resolvedOnServer, resolvedState, filter, activeTagId, currentAgent.id, supabase]);
+  }, [
+    livePulse,
+    resolvedOnServer,
+    resolvedState,
+    filter,
+    activeTagId,
+    sort,
+    currentAgent.id,
+    supabase,
+  ]);
 
   // Lo cargado manda: sus filas están al día por realtime. Lo de la base solo
   // aporta las conversaciones que la ventana no tiene —las viejas, que son
@@ -860,6 +921,12 @@ export function InboxSidebar({
           </Fragment>
         ))}
 
+        {/* Blanco del IntersectionObserver de arriba: 1px, invisible, al
+            final de las filas y antes de cualquier aviso o botón — así
+            "intersecta" apenas el fondo real de la lista se acerca, sin
+            competir por espacio con el resto del pie. */}
+        <div className="crm-list-sentinel" ref={sentinelRef} aria-hidden />
+
         {/*
           Precedencia error > buscando > vacío (A.T5, revisión de código del
           29/8/2026): antes un fallo de la primera página no se distinguía de
@@ -921,12 +988,6 @@ export function InboxSidebar({
             <span>No se pudo traer la bandeja.</span>
             <button type="button" className="crm-pill" onClick={pager.retry}>
               Reintentar
-        {/* Blanco del IntersectionObserver de arriba: 1px, invisible, al
-            final de las filas y antes de cualquier aviso o botón — así
-            "intersecta" apenas el fondo real de la lista se acerca, sin
-            competir por espacio con el resto del pie. */}
-        <div className="crm-list-sentinel" ref={sentinelRef} aria-hidden />
-
             </button>
           </p>
         )}

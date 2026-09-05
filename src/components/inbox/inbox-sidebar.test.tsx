@@ -1960,3 +1960,79 @@ describe("InboxSidebar — el sentinel de IntersectionObserver dispara la carga 
   });
 });
 
+/**
+ * T1.3 del plan "Bandeja que no pierde" (5/9/2026): "Más antiguas" pide la
+ * conversación más vieja de TODA la base, no solo invierte en memoria las
+ * ~30 filas ya cargadas (`conversations`, la prop de este componente). Por
+ * eso, con `sort === "oldest"`, la píldora activa tiene que resolver en el
+ * servidor — incluida "Todos", que hasta esta tarea solo lo hacía con una
+ * etiqueta activa (ver el describe de "etiqueta activa resuelve en el
+ * servidor", arriba: el mismo mecanismo, otro disparador).
+ */
+describe('InboxSidebar — "Más antiguas" resuelve en el servidor (T1.3)', () => {
+  /**
+   * Antes de esta tarea, `pillQueryOptions` lanzaba para `"all"` sin
+   * etiqueta: la única vía era la etiqueta activa. Acá se prueba la segunda
+   * vía, sin ninguna etiqueta puesta — si "Todos" + "Más antiguas" siguiera
+   * paginando en memoria, esta fila (que NO está en `CONVERSATIONS`, la
+   * ventana cargada de `renderSidebar`) jamás aparecería.
+   */
+  it('"Todos" + "Más antiguas" pide al servidor order: "oldest", sin etiqueta', async () => {
+    const laMásVieja = conversation({ id: "todos-mas-vieja-del-servidor" });
+    vi.mocked(fetchConversations).mockImplementation(async (_supabase, options) => {
+      const esTodosMasAntiguas =
+        options?.order === "oldest" &&
+        !options?.tagId &&
+        !options?.awaitingReplyOnly &&
+        !options?.unreadOnly &&
+        !options?.assignedTo;
+      return esTodosMasAntiguas ? [laMásVieja] : [];
+    });
+
+    const { container } = renderSidebar(JEFA);
+    irATodos();
+
+    fireEvent.click(screen.getByRole("button", { name: "Ordenar: Más viejos primero" }));
+
+    await waitFor(() => expect(visibleIds(container)).toContain("todos-mas-vieja-del-servidor"));
+  });
+
+  /**
+   * `sessionKey` de `useInboxPager` ahora lleva el orden
+   * (`${filter}:${currentAgent.id}:${activeTagId ?? ""}:${sort}`): cambiar
+   * de orden abre sesión nueva y la primera página del orden que entra
+   * REEMPLAZA `serverRows` entero (mismo mecanismo que ya prueba "cambiar de
+   * etiqueta no arrastra las filas de la anterior", arriba, para `tagId`).
+   * Sin el orden en el `sessionKey`, la fila de "recent" seguiría en
+   * `serverRows` mezclada con la de "oldest" hasta la próxima "cargar más".
+   */
+  it('cambiar a "Más antiguas" en "Pendientes" abre sesión nueva: reemplaza la lista, no la acumula', async () => {
+    const laReciente = pendingConversation({ id: "pendiente-reciente-servidor" });
+    const laVieja = pendingConversation({ id: "pendiente-vieja-servidor" });
+    vi.mocked(fetchConversations).mockImplementation(async (_supabase, options) => {
+      if (!options?.awaitingReplyOnly) return [];
+      return options?.order === "oldest" ? [laVieja] : [laReciente];
+    });
+
+    const { container } = render(
+      <InboxSidebar
+        conversations={[]}
+        selectedId={null}
+        onSelect={() => {}}
+        currentAgent={JEFA}
+        allTags={ALL_TAGS}
+        bcvRate={null}
+      />
+    );
+
+    // Filtro por defecto ("Pendientes"), orden por defecto ("recent"): trae
+    // la reciente.
+    await waitFor(() => expect(visibleIds(container)).toContain("pendiente-reciente-servidor"));
+
+    fireEvent.click(screen.getByRole("button", { name: "Ordenar: Más viejos primero" }));
+
+    await waitFor(() => expect(visibleIds(container)).toContain("pendiente-vieja-servidor"));
+    // La de "recent" no sobrevive al cambio de sesión.
+    expect(visibleIds(container)).not.toContain("pendiente-reciente-servidor");
+  });
+});

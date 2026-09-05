@@ -69,6 +69,15 @@ export function mergeById(
  * debajo solo se hundió y se conserva. Comparar `lastMessageAt` como texto
  * es incorrecto (`.5Z` > `.55Z`) y pasarlo por `new Date()` pierde los
  * microsegundos con los que este cursor desempata contra la base.
+ *
+ * Por eso vale igual con `order: "oldest"` (T1.3 del plan "Bandeja que no
+ * pierde", 5/9/2026, píldora "Más antiguas"): la función nunca mira qué
+ * significa "más profundo" en términos de fecha, solo POSICIÓN dentro de
+ * `accumulated` —el orden que sea que el servidor haya devuelto, ascendente
+ * o descendente—. Dado vuelta el orden de la consulta, lo que cambia es
+ * simplemente qué fila queda "más profunda" (la más nueva en vez de la más
+ * vieja), no el algoritmo: sigue siendo "recorrer `accumulated` desde el
+ * final buscando la primera fila que la cabecera fresca todavía reconoce".
  */
 export function reconcileHead(
   fresh: ConversationSummary[],
