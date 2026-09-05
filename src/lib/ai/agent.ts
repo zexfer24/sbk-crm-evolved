@@ -542,7 +542,8 @@ async function runPlaybook(
   playbook: Playbook,
   tokens: TurnTokens,
   customerMessage: string | null,
-  tiempos: TurnTiming
+  tiempos: TurnTiming,
+  lastCustomerMessageAt: string | null
 ): Promise<void> {
   // Última mirada a las guardas antes de hablarle al cliente. Si la IA se apagó
   // —o si un asesor se metió— mientras el modelo elegía el escenario, el turno
@@ -565,6 +566,54 @@ async function runPlaybook(
       motivo: "seguimiento",
       resumen: `Respuesta automática "${playbook.name}". Falta que un asesor continúe el caso.`,
     });
+
+    // Anexo B2 (5/9/2026): el texto de este escenario salió ANTES de saber si
+    // iba a hacer falta un asesor —T0.3 exige ese orden: nada puede acompañar
+    // a un mensaje que Meta ya rechazó—, así que se insertó con
+    // is_auto_reply = false y handle_new_message ya lo contó como respuesta
+    // real. Si escalateConversation acaba de descubrir que no había NADIE,
+    // se marca ahora, después, todo lo que la IA mandó en este turno: el
+    // trigger que sumó B1 (20260905070000_auto_reply_recalcula) recalcula
+    // last_reply_at/awaiting_reply al ver que is_auto_reply pasó a true. La
+    // ventana "desde el último mensaje del cliente" es exacta porque dentro
+    // de un turno solo escribe la IA —si un humano escribe, deliver() frena
+    // el envío antes de que llegue acá— y este turno responde a lo que el
+    // cliente dijo después de su último mensaje, nunca a un turno anterior.
+    if (result.unassigned) {
+      if (lastCustomerMessageAt === null) {
+        // No debería darse en un turno real: withinFreeformWindow ya exige
+        // last_customer_message_at para que el turno llegue hasta acá. Pero
+        // el tipo lo permite, y sin esa fecha no hay ventana fiable — marcar
+        // por conversación a secas arriesgaría atrapar la despedida de un
+        // turno ANTERIOR que no tiene nada que ver con este escalamiento.
+        // Se prefiere no marcar y dejar constancia en el registro.
+        log.warn("turno_escenario_sin_fecha_cliente", { conversationId: target.conversationId });
+      } else {
+        const { error } = await supabase
+          .from("messages")
+          .update({ is_auto_reply: true })
+          .eq("conversation_id", target.conversationId)
+          .eq("direction", "outbound")
+          .eq("sender_type", "ai")
+          .eq("is_internal_note", false)
+          .gt("created_at", lastCustomerMessageAt);
+
+        if (error) {
+          // Observabilidad de awaiting_reply, no una barrera: el traspaso
+          // escalada_sin_asesor ya quedó escrito por escalateConversation, y
+          // el turno sigue igual aunque este UPDATE falle.
+          log.error("turno_escenario_despedida_no_marcada", {
+            conversationId: target.conversationId,
+            detail: error.message,
+          });
+        } else {
+          log.info("turno_escenario_sin_asesor_marcado", {
+            conversationId: target.conversationId,
+            desde: lastCustomerMessageAt,
+          });
+        }
+      }
+    }
 
     await logTurn(supabase, target.conversationId, {
       intent: null,
@@ -692,7 +741,8 @@ async function runTurnPhases(
         match.playbook,
         classifiedTokens,
         customerMessage,
-        tiempos
+        tiempos,
+        convo.last_customer_message_at
       );
       return;
     }

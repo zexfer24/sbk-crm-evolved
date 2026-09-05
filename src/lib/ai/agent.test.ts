@@ -40,6 +40,12 @@ interface FakeState {
    * `null` simula un chat sin ningún mensaje entrante con wamid.
    */
   lastInboundWamid: string | null;
+  /**
+   * Anexo B2 (5/9/2026): qué devuelve el UPDATE que marca `is_auto_reply`
+   * sobre el mensaje de un escenario que escaló sin asesores. `null` de
+   * fábrica — el UPDATE sale bien y el turno sigue igual.
+   */
+  messageUpdateError: { message: string } | null;
 }
 
 const state: FakeState = {
@@ -54,10 +60,17 @@ const state: FakeState = {
   humanMessagesError: null,
   turnLockRenewResult: { data: true, error: null },
   lastInboundWamid: "wamid.ULTIMO_ENTRANTE",
+  messageUpdateError: null,
 };
 const conversationUpdates: Record<string, unknown>[] = [];
 const agentTurnInserts: Record<string, unknown>[] = [];
 const contactTagUpserts: { rows: unknown; options: unknown }[] = [];
+/**
+ * Anexo B2 (5/9/2026): cada UPDATE sobre `messages` (marcar `is_auto_reply`
+ * en la despedida de un escenario que escaló sin asesores), con los valores y
+ * los filtros que le llegaron encadenados.
+ */
+const messageUpdates: { values: Record<string, unknown>; filters: [string, unknown][] }[] = [];
 /** Cada llamada a la RPC `record_handoff`, con los parámetros que le llegaron. */
 const handoffCalls: Record<string, unknown>[] = [];
 /**
@@ -126,6 +139,26 @@ function createFakeSupabase() {
 
       if (table === "messages") {
         return {
+          // Anexo B2 (5/9/2026): el UPDATE que marca `is_auto_reply` en la
+          // despedida de un escenario que escaló sin asesores. La cadena real
+          // termina en `.gt("created_at", ...)`, así que ahí se registra el
+          // update completo (valores + filtros acumulados) y se devuelve lo
+          // único que hace falta que sea `await`-able.
+          update: (values: Record<string, unknown>) => {
+            const filters: [string, unknown][] = [];
+            const builder = {
+              eq: (col: string, val: unknown) => {
+                filters.push([col, val]);
+                return builder;
+              },
+              gt: (col: string, val: unknown) => {
+                filters.push([col, val]);
+                messageUpdates.push({ values, filters: [...filters] });
+                return Promise.resolve({ data: null, error: state.messageUpdateError });
+              },
+            };
+            return builder;
+          },
           select: () => ({
             eq: () => ({
               // Se guarda cómo se pidió el orden: la IA tiene que leer los
@@ -278,6 +311,31 @@ vi.mock("@/lib/ai/model", () => ({
 }));
 
 /**
+ * Anexo B2 (5/9/2026), test (e): `runPlaybook` acepta `lastCustomerMessageAt:
+ * string | null` porque el TIPO lo permite, pero en un turno real nunca llega
+ * nulo — `withinFreeformWindow(convo.last_customer_message_at)` ya lo exige
+ * ANTES de que `runAgentTurn` llegue a abrir el lock. Para probar la rama
+ * defensiva de todos modos, este mock deja pasar el `import` real de
+ * `@/lib/dashboard` sin tocar nada salvo que un test puntual instale un
+ * override — así se fuerza la ventana abierta con `last_customer_message_at:
+ * null` sin mentirle a ningún otro test de este archivo (el describe de
+ * "ventana de 24 h" sigue usando el comportamiento real).
+ */
+const withinFreeformWindowOverride: {
+  fn: ((lastCustomerMessageAt: string | null, now?: number) => boolean) | null;
+} = { fn: null };
+vi.mock("@/lib/dashboard", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/lib/dashboard")>();
+  return {
+    ...actual,
+    withinFreeformWindow: (lastCustomerMessageAt: string | null, now?: number) =>
+      withinFreeformWindowOverride.fn
+        ? withinFreeformWindowOverride.fn(lastCustomerMessageAt, now)
+        : actual.withinFreeformWindow(lastCustomerMessageAt, now),
+  };
+});
+
+/**
  * `buildEscalateTool` real (`tools.ts`) es lo que copia `result.unassigned`
  * al `outcome` cuando el MODELO invoca la herramienta durante el tool loop.
  * Acá el tool loop entero está fingido (`generateMock` no ejecuta ninguna
@@ -349,10 +407,13 @@ beforeEach(() => {
   state.humanMessagesError = null;
   state.turnLockRenewResult = { data: true, error: null };
   state.lastInboundWamid = "wamid.ULTIMO_ENTRANTE";
+  state.messageUpdateError = null;
+  withinFreeformWindowOverride.fn = null;
   sendTypingIndicatorMock.mockClear();
   conversationUpdates.length = 0;
   agentTurnInserts.length = 0;
   contactTagUpserts.length = 0;
+  messageUpdates.length = 0;
   pasos.length = 0;
   handoffCalls.length = 0;
   agentOptions.length = 0;
@@ -951,6 +1012,111 @@ describe("runAgentTurn — escenarios predeterminados", () => {
 
     expect(matchPlaybookMock).not.toHaveBeenCalled();
     expect(sendPlaybookReplyMock).not.toHaveBeenCalled();
+  });
+
+  /**
+   * Anexo B2 (5/9/2026): un escenario con `afterSend: "escalate"` manda su
+   * texto ANTES de escalar (T0.3 exige ese orden: nada acompaña a un mensaje
+   * que Meta ya rechazó), así que sale con `is_auto_reply = false` sin saber
+   * todavía si iba a hacer falta un asesor. Si `escalateConversation`
+   * descubre que no hay NADIE, el turno marca ese mensaje con un UPDATE
+   * después — el trigger que sumó B1 (migración 20260905070000) es quien
+   * recalcula `last_reply_at`/`awaiting_reply` en la base; estos tests solo
+   * miran que el UPDATE salga (o no) y con qué filtros.
+   */
+  describe("anexo B2: marca is_auto_reply cuando el escenario escaló sin asesores", () => {
+    it("(a) escalate sin asesores: un UPDATE con is_auto_reply true, filtrado por la conversación y por created_at > el último mensaje del cliente", async () => {
+      const pb = playbook({ afterSend: "escalate", name: "Guía de envío · Cashea" });
+      fetchActivePlaybooksMock.mockResolvedValue([pb]);
+      matchPlaybookMock.mockResolvedValue({ playbook: pb, usage: NO_USAGE });
+      escalateConversationMock.mockImplementation(async () => {
+        pasos.push("escalar");
+        return { escalated: true, assignedAgentName: null, unassigned: true };
+      });
+
+      await runAgentTurn("conv-1");
+
+      expect(messageUpdates).toHaveLength(1);
+      expect(messageUpdates[0].values).toEqual({ is_auto_reply: true });
+      expect(messageUpdates[0].filters).toEqual([
+        ["conversation_id", "conv-1"],
+        ["direction", "outbound"],
+        ["sender_type", "ai"],
+        ["is_internal_note", false],
+        ["created_at", (state.conversation as { last_customer_message_at: string }).last_customer_message_at],
+      ]);
+    });
+
+    /** Refuerza el test ya existente "un escenario con after_send 'escalate' pasa la conversación a un asesor": con asesor, ningún UPDATE. */
+    it("(b) escalate CON asesor asignado: ningún UPDATE", async () => {
+      const pb = playbook({ afterSend: "escalate", name: "Guía de envío · Cashea" });
+      fetchActivePlaybooksMock.mockResolvedValue([pb]);
+      matchPlaybookMock.mockResolvedValue({ playbook: pb, usage: NO_USAGE });
+      // El beforeEach ya deja escalateConversationMock devolviendo un asesor
+      // (María), sin `unassigned`.
+
+      await runAgentTurn("conv-1");
+
+      expect(escalateConversationMock).toHaveBeenCalledTimes(1);
+      expect(messageUpdates).toHaveLength(0);
+    });
+
+    it("(c) escenario 'wait' (no escala): ningún UPDATE", async () => {
+      const pb = playbook({ afterSend: "wait" });
+      fetchActivePlaybooksMock.mockResolvedValue([pb]);
+      matchPlaybookMock.mockResolvedValue({ playbook: pb, usage: NO_USAGE });
+
+      await runAgentTurn("conv-1");
+
+      expect(escalateConversationMock).not.toHaveBeenCalled();
+      expect(messageUpdates).toHaveLength(0);
+    });
+
+    it("(d) el UPDATE falla: log.error con el evento y el turno termina igual (agent_turns con action escalated)", async () => {
+      const error = vi.spyOn(log, "error");
+      const pb = playbook({ afterSend: "escalate", name: "Guía de envío · Cashea" });
+      fetchActivePlaybooksMock.mockResolvedValue([pb]);
+      matchPlaybookMock.mockResolvedValue({ playbook: pb, usage: NO_USAGE });
+      escalateConversationMock.mockImplementation(async () => {
+        pasos.push("escalar");
+        return { escalated: true, assignedAgentName: null, unassigned: true };
+      });
+      state.messageUpdateError = { message: "permiso denegado" };
+
+      await runAgentTurn("conv-1");
+
+      expect(error).toHaveBeenCalledWith("turno_escenario_despedida_no_marcada", {
+        conversationId: "conv-1",
+        detail: "permiso denegado",
+      });
+      expect(agentTurnInserts[0]).toMatchObject({ action: "escalated" });
+    });
+
+    /**
+     * Rama defensiva: en un turno real esto no ocurre —
+     * `withinFreeformWindow(convo.last_customer_message_at)` ya exige la
+     * fecha para que el turno llegue hasta acá—, pero el tipo de
+     * `runPlaybook` la admite. Se fuerza la ventana abierta con
+     * `withinFreeformWindowOverride` para poder ejercer la rama sin mentirle
+     * a ningún otro test del archivo.
+     */
+    it("(e) sin last_customer_message_at (forzado): log.warn y no marca nada", async () => {
+      const warn = vi.spyOn(log, "warn");
+      withinFreeformWindowOverride.fn = () => true;
+      const pb = playbook({ afterSend: "escalate", name: "Guía de envío · Cashea" });
+      fetchActivePlaybooksMock.mockResolvedValue([pb]);
+      matchPlaybookMock.mockResolvedValue({ playbook: pb, usage: NO_USAGE });
+      escalateConversationMock.mockImplementation(async () => {
+        pasos.push("escalar");
+        return { escalated: true, assignedAgentName: null, unassigned: true };
+      });
+      state.conversation = { ...state.conversation, last_customer_message_at: null };
+
+      await runAgentTurn("conv-1");
+
+      expect(messageUpdates).toHaveLength(0);
+      expect(warn).toHaveBeenCalledWith("turno_escenario_sin_fecha_cliente", { conversationId: "conv-1" });
+    });
   });
 });
 

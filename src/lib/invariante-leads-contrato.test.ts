@@ -129,4 +129,20 @@ describe('contrato de "sin dueño" — los mismos casos que invariante_leads.sql
       isUnassignedLead(true, [traspaso("closed", 180), traspaso("human", 10)])
     ).toBe(false);
   });
+
+  /**
+   * Caso 9 (anexo B2, 5/9/2026): un escenario del supervisor con
+   * `afterSend = "escalate"` mandó su texto ANTES de escalar (T0.3 exige ese
+   * orden), así que salió con `is_auto_reply = false` — todavía no se sabía
+   * si iba a hacer falta un asesor — y `handle_new_message` ya lo contó como
+   * respuesta real. Recién después `escalateConversation` descubre que no
+   * hay NADIE, y `runPlaybook` marca ese mensaje `is_auto_reply = true` con
+   * un UPDATE aparte: el trigger que sumó B1 (20260905070000) recalcula
+   * `awaiting_reply` de vuelta a `true` — el `true` del primer argumento acá
+   * abajo es ese hecho ya recalculado — y el traspaso más reciente sigue
+   * siendo `unassigned`/`escalada_sin_asesor`, igual que en el caso 7.
+   */
+  it("caso 9 · escenario que escaló sin asesores y su texto se marcó después: CUENTA", () => {
+    expect(isUnassignedLead(true, [traspaso("unassigned", 7)])).toBe(true);
+  });
 });

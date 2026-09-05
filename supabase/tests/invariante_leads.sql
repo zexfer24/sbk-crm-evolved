@@ -57,8 +57,8 @@ begin;
 -- respondió) salvo en el caso 5, donde se simula la respuesta real del
 -- asesor fijando esas dos columnas.
 -- Un contacto por caso: `conversations` tiene único (contact_id,
--- whatsapp_channel_id), así que ocho conversaciones sobre el mismo canal
--- necesitan ocho contactos distintos. El caso 6 (T2.1, 5/9/2026) suma
+-- whatsapp_channel_id), así que nueve conversaciones sobre el mismo canal
+-- necesitan nueve contactos distintos. El caso 6 (T2.1, 5/9/2026) suma
 -- `cerrada_por_asesor`/`reabierta_por_cliente` a la lista de razones que
 -- puede escribir esta bitácora: nace de 20260905030000. El caso 7 (anexo A1,
 -- 5/9/2026) es la despedida de la IA al escalar sin asesores: sale con
@@ -66,7 +66,12 @@ begin;
 -- por eso NO apaga `awaiting_reply` aunque el cliente la haya recibido. El
 -- caso 8 (anexo A2, 5/9/2026) es el mismo cierre/reapertura del caso 6 pero
 -- con un asesor YA asignado al chat: el webhook la reabre con destino
--- `human` en vez de `unassigned`, así que NO cuenta -- tiene dueño.
+-- `human` en vez de `unassigned`, así que NO cuenta -- tiene dueño. El caso 9
+-- (anexo B2, 5/9/2026) es un escenario que escaló sin asesores cuyo texto
+-- salió con `is_auto_reply = false` (todavía no se sabía si haría falta un
+-- asesor) y se marcó `true` DESPUÉS, con un UPDATE aparte: es el trigger que
+-- sumó B1 (20260905070000) el que recalcula `awaiting_reply` al verlo, no un
+-- valor escrito a mano.
 insert into public.contacts (id, phone_number) values
   ('11111111-1111-1111-1111-111111111101', '+580000000001'),
   ('11111111-1111-1111-1111-111111111102', '+580000000002'),
@@ -75,7 +80,8 @@ insert into public.contacts (id, phone_number) values
   ('11111111-1111-1111-1111-111111111105', '+580000000005'),
   ('11111111-1111-1111-1111-111111111106', '+580000000006'),
   ('11111111-1111-1111-1111-111111111107', '+580000000007'),
-  ('11111111-1111-1111-1111-111111111108', '+580000000008');
+  ('11111111-1111-1111-1111-111111111108', '+580000000008'),
+  ('11111111-1111-1111-1111-111111111109', '+580000000009');
 
 insert into public.whatsapp_channels (id, label, phone_number) values
   ('22222222-2222-2222-2222-222222222222', 'Canal de prueba', '+580000000000');
@@ -177,6 +183,70 @@ values
    now() - interval '10 minutes', now() - interval '10 minutes',
    null, null);
 
+-- Caso 9 · escenario que escaló sin asesores y su texto se marcó DESPUÉS
+-- (anexo B2, 5/9/2026): CUENTA. Mismo patrón del caso 7 (`ai_enabled =
+-- false`, `journey_stage = 'assigned'`, sin fechas a mano: las deja el
+-- trigger a partir de los mensajes de abajo), pero acá el saliente de la IA
+-- nace con `is_auto_reply = false` — tal como sale un escenario con
+-- `afterSend = "escalate"` ANTES de que `escalateConversation` descubra que
+-- no hay asesores (T0.3 exige mandar el texto antes de escalar) — y se marca
+-- `is_auto_reply = true` DESPUÉS, con un UPDATE aparte (lo que hace
+-- `runPlaybook` en `agent.ts`), no en el mismo insert como el caso 7.
+insert into public.conversations
+  (id, contact_id, whatsapp_channel_id, ai_enabled, journey_stage)
+values
+  ('aaaaaaaa-0000-0000-0000-000000000009',
+   '11111111-1111-1111-1111-111111111109', '22222222-2222-2222-2222-222222222222',
+   false, 'assigned');
+
+-- Bloque propio (no el `do $$` final): necesita leer `awaiting_reply` a
+-- MITAD de la prueba, antes y después del UPDATE que marca `is_auto_reply`.
+-- La aserción intermedia es el bug que corrige B2: sin el UPDATE, el mensaje
+-- de la IA sale con `is_auto_reply = false` y `handle_new_message` ya lo
+-- cuenta como respuesta real -- `awaiting_reply` queda en `false` aunque el
+-- cliente siga esperando a un asesor. Recién el UPDATE (idéntico al que
+-- corre `runPlaybook` en `agent.ts`) hace que el trigger de B1
+-- (20260905070000_auto_reply_recalcula) recalcule y devuelva `awaiting_reply`
+-- a `true` -- no un valor escrito a mano.
+do $$
+declare
+  msg_ia_id uuid;
+  esperando boolean;
+begin
+  insert into public.messages
+    (conversation_id, direction, sender_type, message_type, content, is_auto_reply, whatsapp_status, created_at)
+  values
+    ('aaaaaaaa-0000-0000-0000-000000000009', 'inbound', 'customer', 'text',
+     '¿Tienen el kit de arrastre para una Bera SBR 200?', false, null,
+     now() - interval '8 minutes');
+
+  insert into public.messages
+    (conversation_id, direction, sender_type, message_type, content, is_auto_reply, whatsapp_status, created_at)
+  values
+    ('aaaaaaaa-0000-0000-0000-000000000009', 'outbound', 'ai', 'text',
+     'Antes de conseguirte el kit, ¿me confirmas el año de la moto?',
+     false, 'sent', now() - interval '7 minutes')
+  returning id into msg_ia_id;
+
+  select c.awaiting_reply into esperando
+  from public.conversations c
+  where c.id = 'aaaaaaaa-0000-0000-0000-000000000009';
+
+  if esperando then
+    raise exception 'caso 9: awaiting_reply debía ser false ANTES del update de is_auto_reply -- ese es el bug que corrige el anexo B2';
+  end if;
+
+  update public.messages set is_auto_reply = true where id = msg_ia_id;
+
+  select c.awaiting_reply into esperando
+  from public.conversations c
+  where c.id = 'aaaaaaaa-0000-0000-0000-000000000009';
+
+  if not esperando then
+    raise exception 'caso 9: awaiting_reply debía volver a true DESPUÉS de marcar is_auto_reply -- el trigger de B1 (20260905070000) no recalculó';
+  end if;
+end $$;
+
 -- Los traspasos. El `created_at` explícito y separado en el tiempo es
 -- deliberado: lo que decide es la fila MÁS RECIENTE, no el orden de inserción.
 insert into public.conversation_handoffs (conversation_id, to_kind, to_id, reason, created_at) values
@@ -196,11 +266,13 @@ insert into public.conversation_handoffs (conversation_id, to_kind, to_id, reaso
   ('aaaaaaaa-0000-0000-0000-000000000007', 'unassigned', null, 'escalada_sin_asesor', now() - interval '9 minutes'),
 
   ('aaaaaaaa-0000-0000-0000-000000000008', 'closed', null, 'cerrada_por_asesor', now() - interval '3 hours'),
-  ('aaaaaaaa-0000-0000-0000-000000000008', 'human', 'c9c9c9c9-0000-0000-0000-000000000001', 'reabierta_por_cliente', now() - interval '10 minutes');
+  ('aaaaaaaa-0000-0000-0000-000000000008', 'human', 'c9c9c9c9-0000-0000-0000-000000000001', 'reabierta_por_cliente', now() - interval '10 minutes'),
+
+  ('aaaaaaaa-0000-0000-0000-000000000009', 'unassigned', null, 'escalada_sin_asesor', now() - interval '7 minutes');
 
 do $$
 declare
-  esperado integer := 3;  -- el caso 1, el caso 6 y el caso 7
+  esperado integer := 4;  -- el caso 1, el caso 6, el caso 7 y el caso 9
   obtenido integer;
   errores text := '';
   fila record;
@@ -295,6 +367,27 @@ begin
       E'\n  - la conversación cerrada, reabierta por el cliente y CON asesor asignado cuenta como sin dueño (debía quedar `human`).';
   end if;
 
+  -- Caso 9, explícito y con nombre propio (anexo B2, 5/9/2026): igual que el
+  -- caso 7, pero acá `is_auto_reply` se puso DESPUÉS de insertado el mensaje,
+  -- no en el mismo insert -- es el trigger que sumó B1 (20260905070000) el
+  -- que recalcula `last_reply_at`/`awaiting_reply` al ver ese cambio, tal
+  -- como pasa de verdad cuando `runPlaybook` marca la despedida de un
+  -- escenario que escaló sin asesores.
+  select count(*)::integer into obtenido
+  from public.conversations c
+  where c.id = 'aaaaaaaa-0000-0000-0000-000000000009'
+    and c.awaiting_reply
+    and (
+      select h.to_kind from public.conversation_handoffs h
+      where h.conversation_id = c.id
+      order by h.created_at desc, h.id desc limit 1
+    ) = 'unassigned';
+
+  if obtenido <> 1 then
+    errores := errores ||
+      E'\n  - el escenario que escaló sin asesores y marcó su texto is_auto_reply DESPUÉS de insertado no cuenta como sin dueño.';
+  end if;
+
   -- La invariante propiamente dicha, en su forma de Etapa 1: toda
   -- conversación que el sistema soltó y que sigue esperando tiene que ser
   -- VISIBLE — es decir, contable. Una que quedara `unassigned` sin aparecer
@@ -313,7 +406,8 @@ begin
     if fila.id not in (
       'aaaaaaaa-0000-0000-0000-000000000001',
       'aaaaaaaa-0000-0000-0000-000000000006',
-      'aaaaaaaa-0000-0000-0000-000000000007'
+      'aaaaaaaa-0000-0000-0000-000000000007',
+      'aaaaaaaa-0000-0000-0000-000000000009'
     ) then
       errores := errores || format(
         E'\n  - la conversación %s quedó sin dueño y el conteo no la ve.', fila.id);
