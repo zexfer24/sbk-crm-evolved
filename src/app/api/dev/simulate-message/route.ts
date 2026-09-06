@@ -24,14 +24,19 @@ async function ensureTestConversation(supabase: ReturnType<typeof createAdminCli
   await supabase.from("whatsapp_channels").upsert({
     id: TEST_CHANNEL_ID,
     label: "Simulador (panel de control)",
-    phone_number: "+00 000 0000000",
+    phone_number: "+580000000000",
     phone_number_id: null,
     status: "pending",
   });
 
+  // C3 (5/9/2026): este número tenía espacios ("+00 000 0000001"), que
+  // `isDeliverablePhoneNumber` (turn-target.ts) exige E.164 puro (`+` y solo
+  // dígitos) rechaza. Con eso, TODO turno simulado sin `conversationId`
+  // fallaba siempre con "Identidad no verificable" antes de llegar a
+  // `runAgentTurn`, sin importar el mensaje. `+580000000001` es E.164 válido.
   await supabase.from("contacts").upsert({
     id: TEST_CONTACT_ID,
-    phone_number: "+00 000 0000001",
+    phone_number: "+580000000001",
     display_name: "Cliente de prueba",
     profile_name: "Cliente de prueba",
   });
