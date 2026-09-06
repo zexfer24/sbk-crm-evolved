@@ -1,4 +1,5 @@
 import { CRM_TIME_ZONE, crmMinuteOfDay } from "@/lib/time-zone";
+import { DAY_BANDS } from "@/lib/business-hours";
 
 // ---------------------------------------------------------------------------
 // A qué hora puede salir un texto ya redactado.
@@ -38,10 +39,14 @@ export interface GreetingWindow {
  * saludo que ofrecer y el escenario del dueño desaparecería en silencio. A esa
  * hora casi no entra nadie, y el que entra recibe "buenos días" — que es lo
  * que recibía antes.
+ *
+ * Los mismos bordes gobiernan ahora `business-hours.ts` (5/9/2026): en vez de
+ * tener dos copias del mismo número, este archivo importa de allá para que
+ * moverlos en un solo lugar mueva las dos reglas a la vez.
  */
-const MANANA: GreetingWindow = { from: 0, to: 11 * 60 + 59 };
-const TARDE: GreetingWindow = { from: 12 * 60, to: 19 * 60 };
-const NOCHE: GreetingWindow = { from: 19 * 60 + 1, to: 23 * 60 + 59 };
+const MANANA: GreetingWindow = DAY_BANDS["mañana"];
+const TARDE: GreetingWindow = DAY_BANDS.tarde;
+const NOCHE: GreetingWindow = DAY_BANDS.noche;
 
 /**
  * Los tres saludos, escritos como los escribe la gente: con acento o sin él,

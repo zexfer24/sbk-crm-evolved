@@ -86,6 +86,31 @@ export function crmMinuteOfDay(instant: Date = new Date(), timeZone: string = CR
   return (get("hour") % 24) * 60 + get("minute");
 }
 
+/**
+ * Día de la semana en la zona del equipo: 0 domingo, 1 lunes, ..., 6 sábado.
+ *
+ * Existe por la misma razón que `crmMinuteOfDay`: `Date#getDay()` lee el
+ * reloj del proceso (UTC en el contenedor), y cerca de la medianoche de
+ * Caracas (UTC-4) el día ya cambió para el servidor sin haber cambiado para
+ * el cliente. `business-hours.ts` (5/9/2026) lo necesita para saber contra
+ * qué franja del horario comparar un instante.
+ */
+export function crmWeekday(instant: Date = new Date(), timeZone: string = CRM_TIME_ZONE): number {
+  const weekday = new Intl.DateTimeFormat("en-US", { timeZone, weekday: "short" }).format(instant);
+
+  const dias: Record<string, number> = {
+    Sun: 0,
+    Mon: 1,
+    Tue: 2,
+    Wed: 3,
+    Thu: 4,
+    Fri: 5,
+    Sat: 6,
+  };
+
+  return dias[weekday] ?? 0;
+}
+
 export function formatCrmDateTime(instant: Date = new Date(), timeZone: string = CRM_TIME_ZONE): string {
   return new Intl.DateTimeFormat("es-VE", {
     timeZone,
