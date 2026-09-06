@@ -17,7 +17,18 @@ vi.mock("@/lib/ai/escalate", () => ({
   escalateConversation: escalateConversationMock,
 }));
 
-import { buildCatalogTool, buildEscalateTool, type EscalationOutcome } from "@/lib/ai/tools";
+// D3 (6/9/2026): se espía `log.error` sin tragarse el resto del módulo real
+// (`errorText`, `log.warn`, `log.info`) con `importOriginal()`. Un mock
+// completo rompería el test de más abajo ("deja registro en el servidor
+// cuando cotiza con datos viejos"), que depende de que `log.warn` escriba de
+// verdad en `console.error` para poder leer la línea JSON.
+const { logErrorMock } = vi.hoisted(() => ({ logErrorMock: vi.fn() }));
+vi.mock("@/lib/log", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/lib/log")>();
+  return { ...actual, log: { ...actual.log, error: logErrorMock } };
+});
+
+import { buildCatalogTool, buildEscalateTool, buildOrderHistoryTool, type EscalationOutcome } from "@/lib/ai/tools";
 import type { BusinessHours } from "@/lib/business-hours";
 
 interface FakeProductRow {
@@ -489,5 +500,144 @@ describe("buildEscalateTool — instrucción de despedida cuando no hay asesores
       {},
       expect.objectContaining({ conversationId: "conv-1", contactId: "contact-1", businessHours, now })
     );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// D3 (6/9/2026): un error de Supabase en una herramienta del tool loop se
+// tragaba en silencio — la respuesta al modelo ya era "no se pudo consultar",
+// pero no quedaba ningún rastro en el log del servidor. El 5/9/2026 se buscó
+// a ciegas el rastro de un "catálogo fuera de servicio" que resultó ser el
+// interruptor por herramienta apagado; un error real de la base tampoco
+// habría dejado nada. Estos tests verifican que ahora sí queda registrado,
+// con el `conversationId` y el detalle del error, sin cambiar lo que recibe
+// el modelo.
+// ---------------------------------------------------------------------------
+describe("un error de la base deja rastro en el log (D3, 6/9/2026)", () => {
+  beforeEach(() => {
+    logErrorMock.mockClear();
+  });
+
+  /** Un Supabase falso cuya cadena de `products` termina en error, en vez de datos. */
+  function createFailingCatalogSupabase() {
+    return {
+      from(table: string) {
+        if (table === "products") {
+          return {
+            select: () => ({
+              eq: () => ({
+                or: () => ({
+                  limit: async () => ({ data: null, error: { message: "boom" } }),
+                }),
+              }),
+            }),
+          };
+        }
+        throw new Error(`Fake Supabase: tabla no soportada en este test: ${table}`);
+      },
+    };
+  }
+
+  /** Un Supabase falso cuya cadena de `orders` termina en error, en vez de datos. */
+  function createFailingOrderHistorySupabase() {
+    return {
+      from(table: string) {
+        if (table === "orders") {
+          return {
+            select: () => ({
+              eq: () => ({
+                order: () => ({
+                  limit: async () => ({ data: null, error: { message: "boom" } }),
+                }),
+              }),
+            }),
+          };
+        }
+        throw new Error(`Fake Supabase: tabla no soportada en este test: ${table}`);
+      },
+    };
+  }
+
+  it("catálogo: con error de Supabase devuelve la lista vacía de siempre y deja rastro en el log", async () => {
+    const tool = buildCatalogTool({
+      // @ts-expect-error -- fake mínimo suficiente para este test
+      supabase: createFailingCatalogSupabase(),
+      conversationId: "conv-fallo-catalogo",
+      contactId: "contact-1",
+    });
+
+    // @ts-expect-error -- firma simplificada del test
+    const result = (await tool.execute({ query: "carburador" }, { toolCallId: "t1", messages: [] })) as {
+      results: unknown[];
+      error?: string;
+    };
+
+    expect(result.results).toEqual([]);
+    expect(result.error).toBe("No se pudo consultar el catálogo en este momento.");
+
+    expect(logErrorMock).toHaveBeenCalledTimes(1);
+    expect(logErrorMock).toHaveBeenCalledWith(
+      "herramienta_catalogo_fallo",
+      expect.objectContaining({ conversationId: "conv-fallo-catalogo" })
+    );
+    const detail = logErrorMock.mock.calls[0][1].detail as string;
+    expect(typeof detail).toBe("string");
+    expect(detail.length).toBeGreaterThan(0);
+  });
+
+  it("historial: con error de Supabase devuelve la lista vacía de siempre y deja rastro en el log", async () => {
+    const tool = buildOrderHistoryTool({
+      // @ts-expect-error -- fake mínimo suficiente para este test
+      supabase: createFailingOrderHistorySupabase(),
+      conversationId: "conv-fallo-historial",
+      contactId: "contact-1",
+    });
+
+    // @ts-expect-error -- firma simplificada del test
+    const result = (await tool.execute({}, { toolCallId: "t1", messages: [] })) as {
+      orders: unknown[];
+      error?: string;
+    };
+
+    expect(result.orders).toEqual([]);
+    expect(result.error).toBe("No se pudo consultar el historial de compras.");
+
+    expect(logErrorMock).toHaveBeenCalledTimes(1);
+    expect(logErrorMock).toHaveBeenCalledWith(
+      "herramienta_historial_fallo",
+      expect.objectContaining({ conversationId: "conv-fallo-historial" })
+    );
+    const detail = logErrorMock.mock.calls[0][1].detail as string;
+    expect(typeof detail).toBe("string");
+    expect(detail.length).toBeGreaterThan(0);
+  });
+
+  it("camino feliz: con la consulta de catálogo devolviendo filas, no se llama a log.error", async () => {
+    const { client } = createFakeSupabase([
+      {
+        id: "prod-1",
+        name: "Carburador PZ27",
+        brand: "Genérico",
+        price: 18,
+        currency: "USD",
+        stock_quantity: 12,
+        product_compatibility: [],
+      },
+    ]);
+
+    const tool = buildCatalogTool({
+      // @ts-expect-error -- fake mínimo
+      supabase: client,
+      conversationId: "conv-ok",
+      contactId: "contact-1",
+    });
+
+    // @ts-expect-error -- firma simplificada del test
+    const result = (await tool.execute({ query: "carburador" }, { toolCallId: "t1", messages: [] })) as {
+      results: unknown[];
+    };
+
+    expect(result.results).toHaveLength(1);
+    expect(logErrorMock).not.toHaveBeenCalled();
   });
 });

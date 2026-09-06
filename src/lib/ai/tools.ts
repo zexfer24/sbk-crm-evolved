@@ -8,7 +8,7 @@ import { catalogFilter, rankByTerms, searchTerms } from "@/lib/ai/catalog-search
 import { formatQuote } from "@/lib/ai/precio";
 import { RECLAMO_CATEGORIES, escalateConversation, type EscalationMotivo } from "@/lib/ai/escalate";
 import { inventoryAgeInstruction, inventoryFreshness } from "@/lib/inventory-freshness";
-import { log } from "@/lib/log";
+import { errorText, log } from "@/lib/log";
 import type { BusinessHours, BusinessStatus } from "@/lib/business-hours";
 
 /**
@@ -117,7 +117,15 @@ export function buildCatalogTool({ supabase, conversationId }: ToolDeps) {
         .or(catalogFilter(terms))
         .limit(CATALOG_FETCH_LIMIT);
 
-      if (error) return { results: [], error: "No se pudo consultar el catálogo en este momento." };
+      if (error) {
+        // D3 (6/9/2026): antes este error se tragaba en silencio. El 5/9/2026
+        // se buscó en vano el rastro de un "catálogo fuera de servicio" que
+        // resultó ser el interruptor por herramienta apagado, pero la
+        // búsqueda fue a ciegas porque un error real de la base tampoco
+        // habría dejado nada en el log del servidor.
+        log.error("herramienta_catalogo_fallo", { conversationId, detail: errorText(error) });
+        return { results: [], error: "No se pudo consultar el catálogo en este momento." };
+      }
 
       const ranked = rankByTerms(products ?? [], terms);
       const hayMas = ranked.length > MAX_CATALOG_RESULTS;
@@ -217,7 +225,7 @@ export function buildCatalogTool({ supabase, conversationId }: ToolDeps) {
 // Historial de compras — devolucion. Solo lectura: no hay forma de aprobar,
 // rechazar ni modificar nada desde esta herramienta.
 // ---------------------------------------------------------------------------
-export function buildOrderHistoryTool({ supabase, contactId }: ToolDeps) {
+export function buildOrderHistoryTool({ supabase, contactId, conversationId }: ToolDeps) {
   return tool({
     description:
       "Consulta el historial real de compras del cliente (qué compró, cuándo, cuánto pagó). Solo lectura: úsala para armar contexto, nunca para aprobar ni procesar una devolución.",
@@ -230,7 +238,12 @@ export function buildOrderHistoryTool({ supabase, contactId }: ToolDeps) {
         .order("purchased_at", { ascending: false })
         .limit(10);
 
-      if (error) return { orders: [], error: "No se pudo consultar el historial de compras." };
+      if (error) {
+        // D3 (6/9/2026): mismo rastro que la herramienta de catálogo, misma
+        // historia (ver el comentario de arriba en `buildCatalogTool`).
+        log.error("herramienta_historial_fallo", { conversationId, detail: errorText(error) });
+        return { orders: [], error: "No se pudo consultar el historial de compras." };
+      }
 
       return {
         orders: (orders ?? []).map((o) => ({

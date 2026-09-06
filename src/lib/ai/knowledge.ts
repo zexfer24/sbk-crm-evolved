@@ -5,6 +5,7 @@ import type { SupabaseClient } from "@supabase/supabase-js";
 import type { Database } from "@/lib/supabase/database.types";
 import { searchTerms } from "@/lib/ai/catalog-search";
 import { clipContent, rankKnowledge } from "@/lib/ai/knowledge-search";
+import { errorText, log } from "@/lib/log";
 
 // ---------------------------------------------------------------------------
 // Consultar la biblioteca — disponible en todos los casos. Solo lectura.
@@ -37,7 +38,13 @@ const MAX_CONTENT_CHARS = 4000;
  */
 const FETCH_LIMIT = 200;
 
-export function buildKnowledgeTool({ supabase }: { supabase: SupabaseClient<Database> }) {
+export function buildKnowledgeTool({
+  supabase,
+  conversationId,
+}: {
+  supabase: SupabaseClient<Database>;
+  conversationId: string;
+}) {
   return tool({
     description:
       "Busca en la biblioteca de conocimiento de SBK Motorcycles: la información oficial que cargó el equipo sobre envíos, formas de pago, garantías, horarios y cualquier otro tema de la tienda que no sea el catálogo de repuestos. Si no devuelve nada, esa información no está cargada — no te la inventes.",
@@ -56,7 +63,12 @@ export function buildKnowledgeTool({ supabase }: { supabase: SupabaseClient<Data
         .eq("is_active", true)
         .limit(FETCH_LIMIT);
 
-      if (error) return { resultados: [], error: "No se pudo consultar la biblioteca en este momento." };
+      if (error) {
+        // D3 (6/9/2026): mismo rastro que las otras herramientas del tool
+        // loop, misma historia — ver `tools.ts` (`buildCatalogTool`).
+        log.error("herramienta_biblioteca_fallo", { conversationId, detail: errorText(error) });
+        return { resultados: [], error: "No se pudo consultar la biblioteca en este momento." };
+      }
 
       const rows = (data ?? []).map((row) => ({
         title: row.title,
