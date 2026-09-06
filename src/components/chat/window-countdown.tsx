@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 import { Clock } from "lucide-react";
 import { hoursUntilWindowCloses, isWithin24hWindow } from "@/lib/whatsapp-window";
+import { formatWindowRemaining } from "@/components/chat/window-countdown-format";
 
 export function WindowCountdown({ lastCustomerMessageAt }: { lastCustomerMessageAt: string | null }) {
   const [now, setNow] = useState(() => new Date());
@@ -16,8 +17,7 @@ export function WindowCountdown({ lastCustomerMessageAt }: { lastCustomerMessage
   if (!isWithin24hWindow(lastCustomerMessageAt, now)) return null;
 
   const hoursRemaining = hoursUntilWindowCloses(lastCustomerMessageAt, now);
-  const hours = Math.floor(hoursRemaining);
-  const minutes = Math.round((hoursRemaining - hours) * 60);
+  const { hours, minutes } = formatWindowRemaining(hoursRemaining);
   const isClosingSoon = hoursRemaining < 2;
 
   return (
