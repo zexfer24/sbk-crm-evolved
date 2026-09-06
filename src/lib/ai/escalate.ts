@@ -3,6 +3,7 @@ import type { SupabaseClient } from "@supabase/supabase-js";
 import type { Database, TablesUpdate } from "@/lib/supabase/database.types";
 import { claimNextAvailableAgent } from "@/lib/ai/claim-agent";
 import { recordHandoff } from "@/lib/ai/handoffs";
+import { businessStatus, DEFAULT_BUSINESS_HOURS, type BusinessHours, type BusinessStatus } from "@/lib/business-hours";
 
 // ---------------------------------------------------------------------------
 // Lógica compartida de escalamiento: la usa la herramienta que el modelo
@@ -25,6 +26,13 @@ export interface EscalateResult {
   /** El caso quedó esperando a que alguien entre a trabajar. */
   unassigned?: boolean;
   reason?: string;
+  /**
+   * Solo cuando `unassigned` es true: el horario calculado UNA vez acá con el
+   * `now`/`businessHours` de este llamado (Frente B4, "El reloj dice la
+   * verdad", 5/9/2026). `buildEscalateTool` (`tools.ts`) lo usa para armar la
+   * despedida sin volver a calcular `businessStatus` con un reloj distinto.
+   */
+  businessStatus?: BusinessStatus;
 }
 
 export async function escalateConversation(
@@ -35,9 +43,21 @@ export async function escalateConversation(
     motivo: EscalationMotivo;
     resumen: string;
     categoriaReclamo?: ReclamoCategory;
+    /** Default: horario de lunes a viernes 8 am–6 pm (`DEFAULT_BUSINESS_HOURS`). */
+    businessHours?: BusinessHours;
+    /** Inyectable en tests; en producción es el reloj real. */
+    now?: Date;
   }
 ): Promise<EscalateResult> {
-  const { conversationId, contactId, motivo, resumen, categoriaReclamo } = params;
+  const {
+    conversationId,
+    contactId,
+    motivo,
+    resumen,
+    categoriaReclamo,
+    businessHours = DEFAULT_BUSINESS_HOURS,
+    now = new Date(),
+  } = params;
 
   const candidate = await claimNextAvailableAgent(supabase);
 
@@ -55,6 +75,11 @@ export async function escalateConversation(
 
   await supabase.from("conversations").update(conversationUpdate).eq("id", conversationId);
 
+  // Se calcula una sola vez, con el reloj y el horario de ESTE llamado, para
+  // que el sufijo del evento y la instrucción que arma `buildEscalateTool`
+  // cuenten la misma hora (Frente B4, "El reloj dice la verdad", 5/9/2026).
+  const estadoHorario = businessStatus(now, businessHours);
+
   await supabase.from("messages").insert({
     conversation_id: conversationId,
     direction: "outbound",
@@ -63,7 +88,7 @@ export async function escalateConversation(
     is_internal_note: true,
     content: candidate
       ? `IA escaló a ${candidate.displayName}. Motivo: ${motivo}. ${resumen}`
-      : `IA escaló sin asesores disponibles: nadie tiene asignada esta conversación todavía. Motivo: ${motivo}. ${resumen}`,
+      : `IA escaló sin asesores disponibles: nadie tiene asignada esta conversación todavía. Motivo: ${motivo}. ${resumen} (${estadoHorario.open ? "en horario" : "fuera de horario"})`,
   });
 
   // T0.3: el escalamiento es una salida silenciosa más de la IA (la
@@ -93,5 +118,6 @@ export async function escalateConversation(
         assignedAgentName: null,
         unassigned: true,
         reason: "No había asesores activos: la conversación quedó esperando en la bandeja.",
+        businessStatus: estadoHorario,
       };
 }

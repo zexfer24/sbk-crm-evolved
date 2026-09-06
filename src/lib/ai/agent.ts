@@ -567,7 +567,8 @@ async function runPlaybook(
   tokens: TurnTokens,
   customerMessage: string | null,
   tiempos: TurnTiming,
-  lastCustomerMessageAt: string | null
+  lastCustomerMessageAt: string | null,
+  businessHours: BusinessHours
 ): Promise<void> {
   // Última mirada a las guardas antes de hablarle al cliente. Si la IA se apagó
   // —o si un asesor se metió— mientras el modelo elegía el escenario, el turno
@@ -589,6 +590,7 @@ async function runPlaybook(
       contactId: target.contactId,
       motivo: "seguimiento",
       resumen: `Respuesta automática "${playbook.name}". Falta que un asesor continúe el caso.`,
+      businessHours,
     });
 
     // Anexo B2 (5/9/2026): el texto de este escenario salió ANTES de saber si
@@ -771,7 +773,8 @@ async function runTurnPhases(
         classifiedTokens,
         customerMessage,
         tiempos,
-        convo.last_customer_message_at
+        convo.last_customer_message_at,
+        businessHours
       );
       return;
     }
@@ -834,10 +837,9 @@ async function runTurnPhases(
   }
 
   const outcome: EscalationOutcome = { escalated: false };
-  // `businessHours` viaja en `deps` aunque hoy ninguna herramienta lo lea:
-  // lo necesita `buildEscalateTool` para la despedida sin asesores (Frente
-  // B4, "El reloj dice la verdad", pendiente) y así no hace falta reabrir el
-  // Promise.all de runAgentTurn para conseguirlo.
+  // `businessHours` viaja en `deps` para `buildEscalateTool`, que lo usa en la
+  // despedida sin asesores (Frente B4, "El reloj dice la verdad", 5/9/2026):
+  // así no hace falta reabrir el Promise.all de runAgentTurn para conseguirlo.
   const deps = { supabase, conversationId, contactId: target.contactId, businessHours };
 
   // Escalar no tiene interruptor: es la única salida hacia un humano. El

@@ -6,6 +6,20 @@ vi.mock("@/lib/ai/claim-agent", () => ({
 }));
 
 import { escalateConversation } from "@/lib/ai/escalate";
+import { DEFAULT_BUSINESS_HOURS } from "@/lib/business-hours";
+
+/**
+ * Caracas es UTC-4 todo el año (sin horario de verano), así que un instante
+ * en UTC con 4 horas sumadas siempre cae en la misma hora local. Mismo
+ * helper que `business-hours.test.ts`, para no depender de la `TZ` del
+ * proceso que corre la suite.
+ */
+function enCaracas(fechaLocalIso: string): Date {
+  const [fecha, hora] = fechaLocalIso.split("T");
+  const [anio, mes, dia] = fecha.split("-").map(Number);
+  const [h, m] = hora.split(":").map(Number);
+  return new Date(Date.UTC(anio, mes - 1, dia, h + 4, m, 0));
+}
 
 interface Estado {
   conversationUpdates: Record<string, unknown>[];
@@ -209,5 +223,89 @@ describe("escalateConversation", () => {
 
       expect(estado.pasos).toEqual(["update", "nota", "traspaso"]);
     });
+  });
+});
+
+/**
+ * Frente B4 ("El reloj dice la verdad", 5/9/2026): sin asesores, el evento de
+ * sistema y el resultado que le llega a `buildEscalateTool` (`tools.ts`)
+ * tienen que saber si la tienda está abierta — antes de esto la despedida no
+ * podía decir cuándo iban a atender al cliente sin arriesgarse a prometer
+ * algo falso.
+ */
+describe("escalateConversation — horario de la tienda al escalar sin asesores", () => {
+  it("agrega '(fuera de horario)' a la nota cuando la tienda está cerrada", async () => {
+    claimNextAvailableAgentMock.mockResolvedValue(null);
+    const { client, estado } = createFakeSupabase();
+
+    // 2026-09-06 es domingo (mismo ancla que business-hours.test.ts: el
+    // 2026-08-30 es domingo). Sin franja los domingos, cerrada a cualquier hora.
+    const domingo = enCaracas("2026-09-06T10:00");
+
+    // @ts-expect-error -- fake mínimo
+    await escalateConversation(client, { ...PARAMS, now: domingo, businessHours: DEFAULT_BUSINESS_HOURS });
+
+    expect(estado.notas[0]).toContain("(fuera de horario)");
+  });
+
+  it("agrega '(en horario)' a la nota cuando la tienda está abierta", async () => {
+    claimNextAvailableAgentMock.mockResolvedValue(null);
+    const { client, estado } = createFakeSupabase();
+
+    // 2026-09-07 es lunes, 10 am: dentro del horario por defecto (8am-6pm).
+    const lunes = enCaracas("2026-09-07T10:00");
+
+    // @ts-expect-error -- fake mínimo
+    await escalateConversation(client, { ...PARAMS, now: lunes, businessHours: DEFAULT_BUSINESS_HOURS });
+
+    expect(estado.notas[0]).toContain("(en horario)");
+  });
+
+  it("con un asesor asignado, la nota no lleva sufijo de horario", async () => {
+    claimNextAvailableAgentMock.mockResolvedValue({ id: "agent-1", displayName: "María" });
+    const { client, estado } = createFakeSupabase();
+
+    // @ts-expect-error -- fake mínimo
+    await escalateConversation(client, PARAMS);
+
+    expect(estado.notas[0]).not.toMatch(/\(en horario\)|\(fuera de horario\)/);
+  });
+
+  it("con la tienda cerrada un domingo, el resultado dice cuándo abre: el lunes", async () => {
+    claimNextAvailableAgentMock.mockResolvedValue(null);
+    const { client } = createFakeSupabase();
+
+    const domingo = enCaracas("2026-09-06T10:00");
+
+    // @ts-expect-error -- fake mínimo
+    const result = await escalateConversation(client, {
+      ...PARAMS,
+      now: domingo,
+      businessHours: DEFAULT_BUSINESS_HOURS,
+    });
+
+    expect(result.businessStatus?.open).toBe(false);
+    expect(result.businessStatus?.nextOpening).toEqual({ dayLabel: "el lunes", time: "8:00 am" });
+  });
+
+  it("con un asesor asignado, el resultado no lleva businessStatus (no hace falta para esa despedida)", async () => {
+    claimNextAvailableAgentMock.mockResolvedValue({ id: "agent-1", displayName: "María" });
+    const { client } = createFakeSupabase();
+
+    // @ts-expect-error -- fake mínimo
+    const result = await escalateConversation(client, PARAMS);
+
+    expect(result.businessStatus).toBeUndefined();
+  });
+
+  it("sin now ni businessHours, usa el reloj real y el horario por defecto sin reventar", async () => {
+    claimNextAvailableAgentMock.mockResolvedValue(null);
+    const { client, estado } = createFakeSupabase();
+
+    // @ts-expect-error -- fake mínimo
+    const result = await escalateConversation(client, PARAMS);
+
+    expect(estado.notas[0]).toMatch(/\(en horario\)|\(fuera de horario\)/);
+    expect(result.businessStatus).toBeDefined();
   });
 });

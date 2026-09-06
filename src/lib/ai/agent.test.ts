@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Playbook } from "@/lib/types";
 import type { Intent } from "@/lib/ai/classify";
+import { DEFAULT_BUSINESS_HOURS } from "@/lib/business-hours";
 
 // ---------------------------------------------------------------------------
 // Fake de Supabase acotado a lo que el orquestador realmente consulta.
@@ -916,6 +917,11 @@ describe("runAgentTurn — escenarios predeterminados", () => {
     expect(escalateConversationMock.mock.calls[0][1]).toMatchObject({
       conversationId: "conv-1",
       motivo: "seguimiento",
+      // Frente B4 (5/9/2026): el camino de escenario también enhebra el
+      // horario hasta escalateConversation, no solo el tool loop genérico —
+      // sin esto la despedida de un escenario sin asesores no podría decir
+      // cuándo abre la tienda.
+      businessHours: DEFAULT_BUSINESS_HOURS,
     });
     expect(agentTurnInserts[0]).toMatchObject({ action: "escalated" });
   });

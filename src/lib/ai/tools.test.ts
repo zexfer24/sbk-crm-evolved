@@ -1,10 +1,24 @@
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("@/lib/ai/bcv", () => ({
   getBcvRate: vi.fn(async () => ({ rate: 40, isStale: false })),
 }));
 
-import { buildCatalogTool } from "@/lib/ai/tools";
+// El resto de tools.ts (RECLAMO_CATEGORIES) sigue viniendo del módulo real: solo
+// se reemplaza `escalateConversation`, que ya tiene su propia batería de tests
+// en escalate.test.ts (incluido el cálculo real de `businessStatus`). Acá solo
+// interesa CÓMO `buildEscalateTool` traduce ese resultado a la instrucción que
+// lee el modelo — sin importOriginal(), que arrastraría Supabase completo.
+const { escalateConversationMock } = vi.hoisted(() => ({
+  escalateConversationMock: vi.fn(),
+}));
+vi.mock("@/lib/ai/escalate", () => ({
+  RECLAMO_CATEGORIES: ["Envío", "Pago", "Producto", "Atención", "Garantía"],
+  escalateConversation: escalateConversationMock,
+}));
+
+import { buildCatalogTool, buildEscalateTool, type EscalationOutcome } from "@/lib/ai/tools";
+import type { BusinessHours } from "@/lib/business-hours";
 
 interface FakeProductRow {
   id: string;
@@ -366,5 +380,114 @@ describe("buildCatalogTool — un repuesto en cero no se ofrece como disponible"
 
     expect(result.instruccionParaTuRespuesta).toMatch(/cero/i);
     expect(result.instruccionParaTuRespuesta).toMatch(/5 días/);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Frente B4 ("El reloj dice la verdad", 5/9/2026): la despedida al escalar
+// sin ningún asesor conectado tiene que decir cuándo lo van a atender. Antes
+// de esto la instrucción era siempre la misma frase genérica, sin importar
+// si eran las 10 am de un lunes o las 10 pm de un domingo.
+// ---------------------------------------------------------------------------
+describe("buildEscalateTool — instrucción de despedida cuando no hay asesores", () => {
+  beforeEach(() => {
+    escalateConversationMock.mockReset();
+  });
+
+  function crearHerramienta(outcome: EscalationOutcome, deps?: { businessHours?: BusinessHours; now?: Date }) {
+    return buildEscalateTool(
+      // @ts-expect-error -- fake mínimo: la herramienta reenvía supabase tal
+      // cual a escalateConversation, que está mockeado en este archivo.
+      { supabase: {}, conversationId: "conv-1", contactId: "contact-1", ...deps },
+      outcome
+    );
+  }
+
+  async function ejecutar(outcome: EscalationOutcome, deps?: { businessHours?: BusinessHours; now?: Date }) {
+    const tool = crearHerramienta(outcome, deps);
+    const input = { motivo: "queja" as const, resumen: "Reclama por un envío que no llegó" };
+    // @ts-expect-error -- la firma real de `execute` de `ai` es más genérica que lo que necesitamos simular acá
+    return (await tool.execute(input, { toolCallId: "t1", messages: [] })) as { instruccionParaTuRespuesta: string };
+  }
+
+  it("con asesor asignado, la instrucción no cambia", async () => {
+    escalateConversationMock.mockResolvedValue({ escalated: true, assignedAgentName: "María" });
+
+    const result = await ejecutar({ escalated: false });
+
+    expect(result.instruccionParaTuRespuesta).toBe(
+      "Ya está asignado a María. Dile al cliente que un asesor lo va a atender."
+    );
+  });
+
+  it("sin asesores y tienda abierta, promete 'en breve' sin prometer un plazo", async () => {
+    escalateConversationMock.mockResolvedValue({
+      escalated: true,
+      assignedAgentName: null,
+      unassigned: true,
+      businessStatus: { open: true, closesAt: "6:00 pm", nextOpening: null },
+    });
+
+    const result = await ejecutar({ escalated: false });
+
+    expect(result.instruccionParaTuRespuesta).toMatch(/en breve/);
+    expect(result.instruccionParaTuRespuesta).toMatch(/NO prometas/);
+  });
+
+  /**
+   * El caso que motivó el frente: con la tienda cerrada un domingo (ver
+   * `escalate.test.ts` para la prueba de que `escalateConversation` SÍ
+   * calcula este `businessStatus` así con `now` en domingo), la instrucción
+   * final que lee el modelo contiene "lunes" en vez de "en breve".
+   */
+  it("sin asesores y tienda cerrada con próxima apertura, dice el día y la hora exactos", async () => {
+    escalateConversationMock.mockResolvedValue({
+      escalated: true,
+      assignedAgentName: null,
+      unassigned: true,
+      businessStatus: { open: false, closesAt: null, nextOpening: { dayLabel: "el lunes", time: "8:00 am" } },
+    });
+
+    const result = await ejecutar({ escalated: false });
+
+    expect(result.instruccionParaTuRespuesta).toContain("lunes");
+    expect(result.instruccionParaTuRespuesta).toContain("8:00 am");
+    expect(result.instruccionParaTuRespuesta).toMatch(/NO prometas/);
+  });
+
+  it("sin asesores y sin ninguna apertura en los próximos 7 días, dice 'apenas la tienda vuelva a abrir'", async () => {
+    escalateConversationMock.mockResolvedValue({
+      escalated: true,
+      assignedAgentName: null,
+      unassigned: true,
+      businessStatus: { open: false, closesAt: null, nextOpening: null },
+    });
+
+    const result = await ejecutar({ escalated: false });
+
+    expect(result.instruccionParaTuRespuesta).toMatch(/vuelva a abrir/);
+    expect(result.instruccionParaTuRespuesta).not.toMatch(/undefined/);
+  });
+
+  it("sin businessStatus en el resultado (compatibilidad), cae al texto de 'en breve'", async () => {
+    escalateConversationMock.mockResolvedValue({ escalated: true, assignedAgentName: null, unassigned: true });
+
+    const result = await ejecutar({ escalated: false });
+
+    expect(result.instruccionParaTuRespuesta).toMatch(/en breve/);
+  });
+
+  it("reenvía businessHours y now a escalateConversation, tal como los recibió", async () => {
+    escalateConversationMock.mockResolvedValue({ escalated: true, assignedAgentName: "María" });
+
+    const now = new Date("2026-09-06T14:00:00.000Z");
+    const businessHours: BusinessHours = { mon: [], tue: [], wed: [], thu: [], fri: [], sat: [], sun: [] };
+
+    await ejecutar({ escalated: false }, { businessHours, now });
+
+    expect(escalateConversationMock).toHaveBeenCalledWith(
+      {},
+      expect.objectContaining({ conversationId: "conv-1", contactId: "contact-1", businessHours, now })
+    );
   });
 });

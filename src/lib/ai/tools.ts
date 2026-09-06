@@ -9,6 +9,7 @@ import { formatQuote } from "@/lib/ai/precio";
 import { RECLAMO_CATEGORIES, escalateConversation, type EscalationMotivo } from "@/lib/ai/escalate";
 import { inventoryAgeInstruction, inventoryFreshness } from "@/lib/inventory-freshness";
 import { log } from "@/lib/log";
+import type { BusinessHours, BusinessStatus } from "@/lib/business-hours";
 
 /**
  * Tope de repuestos que se le pasan al modelo de una vez.
@@ -58,6 +59,15 @@ interface ToolDeps {
   supabase: SupabaseClient<Database>;
   conversationId: string;
   contactId: string;
+  /**
+   * Horario de la tienda (Frente B4, "El reloj dice la verdad", 5/9/2026):
+   * solo lo usa `buildEscalateTool` para saber cuándo prometer que un asesor
+   * escribe. Opcional porque el resto de las herramientas no lo necesitan y
+   * `escalateConversation` ya tiene su propio default si llega `undefined`.
+   */
+  businessHours?: BusinessHours;
+  /** Inyectable en tests; en producción usa el reloj real. */
+  now?: Date;
 }
 
 /** Se llena cuando el turno escala, para que el orquestador sepa qué pasó sin volver a tocar la base de datos. */
@@ -238,12 +248,41 @@ export function buildOrderHistoryTool({ supabase, contactId }: ToolDeps) {
   });
 }
 
+/**
+ * La instrucción con la que el modelo redacta la despedida al escalar SIN
+ * ningún asesor conectado (Frente B4, "El reloj dice la verdad", 5/9/2026).
+ *
+ * Antes de este frente la IA no sabía si la tienda estaba abierta, así que
+ * no podía decir cuándo la iban a atender sin arriesgarse a prometer un
+ * plazo falso ("ya te atienden" a las 2 am de un domingo). Con `businessStatus`
+ * ya calculado por `escalateConversation` (mismo `now`/horario que dejó el
+ * evento de sistema), acá solo se traduce a prosa:
+ * - abierta: promete "en breve", que sí es cierto porque hay quién conteste hoy.
+ * - cerrada con próxima apertura conocida: nombra el día y la hora exactos.
+ * - cerrada sin ninguna apertura en los próximos 7 días (horario vacío):
+ *   no hay fecha que dar, así que solo dice "apenas la tienda vuelva a abrir".
+ */
+function unassignedEscalationInstruction(status: BusinessStatus | undefined): string {
+  if (!status || status.open) {
+    return "No hay ningún asesor conectado ahora. Dile al cliente que su caso quedó registrado y que le escriben en breve, apenas haya alguien disponible. NO prometas que lo atienden enseguida.";
+  }
+
+  if (!status.nextOpening) {
+    return "No hay ningún asesor conectado ahora y la tienda está cerrada. Dile al cliente que su caso quedó registrado y que le escriben apenas la tienda vuelva a abrir. NO prometas que lo atienden enseguida.";
+  }
+
+  return `No hay ningún asesor conectado ahora y la tienda está cerrada. Dile al cliente que su caso quedó registrado y que un asesor le escribe ${status.nextOpening.dayLabel} a partir de las ${status.nextOpening.time}. NO prometas que lo atienden enseguida.`;
+}
+
 // ---------------------------------------------------------------------------
 // Escalar a un asesor — devolucion, queja, e intención de compra dentro de
 // consulta_disponibilidad. Única forma de tocar dinero o cerrar un caso: la
 // IA nunca aprueba, rechaza ni cierra nada por su cuenta.
 // ---------------------------------------------------------------------------
-export function buildEscalateTool({ supabase, conversationId, contactId }: ToolDeps, outcome: EscalationOutcome) {
+export function buildEscalateTool(
+  { supabase, conversationId, contactId, businessHours, now }: ToolDeps,
+  outcome: EscalationOutcome
+) {
   return tool({
     description:
       "Escala la conversación a un asesor de la tienda: pausa la IA, asigna al asesor con más tiempo sin recibir un cliente nuevo, y deja un resumen para que no tenga que volver a preguntar todo. Es la única forma de tocar dinero real (devoluciones, ventas) o reclamos — la IA nunca los resuelve sola.",
@@ -264,6 +303,8 @@ export function buildEscalateTool({ supabase, conversationId, contactId }: ToolD
         motivo,
         resumen,
         categoriaReclamo,
+        businessHours,
+        now,
       });
 
       outcome.escalated = result.escalated;
@@ -273,11 +314,12 @@ export function buildEscalateTool({ supabase, conversationId, contactId }: ToolD
       outcome.unassigned = result.unassigned;
 
       // El modelo redacta el cierre con esto, así que se le dice en palabras
-      // qué prometer: sin asesores no puede decir «ya te atienden».
+      // qué prometer: sin asesores no puede decir «ya te atienden» sin saber
+      // si la tienda está abierta.
       return {
         ...result,
         instruccionParaTuRespuesta: result.unassigned
-          ? "No hay ningún asesor conectado ahora. Dile al cliente que su caso quedó registrado y que le escriben apenas haya alguien disponible. NO prometas que lo atienden enseguida."
+          ? unassignedEscalationInstruction(result.businessStatus)
           : `Ya está asignado a ${result.assignedAgentName}. Dile al cliente que un asesor lo va a atender.`,
       };
     },
