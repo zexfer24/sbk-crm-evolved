@@ -16,6 +16,17 @@ describe("failureReason", () => {
     expect(numeroMalo).not.toEqual(ventanaVencida);
   });
 
+  /**
+   * D4 (6/9/2026): la frase del 131026 le dice al asesor qué mirar primero
+   * —el aviso de cambio de número en el chat— antes de asumir que el
+   * cliente desapareció. Caso real: +593987317372, 6/9/2026.
+   */
+  it("131026 manda a revisar el aviso de cambio de número antes de otra cosa", () => {
+    const motivo = failureReason(131026, "Message Undeliverable.");
+
+    expect(motivo).toMatch(/aviso de cambio de número/);
+  });
+
   /** La traducción gana al texto de Meta: es la que dice qué hacer. */
   it("prefiere el motivo conocido antes que el texto en inglés", () => {
     expect(failureReason(131026, "Message Undeliverable.")).not.toContain("Undeliverable");

@@ -20,8 +20,14 @@
 
 const MOTIVOS_CONOCIDOS: Record<number, string> = {
   100: "Meta rechazó la petición por un dato inválido.",
+  // El 5/9/2026 a la noche el lead +593987317372 mandó un aviso de cambio de
+  // número que el CRM no supo guardar; el 6/9/2026 el asesor le escribió al
+  // número viejo y Meta rechazó con 131026, aunque ese número había leído
+  // mensajes el 31/8 y el canal despachaba bien (1.553 mensajes esas 24 h):
+  // el número no dejó de existir, dejó de ser cuenta de WhatsApp. D4
+  // (6/9/2026): la frase ahora manda al asesor a mirar el chat primero.
   131026:
-    "El número no está en WhatsApp o no puede recibir mensajes. Confirma el número con el cliente.",
+    "Este número ya no recibe WhatsApp. Si en el chat hay un aviso de cambio de número, escríbele al nuevo; si no, confírmalo con el cliente por otro medio.",
   131047:
     "Pasaron más de 24 h desde el último mensaje del cliente: hasta que vuelva a escribir solo entra una plantilla aprobada.",
   131049: "Meta no entregó el mensaje para cuidar la experiencia del usuario.",
