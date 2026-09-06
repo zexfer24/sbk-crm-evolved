@@ -387,7 +387,12 @@ describe("runAgentTurn — traspasos registrados en cada salida silenciosa", () 
     });
   });
 
-  it("pausada (deliver): el interruptor se apaga MIENTRAS el turno redacta", async () => {
+  // D2 (6/9/2026): antes esta rama registraba `pausada`, pero `stillEnabled`
+  // vuelve a consultar `agent_can_run` (interruptor global + tope de gasto),
+  // NO el `ai_enabled` del chat -- `pausada` le correspondía al otro caso
+  // (arriba, la guarda de `openTurn`). Las dos guardas del mismo apagado
+  // global ahora dejan la misma razón en la bitácora.
+  it("agente_no_puede_correr (deliver): el interruptor se apaga MIENTRAS el turno redacta", async () => {
     generateMock.mockImplementation(async () => {
       // El interruptor cambia después de abrir el turno, mientras el modelo
       // todavía está redactando: es la carrera que stillEnabled() cierra.
@@ -405,7 +410,7 @@ describe("runAgentTurn — traspasos registrados en cada salida silenciosa", () 
     expect(handoffCalls[0]).toMatchObject({
       p_conversation_id: "conv-1",
       p_to_kind: "unassigned",
-      p_reason: "pausada",
+      p_reason: "agente_no_puede_correr",
     });
   });
 

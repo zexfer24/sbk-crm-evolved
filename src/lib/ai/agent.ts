@@ -459,7 +459,15 @@ async function deliver<T>(
   }
 
   if (!(await stillEnabled(supabase, conversationId))) {
-    await recordHandoff(supabase, { conversationId, toKind: "unassigned", reason: "pausada" });
+    // `stillEnabled` vuelve a consultar la RPC `agent_can_run` (interruptor
+    // global de la IA + tope de gasto del día), NO el `ai_enabled` del chat
+    // — ese otro caso lo cubre la guarda de `openTurn` (l. ~1056) y ahí sí
+    // corresponde `pausada`. Antes las dos guardas del mismo hecho —el
+    // apagado global— dejaban razones distintas en la bitácora según en
+    // cuál de las dos cayera el turno, y eso confundía la lectura (deuda
+    // anotada el 5/9/2026 en el reporte de entrega de "Bandeja que no
+    // pierde"). D2 (6/9/2026): ahora las dos escriben `agente_no_puede_correr`.
+    await recordHandoff(supabase, { conversationId, toKind: "unassigned", reason: "agente_no_puede_correr" });
     return null;
   }
   if (await humanWroteMeanwhile(supabase, conversationId, fase)) {
