@@ -331,6 +331,20 @@ export function MessageBubble({
             </div>
           )}
           {message.messageType === "order" && <OrderCard message={message} />}
+          {message.messageType === "unsupported" && (
+            // Meta no entrega el contenido real de estos tipos por la API
+            // (encuestas, fotos de ver una vez, eventos de calendario…):
+            // `content` viene null a propósito (D3, "El cliente que cambió
+            // de número", 6/9/2026) y no hay nada que reconstruir acá, solo
+            // avisar que existe y mandar al asesor al teléfono.
+            <div className="mb-1 flex flex-col gap-0.5 text-xs">
+              <span>
+                WhatsApp no entrega este mensaje por la API (encuesta, foto de
+                ver una vez, evento…). Ábrelo en el teléfono.
+              </span>
+              {message.payload?.type && <span className="opacity-70">Tipo: {message.payload.type}</span>}
+            </div>
+          )}
           {isAi && (
             <div className="mb-1 flex items-center gap-1.5 text-xs opacity-70">
               <Bot size={13} />

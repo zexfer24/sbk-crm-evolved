@@ -391,6 +391,37 @@ describe("MessageBubble — tarjeta de pedido del catálogo", () => {
   });
 });
 
+// ---------------------------------------------------------------------------
+// S3b, "El cliente que cambió de número" (6/9/2026): los `unsupported` que
+// llegan solos (D3) se guardan con content null — antes esto rendía una
+// burbuja vacía, indistinguible de un bug.
+// ---------------------------------------------------------------------------
+describe("MessageBubble — un tipo que WhatsApp no entrega por la API", () => {
+  it("sin payload muestra el marcador fijo", () => {
+    render(<MessageBubble message={baseMessage({ messageType: "unsupported", content: null, payload: null })} />);
+
+    expect(screen.getByText(/whatsapp no entrega este mensaje por la api/i)).toBeInTheDocument();
+    expect(screen.queryByText(/^Tipo:/)).not.toBeInTheDocument();
+  });
+
+  it("con payload.type muestra además el tipo real", () => {
+    render(
+      <MessageBubble
+        message={baseMessage({ messageType: "unsupported", content: null, payload: { type: "poll" } })}
+      />
+    );
+
+    expect(screen.getByText(/whatsapp no entrega este mensaje por la api/i)).toBeInTheDocument();
+    expect(screen.getByText("Tipo: poll")).toBeInTheDocument();
+  });
+
+  it("sin media_url no muestra el aviso de multimedia no recibida", () => {
+    render(<MessageBubble message={baseMessage({ messageType: "unsupported", content: null, mediaUrl: null })} />);
+
+    expect(screen.queryByText(/no se pudo recibir/i)).not.toBeInTheDocument();
+  });
+});
+
 describe("MessageBubble — el doble check con 'played' (nota de voz reproducida)", () => {
   it("lleva un ícono y una etiqueta propios, distintos de 'Leído'", () => {
     render(
