@@ -1,3 +1,8 @@
+import {
+  DEFAULT_BUSINESS_HOURS,
+  businessMinutesBetween,
+  type BusinessHours,
+} from "@/lib/business-hours";
 import type {
   AgentRef,
   BoardConversation,
@@ -64,17 +69,28 @@ export function isTicket(
 // ---------------------------------------------------------------------------
 // Recorrido del cliente
 //
-// El agente de IA escribe la etapa en `journey_stage`. Mientras no lo haga,
-// se deduce de lo que ya se sabe del hilo: quién habló último, si hay una
-// herramienta corriendo, si la IA sigue activa y si hay asesor asignado.
+// El recorrido que describe el operador (5/9/2026, "El reloj dice la
+// verdad"): Primer contacto → Consulta → Clasificando → Herramienta → Con
+// asesor. `journey_stage` es lo que escribe la IA en vivo, pero es un resto
+// que puede quedar congelado (un turno rechazado por Meta, por ejemplo, ver
+// `rejectedByMeta` en `agent.ts`/A3) o directamente pegajoso
+// (`journey_stage = 'assigned'` sobrevive a que el asesor se desasigne).
+// `stageOf` YA NO confía en él a ciegas: solo lo consulta donde la etapa no
+// se puede deducir de otra cosa (`classifying`/`tool_running`), y siempre
+// bajo `awaitingReply` — sin eso es un resto, no una etapa real.
 // ---------------------------------------------------------------------------
 
 export interface JourneyStage {
   id: JourneyStageId;
   label: string;
   caption: string;
-  /** Minutos a partir de los cuales una conversación en esta etapa se considera atascada. */
-  stallMinutes: number;
+  /**
+   * Minutos a partir de los cuales una conversación en esta etapa se
+   * considera atascada. `null` = nunca se atasca en esta etapa (hoy solo
+   * "Primer contacto": recibió la bienvenida y el reloj de la bienvenida no
+   * corre contra el cliente).
+   */
+  stallMinutes: number | null;
   conversations: BoardConversation[];
   stalled: number;
 }
@@ -83,32 +99,32 @@ const STAGE_DEFINITIONS: Omit<JourneyStage, "conversations" | "stalled">[] = [
   {
     id: "first_contact",
     label: "Primer contacto",
-    caption: "Escribe por primera vez, le toca bienvenida",
-    stallMinutes: 10,
+    caption: "Escribió por primera vez; recibió la bienvenida y esperamos su siguiente mensaje",
+    stallMinutes: null,
   },
   {
     id: "inquiry",
     label: "Consulta",
-    caption: "Pregunta abierta esperando respuesta",
+    caption: "Pregunta y espera respuesta",
     stallMinutes: 15,
   },
   {
     id: "classifying",
     label: "Clasificando",
-    caption: "La IA decide qué necesita el cliente",
+    caption: "La IA determina qué necesita",
     stallMinutes: 5,
   },
   {
     id: "tool_running",
     label: "Herramienta",
-    caption: "La IA consulta o ejecuta una acción",
+    caption: "La IA consulta o ejecuta una herramienta",
     stallMinutes: 3,
   },
   {
     id: "assigned",
     label: "Con asesor",
-    caption: "Un humano lleva el caso",
-    stallMinutes: 60 * 24,
+    caption: "Un asesor lleva el caso",
+    stallMinutes: 60,
   },
 ];
 
@@ -120,17 +136,50 @@ export function isActive(conversation: BoardConversation): boolean {
   return conversation.status !== "closed";
 }
 
+/**
+ * Escalera de la etapa, en el orden que describe el operador (5/9/2026,
+ * "El reloj dice la verdad"). Primer peldaño que cumple, gana:
+ *
+ * 1. Hay asesor asignado → `assigned`. Un `journey_stage = 'assigned'` SIN
+ *    asesor ya no cuenta acá (el punto 3 del diagnóstico: el lead sin dueño
+ *    disfrazado de atendido) — sigue bajando la escalera.
+ * 2. Espera respuesta y hay una herramienta corriendo (en vivo o escrita en
+ *    `journey_stage`) → `tool_running`.
+ * 3. Espera respuesta, `journey_stage = 'classifying'` y la IA sigue activa
+ *    → `classifying`. Sin `awaitingReply`, un `classifying`/`tool_running`
+ *    escrito es un resto congelado (punto 4 del diagnóstico, ver
+ *    `rejectedByMeta` en `agent.ts`) y no se honra: sigue bajando.
+ * 4. No espera respuesta, recibió la bienvenida y su último mensaje es anterior
+ *    (o igual) a esa bienvenida → `first_contact`: todavía no escribió su
+ *    siguiente mensaje.
+ * 5. Todo lo demás → `inquiry`. Cubre dos casos bien distintos a propósito:
+ *    el cliente pregunta y espera (atascable) y el cliente calló tras la
+ *    respuesta de la IA (no atascable, se pinta en gris) — los separa
+ *    `awaitingReply`, no la etapa.
+ */
 export function stageOf(conversation: BoardConversation): JourneyStageId {
-  if (conversation.journeyStage) return conversation.journeyStage;
-
   if (conversation.assignedAgent) return "assigned";
-  if (conversation.activeTool) return "tool_running";
 
-  const waitingOnUs = awaitingReply(conversation);
-  if (waitingOnUs && !conversation.welcomeSentAt) return "first_contact";
-  if (waitingOnUs) return "inquiry";
+  const waiting = awaitingReply(conversation);
 
-  return conversation.aiEnabled ? "classifying" : "inquiry";
+  if (waiting && (conversation.activeTool || conversation.journeyStage === "tool_running")) {
+    return "tool_running";
+  }
+
+  if (waiting && conversation.journeyStage === "classifying" && conversation.aiEnabled) {
+    return "classifying";
+  }
+
+  if (
+    !waiting &&
+    conversation.welcomeSentAt &&
+    conversation.lastCustomerMessageAt &&
+    new Date(conversation.lastCustomerMessageAt) <= new Date(conversation.welcomeSentAt)
+  ) {
+    return "first_contact";
+  }
+
+  return "inquiry";
 }
 
 /**
@@ -208,33 +257,122 @@ export function isStalePending(conversation: BoardConversation, now: number = Da
   return awaitingReply(conversation) && !withinFreeformWindow(conversation.lastCustomerMessageAt, now);
 }
 
+/**
+ * Reloj de la cola de reclamos (`ticketQueue`/`buildTicketStats.unanswered`
+ * ya no lo usa, ese va por `isStalePending`; queda para ordenar la cola por
+ * "quién lleva más tiempo callado" usando el último mensaje visible).
+ *
+ * YA NO es el reloj del tablero de "Atascados": medía desde `lastMessageAt`,
+ * que una nota interna, un evento de sistema o una respuesta de la IA
+ * reinician sin que el cliente haya hecho nada (punto 1 del diagnóstico del
+ * Frente A, "El reloj dice la verdad", 5/9/2026). El tablero usa
+ * `waitingMinutes`, que mide desde `lastCustomerMessageAt` y solo cuenta si
+ * de verdad se espera respuesta.
+ */
 export function minutesInStage(conversation: BoardConversation, now: number): number {
   const since = conversation.lastMessageAt ?? conversation.createdAt;
   return (now - new Date(since).getTime()) / 60000;
 }
 
-export function buildJourney(conversations: BoardConversation[], now: number): JourneyStage[] {
+/**
+ * Minutos que el cliente lleva esperando, o `null` si no aplica: la
+ * conversación está cerrada (Roberto, tabla de casos del artefacto — lo
+ * cerrado ya no está "en camino", igual que `isActive`), no espera respuesta
+ * (`!awaitingReply`), o directamente no hay `lastCustomerMessageAt`. El
+ * reloj es UNO —`lastCustomerMessageAt`— para las cuatro etapas de la IA, de
+ * pared: la IA trabaja las 24 h. Solo en "Con asesor" el tiempo se mide en
+ * minutos de horario LABORAL (`businessMinutesBetween`): de noche o domingo
+ * un asesor no está atascado, aunque el reloj de pared ya lleve horas
+ * corriendo (Ana, misma tabla: horas de pared de sobra pero menos de 60 min
+ * laborales).
+ */
+export function waitingMinutes(
+  conversation: BoardConversation,
+  now: number,
+  hours: BusinessHours = DEFAULT_BUSINESS_HOURS
+): number | null {
+  if (!isActive(conversation)) return null;
+  if (!awaitingReply(conversation)) return null;
+  if (!conversation.lastCustomerMessageAt) return null;
+
+  const from = new Date(conversation.lastCustomerMessageAt);
+  const to = new Date(now);
+
+  if (stageOf(conversation) === "assigned") {
+    return businessMinutesBetween(from, to, hours);
+  }
+
+  return (now - from.getTime()) / 60000;
+}
+
+/**
+ * ¿Esta conversación está atascada? Única fórmula (Frente A, definición
+ * nueva): tiene que estar esperando respuesta Y su etapa tiene un umbral Y
+ * la espera ya lo superó. Si la pelota está del lado del cliente
+ * (`waitingMinutes` null) o la etapa nunca se atasca (`stallMinutes` null,
+ * hoy solo "Primer contacto") no hay atasco posible, esté donde esté.
+ * Exportada aparte para que la UI (A4) no reimplemente esta cuenta.
+ */
+export function isStalled(
+  conversation: BoardConversation,
+  now: number,
+  hours: BusinessHours = DEFAULT_BUSINESS_HOURS
+): boolean {
+  const stage = STAGE_DEFINITIONS.find((definition) => definition.id === stageOf(conversation));
+  const stallMinutes = stage?.stallMinutes ?? null;
+  if (stallMinutes === null) return false;
+
+  const waiting = waitingMinutes(conversation, now, hours);
+  return waiting !== null && waiting >= stallMinutes;
+}
+
+export function buildJourney(
+  conversations: BoardConversation[],
+  now: number,
+  hours: BusinessHours = DEFAULT_BUSINESS_HOURS
+): JourneyStage[] {
   const active = conversations.filter(isActive);
 
   return STAGE_DEFINITIONS.map((definition) => {
     const inStage = active.filter((c) => stageOf(c) === definition.id);
+
+    // Primero las que esperan respuesta, con mayor espera arriba; después
+    // las que no esperan (la pelota está del lado del cliente), por último
+    // mensaje descendente — orden pedido por el operador: lo urgente arriba.
+    const sorted = [...inStage].sort((a, b) => {
+      const waitingA = waitingMinutes(a, now, hours);
+      const waitingB = waitingMinutes(b, now, hours);
+
+      if (waitingA !== null && waitingB !== null) return waitingB - waitingA;
+      if (waitingA !== null) return -1;
+      if (waitingB !== null) return 1;
+
+      const lastA = new Date(a.lastMessageAt ?? a.createdAt).getTime();
+      const lastB = new Date(b.lastMessageAt ?? b.createdAt).getTime();
+      return lastB - lastA;
+    });
+
     return {
       ...definition,
-      conversations: inStage.sort((a, b) => minutesInStage(b, now) - minutesInStage(a, now)),
-      stalled: inStage.filter((c) => minutesInStage(c, now) >= definition.stallMinutes).length,
+      conversations: sorted,
+      stalled: inStage.filter((c) => isStalled(c, now, hours)).length,
     };
   });
 }
 
 /**
  * Qué se muestra bajo el nombre en la tarjeta: lo más útil de esa etapa.
- * En "clasificando" interesa la intención; en "herramienta", cuál corre.
+ * En "clasificando" interesa la intención; en "herramienta", cuál corre. En
+ * "Consulta" sin `awaitingReply` la pelota está del lado del cliente —lo que
+ * ya respondió la IA no interesa, interesa que sigue en silencio— así que
+ * ahí se pinta "sin respuesta del cliente" en vez del `intent`.
  */
 export function stageDetail(conversation: BoardConversation, stage: JourneyStageId): string | null {
   if (stage === "tool_running") return conversation.activeTool;
   if (stage === "classifying") return conversation.intent;
   if (stage === "assigned") return conversation.assignedAgent?.displayName ?? null;
-  if (stage === "first_contact") return conversation.welcomeSentAt ? null : "sin bienvenida";
+  if (stage === "first_contact") return "esperando su siguiente mensaje";
+  if (stage === "inquiry" && !awaitingReply(conversation)) return "sin respuesta del cliente";
   return conversation.intent;
 }
 

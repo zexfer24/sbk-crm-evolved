@@ -112,7 +112,8 @@ export function JourneyBoard({ stages, now }: JourneyBoardProps) {
                 ) : (
                   visible.map((conversation, cardIndex) => {
                     const waited = minutesInStage(conversation, now);
-                    const late = waited >= stage.stallMinutes;
+                    // A1 (5/9/2026): first_contact no tiene umbral; A4 reemplaza este cálculo por isStalled
+                    const late = stage.stallMinutes !== null && waited >= stage.stallMinutes;
                     const name = contactName(conversation);
                     const detail = stageDetail(conversation, stage.id);
 

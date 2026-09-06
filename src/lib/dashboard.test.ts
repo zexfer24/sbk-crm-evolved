@@ -1,5 +1,13 @@
 import { describe, expect, it } from "vitest";
-import { awaitingReply } from "@/lib/dashboard";
+import { DEFAULT_BUSINESS_HOURS } from "@/lib/business-hours";
+import {
+  awaitingReply,
+  buildJourney,
+  isStalled,
+  stageDetail,
+  stageOf,
+  waitingMinutes,
+} from "@/lib/dashboard";
 import type { BoardConversation } from "@/lib/types";
 
 // ===========================================================================
@@ -144,5 +152,338 @@ describe("awaitingReply — bordes ya cubiertos indirectamente por el contrato d
         })
       )
     ).toBe(true);
+  });
+});
+
+// ===========================================================================
+// stageOf / waitingMinutes / isStalled / buildJourney — el recorrido que
+// describe el operador y el reloj único del atasco (Frente A, "El reloj
+// dice la verdad", 5/9/2026, anexo A1).
+//
+// `NOW` cae un viernes a las 3 pm hora de Caracas (dentro del horario
+// laboral por defecto, lunes a viernes 8 am a 6 pm) para que los casos que
+// no tocan horario laboral no tengan que pensar en él.
+// ===========================================================================
+
+const NOW = Date.parse("2026-09-04T19:00:00.000Z"); // viernes 3:00 pm America/Caracas
+const HORA = 60 * MIN;
+
+function isoAt(ms: number): string {
+  return new Date(ms).toISOString();
+}
+
+describe("stageOf — la escalera nueva, un peldaño a la vez", () => {
+  it("1. hay asesor asignado → assigned, sin importar el resto", () => {
+    const conversation = conversacion({
+      assignedAgent: { id: "agente-1", displayName: "Pedro" },
+      journeyStage: "classifying",
+      activeTool: "buscar_producto",
+      lastCustomerMessageAt: isoAt(NOW - 5 * MIN),
+      lastReplyAt: null,
+    });
+
+    expect(stageOf(conversation)).toBe("assigned");
+  });
+
+  it("2. espera respuesta y hay herramienta corriendo (activeTool) → tool_running", () => {
+    const conversation = conversacion({
+      assignedAgent: null,
+      activeTool: "buscar_producto",
+      lastCustomerMessageAt: isoAt(NOW - 1 * MIN),
+      lastReplyAt: null,
+    });
+
+    expect(stageOf(conversation)).toBe("tool_running");
+  });
+
+  it("2b. espera respuesta y journey_stage = tool_running (sin activeTool en vivo) → tool_running", () => {
+    const conversation = conversacion({
+      assignedAgent: null,
+      activeTool: null,
+      journeyStage: "tool_running",
+      lastCustomerMessageAt: isoAt(NOW - 1 * MIN),
+      lastReplyAt: null,
+    });
+
+    expect(stageOf(conversation)).toBe("tool_running");
+  });
+
+  it("3. espera respuesta, journey_stage = classifying y la IA sigue activa → classifying", () => {
+    const conversation = conversacion({
+      assignedAgent: null,
+      activeTool: null,
+      journeyStage: "classifying",
+      aiEnabled: true,
+      lastCustomerMessageAt: isoAt(NOW - 1 * MIN),
+      lastReplyAt: null,
+    });
+
+    expect(stageOf(conversation)).toBe("classifying");
+  });
+
+  it("3b. classifying SIN awaitingReply es un resto congelado: cae a inquiry", () => {
+    // Punto 4 del diagnóstico: `rejectedByMeta` en agent.ts podía devolver
+    // antes de resetear `journey_stage`, dejando "Clasificando" congelado
+    // sobre un chat que ya recibió respuesta real. A3 corrige el origen;
+    // acá se prueba que `stageOf` no lo honra de todos modos.
+    const conversation = conversacion({
+      assignedAgent: null,
+      journeyStage: "classifying",
+      aiEnabled: true,
+      lastCustomerMessageAt: isoAt(NOW - 20 * MIN),
+      lastReplyAt: isoAt(NOW - 10 * MIN), // respuesta real, posterior al cliente
+      lastReplySender: "ai",
+    });
+
+    expect(stageOf(conversation)).toBe("inquiry");
+  });
+
+  it("4. no espera respuesta, recibió la bienvenida y no ha vuelto a escribir → first_contact", () => {
+    const conversation = conversacion({
+      assignedAgent: null,
+      welcomeSentAt: isoAt(NOW - 5 * MIN),
+      lastCustomerMessageAt: isoAt(NOW - 10 * MIN), // anterior a la bienvenida
+      lastReplyAt: isoAt(NOW - 5 * MIN),
+      lastReplySender: "ai",
+    });
+
+    expect(awaitingReply(conversation)).toBe(false);
+    expect(stageOf(conversation)).toBe("first_contact");
+  });
+
+  it("5. todo lo demás → inquiry (el cliente pregunta y espera)", () => {
+    const conversation = conversacion({
+      assignedAgent: null,
+      welcomeSentAt: null,
+      lastCustomerMessageAt: isoAt(NOW - 20 * MIN),
+      lastReplyAt: null,
+    });
+
+    expect(stageOf(conversation)).toBe("inquiry");
+  });
+
+  it("5b. todo lo demás → inquiry también cuando el cliente calló tras la respuesta de la IA", () => {
+    const conversation = conversacion({
+      assignedAgent: null,
+      welcomeSentAt: null, // sin bienvenida: el peldaño 4 no aplica
+      lastCustomerMessageAt: isoAt(NOW - 16 * HORA),
+      lastReplyAt: isoAt(NOW - 15 * HORA),
+      lastReplySender: "ai",
+    });
+
+    expect(awaitingReply(conversation)).toBe(false);
+    expect(stageOf(conversation)).toBe("inquiry");
+  });
+
+  it("first_contact nunca queda atascada, aunque pase mucho tiempo", () => {
+    const conversation = conversacion({
+      assignedAgent: null,
+      welcomeSentAt: isoAt(NOW - 48 * HORA),
+      lastCustomerMessageAt: isoAt(NOW - 49 * HORA),
+      lastReplyAt: isoAt(NOW - 48 * HORA),
+      lastReplySender: "ai",
+    });
+
+    expect(stageOf(conversation)).toBe("first_contact");
+    expect(waitingMinutes(conversation, NOW)).toBeNull();
+    expect(isStalled(conversation, NOW)).toBe(false);
+  });
+
+  it("un lastReplyAt posterior al del cliente apaga la espera: waitingMinutes null", () => {
+    const conversation = conversacion({
+      lastCustomerMessageAt: isoAt(NOW - 30 * MIN),
+      lastReplyAt: isoAt(NOW - 20 * MIN),
+      lastReplySender: "agent",
+    });
+
+    expect(awaitingReply(conversation)).toBe(false);
+    expect(waitingMinutes(conversation, NOW)).toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Tabla de casos del artefacto "El reloj dice la verdad" (sección 8):
+// Diana, Carlos, Laura, Ana (x2), "Cliente de prueba", Roberto.
+// ---------------------------------------------------------------------------
+
+describe("waitingMinutes / isStalled — tabla de casos del artefacto", () => {
+  it("Diana: espera 20 min sin bienvenida → inquiry atascada (umbral 15)", () => {
+    const diana = conversacion({
+      id: "diana",
+      assignedAgent: null,
+      welcomeSentAt: null,
+      lastCustomerMessageAt: isoAt(NOW - 20 * MIN),
+      lastReplyAt: null,
+    });
+
+    expect(stageOf(diana)).toBe("inquiry");
+    expect(waitingMinutes(diana, NOW)).toBeCloseTo(20, 5);
+    expect(isStalled(diana, NOW)).toBe(true);
+  });
+
+  it("Carlos: la IA respondió y el cliente calló 16 h → inquiry NO atascada, waitingMinutes null", () => {
+    const carlos = conversacion({
+      id: "carlos",
+      assignedAgent: null,
+      welcomeSentAt: null,
+      lastCustomerMessageAt: isoAt(NOW - 16 * HORA),
+      lastReplyAt: isoAt(NOW - 15 * HORA),
+      lastReplySender: "ai",
+      lastMessageAt: isoAt(NOW - 15 * HORA),
+    });
+
+    expect(stageOf(carlos)).toBe("inquiry");
+    expect(waitingMinutes(carlos, NOW)).toBeNull();
+    expect(isStalled(carlos, NOW)).toBe(false);
+  });
+
+  it("Laura: una nota interna reciente NO reinicia el reloj — sigue contando desde el mensaje del cliente", () => {
+    const laura = conversacion({
+      id: "laura",
+      assignedAgent: null,
+      welcomeSentAt: null,
+      lastCustomerMessageAt: isoAt(NOW - 30 * MIN),
+      // La nota es visible (avanza lastMessageAt en la base) pero no es una
+      // respuesta real: lastReplyAt se queda en null.
+      lastMessageAt: isoAt(NOW - 1 * MIN),
+      lastReplyAt: null,
+    });
+
+    expect(awaitingReply(laura)).toBe(true);
+    expect(waitingMinutes(laura, NOW)).toBeCloseTo(30, 5);
+    expect(isStalled(laura, NOW)).toBe(true);
+  });
+
+  it('Ana: con asesor, dentro de las 59 primeras horas laborales tras el cierre del jueves → NO atascada', () => {
+    // El cliente escribió el jueves 10:30 pm hora de Caracas (fuera de
+    // horario). "Ahora" es el viernes 8:59 am: solo 59 minutos de horario
+    // laboral corrieron desde que abrió la tienda a las 8:00 am.
+    const clienteEscribio = Date.parse("2026-09-04T02:30:00.000Z"); // jue 10:30 pm Caracas
+    const ahoraNoAtascada = Date.parse("2026-09-04T12:59:00.000Z"); // vie 8:59 am Caracas
+
+    const ana = conversacion({
+      id: "ana",
+      assignedAgent: { id: "agente-1", displayName: "Pedro" },
+      lastCustomerMessageAt: isoAt(clienteEscribio),
+      lastReplyAt: null,
+    });
+
+    expect(stageOf(ana)).toBe("assigned");
+    expect(waitingMinutes(ana, ahoraNoAtascada, DEFAULT_BUSINESS_HOURS)).toBe(59);
+    expect(isStalled(ana, ahoraNoAtascada, DEFAULT_BUSINESS_HOURS)).toBe(false);
+  });
+
+  it("Ana: dos minutos más tarde (61 min laborales) → SÍ atascada, aunque el reloj de pared diga lo mismo de siempre", () => {
+    const clienteEscribio = Date.parse("2026-09-04T02:30:00.000Z"); // jue 10:30 pm Caracas
+    const ahoraAtascada = Date.parse("2026-09-04T13:01:00.000Z"); // vie 9:01 am Caracas
+
+    const ana = conversacion({
+      id: "ana",
+      assignedAgent: { id: "agente-1", displayName: "Pedro" },
+      lastCustomerMessageAt: isoAt(clienteEscribio),
+      lastReplyAt: null,
+    });
+
+    expect(waitingMinutes(ana, ahoraAtascada, DEFAULT_BUSINESS_HOURS)).toBe(61);
+    expect(isStalled(ana, ahoraAtascada, DEFAULT_BUSINESS_HOURS)).toBe(true);
+  });
+
+  it('"Cliente de prueba": journey_stage = assigned SIN asesor, espera 20 min → inquiry atascada, no "Con asesor"', () => {
+    const clienteDePrueba = conversacion({
+      id: "cliente-de-prueba",
+      assignedAgent: null,
+      journeyStage: "assigned",
+      lastCustomerMessageAt: isoAt(NOW - 20 * MIN),
+      lastReplyAt: null,
+    });
+
+    expect(stageOf(clienteDePrueba)).toBe("inquiry");
+    expect(waitingMinutes(clienteDePrueba, NOW)).toBeCloseTo(20, 5);
+    expect(isStalled(clienteDePrueba, NOW)).toBe(true);
+  });
+
+  it("Roberto: conversación cerrada → waitingMinutes null, nunca atascada", () => {
+    const roberto = conversacion({
+      id: "roberto",
+      status: "closed",
+      assignedAgent: null,
+      lastCustomerMessageAt: isoAt(NOW - 100 * HORA),
+      lastReplyAt: null,
+    });
+
+    expect(waitingMinutes(roberto, NOW)).toBeNull();
+    expect(isStalled(roberto, NOW)).toBe(false);
+  });
+});
+
+describe("buildJourney — la base del artefacto: un solo atascado (Diana)", () => {
+  it("cuenta 1 atascado en total, con Diana en Consulta y Carlos en Consulta sin atasco", () => {
+    const diana = conversacion({
+      id: "diana",
+      lastCustomerMessageAt: isoAt(NOW - 20 * MIN),
+      lastReplyAt: null,
+    });
+    const carlos = conversacion({
+      id: "carlos",
+      lastCustomerMessageAt: isoAt(NOW - 16 * HORA),
+      lastReplyAt: isoAt(NOW - 15 * HORA),
+      lastReplySender: "ai",
+      lastMessageAt: isoAt(NOW - 15 * HORA),
+    });
+    const clienteDePrueba = conversacion({
+      id: "cliente-de-prueba",
+      journeyStage: "assigned",
+      lastCustomerMessageAt: isoAt(NOW - 10 * MIN), // bajo el umbral de 15
+      lastReplyAt: null,
+    });
+    const roberto = conversacion({
+      id: "roberto",
+      status: "closed",
+      lastCustomerMessageAt: isoAt(NOW - 100 * HORA),
+      lastReplyAt: null,
+    });
+
+    const stages = buildJourney([diana, carlos, clienteDePrueba, roberto], NOW);
+    const inquiry = stages.find((s) => s.id === "inquiry")!;
+
+    const totalStalled = stages.reduce((sum, s) => sum + s.stalled, 0);
+    expect(totalStalled).toBe(1);
+
+    // Roberto está cerrado: `buildJourney` filtra por `isActive`, no aparece
+    // en ninguna columna.
+    const idsEnTablero = stages.flatMap((s) => s.conversations.map((c) => c.id));
+    expect(idsEnTablero).not.toContain("roberto");
+
+    // Diana (espera 20, atascada) va primero dentro de "Consulta": esperando
+    // arriba, ordenadas por mayor espera.
+    expect(inquiry.conversations[0].id).toBe("diana");
+  });
+});
+
+describe("stageDetail — las frases nuevas de Primer contacto y Consulta en silencio", () => {
+  it('first_contact siempre dice "esperando su siguiente mensaje"', () => {
+    const conversation = conversacion({ welcomeSentAt: isoAt(NOW) });
+    expect(stageDetail(conversation, "first_contact")).toBe("esperando su siguiente mensaje");
+  });
+
+  it('inquiry sin awaitingReply dice "sin respuesta del cliente"', () => {
+    const conversation = conversacion({
+      lastCustomerMessageAt: isoAt(NOW - 16 * HORA),
+      lastReplyAt: isoAt(NOW - 15 * HORA),
+      lastReplySender: "ai",
+      intent: "compra",
+    });
+
+    expect(stageDetail(conversation, "inquiry")).toBe("sin respuesta del cliente");
+  });
+
+  it("inquiry esperando respuesta sigue mostrando el intent, como antes", () => {
+    const conversation = conversacion({
+      lastCustomerMessageAt: isoAt(NOW - 5 * MIN),
+      lastReplyAt: null,
+      intent: "compra",
+    });
+
+    expect(stageDetail(conversation, "inquiry")).toBe("compra");
   });
 });

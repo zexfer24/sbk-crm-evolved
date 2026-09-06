@@ -190,6 +190,21 @@ dejar rastro es lo que hacía desaparecer leads.
   migración 20260905070000 (B1, 5/9/2026) marcar un mensaje como
   `is_auto_reply` DESPUÉS de insertado también recalcula `last_reply_at` y
   devuelve `awaiting_reply` a `true`.
+- **"Atascado" en el tablero tiene UNA definición desde A1 ("El reloj dice la
+  verdad", 5/9/2026)**: conversación abierta + `awaitingReply` + minutos desde
+  `lastCustomerMessageAt` ≥ umbral de su etapa (`isStalled`/`waitingMinutes`
+  en `dashboard.ts`). Si la pelota está del lado del cliente NO está
+  atascada, esté donde esté (cliente callado tras la IA = "Consulta" en
+  gris). El reloj NO es `lastMessageAt` (una nota interna o un evento lo
+  adelantan sin que el cliente haga nada) ni `minutesInStage` (queda solo
+  para la cola de reclamos). En "Con asesor" se mide en minutos de HORARIO
+  LABORAL (`businessMinutesBetween`, `business-hours.ts`; umbral 60): de
+  noche o domingo un asesor no está atascado. `stageOf` ya no confía en
+  `journey_stage` a ciegas: `assigned` sin asesor cae a "Consulta" y un
+  `classifying`/`tool_running` sin `awaitingReply` es un resto congelado
+  que no se honra. La píldora "Escaladas" de la bandeja (`inbox-filters.ts`)
+  sigue mirando el campo crudo `journeyStage === "assigned"`: no comparten
+  predicado, a propósito, hasta la Etapa 2.
 - `supabase/seed.sql` **no va a producción** (trae usuarios con contraseña
   escrita); los seeds de catálogo y playbooks sí.
 - Sin `WHATSAPP_APP_SECRET` el webhook acepta cualquier POST (a propósito,
