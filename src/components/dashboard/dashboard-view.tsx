@@ -4,6 +4,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { RefreshCw, Route, TriangleAlert } from "lucide-react";
 import type { Agent, BoardConversation, HourlyActivity, TicketTagsByContact } from "@/lib/types";
+import { DEFAULT_BUSINESS_HOURS, type BusinessHours } from "@/lib/business-hours";
 import { createClient } from "@/lib/supabase/client";
 import {
   fetchBoardConversationRow,
@@ -44,6 +45,13 @@ interface DashboardViewProps {
   initialTicketTags: TicketTagsByContact;
   initialActivity: HourlyActivity[];
   timeZone: string;
+  /**
+   * Horario de atención para medir "Con asesor" en minutos laborales, no de
+   * pared (Frente A, "El reloj dice la verdad", 5/9/2026). Por ahora la
+   * página no lo pasa y queda en el default del seed; B3 lo conecta a
+   * `fetchAgentSettings`.
+   */
+  businessHours?: BusinessHours;
 }
 
 export function DashboardView({
@@ -53,6 +61,7 @@ export function DashboardView({
   initialTicketTags,
   initialActivity,
   timeZone,
+  businessHours = DEFAULT_BUSINESS_HOURS,
 }: DashboardViewProps) {
   const supabase = useMemo(() => createClient(), []);
 
@@ -123,7 +132,10 @@ export function DashboardView({
     }
   }, [refreshConversations, refreshActivity]);
 
-  const stages = useMemo(() => buildJourney(conversations, now), [conversations, now]);
+  const stages = useMemo(
+    () => buildJourney(conversations, now, businessHours),
+    [conversations, now, businessHours]
+  );
   const stats = useMemo(
     () => buildTicketStats(conversations, now, ticketTags),
     [conversations, now, ticketTags]
@@ -249,7 +261,7 @@ export function DashboardView({
                 )}
               </div>
 
-              <JourneyBoard stages={stages} now={now} />
+              <JourneyBoard stages={stages} now={now} hours={businessHours} />
             </section>
 
             <div id="actividad">

@@ -6,12 +6,13 @@ import { AlertTriangle } from "lucide-react";
 import type { JourneyStage } from "@/lib/dashboard";
 import {
   TERMINAL_STAGE,
-  compactDuration,
   contactName,
   initials,
-  minutesInStage,
+  isStalled,
   stageDetail,
+  waitingMinutes,
 } from "@/lib/dashboard";
+import { DEFAULT_BUSINESS_HOURS, type BusinessHours } from "@/lib/business-hours";
 
 /** Tarjetas visibles por etapa antes de resumir el resto en una línea. */
 const CARDS_PER_STAGE = 3;
@@ -27,9 +28,41 @@ interface Wire {
 interface JourneyBoardProps {
   stages: JourneyStage[];
   now: number;
+  /** Horario de atención para medir "Con asesor" en minutos laborales (Frente A). */
+  hours?: BusinessHours;
 }
 
-export function JourneyBoard({ stages, now }: JourneyBoardProps) {
+/**
+ * "espera N min" desde `lastCustomerMessageAt` (Frente A, 5/9/2026): minutos
+ * redondeados hacia abajo, y pasadas las 24 h en horas o "días y horas" —
+ * una tarjeta no necesita más precisión que esa para transmitir urgencia.
+ */
+function formatWait(minutes: number): string {
+  const floored = Math.floor(minutes);
+  if (floored < 1) return "espera menos de 1 min";
+  if (floored < 60) return `espera ${floored} min`;
+
+  const totalHours = Math.floor(floored / 60);
+  if (totalHours < 24) return `espera ${totalHours} h`;
+
+  const days = Math.floor(totalHours / 24);
+  const restHours = totalHours % 24;
+  const dayLabel = days === 1 ? "1 día" : `${days} días`;
+  return restHours === 0 ? `espera ${dayLabel}` : `espera ${dayLabel} y ${restHours} h`;
+}
+
+/**
+ * Qué dice el punto rojo al pasarle el mouse: el umbral de la etapa, no si
+ * está o no atascada (eso ya lo dice el color). "Con asesor" se mide en
+ * minutos de horario laboral, así que lo dice distinto de las etapas de la IA.
+ */
+function stallTitle(stage: JourneyStage): string | undefined {
+  if (stage.stallMinutes === null) return undefined;
+  if (stage.id === TERMINAL_STAGE) return `${stage.stallMinutes} min en horario de atención`;
+  return `Umbral de esta etapa: ${stage.stallMinutes} min`;
+}
+
+export function JourneyBoard({ stages, now, hours = DEFAULT_BUSINESS_HOURS }: JourneyBoardProps) {
   const flowRef = useRef<HTMLDivElement>(null);
   const columnRefs = useRef<(HTMLDivElement | null)[]>([]);
   const [wires, setWires] = useState<Wire[]>([]);
@@ -111,11 +144,20 @@ export function JourneyBoard({ stages, now }: JourneyBoardProps) {
                   <p className="dash-stage-empty">Sin nadie aquí</p>
                 ) : (
                   visible.map((conversation, cardIndex) => {
-                    const waited = minutesInStage(conversation, now);
-                    // A1 (5/9/2026): first_contact no tiene umbral; A4 reemplaza este cálculo por isStalled
-                    const late = stage.stallMinutes !== null && waited >= stage.stallMinutes;
+                    // Único reloj (Frente A, "El reloj dice la verdad", 5/9/2026):
+                    // `waitingMinutes` es null si la pelota está del lado del
+                    // cliente (no espera respuesta) — ahí se pinta `stageDetail`
+                    // en gris en vez de un tiempo de espera que no existe.
+                    const waited = waitingMinutes(conversation, now, hours);
+                    const late = isStalled(conversation, now, hours);
                     const name = contactName(conversation);
                     const detail = stageDetail(conversation, stage.id);
+                    const metaText =
+                      waited !== null
+                        ? detail
+                          ? `${formatWait(waited)} · ${detail}`
+                          : formatWait(waited)
+                        : (detail ?? "");
 
                     return (
                       <Link
@@ -130,14 +172,12 @@ export function JourneyBoard({ stages, now }: JourneyBoardProps) {
                         </span>
                         <span className="dash-card-body">
                           <span className="dash-card-name">{name}</span>
-                          <span className="dash-card-meta">
-                            <span className="dash-num">{compactDuration(waited)}</span>
-                            {detail ? ` · ${detail}` : ""}
-                          </span>
+                          <span className="dash-card-meta">{metaText}</span>
                         </span>
                         <span
                           className="dash-card-tick"
                           style={{ background: late ? "var(--lm-hot)" : "var(--lm-good)" }}
+                          title={stallTitle(stage)}
                         />
                       </Link>
                     );

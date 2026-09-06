@@ -153,7 +153,7 @@ vecino que nombran.
 
 **agent-control/:** `agent-control-view` (42K — la vista más grande del proyecto: interruptores, métricas, simulador, tarifas), `playbooks-panel` (escenarios), `knowledge-panel` (biblioteca), `agent-tools-panel`, `spend-cap-panel` (tope de gasto), `channel-health-panel` (T3.4, 5/9/2026 — tarjeta "Salud del número": calidad/límite/restricciones de `fetchWhatsappChannelHealth`, "sin datos" hasta el primer webhook de Meta, puramente informativa), `agent-roster-panel` (reparto entre asesores), `agent-metrics-row`, `token-usage-chart`.
 
-**dashboard/:** `dashboard-view`, `journey-board` (recorrido del cliente), `activity-chart`, `ticket-queue`, `ticket-stats`.
+**dashboard/:** `dashboard-view` (A4, "El reloj dice la verdad", 5/9/2026: prop opcional `businessHours` con default `DEFAULT_BUSINESS_HOURS`, enhebrada a `buildJourney` y a `JourneyBoard`; la página la conecta con `fetchAgentSettings` desde B3), `journey-board` (recorrido del cliente; A4: la tarjeta pinta "espera 23 min"/"espera 3 h"/"espera 1 día y 2 h" con `waitingMinutes` —`formatWait`, local al componente— o, si es null, el `stageDetail` en gris con la misma `.dash-card-meta`; el punto rojo usa `isStalled` y lleva `title` "Umbral de esta etapa: N min" o "60 min en horario de atención" en "Con asesor"; ya no importa `minutesInStage`; test `journey-board.test.tsx` con `ResizeObserver` stubeado como en `sliding-pills.test.tsx`), `activity-chart`, `ticket-queue`, `ticket-stats`.
 
 **sales/:** `sales-view`, `sale-detail-modal`. **clientes/:** `clientes-view`, `cliente-ficha`, `cliente-datos-panel`, `cliente-notas`, `cliente-etiquetas`. **inventario/:** `inventario-view`, `producto-fila`. **auth/:** `login-form`.
 
