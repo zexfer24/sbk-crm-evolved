@@ -920,6 +920,12 @@ describe("runAgentTurn — escenarios predeterminados", () => {
    * dijera `whatsapp_status: 'failed'`. Con la respuesta del tool loop se
    * cubre en `handoffs.test.ts`; esto cierra el otro consumidor nombrado en
    * el plan.
+   *
+   * A3 (5/9/2026): además, `rejectedByMeta` ahora limpia `journey_stage`/
+   * `active_tool` — sin eso, esta conversación se quedaba pintada
+   * "Clasificando" en el tablero de Atascados para siempre, porque el
+   * `return` salía antes de que el escenario llegara a resetear su propia
+   * etapa.
    */
   it("rechazado_por_meta: el escenario sale rechazado por Meta, no se etiqueta ni se escala", async () => {
     const warn = vi.spyOn(log, "warn");
@@ -953,6 +959,9 @@ describe("runAgentTurn — escenarios predeterminados", () => {
       p_to_kind: "unassigned",
       p_reason: "rechazado_por_meta",
     });
+    // La etapa no se queda congelada en "classifying": el rechazo la libera
+    // igual que lo haría una respuesta que sí hubiera salido.
+    expect(conversationUpdates).toContainEqual({ journey_stage: null, active_tool: null });
   });
 
   it("sin escenarios cargados, el turno sigue por el flujo genérico de siempre", async () => {
@@ -1549,6 +1558,9 @@ describe("runAgentTurn — mensajes fuera de tema", () => {
       p_to_kind: "unassigned",
       p_reason: "rechazado_por_meta",
     });
+    // A3 (5/9/2026): mismo reseteo que en el camino de escenario — sin él, el
+    // tablero de Atascados veía esta conversación congelada en "Clasificando".
+    expect(conversationUpdates).toContainEqual({ journey_stage: null, active_tool: null });
   });
 });
 
@@ -1823,6 +1835,10 @@ describe("runAgentTurn — un solo traspaso por salida cuando la escalación for
       codigo: 131047,
       traspaso_omitido: "escalada_previa",
     });
+    // A3 (5/9/2026): tampoco se pisa journey_stage. escalateConversation ya
+    // dejó "assigned" antes del envío rechazado — resetear acá a null
+    // disfrazaría de "sin escalar" un caso que sí tiene asesor.
+    expect(conversationUpdates).not.toContainEqual({ journey_stage: null, active_tool: null });
   });
 
   /** El caso que ya existía (cubierto también en handoffs.test.ts) sigue igual: sin escalación previa, el rechazo de Meta registra su propio traspaso. */

@@ -43,6 +43,8 @@ const state: FakeState = {
 
 /** Cada llamada a la RPC `record_handoff`, con los parámetros que le llegaron. */
 const handoffCalls: Record<string, unknown>[] = [];
+/** Cada `update` a `conversations`, con los valores que le llegaron (A3, 5/9/2026). */
+const conversationUpdates: Record<string, unknown>[] = [];
 
 function createFakeSupabase() {
   return {
@@ -70,8 +72,11 @@ function createFakeSupabase() {
           select: () => ({
             eq: () => ({ maybeSingle: async () => ({ data: state.conversation }) }),
           }),
-          update: () => ({
-            eq: () => Promise.resolve({ data: null, error: null }),
+          update: (values: Record<string, unknown>) => ({
+            eq: () => {
+              conversationUpdates.push(values);
+              return Promise.resolve({ data: null, error: null });
+            },
           }),
         };
       }
@@ -231,6 +236,7 @@ beforeEach(() => {
   state.agentTurnInsertShouldFail = false;
   state.recordHandoffShouldFail = false;
   handoffCalls.length = 0;
+  conversationUpdates.length = 0;
   vi.clearAllMocks();
   classifyIntentMock.mockResolvedValue({
     intent: "consulta_disponibilidad",
@@ -439,6 +445,11 @@ describe("runAgentTurn — traspasos registrados en cada salida silenciosa", () 
    * Este caso cubre la respuesta del tool loop (la más lejana al momento en
    * que se miraron las guardas de apertura); `agent.test.ts` cubre el mismo
    * mecanismo para el camino de escenario de fase 0.
+   *
+   * A3 (5/9/2026): sumado a la fila de traspaso, `rejectedByMeta` limpia
+   * `journey_stage`/`active_tool` — antes de esto, un rechazo en este camino
+   * dejaba la conversación pintada "Herramienta" (o "Clasificando", si no
+   * llegó a invocar ninguna) para siempre en el tablero de Atascados.
    */
   it("rechazado_por_meta: la respuesta del tool loop sale rechazada por Meta", async () => {
     const warn = vi.spyOn(log, "warn");
@@ -457,6 +468,7 @@ describe("runAgentTurn — traspasos registrados en cada salida silenciosa", () 
       p_to_kind: "unassigned",
       p_reason: "rechazado_por_meta",
     });
+    expect(conversationUpdates).toContainEqual({ journey_stage: null, active_tool: null });
   });
 });
 

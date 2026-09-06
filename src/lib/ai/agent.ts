@@ -496,6 +496,17 @@ async function deliver<T>(
  * aparecería como sin dueño. Un solo traspaso por salida, el más específico:
  * con `yaEscalada` en true se deja el `log.warn` —Meta sí rechazó, y eso
  * tiene que verse— pero no se vuelve a llamar a `recordHandoff`.
+ *
+ * A3 (5/9/2026, tablero de Atascados): en la rama SIN escalar, este `return`
+ * salía antes de que `runPlaybook`/`runTurnPhases` llegaran a su propio
+ * reseteo de `journey_stage`/`active_tool` (los de después de un envío que sí
+ * salió) — el tablero seguía viendo "Clasificando" o "Herramienta" mucho
+ * después de que el turno terminara, como si el cliente estuviera esperando
+ * una fase que ya no existe. Se limpia acá, en el único lugar por el que
+ * pasan los tres consumidores. NO se toca en la rama `yaEscalada`: ahí
+ * `escalateConversation` ya dejó `journey_stage = "assigned"` (ver
+ * `escalate.ts`) ANTES del intento de envío, y pisarlo con `null`
+ * disfrazaría de "sin escalar" un caso que sí tiene asesor.
  */
 async function rejectedByMeta(
   supabase: SupabaseClient<Database>,
@@ -516,6 +527,18 @@ async function rejectedByMeta(
 
   log.warn("turno_rechazado_por_meta", { conversationId, codigo: entrega.whatsapp_error_code });
   await recordHandoff(supabase, { conversationId, toKind: "unassigned", reason: "rechazado_por_meta" });
+
+  // La fila de traspaso ya quedó escrita arriba; este `update` es solo
+  // observabilidad del tablero y no puede tumbar el turno si falla (misma
+  // regla que `recordHandoff`: registrar nunca frena al que registra).
+  const { error } = await supabase
+    .from("conversations")
+    .update({ journey_stage: null, active_tool: null })
+    .eq("id", conversationId);
+  if (error) {
+    log.error("turno_etapa_no_reseteada_tras_rechazo", { conversationId, detail: error.message });
+  }
+
   return true;
 }
 
