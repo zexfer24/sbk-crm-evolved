@@ -109,6 +109,16 @@ interface WebhookMessage {
    * message is currently unavailable").
    */
   errors?: { code: number; title?: string; message?: string }[];
+  /**
+   * Solo en `type: "system"`: un evento del CLIENTE, no un mensaje que haya
+   * escrito -- el único subtipo con datos hoy es que cambió de número de
+   * WhatsApp. Forma verificada contra un payload real reportado por
+   * terceros el 27/6/2023: la Cloud API manda `wa_id`; la documentación
+   * on-premises llama `new_wa_id` al mismo campo. `identity` es del otro
+   * subtipo documentado, `customer_identity_changed`, que no trae `wa_id`.
+   * Plan "El cliente que cambió de número" (6/9/2026).
+   */
+  system?: { body?: string; type?: string; wa_id?: string; new_wa_id?: string; identity?: string };
 }
 
 interface WebhookStatus {
@@ -583,6 +593,182 @@ async function handleTemplateStatusUpdate(
 }
 
 // ---------------------------------------------------------------------------
+// `type: "system"`: el cliente cambió de número de WhatsApp (u otro evento de
+// sistema que Meta avisa sin que el cliente haya escrito nada).
+//
+// Plan "El cliente que cambió de número" (6/9/2026), decisiones del operador:
+//   D1 — el contacto sigue al número nuevo. Conversación, historial, pines,
+//        pedido y bitácora cuelgan de `contact_id`, así que mover solo
+//        `contacts.phone_number` alcanza sin tocar nada más.
+//   D2 — si el número nuevo ya tiene contacto, no se fusiona nada: fusionar
+//        dos historiales es una decisión de persona. Queda dicho en el
+//        evento y en `log.error("webhook_cambio_numero_conflicto")`.
+//   D3 — (atendido en la rama `unsupported`, no acá).
+//   D4 — la frase del 131026 (`meta-client.ts`) manda al asesor a este aviso.
+// ---------------------------------------------------------------------------
+
+/**
+ * `phoneNumberViejo` es el número con el que YA existe (o no) contacto y
+ * conversación en el CRM -- lo resuelve el llamador desde `message.from`
+ * antes de saber si hace falta algo más. Sin contacto o sin conversación
+ * para ese número no hay nada que mover: un cambio de número de alguien que
+ * nunca escribió no crea nada, queda solo en el log
+ * (`webhook_system_sin_conversacion`).
+ */
+async function handleSystemMessage(
+  supabase: SupabaseClient,
+  channel: WelcomeChannel,
+  phoneNumberViejo: string,
+  system: NonNullable<WebhookMessage["system"]>,
+  whatsappMessageId: string
+): Promise<void> {
+  const { data: contact } = await supabase
+    .from("contacts")
+    .select("id")
+    .eq("phone_number", phoneNumberViejo)
+    .maybeSingle<{ id: string }>();
+
+  if (!contact) {
+    log.info("webhook_system_sin_conversacion", {
+      whatsappMessageId,
+      motivo: "sin_contacto",
+      tipo: system.type ?? null,
+    });
+    return;
+  }
+
+  const { data: conversation } = await supabase
+    .from("conversations")
+    .select("id")
+    .eq("contact_id", contact.id)
+    .eq("whatsapp_channel_id", channel.id)
+    .maybeSingle<{ id: string }>();
+
+  if (!conversation) {
+    log.info("webhook_system_sin_conversacion", {
+      whatsappMessageId,
+      motivo: "sin_conversacion",
+      tipo: system.type ?? null,
+    });
+    return;
+  }
+
+  const conversationId = conversation.id;
+
+  // Un `wa_id`/`new_wa_id` que no resulta ser un teléfono válido se trata
+  // como un `system.type` desconocido (supuesto del orquestador, 6/9/2026):
+  // no hay a dónde mover el contacto.
+  const nuevo =
+    system.type === "user_changed_number" ? phoneNumberFromWaId(system.wa_id ?? system.new_wa_id) : null;
+
+  if (nuevo) {
+    const { data: contactoExistente } = await supabase
+      .from("contacts")
+      .select("id")
+      .eq("phone_number", nuevo)
+      .maybeSingle<{ id: string }>();
+
+    let conflictoConId = contactoExistente?.id ?? null;
+    let contactoMovido = false;
+
+    if (!contactoExistente) {
+      const { error: updateError } = await supabase
+        .from("contacts")
+        .update({ phone_number: nuevo })
+        .eq("id", contact.id);
+
+      if (!updateError) {
+        contactoMovido = true;
+      } else if (updateError.code === "23505") {
+        // D2: otro webhook ganó la carrera y ya movió a alguien más a este
+        // número entre el SELECT de arriba y este UPDATE -- se relee para
+        // dejar el id correcto en la bitácora.
+        const { data: ganador } = await supabase
+          .from("contacts")
+          .select("id")
+          .eq("phone_number", nuevo)
+          .maybeSingle<{ id: string }>();
+        conflictoConId = ganador?.id ?? null;
+      } else {
+        // No debería pasar -- 23505 es el único error esperable en este
+        // UPDATE puntual -- pero uno inesperado tampoco puede perder el
+        // aviso: se deja sin mover (más seguro que fingir un movimiento sin
+        // confirmar) y queda registrado aparte del conflicto de verdad.
+        log.error("webhook_cambio_numero_error", { conversationId, detalle: errorText(updateError) });
+      }
+    }
+
+    const conflicto = !contactoMovido;
+    const content = conflicto
+      ? `El cliente cambió su número de WhatsApp a ${nuevo}, que ya tiene conversación en el CRM`
+      : `El cliente cambió su número de WhatsApp a ${nuevo}`;
+
+    if (conflicto) {
+      log.error("webhook_cambio_numero_conflicto", {
+        conversationId,
+        previo: phoneNumberViejo,
+        nuevo,
+        contactoExistenteId: conflictoConId,
+      });
+    }
+
+    const { error: insertError } = await supabase
+      .from("messages")
+      .insert({
+        conversation_id: conversationId,
+        direction: "outbound",
+        sender_type: "system",
+        message_type: "system_event",
+        content,
+        payload: {
+          type: "system",
+          systemType: "user_changed_number",
+          previousPhone: phoneNumberViejo,
+          newPhone: nuevo,
+        } as Json,
+      })
+      .select("id")
+      .single();
+
+    if (insertError) {
+      log.error("webhook_system_evento_no_guardado", { conversationId, detalle: errorText(insertError) });
+    }
+
+    log.info("webhook_cliente_cambio_numero", {
+      conversationId,
+      previo: phoneNumberViejo,
+      nuevo,
+      contactoMovido,
+    });
+    return;
+  }
+
+  // `customer_identity_changed`, un `system.type` nuevo que todavía no se
+  // atiende puntual, o `user_changed_number` con un número que no resultó
+  // válido: se deja el aviso en el hilo, sin tocar ningún dato.
+  const content = system.body ? `WhatsApp avisó: ${system.body}` : "WhatsApp envió un aviso de sistema";
+
+  const { error: insertError } = await supabase
+    .from("messages")
+    .insert({
+      conversation_id: conversationId,
+      direction: "outbound",
+      sender_type: "system",
+      message_type: "system_event",
+      content,
+      payload: { type: "system", systemType: system.type ?? null } as Json,
+    })
+    .select("id")
+    .single();
+
+  if (insertError) {
+    log.error("webhook_system_evento_no_guardado", { conversationId, detalle: errorText(insertError) });
+  }
+
+  log.info("webhook_system_evento_desconocido", { conversationId, tipo: system.type ?? null });
+}
+
+// ---------------------------------------------------------------------------
 // POST: eventos entrantes — mensajes nuevos de clientes y actualizaciones de
 // estado (sent/delivered/read/failed) de mensajes que nosotros enviamos.
 // ---------------------------------------------------------------------------
@@ -803,6 +989,16 @@ export async function POST(request: Request) {
             tipo: message.type,
             remitente: message.from ?? null,
           });
+          continue;
+        }
+
+        // El cliente cambió de número de WhatsApp (u otro aviso de sistema
+        // sin texto de cliente detrás). Entra ANTES del upsert de contacto:
+        // este mensaje no crea nada nuevo, solo mueve o anota sobre lo que ya
+        // existe con el número VIEJO (`phoneNumber`, recién validado arriba).
+        // Ver handleSystemMessage.
+        if (message.type === "system") {
+          await handleSystemMessage(supabase, channel, phoneNumber, message.system ?? {}, message.id);
           continue;
         }
 

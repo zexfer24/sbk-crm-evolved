@@ -104,6 +104,15 @@ function createFakeAdminClient() {
   const channelUpdates: { id: string; patch: Record<string, unknown> }[] = [];
   const templateUpdates: { name: string; language: string; patch: Record<string, unknown> }[] = [];
 
+  // T-S1 (6/9/2026): el contacto por defecto es el mismo remitente de
+  // `webhookBody`/`webhookSystemBody` (+584120000000) con `id: "contact-1"`,
+  // así que el resto del archivo -- que nunca toca `type: "system"` -- no
+  // necesita saber que esta tabla ahora también admite `select`/`update`.
+  let contactRows: { id: string; phone_number: string }[] = [{ id: "contact-1", phone_number: "+584120000000" }];
+  const contactUpdates: { id: string; patch: Record<string, unknown> }[] = [];
+  /** Fuerza el UPDATE de `contacts` a devolver 23505, para simular la carrera del punto D2. */
+  let contactUpdateConflict = false;
+
   const client = {
     from(table: string) {
       if (table === "whatsapp_channels") {
@@ -160,6 +169,37 @@ function createFakeAdminClient() {
             return {
               select() {
                 return { single: async () => ({ data: { id: "contact-1" }, error: null }) };
+              },
+            };
+          },
+          // T-S1 (6/9/2026, "El cliente que cambió de número"): handleSystemMessage
+          // busca contactos por teléfono (el viejo, y el nuevo para detectar
+          // conflicto) en vez de upsertarlos. `contactRows` es mutable con
+          // setter/reset propios, mismo patrón que conversationRow/channelRows.
+          select() {
+            return {
+              eq(_col: string, phone: string) {
+                return {
+                  maybeSingle: async () => {
+                    const row = contactRows.find((r) => r.phone_number === phone);
+                    return { data: row ? { id: row.id } : null, error: null };
+                  },
+                };
+              },
+            };
+          },
+          update(patch: { phone_number?: string }) {
+            return {
+              eq: async (_col: string, id: string) => {
+                contactUpdates.push({ id, patch });
+                if (contactUpdateConflict) {
+                  return { data: null, error: { code: "23505", message: "duplicate key value" } };
+                }
+                if (patch.phone_number) {
+                  const row = contactRows.find((r) => r.id === id);
+                  if (row) row.phone_number = patch.phone_number;
+                }
+                return { data: null, error: null };
               },
             };
           },
@@ -321,6 +361,16 @@ function createFakeAdminClient() {
     resetChannelRows: () => {
       channelRows = [{ id: "chan-1", phone_number: "+15550001234", status: "connected" }];
     },
+    contactUpdates,
+    setContactRows: (rows: { id: string; phone_number: string }[]) => {
+      contactRows = rows;
+    },
+    resetContactRows: () => {
+      contactRows = [{ id: "contact-1", phone_number: "+584120000000" }];
+    },
+    setContactUpdateConflict: (value: boolean) => {
+      contactUpdateConflict = value;
+    },
   };
 }
 
@@ -336,6 +386,10 @@ const {
   resetChannelRows,
   setConversationRow,
   resetConversationRow,
+  contactUpdates,
+  setContactRows,
+  resetContactRows,
+  setContactUpdateConflict,
 } = createFakeAdminClient();
 
 vi.mock("@/lib/supabase/admin", () => ({
@@ -447,8 +501,11 @@ beforeEach(() => {
   handoffCalls.length = 0;
   channelUpdates.length = 0;
   templateUpdates.length = 0;
+  contactUpdates.length = 0;
   resetConversationRow();
   resetChannelRows();
+  resetContactRows();
+  setContactUpdateConflict(false);
   vi.mocked(enqueueAgentTurns).mockClear();
   vi.mocked(processAfterDebounce).mockClear();
 });
@@ -1652,5 +1709,156 @@ describe("POST /api/webhooks/whatsapp — restricción de cuenta", () => {
     } finally {
       spy.mockRestore();
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// S1 del plan "El cliente que cambió de número" (6/9/2026): `type: "system"`,
+// el cliente cambió de número de WhatsApp. D1 -- el contacto sigue al número
+// nuevo; D2 -- si el nuevo ya tiene contacto, no se fusiona nada.
+//
+// El remitente por defecto (+584120000000) coincide con `contactRows` por
+// defecto (contact-1) y con `conversationRow` (conv-1), así que el caso feliz
+// no necesita tocar ningún setter.
+// ---------------------------------------------------------------------------
+function webhookSystemBody(waMessageId: string, system: Record<string, unknown>, from = "584120000000") {
+  return {
+    entry: [
+      {
+        changes: [
+          {
+            field: "messages",
+            value: {
+              metadata: { phone_number_id: "1234567890" },
+              messages: [
+                {
+                  from,
+                  id: waMessageId,
+                  timestamp: String(Math.floor(Date.now() / 1000)),
+                  type: "system",
+                  system,
+                },
+              ],
+            },
+          },
+        ],
+      },
+    ],
+  };
+}
+
+describe("POST /api/webhooks/whatsapp — el cliente cambió de número (type: system)", () => {
+  it("a un número libre: mueve el contacto, el evento lleva el número nuevo, sin turno de IA", async () => {
+    const response = await POST(
+      fakeRequest(
+        webhookSystemBody("wamid.cambio-numero-1", {
+          body: "User A changed from 584120000000 to 584129999999",
+          wa_id: "584129999999",
+          type: "user_changed_number",
+        })
+      )
+    );
+
+    expect(response.status).toBe(200);
+    expect(contactUpdates).toContainEqual({ id: "contact-1", patch: { phone_number: "+584129999999" } });
+
+    const evento = insertedRows.find(
+      (r) => r.sender_type === "system" && typeof r.content === "string" && r.content.includes("+584129999999")
+    );
+    expect(evento).toBeDefined();
+    expect(evento?.payload).toMatchObject({ newPhone: "+584129999999", systemType: "user_changed_number" });
+
+    // Nada de esto es un mensaje del cliente: no abre turno de IA.
+    expect(insertedRows.some((r) => r.direction === "inbound")).toBe(false);
+    expect(enqueueAgentTurns).not.toHaveBeenCalled();
+  });
+
+  it("a un número que ya tiene contacto: no fusiona nada, el evento avisa el conflicto y log.error", async () => {
+    setContactRows([
+      { id: "contact-1", phone_number: "+584120000000" },
+      { id: "contact-9", phone_number: "+584129999999" },
+    ]);
+    const spy = vi.spyOn(console, "error").mockImplementation(() => {});
+
+    try {
+      const response = await POST(
+        fakeRequest(
+          webhookSystemBody("wamid.cambio-numero-conflicto-1", {
+            body: "User A changed from 584120000000 to 584129999999",
+            wa_id: "584129999999",
+            type: "user_changed_number",
+          })
+        )
+      );
+
+      expect(response.status).toBe(200);
+      expect(contactUpdates).toHaveLength(0);
+
+      const evento = insertedRows.find(
+        (r) => r.sender_type === "system" && typeof r.content === "string" && r.content.includes("+584129999999")
+      );
+      expect(evento?.content).toContain("ya tiene conversación en el CRM");
+
+      const eventosLog = spy.mock.calls.map((call) => JSON.parse(String(call[0])));
+      const conflicto = eventosLog.find((e) => e.event === "webhook_cambio_numero_conflicto");
+      expect(conflicto).toMatchObject({ previo: "+584120000000", nuevo: "+584129999999" });
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it("de un número sin conversación en el CRM: no inserta ni actualiza nada, responde 200", async () => {
+    setContactRows([]);
+
+    const response = await POST(
+      fakeRequest(
+        webhookSystemBody(
+          "wamid.cambio-numero-sin-conversacion-1",
+          { body: "User A changed from 584127777777 to 584129999999", wa_id: "584129999999", type: "user_changed_number" },
+          "584127777777"
+        )
+      )
+    );
+
+    expect(response.status).toBe(200);
+    expect(insertedRows).toHaveLength(0);
+    expect(contactUpdates).toHaveLength(0);
+  });
+
+  it("system.type desconocido (customer_identity_changed): deja el evento genérico, sin tocar contacts", async () => {
+    await POST(
+      fakeRequest(
+        webhookSystemBody("wamid.identidad-1", {
+          type: "customer_identity_changed",
+          identity: "algo-que-no-es-un-telefono",
+        })
+      )
+    );
+
+    expect(contactUpdates).toHaveLength(0);
+    const evento = insertedRows.find((r) => r.sender_type === "system");
+    expect(evento?.payload).toEqual({ type: "system", systemType: "customer_identity_changed" });
+  });
+
+  it("conversación cerrada que recibe system: no la reabre, no hay traspaso, el evento igual se inserta", async () => {
+    setConversationRow({ status: "closed", ai_enabled: true });
+
+    await POST(
+      fakeRequest(
+        webhookSystemBody("wamid.cambio-numero-cerrada-1", {
+          body: "User A changed from 584120000000 to 584129999999",
+          wa_id: "584129999999",
+          type: "user_changed_number",
+        })
+      )
+    );
+
+    expect(conversationUpdates.some((u) => "status" in u.patch)).toBe(false);
+    expect(handoffCalls.some((c) => c.p_reason === "reabierta_por_cliente")).toBe(false);
+    expect(
+      insertedRows.some(
+        (r) => r.sender_type === "system" && typeof r.content === "string" && r.content.includes("+584129999999")
+      )
+    ).toBe(true);
   });
 });
