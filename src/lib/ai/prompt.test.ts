@@ -55,13 +55,20 @@ describe("SYSTEM_PROMPT — el bloque que se cachea", () => {
   /**
    * Lo que va después del bloque estático se paga a precio completo en cada
    * turno. Si el sufijo crece, el ahorro se diluye sin que se note.
+   *
+   * El tope subió de 120 a 150 el 5/9/2026 (Frente B3, "El reloj dice la
+   * verdad"): `turnClockLine` reemplazó la única línea de fecha por hora,
+   * franja, saludo, horario de atención y si la tienda está abierta —el peor
+   * caso (primer mensaje + catálogo apagado) mide ~134 tokens medidos con
+   * este mismo estimador. Es el precio de que el modelo ya no tenga que
+   * deducir nada de eso.
    */
   it("el sufijo dinámico se mantiene corto", () => {
     for (const intent of INTENT_VALUES) {
       for (const needsGreeting of [true, false]) {
         const sufijo = buildInstructions({ intent, needsGreeting }).slice(SYSTEM_PROMPT.length);
 
-        expect(sufijo.length / CHARS_PER_TOKEN).toBeLessThan(120);
+        expect(sufijo.length / CHARS_PER_TOKEN).toBeLessThan(150);
       }
     }
   });
@@ -86,8 +93,11 @@ describe("sufijo dinámico del turno", () => {
     const conSaludo = buildInstructions({ ...TURN, needsGreeting: true }).slice(SYSTEM_PROMPT.length);
     const sinSaludo = buildInstructions({ ...TURN, needsGreeting: false }).slice(SYSTEM_PROMPT.length);
 
-    expect(conSaludo).toMatch(/saluda/i);
-    expect(sinSaludo).not.toMatch(/saluda/i);
+    // Ojo: no se busca /saluda/i a secas — turnClockLine SIEMPRE trae la
+    // palabra ("... saluda 'buenas tardes' ..."), sea o no el primer mensaje.
+    // Lo que distingue el primer contacto es esta frase concreta.
+    expect(conSaludo).toMatch(/es el primer mensaje que recibe de nosotros/i);
+    expect(sinSaludo).not.toMatch(/es el primer mensaje que recibe de nosotros/i);
   });
 
   /**
@@ -108,8 +118,14 @@ describe("sufijo dinámico del turno", () => {
 /**
  * El dueño reportó "buenos días" a las tres de la tarde. La causa era que el
  * prompt no mencionaba la hora en ninguna parte: el modelo la adivinaba, y a
- * veces acertaba. Estas pruebas cubren las dos mitades del arreglo — la regla,
- * que es fija y va en el bloque cacheado, y el valor, que cambia cada turno.
+ * veces acertaba. La primera corrección (27/8/2026) le dio al modelo la hora
+ * en texto y le dejó la regla de qué saludo usar en prosa; seguía fallando
+ * porque tenía que DEDUCIR la franja a partir de "4:45 p. m.".
+ *
+ * Frente B3 (5/9/2026, "El reloj dice la verdad") cambia el reparto: la franja,
+ * el saludo Y el horario de atención ya vienen calculados por `turnClockLine`
+ * (business-hours.ts) — el modelo solo los copia. La regla que sigue siendo
+ * fija y cacheada es "usa lo que te llega en TURNO ACTUAL, no lo deduzcas".
  */
 describe("la hora del turno", () => {
   it("el sufijo trae la hora local de Venezuela, no la del proceso", () => {
@@ -119,9 +135,9 @@ describe("la hora del turno", () => {
       SYSTEM_PROMPT.length
     );
 
-    expect(sufijo).toContain("3:12 p. m.");
-    expect(sufijo).toContain("27 de agosto de 2026");
-    expect(sufijo).not.toContain("7:12 p. m.");
+    expect(sufijo).toContain("3:12 pm");
+    expect(sufijo).toContain("27 de agosto");
+    expect(sufijo).not.toContain("7:12 pm");
   });
 
   /**
@@ -137,34 +153,67 @@ describe("la hora del turno", () => {
     expect(manana).not.toEqual(noche);
   });
 
-  /** La regla sí es fija, así que vive arriba y se cachea con el resto. */
-  it("la regla de qué saludo va con qué hora está en el bloque estático", () => {
-    expect(SYSTEM_PROMPT).toMatch(/buenos días/i);
-    expect(SYSTEM_PROMPT).toMatch(/buenas tardes/i);
-    expect(SYSTEM_PROMPT).toMatch(/buenas noches/i);
+  /**
+   * La regla sí es fija, así que vive arriba y se cachea con el resto — pero
+   * ya no describe QUÉ hora es cada saludo (eso lo decide `dayBand`, una sola
+   * vez, en business-hours.ts): solo manda copiar tal cual lo que llega.
+   */
+  it("la regla es copiar la franja y el horario de TURNO ACTUAL, no deducirlos", () => {
+    expect(SYSTEM_PROMPT).toMatch(/usa la franja y el saludo que te llegan en TURNO ACTUAL/i);
+    expect(SYSTEM_PROMPT).toMatch(/el horario de atención y si la tienda está abierta ahora mismo también te llegan en TURNO ACTUAL/i);
+    // La prosa vieja ("buenos días antes del mediodía...") desapareció: la
+    // regla de qué hora es cada franja vive en un solo lugar (DAY_BANDS).
+    expect(SYSTEM_PROMPT).not.toMatch(/antes del mediodía/i);
   });
 
   /**
    * Hay dos caminos que saludan y tienen que decir lo mismo a la misma hora: el
-   * escenario ya redactado del panel y esta regla, que es la que sigue el
-   * modelo cuando no calza ningún escenario. El borde de los escenarios lo
-   * escribió el dueño en sus disparadores —la tarde llega "hasta las 7:00pm"—
-   * y vive en greetingWindow. La regla decía "hasta las seis": entre las seis y
-   * las siete, los dos caminos se contradecían.
+   * escenario ya redactado del panel (por `greetingWindow`, que define "tarde"
+   * hasta las 7:00 pm) y el flujo genérico (por `turnClockLine`, que ahora
+   * comparte los mismos bordes vía `DAY_BANDS` — ver business-hours.ts). Se
+   * verifica contra la salida real y no contra prosa: la regla ya no está
+   * escrita en el prompt, está en el código que los dos comparten.
    */
   it("pone el borde entre tarde y noche donde lo ponen los escenarios", () => {
     expect(greetingWindow("¡Buenas tardes! ¿En qué podemos ayudarle?")?.to).toBe(19 * 60);
-    expect(SYSTEM_PROMPT).toMatch(/hasta las siete de la noche/);
-    expect(SYSTEM_PROMPT).not.toMatch(/hasta las seis de la tarde/);
+
+    const alasSiete = buildInstructions({ ...TURN, now: new Date("2026-09-05T23:00:00Z") }); // 7:00 pm Caracas
+    const unMinutoDespues = buildInstructions({ ...TURN, now: new Date("2026-09-05T23:01:00Z") }); // 7:01 pm Caracas
+
+    expect(alasSiete.slice(SYSTEM_PROMPT.length)).toContain("franja: tarde");
+    expect(unMinutoDespues.slice(SYSTEM_PROMPT.length)).toContain("franja: noche");
   });
 
   /**
-   * Saber la hora invita a deducir el horario, y el horario no está en ningún
-   * lado: la biblioteca de conocimiento sigue vacía. Un "ya cerramos" inventado
-   * a las nueve de la noche es peor que no decir nada.
+   * Antes la regla era "no digas el horario, la biblioteca está vacía": ahora
+   * el horario SÍ existe (agent_settings.business_hours, B1) y llega
+   * calculado. La prohibición cambia de forma: ya no es "no lo digas", es
+   * "no inventes uno distinto al que te dieron".
    */
-  it("prohíbe deducir el horario de la tienda a partir de la hora", () => {
-    expect(SYSTEM_PROMPT).toMatch(/Saber la hora no es saber el horario/);
+  it("manda usar el horario y el estado que llegan en TURNO ACTUAL, no inventar otro", () => {
+    expect(SYSTEM_PROMPT).not.toMatch(/Saber la hora no es saber el horario/);
+    expect(SYSTEM_PROMPT).toMatch(/no inventes otro horario ni otro estado/);
+  });
+
+  /**
+   * Casos concretos pedidos por el operador (plan "El reloj dice la verdad",
+   * 5/9/2026): de noche entra "noche"/"buenas noches"; cerrado un domingo
+   * dice "CERRADA" y nombra cuándo abre, sin romper el prefijo cacheado.
+   */
+  it("a las 8:30 pm de Caracas, el sufijo dice noche y buenas noches", () => {
+    const instructions = buildInstructions({ ...TURN, now: new Date("2026-09-05T00:30:00Z") });
+
+    expect(instructions.startsWith(SYSTEM_PROMPT)).toBe(true);
+    expect(instructions.slice(SYSTEM_PROMPT.length)).toContain("noche");
+    expect(instructions.slice(SYSTEM_PROMPT.length)).toContain("buenas noches");
+  });
+
+  it("a las 8:10 am de un domingo, el sufijo dice CERRADA y cuándo abre", () => {
+    const instructions = buildInstructions({ ...TURN, now: new Date("2026-09-06T12:10:00Z") });
+
+    expect(instructions.startsWith(SYSTEM_PROMPT)).toBe(true);
+    expect(instructions.slice(SYSTEM_PROMPT.length)).toContain("CERRADA");
+    expect(instructions.slice(SYSTEM_PROMPT.length)).toContain("abre el lunes a las 8:00 am");
   });
 });
 

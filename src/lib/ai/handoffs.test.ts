@@ -67,6 +67,18 @@ function createFakeSupabase() {
       throw new Error(`Fake Supabase: rpc no soportada: ${fn}`);
     },
     from(table: string) {
+      if (table === "agent_settings") {
+        // Frente B3 (5/9/2026): runAgentTurn ahora lee el horario junto con
+        // agent_can_run y la conversación. Sin fila ni error: parseBusinessHours
+        // cae al horario por defecto y el turno sigue igual — este archivo no
+        // prueba nada del horario, solo que su lectura no tumbe el turno.
+        return {
+          select: () => ({
+            eq: () => ({ maybeSingle: async () => ({ data: null, error: null }) }),
+          }),
+        };
+      }
+
       if (table === "conversations") {
         return {
           select: () => ({

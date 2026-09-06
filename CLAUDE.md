@@ -48,7 +48,16 @@ reconstruye la base desde cero con las migraciones y seeds del repo.
    escenario/playbook del supervisor? → se envía tal cual) y la fase 1
    (clasificar intención → define qué herramientas recibe el modelo), y solo
    entonces el tool loop (máx. 5 pasos: catálogo, biblioteca, historial,
-   escalar).
+   escalar). Desde B3 ("El reloj dice la verdad", 5/9/2026) el turno lee
+   `agent_settings.business_hours` al arrancar (default L–V 08:00–18:00 si
+   falla; nunca se cae por el horario) y el bloque `TURNO ACTUAL` del prompt
+   trae la franja del día, el saludo, el horario de atención y si la tienda
+   está abierta YA CALCULADOS por `business-hours.ts` (`turnClockLine`): el
+   modelo los copia, no los deduce. La regla vieja "Saber la hora no es saber
+   el horario" quedó sin efecto: el horario ahora sí existe en el sistema.
+   Fuera de horario la IA sigue vendiendo; cobros y cierre los hace un
+   asesor, y al escalar por compra con la tienda cerrada nombra cuándo se
+   procesa la venta.
 4. El envío sale por `lib/whatsapp/meta-client.ts` (server-only). Canal no
    `connected` = envío simulado (demo sin gastar).
 

@@ -5,6 +5,13 @@ import type { Database } from "@/lib/supabase/database.types";
 import type { Playbook, PlaybookAfterSend, PlaybookAttachmentType, Tag, TagColor } from "@/lib/types";
 import { getClassifierModel } from "@/lib/ai/model";
 import { playbooksAtTime } from "@/lib/ai/greeting-window";
+import {
+  DEFAULT_BUSINESS_HOURS,
+  dayBand,
+  describeSchedule,
+  businessStatus,
+  type BusinessHours,
+} from "@/lib/business-hours";
 import { formatCrmDateTime } from "@/lib/time-zone";
 import { errorText, log } from "@/lib/log";
 
@@ -145,12 +152,20 @@ function playbookTags(row: { ai_playbook_tags: RawPlaybookTag[] | null }): Tag[]
     .map((tag) => ({ id: tag.id, label: tag.label, color: tag.color as TagColor }));
 }
 
-function buildPrompt(playbooks: Playbook[], now: Date): string {
+/**
+ * Franja y horario calculados, igual que en `prompt.ts` (Frente B3, "El
+ * reloj dice la verdad", 5/9/2026): antes el clasificador solo recibía la
+ * fecha en texto ("4:45 p. m.") y tenía que deducir la franja él mismo para
+ * comparar contra los disparadores de horario. Acá viene ya resuelta.
+ */
+function buildPrompt(playbooks: Playbook[], now: Date, businessHours: BusinessHours = DEFAULT_BUSINESS_HOURS): string {
   const catalog = playbooks.map((p) => `- ${p.name}: ${p.triggerDescription}`).join("\n");
+  const franja = dayBand(now);
+  const estado = businessStatus(now, businessHours).open ? "abierta" : "cerrada";
 
   return `Eres el clasificador de una repuestera de motos en Venezuela que atiende por WhatsApp. Tienes respuestas ya redactadas para ciertas situaciones. Tu única tarea es decidir cuál de ellas corresponde al ÚLTIMO mensaje del cliente, tomando en cuenta todo el contexto previo de la conversación.
 
-Fecha y hora local: ${formatCrmDateTime(now)} (Venezuela). Varios disparadores están escritos como franjas horarias: compruébalos contra ESA hora, no contra las palabras del cliente. Alguien puede escribir "buenas noches" a las once de la mañana.
+Fecha y hora local: ${formatCrmDateTime(now)} (Venezuela) — franja: ${franja}. Horario de atención: ${describeSchedule(businessHours)}. Ahora mismo la tienda está ${estado}. Varios disparadores están escritos como franjas horarias: compruébalos contra ESA hora, no contra las palabras del cliente. Alguien puede escribir "buenas noches" a las once de la mañana.
 
 Escenarios disponibles:
 ${catalog}
@@ -172,7 +187,11 @@ Responde solo con el nombre exacto del escenario, o con "${NO_MATCH}".`;
 export async function matchPlaybook(
   history: ModelMessage[],
   playbooks: Playbook[],
-  now: Date = new Date()
+  now: Date = new Date(),
+  // Con default para no romper a los llamadores viejos ni a los tests que
+  // todavía no pasan horario: cae al horario por defecto (Frente B3, "El
+  // reloj dice la verdad", 5/9/2026).
+  businessHours: BusinessHours = DEFAULT_BUSINESS_HOURS
 ): Promise<PlaybookMatch> {
   // La hora se decide acá y no se le pregunta al modelo. De 14 saludos del 27
   // de agosto de 2026, 4 salieron con el saludo equivocado —"¡Buenos días!" a
@@ -198,7 +217,7 @@ export async function matchPlaybook(
       maxRetries: 0,
       output: "enum",
       enum: [...candidatos.map((p) => p.name), NO_MATCH],
-      system: buildPrompt(candidatos, now),
+      system: buildPrompt(candidatos, now, businessHours),
       messages: history,
     });
 

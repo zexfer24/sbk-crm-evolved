@@ -1,6 +1,7 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { orExpression, pgrstLiteral } from "@/lib/ai/pgrst";
 import { conversationsWrittenByHumans } from "@/lib/ai/human-handled";
+import { DEFAULT_BUSINESS_HOURS, parseBusinessHours, type BusinessHours } from "@/lib/business-hours";
 import { freeformWindowCutoff, isTicketTag } from "@/lib/dashboard";
 import { isUnassignedLead } from "@/lib/inbox-filters";
 import type { ConversationCursor } from "@/lib/inbox-paging";
@@ -2306,7 +2307,11 @@ export async function fetchBacklogCounts(
 
 export async function fetchAgentSettings(supabase: SupabaseClient): Promise<AgentSettings> {
   const [{ data, error }, { data: spentToday }] = await Promise.all([
-    supabase.from("agent_settings").select("ai_globally_enabled, daily_spend_cap_usd").eq("id", true).single(),
+    supabase
+      .from("agent_settings")
+      .select("ai_globally_enabled, daily_spend_cap_usd, business_hours")
+      .eq("id", true)
+      .single(),
     supabase.rpc("agent_spend_today"),
   ]);
 
@@ -2315,7 +2320,29 @@ export async function fetchAgentSettings(supabase: SupabaseClient): Promise<Agen
     aiGloballyEnabled: data.ai_globally_enabled,
     dailySpendCapUsd: data.daily_spend_cap_usd === null ? null : Number(data.daily_spend_cap_usd),
     spentTodayUsd: Number(spentToday ?? 0),
+    businessHours: parseBusinessHours(data.business_hours),
   };
+}
+
+/**
+ * Solo el horario de atención, sin el gasto del día.
+ *
+ * `fetchAgentSettings` trae `agent_spend_today` (un RPC) porque el panel de
+ * gasto lo necesita; el tablero de "atascados" y el resto del frontend que
+ * solo quieren saber si la tienda está abierta no tienen por qué pagar esa
+ * segunda consulta. Nunca lanza —una fila rota o un rol sin permiso caen al
+ * horario por defecto— porque una lectura de horario no puede tumbar una
+ * página que solo lo usa para colorear una tarjeta (Frente B3, 5/9/2026).
+ */
+export async function fetchBusinessHours(supabase: SupabaseClient): Promise<BusinessHours> {
+  const { data, error } = await supabase.from("agent_settings").select("business_hours").eq("id", true).maybeSingle();
+
+  if (error) {
+    console.error("No se pudo leer el horario de atención, se usa el horario por defecto:", error);
+    return DEFAULT_BUSINESS_HOURS;
+  }
+
+  return parseBusinessHours(data?.business_hours);
 }
 
 /**

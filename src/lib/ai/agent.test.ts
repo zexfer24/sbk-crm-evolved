@@ -46,6 +46,15 @@ interface FakeState {
    * fábrica — el UPDATE sale bien y el turno sigue igual.
    */
   messageUpdateError: { message: string } | null;
+  /**
+   * Frente B3 (5/9/2026): lo que trae la columna `business_hours` de la fila
+   * de `agent_settings`. `undefined` de fábrica — sin columna, `parseBusinessHours`
+   * cae al horario por defecto, que es como se comportaban todos los tests
+   * escritos antes de este frente.
+   */
+  agentSettingsBusinessHours: unknown;
+  /** Si viene con mensaje, la lectura de `agent_settings` falla — el turno no se cae por eso. */
+  agentSettingsError: { message: string } | null;
 }
 
 const state: FakeState = {
@@ -61,6 +70,8 @@ const state: FakeState = {
   turnLockRenewResult: { data: true, error: null },
   lastInboundWamid: "wamid.ULTIMO_ENTRANTE",
   messageUpdateError: null,
+  agentSettingsBusinessHours: undefined,
+  agentSettingsError: null,
 };
 const conversationUpdates: Record<string, unknown>[] = [];
 const agentTurnInserts: Record<string, unknown>[] = [];
@@ -117,7 +128,12 @@ function createFakeSupabase() {
         return {
           select: () => ({
             eq: () => ({
-              maybeSingle: async () => ({ data: { ai_globally_enabled: state.aiGloballyEnabled } }),
+              maybeSingle: async () => ({
+                data: state.agentSettingsError
+                  ? null
+                  : { ai_globally_enabled: state.aiGloballyEnabled, business_hours: state.agentSettingsBusinessHours },
+                error: state.agentSettingsError,
+              }),
             }),
           }),
         };
@@ -408,6 +424,8 @@ beforeEach(() => {
   state.turnLockRenewResult = { data: true, error: null };
   state.lastInboundWamid = "wamid.ULTIMO_ENTRANTE";
   state.messageUpdateError = null;
+  state.agentSettingsBusinessHours = undefined;
+  state.agentSettingsError = null;
   withinFreeformWindowOverride.fn = null;
   sendTypingIndicatorMock.mockClear();
   conversationUpdates.length = 0;
@@ -1582,13 +1600,72 @@ describe("runAgentTurn — instrucciones que recibe el modelo", () => {
 
     await runAgentTurn("conv-1");
 
-    expect(agentOptions[0].instructions.slice(SYSTEM_PROMPT.length)).toMatch(/saluda/i);
+    expect(agentOptions[0].instructions.slice(SYSTEM_PROMPT.length)).toMatch(/es el primer mensaje que recibe de nosotros/i);
   });
 
+  // Ojo: no se busca /saluda/i a secas — desde Frente B3 (5/9/2026) turnClockLine
+  // SIEMPRE trae la palabra ("... saluda 'buenas tardes' ..."), salga o no la
+  // instrucción de saludar. Lo que distingue el primer contacto es esta frase.
   it("no manda saludar si la bienvenida ya salió", async () => {
     await runAgentTurn("conv-1");
 
-    expect(agentOptions[0].instructions.slice(SYSTEM_PROMPT.length)).not.toMatch(/saluda/i);
+    expect(agentOptions[0].instructions.slice(SYSTEM_PROMPT.length)).not.toMatch(
+      /es el primer mensaje que recibe de nosotros/i
+    );
+  });
+
+  /**
+   * Frente B3 (5/9/2026): el horario que lee `runAgentTurn` de
+   * `agent_settings.business_hours` tiene que llegar hasta las instrucciones
+   * del turno, no quedarse en la variable. Con la tienda cerrada los siete
+   * días la aserción no depende de a qué hora corra la suite: sin ninguna
+   * franja en toda la semana, `businessStatus` siempre da CERRADA sin
+   * "abre tal día", así que la salida es la misma corra cuando corra.
+   */
+  it("lee el horario de agent_settings y lo pasa a las instrucciones del turno", async () => {
+    state.agentSettingsBusinessHours = { mon: [], tue: [], wed: [], thu: [], fri: [], sat: [], sun: [] };
+
+    await runAgentTurn("conv-1");
+
+    const sufijo = agentOptions[0].instructions.slice(SYSTEM_PROMPT.length);
+    expect(sufijo).toContain("cerrado todos los días");
+    expect(sufijo).toContain("Ahora mismo: CERRADA.");
+  });
+
+  /** El mismo horario le llega también a `matchPlaybook` (fase 0), no solo al flujo genérico. */
+  it("le pasa el mismo horario a matchPlaybook", async () => {
+    const horario = { mon: [], tue: [], wed: [], thu: [], fri: [], sat: [], sun: [] };
+    state.agentSettingsBusinessHours = horario;
+
+    await runAgentTurn("conv-1");
+
+    expect(matchPlaybookMock.mock.calls[0][3]).toEqual(horario);
+  });
+
+  /** Una fila rota (forma inválida) no tumba el turno: cae al horario por defecto. */
+  it("con agent_settings.business_hours roto, cae al horario por defecto sin romper el turno", async () => {
+    state.agentSettingsBusinessHours = { esto: "no es un horario válido" };
+
+    await runAgentTurn("conv-1");
+
+    const sufijo = agentOptions[0].instructions.slice(SYSTEM_PROMPT.length);
+    expect(sufijo).toContain("lunes a viernes de 8:00 am a 6:00 pm");
+  });
+
+  /** Un fallo leyendo agent_settings tampoco tumba el turno: horario por defecto y log.warn. */
+  it("si agent_settings no se puede leer, sigue con el horario por defecto y avisa por log", async () => {
+    const warn = vi.spyOn(log, "warn");
+    state.agentSettingsError = { message: "conexión perdida" };
+
+    await runAgentTurn("conv-1");
+
+    expect(agentOptions).toHaveLength(1);
+    const sufijo = agentOptions[0].instructions.slice(SYSTEM_PROMPT.length);
+    expect(sufijo).toContain("lunes a viernes de 8:00 am a 6:00 pm");
+    expect(warn).toHaveBeenCalledWith("turno_horario_no_legible", {
+      conversationId: "conv-1",
+      detail: "conexión perdida",
+    });
   });
 });
 

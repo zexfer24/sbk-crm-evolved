@@ -37,6 +37,7 @@ export type Database = {
       agent_settings: {
         Row: {
           ai_globally_enabled: boolean
+          business_hours: Json
           daily_spend_cap_usd: number | null
           id: boolean
           updated_at: string
@@ -44,6 +45,7 @@ export type Database = {
         }
         Insert: {
           ai_globally_enabled?: boolean
+          business_hours?: Json
           daily_spend_cap_usd?: number | null
           id?: boolean
           updated_at?: string
@@ -51,6 +53,7 @@ export type Database = {
         }
         Update: {
           ai_globally_enabled?: boolean
+          business_hours?: Json
           daily_spend_cap_usd?: number | null
           id?: boolean
           updated_at?: string

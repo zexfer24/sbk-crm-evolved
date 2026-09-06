@@ -3,6 +3,7 @@ import { ToolLoopAgent, isStepCount, type LanguageModelUsage, type ModelMessage,
 import type { SupabaseClient } from "@supabase/supabase-js";
 import type { Database } from "@/lib/supabase/database.types";
 import type { Playbook, Tag } from "@/lib/types";
+import { parseBusinessHours, type BusinessHours } from "@/lib/business-hours";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { classifyIntent, type Intent } from "@/lib/ai/classify";
 import { currentAgentModelLabel, getAgentModel } from "@/lib/ai/model";
@@ -677,7 +678,8 @@ async function runTurnPhases(
   convo: AgentConversation,
   entrega: TurnDelivery,
   lease: TurnLease,
-  tiempos: TurnTiming
+  tiempos: TurnTiming,
+  businessHours: BusinessHours
 ): Promise<void> {
   const conversationId = target.conversationId;
 
@@ -727,7 +729,11 @@ async function runTurnPhases(
       // flujo genérico. classifyIntent sí, y su fallo aborta el turno — así que
       // se captura acá para que no se lleve por delante un escenario que quizá
       // sí reconoció.
-      matchPlaybook(history, playbooks),
+      //
+      // `undefined` en el tercer lugar deja que matchPlaybook use su propio
+      // "ahora" por defecto — acá solo hace falta empujar el horario, que ya
+      // llegó calculado desde runAgentTurn (Frente B3, 5/9/2026).
+      matchPlaybook(history, playbooks, undefined, businessHours),
       classifyIntent(history).then(
         (result) => ({ ok: true as const, result }),
         (err: unknown) => ({ ok: false as const, err })
@@ -828,7 +834,11 @@ async function runTurnPhases(
   }
 
   const outcome: EscalationOutcome = { escalated: false };
-  const deps = { supabase, conversationId, contactId: target.contactId };
+  // `businessHours` viaja en `deps` aunque hoy ninguna herramienta lo lea:
+  // lo necesita `buildEscalateTool` para la despedida sin asesores (Frente
+  // B4, "El reloj dice la verdad", pendiente) y así no hace falta reabrir el
+  // Promise.all de runAgentTurn para conseguirlo.
+  const deps = { supabase, conversationId, contactId: target.contactId, businessHours };
 
   // Escalar no tiene interruptor: es la única salida hacia un humano. El
   // resto entra solo si su interruptor del panel está encendido.
@@ -853,6 +863,7 @@ async function runTurnPhases(
       intent,
       needsGreeting: needsGreeting(convo.welcome_sent_at, history),
       missingCatalog,
+      businessHours,
     }),
     tools,
     stopWhen: isStepCount(MAX_STEPS),
@@ -981,7 +992,7 @@ async function runTurnPhases(
 export async function runAgentTurn(conversationId: string): Promise<void> {
   const supabase = createAdminClient();
 
-  const [{ data: canRun }, { data: conversation }] = await Promise.all([
+  const [{ data: canRun }, { data: conversation }, { data: settingsRow, error: settingsError }] = await Promise.all([
     // agent_can_run junta el interruptor global y el tope de gasto del día.
     // La decisión vive en la base para que sea la misma la pregunte quien la
     // pregunte, y para que el tope se levante solo al cambiar el día.
@@ -993,7 +1004,17 @@ export async function runAgentTurn(conversationId: string): Promise<void> {
       )
       .eq("id", conversationId)
       .maybeSingle(),
+    // Horario de atención (Frente B3, "El reloj dice la verdad", 5/9/2026):
+    // se lee junto con las otras dos porque tampoco depende de ellas. Una
+    // fila rota, sin permiso o sin fila cae al horario por defecto más abajo
+    // — el turno nunca se cae por esto.
+    supabase.from("agent_settings").select("business_hours").eq("id", true).maybeSingle(),
   ]);
+
+  if (settingsError) {
+    log.warn("turno_horario_no_legible", { conversationId, detail: settingsError.message });
+  }
+  const businessHours = parseBusinessHours(settingsRow?.business_hours ?? undefined);
 
   const convo = conversation as unknown as AgentConversation | null;
   // Sin fila no hay traspaso que registrar: `conversation_id` tiene FK contra
@@ -1097,7 +1118,7 @@ export async function runAgentTurn(conversationId: string): Promise<void> {
     const arranque = Date.now();
 
     try {
-      await runTurnPhases(supabase, target, convo, entrega, lease, tiempos);
+      await runTurnPhases(supabase, target, convo, entrega, lease, tiempos, businessHours);
     } catch (err) {
       if (!entrega.intentado) throw err;
 

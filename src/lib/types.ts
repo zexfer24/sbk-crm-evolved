@@ -1,3 +1,5 @@
+import type { BusinessHours } from "@/lib/business-hours";
+
 export type AgentRole = "agent" | "supervisor" | "admin";
 
 /**
@@ -582,6 +584,19 @@ export interface AgentSettings {
   dailySpendCapUsd: number | null;
   /** Gasto de la IA en el día en curso, hora de Caracas. */
   spentTodayUsd: number;
+  /**
+   * Horario de atención de la tienda (Frente B, "El reloj dice la verdad",
+   * 5/9/2026). Sale de `agent_settings.business_hours` ya validado por
+   * `parseBusinessHours`: una fila rota en la base cae al horario por
+   * defecto en vez de tumbar la lectura.
+   *
+   * Opcional y no `BusinessHours` a secas para no romper los fixtures de
+   * `AgentSettings` que ya existían en otros frentes (panel de agente,
+   * bandeja) antes de este campo: quien lo consuma cae a
+   * `DEFAULT_BUSINESS_HOURS` si no viene. `fetchAgentSettings` SIEMPRE lo
+   * llena.
+   */
+  businessHours?: BusinessHours;
 }
 
 /** Tarifa en USD por millón de tokens para un modelo — usada para calcular el costo del consumo de la IA. */

@@ -1,6 +1,6 @@
 import "server-only";
 import type { Intent } from "@/lib/ai/classify";
-import { formatCrmDateTime } from "@/lib/time-zone";
+import { DEFAULT_BUSINESS_HOURS, turnClockLine, type BusinessHours } from "@/lib/business-hours";
 
 // ---------------------------------------------------------------------------
 // Identidad y reglas de comportamiento del agente de SBK Motorcycles.
@@ -96,6 +96,8 @@ Cuando una herramienta te devuelva una instrucción sobre cómo responder, resp�
 5.1 Consulta de disponibilidad — el cliente pregunta por un repuesto: si hay, cuánto cuesta, si le sirve a su moto.
 Busca en el catálogo antes de responder. Cotiza en dólares y en bolívares. Si no hay existencia, dilo claro y ofrece pasarlo con un asesor por si viene reposición. Si el cliente confirma que lo quiere —un "dale", un "sí, me lo llevo", un "cómo hago para pagar"— escala con motivo intencion_compra: cobrar y pedir datos le toca a un humano. No seas tú quien cierra la venta.
 
+Fuera de horario sigues vendiendo igual: cotiza, resuelve dudas, sigue la conversación con normalidad. Lo único que cambia es el cierre. Si la tienda está cerrada y el cliente ya quiere comprar, dile con naturalidad que pasas su caso al departamento de ventas y que en el horario regular —nómbraselo tal como te llega en TURNO ACTUAL, por ejemplo "el lunes a partir de las 8:00 am"— le procesan la venta. Escala igual, con motivo intencion_compra: cobrar sigue siendo cosa de un asesor, esté abierta la tienda o no.
+
 5.2 Devolución o cambio — el cliente quiere devolver o cambiar algo que ya compró.
 Esto es dinero real y no lo resuelves tú. Revisa primero su historial de compras para no hacerle repetir lo que ya sabemos; si no aparece nada, pregúntale qué compró, cuándo y cuánto pagó. Responde con calma, confírmale que un asesor lo va a atender, y escala con motivo devolucion y un resumen de lo que compró y qué quiere.
 
@@ -112,9 +114,9 @@ En este rubro casi todo lo ambiguo termina siendo sobre un repuesto: trátalo co
 
 Esto es WhatsApp, no un correo ni un documento. Dos a cuatro líneas por mensaje. Frases cortas.
 
-Cuando saludes, usa la hora local que te llega en TURNO ACTUAL, no la que supongas: buenos días antes del mediodía, buenas tardes desde el mediodía hasta las siete de la noche, buenas noches de ahí en adelante. Esa es la hora de Venezuela.
+Cuando saludes, usa la franja y el saludo que te llegan en TURNO ACTUAL, tal cual: no los deduzcas de la hora ni los cambies por tu cuenta.
 
-Saber la hora no es saber el horario. No digas que la tienda está abierta, cerrada ni por cerrar salvo que eso salga de la biblioteca de conocimiento.
+El horario de atención y si la tienda está abierta ahora mismo también te llegan en TURNO ACTUAL: puedes decirlo tal cual te lo dan, pero no inventes otro horario ni otro estado.
 
 El formato de WhatsApp no es Markdown. Para resaltar se usa un solo asterisco para negrita, un solo guion bajo para itálica y una sola virgulilla para tachado. Duplicar el asterisco no pone nada en negrita: se ve el símbolo, literal, y queda mal.
 
@@ -141,10 +143,17 @@ export interface TurnContext {
   /** true cuando la búsqueda de catálogo está apagada desde el panel y este turno la habría necesitado. */
   missingCatalog?: boolean;
   /**
+   * Horario de atención de la tienda. Default al horario por defecto para no
+   * romper a quien no lo pasa (turnos viejos, pruebas existentes). Lo trae
+   * `runAgentTurn` desde `agent_settings.business_hours` (Frente B3, "El
+   * reloj dice la verdad", 5/9/2026).
+   */
+  businessHours?: BusinessHours;
+  /**
    * Instante del turno. Se inyecta en las pruebas; en producción es ahora.
    *
    * Se formatea en la zona del equipo, nunca con el reloj del proceso: el
-   * contenedor corre en UTC y son cuatro horas de más. Ver formatCrmDateTime.
+   * contenedor corre en UTC y son cuatro horas de más. Ver turnClockLine.
    */
   now?: Date;
 }
@@ -163,7 +172,13 @@ export interface TurnContext {
  * cachear. La REGLA de cómo se usa (qué saludo va con qué hora) sí es fija y
  * vive en la sección 6 del bloque estático; acá viaja solo el valor.
  */
-export function buildInstructions({ intent, needsGreeting, missingCatalog, now }: TurnContext): string {
+export function buildInstructions({
+  intent,
+  needsGreeting,
+  missingCatalog,
+  businessHours = DEFAULT_BUSINESS_HOURS,
+  now,
+}: TurnContext): string {
   const seccion = CASE_SECTION[intent] ?? CASE_SECTION.otro;
 
   const greeting = needsGreeting
@@ -179,6 +194,6 @@ export function buildInstructions({ intent, needsGreeting, missingCatalog, now }
   return `${SYSTEM_PROMPT}
 
 TURNO ACTUAL
-Fecha y hora local: ${formatCrmDateTime(now ?? new Date())} (Venezuela).
+${turnClockLine(now ?? new Date(), businessHours)}
 Caso identificado: ${intent}. Aplica el protocolo ${seccion}.${greeting}${catalog}`;
 }

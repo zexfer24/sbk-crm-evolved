@@ -94,6 +94,24 @@ describe("matchPlaybook", () => {
     expect(call.system).toContain("cuando aplica Catálogo general");
   });
 
+  /**
+   * Frente B3 (5/9/2026, "El reloj dice la verdad"): la franja y el horario
+   * ya vienen calculados, igual que en prompt.ts — el clasificador no tiene
+   * que deducir "tarde" a partir de "4:45 p. m." para comparar contra un
+   * disparador que hable de horario.
+   */
+  it("le lleva al clasificador la franja y el horario ya calculados", async () => {
+    generateObjectMock.mockClear();
+    generateObjectMock.mockResolvedValue({ object: "ninguno", usage: USAGE });
+
+    // 20:30 Caracas, viernes: franja noche, tienda cerrada (default L-V 8-18).
+    await matchPlaybook(HISTORY, [playbook("saludo")], new Date("2026-09-05T00:30:00Z"));
+
+    const call = generateObjectMock.mock.calls[0][0] as { system: string };
+    expect(call.system).toContain("franja: noche");
+    expect(call.system).toMatch(/tienda está cerrada/);
+  });
+
   it("si el modelo falla, no coincide ningún escenario en vez de tumbar el turno", async () => {
     generateObjectMock.mockClear();
     generateObjectMock.mockRejectedValue(new Error("503 del proveedor"));

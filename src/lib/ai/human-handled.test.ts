@@ -203,6 +203,10 @@ function createFakeSupabase() {
 
       if (table === "agent_tools") return { select: () => ({ eq: async () => ({ data: [], error: null }) }) };
       if (table === "agent_turns") return { insert: async () => ({ data: null, error: null }) };
+      // B3 (5/9/2026): runAgentTurn lee el horario al arrancar; sin fila cae al default.
+      if (table === "agent_settings") {
+        return { select: () => ({ eq: () => ({ maybeSingle: async () => ({ data: { business_hours: null }, error: null }) }) }) };
+      }
 
       throw new Error(`tabla no soportada: ${table}`);
     },
