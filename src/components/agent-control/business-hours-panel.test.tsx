@@ -1,6 +1,6 @@
 /** @vitest-environment jsdom */
 import { describe, expect, it, vi, beforeEach, afterEach } from "vitest";
-import { render, screen, fireEvent } from "@testing-library/react";
+import { render, screen, fireEvent, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { BusinessHoursPanel } from "@/components/agent-control/business-hours-panel";
 import { DEFAULT_BUSINESS_HOURS } from "@/lib/business-hours";
@@ -16,6 +16,15 @@ vi.mock("@heroui/react", async (importOriginal) => {
 
 function settings(patch: Partial<AgentSettings> = {}): AgentSettings {
   return { aiGloballyEnabled: true, dailySpendCapUsd: null, spentTodayUsd: 0, ...patch };
+}
+
+// Los siete días repiten el mismo botón "Agregar segunda franja"; hay que
+// acotar la búsqueda a la fila del día que importa.
+function filaDelDia(dia: string): HTMLElement {
+  const etiqueta = screen.getByText(dia);
+  const fila = etiqueta.closest(".ac-hours-row");
+  if (!fila) throw new Error(`No se encontró la fila de ${dia}`);
+  return fila as HTMLElement;
 }
 
 describe("BusinessHoursPanel", () => {
@@ -88,5 +97,63 @@ describe("BusinessHoursPanel", () => {
     render(<BusinessHoursPanel settings={settings()} canEdit={false} onSave={vi.fn()} />);
 
     expect(screen.queryByRole("button", { name: "Guardar" })).not.toBeInTheDocument();
+  });
+
+  it("dos franjas solapadas en el mismo día muestran el error y no dejan guardar", async () => {
+    const user = userEvent.setup({ delay: null, pointerEventsCheck: 0 });
+    const onSave = vi.fn(async () => {});
+    render(<BusinessHoursPanel settings={settings()} canEdit onSave={onSave} />);
+
+    fireEvent.change(screen.getByLabelText("Lunes, cierre de la franja 1"), { target: { value: "13:00" } });
+    await user.click(within(filaDelDia("Lunes")).getByRole("button", { name: "Agregar segunda franja" }));
+    fireEvent.change(screen.getByLabelText("Lunes, apertura de la franja 2"), { target: { value: "12:00" } });
+    fireEvent.change(screen.getByLabelText("Lunes, cierre de la franja 2"), { target: { value: "18:00" } });
+
+    expect(screen.getByText("Las franjas se solapan.")).toBeInTheDocument();
+    const boton = screen.getByRole("button", { name: "Guardar" });
+    expect(boton).toBeDisabled();
+
+    await user.click(boton);
+    expect(onSave).not.toHaveBeenCalled();
+  });
+
+  it("dos franjas contiguas (fin de la primera = inicio de la segunda) son válidas", async () => {
+    const user = userEvent.setup({ delay: null, pointerEventsCheck: 0 });
+    const onSave = vi.fn(async () => {});
+    render(<BusinessHoursPanel settings={settings()} canEdit onSave={onSave} />);
+
+    fireEvent.change(screen.getByLabelText("Lunes, cierre de la franja 1"), { target: { value: "12:00" } });
+    await user.click(within(filaDelDia("Lunes")).getByRole("button", { name: "Agregar segunda franja" }));
+    fireEvent.change(screen.getByLabelText("Lunes, apertura de la franja 2"), { target: { value: "12:00" } });
+    fireEvent.change(screen.getByLabelText("Lunes, cierre de la franja 2"), { target: { value: "18:00" } });
+
+    expect(screen.queryByText("Las franjas se solapan.")).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Guardar" }));
+    expect(onSave).toHaveBeenCalledWith({
+      ...DEFAULT_BUSINESS_HOURS,
+      mon: [
+        ["08:00", "12:00"],
+        ["12:00", "18:00"],
+      ],
+    });
+  });
+
+  it("franjas desordenadas (la segunda termina antes de que empiece la primera) dan el mismo error", async () => {
+    const user = userEvent.setup({ delay: null, pointerEventsCheck: 0 });
+    const onSave = vi.fn(async () => {});
+    render(<BusinessHoursPanel settings={settings()} canEdit onSave={onSave} />);
+
+    fireEvent.change(screen.getByLabelText("Lunes, apertura de la franja 1"), { target: { value: "14:00" } });
+    fireEvent.change(screen.getByLabelText("Lunes, cierre de la franja 1"), { target: { value: "18:00" } });
+    await user.click(within(filaDelDia("Lunes")).getByRole("button", { name: "Agregar segunda franja" }));
+    fireEvent.change(screen.getByLabelText("Lunes, apertura de la franja 2"), { target: { value: "08:00" } });
+    fireEvent.change(screen.getByLabelText("Lunes, cierre de la franja 2"), { target: { value: "12:00" } });
+
+    expect(screen.getByText("Las franjas se solapan.")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Guardar" })).toBeDisabled();
+
+    await user.click(screen.getByRole("button", { name: "Guardar" }));
+    expect(onSave).not.toHaveBeenCalled();
   });
 });

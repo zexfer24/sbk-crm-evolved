@@ -70,6 +70,23 @@ export function validateDraft(draft: BusinessHours): Partial<Record<DayKey, stri
         break;
       }
     }
+
+    // Dos franjas solapadas suman dos veces los minutos en común en
+    // `businessMinutesBetween` (business-hours.ts), y eso adelanta el
+    // umbral de 60 min laborales que pinta "Con asesor" en rojo en el
+    // tablero. Se corta acá, en la puerta de entrada del formulario: si
+    // `parseBusinessHours` rechazara el jsonb en su lugar, el turno de la
+    // IA caería al horario por defecto en silencio (decisión del plan del
+    // 6/9/2026, D4). No se reordenan solas: si vienen al revés (la segunda
+    // termina antes de que empiece la primera) es el mismo error, y quien
+    // edita las corrige a mano.
+    if (!errores[dia] && draft[dia].length === 2) {
+      const [, fin1] = draft[dia][0];
+      const [inicio2] = draft[dia][1];
+      if (hhmmToMinutes(inicio2) < hhmmToMinutes(fin1)) {
+        errores[dia] = "Las franjas se solapan.";
+      }
+    }
   }
 
   return errores;
