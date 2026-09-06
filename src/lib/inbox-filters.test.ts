@@ -431,13 +431,20 @@ describe("applyInboxFilters — 'escalated'", () => {
 
 /**
  * T1.6 del plan "Ningún lead invisible": la píldora "Sin dueño" sobre la
- * bitácora de traspasos (`conversation_handoffs`). No pasa por
- * `applyInboxFilters`/`matchesFilter` como pending/unread/mine/all —esos
+ * bitácora de traspasos (`conversation_handoffs`). Esta regla en sí NO pasa
+ * por `applyInboxFilters`/`matchesFilter` como pending/unread/mine/all —esos
  * cuatro se pueden recalcular sobre lo que ya tiene cargado
  * `ConversationSummary`; "sin dueño" depende de una tabla que ninguna fila de
  * la bandeja trae hoy— así que se prueba directo la regla pura que usa
  * `fetchUnassignedConversations` (data.ts) sobre lo que la base ya le
  * entrega acotado (`awaiting_reply` más el traspaso más reciente).
+ *
+ * Lo que SÍ pasa por `matchesFilter` desde la tanda 1 (5/9/2026, ver el
+ * describe "applyInboxFilters — 'unassigned'" más abajo) es el RESULTADO ya
+ * resuelto de esta regla: `fetchUnassignedConversations` decide con
+ * `isUnassignedLead` qué ids son "sin dueño", y `matchesFilter` solo compara
+ * la fila de la ventana local contra ese conjunto de ids — no vuelve a
+ * evaluar la bitácora, que sigue sin llegar a `ConversationSummary`.
  */
 describe("isUnassignedLead", () => {
   function handoff(toKind: string, createdAt: string): HandoffKind {
@@ -491,6 +498,49 @@ describe("isUnassignedLead", () => {
     ];
 
     expect(isUnassignedLead(true, handoffs)).toBe(false);
+  });
+});
+
+/**
+ * C1 (tanda 1, 5/9/2026): la píldora "Sin dueño" pasa por `applyInboxFilters`
+ * como cualquier otra desde que `matchesFilter` compara contra `unassignedIds`
+ * en vez de devolver `true` a ciegas. Bug detectado en la verificación visual
+ * del 5/9/2026: el conteo salía bien, pero la lista mostraba TODA la ventana
+ * cargada en memoria, no solo lo que `fetchUnassignedConversations` había
+ * resuelto de verdad — porque `searchableConversations` (inbox-sidebar.tsx)
+ * mezcla la ventana local con las filas resueltas por esa consulta antes de
+ * pasarlas a `applyInboxFilters`.
+ */
+describe("applyInboxFilters — 'unassigned'", () => {
+  function ids(todas: Conversation[], unassignedIds?: ReadonlySet<string> | null) {
+    return applyInboxFilters(todas, {
+      filter: "unassigned",
+      search: "",
+      tagId: null,
+      sort: "recent",
+      viewer: ANA,
+      unassignedIds,
+    }).map((c) => c.id);
+  }
+
+  const sinDueño = conversation({ id: "sin-dueno" });
+  const conDueño = conversation({ id: "con-dueno", assignedAgent: ANA });
+  const todas = [sinDueño, conDueño];
+
+  it("sin el set (consulta todavía en vuelo) no deja pasar nada: la lista no se adelanta a lo que la base confirmó", () => {
+    expect(ids(todas)).toEqual([]);
+  });
+
+  it("con el set vacío tampoco deja pasar nada", () => {
+    expect(ids(todas, new Set())).toEqual([]);
+  });
+
+  it("deja pasar SOLO los ids que trajo la consulta de 'sin dueño', aunque la ventana local traiga más filas", () => {
+    expect(ids(todas, new Set(["sin-dueno"]))).toEqual(["sin-dueno"]);
+  });
+
+  it("un id del set que no está en la ventana local simplemente no aparece (no hay fila que pintar)", () => {
+    expect(ids(todas, new Set(["sin-dueno", "fantasma"]))).toEqual(["sin-dueno"]);
   });
 });
 

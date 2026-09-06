@@ -1818,6 +1818,71 @@ describe("InboxSidebar — etiqueta activa resuelve en el servidor", () => {
   });
 });
 
+/**
+ * Bug detectado el 5/9/2026 en la verificación visual, corregido en C1
+ * (tanda 1) del plan "El reloj dice la verdad": el conteo de "Sin dueño" ya
+ * salía correcto (`counts.unassigned`, honesto contra la base), pero la
+ * LISTA pintaba la ventana entera cargada en memoria (`conversations`, prop
+ * del shell) en vez de solo lo que `fetchUnassignedConversations` había
+ * resuelto de verdad. La causa: `searchableConversations` mezcla esas ~30
+ * filas con las resueltas por esa consulta antes de pasarlas a
+ * `applyInboxFilters`, y `matchesFilter` dejaba pasar CUALQUIER fila bajo
+ * "unassigned" sin comparar contra el resultado real de la consulta.
+ *
+ * El test de acá abajo reproduce exactamente esa mezcla: 30 conversaciones
+ * en la ventana local (ninguna de ellas es la que la base dice que está sin
+ * dueño) y 2 resueltas por `fetchUnassignedConversations` — la píldora debe
+ * pintar únicamente esas 2.
+ */
+describe("InboxSidebar — 'Sin dueño' solo lista lo que la base resolvió, no toda la ventana", () => {
+  it("con 30 filas en memoria y 2 resueltas por el servidor, la píldora pinta solo esas 2", async () => {
+    const ventanaLocal = Array.from({ length: 30 }, (_, i) => conversation({ id: `ventana-${i}` }));
+    const sinDuenoUno = conversation({ id: "sin-dueno-1" });
+    const sinDuenoDos = conversation({ id: "sin-dueno-2" });
+    vi.mocked(fetchUnassignedConversations).mockResolvedValue([sinDuenoUno, sinDuenoDos]);
+
+    const { container } = render(
+      <InboxSidebar
+        conversations={ventanaLocal}
+        selectedId={null}
+        onSelect={() => {}}
+        currentAgent={JEFA}
+        allTags={ALL_TAGS}
+        bcvRate={null}
+      />
+    );
+    irA("Sin dueño");
+
+    await waitFor(() =>
+      expect(visibleIds(container).sort()).toEqual(["sin-dueno-1", "sin-dueno-2"])
+    );
+    // Ninguna fila de la ventana local se coló.
+    for (let i = 0; i < 30; i++) {
+      expect(visibleIds(container)).not.toContain(`ventana-${i}`);
+    }
+  });
+
+  it("mientras la consulta viaja (resolvedRows todavía null) no pinta nada de la ventana local", () => {
+    const ventanaLocal = Array.from({ length: 30 }, (_, i) => conversation({ id: `ventana-${i}` }));
+    // Nunca resuelve dentro de este test: simula la consulta en vuelo.
+    vi.mocked(fetchUnassignedConversations).mockReturnValue(new Promise(() => {}));
+
+    const { container } = render(
+      <InboxSidebar
+        conversations={ventanaLocal}
+        selectedId={null}
+        onSelect={() => {}}
+        currentAgent={JEFA}
+        allTags={ALL_TAGS}
+        bcvRate={null}
+      />
+    );
+    irA("Sin dueño");
+
+    expect(visibleIds(container)).toEqual([]);
+  });
+});
+
 describe("InboxSidebar — orden", () => {
   it("el botón de orden alterna entre más recientes y más viejos", () => {
     renderSidebar(JEFA);

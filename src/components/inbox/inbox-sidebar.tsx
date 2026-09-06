@@ -792,6 +792,21 @@ export function InboxSidebar({
 
   const messageHitIds = useMemo(() => new Set(messageHits.keys()), [messageHits]);
 
+  /**
+   * Ids que de verdad están sin dueño, para `matchesFilter` (inbox-filters.ts,
+   * C1, 5/9/2026). Solo tiene sentido con la píldora "Sin dueño" activa:
+   * `resolvedRows` en ese momento son las filas de `fetchUnassignedConversations`
+   * —nunca la ventana local—, así que el set son justo sus ids. `null`
+   * mientras esa consulta viaja (`resolvedRows` todavía no llegó): la lista
+   * no pinta nada de más porque `matchesFilter` falla cerrado sin el set, y
+   * mientras tanto la sidebar ya muestra "Buscando…" (`searching`, más abajo)
+   * en vez de una lista vacía a medias.
+   */
+  const unassignedIds = useMemo(
+    () => (filter === "unassigned" && resolvedRows ? new Set(resolvedRows.map((c) => c.id)) : null),
+    [filter, resolvedRows]
+  );
+
   const filtered = useMemo(
     () =>
       applyInboxFilters(searchableConversations, {
@@ -802,8 +817,19 @@ export function InboxSidebar({
         viewer: currentAgent,
         messageHitIds,
         pinnedIds,
+        unassignedIds,
       }),
-    [searchableConversations, filter, search, activeTagId, sort, currentAgent, messageHitIds, pinnedIds]
+    [
+      searchableConversations,
+      filter,
+      search,
+      activeTagId,
+      sort,
+      currentAgent,
+      messageHitIds,
+      pinnedIds,
+      unassignedIds,
+    ]
   );
 
   // Las palabras a resaltar en el fragmento. Se calculan una vez por búsqueda

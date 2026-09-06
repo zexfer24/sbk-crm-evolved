@@ -147,17 +147,40 @@ export interface InboxCriteria {
    * existente (los tests de acá abajo que no ejercitan pines) a conocerlo.
    */
   pinnedIds?: ReadonlySet<string>;
+  /**
+   * Ids resueltos por `fetchUnassignedConversations` (C1) cuando la píldora
+   * activa es "Sin dueño" — null mientras esa consulta viaja o cuando no es
+   * la píldora activa. Bug detectado el 5/9/2026 en la verificación visual:
+   * el conteo de la píldora ya salía bien (venía de `counts.unassigned`,
+   * honesto contra la base), pero la LISTA pintaba toda la ventana cargada en
+   * memoria —`searchableConversations` en inbox-sidebar.tsx mezcla esas ~30
+   * filas con las resueltas por la consulta de "Sin dueño"— porque
+   * `matchesFilter` dejaba pasar cualquier cosa bajo este filtro. Con este
+   * set, solo pasan las filas que la consulta de verdad devolvió.
+   */
+  unassignedIds?: ReadonlySet<string> | null;
 }
 
-function matchesFilter(conversation: ConversationSummary, filter: InboxFilter, viewer: Agent): boolean {
+function matchesFilter(
+  conversation: ConversationSummary,
+  filter: InboxFilter,
+  viewer: Agent,
+  unassignedIds: ReadonlySet<string> | null | undefined
+): boolean {
   switch (filter) {
     case "all":
       return true;
     // La única píldora que NO se puede volver a comprobar en memoria: si una
     // conversación quedó sin dueño se decide con su bitácora de traspasos, y
     // `ConversationSummary` no la trae (son otra tabla y hasta 18 razones
-    // distintas por fila). Las filas llegan ya filtradas por
-    // `fetchUnassignedConversations`, así que acá se dejan pasar tal cual.
+    // distintas por fila). Antes de esta tarea (C1, mismo día, ver el
+    // comentario de `unassignedIds` en `InboxCriteria`) esto devolvía `true`
+    // sin condición, confiando en que las únicas filas que llegaran fueran
+    // las de `fetchUnassignedConversations` — pero `searchableConversations`
+    // en inbox-sidebar.tsx mezcla esas filas con la ventana local completa
+    // (para que el buscador y el resaltado de mensajes sigan funcionando), y
+    // el filtro dejaba pasar la ventana entera. Ahora se compara contra el
+    // set de ids que trajo esa consulta.
     //
     // La consecuencia, y hay que conocerla: una conversación que alguien
     // reclama con la lista abierta NO desaparece sola de esta píldora como sí
@@ -165,7 +188,7 @@ function matchesFilter(conversation: ConversationSummary, filter: InboxFilter, v
     // precio de que el corte viva en otra tabla, y desaparece en la Etapa 2,
     // cuando `owner_kind` sea una columna de `conversations` como las demás.
     case "unassigned":
-      return true;
+      return unassignedIds?.has(conversation.id) ?? false;
     case "mine":
       return conversation.assignedAgent?.id === viewer.id;
     // Se vuelve a comprobar en memoria aunque la base ya haya filtrado
@@ -288,13 +311,13 @@ function sortValue(conversation: ConversationSummary): number | null {
 
 export function applyInboxFilters(
   conversations: ConversationSummary[],
-  { filter, search, tagId, sort, viewer, messageHitIds, pinnedIds }: InboxCriteria
+  { filter, search, tagId, sort, viewer, messageHitIds, pinnedIds, unassignedIds }: InboxCriteria
 ): ConversationSummary[] {
   const query = normalizeForSearch(search).trim();
 
   const list = conversations.filter(
     (conversation) =>
-      matchesFilter(conversation, filter, viewer) &&
+      matchesFilter(conversation, filter, viewer, unassignedIds) &&
       matchesTag(conversation, tagId) &&
       matchesSearch(conversation, query, messageHitIds)
   );
