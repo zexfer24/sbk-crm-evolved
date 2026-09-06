@@ -868,6 +868,150 @@ describe("POST /api/webhooks/whatsapp — el aviso 'unsupported' de Meta", () =>
   });
 });
 
+/** Un lote de mensajes crudos, ya armados por cada prueba, del mismo canal. */
+function webhookMixedBatch(messages: Record<string, unknown>[]) {
+  return {
+    entry: [
+      {
+        changes: [
+          {
+            field: "messages",
+            value: {
+              metadata: { phone_number_id: "1234567890" },
+              contacts: [{ profile: { name: "Cliente Demo" }, wa_id: "584120000000" }],
+              messages,
+            },
+          },
+        ],
+      },
+    ],
+  };
+}
+
+/**
+ * D3, plan "El cliente que cambió de número" (6/9/2026): un `unsupported`
+ * que llega SOLO -- sin ninguna foto/video/audio/documento/sticker del mismo
+ * remitente en el lote -- ya no se descarta: es contenido del cliente
+ * (encuesta, "ver una vez", evento...) y se guarda para que caiga en
+ * "Pendientes", pero sin turno de IA (no hay texto que atender).
+ */
+describe("POST /api/webhooks/whatsapp — el 'unsupported' que llega solo se guarda (D3)", () => {
+  it("un unsupported solo: insert inbound con content null y payload.type/code, sin encolar turno de IA", async () => {
+    const response = await POST(
+      fakeRequest(
+        webhookMixedBatch([
+          {
+            from: "584120000000",
+            id: "wamid.unsupported-solo-1",
+            timestamp: String(Math.floor(Date.now() / 1000)),
+            type: "unsupported",
+            unsupported: { type: "poll" },
+            errors: [{ code: 131051, title: "Message type unknown" }],
+          },
+        ])
+      )
+    );
+
+    expect(response.status).toBe(200);
+    const fila = insertedRows.find((r) => r.whatsapp_message_id === "wamid.unsupported-solo-1");
+    expect(fila).toBeDefined();
+    expect(fila?.direction).toBe("inbound");
+    expect(fila?.sender_type).toBe("customer");
+    expect(fila?.message_type).toBe("unsupported");
+    expect(fila?.content).toBeNull();
+    expect(fila?.payload).toEqual({ type: "poll", code: 131051 });
+    expect(enqueueAgentTurns).not.toHaveBeenCalled();
+  });
+
+  it("unsupported + foto del mismo remitente: cero inserts del unsupported, la foto se guarda y encola como siempre", async () => {
+    const timestamp = String(Math.floor(Date.now() / 1000));
+    await POST(
+      fakeRequest(
+        webhookMixedBatch([
+          {
+            from: "584120000000",
+            id: "wamid.con-foto-unsupported-1",
+            timestamp,
+            type: "unsupported",
+            unsupported: { type: "poll" },
+            errors: [{ code: 131051, title: "Message type unknown" }],
+          },
+          {
+            from: "584120000000",
+            id: "wamid.con-foto-imagen-1",
+            timestamp,
+            type: "image",
+            image: { id: "media-99", mime_type: "image/jpeg" },
+          },
+        ])
+      )
+    );
+
+    expect(insertedMessages.has("wamid.con-foto-unsupported-1")).toBe(false);
+    expect(insertedMessages.has("wamid.con-foto-imagen-1")).toBe(true);
+    expect(enqueueAgentTurns).toHaveBeenCalledTimes(1);
+  });
+
+  it("unsupported de un remitente y texto de otro: el unsupported se guarda sin encolar por sí solo, el texto se guarda y encola", async () => {
+    const timestamp = String(Math.floor(Date.now() / 1000));
+    await POST(
+      fakeRequest(
+        webhookMixedBatch([
+          {
+            from: "584120000000",
+            id: "wamid.remitente-a-unsupported-1",
+            timestamp,
+            type: "unsupported",
+            unsupported: { type: "poll" },
+            errors: [{ code: 131051, title: "Message type unknown" }],
+          },
+          {
+            from: "584127777777",
+            id: "wamid.remitente-b-texto-1",
+            timestamp,
+            type: "text",
+            text: { body: "hola, ¿tienen bujías?" },
+          },
+        ])
+      )
+    );
+
+    expect(insertedMessages.has("wamid.remitente-a-unsupported-1")).toBe(true);
+    expect(insertedMessages.has("wamid.remitente-b-texto-1")).toBe(true);
+    // Se encola por el texto -- el unsupported de A no dispara turno por sí solo.
+    expect(enqueueAgentTurns).toHaveBeenCalledTimes(1);
+  });
+
+  it("unsupported y texto del MISMO remitente, sin multimedia: se guardan los dos y la conversación se encola una sola vez", async () => {
+    const timestamp = String(Math.floor(Date.now() / 1000));
+    await POST(
+      fakeRequest(
+        webhookMixedBatch([
+          {
+            from: "584120000000",
+            id: "wamid.mismo-remitente-unsupported-1",
+            timestamp,
+            type: "unsupported",
+            unsupported: { type: "poll" },
+            errors: [{ code: 131051, title: "Message type unknown" }],
+          },
+          {
+            from: "584120000000",
+            id: "wamid.mismo-remitente-texto-1",
+            timestamp,
+            type: "text",
+            text: { body: "también les escribo esto" },
+          },
+        ])
+      )
+    );
+
+    expect(insertedMessages.has("wamid.mismo-remitente-unsupported-1")).toBe(true);
+    expect(insertedMessages.has("wamid.mismo-remitente-texto-1")).toBe(true);
+    expect(enqueueAgentTurns).toHaveBeenCalledTimes(1);
+  });
+});
+
 /** Lote con una reacción, tal como la manda Meta: evento aparte con a qué mensaje y con qué emoji. */
 function webhookReactionBody(waMessageId: string, emoji: string, reaccionadoId: string) {
   return {

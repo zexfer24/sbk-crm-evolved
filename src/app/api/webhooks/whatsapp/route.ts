@@ -110,6 +110,13 @@ interface WebhookMessage {
    */
   errors?: { code: number; title?: string; message?: string }[];
   /**
+   * Solo en los `type: "unsupported"`: desde nov 2025 Meta manda acá el tipo
+   * real que no supo representar (encuesta, "ver una vez", evento, mensaje
+   * temporal, grupo, llamada nativa -- "Anatomía de WhatsApp" §13, plan "El
+   * cliente que cambió de número", 6/9/2026).
+   */
+  unsupported?: { type?: string };
+  /**
    * Solo en `type: "system"`: un evento del CLIENTE, no un mensaje que haya
    * escrito -- el único subtipo con datos hoy es que cambió de número de
    * WhatsApp. Forma verificada contra un payload real reportado por
@@ -603,8 +610,11 @@ async function handleTemplateStatusUpdate(
 //   D2 — si el número nuevo ya tiene contacto, no se fusiona nada: fusionar
 //        dos historiales es una decisión de persona. Queda dicho en el
 //        evento y en `log.error("webhook_cambio_numero_conflicto")`.
-//   D3 — (atendido en la rama `unsupported`, no acá).
-//   D4 — la frase del 131026 (`meta-client.ts`) manda al asesor a este aviso.
+//   D3 — atendido en la rama `unsupported` del bucle principal, no acá: un
+//        `unsupported` que llega solo se guarda como entrante, sin turno de
+//        IA.
+//   D4 — la frase del 131026 (`whatsapp/failure-reason.ts`) manda al asesor
+//        a este aviso.
 // ---------------------------------------------------------------------------
 
 /**
@@ -926,16 +936,6 @@ export async function POST(request: Request) {
       }
 
       for (const message of value.messages) {
-        // `unsupported` no es algo que el cliente haya escrito: es Meta
-        // avisando de que hay algo que su API no sabe representar. Llega,
-        // entre otros casos, junto a las fotos cuando el cliente manda
-        // varias de una vez — y ahí las fotos vienen en el mismo lote y se
-        // guardan perfectamente, así que el aviso no aporta nada.
-        //
-        // Guardarlo ponía en el chat una burbuja con jerga ("[unsupported]
-        // Tipo de mensaje no soportado todavía") que el asesor no sabe qué
-        // hacer con ella, y que además se mete entre las fotos y le parte la
-        // galería. Queda en el log del servidor, que es donde sirve.
         // Una reacción no es un mensaje: es algo que le pasa a un mensaje que
         // ya está en el hilo. Meta la manda como evento aparte, diciendo a
         // cuál reacciona y con qué emoji, así que se guarda pegada a esa fila
@@ -957,14 +957,49 @@ export async function POST(request: Request) {
           continue;
         }
 
+        // `unsupported` es Meta avisando de que hay algo que su API no sabe
+        // representar (encuesta, "ver una vez", evento, mensaje temporal,
+        // grupo, llamada nativa -- "Anatomía de WhatsApp" §13). Llega, entre
+        // otros casos, junto a las fotos cuando el cliente manda varias de
+        // una vez, y ahí las fotos vienen en el mismo lote y se guardan
+        // perfectamente, así que ESE aviso no aporta nada -- guardarlo ponía
+        // en el chat una burbuja con jerga que además se metía entre las
+        // fotos y le partía la galería. Esa parte sigue igual.
+        //
+        // Lo que cambió (D3, plan "El cliente que cambió de número",
+        // 6/9/2026): antes se descartaba TODO `unsupported`, también el que
+        // llega solo -- sin ninguna foto/video/audio/documento/sticker del
+        // mismo remitente en el lote. Ese SÍ es contenido del cliente (una
+        // encuesta, algo que Meta todavía no sabe mandar entero) y perderlo
+        // entero era peor que la jerga: se guarda más abajo, junto al resto
+        // de los tipos, como `message_type: "unsupported"` con `content`
+        // null y el tipo real de Meta en `payload.type` -- sin turno de IA
+        // (no hay texto que atender; `loadHistory`, T3.2, ya salta estas
+        // filas) pero contando como entrante para que caiga en "Pendientes"
+        // y un asesor lo mire por WhatsApp directo. Deuda conocida: la vista
+        // previa de la bandeja queda en "Unsupported" (mismo `initcap` del
+        // trigger que ya usa cualquier multimedia sin texto) -- arreglarlo
+        // es tocar `handle_new_message`, otra corrida.
+        let esUnsupportedSolo = false;
         if (message.type === "unsupported") {
-          const motivo = message.errors?.[0];
-          console.info(
-            `Webhook de WhatsApp: Meta marcó el mensaje ${message.id} como no representable` +
-              (motivo ? ` (${motivo.code}: ${motivo.title ?? "sin título"})` : "") +
-              ". No se guarda: no es contenido del cliente."
+          const vieneConGaleria = value.messages.some(
+            (otro) =>
+              otro !== message &&
+              otro.from === message.from &&
+              (MEDIA_TYPES as readonly string[]).includes(otro.type)
           );
-          continue;
+
+          if (vieneConGaleria) {
+            const motivo = message.errors?.[0];
+            console.info(
+              `Webhook de WhatsApp: Meta marcó el mensaje ${message.id} como no representable` +
+                (motivo ? ` (${motivo.code}: ${motivo.title ?? "sin título"})` : "") +
+                ". No se guarda: acompaña a una galería que ya se guardó aparte."
+            );
+            continue;
+          }
+
+          esUnsupportedSolo = true;
         }
 
         // Un remitente que no es un teléfono no entra. Esta línea era
@@ -1256,6 +1291,15 @@ export async function POST(request: Request) {
             catalogId: message.order.catalog_id,
             productItems: message.order.product_items,
           };
+        } else if (message.type === "unsupported") {
+          // Llegó solo (esUnsupportedSolo, arriba): sí es contenido del
+          // cliente aunque no traiga texto -- content queda null a
+          // propósito, no hay nada que mostrar.
+          messageType = "unsupported";
+          payload = {
+            type: message.unsupported?.type ?? null,
+            code: message.errors?.[0]?.code ?? null,
+          };
         } else {
           // Queda algo que el CRM todavía no sabe pintar —una encuesta, un
           // mensaje de un tipo nuevo que Meta agregó—. Antes esto se
@@ -1346,7 +1390,23 @@ export async function POST(request: Request) {
           });
         }
 
-        touchedByCustomer.set(conversationId, debounceSecondsFor(customerText));
+        if (esUnsupportedSolo) {
+          // D3: no hay texto que la IA pueda atender, así que esta fila no
+          // entra a `touchedByCustomer` -- el trigger `handle_new_message`
+          // igual mueve `last_customer_message_at`/`unread_count`/
+          // `awaiting_reply` como a cualquier entrante (confirmado leyendo
+          // 20260905010000_conversations_last_reply.sql líneas 65-127), que
+          // es justo lo que la hace caer en "Pendientes". Si en el mismo
+          // lote esta conversación tiene además un mensaje normal, ESE sí la
+          // deja en el Map en su propia vuelta del bucle -- no se pisan.
+          log.info("webhook_unsupported_guardado", {
+            conversationId,
+            tipo: message.unsupported?.type ?? null,
+            code: message.errors?.[0]?.code ?? null,
+          });
+        } else {
+          touchedByCustomer.set(conversationId, debounceSecondsFor(customerText));
+        }
 
         // La decisión de si ya se saludó es de la base (claimWelcome sobre
         // welcome_sent_at), no de la memoria de esta invocación: así una
