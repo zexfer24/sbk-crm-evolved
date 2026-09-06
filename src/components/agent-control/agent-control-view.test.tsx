@@ -19,6 +19,7 @@ vi.mock("@/components/agent-control/agent-tools-panel", () => ({ AgentToolsPanel
 vi.mock("@/components/agent-control/knowledge-panel", () => ({ KnowledgePanel: () => null }));
 vi.mock("@/components/agent-control/playbooks-panel", () => ({ PlaybooksPanel: () => null }));
 vi.mock("@/components/agent-control/spend-cap-panel", () => ({ SpendCapPanel: () => null }));
+vi.mock("@/components/agent-control/business-hours-panel", () => ({ BusinessHoursPanel: () => null }));
 vi.mock("@/components/agent-control/token-usage-chart", () => ({ TokenUsageChart: () => null }));
 vi.mock("@/components/sliding-pills", () => ({ SlidingPills: () => null }));
 vi.mock("@/components/app-rail", () => ({ AppRail: () => null, AppTopNav: () => null }));
@@ -64,6 +65,7 @@ vi.mock("@/lib/mutations", () => ({
   setAiEnabled: vi.fn(async () => {}),
   setAiGloballyEnabled: (...args: unknown[]) => setAiGloballyEnabledMock(...args),
   setDailySpendCap: vi.fn(async () => {}),
+  updateBusinessHours: vi.fn(async () => {}),
   updateModelPricing: vi.fn(async () => {}),
 }));
 

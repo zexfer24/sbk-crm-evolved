@@ -51,9 +51,11 @@ import {
   setAiEnabled,
   setAiGloballyEnabled,
   setDailySpendCap,
+  updateBusinessHours,
   updateModelPricing,
 } from "@/lib/mutations";
 import { contactName, initials } from "@/lib/dashboard";
+import type { BusinessHours } from "@/lib/business-hours";
 import { TOOL_KEYS } from "@/lib/agent-tool-keys";
 import { formatTime12h } from "@/lib/format";
 import { useLiveConversations } from "@/lib/use-live-conversations";
@@ -66,6 +68,7 @@ import { SlidingPills } from "@/components/sliding-pills";
 import { AppRail, AppTopNav } from "@/components/app-rail";
 import { ChannelHealthPanel } from "@/components/agent-control/channel-health-panel";
 import { SpendCapPanel } from "@/components/agent-control/spend-cap-panel";
+import { BusinessHoursPanel } from "@/components/agent-control/business-hours-panel";
 import { TokenUsageChart } from "@/components/agent-control/token-usage-chart";
 // crm.css trae .crm-pill, que esta vista usa para los botones de acción de
 // cada conversación. Sin este import quedaban sin estilo: el ícono se
@@ -450,6 +453,11 @@ export function AgentControlView({
     setSettings((s) => ({ ...s, dailySpendCapUsd: capUsd }));
   }
 
+  async function saveBusinessHours(hours: BusinessHours) {
+    await updateBusinessHours(supabase, currentAgent, hours);
+    setSettings((s) => ({ ...s, businessHours: hours }));
+  }
+
   async function pauseAi(conversationId: string) {
     setBusyConversationId(conversationId);
     try {
@@ -684,6 +692,12 @@ export function AgentControlView({
               settings={settings}
               canEdit={currentAgent.role === "supervisor" || currentAgent.role === "admin"}
               onSave={saveSpendCap}
+            />
+
+            <BusinessHoursPanel
+              settings={settings}
+              canEdit={currentAgent.role === "supervisor" || currentAgent.role === "admin"}
+              onSave={saveBusinessHours}
             />
 
             <ChannelHealthPanel health={initialChannelHealth} />

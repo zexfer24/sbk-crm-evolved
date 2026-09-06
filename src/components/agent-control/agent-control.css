@@ -917,3 +917,135 @@
   background: rgba(231, 154, 36, 0.13);
   color: var(--lm-wait-ink);
 }
+
+/* --------------------------------------------------------------------------
+   Horario de atención (B5, "El reloj dice la verdad", 5/9/2026)
+   -------------------------------------------------------------------------- */
+.ac-hours-preview {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 0 26px 14px;
+}
+
+.ac-hours-status {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--lm-ink);
+}
+
+.ac-hours-schedule {
+  font-size: 12px;
+  color: var(--lm-muted);
+}
+
+.ac-hours-note {
+  font-size: 11.5px;
+  line-height: 1.5;
+  color: var(--lm-muted);
+  max-width: 74ch;
+}
+
+.ac-hours-rows {
+  display: flex;
+  flex-direction: column;
+}
+
+.ac-hours-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px 14px;
+  padding: 10px 26px;
+  border-top: 1px solid var(--lm-line);
+}
+
+.ac-hours-row[data-error="true"] {
+  background: rgb(var(--lm-hot-rgb) / 0.05);
+}
+
+.ac-hours-day {
+  font-size: 12.5px;
+  font-weight: 600;
+  width: 76px;
+  flex-shrink: 0;
+}
+
+.ac-hours-closed {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--lm-muted);
+  flex-shrink: 0;
+}
+
+.ac-hours-ranges {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.ac-hours-range {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.ac-hours-range input[type="time"] {
+  border: 1px solid var(--lm-line);
+  border-radius: 8px;
+  padding: 4px 8px;
+  font-size: 12.5px;
+  font-family: var(--font-mono), ui-monospace, monospace;
+  background: var(--lm-surface);
+  color: var(--lm-ink);
+}
+
+.ac-hours-range input[type="time"]:focus {
+  outline: 2px solid var(--lm-link);
+  outline-offset: 1px;
+}
+
+.ac-hours-remove {
+  display: inline-flex;
+  align-items: center;
+  border: 0;
+  background: none;
+  color: var(--lm-muted);
+  cursor: pointer;
+  padding: 2px;
+}
+
+.ac-hours-remove:hover {
+  color: var(--lm-hot-ink);
+}
+
+.ac-hours-add {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  border: 1px dashed var(--lm-line);
+  border-radius: 8px;
+  background: none;
+  color: var(--lm-link-ink);
+  font-size: 11.5px;
+  padding: 4px 8px;
+  cursor: pointer;
+}
+
+.ac-hours-error {
+  flex-basis: 100%;
+  font-size: 11.5px;
+  color: var(--lm-hot-ink);
+}
+
+.ac-hours-actions {
+  display: flex;
+  justify-content: flex-end;
+  padding: 14px 26px 20px;
+}

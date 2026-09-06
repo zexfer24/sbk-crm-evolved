@@ -10,6 +10,7 @@ import type {
   WhatsappTemplate,
 } from "@/lib/types";
 import { PAYMENT_METHOD_LABELS } from "@/lib/types";
+import type { BusinessHours } from "@/lib/business-hours";
 
 async function insertSystemEvent(
   supabase: SupabaseClient,
@@ -429,6 +430,20 @@ export async function setDailySpendCap(supabase: SupabaseClient, agent: Agent, c
   const { error } = await supabase
     .from("agent_settings")
     .update({ daily_spend_cap_usd: capUsd, updated_by: agent.id, updated_at: new Date().toISOString() })
+    .eq("id", true);
+  if (error) throw error;
+}
+
+/**
+ * Guarda el horario de atención (B5, "El reloj dice la verdad", 5/9/2026).
+ * El panel ya valida el borrador con `validateDraft` antes de llamar acá; RLS
+ * deja escribir `agent_settings` solo a supervisor/admin, igual que el tope
+ * de gasto.
+ */
+export async function updateBusinessHours(supabase: SupabaseClient, agent: Agent, hours: BusinessHours) {
+  const { error } = await supabase
+    .from("agent_settings")
+    .update({ business_hours: hours, updated_by: agent.id, updated_at: new Date().toISOString() })
     .eq("id", true);
   if (error) throw error;
 }
