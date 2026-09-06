@@ -142,3 +142,15 @@ jobs:
           psql "postgresql://postgres:postgres@127.0.0.1:54322/postgres" \
             -v ON_ERROR_STOP=1 \
             -f supabase/tests/whatsapp_status_forward.sql
+
+      # Frente B1 (plan "El reloj dice la verdad", 5/9/2026):
+      # agent_settings.business_hours guarda el horario de la tienda como
+      # jsonb (mon..sun, franjas [inicio, fin]). El default trae los siete
+      # días con L-V 08:00-18:00 y fin de semana cerrado, y el check
+      # agent_settings_business_hours_object rechaza cualquier forma que no
+      # sea un objeto (ej. un array).
+      - name: agent_settings.business_hours -- default y forma de objeto
+        run: |
+          psql "postgresql://postgres:postgres@127.0.0.1:54322/postgres" \
+            -v ON_ERROR_STOP=1 \
+            -f supabase/tests/business_hours.sql
