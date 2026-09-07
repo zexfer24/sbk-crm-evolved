@@ -159,6 +159,7 @@ describe("sendAgentText — el outcome vuelve", () => {
       whatsapp_status: null,
       whatsapp_error_code: null,
       whatsapp_error_detail: null,
+      origenDelFallo: null,
     });
   });
 
@@ -187,6 +188,80 @@ describe("sendAgentText — el outcome vuelve", () => {
 
     expect(outcome.whatsapp_status).toBe("failed");
     expect(outcome.whatsapp_error_code).toBe(131047);
+  });
+});
+
+/**
+ * S6 (corrida "La IA ve lo que llega", hallazgo 4, 8/9/2026): el corte de red
+ * de OpenRouter del 7/9 dejó dos `ia_envio_fallido` con `detalle: "fetch
+ * failed"` que `agent.ts` trató como rechazo de Meta. `entregar()` distingue
+ * por el TIPO de excepción: `MetaApiError` (Meta respondió por HTTP) vs
+ * cualquier otra cosa (nunca llegó a la Graph API).
+ */
+describe("sendAgentText — origenDelFallo distingue un rechazo de Meta de un corte de red", () => {
+  it("MetaApiError con código → origenDelFallo 'meta'", async () => {
+    const { client, inserted } = createFakeSupabase();
+    process.env.WHATSAPP_ACCESS_TOKEN = "token-de-prueba";
+    sendWhatsappTextMock.mockClear();
+    sendWhatsappTextMock.mockRejectedValueOnce(
+      new MetaApiError("Message failed to send", 400, { error: { code: 131047 } })
+    );
+
+    // @ts-expect-error -- fake mínimo
+    const outcome = await sendAgentText(client, conversation(true), "hola");
+
+    expect(outcome).toMatchObject({
+      whatsapp_status: "failed",
+      whatsapp_error_code: 131047,
+      origenDelFallo: "meta",
+    });
+    // El row insertado en `messages` lleva EXACTAMENTE las claves de
+    // siempre: `origenDelFallo` no es columna y no puede colarse en el insert.
+    expect(Object.keys(inserted[0]).sort()).toEqual(
+      [
+        "conversation_id",
+        "content",
+        "direction",
+        "is_auto_reply",
+        "message_type",
+        "sender_type",
+        "whatsapp_error_code",
+        "whatsapp_error_detail",
+        "whatsapp_message_id",
+        "whatsapp_status",
+      ].sort()
+    );
+  });
+
+  it("TypeError('fetch failed') (corte de red) → origenDelFallo 'red', código null", async () => {
+    const { client, inserted } = createFakeSupabase();
+    process.env.WHATSAPP_ACCESS_TOKEN = "token-de-prueba";
+    sendWhatsappTextMock.mockClear();
+    sendWhatsappTextMock.mockRejectedValueOnce(new TypeError("fetch failed"));
+
+    // @ts-expect-error -- fake mínimo
+    const outcome = await sendAgentText(client, conversation(true), "hola");
+
+    expect(outcome).toMatchObject({
+      whatsapp_status: "failed",
+      whatsapp_error_code: null,
+      whatsapp_error_detail: "fetch failed",
+      origenDelFallo: "red",
+    });
+    expect(Object.keys(inserted[0]).sort()).toEqual(
+      [
+        "conversation_id",
+        "content",
+        "direction",
+        "is_auto_reply",
+        "message_type",
+        "sender_type",
+        "whatsapp_error_code",
+        "whatsapp_error_detail",
+        "whatsapp_message_id",
+        "whatsapp_status",
+      ].sort()
+    );
   });
 });
 

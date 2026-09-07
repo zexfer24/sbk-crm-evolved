@@ -61,7 +61,16 @@ export type HandoffReason =
   | "lock_perdido"
   // La cola agotó los tres intentos.
   | "abandonado"
-  // Falló después de haber intentado entregar: no se reintenta para no duplicar.
+  // Falló después de haber intentado entregar: no se reintenta para no
+  // duplicar (regla de `turn-delivery.ts`). Nace con la cola (los tres
+  // intentos agotados de `abandonado` son un caso vecino); S6 (corrida "La
+  // IA ve lo que llega", 8/9/2026) le suma un segundo uso: `agent.ts`
+  // (`deliveryFailed`, antes `rejectedByMeta`) la escribe también cuando un
+  // envío del turno falla por un corte de RED (`origenDelFallo === "red"` en
+  // `send.ts`, ver `DeliveryOutcome`) — un `fetch failed` nunca llegó a la
+  // Graph API, así que no es `rechazado_por_meta`. Es "reintentable por la
+  // cola" igual: un saliente `failed` no apaga `awaiting_reply` (T0.1), y el
+  // reconciliador la reencola sola en ≤ 5 min.
   | "entrega_fallida"
   // El reconciliador encontró una conversación esperando que nadie tenía.
   | "reabierto"

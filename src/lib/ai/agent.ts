@@ -546,28 +546,50 @@ async function deliver<T>(
 }
 
 /**
- * ¿Meta rechazó de plano el envío que ya pasó todas las guardas de `deliver`?
+ * ¿Falló el envío que ya pasó todas las guardas de `deliver`? Si sí, deja su
+ * traspaso y dice que el turno termina acá.
  *
  * Un `whatsapp_status: "failed"` acá es distinto de cualquier guarda de
  * arriba: no es que el turno decidiera callarse, es que SÍ intentó hablar y
- * el proveedor lo rechazó — el cliente se quedó exactamente igual de sin
- * respuesta, pero antes de T0.3 el turno seguía como si hubiera contestado
- * (`logTurn` con action "answered", `journey_stage` reseteado): la
- * conversación quedaba sin dueño en la bitácora aunque el mensaje nunca
- * hubiera llegado. No se reintenta — reintentar no arregla un rechazo del
- * proveedor y arriesga mandarlo dos veces si Meta lo aceptó a medias.
+ * algo salió mal — el cliente se quedó exactamente igual de sin respuesta,
+ * pero antes de T0.3 el turno seguía como si hubiera contestado (`logTurn`
+ * con action "answered", `journey_stage` reseteado): la conversación quedaba
+ * sin dueño en la bitácora aunque el mensaje nunca hubiera llegado. No se
+ * reintenta DENTRO del turno — regla de `turn-delivery.ts`: `entrega.intentado`
+ * ya quedó en `true` antes del envío, y una vez intentado no se repite porque
+ * no sabemos si el request llegó a mitad de camino. Reintentar acá arriesga
+ * mandarlo dos veces. Sí es "reintentable por la cola": un saliente `failed`
+ * NO apaga `awaiting_reply` (T0.1), así que el reconciliador reencola la
+ * conversación sola en ≤ 5 min (`api/cron/process-queue`).
+ *
+ * Renombrada de `rejectedByMeta` (S6, corrida "La IA ve lo que llega",
+ * hallazgo 4, 8/9/2026): el nombre viejo asumía que TODO `failed` era un
+ * rechazo de la Graph API. El corte de red de OpenRouter del 7/9 a las 11:57
+ * UTC (`getaddrinfo EAI_AGAIN openrouter.ai`) dejó dos envíos `failed` con
+ * `detalle: "fetch failed"` — Meta nunca vio esos mensajes — y el código de
+ * entonces igual escribía `rechazado_por_meta`. `entrega.origenDelFallo`
+ * (`send.ts`) ahora dice cuál de los dos pasó, y esta función bifurca:
+ *
+ *   - `"red"`: un corte de red, DNS o timeout — nada volvió de Meta.
+ *     `log.error("turno_envio_fallo_de_red", ...)` y, si no hay escalación
+ *     previa, `recordHandoff(unassigned, entrega_fallida)` + `resetStage`.
+ *   - `"meta"` (o `null` con `whatsapp_status: "failed"`, por compatibilidad
+ *     con outcomes viejos que no traían `origenDelFallo`): Meta SÍ respondió
+ *     y lo rechazó — comportamiento de siempre, `rechazado_por_meta`.
  *
  * `yaEscalada` (5/9/2026): en el tool loop, devolución/queja terminan
  * SIEMPRE escaladas —por el modelo con la herramienta, o por la red de
  * seguridad forzada más abajo— y `escalateConversation` ya deja su propio
  * traspaso (`escalada` con asesor, `escalada_sin_asesor` sin uno) ANTES de
- * que se intente el envío final. Si ese envío es justo el que Meta rechaza,
- * escribir ADEMÁS `rechazado_por_meta` con `toKind: "unassigned"` pisaría esa
- * fila: como el conteo "Sin dueño" mira la ÚLTIMA fila de
- * `conversation_handoffs`, una conversación que sí quedó con asesor asignado
- * aparecería como sin dueño. Un solo traspaso por salida, el más específico:
- * con `yaEscalada` en true se deja el `log.warn` —Meta sí rechazó, y eso
- * tiene que verse— pero no se vuelve a llamar a `recordHandoff`.
+ * que se intente el envío final. Si ese envío es justo el que falla, escribir
+ * ADEMÁS un traspaso con `toKind: "unassigned"` pisaría esa fila: como el
+ * conteo "Sin dueño" mira la ÚLTIMA fila de `conversation_handoffs`, una
+ * conversación que sí quedó con asesor asignado aparecería como sin dueño.
+ * Un solo traspaso por salida, el más específico: con `yaEscalada` en true se
+ * deja el log —el fallo sí tiene que verse— pero no se vuelve a llamar a
+ * `recordHandoff` ni a `resetStage` (mismo motivo que la rama `"meta"`:
+ * `escalateConversation` ya dejó `journey_stage = "assigned"` y pisarlo con
+ * `null` disfrazaría de "sin escalar" un caso que sí tiene asesor).
  *
  * A3 (5/9/2026, tablero de Atascados): en la rama SIN escalar, este `return`
  * salía antes de que `runPlaybook`/`runTurnPhases` llegaran a su propio
@@ -575,12 +597,9 @@ async function deliver<T>(
  * salió) — el tablero seguía viendo "Clasificando" o "Herramienta" mucho
  * después de que el turno terminara, como si el cliente estuviera esperando
  * una fase que ya no existe. Se limpia acá, en el único lugar por el que
- * pasan los tres consumidores. NO se toca en la rama `yaEscalada`: ahí
- * `escalateConversation` ya dejó `journey_stage = "assigned"` (ver
- * `escalate.ts`) ANTES del intento de envío, y pisarlo con `null`
- * disfrazaría de "sin escalar" un caso que sí tiene asesor.
+ * pasan los tres consumidores.
  */
-async function rejectedByMeta(
+async function deliveryFailed(
   supabase: SupabaseClient<Database>,
   conversationId: string,
   entrega: DeliveryOutcome,
@@ -588,6 +607,18 @@ async function rejectedByMeta(
 ): Promise<boolean> {
   if (entrega.whatsapp_status !== "failed") return false;
 
+  if (entrega.origenDelFallo === "red") {
+    log.error("turno_envio_fallo_de_red", { conversationId, detalle: entrega.whatsapp_error_detail });
+    if (yaEscalada) return true;
+
+    await recordHandoff(supabase, { conversationId, toKind: "unassigned", reason: "entrega_fallida" });
+    await resetStage(supabase, conversationId, "turno_envio_fallo_de_red");
+    return true;
+  }
+
+  // origen "meta" (Meta respondió por HTTP, con o sin código) o `null` con
+  // `whatsapp_status: "failed"` (compatibilidad con outcomes que no traen
+  // `origenDelFallo`): comportamiento de siempre.
   if (yaEscalada) {
     log.warn("turno_rechazado_por_meta", {
       conversationId,
@@ -620,13 +651,13 @@ async function rejectedByMeta(
  *
  * Hallazgo 2 del plan: había TRES puertas en `runTurnPhases` que dejaban la
  * etapa congelada para siempre porque el único reseteo vivía en los caminos
- * que sí llegaban a enviar algo (o en `rejectedByMeta`, que tiene el suyo
+ * que sí llegaban a enviar algo (o en `deliveryFailed`, que tiene el suyo
  * propio por escribir además su traspaso específico). Medido en producción
  * el 7/9/2026: 17 conversaciones quedadas en `classifying` sin lock vigente,
  * la más vieja del 27/8/2026 — el corte de red de OpenRouter del 7/9 11:57
  * UTC pasó justo por la puerta de clasificación fallida.
  *
- * Mismo patrón que `rejectedByMeta`: esto es observabilidad del tablero de
+ * Mismo patrón que `deliveryFailed`: esto es observabilidad del tablero de
  * Atascados, nunca una barrera — si el UPDATE falla se registra y el turno
  * sigue exactamente igual. `evento` es el nombre de la salida que llamó
  * (aparece en el registro) para poder distinguir cuál de las puertas dejó el
@@ -817,7 +848,7 @@ async function runPlaybook(
     sendPlaybookReply(supabase, target, playbook)
   );
   if (!salida) return;
-  if (await rejectedByMeta(supabase, target.conversationId, salida)) return;
+  if (await deliveryFailed(supabase, target.conversationId, salida)) return;
 
   // Se etiqueta siempre que el escenario responda, escale o no: un escenario
   // que deja al cliente esperando también puede querer dejar marcado el caso.
@@ -1104,7 +1135,7 @@ async function runTurnPhases(
         sendAgentText(supabase, target, OFF_TOPIC_REPLY)
       );
       if (!salió) return;
-      if (await rejectedByMeta(supabase, conversationId, salió)) return;
+      if (await deliveryFailed(supabase, conversationId, salió)) return;
     }
 
     await supabase
@@ -1277,7 +1308,7 @@ async function runTurnPhases(
     // su traspaso antes de devolver (por el tool del modelo o por la red de
     // seguridad de arriba), así que si ya está en true acá el dueño de la
     // conversación ya quedó fijado y un rechazo de Meta no debe pisarlo.
-    if (await rejectedByMeta(supabase, conversationId, salida, outcome.escalated)) return;
+    if (await deliveryFailed(supabase, conversationId, salida, outcome.escalated)) return;
   }
 
   if (!outcome.escalated) {

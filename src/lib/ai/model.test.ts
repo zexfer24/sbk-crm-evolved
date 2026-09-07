@@ -38,7 +38,7 @@ vi.mock("ai", async (importOriginal) => ({
 
 import { currentAgentModelLabel, getAgentModel, getClassifierModel } from "@/lib/ai/model";
 
-const VARIABLES = ["AI_AGENT_MODEL", "AI_AGENT_PROVIDER", "AI_CLASSIFIER_MODEL"] as const;
+const VARIABLES = ["AI_AGENT_MODEL", "AI_AGENT_PROVIDER", "AI_CLASSIFIER_MODEL", "AI_AGENT_REASONING"] as const;
 const original: Record<string, string | undefined> = {};
 
 beforeEach(() => {
@@ -130,5 +130,67 @@ describe("costura para mover la clasificación de modelo", () => {
     process.env.AI_CLASSIFIER_MODEL = "gemini-3.1-flash-lite";
 
     expect(currentAgentModelLabel()).toBe("openai/gpt-5.6-luna");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// S6 (corrida "La IA ve lo que llega", 8/9/2026): `gpt-5.6-luna` no razona
+// -- es un alias de OpenRouter -- y `build()` le mandaba `reasoningEffort`
+// de todas formas: el AI SDK avisaba que la opción no se soportaba, 3-4
+// veces por turno, y el esfuerzo configurado nunca se aplicaba de verdad.
+// `AI_AGENT_REASONING=off` es el apagador; `on` (o cualquier otra cosa, o
+// nada) es el comportamiento de siempre.
+// ---------------------------------------------------------------------------
+describe("AI_AGENT_REASONING", () => {
+  it("sin la variable, el modelo del agente lleva reasoningEffort de siempre", () => {
+    const modelo = getAgentModel("medium");
+
+    expect(modelo.providerOptions).toEqual({ openai: { reasoningEffort: "medium" } });
+  });
+
+  it("con AI_AGENT_REASONING=off, el agente no lleva providerOptions", () => {
+    process.env.AI_AGENT_REASONING = "off";
+
+    const modelo = getAgentModel("medium");
+
+    expect(modelo.providerOptions).toBeUndefined();
+  });
+
+  it("con AI_AGENT_REASONING=off, el clasificador tampoco lleva providerOptions", () => {
+    process.env.AI_AGENT_REASONING = "off";
+
+    const modelo = getClassifierModel("clasificar");
+
+    expect(modelo.providerOptions).toBeUndefined();
+  });
+
+  it("con AI_AGENT_REASONING=on explícito, el esfuerzo se manda igual que sin la variable", () => {
+    process.env.AI_AGENT_REASONING = "on";
+
+    const modelo = getAgentModel("high");
+
+    expect(modelo.providerOptions).toEqual({ openai: { reasoningEffort: "high" } });
+  });
+
+  /**
+   * Un valor basura no puede apagar silenciosamente algo que sí se quería
+   * mandar: solo un "off" exacto (sin importar mayúsculas) apaga.
+   */
+  it("con un valor basura, se comporta como on", () => {
+    process.env.AI_AGENT_REASONING = "quizás";
+
+    const modelo = getAgentModel("medium");
+
+    expect(modelo.providerOptions).toEqual({ openai: { reasoningEffort: "medium" } });
+  });
+
+  it("con Google nunca hay providerOptions, tenga o no AI_AGENT_REASONING valor", () => {
+    process.env.AI_AGENT_MODEL = "gemini-3.1-flash-lite";
+    process.env.AI_AGENT_PROVIDER = "google";
+    process.env.AI_AGENT_REASONING = "on";
+
+    const modelo = getAgentModel("medium");
+
+    expect(modelo.providerOptions).toBeUndefined();
   });
 });

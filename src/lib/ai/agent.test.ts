@@ -278,6 +278,7 @@ const OUTCOME_NO_ENVIADO = {
   whatsapp_status: null as "sent" | "failed" | null,
   whatsapp_error_code: null,
   whatsapp_error_detail: null,
+  origenDelFallo: null as "meta" | "red" | null,
 };
 const sendPlaybookReplyMock = vi.fn<AnyMock>(async () => OUTCOME_NO_ENVIADO);
 const sendAgentTextMock = vi.fn<AnyMock>(async () => OUTCOME_NO_ENVIADO);
@@ -1130,6 +1131,7 @@ describe("runAgentTurn — escenarios predeterminados", () => {
       whatsapp_status: "failed" as const,
       whatsapp_error_code: 131047,
       whatsapp_error_detail: "Meta rechazó el envío",
+      origenDelFallo: "meta" as const,
     }));
 
     await runAgentTurn("conv-1");
@@ -1731,6 +1733,7 @@ describe("runAgentTurn — mensajes fuera de tema", () => {
       whatsapp_status: "failed" as const,
       whatsapp_error_code: 131047,
       whatsapp_error_detail: "Meta rechazó el envío",
+      origenDelFallo: "meta" as const,
     });
 
     await runAgentTurn("conv-1");
@@ -2124,6 +2127,110 @@ describe("runAgentTurn — salidas que limpian su etapa", () => {
 });
 
 /**
+ * S6, corrida "La IA ve lo que llega" (hallazgo 4, 8/9/2026). El corte de red
+ * de OpenRouter del 7/9 a las 11:57 UTC dejó dos envíos `failed` con
+ * `detalle: "fetch failed"` que el código de entonces trataba como rechazo
+ * de Meta. `deliveryFailed` (antes `rejectedByMeta`) ahora bifurca por
+ * `entrega.origenDelFallo`.
+ */
+describe("runAgentTurn — un corte de red no se confunde con un rechazo de Meta (S6)", () => {
+  const FALLO_DE_RED = {
+    whatsapp_message_id: null,
+    whatsapp_status: "failed" as const,
+    whatsapp_error_code: null,
+    whatsapp_error_detail: "fetch failed",
+    origenDelFallo: "red" as const,
+  };
+
+  it("la respuesta redactada del tool loop falla por red: entrega_fallida, no rechazado_por_meta, log de red, etapa reseteada", async () => {
+    const error = vi.spyOn(log, "error");
+    const warn = vi.spyOn(log, "warn");
+    sendAgentTextMock.mockResolvedValueOnce(FALLO_DE_RED);
+
+    await runAgentTurn("conv-1");
+
+    expect(error).toHaveBeenCalledWith("turno_envio_fallo_de_red", {
+      conversationId: "conv-1",
+      detalle: "fetch failed",
+    });
+    expect(warn).not.toHaveBeenCalledWith("turno_rechazado_por_meta", expect.anything());
+    expect(handoffCalls).toContainEqual(
+      expect.objectContaining({
+        p_conversation_id: "conv-1",
+        p_to_kind: "unassigned",
+        p_reason: "entrega_fallida",
+      })
+    );
+    expect(handoffCalls.some((call) => call.p_reason === "rechazado_por_meta")).toBe(false);
+    expect(conversationUpdates).toContainEqual({ journey_stage: null, active_tool: null });
+  });
+
+  it("el escenario de fase 0 falla por red: también entrega_fallida, no se etiqueta ni se escala", async () => {
+    const error = vi.spyOn(log, "error");
+    const pb = playbook({
+      afterSend: "escalate",
+      tags: [{ id: "tag-envio", label: "Envio", color: "accent" as const }],
+    });
+    fetchActivePlaybooksMock.mockResolvedValue([pb]);
+    matchPlaybookMock.mockResolvedValue({ playbook: pb, usage: NO_USAGE });
+    sendPlaybookReplyMock.mockImplementation(async () => FALLO_DE_RED);
+
+    await runAgentTurn("conv-1");
+
+    expect(contactTagUpserts).toHaveLength(0);
+    expect(escalateConversationMock).not.toHaveBeenCalled();
+    expect(error).toHaveBeenCalledWith("turno_envio_fallo_de_red", {
+      conversationId: "conv-1",
+      detalle: "fetch failed",
+    });
+    expect(handoffCalls).toContainEqual(
+      expect.objectContaining({ p_to_kind: "unassigned", p_reason: "entrega_fallida" })
+    );
+    expect(conversationUpdates).toContainEqual({ journey_stage: null, active_tool: null });
+  });
+
+  /**
+   * Mismo criterio que un rechazo de Meta: si ya hay una escalación previa
+   * (asesor asignado, traspaso `escalada` ya escrito), un fallo de red en el
+   * envío final NO agrega un segundo traspaso `unassigned` que pisaría al
+   * asesor ya asignado. Solo queda el log.
+   */
+  it("ya escalada + fallo de red: solo se registra el log, sin traspaso nuevo", async () => {
+    const error = vi.spyOn(log, "error");
+    classifyIntentMock.mockResolvedValue({
+      intent: "queja",
+      usage: { inputTokens: 5, outputTokens: 1, totalTokens: 6 },
+    });
+    escalateConversationMock.mockImplementation(async (...args: unknown[]) => {
+      const [supabaseArg, params] = args as [
+        { rpc: (fn: string, params: Record<string, unknown>) => Promise<unknown> },
+        { conversationId: string },
+      ];
+      await supabaseArg.rpc("record_handoff", {
+        p_conversation_id: params.conversationId,
+        p_to_kind: "human",
+        p_reason: "escalada",
+        p_to_id: "asesor-42",
+      });
+      return { escalated: true, assignedAgentName: "María" };
+    });
+    sendAgentTextMock.mockResolvedValueOnce(FALLO_DE_RED);
+
+    await runAgentTurn("conv-1");
+
+    expect(escalateConversationMock).toHaveBeenCalledTimes(1);
+    expect(handoffCalls).toHaveLength(1);
+    expect(handoffCalls[0]).toMatchObject({ p_to_kind: "human", p_reason: "escalada", p_to_id: "asesor-42" });
+    expect(error).toHaveBeenCalledWith("turno_envio_fallo_de_red", {
+      conversationId: "conv-1",
+      detalle: "fetch failed",
+    });
+    // journey_stage ya quedó "assigned" por la escalación: no se pisa con null.
+    expect(conversationUpdates).not.toContainEqual({ journey_stage: null, active_tool: null });
+  });
+});
+
+/**
  * Corrección 5/9/2026 (HUECO 2). En devolución/queja, la escalación forzada
  * (`escalateConversation`) corre ANTES del envío final y ya deja su propio
  * traspaso —`escalada` con asesor, `escalada_sin_asesor` sin uno—. Si ese
@@ -2167,6 +2274,7 @@ describe("runAgentTurn — un solo traspaso por salida cuando la escalación for
       whatsapp_status: "failed" as const,
       whatsapp_error_code: 131047,
       whatsapp_error_detail: "Meta rechazó el envío",
+      origenDelFallo: "meta" as const,
     });
 
     await runAgentTurn("conv-1");
@@ -2202,6 +2310,7 @@ describe("runAgentTurn — un solo traspaso por salida cuando la escalación for
       whatsapp_status: "failed" as const,
       whatsapp_error_code: 131047,
       whatsapp_error_detail: "Meta rechazó el envío",
+      origenDelFallo: "meta" as const,
     });
 
     await runAgentTurn("conv-1");

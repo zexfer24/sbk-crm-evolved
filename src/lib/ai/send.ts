@@ -3,7 +3,7 @@ import type { SupabaseClient } from "@supabase/supabase-js";
 import type { Database } from "@/lib/supabase/database.types";
 import type { Playbook } from "@/lib/types";
 import type { TurnTarget } from "@/lib/ai/turn-target";
-import { metaErrorCode, sendWhatsappMedia, sendWhatsappText } from "@/lib/whatsapp/meta-client";
+import { MetaApiError, metaErrorCode, sendWhatsappMedia, sendWhatsappText } from "@/lib/whatsapp/meta-client";
 import { signedUrlForSending } from "@/lib/media-link";
 import { errorText, log } from "@/lib/log";
 
@@ -53,12 +53,26 @@ function accessTokenFor(target: TurnTarget): string | null {
  * en `messages` pero el turno seguía como si hubiera respondido: la
  * conversación quedaba sin dueño en la bitácora aunque el cliente no
  * hubiera recibido nada.
+ *
+ * `origenDelFallo` (S6, corrida "La IA ve lo que llega", hallazgo 4 del
+ * plan, 8/9/2026): el corte de red de OpenRouter del 7/9 a las 11:57 UTC dejó
+ * dos `ia_envio_fallido` con `detalle: "fetch failed"` — un `TypeError` de
+ * `fetch`, no una respuesta de Meta — y `agent.ts` los trató igual que un
+ * rechazo real de la Graph API, escribiendo `rechazado_por_meta`. Un corte de
+ * red no es un rechazo: Meta nunca llegó a ver el mensaje. `entregar()` lo
+ * distingue por el TIPO de excepción, no por si trae código: `MetaApiError`
+ * significa que Meta SÍ respondió por HTTP (con o sin `code` numérico en el
+ * cuerpo — un 5xx sin código sigue siendo una respuesta de Meta); cualquier
+ * otra excepción (`fetch failed`, DNS, timeout, abortado) nunca tocó la Graph
+ * API. `null` cuando no hubo fallo (`whatsapp_status` "sent" o no se intentó
+ * nada). NO es columna de `messages` — ver `columnasDeEntrega`.
  */
 export interface DeliveryOutcome {
   whatsapp_message_id: string | null;
   whatsapp_status: "sent" | "failed" | null;
   whatsapp_error_code: number | null;
   whatsapp_error_detail: string | null;
+  origenDelFallo: "meta" | "red" | null;
 }
 
 /** Canal simulado: no se intentó nada, así que no hay ni éxito ni fallo que contar. */
@@ -67,7 +81,27 @@ const NO_ENVIADO: DeliveryOutcome = {
   whatsapp_status: null,
   whatsapp_error_code: null,
   whatsapp_error_detail: null,
+  origenDelFallo: null,
 };
+
+/**
+ * Las cuatro columnas de `messages` que describen una entrega, y NADA más.
+ *
+ * Antes de S6 los dos inserts hacían `...entrega`: esparcir el objeto entero
+ * funcionaba mientras `DeliveryOutcome` tuviera exactamente esas cuatro
+ * claves. Sumarle `origenDelFallo` (que no es columna — la tabla no la tiene)
+ * habría roto el insert si se siguiera esparciendo tal cual. Este helper es
+ * la lista explícita que hace ese acoplamiento imposible de romper por
+ * accidente la próxima vez que `DeliveryOutcome` gane un campo.
+ */
+function columnasDeEntrega(entrega: DeliveryOutcome) {
+  return {
+    whatsapp_message_id: entrega.whatsapp_message_id,
+    whatsapp_status: entrega.whatsapp_status,
+    whatsapp_error_code: entrega.whatsapp_error_code,
+    whatsapp_error_detail: entrega.whatsapp_error_detail,
+  };
+}
 
 async function entregar(
   target: TurnTarget,
@@ -83,18 +117,25 @@ async function entregar(
       whatsapp_status: "sent",
       whatsapp_error_code: null,
       whatsapp_error_detail: null,
+      origenDelFallo: null,
     };
   } catch (err) {
+    // Meta respondió (con o sin código): rechazo de verdad. Cualquier otra
+    // excepción nunca llegó a la Graph API — es un fallo de red, no un
+    // rechazo de Meta (hallazgo 4, corte de OpenRouter del 7/9/2026).
+    const origen: "meta" | "red" = err instanceof MetaApiError ? "meta" : "red";
     log.error("ia_envio_fallido", {
       conversationId: target.conversationId,
       codigo: metaErrorCode(err),
       detalle: errorText(err),
+      origen,
     });
     return {
       whatsapp_message_id: null,
       whatsapp_status: "failed",
       whatsapp_error_code: metaErrorCode(err),
       whatsapp_error_detail: errorText(err),
+      origenDelFallo: origen,
     };
   }
 }
@@ -130,7 +171,7 @@ export async function sendAgentText(
     message_type: "text",
     content: text,
     is_auto_reply: opciones?.isAutoReply ?? false,
-    ...entrega,
+    ...columnasDeEntrega(entrega),
   });
 
   return entrega;
@@ -160,7 +201,7 @@ async function sendAgentMedia(
     sender_type: "ai",
     message_type: mediaType,
     media_url: url,
-    ...entrega,
+    ...columnasDeEntrega(entrega),
   });
 
   return entrega;

@@ -7,18 +7,44 @@ import { rateLimitMiddleware } from "@/lib/ai/rate-limit";
 
 // ---------------------------------------------------------------------------
 // Selección de modelo por variable de entorno: en producción, GPT-5.6 Luna
-// (OpenAI, directo, sin gateway); en desarrollo, Gemini 3.1 Flash-Lite. Cambiar
-// de modelo o de proveedor es cosa del .env, no del código.
+// por un proveedor OpenAI-COMPATIBLE vía `OPENAI_BASE_URL` (hoy OpenRouter,
+// no OpenAI directo — el comentario que decía "directo, sin gateway" mentía:
+// el corte del 7/9/2026 a las 11:57 UTC fue `getaddrinfo EAI_AGAIN
+// openrouter.ai`, no un problema de OpenAI); en desarrollo, Gemini 3.1
+// Flash-Lite. Cambiar de modelo o de proveedor es cosa del .env, no del
+// código.
 //
 // Todo modelo que sale de acá va envuelto en el control de ritmo
 // (ver rate-limit.ts). Es el único punto donde se construye un modelo, así
 // que es el único punto donde hay que imponerlo: no hay forma de conseguir un
 // modelo sin freno sin escribir una línea nueva acá.
+//
+// `AI_AGENT_REASONING` (S6, corrida "La IA ve lo que llega", 8/9/2026):
+// `gpt-5.6-luna`, el modelo real de producción, NO razona -- es un alias de
+// OpenRouter sin soporte para `reasoningEffort`, y `build()` se lo mandaba
+// de todas formas a TODO modelo del proveedor OpenAI. El AI SDK avisaba
+// `The feature "reasoningEffort" is not supported` 3-4 veces por turno (una
+// por llamada: reconocimiento de escenario, clasificación de intención,
+// redacción) y el esfuerzo configurado nunca se aplicaba -- el warning era
+// ruido, pero el silencio de fondo era que la perilla no hacía nada. La
+// variable gobierna el proceso completo, no el nombre del modelo: un
+// `gpt-5.6-luna` no razona hoy, pero un `gpt-5.6` a secas sí podría, así que
+// decidir por heurística sobre el id habría sido adivinar.
 // ---------------------------------------------------------------------------
 
 type AiProvider = "openai" | "google";
 
 export type ReasoningEffort = "none" | "low" | "medium" | "high";
+
+/**
+ * `on` por default: falta la variable, o trae cualquier cosa que no sea
+ * exactamente `"off"`, y el esfuerzo se manda igual que siempre. Solo un
+ * `"off"` explícito lo apaga -- así un typo en el .env ("Off", "0", vacío)
+ * no apaga silenciosamente algo que sí se quería mandar.
+ */
+function reasoningEnabled(): boolean {
+  return process.env.AI_AGENT_REASONING?.trim().toLowerCase() !== "off";
+}
 
 function resolveModelId(): string {
   return process.env.AI_AGENT_MODEL?.trim() || "gpt-5.6-luna";
@@ -71,15 +97,21 @@ function build(modelId: string, effort: ReasoningEffort, options: BuildOptions):
     return { model: wrapLanguageModel({ model: google(modelId), middleware }) };
   }
 
-  return {
-    model: wrapLanguageModel({ model: openai(modelId), middleware }),
-    providerOptions: { openai: { reasoningEffort: effort } },
-  };
+  const model = wrapLanguageModel({ model: openai(modelId), middleware });
+
+  // Sin `providerOptions` con `AI_AGENT_REASONING=off`: hoy el modelo de
+  // producción (Luna, vía OpenRouter) no soporta `reasoningEffort`, y
+  // mandarlo igual solo producía el warning del AI SDK sin aplicar nada.
+  if (!reasoningEnabled()) return { model };
+
+  return { model, providerOptions: { openai: { reasoningEffort: effort } } };
 }
 
 /**
  * Modelo que redacta y usa herramientas. `effort` solo aplica al proveedor
- * OpenAI; Google lo ignora silenciosamente.
+ * OpenAI, y solo con `AI_AGENT_REASONING` en `on` (default); con `off` -- o
+ * con Google, que lo ignora silenciosamente -- no viaja ningún
+ * `providerOptions`.
  *
  * Sin reintentos ante rate limit: este es el camino que termina en un envío al
  * cliente, y repetirlo sin clave de idempotencia arriesga un duplicado. Un
