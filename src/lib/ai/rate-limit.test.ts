@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { APICallError } from "@ai-sdk/provider";
 import { rateLimitMiddleware, resetRitmoParaPruebas } from "@/lib/ai/rate-limit";
+import { log } from "@/lib/log";
 
 // ---------------------------------------------------------------------------
 // El control de ritmo es lo único que hay entre un pico de mensajes y el 429
@@ -113,6 +114,114 @@ describe("freno de ritmo", () => {
     expect(emitidas).toBe(4);
 
     // Las dos frenadas siguen vivas, esperando a que se abra la ventana.
+    void enCurso;
+  });
+});
+
+describe("los topes salen del entorno", () => {
+  /**
+   * 7/9/2026: el "15 contra 20" viejo era el techo de la cuenta gratuita de
+   * OpenRouter, que ya no aplica a producción (`is_free_tier: false`,
+   * `limit: null`). Los dos frenos siguen leyéndose del entorno, solo cambia
+   * a qué valor caen sin variable — eso lo prueba el describe de más abajo.
+   */
+  it("AI_MAX_CONCURRENT_REQUESTS de uno deja pasar una petición a la vez", async () => {
+    process.env.AI_MAX_CONCURRENT_REQUESTS = "1";
+    process.env.AI_MAX_REQUESTS_PER_MINUTE = "100";
+    const middleware = rateLimitMiddleware({ fase: "prueba" });
+
+    let enVuelo = 0;
+    let pico = 0;
+    const generar = async () => {
+      enVuelo++;
+      pico = Math.max(pico, enVuelo);
+      await new Promise((r) => setTimeout(r, 20));
+      enVuelo--;
+      return "listo";
+    };
+
+    await Promise.all(Array.from({ length: 4 }, () => generarCon(middleware, generar)));
+
+    expect(pico).toBe(1);
+  });
+
+  /**
+   * Con AI_MAX_REQUESTS_PER_MINUTE=2 la tercera petición no puede salir
+   * dentro de la ventana: se queda dormida en reservarHueco y avisa
+   * `ia_ritmo_al_tope`. No se espera el minuto real —el test solo confirma
+   * que la promesa sigue viva a los pocos ms y que el warn ya salió—, mismo
+   * patrón que "frena la petición que se pasa del tope por minuto" de arriba.
+   */
+  it("AI_MAX_REQUESTS_PER_MINUTE de dos frena la tercera y avisa ia_ritmo_al_tope", async () => {
+    process.env.AI_MAX_CONCURRENT_REQUESTS = "10";
+    process.env.AI_MAX_REQUESTS_PER_MINUTE = "2";
+    const warnSpy = vi.spyOn(log, "warn").mockImplementation(() => {});
+    const middleware = rateLimitMiddleware({ fase: "prueba" });
+
+    let emitidas = 0;
+    const generar = async () => {
+      emitidas++;
+      return "listo";
+    };
+
+    const enCurso = Promise.all(Array.from({ length: 3 }, () => generarCon(middleware, generar)));
+
+    await new Promise((r) => setTimeout(r, 50));
+    expect(emitidas).toBe(2);
+    expect(warnSpy).toHaveBeenCalledWith("ia_ritmo_al_tope", expect.objectContaining({ tope: 2 }));
+
+    // La tercera sigue viva, esperando a que se abra la ventana.
+    void enCurso;
+    warnSpy.mockRestore();
+  });
+});
+
+describe("sin variables en el entorno", () => {
+  /**
+   * Documenta el cambio del 7/9/2026: los defaults pasan de 3/15 a 12/120.
+   * Se afirma con comportamiento (no hay export de solo lectura para esto):
+   * con AI_MAX_CONCURRENT_REQUESTS ausente, la petición 12 sale junto con las
+   * primeras once y la 13 se queda esperando cupo.
+   */
+  it("el default de concurrencia es doce", async () => {
+    process.env.AI_MAX_REQUESTS_PER_MINUTE = "1000";
+    const middleware = rateLimitMiddleware({ fase: "prueba" });
+
+    let enVuelo = 0;
+    let pico = 0;
+    const generar = async () => {
+      enVuelo++;
+      pico = Math.max(pico, enVuelo);
+      await new Promise((r) => setTimeout(r, 30));
+      enVuelo--;
+      return "listo";
+    };
+
+    await Promise.all(Array.from({ length: 20 }, () => generarCon(middleware, generar)));
+
+    expect(pico).toBe(12);
+  });
+
+  /**
+   * Mismo método que "frena la petición que se pasa del tope por minuto":
+   * sin AI_MAX_REQUESTS_PER_MINUTE, la petición 121 tiene que quedarse
+   * esperando y las primeras 120 salir.
+   */
+  it("el default de ritmo es ciento veinte por minuto", async () => {
+    process.env.AI_MAX_CONCURRENT_REQUESTS = "1000";
+    const middleware = rateLimitMiddleware({ fase: "prueba" });
+
+    let emitidas = 0;
+    const generar = async () => {
+      emitidas++;
+      return "listo";
+    };
+
+    const enCurso = Promise.all(Array.from({ length: 121 }, () => generarCon(middleware, generar)));
+
+    await new Promise((r) => setTimeout(r, 150));
+    expect(emitidas).toBe(120);
+
     void enCurso;
   });
 });

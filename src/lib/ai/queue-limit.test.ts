@@ -44,6 +44,7 @@ beforeEach(async () => {
 afterEach(() => {
   delete process.env.AGENT_MAX_CONCURRENT_TURNS;
   delete process.env.AGENT_MAX_TURNS_PER_MINUTE;
+  delete process.env.AGENT_QUEUE_MAX_PER_RUN;
 });
 
 describe("presupuesto de una pasada", () => {
@@ -102,14 +103,14 @@ describe("presupuesto de una pasada", () => {
     expect(await pendingAgentTurns()).toBe(8);
   });
 
-  /** Sin límite, la pasada del cron sí drena su tanda entera. */
+  /** Sin límite explícito, la pasada del cron drena hasta su tope por pasada. */
   it("el cron sigue drenando hasta su tope por pasada", async () => {
+    process.env.AGENT_QUEUE_MAX_PER_RUN = "10";
     const ids = Array.from({ length: 12 }, (_, i) => `c${i}`);
     await enqueueAgentTurns(ids, { debounceSeconds: 0 });
 
     await processQueuedTurns();
 
-    // MAX_PER_RUN es diez.
     expect(runAgentTurnMock).toHaveBeenCalledTimes(10);
     expect(await pendingAgentTurns()).toBe(2);
   });
@@ -120,6 +121,48 @@ describe("presupuesto de una pasada", () => {
 
     expect(runAgentTurnMock).not.toHaveBeenCalled();
     expect(resultado).toEqual({ processed: 0, failed: 0, deferred: 0 });
+  });
+});
+
+describe("tope por pasada sale del entorno", () => {
+  /**
+   * 7/9/2026: MAX_PER_RUN era una constante fija en diez. Con la cola
+   * destopada (ver queue.ts) el tope por pasada tiene que poder subirse en la
+   * rampa sin recompilar, igual que maxTurnsPerMinute.
+   */
+  it("respeta AGENT_QUEUE_MAX_PER_RUN sin límite explícito", async () => {
+    process.env.AGENT_QUEUE_MAX_PER_RUN = "3";
+    const ids = Array.from({ length: 5 }, (_, i) => `c${i}`);
+    await enqueueAgentTurns(ids, { debounceSeconds: 0 });
+
+    await processQueuedTurns();
+
+    expect(runAgentTurnMock).toHaveBeenCalledTimes(3);
+    expect(await pendingAgentTurns()).toBe(2);
+  });
+
+  /** Basura en la variable no puede tirar la cola con un NaN: cae al default. */
+  it("con basura en la variable cae al default de treinta", async () => {
+    process.env.AGENT_QUEUE_MAX_PER_RUN = "muchos";
+    const ids = Array.from({ length: 32 }, (_, i) => `c${i}`);
+    await enqueueAgentTurns(ids, { debounceSeconds: 0 });
+
+    await processQueuedTurns();
+
+    expect(runAgentTurnMock).toHaveBeenCalledTimes(30);
+    expect(await pendingAgentTurns()).toBe(2);
+  });
+
+  /** Cero tampoco es un tope válido: mismo camino que la basura, al default. */
+  it("con cero en la variable cae al default de treinta", async () => {
+    process.env.AGENT_QUEUE_MAX_PER_RUN = "0";
+    const ids = Array.from({ length: 32 }, (_, i) => `c${i}`);
+    await enqueueAgentTurns(ids, { debounceSeconds: 0 });
+
+    await processQueuedTurns();
+
+    expect(runAgentTurnMock).toHaveBeenCalledTimes(30);
+    expect(await pendingAgentTurns()).toBe(2);
   });
 });
 
@@ -151,5 +194,26 @@ describe("tope de turnos por minuto", () => {
     await Promise.all([processQueuedTurns(), processQueuedTurns(), processQueuedTurns()]);
 
     expect(runAgentTurnMock).toHaveBeenCalledTimes(2);
+  });
+
+  /**
+   * 7/9/2026: con el default viejo de cuatro por minuto, una pasada normal
+   * devolvía turnos a la cola (`deferred`) apenas pasaba de cuatro
+   * conversaciones — el síntoma (`cola_ritmo_al_tope`) detrás de la espera de
+   * hasta hora y media medida en producción. Con el ritmo destopado (default
+   * treinta, y acá directamente sin variable) una tanda chica no debería
+   * tocar ese camino.
+   */
+  it("con ritmo destopado una pasada no deja deferred", async () => {
+    delete process.env.AGENT_MAX_TURNS_PER_MINUTE;
+
+    const ids = Array.from({ length: 8 }, (_, i) => `c${i}`);
+    await enqueueAgentTurns(ids, { debounceSeconds: 0 });
+
+    const resultado = await processQueuedTurns();
+
+    expect(resultado.deferred).toBe(0);
+    expect(runAgentTurnMock).toHaveBeenCalledTimes(8);
+    expect(await pendingAgentTurns()).toBe(0);
   });
 });

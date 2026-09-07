@@ -18,8 +18,22 @@ import { errorText, log } from "@/lib/log";
 // de turnos simultáneos de TODO el sistema, no de cada instancia.
 // ---------------------------------------------------------------------------
 
-/** Tope de turnos por pasada. Evita que una tanda grande agote el tiempo de la petición. */
-const MAX_PER_RUN = 10;
+/**
+ * Tope de turnos por pasada. Evita que una tanda grande agote el tiempo de la
+ * petición.
+ *
+ * Fijo en diez hasta el 7/9/2026. Medido ese día contra producción (88
+ * turnos): el turno completo tarda 7,2 s de mediana — lo que espera un
+ * cliente no es el modelo, es la COLA (11,2 min de mediana, p90 32 min, hasta
+ * 90 min con 360 turnos acumulados a un ritmo de cuatro por minuto). Se lee
+ * en cada pasada, con el mismo patrón que maxTurnsPerMinute, para poder
+ * subirlo en la rampa sin recompilar la imagen — ver "Rampa de los topes" en
+ * docs/PRODUCCION.md.
+ */
+function maxPerRun(): number {
+  const configurado = Number(process.env.AGENT_QUEUE_MAX_PER_RUN);
+  return Number.isFinite(configurado) && configurado > 0 ? configurado : 30;
+}
 
 /**
  * Silencio que se espera antes de atender un chat cuando el mensaje parece
@@ -115,10 +129,16 @@ const WAKE_MARGIN_MS = 500;
  * ritmo hacia el proveedor es src/lib/ai/rate-limit.ts, y es el único sitio
  * donde se controla. Este tope sigue siendo útil por otra cosa: acota cuánta
  * conversación tiene el sistema abierta a la vez.
+ *
+ * Default subido de 3 a 8 el 7/9/2026 (rampa "La respuesta llega en siete
+ * segundos", escalón 1). El freno de emergencia real no es este número ni el
+ * de abajo: es `agent_can_run()` —interruptor global + tope de gasto diario—
+ * consultado en CADA turno (ver runAgentTurn), así que apagar la IA a mitad
+ * de tanda sigue matando lo que quede sin gastar una llamada más al modelo.
  */
 function maxConcurrentTurns(): number {
   const configurado = Number(process.env.AGENT_MAX_CONCURRENT_TURNS);
-  return Number.isFinite(configurado) && configurado > 0 ? configurado : 3;
+  return Number.isFinite(configurado) && configurado > 0 ? configurado : 8;
 }
 
 /**
@@ -131,14 +151,28 @@ function maxConcurrentTurns(): number {
  * exactamente lo que pasó el 26 de agosto de 2026, cuando salieron ocho
  * mensajes en un minuto con AGENT_MAX_CONCURRENT_TURNS en 3.
  *
- * Cuatro por minuto es deliberadamente lento. El valor de que sea lento es
- * que apagar el interruptor alcance a frenar algo: a este ritmo, una tanda
- * equivocada son cuatro clientes antes de que alguien reaccione, no
- * veinticuatro.
+ * Cuatro por minuto fue deliberadamente lento hasta el 7/9/2026, pero la
+ * demanda real no lo justificaba: medido ese día entre 12:00 y 17:00 UTC, el
+ * tráfico entrante fue 2,54 conversaciones/min de media con picos de 6 — muy
+ * por debajo del tope — y aun así 17 de 259 minutos lo superaron, con 27
+ * `cola_ritmo_al_tope` en los primeros 18 minutos tras un deploy. A cuatro
+ * por minuto, una noche o la IA volviendo de estar apagada dejan 360 turnos
+ * en cola y el último cliente espera 90 minutos: la cola es FIFO por
+ * vencimiento, así que la espera es siempre cola ÷ este número.
+ *
+ * El freno de emergencia real ya no es la lentitud de este número: es
+ * `agent_can_run()` (interruptor global + tope de gasto diario, $10/día),
+ * consultado en CADA turno — apagar la IA sigue frenando de inmediato, sin
+ * depender de que este tope esté bajo. Default subido a 30 el 7/9/2026
+ * (rampa "La respuesta llega en siete segundos"; en Dokploy el operador lo
+ * carga a mano por escalón, ver docs/PRODUCCION.md, "Rampa de los topes") —
+ * subirlo sin subir también AI_MAX_REQUESTS_PER_MINUTE/AI_MAX_CONCURRENT_REQUESTS
+ * (rate-limit.ts) solo cambia dónde se frena: de `cola_ritmo_al_tope` acá a
+ * `ia_ritmo_al_tope` durmiendo dentro del turno.
  */
 function maxTurnsPerMinute(): number {
   const configurado = Number(process.env.AGENT_MAX_TURNS_PER_MINUTE);
-  return Number.isFinite(configurado) && configurado > 0 ? configurado : 4;
+  return Number.isFinite(configurado) && configurado > 0 ? configurado : 30;
 }
 
 /**
@@ -269,19 +303,19 @@ export interface QueueRunResult {
  * debounceSecondsFor), lanza una pasada por ventana y no una sola.
  *
  * `limit` es lo que arregla el agujero del 26 de agosto de 2026. Esto corría
- * sin límite, o sea con el MAX_PER_RUN de diez, sobre la cola COMPARTIDA: cada
- * mensaje entrante de WhatsApp drenaba hasta diez turnos del atraso. El
- * comentario del barrido decía que el drenado lo hacía el cron, diez turnos
- * cada cinco minutos, y que esa lentitud era el freno de emergencia — pero el
- * mecanismo no estaba conectado y el ritmo lo terminaba poniendo el tráfico
- * entrante. En cuatro minutos entraron veintisiete mensajes de clientes y
- * salieron veinticuatro respuestas.
+ * sin límite, o sea con el tope por pasada de entonces (diez), sobre la cola
+ * COMPARTIDA: cada mensaje entrante de WhatsApp drenaba hasta diez turnos del
+ * atraso. El comentario del barrido decía que el drenado lo hacía el cron, y
+ * que esa lentitud era el freno de emergencia — pero el mecanismo no estaba
+ * conectado y el ritmo lo terminaba poniendo el tráfico entrante. En cuatro
+ * minutos entraron veintisiete mensajes de clientes y salieron veinticuatro
+ * respuestas.
  *
  * Ahora el webhook drena como mucho lo que él mismo encoló: un mensaje
- * entrante puede provocar un turno, no diez.
+ * entrante puede provocar un turno, no diez ni treinta.
  */
 export async function processAfterDebounce(
-  limit = MAX_PER_RUN,
+  limit = maxPerRun(),
   debounceSeconds = DEBOUNCE_SECONDS
 ): Promise<QueueRunResult> {
   await new Promise((resolve) => setTimeout(resolve, debounceSeconds * 1000 + WAKE_MARGIN_MS));
@@ -298,7 +332,7 @@ export async function processAfterDebounce(
  * detrás de otro, y con el modelo tardando segundos eso hacía esperar a
  * clientes que no tenían nada que ver entre sí.
  */
-export async function processQueuedTurns(limit = MAX_PER_RUN): Promise<QueueRunResult> {
+export async function processQueuedTurns(limit = maxPerRun()): Promise<QueueRunResult> {
   const redis = getRedis();
   const cola = createAgentQueue(redis);
   const cupos = createTurnSlots(redis, {

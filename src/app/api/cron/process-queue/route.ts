@@ -29,7 +29,11 @@ import { createAdminClient } from "@/lib/supabase/admin";
 // dejaría lo reconciliado esperando esa vuelta completa, justo el retraso
 // que el reconciliador vino a evitar.
 //
-// Se llama desde un cron externo cada pocos minutos (ver docs/PRODUCCION.md).
+// Se llama desde un cron externo cada minuto (cada 5 minutos hasta el
+// 7/9/2026: ver docs/PRODUCCION.md, "Rampa de los topes"). El drenado no
+// depende de este intervalo para ir rápido — eso lo hace el propio webhook,
+// con el tope de AGENT_MAX_TURNS_PER_MINUTE (src/lib/ai/queue.ts); esto sigue
+// siendo solo la red de seguridad para lo que ese camino no cubre.
 // ---------------------------------------------------------------------------
 
 export const dynamic = "force-dynamic";

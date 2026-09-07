@@ -15,13 +15,14 @@ import { errorText, log } from "@/lib/log";
 // que la IA tiene permitido atender, para que el atraso deje de crecer en
 // paralelo a la IA funcionando.
 //
-// El drenado NO se hace acá. La cola la vacía el cron de process-queue, diez
-// turnos cada cinco minutos, y esa lentitud es a propósito: runAgentTurn
-// vuelve a preguntar `agent_can_run` en CADA turno, así que apagar el
-// interruptor a mitad de tanda mata lo que quede sin gastar una sola llamada
-// al modelo. Drenando a toda velocidad —el sistema da ~1,4 chats por
-// segundo— la tanda entera saldría antes de que nadie alcance a leer la
-// primera respuesta, y entonces el freno de emergencia no frenaría nada.
+// El drenado NO se hace acá. La cola la vacía el webhook y, como red de
+// seguridad, el cron de process-queue (ver docs/PRODUCCION.md, "Rampa de los
+// topes"): el freno de emergencia real no es la lentitud del drenado —eso
+// cambió el 7/9/2026, los tres frenos de la cola estaban calibrados muy por
+// debajo de la demanda real y eso era la causa de hasta 90 min de espera—
+// sino que runAgentTurn vuelve a preguntar `agent_can_run` en CADA turno: así
+// que apagar el interruptor a mitad de tanda mata lo que quede sin gastar
+// una sola llamada al modelo, sin depender de qué tan rápido drene la cola.
 // ---------------------------------------------------------------------------
 
 export const dynamic = "force-dynamic";
@@ -41,9 +42,11 @@ const SPACING_SECONDS = 1;
  * tiene memoria de que ya se pulsó. Con la tanda a medio drenar, el segundo
  * pulso re-encoló todo lo que no había salido.
  *
- * Media hora es lo que tarda una tanda normal en drenar al ritmo del cron. Si
- * alguien necesita relanzar antes, el mensaje de error le dice cuántos turnos
- * quedan pendientes, que es el dato con el que se decide.
+ * Media hora es un margen amplio, no una medida del tiempo real de drenado
+ * (que desde el 7/9/2026 depende de AGENT_MAX_TURNS_PER_MINUTE, configurable,
+ * no de un ritmo fijo del cron). Si alguien necesita relanzar antes, el
+ * mensaje de error le dice cuántos turnos quedan pendientes, que es el dato
+ * con el que se decide.
  */
 const SWEEP_LOCK_SECONDS = 1800;
 

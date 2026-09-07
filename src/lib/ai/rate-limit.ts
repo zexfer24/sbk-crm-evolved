@@ -23,9 +23,17 @@ import { errorText, log } from "@/lib/log";
 //   1. Concurrencia: cuántas peticiones pueden estar en vuelo a la vez.
 //   2. Ritmo: cuántas pueden salir por minuto, en ventana deslizante.
 //
-// El objetivo de ritmo va DEBAJO del techo real (15 contra 20) porque los
-// reintentos también gastan cuota: apuntando a 20, el primer 429 dejaría la
-// ventana sin margen para reintentar y el turno moriría igual.
+// El "15 contra 20" de este comentario hasta el 7/9/2026 venía de la cuenta
+// gratuita de OpenRouter. Consultado ese día `https://openrouter.ai/api/v1/key`
+// contra la llave de producción: `is_free_tier: false`, `limit: null` y el
+// campo `rate_limit` viene deprecado — el techo de 20/min no existe más. Lo
+// que sí sigue siendo cierto, y por eso los dos frenos de acá se suben
+// SIEMPRE juntos con AGENT_MAX_TURNS_PER_MINUTE (queue.ts): un turno gasta
+// ≈3,4 peticiones (escenario + intención + 1-2 pasos de redacción), así que
+// 15 peticiones/min son en realidad 4,4 turnos/min — subir solo el tope de
+// turnos sin subir estos dos no acelera nada, solo cambia el freno visible de
+// `cola_ritmo_al_tope` a `ia_ritmo_al_tope` durmiendo hasta 60 s DENTRO del
+// turno ya empezado, que es peor: el turno queda tomado todo ese rato.
 //
 // Alcance: el estado es por proceso. Con una sola instancia —que es como corre
 // hoy— es el ritmo real del sistema. Si algún día hay varias, el tope por
@@ -52,16 +60,25 @@ const TOPE_ESPERA_SEGUNDOS = 60;
  */
 const JITTER_SEGUNDOS = 3;
 
-/** Peticiones en vuelo a la vez. Tres es el arranque; se ajusta sin recompilar. */
+/**
+ * Peticiones en vuelo a la vez. Default subido de 3 a 12 el 7/9/2026 (rampa
+ * "La respuesta llega en siete segundos"): el techo de 20/min que justificaba
+ * el valor viejo era de la cuenta gratuita de OpenRouter y ya no existe, ver
+ * el encabezado. Se ajusta sin recompilar.
+ */
 function topeConcurrente(): number {
   const configurado = Number(process.env.AI_MAX_CONCURRENT_REQUESTS);
-  return Number.isFinite(configurado) && configurado > 0 ? configurado : 3;
+  return Number.isFinite(configurado) && configurado > 0 ? configurado : 12;
 }
 
-/** Objetivo de ritmo. Debajo del techo del proveedor a propósito: ver el encabezado. */
+/**
+ * Objetivo de ritmo. Default subido de 15 a 120 el 7/9/2026, junto con
+ * topeConcurrente y AGENT_MAX_TURNS_PER_MINUTE (ver el encabezado): el techo
+ * real de producción no tiene límite fijo (`limit: null`).
+ */
 function topePorMinuto(): number {
   const configurado = Number(process.env.AI_MAX_REQUESTS_PER_MINUTE);
-  return Number.isFinite(configurado) && configurado > 0 ? configurado : 15;
+  return Number.isFinite(configurado) && configurado > 0 ? configurado : 120;
 }
 
 function dormir(ms: number): Promise<void> {

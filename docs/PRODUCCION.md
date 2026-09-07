@@ -28,6 +28,11 @@ Para producción, copia `.env.production.example`. Las que **no pueden faltar**:
 | `AI_AGENT_PROVIDER` / `AI_AGENT_MODEL` | Proveedor y modelo del agente |
 | `AI_AGENT_REASONING` | `on`/`off`, default `on`. En `off` el agente y el clasificador no mandan `reasoningEffort` al proveedor. Ponla en `off` en producción mientras el modelo sea `gpt-5.6-luna` vía OpenRouter: no soporta razonamiento y con `on` el SDK deja el warning `reasoningEffort is not supported` varias veces por turno sin que el parámetro se aplique |
 | `AI_HUMAN_GRACE_MINUTES` | Default 30. Minutos que un asesor "conserva" un chat después de escribir, aunque el cliente ya haya vuelto a escribir después de él. Súbela sin redeploy (solo cambiar la variable) si aparece `turno_persona_se_adelanto` sobre una conversación que un asesor está atendiendo ahora mismo |
+| `AGENT_MAX_CONCURRENT_TURNS` | Default 8 (antes 3, hasta el 7/9/2026). Turnos con el modelo abierto a la vez, en todo el sistema. Ver "Rampa de los topes" más abajo. Vuelta atrás: bajarla en Dokploy y redesplegar (~20 s de corte, sin rebuild si no cambió el código) |
+| `AGENT_MAX_TURNS_PER_MINUTE` | Default 30 (antes 4). El freno real de la cola: la espera de un cliente es cola ÷ este número. Medido el 7/9/2026: con 4, hasta 90 min de espera con 360 turnos acumulados. Ver "Rampa de los topes". Vuelta atrás: bajarla en Dokploy — es la palanca más rápida que hay, se lee en cada pasada |
+| `AGENT_QUEUE_MAX_PER_RUN` | Default 30 (antes fijo en diez, sin variable). Turnos que una sola pasada de la cola atiende. Ver "Rampa de los topes" |
+| `AI_MAX_CONCURRENT_REQUESTS` | Default 12 (antes 3). Peticiones al proveedor en vuelo a la vez. Tiene que subir junto con `AGENT_MAX_TURNS_PER_MINUTE`, ver "Rampa de los topes" |
+| `AI_MAX_REQUESTS_PER_MINUTE` | Default 120 (antes 15). El "15 contra 20" viejo era el techo de la cuenta gratuita de OpenRouter; en producción `is_free_tier: false` y `limit: null`. Tiene que subir junto con `AGENT_MAX_TURNS_PER_MINUTE`, ver "Rampa de los topes" |
 
 **El token de Meta caduca.** El que da el panel de desarrollo dura 24 horas.
 Genera uno permanente desde un System User en Business Manager, o la IA dejará
@@ -480,8 +485,8 @@ versión de Node insuficiente. Sale con error si algo de eso pasa.
 - **caddy** — TLS automático de Let's Encrypt, más cabeceras de seguridad. Por
   eso el dominio tiene que resolver a este servidor **antes** de arrancar: si
   no, el certificado no se emite.
-- **cron** — procesa cada 5 minutos lo que quede pendiente en la cola de
-  turnos.
+- **cron** — procesa cada minuto lo que quede pendiente en la cola de turnos
+  (cada 5 minutos hasta el 7/9/2026: ver "Rampa de los topes" más abajo).
 
 **Verificación:**
 
@@ -632,11 +637,21 @@ que el propio webhook procese lo que encola; el cron es la red de seguridad
 para lo que ese camino no cubre — el proceso que murió a mitad, o el turno
 que falló y espera otro intento.
 
-Define `CRON_SECRET` (una cadena larga y aleatoria) y llama cada 5 minutos:
+Define `CRON_SECRET` (una cadena larga y aleatoria) y llama cada minuto:
 
 ```cron
-*/5 * * * * curl -fsS -X POST https://<tu-dominio>/api/cron/process-queue -H "Authorization: Bearer $CRON_SECRET" > /dev/null
+* * * * * curl -fsS -X POST https://<tu-dominio>/api/cron/process-queue -H "Authorization: Bearer $CRON_SECRET" > /dev/null
 ```
+
+Cada 5 minutos hasta el 7/9/2026: con los topes de turnos calibrados a ~4/min
+esa lentitud se creía el freno de emergencia, pero no lo era — ver "Rampa de
+los topes" más abajo. Desde T3 de esta corrida la cola se despierta sola a
+los 3-20 s cuando un turno quedó frenado (reintento de ritmo, de cupo, de
+lock o de error); el cron sigue siendo red de seguridad para lo que ni
+siquiera eso cubre — el proceso que murió antes de reencolarse, o el turno
+que Redis perdió del todo —, y el freno de emergencia real sigue siendo
+`agent_can_run()` (interruptor global + tope de gasto diario), consultado en
+CADA turno.
 
 Sin `CRON_SECRET` el endpoint responde 503 y no procesa nada: dispara turnos
 de IA, o sea gasto, así que falla cerrado siempre.
@@ -650,6 +665,49 @@ select conversation_id, status, attempts, last_error from public.agent_turn_queu
 Una fila en `failed` con 3 intentos ya no se reintenta sola: revisa
 `last_error` y, si corresponde, vuelve a encolarla con
 `select public.enqueue_agent_turn('<conversation_id>')`.
+
+### Rampa de los topes
+
+Medido en producción el 7/9/2026 (88 turnos): el turno completo tarda 7,2 s
+de mediana. Lo que espera el cliente no es el modelo, es la cola —11,2 min de
+mediana, p90 32 min, hasta 90 min— porque tres frenos estaban calibrados a
+~4 turnos/min contra una demanda real de 2,54 conversaciones/min de media
+(picos de 6): `AGENT_MAX_TURNS_PER_MINUTE=4`, `AI_MAX_REQUESTS_PER_MINUTE=15`
+sin subir junto con él (15 peticiones/min son 4,4 turnos/min, no 15, porque un
+turno gasta ≈3,4 peticiones) y el cron cada 5 minutos con tope 10 por pasada
+(2 turnos/min de red de seguridad). El techo de 20/min que justificaba el 15
+no existe: era de la cuenta gratuita de OpenRouter.
+
+El operador sube las cinco variables a mano en la pestaña Environment de
+Dokploy, un escalón a la vez, verificando las señales de abajo entre uno y
+el siguiente:
+
+| Variable | Escalón 1 | Escalón 2 |
+|---|---|---|
+| `AGENT_MAX_TURNS_PER_MINUTE` | 10 | 30 |
+| `AI_MAX_REQUESTS_PER_MINUTE` | 40 | 120 |
+| `AI_MAX_CONCURRENT_REQUESTS` | 6 | 12 |
+| `AGENT_MAX_CONCURRENT_TURNS` | 4 | 8 |
+| `AGENT_QUEUE_MAX_PER_RUN` | 30 | 30 |
+
+Señales a vigilar en cada escalón, antes de subir al siguiente:
+
+- `cola_ritmo_al_tope` baja de frecuencia (si no baja, el tope de turnos
+  sigue por debajo de la demanda real).
+- `ia_ritmo_al_tope` NUNCA aparece (si aparece, `AI_MAX_REQUESTS_PER_MINUTE`/
+  `AI_MAX_CONCURRENT_REQUESTS` quedaron por debajo de lo que
+  `AGENT_MAX_TURNS_PER_MINUTE` ahora permite pedir).
+- Cero respuestas 429 del proveedor en los logs.
+- `redis-cli zcard liminal:agent:turns` tiende a 0 entre ráfagas (la cola no
+  se queda con un remanente permanente).
+
+Vuelta atrás en cualquier momento: bajar `AGENT_MAX_TURNS_PER_MINUTE` en
+Dokploy. Se lee en cada pasada de la cola, así que no hace falta tocar código
+ni base — pero el Environment de Dokploy solo llega al contenedor con un
+redeploy (~20 s de corte, sin rebuild de imagen si no cambió el código). El
+freno de emergencia real —`agent_can_run()`, interruptor global + tope de
+gasto diario, consultado en CADA turno— no depende de ninguno de estos
+números.
 
 ### Monitoreo
 
