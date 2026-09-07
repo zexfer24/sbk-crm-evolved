@@ -74,6 +74,7 @@ const EMPTY_RESULT: ReconcileResult = {
 interface CandidateRow {
   id: string;
   ai_turn_lock_until: string | null;
+  last_customer_message_at: string | null;
 }
 
 /** Mismo criterio que `conversation-lock.ts`: null o vencido = libre. */
@@ -111,7 +112,7 @@ export async function reconcileOrphanTurns(
 ): Promise<ReconcileResult> {
   const { data, error } = await supabase
     .from("conversations")
-    .select("id, ai_turn_lock_until")
+    .select("id, ai_turn_lock_until, last_customer_message_at")
     .eq("awaiting_reply", true)
     .is("assigned_agent_id", null)
     .neq("status", "closed")
@@ -136,7 +137,7 @@ export async function reconcileOrphanTurns(
   const candidatas = ((data ?? []) as unknown as CandidateRow[]).slice(0, RECONCILE_BATCH_LIMIT);
 
   let bloqueadasPorLock = 0;
-  const sinLock: string[] = [];
+  const sinLock: { id: string; lastCustomerMessageAt: string | null }[] = [];
   for (const fila of candidatas) {
     if (lockIsActive(fila.ai_turn_lock_until, now)) {
       // Un turno de IA está corriendo ahora mismo para esta conversación
@@ -145,14 +146,14 @@ export async function reconcileOrphanTurns(
       // pasada futura la recoge.
       bloqueadasPorLock++;
     } else {
-      sinLock.push(fila.id);
+      sinLock.push({ id: fila.id, lastCustomerMessageAt: fila.last_customer_message_at });
     }
   }
 
-  // Un chat que ya tocó una persona es de esa persona, aunque no se haya
-  // asignado el chat. `assigned_agent_id is null` NO alcanza para detectarlo:
-  // el asesor que contesta sin asignarse deja la conversación libre a los
-  // ojos de la consulta de arriba.
+  // Un chat que un asesor está atendiendo AHORA es de ese asesor, aunque no
+  // se haya asignado el chat. `assigned_agent_id is null` NO alcanza para
+  // detectarlo: el asesor que contesta sin asignarse deja la conversación
+  // libre a los ojos de la consulta de arriba.
   //
   // Sin este filtro el reconciliador entra en un bucle perpetuo, y es un
   // bucle silencioso: encola la conversación, `runAgentTurn` la descarta por
@@ -174,20 +175,27 @@ export async function reconcileOrphanTurns(
   // `journey_stage` — el reconciliador ya no la vuelve a encontrar como
   // huérfana sin dueño ni fecha.
   //
-  // El alcance temporal de la guarda de "humanos" de acá abajo cambia en T7
-  // de la misma corrida (deja de ser vitalicia: entra una ventana de gracia
-  // sobre el último mensaje del cliente).
+  // T7 (misma corrida, 8/9/2026) cambió el alcance temporal de la guarda de
+  // acá abajo: hasta entonces preguntaba "¿alguna vez escribió un asesor?",
+  // así que una conversación con una nota vieja de semanas quedaba fuera del
+  // reconciliador para siempre, aunque el cliente hubiera vuelto a escribir
+  // días después y ningún humano estuviera mirando el chat. Ahora
+  // `conversationsWrittenByHumans` recibe también `last_customer_message_at`
+  // de cada fila y aplica `humanClaimsChat` (human-handled.ts): bloquea solo
+  // si el asesor se adelantó al último mensaje del cliente o si escribió en
+  // los últimos `AI_HUMAN_GRACE_MINUTES` (G=30 por default) — "¿lo está
+  // tocando AHORA?", no "¿lo tocó algún día?".
   //
   // Es exactamente el mismo filtro, por el mismo motivo, que ya aplica
   // `fetchBacklogConversationIds` en data.ts: la guarda de verdad vive en el
   // turno, esto es lo que evita llenar la cola de trabajo que el turno va a
   // descartar uno por uno.
-  let libres = sinLock;
+  let libres = sinLock.map((fila) => fila.id);
   let atendidasPorHumanos = 0;
   if (sinLock.length > 0) {
     try {
-      const deHumanos = await conversationsWrittenByHumans(supabase, sinLock);
-      libres = sinLock.filter((id) => !deHumanos.has(id));
+      const deHumanos = await conversationsWrittenByHumans(supabase, sinLock, { now });
+      libres = sinLock.filter((fila) => !deHumanos.has(fila.id)).map((fila) => fila.id);
       atendidasPorHumanos = sinLock.length - libres.length;
     } catch (err) {
       // Falla CERRADO, al revés que la consulta a Redis de más abajo: ante la

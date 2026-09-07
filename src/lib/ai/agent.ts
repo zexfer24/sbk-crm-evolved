@@ -453,10 +453,11 @@ async function stillEnabled(supabase: SupabaseClient<Database>, conversationId: 
 async function humanWroteMeanwhile(
   supabase: SupabaseClient<Database>,
   conversationId: string,
+  lastCustomerMessageAt: string | null,
   fase: SendPhase
 ): Promise<boolean> {
   try {
-    if (!(await humanHasWritten(supabase, conversationId))) return false;
+    if (!(await humanHasWritten(supabase, conversationId, lastCustomerMessageAt))) return false;
   } catch (err) {
     log.error("turno_persona_no_consultable", { conversationId, fase, detail: errorText(err) });
     return true;
@@ -506,6 +507,7 @@ async function deliver<T>(
   lease: TurnLease,
   tiempos: TurnTiming,
   fase: SendPhase,
+  lastCustomerMessageAt: string | null,
   enviar: () => Promise<T>
 ): Promise<T | null> {
   const { conversationId } = target;
@@ -533,7 +535,7 @@ async function deliver<T>(
     await recordHandoff(supabase, { conversationId, toKind: "unassigned", reason: "agente_no_puede_correr" });
     return null;
   }
-  if (await humanWroteMeanwhile(supabase, conversationId, fase)) {
+  if (await humanWroteMeanwhile(supabase, conversationId, lastCustomerMessageAt, fase)) {
     await recordHandoff(supabase, { conversationId, toKind: "human", reason: "humano_se_adelanto" });
     return null;
   }
@@ -844,7 +846,7 @@ async function runPlaybook(
   // —o si un asesor se metió— mientras el modelo elegía el escenario, el turno
   // termina acá sin enviar y sin etiquetar ni escalar: todo lo que sigue
   // acompaña a un mensaje que no salió.
-  const salida = await deliver(supabase, target, entrega, lease, tiempos, "escenario", () =>
+  const salida = await deliver(supabase, target, entrega, lease, tiempos, "escenario", lastCustomerMessageAt, () =>
     sendPlaybookReply(supabase, target, playbook)
   );
   if (!salida) return;
@@ -1131,8 +1133,15 @@ async function runTurnPhases(
   if (intent === "fuera_de_tema") {
     const repetido = alreadyRedirected(history);
     if (!repetido) {
-      const salió = await deliver(supabase, target, entrega, lease, tiempos, "fuera_de_tema", () =>
-        sendAgentText(supabase, target, OFF_TOPIC_REPLY)
+      const salió = await deliver(
+        supabase,
+        target,
+        entrega,
+        lease,
+        tiempos,
+        "fuera_de_tema",
+        convo.last_customer_message_at,
+        () => sendAgentText(supabase, target, OFF_TOPIC_REPLY)
       );
       if (!salió) return;
       if (await deliveryFailed(supabase, conversationId, salió)) return;
@@ -1298,10 +1307,18 @@ async function runTurnPhases(
     // persona, así que el trigger `handle_new_message` no debe apagar
     // `awaiting_reply` con este mensaje — de ahí la misma marca que ya lleva
     // la bienvenida automática (T0.1).
-    const salida = await deliver(supabase, target, entrega, lease, tiempos, "redaccion", () =>
-      sendAgentText(supabase, target, text.trim(), {
-        isAutoReply: outcome.escalated && outcome.unassigned === true,
-      })
+    const salida = await deliver(
+      supabase,
+      target,
+      entrega,
+      lease,
+      tiempos,
+      "redaccion",
+      convo.last_customer_message_at,
+      () =>
+        sendAgentText(supabase, target, text.trim(), {
+          isAutoReply: outcome.escalated && outcome.unassigned === true,
+        })
     );
     if (!salida) return;
     // `outcome.escalated` es la bandera: `escalateConversation` SIEMPRE deja
@@ -1409,7 +1426,7 @@ export async function runAgentTurn(conversationId: string): Promise<void> {
     return;
   }
 
-  // Un chat que ya tocó una persona es de esa persona.
+  // Un chat que un asesor está atendiendo AHORA es de ese asesor.
   //
   // Va acá, en el turno, y no solo en la consulta que arma el atraso, porque
   // este es el cuello por donde pasan TODOS los caminos: el barrido, el
@@ -1422,7 +1439,18 @@ export async function runAgentTurn(conversationId: string): Promise<void> {
   // Se comprueba en cada turno y no una vez al encolar porque entre encolar y
   // atender pasa tiempo, y ese es justo el rato en el que un asesor puede
   // meterse en la conversación. Ver human-handled.ts.
-  if (await humanHasWritten(supabase, conversationId)) {
+  //
+  // Hasta el 8/9/2026 la pregunta era "¿alguna vez escribió un asesor?", sin
+  // ventana de tiempo — 47 de 48 conversaciones mudas del atraso medido ese
+  // día tenían un humano que había escrito ALGUNA VEZ, y "Reactivar
+  // respuestas automáticas" (que solo toca `ai_enabled`) no las liberaba.
+  // Caso `3b654d2c-3cf8-4eef-8638-bc75e45cb10a`: un "a" de un supervisor el
+  // 28/8 dejaba muda a la IA para un cliente que escribió por primera vez en
+  // días el 7/9. La regla nueva (`humanClaimsChat`, human-handled.ts) mira si
+  // el asesor se adelantó al último mensaje del cliente o si escribió en los
+  // últimos G minutos (`AI_HUMAN_GRACE_MINUTES`, default 30) — "¿lo está
+  // tocando AHORA?", no "¿lo tocó algún día?".
+  if (await humanHasWritten(supabase, conversationId, convo.last_customer_message_at)) {
     log.warn("turno_chat_de_una_persona", { conversationId });
     await recordHandoff(supabase, { conversationId, toKind: "human", reason: "humano_intervino" });
     return;

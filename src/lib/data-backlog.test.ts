@@ -18,19 +18,50 @@ interface Filtro {
 
 interface Consulta {
   tabla: string;
+  columnas: string;
   filtros: Filtro[];
   orden: { columna: string; opciones: unknown } | null;
   opciones: unknown;
 }
 
+const AHORA = Date.parse("2026-08-26T15:00:00.000Z");
+const HACE_24H = "2026-08-25T15:00:00.000Z";
+
+/** Un mensaje de asesor: para qué conversación y cuándo. */
+interface HumanoSpec {
+  id: string;
+  createdAt: string;
+}
+
 /**
- * `humanos` son los ids que en `messages` tienen un mensaje de asesor: los
- * chats que una persona ya está atendiendo y que el atraso tiene que dejar
- * fuera. Ver src/lib/ai/human-handled.ts.
+ * Default para los `humanos` que se pasan como simple lista de ids (los
+ * tests viejos, previos a T7, que no les importaba la fecha): hace 1 minuto,
+ * bien dentro de la gracia por default (30 min) y posterior al
+ * `last_customer_message_at` por default de las filas — bloquea sin importar
+ * cuál de las dos cláusulas de `humanClaimsChat` decida.
  */
-function createFakeSupabase(count = 0, humanos: string[] = []) {
+const HUMANO_RECIENTE_POR_DEFAULT = new Date(AHORA - 1 * 60_000).toISOString();
+/** `last_customer_message_at` por default de una fila fabricada: dentro de la ventana de 24h y posterior a cualquier "humano viejo" de estas pruebas. */
+const LCMA_POR_DEFAULT = new Date(AHORA - 5 * 60_000).toISOString();
+
+/**
+ * `humanos` acepta ids sueltos (equivalen a un mensaje de asesor reciente,
+ * que siempre bloquea) o especificaciones completas `{ id, createdAt }` para
+ * los casos donde la fecha es lo que se está probando (T7, 8/9/2026).
+ */
+function createFakeSupabase(
+  count = 0,
+  humanos: (string | HumanoSpec)[] = [],
+  opciones: { lastCustomerMessageAtById?: Record<string, string> } = {}
+) {
   const consultas: Consulta[] = [];
-  const filas = Array.from({ length: count }, (_, i) => ({ id: `conv-${i}` }));
+  const especificaciones: HumanoSpec[] = humanos.map((h) =>
+    typeof h === "string" ? { id: h, createdAt: HUMANO_RECIENTE_POR_DEFAULT } : h
+  );
+  const filas = Array.from({ length: count }, (_, i) => ({
+    id: `conv-${i}`,
+    last_customer_message_at: opciones.lastCustomerMessageAtById?.[`conv-${i}`] ?? LCMA_POR_DEFAULT,
+  }));
 
   function builder(consulta: Consulta) {
     const api = {
@@ -66,7 +97,11 @@ function createFakeSupabase(count = 0, humanos: string[] = []) {
       then: (resolve: (value: { data: unknown[]; error: null; count: number }) => unknown) =>
         resolve(
           consulta.tabla === "messages"
-            ? { data: humanos.map((id) => ({ conversation_id: id })), error: null, count: humanos.length }
+            ? {
+                data: especificaciones.map((h) => ({ conversation_id: h.id, created_at: h.createdAt })),
+                error: null,
+                count: especificaciones.length,
+              }
             : { data: filas, error: null, count }
         ),
     };
@@ -76,8 +111,8 @@ function createFakeSupabase(count = 0, humanos: string[] = []) {
   const client = {
     from(tabla: string) {
       return {
-        select: (_columns: string, opciones?: unknown) => {
-          const consulta: Consulta = { tabla, filtros: [], orden: null, opciones };
+        select: (columnas: string, opciones?: unknown) => {
+          const consulta: Consulta = { tabla, columnas, filtros: [], orden: null, opciones };
           consultas.push(consulta);
           return builder(consulta);
         },
@@ -87,9 +122,6 @@ function createFakeSupabase(count = 0, humanos: string[] = []) {
 
   return { client: client as unknown as SupabaseClient, consultas };
 }
-
-const AHORA = Date.parse("2026-08-26T15:00:00.000Z");
-const HACE_24H = "2026-08-25T15:00:00.000Z";
 
 describe("fetchBacklogConversationIds", () => {
   it("exige las cuatro condiciones y el corte de la ventana, todas en el WHERE", async () => {
@@ -105,6 +137,19 @@ describe("fetchBacklogConversationIds", () => {
       { op: "eq", columna: "ai_enabled", valor: true },
       { op: "gt", columna: "last_customer_message_at", valor: HACE_24H },
     ]);
+  });
+
+  /**
+   * T7 (8/9/2026): la guarda de humanos pasó a decidir con fechas —
+   * `conversationsWrittenByHumans` necesita `last_customer_message_at` de
+   * cada fila, así que dejó de alcanzar con pedir solo "id".
+   */
+  it("pide last_customer_message_at junto con el id", async () => {
+    const { client, consultas } = createFakeSupabase();
+
+    await fetchBacklogConversationIds(client, AHORA);
+
+    expect(consultas[0].columnas).toBe("id, last_customer_message_at");
   });
 
   /**
@@ -133,6 +178,36 @@ describe("fetchBacklogConversationIds", () => {
     const { client } = createFakeSupabase(5, ["conv-1", "conv-3"]);
 
     expect(await fetchBacklogConversationIds(client, AHORA)).toEqual(["conv-0", "conv-2", "conv-4"]);
+  });
+
+  /**
+   * T7 (8/9/2026): un mensaje de asesor de hace semanas, anterior al último
+   * mensaje del cliente y fuera de la gracia, ya no lo saca del atraso para
+   * siempre — caso real `3b654d2c-3cf8-4eef-8638-bc75e45cb10a`.
+   */
+  it("un humano viejo con cliente nuevo SÍ cuenta en el atraso", async () => {
+    const { client } = createFakeSupabase(
+      1,
+      [{ id: "conv-0", createdAt: "2026-08-01T00:00:00.000Z" }], // muy viejo
+      { lastCustomerMessageAtById: { "conv-0": new Date(AHORA - 5 * 60_000).toISOString() } } // cliente reciente
+    );
+
+    expect(await fetchBacklogConversationIds(client, AHORA)).toEqual(["conv-0"]);
+  });
+
+  /**
+   * La contraparte: un humano conversando AHORA sigue afuera. El cliente
+   * escribió DESPUÉS del humano (así la cláusula de "se adelantó" no
+   * decide acá) y aun así bloquea, por la gracia.
+   */
+  it("un humano reciente no cuenta en el atraso", async () => {
+    const { client } = createFakeSupabase(
+      1,
+      [{ id: "conv-0", createdAt: new Date(AHORA - 5 * 60_000).toISOString() }], // hace 5 min: dentro de la gracia
+      { lastCustomerMessageAtById: { "conv-0": new Date(AHORA - 2 * 60_000).toISOString() } } // cliente después del humano
+    );
+
+    expect(await fetchBacklogConversationIds(client, AHORA)).toEqual([]);
   });
 });
 

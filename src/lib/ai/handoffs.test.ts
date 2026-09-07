@@ -22,7 +22,7 @@ interface FakeState {
   conversation: Record<string, unknown> | null;
   history: { sender_type: string; content: string | null; is_internal_note: boolean }[];
   enabledToolKeys: string[];
-  humanMessages: { id: string }[];
+  humanMessages: { created_at: string }[];
   turnLockRenewResult: { data: boolean | null; error: { message: string } | null };
   /** Si `true`, el insert de `agent_turns` revienta: dispara la salida "entrega_fallida". */
   agentTurnInsertShouldFail: boolean;
@@ -98,9 +98,16 @@ function createFakeSupabase() {
           select: () => ({
             eq: () => ({
               order: () => ({ limit: async () => ({ data: state.history }) }),
-              // Segundo `.eq()`: humanHasWritten (ver human-handled.ts).
+              // Segundo `.eq()`: humanHasWritten (ver human-handled.ts). T7
+              // (8/9/2026): ahora trae el mensaje de asesor MÁS RECIENTE
+              // (`.order().limit(1)`), no la lista entera.
               eq: () => ({
-                limit: async () => ({ data: state.humanMessages, error: null }),
+                order: () => ({
+                  limit: async () => {
+                    const masReciente = [...state.humanMessages].sort((a, b) => (a.created_at < b.created_at ? 1 : -1))[0];
+                    return { data: masReciente ? [masReciente] : [], error: null };
+                  },
+                }),
               }),
             }),
           }),
@@ -334,7 +341,7 @@ describe("runAgentTurn — traspasos registrados en cada salida silenciosa", () 
   });
 
   it("humano_intervino: un asesor ya había escrito antes de abrir el turno", async () => {
-    state.humanMessages = [{ id: "msg-del-asesor" }];
+    state.humanMessages = [{ created_at: new Date().toISOString() }];
 
     await runAgentTurn("conv-1");
 
@@ -416,7 +423,7 @@ describe("runAgentTurn — traspasos registrados en cada salida silenciosa", () 
 
   it("humano_se_adelanto: un asesor escribe MIENTRAS el turno redacta", async () => {
     generateMock.mockImplementation(async () => {
-      state.humanMessages = [{ id: "msg-del-asesor" }];
+      state.humanMessages = [{ created_at: new Date().toISOString() }];
       return {
         text: "respuesta redactada por el modelo",
         usage: { inputTokens: 20, outputTokens: 8, totalTokens: 28 },

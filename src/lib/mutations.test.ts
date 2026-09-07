@@ -6,6 +6,8 @@ import {
   markConversationRead,
   markConversationUnread,
   pinConversation,
+  setAiEnabled,
+  unassign,
   unpinConversation,
   type SaleLineItem,
 } from "@/lib/mutations";
@@ -148,6 +150,36 @@ describe("marcar una conversación como no leída", () => {
  * agente/conversación viaja tal cual a la tabla, y que un error de la base
  * (el del cuarto pin, u otro cualquiera) sube sin que la función lo trague.
  */
+/**
+ * T7, corrida "La IA ve lo que llega" (8/9/2026): human-handled.ts dejó de
+ * preguntar "¿alguna vez escribió un asesor?" y pasó a comparar fechas, así
+ * que estas dos mutaciones ya no dependen de nada más que de sus columnas
+ * propias para devolver un chat a la IA — no tocan `messages`, no tocan
+ * fechas. Lo único que fijan estos tests es que el UPDATE de `conversations`
+ * lleva EXACTAMENTE esa columna y ninguna otra: si algún día empezara a
+ * escribir también, por ejemplo, `last_customer_message_at` a mano, rompería
+ * los dos candados documentados en CLAUDE.md sobre esa columna.
+ */
+describe("setAiEnabled / unassign — devuelven el chat a la IA sin tocar messages", () => {
+  it("setAiEnabled(true) actualiza SOLO ai_enabled", async () => {
+    const { client, calls } = createFakeSupabase();
+
+    await setAiEnabled(client, "conv-1", AGENT, true);
+
+    const update = calls.find((c) => c.table === "conversations" && c.op === "update");
+    expect(update?.payload).toEqual({ ai_enabled: true });
+  });
+
+  it("unassign actualiza SOLO assigned_agent_id", async () => {
+    const { client, calls } = createFakeSupabase();
+
+    await unassign(client, "conv-1", AGENT, "María");
+
+    const update = calls.find((c) => c.table === "conversations" && c.op === "update");
+    expect(update?.payload).toEqual({ assigned_agent_id: null });
+  });
+});
+
 describe("pinConversation / unpinConversation", () => {
   function createFakePinsSupabase() {
     const calls: { op: "insert" | "delete"; agentId: string; conversationId: string }[] = [];

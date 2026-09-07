@@ -93,10 +93,17 @@ function baseRow(id: string, overrides: Partial<FakeRow> = {}): FakeRow {
  * consulta, porque un mismo dataset tiene que cubrir varios escenarios
  * (lock vigente, fuera de ventana, etc.) en un solo lugar.
  */
-/** Un mensaje, con lo justo para el filtro de "ya escribió una persona". */
+/**
+ * Un mensaje, con lo justo para el filtro de "ya escribió una persona".
+ *
+ * `created_at` (T7, 8/9/2026): la guarda dejó de preguntar "¿alguna vez
+ * escribió un asesor?" y pasó a comparar fechas contra
+ * `last_customer_message_at` y una ventana de gracia — ver human-handled.ts.
+ */
 interface FakeMensaje {
   conversation_id: string;
   sender_type: string;
+  created_at: string;
 }
 
 function createFakeSupabase(rows: FakeRow[], mensajes: FakeMensaje[] = []) {
@@ -165,6 +172,12 @@ function createFakeSupabase(rows: FakeRow[], mensajes: FakeMensaje[] = []) {
       },
       in(col: keyof FakeMensaje, vals: unknown[]) {
         predicados.push((m) => vals.includes(m[col]));
+        return api;
+      },
+      // T7 (8/9/2026): conversationsWrittenByHumans acota el lote con
+      // `.gt("created_at", umbral)` antes de decidir en memoria.
+      gt(col: keyof FakeMensaje, val: string) {
+        predicados.push((m) => m[col] > val);
         return api;
       },
       then(resolve: (v: { data: FakeMensaje[]; error: null }) => unknown) {
@@ -274,12 +287,22 @@ describe("reconcileOrphanTurns — no duplicar lo que ya está en curso", () => 
    * un cupo y escribiendo una fila de bitácora en cada vuelta.
    */
   it("una conversación donde un asesor ya escribió no se encola, aunque no esté asignada", async () => {
-    const rows = [baseRow("conv-la-atiende-alguien"), baseRow("conv-sola")];
+    const rows = [
+      baseRow("conv-la-atiende-alguien", { last_customer_message_at: DENTRO_DE_VENTANA }),
+      baseRow("conv-sola", { last_customer_message_at: DENTRO_DE_VENTANA }),
+    ];
     const mensajes = [
-      { conversation_id: "conv-la-atiende-alguien", sender_type: "agent" },
+      // El asesor escribió hace 5 min (dentro de la gracia de 30 min por
+      // default): está conversando AHORA, no es una nota vieja. Ver el
+      // describe de más abajo para el caso contrario (humano viejo).
+      {
+        conversation_id: "conv-la-atiende-alguien",
+        sender_type: "agent",
+        created_at: new Date(AHORA - 5 * 60_000).toISOString(),
+      },
       // Un mensaje del cliente en la otra conversación no la descalifica: lo
       // que importa es si escribió una PERSONA del equipo.
-      { conversation_id: "conv-sola", sender_type: "customer" },
+      { conversation_id: "conv-sola", sender_type: "customer", created_at: DENTRO_DE_VENTANA },
     ];
     const { client, handoffCalls } = createFakeSupabase(rows, mensajes);
 
@@ -309,6 +332,61 @@ describe("reconcileOrphanTurns — no duplicar lo que ya está en curso", () => 
     expect(resultado).toEqual({ revisadas: 3, yaEnCola: 0, bloqueadasPorLock: 1, atendidasPorHumanos: 0, encoladas: 2 });
     expect(handoffCalls.map((c) => c.p_conversation_id).sort()).toEqual(["conv-lock-vencido", "conv-sin-lock"]);
     expect(redis.scoreOf(RECONCILE_QUEUE_KEY, "conv-con-lock")).toBeNull();
+  });
+});
+
+/**
+ * T7 (8/9/2026): "ya escribió un asesor" dejó de ser vitalicio. Hasta esta
+ * corrida, un mensaje de asesor de hace semanas dejaba la conversación fuera
+ * del reconciliador para siempre, aunque el cliente hubiera vuelto a escribir
+ * hoy y nadie del equipo estuviera mirando el chat — el caso real
+ * `3b654d2c-3cf8-4eef-8638-bc75e45cb10a` (un "a" del 28/8, cliente nuevo el
+ * 7/9). Ahora `conversationsWrittenByHumans` compara fechas: bloquea solo si
+ * el asesor se adelantó al último mensaje del cliente o si escribió hace
+ * menos de `AI_HUMAN_GRACE_MINUTES` (G=30 por default). Ver human-handled.ts.
+ */
+describe("reconcileOrphanTurns — la guarda de humanos ya no es vitalicia (T7)", () => {
+  it("una conversación con humano viejo y cliente nuevo ahora SÍ se reencola", async () => {
+    const rows = [
+      baseRow("conv-humano-viejo", { last_customer_message_at: DENTRO_DE_VENTANA }),
+    ];
+    const mensajes = [
+      // El "a" del 28/8, muy anterior a DENTRO_DE_VENTANA y a años luz de
+      // los 30 minutos de gracia por default.
+      { conversation_id: "conv-humano-viejo", sender_type: "agent", created_at: "2026-08-28T00:00:00.000Z" },
+    ];
+    const { client, handoffCalls } = createFakeSupabase(rows, mensajes);
+
+    const resultado = await reconcileOrphanTurns(client, AHORA);
+
+    expect(resultado).toEqual({ revisadas: 1, yaEnCola: 0, bloqueadasPorLock: 0, atendidasPorHumanos: 0, encoladas: 1 });
+    expect(handoffCalls.map((c) => c.p_conversation_id)).toEqual(["conv-humano-viejo"]);
+    expect(await pendingAgentTurns()).toBe(1);
+  });
+
+  it("con humano hace menos de G sigue fuera (atendidasPorHumanos)", async () => {
+    const rows = [
+      // Cliente MUY reciente (hace 2 min): el humano de abajo escribió ANTES
+      // que él, así que la cláusula de "se adelantó" no aplica acá — la que
+      // bloquea es la de gracia.
+      baseRow("conv-humano-reciente", { last_customer_message_at: new Date(AHORA - 2 * 60_000).toISOString() }),
+    ];
+    const mensajes = [
+      // El asesor escribió hace 5 min, ANTES que el cliente, pero dentro de
+      // la gracia de 30 min por default: está conversando AHORA.
+      {
+        conversation_id: "conv-humano-reciente",
+        sender_type: "agent",
+        created_at: new Date(AHORA - 5 * 60_000).toISOString(),
+      },
+    ];
+    const { client, handoffCalls } = createFakeSupabase(rows, mensajes);
+
+    const resultado = await reconcileOrphanTurns(client, AHORA);
+
+    expect(resultado).toEqual({ revisadas: 1, yaEnCola: 0, bloqueadasPorLock: 0, atendidasPorHumanos: 1, encoladas: 0 });
+    expect(handoffCalls).toHaveLength(0);
+    expect(await pendingAgentTurns()).toBe(0);
   });
 });
 

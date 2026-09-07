@@ -24,10 +24,13 @@ interface FakeState {
   /** Qué devuelve el upsert de contact_tags. Sirve para probar que un fallo etiquetando no frena el turno. */
   tagUpsertError: { message: string } | null;
   /**
-   * Mensajes de asesor humano en la conversación. Con uno solo, el turno no
-   * corre: el chat es de esa persona. Ver src/lib/ai/human-handled.ts.
+   * Mensajes de asesor humano en la conversación, con `created_at` (T7,
+   * 8/9/2026: la guarda dejó de preguntar "¿alguna vez?" y ahora compara
+   * fechas — ver human-handled.ts). Con uno cuyo `created_at` sea posterior a
+   * `last_customer_message_at`, o de hace menos de la gracia configurada, el
+   * turno no corre: el chat es de esa persona AHORA.
    */
-  humanMessages: { id: string }[];
+  humanMessages: { created_at: string }[];
   /** Fallo al preguntar si escribió una persona. La guarda falla cerrado. */
   humanMessagesError: { message: string } | null;
   /**
@@ -176,7 +179,7 @@ function createFakeSupabase() {
             };
             return builder;
           },
-          select: () => ({
+          select: (columns: string) => ({
             eq: () => ({
               // Se guarda cómo se pidió el orden: la IA tiene que leer los
               // mensajes MÁS RECIENTES, no los más antiguos.
@@ -185,26 +188,37 @@ function createFakeSupabase() {
                 return { limit: async () => ({ data: state.history }) };
               },
               // Segundo .eq(): dos consumidores distintos comparten esta forma
-              // (conversation_id + un segundo filtro) y se distinguen por qué
-              // llaman DESPUÉS — humanHasWritten sigue con `.limit()` directo;
-              // `lastInboundWamid` (T3.1, 4/9/2026) encadena
+              // (conversation_id + un segundo filtro) y se distinguen por las
+              // columnas que pidieron en select() — humanHasWritten (T7,
+              // 8/9/2026) pide "created_at" y encadena `.order().limit()`
+              // (antes pedía "id" y terminaba en `.limit()` sin `order()`, sin
+              // ventana de tiempo que comparar); `lastInboundWamid` (T3.1,
+              // 4/9/2026) pide "whatsapp_message_id" y sigue con
               // `.order().limit().maybeSingle()`. Se lee `state` en el momento
               // de la llamada, no al construir el fake: es lo que deja que un
               // asesor "entre" a mitad de turno.
-              eq: () => ({
-                limit: async () => ({
-                  data: state.humanMessagesError ? null : state.humanMessages,
-                  error: state.humanMessagesError,
-                }),
-                order: () => ({
-                  limit: () => ({
-                    maybeSingle: async () => ({
-                      data: state.lastInboundWamid ? { whatsapp_message_id: state.lastInboundWamid } : null,
-                      error: null,
+              eq: () => {
+                if (columns === "created_at") {
+                  return {
+                    order: () => ({
+                      limit: async () => ({
+                        data: state.humanMessagesError ? null : state.humanMessages,
+                        error: state.humanMessagesError,
+                      }),
+                    }),
+                  };
+                }
+                return {
+                  order: () => ({
+                    limit: () => ({
+                      maybeSingle: async () => ({
+                        data: state.lastInboundWamid ? { whatsapp_message_id: state.lastInboundWamid } : null,
+                        error: null,
+                      }),
                     }),
                   }),
-                }),
-              }),
+                };
+              },
             }),
           }),
         };
@@ -1457,7 +1471,11 @@ describe("runAgentTurn — un asesor se mete mientras el turno corre", () => {
   function elAsesorEntraRedactando() {
     generateMock.mockImplementation(async () => {
       reloj = ASESOR_ESCRIBE;
-      state.humanMessages = [{ id: "msg-del-asesor" }];
+      // Conversando en el momento (caso 3 de human-handled.test.ts): el
+      // `created_at` es el instante real en que el asesor escribió, muy
+      // reciente frente al `now` que verá `deliver()` — lo bloquea la
+      // cláusula de gracia, no la de `last_customer_message_at`.
+      state.humanMessages = [{ created_at: new Date(reloj).toISOString() }];
       reloj = FIN_REDACCION;
       return {
         text: "Claro, tenemos varios cascos disponibles.",
@@ -1533,7 +1551,11 @@ describe("runAgentTurn — un asesor se mete mientras el turno corre", () => {
     fetchActivePlaybooksMock.mockResolvedValue([pb]);
     matchPlaybookMock.mockImplementation(async () => {
       reloj = ASESOR_ESCRIBE;
-      state.humanMessages = [{ id: "msg-del-asesor" }];
+      // Conversando en el momento (caso 3 de human-handled.test.ts): el
+      // `created_at` es el instante real en que el asesor escribió, muy
+      // reciente frente al `now` que verá `deliver()` — lo bloquea la
+      // cláusula de gracia, no la de `last_customer_message_at`.
+      state.humanMessages = [{ created_at: new Date(reloj).toISOString() }];
       return { playbook: pb, usage: NO_USAGE };
     });
 
@@ -1548,7 +1570,11 @@ describe("runAgentTurn — un asesor se mete mientras el turno corre", () => {
   it("tampoco sale la redirección de fuera de tema", async () => {
     classifyIntentMock.mockImplementation(async () => {
       reloj = ASESOR_ESCRIBE;
-      state.humanMessages = [{ id: "msg-del-asesor" }];
+      // Conversando en el momento (caso 3 de human-handled.test.ts): el
+      // `created_at` es el instante real en que el asesor escribió, muy
+      // reciente frente al `now` que verá `deliver()` — lo bloquea la
+      // cláusula de gracia, no la de `last_customer_message_at`.
+      state.humanMessages = [{ created_at: new Date(reloj).toISOString() }];
       return {
         intent: "fuera_de_tema" as const,
         usage: { inputTokens: 5, outputTokens: 1, totalTokens: 6 },
@@ -1582,6 +1608,49 @@ describe("runAgentTurn — un asesor se mete mientras el turno corre", () => {
 
     expect(generateMock).toHaveBeenCalledTimes(1);
     expect(sendAgentTextMock).not.toHaveBeenCalled();
+  });
+});
+
+/**
+ * T7 (8/9/2026): hasta esta corrida, "escribió un humano" preguntaba "¿ALGUNA
+ * VEZ?" y no "¿AHORA?" — caso real `3b654d2c-3cf8-4eef-8638-bc75e45cb10a`, un
+ * "a" de un supervisor el 28/8/2026 dejaba muda a la IA para un cliente que
+ * escribió el 7/9. Estas pruebas cubren el efecto en `runAgentTurn`: un
+ * mensaje de asesor viejo, anterior al último mensaje del cliente y fuera de
+ * la gracia, ya no frena el turno; y "Reactivar IA"/"Desasignar" —que solo
+ * tocan `ai_enabled`/`assigned_agent_id`, nunca `messages`— vuelven a dejar
+ * pasar el turno una vez que el cliente escribió después de esa gracia.
+ */
+describe("runAgentTurn — la guarda de humanos ya no es vitalicia (T7, 8/9/2026)", () => {
+  it("un humano que escribió antes del último mensaje del cliente y hace más de G no frena el turno", async () => {
+    const warn = vi.spyOn(log, "warn");
+    // El "a" del 28/8: mucho antes del último mensaje del cliente (el
+    // `last_customer_message_at` por defecto del beforeEach) y a años luz de
+    // los 30 minutos de gracia por default.
+    state.humanMessages = [{ created_at: "2026-08-28T00:00:00.000Z" }];
+
+    await runAgentTurn("conv-1");
+
+    expect(classifyIntentMock).toHaveBeenCalled();
+    expect(warn).not.toHaveBeenCalledWith("turno_chat_de_una_persona", expect.anything());
+    expect(handoffCalls.some((call) => call.p_reason === "humano_intervino")).toBe(false);
+  });
+
+  /**
+   * `setAiEnabled(true)` y `unassign` (mutations.ts) escriben exactamente
+   * `{ ai_enabled: true }` y `{ assigned_agent_id: null }` — nunca tocan
+   * `messages`. Antes de T7 eso no alcanzaba para que la IA volviera a
+   * hablar si alguna vez había escrito un asesor; ahora sí, en cuanto el
+   * cliente escribió algo nuevo después de la gracia.
+   */
+  it("reactivar la IA y desasignar devuelven el chat", async () => {
+    state.conversation = { ...state.conversation, ai_enabled: true, assigned_agent_id: null };
+    // Humano viejo, muy anterior al último mensaje del cliente y a la gracia.
+    state.humanMessages = [{ created_at: "2026-08-28T00:00:00.000Z" }];
+
+    await runAgentTurn("conv-1");
+
+    expect(classifyIntentMock).toHaveBeenCalled();
   });
 });
 

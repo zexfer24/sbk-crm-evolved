@@ -121,8 +121,9 @@ function createFakeSupabase() {
               }),
               // Ningún asesor escribió en estos chats: son conversaciones que
               // la IA sí tiene permitido atender. Lo contrario se prueba en
-              // human-handled.test.ts.
-              eq: () => ({ limit: async () => ({ data: [], error: null }) }),
+              // human-handled.test.ts. T7 (8/9/2026): humanHasWritten ahora
+              // encadena `.order().limit()` en vez de `.limit()` directo.
+              eq: () => ({ order: () => ({ limit: async () => ({ data: [], error: null }) }) }),
             }),
           }),
         };

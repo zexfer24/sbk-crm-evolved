@@ -2243,12 +2243,12 @@ export async function fetchBacklogConversationIds(
   supabase: SupabaseClient,
   now: number = Date.now()
 ): Promise<string[]> {
-  const { data, error } = await unansweredFreeWork(supabase, "id")
+  const { data, error } = await unansweredFreeWork(supabase, "id, last_customer_message_at")
     .gt("last_customer_message_at", freeformWindowCutoff(now))
     .order("last_message_at", { ascending: false, nullsFirst: false });
 
   if (error) throw error;
-  const ids = ((data ?? []) as unknown as { id: string }[]).map((row) => row.id);
+  const filas = (data ?? []) as unknown as { id: string; last_customer_message_at: string | null }[];
 
   // Las tres condiciones de arriba no distinguen un chat sin atender de uno
   // que una persona está atendiendo: los asesores contestan sin asignarse la
@@ -2261,8 +2261,18 @@ export async function fetchBacklogConversationIds(
   // descartar uno por uno — y, sobre todo, lo que hace que el número del
   // diálogo de encendido diga la verdad: al dueño se le dijo 139 cuando 22 de
   // esas eran de sus asesores.
-  const deHumanos = await conversationsWrittenByHumans(supabase, ids);
-  return ids.filter((id) => !deHumanos.has(id));
+  //
+  // Desde T7 (8/9/2026) "ya tocada por un asesor" deja de ser vitalicia: un
+  // chat con una nota de semanas atrás y un cliente que volvió a escribir hoy
+  // ya no queda descartado para siempre — `conversationsWrittenByHumans`
+  // ahora recibe también `last_customer_message_at` de cada fila y aplica la
+  // ventana de gracia de `humanClaimsChat` (human-handled.ts).
+  const deHumanos = await conversationsWrittenByHumans(
+    supabase,
+    filas.map((fila) => ({ id: fila.id, lastCustomerMessageAt: fila.last_customer_message_at })),
+    { now }
+  );
+  return filas.filter((fila) => !deHumanos.has(fila.id)).map((fila) => fila.id);
 }
 
 export interface BacklogCounts {
@@ -2289,18 +2299,24 @@ export async function fetchBacklogCounts(
   // una persona, y eso no se puede expresar en un `head: true`. Son un puñado
   // de filas: el índice parcial deja adentro solo el trabajo libre pendiente.
   const [dentro, fuera] = await Promise.all([
-    unansweredFreeWork(supabase, "id").gt("last_customer_message_at", cutoff),
+    unansweredFreeWork(supabase, "id, last_customer_message_at").gt("last_customer_message_at", cutoff),
     unansweredFreeWork(supabase, "id", { count: "exact", head: true }).lte("last_customer_message_at", cutoff),
   ]);
 
   if (dentro.error) throw dentro.error;
   if (fuera.error) throw fuera.error;
 
-  const idsDentro = ((dentro.data ?? []) as unknown as { id: string }[]).map((row) => row.id);
-  const deHumanos = await conversationsWrittenByHumans(supabase, idsDentro);
+  const filasDentro = (dentro.data ?? []) as unknown as { id: string; last_customer_message_at: string | null }[];
+  // Mismo criterio que fetchBacklogConversationIds (T7, 8/9/2026): la ventana
+  // de gracia de humanClaimsChat, no "alguna vez escribió un asesor".
+  const deHumanos = await conversationsWrittenByHumans(
+    supabase,
+    filasDentro.map((fila) => ({ id: fila.id, lastCustomerMessageAt: fila.last_customer_message_at })),
+    { now }
+  );
 
   return {
-    inWindow: idsDentro.filter((id) => !deHumanos.has(id)).length,
+    inWindow: filasDentro.filter((fila) => !deHumanos.has(fila.id)).length,
     outOfWindow: fuera.count ?? 0,
   };
 }
