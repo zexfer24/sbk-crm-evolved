@@ -51,10 +51,6 @@ import { sendTypingIndicator } from "@/lib/whatsapp/meta-client";
 
 const MAX_STEPS = 5;
 
-function errorMessage(err: unknown): string {
-  return err instanceof Error ? err.message : String(err);
-}
-
 // ---------------------------------------------------------------------------
 // Cuánto tarda un turno, por tramo.
 //
@@ -947,7 +943,7 @@ async function runTurnPhases(
     await logTurn(supabase, conversationId, {
       intent: null,
       action: "error",
-      summary: `Fallo al clasificar intención: ${errorMessage(classified.err)}`,
+      summary: `Fallo al clasificar intención: ${errorText(classified.err)}`,
       tokens: classifiedTokens,
       customerMessage,
     });
@@ -1061,7 +1057,7 @@ async function runTurnPhases(
     await logTurn(supabase, conversationId, {
       intent,
       action: "error",
-      summary: errorMessage(err),
+      summary: errorText(err),
       tokens: classifyTokens,
       customerMessage,
     });
