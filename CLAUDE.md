@@ -48,7 +48,12 @@ reconstruye la base desde cero con las migraciones y seeds del repo.
    escenario/playbook del supervisor? → se envía tal cual) y la fase 1
    (clasificar intención → define qué herramientas recibe el modelo), y solo
    entonces el tool loop (máx. 5 pasos: catálogo, biblioteca, historial,
-   escalar). Desde B3 ("El reloj dice la verdad", 5/9/2026) el turno lee
+   escalar). `loadHistory` describe cada foto/audio/video/documento/sticker
+   sin texto legible con un marcador entre corchetes que arma `historyLine`
+   (`history-line.ts`, 8/9/2026: `[El cliente envió una foto sin texto; no
+   puedes verla]`, etc.) en vez de descartar la fila; si el último mensaje
+   del cliente es uno de esos marcadores, la fase 0 no corre (nada con qué
+   reconocer un escenario). Desde B3 ("El reloj dice la verdad", 5/9/2026) el turno lee
    `agent_settings.business_hours` al arrancar (default L–V 08:00–18:00 si
    falla; nunca se cae por el horario) y el bloque `TURNO ACTUAL` del prompt
    trae la franja del día, el saludo, el horario de atención y si la tienda
@@ -70,9 +75,15 @@ el proveedor (`rate-limit.ts`), tope de gasto diario, interruptor global,
 interruptor por herramienta, la guarda de identidad (`identity-guard.ts` +
 `applyIdentityGuard` en `agent.ts`): ningún texto que describa a la IA como
 automatizada o como una persona le llega al cliente, y la regla "si un
-humano ya escribió en el chat, la IA no entra"
-(`human-handled.ts`). `turn-target.ts` congela a quién se le habla;
-`turn-delivery.ts` impide el doble envío en reintentos.
+humano escribió DESPUÉS del último mensaje del cliente, o hace menos de
+`AI_HUMAN_GRACE_MINUTES` (default 30), la IA no entra" (`human-handled.ts`,
+`humanClaimsChat`; 8/9/2026 — antes era vitalicia, "¿alguna vez escribió un
+asesor?", y dejaba muda a la IA en el 100 % del backlog: el caso
+`3b654d2c…` quedó mudo por un "a" que un supervisor escribió el 28/8/2026 y
+siguió mudo incluso después de reactivar la IA; con la regla nueva 47 de 48
+conversaciones mudas del backlog medido el 8/9/2026 se liberan).
+`turn-target.ts` congela a quién se le habla; `turn-delivery.ts` impide el
+doble envío en reintentos.
 
 **Frontend:** App Router con una página por sección; `components/crm-shell.tsx`
 es el cliente raíz de la bandeja (estado, suscripciones realtime de Supabase,
@@ -283,6 +294,25 @@ dejar rastro es lo que hacía desaparecer leads.
   (`whatsapp-window.ts`) es la red de seguridad del composer para el hueco
   entre el rechazo de Meta y el refresh por realtime: espeja los mismos dos
   candados en memoria contra `messages`, no reemplaza a la base.
+- **`messages.content` es SOLO lo que el cliente escribió** (8/9/2026): el
+  texto que ve el modelo de una foto/audio/documento/sticker lo arma
+  `historyLine` en memoria (`[El cliente envió …]`/`[El asesor envió …]`),
+  nunca la base — la burbuja, `media-group`, `quoted-content` y
+  `close-sale-modal` dependen de que `content` sea el pie de foto real.
+  `MEDIA_RULES` (sección 7 del prompt) le dice al modelo qué hacer y su
+  test la pasa por la guarda de identidad. Caso `7631718e…` ("cualquiera
+  de estos en talla L" con dos fotos invisibles) y `cea69118…` (audio solo,
+  30 reencolados).
+- **`errorText` (`lib/log.ts`) es el único traductor de errores a texto de
+  log** (8/9/2026): no escribir `err instanceof Error ? err.message :
+  String(err)` en ningún sitio — un `PostgrestError` sale `[object Object]`
+  por esa vía (`turno_lock_no_liberado`, `webhook_error_actualizar_estado`,
+  7/9/2026). **`AI_AGENT_REASONING=off` cuando el modelo no razona**:
+  producción corre `gpt-5.6-luna` vía OpenRouter (`OPENAI_BASE_URL`), el
+  SDK avisaba `reasoningEffort is not supported` 3-4 veces por turno y el
+  esfuerzo no se aplicaba. Un `fetch failed` hacia Meta es `origenDelFallo:
+  "red"` → traspaso `entrega_fallida`, no `rechazado_por_meta`; lo
+  reencola el reconciliador.
 
 ---
 

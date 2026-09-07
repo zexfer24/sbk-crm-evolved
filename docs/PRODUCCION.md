@@ -26,6 +26,8 @@ Para producción, copia `.env.production.example`. Las que **no pueden faltar**:
 | `WHATSAPP_WEBHOOK_VERIFY_TOKEN` | El que registres en Meta |
 | `OPENAI_API_KEY` | O `GOOGLE_GENERATIVE_AI_API_KEY` según el proveedor |
 | `AI_AGENT_PROVIDER` / `AI_AGENT_MODEL` | Proveedor y modelo del agente |
+| `AI_AGENT_REASONING` | `on`/`off`, default `on`. En `off` el agente y el clasificador no mandan `reasoningEffort` al proveedor. Ponla en `off` en producción mientras el modelo sea `gpt-5.6-luna` vía OpenRouter: no soporta razonamiento y con `on` el SDK deja el warning `reasoningEffort is not supported` varias veces por turno sin que el parámetro se aplique |
+| `AI_HUMAN_GRACE_MINUTES` | Default 30. Minutos que un asesor "conserva" un chat después de escribir, aunque el cliente ya haya vuelto a escribir después de él. Súbela sin redeploy (solo cambiar la variable) si aparece `turno_persona_se_adelanto` sobre una conversación que un asesor está atendiendo ahora mismo |
 
 **El token de Meta caduca.** El que da el panel de desarrollo dura 24 horas.
 Genera uno permanente desde un System User en Business Manager, o la IA dejará
@@ -147,6 +149,40 @@ from public.conversations
 where id = 'aa75ef33-38e8-4ff4-8422-7e7f49615795';
 -- 2026-08-31 16:50:35+00
 ```
+
+**`20260908010000_traspaso_sin_contenido_legible`** (corrida "La IA ve lo
+que llega", 8/9/2026): corrige el caso de la conversación `cea69118…`, un
+audio del cliente sin texto previo que dejaba el turno salir por historial
+vacío SIN escribir traspaso (violaba "ningún lead invisible") y que el
+reconciliador reencoló 30 veces hasta que un asesor contestó a mano. Amplía
+el CHECK de `conversation_handoffs.reason` con `sin_contenido_legible` (los
+24 valores vigentes desde 20260905030000, más este). Sin función `security
+definer` nueva, sin revokes ni grants. Trae un backfill único (no en pasos,
+a diferencia de `20260907010000`): limpia `journey_stage`/`active_tool` a
+`null` en las conversaciones que el bug de `journey_stage='classifying'`
+dejó congeladas, sin lock vigente. Para medir cuántas filas va a tocar
+antes de aplicarla:
+
+```sql
+select count(*) from conversations
+where journey_stage in ('classifying','tool_running')
+  and (ai_turn_lock_until is null or ai_turn_lock_until < now());
+-- 17 el 7/9/2026
+```
+
+**Verificación después de aplicarla:**
+
+```sql
+select count(*) from conversations
+where journey_stage in ('classifying','tool_running')
+  and (ai_turn_lock_until is null or ai_turn_lock_until < now());
+-- 0
+```
+
+El CHECK admite `sin_contenido_legible` como valor válido de
+`conversation_handoffs.reason`; el código de esta misma corrida
+(`src/lib/ai/agent.ts`) lo usa cuando el turno queda sin nada legible que
+contestar tras describir la media con `historyLine`.
 
 ### El lease del lock de turno de la IA
 
@@ -499,6 +535,26 @@ migración nueva (título con `[migración]`), el orden es:
    para que el código que asume la migración ya aplicada no corra contra un
    esquema viejo.
 
+**Cuando el deploy lleva migración Y una variable de entorno nueva**
+(caso de la corrida "La IA ve lo que llega", 8/9/2026, migración
+`20260908010000` + `AI_AGENT_REASONING`): la variable va ANTES que el
+código, porque el push a `main` dispara el deploy solo (webhook de
+Dokploy) y el código llegaría antes que la base y que la variable si no se
+ordena así. Orden completo:
+
+1. Respaldo (`scripts/backup.sh`, ver §8).
+2. La variable nueva (`AI_AGENT_REASONING=off` en el caso de esa corrida)
+   en la pestaña **Environment** de Dokploy, **sin desplegar todavía**.
+3. Migración a mano contra `supabase-db` (pasos 2-3 de arriba) y su
+   registro en `supabase_migrations.schema_migrations`.
+4. Push a `main` (el webhook de Dokploy despliega solo).
+5. Verificar en los logs del contenedor nuevo que NO aparece el warning
+   `reasoningEffort is not supported` (confirma que la variable llegó antes
+   que el código que la lee) y que `reconciliador_encolo_huerfanas`
+   aparece con `encoladas` alto UNA sola vez en los primeros minutos —las
+   conversaciones mudas que la corrida libera de golpe: esperado, no un
+   bug.
+
 **Verificación:**
 
 ```bash
@@ -679,7 +735,7 @@ Con todo configurado, esta lista debe pasar entera:
 
 - [ ] Una restauración de prueba devuelve los datos completos
 - [ ] `npm run build` sin errores ni warnings
-- [ ] `select count(*) from supabase_migrations.schema_migrations` devuelve 60
+- [ ] `select count(*) from supabase_migrations.schema_migrations` devuelve 61
 - [ ] El bucket `whatsapp-media` es privado (`public = false`)
 - [ ] Una URL directa al bucket responde 400
 - [ ] `/api/media/...` sin sesión responde 401
