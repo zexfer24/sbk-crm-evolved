@@ -273,6 +273,13 @@ export async function stopAgentQueue(): Promise<{ discarded: number }> {
   const descartados = await createAgentQueue(redis).purge();
   await releaseSweepLock(redis);
 
+  // T3 (7/9/2026): apagar la IA también tiene que dejar quieto el despertador
+  // automático de la cola — si no, un timer que ya estaba programado dispara
+  // igual unos segundos después del apagón e intenta atender lo que la purga
+  // de arriba ya vació (en ese caso no hace daño, la cola está vacía, pero
+  // sigue siendo un timer vivo que un botón de pánico debería cancelar).
+  cancelarContinuacion();
+
   log.warn("cola_purgada", { descartados });
   return { discarded: descartados };
 }
@@ -323,6 +330,23 @@ export async function processAfterDebounce(
 }
 
 /**
+ * Plazos que un turno diferido puede dejar anotados, y si ese plazo cuenta
+ * para despertar la continuación (ver más abajo).
+ *
+ * El de error (RETRY_AFTER_ERROR_SECONDS) queda AFUERA a propósito: reintentar
+ * un error en caliente, a los pocos segundos, tiende a pegarle al mismo muro
+ * otra vez (el modelo que rechazó, el dato corrupto); el cron ya lo cubre a
+ * los 60 s, y no conviene que la cola se autodespierte para eso.
+ */
+type PlazoDiferido = typeof RETRY_WHEN_BUSY_SECONDS | typeof RETRY_WHEN_PACED_SECONDS | typeof RETRY_WHEN_LOCKED_SECONDS;
+
+interface ResultadoPasada {
+  result: QueueRunResult;
+  /** Un elemento por cada turno diferido con plazo (ritmo, cupo o lock). */
+  plazosDiferidos: PlazoDiferido[];
+}
+
+/**
  * Procesa turnos pendientes hasta agotar la cola o llegar al tope.
  *
  * No lanza: un turno que falla vuelve a la cola y deja seguir a los demás,
@@ -331,8 +355,13 @@ export async function processAfterDebounce(
  * Los turnos corren en paralelo hasta el tope de cupos —el histórico era uno
  * detrás de otro, y con el modelo tardando segundos eso hacía esperar a
  * clientes que no tenían nada que ver entre sí.
+ *
+ * Separada de `processQueuedTurns` (que es la que expone el módulo) porque la
+ * continuación (ver más abajo) necesita también `plazosDiferidos` para saber
+ * si hace falta despertarse sola y con qué plazo — algo que `QueueRunResult`,
+ * la forma pública, no tiene por qué cargar.
  */
-export async function processQueuedTurns(limit = maxPerRun()): Promise<QueueRunResult> {
+async function ejecutarPasada(limit: number): Promise<ResultadoPasada> {
   const redis = getRedis();
   const cola = createAgentQueue(redis);
   const cupos = createTurnSlots(redis, {
@@ -342,6 +371,7 @@ export async function processQueuedTurns(limit = maxPerRun()): Promise<QueueRunR
   const ritmo = createTurnPace(redis, { maxPerMinute: maxTurnsPerMinute() });
 
   const result: QueueRunResult = { processed: 0, failed: 0, deferred: 0 };
+  const plazosDiferidos: PlazoDiferido[] = [];
 
   /**
    * Lugares del presupuesto ya tomados, contando los turnos que todavía no
@@ -395,6 +425,7 @@ export async function processQueuedTurns(limit = maxPerRun()): Promise<QueueRunR
         // mida de menos.
         await cola.defer(conversationId, RETRY_WHEN_PACED_SECONDS);
         result.deferred++;
+        plazosDiferidos.push(RETRY_WHEN_PACED_SECONDS);
         log.info("cola_ritmo_al_tope", { conversationId, tope: maxTurnsPerMinute() });
         return;
       }
@@ -405,6 +436,7 @@ export async function processQueuedTurns(limit = maxPerRun()): Promise<QueueRunR
         // se retira; insistir solo gastaría viajes a Redis.
         await cola.defer(conversationId, RETRY_WHEN_BUSY_SECONDS);
         result.deferred++;
+        plazosDiferidos.push(RETRY_WHEN_BUSY_SECONDS);
         return;
       }
 
@@ -421,6 +453,7 @@ export async function processQueuedTurns(limit = maxPerRun()): Promise<QueueRunR
         if (isConversationBusy(err)) {
           await cola.defer(conversationId, RETRY_WHEN_LOCKED_SECONDS);
           result.deferred++;
+          plazosDiferidos.push(RETRY_WHEN_LOCKED_SECONDS);
           log.info("cola_turno_pospuesto_lock", { conversationId });
           continue;
         }
@@ -458,6 +491,8 @@ export async function processQueuedTurns(limit = maxPerRun()): Promise<QueueRunR
           });
         } else {
           log.error("cola_turno_fallido", { conversationId, intentos, detail });
+          // Sin push a plazosDiferidos: ver el comentario de PlazoDiferido —
+          // un error no despierta la continuación, lo cubre el cron.
           await cola.defer(conversationId, RETRY_AFTER_ERROR_SECONDS);
         }
       } finally {
@@ -470,5 +505,118 @@ export async function processQueuedTurns(limit = maxPerRun()): Promise<QueueRunR
 
   await Promise.all(Array.from({ length: maxConcurrentTurns() }, () => atender()));
 
+  return { result, plazosDiferidos };
+}
+
+/**
+ * Corre una pasada y devuelve solo lo público (`QueueRunResult`): la forma
+ * que ya conocen el webhook, el cron y todas las pruebas existentes.
+ *
+ * Además, si la pasada dejó turnos diferidos con plazo, programa (o
+ * encadena) la continuación que los despierta sola — ver `registrarDiferidos`
+ * más abajo. `esPropiaContinuacion` en `false` es siempre lo correcto acá:
+ * esta función es la puerta pública, y solo la usa quien NO es la propia
+ * continuación (webhook, cron, pruebas). La continuación se llama a sí misma
+ * por `ejecutarPasada` directo, más abajo.
+ */
+export async function processQueuedTurns(limit = maxPerRun()): Promise<QueueRunResult> {
+  const { result, plazosDiferidos } = await ejecutarPasada(limit);
+  registrarDiferidos(plazosDiferidos, false);
   return result;
+}
+
+/**
+ * Estado de la continuación automática de la cola.
+ *
+ * 7/9/2026 ("La respuesta llega en siete segundos", T3): hasta acá, cuando una
+ * pasada difería un turno (ritmo al tope, sin cupo, lock tomado), el worker se
+ * retiraba y NADIE lo despertaba — el turno volvía a la cola y solo lo
+ * reclamaban el próximo webhook (que drena como mucho lo que él mismo encoló,
+ * a propósito, desde el 26/8/2026) o el cron. El 7/9/2026 el cron era el
+ * único despertador real: cada 5 min con tope 10, así que un turno frenado
+ * 20 s por ritmo podía terminar esperando hasta 5 min. Ahora la propia cola se
+ * reprograma sola a los pocos segundos.
+ *
+ * Tres valores, no un booleano, porque hay dos ventanas distintas que cerrar:
+ * mientras el timer está ESPERANDO ("programada") no se programa un segundo
+ * timer; y mientras la continuación ya se disparó y su `ejecutarPasada` está
+ * EN VUELO ("corriendo") tampoco, aunque en ese instante no exista ningún
+ * timer vivo — sin este tercer estado, una pasada ajena (un webhook que entra
+ * justo en ese momento) vería "no hay timer" y programaría una segunda
+ * continuación en paralelo con la que ya está corriendo. La propia
+ * continuación SÍ puede reprogramarse a sí misma al terminar si todavía deja
+ * diferidos (para no depender del cron si el atraso es grande) — la distingue
+ * el parámetro `esPropiaContinuacion` de `registrarDiferidos`, no el estado.
+ */
+let estadoContinuacion: "inactiva" | "programada" | "corriendo" = "inactiva";
+let continuacionTimer: ReturnType<typeof setTimeout> | null = null;
+
+/**
+ * Decide si hace falta programar (o encadenar) la continuación, a partir de
+ * lo que dejó diferido la pasada que acaba de terminar.
+ *
+ * `esPropiaContinuacion` distingue quién pregunta: `false` es el webhook, el
+ * cron o una prueba —una pasada CUALQUIERA, ajena a la continuación—; `true`
+ * es la propia continuación evaluando si le hace falta encadenar la
+ * siguiente. Esa distinción es la que permite que, mientras la continuación
+ * está "corriendo", una pasada ajena se quede callada (evita la duplicada) y
+ * al mismo tiempo la continuación se pueda reprogramar a sí misma apenas
+ * termina (si no, un atraso grande nunca terminaría de drenarse solo: cada
+ * ronda dejaría diferidos y nadie volvería a programar nada hasta el cron).
+ */
+function registrarDiferidos(plazos: PlazoDiferido[], esPropiaContinuacion: boolean): void {
+  if (plazos.length === 0) {
+    // La propia continuación, al no dejar más diferidos, cierra el ciclo:
+    // vuelve a "inactiva" para que la próxima pasada con diferidos —sea de
+    // quien sea— pueda programar de cero.
+    if (esPropiaContinuacion) estadoContinuacion = "inactiva";
+    return;
+  }
+
+  if (estadoContinuacion === "programada") return; // ya hay una esperando: silencio.
+  if (estadoContinuacion === "corriendo" && !esPropiaContinuacion) return; // otra pasada mientras la continuación corre: silencio.
+
+  const enSegundos = Math.min(...plazos);
+  estadoContinuacion = "programada";
+  continuacionTimer = setTimeout(() => {
+    continuacionTimer = null;
+    estadoContinuacion = "corriendo";
+    void ejecutarPasada(maxPerRun())
+      .then(({ plazosDiferidos }) => registrarDiferidos(plazosDiferidos, true))
+      .catch((err) => {
+        // No lanza hoy (getRedis() sí podría), pero un timer que revienta sin
+        // registro es un despertador que se calla para siempre sin que nadie
+        // se entere.
+        estadoContinuacion = "inactiva";
+        log.error("cola_continuacion_fallida", { detail: errorText(err) });
+      });
+  }, enSegundos * 1000 + WAKE_MARGIN_MS);
+  // Que el timer no mantenga vivo el proceso: si el resto del sistema ya
+  // terminó, la continuación pendiente no tiene por qué impedir que salga.
+  // Cast puntual porque, bajo la lib DOM de Next, el tipo de setTimeout no
+  // trae `unref()` (mismo caso que el setInterval de conversation-lock.ts);
+  // en Node -que es donde esto corre de verdad, "server-only"- el valor real
+  // sí lo tiene.
+  (continuacionTimer as unknown as { unref?: () => void }).unref?.();
+
+  log.info("cola_continuacion_programada", { enSegundos, diferidos: plazos.length });
+}
+
+/**
+ * Cancela la continuación pendiente (si la hay), sin tocar Redis.
+ *
+ * La usa `stopAgentQueue` de verdad (apagar la IA tiene que dejar quieto
+ * también el despertador automático) y la expone `resetContinuacionParaPruebas`
+ * para el `afterEach` de las pruebas de la continuación, que necesitan limpiar
+ * el estado de módulo entre pruebas sin pasar por Redis.
+ */
+function cancelarContinuacion(): void {
+  if (continuacionTimer) clearTimeout(continuacionTimer);
+  continuacionTimer = null;
+  estadoContinuacion = "inactiva";
+}
+
+/** Solo para pruebas: ver `cancelarContinuacion`. */
+export function resetContinuacionParaPruebas(): void {
+  cancelarContinuacion();
 }

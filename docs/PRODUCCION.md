@@ -646,10 +646,17 @@ Define `CRON_SECRET` (una cadena larga y aleatoria) y llama cada minuto:
 Cada 5 minutos hasta el 7/9/2026: con los topes de turnos calibrados a ~4/min
 esa lentitud se creía el freno de emergencia, pero no lo era — ver "Rampa de
 los topes" más abajo. Desde T3 de esta corrida la cola se despierta sola a
-los 3-20 s cuando un turno quedó frenado (reintento de ritmo, de cupo, de
-lock o de error); el cron sigue siendo red de seguridad para lo que ni
-siquiera eso cubre — el proceso que murió antes de reencolarse, o el turno
-que Redis perdió del todo —, y el freno de emergencia real sigue siendo
+los 3-30 s cuando una pasada difiere un turno por ritmo (20 s), por cupo (3 s)
+o por lock tomado (30 s) — el reintento de un turno que FALLÓ (30 s) queda
+afuera a propósito: reintentar un error en caliente tiende a pegarle al mismo
+muro, y ese caso lo sigue cubriendo el cron. El cron también sigue siendo la
+única red para lo que la continuación no puede ver: el proceso que murió
+antes de reencolarse, el turno que Redis perdió del todo, y un atraso más
+grande que lo que una sola pasada intenta de una vez (`AGENT_QUEUE_MAX_PER_RUN`,
+30 por defecto) cuando esa pasada logra procesar su cupo entero sin que nada
+se rechace — ahí no queda ningún turno "frenado" que la continuación pueda
+registrar, así que no se programa nada y el resto de la cola espera al cron o
+al próximo mensaje entrante. El freno de emergencia real sigue siendo
 `agent_can_run()` (interruptor global + tope de gasto diario), consultado en
 CADA turno.
 
