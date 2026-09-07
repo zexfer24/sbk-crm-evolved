@@ -248,10 +248,18 @@ const matchPlaybookMock = vi.fn();
 const fetchActivePlaybooksMock = vi.fn(async () => [] as Playbook[]);
 /** Si este escenario ya salió en este chat dentro de la ventana de repetición. */
 const playbookSentRecentlyMock = vi.fn<(...args: unknown[]) => Promise<boolean>>(async () => false);
+/**
+ * `ZERO_USAGE` (8/9/2026, T2): agent.ts la usa como el "sin escenario, sin
+ * costo" cuando salta `matchPlaybook` porque la última línea del cliente es
+ * un marcador de media — el mock necesita exportar el mismo nombre, aunque
+ * el valor exacto no importa para estos tests (nunca se suma a un total que
+ * el test verifique).
+ */
 vi.mock("@/lib/ai/playbooks", () => ({
   matchPlaybook: (...args: unknown[]) => matchPlaybookMock(...args),
   fetchActivePlaybooks: () => fetchActivePlaybooksMock(),
   playbookSentRecently: (...args: unknown[]) => playbookSentRecentlyMock(...args),
+  ZERO_USAGE: { inputTokens: 0, outputTokens: 0, totalTokens: 0 },
 }));
 
 type AnyMock = (...args: unknown[]) => Promise<unknown>;
@@ -290,11 +298,19 @@ interface FakeUsage {
   inputTokenDetails?: { noCacheTokens: number; cacheReadTokens: number; cacheWriteTokens: number };
 }
 
-const classifyIntentMock = vi.fn<() => Promise<{ intent: Intent; usage: FakeUsage }>>(async () => ({
+/**
+ * Forwarding de argumentos (8/9/2026, T2): antes el wrapper de `vi.mock`
+ * llamaba a `classifyIntentMock()` sin pasarle nada, así que ningún test
+ * podía mirar QUÉ historial le llegó al clasificador — hacía falta para
+ * probar que un audio sin texto SÍ le llega como línea `user` con el
+ * marcador exacto (ver "solo un audio ya no deja el historial vacío" en el
+ * describe de historial).
+ */
+const classifyIntentMock = vi.fn<(...args: unknown[]) => Promise<{ intent: Intent; usage: FakeUsage }>>(async () => ({
   intent: "consulta_disponibilidad",
   usage: { inputTokens: 5, outputTokens: 1, totalTokens: 6 },
 }));
-vi.mock("@/lib/ai/classify", () => ({ classifyIntent: () => classifyIntentMock() }));
+vi.mock("@/lib/ai/classify", () => ({ classifyIntent: (...args: unknown[]) => classifyIntentMock(...args) }));
 
 const escalateConversationMock = vi.fn<AnyMock>(async () => ({ escalated: true, assignedAgentName: "María" }));
 vi.mock("@/lib/ai/escalate", () => ({
@@ -404,6 +420,7 @@ vi.mock("@/lib/whatsapp/meta-client", () => ({
 import { DESPEDIDA_CON_ASESOR, DESPEDIDA_SIN_ASESOR, runAgentTurn } from "@/lib/ai/agent";
 import { OFF_TOPIC_REPLY, SYSTEM_PROMPT } from "@/lib/ai/prompt";
 import { revealsIdentity } from "@/lib/ai/identity-guard";
+import { playbookMessageText } from "@/lib/ai/send";
 import { log } from "@/lib/log";
 
 function playbook(overrides: Partial<Playbook> = {}): Playbook {
@@ -552,6 +569,130 @@ describe("runAgentTurn — historial", () => {
 
     const enviados = matchPlaybookMock.mock.calls[0][0] as { content: string }[];
     expect(enviados[0].content).toContain("Total: USD 20.00");
+  });
+
+  /**
+   * T2 (8/9/2026, "La IA ve lo que llega", Bug 1 medido en producción el
+   * 7/9/2026): antes `loadHistory` descartaba TODA fila sin `content`, y el
+   * webhook guarda audio con `content = caption ?? null` — sin pie (el caso
+   * normal: WhatsApp no deja ponerle pie a una nota de voz), el historial
+   * quedaba vacío y el turno salía sin rastro (caso `cea69118…`, 30
+   * reencolados). Este es el test de la prueba de mutación: si `historyLine`
+   * volviera a devolver `null` para `audio`, este test se pone rojo.
+   */
+  it("solo un audio ya no deja el historial vacío: se clasifica y se redacta", async () => {
+    state.history = [{ sender_type: "customer", content: null, is_internal_note: false, message_type: "audio" }];
+
+    await runAgentTurn("conv-1");
+
+    expect(classifyIntentMock).toHaveBeenCalledTimes(1);
+    const historialRecibido = classifyIntentMock.mock.calls[0][0] as { role: string; content: string }[];
+    expect(historialRecibido).toEqual([
+      { role: "user", content: "[El cliente envió una nota de voz; no puedes escucharla]" },
+    ]);
+    // El turno no se queda callado: sin escenario que calce, cae al flujo
+    // genérico y redacta.
+    expect(generateMock).toHaveBeenCalledTimes(1);
+  });
+
+  /**
+   * Caso `7631718e-52bc-4448-99f2-586789c073ff` (7/9/2026): una foto con pie
+   * entra al contexto del modelo con su pie, no solo como "llegó una foto".
+   */
+  it("una foto con pie entra con su pie", async () => {
+    state.history = [
+      {
+        sender_type: "customer",
+        content: "Cualquiera de estos en talla L",
+        is_internal_note: false,
+        message_type: "image",
+      },
+    ];
+
+    await runAgentTurn("conv-1");
+
+    const historialRecibido = classifyIntentMock.mock.calls[0][0] as { role: string; content: string }[];
+    expect(historialRecibido).toEqual([
+      { role: "user", content: "[El cliente envió una foto. Pie: Cualquiera de estos en talla L]" },
+    ]);
+  });
+});
+
+/**
+ * S3 del plan (8/9/2026): si la última línea del CLIENTE en el historial es
+ * un marcador de media, fase 0 (`matchPlaybook`) no corre — ningún
+ * disparador de escenario calza contra "[El cliente envió una foto…]", así
+ * que preguntarlo igual sería gastar una llamada de balde. La clasificación
+ * de intención SÍ corre igual: define qué herramientas recibe el modelo, y
+ * eso no depende de que el último mensaje traiga texto. El caso normal —un
+ * texto DESPUÉS de una foto, caso `7631718e…`— sigue corriendo fase 0 con la
+ * foto en contexto: ahí la última línea de cliente es texto, no marcador.
+ */
+describe("runAgentTurn — lo que llega sin texto", () => {
+  it("un marcador como último mensaje no llama a matchPlaybook", async () => {
+    const info = vi.spyOn(log, "info");
+    // Descendente, como los devuelve la consulta: lo más reciente primero.
+    state.history = [
+      { sender_type: "customer", content: null, is_internal_note: false, message_type: "image" },
+      { sender_type: "customer", content: "hola, busco un repuesto", is_internal_note: false, message_type: "text" },
+    ];
+
+    await runAgentTurn("conv-1");
+
+    expect(matchPlaybookMock).not.toHaveBeenCalled();
+    expect(classifyIntentMock).toHaveBeenCalledTimes(1);
+    expect(info).toHaveBeenCalledWith("turno_ultimo_mensaje_sin_texto", { conversationId: "conv-1" });
+    // Nada con qué crear el escenario que faltó: la bitácora queda sin texto
+    // de cliente, no con el marcador.
+    expect(agentTurnInserts[0]).toMatchObject({ customer_message: null });
+  });
+
+  it("una foto seguida de texto sí corre fase 0 con la foto en contexto", async () => {
+    // Descendente: lo más reciente (el texto) primero.
+    state.history = [
+      { sender_type: "customer", content: "Cualquiera de estos en talla L", is_internal_note: false, message_type: "text" },
+      { sender_type: "customer", content: null, is_internal_note: false, message_type: "image" },
+    ];
+
+    await runAgentTurn("conv-1");
+
+    expect(matchPlaybookMock).toHaveBeenCalledTimes(1);
+    const enviados = matchPlaybookMock.mock.calls[0][0] as { role: string; content: string }[];
+    expect(enviados.map((m) => m.content)).toEqual([
+      "[El cliente envió una foto sin texto; no puedes verla]",
+      "Cualquiera de estos en talla L",
+    ]);
+    expect(agentTurnInserts[0]).toMatchObject({ customer_message: "Cualquiera de estos en talla L" });
+  });
+
+  /**
+   * Hallazgo 6 del plan (8/9/2026): `alreadySentPlaybook` salta los
+   * marcadores salientes al buscar "nuestra última respuesta" — si el
+   * asesor mandó una foto DESPUÉS del escenario, la red que evita repetirlo
+   * seguía teniendo que reconocerlo.
+   */
+  it("la última respuesta nuestra para alreadySentPlaybook salta un marcador de foto del asesor", async () => {
+    const info = vi.spyOn(log, "info");
+    const pb = playbook();
+    fetchActivePlaybooksMock.mockResolvedValue([pb]);
+    matchPlaybookMock.mockResolvedValue({ playbook: pb, usage: NO_USAGE });
+    // Descendente: lo más reciente primero. La foto del asesor es la última
+    // respuesta "cronológica", pero la última respuesta con TEXTO sigue
+    // siendo el escenario.
+    state.history = [
+      { sender_type: "ai", content: null, is_internal_note: false, message_type: "image" },
+      { sender_type: "ai", content: playbookMessageText(pb), is_internal_note: false, message_type: "text" },
+      { sender_type: "customer", content: "me pasas el catálogo?", is_internal_note: false, message_type: "text" },
+    ];
+
+    await runAgentTurn("conv-1");
+
+    expect(sendPlaybookReplyMock).not.toHaveBeenCalled();
+    expect(info).toHaveBeenCalledWith("escenario_no_se_repite", {
+      conversationId: "conv-1",
+      escenario: pb.name,
+      motivo: "fue_la_ultima_respuesta",
+    });
   });
 });
 

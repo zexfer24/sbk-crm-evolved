@@ -22,7 +22,8 @@ import { buildKnowledgeTool } from "@/lib/ai/knowledge";
 import { escalateConversation } from "@/lib/ai/escalate";
 import { withConversationTurnLock, type TurnLease } from "@/lib/ai/conversation-lock";
 import { humanHasWritten } from "@/lib/ai/human-handled";
-import { fetchActivePlaybooks, matchPlaybook, playbookSentRecently } from "@/lib/ai/playbooks";
+import { ZERO_USAGE, fetchActivePlaybooks, matchPlaybook, playbookSentRecently, type PlaybookMatch } from "@/lib/ai/playbooks";
+import { historyLine, isHistoryMarker } from "@/lib/ai/history-line";
 import { playbookMessageText, sendAgentText, sendPlaybookReply, type DeliveryOutcome } from "@/lib/ai/send";
 import { buildTurnTarget, type AgentConversation, type TurnTarget } from "@/lib/ai/turn-target";
 import { NonRetryableTurnError, newTurnDelivery, type TurnDelivery } from "@/lib/ai/turn-delivery";
@@ -168,20 +169,61 @@ async function loadHistory(supabase: SupabaseClient<Database>, conversationId: s
     // modelo. Un 'order' SÍ entra: su `content` ya es el resumen en español
     // que arma el webhook (ítems y total), así que no necesita tratamiento
     // aparte acá.
-    if (row.is_internal_note || row.sender_type === "system" || row.message_type === "unsupported" || !row.content)
-      continue;
-    messages.push({ role: row.sender_type === "customer" ? "user" : "assistant", content: row.content });
+    //
+    // Lo que SÍ cambió (8/9/2026, Bug 1 medido en producción el 7/9): una
+    // foto, un video, una nota de voz, un documento o un sticker traen
+    // `content` null cuando llegan sin pie, y antes esa nulidad los
+    // descartaba igual que un 'unsupported' — invisibles para el modelo. La
+    // línea que arma `historyLine` (ver history-line.ts) es la manera de
+    // avisarle al modelo que algo llegó sin sintetizar nada en
+    // `messages.content`: la fila de la base no se toca, el marcador vive
+    // solo en memoria.
+    const linea = historyLine(row);
+    if (!linea) continue;
+    messages.push({ role: linea.role, content: linea.content });
   }
   return messages;
 }
 
-/** Último mensaje del cliente del turno: es lo que se guarda en la bitácora para poder crear el escenario que faltó. */
+/**
+ * Último mensaje del cliente del turno: es lo que se guarda en la bitácora
+ * para poder crear el escenario que faltó.
+ *
+ * Devuelve `null` si esa última línea es un marcador de media (8/9/2026): un
+ * supervisor no puede crear un escenario a partir de "[El cliente envió una
+ * foto sin texto; no puedes verla]" — no hay texto de cliente ahí, solo el
+ * aviso que arma el CRM. Mejor una bitácora vacía que una engañosa.
+ */
 function lastCustomerMessage(history: ModelMessage[]): string | null {
   for (let i = history.length - 1; i >= 0; i--) {
     const message = history[i];
-    if (message.role === "user" && typeof message.content === "string") return message.content;
+    if (message.role === "user" && typeof message.content === "string") {
+      return isHistoryMarker(message.content) ? null : message.content;
+    }
   }
   return null;
+}
+
+/**
+ * ¿La última línea del CLIENTE en el historial es un marcador de media
+ * (foto/video/audio/documento/sticker sin texto que leer)? (8/9/2026)
+ *
+ * Gobierna si vale la pena llamar a `matchPlaybook`: un escenario está
+ * escrito para calzar contra texto de cliente, y un marcador —"[El cliente
+ * envió una nota de voz; no puedes escucharla]"— nunca va a calzar con
+ * ningún disparador. Preguntarlo igual sería gastar una llamada al
+ * proveedor por nada. El caso normal, un texto DESPUÉS de la foto
+ * ("cualquiera de estos en talla L", caso `7631718e…`), sí corre fase 0 con
+ * el marcador en contexto: acá se mira solo la ÚLTIMA línea de cliente, no
+ * si hay marcadores en cualquier parte del historial.
+ */
+function lastUserLineIsMarker(history: ModelMessage[]): boolean {
+  for (let i = history.length - 1; i >= 0; i--) {
+    const message = history[i];
+    if (message.role !== "user") continue;
+    return typeof message.content === "string" && isHistoryMarker(message.content);
+  }
+  return false;
 }
 
 /**
@@ -250,11 +292,21 @@ function needsGreeting(welcomeSentAt: string | null, history: ModelMessage[]): b
   return !welcomeSentAt && !history.some((message) => message.role === "assistant");
 }
 
-/** true si nuestra última respuesta ya fue la redirección de fuera de tema. */
+/**
+ * true si nuestra última respuesta ya fue la redirección de fuera de tema.
+ *
+ * Salta los marcadores de media salientes (8/9/2026, hallazgo 6 del plan):
+ * "[El asesor envió una foto]" no es la redirección ni podría serlo, y si se
+ * lo tomara como "nuestra última respuesta" la red dejaría de reconocer que
+ * la redirección sí se mandó antes de esa foto — se apoyaría solo en que el
+ * cliente vuelva a insistir para descubrirlo. Se compara contra el último
+ * TEXTO real que salió.
+ */
 function alreadyRedirected(history: ModelMessage[]): boolean {
   for (let i = history.length - 1; i >= 0; i--) {
     const message = history[i];
     if (message.role !== "assistant") continue;
+    if (typeof message.content === "string" && isHistoryMarker(message.content)) continue;
     return message.content === OFF_TOPIC_REPLY;
   }
   return false;
@@ -275,12 +327,19 @@ function alreadyRedirected(history: ModelMessage[]): boolean {
  * La comparación es contra el texto tal como SALE —con el enlace pegado
  * abajo si el escenario lo lleva—, porque es eso lo que quedó guardado en el
  * historial. De ahí que el compositor viva en send.ts y no acá.
+ *
+ * Salta los marcadores de media salientes (8/9/2026, hallazgo 6 del plan): si
+ * el asesor mandó una foto DESPUÉS del escenario, "nuestra última respuesta"
+ * sigue siendo el texto del escenario para todo efecto práctico — la red de
+ * "fue la última respuesta" no debe dejar de reconocerlo solo porque en el
+ * medio se coló un adjunto.
  */
 function alreadySentPlaybook(history: ModelMessage[], playbook: Playbook): boolean {
   const enviado = playbookMessageText(playbook);
   for (let i = history.length - 1; i >= 0; i--) {
     const message = history[i];
     if (message.role !== "assistant") continue;
+    if (typeof message.content === "string" && isHistoryMarker(message.content)) continue;
     return message.content === enviado;
   }
   return false;
@@ -873,17 +932,30 @@ async function runTurnPhases(
   // también esa llamada: son dos enums con criterios distintos y prompts
   // distintos, y juntarlos degrada los dos a la vez sin forma de saber cuál.
   // Con esta forma, cada uno se puede mover de modelo por su cuenta.
+  // Si la última línea del CLIENTE es un marcador de media (8/9/2026, ver
+  // lastUserLineIsMarker), matchPlaybook NI SIQUIERA se llama: ningún
+  // disparador de escenario calza contra "[El cliente envió una foto…]", así
+  // que preguntarlo igual gastaría una llamada al proveedor de balde. La
+  // clasificación de intención SÍ corre igual —define qué herramientas recibe
+  // el modelo, y "otro"/"consulta_disponibilidad" siguen siendo válidos
+  // aunque el último mensaje sea una foto—. El caso normal, texto DESPUÉS de
+  // la foto (caso `7631718e…`), no entra acá: ahí la última línea de cliente
+  // es texto y fase 0 corre con el marcador anterior en contexto.
+  const ultimoEsMarcador = lastUserLineIsMarker(history);
+  if (ultimoEsMarcador) {
+    log.info("turno_ultimo_mensaje_sin_texto", { conversationId });
+  }
+  const matchPromise: Promise<PlaybookMatch> = ultimoEsMarcador
+    ? Promise.resolve({ playbook: null, usage: ZERO_USAGE })
+    : matchPlaybook(history, playbooks, undefined, businessHours);
+
   const [match, classified] = await medir(tiempos, "clasificacionMs", () =>
     Promise.all([
       // matchPlaybook nunca lanza: un fallo del proveedor deja el turno por el
       // flujo genérico. classifyIntent sí, y su fallo aborta el turno — así que
       // se captura acá para que no se lleve por delante un escenario que quizá
       // sí reconoció.
-      //
-      // `undefined` en el tercer lugar deja que matchPlaybook use su propio
-      // "ahora" por defecto — acá solo hace falta empujar el horario, que ya
-      // llegó calculado desde runAgentTurn (Frente B3, 5/9/2026).
-      matchPlaybook(history, playbooks, undefined, businessHours),
+      matchPromise,
       classifyIntent(history).then(
         (result) => ({ ok: true as const, result }),
         (err: unknown) => ({ ok: false as const, err })

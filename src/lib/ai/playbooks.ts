@@ -86,7 +86,12 @@ export async function playbookSentRecently(
   return (data ?? []).length > 0;
 }
 
-const ZERO_USAGE: LanguageModelUsage = {
+// Exportada (8/9/2026) para que runTurnPhases (agent.ts) pueda devolver el
+// mismo "sin escenario, sin costo" cuando se salta matchPlaybook a propósito
+// —el último mensaje del cliente es un marcador de media, y comparar un
+// escenario contra "[El cliente envió una foto…]" no calza nunca y solo
+// gastaría una llamada al proveedor de balde.
+export const ZERO_USAGE: LanguageModelUsage = {
   inputTokens: 0,
   outputTokens: 0,
   totalTokens: 0,
