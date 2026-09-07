@@ -29,6 +29,41 @@ import { DEFAULT_BUSINESS_HOURS, turnClockLine, type BusinessHours } from "@/lib
 // TypeScript en tools.ts. Esto es el guion, no la cerradura.
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// Sección 7 del bloque estático: qué hacer con lo que el historial describe
+// entre corchetes en vez de transcribir (ver history-line.ts). Medido en
+// producción el 7/9/2026: 108 de 1000 mensajes entrantes (10,8 %) llegan sin
+// `content` legible —foto, video, nota de voz, sticker, documento—, y hasta
+// ahora esas filas eran invisibles para el modelo. Caso concreto,
+// conversación `7631718e-52bc-4448-99f2-586789c073ff`: el cliente mandó dos
+// fotos y después "Cualquiera de estos en talla L" — "estos" señalaba las
+// fotos, que el modelo nunca vio.
+//
+// Va DENTRO de SYSTEM_PROMPT (interpolada, no pegada aparte) porque es una
+// regla fija: no depende del turno, así que pertenece al prefijo cacheable
+// que cambia una sola vez y no en cada mensaje — meterla en el sufijo la
+// pagaría entera en cada llamada, igual que la hora si estuviera ahí arriba.
+//
+// Exportada aparte (y no inline dentro de SYSTEM_PROMPT) para que el test
+// pueda pasarla sola por `revealsIdentity`: nada de lo que sigue puede
+// describir a la IA como automatizada ni como una persona, y por eso el
+// texto evita las palabras que la guarda vigila —ver identity-guard.ts—
+// incluso para prohibirlas: la prohibición general ya vive en la sección 1.
+// ---------------------------------------------------------------------------
+export const MEDIA_RULES = `7. LO QUE TE LLEGA SIN TEXTO
+
+Cuando el historial trae una línea entre corchetes, como [El cliente envió una foto sin texto; no puedes verla] o [El asesor envió una nota de voz], esa línea la escribió el CRM para avisarte qué llegó: no es algo que el cliente haya escrito. Nunca la cites, no la repitas y no la comentes como si fuera un mensaje suyo.
+
+Si el cliente manda una foto o un video sin nada escrito, no adivines qué es. Pregunta con naturalidad, en una sola pregunta, qué repuesto es o qué anda buscando — por ejemplo, de qué moto se trata. Si la foto o el video traen un pie, atiende ese pie como si fuera su mensaje: no le exijas además que describa lo que mandó.
+
+Si manda una nota de voz, pídele corto y amable que te lo escriba por acá.
+
+Si manda solo un sticker, no lo comentes: sigue con lo que se venía hablando. Si es lo primero que llega en la conversación, saluda y pregunta en qué lo puedes ayudar.
+
+Si manda un documento, dile que un asesor se lo revisa y pregúntale qué necesita.
+
+En ningún caso expliques por qué no puedes ver ni escuchar lo que mandó. Pide directo lo que te hace falta para seguir ayudando, sin dar vueltas ni justificarte.`;
+
 export const SYSTEM_PROMPT = `SBK MOTORCYCLES · ATENCIÓN POR WHATSAPP
 
 1. QUIÉN ERES
@@ -122,7 +157,9 @@ El formato de WhatsApp no es Markdown. Para resaltar se usa un solo asterisco pa
 
 No uses encabezados, ni tablas, ni listas numeradas largas. Si tienes que enumerar dos o tres repuestos, una línea corta por repuesto y ya.
 
-No cierres cada mensaje con una pregunta de relleno. Si no hace falta preguntar nada, no preguntes.`;
+No cierres cada mensaje con una pregunta de relleno. Si no hace falta preguntar nada, no preguntes.
+
+${MEDIA_RULES}`;
 
 /** Respuesta fija para lo que no tiene que ver con la tienda: no pasa por el modelo, así que no cuesta salida. */
 export const OFF_TOPIC_REPLY =

@@ -1,7 +1,8 @@
 import { describe, expect, it } from "vitest";
 import { INTENT_VALUES } from "@/lib/ai/classify";
-import { OFF_TOPIC_REPLY, SYSTEM_PROMPT, buildInstructions } from "@/lib/ai/prompt";
+import { MEDIA_RULES, OFF_TOPIC_REPLY, SYSTEM_PROMPT, buildInstructions } from "@/lib/ai/prompt";
 import { greetingWindow } from "@/lib/ai/greeting-window";
+import { revealsIdentity } from "@/lib/ai/identity-guard";
 
 /**
  * Estimación conservadora de caracteres por token para español.
@@ -349,5 +350,57 @@ describe("formato de WhatsApp", () => {
   it("el prompt no contiene Markdown literal", () => {
     expect(SYSTEM_PROMPT).not.toContain("**");
     expect(OFF_TOPIC_REPLY).not.toContain("**");
+  });
+});
+
+/**
+ * Sección 7 ("LO QUE TE LLEGA SIN TEXTO"): desde T2, el historial describe
+ * fotos, videos, notas de voz, stickers y documentos entre corchetes en vez
+ * de omitirlos. Este bloque le dice al modelo qué hacer con esas líneas, y
+ * tiene que seguir siendo parte del prefijo estático (cacheable) — nunca del
+ * sufijo, que se paga entero en cada turno.
+ */
+describe("sección 7 — lo que llega sin texto", () => {
+  it("MEDIA_RULES es parte del bloque estático que se cachea", () => {
+    expect(SYSTEM_PROMPT).toContain(MEDIA_RULES);
+  });
+
+  it("buildInstructions también trae MEDIA_RULES, dentro del prefijo cacheado", () => {
+    const instructions = buildInstructions(TURN);
+
+    expect(instructions).toContain(MEDIA_RULES);
+    expect(instructions.startsWith(SYSTEM_PROMPT)).toBe(true);
+  });
+
+  /** Nada de lo que le dice al modelo qué hacer con media puede describirlo como automatizado o como una persona. */
+  it("pasa la guarda de identidad limpio", () => {
+    expect(revealsIdentity(MEDIA_RULES)).toBeNull();
+  });
+
+  /**
+   * Prueba de que el test anterior de verdad mira lo que dice mirar: si
+   * MEDIA_RULES calzara con una fórmula prohibida, la guarda tiene que
+   * atraparlo. Sin este test, un `revealsIdentity(MEDIA_RULES) === null`
+   * que pasara "por casualidad" (por ejemplo, si alguien rompiera el import)
+   * no se notaría.
+   */
+  it("la guarda sí atrapa una fórmula prohibida pegada al final", () => {
+    const conFormulaProhibida = `${MEDIA_RULES} Soy un asistente automatizado.`;
+
+    const match = revealsIdentity(conFormulaProhibida);
+
+    expect(match).not.toBeNull();
+    expect(match?.categoria).toBe("automatizacion");
+  });
+
+  it("cubre las cinco conductas: foto, video, nota de voz, sticker y documento", () => {
+    const texto = MEDIA_RULES.toLowerCase();
+
+    expect(texto).toContain("foto");
+    expect(texto).toContain("video");
+    expect(texto).toContain("nota de voz");
+    expect(texto).toContain("sticker");
+    expect(texto).toContain("documento");
+    expect(texto).toContain("corchetes");
   });
 });
