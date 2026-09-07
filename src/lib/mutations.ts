@@ -11,6 +11,10 @@ import type {
 } from "@/lib/types";
 import { PAYMENT_METHOD_LABELS } from "@/lib/types";
 import type { BusinessHours } from "@/lib/business-hours";
+// Sin "server-only": identity-guard.ts es un módulo puro (mismo motivo que
+// human-handled.ts) y este archivo corre en el navegador, dentro del panel
+// de supervisión.
+import { revealsIdentity, type IdentityMatch } from "@/lib/ai/identity-guard";
 
 async function insertSystemEvent(
   supabase: SupabaseClient,
@@ -482,6 +486,33 @@ export async function deleteQuickReply(supabase: SupabaseClient, id: string) {
  */
 export type PlaybookDraft = Omit<Playbook, "id" | "isActive" | "tags"> & { tagIds: string[] };
 
+/**
+ * El 26-27/8/2026 la IA se presentó 60 veces como "asistente automatizado":
+ * la prohibición vivía solo en el guion y el modelo la rompió igual. Los
+ * escenarios son la ÚNICA otra vía —aparte del modelo— por la que sale texto
+ * al cliente sin pasar por la guarda en caliente de `agent.ts` (los escribe
+ * el supervisor, se envían tal cual), así que la cerradura tiene que estar
+ * en la puerta de entrada: acá, antes de tocar la base.
+ */
+export class PlaybookIdentityError extends Error {
+  readonly match: IdentityMatch;
+  name = "PlaybookIdentityError";
+
+  constructor(match: IdentityMatch) {
+    super(
+      match.categoria === "automatizacion"
+        ? `El texto describe a la tienda como automatizada: «${match.fragmento}»`
+        : `El texto describe a la tienda como una persona concreta: «${match.fragmento}»`
+    );
+    this.match = match;
+  }
+}
+
+function assertPlaybookIdentity(draft: PlaybookDraft) {
+  const match = revealsIdentity(draft.responseText);
+  if (match) throw new PlaybookIdentityError(match);
+}
+
 function playbookRow(draft: PlaybookDraft) {
   return {
     name: draft.name,
@@ -532,6 +563,7 @@ async function syncPlaybookTags(supabase: SupabaseClient, playbookId: string, ta
 }
 
 export async function createPlaybook(supabase: SupabaseClient, draft: PlaybookDraft) {
+  assertPlaybookIdentity(draft);
   const { data, error } = await supabase
     .from("ai_playbooks")
     .insert(playbookRow(draft))
@@ -542,6 +574,7 @@ export async function createPlaybook(supabase: SupabaseClient, draft: PlaybookDr
 }
 
 export async function updatePlaybook(supabase: SupabaseClient, id: string, draft: PlaybookDraft) {
+  assertPlaybookIdentity(draft);
   const { error } = await supabase.from("ai_playbooks").update(playbookRow(draft)).eq("id", id);
   if (error) throw error;
   await syncPlaybookTags(supabase, id, draft.tagIds);

@@ -5,7 +5,7 @@ import { AlertTriangle, Link2, MessageSquarePlus, Paperclip, Pencil, Plus, Trash
 import { Button, Input, Label, Modal, TextArea, toast } from "@heroui/react";
 import type { AgentTurn, Playbook, PlaybookAfterSend, PlaybookAttachmentType, QuickReply, Tag } from "@/lib/types";
 import { createClient } from "@/lib/supabase/client";
-import { createPlaybook, deletePlaybook, setPlaybookActive, updatePlaybook } from "@/lib/mutations";
+import { createPlaybook, deletePlaybook, PlaybookIdentityError, setPlaybookActive, updatePlaybook } from "@/lib/mutations";
 import { MEDIA_BUCKET, mediaUrlFor } from "@/lib/storage";
 import { hasHardcodedPrice } from "@/lib/playbook-price";
 
@@ -121,8 +121,15 @@ export function PlaybooksPanel({ playbooks, unmatchedTurns, quickReplies, tags, 
       }
       setIsFormOpen(false);
     } catch (err) {
-      const isDuplicate = err instanceof Error && err.message.includes("duplicate key");
-      toast.danger(isDuplicate ? "Ya existe un escenario con ese nombre." : "No se pudo guardar el escenario.");
+      // La guarda de identidad va primero: su mensaje trae el fragmento exacto
+      // que rechazó («asistente automatizado», "me llamo…") para que el
+      // supervisor sepa QUÉ corregir, no un "no se pudo guardar" a ciegas.
+      if (err instanceof PlaybookIdentityError) {
+        toast.danger(err.message);
+      } else {
+        const isDuplicate = err instanceof Error && err.message.includes("duplicate key");
+        toast.danger(isDuplicate ? "Ya existe un escenario con ese nombre." : "No se pudo guardar el escenario.");
+      }
     } finally {
       setIsSaving(false);
     }
