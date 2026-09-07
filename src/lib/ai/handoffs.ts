@@ -83,7 +83,18 @@ export type HandoffReason =
   // T2.1: el cliente le escribió a una conversación que estaba cerrada; el
   // webhook la reabre sola ANTES de guardar el mensaje entrante, para que no
   // quede invisible detrás de un status que ninguna píldora vuelve a mirar.
-  | "reabierta_por_cliente";
+  | "reabierta_por_cliente"
+  // T4, corrida "La IA ve lo que llega" (8/9/2026): el turno arrancó sin
+  // nada legible para el modelo -- el historial armado por `loadHistory`
+  // quedó vacío tras describir la media con `historyLine` (T2, misma
+  // corrida), es decir que las filas que llegaron eran solo `unsupported`
+  // o notas internas. Caso `cea69118…`: un audio sin texto previo dejaba el
+  // historial vacío y el turno salía sin dueño, sin dejar rastro; el
+  // reconciliador lo reencoló 30 veces. Con `historyLine` describiendo
+  // media, esta salida pasa a ser una red de seguridad (0 de 269
+  // conversaciones esperando quedarían vacías tras T2), pero cuando vuelva
+  // a darse tiene que dejar traspaso igual.
+  | "sin_contenido_legible";
 
 export interface HandoffInput {
   conversationId: string;

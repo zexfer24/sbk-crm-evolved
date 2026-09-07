@@ -162,6 +162,22 @@ export async function reconcileOrphanTurns(
   // después el cron la vuelve a encolar. Cada vuelta gasta un cupo de turno y
   // escribe una fila de bitácora, para siempre.
   //
+  // Hasta el 8/9/2026 existía OTRA puerta al mismo bucle, más difícil de ver
+  // porque no pasaba por `humanHasWritten`: el turno que salía por historial
+  // vacío (`if (history.length === 0) return;` en `agent.ts`) lo hacía SIN
+  // escribir traspaso — caso `cea69118…`, un audio sin texto previo, 30
+  // reencolados seguidos hasta que un asesor contestó a mano. La corrida "La
+  // IA ve lo que llega" la cerró en dos frentes: T2 hace que un audio, foto,
+  // video, documento o sticker ya produzcan una línea de historial (vía
+  // `historyLine`), así que esa salida casi nunca se da; y T4 hace que,
+  // cuando se dé igual, deje traspaso `sin_contenido_legible` y limpie
+  // `journey_stage` — el reconciliador ya no la vuelve a encontrar como
+  // huérfana sin dueño ni fecha.
+  //
+  // El alcance temporal de la guarda de "humanos" de acá abajo cambia en T7
+  // de la misma corrida (deja de ser vitalicia: entra una ventana de gracia
+  // sobre el último mensaje del cliente).
+  //
   // Es exactamente el mismo filtro, por el mismo motivo, que ya aplica
   // `fetchBacklogConversationIds` en data.ts: la guarda de verdad vive en el
   // turno, esto es lo que evita llenar la cola de trabajo que el turno va a

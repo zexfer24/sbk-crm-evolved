@@ -2020,6 +2020,110 @@ describe("runAgentTurn — tiempos del turno", () => {
 });
 
 /**
+ * T4, corrida "La IA ve lo que llega" (8/9/2026, Bug 2 / S4). Hallazgo 2 del
+ * plan: había TRES puertas en `runTurnPhases` que dejaban `journey_stage`
+ * congelado en "classifying"/"tool_running" para siempre porque el turno
+ * salía antes de llegar al reseteo normal. Este describe cubre las tres.
+ */
+describe("runAgentTurn — salidas que limpian su etapa", () => {
+  /** La línea `turno_tiempos`, ya parseada, entre las llamadas de un spy. */
+  function tiemposDe(info: ReturnType<typeof vi.spyOn>): Record<string, unknown> | undefined {
+    const call = info.mock.calls.find((args: unknown[]) => args[0] === "turno_tiempos");
+    return call?.[1] as Record<string, unknown> | undefined;
+  }
+
+  /**
+   * Caso `cea69118…`: un historial que solo trae `unsupported` o notas —nada
+   * legible para el modelo, tras describir la media con `historyLine`
+   * (T2)— ya no sale mudo. Prueba de mutación del orquestador: si el
+   * `return` por historial vacío volviera a ser mudo (`if (history.length
+   * === 0) return;`), este test se pone rojo.
+   */
+  it("un historial sin nada legible deja traspaso sin_contenido_legible y limpia la etapa", async () => {
+    const warn = vi.spyOn(log, "warn");
+    const info = vi.spyOn(log, "info");
+    state.history = [
+      { sender_type: "customer", content: null, is_internal_note: false, message_type: "unsupported" },
+    ];
+
+    await runAgentTurn("conv-1");
+
+    expect(matchPlaybookMock).not.toHaveBeenCalled();
+    expect(classifyIntentMock).not.toHaveBeenCalled();
+    expect(warn).toHaveBeenCalledWith("turno_sin_contenido_legible", { conversationId: "conv-1" });
+    expect(handoffCalls).toContainEqual(
+      expect.objectContaining({
+        p_conversation_id: "conv-1",
+        p_to_kind: "unassigned",
+        p_reason: "sin_contenido_legible",
+      })
+    );
+
+    // journey_stage se puso en "classifying" al abrir el turno y se limpió
+    // DESPUÉS, no antes: el orden importa, es la prueba de que no es un
+    // reseteo que ya estaba ahí por otro motivo.
+    const classificando = conversationUpdates.findIndex((u) => u.journey_stage === "classifying");
+    const limpieza = conversationUpdates.findIndex(
+      (u, i) => i > classificando && u.journey_stage === null && u.active_tool === null
+    );
+    expect(classificando).toBeGreaterThanOrEqual(0);
+    expect(limpieza).toBeGreaterThan(classificando);
+
+    expect(tiemposDe(info)).toMatchObject({ entregado: false });
+  });
+
+  /** Mismo resultado con una nota interna: tampoco es texto de cliente que leer. */
+  it("un historial con solo una nota interna también deja traspaso sin_contenido_legible y limpia la etapa", async () => {
+    const warn = vi.spyOn(log, "warn");
+    const info = vi.spyOn(log, "info");
+    state.history = [{ sender_type: "agent", content: "revisar con el proveedor", is_internal_note: true }];
+
+    await runAgentTurn("conv-1");
+
+    expect(matchPlaybookMock).not.toHaveBeenCalled();
+    expect(classifyIntentMock).not.toHaveBeenCalled();
+    expect(warn).toHaveBeenCalledWith("turno_sin_contenido_legible", { conversationId: "conv-1" });
+    expect(handoffCalls).toContainEqual(
+      expect.objectContaining({ p_to_kind: "unassigned", p_reason: "sin_contenido_legible" })
+    );
+    expect(conversationUpdates).toContainEqual({ journey_stage: null, active_tool: null });
+    expect(tiemposDe(info)).toMatchObject({ entregado: false });
+  });
+
+  /**
+   * El corte de red de OpenRouter del 7/9/2026 a las 11:57 UTC pasó
+   * exactamente por esta puerta: el turno registraba el fallo en
+   * `agent_turns` pero dejaba `journey_stage = "classifying"` sin limpiar.
+   * Acá NO se escribe un traspaso nuevo — `agent_turns` con `action: "error"`
+   * ya es suficiente para que el reconciliador la recoja.
+   */
+  it("si la clasificación falla, la etapa no se queda en classifying", async () => {
+    classifyIntentMock.mockRejectedValue(new Error("rate limit"));
+
+    await runAgentTurn("conv-1");
+
+    expect(agentTurnInserts).toContainEqual(expect.objectContaining({ action: "error" }));
+    expect(conversationUpdates).toContainEqual({ journey_stage: null, active_tool: null });
+    expect(handoffCalls.some((call) => call.p_reason === "sin_contenido_legible")).toBe(false);
+  });
+
+  /**
+   * Antes este `catch` solo apagaba `active_tool` y dejaba `journey_stage`
+   * congelado en "classifying"/"tool_running". Tampoco escribe traspaso
+   * nuevo, por el mismo motivo que la clasificación fallida.
+   */
+  it("si el tool loop lanza, la etapa no se queda en tool_running", async () => {
+    generateMock.mockRejectedValue(new Error("fetch failed"));
+
+    await runAgentTurn("conv-1");
+
+    expect(agentTurnInserts).toContainEqual(expect.objectContaining({ action: "error" }));
+    expect(conversationUpdates).toContainEqual({ journey_stage: null, active_tool: null });
+    expect(handoffCalls.some((call) => call.p_reason === "sin_contenido_legible")).toBe(false);
+  });
+});
+
+/**
  * Corrección 5/9/2026 (HUECO 2). En devolución/queja, la escalación forzada
  * (`escalateConversation`) corre ANTES del envío final y ya deja su propio
  * traspaso —`escalada` con asesor, `escalada_sin_asesor` sin uno—. Si ese

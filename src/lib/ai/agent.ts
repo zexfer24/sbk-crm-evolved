@@ -614,6 +614,38 @@ async function rejectedByMeta(
   return true;
 }
 
+/**
+ * Limpia `journey_stage`/`active_tool` cuando el turno abandona SIN llegar a
+ * hablarle al cliente (T4, corrida "La IA ve lo que llega", 8/9/2026).
+ *
+ * Hallazgo 2 del plan: había TRES puertas en `runTurnPhases` que dejaban la
+ * etapa congelada para siempre porque el único reseteo vivía en los caminos
+ * que sí llegaban a enviar algo (o en `rejectedByMeta`, que tiene el suyo
+ * propio por escribir además su traspaso específico). Medido en producción
+ * el 7/9/2026: 17 conversaciones quedadas en `classifying` sin lock vigente,
+ * la más vieja del 27/8/2026 — el corte de red de OpenRouter del 7/9 11:57
+ * UTC pasó justo por la puerta de clasificación fallida.
+ *
+ * Mismo patrón que `rejectedByMeta`: esto es observabilidad del tablero de
+ * Atascados, nunca una barrera — si el UPDATE falla se registra y el turno
+ * sigue exactamente igual. `evento` es el nombre de la salida que llamó
+ * (aparece en el registro) para poder distinguir cuál de las puertas dejó el
+ * UPDATE sin poder aplicarse.
+ */
+async function resetStage(
+  supabase: SupabaseClient<Database>,
+  conversationId: string,
+  evento: string
+): Promise<void> {
+  const { error } = await supabase
+    .from("conversations")
+    .update({ journey_stage: null, active_tool: null })
+    .eq("id", conversationId);
+  if (error) {
+    log.error("turno_etapa_no_reseteada", { conversationId, evento, detail: errorText(error) });
+  }
+}
+
 /** Sufijo para la bitácora: qué quedó etiquetado, por nombre. Vacío si no había etiquetas. */
 function tagSummary(tags: Tag[]): string {
   return tags.length === 0 ? "" : ` Etiquetas: ${tags.map((tag) => tag.label).join(", ")}.`;
@@ -898,7 +930,28 @@ async function runTurnPhases(
     .eq("id", conversationId);
 
   const history = await loadHistory(supabase, conversationId);
-  if (history.length === 0) return;
+  if (history.length === 0) {
+    // Bug 2 / S4 (T4, corrida "La IA ve lo que llega", 8/9/2026): esto era un
+    // `return` mudo — sin traspaso, y DESPUÉS de haber dejado journey_stage
+    // en "classifying" arriba, sin limpiarlo. Viola la invariante "ningún
+    // lead invisible" de CLAUDE.md. Caso real cea69118-5d17-4f08-84c6-
+    // 925755672b87: un audio del cliente sin texto previo dejaba el
+    // historial armado por loadHistory vacío, el turno desaparecía sin
+    // dueño y el reconciliador lo reencoló 30 veces hasta que un asesor
+    // contestó a mano.
+    //
+    // Desde T2 (misma corrida) un audio, foto, video, documento o sticker ya
+    // producen una línea vía historyLine — el historial solo queda vacío si
+    // TODO lo que llegó fue `unsupported` o notas internas. Medido en
+    // producción el 7/9/2026: 0 de 269 conversaciones esperando quedarían
+    // vacías tras T2. Este `if` deja de ser el camino normal y pasa a ser la
+    // red de seguridad — pero la invariante exige que igual deje rastro
+    // cuando el caso vuelva a darse.
+    log.warn("turno_sin_contenido_legible", { conversationId });
+    await recordHandoff(supabase, { conversationId, toKind: "unassigned", reason: "sin_contenido_legible" });
+    await resetStage(supabase, conversationId, "turno_sin_contenido_legible");
+    return;
+  }
 
   const customerMessage = lastCustomerMessage(history);
 
@@ -945,12 +998,18 @@ async function runTurnPhases(
   if (ultimoEsMarcador) {
     log.info("turno_ultimo_mensaje_sin_texto", { conversationId });
   }
-  const matchPromise: Promise<PlaybookMatch> = ultimoEsMarcador
-    ? Promise.resolve({ playbook: null, usage: ZERO_USAGE })
-    : matchPlaybook(history, playbooks, undefined, businessHours);
 
-  const [match, classified] = await medir(tiempos, "clasificacionMs", () =>
-    Promise.all([
+  // La construcción de matchPromise vive DENTRO del callback de medir (T4,
+  // 8/9/2026, ajuste del orquestador): antes se armaba afuera, así que
+  // matchPlaybook ya podía estar en vuelo antes de que arrancara el
+  // cronómetro de "clasificacionMs" — el tramo medía de menos. Mismo
+  // comportamiento, medido desde que la llamada de verdad se dispara.
+  const [match, classified] = await medir(tiempos, "clasificacionMs", () => {
+    const matchPromise: Promise<PlaybookMatch> = ultimoEsMarcador
+      ? Promise.resolve({ playbook: null, usage: ZERO_USAGE })
+      : matchPlaybook(history, playbooks, undefined, businessHours);
+
+    return Promise.all([
       // matchPlaybook nunca lanza: un fallo del proveedor deja el turno por el
       // flujo genérico. classifyIntent sí, y su fallo aborta el turno — así que
       // se captura acá para que no se lleve por delante un escenario que quizá
@@ -960,8 +1019,8 @@ async function runTurnPhases(
         (result) => ({ ok: true as const, result }),
         (err: unknown) => ({ ok: false as const, err })
       ),
-    ])
-  );
+    ]);
+  });
 
   const matchTokens = tokensFromUsage(match.usage);
   // La clasificación ya se pagó, calce o no un escenario: se cuenta siempre o
@@ -1019,6 +1078,13 @@ async function runTurnPhases(
       tokens: classifiedTokens,
       customerMessage,
     });
+    // Bug 2, hallazgo 2 del plan (T4, 8/9/2026): este `return` dejaba
+    // journey_stage en "classifying" para siempre — el corte de red de
+    // OpenRouter del 7/9/2026 a las 11:57 UTC pasó justo por acá. NO se
+    // escribe un traspaso nuevo: agent_turns ya quedó con action: "error"
+    // arriba, y el reconciliador recoge la conversación sola porque
+    // awaiting_reply sigue en true.
+    await resetStage(supabase, conversationId, "turno_clasificacion_fallida");
     return;
   }
 
@@ -1133,7 +1199,12 @@ async function runTurnPhases(
       tokens: classifyTokens,
       customerMessage,
     });
-    await supabase.from("conversations").update({ active_tool: null }).eq("id", conversationId);
+    // Bug 2, hallazgo 2 del plan (T4, 8/9/2026): antes esto SOLO apagaba
+    // active_tool y dejaba journey_stage en "classifying"/"tool_running"
+    // congelado para siempre. Mismo criterio que la puerta de clasificación
+    // fallida: sin traspaso nuevo (agent_turns ya quedó con action: "error"
+    // arriba, y el reconciliador la recoge sola), pero con la etapa limpia.
+    await resetStage(supabase, conversationId, "turno_tool_loop_fallido");
     return;
   }
 
@@ -1387,8 +1458,11 @@ export async function runAgentTurn(conversationId: string): Promise<void> {
     } finally {
       // En `finally` y no al final del camino feliz: el turno que revienta a
       // los veinte segundos es justo el que hay que poder ver. Un turno que
-      // salió temprano —sin historial, con el interruptor abajo— deja sus
-      // tramos en null, que también dice algo.
+      // salió temprano —sin nada legible en el historial, con el interruptor
+      // abajo— deja sus tramos en null y entregado: false, que también dice
+      // algo (T4, 8/9/2026: esa salida ahora además deja su propio traspaso
+      // en conversation_handoffs, pero turno_tiempos se sigue escribiendo
+      // igual, con el mismo entregado: false de siempre).
       log.info("turno_tiempos", {
         conversationId,
         ...tiempos,
