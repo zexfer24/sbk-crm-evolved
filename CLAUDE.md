@@ -261,6 +261,28 @@ dejar rastro es lo que hacía desaparecer leads.
   evaluada sobre el texto original —así `guía`/`GUIA`/`AUTOASIA` no
   calzan—, `ChatGPT`, `OpenAI`, `GPT`, `Gemini`, `modelo de lenguaje`), nunca
   en el adjetivo suelto.
+- **`last_customer_message_at` (lcma) solo se mueve con un entrante que no
+  sea `unsupported`; un saliente `failed` con el código 131047 de Meta la
+  cierra a `created_at − 24 h`** (los dos triggers, `handle_new_message()` y
+  `handle_message_status_change()`, migración 20260907010000, 7/9/2026). Caso
+  real: la conversación `aa75ef33…` (+593987317372) mostraba la caja de texto
+  habilitada y "quedan 11 h" mientras Meta rechazaba todo con 131047 —un
+  `unsupported` de Meta guardado como entrante había reiniciado el reloj de
+  la ventana, y el CRM ignoraba el aviso explícito de ventana cerrada que
+  Meta ya había mandado. Un `unsupported` sigue siendo VISIBLE en el chat y
+  en la lista (mueve `last_message_at`/preview) pero no abre ventana ni
+  cuenta como no leído — Meta tampoco lo cuenta para su propia ventana de
+  24 h; esto reemplaza lo que D3 (6/9/2026) pretendía ("cuenta como entrante
+  para que caiga en Pendientes"). El candado del 131047 lleva doble guarda:
+  `lcma is not null` (`least(null, x)` devuelve `x`, no `null` — sin esta
+  guarda un 131047 sobre un lead sin mensajes le inventaría una fecha y
+  encendería `awaiting_reply`) y `created_at > lcma` (un callback de Meta que
+  llega tarde no puede retroceder un reloj que un mensaje real posterior ya
+  adelantó). **No escribas `last_customer_message_at` a mano desde
+  TypeScript** — los dos candados viven solo en la base. `isComposerWindowOpen`
+  (`whatsapp-window.ts`) es la red de seguridad del composer para el hueco
+  entre el rechazo de Meta y el refresh por realtime: espeja los mismos dos
+  candados en memoria contra `messages`, no reemplaza a la base.
 
 ---
 

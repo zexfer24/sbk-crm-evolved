@@ -78,9 +78,74 @@ where c.journey_stage = 'assigned'
 **Verificación:**
 
 ```sql
-select count(*) from supabase_migrations.schema_migrations;  -- 49
+select count(*) from supabase_migrations.schema_migrations;  -- 60
 select public from storage.buckets where id = 'whatsapp-media';  -- false
 select public.agent_can_run();  -- true
+```
+
+**`20260907010000_ventana_24h_dice_la_verdad`** (corrida "La ventana de 24 h
+dice la verdad", 7/9/2026): corrige el caso de la conversación `aa75ef33…`
+(+593987317372), que mostraba la caja de texto habilitada y "quedan 11 h"
+mientras Meta rechazaba todo con el código 131047 (ventana de 24 h cerrada).
+`create or replace` de `handle_new_message()` y `handle_message_status_change()`
+con dos candados sobre `last_customer_message_at` (lcma): un entrante
+`message_type = 'unsupported'` deja de mover lcma/`unread_count` (sigue
+visible en el chat y la lista); un saliente `failed` con 131047 cierra lcma a
+`created_at − 24 h`. Sin función `security definer` nueva, sin revokes ni
+grants. Trae un backfill idempotente en tres pasos — mide cuántas filas toca
+cada uno ANTES de aplicarla:
+
+```sql
+-- Paso (a): mensajes históricos (anteriores a T3.2, 5/9/2026) que se
+-- reclasifican de 'text' a 'unsupported'
+select count(*)
+from public.messages
+where direction = 'inbound'
+  and message_type = 'text'
+  and content like 'El cliente envió un mensaje que el CRM todavía no sabe mostrar%';
+
+-- Paso (b): conversaciones cuyo last_customer_message_at apunta al
+-- created_at de un entrante unsupported (real o recién reclasificado en (a))
+-- y se recalcula contra el último entrante que sí cuenta (puede quedar null)
+select count(*)
+from public.conversations c
+where exists (
+  select 1
+  from public.messages m
+  where m.conversation_id = c.id
+    and m.direction = 'inbound'
+    and m.message_type = 'unsupported'
+    and m.created_at = c.last_customer_message_at
+);
+
+-- Paso (c): conversaciones con lcma no nulo (tras (b)) que tienen salientes
+-- failed/131047 posteriores a esa fecha, y se atrasan a
+-- least(lcma, min(created_at de esos) - 24h)
+select count(*)
+from public.conversations c
+where c.last_customer_message_at is not null
+  and exists (
+    select 1
+    from public.messages m
+    where m.conversation_id = c.id
+      and m.direction = 'outbound'
+      and m.whatsapp_status = 'failed'
+      and m.whatsapp_error_code = 131047
+      and m.created_at > c.last_customer_message_at
+  );
+```
+
+`unread_count` NO se recalcula en el backfill (deuda declarada: no hay forma
+fiable de saber cuántos de los no leídos actuales vinieron de un
+`unsupported` sin reconstruir el historial de lecturas).
+
+**Verificación después de aplicarla:**
+
+```sql
+select last_customer_message_at
+from public.conversations
+where id = 'aa75ef33-38e8-4ff4-8422-7e7f49615795';
+-- 2026-08-31 16:50:35+00
 ```
 
 ### El lease del lock de turno de la IA
@@ -412,6 +477,28 @@ Caddy: el certificado se emite al arrancar.
 `preflight.sh` no corre en Dokploy —no hay `.env.production` allá—, así que
 pásalo localmente contra tu copia antes de pegar las variables en el panel.
 
+**Dokploy NO aplica migraciones.** El `compose.deploy` solo reconstruye y
+levanta la imagen de `app`; no hay ningún paso de `supabase db push` ni
+equivalente en el pipeline de Dokploy. Si el commit que se despliega trae una
+migración nueva (título con `[migración]`), el orden es:
+
+1. Respaldo (`scripts/backup.sh`, ver §8).
+2. Aplicarla a mano contra el contenedor `supabase-db`, con `psql`:
+   ```bash
+   docker exec -i supabase-db psql -U postgres -d postgres \
+     < supabase/migrations/<archivo>.sql
+   ```
+3. Registrarla en `supabase_migrations.schema_migrations` (la migración no se
+   registra sola) para que `supabase db push` no intente reaplicarla
+   más adelante:
+   ```sql
+   insert into supabase_migrations.schema_migrations (version, name)
+   values ('<timestamp>', '<nombre_del_archivo_sin_extension>');
+   ```
+4. Solo entonces `compose.deploy` (o el redeploy desde el panel de Dokploy)
+   para que el código que asume la migración ya aplicada no corra contra un
+   esquema viejo.
+
 **Verificación:**
 
 ```bash
@@ -592,7 +679,7 @@ Con todo configurado, esta lista debe pasar entera:
 
 - [ ] Una restauración de prueba devuelve los datos completos
 - [ ] `npm run build` sin errores ni warnings
-- [ ] `select count(*) from supabase_migrations.schema_migrations` devuelve 49
+- [ ] `select count(*) from supabase_migrations.schema_migrations` devuelve 60
 - [ ] El bucket `whatsapp-media` es privado (`public = false`)
 - [ ] Una URL directa al bucket responde 400
 - [ ] `/api/media/...` sin sesión responde 401
