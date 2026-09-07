@@ -168,3 +168,17 @@ jobs:
           psql "postgresql://postgres:postgres@127.0.0.1:54322/postgres" \
             -v ON_ERROR_STOP=1 \
             -f supabase/tests/ventana_24h.sql
+
+      # T1, corrida "La IA ve lo que llega" (8/9/2026): un turno que se queda
+      # sin nada legible que mostrarle al modelo (historial vacío, típico un
+      # chat que abre con un audio/foto/sticker sin texto) ahora escribe
+      # record_handoff(..., reason => 'sin_contenido_legible') en vez de
+      # salir mudo -- caso real cea69118-5d17-4f08-84c6-925755672b87, 30
+      # reencolados por el reconciliador. El backfill de la migración limpia
+      # las conversaciones que ese bug dejó congeladas en
+      # classifying/tool_running sin lock vigente.
+      - name: un turno sin contenido legible deja rastro y limpia su etapa
+        run: |
+          psql "postgresql://postgres:postgres@127.0.0.1:54322/postgres" \
+            -v ON_ERROR_STOP=1 \
+            -f supabase/tests/traspaso_sin_contenido_legible.sql
