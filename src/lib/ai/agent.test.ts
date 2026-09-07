@@ -2089,6 +2089,100 @@ describe("runAgentTurn — tiempos del turno", () => {
       spy.mockRestore();
     }
   });
+
+  /**
+   * T0 ("La respuesta llega en siete segundos", 7/9/2026): `esperaMs` mezclaba
+   * la ventana de silencio (diseño) con la espera en cola (atraso) en un solo
+   * número. Con `vencioEn` —lo que trae el reclamo de la cola, ver
+   * redis-queue.ts— el turno separa los dos tramos, y por construcción
+   * (mismo `Date.now()` para los tres, ver `newTurnTiming`) suman
+   * exactamente `esperaMs`.
+   */
+  it("separa la ventana de silencio de la espera en cola y suman la espera total", async () => {
+    const ahora = Date.now();
+    state.conversation = {
+      ...state.conversation,
+      last_customer_message_at: new Date(ahora - 8000).toISOString(),
+    };
+
+    const spy = vi.spyOn(console, "log").mockImplementation(() => {});
+    try {
+      // El cliente escribió hace 8 s; la cola dio por vencida la ventana de
+      // silencio hace 5 s (vencioEn = ahora - 5000) — o sea, el debounce fue
+      // de 3 s y la cola tardó 5 s más en atenderlo.
+      await runAgentTurn("conv-1", { vencioEn: ahora - 5000 });
+
+      const tiempos = leerTiempos(spy);
+      expect(tiempos).not.toBeNull();
+      // Margen generoso: entre encolar el mock y leer el log corre el turno
+      // entero, y ese tiempo real también pasa.
+      expect(tiempos?.debounceMs).toBeGreaterThanOrEqual(2900);
+      expect(tiempos?.debounceMs).toBeLessThanOrEqual(3200);
+      expect(tiempos?.colaMs).toBeGreaterThanOrEqual(5000);
+      expect((tiempos?.debounceMs as number) + (tiempos?.colaMs as number)).toBe(tiempos?.esperaMs);
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  /**
+   * `api/dev/simulate-message` llama a `runAgentTurn` sin pasar por la cola:
+   * sin `vencioEn` los dos tramos nuevos no pueden calcularse, pero eso no
+   * puede tumbar `esperaMs`, que es el número que ya se usaba antes de esta
+   * corrida.
+   */
+  it("sin vencimiento los dos tramos quedan null y esperaMs sigue midiendo", async () => {
+    const spy = vi.spyOn(console, "log").mockImplementation(() => {});
+    try {
+      await runAgentTurn("conv-1");
+
+      const tiempos = leerTiempos(spy);
+      expect(tiempos?.debounceMs).toBeNull();
+      expect(tiempos?.colaMs).toBeNull();
+      expect(typeof tiempos?.esperaMs).toBe("number");
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  /**
+   * T0: sin este dato, nadie podía decir qué herramienta dispara el segundo
+   * paso de redacción (29 de 65 turnos medidos el 7/9/2026) sin tocar el
+   * prompt del redactor.
+   */
+  it("la línea trae las herramientas usadas, en el orden en que corrieron", async () => {
+    generateMock.mockResolvedValueOnce({
+      text: "respuesta redactada por el modelo",
+      usage: { inputTokens: 20, outputTokens: 8, totalTokens: 28 },
+      steps: [
+        { toolCalls: [{ toolName: "consultarBiblioteca" }] },
+        { toolCalls: [{ toolName: "buscarRepuesto" }, { toolName: "escalarAAsesor" }] },
+      ],
+    });
+
+    const spy = vi.spyOn(console, "log").mockImplementation(() => {});
+    try {
+      await runAgentTurn("conv-1");
+
+      const tiempos = leerTiempos(spy);
+      expect(tiempos?.herramientas).toBe("consultarBiblioteca,buscarRepuesto,escalarAAsesor");
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  /** El mock por defecto de este archivo trae `steps: [{}, {}]`, sin `toolCalls`: el tool loop corrió y no usó ninguna herramienta. */
+  it("sin herramientas usadas, la línea trae un string vacío, no null", async () => {
+    const spy = vi.spyOn(console, "log").mockImplementation(() => {});
+    try {
+      await runAgentTurn("conv-1");
+
+      const tiempos = leerTiempos(spy);
+      expect(tiempos?.herramientas).toBe("");
+    } finally {
+      spy.mockRestore();
+    }
+  });
 });
 
 /**

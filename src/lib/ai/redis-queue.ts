@@ -26,16 +26,53 @@ const SLOTS_KEY = "liminal:agent:slots";
 const PACE_KEY = "liminal:agent:ritmo";
 const SWEEP_LOCK_KEY = "liminal:agent:barrido";
 
+/** Prefijo de la clave que guarda el PRIMER vencimiento de un turno, para que sobreviva a sus reintentos (ver `defer`). */
+const VENCIMIENTO_PREFIX = "liminal:agent:vencimiento:";
+
+/**
+ * Cuánto vive la marca del vencimiento original antes de darse por perdida.
+ *
+ * Mismo criterio que `FAILURE_TTL_SECONDS` de abajo: es la red contra el
+ * turno que nunca vuelve a reclamarse (murió el proceso, se abandonó tras
+ * MAX_ATTEMPTS) y dejaría la clave puesta para siempre.
+ */
+const VENCIMIENTO_TTL_SECONDS = 3600;
+
+function vencimientoKey(conversationId: string): string {
+  return `${VENCIMIENTO_PREFIX}${conversationId}`;
+}
+
 /**
  * Toma el turno vencido que lleva más tiempo esperando y lo saca de la cola,
  * todo dentro de Redis. Que el mismo `ZREM` lo ejecute quien lo leyó es lo
  * que impide que dos procesos se lleven la misma conversación.
+ *
+ * 7/9/2026 ("La respuesta llega en siete segundos", T0): además del id,
+ * devuelve el vencimiento con que se atiende el turno — el que hace falta
+ * para separar, en `agent.ts`, la ventana de silencio (diseño) de la espera
+ * en cola (atraso). La primera vez que se reclama un turno no hay nada
+ * guardado todavía: se siembra la clave de vencimiento con el score crudo
+ * (`SET ... EX 3600`, sin NX: es la primera escritura) para que, si este
+ * turno tiene que diferirse (ver `defer`), el PRÓXIMO reclamo la encuentre y
+ * sepa que ese fue el vencimiento real, no el de un reintento. Si la clave ya
+ * existía —porque este turno viene de un reintento anterior— se usa ese
+ * valor (el más viejo) y se borra: ya cumplió su función, este reclamo es el
+ * que de verdad va a correr.
  */
 const CLAIM_SCRIPT = `
-local vencidos = redis.call('ZRANGEBYSCORE', KEYS[1], '-inf', ARGV[1], 'LIMIT', 0, 1)
+local vencidos = redis.call('ZRANGEBYSCORE', KEYS[1], '-inf', ARGV[1], 'WITHSCORES', 'LIMIT', 0, 1)
 if #vencidos == 0 then return false end
-redis.call('ZREM', KEYS[1], vencidos[1])
-return vencidos[1]
+local miembro = vencidos[1]
+local score = vencidos[2]
+redis.call('ZREM', KEYS[1], miembro)
+local vencKey = ARGV[2] .. miembro
+local original = redis.call('GET', vencKey)
+if original then
+  redis.call('DEL', vencKey)
+  return {miembro, original}
+end
+redis.call('SET', vencKey, score, 'EX', ${VENCIMIENTO_TTL_SECONDS})
+return {miembro, score}
 `;
 
 /**
@@ -60,8 +97,25 @@ export interface AgentQueue {
    * contexto, en vez de cinco veces sueltas.
    */
   enqueue(conversationId: string, debounceSeconds: number): Promise<void>;
-  /** Saca la conversación esperando desde hace más tiempo cuya ventana ya venció. */
-  claimDue(): Promise<string | null>;
+  /**
+   * Saca la conversación esperando desde hace más tiempo cuya ventana ya
+   * venció, junto con el vencimiento con que hay que atenderla —el PRIMERO
+   * que tuvo, no el de un reintento posterior (ver `defer`)—.
+   */
+  claimDue(): Promise<{ conversationId: string; vencioEn: number } | null>;
+  /**
+   * Reintenta un turno que ya se reclamó pero no pudo correr todavía —ritmo
+   * al tope, sin cupo, conversación bloqueada, error transitorio—.
+   *
+   * Es distinto de `enqueue`: un mensaje nuevo del cliente ES una ventana
+   * nueva (por eso `enqueue` borra el vencimiento guardado), pero un
+   * reintento del SISTEMA no lo es. Sin esta distinción, `debounceMs` (=
+   * vencimiento − último mensaje del cliente) terminaría incluyendo la
+   * espera en cola de los reintentos anteriores, y `colaMs` mediría de
+   * menos — justo el número del criterio de cierre de la rampa ("La
+   * respuesta llega en siete segundos", 7/9/2026), sesgado hacia el verde.
+   */
+  defer(conversationId: string, seconds: number): Promise<void>;
   /** Cuántos turnos hay esperando. */
   pending(): Promise<number>;
   /** Anota un intento fallido y devuelve cuántos lleva acumulados esa conversación. */
@@ -86,12 +140,40 @@ function failureKey(conversationId: string): string {
 export function createAgentQueue(redis: Redis): AgentQueue {
   return {
     async enqueue(conversationId, debounceSeconds) {
+      // Mensaje nuevo del cliente = ventana nueva: el vencimiento que
+      // pudiera haber quedado de un turno diferido para esta conversación ya
+      // no vale nada, y dejarlo puesto le mentiría al próximo reclamo.
+      await redis.del(vencimientoKey(conversationId));
       await redis.zadd(QUEUE_KEY, Date.now() + debounceSeconds * 1000, conversationId);
     },
 
     async claimDue() {
-      const claimed = await redis.eval(CLAIM_SCRIPT, 1, QUEUE_KEY, Date.now());
-      return typeof claimed === "string" ? claimed : null;
+      const claimed = await redis.eval(CLAIM_SCRIPT, 1, QUEUE_KEY, Date.now(), VENCIMIENTO_PREFIX);
+      if (!Array.isArray(claimed)) return null;
+      const [conversationId, vencimiento] = claimed as [string, string];
+      const vencioEn = Number(vencimiento);
+      // Defensivo: si algún día el script no trajera un número legible, se
+      // usa el instante del reclamo — perder cinco segundos de precisión es
+      // mejor que tumbar el turno por un dato de telemetría.
+      return { conversationId, vencioEn: Number.isFinite(vencioEn) ? vencioEn : Date.now() };
+    },
+
+    async defer(conversationId, seconds) {
+      // El vencimiento anterior solo existe si esta conversación TODAVÍA
+      // está en la cola (no pasó por un `claimDue` que ya la sacó). En el
+      // camino real de queue.ts (reintento tras reclamar) no lo va a
+      // encontrar acá —`claimDue` ya la sembró en la clave de vencimiento,
+      // que es de donde la recupera el PRÓXIMO reclamo—; este `ZSCORE`
+      // cubre el otro caso, el de diferir una conversación que todavía no se
+      // reclamó ni una vez (varios reintentos seguidos antes del primer
+      // `claimDue`).
+      const scoreAnterior = await redis.zscore(QUEUE_KEY, conversationId);
+      await redis.zadd(QUEUE_KEY, Date.now() + seconds * 1000, conversationId);
+      if (scoreAnterior !== null) {
+        // NX: si ya había un vencimiento guardado de un diferido previo, se
+        // conserva ESE — es el más viejo, y es el que importa.
+        await redis.set(vencimientoKey(conversationId), scoreAnterior, "EX", VENCIMIENTO_TTL_SECONDS, "NX");
+      }
     },
 
     async pending() {
@@ -112,6 +194,18 @@ export function createAgentQueue(redis: Redis): AgentQueue {
     async purge() {
       const pendientes = await redis.zcard(QUEUE_KEY);
       await redis.del(QUEUE_KEY);
+
+      // Los vencimientos que hubieran quedado de turnos a mitad de un
+      // reintento se descartan también: son pocos —uno por turno diferido, y
+      // con TTL de una hora— así que un SCAN no pesa, y KEYS bloquearía
+      // Redis entero en producción mientras dura.
+      let cursor = "0";
+      do {
+        const [siguiente, claves] = await redis.scan(cursor, "MATCH", `${VENCIMIENTO_PREFIX}*`, "COUNT", 200);
+        cursor = siguiente;
+        if (claves.length > 0) await redis.del(...claves);
+      } while (cursor !== "0");
+
       return pendientes;
     },
   };

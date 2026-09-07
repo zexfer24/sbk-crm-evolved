@@ -14,8 +14,13 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
  * Redis en memoria, solo lo que hace falta acá: `zmscore` (que usa el
  * reconciliador para preguntar "¿ya está en cola?"), `zadd` (que usa
  * `AgentQueue.enqueue`, dentro de `enqueueAgentTurns` real, vía
- * `redis-queue.ts` real) y `zcard` (que usa `pendingAgentTurns` para que
- * los tests puedan comprobar qué quedó encolado de verdad).
+ * `redis-queue.ts` real), `zcard` (que usa `pendingAgentTurns` para que
+ * los tests puedan comprobar qué quedó encolado de verdad) y `del` (T0, "La
+ * respuesta llega en siete segundos", 7/9/2026: `enqueue` real ahora borra
+ * también la clave de vencimiento de un turno diferido — ver redis-queue.ts —
+ * y sin este método el `enqueue` real lanzaba, `enqueueAgentTurns` lo
+ * atrapaba en silencio y ninguna de las conversaciones de este archivo
+ * llegaba a encolarse de verdad).
  */
 class FakeRedis {
   private zsets = new Map<string, Map<string, number>>();
@@ -42,6 +47,11 @@ class FakeRedis {
 
   async zcard(key: string): Promise<number> {
     return this.set(key).size;
+  }
+
+  /** Solo lo necesita `enqueue` real, para borrar la clave de vencimiento — acá no hay ninguna que rastrear, así que solo hace falta no lanzar. */
+  async del(): Promise<number> {
+    return 0;
   }
 
   /** Solo para las aserciones de los tests: score crudo o null si no está. */

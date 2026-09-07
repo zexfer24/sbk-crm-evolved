@@ -19,7 +19,18 @@
  * un doble de la SEMÁNTICA, no del intérprete: si algún día un script cambia
  * de forma, esto deja de reconocerlo y hay que actualizarlo a mano. Por eso
  * no sustituye a las pruebas contra Redis real, las acompaña.
+ *
+ * 7/9/2026 ("La respuesta llega en siete segundos", T0): el script de
+ * reclamo (CLAIM_SCRIPT) ya no devuelve solo el id — devuelve `[id,
+ * vencimiento]`, leyendo y sembrando una clave de vencimiento aparte
+ * (`liminal:agent:vencimiento:{id}`) para que sobreviva a los reintentos de
+ * `defer`. Este doble espeja esa semántica con `strings` (la misma tabla que
+ * ya usaba `set`/`incr`), no con un mecanismo nuevo.
  */
+
+function escapeRegExp(texto: string): string {
+  return texto.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
 
 interface Miembro {
   member: string;
@@ -101,6 +112,30 @@ export class FakeRedis {
     return "OK";
   }
 
+  async get(key: string): Promise<string | null> {
+    return this.strings.get(key) ?? null;
+  }
+
+  async zscore(key: string, member: string): Promise<string | null> {
+    const encontrado = this.zset(key).find((m) => m.member === member);
+    return encontrado ? String(encontrado.score) : null;
+  }
+
+  /**
+   * Solo lo necesita `purge` (redis-queue.ts), para barrer las claves de
+   * vencimiento (`liminal:agent:vencimiento:*`). Sin paginar de verdad —los
+   * dobles de prueba no tienen tantas claves como para que haga falta— pero
+   * con la misma forma [cursor, claves] que el cliente real, devolviendo
+   * todo en una sola vuelta (cursor final "0").
+   */
+  async scan(_cursor: string, ...args: unknown[]): Promise<[string, string[]]> {
+    const matchIdx = args.findIndex((a) => String(a).toUpperCase() === "MATCH");
+    const patron = matchIdx !== -1 ? String(args[matchIdx + 1]) : "*";
+    const regex = new RegExp(`^${patron.split("*").map(escapeRegExp).join(".*")}$`);
+    const claves = [...this.strings.keys(), ...this.zsets.keys()].filter((k) => regex.test(k));
+    return ["0", claves];
+  }
+
   /**
    * Reimplementa los scripts de redis-queue.ts, reconocidos por su contenido.
    *
@@ -111,15 +146,28 @@ export class FakeRedis {
   async eval(script: string, _numKeys: number, ...args: (string | number)[]): Promise<unknown> {
     const key = String(args[0]);
 
-    // CLAIM_SCRIPT: saca el vencido que lleva más tiempo esperando.
+    // CLAIM_SCRIPT: saca el vencido que lleva más tiempo esperando y trae su
+    // vencimiento — el guardado de un reintento previo, si lo hay, o si no el
+    // score crudo (que además se siembra para el próximo reclamo, ver
+    // redis-queue.ts).
     if (script.includes("ZRANGEBYSCORE")) {
       const limite = Number(args[1]);
+      const prefijo = String(args[2]);
       const vencidos = this.zset(key)
         .filter((m) => m.score <= limite)
         .sort((a, b) => a.score - b.score || a.member.localeCompare(b.member));
       if (vencidos.length === 0) return false;
-      await this.zrem(key, vencidos[0].member);
-      return vencidos[0].member;
+      const elegido = vencidos[0];
+      await this.zrem(key, elegido.member);
+
+      const vencKey = `${prefijo}${elegido.member}`;
+      const original = await this.get(vencKey);
+      if (original !== null) {
+        await this.del(vencKey);
+        return [elegido.member, original];
+      }
+      await this.set(vencKey, String(elegido.score));
+      return [elegido.member, String(elegido.score)];
     }
 
     // ACQUIRE_SLOT_SCRIPT y CONSUME_PACE_SCRIPT: limpiar, contar, añadir si cabe.

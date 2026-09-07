@@ -365,26 +365,35 @@ export async function processQueuedTurns(limit = maxPerRun()): Promise<QueueRunR
       if (tomados >= limit) return;
       tomados++;
 
-      let conversationId: string | null;
+      // 7/9/2026 ("La respuesta llega en siete segundos", T0): el reclamo
+      // trae también EL vencimiento con que se atiende el turno —el primero
+      // que tuvo, no el de un reintento posterior (ver defer, en
+      // redis-queue.ts)—, para que agent.ts pueda separar la ventana de
+      // silencio (diseño) de la espera en cola (atraso).
+      let reclamo: { conversationId: string; vencioEn: number } | null;
       try {
-        conversationId = await cola.claimDue();
+        reclamo = await cola.claimDue();
       } catch (err) {
         tomados--; // No se llegó a atender nada: el lugar vuelve al presupuesto.
         log.error("cola_reclamar_fallido", { detail: errorText(err) });
         return;
       }
-      if (!conversationId) {
+      if (!reclamo) {
         tomados--; // Cola vacía: idem.
         return;
       }
+      const { conversationId, vencioEn } = reclamo;
 
       // El presupuesto del minuto se pide ANTES del cupo: pedir el cupo
       // primero lo tendría retenido durante una comprobación que puede decir
       // que no, y con tres cupos eso se nota.
       if (!(await ritmo.tryConsume())) {
         // Se devuelve a la cola con la espera del minuto: volver antes solo
-        // gastaría viajes a Redis para recibir el mismo no.
-        await cola.enqueue(conversationId, RETRY_WHEN_PACED_SECONDS);
+        // gastaría viajes a Redis para recibir el mismo no. `defer`, no
+        // `enqueue`: este reintento no es un mensaje nuevo del cliente, y
+        // tiene que conservar el vencimiento original para que colaMs no
+        // mida de menos.
+        await cola.defer(conversationId, RETRY_WHEN_PACED_SECONDS);
         result.deferred++;
         log.info("cola_ritmo_al_tope", { conversationId, tope: maxTurnsPerMinute() });
         return;
@@ -394,13 +403,13 @@ export async function processQueuedTurns(limit = maxPerRun()): Promise<QueueRunR
       if (!cupo) {
         // Sistema al tope: se devuelve para el próximo intento. Este worker
         // se retira; insistir solo gastaría viajes a Redis.
-        await cola.enqueue(conversationId, RETRY_WHEN_BUSY_SECONDS);
+        await cola.defer(conversationId, RETRY_WHEN_BUSY_SECONDS);
         result.deferred++;
         return;
       }
 
       try {
-        await runAgentTurn(conversationId);
+        await runAgentTurn(conversationId, { vencioEn });
         await cola.clearFailures(conversationId);
         result.processed++;
       } catch (err) {
@@ -410,7 +419,7 @@ export async function processQueuedTurns(limit = maxPerRun()): Promise<QueueRunR
         // gastar intentos ni contar como fallido — a diferencia de un error
         // de verdad, esto se resuelve solo apenas el otro turno termine.
         if (isConversationBusy(err)) {
-          await cola.enqueue(conversationId, RETRY_WHEN_LOCKED_SECONDS);
+          await cola.defer(conversationId, RETRY_WHEN_LOCKED_SECONDS);
           result.deferred++;
           log.info("cola_turno_pospuesto_lock", { conversationId });
           continue;
@@ -449,7 +458,7 @@ export async function processQueuedTurns(limit = maxPerRun()): Promise<QueueRunR
           });
         } else {
           log.error("cola_turno_fallido", { conversationId, intentos, detail });
-          await cola.enqueue(conversationId, RETRY_AFTER_ERROR_SECONDS);
+          await cola.defer(conversationId, RETRY_AFTER_ERROR_SECONDS);
         }
       } finally {
         // Pase lo que pase, el cupo se devuelve: retenerlo tras un fallo

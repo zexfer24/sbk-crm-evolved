@@ -67,6 +67,32 @@ const MAX_STEPS = 5;
 interface TurnTiming {
   /** Del mensaje del cliente al arranque del turno: ventana de silencio más cola. */
   esperaMs: number | null;
+  /**
+   * La ventana de silencio, sola: cuánto se esperó a propósito (debounce, 2 s
+   * o 6 s) antes de que la cola considerara el turno vencido. Es DISEÑO, no
+   * atraso.
+   *
+   * `null` sin `vencioEn` (turnos disparados fuera de la cola, como
+   * `simulate-message`) o sin `last_customer_message_at`. 7/9/2026 ("La
+   * respuesta llega en siete segundos", T0): antes de esto, `esperaMs` los
+   * mezclaba en un solo número y no se podía afirmar por turno si se cumplió
+   * el objetivo de siete segundos o si la espera en cola ya bajó de un
+   * segundo — el primero es diseño, el segundo es la métrica que hay que
+   * bajar.
+   */
+  debounceMs: number | null;
+  /**
+   * La espera en cola, sola: del vencimiento (cuando el turno ya estaba listo
+   * para correr) al arranque real. Es ATRASO — el número que el criterio de
+   * cierre de la rampa exige por debajo de un segundo de mediana.
+   *
+   * `debounceMs + colaMs === esperaMs` EXACTO cuando `vencioEn` es válido:
+   * los tres se calculan sobre el mismo `Date.now()`, capturado una única vez
+   * en `newTurnTiming` — dos llamadas separadas a `Date.now()` habrían dejado
+   * un resto de unos pocos milisegundos que rompería la igualdad y, peor,
+   * habría sido casi imposible de reproducir en una prueba.
+   */
+  colaMs: number | null;
   /** Escenario y clasificación, que corren juntos: tarda lo que la más lenta. */
   clasificacionMs: number | null;
   /** El tool loop entero, incluidas las herramientas que haya usado. */
@@ -75,20 +101,70 @@ interface TurnTiming {
   envioMs: number | null;
   /** Pasos del tool loop que el turno gastó de verdad, contra el techo MAX_STEPS. */
   pasos: number | null;
+  /**
+   * Nombres de las herramientas que el tool loop usó de verdad, en el orden
+   * en que corrieron, separados por coma (`""` si corrió y no usó ninguna,
+   * `null` si el turno no llegó a esta fase). 7/9/2026: sin esto nadie podía
+   * decir qué disparaba el segundo paso de redacción (29 de 65 turnos
+   * medidos ese día) sin tocar el prompt del redactor — T4 queda para
+   * después, esto es solo la observabilidad que hace falta para medirlo.
+   */
+  herramientas: string | null;
 }
 
 type TimingPhase = "clasificacionMs" | "redaccionMs" | "envioMs";
 
-function newTurnTiming(lastCustomerMessageAt: string | null): TurnTiming {
+/**
+ * `vencioEn` es el instante en que la cola dio por vencida la ventana de
+ * silencio del turno — el que trae `claimDue()` (ver redis-queue.ts), ya
+ * limpio de cualquier reintento del sistema (ritmo, cupo, lock, error: ver
+ * `defer` en la misma cola). Ausente (turnos fuera de la cola, como
+ * `api/dev/simulate-message`) o no finito, `debounceMs`/`colaMs` quedan en
+ * `null` y solo `esperaMs` sigue midiendo, como medía antes de esta corrida.
+ */
+function newTurnTiming(lastCustomerMessageAt: string | null, vencioEn?: number): TurnTiming {
+  // Un solo Date.now(): es lo que garantiza, por construcción, que
+  // debounceMs + colaMs === esperaMs, sin depender de que dos lecturas del
+  // reloj caigan en el mismo milisegundo.
+  const ahora = Date.now();
   const desde = lastCustomerMessageAt ? Date.parse(lastCustomerMessageAt) : NaN;
+  const esperaMs = Number.isNaN(desde) ? null : ahora - desde;
+
+  const vencimientoValido = esperaMs !== null && Number.isFinite(vencioEn);
+  const debounceMs = vencimientoValido ? (vencioEn as number) - desde : null;
+  const colaMs = vencimientoValido ? ahora - (vencioEn as number) : null;
 
   return {
-    esperaMs: Number.isNaN(desde) ? null : Date.now() - desde,
+    esperaMs,
+    debounceMs,
+    colaMs,
     clasificacionMs: null,
     redaccionMs: null,
     envioMs: null,
     pasos: null,
+    herramientas: null,
   };
+}
+
+/**
+ * Nombres de las herramientas que corrieron en el tool loop, en orden.
+ *
+ * Defensivo a propósito: `steps` es de un SDK externo y esto es telemetría,
+ * no algo que pueda tumbar la respuesta que está midiendo. Un paso sin
+ * `toolCalls` (o sin herramientas declaradas) simplemente no aporta nombres.
+ */
+function toolNamesUsed(steps: readonly unknown[] | undefined): string {
+  if (!steps) return "";
+  const nombres: string[] = [];
+  for (const paso of steps) {
+    const llamadas = (paso as { toolCalls?: unknown }).toolCalls;
+    if (!Array.isArray(llamadas)) continue;
+    for (const llamada of llamadas) {
+      const nombre = (llamada as { toolName?: unknown }).toolName;
+      if (typeof nombre === "string") nombres.push(nombre);
+    }
+  }
+  return nombres.join(",");
 }
 
 /**
@@ -1230,6 +1306,10 @@ async function runTurnPhases(
     // ninguna medición puede tumbar la respuesta que está midiendo. Si el SDK
     // deja de traerlo, se pierde el dato y el cliente recibe su mensaje igual.
     tiempos.pasos = result.steps?.length ?? null;
+    // Mismo criterio que `pasos`: telemetría, nunca puede tumbar el turno que
+    // está midiendo. 7/9/2026: es lo único que dirá, sin tocar el prompt del
+    // redactor, qué herramienta dispara el segundo paso (T4, segunda ola).
+    tiempos.herramientas = toolNamesUsed(result.steps);
     turnTokens = addTokens(classifyTokens, tokensFromUsage(result.usage));
   } catch (err) {
     await logTurn(supabase, conversationId, {
@@ -1359,8 +1439,14 @@ async function runTurnPhases(
  * intentado entregarle algo al cliente — ese sale como NonRetryableTurnError
  * y la cola lo abandona, porque reintentarlo mandaría el mismo mensaje dos
  * veces (ver turn-delivery.ts).
+ *
+ * `options.vencioEn` (7/9/2026, T0): el vencimiento con que la cola reclamó
+ * este turno — lo que hace falta para separar, en `turno_tiempos`, la
+ * ventana de silencio (diseño) de la espera en cola (atraso). Se queda vacío
+ * en los turnos que no pasan por la cola (`api/dev/simulate-message`), y ahí
+ * `debounceMs`/`colaMs` salen `null` sin que el turno se caiga por eso.
  */
-export async function runAgentTurn(conversationId: string): Promise<void> {
+export async function runAgentTurn(conversationId: string, options: { vencioEn?: number } = {}): Promise<void> {
   const supabase = createAdminClient();
 
   const [{ data: canRun }, { data: conversation }, { data: settingsRow, error: settingsError }] = await Promise.all([
@@ -1496,7 +1582,7 @@ export async function runAgentTurn(conversationId: string): Promise<void> {
   // una respuesta duplicada o un doble escalamiento.
   await withConversationTurnLock(supabase, conversationId, async (lease) => {
     const entrega = newTurnDelivery();
-    const tiempos = newTurnTiming(convo.last_customer_message_at);
+    const tiempos = newTurnTiming(convo.last_customer_message_at, options.vencioEn);
     const arranque = Date.now();
 
     try {

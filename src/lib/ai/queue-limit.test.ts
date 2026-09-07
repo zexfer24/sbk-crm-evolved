@@ -22,10 +22,16 @@ import { FakeRedis } from "@/lib/ai/fake-redis";
 const redis = new FakeRedis();
 vi.mock("@/lib/redis", () => ({ getRedis: () => redis }));
 
-const runAgentTurnMock = vi.fn(async (id: string) => {
+// El segundo argumento (`{ vencioEn }`, T0 "La respuesta llega en siete
+// segundos", 7/9/2026) se captura para el describe de más abajo; el resto de
+// este archivo lo ignora, igual que antes.
+const runAgentTurnMock = vi.fn(async (id: string, opts?: { vencioEn?: number }) => {
   void id;
+  void opts;
 });
-vi.mock("@/lib/ai/agent", () => ({ runAgentTurn: (id: string) => runAgentTurnMock(id) }));
+vi.mock("@/lib/ai/agent", () => ({
+  runAgentTurn: (id: string, opts?: { vencioEn?: number }) => runAgentTurnMock(id, opts),
+}));
 
 import { enqueueAgentTurns, pendingAgentTurns, processQueuedTurns } from "@/lib/ai/queue";
 
@@ -215,5 +221,68 @@ describe("tope de turnos por minuto", () => {
     expect(resultado.deferred).toBe(0);
     expect(runAgentTurnMock).toHaveBeenCalledTimes(8);
     expect(await pendingAgentTurns()).toBe(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// El vencimiento que viaja del reclamo al turno.
+//
+// 7/9/2026 ("La respuesta llega en siete segundos", T0): sin esto, un turno
+// que la cola tuvo que reintentar (acá, por el tope de ritmo) le llegaba a
+// `runAgentTurn` con el vencimiento del ÚLTIMO reintento, no el del primer
+// reclamo — y `colaMs` (agent.ts) hubiera medido de menos justo lo que el
+// criterio de cierre de la rampa exige medir bien.
+// ---------------------------------------------------------------------------
+describe("vencimiento que llega al turno", () => {
+  it("el turno recibe el vencimiento con que se reclamó", async () => {
+    const antes = Date.now();
+
+    await enqueueAgentTurns(["c1"], { debounceSeconds: 0 });
+    await processQueuedTurns(1);
+
+    expect(runAgentTurnMock).toHaveBeenCalledTimes(1);
+    const [, opts] = runAgentTurnMock.mock.calls[0];
+    expect(opts?.vencioEn).toBeGreaterThanOrEqual(antes - 300);
+    expect(opts?.vencioEn).toBeLessThanOrEqual(Date.now() + 300);
+  });
+
+  it("un turno diferido por ritmo conserva su vencimiento original", async () => {
+    process.env.AGENT_MAX_TURNS_PER_MINUTE = "1";
+    vi.useFakeTimers();
+    try {
+      const t0 = Date.now();
+      // No importa cuál de las dos se lleve el único cupo del minuto y cuál
+      // se difiera: lo que importa es que, cuando le toque su turno, cada
+      // una llegue con SU PROPIO vencimiento original, no con el del
+      // reintento.
+      const enqueuedAt: Record<string, number> = { c1: Date.now() };
+      await enqueueAgentTurns(["c1"], { debounceSeconds: 0 });
+      enqueuedAt.c2 = Date.now();
+      await enqueueAgentTurns(["c2"], { debounceSeconds: 0 });
+
+      // Una se lleva el único cupo de ritmo del minuto; la otra se difiere.
+      await processQueuedTurns(2);
+      expect(runAgentTurnMock).toHaveBeenCalledTimes(1);
+      expect(await pendingAgentTurns()).toBe(1);
+      const yaCorrida = runAgentTurnMock.mock.calls[0][0];
+      const diferida = yaCorrida === "c1" ? "c2" : "c1";
+
+      // Se adelanta el reloj más allá del reintento (RETRY_WHEN_PACED_SECONDS
+      // = 20s) y se destopa el ritmo, para que el segundo reclamo no vuelva
+      // a diferirse por el mismo motivo.
+      vi.setSystemTime(t0 + 25_000);
+      delete process.env.AGENT_MAX_TURNS_PER_MINUTE;
+
+      await processQueuedTurns(2);
+
+      expect(runAgentTurnMock).toHaveBeenCalledTimes(2);
+      const llamadaDiferida = runAgentTurnMock.mock.calls.find(([id]) => id === diferida);
+      const original = enqueuedAt[diferida];
+      expect(llamadaDiferida?.[1]?.vencioEn).toBeGreaterThanOrEqual(original - 300);
+      expect(llamadaDiferida?.[1]?.vencioEn).toBeLessThanOrEqual(original + 300);
+    } finally {
+      vi.useRealTimers();
+      process.env.AGENT_MAX_TURNS_PER_MINUTE = "1000";
+    }
   });
 });
