@@ -41,9 +41,21 @@ reconstruye la base desde cero con las migraciones y seeds del repo.
    sesión) y **encola** el turno de IA. Nunca procesa en línea.
 2. La cola (`lib/ai/queue.ts` + `redis-queue.ts`, Redis con scripts Lua)
    espera silencio antes de atender: 6 s si el mensaje parece ráfaga a medias,
-   2 s si cierra la idea. Impone cupos globales de turnos simultáneos y por
-   minuto. `api/cron/process-queue` (cada 5 min, `CRON_SECRET`) es la red de
-   seguridad para turnos huérfanos.
+   2 s si cierra la idea. Cinco variables de ritmo que se suben siempre
+   juntas gobiernan cuánto drena (7/9/2026, "La respuesta llega en siete
+   segundos": `AGENT_MAX_CONCURRENT_TURNS=8`, `AGENT_MAX_TURNS_PER_MINUTE=30`,
+   `AGENT_QUEUE_MAX_PER_RUN=30`, `AI_MAX_CONCURRENT_REQUESTS=12` y
+   `AI_MAX_REQUESTS_PER_MINUTE=120` en `rate-limit.ts` — un turno gasta
+   ≈3,4 peticiones, así que subir solo el freno de turnos deja al de
+   peticiones durmiendo el turno hasta 60 s). `api/cron/process-queue`
+   (cada minuto desde el 7/9/2026, antes cada 5 min, `CRON_SECRET`) sigue
+   siendo la red de seguridad para turnos huérfanos, pero un turno frenado
+   por ritmo/cupo/lock ya no espera al cron: se reprograma solo con su
+   propia continuación (`registrarDiferidos`, un `setTimeout` con el menor
+   plazo y `.unref()`). `claimDue` devuelve también el vencimiento
+   original del turno, con el que `turno_tiempos` separa `debounceMs` (la
+   ventana de silencio, diseño) de `colaMs` (lo que esperó frenado,
+   atraso).
 3. El turno (`lib/ai/agent.ts`) corre en paralelo la fase 0 (¿calza un
    escenario/playbook del supervisor? → se envía tal cual) y la fase 1
    (clasificar intención → define qué herramientas recibe el modelo), y solo
@@ -127,6 +139,12 @@ copia intermedia.
   redactar el reporte de entrega por commit para el Claude del VPS.
 - **Metodología de trabajo**: todo cambio entra por la skill `liminalwork`
   (plan aprobado → subagentes → reportes → tests). Sin plan no se implementa.
+- **Al revertir una mutación de verificación sobre código que un subagente
+  aún no commiteó, respaldar con `cp` antes y restaurar desde esa copia —
+  nunca con `git checkout -- <archivo>`.** El 7/9/2026, revertir una
+  mutación así en `queue.ts` con `git checkout --` pisó cambios sin
+  commitear de otra tarea que tocaba el mismo archivo; se recuperaron de
+  una copia hecha antes de mutar.
 
 ## La invariante "ningún lead invisible"
 
@@ -313,6 +331,37 @@ dejar rastro es lo que hacía desaparecer leads.
   esfuerzo no se aplicaba. Un `fetch failed` hacia Meta es `origenDelFallo:
   "red"` → traspaso `entrega_fallida`, no `rechazado_por_meta`; lo
   reencola el reconciliador.
+- **`queue.test.ts` y `redis-queue.test.ts` se saltan ENTEROS sin Redis**
+  (`if (!disponible) return` al inicio del archivo; puerto 6379 cerrado en
+  la máquina de esta corrida, 7/9/2026). Un test nuevo ahí "pasa" sin
+  ejecutar una sola aserción, y una prueba de mutación corrida sin Redis
+  da verde de mentira. Levantar `docker run -d --name sbk_redis -p
+  6379:6379 redis:7-alpine redis-server --appendonly yes` antes de validar
+  cualquier tarea que toque `redis-queue.ts` (receta en la cabecera del
+  archivo); lo que sí puede probarse sin Redis va con `FakeRedis` en
+  archivos aparte (`queue-limit.test.ts`, `queue-continuation.test.ts`).
+- **El "techo de 20/min" de OpenRouter que justificaba
+  `AI_MAX_REQUESTS_PER_MINUTE=15` era de la cuenta gratuita** (verificado
+  el 7/9/2026 contra `/api/v1/key` con la llave de producción:
+  `is_free_tier: false`, `limit: null`, `rate_limit` deprecado). Los
+  frenos de turnos (`AGENT_MAX_TURNS_PER_MINUTE`) y de peticiones
+  (`AI_MAX_REQUESTS_PER_MINUTE`) se suben siempre juntos porque un turno
+  gasta ≈3,4 peticiones (escenario + intención + 1-2 pasos de redacción):
+  subir solo el de turnos hace aparecer `ia_ritmo_al_tope`, que duerme
+  dentro del turno hasta 60 s. El Environment de Dokploy está cifrado y
+  solo llega al contenedor con un redeploy — cargarlo no basta si no se
+  redespliega.
+- **El comparador de clasificación no tiene una referencia fija**
+  (`scripts/comparar-clasificador.test.ts`, 7/9/2026): corrido dos veces
+  con el mismo modelo grande (`gpt-5.6-luna`) sobre 200 conversaciones
+  reales, solo coincide consigo mismo en el 92,5 % y "pierde" 8 escenarios
+  contra su propia respuesta anterior — un criterio absoluto de ≥95 % de
+  acuerdo es inalcanzable incluso para el modelo de referencia. Comparar
+  siempre contra esa línea base grande-contra-grande, nunca contra 100 %;
+  el desacuerdo dominante en todos los candidatos medidos
+  (`google/gemini-3.1-flash-lite` incluido) es
+  `consulta_disponibilidad`↔`otro`, dos intenciones que hoy reciben las
+  mismas herramientas en el tool loop.
 
 ---
 
