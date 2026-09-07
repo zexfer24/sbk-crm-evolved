@@ -154,3 +154,17 @@ jobs:
           psql "postgresql://postgres:postgres@127.0.0.1:54322/postgres" \
             -v ON_ERROR_STOP=1 \
             -f supabase/tests/business_hours.sql
+
+      # T1, corrida "La ventana de 24 h dice la verdad" (7/9/2026): un
+      # `unsupported` entrante no mueve last_customer_message_at/unread_count
+      # (candado A), y un saliente rechazado por Meta con 131047 la empuja
+      # hacia atrás -- created_at menos 24h -- en los dos caminos que pueden
+      # dejar un mensaje en 'failed' (INSERT ya fallido de la IA, UPDATE del
+      # asesor y del callback de Meta) (candado B). El caso 6 reaplica la
+      # migración con `\i` para probar el backfill sobre datos sembrados
+      # después de que la base ya la corrió una vez al construirse.
+      - name: la ventana de 24 h no miente -- unsupported y 131047
+        run: |
+          psql "postgresql://postgres:postgres@127.0.0.1:54322/postgres" \
+            -v ON_ERROR_STOP=1 \
+            -f supabase/tests/ventana_24h.sql
