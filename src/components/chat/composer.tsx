@@ -2,6 +2,7 @@
 
 import {
   useEffect,
+  useMemo,
   useRef,
   useState,
   type ChangeEvent,
@@ -12,7 +13,7 @@ import { AlignLeft, FileText, Lock, Paperclip, Send, X, Zap } from "lucide-react
 import { Button, TextArea, Tooltip } from "@heroui/react";
 import { toast } from "@heroui/react";
 import type { Conversation, Message, MessageType, QuickReply, WhatsappTemplate } from "@/lib/types";
-import { isWithin24hWindow } from "@/lib/whatsapp-window";
+import { isComposerWindowOpen } from "@/lib/whatsapp-window";
 import { contactName } from "@/lib/dashboard";
 import { createClient } from "@/lib/supabase/client";
 import { sendMediaMessage, sendTemplateMessage, sendTypingSignal } from "@/lib/mutations";
@@ -25,6 +26,15 @@ import { WindowCountdown } from "@/components/chat/window-countdown";
 
 interface ComposerProps {
   conversation: Conversation;
+  /**
+   * El hilo completo cargado del chat (T2, "La ventana de 24h dice la
+   * verdad", 7/9/2026): `withinWindow` ya no basta con mirar
+   * `lastCustomerMessageAt` -- necesita ver si Meta rechazó el último
+   * saliente con 131047 (`windowClosedByMeta`, `whatsapp-window.ts`), y para
+   * eso hace falta el historial, no solo la fecha. Antes de esto el composer
+   * no recibía `messages`.
+   */
+  messages: Message[];
   templates: WhatsappTemplate[];
   quickReplies: QuickReply[];
   replyingTo: Message | null;
@@ -81,6 +91,7 @@ function etiquetaQuitar(pending: PendingFile, index: number, todos: PendingFile[
 
 export function Composer({
   conversation,
+  messages,
   templates,
   quickReplies,
   replyingTo,
@@ -98,7 +109,18 @@ export function Composer({
   const fileInputRef = useRef<HTMLInputElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
-  const withinWindow = isWithin24hWindow(conversation.lastCustomerMessageAt);
+  /**
+   * Ya no alcanza con `isWithin24hWindow(lastCustomerMessageAt)` a secas
+   * (caso real del 6/9/2026: la conversación `aa75ef33-…` mostraba "quedan
+   * 11 h" con la caja habilitada mientras Meta rechazaba todo con 131047).
+   * `isComposerWindowOpen` suma la segunda pata -- si el saliente más
+   * reciente falló con 131047 y nada real lo reabrió después, la ventana se
+   * da por cerrada aunque `lastCustomerMessageAt` diga lo contrario.
+   */
+  const withinWindow = useMemo(
+    () => isComposerWindowOpen(conversation.lastCustomerMessageAt, messages),
+    [conversation.lastCustomerMessageAt, messages]
+  );
 
   /**
    * El cuadro se estira con lo que se escribe.

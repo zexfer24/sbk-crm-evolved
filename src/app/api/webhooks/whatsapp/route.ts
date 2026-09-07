@@ -975,11 +975,19 @@ export async function POST(request: Request) {
         // de los tipos, como `message_type: "unsupported"` con `content`
         // null y el tipo real de Meta en `payload.type` -- sin turno de IA
         // (no hay texto que atender; `loadHistory`, T3.2, ya salta estas
-        // filas) pero contando como entrante para que caiga en "Pendientes"
-        // y un asesor lo mire por WhatsApp directo. Deuda conocida: la vista
-        // previa de la bandeja queda en "Unsupported" (mismo `initcap` del
-        // trigger que ya usa cualquier multimedia sin texto) -- arreglarlo
-        // es tocar `handle_new_message`, otra corrida.
+        // filas). Sigue VISIBLE en el chat y en la lista (mueve
+        // `last_message_at`/`last_message_preview`), pero desde la corrida
+        // "La ventana de 24h dice la verdad" (T1, 7/9/2026) YA NO mueve
+        // `last_customer_message_at` ni `unread_count`/`awaiting_reply`: un
+        // aviso que Meta ni siquiera cuenta para su propia ventana de 24h
+        // (código 131047) no puede ser lo único que la abre acá. Hasta esa
+        // corrida SÍ lo hacía -- y el hueco dejó la conversación
+        // `aa75ef33-…` (+593987317372, 6/9/2026) con la caja de texto
+        // habilitada y "quedan 11h" mientras Meta rechazaba todo con 131047.
+        // Deuda conocida: la vista previa de la bandeja queda en
+        // "Unsupported" (mismo `initcap` del trigger que ya usa cualquier
+        // multimedia sin texto) -- arreglarlo es tocar `handle_new_message`,
+        // otra corrida.
         let esUnsupportedSolo = false;
         if (message.type === "unsupported") {
           const vieneConGaleria = value.messages.some(
@@ -1392,13 +1400,19 @@ export async function POST(request: Request) {
 
         if (esUnsupportedSolo) {
           // D3: no hay texto que la IA pueda atender, así que esta fila no
-          // entra a `touchedByCustomer` -- el trigger `handle_new_message`
-          // igual mueve `last_customer_message_at`/`unread_count`/
-          // `awaiting_reply` como a cualquier entrante (confirmado leyendo
-          // 20260905010000_conversations_last_reply.sql líneas 65-127), que
-          // es justo lo que la hace caer en "Pendientes". Si en el mismo
-          // lote esta conversación tiene además un mensaje normal, ESE sí la
-          // deja en el Map en su propia vuelta del bucle -- no se pisan.
+          // entra a `touchedByCustomer` -- no se encola turno. El trigger
+          // `handle_new_message` sí mueve `last_message_at` (queda visible
+          // en el chat y en la lista), pero desde T1 ("La ventana de 24h
+          // dice la verdad", 7/9/2026) YA NO mueve `last_customer_message_at`
+          // ni `unread_count`/`awaiting_reply` para un `unsupported`: Meta
+          // tampoco lo cuenta para su propia ventana de 24h, así que un
+          // aviso que Meta ni reconoce como conversación no puede ser lo
+          // único que la reabra acá. Antes de esa corrida sí lo hacía -- y
+          // ese hueco fue justo el bug real del 6/9/2026 (conversación
+          // `aa75ef33-…`: caja de texto habilitada con la ventana ya cerrada
+          // del lado de Meta). Si en el mismo lote esta conversación tiene
+          // además un mensaje normal, ESE sí la deja en el Map en su propia
+          // vuelta del bucle -- no se pisan.
           log.info("webhook_unsupported_guardado", {
             conversationId,
             tipo: message.unsupported?.type ?? null,

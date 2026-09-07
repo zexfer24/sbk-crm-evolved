@@ -3,7 +3,7 @@ import { describe, expect, it, vi, beforeEach, afterEach } from "vitest";
 import { render, screen, fireEvent, waitFor, act } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { Composer } from "@/components/chat/composer";
-import type { Conversation } from "@/lib/types";
+import type { Conversation, Message } from "@/lib/types";
 
 const sendMediaMessageMock = vi.fn().mockResolvedValue(undefined);
 const onSendTextMock = vi.fn();
@@ -94,10 +94,41 @@ function crearUsuario() {
   return userEvent.setup({ delay: null, pointerEventsCheck: 0 });
 }
 
-function renderComposer() {
+/**
+ * Fábrica mínima de `Message` (T2, "La ventana de 24h dice la verdad",
+ * 7/9/2026): el composer ahora recibe el hilo completo para poder mirar
+ * `windowClosedByMeta` (`whatsapp-window.ts`), y estos tests necesitan armar
+ * mensajes salientes fallidos e inbounds sueltos sin repetir los quince
+ * campos de `Message` en cada caso.
+ */
+function buildMessage(over: Partial<Message> = {}): Message {
+  return {
+    id: `msg-${Math.random().toString(36).slice(2)}`,
+    conversationId: "conv-1",
+    direction: "inbound",
+    senderType: "customer",
+    senderAgent: null,
+    messageType: "text",
+    content: "hola",
+    templateName: null,
+    mediaUrl: null,
+    isInternalNote: false,
+    whatsappStatus: null,
+    whatsappError: null,
+    whatsappErrorCode: null,
+    reactionEmoji: null,
+    replyToMessageId: null,
+    payload: null,
+    createdAt: new Date().toISOString(),
+    ...over,
+  };
+}
+
+function renderComposer(messages: Message[] = []) {
   return render(
     <Composer
       conversation={buildConversation()}
+      messages={messages}
       templates={[]}
       quickReplies={[]}
       replyingTo={null}
@@ -451,5 +482,56 @@ describe("Composer — indicador de \"escribiendo…\" hacia Meta", () => {
     });
 
     expect(sendTypingSignalMock).not.toHaveBeenCalled();
+  });
+});
+
+/**
+ * T2, "La ventana de 24h dice la verdad" (7/9/2026): red de seguridad del
+ * lado del cliente para el caso real del 6/9/2026 (conversación
+ * `aa75ef33-…`) -- `lastCustomerMessageAt` reciente ya no basta para dejar
+ * escribir si el hilo trae un rechazo 131047 sin nada real después.
+ */
+describe("Composer — Meta ya cerró la ventana con 131047", () => {
+  it("un failed 131047 sin inbound real posterior deshabilita el cuadro y ofrece plantilla", () => {
+    const fallo = buildMessage({
+      direction: "outbound",
+      senderType: "agent",
+      messageType: "text",
+      content: "texto libre",
+      whatsappStatus: "failed",
+      whatsappError: "Han pasado más de 24 horas desde el último mensaje del cliente.",
+      whatsappErrorCode: 131047,
+    });
+
+    renderComposer([fallo]);
+
+    const textarea = screen.getByRole("textbox", { name: "Mensaje" }) as HTMLTextAreaElement;
+    expect(textarea).toBeDisabled();
+    expect(textarea.placeholder).toBe("Ventana de 24h cerrada — usa una plantilla");
+    expect(screen.queryByText(/quedan/i)).not.toBeInTheDocument();
+  });
+
+  it("un inbound text posterior al 131047 reabre el cuadro", () => {
+    const fallo = buildMessage({
+      direction: "outbound",
+      senderType: "agent",
+      messageType: "text",
+      content: "texto libre",
+      whatsappStatus: "failed",
+      whatsappError: "Han pasado más de 24 horas desde el último mensaje del cliente.",
+      whatsappErrorCode: 131047,
+      createdAt: new Date(Date.now() - 60_000).toISOString(),
+    });
+    const textoPosterior = buildMessage({
+      direction: "inbound",
+      messageType: "text",
+      createdAt: new Date().toISOString(),
+    });
+
+    renderComposer([fallo, textoPosterior]);
+
+    const textarea = screen.getByRole("textbox", { name: "Mensaje" }) as HTMLTextAreaElement;
+    expect(textarea).not.toBeDisabled();
+    expect(textarea.placeholder).toBe("Escribe un mensaje...");
   });
 });

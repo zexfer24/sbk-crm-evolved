@@ -348,6 +348,7 @@ export function ChatPanel({
 
       <Composer
         conversation={conversation}
+        messages={messages}
         templates={templates}
         quickReplies={quickReplies}
         replyingTo={replyingTo}
