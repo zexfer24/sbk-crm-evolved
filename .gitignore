@@ -40,6 +40,13 @@ yarn-error.log*
 # Respaldos de la base: nunca al repositorio.
 /backups/
 
+# Export de historiales reales para el comparador de clasificador (T2, "La
+# respuesta llega en siete segundos", 7/9/2026): trae texto real de clientes,
+# nunca al repositorio. El reporte que genera el comparador tampoco -- puede
+# citar ese mismo texto en los ejemplos de desacuerdo.
+/scripts/historiales-clasificador.json
+/scripts/comparar-clasificador.reporte.md
+
 # vercel
 .vercel
 

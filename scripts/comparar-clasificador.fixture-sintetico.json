@@ -1,0 +1,141 @@
+{
+  "_sintetico": true,
+  "_advertencia": "Datos INVENTADOS para probar el comparador grande×chico (T2, 'La respuesta llega en siete segundos', 7/9/2026). Ningún cliente ni conversación real. NO reemplaza al export de scripts/exportar-historiales-clasificador.sql -- apuntar COMPARAR_CLASIFICADOR_FIXTURE a ese export para el veredicto real.",
+  "conversaciones": [
+    {
+      "conversation_id": "sintetico-consulta-disponibilidad",
+      "mensajes": [
+        {
+          "sender_type": "customer",
+          "content": "Hola, buenas tardes",
+          "is_internal_note": false,
+          "message_type": "text",
+          "created_at": "2026-09-07T16:00:00.000Z"
+        },
+        {
+          "sender_type": "ai",
+          "content": "¡Buenas tardes! Con gusto te ayudo, ¿qué repuesto andas buscando?",
+          "is_internal_note": false,
+          "message_type": "text",
+          "created_at": "2026-09-07T16:00:20.000Z"
+        },
+        {
+          "sender_type": "customer",
+          "content": "¿Tienen cauchos para una Bera SBR 200? ¿Cuánto cuestan?",
+          "is_internal_note": false,
+          "message_type": "text",
+          "created_at": "2026-09-07T16:01:10.000Z"
+        }
+      ]
+    },
+    {
+      "conversation_id": "sintetico-queja",
+      "mensajes": [
+        {
+          "sender_type": "customer",
+          "content": "Compré un kit de arrastre la semana pasada y llegó con una pieza doblada",
+          "is_internal_note": false,
+          "message_type": "text",
+          "created_at": "2026-09-06T14:10:00.000Z"
+        },
+        {
+          "sender_type": "ai",
+          "content": "Lamento mucho el inconveniente. ¿Me confirmas el número de pedido para revisar qué pasó?",
+          "is_internal_note": false,
+          "message_type": "text",
+          "created_at": "2026-09-06T14:10:30.000Z"
+        },
+        {
+          "sender_type": "customer",
+          "content": "No tengo el número a mano, pero esto está mal, quiero que lo resuelvan ya",
+          "is_internal_note": false,
+          "message_type": "text",
+          "created_at": "2026-09-06T14:12:00.000Z"
+        }
+      ]
+    },
+    {
+      "conversation_id": "sintetico-fuera-de-tema",
+      "mensajes": [
+        {
+          "sender_type": "customer",
+          "content": "Oye, ¿me puedes ayudar a escribir un poema para mi novia?",
+          "is_internal_note": false,
+          "message_type": "text",
+          "created_at": "2026-09-05T09:30:00.000Z"
+        }
+      ]
+    },
+    {
+      "conversation_id": "sintetico-otro-horario",
+      "mensajes": [
+        {
+          "sender_type": "customer",
+          "content": "¿Hasta qué hora atienden los sábados?",
+          "is_internal_note": false,
+          "message_type": "text",
+          "created_at": "2026-09-05T20:15:00.000Z"
+        }
+      ]
+    },
+    {
+      "conversation_id": "sintetico-foto-sin-texto",
+      "mensajes": [
+        {
+          "sender_type": "customer",
+          "content": "Buenas, tengo esta moto",
+          "is_internal_note": false,
+          "message_type": "text",
+          "created_at": "2026-09-04T11:00:00.000Z"
+        },
+        {
+          "sender_type": "customer",
+          "content": null,
+          "is_internal_note": false,
+          "message_type": "image",
+          "created_at": "2026-09-04T11:00:40.000Z"
+        },
+        {
+          "sender_type": "customer",
+          "content": "¿Tienen el escape para esta?",
+          "is_internal_note": false,
+          "message_type": "text",
+          "created_at": "2026-09-04T11:01:00.000Z"
+        }
+      ]
+    }
+  ],
+  "escenarios": [
+    {
+      "id": "sintetico-escenario-horario",
+      "name": "Horario de atención (sintético)",
+      "trigger_description": "El cliente pregunta por el horario de atención, a qué hora abren o cierran, o si atienden fines de semana.",
+      "response_text": "Nuestro horario es de lunes a viernes de 8:00 am a 6:00 pm. Los sábados y domingos permanecemos cerrados.",
+      "attachment_url": null,
+      "attachment_type": null,
+      "after_send": "wait",
+      "is_active": true,
+      "tags": []
+    },
+    {
+      "id": "sintetico-escenario-envio",
+      "name": "Zonas de envío (sintético)",
+      "trigger_description": "El cliente pregunta si hacen envíos, a qué zonas, o el costo del delivery.",
+      "response_text": "Hacemos envíos a todo Barinas y alrededores. El costo depende de la zona y te lo confirma un asesor antes de cobrarte.",
+      "attachment_url": null,
+      "attachment_type": null,
+      "after_send": "wait",
+      "is_active": true,
+      "tags": [{ "id": "sintetico-tag-envio", "label": "Envío", "color": "accent" }]
+    }
+  ],
+  "horario": {
+    "mon": [["08:00", "18:00"]],
+    "tue": [["08:00", "18:00"]],
+    "wed": [["08:00", "18:00"]],
+    "thu": [["08:00", "18:00"]],
+    "fri": [["08:00", "18:00"]],
+    "sat": [],
+    "sun": []
+  }
+}

@@ -131,6 +131,39 @@ describe("costura para mover la clasificación de modelo", () => {
 
     expect(currentAgentModelLabel()).toBe("openai/gpt-5.6-luna");
   });
+
+  /**
+   * Trampa (T2, corrida "La respuesta llega en siete segundos", 7/9/2026):
+   * `resolveProvider` decide Google vs. OpenAI mirando si el id EMPIEZA con
+   * "gemini". El candidato para bajar la clasificación a un modelo chico es
+   * `google/gemini-3.1-flash-lite`, tal como OpenRouter lo lista en su
+   * catálogo (con el prefijo del fabricante) — ese id NO empieza con
+   * "gemini", así que hoy cae al `else` y sale por el proveedor "openai", que
+   * es justo lo que se quiere: `AI_AGENT_PROVIDER=openai` en producción hace
+   * que ese proveedor hable contra `OPENAI_BASE_URL` (OpenRouter), que es
+   * donde vive el catálogo con ese nombre completo. El SDK de Google habla
+   * contra la API de Google directo, sin `OPENAI_BASE_URL` de por medio, y
+   * ahí ese id con el prefijo del fabricante no existe.
+   *
+   * Si alguien "arregla" `resolveProvider` para reconocer también el prefijo
+   * `google/` y mandar esos ids al SDK de Google, este caso se pone en rojo:
+   * es la mutación que el orquestador va a probar a propósito.
+   */
+  it("un id de OpenRouter con prefijo de fabricante (google/gemini-...) sale por el proveedor openai, no por el SDK de Google", () => {
+    process.env.AI_AGENT_PROVIDER = "openai";
+    process.env.AI_CLASSIFIER_MODEL = "google/gemini-3.1-flash-lite";
+
+    getClassifierModel("clasificar");
+
+    expect(openaiMock).toHaveBeenCalledWith("google/gemini-3.1-flash-lite");
+    expect(googleMock).not.toHaveBeenCalled();
+
+    // El agente no se movió: sigue redactando con gpt-5.6-luna (el default de
+    // resolveModelId sin AI_AGENT_MODEL), sin que el override del clasificador
+    // lo toque.
+    getAgentModel("medium");
+    expect(openaiMock).toHaveBeenCalledWith("gpt-5.6-luna");
+  });
 });
 
 // ---------------------------------------------------------------------------
