@@ -574,8 +574,10 @@ Honestidad sobre el estado, para que nadie se lleve una sorpresa:
   o CloudWatch la indexen sin parsear texto, y oculta solo los valores
   sensibles. Falta apuntar un recolector a la salida del contenedor y armar
   las alertas. Los eventos que merecen una: `cola_encolar_fallido`,
-  `cola_turno_fallido`, `webhook_sin_secreto_en_produccion` y
-  `webhook_firma_invalida`.
+  `cola_turno_fallido`, `webhook_sin_secreto_en_produccion`,
+  `webhook_firma_invalida`, `identidad_reescrita` (una reescritura de la
+  guarda de identidad funcionó: vale la pena contarlas) e
+  `identidad_bloqueada` (un turno terminó escalado por esta guarda).
 - **Un solo token de WhatsApp** para todos los canales. Con más de un número
   hay que extender `whatsapp_channels`.
 - **La PII no está cifrada en reposo.** Cédula, dirección y teléfono se

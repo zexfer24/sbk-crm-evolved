@@ -312,6 +312,19 @@ const generateMock = vi.fn<() => Promise<{ text: string; usage: FakeUsage; steps
 );
 /** Opciones con las que se construyó el ToolLoopAgent: es donde viajan las instrucciones. */
 const agentOptions: { instructions: string; tools: Record<string, unknown> }[] = [];
+/**
+ * Guarda de identidad (6/9/2026): la ÚNICA reescritura que hace
+ * `applyIdentityGuard` usa `generateText` (no `ToolLoopAgent` — las
+ * herramientas ya corrieron). Default: un texto limpio que no vuelve a
+ * calzar ningún patrón de `identity-guard.ts`, para que los tests que NO
+ * disparan la guarda no tengan que preocuparse por este mock.
+ */
+const generateTextMock = vi.fn<
+  (args: Record<string, unknown>) => Promise<{ text: string; usage: FakeUsage }>
+>(async () => ({
+  text: "texto reescrito limpio",
+  usage: { inputTokens: 10, outputTokens: 4, totalTokens: 14 },
+}));
 vi.mock("ai", async (importOriginal) => ({
   ...(await importOriginal<typeof import("ai")>()),
   ToolLoopAgent: class {
@@ -320,10 +333,16 @@ vi.mock("ai", async (importOriginal) => ({
     }
     generate = generateMock;
   },
+  generateText: (...args: unknown[]) => generateTextMock(args[0] as Record<string, unknown>),
 }));
 
+/** Con qué `effort` se llamó `getAgentModel` en cada turno: lo usa el describe de la guarda de identidad para afirmar que la reescritura pide "low". */
+const getAgentModelCalls: unknown[] = [];
 vi.mock("@/lib/ai/model", () => ({
-  getAgentModel: () => ({ model: "modelo-falso" }),
+  getAgentModel: (effort?: unknown) => {
+    getAgentModelCalls.push(effort);
+    return { model: "modelo-falso" };
+  },
   currentAgentModelLabel: () => "fake/modelo",
 }));
 
@@ -382,8 +401,9 @@ vi.mock("@/lib/whatsapp/meta-client", () => ({
   sendTypingIndicator: (...args: unknown[]) => sendTypingIndicatorMock(...args),
 }));
 
-import { runAgentTurn } from "@/lib/ai/agent";
+import { DESPEDIDA_CON_ASESOR, DESPEDIDA_SIN_ASESOR, runAgentTurn } from "@/lib/ai/agent";
 import { OFF_TOPIC_REPLY, SYSTEM_PROMPT } from "@/lib/ai/prompt";
+import { revealsIdentity } from "@/lib/ai/identity-guard";
 import { log } from "@/lib/log";
 
 function playbook(overrides: Partial<Playbook> = {}): Playbook {
@@ -436,8 +456,13 @@ beforeEach(() => {
   pasos.length = 0;
   handoffCalls.length = 0;
   agentOptions.length = 0;
+  getAgentModelCalls.length = 0;
   vi.clearAllMocks();
   fetchActivePlaybooksMock.mockResolvedValue([]);
+  generateTextMock.mockResolvedValue({
+    text: "texto reescrito limpio",
+    usage: { inputTokens: 10, outputTokens: 4, totalTokens: 14 },
+  });
   matchPlaybookMock.mockResolvedValue({ playbook: null, usage: NO_USAGE });
   playbookSentRecentlyMock.mockResolvedValue(false);
   classifyIntentMock.mockResolvedValue({
@@ -2153,5 +2178,260 @@ describe("runAgentTurn — 'escribiendo…' hacia el cliente", () => {
     await runAgentTurn("conv-1");
 
     expect(sendAgentTextMock).toHaveBeenCalledTimes(1);
+  });
+});
+
+/**
+ * Guarda de identidad (6/9/2026): último control antes de hablarle al
+ * cliente, sobre el texto final del tool loop —después de la red de
+ * seguridad de devolución/queja, justo antes del envío de la redacción. El
+ * 26 y 27/8/2026 la IA se despidió como "el asistente automatizado de SBK
+ * Motorcycles" 34 de 68 y 26 de 151 veces pese a que el SYSTEM_PROMPT ya lo
+ * prohibía; esta es la cerradura para cuando el guion vuelve a fallar.
+ */
+describe("runAgentTurn — guarda de identidad", () => {
+  it("(a) texto limpio: pasa sin llamada extra a generateText", async () => {
+    const warn = vi.spyOn(log, "warn");
+    const error = vi.spyOn(log, "error");
+    // Negativo del catálogo a propósito: "automático" es un repuesto, no una
+    // autorreferencia — revealsIdentity no debe calzar acá.
+    generateMock.mockResolvedValueOnce({
+      text: "El automático de la Horse está en 12$ a tasa BCV",
+      usage: { inputTokens: 20, outputTokens: 8, totalTokens: 28 },
+      steps: [{}, {}],
+    });
+
+    await runAgentTurn("conv-1");
+
+    expect(generateTextMock).not.toHaveBeenCalled();
+    expect(sendAgentTextMock).toHaveBeenCalledTimes(1);
+    expect(sendAgentTextMock.mock.calls[0][2]).toBe("El automático de la Horse está en 12$ a tasa BCV");
+    expect(escalateConversationMock).not.toHaveBeenCalled();
+    expect(agentTurnInserts[0].summary).not.toMatch(/^\[identidad/);
+    expect(warn).not.toHaveBeenCalledWith("identidad_reescrita", expect.anything());
+    expect(error).not.toHaveBeenCalledWith("identidad_bloqueada", expect.anything());
+  });
+
+  it("(b) texto que calza: se reescribe una vez y sale limpio", async () => {
+    const warn = vi.spyOn(log, "warn");
+    const borrador =
+      "¡Buenos días! Soy el asistente automatizado de SBK Motorcycles. El automático de la Horse está en 12$.";
+    const reescrito = "¡Buenos días! Acá en SBK el automático de la Horse está en 12$.";
+    generateMock.mockResolvedValueOnce({
+      text: borrador,
+      usage: { inputTokens: 20, outputTokens: 8, totalTokens: 28 },
+      steps: [{}, {}],
+    });
+    generateTextMock.mockResolvedValueOnce({
+      text: reescrito,
+      usage: { inputTokens: 10, outputTokens: 4, totalTokens: 14 },
+    });
+
+    await runAgentTurn("conv-1");
+
+    expect(generateTextMock).toHaveBeenCalledTimes(1);
+    const opciones = generateTextMock.mock.calls[0][0] as {
+      system: string;
+      messages: { role: string; content: string }[];
+      maxRetries: number;
+    };
+    expect(opciones.system.startsWith(SYSTEM_PROMPT)).toBe(true);
+    expect(opciones.system).toContain("asistente automatizado");
+    expect(opciones.messages).toEqual([{ role: "user", content: borrador }]);
+    expect(opciones.maxRetries).toBe(0);
+    expect(getAgentModelCalls).toContain("low");
+
+    expect(sendAgentTextMock).toHaveBeenCalledTimes(1);
+    expect(sendAgentTextMock.mock.calls[0][2]).toBe(reescrito);
+    // Nunca el borrador que se delataba.
+    expect(sendAgentTextMock.mock.calls.some((llamada) => llamada[2] === borrador)).toBe(false);
+    expect(escalateConversationMock).not.toHaveBeenCalled();
+    expect(warn).toHaveBeenCalledWith("identidad_reescrita", {
+      conversationId: "conv-1",
+      categoria: "automatizacion",
+      fragmento: "asistente automatizado",
+    });
+
+    expect(agentTurnInserts).toHaveLength(1);
+    expect(agentTurnInserts[0]).toMatchObject({ action: "answered" });
+    expect((agentTurnInserts[0].summary as string).startsWith("[identidad reescrita]")).toBe(true);
+    // 4 (reconocimiento de escenario, NO_USAGE del beforeEach) + 6
+    // (clasificación) + 28 (redacción) + 14 (reescritura) = 52.
+    expect(agentTurnInserts[0].total_tokens).toBe(52);
+  });
+
+  it("(c) reescrito que sigue calzando: se bloquea, se escala por 'seguimiento' y sale la despedida CON asesor", async () => {
+    const error = vi.spyOn(log, "error");
+    const borrador =
+      "¡Buenos días! Soy el asistente automatizado de SBK Motorcycles. El automático de la Horse está en 12$.";
+    const reescritoQueSigueCalzando = "Soy un asistente virtual de SBK, el automático está en 12$.";
+    generateMock.mockResolvedValueOnce({
+      text: borrador,
+      usage: { inputTokens: 20, outputTokens: 8, totalTokens: 28 },
+      steps: [{}, {}],
+    });
+    generateTextMock.mockResolvedValueOnce({
+      text: reescritoQueSigueCalzando,
+      usage: { inputTokens: 10, outputTokens: 4, totalTokens: 14 },
+    });
+    // Mock por defecto del beforeEach: { escalated: true, assignedAgentName: "María" } — CON asesor.
+
+    await runAgentTurn("conv-1");
+
+    expect(sendAgentTextMock).toHaveBeenCalledTimes(1);
+    expect(sendAgentTextMock.mock.calls[0][2]).toBe(DESPEDIDA_CON_ASESOR);
+    const opcionesEnvio = sendAgentTextMock.mock.calls[0][3] as { isAutoReply?: boolean } | undefined;
+    expect(opcionesEnvio?.isAutoReply).not.toBe(true);
+    // Nunca el borrador ni el reescrito que se seguían delatando.
+    expect(sendAgentTextMock.mock.calls.some((llamada) => llamada[2] === borrador)).toBe(false);
+    expect(sendAgentTextMock.mock.calls.some((llamada) => llamada[2] === reescritoQueSigueCalzando)).toBe(false);
+
+    expect(escalateConversationMock).toHaveBeenCalledTimes(1);
+    expect(escalateConversationMock).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        motivo: "seguimiento",
+        resumen: "La respuesta redactada se describía como automatizada y no pudo corregirse. Retomar el hilo.",
+      })
+    );
+    expect(error).toHaveBeenCalledWith("identidad_bloqueada", expect.objectContaining({ conversationId: "conv-1" }));
+
+    expect(agentTurnInserts).toHaveLength(1);
+    expect(agentTurnInserts[0]).toMatchObject({ action: "escalated" });
+    const summary = agentTurnInserts[0].summary as string;
+    expect(summary.startsWith("[identidad bloqueada]")).toBe(true);
+    expect(summary).toContain("seguimiento");
+  });
+
+  it("(c2) variante sin asesor: sale la despedida SIN asesor, marcada is_auto_reply", async () => {
+    generateMock.mockResolvedValueOnce({
+      text: "Soy un asistente virtual de SBK, el automático está en 12$.",
+      usage: { inputTokens: 20, outputTokens: 8, totalTokens: 28 },
+      steps: [{}, {}],
+    });
+    generateTextMock.mockResolvedValueOnce({
+      text: "Soy un asistente virtual de SBK, el automático está en 12$.",
+      usage: { inputTokens: 10, outputTokens: 4, totalTokens: 14 },
+    });
+    escalateConversationMock.mockImplementationOnce(async () => {
+      pasos.push("escalar");
+      return { escalated: true, assignedAgentName: null, unassigned: true };
+    });
+
+    await runAgentTurn("conv-1");
+
+    expect(sendAgentTextMock).toHaveBeenCalledTimes(1);
+    expect(sendAgentTextMock.mock.calls[0][2]).toBe(DESPEDIDA_SIN_ASESOR);
+    const opciones = sendAgentTextMock.mock.calls[0][3] as { isAutoReply?: boolean } | undefined;
+    expect(opciones?.isAutoReply).toBe(true);
+  });
+
+  it("(c3) generateText lanza: se trata como reescritura fallida, nunca se envía el borrador", async () => {
+    const error = vi.spyOn(log, "error");
+    const borrador = "Soy un bot, dame un momento y te cotizo el automático.";
+    generateMock.mockResolvedValueOnce({
+      text: borrador,
+      usage: { inputTokens: 20, outputTokens: 8, totalTokens: 28 },
+      steps: [{}, {}],
+    });
+    generateTextMock.mockRejectedValueOnce(new Error("proveedor caído"));
+
+    // No debe lanzar: un proveedor caído en la reescritura no puede tumbar el
+    // turno, tiene que resolver igual con la despedida fija.
+    await runAgentTurn("conv-1");
+
+    expect(sendAgentTextMock).toHaveBeenCalledTimes(1);
+    expect(sendAgentTextMock.mock.calls[0][2]).not.toBe(borrador);
+    expect([DESPEDIDA_SIN_ASESOR, DESPEDIDA_CON_ASESOR]).toContain(sendAgentTextMock.mock.calls[0][2]);
+    expect(escalateConversationMock).toHaveBeenCalledTimes(1);
+    expect(escalateConversationMock).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ motivo: "seguimiento" })
+    );
+    expect(error).toHaveBeenCalledWith(
+      "identidad_bloqueada",
+      expect.objectContaining({ conversationId: "conv-1", motivo: "reescritura_fallida" })
+    );
+  });
+
+  it("(d) el modelo ya había escalado (queja) antes de redactar: no se escala una segunda vez por 'seguimiento'", async () => {
+    const error = vi.spyOn(log, "error");
+    classifyIntentMock.mockResolvedValueOnce({
+      intent: "queja",
+      usage: { inputTokens: 5, outputTokens: 1, totalTokens: 6 },
+    });
+    generateMock.mockResolvedValueOnce({
+      text: "Soy un bot, ya te paso con un asesor.",
+      usage: { inputTokens: 20, outputTokens: 8, totalTokens: 28 },
+      steps: [{}, {}],
+    });
+    generateTextMock.mockResolvedValueOnce({
+      text: "Soy un asistente virtual, ya te paso con un asesor.",
+      usage: { inputTokens: 10, outputTokens: 4, totalTokens: 14 },
+    });
+    // escalateConversationMock por defecto (beforeEach): { escalated: true, assignedAgentName: "María" } —
+    // es la llamada de la red de seguridad de "queja", ANTES de que corra la guarda de identidad.
+
+    await runAgentTurn("conv-1");
+
+    // Una sola escalación en todo el turno: la de "queja". La guarda NO
+    // escala una segunda vez porque outcome.escalated ya era true.
+    expect(escalateConversationMock).toHaveBeenCalledTimes(1);
+    expect(escalateConversationMock).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ motivo: "queja" })
+    );
+
+    expect(sendAgentTextMock).toHaveBeenCalledTimes(1);
+    expect([DESPEDIDA_SIN_ASESOR, DESPEDIDA_CON_ASESOR]).toContain(sendAgentTextMock.mock.calls[0][2]);
+    expect(error).toHaveBeenCalledWith("identidad_bloqueada", expect.objectContaining({ conversationId: "conv-1" }));
+
+    expect(agentTurnInserts).toHaveLength(1);
+    const summary = agentTurnInserts[0].summary as string;
+    expect(summary.startsWith("[identidad bloqueada]")).toBe(true);
+  });
+
+  /**
+   * Test estático: las constantes y textos fijos que la propia guarda podría
+   * llegar a mandar (u OFF_TOPIC_REPLY, que nunca pasa por la guarda en
+   * caliente) no pueden delatarse a sí mismos — si alguna vez alguien les
+   * agrega la palabra equivocada, este test lo agarra sin levantar el turno
+   * completo.
+   */
+  it("(e) las despedidas fijas y OFF_TOPIC_REPLY no calzan ningún patrón de identidad", () => {
+    expect(revealsIdentity(OFF_TOPIC_REPLY)).toBeNull();
+    expect(revealsIdentity(DESPEDIDA_SIN_ASESOR)).toBeNull();
+    expect(revealsIdentity(DESPEDIDA_CON_ASESOR)).toBeNull();
+  });
+
+  /**
+   * Hueco cerrado el 6/9/2026 al integrar la guarda: la red de seguridad de
+   * devolución/queja (más arriba en `runTurnPhases`, ANTES de la guarda de
+   * identidad) copiaba `escalated`/`assignedAgentName`/`unassigned` de
+   * `forced` pero nunca `outcome.motivo` — a diferencia de
+   * `buildEscalateTool` en tools.ts, que sí lo hace. Sin esa copia, el
+   * `summary` de `agent_turns` quedaba "Escalado a X. Motivo: undefined."
+   * en vez de nombrar "queja" o "devolucion".
+   */
+  it("(f) red de seguridad de queja: el summary trae 'Motivo: queja.', no 'undefined'", async () => {
+    classifyIntentMock.mockResolvedValueOnce({
+      intent: "queja",
+      usage: { inputTokens: 5, outputTokens: 1, totalTokens: 6 },
+    });
+    // Texto limpio, sin nada que la guarda de identidad tenga que tocar: este
+    // test es sobre la red de seguridad de devolución/queja, no sobre la
+    // guarda.
+    generateMock.mockResolvedValueOnce({
+      text: "Lamento lo que pasó, ya te paso con un asesor.",
+      usage: { inputTokens: 20, outputTokens: 8, totalTokens: 28 },
+      steps: [{}, {}],
+    });
+
+    await runAgentTurn("conv-1");
+
+    expect(agentTurnInserts).toHaveLength(1);
+    const summary = agentTurnInserts[0].summary as string;
+    expect(summary).toContain("Motivo: queja.");
+    expect(summary).not.toContain("undefined");
   });
 });

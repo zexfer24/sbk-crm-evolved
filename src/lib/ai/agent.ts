@@ -1,5 +1,12 @@
 import "server-only";
-import { ToolLoopAgent, isStepCount, type LanguageModelUsage, type ModelMessage, type ToolSet } from "ai";
+import {
+  ToolLoopAgent,
+  generateText,
+  isStepCount,
+  type LanguageModelUsage,
+  type ModelMessage,
+  type ToolSet,
+} from "ai";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import type { Database } from "@/lib/supabase/database.types";
 import type { Playbook, Tag } from "@/lib/types";
@@ -7,8 +14,9 @@ import { parseBusinessHours, type BusinessHours } from "@/lib/business-hours";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { classifyIntent, type Intent } from "@/lib/ai/classify";
 import { currentAgentModelLabel, getAgentModel } from "@/lib/ai/model";
-import { OFF_TOPIC_REPLY, buildInstructions } from "@/lib/ai/prompt";
+import { OFF_TOPIC_REPLY, SYSTEM_PROMPT, buildInstructions } from "@/lib/ai/prompt";
 import { buildCatalogTool, buildEscalateTool, buildOrderHistoryTool, type EscalationOutcome } from "@/lib/ai/tools";
+import { revealsIdentity, rewriteSuffix } from "@/lib/ai/identity-guard";
 import { TOOL_KEYS, fetchEnabledToolKeys } from "@/lib/ai/agent-tools";
 import { buildKnowledgeTool } from "@/lib/ai/knowledge";
 import { escalateConversation } from "@/lib/ai/escalate";
@@ -556,6 +564,142 @@ function tagSummary(tags: Tag[]): string {
   return tags.length === 0 ? "" : ` Etiquetas: ${tags.map((tag) => tag.label).join(", ")}.`;
 }
 
+// ---------------------------------------------------------------------------
+// Guarda de identidad (6/9/2026): las dos despedidas fijas que ya usaba la
+// red de seguridad de devolución/queja, ahora compartidas con
+// `applyIdentityGuard` — es el texto que sale cuando la guarda bloquea un
+// borrador y no hay nada más seguro que mandar. Se exportan para el test
+// estático de `agent.test.ts`, que las pasa por `revealsIdentity` para
+// asegurarse de que la propia despedida nunca se delate.
+// ---------------------------------------------------------------------------
+export const DESPEDIDA_SIN_ASESOR =
+  "Ya dejé tu caso registrado para que lo revise un asesor. En cuanto haya alguien disponible te escriben por acá.";
+export const DESPEDIDA_CON_ASESOR =
+  "Dame un momentico, ya te paso con un asesor para que te ayude con esto.";
+
+/**
+ * Cerradura de identidad, en caliente, sobre el texto final del tool loop.
+ *
+ * El 26 y 27/8/2026, en producción, la IA escribió "Soy el asistente
+ * automatizado de SBK Motorcycles" en 34 de 68 y 26 de 151 mensajes PESE A
+ * que el SYSTEM_PROMPT ya se lo prohibía (sección 1, prompt.ts): la
+ * prohibición vivía solo en el guion, y el modelo la rompió igual. El 28/8,
+ * con el prompt reescrito, fue 0 de 702 — pero que el guion funcione hoy no
+ * es una garantía para siempre: otro modelo, o un cliente que insiste
+ * "¿eres un bot?", puede volver a sacarla. Esta función es la cerradura para
+ * ese día: corre DESPUÉS de que el guion ya tuvo su oportunidad.
+ *
+ * Se aplica UNA sola vez, en `runTurnPhases`, sobre el texto que ya pasó por
+ * la red de seguridad de devolución/queja y está a punto de salir por
+ * `sendAgentText`. `persona` y `automatizacion` bloquean igual (decisión del
+ * operador, 6/9/2026): a un cliente le da lo mismo que la IA se delate como
+ * automatización o que mienta siendo "Carlos" del mostrador.
+ *
+ * Si el borrador calza, se pide UNA reescritura con `generateText` — nunca
+ * con `ToolLoopAgent`: las herramientas ya corrieron en el tool loop de
+ * arriba, y volver a dárselas acá arriesga que el modelo invoque
+ * `escalarAAsesor` una segunda vez sobre una conversación que quizás ya
+ * escaló. `maxRetries: 0` por el mismo motivo que el tool loop: el
+ * reintento vive en el control de ritmo (rate-limit.ts), y el del SDK
+ * reintenta demasiado rápido para servir de algo.
+ *
+ * Si la reescritura no alcanza —sigue calzando, o `generateText` falla— ese
+ * texto NO sale nunca: se escala (si el turno no había escalado ya) con
+ * motivo "seguimiento" y se manda una de las dos despedidas fijas de arriba.
+ * El cliente nunca se queda en silencio, y el caso siempre termina en manos
+ * de una persona.
+ */
+async function applyIdentityGuard(params: {
+  supabase: SupabaseClient<Database>;
+  target: TurnTarget;
+  conversationId: string;
+  text: string;
+  outcome: EscalationOutcome;
+  turnTokens: TurnTokens;
+  businessHours: BusinessHours;
+}): Promise<{ text: string; turnTokens: TurnTokens; marca: "reescrita" | "bloqueada" | null }> {
+  const { supabase, target, conversationId, outcome, businessHours } = params;
+  const text = params.text;
+  let turnTokens = params.turnTokens;
+
+  const match = revealsIdentity(text);
+  if (!match) return { text, turnTokens, marca: null };
+
+  // Se recuerda el ÚLTIMO calce visto (el original, o el de la reescritura si
+  // llegó a intentarse): es el que va al registro cuando el texto termina
+  // bloqueado, para que el log sirva para diagnosticar cuál de las dos frases
+  // se coló.
+  let ultimoCalce = match;
+  let motivoFallo: "reescritura_fallida" | "sigue_calzando" = "reescritura_fallida";
+
+  try {
+    const { model, providerOptions } = getAgentModel("low");
+    const result = await generateText({
+      model,
+      // SYSTEM_PROMPT como prefijo EXACTO: es lo único que el proveedor
+      // cachea (ver prompt.ts). Un prefijo distinto por turno paga la entrada
+      // completa cada vez.
+      system: SYSTEM_PROMPT + "\n\n" + rewriteSuffix(match.fragmento),
+      messages: [{ role: "user", content: text }],
+      providerOptions,
+      maxRetries: 0,
+    });
+    turnTokens = addTokens(turnTokens, tokensFromUsage(result.usage));
+
+    const reescrito = (result.text ?? "").trim();
+    if (reescrito) {
+      const segundoCalce = revealsIdentity(reescrito);
+      if (!segundoCalce) {
+        log.warn("identidad_reescrita", {
+          conversationId,
+          categoria: match.categoria,
+          fragmento: match.fragmento,
+        });
+        return { text: reescrito, turnTokens, marca: "reescrita" };
+      }
+      ultimoCalce = segundoCalce;
+      motivoFallo = "sigue_calzando";
+    }
+    // Reescritura vacía: se trata igual que una reescritura fallida —no hay
+    // un segundo calce que reportar, así que `ultimoCalce` queda el original.
+  } catch {
+    // El proveedor puede estar caído o sin cuota: no es un fallo nuevo del
+    // turno, es la misma clase de error que ya contempla el tool loop de
+    // arriba. Acá no hay nada que reintentar (maxRetries: 0 fue deliberado):
+    // se trata como una reescritura que no alcanzó.
+  }
+
+  log.error("identidad_bloqueada", {
+    conversationId,
+    categoria: ultimoCalce.categoria,
+    fragmento: ultimoCalce.fragmento,
+    motivo: motivoFallo,
+  });
+
+  if (!outcome.escalated) {
+    // Mismo patrón que la red de seguridad de devolución/queja de arriba: si
+    // el modelo ya había escalado antes de redactar, no se escala una
+    // segunda vez — solo se reemplaza el texto.
+    const forced = await escalateConversation(supabase, {
+      conversationId,
+      contactId: target.contactId,
+      motivo: "seguimiento",
+      resumen: "La respuesta redactada se describía como automatizada y no pudo corregirse. Retomar el hilo.",
+      businessHours,
+    });
+    outcome.escalated = forced.escalated;
+    outcome.assignedAgentName = forced.assignedAgentName ?? undefined;
+    outcome.unassigned = forced.unassigned;
+    outcome.motivo = "seguimiento";
+  }
+
+  return {
+    text: outcome.unassigned ? DESPEDIDA_SIN_ASESOR : DESPEDIDA_CON_ASESOR,
+    turnTokens,
+    marca: "bloqueada",
+  };
+}
+
 /**
  * Ejecuta una respuesta predeterminada. No llama al modelo en ningún punto:
  * el texto sale tal cual está guardado. El modelo eligió CUÁL responder;
@@ -940,13 +1084,35 @@ async function runTurnPhases(
     // no la herramienta que el modelo invoca — sin este campo, el envío de
     // abajo no tendría cómo saber si la despedida se quedó sin nadie detrás.
     outcome.unassigned = forced.unassigned;
+    // Mismo patrón que `buildEscalateTool` en tools.ts (`outcome.motivo =
+    // motivo`): sin esta línea el `summary` final quedaba "Motivo:
+    // undefined." (hallazgo del 6/9/2026 al integrar la guarda de identidad).
+    outcome.motivo = intent;
     if (!text.trim()) {
       // Sin asesores no se promete lo que no va a pasar: nadie va a
       // contestar en un minuto si no hay nadie trabajando.
-      text = forced.unassigned
-        ? "Ya dejé tu caso registrado para que lo revise un asesor. En cuanto haya alguien disponible te escriben por acá."
-        : "Dame un momentico, ya te paso con un asesor para que te ayude con esto.";
+      text = forced.unassigned ? DESPEDIDA_SIN_ASESOR : DESPEDIDA_CON_ASESOR;
     }
+  }
+
+  // Guarda de identidad (6/9/2026): último control antes de hablarle al
+  // cliente, sobre el texto que ya sobrevivió a la red de seguridad de
+  // arriba. Solo actúa si de verdad hay algo que enviar — un turno que se
+  // quedó en silencio no tiene nada que reescribir ni que bloquear.
+  let identityMark: "reescrita" | "bloqueada" | null = null;
+  if (text.trim()) {
+    const guarded = await applyIdentityGuard({
+      supabase,
+      target,
+      conversationId,
+      text,
+      outcome,
+      turnTokens,
+      businessHours,
+    });
+    text = guarded.text;
+    turnTokens = guarded.turnTokens;
+    identityMark = guarded.marca;
   }
 
   if (text.trim()) {
@@ -979,12 +1145,20 @@ async function runTurnPhases(
     await supabase.from("conversations").update({ journey_stage: null, active_tool: null }).eq("id", conversationId);
   }
 
+  // Prefijo de la bitácora (6/9/2026): así un supervisor que lee `agent_turns`
+  // ve de un vistazo si este turno pasó por la guarda de identidad, sin tener
+  // que cruzar con los logs de `identidad_reescrita`/`identidad_bloqueada`.
+  const identityPrefix =
+    identityMark === "reescrita" ? "[identidad reescrita] " : identityMark === "bloqueada" ? "[identidad bloqueada] " : "";
+
   await logTurn(supabase, conversationId, {
     intent,
     action: outcome.escalated ? "escalated" : "answered",
-    summary: outcome.escalated
-      ? `Escalado a ${outcome.assignedAgentName ?? "(sin asesor disponible)"}. Motivo: ${outcome.motivo}.`
-      : text,
+    summary:
+      identityPrefix +
+      (outcome.escalated
+        ? `Escalado a ${outcome.assignedAgentName ?? "(sin asesor disponible)"}. Motivo: ${outcome.motivo}.`
+        : text),
     tokens: turnTokens,
     customerMessage,
   });

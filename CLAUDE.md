@@ -57,15 +57,20 @@ reconstruye la base desde cero con las migraciones y seeds del repo.
    el horario" quedó sin efecto: el horario ahora sí existe en el sistema.
    Fuera de horario la IA sigue vendiendo; cobros y cierre los hace un
    asesor, y al escalar por compra con la tienda cerrada nombra cuándo se
-   procesa la venta.
+   procesa la venta. Antes de mandar la redacción final, el texto pasa por
+   la guarda de identidad (`identity-guard.ts`): detecta si se describe como
+   automatizada o como una persona, intenta reescribirlo una vez y, si sigue
+   calzando, escala y manda en su lugar la despedida fija.
 4. El envío sale por `lib/whatsapp/meta-client.ts` (server-only). Canal no
    `connected` = envío simulado (demo sin gastar).
 
 **Frenos del agente**, todos independientes: lock por conversación con lease
 que se renueva solo, cupos globales en Redis, rate limit de peticiones hacia
 el proveedor (`rate-limit.ts`), tope de gasto diario, interruptor global,
-interruptor por herramienta, y la regla "si un humano ya escribió en el chat,
-la IA no entra"
+interruptor por herramienta, la guarda de identidad (`identity-guard.ts` +
+`applyIdentityGuard` en `agent.ts`): ningún texto que describa a la IA como
+automatizada o como una persona le llega al cliente, y la regla "si un
+humano ya escribió en el chat, la IA no entra"
 (`human-handled.ts`). `turn-target.ts` congela a quién se le habla;
 `turn-delivery.ts` impide el doble envío en reintentos.
 
@@ -244,6 +249,18 @@ dejar rastro es lo que hacía desaparecer leads.
   handler puede ser perfectamente `authenticated`:
   `src/app/api/agent/backlog/route.ts:50` lo es, y por eso `agent_can_run` no
   se pudo cerrar a `service_role`.
+- **La guarda de identidad NO puede prohibir `automátic*`/`digital`/`sistema`
+  sueltos** (decisión del 6/9/2026). En `products` hay 25 filas como
+  `AUTOMATICO HORSE`, `AUTOMATICO BERA R1 AUTOASIA` o `TACOMETRO DIGITAL
+  BERA SBR`, y los asesores escriben "el sistema lo hace automáticamente"
+  (Cashea): una guarda que bloqueara esos adjetivos sueltos dejaría a la IA
+  sin poder cotizar el automático de una Horse. `identity-guard.ts` ancla sus
+  patrones en la AUTORREFERENCIA ("soy un…", "asistente automatizado",
+  "respuesta automática", "no soy una persona") y en términos sin otro uso en
+  el negocio (`bot`, `chatbot`, `inteligencia artificial`, `IA` en mayúsculas
+  evaluada sobre el texto original —así `guía`/`GUIA`/`AUTOASIA` no
+  calzan—, `ChatGPT`, `OpenAI`, `GPT`, `Gemini`, `modelo de lenguaje`), nunca
+  en el adjetivo suelto.
 
 ---
 
