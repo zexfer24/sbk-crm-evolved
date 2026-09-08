@@ -1144,6 +1144,7 @@ export type Database = {
           search_text: string | null
           stock_quantity: number
           updated_at: string
+          weight_kg: number | null
         }
         Insert: {
           brand?: string | null
@@ -1156,6 +1157,7 @@ export type Database = {
           price: number
           stock_quantity?: number
           updated_at?: string
+          weight_kg?: number | null
         }
         Update: {
           brand?: string | null
@@ -1168,6 +1170,7 @@ export type Database = {
           price?: number
           stock_quantity?: number
           updated_at?: string
+          weight_kg?: number | null
         }
         Relationships: []
       }

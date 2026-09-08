@@ -25,7 +25,7 @@ import "@/components/crm.css";
 import "@/components/clientes/clientes.css";
 import "@/components/inventario/inventario.css";
 
-const FILTERS: InventoryFilter[] = ["todos", "agotados", "bajo-stock", "inactivos"];
+const FILTERS: InventoryFilter[] = ["todos", "agotados", "bajo-stock", "inactivos", "sin-peso"];
 const SORTS: InventorySort[] = ["nombre", "stock", "precio"];
 
 /**
@@ -67,6 +67,10 @@ const EMPTY_BY_FILTER: Record<InventoryFilter, { title: string; hint: string }> 
   inactivos: {
     title: "No hay repuestos desactivados",
     hint: "Todo el catálogo está visible para la IA.",
+  },
+  "sin-peso": {
+    title: "Todo el catálogo activo tiene peso cargado",
+    hint: "Cashea ya puede calcular el envío gratis con lo que hay.",
   },
 };
 
@@ -160,6 +164,11 @@ export function InventarioView({
                 <span className="lm-eyebrow">Bajo stock</span>
                 <span className="lm-num cli-stat-value">{totals.bajos}</span>
                 <span className="cli-stat-note">Quedan pocas unidades.</span>
+              </div>
+              <div className="cli-stat">
+                <span className="lm-eyebrow">Sin peso</span>
+                <span className="lm-num cli-stat-value">{totals.withoutWeight}</span>
+                <span className="cli-stat-note">Cashea lo exige para el envío gratis.</span>
               </div>
               {/* La antigüedad del catálogo, por la misma razón que la fecha de
                   la tasa: la sincronización vive en una aplicación aparte y

@@ -43,6 +43,7 @@ const BUJIA: Product = {
   isActive: true,
   updatedAt: "2026-08-22T10:00:00.000Z",
   compatibility: [],
+  weightKg: null,
 };
 
 const fetchConversationQuotes = vi.fn().mockResolvedValue(QUOTES);

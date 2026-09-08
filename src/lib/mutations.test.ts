@@ -9,6 +9,7 @@ import {
   setAiEnabled,
   unassign,
   unpinConversation,
+  updateProductWeight,
   type SaleLineItem,
 } from "@/lib/mutations";
 
@@ -235,5 +236,58 @@ describe("pinConversation / unpinConversation", () => {
     await unpinConversation(client, "agent-1", "conv-9");
 
     expect(calls).toEqual([{ op: "delete", agentId: "agent-1", conversationId: "conv-9" }]);
+  });
+});
+
+/**
+ * T4 del plan "Seis frentes del buzón" (8/9/2026): peso en kilos para
+ * Cashea. Igual que `updateProductPrice`, el UPDATE lleva la columna y
+ * `updated_at` — nada más — y `null` es un guardado legítimo (vuelve a dejar
+ * el repuesto "sin cargar").
+ */
+describe("updateProductWeight", () => {
+  function createFakeProductsSupabase() {
+    const calls: { table: string; payload: unknown; productId: string }[] = [];
+    const client = {
+      from(table: string) {
+        if (table !== "products") throw new Error(`Fake Supabase: tabla no soportada en este test: ${table}`);
+        return {
+          update: (payload: unknown) => ({
+            eq: async (_col: string, productId: string) => {
+              calls.push({ table, payload, productId });
+              return { error: null };
+            },
+          }),
+        };
+      },
+    };
+    return { client: client as unknown as SupabaseClient, calls };
+  }
+
+  it("manda weight_kg y updated_at", async () => {
+    const { client, calls } = createFakeProductsSupabase();
+
+    await updateProductWeight(client, "prod-1", 0.25);
+
+    expect(calls).toHaveLength(1);
+    expect(calls[0].productId).toBe("prod-1");
+    expect(calls[0].payload).toMatchObject({ weight_kg: 0.25 });
+    expect(calls[0].payload).toHaveProperty("updated_at");
+  });
+
+  it("guardar null vuelve a dejar el repuesto sin peso cargado", async () => {
+    const { client, calls } = createFakeProductsSupabase();
+
+    await updateProductWeight(client, "prod-1", null);
+
+    expect(calls[0].payload).toMatchObject({ weight_kg: null });
+  });
+
+  it("propaga el error de la base en vez de tragárselo", async () => {
+    const client = {
+      from: () => ({ update: () => ({ eq: async () => ({ error: new Error("no se pudo guardar") }) }) }),
+    } as unknown as SupabaseClient;
+
+    await expect(updateProductWeight(client, "prod-1", 1)).rejects.toThrow(/no se pudo guardar/);
   });
 });
