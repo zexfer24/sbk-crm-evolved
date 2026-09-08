@@ -1,14 +1,17 @@
 import { describe, expect, it } from "vitest";
 import type { SupabaseClient } from "@supabase/supabase-js";
-import type { Agent } from "@/lib/types";
+import type { Agent, Contact, Sale } from "@/lib/types";
 import {
   closeSaleWithContactInfo,
+  createInvoiceForSale,
+  issueInvoice,
   markConversationRead,
   markConversationUnread,
   pinConversation,
   setAiEnabled,
   unassign,
   unpinConversation,
+  voidInvoice,
   type SaleLineItem,
 } from "@/lib/mutations";
 
@@ -235,5 +238,189 @@ describe("pinConversation / unpinConversation", () => {
     await unpinConversation(client, "agent-1", "conv-9");
 
     expect(calls).toEqual([{ op: "delete", agentId: "agent-1", conversationId: "conv-9" }]);
+  });
+});
+
+/**
+ * T5, plan "Seis frentes del buzón" (8/9/2026): las bases de la factura.
+ * `createInvoiceForSale` no arma el snapshot ella misma —eso lo prueba
+ * invoices.test.ts (`buildInvoiceDraft`)— acá se fija que lea `order_id` de
+ * la conversación, falle claro sin orden, y que emitir/anular actualicen
+ * exactamente las columnas que les tocan.
+ */
+describe("createInvoiceForSale / issueInvoice / voidInvoice", () => {
+  const CONTACT: Contact = {
+    id: "contact-1",
+    phoneNumber: "+584121234567",
+    displayName: "Cliente Demo",
+    profileName: "Demo WA",
+    avatarUrl: null,
+    tags: [],
+    cedulaType: "V",
+    cedulaNumber: "12345678",
+    state: "Barinas",
+    city: "Barinas",
+    address: "Calle Falsa 123",
+  };
+
+  const SALE: Sale = {
+    id: "conv-1",
+    contact: CONTACT,
+    dealStatus: "won",
+    dealClosedAt: "2026-09-08T12:00:00.000Z",
+    dealPaymentProofUrl: null,
+    dealAmount: 83,
+    dealCurrency: "USD",
+    dealVerified: false,
+    dealVerifiedAt: null,
+    dealVerifiedBy: null,
+    dealPaymentMethod: "pago_movil",
+    dealClosedBy: null,
+    createdAt: "2026-09-08T11:00:00.000Z",
+  };
+
+  const RAW_INVOICE_ROW = {
+    id: "inv-1",
+    number: 1,
+    conversation_id: "conv-1",
+    order_id: "order-1",
+    contact_id: "contact-1",
+    customer: { displayName: "Cliente Demo", phoneNumber: "+584121234567", cedulaType: "V", cedulaNumber: "12345678", state: "Barinas", city: "Barinas", address: "Calle Falsa 123" },
+    items: [{ description: "Carburador PZ27", quantity: 1, unitPrice: 18, amount: 18 }],
+    subtotal: 18,
+    tax_rate: 0,
+    tax_amount: 0,
+    total: 18,
+    currency: "USD",
+    bcv_rate: 40,
+    status: "draft",
+    issued_at: null,
+    voided_at: null,
+    notes: null,
+    created_at: "2026-09-08T12:00:00.000Z",
+    updated_at: "2026-09-08T12:00:00.000Z",
+    issued_by: null,
+  };
+
+  function createFakeInvoiceSupabase(options: { orderId?: string | null } = {}) {
+    const calls: { table: string; op: string; payload?: unknown; eq?: [string, unknown][] }[] = [];
+    const orderId = options.orderId === undefined ? "order-1" : options.orderId;
+
+    const client = {
+      from(table: string) {
+        if (table === "conversations") {
+          return {
+            select: () => ({
+              eq: (col: string, value: unknown) => ({
+                maybeSingle: async () => {
+                  calls.push({ table, op: "select", eq: [[col, value]] });
+                  return { data: { order_id: orderId }, error: null };
+                },
+              }),
+            }),
+          };
+        }
+        if (table === "order_items") {
+          return {
+            select: () => ({
+              eq: (col: string, value: unknown) => {
+                calls.push({ table, op: "select", eq: [[col, value]] });
+                return Promise.resolve({
+                  data: [{ description: "Carburador PZ27", quantity: 1, unit_price: "18.00" }],
+                  error: null,
+                });
+              },
+            }),
+          };
+        }
+        if (table === "invoices") {
+          return {
+            insert: (payload: unknown) => {
+              calls.push({ table, op: "insert", payload });
+              return {
+                select: () => ({
+                  single: async () => ({ data: RAW_INVOICE_ROW, error: null }),
+                }),
+              };
+            },
+            update: (payload: unknown) => {
+              calls.push({ table, op: "update", payload });
+              return {
+                eq: () => ({
+                  select: () => ({
+                    single: async () => ({
+                      data: { ...RAW_INVOICE_ROW, ...(payload as Record<string, unknown>) },
+                      error: null,
+                    }),
+                  }),
+                }),
+              };
+            },
+          };
+        }
+        if (table === "messages") {
+          return { insert: async (payload: unknown) => { calls.push({ table, op: "insert", payload }); return { error: null }; } };
+        }
+        throw new Error(`Fake Supabase: tabla no soportada en este test: ${table}`);
+      },
+    };
+
+    return { client: client as unknown as SupabaseClient, calls };
+  }
+
+  it("crea la factura con el snapshot del cliente y de los renglones de la orden", async () => {
+    const { client, calls } = createFakeInvoiceSupabase();
+
+    const invoice = await createInvoiceForSale(client, SALE, AGENT, 40);
+
+    const invoiceInsert = calls.find((c) => c.table === "invoices" && c.op === "insert");
+    expect(invoiceInsert?.payload).toMatchObject({
+      conversation_id: "conv-1",
+      order_id: "order-1",
+      contact_id: "contact-1",
+      subtotal: 18,
+      total: 18,
+      bcv_rate: 40,
+    });
+    expect(invoice.number).toBe(1);
+    expect(invoice.status).toBe("draft");
+
+    // Deja rastro en la conversación, como el resto de mutaciones de venta.
+    const systemEvent = calls.find((c) => c.table === "messages" && c.op === "insert");
+    expect((systemEvent?.payload as { content: string }).content).toContain("generó la factura SBK-000001");
+  });
+
+  it("sin orden registrada, falla con el mensaje claro y no llega a insertar nada", async () => {
+    const { client, calls } = createFakeInvoiceSupabase({ orderId: null });
+
+    await expect(createInvoiceForSale(client, SALE, AGENT, 40)).rejects.toThrow(
+      "Esta venta no tiene orden registrada"
+    );
+    expect(calls.some((c) => c.table === "invoices")).toBe(false);
+  });
+
+  it("issueInvoice pasa a issued con quién y cuándo, y deja rastro en la conversación", async () => {
+    const { client, calls } = createFakeInvoiceSupabase();
+
+    const invoice = await issueInvoice(client, "inv-1", AGENT);
+
+    const update = calls.find((c) => c.table === "invoices" && c.op === "update");
+    expect(update?.payload).toMatchObject({ status: "issued", issued_by: "agent-1" });
+    expect((update?.payload as { issued_at: string }).issued_at).toEqual(expect.any(String));
+    expect(invoice.status).toBe("issued");
+
+    const systemEvent = calls.find((c) => c.table === "messages" && c.op === "insert");
+    expect((systemEvent?.payload as { content: string }).content).toContain("emitió la factura SBK-000001");
+  });
+
+  it("voidInvoice pasa a void sin pedir agente", async () => {
+    const { client, calls } = createFakeInvoiceSupabase();
+
+    const invoice = await voidInvoice(client, "inv-1");
+
+    const update = calls.find((c) => c.table === "invoices" && c.op === "update");
+    expect(update?.payload).toMatchObject({ status: "void" });
+    expect((update?.payload as { voided_at: string }).voided_at).toEqual(expect.any(String));
+    expect(invoice.status).toBe("void");
   });
 });
