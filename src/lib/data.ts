@@ -813,6 +813,28 @@ export interface FetchConversationsOptions {
    * de los otros cuatro cortes queda exactamente igual.
    */
   embedLatestHandoff?: boolean;
+  /**
+   * "Habló hoy" (T1 del plan "Seis frentes del buzón", 8/9/2026): solo
+   * conversaciones con `last_message_at` desde este instante ISO en
+   * adelante, o SIN `last_message_at` todavía pero `created_at` desde ese
+   * instante — T6 (misma corrida) crea contactos y su conversación desde la
+   * bandeja antes de que exista el primer mensaje, así que exigir solo
+   * `last_message_at` las dejaría fuera de "hoy" el mismo día en que se
+   * crean. `undefined` (todo llamador antes de esta tarea) no agrega ninguna
+   * condición: la bandeja abre en la medianoche de `America/Caracas`
+   * calculada por `useInboxDay` (`src/lib/use-inbox-day.ts`), y el
+   * interruptor "Ver todo" del sidebar lo manda `undefined` a propósito.
+   *
+   * Viaja como un grupo más de `orGroups` (igual que `unreadOnly`/
+   * `pendingWindow: "stale"`/`escalatedOnly`/el cursor), nunca como un
+   * `.or()` propio: dos `.or()` encadenados en la misma consulta no se
+   * combinan de forma confiable en PostgREST (ver el comentario de
+   * `orExpression` en `src/lib/ai/pgrst.ts`), así que este corte tiene que
+   * entrar a la MISMA disyunción combinada que ya arma `fetchConversationRows`
+   * para que "hoy" quede en AND con el resto de los cortes (`unreadOnly`,
+   * el cursor de continuación, etc.) en vez de reemplazarlos.
+   */
+  since?: string;
 }
 
 /**
@@ -850,6 +872,7 @@ async function fetchConversationRows<Raw extends CursorableRow>(
     escalatedOnly,
     embedLatestHandoff,
     tagId,
+    since,
   }: FetchConversationsOptions
 ): Promise<Raw[]> {
   // `tagId` se resuelve primero, contra `contact_tags`, y de ahí en más viaja
@@ -980,6 +1003,16 @@ async function fetchConversationRows<Raw extends CursorableRow>(
       ]);
     }
     if (unreadOnly) orGroups.push(["unread_count.gt.0", "manually_unread.is.true"]);
+    if (since) {
+      // Ver el comentario de `since` en `FetchConversationsOptions`: sin
+      // `last_message_at` todavía (T6 crea la conversación antes del primer
+      // mensaje), cae a `created_at`.
+      const sinceLiteral = pgrstLiteral(since);
+      orGroups.push([
+        `last_message_at.gte.${sinceLiteral}`,
+        `and(last_message_at.is.null,created_at.gte.${sinceLiteral})`,
+      ]);
+    }
     if (escalatedOnly) {
       orGroups.push([
         "last_reply_sender.neq.agent",
@@ -1126,11 +1159,14 @@ interface RawUnassignedCandidate {
  * mecanismo que ya usan "Pendientes"/"No leídas"/"Mías") y ese archivo no
  * está entre los que T1.6 puede tocar — ver el reporte de la tarea.
  */
-async function fetchUnassignedConversationIds(supabase: SupabaseClient): Promise<string[]> {
+async function fetchUnassignedConversationIds(
+  supabase: SupabaseClient,
+  since?: string
+): Promise<string[]> {
   const rows = await fetchConversationRows<RawUnassignedCandidate>(
     supabase,
     "id, last_message_at, awaiting_reply, conversation_handoffs(to_kind, created_at)",
-    { awaitingReplyOnly: true, embedLatestHandoff: true }
+    { awaitingReplyOnly: true, embedLatestHandoff: true, since }
   );
 
   return rows
@@ -1158,15 +1194,18 @@ async function fetchUnassignedConversationIds(supabase: SupabaseClient): Promise
  */
 export async function fetchUnassignedConversations(
   supabase: SupabaseClient,
-  { tagId }: { tagId?: string } = {}
+  { tagId, since }: { tagId?: string; since?: string } = {}
 ): Promise<ConversationSummary[]> {
-  const ids = await fetchUnassignedConversationIds(supabase);
+  const ids = await fetchUnassignedConversationIds(supabase, since);
   // La etiqueta baja hasta la consulta y no se filtra después en el
   // componente: son dos cortes de base (los ids sin dueño y los contactos con
   // la etiqueta) y `fetchConversations` ya sabe combinarlos. Filtrarlo arriba
   // significaría traerse el conjunto entero de "Sin dueño" para descartar la
   // mayor parte en el navegador, y dejaría circulando por el estado filas que
-  // no se van a pintar.
+  // no se van a pintar. `since` NO se repite en esta segunda consulta: los
+  // `ids` que trajo `fetchUnassignedConversationIds` ya salieron del mismo
+  // corte de "hoy" — pedirlo de nuevo acá sería filtrar dos veces el mismo
+  // conjunto por el mismo criterio.
   return fetchConversations(supabase, { ids, tagId });
 }
 
@@ -1287,40 +1326,79 @@ export interface InboxCounts {
 export async function fetchInboxCounts(
   supabase: SupabaseClient,
   viewerId: string,
-  now: number = Date.now()
+  now: number = Date.now(),
+  { since }: { since?: string } = {}
 ): Promise<InboxCounts> {
   const cutoff = freeformWindowCutoff(now);
   const count = () =>
     supabase.from("conversations").select("id", { count: "exact", head: true });
 
+  // "Habló hoy" (T1, 8/9/2026): el mismo grupo que arma `fetchConversationRows`
+  // para `since` en `data.ts` — se combina con el `.or()` propio de cada
+  // conteo (cuando lo tiene) en una sola llamada vía `orExpression`, nunca
+  // como un segundo `.or()` encadenado (ver el comentario de `since` en
+  // `FetchConversationsOptions`: PostgREST no combina de forma confiable dos
+  // `.or()` en la misma consulta). `null` con "Ver todo" (`since` sin
+  // valor): los seis conteos vuelven a mirar toda la base, igual que antes
+  // de esta tarea — por eso cada consulta de abajo solo agrega `.or()`
+  // cuando `sinceGroup` o su propio grupo existen, nunca incondicional.
+  const sinceGroup = since
+    ? [
+        `last_message_at.gte.${pgrstLiteral(since)}`,
+        `and(last_message_at.is.null,created_at.gte.${pgrstLiteral(since)})`,
+      ]
+    : null;
+
+  let pendingQuery = count().eq("awaiting_reply", true).neq("status", "closed");
+  if (sinceGroup) pendingQuery = pendingQuery.or(orExpression([sinceGroup]));
+
+  // Mismo predicado de "Pendientes" más el corte de ventana invertido, con
+  // el mismo criterio de "fallar cerrado" que `withinFreeformWindow`: lo
+  // sin fecha de cliente también cuenta como fuera de la ventana. En la
+  // práctica `awaiting_reply` ya garantiza la fecha no nula (columna
+  // generada), pero el filtro no depende de esa garantía.
+  const pendingStaleGroups: string[][] = [
+    [`last_customer_message_at.lte.${cutoff}`, "last_customer_message_at.is.null"],
+  ];
+  if (sinceGroup) pendingStaleGroups.push(sinceGroup);
+  const pendingStaleQuery = count()
+    .eq("awaiting_reply", true)
+    .neq("status", "closed")
+    .or(orExpression(pendingStaleGroups));
+
+  let mineQuery = count().eq("assigned_agent_id", viewerId);
+  if (sinceGroup) mineQuery = mineQuery.or(orExpression([sinceGroup]));
+
+  const unreadGroups: string[][] = [["unread_count.gt.0", "manually_unread.is.true"]];
+  if (sinceGroup) unreadGroups.push(sinceGroup);
+  // Cerca del final del Promise.all para no correr los índices que ya usan
+  // los tests de "pending"/"pendingStale"/"mine".
+  const unreadQuery = count().or(orExpression(unreadGroups));
+
+  // "Escaladas" (T1.5, 5/9/2026), después de "unread" por el mismo motivo:
+  // mismo predicado que `escalatedOnly` (`FetchConversationsOptions`) y que
+  // `matchesFilter` (inbox-filters.ts) — ver el comentario de `escalated`
+  // en `InboxCounts` para el porqué del `or` final.
+  const escalatedGroups: string[][] = [
+    ["last_reply_sender.neq.agent", "last_reply_sender.is.null", "awaiting_reply.is.true"],
+  ];
+  if (sinceGroup) escalatedGroups.push(sinceGroup);
+  const escalatedQuery = count()
+    .eq("journey_stage", "assigned")
+    .eq("ai_enabled", false)
+    .neq("status", "closed")
+    .or(orExpression(escalatedGroups));
+
   const [pending, pendingStale, mine, unread, escalated, sinDueno] = await Promise.all([
-    count().eq("awaiting_reply", true).neq("status", "closed"),
-    // Mismo predicado de "Pendientes" más el corte de ventana invertido, con
-    // el mismo criterio de "fallar cerrado" que `withinFreeformWindow`: lo
-    // sin fecha de cliente también cuenta como fuera de la ventana. En la
-    // práctica `awaiting_reply` ya garantiza la fecha no nula (columna
-    // generada), pero el filtro no depende de esa garantía.
-    count()
-      .eq("awaiting_reply", true)
-      .neq("status", "closed")
-      .or(`last_customer_message_at.lte.${cutoff},last_customer_message_at.is.null`),
-    count().eq("assigned_agent_id", viewerId),
-    // Al final del Promise.all para no correr los índices que ya usan los
-    // tests de "pending"/"pendingStale"/"mine".
-    count().or("unread_count.gt.0,manually_unread.is.true"),
-    // "Escaladas" (T1.5, 5/9/2026), después de "unread" por el mismo motivo:
-    // mismo predicado que `escalatedOnly` (`FetchConversationsOptions`) y que
-    // `matchesFilter` (inbox-filters.ts) — ver el comentario de `escalated`
-    // en `InboxCounts` para el porqué del `or` final.
-    count()
-      .eq("journey_stage", "assigned")
-      .eq("ai_enabled", false)
-      .neq("status", "closed")
-      .or("last_reply_sender.neq.agent,last_reply_sender.is.null,awaiting_reply.is.true"),
-    // Al final por el mismo motivo que `unread`: no compite con los índices
+    pendingQuery,
+    pendingStaleQuery,
+    mineQuery,
+    unreadQuery,
+    escalatedQuery,
+    // Al final por el mismo motivo que "unread": no compite con los índices
     // que las otras cuatro acaban de usar. Devuelve ids, no un conteo — ver
     // el comentario de `unassigned` en InboxCounts.
-    fetchUnassignedConversationIds(supabase),
+    fetchUnassignedConversationIds(supabase, since),
   ]);
 
   const first = [pending, pendingStale, mine, unread, escalated].find((r) => r.error);

@@ -73,6 +73,13 @@ function summaryRow(id: string) {
 type SummaryRow = ReturnType<typeof summaryRow>;
 
 function createFakeSupabase(candidates: CandidateRow[], summaries: Map<string, SummaryRow>) {
+  // T1 (8/9/2026): capturado para el test de `since` de más abajo. No filtra
+  // nada acá a propósito, mismo criterio que `.eq()` — este archivo prueba
+  // el filtrado EN MEMORIA (`isUnassignedLead`), no que el fake sepa
+  // replicar PostgREST; lo único que hace falta verificar de `since` es que
+  // LLEGA a la consulta de candidatos, combinado en el mismo `.or()`.
+  const orClauses: string[] = [];
+
   function builder(isCandidateQuery: boolean, idFilter: string[] | null) {
     const api = {
       // `.order()`/`.limit()` (con o sin `{foreignTable}`) no hacen falta acá:
@@ -89,6 +96,10 @@ function createFakeSupabase(candidates: CandidateRow[], summaries: Map<string, S
       // `fetchUnassignedConversations` filtra bien EN MEMORIA sobre lo que
       // la base le entrega, no que la base sepa filtrar `.eq()`.
       eq() {
+        return api;
+      },
+      or(clause: string) {
+        orClauses.push(clause);
         return api;
       },
       in(column: string, values: string[]) {
@@ -120,7 +131,7 @@ function createFakeSupabase(candidates: CandidateRow[], summaries: Map<string, S
     },
   };
 
-  return client as unknown as SupabaseClient;
+  return { client: client as unknown as SupabaseClient, orClauses };
 }
 
 describe("fetchUnassignedConversations", () => {
@@ -128,7 +139,7 @@ describe("fetchUnassignedConversations", () => {
     const candidates = [candidate("conv-a", true, [{ to_kind: "unassigned", created_at: "2026-08-30T10:00:00Z" }])];
     const summaries = new Map([["conv-a", summaryRow("conv-a")]]);
 
-    const result = await fetchUnassignedConversations(createFakeSupabase(candidates, summaries));
+    const result = await fetchUnassignedConversations(createFakeSupabase(candidates, summaries).client);
 
     expect(result.map((c) => c.id)).toEqual(["conv-a"]);
   });
@@ -145,7 +156,7 @@ describe("fetchUnassignedConversations", () => {
       ["conv-human", summaryRow("conv-human")],
     ]);
 
-    const result = await fetchUnassignedConversations(createFakeSupabase(candidates, summaries));
+    const result = await fetchUnassignedConversations(createFakeSupabase(candidates, summaries).client);
 
     expect(result).toEqual([]);
   });
@@ -156,7 +167,7 @@ describe("fetchUnassignedConversations", () => {
     ];
     const summaries = new Map([["conv-contestada", summaryRow("conv-contestada")]]);
 
-    const result = await fetchUnassignedConversations(createFakeSupabase(candidates, summaries));
+    const result = await fetchUnassignedConversations(createFakeSupabase(candidates, summaries).client);
 
     expect(result).toEqual([]);
   });
@@ -165,7 +176,7 @@ describe("fetchUnassignedConversations", () => {
     const candidates = [candidate("conv-sin-bitacora", true, [])];
     const summaries = new Map([["conv-sin-bitacora", summaryRow("conv-sin-bitacora")]]);
 
-    const result = await fetchUnassignedConversations(createFakeSupabase(candidates, summaries));
+    const result = await fetchUnassignedConversations(createFakeSupabase(candidates, summaries).client);
 
     expect(result).toEqual([]);
   });
@@ -182,8 +193,47 @@ describe("fetchUnassignedConversations", () => {
       ["conv-c", summaryRow("conv-c")],
     ]);
 
-    const result = await fetchUnassignedConversations(createFakeSupabase(candidates, summaries));
+    const result = await fetchUnassignedConversations(createFakeSupabase(candidates, summaries).client);
 
     expect(result.map((c) => c.id).sort()).toEqual(["conv-a", "conv-c"]);
+  });
+});
+
+/**
+ * T1 del plan "Seis frentes del buzón" (8/9/2026): "Sin dueño" también corta
+ * por "hoy" — `fetchInboxCounts` lo cuenta con esta misma función (ver
+ * `sinDueno` en `fetchInboxCounts`, data.ts). `since` viaja hasta la
+ * consulta de CANDIDATOS (la que trae `awaiting_reply` embebida con la
+ * bitácora), combinado en el MISMO `.or()` que arma `fetchConversationRows`
+ * — nunca como una segunda llamada a `.or()`, que PostgREST no combina de
+ * forma confiable (ver el comentario de `since` en `FetchConversationsOptions`,
+ * data.ts).
+ */
+describe("fetchUnassignedConversations — since", () => {
+  it('pasa "since" a la consulta de candidatos', async () => {
+    const candidates = [
+      candidate("conv-a", true, [{ to_kind: "unassigned", created_at: "2026-09-08T10:00:00Z" }]),
+    ];
+    const summaries = new Map([["conv-a", summaryRow("conv-a")]]);
+    const { client, orClauses } = createFakeSupabase(candidates, summaries);
+
+    await fetchUnassignedConversations(client, { since: "2026-09-08T04:00:00.000Z" });
+
+    expect(orClauses).toEqual([
+      'last_message_at.gte."2026-09-08T04:00:00.000Z",' +
+        'and(last_message_at.is.null,created_at.gte."2026-09-08T04:00:00.000Z")',
+    ]);
+  });
+
+  it('sin "since" (interruptor "Ver todo"), no agrega ningún .or() a la consulta de candidatos', async () => {
+    const candidates = [
+      candidate("conv-a", true, [{ to_kind: "unassigned", created_at: "2026-09-08T10:00:00Z" }]),
+    ];
+    const summaries = new Map([["conv-a", summaryRow("conv-a")]]);
+    const { client, orClauses } = createFakeSupabase(candidates, summaries);
+
+    await fetchUnassignedConversations(client);
+
+    expect(orClauses).toEqual([]);
   });
 });
