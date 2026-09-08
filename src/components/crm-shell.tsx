@@ -6,12 +6,14 @@ import type {
   AgentSettings,
   Conversation,
   ConversationSummary,
+  InboxDayScope,
   Message,
   Note,
   QuickReply,
   Tag,
   WhatsappTemplate,
 } from "@/lib/types";
+import { useInboxDay } from "@/lib/use-inbox-day";
 import { createClient } from "@/lib/supabase/client";
 import {
   CHAT_MESSAGES_WINDOW,
@@ -133,6 +135,17 @@ interface CrmShellProps {
  * por efecto y este helper se invoca una vez por canal: no hace falta
  * compartir el estado entre canales distintos.
  */
+/**
+ * Bajo su propia llave, por visor (T1, 8/9/2026) — distinta de
+ * `sbk:inbox:{agentId}`, que `inbox-sidebar.tsx` usa para `filter`/`sort`:
+ * ese es estado propio del sidebar, y el scope vive en el shell (ver el
+ * comentario de `dayScope` más abajo) porque también gobiernan la cabecera
+ * de "Todos" y los seis contadores.
+ */
+function dayScopeStorageKey(agentId: string): string {
+  return `sbk.inbox.scope.${agentId}`;
+}
+
 function realtimeStatusHandler(channelName: string, onResync: () => void) {
   let previousStatus: RealtimeStatus | null = null;
   return (status: RealtimeStatus) => {
@@ -166,6 +179,63 @@ export function CrmShell({
   const [inboxCounts, setInboxCounts] = useState<InboxCounts>(initialInboxCounts);
 
   /**
+   * "Habló hoy" (T1 del plan "Seis frentes del buzón", 8/9/2026): la bandeja
+   * abre mostrando solo lo que se movió HOY —cliente, asesor o IA,
+   * cualquiera de los tres mueve `last_message_at`— y el interruptor "Ver
+   * todo" (el botón vive en `InboxSidebar`, el estado acá) lo apaga.
+   *
+   * Vive en el shell y no en `InboxSidebar` (que sí guarda `filter`/`sort`
+   * por su cuenta, bajo `sbk:inbox:{agentId}`) porque el corte también
+   * gobierna dos consultas que solo el shell hace: la cabecera de "Todos"
+   * (`fetchInboxHead`, más abajo) y los seis contadores (`fetchInboxCounts`).
+   * Arranca en `"today"` porque `app/inbox/page.tsx` (el servidor, sin
+   * `localStorage`) siembra `initialConversations`/`initialInboxCounts` con
+   * ESE corte — el primer render del cliente tiene que coincidir, o
+   * hidratar con "Ver todo" pisaría en silencio lo que el servidor ya
+   * resolvió. Si el visor tenía "Ver todo" guardado, el efecto de abajo lo
+   * restaura después de montar y el de `dayStart` (junto a
+   * `useLiveConversations`, más abajo) hace el refetch.
+   */
+  const [dayScope, setDayScope] = useState<InboxDayScope>("today");
+
+  useEffect(() => {
+    try {
+      const stored = localStorage.getItem(dayScopeStorageKey(currentAgent.id));
+      if (stored === "today" || stored === "all") {
+        // Sincroniza React con lo que ya vive en localStorage al montar —
+        // mismo patrón que la preferencia de píldora/orden de
+        // `inbox-sidebar.tsx`: no hay otra forma de traer un valor externo
+        // adentro salvo un setState directo acá.
+        // eslint-disable-next-line react-hooks/set-state-in-effect
+        setDayScope(stored);
+      }
+    } catch {
+      // Modo incógnito o almacenamiento bloqueado: se queda en "today", el
+      // corte con el que el servidor ya sembró todo.
+    }
+  }, [currentAgent.id]);
+
+  const handleDayScopeChange = useCallback(
+    (scope: InboxDayScope) => {
+      setDayScope(scope);
+      try {
+        localStorage.setItem(dayScopeStorageKey(currentAgent.id), scope);
+      } catch {
+        // Sin almacenamiento, la preferencia vale solo para esta pestaña.
+      }
+    },
+    [currentAgent.id]
+  );
+
+  /**
+   * ÚNICA fuente del corte (`useInboxDay`, `src/lib/use-inbox-day.ts`): el
+   * mismo string viaja a `fetchInboxHead`/`fetchInboxCounts`/`allPager` de
+   * acá abajo y a `InboxSidebar` (que lo repite en sus propias consultas y
+   * en `applyInboxFilters`). `null` con "Ver todo" — nada que cortar.
+   */
+  const dayStart = useInboxDay(dayScope);
+
+  /**
    * Sube cada vez que `fetchInboxHead` trae una cabecera fresca de la base
    * (disparado por realtime, por la pasada de fondo, o por un refresco
    * manual tras una mutación fallida). Es el pulso que `InboxSidebar` usa
@@ -195,15 +265,16 @@ export function CrmShell({
    */
   const fetchInboxHead = useCallback(
     async (current: ConversationSummary[]) => {
+      const since = dayStart ?? undefined;
       const [head, counts] = await Promise.all([
-        fetchConversations(supabase, { limit: INBOX_PAGE_SIZE }),
-        fetchInboxCounts(supabase, currentAgent.id),
+        fetchConversations(supabase, { limit: INBOX_PAGE_SIZE, since }),
+        fetchInboxCounts(supabase, currentAgent.id, undefined, { since }),
       ]);
       setInboxCounts(counts);
       setLivePulse((p) => p + 1);
       return mergeById(head, current);
     },
-    [supabase, currentAgent.id]
+    [supabase, currentAgent.id, dayStart]
   );
 
   const fetchInboxRow = useCallback(
@@ -222,12 +293,14 @@ export function CrmShell({
    */
   const refreshInboxCounts = useCallback(async () => {
     try {
-      setInboxCounts(await fetchInboxCounts(supabase, currentAgent.id));
+      setInboxCounts(
+        await fetchInboxCounts(supabase, currentAgent.id, undefined, { since: dayStart ?? undefined })
+      );
     } catch {
       // Los contadores se quedan con el valor anterior; el próximo evento en
       // vivo o la próxima mutación reintenta.
     }
-  }, [supabase, currentAgent.id]);
+  }, [supabase, currentAgent.id, dayStart]);
 
   /**
    * "Sin dueño" en vivo (T1.6): un canal PROPIO y angosto, no el genérico de
@@ -315,10 +388,79 @@ export function CrmShell({
       cursor: cursorAfterPage(initialConversations),
       reachedEnd: initialConversations.length < INBOX_PAGE_SIZE,
     },
+    // `since` se lee de `dayStart` en cada llamada (la clausura del hook
+    // captura `fetchPage` recién al salir a la red — ver "CLAUSURA
+    // CAPTURADA" en `use-inbox-pager.ts`), así que "cargar más" después de
+    // tocar el interruptor ya sale con el corte vigente. El cursor sigue
+    // siendo válido para seguir bajando aunque `since` cambie a mitad de
+    // camino: es un predicado de POSICIÓN sobre `last_message_at`/`id`, que
+    // `since` no toca.
     fetchPage: (cursor) =>
-      fetchConversations(supabase, { cursor: cursor ?? undefined, limit: INBOX_PAGE_SIZE }),
+      fetchConversations(supabase, {
+        cursor: cursor ?? undefined,
+        limit: INBOX_PAGE_SIZE,
+        since: dayStart ?? undefined,
+      }),
     onPage: (page) => setConversations((current) => mergeById(current, page)),
   });
+
+  /**
+   * Refresca la cabecera de "Todos" cuando cambia el corte de "hoy" (T1,
+   * 8/9/2026): tocar el interruptor "Ver todo", o que ruede la medianoche de
+   * Caracas. NO usa `allPager.retry()`/un `sessionKey` nuevo —el pager de
+   * "Todos" nace SEMBRADO (`seed`, arriba) y `useInboxPager` bloquea para
+   * siempre la primera página de un pager sembrado (`hasSeedRef`, fijado en
+   * el primer montaje): cambiar su `sessionKey` no lo haría volver a pedir
+   * nada. En su lugar, esto pide una cabecera nueva a mano y la MEZCLA con
+   * `mergeById` sobre lo que ya está cargado.
+   *
+   * Es asimétrico a propósito, y es un límite conocido (no un bug): pasar de
+   * "hoy" a "Ver todo" SÍ trae lo viejo de una vez —lo de hoy ya estaba en
+   * `conversations`, y lo viejo entra al fondo por `mergeById`, que nunca
+   * pisa lo que ya hay—; pasar de "Ver todo" a "hoy" NO saca de memoria lo
+   * viejo que ya se había cargado, solo dejan de pintarse (`matchesDay`,
+   * `inbox-filters.ts`, corre en cada render sobre lo que haya en
+   * `conversations`) — total, sigue viviendo ahí sin ocupar una consulta de
+   * más, y desaparece del todo en la próxima carga completa de la página.
+   *
+   * `didSkipInitialFetchRef` salta la primera pasada: al montar,
+   * `initialConversations`/`initialInboxCounts` (`page.tsx`) YA vienen con
+   * el corte de HOY —el default de `dayScope`—, así que pedir de nuevo ahí
+   * sería una consulta idéntica de balde. Si el visor tenía "Ver todo"
+   * guardado, el efecto que restaura `dayScope` desde `localStorage` cambia
+   * `dayStart` en un commit POSTERIOR al de montar — la primera pasada de
+   * ESTE efecto ya alcanzó a marcar el ref, así que esa restauración sí
+   * dispara el refetch, con el corte correcto.
+   */
+  const didSkipInitialDayFetchRef = useRef(false);
+
+  useEffect(() => {
+    if (!didSkipInitialDayFetchRef.current) {
+      didSkipInitialDayFetchRef.current = true;
+      return;
+    }
+
+    let cancelled = false;
+    const since = dayStart ?? undefined;
+
+    Promise.all([
+      fetchConversations(supabase, { limit: INBOX_PAGE_SIZE, since }),
+      fetchInboxCounts(supabase, currentAgent.id, undefined, { since }),
+    ])
+      .then(([head, counts]) => {
+        if (cancelled) return;
+        setConversations((current) => mergeById(current, head));
+        setInboxCounts(counts);
+      })
+      .catch(() => {
+        // La lista se queda con lo que ya tenía cargado; el próximo pulso en
+        // vivo o un cambio de scope siguiente lo vuelve a intentar.
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [dayStart, supabase, currentAgent.id, setConversations]);
 
   // Sin conversación de inicio no se abre ninguna: abrir la primera de la
   // lista ponía al asesor a leer un chat que no eligió —y lo daba por leído—
@@ -887,6 +1029,9 @@ export function CrmShell({
             counts={inboxCounts}
             initialPendingRows={initialPendingConversations}
             livePulse={livePulse}
+            dayScope={dayScope}
+            dayStart={dayStart}
+            onDayScopeChange={handleDayScopeChange}
           />
         </section>
 

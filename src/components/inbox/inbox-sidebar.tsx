@@ -1,8 +1,15 @@
 "use client";
 
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { ArrowDownWideNarrow, ArrowUpWideNarrow, Search } from "lucide-react";
-import type { Agent, ConversationSummary, InboxFilter, InboxSort, Tag } from "@/lib/types";
+import { ArrowDownWideNarrow, ArrowUpWideNarrow, CalendarDays, History, Search } from "lucide-react";
+import type {
+  Agent,
+  ConversationSummary,
+  InboxDayScope,
+  InboxFilter,
+  InboxSort,
+  Tag,
+} from "@/lib/types";
 import {
   fetchConversations,
   fetchPinnedIds,
@@ -103,13 +110,21 @@ interface StoredInboxPrefs {
  * más VIEJA de toda la base, no solo invertir el orden de lo ya cargado.
  * `fetchConversations` (`src/lib/data.ts`) entiende `order: "recent" |
  * "oldest"` y arma el cursor de continuación en el sentido que corresponda.
+ *
+ * `since` (T1 del plan "Seis frentes del buzón", 8/9/2026, "habló hoy")
+ * viaja igual: el corte de "hoy" ya calculado (`useInboxDay`, en el shell)
+ * se le suma a CUALQUIER píldora, `undefined` con el interruptor "Ver todo".
+ * `undefined` y no un default propio acá: mismo motivo que `cursor`/`tagId`
+ * arriba, para no tocar cada `toHaveBeenCalledWith` existente que no conoce
+ * el día.
  */
 function pillQueryOptions(
   filter: InboxFilter,
   agentId: string,
   cursor: ConversationCursor | null | undefined,
   tagId: string | null,
-  sort: InboxSort
+  sort: InboxSort,
+  since: string | undefined
 ): FetchConversationsOptions {
   const page = {
     limit: INBOX_PAGE_SIZE,
@@ -121,6 +136,7 @@ function pillQueryOptions(
     // cambiaría nada en la consulta pero SÍ en cada `toHaveBeenCalledWith`
     // existente que compara el objeto de opciones exacto.
     order: sort === "oldest" ? ("oldest" as const) : undefined,
+    since,
   };
   switch (filter) {
     case "pending":
@@ -252,6 +268,19 @@ interface InboxSidebarProps {
    * ej. tests que no ejercitan este camino).
    */
   livePulse?: number;
+  /**
+   * El corte "habló hoy" (T1, 8/9/2026): `dayScope` decide qué pinta el
+   * interruptor (icono y texto), `dayStart` es el instante YA CALCULADO
+   * (`useInboxDay`, en el shell — misma fuente que usan las consultas y los
+   * seis contadores) que este componente le pasa tal cual a
+   * `applyInboxFilters`/`pillQueryOptions`/`fetchUnassignedConversations`.
+   * `onDayScopeChange` es lo que dispara el toggle; sin él —tests que no
+   * conocen esta tarea— el botón no se pinta y `dayStart` cae a `null` (sin
+   * corte), igual que el comportamiento de antes de esta tarea.
+   */
+  dayScope?: InboxDayScope;
+  dayStart?: string | null;
+  onDayScopeChange?: (scope: InboxDayScope) => void;
 }
 
 export function InboxSidebar({
@@ -272,6 +301,9 @@ export function InboxSidebar({
   counts,
   initialPendingRows,
   livePulse = 0,
+  dayScope = "all",
+  dayStart = null,
+  onDayScopeChange,
 }: InboxSidebarProps) {
   const availableFilters = useMemo(() => filtersForRole(currentAgent.role), [currentAgent.role]);
 
@@ -589,7 +621,13 @@ export function InboxSidebar({
     // que ya se había armado para el otro sentido —un cursor descendente no
     // sirve para seguir bajando en ascendente, y viceversa— y las filas ya
     // acumuladas del orden anterior quedarían pegadas en `serverRows`.
-    sessionKey: `${filter}:${currentAgent.id}:${activeTagId ?? ""}:${sort}`,
+    //
+    // `dayStart` entra por el mismo motivo (T1, 8/9/2026): tocar el
+    // interruptor "Ver todo", o que el reloj cruce la medianoche de Caracas
+    // (`useInboxDay` cambia de valor), abre sesión nueva — sin esto las
+    // filas ya cargadas bajo el corte de ayer seguirían pegadas en
+    // `serverRows` tras el cambio.
+    sessionKey: `${filter}:${currentAgent.id}:${activeTagId ?? ""}:${sort}:${dayStart ?? ""}`,
     pageSize: INBOX_PAGE_SIZE,
     fetchPage: (cursor) =>
       // "Sin dueño" no pagina por cursor: su consulta resuelve el conjunto
@@ -602,10 +640,13 @@ export function InboxSidebar({
       filter === "unassigned"
         ? cursor
           ? Promise.resolve([])
-          : fetchUnassignedConversations(supabase, { tagId: activeTagId ?? undefined })
+          : fetchUnassignedConversations(supabase, {
+              tagId: activeTagId ?? undefined,
+              since: dayStart ?? undefined,
+            })
         : fetchConversations(
             supabase,
-            pillQueryOptions(filter, currentAgent.id, cursor, activeTagId, sort)
+            pillQueryOptions(filter, currentAgent.id, cursor, activeTagId, sort, dayStart ?? undefined)
           ),
     onPage: (rows, mode) =>
       setServerRows((current) => {
@@ -709,12 +750,20 @@ export function InboxSidebar({
     // volvería a pegar en `serverRows` el conjunto SIN filtrar. `matchesTag`
     // lo escondería igual al pintar, pero `serverRows`/`resolvedRows`
     // quedarían con filas de más hasta el próximo pulso.
+    // El corte de "hoy" viaja igual que la etiqueta y el orden: capturado
+    // junto con `pillFilter` para que, si el visor toca "Ver todo" mientras
+    // esta cabecera viaja, la respuesta se pinte con el corte que la pidió.
+    const pillDayStart = dayStart;
+
     const esSinDueno = pillFilter === "unassigned";
     const consulta = esSinDueno
-      ? fetchUnassignedConversations(supabase, { tagId: pillTagId ?? undefined })
+      ? fetchUnassignedConversations(supabase, {
+          tagId: pillTagId ?? undefined,
+          since: pillDayStart ?? undefined,
+        })
       : fetchConversations(
           supabase,
-          pillQueryOptions(pillFilter, currentAgent.id, null, pillTagId, pillSort)
+          pillQueryOptions(pillFilter, currentAgent.id, null, pillTagId, pillSort, pillDayStart ?? undefined)
         );
 
     consulta
@@ -739,6 +788,7 @@ export function InboxSidebar({
     filter,
     activeTagId,
     sort,
+    dayStart,
     currentAgent.id,
     supabase,
   ]);
@@ -818,6 +868,7 @@ export function InboxSidebar({
         messageHitIds,
         pinnedIds,
         unassignedIds,
+        dayStart,
       }),
     [
       searchableConversations,
@@ -829,6 +880,7 @@ export function InboxSidebar({
       messageHitIds,
       pinnedIds,
       unassignedIds,
+      dayStart,
     ]
   );
 
@@ -1072,6 +1124,31 @@ export function InboxSidebar({
           </div>
           {visibleTags.length > 0 && (
             <TagFilterMenu tags={visibleTags} value={activeTagId} onChange={setTagId} />
+          )}
+          {/*
+            El interruptor "Ver todo" (T1, 8/9/2026): sin `onDayScopeChange`
+            —el shell no lo pasa, o un test viejo que no conoce esta tarea—
+            no se pinta nada, mismo patrón que `onMarkUnread`/`onMarkRead`
+            más abajo (`canOpenMenu`). El icono pinta el modo VIGENTE (mismo
+            criterio que el botón de orden, al lado: `sort === "recent"`
+            pinta la flecha de "recientes primero", no la del próximo clic) y
+            el `aria-label` describe la ACCIÓN del clic, la que cambia AL
+            OTRO modo.
+          */}
+          {onDayScopeChange && (
+            <button
+              type="button"
+              className="lm-icon-btn crm-day-scope-btn"
+              onClick={() => onDayScopeChange(dayScope === "today" ? "all" : "today")}
+              aria-label={dayScope === "today" ? "Ver todo el historial" : "Ver solo hoy"}
+              title={
+                dayScope === "today"
+                  ? "Mostrando solo las conversaciones de hoy"
+                  : "Mostrando todo el historial"
+              }
+            >
+              {dayScope === "today" ? <CalendarDays size={16} /> : <History size={16} />}
+            </button>
           )}
           <button
             type="button"

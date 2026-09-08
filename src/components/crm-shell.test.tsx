@@ -1043,9 +1043,14 @@ describe("CrmShell — bajar por la bandeja cuesta una página, no todo otra vez
     // desplazamiento se rompe apenas una fila cruza el borde de página
     // mientras el asesor sigue bajando (ver `inbox-paging.ts`).
     const ultimaFilaCargada = primeraPagina[primeraPagina.length - 1];
+    // `since` (T1, 8/9/2026): la bandeja abre en "hoy" por defecto, así que
+    // toda consulta de "Todos" lo lleva — `expect.any(String)` porque es la
+    // medianoche de Caracas calculada contra el reloj del momento en que
+    // corre el test, no un valor fijo.
     expect(fetchConversationsMock.mock.calls[0][1]).toEqual({
       cursor: { lastMessageAt: ultimaFilaCargada.lastMessageAt, id: ultimaFilaCargada.id },
       limit: 30,
+      since: expect.any(String),
     });
     // Concatenadas, no reemplazadas: las primeras 30 siguen ahí.
     expect(inboxProps?.conversations).toHaveLength(60);
@@ -1102,8 +1107,12 @@ describe("CrmShell — bajar por la bandeja cuesta una página, no todo otra vez
       vi.advanceTimersByTime(750);
     });
 
-    // Una página, no las 60 que hay en pantalla.
-    expect(fetchConversationsMock.mock.calls[0][1]).toEqual({ limit: 30 });
+    // Una página, no las 60 que hay en pantalla. `since` (T1, 8/9/2026): ver
+    // el comentario del test de arriba.
+    expect(fetchConversationsMock.mock.calls[0][1]).toEqual({
+      limit: 30,
+      since: expect.any(String),
+    });
     expect(inboxProps?.conversations).toHaveLength(60);
   });
 });
@@ -1164,9 +1173,12 @@ describe("CrmShell — una ráfaga de scroll en 'Todos' pide una sola página", 
     const ultimaFilaPrimera = primeraPagina[primeraPagina.length - 1];
     const ultimaFilaSegunda = segundaPagina[segundaPagina.length - 1];
     expect(fetchConversationsMock).toHaveBeenCalledTimes(2);
+    // `since` (T1, 8/9/2026): ver el comentario del primer test de este
+    // `describe`.
     expect(fetchConversationsMock.mock.calls[1][1]).toEqual({
       cursor: { lastMessageAt: ultimaFilaSegunda.lastMessageAt, id: ultimaFilaSegunda.id },
       limit: 30,
+      since: expect.any(String),
     });
     // Nunca vuelve al cursor de la página 1: sería releer lo mismo dos veces.
     expect(fetchConversationsMock.mock.calls[1][1]).not.toEqual({
