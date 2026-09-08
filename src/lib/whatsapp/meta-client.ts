@@ -117,9 +117,10 @@ export async function sendWhatsappMedia(
   caption?: string,
   replyToWamid?: string | null
 ): Promise<SendResult> {
-  // Audio y sticker no aceptan caption: Meta rechaza el envío si viene con
-  // uno (probado contra la Cloud API, T3a "Seis frentes del buzón",
-  // 9/9/2026, para sticker — audio ya lo evitaba desde antes).
+  // Audio y sticker no aceptan caption: según la referencia de mensajes de la
+  // Cloud API el objeto `sticker` solo lleva `id`/`link` (T3a "Seis frentes
+  // del buzón", 8/9/2026 — audio ya lo evitaba desde antes). Sin verificar
+  // contra Meta todavía: el primer sticker saliente en producción es la prueba.
   const mediaPayload =
     mediaType === "audio" || mediaType === "sticker" ? { link } : { link, caption: caption || undefined };
 
