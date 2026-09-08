@@ -762,6 +762,8 @@ export interface Product {
   isActive: boolean;
   updatedAt: string;
   compatibility: ProductCompatibility[];
+  /** Kilogramos con 3 decimales; null = todavía sin cargar. Cashea lo exige para el envío gratis (T4, 8/9/2026). */
+  weightKg: number | null;
 }
 
 /**

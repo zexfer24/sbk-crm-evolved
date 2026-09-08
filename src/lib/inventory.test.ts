@@ -4,12 +4,14 @@ import {
   INVENTORY_PAGE_SIZE,
   LOW_STOCK_THRESHOLD,
   aiVisibility,
+  formatWeightInput,
   inventoryHref,
   inventoryPageRange,
   inventoryTotalPages,
   parseInventoryParams,
   parsePriceInput,
   parseStockInput,
+  parseWeightInput,
   priceInBs,
   stockLevel,
   summarizeInventory,
@@ -27,6 +29,7 @@ function product(over: Partial<Product> = {}): Product {
     isActive: true,
     updatedAt: "2026-08-20T10:00:00Z",
     compatibility: [],
+    weightKg: null,
     ...over,
   };
 }
@@ -117,6 +120,38 @@ describe("parsePriceInput", () => {
   });
 });
 
+describe("parseWeightInput", () => {
+  it("acepta un peso con hasta tres decimales, coma o punto", () => {
+    expect(parseWeightInput("0,250")).toEqual({ ok: true, value: 0.25 });
+    expect(parseWeightInput("1.500")).toEqual({ ok: true, value: 1.5 });
+    expect(parseWeightInput("2")).toEqual({ ok: true, value: 2 });
+  });
+
+  it("vacío es un peso válido: significa que todavía no se cargó", () => {
+    expect(parseWeightInput("")).toEqual({ ok: true, value: null });
+    expect(parseWeightInput("   ")).toEqual({ ok: true, value: null });
+  });
+
+  it("rechaza negativos, texto y más de tres decimales", () => {
+    expect(parseWeightInput("-1").ok).toBe(false);
+    expect(parseWeightInput("pesado").ok).toBe(false);
+    expect(parseWeightInput("1.2345").ok).toBe(false);
+  });
+
+  it("rechaza por encima del tope", () => {
+    expect(parseWeightInput("10000").ok).toBe(false);
+    expect(parseWeightInput("9999.999")).toEqual({ ok: true, value: 9999.999 });
+  });
+});
+
+describe("formatWeightInput", () => {
+  it("vacío para null, tres decimales fijos para un número", () => {
+    expect(formatWeightInput(null)).toBe("");
+    expect(formatWeightInput(0.25)).toBe("0.250");
+    expect(formatWeightInput(2)).toBe("2.000");
+  });
+});
+
 describe("summarizeInventory", () => {
   it("cuenta activos, agotados y bajos por separado", () => {
     const resumen = summarizeInventory([
@@ -145,6 +180,15 @@ describe("summarizeInventory", () => {
     expect(resumen.valorUsd).toBe(30);
     expect(resumen.hasNonUsdPrices).toBe(true);
   });
+
+  it("cuenta sin peso solo sobre los activos", () => {
+    const resumen = summarizeInventory([
+      product({ id: "a", weightKg: null }),
+      product({ id: "b", weightKg: 0.5 }),
+      product({ id: "c", weightKg: null, isActive: false }),
+    ]);
+    expect(resumen.withoutWeight).toBe(1);
+  });
 });
 
 describe("parseInventoryParams", () => {
@@ -156,6 +200,7 @@ describe("parseInventoryParams", () => {
     expect(parseInventoryParams({ filtro: "agotados" }).filter).toBe("agotados");
     expect(parseInventoryParams({ filtro: "bajo-stock" }).filter).toBe("bajo-stock");
     expect(parseInventoryParams({ filtro: "inactivos" }).filter).toBe("inactivos");
+    expect(parseInventoryParams({ filtro: "sin-peso" }).filter).toBe("sin-peso");
     expect(parseInventoryParams({ filtro: "loquesea" }).filter).toBe("todos");
   });
 

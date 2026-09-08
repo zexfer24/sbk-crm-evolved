@@ -57,7 +57,7 @@ export function priceInBs(product: Product, rate: number): number | null {
 // puede dejar pasar un stock negativo ni un precio con basura.
 // ---------------------------------------------------------------------------
 
-export type ParseResult = { ok: true; value: number } | { ok: false; error: string };
+export type ParseResult<T = number> = { ok: true; value: T } | { ok: false; error: string };
 
 export function parseStockInput(raw: string): ParseResult {
   const text = raw.trim();
@@ -82,6 +82,35 @@ export function parsePriceInput(raw: string): ParseResult {
   return { ok: true, value };
 }
 
+/** Tope del peso: de sobra para cualquier repuesto de moto, y calza con `numeric(8,3)`. */
+export const MAX_WEIGHT_KG = 9999.999;
+
+/**
+ * Peso en kilos que Cashea exige para el envío gratis (T4, 8/9/2026).
+ *
+ * A diferencia de stock y precio, acá vacío es un valor válido: significa
+ * "todavía sin cargar" (`value: null`), no un error. El resto de las reglas
+ * copian a `parsePriceInput`: coma o punto decimal, sin negativos, con un
+ * tope de decimales — acá tres, porque un tornillo puede pesar gramos.
+ */
+export function parseWeightInput(raw: string): ParseResult<number | null> {
+  const text = raw.trim().replace(",", ".");
+  if (!text) return { ok: true, value: null };
+  if (!/^\d+(\.\d{1,3})?$/.test(text)) {
+    return { ok: false, error: "Usa un peso positivo en kilos, con hasta tres decimales." };
+  }
+
+  const value = Number(text);
+  if (!Number.isFinite(value)) return { ok: false, error: "Ese peso no es un número." };
+  if (value > MAX_WEIGHT_KG) return { ok: false, error: `Ese peso es demasiado grande (máximo ${MAX_WEIGHT_KG} kg).` };
+  return { ok: true, value };
+}
+
+/** El borrador del campo: vacío si no hay peso cargado, si no con los 3 decimales fijos. */
+export function formatWeightInput(weightKg: number | null): string {
+  return weightKg === null ? "" : weightKg.toFixed(3);
+}
+
 // ---------------------------------------------------------------------------
 // Resumen de la página visible
 // ---------------------------------------------------------------------------
@@ -92,6 +121,8 @@ export interface InventorySummary {
   activos: number;
   agotados: number;
   bajos: number;
+  /** Activos sin peso cargado — lo que Cashea necesita para calcular el envío gratis. */
+  withoutWeight: number;
   valorUsd: number;
   hasNonUsdPrices: boolean;
 }
@@ -100,6 +131,7 @@ export function summarizeInventory(products: Product[]): InventorySummary {
   let activos = 0;
   let agotados = 0;
   let bajos = 0;
+  let withoutWeight = 0;
   let valorUsd = 0;
   let hasNonUsdPrices = false;
 
@@ -115,19 +147,28 @@ export function summarizeInventory(products: Product[]): InventorySummary {
     const level = stockLevel(product);
     if (level === "agotado") agotados += 1;
     if (level === "bajo") bajos += 1;
+    if (product.weightKg === null) withoutWeight += 1;
   }
 
-  return { total: products.length, activos, agotados, bajos, valorUsd: Number(valorUsd.toFixed(2)), hasNonUsdPrices };
+  return {
+    total: products.length,
+    activos,
+    agotados,
+    bajos,
+    withoutWeight,
+    valorUsd: Number(valorUsd.toFixed(2)),
+    hasNonUsdPrices,
+  };
 }
 
 // ---------------------------------------------------------------------------
 // Estado de la lista, leído de la URL
 // ---------------------------------------------------------------------------
 
-export type InventoryFilter = "todos" | "agotados" | "bajo-stock" | "inactivos";
+export type InventoryFilter = "todos" | "agotados" | "bajo-stock" | "inactivos" | "sin-peso";
 export type InventorySort = "nombre" | "stock" | "precio";
 
-const FILTERS: InventoryFilter[] = ["todos", "agotados", "bajo-stock", "inactivos"];
+const FILTERS: InventoryFilter[] = ["todos", "agotados", "bajo-stock", "inactivos", "sin-peso"];
 const SORTS: InventorySort[] = ["nombre", "stock", "precio"];
 
 export const INVENTORY_FILTER_LABELS: Record<InventoryFilter, string> = {
@@ -135,6 +176,7 @@ export const INVENTORY_FILTER_LABELS: Record<InventoryFilter, string> = {
   agotados: "Agotados",
   "bajo-stock": "Bajo stock",
   inactivos: "Desactivados",
+  "sin-peso": "Sin peso",
 };
 
 export const INVENTORY_SORT_LABELS: Record<InventorySort, string> = {

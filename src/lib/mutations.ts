@@ -784,6 +784,23 @@ export async function updateProductPrice(supabase: SupabaseClient, productId: st
   if (error) throw error;
 }
 
+/**
+ * Peso en kilos para el envío (T4, "Seis frentes del buzón", 8/9/2026).
+ *
+ * `weightKg: null` es un guardado válido: vuelve a dejar el repuesto "sin
+ * cargar", el mismo estado en el que nace un producto nuevo. Cashea exige el
+ * peso para calcular si el envío sale gratis; la IA no lo lee (fuera de
+ * alcance de esta tarea).
+ */
+export async function updateProductWeight(supabase: SupabaseClient, productId: string, weightKg: number | null) {
+  const { error } = await supabase
+    .from("products")
+    .update({ weight_kg: weightKg, updated_at: new Date().toISOString() })
+    .eq("id", productId);
+
+  if (error) throw error;
+}
+
 /** Desactivar un repuesto lo saca del catálogo que ve la IA, sin borrar su historial de ventas. */
 export async function setProductActive(supabase: SupabaseClient, productId: string, isActive: boolean) {
   const { error } = await supabase

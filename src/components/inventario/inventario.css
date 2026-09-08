@@ -112,6 +112,11 @@
   text-align: right;
 }
 
+/* El peso lleva 3 decimales ("9999.999"): el ancho de stock/precio le queda corto. */
+.inv-field:has(input[aria-label^="Peso de"]) .inv-input-wrap input {
+  width: 78px;
+}
+
 .inv-input-wrap input:disabled {
   opacity: 0.5;
 }

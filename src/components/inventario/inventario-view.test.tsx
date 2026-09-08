@@ -40,13 +40,13 @@ function haceDias(dias: number): string {
   return new Date(Date.now() - dias * 24 * 60 * 60 * 1000).toISOString();
 }
 
-function pintar(updatedAt: string | null) {
+function pintar(updatedAt: string | null, withoutWeight = 0) {
   render(
     <InventarioView
       currentAgent={ASESOR}
       products={[]}
       total={0}
-      totals={{ productos: 5438, activos: 5435, agotados: 2474, bajos: 300, updatedAt }}
+      totals={{ productos: 5438, activos: 5435, agotados: 2474, bajos: 300, withoutWeight, updatedAt }}
       catalog={CATALOGO}
       params={{ query: "", filter: "todos", sort: "nombre", page: 1 }}
       bcvRate={{ rate: 791.3248, rateDate: "2026-08-27", isStale: false }}
@@ -81,5 +81,24 @@ describe("InventarioView — la antigüedad del inventario se ve", () => {
 
     expect(tarjeta).toHaveTextContent("—");
     expect(tarjeta).toHaveTextContent(/no se sabe/i);
+  });
+});
+
+/** T4, "Seis frentes del buzón" (8/9/2026): el hueco de peso que Cashea exige para el envío gratis. */
+describe("InventarioView — Sin peso", () => {
+  it("la tarjeta de resumen muestra el conteo y por qué importa", () => {
+    pintar(haceDias(0), 37);
+
+    // "Sin peso" aparece dos veces: la etiqueta de la tarjeta y la píldora
+    // de filtro. La tarjeta es la que tiene el conteo grande al lado.
+    const tarjeta = screen.getAllByText("Sin peso").map((el) => el.closest(".cli-stat")).find(Boolean);
+    expect(tarjeta).toHaveTextContent("37");
+    expect(tarjeta).toHaveTextContent(/Cashea/i);
+  });
+
+  it("la píldora de filtro «Sin peso» está entre las de disponibilidad", () => {
+    pintar(haceDias(0));
+
+    expect(screen.getByRole("link", { name: "Sin peso" })).toBeInTheDocument();
   });
 });
