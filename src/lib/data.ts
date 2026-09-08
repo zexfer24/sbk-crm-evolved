@@ -1718,6 +1718,40 @@ export async function fetchTags(supabase: SupabaseClient): Promise<Tag[]> {
 }
 
 /**
+ * El canal que usa el CRM para una conversación que nace sin que el cliente
+ * haya escrito primero (T6, 8/9/2026: "Agregar contacto" desde la bandeja).
+ * Mismo criterio que `fetchWhatsappChannelHealth` arriba -- `connected`
+ * primero, y si no hay ninguno el primer canal que exista -- para que un
+ * ambiente de demo (sin ningún canal `connected` todavía) también pueda
+ * crear el contacto en vez de quedarse sin ningún destino. Null solo si no
+ * hay ni un solo canal creado.
+ */
+export async function fetchDefaultChannel(supabase: SupabaseClient): Promise<WhatsappChannel | null> {
+  const columns = "id, label, phone_number, phone_number_id, status";
+
+  const { data: connected, error: connectedError } = await supabase
+    .from("whatsapp_channels")
+    .select(columns)
+    .eq("status", "connected")
+    .order("created_at", { ascending: true })
+    .limit(1);
+
+  if (connectedError) throw connectedError;
+  const connectedRow = (connected as RawChannel[] | null)?.[0];
+  if (connectedRow) return mapChannel(connectedRow);
+
+  const { data, error } = await supabase
+    .from("whatsapp_channels")
+    .select(columns)
+    .order("created_at", { ascending: true })
+    .limit(1);
+
+  if (error) throw error;
+  const row = (data as RawChannel[] | null)?.[0];
+  return row ? mapChannel(row) : null;
+}
+
+/**
  * Las etiquetas que de verdad tiene aplicadas algún contacto, ordenadas por
  * `label` igual que `fetchTags`.
  *
