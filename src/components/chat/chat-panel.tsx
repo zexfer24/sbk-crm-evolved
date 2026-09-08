@@ -352,6 +352,7 @@ export function ChatPanel({
         messages={messages}
         templates={templates}
         quickReplies={quickReplies}
+        currentAgent={currentAgent}
         replyingTo={replyingTo}
         onCancelReply={() => setReplyingTo(null)}
         onSendText={onSendText}

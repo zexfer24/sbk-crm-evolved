@@ -12,16 +12,18 @@ import { flushSync } from "react-dom";
 import { AlignLeft, FileText, Lock, Paperclip, Send, X, Zap } from "lucide-react";
 import { Button, TextArea, Tooltip } from "@heroui/react";
 import { toast } from "@heroui/react";
-import type { Conversation, Message, MessageType, QuickReply, WhatsappTemplate } from "@/lib/types";
+import type { Agent, Conversation, Message, MessageType, QuickReply, WhatsappTemplate } from "@/lib/types";
 import { isComposerWindowOpen } from "@/lib/whatsapp-window";
 import { contactName } from "@/lib/dashboard";
 import { createClient } from "@/lib/supabase/client";
 import { sendMediaMessage, sendTemplateMessage, sendTypingSignal } from "@/lib/mutations";
 import { MEDIA_BUCKET, mediaUrlFor } from "@/lib/storage";
+import { insertAtCaret } from "@/lib/composer-text";
 import { MediaThumb, type MediaItem } from "@/components/chat/media-lightbox";
 import { QuotedThumb, quotedTypeLabel } from "@/components/chat/quoted-content";
 import { TemplatePickerModal } from "@/components/chat/template-picker-modal";
 import { QuickRepliesModal } from "@/components/chat/quick-replies-modal";
+import { EmojiStickerPopover } from "@/components/chat/emoji-sticker-popover";
 import { WindowCountdown } from "@/components/chat/window-countdown";
 
 interface ComposerProps {
@@ -37,6 +39,14 @@ interface ComposerProps {
   messages: Message[];
   templates: WhatsappTemplate[];
   quickReplies: QuickReply[];
+  /**
+   * Quién compone (T3b, "Seis frentes del buzón", 8/9/2026): lo necesita el
+   * popover de emojis y stickers para atribuir un sticker creado desde cero
+   * (`createSticker`). `chat-panel.tsx` ya lo tenía disponible como
+   * `currentAgent` para el menú contextual de mensajes; acá era el único
+   * hueco que faltaba.
+   */
+  currentAgent: Agent;
   replyingTo: Message | null;
   onCancelReply: () => void;
   /**
@@ -94,6 +104,7 @@ export function Composer({
   messages,
   templates,
   quickReplies,
+  currentAgent,
   replyingTo,
   onCancelReply,
   onSendText,
@@ -388,6 +399,28 @@ export function Composer({
     textarea.setSelectionRange(newStart, newEnd);
   }
 
+  /**
+   * Inserta un emoji en el caret (T3b, "Seis frentes del buzón", 8/9/2026).
+   *
+   * `insertAtCaret` (composer-text.ts) hace la aritmética pura; acá lo único
+   * que hace falta es leer dónde está el cursor AHORA (el popover del emoji
+   * no lo sabe: nunca tuvo el foco) y devolvérselo al cuadro después de
+   * insertar. `flushSync` por el mismo motivo que `wrapSelection`: sin el
+   * commit forzado, `setSelectionRange` puede correr contra el commit de
+   * React y perder la carrera bajo CPU contendida.
+   */
+  function insertEmoji(emoji: string) {
+    const textarea = textareaRef.current;
+    const start = textarea?.selectionStart ?? text.length;
+    const end = textarea?.selectionEnd ?? text.length;
+    const { text: nextText, caret } = insertAtCaret(text, start, end, emoji);
+
+    flushSync(() => setText(nextText));
+
+    textarea?.focus();
+    textarea?.setSelectionRange(caret, caret);
+  }
+
   function handleKeyDown(event: KeyboardEvent<HTMLTextAreaElement>) {
     if (event.key === "Enter" && !event.shiftKey) {
       event.preventDefault();
@@ -489,6 +522,13 @@ export function Composer({
 
       <div className="crm-composer-row flex items-end gap-1.5 pt-2">
         <input ref={fileInputRef} type="file" hidden multiple onChange={handleFileSelected} />
+
+        <EmojiStickerPopover
+          conversation={conversation}
+          withinWindow={withinWindow}
+          agent={currentAgent}
+          onInsertEmoji={insertEmoji}
+        />
 
         <Tooltip>
           <Tooltip.Trigger>

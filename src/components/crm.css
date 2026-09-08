@@ -2466,3 +2466,234 @@ button.crm-bubble-quote:hover {
 .crm-thread-window[data-urgency="danger"] {
   color: var(--lm-hot-ink);
 }
+
+/* --------------------------------------------------------------------------
+   Emojis y stickers del compositor (T3b, "Seis frentes del buzón", 8/9/2026)
+
+   Mismo criterio que `.crm-tag-menu`/`.crm-tag-menu-panel` (bandeja): un
+   botón que despliega un panel anclado, no un diálogo modal — cierra con
+   Escape o al tocar afuera, sin atrapar el foco ni tapar el resto de la
+   pantalla.
+   -------------------------------------------------------------------------- */
+.crm-emoji-sticker {
+  position: relative;
+  flex-shrink: 0;
+}
+
+.crm-emoji-sticker-panel {
+  position: absolute;
+  bottom: calc(100% + 8px);
+  left: 0;
+  z-index: 30;
+  display: flex;
+  flex-direction: column;
+  width: 320px;
+  max-height: 400px;
+  overflow: hidden;
+  border-radius: var(--lm-radius-card);
+  background: var(--lm-surface);
+  box-shadow: var(--lm-shadow-lg);
+}
+
+.crm-emoji-sticker-tabs {
+  display: flex;
+  flex-shrink: 0;
+  gap: 2px;
+  padding: 8px 8px 0;
+  border-bottom: 1px solid var(--lm-line);
+}
+
+.crm-emoji-sticker-tab {
+  flex: 1;
+  padding: 8px 10px;
+  border: 0;
+  border-bottom: 2px solid transparent;
+  background: transparent;
+  color: var(--lm-muted);
+  font: inherit;
+  font-size: 13px;
+  font-weight: 500;
+  text-align: center;
+  cursor: pointer;
+}
+
+.crm-emoji-sticker-tab[aria-selected="true"] {
+  border-bottom-color: var(--lm-link);
+  color: var(--lm-ink);
+}
+
+.crm-emoji-loading {
+  display: grid;
+  place-items: center;
+  height: 320px;
+  color: var(--lm-muted);
+  font-size: 13px;
+}
+
+/* La librería trae su propio look (buscador, filas de categoría); acá solo
+   se le da el hueco y se le apaga el borde propio, que duplicaría el del
+   panel que ya la envuelve. */
+.crm-emoji-sticker-emojis {
+  height: 360px;
+}
+
+.crm-emoji-sticker-emojis .EmojiPickerReact {
+  --epr-hover-bg-color: var(--lm-sunken);
+  --epr-focus-bg-color: var(--lm-sunken);
+  --epr-highlight-color: var(--lm-link);
+  border: 0 !important;
+  width: 100% !important;
+  height: 100% !important;
+}
+
+.crm-emoji-sticker-stickers {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px;
+  overflow-y: auto;
+}
+
+.crm-emoji-sticker-warning {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+}
+
+.crm-emoji-sticker-create {
+  align-self: flex-start;
+}
+
+.crm-emoji-sticker-empty {
+  padding: 16px 4px;
+  color: var(--lm-muted);
+  font-size: 12.5px;
+  text-align: center;
+}
+
+.crm-sticker-grid {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 8px;
+}
+
+.crm-sticker-grid-item {
+  position: relative;
+}
+
+.crm-sticker-grid-send {
+  display: block;
+  width: 100%;
+  aspect-ratio: 1;
+  padding: 4px;
+  border: 0;
+  border-radius: 12px;
+  background: var(--lm-sunken);
+  cursor: pointer;
+}
+
+.crm-sticker-grid-send:hover:not(:disabled) {
+  background: var(--lm-line);
+}
+
+.crm-sticker-grid-send:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+
+.crm-sticker-grid-send img {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+}
+
+.crm-sticker-grid-remove {
+  position: absolute;
+  top: -4px;
+  right: -4px;
+  display: grid;
+  place-items: center;
+  width: 18px;
+  height: 18px;
+  border: 1px solid var(--lm-line);
+  border-radius: 999px;
+  background: var(--lm-surface);
+  color: var(--lm-muted);
+  cursor: pointer;
+}
+
+.crm-sticker-grid-confirm {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 4px;
+  border-radius: 12px;
+  background: var(--lm-surface);
+  box-shadow: var(--lm-shadow-lg);
+  font-size: 10.5px;
+  text-align: center;
+}
+
+.crm-sticker-grid-confirm-actions {
+  display: flex;
+  gap: 4px;
+}
+
+.crm-sticker-grid-confirm-actions button {
+  padding: 3px 7px;
+  border: 1px solid var(--lm-line);
+  border-radius: 999px;
+  background: var(--lm-sunken);
+  cursor: pointer;
+}
+
+/* Elegir imagen para un sticker nuevo, en el modal de "Crear sticker". Mismo
+   gesto que adjuntar en el compositor: clic para elegir archivo, o pegar con
+   Ctrl+V directo sobre el modal. */
+.crm-sticker-drop {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 28px 16px;
+  border: 1px dashed var(--lm-line);
+  border-radius: var(--lm-radius-card);
+  background: var(--lm-sunken);
+  color: var(--lm-muted);
+  font-size: 13px;
+  text-align: center;
+  cursor: pointer;
+}
+
+.crm-sticker-modal-preview {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  padding: 16px;
+  border-radius: var(--lm-radius-card);
+  background: var(--lm-sunken);
+}
+
+.crm-sticker-modal-preview img {
+  width: 160px;
+  height: 160px;
+  object-fit: contain;
+}
+
+@media (max-width: 540px) {
+  /* Sin espacio de sobra a los lados del compositor: el panel pasa a ocupar
+     su ancho completo en vez de quedar anclado a la izquierda del botón. */
+  .crm-emoji-sticker-panel {
+    left: 50%;
+    width: min(320px, calc(100vw - 24px));
+    transform: translateX(-50%);
+  }
+}
