@@ -6,8 +6,16 @@ import { Check, EyeOff, TriangleAlert } from "lucide-react";
 import { toast } from "@heroui/react";
 import type { Product } from "@/lib/types";
 import { createClient } from "@/lib/supabase/client";
-import { setProductActive, updateProductPrice, updateProductStock } from "@/lib/mutations";
-import { aiVisibility, parsePriceInput, parseStockInput, priceInBs, stockLevel } from "@/lib/inventory";
+import { setProductActive, updateProductPrice, updateProductStock, updateProductWeight } from "@/lib/mutations";
+import {
+  aiVisibility,
+  formatWeightInput,
+  parsePriceInput,
+  parseStockInput,
+  parseWeightInput,
+  priceInBs,
+  stockLevel,
+} from "@/lib/inventory";
 
 /**
  * Una fila del inventario, editable en el sitio.
@@ -24,14 +32,15 @@ export function ProductoFila({ product, bcvRate }: { product: Product; bcvRate: 
 
   const [stockDraft, setStockDraft] = useState(String(product.stockQuantity));
   const [priceDraft, setPriceDraft] = useState(product.price.toFixed(2));
+  const [weightDraft, setWeightDraft] = useState(formatWeightInput(product.weightKg));
   const [busy, setBusy] = useState(false);
-  const [savedField, setSavedField] = useState<"stock" | "precio" | null>(null);
+  const [savedField, setSavedField] = useState<"stock" | "precio" | "peso" | null>(null);
 
   const level = stockLevel(product);
   const visibility = aiVisibility(product);
   const bs = priceInBs(product, bcvRate);
 
-  async function save(field: "stock" | "precio", action: () => Promise<void>, revert: () => void) {
+  async function save(field: "stock" | "precio" | "peso", action: () => Promise<void>, revert: () => void) {
     setBusy(true);
     try {
       await action();
@@ -79,6 +88,25 @@ export function ProductoFila({ product, bcvRate }: { product: Product; bcvRate: 
       "precio",
       () => updateProductPrice(createClient(), product.id, parsed.value),
       () => setPriceDraft(product.price.toFixed(2))
+    );
+  }
+
+  async function commitWeight() {
+    const parsed = parseWeightInput(weightDraft);
+    if (!parsed.ok) {
+      setWeightDraft(formatWeightInput(product.weightKg));
+      toast.danger(parsed.error);
+      return;
+    }
+    if (parsed.value === product.weightKg) {
+      setWeightDraft(formatWeightInput(parsed.value));
+      return;
+    }
+
+    await save(
+      "peso",
+      () => updateProductWeight(createClient(), product.id, parsed.value),
+      () => setWeightDraft(formatWeightInput(product.weightKg))
     );
   }
 
@@ -161,6 +189,24 @@ export function ProductoFila({ product, bcvRate }: { product: Product; bcvRate: 
         )}
       </label>
 
+      <label className="inv-field">
+        <span className="lm-eyebrow">Peso (kg)</span>
+        <span className="inv-input-wrap">
+          <input
+            className="lm-num"
+            value={weightDraft}
+            onChange={(e) => setWeightDraft(e.target.value)}
+            onBlur={commitWeight}
+            onKeyDown={onEnter}
+            onFocus={selectAll}
+            disabled={busy}
+            inputMode="decimal"
+            aria-label={`Peso de ${product.name}`}
+          />
+          {savedField === "peso" && <Check size={13} className="inv-saved" aria-label="Guardado" />}
+        </span>
+      </label>
+
       <div className="inv-status">
         {visibility.visible ? (
           <span className="ac-badge" data-tone={visibility.warning ? "wait" : "good"} title={visibility.warning ?? undefined}>
@@ -171,6 +217,13 @@ export function ProductoFila({ product, bcvRate }: { product: Product; bcvRate: 
           <span className="ac-badge" data-tone="muted" title={visibility.warning ?? undefined}>
             <EyeOff size={11} />
             Oculto a la IA
+          </span>
+        )}
+
+        {product.weightKg === null && (
+          <span className="ac-badge" data-tone="wait" title="Cashea exige el peso para calcular el envío gratis">
+            <TriangleAlert size={11} />
+            Sin peso
           </span>
         )}
 

@@ -53,3 +53,44 @@ export function phoneNumberFromWaId(from: string | null | undefined): string | n
   if (!limpio || !SOLO_DIGITOS.test(limpio)) return null;
   return `+${limpio}`;
 }
+
+/**
+ * El teléfono que un asesor escribe a mano al agregar un contacto nuevo
+ * desde la bandeja (T6, 8/9/2026), convertido a E.164 — nunca es un `wa_id`
+ * que ya llegó limpio de Meta, sino lo que alguien tipea con guiones,
+ * espacios y el prefijo que le salga natural. En Venezuela eso es casi
+ * siempre un móvil `04xx-xxxxxxx` sin el código de país, así que los cuatro
+ * prefijos que se resuelven acá (`0`, `00<código>`, el código sin `+`, y `+`
+ * ya puesto) cubren lo que un venezolano escribe sin pensarlo dos veces.
+ *
+ * Termina pasando SIEMPRE por `isDeliverablePhoneNumber`: mejor devolver
+ * `null` que un E.164 con la forma correcta pero un número que Meta va a
+ * rechazar de todas formas (por ejemplo, "123" con el código pegado
+ * adelante sigue siendo demasiado corto).
+ */
+export function normalizePhoneInput(
+  raw: string | null | undefined,
+  defaultCountryCode = "58"
+): string | null {
+  const sinFormato = raw?.replace(/[\s\-.()]/g, "") ?? "";
+  if (sinFormato === "") return null;
+
+  let candidato: string;
+  if (sinFormato.startsWith("+")) {
+    candidato = sinFormato;
+  } else if (sinFormato.startsWith("00")) {
+    candidato = `+${sinFormato.slice(2)}`;
+  } else if (sinFormato.startsWith("0")) {
+    // "0414-1234567": el 0 es el prefijo de marcado nacional, no parte del
+    // número — se cambia por el código de país.
+    candidato = `+${defaultCountryCode}${sinFormato.slice(1)}`;
+  } else if (sinFormato.startsWith(defaultCountryCode)) {
+    candidato = `+${sinFormato}`;
+  } else {
+    // Sin ningún prefijo reconocible: se asume número nacional sin el 0
+    // inicial (p. ej. "4141234567").
+    candidato = `+${defaultCountryCode}${sinFormato}`;
+  }
+
+  return isDeliverablePhoneNumber(candidato) ? candidato : null;
+}

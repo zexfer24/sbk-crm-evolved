@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { INTENT_VALUES } from "@/lib/ai/classify";
-import { MEDIA_RULES, OFF_TOPIC_REPLY, SYSTEM_PROMPT, buildInstructions } from "@/lib/ai/prompt";
+import { MEDIA_RULES, OFF_TOPIC_REPLY, SALES_HANDOFF_RULES, SYSTEM_PROMPT, buildInstructions } from "@/lib/ai/prompt";
 import { greetingWindow } from "@/lib/ai/greeting-window";
 import { revealsIdentity } from "@/lib/ai/identity-guard";
 
@@ -275,6 +275,57 @@ describe("identidad: ni IA ni persona", () => {
 
     expect(conSaludo).toMatch(/le escribes de SBK Motorcycles/);
     expect(conSaludo).not.toMatch(/preséntate/);
+  });
+});
+
+/**
+ * T2, plan "Seis frentes del buzón" (8/9/2026): la IA reconfirma antes de
+ * pasar el caso a ventas. `SALES_HANDOFF_RULES` es un bloque nuevo del
+ * prefijo cacheado (sección 3), la misma forma que ya usa `MEDIA_RULES`.
+ */
+describe("sección 3 — reconfirmación antes de pasar el caso a ventas (T2, 8/9/2026)", () => {
+  it("SALES_HANDOFF_RULES es parte del bloque estático que se cachea", () => {
+    expect(SYSTEM_PROMPT).toContain(SALES_HANDOFF_RULES);
+  });
+
+  it("buildInstructions también trae SALES_HANDOFF_RULES, dentro del prefijo cacheado", () => {
+    const instructions = buildInstructions(TURN);
+
+    expect(instructions).toContain(SALES_HANDOFF_RULES);
+    expect(instructions.startsWith(SYSTEM_PROMPT)).toBe(true);
+  });
+
+  it("manda pedir el segundo sí antes de escalar, y respetar la duda sin insistir", () => {
+    expect(SALES_HANDOFF_RULES).toMatch(/confirma dos veces/i);
+    expect(SALES_HANDOFF_RULES).toMatch(/segunda vez/i);
+    expect(SALES_HANDOFF_RULES).toMatch(/no insistas/i);
+  });
+
+  /** Nada de lo que le pide reconfirmar al modelo puede describirlo como automatizado o como una persona. */
+  it("pasa la guarda de identidad limpio", () => {
+    expect(revealsIdentity(SALES_HANDOFF_RULES)).toBeNull();
+  });
+
+  /**
+   * Mismo control de sanidad que ya tiene MEDIA_RULES: prueba de que el test
+   * anterior de verdad mira lo que dice mirar.
+   */
+  it("la guarda sí atrapa una fórmula prohibida pegada al final", () => {
+    const conFormulaProhibida = `${SALES_HANDOFF_RULES} Soy un asistente automatizado.`;
+
+    const match = revealsIdentity(conFormulaProhibida);
+
+    expect(match).not.toBeNull();
+    expect(match?.categoria).toBe("automatizacion");
+  });
+
+  it("la sección 5.1 remite a la reconfirmación de la sección 3 en vez de escalar directo", () => {
+    const seccion51 = SYSTEM_PROMPT.slice(
+      SYSTEM_PROMPT.indexOf("5.1 Consulta de disponibilidad"),
+      SYSTEM_PROMPT.indexOf("5.2 Devolución")
+    );
+
+    expect(seccion51).toMatch(/reconfirmación de la sección 3/i);
   });
 });
 

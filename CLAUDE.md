@@ -362,6 +362,49 @@ dejar rastro es lo que hacía desaparecer leads.
   (`google/gemini-3.1-flash-lite` incluido) es
   `consulta_disponibilidad`↔`otro`, dos intenciones que hoy reciben las
   mismas herramientas en el tool loop.
+- **El corte "habló hoy" de la bandeja tiene UNA sola fuente** (T1 de "Seis
+  frentes del buzón", 8/9/2026): `useInboxDay(scope)` (`use-inbox-day.ts`,
+  vive en `crm-shell.tsx`) calcula la medianoche de Caracas con
+  `currentDayRange` y ese MISMO string viaja a `FetchConversationsOptions.since`,
+  a `fetchInboxCounts`, a `fetchUnassignedConversations` y a `matchesDay`
+  (`inbox-filters.ts`). La fórmula es `last_message_at >= hoy` O
+  (`last_message_at is null` Y `created_at >= hoy`) — la segunda pata existe
+  para que un contacto recién agregado desde la bandeja (T6, sin mensajes)
+  no desaparezca. No recalcular la medianoche en ningún otro sitio: dos
+  relojes desalineados hacen que un chat entre en la lista pero no en el
+  conteo. La búsqueda ignora el corte a propósito; el interruptor "Ver todo"
+  se guarda por visor en `localStorage` (`sbk.inbox.scope.<agentId>`).
+- **`intencion_compra` ya no escala al primer "sí"** (T2, 8/9/2026): la
+  herramienta de escalar sella `conversations.handoff_confirmation_pending_at`
+  y devuelve una instrucción para reconfirmar; solo escala cuando el ÚLTIMO
+  mensaje del cliente es POSTERIOR al sello y el sello tiene menos de 6 h
+  (`handoffConfirmationState`, `handoff-confirmation.ts`). "Posterior al
+  sello" es la guarda real: sin ella el modelo podía llamar dos veces a la
+  herramienta en el mismo turno y saltarse la confirmación. Devolución, queja,
+  escenarios con `afterSend` y la guarda de identidad NO pasan por acá, y
+  `escalateConversation` siempre limpia el sello.
+- **Un sticker saliente solo viaja por `link` a un WebP del bucket** (T3a,
+  8/9/2026): payload `{ type: "sticker", sticker: { link } }` SIN `caption`
+  (`meta-client.ts`), estático 512×512 y ≤ 100 KB (`sticker-image.ts`); la
+  biblioteca (`stickers`) guarda `storage_path` dentro de `whatsapp-media`
+  bajo `stickers/<uuid>.webp`, nunca una URL. `deleteSticker` borra la FILA
+  antes que el objeto para que un rechazo de RLS no deje archivos huérfanos.
+  Que Meta acepte el primer sticker saliente en producción está por
+  verificar; un animado puede rechazarlo y eso ya lo muestra `failure-reason`.
+- **`products.weight_kg` es nullable y la IA NO lo lee** (T4, 8/9/2026):
+  `null` significa "sin cargar" (la mayoría del catálogo hasta que alguien lo
+  complete para Cashea), el filtro "Sin peso" cuenta solo activos, y
+  `buildCatalogTool` no lo selecciona a propósito. `parseWeightInput` acepta
+  coma o punto y devuelve `value: null` para el campo vacío (guardado
+  legítimo, no error).
+- **La factura es un SNAPSHOT** (T5, 8/9/2026): `invoices.customer` e
+  `invoices.items` se copian de `contacts`/`order_items` al generarla y no se
+  actualizan si después editan el contacto o el producto; los totales se
+  redondean a centavos renglón por renglón (`computeInvoiceTotals`,
+  `invoices.ts`), nunca al final. Emitir y anular exigen supervisor/admin EN
+  RLS (`invoices_update`). Los datos fiscales del emisor (`INVOICE_ISSUER`)
+  y el IVA (`DEFAULT_TAX_RATE = 0`) están "Por definir" hasta que el operador
+  los entregue: la hoja lo muestra así, no inventa valores.
 
 ---
 

@@ -1,6 +1,7 @@
 /** @vitest-environment jsdom */
 import { describe, expect, it, vi, beforeEach, afterEach } from "vitest";
 import { render, screen, fireEvent, within, waitFor } from "@testing-library/react";
+import type { ComponentProps } from "react";
 import type { Agent, Conversation, Tag } from "@/lib/types";
 import { fetchConversations, fetchPinnedIds, fetchUnassignedConversations, INBOX_PAGE_SIZE } from "@/lib/data";
 import { pinConversation, unpinConversation } from "@/lib/mutations";
@@ -37,7 +38,31 @@ vi.mock("@/lib/mutations", () => ({
   unpinConversation: vi.fn().mockResolvedValue(undefined),
 }));
 
+/**
+ * T6 (8/9/2026): "Agregar contacto" abre `NewContactModal`, que tiene sus
+ * propias pruebas completas (`new-contact-modal.test.tsx` -- validación,
+ * llamada a la mutación, `existed`). Acá solo importa el CABLEADO: que el
+ * botón de la cabecera abra el modal y que su `onCreated` llegue a
+ * `onContactCreated` -- por eso se mockea entero, en vez de arrastrar
+ * `@/lib/mutations` con `createContactConversation` real.
+ */
+let capturedOnCreated: ((conversationId: string, existed: boolean) => void) | undefined;
+vi.mock("@/components/inbox/new-contact-modal", () => ({
+  NewContactModal: ({
+    isOpen,
+    onCreated,
+  }: {
+    isOpen: boolean;
+    onOpenChange: (open: boolean) => void;
+    onCreated: (conversationId: string, existed: boolean) => void;
+  }) => {
+    capturedOnCreated = onCreated;
+    return isOpen ? <div data-testid="new-contact-modal" /> : null;
+  },
+}));
+
 beforeEach(() => {
+  capturedOnCreated = undefined;
   vi.mocked(fetchConversations).mockReset().mockResolvedValue([]);
   vi.mocked(fetchUnassignedConversations).mockReset().mockResolvedValue([]);
   vi.mocked(fetchPinnedIds).mockReset().mockResolvedValue(new Set());
@@ -165,7 +190,10 @@ const CONVERSATIONS = [
   conversation({ id: "de-ana-sin-leer", assignedAgent: ANA, unreadCount: 1 }),
 ];
 
-function renderSidebar(currentAgent: Agent) {
+function renderSidebar(
+  currentAgent: Agent,
+  overrides: Partial<ComponentProps<typeof InboxSidebar>> = {}
+) {
   return render(
     <InboxSidebar
       conversations={CONVERSATIONS}
@@ -174,6 +202,7 @@ function renderSidebar(currentAgent: Agent) {
       currentAgent={currentAgent}
       allTags={ALL_TAGS}
       bcvRate={null}
+      {...overrides}
     />
   );
 }
@@ -2317,5 +2346,220 @@ describe("InboxSidebar — recuerda la píldora y el orden (T2.2)", () => {
     // que ya es "sin almacenamiento" (ver el comentario de cabecera).
     expect(() => renderSidebar(JEFA)).not.toThrow();
     expect(() => irATodos()).not.toThrow();
+  });
+});
+
+/**
+ * T6 (8/9/2026): "Agregar contacto" desde la bandeja. `NewContactModal` está
+ * mockeado (ver el mock de arriba) porque tiene sus propias pruebas -- lo
+ * que estos tests fijan es el cableado del botón de la cabecera: que abra
+ * el modal, y que su `onCreated` llegue a la prop `onContactCreated`.
+ */
+describe("InboxSidebar — Agregar contacto (T6, 8/9/2026)", () => {
+  it("la cabecera muestra el botón y el modal arranca cerrado", () => {
+    renderSidebar(ANA);
+
+    expect(screen.getByRole("button", { name: "Agregar contacto" })).toBeInTheDocument();
+    expect(screen.queryByTestId("new-contact-modal")).not.toBeInTheDocument();
+  });
+
+  it("hacer clic en el botón abre el modal", () => {
+    renderSidebar(ANA);
+
+    fireEvent.click(screen.getByRole("button", { name: "Agregar contacto" }));
+
+    expect(screen.getByTestId("new-contact-modal")).toBeInTheDocument();
+  });
+
+  it("el onCreated del modal llega a onContactCreated con el id de la conversación", () => {
+    const onContactCreated = vi.fn();
+    renderSidebar(ANA, { onContactCreated });
+
+    fireEvent.click(screen.getByRole("button", { name: "Agregar contacto" }));
+    capturedOnCreated?.("conv-nueva", false);
+
+    expect(onContactCreated).toHaveBeenCalledWith("conv-nueva");
+  });
+
+  it("sin onContactCreated, que el modal cree un contacto no rompe nada", () => {
+    renderSidebar(ANA);
+
+    fireEvent.click(screen.getByRole("button", { name: "Agregar contacto" }));
+
+    expect(() => capturedOnCreated?.("conv-nueva", false)).not.toThrow();
+  });
+});
+
+/**
+ * T1 del plan "Seis frentes del buzón" (8/9/2026): el interruptor "Ver
+ * todo". El ESTADO del corte (`dayScope`/`dayStart`) vive en `crm-shell.tsx`
+ * —lo necesitan también la cabecera de "Todos" y los seis contadores, no
+ * solo esta lista— así que acá se prueba como props controladas: el sidebar
+ * las recibe, las usa para armar sus consultas y avisa el cambio por
+ * `onDayScopeChange`, sin guardar nada de esto en `localStorage` por su
+ * cuenta (a diferencia de `filter`/`sort`, que sí son estado propio de este
+ * componente).
+ */
+describe('InboxSidebar — el interruptor "Ver todo" (T1, 8/9/2026)', () => {
+  const HOY_00_00_CARACAS = "2026-09-08T04:00:00.000Z";
+
+  it('sin onDayScopeChange (un consumidor que no conoce esta tarea), no pinta el interruptor', () => {
+    renderSidebar(JEFA);
+    expect(screen.queryByLabelText("Ver todo el historial")).toBeNull();
+    expect(screen.queryByLabelText("Ver solo hoy")).toBeNull();
+  });
+
+  it('con dayScope "today", pide "Pendientes" (la píldora por defecto) con el since de hoy', () => {
+    render(
+      <InboxSidebar
+        conversations={[]}
+        selectedId={null}
+        onSelect={() => {}}
+        currentAgent={JEFA}
+        allTags={ALL_TAGS}
+        bcvRate={null}
+        dayScope="today"
+        dayStart={HOY_00_00_CARACAS}
+        onDayScopeChange={() => {}}
+      />
+    );
+
+    expect(fetchConversations).toHaveBeenCalledWith(expect.anything(), {
+      activeOnly: true,
+      awaitingReplyOnly: true,
+      limit: INBOX_PAGE_SIZE,
+      since: HOY_00_00_CARACAS,
+    });
+  });
+
+  it('el botón pinta "Ver todo el historial" en modo "today", y al revés en "all"', () => {
+    const { rerender } = render(
+      <InboxSidebar
+        conversations={[]}
+        selectedId={null}
+        onSelect={() => {}}
+        currentAgent={JEFA}
+        allTags={ALL_TAGS}
+        bcvRate={null}
+        dayScope="today"
+        dayStart={HOY_00_00_CARACAS}
+        onDayScopeChange={() => {}}
+      />
+    );
+    expect(screen.getByLabelText("Ver todo el historial")).toBeInTheDocument();
+    expect(screen.queryByLabelText("Ver solo hoy")).toBeNull();
+
+    rerender(
+      <InboxSidebar
+        conversations={[]}
+        selectedId={null}
+        onSelect={() => {}}
+        currentAgent={JEFA}
+        allTags={ALL_TAGS}
+        bcvRate={null}
+        dayScope="all"
+        dayStart={null}
+        onDayScopeChange={() => {}}
+      />
+    );
+    expect(screen.getByLabelText("Ver solo hoy")).toBeInTheDocument();
+    expect(screen.queryByLabelText("Ver todo el historial")).toBeNull();
+  });
+
+  it('un clic en el interruptor avisa el cambio de scope, sin tocarlo por su cuenta', () => {
+    const onDayScopeChange = vi.fn();
+    render(
+      <InboxSidebar
+        conversations={[]}
+        selectedId={null}
+        onSelect={() => {}}
+        currentAgent={JEFA}
+        allTags={ALL_TAGS}
+        bcvRate={null}
+        dayScope="today"
+        dayStart={HOY_00_00_CARACAS}
+        onDayScopeChange={onDayScopeChange}
+      />
+    );
+
+    fireEvent.click(screen.getByLabelText("Ver todo el historial"));
+
+    expect(onDayScopeChange).toHaveBeenCalledWith("all");
+  });
+
+  /**
+   * "El paginador se reinicia" (contrato del plan): tocar el interruptor —o
+   * que ruede el día— cambia `dayStart`, que entra al `sessionKey` de
+   * `useInboxPager` junto con la píldora/etiqueta/orden. Sesión nueva
+   * significa primera página de NUEVO, no lo acumulado bajo el corte viejo.
+   */
+  it('cambiar "dayStart" abre sesión nueva: pide la primera página otra vez, ahora sin since', async () => {
+    const { rerender } = render(
+      <InboxSidebar
+        conversations={[]}
+        selectedId={null}
+        onSelect={() => {}}
+        currentAgent={JEFA}
+        allTags={ALL_TAGS}
+        bcvRate={null}
+        dayScope="today"
+        dayStart={HOY_00_00_CARACAS}
+        onDayScopeChange={() => {}}
+      />
+    );
+
+    expect(fetchConversations).toHaveBeenCalledWith(expect.anything(), {
+      activeOnly: true,
+      awaitingReplyOnly: true,
+      limit: INBOX_PAGE_SIZE,
+      since: HOY_00_00_CARACAS,
+    });
+    const llamadasAntes = vi.mocked(fetchConversations).mock.calls.length;
+
+    rerender(
+      <InboxSidebar
+        conversations={[]}
+        selectedId={null}
+        onSelect={() => {}}
+        currentAgent={JEFA}
+        allTags={ALL_TAGS}
+        bcvRate={null}
+        dayScope="all"
+        dayStart={null}
+        onDayScopeChange={() => {}}
+      />
+    );
+
+    await waitFor(() =>
+      expect(vi.mocked(fetchConversations).mock.calls.length).toBeGreaterThan(llamadasAntes)
+    );
+    expect(fetchConversations).toHaveBeenCalledWith(expect.anything(), {
+      activeOnly: true,
+      awaitingReplyOnly: true,
+      limit: INBOX_PAGE_SIZE,
+    });
+  });
+
+  it('"Sin dueño" también recibe el since de hoy', () => {
+    render(
+      <InboxSidebar
+        conversations={[]}
+        selectedId={null}
+        onSelect={() => {}}
+        currentAgent={JEFA}
+        allTags={ALL_TAGS}
+        bcvRate={null}
+        dayScope="today"
+        dayStart={HOY_00_00_CARACAS}
+        onDayScopeChange={() => {}}
+      />
+    );
+
+    irA("Sin dueño");
+
+    expect(fetchUnassignedConversations).toHaveBeenCalledWith(expect.anything(), {
+      tagId: undefined,
+      since: HOY_00_00_CARACAS,
+    });
   });
 });

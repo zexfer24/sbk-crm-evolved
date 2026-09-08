@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { isDeliverablePhoneNumber, phoneNumberFromWaId } from "@/lib/whatsapp/phone";
+import { isDeliverablePhoneNumber, normalizePhoneInput, phoneNumberFromWaId } from "@/lib/whatsapp/phone";
 
 describe("phoneNumberFromWaId", () => {
   it("arma el número del CRM a partir del wa_id", () => {
@@ -51,4 +51,33 @@ describe("isDeliverablePhoneNumber", () => {
       expect(isDeliverablePhoneNumber(valor)).toBe(false);
     }
   );
+});
+
+/**
+ * T6 (8/9/2026): agregar un contacto desde la bandeja empieza con lo que un
+ * asesor escribe a mano, no con un `wa_id` limpio. Los cinco formatos son
+ * los que un venezolano tipea sin pensarlo con un móvil `04xx-xxxxxxx`.
+ */
+describe("normalizePhoneInput", () => {
+  it.each([
+    ["0414-1234567", "+584141234567"],
+    ["0414 123 4567", "+584141234567"],
+    ["58414-1234567", "+584141234567"],
+    ["0058414-1234567", "+584141234567"],
+    ["+58414-1234567", "+584141234567"],
+    ["+584141234567", "+584141234567"],
+  ])("normaliza %s a %s", (crudo, esperado) => {
+    expect(normalizePhoneInput(crudo)).toBe(esperado);
+  });
+
+  it.each([["abc"], ["123"], [""], ["   "], [null], [undefined]])(
+    "rechaza lo que no llega a un E.164 entregable: %s",
+    (crudo) => {
+      expect(normalizePhoneInput(crudo)).toBeNull();
+    }
+  );
+
+  it("respeta un código de país explícito distinto al default", () => {
+    expect(normalizePhoneInput("3001234567", "57")).toBe("+573001234567");
+  });
 });

@@ -522,6 +522,18 @@ export type InboxFilter = "pending" | "unread" | "mine" | "all" | "unassigned" |
 
 export type InboxSort = "recent" | "oldest";
 
+/**
+ * Corte por día de la bandeja (T1 del plan "Seis frentes del buzón",
+ * 8/9/2026): `"today"` (default) muestra solo lo que habló HOY en
+ * `America/Caracas` —cliente, asesor o IA, cualquiera de los tres mueve
+ * `last_message_at`—; `"all"` es el interruptor "Ver todo" que vuelve a la
+ * bandeja sin corte. Vive junto a `InboxFilter`/`InboxSort` porque es el
+ * mismo tipo de decisión: qué ventana de la base entra a la lista, antes de
+ * que la búsqueda o cualquier píldora se apliquen encima. La búsqueda
+ * siempre ignora este corte (ver `applyInboxFilters`, inbox-filters.ts).
+ */
+export type InboxDayScope = "today" | "all";
+
 /** Qué categoría detectó la IA en el mensaje del cliente. */
 export type AgentIntent = "consulta_disponibilidad" | "devolucion" | "queja" | "otro";
 
@@ -762,6 +774,8 @@ export interface Product {
   isActive: boolean;
   updatedAt: string;
   compatibility: ProductCompatibility[];
+  /** Kilogramos con 3 decimales; null = todavía sin cargar. Cashea lo exige para el envío gratis (T4, 8/9/2026). */
+  weightKg: number | null;
 }
 
 /**
@@ -795,4 +809,86 @@ export interface SaleCartItem {
   description: string;
   unitPriceUsd: number;
   quantity: number;
+}
+
+/**
+ * Un sticker guardado en la biblioteca (T3a, "Seis frentes del buzón",
+ * 8/9/2026): los que un cliente mandó y un asesor decidió conservar (clic
+ * derecho → "Guardar sticker" en el chat) y los que se crean desde cero.
+ * `url` es la ruta propia del CRM (vía `mediaUrlFor`, igual que
+ * `Message.mediaUrl`), nunca la ruta cruda del bucket.
+ */
+export interface Sticker {
+  id: string;
+  url: string;
+  name: string | null;
+  animated: boolean;
+  createdBy: string | null;
+  createdAt: string;
+}
+
+// ---------------------------------------------------------------------------
+// Facturas (T5, plan "Seis frentes del buzón", 8/9/2026)
+//
+// Las bases de la factura de una venta cerrada. Sin PDF en servidor —se
+// imprime desde el navegador— y sin todos los datos fiscales del negocio
+// todavía (RIF, dirección fiscal, si aplica IVA): `INVOICE_ISSUER`
+// (`src/lib/invoices.ts`) los deja en null a propósito y la hoja los pinta
+// como "Por definir" en vez de inventarlos. Ver el encabezado de
+// `supabase/migrations/20260909040000_invoices.sql` para la historia
+// completa.
+// ---------------------------------------------------------------------------
+
+export type InvoiceStatus = "draft" | "issued" | "void";
+
+/**
+ * Snapshot del contacto al momento de facturar: los mismos campos que
+ * `Contact`, copiados —no una referencia viva—. Si después editan el
+ * contacto, la factura ya generada no cambia.
+ */
+export interface InvoiceCustomerSnapshot {
+  displayName: string;
+  phoneNumber: string;
+  cedulaType: CedulaType | null;
+  cedulaNumber: string | null;
+  state: string | null;
+  city: string | null;
+  address: string | null;
+}
+
+/** Un renglón de la factura: copiado de `order_items` al generarla, no una referencia viva. */
+export interface InvoiceItem {
+  description: string;
+  quantity: number;
+  unitPrice: number;
+  amount: number;
+}
+
+/**
+ * Una factura. `customer`/`items` son el snapshot que explica la migración:
+ * no cambian si después editan el contacto o el producto que le dieron
+ * origen.
+ */
+export interface Invoice {
+  id: string;
+  number: number;
+  conversationId: string | null;
+  orderId: string | null;
+  contactId: string;
+  customer: InvoiceCustomerSnapshot;
+  items: InvoiceItem[];
+  subtotal: number;
+  taxRate: number;
+  taxAmount: number;
+  total: number;
+  currency: "USD" | "VES";
+  /** Tasa BCV vigente al generar la factura. Null si no se pudo leer ese día. */
+  bcvRate: number | null;
+  status: InvoiceStatus;
+  issuedAt: string | null;
+  issuedBy: AgentRef | null;
+  voidedAt: string | null;
+  notes: string | null;
+  createdAt: string;
+  updatedAt: string;
 }

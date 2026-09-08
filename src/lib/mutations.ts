@@ -2,19 +2,29 @@ import type { SupabaseClient } from "@supabase/supabase-js";
 import type {
   Agent,
   CedulaType,
+  Invoice,
   MessageType,
   PaymentMethod,
   Playbook,
+  Sale,
   SaleItemOrigin,
   TagColor,
   WhatsappTemplate,
 } from "@/lib/types";
 import { PAYMENT_METHOD_LABELS } from "@/lib/types";
 import type { BusinessHours } from "@/lib/business-hours";
+import { fetchDefaultChannel } from "@/lib/data";
 // Sin "server-only": identity-guard.ts es un módulo puro (mismo motivo que
 // human-handled.ts) y este archivo corre en el navegador, dentro del panel
 // de supervisión.
 import { revealsIdentity, type IdentityMatch } from "@/lib/ai/identity-guard";
+// T3a ("Seis frentes del buzón", 8/9/2026): biblioteca de stickers. Import
+// aparte, en su propia línea, para no tocar el bloque de arriba —otras
+// tareas del mismo plan lo editan en paralelo.
+import type { Message, Sticker } from "@/lib/types";
+import { MEDIA_BUCKET, mediaUrlFor, storagePathFromUrl } from "@/lib/storage";
+import { buildInvoiceDraft, formatInvoiceNumber } from "@/lib/invoices";
+import { fetchOrderItems, INVOICE_SELECT, mapInvoice, type RawInvoice } from "@/lib/invoices-data";
 
 async function insertSystemEvent(
   supabase: SupabaseClient,
@@ -784,6 +794,23 @@ export async function updateProductPrice(supabase: SupabaseClient, productId: st
   if (error) throw error;
 }
 
+/**
+ * Peso en kilos para el envío (T4, "Seis frentes del buzón", 8/9/2026).
+ *
+ * `weightKg: null` es un guardado válido: vuelve a dejar el repuesto "sin
+ * cargar", el mismo estado en el que nace un producto nuevo. Cashea exige el
+ * peso para calcular si el envío sale gratis; la IA no lo lee (fuera de
+ * alcance de esta tarea).
+ */
+export async function updateProductWeight(supabase: SupabaseClient, productId: string, weightKg: number | null) {
+  const { error } = await supabase
+    .from("products")
+    .update({ weight_kg: weightKg, updated_at: new Date().toISOString() })
+    .eq("id", productId);
+
+  if (error) throw error;
+}
+
 /** Desactivar un repuesto lo saca del catálogo que ve la IA, sin borrar su historial de ventas. */
 export async function setProductActive(supabase: SupabaseClient, productId: string, isActive: boolean) {
   const { error } = await supabase
@@ -869,4 +896,361 @@ export async function unpinConversation(supabase: SupabaseClient, agentId: strin
     .eq("agent_id", agentId)
     .eq("conversation_id", conversationId);
   if (error) throw error;
+}
+
+// ---------------------------------------------------------------------------
+// Biblioteca de stickers (T3a, "Seis frentes del buzón", 8/9/2026). El
+// archivo vive en el mismo bucket privado `whatsapp-media` que el resto del
+// multimedia, bajo `stickers/<uuid>.webp` — nunca en un bucket aparte, para
+// reusar las políticas de storage que ya existen.
+// ---------------------------------------------------------------------------
+
+function newStickerPath(): string {
+  return `stickers/${crypto.randomUUID()}.webp`;
+}
+
+interface RawStickerRow {
+  id: string;
+  storage_path: string;
+  name: string | null;
+  animated: boolean;
+  created_by: string | null;
+  created_at: string;
+}
+
+function mapStickerRow(row: RawStickerRow): Sticker {
+  return {
+    id: row.id,
+    url: mediaUrlFor(row.storage_path),
+    name: row.name,
+    animated: row.animated,
+    createdBy: row.created_by,
+    createdAt: row.created_at,
+  };
+}
+
+const STICKER_SELECT = "id, storage_path, name, animated, created_by, created_at";
+
+/**
+ * Guarda en la biblioteca el sticker de un mensaje ya recibido (clic derecho
+ * → "Guardar sticker" en el chat). Copia el archivo del cliente a su propia
+ * ruta en vez de apuntar `storage_path` al original: el mensaje puede
+ * borrarse (`source_message_id` tiene `on delete set null`) y el sticker
+ * guardado tiene que sobrevivirlo.
+ *
+ * `storage.copy` exige las mismas dos políticas que ya tiene el bucket
+ * (`select`+`is_agent()` e `insert` para `authenticated`) — si por lo que
+ * sea no está disponible en el proyecto Supabase, el respaldo baja el
+ * archivo por la ruta propia (`/api/media/...`, que ya valida la sesión) y
+ * lo vuelve a subir con el mismo resultado.
+ */
+export async function saveStickerFromMessage(
+  supabase: SupabaseClient,
+  message: Message,
+  agent: Agent
+): Promise<Sticker> {
+  if (!message.mediaUrl) throw new Error("Este mensaje no tiene un sticker que guardar.");
+  const sourcePath = storagePathFromUrl(message.mediaUrl);
+  if (!sourcePath) throw new Error("No se pudo ubicar el archivo del sticker en el almacenamiento.");
+
+  const destinationPath = newStickerPath();
+
+  const { error: copyError } = await supabase.storage.from(MEDIA_BUCKET).copy(sourcePath, destinationPath);
+  if (copyError) {
+    // Respaldo: bajar por la ruta propia (con sesión) y subir de nuevo. Pasa
+    // por `fetch` porque, a diferencia de `.copy`, no depende de un permiso
+    // de storage que pueda faltar en un proyecto Supabase más viejo.
+    const response = await fetch(message.mediaUrl);
+    if (!response.ok) throw new Error("No se pudo descargar el sticker para guardarlo.");
+    const blob = await response.blob();
+    const { error: uploadError } = await supabase.storage
+      .from(MEDIA_BUCKET)
+      .upload(destinationPath, blob, { contentType: "image/webp" });
+    if (uploadError) throw uploadError;
+  }
+
+  const { data, error } = await supabase
+    .from("stickers")
+    .insert({
+      storage_path: destinationPath,
+      created_by: agent.id,
+      source_message_id: message.id,
+    })
+    .select(STICKER_SELECT)
+    .single();
+  if (error) throw error;
+  return mapStickerRow(data as RawStickerRow);
+}
+
+/** Sube un sticker armado desde cero (T3b arma el WebP; acá solo se sube e inserta). */
+export async function createSticker(
+  supabase: SupabaseClient,
+  blob: Blob,
+  name: string | null,
+  agent: Agent
+): Promise<Sticker> {
+  const path = newStickerPath();
+
+  const { error: uploadError } = await supabase.storage
+    .from(MEDIA_BUCKET)
+    .upload(path, blob, { contentType: "image/webp" });
+  if (uploadError) throw uploadError;
+
+  const { data, error } = await supabase
+    .from("stickers")
+    .insert({ storage_path: path, name, created_by: agent.id })
+    .select(STICKER_SELECT)
+    .single();
+  if (error) throw error;
+  return mapStickerRow(data as RawStickerRow);
+}
+
+/**
+ * Borra un sticker de la biblioteca: primero la fila (la RLS de `stickers`
+ * decide si este agente puede — `created_by = auth.uid()` o
+ * supervisor/admin — y el error sube tal cual para que la UI lo traduzca),
+ * y solo si eso funcionó el archivo del bucket. En ese orden: si el borrado
+ * de la fila lo frena la RLS, el archivo no debe desaparecer con la fila
+ * todavía apuntándolo.
+ */
+export async function deleteSticker(supabase: SupabaseClient, sticker: Sticker): Promise<void> {
+  const { error } = await supabase.from("stickers").delete().eq("id", sticker.id);
+  if (error) throw error;
+
+  const path = storagePathFromUrl(sticker.url);
+  if (!path) return;
+  const { error: removeError } = await supabase.storage.from(MEDIA_BUCKET).remove([path]);
+  if (removeError) throw removeError;
+}
+
+/**
+ * Manda un sticker por el mismo camino que cualquier adjunto (`kind:
+ * "media"`), sin `content`: Meta rechaza un sticker con caption
+ * (`meta-client.ts`), así que ni se ofrece mandar uno.
+ */
+export async function sendStickerMessage(conversationId: string, mediaUrl: string): Promise<string | null> {
+  return postSendMessage({ conversationId, kind: "media", mediaUrl, mediaType: "sticker" });
+}
+
+// ---------------------------------------------------------------------------
+// Facturas (T5, plan "Seis frentes del buzón", 8/9/2026). El armado del
+// snapshot y el cálculo de totales viven en `invoices.ts` (puro); acá solo
+// se lee lo que hace falta de la base para armarlo y se escribe el
+// resultado. `INVOICE_SELECT`/`mapInvoice` se reusan de `invoices-data.ts`
+// para devolver la fila recién escrita ya mapeada, sin una segunda consulta.
+// ---------------------------------------------------------------------------
+
+function rawInvoiceFrom(data: unknown): RawInvoice {
+  return data as RawInvoice;
+}
+
+/**
+ * Genera el borrador de una factura para una venta cerrada. El monto sale
+ * SIEMPRE de `order_items` —lo que armó `closeSaleWithContactInfo` al
+ * cerrar la venta—, nunca de un número escrito a mano: mismo principio que
+ * gobierna el resto del cierre.
+ *
+ * Sin `conversations.order_id` (la venta no llegó a tener orden registrada,
+ * caso que en la práctica no debería darse pero que el tipo `Sale` no
+ * descarta) falla con un mensaje claro en vez de generar una factura vacía.
+ */
+export async function createInvoiceForSale(
+  supabase: SupabaseClient,
+  sale: Sale,
+  agent: Agent,
+  bcvRate: number | null
+): Promise<Invoice> {
+  const { data: conversation, error: conversationError } = await supabase
+    .from("conversations")
+    .select("order_id")
+    .eq("id", sale.id)
+    .maybeSingle();
+  if (conversationError) throw conversationError;
+
+  const orderId = (conversation as { order_id: string | null } | null)?.order_id ?? null;
+  if (!orderId) {
+    throw new Error("Esta venta no tiene orden registrada");
+  }
+
+  const orderItems = await fetchOrderItems(supabase, orderId);
+  const draft = buildInvoiceDraft({ sale, orderId, orderItems, contact: sale.contact, bcvRate });
+
+  const { data, error } = await supabase
+    .from("invoices")
+    .insert({
+      conversation_id: draft.conversationId,
+      order_id: draft.orderId,
+      contact_id: draft.contactId,
+      customer: draft.customer,
+      items: draft.items,
+      subtotal: draft.subtotal,
+      tax_rate: draft.taxRate,
+      tax_amount: draft.taxAmount,
+      total: draft.total,
+      currency: draft.currency,
+      bcv_rate: draft.bcvRate,
+    })
+    .select(INVOICE_SELECT)
+    .single();
+  if (error || !data) throw error ?? new Error("No se pudo crear la factura.");
+
+  const invoice = mapInvoice(rawInvoiceFrom(data));
+  await insertSystemEvent(
+    supabase,
+    sale.id,
+    agent.id,
+    `${agent.displayName} generó la factura ${formatInvoiceNumber(invoice.number)}`
+  );
+  return invoice;
+}
+
+/** Emitir es sensible (RLS lo exige de supervisor/admin): la factura pasa a `issued` con quién y cuándo. */
+export async function issueInvoice(supabase: SupabaseClient, id: string, agent: Agent): Promise<Invoice> {
+  const { data, error } = await supabase
+    .from("invoices")
+    .update({ status: "issued", issued_at: new Date().toISOString(), issued_by: agent.id })
+    .eq("id", id)
+    .select(INVOICE_SELECT)
+    .single();
+  if (error || !data) throw error ?? new Error("No se pudo emitir la factura.");
+
+  const invoice = mapInvoice(rawInvoiceFrom(data));
+  if (invoice.conversationId) {
+    await insertSystemEvent(
+      supabase,
+      invoice.conversationId,
+      agent.id,
+      `${agent.displayName} emitió la factura ${formatInvoiceNumber(invoice.number)}`
+    );
+  }
+  return invoice;
+}
+
+/**
+ * Anula una factura (RLS lo exige de supervisor/admin). Sin `agent`, a
+ * propósito: la migración no tiene una columna `voided_by` —si hace falta
+ * saber quién anuló, esa columna se agrega aparte, con su propio trazo—.
+ */
+export async function voidInvoice(supabase: SupabaseClient, id: string): Promise<Invoice> {
+  const { data, error } = await supabase
+    .from("invoices")
+    .update({ status: "void", voided_at: new Date().toISOString() })
+    .eq("id", id)
+    .select(INVOICE_SELECT)
+    .single();
+  if (error || !data) throw error ?? new Error("No se pudo anular la factura.");
+
+  return mapInvoice(rawInvoiceFrom(data));
+}
+
+// ---------------------------------------------------------------------------
+// Un contacto nuevo nace desde la bandeja (T6 del plan "Seis frentes del
+// buzón", 8/9/2026)
+//
+// Hasta hoy un contacto solo existía cuando escribía primero por WhatsApp.
+// El operador quería un botón para adelantarse: cargar nombre + teléfono y
+// abrir la conversación antes de que el cliente mande el primer mensaje.
+//
+// `contacts.phone_number` es `unique` y `conversations` tiene
+// `unique (contact_id, whatsapp_channel_id)` — el código postgres `23505`
+// en cualquiera de los dos inserts significa "ya existe", no un error: se
+// recupera la fila existente y se marca `existed`. Repetir el mismo número
+// dos veces es justamente el caso de uso más probable ("¿ya tengo a este
+// cliente?"), así que reintentar en silencio en vez de romper es lo
+// correcto acá.
+//
+// La invariante "ningún lead invisible" (CLAUDE.md) exige traspaso cuando
+// `awaiting_reply` queda `true` sin dueño. Esa columna es GENERADA a partir
+// de si hubo respuesta después del último mensaje del CLIENTE — y acá no
+// hay ningún mensaje del cliente todavía, así que `awaiting_reply` nace en
+// `false` y la invariante no aplica: crear un contacto mudo no le debe
+// ningún traspaso a `conversation_handoffs`.
+// ---------------------------------------------------------------------------
+
+export interface CreateContactConversationParams {
+  displayName: string;
+  /** Ya normalizado a E.164 por `normalizePhoneInput` (`lib/whatsapp/phone.ts`); esta función no vuelve a validarlo. */
+  phoneNumber: string;
+  agent: Agent;
+}
+
+export interface CreateContactConversationResult {
+  conversationId: string;
+  /** `true` si el contacto o la conversación YA existían (número repetido). */
+  existed: boolean;
+}
+
+const UNIQUE_VIOLATION = "23505";
+
+export async function createContactConversation(
+  supabase: SupabaseClient,
+  { displayName, phoneNumber, agent }: CreateContactConversationParams
+): Promise<CreateContactConversationResult> {
+  const channel = await fetchDefaultChannel(supabase);
+  if (!channel) throw new Error("No hay ningún canal de WhatsApp configurado todavía.");
+
+  let contactId: string;
+  let contactExisted = false;
+  const { data: newContact, error: contactError } = await supabase
+    .from("contacts")
+    .insert({ display_name: displayName, phone_number: phoneNumber })
+    .select("id")
+    .single();
+
+  if (contactError) {
+    if (contactError.code !== UNIQUE_VIOLATION) throw contactError;
+    contactExisted = true;
+    const { data: existing, error: findError } = await supabase
+      .from("contacts")
+      .select("id")
+      .eq("phone_number", phoneNumber)
+      .single();
+    if (findError) throw findError;
+    contactId = (existing as { id: string }).id;
+  } else {
+    contactId = (newContact as { id: string }).id;
+  }
+
+  let conversationId: string;
+  let conversationExisted = false;
+  const { data: newConversation, error: conversationError } = await supabase
+    .from("conversations")
+    .insert({ contact_id: contactId, whatsapp_channel_id: channel.id, status: "open" })
+    .select("id")
+    .single();
+
+  if (conversationError) {
+    if (conversationError.code !== UNIQUE_VIOLATION) throw conversationError;
+    conversationExisted = true;
+    const { data: existing, error: findError } = await supabase
+      .from("conversations")
+      .select("id")
+      .eq("contact_id", contactId)
+      .eq("whatsapp_channel_id", channel.id)
+      .single();
+    if (findError) throw findError;
+    conversationId = (existing as { id: string }).id;
+  } else {
+    conversationId = (newConversation as { id: string }).id;
+  }
+
+  const existed = contactExisted || conversationExisted;
+  if (!existed) {
+    // Nota interna, no `insertSystemEvent` de arriba: esa deja
+    // `is_internal_note` en su default `false` y esto es auditoría para el
+    // equipo, no algo con vocación de mostrarse como si el sistema le
+    // "hablara" al cliente en la burbuja del chat.
+    const { error: noteError } = await supabase.from("messages").insert({
+      conversation_id: conversationId,
+      direction: "outbound",
+      sender_type: "system",
+      sender_agent_id: agent.id,
+      message_type: "system_event",
+      content: `Contacto agregado desde la bandeja por ${agent.displayName}`,
+      is_internal_note: true,
+    });
+    if (noteError) throw noteError;
+  }
+
+  return { conversationId, existed };
 }

@@ -102,6 +102,24 @@ describe("escalateConversation", () => {
   });
 
   /**
+   * T2 (8/9/2026, "Seis frentes del buzón"): cualquier escalación cierra una
+   * oferta de pase a ventas pendiente, sea esta la puerta que la confirmó
+   * (`buildEscalateTool`, motivo "intencion_compra", segundo "sí") o
+   * cualquiera de las otras tres (acá probado con "queja", que ni pasa por
+   * la reconfirmación). Limpiarlo en el único lugar donde toda escalación
+   * converge evita tener que acordarse de hacerlo en cada puerta.
+   */
+  it("limpia handoff_confirmation_pending_at al escalar, sin importar el motivo", async () => {
+    claimNextAvailableAgentMock.mockResolvedValue({ id: "agent-1", displayName: "María" });
+    const { client, estado } = createFakeSupabase();
+
+    // @ts-expect-error -- fake mínimo
+    await escalateConversation(client, PARAMS);
+
+    expect(estado.conversationUpdates[0]).toMatchObject({ handoff_confirmation_pending_at: null });
+  });
+
+  /**
    * T0.3: el escalamiento es una salida silenciosa más de la IA —la
    * conversación deja de correr por el turno— y hasta ahora no dejaba fila
    * en `conversation_handoffs`. Con candidato, el traspaso va a la persona

@@ -35,6 +35,7 @@ function product(over: Partial<Product> = {}): Product {
     isActive: true,
     updatedAt: "2026-08-22T10:00:00.000Z",
     compatibility: [],
+    weightKg: null,
     ...over,
   };
 }

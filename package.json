@@ -22,6 +22,7 @@
     "ai": "^7.0.68",
     "clsx": "^2.1.1",
     "date-fns": "^4.4.0",
+    "emoji-picker-react": "4.20.2",
     "framer-motion": "^13.1.0",
     "ioredis": "^6.0.0",
     "lucide-react": "^1.32.0",

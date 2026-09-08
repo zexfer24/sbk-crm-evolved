@@ -80,6 +80,8 @@ let inboxProps: {
   initialPendingRows?: Conversation[];
   /** El pulso de tiempo real: lo mueve, entre otros, el canal de traspasos. */
   livePulse?: number;
+  /** T6 (8/9/2026): capturado para el test de "Agregar contacto". */
+  onContactCreated?: (conversationId: string) => void;
 } | null = null;
 
 vi.mock("@/components/inbox/inbox-sidebar", () => ({
@@ -92,6 +94,7 @@ vi.mock("@/components/inbox/inbox-sidebar", () => ({
     counts,
     initialPendingRows,
     livePulse,
+    onContactCreated,
   }: {
     conversations: Conversation[];
     onSelect: (id: string) => void;
@@ -101,6 +104,7 @@ vi.mock("@/components/inbox/inbox-sidebar", () => ({
     counts?: unknown;
     initialPendingRows?: Conversation[];
     livePulse?: number;
+    onContactCreated?: (conversationId: string) => void;
   }) => ((inboxProps = {
     conversations,
     hasMore,
@@ -108,6 +112,7 @@ vi.mock("@/components/inbox/inbox-sidebar", () => ({
     counts,
     initialPendingRows,
     livePulse,
+    onContactCreated,
   }),
   (
     <>
@@ -119,6 +124,11 @@ vi.mock("@/components/inbox/inbox-sidebar", () => ({
       {hasMore && (
         <button type="button" onClick={onLoadMore}>
           cargar más
+        </button>
+      )}
+      {onContactCreated && (
+        <button type="button" onClick={() => onContactCreated("conv-agregada")}>
+          simular contacto agregado
         </button>
       )}
     </>
@@ -856,6 +866,45 @@ describe("CrmShell — marcar leído vuelve a pedir los contadores", () => {
 });
 
 /**
+ * T6 (8/9/2026): "Agregar contacto" desde la bandeja. `NewContactModal` (con
+ * sus propias pruebas) vive dentro de `InboxSidebar`, mockeado acá — lo que
+ * este test fija es lo que hace `crm-shell.tsx` cuando `onContactCreated`
+ * llega desde abajo: abrir el chat de la conversación recién creada Y pedir
+ * la cabecera de la bandeja de nuevo (esa fila todavía no está en
+ * `conversations`, nadie la bajó).
+ */
+describe("CrmShell — Agregar contacto abre el chat y refresca la bandeja", () => {
+  it("onContactCreated selecciona la conversación y dispara un refetch de la cabecera", async () => {
+    render(
+      <CrmShell
+        currentAgent={currentAgent}
+        initialConversations={[buildConversation({ id: "conv-1" })]}
+        initialInboxCounts={inboxCounts}
+        allTags={allTags}
+        initialQuickReplies={initialQuickReplies}
+        bcvRate={null}
+        initialAgentSettings={agentSettings}
+      />
+    );
+    await act(async () => {});
+    fetchConversationsMock.mockClear();
+    fetchConversationMock.mockClear();
+
+    await act(async () => {
+      screen.getByRole("button", { name: "simular contacto agregado" }).click();
+    });
+    await act(async () => {});
+
+    // El chat se abre pidiendo el detalle de la conversación que acaba de nacer.
+    expect(fetchConversationMock).toHaveBeenCalledWith(expect.anything(), "conv-agregada");
+    // `refreshConversations` (dentro de `handleContactCreated`) llama a
+    // `fetchInboxHead`, que pide `fetchConversations` sin filtro: la fila
+    // nueva llega por ahí, no por la lista con la que arrancó el shell.
+    expect(fetchConversationsMock).toHaveBeenCalled();
+  });
+});
+
+/**
  * Cada evento de realtime pedía la bandeja entera: 200 conversaciones con
  * siete relaciones cada una, unos 230 KB medidos. Y los eventos no son pocos
  * —cada confirmación de entrega toca la conversación, así que un solo mensaje
@@ -1043,9 +1092,14 @@ describe("CrmShell — bajar por la bandeja cuesta una página, no todo otra vez
     // desplazamiento se rompe apenas una fila cruza el borde de página
     // mientras el asesor sigue bajando (ver `inbox-paging.ts`).
     const ultimaFilaCargada = primeraPagina[primeraPagina.length - 1];
+    // `since` (T1, 8/9/2026): la bandeja abre en "hoy" por defecto, así que
+    // toda consulta de "Todos" lo lleva — `expect.any(String)` porque es la
+    // medianoche de Caracas calculada contra el reloj del momento en que
+    // corre el test, no un valor fijo.
     expect(fetchConversationsMock.mock.calls[0][1]).toEqual({
       cursor: { lastMessageAt: ultimaFilaCargada.lastMessageAt, id: ultimaFilaCargada.id },
       limit: 30,
+      since: expect.any(String),
     });
     // Concatenadas, no reemplazadas: las primeras 30 siguen ahí.
     expect(inboxProps?.conversations).toHaveLength(60);
@@ -1102,8 +1156,12 @@ describe("CrmShell — bajar por la bandeja cuesta una página, no todo otra vez
       vi.advanceTimersByTime(750);
     });
 
-    // Una página, no las 60 que hay en pantalla.
-    expect(fetchConversationsMock.mock.calls[0][1]).toEqual({ limit: 30 });
+    // Una página, no las 60 que hay en pantalla. `since` (T1, 8/9/2026): ver
+    // el comentario del test de arriba.
+    expect(fetchConversationsMock.mock.calls[0][1]).toEqual({
+      limit: 30,
+      since: expect.any(String),
+    });
     expect(inboxProps?.conversations).toHaveLength(60);
   });
 });
@@ -1164,9 +1222,12 @@ describe("CrmShell — una ráfaga de scroll en 'Todos' pide una sola página", 
     const ultimaFilaPrimera = primeraPagina[primeraPagina.length - 1];
     const ultimaFilaSegunda = segundaPagina[segundaPagina.length - 1];
     expect(fetchConversationsMock).toHaveBeenCalledTimes(2);
+    // `since` (T1, 8/9/2026): ver el comentario del primer test de este
+    // `describe`.
     expect(fetchConversationsMock.mock.calls[1][1]).toEqual({
       cursor: { lastMessageAt: ultimaFilaSegunda.lastMessageAt, id: ultimaFilaSegunda.id },
       limit: 30,
+      since: expect.any(String),
     });
     // Nunca vuelve al cursor de la página 1: sería releer lo mismo dos veces.
     expect(fetchConversationsMock.mock.calls[1][1]).not.toEqual({

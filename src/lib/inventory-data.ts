@@ -13,7 +13,7 @@ import { inventoryPageRange, LOW_STOCK_THRESHOLD, type InventoryParams } from "@
 
 const PRODUCT_SELECT = `
   id, name, brand, price, currency, stock_quantity, description,
-  is_active, updated_at,
+  is_active, updated_at, weight_kg,
   product_compatibility(id, moto_brand, moto_model)
 `;
 
@@ -27,6 +27,7 @@ interface RawProduct {
   description: string | null;
   is_active: boolean;
   updated_at: string;
+  weight_kg: number | null;
   product_compatibility: { id: string; moto_brand: string; moto_model: string }[] | null;
 }
 
@@ -41,6 +42,7 @@ function mapProduct(row: RawProduct): Product {
     description: row.description,
     isActive: row.is_active,
     updatedAt: row.updated_at,
+    weightKg: row.weight_kg === null ? null : Number(row.weight_kg),
     compatibility: (row.product_compatibility ?? []).map((c) => ({
       id: c.id,
       motoBrand: c.moto_brand,
@@ -76,6 +78,8 @@ export async function fetchProductsPage(
     request = request.eq("is_active", true).gt("stock_quantity", 0).lte("stock_quantity", LOW_STOCK_THRESHOLD);
   } else if (filter === "inactivos") {
     request = request.eq("is_active", false);
+  } else if (filter === "sin-peso") {
+    request = request.eq("is_active", true).is("weight_kg", null);
   }
 
   if (sort === "stock") request = request.order("stock_quantity", { ascending: true });
@@ -107,6 +111,8 @@ export interface InventoryTotals {
   activos: number;
   agotados: number;
   bajos: number;
+  /** Activos sin peso cargado — el conteo que Cashea obliga a bajar a cero (T4, 8/9/2026). */
+  withoutWeight: number;
   /**
    * El `updated_at` más reciente de todo el catálogo, o null si no hay
    * ninguno. Es la antigüedad del inventario entero: si el más nuevo tiene
@@ -118,15 +124,16 @@ export interface InventoryTotals {
 export async function fetchInventoryTotals(supabase: SupabaseClient): Promise<InventoryTotals> {
   const countOnly = () => supabase.from("products").select("id", { count: "exact", head: true });
 
-  const [productos, activos, agotados, bajos, ultimo] = await Promise.all([
+  const [productos, activos, agotados, bajos, sinPeso, ultimo] = await Promise.all([
     countOnly(),
     countOnly().eq("is_active", true),
     countOnly().eq("is_active", true).lte("stock_quantity", 0),
     countOnly().eq("is_active", true).gt("stock_quantity", 0).lte("stock_quantity", LOW_STOCK_THRESHOLD),
+    countOnly().eq("is_active", true).is("weight_kg", null),
     supabase.from("products").select("updated_at").order("updated_at", { ascending: false }).limit(1).maybeSingle(),
   ]);
 
-  for (const result of [productos, activos, agotados, bajos]) {
+  for (const result of [productos, activos, agotados, bajos, sinPeso]) {
     if (result.error) throw result.error;
   }
 
@@ -135,6 +142,7 @@ export async function fetchInventoryTotals(supabase: SupabaseClient): Promise<In
     activos: activos.count ?? 0,
     agotados: agotados.count ?? 0,
     bajos: bajos.count ?? 0,
+    withoutWeight: sinPeso.count ?? 0,
     // La antigüedad es un dato de apoyo: si esta consulta falla, la sección
     // tiene que abrir igual y decir que no se sabe de cuándo son los datos.
     updatedAt: (ultimo.data as { updated_at: string } | null)?.updated_at ?? null,

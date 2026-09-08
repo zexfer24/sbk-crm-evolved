@@ -11,7 +11,7 @@ import {
   Reply as ReplyIcon,
   ShoppingCart,
 } from "lucide-react";
-import type { Message } from "@/lib/types";
+import type { Agent, Message } from "@/lib/types";
 import { formatMessageTime } from "@/lib/format";
 import { useLongPress } from "@/lib/use-long-press";
 import { failureAction } from "@/lib/whatsapp/failure-reason";
@@ -232,6 +232,12 @@ interface MessageBubbleProps {
    * muestra el motivo en palabras — solo no ofrece el atajo.
    */
   onOpenTemplatePicker?: () => void;
+  /**
+   * Quién ve el chat, para que el menú contextual pueda ofrecer "Guardar
+   * sticker" con dueño (T3a, "Seis frentes del buzón", 8/9/2026). Opcional:
+   * sin `agent` la burbuja se comporta exactamente igual que antes.
+   */
+  agent?: Agent;
 }
 
 export function MessageBubble({
@@ -242,6 +248,7 @@ export function MessageBubble({
   isHighlighted = false,
   pendingDelivery = false,
   onOpenTemplatePicker,
+  agent,
 }: MessageBubbleProps) {
   // Antes del retorno de `system_event`: un hook no puede quedar detrás de
   // una salida temprana.
@@ -396,6 +403,7 @@ export function MessageBubble({
           message={message}
           onReply={onReply}
           onClose={() => setMenuAt(null)}
+          agent={agent}
         />
       )}
 

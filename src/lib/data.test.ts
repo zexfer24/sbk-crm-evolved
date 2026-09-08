@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { SupabaseClient } from "@supabase/supabase-js";
-import { fetchMessages, searchConversationSummaries } from "@/lib/data";
+import { fetchDefaultChannel, fetchMessages, searchConversationSummaries } from "@/lib/data";
 
 // ---------------------------------------------------------------------------
 // Fake SupabaseClient: simula el query builder encadenable que usa
@@ -273,5 +273,91 @@ describe("searchConversationSummaries", () => {
     const result = await searchConversationSummaries(client, "nadie", []);
 
     expect(result).toEqual([]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// fetchDefaultChannel — T6 (8/9/2026): "Agregar contacto" desde la bandeja
+// necesita un canal para crear la conversación aunque el cliente no haya
+// escrito nunca. Mismo criterio "connected primero, si no el primero que
+// exista" que `fetchWhatsappChannelHealth` ya usa para la salud del número;
+// el fake reproduce las dos consultas encadenadas (`.eq("status",
+// "connected")` primero, sin ese filtro después) sin duplicar PostgREST.
+// ---------------------------------------------------------------------------
+
+interface RawChannelRow {
+  id: string;
+  label: string;
+  phone_number: string;
+  phone_number_id: string | null;
+  status: "connected" | "disconnected" | "pending";
+}
+
+function fakeChannelsTable(rows: { connected?: RawChannelRow[]; all?: RawChannelRow[] }) {
+  const client = {
+    from: (table: string) => {
+      if (table !== "whatsapp_channels") {
+        throw new Error(`el fake de este test solo conoce "whatsapp_channels", pidieron "${table}"`);
+      }
+      let filtroConnected = false;
+      const builder = {
+        select: () => builder,
+        eq: () => {
+          filtroConnected = true;
+          return builder;
+        },
+        order: () => builder,
+        limit: () =>
+          Promise.resolve({ data: (filtroConnected ? rows.connected : rows.all) ?? [], error: null }),
+      };
+      return builder;
+    },
+  };
+
+  return { client: client as unknown as SupabaseClient };
+}
+
+const CANAL_CONECTADO: RawChannelRow = {
+  id: "chan-connected",
+  label: "Principal",
+  phone_number: "+584000000000",
+  phone_number_id: "phone-id-1",
+  status: "connected",
+};
+
+const CANAL_PENDIENTE: RawChannelRow = {
+  id: "chan-pending",
+  label: "Demo",
+  phone_number: "+584000000001",
+  phone_number_id: null,
+  status: "pending",
+};
+
+describe("fetchDefaultChannel", () => {
+  it("prefiere el canal connected sobre cualquier otro", async () => {
+    const { client } = fakeChannelsTable({
+      connected: [CANAL_CONECTADO],
+      all: [CANAL_PENDIENTE, CANAL_CONECTADO],
+    });
+
+    const result = await fetchDefaultChannel(client);
+
+    expect(result?.id).toBe("chan-connected");
+  });
+
+  it("sin ningún canal connected, cae al primero que exista (demo)", async () => {
+    const { client } = fakeChannelsTable({ connected: [], all: [CANAL_PENDIENTE] });
+
+    const result = await fetchDefaultChannel(client);
+
+    expect(result?.id).toBe("chan-pending");
+  });
+
+  it("sin ningún canal creado, devuelve null en vez de inventar uno", async () => {
+    const { client } = fakeChannelsTable({ connected: [], all: [] });
+
+    const result = await fetchDefaultChannel(client);
+
+    expect(result).toBeNull();
   });
 });

@@ -330,6 +330,7 @@ export function ChatPanel({
               isHighlighted={item.message.id === jumpedToId}
               pendingDelivery={conversation.channel.status === "connected"}
               onOpenTemplatePicker={handleOpenTemplatePicker}
+              agent={currentAgent}
             />
           );
         })}
@@ -351,6 +352,7 @@ export function ChatPanel({
         messages={messages}
         templates={templates}
         quickReplies={quickReplies}
+        currentAgent={currentAgent}
         replyingTo={replyingTo}
         onCancelReply={() => setReplyingTo(null)}
         onSendText={onSendText}
