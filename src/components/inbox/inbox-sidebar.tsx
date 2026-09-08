@@ -1,7 +1,7 @@
 "use client";
 
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { ArrowDownWideNarrow, ArrowUpWideNarrow, Search } from "lucide-react";
+import { ArrowDownWideNarrow, ArrowUpWideNarrow, Search, UserPlus } from "lucide-react";
 import type { Agent, ConversationSummary, InboxFilter, InboxSort, Tag } from "@/lib/types";
 import {
   fetchConversations,
@@ -39,6 +39,7 @@ import { FilterScroller } from "@/components/inbox/filter-scroller";
 import { TagFilterMenu } from "@/components/inbox/tag-filter-menu";
 import { SlidingPills } from "@/components/sliding-pills";
 import { SbkMark } from "@/components/sbk-logo";
+import { NewContactModal } from "@/components/inbox/new-contact-modal";
 
 /**
  * Cuánto se espera desde la última tecla antes de consultar la base.
@@ -252,6 +253,14 @@ interface InboxSidebarProps {
    * ej. tests que no ejercitan este camino).
    */
   livePulse?: number;
+  /**
+   * "Agregar contacto" (T6, 8/9/2026): sube al padre el id de la
+   * conversación que acaba de crear/reutilizar `NewContactModal`, para que
+   * el shell la seleccione y abra el chat. Opcional -- sin el callback el
+   * botón de la cabecera igual crea la conversación (queda en la bandeja
+   * apenas llegue el próximo refresco), solo no la abre sola.
+   */
+  onContactCreated?: (conversationId: string) => void;
 }
 
 export function InboxSidebar({
@@ -272,7 +281,9 @@ export function InboxSidebar({
   counts,
   initialPendingRows,
   livePulse = 0,
+  onContactCreated,
 }: InboxSidebarProps) {
+  const [isNewContactOpen, setIsNewContactOpen] = useState(false);
   const availableFilters = useMemo(() => filtersForRole(currentAgent.role), [currentAgent.role]);
 
   // La bandeja abre mostrando lo que falta por atender, no todo el ruido.
@@ -1039,7 +1050,25 @@ export function InboxSidebar({
           quedan sin número antes que repetir la misma mentira.
         */}
         <span style={{ flex: 1 }} />
+        {/* T6 (8/9/2026): un contacto ya no depende de que el cliente
+            escriba primero. */}
+        <button
+          type="button"
+          className="lm-icon-btn"
+          aria-label="Agregar contacto"
+          title="Agregar contacto"
+          onClick={() => setIsNewContactOpen(true)}
+        >
+          <UserPlus size={16} />
+        </button>
       </header>
+
+      <NewContactModal
+        isOpen={isNewContactOpen}
+        onOpenChange={setIsNewContactOpen}
+        currentAgent={currentAgent}
+        onCreated={(conversationId) => onContactCreated?.(conversationId)}
+      />
 
       {bcvRate && <BcvRateChip rate={bcvRate} />}
 
