@@ -3,6 +3,7 @@ import type { SupabaseClient } from "@supabase/supabase-js";
 import type { Agent } from "@/lib/types";
 import {
   closeSaleWithContactInfo,
+  createContactConversation,
   markConversationRead,
   markConversationUnread,
   pinConversation,
@@ -235,5 +236,192 @@ describe("pinConversation / unpinConversation", () => {
     await unpinConversation(client, "agent-1", "conv-9");
 
     expect(calls).toEqual([{ op: "delete", agentId: "agent-1", conversationId: "conv-9" }]);
+  });
+});
+
+/**
+ * T6 (8/9/2026): "Agregar contacto" desde la bandeja. El fake reproduce las
+ * tres tablas que toca la mutación -- `whatsapp_channels` (vía
+ * `fetchDefaultChannel`, ya probado aparte en `data.test.ts`), `contacts` y
+ * `conversations` -- y deja simular el código `23505` (unique_violation) de
+ * Postgres en cualquiera de los dos inserts, que es el camino real: repetir
+ * el mismo teléfono es el caso de uso más probable, no un error.
+ */
+describe("createContactConversation — un contacto nace desde la bandeja", () => {
+  interface ContactConversationFakeOptions {
+    channelRow?: { id: string; status: string } | null;
+    contactInsertError?: { code: string } | null;
+    existingContactId?: string;
+    conversationInsertError?: { code: string } | null;
+    existingConversationId?: string;
+  }
+
+  function createContactFlowSupabase(options: ContactConversationFakeOptions = {}) {
+    const calls: { table: string; op: "insert"; payload: unknown }[] = [];
+    const channelRow = options.channelRow === undefined ? { id: "chan-1", status: "connected" } : options.channelRow;
+
+    const client = {
+      from(table: string) {
+        if (table === "whatsapp_channels") {
+          return {
+            select: () => ({
+              eq: () => ({
+                order: () => ({
+                  limit: async () =>
+                    channelRow && channelRow.status === "connected"
+                      ? { data: [channelRow], error: null }
+                      : { data: [], error: null },
+                }),
+              }),
+              order: () => ({
+                limit: async () => (channelRow ? { data: [channelRow], error: null } : { data: [], error: null }),
+              }),
+            }),
+          };
+        }
+        if (table === "contacts") {
+          return {
+            insert: (payload: unknown) => {
+              calls.push({ table, op: "insert", payload });
+              return {
+                select: () => ({
+                  single: async () =>
+                    options.contactInsertError
+                      ? { data: null, error: options.contactInsertError }
+                      : { data: { id: "contact-new" }, error: null },
+                }),
+              };
+            },
+            select: () => ({
+              eq: () => ({
+                single: async () => ({ data: { id: options.existingContactId ?? "contact-existing" }, error: null }),
+              }),
+            }),
+          };
+        }
+        if (table === "conversations") {
+          return {
+            insert: (payload: unknown) => {
+              calls.push({ table, op: "insert", payload });
+              return {
+                select: () => ({
+                  single: async () =>
+                    options.conversationInsertError
+                      ? { data: null, error: options.conversationInsertError }
+                      : { data: { id: "conv-new" }, error: null },
+                }),
+              };
+            },
+            select: () => ({
+              eq: () => ({
+                eq: () => ({
+                  single: async () => ({ data: { id: options.existingConversationId ?? "conv-existing" }, error: null }),
+                }),
+              }),
+            }),
+          };
+        }
+        if (table === "messages") {
+          return {
+            insert: async (payload: unknown) => {
+              calls.push({ table, op: "insert", payload });
+              return { error: null };
+            },
+          };
+        }
+        throw new Error(`Fake Supabase: tabla no soportada en este test: ${table}`);
+      },
+    };
+
+    return { client: client as unknown as SupabaseClient, calls };
+  }
+
+  it("crea contacto y conversación nuevos, y deja la nota interna de auditoría", async () => {
+    const { client, calls } = createContactFlowSupabase();
+
+    const result = await createContactConversation(client, {
+      displayName: "Pedro Pérez",
+      phoneNumber: "+584141234567",
+      agent: AGENT,
+    });
+
+    expect(result).toEqual({ conversationId: "conv-new", existed: false });
+
+    const contactInsert = calls.find((c) => c.table === "contacts");
+    expect(contactInsert?.payload).toEqual({ display_name: "Pedro Pérez", phone_number: "+584141234567" });
+
+    const conversationInsert = calls.find((c) => c.table === "conversations");
+    expect(conversationInsert?.payload).toEqual({
+      contact_id: "contact-new",
+      whatsapp_channel_id: "chan-1",
+      status: "open",
+    });
+
+    const noteInsert = calls.find((c) => c.table === "messages");
+    expect(noteInsert?.payload).toMatchObject({
+      conversation_id: "conv-new",
+      direction: "outbound",
+      sender_type: "system",
+      sender_agent_id: AGENT.id,
+      message_type: "system_event",
+      is_internal_note: true,
+      content: "Contacto agregado desde la bandeja por José Riera",
+    });
+  });
+
+  it("sin ningún canal de WhatsApp configurado, no crea nada y lanza", async () => {
+    const { client, calls } = createContactFlowSupabase({ channelRow: null });
+
+    await expect(
+      createContactConversation(client, { displayName: "Pedro", phoneNumber: "+584141234567", agent: AGENT })
+    ).rejects.toThrow(/ningún canal/i);
+
+    expect(calls).toEqual([]);
+  });
+
+  it("un teléfono repetido (23505 en contacts) reutiliza el contacto y marca existed sin dejar nota", async () => {
+    const { client, calls } = createContactFlowSupabase({
+      contactInsertError: { code: "23505" },
+      existingContactId: "contact-existing",
+    });
+
+    const result = await createContactConversation(client, {
+      displayName: "Pedro",
+      phoneNumber: "+584141234567",
+      agent: AGENT,
+    });
+
+    expect(result).toEqual({ conversationId: "conv-new", existed: true });
+
+    const conversationInsert = calls.find((c) => c.table === "conversations");
+    expect(conversationInsert?.payload).toMatchObject({ contact_id: "contact-existing" });
+
+    expect(calls.some((c) => c.table === "messages")).toBe(false);
+  });
+
+  it("una conversación repetida (23505 en conversations) reutiliza esa conversación y marca existed", async () => {
+    const { client, calls } = createContactFlowSupabase({
+      conversationInsertError: { code: "23505" },
+      existingConversationId: "conv-repetida",
+    });
+
+    const result = await createContactConversation(client, {
+      displayName: "Pedro",
+      phoneNumber: "+584141234567",
+      agent: AGENT,
+    });
+
+    expect(result).toEqual({ conversationId: "conv-repetida", existed: true });
+    expect(calls.some((c) => c.table === "messages")).toBe(false);
+  });
+
+  it("un error de la base que no es 23505 sube tal cual, no se traga", async () => {
+    const { client } = createContactFlowSupabase({
+      contactInsertError: { code: "42501" },
+    });
+
+    await expect(
+      createContactConversation(client, { displayName: "Pedro", phoneNumber: "+584141234567", agent: AGENT })
+    ).rejects.toEqual({ code: "42501" });
   });
 });

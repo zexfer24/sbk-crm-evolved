@@ -11,6 +11,7 @@ import type {
 } from "@/lib/types";
 import { PAYMENT_METHOD_LABELS } from "@/lib/types";
 import type { BusinessHours } from "@/lib/business-hours";
+import { fetchDefaultChannel } from "@/lib/data";
 // Sin "server-only": identity-guard.ts es un módulo puro (mismo motivo que
 // human-handled.ts) y este archivo corre en el navegador, dentro del panel
 // de supervisión.
@@ -869,4 +870,116 @@ export async function unpinConversation(supabase: SupabaseClient, agentId: strin
     .eq("agent_id", agentId)
     .eq("conversation_id", conversationId);
   if (error) throw error;
+}
+
+// ---------------------------------------------------------------------------
+// Un contacto nuevo nace desde la bandeja (T6 del plan "Seis frentes del
+// buzón", 8/9/2026)
+//
+// Hasta hoy un contacto solo existía cuando escribía primero por WhatsApp.
+// El operador quería un botón para adelantarse: cargar nombre + teléfono y
+// abrir la conversación antes de que el cliente mande el primer mensaje.
+//
+// `contacts.phone_number` es `unique` y `conversations` tiene
+// `unique (contact_id, whatsapp_channel_id)` — el código postgres `23505`
+// en cualquiera de los dos inserts significa "ya existe", no un error: se
+// recupera la fila existente y se marca `existed`. Repetir el mismo número
+// dos veces es justamente el caso de uso más probable ("¿ya tengo a este
+// cliente?"), así que reintentar en silencio en vez de romper es lo
+// correcto acá.
+//
+// La invariante "ningún lead invisible" (CLAUDE.md) exige traspaso cuando
+// `awaiting_reply` queda `true` sin dueño. Esa columna es GENERADA a partir
+// de si hubo respuesta después del último mensaje del CLIENTE — y acá no
+// hay ningún mensaje del cliente todavía, así que `awaiting_reply` nace en
+// `false` y la invariante no aplica: crear un contacto mudo no le debe
+// ningún traspaso a `conversation_handoffs`.
+// ---------------------------------------------------------------------------
+
+export interface CreateContactConversationParams {
+  displayName: string;
+  /** Ya normalizado a E.164 por `normalizePhoneInput` (`lib/whatsapp/phone.ts`); esta función no vuelve a validarlo. */
+  phoneNumber: string;
+  agent: Agent;
+}
+
+export interface CreateContactConversationResult {
+  conversationId: string;
+  /** `true` si el contacto o la conversación YA existían (número repetido). */
+  existed: boolean;
+}
+
+const UNIQUE_VIOLATION = "23505";
+
+export async function createContactConversation(
+  supabase: SupabaseClient,
+  { displayName, phoneNumber, agent }: CreateContactConversationParams
+): Promise<CreateContactConversationResult> {
+  const channel = await fetchDefaultChannel(supabase);
+  if (!channel) throw new Error("No hay ningún canal de WhatsApp configurado todavía.");
+
+  let contactId: string;
+  let contactExisted = false;
+  const { data: newContact, error: contactError } = await supabase
+    .from("contacts")
+    .insert({ display_name: displayName, phone_number: phoneNumber })
+    .select("id")
+    .single();
+
+  if (contactError) {
+    if (contactError.code !== UNIQUE_VIOLATION) throw contactError;
+    contactExisted = true;
+    const { data: existing, error: findError } = await supabase
+      .from("contacts")
+      .select("id")
+      .eq("phone_number", phoneNumber)
+      .single();
+    if (findError) throw findError;
+    contactId = (existing as { id: string }).id;
+  } else {
+    contactId = (newContact as { id: string }).id;
+  }
+
+  let conversationId: string;
+  let conversationExisted = false;
+  const { data: newConversation, error: conversationError } = await supabase
+    .from("conversations")
+    .insert({ contact_id: contactId, whatsapp_channel_id: channel.id, status: "open" })
+    .select("id")
+    .single();
+
+  if (conversationError) {
+    if (conversationError.code !== UNIQUE_VIOLATION) throw conversationError;
+    conversationExisted = true;
+    const { data: existing, error: findError } = await supabase
+      .from("conversations")
+      .select("id")
+      .eq("contact_id", contactId)
+      .eq("whatsapp_channel_id", channel.id)
+      .single();
+    if (findError) throw findError;
+    conversationId = (existing as { id: string }).id;
+  } else {
+    conversationId = (newConversation as { id: string }).id;
+  }
+
+  const existed = contactExisted || conversationExisted;
+  if (!existed) {
+    // Nota interna, no `insertSystemEvent` de arriba: esa deja
+    // `is_internal_note` en su default `false` y esto es auditoría para el
+    // equipo, no algo con vocación de mostrarse como si el sistema le
+    // "hablara" al cliente en la burbuja del chat.
+    const { error: noteError } = await supabase.from("messages").insert({
+      conversation_id: conversationId,
+      direction: "outbound",
+      sender_type: "system",
+      sender_agent_id: agent.id,
+      message_type: "system_event",
+      content: `Contacto agregado desde la bandeja por ${agent.displayName}`,
+      is_internal_note: true,
+    });
+    if (noteError) throw noteError;
+  }
+
+  return { conversationId, existed };
 }
