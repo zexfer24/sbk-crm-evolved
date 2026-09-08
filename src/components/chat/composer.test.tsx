@@ -1,19 +1,31 @@
 /** @vitest-environment jsdom */
 import { describe, expect, it, vi, beforeEach, afterEach } from "vitest";
-import { render, screen, fireEvent, waitFor, act } from "@testing-library/react";
+import { render, screen, fireEvent, waitFor, act, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { Composer } from "@/components/chat/composer";
-import type { Conversation, Message } from "@/lib/types";
+import type { Agent, Conversation, Message, Sticker } from "@/lib/types";
 
 const sendMediaMessageMock = vi.fn().mockResolvedValue(undefined);
 const onSendTextMock = vi.fn();
 /** T3.1 (4/9/2026): "escribiendo…" hacia Meta. Nunca lanza, así que el mock tampoco. */
 const sendTypingSignalMock = vi.fn().mockResolvedValue(undefined);
+/** T3b (8/9/2026): emojis y stickers del compositor. */
+const sendStickerMessageMock = vi.fn().mockResolvedValue("msg-sticker");
+const deleteStickerMock = vi.fn().mockResolvedValue(undefined);
+const createStickerMock = vi.fn();
+const fetchStickersMock = vi.fn().mockResolvedValue([]);
 
 vi.mock("@/lib/mutations", () => ({
   sendMediaMessage: (...args: unknown[]) => sendMediaMessageMock(...args),
   sendTemplateMessage: vi.fn().mockResolvedValue(undefined),
   sendTypingSignal: (...args: unknown[]) => sendTypingSignalMock(...args),
+  sendStickerMessage: (...args: unknown[]) => sendStickerMessageMock(...args),
+  deleteSticker: (...args: unknown[]) => deleteStickerMock(...args),
+  createSticker: (...args: unknown[]) => createStickerMock(...args),
+}));
+
+vi.mock("@/lib/stickers-data", () => ({
+  fetchStickers: (...args: unknown[]) => fetchStickersMock(...args),
 }));
 
 vi.mock("@/lib/supabase/client", () => ({
@@ -26,6 +38,30 @@ vi.mock("@/lib/supabase/client", () => ({
     },
   })),
 }));
+
+/**
+ * El picker real trae su propio dataset de emojis y no tiene sentido cargarlo
+ * en un test: se reemplaza por un botón mínimo que dispara `onEmojiClick`
+ * con un emoji fijo, igual que hace `message-context-menu.test.tsx` con
+ * `saveStickerFromMessage`. Cubre el contrato real (la prop que recibe el
+ * compositor), no la librería de terceros.
+ */
+vi.mock("emoji-picker-react", () => ({
+  default: (props: { onEmojiClick: (data: { emoji: string }) => void }) => (
+    <button type="button" onClick={() => props.onEmojiClick({ emoji: "😀" })}>
+      Elegir emoji de prueba
+    </button>
+  ),
+}));
+
+const AGENT: Agent = {
+  id: "agent-1",
+  displayName: "Ana",
+  fullName: "Ana Torres",
+  avatarUrl: null,
+  role: "agent",
+  isActive: true,
+};
 
 function buildConversation(): Conversation {
   return {
@@ -124,13 +160,14 @@ function buildMessage(over: Partial<Message> = {}): Message {
   };
 }
 
-function renderComposer(messages: Message[] = []) {
+function renderComposer(messages: Message[] = [], conversation: Conversation = buildConversation()) {
   return render(
     <Composer
-      conversation={buildConversation()}
+      conversation={conversation}
       messages={messages}
       templates={[]}
       quickReplies={[]}
+      currentAgent={AGENT}
       replyingTo={null}
       onCancelReply={vi.fn()}
       onSendText={onSendTextMock}
@@ -533,5 +570,120 @@ describe("Composer — Meta ya cerró la ventana con 131047", () => {
     const textarea = screen.getByRole("textbox", { name: "Mensaje" }) as HTMLTextAreaElement;
     expect(textarea).not.toBeDisabled();
     expect(textarea.placeholder).toBe("Escribe un mensaje...");
+  });
+});
+
+/**
+ * Emojis y stickers del compositor (T3b, "Seis frentes del buzón",
+ * 8/9/2026). `emoji-picker-react` va mockeado a un botón mínimo que dispara
+ * `onEmojiClick`: lo que importa acá es el contrato con el compositor
+ * (inserta en el caret, mantiene el foco), no repetir las pruebas de la
+ * librería.
+ */
+describe("Composer — popover de emojis y stickers", () => {
+  beforeEach(() => {
+    fetchStickersMock.mockReset().mockResolvedValue([]);
+    sendStickerMessageMock.mockReset().mockResolvedValue("msg-sticker");
+    deleteStickerMock.mockReset().mockResolvedValue(undefined);
+  });
+
+  function buildSticker(over: Partial<Sticker> = {}): Sticker {
+    return {
+      id: "sticker-1",
+      url: "/api/media/stickers/sticker-1.webp",
+      name: "Saludo",
+      animated: false,
+      createdBy: "agent-1",
+      createdAt: new Date().toISOString(),
+      ...over,
+    };
+  }
+
+  it("el botón de emojis y stickers existe y abre el popover", async () => {
+    const user = crearUsuario();
+    renderComposer();
+
+    await user.click(screen.getByRole("button", { name: "Emojis y stickers" }));
+
+    expect(screen.getByRole("dialog", { name: "Emojis y stickers" })).toBeInTheDocument();
+  });
+
+  it("elegir un emoji lo inserta en el caret del cuadro y mantiene el foco ahí", async () => {
+    const user = crearUsuario();
+    renderComposer();
+    const textarea = screen.getByRole("textbox", { name: "Mensaje" }) as HTMLTextAreaElement;
+
+    await user.click(textarea);
+    await user.type(textarea, "hola mundo");
+    // Cursor justo después de "hola " (posición 5), antes de "mundo".
+    textarea.setSelectionRange(5, 5);
+
+    await user.click(screen.getByRole("button", { name: "Emojis y stickers" }));
+    const emojiButton = await screen.findByRole("button", { name: "Elegir emoji de prueba" });
+    await user.click(emojiButton);
+
+    expect(textarea.value).toBe("hola 😀mundo");
+    expect(document.activeElement).toBe(textarea);
+  });
+
+  it("la pestaña de stickers lista los de la biblioteca y manda uno al clic", async () => {
+    fetchStickersMock.mockResolvedValue([buildSticker()]);
+    const user = crearUsuario();
+    renderComposer();
+
+    await user.click(screen.getByRole("button", { name: "Emojis y stickers" }));
+    await user.click(screen.getByRole("tab", { name: "Stickers" }));
+
+    const enviar = await screen.findByRole("button", { name: 'Enviar sticker "Saludo"' });
+    await user.click(enviar);
+
+    await waitFor(() =>
+      expect(sendStickerMessageMock).toHaveBeenCalledWith("conv-1", buildSticker().url)
+    );
+  });
+
+  it("con la ventana de 24h cerrada, la rejilla de stickers queda deshabilitada", async () => {
+    fetchStickersMock.mockResolvedValue([buildSticker()]);
+    const fallo = buildMessage({
+      direction: "outbound",
+      senderType: "agent",
+      messageType: "text",
+      content: "texto libre",
+      whatsappStatus: "failed",
+      whatsappError: "Han pasado más de 24 horas desde el último mensaje del cliente.",
+      whatsappErrorCode: 131047,
+    });
+    const user = crearUsuario();
+    renderComposer([fallo]);
+
+    await user.click(screen.getByRole("button", { name: "Emojis y stickers" }));
+    await user.click(screen.getByRole("tab", { name: "Stickers" }));
+
+    const enviar = await screen.findByRole("button", { name: 'Enviar sticker "Saludo"' });
+    expect(enviar).toBeDisabled();
+    // `getByText` a secas encuentra dos: el aviso del propio compositor (ya
+    // visible con la ventana cerrada) y el del popover -- se acota al diálogo.
+    const dialog = screen.getByRole("dialog", { name: "Emojis y stickers" });
+    expect(within(dialog).getByText(/han pasado más de 24 h/i)).toBeInTheDocument();
+  });
+
+  it("quitar un sticker de la biblioteca pide confirmación antes de borrarlo", async () => {
+    fetchStickersMock.mockResolvedValue([buildSticker()]);
+    const user = crearUsuario();
+    renderComposer();
+
+    await user.click(screen.getByRole("button", { name: "Emojis y stickers" }));
+    await user.click(screen.getByRole("tab", { name: "Stickers" }));
+
+    const quitar = await screen.findByRole("button", { name: 'Quitar sticker "Saludo" de la biblioteca' });
+    await user.click(quitar);
+
+    // Pide confirmación antes de tocar la base: todavía no llamó a la mutación.
+    expect(deleteStickerMock).not.toHaveBeenCalled();
+    expect(screen.getByText("¿Quitar de la biblioteca?")).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Quitar" }));
+
+    await waitFor(() => expect(deleteStickerMock).toHaveBeenCalled());
   });
 });
