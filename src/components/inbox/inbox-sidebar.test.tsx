@@ -1,6 +1,7 @@
 /** @vitest-environment jsdom */
 import { describe, expect, it, vi, beforeEach, afterEach } from "vitest";
 import { render, screen, fireEvent, within, waitFor } from "@testing-library/react";
+import type { ComponentProps } from "react";
 import type { Agent, Conversation, Tag } from "@/lib/types";
 import { fetchConversations, fetchPinnedIds, fetchUnassignedConversations, INBOX_PAGE_SIZE } from "@/lib/data";
 import { pinConversation, unpinConversation } from "@/lib/mutations";
@@ -37,7 +38,31 @@ vi.mock("@/lib/mutations", () => ({
   unpinConversation: vi.fn().mockResolvedValue(undefined),
 }));
 
+/**
+ * T6 (8/9/2026): "Agregar contacto" abre `NewContactModal`, que tiene sus
+ * propias pruebas completas (`new-contact-modal.test.tsx` -- validación,
+ * llamada a la mutación, `existed`). Acá solo importa el CABLEADO: que el
+ * botón de la cabecera abra el modal y que su `onCreated` llegue a
+ * `onContactCreated` -- por eso se mockea entero, en vez de arrastrar
+ * `@/lib/mutations` con `createContactConversation` real.
+ */
+let capturedOnCreated: ((conversationId: string, existed: boolean) => void) | undefined;
+vi.mock("@/components/inbox/new-contact-modal", () => ({
+  NewContactModal: ({
+    isOpen,
+    onCreated,
+  }: {
+    isOpen: boolean;
+    onOpenChange: (open: boolean) => void;
+    onCreated: (conversationId: string, existed: boolean) => void;
+  }) => {
+    capturedOnCreated = onCreated;
+    return isOpen ? <div data-testid="new-contact-modal" /> : null;
+  },
+}));
+
 beforeEach(() => {
+  capturedOnCreated = undefined;
   vi.mocked(fetchConversations).mockReset().mockResolvedValue([]);
   vi.mocked(fetchUnassignedConversations).mockReset().mockResolvedValue([]);
   vi.mocked(fetchPinnedIds).mockReset().mockResolvedValue(new Set());
@@ -165,7 +190,10 @@ const CONVERSATIONS = [
   conversation({ id: "de-ana-sin-leer", assignedAgent: ANA, unreadCount: 1 }),
 ];
 
-function renderSidebar(currentAgent: Agent) {
+function renderSidebar(
+  currentAgent: Agent,
+  overrides: Partial<ComponentProps<typeof InboxSidebar>> = {}
+) {
   return render(
     <InboxSidebar
       conversations={CONVERSATIONS}
@@ -174,6 +202,7 @@ function renderSidebar(currentAgent: Agent) {
       currentAgent={currentAgent}
       allTags={ALL_TAGS}
       bcvRate={null}
+      {...overrides}
     />
   );
 }
@@ -2317,5 +2346,46 @@ describe("InboxSidebar — recuerda la píldora y el orden (T2.2)", () => {
     // que ya es "sin almacenamiento" (ver el comentario de cabecera).
     expect(() => renderSidebar(JEFA)).not.toThrow();
     expect(() => irATodos()).not.toThrow();
+  });
+});
+
+/**
+ * T6 (8/9/2026): "Agregar contacto" desde la bandeja. `NewContactModal` está
+ * mockeado (ver el mock de arriba) porque tiene sus propias pruebas -- lo
+ * que estos tests fijan es el cableado del botón de la cabecera: que abra
+ * el modal, y que su `onCreated` llegue a la prop `onContactCreated`.
+ */
+describe("InboxSidebar — Agregar contacto (T6, 8/9/2026)", () => {
+  it("la cabecera muestra el botón y el modal arranca cerrado", () => {
+    renderSidebar(ANA);
+
+    expect(screen.getByRole("button", { name: "Agregar contacto" })).toBeInTheDocument();
+    expect(screen.queryByTestId("new-contact-modal")).not.toBeInTheDocument();
+  });
+
+  it("hacer clic en el botón abre el modal", () => {
+    renderSidebar(ANA);
+
+    fireEvent.click(screen.getByRole("button", { name: "Agregar contacto" }));
+
+    expect(screen.getByTestId("new-contact-modal")).toBeInTheDocument();
+  });
+
+  it("el onCreated del modal llega a onContactCreated con el id de la conversación", () => {
+    const onContactCreated = vi.fn();
+    renderSidebar(ANA, { onContactCreated });
+
+    fireEvent.click(screen.getByRole("button", { name: "Agregar contacto" }));
+    capturedOnCreated?.("conv-nueva", false);
+
+    expect(onContactCreated).toHaveBeenCalledWith("conv-nueva");
+  });
+
+  it("sin onContactCreated, que el modal cree un contacto no rompe nada", () => {
+    renderSidebar(ANA);
+
+    fireEvent.click(screen.getByRole("button", { name: "Agregar contacto" }));
+
+    expect(() => capturedOnCreated?.("conv-nueva", false)).not.toThrow();
   });
 });
