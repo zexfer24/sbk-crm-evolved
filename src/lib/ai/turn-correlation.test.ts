@@ -421,6 +421,7 @@ describe("verificación de identidad", () => {
       assigned_agent_id: null,
       welcome_sent_at: null,
       last_customer_message_at: new Date().toISOString(),
+      handoff_confirmation_pending_at: null,
       contact: { phone_number: "+584120000001" },
       channel: { phone_number_id: "pnid-1", status: "connected" },
       ...overrides,
