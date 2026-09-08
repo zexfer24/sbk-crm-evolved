@@ -15,6 +15,11 @@ import type { BusinessHours } from "@/lib/business-hours";
 // human-handled.ts) y este archivo corre en el navegador, dentro del panel
 // de supervisión.
 import { revealsIdentity, type IdentityMatch } from "@/lib/ai/identity-guard";
+// T3a ("Seis frentes del buzón", 9/9/2026): biblioteca de stickers. Import
+// aparte, en su propia línea, para no tocar el bloque de arriba —otras
+// tareas del mismo plan lo editan en paralelo.
+import type { Message, Sticker } from "@/lib/types";
+import { MEDIA_BUCKET, mediaUrlFor, storagePathFromUrl } from "@/lib/storage";
 
 async function insertSystemEvent(
   supabase: SupabaseClient,
@@ -869,4 +874,138 @@ export async function unpinConversation(supabase: SupabaseClient, agentId: strin
     .eq("agent_id", agentId)
     .eq("conversation_id", conversationId);
   if (error) throw error;
+}
+
+// ---------------------------------------------------------------------------
+// Biblioteca de stickers (T3a, "Seis frentes del buzón", 9/9/2026). El
+// archivo vive en el mismo bucket privado `whatsapp-media` que el resto del
+// multimedia, bajo `stickers/<uuid>.webp` — nunca en un bucket aparte, para
+// reusar las políticas de storage que ya existen.
+// ---------------------------------------------------------------------------
+
+function newStickerPath(): string {
+  return `stickers/${crypto.randomUUID()}.webp`;
+}
+
+interface RawStickerRow {
+  id: string;
+  storage_path: string;
+  name: string | null;
+  animated: boolean;
+  created_by: string | null;
+  created_at: string;
+}
+
+function mapStickerRow(row: RawStickerRow): Sticker {
+  return {
+    id: row.id,
+    url: mediaUrlFor(row.storage_path),
+    name: row.name,
+    animated: row.animated,
+    createdBy: row.created_by,
+    createdAt: row.created_at,
+  };
+}
+
+const STICKER_SELECT = "id, storage_path, name, animated, created_by, created_at";
+
+/**
+ * Guarda en la biblioteca el sticker de un mensaje ya recibido (clic derecho
+ * → "Guardar sticker" en el chat). Copia el archivo del cliente a su propia
+ * ruta en vez de apuntar `storage_path` al original: el mensaje puede
+ * borrarse (`source_message_id` tiene `on delete set null`) y el sticker
+ * guardado tiene que sobrevivirlo.
+ *
+ * `storage.copy` exige las mismas dos políticas que ya tiene el bucket
+ * (`select`+`is_agent()` e `insert` para `authenticated`) — si por lo que
+ * sea no está disponible en el proyecto Supabase, el respaldo baja el
+ * archivo por la ruta propia (`/api/media/...`, que ya valida la sesión) y
+ * lo vuelve a subir con el mismo resultado.
+ */
+export async function saveStickerFromMessage(
+  supabase: SupabaseClient,
+  message: Message,
+  agent: Agent
+): Promise<Sticker> {
+  if (!message.mediaUrl) throw new Error("Este mensaje no tiene un sticker que guardar.");
+  const sourcePath = storagePathFromUrl(message.mediaUrl);
+  if (!sourcePath) throw new Error("No se pudo ubicar el archivo del sticker en el almacenamiento.");
+
+  const destinationPath = newStickerPath();
+
+  const { error: copyError } = await supabase.storage.from(MEDIA_BUCKET).copy(sourcePath, destinationPath);
+  if (copyError) {
+    // Respaldo: bajar por la ruta propia (con sesión) y subir de nuevo. Pasa
+    // por `fetch` porque, a diferencia de `.copy`, no depende de un permiso
+    // de storage que pueda faltar en un proyecto Supabase más viejo.
+    const response = await fetch(message.mediaUrl);
+    if (!response.ok) throw new Error("No se pudo descargar el sticker para guardarlo.");
+    const blob = await response.blob();
+    const { error: uploadError } = await supabase.storage
+      .from(MEDIA_BUCKET)
+      .upload(destinationPath, blob, { contentType: "image/webp" });
+    if (uploadError) throw uploadError;
+  }
+
+  const { data, error } = await supabase
+    .from("stickers")
+    .insert({
+      storage_path: destinationPath,
+      created_by: agent.id,
+      source_message_id: message.id,
+    })
+    .select(STICKER_SELECT)
+    .single();
+  if (error) throw error;
+  return mapStickerRow(data as RawStickerRow);
+}
+
+/** Sube un sticker armado desde cero (T3b arma el WebP; acá solo se sube e inserta). */
+export async function createSticker(
+  supabase: SupabaseClient,
+  blob: Blob,
+  name: string | null,
+  agent: Agent
+): Promise<Sticker> {
+  const path = newStickerPath();
+
+  const { error: uploadError } = await supabase.storage
+    .from(MEDIA_BUCKET)
+    .upload(path, blob, { contentType: "image/webp" });
+  if (uploadError) throw uploadError;
+
+  const { data, error } = await supabase
+    .from("stickers")
+    .insert({ storage_path: path, name, created_by: agent.id })
+    .select(STICKER_SELECT)
+    .single();
+  if (error) throw error;
+  return mapStickerRow(data as RawStickerRow);
+}
+
+/**
+ * Borra un sticker de la biblioteca: primero la fila (la RLS de `stickers`
+ * decide si este agente puede — `created_by = auth.uid()` o
+ * supervisor/admin — y el error sube tal cual para que la UI lo traduzca),
+ * y solo si eso funcionó el archivo del bucket. En ese orden: si el borrado
+ * de la fila lo frena la RLS, el archivo no debe desaparecer con la fila
+ * todavía apuntándolo.
+ */
+export async function deleteSticker(supabase: SupabaseClient, sticker: Sticker): Promise<void> {
+  const { error } = await supabase.from("stickers").delete().eq("id", sticker.id);
+  if (error) throw error;
+
+  const path = storagePathFromUrl(sticker.url);
+  if (!path) return;
+  const { error: removeError } = await supabase.storage.from(MEDIA_BUCKET).remove([path]);
+  if (removeError) throw removeError;
+}
+
+/**
+ * Manda un sticker por el mismo camino que cualquier adjunto (`kind:
+ * "media"`), sin `content`: Meta rechaza un sticker con caption
+ * (`meta-client.ts`), así que ni se ofrece mandar uno.
+ */
+export async function sendStickerMessage(conversationId: string, mediaUrl: string): Promise<string | null> {
+  return postSendMessage({ conversationId, kind: "media", mediaUrl, mediaType: "sticker" });
 }

@@ -41,7 +41,7 @@ interface SendResult {
   whatsappMessageId: string;
 }
 
-type MediaKind = "image" | "video" | "audio" | "document";
+type MediaKind = "image" | "video" | "audio" | "document" | "sticker";
 
 async function callGraphApi(phoneNumberId: string, accessToken: string, body: Record<string, unknown>) {
   const res = await fetch(`https://graph.facebook.com/${GRAPH_API_VERSION}/${phoneNumberId}/messages`, {
@@ -117,7 +117,11 @@ export async function sendWhatsappMedia(
   caption?: string,
   replyToWamid?: string | null
 ): Promise<SendResult> {
-  const mediaPayload = mediaType === "audio" ? { link } : { link, caption: caption || undefined };
+  // Audio y sticker no aceptan caption: Meta rechaza el envío si viene con
+  // uno (probado contra la Cloud API, T3a "Seis frentes del buzón",
+  // 9/9/2026, para sticker — audio ya lo evitaba desde antes).
+  const mediaPayload =
+    mediaType === "audio" || mediaType === "sticker" ? { link } : { link, caption: caption || undefined };
 
   const json = await callGraphApi(phoneNumberId, accessToken, {
     to: toWaId(to),

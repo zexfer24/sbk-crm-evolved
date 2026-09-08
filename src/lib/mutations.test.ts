@@ -1,11 +1,15 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi, beforeEach, afterEach } from "vitest";
 import type { SupabaseClient } from "@supabase/supabase-js";
-import type { Agent } from "@/lib/types";
+import type { Agent, Message, Sticker } from "@/lib/types";
 import {
   closeSaleWithContactInfo,
+  createSticker,
+  deleteSticker,
   markConversationRead,
   markConversationUnread,
   pinConversation,
+  saveStickerFromMessage,
+  sendStickerMessage,
   setAiEnabled,
   unassign,
   unpinConversation,
@@ -235,5 +239,228 @@ describe("pinConversation / unpinConversation", () => {
     await unpinConversation(client, "agent-1", "conv-9");
 
     expect(calls).toEqual([{ op: "delete", agentId: "agent-1", conversationId: "conv-9" }]);
+  });
+});
+
+/**
+ * Biblioteca de stickers (T3a, "Seis frentes del buzón", 9/9/2026). El fake
+ * de storage reproduce solo `.copy`/`.upload`/`.remove` del bucket —lo que
+ * estas mutaciones usan— y el fake de `stickers` reproduce
+ * insert().select().single() y delete().eq(id).
+ */
+function createStickerFakeSupabase(options: { copyFails?: boolean } = {}) {
+  const storageCalls: { op: "copy" | "upload" | "remove"; args: unknown[] }[] = [];
+  const tableCalls: { op: "insert" | "delete"; payload?: unknown; id?: string }[] = [];
+  let insertedRow: Record<string, unknown> | null = null;
+
+  const client = {
+    from(table: string) {
+      if (table !== "stickers") throw new Error(`Fake Supabase: tabla no soportada en este test: ${table}`);
+      return {
+        insert: (payload: Record<string, unknown>) => {
+          insertedRow = {
+            id: "sticker-nuevo",
+            storage_path: payload.storage_path,
+            name: (payload.name as string | null | undefined) ?? null,
+            animated: false,
+            created_by: payload.created_by,
+            created_at: "2026-09-09T12:00:00.000Z",
+          };
+          tableCalls.push({ op: "insert", payload });
+          return {
+            select: () => ({
+              single: async () => ({ data: insertedRow, error: null }),
+            }),
+          };
+        },
+        delete: () => ({
+          eq: async (_col: string, id: string) => {
+            tableCalls.push({ op: "delete", id });
+            return { error: null };
+          },
+        }),
+      };
+    },
+    storage: {
+      from: (bucket: string) => ({
+        copy: async (src: string, dst: string) => {
+          storageCalls.push({ op: "copy", args: [bucket, src, dst] });
+          if (options.copyFails) return { error: new Error("copy no disponible") };
+          return { data: { path: dst }, error: null };
+        },
+        upload: async (path: string, file: unknown, opts: unknown) => {
+          storageCalls.push({ op: "upload", args: [bucket, path, file, opts] });
+          return { error: null };
+        },
+        remove: async (paths: string[]) => {
+          storageCalls.push({ op: "remove", args: [bucket, paths] });
+          return { error: null };
+        },
+      }),
+    },
+  };
+
+  return { client: client as unknown as SupabaseClient, storageCalls, tableCalls };
+}
+
+const STICKER_AGENT: Agent = {
+  id: "agent-42",
+  displayName: "Ana",
+  fullName: "Ana Torres",
+  avatarUrl: null,
+  role: "agent",
+  isActive: true,
+};
+
+function stickerSourceMessage(overrides: Partial<Message> = {}): Message {
+  return {
+    id: "msg-sticker-1",
+    conversationId: "conv-1",
+    direction: "inbound",
+    senderType: "customer",
+    senderAgent: null,
+    messageType: "sticker",
+    content: null,
+    templateName: null,
+    mediaUrl: "/api/media/inbound/conv-1/original.webp",
+    isInternalNote: false,
+    whatsappStatus: null,
+    whatsappError: null,
+    whatsappErrorCode: null,
+    reactionEmoji: null,
+    replyToMessageId: null,
+    payload: null,
+    createdAt: "2026-09-09T11:00:00.000Z",
+    ...overrides,
+  };
+}
+
+describe("saveStickerFromMessage — guardar el sticker de un mensaje recibido", () => {
+  it("copia el archivo a stickers/<uuid>.webp e inserta la fila con source_message_id", async () => {
+    const { client, storageCalls, tableCalls } = createStickerFakeSupabase();
+
+    const sticker = await saveStickerFromMessage(client, stickerSourceMessage(), STICKER_AGENT);
+
+    const copyCall = storageCalls.find((c) => c.op === "copy");
+    expect(copyCall?.args[1]).toBe("inbound/conv-1/original.webp");
+    expect(String(copyCall?.args[2])).toMatch(/^stickers\/.+\.webp$/);
+    expect(storageCalls.some((c) => c.op === "upload")).toBe(false);
+
+    expect(tableCalls[0]).toMatchObject({
+      op: "insert",
+      payload: {
+        created_by: "agent-42",
+        source_message_id: "msg-sticker-1",
+      },
+    });
+    expect(sticker.id).toBe("sticker-nuevo");
+    expect(sticker.url).toMatch(/^\/api\/media\/stickers\//);
+  });
+
+  it("si .copy no está disponible, cae al respaldo: descargar por la ruta propia y subir", async () => {
+    const { client, storageCalls } = createStickerFakeSupabase({ copyFails: true });
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => ({ ok: true, blob: async () => new Blob(["contenido"]) }))
+    );
+
+    try {
+      await saveStickerFromMessage(client, stickerSourceMessage(), STICKER_AGENT);
+
+      expect(storageCalls.some((c) => c.op === "copy")).toBe(true);
+      const uploadCall = storageCalls.find((c) => c.op === "upload");
+      expect(uploadCall).toBeDefined();
+      expect(uploadCall?.args[3]).toMatchObject({ contentType: "image/webp" });
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("sin mediaUrl no hay nada que guardar", async () => {
+    const { client } = createStickerFakeSupabase();
+    await expect(
+      saveStickerFromMessage(client, stickerSourceMessage({ mediaUrl: null }), STICKER_AGENT)
+    ).rejects.toThrow(/no tiene un sticker/i);
+  });
+});
+
+describe("createSticker — armado desde cero", () => {
+  it("sube el WebP e inserta la fila con el nombre", async () => {
+    const { client, storageCalls, tableCalls } = createStickerFakeSupabase();
+    const blob = new Blob(["webp"]);
+
+    const sticker = await createSticker(client, blob, "Moto contenta", STICKER_AGENT);
+
+    const uploadCall = storageCalls.find((c) => c.op === "upload");
+    expect(uploadCall?.args[2]).toBe(blob);
+    expect(uploadCall?.args[3]).toMatchObject({ contentType: "image/webp" });
+    expect(tableCalls[0]).toMatchObject({
+      op: "insert",
+      payload: { name: "Moto contenta", created_by: "agent-42" },
+    });
+    expect(sticker.name).toBe("Moto contenta");
+  });
+});
+
+describe("deleteSticker — borra la fila y el archivo, en ese orden", () => {
+  const STICKER: Sticker = {
+    id: "sticker-1",
+    url: "/api/media/stickers/sticker-1.webp",
+    name: null,
+    animated: false,
+    createdBy: "agent-42",
+    createdAt: "2026-09-09T12:00:00.000Z",
+  };
+
+  it("borra la fila y después el objeto del bucket", async () => {
+    const { client, storageCalls, tableCalls } = createStickerFakeSupabase();
+
+    await deleteSticker(client, STICKER);
+
+    expect(tableCalls).toEqual([{ op: "delete", id: "sticker-1" }]);
+    const removeCall = storageCalls.find((c) => c.op === "remove");
+    expect(removeCall?.args[1]).toEqual(["stickers/sticker-1.webp"]);
+  });
+
+  it("un error de RLS al borrar la fila se propaga tal cual, sin tocar el archivo", async () => {
+    const client = {
+      from: () => ({
+        delete: () => ({
+          eq: async () => ({ error: new Error("new row violates row-level security policy") }),
+        }),
+      }),
+      storage: { from: () => ({ remove: vi.fn() }) },
+    } as unknown as SupabaseClient;
+
+    await expect(deleteSticker(client, STICKER)).rejects.toThrow(/row-level security/);
+  });
+});
+
+describe("sendStickerMessage — el mismo camino que un adjunto, sin content", () => {
+  const fetchMock = vi.fn();
+
+  beforeEach(() => {
+    vi.stubGlobal("fetch", fetchMock);
+    fetchMock.mockReset();
+    fetchMock.mockResolvedValue({ ok: true, json: async () => ({ ok: true, id: "msg-99" }) });
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("manda kind: media, mediaType: sticker y sin content", async () => {
+    await sendStickerMessage("conv-1", "/api/media/stickers/sticker-1.webp");
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const [url, init] = fetchMock.mock.calls[0];
+    expect(url).toBe("/api/messages/send");
+    const body = JSON.parse(init.body);
+    expect(body).toEqual({
+      conversationId: "conv-1",
+      kind: "media",
+      mediaUrl: "/api/media/stickers/sticker-1.webp",
+      mediaType: "sticker",
+    });
   });
 });

@@ -67,7 +67,7 @@ export async function POST(request: Request) {
   const body = (await request.json()) as SendMessageBody;
   const { conversationId, kind, content, isInternalNote, templateName, templateLanguage, mediaUrl } =
     body;
-  const mediaType = body.mediaType as "image" | "video" | "audio" | "document" | undefined;
+  const mediaType = body.mediaType as "image" | "video" | "audio" | "document" | "sticker" | undefined;
   const replyToMessageId = body.replyToMessageId ?? null;
   // Solo tienen sentido cuando `kind === "template"`; en el resto de los
   // envíos viajan vacías y no hacen nada.
@@ -169,6 +169,12 @@ export async function POST(request: Request) {
   // mismo "en camino" del check de WhatsApp— y el envío real corre después
   // de responder: al confirmar Meta pasa a 'sent' y el check aparece por
   // realtime; si Meta lo rechaza pasa a 'failed' y la burbuja lo cuenta.
+  // Un sticker no lleva pie de foto: Meta rechaza el envío si el payload
+  // trae `caption` (ver meta-client.ts), así que el CRM tampoco lo guarda —
+  // aunque el composer mandara algo en `content` por error, se descarta acá.
+  const messageContent =
+    kind === "template" ? templateContent : mediaType === "sticker" ? null : content;
+
   const { data: inserted, error } = await supabase
     .from("messages")
     .insert({
@@ -177,7 +183,7 @@ export async function POST(request: Request) {
       sender_type: "agent",
       sender_agent_id: agent.id,
       message_type: kind === "template" ? "template" : kind === "media" ? mediaType : "text",
-      content: (kind === "template" ? templateContent : content) ?? null,
+      content: messageContent ?? null,
       template_name: kind === "template" ? templateName : null,
       media_url: kind === "media" ? mediaUrl : null,
       whatsapp_message_id: null,
@@ -231,7 +237,7 @@ export async function POST(request: Request) {
               phoneNumberId,
               accessToken!,
               toPhoneNumber,
-              mediaType as "image" | "video" | "audio" | "document",
+              mediaType as "image" | "video" | "audio" | "document" | "sticker",
               link,
               content,
               replyToWamid

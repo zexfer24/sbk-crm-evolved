@@ -22,6 +22,7 @@ vi.mock("next/server", async (importOriginal) => {
 
 const sendWhatsappTextMock = vi.fn();
 const sendWhatsappTemplateMock = vi.fn();
+const sendWhatsappMediaMock = vi.fn();
 
 vi.mock("@/lib/whatsapp/meta-client", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@/lib/whatsapp/meta-client")>();
@@ -29,6 +30,7 @@ vi.mock("@/lib/whatsapp/meta-client", async (importOriginal) => {
     ...actual,
     sendWhatsappText: (...args: unknown[]) => sendWhatsappTextMock(...args),
     sendWhatsappTemplate: (...args: unknown[]) => sendWhatsappTemplateMock(...args),
+    sendWhatsappMedia: (...args: unknown[]) => sendWhatsappMediaMock(...args),
   };
 });
 
@@ -145,6 +147,8 @@ beforeEach(() => {
   sendWhatsappTextMock.mockResolvedValue({ whatsappMessageId: "wamid.OK" });
   sendWhatsappTemplateMock.mockReset();
   sendWhatsappTemplateMock.mockResolvedValue({ whatsappMessageId: "wamid.PLANTILLA" });
+  sendWhatsappMediaMock.mockReset();
+  sendWhatsappMediaMock.mockResolvedValue({ whatsappMessageId: "wamid.MEDIA" });
   process.env.WHATSAPP_ACCESS_TOKEN = "token-de-prueba";
 });
 
@@ -394,5 +398,48 @@ describe("POST /api/messages/send — plantillas con variables", () => {
     expect(insertedRows[0]).toMatchObject({ content: "Gracias por tu compra." });
     await vi.waitFor(() => expect(sendWhatsappTemplateMock).toHaveBeenCalledTimes(1), { timeout: 5000 });
     expect(sendWhatsappTemplateMock.mock.calls[0][5]).toBeUndefined();
+  });
+});
+
+/**
+ * T3a ("Seis frentes del buzón", 9/9/2026): el camino de salida de un
+ * sticker. Igual que cualquier `kind: "media"`, salvo que `content` se
+ * fuerza a null aunque el llamador mande algo — Meta rechaza el envío con
+ * caption.
+ */
+function stickerRequest(overrides: Record<string, unknown> = {}) {
+  return sendRequest({
+    kind: "media",
+    mediaType: "sticker",
+    mediaUrl: "/api/media/stickers/abc-123.webp",
+    content: undefined,
+    ...overrides,
+  });
+}
+
+describe("POST /api/messages/send — sticker", () => {
+  it("guarda message_type: 'sticker' con content null", async () => {
+    await POST(stickerRequest());
+
+    expect(insertedRows[0]).toMatchObject({
+      message_type: "sticker",
+      media_url: "/api/media/stickers/abc-123.webp",
+      content: null,
+    });
+  });
+
+  it("content null aunque el llamador mande uno por error", async () => {
+    await POST(stickerRequest({ content: "un pie que no debería llegar" }));
+
+    expect(insertedRows[0]).toMatchObject({ content: null });
+  });
+
+  it("en canal real llama a sendWhatsappMedia con mediaType 'sticker'", async () => {
+    await POST(stickerRequest());
+
+    await vi.waitFor(() => expect(sendWhatsappMediaMock).toHaveBeenCalledTimes(1), { timeout: 5000 });
+    const args = sendWhatsappMediaMock.mock.calls[0];
+    // (phoneNumberId, accessToken, to, mediaType, link, caption, replyToWamid)
+    expect(args[3]).toBe("sticker");
   });
 });
