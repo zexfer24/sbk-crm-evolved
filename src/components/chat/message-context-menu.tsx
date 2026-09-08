@@ -1,10 +1,12 @@
 "use client";
 
 import { useState } from "react";
-import { Copy, ImageDown, Reply } from "lucide-react";
+import { Copy, ImageDown, Reply, Sticker as StickerIcon } from "lucide-react";
 import { toast } from "@heroui/react";
-import type { Message } from "@/lib/types";
+import type { Agent, Message } from "@/lib/types";
 import { ContextMenu } from "@/components/context-menu";
+import { createClient } from "@/lib/supabase/client";
+import { saveStickerFromMessage } from "@/lib/mutations";
 
 /**
  * Deja la foto en el portapapeles, lista para pegar en otro chat o en
@@ -35,12 +37,21 @@ interface MessageContextMenuProps {
   message: Message;
   onReply?: (message: Message) => void;
   onClose: () => void;
+  /**
+   * Quién está guardando el sticker (T3a, "Seis frentes del buzón",
+   * 9/9/2026). Opcional: sin `agent` la opción "Guardar sticker" no se
+   * ofrece, en vez de intentar guardarlo con un dueño desconocido — cubre
+   * a cualquier lugar donde este menú se use sin conocer al agente.
+   */
+  agent?: Agent;
 }
 
-export function MessageContextMenu({ position, message, onReply, onClose }: MessageContextMenuProps) {
+export function MessageContextMenu({ position, message, onReply, onClose, agent }: MessageContextMenuProps) {
   const [copiando, setCopiando] = useState(false);
+  const [guardandoSticker, setGuardandoSticker] = useState(false);
 
   const esImagen = message.messageType === "image" && !!message.mediaUrl;
+  const esSticker = message.messageType === "sticker" && !!message.mediaUrl;
   const tieneTexto = !!message.content?.trim();
 
   async function copiarImagen() {
@@ -67,6 +78,21 @@ export function MessageContextMenu({ position, message, onReply, onClose }: Mess
     onClose();
   }
 
+  async function guardarSticker() {
+    if (!agent) return;
+    setGuardandoSticker(true);
+    try {
+      await saveStickerFromMessage(createClient(), message, agent);
+      toast.success("Sticker guardado");
+      onClose();
+    } catch {
+      // Mismo criterio que copiarImagen: se dice el fallo, no se cierra el
+      // menú como si el sticker ya estuviera en la biblioteca.
+      toast.danger("No se pudo guardar el sticker.");
+      setGuardandoSticker(false);
+    }
+  }
+
   return (
     <ContextMenu position={position} onClose={onClose} label="Acciones del mensaje">
       {onReply && (
@@ -87,6 +113,13 @@ export function MessageContextMenu({ position, message, onReply, onClose }: Mess
         <button type="button" role="menuitem" onClick={copiarImagen} disabled={copiando}>
           <ImageDown size={15} aria-hidden="true" />
           {copiando ? "Copiando…" : "Copiar imagen"}
+        </button>
+      )}
+
+      {esSticker && agent && (
+        <button type="button" role="menuitem" onClick={guardarSticker} disabled={guardandoSticker}>
+          <StickerIcon size={15} aria-hidden="true" />
+          {guardandoSticker ? "Guardando…" : "Guardar sticker"}
         </button>
       )}
 
