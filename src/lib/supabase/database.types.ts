@@ -550,6 +550,7 @@ export type Database = {
           deal_verified: boolean
           deal_verified_at: string | null
           deal_verified_by: string | null
+          handoff_confirmation_pending_at: string | null
           id: string
           intent: string | null
           journey_stage: string | null
@@ -586,6 +587,7 @@ export type Database = {
           deal_verified?: boolean
           deal_verified_at?: string | null
           deal_verified_by?: string | null
+          handoff_confirmation_pending_at?: string | null
           id?: string
           intent?: string | null
           journey_stage?: string | null
@@ -622,6 +624,7 @@ export type Database = {
           deal_verified?: boolean
           deal_verified_at?: string | null
           deal_verified_by?: string | null
+          handoff_confirmation_pending_at?: string | null
           id?: string
           intent?: string | null
           journey_stage?: string | null
