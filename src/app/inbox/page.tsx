@@ -11,6 +11,7 @@ import {
   fetchAgentSettings,
 } from "@/lib/data";
 import { getBcvRate } from "@/lib/ai/bcv";
+import { CRM_TIME_ZONE, currentDayRange } from "@/lib/time-zone";
 import { CrmShell } from "@/components/crm-shell";
 import type { BcvRateSummary } from "@/components/inbox/bcv-rate-chip";
 
@@ -37,6 +38,18 @@ export default async function InboxPage({ searchParams }: PageProps<"/inbox">) {
     redirect("/login");
   }
 
+  // "Habló hoy" (T1 del plan "Seis frentes del buzón", 8/9/2026): el
+  // servidor no tiene `localStorage` (no sabe si el visor dejó guardado "Ver
+  // todo"), así que siempre siembra con el corte de HOY — el default de
+  // `dayScope` en `crm-shell.tsx`. Si el visor tenía "Ver todo" guardado, el
+  // efecto de esa misma constante en el shell restaura la preferencia
+  // después de montar y dispara su propio refetch sin corte; hasta entonces,
+  // la bandeja abre en "hoy" para todo el mundo, coincidiendo siempre con lo
+  // que el primer render del cliente calcula (`useInboxDay("today")`) — sin
+  // esto, hidratar ya con "Ver todo" pisaría en silencio lo que acá abajo se
+  // resolvió.
+  const since = currentDayRange(CRM_TIME_ZONE).from.toISOString();
+
   const [
     { conversation },
     conversations,
@@ -49,8 +62,8 @@ export default async function InboxPage({ searchParams }: PageProps<"/inbox">) {
     agentSettings,
   ] = await Promise.all([
     searchParams,
-    fetchConversations(supabase, { limit: INBOX_PAGE_SIZE }),
-    fetchInboxCounts(supabase, currentAgent.id),
+    fetchConversations(supabase, { limit: INBOX_PAGE_SIZE, since }),
+    fetchInboxCounts(supabase, currentAgent.id, undefined, { since }),
     // Misma consulta que `InboxSidebar` le pide a la base al montar en la
     // píldora que abre por defecto (ver `pillQueryOptions` en
     // inbox-sidebar.tsx): primera página, mismo tamaño (`INBOX_PAGE_SIZE`)
@@ -62,8 +75,14 @@ export default async function InboxPage({ searchParams }: PageProps<"/inbox">) {
     // 30/8/2026 devolvió el filtro por defecto a "Pendientes" —231 chats
     // leídos y sin responder no aparecían en ninguna píldora—, así que vuelve
     // a sembrar "Pendientes", pero sigue siendo esa misma consulta única, sin
-    // el corte fresh/stale que tenía antes de la reforma anterior.
-    fetchConversations(supabase, { activeOnly: true, awaitingReplyOnly: true, limit: INBOX_PAGE_SIZE }),
+    // el corte fresh/stale que tenía antes de la reforma anterior. `since`
+    // (T1, 8/9/2026): mismo corte de "hoy" que el resto de esta siembra.
+    fetchConversations(supabase, {
+      activeOnly: true,
+      awaitingReplyOnly: true,
+      limit: INBOX_PAGE_SIZE,
+      since,
+    }),
     fetchTags(supabase),
     // Las etiquetas EN USO para la barra de filtro de la bandeja
     // (`InboxSidebar.allTags`, ver `crm-shell.tsx`): antes ese componente

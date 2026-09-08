@@ -7,6 +7,7 @@ import {
   INBOX_FILTER_LABELS,
   isUnassignedLead,
   isUnread,
+  matchesDay,
   type HandoffKind,
 } from "@/lib/inbox-filters";
 
@@ -27,6 +28,8 @@ function conversation(over: {
   manuallyUnread?: boolean;
   assignedAgent?: Agent | null;
   lastMessageAt?: string | null;
+  /** T1 (8/9/2026): lo que mira `matchesDay` cuando no hay `lastMessageAt` todavía. */
+  createdAt?: string;
   lastCustomerMessageAt?: string | null;
   /**
    * La respuesta real (T0.2, 5/9/2026): lo único que mira `awaitingReply`
@@ -54,6 +57,7 @@ function conversation(over: {
     // Ojo: `?? default` convertiría un null explícito en fecha. Acá null
     // significa "esta conversación nunca tuvo un mensaje".
     lastMessageAt: "lastMessageAt" in over ? over.lastMessageAt : "2026-08-22T10:00:00Z",
+    createdAt: over.createdAt ?? "2026-08-22T10:00:00Z",
     lastCustomerMessageAt:
       "lastCustomerMessageAt" in over ? over.lastCustomerMessageAt : null,
     lastReplyAt: "lastReplyAt" in over ? over.lastReplyAt : null,
@@ -808,5 +812,103 @@ describe("applyInboxFilters — 'pinnedIds' pone los fijados primero", () => {
 
   it("un id fijado que no está en la lista no rompe nada", () => {
     expect(ids(new Set(["fantasma"]))).toEqual(["nueva", "media", "vieja"]);
+  });
+});
+
+/**
+ * T1 del plan "Seis frentes del buzón" (8/9/2026): "habló hoy" es cualquier
+ * mensaje de HOY —cliente, asesor o IA— en `America/Caracas`. La medianoche
+ * de Caracas de acá abajo (UTC-4) es una hora fija cualquiera: `matchesDay`
+ * es puro y no vuelve a calcular la zona horaria, solo compara el instante
+ * que le llega contra el que ya trae calculado `useInboxDay`.
+ */
+describe("matchesDay", () => {
+  const HOY_00_00_CARACAS = "2026-09-08T04:00:00.000Z";
+
+  it("un mensaje de hoy pasa el corte", () => {
+    const conv = conversation({ id: "hoy", lastMessageAt: "2026-09-08T10:00:00.000Z" });
+    expect(matchesDay(conv, HOY_00_00_CARACAS)).toBe(true);
+  });
+
+  it("el último mensaje de ayer no pasa", () => {
+    const conv = conversation({ id: "ayer", lastMessageAt: "2026-09-07T23:59:59.000Z" });
+    expect(matchesDay(conv, HOY_00_00_CARACAS)).toBe(false);
+  });
+
+  it("exactamente la medianoche de Caracas cuenta como hoy (corte inclusivo, >=)", () => {
+    const conv = conversation({ id: "medianoche", lastMessageAt: HOY_00_00_CARACAS });
+    expect(matchesDay(conv, HOY_00_00_CARACAS)).toBe(true);
+  });
+
+  // Una conversación recién creada desde la bandeja (T6) no tiene
+  // `lastMessageAt` todavía: sin este respaldo desaparecería de "hoy" antes
+  // de que le llegue el primer mensaje.
+  it("sin lastMessageAt, cae a createdAt: hoy pasa", () => {
+    const conv = conversation({
+      id: "recien-creada",
+      lastMessageAt: null,
+      createdAt: "2026-09-08T12:00:00.000Z",
+    });
+    expect(matchesDay(conv, HOY_00_00_CARACAS)).toBe(true);
+  });
+
+  it("sin lastMessageAt, cae a createdAt: ayer no pasa", () => {
+    const conv = conversation({
+      id: "recien-creada-ayer",
+      lastMessageAt: null,
+      createdAt: "2026-09-07T12:00:00.000Z",
+    });
+    expect(matchesDay(conv, HOY_00_00_CARACAS)).toBe(false);
+  });
+
+  it('con dayStart null ("Ver todo") deja pasar cualquier fecha', () => {
+    const conv = conversation({ id: "viejisima", lastMessageAt: "2020-01-01T00:00:00.000Z" });
+    expect(matchesDay(conv, null)).toBe(true);
+  });
+});
+
+describe("applyInboxFilters — el corte de 'hoy' (T1, 8/9/2026)", () => {
+  const HOY_00_00_CARACAS = "2026-09-08T04:00:00.000Z";
+  const hoy = conversation({ id: "hoy", lastMessageAt: "2026-09-08T10:00:00.000Z" });
+  const semanaAnterior = conversation({
+    id: "semana-pasada",
+    lastMessageAt: "2026-09-01T10:00:00.000Z",
+  });
+
+  it("sin búsqueda, deja fuera lo que no habló hoy", () => {
+    const result = applyInboxFilters([hoy, semanaAnterior], {
+      filter: "all",
+      search: "",
+      tagId: null,
+      sort: "recent",
+      viewer: ANA,
+      dayStart: HOY_00_00_CARACAS,
+    });
+    expect(result.map((c) => c.id)).toEqual(["hoy"]);
+  });
+
+  // Decisión del operador: la búsqueda siempre mira todo el historial, sin
+  // que haga falta tocar el interruptor "Ver todo".
+  it("con búsqueda activa, ignora el corte y encuentra al cliente de la semana pasada", () => {
+    const result = applyInboxFilters([hoy, semanaAnterior], {
+      filter: "all",
+      search: "semana",
+      tagId: null,
+      sort: "recent",
+      viewer: ANA,
+      dayStart: HOY_00_00_CARACAS,
+    });
+    expect(result.map((c) => c.id)).toEqual(["semana-pasada"]);
+  });
+
+  it("sin dayStart, no filtra por día (llamador que todavía no lo conoce)", () => {
+    const result = applyInboxFilters([hoy, semanaAnterior], {
+      filter: "all",
+      search: "",
+      tagId: null,
+      sort: "recent",
+      viewer: ANA,
+    });
+    expect(result.map((c) => c.id).sort()).toEqual(["hoy", "semana-pasada"]);
   });
 });

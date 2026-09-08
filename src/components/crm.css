@@ -1787,6 +1787,13 @@
   height: 32px;
 }
 
+/* El interruptor "Ver todo" (T1, 8/9/2026): mismo tamaño que el botón de
+   orden, justo al lado. */
+.crm-day-scope-btn {
+  width: 32px;
+  height: 32px;
+}
+
 /* Carril de los filtros. El degradado del borde derecho es la única pista de
    que la fila sigue: sin él, la cuarta píldora simplemente no existe para
    quien mira. Se apaga al llegar al final. */

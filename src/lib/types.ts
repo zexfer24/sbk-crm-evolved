@@ -522,6 +522,18 @@ export type InboxFilter = "pending" | "unread" | "mine" | "all" | "unassigned" |
 
 export type InboxSort = "recent" | "oldest";
 
+/**
+ * Corte por día de la bandeja (T1 del plan "Seis frentes del buzón",
+ * 8/9/2026): `"today"` (default) muestra solo lo que habló HOY en
+ * `America/Caracas` —cliente, asesor o IA, cualquiera de los tres mueve
+ * `last_message_at`—; `"all"` es el interruptor "Ver todo" que vuelve a la
+ * bandeja sin corte. Vive junto a `InboxFilter`/`InboxSort` porque es el
+ * mismo tipo de decisión: qué ventana de la base entra a la lista, antes de
+ * que la búsqueda o cualquier píldora se apliquen encima. La búsqueda
+ * siempre ignora este corte (ver `applyInboxFilters`, inbox-filters.ts).
+ */
+export type InboxDayScope = "today" | "all";
+
 /** Qué categoría detectó la IA en el mensaje del cliente. */
 export type AgentIntent = "consulta_disponibilidad" | "devolucion" | "queja" | "otro";
 

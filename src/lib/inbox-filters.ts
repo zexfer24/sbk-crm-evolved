@@ -83,6 +83,36 @@ export function isUnread(conversation: ConversationSummary): boolean {
 }
 
 /**
+ * "Habló hoy" (T1 del plan "Seis frentes del buzón", 8/9/2026): el mismo
+ * criterio que arma `since` en `data.ts` (ver el comentario de `since` en
+ * `FetchConversationsOptions`), repetido acá porque la lista mezcla filas
+ * resueltas por la base con filas vivas de realtime — igual que
+ * `isUnread`/`isUnassignedLead`, este predicado se vuelve a comprobar en
+ * memoria.
+ *
+ * `dayStart` es la medianoche de HOY en `America/Caracas`, en ISO
+ * (`useInboxDay`, `src/lib/use-inbox-day.ts`) — `null` cuando el visor tiene
+ * "Ver todo" activo, y entonces no hay nada que cortar.
+ *
+ * Una conversación recién creada desde la bandeja (T6, "Ningún contacto se
+ * escribe dos veces") no tiene `lastMessageAt` todavía: cae a `createdAt`
+ * para no desaparecer de "hoy" antes de que le llegue su primer mensaje.
+ *
+ * Comparación NUMÉRICA (`Date.parse`), no de texto: `dayStart` sale de
+ * `toISOString()` (sufijo `Z`) pero lo que trae Supabase de un `timestamptz`
+ * suele venir con offset explícito (`+00:00`); los dos textos representan el
+ * mismo instante pero no ordenan igual como string (`sortValue`, más abajo
+ * en este archivo, ya evita el mismo error convirtiendo a `Date`).
+ */
+export function matchesDay(conversation: ConversationSummary, dayStart: string | null): boolean {
+  if (!dayStart) return true;
+  const cutoff = Date.parse(dayStart);
+  const reference = conversation.lastMessageAt ?? conversation.createdAt;
+  const value = Date.parse(reference);
+  return !Number.isNaN(value) && value >= cutoff;
+}
+
+/**
  * Un traspaso de `conversation_handoffs`, en la forma mínima que hace falta
  * para decidir "sin dueño": a quién pasó y cuándo. `toKind`/`createdAt` y no
  * los nombres crudos de la columna (`to_kind`/`created_at`) porque esto es
@@ -159,6 +189,15 @@ export interface InboxCriteria {
    * set, solo pasan las filas que la consulta de verdad devolvió.
    */
   unassignedIds?: ReadonlySet<string> | null;
+  /**
+   * El corte de "hoy" (T1, 8/9/2026): mismo valor que viaja a las consultas
+   * y a los seis contadores (`useInboxDay`, `src/lib/use-inbox-day.ts`).
+   * `null` con el interruptor "Ver todo" — sin corte. Opcional y sin default
+   * en la firma, mismo motivo que `pinnedIds`: no obligar a cada llamador
+   * existente (los tests de acá abajo que no ejercitan el día) a conocerlo —
+   * sin el campo, `matchesDay` no se aplica (ver más abajo).
+   */
+  dayStart?: string | null;
 }
 
 function matchesFilter(
@@ -311,7 +350,7 @@ function sortValue(conversation: ConversationSummary): number | null {
 
 export function applyInboxFilters(
   conversations: ConversationSummary[],
-  { filter, search, tagId, sort, viewer, messageHitIds, pinnedIds, unassignedIds }: InboxCriteria
+  { filter, search, tagId, sort, viewer, messageHitIds, pinnedIds, unassignedIds, dayStart }: InboxCriteria
 ): ConversationSummary[] {
   const query = normalizeForSearch(search).trim();
 
@@ -319,7 +358,12 @@ export function applyInboxFilters(
     (conversation) =>
       matchesFilter(conversation, filter, viewer, unassignedIds) &&
       matchesTag(conversation, tagId) &&
-      matchesSearch(conversation, query, messageHitIds)
+      matchesSearch(conversation, query, messageHitIds) &&
+      // La búsqueda mira TODO el historial (decisión del operador, T1,
+      // 8/9/2026): con algo escrito en el cuadro, el corte de "hoy" no
+      // aplica — si no, "bujía" no encontraría al cliente de la semana
+      // pasada que sí la compró.
+      (query.length > 0 || matchesDay(conversation, dayStart ?? null))
   );
 
   // Copia: ordenar in situ reordenaría la lista que vive en el estado de React.

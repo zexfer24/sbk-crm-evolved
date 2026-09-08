@@ -2389,3 +2389,177 @@ describe("InboxSidebar — Agregar contacto (T6, 8/9/2026)", () => {
     expect(() => capturedOnCreated?.("conv-nueva", false)).not.toThrow();
   });
 });
+
+/**
+ * T1 del plan "Seis frentes del buzón" (8/9/2026): el interruptor "Ver
+ * todo". El ESTADO del corte (`dayScope`/`dayStart`) vive en `crm-shell.tsx`
+ * —lo necesitan también la cabecera de "Todos" y los seis contadores, no
+ * solo esta lista— así que acá se prueba como props controladas: el sidebar
+ * las recibe, las usa para armar sus consultas y avisa el cambio por
+ * `onDayScopeChange`, sin guardar nada de esto en `localStorage` por su
+ * cuenta (a diferencia de `filter`/`sort`, que sí son estado propio de este
+ * componente).
+ */
+describe('InboxSidebar — el interruptor "Ver todo" (T1, 8/9/2026)', () => {
+  const HOY_00_00_CARACAS = "2026-09-08T04:00:00.000Z";
+
+  it('sin onDayScopeChange (un consumidor que no conoce esta tarea), no pinta el interruptor', () => {
+    renderSidebar(JEFA);
+    expect(screen.queryByLabelText("Ver todo el historial")).toBeNull();
+    expect(screen.queryByLabelText("Ver solo hoy")).toBeNull();
+  });
+
+  it('con dayScope "today", pide "Pendientes" (la píldora por defecto) con el since de hoy', () => {
+    render(
+      <InboxSidebar
+        conversations={[]}
+        selectedId={null}
+        onSelect={() => {}}
+        currentAgent={JEFA}
+        allTags={ALL_TAGS}
+        bcvRate={null}
+        dayScope="today"
+        dayStart={HOY_00_00_CARACAS}
+        onDayScopeChange={() => {}}
+      />
+    );
+
+    expect(fetchConversations).toHaveBeenCalledWith(expect.anything(), {
+      activeOnly: true,
+      awaitingReplyOnly: true,
+      limit: INBOX_PAGE_SIZE,
+      since: HOY_00_00_CARACAS,
+    });
+  });
+
+  it('el botón pinta "Ver todo el historial" en modo "today", y al revés en "all"', () => {
+    const { rerender } = render(
+      <InboxSidebar
+        conversations={[]}
+        selectedId={null}
+        onSelect={() => {}}
+        currentAgent={JEFA}
+        allTags={ALL_TAGS}
+        bcvRate={null}
+        dayScope="today"
+        dayStart={HOY_00_00_CARACAS}
+        onDayScopeChange={() => {}}
+      />
+    );
+    expect(screen.getByLabelText("Ver todo el historial")).toBeInTheDocument();
+    expect(screen.queryByLabelText("Ver solo hoy")).toBeNull();
+
+    rerender(
+      <InboxSidebar
+        conversations={[]}
+        selectedId={null}
+        onSelect={() => {}}
+        currentAgent={JEFA}
+        allTags={ALL_TAGS}
+        bcvRate={null}
+        dayScope="all"
+        dayStart={null}
+        onDayScopeChange={() => {}}
+      />
+    );
+    expect(screen.getByLabelText("Ver solo hoy")).toBeInTheDocument();
+    expect(screen.queryByLabelText("Ver todo el historial")).toBeNull();
+  });
+
+  it('un clic en el interruptor avisa el cambio de scope, sin tocarlo por su cuenta', () => {
+    const onDayScopeChange = vi.fn();
+    render(
+      <InboxSidebar
+        conversations={[]}
+        selectedId={null}
+        onSelect={() => {}}
+        currentAgent={JEFA}
+        allTags={ALL_TAGS}
+        bcvRate={null}
+        dayScope="today"
+        dayStart={HOY_00_00_CARACAS}
+        onDayScopeChange={onDayScopeChange}
+      />
+    );
+
+    fireEvent.click(screen.getByLabelText("Ver todo el historial"));
+
+    expect(onDayScopeChange).toHaveBeenCalledWith("all");
+  });
+
+  /**
+   * "El paginador se reinicia" (contrato del plan): tocar el interruptor —o
+   * que ruede el día— cambia `dayStart`, que entra al `sessionKey` de
+   * `useInboxPager` junto con la píldora/etiqueta/orden. Sesión nueva
+   * significa primera página de NUEVO, no lo acumulado bajo el corte viejo.
+   */
+  it('cambiar "dayStart" abre sesión nueva: pide la primera página otra vez, ahora sin since', async () => {
+    const { rerender } = render(
+      <InboxSidebar
+        conversations={[]}
+        selectedId={null}
+        onSelect={() => {}}
+        currentAgent={JEFA}
+        allTags={ALL_TAGS}
+        bcvRate={null}
+        dayScope="today"
+        dayStart={HOY_00_00_CARACAS}
+        onDayScopeChange={() => {}}
+      />
+    );
+
+    expect(fetchConversations).toHaveBeenCalledWith(expect.anything(), {
+      activeOnly: true,
+      awaitingReplyOnly: true,
+      limit: INBOX_PAGE_SIZE,
+      since: HOY_00_00_CARACAS,
+    });
+    const llamadasAntes = vi.mocked(fetchConversations).mock.calls.length;
+
+    rerender(
+      <InboxSidebar
+        conversations={[]}
+        selectedId={null}
+        onSelect={() => {}}
+        currentAgent={JEFA}
+        allTags={ALL_TAGS}
+        bcvRate={null}
+        dayScope="all"
+        dayStart={null}
+        onDayScopeChange={() => {}}
+      />
+    );
+
+    await waitFor(() =>
+      expect(vi.mocked(fetchConversations).mock.calls.length).toBeGreaterThan(llamadasAntes)
+    );
+    expect(fetchConversations).toHaveBeenCalledWith(expect.anything(), {
+      activeOnly: true,
+      awaitingReplyOnly: true,
+      limit: INBOX_PAGE_SIZE,
+    });
+  });
+
+  it('"Sin dueño" también recibe el since de hoy', () => {
+    render(
+      <InboxSidebar
+        conversations={[]}
+        selectedId={null}
+        onSelect={() => {}}
+        currentAgent={JEFA}
+        allTags={ALL_TAGS}
+        bcvRate={null}
+        dayScope="today"
+        dayStart={HOY_00_00_CARACAS}
+        onDayScopeChange={() => {}}
+      />
+    );
+
+    irA("Sin dueño");
+
+    expect(fetchUnassignedConversations).toHaveBeenCalledWith(expect.anything(), {
+      tagId: undefined,
+      since: HOY_00_00_CARACAS,
+    });
+  });
+});

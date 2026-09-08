@@ -163,6 +163,10 @@ function evalCond(row: Row, cond: Cond): boolean {
       return cell != null && compareCell(cell, cond.value) <= 0;
     case "gt":
       return cell != null && compareCell(cell, cond.value) > 0;
+    // T1 (8/9/2026): el corte de "hoy" (`since`) es el primer filtro de este
+    // archivo que emite `.gte.` — hasta ahora el fake solo conocía `lte`/`gt`.
+    case "gte":
+      return cell != null && compareCell(cell, cond.value) >= 0;
     default:
       throw new Error(`operador "${cond.op}" no soportado por el fake de .or()`);
   }
@@ -940,6 +944,30 @@ describe("fetchConversations", () => {
      * `neverRepliedOnly`), pero mientras exista tiene que poder combinarse
      * con `limit` como cualquier otro filtro.
      */
+    /**
+     * T1 del plan "Seis frentes del buzón" (8/9/2026): "habló hoy". El
+     * grupo se combina con `pendingWindow`/`unreadOnly`/`escalatedOnly`/el
+     * cursor en el MISMO `.or()` (`orExpression`, `src/lib/ai/pgrst.ts`) —
+     * acá alcanza con verlo solo, sin nada más que combinar.
+     */
+    it('con since emite el OR de last_message_at/created_at ("habló hoy")', async () => {
+      const rows = [
+        conFecha(0, ANTES_DEL_CORTE),
+        { ...makeRow(1), last_message_at: null as string | null },
+      ];
+      const { client, filters } = createFakeSupabase(rows);
+
+      await fetchConversations(client, { since: "2026-09-08T04:00:00.000Z" });
+
+      expect(filters).toContainEqual({
+        op: "or",
+        column: "",
+        value:
+          'last_message_at.gte."2026-09-08T04:00:00.000Z",' +
+          'and(last_message_at.is.null,created_at.gte."2026-09-08T04:00:00.000Z")',
+      });
+    });
+
     it('pendingWindow "stale" respeta el limit explícito', async () => {
       const rows = Array.from({ length: 10 }, (_, i) => conFecha(i, ANTES_DEL_CORTE));
       const { client, calls } = createFakeSupabase(rows);

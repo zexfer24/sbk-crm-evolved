@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { fetchInboxCounts } from "@/lib/data";
 import { freeformWindowCutoff } from "@/lib/dashboard";
+import { orExpression, pgrstLiteral } from "@/lib/ai/pgrst";
 
 // ---------------------------------------------------------------------------
 // Los conteos de las píldoras de la bandeja: "Pendientes" (con o sin asesor
@@ -39,6 +40,38 @@ interface FilaConteo {
   journey_stage: string | null;
   ai_enabled: boolean;
   last_reply_sender: string | null;
+  /**
+   * T1 (8/9/2026): lo que mira el corte "habló hoy" (`since`). Opcionales —
+   * `undefined` en las filas de este archivo que no ejercitan `since`, así
+   * que las siete filas de `filas()` no tuvieron que tocarse.
+   */
+  last_message_at?: string | null;
+  created_at?: string;
+}
+
+/**
+ * Divide una expresión de `.or()` por sus comas de nivel superior, sin
+ * partir las que quedan dentro de un `and(...)` anidado — mismo recorte que
+ * `data-conversations.test.ts` (T1, 8/9/2026: `since` combinado con el `.or()`
+ * propio de "pendingStale"/"unread"/"escalated" produce `and(a,b)` de dos
+ * términos, algo que este fake no tenía que entender antes de esta tarea).
+ */
+function splitTopLevel(clause: string): string[] {
+  const parts: string[] = [];
+  let depth = 0;
+  let current = "";
+  for (const ch of clause) {
+    if (ch === "(") depth++;
+    if (ch === ")") depth--;
+    if (ch === "," && depth === 0) {
+      parts.push(current);
+      current = "";
+      continue;
+    }
+    current += ch;
+  }
+  if (current) parts.push(current);
+  return parts;
 }
 
 function createFakeSupabase(rows: FilaConteo[]) {
@@ -70,34 +103,50 @@ function createFakeSupabase(rows: FilaConteo[]) {
         );
       },
       // Fake mínimo: entiende las cláusulas que emite fetchInboxCounts para
-      // `pendingStale` (`columna.lte.valor` y `columna.is.null`) y para
-      // `unread` (`columna.gt.valor` y `columna.is.true`).
+      // `pendingStale` (`columna.lte.valor` y `columna.is.null`), `unread`
+      // (`columna.gt.valor` y `columna.is.true`) y, desde T1 (8/9/2026),
+      // `since` combinado con cualquiera de los anteriores en un solo
+      // `and(...)` por `orExpression` — de ahí el término RECURSIVO: un
+      // `and(...)` de nivel superior puede traer, a su vez, otro término
+      // suelto o `and(...)` adentro.
       or(clause: string) {
         consulta.filtros.push({ op: "or", column: "", value: clause });
-        const conditions = clause.split(",").map((raw) => {
-          const [column, op, ...rest] = raw.split(".");
-          return { column, op, value: rest.join(".") };
-        });
+        function evalTerm(row: FilaConteo, term: string): boolean {
+          if (term.startsWith("and(") && term.endsWith(")")) {
+            const inner = term.slice(4, -1);
+            return splitTopLevel(inner).every((raw) => evalTerm(row, raw));
+          }
+          const [column, op, ...rest] = term.split(".");
+          let value = rest.join(".");
+          // `since` viaja entrecomillado (`pgrstLiteral`, igual que el resto
+          // de los valores libres de esta base): sin desentrecomillar, el
+          // caracter `"` (0x22) ordena ANTES que cualquier dígito y el `gte`
+          // de acá abajo daría siempre verdadero, sin importar la fecha real.
+          if (value.startsWith('"') && value.endsWith('"')) {
+            value = value.slice(1, -1).replace(/\\"/g, '"').replace(/\\\\/g, "\\");
+          }
+          const cell = (row as unknown as Record<string, unknown>)[column];
+          if (op === "is") {
+            if (value === "null") return cell == null;
+            if (value === "true") return cell === true;
+            return cell === value;
+          }
+          if (op === "lte") return cell != null && (cell as string) <= value;
+          if (op === "gt") return cell != null && (cell as number) > Number(value);
+          // T1 (8/9/2026): el corte "habló hoy" (`since`) es el primer
+          // consumidor de `gte` en este fake.
+          if (op === "gte") return cell != null && (cell as string) >= value;
+          // T1.5 (5/9/2026): el conteo de "Escaladas" arma
+          // `last_reply_sender.neq.agent` dentro del `.or()` (junto con
+          // `.is.null` y `.is.true`) para expresar "is distinct from
+          // 'agent'" — ver el comentario de `escalated` en data.ts.
+          if (op === "neq") return cell !== value;
+          throw new Error(`operador "${op}" no soportado por el fake de .or()`);
+        }
+        const terms = splitTopLevel(clause);
         return builder(
           consulta,
-          current.filter((row) =>
-            conditions.some(({ column, op, value }) => {
-              const cell = (row as unknown as Record<string, unknown>)[column];
-              if (op === "is") {
-                if (value === "null") return cell == null;
-                if (value === "true") return cell === true;
-                return cell === value;
-              }
-              if (op === "lte") return cell != null && (cell as string) <= value;
-              if (op === "gt") return cell != null && (cell as number) > Number(value);
-              // T1.5 (5/9/2026): el conteo de "Escaladas" arma
-              // `last_reply_sender.neq.agent` dentro del `.or()` (junto con
-              // `.is.null` y `.is.true`) para expresar "is distinct from
-              // 'agent'" — ver el comentario de `escalated` en data.ts.
-              if (op === "neq") return cell !== value;
-              throw new Error(`operador "${op}" no soportado por el fake de .or()`);
-            })
-          )
+          current.filter((row) => terms.some((term) => evalTerm(row, term)))
         );
       },
       // La consulta de "Sin dueño" (`fetchUnassignedConversationIds`) no es un
@@ -380,5 +429,165 @@ describe("fetchInboxCounts", () => {
       escalated: 1,
       unassigned: 0,
     });
+  });
+});
+
+/**
+ * T1 del plan "Seis frentes del buzón" (8/9/2026): "habló hoy" en los seis
+ * contadores. `since` se combina en el MISMO `.or()` que cada conteo ya
+ * arma (`orExpression`, `src/lib/ai/pgrst.ts`) — nunca como un segundo
+ * `.or()` encadenado (ver el comentario de `since` en
+ * `FetchConversationsOptions`, data.ts). Los strings esperados se calculan
+ * con la misma `orExpression` que usa la implementación, igual que
+ * `data-conversations.test.ts` ya hace para el cursor combinado con
+ * `unreadOnly` — así el test valida la COMBINACIÓN, no una copia a mano del
+ * algoritmo que podría desincronizarse en silencio.
+ */
+describe('fetchInboxCounts — since ("habló hoy")', () => {
+  const SINCE = "2026-09-08T04:00:00.000Z";
+  const sinceGroup = [
+    `last_message_at.gte.${pgrstLiteral(SINCE)}`,
+    `and(last_message_at.is.null,created_at.gte.${pgrstLiteral(SINCE)})`,
+  ];
+
+  function fila(id: string, over: Partial<FilaConteo> = {}): FilaConteo {
+    return {
+      id,
+      awaiting_reply: true,
+      status: "open",
+      assigned_agent_id: null,
+      last_customer_message_at: null,
+      unread_count: 0,
+      manually_unread: false,
+      journey_stage: null,
+      ai_enabled: true,
+      last_reply_sender: null,
+      last_message_at: "2026-09-08T10:00:00.000Z",
+      created_at: "2026-09-08T10:00:00.000Z",
+      ...over,
+    };
+  }
+
+  it('"pending" (sin OR propio) agrega el .or() de since solo', async () => {
+    const { client, consultas } = createFakeSupabase([fila("conv-0")]);
+
+    await fetchInboxCounts(client, "viewer-1", AHORA, { since: SINCE });
+
+    expect(consultas[0].filtros).toContainEqual({
+      op: "or",
+      column: "",
+      value: orExpression([sinceGroup]),
+    });
+  });
+
+  it('"mine" (sin OR propio) agrega el .or() de since solo', async () => {
+    const { client, consultas } = createFakeSupabase([fila("conv-0")]);
+
+    await fetchInboxCounts(client, "viewer-1", AHORA, { since: SINCE });
+
+    expect(consultas[2].filtros).toContainEqual({
+      op: "or",
+      column: "",
+      value: orExpression([sinceGroup]),
+    });
+  });
+
+  it('"pendingStale" cruza su OR propio con el de since en una sola disyunción', async () => {
+    const { client, consultas } = createFakeSupabase([fila("conv-0")]);
+
+    await fetchInboxCounts(client, "viewer-1", AHORA, { since: SINCE });
+
+    const propio = [`last_customer_message_at.lte.${CUTOFF}`, "last_customer_message_at.is.null"];
+    expect(consultas[1].filtros).toContainEqual({
+      op: "or",
+      column: "",
+      value: orExpression([propio, sinceGroup]),
+    });
+  });
+
+  it('"unread" cruza su OR propio con el de since en una sola disyunción', async () => {
+    const { client, consultas } = createFakeSupabase([fila("conv-0")]);
+
+    await fetchInboxCounts(client, "viewer-1", AHORA, { since: SINCE });
+
+    const propio = ["unread_count.gt.0", "manually_unread.is.true"];
+    expect(consultas[3].filtros).toContainEqual({
+      op: "or",
+      column: "",
+      value: orExpression([propio, sinceGroup]),
+    });
+  });
+
+  it('"escalated" cruza su OR propio con el de since en una sola disyunción', async () => {
+    const { client, consultas } = createFakeSupabase([fila("conv-0")]);
+
+    await fetchInboxCounts(client, "viewer-1", AHORA, { since: SINCE });
+
+    const propio = [
+      "last_reply_sender.neq.agent",
+      "last_reply_sender.is.null",
+      "awaiting_reply.is.true",
+    ];
+    expect(consultas[4].filtros).toContainEqual({
+      op: "or",
+      column: "",
+      value: orExpression([propio, sinceGroup]),
+    });
+  });
+
+  it('"unassigned" (fetchUnassignedConversationIds) también recibe since', async () => {
+    const { client, consultas } = createFakeSupabase([fila("conv-0")]);
+
+    await fetchInboxCounts(client, "viewer-1", AHORA, { since: SINCE });
+
+    expect(consultas[5].filtros).toContainEqual({
+      op: "or",
+      column: "",
+      value: orExpression([sinceGroup]),
+    });
+  });
+
+  it("sin since (interruptor \"Ver todo\"), ninguno de los seis agrega el .or() de since", async () => {
+    const { client, consultas } = createFakeSupabase([fila("conv-0")]);
+
+    await fetchInboxCounts(client, "viewer-1", AHORA);
+
+    // "pending"/"mine" no llevan ningún .or() sin since (ya cubierto arriba
+    // por los tests que abren este archivo); acá se confirma que ninguna de
+    // las seis consultas menciona `last_message_at.gte` — ni siquiera las
+    // que ya tenían su propio `.or()`.
+    for (const consulta of consultas) {
+      for (const filtro of consulta.filtros) {
+        if (filtro.op === "or") {
+          expect(String(filtro.value)).not.toContain("last_message_at.gte");
+        }
+      }
+    }
+  });
+
+  it("con datos reales de hoy y de ayer, since deja solo lo de hoy en los conteos que lo cruzan", async () => {
+    const rows = [
+      // Hoy, pendiente sin asesor: cuenta en pending/pendingStale.
+      fila("conv-hoy", { last_customer_message_at: ANTES_DEL_CORTE }),
+      // Ayer, pendiente sin asesor: pending/pendingStale la ven, since la saca.
+      fila("conv-ayer", {
+        last_message_at: "2026-09-07T10:00:00.000Z",
+        created_at: "2026-09-07T10:00:00.000Z",
+        last_customer_message_at: ANTES_DEL_CORTE,
+      }),
+      // Recién creada hoy desde la bandeja (T6): sin last_message_at
+      // todavía, pero created_at de hoy — since la deja pasar igual.
+      fila("conv-recien-creada", {
+        last_message_at: null,
+        created_at: "2026-09-08T11:00:00.000Z",
+        last_customer_message_at: ANTES_DEL_CORTE,
+      }),
+    ];
+    const { client } = createFakeSupabase(rows);
+
+    const result = await fetchInboxCounts(client, "viewer-1", AHORA, { since: SINCE });
+
+    expect(result.pending).toBe(2); // conv-hoy, conv-recien-creada
+    expect(result.pendingStale).toBe(2); // las dos están fuera de la ventana de 24h
   });
 });
