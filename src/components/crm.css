@@ -975,6 +975,19 @@
   font-size: 11.5px;
 }
 
+/* El botón "Abrir el chat de {newPhone}" del aviso de cambio de número (D2,
+   6/9/2026; botón del 8/9/2026): mismo lenguaje que `.crm-msg-failure-action`
+   (color de acento, sin fondo ni borde) pero centrado, porque cuelga debajo
+   de una nota de sistema centrada y no de una burbuja alineada a un lado. */
+.crm-system-note-action {
+  color: var(--lm-accent, var(--lm-link, inherit));
+  cursor: pointer;
+  background: none;
+  border: none;
+  padding: 0 4px;
+  font-size: 11.5px;
+}
+
 .crm-day-sep {
   display: flex;
   justify-content: center;
