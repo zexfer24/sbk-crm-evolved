@@ -165,7 +165,7 @@ vecino que nombran.
 
 | Qué | Dónde |
 |---|---|
-| Migraciones (61, timestampeadas; recontadas el 8/9/2026 con `ls supabase/migrations/*.sql \| wc -l` — la fila venía diciendo 59 desde antes de que T1 de "La IA ve lo que llega" sumara la migración `20260908010000`, que la sube a 61, no a 60) | `migrations/` — regla: commit propio con `[migración]` en el título. El número es el CONTEO, no una secuencia: los archivos van por fecha (`20260830040000_…`), y leerlo como "la próxima es la 51" ya hizo que un plan pidiera crear `051_…`, que se habría ordenado antes que todo 2026 |
+| Migraciones (62, timestampeadas; recontadas el 9/9/2026 con `ls supabase/migrations/*.sql \| wc -l` tras sumar `20260909020000_stickers.sql` — la fila venía diciendo 61 desde T1 de "La IA ve lo que llega") | `migrations/` — regla: commit propio con `[migración]` en el título. El número es el CONTEO, no una secuencia: los archivos van por fecha (`20260830040000_…`), y leerlo como "la próxima es la 51" ya hizo que un plan pidiera crear `051_…`, que se habría ordenado antes que todo 2026 |
 | Seed de demo (3 usuarios, 5 conversaciones) | `seed.sql` — **no va a producción** |
 | Catálogo y escenarios para producción | `seeds/moto_catalog_seed.sql`, `seeds/ai_playbooks.sql` |
 | Config del stack local | `config.toml` |
