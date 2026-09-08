@@ -798,3 +798,19 @@ export interface SaleCartItem {
   unitPriceUsd: number;
   quantity: number;
 }
+
+/**
+ * Un sticker guardado en la biblioteca (T3a, "Seis frentes del buzón",
+ * 8/9/2026): los que un cliente mandó y un asesor decidió conservar (clic
+ * derecho → "Guardar sticker" en el chat) y los que se crean desde cero.
+ * `url` es la ruta propia del CRM (vía `mediaUrlFor`, igual que
+ * `Message.mediaUrl`), nunca la ruta cruda del bucket.
+ */
+export interface Sticker {
+  id: string;
+  url: string;
+  name: string | null;
+  animated: boolean;
+  createdBy: string | null;
+  createdAt: string;
+}

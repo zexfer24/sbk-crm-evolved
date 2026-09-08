@@ -1283,6 +1283,51 @@ export type Database = {
         }
         Relationships: []
       }
+      stickers: {
+        Row: {
+          animated: boolean
+          created_at: string
+          created_by: string | null
+          id: string
+          name: string | null
+          source_message_id: string | null
+          storage_path: string
+        }
+        Insert: {
+          animated?: boolean
+          created_at?: string
+          created_by?: string | null
+          id?: string
+          name?: string | null
+          source_message_id?: string | null
+          storage_path: string
+        }
+        Update: {
+          animated?: boolean
+          created_at?: string
+          created_by?: string | null
+          id?: string
+          name?: string | null
+          source_message_id?: string | null
+          storage_path?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "stickers_created_by_fkey"
+            columns: ["created_by"]
+            isOneToOne: false
+            referencedRelation: "agents"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "stickers_source_message_id_fkey"
+            columns: ["source_message_id"]
+            isOneToOne: false
+            referencedRelation: "messages"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       tags: {
         Row: {
           color: string

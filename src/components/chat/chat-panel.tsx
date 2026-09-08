@@ -330,6 +330,7 @@ export function ChatPanel({
               isHighlighted={item.message.id === jumpedToId}
               pendingDelivery={conversation.channel.status === "connected"}
               onOpenTemplatePicker={handleOpenTemplatePicker}
+              agent={currentAgent}
             />
           );
         })}

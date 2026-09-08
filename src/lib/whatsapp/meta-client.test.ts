@@ -1,5 +1,5 @@
 import { describe, expect, it, vi, beforeEach, afterEach } from "vitest";
-import { markWhatsappRead, sendTypingIndicator } from "@/lib/whatsapp/meta-client";
+import { markWhatsappRead, sendTypingIndicator, sendWhatsappMedia } from "@/lib/whatsapp/meta-client";
 import { log } from "@/lib/log";
 
 /**
@@ -102,5 +102,46 @@ describe("sendTypingIndicator", () => {
     fetchMock.mockRejectedValue(new Error("network down"));
 
     await expect(sendTypingIndicator("phone-id-1", "token-123", "wamid.X")).resolves.toBeUndefined();
+  });
+});
+
+/**
+ * T3a ("Seis frentes del buzón", 8/9/2026): un sticker se manda por `link`
+ * como cualquier otro adjunto, pero SIN `caption` — Meta lo rechaza si lo
+ * lleva. `audio` ya tenía esta misma restricción; `sticker` la suma.
+ */
+describe("sendWhatsappMedia — sticker", () => {
+  beforeEach(() => {
+    fetchMock.mockResolvedValue({
+      ok: true,
+      json: async () => ({ messages: [{ id: "wamid.STICKER" }] }),
+    });
+  });
+
+  it("manda {link} sin caption aunque se le pase uno", async () => {
+    const result = await sendWhatsappMedia(
+      "phone-id-1",
+      "token-123",
+      "584121234567",
+      "sticker",
+      "https://signed.example.com/sticker.webp",
+      "un pie que Meta va a rechazar"
+    );
+
+    expect(result).toEqual({ whatsappMessageId: "wamid.STICKER" });
+    const [, init] = fetchMock.mock.calls[0];
+    expect(JSON.parse(init.body)).toEqual({
+      messaging_product: "whatsapp",
+      to: "584121234567",
+      type: "sticker",
+      sticker: { link: "https://signed.example.com/sticker.webp" },
+    });
+  });
+
+  it("sin pie tampoco manda caption (mismo camino)", async () => {
+    await sendWhatsappMedia("phone-id-1", "token-123", "584121234567", "sticker", "https://signed.example.com/s.webp");
+
+    const [, init] = fetchMock.mock.calls[0];
+    expect(JSON.parse(init.body).sticker).toEqual({ link: "https://signed.example.com/s.webp" });
   });
 });
