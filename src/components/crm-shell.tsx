@@ -462,6 +462,28 @@ export function CrmShell({
   }
 
   /**
+   * "Agregar contacto" (T6, 8/9/2026): la conversación que acaba de crear
+   * `NewContactModal` (vía `inbox-sidebar.tsx`) todavía no está en
+   * `conversations` -- nadie la bajó todavía, nació recién en la base --
+   * así que abrir el chat sola no alcanza. El realtime de INSERT en
+   * `conversations` (`use-live-conversations.ts:193`, todo evento que no
+   * sea UPDATE cae a `requestListRefresh()`) también la traería, pero eso
+   * puede tardar un ciclo entero; pedir la cabecera de una vez con
+   * `refreshConversations` evita que el asesor vea el chat abierto y la
+   * fila ausente de la bandeja al mismo tiempo.
+   *
+   * Sin traspaso a `conversation_handoffs`: la invariante "ningún lead
+   * invisible" exige uno cuando `awaiting_reply` queda en `true` sin dueño,
+   * y acá no hay ningún mensaje del cliente todavía -- esa columna
+   * generada nace en `false` (ver el comentario en
+   * `createContactConversation`, `lib/mutations.ts`).
+   */
+  function handleContactCreated(conversationId: string) {
+    openConversation(conversationId);
+    refreshConversations();
+  }
+
+  /**
    * La conversación completa del chat abierto (canal, ficha, venta), pedida
    * por id al seleccionarla. La lista ya no la trae: sus filas son filas de
    * bandeja, y cargar el detalle de 30 conversaciones para abrir una era el
@@ -887,6 +909,7 @@ export function CrmShell({
             counts={inboxCounts}
             initialPendingRows={initialPendingConversations}
             livePulse={livePulse}
+            onContactCreated={handleContactCreated}
           />
         </section>
 

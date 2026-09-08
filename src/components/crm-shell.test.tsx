@@ -80,6 +80,8 @@ let inboxProps: {
   initialPendingRows?: Conversation[];
   /** El pulso de tiempo real: lo mueve, entre otros, el canal de traspasos. */
   livePulse?: number;
+  /** T6 (8/9/2026): capturado para el test de "Agregar contacto". */
+  onContactCreated?: (conversationId: string) => void;
 } | null = null;
 
 vi.mock("@/components/inbox/inbox-sidebar", () => ({
@@ -92,6 +94,7 @@ vi.mock("@/components/inbox/inbox-sidebar", () => ({
     counts,
     initialPendingRows,
     livePulse,
+    onContactCreated,
   }: {
     conversations: Conversation[];
     onSelect: (id: string) => void;
@@ -101,6 +104,7 @@ vi.mock("@/components/inbox/inbox-sidebar", () => ({
     counts?: unknown;
     initialPendingRows?: Conversation[];
     livePulse?: number;
+    onContactCreated?: (conversationId: string) => void;
   }) => ((inboxProps = {
     conversations,
     hasMore,
@@ -108,6 +112,7 @@ vi.mock("@/components/inbox/inbox-sidebar", () => ({
     counts,
     initialPendingRows,
     livePulse,
+    onContactCreated,
   }),
   (
     <>
@@ -119,6 +124,11 @@ vi.mock("@/components/inbox/inbox-sidebar", () => ({
       {hasMore && (
         <button type="button" onClick={onLoadMore}>
           cargar más
+        </button>
+      )}
+      {onContactCreated && (
+        <button type="button" onClick={() => onContactCreated("conv-agregada")}>
+          simular contacto agregado
         </button>
       )}
     </>
@@ -852,6 +862,45 @@ describe("CrmShell — marcar leído vuelve a pedir los contadores", () => {
 
     expect(fetchInboxCountsMock).toHaveBeenCalledTimes(1);
     expect(inboxProps?.counts).toEqual(contadoresActualizados);
+  });
+});
+
+/**
+ * T6 (8/9/2026): "Agregar contacto" desde la bandeja. `NewContactModal` (con
+ * sus propias pruebas) vive dentro de `InboxSidebar`, mockeado acá — lo que
+ * este test fija es lo que hace `crm-shell.tsx` cuando `onContactCreated`
+ * llega desde abajo: abrir el chat de la conversación recién creada Y pedir
+ * la cabecera de la bandeja de nuevo (esa fila todavía no está en
+ * `conversations`, nadie la bajó).
+ */
+describe("CrmShell — Agregar contacto abre el chat y refresca la bandeja", () => {
+  it("onContactCreated selecciona la conversación y dispara un refetch de la cabecera", async () => {
+    render(
+      <CrmShell
+        currentAgent={currentAgent}
+        initialConversations={[buildConversation({ id: "conv-1" })]}
+        initialInboxCounts={inboxCounts}
+        allTags={allTags}
+        initialQuickReplies={initialQuickReplies}
+        bcvRate={null}
+        initialAgentSettings={agentSettings}
+      />
+    );
+    await act(async () => {});
+    fetchConversationsMock.mockClear();
+    fetchConversationMock.mockClear();
+
+    await act(async () => {
+      screen.getByRole("button", { name: "simular contacto agregado" }).click();
+    });
+    await act(async () => {});
+
+    // El chat se abre pidiendo el detalle de la conversación que acaba de nacer.
+    expect(fetchConversationMock).toHaveBeenCalledWith(expect.anything(), "conv-agregada");
+    // `refreshConversations` (dentro de `handleContactCreated`) llama a
+    // `fetchInboxHead`, que pide `fetchConversations` sin filtro: la fila
+    // nueva llega por ahí, no por la lista con la que arrancó el shell.
+    expect(fetchConversationsMock).toHaveBeenCalled();
   });
 });
 
