@@ -734,6 +734,104 @@ export type Database = {
         }
         Relationships: []
       }
+      invoices: {
+        Row: {
+          bcv_rate: number | null
+          contact_id: string
+          conversation_id: string | null
+          created_at: string
+          currency: string
+          customer: Json
+          id: string
+          issued_at: string | null
+          issued_by: string | null
+          items: Json
+          notes: string | null
+          number: number
+          order_id: string | null
+          status: string
+          subtotal: number
+          tax_amount: number
+          tax_rate: number
+          total: number
+          updated_at: string
+          voided_at: string | null
+        }
+        Insert: {
+          bcv_rate?: number | null
+          contact_id: string
+          conversation_id?: string | null
+          created_at?: string
+          currency?: string
+          customer: Json
+          id?: string
+          issued_at?: string | null
+          issued_by?: string | null
+          items: Json
+          notes?: string | null
+          number?: number
+          order_id?: string | null
+          status?: string
+          subtotal: number
+          tax_amount: number
+          tax_rate?: number
+          total: number
+          updated_at?: string
+          voided_at?: string | null
+        }
+        Update: {
+          bcv_rate?: number | null
+          contact_id?: string
+          conversation_id?: string | null
+          created_at?: string
+          currency?: string
+          customer?: Json
+          id?: string
+          issued_at?: string | null
+          issued_by?: string | null
+          items?: Json
+          notes?: string | null
+          number?: number
+          order_id?: string | null
+          status?: string
+          subtotal?: number
+          tax_amount?: number
+          tax_rate?: number
+          total?: number
+          updated_at?: string
+          voided_at?: string | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "invoices_contact_id_fkey"
+            columns: ["contact_id"]
+            isOneToOne: false
+            referencedRelation: "contacts"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "invoices_conversation_id_fkey"
+            columns: ["conversation_id"]
+            isOneToOne: false
+            referencedRelation: "conversations"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "invoices_issued_by_fkey"
+            columns: ["issued_by"]
+            isOneToOne: false
+            referencedRelation: "agents"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "invoices_order_id_fkey"
+            columns: ["order_id"]
+            isOneToOne: false
+            referencedRelation: "orders"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       knowledge_categories: {
         Row: {
           created_at: string

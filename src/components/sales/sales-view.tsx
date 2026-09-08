@@ -1,11 +1,12 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { CheckCheck, Eye, Receipt, RotateCcw, ShieldCheck, Trash2 } from "lucide-react";
-import type { Agent, Sale } from "@/lib/types";
+import type { Agent, Invoice, Sale } from "@/lib/types";
 import { PAYMENT_METHOD_LABELS } from "@/lib/types";
 import { createClient } from "@/lib/supabase/client";
-import { deleteSale, returnSale, verifySale } from "@/lib/mutations";
+import { createInvoiceForSale, deleteSale, issueInvoice, returnSale, verifySale, voidInvoice } from "@/lib/mutations";
+import { fetchInvoicesForSale } from "@/lib/invoices-data";
 import { useLiveSales } from "@/lib/use-live-sales";
 import { contactName, initials } from "@/lib/dashboard";
 import { formatFullDateTime } from "@/lib/format";
@@ -19,9 +20,11 @@ import "@/components/sales/sales.css";
 interface SalesViewProps {
   currentAgent: Agent;
   initialSales: Sale[];
+  /** Null si no se pudo leer la tasa BCV ese día: "Generar factura" sigue funcionando, con `bcv_rate: null`. */
+  bcvRate: number | null;
 }
 
-export function SalesView({ currentAgent, initialSales }: SalesViewProps) {
+export function SalesView({ currentAgent, initialSales, bcvRate }: SalesViewProps) {
   const supabase = useMemo(() => createClient(), []);
 
   // La sección pide solo las ventas (filtradas en la base), no el histórico
@@ -32,6 +35,36 @@ export function SalesView({ currentAgent, initialSales }: SalesViewProps) {
   const [detailId, setDetailId] = useState<string | null>(null);
   const [busyId, setBusyId] = useState<string | null>(null);
   const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
+
+  // Factura de la venta abierta en el detalle: `undefined` mientras carga,
+  // `null` si la venta todavía no tiene ninguna. Se pide solo al abrir el
+  // detalle —la lista no la necesita— y queda en caché por id de venta para
+  // no repetir la consulta si se vuelve a abrir el mismo detalle.
+  const [invoicesBySale, setInvoicesBySale] = useState<Record<string, Invoice | null>>({});
+  const [invoiceBusyId, setInvoiceBusyId] = useState<string | null>(null);
+  const loadedInvoiceIds = useRef<Set<string>>(new Set());
+
+  useEffect(() => {
+    if (!detailId || loadedInvoiceIds.current.has(detailId)) return;
+    loadedInvoiceIds.current.add(detailId);
+    let cancelled = false;
+
+    fetchInvoicesForSale(supabase, detailId)
+      .then((invoices) => {
+        if (!cancelled) setInvoicesBySale((current) => ({ ...current, [detailId]: invoices[0] ?? null }));
+      })
+      .catch(() => {
+        // Una factura que no se pudo leer no puede tumbar el detalle de la
+        // venta: se trata como "sin factura todavía" y "Generar factura"
+        // sigue disponible para reintentar.
+        loadedInvoiceIds.current.delete(detailId);
+        if (!cancelled) setInvoicesBySale((current) => ({ ...current, [detailId]: null }));
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [detailId, supabase]);
 
   // El orden lo decide el cierre; `fetchSales` ya lo trae así, pero se
   // reafirma para que un refetch parcial no lo desarme.
@@ -45,6 +78,38 @@ export function SalesView({ currentAgent, initialSales }: SalesViewProps) {
   );
 
   const detailSale = sales.find((s) => s.id === detailId) ?? null;
+
+  async function handleGenerateInvoice(saleId: string) {
+    const sale = sales.find((s) => s.id === saleId);
+    if (!sale) return;
+    setInvoiceBusyId(saleId);
+    try {
+      const invoice = await createInvoiceForSale(supabase, sale, currentAgent, bcvRate);
+      setInvoicesBySale((current) => ({ ...current, [saleId]: invoice }));
+    } finally {
+      setInvoiceBusyId(null);
+    }
+  }
+
+  async function handleIssueInvoice(saleId: string, invoiceId: string) {
+    setInvoiceBusyId(saleId);
+    try {
+      const invoice = await issueInvoice(supabase, invoiceId, currentAgent);
+      setInvoicesBySale((current) => ({ ...current, [saleId]: invoice }));
+    } finally {
+      setInvoiceBusyId(null);
+    }
+  }
+
+  async function handleVoidInvoice(saleId: string, invoiceId: string) {
+    setInvoiceBusyId(saleId);
+    try {
+      const invoice = await voidInvoice(supabase, invoiceId);
+      setInvoicesBySale((current) => ({ ...current, [saleId]: invoice }));
+    } finally {
+      setInvoiceBusyId(null);
+    }
+  }
 
   async function handleVerify(id: string) {
     setBusyId(id);
@@ -231,11 +296,17 @@ export function SalesView({ currentAgent, initialSales }: SalesViewProps) {
           }
         }}
         sale={detailSale}
+        currentAgent={currentAgent}
         busy={busyId === detailId}
         confirmingDelete={detailId !== null && confirmDeleteId === detailId}
         onVerify={handleVerify}
         onReturn={handleReturn}
         onDelete={handleDelete}
+        invoice={detailId ? invoicesBySale[detailId] : undefined}
+        invoiceBusy={invoiceBusyId !== null && invoiceBusyId === detailId}
+        onGenerateInvoice={handleGenerateInvoice}
+        onIssueInvoice={handleIssueInvoice}
+        onVoidInvoice={handleVoidInvoice}
       />
     </div>
   );

@@ -2,9 +2,11 @@ import type { SupabaseClient } from "@supabase/supabase-js";
 import type {
   Agent,
   CedulaType,
+  Invoice,
   MessageType,
   PaymentMethod,
   Playbook,
+  Sale,
   SaleItemOrigin,
   TagColor,
   WhatsappTemplate,
@@ -20,6 +22,8 @@ import { revealsIdentity, type IdentityMatch } from "@/lib/ai/identity-guard";
 // tareas del mismo plan lo editan en paralelo.
 import type { Message, Sticker } from "@/lib/types";
 import { MEDIA_BUCKET, mediaUrlFor, storagePathFromUrl } from "@/lib/storage";
+import { buildInvoiceDraft, formatInvoiceNumber } from "@/lib/invoices";
+import { fetchOrderItems, INVOICE_SELECT, mapInvoice, type RawInvoice } from "@/lib/invoices-data";
 
 async function insertSystemEvent(
   supabase: SupabaseClient,
@@ -1025,4 +1029,115 @@ export async function deleteSticker(supabase: SupabaseClient, sticker: Sticker):
  */
 export async function sendStickerMessage(conversationId: string, mediaUrl: string): Promise<string | null> {
   return postSendMessage({ conversationId, kind: "media", mediaUrl, mediaType: "sticker" });
+}
+
+// ---------------------------------------------------------------------------
+// Facturas (T5, plan "Seis frentes del buzón", 8/9/2026). El armado del
+// snapshot y el cálculo de totales viven en `invoices.ts` (puro); acá solo
+// se lee lo que hace falta de la base para armarlo y se escribe el
+// resultado. `INVOICE_SELECT`/`mapInvoice` se reusan de `invoices-data.ts`
+// para devolver la fila recién escrita ya mapeada, sin una segunda consulta.
+// ---------------------------------------------------------------------------
+
+function rawInvoiceFrom(data: unknown): RawInvoice {
+  return data as RawInvoice;
+}
+
+/**
+ * Genera el borrador de una factura para una venta cerrada. El monto sale
+ * SIEMPRE de `order_items` —lo que armó `closeSaleWithContactInfo` al
+ * cerrar la venta—, nunca de un número escrito a mano: mismo principio que
+ * gobierna el resto del cierre.
+ *
+ * Sin `conversations.order_id` (la venta no llegó a tener orden registrada,
+ * caso que en la práctica no debería darse pero que el tipo `Sale` no
+ * descarta) falla con un mensaje claro en vez de generar una factura vacía.
+ */
+export async function createInvoiceForSale(
+  supabase: SupabaseClient,
+  sale: Sale,
+  agent: Agent,
+  bcvRate: number | null
+): Promise<Invoice> {
+  const { data: conversation, error: conversationError } = await supabase
+    .from("conversations")
+    .select("order_id")
+    .eq("id", sale.id)
+    .maybeSingle();
+  if (conversationError) throw conversationError;
+
+  const orderId = (conversation as { order_id: string | null } | null)?.order_id ?? null;
+  if (!orderId) {
+    throw new Error("Esta venta no tiene orden registrada");
+  }
+
+  const orderItems = await fetchOrderItems(supabase, orderId);
+  const draft = buildInvoiceDraft({ sale, orderId, orderItems, contact: sale.contact, bcvRate });
+
+  const { data, error } = await supabase
+    .from("invoices")
+    .insert({
+      conversation_id: draft.conversationId,
+      order_id: draft.orderId,
+      contact_id: draft.contactId,
+      customer: draft.customer,
+      items: draft.items,
+      subtotal: draft.subtotal,
+      tax_rate: draft.taxRate,
+      tax_amount: draft.taxAmount,
+      total: draft.total,
+      currency: draft.currency,
+      bcv_rate: draft.bcvRate,
+    })
+    .select(INVOICE_SELECT)
+    .single();
+  if (error || !data) throw error ?? new Error("No se pudo crear la factura.");
+
+  const invoice = mapInvoice(rawInvoiceFrom(data));
+  await insertSystemEvent(
+    supabase,
+    sale.id,
+    agent.id,
+    `${agent.displayName} generó la factura ${formatInvoiceNumber(invoice.number)}`
+  );
+  return invoice;
+}
+
+/** Emitir es sensible (RLS lo exige de supervisor/admin): la factura pasa a `issued` con quién y cuándo. */
+export async function issueInvoice(supabase: SupabaseClient, id: string, agent: Agent): Promise<Invoice> {
+  const { data, error } = await supabase
+    .from("invoices")
+    .update({ status: "issued", issued_at: new Date().toISOString(), issued_by: agent.id })
+    .eq("id", id)
+    .select(INVOICE_SELECT)
+    .single();
+  if (error || !data) throw error ?? new Error("No se pudo emitir la factura.");
+
+  const invoice = mapInvoice(rawInvoiceFrom(data));
+  if (invoice.conversationId) {
+    await insertSystemEvent(
+      supabase,
+      invoice.conversationId,
+      agent.id,
+      `${agent.displayName} emitió la factura ${formatInvoiceNumber(invoice.number)}`
+    );
+  }
+  return invoice;
+}
+
+/**
+ * Anula una factura (RLS lo exige de supervisor/admin). Sin `agent`, a
+ * propósito: la migración no tiene una columna `voided_by` —si hace falta
+ * saber quién anuló, esa columna se agrega aparte, con su propio trazo—.
+ */
+export async function voidInvoice(supabase: SupabaseClient, id: string): Promise<Invoice> {
+  const { data, error } = await supabase
+    .from("invoices")
+    .update({ status: "void", voided_at: new Date().toISOString() })
+    .eq("id", id)
+    .select(INVOICE_SELECT)
+    .single();
+  if (error || !data) throw error ?? new Error("No se pudo anular la factura.");
+
+  return mapInvoice(rawInvoiceFrom(data));
 }
