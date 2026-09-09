@@ -309,9 +309,8 @@ export interface OrderPayloadItem {
  * `messages.payload`, tipado con el mínimo que la burbuja necesita pintar
  * (T3.2, 5/9/2026): jsonb sin esquema fijo en la base porque cambia según el
  * tipo de mensaje, pero cada tipo que la UI sabe representar tiene su forma
- * acá. El resto (el tipo real cuando `messageType='unsupported'`, o
- * `referredProduct` de un anuncio) viaja en la fila pero no tiene lector
- * propio todavía.
+ * acá. El resto (`referredProduct` de un anuncio) viaja en la fila pero no
+ * tiene lector propio todavía.
  */
 export interface MessagePayload {
   /** Solo cuando `messageType === 'interactive'` y vino de un botón/lista. */
@@ -323,6 +322,27 @@ export interface MessagePayload {
   /** Solo cuando `messageType === 'order'`. */
   catalogId?: string;
   productItems?: OrderPayloadItem[];
+  /**
+   * Solo cuando `messageType === 'system_event'` (webhook `handleSystemMessage`,
+   * 6/9/2026): qué evento de sistema de Meta generó esta fila —
+   * `"user_changed_number"` es el único con lector propio hoy (el botón de la
+   * burbuja, 8/9/2026).
+   */
+  systemType?: string;
+  /**
+   * Solo cuando `messageType === 'system_event'` y `systemType ===
+   * 'user_changed_number'` (webhook `handleSystemMessage`, 6/9/2026): el
+   * número que tenía el contacto antes del cambio.
+   */
+  previousPhone?: string;
+  /**
+   * Solo cuando `messageType === 'system_event'` y `systemType ===
+   * 'user_changed_number'` (webhook `handleSystemMessage`, 6/9/2026): el
+   * número nuevo. Cuando ya tenía conversación propia en el CRM (D2) el
+   * contacto de ESTE hilo no se movió a él, y la burbuja ofrece saltar a esa
+   * otra conversación (botón del 8/9/2026).
+   */
+  newPhone?: string;
 }
 
 /**

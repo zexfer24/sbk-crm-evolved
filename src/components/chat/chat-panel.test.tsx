@@ -46,7 +46,10 @@ const conversacion = {
 function renderPanel(
   messages: Message[],
   extra: Partial<
-    Pick<Parameters<typeof ChatPanel>[0], "outboxItems" | "onRetryOutbox" | "onDiscardOutbox" | "conversation">
+    Pick<
+      Parameters<typeof ChatPanel>[0],
+      "outboxItems" | "onRetryOutbox" | "onDiscardOutbox" | "conversation" | "onOpenConversationByPhone"
+    >
   > = {}
 ) {
   return render(
@@ -223,6 +226,36 @@ describe("ChatPanel — cerrar y reabrir desde la cabecera", () => {
 
     expect(reopenConversation).toHaveBeenCalledWith("conv-1");
     expect(screen.queryByRole("button", { name: /^cerrar$/i })).not.toBeInTheDocument();
+  });
+});
+
+/**
+ * El botón "Abrir el chat de {newPhone}" del aviso de cambio de número (D2,
+ * "El cliente que cambió de número", 6/9/2026; botón del 8/9/2026): el panel
+ * pasa el teléfono ACTUAL del contacto de este hilo y el callback recibido
+ * hasta la burbuja, para que sepa si el número del aviso es este mismo chat.
+ */
+describe("ChatPanel — el aviso de cambio de número", () => {
+  it("con un aviso de conflicto en el hilo, el clic en su botón llega al callback del panel con el número nuevo", async () => {
+    const onOpenConversationByPhone = vi.fn().mockResolvedValue(true);
+
+    renderPanel(
+      [
+        mensaje({
+          id: "m-aviso",
+          direction: "outbound",
+          senderType: "system",
+          messageType: "system_event",
+          content: "El cliente cambió su número de WhatsApp a +584129999999, que ya tiene conversación en el CRM",
+          payload: { systemType: "user_changed_number", previousPhone: "+58412", newPhone: "+584129999999" },
+        }),
+      ],
+      { onOpenConversationByPhone }
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: /abrir el chat de \+584129999999/i }));
+
+    expect(onOpenConversationByPhone).toHaveBeenCalledWith("+584129999999");
   });
 });
 

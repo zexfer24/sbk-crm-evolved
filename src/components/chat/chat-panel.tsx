@@ -63,6 +63,12 @@ interface ChatPanelProps {
   onSendText: (content: string, replyToMessageId: string | null) => void;
   onRetryOutbox?: (localId: string) => void;
   onDiscardOutbox?: (localId: string) => void;
+  /**
+   * El botón "Abrir el chat de {newPhone}" del aviso de cambio de número
+   * (D2, 6/9/2026; botón del 8/9/2026): sin este callback la burbuja de
+   * `system_event` solo informa, nunca ofrece el atajo.
+   */
+  onOpenConversationByPhone?: (phone: string) => Promise<boolean>;
 }
 
 export function ChatPanel({
@@ -82,6 +88,7 @@ export function ChatPanel({
   onSendText,
   onRetryOutbox,
   onDiscardOutbox,
+  onOpenConversationByPhone,
 }: ChatPanelProps) {
   const [isIntervening, setIsIntervening] = useState(false);
   const [replyingTo, setReplyingTo] = useState<Message | null>(null);
@@ -331,6 +338,8 @@ export function ChatPanel({
               pendingDelivery={conversation.channel.status === "connected"}
               onOpenTemplatePicker={handleOpenTemplatePicker}
               agent={currentAgent}
+              contactPhone={conversation.contact.phoneNumber}
+              onOpenConversationByPhone={onOpenConversationByPhone}
             />
           );
         })}

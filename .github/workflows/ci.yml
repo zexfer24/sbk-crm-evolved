@@ -182,3 +182,19 @@ jobs:
           psql "postgresql://postgres:postgres@127.0.0.1:54322/postgres" \
             -v ON_ERROR_STOP=1 \
             -f supabase/tests/traspaso_sin_contenido_legible.sql
+
+      # T1, corrida "La bandeja habla español y el número nuevo queda a un
+      # clic" (8/9/2026): la preview de la lista mostraba "Image", "Audio",
+      # "Sticker", "Unsupported" en inglés crudo cuando el último mensaje
+      # visible no traía content -- deuda dejada por la corrida "El cliente
+      # que cambió de número" (6/9/2026). Va en la base porque
+      # last_message_preview es la única fuente de verdad que lee la
+      # bandeja: message_preview_label() traduce el tipo, handle_new_message()
+      # la usa como respaldo de content, y el caso 6 reaplica la migración
+      # con `\i` para probar el backfill sobre previews que ya quedaron en
+      # inglés antes de esta migración.
+      - name: la preview de la bandeja habla español
+        run: |
+          psql "postgresql://postgres:postgres@127.0.0.1:54322/postgres" \
+            -v ON_ERROR_STOP=1 \
+            -f supabase/tests/preview_en_espanol.sql

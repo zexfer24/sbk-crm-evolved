@@ -1,6 +1,7 @@
 /** @vitest-environment jsdom */
 import { describe, expect, it, vi } from "vitest";
 import { render, screen, fireEvent, act } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { AudioContent, MediaContent, MessageBubble } from "@/components/chat/message-bubble";
 import type { Message } from "@/lib/types";
 
@@ -333,6 +334,88 @@ describe("MessageBubble — la acción sugerida del fallo", () => {
     );
 
     expect(screen.queryByRole("button", { name: /abrir plantillas/i })).not.toBeInTheDocument();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// El aviso de cambio de número (D2, "El cliente que cambió de número",
+// 6/9/2026; botón del 8/9/2026): cuando el número nuevo YA tenía
+// conversación en el CRM, el webhook deja un `system_event` sin fusionar y la
+// burbuja ofrece saltar al otro chat.
+// ---------------------------------------------------------------------------
+describe("MessageBubble — el aviso de cambio de número", () => {
+  const avisoCambioNumero = (newPhone: string | undefined, systemType = "user_changed_number") =>
+    baseMessage({
+      messageType: "system_event",
+      content: "El cliente cambió su número de WhatsApp a +584129999999, que ya tiene conversación en el CRM",
+      payload: { systemType, previousPhone: "+584121111111", newPhone },
+    });
+
+  it("con el número nuevo distinto de este chat, ofrece el botón y el clic llama al callback con newPhone", async () => {
+    const user = userEvent.setup({ delay: null, pointerEventsCheck: 0 });
+    const onOpenConversationByPhone = vi.fn().mockResolvedValue(true);
+
+    render(
+      <MessageBubble
+        message={avisoCambioNumero("+584129999999")}
+        contactPhone="+584121111111"
+        onOpenConversationByPhone={onOpenConversationByPhone}
+      />
+    );
+
+    const boton = screen.getByRole("button", { name: /abrir el chat de \+584129999999/i });
+    await user.click(boton);
+
+    expect(onOpenConversationByPhone).toHaveBeenCalledWith("+584129999999");
+  });
+
+  it("cuando el contacto ya se movió a ESTE chat (newPhone === contactPhone), no ofrece botón", () => {
+    const onOpenConversationByPhone = vi.fn();
+    render(
+      <MessageBubble
+        message={avisoCambioNumero("+584129999999")}
+        contactPhone="+584129999999"
+        onOpenConversationByPhone={onOpenConversationByPhone}
+      />
+    );
+
+    expect(screen.queryByRole("button", { name: /abrir el chat de/i })).not.toBeInTheDocument();
+  });
+
+  it("sin el callback, no ofrece ningún botón", () => {
+    render(<MessageBubble message={avisoCambioNumero("+584129999999")} contactPhone="+584121111111" />);
+
+    expect(screen.queryByRole("button", { name: /abrir el chat de/i })).not.toBeInTheDocument();
+  });
+
+  it("otro system_event sin newPhone no ofrece botón", () => {
+    const onOpenConversationByPhone = vi.fn();
+    render(
+      <MessageBubble
+        message={avisoCambioNumero(undefined, "customer_identity_changed")}
+        contactPhone="+584121111111"
+        onOpenConversationByPhone={onOpenConversationByPhone}
+      />
+    );
+
+    expect(screen.queryByRole("button", { name: /abrir el chat de/i })).not.toBeInTheDocument();
+  });
+
+  it("cuando el callback resuelve false, avisa en línea que no hay conversación con ese número", async () => {
+    const user = userEvent.setup({ delay: null, pointerEventsCheck: 0 });
+    const onOpenConversationByPhone = vi.fn().mockResolvedValue(false);
+
+    render(
+      <MessageBubble
+        message={avisoCambioNumero("+584129999999")}
+        contactPhone="+584121111111"
+        onOpenConversationByPhone={onOpenConversationByPhone}
+      />
+    );
+
+    await user.click(screen.getByRole("button", { name: /abrir el chat de \+584129999999/i }));
+
+    expect(await screen.findByText(/no hay conversación con ese número/i)).toBeInTheDocument();
   });
 });
 

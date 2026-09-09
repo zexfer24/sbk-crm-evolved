@@ -1231,6 +1231,47 @@ export async function fetchConversationRow(
   return data ? mapConversationSummary(data as unknown as RawConversationSummary) : null;
 }
 
+/**
+ * El id de la conversación más reciente de un teléfono, o `null` si no hay
+ * contacto o el contacto no tiene ninguna.
+ *
+ * Nace del botón "Abrir el chat de {newPhone}" del aviso de cambio de número
+ * (D2, "El cliente que cambió de número", 6/9/2026; botón del 8/9/2026):
+ * cuando el número nuevo YA tenía contacto, el webhook no fusiona nada y deja
+ * un `system_event` en el hilo viejo — esto es lo que resuelve a qué
+ * conversación saltar. Dos consultas y no un join porque `contacts` y
+ * `conversations` son las tablas de siempre y esto no corre en un listado:
+ * es un clic aislado.
+ *
+ * El UNIQUE de `conversations` es `(contact_id, whatsapp_channel_id)`, así
+ * que un contacto puede tener más de una fila (un canal distinto, o una
+ * cerrada y otra abierta) — se abre la más reciente por `last_message_at`.
+ */
+export async function fetchConversationIdByPhone(
+  supabase: SupabaseClient,
+  phone: string
+): Promise<string | null> {
+  const { data: contact, error: contactError } = await supabase
+    .from("contacts")
+    .select("id")
+    .eq("phone_number", phone)
+    .maybeSingle();
+
+  if (contactError) throw contactError;
+  if (!contact) return null;
+
+  const { data: conversation, error: conversationError } = await supabase
+    .from("conversations")
+    .select("id")
+    .eq("contact_id", contact.id)
+    .order("last_message_at", { ascending: false, nullsFirst: false })
+    .limit(1)
+    .maybeSingle();
+
+  if (conversationError) throw conversationError;
+  return conversation?.id ?? null;
+}
+
 /** La misma fila suelta, en la forma liviana del tablero. */
 export async function fetchBoardConversationRow(
   supabase: SupabaseClient,

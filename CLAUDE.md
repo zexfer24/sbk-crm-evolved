@@ -321,6 +321,16 @@ dejar rastro es lo que hacía desaparecer leads.
   test la pasa por la guarda de identidad. Caso `7631718e…` ("cualquiera
   de estos en talla L" con dos fotos invisibles) y `cea69118…` (audio solo,
   30 reencolados).
+- **`conversations.last_message_preview` lo escribe la base, en español,
+  desde la migración 20260908020000** ("La bandeja habla español",
+  8/9/2026): cuando el mensaje no trae `content`, `handle_new_message()`
+  llama a `message_preview_label(message_type)` ("📷 Foto", "🎤 Audio",
+  "Mensaje que WhatsApp no entrega"…). NO traducir el preview en la
+  interfaz ni comparar contra "Image"/"Unsupported" en TypeScript: antes
+  de esa migración el trigger escribía el `initcap` del tipo en inglés y
+  la lista lo pintaba tal cual; el backfill de la migración corrigió solo
+  las filas cuyo preview era EXACTAMENTE ese `initcap`. Una etiqueta
+  nueva se agrega en la función SQL (migración nueva), no en la UI.
 - **`errorText` (`lib/log.ts`) es el único traductor de errores a texto de
   log** (8/9/2026): no escribir `err instanceof Error ? err.message :
   String(err)` en ningún sitio — un `PostgrestError` sale `[object Object]`

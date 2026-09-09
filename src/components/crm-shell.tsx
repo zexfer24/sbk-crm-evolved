@@ -19,6 +19,7 @@ import {
   CHAT_MESSAGES_WINDOW,
   INBOX_PAGE_SIZE,
   fetchConversation,
+  fetchConversationIdByPhone,
   fetchConversationRow,
   fetchConversations,
   fetchInboxCounts,
@@ -824,6 +825,33 @@ export function CrmShell({
     [refreshConversations, refreshInboxCounts, setConversations]
   );
 
+  /**
+   * El botón "Abrir el chat de {newPhone}" del aviso de cambio de número
+   * (D2, "El cliente que cambió de número", 6/9/2026; botón del 8/9/2026):
+   * cuando el número nuevo ya tenía conversación propia el webhook no
+   * fusiona nada, y esto es lo que le da al asesor el salto directo en vez
+   * de tener que buscar el otro chat a mano. `openConversation` funciona
+   * aunque la fila no esté en la ventana cargada de la lista — el detalle se
+   * pide por id (líneas ~477-500).
+   */
+  const handleOpenConversationByPhone = useCallback(
+    async (phone: string): Promise<boolean> => {
+      try {
+        const conversationId = await fetchConversationIdByPhone(supabase, phone);
+        if (!conversationId) return false;
+        openConversation(conversationId);
+        return true;
+      } catch (err) {
+        // `log.ts` es `server-only` (ver `realtimeStatusHandler` más arriba
+        // en este mismo archivo): `console.error` con el nombre del evento
+        // deja el rastro sin arrastrar ese módulo al navegador.
+        console.error("conversacion_por_telefono_no_resuelta", err);
+        return false;
+      }
+    },
+    [supabase]
+  );
+
   // Mensajes rápidos compartidos entre agentes: se sincronizan en vivo.
   useEffect(() => {
     const channel = supabase
@@ -1119,6 +1147,7 @@ export function CrmShell({
               }
               onRetryOutbox={retryOutboxItem}
               onDiscardOutbox={discardOutboxItem}
+              onOpenConversationByPhone={handleOpenConversationByPhone}
             />
           ) : selectedId ? (
             // El detalle del hilo está en camino. Sin este estado intermedio,

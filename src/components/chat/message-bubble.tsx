@@ -238,6 +238,20 @@ interface MessageBubbleProps {
    * sin `agent` la burbuja se comporta exactamente igual que antes.
    */
   agent?: Agent;
+  /**
+   * El teléfono ACTUAL del contacto de esta conversación (D2, "El cliente
+   * que cambió de número", 6/9/2026 + botón del 8/9/2026): decide si el
+   * `newPhone` del aviso de cambio de número es este mismo chat (ya movido,
+   * nada a dónde saltar) u otro.
+   */
+  contactPhone?: string;
+  /**
+   * Abre el chat del número nuevo cuando el webhook dejó un aviso de cambio
+   * de número sin fusionar (D2, 6/9/2026; botón del 8/9/2026): el número
+   * nuevo ya tenía conversación propia y sin esto el asesor la busca a mano.
+   * Devuelve si encontró una conversación para ese teléfono.
+   */
+  onOpenConversationByPhone?: (phone: string) => Promise<boolean>;
 }
 
 export function MessageBubble({
@@ -249,18 +263,53 @@ export function MessageBubble({
   pendingDelivery = false,
   onOpenTemplatePicker,
   agent,
+  contactPhone,
+  onOpenConversationByPhone,
 }: MessageBubbleProps) {
   // Antes del retorno de `system_event`: un hook no puede quedar detrás de
   // una salida temprana.
   const [menuAt, setMenuAt] = useState<{ x: number; y: number } | null>(null);
   const longPress = useLongPress(setMenuAt);
+  // Estado del botón "Abrir el chat de {newPhone}" (8/9/2026): evita el
+  // doble clic mientras la búsqueda viaja y avisa en línea cuando no hay a
+  // dónde saltar — el shell no tiene sistema de toasts.
+  const [openingPhoneChat, setOpeningPhoneChat] = useState(false);
+  const [phoneChatNotFound, setPhoneChatNotFound] = useState(false);
 
   if (message.messageType === "system_event") {
+    // El botón solo tiene sentido para el aviso de cambio de número, y solo
+    // cuando el número nuevo es DISTINTO de este chat: si son iguales, el
+    // contacto sí se movió acá (D1) y no hay ningún otro lado a dónde ir.
+    const newPhone =
+      message.payload?.systemType === "user_changed_number" ? message.payload.newPhone : undefined;
+    const showOpenButton = Boolean(newPhone && newPhone !== contactPhone && onOpenConversationByPhone);
+
     return (
-      <div className="flex justify-center py-1">
+      <div className="flex flex-col items-center gap-1 py-1">
         <span className="crm-system-note">
           {message.content} · {formatMessageTime(message.createdAt)}
         </span>
+        {showOpenButton && (
+          <button
+            type="button"
+            className="crm-system-note-action"
+            disabled={openingPhoneChat}
+            onClick={async () => {
+              if (openingPhoneChat) return;
+              setOpeningPhoneChat(true);
+              setPhoneChatNotFound(false);
+              try {
+                const found = await onOpenConversationByPhone!(newPhone!);
+                if (!found) setPhoneChatNotFound(true);
+              } finally {
+                setOpeningPhoneChat(false);
+              }
+            }}
+          >
+            Abrir el chat de {newPhone}
+          </button>
+        )}
+        {phoneChatNotFound && <span className="crm-system-note">No hay conversación con ese número</span>}
       </div>
     );
   }

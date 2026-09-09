@@ -135,10 +135,27 @@ vi.mock("@/components/inbox/inbox-sidebar", () => ({
   )),
 }));
 vi.mock("@/components/chat/chat-panel", () => ({
-  ChatPanel: ({ messages }: { messages: Message[] }) => (
+  // El teléfono del contacto y el callback del botón "Abrir el chat de
+  // {newPhone}" (D2, 6/9/2026; botón del 8/9/2026) se reenvían tal cual los
+  // reenvía el `ChatPanel` real, para que el test del aviso de cambio de
+  // número ejercite la burbuja de verdad, no una réplica del test.
+  ChatPanel: ({
+    messages,
+    conversation,
+    onOpenConversationByPhone,
+  }: {
+    messages: Message[];
+    conversation: Conversation;
+    onOpenConversationByPhone?: (phone: string) => Promise<boolean>;
+  }) => (
     <>
       {messages.map((message) => (
-        <MessageBubble key={message.id} message={message} />
+        <MessageBubble
+          key={message.id}
+          message={message}
+          contactPhone={conversation.contact.phoneNumber}
+          onOpenConversationByPhone={onOpenConversationByPhone}
+        />
       ))}
     </>
   ),
@@ -159,6 +176,8 @@ const fetchConversationRowMock = vi.fn(
 );
 // "Sin dueño" (T1.6): el canal de `conversation_handoffs` la vuelve a pedir entera.
 const fetchUnassignedConversationsMock = vi.fn().mockResolvedValue([]);
+// El botón "Abrir el chat de {newPhone}" (D2, 6/9/2026; botón del 8/9/2026).
+const fetchConversationIdByPhoneMock = vi.fn().mockResolvedValue(null);
 
 const fetchAgentSettingsMock = vi.fn().mockResolvedValue({
   aiGloballyEnabled: true,
@@ -180,6 +199,7 @@ vi.mock("@/lib/data", () => ({
     fetchConversationMock(...(args as [unknown, string])),
   fetchConversationRow: (...args: unknown[]) =>
     fetchConversationRowMock(...(args as [unknown, string])),
+  fetchConversationIdByPhone: (...args: unknown[]) => fetchConversationIdByPhoneMock(...args),
   fetchConversations: (...args: unknown[]) => fetchConversationsMock(...args),
   fetchInboxCounts: (...args: unknown[]) => fetchInboxCountsMock(...args),
   fetchUnassignedConversations: (...args: unknown[]) => fetchUnassignedConversationsMock(...args),
@@ -281,6 +301,8 @@ beforeEach(() => {
   fetchConversationRowMock.mockClear();
   fetchInboxCountsMock.mockClear();
   fetchUnassignedConversationsMock.mockClear();
+  fetchConversationIdByPhoneMock.mockClear();
+  fetchConversationIdByPhoneMock.mockResolvedValue(null);
   fetchMessagesMock.mockClear();
   fetchMessagesMock.mockResolvedValue([]); // cada test decide qué mensajes hay
   markConversationReadMock.mockClear();
@@ -689,6 +711,122 @@ describe("CrmShell — abrir un chat apartado a mano lo da por leído", () => {
     // Abrir un chat apartado a mano SÍ es "de verdad se leyó": el asesor lo
     // acaba de abrir y lo tiene delante. El doble check azul viaja igual.
     expect(sendReadReceiptMock).toHaveBeenCalledTimes(1);
+  });
+});
+
+/**
+ * El botón "Abrir el chat de {newPhone}" del aviso de cambio de número (D2,
+ * "El cliente que cambió de número", 6/9/2026; botón del 8/9/2026): cuando
+ * el número nuevo YA tenía conversación propia, el webhook deja el aviso sin
+ * fusionar y el asesor necesita saltar hasta esa otra conversación desde acá.
+ */
+describe("CrmShell — el botón del aviso de cambio de número abre la otra conversación", () => {
+  it("resuelve el id por el teléfono y selecciona esa conversación", async () => {
+    const aviso: Message = {
+      id: "msg-aviso",
+      conversationId: "conv-1",
+      direction: "outbound",
+      senderType: "system",
+      senderAgent: null,
+      messageType: "system_event",
+      content: "El cliente cambió su número de WhatsApp a +584129999999, que ya tiene conversación en el CRM",
+      templateName: null,
+      mediaUrl: null,
+      isInternalNote: false,
+      whatsappStatus: null,
+      whatsappError: null,
+      whatsappErrorCode: null,
+      reactionEmoji: null,
+      replyToMessageId: null,
+      payload: {
+        systemType: "user_changed_number",
+        previousPhone: "+58123456789",
+        newPhone: "+584129999999",
+      },
+      createdAt: "2026-09-08T12:00:00.000Z",
+    };
+    fetchMessagesMock.mockResolvedValue([aviso]);
+    // conv-1 (buildConversation()) tiene phoneNumber "+58123456789", distinto
+    // del newPhone del aviso: el botón se ofrece.
+    fetchConversationIdByPhoneMock.mockResolvedValue("conv-2");
+
+    render(
+      <CrmShell
+        currentAgent={currentAgent}
+        initialConversations={[buildConversation()]}
+        initialInboxCounts={inboxCounts}
+        allTags={allTags}
+        initialQuickReplies={initialQuickReplies}
+        bcvRate={null}
+        initialAgentSettings={agentSettings}
+        initialConversationId="conv-1"
+      />
+    );
+    await act(async () => {});
+    fetchConversationMock.mockClear();
+
+    await act(async () => {
+      screen.getByRole("button", { name: /abrir el chat de \+584129999999/i }).click();
+    });
+
+    expect(fetchConversationIdByPhoneMock).toHaveBeenCalledWith(expect.anything(), "+584129999999");
+    // El salto llega hasta `openConversation`, que pide el detalle por id: la
+    // conversación seleccionada pasa a ser la del número nuevo.
+    expect(fetchConversationMock).toHaveBeenCalledWith(expect.anything(), "conv-2");
+  });
+
+  it("cuando no hay conversación para ese teléfono, avisa en línea y no cambia de chat", async () => {
+    const aviso: Message = {
+      id: "msg-aviso",
+      conversationId: "conv-1",
+      direction: "outbound",
+      senderType: "system",
+      senderAgent: null,
+      messageType: "system_event",
+      content: "El cliente cambió su número de WhatsApp a +584129999999, que ya tiene conversación en el CRM",
+      templateName: null,
+      mediaUrl: null,
+      isInternalNote: false,
+      whatsappStatus: null,
+      whatsappError: null,
+      whatsappErrorCode: null,
+      reactionEmoji: null,
+      replyToMessageId: null,
+      payload: {
+        systemType: "user_changed_number",
+        previousPhone: "+58123456789",
+        newPhone: "+584129999999",
+      },
+      createdAt: "2026-09-08T12:00:00.000Z",
+    };
+    fetchMessagesMock.mockResolvedValue([aviso]);
+    fetchConversationIdByPhoneMock.mockResolvedValue(null);
+
+    render(
+      <CrmShell
+        currentAgent={currentAgent}
+        initialConversations={[buildConversation()]}
+        initialInboxCounts={inboxCounts}
+        allTags={allTags}
+        initialQuickReplies={initialQuickReplies}
+        bcvRate={null}
+        initialAgentSettings={agentSettings}
+        initialConversationId="conv-1"
+      />
+    );
+    await act(async () => {});
+    fetchConversationMock.mockClear();
+
+    await act(async () => {
+      screen.getByRole("button", { name: /abrir el chat de \+584129999999/i }).click();
+    });
+
+    // No `findByText`: el archivo corre con `vi.useFakeTimers()` (beforeEach)
+    // y `findByText`/`waitFor` sondean con temporizadores reales por dentro,
+    // así que se cuelgan hasta el timeout de Vitest en vez de ver el estado
+    // que el `await act(...)` de arriba ya asentó.
+    expect(screen.getByText(/no hay conversación con ese número/i)).toBeInTheDocument();
+    expect(fetchConversationMock).not.toHaveBeenCalled();
   });
 });
 
