@@ -1,12 +1,39 @@
 import { describe, expect, it } from "vitest";
 import {
   fitInSquare,
+  isAnimatedWebp,
   isWithinStickerLimit,
   qualityLadder,
   STICKER_ANIMATED_MAX_BYTES,
   STICKER_SIDE,
   STICKER_STATIC_MAX_BYTES,
+  stickerLimitFor,
+  stickerRejectionMessage,
 } from "@/lib/sticker-image";
+
+// Arma un WebP mínimo a mano: RIFF + tamaño + WEBP + un chunk.
+// `chunkFourCC` es "VP8X", "VP8 " o "VP8L"; `vp8xFlags` solo aplica cuando
+// el chunk es VP8X (es el byte de flags en el offset 20 del archivo, donde
+// el bit 0x02 es el flag ANIM que marca animación).
+function armarWebp(chunkFourCC: "VP8X" | "VP8 " | "VP8L", vp8xFlags = 0): Uint8Array {
+  const bytes: number[] = [];
+  const pushFourCC = (s: string) => {
+    for (const ch of s) bytes.push(ch.charCodeAt(0));
+  };
+  pushFourCC("RIFF");
+  bytes.push(0, 0, 0, 0); // tamaño del archivo, no importa para la detección
+  pushFourCC("WEBP");
+  pushFourCC(chunkFourCC);
+  bytes.push(0, 0, 0, 0); // tamaño del chunk
+  if (chunkFourCC === "VP8X") {
+    bytes.push(vp8xFlags); // byte 20: flags, bit 0x02 = ANIM
+    while (bytes.length < 30) bytes.push(0); // resto del payload VP8X, relleno
+  } else {
+    // VP8 / VP8L: unos bytes cualquiera de payload, no se leen para detectar animación.
+    bytes.push(0, 0, 0, 0, 0);
+  }
+  return new Uint8Array(bytes);
+}
 
 describe("fitInSquare — encajar sin deformar ni recortar", () => {
   it("una imagen horizontal (ancha) queda con barras arriba y abajo", () => {
@@ -68,5 +95,74 @@ describe("isWithinStickerLimit — el peso que acepta Meta", () => {
     expect(isWithinStickerLimit(STICKER_ANIMATED_MAX_BYTES, true)).toBe(true);
     expect(isWithinStickerLimit(STICKER_ANIMATED_MAX_BYTES + 1, true)).toBe(false);
     expect(isWithinStickerLimit(STICKER_STATIC_MAX_BYTES + 1, true)).toBe(true);
+  });
+});
+
+describe("stickerLimitFor — qué límite aplica según el tipo", () => {
+  it("animado usa el tope de 500 KB, estático el de 100 KB", () => {
+    expect(stickerLimitFor(true)).toBe(512000);
+    expect(stickerLimitFor(false)).toBe(102400);
+  });
+});
+
+describe("isAnimatedWebp — leer bytes, no confiar en la extensión ni el MIME", () => {
+  it("VP8X con el bit ANIM (0x02) encendido es animado", () => {
+    expect(isAnimatedWebp(armarWebp("VP8X", 0x02))).toBe(true);
+  });
+
+  it("VP8X con el bit ANIM apagado no es animado", () => {
+    expect(isAnimatedWebp(armarWebp("VP8X", 0x00))).toBe(false);
+  });
+
+  it("VP8X con otros flags encendidos pero sin 0x02 no es animado", () => {
+    // 0x20 = flag ICC, por ejemplo — no debe confundirse con ANIM.
+    expect(isAnimatedWebp(armarWebp("VP8X", 0x20))).toBe(false);
+  });
+
+  it("VP8 directo (sin VP8X) es estático", () => {
+    expect(isAnimatedWebp(armarWebp("VP8 "))).toBe(false);
+  });
+
+  it("VP8L directo (sin VP8X) es estático", () => {
+    expect(isAnimatedWebp(armarWebp("VP8L"))).toBe(false);
+  });
+
+  it("acepta un ArrayBuffer además de un Uint8Array", () => {
+    const view = armarWebp("VP8X", 0x02);
+    const buffer = new Uint8Array(view).buffer as ArrayBuffer;
+    expect(isAnimatedWebp(buffer)).toBe(true);
+  });
+
+  it("un buffer más corto que 21 bytes no es animado, y no tira", () => {
+    expect(() => isAnimatedWebp(new Uint8Array(10))).not.toThrow();
+    expect(isAnimatedWebp(new Uint8Array(10))).toBe(false);
+  });
+
+  it("un buffer vacío no es animado, y no tira", () => {
+    expect(() => isAnimatedWebp(new Uint8Array(0))).not.toThrow();
+    expect(isAnimatedWebp(new Uint8Array(0))).toBe(false);
+  });
+
+  it("un buffer que no empieza con RIFF/WEBP no es animado, y no tira", () => {
+    const basura = new Uint8Array(30).fill(0x41); // puro "AAAA...", ni RIFF ni WEBP
+    expect(() => isAnimatedWebp(basura)).not.toThrow();
+    expect(isAnimatedWebp(basura)).toBe(false);
+  });
+});
+
+describe("stickerRejectionMessage — el asesor tiene que entender por qué no entra", () => {
+  it("nombra el peso real y el límite del caso real del 8/9/2026 (animado)", () => {
+    // El sticker que Meta rechazó con el error 131053: 973.668 bytes, animado.
+    const mensaje = stickerRejectionMessage(973668, true);
+    expect(mensaje).toContain("animado");
+    expect(mensaje).toContain("951"); // 973668 / 1024 redondeado
+    expect(mensaje).toContain("500"); // límite animado en KB
+  });
+
+  it("nombra el peso real y el límite para un estático", () => {
+    const mensaje = stickerRejectionMessage(150000, false);
+    expect(mensaje).toContain("estático");
+    expect(mensaje).toContain("146"); // 150000 / 1024 redondeado
+    expect(mensaje).toContain("100"); // límite estático en KB
   });
 });
