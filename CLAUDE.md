@@ -374,15 +374,31 @@ dejar rastro es lo que hacía desaparecer leads.
   relojes desalineados hacen que un chat entre en la lista pero no en el
   conteo. La búsqueda ignora el corte a propósito; el interruptor "Ver todo"
   se guarda por visor en `localStorage` (`sbk.inbox.scope.<agentId>`).
-- **`intencion_compra` ya no escala al primer "sí"** (T2, 8/9/2026): la
-  herramienta de escalar sella `conversations.handoff_confirmation_pending_at`
-  y devuelve una instrucción para reconfirmar; solo escala cuando el ÚLTIMO
-  mensaje del cliente es POSTERIOR al sello y el sello tiene menos de 6 h
-  (`handoffConfirmationState`, `handoff-confirmation.ts`). "Posterior al
-  sello" es la guarda real: sin ella el modelo podía llamar dos veces a la
-  herramienta en el mismo turno y saltarse la confirmación. Devolución, queja,
-  escenarios con `afterSend` y la guarda de identidad NO pasan por acá, y
-  `escalateConversation` siempre limpia el sello.
+- **`intencion_compra` escala con el primer aviso, igual que devolución y
+  queja** (revertido el 9/9/2026, corrida "El pase a ventas al primer sí").
+  T2 del plan "Seis frentes del buzón" (8/9/2026) le había puesto una
+  segunda confirmación: la herramienta de escalar sellaba
+  `conversations.handoff_confirmation_pending_at` y solo escalaba de verdad
+  cuando el cliente decía que sí por segunda vez. En producción hizo bucle —
+  el cliente contestaba "ok", "está bien" o "dale" al primer paso hacia el
+  cierre, el prompt exigía un segundo "sí" LITERAL y el modelo no contaba
+  esos sinónimos como la confirmación, así que la conversación quedaba dando
+  vueltas sin escalar nunca. El operador aprobó eliminar la doble
+  confirmación por completo: se borró `handoff-confirmation.ts` (la máquina
+  de estados que decidía "none"/"awaiting"/"confirmed"/"expired") y la rama
+  de `buildEscalateTool` (`tools.ts`) que la consultaba. **La única regla
+  que queda es la prosa del prompt** (`SALES_ACCEPTANCE_RULES`, sección 3,
+  que reemplazó a `SALES_HANDOFF_RULES`): le nombra al modelo las formas de
+  aceptar que no son un "sí" literal ("ok", "está bien", "dale", "listo",
+  "claro", "por favor", un pulgar arriba) y le dice que pase el caso de una
+  vez. **Ya no hay ninguna red de seguridad en código** — si algún día hace
+  falta volver a frenar el escalamiento, hay que reconstruir la máquina de
+  estados, no alcanza con tocar el prompt. La columna
+  `conversations.handoff_confirmation_pending_at` (migración
+  `20260909010000`) sigue en la base **sin uso**, con valores viejos que ya
+  nadie lee ni escribe — no hay migración de reversa a propósito (`drop
+  column` es irreversible) — y `database.types.ts` la conserva porque el
+  esquema real todavía tiene la columna.
 - **Un sticker saliente solo viaja por `link` a un WebP del bucket** (T3a,
   8/9/2026): payload `{ type: "sticker", sticker: { link } }` SIN `caption`
   (`meta-client.ts`), estático 512×512 y ≤ 100 KB (`sticker-image.ts`); la

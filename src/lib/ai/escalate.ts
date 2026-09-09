@@ -70,14 +70,6 @@ export async function escalateConversation(
     ai_enabled: false,
     assigned_agent_id: candidate?.id ?? null,
     journey_stage: "assigned",
-    // T2 (8/9/2026): cualquier escalación cierra una oferta de pase a ventas
-    // pendiente, sea esta la puerta que la confirmó (`buildEscalateTool` con
-    // motivo "intencion_compra" y el segundo "sí") o cualquiera de las otras
-    // tres (devolución, queja, un escenario con afterSend = "escalate") que
-    // pasan por acá SIN pasar por la reconfirmación. Limpiarlo acá, en el
-    // único lugar donde toda escalación converge, evita tener que acordarse
-    // de hacerlo en cada puerta por separado.
-    handoff_confirmation_pending_at: null,
   };
   if (motivo === "intencion_compra") conversationUpdate.deal_status = "in_progress";
 
