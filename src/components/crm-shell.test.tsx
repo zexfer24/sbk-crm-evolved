@@ -168,6 +168,12 @@ const fetchAgentSettingsMock = vi.fn().mockResolvedValue({
 
 vi.mock("@/lib/data", () => ({
   fetchAgentSettings: (...args: unknown[]) => fetchAgentSettingsMock(...args),
+  // `AppRail` (que `CrmShell` monta de verdad, sin mock) trae desde T6 el
+  // aviso de asignación (`AssignmentNotifier`), que pide `fetchCurrentAgent`
+  // al montarse. Sin este mock, cualquier test de este archivo revienta en
+  // el efecto de montaje con "No fetchCurrentAgent export is defined" — no
+  // hace falta un agente real para estos tests, así que `null` alcanza.
+  fetchCurrentAgent: vi.fn().mockResolvedValue(null),
   CHAT_MESSAGES_WINDOW: 100,
   INBOX_PAGE_SIZE: 30,
   fetchConversation: (...args: unknown[]) =>
@@ -1268,6 +1274,105 @@ describe("CrmShell — una ráfaga de scroll en 'Todos' pide una sola página", 
  * Una pasada de fondo, espaciada, devuelve esa reparación sin volver al
  * coste de antes.
  */
+/**
+ * T7 (8/9/2026): el aviso de asignación navega con
+ * `router.push("/inbox?conversation=<id>")` mientras el asesor ya está
+ * parado en `/inbox`. Eso cambia el searchParam y por lo tanto el prop
+ * `initialConversationId`, pero sin montaje nuevo — antes `selectedId`
+ * (fijado con `useState(initialConversationId ?? null)`, que solo lee el
+ * prop una vez) no se movía y el clic del aviso no abría nada.
+ */
+describe("CrmShell — sincroniza el chat abierto cuando cambia initialConversationId sin remontar", () => {
+  function dosConversaciones() {
+    return [
+      buildConversation({ id: "conv-1" }),
+      buildConversation({
+        id: "conv-2",
+        contact: { ...buildConversation().contact, id: "contact-2" },
+      }),
+    ];
+  }
+
+  it("un rerender con OTRO initialConversationId abre ese hilo nuevo", async () => {
+    const { rerender } = render(
+      <CrmShell
+        currentAgent={currentAgent}
+        initialConversations={dosConversaciones()}
+        initialInboxCounts={inboxCounts}
+        allTags={allTags}
+        initialQuickReplies={initialQuickReplies}
+        bcvRate={null}
+        initialAgentSettings={agentSettings}
+        initialConversationId="conv-1"
+      />
+    );
+    await act(async () => {});
+    fetchConversationMock.mockClear();
+
+    // Mismo componente montado, prop nuevo: así llega el aviso de asignación
+    // cuando el asesor ya está en /inbox — no hay un montaje nuevo de por medio.
+    rerender(
+      <CrmShell
+        currentAgent={currentAgent}
+        initialConversations={dosConversaciones()}
+        initialInboxCounts={inboxCounts}
+        allTags={allTags}
+        initialQuickReplies={initialQuickReplies}
+        bcvRate={null}
+        initialAgentSettings={agentSettings}
+        initialConversationId="conv-2"
+      />
+    );
+    await act(async () => {});
+
+    expect(fetchConversationMock).toHaveBeenCalledWith(expect.anything(), "conv-2");
+  });
+
+  it("un rerender con el MISMO initialConversationId no pisa la selección que el asesor hizo a mano", async () => {
+    const { rerender } = render(
+      <CrmShell
+        currentAgent={currentAgent}
+        initialConversations={dosConversaciones()}
+        initialInboxCounts={inboxCounts}
+        allTags={allTags}
+        initialQuickReplies={initialQuickReplies}
+        bcvRate={null}
+        initialAgentSettings={agentSettings}
+        initialConversationId="conv-1"
+      />
+    );
+    await act(async () => {});
+
+    // El asesor elige otro hilo a mano, con el prop todavía en "conv-1".
+    await act(async () => {
+      screen.getByRole("button", { name: "abrir conv-2" }).click();
+    });
+    expect(fetchConversationMock).toHaveBeenCalledWith(expect.anything(), "conv-2");
+    fetchConversationMock.mockClear();
+
+    // Rerender con el prop SIN cambiar: un useEffect ingenuo con
+    // [initialConversationId] en las dependencias no distingue esto de un
+    // prop nuevo y reabriría "conv-1", pisando el clic manual.
+    rerender(
+      <CrmShell
+        currentAgent={currentAgent}
+        initialConversations={dosConversaciones()}
+        initialInboxCounts={inboxCounts}
+        allTags={allTags}
+        initialQuickReplies={initialQuickReplies}
+        bcvRate={null}
+        initialAgentSettings={agentSettings}
+        initialConversationId="conv-1"
+      />
+    );
+    await act(async () => {});
+
+    // No se volvió a pedir el detalle de "conv-1": la selección manual de
+    // "conv-2" sigue en pie.
+    expect(fetchConversationMock).not.toHaveBeenCalled();
+  });
+});
+
 describe("CrmShell — red de seguridad contra la deriva", () => {
   it("cada tanto vuelve a pedir la bandeja aunque no haya pasado nada", async () => {
     render(

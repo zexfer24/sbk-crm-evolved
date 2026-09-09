@@ -470,6 +470,46 @@ export function CrmShell({
   // por id, no se busca en la lista.
   const [selectedId, setSelectedId] = useState<string | null>(initialConversationId ?? null);
   /**
+   * Sincroniza `selectedId` con `initialConversationId` cuando el prop
+   * cambia DESPUÉS del montaje — no en el montaje, que ya lo cubre el
+   * `useState` de arriba.
+   *
+   * Antes esto no existía: `useState` solo lee el prop una vez. El asesor ya
+   * parado en `/inbox` y un `router.push("/inbox?conversation=<id>")` (el
+   * aviso de asignación, 8/9/2026) cambiaban el searchParam y por lo tanto
+   * `initialConversationId`, pero como no hay montaje nuevo `selectedId` no
+   * se movía: el clic del aviso no abría nada. Estando en otra sección sí
+   * funcionaba, porque ahí sí hay montaje.
+   *
+   * Se resuelve con "estado derivado durante el render" (el patrón oficial
+   * de React para ajustar estado cuando cambia un prop, sin `useEffect`) en
+   * vez de un `useEffect` con `[initialConversationId]` en las dependencias:
+   * ese efecto ingenuo dispara `setSelectedId` cada vez que el prop es
+   * distinto a como estaba, sin poder distinguir "el prop trae un id nuevo"
+   * de "sigue siendo el mismo pero el asesor ya seleccionó otro hilo a
+   * mano" — comparando contra el valor ANTERIOR sí se puede. El valor
+   * anterior va en `useState`, no en un `useRef`: la regla de lint
+   * `react-hooks/refs` (activa en este repo) prohíbe leer Y escribir
+   * `.current` durante el render —el `useRef` original pasaba `tsc` pero no
+   * `rtk npm run lint`—, y este bloque corre en el cuerpo del componente, no
+   * dentro de un evento o un efecto. Con `useState` no hay ref que tocar, así
+   * que la regla queda satisfecha sin cambiar el comportamiento. Un rerender
+   * con el mismo prop no toca el estado previo, así que no pisa la selección
+   * manual (si el asesor clickea "B" con el prop todavía en "A", queda "B").
+   * Y un prop que llega `null` no dispara nada: `null` sigue significando
+   * "no abras nada" (ver el comentario de arriba), nunca "cierra lo que el
+   * asesor tiene abierto".
+   */
+  const [previousInitialConversationId, setPreviousInitialConversationId] = useState(
+    initialConversationId
+  );
+  if (initialConversationId !== previousInitialConversationId) {
+    setPreviousInitialConversationId(initialConversationId);
+    if (initialConversationId) {
+      setSelectedId(initialConversationId);
+    }
+  }
+  /**
    * El hilo cargado, con la conversación a la que pertenece pegada al lado.
    *
    * Guardar el id junto a los mensajes —en vez de vaciar la lista al cambiar
