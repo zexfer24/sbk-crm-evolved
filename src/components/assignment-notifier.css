@@ -17,8 +17,24 @@
    assignment-notifier.tsx): vacío la mayor parte del tiempo, así que no
    puede robarse clics ni dejar un hueco donde no hay nada que tocar.
    `pointer-events: none` acá + `pointer-events: auto` en `.an-toast` es el
-   patrón para que el hijo real siga siendo clicable cuando aparece. */
+   patrón para que el hijo real siga siendo clicable cuando aparece.
+
+   `position: fixed` NO es decoración: es lo único que lo saca del FLUJO
+   (9/9/2026, tumbó producción entera). `AppRail` devuelve un fragmento con
+   dos hijos —el `<nav>` y este contenedor—, y un fragmento no crea nodo
+   DOM: los dos suben como hijos DIRECTOS del contenedor de la pantalla.
+   Tanto `.crm` (crm.css) como `.dash-frame` (dashboard.css) son
+   `grid-template-columns: 72px minmax(0, 1fr)`, o sea DOS columnas: con
+   este div en flujo, él se quedaba la columna 2 y TODO el contenido caía a
+   una fila implícita de 72px de ancho, recortada por el `overflow: hidden`
+   del contenedor. `pointer-events: none` no alcanzaba: no saca del flujo,
+   solo deja pasar los clics. Un ancestro `fixed` no cambia el anclaje al
+   viewport de `.an-toast`, que sigue posicionándose por su `right`/`bottom`
+   propios. Su test de resguardo vive en `assignment-notifier.test.tsx`. */
 .an-live {
+  position: fixed;
+  width: 0;
+  height: 0;
   pointer-events: none;
 }
 

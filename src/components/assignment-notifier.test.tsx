@@ -242,3 +242,34 @@ describe("AssignmentNotifier", () => {
     expect(screen.getByText("La IA te la pasó.")).toBeTruthy();
   });
 });
+
+/**
+ * Resguardo de layout, no de comportamiento (9/9/2026).
+ *
+ * `AppRail` devuelve un fragmento con DOS hijos —el `<nav>` del rail y el
+ * contenedor `aria-live` de este componente— y un fragmento no crea nodo
+ * DOM: los dos suben como hijos DIRECTOS del contenedor de la pantalla.
+ * `.crm` y `.dash-frame` son grids de DOS columnas (`72px minmax(0, 1fr)`),
+ * así que un `.an-live` en flujo se queda la columna del contenido y empuja
+ * TODO el CRM a una fila implícita de 72px de ancho. Pasó en producción: la
+ * interfaz entera quedó regada, en las seis secciones a la vez.
+ *
+ * Los tests de este archivo no lo vieron porque jsdom no calcula layout —
+ * ninguna aserción sobre el DOM renderizado puede detectarlo—, así que el
+ * resguardo mira la hoja: `.an-live` tiene que estar FUERA DEL FLUJO.
+ */
+describe("la hoja de estilos del aviso", () => {
+  it("saca el contenedor aria-live del flujo, para no robarle una columna al grid", async () => {
+    const { readFile } = await import("node:fs/promises");
+    const { join } = await import("node:path");
+
+    const css = await readFile(join(process.cwd(), "src/components/assignment-notifier.css"), "utf8");
+    const regla = /\.an-live\s*\{([^}]*)\}/.exec(css);
+
+    expect(regla, "no se encontró la regla `.an-live` en assignment-notifier.css").not.toBeNull();
+    expect(
+      regla![1],
+      "`.an-live` volvió al flujo: sin `position: fixed` (o `absolute`) se come una columna del grid y desarma el CRM entero"
+    ).toMatch(/position:\s*(fixed|absolute)\s*;/);
+  });
+});
