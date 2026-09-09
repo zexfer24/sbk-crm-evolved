@@ -49,6 +49,18 @@ vi.mock("@/lib/media-link", () => ({
   signedUrlForSending: vi.fn(async () => "https://firmado.example/archivo"),
 }));
 
+/**
+ * La guarda de sticker (T3, 8/9/2026) se prueba a fondo en
+ * `sticker-guard.test.ts` — acá solo importa que el route la llame en el
+ * momento correcto (canal real, sticker, ANTES del insert) y respete lo que
+ * devuelve. Por defecto deja pasar; cada test que necesite el rechazo lo
+ * pisa con `mockResolvedValueOnce`.
+ */
+const checkStickerBeforeSendMock = vi.fn<(mediaUrl: string) => Promise<{ ok: boolean; reason?: string }>>();
+vi.mock("@/lib/whatsapp/sticker-guard", () => ({
+  checkStickerBeforeSend: (mediaUrl: string) => checkStickerBeforeSendMock(mediaUrl),
+}));
+
 /** Filas que llegaron a `messages.insert`, y los UPDATE que les cayeron después. */
 const insertedRows: Record<string, unknown>[] = [];
 const messageUpdates: Record<string, unknown>[] = [];
@@ -149,6 +161,8 @@ beforeEach(() => {
   sendWhatsappTemplateMock.mockResolvedValue({ whatsappMessageId: "wamid.PLANTILLA" });
   sendWhatsappMediaMock.mockReset();
   sendWhatsappMediaMock.mockResolvedValue({ whatsappMessageId: "wamid.MEDIA" });
+  checkStickerBeforeSendMock.mockReset();
+  checkStickerBeforeSendMock.mockResolvedValue({ ok: true });
   process.env.WHATSAPP_ACCESS_TOKEN = "token-de-prueba";
 });
 
@@ -441,5 +455,52 @@ describe("POST /api/messages/send — sticker", () => {
     const args = sendWhatsappMediaMock.mock.calls[0];
     // (phoneNumberId, accessToken, to, mediaType, link, caption, replyToWamid)
     expect(args[3]).toBe("sticker");
+  });
+
+  // -------------------------------------------------------------------------
+  // La guarda de peso/animación (T3, 8/9/2026): el rechazo de Meta (131053)
+  // llega recién 3 s después por el webhook de status, así que un sticker
+  // que no entra se corta ACÁ, antes de insertar la fila — un 422 con
+  // explicación es mejor que un `failed` silencioso.
+  // -------------------------------------------------------------------------
+  it("un sticker que no entra en el límite responde 422 y no inserta fila", async () => {
+    checkStickerBeforeSendMock.mockResolvedValueOnce({
+      ok: false,
+      reason: "Este sticker es animado y pesa 951 KB, pero WhatsApp solo deja hasta 500 KB.",
+    });
+
+    const res = await POST(stickerRequest());
+    const body = await res.json();
+
+    expect(res.status).toBe(422);
+    expect(body.error).toContain("951 KB");
+    expect(insertedRows).toHaveLength(0);
+    expect(sendWhatsappMediaMock).not.toHaveBeenCalled();
+  });
+
+  it("un sticker dentro del límite sigue el camino normal: se inserta y se envía", async () => {
+    checkStickerBeforeSendMock.mockResolvedValueOnce({ ok: true });
+
+    const res = await POST(stickerRequest());
+
+    expect(res.status).toBe(200);
+    expect(insertedRows).toHaveLength(1);
+    await vi.waitFor(() => expect(sendWhatsappMediaMock).toHaveBeenCalledTimes(1), { timeout: 5000 });
+  });
+
+  it("en un canal de demo no se consulta la guarda: no hay a quien Meta rechazarle nada", async () => {
+    channelRow = { phone_number_id: null, status: "demo" };
+
+    const res = await POST(stickerRequest());
+
+    expect(res.status).toBe(200);
+    expect(checkStickerBeforeSendMock).not.toHaveBeenCalled();
+    expect(insertedRows).toHaveLength(1);
+  });
+
+  it("un envío de texto normal no pasa por la guarda del sticker", async () => {
+    await POST(sendRequest());
+
+    expect(checkStickerBeforeSendMock).not.toHaveBeenCalled();
   });
 });
