@@ -10,8 +10,27 @@ import RecorridoLoading from "@/app/loading";
 
 // El rail cierra sesión con el router, que fuera de Next no existe.
 vi.mock("next/navigation", () => ({ useRouter: () => ({ push: vi.fn(), refresh: vi.fn() }) }));
+
+// AppRail monta AssignmentNotifier (T6): abre su propio canal de realtime y
+// resuelve el agente actual con `auth.getSession()`. Sin esas dos piezas acá
+// el mock se queda corto para lo que el rail necesita ahora y el montaje de
+// cada esqueleto revienta con "supabase.channel is not a function" antes de
+// llegar a las aserciones de este archivo, que no miran el aviso en sí (eso
+// lo cubre assignment-notifier.test.tsx).
+function fakeChannel() {
+  const channel = {
+    on: () => channel,
+    subscribe: () => channel,
+  };
+  return channel;
+}
+
 vi.mock("@/lib/supabase/client", () => ({
-  createClient: () => ({ auth: { signOut: vi.fn().mockResolvedValue({}) } }),
+  createClient: () => ({
+    auth: { signOut: vi.fn().mockResolvedValue({}), getSession: vi.fn().mockResolvedValue({ data: { session: null } }) },
+    channel: () => fakeChannel(),
+    removeChannel: vi.fn(),
+  }),
 }));
 
 /**

@@ -6,6 +6,7 @@ import { Bot, Inbox, LogOut, Package, Receipt, Route, Users } from "lucide-react
 import { createClient } from "@/lib/supabase/client";
 import { SbkMark } from "@/components/sbk-logo";
 import { ThemeToggle } from "@/components/theme-toggle";
+import { AssignmentNotifier } from "@/components/assignment-notifier";
 
 /**
  * La barra lateral de secciones.
@@ -47,34 +48,43 @@ export function AppRail({ active, variant = "dash" }: AppRailProps) {
   }
 
   return (
-    <nav className={`${variant}-rail`} aria-label="Secciones">
-      {/* La marca ancla la columna, pero no navega: "Recorrido" ya es el
-          primer botón y un segundo camino a la misma ruta solo confunde. */}
-      <span className={`${variant}-rail-brand`}>
-        <SbkMark size={32} />
-      </span>
+    <>
+      <nav className={`${variant}-rail`} aria-label="Secciones">
+        {/* La marca ancla la columna, pero no navega: "Recorrido" ya es el
+            primer botón y un segundo camino a la misma ruta solo confunde. */}
+        <span className={`${variant}-rail-brand`}>
+          <SbkMark size={32} />
+        </span>
 
-      {SECTIONS.map(({ id, href, label, Icon }) => (
-        <Link
-          key={id}
-          className={`${variant}-rail-btn`}
-          href={href}
-          aria-label={label}
-          title={label}
-          {...(active === id ? { "data-active": "true", "aria-current": "page" as const } : {})}
-        >
-          <Icon size={17} />
-        </Link>
-      ))}
+        {SECTIONS.map(({ id, href, label, Icon }) => (
+          <Link
+            key={id}
+            className={`${variant}-rail-btn`}
+            href={href}
+            aria-label={label}
+            title={label}
+            {...(active === id ? { "data-active": "true", "aria-current": "page" as const } : {})}
+          >
+            <Icon size={17} />
+          </Link>
+        ))}
 
-      <span className={`${variant}-rail-spacer`} />
+        <span className={`${variant}-rail-spacer`} />
 
-      <ThemeToggle variant={variant} />
+        <ThemeToggle variant={variant} />
 
-      <button className={`${variant}-rail-btn`} type="button" onClick={signOut} aria-label="Cerrar sesión">
-        <LogOut size={17} />
-      </button>
-    </nav>
+        <button className={`${variant}-rail-btn`} type="button" onClick={signOut} aria-label="Cerrar sesión">
+          <LogOut size={17} />
+        </button>
+      </nav>
+
+      {/* Global, no un botón más del rail: se monta una vez por cada AppRail
+          vivo (incluida la instancia que `section-skeleton.tsx` deja unos
+          milisegundos durante una navegación), y el dedupe de
+          `assignment-notice.ts` —un `Set` de MÓDULO— es lo que garantiza un
+          solo aviso aunque haya dos instancias a la vez. */}
+      <AssignmentNotifier />
+    </>
   );
 }
 
