@@ -401,12 +401,41 @@ dejar rastro es lo que hacía desaparecer leads.
   esquema real todavía tiene la columna.
 - **Un sticker saliente solo viaja por `link` a un WebP del bucket** (T3a,
   8/9/2026): payload `{ type: "sticker", sticker: { link } }` SIN `caption`
-  (`meta-client.ts`), estático 512×512 y ≤ 100 KB (`sticker-image.ts`); la
-  biblioteca (`stickers`) guarda `storage_path` dentro de `whatsapp-media`
-  bajo `stickers/<uuid>.webp`, nunca una URL. `deleteSticker` borra la FILA
-  antes que el objeto para que un rechazo de RLS no deje archivos huérfanos.
-  Que Meta acepte el primer sticker saliente en producción está por
-  verificar; un animado puede rechazarlo y eso ya lo muestra `failure-reason`.
+  (`meta-client.ts`); la biblioteca (`stickers`) guarda `storage_path` dentro
+  de `whatsapp-media` bajo `stickers/<uuid>.webp`, nunca una URL.
+  `deleteSticker` borra la FILA antes que el objeto para que un rechazo de
+  RLS no deje archivos huérfanos. **Actualización (8/9/2026): el primer
+  sticker saliente en producción SÍ se verificó, y Meta lo rechazó** — no por
+  el `caption` (la forma del payload estaba bien), sino por PESO: error
+  131053, "Sticker file has size 973668 bytes but must be atmost 512000
+  bytes and non-empty" (mensaje `642661b5-7c07-4676-9c4a-9d0af949a712`,
+  conversación `3b654d2c…`, 18:38 UTC). Era el mismo sticker, byte por byte,
+  que ese cliente había mandado el día anterior — un WebP **animado**
+  guardado en la biblioteca con `animated` en su default `false`. Ver la
+  trampa siguiente ("los límites de Meta son de salida") y
+  `whatsapp/sticker-guard.ts`.
+- **Los límites de peso de stickers de Meta son de SALIDA, y son DOS, no
+  uno** (8/9/2026, caso `642661b5…` de arriba): WhatsApp entrega al cliente
+  stickers entrantes más pesados de lo que la Cloud API deja reenviar, así
+  que **nada de lo que se recibe es reenviable por definición** — hay que
+  medirlo, nunca asumirlo. El límite es 100 KB para un sticker estático y
+  **500 KB para uno animado** (cinco veces más), y **detectar animación es
+  leer bytes** (`isAnimatedWebp` en `sticker-image.ts`: `RIFF`+`WEBP`+`VP8X`
+  y el bit `0x02` del byte de flags en el offset 20), nunca la extensión ni
+  el MIME que mandó el cliente. La escalera de calidad de `sticker-canvas.ts`
+  (T3b) **NO rescata un animado que no entra**: reencodear en `<canvas>` lo
+  aplana a un solo fotograma, deja de ser el sticker que el asesor quería
+  guardar — un animado que no entra se RECHAZA, nunca se recomprime. Por eso
+  `saveStickerFromMessage` (`mutations.ts`) ya no usa el camino rápido
+  `storage.copy`: para pesar el archivo y detectar animación hay que bajar
+  los bytes igual, así que un "camino rápido" que nunca ve lo que acaba de
+  medir no se justificaba — ahora baja, mide y RECIÉN ENTONCES escribe; si no
+  entra, tira antes de tocar storage o la tabla, sin dejar nada a medias. Y
+  `api/messages/send/route.ts` corta con 422 ANTES de insertar la fila en
+  `messages` (`checkStickerBeforeSend`, `whatsapp/sticker-guard.ts`) porque
+  Meta acepta el POST con 200/wamid igual — el 131053 llega recién ~3 s
+  después por el webhook de status, un `failed` silencioso que solo se
+  entiende mirando la burbuja.
 - **`products.weight_kg` es nullable y la IA NO lo lee** (T4, 8/9/2026):
   `null` significa "sin cargar" (la mayoría del catálogo hasta que alguien lo
   complete para Cashea), el filtro "Sin peso" cuenta solo activos, y
@@ -421,6 +450,49 @@ dejar rastro es lo que hacía desaparecer leads.
   RLS (`invoices_update`). Los datos fiscales del emisor (`INVOICE_ISSUER`)
   y el IVA (`DEFAULT_TAX_RATE = 0`) están "Por definir" hasta que el operador
   los entregue: la hoja lo muestra así, no inventa valores.
+- **Estar en una migración con RLS no significa que una tabla publique nada
+  por Realtime — y suscribirse a un canal muerto no falla, calla para
+  siempre.** `conversation_handoffs` existe desde el 30/8/2026
+  (migración 20260830040000) con su política `conversation_handoffs_select
+  using (is_agent())`, y desde esa misma fecha `crm-shell.tsx` tiene un canal
+  `unassigned-handoffs` suscrito a sus `postgres_changes` para mantener viva
+  la píldora "Sin dueño". Verificado contra producción el 8/9/2026
+  (`select tablename from pg_publication_tables where
+  pubname='supabase_realtime'`): de 15 tablas publicadas, esa NO estaba —
+  nadie la agregó a `supabase_realtime` en la migración que la creó ni en
+  ninguna posterior. El canal se arma bien, `channel.subscribe()` reporta
+  `SUBSCRIBED`, y no llega jamás un evento: la píldora solo se actualizaba al
+  recargar la página, desde el 30/8 hasta el 8/9. Antes de confiar en un
+  canal nuevo (o viejo, que nadie había medido), verificar la publicación
+  contra la base, no leer la migración ni el código del canal — ninguno de
+  los dos avisa. Arreglado en `migrations/20260909050000_realtime_conversation_handoffs.sql`
+  (`alter publication supabase_realtime add table`, con
+  autoverificación: `raise exception` si al final no quedó publicada).
+- **El `reason` de `conversation_handoffs` es imprescindible para distinguir
+  "te asignaron algo nuevo" de "seguís teniendo lo mismo de siempre" — no es
+  higiene, es la diferencia entre un aviso útil y un aviso que salta en cada
+  mensaje.** El aviso de asignación (8/9/2026, `assignment-notice.ts`) solo
+  dispara con `to_kind === "human" && to_id === miAgentId && reason ===
+  "escalada"`. `escalada` (`escalate.ts`) es el ÚNICO traspaso que significa
+  "la IA te acaba de entregar este caso"; `asignada` (`agent.ts`) se escribe
+  CADA VEZ que llega un mensaje del cliente a una conversación que YA tiene
+  dueño —no es una asignación nueva, es la misma reafirmándose—, así que
+  filtrar solo por `to_kind`/`to_id` habría hecho saltar el aviso en cada
+  mensaje del cliente durante el resto de la conversación. `created_by`
+  tampoco sirve como filtro: vale `'system'` en casi todas las razones,
+  incluida `escalada`.
+- **El dedupe de un aviso que vive dentro de un componente montado en varios
+  sitios a la vez tiene que ser un `Set` de MÓDULO, nunca de instancia.**
+  `AppRail` se monta en las seis secciones del CRM y TAMBIÉN dentro de
+  `section-skeleton.tsx`, así que durante cualquier navegación coexisten dos
+  instancias unos milisegundos — las dos suscritas al mismo canal
+  `assignment-notice`, las dos recibiendo el mismo INSERT de
+  `conversation_handoffs`. Un `Set` por instancia (p. ej. un `useRef` dentro
+  de `AssignmentNotifier`) no protege de nada porque cada instancia tiene el
+  suyo; `markAssignmentNoticeSeen` (`assignment-notice.ts`) usa un `Set` a
+  nivel de módulo (tope 200, FIFO) que las dos instancias comparten. Mismo
+  motivo por el que `notifiedHandoffIds` nunca se resetea al montar el
+  componente.
 
 ---
 

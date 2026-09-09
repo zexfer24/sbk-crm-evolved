@@ -7,8 +7,25 @@ vi.mock("next/navigation", () => ({
   useRouter: () => ({ push: vi.fn(), replace: vi.fn(), refresh: vi.fn() }),
 }));
 
+// AppRail monta AssignmentNotifier (T6), que abre su propio canal de
+// realtime y resuelve el agente actual con `auth.getSession()` — sin estas
+// dos piezas el montaje revienta antes de llegar a las aserciones de estas
+// pruebas, que no miran el aviso en sí (eso lo cubre
+// assignment-notifier.test.tsx).
+function fakeChannel() {
+  const channel = {
+    on: () => channel,
+    subscribe: () => channel,
+  };
+  return channel;
+}
+
 vi.mock("@/lib/supabase/client", () => ({
-  createClient: () => ({ auth: { signOut: vi.fn() } }),
+  createClient: () => ({
+    auth: { signOut: vi.fn(), getSession: vi.fn().mockResolvedValue({ data: { session: null } }) },
+    channel: () => fakeChannel(),
+    removeChannel: vi.fn(),
+  }),
 }));
 
 const SECCIONES = [

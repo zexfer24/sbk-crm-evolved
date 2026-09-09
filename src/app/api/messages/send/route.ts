@@ -5,6 +5,7 @@ import { log, errorText } from "@/lib/log";
 import type { MessageType } from "@/lib/types";
 import { signedUrlForSending } from "@/lib/media-link";
 import { isDeliverablePhoneNumber } from "@/lib/whatsapp/phone";
+import { checkStickerBeforeSend } from "@/lib/whatsapp/sticker-guard";
 import {
   MetaApiError,
   metaErrorCode,
@@ -160,6 +161,23 @@ export async function POST(request: Request) {
       },
       { status: 422 }
     );
+  }
+
+  // Un sticker que no entra en el límite de Meta (peso y animación medidos
+  // de verdad, no la columna `animated` de la biblioteca — ver
+  // sticker-guard.ts) se corta ACÁ, antes de insertar la fila, con el mismo
+  // criterio que la guarda del teléfono: Meta igual acepta el POST con un
+  // 200 y wamid, y el rechazo (131053) llega recién 3 s después por el
+  // webhook de status — un `failed` silencioso que el asesor solo entiende
+  // mirando la burbuja. Solo aplica en canal real: en demo no hay a quien
+  // Meta rechazarle nada, y forzar la lectura del bucket en cada envío
+  // simulado no evita ningún 131053 real.
+  if (isRealChannel && kind === "media" && mediaType === "sticker") {
+    const guard = await checkStickerBeforeSend(mediaUrl!);
+    if (!guard.ok) {
+      log.warn("send.sticker_fuera_de_limite", { conversationId, mediaUrl: mediaUrl! });
+      return NextResponse.json({ error: guard.reason }, { status: 422 });
+    }
   }
 
   // El mensaje se guarda ANTES de hablar con Meta y el asesor recibe su
