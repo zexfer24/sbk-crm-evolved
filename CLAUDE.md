@@ -460,6 +460,24 @@ dejar rastro es lo que hacía desaparecer leads.
   RLS (`invoices_update`). Los datos fiscales del emisor (`INVOICE_ISSUER`)
   y el IVA (`DEFAULT_TAX_RATE = 0`) están "Por definir" hasta que el operador
   los entregue: la hoja lo muestra así, no inventa valores.
+- **Un componente que devuelve un FRAGMENTO le entrega N hijos a su padre, no
+  uno — y si ese padre es un grid de columnas fijas, le desarma la pantalla
+  entera.** Tumbó producción el 9/9/2026, en las seis secciones a la vez.
+  `AppRail` pasó a devolver `<>` con el `<nav>` del rail MÁS el contenedor
+  `aria-live` de `AssignmentNotifier` (143531c); un fragmento no crea nodo DOM,
+  así que los dos subieron como hijos DIRECTOS de `.crm` (crm.css) y
+  `.dash-frame` (dashboard.css), que son `grid-template-columns: 72px
+  minmax(0, 1fr)` — DOS columnas. El contenedor del aviso se quedó la columna
+  del contenido y TODO el CRM cayó a una fila implícita de 72px de ancho,
+  recortada por el `overflow: hidden`. **`pointer-events: none` NO saca del
+  flujo** (solo deja pasar los clics): lo que hacía falta era `position: fixed`
+  en `.an-live`, y ahí sigue con su test de resguardo. Antes de montar algo
+  nuevo dentro de un componente compartido, mirar si el padre reparte columnas:
+  el hijo de más no se ve en ningún test. **Los tests de este repo NO pueden
+  atrapar esto** — jsdom no calcula layout, así que ninguna aserción sobre el
+  DOM renderizado detecta un grid desarmado; el resguardo tiene que mirar la
+  HOJA de estilos (`assignment-notifier.test.tsx`, "la hoja de estilos del
+  aviso") o ser una verificación visual.
 - **Estar en una migración con RLS no significa que una tabla publique nada
   por Realtime — y suscribirse a un canal muerto no falla, calla para
   siempre.** `conversation_handoffs` existe desde el 30/8/2026
