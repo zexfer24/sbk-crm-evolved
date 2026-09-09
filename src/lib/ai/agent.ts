@@ -1242,17 +1242,11 @@ async function runTurnPhases(
   // `businessHours` viaja en `deps` para `buildEscalateTool`, que lo usa en la
   // despedida sin asesores (Frente B4, "El reloj dice la verdad", 5/9/2026):
   // así no hace falta reabrir el Promise.all de runAgentTurn para conseguirlo.
-  // T2 (8/9/2026): `lastCustomerMessageAt`/`handoffConfirmationPendingAt`
-  // viajan igual, de la misma fila `convo` ya leída — `buildEscalateTool` los
-  // usa solo en `motivo: "intencion_compra"` para decidir si el "sí" que
-  // acaba de leer el modelo es el primero o el segundo.
   const deps = {
     supabase,
     conversationId,
     contactId: target.contactId,
     businessHours,
-    lastCustomerMessageAt: convo.last_customer_message_at,
-    handoffConfirmationPendingAt: convo.handoff_confirmation_pending_at,
   };
 
   // Escalar no tiene interruptor: es la única salida hacia un humano. El
@@ -1468,7 +1462,7 @@ export async function runAgentTurn(conversationId: string, options: { vencioEn?:
     supabase
       .from("conversations")
       .select(
-        "id, contact_id, ai_enabled, assigned_agent_id, welcome_sent_at, last_customer_message_at, handoff_confirmation_pending_at, contact:contacts(phone_number), channel:whatsapp_channels(phone_number_id, status)"
+        "id, contact_id, ai_enabled, assigned_agent_id, welcome_sent_at, last_customer_message_at, contact:contacts(phone_number), channel:whatsapp_channels(phone_number_id, status)"
       )
       .eq("id", conversationId)
       .maybeSingle(),

@@ -504,159 +504,61 @@ describe("buildEscalateTool — instrucción de despedida cuando no hay asesores
 });
 
 // ---------------------------------------------------------------------------
-// T2 (8/9/2026, plan "Seis frentes del buzón"): SOLO motivo "intencion_compra"
-// reconfirma. `escalateConversation` sigue mockeado (su propia batería vive en
-// escalate.test.ts); acá hace falta un fake de `supabase` de verdad para
-// "conversations"/"messages" porque, a diferencia del resto de este archivo,
-// esta rama SÍ escribe directo (sella la oferta, deja la nota interna) sin
-// pasar por `escalateConversation`.
+// "La IA pasa el caso a ventas apenas el cliente acepta" (8/9/2026): T2 había
+// agregado una segunda confirmación para "intencion_compra", pero en
+// producción el cliente contesta "ok"/"dale"/"está bien" en vez de un "sí"
+// literal, el modelo no lo reconocía como el segundo sí y la conversación
+// quedaba en bucle pidiendo confirmación. Se eliminó la máquina de
+// reconfirmación: ahora los tres motivos ("devolucion", "queja",
+// "intencion_compra") escalan igual, con el primer aviso.
 // ---------------------------------------------------------------------------
-describe("buildEscalateTool — reconfirmación de pase a ventas (T2, 8/9/2026)", () => {
+describe("buildEscalateTool — intencion_compra escala con el primer aviso", () => {
   beforeEach(() => {
     escalateConversationMock.mockReset();
   });
 
-  interface EstadoReconfirmacion {
-    conversationUpdates: Record<string, unknown>[];
-    notas: string[];
-  }
-
-  function crearFakeSupabase(): { client: unknown; estado: EstadoReconfirmacion } {
-    const estado: EstadoReconfirmacion = { conversationUpdates: [], notas: [] };
-    const client = {
+  /** Fake que revienta si `buildEscalateTool` toca `conversations`/`messages` por su cuenta: hoy todo pasa por `escalateConversation`, que está mockeado. */
+  function crearFakeSupabaseSinEscrituraDirecta(): unknown {
+    return {
       from(table: string) {
-        if (table === "conversations") {
-          return {
-            update(values: Record<string, unknown>) {
-              estado.conversationUpdates.push(values);
-              return { eq: async () => ({ data: null, error: null }) };
-            },
-          };
-        }
-        if (table === "messages") {
-          return {
-            insert(row: { content?: string }) {
-              estado.notas.push(row.content ?? "");
-              return Promise.resolve({ data: null, error: null });
-            },
-          };
-        }
-        throw new Error(`Fake Supabase: tabla no soportada en este test: ${table}`);
+        throw new Error(`Fake Supabase: no se esperaba tocar la tabla '${table}' desde buildEscalateTool`);
       },
     };
-    return { client, estado };
   }
 
-  interface DepsIntencionCompra {
-    now?: Date;
-    lastCustomerMessageAt?: string | null;
-    handoffConfirmationPendingAt?: string | null;
-  }
-
-  async function ejecutarIntencionCompra(deps: DepsIntencionCompra, outcome: EscalationOutcome = { escalated: false }) {
-    const { client, estado } = crearFakeSupabase();
+  it("la primera llamada con motivo intencion_compra escala directo: llama a escalateConversation y devuelve escalated true", async () => {
+    escalateConversationMock.mockResolvedValue({ escalated: true, assignedAgentName: "María" });
+    const outcome: EscalationOutcome = { escalated: false };
     const tool = buildEscalateTool(
-      // @ts-expect-error -- fake mínimo: la herramienta reenvía supabase tal
-      // cual a escalateConversation (mockeado) y a sus propias llamadas.
-      { supabase: client, conversationId: "conv-1", contactId: "contact-1", ...deps },
+      // @ts-expect-error -- fake mínimo: si la herramienta tocara supabase
+      // directo (en vez de reenviarlo a escalateConversation, mockeado),
+      // el fake revienta.
+      { supabase: crearFakeSupabaseSinEscrituraDirecta(), conversationId: "conv-1", contactId: "contact-1" },
       outcome
     );
+
     const input = { motivo: "intencion_compra" as const, resumen: "Quiere comprar un carburador" };
     // @ts-expect-error -- la firma real de `execute` de `ai` es más genérica que lo que necesitamos simular acá
     const result = (await tool.execute(input, { toolCallId: "t1", messages: [] })) as {
       escalated: boolean;
       instruccionParaTuRespuesta: string;
     };
-    return { result, estado, outcome };
-  }
-
-  it("primer sí (sin sello): no escala, sella la oferta y deja la nota interna", async () => {
-    const now = new Date("2026-09-08T12:00:00.000Z");
-
-    const { result, estado, outcome } = await ejecutarIntencionCompra({
-      now,
-      lastCustomerMessageAt: new Date("2026-09-08T11:59:00.000Z").toISOString(),
-      handoffConfirmationPendingAt: null,
-    });
-
-    expect(result.escalated).toBe(false);
-    expect(outcome.escalated).toBe(false);
-    expect(escalateConversationMock).not.toHaveBeenCalled();
-    expect(estado.conversationUpdates).toContainEqual({ handoff_confirmation_pending_at: now.toISOString() });
-    expect(estado.notas).toContainEqual("La IA ofreció pasar el caso a ventas y espera que el cliente lo confirme");
-    expect(result.instruccionParaTuRespuesta).toMatch(/todavía no pasaste el caso/i);
-    expect(result.instruccionParaTuRespuesta).toMatch(/no vuelvas a usar esta herramienta en este turno/i);
-  });
-
-  /**
-   * El tool loop permite hasta 5 pasos: si el modelo llamara a la
-   * herramienta dos veces respondiendo al MISMO mensaje del cliente (el que
-   * disparó el primer sello), la segunda llamada no puede escalar ni volver
-   * a escribir — `handoffConfirmationState` exige un mensaje POSTERIOR al
-   * sello, y acá el último mensaje del cliente es ANTERIOR (el mismo que ya
-   * disparó el sello, que quedó sellado recién en esta simulación).
-   */
-  it("segunda llamada respondiendo al mismo mensaje del cliente: no escala ni vuelve a escribir", async () => {
-    const now = new Date("2026-09-08T12:00:00.000Z");
-    const pendingAt = now.toISOString();
-
-    const { result, estado } = await ejecutarIntencionCompra({
-      now,
-      lastCustomerMessageAt: new Date("2026-09-08T11:59:00.000Z").toISOString(),
-      handoffConfirmationPendingAt: pendingAt,
-    });
-
-    expect(result.escalated).toBe(false);
-    expect(escalateConversationMock).not.toHaveBeenCalled();
-    expect(estado.conversationUpdates).toHaveLength(0);
-    expect(estado.notas).toHaveLength(0);
-    expect(result.instruccionParaTuRespuesta).toMatch(/todavía no pasaste el caso/i);
-  });
-
-  it("con un mensaje del cliente posterior al sello (segundo sí): escala de verdad", async () => {
-    escalateConversationMock.mockResolvedValue({ escalated: true, assignedAgentName: "María" });
-    const pendingAt = new Date("2026-09-08T12:00:00.000Z").toISOString();
-
-    const { result, estado, outcome } = await ejecutarIntencionCompra({
-      now: new Date("2026-09-08T12:05:00.000Z"),
-      lastCustomerMessageAt: new Date("2026-09-08T12:01:00.000Z").toISOString(),
-      handoffConfirmationPendingAt: pendingAt,
-    });
 
     expect(escalateConversationMock).toHaveBeenCalledTimes(1);
+    expect(escalateConversationMock).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ conversationId: "conv-1", contactId: "contact-1", motivo: "intencion_compra" })
+    );
     expect(result.escalated).toBe(true);
     expect(outcome.escalated).toBe(true);
-    // No vuelve a sellar ni a dejar nota: eso lo hace `escalateConversation`
-    // en su propio update (ver "limpia handoff_confirmation_pending_at..."
-    // en escalate.test.ts), no esta herramienta.
-    expect(estado.conversationUpdates).toHaveLength(0);
-    expect(estado.notas).toHaveLength(0);
   });
 
-  it("una oferta vencida (más de 6h) vuelve a sellar, en vez de escalar con un sí fuera de contexto", async () => {
-    const now = new Date("2026-09-08T20:00:00.000Z");
-    const pendingAt = new Date("2026-09-08T12:00:00.000Z").toISOString();
-
-    const { result, estado } = await ejecutarIntencionCompra({
-      now,
-      // Posterior al sello, pero la oferta ya venció: expired le gana a confirmed.
-      lastCustomerMessageAt: new Date("2026-09-08T13:00:00.000Z").toISOString(),
-      handoffConfirmationPendingAt: pendingAt,
-    });
-
-    expect(escalateConversationMock).not.toHaveBeenCalled();
-    expect(result.escalated).toBe(false);
-    expect(estado.conversationUpdates).toContainEqual({ handoff_confirmation_pending_at: now.toISOString() });
-    expect(estado.notas).toHaveLength(1);
-  });
-
-  it("devolución y queja no pasan por la reconfirmación: escalan directo con el primer aviso", async () => {
+  it("devolución y queja también escalan directo con el primer aviso", async () => {
     escalateConversationMock.mockResolvedValue({ escalated: true, assignedAgentName: "María" });
-    const { client } = crearFakeSupabase();
     const outcome: EscalationOutcome = { escalated: false };
     const tool = buildEscalateTool(
       // @ts-expect-error -- fake mínimo
-      { supabase: client, conversationId: "conv-1", contactId: "contact-1" },
+      { supabase: crearFakeSupabaseSinEscrituraDirecta(), conversationId: "conv-1", contactId: "contact-1" },
       outcome
     );
 

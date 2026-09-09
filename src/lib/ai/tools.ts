@@ -7,7 +7,6 @@ import { getBcvRate } from "@/lib/ai/bcv";
 import { catalogFilter, rankByTerms, searchTerms } from "@/lib/ai/catalog-search";
 import { formatQuote } from "@/lib/ai/precio";
 import { RECLAMO_CATEGORIES, escalateConversation, type EscalationMotivo } from "@/lib/ai/escalate";
-import { handoffConfirmationState } from "@/lib/ai/handoff-confirmation";
 import { inventoryAgeInstruction, inventoryFreshness } from "@/lib/inventory-freshness";
 import { errorText, log } from "@/lib/log";
 import type { BusinessHours, BusinessStatus } from "@/lib/business-hours";
@@ -69,16 +68,6 @@ interface ToolDeps {
   businessHours?: BusinessHours;
   /** Inyectable en tests; en producción usa el reloj real. */
   now?: Date;
-  /**
-   * Reconfirmación de pase a ventas (T2, plan "Seis frentes del buzón",
-   * 8/9/2026): solo los usa `buildEscalateTool`, y solo en
-   * `motivo === "intencion_compra"`, para decidir si el "sí" que acaba de
-   * leer el modelo es el primero (hay que pedir que lo confirme) o el
-   * segundo (ya se puede escalar). Ver `handoff-confirmation.ts`.
-   */
-  lastCustomerMessageAt?: string | null;
-  /** `conversations.handoff_confirmation_pending_at`: null si no hay ninguna oferta de pase a ventas pendiente. */
-  handoffConfirmationPendingAt?: string | null;
 }
 
 /** Se llena cuando el turno escala, para que el orquestador sepa qué pasó sin volver a tocar la base de datos. */
@@ -298,35 +287,13 @@ function unassignedEscalationInstruction(status: BusinessStatus | undefined): st
   return `No hay ningún asesor conectado ahora y la tienda está cerrada. Dile al cliente que su caso quedó registrado y que un asesor le escribe ${status.nextOpening.dayLabel} a partir de las ${status.nextOpening.time}. NO prometas que lo atienden enseguida.`;
 }
 
-/**
- * Lo que lee el modelo cuando invoca `escalarAAsesor` con
- * `motivo: "intencion_compra"` y la reconfirmación TODAVÍA no llegó a su
- * segundo "sí" (T2, plan "Seis frentes del buzón", 8/9/2026).
- *
- * Misma frase tanto si esta es la primera llamada (recién se sella la
- * oferta) como si es una repetición dentro del mismo turno (ver
- * `handoff-confirmation.ts`, estado "awaiting"): el modelo no tiene por qué
- * distinguir los dos casos, en ambos el paso siguiente es el mismo —pedir el
- * "sí" y no volver a tocar la herramienta.
- */
-const SALES_HANDOFF_PENDING_INSTRUCTION =
-  "Todavía NO pasaste el caso. Dile en una sola frase que lo pasas con un asesor de ventas y pídele que te lo confirme con un sí. No vuelvas a usar esta herramienta en este turno.";
-
 // ---------------------------------------------------------------------------
 // Escalar a un asesor — devolucion, queja, e intención de compra dentro de
 // consulta_disponibilidad. Única forma de tocar dinero o cerrar un caso: la
 // IA nunca aprueba, rechaza ni cierra nada por su cuenta.
 // ---------------------------------------------------------------------------
 export function buildEscalateTool(
-  {
-    supabase,
-    conversationId,
-    contactId,
-    businessHours,
-    now,
-    lastCustomerMessageAt,
-    handoffConfirmationPendingAt,
-  }: ToolDeps,
+  { supabase, conversationId, contactId, businessHours, now }: ToolDeps,
   outcome: EscalationOutcome
 ) {
   return tool({
@@ -343,53 +310,6 @@ export function buildEscalateTool(
         .describe("Solo si motivo='queja': la categoría que mejor describe el reclamo."),
     }),
     execute: async ({ motivo, resumen, categoriaReclamo }) => {
-      // T2 (8/9/2026): SOLO el pase a ventas reconfirma. Devolución y queja
-      // (y los escenarios con afterSend = "escalate", que ni pasan por acá)
-      // siguen escalando con el primer aviso — ahí no hay nada que dudar, el
-      // cliente ya está pidiendo ayuda con algo que salió mal.
-      if (motivo === "intencion_compra") {
-        const momento = now ?? new Date();
-        const estado = handoffConfirmationState({
-          pendingAt: handoffConfirmationPendingAt ?? null,
-          lastCustomerMessageAt: lastCustomerMessageAt ?? null,
-          now: momento,
-        });
-
-        if (estado !== "confirmed") {
-          // "none"/"expired" sellan (o resellan) la oferta y dejan la nota
-          // interna para que la bandeja muestre el intermedio. "awaiting" es
-          // el modelo llamando dos veces en el mismo turno —el tool loop
-          // permite hasta 5 pasos— y no vuelve a escribir nada: la oferta ya
-          // está sellada, escribir de nuevo no cambia el sello ni agrega
-          // información.
-          if (estado === "none" || estado === "expired") {
-            await supabase
-              .from("conversations")
-              .update({ handoff_confirmation_pending_at: momento.toISOString() })
-              .eq("id", conversationId);
-
-            await supabase.from("messages").insert({
-              conversation_id: conversationId,
-              direction: "outbound",
-              sender_type: "system",
-              message_type: "system_event",
-              is_internal_note: true,
-              content: "La IA ofreció pasar el caso a ventas y espera que el cliente lo confirme",
-            });
-          }
-
-          // `outcome.escalated` se queda en `false` (default con el que
-          // `runTurnPhases` lo inicializa): el turno de `agent.ts` no tiene
-          // nada especial que hacer acá, termina como uno normal —responde
-          // con el texto que redacte el modelo y limpia `journey_stage`.
-          return { escalated: false, instruccionParaTuRespuesta: SALES_HANDOFF_PENDING_INSTRUCTION };
-        }
-        // "confirmed": sigue de largo al escalamiento real de abajo. El
-        // sello se limpia solo — `escalateConversation` lo pone en null en
-        // el mismo `update` que pausa la IA, sin que esta herramienta tenga
-        // que acordarse de hacerlo.
-      }
-
       const result = await escalateConversation(supabase, {
         conversationId,
         contactId,
