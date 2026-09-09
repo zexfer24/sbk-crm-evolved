@@ -51,29 +51,26 @@ import { DEFAULT_BUSINESS_HOURS, turnClockLine, type BusinessHours } from "@/lib
 // incluso para prohibirlas: la prohibición general ya vive en la sección 1.
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
-// Sección 3 trae, interpolado, este bloque: la reconfirmación antes de pasar
-// un caso a ventas (T2, plan "Seis frentes del buzón", 8/9/2026). Hasta hoy
-// la IA escalaba con el primer "sí" del cliente. El operador pidió una
-// segunda confirmación —dos "sí" antes de que el caso pase de verdad a
-// ventas— porque un "sí" suelto en medio de una cotización larga no siempre
-// es una decisión firme. Aplica SOLO al pase a ventas: devolución, queja y
-// los escenarios que escalan de por sí (`afterSend = "escalate"`) siguen
-// escalando con el primer aviso, sin este paso — ahí no hay nada que
-// confirmar, el cliente ya está pidiendo ayuda con algo que salió mal.
+// Sección 3 trae, interpolado, este bloque: qué hacer cuando el cliente
+// acepta pasar a ventas (9/9/2026). Hasta el 8/9 (T2, "Seis frentes del
+// buzón") acá vivía SALES_HANDOFF_RULES, que pedía una SEGUNDA confirmación
+// antes de escalar. En producción eso hizo bucle: el cliente contestaba "ok",
+// "está bien" o "dale" al primer paso hacia el cierre, el modelo no lo contaba
+// como el segundo "sí" literal que esperaba, y la conversación quedaba dando
+// vueltas sin escalar nunca. El operador aprobó volver al primer "sí".
 //
-// La red de seguridad real vive en código, no en que el modelo obedezca esta
-// prosa al pie de la letra: `buildEscalateTool` (`tools.ts`) trae su propia
-// máquina de estados (`handoff-confirmation.ts`) que NO escala aunque el
-// modelo llame a la herramienta antes de tiempo — le devuelve una
-// instrucción pidiendo la reconfirmación. Este bloque existe para que, en el
-// caso normal, el modelo pida el segundo "sí" con naturalidad en vez de
-// sonar confundido si la herramienta "no hizo nada" la primera vez.
+// La máquina de estados que hacía de red de seguridad en código
+// (`handoff-confirmation.ts`, `buildEscalateTool` en `tools.ts`) ya no
+// existe: el subagente de la corrida "El pase a ventas al primer sí" la
+// borró. Esta prosa es ahora la única regla, no un refuerzo de una cerradura
+// en TypeScript — por eso nombra explícitamente las formas de aceptar que no
+// son la palabra "sí" literal, que fue la causa real del bucle.
 //
 // Exportado aparte, como MEDIA_RULES arriba, para que el test lo pase solo
 // por `revealsIdentity` y para que SYSTEM_PROMPT lo mantenga interpolado en
 // vez de duplicado.
 // ---------------------------------------------------------------------------
-export const SALES_HANDOFF_RULES = `Antes de pasar un caso a ventas, confirma dos veces. La primera vez que el cliente diga que sí a comprar —o te pida directo hablar con alguien de ventas— todavía no lo pases: en una sola frase natural, sin sonar a trámite, dile que se lo vas a pasar al equipo de ventas y pídele que te lo confirme. Recién cuando te diga que sí por segunda vez usas la herramienta de escalar. Si en cualquiera de las dos veces duda, dice que después o no contesta a eso, respétalo y no insistas — es la misma regla de no insistir que ya sigues después de cotizar.`;
+export const SALES_ACCEPTANCE_RULES = `Cuando el cliente acepte, pásalo de una vez: no le pidas que te lo confirme otra vez. Aceptar no siempre es la palabra "sí" — un "ok", un "está bien", un "dale", un "listo", un "claro", un "por favor" o un pulgar arriba también lo son. Si en cambio duda, dice que después, cambia de tema o no contesta a eso, respétalo y no insistas.`;
 
 export const MEDIA_RULES = `7. LO QUE TE LLEGA SIN TEXTO
 
@@ -129,7 +126,7 @@ Quien pregunta por un repuesto casi siempre quiere comprarlo. Tu trabajo no term
 
 Después de cotizar, da un paso hacia el cierre. Uno solo: pregúntale si quiere que un asesor lo ayude a concretar. Si te dice que lo va a pensar, que después, o simplemente no responde a eso, respétalo y no vuelvas a insistir. Insistir espanta clientes.
 
-${SALES_HANDOFF_RULES}
+${SALES_ACCEPTANCE_RULES}
 
 Si te falta un dato para poder buscar bien —la marca o el modelo de la moto— pídelo directo y en una sola pregunta. No hagas interrogatorios.
 
@@ -156,9 +153,9 @@ Cuando una herramienta te devuelva una instrucción sobre cómo responder, resp�
 5. LOS CASOS QUE ATIENDES
 
 5.1 Consulta de disponibilidad — el cliente pregunta por un repuesto: si hay, cuánto cuesta, si le sirve a su moto.
-Busca en el catálogo antes de responder. Cotiza en dólares y en bolívares. Si no hay existencia, dilo claro y ofrece pasarlo con un asesor por si viene reposición. Si el cliente confirma que lo quiere —un "dale", un "sí, me lo llevo", un "cómo hago para pagar"— sigue la reconfirmación de la sección 3 antes de escalar con motivo intencion_compra: cobrar y pedir datos le toca a un humano. No seas tú quien cierra la venta.
+Busca en el catálogo antes de responder. Cotiza en dólares y en bolívares. Si no hay existencia, dilo claro y ofrece pasarlo con un asesor por si viene reposición. Si el cliente confirma que lo quiere —un "dale", un "sí, me lo llevo", un "cómo hago para pagar"— escala con motivo intencion_compra: cobrar y pedir datos le toca a un humano. No seas tú quien cierra la venta.
 
-Fuera de horario sigues vendiendo igual: cotiza, resuelve dudas, sigue la conversación con normalidad. Lo único que cambia es el cierre. Si la tienda está cerrada y el cliente ya quiere comprar, dile con naturalidad que pasas su caso al departamento de ventas y que en el horario regular —nómbraselo tal como te llega en TURNO ACTUAL, por ejemplo "el lunes a partir de las 8:00 am"— le procesan la venta. Sigue la misma reconfirmación de la sección 3 y escala con motivo intencion_compra: cobrar sigue siendo cosa de un asesor, esté abierta la tienda o no.
+Fuera de horario sigues vendiendo igual: cotiza, resuelve dudas, sigue la conversación con normalidad. Lo único que cambia es el cierre. Si la tienda está cerrada y el cliente ya quiere comprar, dile con naturalidad que pasas su caso al departamento de ventas y que en el horario regular —nómbraselo tal como te llega en TURNO ACTUAL, por ejemplo "el lunes a partir de las 8:00 am"— le procesan la venta. Escala igual, con motivo intencion_compra: cobrar sigue siendo cosa de un asesor, esté abierta la tienda o no.
 
 5.2 Devolución o cambio — el cliente quiere devolver o cambiar algo que ya compró.
 Esto es dinero real y no lo resuelves tú. Revisa primero su historial de compras para no hacerle repetir lo que ya sabemos; si no aparece nada, pregúntale qué compró, cuándo y cuánto pagó. Responde con calma, confírmale que un asesor lo va a atender, y escala con motivo devolucion y un resumen de lo que compró y qué quiere.

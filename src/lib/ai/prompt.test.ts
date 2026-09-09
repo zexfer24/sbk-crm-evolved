@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { INTENT_VALUES } from "@/lib/ai/classify";
-import { MEDIA_RULES, OFF_TOPIC_REPLY, SALES_HANDOFF_RULES, SYSTEM_PROMPT, buildInstructions } from "@/lib/ai/prompt";
+import { MEDIA_RULES, OFF_TOPIC_REPLY, SALES_ACCEPTANCE_RULES, SYSTEM_PROMPT, buildInstructions } from "@/lib/ai/prompt";
 import { greetingWindow } from "@/lib/ai/greeting-window";
 import { revealsIdentity } from "@/lib/ai/identity-guard";
 
@@ -279,31 +279,48 @@ describe("identidad: ni IA ni persona", () => {
 });
 
 /**
- * T2, plan "Seis frentes del buzón" (8/9/2026): la IA reconfirma antes de
- * pasar el caso a ventas. `SALES_HANDOFF_RULES` es un bloque nuevo del
- * prefijo cacheado (sección 3), la misma forma que ya usa `MEDIA_RULES`.
+ * 9/9/2026: T2 del plan "Seis frentes del buzón" (8/9/2026) había hecho que
+ * la IA pidiera una SEGUNDA confirmación antes de pasar el caso a ventas. En
+ * producción hizo bucle — el cliente contestaba "ok", "está bien" o "dale" en
+ * vez de un "sí" literal, el modelo no lo contaba como la segunda
+ * confirmación, y la conversación quedaba dando vueltas sin escalar nunca. El
+ * operador aprobó volver al primer "sí": `handoff-confirmation.ts` (la
+ * máquina de estados que hacía de red de seguridad en código) se borró, y
+ * `SALES_ACCEPTANCE_RULES` reemplaza a `SALES_HANDOFF_RULES` con la misma
+ * forma que ya usa `MEDIA_RULES`.
  */
-describe("sección 3 — reconfirmación antes de pasar el caso a ventas (T2, 8/9/2026)", () => {
-  it("SALES_HANDOFF_RULES es parte del bloque estático que se cachea", () => {
-    expect(SYSTEM_PROMPT).toContain(SALES_HANDOFF_RULES);
+describe("sección 3 — aceptar es pasar de una vez, sin reconfirmar (9/9/2026)", () => {
+  it("SALES_ACCEPTANCE_RULES es parte del bloque estático que se cachea", () => {
+    expect(SYSTEM_PROMPT).toContain(SALES_ACCEPTANCE_RULES);
   });
 
-  it("buildInstructions también trae SALES_HANDOFF_RULES, dentro del prefijo cacheado", () => {
+  it("buildInstructions también trae SALES_ACCEPTANCE_RULES, dentro del prefijo cacheado", () => {
     const instructions = buildInstructions(TURN);
 
-    expect(instructions).toContain(SALES_HANDOFF_RULES);
+    expect(instructions).toContain(SALES_ACCEPTANCE_RULES);
     expect(instructions.startsWith(SYSTEM_PROMPT)).toBe(true);
   });
 
-  it("manda pedir el segundo sí antes de escalar, y respetar la duda sin insistir", () => {
-    expect(SALES_HANDOFF_RULES).toMatch(/confirma dos veces/i);
-    expect(SALES_HANDOFF_RULES).toMatch(/segunda vez/i);
-    expect(SALES_HANDOFF_RULES).toMatch(/no insistas/i);
+  it("ya no pide confirmar dos veces, ni deja rastro de la reconfirmación de T2", () => {
+    expect(SYSTEM_PROMPT).not.toMatch(/confirma dos veces/i);
+    expect(SYSTEM_PROMPT).not.toMatch(/segunda vez/i);
+    expect(SYSTEM_PROMPT).not.toMatch(/reconfirmaci[oó]n/i);
   });
 
-  /** Nada de lo que le pide reconfirmar al modelo puede describirlo como automatizado o como una persona. */
+  it("nombra formas de aceptar más allá del 'sí' literal", () => {
+    expect(SALES_ACCEPTANCE_RULES).toMatch(/"ok"/i);
+    expect(SALES_ACCEPTANCE_RULES).toMatch(/"está bien"/i);
+    expect(SALES_ACCEPTANCE_RULES).toMatch(/"dale"/i);
+  });
+
+  it("manda pasar el caso de una vez, sin pedir que lo confirme otra vez", () => {
+    expect(SALES_ACCEPTANCE_RULES).toMatch(/pásalo de una vez/i);
+    expect(SALES_ACCEPTANCE_RULES).toMatch(/no le pidas que te lo confirme otra vez/i);
+  });
+
+  /** Nada de lo que le dice al modelo sobre aceptar la venta puede describirlo como automatizado o como una persona. */
   it("pasa la guarda de identidad limpio", () => {
-    expect(revealsIdentity(SALES_HANDOFF_RULES)).toBeNull();
+    expect(revealsIdentity(SALES_ACCEPTANCE_RULES)).toBeNull();
   });
 
   /**
@@ -311,7 +328,7 @@ describe("sección 3 — reconfirmación antes de pasar el caso a ventas (T2, 8/
    * anterior de verdad mira lo que dice mirar.
    */
   it("la guarda sí atrapa una fórmula prohibida pegada al final", () => {
-    const conFormulaProhibida = `${SALES_HANDOFF_RULES} Soy un asistente automatizado.`;
+    const conFormulaProhibida = `${SALES_ACCEPTANCE_RULES} Soy un asistente automatizado.`;
 
     const match = revealsIdentity(conFormulaProhibida);
 
@@ -319,13 +336,14 @@ describe("sección 3 — reconfirmación antes de pasar el caso a ventas (T2, 8/
     expect(match?.categoria).toBe("automatizacion");
   });
 
-  it("la sección 5.1 remite a la reconfirmación de la sección 3 en vez de escalar directo", () => {
+  it("la sección 5.1 vuelve a escalar directo con intencion_compra, sin remitir a ninguna reconfirmación", () => {
     const seccion51 = SYSTEM_PROMPT.slice(
       SYSTEM_PROMPT.indexOf("5.1 Consulta de disponibilidad"),
       SYSTEM_PROMPT.indexOf("5.2 Devolución")
     );
 
-    expect(seccion51).toMatch(/reconfirmación de la sección 3/i);
+    expect(seccion51).toMatch(/escala con motivo intencion_compra/i);
+    expect(seccion51).not.toMatch(/reconfirmaci[oó]n/i);
   });
 });
 
