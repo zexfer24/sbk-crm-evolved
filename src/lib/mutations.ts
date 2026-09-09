@@ -23,6 +23,7 @@ import { revealsIdentity, type IdentityMatch } from "@/lib/ai/identity-guard";
 // tareas del mismo plan lo editan en paralelo.
 import type { Message, Sticker } from "@/lib/types";
 import { MEDIA_BUCKET, mediaUrlFor, storagePathFromUrl } from "@/lib/storage";
+import { isAnimatedWebp, isWithinStickerLimit, stickerRejectionMessage } from "@/lib/sticker-image";
 import { buildInvoiceDraft, formatInvoiceNumber } from "@/lib/invoices";
 import { fetchOrderItems, INVOICE_SELECT, mapInvoice, type RawInvoice } from "@/lib/invoices-data";
 
@@ -933,16 +934,34 @@ const STICKER_SELECT = "id, storage_path, name, animated, created_by, created_at
 
 /**
  * Guarda en la biblioteca el sticker de un mensaje ya recibido (clic derecho
- * → "Guardar sticker" en el chat). Copia el archivo del cliente a su propia
- * ruta en vez de apuntar `storage_path` al original: el mensaje puede
- * borrarse (`source_message_id` tiene `on delete set null`) y el sticker
- * guardado tiene que sobrevivirlo.
+ * → "Guardar sticker" en el chat). Sube el archivo a su propia ruta en vez
+ * de apuntar `storage_path` al original: el mensaje puede borrarse
+ * (`source_message_id` tiene `on delete set null`) y el sticker guardado
+ * tiene que sobrevivirlo.
  *
- * `storage.copy` exige las mismas dos políticas que ya tiene el bucket
- * (`select`+`is_agent()` e `insert` para `authenticated`) — si por lo que
- * sea no está disponible en el proyecto Supabase, el respaldo baja el
- * archivo por la ruta propia (`/api/media/...`, que ya valida la sesión) y
- * lo vuelve a subir con el mismo resultado.
+ * T2 ("Ponele balanza a la biblioteca", 8/9/2026): en producción el primer
+ * sticker saliente rebotó con el 131053 de Meta — "Sticker file has size
+ * 973668 bytes but must be atmost 512000 bytes and non-empty" — porque esta
+ * función copiaba el WebP del cliente tal cual, sin pesarlo ni mirarlo, y
+ * dejaba `animated` en su default `false` aunque el archivo fuera un WebP
+ * animado de 951 KB. Los límites de peso de Meta son de SALIDA: WhatsApp
+ * entrega al cliente stickers entrantes más pesados de lo que la Cloud API
+ * deja reenviar, así que nada de lo que llega acá es reenviable por
+ * definición — hay que medirlo antes de guardarlo.
+ *
+ * Por eso ahora la función baja el archivo primero (por la ruta propia
+ * `/api/media/...`, que ya valida la sesión) y solo si entra en su límite
+ * —102400 bytes estático, 512000 animado, según lo que `isAnimatedWebp`
+ * detecte en los bytes reales— sube y hace el insert. Antes existía también
+ * un camino rápido con `storage.copy` (mover el archivo dentro del mismo
+ * bucket sin bajarlo a este proceso) con este `fetch`+`upload` como
+ * respaldo si `.copy` no estaba disponible; se eliminó porque, para pesar y
+ * detectar animación, los bytes hay que traerlos de todos modos — mantener
+ * `.copy` como camino "rápido" habría dejado dos caminos de escritura
+ * distintos (uno que nunca ve los bytes que acaba de medir) sin ahorrar la
+ * única parte cara, que es la descarga. Con un solo camino, además, es
+ * simple no dejar nada escrito cuando se rechaza: si el peso no entra, la
+ * función tira ANTES de tocar storage o la tabla `stickers`.
  */
 export async function saveStickerFromMessage(
   supabase: SupabaseClient,
@@ -953,26 +972,26 @@ export async function saveStickerFromMessage(
   const sourcePath = storagePathFromUrl(message.mediaUrl);
   if (!sourcePath) throw new Error("No se pudo ubicar el archivo del sticker en el almacenamiento.");
 
-  const destinationPath = newStickerPath();
+  const response = await fetch(message.mediaUrl);
+  if (!response.ok) throw new Error("No se pudo descargar el sticker para guardarlo.");
+  const buffer = await response.arrayBuffer();
 
-  const { error: copyError } = await supabase.storage.from(MEDIA_BUCKET).copy(sourcePath, destinationPath);
-  if (copyError) {
-    // Respaldo: bajar por la ruta propia (con sesión) y subir de nuevo. Pasa
-    // por `fetch` porque, a diferencia de `.copy`, no depende de un permiso
-    // de storage que pueda faltar en un proyecto Supabase más viejo.
-    const response = await fetch(message.mediaUrl);
-    if (!response.ok) throw new Error("No se pudo descargar el sticker para guardarlo.");
-    const blob = await response.blob();
-    const { error: uploadError } = await supabase.storage
-      .from(MEDIA_BUCKET)
-      .upload(destinationPath, blob, { contentType: "image/webp" });
-    if (uploadError) throw uploadError;
+  const animated = isAnimatedWebp(buffer);
+  if (!isWithinStickerLimit(buffer.byteLength, animated)) {
+    throw new Error(stickerRejectionMessage(buffer.byteLength, animated));
   }
+
+  const destinationPath = newStickerPath();
+  const { error: uploadError } = await supabase.storage
+    .from(MEDIA_BUCKET)
+    .upload(destinationPath, new Blob([buffer]), { contentType: "image/webp" });
+  if (uploadError) throw uploadError;
 
   const { data, error } = await supabase
     .from("stickers")
     .insert({
       storage_path: destinationPath,
+      animated,
       created_by: agent.id,
       source_message_id: message.id,
     })

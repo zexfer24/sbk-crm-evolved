@@ -120,8 +120,38 @@ describe("MessageContextMenu — Guardar sticker", () => {
     expect(onClose).toHaveBeenCalled();
   });
 
-  it("si la mutación falla, avisa con un toast de error y deja el menú abierto", async () => {
-    saveStickerFromMessageMock.mockRejectedValue(new Error("sin permiso"));
+  // T2 ("Ponele balanza a la biblioteca", 8/9/2026): el toast de error tiene
+  // que mostrarle al asesor el texto completo del rechazo —el que nombra el
+  // tipo, el peso y el límite en KB de `stickerRejectionMessage`—, no un
+  // genérico que lo deje sin saber por qué el sticker no se guardó.
+  it("si la mutación falla con un Error, el toast muestra su mensaje completo (p. ej. el rechazo por peso) y deja el menú abierto", async () => {
+    saveStickerFromMessageMock.mockRejectedValue(
+      new Error(
+        "Este sticker es animado y pesa 951 KB, pero WhatsApp solo deja enviar stickers animados de hasta 500 KB. " +
+          "Hay que achicarlo o usar uno más liviano antes de guardarlo en la biblioteca."
+      )
+    );
+    const onClose = vi.fn();
+
+    render(
+      <MessageContextMenu position={{ x: 0, y: 0 }} message={stickerMessage()} onClose={onClose} agent={AGENT} />
+    );
+    fireEvent.click(screen.getByRole("menuitem", { name: /guardar sticker/i }));
+
+    await waitFor(() =>
+      expect(dangerToast).toHaveBeenCalledWith(
+        "Este sticker es animado y pesa 951 KB, pero WhatsApp solo deja enviar stickers animados de hasta 500 KB. " +
+          "Hay que achicarlo o usar uno más liviano antes de guardarlo en la biblioteca."
+      )
+    );
+    expect(onClose).not.toHaveBeenCalled();
+  });
+
+  it("si la mutación falla con algo que no es un Error (p. ej. un PostgrestError como objeto plano), el toast cae al genérico y deja el menú abierto", async () => {
+    saveStickerFromMessageMock.mockRejectedValue({
+      message: "new row violates row-level security policy",
+      code: "42501",
+    });
     const onClose = vi.fn();
 
     render(

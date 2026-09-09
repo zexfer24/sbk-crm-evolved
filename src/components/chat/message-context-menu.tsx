@@ -85,10 +85,13 @@ export function MessageContextMenu({ position, message, onReply, onClose, agent 
       await saveStickerFromMessage(createClient(), message, agent);
       toast.success("Sticker guardado");
       onClose();
-    } catch {
+    } catch (err) {
       // Mismo criterio que copiarImagen: se dice el fallo, no se cierra el
-      // menú como si el sticker ya estuviera en la biblioteca.
-      toast.danger("No se pudo guardar el sticker.");
+      // menú como si el sticker ya estuviera en la biblioteca. El mensaje de
+      // `saveStickerFromMessage` cuando el sticker no entra en el límite de
+      // Meta (T2, 8/9/2026) ya trae el tipo, el peso y el límite en KB —
+      // reemplazarlo por un genérico dejaría al asesor sin saber por qué.
+      toast.danger(err instanceof Error ? err.message : "No se pudo guardar el sticker.");
       setGuardandoSticker(false);
     }
   }

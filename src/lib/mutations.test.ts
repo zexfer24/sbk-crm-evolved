@@ -306,8 +306,8 @@ describe("updateProductWeight", () => {
  * estas mutaciones usan— y el fake de `stickers` reproduce
  * insert().select().single() y delete().eq(id).
  */
-function createStickerFakeSupabase(options: { copyFails?: boolean } = {}) {
-  const storageCalls: { op: "copy" | "upload" | "remove"; args: unknown[] }[] = [];
+function createStickerFakeSupabase() {
+  const storageCalls: { op: "upload" | "remove"; args: unknown[] }[] = [];
   const tableCalls: { op: "insert" | "delete"; payload?: unknown; id?: string }[] = [];
   let insertedRow: Record<string, unknown> | null = null;
 
@@ -320,7 +320,7 @@ function createStickerFakeSupabase(options: { copyFails?: boolean } = {}) {
             id: "sticker-nuevo",
             storage_path: payload.storage_path,
             name: (payload.name as string | null | undefined) ?? null,
-            animated: false,
+            animated: (payload.animated as boolean | undefined) ?? false,
             created_by: payload.created_by,
             created_at: "2026-09-09T12:00:00.000Z",
           };
@@ -341,11 +341,6 @@ function createStickerFakeSupabase(options: { copyFails?: boolean } = {}) {
     },
     storage: {
       from: (bucket: string) => ({
-        copy: async (src: string, dst: string) => {
-          storageCalls.push({ op: "copy", args: [bucket, src, dst] });
-          if (options.copyFails) return { error: new Error("copy no disponible") };
-          return { data: { path: dst }, error: null };
-        },
         upload: async (path: string, file: unknown, opts: unknown) => {
           storageCalls.push({ op: "upload", args: [bucket, path, file, opts] });
           return { error: null };
@@ -359,6 +354,35 @@ function createStickerFakeSupabase(options: { copyFails?: boolean } = {}) {
   };
 
   return { client: client as unknown as SupabaseClient, storageCalls, tableCalls };
+}
+
+/**
+ * Arma bytes de un WebP mínimo (T2, "Ponele balanza a la biblioteca",
+ * 8/9/2026): cabecera `RIFF`/tamaño/`WEBP` + chunk `VP8X` con el bit ANIM
+ * (`0x02`) prendido o apagado en el byte de flags (offset 20), rellenado
+ * hasta `totalBytes` — lo mínimo que `isAnimatedWebp` necesita para decidir,
+ * más relleno para simular el peso real del caso que el test necesita.
+ */
+function buildWebpBytes(totalBytes: number, animated: boolean): Uint8Array {
+  const bytes = new Uint8Array(Math.max(totalBytes, 21));
+  const escribirFourCC = (offset: number, cc: string) => {
+    for (let i = 0; i < 4; i++) bytes[offset + i] = cc.charCodeAt(i);
+  };
+  escribirFourCC(0, "RIFF");
+  escribirFourCC(8, "WEBP");
+  escribirFourCC(12, "VP8X");
+  bytes[20] = animated ? 0x02 : 0x00;
+  return bytes;
+}
+
+function stubFetchConArchivo(bytes: Uint8Array) {
+  vi.stubGlobal(
+    "fetch",
+    vi.fn(async () => ({
+      ok: true,
+      arrayBuffer: async () => bytes.buffer,
+    }))
+  );
 }
 
 const STICKER_AGENT: Agent = {
@@ -394,41 +418,86 @@ function stickerSourceMessage(overrides: Partial<Message> = {}): Message {
 }
 
 describe("saveStickerFromMessage — guardar el sticker de un mensaje recibido", () => {
-  it("copia el archivo a stickers/<uuid>.webp e inserta la fila con source_message_id", async () => {
+  it("descarga el sticker por la ruta propia, lo sube a stickers/<uuid>.webp e inserta la fila con source_message_id", async () => {
     const { client, storageCalls, tableCalls } = createStickerFakeSupabase();
-
-    const sticker = await saveStickerFromMessage(client, stickerSourceMessage(), STICKER_AGENT);
-
-    const copyCall = storageCalls.find((c) => c.op === "copy");
-    expect(copyCall?.args[1]).toBe("inbound/conv-1/original.webp");
-    expect(String(copyCall?.args[2])).toMatch(/^stickers\/.+\.webp$/);
-    expect(storageCalls.some((c) => c.op === "upload")).toBe(false);
-
-    expect(tableCalls[0]).toMatchObject({
-      op: "insert",
-      payload: {
-        created_by: "agent-42",
-        source_message_id: "msg-sticker-1",
-      },
-    });
-    expect(sticker.id).toBe("sticker-nuevo");
-    expect(sticker.url).toMatch(/^\/api\/media\/stickers\//);
-  });
-
-  it("si .copy no está disponible, cae al respaldo: descargar por la ruta propia y subir", async () => {
-    const { client, storageCalls } = createStickerFakeSupabase({ copyFails: true });
-    vi.stubGlobal(
-      "fetch",
-      vi.fn(async () => ({ ok: true, blob: async () => new Blob(["contenido"]) }))
-    );
+    const bytes = buildWebpBytes(60 * 1024, false);
+    stubFetchConArchivo(bytes);
 
     try {
-      await saveStickerFromMessage(client, stickerSourceMessage(), STICKER_AGENT);
+      const sticker = await saveStickerFromMessage(client, stickerSourceMessage(), STICKER_AGENT);
 
-      expect(storageCalls.some((c) => c.op === "copy")).toBe(true);
+      // No hay .copy: ahora el único camino es bajar los bytes (para
+      // pesarlos y detectar animación) y subirlos.
       const uploadCall = storageCalls.find((c) => c.op === "upload");
       expect(uploadCall).toBeDefined();
+      expect(String(uploadCall?.args[1])).toMatch(/^stickers\/.+\.webp$/);
       expect(uploadCall?.args[3]).toMatchObject({ contentType: "image/webp" });
+
+      expect(tableCalls[0]).toMatchObject({
+        op: "insert",
+        payload: {
+          created_by: "agent-42",
+          source_message_id: "msg-sticker-1",
+          animated: false,
+        },
+      });
+      expect(sticker.id).toBe("sticker-nuevo");
+      expect(sticker.url).toMatch(/^\/api\/media\/stickers\//);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("un sticker animado de 973.668 bytes (el caso real del 131053 de Meta) se rechaza sin escribir nada", async () => {
+    const { client, storageCalls, tableCalls } = createStickerFakeSupabase();
+    const bytes = buildWebpBytes(973668, true);
+    stubFetchConArchivo(bytes);
+
+    try {
+      let error: unknown;
+      try {
+        await saveStickerFromMessage(client, stickerSourceMessage(), STICKER_AGENT);
+      } catch (err) {
+        error = err;
+      }
+      expect(error).toBeInstanceOf(Error);
+      const mensaje = (error as Error).message;
+      expect(mensaje).toMatch(/animado/i);
+      expect(mensaje).toMatch(/951 KB/);
+      expect(mensaje).toMatch(/500 KB/);
+
+      expect(storageCalls).toHaveLength(0);
+      expect(tableCalls).toHaveLength(0);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("un sticker animado de 400 KB entra en el límite y se guarda con animated: true", async () => {
+    const { client, tableCalls } = createStickerFakeSupabase();
+    const bytes = buildWebpBytes(400 * 1024, true);
+    stubFetchConArchivo(bytes);
+
+    try {
+      const sticker = await saveStickerFromMessage(client, stickerSourceMessage(), STICKER_AGENT);
+
+      expect(tableCalls[0]).toMatchObject({ op: "insert", payload: { animated: true } });
+      expect(sticker.animated).toBe(true);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("un sticker estático de 60 KB se guarda con animated: false", async () => {
+    const { client, tableCalls } = createStickerFakeSupabase();
+    const bytes = buildWebpBytes(60 * 1024, false);
+    stubFetchConArchivo(bytes);
+
+    try {
+      const sticker = await saveStickerFromMessage(client, stickerSourceMessage(), STICKER_AGENT);
+
+      expect(tableCalls[0]).toMatchObject({ op: "insert", payload: { animated: false } });
+      expect(sticker.animated).toBe(false);
     } finally {
       vi.unstubAllGlobals();
     }
