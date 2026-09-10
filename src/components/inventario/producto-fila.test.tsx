@@ -123,3 +123,41 @@ describe("ProductoFila — el campo Peso", () => {
     expect(screen.queryByText("Sin peso")).not.toBeInTheDocument();
   });
 });
+
+/**
+ * T7 (10/9/2026): el pie `.inv-bs` de la columna Precio tiene que existir
+ * SIEMPRE (con o sin texto) para que Stock/Precio/Peso midan lo mismo de
+ * alto — si solo aparece en USD, ese campo queda más alto y descuadra la
+ * fila (ver `inventario-css.test.ts`, que mira `.inv-row`/`.inv-bs` en la
+ * hoja de estilos porque jsdom no calcula ese layout).
+ */
+describe("ProductoFila — el pie de la columna Precio", () => {
+  it("un producto en VES también renderiza el pie de Precio, vacío", () => {
+    const { container } = render(
+      <ProductoFila product={product({ currency: "VES", price: 900 })} bcvRate={40} />
+    );
+    const precioField = screen.getByLabelText("Precio de Carburador PZ27").closest(".inv-field");
+    const pie = precioField?.querySelector(".inv-bs");
+
+    expect(pie).not.toBeNull();
+    expect(pie).toHaveTextContent("");
+    void container;
+  });
+
+  it("un producto en USD con tasa muestra el pie de Precio en bolívares", () => {
+    render(<ProductoFila product={product({ currency: "USD", price: 25 })} bcvRate={40} />);
+    const precioField = screen.getByLabelText("Precio de Carburador PZ27").closest(".inv-field");
+    const pie = precioField?.querySelector(".inv-bs");
+
+    expect(pie).toHaveTextContent("Bs. 1000.00");
+  });
+
+  it("los campos Stock y Peso también llevan su pie, vacío", () => {
+    render(<ProductoFila product={product()} bcvRate={40} />);
+    const stockField = screen.getByLabelText("Stock de Carburador PZ27").closest(".inv-field");
+    const pesoField = screen.getByLabelText("Peso de Carburador PZ27").closest(".inv-field");
+
+    expect(stockField?.querySelector(".inv-bs")).not.toBeNull();
+    expect(pesoField?.querySelector(".inv-bs")).not.toBeNull();
+  });
+});

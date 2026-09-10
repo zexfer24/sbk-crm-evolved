@@ -14,13 +14,37 @@
   padding: 0;
 }
 
+/*
+ * T7 (10/9/2026): con `flex` + `align-items: center` la fila desalineaba sus
+ * cajas cuando alguna variaba de alto — el campo Precio en USD lleva debajo
+ * del input una línea extra `.inv-bs` ("Bs. 1234.00") que en VES no existe,
+ * así que Stock y Peso quedaban centrados contra una columna más alta que la
+ * suya y bajaban unos píxeles; con `flex-wrap: wrap` un nombre largo además
+ * mandaba las cajas a una segunda línea en algunas filas sí y otras no. El
+ * grid fija columnas y ancla todo arriba (`align-items: start`): ya no hay
+ * "más alto" contra el que centrarse, y nada se envuelve.
+ *
+ * La última columna NACIÓ `auto` y eso reabrió el mismo síntoma de otra
+ * forma (medido con `getBoundingClientRect`, mismo día): cada `<li>` es su
+ * propio grid, así que una columna `auto` toma el ancho de SU contenido —el
+ * badge de `.inv-status` cambia de "La IA lo ofrece" a "Sin stock" a "Sin
+ * stock" + "Sin peso" según la fila— y esa diferencia de ancho se la resta
+ * o se la suma a la columna `1fr` de al lado, corriendo Stock/Precio/Peso
+ * hasta ~38px entre una fila y otra. `300px` fijo —medido sobre el peor
+ * caso: "La IA lo ofrece" + "Sin peso" + "Desactivar" + los `gap` de 8px
+ * entre los tres— le da a las tres filas la MISMA columna de ancho, pase lo
+ * que pase adentro; `.inv-status` con `flex-wrap: wrap` deja que un
+ * contenido que no entre baje de línea en vez de ensanchar la columna y
+ * volver a correr todo.
+ */
 .inv-row {
-  display: flex;
-  align-items: center;
-  gap: 16px;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 100px 150px 110px 300px;
+  align-items: start;
+  column-gap: 16px;
+  row-gap: 8px;
   padding: 12px 26px;
   border-top: 1px solid var(--lm-line);
-  flex-wrap: wrap;
 }
 
 .inv-row:hover {
@@ -36,7 +60,6 @@
   display: flex;
   flex-direction: column;
   gap: 3px;
-  flex: 1 1 240px;
   min-width: 0;
 }
 
@@ -76,7 +99,7 @@
   display: flex;
   flex-direction: column;
   gap: 3px;
-  min-width: 92px;
+  min-width: 0;
 }
 
 .inv-input-wrap {
@@ -103,18 +126,14 @@
 }
 
 .inv-input-wrap input {
-  width: 62px;
+  width: 100%;
+  min-width: 0;
   border: none;
   outline: none;
   background: transparent;
   color: var(--lm-ink);
   font-size: 13px;
   text-align: right;
-}
-
-/* El peso lleva 3 decimales ("9999.999"): el ancho de stock/precio le queda corto. */
-.inv-field:has(input[aria-label^="Peso de"]) .inv-input-wrap input {
-  width: 78px;
 }
 
 .inv-input-wrap input:disabled {
@@ -126,16 +145,25 @@
   flex-shrink: 0;
 }
 
+/*
+ * `min-height` existe aunque el pie esté vacío (Stock, Peso y Precio en VES):
+ * así los tres campos miden lo mismo y no hay columna "más alta" que corra
+ * a las demás hacia abajo (ver el comentario de `.inv-row`, T7 10/9/2026).
+ */
 .inv-bs {
+  display: block;
+  min-height: 14px;
   font-size: 11px;
   color: var(--lm-muted);
 }
 
 .inv-status {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
+  justify-content: flex-end;
   gap: 8px;
-  margin-left: auto;
+  justify-self: end;
 }
 
 /* --- Catálogo de motos ---------------------------------------------------- */
@@ -187,8 +215,17 @@
 /* --- Pantallas estrechas -------------------------------------------------- */
 
 @media (max-width: 760px) {
+  .inv-row {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+
+  .inv-identity,
   .inv-status {
-    margin-left: 0;
+    grid-column: 1 / -1;
+  }
+
+  .inv-status {
+    justify-self: stretch;
     width: 100%;
   }
 
