@@ -31,7 +31,7 @@ describe("AgentHomePanel", () => {
     render(
       <AgentHomePanel
         currentAgent={currentAgent}
-        counts={{ pending: 4, pendingStale: 3, mine: 2, unread: 0, unassigned: 7, escalated: 5 }}
+        counts={{ pending: 4, pendingStale: 3, mine: 2, unread: 0, mineUnread: 0, unassigned: 7, escalated: 5 }}
         agentSettings={agentSettings}
       />
     );
@@ -61,7 +61,7 @@ describe("AgentHomePanel", () => {
     const { rerender, container } = render(
       <AgentHomePanel
         currentAgent={currentAgent}
-        counts={{ pending: 0, pendingStale: 0, mine: 0, unread: 0, unassigned: 0, escalated: 0 }}
+        counts={{ pending: 0, pendingStale: 0, mine: 0, unread: 0, mineUnread: 0, unassigned: 0, escalated: 0 }}
         agentSettings={agentSettings}
       />
     );
@@ -71,7 +71,7 @@ describe("AgentHomePanel", () => {
     rerender(
       <AgentHomePanel
         currentAgent={currentAgent}
-        counts={{ pending: 0, pendingStale: 0, mine: 0, unread: 0, unassigned: 1, escalated: 0 }}
+        counts={{ pending: 0, pendingStale: 0, mine: 0, unread: 0, mineUnread: 0, unassigned: 1, escalated: 0 }}
         agentSettings={agentSettings}
       />
     );
@@ -90,7 +90,7 @@ describe("AgentHomePanel", () => {
     const { container } = render(
       <AgentHomePanel
         currentAgent={currentAgent}
-        counts={{ pending: 0, pendingStale: 0, mine: 0, unread: 0, unassigned: 0, escalated: 9 }}
+        counts={{ pending: 0, pendingStale: 0, mine: 0, unread: 0, mineUnread: 0, unassigned: 0, escalated: 9 }}
         agentSettings={agentSettings}
       />
     );
@@ -102,7 +102,7 @@ describe("AgentHomePanel", () => {
     render(
       <AgentHomePanel
         currentAgent={currentAgent}
-        counts={{ pending: 0, pendingStale: 0, mine: 0, unread: 0, unassigned: 0, escalated: 0 }}
+        counts={{ pending: 0, pendingStale: 0, mine: 0, unread: 0, mineUnread: 0, unassigned: 0, escalated: 0 }}
         agentSettings={agentSettings}
       />
     );

@@ -1325,7 +1325,7 @@ describe("InboxSidebar — conteo de las píldoras 'Pendientes', 'Sin dueño', '
         currentAgent={JEFA}
         allTags={ALL_TAGS}
         bcvRate={null}
-        counts={{ pending: 5, pendingStale: 2, mine: 3, unread: 42, unassigned: 0, escalated: 7 }}
+        counts={{ pending: 5, pendingStale: 2, mine: 3, unread: 42, mineUnread: 0, unassigned: 0, escalated: 7 }}
       />
     );
     await waitFor(() => expect(fetchConversations).toHaveBeenCalled());

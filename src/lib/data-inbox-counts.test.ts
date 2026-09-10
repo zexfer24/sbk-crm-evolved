@@ -363,17 +363,18 @@ describe("fetchInboxCounts", () => {
    * mensajes sin leer (conv-2) sigue contando — es la misma decisión que
    * `unreadOnly` de `fetchConversations` (ver data-conversations.test.ts).
    *
-   * Son SEIS consultas desde el 5/9/2026 (T1.5), no cinco: la nueva es
-   * "Escaladas" (consultas[4], ver el test de abajo); "Sin dueño" sigue
-   * última porque no es un conteo —pide filas con la bitácora embebida— y
-   * porque es la única que toca otra tabla.
+   * Son SIETE consultas desde el 10/9/2026 (T3, "Los números del día"), no
+   * seis: "Tuyas sin leer" (consultas[4], ver el test de abajo) se suma justo
+   * al lado de "unread"; "Escaladas" pasa de consultas[4] a consultas[5]; "Sin
+   * dueño" sigue última porque no es un conteo —pide filas con la bitácora
+   * embebida— y porque es la única que toca otra tabla.
    */
   it('"unread" pregunta por el OR de unread_count/manually_unread, sin condición de estado', async () => {
     const { client, consultas } = createFakeSupabase(filas());
 
     await fetchInboxCounts(client, "viewer-1", AHORA);
 
-    expect(consultas).toHaveLength(6);
+    expect(consultas).toHaveLength(7);
     expect(consultas[3].filtros).toEqual([
       {
         op: "or",
@@ -382,6 +383,27 @@ describe("fetchInboxCounts", () => {
       },
     ]);
     expect(consultas[3].opciones).toEqual({ count: "exact", head: true });
+  });
+
+  /**
+   * "Tuyas sin leer" (T3, "Los números del día", 10/9/2026): mismo OR que
+   * "unread" arriba, más `assigned_agent_id` por `.eq()` — la tarjeta "Tuyas
+   * sin leer" del panel de inicio.
+   */
+  it('"mineUnread" pregunta por assigned_agent_id y el mismo OR que "unread"', async () => {
+    const { client, consultas } = createFakeSupabase(filas());
+
+    await fetchInboxCounts(client, "viewer-1", AHORA);
+
+    expect(consultas[4].filtros).toEqual([
+      { op: "eq", column: "assigned_agent_id", value: "viewer-1" },
+      {
+        op: "or",
+        column: "",
+        value: "unread_count.gt.0,manually_unread.is.true",
+      },
+    ]);
+    expect(consultas[4].opciones).toEqual({ count: "exact", head: true });
   });
 
   /**
@@ -395,7 +417,7 @@ describe("fetchInboxCounts", () => {
 
     await fetchInboxCounts(client, "viewer-1", AHORA);
 
-    expect(consultas[4].filtros).toEqual([
+    expect(consultas[5].filtros).toEqual([
       { op: "eq", column: "journey_stage", value: "assigned" },
       { op: "eq", column: "ai_enabled", value: false },
       { op: "neq", column: "status", value: "closed" },
@@ -405,10 +427,10 @@ describe("fetchInboxCounts", () => {
         value: "last_reply_sender.neq.agent,last_reply_sender.is.null,awaiting_reply.is.true",
       },
     ]);
-    expect(consultas[4].opciones).toEqual({ count: "exact", head: true });
+    expect(consultas[5].opciones).toEqual({ count: "exact", head: true });
   });
 
-  it("devuelve los seis números, cada uno contra su propio subconjunto", async () => {
+  it("devuelve los siete números, cada uno contra su propio subconjunto", async () => {
     const { client } = createFakeSupabase(filas());
 
     const result = await fetchInboxCounts(client, "viewer-1", AHORA);
@@ -418,6 +440,8 @@ describe("fetchInboxCounts", () => {
     // mine: conv-3 y conv-4 (assigned_agent_id === "viewer-1").
     // unread: conv-2 (cerrada, pero con unread_count > 0 — a propósito, no
     // exige status abierto) y conv-4 (manually_unread).
+    // mineUnread: solo conv-4 (mine Y unread a la vez) — conv-3 es mine pero
+    // leída, conv-2 no leída pero no es del viewer.
     // escalated: conv-5 (escalada sin asesor, la IA se despidió con la
     // cortesía) — NO conv-6 (con asesor que ya respondió de verdad y el
     // cliente no volvió).
@@ -426,6 +450,7 @@ describe("fetchInboxCounts", () => {
       pendingStale: 2,
       mine: 2,
       unread: 2,
+      mineUnread: 1,
       escalated: 1,
       unassigned: 0,
     });
@@ -434,7 +459,9 @@ describe("fetchInboxCounts", () => {
 
 /**
  * T1 del plan "Seis frentes del buzón" (8/9/2026): "habló hoy" en los seis
- * contadores. `since` se combina en el MISMO `.or()` que cada conteo ya
+ * contadores originales (el séptimo, `mineUnread`, se suma el 10/9/2026 con
+ * T3, "Los números del día", y hereda el mismo mecanismo). `since` se
+ * combina en el MISMO `.or()` que cada conteo ya
  * arma (`orExpression`, `src/lib/ai/pgrst.ts`) — nunca como un segundo
  * `.or()` encadenado (ver el comentario de `since` en
  * `FetchConversationsOptions`, data.ts). Los strings esperados se calculan
@@ -518,6 +545,24 @@ describe('fetchInboxCounts — since ("habló hoy")', () => {
     });
   });
 
+  it('"mineUnread" cruza su OR propio (el mismo de "unread") con el de since en una sola disyunción', async () => {
+    const { client, consultas } = createFakeSupabase([fila("conv-0")]);
+
+    await fetchInboxCounts(client, "viewer-1", AHORA, { since: SINCE });
+
+    const propio = ["unread_count.gt.0", "manually_unread.is.true"];
+    expect(consultas[4].filtros).toContainEqual({
+      op: "eq",
+      column: "assigned_agent_id",
+      value: "viewer-1",
+    });
+    expect(consultas[4].filtros).toContainEqual({
+      op: "or",
+      column: "",
+      value: orExpression([propio, sinceGroup]),
+    });
+  });
+
   it('"escalated" cruza su OR propio con el de since en una sola disyunción', async () => {
     const { client, consultas } = createFakeSupabase([fila("conv-0")]);
 
@@ -528,7 +573,7 @@ describe('fetchInboxCounts — since ("habló hoy")', () => {
       "last_reply_sender.is.null",
       "awaiting_reply.is.true",
     ];
-    expect(consultas[4].filtros).toContainEqual({
+    expect(consultas[5].filtros).toContainEqual({
       op: "or",
       column: "",
       value: orExpression([propio, sinceGroup]),
@@ -540,7 +585,7 @@ describe('fetchInboxCounts — since ("habló hoy")', () => {
 
     await fetchInboxCounts(client, "viewer-1", AHORA, { since: SINCE });
 
-    expect(consultas[5].filtros).toContainEqual({
+    expect(consultas[6].filtros).toContainEqual({
       op: "or",
       column: "",
       value: orExpression([sinceGroup]),

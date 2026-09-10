@@ -292,7 +292,15 @@ const currentAgent: Agent = {
 const allTags: Tag[] = [];
 const agentSettings = { aiGloballyEnabled: true, dailySpendCapUsd: null, spentTodayUsd: 0 };
 const initialQuickReplies: QuickReply[] = [];
-const inboxCounts = { pending: 0, pendingStale: 0, mine: 0, unread: 0, unassigned: 0, escalated: 0 };
+const inboxCounts = {
+  pending: 0,
+  pendingStale: 0,
+  mine: 0,
+  unread: 0,
+  mineUnread: 0,
+  unassigned: 0,
+  escalated: 0,
+};
 
 beforeEach(() => {
   fake = createFakeSupabase();
