@@ -297,6 +297,7 @@ Lo cerraron tres migraciones del 30/8/2026:
 - `20260830030000_agent_metrics_guarda.sql` — `agent_metrics` verifica
   `is_agent()` desde adentro, como segunda línea de defensa detrás del
   revoke, por si un `grant` futuro la vuelve a abrir.
+- `20260910010000_resumen_del_dia_del_asesor.sql` — nace `agent_day_summary`  (resumen del día del asesor que llama, con los dos revokes y el grant a  `authenticated`) y `agent_metrics` pasa a atribuir las ventas a quien  cerró (`deal_closed_by`). No crea columnas: `assigned_at` existe desde  20260822080000.
 
 **No verifiques función por función.** Una sola consulta recorre todas las
 `security definer` de `public` y muestra qué puede ejecutar cada rol:
@@ -330,7 +331,7 @@ Qué se espera ver:
   `ai_turn_lock_renew`, `ai_turn_lock_release`, `claim_agent_turn`,
   `enqueue_agent_turn`, `finish_agent_turn` y `rate_limit_allow`: el grupo
   que solo llama `service_role` vía `createAdminClient()`.
-- **`authenticated` en `true`** para `agent_metrics`, `agent_can_run` y
+- **`authenticated` en `true`** para `agent_metrics`, `agent_day_summary`, `agent_can_run` y
   `agent_spend_today`: el navegador sí las llama, siempre con sesión de
   asesor. Que una ruta corra en el servidor no basta para service_role —
   `src/app/api/agent/backlog/route.ts:50` arma su cliente con
