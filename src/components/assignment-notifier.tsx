@@ -1,37 +1,39 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
-import { UserCheck } from "lucide-react";
+import { toast } from "@heroui/react";
 import { createClient } from "@/lib/supabase/client";
 import { fetchCurrentAgent } from "@/lib/data";
 import { nextRealtimeAction, type RealtimeStatus } from "@/lib/realtime-status";
 import { shouldShowAssignmentNotice, type AssignmentHandoffRow } from "@/lib/assignment-notice";
-import "@/components/assignment-notifier.css";
 
 // ---------------------------------------------------------------------------
-// Aviso de 6 s cuando la IA me acaba de asignar una conversación (T6).
+// Aviso cuando la IA me acaba de asignar una conversación (T6, 8/9/2026).
+//
+// 10/9/2026: pasó de un toast casero (`.an-toast`, `position: fixed; right;
+// bottom`) al `toast()` de HeroUI — el operador no lo veía: medido en el
+// navegador, se dibujaba a los 200 ms del INSERT pero abajo a la derecha,
+// 6 s, sin el nombre del contacto (llegaba después por una consulta aparte).
+// El pedido fue calcarlo del toast de "sticker guardado": arriba a la
+// derecha, con nombre desde el primer render y más tiempo en pantalla. Acá
+// ya está montado `Toast.Provider placement="top end"`
+// (`src/app/layout.tsx:57`), así que este componente deja de dibujar nada
+// propio y solo empuja al queue global de HeroUI — de ahí que ya no exista
+// `assignment-notifier.css` ni la región `aria-live` a mano: el
+// `Toast.Provider` trae la suya.
 //
 // La regla de negocio (¿esta fila de `conversation_handoffs` es un aviso
-// para MÍ?) y el dedupe entre instancias ya viven en `assignment-notice.ts`
-// (T5, módulo puro); este componente solo conecta esa regla al canal de
-// realtime, resuelve quién soy y quién es el cliente, y dibuja el toast.
-//
-// Se monta en `AppRail`, que vive en las seis secciones — y también dentro
-// de `section-skeleton.tsx`, así que durante una navegación puede haber DOS
-// instancias vivas a la vez. El dedupe por id de handoff que sostiene eso es
-// el `Set` de módulo de `assignment-notice.ts`: acá no se agrega ningún
-// estado propio que lo pueda romper (nada de resetear el Set al montar, y
-// `shouldShowAssignmentNotice` se llama UNA sola vez por fila recibida).
+// para MÍ?) y el dedupe entre instancias siguen viviendo en
+// `assignment-notice.ts` (T5, módulo puro) y no se tocan acá. El dedupe
+// sigue siendo IMPRESCINDIBLE con HeroUI igual que con el toast casero: el
+// `Set` de MÓDULO (no de instancia) es lo único que evita un `toast()`
+// doble cuando `AppRail` está montado dos veces a la vez durante una
+// navegación (vive también en `section-skeleton.tsx`) — cambiar de toast no
+// cambió ese problema, solo quién lo pinta.
 // ---------------------------------------------------------------------------
 
-const NOTICE_DURATION_MS = 6000;
-
-interface VisibleNotice {
-  conversationId: string;
-  /** `null` cuando la consulta del nombre del contacto falló o no volvió fila: el aviso se ve igual, con un texto neutro. */
-  contactName: string | null;
-}
+const NOTICE_TIMEOUT_MS = 10000;
 
 /**
  * Quién soy, resuelto una vez por instancia.
@@ -108,15 +110,19 @@ export function AssignmentNotifier() {
   const router = useRouter();
   const myAgentIdRef = useRef<string | null>(null);
   const myAgentId = useMyAgentId();
-  const [notice, setNotice] = useState<VisibleNotice | null>(null);
-  const hideTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // `router` de `useRouter()` es estable entre renders en la práctica, pero
+  // el patrón del archivo (ver `myAgentIdRef`) es dejar SIEMPRE un ref al
+  // día en vez de confiar en eso a ojo: el efecto del canal se abre una
+  // sola vez (`[]`) y no puede depender de un valor que cambie de render.
+  const routerRef = useRef(router);
 
-  // El handler del canal se registra una sola vez (no depende de re-render);
-  // un ref evita cerrar sobre un `myAgentId` viejo sin tener que reabrir el
-  // canal cada vez que se resuelve.
   useEffect(() => {
     myAgentIdRef.current = myAgentId;
   }, [myAgentId]);
+
+  useEffect(() => {
+    routerRef.current = router;
+  }, [router]);
 
   useEffect(() => {
     const supabase = createClient();
@@ -149,20 +155,23 @@ export function AssignmentNotifier() {
           const conversationId = raw.conversation_id ? String(raw.conversation_id) : null;
           if (!conversationId) return;
 
-          if (hideTimeoutRef.current) clearTimeout(hideTimeoutRef.current);
-
-          // Se muestra de inmediato con el texto neutro, y el nombre entra
-          // después si llega a tiempo: el cliente no espera a una consulta
-          // extra para enterarse de que le asignaron algo.
-          setNotice({ conversationId, contactName: null });
-          fetchContactName(supabase, conversationId).then((contactName) => {
-            if (contactName) setNotice((current) => (current?.conversationId === conversationId ? { ...current, contactName } : current));
+          // A diferencia del toast casero (que se mostraba de inmediato con
+          // texto neutro y el nombre entraba después), acá se espera el
+          // nombre ANTES de llamar a `toast()`: es una consulta de
+          // milisegundos y HeroUI no tiene forma de "actualizar la
+          // descripción" de un toast ya en pantalla sin parpadeo — pedirle
+          // el dato primero es más simple que mutar un toast vivo.
+          void fetchContactName(supabase, conversationId).then((contactName) => {
+            toast("Te asignaron una conversación", {
+              description: contactName ? `La IA te pasó a ${contactName}` : "La IA te pasó una conversación",
+              timeout: NOTICE_TIMEOUT_MS,
+              variant: "accent",
+              actionProps: {
+                children: "Abrir",
+                onPress: () => routerRef.current.push(`/inbox?conversation=${conversationId}`),
+              },
+            });
           });
-
-          hideTimeoutRef.current = setTimeout(() => {
-            hideTimeoutRef.current = null;
-            setNotice(null);
-          }, NOTICE_DURATION_MS);
         }
       );
 
@@ -184,41 +193,13 @@ export function AssignmentNotifier() {
     });
 
     return () => {
-      if (hideTimeoutRef.current) clearTimeout(hideTimeoutRef.current);
       supabase.removeChannel(channel);
     };
   }, []);
 
-  const goToConversation = useCallback(() => {
-    if (!notice) return;
-    if (hideTimeoutRef.current) clearTimeout(hideTimeoutRef.current);
-    const conversationId = notice.conversationId;
-    setNotice(null);
-    router.push(`/inbox?conversation=${conversationId}`);
-  }, [notice, router]);
-
-  // La región `aria-live` tiene que estar SIEMPRE montada, aunque no haya
-  // aviso: un lector de pantalla anuncia MUTACIONES dentro de una región
-  // viva que ya existía en el DOM, no un nodo que aparece de cero con
-  // `aria-live` puesto y el texto ya adentro (NVDA/JAWS/VoiceOver
-  // típicamente se quedan callados en ese caso). Por eso NO hay un
-  // `if (!notice) return null` acá arriba: el contenedor vive siempre y lo
-  // único que cambia es su contenido.
-  return (
-    <div className="an-live" aria-live="polite" aria-atomic="true">
-      {notice && (
-        <button type="button" className="an-toast" onClick={goToConversation}>
-          <span className="an-toast-icon">
-            <UserCheck size={16} />
-          </span>
-          <span className="an-toast-text">
-            <span className="an-toast-title">Te asignaron una conversación</span>
-            <span className="an-toast-detail">
-              {notice.contactName ? `La IA te la pasó: ${notice.contactName}` : "La IA te la pasó."}
-            </span>
-          </span>
-        </button>
-      )}
-    </div>
-  );
+  // Ya no hay nada propio que dibujar: el `Toast.Provider` de HeroUI
+  // (`src/app/layout.tsx:57`) es quien pinta el toast y su propia región
+  // `aria-live`. Este componente es puramente un conector de efectos —igual
+  // que antes, pero sin dejar un nodo en el DOM.
+  return null;
 }

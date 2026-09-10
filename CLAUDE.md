@@ -471,13 +471,21 @@ dejar rastro es lo que hacía desaparecer leads.
   del contenido y TODO el CRM cayó a una fila implícita de 72px de ancho,
   recortada por el `overflow: hidden`. **`pointer-events: none` NO saca del
   flujo** (solo deja pasar los clics): lo que hacía falta era `position: fixed`
-  en `.an-live`, y ahí sigue con su test de resguardo. Antes de montar algo
-  nuevo dentro de un componente compartido, mirar si el padre reparte columnas:
-  el hijo de más no se ve en ningún test. **Los tests de este repo NO pueden
-  atrapar esto** — jsdom no calcula layout, así que ninguna aserción sobre el
-  DOM renderizado detecta un grid desarmado; el resguardo tiene que mirar la
-  HOJA de estilos (`assignment-notifier.test.tsx`, "la hoja de estilos del
-  aviso") o ser una verificación visual.
+  en `.an-live`. Antes de montar algo nuevo dentro de un componente
+  compartido, mirar si el padre reparte columnas: el hijo de más no se ve en
+  ningún test. **Los tests de este repo NO pueden atrapar esto** — jsdom no
+  calcula layout, así que ninguna aserción sobre el DOM renderizado detecta
+  un grid desarmado. (10/9/2026, "El aviso de asignación sale arriba a la
+  derecha": `AssignmentNotifier` dejó de montar `.an-live`/`.an-toast` —pasó
+  a usar el `toast()` global de HeroUI, con el `Toast.Provider` ya montado
+  en `layout.tsx`— así que `assignment-notifier.css` se borró entero y el
+  componente devuelve `null`; el fragmento de `AppRail` ya no tiene un
+  segundo hijo que robarle la columna al grid. El resguardo de la HOJA de
+  estilos se fue con el CSS: quedó reemplazado por
+  `app-rail.test.tsx` ("entrega un solo hijo directo"), que verifica
+  `container.childElementCount === 1` — más general que mirar una regla CSS
+  puntual, porque atrapa CUALQUIER hijo de más que algo montado dentro de
+  `AppRail` deje en el DOM, no solo este caso.)
 - **Estar en una migración con RLS no significa que una tabla publique nada
   por Realtime — y suscribirse a un canal muerto no falla, calla para
   siempre.** `conversation_handoffs` existe desde el 30/8/2026
@@ -578,6 +586,30 @@ dejar rastro es lo que hacía desaparecer leads.
   Queda el número en la nota del roster, enlazado a `/inbox`; la cola vive
   paginada en la píldora "Sin dueño". La bandeja todavía no acepta un
   parámetro de URL para abrir en una píldora.
+- **`next dev` puede servir un chunk con una versión VIEJA de un módulo, sin
+  avisar de nada** (10/9/2026, verificando el aviso de asignación en local).
+  `data.ts` viaja en DOS chunks del cliente —el de `src/lib` y el de
+  `app-rail`, porque `AssignmentNotifier` importa `fetchCurrentAgent`— y uno
+  de los dos traía `fetchInboxCounts` SIN `mineUnread` mientras el otro sí:
+  el panel de inicio pintaba "Tuyas sin leer" vacío después de cualquier
+  refresco en vivo, porque el objeto de contadores llegaba con seis claves
+  en vez de siete. El fuente estaba bien y la suite en verde. Borrar
+  `.next/dev` no alcanza: hay que borrar **también `.next/cache` y
+  `.next/turbopack`**, reiniciar el server (confirmar pid nuevo con
+  `netstat -ano | grep :3000`) y recargar con **Ctrl+Shift+R** — sin la
+  recarga dura, el navegador reusa el chunk viejo y Turbopack tira
+  `module factory is not available`. Diagnóstico: bajar cada chunk desde la
+  consola (`fetch(url, {cache:'reload'})`) y contar el símbolo que falta,
+  antes de tocar una línea de código. Producción no lo sufre: CI y Dokploy
+  compilan desde cero.
+- **Tras arrancar Docker Desktop, el primer minuto la base rechaza los
+  tokens** (10/9/2026): el reloj de la VM arranca atrasado y PostgREST
+  responde `PGRST303 "JWT issued at future"`. Se ve como
+  `fetchBusinessHours` cayendo al horario por defecto y como TODOS los
+  canales de Realtime cerrándose ~40 s después de entrar. No es un bug del
+  CRM: esperar un minuto tras `docker ps` y recargar. (Los siete
+  `realtime_canal_caido` que aparecen al cargar una página son el doble
+  montaje de StrictMode en desarrollo, tampoco son una caída.)
 
 ---
 
