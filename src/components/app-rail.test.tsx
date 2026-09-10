@@ -28,6 +28,13 @@ vi.mock("@/lib/supabase/client", () => ({
   }),
 }));
 
+// `AssignmentNotifier` (T6, 10/9/2026) llama a `toast()` de HeroUI cuando le
+// llega un aviso de asignación por el canal de arriba; estas pruebas no
+// disparan ningún INSERT, así que nunca se invoca, pero el import real de
+// `@heroui/react` no hace falta acá — mismo patrón que
+// `assignment-notifier.test.tsx`.
+vi.mock("@heroui/react", () => ({ toast: vi.fn() }));
+
 const SECCIONES = [
   ["Recorrido", "/"],
   ["Bandeja", "/inbox"],
@@ -70,6 +77,28 @@ describe("AppRail", () => {
 
     const { container: dash } = render(<AppRail active="ventas" variant="dash" />);
     expect(dash.querySelector(".dash-rail")).toBeTruthy();
+  });
+
+  /**
+   * Resguardo de layout, no de comportamiento (10/9/2026, reemplaza al test
+   * "la hoja de estilos del aviso" de `assignment-notifier.test.tsx`).
+   *
+   * `AppRail` devuelve un fragmento con el `<nav>` del rail MÁS
+   * `<AssignmentNotifier />`; un fragmento no crea nodo DOM, así que
+   * CUALQUIER hijo que `AssignmentNotifier` deje montado sube como hijo
+   * DIRECTO del contenedor de la pantalla. `.crm` (crm.css) y `.dash-frame`
+   * (dashboard.css) son grids de DOS columnas (`72px minmax(0, 1fr)`): un
+   * segundo hijo ahí le roba la columna del contenido y desarma el CRM
+   * entero — pasó en producción el 9/9/2026 con `.an-live`, en las seis
+   * secciones a la vez. Ahora que `AssignmentNotifier` devuelve `null` (usa
+   * el `Toast.Provider` global de HeroUI en vez de montar contenedor
+   * propio) el resguardo es más simple: verificar que `AppRail` nunca
+   * entregue más de un hijo directo, sin importar qué monte por dentro.
+   */
+  it("entrega un solo hijo directo (el <nav>): un hijo de más desarma el grid de dos columnas de .crm/.dash-frame", () => {
+    const { container } = render(<AppRail active="bandeja" />);
+    expect(container.childElementCount).toBe(1);
+    expect(container.firstElementChild?.tagName).toBe("NAV");
   });
 });
 

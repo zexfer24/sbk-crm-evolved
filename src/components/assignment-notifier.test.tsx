@@ -1,7 +1,6 @@
 /** @vitest-environment jsdom */
 import { describe, expect, it, vi, beforeEach } from "vitest";
-import { render, screen, act } from "@testing-library/react";
-import userEvent from "@testing-library/user-event";
+import { render, act } from "@testing-library/react";
 import { AssignmentNotifier } from "@/components/assignment-notifier";
 import { resetAssignmentNoticeDedupe } from "@/lib/assignment-notice";
 
@@ -105,6 +104,7 @@ function createFakeSupabase() {
 
 let fake: ReturnType<typeof createFakeSupabase>;
 let pushMock: ReturnType<typeof vi.fn>;
+let toastMock: ReturnType<typeof vi.fn<(...args: unknown[]) => void>>;
 
 vi.mock("@/lib/supabase/client", () => ({
   createClient: () => fake.supabase,
@@ -112,6 +112,15 @@ vi.mock("@/lib/supabase/client", () => ({
 
 vi.mock("next/navigation", () => ({
   useRouter: () => ({ push: pushMock }),
+}));
+
+// Mismo patrón que `producto-fila.test.tsx`/`business-hours-panel.test.tsx`:
+// mockear solo la función que este componente usa (`toast` como callable),
+// nada del resto del módulo — acá no hace falta `.success`/`.danger`/etc
+// porque `assignment-notifier.tsx` es el único código de este árbol de
+// render que toca `@heroui/react`.
+vi.mock("@heroui/react", () => ({
+  toast: (...args: unknown[]) => toastMock(...args),
 }));
 
 /** Fila de traspaso `escalada` para "agente-1", como la escribe `escalateConversation`. */
@@ -128,10 +137,8 @@ function escaladaHandoff(overrides: Record<string, unknown> = {}) {
 
 /**
  * Deja correr la cadena de promesas de `fetchCurrentAgent`/`fetchContactName`
- * (session → fila de `agents`/`conversations` → `setState`) dentro de `act`,
- * sin depender de temporizadores: `vi.useFakeTimers()` (el test de los 6 s)
- * no toca la cola de microtareas, así que esto funciona igual con o sin
- * temporizadores falsos.
+ * (session → fila de `agents`/`conversations` → `toast()`) dentro de `act`,
+ * sin depender de temporizadores.
  */
 async function flush(ticks = 8) {
   await act(async () => {
@@ -144,11 +151,12 @@ async function flush(ticks = 8) {
 beforeEach(() => {
   fake = createFakeSupabase();
   pushMock = vi.fn();
+  toastMock = vi.fn();
   resetAssignmentNoticeDedupe();
 });
 
 describe("AssignmentNotifier", () => {
-  it("un traspaso 'escalada' para mí muestra el aviso con el nombre del contacto", async () => {
+  it("un traspaso 'escalada' para mí llama a toast() con el nombre del contacto", async () => {
     render(<AssignmentNotifier />);
     await flush();
 
@@ -157,49 +165,46 @@ describe("AssignmentNotifier", () => {
     });
     await flush();
 
-    expect(screen.getByText("Te asignaron una conversación")).toBeTruthy();
-    expect(screen.getByText("La IA te la pasó: María Pérez")).toBeTruthy();
+    expect(toastMock).toHaveBeenCalledTimes(1);
+    expect(toastMock).toHaveBeenCalledWith(
+      "Te asignaron una conversación",
+      expect.objectContaining({
+        description: "La IA te pasó a María Pérez",
+        timeout: 10000,
+      })
+    );
   });
 
-  it("a los 6.000 ms el aviso desaparece", async () => {
-    vi.useFakeTimers();
-    try {
-      render(<AssignmentNotifier />);
-      await flush();
-
-      act(() => {
-        fake.trigger("conversation_handoffs", "INSERT", escaladaHandoff());
-      });
-      await flush();
-
-      expect(screen.getByText("Te asignaron una conversación")).toBeTruthy();
-
-      act(() => {
-        vi.advanceTimersByTime(6000);
-      });
-
-      expect(screen.queryByText("Te asignaron una conversación")).toBeNull();
-    } finally {
-      vi.useRealTimers();
-    }
-  });
-
-  it("el clic navega directo a la conversación asignada", async () => {
-    const user = userEvent.setup({ delay: null, pointerEventsCheck: 0 });
+  it("si la consulta del nombre del contacto falla, igual llama a toast() con la descripción neutra", async () => {
+    fake.setContactFails();
     render(<AssignmentNotifier />);
     await flush();
 
     act(() => {
-      fake.trigger("conversation_handoffs", "INSERT", escaladaHandoff({ conversation_id: "conv-42" }));
+      fake.trigger("conversation_handoffs", "INSERT", escaladaHandoff());
     });
     await flush();
 
-    await user.click(screen.getByRole("button"));
-
-    expect(pushMock).toHaveBeenCalledWith("/inbox?conversation=conv-42");
+    expect(toastMock).toHaveBeenCalledTimes(1);
+    expect(toastMock).toHaveBeenCalledWith(
+      "Te asignaron una conversación",
+      expect.objectContaining({ description: "La IA te pasó una conversación" })
+    );
   });
 
-  it("un traspaso 'escalada' para otro asesor no muestra nada", async () => {
+  it("un traspaso 'asignada' (mismo dueño de siempre) no llama a toast()", async () => {
+    render(<AssignmentNotifier />);
+    await flush();
+
+    act(() => {
+      fake.trigger("conversation_handoffs", "INSERT", escaladaHandoff({ reason: "asignada" }));
+    });
+    await flush();
+
+    expect(toastMock).not.toHaveBeenCalled();
+  });
+
+  it("un traspaso 'escalada' para OTRO asesor no llama a toast()", async () => {
     render(<AssignmentNotifier />);
     await flush();
 
@@ -208,10 +213,10 @@ describe("AssignmentNotifier", () => {
     });
     await flush();
 
-    expect(screen.queryByText("Te asignaron una conversación")).toBeNull();
+    expect(toastMock).not.toHaveBeenCalled();
   });
 
-  it("dos instancias montadas a la vez (el cruce de section-skeleton) muestran un solo aviso", async () => {
+  it("dos instancias montadas a la vez (el cruce de section-skeleton) llaman a toast() una sola vez", async () => {
     render(
       <>
         <AssignmentNotifier />
@@ -225,51 +230,30 @@ describe("AssignmentNotifier", () => {
     });
     await flush();
 
-    expect(screen.getAllByText("Te asignaron una conversación")).toHaveLength(1);
+    expect(toastMock).toHaveBeenCalledTimes(1);
   });
 
-  it("si la consulta del nombre del contacto falla, el aviso igual aparece con el texto neutro", async () => {
-    fake.setContactFails();
+  it("el 'Abrir' del toast navega a la conversación asignada", async () => {
     render(<AssignmentNotifier />);
     await flush();
 
     act(() => {
-      fake.trigger("conversation_handoffs", "INSERT", escaladaHandoff());
+      fake.trigger("conversation_handoffs", "INSERT", escaladaHandoff({ conversation_id: "conv-42" }));
     });
     await flush();
 
-    expect(screen.getByText("Te asignaron una conversación")).toBeTruthy();
-    expect(screen.getByText("La IA te la pasó.")).toBeTruthy();
+    expect(toastMock).toHaveBeenCalledTimes(1);
+    const options = toastMock.mock.calls[0][1] as { actionProps: { children: string; onPress: () => void } };
+    expect(options.actionProps.children).toBe("Abrir");
+
+    options.actionProps.onPress();
+    expect(pushMock).toHaveBeenCalledWith("/inbox?conversation=conv-42");
   });
-});
 
-/**
- * Resguardo de layout, no de comportamiento (9/9/2026).
- *
- * `AppRail` devuelve un fragmento con DOS hijos —el `<nav>` del rail y el
- * contenedor `aria-live` de este componente— y un fragmento no crea nodo
- * DOM: los dos suben como hijos DIRECTOS del contenedor de la pantalla.
- * `.crm` y `.dash-frame` son grids de DOS columnas (`72px minmax(0, 1fr)`),
- * así que un `.an-live` en flujo se queda la columna del contenido y empuja
- * TODO el CRM a una fila implícita de 72px de ancho. Pasó en producción: la
- * interfaz entera quedó regada, en las seis secciones a la vez.
- *
- * Los tests de este archivo no lo vieron porque jsdom no calcula layout —
- * ninguna aserción sobre el DOM renderizado puede detectarlo—, así que el
- * resguardo mira la hoja: `.an-live` tiene que estar FUERA DEL FLUJO.
- */
-describe("la hoja de estilos del aviso", () => {
-  it("saca el contenedor aria-live del flujo, para no robarle una columna al grid", async () => {
-    const { readFile } = await import("node:fs/promises");
-    const { join } = await import("node:path");
+  it("no deja ningún nodo propio en el DOM: el Toast.Provider de HeroUI (layout.tsx) es quien pinta", async () => {
+    const { container } = render(<AssignmentNotifier />);
+    await flush();
 
-    const css = await readFile(join(process.cwd(), "src/components/assignment-notifier.css"), "utf8");
-    const regla = /\.an-live\s*\{([^}]*)\}/.exec(css);
-
-    expect(regla, "no se encontró la regla `.an-live` en assignment-notifier.css").not.toBeNull();
-    expect(
-      regla![1],
-      "`.an-live` volvió al flujo: sin `position: fixed` (o `absolute`) se come una columna del grid y desarma el CRM entero"
-    ).toMatch(/position:\s*(fixed|absolute)\s*;/);
+    expect(container.childElementCount).toBe(0);
   });
 });

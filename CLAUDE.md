@@ -471,13 +471,21 @@ dejar rastro es lo que hacía desaparecer leads.
   del contenido y TODO el CRM cayó a una fila implícita de 72px de ancho,
   recortada por el `overflow: hidden`. **`pointer-events: none` NO saca del
   flujo** (solo deja pasar los clics): lo que hacía falta era `position: fixed`
-  en `.an-live`, y ahí sigue con su test de resguardo. Antes de montar algo
-  nuevo dentro de un componente compartido, mirar si el padre reparte columnas:
-  el hijo de más no se ve en ningún test. **Los tests de este repo NO pueden
-  atrapar esto** — jsdom no calcula layout, así que ninguna aserción sobre el
-  DOM renderizado detecta un grid desarmado; el resguardo tiene que mirar la
-  HOJA de estilos (`assignment-notifier.test.tsx`, "la hoja de estilos del
-  aviso") o ser una verificación visual.
+  en `.an-live`. Antes de montar algo nuevo dentro de un componente
+  compartido, mirar si el padre reparte columnas: el hijo de más no se ve en
+  ningún test. **Los tests de este repo NO pueden atrapar esto** — jsdom no
+  calcula layout, así que ninguna aserción sobre el DOM renderizado detecta
+  un grid desarmado. (10/9/2026, "El aviso de asignación sale arriba a la
+  derecha": `AssignmentNotifier` dejó de montar `.an-live`/`.an-toast` —pasó
+  a usar el `toast()` global de HeroUI, con el `Toast.Provider` ya montado
+  en `layout.tsx`— así que `assignment-notifier.css` se borró entero y el
+  componente devuelve `null`; el fragmento de `AppRail` ya no tiene un
+  segundo hijo que robarle la columna al grid. El resguardo de la HOJA de
+  estilos se fue con el CSS: quedó reemplazado por
+  `app-rail.test.tsx` ("entrega un solo hijo directo"), que verifica
+  `container.childElementCount === 1` — más general que mirar una regla CSS
+  puntual, porque atrapa CUALQUIER hijo de más que algo montado dentro de
+  `AppRail` deje en el DOM, no solo este caso.)
 - **Estar en una migración con RLS no significa que una tabla publique nada
   por Realtime — y suscribirse a un canal muerto no falla, calla para
   siempre.** `conversation_handoffs` existe desde el 30/8/2026
