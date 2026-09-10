@@ -521,6 +521,63 @@ dejar rastro es lo que hacía desaparecer leads.
   nivel de módulo (tope 200, FIFO) que las dos instancias comparten. Mismo
   motivo por el que `notifiedHandoffIds` nunca se resetea al montar el
   componente.
+- **El Recorrido muestra SOLO el día en curso; "Total de leads" es su único
+  número acumulado** (corrida "Los números del día", 10/9/2026).
+  `buildJourney`/`stageOf`/`isStalled`/`waitingMinutes` (`dashboard.ts`)
+  reciben `dayStart` —el MISMO string de `useInboxDay("today")` que usa la
+  bandeja, aplicado en memoria porque la lista de Reclamos de la misma
+  página necesita conversaciones de cualquier fecha—; sin `dayStart` no
+  filtran nada (llamador viejo). "Primer contacto" es el lead CREADO HOY
+  con un solo mensaje del cliente (`lastCustomerMessageAt <=
+  welcomeSentAt`), espere o no, y se atasca a los 15 min: hasta el 10/9
+  exigía que la IA ya hubiera respondido y nunca se atascaba. El orden
+  dentro de cada etapa es "más nuevo arriba" (revierte "lo urgente arriba"
+  del 5/9); la urgencia la conservan el punto rojo y el contador "N
+  atascados". `matchesDay` está replicada en privado en `dashboard.ts`
+  porque `inbox-filters.ts` ya importa de `dashboard.ts` (ciclo).
+- **`dayKey` (`format.ts`) agrupa en la zona del NAVEGADOR; el día de
+  negocio se corta con `crmDayKey`/`todayKey` (`sales-day.ts`)**
+  (10/9/2026). Un asesor con el reloj de Windows en otra zona vería una
+  venta de las 23:30 cambiar de día. Ventas corta en memoria sobre lo que
+  ya trae `fetchSales`; cuenta y suma SOLO `won` en USD (`closeSale`
+  siempre crea la orden en USD; `null` se trata como USD), las devueltas
+  se cuentan aparte y nunca se mezclan monedas.
+- **Una fila de campos en flex con `align-items: center` se desalinea apenas
+  un vecino tenga una línea más.** Inventario (10/9/2026): el campo Precio
+  llevaba debajo, SOLO en productos en USD, la línea "Bs. …" (`.inv-bs`);
+  ese campo quedaba más alto y Stock y Peso se centraban contra él, unos
+  píxeles más abajo — en productos en bolívares no pasaba, por eso
+  "algunas" filas se veían torcidas. `.inv-row` es ahora una grilla de
+  columnas FIJAS (la de estado también: con `auto`, cada `<li>` repartía
+  distinto y las cajas se corrían 38 px entre filas) y el pie de bolívares
+  se reserva siempre. El resguardo (`inventario-css.test.ts`) mira la HOJA,
+  no el DOM; la alineación se midió con `getBoundingClientRect` en Brave.
+- **`conversations.assigned_at` existe desde la migración 20260822080000**
+  (la sella `handle_conversation_assigned`, BEFORE, y la limpia al
+  desasignar) **y `database.types.ts` NO la tenía**: el plan del 10/9/2026
+  la creyó nueva y la primera versión de la migración la volvía a crear
+  (habría fallado con "column already exists"). Los tipos generados son
+  copia a mano y pueden mentir por omisión: antes de "agregar" una columna,
+  `grep` en `supabase/migrations/`. "Asignadas hoy" del panel de inicio es
+  `null` solo para lo asignado antes del 22/8/2026.
+- **Las ventas se atribuyen a quien CERRÓ (`deal_closed_by`), no al asesor
+  asignado, en TODO el CRM desde 20260910010000**: la lista de Ventas ya lo
+  hacía, `agent_day_summary` (panel de inicio) nace así y `agent_metrics`
+  (Control IA) se realineó en esa migración (decisión 8, 10/9/2026). Un
+  supervisor que cierra la venta de un chat asignado a otro se la lleva él.
+- **El panel de inicio de la bandeja habla del ASESOR y de HOY** (10/9/2026):
+  `agent_day_summary(p_from, p_to)` recibe el rango desde el cliente
+  (`dayRangeFrom(useInboxDay("today"))`, aparte del `dayScope` de la
+  bandeja: "Ver todo" no cambia el día) y decide el asesor por `auth.uid()`.
+  `null` del RPC pinta "—", nunca un cero que parezca verdad. La lista "La
+  IA te pasó hoy" y su refresco en vivo dependen de que
+  `conversation_handoffs` esté publicada en Realtime (migración
+  20260909050000): sin ella el canal calla y solo se ve al recargar.
+- **Control IA ya no lista los chats sin asesor** (10/9/2026): la tarjeta
+  "Sin asignar" mostraba TODOS y con cientos de leads desbordaba la página.
+  Queda el número en la nota del roster, enlazado a `/inbox`; la cola vive
+  paginada en la píldora "Sin dueño". La bandeja todavía no acepta un
+  parámetro de URL para abrir en una píldora.
 
 ---
 
