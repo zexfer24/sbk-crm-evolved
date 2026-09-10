@@ -2,7 +2,7 @@
 
 import { useMemo } from "react";
 import Link from "next/link";
-import { Inbox, MailWarning, MessageSquare } from "lucide-react";
+import { MailWarning, MessageSquare } from "lucide-react";
 import type { Agent, AgentMetrics, BoardConversation } from "@/lib/types";
 import { contactName, initials } from "@/lib/dashboard";
 import { AgentMetricsRow } from "@/components/agent-control/agent-metrics-row";
@@ -40,20 +40,13 @@ export function AgentsRosterPanel({
     [agents]
   );
 
-  // La cola que nadie tiene: chats abiertos sin asesor. Es la pregunta previa
-  // a repartir carga — qué está en manos de la IA o esperando que alguien lo
-  // tome.
-  const unassigned = useMemo(
-    () =>
-      conversations
-        .filter((c) => !c.assignedAgent && c.status !== "closed")
-        .sort(
-          (a, b) =>
-            new Date(b.lastMessageAt ?? b.createdAt).getTime() - new Date(a.lastMessageAt ?? a.createdAt).getTime()
-        ),
-    [conversations]
-  );
-  const unassignedUnread = unassigned.filter((c) => c.unreadCount > 0);
+  // Solo el número sobrevive (para la nota del encabezado): la tarjeta que
+  // listaba uno por uno los chats sin asesor se retiró el 10/9/2026 ("Los
+  // números del día") — con cientos de leads abiertos en producción ocupaba
+  // la página entera y tapaba la navegación. Esa cola ya vive paginada en la
+  // píldora "Sin dueño" de la bandeja; no hace falta repetirla acá sin
+  // paginar.
+  const unassigned = useMemo(() => conversations.filter((c) => !c.assignedAgent && c.status !== "closed"), [conversations]);
 
   return (
     <section className="dash-panel">
@@ -61,59 +54,19 @@ export function AgentsRosterPanel({
         <h2 className="dash-panel-title">Agentes en la operación</h2>
         <span className="dash-panel-spacer" />
         <span className="dash-panel-note">
-          {agents.length} en total · {activeCount} en el reparto · {unassigned.length} sin asignar
+          {agents.length} en total · {activeCount} en el reparto ·{" "}
+          <Link href="/inbox" title="Se ven en la píldora Sin dueño de la bandeja">
+            {unassigned.length} sin asignar
+          </Link>
         </span>
       </div>
 
-      {agents.length === 0 && unassigned.length === 0 ? (
+      {agents.length === 0 ? (
         <div className="dash-empty">
           <p className="dash-empty-title">Todavía no hay agentes registrados</p>
         </div>
       ) : (
         <div className="ac-roster">
-          <div className="ac-agent-card" data-unassigned="true">
-            <div className="ac-agent-card-head">
-              <span className="ac-live-avatar" aria-hidden="true">
-                <Inbox size={16} />
-              </span>
-              <div className="ac-agent-card-who">
-                <span className="ac-agent-card-name">Sin asignar</span>
-                <span className="ac-agent-card-role">En manos de la IA o esperando asesor</span>
-              </div>
-            </div>
-
-            <div className="ac-agent-card-stats">
-              <span className="ac-badge" data-tone="link">
-                <MessageSquare size={11} />
-                {unassigned.length} abiertos
-              </span>
-              <span className="ac-badge" data-tone={unassignedUnread.length > 0 ? "hot" : "muted"}>
-                <MailWarning size={11} />
-                {unassignedUnread.length} sin responder
-              </span>
-            </div>
-
-            {unassigned.length === 0 ? (
-              <p className="ac-live-empty">No hay chats sin asignar en este momento.</p>
-            ) : (
-              // Todos, no los primeros cinco como en las tarjetas de asesor:
-              // esto es una cola de trabajo, y una cola con elementos
-              // escondidos no sirve para repartir.
-              <div className="ac-agent-card-chats">
-                {unassigned.map((c) => (
-                  <Link
-                    key={c.id}
-                    href={`/inbox?conversation=${c.id}`}
-                    className="ac-agent-card-chat"
-                    data-unread={c.unreadCount > 0}
-                  >
-                    {contactName(c)}
-                  </Link>
-                ))}
-              </div>
-            )}
-          </div>
-
           {ordered.map((agent) => {
             const assigned = conversations.filter(
               (c) => c.assignedAgent?.id === agent.id && c.status !== "closed"
