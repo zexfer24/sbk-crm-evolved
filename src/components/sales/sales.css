@@ -269,3 +269,125 @@
     width: 100%;
   }
 }
+
+/* ==========================================================================
+   Los números del día (T6, corrida "Los números del día", 10/9/2026)
+   Tarjetas .cli-stat/.cli-stats (importadas de clientes.css) + selector de
+   día + histórico. `.sales-toolbar` es un grid con áreas nombradas -- no
+   flex -- justamente para poder reordenar el selector DEBAJO de las
+   tarjetas en angosto sin tocar el orden del DOM (title/picker/stats en el
+   marcado, para que el picker quede cerca del título al leer con lector de
+   pantalla).
+   ========================================================================== */
+
+.sales-toolbar {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  grid-template-areas: "title picker" "stats stats";
+  align-items: start;
+  gap: 14px 24px;
+  padding: 6px 4px 0;
+}
+
+.sales-toolbar .dash-header {
+  grid-area: title;
+  padding: 0;
+}
+
+.sales-toolbar .cli-stats {
+  grid-area: stats;
+  margin: 0;
+}
+
+.sales-day-picker {
+  grid-area: picker;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  align-self: end;
+}
+
+.sales-day-label {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--lm-muted);
+  margin-right: 2px;
+}
+
+.sales-day-input {
+  padding: 6px 10px;
+  border: 1px solid var(--lm-line);
+  border-radius: 999px;
+  background: var(--lm-surface);
+  color: var(--lm-ink);
+  font-size: 12.5px;
+  font-family: inherit;
+}
+
+.sales-history {
+  display: flex;
+  flex-direction: column;
+}
+
+.sales-history-row {
+  display: grid;
+  grid-template-columns: auto 1fr auto auto;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 10px 26px;
+  border: 0;
+  border-top: 1px solid var(--lm-line);
+  background: none;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  transition: background 150ms ease;
+}
+
+.sales-history-row:hover {
+  background: var(--lm-sunken);
+}
+
+.sales-history-row[aria-current="true"] {
+  background: var(--lm-sunken);
+  font-weight: 600;
+}
+
+.sales-history-date {
+  min-width: 54px;
+  font-size: 12.5px;
+  color: var(--lm-muted);
+}
+
+.sales-history-count {
+  font-size: 12.5px;
+  color: var(--lm-ink-soft);
+}
+
+.sales-history-amount {
+  font-size: 13px;
+}
+
+.sales-history-returned {
+  font-size: 11.5px;
+  color: var(--lm-hot-ink);
+  white-space: nowrap;
+}
+
+@media (max-width: 760px) {
+  .sales-toolbar {
+    grid-template-columns: 1fr;
+    grid-template-areas: "title" "stats" "picker";
+  }
+
+  .sales-day-picker {
+    align-self: start;
+    flex-wrap: wrap;
+  }
+
+  .sales-history-row {
+    padding: 10px 16px;
+  }
+}

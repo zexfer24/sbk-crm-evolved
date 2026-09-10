@@ -1,7 +1,9 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
-import { CheckCheck, Eye, Receipt, RotateCcw, ShieldCheck, Trash2 } from "lucide-react";
+import { format } from "date-fns";
+import { es } from "date-fns/locale";
+import { CheckCheck, ChevronLeft, ChevronRight, Eye, Receipt, RotateCcw, ShieldCheck, Trash2 } from "lucide-react";
 import type { Agent, Invoice, Sale } from "@/lib/types";
 import { PAYMENT_METHOD_LABELS } from "@/lib/types";
 import { createClient } from "@/lib/supabase/client";
@@ -10,10 +12,12 @@ import { fetchInvoicesForSale } from "@/lib/invoices-data";
 import { useLiveSales } from "@/lib/use-live-sales";
 import { contactName, initials } from "@/lib/dashboard";
 import { formatFullDateTime } from "@/lib/format";
+import { formatDayKey, salesDayHistory, salesOnDay, shiftDayKey, summarizeSalesDay, todayKey } from "@/lib/sales-day";
 import { SaleDetailModal } from "@/components/sales/sale-detail-modal";
 import { AppRail, AppTopNav } from "@/components/app-rail";
 import "@/components/dashboard/dashboard.css";
 import "@/components/agent-control/agent-control.css";
+import "@/components/clientes/clientes.css";
 import "@/components/crm.css";
 import "@/components/sales/sales.css";
 
@@ -24,6 +28,32 @@ interface SalesViewProps {
   bcvRate: number | null;
 }
 
+// "es-VE" para que "$ 1.240,00" se lea a la venezolana (coma decimal), igual
+// que los precios de inventario y facturas.
+const AMOUNT_FORMATTER = new Intl.NumberFormat("es-VE", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+
+function formatUsd(amount: number): string {
+  return `$ ${AMOUNT_FORMATTER.format(amount)}`;
+}
+
+function formatVes(amount: number): string {
+  return `Bs. ${AMOUNT_FORMATTER.format(amount)}`;
+}
+
+function ventasLabel(count: number): string {
+  return `${count} ${count === 1 ? "venta" : "ventas"}`;
+}
+
+function devueltasLabel(count: number): string {
+  return `${count} ${count === 1 ? "devuelta" : "devueltas"}`;
+}
+
+/** "10 sep" para una fila del histórico: mediodía UTC, mismo truco que `formatDayKey`. */
+function formatShortDay(key: string): string {
+  const [year, month, day] = key.split("-").map(Number);
+  return format(new Date(Date.UTC(year, month - 1, day, 12)), "d MMM", { locale: es });
+}
+
 export function SalesView({ currentAgent, initialSales, bcvRate }: SalesViewProps) {
   const supabase = useMemo(() => createClient(), []);
 
@@ -31,6 +61,14 @@ export function SalesView({ currentAgent, initialSales, bcvRate }: SalesViewProp
   // completo de conversaciones para filtrarlo acá. El hook refetchea cuando
   // un evento toca una venta y descarta el tráfico de bandeja.
   const { sales: liveSales, refreshSales: refresh } = useLiveSales(supabase, initialSales);
+
+  // Día elegido para las tarjetas y la lista (T6, "Los números del día",
+  // 10/9/2026): arranca en hoy (zona del equipo) y se navega con las
+  // flechas, el input de fecha o un clic en el histórico. El corte es en
+  // memoria sobre `liveSales` — nunca se vuelve a pedir a Supabase.
+  const [dayKey, setDayKey] = useState<string>(() => todayKey());
+  const today = todayKey();
+  const isToday = dayKey === today;
 
   const [detailId, setDetailId] = useState<string | null>(null);
   const [busyId, setBusyId] = useState<string | null>(null);
@@ -76,6 +114,10 @@ export function SalesView({ currentAgent, initialSales, bcvRate }: SalesViewProp
       ),
     [liveSales]
   );
+
+  const daySales = useMemo(() => salesOnDay(sales, dayKey), [sales, dayKey]);
+  const daySummary = useMemo(() => summarizeSalesDay(sales, dayKey), [sales, dayKey]);
+  const dayHistory = useMemo(() => salesDayHistory(sales, 30), [sales]);
 
   const detailSale = sales.find((s) => s.id === detailId) ?? null;
 
@@ -171,28 +213,97 @@ export function SalesView({ currentAgent, initialSales, bcvRate }: SalesViewProp
               </div>
             </header>
 
-            <div className="dash-header">
-              <div>
-                <h1 className="dash-title dash-display">Ventas</h1>
-                <p className="dash-subtitle">El flujo de ventas que se van cerrando a lo largo de la jornada.</p>
+            <div className="sales-toolbar">
+              <div className="dash-header">
+                <div>
+                  <h1 className="dash-title dash-display">Ventas</h1>
+                  <p className="dash-subtitle">El flujo de ventas que se van cerrando a lo largo de la jornada.</p>
+                </div>
+              </div>
+
+              <div className="cli-stats">
+                <div className="cli-stat">
+                  <span className="lm-eyebrow">Ventas del día</span>
+                  <span className="lm-num cli-stat-value">{daySummary.count}</span>
+                  <span className="cli-stat-note">de todo el equipo</span>
+                </div>
+                <div className="cli-stat">
+                  <span className="lm-eyebrow">Vendido el día</span>
+                  <span className="lm-num cli-stat-value">{formatUsd(daySummary.amountUsd)}</span>
+                  {daySummary.amountVes > 0 && (
+                    <span className="cli-stat-note">más {formatVes(daySummary.amountVes)} en bolívares</span>
+                  )}
+                </div>
+                <div className="cli-stat">
+                  <span className="lm-eyebrow">Devueltas</span>
+                  <span className="lm-num cli-stat-value">{daySummary.returned}</span>
+                </div>
+              </div>
+
+              <div className="sales-day-picker">
+                <label className="sales-day-label" htmlFor="ventas-dia">
+                  Día
+                </label>
+                <button
+                  type="button"
+                  className="crm-pill"
+                  onClick={() => setDayKey((current) => shiftDayKey(current, -1))}
+                  aria-label="Día anterior"
+                >
+                  <ChevronLeft size={14} />
+                </button>
+                <input
+                  type="date"
+                  id="ventas-dia"
+                  aria-label="Elegir día"
+                  className="sales-day-input"
+                  value={dayKey}
+                  max={today}
+                  onChange={(event) => {
+                    if (event.target.value) setDayKey(event.target.value);
+                  }}
+                />
+                <button
+                  type="button"
+                  className="crm-pill"
+                  onClick={() => setDayKey((current) => shiftDayKey(current, 1))}
+                  disabled={dayKey >= today}
+                  aria-label="Día siguiente"
+                >
+                  <ChevronRight size={14} />
+                </button>
+                <button
+                  type="button"
+                  className="crm-pill"
+                  onClick={() => setDayKey(today)}
+                  disabled={isToday}
+                >
+                  Hoy
+                </button>
               </div>
             </div>
 
             <section className="dash-panel">
               <div className="dash-panel-head">
-                <h2 className="dash-panel-title">Ventas cerradas</h2>
+                <h2 className="dash-panel-title">{isToday ? "Ventas de hoy" : `Ventas del ${formatDayKey(dayKey)}`}</h2>
                 <span className="dash-panel-spacer" />
-                <span className="dash-panel-note">{sales.length} en total</span>
+                <span className="dash-panel-note">{daySales.length} en el día</span>
               </div>
 
-              {sales.length === 0 ? (
+              {daySales.length === 0 ? (
                 <div className="dash-empty">
-                  <p className="dash-empty-title">Todavía no hay ventas cerradas</p>
-                  <p className="dash-empty-hint">Aparecerán aquí en cuanto se cierre la primera venta del día.</p>
+                  <p className="dash-empty-title">
+                    {isToday ? "Todavía no hay ventas cerradas" : "Ningún cierre ese día"}
+                  </p>
+                  <p className="dash-empty-hint">
+                    {isToday
+                      ? "Aparecerán aquí en cuanto se cierre la primera venta del día."
+                      : "Elegí otro día con las flechas o desde el histórico."}
+                  </p>
                 </div>
               ) : (
                 <div className="sales-list">
-                  {sales.map((sale) => {
+                  {daySales.map((sale) => {
                     const name = contactName(sale);
                     const isReturned = sale.dealStatus === "returned";
                     const isBusy = busyId === sale.id;
@@ -280,6 +391,37 @@ export function SalesView({ currentAgent, initialSales, bcvRate }: SalesViewProp
                       </div>
                     );
                   })}
+                </div>
+              )}
+            </section>
+
+            <section className="dash-panel">
+              <div className="dash-panel-head">
+                <h2 className="dash-panel-title">Histórico · últimos 30 días con ventas</h2>
+              </div>
+
+              {dayHistory.length === 0 ? (
+                <div className="dash-empty">
+                  <p className="dash-empty-title">Todavía no hay días con ventas</p>
+                </div>
+              ) : (
+                <div className="sales-history">
+                  {dayHistory.map((entry) => (
+                    <button
+                      key={entry.key}
+                      type="button"
+                      className="sales-history-row"
+                      aria-current={entry.key === dayKey ? "true" : undefined}
+                      onClick={() => setDayKey(entry.key)}
+                    >
+                      <span className="lm-num sales-history-date">{formatShortDay(entry.key)}</span>
+                      <span className="sales-history-count">{ventasLabel(entry.count)}</span>
+                      <span className="lm-num sales-history-amount">{formatUsd(entry.amountUsd)}</span>
+                      {entry.returned > 0 && (
+                        <span className="sales-history-returned">· {devueltasLabel(entry.returned)}</span>
+                      )}
+                    </button>
+                  ))}
                 </div>
               )}
             </section>
