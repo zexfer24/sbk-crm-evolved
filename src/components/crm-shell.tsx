@@ -54,8 +54,15 @@ import {
 } from "@/lib/outbox";
 import { useInboxPager } from "@/lib/use-inbox-pager";
 import { useLiveConversations } from "@/lib/use-live-conversations";
-import { REALTIME_DEBOUNCE_MS } from "@/lib/use-live-refresh";
+import { REALTIME_DEBOUNCE_MS, useLiveRefresh } from "@/lib/use-live-refresh";
 import { nextRealtimeAction, type RealtimeStatus } from "@/lib/realtime-status";
+import {
+  dayRangeFrom,
+  fetchAgentDaySummary,
+  fetchAiAssignmentsToday,
+  type AgentDaySummary,
+  type AiAssignment,
+} from "@/lib/agent-day-data";
 import { InboxSidebar } from "@/components/inbox/inbox-sidebar";
 import { AgentHomePanel } from "@/components/inbox/agent-home-panel";
 import type { BcvRateSummary } from "@/components/inbox/bcv-rate-chip";
@@ -120,6 +127,22 @@ interface CrmShellProps {
    * responde cuando está apagada para todo el CRM.
    */
   initialAgentSettings: AgentSettings;
+  /**
+   * El resumen del día del asesor logueado (T4, "Los números del día",
+   * 10/9/2026), ya resuelto en el servidor: alimenta las tarjetas "Tu día"
+   * de `AgentHomePanel`. `null` cuando el RPC falló o la siembra del
+   * servidor no llegó a pedirlo — nunca se inventa un cero (ver el
+   * comentario de `AgentHomePanel`). Opcional con default `null`, mismo
+   * criterio que el resto de las props de siembra nuevas: las pruebas que no
+   * conocen esta tarea no tienen que enterarse.
+   */
+  initialAgentDay?: AgentDaySummary | null;
+  /**
+   * Lo último que la IA le pasó al asesor HOY (T4, 10/9/2026), ya resuelto
+   * en el servidor, para la lista "La IA te pasó hoy" de `AgentHomePanel`.
+   * Opcional con default `[]`, mismo criterio que `initialAgentDay`.
+   */
+  initialAiAssignments?: AiAssignment[];
 }
 
 /**
@@ -174,6 +197,8 @@ export function CrmShell({
   bcvRate,
   initialConversationId,
   initialAgentSettings,
+  initialAgentDay = null,
+  initialAiAssignments = [],
 }: CrmShellProps) {
   const supabase = useMemo(() => createClient(), []);
 
@@ -237,6 +262,46 @@ export function CrmShell({
   const dayStart = useInboxDay(dayScope);
 
   /**
+   * El corte de "Tu día" (T4, "Los números del día", 10/9/2026): SIEMPRE
+   * hoy, sin importar el interruptor "Ver todo" de la bandeja — el resumen
+   * del día del asesor no es una vista de la bandeja, es su día de verdad, y
+   * "Ver todo" no debería vaciarlo. Por eso es un `useInboxDay("today")`
+   * aparte de `dayStart` (arriba, que sí seguía a `dayScope`) y no una
+   * reutilización: las dos fuentes coinciden casi siempre (el default de
+   * `dayScope` YA es "today"), pero divergen justo cuando el asesor prende
+   * "Ver todo", que es el caso que este panel tiene que ignorar.
+   */
+  const agentDayStart = useInboxDay("today");
+
+  const [agentDay, setAgentDay] = useState<AgentDaySummary | null>(initialAgentDay);
+  const [aiAssignments, setAiAssignments] = useState<AiAssignment[]>(initialAiAssignments);
+
+  /**
+   * Vuelve a pedir el resumen del día y los últimos traspasos de la IA. Se
+   * llama (a) de rebote desde `fetchInboxHead`/`refreshInboxCounts` —ya que
+   * de todos modos consultan la base por otro motivo—, (b) cuando rueda la
+   * medianoche de Caracas (efecto más abajo) y (c) desde el canal
+   * `agent-day-handoffs`. En error conserva lo que ya había: el próximo
+   * pulso o la próxima mutación reintenta, y el panel no se queda pintando
+   * "—" cuando lo que falló fue el refresco, no la primera carga.
+   */
+  const refreshAgentDay = useCallback(async () => {
+    // "today" nunca da null (ver `useInboxDay`); la guarda es solo para TS.
+    if (!agentDayStart) return;
+    try {
+      const range = dayRangeFrom(agentDayStart);
+      const [summary, assignments] = await Promise.all([
+        fetchAgentDaySummary(supabase, range),
+        fetchAiAssignmentsToday(supabase, currentAgent.id, agentDayStart),
+      ]);
+      setAgentDay(summary);
+      setAiAssignments(assignments);
+    } catch {
+      // Se queda con el resumen anterior; el próximo pulso lo reintenta.
+    }
+  }, [supabase, currentAgent.id, agentDayStart]);
+
+  /**
    * Sube cada vez que `fetchInboxHead` trae una cabecera fresca de la base
    * (disparado por realtime, por la pasada de fondo, o por un refresco
    * manual tras una mutación fallida). Es el pulso que `InboxSidebar` usa
@@ -273,9 +338,13 @@ export function CrmShell({
       ]);
       setInboxCounts(counts);
       setLivePulse((p) => p + 1);
+      // De rebote (T4, 10/9/2026): el viaje a la base ya está hecho por otro
+      // motivo, y sin bloquear a este `Promise.all` — el panel de inicio no
+      // tiene que atrasar la bandeja.
+      void refreshAgentDay();
       return mergeById(head, current);
     },
-    [supabase, currentAgent.id, dayStart]
+    [supabase, currentAgent.id, dayStart, refreshAgentDay]
   );
 
   const fetchInboxRow = useCallback(
@@ -301,7 +370,10 @@ export function CrmShell({
       // Los contadores se quedan con el valor anterior; el próximo evento en
       // vivo o la próxima mutación reintenta.
     }
-  }, [supabase, currentAgent.id, dayStart]);
+    // De rebote, igual que en `fetchInboxHead` (T4, 10/9/2026): sin bloquear
+    // esta función por un panel que no es lo que ella refresca.
+    void refreshAgentDay();
+  }, [supabase, currentAgent.id, dayStart, refreshAgentDay]);
 
   /**
    * "Sin dueño" en vivo (T1.6): un canal PROPIO y angosto, no el genérico de
@@ -361,6 +433,66 @@ export function CrmShell({
       supabase.removeChannel(channel);
     };
   }, [supabase]);
+
+  /**
+   * Arranca el panel en cero solo cuando rueda la medianoche de Caracas (T4,
+   * 10/9/2026): `agentDayStart` cambia de valor (dos veces por día, ver
+   * `useInboxDay`) y este efecto vuelve a pedir el resumen. Salta su primera
+   * pasada con el mismo patrón que `didSkipInitialDayFetchRef` más abajo: al
+   * montar, `initialAgentDay`/`initialAiAssignments` YA vienen resueltos por
+   * el servidor con el corte de HOY — pedirlos de nuevo ahí sería una
+   * consulta idéntica de balde.
+   */
+  const didSkipInitialAgentDayFetchRef = useRef(false);
+
+  useEffect(() => {
+    if (!didSkipInitialAgentDayFetchRef.current) {
+      didSkipInitialAgentDayFetchRef.current = true;
+      return;
+    }
+    void refreshAgentDay();
+  }, [refreshAgentDay]);
+
+  /**
+   * "La IA te pasó hoy" en vivo (T4, 10/9/2026): un canal PROPIO, filtrado
+   * en el servidor por `to_kind = 'human'` — no puede filtrar además por
+   * `to_id` porque ese valor depende de quién soy, no algo que se pueda fijar
+   * en la suscripción (mismo motivo que documenta `assignment-notifier.tsx`
+   * para su propio canal). El chequeo de `to_id === currentAgent.id` queda
+   * del lado del cliente, adentro del handler.
+   *
+   * `useLiveRefresh` agrupa ráfagas (varios traspasos seguidos del
+   * reconciliador o de un lote sin asesores) igual que hace
+   * `dashboard-view.tsx` con su propio canal angosto — mismo patrón, no uno
+   * nuevo. `realtimeStatusHandler` (arriba en este archivo) resincroniza si
+   * el canal se cae y reconecta.
+   */
+  const requestAgentDayRefresh = useLiveRefresh(refreshAgentDay);
+
+  useEffect(() => {
+    const channel = supabase
+      .channel("agent-day-handoffs")
+      .on(
+        "postgres_changes",
+        {
+          event: "INSERT",
+          schema: "public",
+          table: "conversation_handoffs",
+          filter: "to_kind=eq.human",
+        },
+        (payload) => {
+          const raw = payload.new as Record<string, unknown>;
+          if (raw.to_id === currentAgent.id) {
+            requestAgentDayRefresh();
+          }
+        }
+      )
+      .subscribe(realtimeStatusHandler("agent-day-handoffs", requestAgentDayRefresh));
+
+    return () => {
+      supabase.removeChannel(channel);
+    };
+  }, [supabase, currentAgent.id, requestAgentDayRefresh]);
 
   // La lista viva: aplica en memoria lo que el evento ya trae, agrupa los
   // refetch inevitables, y no trabaja contra una pestaña que nadie mira.
@@ -1158,6 +1290,8 @@ export function CrmShell({
               currentAgent={currentAgent}
               counts={inboxCounts}
               agentSettings={agentSettings}
+              agentDay={agentDay}
+              aiAssignments={aiAssignments}
             />
           )}
         </section>
