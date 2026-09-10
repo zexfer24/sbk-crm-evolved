@@ -1421,14 +1421,38 @@
 /* Cuatro tarjetas desde el 30/8/2026 ("Sin dueño", el KPI de la reforma
    "ningún lead invisible"). En 2x2 y no en una fila de cuatro: dentro de los
    400 px de ancho del panel, cuatro columnas dejaban los números en ~90 px y
-   las etiquetas partidas en dos líneas. */
+   las etiquetas partidas en dos líneas.
+
+   T4 ("Los números del día", 10/9/2026): el panel deja de tener una sola
+   grilla — ahora cada bloque (`.crm-agent-block`) trae la suya, "Tu día" con
+   CUATRO columnas (`data-cols="4"`) y "Tus chats" con dos (el default de
+   abajo, repetido en `data-cols="2"` por claridad). `max-width`/`margin-top`
+   se mudaron a `.crm-agent-block`, que ahora es quien reserva el ancho del
+   panel y el espacio entre bloques. */
 .crm-agent-stats {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 10px;
   width: 100%;
-  max-width: 400px;
-  margin-top: 24px;
+}
+
+.crm-agent-stats[data-cols="2"] {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+/* Cuatro columnas en los mismos 400 px de "Tu día" dejan el número en ~85 px
+   de ancho: sin el tamaño reducido de acá abajo, "Respondidas hoy" partía en
+   tres líneas (verificación visual, 10/9/2026). */
+.crm-agent-stats[data-cols="4"] {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+
+.crm-agent-stats[data-cols="4"] .crm-agent-stat-value {
+  font-size: 20px;
+}
+
+.crm-agent-stats[data-cols="4"] .lm-eyebrow {
+  font-size: 10.5px;
 }
 
 .crm-agent-stat {
@@ -1454,6 +1478,73 @@
 .crm-agent-stat[data-alerta="true"] {
   background: rgba(231, 154, 36, 0.14);
   color: var(--lm-wait-ink);
+}
+
+/* Un bloque del panel de inicio: título (`.lm-eyebrow`) + su grilla o lista,
+   separados 8px entre sí y 20px del bloque anterior (T4, 10/9/2026). */
+.crm-agent-block {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  width: 100%;
+  max-width: 400px;
+  margin-top: 20px;
+}
+
+/* "La IA te pasó hoy" vacía: mismo tono apagado que el resto de los estados
+   vacíos del CRM (`.crm-context-empty`, más abajo), no un párrafo negro que
+   compita con las tarjetas. */
+.crm-agent-empty {
+  margin: 0;
+  color: var(--lm-muted);
+  font-size: 12.5px;
+}
+
+.crm-agent-handoffs {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.crm-agent-handoffs a {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 8px 10px;
+  border-radius: 10px;
+  color: inherit;
+  text-decoration: none;
+  font-size: 13px;
+}
+
+.crm-agent-handoffs a:hover {
+  background: var(--lm-sunken);
+}
+
+.crm-agent-handoffs a .lm-num {
+  color: var(--lm-muted);
+  font-size: 12px;
+}
+
+/* La línea de equipo (T4, 10/9/2026): lo que antes eran cinco tarjetas baja
+   a una sola línea compacta — el centro del panel pasa a ser el día del
+   asesor, no los números del equipo — pero "Sin dueño" sigue siendo el KPI
+   de la reforma "ningún lead invisible" y tiene que seguir a la vista. */
+.crm-agent-team {
+  margin: 14px 0 0;
+  width: 100%;
+  max-width: 400px;
+  color: var(--lm-muted);
+  font-size: 12.5px;
+}
+
+.crm-agent-team [data-alerta="true"] {
+  color: var(--lm-wait-ink);
+  font-weight: 600;
 }
 
 .crm-agent-ai {

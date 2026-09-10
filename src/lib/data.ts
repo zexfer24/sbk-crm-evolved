@@ -1318,7 +1318,9 @@ export async function fetchConversation(
  * tenían ninguna píldora que los alcanzara—, así que hoy `pending` sirve a
  * las dos vistas otra vez. `unread` es el conteo de la segunda reforma,
  * para la píldora "No leídas". `escalated` es de T1.5 (5/9/2026, plan "La
- * bandeja que no pierde"), para la píldora "Escaladas".
+ * bandeja que no pierde"), para la píldora "Escaladas". `mineUnread` es de
+ * T3 ("Los números del día", 10/9/2026), para la tarjeta "Tuyas sin leer"
+ * del panel de inicio.
  */
 export interface InboxCounts {
   /**
@@ -1339,6 +1341,15 @@ export interface InboxCounts {
    * sin leer sigue contando.
    */
   unread: number;
+  /**
+   * "Tuyas sin leer" del panel de inicio (T3, "Los números del día",
+   * 10/9/2026): el mismo OR de `unread` pero además `assigned_agent_id =
+   * viewerId` — las conversaciones que el asesor tiene asignadas y todavía no
+   * leyó, para no obligarlo a cruzar "Mías" con "No leídas" a mano. Mismo
+   * criterio "sin condición de estado" que `unread`: una asignada y cerrada
+   * con mensajes sin leer sigue contando.
+   */
+  mineUnread: number;
   /**
    * Total de la píldora "Sin dueño": conversaciones que siguen esperando y
    * cuya ÚLTIMA fila de `conversation_handoffs` las dejó sin nadie a cargo.
@@ -1416,6 +1427,17 @@ export async function fetchInboxCounts(
   // los tests de "pending"/"pendingStale"/"mine".
   const unreadQuery = count().or(orExpression(unreadGroups));
 
+  // "Tuyas sin leer" (T3, "Los números del día", 10/9/2026): mismo OR que
+  // "unread" de arriba, más `assigned_agent_id = viewerId` por `.eq()` (se
+  // combina con AND, como el resto de las condiciones sueltas de esta
+  // función). Va justo al lado de "unread" en el Promise.all, a propósito —
+  // mismo motivo del comentario de arriba.
+  const mineUnreadGroups: string[][] = [["unread_count.gt.0", "manually_unread.is.true"]];
+  if (sinceGroup) mineUnreadGroups.push(sinceGroup);
+  const mineUnreadQuery = count()
+    .eq("assigned_agent_id", viewerId)
+    .or(orExpression(mineUnreadGroups));
+
   // "Escaladas" (T1.5, 5/9/2026), después de "unread" por el mismo motivo:
   // mismo predicado que `escalatedOnly` (`FetchConversationsOptions`) y que
   // `matchesFilter` (inbox-filters.ts) — ver el comentario de `escalated`
@@ -1430,19 +1452,20 @@ export async function fetchInboxCounts(
     .neq("status", "closed")
     .or(orExpression(escalatedGroups));
 
-  const [pending, pendingStale, mine, unread, escalated, sinDueno] = await Promise.all([
+  const [pending, pendingStale, mine, unread, mineUnread, escalated, sinDueno] = await Promise.all([
     pendingQuery,
     pendingStaleQuery,
     mineQuery,
     unreadQuery,
+    mineUnreadQuery,
     escalatedQuery,
     // Al final por el mismo motivo que "unread": no compite con los índices
-    // que las otras cuatro acaban de usar. Devuelve ids, no un conteo — ver
+    // que las otras cinco acaban de usar. Devuelve ids, no un conteo — ver
     // el comentario de `unassigned` en InboxCounts.
     fetchUnassignedConversationIds(supabase, since),
   ]);
 
-  const first = [pending, pendingStale, mine, unread, escalated].find((r) => r.error);
+  const first = [pending, pendingStale, mine, unread, mineUnread, escalated].find((r) => r.error);
   if (first?.error) throw first.error;
 
   return {
@@ -1450,6 +1473,7 @@ export async function fetchInboxCounts(
     pendingStale: pendingStale.count ?? 0,
     mine: mine.count ?? 0,
     unread: unread.count ?? 0,
+    mineUnread: mineUnread.count ?? 0,
     escalated: escalated.count ?? 0,
     unassigned: sinDueno.length,
   };

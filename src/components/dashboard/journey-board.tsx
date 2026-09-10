@@ -30,6 +30,17 @@ interface JourneyBoardProps {
   now: number;
   /** Horario de atención para medir "Con asesor" en minutos laborales (Frente A). */
   hours?: BusinessHours;
+  /**
+   * El mismo corte "habló hoy" que ya recibió `buildJourney` para armar
+   * `stages` (T2, corrida "Los números del día", 10/9/2026): sin este
+   * mismo valor, `waitingMinutes`/`isStalled` decidirían "Primer contacto"
+   * con OTRO día del que decidió `stageOf` al armar la columna —el punto
+   * rojo de una tarjeta podría no coincidir con el contador de atascados
+   * de su propia columna. `null` por default para no romper a un llamador
+   * que todavía no lo pasa (hoy ninguno; queda documentado como el resto
+   * de los opcionales de esta pantalla).
+   */
+  dayStart?: string | null;
 }
 
 /**
@@ -62,7 +73,12 @@ function stallTitle(stage: JourneyStage): string | undefined {
   return `Umbral de esta etapa: ${stage.stallMinutes} min`;
 }
 
-export function JourneyBoard({ stages, now, hours = DEFAULT_BUSINESS_HOURS }: JourneyBoardProps) {
+export function JourneyBoard({
+  stages,
+  now,
+  hours = DEFAULT_BUSINESS_HOURS,
+  dayStart = null,
+}: JourneyBoardProps) {
   const flowRef = useRef<HTMLDivElement>(null);
   const columnRefs = useRef<(HTMLDivElement | null)[]>([]);
   const [wires, setWires] = useState<Wire[]>([]);
@@ -148,8 +164,8 @@ export function JourneyBoard({ stages, now, hours = DEFAULT_BUSINESS_HOURS }: Jo
                     // `waitingMinutes` es null si la pelota está del lado del
                     // cliente (no espera respuesta) — ahí se pinta `stageDetail`
                     // en gris en vez de un tiempo de espera que no existe.
-                    const waited = waitingMinutes(conversation, now, hours);
-                    const late = isStalled(conversation, now, hours);
+                    const waited = waitingMinutes(conversation, now, hours, dayStart);
+                    const late = isStalled(conversation, now, hours, dayStart);
                     const name = contactName(conversation);
                     const detail = stageDetail(conversation, stage.id);
                     const metaText =

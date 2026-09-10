@@ -12,6 +12,13 @@ import {
 } from "@/lib/data";
 import { getBcvRate } from "@/lib/ai/bcv";
 import { CRM_TIME_ZONE, currentDayRange } from "@/lib/time-zone";
+import {
+  dayRangeFrom,
+  fetchAgentDaySummary,
+  fetchAiAssignmentsToday,
+  type AgentDaySummary,
+  type AiAssignment,
+} from "@/lib/agent-day-data";
 import { CrmShell } from "@/components/crm-shell";
 import type { BcvRateSummary } from "@/components/inbox/bcv-rate-chip";
 
@@ -25,6 +32,29 @@ async function loadBcvRate(supabase: Awaited<ReturnType<typeof createClient>>): 
     return await getBcvRate(supabase);
   } catch {
     return null;
+  }
+}
+
+/**
+ * El resumen del día del panel de inicio (T4, "Los números del día",
+ * 10/9/2026) es un dato de apoyo, igual que la tasa del BCV arriba: un
+ * tropiezo del RPC o de la consulta de traspasos no puede tumbar la
+ * bandeja entera. `null`/`[]` es justo lo que `AgentHomePanel` ya sabe
+ * pintar como "todavía no hay nada" (ver su comentario).
+ */
+async function loadAgentDay(
+  supabase: Awaited<ReturnType<typeof createClient>>,
+  agentId: string,
+  since: string
+): Promise<{ agentDay: AgentDaySummary | null; aiAssignments: AiAssignment[] }> {
+  try {
+    const [agentDay, aiAssignments] = await Promise.all([
+      fetchAgentDaySummary(supabase, dayRangeFrom(since)),
+      fetchAiAssignmentsToday(supabase, agentId, since),
+    ]);
+    return { agentDay, aiAssignments };
+  } catch {
+    return { agentDay: null, aiAssignments: [] };
   }
 }
 
@@ -60,6 +90,7 @@ export default async function InboxPage({ searchParams }: PageProps<"/inbox">) {
     quickReplies,
     bcvRate,
     agentSettings,
+    { agentDay, aiAssignments },
   ] = await Promise.all([
     searchParams,
     fetchConversations(supabase, { limit: INBOX_PAGE_SIZE, since }),
@@ -95,6 +126,11 @@ export default async function InboxPage({ searchParams }: PageProps<"/inbox">) {
     fetchQuickReplies(supabase),
     loadBcvRate(supabase),
     fetchAgentSettings(supabase),
+    // T4 ("Los números del día", 10/9/2026): SIEMPRE con el corte de HOY,
+    // nunca con el `since` que la bandeja pudiera tener en "Ver todo" —acá
+    // arriba `since` ya es siempre hoy (el servidor no sabe de "Ver todo",
+    // ver el comentario de esa constante), así que se reutiliza tal cual.
+    loadAgentDay(supabase, currentAgent.id, since),
   ]);
 
   // El dashboard enlaza cada tarjeta con ?conversation=<id> para abrir el hilo directo.
@@ -112,6 +148,8 @@ export default async function InboxPage({ searchParams }: PageProps<"/inbox">) {
       bcvRate={bcvRate}
       initialConversationId={requestedId}
       initialAgentSettings={agentSettings}
+      initialAgentDay={agentDay}
+      initialAiAssignments={aiAssignments}
     />
   );
 }

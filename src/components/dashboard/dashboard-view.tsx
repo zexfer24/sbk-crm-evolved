@@ -11,7 +11,10 @@ import {
   fetchDashboardConversations,
   fetchTodayActivity,
 } from "@/lib/data";
+import { fetchLeadTotal } from "@/lib/dashboard-data";
 import { useClock } from "@/lib/use-clock";
+import { useInboxDay } from "@/lib/use-inbox-day";
+import { matchesDay } from "@/lib/inbox-filters";
 import { useLiveConversations } from "@/lib/use-live-conversations";
 import { useLiveRefresh } from "@/lib/use-live-refresh";
 import {
@@ -44,6 +47,14 @@ interface DashboardViewProps {
   /** Qué contactos tienen etiqueta de reclamo: no viaja en la fila (ver types.ts). */
   initialTicketTags: TicketTagsByContact;
   initialActivity: HourlyActivity[];
+  /**
+   * "Total de leads" (T2, corrida "Los números del día", 10/9/2026): a
+   * diferencia del resto del pulso —que corta por hoy—, este número es
+   * acumulado a propósito (ver el comentario de `fetchLeadTotal`,
+   * `dashboard-data.ts`); llega sembrado del servidor y el `fetcher` de
+   * `useLiveConversations` lo vuelve a pedir en cada refresco.
+   */
+  initialLeadTotal: number;
   timeZone: string;
   /**
    * Horario de atención para medir "Con asesor" en minutos laborales, no de
@@ -60,10 +71,17 @@ export function DashboardView({
   initialConversations,
   initialTicketTags,
   initialActivity,
+  initialLeadTotal,
   timeZone,
   businessHours = DEFAULT_BUSINESS_HOURS,
 }: DashboardViewProps) {
   const supabase = useMemo(() => createClient(), []);
+
+  // El corte "habló hoy" del Recorrido: la MISMA medianoche de Caracas que ya
+  // usa la bandeja (T2, corrida "Los números del día", 10/9/2026 — ver el
+  // comentario de `useInboxDay`, "ÚNICA fuente del corte"). "today" fijo: el
+  // tablero no tiene interruptor "Ver todo", siempre muestra el día en curso.
+  const dayStart = useInboxDay("today");
 
   // El tablero sigue en vivo lo que pasa en la bandeja de todo el equipo.
   // Los reclamos salen de las etiquetas del contacto, por eso también se
@@ -71,12 +89,24 @@ export function DashboardView({
   // nunca el histórico: con 600 conversaciones ya eran 235 KB por refetch, y
   // el costo crecía con cada cliente nuevo.
   const [ticketTags, setTicketTags] = useState<TicketTagsByContact>(initialTicketTags);
+  const [leadTotal, setLeadTotal] = useState(initialLeadTotal);
 
   // Las etiquetas de reclamo llegan por su propio camino —dos consultas
   // planas— y no embebidas en cada una de las cientos de filas del tablero.
-  // El mismo viaje que rearma la lista las trae al día.
+  // El mismo viaje que rearma la lista las trae al día. "Total de leads"
+  // (T2, 10/9/2026) viaja en el MISMO `Promise.all`, pero su propio
+  // `.catch()`: un tropiezo puntual en ese conteo no tiene por qué tirar el
+  // refresco de conversaciones/etiquetas — conserva el número anterior y
+  // el siguiente evento en tiempo real reintenta.
   const fetcher = useCallback(async () => {
-    const { conversations, ticketTags: tags } = await fetchDashboardConversations(supabase);
+    const [{ conversations, ticketTags: tags }] = await Promise.all([
+      fetchDashboardConversations(supabase),
+      fetchLeadTotal(supabase)
+        .then(setLeadTotal)
+        .catch(() => {
+          // Conserva `leadTotal` tal como estaba; ver el comentario de arriba.
+        }),
+    ]);
     setTicketTags(tags);
     return conversations;
   }, [supabase]);
@@ -133,8 +163,8 @@ export function DashboardView({
   }, [refreshConversations, refreshActivity]);
 
   const stages = useMemo(
-    () => buildJourney(conversations, now, businessHours),
-    [conversations, now, businessHours]
+    () => buildJourney(conversations, now, businessHours, dayStart),
+    [conversations, now, businessHours, dayStart]
   );
   const stats = useMemo(
     () => buildTicketStats(conversations, now, ticketTags),
@@ -151,7 +181,10 @@ export function DashboardView({
   const withAgent = countIn("assigned");
   const stalledTotal = stages.reduce((sum, stage) => sum + stage.stalled, 0);
 
-  const load = useMemo(() => agentLoad(agents, conversations), [agents, conversations]);
+  const load = useMemo(
+    () => agentLoad(agents, conversations, dayStart),
+    [agents, conversations, dayStart]
+  );
 
   return (
     <div className="dash">
@@ -217,7 +250,7 @@ export function DashboardView({
               <div>
                 <h1 className="dash-title dash-display">Recorrido del cliente</h1>
                 <p className="dash-subtitle">
-                  De la primera línea que escribe un cliente por WhatsApp hasta el asesor que
+                  Lo que pasó hoy, de la primera línea que escribe un cliente al asesor que
                   cierra la venta.
                 </p>
               </div>
@@ -228,6 +261,11 @@ export function DashboardView({
                 <PulseItem value={withAi} label="Con la IA" />
                 <span className="dash-pulse-rule" />
                 <PulseItem value={withAgent} label="Con asesor" />
+                {/* Regla más marcada (T2, 10/9/2026): separa las tres piezas
+                    de HOY del acumulado histórico que sigue — no son la misma
+                    pregunta, y el trazo lo dice antes que el texto. */}
+                <span className="dash-pulse-rule dash-pulse-rule-strong" />
+                <PulseItem value={leadTotal} label="Total de leads" caption="acumulado" />
               </div>
             </div>
 
@@ -261,7 +299,7 @@ export function DashboardView({
                 )}
               </div>
 
-              <JourneyBoard stages={stages} now={now} hours={businessHours} />
+              <JourneyBoard stages={stages} now={now} hours={businessHours} dayStart={dayStart} />
             </section>
 
             <div id="actividad">
@@ -279,21 +317,39 @@ export function DashboardView({
   );
 }
 
-function PulseItem({ value, label }: { value: number; label: string }) {
+/**
+ * `caption` (T2, 10/9/2026): la marca "acumulado" de "Total de leads" — la
+ * única pieza del pulso que no corta por hoy, así que necesita decirlo. Va
+ * bajo la etiqueta, no al lado del número: el valor tiene que leerse igual
+ * de grande que el resto del pulso.
+ */
+function PulseItem({ value, label, caption }: { value: number; label: string; caption?: string }) {
   return (
     <span className="dash-pulse-item">
       <span className="dash-pulse-value dash-num">{value}</span>
       <span className="dash-pulse-label">{label}</span>
+      {caption && <span className="dash-pulse-caption">{caption}</span>}
     </span>
   );
 }
 
-/** Casos abiertos por asesor, el equipo ordenado de más a menos cargado. */
-function agentLoad(agents: Agent[], conversations: BoardConversation[]) {
+/**
+ * Casos abiertos por asesor, el equipo ordenado de más a menos cargado.
+ *
+ * `dayStart` (T2, corrida "Los números del día", 10/9/2026): el encabezado
+ * "Flujo de hoy" solo cuenta actividad de HOY, así que el avatar de cada
+ * asesor tiene que aplicar el mismo corte que ya usa `buildJourney` — antes
+ * de esta tarea contaba TODO lo abierto asignado a un asesor, sin importar
+ * cuándo habló el cliente por última vez, y el título del avatar terminaba
+ * contradiciendo al resto del encabezado.
+ */
+function agentLoad(agents: Agent[], conversations: BoardConversation[], dayStart: string | null) {
   return agents
     .map((agent) => ({
       agent,
-      open: conversations.filter((c) => c.assignedAgent?.id === agent.id && isActive(c)).length,
+      open: conversations.filter(
+        (c) => c.assignedAgent?.id === agent.id && isActive(c) && matchesDay(c, dayStart)
+      ).length,
     }))
     .sort((a, b) => b.open - a.open);
 }

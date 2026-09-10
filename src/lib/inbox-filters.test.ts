@@ -865,6 +865,17 @@ describe("matchesDay", () => {
     const conv = conversation({ id: "viejisima", lastMessageAt: "2020-01-01T00:00:00.000Z" });
     expect(matchesDay(conv, null)).toBe(true);
   });
+
+  // T1, corrida "Los números del día" (10/9/2026): el parámetro pasó de
+  // `ConversationSummary` a un `Pick` estructural de sus dos únicos campos,
+  // justo para que `buildJourney` (`dashboard.ts`) pueda usar el mismo
+  // criterio sobre `BoardConversation` sin importar esta función (crearía un
+  // ciclo: `inbox-filters.ts` ya importa de `dashboard.ts`). Este test
+  // afirma la forma mínima, no una `Conversation` completa.
+  it("acepta cualquier objeto con solo lastMessageAt y createdAt, sin el resto de ConversationSummary", () => {
+    const minimo = { lastMessageAt: "2026-09-08T10:00:00.000Z", createdAt: "2026-09-08T09:00:00.000Z" };
+    expect(matchesDay(minimo, HOY_00_00_CARACAS)).toBe(true);
+  });
 });
 
 describe("applyInboxFilters — el corte de 'hoy' (T1, 8/9/2026)", () => {

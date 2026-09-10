@@ -7,13 +7,14 @@ import {
   fetchDashboardConversations,
   fetchTodayActivity,
 } from "@/lib/data";
+import { fetchLeadTotal } from "@/lib/dashboard-data";
 import { CRM_TIME_ZONE } from "@/lib/time-zone";
 import { DashboardView } from "@/components/dashboard/dashboard-view";
 
 export default async function DashboardPage() {
   const supabase = await createClient();
 
-  const [currentAgent, agents, dashboard, activity, businessHours] = await Promise.all([
+  const [currentAgent, agents, dashboard, activity, businessHours, leadTotal] = await Promise.all([
     fetchCurrentAgent(supabase),
     fetchAgents(supabase),
     fetchDashboardConversations(supabase),
@@ -23,6 +24,8 @@ export default async function DashboardPage() {
     // la fila no se puede leer, para que un tropiezo acá nunca tumbe la
     // bandeja (Frente B3, "El reloj dice la verdad", 5/9/2026).
     fetchBusinessHours(supabase),
+    // "Total de leads" (T2, corrida "Los números del día", 10/9/2026).
+    fetchLeadTotal(supabase),
   ]);
 
   if (!currentAgent) {
@@ -36,6 +39,7 @@ export default async function DashboardPage() {
       initialConversations={dashboard.conversations}
       initialTicketTags={dashboard.ticketTags}
       initialActivity={activity}
+      initialLeadTotal={leadTotal}
       timeZone={CRM_TIME_ZONE}
       businessHours={businessHours}
     />

@@ -540,6 +540,9 @@ export type Database = {
           ai_turn_lock_until: string | null
           ai_turn_running: boolean
           assigned_agent_id: string | null
+          // Existe desde 20260822080000_agent_metrics.sql; faltaba acá porque
+          // estos tipos estaban desactualizados (10/9/2026).
+          assigned_at: string | null
           contact_id: string
           created_at: string
           deal_closed_at: string | null
@@ -577,6 +580,7 @@ export type Database = {
           ai_turn_lock_until?: string | null
           ai_turn_running?: boolean
           assigned_agent_id?: string | null
+          assigned_at?: string | null
           contact_id: string
           created_at?: string
           deal_closed_at?: string | null
@@ -614,6 +618,7 @@ export type Database = {
           ai_turn_lock_until?: string | null
           ai_turn_running?: boolean
           assigned_agent_id?: string | null
+          assigned_at?: string | null
           contact_id?: string
           created_at?: string
           deal_closed_at?: string | null
@@ -1545,6 +1550,15 @@ export type Database = {
     }
     Functions: {
       agent_can_run: { Args: never; Returns: boolean }
+      agent_day_summary: {
+        Args: { p_from: string; p_to: string }
+        Returns: {
+          asignadas: number
+          respondidas: number
+          ventas: number
+          monto: number
+        }[]
+      }
       agent_spend_today: { Args: never; Returns: number }
       agent_token_usage: {
         Args: { days?: number }

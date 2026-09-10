@@ -224,6 +224,20 @@ vi.mock("@/lib/mutations", () => ({
   sendReadReceipt: (...args: unknown[]) => sendReadReceiptMock(...args),
 }));
 
+// T4 ("Los números del día", 10/9/2026): el panel de inicio. `dayRangeFrom`
+// se reimplementa mínimo (no la versión real de `agent-day-data.ts`) porque
+// acá solo importa que `refreshAgentDay` la llame con el `dayStart` de hoy,
+// no el cálculo exacto de `to` — mismo criterio que el resto de los mocks de
+// este archivo, que no reexportan el módulo real.
+const fetchAgentDaySummaryMock = vi.fn().mockResolvedValue(null);
+const fetchAiAssignmentsTodayMock = vi.fn().mockResolvedValue([]);
+
+vi.mock("@/lib/agent-day-data", () => ({
+  fetchAgentDaySummary: (...args: unknown[]) => fetchAgentDaySummaryMock(...args),
+  fetchAiAssignmentsToday: (...args: unknown[]) => fetchAiAssignmentsTodayMock(...args),
+  dayRangeFrom: (dayStart: string) => ({ from: dayStart, to: dayStart }),
+}));
+
 function buildConversation(overrides: Partial<Conversation> = {}): Conversation {
   return {
     id: "conv-1",
@@ -292,7 +306,15 @@ const currentAgent: Agent = {
 const allTags: Tag[] = [];
 const agentSettings = { aiGloballyEnabled: true, dailySpendCapUsd: null, spentTodayUsd: 0 };
 const initialQuickReplies: QuickReply[] = [];
-const inboxCounts = { pending: 0, pendingStale: 0, mine: 0, unread: 0, unassigned: 0, escalated: 0 };
+const inboxCounts = {
+  pending: 0,
+  pendingStale: 0,
+  mine: 0,
+  unread: 0,
+  mineUnread: 0,
+  unassigned: 0,
+  escalated: 0,
+};
 
 beforeEach(() => {
   fake = createFakeSupabase();
@@ -309,6 +331,10 @@ beforeEach(() => {
   markConversationUnreadMock.mockClear();
   sendReadReceiptMock.mockClear();
   fetchAgentSettingsMock.mockClear();
+  fetchAgentDaySummaryMock.mockClear();
+  fetchAgentDaySummaryMock.mockResolvedValue(null);
+  fetchAiAssignmentsTodayMock.mockClear();
+  fetchAiAssignmentsTodayMock.mockResolvedValue([]);
   // Foco de la ventana por defecto: jsdom, a diferencia de un navegador real,
   // arranca sin foco (`document.hasFocus()` en `false` mientras nada haya
   // llamado `.focus()`), y los tests de T1.1 más abajo son los únicos que
@@ -419,6 +445,78 @@ describe("CrmShell — debounce del refresh disparado por realtime", () => {
     // pulso y quien tenga abierta la píldora "Sin dueño" (InboxSidebar)
     // rehace su consulta. Guardarla acá además sería guardarla dos veces.
     expect(inboxProps?.livePulse ?? 0).toBe(pulsoInicial + 1);
+  });
+});
+
+// T4 ("Los números del día", 10/9/2026): el canal `agent-day-handoffs`, filtrado
+// en el servidor por `to_kind = 'human'` (el fake de este archivo no reproduce
+// ese filtro — ver el comentario de T1.6 más arriba — así que ambos casos
+// disparan el mismo handler y lo que decide es el chequeo de `to_id` del lado
+// del cliente).
+describe("CrmShell — el resumen del día del asesor en vivo", () => {
+  it("un traspaso a MÍ dispara el resumen del día y los traspasos de la IA", async () => {
+    render(
+      <CrmShell
+        currentAgent={currentAgent}
+        initialConversations={[buildConversation()]}
+        initialInboxCounts={inboxCounts}
+        allTags={allTags}
+        initialQuickReplies={initialQuickReplies}
+        bcvRate={null}
+        initialAgentSettings={agentSettings}
+      />
+    );
+    await act(async () => {}); // deja resolver la carga inicial
+    fetchAgentDaySummaryMock.mockClear();
+    fetchAiAssignmentsTodayMock.mockClear();
+
+    act(() => {
+      fake.trigger("conversation_handoffs", "INSERT", {
+        to_kind: "human",
+        to_id: currentAgent.id,
+      });
+    });
+    // Agrupado igual que el resto de los refrescos en vivo del shell: antes
+    // del debounce no se pidió nada.
+    expect(fetchAgentDaySummaryMock).not.toHaveBeenCalled();
+
+    await act(async () => {
+      vi.advanceTimersByTime(750);
+    });
+
+    expect(fetchAgentDaySummaryMock).toHaveBeenCalled();
+    expect(fetchAiAssignmentsTodayMock).toHaveBeenCalled();
+  });
+
+  it("un traspaso a OTRO asesor no dispara nada", async () => {
+    render(
+      <CrmShell
+        currentAgent={currentAgent}
+        initialConversations={[buildConversation()]}
+        initialInboxCounts={inboxCounts}
+        allTags={allTags}
+        initialQuickReplies={initialQuickReplies}
+        bcvRate={null}
+        initialAgentSettings={agentSettings}
+      />
+    );
+    await act(async () => {});
+    fetchAgentDaySummaryMock.mockClear();
+    fetchAiAssignmentsTodayMock.mockClear();
+
+    act(() => {
+      fake.trigger("conversation_handoffs", "INSERT", {
+        to_kind: "human",
+        to_id: "otro-agente",
+      });
+    });
+
+    await act(async () => {
+      vi.advanceTimersByTime(750);
+    });
+
+    expect(fetchAgentDaySummaryMock).not.toHaveBeenCalled();
+    expect(fetchAiAssignmentsTodayMock).not.toHaveBeenCalled();
   });
 });
 

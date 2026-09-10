@@ -157,7 +157,11 @@ declare
   funciones text[] := array[
     'public.agent_metrics(integer)',
     'public.agent_can_run()',
-    'public.agent_spend_today()'
+    'public.agent_spend_today()',
+    -- agent_day_summary (migración 20260910010000, corrida "Los números del
+    -- día"): mismo grupo que agent_metrics — la llama el navegador con
+    -- sesión de asesor (resumen del propio día) y también el servidor.
+    'public.agent_day_summary(timestamptz, timestamptz)'
   ];
   f text;
   errores text := '';

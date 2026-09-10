@@ -78,6 +78,28 @@ export function isTicket(
 // `stageOf` YA NO confía en él a ciegas: solo lo consulta donde la etapa no
 // se puede deducir de otra cosa (`classifying`/`tool_running`), y siempre
 // bajo `awaitingReply` — sin eso es un resto, no una etapa real.
+//
+// Corrida "Los números del día" (10/9/2026, pedido del operador): el
+// tablero pasa a mostrar SOLO el día en curso y el orden se da vuelta. Tres
+// cambios, todos con un `dayStart?: string | null` opcional que viaja hasta
+// `stageOf`/`waitingMinutes`/`isStalled`/`buildJourney` para no romper a
+// quien todavía llama sin él (`journey-board.tsx` no necesita tocarse):
+//   1. `buildJourney` filtra, ADEMÁS de `isActive`, con el mismo corte
+//      "habló hoy" que ya usa la bandeja (`matchesDay`, `inbox-filters.ts`,
+//      trampa "El corte habló hoy tiene UNA sola fuente" en CLAUDE.md) —
+//      replicado acá abajo, sin importarlo, porque `inbox-filters.ts` ya
+//      importa `awaitingReply`/`contactName` de este archivo y la vía
+//      contraria crearía un ciclo. Se aplica en memoria, no en la consulta:
+//      `ticketQueue`, en este mismo archivo, necesita reclamos de
+//      CUALQUIER fecha.
+//   2. El peldaño de `first_contact` deja de exigir `!awaitingReply`: pasa
+//      a significar "escribió por primera vez HOY y la IA todavía no le
+//      contestó", así que ahora SÍ se atasca (`stallMinutes: 15`, antes
+//      `null` — "nunca se atasca").
+//   3. El orden dentro de cada etapa se da vuelta: "mayor espera arriba"
+//      (5/9/2026) pasa a "más nuevo arriba" — el punto rojo de atasco y el
+//      contador "N atascados" conservan la urgencia, el orden ya no tiene
+//      que hacerlo también.
 // ---------------------------------------------------------------------------
 
 export interface JourneyStage {
@@ -86,9 +108,12 @@ export interface JourneyStage {
   caption: string;
   /**
    * Minutos a partir de los cuales una conversación en esta etapa se
-   * considera atascada. `null` = nunca se atasca en esta etapa (hoy solo
-   * "Primer contacto": recibió la bienvenida y el reloj de la bienvenida no
-   * corre contra el cliente).
+   * considera atascada. `null` = nunca se atasca en esta etapa. Hasta el
+   * 10/9/2026 era el caso de "Primer contacto" (recibió la bienvenida y el
+   * reloj no corría contra el cliente); la corrida "Los números del día"
+   * le cambió el significado a la etapa —ahora es "la IA todavía no
+   * respondió el primer mensaje de hoy"— y con eso SÍ se atasca
+   * (`stallMinutes: 15`), así que hoy ninguna etapa queda en `null`.
    */
   stallMinutes: number | null;
   conversations: BoardConversation[];
@@ -99,8 +124,11 @@ const STAGE_DEFINITIONS: Omit<JourneyStage, "conversations" | "stalled">[] = [
   {
     id: "first_contact",
     label: "Primer contacto",
-    caption: "Escribió por primera vez; recibió la bienvenida y esperamos su siguiente mensaje",
-    stallMinutes: null,
+    // 10/9/2026, "Los números del día": ya no es "esperamos su siguiente
+    // mensaje" (esa frase describía a alguien que YA fue atendido); ahora
+    // cubre el hueco antes de la primera respuesta real.
+    caption: "Escribió por primera vez hoy; la IA le responde",
+    stallMinutes: 15,
   },
   {
     id: "inquiry",
@@ -137,8 +165,12 @@ export function isActive(conversation: BoardConversation): boolean {
 }
 
 /**
- * Escalera de la etapa, en el orden que describe el operador (5/9/2026,
- * "El reloj dice la verdad"). Primer peldaño que cumple, gana:
+ * Escalera de la etapa. Nació el 5/9/2026 ("El reloj dice la verdad") con
+ * cinco peldaños; el 10/9/2026 ("Los números del día") el operador cambió
+ * el peldaño 4: `first_contact` deja de exigir `!awaitingReply` (ya no es
+ * "ya lo atendieron y calló", pasa a ser "escribió hoy y la IA todavía no le
+ * contesta") y suma la fecha de creación cuando el llamador manda
+ * `dayStart`. Primer peldaño que cumple, gana:
  *
  * 1. Hay asesor asignado → `assigned`. Un `journey_stage = 'assigned'` SIN
  *    asesor ya no cuenta acá (el punto 3 del diagnóstico: el lead sin dueño
@@ -149,15 +181,20 @@ export function isActive(conversation: BoardConversation): boolean {
  *    → `classifying`. Sin `awaitingReply`, un `classifying`/`tool_running`
  *    escrito es un resto congelado (punto 4 del diagnóstico, ver
  *    `rejectedByMeta` en `agent.ts`) y no se honra: sigue bajando.
- * 4. No espera respuesta, recibió la bienvenida y su último mensaje es anterior
- *    (o igual) a esa bienvenida → `first_contact`: todavía no escribió su
- *    siguiente mensaje.
+ * 4. `first_contact`: recibió la bienvenida, su último mensaje es anterior
+ *    (o igual) a esa bienvenida —todavía no escribió un segundo mensaje— y,
+ *    si viene `dayStart`, fue creada hoy (`createdAt >= dayStart`; sin
+ *    `dayStart` no exige nada de fecha, para no romper a un llamador viejo).
+ *    YA NO exige `!awaitingReply`: antes de hoy este peldaño describía a
+ *    alguien que ya había recibido una respuesta real y calló; ahora
+ *    describe al lead nuevo del día ANTES de esa respuesta, por eso vuelve a
+ *    poder atascarse (ver `STAGE_DEFINITIONS`).
  * 5. Todo lo demás → `inquiry`. Cubre dos casos bien distintos a propósito:
  *    el cliente pregunta y espera (atascable) y el cliente calló tras la
  *    respuesta de la IA (no atascable, se pinta en gris) — los separa
  *    `awaitingReply`, no la etapa.
  */
-export function stageOf(conversation: BoardConversation): JourneyStageId {
+export function stageOf(conversation: BoardConversation, dayStart?: string | null): JourneyStageId {
   if (conversation.assignedAgent) return "assigned";
 
   const waiting = awaitingReply(conversation);
@@ -170,8 +207,11 @@ export function stageOf(conversation: BoardConversation): JourneyStageId {
     return "classifying";
   }
 
+  const createdToday =
+    dayStart == null || Date.parse(conversation.createdAt) >= Date.parse(dayStart);
+
   if (
-    !waiting &&
+    createdToday &&
     conversation.welcomeSentAt &&
     conversation.lastCustomerMessageAt &&
     new Date(conversation.lastCustomerMessageAt) <= new Date(conversation.welcomeSentAt)
@@ -285,11 +325,16 @@ export function minutesInStage(conversation: BoardConversation, now: number): nu
  * un asesor no está atascado, aunque el reloj de pared ya lleve horas
  * corriendo (Ana, misma tabla: horas de pared de sobra pero menos de 60 min
  * laborales).
+ *
+ * `dayStart` (10/9/2026, opcional, al final) solo importa para decidir si
+ * la conversación es `first_contact` (`stageOf`) o no — hoy esa etapa mide
+ * en pared igual que las demás de la IA, así que no cambia el cálculo en sí.
  */
 export function waitingMinutes(
   conversation: BoardConversation,
   now: number,
-  hours: BusinessHours = DEFAULT_BUSINESS_HOURS
+  hours: BusinessHours = DEFAULT_BUSINESS_HOURS,
+  dayStart?: string | null
 ): number | null {
   if (!isActive(conversation)) return null;
   if (!awaitingReply(conversation)) return null;
@@ -298,7 +343,7 @@ export function waitingMinutes(
   const from = new Date(conversation.lastCustomerMessageAt);
   const to = new Date(now);
 
-  if (stageOf(conversation) === "assigned") {
+  if (stageOf(conversation, dayStart) === "assigned") {
     return businessMinutesBetween(from, to, hours);
   }
 
@@ -312,50 +357,89 @@ export function waitingMinutes(
  * (`waitingMinutes` null) o la etapa nunca se atasca (`stallMinutes` null,
  * hoy solo "Primer contacto") no hay atasco posible, esté donde esté.
  * Exportada aparte para que la UI (A4) no reimplemente esta cuenta.
+ *
+ * `dayStart` (10/9/2026, opcional, al final): viaja a `stageOf` para que
+ * "Primer contacto" se decida con el mismo corte de día que usa el tablero.
  */
 export function isStalled(
   conversation: BoardConversation,
   now: number,
-  hours: BusinessHours = DEFAULT_BUSINESS_HOURS
+  hours: BusinessHours = DEFAULT_BUSINESS_HOURS,
+  dayStart?: string | null
 ): boolean {
-  const stage = STAGE_DEFINITIONS.find((definition) => definition.id === stageOf(conversation));
+  const stage = STAGE_DEFINITIONS.find(
+    (definition) => definition.id === stageOf(conversation, dayStart)
+  );
   const stallMinutes = stage?.stallMinutes ?? null;
   if (stallMinutes === null) return false;
 
-  const waiting = waitingMinutes(conversation, now, hours);
+  const waiting = waitingMinutes(conversation, now, hours, dayStart);
   return waiting !== null && waiting >= stallMinutes;
 }
 
+/**
+ * Gemela de `matchesDay` (`inbox-filters.ts`): mismo corte "habló hoy" que
+ * ya usa la bandeja (`lastMessageAt >= dayStart`, o sin `lastMessageAt`
+ * —conversación recién creada— `createdAt >= dayStart`; `dayStart` nulo deja
+ * pasar cualquier fecha). NO se importa de allá: `inbox-filters.ts` ya
+ * importa `awaitingReply`/`contactName` de este archivo, así que la vía
+ * contraria cerraría un ciclo de imports. Privada a propósito — solo
+ * `buildJourney` la necesita; si algún día hace falta en otro lado de este
+ * archivo, exportarla ahí es la señal de que el ciclo hay que resolverlo de
+ * verdad, moviendo una de las dos funciones.
+ */
+function matchesDay(
+  conversation: { lastMessageAt: string | null; createdAt: string },
+  dayStart: string | null
+): boolean {
+  if (!dayStart) return true;
+  const cutoff = Date.parse(dayStart);
+  const reference = conversation.lastMessageAt ?? conversation.createdAt;
+  const value = Date.parse(reference);
+  return !Number.isNaN(value) && value >= cutoff;
+}
+
+/** Reloj de orden del Recorrido (10/9/2026): el mismo que ya usa `waitingMinutes`, con los mismos dos respaldos que `matchesDay`. */
+function journeyOrderKey(conversation: BoardConversation): number {
+  const reference =
+    conversation.lastCustomerMessageAt ?? conversation.lastMessageAt ?? conversation.createdAt;
+  return new Date(reference).getTime();
+}
+
+/**
+ * `dayStart` (10/9/2026, opcional, al final para no romper a
+ * `dashboard-view.tsx`, que sigue llamando sin él): el corte "habló hoy" que
+ * ya usa la bandeja, mismo string que sale de `useInboxDay` — filtra ADEMÁS
+ * de `isActive`, en memoria y no en la consulta, porque `ticketQueue` (más
+ * abajo, misma página) necesita reclamos de cualquier fecha. Sin `dayStart`
+ * (llamador viejo) `matchesDay` deja pasar todo: nada cambia.
+ */
 export function buildJourney(
   conversations: BoardConversation[],
   now: number,
-  hours: BusinessHours = DEFAULT_BUSINESS_HOURS
+  hours: BusinessHours = DEFAULT_BUSINESS_HOURS,
+  dayStart?: string | null
 ): JourneyStage[] {
-  const active = conversations.filter(isActive);
+  const active = conversations.filter(isActive).filter((c) => matchesDay(c, dayStart ?? null));
 
   return STAGE_DEFINITIONS.map((definition) => {
-    const inStage = active.filter((c) => stageOf(c) === definition.id);
+    const inStage = active.filter((c) => stageOf(c, dayStart) === definition.id);
 
-    // Primero las que esperan respuesta, con mayor espera arriba; después
-    // las que no esperan (la pelota está del lado del cliente), por último
-    // mensaje descendente — orden pedido por el operador: lo urgente arriba.
+    // Más nuevo arriba (decisión del operador, 10/9/2026, "Los números del
+    // día" — reemplaza el "mayor espera arriba" del 5/9/2026): el punto rojo
+    // de atasco y el contador "N atascados" (`stalled`, abajo) siguen
+    // marcando la urgencia, así que el orden ya no tenía que hacerlo
+    // también. Desempate por `id` para que el orden sea determinista cuando
+    // dos conversaciones comparten el mismo instante exacto.
     const sorted = [...inStage].sort((a, b) => {
-      const waitingA = waitingMinutes(a, now, hours);
-      const waitingB = waitingMinutes(b, now, hours);
-
-      if (waitingA !== null && waitingB !== null) return waitingB - waitingA;
-      if (waitingA !== null) return -1;
-      if (waitingB !== null) return 1;
-
-      const lastA = new Date(a.lastMessageAt ?? a.createdAt).getTime();
-      const lastB = new Date(b.lastMessageAt ?? b.createdAt).getTime();
-      return lastB - lastA;
+      const diff = journeyOrderKey(b) - journeyOrderKey(a);
+      return diff !== 0 ? diff : a.id.localeCompare(b.id);
     });
 
     return {
       ...definition,
       conversations: sorted,
-      stalled: inStage.filter((c) => isStalled(c, now, hours)).length,
+      stalled: inStage.filter((c) => isStalled(c, now, hours, dayStart)).length,
     };
   });
 }
@@ -366,12 +450,21 @@ export function buildJourney(
  * "Consulta" sin `awaitingReply` la pelota está del lado del cliente —lo que
  * ya respondió la IA no interesa, interesa que sigue en silencio— así que
  * ahí se pinta "sin respuesta del cliente" en vez del `intent`.
+ *
+ * 10/9/2026 ("Los números del día"): `first_contact` deja de ser un único
+ * texto fijo — ahora puede estar esperando la primera respuesta (como
+ * cualquier "Consulta", muestra el `intent`) o ya haber recibido la
+ * bienvenida sin haber escrito de nuevo (el texto de siempre). No recibe
+ * `dayStart`: la etapa ya viene decidida por el llamador (`stage`), acá solo
+ * hace falta `awaitingReply`.
  */
 export function stageDetail(conversation: BoardConversation, stage: JourneyStageId): string | null {
   if (stage === "tool_running") return conversation.activeTool;
   if (stage === "classifying") return conversation.intent;
   if (stage === "assigned") return conversation.assignedAgent?.displayName ?? null;
-  if (stage === "first_contact") return "esperando su siguiente mensaje";
+  if (stage === "first_contact") {
+    return awaitingReply(conversation) ? conversation.intent : "esperando su siguiente mensaje";
+  }
   if (stage === "inquiry" && !awaitingReply(conversation)) return "sin respuesta del cliente";
   return conversation.intent;
 }

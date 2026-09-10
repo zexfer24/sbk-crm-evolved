@@ -166,6 +166,8 @@ export function ProductoFila({ product, bcvRate }: { product: Product; bcvRate: 
           />
           {savedField === "stock" && <Check size={13} className="inv-saved" aria-label="Guardado" />}
         </span>
+        {/* Pie vacío: Stock mide lo mismo que Precio en USD (T7, 10/9/2026). */}
+        <span className="inv-bs" aria-hidden="true" />
       </label>
 
       <label className="inv-field">
@@ -184,8 +186,16 @@ export function ProductoFila({ product, bcvRate }: { product: Product; bcvRate: 
           />
           {savedField === "precio" && <Check size={13} className="inv-saved" aria-label="Guardado" />}
         </span>
-        {bs !== null && product.currency === "USD" && (
+        {/*
+         * El pie SIEMPRE se renderiza (con o sin texto): si solo aparece en
+         * USD, ese campo queda más alto que Stock/Peso y, aunque la fila ya
+         * sea grid con `align-items: start`, los tres inputs dejan de medir
+         * lo mismo entre sí de un producto a otro (T7, 10/9/2026).
+         */}
+        {bs !== null && product.currency === "USD" ? (
           <span className="inv-bs lm-num">Bs. {bs.toFixed(2)}</span>
+        ) : (
+          <span className="inv-bs" aria-hidden="true" />
         )}
       </label>
 
@@ -205,6 +215,7 @@ export function ProductoFila({ product, bcvRate }: { product: Product; bcvRate: 
           />
           {savedField === "peso" && <Check size={13} className="inv-saved" aria-label="Guardado" />}
         </span>
+        <span className="inv-bs" aria-hidden="true" />
       </label>
 
       <div className="inv-status">
