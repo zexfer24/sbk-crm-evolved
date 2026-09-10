@@ -20,6 +20,7 @@ import { useLiveRefresh } from "@/lib/use-live-refresh";
 import {
   buildJourney,
   buildTicketStats,
+  countStalled,
   initials,
   isActive,
   ticketQueue,
@@ -179,7 +180,16 @@ export function DashboardView({
   const arriving = countIn("first_contact");
   const withAi = countIn("inquiry") + countIn("classifying") + countIn("tool_running");
   const withAgent = countIn("assigned");
-  const stalledTotal = stages.reduce((sum, stage) => sum + stage.stalled, 0);
+  // `countStalled`, no `stages.reduce((sum, stage) => sum + stage.stalled, 0)`
+  // (T2, "El Recorrido cuenta los números nuevos del día", 10/9/2026): desde
+  // que "Primer contacto" es una columna de cohorte, una conversación puede
+  // salir en DOS columnas a la vez, y sumar el `stalled` de cada columna la
+  // contaba dos veces si estaba atascada en ambas. `countStalled` cuenta
+  // sobre el conjunto de conversaciones, no sobre las columnas.
+  const stalledTotal = useMemo(
+    () => countStalled(conversations, now, businessHours, dayStart),
+    [conversations, now, businessHours, dayStart]
+  );
 
   const load = useMemo(
     () => agentLoad(agents, conversations, dayStart),
@@ -256,7 +266,13 @@ export function DashboardView({
               </div>
 
               <div className="dash-pulse">
-                <PulseItem value={arriving} label="Nuevos" />
+                {/* "entraron hoy" (T2, 10/9/2026): desde que "Primer
+                    contacto" es una columna de cohorte, "Nuevos" ya no es
+                    disjunto de "Con la IA"/"Con asesor" — un número nuevo de
+                    hoy que ya tiene asesor se cuenta acá Y en "Con asesor".
+                    El caption avisa que responde otra pregunta, no que sea
+                    un sumando de las otras dos piezas del pulso. */}
+                <PulseItem value={arriving} label="Nuevos" caption="entraron hoy" />
                 <span className="dash-pulse-rule" />
                 <PulseItem value={withAi} label="Con la IA" />
                 <span className="dash-pulse-rule" />

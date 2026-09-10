@@ -1,6 +1,6 @@
 /** @vitest-environment jsdom */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { render, screen } from "@testing-library/react";
+import { render, screen, within } from "@testing-library/react";
 import type { Agent, BoardConversation } from "@/lib/types";
 import { DashboardView } from "@/components/dashboard/dashboard-view";
 
@@ -156,13 +156,27 @@ function pulseCaption(container: HTMLElement, label: string): string | null {
   return item?.querySelector(".dash-pulse-caption")?.textContent ?? null;
 }
 
+/**
+ * La sección `.dash-stage` de una columna del Recorrido, por su etiqueta
+ * (T2, "El Recorrido cuenta los números nuevos del día", 10/9/2026): hace
+ * falta para distinguir en qué columna aparece una tarjeta cuando, desde esta
+ * corrida, la misma conversación puede salir en dos a la vez ("Primer
+ * contacto" + su etapa real).
+ */
+function stageSection(container: HTMLElement, label: string): HTMLElement {
+  const sections = Array.from(container.querySelectorAll(".dash-stage"));
+  const section = sections.find((el) => el.querySelector(".dash-stage-label")?.textContent === label);
+  if (!section) throw new Error(`No se encontró la columna "${label}"`);
+  return section as HTMLElement;
+}
+
 describe("DashboardView", () => {
   // Tarde de Caracas del 10/9/2026 (America/Caracas = UTC-4): mismo patrón
   // que `dashboard.test.ts` ("HOY" en `describe("buildJourney con dayStart")`).
   const HOY = "2026-09-10T19:00:00.000Z";
   const AYER = "2026-09-09T20:00:00.000Z";
 
-  it('(a) con dos conversaciones de hoy y una de ayer, "Con la IA" cuenta solo las de hoy y la de ayer no aparece en ninguna columna', () => {
+  it('(a) con dos conversaciones de hoy y una de ayer, "Con la IA" cuenta solo las de hoy, y las de hoy salen ADEMÁS en "Primer contacto" (cohorte)', () => {
     vi.setSystemTime(new Date(HOY));
 
     const hoy1 = conversacion({
@@ -191,8 +205,22 @@ describe("DashboardView", () => {
 
     expect(pulseValue(container, "Con la IA")).toBe("2");
     expect(screen.queryByText("Ayer Cliente")).not.toBeInTheDocument();
-    expect(screen.getByText("Hoy Uno")).toBeInTheDocument();
-    expect(screen.getByText("Hoy Dos")).toBeInTheDocument();
+
+    // Desde esta corrida "Hoy Uno"/"Hoy Dos" salen en DOS columnas a la vez:
+    // "Consulta" (su etapa real, vía `stageOf`) y "Primer contacto" (la
+    // cohorte de hoy, vía `isFirstContact`) — es el comportamiento nuevo, no
+    // un duplicado accidental. `getByText` a secas fallaría acá porque
+    // encuentra dos nodos; lo que hay que afirmar es justamente que aparecen
+    // dos veces, y en qué columnas.
+    expect(screen.getAllByText("Hoy Uno")).toHaveLength(2);
+    expect(screen.getAllByText("Hoy Dos")).toHaveLength(2);
+
+    const consulta = stageSection(container, "Consulta");
+    const primerContacto = stageSection(container, "Primer contacto");
+    expect(within(consulta).getByText("Hoy Uno")).toBeInTheDocument();
+    expect(within(primerContacto).getByText("Hoy Uno")).toBeInTheDocument();
+    expect(within(consulta).getByText("Hoy Dos")).toBeInTheDocument();
+    expect(within(primerContacto).getByText("Hoy Dos")).toBeInTheDocument();
   });
 
   it('(b) "Total de leads" pinta el initialLeadTotal con la marca "acumulado"', () => {
@@ -226,5 +254,54 @@ describe("DashboardView", () => {
 
     const stack = container.querySelector(".dash-avatar-stack");
     expect(stack?.getAttribute("title")).toBe(`${AGENT.displayName}: 1 casos abiertos`);
+  });
+
+  it('(d) el pulso "Nuevos" cuenta la cohorte de hoy, incluida una conversación que YA tiene asesor asignado', () => {
+    vi.setSystemTime(new Date(HOY));
+
+    // Antes de esta corrida "Primer contacto" dependía de `welcomeSentAt`
+    // (nunca se sella, `WHATSAPP_WELCOME_TEMPLATE` vacía) y este caso daba
+    // cero: un lead de hoy que ya escaló a un asesor no era "primer
+    // contacto" para la escalera vieja. Ahora es cohorte: entró hoy, cuenta,
+    // sin importar dónde esté parado de verdad.
+    const hoyConAsesor = conversacion({
+      id: "hoy-con-asesor",
+      assignedAgent: { id: AGENT.id, displayName: AGENT.displayName },
+      lastCustomerMessageAt: HOY,
+      lastMessageAt: HOY,
+      createdAt: HOY,
+    });
+
+    const { container } = renderView({ initialConversations: [hoyConAsesor] });
+
+    expect(pulseValue(container, "Nuevos")).toBe("1");
+    expect(pulseCaption(container, "Nuevos")).toBe("entraron hoy");
+    // Y aparece también en su columna real, "Con asesor" (`withAgent`).
+    expect(pulseValue(container, "Con asesor")).toBe("1");
+  });
+
+  it('(e) el contador "N atascados" del encabezado no cuenta dos veces una conversación atascada que aparece en dos columnas', () => {
+    vi.setSystemTime(new Date(HOY));
+
+    // Creada y con último mensaje del cliente 20 min antes de "ahora": supera
+    // el umbral de 15 min de "Consulta" y, por ser de hoy, sale ADEMÁS en
+    // "Primer contacto" — las dos columnas la marcan atascada.
+    const atascadaHoy = conversacion({
+      id: "atascada-hoy",
+      lastCustomerMessageAt: "2026-09-10T18:40:00.000Z",
+      lastMessageAt: "2026-09-10T18:40:00.000Z",
+      createdAt: "2026-09-10T18:40:00.000Z",
+    });
+
+    const { container } = renderView({ initialConversations: [atascadaHoy] });
+
+    const consulta = stageSection(container, "Consulta");
+    const primerContacto = stageSection(container, "Primer contacto");
+    expect(consulta.querySelector(".dash-stage-alert .dash-num")?.textContent).toBe("1");
+    expect(primerContacto.querySelector(".dash-stage-alert .dash-num")?.textContent).toBe("1");
+
+    // Pero el encabezado cuenta la CONVERSACIÓN, no las marcas de columna.
+    const stalledBadge = container.querySelector(".dash-board-head .dash-stage-alert .dash-num");
+    expect(stalledBadge?.textContent).toBe("1");
   });
 });

@@ -1,6 +1,6 @@
 /** @vitest-environment jsdom */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { render, screen } from "@testing-library/react";
+import { render, screen, within } from "@testing-library/react";
 import type { BoardConversation } from "@/lib/types";
 import { buildJourney, isStalled } from "@/lib/dashboard";
 import { DEFAULT_BUSINESS_HOURS } from "@/lib/business-hours";
@@ -179,5 +179,36 @@ describe("JourneyBoard — la tarjeta dice cuánto lleva esperando el cliente y 
     // del documento es el de "Consulta".
     const badge = container.querySelector(".dash-stage-alert .dash-num");
     expect(badge?.textContent).toBe(String(expectedStalled));
+  });
+
+  it("(e) una conversación creada hoy con asesor asignado sale en 'Primer contacto' Y en 'Con asesor' a la vez", () => {
+    // Corrida "El Recorrido cuenta los números nuevos del día" (10/9/2026):
+    // "Primer contacto" pasó de peldaño exclusivo a columna de cohorte, así
+    // que una tarjeta de hoy con asesor asignado tiene que verse en las DOS
+    // columnas al mismo tiempo — la misma conversación, dos apariciones.
+    const dayStart = "2026-09-04T04:00:00.000Z"; // medianoche de Caracas del 4/9/2026
+    const now = Date.parse("2026-09-04T12:00:00.000Z");
+    const conversation = conversacion({
+      id: "conv-e",
+      assignedAgent: { id: "ag-1", displayName: "Pedro" },
+      lastCustomerMessageAt: new Date(now - 5 * 60_000).toISOString(),
+      createdAt: new Date(now - 5 * 60_000).toISOString(),
+    });
+
+    const stages = buildJourney([conversation], now, DEFAULT_BUSINESS_HOURS, dayStart);
+    const { container } = render(
+      <JourneyBoard stages={stages} now={now} hours={DEFAULT_BUSINESS_HOURS} dayStart={dayStart} />
+    );
+
+    const sections = Array.from(container.querySelectorAll<HTMLElement>(".dash-stage"));
+    const primerContacto = sections.find(
+      (el) => el.querySelector(".dash-stage-label")?.textContent === "Primer contacto"
+    )!;
+    const conAsesor = sections.find(
+      (el) => el.querySelector(".dash-stage-label")?.textContent === "Con asesor"
+    )!;
+
+    expect(within(primerContacto).getByText("Cliente")).toBeInTheDocument();
+    expect(within(conAsesor).getByText("Cliente")).toBeInTheDocument();
   });
 });
