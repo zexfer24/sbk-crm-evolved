@@ -61,14 +61,15 @@ import { describe, expect, it } from "vitest";
 
 const LISTA_BLANCA = new Set(["is_agent", "is_supervisor_or_admin"]);
 
-// Las 18 funciones `security definer` conocidas en el esquema `public` a
-// fecha 30/8/2026 (17 + record_handoff, sumada en
-// 20260830040000_conversation_handoffs.sql — T1.1 del plan "Ningún lead
-// invisible"). Sirve para comprobar que el parser de abajo no se está
+// Las 19 funciones `security definer` conocidas en el esquema `public` a
+// fecha 10/9/2026 (18 + agent_day_summary, sumada en
+// 20260910010000_resumen_del_dia_del_asesor.sql — T0 de la corrida "Los
+// números del día"). Sirve para comprobar que el parser de abajo no se está
 // quedando corto: si algún día detecta menos de estas, el guardián dejó de
 // proteger algo y hay que enterarse antes de confiar en el resultado.
 const FUNCIONES_SECURITY_DEFINER_CONOCIDAS = [
   "is_agent",
+  "agent_day_summary",
   "is_supervisor_or_admin",
   "handle_new_agent",
   "handle_new_message",
@@ -219,7 +220,7 @@ describe("permisos de funciones security definer (guardián estático)", () => {
     .map(([nombre]) => nombre)
     .sort();
 
-  it("detecta exactamente las 17 funciones security definer conocidas", () => {
+  it("detecta exactamente las 19 funciones security definer conocidas", () => {
     // Si esto falla con MENOS de las 17, el parser se está comiendo alguna
     // (regex de cabecera roto, `$$` no encontrado, etc.) y el resto de este
     // archivo no protege nada aunque pase en verde. Si falla con MÁS,
