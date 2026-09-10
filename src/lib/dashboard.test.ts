@@ -3,6 +3,8 @@ import { DEFAULT_BUSINESS_HOURS } from "@/lib/business-hours";
 import {
   awaitingReply,
   buildJourney,
+  countStalled,
+  isFirstContact,
   isStalled,
   stageDetail,
   stageOf,
@@ -238,11 +240,18 @@ describe("stageOf — la escalera nueva, un peldaño a la vez", () => {
     expect(stageOf(conversation)).toBe("inquiry");
   });
 
-  it("4. (regla cambiada el 10/9/2026, 'Los números del día') recibió la bienvenida y no ha vuelto a escribir → first_contact, YA NO exige !awaitingReply", () => {
-    // Hasta el 9/9/2026 este peldaño exigía `!awaitingReply` (alguien ya
-    // había respondido de verdad y el cliente calló). El operador lo cambió:
-    // ahora "Primer contacto" describe al lead nuevo ANTES de esa respuesta,
-    // así que el peldaño tiene que calzar con o sin ella.
+  it("4. (peldaño ELIMINADO el 10/9/2026, 'El Recorrido cuenta los números nuevos del día') welcomeSentAt puesto ya NUNCA da first_contact — cae a inquiry", () => {
+    // Este era el caso del viejo peldaño 4: bienvenida enviada y el cliente
+    // sin volver a escribir. Hasta la corrida del 10/9/2026 esto daba
+    // `stageOf(...) === "first_contact"`, con o sin `awaitingReply` (la
+    // corrida "Los números del día", esa misma mañana, le había sacado esa
+    // exigencia). Unas horas después "El Recorrido cuenta los números
+    // nuevos del día" sacó el peldaño ENTERO de la escalera: `stageOf` ya no
+    // mira `welcomeSentAt` para nada, y este caso —lo que antes probaba que
+    // el peldaño existía para este lead— ahora prueba lo contrario, que
+    // `stageOf` nunca vuelve a caer ahí. Lo que este caso probaba de
+    // verdad (que la cohorte del día lo detecta) se prueba en
+    // `isFirstContact`, más abajo.
     const conRespuesta = conversacion({
       assignedAgent: null,
       welcomeSentAt: isoAt(NOW - 5 * MIN),
@@ -251,7 +260,7 @@ describe("stageOf — la escalera nueva, un peldaño a la vez", () => {
       lastReplySender: "ai",
     });
     expect(awaitingReply(conRespuesta)).toBe(false);
-    expect(stageOf(conRespuesta)).toBe("first_contact");
+    expect(stageOf(conRespuesta)).toBe("inquiry");
 
     const sinRespuesta = conversacion({
       assignedAgent: null,
@@ -260,7 +269,7 @@ describe("stageOf — la escalera nueva, un peldaño a la vez", () => {
       lastReplyAt: null,
     });
     expect(awaitingReply(sinRespuesta)).toBe(true);
-    expect(stageOf(sinRespuesta)).toBe("first_contact");
+    expect(stageOf(sinRespuesta)).toBe("inquiry");
   });
 
   it("5. todo lo demás → inquiry (el cliente pregunta y espera)", () => {
@@ -287,7 +296,12 @@ describe("stageOf — la escalera nueva, un peldaño a la vez", () => {
     expect(stageOf(conversation)).toBe("inquiry");
   });
 
-  it("first_contact YA NO es 'nunca se atasca' (regla cambiada el 10/9/2026, stallMinutes pasó de null a 15): con respuesta real ya enviada la pelota volvió al cliente y sigue sin atascarse, pero sin respuesta sí se atasca pasados 15 min", () => {
+  it("welcomeSentAt puesto ya no cambia nada de stageOf/waitingMinutes/isStalled: cae a inquiry con su propio reloj", () => {
+    // Reemplaza al test "first_contact YA NO es 'nunca se atasca'": con el
+    // peldaño 4 eliminado, `welcomeSentAt` es un campo que `stageOf` ya ni
+    // lee. Los mismos dos fixtures de antes (con y sin respuesta real) caen
+    // a `inquiry` y se rigen por SU reloj, no por ningún `stallMinutes` de
+    // "Primer contacto".
     const conRespuesta = conversacion({
       assignedAgent: null,
       welcomeSentAt: isoAt(NOW - 48 * HORA),
@@ -296,9 +310,8 @@ describe("stageOf — la escalera nueva, un peldaño a la vez", () => {
       lastReplySender: "ai",
     });
 
-    expect(stageOf(conRespuesta)).toBe("first_contact");
-    // No es el `stallMinutes: null` de antes lo que la salva: es que
-    // `awaitingReply` es false (ya hubo respuesta real) y `waitingMinutes`
+    expect(stageOf(conRespuesta)).toBe("inquiry");
+    // Ya hubo respuesta real: `awaitingReply` es false y `waitingMinutes`
     // devuelve null para cualquier etapa en ese caso.
     expect(waitingMinutes(conRespuesta, NOW)).toBeNull();
     expect(isStalled(conRespuesta, NOW)).toBe(false);
@@ -310,8 +323,9 @@ describe("stageOf — la escalera nueva, un peldaño a la vez", () => {
       lastReplyAt: null,
     });
 
-    expect(stageOf(sinRespuesta)).toBe("first_contact");
+    expect(stageOf(sinRespuesta)).toBe("inquiry");
     expect(waitingMinutes(sinRespuesta, NOW)).toBeCloseTo(20, 5);
+    // Umbral de "Consulta" (15 min), no de "Primer contacto": 20 min lo supera.
     expect(isStalled(sinRespuesta, NOW)).toBe(true);
   });
 
@@ -489,27 +503,25 @@ describe("buildJourney — la base del artefacto: un solo atascado (Diana)", () 
   });
 });
 
-describe("stageDetail — las frases nuevas de Primer contacto y Consulta en silencio", () => {
-  // 10/9/2026 ("Los números del día"): `first_contact` deja de tener un
-  // único texto fijo, igual que `stageOf` dejó de exigir `!awaitingReply`
-  // para esta etapa — ahora puede estar esperando la primera respuesta
-  // (muestra el `intent`, como "Consulta") o ya haber recibido la
-  // bienvenida sin volver a escribir (el texto de siempre).
-  it('first_contact esperando respuesta muestra el intent, como inquiry', () => {
-    const conversation = conversacion({ welcomeSentAt: isoAt(NOW), lastReplyAt: null, intent: "compra" });
-    expect(awaitingReply(conversation)).toBe(true);
+describe("stageDetail — Primer contacto delega en la etapa real, Consulta en silencio", () => {
+  // 10/9/2026, "El Recorrido cuenta los números nuevos del día":
+  // `first_contact` deja de tener texto propio (ni el `intent` fijo ni
+  // "esperando su siguiente mensaje" describen a TODA la cohorte de hoy) y
+  // pasa a delegar en `stageDetail(conversation, stageOf(conversation))` —
+  // la etapa real de la tarjeta, la misma que decide en qué otra columna
+  // aparece además.
+  it("first_contact sin asesor y esperando respuesta muestra el intent, igual que inquiry", () => {
+    const conversation = conversacion({ lastReplyAt: null, intent: "compra" });
+    expect(stageOf(conversation)).toBe("inquiry");
     expect(stageDetail(conversation, "first_contact")).toBe("compra");
   });
 
-  it('first_contact sin esperar respuesta dice "esperando su siguiente mensaje"', () => {
+  it("first_contact con asesor asignado devuelve el nombre del asesor (la tarjeta duplicada dice dónde está de verdad)", () => {
     const conversation = conversacion({
-      welcomeSentAt: isoAt(NOW),
-      lastCustomerMessageAt: isoAt(NOW - 10 * MIN),
-      lastReplyAt: isoAt(NOW),
-      lastReplySender: "ai",
+      assignedAgent: { id: "agente-1", displayName: "Pedro" },
     });
-    expect(awaitingReply(conversation)).toBe(false);
-    expect(stageDetail(conversation, "first_contact")).toBe("esperando su siguiente mensaje");
+    expect(stageOf(conversation)).toBe("assigned");
+    expect(stageDetail(conversation, "first_contact")).toBe("Pedro");
   });
 
   it('inquiry sin awaitingReply dice "sin respuesta del cliente"', () => {
@@ -536,14 +548,20 @@ describe("stageDetail — las frases nuevas de Primer contacto y Consulta en sil
 
 // ===========================================================================
 // buildJourney con dayStart — el tablero del día (T1, corrida "Los números
-// del día", 10/9/2026). `DAY_START` es la medianoche de Caracas del 10/9
-// (mismo formato que produce `useInboxDay`); `HOY` cae a las 3 pm del mismo
-// día, igual patrón que `NOW` más arriba en este archivo. Ojo con los
-// fixtures: `conversacion()` por defecto pone `lastMessageAt`/`createdAt`
-// en el 4/9 (T0) — cada caso de acá abajo que deba PASAR el corte del día
-// tiene que pisar `lastMessageAt` explícito, porque `matchesDay` (la gemela
-// de `inbox-filters.ts`) mira `lastMessageAt ?? createdAt`, nunca
-// `lastCustomerMessageAt`.
+// del día", 10/9/2026, y su segunda vuelta el mismo día, "El Recorrido
+// cuenta los números nuevos del día"). `DAY_START` es la medianoche de
+// Caracas del 10/9 (mismo formato que produce `useInboxDay`); `HOY` cae a
+// las 3 pm del mismo día, igual patrón que `NOW` más arriba en este archivo.
+// Ojo con los fixtures: `conversacion()` por defecto pone
+// `lastMessageAt`/`createdAt` en el 4/9 (T0) — cada caso de acá abajo que
+// deba PASAR el corte del día tiene que pisar `lastMessageAt` explícito,
+// porque `matchesDay` (la gemela de `inbox-filters.ts`) mira `lastMessageAt
+// ?? createdAt`, nunca `lastCustomerMessageAt`.
+//
+// (b) y (c) probaban el peldaño 4 de `stageOf` con `dayStart` —eliminado en
+// la segunda vuelta del 10/9/2026—, así que ahora prueban lo que quedó en su
+// lugar: `isFirstContact` y la columna de cohorte duplicada de
+// `buildJourney`.
 // ===========================================================================
 
 describe("buildJourney con dayStart — el tablero del día", () => {
@@ -564,39 +582,47 @@ describe("buildJourney con dayStart — el tablero del día", () => {
     expect(idsEnTablero).not.toContain("ayer");
   });
 
-  it("(b) creada hoy, un solo mensaje, con bienvenida y SIN respuesta → first_contact; se atasca a los 15 min, no a los 14", () => {
+  it("(b) creada hoy, un solo mensaje, SIN respuesta → sale en first_contact (cohorte) e inquiry (etapa real) a la vez, y las dos columnas se atascan a los 15 min, no a los 14", () => {
     const creadaHoy = "2026-09-10T18:44:00.000Z"; // 10/9, 2:44 pm Caracas
     const primerMensaje = conversacion({
       id: "primer-mensaje",
       createdAt: creadaHoy,
-      welcomeSentAt: creadaHoy,
       lastCustomerMessageAt: creadaHoy,
       lastMessageAt: creadaHoy,
       lastReplyAt: null,
     });
 
-    expect(stageOf(primerMensaje, DAY_START)).toBe("first_contact");
+    // Etapa real: sin asesor ni herramienta, cae a `inquiry` (el peldaño 4
+    // que hacía esto `first_contact` ya no existe).
+    expect(stageOf(primerMensaje)).toBe("inquiry");
+    expect(isFirstContact(primerMensaje, DAY_START)).toBe(true);
 
     const a14min = Date.parse(creadaHoy) + 14 * MIN;
     const a15min = Date.parse(creadaHoy) + 15 * MIN;
-    expect(isStalled(primerMensaje, a14min, DEFAULT_BUSINESS_HOURS, DAY_START)).toBe(false);
-    expect(isStalled(primerMensaje, a15min, DEFAULT_BUSINESS_HOURS, DAY_START)).toBe(true);
+
+    const stagesA14 = buildJourney([primerMensaje], a14min, DEFAULT_BUSINESS_HOURS, DAY_START);
+    expect(stagesA14.find((s) => s.id === "first_contact")!.stalled).toBe(0);
+    expect(stagesA14.find((s) => s.id === "inquiry")!.stalled).toBe(0);
+
+    const stagesA15 = buildJourney([primerMensaje], a15min, DEFAULT_BUSINESS_HOURS, DAY_START);
+    expect(stagesA15.find((s) => s.id === "first_contact")!.stalled).toBe(1);
+    expect(stagesA15.find((s) => s.id === "inquiry")!.stalled).toBe(1);
   });
 
-  it("(c) creada ayer que hoy escribió su segundo mensaje → inquiry, no first_contact", () => {
+  it("(c) creada ayer que hoy escribió su segundo mensaje → no es first_contact (cohorte) aunque su etapa real sea inquiry", () => {
     const segundoMensaje = conversacion({
       id: "segundo-mensaje",
       createdAt: "2026-09-09T15:00:00.000Z", // ayer, primer mensaje
-      welcomeSentAt: "2026-09-09T15:05:00.000Z", // ayer, tras el primer mensaje
       lastCustomerMessageAt: "2026-09-10T12:00:00.000Z", // hoy, segundo mensaje
       lastMessageAt: "2026-09-10T12:00:00.000Z",
       lastReplyAt: null,
     });
 
-    // El último mensaje es posterior a la bienvenida (segundo mensaje real):
-    // el peldaño 4 también fallaría por esto solo, pero lo que este caso
-    // prueba es el pie extra del 10/9/2026 (creada ayer, no hoy).
-    expect(stageOf(segundoMensaje, DAY_START)).toBe("inquiry");
+    expect(stageOf(segundoMensaje)).toBe("inquiry");
+    // Lo que este caso prueba de verdad: la cohorte mira `createdAt`
+    // (cuándo entró el número al sistema), no cuándo escribió por última
+    // vez — "creada ayer" la deja fuera aunque el mensaje sea de hoy.
+    expect(isFirstContact(segundoMensaje, DAY_START)).toBe(false);
   });
 
   it("(d) dentro de una etapa el orden es el más nuevo arriba", () => {
@@ -639,5 +665,156 @@ describe("buildJourney con dayStart — el tablero del día", () => {
     const stages = buildJourney([ayer], HOY);
     const idsEnTablero = stages.flatMap((s) => s.conversations.map((c) => c.id));
     expect(idsEnTablero).toContain("ayer-sin-daystart");
+  });
+});
+
+// ===========================================================================
+// isFirstContact — la cohorte del día (T1, corrida "El Recorrido cuenta los
+// números nuevos del día", 10/9/2026). Reemplaza al peldaño 4 que tenía
+// `stageOf`: ver el diagnóstico en el comentario de cabecera del archivo
+// fuente (119 números nuevos medidos en producción esa mañana, 0 en la
+// columna vieja por `welcome_sent_at` sin sellar nunca).
+// ===========================================================================
+
+describe("isFirstContact — la cohorte del día", () => {
+  const DAY_START = "2026-09-10T04:00:00.000Z"; // medianoche de Caracas, 10/9/2026
+
+  it("creada hoy con mensaje del cliente → true", () => {
+    const conversation = conversacion({
+      createdAt: "2026-09-10T18:44:00.000Z",
+      lastCustomerMessageAt: "2026-09-10T18:44:00.000Z",
+    });
+
+    expect(isFirstContact(conversation, DAY_START)).toBe(true);
+  });
+
+  it("creada ayer → false", () => {
+    const conversation = conversacion({
+      createdAt: "2026-09-09T15:00:00.000Z",
+      lastCustomerMessageAt: "2026-09-09T15:00:00.000Z",
+    });
+
+    expect(isFirstContact(conversation, DAY_START)).toBe(false);
+  });
+
+  it("creada hoy pero SIN lastCustomerMessageAt (contacto agregado a mano, T6 'Seis frentes del buzón') → false", () => {
+    const conversation = conversacion({
+      createdAt: "2026-09-10T18:44:00.000Z",
+      lastCustomerMessageAt: null,
+    });
+
+    expect(isFirstContact(conversation, DAY_START)).toBe(false);
+  });
+
+  it("dayStart nulo o ausente → false (sin día no hay cohorte; lo CONTRARIO del viejo createdToday de stageOf, que sin dayStart dejaba pasar cualquier fecha)", () => {
+    const conversation = conversacion({
+      createdAt: "2026-09-10T18:44:00.000Z",
+      lastCustomerMessageAt: "2026-09-10T18:44:00.000Z",
+    });
+
+    expect(isFirstContact(conversation, null)).toBe(false);
+    expect(isFirstContact(conversation, undefined)).toBe(false);
+  });
+
+  it("borde exacto de medianoche: createdAt === dayStart SÍ cuenta como hoy (>=, no >)", () => {
+    // Prueba de mutación (encargo T1): cambiar `>=` por `>` en
+    // `isFirstContact` tiene que romper justo este caso.
+    const conversation = conversacion({
+      createdAt: DAY_START,
+      lastCustomerMessageAt: DAY_START,
+    });
+
+    expect(isFirstContact(conversation, DAY_START)).toBe(true);
+  });
+});
+
+// ===========================================================================
+// buildJourney / countStalled — una tarjeta en dos columnas a la vez (T1,
+// misma corrida). El caso central del cambio conceptual: una conversación
+// creada hoy Y con asesor sale en `first_contact` (cohorte) Y en `assigned`
+// (etapa real), y el atasco de cada columna usa el umbral de la etapa REAL
+// de la tarjeta, nunca uno propio de "Primer contacto" (`stallMinutes` de
+// esa entrada es `null` — documentación, `stageOf` nunca la consulta).
+// ===========================================================================
+
+describe("buildJourney — una tarjeta en dos columnas a la vez", () => {
+  const DAY_START = "2026-09-10T04:00:00.000Z"; // medianoche de Caracas, 10/9/2026
+
+  it("conversación con asesor creada hoy aparece en first_contact Y en assigned", () => {
+    const conAsesor = conversacion({
+      id: "con-asesor",
+      assignedAgent: { id: "agente-1", displayName: "Pedro" },
+      createdAt: "2026-09-10T12:00:00.000Z",
+      lastMessageAt: "2026-09-10T12:00:00.000Z",
+      lastCustomerMessageAt: "2026-09-10T12:00:00.000Z",
+      lastReplyAt: null,
+    });
+
+    const hoy = Date.parse("2026-09-10T19:00:00.000Z"); // 10/9, 3 pm Caracas
+    const stages = buildJourney([conAsesor], hoy, DEFAULT_BUSINESS_HOURS, DAY_START);
+
+    expect(stages.find((s) => s.id === "first_contact")!.conversations.map((c) => c.id)).toEqual([
+      "con-asesor",
+    ]);
+    expect(stages.find((s) => s.id === "assigned")!.conversations.map((c) => c.id)).toEqual([
+      "con-asesor",
+    ]);
+  });
+
+  it("asignada con 30 min de pared en horario laboral NO marca atasco en ninguna de las dos columnas (menos que los 60 min laborales de 'Con asesor')", () => {
+    const clienteEscribio = Date.parse("2026-09-10T12:30:00.000Z"); // 10/9, 8:30 am Caracas
+    const ahora = Date.parse("2026-09-10T13:00:00.000Z"); // 10/9, 9:00 am Caracas: 30 min laborales
+
+    const conAsesor = conversacion({
+      id: "con-asesor-30min",
+      assignedAgent: { id: "agente-1", displayName: "Pedro" },
+      createdAt: isoAt(clienteEscribio),
+      lastMessageAt: isoAt(clienteEscribio),
+      lastCustomerMessageAt: isoAt(clienteEscribio),
+      lastReplyAt: null,
+    });
+
+    const stages = buildJourney([conAsesor], ahora, DEFAULT_BUSINESS_HOURS, DAY_START);
+
+    expect(stages.find((s) => s.id === "first_contact")!.stalled).toBe(0);
+    expect(stages.find((s) => s.id === "assigned")!.stalled).toBe(0);
+  });
+
+  it("sin asesor con 20 min SÍ marca atasco en las dos columnas (umbral de Consulta, 15 min)", () => {
+    const clienteEscribio = Date.parse("2026-09-10T12:00:00.000Z"); // 10/9, 8:00 am Caracas
+    const ahora = Date.parse("2026-09-10T12:20:00.000Z"); // 20 min después
+
+    const sinAsesor = conversacion({
+      id: "sin-asesor-20min",
+      assignedAgent: null,
+      createdAt: isoAt(clienteEscribio),
+      lastMessageAt: isoAt(clienteEscribio),
+      lastCustomerMessageAt: isoAt(clienteEscribio),
+      lastReplyAt: null,
+    });
+
+    const stages = buildJourney([sinAsesor], ahora, DEFAULT_BUSINESS_HOURS, DAY_START);
+
+    expect(stages.find((s) => s.id === "first_contact")!.stalled).toBe(1);
+    expect(stages.find((s) => s.id === "inquiry")!.stalled).toBe(1);
+  });
+
+  it("countStalled cuenta 1, no 2, sobre la conversación duplicada en dos columnas", () => {
+    const clienteEscribio = Date.parse("2026-09-10T12:00:00.000Z");
+    const ahora = Date.parse("2026-09-10T12:20:00.000Z");
+
+    const sinAsesor = conversacion({
+      id: "sin-asesor-20min",
+      assignedAgent: null,
+      createdAt: isoAt(clienteEscribio),
+      lastMessageAt: isoAt(clienteEscribio),
+      lastCustomerMessageAt: isoAt(clienteEscribio),
+      lastReplyAt: null,
+    });
+
+    // Sumar `stage.stalled` de las cinco columnas contaría esta tarjeta dos
+    // veces (aparece en `first_contact` e `inquiry`); `countStalled` cuenta
+    // conversaciones únicas.
+    expect(countStalled([sinAsesor], ahora, DEFAULT_BUSINESS_HOURS, DAY_START)).toBe(1);
   });
 });

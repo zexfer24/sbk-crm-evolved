@@ -164,8 +164,8 @@ export function JourneyBoard({
                     // `waitingMinutes` es null si la pelota está del lado del
                     // cliente (no espera respuesta) — ahí se pinta `stageDetail`
                     // en gris en vez de un tiempo de espera que no existe.
-                    const waited = waitingMinutes(conversation, now, hours, dayStart);
-                    const late = isStalled(conversation, now, hours, dayStart);
+                    const waited = waitingMinutes(conversation, now, hours);
+                    const late = isStalled(conversation, now, hours);
                     const name = contactName(conversation);
                     const detail = stageDetail(conversation, stage.id);
                     const metaText =
