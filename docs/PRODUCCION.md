@@ -297,7 +297,11 @@ Lo cerraron tres migraciones del 30/8/2026:
 - `20260830030000_agent_metrics_guarda.sql` — `agent_metrics` verifica
   `is_agent()` desde adentro, como segunda línea de defensa detrás del
   revoke, por si un `grant` futuro la vuelve a abrir.
-- `20260910010000_resumen_del_dia_del_asesor.sql` — nace `agent_day_summary`  (resumen del día del asesor que llama, con los dos revokes y el grant a  `authenticated`) y `agent_metrics` pasa a atribuir las ventas a quien  cerró (`deal_closed_by`). No crea columnas: `assigned_at` existe desde  20260822080000.
+- `20260910010000_resumen_del_dia_del_asesor.sql` — nace `agent_day_summary`
+  (resumen del día del asesor que llama, con los dos revokes y el grant a
+  `authenticated`) y `agent_metrics` pasa a atribuir las ventas a quien
+  cerró (`deal_closed_by`). No crea columnas: `assigned_at` existe desde
+  20260822080000.
 
 **No verifiques función por función.** Una sola consulta recorre todas las
 `security definer` de `public` y muestra qué puede ejecutar cada rol:
