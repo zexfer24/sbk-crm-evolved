@@ -30,18 +30,15 @@ interface JourneyBoardProps {
   now: number;
   /** Horario de atención para medir "Con asesor" en minutos laborales (Frente A). */
   hours?: BusinessHours;
-  /**
-   * El mismo corte "habló hoy" que ya recibió `buildJourney` para armar
-   * `stages` (T2, corrida "Los números del día", 10/9/2026): sin este
-   * mismo valor, `waitingMinutes`/`isStalled` decidirían "Primer contacto"
-   * con OTRO día del que decidió `stageOf` al armar la columna —el punto
-   * rojo de una tarjeta podría no coincidir con el contador de atascados
-   * de su propia columna. `null` por default para no romper a un llamador
-   * que todavía no lo pasa (hoy ninguno; queda documentado como el resto
-   * de los opcionales de esta pantalla).
-   */
-  dayStart?: string | null;
 }
+
+// Tuvo un prop `dayStart` (T2, corrida "Los números del día", 10/9/2026):
+// enhebraba el mismo corte "habló hoy" hasta `waitingMinutes`/`isStalled`
+// para que decidieran "Primer contacto" con el mismo día que `stageOf` usaba
+// al armar la columna. Se fue en "El Recorrido cuenta los números nuevos del
+// día" (mismo día, corrida siguiente): `stageOf` ya nunca devuelve
+// `"first_contact"`, así que `waitingMinutes`/`isStalled` dejaron de tomar
+// `dayStart` — no había a quién enhebrárselo.
 
 /**
  * "espera N min" desde `lastCustomerMessageAt` (Frente A, 5/9/2026): minutos
@@ -77,7 +74,6 @@ export function JourneyBoard({
   stages,
   now,
   hours = DEFAULT_BUSINESS_HOURS,
-  dayStart = null,
 }: JourneyBoardProps) {
   const flowRef = useRef<HTMLDivElement>(null);
   const columnRefs = useRef<(HTMLDivElement | null)[]>([]);

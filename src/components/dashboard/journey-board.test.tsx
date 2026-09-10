@@ -197,7 +197,7 @@ describe("JourneyBoard — la tarjeta dice cuánto lleva esperando el cliente y 
 
     const stages = buildJourney([conversation], now, DEFAULT_BUSINESS_HOURS, dayStart);
     const { container } = render(
-      <JourneyBoard stages={stages} now={now} hours={DEFAULT_BUSINESS_HOURS} dayStart={dayStart} />
+      <JourneyBoard stages={stages} now={now} hours={DEFAULT_BUSINESS_HOURS} />
     );
 
     const sections = Array.from(container.querySelectorAll<HTMLElement>(".dash-stage"));

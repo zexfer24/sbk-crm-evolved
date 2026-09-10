@@ -531,18 +531,43 @@ dejar rastro es lo que hacía desaparecer leads.
   componente.
 - **El Recorrido muestra SOLO el día en curso; "Total de leads" es su único
   número acumulado** (corrida "Los números del día", 10/9/2026).
-  `buildJourney`/`stageOf`/`isStalled`/`waitingMinutes` (`dashboard.ts`)
-  reciben `dayStart` —el MISMO string de `useInboxDay("today")` que usa la
-  bandeja, aplicado en memoria porque la lista de Reclamos de la misma
-  página necesita conversaciones de cualquier fecha—; sin `dayStart` no
-  filtran nada (llamador viejo). "Primer contacto" es el lead CREADO HOY
-  con un solo mensaje del cliente (`lastCustomerMessageAt <=
-  welcomeSentAt`), espere o no, y se atasca a los 15 min: hasta el 10/9
-  exigía que la IA ya hubiera respondido y nunca se atascaba. El orden
-  dentro de cada etapa es "más nuevo arriba" (revierte "lo urgente arriba"
-  del 5/9); la urgencia la conservan el punto rojo y el contador "N
-  atascados". `matchesDay` está replicada en privado en `dashboard.ts`
-  porque `inbox-filters.ts` ya importa de `dashboard.ts` (ciclo).
+  `buildJourney`/`countStalled` (`dashboard.ts`) reciben `dayStart` —el
+  MISMO string de `useInboxDay("today")` que usa la bandeja, aplicado en
+  memoria porque la lista de Reclamos de la misma página necesita
+  conversaciones de cualquier fecha—; sin `dayStart` no filtran nada
+  (llamador viejo). El orden dentro de cada etapa es "más nuevo arriba"
+  (revierte "lo urgente arriba" del 5/9); la urgencia la conservan el punto
+  rojo y el contador "N atascados". `matchesDay` está replicada en privado
+  en `dashboard.ts` porque `inbox-filters.ts` ya importa de `dashboard.ts`
+  (ciclo).
+  **"Primer contacto" es una COLUMNA DE COHORTE, no un peldaño de la
+  escalera** (corrida "El Recorrido cuenta los números nuevos del día",
+  10/9/2026, misma tarde, segunda vuelta): la misma conversación puede
+  aparecer ahí Y en su columna de estado real (p. ej. "Con asesor") a la
+  vez, a propósito — cualquier número del tablero que sume las columnas en
+  vez de contar conversaciones únicas cuenta esa tarjeta dos veces, que es
+  justo por lo que existe `countStalled` (cuenta sobre el conjunto
+  `isActive` + `matchesDay`, no sobre `stage.stalled` de cada columna). Su
+  definición (`isFirstContact`) es "creada hoy + tiene un mensaje del
+  cliente"; `welcomeSentAt` YA NO participa. Sí participaba hasta esta
+  corrida —"CREADO HOY con un solo mensaje del cliente, `lastCustomerMessageAt
+  <= welcomeSentAt`, espere o no"— y esa dependencia fue el bug real: se
+  midió en producción el 10/9/2026 y la columna daba CERO sobre 119 números
+  nuevos del día (90 ya con asesor, 28 ya con respuesta), porque
+  `WHATSAPP_WELCOME_TEMPLATE` está vacía desde siempre y `welcome_sent_at`
+  nunca se sella. Sacarle solo esa condición al peldaño no arreglaba nada de
+  fondo —habría mostrado 1 de 119, porque casi ningún lead nuevo se queda
+  quieto en un peldaño de escalera—, así que el operador decidió la cohorte
+  completa en vez de un parche puntual. La cohorte NO tiene reloj propio:
+  `stageOf` nunca devuelve `"first_contact"` (perdió ese peldaño y su
+  parámetro `dayStart`, igual que `waitingMinutes`/`isStalled`), así que el
+  punto rojo de cada tarjeta de "Primer contacto" se pinta con el umbral de
+  su etapa REAL (60 min laborales con asesor, 15 sin él) — "atascado" sigue
+  teniendo una sola definición, la de siempre. Y ojo con la asimetría frente
+  al llamador viejo: sin `dayStart`, `buildJourney` y `countStalled` dejan
+  pasar cualquier fecha, pero `isFirstContact` devuelve `false` (sin día no
+  hay cohorte), así que esa columna se VACÍA en vez de llenarse — lo
+  contrario de lo que sugiere el resto de la viñeta.
 - **`dayKey` (`format.ts`) agrupa en la zona del NAVEGADOR; el día de
   negocio se corta con `crmDayKey`/`todayKey` (`sales-day.ts`)**
   (10/9/2026). Un asesor con el reloj de Windows en otra zona vería una

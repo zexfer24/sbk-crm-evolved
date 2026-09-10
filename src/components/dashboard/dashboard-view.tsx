@@ -315,7 +315,7 @@ export function DashboardView({
                 )}
               </div>
 
-              <JourneyBoard stages={stages} now={now} hours={businessHours} dayStart={dayStart} />
+              <JourneyBoard stages={stages} now={now} hours={businessHours} />
             </section>
 
             <div id="actividad">
