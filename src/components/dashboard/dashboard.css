@@ -332,10 +332,30 @@
   text-transform: uppercase;
 }
 
+/* "acumulado" bajo "Total de leads" (T2, 10/9/2026): la única pieza del
+   pulso que no corta por hoy — más chica y sin mayúsculas para no competir
+   con la etiqueta de arriba, que sigue siendo la que se lee primero. */
+.dash-pulse-caption {
+  color: var(--lm-muted);
+  font-size: 10px;
+  font-weight: 400;
+  opacity: 0.75;
+}
+
 .dash-pulse-rule {
   width: 1px;
   height: 30px;
   background: var(--lm-canvas-edge);
+}
+
+/* Separa las tres piezas de HOY del acumulado histórico que cierra el pulso
+   (T2, 10/9/2026): más ancha y más alta que `.dash-pulse-rule` para que el
+   corte se note sin necesitar una segunda oración. */
+.dash-pulse-rule-strong {
+  width: 1.5px;
+  height: 34px;
+  background: var(--lm-ink-soft);
+  opacity: 0.4;
 }
 
 /* --------------------------------------------------------------------------
