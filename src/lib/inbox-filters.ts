@@ -103,8 +103,20 @@ export function isUnread(conversation: ConversationSummary): boolean {
  * suele venir con offset explícito (`+00:00`); los dos textos representan el
  * mismo instante pero no ordenan igual como string (`sortValue`, más abajo
  * en este archivo, ya evita el mismo error convirtiendo a `Date`).
+ *
+ * Parámetro estructural (T1, corrida "Los números del día", 10/9/2026): un
+ * `Pick` inline de los dos únicos campos que mira, en vez de
+ * `ConversationSummary` entero. `buildJourney` (`dashboard.ts`) necesita el
+ * mismo corte sobre `BoardConversation` —tiene los mismos dos campos, con el
+ * mismo tipo, pero no extiende `ConversationSummary`— y no puede importar
+ * esta función (`dashboard.ts` la replica en privado: ver el comentario del
+ * ciclo ahí), así que el tipo de este parámetro queda documentado como el
+ * contrato mínimo que cualquier forma de conversación tiene que cumplir.
  */
-export function matchesDay(conversation: ConversationSummary, dayStart: string | null): boolean {
+export function matchesDay(
+  conversation: { lastMessageAt: string | null; createdAt: string },
+  dayStart: string | null
+): boolean {
   if (!dayStart) return true;
   const cutoff = Date.parse(dayStart);
   const reference = conversation.lastMessageAt ?? conversation.createdAt;
