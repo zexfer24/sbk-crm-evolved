@@ -1,4 +1,5 @@
 import "@testing-library/jest-dom/vitest";
+import { beforeEach } from "vitest";
 
 /**
  * jsdom no implementa `matchMedia`, y cualquier componente que pregunte por la
@@ -36,4 +37,25 @@ if (typeof window !== "undefined" && !window.matchMedia) {
 if (typeof window !== "undefined") {
   const { configure } = await import("@testing-library/react");
   configure({ asyncUtilTimeout: 5000 });
+}
+
+/**
+ * 10/9/2026: jsdom conserva su `localStorage` durante todo un archivo de
+ * pruebas, así que lo que guardaba un test (la píldora y el orden de la
+ * bandeja, `sbk:inbox:{agentId}`) lo heredaba el siguiente. En el CI (Node
+ * 22) eso dejó rojos 15 tests de inbox-sidebar.test.tsx desde el 6/9; en
+ * local no se veía porque Node 26 no le daba `localStorage` a jsdom (ver
+ * `execArgv` en vitest.config.ts). Se vacía ANTES de cada test para que cada
+ * uno arranque limpio sin depender del orden de los `afterEach`. Si algún día
+ * falta el almacenamiento, no se lanza desde acá: el contrato del entorno lo
+ * cuida vitest.setup.test.ts.
+ */
+if (typeof window !== "undefined") {
+  beforeEach(() => {
+    try {
+      globalThis.localStorage?.clear();
+    } catch {
+      // Un stub sin `clear` o un almacenamiento bloqueado: nada que vaciar.
+    }
+  });
 }

@@ -2264,15 +2264,18 @@ describe('InboxSidebar — "Más antiguas" resuelve en el servidor (T1.3)', () =
 
 /**
  * T2.2 del plan "La bandeja que no pierde" (5/9/2026): la píldora y el orden
- * activos se recuerdan entre sesiones bajo `sbk:inbox:{agentId}`. El entorno
- * de este archivo (Node + jsdom) NO trae un `localStorage` global de verdad
- * —Node 22+ define su propio `localStorage` experimental que pisa el de
- * jsdom y lo deja `undefined` sin `--localstorage-file`, confirmado
- * directamente contra este runner— así que cada test que necesita
- * almacenamiento real instala uno falso con `vi.stubGlobal`, y el que prueba
- * justamente la AUSENCIA de almacenamiento no instala nada: ya es el estado
- * por defecto de este entorno, el mismo que corrieron sin quejarse los otros
- * 71 tests de este archivo.
+ * activos se recuerdan entre sesiones bajo `sbk:inbox:{agentId}`. Los tests
+ * que necesitan un almacenamiento con contenido controlado instalan uno falso
+ * con `vi.stubGlobal`; el que prueba la AUSENCIA de almacenamiento la simula
+ * con `vi.stubGlobal("localStorage", undefined)`.
+ *
+ * 10/9/2026: este comentario decía que "Node 22+" dejaba `localStorage` en
+ * `undefined` dentro de jsdom. Era falso justo para Node 22, el del CI: ahí
+ * jsdom trae uno real, el estado se contagiaba de un test al siguiente y el
+ * CI estuvo rojo desde el 6/9 mientras la suite local (Node 26, sin
+ * almacenamiento) daba verde. Desde entonces el entorno trae el de jsdom en
+ * cualquier Node (`execArgv` en vitest.config.ts) y vitest.setup.ts lo vacía
+ * antes de cada test.
  */
 describe("InboxSidebar — recuerda la píldora y el orden (T2.2)", () => {
   function fakeLocalStorage() {
@@ -2342,10 +2345,19 @@ describe("InboxSidebar — recuerda la píldora y el orden (T2.2)", () => {
   });
 
   it("sin localStorage disponible no rompe ni al montar ni al cambiar de píldora", () => {
-    // Sin vi.stubGlobal: se prueba contra el estado real de este entorno,
-    // que ya es "sin almacenamiento" (ver el comentario de cabecera).
+    // La ausencia se simula a propósito: el entorno de pruebas SÍ trae el
+    // localStorage de jsdom (execArgv en vitest.config.ts, 10/9/2026). El
+    // afterEach de este describe lo restaura con vi.unstubAllGlobals().
+    vi.stubGlobal("localStorage", undefined);
+
     expect(() => renderSidebar(JEFA)).not.toThrow();
+    // Un error dentro de un efecto no siempre sale por `render`: en React 19
+    // puede desmontar la raíz y reportarse aparte. Que las píldoras sigan en
+    // pantalla es la prueba de que la bandeja sobrevivió.
+    expect(activePillLabel()).toBe("Pendientes");
+
     expect(() => irATodos()).not.toThrow();
+    expect(activePillLabel()).toBe("Todos");
   });
 });
 

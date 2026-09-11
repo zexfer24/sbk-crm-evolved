@@ -20,6 +20,14 @@ export default defineConfig({
     // `/** @vitest-environment jsdom */` como primera línea del archivo.
     environment: "node",
     setupFiles: ["./vitest.setup.ts"],
+    // 10/9/2026: Node 25+ trae Web Storage nativo y, sin --localstorage-file,
+    // deja `localStorage` en undefined dentro de jsdom; Node 22 (el del CI y
+    // el del Dockerfile) no lo trae y jsdom pone uno real. Con esa diferencia
+    // la suite local daba verde mientras el CI estaba rojo (desde el 6/9:
+    // estado de inbox-sidebar heredado de un test al siguiente). Apagar el
+    // nativo deja a jsdom igual en las dos versiones. Aceptada por Node
+    // 22.23.2 y 26.3.0 (probado el 10/9/2026).
+    execArgv: ["--no-experimental-webstorage"],
     globals: true,
     css: false,
     // 28/8/2026: con pool "forks" + isolate true (los defaults), cada archivo
