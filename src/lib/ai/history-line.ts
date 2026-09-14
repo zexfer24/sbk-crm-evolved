@@ -115,3 +115,93 @@ export function historyLine(row: HistoryRow): HistoryLine | null {
 export function isHistoryMarker(text: string): boolean {
   return /^\[(El cliente|El asesor) envió /.test(text);
 }
+
+// ---------------------------------------------------------------------------
+// Racha de adjuntos sin texto (Tarea 6, "La voz cercana y la espera visible",
+// 14/9/2026, decisión 5): 494 fotos y 117 audios en 72 h, y la IA repitiendo
+// "¿qué repuesto buscas?" hasta 10 veces sin que nadie contara cuántas veces
+// ya lo había preguntado. `history-line.ts` ya marcaba cada adjunto; lo que
+// faltaba era contar la racha para que `agent.ts` supiera cuándo dejar de
+// insistir y pasar el caso.
+//
+// Los cuatro literales de abajo tienen que coincidir EXACTAMENTE con los que
+// arma `clienteMarker` más arriba en este archivo (mismo acoplamiento que ya
+// advierte el comentario de cabecera del módulo) — son constantes, nunca
+// llevan pie, así que compararlas por igualdad es más simple y más seguro que
+// otro regex. El sticker se deja fuera a propósito: un sticker no es un
+// pedido (decisión 5 del plan), así que ni cuenta como adjunto ni corta la
+// racha por sí solo — mismo trato que el resto del código le da a los
+// marcadores del asesor (no son "una pregunta").
+// ---------------------------------------------------------------------------
+
+/** Tipo (en español, para el resumen que lee un asesor) de cada marcador "sin pie" que SÍ cuenta como adjunto pendiente. */
+const SIN_PIE_MARKERS: Record<string, string> = {
+  "[El cliente envió una foto sin texto; no puedes verla]": "una foto",
+  "[El cliente envió un video sin texto; no puedes verlo]": "un video",
+  "[El cliente envió una nota de voz; no puedes escucharla]": "una nota de voz",
+  "[El cliente envió un documento; no puedes abrirlo]": "un documento",
+};
+
+/**
+ * Forma mínima que necesita `mediaStreakWithoutText`: tanto `HistoryLine`
+ * (este archivo) como el `ModelMessage` que arma `loadHistory` en agent.ts
+ * calzan sin adaptar nada — los dos tienen `role`/`content` de sobra.
+ */
+interface StreakEntry {
+  role: string;
+  content: unknown;
+}
+
+export interface MediaStreak {
+  /** Cuántos marcadores "sin pie" seguidos, contando desde el final, sin ningún texto de cliente en el medio. */
+  adjuntos: number;
+  /** true si entre esos adjuntos la IA (o un asesor) ya escribió algo que no es, a su vez, un marcador de media saliente. */
+  yaPreguntamos: boolean;
+  /** El tipo (en español) de cada adjunto contado, del más viejo al más nuevo — para el resumen que lee el asesor al escalar. */
+  tipos: string[];
+}
+
+/**
+ * Cuenta, desde el mensaje más reciente hacia atrás, cuántos adjuntos del
+ * cliente llegaron seguidos sin ningún texto — ni un pie en el propio
+ * adjunto, ni un mensaje de texto posterior. Se detiene en la primera línea
+ * de cliente que SÍ trae texto (un mensaje normal, o un marcador con pie: si
+ * puso un pie, ya escribió lo que hacía falta) o en un sticker (no es un
+ * pedido, decisión 5 del plan: ni cuenta ni corta la racha por las buenas,
+ * simplemente no es del tipo que este conteo busca).
+ *
+ * `agent.ts` usa el resultado para decidir si vale la pena volver a
+ * preguntar "¿qué es esto?" una vez más, o si ya toca pasarle el caso a un
+ * asesor (ver `runTurnPhases`).
+ */
+export function mediaStreakWithoutText(history: StreakEntry[]): MediaStreak {
+  let adjuntos = 0;
+  let yaPreguntamos = false;
+  const tipos: string[] = [];
+
+  for (let i = history.length - 1; i >= 0; i--) {
+    const message = history[i];
+    const content = typeof message.content === "string" ? message.content : null;
+
+    if (message.role === "user") {
+      const tipo = content !== null ? SIN_PIE_MARKERS[content] : undefined;
+      if (tipo) {
+        adjuntos++;
+        tipos.unshift(tipo);
+        continue;
+      }
+      // Cualquier otra línea de cliente —texto real, un marcador CON pie, o
+      // un sticker— cierra la racha acá: ya hay algo que leer, o (sticker) no
+      // hay un pedido que perseguir.
+      break;
+    }
+
+    // Línea del asesor/IA: un marcador de media saliente ("[El asesor envió
+    // una foto]") no es una pregunta —mismo criterio que `alreadyRedirected`/
+    // `alreadySentPlaybook` en agent.ts—; cualquier otro texto sí lo es.
+    if (content !== null && isHistoryMarker(content)) continue;
+    yaPreguntamos = true;
+  }
+
+  return { adjuntos, yaPreguntamos, tipos };
+}

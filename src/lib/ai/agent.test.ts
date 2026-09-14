@@ -509,7 +509,7 @@ vi.mock("@/lib/whatsapp/meta-client", () => ({
   sendTypingIndicator: (...args: unknown[]) => sendTypingIndicatorMock(...args),
 }));
 
-import { DESPEDIDA_SIN_ASESOR, despedidaConAsesor, runAgentTurn } from "@/lib/ai/agent";
+import { DESPEDIDA_MEDIA, DESPEDIDA_SIN_ASESOR, despedidaConAsesor, runAgentTurn } from "@/lib/ai/agent";
 import { OFF_TOPIC_REPLY, SYSTEM_PROMPT } from "@/lib/ai/prompt";
 import { revealsIdentity } from "@/lib/ai/identity-guard";
 import { playbookMessageText } from "@/lib/ai/send";
@@ -1083,6 +1083,79 @@ describe("runAgentTurn — guarda de cortesía tras una escalada abierta (Tarea 
     expect(classifyIntentMock).toHaveBeenCalled();
     expect(sendAgentTextMock).toHaveBeenCalledTimes(1);
     expect(handoffCalls.some((c) => c.p_reason === "cortesia_tras_escalada")).toBe(false);
+  });
+});
+
+/**
+ * Tarea 6, "La voz cercana y la espera visible" (14/9/2026), decisión 5: 494
+ * fotos y 117 audios en 72 h, la IA repitiendo "¿qué repuesto buscas?" hasta
+ * 10 veces. Corre ANTES de fase 0 y de clasificar — `matchPlaybookMock`/
+ * `classifyIntentMock` no deben llamarse cuando la guarda dispara.
+ *
+ * El historial se escribe DESCENDENTE (más reciente primero), igual que el
+ * resto del archivo — `loadHistory` lo invierte a cronológico antes de que
+ * `mediaStreakWithoutText` lo lea.
+ */
+describe("runAgentTurn — al segundo adjunto sin texto, la IA pasa el caso (Tarea 6, 14/9/2026)", () => {
+  it("(a) foto → la IA pregunta → foto: escala con 'seguimiento' y manda DESPEDIDA_MEDIA con is_auto_reply", async () => {
+    state.history = [
+      { sender_type: "customer", content: null, is_internal_note: false, message_type: "image" },
+      { sender_type: "ai", content: "¿De qué moto es el repuesto que buscas?", is_internal_note: false },
+      { sender_type: "customer", content: null, is_internal_note: false, message_type: "image" },
+    ];
+
+    await runAgentTurn("conv-1");
+
+    expect(matchPlaybookMock).not.toHaveBeenCalled();
+    expect(classifyIntentMock).not.toHaveBeenCalled();
+    expect(escalateConversationMock).toHaveBeenCalledTimes(1);
+    expect(escalateConversationMock.mock.calls[0][1]).toMatchObject({
+      conversationId: "conv-1",
+      contactId: "contact-1",
+      motivo: "seguimiento",
+      businessHours: DEFAULT_BUSINESS_HOURS,
+    });
+    expect((escalateConversationMock.mock.calls[0][1] as { resumen: string }).resumen).toContain("2 adjuntos");
+
+    expect(sendAgentTextMock).toHaveBeenCalledTimes(1);
+    expect(sendAgentTextMock).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.anything(),
+      DESPEDIDA_MEDIA,
+      { isAutoReply: true }
+    );
+
+    expect(agentTurnInserts).toHaveLength(1);
+    expect(agentTurnInserts[0]).toMatchObject({ intent: null, action: "escalated" });
+  });
+
+  it("(b) foto → foto, SIN que la IA haya respondido en medio: turno normal", async () => {
+    state.history = [
+      { sender_type: "customer", content: null, is_internal_note: false, message_type: "image" },
+      { sender_type: "customer", content: null, is_internal_note: false, message_type: "image" },
+    ];
+
+    await runAgentTurn("conv-1");
+
+    expect(escalateConversationMock).not.toHaveBeenCalled();
+    expect(classifyIntentMock).toHaveBeenCalled();
+    expect(sendAgentTextMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("(c) sticker → sticker: un sticker no es un pedido, turno normal", async () => {
+    state.history = [
+      { sender_type: "customer", content: null, is_internal_note: false, message_type: "sticker" },
+      { sender_type: "customer", content: null, is_internal_note: false, message_type: "sticker" },
+    ];
+
+    await runAgentTurn("conv-1");
+
+    expect(escalateConversationMock).not.toHaveBeenCalled();
+    expect(classifyIntentMock).toHaveBeenCalled();
+  });
+
+  it("(d) DESPEDIDA_MEDIA pasa la guarda de identidad", () => {
+    expect(revealsIdentity(DESPEDIDA_MEDIA)).toBeNull();
   });
 });
 
@@ -3380,6 +3453,8 @@ describe("runAgentTurn — guarda de identidad", () => {
     ).toBeNull();
     expect(revealsIdentity(despedidaConAsesor({ open: false, closesAt: null, nextOpening: null }))).toBeNull();
     expect(revealsIdentity(despedidaConAsesor(undefined))).toBeNull();
+    // Tarea 6 (14/9/2026): la despedida del segundo adjunto sin texto.
+    expect(revealsIdentity(DESPEDIDA_MEDIA)).toBeNull();
   });
 
   /**

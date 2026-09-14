@@ -23,7 +23,7 @@ import { escalateConversation } from "@/lib/ai/escalate";
 import { withConversationTurnLock, type TurnLease } from "@/lib/ai/conversation-lock";
 import { humanHasWritten } from "@/lib/ai/human-handled";
 import { ZERO_USAGE, fetchActivePlaybooks, matchPlaybook, playbookSentRecently, type PlaybookMatch } from "@/lib/ai/playbooks";
-import { historyLine, isHistoryMarker } from "@/lib/ai/history-line";
+import { historyLine, isHistoryMarker, mediaStreakWithoutText } from "@/lib/ai/history-line";
 import { customerFirstName } from "@/lib/ai/customer-name";
 import { playbookMessageText, sendAgentText, sendPlaybookReply, type DeliveryOutcome } from "@/lib/ai/send";
 import { buildTurnTarget, type AgentConversation, type TurnTarget } from "@/lib/ai/turn-target";
@@ -576,7 +576,7 @@ async function humanWroteMeanwhile(
 }
 
 /** Desde qué punto del turno se está intentando hablar. Viaja al registro. */
-type SendPhase = "escenario" | "fuera_de_tema" | "redaccion";
+type SendPhase = "escenario" | "fuera_de_tema" | "redaccion" | "adjuntos_sin_texto";
 
 /**
  * La única puerta por la que un turno le pone algo delante al cliente.
@@ -833,6 +833,38 @@ export function despedidaConAsesor(status?: BusinessStatus): string {
     return "Dame un momentico: ya le paso tu caso a un asesor para que te ayude con esto en cuanto la tienda vuelva a abrir; gracias por la paciencia.";
   }
   return `Dame un momentico: ya le paso tu caso a un asesor para que te ayude con esto. Eso sí, la tienda está cerrada ahora — te escribe ${status.nextOpening.dayLabel} a partir de las ${status.nextOpening.time}; gracias por la paciencia.`;
+}
+
+/**
+ * Despedida fija del segundo adjunto sin texto seguido (Tarea 6, "La voz
+ * cercana y la espera visible", 14/9/2026, decisión 5): 494 fotos y 117
+ * audios en 72 h, la IA repitiendo "¿qué repuesto buscas?" hasta 10 veces.
+ * Cuando `mediaStreakWithoutText` (history-line.ts) ve que ya se preguntó una
+ * vez y llegó OTRO adjunto sin texto, no tiene sentido volver a preguntar: se
+ * pasa el caso directo, sin gastar fase 0, fase 1 ni tool loop.
+ *
+ * Exportada, mismo motivo que `DESPEDIDA_SIN_ASESOR`: el test estático de
+ * `agent.test.ts` la pasa por `revealsIdentity`.
+ */
+export const DESPEDIDA_MEDIA =
+  "Ya vi que me mandaste varias cosas 🙌. Para no hacerte esperar, te paso con un asesor que lo revisa y te escribe por acá.";
+
+/**
+ * `DESPEDIDA_MEDIA` ya dice "te paso con un asesor" y "te escribe por acá",
+ * pero esa promesa sola no dice CUÁNDO (Decisión 6, "la promesa dice
+ * cuándo"): sin asesor asignado, se completa con el mismo cierre que ya usa
+ * la red de seguridad sin asesor (`DESPEDIDA_SIN_ASESOR`); con asesor
+ * asignado y la tienda cerrada, se le suma la misma línea de horario que
+ * `despedidaConAsesor` ya sabe armar — para no duplicar esa lógica, se le
+ * pide prestada.
+ */
+function despedidaMedia(unassigned: boolean | undefined, status?: BusinessStatus): string {
+  if (unassigned) return `${DESPEDIDA_MEDIA} ${DESPEDIDA_SIN_ASESOR}`;
+  if (!status || status.open) return DESPEDIDA_MEDIA;
+  if (!status.nextOpening) {
+    return `${DESPEDIDA_MEDIA} Eso sí, la tienda está cerrada ahora; en cuanto vuelva a abrir, el asesor te escribe.`;
+  }
+  return `${DESPEDIDA_MEDIA} Eso sí, la tienda está cerrada ahora — te escribe ${status.nextOpening.dayLabel} a partir de las ${status.nextOpening.time}.`;
 }
 
 /**
@@ -1167,6 +1199,55 @@ async function runTurnPhases(
       intent: null,
       action: "answered",
       summary: "Cortesía con escalada abierta: no se respondió.",
+      tokens: null,
+      customerMessage,
+    });
+    return;
+  }
+
+  // Segundo adjunto sin texto seguido (Tarea 6, "La voz cercana y la espera
+  // visible", 14/9/2026, decisión 5). ANTES de fase 0 y de clasificar, mismo
+  // criterio que la guarda de cortesía de arriba: 494 fotos y 117 audios en
+  // 72 h, con la IA repitiendo "¿qué repuesto buscas?" hasta 10 veces porque
+  // nadie contaba la racha. Si el cliente ya recibió una pregunta de la IA
+  // (o de un asesor, mientras no sea otro adjunto suyo) y vuelve a mandar
+  // OTRO adjunto sin escribir nada, insistir una vez más no sirve: se escala
+  // en código, directo, sin gastar fase 0/1 ni el tool loop —tres llamadas al
+  // proveedor que un cuarto "¿qué es esto?" no iba a mejorar—.
+  const racha = mediaStreakWithoutText(history);
+  if (racha.adjuntos >= 2 && racha.yaPreguntamos) {
+    const forced = await escalateConversation(supabase, {
+      conversationId,
+      contactId: target.contactId,
+      motivo: "seguimiento",
+      resumen: `El cliente mandó ${racha.adjuntos} adjuntos sin texto (fotos/notas de voz) y ya se le pidió que escribiera. Revisar en el chat qué mandó.`,
+      businessHours,
+    });
+
+    const salida = await deliver(
+      supabase,
+      target,
+      entrega,
+      lease,
+      tiempos,
+      "adjuntos_sin_texto",
+      convo.last_customer_message_at,
+      () =>
+        sendAgentText(supabase, target, despedidaMedia(forced.unassigned, forced.businessStatus), {
+          isAutoReply: true,
+        })
+    );
+    if (!salida) return;
+    // `escalateConversation` ya dejó su traspaso (`escalada`/`escalada_sin_asesor`)
+    // antes de este envío: si Meta lo rechaza, no se pisa con uno nuevo
+    // (mismo motivo que el resto de los caminos que escalan primero y hablan
+    // después, ver `deliveryFailed`).
+    if (await deliveryFailed(supabase, conversationId, salida, true)) return;
+
+    await logTurn(supabase, conversationId, {
+      intent: null,
+      action: "escalated",
+      summary: `Segundo adjunto sin texto → ${forced.assignedAgentName ?? "(sin asesor disponible)"}.`,
       tokens: null,
       customerMessage,
     });

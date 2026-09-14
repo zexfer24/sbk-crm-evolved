@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { historyLine, isHistoryMarker, type HistoryRow } from "@/lib/ai/history-line";
+import { historyLine, isHistoryMarker, mediaStreakWithoutText, type HistoryRow } from "@/lib/ai/history-line";
 import { revealsIdentity } from "@/lib/ai/identity-guard";
 
 function row(overrides: Partial<HistoryRow>): HistoryRow {
@@ -275,6 +275,76 @@ describe("isHistoryMarker", () => {
 
   it("una frase que menciona lo que envió el cliente pero no la escribió el CRM no es un marcador", () => {
     expect(isHistoryMarker("[El cliente dijo hola]")).toBe(false);
+  });
+});
+
+/**
+ * Tarea 6, "La voz cercana y la espera visible" (14/9/2026), decisión 5:
+ * 494 fotos y 117 audios en 72 h, la IA repitiendo "¿qué repuesto buscas?"
+ * hasta 10 veces. `agent.ts` usa esto para decidir cuándo dejar de insistir.
+ *
+ * El historial se escribe en orden CRONOLÓGICO (del más viejo al más
+ * nuevo) — es la forma en la que `loadHistory` (agent.ts) se lo entrega al
+ * modelo, y la que recibe `mediaStreakWithoutText` en producción.
+ */
+describe("mediaStreakWithoutText", () => {
+  it("foto sin pie + pregunta de la IA + foto sin pie → {2, true}", () => {
+    expect(
+      mediaStreakWithoutText([
+        { role: "user", content: "[El cliente envió una foto sin texto; no puedes verla]" },
+        { role: "assistant", content: "¿De qué moto es el repuesto que buscas?" },
+        { role: "user", content: "[El cliente envió una foto sin texto; no puedes verla]" },
+      ])
+    ).toEqual({ adjuntos: 2, yaPreguntamos: true, tipos: ["una foto", "una foto"] });
+  });
+
+  it("foto sin pie + foto sin pie, SIN que la IA haya respondido en medio → {2, false}: turno normal", () => {
+    expect(
+      mediaStreakWithoutText([
+        { role: "user", content: "[El cliente envió una foto sin texto; no puedes verla]" },
+        { role: "user", content: "[El cliente envió una foto sin texto; no puedes verla]" },
+      ])
+    ).toEqual({ adjuntos: 2, yaPreguntamos: false, tipos: ["una foto", "una foto"] });
+  });
+
+  it("foto CON pie → 0: hay texto, no es un adjunto sin respuesta", () => {
+    expect(
+      mediaStreakWithoutText([
+        { role: "user", content: "[El cliente envió una foto. Pie: para mi moto]" },
+      ])
+    ).toEqual({ adjuntos: 0, yaPreguntamos: false, tipos: [] });
+  });
+
+  it("texto normal al final → 0", () => {
+    expect(
+      mediaStreakWithoutText([
+        { role: "user", content: "[El cliente envió una foto sin texto; no puedes verla]" },
+        { role: "user", content: "hola, era para mi Bera" },
+      ])
+    ).toEqual({ adjuntos: 0, yaPreguntamos: false, tipos: [] });
+  });
+
+  it("sticker + sticker: un sticker no es un pedido, no cuenta ni corta como si fuera texto — pero tampoco arrastra una racha detrás", () => {
+    expect(
+      mediaStreakWithoutText([
+        { role: "user", content: "[El cliente envió un sticker]" },
+        { role: "user", content: "[El cliente envió un sticker]" },
+      ])
+    ).toEqual({ adjuntos: 0, yaPreguntamos: false, tipos: [] });
+  });
+
+  it("un marcador saliente del asesor (foto) en medio no cuenta como pregunta", () => {
+    expect(
+      mediaStreakWithoutText([
+        { role: "user", content: "[El cliente envió una foto sin texto; no puedes verla]" },
+        { role: "assistant", content: "[El asesor envió una foto]" },
+        { role: "user", content: "[El cliente envió una foto sin texto; no puedes verla]" },
+      ])
+    ).toEqual({ adjuntos: 2, yaPreguntamos: false, tipos: ["una foto", "una foto"] });
+  });
+
+  it("historial vacío → todo en cero", () => {
+    expect(mediaStreakWithoutText([])).toEqual({ adjuntos: 0, yaPreguntamos: false, tipos: [] });
   });
 });
 
