@@ -69,6 +69,14 @@ const statusUpdates: { wamid: string; patch: Record<string, unknown> }[] = [];
 let rateLimitAllows = true;
 /** El interruptor global. Se apaga en el test que comprueba que no se encola nada. */
 let aiCanRun = true;
+/**
+ * El error que devolvería la RPC `agent_can_run` si la base está caída o la
+ * red se corta. Corrección del 14/9/2026 (extensión de la Decisión 7 del
+ * plan "La voz cercana y la espera visible" a este sitio): un error de la
+ * RPC no es un `false` -- el test que lo prueba pone esto y deja `aiCanRun`
+ * en `true` (la RPC ni siquiera llegó a contestar).
+ */
+let aiCanRunError: { message: string } | null = null;
 
 function createFakeAdminClient() {
   const insertedMessages = new Map<string, FakeMessageRow>();
@@ -317,7 +325,7 @@ function createFakeAdminClient() {
       if (fn === "rate_limit_allow") return { data: rateLimitAllows, error: null };
       // Con la IA apagada el webhook no encola: la cola dejaba de ser el
       // reflejo de lo que la IA iba a hacer y crecía con el interruptor abajo.
-      if (fn === "agent_can_run") return { data: aiCanRun, error: null };
+      if (fn === "agent_can_run") return { data: aiCanRunError ? null : aiCanRun, error: aiCanRunError };
       // T2.1: la reapertura de una conversación cerrada deja su traspaso acá.
       if (fn === "record_handoff") {
         handoffCalls.push(params ?? {});
@@ -642,8 +650,41 @@ describe("POST /api/webhooks/whatsapp — interruptor global", () => {
       // El mensaje del cliente se guarda igual: la bandeja lo tiene que ver.
       expect(insertedMessages.has("wamid.ia-apagada-1")).toBe(true);
       expect(enqueueAgentTurns).not.toHaveBeenCalled();
+      // La RPC SÍ contestó (data: false): esta es la única rama que deja el
+      // traspaso "nadie se hace cargo" -- ver el test siguiente, que prueba
+      // que un ERROR de la RPC no cae en esta misma rama.
+      expect(handoffCalls).toContainEqual(
+        expect.objectContaining({ p_reason: "agente_no_puede_correr" })
+      );
     } finally {
       aiCanRun = true;
+    }
+  });
+
+  /**
+   * Corrección del 14/9/2026 (hallazgo 10 de la auditoría final del plan "La
+   * voz cercana y la espera visible": extiende su Decisión 7 -- ya aplicada
+   * en `runAgentTurn`, T5 -- a este sitio, que el plan no había tocado).
+   * Antes, un ERROR de `agent_can_run` (base caída, red cortada) caía en la
+   * misma rama que un `false` genuino: el webhook escribía el traspaso
+   * `agente_no_puede_correr` y no encolaba nada, disfrazando un corte de
+   * infraestructura de interruptor apagado -- verificado a mano contra el
+   * dev local renombrando la función. Ahora el webhook sigue de largo y
+   * encola igual: `runAgentTurn` vuelve a preguntar al abrir el turno, y si
+   * sigue sin poder consultar, lanza y la cola reintenta (T5) sin haber
+   * enviado nada.
+   */
+  it("con la RPC en error SÍ encola (no la trata como IA apagada) y no deja el traspaso", async () => {
+    aiCanRunError = { message: "connection refused" };
+    try {
+      const response = await POST(fakeRequest(webhookBody("wamid.interruptor-no-consultable-1")));
+
+      expect(response.status).toBe(200);
+      expect(insertedMessages.has("wamid.interruptor-no-consultable-1")).toBe(true);
+      expect(enqueueAgentTurns).toHaveBeenCalled();
+      expect(handoffCalls.some((c) => c.p_reason === "agente_no_puede_correr")).toBe(false);
+    } finally {
+      aiCanRunError = null;
     }
   });
 });

@@ -1448,8 +1448,48 @@ export async function POST(request: Request) {
     // reclamaban para salir por la puerta de atrás de runAgentTurn: trabajo
     // invisible, y una cola que crecía mientras el dueño creía tener la IA
     // parada. Se pregunta una vez por lote, no una por conversación.
-    const { data: canRun } = await supabase.rpc("agent_can_run");
-    if (!canRun) {
+    //
+    // Corrección del 14/9/2026 (hallazgo 10 de la auditoría final del plan
+    // "La voz cercana y la espera visible": extiende su Decisión 7 a este
+    // sitio, que el plan no había tocado). Un ERROR de la RPC (base caída,
+    // red cortada) no es lo mismo que una RESPUESTA que dice "no" -- mismo
+    // cambio que T5 ya había hecho en `runAgentTurn` (`agent.ts`). Antes
+    // esto se desestructuraba con `{ data: canRun }` a secas: un `error`
+    // acá dejaba `canRun` en `undefined`, que `!canRun` trataba exactamente
+    // igual que un `false` genuino, y el webhook escribía el traspaso
+    // `agente_no_puede_correr` + `webhook_no_encola_ia_apagada` SIN encolar
+    // turno -- un corte de infraestructura disfrazado de interruptor
+    // apagado. Verificado a mano contra el dev local renombrando
+    // `agent_can_run`: con la RPC rota, el webhook escribía el traspaso a
+    // 1s sin encolar nada, y la corrección de T5 en el turno no llegaba a
+    // correr nunca. `.rpc()` normalmente no lanza (devuelve `{ data, error
+    // }`), pero el `try/catch` cubre igual una excepción de red genuina sin
+    // duplicar la rama de abajo.
+    let canRun: boolean | null = null;
+    let canRunError: unknown = null;
+    try {
+      const result = await supabase.rpc("agent_can_run");
+      canRun = result.data;
+      canRunError = result.error;
+    } catch (err) {
+      canRunError = err;
+    }
+
+    if (canRunError) {
+      // Sin traspaso acá: el turno todavía no existe, así que no hay ningún
+      // dueño que "soltar" -- se sigue de largo al encolado normal, más
+      // abajo, como si el interruptor no se hubiera podido consultar.
+      // `runAgentTurn` vuelve a preguntarle a la RPC al abrir el turno: si
+      // sigue sin contestar, lanza y la cola reintenta (T5, `MAX_ATTEMPTS`)
+      // sin que `entrega.intentado` llegue a `true`; si contesta `false`,
+      // el turno mismo deja el traspaso `agente_no_puede_correr`. Sigue
+      // fallando cerrado: nada se envía sin que `agent_can_run` diga que sí
+      // DENTRO del turno.
+      log.error("webhook_interruptor_no_consultable", {
+        conversaciones: touchedByCustomer.size,
+        detail: errorText(canRunError),
+      });
+    } else if (!canRun) {
       log.info("webhook_no_encola_ia_apagada", { conversaciones: touchedByCustomer.size });
 
       // El mensaje ya quedó guardado arriba, pero sin turno nadie queda a
