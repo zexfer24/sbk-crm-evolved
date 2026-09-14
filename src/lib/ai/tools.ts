@@ -345,7 +345,18 @@ export function buildEscalateTool(
     description:
       "Escala la conversación a un asesor de la tienda: pausa la IA, asigna al asesor con más tiempo sin recibir un cliente nuevo, y deja un resumen para que no tenga que volver a preguntar todo. Es la única forma de tocar dinero real (devoluciones, ventas) o reclamos — la IA nunca los resuelve sola.",
     inputSchema: z.object({
-      motivo: z.enum(["devolucion", "queja", "intencion_compra"]),
+      // Tarea 7 ("El guion atiende a quien no es cliente…", 14/9/2026): suma
+      // `seguimiento` (ya admitido por `EscalationMotivo` en escalate.ts,
+      // que no tuvo que tocarse) para el aviso de reposición de un repuesto
+      // agotado, las listas largas o de mayoreo, y la postventa en general —
+      // casos que no son ni una devolución, ni una queja, ni una venta en
+      // curso, y que hasta ahora no tenían dónde caer sin forzar uno de los
+      // otros tres motivos.
+      motivo: z
+        .enum(["devolucion", "queja", "intencion_compra", "seguimiento"])
+        .describe(
+          "Por qué se escala: devolucion (quiere devolver o cambiar algo que ya compró), queja (reclamo), intencion_compra (quiere comprar y hay que cobrarle), seguimiento (avisar cuando llegue un repuesto agotado, una lista larga o de mayoreo, o cualquier postventa que no sea devolución ni queja)."
+        ),
       resumen: z
         .string()
         .describe("Resumen para el asesor: qué quiere el cliente, qué compró si aplica, y por qué se escala."),

@@ -45,6 +45,26 @@ describe("classifyIntent", () => {
   });
 
   /**
+   * Tarea 7 ("El guion atiende a quien no es cliente…", 14/9/2026): la
+   * auditoría encontró patrocinios/publicidad y números equivocados
+   * clasificados como si fueran un cliente real. Van dentro de
+   * fuera_de_tema, no en una categoría nueva — este test mira el `system`
+   * que de verdad recibe el modelo, no una copia del texto en el test.
+   */
+  it("el prompt nombra patrocinio/publicidad y número equivocado dentro de fuera_de_tema", async () => {
+    generateObjectMock.mockResolvedValue({
+      object: "fuera_de_tema",
+      usage: { inputTokens: 10, outputTokens: 2, totalTokens: 12 },
+    });
+
+    await classifyIntent(HISTORY);
+
+    const call = generateObjectMock.mock.calls[0][0] as { system: string };
+    expect(call.system).toMatch(/patrocinio/i);
+    expect(call.system).toMatch(/equivocó de número/i);
+  });
+
+  /**
    * Clasificar devuelve UNA palabra de un enum: razonar de más no mejora la
    * respuesta, solo agrega tokens de razonamiento facturables y latencia. Se
    * pide esfuerzo bajo, pero pedirlo no basta — hay que trasladárselo al

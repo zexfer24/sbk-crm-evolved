@@ -583,6 +583,35 @@ describe("buildEscalateTool — instrucción de despedida según asesor y horari
 // reconfirmación: ahora los tres motivos ("devolucion", "queja",
 // "intencion_compra") escalan igual, con el primer aviso.
 // ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// Tarea 7 ("El guion atiende a quien no es cliente…", 14/9/2026): el motivo
+// `seguimiento` ya lo admitía `EscalationMotivo` (escalate.ts) para la red de
+// seguridad del orquestador, pero el ESQUEMA que el modelo ve en
+// `buildEscalateTool` seguía con solo tres valores — el modelo nunca podría
+// haberlo elegido aunque el prompt se lo pidiera. Este test mira el zod
+// schema de verdad, no una copia: llamar `tool.execute(...)` a mano (como
+// hacen el resto de los tests de este archivo) no pasa por la validación del
+// esquema, así que no habría atrapado el enum viejo.
+// ---------------------------------------------------------------------------
+describe("buildEscalateTool — el esquema acepta el motivo seguimiento", () => {
+  it("el zod schema de 'motivo' acepta 'seguimiento' además de los tres motivos de siempre", () => {
+    const tool = buildEscalateTool(
+      // @ts-expect-error -- fake mínimo: no se ejecuta nada, solo se lee el esquema.
+      { supabase: {}, conversationId: "conv-1", contactId: "contact-1" },
+      { escalated: false }
+    );
+
+    const schema = (tool as unknown as { inputSchema: { shape: { motivo: { parse: (v: unknown) => unknown } } } })
+      .inputSchema.shape.motivo;
+
+    expect(() => schema.parse("seguimiento")).not.toThrow();
+    expect(() => schema.parse("devolucion")).not.toThrow();
+    expect(() => schema.parse("queja")).not.toThrow();
+    expect(() => schema.parse("intencion_compra")).not.toThrow();
+    expect(() => schema.parse("motivo_inventado")).toThrow();
+  });
+});
+
 describe("buildEscalateTool — intencion_compra escala con el primer aviso", () => {
   beforeEach(() => {
     escalateConversationMock.mockReset();

@@ -620,6 +620,61 @@ describe("sufijo dinámico — nombre del cliente (Tarea 3, 14/9/2026)", () => {
 });
 
 /**
+ * Tarea 7 ("El guion atiende a quien no es cliente, el horario, el agotado y
+ * las listas largas", 14/9/2026, Decisión 8): tres huecos de la auditoría.
+ */
+describe("Tarea 7 — horario, agotado con aviso y listas largas (14/9/2026)", () => {
+  it("5.5 responde el horario con lo que dice TURNO ACTUAL, sin escalar ni consultar nada", () => {
+    const seccion55 = SYSTEM_PROMPT.slice(SYSTEM_PROMPT.indexOf("5.5 Otro"), SYSTEM_PROMPT.indexOf("6. CÓMO ESCRIBES"));
+
+    expect(seccion55).toMatch(/horario/i);
+    expect(seccion55).toMatch(/TURNO ACTUAL/);
+    expect(seccion55).toMatch(/sin escalar/i);
+  });
+
+  it("5.1 un agotado con aviso escala con motivo seguimiento, no como intencion_compra", () => {
+    const seccion51 = SYSTEM_PROMPT.slice(
+      SYSTEM_PROMPT.indexOf("5.1 Consulta de disponibilidad"),
+      SYSTEM_PROMPT.indexOf("5.2 Devolución")
+    );
+
+    expect(seccion51).toMatch(/agotado/i);
+    expect(seccion51).toMatch(/avisen cuando llegue/i);
+    expect(seccion51).toMatch(/motivo seguimiento/i);
+    expect(seccion51).toMatch(/qué repuesto y para qué moto/i);
+  });
+
+  it("sección 3 pide la lista completa de una vez, sin interrogar repuesto por repuesto", () => {
+    const seccion3 = SYSTEM_PROMPT.slice(
+      SYSTEM_PROMPT.indexOf("3. CÓMO LLEVAS"),
+      SYSTEM_PROMPT.indexOf("4. HERRAMIENTAS")
+    );
+
+    expect(seccion3).toMatch(/lista de varios repuestos/i);
+    expect(seccion3).toMatch(/mayor/i);
+    expect(seccion3).toMatch(/UNA vez marca y modelo/i);
+    expect(seccion3).toMatch(/un renglón por repuesto/i);
+  });
+
+  /** Los tres textos nuevos pasan la misma guarda que ya cubre el resto del prompt. */
+  it("los tres textos nuevos pasan la guarda de identidad", () => {
+    const seccion51 = SYSTEM_PROMPT.slice(
+      SYSTEM_PROMPT.indexOf("5.1 Consulta de disponibilidad"),
+      SYSTEM_PROMPT.indexOf("5.2 Devolución")
+    );
+    const seccion55 = SYSTEM_PROMPT.slice(SYSTEM_PROMPT.indexOf("5.5 Otro"), SYSTEM_PROMPT.indexOf("6. CÓMO ESCRIBES"));
+    const seccion3 = SYSTEM_PROMPT.slice(
+      SYSTEM_PROMPT.indexOf("3. CÓMO LLEVAS"),
+      SYSTEM_PROMPT.indexOf("4. HERRAMIENTAS")
+    );
+
+    expect(revealsIdentity(seccion51)).toBeNull();
+    expect(revealsIdentity(seccion55)).toBeNull();
+    expect(revealsIdentity(seccion3)).toBeNull();
+  });
+});
+
+/**
  * Los cinco textos fijos que el plan exige pasar por la guarda de identidad
  * (Tarea 3, 14/9/2026). Los otros tres —DESPEDIDA_SIN_ASESOR,
  * despedidaConAsesor y la instrucción de buildEscalateTool— viven en

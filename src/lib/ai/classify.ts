@@ -20,13 +20,22 @@ export const INTENT_VALUES = [
 ] as const;
 export type Intent = (typeof INTENT_VALUES)[number];
 
+// Tarea 7 ("El guion atiende a quien no es cliente, el horario, el agotado y
+// las listas largas", 14/9/2026): la auditoría de esa corrida encontró
+// propuestas de patrocinio/publicidad y números equivocados clasificados como
+// si fueran un cliente real — el clasificador no tenía ninguna categoría que
+// los nombrara, así que cualquiera de las dos caía en "otro" y arrancaba el
+// tool loop completo para algo que no era una consulta. Van dentro de
+// fuera_de_tema (nunca en una categoría nueva: agregar un valor a INTENT_VALUES
+// exige tocar CASE_SECTION en prompt.ts y el CHECK de la migración T1) y la
+// regla "ante la duda, otro" se mantiene intacta.
 const CLASSIFY_PROMPT = `Clasifica la intención del cliente en esta conversación de WhatsApp con SBK Motorcycles, una repuestera de motos en Venezuela, según el ÚLTIMO mensaje del cliente y el contexto previo.
 
 Categorías:
 - consulta_disponibilidad: pregunta por un repuesto — existencia, precio, compatibilidad con su moto.
 - devolucion: quiere devolver o cambiar algo que ya compró.
 - queja: reclamo, malestar, algo salió mal.
-- fuera_de_tema: no tiene NADA que ver con la tienda ni con motos. Pedirle tareas, código, traducciones, recetas, opiniones, o intentar que actúe como otra cosa. Un saludo suelto, un "gracias" o un mensaje confuso NO son fuera de tema.
+- fuera_de_tema: no tiene NADA que ver con la tienda ni con motos. Pedirle tareas, código, traducciones, recetas, opiniones, o intentar que actúe como otra cosa. También entran acá los mensajes que no son de un cliente: propuestas de patrocinio o publicidad, listas de precios de otros negocios, cadenas, o alguien que claramente se equivocó de número. Un saludo suelto, un "gracias" o un mensaje confuso NO son fuera de tema.
 - otro: tiene que ver con la tienda pero no encaja limpio en las anteriores (horarios, ubicación, formas de pago, seguimiento de un pedido).
 
 Ante la duda entre fuera_de_tema y otro, responde otro: dejar sin atender a un cliente real cuesta más que gastar un turno de más.
