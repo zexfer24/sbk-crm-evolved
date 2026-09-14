@@ -297,12 +297,12 @@ describe("businessMinutesBetween — minutos de horario laboral entre dos instan
 });
 
 describe("turnClockLine — la línea completa para TURNO ACTUAL", () => {
-  it("tienda abierta: hora, franja, saludo, horario y cierre", () => {
+  it("tienda abierta: hora, horario y cierre", () => {
     // 2026-08-27 es jueves, 4:00 pm en Caracas.
     const linea = turnClockLine(enCaracas("2026-08-27T16:00"), DEFAULT_BUSINESS_HOURS, TZ);
 
     expect(linea).toBe(
-      'Hora local: jueves 27 de agosto, 4:00 pm — franja: tarde (saluda "buenas tardes"). ' +
+      "Hora local: jueves 27 de agosto, 4:00 pm. " +
         "Horario de atención: lunes a viernes de 8:00 am a 6:00 pm. " +
         "Ahora mismo: ABIERTA, cierra a las 6:00 pm."
     );
@@ -310,15 +310,31 @@ describe("turnClockLine — la línea completa para TURNO ACTUAL", () => {
 
   /**
    * "el lunes", no "mañana": aunque el lunes es el día siguiente al domingo,
-   * la línea ya dice "franja: mañana" para la franja horaria de la mañana —
-   * repetir la palabra con el otro sentido ("abre mañana a las 8:00 am")
-   * confundía al modelo (decisión del orquestador, 5/9/2026).
+   * decir siempre el nombre del día es inequívoco sea el día siguiente o
+   * cualquier otro (decisión del orquestador, 5/9/2026 — sigue vigente tras
+   * quitar la franja de esta línea el 14/9/2026).
    */
   it("tienda cerrada: dice cuándo abre, nombrando el día y no 'mañana'", () => {
     // 2026-08-30 es domingo, 8:10 am en Caracas.
     const linea = turnClockLine(enCaracas("2026-08-30T08:10"), DEFAULT_BUSINESS_HOURS, TZ);
 
     expect(linea).toContain("CERRADA, abre el lunes a las 8:00 am");
-    expect(linea).toContain('franja: mañana (saluda "buenos días")');
+  });
+
+  /**
+   * Tarea 2 del plan "La voz cercana y la espera visible" (14/9/2026): el
+   * saludo por franja causaba "buenas tardes" en medio de una conversación
+   * ya empezada. `turnClockLine` deja de decidir el saludo — lo decide
+   * `needsGreeting` en `prompt.ts`, no la hora — así que esta línea nunca
+   * puede traer la palabra "saluda" ni un saludo de franja, a ninguna hora.
+   */
+  it("nunca trae la palabra saluda ni un saludo de franja", () => {
+    const deTarde = turnClockLine(enCaracas("2026-08-27T16:00"), DEFAULT_BUSINESS_HOURS, TZ);
+    const deNoche = turnClockLine(enCaracas("2026-08-27T20:30"), DEFAULT_BUSINESS_HOURS, TZ);
+    const deManana = turnClockLine(enCaracas("2026-08-30T08:10"), DEFAULT_BUSINESS_HOURS, TZ);
+
+    for (const linea of [deTarde, deNoche, deManana]) {
+      expect(linea).not.toMatch(/saluda|buenos días|buenas tardes|buenas noches/i);
+    }
   });
 });

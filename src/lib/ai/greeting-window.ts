@@ -21,6 +21,13 @@ import { DAY_BANDS } from "@/lib/business-hours";
 // Falla ABIERTO: un texto que no empieza saludando por la hora no queda
 // restringido a ninguna franja. Equivocarse hacia ese lado deja las cosas como
 // estaban; hacia el otro apagaría un escenario del dueño sin avisarle.
+//
+// 14/9/2026 (Tarea 2, "La voz cercana y la espera visible"): el flujo
+// genérico dejó de saludar por franja — `turnClockLine` ya no trae "saluda
+// 'buenas tardes'" y el sufijo `needsGreeting` de `prompt.ts` manda un hola
+// neutro, una sola vez, sin importar la hora. Este filtro se queda TAL CUAL,
+// como red para los escenarios del panel que sigan empezando con un saludo
+// de franja escrito a mano por el dueño — sigue fallando abierto.
 // ---------------------------------------------------------------------------
 
 /** Franja del día en la que un texto tiene sentido, en minutos desde medianoche. */

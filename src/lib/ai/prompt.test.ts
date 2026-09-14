@@ -155,34 +155,34 @@ describe("la hora del turno", () => {
   });
 
   /**
-   * La regla sí es fija, así que vive arriba y se cachea con el resto — pero
-   * ya no describe QUÉ hora es cada saludo (eso lo decide `dayBand`, una sola
-   * vez, en business-hours.ts): solo manda copiar tal cual lo que llega.
+   * Reescrito el 14/9/2026 (Tarea 2, "La voz cercana y la espera visible"):
+   * hasta entonces la regla era "copia la franja y el saludo que te llegan
+   * en TURNO ACTUAL", y `turnClockLine` los traía calculados ("franja: tarde
+   * (saluda 'buenas tardes')"). El cliente reportó que la IA saludaba por
+   * franja en mitad de una conversación ya empezada — la regla no distinguía
+   * el primer mensaje de cualquier otro. Ahora el saludo es neutro y depende
+   * de `needsGreeting`, no de la hora: la sección 6 ya no menciona ninguna
+   * franja ni ningún "buenos días/tardes/noches".
    */
-  it("la regla es copiar la franja y el horario de TURNO ACTUAL, no deducirlos", () => {
-    expect(SYSTEM_PROMPT).toMatch(/usa la franja y el saludo que te llegan en TURNO ACTUAL/i);
+  it("la regla es saludar una sola vez, sin depender de la hora", () => {
+    expect(SYSTEM_PROMPT).toMatch(/Saludas UNA sola vez por conversación/i);
+    expect(SYSTEM_PROMPT).toMatch(/Nunca saludes por la hora/i);
     expect(SYSTEM_PROMPT).toMatch(/el horario de atención y si la tienda está abierta ahora mismo también te llegan en TURNO ACTUAL/i);
-    // La prosa vieja ("buenos días antes del mediodía...") desapareció: la
-    // regla de qué hora es cada franja vive en un solo lugar (DAY_BANDS).
+    // La prosa vieja (franja/saludo por hora) desapareció por completo.
+    expect(SYSTEM_PROMPT).not.toMatch(/usa la franja y el saludo/i);
     expect(SYSTEM_PROMPT).not.toMatch(/antes del mediodía/i);
   });
 
   /**
-   * Hay dos caminos que saludan y tienen que decir lo mismo a la misma hora: el
-   * escenario ya redactado del panel (por `greetingWindow`, que define "tarde"
-   * hasta las 7:00 pm) y el flujo genérico (por `turnClockLine`, que ahora
-   * comparte los mismos bordes vía `DAY_BANDS` — ver business-hours.ts). Se
-   * verifica contra la salida real y no contra prosa: la regla ya no está
-   * escrita en el prompt, está en el código que los dos comparten.
+   * `greetingWindow` (los escenarios del panel) conserva sus propios bordes
+   * horarios — eso no cambió el 14/9/2026, y sigue siendo la red para un
+   * escenario del dueño que empiece con un saludo de franja escrito a mano.
+   * Lo que sí cambió es que `turnClockLine` (el flujo genérico) YA NO trae
+   * ninguna franja para comparar: por eso este test dejó de verificar que
+   * `buildInstructions` diga "franja: tarde"/"franja: noche" a las 7:00 pm.
    */
-  it("pone el borde entre tarde y noche donde lo ponen los escenarios", () => {
+  it("greetingWindow sigue poniendo el borde entre tarde y noche a las 7:00 pm", () => {
     expect(greetingWindow("¡Buenas tardes! ¿En qué podemos ayudarle?")?.to).toBe(19 * 60);
-
-    const alasSiete = buildInstructions({ ...TURN, now: new Date("2026-09-05T23:00:00Z") }); // 7:00 pm Caracas
-    const unMinutoDespues = buildInstructions({ ...TURN, now: new Date("2026-09-05T23:01:00Z") }); // 7:01 pm Caracas
-
-    expect(alasSiete.slice(SYSTEM_PROMPT.length)).toContain("franja: tarde");
-    expect(unMinutoDespues.slice(SYSTEM_PROMPT.length)).toContain("franja: noche");
   });
 
   /**
@@ -197,24 +197,30 @@ describe("la hora del turno", () => {
   });
 
   /**
-   * Casos concretos pedidos por el operador (plan "El reloj dice la verdad",
-   * 5/9/2026): de noche entra "noche"/"buenas noches"; cerrado un domingo
-   * dice "CERRADA" y nombra cuándo abre, sin romper el prefijo cacheado.
+   * Reescrito el 14/9/2026 (Tarea 2): hasta entonces se pedía "de noche
+   * entra 'noche'/'buenas noches'" — ahora es justo lo contrario, a
+   * propósito. `turnClockLine` ya no calcula ninguna franja ni saludo, y la
+   * sección 6 prohíbe saludar por hora: a las 8:30 pm el sufijo tiene que
+   * seguir sin decir "noche" ni "buenas noches", igual que a las 8:10 am no
+   * puede decir "franja" ni "buenos días" — el saludo neutro vive solo en
+   * `needsGreeting`, nunca en la hora.
    */
-  it("a las 8:30 pm de Caracas, el sufijo dice noche y buenas noches", () => {
-    const instructions = buildInstructions({ ...TURN, now: new Date("2026-09-05T00:30:00Z") });
+  it("a las 8:30 pm de Caracas, el sufijo no saluda por franja ni dice 'noche'", () => {
+    const instructions = buildInstructions({ ...TURN, now: new Date("2026-09-05T00:30:00Z") }); // 8:30 pm Caracas
 
     expect(instructions.startsWith(SYSTEM_PROMPT)).toBe(true);
-    expect(instructions.slice(SYSTEM_PROMPT.length)).toContain("noche");
-    expect(instructions.slice(SYSTEM_PROMPT.length)).toContain("buenas noches");
+    const sufijo = instructions.slice(SYSTEM_PROMPT.length);
+    expect(sufijo).not.toMatch(/saluda|buenos días|buenas tardes|buenas noches|franja/i);
   });
 
-  it("a las 8:10 am de un domingo, el sufijo dice CERRADA y cuándo abre", () => {
+  it("a las 8:10 am de un domingo, el sufijo dice CERRADA y cuándo abre, sin saludo de franja", () => {
     const instructions = buildInstructions({ ...TURN, now: new Date("2026-09-06T12:10:00Z") });
 
     expect(instructions.startsWith(SYSTEM_PROMPT)).toBe(true);
-    expect(instructions.slice(SYSTEM_PROMPT.length)).toContain("CERRADA");
-    expect(instructions.slice(SYSTEM_PROMPT.length)).toContain("abre el lunes a las 8:00 am");
+    const sufijo = instructions.slice(SYSTEM_PROMPT.length);
+    expect(sufijo).toContain("CERRADA");
+    expect(sufijo).toContain("abre el lunes a las 8:00 am");
+    expect(sufijo).not.toMatch(/saluda|buenos días|buenas tardes|buenas noches|franja/i);
   });
 });
 
@@ -275,6 +281,21 @@ describe("identidad: ni IA ni persona", () => {
 
     expect(conSaludo).toMatch(/le escribes de SBK Motorcycles/);
     expect(conSaludo).not.toMatch(/preséntate/);
+  });
+
+  /**
+   * Tarea 2 (14/9/2026): el sufijo `needsGreeting` es el texto nuevo del
+   * primer saludo — nombra SBK Motorcycles y tiene que pasar la misma guarda
+   * que MEDIA_RULES y SALES_ACCEPTANCE_RULES, aunque no esté exportado
+   * aparte (es corto, y vive en el sufijo, no en el prefijo cacheado).
+   */
+  it("el sufijo del primer saludo nombra SBK Motorcycles y pasa la guarda de identidad", () => {
+    const conSaludo = buildInstructions({ ...TURN, needsGreeting: true }).slice(SYSTEM_PROMPT.length);
+    const sinSaludo = buildInstructions({ ...TURN, needsGreeting: false }).slice(SYSTEM_PROMPT.length);
+
+    expect(conSaludo).toMatch(/SBK Motorcycles/);
+    expect(revealsIdentity(conSaludo)).toBeNull();
+    expect(revealsIdentity(sinSaludo)).toBeNull();
   });
 });
 

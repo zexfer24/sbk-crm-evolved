@@ -267,20 +267,28 @@ function fechaLarga(now: Date, timeZone: string): string {
 }
 
 /**
- * La línea que va en el bloque `TURNO ACTUAL` del prompt: hora, franja,
- * saludo, horario de atención y si la tienda está abierta ahora mismo.
+ * La línea que va en el bloque `TURNO ACTUAL` del prompt: hora, horario de
+ * atención y si la tienda está abierta ahora mismo.
  *
- * Reemplaza el texto "Fecha y hora local: …" que obligaba al modelo a leer
- * "4:45 p. m." y deducir "tarde" solo — a veces mal. Acá la franja y el
- * horario ya vienen calculados; el modelo solo los copia (B3, 5/9/2026).
+ * Hasta el 14/9/2026 esta línea también traía la franja del día y el saludo
+ * que le tocaba ("franja: tarde (saluda 'buenas tardes')"), y la sección 6
+ * del prompt mandaba copiarlo tal cual. El cliente reportó saludos en medio
+ * de una conversación ya empezada — el saludo por franja no distinguía el
+ * primer mensaje de cualquier otro, así que la IA volvía a decir "buenas
+ * tardes" turno tras turno. Plan "La voz cercana y la espera visible"
+ * (Tarea 2, 14/9/2026): el saludo pasa a ser neutro y único (un "¡Hola!" o
+ * un "¡Buenas!" solo en el primer mensaje, decidido por `needsGreeting` en
+ * `prompt.ts`, no por la hora), así que esta línea deja de necesitar la
+ * franja — la tienda sigue necesitando saber si está abierta para vender
+ * fuera de horario, y eso se queda. `dayBand`/`greetingFor` no se tocan:
+ * los sigue usando `playbooks.ts` (`buildPrompt`, fase 0) para los
+ * disparadores horarios de los escenarios del panel.
  */
 export function turnClockLine(
   now: Date = new Date(),
   hours: BusinessHours = DEFAULT_BUSINESS_HOURS,
   timeZone: string = CRM_TIME_ZONE
 ): string {
-  const franja = dayBand(now, timeZone);
-  const saludo = greetingFor(franja);
   const hora = minuteTo12Hour(crmMinuteOfDay(now, timeZone));
   const fecha = fechaLarga(now, timeZone);
   const horario = describeSchedule(hours);
@@ -293,7 +301,7 @@ export function turnClockLine(
       : "CERRADA";
 
   return (
-    `Hora local: ${fecha}, ${hora} — franja: ${franja} (saluda "${saludo}"). ` +
+    `Hora local: ${fecha}, ${hora}. ` +
     `Horario de atención: ${horario}. ` +
     `Ahora mismo: ${lineaEstado}.`
   );

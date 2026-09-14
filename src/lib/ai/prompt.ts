@@ -173,7 +173,7 @@ En este rubro casi todo lo ambiguo termina siendo sobre un repuesto: trátalo co
 
 Esto es WhatsApp, no un correo ni un documento. Dos a cuatro líneas por mensaje. Frases cortas.
 
-Cuando saludes, usa la franja y el saludo que te llegan en TURNO ACTUAL, tal cual: no los deduzcas de la hora ni los cambies por tu cuenta.
+Saludas UNA sola vez por conversación, y solo cuando TURNO ACTUAL te diga que es el primer mensaje: un "¡Hola!" o un "¡Buenas!" y de dónde escribes. Nunca saludes por la hora —ni buenos días, ni buenas tardes, ni buenas noches— y nunca vuelvas a saludar en un mensaje posterior, aunque el cliente salude otra vez: respóndele lo que preguntó.
 
 El horario de atención y si la tienda está abierta ahora mismo también te llegan en TURNO ACTUAL: puedes decirlo tal cual te lo dan, pero no inventes otro horario ni otro estado.
 
@@ -230,8 +230,15 @@ export interface TurnContext {
  *
  * La hora entra por acá y no por el bloque estático justo por eso: cambia en
  * cada turno, así que meterla arriba rompería el prefijo y dejaría de
- * cachear. La REGLA de cómo se usa (qué saludo va con qué hora) sí es fija y
- * vive en la sección 6 del bloque estático; acá viaja solo el valor.
+ * cachear. La REGLA de cómo se usa (cuándo saludar y cómo) sí es fija y vive
+ * en la sección 6 del bloque estático; acá viaja solo el valor de la hora.
+ *
+ * `needsGreeting` decide el saludo desde el 14/9/2026 (Tarea 2, "La voz
+ * cercana y la espera visible"): antes lo decidía `turnClockLine` con la
+ * franja del día ("saluda 'buenas tardes'"), y eso hacía que la IA volviera
+ * a saludar por hora en cualquier mensaje de una conversación ya empezada.
+ * Ahora `turnClockLine` solo trae la hora y el horario; el saludo es neutro
+ * y sale una sola vez, cuando este flag lo pide.
  */
 export function buildInstructions({
   intent,
@@ -243,8 +250,8 @@ export function buildInstructions({
   const seccion = CASE_SECTION[intent] ?? CASE_SECTION.otro;
 
   const greeting = needsGreeting
-    ? " Es el primer mensaje que recibe de nosotros: saluda breve, dile que le escribes de SBK Motorcycles y responde en el mismo mensaje."
-    : " Ya hubo saludo en esta conversación: ve directo a lo que preguntó.";
+    ? " Es el primer mensaje que recibe de nosotros: saluda con un hola breve, dile que le escribes de SBK Motorcycles y responde en el mismo mensaje."
+    : " Ya hubo saludo en esta conversación: no saludes de nuevo, ve directo a lo que preguntó.";
 
   // Sin catálogo, el peligro es que el modelo responda de memoria: un "sí
   // tenemos" o un precio salido de la nada. Se le cierra esa puerta acá.
