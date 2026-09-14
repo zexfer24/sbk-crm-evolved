@@ -293,36 +293,43 @@ export function buildOrderHistoryTool({ supabase, contactId, conversationId }: T
  * `now`/horario que dejó el evento de sistema, SIEMPRE presente desde la
  * Tarea 5 — ver escalate.ts), acá solo se traduce a prosa, en las cuatro
  * combinaciones de asesor × horario:
- * - con asesor, abierta: sin cambios ("ya lo va a atender").
+ * - con asesor, abierta: cálida, sin horario ("un asesor toma su caso").
  * - con asesor, cerrada: agradece la paciencia y nombra cuándo escribe el
  *   asesor (día y hora exactos, o "apenas la tienda vuelva a abrir" si no hay
  *   ninguna franja en los próximos 7 días).
  * - sin asesor, abierta: promete "en breve", que sí es cierto porque hay
  *   quién conteste hoy.
  * - sin asesor, cerrada: mismo criterio de B4, con o sin próxima apertura.
+ *
+ * Tarea 3 ("La voz cercana y la espera visible", 14/9/2026): hasta acá solo
+ * la rama "con asesor, cerrada" llevaba calidez explícita ("dile con
+ * calidez..."); las otras tres decían el hecho seco ("un asesor lo va a
+ * atender", "su caso quedó registrado") sin agradecer ni suavizar. Las
+ * cuatro ramas reciben ahora el mismo trato: agradecer la espera o la
+ * paciencia, y nombrar con calidez lo que va a pasar.
  */
 function escalationInstruction(status: BusinessStatus | undefined, assignedName: string | null): string {
   const abierta = !status || status.open;
 
   if (assignedName) {
     if (abierta) {
-      return `Ya está asignado a ${assignedName}. Dile al cliente que un asesor lo va a atender.`;
+      return `Ya está asignado a ${assignedName}. Dile al cliente, con calidez, que un asesor toma su caso y le escribe por acá; agradécele la espera.`;
     }
     const cuando = status?.nextOpening
       ? `${status.nextOpening.dayLabel} a partir de las ${status.nextOpening.time}`
       : "apenas la tienda vuelva a abrir";
-    return `Ya está asignado a ${assignedName}, pero la tienda está cerrada: dile con calidez que un asesor le escribe ${cuando}, y agradécele la paciencia. NO prometas que lo atienden ahora.`;
+    return `Ya está asignado a ${assignedName}, pero la tienda está cerrada. Dile al cliente, con calidez, que un asesor toma su caso y le escribe ${cuando}; agradécele la paciencia. NO prometas que lo atienden ahora.`;
   }
 
   if (abierta) {
-    return "No hay ningún asesor conectado ahora. Dile al cliente que su caso quedó registrado y que le escriben en breve, apenas haya alguien disponible. NO prometas que lo atienden enseguida.";
+    return "No hay ningún asesor conectado ahora. Dile al cliente, con calidez, que su caso quedó registrado y que le escriben en breve, apenas haya alguien disponible; agradécele la espera. NO prometas que lo atienden enseguida.";
   }
 
   if (!status?.nextOpening) {
-    return "No hay ningún asesor conectado ahora y la tienda está cerrada. Dile al cliente que su caso quedó registrado y que le escriben apenas la tienda vuelva a abrir. NO prometas que lo atienden enseguida.";
+    return "No hay ningún asesor conectado ahora y la tienda está cerrada. Dile al cliente, con calidez, que su caso quedó registrado y que le escriben apenas la tienda vuelva a abrir; agradécele la paciencia. NO prometas que lo atienden enseguida.";
   }
 
-  return `No hay ningún asesor conectado ahora y la tienda está cerrada. Dile al cliente que su caso quedó registrado y que un asesor le escribe ${status.nextOpening.dayLabel} a partir de las ${status.nextOpening.time}. NO prometas que lo atienden enseguida.`;
+  return `No hay ningún asesor conectado ahora y la tienda está cerrada. Dile al cliente, con calidez, que su caso quedó registrado y que un asesor le escribe ${status.nextOpening.dayLabel} a partir de las ${status.nextOpening.time}; agradécele la paciencia. NO prometas que lo atienden enseguida.`;
 }
 
 // ---------------------------------------------------------------------------

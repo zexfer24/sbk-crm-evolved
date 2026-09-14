@@ -94,6 +94,8 @@ const state: FakeState = {
   intentUpdateError: null,
 };
 const conversationUpdates: Record<string, unknown>[] = [];
+/** Tarea 3 (14/9/2026): columnas pedidas en cada `select()` sobre `conversations`, para probar que trae display_name/profile_name. */
+const conversationSelectColumns: string[] = [];
 const agentTurnInserts: Record<string, unknown>[] = [];
 const contactTagUpserts: { rows: unknown; options: unknown }[] = [];
 /**
@@ -164,9 +166,12 @@ function createFakeSupabase() {
 
       if (table === "conversations") {
         return {
-          select: () => ({
-            eq: () => ({ maybeSingle: async () => ({ data: state.conversation }) }),
-          }),
+          select: (columns: string) => {
+            conversationSelectColumns.push(columns);
+            return {
+              eq: () => ({ maybeSingle: async () => ({ data: state.conversation }) }),
+            };
+          },
           update: (values: Record<string, unknown>) => ({
             eq: () => {
               conversationUpdates.push(values);
@@ -518,6 +523,7 @@ beforeEach(() => {
   withinFreeformWindowOverride.fn = null;
   sendTypingIndicatorMock.mockClear();
   conversationUpdates.length = 0;
+  conversationSelectColumns.length = 0;
   agentTurnInserts.length = 0;
   contactTagUpserts.length = 0;
   messageUpdates.length = 0;
@@ -2062,6 +2068,49 @@ describe("runAgentTurn — instrucciones que recibe el modelo", () => {
       detail: "conexión perdida",
     });
   });
+
+  /**
+   * Tarea 3 (14/9/2026): `display_name`/`profile_name` tienen que viajar en
+   * la misma fila que ya trae `phone_number`, para que `customerFirstName`
+   * (customer-name.ts) tenga con qué trabajar sin una segunda consulta.
+   */
+  it("el select del turno pide display_name y profile_name del contacto", async () => {
+    await runAgentTurn("conv-1");
+
+    expect(conversationSelectColumns).toHaveLength(1);
+    expect(conversationSelectColumns[0]).toContain("display_name");
+    expect(conversationSelectColumns[0]).toContain("profile_name");
+  });
+
+  /**
+   * `buildInstructions` (prompt.ts) recibe el nombre ya resuelto por
+   * `customerFirstName`: con un nombre de persona en `display_name`, el
+   * sufijo lo nombra; con un teléfono guardado ahí y sin `profile_name`, no
+   * hay nada que parezca un nombre y el sufijo no lo menciona.
+   */
+  it("pasa customerName a las instrucciones cuando el contacto tiene nombre", async () => {
+    state.conversation = {
+      ...state.conversation,
+      contact: { phone_number: "+584121112233", display_name: "Ana Pérez", profile_name: null },
+    };
+
+    await runAgentTurn("conv-1");
+
+    const sufijo = agentOptions[0].instructions.slice(SYSTEM_PROMPT.length);
+    expect(sufijo).toContain("El cliente se llama Ana");
+  });
+
+  it("no menciona ningún nombre cuando lo guardado es un teléfono", async () => {
+    state.conversation = {
+      ...state.conversation,
+      contact: { phone_number: "+584121112233", display_name: "+584121112233", profile_name: null },
+    };
+
+    await runAgentTurn("conv-1");
+
+    const sufijo = agentOptions[0].instructions.slice(SYSTEM_PROMPT.length);
+    expect(sufijo).not.toMatch(/El cliente se llama/);
+  });
 });
 
 describe("runAgentTurn — interruptores de herramientas", () => {
@@ -2681,7 +2730,7 @@ describe("runAgentTurn — anexo A1 + Tarea 5: is_auto_reply en la despedida de 
     expect(sendAgentTextMock).toHaveBeenCalledWith(
       expect.anything(),
       expect.anything(),
-      "Ya dejé tu caso registrado para que lo revise un asesor. En cuanto haya alguien disponible te escriben por acá.",
+      DESPEDIDA_SIN_ASESOR,
       { isAutoReply: true }
     );
   });
@@ -2758,8 +2807,11 @@ describe("runAgentTurn — anexo A1 + Tarea 5: is_auto_reply en la despedida de 
  */
 describe("despedidaConAsesor — texto según el horario (Tarea 5, 14/9/2026)", () => {
   it("tienda abierta: promesa genérica, sin horario", () => {
+    // Tarea 3 (14/9/2026): texto reescrito para sonar de mostrador — dice
+    // por qué (para que te ayude con esto) y qué va a pasar (te escriba por
+    // acá), regla "CÓMO SUENAS" del prompt (prompt.ts).
     expect(despedidaConAsesor({ open: true, closesAt: "6:00 pm", nextOpening: null })).toBe(
-      "Dame un momentico, ya te paso con un asesor para que te ayude con esto."
+      "Dame un momentico: ya le paso tu caso a un asesor para que te ayude con esto y te escriba por acá."
     );
   });
 

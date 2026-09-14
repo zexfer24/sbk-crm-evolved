@@ -1,6 +1,13 @@
 import { describe, expect, it } from "vitest";
 import { INTENT_VALUES } from "@/lib/ai/classify";
-import { MEDIA_RULES, OFF_TOPIC_REPLY, SALES_ACCEPTANCE_RULES, SYSTEM_PROMPT, buildInstructions } from "@/lib/ai/prompt";
+import {
+  MEDIA_RULES,
+  OFF_TOPIC_REPLY,
+  SALES_ACCEPTANCE_RULES,
+  SYSTEM_PROMPT,
+  TONE_RULES,
+  buildInstructions,
+} from "@/lib/ai/prompt";
 import { greetingWindow } from "@/lib/ai/greeting-window";
 import { revealsIdentity } from "@/lib/ai/identity-guard";
 
@@ -492,5 +499,141 @@ describe("sección 7 — lo que llega sin texto", () => {
     expect(texto).toContain("sticker");
     expect(texto).toContain("documento");
     expect(texto).toContain("corchetes");
+  });
+});
+
+/**
+ * Sección "6 BIS. CÓMO SUENAS" (Tarea 3, "La voz cercana y la espera
+ * visible", 14/9/2026): hasta acá el guion solo pedía "cercano, directo,
+ * sencillo" (sección 1) sin ninguna regla concreta de tono, y los textos
+ * fijos de la IA (OFF_TOPIC_REPLY, las despedidas de agent.ts, la
+ * instrucción de escalar de tools.ts) eran secos por la misma razón.
+ */
+describe("sección 6 bis — cómo suenas", () => {
+  it("TONE_RULES es parte del bloque estático que se cachea", () => {
+    expect(SYSTEM_PROMPT).toContain(TONE_RULES);
+  });
+
+  it("buildInstructions también trae TONE_RULES, dentro del prefijo cacheado", () => {
+    const instructions = buildInstructions(TURN);
+
+    expect(instructions).toContain(TONE_RULES);
+    expect(instructions.startsWith(SYSTEM_PROMPT)).toBe(true);
+  });
+
+  it("pasa la guarda de identidad limpio", () => {
+    expect(revealsIdentity(TONE_RULES)).toBeNull();
+  });
+
+  it("la guarda sí atrapa una fórmula prohibida pegada al final", () => {
+    const conFormulaProhibida = `${TONE_RULES} Soy un asistente automatizado.`;
+
+    const match = revealsIdentity(conFormulaProhibida);
+
+    expect(match).not.toBeNull();
+    expect(match?.categoria).toBe("automatizacion");
+  });
+
+  it("manda tutear, nunca 'usted'", () => {
+    expect(TONE_RULES).toMatch(/Tutéate siempre/i);
+  });
+
+  it("manda reconocer lo que pidió el cliente antes de dar el dato", () => {
+    expect(TONE_RULES).toMatch(/reconoce en media frase lo que te preguntó/i);
+  });
+
+  /**
+   * Mutación de esta tarea: quitar esta regla debe poner en rojo un test que
+   * busque exactamente "por qué" y "qué va a pasar" — es la regla (3) del
+   * checklist, la que evita despedidas secas como "te paso con un asesor".
+   */
+  it("manda decir por qué se pasa el caso y qué va a pasar, nunca solo 'te paso con un asesor'", () => {
+    expect(TONE_RULES).toMatch(/por qué lo haces y qué va a pasar/i);
+    expect(TONE_RULES).toMatch(/nunca sueltes solo "te paso con un asesor"/i);
+  });
+
+  it("una pregunta nunca se contesta con una sola línea seca ni con un 'no' a secas", () => {
+    expect(TONE_RULES).toMatch(/nunca se contesta con una sola línea seca/i);
+  });
+
+  it("manda agradecer cuando el cliente da un dato o espera", () => {
+    expect(TONE_RULES).toMatch(/Agradece cuando el cliente/i);
+  });
+
+  it("limita a un emoji por mensaje, solo de tres posibles", () => {
+    expect(TONE_RULES).toMatch(/Como mucho un emoji por mensaje/i);
+    expect(TONE_RULES).toContain("🏍️");
+    expect(TONE_RULES).toContain("👍");
+    expect(TONE_RULES).toContain("🙌");
+  });
+
+  it("manda disculparse antes de resolver cuando el cliente está molesto", () => {
+    expect(TONE_RULES).toMatch(/primero la disculpa, después la solución/i);
+  });
+
+  it("prohíbe las fórmulas de correo", () => {
+    expect(TONE_RULES).toMatch(/estimado/i);
+    expect(TONE_RULES).toMatch(/le informamos/i);
+    expect(TONE_RULES).toMatch(/procedemos/i);
+    expect(TONE_RULES).toMatch(/en breve estaremos/i);
+  });
+
+  it("el bloque estático no usa 'estimado' fuera de la prohibición de esta sección y de la sección 1", () => {
+    // Las dos únicas líneas que pueden nombrar "estimado" son las que lo
+    // prohíben (sección 1 y TONE_RULES); ninguna otra línea del guion puede
+    // usarlo para dirigirse al cliente.
+    const lineasConEstimado = SYSTEM_PROMPT.split(/\r?\n/).filter((linea) => /estimado/i.test(linea));
+
+    for (const linea of lineasConEstimado) {
+      expect(linea).toMatch(/estimado cliente"|"estimado"/i);
+    }
+  });
+});
+
+/**
+ * Decisión 2 del plan (14/9/2026): la IA usa el nombre del cliente cuando lo
+ * conoce. `customerFirstName` (customer-name.ts) ya decidió si lo que hay
+ * guardado parece un nombre de persona; acá solo se prueba que el sufijo lo
+ * incluya o no según lo que llega.
+ */
+describe("sufijo dinámico — nombre del cliente (Tarea 3, 14/9/2026)", () => {
+  it("con un nombre, el sufijo lo nombra y pide usarlo con naturalidad", () => {
+    const sufijo = buildInstructions({ ...TURN, customerName: "Ana" }).slice(SYSTEM_PROMPT.length);
+
+    expect(sufijo).toContain("El cliente se llama Ana");
+    expect(sufijo).toMatch(/úsalo con naturalidad/i);
+  });
+
+  it("sin nombre (null o undefined), el sufijo no menciona ningún nombre", () => {
+    const sinNombreNull = buildInstructions({ ...TURN, customerName: null }).slice(SYSTEM_PROMPT.length);
+    const sinNombreUndefined = buildInstructions(TURN).slice(SYSTEM_PROMPT.length);
+
+    expect(sinNombreNull).not.toMatch(/El cliente se llama/);
+    expect(sinNombreUndefined).not.toMatch(/El cliente se llama/);
+  });
+
+  it("no rompe el prefijo cacheado", () => {
+    const instructions = buildInstructions({ ...TURN, customerName: "Ana" });
+
+    expect(instructions.startsWith(SYSTEM_PROMPT)).toBe(true);
+  });
+});
+
+/**
+ * Los cinco textos fijos que el plan exige pasar por la guarda de identidad
+ * (Tarea 3, 14/9/2026). Los otros tres —DESPEDIDA_SIN_ASESOR,
+ * despedidaConAsesor y la instrucción de buildEscalateTool— viven en
+ * agent.ts y tools.ts, y ya los cubren agent.test.ts y tools.test.ts: acá
+ * solo los dos que son de este módulo.
+ */
+describe("los textos fijos de prompt.ts pasan la guarda de identidad (Tarea 3, 14/9/2026)", () => {
+  it("OFF_TOPIC_REPLY", () => {
+    expect(revealsIdentity(OFF_TOPIC_REPLY)).toBeNull();
+  });
+
+  it("el sufijo de catálogo apagado", () => {
+    const sufijo = buildInstructions({ ...TURN, missingCatalog: true }).slice(SYSTEM_PROMPT.length);
+
+    expect(revealsIdentity(sufijo)).toBeNull();
   });
 });

@@ -29,7 +29,18 @@ export interface AgentConversation {
   welcome_sent_at: string | null;
   /** Decide si Meta todavía acepta texto libre en este chat. Ver withinFreeformWindow. */
   last_customer_message_at: string | null;
-  contact: { phone_number: string };
+  contact: {
+    phone_number: string;
+    /**
+     * Nombre que un asesor le puso al contacto a mano. Tarea 3, "La voz
+     * cercana y la espera visible" (14/9/2026): `agent.ts` lo usa para que la
+     * IA salude por nombre — ver `customer-name.ts`. Opcional porque no toda
+     * fila que construye un `AgentConversation` en pruebas lo trae.
+     */
+    display_name?: string | null;
+    /** El nombre que Meta manda del perfil de WhatsApp del cliente. Mismo uso que `display_name`, de menor prioridad. */
+    profile_name?: string | null;
+  };
   channel: { phone_number_id: string | null; status: string };
 }
 

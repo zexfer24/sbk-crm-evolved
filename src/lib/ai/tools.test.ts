@@ -30,6 +30,7 @@ vi.mock("@/lib/log", async (importOriginal) => {
 
 import { buildCatalogTool, buildEscalateTool, buildOrderHistoryTool, type EscalationOutcome } from "@/lib/ai/tools";
 import type { BusinessHours } from "@/lib/business-hours";
+import { revealsIdentity } from "@/lib/ai/identity-guard";
 
 interface FakeProductRow {
   id: string;
@@ -431,8 +432,11 @@ describe("buildEscalateTool — instrucción de despedida según asesor y horari
 
     const result = await ejecutar({ escalated: false });
 
+    // Tarea 3 (14/9/2026): las cuatro ramas de `escalationInstruction` ganan
+    // calidez explícita ("con calidez"/"agradécele"), no solo la rama con
+    // asesor y tienda cerrada, que ya la traía desde B4.
     expect(result.instruccionParaTuRespuesta).toBe(
-      "Ya está asignado a María. Dile al cliente que un asesor lo va a atender."
+      "Ya está asignado a María. Dile al cliente, con calidez, que un asesor toma su caso y le escribe por acá; agradécele la espera."
     );
   });
 
@@ -539,6 +543,34 @@ describe("buildEscalateTool — instrucción de despedida según asesor y horari
       {},
       expect.objectContaining({ conversationId: "conv-1", contactId: "contact-1", businessHours, now })
     );
+  });
+
+  /**
+   * Tarea 3 (14/9/2026): una de las cinco frases fijas que el plan exige
+   * pasar por la guarda de identidad (junto con OFF_TOPIC_REPLY, las dos
+   * despedidas de agent.ts y el sufijo de catálogo apagado de prompt.ts).
+   * Esta es la única de las cinco que vive en tools.ts.
+   */
+  it("las cuatro ramas cálidas de la instrucción pasan la guarda de identidad", async () => {
+    const casos: { assignedAgentName: string | null; unassigned?: boolean; businessStatus?: unknown }[] = [
+      { assignedAgentName: "María" },
+      {
+        assignedAgentName: "María",
+        businessStatus: { open: false, closesAt: null, nextOpening: { dayLabel: "el lunes", time: "8:00 am" } },
+      },
+      { assignedAgentName: null, unassigned: true, businessStatus: { open: true, closesAt: "6:00 pm", nextOpening: null } },
+      {
+        assignedAgentName: null,
+        unassigned: true,
+        businessStatus: { open: false, closesAt: null, nextOpening: null },
+      },
+    ];
+
+    for (const caso of casos) {
+      escalateConversationMock.mockResolvedValue({ escalated: true, ...caso });
+      const result = await ejecutar({ escalated: false });
+      expect(revealsIdentity(result.instruccionParaTuRespuesta)).toBeNull();
+    }
   });
 });
 

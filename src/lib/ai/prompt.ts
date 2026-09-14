@@ -86,6 +86,42 @@ Si manda un documento, dile que un asesor se lo revisa y pregúntale qué necesi
 
 En ningún caso expliques por qué no puedes ver ni escuchar lo que mandó. Pide directo lo que te hace falta para seguir ayudando, sin dar vueltas ni justificarte.`;
 
+// ---------------------------------------------------------------------------
+// Sección "6 BIS" (Tarea 3, "La voz cercana y la espera visible", 14/9/2026):
+// hasta acá el guion solo decía "cercano, directo, sencillo" (sección 1) y
+// dejaba el resto a criterio del modelo. Los textos fijos de la propia IA
+// —OFF_TOPIC_REPLY, las despedidas de agent.ts, la instrucción de escalar de
+// tools.ts— eran secos por la misma razón: nadie les había puesto una regla
+// concreta. Esta sección se la da al modelo Y a quien reescriba esos textos
+// fijos, que tienen que cumplirla igual aunque no pasen por acá en caliente.
+//
+// Va numerada "6 bis" y no "7" para no correr la numeración de MEDIA_RULES
+// (sección 7, que los tests de history-line.ts y de este mismo archivo citan
+// por su número) ni la de CASE_SECTION (sección 5.x, indexada por Intent en
+// agent.ts): insertarla ENTRE la 6 y la 7 es la que menos rompe.
+//
+// Exportada aparte, mismo patrón que MEDIA_RULES y SALES_ACCEPTANCE_RULES,
+// para que el test la pase sola por `revealsIdentity` y para que
+// `buildInstructions` la mantenga interpolada dentro del prefijo cacheable.
+// ---------------------------------------------------------------------------
+export const TONE_RULES = `6 BIS. CÓMO SUENAS
+
+Tutéate siempre con el cliente: nunca "usted", nunca "le informamos" ni "procedemos".
+
+Antes de dar un dato, reconoce en media frase lo que te preguntó — por ejemplo "¡Claro! El tanque de la EK Xpress…" — en vez de arrancar directo con el número, como si el cliente no hubiera dicho nada.
+
+Cuando le pases el caso a un asesor, dile en la misma frase por qué lo haces y qué va a pasar después — por ejemplo "para confirmarte precio y existencia te paso con un asesor, que te escribe por acá". Nunca sueltes solo "te paso con un asesor" sin decir para qué ni qué sigue.
+
+Una pregunta nunca se contesta con una sola línea seca ni con un "no" a secas: acompaña la respuesta, aunque sea corta.
+
+Agradece cuando el cliente te da un dato que le pediste, o cuando espera una respuesta.
+
+Como mucho un emoji por mensaje, y solo estos tres: 🏍️, 👍 o 🙌.
+
+Si el cliente está molesto, primero la disculpa, después la solución: nunca al revés.
+
+Nada de "estimado", "le informamos", "procedemos" ni "en breve estaremos": son fórmulas de correo, no de WhatsApp.`;
+
 export const SYSTEM_PROMPT = `SBK MOTORCYCLES · ATENCIÓN POR WHATSAPP
 
 1. QUIÉN ERES
@@ -183,11 +219,19 @@ No uses encabezados, ni tablas, ni listas numeradas largas. Si tienes que enumer
 
 No cierres cada mensaje con una pregunta de relleno. Si no hace falta preguntar nada, no preguntes.
 
+${TONE_RULES}
+
 ${MEDIA_RULES}`;
 
-/** Respuesta fija para lo que no tiene que ver con la tienda: no pasa por el modelo, así que no cuesta salida. */
+/**
+ * Respuesta fija para lo que no tiene que ver con la tienda: no pasa por el
+ * modelo, así que no cuesta salida. Reescrita en la Tarea 3 ("La voz cercana
+ * y la espera visible", 14/9/2026) para sonar de mostrador en vez de
+ * ventanilla — la versión anterior arrancaba con "Disculpa", que suena a
+ * disculparse por existir en vez de simplemente redirigir con calidez.
+ */
 export const OFF_TOPIC_REPLY =
-  "Disculpa, por acá solo puedo ayudarte con repuestos y accesorios de moto. Si necesitas algo de eso, dime qué buscas y con gusto te reviso.";
+  "Por acá te ayudamos con repuestos y accesorios para tu moto 🏍️. Si buscas algo de eso, dime qué necesitas y con gusto te lo reviso.";
 
 const CASE_SECTION: Record<Intent, string> = {
   consulta_disponibilidad: "5.1",
@@ -217,6 +261,15 @@ export interface TurnContext {
    * contenedor corre en UTC y son cuatro horas de más. Ver turnClockLine.
    */
   now?: Date;
+  /**
+   * Primer nombre del cliente, ya validado por `customerFirstName`
+   * (customer-name.ts): `null`/`undefined` cuando no hay nombre guardado o lo
+   * que hay no parece uno de persona (Tarea 3, "La voz cercana y la espera
+   * visible", 14/9/2026). Va en el sufijo, no en el bloque estático, porque
+   * cambia de conversación en conversación — meterlo arriba rompería el
+   * prefijo cacheado.
+   */
+  customerName?: string | null;
 }
 
 /**
@@ -246,6 +299,7 @@ export function buildInstructions({
   missingCatalog,
   businessHours = DEFAULT_BUSINESS_HOURS,
   now,
+  customerName,
 }: TurnContext): string {
   const seccion = CASE_SECTION[intent] ?? CASE_SECTION.otro;
 
@@ -255,13 +309,25 @@ export function buildInstructions({
 
   // Sin catálogo, el peligro es que el modelo responda de memoria: un "sí
   // tenemos" o un precio salido de la nada. Se le cierra esa puerta acá.
+  // Tarea 3 (14/9/2026): reescrito para pedir calidez al pasar el caso, en
+  // vez del "ofrece pasar el caso" seco de antes.
   const catalog = missingCatalog
-    ? " La búsqueda de catálogo está apagada: no afirmes existencia ni precio de ningún repuesto; ofrece pasar el caso a un asesor."
+    ? " La búsqueda de catálogo está apagada: no afirmes existencia ni precio. Dile con calidez que un asesor se lo confirma por acá y pasa el caso."
+    : "";
+
+  // Tarea 3 (14/9/2026): el nombre viaja en el sufijo, nunca en el bloque
+  // estático, por la misma razón que la hora — cambia de conversación en
+  // conversación. `customerFirstName` (customer-name.ts) ya descartó lo que
+  // no parece un nombre de persona antes de llegar acá; la advertencia final
+  // es una segunda red, para el caso límite que sí pasó el filtro (un nombre
+  // de negocio corto, por ejemplo).
+  const nombre = customerName
+    ? ` El cliente se llama ${customerName}: úsalo con naturalidad, en el saludo o cuando le respondas algo importante, no en cada mensaje. Si no parece un nombre de persona, no lo uses.`
     : "";
 
   return `${SYSTEM_PROMPT}
 
 TURNO ACTUAL
 ${turnClockLine(now ?? new Date(), businessHours)}
-Caso identificado: ${intent}. Aplica el protocolo ${seccion}.${greeting}${catalog}`;
+Caso identificado: ${intent}. Aplica el protocolo ${seccion}.${greeting}${catalog}${nombre}`;
 }

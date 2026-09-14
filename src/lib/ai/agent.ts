@@ -24,6 +24,7 @@ import { withConversationTurnLock, type TurnLease } from "@/lib/ai/conversation-
 import { humanHasWritten } from "@/lib/ai/human-handled";
 import { ZERO_USAGE, fetchActivePlaybooks, matchPlaybook, playbookSentRecently, type PlaybookMatch } from "@/lib/ai/playbooks";
 import { historyLine, isHistoryMarker } from "@/lib/ai/history-line";
+import { customerFirstName } from "@/lib/ai/customer-name";
 import { playbookMessageText, sendAgentText, sendPlaybookReply, type DeliveryOutcome } from "@/lib/ai/send";
 import { buildTurnTarget, type AgentConversation, type TurnTarget } from "@/lib/ai/turn-target";
 import { NonRetryableTurnError, newTurnDelivery, type TurnDelivery } from "@/lib/ai/turn-delivery";
@@ -799,7 +800,7 @@ function tagSummary(tags: Tag[]): string {
 // asegurarse de que la propia despedida nunca se delate.
 // ---------------------------------------------------------------------------
 export const DESPEDIDA_SIN_ASESOR =
-  "Ya dejé tu caso registrado para que lo revise un asesor. En cuanto haya alguien disponible te escriben por acá.";
+  "Listo, dejé tu caso registrado para que un asesor lo revise. En cuanto haya alguien disponible te escribe por acá; gracias por la paciencia.";
 
 /**
  * La despedida fija cuando la IA no puede seguir hablando pero SÍ hay un
@@ -817,17 +818,20 @@ export const DESPEDIDA_SIN_ASESOR =
  * test) y se trata como tienda abierta — mismo criterio que
  * `escalationInstruction` en tools.ts.
  *
- * T3 (tanda siguiente del mismo plan) reescribe el texto para que suene más
- * cálido; acá solo se le da el dato de horario que le faltaba.
+ * Tarea 3 ("La voz cercana y la espera visible", 14/9/2026): texto reescrito
+ * para sonar de mostrador — la sección "CÓMO SUENAS" del prompt (prompt.ts)
+ * pide que toda despedida diga por qué se pasa el caso, qué va a pasar
+ * después y agradezca la espera; las tres ramas de acá cumplen esa misma
+ * regla, no solo el guion que le llega al modelo.
  */
 export function despedidaConAsesor(status?: BusinessStatus): string {
   if (!status || status.open) {
-    return "Dame un momentico, ya te paso con un asesor para que te ayude con esto.";
+    return "Dame un momentico: ya le paso tu caso a un asesor para que te ayude con esto y te escriba por acá.";
   }
   if (!status.nextOpening) {
-    return "Dame un momentico, ya te paso con un asesor para que te ayude con esto en cuanto la tienda vuelva a abrir.";
+    return "Dame un momentico: ya le paso tu caso a un asesor para que te ayude con esto en cuanto la tienda vuelva a abrir; gracias por la paciencia.";
   }
-  return `Dame un momentico, ya te paso con un asesor para que te ayude con esto. Eso sí, la tienda está cerrada ahora: te escribe ${status.nextOpening.dayLabel} a partir de las ${status.nextOpening.time}.`;
+  return `Dame un momentico: ya le paso tu caso a un asesor para que te ayude con esto. Eso sí, la tienda está cerrada ahora — te escribe ${status.nextOpening.dayLabel} a partir de las ${status.nextOpening.time}; gracias por la paciencia.`;
 }
 
 /**
@@ -1347,6 +1351,13 @@ async function runTurnPhases(
 
   const { model, providerOptions } = getAgentModel("medium");
 
+  // Tarea 3 ("La voz cercana y la espera visible", 14/9/2026): el nombre que
+  // la IA usa para sonar de mostrador, no de ventanilla. `customerFirstName`
+  // devuelve `null` para lo que no parece un nombre de persona (un teléfono,
+  // "SBK Motos" es la única excepción aceptada, ver customer-name.ts) y el
+  // sufijo del prompt simplemente no aparece en ese caso.
+  const customerName = customerFirstName(convo.contact?.display_name ?? null, convo.contact?.profile_name ?? null);
+
   const agent = new ToolLoopAgent({
     model,
     instructions: buildInstructions({
@@ -1354,6 +1365,7 @@ async function runTurnPhases(
       needsGreeting: needsGreeting(convo.welcome_sent_at, history),
       missingCatalog,
       businessHours,
+      customerName,
     }),
     tools,
     stopWhen: isStepCount(MAX_STEPS),
@@ -1571,7 +1583,11 @@ export async function runAgentTurn(conversationId: string, options: { vencioEn?:
     supabase
       .from("conversations")
       .select(
-        "id, contact_id, ai_enabled, assigned_agent_id, welcome_sent_at, last_customer_message_at, contact:contacts(phone_number), channel:whatsapp_channels(phone_number_id, status)"
+        // Tarea 3, "La voz cercana y la espera visible" (14/9/2026):
+        // display_name/profile_name viajan con el resto de la fila del
+        // contacto para que la IA pueda saludar por nombre — ver
+        // customer-name.ts.
+        "id, contact_id, ai_enabled, assigned_agent_id, welcome_sent_at, last_customer_message_at, contact:contacts(phone_number, display_name, profile_name), channel:whatsapp_channels(phone_number_id, status)"
       )
       .eq("id", conversationId)
       .maybeSingle(),
