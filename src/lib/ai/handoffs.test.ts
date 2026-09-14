@@ -229,6 +229,7 @@ vi.mock("@/lib/ai/knowledge", () => ({
 }));
 
 import { runAgentTurn } from "@/lib/ai/agent";
+import { escalationOpen } from "@/lib/ai/handoffs";
 import { log } from "@/lib/log";
 
 function baseConversation(overrides: Record<string, unknown> = {}) {
@@ -531,5 +532,140 @@ describe("runAgentTurn — la regla inviolable: registrar el traspaso nunca pued
     expect(handoffCalls).toHaveLength(1);
     expect(sendAgentTextMock).not.toHaveBeenCalled();
     expect(sendPlaybookReplyMock).not.toHaveBeenCalled();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// escalationOpen — Tarea 4, "La voz cercana y la espera visible" (14/9/2026).
+//
+// Fake acotado, distinto del `createFakeSupabase` de arriba (ese arma un
+// turno completo; esto es una función pura sobre dos consultas): imita solo
+// las dos cadenas que `escalationOpen` de verdad encadena —
+// `.from("conversation_handoffs").select().eq().order().limit().maybeSingle()`
+// y `.from("messages").select().eq().eq().gt().limit()`.
+// ---------------------------------------------------------------------------
+
+interface HandoffRow {
+  reason: string;
+  created_at: string;
+}
+
+function fakeSupabaseParaEscalationOpen(opts: {
+  ultimoTraspaso?: HandoffRow | null;
+  traspasoError?: { message: string } | null;
+  mensajesDeAsesor?: { id: string }[];
+  mensajesError?: { message: string } | null;
+}) {
+  const { ultimoTraspaso = null, traspasoError = null, mensajesDeAsesor = [], mensajesError = null } = opts;
+
+  return {
+    from(table: string) {
+      if (table === "conversation_handoffs") {
+        return {
+          select: () => ({
+            eq: () => ({
+              order: () => ({
+                limit: () => ({
+                  maybeSingle: async () => ({
+                    data: traspasoError ? null : ultimoTraspaso,
+                    error: traspasoError,
+                  }),
+                }),
+              }),
+            }),
+          }),
+        };
+      }
+
+      if (table === "messages") {
+        return {
+          select: () => ({
+            eq: () => ({
+              eq: () => ({
+                gt: () => ({
+                  limit: async () => ({
+                    data: mensajesError ? null : mensajesDeAsesor,
+                    error: mensajesError,
+                  }),
+                }),
+              }),
+            }),
+          }),
+        };
+      }
+
+      throw new Error(`Fake Supabase: tabla no soportada: ${table}`);
+    },
+  } as never;
+}
+
+describe("escalationOpen", () => {
+  it("true: el último traspaso es 'escalada' y ningún asesor escribió después", async () => {
+    const supabase = fakeSupabaseParaEscalationOpen({
+      ultimoTraspaso: { reason: "escalada", created_at: "2026-09-14T10:00:00.000Z" },
+      mensajesDeAsesor: [],
+    });
+
+    expect(await escalationOpen(supabase, "conv-1")).toBe(true);
+  });
+
+  it("true: el último traspaso es 'escalada_sin_asesor' y ningún asesor escribió después", async () => {
+    const supabase = fakeSupabaseParaEscalationOpen({
+      ultimoTraspaso: { reason: "escalada_sin_asesor", created_at: "2026-09-14T10:00:00.000Z" },
+      mensajesDeAsesor: [],
+    });
+
+    expect(await escalationOpen(supabase, "conv-1")).toBe(true);
+  });
+
+  it("false: un asesor (sender_type = 'agent') ya escribió después de la escalada", async () => {
+    const supabase = fakeSupabaseParaEscalationOpen({
+      ultimoTraspaso: { reason: "escalada", created_at: "2026-09-14T10:00:00.000Z" },
+      mensajesDeAsesor: [{ id: "msg-1" }],
+    });
+
+    expect(await escalationOpen(supabase, "conv-1")).toBe(false);
+  });
+
+  it("false: el último traspaso no es una escalada (p. ej. la conversación se reabrió después)", async () => {
+    const supabase = fakeSupabaseParaEscalationOpen({
+      ultimoTraspaso: { reason: "reabierta_por_cliente", created_at: "2026-09-14T11:00:00.000Z" },
+    });
+
+    expect(await escalationOpen(supabase, "conv-1")).toBe(false);
+  });
+
+  it("false: la conversación no tiene ningún traspaso todavía", async () => {
+    const supabase = fakeSupabaseParaEscalationOpen({ ultimoTraspaso: null });
+
+    expect(await escalationOpen(supabase, "conv-1")).toBe(false);
+  });
+
+  it("falla cerrado: un error al consultar conversation_handoffs devuelve false, no lanza", async () => {
+    const error = vi.spyOn(log, "error");
+    const supabase = fakeSupabaseParaEscalationOpen({
+      ultimoTraspaso: null,
+      traspasoError: { message: "conexión perdida" },
+    });
+
+    await expect(escalationOpen(supabase, "conv-1")).resolves.toBe(false);
+    expect(error).toHaveBeenCalledWith("escalada_abierta_no_consultable", {
+      conversationId: "conv-1",
+      detail: "conexión perdida",
+    });
+  });
+
+  it("falla cerrado: un error al consultar messages devuelve false, no lanza", async () => {
+    const error = vi.spyOn(log, "error");
+    const supabase = fakeSupabaseParaEscalationOpen({
+      ultimoTraspaso: { reason: "escalada", created_at: "2026-09-14T10:00:00.000Z" },
+      mensajesError: { message: "timeout" },
+    });
+
+    await expect(escalationOpen(supabase, "conv-1")).resolves.toBe(false);
+    expect(error).toHaveBeenCalledWith("escalada_abierta_no_consultable", {
+      conversationId: "conv-1",
+      detail: "timeout",
+    });
   });
 });

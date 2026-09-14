@@ -103,7 +103,18 @@ export type HandoffReason =
   // media, esta salida pasa a ser una red de seguridad (0 de 269
   // conversaciones esperando quedarían vacías tras T2), pero cuando vuelva
   // a darse tiene que dejar traspaso igual.
-  | "sin_contenido_legible";
+  | "sin_contenido_legible"
+  // Tarea 4, "La voz cercana y la espera visible" (14/9/2026): el cliente
+  // cerró con puro agradecimiento/cortesía ("Ok, muchas gracias") mientras
+  // la conversación seguía con una escalada abierta y ningún asesor había
+  // escrito todavía (`escalationOpen`, abajo). Tras la devolución masiva
+  // del 13/9/2026 un caso así recibió la despedida fija de escalada
+  // ("¡Gracias por preferirnos!") — una respuesta MÁS, y ninguna de la
+  // persona que el cliente en realidad espera. El turno se calla (no hay
+  // pregunta nueva que contestar) pero deja esta fila, con el mismo dueño
+  // que ya tenía la conversación: la migración 20260914010000 (T1, misma
+  // corrida) suma el valor al CHECK de la base.
+  | "cortesia_tras_escalada";
 
 export interface HandoffInput {
   conversationId: string;
@@ -198,6 +209,74 @@ export async function recordHandoffAdmin(input: HandoffInput): Promise<boolean> 
       reason: input.reason,
       detail: errorText(err),
     });
+    return false;
+  }
+}
+
+/**
+ * ¿Sigue abierta la última escalada de esta conversación? Tarea 4, "La voz
+ * cercana y la espera visible" (14/9/2026): se pregunta ANTES de dejarle
+ * hablar a la IA sobre un mensaje que es puro agradecimiento/cortesía — si
+ * la respuesta es sí, el turno se calla en vez de despedirse otra vez de
+ * alguien que ya está esperando a un asesor (ver `runTurnPhases` en
+ * agent.ts, guarda de cortesía).
+ *
+ * `true` solo si SE CUMPLEN LAS DOS COSAS:
+ *   1. La ÚLTIMA fila de `conversation_handoffs` de esta conversación
+ *      (cualquiera sea su `reason`) es una escalada — `escalada` (con
+ *      asesor) o `escalada_sin_asesor` (sin ninguno libre). Si la última fila
+ *      es cualquier otra cosa —la conversación se cerró, se reabrió, un
+ *      asesor la reclamó a mano— la escalada ya no es "lo último que pasó" y
+ *      esto devuelve `false`.
+ *   2. Ningún `messages` con `sender_type = 'agent'` (un asesor humano,
+ *      nunca `'ai'`) quedó con `created_at` posterior a esa fila: si un
+ *      asesor ya escribió, la conversación pasó a ser SUYA y la IA no tiene
+ *      por qué seguir en silencio.
+ *
+ * Falla CERRADO hacia `false` (ante cualquier error de cualquiera de las dos
+ * consultas, la IA atiende normal): equivocarse hacia ese lado cuesta, como
+ * mucho, una despedida de más — equivocarse hacia el otro sería la IA muda
+ * en una conversación que ya no tiene ninguna escalada pendiente, que es el
+ * defecto que esta función existe para no repetir en el sentido contrario.
+ */
+export async function escalationOpen(
+  supabase: SupabaseClient<Database>,
+  conversationId: string
+): Promise<boolean> {
+  try {
+    const { data: ultimoTraspaso, error: traspasoError } = await supabase
+      .from("conversation_handoffs")
+      .select("reason, created_at")
+      .eq("conversation_id", conversationId)
+      .order("created_at", { ascending: false })
+      .limit(1)
+      .maybeSingle();
+
+    if (traspasoError) {
+      log.error("escalada_abierta_no_consultable", { conversationId, detail: traspasoError.message });
+      return false;
+    }
+
+    if (!ultimoTraspaso || (ultimoTraspaso.reason !== "escalada" && ultimoTraspaso.reason !== "escalada_sin_asesor")) {
+      return false;
+    }
+
+    const { data: mensajesDeAsesor, error: mensajesError } = await supabase
+      .from("messages")
+      .select("id")
+      .eq("conversation_id", conversationId)
+      .eq("sender_type", "agent")
+      .gt("created_at", ultimoTraspaso.created_at)
+      .limit(1);
+
+    if (mensajesError) {
+      log.error("escalada_abierta_no_consultable", { conversationId, detail: mensajesError.message });
+      return false;
+    }
+
+    return (mensajesDeAsesor ?? []).length === 0;
+  } catch (err) {
+    log.error("escalada_abierta_no_consultable", { conversationId, detail: errorText(err) });
     return false;
   }
 }

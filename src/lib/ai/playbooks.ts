@@ -13,6 +13,7 @@ import {
   type BusinessHours,
 } from "@/lib/business-hours";
 import { formatCrmDateTime } from "@/lib/time-zone";
+import { isGreetingPlaybook, isPureGreeting } from "@/lib/ai/saludo";
 import { errorText, log } from "@/lib/log";
 
 // ---------------------------------------------------------------------------
@@ -175,6 +176,8 @@ Fecha y hora local: ${formatCrmDateTime(now)} (Venezuela) — franja: ${franja}.
 Escenarios disponibles:
 ${catalog}
 
+Si el cliente saluda Y pregunta algo en el mismo mensaje, el saludo no cuenta: clasifica por la pregunta.
+
 Responde "${NO_MATCH}" si ninguno calza con claridad.
 
 Ante la duda, responde "${NO_MATCH}". Equivocarse de escenario le manda al cliente un mensaje que no tiene nada que ver con lo que preguntó; responder "${NO_MATCH}" solo hace que otro agente atienda el caso con normalidad. Prefiere siempre el segundo error.
@@ -196,7 +199,14 @@ export async function matchPlaybook(
   // Con default para no romper a los llamadores viejos ni a los tests que
   // todavía no pasan horario: cae al horario por defecto (Frente B3, "El
   // reloj dice la verdad", 5/9/2026).
-  businessHours: BusinessHours = DEFAULT_BUSINESS_HOURS
+  businessHours: BusinessHours = DEFAULT_BUSINESS_HOURS,
+  // Tarea 4 ("La voz cercana y la espera visible", 14/9/2026): el ÚLTIMO
+  // texto del cliente, tal cual lo devuelve `lastCustomerMessage` en
+  // agent.ts (null si esa línea es un marcador de media, o si el llamador
+  // no lo tiene). Opcional para no romper a los tests y llamadores viejos
+  // que todavía no lo pasan — sin este argumento no se filtra nada, mismo
+  // comportamiento de siempre.
+  lastCustomerText?: string | null
 ): Promise<PlaybookMatch> {
   // La hora se decide acá y no se le pregunta al modelo. De 14 saludos del 27
   // de agosto de 2026, 4 salieron con el saludo equivocado —"¡Buenos días!" a
@@ -205,7 +215,25 @@ export async function matchPlaybook(
   // FORMA del mensaje ("solo con hola o cualquier saludo") calzaba a toda
   // hora. Filtrar antes le quita la opción imposible en vez de corregirle la
   // respuesta después. Ver greeting-window.ts.
-  const candidatos = playbooksAtTime(playbooks, now);
+  let candidatos = playbooksAtTime(playbooks, now);
+
+  // 53 veces en 72 h (medido antes de esta tarea, 14/9/2026) el cliente
+  // saludó y preguntó algo en el mismo mensaje ("Buenas tardes, tienen
+  // tanque de EK Xpress") y recibió solo el escenario de saludo — el
+  // disparador de saludo no exige que el mensaje sea nada MÁS que un saludo,
+  // así que calzaba igual. Si el último mensaje del cliente trae algo más
+  // que un saludo, los escenarios que EMPIEZAN saludando salen de los
+  // candidatos: el resto de la clasificación (o el flujo genérico) responde
+  // la pregunta real. Sin `lastCustomerText` (llamador viejo, o el turno no
+  // pudo determinar el último texto) no se filtra nada — ver el comentario
+  // del parámetro arriba.
+  if (lastCustomerText != null && !isPureGreeting(lastCustomerText)) {
+    const antes = candidatos.length;
+    candidatos = candidatos.filter((playbook) => !isGreetingPlaybook(playbook.responseText));
+    if (candidatos.length < antes) {
+      log.info("escenarios_saludo_descartados", { descartados: antes - candidatos.length });
+    }
+  }
 
   // Sin escenarios que puedan salir ahora no hay nada que elegir: se ahorra la
   // llamada y el turno sigue por el flujo genérico, que redacta con la hora

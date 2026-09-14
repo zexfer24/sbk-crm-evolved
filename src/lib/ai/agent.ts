@@ -28,7 +28,8 @@ import { customerFirstName } from "@/lib/ai/customer-name";
 import { playbookMessageText, sendAgentText, sendPlaybookReply, type DeliveryOutcome } from "@/lib/ai/send";
 import { buildTurnTarget, type AgentConversation, type TurnTarget } from "@/lib/ai/turn-target";
 import { NonRetryableTurnError, newTurnDelivery, type TurnDelivery } from "@/lib/ai/turn-delivery";
-import { recordHandoff } from "@/lib/ai/handoffs";
+import { recordHandoff, escalationOpen } from "@/lib/ai/handoffs";
+import { isCourtesyOnly } from "@/lib/ai/saludo";
 import { errorText, log } from "@/lib/log";
 import { withinFreeformWindow } from "@/lib/dashboard";
 import { isWithin24hWindow } from "@/lib/whatsapp-window";
@@ -1140,6 +1141,38 @@ async function runTurnPhases(
 
   const customerMessage = lastCustomerMessage(history);
 
+  // Guarda de cortesía tras una escalada abierta (Tarea 4, "La voz cercana y
+  // la espera visible", 14/9/2026, decisión 4). ANTES de fase 0 y de
+  // clasificar: tras la devolución masiva del 13/9/2026, un "Ok, muchas
+  // gracias" reencolado recibió la despedida fija de escalada ("¡Gracias por
+  // preferirnos!") mientras la conversación seguía esperando a que un asesor
+  // le escribiera — una respuesta MÁS, y ninguna de la persona que el
+  // cliente en realidad espera. Si el último mensaje es solo cortesía de
+  // cierre y la última escalada de esta conversación sigue abierta (ningún
+  // asesor escribió después), el turno se calla: no hay pregunta nueva que
+  // contestar, y CLAUDE.md prohíbe justo el `return` que no deja rastro —
+  // por eso la fila de traspaso lleva el MISMO dueño que ya tenía la
+  // conversación (el asesor asignado, o `unassigned` si no lo hay):
+  // `awaiting_reply` no se toca, el cliente sigue esperando a la persona.
+  if (customerMessage && isCourtesyOnly(customerMessage) && (await escalationOpen(supabase, conversationId))) {
+    await recordHandoff(supabase, {
+      conversationId,
+      toKind: convo.assigned_agent_id ? "human" : "unassigned",
+      toId: convo.assigned_agent_id ?? null,
+      reason: "cortesia_tras_escalada",
+    });
+    await resetStage(supabase, conversationId, "turno_cortesia_tras_escalada");
+    log.info("turno_cortesia_tras_escalada", { conversationId });
+    await logTurn(supabase, conversationId, {
+      intent: null,
+      action: "answered",
+      summary: "Cortesía con escalada abierta: no se respondió.",
+      tokens: null,
+      customerMessage,
+    });
+    return;
+  }
+
   // Fases 0 y 1 — ¿el mensaje calza con una respuesta ya redactada, y qué
   // caso es? Si calza un escenario, se envía tal cual y el turno termina ahí:
   // el cliente recibe el texto oficial en vez de una versión que el modelo
@@ -1192,7 +1225,7 @@ async function runTurnPhases(
   const [match, classified] = await medir(tiempos, "clasificacionMs", () => {
     const matchPromise: Promise<PlaybookMatch> = ultimoEsMarcador
       ? Promise.resolve({ playbook: null, usage: ZERO_USAGE })
-      : matchPlaybook(history, playbooks, undefined, businessHours);
+      : matchPlaybook(history, playbooks, undefined, businessHours, customerMessage);
 
     return Promise.all([
       // matchPlaybook nunca lanza: un fallo del proveedor deja el turno por el

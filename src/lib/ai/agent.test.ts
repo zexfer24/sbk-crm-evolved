@@ -72,6 +72,19 @@ interface FakeState {
   agentTurnInsertError: { message: string } | null;
   /** El error que devuelve el UPDATE de `conversations.intent`. `null` de fábrica. */
   intentUpdateError: { message: string } | null;
+  /**
+   * Tarea 4 (14/9/2026): la ÚLTIMA fila de `conversation_handoffs` que
+   * `escalationOpen` (handoffs.ts) consulta antes de la guarda de cortesía.
+   * `null` de fábrica — sin ningún traspaso previo, `escalationOpen` da
+   * `false` y la guarda nunca se activa en los tests que no la ejercitan.
+   */
+  lastHandoffRow: { reason: string; created_at: string } | null;
+  /** Si viene con mensaje, la consulta de `conversation_handoffs` de `escalationOpen` falla. */
+  lastHandoffError: { message: string } | null;
+  /** Mensajes de asesor (`sender_type = 'agent'`) posteriores al último traspaso — lo que mira `escalationOpen`. */
+  agentMessagesAfterHandoff: { id: string }[];
+  /** Si viene con mensaje, esa segunda consulta de `escalationOpen` falla. */
+  agentMessagesAfterHandoffError: { message: string } | null;
 }
 
 const state: FakeState = {
@@ -92,6 +105,10 @@ const state: FakeState = {
   agentCanRunError: null,
   agentTurnInsertError: null,
   intentUpdateError: null,
+  lastHandoffRow: null,
+  lastHandoffError: null,
+  agentMessagesAfterHandoff: [],
+  agentMessagesAfterHandoffError: null,
 };
 const conversationUpdates: Record<string, unknown>[] = [];
 /** Tarea 3 (14/9/2026): columnas pedidas en cada `select()` sobre `conversations`, para probar que trae display_name/profile_name. */
@@ -235,6 +252,20 @@ function createFakeSupabase() {
                     }),
                   };
                 }
+                // Tarea 4 (14/9/2026): `escalationOpen` (handoffs.ts) pide
+                // "id" y encadena `.eq("sender_type", "agent").gt("created_at",
+                // ...).limit(1)` — un tercer consumidor de esta misma forma
+                // de select, distinguido por columna igual que los otros dos.
+                if (columns === "id") {
+                  return {
+                    gt: () => ({
+                      limit: async () => ({
+                        data: state.agentMessagesAfterHandoffError ? null : state.agentMessagesAfterHandoff,
+                        error: state.agentMessagesAfterHandoffError,
+                      }),
+                    }),
+                  };
+                }
                 return {
                   order: () => ({
                     limit: () => ({
@@ -275,6 +306,25 @@ function createFakeSupabase() {
             agentTurnInserts.push(row);
             return Promise.resolve({ data: null, error: state.agentTurnInsertError });
           },
+        };
+      }
+
+      // Tarea 4 (14/9/2026): `escalationOpen` (handoffs.ts) — la guarda de
+      // cortesía tras una escalada abierta la consulta ANTES de fase 0.
+      if (table === "conversation_handoffs") {
+        return {
+          select: () => ({
+            eq: () => ({
+              order: () => ({
+                limit: () => ({
+                  maybeSingle: async () => ({
+                    data: state.lastHandoffError ? null : state.lastHandoffRow,
+                    error: state.lastHandoffError,
+                  }),
+                }),
+              }),
+            }),
+          }),
         };
       }
 
@@ -520,6 +570,10 @@ beforeEach(() => {
   state.agentCanRunError = null;
   state.agentTurnInsertError = null;
   state.intentUpdateError = null;
+  state.lastHandoffRow = null;
+  state.lastHandoffError = null;
+  state.agentMessagesAfterHandoff = [];
+  state.agentMessagesAfterHandoffError = null;
   withinFreeformWindowOverride.fn = null;
   sendTypingIndicatorMock.mockClear();
   conversationUpdates.length = 0;
@@ -944,6 +998,91 @@ describe("runAgentTurn — salidas silenciosas de apertura", () => {
     expect(matchPlaybookMock).not.toHaveBeenCalled();
     expect(sendAgentTextMock).not.toHaveBeenCalled();
     expect(sendPlaybookReplyMock).not.toHaveBeenCalled();
+  });
+});
+
+/**
+ * Tarea 4, "La voz cercana y la espera visible" (14/9/2026), decisión 4: no
+ * se despide de quien ya está esperando a un asesor. Corre ANTES de fase 0 —
+ * `matchPlaybookMock`/`classifyIntentMock` no deben llamarse cuando la guarda
+ * dispara.
+ */
+describe("runAgentTurn — guarda de cortesía tras una escalada abierta (Tarea 4, 14/9/2026)", () => {
+  it("'Ok, muchas gracias' con una escalada abierta y sin asesor asignado: se calla, deja traspaso a 'unassigned'", async () => {
+    const info = vi.spyOn(log, "info");
+    state.history = [{ sender_type: "customer", content: "Ok, muchas gracias", is_internal_note: false }];
+    state.lastHandoffRow = { reason: "escalada_sin_asesor", created_at: "2026-09-14T10:00:00.000Z" };
+    state.agentMessagesAfterHandoff = [];
+
+    await runAgentTurn("conv-1");
+
+    expect(matchPlaybookMock).not.toHaveBeenCalled();
+    expect(classifyIntentMock).not.toHaveBeenCalled();
+    expect(sendAgentTextMock).not.toHaveBeenCalled();
+    expect(sendPlaybookReplyMock).not.toHaveBeenCalled();
+    expect(handoffCalls).toHaveLength(1);
+    expect(handoffCalls[0]).toMatchObject({
+      p_conversation_id: "conv-1",
+      p_to_kind: "unassigned",
+      p_reason: "cortesia_tras_escalada",
+    });
+    expect(info).toHaveBeenCalledWith("turno_cortesia_tras_escalada", { conversationId: "conv-1" });
+    expect(agentTurnInserts).toHaveLength(1);
+    expect(agentTurnInserts[0]).toMatchObject({
+      action: "answered",
+      summary: "Cortesía con escalada abierta: no se respondió.",
+      customer_message: "Ok, muchas gracias",
+    });
+    // journey_stage vuelve a null: no se queda pegado en "classifying".
+    expect(conversationUpdates).toContainEqual({ journey_stage: null, active_tool: null });
+  });
+
+  // NOTA (desvío del plan, ver reporte): no hay un test "con asesor
+  // asignado, el traspaso lleva su to_id" — es IRREPRODUCIBLE con
+  // `runAgentTurn`. `openTurn` (arriba en este mismo archivo, la guarda
+  // "asignada": línea ~1680 de agent.ts) corta el turno ANTES de llegar a
+  // `runTurnPhases` en CUANTO `convo.assigned_agent_id` no es null, sin
+  // mirar `ai_enabled` — así que dentro de `runTurnPhases` (donde vive esta
+  // guarda de cortesía) `convo.assigned_agent_id` SIEMPRE es null. El
+  // `convo.assigned_agent_id ? "human" : "unassigned"` de la guarda de
+  // cortesía (pedido tal cual por el plan) queda como código defensivo para
+  // si ese orden cambia algún día; hoy toma siempre la rama `unassigned`.
+
+  it("mismo mensaje, pero un asesor YA escribió después de la escalada: turno normal", async () => {
+    state.history = [{ sender_type: "customer", content: "Ok, muchas gracias", is_internal_note: false }];
+    state.lastHandoffRow = { reason: "escalada", created_at: "2026-09-14T10:00:00.000Z" };
+    state.agentMessagesAfterHandoff = [{ id: "msg-asesor-1" }];
+
+    await runAgentTurn("conv-1");
+
+    expect(classifyIntentMock).toHaveBeenCalled();
+    expect(sendAgentTextMock).toHaveBeenCalledTimes(1);
+    expect(handoffCalls.some((c) => c.p_reason === "cortesia_tras_escalada")).toBe(false);
+  });
+
+  it("'gracias, y ¿tienen rines 17?' no es solo cortesía: turno normal aunque la escalada siga abierta", async () => {
+    state.history = [
+      { sender_type: "customer", content: "gracias, y ¿tienen rines 17?", is_internal_note: false },
+    ];
+    state.lastHandoffRow = { reason: "escalada_sin_asesor", created_at: "2026-09-14T10:00:00.000Z" };
+    state.agentMessagesAfterHandoff = [];
+
+    await runAgentTurn("conv-1");
+
+    expect(classifyIntentMock).toHaveBeenCalled();
+    expect(sendAgentTextMock).toHaveBeenCalledTimes(1);
+    expect(handoffCalls.some((c) => c.p_reason === "cortesia_tras_escalada")).toBe(false);
+  });
+
+  it("mensaje de cortesía pero SIN ninguna escalada previa: turno normal", async () => {
+    state.history = [{ sender_type: "customer", content: "gracias", is_internal_note: false }];
+    state.lastHandoffRow = null;
+
+    await runAgentTurn("conv-1");
+
+    expect(classifyIntentMock).toHaveBeenCalled();
+    expect(sendAgentTextMock).toHaveBeenCalledTimes(1);
+    expect(handoffCalls.some((c) => c.p_reason === "cortesia_tras_escalada")).toBe(false);
   });
 });
 

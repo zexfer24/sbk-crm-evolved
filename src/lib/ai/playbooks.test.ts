@@ -18,6 +18,7 @@ vi.mock("@/lib/ai/model", () => ({
 }));
 
 import { matchPlaybook, playbookSentRecently } from "@/lib/ai/playbooks";
+import { log } from "@/lib/log";
 
 const USAGE = { inputTokens: 10, outputTokens: 2, totalTokens: 12 };
 
@@ -120,6 +121,89 @@ describe("matchPlaybook", () => {
 
     expect(result.playbook).toBeNull();
     expect(result.usage.totalTokens).toBe(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Tarea 4, "La voz cercana y la espera visible" (14/9/2026), decisión 4: 53
+// veces en 72 h el cliente saludó y preguntó en el mismo mensaje ("Buenas
+// tardes, tienen tanque de EK Xpress") y el escenario de saludo calzó igual
+// — el disparador de saludo no exige que el mensaje sea SOLO un saludo. El
+// quinto argumento de `matchPlaybook` (el último texto del cliente) saca de
+// los candidatos los escenarios que EMPIEZAN saludando cuando ese texto trae
+// algo más que un saludo.
+// ---------------------------------------------------------------------------
+describe("matchPlaybook · el saludo no tapa la pregunta real", () => {
+  const saludo = playbook("Saludo", { responseText: "¡Buenas tardes! ¿En qué podemos ayudarte hoy?" });
+  const catalogo = playbook("Catálogo general", { responseText: "Claro, dame un momento para revisar." });
+
+  it("con algo más que un saludo, el enum no incluye el escenario de saludo", async () => {
+    generateObjectMock.mockClear();
+    generateObjectMock.mockResolvedValue({ object: "Catálogo general", usage: USAGE });
+
+    await matchPlaybook(
+      [{ role: "user", content: "Buenas tardes, tienen tanque de EK Xpress" }],
+      [saludo, catalogo],
+      undefined,
+      undefined,
+      "Buenas tardes, tienen tanque de EK Xpress"
+    );
+
+    const call = generateObjectMock.mock.calls[0][0] as { enum: string[] };
+    expect(call.enum).not.toContain("Saludo");
+    expect(call.enum).toContain("Catálogo general");
+  });
+
+  it("con solo un saludo, el enum SÍ incluye el escenario de saludo", async () => {
+    generateObjectMock.mockClear();
+    generateObjectMock.mockResolvedValue({ object: "Saludo", usage: USAGE });
+
+    await matchPlaybook(
+      [{ role: "user", content: "hola" }],
+      [saludo, catalogo],
+      undefined,
+      undefined,
+      "hola"
+    );
+
+    const call = generateObjectMock.mock.calls[0][0] as { enum: string[] };
+    expect(call.enum).toContain("Saludo");
+  });
+
+  it("sin el quinto argumento (llamador viejo), no filtra nada — compatibilidad hacia atrás", async () => {
+    generateObjectMock.mockClear();
+    generateObjectMock.mockResolvedValue({ object: "ninguno", usage: USAGE });
+
+    await matchPlaybook([{ role: "user", content: "Buenas tardes, tienen tanque de EK Xpress" }], [saludo, catalogo]);
+
+    const call = generateObjectMock.mock.calls[0][0] as { enum: string[] };
+    expect(call.enum).toContain("Saludo");
+  });
+
+  it("deja en el registro cuántos escenarios de saludo descartó", async () => {
+    const info = vi.spyOn(log, "info");
+    generateObjectMock.mockClear();
+    generateObjectMock.mockResolvedValue({ object: "Catálogo general", usage: USAGE });
+
+    await matchPlaybook(
+      [{ role: "user", content: "Buenas tardes, tienen tanque de EK Xpress" }],
+      [saludo, catalogo],
+      undefined,
+      undefined,
+      "Buenas tardes, tienen tanque de EK Xpress"
+    );
+
+    expect(info).toHaveBeenCalledWith("escenarios_saludo_descartados", { descartados: 1 });
+  });
+
+  it("el prompt le dice al modelo que clasifique por la pregunta cuando el cliente saluda y pregunta a la vez", async () => {
+    generateObjectMock.mockClear();
+    generateObjectMock.mockResolvedValue({ object: "Catálogo general", usage: USAGE });
+
+    await matchPlaybook([{ role: "user", content: "hola, quiero un casco" }], [catalogo]);
+
+    const call = generateObjectMock.mock.calls[0][0] as { system: string };
+    expect(call.system).toContain("el saludo no cuenta");
   });
 });
 
