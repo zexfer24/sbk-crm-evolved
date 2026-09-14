@@ -288,14 +288,29 @@ describe("escalateConversation — horario de la tienda al escalar sin asesores"
     expect(result.businessStatus?.nextOpening).toEqual({ dayLabel: "el lunes", time: "8:00 am" });
   });
 
-  it("con un asesor asignado, el resultado no lleva businessStatus (no hace falta para esa despedida)", async () => {
+  /**
+   * Tarea 5 ("La voz cercana y la espera visible", 14/9/2026): businessStatus
+   * pasa a viajar SIEMPRE, con asesor o sin él — antes de esta tarea solo
+   * viajaba sin asesor, y `escalationInstruction`/`despedidaConAsesor`
+   * (`tools.ts`/`agent.ts`) lo necesitan también con asesor, para poder
+   * avisar "la tienda está cerrada" cuando corresponda. Ya se calculaba
+   * siempre por dentro; lo único que cambió es que ahora también se expone.
+   */
+  it("con un asesor asignado y la tienda cerrada, el resultado igual trae businessStatus con la próxima apertura", async () => {
     claimNextAvailableAgentMock.mockResolvedValue({ id: "agent-1", displayName: "María" });
     const { client } = createFakeSupabase();
 
-    // @ts-expect-error -- fake mínimo
-    const result = await escalateConversation(client, PARAMS);
+    const domingo = enCaracas("2026-09-06T10:00");
 
-    expect(result.businessStatus).toBeUndefined();
+    // @ts-expect-error -- fake mínimo
+    const result = await escalateConversation(client, {
+      ...PARAMS,
+      now: domingo,
+      businessHours: DEFAULT_BUSINESS_HOURS,
+    });
+
+    expect(result.businessStatus?.open).toBe(false);
+    expect(result.businessStatus?.nextOpening).toEqual({ dayLabel: "el lunes", time: "8:00 am" });
   });
 
   it("sin now ni businessHours, usa el reloj real y el horario por defecto sin reventar", async () => {

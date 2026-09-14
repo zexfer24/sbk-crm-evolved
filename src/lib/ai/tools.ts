@@ -78,11 +78,25 @@ export interface EscalationOutcome {
   reason?: string;
   /**
    * La escalación quedó sin ningún asesor disponible (anexo A1, 5/9/2026).
-   * El orquestador la usa para decidir si el mensaje final es una despedida
-   * sin nadie detrás —que no cuenta como respuesta real, `isAutoReply: true`
-   * en `sendAgentText`— o una escalación con asesor de verdad.
+   * Hasta el 14/9/2026 el orquestador la usaba para decidir si el mensaje
+   * final es una despedida sin nadie detrás —`isAutoReply: true` en
+   * `sendAgentText`—; desde la Tarea 5 ("La voz cercana y la espera
+   * visible") la promesa de un asesor TAMPOCO es una respuesta real (170
+   * promesas ≥ 30 min sin cumplir, 23 de ellas nunca atendidas, medidas en
+   * la auditoría de esa tarea), así que `isAutoReply` pasó a depender solo
+   * de `escalated` — este campo se sigue usando para elegir QUÉ despedida
+   * fija mandar (`DESPEDIDA_SIN_ASESOR` vs. `despedidaConAsesor`, agent.ts).
    */
   unassigned?: boolean;
+  /**
+   * El horario de la tienda en el momento de escalar (Tarea 5, 14/9/2026):
+   * `escalateConversation` lo calcula siempre (ver escalate.ts) y viaja acá
+   * para que la despedida fija CON asesor (`despedidaConAsesor`, agent.ts) y
+   * la instrucción que lee el modelo (`escalationInstruction`, este
+   * archivo) usen el MISMO reloj — nunca uno recalculado después, que podría
+   * cruzar el borde de la hora de cierre entre el escalamiento y el envío.
+   */
+  businessStatus?: BusinessStatus;
 }
 
 // ---------------------------------------------------------------------------
@@ -262,25 +276,49 @@ export function buildOrderHistoryTool({ supabase, contactId, conversationId }: T
 }
 
 /**
- * La instrucción con la que el modelo redacta la despedida al escalar SIN
- * ningún asesor conectado (Frente B4, "El reloj dice la verdad", 5/9/2026).
+ * La instrucción con la que el modelo redacta la despedida al escalar, con o
+ * sin asesor asignado.
  *
- * Antes de este frente la IA no sabía si la tienda estaba abierta, así que
- * no podía decir cuándo la iban a atender sin arriesgarse a prometer un
- * plazo falso ("ya te atienden" a las 2 am de un domingo). Con `businessStatus`
- * ya calculado por `escalateConversation` (mismo `now`/horario que dejó el
- * evento de sistema), acá solo se traduce a prosa:
- * - abierta: promete "en breve", que sí es cierto porque hay quién conteste hoy.
- * - cerrada con próxima apertura conocida: nombra el día y la hora exactos.
- * - cerrada sin ninguna apertura en los próximos 7 días (horario vacío):
- *   no hay fecha que dar, así que solo dice "apenas la tienda vuelva a abrir".
+ * Nace en el Frente B4 ("El reloj dice la verdad", 5/9/2026) cubriendo solo
+ * el caso SIN asesor: hasta ahí la IA no sabía si la tienda estaba abierta,
+ * así que no podía decir cuándo la iban a atender sin arriesgarse a prometer
+ * un plazo falso ("ya te atienden" a las 2 am de un domingo). La Tarea 5
+ * ("La voz cercana y la espera visible", 14/9/2026) encontró la MISMA falla
+ * del lado CON asesor —170 promesas "ya te paso con un asesor" en 72 h, 23
+ * con la tienda ya cerrada y sin decir cuándo— y la cerró acá, renombrando la
+ * función (antes `unassignedEscalationInstruction`) porque dejó de ser
+ * exclusiva del caso sin asesor.
+ *
+ * Con `businessStatus` ya calculado por `escalateConversation` (mismo
+ * `now`/horario que dejó el evento de sistema, SIEMPRE presente desde la
+ * Tarea 5 — ver escalate.ts), acá solo se traduce a prosa, en las cuatro
+ * combinaciones de asesor × horario:
+ * - con asesor, abierta: sin cambios ("ya lo va a atender").
+ * - con asesor, cerrada: agradece la paciencia y nombra cuándo escribe el
+ *   asesor (día y hora exactos, o "apenas la tienda vuelva a abrir" si no hay
+ *   ninguna franja en los próximos 7 días).
+ * - sin asesor, abierta: promete "en breve", que sí es cierto porque hay
+ *   quién conteste hoy.
+ * - sin asesor, cerrada: mismo criterio de B4, con o sin próxima apertura.
  */
-function unassignedEscalationInstruction(status: BusinessStatus | undefined): string {
-  if (!status || status.open) {
+function escalationInstruction(status: BusinessStatus | undefined, assignedName: string | null): string {
+  const abierta = !status || status.open;
+
+  if (assignedName) {
+    if (abierta) {
+      return `Ya está asignado a ${assignedName}. Dile al cliente que un asesor lo va a atender.`;
+    }
+    const cuando = status?.nextOpening
+      ? `${status.nextOpening.dayLabel} a partir de las ${status.nextOpening.time}`
+      : "apenas la tienda vuelva a abrir";
+    return `Ya está asignado a ${assignedName}, pero la tienda está cerrada: dile con calidez que un asesor le escribe ${cuando}, y agradécele la paciencia. NO prometas que lo atienden ahora.`;
+  }
+
+  if (abierta) {
     return "No hay ningún asesor conectado ahora. Dile al cliente que su caso quedó registrado y que le escriben en breve, apenas haya alguien disponible. NO prometas que lo atienden enseguida.";
   }
 
-  if (!status.nextOpening) {
+  if (!status?.nextOpening) {
     return "No hay ningún asesor conectado ahora y la tienda está cerrada. Dile al cliente que su caso quedó registrado y que le escriben apenas la tienda vuelva a abrir. NO prometas que lo atienden enseguida.";
   }
 
@@ -325,15 +363,14 @@ export function buildEscalateTool(
       outcome.assignedAgentName = result.assignedAgentName ?? undefined;
       outcome.reason = result.reason;
       outcome.unassigned = result.unassigned;
+      outcome.businessStatus = result.businessStatus;
 
       // El modelo redacta el cierre con esto, así que se le dice en palabras
-      // qué prometer: sin asesores no puede decir «ya te atienden» sin saber
-      // si la tienda está abierta.
+      // qué prometer: ni con asesor ni sin él puede decir «ya te atienden»
+      // sin saber si la tienda está abierta (Tarea 5, 14/9/2026).
       return {
         ...result,
-        instruccionParaTuRespuesta: result.unassigned
-          ? unassignedEscalationInstruction(result.businessStatus)
-          : `Ya está asignado a ${result.assignedAgentName}. Dile al cliente que un asesor lo va a atender.`,
+        instruccionParaTuRespuesta: escalationInstruction(result.businessStatus, result.assignedAgentName ?? null),
       };
     },
   });

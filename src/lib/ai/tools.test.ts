@@ -396,11 +396,16 @@ describe("buildCatalogTool — un repuesto en cero no se ofrece como disponible"
 
 // ---------------------------------------------------------------------------
 // Frente B4 ("El reloj dice la verdad", 5/9/2026): la despedida al escalar
-// sin ningún asesor conectado tiene que decir cuándo lo van a atender. Antes
+// SIN ningún asesor conectado tiene que decir cuándo lo van a atender. Antes
 // de esto la instrucción era siempre la misma frase genérica, sin importar
 // si eran las 10 am de un lunes o las 10 pm de un domingo.
+//
+// Tarea 5 ("La voz cercana y la espera visible", 14/9/2026) encontró la
+// misma falla del lado CON asesor y sumó las cuatro ramas de
+// `escalationInstruction` (antes `unassignedEscalationInstruction`, que solo
+// cubría las dos de abajo).
 // ---------------------------------------------------------------------------
-describe("buildEscalateTool — instrucción de despedida cuando no hay asesores", () => {
+describe("buildEscalateTool — instrucción de despedida según asesor y horario", () => {
   beforeEach(() => {
     escalateConversationMock.mockReset();
   });
@@ -421,7 +426,7 @@ describe("buildEscalateTool — instrucción de despedida cuando no hay asesores
     return (await tool.execute(input, { toolCallId: "t1", messages: [] })) as { instruccionParaTuRespuesta: string };
   }
 
-  it("con asesor asignado, la instrucción no cambia", async () => {
+  it("con asesor asignado y tienda abierta (o sin businessStatus, compatibilidad), la instrucción no cambia", async () => {
     escalateConversationMock.mockResolvedValue({ escalated: true, assignedAgentName: "María" });
 
     const result = await ejecutar({ escalated: false });
@@ -429,6 +434,40 @@ describe("buildEscalateTool — instrucción de despedida cuando no hay asesores
     expect(result.instruccionParaTuRespuesta).toBe(
       "Ya está asignado a María. Dile al cliente que un asesor lo va a atender."
     );
+  });
+
+  /**
+   * Tarea 5 (14/9/2026): la falla que la auditoría midió del lado CON
+   * asesor — la promesa nunca decía cuándo si la tienda ya había cerrado.
+   */
+  it("con asesor asignado y tienda cerrada con próxima apertura, agradece la paciencia y dice el día y la hora", async () => {
+    escalateConversationMock.mockResolvedValue({
+      escalated: true,
+      assignedAgentName: "María",
+      businessStatus: { open: false, closesAt: null, nextOpening: { dayLabel: "el lunes", time: "8:00 am" } },
+    });
+
+    const result = await ejecutar({ escalated: false });
+
+    expect(result.instruccionParaTuRespuesta).toContain("María");
+    expect(result.instruccionParaTuRespuesta).toContain("lunes");
+    expect(result.instruccionParaTuRespuesta).toContain("8:00 am");
+    expect(result.instruccionParaTuRespuesta).toMatch(/NO prometas/);
+  });
+
+  it("con asesor asignado y tienda cerrada sin ninguna apertura en los próximos 7 días, dice 'apenas la tienda vuelva a abrir'", async () => {
+    escalateConversationMock.mockResolvedValue({
+      escalated: true,
+      assignedAgentName: "María",
+      businessStatus: { open: false, closesAt: null, nextOpening: null },
+    });
+
+    const result = await ejecutar({ escalated: false });
+
+    expect(result.instruccionParaTuRespuesta).toContain("María");
+    expect(result.instruccionParaTuRespuesta).toMatch(/vuelva a abrir/);
+    expect(result.instruccionParaTuRespuesta).toMatch(/NO prometas/);
+    expect(result.instruccionParaTuRespuesta).not.toMatch(/undefined/);
   });
 
   it("sin asesores y tienda abierta, promete 'en breve' sin prometer un plazo", async () => {

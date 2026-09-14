@@ -10,7 +10,7 @@ import {
 import type { SupabaseClient } from "@supabase/supabase-js";
 import type { Database } from "@/lib/supabase/database.types";
 import type { Playbook, Tag } from "@/lib/types";
-import { parseBusinessHours, type BusinessHours } from "@/lib/business-hours";
+import { parseBusinessHours, type BusinessHours, type BusinessStatus } from "@/lib/business-hours";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { classifyIntent, type Intent } from "@/lib/ai/classify";
 import { currentAgentModelLabel, getAgentModel } from "@/lib/ai/model";
@@ -430,8 +430,19 @@ interface LogTurnParams {
   customerMessage?: string | null;
 }
 
+/**
+ * Escribe la fila de bitácora del turno (`agent_turns`).
+ *
+ * Hasta el 14/9/2026 (Tarea 5) el `error` de este INSERT se ignoraba en
+ * silencio: un `fuera_de_tema` o cualquier otro turno cuya única huella es
+ * esta fila desaparecía sin dejar rastro si el INSERT fallaba —exactamente
+ * el motivo por el que nadie encontró en la bitácora ningún `fuera_de_tema`
+ * cuando se buscó uno. No lanza: `logTurn` es observabilidad, nunca puede
+ * tumbar un turno que ya le habló al cliente (o que decidió, correctamente,
+ * callarse).
+ */
 async function logTurn(supabase: SupabaseClient<Database>, conversationId: string, params: LogTurnParams) {
-  await supabase.from("agent_turns").insert({
+  const { error } = await supabase.from("agent_turns").insert({
     conversation_id: conversationId,
     intent: params.intent,
     action: params.action,
@@ -444,6 +455,10 @@ async function logTurn(supabase: SupabaseClient<Database>, conversationId: strin
     playbook_id: params.playbookId ?? null,
     customer_message: params.customerMessage ?? null,
   });
+
+  if (error) {
+    log.error("turno_bitacora_no_escrita", { conversationId, action: params.action, detail: errorText(error) });
+  }
 }
 
 /**
@@ -497,19 +512,34 @@ async function applyPlaybookTags(
  * en un freno de emergencia de verdad. Lo que ya se gastó en el modelo se
  * gastó; lo que no pasa es que el cliente lo reciba.
  *
- * Falla cerrado: si no se puede preguntar, no se envía. Un botón de pánico que
- * ante la duda sigue adelante no es un botón de pánico.
+ * Falla cerrado: si no se puede enviar, no se envía. Pero desde la Tarea 5
+ * ("La voz cercana y la espera visible", 14/9/2026) "no se puede preguntar"
+ * y "la respuesta dice que no" dejaron de ser lo mismo. Antes un error de
+ * red o de la RPC caía en el mismo `catch` que un `data === false` genuino y
+ * `deliver()` los trataba IGUAL: `recordHandoff(..., "agente_no_puede_correr")`
+ * y el turno terminaba ahí, reintentable solo si el llamador de `runAgentTurn`
+ * decidía reencolarlo por su cuenta — un corte de base se disfrazaba de
+ * interruptor apagado en la bitácora (hallazgo 10 de la auditoría de esta
+ * tarea: 13 turnos así en 72 h). Ahora un error de la RPC (o una excepción de
+ * red) se relanza DESPUÉS de loguearlo: `deliver()` no lo atrapa, así que el
+ * turno entero falla ANTES de marcar `entrega.intentado = true` y la cola lo
+ * reintenta como cualquier otro fallo transitorio (ver el `catch` de
+ * `runAgentTurn`, más abajo). Solo un `data === false` DE VERDAD —la RPC
+ * respondió, y dijo que no— sigue escribiendo `agente_no_puede_correr`: ese
+ * caso no es reintentable, es una decisión.
  */
 async function stillEnabled(supabase: SupabaseClient<Database>, conversationId: string): Promise<boolean> {
+  let data: boolean | null;
   try {
-    const { data, error } = await supabase.rpc("agent_can_run");
-    if (error) throw new Error(error.message);
-    if (!data) log.warn("turno_abortado_por_interruptor", { conversationId });
-    return Boolean(data);
+    const result = await supabase.rpc("agent_can_run");
+    if (result.error) throw new Error(result.error.message);
+    data = result.data;
   } catch (err) {
     log.error("turno_interruptor_no_consultable", { conversationId, detail: errorText(err) });
-    return false;
+    throw new Error(`agent_can_run no consultable: ${errorText(err)}`, { cause: err });
   }
+  if (!data) log.warn("turno_abortado_por_interruptor", { conversationId });
+  return Boolean(data);
 }
 
 /**
@@ -770,8 +800,35 @@ function tagSummary(tags: Tag[]): string {
 // ---------------------------------------------------------------------------
 export const DESPEDIDA_SIN_ASESOR =
   "Ya dejé tu caso registrado para que lo revise un asesor. En cuanto haya alguien disponible te escriben por acá.";
-export const DESPEDIDA_CON_ASESOR =
-  "Dame un momentico, ya te paso con un asesor para que te ayude con esto.";
+
+/**
+ * La despedida fija cuando la IA no puede seguir hablando pero SÍ hay un
+ * asesor asignado (guarda de identidad bloqueada, o el tool loop se quedó
+ * sin pasos antes de escalar formalmente). Hasta el 14/9/2026 (Tarea 5, "La
+ * voz cercana y la espera visible") era un texto fijo sin horario — igual
+ * que la despedida SIN asesor antes del Frente B4 (5/9/2026, ver
+ * escalate.ts). La auditoría de esta tarea midió 170 promesas "ya te paso
+ * con un asesor" en 72 h, 23 de ellas con la tienda ya cerrada y sin decir
+ * cuándo volvía a abrir — la misma falla que B4 ya había cerrado del lado
+ * sin asesor.
+ *
+ * `status` puede llegar `undefined` (compatibilidad: un outcome que nunca
+ * pasó por una llamada real a `escalateConversation`, por ejemplo un mock de
+ * test) y se trata como tienda abierta — mismo criterio que
+ * `escalationInstruction` en tools.ts.
+ *
+ * T3 (tanda siguiente del mismo plan) reescribe el texto para que suene más
+ * cálido; acá solo se le da el dato de horario que le faltaba.
+ */
+export function despedidaConAsesor(status?: BusinessStatus): string {
+  if (!status || status.open) {
+    return "Dame un momentico, ya te paso con un asesor para que te ayude con esto.";
+  }
+  if (!status.nextOpening) {
+    return "Dame un momentico, ya te paso con un asesor para que te ayude con esto en cuanto la tienda vuelva a abrir.";
+  }
+  return `Dame un momentico, ya te paso con un asesor para que te ayude con esto. Eso sí, la tienda está cerrada ahora: te escribe ${status.nextOpening.dayLabel} a partir de las ${status.nextOpening.time}.`;
+}
 
 /**
  * Cerradura de identidad, en caliente, sobre el texto final del tool loop.
@@ -887,10 +944,16 @@ async function applyIdentityGuard(params: {
     outcome.assignedAgentName = forced.assignedAgentName ?? undefined;
     outcome.unassigned = forced.unassigned;
     outcome.motivo = "seguimiento";
+    outcome.businessStatus = forced.businessStatus;
   }
 
   return {
-    text: outcome.unassigned ? DESPEDIDA_SIN_ASESOR : DESPEDIDA_CON_ASESOR,
+    // `outcome.businessStatus` viaja desde CUALQUIER camino que haya escalado
+    // —esta misma llamada, el tool del modelo (`buildEscalateTool`, tools.ts)
+    // o la red de seguridad de devolución/queja de más abajo (Tarea 5,
+    // 14/9/2026)—, así que `despedidaConAsesor` siempre usa el reloj de la
+    // llamada que de verdad escaló, nunca uno recalculado acá.
+    text: outcome.unassigned ? DESPEDIDA_SIN_ASESOR : despedidaConAsesor(outcome.businessStatus),
     turnTokens,
     marca: "bloqueada",
   };
@@ -945,15 +1008,21 @@ async function runPlaybook(
     // iba a hacer falta un asesor —T0.3 exige ese orden: nada puede acompañar
     // a un mensaje que Meta ya rechazó—, así que se insertó con
     // is_auto_reply = false y handle_new_message ya lo contó como respuesta
-    // real. Si escalateConversation acaba de descubrir que no había NADIE,
-    // se marca ahora, después, todo lo que la IA mandó en este turno: el
+    // real. Tarea 5 ("La voz cercana y la espera visible", 14/9/2026): hasta
+    // esta tarea el UPDATE solo corría si `escalateConversation` descubría
+    // que no había NADIE (`result.unassigned`) — pero la promesa "ya te paso
+    // con un asesor" tampoco es una respuesta real cuando SÍ hay alguien
+    // asignado (170 promesas ≥ 30 min sin cumplir en la auditoría de esta
+    // tarea, 23 nunca atendidas). `escalateConversation` deja `escalated:
+    // true` en TODAS sus salidas, así que la condición pasa a ser esa: se
+    // marca todo lo que la IA mandó en este turno, tenga o no asesor. El
     // trigger que sumó B1 (20260905070000_auto_reply_recalcula) recalcula
     // last_reply_at/awaiting_reply al ver que is_auto_reply pasó a true. La
     // ventana "desde el último mensaje del cliente" es exacta porque dentro
     // de un turno solo escribe la IA —si un humano escribe, deliver() frena
     // el envío antes de que llegue acá— y este turno responde a lo que el
     // cliente dijo después de su último mensaje, nunca a un turno anterior.
-    if (result.unassigned) {
+    if (result.escalated) {
       if (lastCustomerMessageAt === null) {
         // No debería darse en un turno real: withinFreeformWindow ya exige
         // last_customer_message_at para que el turno llegue hasta acá. Pero
@@ -974,14 +1043,17 @@ async function runPlaybook(
 
         if (error) {
           // Observabilidad de awaiting_reply, no una barrera: el traspaso
-          // escalada_sin_asesor ya quedó escrito por escalateConversation, y
-          // el turno sigue igual aunque este UPDATE falle.
+          // (escalada o escalada_sin_asesor) ya quedó escrito por
+          // escalateConversation, y el turno sigue igual aunque este UPDATE
+          // falle.
           log.error("turno_escenario_despedida_no_marcada", {
             conversationId: target.conversationId,
             detail: error.message,
           });
         } else {
-          log.info("turno_escenario_sin_asesor_marcado", {
+          // Renombrado (Tarea 5, 14/9/2026): antes `turno_escenario_sin_asesor_marcado`,
+          // porque solo se escribía sin asesor. Ahora corre con o sin él.
+          log.info("turno_escenario_escalado_marcado", {
             conversationId: target.conversationId,
             desde: lastCustomerMessageAt,
           });
@@ -1200,7 +1272,16 @@ async function runTurnPhases(
   const intent: Intent = classified.result.intent;
   const classifyTokens = classifiedTokens;
 
-  await supabase.from("conversations").update({ intent }).eq("id", conversationId);
+  // Observabilidad, no una barrera (Tarea 5, 14/9/2026, mismo criterio que
+  // logTurn de arriba): que la columna `intent` de la conversación no se
+  // pudiera guardar no puede tumbar el turno — el cliente ya está a punto de
+  // recibir su respuesta.
+  {
+    const { error } = await supabase.from("conversations").update({ intent }).eq("id", conversationId);
+    if (error) {
+      log.error("turno_intencion_no_guardada", { conversationId, detail: errorText(error) });
+    }
+  }
 
   // Fuera de tema: el turno termina acá. No se arma el tool loop —que es la
   // parte cara— y el texto sale de una constante, así que no cuesta salida.
@@ -1341,6 +1422,12 @@ async function runTurnPhases(
       contactId: target.contactId,
       motivo: intent,
       resumen: "El turno de la IA se quedó sin pasos antes de escalar formalmente. Revisar el hilo completo.",
+      // Corregido en la Tarea 5 (14/9/2026): esta llamada nunca había pasado
+      // `businessHours` y caía al horario por defecto de escalate.ts pase lo
+      // que pase en `agent_settings` — inofensivo mientras la despedida CON
+      // asesor no decía la hora (siempre el mismo texto fijo), pero
+      // `despedidaConAsesor` de abajo sí la necesita correcta.
+      businessHours,
     });
     outcome.escalated = forced.escalated;
     outcome.assignedAgentName = forced.assignedAgentName ?? undefined;
@@ -1348,14 +1435,20 @@ async function runTurnPhases(
     // no la herramienta que el modelo invoca — sin este campo, el envío de
     // abajo no tendría cómo saber si la despedida se quedó sin nadie detrás.
     outcome.unassigned = forced.unassigned;
+    // Idem `businessStatus` (Tarea 5, 14/9/2026): lo necesita `despedidaConAsesor`
+    // de acá abajo, y también la guarda de identidad si le toca reemplazar
+    // este mismo texto más adelante en el turno.
+    outcome.businessStatus = forced.businessStatus;
     // Mismo patrón que `buildEscalateTool` en tools.ts (`outcome.motivo =
     // motivo`): sin esta línea el `summary` final quedaba "Motivo:
     // undefined." (hallazgo del 6/9/2026 al integrar la guarda de identidad).
     outcome.motivo = intent;
     if (!text.trim()) {
       // Sin asesores no se promete lo que no va a pasar: nadie va a
-      // contestar en un minuto si no hay nadie trabajando.
-      text = forced.unassigned ? DESPEDIDA_SIN_ASESOR : DESPEDIDA_CON_ASESOR;
+      // contestar en un minuto si no hay nadie trabajando. Con asesor, desde
+      // la Tarea 5 (14/9/2026), la despedida nombra cuándo escribe si la
+      // tienda ya cerró (`despedidaConAsesor`, arriba).
+      text = forced.unassigned ? DESPEDIDA_SIN_ASESOR : despedidaConAsesor(forced.businessStatus);
     }
   }
 
@@ -1384,14 +1477,26 @@ async function runTurnPhases(
     // pasaron el reconocimiento de escenario, la clasificación y hasta cinco
     // pasos de tool loop. Es el punto del turno más lejano al momento en que
     // se miraron las guardas al abrirlo.
-    // `isAutoReply` (anexo A1, 5/9/2026): una despedida sin nadie detrás no
-    // es una respuesta. Cubre los DOS caminos por los que la IA se despide al
-    // escalar sin asesores: el texto fijo de la red de seguridad de arriba y
-    // el que redacta el propio modelo tras leer `instruccionParaTuRespuesta`
-    // de la herramienta (`tools.ts`). El cliente sigue esperando a una
-    // persona, así que el trigger `handle_new_message` no debe apagar
-    // `awaiting_reply` con este mensaje — de ahí la misma marca que ya lleva
-    // la bienvenida automática (T0.1).
+    // `isAutoReply` (anexo A1, 5/9/2026; ampliado Tarea 5, "La voz cercana y
+    // la espera visible", 14/9/2026): una despedida sin nadie detrás no es
+    // una respuesta, y desde el 14/9/2026 la promesa de un asesor TAMPOCO lo
+    // es, tenga o no asesor asignado — la auditoría de esta tarea midió 170
+    // promesas "ya te paso con un asesor" con 30 minutos o más de espera, 23
+    // de ellas sin cumplir nunca. Antes la condición exigía además
+    // `outcome.unassigned === true`, así que una escalación CON asesor
+    // apagaba `awaiting_reply` con un mensaje que no era una respuesta real:
+    // el cliente desaparecía de "Pendientes" y de "Tuyas" del asesor
+    // asignado, y "Con asesor" del Recorrido nunca contaba un atascado de
+    // verdad. Ahora basta con `outcome.escalated`: cubre los TRES caminos
+    // por los que la IA se despide al escalar —el texto fijo de la red de
+    // seguridad de arriba, el que redacta el propio modelo tras leer
+    // `instruccionParaTuRespuesta` de la herramienta (`tools.ts`), y la
+    // despedida fija con asesor (`despedidaConAsesor`, arriba)—. El cliente
+    // sigue esperando a una persona en los tres casos, así que el trigger
+    // `handle_new_message` no debe apagar `awaiting_reply` con este mensaje
+    // — de ahí la misma marca que ya lleva la bienvenida automática (T0.1).
+    // No se toca la base: el trigger de la migración 20260905010000 ya hace
+    // el resto con solo este booleano.
     const salida = await deliver(
       supabase,
       target,
@@ -1402,7 +1507,7 @@ async function runTurnPhases(
       convo.last_customer_message_at,
       () =>
         sendAgentText(supabase, target, text.trim(), {
-          isAutoReply: outcome.escalated && outcome.unassigned === true,
+          isAutoReply: outcome.escalated,
         })
     );
     if (!salida) return;
@@ -1454,7 +1559,11 @@ async function runTurnPhases(
 export async function runAgentTurn(conversationId: string, options: { vencioEn?: number } = {}): Promise<void> {
   const supabase = createAdminClient();
 
-  const [{ data: canRun }, { data: conversation }, { data: settingsRow, error: settingsError }] = await Promise.all([
+  const [
+    { data: canRun, error: canRunError },
+    { data: conversation },
+    { data: settingsRow, error: settingsError },
+  ] = await Promise.all([
     // agent_can_run junta el interruptor global y el tope de gasto del día.
     // La decisión vive en la base para que sea la misma la pregunte quien la
     // pregunte, y para que el tope se levante solo al cambiar el día.
@@ -1473,6 +1582,20 @@ export async function runAgentTurn(conversationId: string, options: { vencioEn?:
     supabase.from("agent_settings").select("business_hours").eq("id", true).maybeSingle(),
   ]);
 
+  // Tarea 5 (14/9/2026): un ERROR de la RPC (base caída, red cortada) no es
+  // lo mismo que una RESPUESTA que dice "no" — mismo motivo que el cambio en
+  // `stillEnabled`, más abajo. Antes esto se desestructuraba con `{ data:
+  // canRun }` a secas: un `error` acá dejaba `canRun` en `undefined`, que
+  // `!canRun` trataba exactamente igual que un `false` genuino y el turno
+  // terminaba con `turno_saltado_ia_apagada` + `agente_no_puede_correr` —un
+  // corte de infraestructura disfrazado de interruptor apagado, el mismo
+  // hallazgo 10 de la auditoría (13 turnos así en 72 h). Ahora lanza: la cola
+  // reintenta un fallo transitorio en vez de archivarlo como una decisión.
+  if (canRunError) {
+    log.error("turno_interruptor_no_consultable", { conversationId, detail: errorText(canRunError) });
+    throw new Error(`agent_can_run no consultable: ${errorText(canRunError)}`, { cause: canRunError });
+  }
+
   if (settingsError) {
     log.warn("turno_horario_no_legible", { conversationId, detail: settingsError.message });
   }
@@ -1486,6 +1609,8 @@ export async function runAgentTurn(conversationId: string, options: { vencioEn?:
 
   // Guardrail duro: si algo dice que la IA no debe correr, no se llama al
   // modelo. No depende de que el prompt "se acuerde" de quedarse callado.
+  // Acá abajo `canRun` es SIEMPRE una respuesta real (`true`/`false`): el
+  // caso "no se pudo preguntar" ya salió arriba, antes de este punto.
   if (!canRun) {
     // Antes era un `return` mudo. Con la cola llena y la IA apagada, los
     // turnos se reclamaban y desaparecían sin dejar rastro de por qué.

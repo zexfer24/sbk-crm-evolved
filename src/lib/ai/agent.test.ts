@@ -59,6 +59,19 @@ interface FakeState {
   agentSettingsBusinessHours: unknown;
   /** Si viene con mensaje, la lectura de `agent_settings` falla — el turno no se cae por eso. */
   agentSettingsError: { message: string } | null;
+  /**
+   * Tarea 5 (14/9/2026): lo que devuelve la RPC `agent_can_run` como
+   * `error`, distinto de una respuesta genuina (`data: false`). Con esto en
+   * `null` (de fábrica) la RPC se comporta como antes de esta tarea —
+   * `{ data: aiGloballyEnabled && canRun, error: null }`. Con un mensaje, el
+   * turno tiene que LANZAR en vez de tratar el corte de base como si el
+   * interruptor estuviera apagado (`stillEnabled`/apertura de `runAgentTurn`).
+   */
+  agentCanRunError: { message: string } | null;
+  /** El error que devuelve el INSERT de `agent_turns` (logTurn). `null` de fábrica: el turno nunca se cae por esto, pero sí deja rastro. */
+  agentTurnInsertError: { message: string } | null;
+  /** El error que devuelve el UPDATE de `conversations.intent`. `null` de fábrica. */
+  intentUpdateError: { message: string } | null;
 }
 
 const state: FakeState = {
@@ -76,6 +89,9 @@ const state: FakeState = {
   messageUpdateError: null,
   agentSettingsBusinessHours: undefined,
   agentSettingsError: null,
+  agentCanRunError: null,
+  agentTurnInsertError: null,
+  intentUpdateError: null,
 };
 const conversationUpdates: Record<string, unknown>[] = [];
 const agentTurnInserts: Record<string, unknown>[] = [];
@@ -100,6 +116,9 @@ function createFakeSupabase() {
     rpc(fn: string, params?: Record<string, unknown>) {
       // Igual que la función SQL: junta el interruptor global y el tope de gasto.
       if (fn === "agent_can_run") {
+        // Tarea 5 (14/9/2026): un error de la RPC es distinto de que la RPC
+        // conteste "no" — se simula por separado de `canRun`.
+        if (state.agentCanRunError) return Promise.resolve({ data: null, error: state.agentCanRunError });
         return Promise.resolve({ data: state.aiGloballyEnabled && state.canRun, error: null });
       }
       // Lock por conversación (conversation-lock.ts): siempre libre, siempre
@@ -151,7 +170,10 @@ function createFakeSupabase() {
           update: (values: Record<string, unknown>) => ({
             eq: () => {
               conversationUpdates.push(values);
-              return Promise.resolve({ data: null, error: null });
+              // Tarea 5 (14/9/2026): solo el UPDATE que toca `intent` puede
+              // fallar en estos tests — es el único que agent.ts revisa.
+              const error = "intent" in values ? state.intentUpdateError : null;
+              return Promise.resolve({ data: null, error });
             },
           }),
         };
@@ -246,7 +268,7 @@ function createFakeSupabase() {
         return {
           insert: (row: Record<string, unknown>) => {
             agentTurnInserts.push(row);
-            return Promise.resolve({ data: null, error: null });
+            return Promise.resolve({ data: null, error: state.agentTurnInsertError });
           },
         };
       }
@@ -432,7 +454,7 @@ vi.mock("@/lib/whatsapp/meta-client", () => ({
   sendTypingIndicator: (...args: unknown[]) => sendTypingIndicatorMock(...args),
 }));
 
-import { DESPEDIDA_CON_ASESOR, DESPEDIDA_SIN_ASESOR, runAgentTurn } from "@/lib/ai/agent";
+import { DESPEDIDA_SIN_ASESOR, despedidaConAsesor, runAgentTurn } from "@/lib/ai/agent";
 import { OFF_TOPIC_REPLY, SYSTEM_PROMPT } from "@/lib/ai/prompt";
 import { revealsIdentity } from "@/lib/ai/identity-guard";
 import { playbookMessageText } from "@/lib/ai/send";
@@ -454,6 +476,17 @@ function playbook(overrides: Partial<Playbook> = {}): Playbook {
 }
 
 const NO_USAGE = { inputTokens: 3, outputTokens: 1, totalTokens: 4 };
+
+/**
+ * La despedida fija CON asesor cuando `status` es `undefined` — el caso de
+ * "compatibilidad" de `despedidaConAsesor` (agent.ts): es exactamente lo que
+ * devuelve `escalateConversationMock` por defecto en este archivo (el mock
+ * no trae `businessStatus`), así que es el texto que hay que esperar en
+ * cualquier test que no arme su propio `businessStatus` a mano. Pura y sin
+ * reloj: calcularla acá una sola vez no depende de la hora a la que corra la
+ * suite (Tarea 5, "La voz cercana y la espera visible", 14/9/2026).
+ */
+const DESPEDIDA_CON_ASESOR_ABIERTA = despedidaConAsesor(undefined);
 
 beforeEach(() => {
   state.aiGloballyEnabled = true;
@@ -479,6 +512,9 @@ beforeEach(() => {
   state.messageUpdateError = null;
   state.agentSettingsBusinessHours = undefined;
   state.agentSettingsError = null;
+  state.agentCanRunError = null;
+  state.agentTurnInsertError = null;
+  state.intentUpdateError = null;
   withinFreeformWindowOverride.fn = null;
   sendTypingIndicatorMock.mockClear();
   conversationUpdates.length = 0;
@@ -824,6 +860,33 @@ describe("runAgentTurn — salidas silenciosas de apertura", () => {
     expect(matchPlaybookMock).not.toHaveBeenCalled();
     expect(sendAgentTextMock).not.toHaveBeenCalled();
     expect(sendPlaybookReplyMock).not.toHaveBeenCalled();
+  });
+
+  /**
+   * Tarea 5 (14/9/2026), (d) del checklist: un ERROR de la RPC agent_can_run
+   * al abrir el turno no es lo mismo que una respuesta que dice "no". Antes
+   * de esta tarea, `{ data: canRun }` desestructuraba sin mirar `error`, así
+   * que un corte de base dejaba `canRun` en `undefined` y el turno tomaba
+   * exactamente el mismo camino que el test de arriba —
+   * `turno_saltado_ia_apagada` + traspaso `agente_no_puede_correr`— cuando en
+   * realidad no se pudo ni preguntar. Ahora lanza, y la cola reintenta un
+   * fallo transitorio en vez de archivarlo como una decisión.
+   */
+  it("(d) con error en la RPC agent_can_run al ABRIR el turno: lanza y no hay traspaso agente_no_puede_correr", async () => {
+    const info = vi.spyOn(log, "info");
+    const error = vi.spyOn(log, "error");
+    state.agentCanRunError = { message: "conexión perdida" };
+
+    await expect(runAgentTurn("conv-1")).rejects.toThrow(/agent_can_run no consultable/);
+
+    expect(error).toHaveBeenCalledWith(
+      "turno_interruptor_no_consultable",
+      expect.objectContaining({ conversationId: "conv-1", detail: "conexión perdida" })
+    );
+    expect(info).not.toHaveBeenCalledWith("turno_saltado_ia_apagada", expect.anything());
+    expect(handoffCalls).toHaveLength(0);
+    expect(matchPlaybookMock).not.toHaveBeenCalled();
+    expect(sendAgentTextMock).not.toHaveBeenCalled();
   });
 
   /**
@@ -1233,13 +1296,19 @@ describe("runAgentTurn — escenarios predeterminados", () => {
    * Anexo B2 (5/9/2026): un escenario con `afterSend: "escalate"` manda su
    * texto ANTES de escalar (T0.3 exige ese orden: nada acompaña a un mensaje
    * que Meta ya rechazó), así que sale con `is_auto_reply = false` sin saber
-   * todavía si iba a hacer falta un asesor. Si `escalateConversation`
-   * descubre que no hay NADIE, el turno marca ese mensaje con un UPDATE
-   * después — el trigger que sumó B1 (migración 20260905070000) es quien
-   * recalcula `last_reply_at`/`awaiting_reply` en la base; estos tests solo
-   * miran que el UPDATE salga (o no) y con qué filtros.
+   * todavía si iba a hacer falta un asesor. El turno marca ese mensaje con un
+   * UPDATE después — el trigger que sumó B1 (migración 20260905070000) es
+   * quien recalcula `last_reply_at`/`awaiting_reply` en la base; estos tests
+   * solo miran que el UPDATE salga (o no) y con qué filtros.
+   *
+   * Tarea 5 ("La voz cercana y la espera visible", 14/9/2026): hasta esta
+   * tarea el UPDATE solo corría SIN asesor (`result.unassigned`); ahora corre
+   * siempre que `result.escalated` —que `escalateConversation` deja en
+   * `true` en TODAS sus salidas—, porque la promesa de un asesor tampoco es
+   * una respuesta real. El test (b), que hasta acá probaba "con asesor,
+   * ningún UPDATE", pasa a probar justo lo contrario.
    */
-  describe("anexo B2: marca is_auto_reply cuando el escenario escaló sin asesores", () => {
+  describe("anexo B2 + Tarea 5: marca is_auto_reply cuando el escenario escala", () => {
     it("(a) escalate sin asesores: un UPDATE con is_auto_reply true, filtrado por la conversación y por created_at > el último mensaje del cliente", async () => {
       const pb = playbook({ afterSend: "escalate", name: "Guía de envío · Cashea" });
       fetchActivePlaybooksMock.mockResolvedValue([pb]);
@@ -1262,8 +1331,8 @@ describe("runAgentTurn — escenarios predeterminados", () => {
       ]);
     });
 
-    /** Refuerza el test ya existente "un escenario con after_send 'escalate' pasa la conversación a un asesor": con asesor, ningún UPDATE. */
-    it("(b) escalate CON asesor asignado: ningún UPDATE", async () => {
+    it("(b) escalate CON asesor asignado: el UPDATE corre igual (Tarea 5, 14/9/2026)", async () => {
+      const info = vi.spyOn(log, "info");
       const pb = playbook({ afterSend: "escalate", name: "Guía de envío · Cashea" });
       fetchActivePlaybooksMock.mockResolvedValue([pb]);
       matchPlaybookMock.mockResolvedValue({ playbook: pb, usage: NO_USAGE });
@@ -1273,7 +1342,14 @@ describe("runAgentTurn — escenarios predeterminados", () => {
       await runAgentTurn("conv-1");
 
       expect(escalateConversationMock).toHaveBeenCalledTimes(1);
-      expect(messageUpdates).toHaveLength(0);
+      expect(messageUpdates).toHaveLength(1);
+      expect(messageUpdates[0].values).toEqual({ is_auto_reply: true });
+      // Renombrado de turno_escenario_sin_asesor_marcado (Tarea 5, 14/9/2026):
+      // el evento ya no es exclusivo del caso sin asesor.
+      expect(info).toHaveBeenCalledWith(
+        "turno_escenario_escalado_marcado",
+        expect.objectContaining({ conversationId: "conv-1" })
+      );
     });
 
     it("(c) escenario 'wait' (no escala): ningún UPDATE", async () => {
@@ -1736,6 +1812,81 @@ describe("runAgentTurn — el interruptor se vuelve a revisar justo antes de env
     expect(generateMock).toHaveBeenCalledTimes(1);
     expect(sendAgentTextMock).not.toHaveBeenCalled();
     expect(warn).toHaveBeenCalledWith("turno_abortado_por_interruptor", { conversationId: "conv-1" });
+  });
+
+  /**
+   * Tarea 5 (14/9/2026), (c) del checklist: acá la RPC NO contesta "no" — no
+   * se puede ni consultar (mismo corte de red que ya cubre el test de
+   * apertura de arriba, pero éste pasa DENTRO de `deliver()`, justo antes de
+   * enviar). Antes de esta tarea `stillEnabled` atrapaba cualquier error y
+   * devolvía `false`, así que este caso quedaba indistinguible de "se apagó
+   * de verdad": `deliver()` escribía `agente_no_puede_correr` como si fuera
+   * una decisión, y el turno NO se reintentaba porque no lanzaba nada. Ahora
+   * `stillEnabled` relanza: `deliver()` no lo atrapa, `entrega.intentado`
+   * nunca llega a `true`, y el `catch` de `runAgentTurn` (ver más abajo en
+   * el archivo) reencola el turno en vez de archivarlo.
+   */
+  it("(c) si la RPC agent_can_run no se puede consultar justo antes de enviar (dentro de deliver), el turno lanza y no hay traspaso agente_no_puede_correr", async () => {
+    const error = vi.spyOn(log, "error");
+    generateMock.mockImplementation(async () => {
+      // Mismo patrón que el test de arriba: el fallo aparece DESPUÉS de abrir
+      // el turno, mientras el modelo redacta.
+      state.agentCanRunError = { message: "red caída" };
+      return {
+        text: "respuesta redactada por el modelo",
+        usage: { inputTokens: 20, outputTokens: 8, totalTokens: 28 },
+        steps: [{}, {}],
+      };
+    });
+
+    await expect(runAgentTurn("conv-1")).rejects.toThrow();
+
+    expect(generateMock).toHaveBeenCalledTimes(1);
+    expect(sendAgentTextMock).not.toHaveBeenCalled();
+    expect(error).toHaveBeenCalledWith(
+      "turno_interruptor_no_consultable",
+      expect.objectContaining({ conversationId: "conv-1", detail: "red caída" })
+    );
+    expect(handoffCalls.filter((h) => h.p_reason === "agente_no_puede_correr")).toHaveLength(0);
+  });
+});
+
+/**
+ * Tarea 5 ("La voz cercana y la espera visible", 14/9/2026), (e) del
+ * checklist: hasta esta tarea `logTurn` y el UPDATE de `conversations.intent`
+ * ignoraban su propio `error` — por eso ningún `fuera_de_tema` había quedado
+ * jamás en la bitácora pese a que el camino ya existía: si el INSERT fallaba,
+ * nadie se enteraba. Ninguno de los dos puede tumbar el turno: el cliente ya
+ * recibió su respuesta (o el turno ya decidió, correctamente, callarse), así
+ * que un fallo acá es observabilidad perdida, no un mensaje sin enviar.
+ */
+describe("runAgentTurn — la bitácora registra sus propios fallos (Tarea 5, 14/9/2026)", () => {
+  it("(e) si el INSERT de agent_turns falla, deja turno_bitacora_no_escrita en el registro y el turno no lanza", async () => {
+    const error = vi.spyOn(log, "error");
+    state.agentTurnInsertError = { message: "permiso denegado" };
+
+    await expect(runAgentTurn("conv-1")).resolves.toBeUndefined();
+
+    expect(error).toHaveBeenCalledWith(
+      "turno_bitacora_no_escrita",
+      expect.objectContaining({ conversationId: "conv-1", action: "answered" })
+    );
+    // El turno sigue igual pese al fallo: el mensaje sí salió.
+    expect(sendAgentTextMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("si el UPDATE de conversations.intent falla, deja turno_intencion_no_guardada en el registro y el turno sigue igual", async () => {
+    const error = vi.spyOn(log, "error");
+    state.intentUpdateError = { message: "conexión perdida" };
+
+    await runAgentTurn("conv-1");
+
+    expect(error).toHaveBeenCalledWith(
+      "turno_intencion_no_guardada",
+      expect.objectContaining({ conversationId: "conv-1", detail: "conexión perdida" })
+    );
+    // Tampoco es una barrera: el turno sigue hasta enviar la respuesta.
+    expect(sendAgentTextMock).toHaveBeenCalledTimes(1);
   });
 });
 
@@ -2500,8 +2651,14 @@ describe("runAgentTurn — un solo traspaso por salida cuando la escalación for
  * modelo que redacta su propia despedida tras invocar la herramienta— y los
  * dos controles: con asesor asignado, y una respuesta que ni siquiera
  * escaló.
+ *
+ * Tarea 5 ("La voz cercana y la espera visible", 14/9/2026): la promesa de
+ * un asesor TAMPOCO cuenta como respuesta real, tenga o no asesor asignado
+ * — 170 promesas ≥ 30 min sin cumplir en la auditoría de esta tarea, 23 de
+ * ellas nunca atendidas. El caso (c), que hasta acá era el CONTROL de "con
+ * asesor no lleva la marca", pasa a ser justo lo contrario.
  */
-describe("runAgentTurn — anexo A1: is_auto_reply en la despedida de la IA al escalar sin asesores", () => {
+describe("runAgentTurn — anexo A1 + Tarea 5: is_auto_reply en la despedida de la IA al escalar", () => {
   it("(a) red de seguridad de queja sin asesores: el texto fijo sale con isAutoReply true", async () => {
     classifyIntentMock.mockResolvedValue({
       intent: "queja",
@@ -2556,7 +2713,15 @@ describe("runAgentTurn — anexo A1: is_auto_reply en la despedida de la IA al e
     );
   });
 
-  it("(c) escalación CON asesor: isAutoReply falso o ausente", async () => {
+  /**
+   * (a) del checklist de la Tarea 5: escalación CON asesor, el mensaje al
+   * cliente lleva `is_auto_reply: true`. Hasta el 14/9/2026 este mismo test
+   * era el CONTROL negativo ("con asesor no lleva la marca") — la auditoría
+   * de esta tarea encontró que esa era justo la falla: la conversación
+   * apagaba `awaiting_reply` con una promesa, no con una respuesta real, y
+   * desaparecía de "Pendientes" y de "Tuyas" del asesor asignado.
+   */
+  it("(c) escalación CON asesor: isAutoReply true — la promesa tampoco es respuesta (Tarea 5, 14/9/2026)", async () => {
     buildEscalateToolMock.mockImplementationOnce((_deps, outcome) => {
       outcome.escalated = true;
       outcome.assignedAgentName = "María";
@@ -2575,7 +2740,7 @@ describe("runAgentTurn — anexo A1: is_auto_reply en la despedida de la IA al e
     const llamada = sendAgentTextMock.mock.calls[0];
     expect(llamada[2]).toBe("Ya te paso con María, ella te ayuda con esto.");
     const opciones = llamada[3] as { isAutoReply?: boolean } | undefined;
-    expect(opciones?.isAutoReply).not.toBe(true);
+    expect(opciones?.isAutoReply).toBe(true);
   });
 
   it("(d) respuesta normal sin escalar: sin la marca", async () => {
@@ -2584,6 +2749,100 @@ describe("runAgentTurn — anexo A1: is_auto_reply en la despedida de la IA al e
     const llamada = sendAgentTextMock.mock.calls[0];
     const opciones = llamada[3] as { isAutoReply?: boolean } | undefined;
     expect(opciones?.isAutoReply).not.toBe(true);
+  });
+});
+
+/**
+ * `despedidaConAsesor` (agent.ts) es la función pura; estos primeros cuatro
+ * casos la ejercen directo, sin levantar `runAgentTurn`.
+ */
+describe("despedidaConAsesor — texto según el horario (Tarea 5, 14/9/2026)", () => {
+  it("tienda abierta: promesa genérica, sin horario", () => {
+    expect(despedidaConAsesor({ open: true, closesAt: "6:00 pm", nextOpening: null })).toBe(
+      "Dame un momentico, ya te paso con un asesor para que te ayude con esto."
+    );
+  });
+
+  it("tienda cerrada con próxima apertura: nombra el día y la hora", () => {
+    const texto = despedidaConAsesor({
+      open: false,
+      closesAt: null,
+      nextOpening: { dayLabel: "el lunes", time: "8:00 am" },
+    });
+
+    expect(texto).toContain("el lunes");
+    expect(texto).toContain("8:00 am");
+  });
+
+  it("tienda cerrada sin ninguna apertura en los próximos 7 días: no inventa una fecha", () => {
+    const texto = despedidaConAsesor({ open: false, closesAt: null, nextOpening: null });
+
+    expect(texto).not.toMatch(/undefined/);
+    expect(texto).toMatch(/vuelva a abrir/);
+  });
+
+  it("sin status (compatibilidad): se trata igual que tienda abierta", () => {
+    expect(despedidaConAsesor(undefined)).toBe(DESPEDIDA_CON_ASESOR_ABIERTA);
+  });
+});
+
+/**
+ * Extremo a extremo: que `outcome.businessStatus` viaje desde
+ * `escalateConversation` hasta el texto que de verdad sale por
+ * `sendAgentText`, en el camino de la red de seguridad de devolución/queja
+ * (agent.ts, ~1380). Es el mismo camino que antes solo sabía mandar
+ * `DESPEDIDA_SIN_ASESOR`/el texto fijo sin horario — Tarea 5, 14/9/2026,
+ * decisión 6.
+ */
+describe("runAgentTurn — la despedida CON asesor de la red de seguridad nombra el horario (Tarea 5, 14/9/2026)", () => {
+  function forzarQuejaSinTexto() {
+    classifyIntentMock.mockResolvedValue({
+      intent: "queja",
+      usage: { inputTokens: 5, outputTokens: 1, totalTokens: 6 },
+    });
+    // El modelo no redacta nada (tool loop agotado sin escalar de verdad):
+    // el texto que sale es el que arma la red de seguridad, forzando el
+    // camino que decide despedidaConAsesor.
+    generateMock.mockResolvedValueOnce({
+      text: "",
+      usage: { inputTokens: 20, outputTokens: 0, totalTokens: 20 },
+      steps: [{}],
+    });
+  }
+
+  it("con asesor y tienda abierta: no promete un horario", async () => {
+    forzarQuejaSinTexto();
+    escalateConversationMock.mockImplementation(async () => {
+      pasos.push("escalar");
+      return {
+        escalated: true,
+        assignedAgentName: "María",
+        businessStatus: { open: true, closesAt: "6:00 pm", nextOpening: null },
+      };
+    });
+
+    await runAgentTurn("conv-1");
+
+    expect(sendAgentTextMock.mock.calls[0][2]).toBe(DESPEDIDA_CON_ASESOR_ABIERTA);
+  });
+
+  it("con asesor y tienda cerrada: nombra cuándo escribe el asesor", async () => {
+    forzarQuejaSinTexto();
+    escalateConversationMock.mockImplementation(async () => {
+      pasos.push("escalar");
+      return {
+        escalated: true,
+        assignedAgentName: "María",
+        businessStatus: { open: false, closesAt: null, nextOpening: { dayLabel: "el lunes", time: "8:00 am" } },
+      };
+    });
+
+    await runAgentTurn("conv-1");
+
+    const textoEnviado = sendAgentTextMock.mock.calls[0][2] as string;
+    expect(textoEnviado).toContain("lunes");
+    expect(textoEnviado).toContain("8:00 am");
+    expect(revealsIdentity(textoEnviado)).toBeNull();
   });
 });
 
@@ -2796,9 +3055,11 @@ describe("runAgentTurn — guarda de identidad", () => {
     await runAgentTurn("conv-1");
 
     expect(sendAgentTextMock).toHaveBeenCalledTimes(1);
-    expect(sendAgentTextMock.mock.calls[0][2]).toBe(DESPEDIDA_CON_ASESOR);
+    expect(sendAgentTextMock.mock.calls[0][2]).toBe(DESPEDIDA_CON_ASESOR_ABIERTA);
     const opcionesEnvio = sendAgentTextMock.mock.calls[0][3] as { isAutoReply?: boolean } | undefined;
-    expect(opcionesEnvio?.isAutoReply).not.toBe(true);
+    // Tarea 5 (14/9/2026): la promesa de un asesor tampoco es una respuesta
+    // real, tenga o no asesor — antes esta aserción era `.not.toBe(true)`.
+    expect(opcionesEnvio?.isAutoReply).toBe(true);
     // Nunca el borrador ni el reescrito que se seguían delatando.
     expect(sendAgentTextMock.mock.calls.some((llamada) => llamada[2] === borrador)).toBe(false);
     expect(sendAgentTextMock.mock.calls.some((llamada) => llamada[2] === reescritoQueSigueCalzando)).toBe(false);
@@ -2859,7 +3120,7 @@ describe("runAgentTurn — guarda de identidad", () => {
 
     expect(sendAgentTextMock).toHaveBeenCalledTimes(1);
     expect(sendAgentTextMock.mock.calls[0][2]).not.toBe(borrador);
-    expect([DESPEDIDA_SIN_ASESOR, DESPEDIDA_CON_ASESOR]).toContain(sendAgentTextMock.mock.calls[0][2]);
+    expect([DESPEDIDA_SIN_ASESOR, DESPEDIDA_CON_ASESOR_ABIERTA]).toContain(sendAgentTextMock.mock.calls[0][2]);
     expect(escalateConversationMock).toHaveBeenCalledTimes(1);
     expect(escalateConversationMock).toHaveBeenCalledWith(
       expect.anything(),
@@ -2900,7 +3161,7 @@ describe("runAgentTurn — guarda de identidad", () => {
     );
 
     expect(sendAgentTextMock).toHaveBeenCalledTimes(1);
-    expect([DESPEDIDA_SIN_ASESOR, DESPEDIDA_CON_ASESOR]).toContain(sendAgentTextMock.mock.calls[0][2]);
+    expect([DESPEDIDA_SIN_ASESOR, DESPEDIDA_CON_ASESOR_ABIERTA]).toContain(sendAgentTextMock.mock.calls[0][2]);
     expect(error).toHaveBeenCalledWith("identidad_bloqueada", expect.objectContaining({ conversationId: "conv-1" }));
 
     expect(agentTurnInserts).toHaveLength(1);
@@ -2918,7 +3179,16 @@ describe("runAgentTurn — guarda de identidad", () => {
   it("(e) las despedidas fijas y OFF_TOPIC_REPLY no calzan ningún patrón de identidad", () => {
     expect(revealsIdentity(OFF_TOPIC_REPLY)).toBeNull();
     expect(revealsIdentity(DESPEDIDA_SIN_ASESOR)).toBeNull();
-    expect(revealsIdentity(DESPEDIDA_CON_ASESOR)).toBeNull();
+    // Tarea 5 (14/9/2026): despedidaConAsesor pasó a tener tres formas según
+    // el horario — las tres tienen que revisarse, no solo la de "abierta".
+    expect(revealsIdentity(despedidaConAsesor({ open: true, closesAt: "6:00 pm", nextOpening: null }))).toBeNull();
+    expect(
+      revealsIdentity(
+        despedidaConAsesor({ open: false, closesAt: null, nextOpening: { dayLabel: "el lunes", time: "8:00 am" } })
+      )
+    ).toBeNull();
+    expect(revealsIdentity(despedidaConAsesor({ open: false, closesAt: null, nextOpening: null }))).toBeNull();
+    expect(revealsIdentity(despedidaConAsesor(undefined))).toBeNull();
   });
 
   /**

@@ -433,13 +433,22 @@ describe("el interruptor global para lo que ya está en vuelo", () => {
   /**
    * Falla cerrado. Un botón de pánico que ante la duda sigue adelante no es un
    * botón de pánico.
+   *
+   * Tarea 5 ("La voz cercana y la espera visible", 14/9/2026): "no se puede
+   * consultar" dejó de tratarse igual que "la respuesta es que no". Antes
+   * `stillEnabled` atrapaba cualquier error de la RPC y devolvía `false`, así
+   * que este caso terminaba exactamente igual que el de arriba —silencioso,
+   * con `enviados` vacío— y un corte de base quedaba indistinguible de que el
+   * dueño apagó la IA. Ahora `stillEnabled` relanza: el turno entero falla
+   * ANTES de marcar el mensaje como intentado, así que la cola lo reintenta
+   * como un fallo transitorio en vez de archivarlo como una decisión.
    */
   it("no envía si el interruptor no se puede consultar", async () => {
     // La apertura del turno pasa; la consulta de justo antes de enviar
-    // revienta. Ante la duda, no se envía.
+    // revienta. Ante la duda, no se envía — y ahora, además, el turno lanza.
     consultasAntesDeRomperse = 1;
 
-    await runAgentTurn(CHAT_SIN_TOCAR.id);
+    await expect(runAgentTurn(CHAT_SIN_TOCAR.id)).rejects.toThrow(/agent_can_run no consultable/);
 
     expect(enviados).toEqual([]);
   });

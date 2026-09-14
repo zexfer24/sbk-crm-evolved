@@ -27,10 +27,18 @@ export interface EscalateResult {
   unassigned?: boolean;
   reason?: string;
   /**
-   * Solo cuando `unassigned` es true: el horario calculado UNA vez acá con el
-   * `now`/`businessHours` de este llamado (Frente B4, "El reloj dice la
-   * verdad", 5/9/2026). `buildEscalateTool` (`tools.ts`) lo usa para armar la
-   * despedida sin volver a calcular `businessStatus` con un reloj distinto.
+   * El horario calculado UNA vez acá con el `now`/`businessHours` de este
+   * llamado (Frente B4, "El reloj dice la verdad", 5/9/2026). Hasta el
+   * 14/9/2026 solo viajaba cuando `unassigned` era true —la despedida SIN
+   * asesor era la única que necesitaba decir cuándo—, pero la Tarea 5 ("La
+   * voz cercana y la espera visible") encontró la misma falla del lado CON
+   * asesor: 170 promesas "ya te paso con un asesor" en 72 h, 23 de ellas con
+   * la tienda ya cerrada y sin decir cuándo volvía a abrir. Como ya se
+   * calculaba siempre (`businessStatus(now, businessHours)`, dos líneas más
+   * abajo), devolverlo siempre —con asesor o sin él— no cuesta nada extra:
+   * `escalationInstruction`/`despedidaConAsesor` (`tools.ts`/`agent.ts`) lo
+   * usan para armar la despedida sin volver a calcular `businessStatus` con
+   * un reloj distinto.
    */
   businessStatus?: BusinessStatus;
 }
@@ -112,7 +120,7 @@ export async function escalateConversation(
   }
 
   return candidate
-    ? { escalated: true, assignedAgentName: candidate.displayName }
+    ? { escalated: true, assignedAgentName: candidate.displayName, businessStatus: estadoHorario }
     : {
         escalated: true,
         assignedAgentName: null,
