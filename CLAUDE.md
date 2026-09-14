@@ -652,6 +652,87 @@ dejar rastro es lo que hacía desaparecer leads.
   `head_sha`, `status`, `conclusion`). GitHub muestra solo 10 anotaciones por
   paso: si hay más fallas, reproducirlas en local.
 
+- **Toda salida de un turno que escaló es `is_auto_reply`, con asesor o sin
+  él** (T5, "La voz cercana y la espera visible", 14/9/2026). Antes
+  `isAutoReply: outcome.escalated && outcome.unassigned === true`: con
+  asesor asignado la promesa "un asesor te va a atender" salía como
+  respuesta real, el trigger apagaba `awaiting_reply` y la conversación
+  desaparecía de Pendientes —170 promesas de ≥ 30 min invisibles en 72 h, 23
+  sin cumplir— y "Con asesor" del Recorrido nunca contaba atascados
+  (`waitingMinutes` devuelve `null` sin `awaitingReply`). Ahora la
+  conversación sigue esperando hasta que una persona escriba: aparece en
+  "Pendientes" y en "Tuyas" del asesor, y "Con asesor" cuenta atascados a
+  60 min laborales. El camino de escenario `afterSend = "escalate"` marca
+  igual (`turno_escenario_escalado_marcado`). El reconciliador no la
+  reencola porque `ai_enabled = false`. Si alguna vez una escalada apaga
+  `awaiting_reply`, el bug está en quien mandó el texto sin la marca, no
+  en la base.
+- **La IA no saluda por franja** (T2, 14/9/2026; reporte del cliente: "da
+  los buenos días, buenas tardes y buenas noches"). `turnClockLine` ya no
+  trae `franja … (saluda "…")`: solo hora, horario y estado. El saludo lo
+  decide el sufijo `needsGreeting` de `prompt.ts` ("¡Hola!"/"¡Buenas!", "le
+  escribes de SBK Motorcycles") y solo en el primer mensaje; después el
+  sufijo lo prohíbe. `dayBand`/`greetingFor` siguen vivos para los
+  disparadores horarios de los escenarios, y `greeting-window.ts` queda
+  como red para los escenarios del panel que todavía empiecen con "buenas
+  tardes" (O3 los reemplaza por uno neutro). No volver a meter el saludo en
+  `TURNO ACTUAL`: el modelo lo copia en cada turno, no solo en el primero.
+- **Los CHECK de `intent` viven en `20260914010000`; un valor nuevo en
+  `INTENT_VALUES` (`classify.ts`) exige migración** (T1, 14/9/2026).
+  `fuera_de_tema` existió en el código desde el 5/9 y en la base hasta el
+  14/9 no: cada turno fuera de tema fallaba en silencio el insert de
+  `logTurn` y el update de `conversations.intent` (3 turnos visibles, 0 en
+  bitácora). Desde T5 esos dos errores se registran
+  (`turno_bitacora_no_escrita`, `turno_intencion_no_guardada`) sin lanzar:
+  si aparecen en el log, falta una migración, no un try/catch.
+- **Un error de la RPC `agent_can_run` LANZA y la cola reintenta; solo un
+  `false` es "IA apagada"** (T5, 14/9/2026). Antes `stillEnabled` devolvía
+  `false` ante cualquier error y la apertura de `runAgentTurn` leía
+  `{ data }` sin mirar `error`: 13 turnos en 72 h quedaron como
+  `agente_no_puede_correr`/`turno_saltado_ia_apagada` con el interruptor
+  encendido, y eran cortes de conexión con la base (0,87 $ gastados en
+  turnos que nunca respondieron). Ahora `turno_interruptor_no_consultable`
+  + `throw`: el turno falla antes de `entrega.intentado = true`, así que
+  no hay doble envío, y `MAX_ATTEMPTS` de la cola hace los reintentos.
+  Sigue fallando cerrado (no se envía), pero un corte de base ya no se
+  disfraza de interruptor. `human-handled.test.ts` espera el rechazo. El WEBHOOK tiene su propio chequeo antes de encolar (route.ts, `webhook_interruptor_no_consultable`): ante error sigue de largo y encola; solo un `false` real deja `agente_no_puede_correr` sin encolar (corrección hallada en la verificación final del 14/9: con la RPC rota antes del mensaje, el hueco del webhook tapaba el arreglo del turno).
+- **Fase 0 descarta los escenarios de saludo cuando el mensaje trae más que
+  un saludo** (T4, 14/9/2026; 53 casos en 72 h de "Buenas tardes, tienen
+  tanque de EK Xpress" → "¿En qué podemos ayudarle?"). `matchPlaybook`
+  recibe el último texto del cliente y, si `isPureGreeting` (`saludo.ts`)
+  dice que no es SOLO un saludo, saca de los candidatos los escenarios cuyo
+  texto empieza saludando (`isGreetingPlaybook`, falla abierto). Es una
+  regla determinista ANTES del modelo; la prosa de `buildPrompt` solo la
+  refuerza. Las listas de palabras de `saludo.ts` fallan a `false` con
+  cualquier palabra desconocida: agregar sinónimos ahí, no aflojar el
+  filtro.
+- **La guarda de cortesía tras escalada (`cortesia_tras_escalada`) solo
+  puede correr SIN asesor asignado** (T4, 14/9/2026). `openTurn` corta
+  antes con `asignada` cuando `assigned_agent_id` no es `null`, así que
+  dentro de `runTurnPhases` la rama `toKind: "human"` de esa guarda es
+  defensiva e inalcanzable hoy. El caso real es el de la devolución masiva
+  a la IA del 13/9 (asesor quitado, `ai_enabled = true`, último traspaso
+  `escalada`): el "gracias" reencolado calzaba el escenario de despedida.
+  Ahora `escalationOpen` (`handoffs.ts`) lo detecta y el turno se calla
+  dejando la fila con `to_kind = 'unassigned'`: cae en "Sin dueño", que es
+  la verdad. `awaiting_reply` no se toca a propósito. Hueco medido el 14/9 en local: `escalationOpen` mira SOLO la última fila, y si el cliente escribió mientras estaba asignado esa fila es `asignada`, no `escalada` — la guarda no dispara y la IA atiende normal (deuda anotada, no es de esta corrida).
+- **Al segundo adjunto sin texto la IA escala en código, sin modelo** (T6,
+  14/9/2026). `mediaStreakWithoutText` (`history-line.ts`) cuenta la racha
+  de marcadores SIN pie desde el final; con dos y una respuesta de la IA en
+  medio, `runTurnPhases` escala con `seguimiento`, manda `DESPEDIDA_MEDIA`
+  con `is_auto_reply` y no llama ni a fase 0 ni a `classifyIntent` (la
+  fila de `agent_turns` queda sin tokens). El sticker no cuenta ni corta la
+  racha. La línea de `MEDIA_RULES` es informativa: la regla vive en código.
+- **Las notas de voz de Meta llegan como `audio/ogg; codecs=opus` y el CRM
+  las sirve tal cual** (T6b, 14/9/2026, `docs/diagnosticos/2026-09-14-notas-de-voz.md`):
+  `api/media` solo redirige a una URL firmada, no toca el `Content-Type`.
+  Safari/WebKit —y por lo tanto TODO navegador en iOS— no reprodujo el
+  contenedor Ogg hasta la versión 18.4 (marzo 2025); `AudioContent`
+  (`message-bubble.tsx`) ya detecta el error y ofrece "Descargar" desde el
+  21/8. Deuda anotada: `EXTENSION_BY_MIME` del webhook no reconoce la clave
+  con el sufijo `; codecs=opus` y guarda esos archivos como `.bin`. Falta
+  saber desde qué equipo y navegador trabajan los asesores antes de
+  decidir transcodificar.
 ---
 
 # RTK (Rust Token Killer) - Token-Optimized Commands

@@ -799,13 +799,76 @@ Honestidad sobre el estado, para que nadie se lleve una sorpresa:
 
 ---
 
+## 10. Lista operativa de v1.1 (14/9/2026)
+
+Lo que el código de la corrida "La voz cercana y la espera visible" NO
+reemplaza: son tareas del operador desde el panel (`/agent-control`, la
+bandeja y Dokploy). Nacen de la auditoría "72 horas en el buzón" (727
+conversaciones, 11/9 → 14/9) y del reporte directo del cliente. Sin
+O1–O6 hechas no se etiqueta `v1.1`.
+
+| # | Qué | Por qué | Cómo se verifica |
+|---|---|---|---|
+| O1 | Contactar a los 80 leads sin respuesta (CSV de la auditoría), empezando por los 11 del viernes y los 29 del domingo. | 3 ventas perdidas y 47 en riesgo ya contadas. | Píldora "Pendientes" baja; los 80 tienen respuesta de asesor. |
+| O2 | **Encender "Consulta de productos"** en Control IA tras confirmar que el inventario del 11/9 está al día. | 99 de 151 preguntas sin respuesta propia son precio/existencia; es la causa principal del tono "te paso con un asesor". Desde el 25/8 nunca estuvo encendida. | Un turno de consulta muestra `buscarRepuesto` en `agent_turns`; la tasa de escaladas por `intencion_compra` baja de 438/480. |
+| O3 | Reemplazar los tres escenarios de saludo por UNO neutro (*¡Hola! Bienvenido a SBK Motorcycles 🏍️ ¿Qué repuesto o accesorio buscas para tu moto?*), disparador *solo cuando el mensaje es únicamente un saludo*; unificar a "tú" los escenarios con "usted"; estrechar el disparador de la despedida ("Gracias por preferirnos") a *cuando el cliente se despide y no queda nada pendiente*. | Decisiones 1, 2 y 4 del plan. Desde T4 el código descarta los escenarios de saludo cuando el mensaje trae una pregunta, pero el texto del saludo sigue siendo el del panel. | `agent_turns` con `playbook_id` de saludo solo en mensajes que son solo saludo; ningún mensaje de la IA empieza con "buenos días/tardes/noches". |
+| O4 | Confirmar el horario del domingo (¿9:30–16:00 o 9:00–16:30?) y corregir `business_hours` en el panel. | La IA dice el horario tal cual está cargado, y desde T7 lo responde ella misma sin escalar. | `turnClockLine` en un turno de domingo. |
+| O5 | Cargar la biblioteca con las respuestas validadas de la sección 2 de la auditoría: horario, taller y precios de referencia, métodos de pago aceptados/rechazados (Binance sí, Zelle no), compatibilidades frecuentes, guía MRW y tiempos, Cashea (error de envío gratis), garantía y cambios, RCV. Revisar los enlaces de Drive del catálogo (fallaron 12/9 y 13/9). | 52 preguntas de política sin respuesta propia; hoy la biblioteca tiene 6 entradas. | `consultarBiblioteca` devuelve resultados en esos turnos. |
+| O6 | Roster: marcar "Fuera del reparto" a quien no está de turno (fin del día, domingo). No devolver conversaciones a la IA en masa mientras tengan escalada abierta: reasignar. | `claim-agent.ts` reparte por esa bandera; la devolución masiva del 13/9 re-escaló 63 casos y quitó el asesor a 11 leads del viernes. Desde T4 un "gracias" con escalada abierta ya no recibe despedida, pero el lead sigue sin dueño. | Escaladas fuera de horario caen en "Sin dueño" (visibles) en vez de en un asesor ausente. |
+| O7 | Rampa de ritmo: pasar `AGENT_MAX_TURNS_PER_MINUTE` 30→40 y `AI_MAX_REQUESTS_PER_MINUTE` 120→160 juntas en Dokploy (las cinco variables suben juntas, ver "Rampa de los topes"; redeploy). | 138 topes de 30/min en 72 h. | `ia_ritmo_al_tope` desaparece en hora pico; `cola_ritmo_al_tope` baja. |
+| O8 | Pedir al Claude del VPS revisar los cortes de conexión con la base: `docker logs` del contenedor de la app y de PostgREST/pooler alrededor de los 13 `turno_interruptor_no_consultable` y los 41 `webhook_error_actualizar_estado`; límites de conexiones del pooler; reinicios de contenedores. | Hallazgo 10 de la auditoría. Con T5 el síntoma deja de disfrazarse de "IA apagada", pero la causa es del VPS. | Cero `turno_interruptor_no_consultable` en 48 h. |
+
+### Verificación en producción a 48 h y etiqueta v1.1
+
+A las 48 h del despliegue, repetir sobre la base de producción (solo
+lectura) las cifras de la auditoría y compararlas:
+
+| Métrica | Antes (72 h al 14/9) | Meta |
+|---|---|---|
+| Mensajes de la IA que empiezan con "buenos días/tardes/noches" | 3 con franja mal; ~50 % de los escenarios eran saludos | 0 |
+| Promesas "un asesor te atiende" que apagaron `awaiting_reply` | 170 ≥ 30 min invisibles | 0 (todas `is_auto_reply`) |
+| Repeticiones de "¿qué repuesto buscas?" ante adjuntos sin texto | hasta 10 por chat | ≤ 1 por racha |
+| `agent_turns` con `intent = 'fuera_de_tema'` | 0 (rechazados) | = a los turnos fuera de tema del log |
+| Escaladas por `intencion_compra` (con catálogo encendido, O2) | 438 / 480 | < 250 |
+| Lectura de tono: 20 respuestas de la IA elegidas al azar | "tajante" | ≥ 16 con reconocimiento + explicación (rúbrica de "CÓMO SUENAS") |
+
+Consultas de apoyo (solo lectura):
+
+```sql
+-- saludos por franja que todavía salen (meta: 0)
+select count(*) from messages
+ where sender_type = 'ai' and created_at > now() - interval '48 hours'
+   and content ~* '^\s*[¡!]?\s*buen[ao]s? (d[ií]as|tardes|noches)';
+-- textos de la IA en el turno que escaló que NO quedaron como auto_reply (meta: 0)
+select count(*) from messages m
+  join agent_turns t on t.conversation_id = m.conversation_id
+ where m.sender_type = 'ai' and m.is_auto_reply = false
+   and t.action = 'escalated'
+   and m.created_at between t.created_at and t.created_at + interval '2 minutes'
+   and m.created_at > now() - interval '48 hours';
+-- fuera de tema registrados (meta: igual a los del log)
+select count(*) from agent_turns where intent = 'fuera_de_tema'
+   and created_at > now() - interval '48 hours';
+-- cortesías calladas con escalada abierta y escaladas
+select reason, count(*) from conversation_handoffs
+ where created_at > now() - interval '48 hours'
+   and reason in ('cortesia_tras_escalada', 'escalada', 'escalada_sin_asesor')
+ group by reason;
+```
+
+Con eso en verde y O1–O6 hechas: `git tag -a v1.1 -m "SBK CRM v1.1
+estable: la voz cercana y la espera visible"` sobre el commit desplegado, y
+push del tag.
+
+---
+
 ## Comprobación final
 
 Con todo configurado, esta lista debe pasar entera:
 
 - [ ] Una restauración de prueba devuelve los datos completos
 - [ ] `npm run build` sin errores ni warnings
-- [ ] `select count(*) from supabase_migrations.schema_migrations` devuelve 61
+- [ ] `select count(*) from supabase_migrations.schema_migrations` devuelve 69 (recontado el 14/9/2026; decía 61 cuando se escribió esta guía)
 - [ ] El bucket `whatsapp-media` es privado (`public = false`)
 - [ ] Una URL directa al bucket responde 400
 - [ ] `/api/media/...` sin sesión responde 401
