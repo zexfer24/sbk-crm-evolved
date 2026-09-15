@@ -9,7 +9,6 @@ import {
   TONE_RULES,
   buildInstructions,
 } from "@/lib/ai/prompt";
-import { greetingWindow } from "@/lib/ai/greeting-window";
 import { revealsIdentity } from "@/lib/ai/identity-guard";
 
 /**
@@ -182,18 +181,6 @@ describe("la hora del turno", () => {
     expect(SYSTEM_PROMPT).not.toMatch(/Nunca saludes por la hora/i);
     expect(SYSTEM_PROMPT).not.toMatch(/usa la franja y el saludo/i);
     expect(SYSTEM_PROMPT).not.toMatch(/antes del mediodía/i);
-  });
-
-  /**
-   * `greetingWindow` (los escenarios del panel) conserva sus propios bordes
-   * horarios — eso no cambió el 14/9/2026, y sigue siendo la red para un
-   * escenario del dueño que empiece con un saludo de franja escrito a mano.
-   * Lo que sí cambió es que `turnClockLine` (el flujo genérico) YA NO trae
-   * ninguna franja para comparar: por eso este test dejó de verificar que
-   * `buildInstructions` diga "franja: tarde"/"franja: noche" a las 7:00 pm.
-   */
-  it("greetingWindow sigue poniendo el borde entre tarde y noche a las 7:00 pm", () => {
-    expect(greetingWindow("¡Buenas tardes! ¿En qué podemos ayudarle?")?.to).toBe(19 * 60);
   });
 
   /**

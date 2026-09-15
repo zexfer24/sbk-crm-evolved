@@ -67,8 +67,12 @@ export function currentDayRange(timeZone: string, now: Date = new Date()): { fro
  *
  * Es la misma hora que `formatCrmDateTime` escribe en palabras, pero en un
  * número con el que se puede comparar. Existe porque hay decisiones que se
- * toman con la hora y no se le pueden delegar al modelo — cuál de los tres
- * saludos puede salir, por ejemplo (ver greeting-window.ts).
+ * toman con la hora y no se le pueden delegar al modelo — la franja del día
+ * que calcula `dayBand` (business-hours.ts), por ejemplo. Hasta el
+ * 15/9/2026 la usaba también el módulo que decidía cuál de los tres saludos
+ * de los escenarios del panel podía salir; ese módulo se retiró (Tarea 4,
+ * "La voz de mostrador con nombre propio") cuando el saludo dejó de salir
+ * de cualquier escenario.
  */
 export function crmMinuteOfDay(instant: Date = new Date(), timeZone: string = CRM_TIME_ZONE): number {
   const parts = new Intl.DateTimeFormat("en-US", {

@@ -4,7 +4,6 @@ import type { SupabaseClient } from "@supabase/supabase-js";
 import type { Database } from "@/lib/supabase/database.types";
 import type { Playbook, PlaybookAfterSend, PlaybookAttachmentType, Tag, TagColor } from "@/lib/types";
 import { getClassifierModel } from "@/lib/ai/model";
-import { playbooksAtTime } from "@/lib/ai/greeting-window";
 import {
   DEFAULT_BUSINESS_HOURS,
   dayBand,
@@ -13,7 +12,7 @@ import {
   type BusinessHours,
 } from "@/lib/business-hours";
 import { formatCrmDateTime } from "@/lib/time-zone";
-import { isGreetingPlaybook, isPureGreeting } from "@/lib/ai/saludo";
+import { isGreetingPlaybook } from "@/lib/ai/saludo";
 import { errorText, log } from "@/lib/log";
 
 // ---------------------------------------------------------------------------
@@ -199,40 +198,48 @@ export async function matchPlaybook(
   // Con default para no romper a los llamadores viejos ni a los tests que
   // todavía no pasan horario: cae al horario por defecto (Frente B3, "El
   // reloj dice la verdad", 5/9/2026).
-  businessHours: BusinessHours = DEFAULT_BUSINESS_HOURS,
-  // Tarea 4 ("La voz cercana y la espera visible", 14/9/2026): el ÚLTIMO
-  // texto del cliente, tal cual lo devuelve `lastCustomerMessage` en
-  // agent.ts (null si esa línea es un marcador de media, o si el llamador
-  // no lo tiene). Opcional para no romper a los tests y llamadores viejos
-  // que todavía no lo pasan — sin este argumento no se filtra nada, mismo
-  // comportamiento de siempre.
-  lastCustomerText?: string | null
+  businessHours: BusinessHours = DEFAULT_BUSINESS_HOURS
 ): Promise<PlaybookMatch> {
-  // La hora se decide acá y no se le pregunta al modelo. De 14 saludos del 27
-  // de agosto de 2026, 4 salieron con el saludo equivocado —"¡Buenos días!" a
-  // las diez de la noche— porque esta función no sabía qué hora era: los tres
-  // saludos entraban juntos al enum y el único cuyo disparador describe la
-  // FORMA del mensaje ("solo con hola o cualquier saludo") calzaba a toda
-  // hora. Filtrar antes le quita la opción imposible en vez de corregirle la
-  // respuesta después. Ver greeting-window.ts.
-  let candidatos = playbooksAtTime(playbooks, now);
-
-  // 53 veces en 72 h (medido antes de esta tarea, 14/9/2026) el cliente
-  // saludó y preguntó algo en el mismo mensaje ("Buenas tardes, tienen
-  // tanque de EK Xpress") y recibió solo el escenario de saludo — el
-  // disparador de saludo no exige que el mensaje sea nada MÁS que un saludo,
-  // así que calzaba igual. Si el último mensaje del cliente trae algo más
-  // que un saludo, los escenarios que EMPIEZAN saludando salen de los
-  // candidatos: el resto de la clasificación (o el flujo genérico) responde
-  // la pregunta real. Sin `lastCustomerText` (llamador viejo, o el turno no
-  // pudo determinar el último texto) no se filtra nada — ver el comentario
-  // del parámetro arriba.
-  if (lastCustomerText != null && !isPureGreeting(lastCustomerText)) {
-    const antes = candidatos.length;
-    candidatos = candidatos.filter((playbook) => !isGreetingPlaybook(playbook.responseText));
-    if (candidatos.length < antes) {
-      log.info("escenarios_saludo_descartados", { descartados: antes - candidatos.length });
-    }
+  // Historia de este filtro, tres capítulos:
+  //
+  // 27/8/2026 — el saludo lo daba el TEXTO del escenario, elegido por el
+  // modelo entre tres opciones ("Buen día"/"Buenas tardes"/"Buenas noches")
+  // sin saber qué hora era: 4 de 14 salieron con el saludo equivocado.
+  // 5/9/2026 (B3) se arregló restringiendo esos tres por franja horaria, con
+  // un módulo aparte dedicado solo a acotar por hora los escenarios que
+  // saludan.
+  //
+  // 14/9/2026 (T4 de la corrida anterior) apareció el problema real: 53
+  // veces en 72 h el cliente saludó Y preguntó en el mismo mensaje ("Buenas
+  // tardes, tienen tanque de EK Xpress") y el escenario de saludo calzaba
+  // igual —su disparador no exige que el mensaje sea SOLO un saludo—, así
+  // que la pregunta real se perdía. El parche de entonces solo descartaba
+  // los escenarios de saludo cuando el ÚLTIMO texto del cliente traía algo
+  // más que un saludo puro (quinto argumento de esta función, retirado en
+  // la corrida siguiente).
+  //
+  // 15/9/2026 (T3 de esta corrida, `44145c7`): el saludo dejó de salir de
+  // NINGÚN escenario del panel. `buildInstructions` (prompt.ts) ya saluda
+  // por código, con la franja calculada, UNA sola vez por conversación —
+  // así que ya no hace falta que fase 0 elija BIEN cuál saludo mandar: hace
+  // falta que NUNCA elija uno, porque el saludo ya salió antes. El descarte
+  // pasa a ser incondicional (ya no depende de si el cliente saludó pelado
+  // o con pregunta) y el módulo que acotaba los escenarios de saludo por
+  // hora queda sin trabajo: se retira. `isGreetingPlaybook` (saludo.ts)
+  // sigue siendo la única pregunta que hace falta — "¿el texto YA REDACTADO
+  // de este escenario empieza saludando?" — y ahora se aplica siempre, sin
+  // condición.
+  const antes = playbooks.length;
+  const candidatos = playbooks.filter((p) => !isGreetingPlaybook(p.responseText));
+  if (candidatos.length < antes) {
+    const ignorados = antes - candidatos.length;
+    // `LogContext` (log.ts) solo acepta valores escalares: los nombres viajan
+    // unidos por coma, no como arreglo.
+    const nombres = playbooks
+      .filter((p) => isGreetingPlaybook(p.responseText))
+      .map((p) => p.name)
+      .join(", ");
+    log.info("escenarios_saludo_ignorados", { ignorados, nombres });
   }
 
   // Sin escenarios que puedan salir ahora no hay nada que elegir: se ahorra la

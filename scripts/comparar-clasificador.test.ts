@@ -69,12 +69,16 @@
 //   - `classifyIntent` SÍ lanza -- se envuelve en try/catch normal.
 //   - `matchPlaybook` NUNCA lanza (ver playbooks.ts): ante un fallo del
 //     proveedor atrapa el error y devuelve `{ playbook: null, usage:
-//     ZERO_USAGE }`, EXACTAMENTE lo mismo que devuelve cuando no hay ningún
-//     escenario candidato a esa hora. La única forma de distinguir "falló"
-//     de "no había nada que reconocer" es mirar si HABÍA candidatos
-//     (`playbooksAtTime`, la misma función que usa `matchPlaybook`
-//     internamente): con candidatos, `playbook === null && usage.totalTokens
-//     === 0` es un fallo -- un NO_MATCH real del modelo consume tokens.
+//     ZERO_USAGE }`, EXACTAMENTE lo mismo que devuelve cuando no queda
+//     ningún escenario candidato. La única forma de distinguir "falló" de
+//     "no había nada que reconocer" es mirar si HABÍA candidatos DESPUÉS de
+//     sacar los que empiezan saludando (`isGreetingPlaybook`, saludo.ts --
+//     el mismo filtro que aplica `matchPlaybook` por dentro desde el
+//     15/9/2026; hasta esa fecha el filtro era por franja horaria, con un
+//     módulo aparte retirado el mismo día en que el saludo dejó de salir de
+//     cualquier escenario): con candidatos, `playbook === null &&
+//     usage.totalTokens === 0` es un fallo -- un NO_MATCH real del modelo
+//     consume tokens.
 //   - Un colector GLOBAL de `console.error` (uno solo, para toda la corrida,
 //     las dos pasadas) que arranca al principio del test y se restaura al
 //     final en un `finally`: no distingue de qué llamada vino cada línea,
@@ -112,7 +116,7 @@ process.env.AI_MAX_REQUESTS_PER_MINUTE ??= "600";
 
 import { classifyIntent, INTENT_VALUES, type Intent } from "@/lib/ai/classify";
 import { matchPlaybook } from "@/lib/ai/playbooks";
-import { playbooksAtTime } from "@/lib/ai/greeting-window";
+import { isGreetingPlaybook } from "@/lib/ai/saludo";
 import { historyLine, type HistoryRow } from "@/lib/ai/history-line";
 import { parseBusinessHours } from "@/lib/business-hours";
 import { errorText } from "@/lib/log";
@@ -310,7 +314,7 @@ describe.skipIf(!process.env.COMPARAR_CLASIFICADOR)("comparador grande×chico de
 
         const ultimoMensaje = conversacion.mensajes[conversacion.mensajes.length - 1];
         const ahora = new Date(ultimoMensaje.created_at);
-        const habiaCandidatos = playbooksAtTime(playbooks, ahora).length > 0;
+        const habiaCandidatos = playbooks.some((p) => !isGreetingPlaybook(p.responseText));
 
         async function medirIntent(): Promise<Pick<ResultadoConversacion, "intent" | "intentMs" | "intentTokens" | "intentError">> {
           const inicio = performance.now();

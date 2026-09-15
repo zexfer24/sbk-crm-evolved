@@ -86,10 +86,15 @@ export function parseBusinessHours(raw: unknown): BusinessHours {
 }
 
 // ---------------------------------------------------------------------------
-// Franja del día (mañana / tarde / noche), con los MISMOS bordes que traía
-// `greeting-window.ts` antes del 5/9/2026: la fuente pasa a ser este módulo
-// y `greeting-window.ts` importa de acá para no tener dos copias del mismo
-// número que un día se desincronicen.
+// Franja del día (mañana / tarde / noche). Hasta el 5/9/2026 estos bordes
+// vivían por duplicado en el módulo que acotaba por hora los escenarios de
+// saludo del panel; ese día la fuente pasó a ser este módulo. Desde el
+// 15/9/2026 (Tarea 4, "La voz de mostrador con nombre propio") ese módulo se
+// retiró entero —el saludo de los escenarios del panel dejó de existir,
+// `buildInstructions` (prompt.ts) es quien saluda ahora— y `DAY_BANDS`/
+// `dayBand` quedan como la ÚNICA fuente de franjas: la usan `buildPrompt`
+// (playbooks.ts, disparadores horarios de los escenarios) y
+// `buildInstructions` (prompt.ts, el saludo del primer mensaje).
 // ---------------------------------------------------------------------------
 
 export type DayBand = "mañana" | "tarde" | "noche";

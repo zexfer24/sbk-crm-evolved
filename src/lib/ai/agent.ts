@@ -1316,7 +1316,7 @@ async function runTurnPhases(
   const [match, classified] = await medir(tiempos, "clasificacionMs", () => {
     const matchPromise: Promise<PlaybookMatch> = ultimoEsMarcador
       ? Promise.resolve({ playbook: null, usage: ZERO_USAGE })
-      : matchPlaybook(history, playbooks, undefined, businessHours, customerMessage);
+      : matchPlaybook(history, playbooks, undefined, businessHours);
 
     return Promise.all([
       // matchPlaybook nunca lanza: un fallo del proveedor deja el turno por el
