@@ -1,5 +1,12 @@
 # Diagnóstico: por qué los asesores no oyen las notas de voz
 
+> **Actualización 15/9/2026.** El operador confirmó que los cuatro asesores
+> trabajan desde Android o PC con Chrome/Brave/Edge: la causa Safari/Ogg de
+> este documento queda descartada. La segunda vuelta, con la hipótesis de la
+> URL firmada de 60 s medida en local, vive en
+> `2026-09-15-notas-de-voz-chrome.md`. La extensión `.bin` que se anota
+> abajo como deuda la cerró T6 el 15/9 (`whatsapp/media-extension.ts`).
+
 14/9/2026 — Tarea 6b del plan "La voz cercana y la espera visible". Un asesor
 pidió 7 veces "escríbelo, no se nos reproducen las notas de voz". Diagnóstico
 de solo lectura: no se tocó código (ver "Por qué no se tocó código" al final).

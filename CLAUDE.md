@@ -2,7 +2,7 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
-# SBK Motorcycles CRM
+# SBK Motors CRM
 
 CRM multiagente de ventas por WhatsApp para una tienda de motos y repuestos en
 Venezuela (equipo en Barinas, zona horaria `America/Caracas`, tasa BCV como
@@ -667,16 +667,19 @@ dejar rastro es lo que hacía desaparecer leads.
   reencola porque `ai_enabled = false`. Si alguna vez una escalada apaga
   `awaiting_reply`, el bug está en quien mandó el texto sin la marca, no
   en la base.
-- **La IA no saluda por franja** (T2, 14/9/2026; reporte del cliente: "da
-  los buenos días, buenas tardes y buenas noches"). `turnClockLine` ya no
-  trae `franja … (saluda "…")`: solo hora, horario y estado. El saludo lo
-  decide el sufijo `needsGreeting` de `prompt.ts` ("¡Hola!"/"¡Buenas!", "le
-  escribes de SBK Motorcycles") y solo en el primer mensaje; después el
-  sufijo lo prohíbe. `dayBand`/`greetingFor` siguen vivos para los
-  disparadores horarios de los escenarios, y `greeting-window.ts` queda
-  como red para los escenarios del panel que todavía empiecen con "buenas
-  tardes" (O3 los reemplaza por uno neutro). No volver a meter el saludo en
-  `TURNO ACTUAL`: el modelo lo copia en cada turno, no solo en el primero.
+- **La IA saluda por franja UNA sola vez, y el saludo lo calcula el código,
+  no el modelo ni el panel** (T3 y T4, "La voz de mostrador con nombre
+  propio", 15/9/2026). El sufijo `needsGreeting` de `buildInstructions`
+  (`prompt.ts`) trae el saludo ya resuelto —"¡Buenas noches!"— con
+  `greetingFor(dayBand(now))` de `business-hours.ts`, solo en el primer
+  mensaje de la conversación; en los demás el sufijo prohíbe saludar.
+  `turnClockLine` sigue SIN franja a propósito: hasta el 14/9 la traía en
+  cada turno y la IA saludaba a mitad de conversación (a veces con la
+  franja mal), y el 14/9 el saludo fue neutro un día ("¡Hola!") hasta que el
+  operador pidió la franja de vuelta. No volver a meter el saludo en `TURNO
+  ACTUAL`: el modelo copia lo que llega en cada turno, no solo en el
+  primero. Ningún escenario del panel saluda (ver la trampa siguiente), así
+  que el saludo no depende de nada configurable.
 - **Los CHECK de `intent` viven en `20260914010000`; un valor nuevo en
   `INTENT_VALUES` (`classify.ts`) exige migración** (T1, 14/9/2026).
   `fuera_de_tema` existió en el código desde el 5/9 y en la base hasta el
@@ -696,26 +699,42 @@ dejar rastro es lo que hacía desaparecer leads.
   no hay doble envío, y `MAX_ATTEMPTS` de la cola hace los reintentos.
   Sigue fallando cerrado (no se envía), pero un corte de base ya no se
   disfraza de interruptor. `human-handled.test.ts` espera el rechazo. El WEBHOOK tiene su propio chequeo antes de encolar (route.ts, `webhook_interruptor_no_consultable`): ante error sigue de largo y encola; solo un `false` real deja `agente_no_puede_correr` sin encolar (corrección hallada en la verificación final del 14/9: con la RPC rota antes del mensaje, el hueco del webhook tapaba el arreglo del turno).
-- **Fase 0 descarta los escenarios de saludo cuando el mensaje trae más que
-  un saludo** (T4, 14/9/2026; 53 casos en 72 h de "Buenas tardes, tienen
-  tanque de EK Xpress" → "¿En qué podemos ayudarle?"). `matchPlaybook`
-  recibe el último texto del cliente y, si `isPureGreeting` (`saludo.ts`)
-  dice que no es SOLO un saludo, saca de los candidatos los escenarios cuyo
-  texto empieza saludando (`isGreetingPlaybook`, falla abierto). Es una
-  regla determinista ANTES del modelo; la prosa de `buildPrompt` solo la
-  refuerza. Las listas de palabras de `saludo.ts` fallan a `false` con
-  cualquier palabra desconocida: agregar sinónimos ahí, no aflojar el
-  filtro.
+- **Fase 0 ignora SIEMPRE los escenarios cuyo texto empieza saludando** (T4,
+  15/9/2026). `matchPlaybook` saca de los candidatos todo escenario cuyo
+  `response_text` calce `isGreetingPlaybook` (`saludo.ts`:
+  hola/buenas/buenos/buen día/bienvenid…) antes de llamar al modelo, y deja
+  `escenarios_saludo_ignorados` con sus nombres. El 14/9 el descarte era
+  condicional (solo si el mensaje traía más que un saludo) y un "hola"
+  pelado seguía eligiendo el escenario del panel, con el texto y la franja
+  escritos a mano: eso fue lo que el cliente reportó como "configuré los
+  escenarios y la IA no funcionaba". `greeting-window.ts` (el reloj que
+  filtraba escenarios por la franja de su texto) se retiró el 15/9: sus
+  tres patrones eran subconjunto de `isGreetingPlaybook`, así que ya no
+  podía filtrar nada. Consecuencia para el panel: un escenario que deba
+  salir NO puede empezar con hola/buenas/bienvenid ("¡Hola! Acá va el
+  catálogo 👇" se ignora aunque no sea un saludo); O3 lo documenta. Y ojo
+  con los tests: un escenario de prueba "¡Buenas tardes!…" sin `now` fijo
+  hizo fallar tres tests de `playbooks.test.ts` después de las 19:00 del
+  14/9 sin que nadie lo viera hasta el 15/9 — nunca dejar un test que
+  dependa del reloj real.
 - **La guarda de cortesía tras escalada (`cortesia_tras_escalada`) solo
-  puede correr SIN asesor asignado** (T4, 14/9/2026). `openTurn` corta
+  puede correr SIN asesor asignado, y `escalationOpen` mira la última fila
+  QUE CAMBIA DE MANOS** (T4 del 14/9 y T5 del 15/9/2026). `openTurn` corta
   antes con `asignada` cuando `assigned_agent_id` no es `null`, así que
   dentro de `runTurnPhases` la rama `toKind: "human"` de esa guarda es
   defensiva e inalcanzable hoy. El caso real es el de la devolución masiva
   a la IA del 13/9 (asesor quitado, `ai_enabled = true`, último traspaso
   `escalada`): el "gracias" reencolado calzaba el escenario de despedida.
-  Ahora `escalationOpen` (`handoffs.ts`) lo detecta y el turno se calla
-  dejando la fila con `to_kind = 'unassigned'`: cae en "Sin dueño", que es
-  la verdad. `awaiting_reply` no se toca a propósito. Hueco medido el 14/9 en local: `escalationOpen` mira SOLO la última fila, y si el cliente escribió mientras estaba asignado esa fila es `asignada`, no `escalada` — la guarda no dispara y la IA atiende normal (deuda anotada, no es de esta corrida).
+  `escalationOpen` (`handoffs.ts`) lo detecta y el turno se calla dejando
+  la fila con `to_kind = 'unassigned'`: cae en "Sin dueño", que es la
+  verdad. `awaiting_reply` no se toca a propósito. Desde el 15/9 la
+  consulta excluye `RAZONES_QUE_NO_CIERRAN_LA_ESCALADA` (`asignada`,
+  `pausada`, `agente_no_puede_correr`, `cortesia_tras_escalada`,
+  `humano_intervino`, `humano_se_adelanto`): esas filas se escriben sin que
+  la escalada cambie y el 14/9 tapaban la `escalada` (una `asignada`
+  posterior, o la propia segunda cortesía). **Toda razón nueva que se
+  escriba por mensaje sin cambiar de dueño exige sumarse a esa constante**;
+  una razón desconocida cuenta como cierre y la IA atiende.
 - **Al segundo adjunto sin texto la IA escala en código, sin modelo** (T6,
   14/9/2026). `mediaStreakWithoutText` (`history-line.ts`) cuenta la racha
   de marcadores SIN pie desde el final; con dos y una respuesta de la IA en
@@ -723,16 +742,39 @@ dejar rastro es lo que hacía desaparecer leads.
   con `is_auto_reply` y no llama ni a fase 0 ni a `classifyIntent` (la
   fila de `agent_turns` queda sin tokens). El sticker no cuenta ni corta la
   racha. La línea de `MEDIA_RULES` es informativa: la regla vive en código.
-- **Las notas de voz de Meta llegan como `audio/ogg; codecs=opus` y el CRM
-  las sirve tal cual** (T6b, 14/9/2026, `docs/diagnosticos/2026-09-14-notas-de-voz.md`):
-  `api/media` solo redirige a una URL firmada, no toca el `Content-Type`.
-  Safari/WebKit —y por lo tanto TODO navegador en iOS— no reprodujo el
-  contenedor Ogg hasta la versión 18.4 (marzo 2025); `AudioContent`
-  (`message-bubble.tsx`) ya detecta el error y ofrece "Descargar" desde el
-  21/8. Deuda anotada: `EXTENSION_BY_MIME` del webhook no reconoce la clave
-  con el sufijo `; codecs=opus` y guarda esos archivos como `.bin`. Falta
-  saber desde qué equipo y navegador trabajan los asesores antes de
-  decidir transcodificar.
+- **Las notas de voz de Meta llegan como `audio/ogg; codecs=opus`, el CRM
+  las sirve tal cual, y en Chrome el fallo NO es el formato: es la URL
+  firmada de 60 s** (T6b del 14/9 y T7 del 15/9/2026;
+  `docs/diagnosticos/2026-09-14-notas-de-voz.md` y
+  `2026-09-15-notas-de-voz-chrome.md`). `api/media` solo redirige (307) a
+  una URL firmada de Supabase Storage que vive 60 s; la burbuja
+  (`AudioContent`, `message-bubble.tsx`) usa `<audio preload="metadata">`,
+  que resuelve ese redirect al montarse. Si el asesor pulsa play más de un
+  minuto después, Chrome pide los rangos a la URL vencida, Storage responde
+  400 con JSON y `<audio>` reporta el código 4, el MISMO que un códec no
+  soportado (medido en local con `curl`; `Accept-Ranges`/206 y el
+  `Content-Type` sí están bien). Los asesores usan Android o PC con
+  Chrome/Brave/Edge, así que la hipótesis Safari/Ogg del 14/9 queda
+  descartada. Desde el 15/9 la rama del código 4 ofrece Reintentar además
+  de Descargar; el TTL de `api/media` NO se tocó (decisión del operador):
+  el arreglo de fondo (TTL más largo o streaming con `Range` sin URL
+  firmada) es de v1.2. La extensión `.bin` de esas notas se cerró el 15/9
+  (`extensionForMime`, `whatsapp/media-extension.ts`, corta el parámetro
+  tras `;`).
+- **El negocio se llama SBK Motors y el nombre vive en `src/lib/brand.ts`**
+  (T2, 15/9/2026). Hasta esa fecha "SBK Motorcycles" estaba escrito a mano
+  en ~20 archivos (prompt, clasificador, herramientas, factura, título,
+  login, seis cabeceras) y uno llegaba al cliente en cada saludo;
+  `BUSINESS_NAME`/`APP_TITLE` son ahora la única fuente y ningún archivo de
+  `src/` escribe el literal salvo `brand.ts` y sus tests. La migración
+  `20260915010000` corrigió el nombre en los DATOS (categorías y entradas
+  de la biblioteca, escenarios del panel). Se conservan a propósito con el
+  nombre viejo: los identificadores de infraestructura (tag de imagen
+  `sbk-motorcycles-crm`, `REMOTE_DIR` de `deploy.sh`, `.claude/launch.json`
+  — son rutas en el VPS), las migraciones ya aplicadas, el User-Agent
+  `SbkMotorcyclesCRM/1.0` de `bcv-fetch.ts` y las citas históricas de frases
+  reales en comentarios y tests ("Soy el asistente automatizado de SBK
+  Motorcycles" fue lo que salió el 26/8: es evidencia, no marca).
 ---
 
 # RTK (Rust Token Killer) - Token-Optimized Commands
