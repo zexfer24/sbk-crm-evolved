@@ -198,3 +198,30 @@ jobs:
           psql "postgresql://postgres:postgres@127.0.0.1:54322/postgres" \
             -v ON_ERROR_STOP=1 \
             -f supabase/tests/preview_en_espanol.sql
+
+      # T1, corrida "La voz cercana y la espera visible" (14/9/2026): los
+      # cinco valores de intención (agent_turns.intent/conversations.intent,
+      # sumando fuera_de_tema) y la razón cortesia_tras_escalada de
+      # conversation_handoffs quedan admitidos en la base. Este test existía
+      # desde el 14/9 pero no estaba cableado en este job -- se detectó al
+      # preparar la Tarea 1 de "La voz de mostrador con nombre propio"
+      # (15/9/2026).
+      - name: los cinco valores de intención y la cortesía tras escalada
+        run: |
+          psql "postgresql://postgres:postgres@127.0.0.1:54322/postgres" \
+            -v ON_ERROR_STOP=1 \
+            -f supabase/tests/intenciones_y_traspasos_completos.sql
+
+      # Tarea 1, "La voz de mostrador con nombre propio y el cierre de v1.1"
+      # (15/9/2026): "SBK Motorcycles" quedó sembrado como DATO -- no solo
+      # como texto de código -- en knowledge_categories (la categoría "La
+      # tienda", 20260825020000) y podía repetirse en knowledge_entries y
+      # ai_playbooks escritos a mano desde el panel; ambas cosas le llegan al
+      # cliente verbatim. La migración reemplaza el nombre viejo por "SBK
+      # Motors" en las tres tablas, sin tocar templates (texto ya aprobado
+      # por Meta).
+      - name: la base dice SBK Motors donde decía SBK Motorcycles
+        run: |
+          psql "postgresql://postgres:postgres@127.0.0.1:54322/postgres" \
+            -v ON_ERROR_STOP=1 \
+            -f supabase/tests/marca_sbk_motors.sql
