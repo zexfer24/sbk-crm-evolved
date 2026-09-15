@@ -15,6 +15,7 @@ import { debounceSecondsFor, enqueueAgentTurns, processAfterDebounce } from "@/l
 import { recordHandoff } from "@/lib/ai/handoffs";
 import { MEDIA_BUCKET, mediaUrlFor } from "@/lib/storage";
 import { phoneNumberFromWaId } from "@/lib/whatsapp/phone";
+import { extensionForMime } from "@/lib/whatsapp/media-extension";
 import { pgrstLiteral } from "@/lib/ai/pgrst";
 import { log, errorText } from "@/lib/log";
 
@@ -274,18 +275,6 @@ function describirPedido(order: NonNullable<WebhookMessage["order"]>): string {
 
 const MEDIA_TYPES = ["image", "video", "audio", "document", "sticker"] as const;
 type MediaType = (typeof MEDIA_TYPES)[number];
-
-const EXTENSION_BY_MIME: Record<string, string> = {
-  "image/jpeg": "jpg",
-  "image/png": "png",
-  "image/webp": "webp",
-  "video/mp4": "mp4",
-  "video/3gpp": "3gp",
-  "audio/ogg": "ogg",
-  "audio/mpeg": "mp3",
-  "audio/amr": "amr",
-  "application/pdf": "pdf",
-};
 
 // ---------------------------------------------------------------------------
 // Bienvenida automática
@@ -1379,7 +1368,7 @@ export async function POST(request: Request) {
             try {
               const { url, mimeType } = await getMetaMediaUrl(mediaId, accessToken);
               const bytes = await downloadMetaMedia(url, accessToken);
-              const extension = EXTENSION_BY_MIME[mimeType] ?? "bin";
+              const extension = extensionForMime(mimeType);
               const path = `${convId}/${waMessageId}.${extension}`;
 
               const { error: uploadError } = await supabase.storage

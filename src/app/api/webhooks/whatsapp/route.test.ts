@@ -81,6 +81,10 @@ let aiCanRunError: { message: string } | null = null;
 function createFakeAdminClient() {
   const insertedMessages = new Map<string, FakeMessageRow>();
   const mediaUpdates: { id: string; mediaUrl: string }[] = [];
+  // Tarea 6 (15/9/2026): las rutas con las que se subió cada archivo, para
+  // poder comprobar la extensión real sin depender de `mediaUpdates` (esa
+  // solo confirma el UPDATE de `media_url`, no el nombre subido a Storage).
+  const uploadedPaths: string[] = [];
   let nextId = 1;
 
   // T2.1 (5/9/2026): la fila de conversación que devuelve el SELECT de
@@ -336,7 +340,10 @@ function createFakeAdminClient() {
     storage: {
       from() {
         return {
-          upload: async () => ({ error: null }),
+          upload: async (path: string) => {
+            uploadedPaths.push(path);
+            return { error: null };
+          },
           getPublicUrl: () => ({ data: { publicUrl: "https://example.com/media" } }),
         };
       },
@@ -347,6 +354,7 @@ function createFakeAdminClient() {
     client,
     insertedMessages,
     mediaUpdates,
+    uploadedPaths,
     conversationUpdates,
     handoffCalls,
     channelUpdates,
@@ -386,6 +394,7 @@ const {
   client: fakeAdminClient,
   insertedMessages,
   mediaUpdates,
+  uploadedPaths,
   conversationUpdates,
   handoffCalls,
   channelUpdates,
@@ -458,6 +467,33 @@ function webhookImageBody(waMessageId: string) {
   };
 }
 
+function webhookAudioBody(waMessageId: string) {
+  return {
+    entry: [
+      {
+        changes: [
+          {
+            field: "messages",
+            value: {
+              metadata: { phone_number_id: "1234567890" },
+              contacts: [{ profile: { name: "Cliente Demo" }, wa_id: "584120000000" }],
+              messages: [
+                {
+                  from: "584120000000",
+                  id: waMessageId,
+                  timestamp: String(Math.floor(Date.now() / 1000)),
+                  type: "audio",
+                  audio: { id: "meta-media-id-audio-1", mime_type: "audio/ogg; codecs=opus" },
+                },
+              ],
+            },
+          },
+        ],
+      },
+    ],
+  };
+}
+
 function fakeRequest(body: unknown, headers: Record<string, string> = {}): Request {
   const raw = JSON.stringify(body);
   return {
@@ -489,6 +525,10 @@ let enqueueAgentTurns: typeof import("@/lib/ai/queue").enqueueAgentTurns;
 let processAfterDebounce: typeof import("@/lib/ai/queue").processAfterDebounce;
 let DEBOUNCE_SECONDS: typeof import("@/lib/ai/queue").DEBOUNCE_SECONDS;
 let DEBOUNCE_SHORT_SECONDS: typeof import("@/lib/ai/queue").DEBOUNCE_SHORT_SECONDS;
+// Tarea 6 (15/9/2026): se necesita el mock ya creado en la fábrica de arriba
+// para poder pisarlo una vez con `mockResolvedValueOnce` en el test de la
+// nota de voz, sin afectar al resto (que dependen del default `image/jpeg`).
+let getMetaMediaUrl: typeof import("@/lib/whatsapp/meta-client").getMetaMediaUrl;
 
 // 29/8/2026: bajo inanición extrema de CPU la carga en frío del grafo
 // (cuatro fábricas con importOriginal) superó los 15 s del hookTimeout; el
@@ -498,6 +538,7 @@ beforeAll(async () => {
   ({ enqueueAgentTurns, processAfterDebounce, DEBOUNCE_SECONDS, DEBOUNCE_SHORT_SECONDS } = await import(
     "@/lib/ai/queue"
   ));
+  ({ getMetaMediaUrl } = await import("@/lib/whatsapp/meta-client"));
 }, 30_000);
 
 /** Limpieza uniforme del estado compartido a nivel de módulo, antes de cada prueba. */
@@ -833,6 +874,35 @@ describe("POST /api/webhooks/whatsapp — media asíncrona", () => {
           }),
         { timeout: 5000 }
       );
+    } finally {
+      process.env.WHATSAPP_ACCESS_TOKEN = previousToken;
+    }
+  });
+
+  // Tarea 6, "La voz de mostrador con nombre propio" (15/9/2026): Meta
+  // reporta las notas de voz con `audio/ogg; codecs=opus` (con parámetro),
+  // no `audio/ogg` a secas -- antes de `extensionForMime` (media-extension.ts)
+  // el lookup exacto nunca calzaba y toda nota de voz quedaba guardada como
+  // `.bin` en Storage.
+  it("guarda una nota de voz con extensión .ogg, no .bin", async () => {
+    const previousToken = process.env.WHATSAPP_ACCESS_TOKEN;
+    process.env.WHATSAPP_ACCESS_TOKEN = "test-token";
+    vi.mocked(getMetaMediaUrl).mockResolvedValueOnce({
+      url: "https://meta.example/audio-file",
+      mimeType: "audio/ogg; codecs=opus",
+    });
+
+    try {
+      const waMessageId = "wamid.media-async-audio-1";
+
+      const response = await POST(fakeRequest(webhookAudioBody(waMessageId)));
+      expect(response.status).toBe(200);
+
+      // La descarga corre en el after() mockeado (inline), igual que en el
+      // test de la foto de arriba: se espera el hecho, no un tick.
+      await vi.waitFor(() => expect(uploadedPaths).toContainEqual(expect.stringMatching(/\.ogg$/)), {
+        timeout: 5000,
+      });
     } finally {
       process.env.WHATSAPP_ACCESS_TOKEN = previousToken;
     }
