@@ -48,7 +48,11 @@ describe("MediaContent con mediaUrl nulo (falló la descarga desde WhatsApp)", (
 });
 
 describe("AudioContent", () => {
-  it("cuando el códec no es soportado (MEDIA_ERR_SRC_NOT_SUPPORTED) muestra un mensaje específico y no ofrece reintentar", () => {
+  // 15/9/2026, diagnóstico "notas de voz en Chrome/Android": el código 4
+  // (MEDIA_ERR_SRC_NOT_SUPPORTED) también sale de una URL firmada de
+  // api/media ya vencida (400 con cuerpo JSON), no solo de un códec no
+  // soportado — así que ya no se puede descartar Reintentar para este código.
+  it("código 4 ofrece reintentar Y descargar (puede ser un códec no soportado o la URL firmada vencida)", () => {
     render(<AudioContent url={AUDIO_URL} />);
     const audio = document.querySelector("audio") as HTMLAudioElement;
 
@@ -58,8 +62,15 @@ describe("AudioContent", () => {
     });
     fireEvent.error(audio);
 
-    expect(screen.getByText(/este navegador no puede reproducir este audio/i)).toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: /reintentar/i })).not.toBeInTheDocument();
+    expect(screen.getByText("No se pudo reproducir el audio.")).toBeInTheDocument();
+    const retryButton = screen.getByRole("button", { name: /reintentar/i });
+    expect(retryButton).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: /descargar/i })).toBeInTheDocument();
+
+    fireEvent.click(retryButton);
+
+    expect(screen.queryByText("No se pudo reproducir el audio.")).not.toBeInTheDocument();
+    expect(document.querySelector("audio")).toBeInTheDocument();
   });
 
   it("cuando el error es de red (code 2) muestra el mensaje genérico, ofrece reintentar y al hacer click vuelve a intentar cargar", () => {

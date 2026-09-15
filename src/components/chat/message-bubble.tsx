@@ -32,13 +32,39 @@ export function AudioContent({ url }: { url: string }) {
   const [attempt, setAttempt] = useState(0);
 
   if (failed) {
-    // Códec/contenedor no soportado por este navegador (ej. Opus/OGG en Safari):
-    // reintentar la misma url en el mismo navegador nunca va a funcionar.
+    // El código 4 (MEDIA_ERR_SRC_NOT_SUPPORTED) NO significa siempre "códec no
+    // soportado" (diagnóstico "notas de voz en Chrome/Android", 15/9/2026: los
+    // cuatro asesores usan Android o PC con Chrome/Brave/Edge, no Safari, así
+    // que la hipótesis vieja de Opus/OGG no les aplica). `api/media` redirige
+    // a una URL firmada de Supabase Storage con TTL de 60s
+    // (`SIGNED_URL_TTL_SECONDS`); `preload="metadata"` la resuelve al montar
+    // la burbuja, y si el asesor da play más de un minuto después, Chrome le
+    // pide el audio a esa URL YA VENCIDA: Storage responde 400 con un cuerpo
+    // JSON (`InvalidJWT`, medido en local contra el bucket `whatsapp-media`
+    // el 15/9/2026) en vez de bytes de audio, y el navegador reporta ese
+    // fallo con el MISMO código 4 que un contenedor no soportado — no hay
+    // forma de distinguir los dos casos desde acá. Por eso ya NO se descarta
+    // "Reintentar": si la causa fue la URL vencida, un reintento monta un
+    // `<audio>` nuevo (`key={attempt}`) que pide una URL firmada fresca a
+    // `api/media` y sí puede reproducir.
     if (errorCode === MEDIA_ERR_SRC_NOT_SUPPORTED) {
       return (
         <div className="crm-audio-error">
           <AudioLines size={14} />
-          <span>Este navegador no puede reproducir este audio.</span>
+          <span>No se pudo reproducir el audio.</span>
+          <button
+            type="button"
+            className="crm-audio-retry"
+            onClick={() => {
+              setFailed(false);
+              setErrorCode(undefined);
+              setAttempt((a) => a + 1);
+            }}
+            aria-label="Reintentar carga del audio"
+          >
+            <RefreshCw size={12} />
+            Reintentar
+          </button>
           <a
             className="crm-audio-retry"
             href={url}
