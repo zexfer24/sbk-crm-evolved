@@ -1,6 +1,7 @@
 import Link from "next/link";
 import { ArrowLeft, IdCard, MapPin, MessageCircle, Phone, ShieldCheck, Users } from "lucide-react";
 import type { Agent, CustomerDetail, Tag } from "@/lib/types";
+import { BUSINESS_NAME } from "@/lib/brand";
 import { customerLocation, customerName, formatCedula, isProfileIncomplete } from "@/lib/customers";
 import { initials } from "@/lib/dashboard";
 import { formatConversationTimestamp, formatFullDateTime } from "@/lib/format";
@@ -38,7 +39,7 @@ export function ClienteFicha({ currentAgent, detail, allTags }: ClienteFichaProp
                 <span className="dash-brand-mark" aria-hidden="true">
                   <Users size={14} />
                 </span>
-                <span className="dash-brand-name">SBK Motorcycles</span>
+                <span className="dash-brand-name">{BUSINESS_NAME}</span>
               </p>
 
               <AppTopNav active="clientes" />

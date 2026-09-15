@@ -4,6 +4,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { RefreshCw, Route, TriangleAlert } from "lucide-react";
 import type { Agent, BoardConversation, HourlyActivity, TicketTagsByContact } from "@/lib/types";
+import { BUSINESS_NAME } from "@/lib/brand";
 import { DEFAULT_BUSINESS_HOURS, type BusinessHours } from "@/lib/business-hours";
 import { createClient } from "@/lib/supabase/client";
 import {
@@ -208,7 +209,7 @@ export function DashboardView({
                 <span className="dash-brand-mark" aria-hidden="true">
                   <Route size={14} />
                 </span>
-                <span className="dash-brand-name">SBK Motorcycles</span>
+                <span className="dash-brand-name">{BUSINESS_NAME}</span>
               </p>
 
               <nav className="dash-nav" aria-label="Navegación principal">

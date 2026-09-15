@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { BUSINESS_NAME } from "@/lib/brand";
 import type { Contact } from "@/lib/types";
 import {
   buildInvoiceDraft,
@@ -61,7 +62,8 @@ describe("computeInvoiceTotals — redondeo a centavos, no a la coma flotante", 
 
 describe("INVOICE_ISSUER — sin datos fiscales inventados", () => {
   it("deja RIF, dirección, teléfono y ciudad en null hasta que el operador los defina", () => {
-    expect(INVOICE_ISSUER.name).toBe("SBK Motorcycles");
+    expect(INVOICE_ISSUER.name).toBe(BUSINESS_NAME);
+    expect(INVOICE_ISSUER.name).not.toContain("Motorcycles");
     expect(INVOICE_ISSUER.rif).toBeNull();
     expect(INVOICE_ISSUER.address).toBeNull();
     expect(INVOICE_ISSUER.phone).toBeNull();

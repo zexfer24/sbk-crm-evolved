@@ -1,6 +1,7 @@
 import Link from "next/link";
 import { IdCard, MapPin, MessageCircle, Users } from "lucide-react";
 import type { Agent, CustomerSummary } from "@/lib/types";
+import { BUSINESS_NAME } from "@/lib/brand";
 import {
   CUSTOMER_FILTER_LABELS,
   CUSTOMER_SORT_LABELS,
@@ -96,7 +97,7 @@ export function ClientesView({ currentAgent, customers, total, params }: Cliente
                 <span className="dash-brand-mark" aria-hidden="true">
                   <Users size={14} />
                 </span>
-                <span className="dash-brand-name">SBK Motorcycles</span>
+                <span className="dash-brand-name">{BUSINESS_NAME}</span>
               </p>
 
               <AppTopNav active="clientes" />

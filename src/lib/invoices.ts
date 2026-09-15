@@ -1,3 +1,4 @@
+import { BUSINESS_NAME } from "@/lib/brand";
 import type { Contact, InvoiceCustomerSnapshot, InvoiceItem, InvoiceStatus } from "@/lib/types";
 
 // ---------------------------------------------------------------------------
@@ -27,7 +28,7 @@ export const INVOICE_ISSUER: {
   phone: string | null;
   city: string | null;
 } = {
-  name: "SBK Motorcycles",
+  name: BUSINESS_NAME,
   rif: null,
   address: null,
   phone: null,

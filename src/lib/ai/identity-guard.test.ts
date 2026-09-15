@@ -23,6 +23,12 @@ const FRASES_AUTOMATIZACION = [
   "soy un asistente virtual",
   "no soy una persona",
   "Soy ChatGPT",
+  // 15/9/2026 (Tarea 2, "La voz de mostrador con nombre propio"): "agente
+  // virtual/automatizado/de IA/conversacional" describe al programa, igual
+  // que "asistente automatizado" — ver identity-guard.ts.
+  "soy un agente virtual",
+  "somos un agente automatizado que te escribe",
+  "como agente de IA",
 ];
 
 // Frases que deben calzar como afirmación de ser una persona.
@@ -55,6 +61,10 @@ const NEGATIVOS = [
   "¿Tienes la guía?",
   "Acá en SBK lo tenemos, te lo confirmamos con un asesor.",
   "Escribimos desde SBK Motorcycles.",
+  // 15/9/2026 (Tarea 2): "agente" SUELTO no se bloquea — los asesores
+  // humanos son `agents` en el resto del sistema.
+  "un agente de ventas te escribe por acá",
+  "tu agente asignado",
 ];
 
 describe("revealsIdentity — positivos de automatizacion", () => {

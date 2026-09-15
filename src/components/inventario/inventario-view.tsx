@@ -1,6 +1,7 @@
 import Link from "next/link";
 import { Package } from "lucide-react";
 import type { Agent, MotoCatalogSummary, Product } from "@/lib/types";
+import { BUSINESS_NAME } from "@/lib/brand";
 import {
   INVENTORY_FILTER_LABELS,
   INVENTORY_PAGE_SIZE,
@@ -127,7 +128,7 @@ export function InventarioView({
                 <span className="dash-brand-mark" aria-hidden="true">
                   <Package size={14} />
                 </span>
-                <span className="dash-brand-name">SBK Motorcycles</span>
+                <span className="dash-brand-name">{BUSINESS_NAME}</span>
               </p>
 
               <AppTopNav active="inventario" />

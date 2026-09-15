@@ -1,5 +1,5 @@
 # =============================================================================
-# Imagen de producción de SBK Motorcycles CRM.
+# Imagen de producción de SBK Motors CRM.
 #
 #   docker build -t sbk-motorcycles-crm .
 #   docker run -p 3000:3000 --env-file .env.production sbk-motorcycles-crm

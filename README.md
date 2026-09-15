@@ -1,4 +1,4 @@
-# SBK Motorcycles CRM
+# SBK Motors CRM
 
 CRM multiagente para ventas por WhatsApp con automatización de IA. Bandeja de
 entrada compartida, control de la ventana de 24h de WhatsApp, plantillas de

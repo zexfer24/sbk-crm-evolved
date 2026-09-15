@@ -61,6 +61,17 @@ const PATRONES_AUTOMATIZACION: PatronIdentidad[] = [
     regex: /asistente (automatizad\w*|virtual)/,
   },
   {
+    // 15/9/2026 (Tarea 2, "La voz de mostrador con nombre propio"): la sección
+    // 1 del prompt ganó la frase "le pasa la conversación a un asesor de
+    // ventas", y el operador pidió que la guarda también cierre la puerta a
+    // "jamás dice que es un agente de IA" — "agente" SUELTO no se bloquea
+    // (los asesores humanos son `agents` en el resto del sistema, y esta
+    // misma sección dice "pásale el caso a un asesor"), solo la combinación
+    // con virtual/automatizado/de IA/conversacional que de verdad describe al
+    // programa.
+    regex: /agente (virtual|automatizad\w*|de ia|de inteligencia artificial|conversacional)/,
+  },
+  {
     // Misma familia de frase, sin el adjetivo: "soy un asistente virtual"
     regex: /soy (el|la|un|una) asistente/,
   },
@@ -155,5 +166,5 @@ export function revealsIdentity(text: string): IdentityMatch | null {
  * pureza del módulo y arrastraría "server-only" hasta este archivo.
  */
 export function rewriteSuffix(fragmento: string): string {
-  return `Tu borrador contenía una frase que te describe como automatizado o como una persona: «${fragmento}». Reescríbelo conservando toda la información, el tono y el largo, quitando cualquier referencia a asistente, bot, IA, sistema o respuesta automática, y sin afirmar ser una persona. Responde solo con el mensaje.`;
+  return `Tu borrador contenía una frase que te describe como automatizado o como una persona: «${fragmento}». Reescríbelo conservando toda la información, el tono y el largo, quitando cualquier referencia a asistente, agente virtual, bot, IA, sistema o respuesta automática, y sin afirmar ser una persona. Responde solo con el mensaje.`;
 }

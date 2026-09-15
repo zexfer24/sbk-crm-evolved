@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { BUSINESS_NAME } from "@/lib/brand";
 import { INTENT_VALUES } from "@/lib/ai/classify";
 import {
   MEDIA_RULES,
@@ -286,23 +287,64 @@ describe("identidad: ni IA ni persona", () => {
   it("el saludo dice de dónde escribe, no qué es", () => {
     const conSaludo = buildInstructions({ ...TURN, needsGreeting: true }).slice(SYSTEM_PROMPT.length);
 
-    expect(conSaludo).toMatch(/le escribes de SBK Motorcycles/);
+    expect(conSaludo).toMatch(new RegExp(`le escribes de ${BUSINESS_NAME}`));
     expect(conSaludo).not.toMatch(/preséntate/);
   });
 
   /**
    * Tarea 2 (14/9/2026): el sufijo `needsGreeting` es el texto nuevo del
-   * primer saludo — nombra SBK Motorcycles y tiene que pasar la misma guarda
+   * primer saludo — nombra el negocio y tiene que pasar la misma guarda
    * que MEDIA_RULES y SALES_ACCEPTANCE_RULES, aunque no esté exportado
    * aparte (es corto, y vive en el sufijo, no en el prefijo cacheado).
    */
-  it("el sufijo del primer saludo nombra SBK Motorcycles y pasa la guarda de identidad", () => {
+  it("el sufijo del primer saludo nombra el negocio y pasa la guarda de identidad", () => {
     const conSaludo = buildInstructions({ ...TURN, needsGreeting: true }).slice(SYSTEM_PROMPT.length);
     const sinSaludo = buildInstructions({ ...TURN, needsGreeting: false }).slice(SYSTEM_PROMPT.length);
 
-    expect(conSaludo).toMatch(/SBK Motorcycles/);
+    expect(conSaludo).toContain(BUSINESS_NAME);
     expect(revealsIdentity(conSaludo)).toBeNull();
     expect(revealsIdentity(sinSaludo)).toBeNull();
+  });
+});
+
+/**
+ * Tarea 2 (15/9/2026, "La voz de mostrador con nombre propio"): el nombre del
+ * negocio dejó de estar escrito a mano en "Motorcycles" y pasó a vivir en
+ * `BUSINESS_NAME` (`brand.ts`), y la sección 1 ganó la identidad que pidió el
+ * operador — alguien amable que orienta, cotiza y pasa lo específico a un
+ * asesor de ventas. Estos tests son la mutación 1 de la tarea (`BUSINESS_NAME`
+ * roto los pondría rojos) y el control de que el texto nuevo pasa la guarda
+ * de identidad.
+ */
+describe("Tarea 2 — nombre único y sección 1 nueva (15/9/2026)", () => {
+  it("SYSTEM_PROMPT ya no dice Motorcycles en ningún lado", () => {
+    expect(SYSTEM_PROMPT).not.toContain("Motorcycles");
+  });
+
+  it("nombra la identidad que pidió el operador", () => {
+    expect(SYSTEM_PROMPT).toContain("sumamente amable");
+    expect(SYSTEM_PROMPT).toContain("asesor de ventas");
+    expect(SYSTEM_PROMPT).toContain("orientar y cotizar");
+  });
+
+  it("la sección 1, sin la línea de prohibición, pasa la guarda de identidad", () => {
+    const seccion1 = SYSTEM_PROMPT.slice(
+      SYSTEM_PROMPT.indexOf("1. QUIÉN ERES"),
+      SYSTEM_PROMPT.indexOf("2. LO QUE NUNCA HACES")
+    )
+      .split(/\r?\n/)
+      .filter((linea) => !linea.startsWith("Nunca te describas como"))
+      .join("\n");
+
+    expect(revealsIdentity(seccion1)).toBeNull();
+  });
+
+  it("la línea de prohibición nombra también 'agente virtual'", () => {
+    const lineaProhibicion = SYSTEM_PROMPT.split(/\r?\n/).find((linea) =>
+      linea.startsWith("Nunca te describas como")
+    );
+
+    expect(lineaProhibicion).toMatch(/agente virtual/i);
   });
 });
 

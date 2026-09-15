@@ -1,6 +1,7 @@
 import "server-only";
 import { generateObject, type LanguageModelUsage, type ModelMessage } from "ai";
 import { getClassifierModel } from "@/lib/ai/model";
+import { BUSINESS_NAME } from "@/lib/brand";
 
 // ---------------------------------------------------------------------------
 // Fase 1 del turno: clasificación obligatoria, barata y rápida — separada del
@@ -29,7 +30,7 @@ export type Intent = (typeof INTENT_VALUES)[number];
 // fuera_de_tema (nunca en una categoría nueva: agregar un valor a INTENT_VALUES
 // exige tocar CASE_SECTION en prompt.ts y el CHECK de la migración T1) y la
 // regla "ante la duda, otro" se mantiene intacta.
-const CLASSIFY_PROMPT = `Clasifica la intención del cliente en esta conversación de WhatsApp con SBK Motorcycles, una repuestera de motos en Venezuela, según el ÚLTIMO mensaje del cliente y el contexto previo.
+const CLASSIFY_PROMPT = `Clasifica la intención del cliente en esta conversación de WhatsApp con ${BUSINESS_NAME}, una repuestera de motos en Venezuela, según el ÚLTIMO mensaje del cliente y el contexto previo.
 
 Categorías:
 - consulta_disponibilidad: pregunta por un repuesto — existencia, precio, compatibilidad con su moto.

@@ -3,6 +3,7 @@ import { tool } from "ai";
 import { z } from "zod";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import type { Database } from "@/lib/supabase/database.types";
+import { BUSINESS_NAME } from "@/lib/brand";
 import { searchTerms } from "@/lib/ai/catalog-search";
 import { clipContent, rankKnowledge } from "@/lib/ai/knowledge-search";
 import { errorText, log } from "@/lib/log";
@@ -47,7 +48,7 @@ export function buildKnowledgeTool({
 }) {
   return tool({
     description:
-      "Busca en la biblioteca de conocimiento de SBK Motorcycles: la información oficial que cargó el equipo sobre envíos, formas de pago, garantías, horarios y cualquier otro tema de la tienda que no sea el catálogo de repuestos. Si no devuelve nada, esa información no está cargada — no te la inventes.",
+      `Busca en la biblioteca de conocimiento de ${BUSINESS_NAME}: la información oficial que cargó el equipo sobre envíos, formas de pago, garantías, horarios y cualquier otro tema de la tienda que no sea el catálogo de repuestos. Si no devuelve nada, esa información no está cargada — no te la inventes.`,
     inputSchema: z.object({
       tema: z
         .string()

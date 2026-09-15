@@ -2,6 +2,7 @@ import type { Metadata, Viewport } from "next";
 import { Familjen_Grotesk, Geist, Geist_Mono } from "next/font/google";
 import { Toast } from "@heroui/react";
 import "./globals.css";
+import { APP_TITLE } from "@/lib/brand";
 import { THEME_BOOT_SCRIPT } from "@/lib/use-theme";
 
 const geistSans = Geist({
@@ -24,7 +25,7 @@ const familjenGrotesk = Familjen_Grotesk({
 });
 
 export const metadata: Metadata = {
-  title: "SBK Motorcycles CRM",
+  title: APP_TITLE,
   description: "CRM multiagente para ventas por WhatsApp con automatización de IA",
 };
 

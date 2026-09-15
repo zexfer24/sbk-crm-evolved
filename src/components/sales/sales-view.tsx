@@ -5,6 +5,7 @@ import { format } from "date-fns";
 import { es } from "date-fns/locale";
 import { CheckCheck, ChevronLeft, ChevronRight, Eye, Receipt, RotateCcw, ShieldCheck, Trash2 } from "lucide-react";
 import type { Agent, Invoice, Sale } from "@/lib/types";
+import { BUSINESS_NAME } from "@/lib/brand";
 import { PAYMENT_METHOD_LABELS } from "@/lib/types";
 import { createClient } from "@/lib/supabase/client";
 import { createInvoiceForSale, deleteSale, issueInvoice, returnSale, verifySale, voidInvoice } from "@/lib/mutations";
@@ -201,7 +202,7 @@ export function SalesView({ currentAgent, initialSales, bcvRate }: SalesViewProp
                 <span className="dash-brand-mark" aria-hidden="true">
                   <Receipt size={14} />
                 </span>
-                <span className="dash-brand-name">SBK Motorcycles</span>
+                <span className="dash-brand-name">{BUSINESS_NAME}</span>
               </p>
 
               <AppTopNav active="ventas" />

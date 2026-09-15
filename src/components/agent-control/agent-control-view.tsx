@@ -4,6 +4,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { Button, Modal, toast } from "@heroui/react";
 import { BookOpen, Bot, ShieldAlert, Users, Wrench, Zap } from "lucide-react";
 import type { BacklogCounts } from "@/lib/data";
+import { BUSINESS_NAME } from "@/lib/brand";
 import type {
   Agent,
   AgentIntent,
@@ -543,7 +544,7 @@ export function AgentControlView({
                 <span className="dash-brand-mark" aria-hidden="true">
                   <Bot size={14} />
                 </span>
-                <span className="dash-brand-name">SBK Motorcycles</span>
+                <span className="dash-brand-name">{BUSINESS_NAME}</span>
               </p>
 
               <AppTopNav active="control" />
