@@ -214,6 +214,48 @@ export async function recordHandoffAdmin(input: HandoffInput): Promise<boolean> 
 }
 
 /**
+ * Razones que NO cierran una escalada abierta porque ninguna cambia a quién
+ * pertenece la conversación — se escriben SOBRE el mismo dueño que dejó la
+ * `escalada`/`escalada_sin_asesor`, no le entregan la conversación a nadie
+ * nuevo. Tarea 5 ("La voz cercana y la espera visible", 14/9/2026): hueco
+ * medido en local el 14/9 y anotado en CLAUDE.md — `escalationOpen` miraba
+ * SOLO la última fila, y si el cliente volvía a escribir mientras seguía
+ * asignado, `openTurn` grababa `asignada` encima de la `escalada`; la guarda
+ * de cortesía dejaba de disparar y la IA volvía a despedirse dos veces.
+ *
+ * Una por una, por qué se escribe sin que la escalada cambie de manos:
+ *   - `asignada`: la escribe `openTurn` en CADA mensaje del cliente a un chat
+ *     que YA tiene asesor asignado (agent.ts:~1761) — reafirma un dueño que
+ *     ya existía, no asigna uno nuevo.
+ *   - `pausada`: la escribe `openTurn` cuando la IA está apagada en ESTE chat
+ *     y no hay asesor (agent.ts:~1770) — la conversación sigue sin dueño
+ *     nuevo, solo callada.
+ *   - `agente_no_puede_correr`: la escribe `openTurn`/`deliver()` cuando el
+ *     interruptor global o el tope de gasto lo impiden — tampoco mueve el
+ *     dueño.
+ *   - `cortesia_tras_escalada`: la escribe ESTA MISMA guarda (`runTurnPhases`
+ *     en agent.ts) cuando ya decidió que la escalada sigue abierta — un
+ *     segundo "gracias" no puede volver a cerrar lo que la primera fila de
+ *     cortesía ya dejó abierto.
+ *   - `humano_intervino`/`humano_se_adelanto`: las decide la consulta de
+ *     `messages` de más abajo (paso 2), no la de `conversation_handoffs` —
+ *     dejarlas fuera de esta lista sería redundante con esa consulta, pero
+ *     incluirlas documenta que tampoco cierran por sí solas si por algún
+ *     camino quedaran como última fila.
+ *
+ * Ver la migración 20260830040000_conversation_handoffs.sql (el CHECK de
+ * `reason`) y CLAUDE.md.
+ */
+const RAZONES_QUE_NO_CIERRAN_LA_ESCALADA: HandoffReason[] = [
+  "asignada",
+  "pausada",
+  "agente_no_puede_correr",
+  "cortesia_tras_escalada",
+  "humano_intervino",
+  "humano_se_adelanto",
+];
+
+/**
  * ¿Sigue abierta la última escalada de esta conversación? Tarea 4, "La voz
  * cercana y la espera visible" (14/9/2026): se pregunta ANTES de dejarle
  * hablar a la IA sobre un mensaje que es puro agradecimiento/cortesía — si
@@ -222,12 +264,18 @@ export async function recordHandoffAdmin(input: HandoffInput): Promise<boolean> 
  * agent.ts, guarda de cortesía).
  *
  * `true` solo si SE CUMPLEN LAS DOS COSAS:
- *   1. La ÚLTIMA fila de `conversation_handoffs` de esta conversación
- *      (cualquiera sea su `reason`) es una escalada — `escalada` (con
- *      asesor) o `escalada_sin_asesor` (sin ninguno libre). Si la última fila
- *      es cualquier otra cosa —la conversación se cerró, se reabrió, un
- *      asesor la reclamó a mano— la escalada ya no es "lo último que pasó" y
- *      esto devuelve `false`.
+ *   1. La ÚLTIMA fila de `conversation_handoffs` de esta conversación QUE
+ *      CAMBIA DE MANOS (Tarea 5, 14/9/2026: se excluyen con `.not("reason",
+ *      "in", …)` las razones de `RAZONES_QUE_NO_CIERRAN_LA_ESCALADA`, arriba
+ *      — `asignada`/`pausada`/`agente_no_puede_correr`/
+ *      `cortesia_tras_escalada`/`humano_intervino`/`humano_se_adelanto`) es
+ *      una escalada — `escalada` (con asesor) o `escalada_sin_asesor` (sin
+ *      ninguno libre). Si esa fila es cualquier otra cosa —la conversación
+ *      se cerró, se reabrió, un asesor la reclamó a mano— la escalada ya no
+ *      es "lo último que pasó de verdad" y esto devuelve `false`. Una razón
+ *      DESCONOCIDA futura (fuera del CHECK de hoy) no está en la lista de
+ *      exclusión, así que cuenta como cierre: el mismo sesgo hacia responder
+ *      que ya tiene el resto de la función.
  *   2. Ningún `messages` con `sender_type = 'agent'` (un asesor humano,
  *      nunca `'ai'`) quedó con `created_at` posterior a esa fila: si un
  *      asesor ya escribió, la conversación pasó a ser SUYA y la IA no tiene
@@ -244,10 +292,17 @@ export async function escalationOpen(
   conversationId: string
 ): Promise<boolean> {
   try {
+    // `.not("reason", "in", "(a,b,c)")` es la forma que usa supabase-js para
+    // el operador PostgREST `not.in`: la lista va entre paréntesis y SIN
+    // comillas por valor (precedente ya en el repo: `customers-data.ts`,
+    // `.not("id", "in", \`(${buyers.join(",")})\`)`); los valores de
+    // `HandoffReason` son identificadores simples (sin comas ni paréntesis),
+    // así que un `join(",")` alcanza sin escapar nada.
     const { data: ultimoTraspaso, error: traspasoError } = await supabase
       .from("conversation_handoffs")
       .select("reason, created_at")
       .eq("conversation_id", conversationId)
+      .not("reason", "in", `(${RAZONES_QUE_NO_CIERRAN_LA_ESCALADA.join(",")})`)
       .order("created_at", { ascending: false })
       .limit(1)
       .maybeSingle();

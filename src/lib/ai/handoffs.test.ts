@@ -536,13 +536,24 @@ describe("runAgentTurn — la regla inviolable: registrar el traspaso nunca pued
 });
 
 // ---------------------------------------------------------------------------
-// escalationOpen — Tarea 4, "La voz cercana y la espera visible" (14/9/2026).
+// escalationOpen — Tarea 4, "La voz cercana y la espera visible" (14/9/2026);
+// Tarea 5 (14/9/2026) le agrega el `.not("reason", "in", …)` que hace que la
+// función mire la última fila QUE CAMBIA DE MANOS, no la última a secas.
 //
 // Fake acotado, distinto del `createFakeSupabase` de arriba (ese arma un
-// turno completo; esto es una función pura sobre dos consultas): imita solo
-// las dos cadenas que `escalationOpen` de verdad encadena —
-// `.from("conversation_handoffs").select().eq().order().limit().maybeSingle()`
+// turno completo; esto es una función pura sobre dos consultas): imita las
+// dos cadenas que `escalationOpen` de verdad encadena —
+// `.from("conversation_handoffs").select().eq().not().order().limit().maybeSingle()`
 // y `.from("messages").select().eq().eq().gt().limit()`.
+//
+// A diferencia de la versión de la Tarea 4 (que recibía `ultimoTraspaso` YA
+// resuelto), este fake recibe `filas` -- todas las filas de
+// `conversation_handoffs` de la conversación, en el orden en que se
+// escribieron -- y aplica GENÉRICAMENTE `.not(col, "in", "(a,b)")` más
+// `.order(desc).limit(1)` sobre ellas: así el test ejercita el filtro real
+// (la constante `RAZONES_QUE_NO_CIERRAN_LA_ESCALADA` de handoffs.ts), no una
+// copia a mano de "qué debería quedar", que no habría detectado un error de
+// ortografía en la lista de exclusión.
 // ---------------------------------------------------------------------------
 
 interface HandoffRow {
@@ -551,30 +562,45 @@ interface HandoffRow {
 }
 
 function fakeSupabaseParaEscalationOpen(opts: {
-  ultimoTraspaso?: HandoffRow | null;
+  filas?: HandoffRow[];
   traspasoError?: { message: string } | null;
   mensajesDeAsesor?: { id: string }[];
   mensajesError?: { message: string } | null;
 }) {
-  const { ultimoTraspaso = null, traspasoError = null, mensajesDeAsesor = [], mensajesError = null } = opts;
+  const { filas = [], traspasoError = null, mensajesDeAsesor = [], mensajesError = null } = opts;
 
   return {
     from(table: string) {
       if (table === "conversation_handoffs") {
-        return {
-          select: () => ({
-            eq: () => ({
-              order: () => ({
-                limit: () => ({
-                  maybeSingle: async () => ({
-                    data: traspasoError ? null : ultimoTraspaso,
-                    error: traspasoError,
-                  }),
-                }),
-              }),
-            }),
+        // Mini PostgREST de ~20 líneas: todas las `filas` son de la misma
+        // conversación en este fake, así que `.eq("conversation_id", …)` no
+        // filtra nada de verdad -- lo que se prueba es `.not()` + `.order()`
+        // + `.limit(1)`, que sí son la lógica bajo prueba.
+        let rows = filas.map((fila) => ({ ...fila }));
+        const builder = {
+          select: () => builder,
+          eq: () => builder,
+          not: (col: keyof HandoffRow, op: string, val: string) => {
+            if (op !== "in") throw new Error(`Fake: operador .not no soportado: ${op}`);
+            const excluidas = val.slice(1, -1).split(",");
+            rows = rows.filter((row) => !excluidas.includes(String(row[col])));
+            return builder;
+          },
+          order: (col: keyof HandoffRow, { ascending }: { ascending: boolean }) => {
+            rows = [...rows].sort((a, b) => {
+              if (a[col] === b[col]) return 0;
+              const mayorEsA = a[col] > b[col];
+              return ascending === mayorEsA ? 1 : -1;
+            });
+            return builder;
+          },
+          limit: () => builder,
+          maybeSingle: async () => ({
+            data: traspasoError ? null : (rows[0] ?? null),
+            error: traspasoError,
           }),
         };
+        return builder;
       }
 
       if (table === "messages") {
@@ -602,7 +628,7 @@ function fakeSupabaseParaEscalationOpen(opts: {
 describe("escalationOpen", () => {
   it("true: el último traspaso es 'escalada' y ningún asesor escribió después", async () => {
     const supabase = fakeSupabaseParaEscalationOpen({
-      ultimoTraspaso: { reason: "escalada", created_at: "2026-09-14T10:00:00.000Z" },
+      filas: [{ reason: "escalada", created_at: "2026-09-14T10:00:00.000Z" }],
       mensajesDeAsesor: [],
     });
 
@@ -611,7 +637,7 @@ describe("escalationOpen", () => {
 
   it("true: el último traspaso es 'escalada_sin_asesor' y ningún asesor escribió después", async () => {
     const supabase = fakeSupabaseParaEscalationOpen({
-      ultimoTraspaso: { reason: "escalada_sin_asesor", created_at: "2026-09-14T10:00:00.000Z" },
+      filas: [{ reason: "escalada_sin_asesor", created_at: "2026-09-14T10:00:00.000Z" }],
       mensajesDeAsesor: [],
     });
 
@@ -620,7 +646,7 @@ describe("escalationOpen", () => {
 
   it("false: un asesor (sender_type = 'agent') ya escribió después de la escalada", async () => {
     const supabase = fakeSupabaseParaEscalationOpen({
-      ultimoTraspaso: { reason: "escalada", created_at: "2026-09-14T10:00:00.000Z" },
+      filas: [{ reason: "escalada", created_at: "2026-09-14T10:00:00.000Z" }],
       mensajesDeAsesor: [{ id: "msg-1" }],
     });
 
@@ -629,14 +655,14 @@ describe("escalationOpen", () => {
 
   it("false: el último traspaso no es una escalada (p. ej. la conversación se reabrió después)", async () => {
     const supabase = fakeSupabaseParaEscalationOpen({
-      ultimoTraspaso: { reason: "reabierta_por_cliente", created_at: "2026-09-14T11:00:00.000Z" },
+      filas: [{ reason: "reabierta_por_cliente", created_at: "2026-09-14T11:00:00.000Z" }],
     });
 
     expect(await escalationOpen(supabase, "conv-1")).toBe(false);
   });
 
   it("false: la conversación no tiene ningún traspaso todavía", async () => {
-    const supabase = fakeSupabaseParaEscalationOpen({ ultimoTraspaso: null });
+    const supabase = fakeSupabaseParaEscalationOpen({ filas: [] });
 
     expect(await escalationOpen(supabase, "conv-1")).toBe(false);
   });
@@ -644,7 +670,7 @@ describe("escalationOpen", () => {
   it("falla cerrado: un error al consultar conversation_handoffs devuelve false, no lanza", async () => {
     const error = vi.spyOn(log, "error");
     const supabase = fakeSupabaseParaEscalationOpen({
-      ultimoTraspaso: null,
+      filas: [],
       traspasoError: { message: "conexión perdida" },
     });
 
@@ -658,7 +684,7 @@ describe("escalationOpen", () => {
   it("falla cerrado: un error al consultar messages devuelve false, no lanza", async () => {
     const error = vi.spyOn(log, "error");
     const supabase = fakeSupabaseParaEscalationOpen({
-      ultimoTraspaso: { reason: "escalada", created_at: "2026-09-14T10:00:00.000Z" },
+      filas: [{ reason: "escalada", created_at: "2026-09-14T10:00:00.000Z" }],
       mensajesError: { message: "timeout" },
     });
 
@@ -667,5 +693,83 @@ describe("escalationOpen", () => {
       conversationId: "conv-1",
       detail: "timeout",
     });
+  });
+
+  // -------------------------------------------------------------------------
+  // Tarea 5 (14/9/2026): la última fila QUE CAMBIA DE MANOS, no la última a
+  // secas. Cada caso tiene una fila de escalada seguida de una o más filas
+  // que `RAZONES_QUE_NO_CIERRAN_LA_ESCALADA` (handoffs.ts) excluye.
+  // -------------------------------------------------------------------------
+
+  it("true: 'escalada' seguida de dos 'asignada' (mensajes del cliente a un chat ya asignado)", async () => {
+    const supabase = fakeSupabaseParaEscalationOpen({
+      filas: [
+        { reason: "escalada", created_at: "2026-09-14T10:00:00.000Z" },
+        { reason: "asignada", created_at: "2026-09-14T10:05:00.000Z" },
+        { reason: "asignada", created_at: "2026-09-14T10:10:00.000Z" },
+      ],
+      mensajesDeAsesor: [],
+    });
+
+    expect(await escalationOpen(supabase, "conv-1")).toBe(true);
+  });
+
+  it("true: 'escalada' seguida de 'cortesia_tras_escalada' (un segundo agradecimiento)", async () => {
+    const supabase = fakeSupabaseParaEscalationOpen({
+      filas: [
+        { reason: "escalada", created_at: "2026-09-14T10:00:00.000Z" },
+        { reason: "cortesia_tras_escalada", created_at: "2026-09-14T10:05:00.000Z" },
+      ],
+      mensajesDeAsesor: [],
+    });
+
+    expect(await escalationOpen(supabase, "conv-1")).toBe(true);
+  });
+
+  it("true: 'escalada_sin_asesor' seguida de dos 'pausada'", async () => {
+    const supabase = fakeSupabaseParaEscalationOpen({
+      filas: [
+        { reason: "escalada_sin_asesor", created_at: "2026-09-14T10:00:00.000Z" },
+        { reason: "pausada", created_at: "2026-09-14T10:05:00.000Z" },
+        { reason: "pausada", created_at: "2026-09-14T10:10:00.000Z" },
+      ],
+      mensajesDeAsesor: [],
+    });
+
+    expect(await escalationOpen(supabase, "conv-1")).toBe(true);
+  });
+
+  it("false: 'escalada' seguida de 'cerrada_por_asesor' (SÍ cambia de manos)", async () => {
+    const supabase = fakeSupabaseParaEscalationOpen({
+      filas: [
+        { reason: "escalada", created_at: "2026-09-14T10:00:00.000Z" },
+        { reason: "cerrada_por_asesor", created_at: "2026-09-14T10:05:00.000Z" },
+      ],
+    });
+
+    expect(await escalationOpen(supabase, "conv-1")).toBe(false);
+  });
+
+  it("false: 'escalada' seguida de 'reabierta_por_cliente' (SÍ cambia de manos)", async () => {
+    const supabase = fakeSupabaseParaEscalationOpen({
+      filas: [
+        { reason: "escalada", created_at: "2026-09-14T10:00:00.000Z" },
+        { reason: "reabierta_por_cliente", created_at: "2026-09-14T10:05:00.000Z" },
+      ],
+    });
+
+    expect(await escalationOpen(supabase, "conv-1")).toBe(false);
+  });
+
+  it("false: 'escalada' seguida de 'asignada', pero un asesor escribió después de la escalada", async () => {
+    const supabase = fakeSupabaseParaEscalationOpen({
+      filas: [
+        { reason: "escalada", created_at: "2026-09-14T10:00:00.000Z" },
+        { reason: "asignada", created_at: "2026-09-14T10:05:00.000Z" },
+      ],
+      mensajesDeAsesor: [{ id: "msg-1" }],
+    });
+
+    expect(await escalationOpen(supabase, "conv-1")).toBe(false);
   });
 });

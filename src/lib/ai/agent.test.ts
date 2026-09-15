@@ -311,15 +311,23 @@ function createFakeSupabase() {
 
       // Tarea 4 (14/9/2026): `escalationOpen` (handoffs.ts) — la guarda de
       // cortesía tras una escalada abierta la consulta ANTES de fase 0.
+      // Tarea 5 (14/9/2026): la consulta real sumó un `.not("reason", "in",
+      // …)` entre `.eq()` y `.order()` (excluye las razones que no cambian
+      // de dueño). Este fake ya trae `state.lastHandoffRow` RESUELTO -- no
+      // filtra una lista, es `agent.test.ts` el que arma el escenario -- así
+      // que `.not()` es un passthrough: el filtro de verdad, sobre filas
+      // crudas, lo ejercita `handoffs.test.ts` (mini PostgREST genérico).
       if (table === "conversation_handoffs") {
         return {
           select: () => ({
             eq: () => ({
-              order: () => ({
-                limit: () => ({
-                  maybeSingle: async () => ({
-                    data: state.lastHandoffError ? null : state.lastHandoffRow,
-                    error: state.lastHandoffError,
+              not: () => ({
+                order: () => ({
+                  limit: () => ({
+                    maybeSingle: async () => ({
+                      data: state.lastHandoffError ? null : state.lastHandoffRow,
+                      error: state.lastHandoffError,
+                    }),
                   }),
                 }),
               }),

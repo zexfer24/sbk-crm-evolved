@@ -1186,6 +1186,16 @@ async function runTurnPhases(
   // por eso la fila de traspaso lleva el MISMO dueño que ya tenía la
   // conversación (el asesor asignado, o `unassigned` si no lo hay):
   // `awaiting_reply` no se toca, el cliente sigue esperando a la persona.
+  //
+  // Tarea 5 (15/9/2026): el hueco que dejaba esto anotado como deuda en
+  // CLAUDE.md quedó cerrado — `escalationOpen` ya no mira SOLO la última
+  // fila de `conversation_handoffs`, sino la última que CAMBIA DE MANOS
+  // (`RAZONES_QUE_NO_CIERRAN_LA_ESCALADA` en handoffs.ts). Antes, un
+  // `asignada` que `openTurn` graba en cada mensaje del cliente a un chat ya
+  // asignado —o una segunda `pausada`, o una segunda `cortesia_tras_escalada`
+  // de esta misma guarda— tapaba la `escalada` y esta guarda dejaba de
+  // disparar: la IA volvía a despedirse en cada mensaje de cortesía
+  // posterior al primero.
   if (customerMessage && isCourtesyOnly(customerMessage) && (await escalationOpen(supabase, conversationId))) {
     await recordHandoff(supabase, {
       conversationId,
