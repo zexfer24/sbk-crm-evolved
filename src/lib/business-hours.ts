@@ -280,9 +280,18 @@ function fechaLarga(now: Date, timeZone: string): string {
  * un "¡Buenas!" solo en el primer mensaje, decidido por `needsGreeting` en
  * `prompt.ts`, no por la hora), así que esta línea deja de necesitar la
  * franja — la tienda sigue necesitando saber si está abierta para vender
- * fuera de horario, y eso se queda. `dayBand`/`greetingFor` no se tocan:
- * los sigue usando `playbooks.ts` (`buildPrompt`, fase 0) para los
- * disparadores horarios de los escenarios del panel.
+ * fuera de horario, y eso se queda.
+ *
+ * El 15/9/2026 (Tarea 3, "La voz de mostrador con nombre propio") el
+ * operador pidió recuperar "buenos días/tardes/noches" — pero SOLO en el
+ * sufijo del primer mensaje, no acá: `greetingFor` volvió a tener un
+ * llamador (`buildInstructions`, `prompt.ts`), calculado una única vez por
+ * conversación con `dayBand(instante)`. Esta línea sigue sin franja a
+ * propósito, para no reabrir el bug del 14/9 (saludar por hora en cada
+ * turno); su test ("nunca trae la palabra saluda ni un saludo de franja")
+ * sigue vigente. `dayBand`/`greetingFor` también los sigue usando
+ * `playbooks.ts` (`buildPrompt`, fase 0) para los disparadores horarios de
+ * los escenarios del panel.
  */
 export function turnClockLine(
   now: Date = new Date(),

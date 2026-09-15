@@ -163,20 +163,23 @@ describe("la hora del turno", () => {
   });
 
   /**
-   * Reescrito el 14/9/2026 (Tarea 2, "La voz cercana y la espera visible"):
-   * hasta entonces la regla era "copia la franja y el saludo que te llegan
-   * en TURNO ACTUAL", y `turnClockLine` los traía calculados ("franja: tarde
-   * (saluda 'buenas tardes')"). El cliente reportó que la IA saludaba por
-   * franja en mitad de una conversación ya empezada — la regla no distinguía
-   * el primer mensaje de cualquier otro. Ahora el saludo es neutro y depende
-   * de `needsGreeting`, no de la hora: la sección 6 ya no menciona ninguna
-   * franja ni ningún "buenos días/tardes/noches".
+   * Reescrito el 15/9/2026 (Tarea 3, "La voz de mostrador con nombre propio"):
+   * el 14/9 (Tarea 2 de la corrida anterior) la regla había pasado a "saluda
+   * neutro, nunca por la hora" porque `turnClockLine` traía la franja en
+   * CADA turno y la IA repetía "buenas tardes" turno tras turno. El operador
+   * pidió recuperar el saludo por franja — pero solo en el primer mensaje,
+   * calculado por código (`dayBand`/`greetingFor` en `buildInstructions`),
+   * nunca deducido por el modelo. La sección 6 ya NO prohíbe saludar por la
+   * hora: ahora exige usar exactamente el saludo que llega calculado.
    */
-  it("la regla es saludar una sola vez, sin depender de la hora", () => {
+  it("la regla es saludar una sola vez, con el saludo que llega ya calculado con la hora de Barinas", () => {
     expect(SYSTEM_PROMPT).toMatch(/Saludas UNA sola vez por conversación/i);
-    expect(SYSTEM_PROMPT).toMatch(/Nunca saludes por la hora/i);
+    expect(SYSTEM_PROMPT).toMatch(/ya calculado con la hora de Barinas/i);
+    expect(SYSTEM_PROMPT).toMatch(/nunca uno que deduzcas tú/i);
     expect(SYSTEM_PROMPT).toMatch(/el horario de atención y si la tienda está abierta ahora mismo también te llegan en TURNO ACTUAL/i);
-    // La prosa vieja (franja/saludo por hora) desapareció por completo.
+    // La prohibición vieja del 14/9 ("nunca saludes por la hora") quedó sin
+    // efecto: el 15/9 la franja vuelve, solo en el sufijo del primer mensaje.
+    expect(SYSTEM_PROMPT).not.toMatch(/Nunca saludes por la hora/i);
     expect(SYSTEM_PROMPT).not.toMatch(/usa la franja y el saludo/i);
     expect(SYSTEM_PROMPT).not.toMatch(/antes del mediodía/i);
   });
@@ -205,30 +208,98 @@ describe("la hora del turno", () => {
   });
 
   /**
-   * Reescrito el 14/9/2026 (Tarea 2): hasta entonces se pedía "de noche
-   * entra 'noche'/'buenas noches'" — ahora es justo lo contrario, a
-   * propósito. `turnClockLine` ya no calcula ninguna franja ni saludo, y la
-   * sección 6 prohíbe saludar por hora: a las 8:30 pm el sufijo tiene que
-   * seguir sin decir "noche" ni "buenas noches", igual que a las 8:10 am no
-   * puede decir "franja" ni "buenos días" — el saludo neutro vive solo en
-   * `needsGreeting`, nunca en la hora.
+   * Reescrito el 15/9/2026 (Tarea 3): entre el 14/9 y el 15/9 la regla fue
+   * "nunca digas 'noche' ni 'buenas noches', el saludo es neutro y no
+   * depende de la hora". Ese test ya no describe la regla vigente — ahora SÍ
+   * depende de la hora, pero solo cuando `needsGreeting` es `true` (ver el
+   * describe de más abajo con los cuatro casos de franja). Este test se
+   * queda para el caso `needsGreeting: false` (`TURN` lo trae así): sin
+   * saludo pendiente, la hora no debe filtrarse al sufijo bajo ninguna
+   * forma, aunque sean las 8:30 pm.
    */
-  it("a las 8:30 pm de Caracas, el sufijo no saluda por franja ni dice 'noche'", () => {
-    const instructions = buildInstructions({ ...TURN, now: new Date("2026-09-05T00:30:00Z") }); // 8:30 pm Caracas
+  it("con needsGreeting false, a las 8:30 pm de Caracas el sufijo no menciona ningún saludo de franja", () => {
+    const instructions = buildInstructions({ ...TURN, needsGreeting: false, now: new Date("2026-09-05T00:30:00Z") }); // 8:30 pm Caracas
 
     expect(instructions.startsWith(SYSTEM_PROMPT)).toBe(true);
     const sufijo = instructions.slice(SYSTEM_PROMPT.length);
     expect(sufijo).not.toMatch(/saluda|buenos días|buenas tardes|buenas noches|franja/i);
   });
 
-  it("a las 8:10 am de un domingo, el sufijo dice CERRADA y cuándo abre, sin saludo de franja", () => {
-    const instructions = buildInstructions({ ...TURN, now: new Date("2026-09-06T12:10:00Z") });
+  it("con needsGreeting false, a las 8:10 am de un domingo el sufijo dice CERRADA y cuándo abre, sin saludo de franja", () => {
+    const instructions = buildInstructions({ ...TURN, needsGreeting: false, now: new Date("2026-09-06T12:10:00Z") });
 
     expect(instructions.startsWith(SYSTEM_PROMPT)).toBe(true);
     const sufijo = instructions.slice(SYSTEM_PROMPT.length);
     expect(sufijo).toContain("CERRADA");
     expect(sufijo).toContain("abre el lunes a las 8:00 am");
     expect(sufijo).not.toMatch(/saluda|buenos días|buenas tardes|buenas noches|franja/i);
+  });
+});
+
+/**
+ * Tarea 3 ("La voz de mostrador con nombre propio", 15/9/2026, Decisión 4):
+ * el saludo por franja vuelve, pero SOLO en el sufijo del primer mensaje
+ * (`needsGreeting: true`) y calculado por código con `dayBand`/`greetingFor`
+ * sobre la hora de Barinas — nunca deducido por el modelo. `turnClockLine`
+ * (y por lo tanto TURNO ACTUAL) sigue sin traer franja: el bug del 14/9
+ * (saludar por hora en CADA turno) no puede reaparecer porque el cálculo
+ * ocurre una sola vez, acá, y solo cuando el flag lo pide.
+ */
+describe("sufijo del primer saludo — buenos días, tardes o noches, con la hora de Barinas (Tarea 3, 15/9/2026)", () => {
+  it("8:30 pm de Caracas → ¡Buenas noches!, y nada de buenos días ni buenas tardes", () => {
+    const instructions = buildInstructions({ ...TURN, needsGreeting: true, now: new Date("2026-09-05T00:30:00Z") });
+
+    expect(instructions.startsWith(SYSTEM_PROMPT)).toBe(true);
+    const sufijo = instructions.slice(SYSTEM_PROMPT.length);
+    expect(sufijo).toContain("¡Buenas noches!");
+    expect(sufijo).not.toMatch(/buenos días|buenas tardes/i);
+  });
+
+  it("8:10 am de un domingo → ¡Buenos días!, y trae CERRADA", () => {
+    const instructions = buildInstructions({ ...TURN, needsGreeting: true, now: new Date("2026-09-06T12:10:00Z") });
+
+    expect(instructions.startsWith(SYSTEM_PROMPT)).toBe(true);
+    const sufijo = instructions.slice(SYSTEM_PROMPT.length);
+    expect(sufijo).toContain("¡Buenos días!");
+    expect(sufijo).toContain("CERRADA");
+  });
+
+  it("12:00 pm de Caracas → ¡Buenas tardes!", () => {
+    const instructions = buildInstructions({ ...TURN, needsGreeting: true, now: new Date("2026-09-05T16:00:00Z") });
+
+    expect(instructions.startsWith(SYSTEM_PROMPT)).toBe(true);
+    const sufijo = instructions.slice(SYSTEM_PROMPT.length);
+    expect(sufijo).toContain("¡Buenas tardes!");
+  });
+
+  /**
+   * 19:00 en punto sigue siendo "tarde" según `DAY_BANDS` (el borde de tarde
+   * es `to: 19 * 60`, inclusive); 19:01 ya cae en "noche". Este caso prueba
+   * ese borde exacto, un minuto después del límite.
+   */
+  it("7:01 pm de Caracas → ¡Buenas noches! (el borde de DAY_BANDS es 19:00 en punto)", () => {
+    const instructions = buildInstructions({ ...TURN, needsGreeting: true, now: new Date("2026-09-05T23:01:00Z") });
+
+    expect(instructions.startsWith(SYSTEM_PROMPT)).toBe(true);
+    const sufijo = instructions.slice(SYSTEM_PROMPT.length);
+    expect(sufijo).toContain("¡Buenas noches!");
+  });
+
+  /**
+   * El bloque estático (`SYSTEM_PROMPT`) no puede depender de la hora: si
+   * trajera un saludo de franja escrito, el prefijo cacheable dejaría de ser
+   * idéntico entre turnos. El saludo vive SOLO en el sufijo.
+   */
+  it("SYSTEM_PROMPT nunca trae un saludo de franja escrito", () => {
+    expect(SYSTEM_PROMPT).not.toContain("¡Buen");
+  });
+
+  /** El sufijo con saludo de franja no puede describir a la IA como automatizada ni como una persona. */
+  it("el sufijo con saludo de franja pasa la guarda de identidad", () => {
+    const instructions = buildInstructions({ ...TURN, needsGreeting: true, now: new Date("2026-09-05T00:30:00Z") });
+    const sufijo = instructions.slice(SYSTEM_PROMPT.length);
+
+    expect(revealsIdentity(sufijo)).toBeNull();
   });
 });
 

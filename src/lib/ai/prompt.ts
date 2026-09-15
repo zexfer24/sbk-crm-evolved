@@ -1,7 +1,7 @@
 import "server-only";
 import type { Intent } from "@/lib/ai/classify";
 import { BUSINESS_NAME } from "@/lib/brand";
-import { DEFAULT_BUSINESS_HOURS, turnClockLine, type BusinessHours } from "@/lib/business-hours";
+import { DEFAULT_BUSINESS_HOURS, dayBand, greetingFor, turnClockLine, type BusinessHours } from "@/lib/business-hours";
 
 // ---------------------------------------------------------------------------
 // Identidad y reglas de comportamiento del agente de la tienda (el nombre del
@@ -241,7 +241,7 @@ Si pregunta por el horario o si están abiertos, respóndelo tú con lo que dice
 
 Esto es WhatsApp, no un correo ni un documento. Dos a cuatro líneas por mensaje. Frases cortas.
 
-Saludas UNA sola vez por conversación, y solo cuando TURNO ACTUAL te diga que es el primer mensaje: un "¡Hola!" o un "¡Buenas!" y de dónde escribes. Nunca saludes por la hora —ni buenos días, ni buenas tardes, ni buenas noches— y nunca vuelvas a saludar en un mensaje posterior, aunque el cliente salude otra vez: respóndele lo que preguntó.
+Saludas UNA sola vez por conversación, y solo cuando TURNO ACTUAL te diga que es el primer mensaje: con el saludo exacto que te da ahí —buenos días, buenas tardes o buenas noches, ya calculado con la hora de Barinas—, nunca uno que deduzcas tú, y diciendo de dónde escribes. En cualquier otro mensaje no saludas, aunque el cliente vuelva a saludar: respóndele lo que preguntó.
 
 El horario de atención y si la tienda está abierta ahora mismo también te llegan en TURNO ACTUAL: puedes decirlo tal cual te lo dan, pero no inventes otro horario ni otro estado.
 
@@ -321,9 +321,14 @@ export interface TurnContext {
  * `needsGreeting` decide el saludo desde el 14/9/2026 (Tarea 2, "La voz
  * cercana y la espera visible"): antes lo decidía `turnClockLine` con la
  * franja del día ("saluda 'buenas tardes'"), y eso hacía que la IA volviera
- * a saludar por hora en cualquier mensaje de una conversación ya empezada.
- * Ahora `turnClockLine` solo trae la hora y el horario; el saludo es neutro
- * y sale una sola vez, cuando este flag lo pide.
+ * a saludar por hora en cualquier mensaje de una conversación ya empezada,
+ * porque la franja viajaba en CADA turno. La corrección de ese día fue
+ * volverlo neutro ("¡Hola!"/"¡Buenas!") para cortar la repetición. El
+ * 15/9/2026 (Tarea 3, "La voz de mostrador con nombre propio") el operador
+ * pidió recuperar "buenos días/tardes/noches" — pero solo acá, en el sufijo
+ * del primer mensaje, calculado por código con `dayBand`/`greetingFor` una
+ * única vez por conversación: `turnClockLine` sigue sin traer franja, así
+ * que el bug del 14/9 (saludar por hora en cada turno) no puede volver.
  */
 export function buildInstructions({
   intent,
@@ -334,9 +339,10 @@ export function buildInstructions({
   customerName,
 }: TurnContext): string {
   const seccion = CASE_SECTION[intent] ?? CASE_SECTION.otro;
+  const instante = now ?? new Date();
 
   const greeting = needsGreeting
-    ? ` Es el primer mensaje que recibe de nosotros: saluda con un hola breve, dile que le escribes de ${BUSINESS_NAME} y responde en el mismo mensaje.`
+    ? ` Es el primer mensaje que recibe de nosotros: abre con "¡${capitalizar(greetingFor(dayBand(instante)))}!" —exactamente ese saludo, ya calculado con la hora de Barinas; no lo cambies por otro ni lo repitas después—, dile que le escribes de ${BUSINESS_NAME} y responde en el mismo mensaje lo que preguntó.`
     : " Ya hubo saludo en esta conversación: no saludes de nuevo, ve directo a lo que preguntó.";
 
   // Sin catálogo, el peligro es que el modelo responda de memoria: un "sí
@@ -360,6 +366,16 @@ export function buildInstructions({
   return `${SYSTEM_PROMPT}
 
 TURNO ACTUAL
-${turnClockLine(now ?? new Date(), businessHours)}
+${turnClockLine(instante, businessHours)}
 Caso identificado: ${intent}. Aplica el protocolo ${seccion}.${greeting}${catalog}${nombre}`;
+}
+
+/**
+ * "buenas noches" → "Buenas noches". Helper local: `greetingFor` devuelve el
+ * saludo en minúsculas (así lo usa `dayBand` en prosa media-frase), pero el
+ * sufijo lo abre como interjección ("¡Buenas noches!") y necesita la
+ * mayúscula inicial (Tarea 3, 15/9/2026).
+ */
+function capitalizar(texto: string): string {
+  return texto.charAt(0).toUpperCase() + texto.slice(1);
 }
