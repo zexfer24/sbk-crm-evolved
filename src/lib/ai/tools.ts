@@ -308,29 +308,42 @@ export function buildOrderHistoryTool({ supabase, contactId, conversationId }: T
  * atender", "su caso quedó registrado") sin agradecer ni suavizar. Las
  * cuatro ramas reciben ahora el mismo trato: agradecer la espera o la
  * paciencia, y nombrar con calidez lo que va a pasar.
+ *
+ * Corrección del 15/9/2026 (verificación final de "La voz de mostrador con
+ * nombre propio y el cierre de v1.1"): un chat NUEVO ("buenas tardes,
+ * tienen tanque de EK Xpress") no encontró stock, escaló por
+ * `escalarAAsesor` (motivo `seguimiento`) y la redacción final salió SIN el
+ * saludo de franja que `needsGreeting` pedía en el sufijo de `prompt.ts` —el
+ * modelo obedece la ÚLTIMA instrucción que lee, y esta no mencionaba el
+ * saludo, así que se lo comía. Las cuatro ramas terminan ahora con
+ * `RECORDATORIO_SALUDO` para que el saludo del primer mensaje sobreviva
+ * también cuando el turno termina en una escalada.
  */
+export const RECORDATORIO_SALUDO =
+  " Si este es el primer mensaje que recibe de nosotros (TURNO ACTUAL te lo dice), abre igual con el saludo exacto que te dio antes de esta promesa; si no, no saludes.";
+
 function escalationInstruction(status: BusinessStatus | undefined, assignedName: string | null): string {
   const abierta = !status || status.open;
 
   if (assignedName) {
     if (abierta) {
-      return `Ya está asignado a ${assignedName}. Dile al cliente, con calidez, que un asesor toma su caso y le escribe por acá; agradécele la espera.`;
+      return `Ya está asignado a ${assignedName}. Dile al cliente, con calidez, que un asesor toma su caso y le escribe por acá; agradécele la espera.${RECORDATORIO_SALUDO}`;
     }
     const cuando = status?.nextOpening
       ? `${status.nextOpening.dayLabel} a partir de las ${status.nextOpening.time}`
       : "apenas la tienda vuelva a abrir";
-    return `Ya está asignado a ${assignedName}, pero la tienda está cerrada. Dile al cliente, con calidez, que un asesor toma su caso y le escribe ${cuando}; agradécele la paciencia. NO prometas que lo atienden ahora.`;
+    return `Ya está asignado a ${assignedName}, pero la tienda está cerrada. Dile al cliente, con calidez, que un asesor toma su caso y le escribe ${cuando}; agradécele la paciencia. NO prometas que lo atienden ahora.${RECORDATORIO_SALUDO}`;
   }
 
   if (abierta) {
-    return "No hay ningún asesor conectado ahora. Dile al cliente, con calidez, que su caso quedó registrado y que le escriben en breve, apenas haya alguien disponible; agradécele la espera. NO prometas que lo atienden enseguida.";
+    return `No hay ningún asesor conectado ahora. Dile al cliente, con calidez, que su caso quedó registrado y que le escriben en breve, apenas haya alguien disponible; agradécele la espera. NO prometas que lo atienden enseguida.${RECORDATORIO_SALUDO}`;
   }
 
   if (!status?.nextOpening) {
-    return "No hay ningún asesor conectado ahora y la tienda está cerrada. Dile al cliente, con calidez, que su caso quedó registrado y que le escriben apenas la tienda vuelva a abrir; agradécele la paciencia. NO prometas que lo atienden enseguida.";
+    return `No hay ningún asesor conectado ahora y la tienda está cerrada. Dile al cliente, con calidez, que su caso quedó registrado y que le escriben apenas la tienda vuelva a abrir; agradécele la paciencia. NO prometas que lo atienden enseguida.${RECORDATORIO_SALUDO}`;
   }
 
-  return `No hay ningún asesor conectado ahora y la tienda está cerrada. Dile al cliente, con calidez, que su caso quedó registrado y que un asesor le escribe ${status.nextOpening.dayLabel} a partir de las ${status.nextOpening.time}; agradécele la paciencia. NO prometas que lo atienden enseguida.`;
+  return `No hay ningún asesor conectado ahora y la tienda está cerrada. Dile al cliente, con calidez, que su caso quedó registrado y que un asesor le escribe ${status.nextOpening.dayLabel} a partir de las ${status.nextOpening.time}; agradécele la paciencia. NO prometas que lo atienden enseguida.${RECORDATORIO_SALUDO}`;
 }
 
 // ---------------------------------------------------------------------------

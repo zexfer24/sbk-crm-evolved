@@ -28,7 +28,13 @@ vi.mock("@/lib/log", async (importOriginal) => {
   return { ...actual, log: { ...actual.log, error: logErrorMock } };
 });
 
-import { buildCatalogTool, buildEscalateTool, buildOrderHistoryTool, type EscalationOutcome } from "@/lib/ai/tools";
+import {
+  buildCatalogTool,
+  buildEscalateTool,
+  buildOrderHistoryTool,
+  RECORDATORIO_SALUDO,
+  type EscalationOutcome,
+} from "@/lib/ai/tools";
 import type { BusinessHours } from "@/lib/business-hours";
 import { revealsIdentity } from "@/lib/ai/identity-guard";
 
@@ -435,8 +441,14 @@ describe("buildEscalateTool — instrucción de despedida según asesor y horari
     // Tarea 3 (14/9/2026): las cuatro ramas de `escalationInstruction` ganan
     // calidez explícita ("con calidez"/"agradécele"), no solo la rama con
     // asesor y tienda cerrada, que ya la traía desde B4.
+    //
+    // Corrección del 15/9/2026 (verificación final de "La voz de mostrador
+    // con nombre propio y el cierre de v1.1"): la instrucción ahora termina
+    // con RECORDATORIO_SALUDO en las cuatro ramas (ver el bug real en
+    // tools.ts, arriba de `escalationInstruction`), así que el `toBe`
+    // concatena la constante en vez de comparar contra el string viejo.
     expect(result.instruccionParaTuRespuesta).toBe(
-      "Ya está asignado a María. Dile al cliente, con calidez, que un asesor toma su caso y le escribe por acá; agradécele la espera."
+      `Ya está asignado a María. Dile al cliente, con calidez, que un asesor toma su caso y le escribe por acá; agradécele la espera.${RECORDATORIO_SALUDO}`
     );
   });
 
@@ -457,6 +469,8 @@ describe("buildEscalateTool — instrucción de despedida según asesor y horari
     expect(result.instruccionParaTuRespuesta).toContain("lunes");
     expect(result.instruccionParaTuRespuesta).toContain("8:00 am");
     expect(result.instruccionParaTuRespuesta).toMatch(/NO prometas/);
+    // Corrección del 15/9/2026: ver el bug real arriba de `escalationInstruction`.
+    expect(result.instruccionParaTuRespuesta).toContain(RECORDATORIO_SALUDO);
   });
 
   it("con asesor asignado y tienda cerrada sin ninguna apertura en los próximos 7 días, dice 'apenas la tienda vuelva a abrir'", async () => {
@@ -472,6 +486,8 @@ describe("buildEscalateTool — instrucción de despedida según asesor y horari
     expect(result.instruccionParaTuRespuesta).toMatch(/vuelva a abrir/);
     expect(result.instruccionParaTuRespuesta).toMatch(/NO prometas/);
     expect(result.instruccionParaTuRespuesta).not.toMatch(/undefined/);
+    // Corrección del 15/9/2026: ver el bug real arriba de `escalationInstruction`.
+    expect(result.instruccionParaTuRespuesta).toContain(RECORDATORIO_SALUDO);
   });
 
   it("sin asesores y tienda abierta, promete 'en breve' sin prometer un plazo", async () => {
@@ -486,6 +502,8 @@ describe("buildEscalateTool — instrucción de despedida según asesor y horari
 
     expect(result.instruccionParaTuRespuesta).toMatch(/en breve/);
     expect(result.instruccionParaTuRespuesta).toMatch(/NO prometas/);
+    // Corrección del 15/9/2026: ver el bug real arriba de `escalationInstruction`.
+    expect(result.instruccionParaTuRespuesta).toContain(RECORDATORIO_SALUDO);
   });
 
   /**
@@ -507,6 +525,8 @@ describe("buildEscalateTool — instrucción de despedida según asesor y horari
     expect(result.instruccionParaTuRespuesta).toContain("lunes");
     expect(result.instruccionParaTuRespuesta).toContain("8:00 am");
     expect(result.instruccionParaTuRespuesta).toMatch(/NO prometas/);
+    // Corrección del 15/9/2026: ver el bug real arriba de `escalationInstruction`.
+    expect(result.instruccionParaTuRespuesta).toContain(RECORDATORIO_SALUDO);
   });
 
   it("sin asesores y sin ninguna apertura en los próximos 7 días, dice 'apenas la tienda vuelva a abrir'", async () => {
@@ -521,6 +541,8 @@ describe("buildEscalateTool — instrucción de despedida según asesor y horari
 
     expect(result.instruccionParaTuRespuesta).toMatch(/vuelva a abrir/);
     expect(result.instruccionParaTuRespuesta).not.toMatch(/undefined/);
+    // Corrección del 15/9/2026: ver el bug real arriba de `escalationInstruction`.
+    expect(result.instruccionParaTuRespuesta).toContain(RECORDATORIO_SALUDO);
   });
 
   it("sin businessStatus en el resultado (compatibilidad), cae al texto de 'en breve'", async () => {
@@ -529,6 +551,8 @@ describe("buildEscalateTool — instrucción de despedida según asesor y horari
     const result = await ejecutar({ escalated: false });
 
     expect(result.instruccionParaTuRespuesta).toMatch(/en breve/);
+    // Corrección del 15/9/2026: ver el bug real arriba de `escalationInstruction`.
+    expect(result.instruccionParaTuRespuesta).toContain(RECORDATORIO_SALUDO);
   });
 
   it("reenvía businessHours y now a escalateConversation, tal como los recibió", async () => {
