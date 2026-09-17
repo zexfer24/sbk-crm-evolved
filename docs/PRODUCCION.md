@@ -189,6 +189,108 @@ El CHECK admite `sin_contenido_legible` como valor válido de
 (`src/lib/ai/agent.ts`) lo usa cuando el turno queda sin nada legible que
 contestar tras describir la media con `historyLine`.
 
+**`20260916010000_devolucion_a_la_ia`** (revisión del plan "La IA no vuelve
+a pedir lo que ya pidió", 16/9/2026). Caso reportado: un cliente pide un
+asesor, la IA escala y se despide ("te paso con un asesor"); un asesor
+desasigna la conversación y reactiva la IA a mano; en menos de un minuto el
+reconciliador la reencolaba y la IA repetía la misma promesa sobre el MISMO
+mensaje viejo — el mecanismo que el 13/9 volvió a escalar 63 casos.
+
+**Regla dura, sin excepción: esta migración va ANTES del código, nunca
+junto ni después.** El código nuevo de `src/lib/ai/agent.ts`,
+`src/lib/ai/reconciler.ts` y `src/lib/data.ts` (`unansweredFreeWork`) lee
+`ai_resume_cutoff_at`/`new_since_ai_resume` en su `select`/`.eq()`. Sin las
+columnas: el `select` de `runAgentTurn` falla y se caen TODOS los turnos de
+IA (no solo los que pasarían por la guarda nueva), `reconcileOrphanTurns`
+devuelve vacío EN SILENCIO para quien lo llama (PostgREST responde con un
+error 42703 por la columna desconocida, el reconciliador lo registra como
+`reconciliador_consulta_fallida` y devuelve el resultado vacío en vez de
+lanzar — `reconcileOrphanTurns` en `reconciler.ts`) y el botón "encender la
+IA" de la bandeja LANZA (`fetchBacklogConversationIds`, `data.ts`).
+Desplegar el código antes que la migración deja la cola de IA muda: el
+único rastro es ese evento en el log y las filas que dejan de aparecer en
+`agent_turns`.
+
+**`lock_timeout` corto, y qué hacer si falla.** La migración fija `set
+local lock_timeout = '5s'` antes de crear `new_since_ai_resume`: agregar
+una columna GENERADA reescribe `conversations` entera con un lock `ACCESS
+EXCLUSIVE` (a diferencia de una columna común con default, que desde PG11
+es solo metadato) — `conversations` es la tabla del camino caliente de
+cada mensaje de WhatsApp, así que es mejor que la migración falle y se
+reintente a que un `ACCESS EXCLUSIVE` prolongado encole detrás suyo a los
+webhooks entrantes. **Si `db push` falla por bloqueo, reintentar en un
+momento de menos tráfico — no quitar el `lock_timeout` ni subirlo "para
+que pase".** Aplicada a mano, tiene que ir con `psql -1 -v
+ON_ERROR_STOP=1` (ver "En Dokploy" → "Aplicarla a mano", §7) — sin `-1` el
+`set local` de esta sección no aplica a nada.
+
+Sin backfill: `ai_resume_cutoff_at` nace `null` en todas las conversaciones
+existentes —ninguna "acaba de ser devuelta" al momento de desplegar esta
+migración—, así que no hay nada que medir antes de aplicarla como sí hacía
+falta con `20260907010000`/`20260908010000`.
+
+**Verificación después de aplicarla** (solo lectura):
+
+```sql
+-- Las dos columnas, y que la segunda sea GENERADA
+select column_name, is_generated
+from information_schema.columns
+where table_schema = 'public' and table_name = 'conversations'
+  and column_name in ('ai_resume_cutoff_at', 'new_since_ai_resume');
+-- new_since_ai_resume debe dar is_generated = 'ALWAYS'
+
+-- Los dos triggers
+select tgname from pg_trigger
+where tgrelid = 'public.conversations'::regclass
+  and tgname in (
+    'conversations_ai_resume_before_trigger',
+    'conversations_ownership_change_handoff_trigger'
+  )
+  and not tgisinternal;
+-- deben salir las dos filas
+
+-- El CHECK de conversation_handoffs.reason trae los dos valores nuevos
+select pg_get_constraintdef(oid) from pg_constraint
+where conrelid = 'public.conversation_handoffs'::regclass
+  and conname = 'conversation_handoffs_reason_check';
+-- debe contener 'desasignada_por_asesor' y 'mensaje_previo_a_devolucion'
+
+-- anon no puede ejecutar ninguna de las dos funciones de esta migración
+-- (la consulta única de la sección "Permisos de las funciones security
+-- definer", más abajo, ya las incluye — esta es la específica de esta
+-- migración, mismo criterio que usan awaiting_reply.sql/ventana_24h.sql)
+select
+  has_function_privilege('anon', 'public.handle_conversation_ai_resume()', 'execute') as ai_resume,
+  has_function_privilege('anon', 'public.handle_conversation_ownership_change()', 'execute') as ownership_change;
+-- las dos en false
+
+select count(*) from supabase_migrations.schema_migrations;  -- 71
+```
+
+**Consulta de la Verificación · 5 del plan** (solo lectura, para decidir con
+el operador si el número no da ~0): cuenta conversaciones con la IA
+encendida, sin asesor, esperando respuesta y con una escalada posterior a
+su último mensaje del cliente — casos devueltos ANTES de esta migración que
+no van a tener sello (el reconciliador ya los habrá vuelto a escalar, así
+que se espera un número mínimo):
+
+```sql
+select count(*) from public.conversations c
+where c.ai_enabled
+  and c.assigned_agent_id is null
+  and c.awaiting_reply
+  and c.last_customer_message_at is not null
+  and exists (
+    select 1 from public.conversation_handoffs h
+    where h.conversation_id = c.id
+      and h.reason in ('escalada', 'escalada_sin_asesor')
+      and h.created_at > c.last_customer_message_at
+  );
+```
+
+Test: `tests/devolucion_a_la_ia.sql` (doce casos, transacción con rollback),
+cableado al job `migraciones` del CI.
+
 ### El lease del lock de turno de la IA
 
 La migración `20260829020000_conversations_turn_lock_lease.sql` agrega dos
@@ -529,9 +631,16 @@ equivalente en el pipeline de Dokploy. Si el commit que se despliega trae una
 migración nueva (título con `[migración]`), el orden es:
 
 1. Respaldo (`scripts/backup.sh`, ver §8).
-2. Aplicarla a mano contra el contenedor `supabase-db`, con `psql`:
+2. Aplicarla a mano contra el contenedor `supabase-db`, con `psql -1 -v
+   ON_ERROR_STOP=1` (desde el 16/9/2026, migración `20260916010000`: sin
+   `-1` cada sentencia corre en su propia transacción implícita y un `set
+   local lock_timeout` queda en un NO-OP silencioso; sin `ON_ERROR_STOP=1`,
+   si una sentencia de en medio falla psql sigue con las siguientes y sale
+   con código 0, dejando el esquema a medias. Con `-1`: o entra la
+   migración ENTERA, o no entra nada):
    ```bash
    docker exec -i supabase-db psql -U postgres -d postgres \
+     -1 -v ON_ERROR_STOP=1 \
      < supabase/migrations/<archivo>.sql
    ```
 3. Registrarla en `supabase_migrations.schema_migrations` (la migración no se

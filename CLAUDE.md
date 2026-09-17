@@ -775,6 +775,113 @@ dejar rastro es lo que hacía desaparecer leads.
   `SbkMotorcyclesCRM/1.0` de `bcv-fetch.ts` y las citas históricas de frases
   reales en comentarios y tests ("Soy el asistente automatizado de SBK
   Motorcycles" fue lo que salió el 26/8: es evidencia, no marca).
+- **La IA solo atiende mensajes del cliente posteriores al sello de
+  devolución, y "Sin dueño" ahora también lo llenan las devoluciones**
+  (T1/T2/T3, "La IA no vuelve a pedir lo que ya pidió" — revisión,
+  16/9/2026, migración `20260916010000`). Caso reportado: un cliente pide
+  un asesor, la IA escala y se despide ("te paso con un asesor"); un
+  asesor desasigna la conversación y reactiva la IA a mano; en menos de un
+  minuto el reconciliador la reencolaba y la IA repetía la misma promesa
+  sobre el MISMO mensaje viejo del cliente — el mecanismo que el 13/9
+  volvió a escalar 63 casos. `conversations.ai_resume_cutoff_at` es el
+  sello: lo escribe el trigger BEFORE `handle_conversation_ai_resume()` al
+  ENTRAR al estado "IA encendida y sin asesor" (viniendo de cualquier otro
+  estado — cubre los dos órdenes de desasignar/reactivar y un UPDATE
+  masivo por SQL); una escalada SALE de ese estado, así que nunca sella.
+  `new_since_ai_resume` es la columna GENERADA que compara
+  `last_customer_message_at` contra ese sello — `reconciler.ts` y
+  `unansweredFreeWork` (`data.ts`, el botón de atraso "encender la IA")
+  filtran por ella EN EL WHERE, no en memoria. La guarda
+  nueva de `runAgentTurn` (`agent.ts`, después de `pausada`, antes de
+  `humanHasWritten`) compara lo mismo en código: si
+  `last_customer_message_at` es anterior O IGUAL al sello, el turno no
+  llama al modelo y deja el traspaso `mensaje_previo_a_devolucion` a
+  `unassigned` — ese chat cae y se queda en "Sin dueño" hasta que alguien
+  (un humano, o la IA con un mensaje nuevo del cliente) lo atienda. Es la
+  decisión del operador del 16/9, no un bug: "Sin dueño" crece con cada
+  devolución que deja un mensaje pendiente.
+- **El sello copia `last_customer_message_at`, nunca `now()`** — misma
+  razón que la trampa del 131047 de más arriba: `created_at` de un
+  entrante es la marca de tiempo de META (`route.ts:1343`), así que un
+  mensaje mandado un segundo antes de la devolución pero ENTREGADO después
+  quedaría detrás de un `now()` fijado con el reloj de pared de esta
+  máquina. Contra el último mensaje ya conocido en el instante de la
+  devolución no hace falta ninguna tolerancia: cualquier mensaje que
+  llegue después queda por delante del sello sin importar cuándo salió la
+  respuesta de la IA — por eso la guarda de `agent.ts` no sufre la carrera
+  de ráfaga (el cliente escribe mientras la IA redacta): el sello nunca se
+  mueve con una salida, solo con una devolución.
+- **TODA reactivación sella, no solo la que sigue a una escalada** —
+  también la de una pausa manual. Si un asesor pausa la IA, el cliente
+  escribe, nadie le contesta y el asesor la reactiva, la IA NO contesta
+  ese mensaje: el chat queda en "Sin dueño" hasta que alguien le escriba o
+  el cliente vuelva a escribir. El trigger dispara con CUALQUIER cambio de
+  `ai_enabled`/`assigned_agent_id`, y sella al ENTRAR al estado "sin
+  asesor" sin mirar por qué se llegó ahí — es una consecuencia que el
+  operador aprobó a propósito con este plan, no un efecto colateral que
+  falte corregir.
+- **`devuelto_a_ia`/`desasignada_por_asesor` SÍ cierran la escalada para
+  `escalationOpen`; `mensaje_previo_a_devolucion` NO** (`handoffs.ts`,
+  `RAZONES_QUE_NO_CIERRAN_LA_ESCALADA`). Las dos primeras las escribe el
+  trigger AFTER `handle_conversation_ownership_change()` cuando un humano
+  de verdad mueve al dueño (desasigna, o reactiva la IA) — eso SÍ cambia
+  de manos, y si no cerraran la escalada un "gracias" escrito DESPUÉS de
+  la devolución quedaría callado por la guarda de cortesía
+  (`cortesia_tras_escalada`), contra la decisión de que la IA vuelva a
+  responder lo que el cliente escriba después de que se la devuelven.
+  `mensaje_previo_a_devolucion` es justo lo opuesto — la propia guarda de
+  T3 callándose sola, sin que nadie mueva al dueño — y por eso SÍ está en
+  la constante: tratarla como cierre dejaría a `escalationOpen` mirando su
+  propia salida silenciosa como si fuera un traspaso real. Consecuencia:
+  `reabierto` (el que escribía el reconciliador al reencolar) ya NO se
+  escribe para un mensaje anterior a la devolución, porque
+  `new_since_ai_resume` lo saca del WHERE antes de que el reconciliador
+  llegue a considerarlo.
+- **Diseño descartado el 16/9/2026, no repetirlo.** La primera versión de
+  este plan (15/9/2026, commit `56fa2df`, migración `20260915020000`,
+  deshecho con `git reset --soft` antes de salir de esta máquina) medía
+  una columna `awaiting_any_reply` contra `last_message_at` —"¿salió algo
+  después del último mensaje del cliente?"— y la revisión adversarial le
+  encontró cinco fallas: (1) un envío `failed` también adelanta
+  `last_message_at`, tapando `entrega_fallida`; (2) la carrera de ráfaga
+  —el cliente escribe mientras la IA redacta y la respuesta queda fechada
+  después de ese mensaje— callaba un mensaje sin contestar; (3) la
+  plantilla de bienvenida se inserta justo después del primer mensaje del
+  cliente, y la guarda habría callado el primer turno de cada lead nuevo;
+  (4) la fila `devuelto_a_ia` iba siempre a `'ai'`, así que un cliente con
+  una promesa pendiente salía de "Sin dueño"; (5) con la IA apagada por la
+  escalada, el cliente puede escribir mientras espera al asesor —el
+  webhook lo encola igual y el turno sale por `pausada`— dejando un
+  mensaje ANTERIOR a la devolución que un reloj de salidas vería como
+  pendiente al reactivar. El sello de devolución no sufre ninguna de las
+  cinco: no mira salidas, solo el instante en que un humano le entrega el
+  chat a la IA.
+- **El trigger AFTER dejó con rastro tres movimientos de dueño que antes no
+  tenían ninguno.** `handle_conversation_ownership_change()`
+  (`20260916010000`) inserta `desasignada_por_asesor` cuando un asesor
+  suelta el caso, `devuelto_a_ia` cuando la IA se reactiva y `reclamado`
+  cuando un asesor TOMA un caso (`assignToMe`/`intervene` en
+  `mutations.ts`, sin `ai_enabled` cambiando en el mismo UPDATE —eso
+  excluye a la escalada, que cambia las dos columnas juntas y deja su
+  propia fila `escalada`)—los tres movimientos que `mutations.ts` hacía sin
+  escribir bitácora, justo lo que prohíbe la invariante "ningún lead
+  invisible"—, con `to_kind` calculado UNA sola vez para todas las filas
+  que caigan en el mismo UPDATE (para no contradecirse entre sí; como
+  mucho dos de las tres disparan juntas) y `created_by` resuelto por
+  `auth.uid()` (`'user'` con sesión, `'system'` sin ella: un script SQL
+  directo, el `on delete set null` al borrar un asesor, o la carrera del
+  UPDATE ciego de `escalate.ts:84` corriendo con `service_role`).
+  `reclamado` ya vivía en el CHECK desde `20260830040000` sin que nadie lo
+  escribiera de verdad hasta esta migración. **Corrección post-revisión del
+  mismo 16/9/2026 (`/code-review high`):** `v_to_kind` mira PRIMERO
+  `new.status = 'closed'` —antes de mirar quién quedó asignado—, porque
+  desasignar (o el `on delete set null` de un asesor borrado) un chat YA
+  CERRADO daba `'unassigned'` y `unassigned_waiting_count()` lo contaba en
+  "Sin dueño" aunque estuviera cerrado; y aplicar esta migración a mano
+  exige `psql -1 -v ON_ERROR_STOP=1` (ver docs/PRODUCCION.md) porque `set
+  local lock_timeout` fuera de una transacción es un NO-OP silencioso y una
+  falla a mitad de archivo sin `ON_ERROR_STOP` deja el trigger AFTER
+  leyendo una columna que la sentencia siguiente nunca llegó a crear.
 ---
 
 # RTK (Rust Token Killer) - Token-Optimized Commands
