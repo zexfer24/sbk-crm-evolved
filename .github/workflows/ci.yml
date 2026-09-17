@@ -225,3 +225,25 @@ jobs:
           psql "postgresql://postgres:postgres@127.0.0.1:54322/postgres" \
             -v ON_ERROR_STOP=1 \
             -f supabase/tests/marca_sbk_motors.sql
+
+      # Tarea 1, "La IA no vuelve a pedir lo que ya pidió" (16/9/2026):
+      # ai_resume_cutoff_at sella el instante en que un humano le devuelve
+      # el chat a la IA (ai_enabled=true y sin asesor, viniendo de otro
+      # estado), copiando last_customer_message_at de ESE momento -- nunca
+      # now(), por la latencia de Meta. new_since_ai_resume (columna
+      # generada) dice si el último mensaje del cliente es posterior al
+      # sello: el reconciliador y el turno dejan de reencolar/contestar un
+      # mensaje que ya estaba ahí cuando lo devolvieron. Reemplaza al
+      # diseño de 20260915020000 (awaiting_any_reply contra last_message_at,
+      # deshecho el 16/9/2026: no distinguía un mensaje anterior a la
+      # devolución de uno posterior). Y un asesor que desasigna una
+      # conversación o reactiva la IA deja rastro en conversation_handoffs
+      # (desasignada_por_asesor/devuelto_a_ia): antes de esta migración esos
+      # dos movimientos de dueño no dejaban ninguna fila, y un cliente podía
+      # recibir dos veces la misma despedida de escalada si un asesor
+      # desasignaba y reactivaba la IA en menos de un minuto.
+      - name: la IA solo atiende lo posterior al sello de devolución
+        run: |
+          psql "postgresql://postgres:postgres@127.0.0.1:54322/postgres" \
+            -v ON_ERROR_STOP=1 \
+            -f supabase/tests/devolucion_a_la_ia.sql
