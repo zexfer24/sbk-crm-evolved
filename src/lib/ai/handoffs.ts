@@ -114,7 +114,33 @@ export type HandoffReason =
   // pregunta nueva que contestar) pero deja esta fila, con el mismo dueño
   // que ya tenía la conversación: la migración 20260914010000 (T1, misma
   // corrida) suma el valor al CHECK de la base.
-  | "cortesia_tras_escalada";
+  | "cortesia_tras_escalada"
+  // T1 de "La IA no vuelve a pedir lo que ya pidió" (16/9/2026): un asesor
+  // devuelve el gobierno a la IA reactivando `ai_enabled` a mano sin
+  // reasignar a nadie. La escribe el trigger
+  // `handle_conversation_ownership_change` (20260916010000), nunca código de
+  // TypeScript — existe en el CHECK desde 20260830040000 pero hasta esta
+  // migración nadie la escribía de verdad.
+  | "devuelto_a_ia"
+  // Misma migración: un asesor suelta el caso (desasignar), con la IA
+  // encendida. También la escribe el trigger de arriba, nunca TypeScript.
+  | "desasignada_por_asesor"
+  // Corrección post-revisión de la misma corrida (16/9/2026, hallazgo de
+  // `/code-review high`): un asesor reclama un caso (lo toma sin tenerlo, o
+  // se lo saca a otro asesor) sin que `ai_enabled` cambie en el mismo
+  // UPDATE. Vivía en el CHECK desde 20260830040000 sin que nadie la
+  // escribiera de verdad — `assignToMe`/`intervene` (mutations.ts) asignan
+  // sin dejar rastro, y un chat que pasaba de manos quedaba con la última
+  // fila de la bitácora en `unassigned` mientras alguien ya lo tenía.
+  // También la escribe el trigger `handle_conversation_ownership_change`,
+  // nunca TypeScript.
+  | "reclamado"
+  // T3 de la misma corrida: `runAgentTurn` encontró un mensaje del cliente
+  // (`last_customer_message_at`) anterior o igual al sello de la última
+  // devolución (`ai_resume_cutoff_at`) — ese mensaje ya estaba ahí cuando le
+  // devolvieron el chat a la IA, no es una pregunta nueva. El turno se calla
+  // sin llamar al modelo. Ver el comentario de esa guarda en agent.ts.
+  | "mensaje_previo_a_devolucion";
 
 export interface HandoffInput {
   conversationId: string;
@@ -243,6 +269,36 @@ export async function recordHandoffAdmin(input: HandoffInput): Promise<boolean> 
  *     incluirlas documenta que tampoco cierran por sí solas si por algún
  *     camino quedaran como última fila.
  *
+ * T3 de "La IA no vuelve a pedir lo que ya pidió" (16/9/2026) suma UNA razón
+ * más a la lista, y a propósito NO suma `devuelto_a_ia`/`desasignada_por_asesor`
+ * (la primera versión de este plan, del 15/9, sí las había sumado — revisar
+ * el diff viejo de este archivo antes de repetir el error):
+ *   - `mensaje_previo_a_devolucion`: la escribe la guarda de T3 (agent.ts,
+ *     apertura de `runAgentTurn`) cuando el turno se calla porque el mensaje
+ *     del cliente ya estaba ahí antes de que le devolvieran el chat a la IA
+ *     — ni siquiera llegó a mirar si había una escalada abierta. Tratarla
+ *     como cierre dejaría a `escalationOpen` mirando su propia salida
+ *     silenciosa como si fuera un movimiento de dueño real, exactamente el
+ *     mismo hueco que `cortesia_tras_escalada` (arriba) vino a tapar.
+ *   - `devuelto_a_ia`/`desasignada_por_asesor` SÍ CIERRAN la escalada, y por
+ *     eso NO están en esta lista: un humano decidió, a propósito, devolverle
+ *     el chat a la IA — eso es un movimiento de dueño real, no un eco de la
+ *     propia IA. Si no cerraran, un "gracias" que el cliente escribe DESPUÉS
+ *     de la devolución quedaría callado por la guarda de cortesía
+ *     (`runTurnPhases` en agent.ts), contra la decisión del operador de que
+ *     la IA solo responde a lo que el cliente escriba después de que se la
+ *     devuelven. (La corrida del 15/9 había razonado justo al revés —que
+ *     cerrar la escalada aquí "tapaba" la guarda de cortesía— pero esa
+ *     lectura confundía la escalada VIEJA, que sí debe darse por cerrada,
+ *     con la posibilidad de una escalada NUEVA sobre el mismo chat.)
+ *
+ * Corrección post-revisión de la misma corrida (16/9/2026, `/code-review
+ * high`): `reclamado` (un asesor toma el caso) tampoco está en esta lista,
+ * por el mismo motivo que `devuelto_a_ia`/`desasignada_por_asesor` — un
+ * asesor reclamando el chat es un movimiento de dueño real, y la escalada
+ * vieja debe darse por cerrada aunque el nuevo dueño sea un humano y no la
+ * IA.
+ *
  * Ver la migración 20260830040000_conversation_handoffs.sql (el CHECK de
  * `reason`) y CLAUDE.md.
  */
@@ -253,6 +309,7 @@ const RAZONES_QUE_NO_CIERRAN_LA_ESCALADA: HandoffReason[] = [
   "cortesia_tras_escalada",
   "humano_intervino",
   "humano_se_adelanto",
+  "mensaje_previo_a_devolucion",
 ];
 
 /**

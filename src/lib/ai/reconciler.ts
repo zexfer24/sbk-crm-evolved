@@ -105,6 +105,41 @@ function lockIsActive(until: string | null, now: number): boolean {
  * ahí. (El único lugar del sistema que sí mira `to_kind` —nunca `reason`— es
  * `unassigned_waiting_count()`, el KPI de "Sin dueño"; ver
  * 20260830040000_conversation_handoffs.sql.)
+ *
+ * Tarea 2, "La IA no vuelve a pedir lo que ya pidió" — revisión (16/9/2026).
+ * Caso real del 13-15/9: un cliente pide un asesor, la IA escala y se
+ * despide ("te paso con un asesor") — esa despedida es `is_auto_reply`, así
+ * que a propósito NO apaga `awaiting_reply` (el cliente sigue esperando a
+ * una PERSONA, no a una IA) — y `escalateConversation` apaga `ai_enabled`.
+ * Un asesor desasigna el caso y reactiva la IA a mano: sin este filtro, esta
+ * misma consulta encontraba la conversación "esperando, sin asesor, con la
+ * IA encendida" en menos de un minuto y la reencolaba — la IA repetía la
+ * MISMA promesa sobre el MISMO mensaje del cliente, sin que hubiera nada
+ * nuevo que contestar. Es el mecanismo que el 13/9 volvió a escalar 63
+ * casos.
+ *
+ * Un reloj de SALIDAS (el diseño del 15/9, `awaiting_any_reply`) no alcanza:
+ * lo tapa el caso 5 hallado en la revisión adversarial de ese plan. Mientras
+ * el cliente espera al asesor puede escribir "¿ya me atienden?" — el webhook
+ * lo encola igual, y el turno sale por `pausada` (la IA sigue apagada) sin
+ * contestarlo. Ese mensaje queda PENDIENTE y es ANTERIOR a la devolución.
+ * Un filtro que solo mirara "¿salió algo después del último mensaje?" lo
+ * habría dado por nuevo apenas alguien reactivara la IA, y la IA le habría
+ * contestado un mensaje viejo dejando además el traspaso `reabierto` (que
+ * cierra la escalada para `escalationOpen`).
+ *
+ * `new_since_ai_resume` (columna generada, migración 20260916010000)
+ * resuelve las dos fallas con una sola pregunta: ¿este mensaje del cliente
+ * llegó DESPUÉS de que un humano le devolvió el chat a la IA? El sello
+ * `ai_resume_cutoff_at` se mueve solo con una devolución
+ * (`handle_conversation_ai_resume()`), nunca con una salida — ni con la
+ * despedida de la escalada ni con la respuesta a "¿ya me atienden?" (que no
+ * existe, es justo el problema) — así que ninguno de los dos mensajes viejos
+ * pasa por "nuevo". Va en el WHERE, no en un filtro posterior en TypeScript,
+ * por el mismo motivo que las demás condiciones de esta consulta:
+ * `RECONCILE_BATCH_LIMIT` corta la consulta ANTES de que el código filtre
+ * nada, así que filtrar en memoria dejaría fuera huérfanas de verdad que sí
+ * necesitan reencolarse.
  */
 export async function reconcileOrphanTurns(
   supabase: SupabaseClient,
@@ -114,6 +149,7 @@ export async function reconcileOrphanTurns(
     .from("conversations")
     .select("id, ai_turn_lock_until, last_customer_message_at")
     .eq("awaiting_reply", true)
+    .eq("new_since_ai_resume", true)
     .is("assigned_agent_id", null)
     .neq("status", "closed")
     .eq("ai_enabled", true)

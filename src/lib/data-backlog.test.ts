@@ -124,7 +124,7 @@ function createFakeSupabase(
 }
 
 describe("fetchBacklogConversationIds", () => {
-  it("exige las cuatro condiciones y el corte de la ventana, todas en el WHERE", async () => {
+  it("exige las cinco condiciones y el corte de la ventana, todas en el WHERE", async () => {
     const { client, consultas } = createFakeSupabase();
 
     await fetchBacklogConversationIds(client, AHORA);
@@ -132,6 +132,15 @@ describe("fetchBacklogConversationIds", () => {
     expect(consultas).toHaveLength(1);
     expect(consultas[0].filtros).toEqual([
       { op: "eq", columna: "awaiting_reply", valor: true },
+      // Tarea 2, "La IA no vuelve a pedir lo que ya pidió" — revisión
+      // (16/9/2026): sin esta condición el diálogo de encendido volvía a
+      // ofrecer un chat con un mensaje del cliente ANTERIOR a la última
+      // devolución humana (la despedida automática de una escalada, o un
+      // "¿ya me atienden?" escrito mientras esperaba al asesor — caso 5 del
+      // plan) — la IA repetía una promesa sobre un mensaje que ya vio en su
+      // vida anterior. `new_since_ai_resume` compara contra el sello
+      // `ai_resume_cutoff_at`, que solo se mueve con una devolución.
+      { op: "eq", columna: "new_since_ai_resume", valor: true },
       { op: "is", columna: "assigned_agent_id", valor: null },
       { op: "neq", columna: "status", valor: "closed" },
       { op: "eq", columna: "ai_enabled", valor: true },

@@ -29,6 +29,20 @@ export interface AgentConversation {
   welcome_sent_at: string | null;
   /** Decide si Meta todavía acepta texto libre en este chat. Ver withinFreeformWindow. */
   last_customer_message_at: string | null;
+  /**
+   * Columna `conversations.ai_resume_cutoff_at` (migración
+   * 20260916010000_devolucion_a_la_ia.sql, T1). `null` mientras nunca hubo
+   * una devolución manual; cuando la hay, guarda el `last_customer_message_at`
+   * del INSTANTE en que la fila entró al estado "IA encendida y sin asesor"
+   * (un trigger de la base lo copia, nunca `now()` -- ver el comentario largo
+   * en la guarda de `runAgentTurn`, agent.ts). Tarea 3, "La IA no vuelve a
+   * pedir lo que ya pidió" (16/9/2026), reemplaza a la primera versión de
+   * este campo (`awaiting_any_reply`, descartada: comparaba contra la última
+   * SALIDA, no contra la última DEVOLUCIÓN, y eso la hacía vulnerable a la
+   * carrera de ráfaga -- ver el Enfoque del plan del 16/9 en
+   * docs/planes/).
+   */
+  ai_resume_cutoff_at: string | null;
   contact: {
     phone_number: string;
     /**

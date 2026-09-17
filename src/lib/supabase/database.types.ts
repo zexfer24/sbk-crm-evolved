@@ -543,6 +543,16 @@ export type Database = {
           // Existe desde 20260822080000_agent_metrics.sql; faltaba acá porque
           // estos tipos estaban desactualizados (10/9/2026).
           assigned_at: string | null
+          // Sello de la última devolución humana a la IA (migración
+          // 20260916010000, "La IA no vuelve a pedir lo que ya pidió" —
+          // revisión, 16/9/2026): copia `last_customer_message_at` en el
+          // instante en que la fila entra a "IA encendida y sin asesor"
+          // (`handle_conversation_ai_resume()`). Reemplaza a
+          // `awaiting_any_reply`, la columna del diseño del 15/9 que este
+          // plan descartó (medía "¿salió algo después del último mensaje?",
+          // pregunta que no distinguía un mensaje del cliente ANTERIOR a una
+          // devolución de uno posterior — ver el caso 5 del plan).
+          ai_resume_cutoff_at: string | null
           contact_id: string
           created_at: string
           deal_closed_at: string | null
@@ -564,6 +574,16 @@ export type Database = {
           last_message_status: string | null
           last_reply_at: string | null
           last_reply_sender: string | null
+          // Columna GENERADA (migración 20260916010000): `last_customer_message_at
+          // is not null and (ai_resume_cutoff_at is null or
+          // last_customer_message_at > ai_resume_cutoff_at)`. Solo en Row —una
+          // columna generada no se escribe por Insert/Update, Postgres la
+          // calcula sola. `awaiting_reply`, su prima generada desde
+          // 20260825050000, sigue sin declararse acá (deuda anterior, ver la
+          // nota de `ai_resume_cutoff_at` más arriba); el código de la app no
+          // exige tenerla para compilar porque usa `SupabaseClient` sin el
+          // genérico `Database`.
+          new_since_ai_resume: boolean | null
           order_id: string | null
           referral: Json | null
           status: string
@@ -581,6 +601,7 @@ export type Database = {
           ai_turn_running?: boolean
           assigned_agent_id?: string | null
           assigned_at?: string | null
+          ai_resume_cutoff_at?: string | null
           contact_id: string
           created_at?: string
           deal_closed_at?: string | null
@@ -619,6 +640,7 @@ export type Database = {
           ai_turn_running?: boolean
           assigned_agent_id?: string | null
           assigned_at?: string | null
+          ai_resume_cutoff_at?: string | null
           contact_id?: string
           created_at?: string
           deal_closed_at?: string | null

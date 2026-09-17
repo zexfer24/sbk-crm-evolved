@@ -772,4 +772,61 @@ describe("escalationOpen", () => {
 
     expect(await escalationOpen(supabase, "conv-1")).toBe(false);
   });
+
+  // -------------------------------------------------------------------------
+  // Tarea 3, "La IA no vuelve a pedir lo que ya pidió" (16/9/2026):
+  // `devuelto_a_ia`/`desasignada_por_asesor` SÍ cambian de manos (un humano
+  // decidió devolverle el chat a la IA) y por eso cierran la escalada, a
+  // diferencia de `mensaje_previo_a_devolucion` (la escribe la propia guarda
+  // de T3 sin que nadie mueva al dueño). Ver el razonamiento completo en el
+  // comentario de `RAZONES_QUE_NO_CIERRAN_LA_ESCALADA`, handoffs.ts.
+  // -------------------------------------------------------------------------
+
+  it("false: 'escalada' seguida de 'devuelto_a_ia' (un asesor devolvió el chat a la IA: SÍ cambia de manos)", async () => {
+    const supabase = fakeSupabaseParaEscalationOpen({
+      filas: [
+        { reason: "escalada", created_at: "2026-09-14T10:00:00.000Z" },
+        { reason: "devuelto_a_ia", created_at: "2026-09-14T10:05:00.000Z" },
+      ],
+    });
+
+    expect(await escalationOpen(supabase, "conv-1")).toBe(false);
+  });
+
+  it("false: 'escalada' seguida de 'desasignada_por_asesor' (un asesor soltó el caso: SÍ cambia de manos)", async () => {
+    const supabase = fakeSupabaseParaEscalationOpen({
+      filas: [
+        { reason: "escalada", created_at: "2026-09-14T10:00:00.000Z" },
+        { reason: "desasignada_por_asesor", created_at: "2026-09-14T10:05:00.000Z" },
+      ],
+    });
+
+    expect(await escalationOpen(supabase, "conv-1")).toBe(false);
+  });
+
+  // Corrección post-revisión (16/9/2026, `/code-review high`): `reclamado`
+  // (un asesor toma el caso) cierra la escalada igual que `devuelto_a_ia`/
+  // `desasignada_por_asesor` — es un movimiento de dueño real.
+  it("false: 'escalada' seguida de 'reclamado' (un asesor tomó el caso: SÍ cambia de manos)", async () => {
+    const supabase = fakeSupabaseParaEscalationOpen({
+      filas: [
+        { reason: "escalada", created_at: "2026-09-14T10:00:00.000Z" },
+        { reason: "reclamado", created_at: "2026-09-14T10:05:00.000Z" },
+      ],
+    });
+
+    expect(await escalationOpen(supabase, "conv-1")).toBe(false);
+  });
+
+  it("true: 'escalada' seguida solo de 'mensaje_previo_a_devolucion' (la propia guarda de T3 callándose, no un movimiento de dueño)", async () => {
+    const supabase = fakeSupabaseParaEscalationOpen({
+      filas: [
+        { reason: "escalada", created_at: "2026-09-14T10:00:00.000Z" },
+        { reason: "mensaje_previo_a_devolucion", created_at: "2026-09-14T10:05:00.000Z" },
+      ],
+      mensajesDeAsesor: [],
+    });
+
+    expect(await escalationOpen(supabase, "conv-1")).toBe(true);
+  });
 });

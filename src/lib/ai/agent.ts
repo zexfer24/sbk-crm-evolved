@@ -1710,8 +1710,11 @@ export async function runAgentTurn(conversationId: string, options: { vencioEn?:
         // Tarea 3, "La voz cercana y la espera visible" (14/9/2026):
         // display_name/profile_name viajan con el resto de la fila del
         // contacto para que la IA pueda saludar por nombre — ver
-        // customer-name.ts.
-        "id, contact_id, ai_enabled, assigned_agent_id, welcome_sent_at, last_customer_message_at, contact:contacts(phone_number, display_name, profile_name), channel:whatsapp_channels(phone_number_id, status)"
+        // customer-name.ts. ai_resume_cutoff_at (Tarea 3 de "La IA no vuelve
+        // a pedir lo que ya pidió", 16/9/2026): la guarda de
+        // "mensaje_previo_a_devolucion" de más abajo la necesita fresca en
+        // cada turno.
+        "id, contact_id, ai_enabled, assigned_agent_id, welcome_sent_at, last_customer_message_at, ai_resume_cutoff_at, contact:contacts(phone_number, display_name, profile_name), channel:whatsapp_channels(phone_number_id, status)"
       )
       .eq("id", conversationId)
       .maybeSingle(),
@@ -1779,6 +1782,71 @@ export async function runAgentTurn(conversationId: string, options: { vencioEn?:
   }
   if (!convo.ai_enabled) {
     await recordHandoff(supabase, { conversationId, toKind: "unassigned", reason: "pausada" });
+    return;
+  }
+
+  // Tarea 3, "La IA no vuelve a pedir lo que ya pidió" (16/9/2026). Caso
+  // real: un cliente pide un asesor -> la IA escala y se despide ("te paso
+  // con un asesor") -> un asesor desasigna y reactiva la IA a mano -> en
+  // menos de un minuto el reconciliador reencola la conversación, y el turno
+  // corre sobre el MISMO mensaje viejo del cliente: el modelo vuelve a
+  // escalar y repite la misma promesa. Es el mecanismo que el 13/9 volvió a
+  // escalar 63 casos.
+  //
+  // Caso 5, hallado en la revisión adversarial de este plan: el cliente
+  // escribe "¿ya me atienden?" MIENTRAS espera al asesor -- con la IA
+  // apagada por la escalada, el webhook lo encola igual y el turno sale por
+  // `pausada` (arriba), así que ese mensaje queda pendiente y es ANTERIOR a
+  // la devolución. La primera versión de esta guarda (`awaiting_any_reply`,
+  // comparaba contra la última SALIDA hacia el cliente) tenía cinco fallas
+  // -- entre ellas, la carrera de ráfaga: si el cliente escribe mientras la
+  // IA redacta, la respuesta queda fechada DESPUÉS de ese mensaje y la
+  // guarda vieja lo callaba también a él. Esta versión no sufre esa carrera
+  // porque compara contra un sello que SOLO se mueve con una devolución
+  // humana, nunca con una salida de la IA: `ai_resume_cutoff_at` es el
+  // `last_customer_message_at` del instante en que un trigger de la base
+  // (`handle_conversation_ai_resume`, 20260916010000) vio la fila entrar al
+  // estado "IA encendida y sin asesor". Un mensaje del cliente fechado
+  // DESPUÉS de ese instante queda siempre por delante del sello, sin
+  // importar cuándo salió la respuesta.
+  //
+  // La condición: si `last_customer_message_at` es anterior O IGUAL al
+  // sello, ese mensaje ya estaba ahí cuando devolvieron el chat y no hay
+  // nada nuevo que contestar. La igualdad cuenta como previo a propósito --
+  // el sello se copia de ese mismo campo en el instante de la devolución,
+  // así que un sello igual al último mensaje es el caso normal de "no
+  // escribió nada después", no un empate a resolver a favor de la IA.
+  //
+  // Además del reconciliador (el camino que destapó el caso real), esta
+  // guarda tapa los turnos que un mensaje viejo puede volver a disparar por
+  // otras vías: los turnos diferidos por ritmo/cupo/lock que se reprograman
+  // solos con `registrarDiferidos`, y los reintentos de la cola que corren
+  // DESPUÉS de que alguien devolvió el chat a la IA.
+  //
+  // Va DESPUÉS de `pausada`: con la IA apagada en este chat, esa es la razón
+  // más específica y tiene que ganar aunque también calce esta. Va ANTES de
+  // `humanHasWritten`: esa guarda cuesta una consulta a `messages`, y si
+  // `conversations` ya trae el sello no hace falta preguntarle nada más a la
+  // base para llegar a la misma conclusión de "no hay nada nuevo que
+  // contestar".
+  //
+  // Por qué `unassigned` y no el asesor que tenía antes de la escalada
+  // (decisión del operador, 16/9/2026): el cliente sigue esperando a una
+  // PERSONA que todavía no le escribió nada, así que el chat tiene que verse
+  // en "Sin dueño" -- no en la bandeja de un asesor que ya lo soltó. En este
+  // punto `assigned_agent_id` ya se filtró arriba (rama `asignada`), así que
+  // siempre es `null` de todos modos.
+  if (
+    convo.ai_resume_cutoff_at &&
+    convo.last_customer_message_at &&
+    Date.parse(convo.last_customer_message_at) <= Date.parse(convo.ai_resume_cutoff_at)
+  ) {
+    log.info("turno_mensaje_previo_a_devolucion", { conversationId });
+    await recordHandoff(supabase, {
+      conversationId,
+      toKind: "unassigned",
+      reason: "mensaje_previo_a_devolucion",
+    });
     return;
   }
 

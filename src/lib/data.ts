@@ -2383,9 +2383,32 @@ export async function fetchAgentSuggestions(supabase: SupabaseClient, limit = 50
 
 /**
  * Trabajo libre sin contestar que la IA tiene permitido tomar: nadie
- * respondió, nadie lo tomó, no está cerrado y la IA está encendida en ese
- * chat. Falta el corte de la ventana, que lo pone cada llamador porque los
- * dos lados —dentro y fuera— se cuentan por separado.
+ * respondió de verdad, nadie lo tomó, no está cerrado y la IA está encendida
+ * en ese chat. Falta el corte de la ventana, que lo pone cada llamador
+ * porque los dos lados —dentro y fuera— se cuentan por separado.
+ *
+ * `new_since_ai_resume` (Tarea 2, "La IA no vuelve a pedir lo que ya
+ * pidió" — revisión, 16/9/2026, migración 20260916010000) se suma acá junto
+ * a `awaiting_reply` a propósito. Caso real del 13-15/9: un cliente pide un
+ * asesor, la IA escala y se despide ("te paso con un asesor") — esa
+ * despedida es `is_auto_reply` y no apaga `awaiting_reply`, porque el
+ * cliente sigue esperando a una PERSONA — y `escalateConversation` apaga
+ * `ai_enabled`. Sin este filtro, el diálogo de "encender la IA" volvía a
+ * ofrecer esa misma conversación con el mismo mensaje viejo apenas alguien
+ * la reactivaba, y encenderla mandaba la misma promesa dos veces.
+ *
+ * Cubre también el caso 5 hallado en la revisión adversarial del plan del
+ * 15/9: si el cliente escribe "¿ya me atienden?" mientras espera al asesor,
+ * el webhook lo encola igual y el turno sale por `pausada` sin contestarlo —
+ * ese mensaje queda pendiente y es ANTERIOR a la devolución. Un reloj que
+ * solo mirara "¿salió algo después del último mensaje?" (el diseño
+ * descartado del 15/9, `awaiting_any_reply`) lo habría dado por nuevo apenas
+ * alguien encendiera la IA. `new_since_ai_resume` compara en cambio contra
+ * el sello `ai_resume_cutoff_at`, que solo se mueve con una devolución
+ * (nunca con una salida), así que ni la despedida de la escalada ni el
+ * "¿ya me atienden?" sin contestar pasan por "nuevo". Consecuencia buscada:
+ * este diálogo ofrece MENOS conversaciones que antes, porque deja de contar
+ * las que quedaron pendientes de ANTES de la última devolución.
  */
 function unansweredFreeWork(
   supabase: SupabaseClient,
@@ -2396,6 +2419,7 @@ function unansweredFreeWork(
     .from("conversations")
     .select(select, options)
     .eq("awaiting_reply", true)
+    .eq("new_since_ai_resume", true)
     .is("assigned_agent_id", null)
     .neq("status", "closed")
     .eq("ai_enabled", true);

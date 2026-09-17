@@ -90,6 +90,7 @@ function createFakeSupabase() {
                     assigned_agent_id: null,
                     welcome_sent_at: "2026-08-22T10:00:00Z",
                     last_customer_message_at: new Date().toISOString(),
+                    ai_resume_cutoff_at: null,
                     contact: { phone_number: convo.phoneNumber },
                     channel: { phone_number_id: "pnid-1", status: "connected" },
                   },
@@ -421,6 +422,9 @@ describe("verificación de identidad", () => {
       assigned_agent_id: null,
       welcome_sent_at: null,
       last_customer_message_at: new Date().toISOString(),
+      // `null` de fábrica: ninguno de estos casos ejercita una devolución
+      // manual. Tarea 3, "La IA no vuelve a pedir lo que ya pidió" (16/9/2026).
+      ai_resume_cutoff_at: null,
       contact: { phone_number: "+584120000001" },
       channel: { phone_number_id: "pnid-1", status: "connected" },
       ...overrides,

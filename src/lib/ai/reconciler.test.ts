@@ -74,6 +74,13 @@ import { pendingAgentTurns } from "@/lib/ai/queue";
 interface FakeRow {
   id: string;
   awaiting_reply: boolean;
+  // Tarea 2, "La IA no vuelve a pedir lo que ya pidió" — revisión
+  // (16/9/2026): columna generada que compara `last_customer_message_at`
+  // contra el sello de la última devolución humana (`ai_resume_cutoff_at`,
+  // que este fake no necesita modelar porque la base ya resuelve el booleano
+  // antes de que el código lo lea). Nace en `true` por default para no
+  // romper los tests de arriba, a los que no les importa esta columna.
+  new_since_ai_resume: boolean;
   assigned_agent_id: string | null;
   status: string;
   ai_enabled: boolean;
@@ -86,6 +93,7 @@ function baseRow(id: string, overrides: Partial<FakeRow> = {}): FakeRow {
   return {
     id,
     awaiting_reply: true,
+    new_since_ai_resume: true,
     assigned_agent_id: null,
     status: "open",
     ai_enabled: true,
@@ -450,6 +458,56 @@ describe("reconcileOrphanTurns — el predicado no mira conversation_handoffs (T
       p_to_kind: "ai",
       p_reason: "reabierto",
     });
+  });
+});
+
+/**
+ * Tarea 2, "La IA no vuelve a pedir lo que ya pidió" — revisión (16/9/2026).
+ *
+ * Caso reportado: un cliente pide un asesor, la IA escala y se despide ("te
+ * paso con un asesor") con `is_auto_reply` — eso deja `awaiting_reply = true`
+ * (el cliente sigue esperando a una PERSONA, la despedida automática no
+ * cuenta) y `escalateConversation` apaga `ai_enabled`. Un asesor desasigna y
+ * reactiva la IA a mano: eso ES una devolución, y sella
+ * `ai_resume_cutoff_at` con el `last_customer_message_at` de ese instante —
+ * el mismo mensaje de la escalada, que quedó ANTES del sello. Sin este
+ * filtro el reconciliador volvía a encontrar la conversación "esperando, sin
+ * asesor, con la IA encendida" y repetía la misma despedida sobre el mismo
+ * mensaje.
+ *
+ * Caso 5 (hallado en la revisión adversarial del plan del 15/9): mientras el
+ * cliente espera al asesor puede escribir "¿ya me atienden?" — un mensaje
+ * que TAMPOCO tuvo respuesta y que, si un reloj mirara solo "¿hay algo sin
+ * contestar?", pasaría por nuevo apenas alguien reactivara la IA. Pero sigue
+ * siendo anterior a la devolución (`new_since_ai_resume = false`), así que
+ * el reconciliador lo deja igual de quieto que el mensaje de la escalada:
+ * ninguno de los dos se encola, y ninguno deja `reabierto`.
+ */
+describe("reconcileOrphanTurns — nadie encola un mensaje anterior a la devolución (Tarea 2, 16/9/2026)", () => {
+  it("una conversación devuelta con su mensaje previo a la devolución pendiente no se encola ni deja 'reabierto'", async () => {
+    const rows = [
+      baseRow("conv-mensaje-previo-a-la-devolucion", { new_since_ai_resume: false }),
+      baseRow("conv-mensaje-nuevo"),
+    ];
+    const { client, handoffCalls } = createFakeSupabase(rows);
+
+    const resultado = await reconcileOrphanTurns(client, AHORA);
+
+    expect(resultado).toEqual({ revisadas: 1, yaEnCola: 0, bloqueadasPorLock: 0, atendidasPorHumanos: 0, encoladas: 1 });
+    expect(handoffCalls.map((c) => c.p_conversation_id)).toEqual(["conv-mensaje-nuevo"]);
+    expect(handoffCalls.every((c) => c.p_reason === "reabierto")).toBe(true);
+    expect(await pendingAgentTurns()).toBe(1);
+  });
+
+  it("una conversación con un mensaje posterior a la devolución (new_since_ai_resume=true) sí se encola y deja su traspaso", async () => {
+    const rows = [baseRow("conv-mensaje-posterior-a-la-devolucion", { new_since_ai_resume: true })];
+    const { client, handoffCalls } = createFakeSupabase(rows);
+
+    const resultado = await reconcileOrphanTurns(client, AHORA);
+
+    expect(resultado.encoladas).toBe(1);
+    expect(handoffCalls).toMatchObject([{ p_conversation_id: "conv-mensaje-posterior-a-la-devolucion", p_reason: "reabierto" }]);
+    expect(await pendingAgentTurns()).toBe(1);
   });
 });
 

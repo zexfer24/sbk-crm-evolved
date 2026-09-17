@@ -561,6 +561,10 @@ beforeEach(() => {
     assigned_agent_id: null,
     welcome_sent_at: "2026-08-22T10:00:00Z",
     last_customer_message_at: new Date().toISOString(),
+    // `null` de fábrica: la mayoría de las conversaciones de la suite nunca
+    // pasaron por una devolución manual. Tarea 3, "La IA no vuelve a pedir
+    // lo que ya pidió" (16/9/2026) — ver el describe de más abajo.
+    ai_resume_cutoff_at: null,
     contact: { phone_number: "+584121112233" },
     channel: { phone_number_id: null, status: "demo" },
   };
@@ -1006,6 +1010,80 @@ describe("runAgentTurn — salidas silenciosas de apertura", () => {
     expect(matchPlaybookMock).not.toHaveBeenCalled();
     expect(sendAgentTextMock).not.toHaveBeenCalled();
     expect(sendPlaybookReplyMock).not.toHaveBeenCalled();
+  });
+});
+
+/**
+ * Tarea 3, "La IA no vuelve a pedir lo que ya pidió" (16/9/2026). Caso real:
+ * un cliente pide un asesor -> la IA escala y se despide ("te paso con un
+ * asesor") -> un asesor desasigna y reactiva la IA a mano -> en menos de un
+ * minuto el reconciliador reencola la conversación, y el turno corría sobre
+ * el MISMO mensaje viejo, repitiendo la promesa. Reemplaza a la guarda
+ * `awaiting_any_reply` del 15/9 (descartada: comparaba contra la última
+ * SALIDA y por eso sufría la carrera de ráfaga — ver el Enfoque del plan del
+ * 16/9). Corre ANTES de `humanHasWritten` (la guarda de abajo) y antes de
+ * fase 0/clasificar: `matchPlaybookMock`/`classifyIntentMock` no deben
+ * llamarse cuando esta guarda dispara.
+ */
+describe("runAgentTurn — no contesta lo que llegó antes de la devolución (Tarea 3, 16/9/2026)", () => {
+  it("con last_customer_message_at igual al sello (el borde: la igualdad cuenta como previo), no llama a fase 0 ni al modelo, no envía nada y deja el traspaso mensaje_previo_a_devolucion a unassigned", async () => {
+    const info = vi.spyOn(log, "info");
+    // Reciente (no una fecha fija) para no chocar con `withinFreeformWindow`
+    // -- esta guarda corre antes que esa, pero un `last_customer_message_at`
+    // de hace más de 24 h sería un dato incoherente en la fila real.
+    const sello = new Date(Date.now() - 60_000).toISOString();
+    state.conversation = {
+      ...state.conversation,
+      ai_resume_cutoff_at: sello,
+      last_customer_message_at: sello,
+    };
+
+    await runAgentTurn("conv-1");
+
+    expect(matchPlaybookMock).not.toHaveBeenCalled();
+    expect(classifyIntentMock).not.toHaveBeenCalled();
+    expect(sendAgentTextMock).not.toHaveBeenCalled();
+    expect(sendPlaybookReplyMock).not.toHaveBeenCalled();
+    expect(handoffCalls).toHaveLength(1);
+    expect(handoffCalls[0]).toMatchObject({
+      p_conversation_id: "conv-1",
+      p_to_kind: "unassigned",
+      p_reason: "mensaje_previo_a_devolucion",
+    });
+    expect(info).toHaveBeenCalledWith("turno_mensaje_previo_a_devolucion", { conversationId: "conv-1" });
+  });
+
+  it("con last_customer_message_at posterior al sello, el turno redacta y envía aunque el historial ya traiga una salida de la IA fechada después (la forma de la carrera de ráfaga no lo calla)", async () => {
+    // A diferencia de la guarda vieja (`awaiting_any_reply`, comparaba
+    // contra la última SALIDA hacia el cliente), esta guarda solo mira
+    // cuándo se devolvió el chat: que ya haya salido una respuesta de la IA
+    // fechada después del mensaje del cliente no importa, porque el sello no
+    // se mueve con salidas.
+    state.conversation = {
+      ...state.conversation,
+      ai_resume_cutoff_at: new Date(Date.now() - 60_000).toISOString(),
+      last_customer_message_at: new Date(Date.now() - 55_000).toISOString(),
+    };
+    state.history = [
+      { sender_type: "customer", content: "hola quiero accesorios", is_internal_note: false },
+      { sender_type: "ai", content: "¡Claro! ¿Qué accesorio buscas?", is_internal_note: false },
+    ];
+
+    await runAgentTurn("conv-1");
+
+    expect(classifyIntentMock).toHaveBeenCalled();
+    expect(sendAgentTextMock).toHaveBeenCalledTimes(1);
+    expect(handoffCalls.some((c) => c.p_reason === "mensaje_previo_a_devolucion")).toBe(false);
+  });
+
+  it("sin sello (ai_resume_cutoff_at=null, el caso normal: nunca hubo una devolución manual), el turno sigue el camino de siempre", async () => {
+    state.conversation = { ...state.conversation, ai_resume_cutoff_at: null };
+
+    await runAgentTurn("conv-1");
+
+    expect(classifyIntentMock).toHaveBeenCalled();
+    expect(sendAgentTextMock).toHaveBeenCalledTimes(1);
+    expect(handoffCalls.some((c) => c.p_reason === "mensaje_previo_a_devolucion")).toBe(false);
   });
 });
 
