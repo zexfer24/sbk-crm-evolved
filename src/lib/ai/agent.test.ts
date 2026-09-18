@@ -557,8 +557,24 @@ vi.mock("@/lib/dashboard", async (importOriginal) => {
 const buildEscalateToolMock = vi.fn<(deps: unknown, outcome: Record<string, unknown>) => Record<string, never>>(
   () => ({})
 );
+/**
+ * T3, "Seba atiende el mostrador" (18/9/2026): mismo patrón que
+ * `buildEscalateToolMock`, pero para el catálogo. `buildCatalogTool` real
+ * (`tools.ts`) es lo que llena `CatalogOutcome` cuando el MODELO invoca
+ * `buscarRepuesto` durante el tool loop; acá el tool loop está fingido, así
+ * que un test puntual sobrescribe este mock para mutar el `catalogOutcome`
+ * que le llega —el mismo objeto que `runTurnPhases` construye ANTES de
+ * invocar `agent.generate()`— simulando que el modelo consultó el catálogo,
+ * sin correr la herramienta real. Default: no hace nada (`catalogOutcome.ran`
+ * queda `false`), igual que la mayoría de los tests de este archivo, que no
+ * ejercitan la red de seguridad del catálogo.
+ */
+const buildCatalogToolMock = vi.fn<(deps: unknown, catalogOutcome: Record<string, unknown>) => Record<string, never>>(
+  () => ({})
+);
 vi.mock("@/lib/ai/tools", () => ({
-  buildCatalogTool: () => ({}),
+  buildCatalogTool: (deps: unknown, catalogOutcome: Record<string, unknown>) =>
+    buildCatalogToolMock(deps, catalogOutcome),
   buildEscalateTool: (deps: unknown, outcome: Record<string, unknown>) => buildEscalateToolMock(deps, outcome),
   buildOrderHistoryTool: () => ({}),
 }));
@@ -577,7 +593,7 @@ import { DESPEDIDA_MEDIA, DESPEDIDA_SIN_ASESOR, despedidaConAsesor, runAgentTurn
 import { OFF_TOPIC_REPLY, SYSTEM_PROMPT } from "@/lib/ai/prompt";
 import { revealsIdentity } from "@/lib/ai/identity-guard";
 import { playbookMessageText } from "@/lib/ai/send";
-import { sebaGreeting } from "@/lib/ai/seba";
+import { sebaGreeting, TEXTO_CONFIRMAR_INVENTARIO, TEXTO_NO_IDENTIFICADO, TEXTO_SIN_STOCK } from "@/lib/ai/seba";
 import { log } from "@/lib/log";
 
 function playbook(overrides: Partial<Playbook> = {}): Playbook {
@@ -3424,6 +3440,158 @@ describe("runAgentTurn — anexo A1 + Tarea 5: is_auto_reply en la despedida de 
     const llamada = sendAgentTextMock.mock.calls[0];
     const opciones = llamada[3] as { isAutoReply?: boolean } | undefined;
     expect(opciones?.isAutoReply).not.toBe(true);
+  });
+});
+
+/**
+ * T3, "Seba atiende el mostrador" (18/9/2026, requisitos 2/3/4/5 del
+ * cliente): la red de seguridad del catálogo — mismo patrón que la red de
+ * devolución/queja (A1, arriba), pero mirando `catalogOutcome` en vez de
+ * `intent`. `buildCatalogToolMock` simula lo que haría `buildCatalogTool`
+ * real si el modelo llamara a `buscarRepuesto` durante el tool loop: mutar
+ * el `catalogOutcome` que `runTurnPhases` construye ANTES de invocar
+ * `agent.generate()`.
+ */
+describe("runAgentTurn — T3: red de seguridad del catálogo", () => {
+  it("con existencia y sin escalada del modelo, escala en código con confirmar_inventario y is_auto_reply", async () => {
+    buildCatalogToolMock.mockImplementationOnce((_deps, catalogOutcome) => {
+      catalogOutcome.ran = true;
+      catalogOutcome.conExistencia = true;
+      return {};
+    });
+    // El modelo cotizó, pero se quedó sin pasos antes de llamar a
+    // `escalarAAsesor` — no menciona "asesor", así que la red debe anexarlo.
+    generateMock.mockResolvedValueOnce({
+      text: "Tenemos el carburador en $18 y 12 unidades.",
+      usage: NO_USAGE,
+      steps: [{}, {}],
+    });
+
+    await runAgentTurn("conv-1");
+
+    expect(escalateConversationMock).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ conversationId: "conv-1", motivo: "confirmar_inventario" })
+    );
+    const llamada = sendAgentTextMock.mock.calls[0];
+    expect(llamada[2]).toBe(`Tenemos el carburador en $18 y 12 unidades.\n${TEXTO_CONFIRMAR_INVENTARIO}`);
+    const opciones = llamada[3] as { isAutoReply?: boolean } | undefined;
+    expect(opciones?.isAutoReply).toBe(true);
+  });
+
+  it("agotados: escala en código con sin_stock y anexa el texto fijo", async () => {
+    buildCatalogToolMock.mockImplementationOnce((_deps, catalogOutcome) => {
+      catalogOutcome.ran = true;
+      catalogOutcome.agotados = true;
+      return {};
+    });
+    generateMock.mockResolvedValueOnce({
+      text: "Por ahora no quedan unidades de ese repuesto.",
+      usage: NO_USAGE,
+      steps: [{}, {}],
+    });
+
+    await runAgentTurn("conv-1");
+
+    expect(escalateConversationMock).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ conversationId: "conv-1", motivo: "sin_stock" })
+    );
+    const llamada = sendAgentTextMock.mock.calls[0];
+    expect(llamada[2]).toContain(TEXTO_SIN_STOCK);
+  });
+
+  it("sin resultados: escala en código con no_identificado y anexa el texto fijo", async () => {
+    buildCatalogToolMock.mockImplementationOnce((_deps, catalogOutcome) => {
+      catalogOutcome.ran = true;
+      catalogOutcome.sinResultados = true;
+      return {};
+    });
+    generateMock.mockResolvedValueOnce({
+      text: "No tengo ese repuesto en el catálogo.",
+      usage: NO_USAGE,
+      steps: [{}, {}],
+    });
+
+    await runAgentTurn("conv-1");
+
+    expect(escalateConversationMock).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ conversationId: "conv-1", motivo: "no_identificado" })
+    );
+    const llamada = sendAgentTextMock.mock.calls[0];
+    expect(llamada[2]).toContain(TEXTO_NO_IDENTIFICADO);
+  });
+
+  /**
+   * Mutación de verificación de la tarea (ver el reporte final): cambiar
+   * `!catalogOutcome.generico` por `true` en la red de seguridad de
+   * `agent.ts` tiene que poner ESTE test en rojo.
+   */
+  it("genérico: NO escala en código aunque el modelo se haya quedado sin pasos", async () => {
+    buildCatalogToolMock.mockImplementationOnce((_deps, catalogOutcome) => {
+      catalogOutcome.ran = true;
+      catalogOutcome.generico = true;
+      return {};
+    });
+    generateMock.mockResolvedValueOnce({
+      text: "Claro, ¿para qué modelo y año de moto las buscas?",
+      usage: NO_USAGE,
+      steps: [{}, {}],
+    });
+
+    await runAgentTurn("conv-1");
+
+    expect(escalateConversationMock).not.toHaveBeenCalled();
+    const llamada = sendAgentTextMock.mock.calls[0];
+    expect(llamada[2]).toBe("Claro, ¿para qué modelo y año de moto las buscas?");
+    const opciones = llamada[3] as { isAutoReply?: boolean } | undefined;
+    expect(opciones?.isAutoReply).not.toBe(true);
+  });
+
+  it("el modelo ya dijo 'asesor': no se anexa el texto fijo por encima", async () => {
+    buildCatalogToolMock.mockImplementationOnce((_deps, catalogOutcome) => {
+      catalogOutcome.ran = true;
+      catalogOutcome.conExistencia = true;
+      return {};
+    });
+    generateMock.mockResolvedValueOnce({
+      text: "Tenemos el carburador disponible; ya te paso con un asesor para confirmar.",
+      usage: NO_USAGE,
+      steps: [{}, {}],
+    });
+
+    await runAgentTurn("conv-1");
+
+    const llamada = sendAgentTextMock.mock.calls[0];
+    expect(llamada[2]).toBe("Tenemos el carburador disponible; ya te paso con un asesor para confirmar.");
+    expect(llamada[2]).not.toContain(TEXTO_CONFIRMAR_INVENTARIO);
+  });
+
+  it("el modelo ya escaló (llamó a escalarAAsesor de verdad): la red del catálogo no vuelve a escalar", async () => {
+    buildCatalogToolMock.mockImplementationOnce((_deps, catalogOutcome) => {
+      catalogOutcome.ran = true;
+      catalogOutcome.conExistencia = true;
+      return {};
+    });
+    buildEscalateToolMock.mockImplementationOnce((_deps, outcome) => {
+      outcome.escalated = true;
+      outcome.assignedAgentName = "María";
+      outcome.motivo = "confirmar_inventario";
+      pasos.push("escalar");
+      return {};
+    });
+    generateMock.mockResolvedValueOnce({
+      text: "Tenemos el carburador disponible, ya te paso con María para confirmar el inventario.",
+      usage: NO_USAGE,
+      steps: [{}, {}, {}],
+    });
+
+    await runAgentTurn("conv-1");
+
+    expect(escalateConversationMock).not.toHaveBeenCalled();
+    const llamada = sendAgentTextMock.mock.calls[0];
+    expect(llamada[2]).toBe("Tenemos el carburador disponible, ya te paso con María para confirmar el inventario.");
   });
 });
 

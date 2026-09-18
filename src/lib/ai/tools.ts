@@ -8,6 +8,7 @@ import { getBcvRate } from "@/lib/ai/bcv";
 import { catalogFilter, rankByTerms, searchTerms } from "@/lib/ai/catalog-search";
 import { formatQuote } from "@/lib/ai/precio";
 import { RECLAMO_CATEGORIES, escalateConversation, type EscalationMotivo } from "@/lib/ai/escalate";
+import { PREGUNTA_FILTRO, TEXTO_CONFIRMAR_INVENTARIO, TEXTO_NO_IDENTIFICADO, TEXTO_SIN_STOCK } from "@/lib/ai/seba";
 import { inventoryAgeInstruction, inventoryFreshness } from "@/lib/inventory-freshness";
 import { errorText, log } from "@/lib/log";
 import type { BusinessHours, BusinessStatus } from "@/lib/business-hours";
@@ -42,13 +43,47 @@ const RECORTE_INSTRUCTION =
   "Hay más resultados de los que caben acá. Muestra estos y pídele al cliente que precise (marca del repuesto, modelo de su moto) en vez de dar a entender que esto es todo lo que hay.";
 
 /**
- * Un repuesto activo en cero se sigue cotizando —el cliente pregunta por el
- * precio igual— pero no se ofrece como disponible. La regla ya está en el
- * prompt; acá viaja pegada al resultado, que es lo que el modelo tiene
- * delante en el momento de redactar.
+ * T3, "Seba atiende el mostrador" (18/9/2026, requisitos 2/3/4 del cliente):
+ * hasta esta corrida un repuesto en cero solo dejaba un aviso suelto
+ * (`SIN_STOCK_INSTRUCTION`, ver abajo qué reemplazó) y nada obligaba a
+ * escalar. Ahora TODA llamada al catálogo con resultado termina en una de
+ * cuatro instrucciones, en este orden de precedencia (`generico` primero
+ * porque es la única que le prohíbe escalar: requisito 5, la única
+ * pregunta):
+ *   1. `generico` — sin marca ni modelo de moto y varios repuestos calzan:
+ *      UNA pregunta de filtro, sin escalar en este turno.
+ *   2. resultados con existencia — cotiza y escala con `confirmar_inventario`.
+ *   3. resultados todos en cero — avisa y escala con `sin_stock`.
+ *   4. sin resultados (o el motor de búsqueda no encontró términos) — avisa
+ *      y escala con `no_identificado`.
+ * Los tres textos que el modelo tiene que decir TEXTUAL vienen de `seba.ts`
+ * (el cliente los dictó, o el operador los fijó para el caso 4): nunca se
+ * escriben literales acá, para que no puedan desincronizarse de lo que dicta
+ * el prompt (sección 5.1) ni de lo que exporta `seba.test.ts`.
  */
-const SIN_STOCK_INSTRUCTION =
-  "Alguno de estos repuestos está en cero: de ese NO digas que hay ni lo ofrezcas como disponible. Dilo claro y ofrece pasarle el caso a un asesor por si viene reposición.";
+const GENERICO_INSTRUCTION =
+  `El cliente no dijo modelo ni año de su moto y hay varios repuestos que calzan: haz UNA sola pregunta de filtro («${PREGUNTA_FILTRO}») y NO escales en este turno. Con la respuesta vuelves a buscar.`;
+
+/**
+ * Reemplaza a la vieja `SIN_STOCK_INSTRUCTION` ("alguno de estos repuestos
+ * está en cero"), que solo avisaba sin obligar a escalar. Ahora, con AL
+ * MENOS un resultado con existencia, se cotiza tal cual (los que estén en
+ * cero se dicen como agotados) y se agrega el texto fijo del requisito 3.
+ */
+const CONFIRMAR_INVENTARIO_INSTRUCTION =
+  `Da nombre, precio y stock tal como llegan (si alguno está en cero, dilo como agotado) y agrega textual: «${TEXTO_CONFIRMAR_INVENTARIO}». Luego llama a escalarAAsesor con motivo confirmar_inventario en este mismo turno.`;
+
+/** Todos los resultados en cero (requisito 4): el texto fijo reemplaza cualquier oferta de "hay unidades". */
+const SIN_STOCK_CASO_INSTRUCTION =
+  `Di textual: «${TEXTO_SIN_STOCK}» y llama a escalarAAsesor con motivo sin_stock.`;
+
+/**
+ * Sin resultados, o sin términos de búsqueda reconocibles (requisito 2): el
+ * catálogo no da para más, así que se pasa el caso de una vez sin inventar
+ * alternativas.
+ */
+const NO_IDENTIFICADO_INSTRUCTION =
+  `No encontraste nada, o no queda claro cuál es: di «${TEXTO_NO_IDENTIFICADO}» y llama a escalarAAsesor con motivo no_identificado. No inventes ni sugieras alternativas.`;
 
 /** El `updated_at` más viejo del grupo, o null si ninguna fila trae fecha. */
 function oldestUpdate(rows: { updated_at?: string | null }[]): string | null {
@@ -100,10 +135,38 @@ export interface EscalationOutcome {
   businessStatus?: BusinessStatus;
 }
 
+/**
+ * T3, "Seba atiende el mostrador" (18/9/2026): lo que pasó en las llamadas al
+ * catálogo durante EL MISMO turno, para que la red de seguridad de
+ * `agent.ts` sepa si tiene que escalar en código cuando el modelo se quedó
+ * sin pasos sin haberlo hecho (requisitos 2/3/4 del cliente: repuesto
+ * encontrado, agotado o no identificado SIEMPRE terminan con un asesor).
+ * Mismo patrón que `EscalationOutcome`: un objeto mutable que
+ * `buildCatalogTool` va llenando, pasado por el orquestador.
+ *
+ * Se ACUMULA entre llamadas del mismo turno y nunca se resetea: una consulta
+ * con existencia y otra sin resultados dejan `conExistencia = true` Y
+ * `sinResultados = true` a la vez. La precedencia de qué motivo escala (si
+ * hace falta) la decide `agent.ts`, no este tipo — acá solo se deja
+ * constancia de lo que pasó.
+ */
+export interface CatalogOutcome {
+  /** El tool se invocó al menos una vez en este turno. */
+  ran: boolean;
+  /** Alguna llamada devolvió al menos un repuesto con stock > 0. */
+  conExistencia: boolean;
+  /** Alguna llamada devolvió repuestos, pero todos en cero. */
+  agotados: boolean;
+  /** Alguna llamada no encontró nada (o sin términos de búsqueda reconocibles, o falló la consulta a la base). */
+  sinResultados: boolean;
+  /** Alguna llamada fue una consulta genérica: se le pidió UNA pregunta de filtro, sin escalar. */
+  generico: boolean;
+}
+
 // ---------------------------------------------------------------------------
 // Buscar repuesto — consulta_disponibilidad / otro. Solo lectura.
 // ---------------------------------------------------------------------------
-export function buildCatalogTool({ supabase, conversationId }: ToolDeps) {
+export function buildCatalogTool({ supabase, conversationId }: ToolDeps, catalogOutcome: CatalogOutcome) {
   return tool({
     description:
       `Busca repuestos en el catálogo real de ${BUSINESS_NAME} por nombre o marca del repuesto, y opcionalmente filtra por marca/modelo de la moto del cliente. Devuelve precio en USD y Bs (tasa BCV del día) y el stock disponible. Si no devuelve nada, ese repuesto no existe en el catálogo — no te lo inventes.`,
@@ -113,11 +176,23 @@ export function buildCatalogTool({ supabase, conversationId }: ToolDeps) {
       motoModel: z.string().optional().describe("Modelo de la moto del cliente, si lo mencionó (ej. 'SBR 200')"),
     }),
     execute: async ({ query, motoBrand, motoModel }) => {
+      // T3 (18/9/2026): el tool "corrió" en cuanto el modelo lo invoca, sea
+      // cual sea el resultado — la red de seguridad de `agent.ts` necesita
+      // distinguir "nunca se consultó el catálogo" de "se consultó y no se
+      // pudo decidir nada" (sin términos de búsqueda, o la consulta falló).
+      catalogOutcome.ran = true;
+
       // Palabra por palabra y sin acentos: buscar la frase completa hacía que
       // "bujía NGK" no encontrara la Bujía CR7HSA de NGK, y el agente
       // respondiera con toda seguridad que no la tenemos. Ver catalog-search.ts.
       const terms = searchTerms(query);
-      if (terms.length === 0) return { results: [] };
+      if (terms.length === 0) {
+        // Antes de T3 este caso volvía sin instrucción (uno de los "dos
+        // sitios" del plan): el modelo se quedaba sin saber qué decir cuando
+        // no había ni un término reconocible que buscar.
+        catalogOutcome.sinResultados = true;
+        return { results: [], instruccionParaTuRespuesta: NO_IDENTIFICADO_INSTRUCTION };
+      }
 
       // `query` lo redacta el modelo a partir de lo que escribe el cliente:
       // es entrada no confiable y el filtro `.or()` es un mini-lenguaje, no
@@ -139,7 +214,15 @@ export function buildCatalogTool({ supabase, conversationId }: ToolDeps) {
         // búsqueda fue a ciegas porque un error real de la base tampoco
         // habría dejado nada en el log del servidor.
         log.error("herramienta_catalogo_fallo", { conversationId, detail: errorText(error) });
-        return { results: [], error: "No se pudo consultar el catálogo en este momento." };
+        // T3 (18/9/2026): un error de la base tampoco deja decidir nada — la
+        // red de seguridad de `agent.ts` lo trata como "no identificado" si
+        // el turno se queda sin pasos sin escalar.
+        catalogOutcome.sinResultados = true;
+        return {
+          results: [],
+          error: "No se pudo consultar el catálogo en este momento.",
+          instruccionParaTuRespuesta: NO_IDENTIFICADO_INSTRUCTION,
+        };
       }
 
       const ranked = rankByTerms(products ?? [], terms);
@@ -189,13 +272,41 @@ export function buildCatalogTool({ supabase, conversationId }: ToolDeps) {
         });
       }
 
+      // T3 (18/9/2026, requisito 5 "única pregunta"): una consulta genérica
+      // —sin marca ni modelo de moto— con varios repuestos que calzan no se
+      // responde con una lista: se le pide al modelo UNA sola pregunta de
+      // filtro y que NO escale en este turno. `hayMas` entra también porque
+      // un recorte de más de diez significa lo mismo que "varios calzan",
+      // aunque los primeros diez quepan en la respuesta.
+      const generico = !motoBrand && !motoModel && (quoted.length > 3 || hayMas);
+
+      // Orden de precedencia dentro de esta llamada (genérico primero: es la
+      // única que le prohíbe escalar). Con `motoBrand`/`motoModel` dados
+      // nunca es genérico, aunque haya más de tres resultados — el cliente ya
+      // filtró lo que pudo, y no hay una sola pregunta más que valga la pena.
+      let casoInstruccion: string;
+      if (generico) {
+        catalogOutcome.generico = true;
+        casoInstruccion = GENERICO_INSTRUCTION;
+      } else if (quoted.length === 0) {
+        catalogOutcome.sinResultados = true;
+        casoInstruccion = NO_IDENTIFICADO_INSTRUCTION;
+      } else if (quoted.some((q) => q.stock > 0)) {
+        catalogOutcome.conExistencia = true;
+        casoInstruccion = CONFIRMAR_INVENTARIO_INSTRUCTION;
+      } else {
+        catalogOutcome.agotados = true;
+        casoInstruccion = SIN_STOCK_CASO_INSTRUCTION;
+      }
+
       // Las advertencias se juntan en una sola instrucción: el modelo lee una
-      // frase, no un formulario. Van primero las que limitan lo que puede
-      // prometer y de última la del recorte, que es de forma.
+      // frase, no un formulario. El recorte se calla en el caso genérico: ahí
+      // la instrucción ya dice "no listes, pregunta primero", y avisar "hay
+      // más" encima contradice ese pedido.
       const instrucciones = [
-        quoted.some((q) => q.stock <= 0) ? SIN_STOCK_INSTRUCTION : null,
+        casoInstruccion,
         inventoryAgeInstruction(freshness),
-        hayMas ? RECORTE_INSTRUCTION : null,
+        !generico && hayMas ? RECORTE_INSTRUCTION : null,
       ].filter((linea): linea is string => linea !== null);
 
       // El monto de una venta sale de lo que se cotizó acá, no de un número
@@ -230,7 +341,13 @@ export function buildCatalogTool({ supabase, conversationId }: ToolDeps) {
         tasaDesactualizada: isStale,
         inventarioDesactualizado: freshness.isStale,
         hayMas,
-        ...(instrucciones.length > 0 ? { instruccionParaTuRespuesta: instrucciones.join(" ") } : {}),
+        // T3 (18/9/2026): antes esta clave solo aparecía si había algo que
+        // avisar (stock en cero, inventario viejo, recorte); ahora SIEMPRE
+        // hay una instrucción de caso (generico/existencia/agotado/sin
+        // resultados), así que la condición sobra — pero se conserva el
+        // `.filter` de arriba porque las otras dos líneas siguen siendo
+        // opcionales.
+        instruccionParaTuRespuesta: instrucciones.join(" "),
       };
     },
   });
@@ -383,10 +500,22 @@ export function buildEscalateTool(
       // casos que no son ni una devolución, ni una queja, ni una venta en
       // curso, y que hasta ahora no tenían dónde caer sin forzar uno de los
       // otros tres motivos.
+      // T3 (18/9/2026, requisitos 2/3/4): suma confirmar_inventario, sin_stock
+      // y no_identificado — los tres motivos con los que `buildCatalogTool`
+      // le pide al modelo que escale tras cotizar. Sin `consulta_generica`:
+      // ese caso (requisito 5) pide una pregunta y a propósito no escala.
       motivo: z
-        .enum(["devolucion", "queja", "intencion_compra", "seguimiento"])
+        .enum([
+          "devolucion",
+          "queja",
+          "intencion_compra",
+          "seguimiento",
+          "confirmar_inventario",
+          "sin_stock",
+          "no_identificado",
+        ])
         .describe(
-          "Por qué se escala: devolucion (quiere devolver o cambiar algo que ya compró), queja (reclamo), intencion_compra (quiere comprar y hay que cobrarle), seguimiento (avisar cuando llegue un repuesto agotado, una lista larga o de mayoreo, o cualquier postventa que no sea devolución ni queja)."
+          "Por qué se escala: devolucion (quiere devolver o cambiar algo que ya compró), queja (reclamo), intencion_compra (quiere comprar y hay que cobrarle), seguimiento (avisar cuando llegue un repuesto agotado, una lista larga o de mayoreo, o cualquier postventa que no sea devolución ni queja), confirmar_inventario (el catálogo mostró un repuesto con existencia y hay que confirmar el inventario físico), sin_stock (el catálogo marca cero unidades), no_identificado (no se encontró el repuesto en el catálogo, o no quedó claro cuál es)."
         ),
       resumen: z
         .string()

@@ -406,6 +406,32 @@ describe("escalateConversation — el chat ya tenía asesor asignado", () => {
 });
 
 /**
+ * T3, "Seba atiende el mostrador" (18/9/2026, requisitos 2/3/4 del cliente):
+ * `EscalationMotivo` suma `confirmar_inventario`, `sin_stock` y
+ * `no_identificado` — los motivos con los que `buildCatalogTool` (tools.ts)
+ * le pide al modelo que escale tras cotizar. `motivo` no tiene CHECK en la
+ * base (hallazgo 7 del plan): viaja tal cual en el texto del `system_event`,
+ * así que no hay una etiqueta legible que traducir — este test solo fija que
+ * `escalateConversation` los acepta y los deja igual de crudos en la nota,
+ * el mismo comportamiento que ya tenían `devolucion`/`queja`/`seguimiento`.
+ */
+describe("escalateConversation — acepta los tres motivos nuevos del catálogo", () => {
+  it.each(["confirmar_inventario", "sin_stock", "no_identificado"] as const)(
+    "motivo '%s': asigna, y la nota interna lo nombra tal cual",
+    async (motivo) => {
+      claimNextAvailableAgentMock.mockResolvedValue({ id: "agent-1", displayName: "María" });
+      const { client, estado } = createFakeSupabase();
+
+      // @ts-expect-error -- fake mínimo
+      const result = await escalateConversation(client, { ...PARAMS, motivo });
+
+      expect(result.escalated).toBe(true);
+      expect(estado.notas[0]).toContain(`Motivo: ${motivo}.`);
+    }
+  );
+});
+
+/**
  * Frente B4 ("El reloj dice la verdad", 5/9/2026): sin asesores, el evento de
  * sistema y el resultado que le llega a `buildEscalateTool` (`tools.ts`)
  * tienen que saber si la tienda está abierta — antes de esto la despedida no

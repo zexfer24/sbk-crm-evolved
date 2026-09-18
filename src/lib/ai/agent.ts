@@ -15,11 +15,17 @@ import { createAdminClient } from "@/lib/supabase/admin";
 import { classifyIntent, type Intent } from "@/lib/ai/classify";
 import { currentAgentModelLabel, getAgentModel } from "@/lib/ai/model";
 import { OFF_TOPIC_REPLY, SYSTEM_PROMPT, buildInstructions } from "@/lib/ai/prompt";
-import { buildCatalogTool, buildEscalateTool, buildOrderHistoryTool, type EscalationOutcome } from "@/lib/ai/tools";
+import {
+  buildCatalogTool,
+  buildEscalateTool,
+  buildOrderHistoryTool,
+  type CatalogOutcome,
+  type EscalationOutcome,
+} from "@/lib/ai/tools";
 import { revealsIdentity, rewriteSuffix } from "@/lib/ai/identity-guard";
 import { TOOL_KEYS, fetchEnabledToolKeys } from "@/lib/ai/agent-tools";
 import { buildKnowledgeTool } from "@/lib/ai/knowledge";
-import { escalateConversation } from "@/lib/ai/escalate";
+import { escalateConversation, type EscalationMotivo } from "@/lib/ai/escalate";
 import { withConversationTurnLock, type TurnLease } from "@/lib/ai/conversation-lock";
 import { humanHasWritten } from "@/lib/ai/human-handled";
 import { ZERO_USAGE, fetchActivePlaybooks, matchPlaybook, playbookSentRecently, type PlaybookMatch } from "@/lib/ai/playbooks";
@@ -30,7 +36,12 @@ import { buildTurnTarget, type AgentConversation, type TurnTarget } from "@/lib/
 import { NonRetryableTurnError, newTurnDelivery, type TurnDelivery } from "@/lib/ai/turn-delivery";
 import { recordHandoff, escalationOpen } from "@/lib/ai/handoffs";
 import { isCourtesyOnly, isGreetingOnly } from "@/lib/ai/saludo";
-import { sebaGreeting } from "@/lib/ai/seba";
+import {
+  sebaGreeting,
+  TEXTO_CONFIRMAR_INVENTARIO,
+  TEXTO_NO_IDENTIFICADO,
+  TEXTO_SIN_STOCK,
+} from "@/lib/ai/seba";
 import { errorText, log } from "@/lib/log";
 import { withinFreeformWindow } from "@/lib/dashboard";
 import { isWithin24hWindow } from "@/lib/whatsapp-window";
@@ -1638,6 +1649,18 @@ async function runTurnPhases(
   }
 
   const outcome: EscalationOutcome = { escalated: false };
+  // T3, "Seba atiende el mostrador" (18/9/2026): mismo patrón que `outcome`,
+  // pero para el catálogo — `buildCatalogTool` lo va llenando en cada
+  // llamada del turno, y la red de seguridad de más abajo lo lee para
+  // escalar en código si el modelo cotizó (o dijo "no lo manejo") y se quedó
+  // sin pasos antes de llamar a `escalarAAsesor` de verdad.
+  const catalogOutcome: CatalogOutcome = {
+    ran: false,
+    conExistencia: false,
+    agotados: false,
+    sinResultados: false,
+    generico: false,
+  };
   // `businessHours` viaja en `deps` para `buildEscalateTool`, que lo usa en la
   // despedida sin asesores (Frente B4, "El reloj dice la verdad", 5/9/2026):
   // así no hace falta reabrir el Promise.all de runAgentTurn para conseguirlo.
@@ -1654,7 +1677,7 @@ async function runTurnPhases(
   if (intent === "devolucion") {
     if (enabledTools.has(TOOL_KEYS.orderHistory)) tools.buscarHistorialCompras = buildOrderHistoryTool(deps);
   } else if (intent !== "queja") {
-    if (enabledTools.has(TOOL_KEYS.catalog)) tools.buscarRepuesto = buildCatalogTool(deps);
+    if (enabledTools.has(TOOL_KEYS.catalog)) tools.buscarRepuesto = buildCatalogTool(deps, catalogOutcome);
   }
   if (enabledTools.has(TOOL_KEYS.knowledge)) tools.consultarBiblioteca = buildKnowledgeTool(deps);
 
@@ -1775,6 +1798,59 @@ async function runTurnPhases(
       // la Tarea 5 (14/9/2026), la despedida nombra cuándo escribe si la
       // tienda ya cerró (`despedidaConAsesor`, arriba).
       text = forced.unassigned ? DESPEDIDA_SIN_ASESOR : despedidaConAsesor(forced.businessStatus);
+    }
+  }
+
+  // Red de seguridad del catálogo (T3, "Seba atiende el mostrador",
+  // 18/9/2026, requisitos 2/3/4 del cliente): repuesto encontrado, agotado o
+  // no identificado SIEMPRE terminan con un asesor — mismo patrón que la red
+  // de devolución/queja de arriba, pero mirando `catalogOutcome` en vez de
+  // `intent`, porque acá el modelo YA recibió una instrucción explícita
+  // (`instruccionParaTuRespuesta`, tools.ts) que le pide llamar a
+  // `escalarAAsesor` en el mismo turno; esta red solo cubre el caso en que
+  // el modelo cotizó (o dijo "no lo manejo") y se quedó sin pasos antes de
+  // escalar de verdad. Un genérico NO entra acá a propósito: ese caso pide
+  // UNA pregunta de filtro y explícitamente no escala en este turno
+  // (requisito 5, la única pregunta) — `catalogOutcome.generico` bloquea la
+  // red entera aunque OTRA llamada del mismo turno haya dejado
+  // `conExistencia`/`agotados`/`sinResultados` en `true` (se acumulan, ver
+  // `CatalogOutcome` en tools.ts): la pregunta sin contestar pesa más que
+  // cualquier resultado a medias.
+  if (catalogOutcome.ran && !outcome.escalated && !catalogOutcome.generico) {
+    const motivoCatalogo: EscalationMotivo = catalogOutcome.conExistencia
+      ? "confirmar_inventario"
+      : catalogOutcome.agotados
+        ? "sin_stock"
+        : "no_identificado";
+    const forced = await escalateConversation(supabase, {
+      conversationId,
+      contactId: target.contactId,
+      motivo: motivoCatalogo,
+      resumen: "El turno de la IA consultó el catálogo y se quedó sin pasos antes de escalar formalmente.",
+      businessHours,
+    });
+    outcome.escalated = forced.escalated;
+    outcome.assignedAgentName = forced.assignedAgentName ?? undefined;
+    outcome.unassigned = forced.unassigned;
+    outcome.businessStatus = forced.businessStatus;
+    outcome.motivo = motivoCatalogo;
+
+    // El modelo puede haber cotizado o dicho "no lo manejo" SIN mencionar al
+    // asesor —se quedó sin pasos antes de leer la instrucción del tool—, así
+    // que se le anexa el texto fijo del motivo para no dejar al cliente sin
+    // la frase que el dueño exigió (los tres textos de `seba.ts` ya
+    // contienen "asesor", así que si el modelo ya lo dijo no se duplica). Si
+    // el turno no redactó nada, el texto fijo queda como la respuesta
+    // entera — ya trae la promesa completa, no hace falta una despedida
+    // genérica encima.
+    if (!/asesor/i.test(text)) {
+      const textoFijo =
+        motivoCatalogo === "confirmar_inventario"
+          ? TEXTO_CONFIRMAR_INVENTARIO
+          : motivoCatalogo === "sin_stock"
+            ? TEXTO_SIN_STOCK
+            : TEXTO_NO_IDENTIFICADO;
+      text = text.trim() ? `${text.trim()}\n${textoFijo}` : textoFijo;
     }
   }
 

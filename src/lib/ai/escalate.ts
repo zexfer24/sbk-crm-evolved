@@ -17,7 +17,28 @@ import { log } from "@/lib/log";
 export const RECLAMO_CATEGORIES = ["Envío", "Pago", "Producto", "Atención", "Garantía"] as const;
 export type ReclamoCategory = (typeof RECLAMO_CATEGORIES)[number];
 /** `seguimiento`: postventa y logística — lo usan los escenarios predeterminados que piden un dato y pasan el caso a un humano. */
-export type EscalationMotivo = "devolucion" | "queja" | "intencion_compra" | "seguimiento";
+/**
+ * T3, "Seba atiende el mostrador" (18/9/2026, requisitos 2/3/4 del cliente):
+ * suman `confirmar_inventario` (repuesto encontrado con existencia),
+ * `sin_stock` (el catálogo marca cero) y `no_identificado` (no se encontró
+ * nada, o no quedó claro cuál repuesto es) — los tres motivos con los que
+ * `buildCatalogTool` (tools.ts) le dice al modelo que escale tras cotizar, y
+ * con los que la red de seguridad de `agent.ts` escala en código si el
+ * modelo se queda sin pasos antes de hacerlo. No hay `consulta_generica`: el
+ * caso genérico (sin marca ni modelo de moto) pide UNA pregunta de filtro y
+ * a propósito NO escala en ese turno (requisito 5, la única pregunta).
+ * `motivo` no tiene CHECK en la base (viaja solo en el texto del
+ * `system_event` y en `agent_turns.summary`, hallazgo 7 del plan): sumar un
+ * valor acá no exige migración.
+ */
+export type EscalationMotivo =
+  | "devolucion"
+  | "queja"
+  | "intencion_compra"
+  | "seguimiento"
+  | "confirmar_inventario"
+  | "sin_stock"
+  | "no_identificado";
 
 export interface EscalateResult {
   /** El caso salió de manos de la IA. Es true aunque no haya habido a quién asignárselo. */

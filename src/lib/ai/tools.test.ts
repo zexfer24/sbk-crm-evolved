@@ -33,10 +33,23 @@ import {
   buildEscalateTool,
   buildOrderHistoryTool,
   RECORDATORIO_SALUDO,
+  type CatalogOutcome,
   type EscalationOutcome,
 } from "@/lib/ai/tools";
 import type { BusinessHours } from "@/lib/business-hours";
 import { revealsIdentity } from "@/lib/ai/identity-guard";
+import { PREGUNTA_FILTRO, TEXTO_CONFIRMAR_INVENTARIO, TEXTO_NO_IDENTIFICADO, TEXTO_SIN_STOCK } from "@/lib/ai/seba";
+
+/**
+ * T3, "Seba atiende el mostrador" (18/9/2026): `buildCatalogTool` ganó un
+ * segundo parámetro que se acumula entre llamadas del mismo turno. Los tests
+ * viejos de este archivo no necesitan mirarlo — solo pasarlo para que el tool
+ * pueda escribir en él — así que este helper les da uno nuevo en cada
+ * llamada, salvo los tests nuevos que sí lo inspeccionan.
+ */
+function nuevoCatalogOutcome(): CatalogOutcome {
+  return { ran: false, conExistencia: false, agotados: false, sinResultados: false, generico: false };
+}
 
 interface FakeProductRow {
   id: string;
@@ -105,7 +118,7 @@ describe("buildCatalogTool — registro de cotizaciones", () => {
       supabase: client,
       conversationId: "conv-1",
       contactId: "contact-1",
-    });
+    }, nuevoCatalogOutcome());
 
     // @ts-expect-error -- la firma real de `execute` de `ai` es más genérica que lo que necesitamos simular acá
     const result = (await tool.execute({ query: "carburador" }, { toolCallId: "t1", messages: [] })) as {
@@ -148,7 +161,7 @@ describe("buildCatalogTool — registro de cotizaciones", () => {
       supabase: client,
       conversationId: "conv-1",
       contactId: "contact-1",
-    });
+    }, nuevoCatalogOutcome());
 
     // @ts-expect-error -- la firma real de `execute` de `ai` es más genérica
     const result = (await tool.execute({ query: "carburador" }, { toolCallId: "t1", messages: [] })) as {
@@ -167,7 +180,7 @@ describe("buildCatalogTool — registro de cotizaciones", () => {
       supabase: client,
       conversationId: "conv-1",
       contactId: "contact-1",
-    });
+    }, nuevoCatalogOutcome());
 
     // @ts-expect-error -- firma simplificada del test
     await tool.execute({ query: "algo que no existe" }, { toolCallId: "t1", messages: [] });
@@ -200,7 +213,7 @@ describe("buildCatalogTool — tope de resultados", () => {
       supabase: client,
       conversationId: "conv-1",
       contactId: "contact-1",
-    });
+    }, nuevoCatalogOutcome());
 
     // @ts-expect-error -- firma simplificada del test
     const result = (await tool.execute({ query: "a" }, { toolCallId: "t1", messages: [] })) as {
@@ -233,7 +246,7 @@ describe("buildCatalogTool — tope de resultados", () => {
       supabase: client,
       conversationId: "conv-1",
       contactId: "contact-1",
-    });
+    }, nuevoCatalogOutcome());
 
     // @ts-expect-error -- firma simplificada
     const result = (await tool.execute({ query: "a" }, { toolCallId: "t1", messages: [] })) as {
@@ -261,7 +274,7 @@ describe("buildCatalogTool — tope de resultados", () => {
       supabase: client,
       conversationId: "conv-1",
       contactId: "contact-1",
-    });
+    }, nuevoCatalogOutcome());
 
     // @ts-expect-error -- firma simplificada
     const result = (await tool.execute({ query: "carburador" }, { toolCallId: "t1", messages: [] })) as {
@@ -307,7 +320,7 @@ async function cotizar(products: FakeProductRow[]) {
     supabase: client,
     conversationId: "conv-1",
     contactId: "contact-1",
-  });
+  }, nuevoCatalogOutcome());
 
   // @ts-expect-error -- firma simplificada del test
   return (await tool.execute({ query: "carburador" }, { toolCallId: "t1", messages: [] })) as {
@@ -318,11 +331,19 @@ async function cotizar(products: FakeProductRow[]) {
 }
 
 describe("buildCatalogTool — qué tan viejo es lo que está cotizando", () => {
-  it("con el inventario de hoy afirma con normalidad, sin advertencias", async () => {
+  /**
+   * T3 (18/9/2026): antes de esta corrida, "sin advertencias" significaba
+   * `instruccionParaTuRespuesta` ausente del todo. Ahora SIEMPRE hay una
+   * instrucción de caso (acá, `confirmar_inventario`, porque el único
+   * producto tiene existencia) — lo que sigue sin aparecer es el aviso de
+   * antigüedad, que es lo que este test de verdad mide.
+   */
+  it("con el inventario de hoy no trae aviso de antigüedad (sí la instrucción de existencia, que ahora es siempre)", async () => {
     const result = await cotizar([producto({ id: "prod-1", updated_at: haceDias(0) })]);
 
     expect(result.inventarioDesactualizado).toBe(false);
-    expect(result.instruccionParaTuRespuesta).toBeUndefined();
+    expect(result.instruccionParaTuRespuesta).toContain(TEXTO_CONFIRMAR_INVENTARIO);
+    expect(result.instruccionParaTuRespuesta).not.toMatch(/no se actualiza desde hace/i);
   });
 
   it("con el inventario de hace una semana se lo dice al modelo, con la antigüedad y el asesor", async () => {
@@ -378,25 +399,33 @@ describe("buildCatalogTool — un repuesto en cero no se ofrece como disponible"
    * el prompt es el guion, no la cerradura: acá se le dice con el resultado en
    * la mano, que es lo que el modelo tiene delante cuando redacta.
    */
-  it("se lo dice al modelo en palabras cuando alguno viene en cero", async () => {
+  /**
+   * T3 (18/9/2026): reemplaza a la vieja `SIN_STOCK_INSTRUCTION` ("alguno de
+   * estos repuestos está en cero"), que avisaba sin obligar a escalar. Con
+   * TODOS los resultados en cero, la instrucción es el texto literal que
+   * dictó el cliente (requisito 4) y el motivo `sin_stock`.
+   */
+  it("se lo dice al modelo en palabras cuando todos vienen en cero, con el texto fijo y el motivo sin_stock", async () => {
     const result = await cotizar([producto({ id: "prod-1", stock_quantity: 0, updated_at: haceDias(0) })]);
 
     expect(result.results[0].stock).toBe(0);
-    expect(result.instruccionParaTuRespuesta).toMatch(/cero/i);
+    expect(result.instruccionParaTuRespuesta).toContain(TEXTO_SIN_STOCK);
     expect(result.instruccionParaTuRespuesta).toMatch(/asesor/i);
+    expect(result.instruccionParaTuRespuesta).toMatch(/motivo sin_stock/);
   });
 
-  it("no dice nada de eso cuando todos tienen unidades", async () => {
+  it("con existencia, la instrucción es la de confirmar inventario, no la de agotado", async () => {
     const result = await cotizar([producto({ id: "prod-1", stock_quantity: 4, updated_at: haceDias(0) })]);
 
-    expect(result.instruccionParaTuRespuesta).toBeUndefined();
+    expect(result.instruccionParaTuRespuesta).toContain(TEXTO_CONFIRMAR_INVENTARIO);
+    expect(result.instruccionParaTuRespuesta).not.toContain(TEXTO_SIN_STOCK);
   });
 
   /** Las dos advertencias son independientes y pueden salir juntas. */
   it("con un repuesto en cero y el inventario viejo, avisa de las dos cosas", async () => {
     const result = await cotizar([producto({ id: "prod-1", stock_quantity: 0, updated_at: haceDias(5) })]);
 
-    expect(result.instruccionParaTuRespuesta).toMatch(/cero/i);
+    expect(result.instruccionParaTuRespuesta).toContain(TEXTO_SIN_STOCK);
     expect(result.instruccionParaTuRespuesta).toMatch(/5 días/);
   });
 });
@@ -634,6 +663,28 @@ describe("buildEscalateTool — el esquema acepta el motivo seguimiento", () => 
     expect(() => schema.parse("intencion_compra")).not.toThrow();
     expect(() => schema.parse("motivo_inventado")).toThrow();
   });
+
+  // T3, "Seba atiende el mostrador" (18/9/2026, requisitos 2/3/4 del
+  // cliente): el modelo tiene que poder elegir estos tres motivos cuando
+  // llama a `escalarAAsesor` tras leer la instrucción del catálogo
+  // (`buildCatalogTool`, más abajo en este archivo) — sin el esquema real
+  // actualizado, el prompt podría pedírselo y el modelo nunca podría hacerlo.
+  it("el zod schema de 'motivo' acepta los tres motivos nuevos del catálogo (confirmar_inventario, sin_stock, no_identificado)", () => {
+    const tool = buildEscalateTool(
+      // @ts-expect-error -- fake mínimo: no se ejecuta nada, solo se lee el esquema.
+      { supabase: {}, conversationId: "conv-1", contactId: "contact-1" },
+      { escalated: false }
+    );
+
+    const schema = (tool as unknown as { inputSchema: { shape: { motivo: { parse: (v: unknown) => unknown } } } })
+      .inputSchema.shape.motivo;
+
+    expect(() => schema.parse("confirmar_inventario")).not.toThrow();
+    expect(() => schema.parse("sin_stock")).not.toThrow();
+    expect(() => schema.parse("no_identificado")).not.toThrow();
+    // No hay `consulta_generica`: ese caso pide una pregunta y NO escala.
+    expect(() => schema.parse("consulta_generica")).toThrow();
+  });
 });
 
 describe("buildEscalateTool — intencion_compra escala con el primer aviso", () => {
@@ -752,21 +803,32 @@ describe("un error de la base deja rastro en el log (D3, 6/9/2026)", () => {
   }
 
   it("catálogo: con error de Supabase devuelve la lista vacía de siempre y deja rastro en el log", async () => {
-    const tool = buildCatalogTool({
-      // @ts-expect-error -- fake mínimo suficiente para este test
-      supabase: createFailingCatalogSupabase(),
-      conversationId: "conv-fallo-catalogo",
-      contactId: "contact-1",
-    });
+    // T3 (18/9/2026): un error de la base tampoco deja decidir nada — se
+    // guarda el `catalogOutcome` de este llamado para comprobar que queda
+    // marcado `sinResultados`, igual que "no encontré nada".
+    const catalogOutcome = nuevoCatalogOutcome();
+    const tool = buildCatalogTool(
+      {
+        // @ts-expect-error -- fake mínimo suficiente para este test
+        supabase: createFailingCatalogSupabase(),
+        conversationId: "conv-fallo-catalogo",
+        contactId: "contact-1",
+      },
+      catalogOutcome
+    );
 
     // @ts-expect-error -- firma simplificada del test
     const result = (await tool.execute({ query: "carburador" }, { toolCallId: "t1", messages: [] })) as {
       results: unknown[];
       error?: string;
+      instruccionParaTuRespuesta?: string;
     };
 
     expect(result.results).toEqual([]);
     expect(result.error).toBe("No se pudo consultar el catálogo en este momento.");
+    expect(catalogOutcome.ran).toBe(true);
+    expect(catalogOutcome.sinResultados).toBe(true);
+    expect(result.instruccionParaTuRespuesta).toContain(TEXTO_NO_IDENTIFICADO);
 
     expect(logErrorMock).toHaveBeenCalledTimes(1);
     expect(logErrorMock).toHaveBeenCalledWith(
@@ -823,7 +885,7 @@ describe("un error de la base deja rastro en el log (D3, 6/9/2026)", () => {
       supabase: client,
       conversationId: "conv-ok",
       contactId: "contact-1",
-    });
+    }, nuevoCatalogOutcome());
 
     // @ts-expect-error -- firma simplificada del test
     const result = (await tool.execute({ query: "carburador" }, { toolCallId: "t1", messages: [] })) as {
@@ -832,5 +894,214 @@ describe("un error de la base deja rastro en el log (D3, 6/9/2026)", () => {
 
     expect(result.results).toHaveLength(1);
     expect(logErrorMock).not.toHaveBeenCalled();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// T3, "Seba atiende el mostrador" (18/9/2026, requisitos 2/3/4/5 del
+// cliente): las cuatro instrucciones de caso, en orden de precedencia, y el
+// `CatalogOutcome` que la red de seguridad de `agent.ts` lee para escalar en
+// código si el modelo se queda sin pasos antes de hacerlo por su cuenta.
+// ---------------------------------------------------------------------------
+describe("buildCatalogTool — sin resultados, escala con no_identificado", () => {
+  it("sin ningún producto en el catálogo, la instrucción es el texto fijo y el motivo no_identificado", async () => {
+    const { client } = createFakeSupabase([]);
+    const catalogOutcome = nuevoCatalogOutcome();
+    const tool = buildCatalogTool(
+      // @ts-expect-error -- fake mínimo
+      { supabase: client, conversationId: "conv-1", contactId: "contact-1" },
+      catalogOutcome
+    );
+
+    // @ts-expect-error -- firma simplificada del test
+    const result = (await tool.execute({ query: "carburador" }, { toolCallId: "t1", messages: [] })) as {
+      results: unknown[];
+      instruccionParaTuRespuesta?: string;
+    };
+
+    expect(result.results).toEqual([]);
+    expect(result.instruccionParaTuRespuesta).toContain(TEXTO_NO_IDENTIFICADO);
+    expect(result.instruccionParaTuRespuesta).toMatch(/motivo no_identificado/);
+    expect(catalogOutcome.ran).toBe(true);
+    expect(catalogOutcome.sinResultados).toBe(true);
+    expect(catalogOutcome.conExistencia).toBe(false);
+    expect(catalogOutcome.agotados).toBe(false);
+    expect(catalogOutcome.generico).toBe(false);
+  });
+
+  /** El otro sitio "sin instrucción" que nombra el plan: sin términos reconocibles, antes de tocar la base. */
+  it("sin términos de búsqueda reconocibles (query muy corta), también marca sinResultados", async () => {
+    const { client } = createFakeSupabase([]);
+    const catalogOutcome = nuevoCatalogOutcome();
+    const tool = buildCatalogTool(
+      // @ts-expect-error -- fake mínimo
+      { supabase: client, conversationId: "conv-1", contactId: "contact-1" },
+      catalogOutcome
+    );
+
+    // Palabras de menos de tres letras se descartan (searchTerms), pero
+    // `searchTerms` cae a la frase entera si queda algo — para que
+    // `terms.length === 0` de verdad hace falta una consulta vacía tras
+    // normalizar.
+    // @ts-expect-error -- firma simplificada del test
+    const result = (await tool.execute({ query: "   " }, { toolCallId: "t1", messages: [] })) as {
+      results: unknown[];
+      instruccionParaTuRespuesta?: string;
+    };
+
+    expect(result.results).toEqual([]);
+    expect(result.instruccionParaTuRespuesta).toContain(TEXTO_NO_IDENTIFICADO);
+    expect(catalogOutcome.sinResultados).toBe(true);
+  });
+});
+
+describe("buildCatalogTool — consulta genérica: una pregunta de filtro, sin escalar", () => {
+  /** Varios repuestos genéricos, sin marca ni modelo de moto en la consulta: más de tres calzan. */
+  function repuestosGenericos(cantidad: number): FakeProductRow[] {
+    return Array.from({ length: cantidad }, (_, i) => ({
+      id: `prod-${i}`,
+      name: `Pastilla de freno ${i}`,
+      brand: "Genérico",
+      price: 10,
+      currency: "USD" as const,
+      stock_quantity: 5,
+      product_compatibility: [],
+    }));
+  }
+
+  it("sin marca ni modelo y más de tres resultados: pregunta de filtro, generico=true, y NO escala en este turno", async () => {
+    const { client } = createFakeSupabase(repuestosGenericos(5));
+    const catalogOutcome = nuevoCatalogOutcome();
+    const tool = buildCatalogTool(
+      // @ts-expect-error -- fake mínimo
+      { supabase: client, conversationId: "conv-1", contactId: "contact-1" },
+      catalogOutcome
+    );
+
+    // @ts-expect-error -- firma simplificada del test
+    const result = (await tool.execute({ query: "pastilla" }, { toolCallId: "t1", messages: [] })) as {
+      instruccionParaTuRespuesta?: string;
+    };
+
+    expect(result.instruccionParaTuRespuesta).toContain(PREGUNTA_FILTRO);
+    expect(result.instruccionParaTuRespuesta).toMatch(/no escales/i);
+    expect(result.instruccionParaTuRespuesta).not.toMatch(/escalarAAsesor/);
+    expect(catalogOutcome.generico).toBe(true);
+    expect(catalogOutcome.conExistencia).toBe(false);
+  });
+
+  it("con tres resultados o menos, no es genérico aunque no haya marca ni modelo", async () => {
+    const { client } = createFakeSupabase(repuestosGenericos(2));
+    const catalogOutcome = nuevoCatalogOutcome();
+    const tool = buildCatalogTool(
+      // @ts-expect-error -- fake mínimo
+      { supabase: client, conversationId: "conv-1", contactId: "contact-1" },
+      catalogOutcome
+    );
+
+    // @ts-expect-error -- firma simplificada del test
+    await tool.execute({ query: "pastilla" }, { toolCallId: "t1", messages: [] });
+
+    expect(catalogOutcome.generico).toBe(false);
+    expect(catalogOutcome.conExistencia).toBe(true);
+  });
+
+  it("con motoModel y más de tres resultados, NO es genérico: cotiza y escala con confirmar_inventario", async () => {
+    const { client } = createFakeSupabase(repuestosGenericos(5));
+    const catalogOutcome = nuevoCatalogOutcome();
+    const tool = buildCatalogTool(
+      // @ts-expect-error -- fake mínimo
+      { supabase: client, conversationId: "conv-1", contactId: "contact-1" },
+      catalogOutcome
+    );
+
+    // @ts-expect-error -- firma simplificada del test
+    const result = (await tool.execute({ query: "pastilla", motoModel: "SBR 200" }, { toolCallId: "t1", messages: [] })) as {
+      instruccionParaTuRespuesta?: string;
+    };
+
+    expect(catalogOutcome.generico).toBe(false);
+    expect(catalogOutcome.conExistencia).toBe(true);
+    expect(result.instruccionParaTuRespuesta).toContain(TEXTO_CONFIRMAR_INVENTARIO);
+  });
+
+  it("con motoBrand y más de tres resultados, tampoco es genérico", async () => {
+    const { client } = createFakeSupabase(repuestosGenericos(5));
+    const catalogOutcome = nuevoCatalogOutcome();
+    const tool = buildCatalogTool(
+      // @ts-expect-error -- fake mínimo
+      { supabase: client, conversationId: "conv-1", contactId: "contact-1" },
+      catalogOutcome
+    );
+
+    // @ts-expect-error -- firma simplificada del test
+    await tool.execute({ query: "pastilla", motoBrand: "Bera" }, { toolCallId: "t1", messages: [] });
+
+    expect(catalogOutcome.generico).toBe(false);
+  });
+});
+
+describe("buildCatalogTool — el CatalogOutcome se acumula entre llamadas del mismo turno", () => {
+  /** Un fake cuyo `products` devuelve una lista distinta en cada llamada, en el orden dado. */
+  function createSequencedFakeSupabase(secuencia: FakeProductRow[][]) {
+    let llamada = 0;
+    return {
+      from(table: string) {
+        if (table === "products") {
+          return {
+            select: () => ({
+              eq: () => ({
+                or: () => ({
+                  limit: async (n: number) => {
+                    const products = secuencia[llamada] ?? [];
+                    llamada += 1;
+                    return { data: products.slice(0, n), error: null };
+                  },
+                }),
+              }),
+            }),
+          };
+        }
+        if (table === "conversation_quotes") {
+          return { insert: async () => ({ data: null, error: null }) };
+        }
+        throw new Error(`Fake Supabase: tabla no soportada en este test: ${table}`);
+      },
+    };
+  }
+
+  it("una llamada con existencia y otra sin resultados dejan conExistencia=true Y sinResultados=true a la vez", async () => {
+    const client = createSequencedFakeSupabase([
+      [
+        {
+          id: "prod-1",
+          name: "Carburador PZ27",
+          brand: "Genérico",
+          price: 18,
+          currency: "USD",
+          stock_quantity: 12,
+          product_compatibility: [],
+        },
+      ],
+      [],
+    ]);
+    const catalogOutcome = nuevoCatalogOutcome();
+    const tool = buildCatalogTool(
+      // @ts-expect-error -- fake mínimo
+      { supabase: client, conversationId: "conv-1", contactId: "contact-1" },
+      catalogOutcome
+    );
+
+    // @ts-expect-error -- firma simplificada del test
+    await tool.execute({ query: "carburador" }, { toolCallId: "t1", messages: [] });
+    // @ts-expect-error -- firma simplificada del test
+    await tool.execute({ query: "algo que no existe" }, { toolCallId: "t2", messages: [] });
+
+    expect(catalogOutcome.ran).toBe(true);
+    expect(catalogOutcome.conExistencia).toBe(true);
+    expect(catalogOutcome.sinResultados).toBe(true);
+    // Lo que NO pasó en ninguna de las dos llamadas sigue en false.
+    expect(catalogOutcome.agotados).toBe(false);
+    expect(catalogOutcome.generico).toBe(false);
   });
 });
