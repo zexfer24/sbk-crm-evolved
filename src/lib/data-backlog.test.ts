@@ -16,6 +16,15 @@ interface Filtro {
   valor: unknown;
 }
 
+/**
+ * Hallazgo 2 del plan "Seba atiende el mostrador" (18/9/2026, D2): el
+ * `.or(...)` nuevo de `unansweredFreeWork` (data.ts) — mismo literal que
+ * ese archivo manda, se registra como un filtro más para que el test de
+ * "las cinco condiciones… en el WHERE" lo vea en su sitio real (después de
+ * `ai_enabled`, antes del corte de ventana que agrega cada llamador).
+ */
+const OR_VISIBLE_O_FALLIDO = "last_message_direction.eq.inbound,last_message_status.eq.failed";
+
 interface Consulta {
   tabla: string;
   columnas: string;
@@ -89,6 +98,10 @@ function createFakeSupabase(
         consulta.filtros.push({ op: "in", columna, valor });
         return api;
       },
+      or: (filtro: string) => {
+        consulta.filtros.push({ op: "or", columna: filtro, valor: undefined });
+        return api;
+      },
       order: (columna: string, opciones: unknown) => {
         consulta.orden = { columna, opciones };
         return api;
@@ -144,6 +157,10 @@ describe("fetchBacklogConversationIds", () => {
       { op: "is", columna: "assigned_agent_id", valor: null },
       { op: "neq", columna: "status", valor: "closed" },
       { op: "eq", columna: "ai_enabled", valor: true },
+      // Hallazgo 2 del plan "Seba atiende el mostrador" (18/9/2026, D2): sin
+      // esto, el diálogo volvía a ofrecer un chat cuya despedida de escalada
+      // (sin asesor, de noche) ya había salido bien.
+      { op: "or", columna: OR_VISIBLE_O_FALLIDO, valor: undefined },
       { op: "gt", columna: "last_customer_message_at", valor: HACE_24H },
     ]);
   });

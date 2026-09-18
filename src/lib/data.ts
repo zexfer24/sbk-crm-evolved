@@ -2409,6 +2409,17 @@ export async function fetchAgentSuggestions(supabase: SupabaseClient, limit = 50
  * "¿ya me atienden?" sin contestar pasan por "nuevo". Consecuencia buscada:
  * este diálogo ofrece MENOS conversaciones que antes, porque deja de contar
  * las que quedaron pendientes de ANTES de la última devolución.
+ *
+ * `.or("last_message_direction.eq.inbound,last_message_status.eq.failed")`
+ * (hallazgo 2 del plan "Seba atiende el mostrador", 18/9/2026): mismo
+ * predicado y misma historia que `reconciler.ts` — con D2 (la escalada ya no
+ * apaga `ai_enabled`, requisito 6 del cliente), una escalada sin asesor de
+ * noche (P1) deja `awaiting_reply = true` con la IA encendida y sin nadie
+ * asignado, y el sello de devolución sin moverse (no hubo ninguna). Sin este
+ * filtro, este diálogo volvía a ofrecer un chat cuya despedida YA salió
+ * bien, y encenderlo de nuevo mandaba la misma promesa una vez más.
+ * `last_message_direction`/`last_message_status` son columnas que
+ * `handle_new_message()` mantiene desde 20260822060000.
  */
 function unansweredFreeWork(
   supabase: SupabaseClient,
@@ -2422,7 +2433,8 @@ function unansweredFreeWork(
     .eq("new_since_ai_resume", true)
     .is("assigned_agent_id", null)
     .neq("status", "closed")
-    .eq("ai_enabled", true);
+    .eq("ai_enabled", true)
+    .or("last_message_direction.eq.inbound,last_message_status.eq.failed");
 }
 
 /**

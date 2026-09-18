@@ -713,6 +713,15 @@ async function deliveryFailed(
   supabase: SupabaseClient<Database>,
   conversationId: string,
   entrega: DeliveryOutcome,
+  /**
+   * T4, "Seba atiende el mostrador" (18/9/2026, D2/D3): `assigned_agent_id`
+   * del chat, para que el reseteo de `journey_stage` de acá abajo pase por
+   * `stageFor` — con D2 la IA sigue corriendo turnos enteros en un chat YA
+   * asignado (ya no corta en la apertura), y un reseteo a `null` a secas lo
+   * sacaría de la píldora "Escaladas" (`inbox-filters.ts`, que mira el campo
+   * crudo) apenas un envío fallara.
+   */
+  assignedAgentId: string | null,
   yaEscalada = false
 ): Promise<boolean> {
   if (entrega.whatsapp_status !== "failed") return false;
@@ -722,7 +731,7 @@ async function deliveryFailed(
     if (yaEscalada) return true;
 
     await recordHandoff(supabase, { conversationId, toKind: "unassigned", reason: "entrega_fallida" });
-    await resetStage(supabase, conversationId, "turno_envio_fallo_de_red");
+    await resetStage(supabase, conversationId, "turno_envio_fallo_de_red", assignedAgentId);
     return true;
   }
 
@@ -746,7 +755,7 @@ async function deliveryFailed(
   // regla que `recordHandoff`: registrar nunca frena al que registra).
   const { error } = await supabase
     .from("conversations")
-    .update({ journey_stage: null, active_tool: null })
+    .update({ journey_stage: stageFor(assignedAgentId, null), active_tool: null })
     .eq("id", conversationId);
   if (error) {
     log.error("turno_etapa_no_reseteada_tras_rechazo", { conversationId, detail: error.message });
@@ -776,15 +785,42 @@ async function deliveryFailed(
 async function resetStage(
   supabase: SupabaseClient<Database>,
   conversationId: string,
-  evento: string
+  evento: string,
+  /** Ver el comentario de `stageFor`, más abajo. */
+  assignedAgentId: string | null
 ): Promise<void> {
   const { error } = await supabase
     .from("conversations")
-    .update({ journey_stage: null, active_tool: null })
+    .update({ journey_stage: stageFor(assignedAgentId, null), active_tool: null })
     .eq("id", conversationId);
   if (error) {
     log.error("turno_etapa_no_reseteada", { conversationId, evento, detail: errorText(error) });
   }
+}
+
+/**
+ * T4, "Seba atiende el mostrador" (18/9/2026, D2/D3): qué `journey_stage`
+ * escribir en cada punto del turno donde antes se escribía la etapa a
+ * secas (`"classifying"`, `"tool_running"`, o `null` al terminar/abandonar).
+ *
+ * Hasta esta corrida un chat asignado NUNCA llegaba a estas líneas: la
+ * apertura de `runAgentTurn` cortaba el turno entero en cuanto veía
+ * `assigned_agent_id` (ver más arriba). Con D2 la escalada ya no apaga la
+ * IA, así que Seba corre el turno COMPLETO en un chat que ya tiene asesor
+ * —clasifica, usa herramientas, redacta— hasta que el asesor escribe de
+ * verdad. Si esas escrituras siguieran poniendo `"classifying"`/
+ * `"tool_running"`/`null` sin mirar quién es el dueño, la píldora
+ * "Escaladas" de la bandeja (`inbox-filters.ts`, que mira el campo CRUDO
+ * `journeyStage === "assigned"`, sin cruzarlo con `ai_enabled`) perdería el
+ * chat apenas el turno arrancara a trabajar, y lo recuperaría recién al
+ * terminar — parpadeando en cada mensaje del cliente.
+ *
+ * Un chat asignado escribe SIEMPRE `"assigned"`, nunca lo que el turno
+ * hubiera escrito para uno sin dueño; uno sin asignar sigue exactamente
+ * igual que antes.
+ */
+function stageFor(assignedAgentId: string | null, etapa: string | null): string | null {
+  return assignedAgentId ? "assigned" : etapa;
 }
 
 /** Sufijo para la bitácora: qué quedó etiquetado, por nombre. Vacío si no había etiquetas. */
@@ -1016,17 +1052,35 @@ async function runPlaybook(
   customerMessage: string | null,
   tiempos: TurnTiming,
   lastCustomerMessageAt: string | null,
-  businessHours: BusinessHours
+  businessHours: BusinessHours,
+  /**
+   * T4, "Seba atiende el mostrador" (18/9/2026, D2/D3): `assigned_agent_id`
+   * del chat AL ABRIR el turno. Con D2 un escenario puede calzar en un chat
+   * que YA tiene asesor —el turno entero sigue corriendo, ya no corta en la
+   * apertura— y esa respuesta tampoco es una que el cliente esté esperando
+   * de una persona: sale marcada `is_auto_reply` desde el mismo envío (ver
+   * `esperandoAsesor`, más abajo), y `journey_stage` no puede caer a `null`
+   * al terminar (`stageFor`, ver el reseteo de más abajo).
+   */
+  assignedAgentId: string | null
 ): Promise<void> {
+  // Con D2 la IA sigue respondiendo en un chat que YA tiene asesor: esa
+  // respuesta es la misma cortesía automática de siempre —el cliente sigue
+  // esperando a la PERSONA, no a Seba— así que sale marcada desde el envío,
+  // no solo cuando el escenario decide escalar de nuevo (`afterSend:
+  // "escalate"`, más abajo, que tiene su propio marcado posterior porque acá
+  // todavía no se sabe si va a hacer falta un asesor NUEVO).
+  const esperandoAsesor = Boolean(assignedAgentId);
+
   // Última mirada a las guardas antes de hablarle al cliente. Si la IA se apagó
   // —o si un asesor se metió— mientras el modelo elegía el escenario, el turno
   // termina acá sin enviar y sin etiquetar ni escalar: todo lo que sigue
   // acompaña a un mensaje que no salió.
   const salida = await deliver(supabase, target, entrega, lease, tiempos, "escenario", lastCustomerMessageAt, () =>
-    sendPlaybookReply(supabase, target, playbook)
+    sendPlaybookReply(supabase, target, playbook, { isAutoReply: esperandoAsesor })
   );
   if (!salida) return;
-  if (await deliveryFailed(supabase, target.conversationId, salida)) return;
+  if (await deliveryFailed(supabase, target.conversationId, salida, assignedAgentId)) return;
 
   // Se etiqueta siempre que el escenario responda, escale o no: un escenario
   // que deja al cliente esperando también puede querer dejar marcado el caso.
@@ -1111,7 +1165,7 @@ async function runPlaybook(
 
   await supabase
     .from("conversations")
-    .update({ journey_stage: null, active_tool: null })
+    .update({ journey_stage: stageFor(assignedAgentId, null), active_tool: null })
     .eq("id", target.conversationId);
 
   await logTurn(supabase, target.conversationId, {
@@ -1142,9 +1196,21 @@ async function runTurnPhases(
 ): Promise<void> {
   const conversationId = target.conversationId;
 
+  // T4, "Seba atiende el mostrador" (18/9/2026, D2/D3): con la escalada sin
+  // apagar la IA, el turno entero corre en un chat que YA tiene asesor — la
+  // apertura de `runAgentTurn` dejó de cortar en cuanto veía
+  // `assigned_agent_id` (ver esa guarda, más abajo en este archivo). Todo lo
+  // que la IA mande de acá en más en un chat así sigue siendo una cortesía
+  // automática, no una respuesta real: el cliente espera a la PERSONA, no a
+  // Seba. `esperandoAsesor` viaja a cada envío (`isAutoReply`) para que
+  // `awaiting_reply` no se apague solo, y `stageFor` (ver su comentario)
+  // gobierna cada escritura de `journey_stage` de acá para abajo, para que
+  // el chat no se caiga de la píldora "Escaladas" mientras el turno trabaja.
+  const esperandoAsesor = Boolean(convo.assigned_agent_id);
+
   await supabase
     .from("conversations")
-    .update({ journey_stage: "classifying", active_tool: null })
+    .update({ journey_stage: stageFor(convo.assigned_agent_id, "classifying"), active_tool: null })
     .eq("id", conversationId);
 
   const history = await loadHistory(supabase, conversationId);
@@ -1167,7 +1233,7 @@ async function runTurnPhases(
     // cuando el caso vuelva a darse.
     log.warn("turno_sin_contenido_legible", { conversationId });
     await recordHandoff(supabase, { conversationId, toKind: "unassigned", reason: "sin_contenido_legible" });
-    await resetStage(supabase, conversationId, "turno_sin_contenido_legible");
+    await resetStage(supabase, conversationId, "turno_sin_contenido_legible", convo.assigned_agent_id);
     return;
   }
 
@@ -1203,7 +1269,7 @@ async function runTurnPhases(
       toId: convo.assigned_agent_id ?? null,
       reason: "cortesia_tras_escalada",
     });
-    await resetStage(supabase, conversationId, "turno_cortesia_tras_escalada");
+    await resetStage(supabase, conversationId, "turno_cortesia_tras_escalada", convo.assigned_agent_id);
     log.info("turno_cortesia_tras_escalada", { conversationId });
     await logTurn(supabase, conversationId, {
       intent: null,
@@ -1252,7 +1318,7 @@ async function runTurnPhases(
     // antes de este envío: si Meta lo rechaza, no se pisa con uno nuevo
     // (mismo motivo que el resto de los caminos que escalan primero y hablan
     // después, ver `deliveryFailed`).
-    if (await deliveryFailed(supabase, conversationId, salida, true)) return;
+    if (await deliveryFailed(supabase, conversationId, salida, convo.assigned_agent_id, true)) return;
 
     await logTurn(supabase, conversationId, {
       intent: null,
@@ -1362,7 +1428,8 @@ async function runTurnPhases(
         customerMessage,
         tiempos,
         convo.last_customer_message_at,
-        businessHours
+        businessHours,
+        convo.assigned_agent_id
       );
       return;
     }
@@ -1393,7 +1460,7 @@ async function runTurnPhases(
     // escribe un traspaso nuevo: agent_turns ya quedó con action: "error"
     // arriba, y el reconciliador recoge la conversación sola porque
     // awaiting_reply sigue en true.
-    await resetStage(supabase, conversationId, "turno_clasificacion_fallida");
+    await resetStage(supabase, conversationId, "turno_clasificacion_fallida", convo.assigned_agent_id);
     return;
   }
 
@@ -1426,15 +1493,18 @@ async function runTurnPhases(
         tiempos,
         "fuera_de_tema",
         convo.last_customer_message_at,
-        () => sendAgentText(supabase, target, OFF_TOPIC_REPLY)
+        // T4, "Seba atiende el mostrador" (18/9/2026): en un chat ya
+        // asignado esta redirección tampoco es una respuesta real — mismo
+        // criterio que el resto de las salidas de este turno.
+        () => sendAgentText(supabase, target, OFF_TOPIC_REPLY, { isAutoReply: esperandoAsesor })
       );
       if (!salió) return;
-      if (await deliveryFailed(supabase, conversationId, salió)) return;
+      if (await deliveryFailed(supabase, conversationId, salió, convo.assigned_agent_id)) return;
     }
 
     await supabase
       .from("conversations")
-      .update({ journey_stage: null, active_tool: null })
+      .update({ journey_stage: stageFor(convo.assigned_agent_id, null), active_tool: null })
       .eq("id", conversationId);
 
     await logTurn(supabase, conversationId, {
@@ -1502,7 +1572,7 @@ async function runTurnPhases(
     onToolExecutionStart: async ({ toolCall }) => {
       await supabase
         .from("conversations")
-        .update({ journey_stage: "tool_running", active_tool: toolCall.toolName })
+        .update({ journey_stage: stageFor(convo.assigned_agent_id, "tool_running"), active_tool: toolCall.toolName })
         .eq("id", conversationId);
     },
     onToolExecutionEnd: async () => {
@@ -1546,7 +1616,7 @@ async function runTurnPhases(
     // congelado para siempre. Mismo criterio que la puerta de clasificación
     // fallida: sin traspaso nuevo (agent_turns ya quedó con action: "error"
     // arriba, y el reconciliador la recoge sola), pero con la etapa limpia.
-    await resetStage(supabase, conversationId, "turno_tool_loop_fallido");
+    await resetStage(supabase, conversationId, "turno_tool_loop_fallido", convo.assigned_agent_id);
     return;
   }
 
@@ -1633,6 +1703,14 @@ async function runTurnPhases(
     // — de ahí la misma marca que ya lleva la bienvenida automática (T0.1).
     // No se toca la base: el trigger de la migración 20260905010000 ya hace
     // el resto con solo este booleano.
+    //
+    // T4, "Seba atiende el mostrador" (18/9/2026, D2/D3): se suma `||
+    // esperandoAsesor` — con la escalada sin apagar la IA, este mismo tramo
+    // corre TAMBIÉN cuando el chat ya tenía asesor ANTES de este turno (sin
+    // que este turno haya escalado nada nuevo, `outcome.escalated` seguiría
+    // en `false`). Esa respuesta es la misma cortesía de siempre: el cliente
+    // le sigue hablando a Seba mientras espera a la PERSONA, así que tampoco
+    // puede apagar `awaiting_reply`.
     const salida = await deliver(
       supabase,
       target,
@@ -1643,7 +1721,7 @@ async function runTurnPhases(
       convo.last_customer_message_at,
       () =>
         sendAgentText(supabase, target, text.trim(), {
-          isAutoReply: outcome.escalated,
+          isAutoReply: outcome.escalated || esperandoAsesor,
         })
     );
     if (!salida) return;
@@ -1651,11 +1729,14 @@ async function runTurnPhases(
     // su traspaso antes de devolver (por el tool del modelo o por la red de
     // seguridad de arriba), así que si ya está en true acá el dueño de la
     // conversación ya quedó fijado y un rechazo de Meta no debe pisarlo.
-    if (await deliveryFailed(supabase, conversationId, salida, outcome.escalated)) return;
+    if (await deliveryFailed(supabase, conversationId, salida, convo.assigned_agent_id, outcome.escalated)) return;
   }
 
   if (!outcome.escalated) {
-    await supabase.from("conversations").update({ journey_stage: null, active_tool: null }).eq("id", conversationId);
+    await supabase
+      .from("conversations")
+      .update({ journey_stage: stageFor(convo.assigned_agent_id, null), active_tool: null })
+      .eq("id", conversationId);
   }
 
   // Prefijo de la bitácora (6/9/2026): así un supervisor que lee `agent_turns`
@@ -1761,27 +1842,42 @@ export async function runAgentTurn(conversationId: string, options: { vencioEn?:
     await recordHandoff(supabase, { conversationId, toKind: "unassigned", reason: "agente_no_puede_correr" });
     return;
   }
-  // Partido en dos para poder registrar cuál de las dos causas fue. El orden
-  // CAMBIÓ el 5/9/2026 (anexo A2): antes se miraba primero `ai_enabled`, así
-  // que un chat con dueño (`assigned_agent_id`) y la IA apagada —el estado
-  // normal tras una escalación o un cierre manual, no un caso raro— caía en
-  // la rama de `pausada`/`unassigned` sin que importara que tenía asesor: la
-  // bitácora decía "sin dueño" de una conversación que sí lo tenía. Ahora se
-  // mira primero `assigned_agent_id`: un chat asignado registra `asignada`/
-  // `human` aunque la IA esté apagada en él, que es justo el caso que este
-  // reordenamiento vino a corregir. El efecto observable —return sin enviar
-  // nada— no cambia, solo qué dice el traspaso.
-  if (convo.assigned_agent_id) {
-    await recordHandoff(supabase, {
-      conversationId,
-      toKind: "human",
-      reason: "asignada",
-      toId: convo.assigned_agent_id,
-    });
-    return;
-  }
+  // T4, "Seba atiende el mostrador" (18/9/2026, D2, requisito 6 del
+  // cliente): las dos guardas se FUSIONAN en una — hasta esta corrida eran
+  // dos `if` separados y un chat asignado cortaba el turno SIN mirar
+  // `ai_enabled` (anexo A2, 5/9/2026: antes de eso el orden era al revés,
+  // ver la historia vieja más abajo). Con D2 la escalada ya NO apaga la IA
+  // (`escalate.ts` deja `ai_enabled` intacto): asignar ya no significa
+  // "cállate", significa "Seba sigue respondiendo hasta que el asesor
+  // escriba de verdad". Por eso ahora la única condición que corta el turno
+  // es `!convo.ai_enabled` — lo que la apaga es el trigger
+  // `handle_agent_message_silences_ai` (migración 20260917010000, un
+  // mensaje REAL del asesor) o la pausa manual, nunca la asignación por sí
+  // sola. Asignado + IA encendida ya NO hace `return` acá: el turno sigue
+  // de largo, y las salidas que hable la IA de acá en más se marcan
+  // `is_auto_reply` (ver `esperandoAsesor` en `runTurnPhases`) para que
+  // `awaiting_reply` no se apague con una cortesía automática mientras el
+  // cliente sigue esperando a una persona.
+  //
+  // Historia vieja (anexo A2, 5/9/2026, todavía válida para por qué el
+  // orden importa cuando SÍ hay que cortar): antes de ese anexo se miraba
+  // primero `ai_enabled`, así que un chat con dueño y la IA apagada en él
+  // —el estado normal tras una escalación o un cierre manual, no un caso
+  // raro— caía en la rama de `pausada`/`unassigned` sin que importara que
+  // tenía asesor: la bitácora decía "sin dueño" de una conversación que sí
+  // lo tenía. Por eso, DENTRO de la rama que sí corta (`!ai_enabled`), se
+  // sigue mirando primero `assigned_agent_id` para decidir el traspaso.
   if (!convo.ai_enabled) {
-    await recordHandoff(supabase, { conversationId, toKind: "unassigned", reason: "pausada" });
+    if (convo.assigned_agent_id) {
+      await recordHandoff(supabase, {
+        conversationId,
+        toKind: "human",
+        reason: "asignada",
+        toId: convo.assigned_agent_id,
+      });
+    } else {
+      await recordHandoff(supabase, { conversationId, toKind: "unassigned", reason: "pausada" });
+    }
     return;
   }
 

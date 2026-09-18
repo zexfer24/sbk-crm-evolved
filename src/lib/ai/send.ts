@@ -240,11 +240,21 @@ export function playbookMessageText(playbook: Playbook): string {
 export async function sendPlaybookReply(
   supabase: SupabaseClient<Database>,
   target: TurnTarget,
-  playbook: Playbook
+  playbook: Playbook,
+  /**
+   * T4, "Seba atiende el mostrador" (18/9/2026, D2/D3): el mismo
+   * `opciones?.isAutoReply` que ya recibe `sendAgentText` — `runPlaybook`
+   * (agent.ts) lo arma con `esperandoAsesor` (el chat YA tenía asesor
+   * asignado ANTES de este turno) para que el escenario salga marcado desde
+   * que se manda, y no solo cuando `afterSend: "escalate"` recién decide
+   * escalar (ese caso sigue con su propio UPDATE posterior, porque a esta
+   * altura todavía no se sabe si va a hacer falta un asesor).
+   */
+  opciones?: SendAgentTextOptions
 ): Promise<DeliveryOutcome> {
   const { attachmentUrl, attachmentType } = playbook;
 
-  const entrega = await sendAgentText(supabase, target, playbookMessageText(playbook));
+  const entrega = await sendAgentText(supabase, target, playbookMessageText(playbook), opciones);
 
   if (attachmentUrl && attachmentType && attachmentType !== "link") {
     await sendAgentMedia(supabase, target, attachmentType, attachmentUrl);

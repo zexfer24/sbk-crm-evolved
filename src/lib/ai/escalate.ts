@@ -4,6 +4,7 @@ import type { Database, TablesUpdate } from "@/lib/supabase/database.types";
 import { claimNextAvailableAgent } from "@/lib/ai/claim-agent";
 import { recordHandoff } from "@/lib/ai/handoffs";
 import { businessStatus, DEFAULT_BUSINESS_HOURS, type BusinessHours, type BusinessStatus } from "@/lib/business-hours";
+import { log } from "@/lib/log";
 
 // ---------------------------------------------------------------------------
 // Lógica compartida de escalamiento: la usa la herramienta que el modelo
@@ -41,6 +42,19 @@ export interface EscalateResult {
    * un reloj distinto.
    */
   businessStatus?: BusinessStatus;
+  /**
+   * T4, "Seba atiende el mostrador" (18/9/2026, decisión D2/D3, hallazgo 3
+   * del plan): `true` cuando el chat YA tenía asesor asignado al entrar a
+   * esta función — no se reclamó a nadie nuevo. Con la IA encendida tras
+   * escalar (ver más abajo), el modelo puede volver a llamar a esta misma
+   * herramienta en cada consulta de inventario (las reglas 3/4 del prompt
+   * escalan con o sin existencia); sin esta rama cada pregunta del cliente
+   * reasignaría el chat por round-robin a OTRO asesor, quitándoselo al que
+   * ya lo tenía. `assignedAgentName` sigue trayendo el nombre de quien ya
+   * lo tenía, para que la despedida no cambie de forma entre la primera
+   * escalada y las siguientes.
+   */
+  alreadyAssigned?: boolean;
 }
 
 export async function escalateConversation(
@@ -67,26 +81,90 @@ export async function escalateConversation(
     now = new Date(),
   } = params;
 
+  // Se calcula una sola vez, con el reloj y el horario de ESTE llamado, para
+  // que el sufijo del evento y la instrucción que arma `buildEscalateTool`
+  // cuenten la misma hora (Frente B4, "El reloj dice la verdad", 5/9/2026).
+  const estadoHorario = businessStatus(now, businessHours);
+
+  // T4, "Seba atiende el mostrador" (18/9/2026, D2/D3, hallazgo 3 del plan):
+  // antes de reclamar a nadie, mirar si el chat YA tiene asesor. Con la IA
+  // encendida tras escalar (ver más abajo: el UPDATE ya no toca
+  // `ai_enabled`), el modelo puede volver a llamar a esta misma función en
+  // cada consulta de inventario del cliente —las reglas 3/4 del prompt
+  // escalan con existencia o sin ella—, y `claimNextAvailableAgent` reparte
+  // por round-robin: sin esta lectura, cada pregunta nueva le quitaría el
+  // chat al asesor que ya lo tenía para dárselo a otro. `ai_enabled` viaja
+  // en el mismo `select` porque en teoría podría haberse apagado en la
+  // misma fracción de segundo (un asesor que escribe justo cuando el modelo
+  // ya decidió llamar a esta herramienta) — no cambia ninguna rama de acá
+  // abajo (el turno que sigue en vuelo ya tiene sus propias guardas contra
+  // esa carrera en `deliver()`), pero si ocurriera de todos modos queda
+  // dicho en el registro en vez de pasar inadvertido.
+  const { data: current, error: currentError } = await supabase
+    .from("conversations")
+    .select("assigned_agent_id, ai_enabled, assigned_agent:agents!conversations_assigned_agent_id_fkey(id, display_name)")
+    .eq("id", conversationId)
+    .maybeSingle();
+
+  if (currentError) {
+    log.error("escalada_estado_previo_no_legible", { conversationId, detail: currentError.message });
+  }
+
+  const yaAsignado =
+    current?.assigned_agent_id != null
+      ? { id: current.assigned_agent_id, displayName: current.assigned_agent?.display_name ?? "un asesor" }
+      : null;
+
+  if (yaAsignado) {
+    if (current?.ai_enabled === false) {
+      // No debería darse: si la IA ya estaba apagada en este chat, el turno
+      // que llegó hasta acá tendría que haberse cortado en la guarda de
+      // apertura de `runAgentTurn` antes de invocar ninguna herramienta.
+      // Queda dicho por si una carrera lo produce de todos modos.
+      log.warn("escalada_repetida_con_ia_silenciada", { conversationId });
+    }
+
+    if (motivo === "intencion_compra") {
+      await supabase.from("conversations").update({ deal_status: "in_progress" }).eq("id", conversationId);
+    }
+
+    await supabase.from("messages").insert({
+      conversation_id: conversationId,
+      direction: "outbound",
+      sender_type: "system",
+      message_type: "system_event",
+      is_internal_note: true,
+      content: `IA reiteró la escalada a ${yaAsignado.displayName}. Motivo: ${motivo}. ${resumen}`,
+    });
+
+    // Sin `recordHandoff`: reasignar el MISMO asesor no es un traspaso — el
+    // aviso de asignación (`assignment-notice.ts`) solo dispara con la razón
+    // `escalada`, y volver a escribirla en cada pregunta lo haría saltar de
+    // nuevo sin que nada haya cambiado de dueño de verdad.
+    return { escalated: true, assignedAgentName: yaAsignado.displayName, alreadyAssigned: true, businessStatus: estadoHorario };
+  }
+
   const candidate = await claimNextAvailableAgent(supabase);
 
-  // Sin asesores la IA se pausa IGUAL. Dejarla encendida era peor por los dos
-  // lados: cada mensaje del cliente disparaba otro turno completo que volvía
-  // a intentar escalar y volvía a fallar —gasto puro— y el caso seguía sin
-  // aparecer en ningún lado. Pausada y en 'assigned' queda esperando en la
-  // bandeja a que alguien entre a trabajar.
+  // D2 (18/9/2026, "Seba atiende el mostrador", requisito 6 del cliente): el
+  // UPDATE deja de tocar `ai_enabled`. Hasta esta corrida se apagaba acá
+  // mismo ("Sin asesores la IA se pausa IGUAL" — dejarla encendida sin
+  // asesor volvía a intentar escalar en cada mensaje). Ahora la IA sigue
+  // contestando DESPUÉS de escalar, con o sin asesor (P1: de noche o un
+  // domingo sin nadie conectado, Seba sigue vendiendo) — lo que apaga
+  // `ai_enabled` es el asesor mandando su primer mensaje REAL
+  // (`handle_agent_message_silences_ai`, migración 20260917010000) o la
+  // pausa manual, nunca esta función. El freno contra el bucle de
+  // reescalar en cada mensaje sin asesor ya no es `ai_enabled=false`: es el
+  // predicado nuevo del reconciliador (hallazgo 2 del plan, `reconciler.ts`)
+  // y la rama `yaAsignado` de arriba (hallazgo 3).
   const conversationUpdate: TablesUpdate<"conversations"> = {
-    ai_enabled: false,
     assigned_agent_id: candidate?.id ?? null,
     journey_stage: "assigned",
   };
   if (motivo === "intencion_compra") conversationUpdate.deal_status = "in_progress";
 
   await supabase.from("conversations").update(conversationUpdate).eq("id", conversationId);
-
-  // Se calcula una sola vez, con el reloj y el horario de ESTE llamado, para
-  // que el sufijo del evento y la instrucción que arma `buildEscalateTool`
-  // cuenten la misma hora (Frente B4, "El reloj dice la verdad", 5/9/2026).
-  const estadoHorario = businessStatus(now, businessHours);
 
   await supabase.from("messages").insert({
     conversation_id: conversationId,

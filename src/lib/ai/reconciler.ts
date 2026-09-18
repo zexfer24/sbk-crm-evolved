@@ -140,6 +140,32 @@ function lockIsActive(until: string | null, now: number): boolean {
  * `RECONCILE_BATCH_LIMIT` corta la consulta ANTES de que el código filtre
  * nada, así que filtrar en memoria dejaría fuera huérfanas de verdad que sí
  * necesitan reencolarse.
+ *
+ * Hallazgo 2 del plan "Seba atiende el mostrador" (18/9/2026): con D2 (la
+ * escalada ya no apaga `ai_enabled` — requisito 6 del cliente), el bucle de
+ * noche vuelve por una puerta DISTINTA a la que tapó `new_since_ai_resume`.
+ * Caso: la IA escala `escalada_sin_asesor` (P1, sin nadie conectado) y se
+ * despide — esa despedida es `is_auto_reply`, así que `awaiting_reply` sigue
+ * en `true` (el cliente sigue esperando a una PERSONA) —, nadie queda
+ * asignado, y el sello `ai_resume_cutoff_at` NO se mueve (no hubo ninguna
+ * devolución, la IA nunca se apagó). Sin un predicado más, esta misma
+ * consulta la volvía a encontrar "esperando, sin asesor, con la IA
+ * encendida" en el minuto siguiente, la reencolaba, el modelo volvía a
+ * escalar con el MISMO mensaje del cliente (round-robin no aplica: sigue sin
+ * candidato) — y así cada minuto hasta que alguien escribiera. `.or(...)`
+ * abajo es la barrera: solo reencola si el ÚLTIMO mensaje VISIBLE de la
+ * conversación es del cliente (`last_message_direction = 'inbound'`, la
+ * despedida de la IA con `is_auto_reply` de esta corrida NO cuenta como algo
+ * que el cliente todavía no vio — sigue siendo un saliente) o si el último
+ * saliente falló (`last_message_status = 'failed'`, el caso de siempre:
+ * `entrega_fallida`). Una despedida de la IA que SÍ salió bien dejó
+ * `last_message_direction = 'outbound'` con `last_message_status` distinto
+ * de `'failed'`, así que esta consulta la deja quieta — el reconciliador no
+ * es quien tiene que reintentar una escalada que ya se hizo, solo turnos
+ * huérfanos de verdad. `last_message_direction`/`last_message_status` son
+ * columnas que `handle_new_message()` mantiene desde 20260822060000 (ver
+ * `unansweredFreeWork` en `data.ts`, que gana el mismo `.or()` por el mismo
+ * motivo — el botón "encender la IA" del atraso sufre el mismo bucle).
  */
 export async function reconcileOrphanTurns(
   supabase: SupabaseClient,
@@ -153,6 +179,11 @@ export async function reconcileOrphanTurns(
     .is("assigned_agent_id", null)
     .neq("status", "closed")
     .eq("ai_enabled", true)
+    // Hallazgo 2 del plan "Seba atiende el mostrador" (18/9/2026, D2): sin
+    // esto, una escalada sin asesor de noche (P1, la IA sigue encendida y se
+    // despide con is_auto_reply) se reencolaba cada minuto para siempre. Ver
+    // el comentario largo más arriba.
+    .or("last_message_direction.eq.inbound,last_message_status.eq.failed")
     // Fuera de esta ventana Meta rechaza el texto libre: no hay nada que
     // reencolar, encolarlo solo movería el problema a un turno que
     // `withinFreeformWindow` va a rechazar igual (ver agent.ts).

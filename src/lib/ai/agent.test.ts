@@ -962,14 +962,15 @@ describe("runAgentTurn — salidas silenciosas de apertura", () => {
   });
 
   /**
-   * `ai_enabled` (apagado en ESTE chat) y `assigned_agent_id` (chat ya de un
-   * asesor) son dos guardas separadas que registran su propio traspaso
-   * (`pausada`/`asignada` — ver `handoffs.test.ts`), pero ninguna de las dos
-   * deja nada en `log`: la bitácora vive en `conversation_handoffs`, no en
-   * los logs. Anexo A2 (5/9/2026): el orden entre ellas se invirtió
-   * (`assigned_agent_id` se mira primero), pero este caso no tiene asesor
-   * asignado, así que sigue cayendo en la misma rama de siempre —
-   * `pausada`/`unassigned`— y esta prueba no necesita tocarse.
+   * `!ai_enabled` es la única condición que corta el turno desde T4, "Seba
+   * atiende el mostrador" (18/9/2026, D2) — hasta esa corrida, `ai_enabled`
+   * (apagado en ESTE chat) y `assigned_agent_id` (chat ya de un asesor) eran
+   * dos `if` separados; ahora están fusionados (`if (!convo.ai_enabled) {
+   * ... }`) y `assigned_agent_id` solo decide, ADENTRO de esa rama, si el
+   * traspaso es `asignada`/`human` o `pausada`/`unassigned` (ver
+   * `handoffs.test.ts`). Ninguno de los dos deja nada en `log`: la bitácora
+   * vive en `conversation_handoffs`. Este caso no tiene asesor asignado, así
+   * que sigue cayendo en `pausada`/`unassigned` de siempre.
    */
   it("con ai_enabled=false en el chat, no corre nada y no deja ningún evento en el registro", async () => {
     const info = vi.spyOn(log, "info");
@@ -985,6 +986,67 @@ describe("runAgentTurn — salidas silenciosas de apertura", () => {
     expect(info).not.toHaveBeenCalled();
     expect(warn).not.toHaveBeenCalled();
     expect(error).not.toHaveBeenCalled();
+  });
+
+  /**
+   * T4, "Seba atiende el mostrador" (18/9/2026, D2): con asesor asignado y
+   * `ai_enabled: false` (el mismo evento que apaga el trigger de la
+   * migración 20260917010000 cuando el asesor escribe de verdad), el turno
+   * sigue cortando — la fusión de las dos guardas viejas no cambió ESTE
+   * comportamiento, solo el caso "asignado + IA encendida" (ver más abajo).
+   */
+  it("con asesor asignado y ai_enabled=false, no corre nada (traspaso 'asignada' en handoffs.test.ts)", async () => {
+    state.conversation = { ...state.conversation, ai_enabled: false, assigned_agent_id: "agent-9" };
+
+    await runAgentTurn("conv-1");
+
+    expect(matchPlaybookMock).not.toHaveBeenCalled();
+    expect(classifyIntentMock).not.toHaveBeenCalled();
+    expect(sendAgentTextMock).not.toHaveBeenCalled();
+    expect(sendPlaybookReplyMock).not.toHaveBeenCalled();
+  });
+
+  /**
+   * El cambio central de T4 (D2, requisito 6 del cliente): asignado + IA
+   * ENCENDIDA ya NO corta el turno. Antes de esta corrida `assigned_agent_id`
+   * por sí solo bastaba para silenciar a la IA (anexo A2, 5/9/2026); con la
+   * escalada sin apagar `ai_enabled`, Seba tiene que seguir respondiendo en
+   * un chat ya asignado hasta que el asesor escriba de verdad. La salida
+   * final lleva `is_auto_reply: true` — el cliente le sigue hablando a Seba,
+   * no a la persona que espera.
+   */
+  it("con asesor asignado y ai_enabled=true, el turno CORRE y la respuesta final sale is_auto_reply", async () => {
+    state.conversation = { ...state.conversation, ai_enabled: true, assigned_agent_id: "agent-9" };
+
+    await runAgentTurn("conv-1");
+
+    expect(classifyIntentMock).toHaveBeenCalledTimes(1);
+    expect(generateMock).toHaveBeenCalledTimes(1);
+    expect(sendAgentTextMock).toHaveBeenCalledTimes(1);
+    expect(sendAgentTextMock).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.anything(),
+      "respuesta redactada por el modelo",
+      expect.objectContaining({ isAutoReply: true })
+    );
+    // Ningún traspaso de apertura: el turno no se calló en ningún guardián.
+    expect(handoffCalls).toHaveLength(0);
+  });
+
+  /**
+   * `journey_stage` no puede caer a `null` a mitad de turno en un chat
+   * asignado: la píldora "Escaladas" de la bandeja mira ese campo CRUDO
+   * (`inbox-filters.ts`), sin cruzarlo con `ai_enabled`. `stageFor`
+   * (agent.ts) hace que las seis escrituras de la etapa devuelvan siempre
+   * `"assigned"` cuando hay dueño — acá se comprueba la del final del turno.
+   */
+  it("con asesor asignado, journey_stage queda 'assigned' al terminar el turno, nunca null", async () => {
+    state.conversation = { ...state.conversation, ai_enabled: true, assigned_agent_id: "agent-9" };
+
+    await runAgentTurn("conv-1");
+
+    expect(conversationUpdates.some((u) => u.journey_stage === null)).toBe(false);
+    expect(conversationUpdates).toContainEqual({ journey_stage: "assigned", active_tool: null });
   });
 
   /**
@@ -1123,16 +1185,42 @@ describe("runAgentTurn — guarda de cortesía tras una escalada abierta (Tarea 
     expect(conversationUpdates).toContainEqual({ journey_stage: null, active_tool: null });
   });
 
-  // NOTA (desvío del plan, ver reporte): no hay un test "con asesor
-  // asignado, el traspaso lleva su to_id" — es IRREPRODUCIBLE con
-  // `runAgentTurn`. `openTurn` (arriba en este mismo archivo, la guarda
-  // "asignada": línea ~1680 de agent.ts) corta el turno ANTES de llegar a
-  // `runTurnPhases` en CUANTO `convo.assigned_agent_id` no es null, sin
-  // mirar `ai_enabled` — así que dentro de `runTurnPhases` (donde vive esta
-  // guarda de cortesía) `convo.assigned_agent_id` SIEMPRE es null. El
-  // `convo.assigned_agent_id ? "human" : "unassigned"` de la guarda de
-  // cortesía (pedido tal cual por el plan) queda como código defensivo para
-  // si ese orden cambia algún día; hoy toma siempre la rama `unassigned`.
+  /**
+   * T4, "Seba atiende el mostrador" (18/9/2026, D2): esta rama DEJA de ser
+   * defensiva/inalcanzable. La nota vieja (hasta esta corrida) decía que
+   * `openTurn` cortaba el turno ANTES de llegar a `runTurnPhases` en cuanto
+   * `assigned_agent_id` no era null, sin mirar `ai_enabled` — así que
+   * `convo.assigned_agent_id` siempre llegaba `null` a esta guarda. Con D2
+   * (la escalada ya no apaga la IA) la guarda de apertura se fusionó en
+   * `if (!convo.ai_enabled)`, así que un chat asignado con `ai_enabled:
+   * true` SÍ corre `runTurnPhases` completo, y esta rama —pedida tal cual
+   * por el plan desde el 14/9/2026— por fin es alcanzable.
+   */
+  it("'Ok, muchas gracias' con una escalada abierta y CON asesor asignado: se calla, deja traspaso a 'human' con su toId", async () => {
+    const info = vi.spyOn(log, "info");
+    state.conversation = { ...state.conversation, ai_enabled: true, assigned_agent_id: "agent-9" };
+    state.history = [{ sender_type: "customer", content: "Ok, muchas gracias", is_internal_note: false }];
+    state.lastHandoffRow = { reason: "escalada", created_at: "2026-09-14T10:00:00.000Z" };
+    state.agentMessagesAfterHandoff = [];
+
+    await runAgentTurn("conv-1");
+
+    expect(matchPlaybookMock).not.toHaveBeenCalled();
+    expect(classifyIntentMock).not.toHaveBeenCalled();
+    expect(sendAgentTextMock).not.toHaveBeenCalled();
+    expect(sendPlaybookReplyMock).not.toHaveBeenCalled();
+    expect(handoffCalls).toHaveLength(1);
+    expect(handoffCalls[0]).toMatchObject({
+      p_conversation_id: "conv-1",
+      p_to_kind: "human",
+      p_to_id: "agent-9",
+      p_reason: "cortesia_tras_escalada",
+    });
+    expect(info).toHaveBeenCalledWith("turno_cortesia_tras_escalada", { conversationId: "conv-1" });
+    // journey_stage: un chat asignado nunca cae a null, queda "assigned"
+    // (stageFor, agent.ts) — la píldora "Escaladas" no lo pierde.
+    expect(conversationUpdates).toContainEqual({ journey_stage: "assigned", active_tool: null });
+  });
 
   it("mismo mensaje, pero un asesor YA escribió después de la escalada: turno normal", async () => {
     state.history = [{ sender_type: "customer", content: "Ok, muchas gracias", is_internal_note: false }];
@@ -1586,14 +1674,31 @@ describe("runAgentTurn — escenarios predeterminados", () => {
     expect(sendAgentTextMock).not.toHaveBeenCalled();
   });
 
-  it("no reconoce escenarios si la conversación ya tiene un asesor asignado", async () => {
-    state.conversation = { ...state.conversation, assigned_agent_id: "agent-9" };
-    fetchActivePlaybooksMock.mockResolvedValue([playbook()]);
+  /**
+   * T4, "Seba atiende el mostrador" (18/9/2026, D2): hasta esta corrida un
+   * chat ya asignado ni siquiera llegaba a fase 0 — la apertura de
+   * `runAgentTurn` cortaba el turno en cuanto veía `assigned_agent_id`, sin
+   * mirar `ai_enabled` (anexo A2, 5/9/2026). Con la escalada sin apagar la
+   * IA, Seba sigue reconociendo escenarios en un chat asignado: el título
+   * viejo ("no reconoce escenarios si la conversación ya tiene un asesor
+   * asignado") describía justo lo contrario de lo que el requisito 6 del
+   * cliente pide. `runPlaybook` marca `is_auto_reply: true` desde el mismo
+   * envío (`esperandoAsesor`, ver `send.ts`), porque el cliente le sigue
+   * hablando a Seba, no a la persona que espera.
+   */
+  it("un escenario reconocido en un chat YA asignado SÍ se manda, marcado is_auto_reply", async () => {
+    state.conversation = { ...state.conversation, ai_enabled: true, assigned_agent_id: "agent-9" };
+    const pb = playbook();
+    fetchActivePlaybooksMock.mockResolvedValue([pb]);
+    matchPlaybookMock.mockResolvedValue({ playbook: pb, usage: NO_USAGE });
 
     await runAgentTurn("conv-1");
 
-    expect(matchPlaybookMock).not.toHaveBeenCalled();
-    expect(sendPlaybookReplyMock).not.toHaveBeenCalled();
+    expect(matchPlaybookMock).toHaveBeenCalled();
+    expect(sendPlaybookReplyMock).toHaveBeenCalledTimes(1);
+    expect(sendPlaybookReplyMock).toHaveBeenCalledWith(expect.anything(), expect.anything(), pb, {
+      isAutoReply: true,
+    });
   });
 
   /**

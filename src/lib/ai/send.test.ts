@@ -291,6 +291,38 @@ describe("sendAgentText — is_auto_reply", () => {
   });
 });
 
+/**
+ * T4, "Seba atiende el mostrador" (18/9/2026, D2/D3): `sendPlaybookReply`
+ * reenvía sus opciones a `sendAgentText` — así un escenario que sale en un
+ * chat ya asignado a un asesor (`esperandoAsesor`, agent.ts) puede marcarse
+ * `is_auto_reply: true` desde el mismo envío, sin esperar al UPDATE posterior
+ * que solo existe para el camino `afterSend: "escalate"`.
+ */
+describe("sendPlaybookReply — opciones (is_auto_reply)", () => {
+  it("sin opciones, inserta is_auto_reply: false (el default de sendAgentText)", async () => {
+    const { client, inserted } = createFakeSupabase();
+
+    // @ts-expect-error -- fake mínimo
+    await sendPlaybookReply(client, conversation(false), playbook());
+
+    expect(inserted[0].is_auto_reply).toBe(false);
+  });
+
+  it("con { isAutoReply: true }, inserta is_auto_reply: true en el texto del escenario", async () => {
+    const { client, inserted } = createFakeSupabase();
+
+    await sendPlaybookReply(
+      // @ts-expect-error -- fake mínimo
+      client,
+      conversation(false),
+      playbook(),
+      { isAutoReply: true }
+    );
+
+    expect(inserted[0].is_auto_reply).toBe(true);
+  });
+});
+
 describe("sendPlaybookReply — el outcome que vuelve es el del texto, no el del adjunto", () => {
   it("devuelve el outcome del texto aunque el envío del adjunto falle", async () => {
     const { client } = createFakeSupabase();

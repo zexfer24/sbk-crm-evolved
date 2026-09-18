@@ -304,8 +304,19 @@ describe("runAgentTurn — traspasos registrados en cada salida silenciosa", () 
     });
   });
 
-  it("asignada: con un asesor ya asignado al chat, viaja el toId", async () => {
-    state.conversation = baseConversation({ assigned_agent_id: "asesor-42" });
+  /**
+   * T4, "Seba atiende el mostrador" (18/9/2026, D2): desde esta corrida
+   * `asignada` solo se escribe cuando la IA está APAGADA en el chat — las
+   * dos guardas viejas (`assigned_agent_id` y `ai_enabled`, separadas) se
+   * fusionaron en `if (!convo.ai_enabled) { ... }`, así que un chat
+   * asignado con la IA todavía ENCENDIDA ya no corta el turno acá (sigue de
+   * largo: Seba responde hasta que el asesor escriba de verdad). `ai_enabled:
+   * false` es explícito para que este test siga probando la salida
+   * silenciosa; sin él el turno correría entero y `agent.test.ts` es donde
+   * eso se prueba.
+   */
+  it("asignada: con un asesor ya asignado al chat y la IA apagada, viaja el toId", async () => {
+    state.conversation = baseConversation({ ai_enabled: false, assigned_agent_id: "asesor-42" });
 
     await runAgentTurn("conv-1");
 
@@ -828,5 +839,23 @@ describe("escalationOpen", () => {
     });
 
     expect(await escalationOpen(supabase, "conv-1")).toBe(true);
+  });
+
+  // ---------------------------------------------------------------------------
+  // T0/T4, "Seba atiende el mostrador" (18/9/2026): `silenciada_por_asesor`
+  // (el trigger de la migración 20260917010000, cuando un asesor manda su
+  // primer mensaje real o alguien pausa la IA a mano) SÍ cierra la escalada
+  // — un humano tomó el chat de verdad, igual que `devuelto_a_ia`/
+  // `desasignada_por_asesor`/`reclamado`.
+  // ---------------------------------------------------------------------------
+  it("false: 'escalada' seguida de 'silenciada_por_asesor' (un asesor escribió de verdad: SÍ cambia de manos)", async () => {
+    const supabase = fakeSupabaseParaEscalationOpen({
+      filas: [
+        { reason: "escalada", created_at: "2026-09-14T10:00:00.000Z" },
+        { reason: "silenciada_por_asesor", created_at: "2026-09-14T10:05:00.000Z" },
+      ],
+    });
+
+    expect(await escalationOpen(supabase, "conv-1")).toBe(false);
   });
 });

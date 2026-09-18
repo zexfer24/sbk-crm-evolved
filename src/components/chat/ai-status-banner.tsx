@@ -1,6 +1,7 @@
 "use client";
 
 import { Bot, ShieldAlert } from "lucide-react";
+import { AI_NAME } from "@/lib/brand";
 
 interface AiStatusBannerProps {
   /** El interruptor de esta conversación. */
@@ -9,6 +10,16 @@ interface AiStatusBannerProps {
   aiGloballyEnabled: boolean;
   /** Ya se gastó el tope del día, así que el motor no va a correr. */
   spendCapReached: boolean;
+  /**
+   * T4, "Seba atiende el mostrador" (18/9/2026, D2/D3): `true` cuando el
+   * chat ya tiene asesor asignado. Con la escalada sin apagar la IA
+   * (requisito 6 del cliente), un chat así sigue con `aiEnabled: true` y
+   * `respondiendo` en `true` — pero "La IA sigue respondiendo
+   * automáticamente" sonaba a que nadie estaba mirando el caso, cuando en
+   * realidad ya hay un asesor asignado y Seba solo tapa el hueco hasta que
+   * escriba. `Boolean(conversation.assignedAgent)` en `chat-panel.tsx`.
+   */
+  waitingForHuman: boolean;
   isIntervening: boolean;
   onIntervene: () => void;
   onToggleAi: () => void;
@@ -31,7 +42,8 @@ function estadoDeLaIa({
   aiEnabled,
   aiGloballyEnabled,
   spendCapReached,
-}: Pick<AiStatusBannerProps, "aiEnabled" | "aiGloballyEnabled" | "spendCapReached">) {
+  waitingForHuman,
+}: Pick<AiStatusBannerProps, "aiEnabled" | "aiGloballyEnabled" | "spendCapReached" | "waitingForHuman">) {
   if (!aiGloballyEnabled) {
     return { respondiendo: false, texto: "La IA está apagada para todo el CRM" };
   }
@@ -41,6 +53,16 @@ function estadoDeLaIa({
   if (!aiEnabled) {
     return { respondiendo: false, texto: "La IA está pausada en esta conversación" };
   }
+  // T4, "Seba atiende el mostrador" (18/9/2026, D2/D3, requisito 6 del
+  // cliente): con asesor asignado, Seba sigue contestando — pero el asesor
+  // tiene que saber que es EXACTAMENTE hasta que él escriba, no una
+  // respuesta automática indefinida como en un chat sin dueño.
+  if (waitingForHuman) {
+    return {
+      respondiendo: true,
+      texto: `${AI_NAME} responde mientras el asesor no escriba; se apaga con tu primer mensaje`,
+    };
+  }
   return { respondiendo: true, texto: "La IA sigue respondiendo automáticamente" };
 }
 
@@ -48,11 +70,12 @@ export function AiStatusBanner({
   aiEnabled,
   aiGloballyEnabled,
   spendCapReached,
+  waitingForHuman,
   isIntervening,
   onIntervene,
   onToggleAi,
 }: AiStatusBannerProps) {
-  const { respondiendo, texto } = estadoDeLaIa({ aiEnabled, aiGloballyEnabled, spendCapReached });
+  const { respondiendo, texto } = estadoDeLaIa({ aiEnabled, aiGloballyEnabled, spendCapReached, waitingForHuman });
 
   return (
     <div className="crm-ai-band" data-on={respondiendo}>

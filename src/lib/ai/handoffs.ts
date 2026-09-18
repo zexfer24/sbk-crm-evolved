@@ -140,7 +140,17 @@ export type HandoffReason =
   // devolución (`ai_resume_cutoff_at`) — ese mensaje ya estaba ahí cuando le
   // devolvieron el chat a la IA, no es una pregunta nueva. El turno se calla
   // sin llamar al modelo. Ver el comentario de esa guarda en agent.ts.
-  | "mensaje_previo_a_devolucion";
+  | "mensaje_previo_a_devolucion"
+  // T0 de "Seba atiende el mostrador" (18/9/2026, migración 20260917010000):
+  // `ai_enabled` se apagó SIN que `assigned_agent_id` cambiara en el mismo
+  // UPDATE — un asesor mandó su primer mensaje real (trigger AFTER INSERT ON
+  // messages `handle_agent_message_silences_ai`, requisito 6 del cliente: la
+  // IA sigue contestando tras escalar hasta que el asesor escribe de
+  // verdad) o alguien pausó la IA a mano (`setAiEnabled(false)`,
+  // `mutations.ts`). La escribe el trigger `handle_conversation_ownership_change`
+  // de esa migración, NUNCA TypeScript — mismo patrón que `devuelto_a_ia`/
+  // `desasignada_por_asesor`/`reclamado`.
+  | "silenciada_por_asesor";
 
 export interface HandoffInput {
   conversationId: string;
@@ -298,6 +308,15 @@ export async function recordHandoffAdmin(input: HandoffInput): Promise<boolean> 
  * asesor reclamando el chat es un movimiento de dueño real, y la escalada
  * vieja debe darse por cerrada aunque el nuevo dueño sea un humano y no la
  * IA.
+ *
+ * T0/T4 de "Seba atiende el mostrador" (18/9/2026): `silenciada_por_asesor`
+ * (un asesor mandó su primer mensaje real, o alguien pausó la IA a mano) NO
+ * entra en esta lista, por el MISMO motivo que `reclamado`/`devuelto_a_ia`/
+ * `desasignada_por_asesor` — un humano tomando el chat de verdad SÍ cambia
+ * de manos, así que cierra la escalada vieja. Con D2 la IA sigue
+ * contestando después de escalar hasta que eso pasa; si esta razón no
+ * cerrara, la guarda de cortesía (`cortesia_tras_escalada`) seguiría
+ * callando a la IA sobre un chat que un asesor ya tomó de verdad.
  *
  * Ver la migración 20260830040000_conversation_handoffs.sql (el CHECK de
  * `reason`) y CLAUDE.md.

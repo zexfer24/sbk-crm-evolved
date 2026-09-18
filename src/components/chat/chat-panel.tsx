@@ -288,6 +288,12 @@ export function ChatPanel({
         aiEnabled={conversation.aiEnabled}
         aiGloballyEnabled={aiGloballyEnabled}
         spendCapReached={spendCapReached}
+        // T4, "Seba atiende el mostrador" (18/9/2026, D2/D3): con la
+        // escalada sin apagar la IA, un chat asignado puede seguir con
+        // aiEnabled true — el banner necesita saberlo para no sonar a
+        // "respuesta automática indefinida" cuando en realidad ya hay un
+        // asesor y Seba solo tapa el hueco hasta que escriba.
+        waitingForHuman={Boolean(conversation.assignedAgent)}
         isIntervening={isIntervening}
         onIntervene={handleIntervene}
         onToggleAi={handleToggleAi}

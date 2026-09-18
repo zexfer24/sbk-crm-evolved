@@ -87,6 +87,15 @@ interface FakeRow {
   last_customer_message_at: string | null;
   last_message_at: string | null;
   ai_turn_lock_until: string | null;
+  /**
+   * Hallazgo 2 del plan "Seba atiende el mostrador" (18/9/2026, D2): el
+   * predicado nuevo del reconciliador (`.or("last_message_direction.eq.inbound,
+   * last_message_status.eq.failed")`) — de fábrica "inbound" (el último
+   * mensaje visible es del cliente), que es el caso normal de casi todos los
+   * tests de este archivo escritos antes de esta tarea.
+   */
+  last_message_direction: "inbound" | "outbound";
+  last_message_status: "sent" | "delivered" | "read" | "failed" | null;
 }
 
 function baseRow(id: string, overrides: Partial<FakeRow> = {}): FakeRow {
@@ -100,6 +109,8 @@ function baseRow(id: string, overrides: Partial<FakeRow> = {}): FakeRow {
     last_customer_message_at: new Date().toISOString(),
     last_message_at: new Date().toISOString(),
     ai_turn_lock_until: null,
+    last_message_direction: "inbound",
+    last_message_status: null,
     ...overrides,
   };
 }
@@ -148,6 +159,23 @@ function createFakeSupabase(rows: FakeRow[], mensajes: FakeMensaje[] = []) {
       },
       gt(col: keyof FakeRow, val: string) {
         predicates.push((r) => typeof r[col] === "string" && (r[col] as string) > val);
+        return api;
+      },
+      /**
+       * Fake mínimo de `.or()`: solo entiende la forma simple que emite el
+       * reconciliador (`"col.eq.val,col.eq.val"`, sin `and()` anidado — a
+       * diferencia del `.or()` genérico de `data-conversations.test.ts`, que
+       * sí lo necesita para otra consulta). Alcanza para probar el
+       * predicado de verdad (hallazgo 2 del plan "Seba atiende el
+       * mostrador", 18/9/2026) sin copiar un parser de PostgREST entero acá.
+       */
+      or(filtro: string) {
+        const clausulas = filtro.split(",").map((clausula) => {
+          const [col, op, val] = clausula.split(".") as [keyof FakeRow, string, string];
+          if (op !== "eq") throw new Error(`Fake: operador .or() no soportado: ${op}`);
+          return { col, val };
+        });
+        predicates.push((r) => clausulas.some(({ col, val }) => String(r[col]) === val));
         return api;
       },
       order(col: keyof FakeRow, opciones: { ascending: boolean }) {
@@ -508,6 +536,67 @@ describe("reconcileOrphanTurns — nadie encola un mensaje anterior a la devoluc
     expect(resultado.encoladas).toBe(1);
     expect(handoffCalls).toMatchObject([{ p_conversation_id: "conv-mensaje-posterior-a-la-devolucion", p_reason: "reabierto" }]);
     expect(await pendingAgentTurns()).toBe(1);
+  });
+});
+
+/**
+ * Hallazgo 2 del plan "Seba atiende el mostrador" (18/9/2026, D2). Con la
+ * escalada sin apagar `ai_enabled` (requisito 6 del cliente), una escalada
+ * `escalada_sin_asesor` de noche (P1) deja `awaiting_reply = true`
+ * (despedida `is_auto_reply`), nadie asignado, y el sello
+ * `ai_resume_cutoff_at` sin moverse (no hubo devolución). Sin este
+ * predicado, esta misma consulta volvía a encontrarla "esperando, sin
+ * asesor, con la IA encendida" cada minuto y la reencolaba para siempre —
+ * el modelo volvía a escalar sobre el MISMO mensaje del cliente.
+ */
+describe("reconcileOrphanTurns — no reencola una despedida de escalada que ya salió bien (hallazgo 2, 18/9/2026)", () => {
+  it("último mensaje visible saliente y NO fallido (la despedida de la IA ya salió): no se encola", async () => {
+    const rows = [
+      baseRow("conv-despedida-ya-salio", { last_message_direction: "outbound", last_message_status: "sent" }),
+    ];
+    const { client, handoffCalls } = createFakeSupabase(rows);
+
+    const resultado = await reconcileOrphanTurns(client, AHORA);
+
+    expect(resultado).toEqual({ revisadas: 0, yaEnCola: 0, bloqueadasPorLock: 0, atendidasPorHumanos: 0, encoladas: 0 });
+    expect(handoffCalls).toHaveLength(0);
+    expect(await pendingAgentTurns()).toBe(0);
+  });
+
+  it("último mensaje visible entrante (el cliente escribió algo que nadie contestó): sí se encola", async () => {
+    const rows = [baseRow("conv-cliente-escribio", { last_message_direction: "inbound" })];
+    const { client, handoffCalls } = createFakeSupabase(rows);
+
+    const resultado = await reconcileOrphanTurns(client, AHORA);
+
+    expect(resultado.encoladas).toBe(1);
+    expect(handoffCalls.map((c) => c.p_conversation_id)).toEqual(["conv-cliente-escribio"]);
+    expect(await pendingAgentTurns()).toBe(1);
+  });
+
+  it("último saliente 'failed' (la despedida no llegó de verdad): sí se encola, aunque sea saliente", async () => {
+    const rows = [
+      baseRow("conv-despedida-fallida", { last_message_direction: "outbound", last_message_status: "failed" }),
+    ];
+    const { client, handoffCalls } = createFakeSupabase(rows);
+
+    const resultado = await reconcileOrphanTurns(client, AHORA);
+
+    expect(resultado.encoladas).toBe(1);
+    expect(handoffCalls.map((c) => c.p_conversation_id)).toEqual(["conv-despedida-fallida"]);
+    expect(await pendingAgentTurns()).toBe(1);
+  });
+
+  it("saliente 'delivered' (ni sent recién ni failed): sigue sin encolarse", async () => {
+    const rows = [
+      baseRow("conv-despedida-entregada", { last_message_direction: "outbound", last_message_status: "delivered" }),
+    ];
+    const { client, handoffCalls } = createFakeSupabase(rows);
+
+    const resultado = await reconcileOrphanTurns(client, AHORA);
+
+    expect(resultado.encoladas).toBe(0);
+    expect(handoffCalls).toHaveLength(0);
   });
 });
 
