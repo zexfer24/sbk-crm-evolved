@@ -150,6 +150,34 @@ describe("rewriteSuffix", () => {
   });
 });
 
+// 18/9/2026 (T2a, plan "Seba atiende el mostrador", requisito 1 del
+// cliente): la IA se llama Seba y puede presentarse como "tu asistente" —
+// "asistente" a secas deja de estar bloqueado, y el nombre "Seba" queda
+// excepcionado del patrón que bloquea afirmar un nombre propio. Cualquier
+// otro nombre, o "asistente" en combinación con "virtual"/"automatizado",
+// sigue bloqueado igual que antes.
+describe("la excepción de Seba (18/9/2026)", () => {
+  it("'Soy el asistente de SBK Motors' pasa (asistente solo, sin más compañía)", () => {
+    expect(revealsIdentity("Soy el asistente de SBK Motors")).toBeNull();
+  });
+
+  it("'soy un asistente virtual' sigue bloqueado", () => {
+    expect(revealsIdentity("soy un asistente virtual")?.categoria).toBe("automatizacion");
+  });
+
+  it("'mi nombre es Seba' pasa", () => {
+    expect(revealsIdentity("mi nombre es Seba")).toBeNull();
+  });
+
+  it("'mi nombre es Carlos' sigue bloqueado como persona", () => {
+    expect(revealsIdentity("mi nombre es Carlos")?.categoria).toBe("persona");
+  });
+
+  it("'me llamo Juan' sigue bloqueado como persona", () => {
+    expect(revealsIdentity("me llamo Juan")?.categoria).toBe("persona");
+  });
+});
+
 describe("pureza del módulo", () => {
   // Nota de la trampa: este test lee el archivo fuente con fs en vez de
   // inspeccionar el grafo de módulos en runtime, así que no detecta un

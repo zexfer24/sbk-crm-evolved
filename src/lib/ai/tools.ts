@@ -356,8 +356,17 @@ export function buildEscalateTool(
   outcome: EscalationOutcome
 ) {
   return tool({
+    // 18/9/2026 (T2a, plan "Seba atiende el mostrador", requisito 6 del
+    // cliente): hasta acá esta descripción decía "pausa la IA" — escalar
+    // apagaba el turno en el acto (`escalate.ts`, `ai_enabled: false`). El
+    // requisito 6 pide lo contrario: tras pasar el caso, Seba sigue
+    // respondiendo lo que el cliente pregunte en ese chat hasta que el
+    // asesor escriba su primer mensaje real, y recién ahí se calla. La
+    // reescritura de `escalate.ts` para que de verdad deje de apagar
+    // `ai_enabled` es tarea aparte (T4 del plan); acá solo se corrige lo que
+    // el modelo lee sobre qué hace esta herramienta.
     description:
-      "Escala la conversación a un asesor de la tienda: pausa la IA, asigna al asesor con más tiempo sin recibir un cliente nuevo, y deja un resumen para que no tenga que volver a preguntar todo. Es la única forma de tocar dinero real (devoluciones, ventas) o reclamos — la IA nunca los resuelve sola.",
+      "Escala la conversación a un asesor de la tienda: asigna al asesor con más tiempo sin recibir un cliente nuevo, y deja un resumen para que no tenga que volver a preguntar todo. La IA sigue contestando en este chat hasta que el asesor escriba. Es la única forma de tocar dinero real (devoluciones, ventas) o reclamos — la IA nunca los resuelve sola.",
     inputSchema: z.object({
       // Tarea 7 ("El guion atiende a quien no es cliente…", 14/9/2026): suma
       // `seguimiento` (ya admitido por `EscalationMotivo` en escalate.ts,

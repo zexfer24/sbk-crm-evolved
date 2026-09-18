@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { BUSINESS_NAME } from "@/lib/brand";
+import { AI_NAME, BUSINESS_NAME } from "@/lib/brand";
 import { INTENT_VALUES } from "@/lib/ai/classify";
 import {
   MEDIA_RULES,
@@ -10,6 +10,7 @@ import {
   buildInstructions,
 } from "@/lib/ai/prompt";
 import { revealsIdentity } from "@/lib/ai/identity-guard";
+import { PREGUNTA_FILTRO, TEXTO_CONFIRMAR_INVENTARIO, TEXTO_NO_IDENTIFICADO, TEXTO_SIN_STOCK } from "@/lib/ai/seba";
 
 /**
  * Estimación conservadora de caracteres por token para español.
@@ -790,5 +791,115 @@ describe("los textos fijos de prompt.ts pasan la guarda de identidad (Tarea 3, 1
     const sufijo = buildInstructions({ ...TURN, missingCatalog: true }).slice(SYSTEM_PROMPT.length);
 
     expect(revealsIdentity(sufijo)).toBeNull();
+  });
+});
+
+/**
+ * 18/9/2026, plan "Seba atiende el mostrador" (T2a). El agente pasa a
+ * llamarse Seba (requisito 1) y la sección 3 gana la REGLA DE LA ÚNICA
+ * PREGUNTA (requisito 5): cero preguntas salvo una consulta genérica, que
+ * admite UNA de filtro antes de buscar.
+ */
+describe("Tarea T2a — Seba tiene nombre propio (18/9/2026)", () => {
+  it("la sección 1 nombra a Seba y dice que ya se presentó por código", () => {
+    const seccion1 = SYSTEM_PROMPT.slice(
+      SYSTEM_PROMPT.indexOf("1. QUIÉN ERES"),
+      SYSTEM_PROMPT.indexOf("2. LO QUE NUNCA HACES")
+    );
+
+    expect(seccion1).toContain(`Te llamas ${AI_NAME}`);
+    expect(seccion1).toMatch(/ya se present[oó] al cliente/i);
+    expect(seccion1).toContain(`eres ${AI_NAME}`);
+  });
+
+  it("la línea de prohibición ahora exige 'asistente virtual'/'asistente automatizado', y deja pasar 'asistente' a secas", () => {
+    const lineaProhibicion = SYSTEM_PROMPT.split(/\r?\n/).find((linea) =>
+      linea.startsWith("Nunca te describas como")
+    );
+
+    expect(lineaProhibicion).toMatch(/asistente virtual/i);
+    expect(lineaProhibicion).toMatch(/asistente automatizado/i);
+  });
+});
+
+describe("Tarea T2a — sección 3, regla de la única pregunta (requisito 5, 18/9/2026)", () => {
+  const seccion3 = SYSTEM_PROMPT.slice(
+    SYSTEM_PROMPT.indexOf("3. CÓMO LLEVAS"),
+    SYSTEM_PROMPT.indexOf("4. HERRAMIENTAS")
+  );
+
+  it("contiene 'única pregunta' y la pregunta de filtro literal", () => {
+    expect(seccion3).toMatch(/única pregunta/i);
+    expect(seccion3).toContain(PREGUNTA_FILTRO);
+  });
+
+  it("sigue conteniendo SALES_ACCEPTANCE_RULES y la regla de listas largas", () => {
+    expect(seccion3).toContain(SALES_ACCEPTANCE_RULES);
+    expect(seccion3).toMatch(/lista de varios repuestos/i);
+    expect(seccion3).toMatch(/un renglón por repuesto/i);
+  });
+
+  it("pasa la guarda de identidad", () => {
+    expect(revealsIdentity(seccion3)).toBeNull();
+  });
+});
+
+describe("Tarea T2a — sección 5.1, los tres casos de catálogo (requisitos 2, 3 y 4, 18/9/2026)", () => {
+  const seccion51 = SYSTEM_PROMPT.slice(
+    SYSTEM_PROMPT.indexOf("5.1 Consulta de disponibilidad"),
+    SYSTEM_PROMPT.indexOf("5.2 Devolución")
+  );
+
+  it("contiene los tres textos fijos, literales", () => {
+    expect(seccion51).toContain(TEXTO_CONFIRMAR_INVENTARIO);
+    expect(seccion51).toContain(TEXTO_SIN_STOCK);
+    expect(seccion51).toContain(TEXTO_NO_IDENTIFICADO);
+  });
+
+  it("contiene los tres motivos nuevos", () => {
+    expect(seccion51).toMatch(/motivo confirmar_inventario/);
+    expect(seccion51).toMatch(/motivo sin_stock/);
+    expect(seccion51).toMatch(/motivo no_identificado/);
+  });
+
+  it("el caso 'no identificado' pide no inventar alternativas", () => {
+    expect(seccion51).toMatch(/no inventes ni sugieras alternativas/i);
+  });
+
+  it("cada uno de los tres textos pasa la guarda de identidad por separado", () => {
+    expect(revealsIdentity(TEXTO_CONFIRMAR_INVENTARIO)).toBeNull();
+    expect(revealsIdentity(TEXTO_SIN_STOCK)).toBeNull();
+    expect(revealsIdentity(TEXTO_NO_IDENTIFICADO)).toBeNull();
+    expect(revealsIdentity(PREGUNTA_FILTRO)).toBeNull();
+  });
+
+  it("sigue escalando con motivo intencion_compra cuando el cliente confirma, y con seguimiento cuando pide aviso de reposición", () => {
+    expect(seccion51).toMatch(/escala con motivo intencion_compra/i);
+    expect(seccion51).toMatch(/motivo seguimiento/i);
+  });
+});
+
+describe("Tarea T2a — control general (18/9/2026)", () => {
+  it("el prefijo cacheable sigue por encima del umbral de 1024 tokens estimados", () => {
+    const tokensEstimados = SYSTEM_PROMPT.length / CHARS_PER_TOKEN;
+
+    expect(tokensEstimados).toBeGreaterThan(CACHE_MIN_TOKENS);
+  });
+
+  /**
+   * Las secciones que toca esta tarea (1, 3, 4 y 5.1 — hasta el arranque de
+   * la sección 6) no pueden mencionar ninguna franja horaria: el saludo por
+   * franja sigue viviendo SOLO en el sufijo `needsGreeting` (`buildInstructions`,
+   * fuera del alcance de esta tarea) y en la sección 6, que esta tarea no
+   * toca. Si esto se pone rojo, algo de lo nuevo hardcodeó una franja en el
+   * bloque cacheado.
+   */
+  it("las secciones 1 a 5.5 no mencionan ninguna franja horaria", () => {
+    const bloqueTocado = SYSTEM_PROMPT.slice(
+      SYSTEM_PROMPT.indexOf("1. QUIÉN ERES"),
+      SYSTEM_PROMPT.indexOf("6. CÓMO ESCRIBES")
+    );
+
+    expect(bloqueTocado).not.toMatch(/buen[oa]s? (d[ií]as?|tardes?|noches?)/i);
   });
 });

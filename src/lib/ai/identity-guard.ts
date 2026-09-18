@@ -52,9 +52,20 @@ function normalizar(texto: string): string {
 
 // El orden dentro de cada categoría importa para el `fragmento` que se
 // reporta (el primer patrón que calza gana), no solo para la categoría.
-// "asistente (automatizado|virtual)" va antes que "soy ... asistente" para
-// que la frase real del 26/8 devuelva el fragmento más específico
-// ("asistente automatizado") y no el genérico ("soy el asistente").
+// "asistente (automatizado|virtual)" va antes que el resto de los patrones
+// que tocan "asistente" para que la frase real del 26/8 devuelva el
+// fragmento más específico ("asistente automatizado") y no uno genérico.
+//
+// 18/9/2026 (T2a, plan "Seba atiende el mostrador", requisito 1 del
+// cliente): la IA pasa a llamarse Seba y a presentarse como "tu asistente"
+// en el saludo literal (`seba.ts`) y en la sección 1 del prompt ("eres
+// Seba, el asistente de SBK Motors por WhatsApp"). Bloquear "soy el
+// asistente" o "como asistente" a secas habría bloqueado ese saludo y esa
+// frase, así que se retira el patrón `/soy (el|la|un|una) asistente/` y se
+// saca "asistente" del patrón `como (ia|...)`. "asistente" solo, sin más
+// compañía, deja de estar anclado — sigue bloqueado en combinación con
+// "virtual"/"automatizado" (el patrón de arriba), que es lo que de verdad
+// describe al programa como automatización.
 const PATRONES_AUTOMATIZACION: PatronIdentidad[] = [
   {
     // 26-27/8/2026: "Soy el asistente automatizado de SBK Motorcycles."
@@ -72,10 +83,6 @@ const PATRONES_AUTOMATIZACION: PatronIdentidad[] = [
     regex: /agente (virtual|automatizad\w*|de ia|de inteligencia artificial|conversacional)/,
   },
   {
-    // Misma familia de frase, sin el adjetivo: "soy un asistente virtual"
-    regex: /soy (el|la|un|una) asistente/,
-  },
-  {
     // "esta es una respuesta automática": sustantivo + adjetivo. El adjetivo
     // solo ("automático") es un repuesto del catálogo — no se bloquea suelto.
     regex: /(respuesta|mensaje) automatic\w*/,
@@ -87,8 +94,10 @@ const PATRONES_AUTOMATIZACION: PatronIdentidad[] = [
   {
     // "como IA no puedo": el "ia" minúsculo acá solo vale pegado a "como ",
     // nunca suelto (eso lo cubre el patrón \bIA\b de más abajo, sobre el
-    // texto original y sensible a mayúsculas).
-    regex: /como (ia|inteligencia artificial|asistente)\b/,
+    // texto original y sensible a mayúsculas). "asistente" salió de acá el
+    // 18/9/2026 (ver el comentario de cabecera): "como asistente" solo ya
+    // no se bloquea.
+    regex: /como (ia|inteligencia artificial)\b/,
   },
   {
     // "no soy una persona" respondiendo "¿eres humano?": negar ser humano es
@@ -126,8 +135,17 @@ const PATRONES_PERSONA: PatronIdentidad[] = [
     // Afirmar ser un asesor/vendedor concreto es afirmar ser una persona.
     regex: /soy (un|una|el|la) (asesor|asesora|vendedor|vendedora)/,
   },
-  { regex: /me llamo/ },
-  { regex: /mi nombre es/ },
+  {
+    // 18/9/2026 (T2a, "Seba atiende el mostrador"): el saludo literal de
+    // Seba dice "mi nombre es Seba" (`seba.ts`), y la sección 1 del prompt
+    // deja que el modelo lo repita si preguntan con quién habla. El
+    // lookahead negativo excluye SOLO ese nombre — cualquier otro ("mi
+    // nombre es Carlos") sigue calzando. Corre sobre el texto NORMALIZADO
+    // (minúsculas, sin diacríticos — ver `normalizar` más arriba), así que
+    // el lookahead compara en minúsculas.
+    regex: /me llamo (?!seba\b)/,
+  },
+  { regex: /mi nombre es (?!seba\b)/ },
   { regex: /estoy en el mostrador/ },
   // NO se incluye "(estoy|estamos) aquí en la tienda": el plural que pide el
   // guion ("acá en SBK lo tenemos") es legítimo y no debe calzar.
@@ -164,7 +182,14 @@ export function revealsIdentity(text: string): IdentityMatch | null {
  * Texto que `agent.ts` pega DESPUÉS del SYSTEM_PROMPT para pedirle al modelo
  * que reescriba su borrador. No importa SYSTEM_PROMPT acá: eso rompería la
  * pureza del módulo y arrastraría "server-only" hasta este archivo.
+ *
+ * 18/9/2026 (T2a, "Seba atiende el mostrador"): pedía quitar cualquier
+ * referencia a "asistente" a secas, pero desde esta tarea Seba SÍ puede
+ * llamarse "tu asistente" (ver `PATRONES_AUTOMATIZACION`). El pedido de
+ * reescritura pasa a nombrar "asistente virtual" — la combinación que
+ * sigue bloqueada — para no pedirle al modelo que se quite de encima una
+ * palabra que ahora tiene permitida.
  */
 export function rewriteSuffix(fragmento: string): string {
-  return `Tu borrador contenía una frase que te describe como automatizado o como una persona: «${fragmento}». Reescríbelo conservando toda la información, el tono y el largo, quitando cualquier referencia a asistente, agente virtual, bot, IA, sistema o respuesta automática, y sin afirmar ser una persona. Responde solo con el mensaje.`;
+  return `Tu borrador contenía una frase que te describe como automatizado o como una persona: «${fragmento}». Reescríbelo conservando toda la información, el tono y el largo, quitando cualquier referencia a asistente virtual, agente virtual, bot, IA, sistema o respuesta automática, y sin afirmar ser una persona. Responde solo con el mensaje.`;
 }

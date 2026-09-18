@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { isCourtesyOnly, isGreetingPlaybook } from "@/lib/ai/saludo";
+import { isCourtesyOnly, isGreetingOnly, isGreetingPlaybook } from "@/lib/ai/saludo";
 
 describe("isCourtesyOnly", () => {
   it.each([
@@ -30,6 +30,21 @@ describe("isCourtesyOnly", () => {
     "gracias gracias gracias gracias gracias gracias gracias",
   ])("no reconoce %s como cortesía pura", (texto) => {
     expect(isCourtesyOnly(texto)).toBe(false);
+  });
+});
+
+// 18/9/2026 (T2a, "Seba atiende el mostrador"): vuelve con un llamador real
+// en el turno (ver el comentario de cabecera del módulo).
+describe("isGreetingOnly", () => {
+  it.each(["hola", "Buenas tardes!", "hola que tal"])(
+    "reconoce %s como saludo puro del cliente",
+    (texto) => {
+      expect(isGreetingOnly(texto)).toBe(true);
+    }
+  );
+
+  it.each(["hola tienen pastillas", ""])("no reconoce %s como saludo puro", (texto) => {
+    expect(isGreetingOnly(texto)).toBe(false);
   });
 });
 

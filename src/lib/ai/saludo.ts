@@ -3,9 +3,14 @@
 // reescrito el 15/9/2026 en la corrida "La voz de mostrador con nombre
 // propio" (Tarea 4): se retiró la pregunta que miraba si el mensaje del
 // CLIENTE era solo un saludo — sin llamadores tras el cambio de abajo.
+// Vuelve el 18/9/2026 (T2a, plan "Seba atiende el mostrador") como
+// `isGreetingOnly`, con un llamador real: el turno necesita distinguir "el
+// cliente solo saludó" de "el cliente saludó Y preguntó algo" para decidir
+// si el saludo de Seba (`seba.ts`) es la respuesta completa del turno o si
+// además hace falta redactar (`agent.ts`, tarea T2b).
 //
-// Dos preguntas puras sobre la FORMA de un texto, sin nada de Supabase ni del
-// SDK de IA — igual que identity-guard.ts y history-line.ts:
+// Tres preguntas puras sobre la FORMA de un texto, sin nada de Supabase ni
+// del SDK de IA — igual que identity-guard.ts y history-line.ts:
 //
 //   - `isCourtesyOnly`: el mensaje del cliente es SOLO cortesía de cierre
 //     ("gracias", "ok", "perfecto"...). Tras la devolución masiva del
@@ -30,6 +35,13 @@
 //     función retirada en esta misma corrida que miraba el mismo tipo de
 //     texto para acotarlo a una franja horaria — trabajo que ya no hace
 //     falta porque ningún escenario necesita saludar.
+//   - `isGreetingOnly`: el mensaje del CLIENTE es SOLO un saludo ("hola",
+//     "buenas tardes!", "hola que tal"), sin nada más que atender. La usa el
+//     turno (`agent.ts`, T2b): si el cliente solo saludó, el saludo de Seba
+//     (`sebaGreeting`, `seba.ts`) ya es la respuesta completa y el turno no
+//     gasta fase 0, fase 1 ni tool loop en redactar nada más. Misma mecánica
+//     que `isCourtesyOnly` (tope de 6 palabras, normalización), lista de
+//     palabras propia.
 //
 // `isCourtesyOnly` falla hacia `false` ante cualquier palabra que no esté en
 // su lista de palabras permitidas: es mejor tratar un mensaje ambiguo como
@@ -124,6 +136,45 @@ function esSoloEmojisDeCortesia(text: string): boolean {
  */
 export function isCourtesyOnly(text: string): boolean {
   return esSoloEmojisDeCortesia(text) || esSoloPalabrasDe(text, PALABRAS_CORTESIA);
+}
+
+/**
+ * Palabras que arman un saludo puro del cliente: "hola", "buenas [tardes]",
+ * "qué tal", "hey"... — no incluye "gracias" ni el resto de la cortesía de
+ * cierre, que vive en `PALABRAS_CORTESIA` (son dos situaciones distintas: una
+ * abre la conversación, la otra la cierra).
+ */
+const PALABRAS_SALUDO = new Set([
+  "hola",
+  "buenas",
+  "buenos",
+  "buen",
+  "dia",
+  "dias",
+  "tarde",
+  "tardes",
+  "noche",
+  "noches",
+  "saludos",
+  "hey",
+  "que",
+  "tal",
+  "hi",
+]);
+
+/**
+ * true si, normalizado, el mensaje del CLIENTE es SOLO un saludo: "hola",
+ * "buenas tardes!", "hola que tal". Más de seis palabras, o cualquier
+ * palabra fuera de la lista ("hola tienen pastillas"), lo tira a `false` —
+ * mismo criterio que `isCourtesyOnly`: mejor tratar un mensaje ambiguo como
+ * "hay algo más que atender" que tragarse una pregunta real.
+ *
+ * 18/9/2026 (T2a, "Seba atiende el mostrador"): la usa el turno para decidir
+ * si, tras mandar el saludo de Seba, hace falta seguir redactando o si el
+ * saludo ya fue la respuesta completa (`agent.ts`, T2b).
+ */
+export function isGreetingOnly(text: string): boolean {
+  return esSoloPalabrasDe(text, PALABRAS_SALUDO);
 }
 
 /**

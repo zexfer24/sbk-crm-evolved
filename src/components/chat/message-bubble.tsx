@@ -12,6 +12,7 @@ import {
   ShoppingCart,
 } from "lucide-react";
 import type { Agent, Message } from "@/lib/types";
+import { AI_NAME } from "@/lib/brand";
 import { formatMessageTime } from "@/lib/format";
 import { useLongPress } from "@/lib/use-long-press";
 import { failureAction } from "@/lib/whatsapp/failure-reason";
@@ -124,7 +125,10 @@ function cx(...classes: (string | false | null | undefined)[]) {
 function senderLabel(message: Message): string {
   if (message.direction === "inbound") return "Cliente";
   if (message.isInternalNote) return "Nota interna";
-  if (message.senderType === "ai") return "IA";
+  // 18/9/2026 (T2a, plan "Seba atiende el mostrador", requisito 1 del
+  // cliente): la etiqueta de la burbuja decía "IA" a secas; ahora nombra al
+  // agente por su nombre, igual que el resto del guion.
+  if (message.senderType === "ai") return AI_NAME;
   return message.senderAgent?.displayName ?? "Agente";
 }
 

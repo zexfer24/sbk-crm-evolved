@@ -17,3 +17,13 @@
 export const BUSINESS_NAME = "SBK Motors";
 
 export const APP_TITLE = `${BUSINESS_NAME} CRM`;
+
+// ---------------------------------------------------------------------------
+// 18/9/2026, plan "Seba atiende el mostrador" (Requisito 1 del cliente): el
+// agente de IA se llama "Seba", de mostrador — no "el asistente" ni "la IA".
+// Vive acá por la misma razón que BUSINESS_NAME: lo necesita `prompt.ts`
+// (servidor, el guion del modelo), `seba.ts` (el saludo literal) y el
+// cliente (`message-bubble.tsx`, la etiqueta de la burbuja de la IA, y el
+// menú "Enseñar a Seba…" que llega con R7).
+// ---------------------------------------------------------------------------
+export const AI_NAME = "Seba";

@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from "vitest";
 import { render, screen, fireEvent, act } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { AudioContent, MediaContent, MessageBubble } from "@/components/chat/message-bubble";
+import { AI_NAME } from "@/lib/brand";
 import type { Message } from "@/lib/types";
 
 const AUDIO_URL = "https://example.com/nota-de-voz.ogg";
@@ -29,6 +30,28 @@ function baseMessage(overrides: Partial<Message>): Message {
     ...overrides,
   };
 }
+
+// 18/9/2026 (T2a, plan "Seba atiende el mostrador", requisito 1 del
+// cliente): la etiqueta de la burbuja de un mensaje de la IA pasa de "IA" a
+// secas al nombre del agente (`AI_NAME`, `brand.ts`).
+describe("MessageBubble — etiqueta del remitente cuando el mensaje es de la IA", () => {
+  it("muestra AI_NAME, no 'IA' a secas", () => {
+    render(
+      <MessageBubble
+        message={baseMessage({
+          id: "msg-ia-1",
+          direction: "outbound",
+          senderType: "ai",
+          messageType: "text",
+          content: "Hola, buenas tardes...",
+        })}
+      />
+    );
+
+    expect(screen.getByText(AI_NAME)).toBeInTheDocument();
+    expect(screen.queryByText("IA")).not.toBeInTheDocument();
+  });
+});
 
 describe("MediaContent con mediaUrl nulo (falló la descarga desde WhatsApp)", () => {
   it.each(["image", "video", "sticker", "audio", "document"] as const)(
