@@ -349,7 +349,27 @@ select
   has_function_privilege('authenticated', 'public.handle_agent_message_silences_ai()', 'execute') as authenticated;
 -- las dos en false
 
-select count(*) from supabase_migrations.schema_migrations;  -- 72
+select count(*) from supabase_migrations.schema_migrations;  -- 72 (73 con la de ai_lessons, abajo)
+```
+
+**`20260917020000_ai_lessons`** (T1 del mismo plan, 18/9/2026). Va DESPUÉS
+de `20260917010000`, también con `psql -1 -v ON_ERROR_STOP=1` y ANTES del
+código de la corrida (la interfaz y el turno de la IA la leen; sin la tabla
+el `select` de lecciones falla y el turno sigue con lecciones vacías, pero
+el menú "Enseñar a Seba…" no puede guardar nada). Crea la tabla
+`public.ai_lessons` con RLS (cualquier agente lee; inserta solo con
+`created_by = auth.uid()`; edita y borra el autor o un supervisor), sus
+CHECK, índices parciales, `set_updated_at` y la publica en
+`supabase_realtime` con autoverificación (`raise exception` si no quedó
+publicada). No trae funciones `security definer` nuevas.
+
+**Verificación después de aplicarla** (solo lectura):
+
+```sql
+select count(*) from pg_policies where tablename = 'ai_lessons';  -- 4
+select tablename from pg_publication_tables
+where pubname = 'supabase_realtime' and tablename = 'ai_lessons';  -- una fila
+select count(*) from supabase_migrations.schema_migrations;  -- 73
 ```
 
 Test: `tests/seba_y_escalada_viva.sql` (ocho casos, transacción con

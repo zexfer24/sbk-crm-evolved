@@ -269,3 +269,14 @@ jobs:
             -v ON_ERROR_STOP=1 \
             -f supabase/tests/seba_y_escalada_viva.sql
 
+      # T1, plan "Seba atiende el mostrador" (18/9/2026): la tabla ai_lessons
+      # (requisito 7 del cliente: un asesor corrige a Seba desde un mensaje y
+      # la IA lo lee en cada turno). El test mide RLS con roles reales
+      # (autor, otro agente, supervisor), los CHECK y que la tabla esté
+      # publicada en supabase_realtime -- un canal muerto no falla, calla
+      # (ver CLAUDE.md, conversation_handoffs).
+      - name: lecciones de Seba (RLS, CHECK y Realtime)
+        run: |
+          psql "postgresql://postgres:postgres@127.0.0.1:54322/postgres" \
+            -v ON_ERROR_STOP=1 \
+            -f supabase/tests/ai_lessons.sql
