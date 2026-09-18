@@ -10,7 +10,7 @@ import {
 import type { SupabaseClient } from "@supabase/supabase-js";
 import type { Database } from "@/lib/supabase/database.types";
 import type { Playbook, Tag } from "@/lib/types";
-import { parseBusinessHours, type BusinessHours, type BusinessStatus } from "@/lib/business-hours";
+import { dayBand, parseBusinessHours, type BusinessHours, type BusinessStatus } from "@/lib/business-hours";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { classifyIntent, type Intent } from "@/lib/ai/classify";
 import { currentAgentModelLabel, getAgentModel } from "@/lib/ai/model";
@@ -29,7 +29,8 @@ import { playbookMessageText, sendAgentText, sendPlaybookReply, type DeliveryOut
 import { buildTurnTarget, type AgentConversation, type TurnTarget } from "@/lib/ai/turn-target";
 import { NonRetryableTurnError, newTurnDelivery, type TurnDelivery } from "@/lib/ai/turn-delivery";
 import { recordHandoff, escalationOpen } from "@/lib/ai/handoffs";
-import { isCourtesyOnly } from "@/lib/ai/saludo";
+import { isCourtesyOnly, isGreetingOnly } from "@/lib/ai/saludo";
+import { sebaGreeting } from "@/lib/ai/seba";
 import { errorText, log } from "@/lib/log";
 import { withinFreeformWindow } from "@/lib/dashboard";
 import { isWithin24hWindow } from "@/lib/whatsapp-window";
@@ -358,19 +359,6 @@ function fireTypingIndicator(
 }
 
 /**
- * ¿Le toca al agente saludar en este turno?
- *
- * La plantilla de bienvenida solo sale si WHATSAPP_WELCOME_TEMPLATE está
- * configurada; sin esa variable `welcome_sent_at` se queda en null para
- * siempre y nadie saluda nunca. Pero mirar solo esa columna haría que el
- * agente saludara en CADA mensaje, así que se exige además que no haya
- * respondido antes en esta conversación.
- */
-function needsGreeting(welcomeSentAt: string | null, history: ModelMessage[]): boolean {
-  return !welcomeSentAt && !history.some((message) => message.role === "assistant");
-}
-
-/**
  * true si nuestra última respuesta ya fue la redirección de fuera de tema.
  *
  * Salta los marcadores de media salientes (8/9/2026, hallazgo 6 del plan):
@@ -576,7 +564,7 @@ async function humanWroteMeanwhile(
 }
 
 /** Desde qué punto del turno se está intentando hablar. Viaja al registro. */
-type SendPhase = "escenario" | "fuera_de_tema" | "redaccion" | "adjuntos_sin_texto";
+type SendPhase = "presentacion" | "escenario" | "fuera_de_tema" | "redaccion" | "adjuntos_sin_texto";
 
 /**
  * La única puerta por la que un turno le pone algo delante al cliente.
@@ -1179,6 +1167,39 @@ async function runPlaybook(
 }
 
 /**
+ * Reclama el envío de la presentación de Seba, sellando `welcome_sent_at`
+ * ANTES de mandar nada — mismo patrón que `claimWelcome` (route.ts,
+ * ~l.316-333): el UPDATE condicional ES la carrera entera. Bajo READ
+ * COMMITTED, dos lecturas concurrentes de la misma fila reevalúan el WHERE
+ * contra lo que ya escribió la primera que confirma; la segunda ve 0 filas y
+ * pierde limpio, sin tocar nada. Acá no debería haber carrera real —el lock
+ * de conversación ya serializa los turnos de un mismo chat—, pero el patrón
+ * es barato y deja la garantía escrita en la base, no solo en el orden en que
+ * el código de hoy da la casualidad de llamarlo.
+ *
+ * T2b, plan "Seba atiende el mostrador" (18/9/2026): desde la migración
+ * 20260917010000 (T0 del mismo plan) `welcome_sent_at` dejó de significar
+ * "salió la PLANTILLA de bienvenida" (WHATSAPP_WELCOME_TEMPLATE, que en
+ * producción sigue vacía) y pasó a significar "Seba ya se presentó en esta
+ * conversación" — `welcome_sent_at IS NULL` es la condición que decide si
+ * corresponde presentarse.
+ */
+async function claimPresentation(supabase: SupabaseClient<Database>, conversationId: string): Promise<boolean> {
+  const { data, error } = await supabase
+    .from("conversations")
+    .update({ welcome_sent_at: new Date().toISOString() })
+    .eq("id", conversationId)
+    .is("welcome_sent_at", null)
+    .select("id");
+
+  if (error) {
+    log.error("turno_presentacion_reclamo_fallido", { conversationId, detail: errorText(error) });
+    return false;
+  }
+  return (data?.length ?? 0) > 0;
+}
+
+/**
  * Las tres fases del turno, con el destinatario ya verificado.
  *
  * Corre dentro del lock de conversación. Todo lo que le hable al cliente
@@ -1238,6 +1259,105 @@ async function runTurnPhases(
   }
 
   const customerMessage = lastCustomerMessage(history);
+
+  // Requisito 1 del cliente (18/9/2026, plan "Seba atiende el mostrador",
+  // decisión D1): el primer mensaje de cada conversación —nueva, o reabierta
+  // tras cierre (el webhook borra el sello al reabrir, ver route.ts)— tiene
+  // que ser ESTRICTAMENTE el saludo que dictó el cliente, sin que el modelo
+  // lo redacte ni lo parafrasee.
+  //
+  // Por qué lo manda el TURNO y no el webhook: acá viven las cuatro cosas
+  // que garantizan que el saludo salga bien y una sola vez — el lock de
+  // conversación, `deliver()` (que vuelve a mirar el interruptor y si un
+  // asesor se metió justo antes de hablar), la ventana de 24 h de Meta
+  // (`withinFreeformWindow` ya corrió al abrir el turno, antes de esta
+  // función) y el `TurnTarget` congelado. Mandarlo desde el webhook saltaría
+  // las cuatro guardas y correría en paralelo con el propio turno, sin
+  // ninguna de ellas.
+  //
+  // Por qué son excluyentes con la plantilla de bienvenida
+  // (WHATSAPP_WELCOME_TEMPLATE, route.ts): las dos comparten la misma
+  // columna. Si algún día se configurara esa variable, `claimWelcome`
+  // sellaría `welcome_sent_at` ANTES de que este turno llegue a correr —el
+  // webhook encola después de intentar la bienvenida— y acá abajo
+  // `claimPresentation` ya no tendría nada que reclamar: Seba no saludaría
+  // encima de la plantilla. Hoy esa variable sigue vacía en producción, así
+  // que este es el único saludo que sale.
+  let introducedThisTurn = false;
+  if (convo.welcome_sent_at === null) {
+    const claimed = await claimPresentation(supabase, conversationId);
+    if (claimed) {
+      // "Solo saludó" decide si hace falta seguir redactando: un "hola" (o
+      // una cortesía de apertura) pelado ya queda completamente contestado
+      // con la presentación — seguir hasta fase 0/1 y el tool loop no
+      // tendría nada más que decir. `isGreetingOnly`/`isCourtesyOnly`
+      // (saludo.ts) son las mismas dos preguntas que ya usa el resto del
+      // turno para lo mismo, sobre texto de cliente.
+      const soloSaludo =
+        customerMessage !== null && (isGreetingOnly(customerMessage) || isCourtesyOnly(customerMessage));
+
+      const salida = await deliver(
+        supabase,
+        target,
+        entrega,
+        lease,
+        tiempos,
+        "presentacion",
+        convo.last_customer_message_at,
+        () =>
+          sendAgentText(supabase, target, sebaGreeting(dayBand(new Date())), {
+            // `!soloSaludo`: si el cliente solo saludó, este mensaje ES la
+            // respuesta completa del turno y tiene que apagar
+            // `awaiting_reply` como cualquier respuesta real. Si en cambio
+            // sigue una redacción de verdad, el saludo NO puede apagarla
+            // todavía — si esa redacción termina escalando, el cliente
+            // tiene que seguir viéndose en "Pendientes" hasta que una
+            // persona le escriba (CLAUDE.md, "Toda salida de un turno que
+            // escaló es is_auto_reply"): apagarla acá la encendería de
+            // nuevo recién con la escalada, dejando una ventana falsa en el
+            // medio.
+            isAutoReply: !soloSaludo,
+          })
+      );
+
+      // `claimPresentation` ya selló `welcome_sent_at` ANTES de este envío.
+      // Si `deliver()` frenó (lock perdido, interruptor apagado, un asesor
+      // se adelantó) o Meta rechazó el mensaje, no hubo presentación real:
+      // el sello se devuelve a null — mismo patrón que Meta rechazando la
+      // plantilla de bienvenida (`bienvenida_rechazada_por_meta`, route.ts,
+      // ~l.391) — para que la próxima vez que el cliente escriba, Seba se
+      // presente de verdad. `deliver()`/`deliveryFailed()` ya dejaron su
+      // propio traspaso; acá no hace falta uno nuevo.
+      if (!salida) {
+        await supabase.from("conversations").update({ welcome_sent_at: null }).eq("id", conversationId);
+        return;
+      }
+      if (await deliveryFailed(supabase, conversationId, salida, convo.assigned_agent_id)) {
+        await supabase.from("conversations").update({ welcome_sent_at: null }).eq("id", conversationId);
+        return;
+      }
+
+      if (soloSaludo) {
+        // Sin fase 0, fase 1 ni tool loop: tres llamadas al proveedor que un
+        // "hola" pelado no iba a necesitar.
+        await resetStage(supabase, conversationId, "turno_presentacion_saludo", convo.assigned_agent_id);
+        await logTurn(supabase, conversationId, {
+          intent: null,
+          action: "answered",
+          summary: "Seba se presentó; el cliente solo saludó.",
+          tokens: null,
+          customerMessage,
+        });
+        return;
+      }
+
+      // Hay más que atender: el turno sigue de largo (guarda de cortesía,
+      // fase 0/1, tool loop) y `buildInstructions` recibe `introducedThisTurn:
+      // true` para que el modelo sepa que el saludo YA salió, en un mensaje
+      // aparte, y no lo repita.
+      introducedThisTurn = true;
+    }
+  }
 
   // Guarda de cortesía tras una escalada abierta (Tarea 4, "La voz cercana y
   // la espera visible", 14/9/2026, decisión 4). ANTES de fase 0 y de
@@ -1556,7 +1676,7 @@ async function runTurnPhases(
     model,
     instructions: buildInstructions({
       intent,
-      needsGreeting: needsGreeting(convo.welcome_sent_at, history),
+      introducedThisTurn,
       missingCatalog,
       businessHours,
       customerName,

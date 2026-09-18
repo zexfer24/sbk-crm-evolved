@@ -1,7 +1,7 @@
 import "server-only";
 import type { Intent } from "@/lib/ai/classify";
 import { AI_NAME, BUSINESS_NAME } from "@/lib/brand";
-import { DEFAULT_BUSINESS_HOURS, dayBand, greetingFor, turnClockLine, type BusinessHours } from "@/lib/business-hours";
+import { DEFAULT_BUSINESS_HOURS, turnClockLine, type BusinessHours } from "@/lib/business-hours";
 import { PREGUNTA_FILTRO, TEXTO_CONFIRMAR_INVENTARIO, TEXTO_NO_IDENTIFICADO, TEXTO_SIN_STOCK } from "@/lib/ai/seba";
 
 // ---------------------------------------------------------------------------
@@ -92,7 +92,7 @@ Si el cliente manda una foto o un video sin nada escrito, no adivines qué es. P
 
 Si manda una nota de voz, pídele corto y amable que te lo escriba por acá.
 
-Si manda solo un sticker, no lo comentes: sigue con lo que se venía hablando. Si es lo primero que llega en la conversación, saluda y pregunta en qué lo puedes ayudar.
+Si manda solo un sticker, no lo comentes: sigue con lo que se venía hablando. Si es lo primero que llega en la conversación, pregunta en qué lo puedes ayudar.
 
 Si manda un documento, dile que un asesor se lo revisa y pregúntale qué necesita.
 
@@ -289,7 +289,7 @@ Si pregunta por el horario o si están abiertos, respóndelo tú con lo que dice
 
 Esto es WhatsApp, no un correo ni un documento. Dos a cuatro líneas por mensaje. Frases cortas.
 
-Saludas UNA sola vez por conversación, y solo cuando TURNO ACTUAL te diga que es el primer mensaje: con el saludo exacto que te da ahí —buenos días, buenas tardes o buenas noches, ya calculado con la hora de Barinas—, nunca uno que deduzcas tú, y diciendo de dónde escribes. En cualquier otro mensaje no saludas, aunque el cliente vuelva a saludar: respóndele lo que preguntó.
+No saludas ni te presentas: Seba ya se presentó en un mensaje aparte que el sistema manda antes que el tuyo. Ni al abrir la conversación ni cuando el cliente vuelva a saludar.
 
 El horario de atención y si la tienda está abierta ahora mismo también te llegan en TURNO ACTUAL: puedes decirlo tal cual te lo dan, pero no inventes otro horario ni otro estado.
 
@@ -323,8 +323,16 @@ const CASE_SECTION: Record<Intent, string> = {
 
 export interface TurnContext {
   intent: Intent;
-  /** true cuando la conversación no recibió la plantilla de bienvenida y nadie ha saludado todavía. */
-  needsGreeting: boolean;
+  /**
+   * true cuando Seba se presentó EN ESTE MISMO TURNO, en el mensaje que
+   * `agent.ts` manda por código justo antes de este (`sebaGreeting`,
+   * `claimPresentation`) — nunca cuando lo hizo en un turno anterior. Las dos
+   * ramas del sufijo dicen "no saludes": la diferencia es solo si hay que
+   * explicar que la presentación YA salió en un mensaje aparte (18/9/2026,
+   * T2b, plan "Seba atiende el mostrador" — reemplaza a `needsGreeting`,
+   * cuya semántica era la inversa: "todavía nadie saludó, salúdalo tú").
+   */
+  introducedThisTurn: boolean;
   /** true cuando la búsqueda de catálogo está apagada desde el panel y este turno la habría necesitado. */
   missingCatalog?: boolean;
   /**
@@ -363,24 +371,26 @@ export interface TurnContext {
  *
  * La hora entra por acá y no por el bloque estático justo por eso: cambia en
  * cada turno, así que meterla arriba rompería el prefijo y dejaría de
- * cachear. La REGLA de cómo se usa (cuándo saludar y cómo) sí es fija y vive
- * en la sección 6 del bloque estático; acá viaja solo el valor de la hora.
+ * cachear. La REGLA de cómo se usa (nunca saludar, Seba ya lo hizo por
+ * código) sí es fija y vive en la sección 6 del bloque estático; acá viaja
+ * solo el valor de la hora.
  *
- * `needsGreeting` decide el saludo desde el 14/9/2026 (Tarea 2, "La voz
- * cercana y la espera visible"): antes lo decidía `turnClockLine` con la
- * franja del día ("saluda 'buenas tardes'"), y eso hacía que la IA volviera
- * a saludar por hora en cualquier mensaje de una conversación ya empezada,
- * porque la franja viajaba en CADA turno. La corrección de ese día fue
- * volverlo neutro ("¡Hola!"/"¡Buenas!") para cortar la repetición. El
- * 15/9/2026 (Tarea 3, "La voz de mostrador con nombre propio") el operador
- * pidió recuperar "buenos días/tardes/noches" — pero solo acá, en el sufijo
- * del primer mensaje, calculado por código con `dayBand`/`greetingFor` una
- * única vez por conversación: `turnClockLine` sigue sin traer franja, así
- * que el bug del 14/9 (saludar por hora en cada turno) no puede volver.
+ * `introducedThisTurn` (18/9/2026, T2b del plan "Seba atiende el mostrador")
+ * reemplaza a `needsGreeting`: hasta esta tarea el propio MODELO redactaba
+ * el saludo del primer mensaje, con la franja calculada acá
+ * (`dayBand`/`greetingFor`) y pegada al sufijo — así fue como el 14/9/2026
+ * (Tarea 2, "La voz cercana y la espera visible") la IA terminó saludando
+ * por hora en cada turno de una conversación ya empezada, porque
+ * `turnClockLine` traía la franja SIEMPRE, y como el 15/9 (Tarea 3, "La voz
+ * de mostrador con nombre propio") volvió a depender de la hora en el
+ * primer mensaje. Desde T2b el saludo YA NO lo redacta el modelo: sale como
+ * mensaje aparte, por código, ANTES de que este texto llegue a existir
+ * (`sebaGreeting`, `claimPresentation`, agent.ts) — acá no queda franja que
+ * calcular ni saludo que armar, solo la instrucción de no repetirlo.
  */
 export function buildInstructions({
   intent,
-  needsGreeting,
+  introducedThisTurn,
   missingCatalog,
   businessHours = DEFAULT_BUSINESS_HOURS,
   now,
@@ -389,9 +399,9 @@ export function buildInstructions({
   const seccion = CASE_SECTION[intent] ?? CASE_SECTION.otro;
   const instante = now ?? new Date();
 
-  const greeting = needsGreeting
-    ? ` Es el primer mensaje que recibe de nosotros: abre con "¡${capitalizar(greetingFor(dayBand(instante)))}!" —exactamente ese saludo, ya calculado con la hora de Barinas; no lo cambies por otro ni lo repitas después—, dile que le escribes de ${BUSINESS_NAME} y responde en el mismo mensaje lo que preguntó.`
-    : " Ya hubo saludo en esta conversación: no saludes de nuevo, ve directo a lo que preguntó.";
+  const greeting = introducedThisTurn
+    ? " Seba acaba de presentarse en un mensaje aparte que salió antes que el tuyo, con el saludo del día: no saludes ni te presentes, contesta directo lo que preguntó."
+    : " Ya te presentaste como Seba en esta conversación: no saludes ni te presentes de nuevo, ve directo a lo que preguntó.";
 
   // Sin catálogo, el peligro es que el modelo responda de memoria: un "sí
   // tenemos" o un precio salido de la nada. Se le cierra esa puerta acá.
@@ -416,14 +426,4 @@ export function buildInstructions({
 TURNO ACTUAL
 ${turnClockLine(instante, businessHours)}
 Caso identificado: ${intent}. Aplica el protocolo ${seccion}.${greeting}${catalog}${nombre}`;
-}
-
-/**
- * "buenas noches" → "Buenas noches". Helper local: `greetingFor` devuelve el
- * saludo en minúsculas (así lo usa `dayBand` en prosa media-frase), pero el
- * sufijo lo abre como interjección ("¡Buenas noches!") y necesita la
- * mayúscula inicial (Tarea 3, 15/9/2026).
- */
-function capitalizar(texto: string): string {
-  return texto.charAt(0).toUpperCase() + texto.slice(1);
 }

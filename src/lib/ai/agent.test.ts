@@ -85,6 +85,28 @@ interface FakeState {
   agentMessagesAfterHandoff: { id: string }[];
   /** Si viene con mensaje, esa segunda consulta de `escalationOpen` falla. */
   agentMessagesAfterHandoffError: { message: string } | null;
+  /**
+   * T2b, plan "Seba atiende el mostrador" (18/9/2026): qué devuelve el
+   * reclamo de `claimPresentation` (`UPDATE ... WHERE id = ? AND
+   * welcome_sent_at IS NULL ... SELECT id`). `true` de fábrica: la mayoría
+   * de los turnos de esta suite tienen `welcome_sent_at` ya sellado, así que
+   * ni siquiera llegan a preguntar esto — solo importa en los tests que
+   * ponen `welcome_sent_at: null`.
+   */
+  presentationClaimWins: boolean;
+  /** Si viene con mensaje, el UPDATE del reclamo de presentación falla. */
+  presentationClaimError: { message: string } | null;
+  /**
+   * Gancho que corre justo DESPUÉS de que el reclamo de presentación gana
+   * (la consulta ya devolvió éxito), para simular una carrera: algo cambia
+   * en el estado justo en el hueco entre el reclamo y el siguiente guardián
+   * de `deliver()` — mismo patrón que el resto de la suite usa para las
+   * carreras del turno (flip de estado dentro de un mock que corre en el
+   * punto exacto), pero acá no hay un `generateMock` al que engancharse
+   * porque el reclamo pasa ANTES de clasificar y redactar. `null` de
+   * fábrica: no hace nada salvo que un test lo ponga.
+   */
+  onPresentationClaimed: (() => void) | null;
 }
 
 const state: FakeState = {
@@ -109,6 +131,9 @@ const state: FakeState = {
   lastHandoffError: null,
   agentMessagesAfterHandoff: [],
   agentMessagesAfterHandoffError: null,
+  presentationClaimWins: true,
+  presentationClaimError: null,
+  onPresentationClaimed: null,
 };
 const conversationUpdates: Record<string, unknown>[] = [];
 /** Tarea 3 (14/9/2026): columnas pedidas en cada `select()` sobre `conversations`, para probar que trae display_name/profile_name. */
@@ -189,13 +214,44 @@ function createFakeSupabase() {
               eq: () => ({ maybeSingle: async () => ({ data: state.conversation }) }),
             };
           },
+          // T2b, plan "Seba atiende el mostrador" (18/9/2026): el turno usa
+          // `.update(...).eq(...)` de dos formas -- un `await` directo (la
+          // mayoría: journey_stage, intent, el revert de welcome_sent_at) y
+          // el reclamo de presentación (`claimPresentation`, agent.ts:
+          // `.eq("id", id).is("welcome_sent_at", null).select("id")`). El
+          // objeto que devuelve `.eq()` tiene que servir para las dos --
+          // "thenable" para el primer caso, encadenable con `.is()` +
+          // `.select()` para el segundo -- mismo patrón que ya usa
+          // welcome-race.test.ts para `claimWelcome` (route.ts).
           update: (values: Record<string, unknown>) => ({
-            eq: () => {
-              conversationUpdates.push(values);
-              // Tarea 5 (14/9/2026): solo el UPDATE que toca `intent` puede
-              // fallar en estos tests — es el único que agent.ts revisa.
-              const error = "intent" in values ? state.intentUpdateError : null;
-              return Promise.resolve({ data: null, error });
+            eq: (_col: string, id: string) => {
+              const builder = {
+                is: (_isCol: string, _isVal: unknown) => ({
+                  select: async (_cols: string) => {
+                    if (state.presentationClaimError) {
+                      return { data: null, error: state.presentationClaimError };
+                    }
+                    if (!state.presentationClaimWins) {
+                      // El claim pierde: otra corrida ya selló
+                      // welcome_sent_at (o simplemente no calzó). 0 filas,
+                      // sin aplicar el patch.
+                      return { data: [], error: null };
+                    }
+                    conversationUpdates.push(values);
+                    state.onPresentationClaimed?.();
+                    return { data: [{ id }], error: null };
+                  },
+                }),
+                then: (resolve: (value: { data: null; error: unknown }) => void) => {
+                  conversationUpdates.push(values);
+                  // Tarea 5 (14/9/2026): solo el UPDATE que toca `intent`
+                  // puede fallar en estos tests — es el único que agent.ts
+                  // revisa.
+                  const error = "intent" in values ? state.intentUpdateError : null;
+                  resolve({ data: null, error });
+                },
+              };
+              return builder;
             },
           }),
         };
@@ -521,6 +577,7 @@ import { DESPEDIDA_MEDIA, DESPEDIDA_SIN_ASESOR, despedidaConAsesor, runAgentTurn
 import { OFF_TOPIC_REPLY, SYSTEM_PROMPT } from "@/lib/ai/prompt";
 import { revealsIdentity } from "@/lib/ai/identity-guard";
 import { playbookMessageText } from "@/lib/ai/send";
+import { sebaGreeting } from "@/lib/ai/seba";
 import { log } from "@/lib/log";
 
 function playbook(overrides: Partial<Playbook> = {}): Playbook {
@@ -586,6 +643,9 @@ beforeEach(() => {
   state.lastHandoffError = null;
   state.agentMessagesAfterHandoff = [];
   state.agentMessagesAfterHandoffError = null;
+  state.presentationClaimWins = true;
+  state.presentationClaimError = null;
+  state.onPresentationClaimed = null;
   withinFreeformWindowOverride.fn = null;
   sendTypingIndicatorMock.mockClear();
   conversationUpdates.length = 0;
@@ -2395,26 +2455,19 @@ describe("runAgentTurn — instrucciones que recibe el modelo", () => {
   });
 
   /**
-   * La plantilla de bienvenida solo sale si WHATSAPP_WELCOME_TEMPLATE está
-   * configurada. Sin ella `welcome_sent_at` queda en null y no saluda nadie:
-   * el cliente recibiría su primera respuesta en seco.
+   * 18/9/2026 (T2b, plan "Seba atiende el mostrador"): reemplaza a "manda
+   * saludar cuando la conversación nunca recibió bienvenida" / "no manda
+   * saludar si la bienvenida ya salió" — el modelo YA NO redacta ningún
+   * saludo. Con `welcome_sent_at` sellado (el estado por defecto de
+   * `state.conversation`), el turno no manda la presentación de Seba y el
+   * sufijo dice "no te presentes de nuevo" (`introducedThisTurn: false`).
    */
-  it("manda saludar cuando la conversación nunca recibió bienvenida", async () => {
-    state.conversation = { ...state.conversation, welcome_sent_at: null };
-
+  it("con welcome_sent_at ya sellado, el sufijo dice que Seba ya se presentó antes", async () => {
     await runAgentTurn("conv-1");
 
-    expect(agentOptions[0].instructions.slice(SYSTEM_PROMPT.length)).toMatch(/es el primer mensaje que recibe de nosotros/i);
-  });
-
-  // Ojo: no se busca /saluda/i a secas — desde Frente B3 (5/9/2026) turnClockLine
-  // SIEMPRE trae la palabra ("... saluda 'buenas tardes' ..."), salga o no la
-  // instrucción de saludar. Lo que distingue el primer contacto es esta frase.
-  it("no manda saludar si la bienvenida ya salió", async () => {
-    await runAgentTurn("conv-1");
-
-    expect(agentOptions[0].instructions.slice(SYSTEM_PROMPT.length)).not.toMatch(
-      /es el primer mensaje que recibe de nosotros/i
+    expect(sendAgentTextMock).toHaveBeenCalledTimes(1);
+    expect(agentOptions[0].instructions.slice(SYSTEM_PROMPT.length)).toMatch(
+      /ya te presentaste como seba en esta conversación/i
     );
   });
 
@@ -2513,6 +2566,176 @@ describe("runAgentTurn — instrucciones que recibe el modelo", () => {
 
     const sufijo = agentOptions[0].instructions.slice(SYSTEM_PROMPT.length);
     expect(sufijo).not.toMatch(/El cliente se llama/);
+  });
+});
+
+/**
+ * T2b, plan "Seba atiende el mostrador" (18/9/2026): el turno presenta a
+ * Seba por código, en un mensaje aparte, ANTES de cualquier redacción del
+ * modelo — `welcome_sent_at IS NULL` es la condición completa (reemplaza a
+ * `needsGreeting`, que miraba el historial). `presentationClaimWins: true`
+ * de fábrica (`beforeEach`) es lo que deja pasar de largo a TODA la suite
+ * anterior a esta tarea sin que le importe el reclamo.
+ */
+describe("runAgentTurn — la presentación de Seba (T2b, 18/9/2026)", () => {
+  afterEach(() => {
+    // El reloj vuelve a ser el de verdad al salir: un reloj congelado que se
+    // filtre al resto del archivo rompe cualquier prueba que dependa de la
+    // hora real (mismo motivo que el `afterEach` de "tiempos del turno").
+    vi.useRealTimers();
+  });
+
+  /**
+   * Chat nuevo (`welcome_sent_at: null`) con una pregunta de verdad detrás
+   * del saludo: el turno manda DOS mensajes, en orden — la presentación
+   * literal de Seba primero (marcada `is_auto_reply: true`, porque sigue una
+   * redacción real detrás y `awaiting_reply` no puede apagarse antes de
+   * tiempo) y la respuesta redactada después (sin `is_auto_reply`, la
+   * respuesta real). El texto de la presentación es el EXACTO que arma
+   * `sebaGreeting` para la franja del `now` fijo del test — nunca el reloj
+   * real (trampa de CLAUDE.md, "nunca dejar un test que dependa del reloj
+   * real").
+   */
+  it("chat nuevo + pregunta: dos envíos en orden saludo → respuesta, is_auto_reply distinto en cada uno", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-09-18T00:30:00Z")); // 8:30 pm en Caracas → franja "noche"
+
+    state.conversation = { ...state.conversation, welcome_sent_at: null };
+    state.history = [
+      { sender_type: "customer", content: "hola, tienen pastillas de freno", is_internal_note: false },
+    ];
+
+    await runAgentTurn("conv-1");
+
+    expect(sendAgentTextMock).toHaveBeenCalledTimes(2);
+    expect(sendAgentTextMock).toHaveBeenNthCalledWith(
+      1,
+      expect.anything(),
+      expect.anything(),
+      sebaGreeting("noche"),
+      expect.objectContaining({ isAutoReply: true })
+    );
+    expect(sendAgentTextMock).toHaveBeenNthCalledWith(
+      2,
+      expect.anything(),
+      expect.anything(),
+      "respuesta redactada por el modelo",
+      expect.objectContaining({ isAutoReply: false })
+    );
+    // El sello de presentación quedó puesto (el reclamo se ve en el UPDATE).
+    expect(conversationUpdates).toContainEqual(
+      expect.objectContaining({ welcome_sent_at: expect.any(String) })
+    );
+    // Sí llegó a clasificar y a redactar: la presentación no reemplazó el
+    // resto del turno, lo precedió.
+    expect(classifyIntentMock).toHaveBeenCalledTimes(1);
+    expect(generateMock).toHaveBeenCalledTimes(1);
+  });
+
+  /**
+   * "hola" pelado: el saludo de Seba YA es la respuesta completa del turno.
+   * Un solo envío, marcado `is_auto_reply: false` (apaga `awaiting_reply`
+   * como cualquier respuesta real), y sin gastar fase 0, fase 1 ni el tool
+   * loop — tres llamadas al proveedor que un "hola" no necesitaba.
+   */
+  it("chat nuevo + 'hola': un solo envío con is_auto_reply false, sin clasificar ni redactar", async () => {
+    state.conversation = { ...state.conversation, welcome_sent_at: null };
+    state.history = [{ sender_type: "customer", content: "hola", is_internal_note: false }];
+
+    await runAgentTurn("conv-1");
+
+    expect(sendAgentTextMock).toHaveBeenCalledTimes(1);
+    expect(sendAgentTextMock).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.anything(),
+      expect.any(String),
+      expect.objectContaining({ isAutoReply: false })
+    );
+    expect(matchPlaybookMock).not.toHaveBeenCalled();
+    expect(classifyIntentMock).not.toHaveBeenCalled();
+    expect(generateMock).not.toHaveBeenCalled();
+    expect(agentTurnInserts).toHaveLength(1);
+    expect(agentTurnInserts[0]).toMatchObject({
+      action: "answered",
+      summary: "Seba se presentó; el cliente solo saludó.",
+    });
+  });
+
+  /**
+   * Si el reclamo pierde —otra corrida ya selló `welcome_sent_at` antes de
+   * que esta llegara a intentarlo— el turno no manda ninguna presentación:
+   * sigue de largo como si el sello ya hubiera estado puesto desde el
+   * principio.
+   */
+  it("si el reclamo pierde (0 filas), no saluda y sigue directo a la redacción", async () => {
+    state.conversation = { ...state.conversation, welcome_sent_at: null };
+    state.presentationClaimWins = false;
+
+    await runAgentTurn("conv-1");
+
+    expect(sendAgentTextMock).toHaveBeenCalledTimes(1);
+    expect(sendAgentTextMock).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.anything(),
+      "respuesta redactada por el modelo",
+      expect.anything()
+    );
+    expect(agentOptions[0].instructions.slice(SYSTEM_PROMPT.length)).toMatch(
+      /ya te presentaste como seba en esta conversación/i
+    );
+  });
+
+  /**
+   * La guarda de `deliver()` frena DESPUÉS de que el reclamo ya selló
+   * `welcome_sent_at` — acá, el interruptor global apagándose justo en el
+   * hueco entre el reclamo y el siguiente guardián de `deliver()` (mismo
+   * tipo de carrera que ya cubre "el interruptor se vuelve a revisar justo
+   * antes de enviar", más arriba, pero ANTES de clasificar/redactar). El
+   * sello no puede quedar puesto sin que haya salido nada: se revierte a
+   * `null` para que el próximo mensaje del cliente encuentre otra vez
+   * `welcome_sent_at IS NULL` y Seba se presente de verdad.
+   */
+  it("si deliver() frena justo después del reclamo, el sello vuelve a null y no sigue redactando", async () => {
+    const warn = vi.spyOn(log, "warn");
+    state.conversation = { ...state.conversation, welcome_sent_at: null };
+    state.onPresentationClaimed = () => {
+      state.canRun = false;
+    };
+
+    await runAgentTurn("conv-1");
+
+    expect(sendAgentTextMock).not.toHaveBeenCalled();
+    expect(classifyIntentMock).not.toHaveBeenCalled();
+    expect(conversationUpdates).toContainEqual({ welcome_sent_at: null });
+    expect(warn).toHaveBeenCalledWith("turno_abortado_por_interruptor", { conversationId: "conv-1" });
+  });
+
+  /**
+   * Meta rechaza el envío de la presentación (Meta SÍ respondió, con un
+   * código de error): mismo criterio que el caso de arriba — sin
+   * presentación real, el sello vuelve a `null`. El turno no sigue de largo
+   * hacia la redacción: `deliveryFailed` corta el camino ahí mismo.
+   */
+  it("si Meta rechaza el envío de la presentación, el sello vuelve a null y el turno no sigue redactando", async () => {
+    state.conversation = { ...state.conversation, welcome_sent_at: null };
+    sendAgentTextMock.mockResolvedValueOnce({
+      whatsapp_message_id: null,
+      whatsapp_status: "failed",
+      whatsapp_error_code: 131047,
+      whatsapp_error_detail: "rechazado por Meta",
+      origenDelFallo: "meta",
+    });
+
+    await runAgentTurn("conv-1");
+
+    // Un solo intento: el de la presentación. El turno no llegó a clasificar
+    // ni a redactar una segunda respuesta.
+    expect(sendAgentTextMock).toHaveBeenCalledTimes(1);
+    expect(classifyIntentMock).not.toHaveBeenCalled();
+    expect(conversationUpdates).toContainEqual({ welcome_sent_at: null });
+    expect(handoffCalls).toContainEqual(
+      expect.objectContaining({ p_conversation_id: "conv-1", p_to_kind: "unassigned", p_reason: "rechazado_por_meta" })
+    );
   });
 });
 

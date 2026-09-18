@@ -318,9 +318,17 @@ export function buildOrderHistoryTool({ supabase, contactId, conversationId }: T
  * saludo, así que se lo comía. Las cuatro ramas terminan ahora con
  * `RECORDATORIO_SALUDO` para que el saludo del primer mensaje sobreviva
  * también cuando el turno termina en una escalada.
+ *
+ * 18/9/2026 (T2b, plan "Seba atiende el mostrador"): el saludo dejó de ser
+ * algo que el modelo redacta — sale como mensaje aparte, por código, ANTES
+ * del tool loop (`sebaGreeting`, agent.ts). El riesgo que motivó este
+ * recordatorio en 15/9 ya no existe (no hay ningún saludo que el modelo
+ * pueda "comerse"), pero el texto se conserva con el sentido inverso: sigue
+ * siendo la ÚLTIMA instrucción que las cuatro ramas le dejan al modelo, así
+ * que tiene que seguir diciendo la verdad — no saludes, ya se presentó.
  */
 export const RECORDATORIO_SALUDO =
-  " Si este es el primer mensaje que recibe de nosotros (TURNO ACTUAL te lo dice), abre igual con el saludo exacto que te dio antes de esta promesa; si no, no saludes.";
+  " No saludes ni te presentes: Seba ya se presentó en un mensaje aparte.";
 
 function escalationInstruction(status: BusinessStatus | undefined, assignedName: string | null): string {
   const abierta = !status || status.open;

@@ -101,6 +101,14 @@ function createFakeAdminClient() {
     // solo el caso nuevo de "cerrada con asesor" lo pisa con `setConversationRow`.
     assigned_agent_id: null as string | null,
   };
+  /**
+   * T2b, plan "Seba atiende el mostrador" (18/9/2026): cuántas lecturas más
+   * del SELECT de "¿existe ya?" deben devolver `status: "closed"` aunque
+   * `conversationRow.status` ya haya cambiado -- ver el comentario en
+   * `maybeSingle`, más abajo. `0` de fábrica: por defecto cada SELECT ve el
+   * estado real, como antes de esta tarea.
+   */
+  let forceStaleClosedReads = 0;
   const conversationUpdates: { id: string; patch: Record<string, unknown> }[] = [];
   /** Cada llamada a la RPC `record_handoff`, con sus parámetros. */
   const handoffCalls: Record<string, unknown>[] = [];
@@ -228,24 +236,66 @@ function createFakeAdminClient() {
                     return {
                       // Ventana abierta a propósito: evita que el test dependa
                       // de la lógica de bienvenida (fuera de alcance acá).
-                      maybeSingle: async () => ({ data: { ...conversationRow }, error: null }),
+                      maybeSingle: async () => {
+                        // T2b, plan "Seba atiende el mostrador" (18/9/2026):
+                        // `forceStaleClosedReads` simula la lectura VIEJA que
+                        // vería un segundo webhook concurrente del mismo
+                        // lote -- el SELECT real de Postgres bajo READ
+                        // COMMITTED puede seguir viendo `status = 'closed'`
+                        // aunque el primer UPDATE ya lo haya reabierto, hasta
+                        // que ese segundo webhook intenta SU PROPIO UPDATE
+                        // (que entonces sí ve la fila ya reabierta y afecta 0
+                        // filas). Sin esto, el fake "auto-corrige" el estado
+                        // en cada SELECT y el camino de 0 filas del reclamo
+                        // nunca se ejercita.
+                        if (forceStaleClosedReads > 0) {
+                          forceStaleClosedReads--;
+                          return { data: { ...conversationRow, status: "closed" }, error: null };
+                        }
+                        return { data: { ...conversationRow }, error: null };
+                      },
                     };
                   },
                 };
               },
             };
           },
+          // T2b, plan "Seba atiende el mostrador" (18/9/2026): el webhook usa
+          // `.update(...).eq(...)` de dos formas -- un `await` directo (el
+          // UPDATE de `referral`, un solo `.eq()`) y el reclamo de reapertura
+          // (`.eq("id", id).eq("status", "closed").select("id")`, T2b). El
+          // objeto que devuelve el primer `.eq()` tiene que servir para las
+          // dos: "thenable" para el `await` directo, y encadenable con un
+          // segundo `.eq()` + `.select()` para el reclamo -- mismo patrón que
+          // ya usa welcome-race.test.ts para `claimWelcome`.
           update(patch: Record<string, unknown>) {
             return {
-              eq: async (_col: string, id: string) => {
-                conversationUpdates.push({ id, patch });
-                // T2.1: la reapertura del webhook relee `status` en la misma
-                // invocación cuando un lote trae varios mensajes del mismo
-                // contacto — sin esto, el segundo mensaje del lote vería la
-                // fila todavía `closed` y dispararía un segundo traspaso.
-                if (typeof patch.status === "string") conversationRow.status = patch.status;
-                return { data: null, error: null };
-              },
+              eq: (_col1: string, id: string) => ({
+                eq: (col2: string, val2: unknown) => ({
+                  select: async (_cols: string) => {
+                    // El reclamo filtra por el WHERE real: si la fila ya no
+                    // calza (otro webhook concurrente del mismo lote ya la
+                    // reabrió), el UPDATE no afecta ninguna fila.
+                    const calza = (conversationRow as Record<string, unknown>)[col2] === val2;
+                    if (!calza) return { data: [], error: null };
+                    conversationUpdates.push({ id, patch });
+                    Object.assign(conversationRow, patch);
+                    return { data: [{ id }], error: null };
+                  },
+                }),
+                then: (resolve: (value: { data: null; error: null }) => void) => {
+                  conversationUpdates.push({ id, patch });
+                  // T2.1: la reapertura del webhook relee `status` en la
+                  // misma invocación cuando un lote trae varios mensajes del
+                  // mismo contacto — sin esto, el segundo mensaje del lote
+                  // vería la fila todavía `closed` y dispararía un segundo
+                  // traspaso. Con el reclamo (arriba) esto ya no hace falta
+                  // para la reapertura, pero el UPDATE de `referral` sigue
+                  // pasando por acá.
+                  if (typeof patch.status === "string") conversationRow.status = patch.status as string;
+                  resolve({ data: null, error: null });
+                },
+              }),
             };
           },
         };
@@ -362,6 +412,9 @@ function createFakeAdminClient() {
     setConversationRow: (patch: Partial<typeof conversationRow>) => {
       conversationRow = { ...conversationRow, ...patch };
     },
+    setForceStaleClosedReads: (n: number) => {
+      forceStaleClosedReads = n;
+    },
     resetConversationRow: () => {
       conversationRow = {
         id: "conv-1",
@@ -402,6 +455,7 @@ const {
   setChannelRows,
   resetChannelRows,
   setConversationRow,
+  setForceStaleClosedReads,
   resetConversationRow,
   contactUpdates,
   setContactRows,
@@ -430,6 +484,46 @@ function webhookBody(waMessageId: string) {
                   timestamp: String(Math.floor(Date.now() / 1000)),
                   type: "text",
                   text: { body: "hola" },
+                },
+              ],
+            },
+          },
+        ],
+      },
+    ],
+  };
+}
+
+/**
+ * Un lote con DOS mensajes del MISMO contacto, como cuando Meta los agrupa
+ * (T2b, "Seba atiende el mostrador", 18/9/2026): la prueba de que el reclamo
+ * de reapertura no duplica el evento ni el traspaso necesita dos mensajes en
+ * la MISMA invocación, procesados uno tras otro por el mismo bucle.
+ */
+function webhookBodyTwoMessages(waMessageId1: string, waMessageId2: string) {
+  return {
+    entry: [
+      {
+        changes: [
+          {
+            field: "messages",
+            value: {
+              metadata: { phone_number_id: "1234567890" },
+              contacts: [{ profile: { name: "Cliente Demo" }, wa_id: "584120000000" }],
+              messages: [
+                {
+                  from: "584120000000",
+                  id: waMessageId1,
+                  timestamp: String(Math.floor(Date.now() / 1000)),
+                  type: "text",
+                  text: { body: "hola" },
+                },
+                {
+                  from: "584120000000",
+                  id: waMessageId2,
+                  timestamp: String(Math.floor(Date.now() / 1000) + 1),
+                  type: "text",
+                  text: { body: "otra vez" },
                 },
               ],
             },
@@ -552,6 +646,7 @@ beforeEach(() => {
   templateUpdates.length = 0;
   contactUpdates.length = 0;
   resetConversationRow();
+  setForceStaleClosedReads(0);
   resetChannelRows();
   resetContactRows();
   setContactUpdateConflict(false);
@@ -1640,15 +1735,24 @@ describe("POST /api/webhooks/whatsapp — un remitente que no es un teléfono", 
 // `status = 'closed'` -- invisible para "Pendientes" y para cualquier otra
 // píldora que descuente lo cerrado. El webhook la reabre sola, ANTES de
 // guardar ese mensaje, y deja el traspaso `reabierta_por_cliente`.
+//
+// T2b, plan "Seba atiende el mostrador" (18/9/2026, D2): reescrito. El
+// reopen dejó de tener ramas por `ai_enabled`/`assigned_agent_id` -- un chat
+// reabierto arranca SIEMPRE de cero (IA encendida, sin asesor, Seba se
+// presenta de nuevo) -- así que el UPDATE ahora es un RECLAMO con los cuatro
+// campos y `.eq("status", "closed")` en el WHERE, y el traspaso es siempre
+// `toKind: "ai"`.
 // ---------------------------------------------------------------------------
 describe("POST /api/webhooks/whatsapp — el cliente vuelve sobre una conversación cerrada", () => {
-  it("con la IA encendida, reabre, avisa en el hilo y el traspaso vuelve a la IA", async () => {
+  const PATCH_REAPERTURA = { status: "open", ai_enabled: true, assigned_agent_id: null, welcome_sent_at: null };
+
+  it("reabre con los cuatro campos, avisa en el hilo y el traspaso siempre vuelve a la IA", async () => {
     setConversationRow({ status: "closed", ai_enabled: true });
 
     const response = await POST(fakeRequest(webhookBody("wamid.reabre-con-ia-1")));
 
     expect(response.status).toBe(200);
-    expect(conversationUpdates).toContainEqual({ id: "conv-1", patch: { status: "open" } });
+    expect(conversationUpdates).toContainEqual({ id: "conv-1", patch: PATCH_REAPERTURA });
     expect(
       insertedRows.some((r) => r.sender_type === "system" && r.content === "El cliente volvió a escribir")
     ).toBe(true);
@@ -1661,42 +1765,31 @@ describe("POST /api/webhooks/whatsapp — el cliente vuelve sobre una conversaci
     );
   });
 
-  it("con la IA apagada en el chat, la deja sin dueño en vez de reactivarla sola", async () => {
-    setConversationRow({ status: "closed", ai_enabled: false });
-
-    await POST(fakeRequest(webhookBody("wamid.reabre-sin-ia-1")));
-
-    expect(conversationUpdates).toContainEqual({ id: "conv-1", patch: { status: "open" } });
-    expect(handoffCalls).toContainEqual(
-      expect.objectContaining({
-        p_conversation_id: "conv-1",
-        p_to_kind: "unassigned",
-        p_reason: "reabierta_por_cliente",
-      })
-    );
-  });
-
   /**
-   * Anexo A2 (5/9/2026): con la IA apagada PERO un asesor ya asignado al
-   * chat, el traspaso es suyo -- `human` + su id --, no `unassigned`. Antes
-   * de A2 el destino se decidía solo mirando `ai_enabled`, así que este caso
-   * caía en el de arriba y una conversación con dueño quedaba en la
-   * bitácora como si no lo tuviera.
+   * Antes de esta tarea, un chat cerrado con la IA apagada (o con asesor
+   * asignado) se devolvía a esa misma persona -- `human`/`unassigned` según
+   * el estado previo. D2 decidió que un chat reabierto arranca SIEMPRE de
+   * cero: el traspaso es `ai` sin mirar cómo había quedado el chat al
+   * cerrarse.
    */
-  it("con la IA apagada pero un asesor ya asignado, la devuelve a ESE asesor", async () => {
+  it("con la IA apagada, o con un asesor ya asignado, igual reabre encendiendo la IA y sin dueño previo", async () => {
     setConversationRow({ status: "closed", ai_enabled: false, assigned_agent_id: "agent-7" });
 
     await POST(fakeRequest(webhookBody("wamid.reabre-con-asesor-1")));
 
-    expect(conversationUpdates).toContainEqual({ id: "conv-1", patch: { status: "open" } });
+    expect(conversationUpdates).toContainEqual({ id: "conv-1", patch: PATCH_REAPERTURA });
     expect(handoffCalls).toContainEqual(
       expect.objectContaining({
         p_conversation_id: "conv-1",
-        p_to_kind: "human",
-        p_to_id: "agent-7",
+        p_to_kind: "ai",
         p_reason: "reabierta_por_cliente",
       })
     );
+    // Ningún traspaso de reapertura queda con `human` o `unassigned`: los dos
+    // desaparecieron con las ramas por `ai_enabled`/`assigned_agent_id`.
+    expect(
+      handoffCalls.some((c) => c.p_reason === "reabierta_por_cliente" && c.p_to_kind !== "ai")
+    ).toBe(false);
   });
 
   /**
@@ -1712,6 +1805,34 @@ describe("POST /api/webhooks/whatsapp — el cliente vuelve sobre una conversaci
 
     expect(conversationUpdates).toHaveLength(0);
     expect(handoffCalls.some((c) => c.p_reason === "reabierta_por_cliente")).toBe(false);
+  });
+
+  /**
+   * Mutación de esta tarea (T2b): quitar `.eq("status", "closed")` del
+   * UPDATE de reapertura deja este test en rojo -- sin ese filtro en el
+   * WHERE, el segundo mensaje del lote (que ve la fila todavía "closed" por
+   * la lectura forzada abajo) volvería a afectar la fila ya reabierta por el
+   * primero, y se duplicarían el evento de sistema y el traspaso.
+   *
+   * `setForceStaleClosedReads(2)` simula la lectura vieja que vería un
+   * segundo webhook concurrente del mismo lote: el SELECT de "¿existe ya?"
+   * devuelve `status: "closed"` para los DOS mensajes aunque el primer
+   * UPDATE ya haya reabierto la fila de verdad -- así el reclamo del segundo
+   * (`.eq("status", "closed").select("id")`) es el único que puede frenarlo.
+   */
+  it("dos mensajes del mismo lote no duplican ni el evento ni el traspaso de reapertura", async () => {
+    setConversationRow({ status: "closed", ai_enabled: true });
+    setForceStaleClosedReads(2);
+
+    await POST(
+      fakeRequest(
+        webhookBodyTwoMessages("wamid.reabre-lote-1", "wamid.reabre-lote-2")
+      )
+    );
+
+    expect(conversationUpdates.filter((u) => "status" in u.patch)).toHaveLength(1);
+    expect(insertedRows.filter((r) => r.sender_type === "system" && r.content === "El cliente volvió a escribir")).toHaveLength(1);
+    expect(handoffCalls.filter((c) => c.p_reason === "reabierta_por_cliente")).toHaveLength(1);
   });
 });
 

@@ -25,7 +25,17 @@ export interface AgentConversation {
   contact_id: string;
   ai_enabled: boolean;
   assigned_agent_id: string | null;
-  /** null cuando nunca salió la plantilla de bienvenida: es lo que decide si el agente saluda. */
+  /**
+   * `null` cuando Seba todavía no se presentó en esta conversación. Hasta la
+   * migración 20260917010000 (T0, plan "Seba atiende el mostrador",
+   * 18/9/2026) esta columna significaba "salió la PLANTILLA de bienvenida"
+   * (WHATSAPP_WELCOME_TEMPLATE, que en producción sigue vacía); desde esa
+   * migración pasó a ser el sello de la presentación literal que manda el
+   * turno (`sebaGreeting`, `seba.ts`, reclamado con `claimPresentation` en
+   * agent.ts) — las dos cosas comparten la misma columna a propósito, son
+   * excluyentes: si algún día se configura la plantilla, `claimWelcome`
+   * (route.ts) la sella primero y Seba no vuelve a saludar encima.
+   */
   welcome_sent_at: string | null;
   /** Decide si Meta todavía acepta texto libre en este chat. Ver withinFreeformWindow. */
   last_customer_message_at: string | null;

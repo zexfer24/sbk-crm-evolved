@@ -1057,15 +1057,13 @@ export async function POST(request: Request) {
 
         const { data: existingConversation } = await supabase
           .from("conversations")
-          .select("id, last_customer_message_at, status, ai_enabled, assigned_agent_id, referral")
+          .select("id, last_customer_message_at, status, referral")
           .eq("contact_id", contact.id)
           .eq("whatsapp_channel_id", channel.id)
           .maybeSingle<{
             id: string;
             last_customer_message_at: string | null;
             status: string;
-            ai_enabled: boolean;
-            assigned_agent_id: string | null;
             referral: unknown;
           }>();
 
@@ -1081,18 +1079,34 @@ export async function POST(request: Request) {
           // enterara de que hacía falta contestar. Se reabre ANTES del
           // insert de más abajo, para que ese mensaje ya caiga sobre una
           // conversación abierta.
+          //
+          // T2b, plan "Seba atiende el mostrador" (18/9/2026, D2): el UPDATE
+          // pasa a ser un RECLAMO -- `.eq("status", "closed")` en el WHERE y
+          // `.select("id")` para saber si ESTA invocación fue la que de
+          // verdad reabrió -- porque desde D2 un chat reabierto arranca
+          // SIEMPRE de cero: IA encendida, sin asesor, y Seba se presenta de
+          // nuevo (`welcome_sent_at: null`, que el turno reclama con
+          // `claimPresentation`, agent.ts). Ya NO hay ramas por
+          // `ai_enabled`/`assigned_agent_id` -- el traspaso es siempre
+          // `toKind: "ai"` -- así que ya no hace falta leerlos ni traerlos en
+          // el `select` de arriba. Sin el reclamo, dos webhooks concurrentes
+          // del mismo lote de Meta (dos mensajes del mismo contacto que Meta
+          // agrupó) dispararían el UPDATE dos veces y duplicarían el evento
+          // de sistema y el traspaso.
           if (existingConversation.status === "closed") {
-            const { error: reopenError } = await supabase
+            const { data: reopened, error: reopenError } = await supabase
               .from("conversations")
-              .update({ status: "open" })
-              .eq("id", conversationId);
+              .update({ status: "open", ai_enabled: true, assigned_agent_id: null, welcome_sent_at: null })
+              .eq("id", conversationId)
+              .eq("status", "closed")
+              .select("id");
 
             if (reopenError) {
               console.error(
                 "Webhook de WhatsApp: error al reabrir conversación cerrada",
                 reopenError
               );
-            } else {
+            } else if ((reopened?.length ?? 0) > 0) {
               await supabase
                 .from("messages")
                 .insert({
@@ -1105,26 +1119,39 @@ export async function POST(request: Request) {
                 .select("id")
                 .single();
 
-              // La IA sigue en el estado en que quedó al cerrar el chat: el
-              // sistema no la reactiva sola. Anexo A2 (5/9/2026): si la IA
-              // seguía encendida, vuelve a ella (`ai`, como siempre); si no,
-              // pero el chat YA tenía asesor (`assigned_agent_id`), la
-              // conversación es SUYA -- se le devuelve con `human` + su id,
-              // no `unassigned` -- porque ese es el estado normal tras una
-              // escalación o un cierre manual, y decir "sin dueño" ahí era
-              // mentira de la bitácora, no una decisión. Solo sin ninguna de
-              // las dos cosas queda de verdad sin dueño. `recordHandoff`
-              // nunca lanza, así que esto no arriesga la respuesta al webhook.
+              // `recordHandoff` nunca lanza, así que esto no arriesga la
+              // respuesta al webhook. El trigger AFTER
+              // `handle_conversation_ownership_change()` (migración
+              // 20260916010000) puede escribir, DENTRO del mismo UPDATE de
+              // arriba, `desasignada_por_asesor`/`devuelto_a_ia` si el chat
+              // estaba escalado al cerrarse (`created_by = 'system'`, porque
+              // nadie con sesión tocó nada) -- se acepta como rastro
+              // correcto ("el sistema le devolvió el chat a la IA") y esta
+              // fila `reabierta_por_cliente` queda SIEMPRE última, cerrando
+              // cualquier escalada vieja que `escalationOpen` (handoffs.ts)
+              // pudiera seguir viendo abierta.
+              //
+              // Hallazgo 5 del plan: este UPDATE corre ANTES del insert del
+              // mensaje entrante (más abajo, cuando se guarda lo que
+              // escribió el cliente). El trigger BEFORE
+              // `handle_conversation_ai_resume()` sella
+              // `ai_resume_cutoff_at := last_customer_message_at` VIEJO --
+              // el de ANTES de este mensaje --, así que cuando el mensaje se
+              // inserte después (con el `created_at` que manda Meta,
+              // necesariamente posterior a este UPDATE), su fecha queda por
+              // delante del sello y la guarda de
+              // "mensaje_previo_a_devolucion" (agent.ts) no lo calla: es
+              // justo el mensaje que el cliente escribió para reabrir el
+              // chat, no uno que ya estaba ahí antes de la devolución.
               await recordHandoff(supabase, {
                 conversationId,
-                ...(existingConversation.ai_enabled
-                  ? { toKind: "ai" }
-                  : existingConversation.assigned_agent_id
-                    ? { toKind: "human", toId: existingConversation.assigned_agent_id }
-                    : { toKind: "unassigned" }),
+                toKind: "ai",
                 reason: "reabierta_por_cliente",
               });
             }
+            // 0 filas (sin error): otra invocación concurrente de este mismo
+            // lote ya reabrió el chat -- no se duplica ni el evento de
+            // sistema ni el traspaso.
           }
         } else {
           windowWasClosed = true;

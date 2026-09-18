@@ -27,7 +27,7 @@ const CHARS_PER_TOKEN = 4;
  */
 const CACHE_MIN_TOKENS = 1024;
 
-const TURN = { intent: "consulta_disponibilidad", needsGreeting: false } as const;
+const TURN = { intent: "consulta_disponibilidad", introducedThisTurn: false } as const;
 
 describe("SYSTEM_PROMPT — el bloque que se cachea", () => {
   /**
@@ -45,7 +45,7 @@ describe("SYSTEM_PROMPT — el bloque que se cachea", () => {
   it.each(INTENT_VALUES)(
     "para la intención %s, el bloque estático es prefijo EXACTO de las instrucciones",
     (intent) => {
-      const instructions = buildInstructions({ intent, needsGreeting: false });
+      const instructions = buildInstructions({ intent, introducedThisTurn: false });
 
       // startsWith y no `includes`: si algo se cuela ANTES del bloque, el
       // prefijo deja de coincidir entre turnos y el caché no entra.
@@ -53,12 +53,12 @@ describe("SYSTEM_PROMPT — el bloque que se cachea", () => {
     }
   );
 
-  it("el bloque estático es idéntico se salude o no", () => {
-    const conSaludo = buildInstructions({ ...TURN, needsGreeting: true });
-    const sinSaludo = buildInstructions({ ...TURN, needsGreeting: false });
+  it("el bloque estático es idéntico se haya presentado Seba en este turno o en uno anterior", () => {
+    const presentadoAhora = buildInstructions({ ...TURN, introducedThisTurn: true });
+    const presentadoAntes = buildInstructions({ ...TURN, introducedThisTurn: false });
 
-    expect(conSaludo.startsWith(SYSTEM_PROMPT)).toBe(true);
-    expect(sinSaludo.startsWith(SYSTEM_PROMPT)).toBe(true);
+    expect(presentadoAhora.startsWith(SYSTEM_PROMPT)).toBe(true);
+    expect(presentadoAntes.startsWith(SYSTEM_PROMPT)).toBe(true);
   });
 
   /**
@@ -74,8 +74,8 @@ describe("SYSTEM_PROMPT — el bloque que se cachea", () => {
    */
   it("el sufijo dinámico se mantiene corto", () => {
     for (const intent of INTENT_VALUES) {
-      for (const needsGreeting of [true, false]) {
-        const sufijo = buildInstructions({ intent, needsGreeting }).slice(SYSTEM_PROMPT.length);
+      for (const introducedThisTurn of [true, false]) {
+        const sufijo = buildInstructions({ intent, introducedThisTurn }).slice(SYSTEM_PROMPT.length);
 
         expect(sufijo.length / CHARS_PER_TOKEN).toBeLessThan(150);
       }
@@ -85,8 +85,8 @@ describe("SYSTEM_PROMPT — el bloque que se cachea", () => {
 
 describe("sufijo dinámico del turno", () => {
   it("le dice al modelo cuál de los casos está atendiendo", () => {
-    const devolucion = buildInstructions({ intent: "devolucion", needsGreeting: false });
-    const queja = buildInstructions({ intent: "queja", needsGreeting: false });
+    const devolucion = buildInstructions({ intent: "devolucion", introducedThisTurn: false });
+    const queja = buildInstructions({ intent: "queja", introducedThisTurn: false });
 
     expect(devolucion.slice(SYSTEM_PROMPT.length)).toContain("devolucion");
     expect(queja.slice(SYSTEM_PROMPT.length)).toContain("queja");
@@ -94,19 +94,23 @@ describe("sufijo dinámico del turno", () => {
   });
 
   /**
-   * La plantilla de bienvenida solo sale si WHATSAPP_WELCOME_TEMPLATE está
-   * configurada (ver route.ts). Sin ella nadie saluda, así que el agente
-   * tiene que hacerlo o el cliente recibe una respuesta en seco.
+   * 18/9/2026 (T2b, plan "Seba atiende el mostrador"): el modelo YA NO
+   * redacta ningún saludo — Seba se presenta por código, en un mensaje
+   * aparte que sale ANTES de este texto (`sebaGreeting`, `agent.ts`). Las
+   * DOS ramas de `introducedThisTurn` —se haya presentado en este mismo
+   * turno o en uno anterior— le prohíben al modelo saludar o presentarse de
+   * nuevo; la única diferencia es si hace falta explicar que la
+   * presentación YA salió, en un mensaje aparte, justo antes.
    */
-  it("manda saludar solo cuando la conversación no recibió bienvenida", () => {
-    const conSaludo = buildInstructions({ ...TURN, needsGreeting: true }).slice(SYSTEM_PROMPT.length);
-    const sinSaludo = buildInstructions({ ...TURN, needsGreeting: false }).slice(SYSTEM_PROMPT.length);
+  it("las dos ramas de introducedThisTurn prohíben saludar y presentarse", () => {
+    const presentadoAhora = buildInstructions({ ...TURN, introducedThisTurn: true }).slice(SYSTEM_PROMPT.length);
+    const presentadoAntes = buildInstructions({ ...TURN, introducedThisTurn: false }).slice(SYSTEM_PROMPT.length);
 
-    // Ojo: no se busca /saluda/i a secas — turnClockLine SIEMPRE trae la
-    // palabra ("... saluda 'buenas tardes' ..."), sea o no el primer mensaje.
-    // Lo que distingue el primer contacto es esta frase concreta.
-    expect(conSaludo).toMatch(/es el primer mensaje que recibe de nosotros/i);
-    expect(sinSaludo).not.toMatch(/es el primer mensaje que recibe de nosotros/i);
+    expect(presentadoAhora).toMatch(/no saludes/i);
+    expect(presentadoAhora).toMatch(/te presentes/i);
+    expect(presentadoAntes).toMatch(/no saludes/i);
+    expect(presentadoAntes).toMatch(/te presentes/i);
+    expect(presentadoAhora).not.toEqual(presentadoAntes);
   });
 
   /**
@@ -163,22 +167,23 @@ describe("la hora del turno", () => {
   });
 
   /**
-   * Reescrito el 15/9/2026 (Tarea 3, "La voz de mostrador con nombre propio"):
-   * el 14/9 (Tarea 2 de la corrida anterior) la regla había pasado a "saluda
-   * neutro, nunca por la hora" porque `turnClockLine` traía la franja en
-   * CADA turno y la IA repetía "buenas tardes" turno tras turno. El operador
-   * pidió recuperar el saludo por franja — pero solo en el primer mensaje,
-   * calculado por código (`dayBand`/`greetingFor` en `buildInstructions`),
-   * nunca deducido por el modelo. La sección 6 ya NO prohíbe saludar por la
-   * hora: ahora exige usar exactamente el saludo que llega calculado.
+   * Reescrito el 18/9/2026 (T2b, plan "Seba atiende el mostrador"): hasta
+   * esta tarea la sección 6 le pedía al MODELO que saludara una vez, con el
+   * saludo de franja calculado por `buildInstructions`. Desde T2b el saludo
+   * dejó de ser cosa del modelo — sale por código, en un mensaje aparte,
+   * ANTES de este texto (`sebaGreeting`, agent.ts) — así que la sección 6
+   * pasa a prohibirlo del todo, siempre, sin excepción de "primer mensaje".
    */
-  it("la regla es saludar una sola vez, con el saludo que llega ya calculado con la hora de Barinas", () => {
-    expect(SYSTEM_PROMPT).toMatch(/Saludas UNA sola vez por conversación/i);
-    expect(SYSTEM_PROMPT).toMatch(/ya calculado con la hora de Barinas/i);
-    expect(SYSTEM_PROMPT).toMatch(/nunca uno que deduzcas tú/i);
+  it("la regla es no saludar nunca: Seba ya se presentó en un mensaje aparte que manda el sistema", () => {
+    expect(SYSTEM_PROMPT).toMatch(/No saludas ni te presentas/i);
+    expect(SYSTEM_PROMPT).toMatch(/Seba ya se presentó en un mensaje aparte que el sistema manda antes que el tuyo/i);
+    expect(SYSTEM_PROMPT).toMatch(/Ni al abrir la conversación ni cuando el cliente vuelva a saludar/i);
     expect(SYSTEM_PROMPT).toMatch(/el horario de atención y si la tienda está abierta ahora mismo también te llegan en TURNO ACTUAL/i);
-    // La prohibición vieja del 14/9 ("nunca saludes por la hora") quedó sin
-    // efecto: el 15/9 la franja vuelve, solo en el sufijo del primer mensaje.
+    // Las reglas viejas —"Saludas UNA sola vez", la que pedía deducir el
+    // saludo, y la prohibición de saludar por hora del 14/9— quedaron sin
+    // efecto, todas reemplazadas por la prohibición total de T2b.
+    expect(SYSTEM_PROMPT).not.toMatch(/Saludas UNA sola vez por conversación/i);
+    expect(SYSTEM_PROMPT).not.toMatch(/nunca uno que deduzcas tú/i);
     expect(SYSTEM_PROMPT).not.toMatch(/Nunca saludes por la hora/i);
     expect(SYSTEM_PROMPT).not.toMatch(/usa la franja y el saludo/i);
     expect(SYSTEM_PROMPT).not.toMatch(/antes del mediodía/i);
@@ -196,98 +201,73 @@ describe("la hora del turno", () => {
   });
 
   /**
-   * Reescrito el 15/9/2026 (Tarea 3): entre el 14/9 y el 15/9 la regla fue
-   * "nunca digas 'noche' ni 'buenas noches', el saludo es neutro y no
-   * depende de la hora". Ese test ya no describe la regla vigente — ahora SÍ
-   * depende de la hora, pero solo cuando `needsGreeting` es `true` (ver el
-   * describe de más abajo con los cuatro casos de franja). Este test se
-   * queda para el caso `needsGreeting: false` (`TURN` lo trae así): sin
-   * saludo pendiente, la hora no debe filtrarse al sufijo bajo ninguna
-   * forma, aunque sean las 8:30 pm.
+   * 18/9/2026 (T2b): desde que el saludo salió del sufijo por completo (el
+   * modelo ya nunca lo redacta), NINGUNA hora ni ninguna rama de
+   * `introducedThisTurn` puede filtrar un saludo de franja al sufijo. Estos
+   * dos tests cubren las dos puntas del reloj para las dos ramas.
    */
-  it("con needsGreeting false, a las 8:30 pm de Caracas el sufijo no menciona ningún saludo de franja", () => {
-    const instructions = buildInstructions({ ...TURN, needsGreeting: false, now: new Date("2026-09-05T00:30:00Z") }); // 8:30 pm Caracas
+  it("con introducedThisTurn false, a las 8:30 pm de Caracas el sufijo no menciona ningún saludo de franja", () => {
+    const instructions = buildInstructions({
+      ...TURN,
+      introducedThisTurn: false,
+      now: new Date("2026-09-05T00:30:00Z"),
+    }); // 8:30 pm Caracas
 
     expect(instructions.startsWith(SYSTEM_PROMPT)).toBe(true);
     const sufijo = instructions.slice(SYSTEM_PROMPT.length);
-    expect(sufijo).not.toMatch(/saluda|buenos días|buenas tardes|buenas noches|franja/i);
+    expect(sufijo).not.toMatch(/¡buen|buenos días|buenas tardes|buenas noches|franja/i);
   });
 
-  it("con needsGreeting false, a las 8:10 am de un domingo el sufijo dice CERRADA y cuándo abre, sin saludo de franja", () => {
-    const instructions = buildInstructions({ ...TURN, needsGreeting: false, now: new Date("2026-09-06T12:10:00Z") });
+  it("con introducedThisTurn true, a las 8:10 am de un domingo el sufijo dice CERRADA y cuándo abre, sin saludo de franja", () => {
+    const instructions = buildInstructions({
+      ...TURN,
+      introducedThisTurn: true,
+      now: new Date("2026-09-06T12:10:00Z"),
+    });
 
     expect(instructions.startsWith(SYSTEM_PROMPT)).toBe(true);
     const sufijo = instructions.slice(SYSTEM_PROMPT.length);
     expect(sufijo).toContain("CERRADA");
     expect(sufijo).toContain("abre el lunes a las 8:00 am");
-    expect(sufijo).not.toMatch(/saluda|buenos días|buenas tardes|buenas noches|franja/i);
+    expect(sufijo).not.toMatch(/¡buen|buenos días|buenas tardes|buenas noches|franja/i);
   });
 });
 
 /**
- * Tarea 3 ("La voz de mostrador con nombre propio", 15/9/2026, Decisión 4):
- * el saludo por franja vuelve, pero SOLO en el sufijo del primer mensaje
- * (`needsGreeting: true`) y calculado por código con `dayBand`/`greetingFor`
- * sobre la hora de Barinas — nunca deducido por el modelo. `turnClockLine`
- * (y por lo tanto TURNO ACTUAL) sigue sin traer franja: el bug del 14/9
- * (saludar por hora en CADA turno) no puede reaparecer porque el cálculo
- * ocurre una sola vez, acá, y solo cuando el flag lo pide.
+ * 18/9/2026 (T2b, plan "Seba atiende el mostrador"): la mecánica de esta
+ * sección —el saludo por franja que la Tarea 3 del 15/9 calculaba en el
+ * sufijo cuando `needsGreeting` era `true`— queda retirada. Seba se
+ * presenta por código, en un mensaje aparte que sale ANTES de este texto
+ * (`sebaGreeting`, `seba.ts`, reclamado por `claimPresentation` en
+ * `agent.ts`); las cuatro franjas de `sebaGreeting` ya se prueban en
+ * `seba.test.ts`, con `now` fijo. Lo que queda por probar acá es que NINGÚN
+ * rastro de esa mecánica vieja sobrevive en el prompt: ni en el bloque
+ * cacheado, ni en ninguna rama del sufijo.
  */
-describe("sufijo del primer saludo — buenos días, tardes o noches, con la hora de Barinas (Tarea 3, 15/9/2026)", () => {
-  it("8:30 pm de Caracas → ¡Buenas noches!, y nada de buenos días ni buenas tardes", () => {
-    const instructions = buildInstructions({ ...TURN, needsGreeting: true, now: new Date("2026-09-05T00:30:00Z") });
-
-    expect(instructions.startsWith(SYSTEM_PROMPT)).toBe(true);
-    const sufijo = instructions.slice(SYSTEM_PROMPT.length);
-    expect(sufijo).toContain("¡Buenas noches!");
-    expect(sufijo).not.toMatch(/buenos días|buenas tardes/i);
-  });
-
-  it("8:10 am de un domingo → ¡Buenos días!, y trae CERRADA", () => {
-    const instructions = buildInstructions({ ...TURN, needsGreeting: true, now: new Date("2026-09-06T12:10:00Z") });
-
-    expect(instructions.startsWith(SYSTEM_PROMPT)).toBe(true);
-    const sufijo = instructions.slice(SYSTEM_PROMPT.length);
-    expect(sufijo).toContain("¡Buenos días!");
-    expect(sufijo).toContain("CERRADA");
-  });
-
-  it("12:00 pm de Caracas → ¡Buenas tardes!", () => {
-    const instructions = buildInstructions({ ...TURN, needsGreeting: true, now: new Date("2026-09-05T16:00:00Z") });
-
-    expect(instructions.startsWith(SYSTEM_PROMPT)).toBe(true);
-    const sufijo = instructions.slice(SYSTEM_PROMPT.length);
-    expect(sufijo).toContain("¡Buenas tardes!");
-  });
-
-  /**
-   * 19:00 en punto sigue siendo "tarde" según `DAY_BANDS` (el borde de tarde
-   * es `to: 19 * 60`, inclusive); 19:01 ya cae en "noche". Este caso prueba
-   * ese borde exacto, un minuto después del límite.
-   */
-  it("7:01 pm de Caracas → ¡Buenas noches! (el borde de DAY_BANDS es 19:00 en punto)", () => {
-    const instructions = buildInstructions({ ...TURN, needsGreeting: true, now: new Date("2026-09-05T23:01:00Z") });
-
-    expect(instructions.startsWith(SYSTEM_PROMPT)).toBe(true);
-    const sufijo = instructions.slice(SYSTEM_PROMPT.length);
-    expect(sufijo).toContain("¡Buenas noches!");
-  });
-
-  /**
-   * El bloque estático (`SYSTEM_PROMPT`) no puede depender de la hora: si
-   * trajera un saludo de franja escrito, el prefijo cacheable dejaría de ser
-   * idéntico entre turnos. El saludo vive SOLO en el sufijo.
-   */
+describe("Tarea T2b — el saludo salió del prompt (18/9/2026)", () => {
   it("SYSTEM_PROMPT nunca trae un saludo de franja escrito", () => {
     expect(SYSTEM_PROMPT).not.toContain("¡Buen");
   });
 
-  /** El sufijo con saludo de franja no puede describir a la IA como automatizada ni como una persona. */
-  it("el sufijo con saludo de franja pasa la guarda de identidad", () => {
-    const instructions = buildInstructions({ ...TURN, needsGreeting: true, now: new Date("2026-09-05T00:30:00Z") });
-    const sufijo = instructions.slice(SYSTEM_PROMPT.length);
+  it("ninguna rama del sufijo trae un saludo de franja escrito, a ninguna hora", () => {
+    for (const introducedThisTurn of [true, false]) {
+      const sufijo = buildInstructions({
+        ...TURN,
+        introducedThisTurn,
+        now: new Date("2026-09-05T00:30:00Z"), // 8:30 pm Caracas
+      }).slice(SYSTEM_PROMPT.length);
 
-    expect(revealsIdentity(sufijo)).toBeNull();
+      expect(sufijo).not.toContain("¡Buen");
+    }
+  });
+
+  /** Ninguna de las dos ramas puede describir a Seba como automatizado ni como una persona. */
+  it("las dos ramas del sufijo pasan la guarda de identidad", () => {
+    const presentadoAhora = buildInstructions({ ...TURN, introducedThisTurn: true }).slice(SYSTEM_PROMPT.length);
+    const presentadoAntes = buildInstructions({ ...TURN, introducedThisTurn: false }).slice(SYSTEM_PROMPT.length);
+
+    expect(revealsIdentity(presentadoAhora)).toBeNull();
+    expect(revealsIdentity(presentadoAntes)).toBeNull();
   });
 });
 
@@ -342,27 +322,22 @@ describe("identidad: ni IA ni persona", () => {
     expect(SYSTEM_PROMPT).toMatch(/pásale el caso a un asesor/);
   });
 
-  /** El saludo de bienvenida era el otro sitio donde salía la fórmula. */
-  it("el saludo dice de dónde escribe, no qué es", () => {
-    const conSaludo = buildInstructions({ ...TURN, needsGreeting: true }).slice(SYSTEM_PROMPT.length);
-
-    expect(conSaludo).toMatch(new RegExp(`le escribes de ${BUSINESS_NAME}`));
-    expect(conSaludo).not.toMatch(/preséntate/);
-  });
-
   /**
-   * Tarea 2 (14/9/2026): el sufijo `needsGreeting` es el texto nuevo del
-   * primer saludo — nombra el negocio y tiene que pasar la misma guarda
-   * que MEDIA_RULES y SALES_ACCEPTANCE_RULES, aunque no esté exportado
-   * aparte (es corto, y vive en el sufijo, no en el prefijo cacheado).
+   * 18/9/2026 (T2b): el saludo de bienvenida ya no lo redacta el modelo —
+   * "le escribes de SBK Motors" era la frase que armaba `buildInstructions`
+   * para el sufijo `needsGreeting`, retirada con esa mecánica. La sección 1
+   * del bloque estático sigue diciendo de dónde escribe Seba ("Escribes en
+   * nombre de la tienda…", "eres Seba, el asistente de SBK Motors"), sin
+   * necesitar ningún sufijo dinámico para eso.
    */
-  it("el sufijo del primer saludo nombra el negocio y pasa la guarda de identidad", () => {
-    const conSaludo = buildInstructions({ ...TURN, needsGreeting: true }).slice(SYSTEM_PROMPT.length);
-    const sinSaludo = buildInstructions({ ...TURN, needsGreeting: false }).slice(SYSTEM_PROMPT.length);
+  it("la sección 1 dice de dónde escribe, no qué es, sin depender de ningún sufijo de saludo", () => {
+    const seccion1 = SYSTEM_PROMPT.slice(
+      SYSTEM_PROMPT.indexOf("1. QUIÉN ERES"),
+      SYSTEM_PROMPT.indexOf("2. LO QUE NUNCA HACES")
+    );
 
-    expect(conSaludo).toContain(BUSINESS_NAME);
-    expect(revealsIdentity(conSaludo)).toBeNull();
-    expect(revealsIdentity(sinSaludo)).toBeNull();
+    expect(seccion1).toMatch(new RegExp(`el asistente de ${BUSINESS_NAME}`));
+    expect(seccion1).not.toMatch(/preséntate/);
   });
 });
 
