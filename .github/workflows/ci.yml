@@ -247,3 +247,25 @@ jobs:
           psql "postgresql://postgres:postgres@127.0.0.1:54322/postgres" \
             -v ON_ERROR_STOP=1 \
             -f supabase/tests/devolucion_a_la_ia.sql
+
+      # T0, plan "Seba atiende el mostrador" (18/9/2026):
+      # welcome_sent_at pasa a ser el sello de "Seba ya se presentó"
+      # (backfill con COALESCE(last_reply_at, last_message_at, created_at),
+      # nunca now()); conversation_handoffs.reason suma
+      # silenciada_por_asesor, la razón que deja rastro cuando un asesor
+      # manda su primer mensaje real (trigger nuevo
+      # messages_agent_silences_ai_trigger, AFTER INSERT ON messages) o
+      # alguien pausa la IA a mano (setAiEnabled(false)) -- los dos caminos
+      # que apagaban ai_enabled sin dejar ninguna fila hasta esta migración.
+      # La rama reclamado de handle_conversation_ownership_change gana
+      # `auth.uid() is not null` (hallazgo 1 del plan): sin esa guarda, la
+      # escalada que una tarea futura de la misma corrida va a dejar
+      # cambiando SOLO assigned_agent_id (con service_role, sin sesión)
+      # dejaría una fila reclamado espuria antes de su propia fila
+      # escalada.
+      - name: la escalada no apaga la IA; el primer mensaje del asesor sí
+        run: |
+          psql "postgresql://postgres:postgres@127.0.0.1:54322/postgres" \
+            -v ON_ERROR_STOP=1 \
+            -f supabase/tests/seba_y_escalada_viva.sql
+

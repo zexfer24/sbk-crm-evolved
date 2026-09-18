@@ -36,6 +36,24 @@
 --
 -- Corre en el job `migraciones` de CI, en el mismo paso que
 -- permisos_funciones.sql/invariante_leads.sql/awaiting_reply.sql.
+--
+-- Corrección del 18/9/2026 (T0 del plan "Seba atiende el mostrador",
+-- docs/planes/2026-09-17-seba-atiende-el-mostrador.md): la migración
+-- 20260917010000 le agrega a la rama `reclamado` de
+-- `handle_conversation_ownership_change()` la condición `auth.uid() is not
+-- null` (su hallazgo 1: sin esa guarda, la escalada de una tarea futura de
+-- ese plan -- que va a cambiar SOLO `assigned_agent_id`, con
+-- `service_role`, sin sesión -- dejaría una fila `reclamado` espuria antes
+-- de su propia fila `escalada`). Los casos 13, 14 y 15 de acá abajo (los
+-- de `reclamado`, sumados en la corrección post-revisión del 16/9/2026)
+-- simulaban al asesor que reclama SIN ninguna sesión, porque ese día
+-- `auth.uid()` todavía no importaba para esa rama -- se les agregó `set
+-- local role authenticated` + `set local "request.jwt.claim.sub"` (mismo
+-- patrón que el caso 11a) para seguir representando lo que pasa de verdad:
+-- `assignToMe`/`intervene` siempre corren con la sesión del asesor que
+-- reclama. Sin este ajuste los tres casos se ponen en rojo apenas se aplica
+-- 20260917010000 -- verificado corriendo este archivo contra la base local
+-- con esa migración ya aplicada.
 -- ===========================================================================
 
 begin;
@@ -631,8 +649,21 @@ begin
   -- Desasignar: queda 'unassigned' porque la IA sigue apagada.
   update public.conversations set assigned_agent_id = null where id = conv_id;
 
-  -- Reclamar: C toma el caso, IA sigue apagada (ai_enabled sin cambio).
+  -- Reclamar: C toma el caso, IA sigue apagada (ai_enabled sin cambio). Con
+  -- sesión real de C -- corrección del 18/9/2026 (T0, "Seba atiende el
+  -- mostrador"): desde 20260917010000 la rama `reclamado` exige
+  -- `auth.uid() is not null` (hallazgo 1 de ese plan: sin la guarda, la
+  -- escalada de T4 -- que solo cambia assigned_agent_id, sin sesión --
+  -- dejaría una fila `reclamado` espuria), así que este UPDATE necesita
+  -- simular la sesión del asesor que reclama de verdad, igual que el
+  -- caso 11a de este mismo archivo.
+  set local role authenticated;
+  set local "request.jwt.claim.sub" = 'b9b9b9b9-0000-0000-0000-000000000003';
+
   update public.conversations set assigned_agent_id = agent_c where id = conv_id;
+
+  reset role;
+  reset "request.jwt.claim.sub";
 
   select count(*) into v_count from public.conversation_handoffs
     where conversation_id = conv_id and reason = 'reclamado';
@@ -671,8 +702,15 @@ declare
   v_to_kind text;
   v_to_id uuid;
 begin
-  -- La conversación nace con ai_enabled = true y sin asesor (default).
+  -- La conversación nace con ai_enabled = true y sin asesor (default). Con
+  -- sesión de B, que se autoasigna -- ver nota del 18/9/2026 en el caso 13.
+  set local role authenticated;
+  set local "request.jwt.claim.sub" = 'b9b9b9b9-0000-0000-0000-000000000002';
+
   update public.conversations set assigned_agent_id = agent_b where id = conv_id;
+
+  reset role;
+  reset "request.jwt.claim.sub";
 
   select from_kind, to_kind, to_id into v_from_kind, v_to_kind, v_to_id
     from public.conversation_handoffs
@@ -705,11 +743,21 @@ declare
   v_to_id uuid;
 begin
   -- A toma el caso primero (esto también deja su propia fila 'reclamado',
-  -- de 'ai' a A -- no es lo que este caso mide, se ignora a propósito).
+  -- de 'ai' a A -- no es lo que este caso mide, se ignora a propósito). Con
+  -- sesión de A -- ver nota del 18/9/2026 en el caso 13.
+  set local role authenticated;
+  set local "request.jwt.claim.sub" = 'b9b9b9b9-0000-0000-0000-000000000001';
   update public.conversations set assigned_agent_id = agent_a where id = conv_id;
+  reset role;
+  reset "request.jwt.claim.sub";
 
-  -- C se lo saca a A de un solo UPDATE, sin tocar ai_enabled.
+  -- C se lo saca a A de un solo UPDATE, sin tocar ai_enabled. Con sesión de
+  -- C, que reclama el caso él mismo.
+  set local role authenticated;
+  set local "request.jwt.claim.sub" = 'b9b9b9b9-0000-0000-0000-000000000003';
   update public.conversations set assigned_agent_id = agent_c where id = conv_id;
+  reset role;
+  reset "request.jwt.claim.sub";
 
   select from_kind, from_id, to_kind, to_id into v_from_kind, v_from_id, v_to_kind, v_to_id
     from public.conversation_handoffs

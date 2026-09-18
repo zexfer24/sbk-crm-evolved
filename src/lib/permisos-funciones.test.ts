@@ -61,24 +61,33 @@ import { describe, expect, it } from "vitest";
 
 const LISTA_BLANCA = new Set(["is_agent", "is_supervisor_or_admin"]);
 
-// Las 20 funciones `security definer` conocidas en el esquema `public` a
-// fecha 16/9/2026 (19 + handle_conversation_ownership_change, sumada en
-// 20260916010000_devolucion_a_la_ia.sql — T1 de la corrida "La IA no vuelve
-// a pedir lo que ya pidió"). Sirve para comprobar que el parser de abajo no
-// se está quedando corto: si algún día detecta menos de estas, el guardián
-// dejó de proteger algo y hay que enterarse antes de confiar en el
+// Las 21 funciones `security definer` conocidas en el esquema `public` a
+// fecha 18/9/2026 (20 + handle_agent_message_silences_ai, sumada en
+// 20260917010000_seba_y_escalada_viva.sql — T0 del plan "Seba atiende el
+// mostrador". Las 20 anteriores: 19 + handle_conversation_ownership_change,
+// sumada en 20260916010000_devolucion_a_la_ia.sql — T1 de la corrida "La IA
+// no vuelve a pedir lo que ya pidió"). Sirve para comprobar que el parser de
+// abajo no se está quedando corto: si algún día detecta menos de estas, el
+// guardián dejó de proteger algo y hay que enterarse antes de confiar en el
 // resultado.
 //
 // handle_conversation_ownership_change es security definer porque corre
 // como `authenticated` (mutations.ts, RLS normal de conversations) y tiene
 // que dejar rastro en conversation_handoffs, que solo admite INSERT de
 // service_role (20260830040000) — necesita saltarse esa RLS para escribir
-// su fila, igual que handle_new_message/handle_message_status_change. NO
-// entra a LISTA_BLANCA: a diferencia de is_agent()/is_supervisor_or_admin()
-// (que sostienen políticas RLS vivas y por eso no se les puede tocar el
-// EXECUTE), esta función trae los dos revokes de siempre (`from public` y
-// `from anon, authenticated`, en la misma migración que la crea) y nadie
-// más que el propio trigger necesita invocarla.
+// su fila, igual que handle_new_message/handle_message_status_change.
+//
+// handle_agent_message_silences_ai (18/9/2026) apaga conversations.ai_enabled
+// desde un trigger AFTER INSERT ON messages (requisito 6 del cliente: la IA
+// se calla en cuanto el asesor manda su primer mensaje real) — mismo
+// criterio que las de trigger de arriba: nadie más que el propio disparador
+// necesita invocarla.
+//
+// Ninguna de las dos entra a LISTA_BLANCA: a diferencia de
+// is_agent()/is_supervisor_or_admin() (que sostienen políticas RLS vivas y
+// por eso no se les puede tocar el EXECUTE), estas funciones traen los dos
+// revokes de siempre (`from public` y `from anon, authenticated`, en la
+// misma migración que las crea).
 const FUNCIONES_SECURITY_DEFINER_CONOCIDAS = [
   "is_agent",
   "agent_day_summary",
@@ -87,6 +96,7 @@ const FUNCIONES_SECURITY_DEFINER_CONOCIDAS = [
   "handle_new_message",
   "handle_conversation_assigned",
   "handle_conversation_ownership_change",
+  "handle_agent_message_silences_ai",
   "handle_message_status_change",
   "enforce_sale_role_guard",
   "agent_spend_today",
@@ -233,8 +243,8 @@ describe("permisos de funciones security definer (guardián estático)", () => {
     .map(([nombre]) => nombre)
     .sort();
 
-  it("detecta exactamente las 20 funciones security definer conocidas", () => {
-    // Si esto falla con MENOS de las 20, el parser se está comiendo alguna
+  it("detecta exactamente las 21 funciones security definer conocidas", () => {
+    // Si esto falla con MENOS de las 21, el parser se está comiendo alguna
     // (regex de cabecera roto, `$$` no encontrado, etc.) y el resto de este
     // archivo no protege nada aunque pase en verde. Si falla con MÁS,
     // apareció una función security definer nueva: hay que sumarla a esta

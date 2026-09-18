@@ -291,6 +291,74 @@ where c.ai_enabled
 Test: `tests/devolucion_a_la_ia.sql` (doce casos, transacción con rollback),
 cableado al job `migraciones` del CI.
 
+**`20260917010000_seba_y_escalada_viva`** (T0 del plan "Seba atiende el
+mostrador", `docs/planes/2026-09-17-seba-atiende-el-mostrador.md`,
+18/9/2026). Va DESPUÉS de `20260916010000` (reusa `new_since_ai_resume` en
+`handle_conversation_ownership_change`) y ANTES del código de la misma
+corrida, con la misma regla dura de siempre: aplicada a mano con `psql -1
+-v ON_ERROR_STOP=1` (§7 → "En Dokploy" → "Aplicarla a mano"), en su propio
+paso, después de `20260916010000` y antes de `20260915010000` si esa
+tampoco estuviera aplicada todavía. Trae:
+
+- Backfill de `welcome_sent_at` (deja de ser "última vez que se mandó la
+  plantilla de bienvenida" — nunca se usó, `WHATSAPP_WELCOME_TEMPLATE` está
+  vacía desde siempre — y pasa a ser el sello de "Seba ya se presentó").
+- `conversation_handoffs.reason` suma `silenciada_por_asesor`.
+- `handle_conversation_ownership_change()` (`create or replace`, ACL
+  intacto): la rama `reclamado` gana `auth.uid() is not null`, y una rama
+  nueva escribe `silenciada_por_asesor` cuando `ai_enabled` se apaga SIN que
+  `assigned_agent_id` cambie en el mismo UPDATE (la escalada de hoy sigue
+  cambiando las dos juntas hasta que una tarea futura de la misma corrida la
+  reforme).
+- `handle_agent_message_silences_ai()` nueva + trigger `AFTER INSERT ON
+  messages` (`messages_agent_silences_ai_trigger`): apaga la IA en cuanto un
+  asesor manda su primer mensaje real al cliente.
+
+**El código de esta misma corrida que todavía no existe al escribir esta
+migración depende de dos cosas de acá:** la columna `welcome_sent_at` con
+la semántica nueva (el turno la usará para decidir si Seba saluda) y la
+razón `silenciada_por_asesor` en el CHECK (el código no la escribe — la
+escribe el trigger solo —, pero si el CHECK no la admitiera el INSERT del
+trigger fallaría en silencio, como cualquier `conversation_handoffs`
+roto). No hay guarda de "el `select` falla sin la columna" como en
+`20260916010000`: `welcome_sent_at` ya existía desde `20260819030000`, así
+que desplegar el código de esta corrida antes que la migración no rompe
+ningún `select` — solo deja el saludo de Seba mudo hasta que la migración
+entre (la columna sigue existiendo con la semántica vieja, y el código
+nuevo la lee igual, solo que con datos que el backfill todavía no corrigió).
+
+**Verificación después de aplicarla** (solo lectura):
+
+```sql
+-- El CHECK trae el valor nuevo
+select pg_get_constraintdef(oid) from pg_constraint
+where conrelid = 'public.conversation_handoffs'::regclass
+  and conname = 'conversation_handoffs_reason_check';
+-- debe contener 'silenciada_por_asesor'
+
+-- El trigger de silencio existe
+select tgname from pg_trigger
+where tgrelid = 'public.messages'::regclass
+  and tgname = 'messages_agent_silences_ai_trigger'
+  and not tgisinternal;
+-- debe salir la fila
+
+-- anon y authenticated no pueden ejecutar la función nueva
+select
+  has_function_privilege('anon', 'public.handle_agent_message_silences_ai()', 'execute') as anon,
+  has_function_privilege('authenticated', 'public.handle_agent_message_silences_ai()', 'execute') as authenticated;
+-- las dos en false
+
+select count(*) from supabase_migrations.schema_migrations;  -- 72
+```
+
+Test: `tests/seba_y_escalada_viva.sql` (ocho casos, transacción con
+rollback), cableado al job `migraciones` del CI. Aplicar esta migración
+también rompía (antes de corregirlo) dos supuestos de
+`tests/devolucion_a_la_ia.sql`: su caso 1 ("escalada simulada no deja
+fila") y sus casos 13/14/15 de `reclamado` — ver el comentario al final de
+la cabecera de ese archivo, corregido en la misma tanda.
+
 ### El lease del lock de turno de la IA
 
 La migración `20260829020000_conversations_turn_lock_lease.sql` agrega dos
