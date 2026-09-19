@@ -2779,18 +2779,29 @@ export async function fetchCatalogLinks(supabase: SupabaseClient): Promise<Catal
  * la bandeja — ante un error cae a `[]` (ningún marcador resuelve, D6 se
  * encarga del resto) y deja el aviso en consola, mismo criterio que
  * `fetchBusinessHours` de acá arriba.
+ *
+ * T7 (19/9/2026): la promesa "nunca lanza" solo cubría el `error` que
+ * devuelve Supabase, no una EXCEPCIÓN de verdad (p. ej. `fetch failed` de
+ * red, antes de que la librería llegue a resolver `{data, error}`) — esa se
+ * colaba entera y sí podía tumbar a quien llamara sin `try/catch` propio.
+ * El `try/catch` de acá cubre las dos vías con el mismo resultado.
  */
 export async function fetchActiveCatalogLinks(supabase: SupabaseClient): Promise<CatalogLink[]> {
-  const { data, error } = await supabase
-    .from("catalog_links")
-    .select(CATALOG_LINK_COLUMNS)
-    .eq("is_active", true)
-    .order("sort_order");
+  try {
+    const { data, error } = await supabase
+      .from("catalog_links")
+      .select(CATALOG_LINK_COLUMNS)
+      .eq("is_active", true)
+      .order("sort_order");
 
-  if (error) {
+    if (error) {
+      console.error("No se pudieron leer los enlaces de catálogo, se sigue sin ninguno:", error);
+      return [];
+    }
+
+    return (data as RawCatalogLink[]).map(mapCatalogLink);
+  } catch (error) {
     console.error("No se pudieron leer los enlaces de catálogo, se sigue sin ninguno:", error);
     return [];
   }
-
-  return (data as RawCatalogLink[]).map(mapCatalogLink);
 }
