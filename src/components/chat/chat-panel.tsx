@@ -21,6 +21,7 @@ import { MessageBubble } from "@/components/chat/message-bubble";
 import { MediaGroup } from "@/components/chat/media-group";
 import { OutboxBubble } from "@/components/chat/outbox-bubble";
 import { Composer } from "@/components/chat/composer";
+import { TeachSebaModal } from "@/components/chat/teach-seba-modal";
 
 /**
  * Cuánto dura el banner de "llegó desde el anuncio" en la cabecera del chat
@@ -92,6 +93,12 @@ export function ChatPanel({
 }: ChatPanelProps) {
   const [isIntervening, setIsIntervening] = useState(false);
   const [replyingTo, setReplyingTo] = useState<Message | null>(null);
+  /**
+   * "Enseñar a Seba…" (T6, 18/9/2026): mismo criterio que `replyingTo`, un
+   * único mensaje a la vez. `null` mantiene el modal desmontado — no hace
+   * falta el viaje a Supabase hasta que el asesor lo abre de verdad.
+   */
+  const [teachingMessage, setTeachingMessage] = useState<Message | null>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
   const listRef = useRef<HTMLDivElement>(null);
 
@@ -339,6 +346,7 @@ export function ChatPanel({
                 item.message.replyToMessageId ? (messagesById.get(item.message.replyToMessageId) ?? null) : null
               }
               onReply={setReplyingTo}
+              onTeach={setTeachingMessage}
               onJumpToQuoted={jumpToMessage}
               isHighlighted={item.message.id === jumpedToId}
               pendingDelivery={conversation.channel.status === "connected"}
@@ -373,6 +381,19 @@ export function ChatPanel({
         onSendText={onSendText}
         openTemplateModalSignal={templateModalSignal}
       />
+
+      {teachingMessage && (
+        <TeachSebaModal
+          isOpen
+          message={teachingMessage}
+          agent={currentAgent}
+          conversationId={conversation.id}
+          contactId={conversation.contact.id}
+          onOpenChange={(open) => {
+            if (!open) setTeachingMessage(null);
+          }}
+        />
+      )}
     </>
   );
 }

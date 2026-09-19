@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { Button, Modal, toast } from "@heroui/react";
-import { BookOpen, Bot, ShieldAlert, Users, Wrench, Zap } from "lucide-react";
+import { BookOpen, Bot, GraduationCap, ShieldAlert, Users, Wrench, Zap } from "lucide-react";
 import type { BacklogCounts } from "@/lib/data";
 import { BUSINESS_NAME } from "@/lib/brand";
 import type {
@@ -14,6 +14,7 @@ import type {
   AgentTool,
   AgentTurn,
   AgentTurnAction,
+  AiLesson,
   BoardConversation,
   KnowledgeCategory,
   KnowledgeEntry,
@@ -37,6 +38,7 @@ import {
   fetchBoardConversations,
   fetchKnowledgeCategories,
   fetchKnowledgeEntries,
+  fetchLessons,
   fetchModelPricing,
   fetchBacklogCounts,
   fetchPlaybooks,
@@ -64,6 +66,7 @@ import { useLiveRefresh } from "@/lib/use-live-refresh";
 import { AgentsRosterPanel } from "@/components/agent-control/agent-roster-panel";
 import { AgentToolsPanel } from "@/components/agent-control/agent-tools-panel";
 import { KnowledgePanel } from "@/components/agent-control/knowledge-panel";
+import { LessonsPanel } from "@/components/agent-control/lessons-panel";
 import { PlaybooksPanel } from "@/components/agent-control/playbooks-panel";
 import { SlidingPills } from "@/components/sliding-pills";
 import { AppRail, AppTopNav } from "@/components/app-rail";
@@ -94,6 +97,13 @@ interface AgentControlViewProps {
   initialAgentTools: AgentTool[];
   initialKnowledgeCategories: KnowledgeCategory[];
   initialKnowledgeEntries: KnowledgeEntry[];
+  /**
+   * "Lecciones de Seba" (T6, plan "Seba atiende el mostrador", 18/9/2026,
+   * requisito 7 del cliente): correcciones que los asesores le escribieron a
+   * la IA desde el chat ("Enseñar a Seba…"), activas e inactivas — el panel
+   * administra las dos, igual que `initialKnowledgeEntries`.
+   */
+  initialLessons: AiLesson[];
   /** Catálogo de etiquetas del CRM: lo elige el formulario de escenarios. */
   initialTags: Tag[];
   /**
@@ -105,7 +115,7 @@ interface AgentControlViewProps {
   modelLabel: string;
 }
 
-type AgentControlTab = "ia" | "respuestas" | "biblioteca" | "herramientas" | "agentes";
+type AgentControlTab = "ia" | "respuestas" | "biblioteca" | "lecciones" | "herramientas" | "agentes";
 
 // ---------------------------------------------------------------------------
 // Ritmo del repaso del atraso, para poder decírselo a quien aprieta el botón.
@@ -154,6 +164,7 @@ const TAB_TITLE: Record<AgentControlTab, string> = {
   ia: "Control del agente de IA",
   respuestas: "Respuestas predeterminadas",
   biblioteca: "Biblioteca de conocimiento",
+  lecciones: "Lecciones de Seba",
   herramientas: "Herramientas de la IA",
   agentes: "Control de agentes",
 };
@@ -164,6 +175,8 @@ const TAB_SUBTITLE: Record<AgentControlTab, string> = {
     "Los casos que la IA ya sabe resolver con un texto tuyo, y los mensajes de clientes que todavía no calzan con ninguno.",
   biblioteca:
     "Lo que la IA sabe de la tienda más allá del catálogo: envíos, pagos, garantías, horarios… Escríbelo o importa un .md y la IA lo usa al responder.",
+  lecciones:
+    'Correcciones y sinónimos que los asesores le escribieron a Seba desde el chat con "Enseñar a Seba…": tienen prioridad sobre su criterio al responder.',
   herramientas:
     "Enciende o apaga cada capacidad de la IA por separado, sin apagarla completa: ella sigue atendiendo con lo que tenga disponible.",
   agentes:
@@ -190,6 +203,7 @@ export function AgentControlView({
   initialAgentTools,
   initialKnowledgeCategories,
   initialKnowledgeEntries,
+  initialLessons,
   initialTags,
   initialChannelHealth = null,
   modelLabel,
@@ -229,6 +243,7 @@ export function AgentControlView({
   const [agentTools, setAgentTools] = useState(initialAgentTools);
   const [knowledgeCategories, setKnowledgeCategories] = useState(initialKnowledgeCategories);
   const [knowledgeEntries, setKnowledgeEntries] = useState(initialKnowledgeEntries);
+  const [lessons, setLessons] = useState(initialLessons);
   const [togglingKillSwitch, setTogglingKillSwitch] = useState(false);
   const [confirmingAiOn, setConfirmingAiOn] = useState(false);
   // null mientras se cuenta. El diálogo no deja encender hasta tener el
@@ -265,6 +280,7 @@ export function AgentControlView({
         nextAgentTools,
         nextKnowledgeCategories,
         nextKnowledgeEntries,
+        nextLessons,
       ] = await Promise.all([
         fetchAgentTurns(supabase),
         fetchAgentSettings(supabase),
@@ -278,6 +294,7 @@ export function AgentControlView({
         fetchAgentTools(supabase),
         fetchKnowledgeCategories(supabase),
         fetchKnowledgeEntries(supabase),
+        fetchLessons(supabase),
       ]);
       setTurns(nextTurns);
       setSettings(nextSettings);
@@ -291,6 +308,7 @@ export function AgentControlView({
       setAgentTools(nextAgentTools);
       setKnowledgeCategories(nextKnowledgeCategories);
       setKnowledgeEntries(nextKnowledgeEntries);
+      setLessons(nextLessons);
     } catch {
       // El siguiente cambio en tiempo real reintentará la sincronización.
     }
@@ -314,6 +332,9 @@ export function AgentControlView({
       .on("postgres_changes", { event: "UPDATE", schema: "public", table: "agent_tools" }, () => scheduleRefresh())
       .on("postgres_changes", { event: "*", schema: "public", table: "knowledge_categories" }, () => scheduleRefresh())
       .on("postgres_changes", { event: "*", schema: "public", table: "knowledge_entries" }, () => scheduleRefresh())
+      // "Enseñar a Seba…" (T6, 18/9/2026): otro asesor puede escribir una
+      // lección o desactivarla mientras este panel está abierto.
+      .on("postgres_changes", { event: "*", schema: "public", table: "ai_lessons" }, () => scheduleRefresh())
       .subscribe();
 
     return () => {
@@ -578,6 +599,12 @@ export function AgentControlView({
                   label: "Biblioteca",
                   icon: <BookOpen size={13} />,
                   count: knowledgeEntries.length,
+                },
+                {
+                  value: "lecciones",
+                  label: "Lecciones",
+                  icon: <GraduationCap size={13} />,
+                  count: lessons.length,
                 },
                 {
                   value: "herramientas",
@@ -957,6 +984,8 @@ export function AgentControlView({
                 canEdit={currentAgent.role === "supervisor" || currentAgent.role === "admin"}
               />
             )}
+
+            {tab === "lecciones" && <LessonsPanel currentAgent={currentAgent} lessons={lessons} />}
 
             {tab === "herramientas" && (
               <AgentToolsPanel

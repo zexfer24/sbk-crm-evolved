@@ -241,6 +241,13 @@ interface MessageBubbleProps {
   repliedMessage?: Message | null;
   onReply?: (message: Message) => void;
   /**
+   * Abre "Enseñar a Seba…" (T6, plan "Seba atiende el mostrador",
+   * 18/9/2026). Mismo cableado que `onReply`: viaja hasta
+   * `MessageContextMenu`, que decide si ofrecerlo según el mensaje y si hay
+   * `agent`.
+   */
+  onTeach?: (message: Message) => void;
+  /**
    * Lleva la conversación hasta el mensaje citado. Sin esto la cita se
    * queda como lo que era: un recorte que dice de qué se hablaba, pero que
    * no lleva a ningún lado.
@@ -288,6 +295,7 @@ export function MessageBubble({
   message,
   repliedMessage,
   onReply,
+  onTeach,
   onJumpToQuoted,
   isHighlighted = false,
   pendingDelivery = false,
@@ -481,6 +489,7 @@ export function MessageBubble({
           position={menuAt}
           message={message}
           onReply={onReply}
+          onTeach={onTeach}
           onClose={() => setMenuAt(null)}
           agent={agent}
         />

@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import { Copy, ImageDown, Reply, Sticker as StickerIcon } from "lucide-react";
+import { Copy, GraduationCap, ImageDown, Reply, Sticker as StickerIcon } from "lucide-react";
 import { toast } from "@heroui/react";
 import type { Agent, Message } from "@/lib/types";
 import { ContextMenu } from "@/components/context-menu";
@@ -44,15 +44,26 @@ interface MessageContextMenuProps {
    * a cualquier lugar donde este menú se use sin conocer al agente.
    */
   agent?: Agent;
+  /**
+   * Abre el modal "Enseñar a Seba…" (T6, plan "Seba atiende el mostrador",
+   * requisito 7 del cliente, 18/9/2026). Mismo criterio que `onReply`: sin
+   * este callback la opción no se ofrece.
+   */
+  onTeach?: (message: Message) => void;
 }
 
-export function MessageContextMenu({ position, message, onReply, onClose, agent }: MessageContextMenuProps) {
+export function MessageContextMenu({ position, message, onReply, onClose, agent, onTeach }: MessageContextMenuProps) {
   const [copiando, setCopiando] = useState(false);
   const [guardandoSticker, setGuardandoSticker] = useState(false);
 
   const esImagen = message.messageType === "image" && !!message.mediaUrl;
   const esSticker = message.messageType === "sticker" && !!message.mediaUrl;
   const tieneTexto = !!message.content?.trim();
+  // T6, plan "Seba atiende el mostrador" (18/9/2026, requisito 7 del
+  // cliente): se enseña sobre lo que dijo el cliente o lo que Seba
+  // respondió — nunca sobre lo que escribió un asesor, que no es una
+  // corrección de la IA sino la voz de una persona.
+  const esEnsenable = message.direction === "inbound" || message.senderType === "ai";
 
   async function copiarImagen() {
     setCopiando(true);
@@ -130,6 +141,20 @@ export function MessageContextMenu({ position, message, onReply, onClose, agent 
         <button type="button" role="menuitem" onClick={copiarTexto}>
           <Copy size={15} aria-hidden="true" />
           Copiar texto
+        </button>
+      )}
+
+      {onTeach && agent && esEnsenable && (
+        <button
+          type="button"
+          role="menuitem"
+          onClick={() => {
+            onTeach(message);
+            onClose();
+          }}
+        >
+          <GraduationCap size={15} aria-hidden="true" />
+          Enseñar a Seba…
         </button>
       )}
     </ContextMenu>

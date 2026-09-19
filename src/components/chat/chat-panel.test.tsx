@@ -1,6 +1,6 @@
 /** @vitest-environment jsdom */
 import { describe, expect, it, vi, beforeEach } from "vitest";
-import { render, screen, fireEvent } from "@testing-library/react";
+import { render, screen, fireEvent, act } from "@testing-library/react";
 import { ChatPanel } from "@/components/chat/chat-panel";
 import type { Agent, Conversation, Message } from "@/lib/types";
 import type { OutboxItem } from "@/lib/outbox";
@@ -15,6 +15,16 @@ vi.mock("@/lib/mutations", () => ({
   unassign: vi.fn(),
 }));
 vi.mock("@/components/chat/composer", () => ({ Composer: () => null }));
+
+// El modal en sí ya tiene su propio archivo de tests (teach-seba-modal.test.tsx);
+// acá solo se prueba que ChatPanel lo abre y le pasa el mensaje correcto.
+const teachSebaModalProps = vi.fn();
+vi.mock("@/components/chat/teach-seba-modal", () => ({
+  TeachSebaModal: (props: unknown) => {
+    teachSebaModalProps(props);
+    return <div data-testid="teach-seba-modal" />;
+  },
+}));
 
 const dangerToast = vi.fn();
 vi.mock("@heroui/react", async (importOriginal) => {
@@ -70,6 +80,7 @@ function renderPanel(
 
 beforeEach(() => {
   dangerToast.mockClear();
+  teachSebaModalProps.mockClear();
   // jsdom no trae scrollIntoView, y el panel lo llama al montar para dejar
   // el final del hilo a la vista. Cada test que lo afirma pone el suyo.
   Element.prototype.scrollIntoView = vi.fn();
@@ -256,6 +267,50 @@ describe("ChatPanel — el aviso de cambio de número", () => {
     fireEvent.click(screen.getByRole("button", { name: /abrir el chat de \+584129999999/i }));
 
     expect(onOpenConversationByPhone).toHaveBeenCalledWith("+584129999999");
+  });
+});
+
+/**
+ * "Enseñar a Seba…" (T6, plan "Seba atiende el mostrador", 18/9/2026): el
+ * panel abre el modal con el mismo mensaje que citó el menú contextual —
+ * mismo camino que `replyingTo` — y lo desmonta al cerrar.
+ */
+describe("ChatPanel — Enseñar a Seba", () => {
+  it("sin haber pedido enseñar nada, el modal no se monta", () => {
+    renderPanel([mensaje({ content: "hola" })]);
+    expect(screen.queryByTestId("teach-seba-modal")).not.toBeInTheDocument();
+  });
+
+  it("clic derecho y 'Enseñar a Seba…' monta el modal con ese mensaje y el agente actual", () => {
+    const message = mensaje({ id: "msg-teach", content: "¿Tienen pastillas de freno?" });
+    renderPanel([message]);
+
+    fireEvent.contextMenu(screen.getByText("¿Tienen pastillas de freno?"));
+    fireEvent.click(screen.getByRole("menuitem", { name: /enseñar a seba/i }));
+
+    expect(screen.getByTestId("teach-seba-modal")).toBeInTheDocument();
+    expect(teachSebaModalProps).toHaveBeenCalledWith(
+      expect.objectContaining({
+        isOpen: true,
+        message,
+        agent: AGENTE,
+        conversationId: "conv-1",
+        contactId: "c-1",
+      })
+    );
+  });
+
+  it("cerrar el modal (onOpenChange(false)) lo desmonta", () => {
+    renderPanel([mensaje({ id: "msg-teach", content: "¿Tienen pastillas de freno?" })]);
+
+    fireEvent.contextMenu(screen.getByText("¿Tienen pastillas de freno?"));
+    fireEvent.click(screen.getByRole("menuitem", { name: /enseñar a seba/i }));
+    expect(screen.getByTestId("teach-seba-modal")).toBeInTheDocument();
+
+    const { onOpenChange } = teachSebaModalProps.mock.calls.at(-1)?.[0] as { onOpenChange: (open: boolean) => void };
+    act(() => onOpenChange(false));
+
+    expect(screen.queryByTestId("teach-seba-modal")).not.toBeInTheDocument();
   });
 });
 

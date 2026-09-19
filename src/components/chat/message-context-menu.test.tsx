@@ -163,3 +163,99 @@ describe("MessageContextMenu — Guardar sticker", () => {
     expect(onClose).not.toHaveBeenCalled();
   });
 });
+
+/**
+ * T6, plan "Seba atiende el mostrador" (18/9/2026, requisito 7 del
+ * cliente): "Enseñar a Seba…" sobre lo que dijo el cliente o lo que
+ * respondió la IA, nunca sobre lo que escribió un asesor humano — eso no es
+ * una corrección para la IA, es la voz de una persona.
+ */
+describe("MessageContextMenu — Enseñar a Seba", () => {
+  function textMessage(overrides: Partial<Message> = {}): Message {
+    return {
+      id: "msg-text-1",
+      conversationId: "conv-1",
+      direction: "inbound",
+      senderType: "customer",
+      senderAgent: null,
+      messageType: "text",
+      content: "¿Tienen pastillas de freno para una Bera SBR?",
+      templateName: null,
+      mediaUrl: null,
+      isInternalNote: false,
+      whatsappStatus: null,
+      whatsappError: null,
+      whatsappErrorCode: null,
+      reactionEmoji: null,
+      replyToMessageId: null,
+      payload: null,
+      createdAt: "2026-09-18T11:00:00.000Z",
+      ...overrides,
+    };
+  }
+
+  it("sobre un mensaje entrante del cliente, con agent y onTeach, ofrece la opción", () => {
+    render(
+      <MessageContextMenu
+        position={{ x: 0, y: 0 }}
+        message={textMessage()}
+        onClose={vi.fn()}
+        agent={AGENT}
+        onTeach={vi.fn()}
+      />
+    );
+    expect(screen.getByRole("menuitem", { name: /enseñar a seba/i })).toBeInTheDocument();
+  });
+
+  it("sobre una respuesta de la IA también la ofrece", () => {
+    render(
+      <MessageContextMenu
+        position={{ x: 0, y: 0 }}
+        message={textMessage({ direction: "outbound", senderType: "ai" })}
+        onClose={vi.fn()}
+        agent={AGENT}
+        onTeach={vi.fn()}
+      />
+    );
+    expect(screen.getByRole("menuitem", { name: /enseñar a seba/i })).toBeInTheDocument();
+  });
+
+  it("sobre un saliente de un asesor humano NO la ofrece", () => {
+    render(
+      <MessageContextMenu
+        position={{ x: 0, y: 0 }}
+        message={textMessage({ direction: "outbound", senderType: "agent" })}
+        onClose={vi.fn()}
+        agent={AGENT}
+        onTeach={vi.fn()}
+      />
+    );
+    expect(screen.queryByRole("menuitem", { name: /enseñar a seba/i })).not.toBeInTheDocument();
+  });
+
+  it("sin agent no la ofrece, aunque el mensaje sea entrante", () => {
+    render(
+      <MessageContextMenu position={{ x: 0, y: 0 }} message={textMessage()} onClose={vi.fn()} onTeach={vi.fn()} />
+    );
+    expect(screen.queryByRole("menuitem", { name: /enseñar a seba/i })).not.toBeInTheDocument();
+  });
+
+  it("sin onTeach no la ofrece, aunque haya agent", () => {
+    render(<MessageContextMenu position={{ x: 0, y: 0 }} message={textMessage()} onClose={vi.fn()} agent={AGENT} />);
+    expect(screen.queryByRole("menuitem", { name: /enseñar a seba/i })).not.toBeInTheDocument();
+  });
+
+  it("al hacer clic llama a onTeach con el mensaje y cierra el menú", () => {
+    const onTeach = vi.fn();
+    const onClose = vi.fn();
+    const message = textMessage();
+
+    render(
+      <MessageContextMenu position={{ x: 0, y: 0 }} message={message} onClose={onClose} agent={AGENT} onTeach={onTeach} />
+    );
+    fireEvent.click(screen.getByRole("menuitem", { name: /enseñar a seba/i }));
+
+    expect(onTeach).toHaveBeenCalledWith(message);
+    expect(onClose).toHaveBeenCalled();
+  });
+});

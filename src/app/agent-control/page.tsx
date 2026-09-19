@@ -11,6 +11,7 @@ import {
   fetchCurrentAgent,
   fetchKnowledgeCategories,
   fetchKnowledgeEntries,
+  fetchLessons,
   fetchModelPricing,
   fetchPlaybooks,
   fetchQuickReplies,
@@ -41,6 +42,7 @@ export default async function AgentControlPage() {
     agentTools,
     knowledgeCategories,
     knowledgeEntries,
+    lessons,
     tags,
     channelHealth,
   ] = await Promise.all([
@@ -61,6 +63,7 @@ export default async function AgentControlPage() {
     fetchAgentTools(supabase),
     fetchKnowledgeCategories(supabase),
     fetchKnowledgeEntries(supabase),
+    fetchLessons(supabase),
     fetchTags(supabase),
     fetchWhatsappChannelHealth(supabase),
   ]);
@@ -86,6 +89,7 @@ export default async function AgentControlPage() {
       initialAgentTools={agentTools}
       initialKnowledgeCategories={knowledgeCategories}
       initialKnowledgeEntries={knowledgeEntries}
+      initialLessons={lessons}
       initialTags={tags}
       initialChannelHealth={channelHealth}
       modelLabel={currentAgentModelLabel()}

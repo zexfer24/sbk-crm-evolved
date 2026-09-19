@@ -17,6 +17,7 @@ import type { Agent, AgentSettings, Conversation } from "@/lib/types";
 vi.mock("@/components/agent-control/agent-roster-panel", () => ({ AgentsRosterPanel: () => null }));
 vi.mock("@/components/agent-control/agent-tools-panel", () => ({ AgentToolsPanel: () => null }));
 vi.mock("@/components/agent-control/knowledge-panel", () => ({ KnowledgePanel: () => null }));
+vi.mock("@/components/agent-control/lessons-panel", () => ({ LessonsPanel: () => null }));
 vi.mock("@/components/agent-control/playbooks-panel", () => ({ PlaybooksPanel: () => null }));
 vi.mock("@/components/agent-control/spend-cap-panel", () => ({ SpendCapPanel: () => null }));
 vi.mock("@/components/agent-control/business-hours-panel", () => ({ BusinessHoursPanel: () => null }));
@@ -46,6 +47,7 @@ vi.mock("@/lib/data", () => ({
   fetchAllAgents: vi.fn(async () => []),
   fetchKnowledgeCategories: vi.fn(async () => []),
   fetchKnowledgeEntries: vi.fn(async () => []),
+  fetchLessons: vi.fn(async () => []),
   fetchModelPricing: vi.fn(async () => []),
   fetchPlaybooks: vi.fn(async () => []),
   fetchTokenUsageSummary: vi.fn(async () => ({ totalTokens: 0, totalUsd: 0, hasUnpricedModels: false, byDay: [], byModel: [] })),
@@ -153,6 +155,7 @@ function montar(settings: AgentSettings) {
       initialAgentTools={[]}
       initialKnowledgeCategories={[]}
       initialKnowledgeEntries={[]}
+      initialLessons={[]}
       modelLabel="modelo-de-prueba"
     />
   );

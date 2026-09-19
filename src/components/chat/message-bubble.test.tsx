@@ -4,7 +4,7 @@ import { render, screen, fireEvent, act } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { AudioContent, MediaContent, MessageBubble } from "@/components/chat/message-bubble";
 import { AI_NAME } from "@/lib/brand";
-import type { Message } from "@/lib/types";
+import type { Agent, Message } from "@/lib/types";
 
 const AUDIO_URL = "https://example.com/nota-de-voz.ogg";
 
@@ -227,6 +227,45 @@ describe("MessageBubble — en el teléfono no hay click derecho", () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// T6, plan "Seba atiende el mostrador" (18/9/2026): cableado de
+// "Enseñar a Seba…" hasta el menú contextual real (sin mockear
+// MessageContextMenu, igual que el resto de este archivo).
+// ---------------------------------------------------------------------------
+describe("MessageBubble — cableado de 'Enseñar a Seba…'", () => {
+  const AGENTE: Agent = {
+    id: "agent-1",
+    displayName: "Ana",
+    fullName: "Ana Torres",
+    avatarUrl: null,
+    role: "agent",
+    isActive: true,
+  };
+
+  it("con onTeach y agent, sobre un mensaje entrante, el clic llama a onTeach con el mensaje", () => {
+    const onTeach = vi.fn();
+    const message = baseMessage({ id: "msg-9", content: "¿Cuánto sale?" });
+
+    render(<MessageBubble message={message} onTeach={onTeach} agent={AGENTE} />);
+    fireEvent.contextMenu(screen.getByText("¿Cuánto sale?"));
+    fireEvent.click(screen.getByRole("menuitem", { name: /enseñar a seba/i }));
+
+    expect(onTeach).toHaveBeenCalledWith(message);
+  });
+
+  it("sin onTeach no ofrece la opción", () => {
+    render(<MessageBubble message={baseMessage({ content: "¿Cuánto sale?" })} agent={AGENTE} />);
+    fireEvent.contextMenu(screen.getByText("¿Cuánto sale?"));
+    expect(screen.queryByRole("menuitem", { name: /enseñar a seba/i })).not.toBeInTheDocument();
+  });
+
+  it("sin agent no ofrece la opción, aunque haya onTeach", () => {
+    render(<MessageBubble message={baseMessage({ content: "¿Cuánto sale?" })} onTeach={vi.fn()} />);
+    fireEvent.contextMenu(screen.getByText("¿Cuánto sale?"));
+    expect(screen.queryByRole("menuitem", { name: /enseñar a seba/i })).not.toBeInTheDocument();
   });
 });
 

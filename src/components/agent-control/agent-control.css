@@ -1049,3 +1049,14 @@
   justify-content: flex-end;
   padding: 14px 26px 20px;
 }
+
+/* --------------------------------------------------------------------------
+   Lecciones de Seba (T6, plan "Seba atiende el mostrador", 18/9/2026):
+   reutiliza las tarjetas .ac-pb-* de arriba; el único agregado es el par
+   jerga → catálogo de un sinónimo, que se lee mejor en monoespaciada que el
+   texto libre de una nota.
+   -------------------------------------------------------------------------- */
+.ac-lesson-synonym {
+  font-family: var(--font-mono), ui-monospace, monospace;
+  -webkit-line-clamp: 2;
+}
