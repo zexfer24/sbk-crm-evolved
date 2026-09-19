@@ -492,6 +492,48 @@ export interface KnowledgeEntry {
   updatedAt: string;
 }
 
+/** `global`: se aplica a cualquier chat (default de la UI, decisión P2 del plan). `conversacion`: solo a la que la originó. */
+export type LessonScope = "global" | "conversacion";
+
+/**
+ * `nota`: texto libre que el modelo lee como instrucción o corrección.
+ * `sinonimo`: un par `synonymFrom`/`synonymTo` que `catalog-search.ts` usa
+ * para expandir la búsqueda del catálogo — nunca se le muestra al modelo
+ * como prosa (ver `ai_lessons.kind` en la migración 20260917020000).
+ */
+export type LessonKind = "nota" | "sinonimo";
+
+/**
+ * "Lecciones de Seba" (requisito 7 del cliente, plan "Seba atiende el
+ * mostrador", 18/9/2026): una corrección o nota corta que un asesor le
+ * escribe a la IA desde el chat — clic derecho sobre un mensaje, "Enseñar a
+ * Seba…" — sin tocar código. Ver `public.ai_lessons`
+ * (supabase/migrations/20260917020000_ai_lessons.sql) para las columnas y
+ * los CHECK exactos; este tipo es su espejo en la app.
+ */
+export interface AiLesson {
+  id: string;
+  scope: LessonScope;
+  kind: LessonKind;
+  content: string;
+  /** Con kind="sinonimo": el término que usa el cliente (jerga). */
+  synonymFrom: string | null;
+  /** Con kind="sinonimo": el término real del catálogo al que expande la búsqueda. */
+  synonymTo: string | null;
+  /** El mensaje del chat sobre el que se escribió la lección, si vino de ahí. */
+  messageId: string | null;
+  /** Copia del texto citado en el momento de crear la lección (snapshot, igual que invoices.customer/items). */
+  messageExcerpt: string | null;
+  conversationId: string | null;
+  contactId: string | null;
+  isActive: boolean;
+  createdBy: string | null;
+  /** Nombre del asesor que la escribió, ya resuelto para la lista del panel. "—" si el autor se borró. */
+  authorName: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
 /**
  * Cortes de la bandeja. Primera reforma (28/8/2026, mañana): de cinco
  * píldoras que distinguían leído/asignado se pasó a tres iguales para todos

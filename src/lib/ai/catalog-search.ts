@@ -70,3 +70,45 @@ export function rankByTerms<T extends { search_text: string | null }>(rows: T[],
 
   return [...rows].sort((a, b) => score(b) - score(a));
 }
+
+// ---------------------------------------------------------------------------
+// Sinónimos de búsqueda — T5c, plan "Seba atiende el mostrador" (18/9/2026,
+// requisito 7 del cliente, decisión P3): un asesor le enseña a Seba que
+// "pastilla" (jerga que usa el cliente) también busca "pastillas de freno"
+// (el nombre real en el catálogo), sin que nadie toque código.
+//
+// NO reutiliza `products.sinonimos_busqueda` (hallazgo 9 del plan): esa
+// columna ya está ocupada por otro flujo. Los sinónimos de esta tarea viven
+// en `public.ai_lessons` con `kind = 'sinonimo'` (migración 20260917020000)
+// y `tools.ts` los consulta activos antes de armar el filtro del catálogo.
+// ---------------------------------------------------------------------------
+
+/** Un par jerga → término real. `isActive` es opcional (por defecto, activo). */
+export interface SearchSynonym {
+  from: string;
+  to: string;
+  isActive?: boolean;
+}
+
+/**
+ * Agrega, a los términos que ya salieron de `searchTerms`, el término real de
+ * cada sinónimo cuya jerga (`from`, normalizada) esté entre ellos.
+ *
+ * Compara en normalizado (sin acentos, minúsculas) porque `terms` ya llega
+ * así. Los sinónimos con `isActive === false` se ignoran ACÁ TAMBIÉN, de
+ * forma defensiva — aunque quien llama (`tools.ts`) ya filtra
+ * `is_active = true` en la consulta, dos guardas independientes es el mismo
+ * criterio que el resto del repo (ver CLAUDE.md, los dos revokes de una
+ * función `security definer`). No duplica: el resultado sale de un `Set`.
+ */
+export function expandTerms(terms: string[], synonyms: SearchSynonym[]): string[] {
+  const expanded = new Set(terms);
+
+  for (const synonym of synonyms) {
+    if (synonym.isActive === false) continue;
+    if (!terms.includes(normalize(synonym.from))) continue;
+    expanded.add(normalize(synonym.to));
+  }
+
+  return [...expanded];
+}

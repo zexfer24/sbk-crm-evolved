@@ -15,6 +15,7 @@ import { createAdminClient } from "@/lib/supabase/admin";
 import { classifyIntent, type Intent } from "@/lib/ai/classify";
 import { currentAgentModelLabel, getAgentModel } from "@/lib/ai/model";
 import { OFF_TOPIC_REPLY, SYSTEM_PROMPT, buildInstructions } from "@/lib/ai/prompt";
+import { fetchTurnLessons, type TurnLessons } from "@/lib/ai/lessons";
 import {
   buildCatalogTool,
   buildEscalateTool,
@@ -1224,7 +1225,8 @@ async function runTurnPhases(
   entrega: TurnDelivery,
   lease: TurnLease,
   tiempos: TurnTiming,
-  businessHours: BusinessHours
+  businessHours: BusinessHours,
+  lessons: TurnLessons
 ): Promise<void> {
   const conversationId = target.conversationId;
 
@@ -1703,6 +1705,7 @@ async function runTurnPhases(
       missingCatalog,
       businessHours,
       customerName,
+      lessons,
     }),
     tools,
     stopWhen: isStepCount(MAX_STEPS),
@@ -1976,6 +1979,7 @@ export async function runAgentTurn(conversationId: string, options: { vencioEn?:
     { data: canRun, error: canRunError },
     { data: conversation },
     { data: settingsRow, error: settingsError },
+    lessons,
   ] = await Promise.all([
     // agent_can_run junta el interruptor global y el tope de gasto del día.
     // La decisión vive en la base para que sea la misma la pregunte quien la
@@ -2000,6 +2004,11 @@ export async function runAgentTurn(conversationId: string, options: { vencioEn?:
     // fila rota, sin permiso o sin fila cae al horario por defecto más abajo
     // — el turno nunca se cae por esto.
     supabase.from("agent_settings").select("business_hours").eq("id", true).maybeSingle(),
+    // "Lecciones de Seba" (T5, plan "Seba atiende el mostrador", 18/9/2026):
+    // cuarta consulta en paralelo, tampoco depende de las otras tres.
+    // `fetchTurnLessons` nunca lanza (ver su propio catch + log.warn), así
+    // que este Promise.all no gana ninguna rama de error nueva por su culpa.
+    fetchTurnLessons(supabase, conversationId),
   ]);
 
   // Tarea 5 (14/9/2026): un ERROR de la RPC (base caída, red cortada) no es
@@ -2216,7 +2225,7 @@ export async function runAgentTurn(conversationId: string, options: { vencioEn?:
     const arranque = Date.now();
 
     try {
-      await runTurnPhases(supabase, target, convo, entrega, lease, tiempos, businessHours);
+      await runTurnPhases(supabase, target, convo, entrega, lease, tiempos, businessHours, lessons);
     } catch (err) {
       if (!entrega.intentado) throw err;
 

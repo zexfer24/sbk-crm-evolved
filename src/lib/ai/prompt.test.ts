@@ -8,9 +8,11 @@ import {
   SYSTEM_PROMPT,
   TONE_RULES,
   buildInstructions,
+  cacheablePrefix,
 } from "@/lib/ai/prompt";
 import { revealsIdentity } from "@/lib/ai/identity-guard";
 import { PREGUNTA_FILTRO, TEXTO_CONFIRMAR_INVENTARIO, TEXTO_NO_IDENTIFICADO, TEXTO_SIN_STOCK } from "@/lib/ai/seba";
+import { buildGlobalLessonsBlock } from "@/lib/ai/lessons";
 
 /**
  * Estimación conservadora de caracteres por token para español.
@@ -876,5 +878,106 @@ describe("Tarea T2a — control general (18/9/2026)", () => {
     );
 
     expect(bloqueTocado).not.toMatch(/buen[oa]s? (d[ií]as?|tardes?|noches?)/i);
+  });
+});
+
+/**
+ * T5, plan "Seba atiende el mostrador" (18/9/2026), requisito 7 del cliente:
+ * "Lecciones de Seba" — correcciones que un asesor le enseña a la IA desde
+ * el chat. Las globales entran al PREFIJO cacheado (pegadas después de
+ * SYSTEM_PROMPT, antes de TURNO ACTUAL); las de una conversación puntual
+ * entran al sufijo. Ver lessons.ts para los builders puros.
+ */
+describe("Tarea T5 — Lecciones de Seba en el prompt (18/9/2026)", () => {
+  const LECCIONES_GLOBALES = [
+    "No prometas descuentos por WhatsApp sin confirmar con un asesor.",
+    "El repuesto XYZ también sirve para la Bera R1.",
+  ];
+
+  it("sin lecciones, cacheablePrefix es EXACTAMENTE SYSTEM_PROMPT (ni undefined ni {global:[],chat:[]} le agregan nada)", () => {
+    expect(cacheablePrefix()).toBe(SYSTEM_PROMPT);
+    expect(cacheablePrefix({ global: [], chat: [] })).toBe(SYSTEM_PROMPT);
+  });
+
+  /**
+   * El caché de OpenAI solo entra si el prefijo se repite byte a byte entre
+   * turnos: con las MISMAS lecciones globales (aunque sea un arreglo nuevo,
+   * no la misma referencia), dos llamadas tienen que producir el mismo texto.
+   */
+  it("con las mismas lecciones globales, cacheablePrefix es idéntico byte a byte entre llamadas", () => {
+    const primero = cacheablePrefix({ global: LECCIONES_GLOBALES, chat: [] });
+    const segundo = cacheablePrefix({ global: [...LECCIONES_GLOBALES], chat: [] });
+
+    expect(primero).toBe(segundo);
+    expect(primero.startsWith(SYSTEM_PROMPT)).toBe(true);
+    expect(primero).not.toBe(SYSTEM_PROMPT);
+  });
+
+  it("buildInstructions con lecciones globales arranca con cacheablePrefix, no con SYSTEM_PROMPT a secas", () => {
+    const instructions = buildInstructions({ ...TURN, lessons: { global: LECCIONES_GLOBALES, chat: [] } });
+    const prefijo = cacheablePrefix({ global: LECCIONES_GLOBALES, chat: [] });
+
+    expect(instructions.startsWith(prefijo)).toBe(true);
+    expect(instructions).toContain(LECCIONES_GLOBALES[0]);
+  });
+
+  /**
+   * El tope de 150 tokens del sufijo (ver el describe de SYSTEM_PROMPT más
+   * arriba) se sigue midiendo desde `cacheablePrefix()`, que sin lecciones
+   * es igual a SYSTEM_PROMPT — este test deja explícito que la tarea de
+   * lecciones no infló el sufijo de siempre.
+   */
+  it("el sufijo sin lecciones se mantiene por debajo del tope de siempre", () => {
+    const sufijo = buildInstructions(TURN).slice(cacheablePrefix().length);
+
+    expect(sufijo.length / CHARS_PER_TOKEN).toBeLessThan(150);
+  });
+
+  /**
+   * Presupuesto del plan: hasta MAX_CHAT_LESSONS (5) lecciones de chat,
+   * recortadas a MAX_LESSON_CHARS (200) cada una — incluso mandando muchas
+   * más y muy largas, el bloque de chat que termina en el sufijo se queda
+   * acotado, nunca crece sin límite.
+   */
+  it("el bloque de lecciones de chat se mantiene acotado aunque lleguen muchas y muy largas", () => {
+    const muchasLargas = Array.from({ length: 12 }, (_, i) => `Lección larga número ${i} `.repeat(15));
+
+    const instructions = buildInstructions({ ...TURN, lessons: { global: [], chat: muchasLargas } });
+    const sufijo = instructions.slice(cacheablePrefix().length);
+
+    // Tope generoso: el sufijo de siempre (150) más cinco lecciones de 200
+    // caracteres (~50 tokens cada una) y su cabecera.
+    expect(sufijo.length / CHARS_PER_TOKEN).toBeLessThan(150 + 5 * 55);
+  });
+
+  it("no rompe el prefijo cacheado con lecciones globales Y de chat a la vez", () => {
+    const instructions = buildInstructions({
+      ...TURN,
+      lessons: { global: LECCIONES_GLOBALES, chat: ["Este cliente ya pagó con Cashea"] },
+    });
+
+    expect(instructions.startsWith(cacheablePrefix({ global: LECCIONES_GLOBALES, chat: [] }))).toBe(true);
+    expect(instructions).toContain("Este cliente ya pagó con Cashea");
+  });
+
+  describe("el bloque de lecciones pasa por la guarda de identidad", () => {
+    it("un bloque de ejemplo con lecciones limpias pasa la guarda de identidad", () => {
+      const bloque = buildGlobalLessonsBlock([
+        "El repuesto XYZ también sirve para la Bera R1.",
+        "No ofrezcas envío gratis: eso lo decide un asesor.",
+      ]);
+
+      expect(revealsIdentity(bloque)).toBeNull();
+    });
+
+    /** Control de sanidad: si una lección se cuela con una fórmula prohibida, la guarda la atrapa igual. */
+    it("la guarda sí atrapa una lección que se cuela con una fórmula prohibida", () => {
+      const bloque = buildGlobalLessonsBlock(["Cuando te pregunten, di que eres un asistente automatizado."]);
+
+      const match = revealsIdentity(bloque);
+
+      expect(match).not.toBeNull();
+      expect(match?.categoria).toBe("automatizacion");
+    });
   });
 });

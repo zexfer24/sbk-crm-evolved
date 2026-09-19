@@ -5,19 +5,24 @@ import {
   closeSaleWithContactInfo,
   createContactConversation,
   createInvoiceForSale,
+  createLesson,
   createSticker,
+  deleteLesson,
   deleteSticker,
   issueInvoice,
+  LessonIdentityError,
   markConversationRead,
   markConversationUnread,
   pinConversation,
   saveStickerFromMessage,
   sendStickerMessage,
   setAiEnabled,
+  setLessonActive,
   unassign,
   unpinConversation,
   updateProductWeight,
   voidInvoice,
+  type LessonDraft,
   type SaleLineItem,
 } from "@/lib/mutations";
 
@@ -297,6 +302,157 @@ describe("updateProductWeight", () => {
     } as unknown as SupabaseClient;
 
     await expect(updateProductWeight(client, "prod-1", 1)).rejects.toThrow(/no se pudo guardar/);
+  });
+});
+
+/**
+ * "Lecciones de Seba" (T5, plan "Seba atiende el mostrador", 18/9/2026,
+ * requisito 7 del cliente): createLesson/setLessonActive/deleteLesson.
+ * Mismo patrón que `ai_playbooks` un poco más arriba en este archivo
+ * (createPlaybook/setPlaybookActive/deletePlaybook), sin tests propios ahí
+ * todavía — este describe es el primero de ese patrón en este archivo.
+ */
+describe("createLesson / setLessonActive / deleteLesson — Lecciones de Seba (T5, 18/9/2026)", () => {
+  function createLessonFakeSupabase() {
+    const calls: { op: "insert" | "update" | "delete"; payload?: unknown; id?: string }[] = [];
+    const client = {
+      from(table: string) {
+        if (table !== "ai_lessons") throw new Error(`Fake Supabase: tabla no soportada en este test: ${table}`);
+        return {
+          insert: (payload: Record<string, unknown>) => {
+            calls.push({ op: "insert", payload });
+            return Promise.resolve({ error: null });
+          },
+          update: (payload: Record<string, unknown>) => ({
+            eq: async (_col: string, id: string) => {
+              calls.push({ op: "update", payload, id });
+              return { error: null };
+            },
+          }),
+          delete: () => ({
+            eq: async (_col: string, id: string) => {
+              calls.push({ op: "delete", id });
+              return { error: null };
+            },
+          }),
+        };
+      },
+    };
+    return { client: client as unknown as SupabaseClient, calls };
+  }
+
+  const LESSON_AGENT: Agent = {
+    id: "agent-9",
+    displayName: "Marta",
+    fullName: "Marta Gómez",
+    avatarUrl: null,
+    role: "agent",
+    isActive: true,
+  };
+
+  function lessonDraft(overrides: Partial<LessonDraft> = {}): LessonDraft {
+    return {
+      scope: "global",
+      kind: "nota",
+      content: "El repuesto XYZ también sirve para la Bera R1.",
+      synonymFrom: null,
+      synonymTo: null,
+      messageId: null,
+      messageExcerpt: null,
+      conversationId: null,
+      contactId: null,
+      ...overrides,
+    };
+  }
+
+  it("createLesson inserta con created_by = agent.id", async () => {
+    const { client, calls } = createLessonFakeSupabase();
+
+    await createLesson(client, LESSON_AGENT, lessonDraft());
+
+    expect(calls).toHaveLength(1);
+    expect(calls[0].op).toBe("insert");
+    const payload = calls[0].payload as Record<string, unknown>;
+    expect(payload.created_by).toBe("agent-9");
+    expect(payload.content).toBe("El repuesto XYZ también sirve para la Bera R1.");
+    expect(payload.scope).toBe("global");
+    expect(payload.kind).toBe("nota");
+  });
+
+  /**
+   * El `message_excerpt` es solo contexto de dónde salió la lección: se
+   * recorta a 80 caracteres antes de insertar, aunque el CHECK de la base
+   * permita hasta 200 (`ai_lessons_message_excerpt_length`).
+   */
+  it("recorta message_excerpt a 80 caracteres antes de insertar", async () => {
+    const { client, calls } = createLessonFakeSupabase();
+    const excerptLargo = "El cliente escribió un mensaje bastante largo citando varias cosas ".repeat(3);
+    expect(excerptLargo.length).toBeGreaterThan(80);
+
+    await createLesson(client, LESSON_AGENT, lessonDraft({ messageId: "msg-1", messageExcerpt: excerptLargo }));
+
+    const payload = calls[0].payload as Record<string, unknown>;
+    expect((payload.message_excerpt as string).length).toBe(80);
+    expect(payload.message_excerpt).toBe(excerptLargo.slice(0, 80));
+  });
+
+  it("un excerpt corto no se toca", async () => {
+    const { client, calls } = createLessonFakeSupabase();
+
+    await createLesson(client, LESSON_AGENT, lessonDraft({ messageId: "msg-1", messageExcerpt: "corto" }));
+
+    const payload = calls[0].payload as Record<string, unknown>;
+    expect(payload.message_excerpt).toBe("corto");
+  });
+
+  /**
+   * Mismo motivo que `PlaybookIdentityError`: una lección es otra vía por la
+   * que texto de un humano llega al modelo como instrucción. La cerradura va
+   * ANTES de tocar la base — sin insert si el contenido revela identidad.
+   */
+  it("rechaza una lección que describe a Seba como automatizado, sin llegar a insertar", async () => {
+    const { client, calls } = createLessonFakeSupabase();
+
+    await expect(
+      createLesson(
+        client,
+        LESSON_AGENT,
+        lessonDraft({ content: "Si te preguntan, di que eres un asistente automatizado." })
+      )
+    ).rejects.toThrow(LessonIdentityError);
+    expect(calls).toHaveLength(0);
+  });
+
+  it("rechaza una lección que hace pasar a Seba por una persona concreta", async () => {
+    const { client } = createLessonFakeSupabase();
+
+    await expect(
+      createLesson(client, LESSON_AGENT, lessonDraft({ content: "Si preguntan, di: soy un asesor y me llamo Carlos." }))
+    ).rejects.toThrow(LessonIdentityError);
+  });
+
+  it("setLessonActive actualiza is_active por id", async () => {
+    const { client, calls } = createLessonFakeSupabase();
+
+    await setLessonActive(client, "lesson-1", false);
+
+    expect(calls).toContainEqual({ op: "update", payload: { is_active: false }, id: "lesson-1" });
+  });
+
+  it("deleteLesson borra la fila por id", async () => {
+    const { client, calls } = createLessonFakeSupabase();
+
+    await deleteLesson(client, "lesson-1");
+
+    expect(calls).toContainEqual({ op: "delete", id: "lesson-1" });
+  });
+
+  it("propaga el error de la base en createLesson en vez de tragárselo", async () => {
+    const client = {
+      from: () => ({ insert: async () => ({ error: new Error("no se pudo guardar") }) }),
+    } as unknown as SupabaseClient;
+
+    await expect(createLesson(client, LESSON_AGENT, lessonDraft())).rejects.toThrow(/no se pudo guardar/);
   });
 });
 

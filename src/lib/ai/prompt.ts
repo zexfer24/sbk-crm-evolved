@@ -3,6 +3,7 @@ import type { Intent } from "@/lib/ai/classify";
 import { AI_NAME, BUSINESS_NAME } from "@/lib/brand";
 import { DEFAULT_BUSINESS_HOURS, turnClockLine, type BusinessHours } from "@/lib/business-hours";
 import { PREGUNTA_FILTRO, TEXTO_CONFIRMAR_INVENTARIO, TEXTO_NO_IDENTIFICADO, TEXTO_SIN_STOCK } from "@/lib/ai/seba";
+import { buildChatLessonsLine, buildGlobalLessonsBlock, type TurnLessons } from "@/lib/ai/lessons";
 
 // ---------------------------------------------------------------------------
 // Identidad y reglas de comportamiento del agente de la tienda (el nombre del
@@ -358,6 +359,32 @@ export interface TurnContext {
    * prefijo cacheado.
    */
   customerName?: string | null;
+  /**
+   * "Lecciones de Seba" (T5, plan "Seba atiende el mostrador", 18/9/2026):
+   * correcciones que los asesores le enseñaron a la IA desde el chat.
+   * `global` entra al PREFIJO cacheado (ver `cacheablePrefix`, más abajo);
+   * `chat` —las que solo aplican a esta conversación— entra al sufijo.
+   * `undefined` (turnos viejos, tests que no lo pasan) se trata como sin
+   * lecciones: el prefijo sigue siendo exactamente SYSTEM_PROMPT.
+   */
+  lessons?: TurnLessons;
+}
+
+/**
+ * El prefijo que de verdad se cachea: SYSTEM_PROMPT más, si las hay, el
+ * bloque de lecciones globales del equipo. Exportado aparte para que
+ * `prompt.test.ts` pueda medir el sufijo
+ * (`buildInstructions(...).slice(cacheablePrefix(lessons).length)`) sin
+ * reconstruir a mano cómo se pega el bloque.
+ *
+ * Sin lecciones globales, `buildGlobalLessonsBlock` devuelve "" y esta
+ * función devuelve SYSTEM_PROMPT tal cual —ni un carácter de más— para que
+ * los turnos sin ninguna lección cargada (todos, hasta que alguien enseñe la
+ * primera) sigan cacheando exactamente como antes de esta tarea.
+ */
+export function cacheablePrefix(lessons?: TurnLessons): string {
+  const bloqueGlobal = buildGlobalLessonsBlock(lessons?.global ?? []);
+  return bloqueGlobal ? `${SYSTEM_PROMPT}\n\n${bloqueGlobal}` : SYSTEM_PROMPT;
 }
 
 /**
@@ -395,6 +422,7 @@ export function buildInstructions({
   businessHours = DEFAULT_BUSINESS_HOURS,
   now,
   customerName,
+  lessons,
 }: TurnContext): string {
   const seccion = CASE_SECTION[intent] ?? CASE_SECTION.otro;
   const instante = now ?? new Date();
@@ -421,9 +449,15 @@ export function buildInstructions({
     ? ` El cliente se llama ${customerName}: úsalo con naturalidad, en el saludo o cuando le respondas algo importante, no en cada mensaje. Si no parece un nombre de persona, no lo uses.`
     : "";
 
-  return `${SYSTEM_PROMPT}
+  // Lecciones de esta conversación (T5, 18/9/2026): van al final del todo,
+  // después de todo lo demás del sufijo — son la corrección más específica
+  // que existe (más que el caso, más que el nombre), así que quedan pegadas
+  // justo antes de que el modelo redacte.
+  const leccionesDeChat = buildChatLessonsLine(lessons?.chat ?? []);
+
+  return `${cacheablePrefix(lessons)}
 
 TURNO ACTUAL
 ${turnClockLine(instante, businessHours)}
-Caso identificado: ${intent}. Aplica el protocolo ${seccion}.${greeting}${catalog}${nombre}`;
+Caso identificado: ${intent}. Aplica el protocolo ${seccion}.${greeting}${catalog}${nombre}${leccionesDeChat}`;
 }

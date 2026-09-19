@@ -1,6 +1,7 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
 import type {
   Agent,
+  AiLesson,
   CedulaType,
   Invoice,
   MessageType,
@@ -599,6 +600,84 @@ export async function deletePlaybook(supabase: SupabaseClient, id: string) {
 /** Apagar un escenario lo saca del reconocimiento sin perder el texto. */
 export async function setPlaybookActive(supabase: SupabaseClient, id: string, isActive: boolean) {
   const { error } = await supabase.from("ai_playbooks").update({ is_active: isActive }).eq("id", id);
+  if (error) throw error;
+}
+
+// ---------------------------------------------------------------------------
+// "Lecciones de Seba" (T5, plan "Seba atiende el mostrador", 18/9/2026,
+// requisito 7 del cliente): correcciones y notas cortas que un asesor le
+// escribe a la IA desde el chat — "Enseñar a Seba…" — sin tocar código. Ver
+// `public.ai_lessons` (supabase/migrations/20260917020000_ai_lessons.sql).
+// ---------------------------------------------------------------------------
+
+/** Tope del extracto del mensaje citado: es solo contexto para la lista del panel, no hace falta el texto completo. */
+const LESSON_EXCERPT_MAX_CHARS = 80;
+
+/** Campos que llegan del formulario/menú "Enseñar a Seba…"; `id`, `isActive`, `createdBy`, `authorName` y las fechas los pone la base. */
+export type LessonDraft = Pick<
+  AiLesson,
+  "scope" | "kind" | "content" | "synonymFrom" | "synonymTo" | "messageId" | "messageExcerpt" | "conversationId" | "contactId"
+>;
+
+/**
+ * Mismo patrón que `PlaybookIdentityError`: una lección es OTRA vía por la
+ * que texto escrito por un humano llega al modelo (como instrucción, no
+ * como respuesta directa al cliente, pero igual de capaz de colarle a Seba
+ * una autodescripción prohibida si el asesor la escribe sin querer). La
+ * cerradura va en la puerta de entrada, antes de tocar la base.
+ */
+export class LessonIdentityError extends Error {
+  readonly match: IdentityMatch;
+  name = "LessonIdentityError";
+
+  constructor(match: IdentityMatch) {
+    super(
+      match.categoria === "automatizacion"
+        ? `La lección describe a Seba como automatizado: «${match.fragmento}»`
+        : `La lección describe a Seba como una persona concreta: «${match.fragmento}»`
+    );
+    this.match = match;
+  }
+}
+
+function assertLessonIdentity(draft: LessonDraft) {
+  const match = revealsIdentity(draft.content);
+  if (match) throw new LessonIdentityError(match);
+}
+
+function lessonRow(draft: LessonDraft, createdBy: string) {
+  return {
+    scope: draft.scope,
+    kind: draft.kind,
+    content: draft.content,
+    synonym_from: draft.synonymFrom,
+    synonym_to: draft.synonymTo,
+    message_id: draft.messageId,
+    // Recortado acá y no solo confiado al CHECK de la base
+    // (`ai_lessons_message_excerpt_length`, tope 200): el extracto es solo
+    // contexto de dónde salió la lección, no el contenido en sí — no hace
+    // falta guardar más de lo que la lista del panel va a mostrar.
+    message_excerpt: draft.messageExcerpt ? draft.messageExcerpt.slice(0, LESSON_EXCERPT_MAX_CHARS) : draft.messageExcerpt,
+    conversation_id: draft.conversationId,
+    contact_id: draft.contactId,
+    created_by: createdBy,
+  };
+}
+
+export async function createLesson(supabase: SupabaseClient, agent: Agent, draft: LessonDraft) {
+  assertLessonIdentity(draft);
+  const { error } = await supabase.from("ai_lessons").insert(lessonRow(draft, agent.id));
+  if (error) throw error;
+}
+
+/** `false` la saca del prompt del turno sin perder el texto ni el historial — mismo criterio que `setPlaybookActive`. */
+export async function setLessonActive(supabase: SupabaseClient, id: string, isActive: boolean) {
+  const { error } = await supabase.from("ai_lessons").update({ is_active: isActive }).eq("id", id);
+  if (error) throw error;
+}
+
+export async function deleteLesson(supabase: SupabaseClient, id: string) {
+  const { error } = await supabase.from("ai_lessons").delete().eq("id", id);
   if (error) throw error;
 }
 

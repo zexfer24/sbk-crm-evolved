@@ -289,6 +289,91 @@ export type Database = {
         }
         Relationships: []
       }
+      // Tipos a mano (18/9/2026, plan "Seba atiende el mostrador", T5): esta
+      // tabla nace en la migración 20260917020000_ai_lessons.sql. Se copian
+      // las columnas y los CHECK de ahí a mano, mismo criterio que
+      // knowledge_entries un poco más abajo -- el generador de tipos no
+      // corre en este repo.
+      ai_lessons: {
+        Row: {
+          contact_id: string | null
+          content: string
+          conversation_id: string | null
+          created_at: string
+          created_by: string | null
+          id: string
+          is_active: boolean
+          kind: string
+          message_excerpt: string | null
+          message_id: string | null
+          scope: string
+          synonym_from: string | null
+          synonym_to: string | null
+          updated_at: string
+        }
+        Insert: {
+          contact_id?: string | null
+          content: string
+          conversation_id?: string | null
+          created_at?: string
+          created_by?: string | null
+          id?: string
+          is_active?: boolean
+          kind?: string
+          message_excerpt?: string | null
+          message_id?: string | null
+          scope: string
+          synonym_from?: string | null
+          synonym_to?: string | null
+          updated_at?: string
+        }
+        Update: {
+          contact_id?: string | null
+          content?: string
+          conversation_id?: string | null
+          created_at?: string
+          created_by?: string | null
+          id?: string
+          is_active?: boolean
+          kind?: string
+          message_excerpt?: string | null
+          message_id?: string | null
+          scope?: string
+          synonym_from?: string | null
+          synonym_to?: string | null
+          updated_at?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "ai_lessons_contact_id_fkey"
+            columns: ["contact_id"]
+            isOneToOne: false
+            referencedRelation: "contacts"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "ai_lessons_conversation_id_fkey"
+            columns: ["conversation_id"]
+            isOneToOne: false
+            referencedRelation: "conversations"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "ai_lessons_created_by_fkey"
+            columns: ["created_by"]
+            isOneToOne: false
+            referencedRelation: "agents"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "ai_lessons_message_id_fkey"
+            columns: ["message_id"]
+            isOneToOne: false
+            referencedRelation: "messages"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       ai_playbook_tags: {
         Row: {
           created_at: string

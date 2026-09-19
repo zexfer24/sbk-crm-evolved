@@ -107,6 +107,16 @@ interface FakeState {
    * fábrica: no hace nada salvo que un test lo ponga.
    */
   onPresentationClaimed: (() => void) | null;
+  /**
+   * T5, plan "Seba atiende el mostrador" (18/9/2026): lo que devuelven las
+   * dos consultas de `fetchTurnLessons` (lessons.ts) — vacías de fábrica,
+   * igual que el resto de esta suite antes de esta tarea, para que ningún
+   * test viejo tenga que enterarse de que ahora existe una cuarta consulta.
+   */
+  globalLessons: string[];
+  chatLessons: string[];
+  /** Si viene con mensaje, las dos consultas de `ai_lessons` fallan (fetchTurnLessons nunca lanza: se cae a vacío + log.warn). */
+  lessonsError: { message: string } | null;
 }
 
 const state: FakeState = {
@@ -134,6 +144,9 @@ const state: FakeState = {
   presentationClaimWins: true,
   presentationClaimError: null,
   onPresentationClaimed: null,
+  globalLessons: [],
+  chatLessons: [],
+  lessonsError: null,
 };
 const conversationUpdates: Record<string, unknown>[] = [];
 /** Tarea 3 (14/9/2026): columnas pedidas en cada `select()` sobre `conversations`, para probar que trae display_name/profile_name. */
@@ -389,6 +402,34 @@ function createFakeSupabase() {
               }),
             }),
           }),
+        };
+      }
+
+      // T5, plan "Seba atiende el mostrador" (18/9/2026): `fetchTurnLessons`
+      // (lessons.ts) hace DOS consultas contra esta misma tabla, distinguidas
+      // por el filtro `scope` — el fake acumula los `.eq()` que le lleguen
+      // (en cualquier orden, cualquier cantidad) y recién resuelve en
+      // `.order().limit()`, así no queda pegado a la forma exacta de la
+      // cadena real.
+      if (table === "ai_lessons") {
+        return {
+          select: () => {
+            const filters: Record<string, unknown> = {};
+            const builder = {
+              eq: (col: string, val: unknown) => {
+                filters[col] = val;
+                return builder;
+              },
+              order: () => ({
+                limit: async () => {
+                  if (state.lessonsError) return { data: null, error: state.lessonsError };
+                  const rows = filters.scope === "conversacion" ? state.chatLessons : state.globalLessons;
+                  return { data: rows.map((content) => ({ content })), error: null };
+                },
+              }),
+            };
+            return builder;
+          },
         };
       }
 
@@ -662,6 +703,9 @@ beforeEach(() => {
   state.presentationClaimWins = true;
   state.presentationClaimError = null;
   state.onPresentationClaimed = null;
+  state.globalLessons = [];
+  state.chatLessons = [];
+  state.lessonsError = null;
   withinFreeformWindowOverride.fn = null;
   sendTypingIndicatorMock.mockClear();
   conversationUpdates.length = 0;
@@ -4068,5 +4112,61 @@ describe("runAgentTurn — guarda de identidad", () => {
     const summary = agentTurnInserts[0].summary as string;
     expect(summary).toContain("Motivo: queja.");
     expect(summary).not.toContain("undefined");
+  });
+});
+
+/**
+ * T5, plan "Seba atiende el mostrador" (18/9/2026), requisito 7 del cliente:
+ * "Lecciones de Seba" leídas en `fetchTurnLessons` (lessons.ts) y pasadas a
+ * `buildInstructions` (prompt.ts). El módulo real de `prompt.ts` NO está
+ * mockeado en este archivo, así que `agentOptions[n].instructions` trae el
+ * texto de verdad — estas pruebas verifican que el turno de verdad lee la
+ * cuarta consulta y se la entrega al modelo, no que `prompt.ts` sepa
+ * pegarlas (eso ya lo cubre prompt.test.ts).
+ */
+describe("Lecciones de Seba llegan al prompt del turno (T5, 18/9/2026)", () => {
+  it("sin lecciones cargadas (el caso de fábrica), el prefijo sigue siendo exactamente SYSTEM_PROMPT", async () => {
+    await runAgentTurn("conv-1");
+
+    expect(agentOptions).toHaveLength(1);
+    expect(agentOptions[0].instructions.startsWith(SYSTEM_PROMPT)).toBe(true);
+  });
+
+  it("con lecciones globales, buildInstructions las recibe en el bloque cacheado", async () => {
+    state.globalLessons = ["Nunca prometas un descuento por WhatsApp sin confirmar con un asesor."];
+
+    await runAgentTurn("conv-1");
+
+    expect(agentOptions[0].instructions).toContain("Nunca prometas un descuento por WhatsApp");
+    expect(agentOptions[0].instructions).toContain("LECCIONES DEL EQUIPO");
+  });
+
+  it("con lecciones de esta conversación, buildInstructions las recibe en el sufijo", async () => {
+    state.chatLessons = ["Este cliente ya pagó con Cashea, no le pidas comprobante otra vez."];
+
+    await runAgentTurn("conv-1");
+
+    const sufijo = agentOptions[0].instructions.slice(SYSTEM_PROMPT.length);
+    expect(sufijo).toContain("Este cliente ya pagó con Cashea");
+  });
+
+  /**
+   * `fetchTurnLessons` nunca lanza (ver lessons.test.ts): un error de la
+   * base se traduce en lecciones vacías + `log.warn`, nunca en un turno
+   * caído — el cliente sigue esperando su respuesta, con o sin las
+   * correcciones del equipo.
+   */
+  it("un error leyendo ai_lessons no tumba el turno: sigue sin lecciones y avisa por log", async () => {
+    const warn = vi.spyOn(log, "warn");
+    state.lessonsError = { message: "conexión perdida" };
+
+    await runAgentTurn("conv-1");
+
+    expect(agentOptions).toHaveLength(1);
+    expect(agentOptions[0].instructions.startsWith(SYSTEM_PROMPT)).toBe(true);
+    expect(warn).toHaveBeenCalledWith(
+      "turno_lecciones_no_legibles",
+      expect.objectContaining({ conversationId: "conv-1", detail: "conexión perdida" })
+    );
   });
 });

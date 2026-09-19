@@ -5,7 +5,7 @@ import type { SupabaseClient } from "@supabase/supabase-js";
 import type { Database } from "@/lib/supabase/database.types";
 import { BUSINESS_NAME } from "@/lib/brand";
 import { getBcvRate } from "@/lib/ai/bcv";
-import { catalogFilter, rankByTerms, searchTerms } from "@/lib/ai/catalog-search";
+import { catalogFilter, expandTerms, rankByTerms, searchTerms, type SearchSynonym } from "@/lib/ai/catalog-search";
 import { formatQuote } from "@/lib/ai/precio";
 import { RECLAMO_CATEGORIES, escalateConversation, type EscalationMotivo } from "@/lib/ai/escalate";
 import { PREGUNTA_FILTRO, TEXTO_CONFIRMAR_INVENTARIO, TEXTO_NO_IDENTIFICADO, TEXTO_SIN_STOCK } from "@/lib/ai/seba";
@@ -34,6 +34,15 @@ const MAX_CATALOG_RESULTS = 10;
  * que el recorte no se lleve por delante justo el que el cliente buscaba.
  */
 const CATALOG_FETCH_LIMIT = MAX_CATALOG_RESULTS * 3 + 1;
+
+/**
+ * Tope de sinónimos activos (`ai_lessons.kind = 'sinonimo'`) que se leen en
+ * cada búsqueda (T5c, 18/9/2026, ver catalog-search.ts). 200 es
+ * generosamente más de lo que un equipo de asesores va a acumular en la
+ * práctica; el límite existe para que la consulta nunca sea ilimitada, no
+ * porque se espere acercarse a él.
+ */
+const MAX_SYNONYM_LESSONS = 200;
 
 /**
  * Se le dice en palabras qué hacer con el recorte: si no, el modelo enumera
@@ -194,6 +203,29 @@ export function buildCatalogTool({ supabase, conversationId }: ToolDeps, catalog
         return { results: [], instruccionParaTuRespuesta: NO_IDENTIFICADO_INSTRUCTION };
       }
 
+      // Sinónimos de búsqueda (T5c, "Seba atiende el mostrador", 18/9/2026):
+      // lo que un asesor le enseñó a Seba desde "Lecciones de Seba" —jerga
+      // local que no calza con el nombre real del catálogo. Se leen ANTES de
+      // armar el filtro porque el término expandido tiene que entrar en el
+      // MISMO `.or()` que la búsqueda real, no en una segunda consulta. Un
+      // error acá no frena la búsqueda: se sigue con los términos tal cual
+      // llegaron, ni mejor ni peor que antes de esta tarea.
+      const { data: synonymRows } = await supabase
+        .from("ai_lessons")
+        .select("synonym_from, synonym_to")
+        .eq("kind", "sinonimo")
+        .eq("is_active", true)
+        .limit(MAX_SYNONYM_LESSONS);
+
+      const synonyms: SearchSynonym[] = (synonymRows ?? [])
+        .filter(
+          (row): row is { synonym_from: string; synonym_to: string } =>
+            typeof row.synonym_from === "string" && typeof row.synonym_to === "string"
+        )
+        .map((row) => ({ from: row.synonym_from, to: row.synonym_to }));
+
+      const expandedTerms = expandTerms(terms, synonyms);
+
       // `query` lo redacta el modelo a partir de lo que escribe el cliente:
       // es entrada no confiable y el filtro `.or()` es un mini-lenguaje, no
       // una cadena inerte. Sin entrecomillar, una coma en el texto agrega
@@ -204,7 +236,7 @@ export function buildCatalogTool({ supabase, conversationId }: ToolDeps, catalog
           "id, name, brand, price, currency, stock_quantity, updated_at, search_text, product_compatibility(moto_brand, moto_model)"
         )
         .eq("is_active", true)
-        .or(catalogFilter(terms))
+        .or(catalogFilter(expandedTerms))
         .limit(CATALOG_FETCH_LIMIT);
 
       if (error) {
@@ -225,7 +257,7 @@ export function buildCatalogTool({ supabase, conversationId }: ToolDeps, catalog
         };
       }
 
-      const ranked = rankByTerms(products ?? [], terms);
+      const ranked = rankByTerms(products ?? [], expandedTerms);
       const hayMas = ranked.length > MAX_CATALOG_RESULTS;
 
       let filtered = ranked.slice(0, MAX_CATALOG_RESULTS);

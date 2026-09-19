@@ -16,6 +16,7 @@ import type {
   AgentSuggestion,
   AgentTool,
   AgentTurn,
+  AiLesson,
   BoardConversation,
   Contact,
   ContactName,
@@ -2210,6 +2211,63 @@ export async function fetchKnowledgeEntries(supabase: SupabaseClient): Promise<K
     content: row.content,
     sourceFilename: row.source_filename,
     isActive: row.is_active,
+    updatedAt: row.updated_at,
+  }));
+}
+
+interface RawAiLesson {
+  id: string;
+  scope: string;
+  kind: string;
+  content: string;
+  synonym_from: string | null;
+  synonym_to: string | null;
+  message_id: string | null;
+  message_excerpt: string | null;
+  conversation_id: string | null;
+  contact_id: string | null;
+  is_active: boolean;
+  created_by: string | null;
+  created_at: string;
+  updated_at: string;
+  author: { display_name: string } | null;
+}
+
+/**
+ * "Lecciones de Seba" (T5, plan "Seba atiende el mostrador", 18/9/2026,
+ * requisito 7 del cliente). Todas, activas e inactivas: el panel de Control
+ * IA administra ambas (mismo criterio que `fetchPlaybooks`/
+ * `fetchKnowledgeEntries`). El turno de la IA NO usa esta función — lee
+ * directo con `fetchTurnLessons` (`lib/ai/lessons.ts`), que solo trae
+ * `content` de las activas y nunca el nombre del autor.
+ */
+export async function fetchLessons(supabase: SupabaseClient): Promise<AiLesson[]> {
+  const { data, error } = await supabase
+    .from("ai_lessons")
+    .select(
+      "id, scope, kind, content, synonym_from, synonym_to, message_id, message_excerpt, conversation_id, contact_id, is_active, created_by, created_at, updated_at, author:agents(display_name)"
+    )
+    .order("created_at", { ascending: false });
+
+  if (error) throw error;
+  // Mismo doble paso por `unknown` que `fetchPlaybooks`/`fetchKnowledgeEntries`
+  // de acá arriba: PostgREST devuelve el embebido `author` como objeto, pero
+  // el tipo generado a mano infiere un arreglo para la relación por FK.
+  return (data as unknown as RawAiLesson[]).map((row) => ({
+    id: row.id,
+    scope: row.scope as AiLesson["scope"],
+    kind: row.kind as AiLesson["kind"],
+    content: row.content,
+    synonymFrom: row.synonym_from,
+    synonymTo: row.synonym_to,
+    messageId: row.message_id,
+    messageExcerpt: row.message_excerpt,
+    conversationId: row.conversation_id,
+    contactId: row.contact_id,
+    isActive: row.is_active,
+    createdBy: row.created_by,
+    authorName: row.author?.display_name ?? "—",
+    createdAt: row.created_at,
     updatedAt: row.updated_at,
   }));
 }

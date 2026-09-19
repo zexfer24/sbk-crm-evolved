@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { catalogFilter, normalize, rankByTerms, searchTerms } from "@/lib/ai/catalog-search";
+import { catalogFilter, expandTerms, normalize, rankByTerms, searchTerms, type SearchSynonym } from "@/lib/ai/catalog-search";
 
 /**
  * Estos dos casos vienen de correr el agente contra el catálogo real, no de
@@ -75,5 +75,47 @@ describe("rankByTerms", () => {
 describe("normalize", () => {
   it("deja el texto en minúsculas y sin diacríticos", () => {
     expect(normalize("Bujía CR7HSA Ñ")).toBe("bujia cr7hsa n");
+  });
+});
+
+/**
+ * T5c, plan "Seba atiende el mostrador" (18/9/2026, requisito 7, decisión
+ * P3): sinónimos de búsqueda que un asesor le enseña a Seba ("pastilla"
+ * también busca "pastillas de freno"), sin tocar código.
+ */
+describe("expandTerms", () => {
+  it("expande un término de jerga con el nombre real del catálogo", () => {
+    const sinonimos: SearchSynonym[] = [{ from: "pastilla", to: "pastillas de freno" }];
+
+    expect(expandTerms(["pastilla"], sinonimos)).toEqual(["pastilla", "pastillas de freno"]);
+  });
+
+  it("no toca los términos que no calzan ningún sinónimo", () => {
+    const sinonimos: SearchSynonym[] = [{ from: "pastilla", to: "pastillas de freno" }];
+
+    expect(expandTerms(["bujia", "ngk"], sinonimos)).toEqual(["bujia", "ngk"]);
+  });
+
+  it("no duplica cuando el término expandido ya estaba entre los originales", () => {
+    const sinonimos: SearchSynonym[] = [{ from: "pastilla", to: "pastilla" }];
+
+    expect(expandTerms(["pastilla"], sinonimos)).toEqual(["pastilla"]);
+  });
+
+  /** Un sinónimo desactivado no expande nada, aunque calce — defensa aparte de que tools.ts ya filtre is_active en la consulta. */
+  it("ignora los sinónimos inactivos", () => {
+    const sinonimos: SearchSynonym[] = [{ from: "pastilla", to: "pastillas de freno", isActive: false }];
+
+    expect(expandTerms(["pastilla"], sinonimos)).toEqual(["pastilla"]);
+  });
+
+  it("compara sin acentos y en minúsculas, igual que searchTerms", () => {
+    const sinonimos: SearchSynonym[] = [{ from: "Pastilla", to: "Pastillas De Freno" }];
+
+    expect(expandTerms(["pastilla"], sinonimos)).toEqual(["pastilla", "pastillas de freno"]);
+  });
+
+  it("sin sinónimos, devuelve los términos tal cual", () => {
+    expect(expandTerms(["bujia", "ngk"], [])).toEqual(["bujia", "ngk"]);
   });
 });
