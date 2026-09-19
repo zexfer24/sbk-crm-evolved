@@ -85,6 +85,19 @@
 -- ============================================================================
 set local lock_timeout = '5s';
 
+-- Guarda contra el no-op silencioso de `set local` -- mismo motivo y misma
+-- verificación que 20260916010000 (hallazgo 10, revisión `/code-review
+-- high` del 19/9/2026): sin `psql -1` esto corre con `lock_timeout = 0`
+-- sin que `ON_ERROR_STOP` lo note (un warning, no un error), así que falla
+-- cerrado acá. `PGOPTIONS="-c lock_timeout=5s"` sin `-1` también pasa: hay
+-- un tope real, no es el no-op.
+do $$
+begin
+  if current_setting('lock_timeout') in ('0', '0ms') then
+    raise exception 'Esta migración se aplica dentro de una transacción (psql -1 -v ON_ERROR_STOP=1): sin ella, set local lock_timeout es un no-op y el DDL correría sin límite de espera.';
+  end if;
+end $$;
+
 -- ---------------------------------------------------------------------------
 -- 1. Backfill de `welcome_sent_at` (hallazgo 4). Mismo criterio que
 --    `has_reply`: un chat que alguna vez recibió una respuesta real (IA,
@@ -398,3 +411,9 @@ begin
 
   raise notice '20260917010000: autoverificación del CHECK ampliado, el trigger de silencio y sus permisos, correcta.';
 end $$;
+
+-- Sin esto PostgREST sigue sirviendo el esquema cacheado y el CHECK/trigger
+-- nuevos dan 400 hasta que alguien lo recargue a mano -- revisión "Seba sale
+-- sin pisar a nadie" (19/9/2026, tarea T5, hallazgo M1: ninguna de las cinco
+-- migraciones de esta corrida lo traía).
+notify pgrst, 'reload schema';

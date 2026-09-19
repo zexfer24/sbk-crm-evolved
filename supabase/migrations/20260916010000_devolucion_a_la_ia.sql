@@ -86,6 +86,40 @@
 set local lock_timeout = '5s';
 
 -- ---------------------------------------------------------------------------
+-- 0b. Guarda contra el no-op silencioso de arriba (hallazgo 10, revisión
+--     `/code-review high` del 19/9/2026, corrección sobre T5 de "Seba sale
+--     sin pisar a nadie"): `set local` fuera de una transacción no lanza
+--     ningún error, solo un WARNING ("SET LOCAL can only be used in
+--     transaction blocks") -- `ON_ERROR_STOP` no frena con warnings, así
+--     que si alguien aplica este archivo sin `psql -1` el DDL de la
+--     sección 2 en adelante corre igual, con `lock_timeout = 0` (sin
+--     tope): el mismo ACCESS EXCLUSIVE prolongado que el bloque de arriba
+--     existe para evitar. Mejor fallar cerrado acá que confiar en que
+--     nadie se salte `-1`. La comparación contra `'0'`/`'0ms'` distingue
+--     el no-op de un `lock_timeout` real heredado de la SESIÓN -- p. ej.
+--     `PGOPTIONS="-c lock_timeout=5s"`, que docs/PRODUCCION.md ya
+--     recomienda junto con `-1` -- ahí sí hay un tope activo y esta guarda
+--     no debe disparar. Verificado a mano contra la base local
+--     (`supabase_db_Liminal_CRM`, Postgres 17.6.1.167): dentro de
+--     `begin … rollback` pasa (`current_setting('lock_timeout')` da `5s`);
+--     en autocommit sin `-1` lanza y `psql -v ON_ERROR_STOP=1` sale con
+--     código ≠ 0; en autocommit con `PGOPTIONS="-c lock_timeout=5s"` pasa
+--     igual que dentro de la transacción. El CI
+--     (`.github/workflows/ci.yml`, job `migraciones`, `supabase db
+--     start`) y `supabase db push` aplican cada archivo de migración
+--     dentro de su propio pipeline/transacción -- no se encontró ningún
+--     `\i` de estas cinco migraciones fuera de un `begin` en
+--     `supabase/tests/` ni en `scripts/` -- así que esta guarda no
+--     debería disparar nunca ahí.
+-- ---------------------------------------------------------------------------
+do $$
+begin
+  if current_setting('lock_timeout') in ('0', '0ms') then
+    raise exception 'Esta migración se aplica dentro de una transacción (psql -1 -v ON_ERROR_STOP=1): sin ella, set local lock_timeout es un no-op y el DDL correría sin límite de espera.';
+  end if;
+end $$;
+
+-- ---------------------------------------------------------------------------
 -- 1. ai_resume_cutoff_at -- el sello. Nace null: ninguna conversación
 --    existente "acaba de ser devuelta", así que no hay nada que sellar con
 --    un backfill.
@@ -463,3 +497,9 @@ begin
 
   raise notice '20260916010000: autoverificación del sello de devolución, la columna generada, los dos triggers, el CHECK ampliado y los permisos, correcta.';
 end $$;
+
+-- Sin esto PostgREST sigue sirviendo el esquema cacheado y la columna/CHECK
+-- nuevos dan 400 hasta que alguien lo recargue a mano -- revisión "Seba sale
+-- sin pisar a nadie" (19/9/2026, tarea T5, hallazgo M1: ninguna de las cinco
+-- migraciones de esta corrida lo traía).
+notify pgrst, 'reload schema';

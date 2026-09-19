@@ -20,7 +20,32 @@
 -- mostrador a veces cobra junto lo que el CRM registró como dos
 -- conversaciones separadas), y un rechazo por duplicado en el momento de
 -- cerrar confundiría al asesor más de lo que protegería.
+--
+-- ESTA MIGRACIÓN TIENE QUE APLICARSE DENTRO DE UNA SOLA TRANSACCIÓN --
+-- `psql -1 -v ON_ERROR_STOP=1` -- mismo motivo que 20260916010000/
+-- 20260917010000/20260917020000/20260918010000 (revisión "Seba sale sin
+-- pisar a nadie", 19/9/2026, tarea T5): `set local lock_timeout` fuera de
+-- una transacción es un NO-OP silencioso -- en autocommit cada sentencia
+-- corre en su propia transacción implícita y el tope de acá abajo quedaría
+-- en 0 (sin tope) para el `alter table ... add column`/`add constraint`
+-- sobre `orders`, tabla que también está en el camino de cierre de venta.
+-- En la inspección previa al despliegue (19/9/2026) se midió un INSERT del
+-- webhook encolado 6,9 s detrás del lock de una de estas cinco migraciones.
 -- ============================================================================
+set local lock_timeout = '5s';
+
+-- Guarda contra el no-op silencioso de `set local` -- mismo motivo y misma
+-- verificación que 20260916010000 (hallazgo 10, revisión `/code-review
+-- high` del 19/9/2026): sin `psql -1` esto corre con `lock_timeout = 0`
+-- sin que `ON_ERROR_STOP` lo note (un warning, no un error), así que falla
+-- cerrado acá. `PGOPTIONS="-c lock_timeout=5s"` sin `-1` también pasa: hay
+-- un tope real, no es el no-op.
+do $$
+begin
+  if current_setting('lock_timeout') in ('0', '0ms') then
+    raise exception 'Esta migración se aplica dentro de una transacción (psql -1 -v ON_ERROR_STOP=1): sin ella, set local lock_timeout es un no-op y el DDL correría sin límite de espera.';
+  end if;
+end $$;
 
 alter table public.orders
   add column saint_invoice_number text;
@@ -82,3 +107,8 @@ begin
   raise notice '20260918020000: autoverificación de orders.saint_invoice_number (columna nullable + CHECK) correcta.';
 end
 $$;
+
+-- Sin esto PostgREST sigue sirviendo el esquema cacheado y la columna nueva
+-- da 400 hasta que alguien lo recargue a mano -- revisión "Seba sale sin
+-- pisar a nadie" (19/9/2026, tarea T5, hallazgo M1).
+notify pgrst, 'reload schema';
