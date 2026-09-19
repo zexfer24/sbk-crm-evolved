@@ -3,7 +3,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { ArrowLeft, Lock, Megaphone, Unlock, UserPlus, UserMinus } from "lucide-react";
 import { toast } from "@heroui/react";
-import type { Agent, Conversation, Message, QuickReply, WhatsappTemplate } from "@/lib/types";
+import type { Agent, CatalogLink, Conversation, Message, QuickReply, WhatsappTemplate } from "@/lib/types";
 import type { OutboxItem } from "@/lib/outbox";
 import { createClient } from "@/lib/supabase/client";
 import { contactName, initials } from "@/lib/dashboard";
@@ -42,6 +42,13 @@ interface ChatPanelProps {
   messages: Message[];
   templates: WhatsappTemplate[];
   quickReplies: QuickReply[];
+  /**
+   * Los catálogos ACTIVOS (T4b, 18/9/2026): el composer los necesita para
+   * resolver `{{catalogo:<key>}}`/`{{catalogos}}` al usar un mensaje rápido.
+   * Opcional con default `[]`, mismo criterio que el resto de siembras
+   * nuevas de este archivo.
+   */
+  catalogLinks?: CatalogLink[];
   currentAgent: Agent;
   /** Queda historial más viejo que el que se está mostrando. */
   hasOlderMessages?: boolean;
@@ -77,6 +84,7 @@ export function ChatPanel({
   messages,
   templates,
   quickReplies,
+  catalogLinks = [],
   currentAgent,
   hasOlderMessages = false,
   loadingOlderMessages = false,
@@ -375,6 +383,7 @@ export function ChatPanel({
         messages={messages}
         templates={templates}
         quickReplies={quickReplies}
+        catalogLinks={catalogLinks}
         currentAgent={currentAgent}
         replyingTo={replyingTo}
         onCancelReply={() => setReplyingTo(null)}

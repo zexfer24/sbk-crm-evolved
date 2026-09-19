@@ -12,13 +12,14 @@ import { flushSync } from "react-dom";
 import { AlignLeft, FileText, Lock, Paperclip, Send, X, Zap } from "lucide-react";
 import { Button, TextArea, Tooltip } from "@heroui/react";
 import { toast } from "@heroui/react";
-import type { Agent, Conversation, Message, MessageType, QuickReply, WhatsappTemplate } from "@/lib/types";
+import type { Agent, CatalogLink, Conversation, Message, MessageType, QuickReply, WhatsappTemplate } from "@/lib/types";
 import { isComposerWindowOpen } from "@/lib/whatsapp-window";
 import { contactName } from "@/lib/dashboard";
 import { createClient } from "@/lib/supabase/client";
 import { sendMediaMessage, sendTemplateMessage, sendTypingSignal } from "@/lib/mutations";
 import { MEDIA_BUCKET, mediaUrlFor } from "@/lib/storage";
 import { insertAtCaret } from "@/lib/composer-text";
+import { resolveCatalogMarkers } from "@/lib/catalog-links";
 import { MediaThumb, type MediaItem } from "@/components/chat/media-lightbox";
 import { QuotedThumb, quotedTypeLabel } from "@/components/chat/quoted-content";
 import { TemplatePickerModal } from "@/components/chat/template-picker-modal";
@@ -39,6 +40,16 @@ interface ComposerProps {
   messages: Message[];
   templates: WhatsappTemplate[];
   quickReplies: QuickReply[];
+  /**
+   * Los catálogos ACTIVOS (T4b, "Nada sin leer, un solo catálogo y la
+   * factura Saint", 18/9/2026): `handleSelectQuickReply` los usa para
+   * resolver `{{catalogo:<key>}}`/`{{catalogos}}` antes de pegar el
+   * contenido del mensaje rápido en el cuadro — la fuente única es la tabla
+   * `catalog_links` (D3/D4 del plan), nunca la URL copiada dentro del texto
+   * del mensaje rápido. Opcional con default `[]`, mismo criterio que
+   * `openTemplateModalSignal`.
+   */
+  catalogLinks?: CatalogLink[];
   /**
    * Quién compone (T3b, "Seis frentes del buzón", 8/9/2026): lo necesita el
    * popover de emojis y stickers para atribuir un sticker creado desde cero
@@ -104,6 +115,7 @@ export function Composer({
   messages,
   templates,
   quickReplies,
+  catalogLinks = [],
   currentAgent,
   replyingTo,
   onCancelReply,
@@ -229,9 +241,22 @@ export function Composer({
     }
   }
 
+  /**
+   * Un mensaje rápido puede traer `{{catalogo:<key>}}`/`{{catalogos}}` en
+   * vez de la URL pegada a mano (D4, T4b, 18/9/2026): se resuelve acá,
+   * justo antes de pegarlo en el cuadro, con la misma lista de catálogos
+   * ACTIVOS que ve el resto del CRM. Un marcador que no calza con ningún
+   * catálogo activo queda TAL CUAL en el texto (D6 — nunca se inventa una
+   * URL) y el asesor lo ve antes de enviar, así que se avisa con un toast en
+   * vez de bloquear el pegado.
+   */
   function handleSelectQuickReply(content: string) {
-    setText((prev) => (prev ? `${prev}\n${content}` : content));
+    const { text: resolved, missing } = resolveCatalogMarkers(content, catalogLinks);
+    setText((prev) => (prev ? `${prev}\n${resolved}` : resolved));
     setIsQuickRepliesOpen(false);
+    for (const key of missing) {
+      toast.warning(`El catálogo «${key}» no está configurado`);
+    }
   }
 
   function addFiles(files: File[]) {
@@ -623,6 +648,7 @@ export function Composer({
         isOpen={isQuickRepliesOpen}
         onOpenChange={setIsQuickRepliesOpen}
         quickReplies={quickReplies}
+        catalogLinks={catalogLinks}
         onSelect={handleSelectQuickReply}
       />
     </div>

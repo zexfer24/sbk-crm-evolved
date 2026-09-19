@@ -3,7 +3,19 @@ import { describe, expect, it, vi, beforeEach, afterEach } from "vitest";
 import { render, screen, fireEvent, waitFor, act, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { Composer } from "@/components/chat/composer";
-import type { Agent, Conversation, Message, Sticker } from "@/lib/types";
+import type { Agent, CatalogLink, Conversation, Message, QuickReply, Sticker } from "@/lib/types";
+
+/**
+ * T4b (18/9/2026): `handleSelectQuickReply` avisa con `toast.warning` cuando
+ * un mensaje rápido trae un marcador de catálogo que no resuelve (D6). El
+ * resto del módulo real de HeroUI queda intacto -- estos tests no necesitan
+ * un doble de `Button`/`TextArea`/`Modal`, solo un espía sobre `warning`.
+ */
+const toastWarningMock = vi.fn();
+vi.mock("@heroui/react", async (importOriginal) => {
+  const real = await importOriginal<typeof import("@heroui/react")>();
+  return { ...real, toast: { ...real.toast, warning: (...args: unknown[]) => toastWarningMock(...args) } };
+});
 
 const sendMediaMessageMock = vi.fn().mockResolvedValue(undefined);
 const onSendTextMock = vi.fn();
@@ -160,19 +172,50 @@ function buildMessage(over: Partial<Message> = {}): Message {
   };
 }
 
-function renderComposer(messages: Message[] = [], conversation: Conversation = buildConversation()) {
+function renderComposer(
+  messages: Message[] = [],
+  conversation: Conversation = buildConversation(),
+  extra: { quickReplies?: QuickReply[]; catalogLinks?: CatalogLink[] } = {}
+) {
   return render(
     <Composer
       conversation={conversation}
       messages={messages}
       templates={[]}
-      quickReplies={[]}
+      quickReplies={extra.quickReplies ?? []}
+      catalogLinks={extra.catalogLinks ?? []}
       currentAgent={AGENT}
       replyingTo={null}
       onCancelReply={vi.fn()}
       onSendText={onSendTextMock}
     />
   );
+}
+
+/** Fábrica mínima de `QuickReply` para los tests de T4b (18/9/2026). */
+function buildQuickReply(over: Partial<QuickReply> = {}): QuickReply {
+  return {
+    id: `qr-${Math.random().toString(36).slice(2)}`,
+    label: "Catálogo",
+    content: "Acá va nuestro catálogo",
+    ...over,
+  };
+}
+
+/** Fábrica mínima de `CatalogLink` para los tests de T4b (18/9/2026). */
+function buildCatalogLink(over: Partial<CatalogLink> = {}): CatalogLink {
+  return {
+    id: `cat-${Math.random().toString(36).slice(2)}`,
+    key: "cascos",
+    label: "Cascos",
+    url: "https://drive.google.com/file/d/cascos",
+    sortOrder: 1,
+    isActive: true,
+    updatedBy: null,
+    createdAt: "2026-09-18T00:00:00.000Z",
+    updatedAt: "2026-09-18T00:00:00.000Z",
+    ...over,
+  };
 }
 
 describe("Composer - atajos de teclado de formato", () => {
@@ -275,6 +318,62 @@ describe("Composer — el cuadro entrega a la cola y se vacía en el acto", () =
     await user.keyboard("{Enter}");
 
     expect(onSendTextMock).not.toHaveBeenCalled();
+  });
+});
+
+/**
+ * T4b, plan "Nada sin leer, un solo catálogo y la factura Saint" (18/9/2026,
+ * D4/D6): un mensaje rápido puede traer `{{catalogo:<key>}}`/`{{catalogos}}`
+ * en vez de la URL pegada a mano. `handleSelectQuickReply` lo resuelve con
+ * `catalogLinks` justo antes de pegarlo en el cuadro -- la fuente única
+ * siempre es la tabla, nunca el texto que guardó el mensaje rápido.
+ */
+describe("Composer — un mensaje rápido con marcador de catálogo", () => {
+  beforeEach(() => toastWarningMock.mockClear());
+
+  it("al usar el mensaje rápido, el marcador sale resuelto con la URL vigente", async () => {
+    const user = crearUsuario();
+    renderComposer([], undefined, {
+      quickReplies: [buildQuickReply({ content: "Acá va {{catalogo:cascos}}" })],
+      catalogLinks: [buildCatalogLink({ key: "cascos", url: "https://drive.google.com/file/d/cascos-vigente" })],
+    });
+
+    await user.click(screen.getByRole("button", { name: "Mensajes rápidos" }));
+    await user.click(screen.getByRole("button", { name: "Usar" }));
+
+    const textarea = screen.getByRole("textbox", { name: "Mensaje" }) as HTMLTextAreaElement;
+    expect(textarea.value).toBe("Acá va https://drive.google.com/file/d/cascos-vigente");
+    expect(toastWarningMock).not.toHaveBeenCalled();
+  });
+
+  it("sin catálogo activo con esa clave, el marcador queda tal cual y avisa con un toast", async () => {
+    const user = crearUsuario();
+    renderComposer([], undefined, {
+      quickReplies: [buildQuickReply({ content: "Acá va {{catalogo:cascos}}" })],
+      catalogLinks: [], // ningún catálogo cargado todavía: D6, nunca se inventa una URL
+    });
+
+    await user.click(screen.getByRole("button", { name: "Mensajes rápidos" }));
+    await user.click(screen.getByRole("button", { name: "Usar" }));
+
+    const textarea = screen.getByRole("textbox", { name: "Mensaje" }) as HTMLTextAreaElement;
+    expect(textarea.value).toBe("Acá va {{catalogo:cascos}}");
+    expect(toastWarningMock).toHaveBeenCalledWith("El catálogo «cascos» no está configurado");
+  });
+
+  it('un mensaje rápido sin marcador se pega tal cual, sin tocar el catálogo', async () => {
+    const user = crearUsuario();
+    renderComposer([], undefined, {
+      quickReplies: [buildQuickReply({ content: "Gracias por tu compra." })],
+      catalogLinks: [buildCatalogLink()],
+    });
+
+    await user.click(screen.getByRole("button", { name: "Mensajes rápidos" }));
+    await user.click(screen.getByRole("button", { name: "Usar" }));
+
+    const textarea = screen.getByRole("textbox", { name: "Mensaje" }) as HTMLTextAreaElement;
+    expect(textarea.value).toBe("Gracias por tu compra.");
+    expect(toastWarningMock).not.toHaveBeenCalled();
   });
 });
 

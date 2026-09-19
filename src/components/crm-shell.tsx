@@ -4,6 +4,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type {
   Agent,
   AgentSettings,
+  CatalogLink,
   Conversation,
   ConversationSummary,
   InboxDayScope,
@@ -18,6 +19,7 @@ import { createClient } from "@/lib/supabase/client";
 import {
   CHAT_MESSAGES_WINDOW,
   INBOX_PAGE_SIZE,
+  fetchActiveCatalogLinks,
   fetchConversation,
   fetchConversationIdByPhone,
   fetchConversationRow,
@@ -117,6 +119,16 @@ interface CrmShellProps {
    */
   tagsInUse?: Tag[];
   initialQuickReplies: QuickReply[];
+  /**
+   * Los catálogos ACTIVOS, ya resueltos en el servidor (T4b, plan "Nada sin
+   * leer, un solo catálogo y la factura Saint", 18/9/2026): siembra el
+   * composer para que "Insertar catálogo" y la resolución del marcador
+   * (`resolveCatalogMarkers`, `catalog-links.ts`) tengan la lista desde el
+   * primer render, mismo criterio que `initialQuickReplies`. Opcional con
+   * default `[]` para no obligar a los tests que no conocen esta tarea a
+   * pasarla.
+   */
+  initialCatalogLinks?: CatalogLink[];
   /** Tasa del BCV del día, ya resuelta en el servidor. Null si no se pudo obtener ninguna. */
   bcvRate: BcvRateSummary | null;
   /** Hilo a abrir al entrar, por ejemplo al llegar desde una tarjeta del dashboard. */
@@ -194,6 +206,7 @@ export function CrmShell({
   allTags,
   tagsInUse = allTags,
   initialQuickReplies,
+  initialCatalogLinks = [],
   bcvRate,
   initialConversationId,
   initialAgentSettings,
@@ -659,6 +672,7 @@ export function CrmShell({
   } | null>(null);
   const [templates, setTemplates] = useState<WhatsappTemplate[]>([]);
   const [quickReplies, setQuickReplies] = useState<QuickReply[]>(initialQuickReplies);
+  const [catalogLinks, setCatalogLinks] = useState<CatalogLink[]>(initialCatalogLinks);
   const [tags, setTags] = useState<Tag[]>(allTags);
   const [agentSettings, setAgentSettings] = useState<AgentSettings>(initialAgentSettings);
 
@@ -1002,6 +1016,28 @@ export function CrmShell({
     };
   }, [supabase]);
 
+  // Enlaces de catálogo compartidos entre agentes (T4b, "Nada sin leer, un
+  // solo catálogo y la factura Saint", 18/9/2026): el supervisor los edita
+  // desde Control IA y el composer necesita verlos cambiar sin recargar la
+  // página, mismo patrón que "quick-replies-changes" de acá arriba. La
+  // tabla ya está publicada en Realtime desde la migración 20260918010000.
+  useEffect(() => {
+    const channel = supabase
+      .channel("catalog-links-changes")
+      .on("postgres_changes", { event: "*", schema: "public", table: "catalog_links" }, () => {
+        fetchActiveCatalogLinks(supabase).then(setCatalogLinks).catch(() => {});
+      })
+      .subscribe(
+        realtimeStatusHandler("catalog-links-changes", () => {
+          fetchActiveCatalogLinks(supabase).then(setCatalogLinks).catch(() => {});
+        })
+      );
+
+    return () => {
+      supabase.removeChannel(channel);
+    };
+  }, [supabase]);
+
   // Catálogo de etiquetas compartido entre agentes: se sincroniza en vivo.
   useEffect(() => {
     const channel = supabase
@@ -1265,6 +1301,7 @@ export function CrmShell({
               messages={messages}
               templates={templates}
               quickReplies={quickReplies}
+              catalogLinks={catalogLinks}
               currentAgent={currentAgent}
               loadingMessages={loadingMessages}
               aiGloballyEnabled={agentSettings.aiGloballyEnabled}

@@ -2,6 +2,7 @@ import { redirect } from "next/navigation";
 import { createClient } from "@/lib/supabase/server";
 import {
   INBOX_PAGE_SIZE,
+  fetchActiveCatalogLinks,
   fetchConversations,
   fetchCurrentAgent,
   fetchInboxCounts,
@@ -88,6 +89,7 @@ export default async function InboxPage({ searchParams }: PageProps<"/inbox">) {
     tags,
     tagsInUse,
     quickReplies,
+    catalogLinks,
     bcvRate,
     agentSettings,
     { agentDay, aiAssignments },
@@ -124,6 +126,11 @@ export default async function InboxPage({ searchParams }: PageProps<"/inbox">) {
     // `ContextPanel`, que necesita ver también las que nadie usa todavía).
     fetchTagsInUse(supabase),
     fetchQuickReplies(supabase),
+    // Los catálogos ACTIVOS (T4b, "Nada sin leer, un solo catálogo y la
+    // factura Saint", 18/9/2026): `fetchActiveCatalogLinks` nunca lanza (cae
+    // a `[]` ante un error), así que no hace falta envolverla como
+    // `loadBcvRate`/`loadAgentDay` de acá arriba.
+    fetchActiveCatalogLinks(supabase),
     loadBcvRate(supabase),
     fetchAgentSettings(supabase),
     // T4 ("Los números del día", 10/9/2026): SIEMPRE con el corte de HOY,
@@ -145,6 +152,7 @@ export default async function InboxPage({ searchParams }: PageProps<"/inbox">) {
       allTags={tags}
       tagsInUse={tagsInUse}
       initialQuickReplies={quickReplies}
+      initialCatalogLinks={catalogLinks}
       bcvRate={bcvRate}
       initialConversationId={requestedId}
       initialAgentSettings={agentSettings}

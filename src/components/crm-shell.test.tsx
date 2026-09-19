@@ -178,6 +178,14 @@ const fetchConversationRowMock = vi.fn(
 const fetchUnassignedConversationsMock = vi.fn().mockResolvedValue([]);
 // El botón "Abrir el chat de {newPhone}" (D2, 6/9/2026; botón del 8/9/2026).
 const fetchConversationIdByPhoneMock = vi.fn().mockResolvedValue(null);
+// Los enlaces de catálogo (T4b, "Nada sin leer, un solo catálogo y la
+// factura Saint", 18/9/2026): siembra por prop (`initialCatalogLinks`), y
+// esta función solo se llama cuando el canal "catalog-links-changes"
+// dispara -- ver la trampa de `vi.mock("@/lib/data", ...)` de acá abajo, que
+// NO reexporta el módulo real (`importOriginal`): un export nuevo que
+// `crm-shell.tsx` use y falte acá tumba TODOS los tests de este archivo, no
+// solo el nuevo.
+const fetchActiveCatalogLinksMock = vi.fn().mockResolvedValue([]);
 
 const fetchAgentSettingsMock = vi.fn().mockResolvedValue({
   aiGloballyEnabled: true,
@@ -207,6 +215,7 @@ vi.mock("@/lib/data", () => ({
   fetchMessagesBefore: vi.fn().mockResolvedValue([]),
   fetchNotes: vi.fn().mockResolvedValue([]),
   fetchQuickReplies: vi.fn().mockResolvedValue([]),
+  fetchActiveCatalogLinks: (...args: unknown[]) => fetchActiveCatalogLinksMock(...args),
   fetchTags: vi.fn().mockResolvedValue([]),
   fetchTemplates: vi.fn().mockResolvedValue([]),
 }));
@@ -1067,6 +1076,36 @@ describe("CrmShell — el interruptor general de la IA se sigue en vivo", () => 
     });
 
     expect(fetchAgentSettingsMock).toHaveBeenCalledTimes(1);
+  });
+});
+
+/**
+ * Los enlaces de catálogo se editan desde Control IA, otra pantalla (T4b,
+ * "Nada sin leer, un solo catálogo y la factura Saint", 18/9/2026): sin este
+ * canal, el composer se quedaría con la URL vigente al momento de abrir la
+ * bandeja hasta que alguien recargara — el mismo motivo por el que ya existe
+ * el canal de `agent_settings` de acá arriba.
+ */
+describe("CrmShell — los enlaces de catálogo se siguen en vivo", () => {
+  it("al cambiar catalog_links vuelve a pedir los catálogos activos", async () => {
+    render(
+      <CrmShell
+        currentAgent={currentAgent}
+        initialConversations={[buildConversation()]}
+        initialInboxCounts={inboxCounts}
+        allTags={allTags}
+        initialQuickReplies={initialQuickReplies}
+        bcvRate={null}
+        initialAgentSettings={agentSettings}
+      />
+    );
+    fetchActiveCatalogLinksMock.mockClear();
+
+    await act(async () => {
+      fake.trigger("catalog_links", "UPDATE");
+    });
+
+    expect(fetchActiveCatalogLinksMock).toHaveBeenCalledTimes(1);
   });
 });
 
