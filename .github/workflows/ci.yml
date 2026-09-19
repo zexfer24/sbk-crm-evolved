@@ -280,3 +280,19 @@ jobs:
           psql "postgresql://postgres:postgres@127.0.0.1:54322/postgres" \
             -v ON_ERROR_STOP=1 \
             -f supabase/tests/ai_lessons.sql
+
+      # M1, plan "Nada sin leer, un solo catálogo y la factura Saint"
+      # (18/9/2026): la URL de cada catálogo (hoy archivos de Google Drive de
+      # un tercero) sale de la tabla catalog_links en vez de estar pegada a
+      # mano en tres escenarios y cuatro mensajes rápidos -- el catálogo de
+      # cascos tuvo cuatro IDs de Drive distintos en 25 días y el 18/9
+      # circulaban dos versiones a la vez porque la URL estaba copiada en
+      # más de un sitio. El test mide RLS con roles reales (asesor lee/no
+      # escribe, supervisor sí escribe, anon no lee nada), los CHECK de
+      # clave/URL y la unicidad de la clave, y que la tabla esté publicada
+      # en supabase_realtime.
+      - name: catalog_links -- CHECK, RLS y Realtime
+        run: |
+          psql "postgresql://postgres:postgres@127.0.0.1:54322/postgres" \
+            -v ON_ERROR_STOP=1 \
+            -f supabase/tests/catalog_links.sql
