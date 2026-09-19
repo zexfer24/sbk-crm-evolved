@@ -58,6 +58,24 @@ export function sebaGreeting(band: DayBand): string {
   return `Hola, ${presentationGreetingFor(band)}, mi nombre es ${AI_NAME}. Soy tu asistente el día de hoy en ${BUSINESS_NAME.toUpperCase()}, ¿cómo puedo ayudarte?`;
 }
 
+/** Las tres franjas, en el mismo orden que `DayBand` las declara (business-hours.ts). */
+const ALL_DAY_BANDS: readonly DayBand[] = ["mañana", "tarde", "noche"];
+
+/**
+ * ¿Es `text` EXACTAMENTE la presentación de Seba, en cualquier franja?
+ *
+ * T12, plan "Seba sale sin pisar a nadie" (19/9/2026, decisión abierta #1
+ * del plan original): el turno la usa para reconocer, en un REINTENTO tras
+ * `ProviderFailedAfterGreetingError` (agent.ts), que la última línea del
+ * historial ya es la presentación que salió en el intento anterior — no
+ * algo que el modelo tenga que volver a redactar ni contestar. Construida a
+ * partir de `sebaGreeting` (no se repiten los tres literales a mano): si el
+ * texto del saludo cambia algún día, este reconocimiento cambia solo con él.
+ */
+export function isSebaGreeting(text: string): boolean {
+  return ALL_DAY_BANDS.some((band) => sebaGreeting(band) === text);
+}
+
 /**
  * Requisito 3: repuesto encontrado en catálogo (con existencia). El cliente
  * dictó este texto literal — un asesor confirma el inventario físico antes

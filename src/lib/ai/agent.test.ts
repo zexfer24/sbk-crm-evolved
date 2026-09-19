@@ -3669,37 +3669,42 @@ describe("runAgentTurn — salidas que limpian su etapa", () => {
   });
 
   /**
-   * T2, plan "Seba sale sin pisar a nadie" (19/9/2026, hallazgo A2). Con
+   * T2, plan "Seba sale sin pisar a nadie" (19/9/2026, hallazgo A2), test
+   * (a) de T12 (mismo plan, cierra la decisión abierta #1, 19/9/2026). Con
    * `welcome_sent_at: null` y una pregunta real detrás del saludo
    * (`introducedThisTurn` termina en `true`), el saludo de Seba sale y
-   * QUEDA como el último mensaje visible; si clasificar falla después, el
-   * reconciliador (`last_message_direction.eq.inbound` o
-   * `last_message_status.eq.failed`) ya no vuelve a mirar la conversación
-   * — sin este `recordHandoff` el lead se queda sin respuesta Y sin
-   * traspaso. Sin asesor asignado, el traspaso va a `unassigned`.
+   * QUEDA como el último mensaje visible. T2 tapaba la invisibilidad
+   * escribiendo acá un `recordHandoff(entrega_fallida)` — T12 lo reemplaza:
+   * ese traspaso volvía el caso irrecuperable cuando en realidad es seguro
+   * reintentar (lo único que salió es la presentación, ya sellada). Ahora
+   * el turno LANZA `ProviderFailedAfterGreetingError` (la cola lo
+   * reintenta) y NO escribe ningún traspaso.
    */
-  it("si la clasificación falla CON saludo previo, deja entrega_fallida a unassigned", async () => {
+  it("si la clasificación falla CON saludo previo, lanza ProviderFailedAfterGreetingError y NO escribe entrega_fallida", async () => {
     state.conversation = { ...state.conversation, welcome_sent_at: null };
     classifyIntentMock.mockRejectedValue(new Error("rate limit"));
 
-    await runAgentTurn("conv-1");
+    await expect(runAgentTurn("conv-1")).rejects.toMatchObject({
+      name: "ProviderFailedAfterGreetingError",
+      conversationId: "conv-1",
+    });
 
     expect(sendAgentTextMock).toHaveBeenCalledTimes(1);
     expect(agentTurnInserts).toContainEqual(expect.objectContaining({ action: "error" }));
     expect(conversationUpdates).toContainEqual({ journey_stage: null, active_tool: null });
-    expect(handoffCalls).toHaveLength(1);
-    expect(handoffCalls[0]).toMatchObject({
-      p_conversation_id: "conv-1",
-      p_to_kind: "unassigned",
-      p_reason: "entrega_fallida",
-    });
+    // El sello de `welcome_sent_at` queda puesto: el reintento no vuelve a
+    // presentarse.
+    expect(conversationUpdates).toContainEqual(expect.objectContaining({ welcome_sent_at: expect.any(String) }));
+    expect(handoffCalls).toHaveLength(0);
   });
 
   /**
    * Antes este `catch` solo apagaba `active_tool` y dejaba `journey_stage`
    * congelado en "classifying"/"tool_running". Sin saludo previo, mismo
    * motivo que la clasificación fallida: el último mensaje sigue siendo del
-   * cliente y el reconciliador la recoge como siempre.
+   * cliente y el reconciliador la recoge como siempre. T12 (19/9/2026, test
+   * (c) del plan) no cambia nada de este camino: sin saludo no hay nada que
+   * reintentar de forma especial.
    */
   it("si el tool loop lanza SIN saludo previo, la etapa se limpia y no hay traspaso nuevo", async () => {
     generateMock.mockRejectedValue(new Error("fetch failed"));
@@ -3712,30 +3717,189 @@ describe("runAgentTurn — salidas que limpian su etapa", () => {
   });
 
   /**
-   * T2, plan "Seba sale sin pisar a nadie" (19/9/2026, hallazgo A2). Mismo
-   * caso que la clasificación fallida, pero para el `catch` del tool loop,
-   * y con un asesor YA asignado (D2, "Seba atiende el mostrador": asignado +
-   * IA encendida corre el turno igual) — el traspaso tiene que respetar ese
-   * dueño, no mandarlo a `unassigned` y pisarlo.
+   * T2, plan "Seba sale sin pisar a nadie" (19/9/2026, hallazgo A2), test
+   * (b) de T12 (mismo plan, 19/9/2026). Mismo caso que la clasificación
+   * fallida, pero para el `catch` del tool loop, y con un asesor YA
+   * asignado (D2, "Seba atiende el mostrador": asignado + IA encendida
+   * corre el turno igual). T12 reemplaza el `recordHandoff(entrega_fallida)`
+   * de T2 por `ProviderFailedAfterGreetingError`: es seguro reintentar sin
+   * importar quién esté asignado, porque lo único que salió es el saludo.
    */
-  it("si el tool loop lanza CON saludo previo y asesor asignado, deja entrega_fallida a ese asesor", async () => {
+  it("si el tool loop lanza CON saludo previo y asesor asignado, lanza ProviderFailedAfterGreetingError y NO escribe entrega_fallida", async () => {
     state.conversation = { ...state.conversation, welcome_sent_at: null, assigned_agent_id: "agent-9" };
     generateMock.mockRejectedValue(new Error("fetch failed"));
 
-    await runAgentTurn("conv-1");
+    await expect(runAgentTurn("conv-1")).rejects.toMatchObject({
+      name: "ProviderFailedAfterGreetingError",
+      conversationId: "conv-1",
+    });
 
     expect(sendAgentTextMock).toHaveBeenCalledTimes(1);
     expect(agentTurnInserts).toContainEqual(expect.objectContaining({ action: "error" }));
     // Con dueño asignado, `stageFor` deja "assigned" en vez de `null`
     // (CLAUDE.md, trampa de la píldora "Escaladas" que mira el campo crudo).
     expect(conversationUpdates).toContainEqual({ journey_stage: "assigned", active_tool: null });
+    expect(handoffCalls).toHaveLength(0);
+  });
+});
+
+/**
+ * T12, plan "Seba sale sin pisar a nadie" (19/9/2026, cierra la decisión
+ * abierta #1). Los dos describes de arriba prueban las salidas que LANZAN el
+ * error reintentable; este describe prueba el otro lado — el REINTENTO en
+ * sí, que reconoce el saludo ya enviado y actúa distinto según lo que
+ * encuentre.
+ *
+ * El reloj se fija en los tests que arman `sebaGreeting` a mano (mismo
+ * patrón que el describe "la presentación de Seba, T2b" más arriba): nunca
+ * el reloj real (trampa de CLAUDE.md).
+ */
+describe("runAgentTurn — el reintento tras ProviderFailedAfterGreetingError (T12, 19/9/2026)", () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  /**
+   * Test (d) del plan: el historial que llega —armado por `loadHistory`
+   * REAL a partir de la fila que dejaría `sendAgentText`, no un
+   * `introducedThisTurn` inyectado a mano— termina en la presentación de
+   * Seba seguida de la pregunta real del cliente. El reintento reconoce el
+   * saludo, lo recorta, NO vuelve a saludar, y el historial que llega tanto
+   * a `classifyIntent` como a `agent.generate` termina en el mensaje del
+   * CLIENTE — nunca en el saludo.
+   */
+  it("reintento: no vuelve a saludar, clasifica y redacta con el historial terminado en el cliente", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-09-18T00:30:00Z")); // 8:30 pm en Caracas → franja "noche"
+    // welcome_sent_at YA sellado: el primer intento reclamó la presentación
+    // y la mandó antes de caerse.
+    state.conversation = { ...state.conversation, welcome_sent_at: "2026-09-17T23:00:00Z" };
+    // Descendente (más reciente primero), igual que el resto de este
+    // archivo: el saludo de Seba es la fila MÁS reciente.
+    state.history = [
+      { sender_type: "agent", content: sebaGreeting("noche"), is_internal_note: false, created_at: "2026-09-18T00:29:00.000Z" },
+      { sender_type: "customer", content: "hola, tienen pastillas de freno", is_internal_note: false, created_at: "2026-09-18T00:28:00.000Z" },
+    ];
+
+    await runAgentTurn("conv-1");
+
+    // Un solo envío: la respuesta redactada. El saludo NO se repite.
+    expect(sendAgentTextMock).toHaveBeenCalledTimes(1);
+    expect(sendAgentTextMock).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.anything(),
+      "respuesta redactada por el modelo",
+      expect.anything()
+    );
+    expect(classifyIntentMock).toHaveBeenCalledTimes(1);
+    // El historial que le llegó a classifyIntent termina en el cliente, no
+    // en el saludo — el primer argumento es el historial completo.
+    const historialClasificado = classifyIntentMock.mock.calls[0][0] as { role: string; content: unknown }[];
+    expect(historialClasificado.at(-1)).toMatchObject({ role: "user", content: "hola, tienen pastillas de freno" });
+    expect(generateMock).toHaveBeenCalledTimes(1);
+    // `buildInstructions` recibe `introducedThisTurn: true`: el sufijo usa
+    // la variante "Seba acaba de presentarse en un mensaje aparte..." (la
+    // misma que un turno que SÍ mandó el saludo este turno), no la de "ya te
+    // presentaste antes" — para el modelo el saludo salió recién, aunque
+    // haya sido en el intento anterior.
+    expect(agentOptions[0].instructions.slice(SYSTEM_PROMPT.length)).toMatch(
+      /seba acaba de presentarse en un mensaje aparte/i
+    );
+  });
+
+  /**
+   * Test (d2) del plan: turno espurio. El primer intento mandó el saludo
+   * como respuesta COMPLETA (`soloSaludo` — el cliente solo había dicho
+   * "hola") y se cayó DESPUÉS, en un paso que ya no debería existir para un
+   * turno tan simple (defensivo: lo que importa es que el reintento, al
+   * encontrar `[hola, saludo]`, no tenga nada nuevo que redactar). Cierra
+   * sin llamar al modelo ni escribir traspaso.
+   */
+  it("reintento sobre [hola, saludo]: turno espurio, cierra sin llamar al modelo ni traspaso", async () => {
+    state.conversation = { ...state.conversation, welcome_sent_at: "2026-09-17T23:00:00Z" };
+    state.history = [
+      { sender_type: "agent", content: sebaGreeting("noche"), is_internal_note: false, created_at: "2026-09-18T00:29:00.000Z" },
+      { sender_type: "customer", content: "hola", is_internal_note: false, created_at: "2026-09-18T00:28:00.000Z" },
+    ];
+
+    await runAgentTurn("conv-1");
+
+    expect(sendAgentTextMock).not.toHaveBeenCalled();
+    expect(classifyIntentMock).not.toHaveBeenCalled();
+    expect(generateMock).not.toHaveBeenCalled();
+    expect(handoffCalls).toHaveLength(0);
+    expect(conversationUpdates).toContainEqual({ journey_stage: null, active_tool: null });
+  });
+
+  /**
+   * Test (d3) del plan: el cliente escribió DESPUÉS del saludo (mientras el
+   * primer intento esperaba su reintento, o simplemente escribió de nuevo).
+   * La última línea del historial ya NO es el asistente — es el cliente —
+   * así que esto NO se reconoce como reintento: el saludo se queda en el
+   * historial tal cual, y el turno corre normal (sin volver a presentarse,
+   * porque `welcome_sent_at` ya está sellado).
+   */
+  it("el cliente escribió después del saludo: NO es un reintento, el saludo se queda en el historial", async () => {
+    state.conversation = { ...state.conversation, welcome_sent_at: "2026-09-17T23:00:00Z" };
+    state.history = [
+      { sender_type: "customer", content: "¿y en talla M la tienen?", is_internal_note: false, created_at: "2026-09-18T00:30:00.000Z" },
+      { sender_type: "agent", content: sebaGreeting("noche"), is_internal_note: false, created_at: "2026-09-18T00:29:00.000Z" },
+      { sender_type: "customer", content: "hola, tienen pastillas de freno", is_internal_note: false, created_at: "2026-09-18T00:28:00.000Z" },
+    ];
+
+    await runAgentTurn("conv-1");
+
+    expect(sendAgentTextMock).toHaveBeenCalledTimes(1);
+    expect(classifyIntentMock).toHaveBeenCalledTimes(1);
+    const historialClasificado = classifyIntentMock.mock.calls[0][0] as { role: string; content: unknown }[];
+    // El saludo SIGUE en el historial que ve el modelo, sin recortar.
+    expect(historialClasificado.some((m) => m.content === sebaGreeting("noche"))).toBe(true);
+    expect(historialClasificado.at(-1)).toMatchObject({ role: "user", content: "¿y en talla M la tienen?" });
+  });
+
+  /**
+   * Test (e) del plan: reintento con "gracias" + escalada abierta. La
+   * guarda de cortesía tras escalada sigue callando el turno — la ráfaga se
+   * calcula SIN el saludo final (recortado antes de `customerBurst`), así
+   * que ["gracias"] sigue siendo pura cortesía y la guarda dispara igual
+   * que si el saludo nunca hubiera estado ahí.
+   */
+  it("reintento con 'gracias' + escalada abierta: la guarda de cortesía sigue callando", async () => {
+    state.conversation = { ...state.conversation, welcome_sent_at: "2026-09-17T23:00:00Z" };
+    state.history = [
+      { sender_type: "agent", content: sebaGreeting("noche"), is_internal_note: false, created_at: "2026-09-18T00:29:00.000Z" },
+      { sender_type: "customer", content: "gracias", is_internal_note: false, created_at: "2026-09-18T00:28:00.000Z" },
+    ];
+    state.lastHandoffRow = { reason: "escalada_sin_asesor", created_at: "2026-09-14T10:00:00.000Z" };
+    state.agentMessagesAfterHandoff = [];
+
+    await runAgentTurn("conv-1");
+
+    expect(sendAgentTextMock).not.toHaveBeenCalled();
+    expect(classifyIntentMock).not.toHaveBeenCalled();
     expect(handoffCalls).toHaveLength(1);
-    expect(handoffCalls[0]).toMatchObject({
-      p_conversation_id: "conv-1",
-      p_to_kind: "human",
-      p_to_id: "agent-9",
-      p_reason: "entrega_fallida",
-    });
+    expect(handoffCalls[0]).toMatchObject({ p_reason: "cortesia_tras_escalada" });
+  });
+
+  /**
+   * Test (f) del plan: `runAgentTurn` deja pasar el error TAL CUAL, sin
+   * envolverlo en `NonRetryableTurnError` — es la mutación que el plan pide
+   * verificar a mano (quitar la excepción del `catch` de `runAgentTurn` debe
+   * romper este test).
+   */
+  it("runAgentTurn deja pasar ProviderFailedAfterGreetingError sin envolverlo en NonRetryableTurnError", async () => {
+    state.conversation = { ...state.conversation, welcome_sent_at: null };
+    classifyIntentMock.mockRejectedValue(new Error("rate limit"));
+
+    let capturado: unknown;
+    try {
+      await runAgentTurn("conv-1");
+    } catch (err) {
+      capturado = err;
+    }
+
+    expect(capturado).toMatchObject({ name: "ProviderFailedAfterGreetingError" });
+    expect((capturado as Error).name).not.toBe("NonRetryableTurnError");
   });
 });
 

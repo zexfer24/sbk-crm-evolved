@@ -1,5 +1,11 @@
 import { describe, expect, it } from "vitest";
-import { NonRetryableTurnError, isNonRetryable, newTurnDelivery } from "@/lib/ai/turn-delivery";
+import {
+  NonRetryableTurnError,
+  ProviderFailedAfterGreetingError,
+  isNonRetryable,
+  isProviderFailedAfterGreeting,
+  newTurnDelivery,
+} from "@/lib/ai/turn-delivery";
 
 // ---------------------------------------------------------------------------
 // Este archivo prueba la barrera en sí misma, sin correr un turno entero: si
@@ -95,5 +101,75 @@ describe("isNonRetryable", () => {
     expect(isNonRetryable(null)).toBe(false);
     expect(isNonRetryable(undefined)).toBe(false);
     expect(isNonRetryable("no soy un error")).toBe(false);
+  });
+});
+
+// T12, plan "Seba sale sin pisar a nadie" (19/9/2026, cierra la decisión
+// abierta #1): esta clase es la ÚNICA excepción a "si entrega.intentado, no
+// se reintenta" — por diseño NO puede confundirse con `NonRetryableTurnError`
+// en ningún sentido, o la cola dejaría de reintentar el único caso donde
+// reintentar es seguro (agent.ts, catch de runAgentTurn).
+describe("ProviderFailedAfterGreetingError", () => {
+  it("conserva el conversationId con el que se construyó", () => {
+    const err = new ProviderFailedAfterGreetingError("conv-1", "clasificar falló después del saludo");
+
+    expect(err.conversationId).toBe("conv-1");
+  });
+
+  it("lleva el name propio, no el genérico 'Error'", () => {
+    const err = new ProviderFailedAfterGreetingError("conv-1", "clasificar falló después del saludo");
+
+    expect(err.name).toBe("ProviderFailedAfterGreetingError");
+  });
+
+  it("es un Error de verdad: instanceof Error sigue funcionando", () => {
+    const err = new ProviderFailedAfterGreetingError("conv-1", "clasificar falló después del saludo");
+
+    expect(err).toBeInstanceOf(Error);
+    expect(err.message).toBe("clasificar falló después del saludo");
+  });
+
+  it("conserva la causa original cuando se le pasa una", () => {
+    const original = new Error("rate limit del proveedor");
+
+    const err = new ProviderFailedAfterGreetingError("conv-1", "clasificar falló después del saludo", {
+      cause: original,
+    });
+
+    expect(err.cause).toBe(original);
+  });
+});
+
+describe("isProviderFailedAfterGreeting", () => {
+  it("reconoce un ProviderFailedAfterGreetingError", () => {
+    expect(isProviderFailedAfterGreeting(new ProviderFailedAfterGreetingError("conv-1", "x"))).toBe(true);
+  });
+
+  /**
+   * La distinción que le importa a la cola: `isNonRetryable` decide
+   * "abandonar sin reintentar" y esta clase es justo lo contrario —"sí
+   * reintentar"—, así que las dos funciones NUNCA pueden estar de acuerdo
+   * sobre el mismo error.
+   */
+  it("NO es un NonRetryableTurnError — la cola tiene que poder distinguirlos", () => {
+    const err = new ProviderFailedAfterGreetingError("conv-1", "clasificar falló después del saludo");
+
+    expect(isNonRetryable(err)).toBe(false);
+  });
+
+  it("un NonRetryableTurnError no se reconoce como ProviderFailedAfterGreetingError", () => {
+    const err = new NonRetryableTurnError("conv-1", "identidad no verificable");
+
+    expect(isProviderFailedAfterGreeting(err)).toBe(false);
+  });
+
+  it("no confunde un Error común", () => {
+    expect(isProviderFailedAfterGreeting(new Error("fallo cualquiera"))).toBe(false);
+  });
+
+  it("no lanza ni confunde valores que no son errores", () => {
+    expect(isProviderFailedAfterGreeting(null)).toBe(false);
+    expect(isProviderFailedAfterGreeting(undefined)).toBe(false);
+    expect(isProviderFailedAfterGreeting("no soy un error")).toBe(false);
   });
 });

@@ -49,3 +49,47 @@ export class NonRetryableTurnError extends Error {
 export function isNonRetryable(err: unknown): err is NonRetryableTurnError {
   return err instanceof NonRetryableTurnError;
 }
+
+// ---------------------------------------------------------------------------
+// T12, plan "Seba sale sin pisar a nadie" (19/9/2026, cierra la decisión
+// abierta #1): la ÚNICA excepción a la regla de arriba — es seguro reintentar
+// un turno que ya "intentó entregar algo" cuando lo único que salió fue la
+// presentación de Seba (`seba.ts`).
+//
+// Por qué es distinto de cualquier otro envío: `claimPresentation` (agent.ts)
+// sella `welcome_sent_at` ANTES de mandarla, así que el reintento no puede
+// volver a presentarse — y `runTurnPhases` reconoce, al arrancar, que la
+// última línea del historial ya es esa presentación (`isSebaGreeting`,
+// seba.ts) y la recorta antes de calcular nada más: el reintento ve
+// exactamente lo que vio el primer intento, sin el saludo, y contesta lo que
+// faltó. Ningún `deliver()` vive fuera de agent.ts —las herramientas del tool
+// loop no le mandan nada al cliente por su cuenta—, así que si el turno cae
+// DESPUÉS de la presentación (clasificando, o dentro del tool loop) no hay
+// ningún otro mensaje que un reintento pudiera duplicar.
+//
+// La cola (queue.ts) NO se toca: ya sabe reintentar un error común
+// (`recordFailure` → `RETRY_AFTER_ERROR_SECONDS`, hasta `MAX_ATTEMPTS`), y
+// esta clase deliberadamente NO es `NonRetryableTurnError` para que la cola
+// la trate así — `isNonRetryable` no la reconoce, y `queue.ts` la reencola
+// como cualquier fallo transitorio.
+// ---------------------------------------------------------------------------
+
+/**
+ * El turno falló DESPUÉS de que Seba ya se presentó, y es seguro reintentar:
+ * `agent.ts` la lanza desde las dos salidas que hoy pueden caer justo
+ * después del saludo (clasificar la intención, o el tool loop) cuando
+ * `introducedThisTurn` es `true`.
+ */
+export class ProviderFailedAfterGreetingError extends Error {
+  readonly conversationId: string;
+
+  constructor(conversationId: string, message: string, options?: { cause?: unknown }) {
+    super(message, options);
+    this.name = "ProviderFailedAfterGreetingError";
+    this.conversationId = conversationId;
+  }
+}
+
+export function isProviderFailedAfterGreeting(err: unknown): err is ProviderFailedAfterGreetingError {
+  return err instanceof ProviderFailedAfterGreetingError;
+}

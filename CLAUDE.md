@@ -1399,9 +1399,10 @@ dejar rastro es lo que hacía desaparecer leads.
   (pausa manual, primer mensaje real del asesor, o `silenceAiForManual
   Takeover`) escribió esa fila, y la IA se reenciende igual; distinguirlo
   exigiría una columna nueva. La OTRA decisión abierta de la misma revisión
-  —reencolar el turno tras un `entrega_fallida` post-saludo— sigue ABIERTA
-  a propósito: reabre D-B y no se toca el camino caliente en la víspera del
-  despliegue.
+  —reencolar el turno tras un `entrega_fallida` post-saludo— la CERRÓ T12
+  ("El turno se reintenta solo cuando el proveedor falla después del
+  saludo", 19/9/2026): ya no hay ningún `entrega_fallida` post-saludo que
+  reencolar a mano — ver esa trampa, más abajo.
 - **El turno LANZA si no puede leer la conversación — un 400 de PostgREST
   por una migración faltante ya no se lee como "la conversación no
   existe"** (T1, plan "Seba sale sin pisar a nadie", 19/9/2026, hallazgo
@@ -1443,7 +1444,14 @@ dejar rastro es lo que hacía desaparecer leads.
   duplicar", que es exactamente este caso, sin necesitar una sexta
   migración con su propio CHECK. Sin saludo previo, el último mensaje
   sigue siendo del cliente y el diagnóstico viejo sigue valiendo tal cual:
-  no se escribe nada nuevo.
+  no se escribe nada nuevo. **SUPERADO el 19/9/2026 por T12** ("El turno se
+  reintenta solo cuando el proveedor falla después del saludo", cierra la
+  decisión abierta #1 del mismo plan): ese `recordHandoff(entrega_fallida)`
+  volvía el caso IRRECUPERABLE justo cuando es SEGURO reintentar —lo único
+  que salió es la presentación, ya sellada por `claimPresentation`—, así
+  que en las dos salidas de arriba, con `introducedThisTurn`, ya NO se
+  escribe ese traspaso: se lanza `ProviderFailedAfterGreetingError` en su
+  lugar. Ver la trampa nueva de T12, más abajo.
 - **`soloSaludo` y la guarda de cortesía tras escalada miran la RÁFAGA
   entera del cliente, no solo la última línea** (T3, plan "Seba sale sin
   pisar a nadie", 19/9/2026, hallazgo A3 más un hallazgo nuevo de la misma
@@ -1621,6 +1629,68 @@ dejar rastro es lo que hacía desaparecer leads.
   violates unique constraint` — es un artefacto de correr el test contra
   una base de ensayo que ya tiene datos reales del script, no pasa en el
   CI (que arranca de una base limpia con solo migraciones y seeds).
+- **Un reintento tras `ProviderFailedAfterGreetingError` tiene que ver
+  EXACTAMENTE el mismo historial que vio el primer intento, y recortar el
+  saludo SOLO para la ráfaga no alcanza** (T12, "El turno se reintenta
+  solo cuando el proveedor falla después del saludo", plan "Seba sale sin
+  pisar a nadie", 19/9/2026, cierra la decisión abierta #1). Con D2
+  ("Seba atiende el mostrador") la escalada ya no apaga a Seba, y con T2b
+  Seba se presenta por código ANTES de fase 0/1: eso dejó dos salidas del
+  turno —clasificar y el `catch` del tool loop— que pueden fallar JUSTO
+  DESPUÉS de que la presentación ya salió, con `welcome_sent_at` sellado.
+  T2 tapaba la invisibilidad con un `recordHandoff(entrega_fallida)`, pero
+  ese traspaso volvía el caso IRRECUPERABLE cuando en realidad es SEGURO
+  reintentar: lo único que salió fue el saludo, ya sellado por
+  `claimPresentation`, y ningún `deliver()` vive fuera de `agent.ts` (las
+  herramientas del tool loop no le mandan nada al cliente por su cuenta).
+  Ahora esas dos salidas lanzan `ProviderFailedAfterGreetingError`
+  (`turn-delivery.ts`) — la ÚNICA excepción a "si `entrega.intentado`, no
+  se reintenta"— y `runAgentTurn` la deja pasar TAL CUAL (sin envolver en
+  `NonRetryableTurnError`, `log.warn("turno_reintentable_tras_saludo")`)
+  para que `queue.ts`, SIN TOCAR, la reintente como cualquier fallo
+  transitorio. La revisión adversarial encontró que la primera versión del
+  plan recortaba el saludo SOLO para calcular la ráfaga (`customerBurst`)
+  y dejaba el historial REAL —el que viaja a `agent.generate` y a
+  `classifyIntent`— terminado en un mensaje del ASISTENTE: hay proveedores
+  que tratan eso como *prefill* o devuelven vacío, y además fase 0 y
+  `mediaStreakWithoutText` verían un historial distinto al del primer
+  intento. La versión final recorta el saludo de `history` Y
+  `historyCreatedAt` —los dos arreglos que arma `loadHistory` en el mismo
+  bucle, mismo índice, `.pop()` en los dos— justo después de `loadHistory`
+  y ANTES de calcular nada más: el reintento ve el historial "como si Seba
+  no hubiera hablado todavía", terminado en el cliente, igual que el
+  primer intento. El reconocimiento (`isSebaGreeting`, `seba.ts`) depende
+  de que el texto viaje sin transformar — `send.ts` guarda `content: text`
+  tal cual y `historyLine` devuelve `row.content` crudo para un `text` — y
+  por eso el test que ejercita el reintento pasa por `loadHistory` de
+  verdad con una fila armada como la dejaría `sendAgentText`, no por un
+  `introducedThisTurn` inyectado a mano: si el reconocimiento fallara
+  alguna vez, el lead quedaría mudo SIN rastro (sin `introducedThisTurn`
+  no hay ni `throw` ni traspaso, y el último mensaje visible es saliente).
+  **Turno espurio** (un reintento —o cualquier invocación duplicada— sobre
+  un saludo que YA fue la respuesta completa, el caso `soloSaludo` del
+  primer intento): si la ráfaga recortada sigue siendo solo saludo o
+  cortesía, el turno cierra con `resetStage("turno_saludo_ya_respondido",
+  …)` sin llamar al modelo ni escribir traspaso —`awaiting_reply` ya había
+  quedado apagado por ese saludo (`isAutoReply: false`)—, pero este cierre
+  vive A PROPÓSITO DESPUÉS de la guarda de cortesía tras escalada abierta,
+  no antes: las dos comparten el caso `["gracias"]`, y con una escalada
+  abierta esa guarda tiene que ganar (deja su propio traspaso
+  `cortesia_tras_escalada`) en vez de que el cierre silencioso se la coma
+  antes de que llegue a evaluarla. Casos revisados que no necesitaron
+  código nuevo: el cliente escribe durante la espera del reintento (su
+  mensaje queda DESPUÉS del saludo en el historial, así que la última
+  línea ya no es del asistente y esto no se reconoce como reintento — el
+  saludo se queda en el historial y el turno corre normal); un asesor
+  escribe o toma el chat entre intentos (las guardas de apertura de
+  siempre, `pausada`/`humano_se_adelanto`, cortan igual); si el intento 1
+  llegó a escalar antes de que `generate` lanzara, el reintento puede
+  escalar otra vez, pero cae en la rama `alreadyAssigned` de
+  `escalate.ts` (solo nota) si ya hay asesor — bitácora repetida, no
+  mensaje repetido. Límite aceptado: si los tres intentos de la cola
+  fallan, `abandonado` va siempre a `unassigned` (aunque el chat tuviera
+  asesor asignado) — con asesor, el chat sigue en "Tuyas"/"Pendientes" por
+  `awaiting_reply` de todos modos, porque el saludo es `is_auto_reply`.
 ---
 
 # RTK (Rust Token Killer) - Token-Optimized Commands

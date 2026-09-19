@@ -35,10 +35,17 @@ import { customerBurst, historyLine, isHistoryMarker, mediaStreakWithoutText } f
 import { customerFirstName } from "@/lib/ai/customer-name";
 import { playbookMessageText, sendAgentText, sendPlaybookReply, type DeliveryOutcome } from "@/lib/ai/send";
 import { buildTurnTarget, type AgentConversation, type TurnTarget } from "@/lib/ai/turn-target";
-import { NonRetryableTurnError, newTurnDelivery, type TurnDelivery } from "@/lib/ai/turn-delivery";
+import {
+  NonRetryableTurnError,
+  ProviderFailedAfterGreetingError,
+  isProviderFailedAfterGreeting,
+  newTurnDelivery,
+  type TurnDelivery,
+} from "@/lib/ai/turn-delivery";
 import { recordHandoff, escalationOpen } from "@/lib/ai/handoffs";
 import { isCourtesyOnly, isGreetingOnly } from "@/lib/ai/saludo";
 import {
+  isSebaGreeting,
   sebaGreeting,
   TEXTO_CONFIRMAR_INVENTARIO,
   TEXTO_NO_IDENTIFICADO,
@@ -1288,6 +1295,42 @@ async function runTurnPhases(
     .eq("id", conversationId);
 
   const { messages: history, createdAt: historyCreatedAt } = await loadHistory(supabase, conversationId);
+
+  // T12, plan "Seba sale sin pisar a nadie" (19/9/2026, cierra la decisión
+  // abierta #1): ¿este turno es un REINTENTO de uno anterior que ya mandó la
+  // presentación de Seba y se cayó DESPUÉS, al clasificar o en el tool loop,
+  // antes de redactar la respuesta real? Se reconoce porque la última línea
+  // del historial es del asistente y calza byte a byte con `sebaGreeting`
+  // (`isSebaGreeting`, seba.ts) — `claimPresentation` ya selló
+  // `welcome_sent_at` antes de mandarla, así que un reintento nunca vuelve a
+  // presentarse.
+  //
+  // Principio: el reintento tiene que ver EXACTAMENTE lo que vio el primer
+  // intento. Por eso el saludo se recorta acá, en los DOS arreglos y en el
+  // mismo índice (`loadHistory` los arma en el mismo bucle, así que un
+  // `.pop()` en cada uno preserva el paralelismo), ANTES de calcular
+  // `customerMessage`, `rafagaCliente`, correr `mediaStreakWithoutText`, fase
+  // 0, la clasificación o el tool loop — todos reciben el historial "como si
+  // Seba no hubiera hablado todavía", terminado en el cliente. Revisión
+  // adversarial del 19/9/2026 (ver el plan): la primera versión recortaba
+  // solo para la ráfaga y dejaba el historial real —el que viaja a
+  // `agent.generate`— terminado en un mensaje del ASISTENTE; hay proveedores
+  // que lo tratan como prefill o devuelven vacío.
+  let introducedThisTurn = false;
+  let saludoPendienteDeRespuesta = false;
+  const ultimaLinea = history[history.length - 1];
+  if (
+    ultimaLinea &&
+    ultimaLinea.role === "assistant" &&
+    typeof ultimaLinea.content === "string" &&
+    isSebaGreeting(ultimaLinea.content)
+  ) {
+    history.pop();
+    historyCreatedAt.pop();
+    introducedThisTurn = true;
+    saludoPendienteDeRespuesta = true;
+  }
+
   if (history.length === 0) {
     // Bug 2 / S4 (T4, corrida "La IA ve lo que llega", 8/9/2026): esto era un
     // `return` mudo — sin traspaso, y DESPUÉS de haber dejado journey_stage
@@ -1305,6 +1348,12 @@ async function runTurnPhases(
     // vacías tras T2. Este `if` deja de ser el camino normal y pasa a ser la
     // red de seguridad — pero la invariante exige que igual deje rastro
     // cuando el caso vuelva a darse.
+    //
+    // T12 (19/9/2026): el recorte de arriba también puede dejar esto vacío
+    // si el saludo fuera la ÚNICA fila del historial — no debería pasar
+    // nunca (Seba solo se presenta después de que el cliente ya escribió
+    // algo), pero se trata igual que un historial vacío de verdad, sin
+    // inventar un índice fuera de rango.
     log.warn("turno_sin_contenido_legible", { conversationId });
     await recordHandoff(supabase, { conversationId, toKind: "unassigned", reason: "sin_contenido_legible" });
     await resetStage(supabase, conversationId, "turno_sin_contenido_legible", convo.assigned_agent_id);
@@ -1356,7 +1405,12 @@ async function runTurnPhases(
   // `claimPresentation` ya no tendría nada que reclamar: Seba no saludaría
   // encima de la plantilla. Hoy esa variable sigue vacía en producción, así
   // que este es el único saludo que sale.
-  let introducedThisTurn = false;
+  //
+  // `introducedThisTurn` ya se declaró más arriba (T12, 19/9/2026): en un
+  // REINTENTO queda en `true` desde el recorte del saludo, y este `if` ni
+  // siquiera entra —`convo.welcome_sent_at` ya no es `null`, porque
+  // `claimPresentation` lo selló en el primer intento—, así que las dos
+  // formas de quedar `true` son mutuamente excluyentes en el mismo turno.
   if (convo.welcome_sent_at === null) {
     const claimed = await claimPresentation(supabase, conversationId);
     if (claimed) {
@@ -1496,6 +1550,33 @@ async function runTurnPhases(
       tokens: null,
       customerMessage,
     });
+    return;
+  }
+
+  // T12, plan "Seba sale sin pisar a nadie" (19/9/2026): turno espurio — este
+  // reintento cae sobre un saludo que YA fue la respuesta completa del primer
+  // intento (el caso `soloSaludo`, más arriba, que retorna ANTES de llamar al
+  // proveedor y por eso nunca produce por sí solo un reintento de T12 — esto
+  // cubre una invocación duplicada del turno por cualquier otra vía). Si la
+  // ráfaga —ya recortada del saludo— sigue siendo solo saludo o cortesía, no
+  // hay nada nuevo que redactar: cerrar sin llamar al modelo ni escribir
+  // traspaso. `awaiting_reply` ya quedó apagado por ese saludo
+  // (`isAutoReply: false`) cuando salió la primera vez, así que callarse acá
+  // no deja al cliente esperando sin dueño.
+  //
+  // A PROPÓSITO después de la guarda de cortesía de arriba, no antes: las dos
+  // comparten el caso "ráfaga que es solo 'gracias'" cuando la ráfaga
+  // recortada es pura cortesía, y con una escalada abierta esa guarda tiene
+  // que ganar —deja su propio traspaso (`cortesia_tras_escalada`), que
+  // importa para la bitácora del caso— en vez de que este cierre espurio,
+  // silencioso, se la coma antes de que llegue a evaluarla.
+  if (
+    saludoPendienteDeRespuesta &&
+    rafagaCliente.length > 0 &&
+    rafagaCliente.every((linea) => isGreetingOnly(linea) || isCourtesyOnly(linea))
+  ) {
+    log.info("turno_saludo_ya_respondido", { conversationId });
+    await resetStage(supabase, conversationId, "turno_saludo_ya_respondido", convo.assigned_agent_id);
     return;
   }
 
@@ -1709,21 +1790,27 @@ async function runTurnPhases(
     // saliente que sí se entregó — y el predicado nuevo del reconciliador
     // (`last_message_direction.eq.inbound` o `last_message_status.eq.failed`,
     // `reconciler.ts`) deja afuera justo ese caso: un lead que recibió el
-    // saludo y se quedó sin la redacción de verdad, sin traspaso, invisible
-    // para "Sin dueño". Por eso acá sí hace falta un `recordHandoff` nuevo
-    // —mismo `toKind`/`toId` que ya usa la guarda de cortesía, arriba— pero
-    // SOLO si Seba se presentó este turno: sin saludo, el último mensaje
-    // sigue siendo del cliente y el diagnóstico viejo sigue valiendo tal
-    // cual, el reconciliador lo recoge como siempre.
-    if (introducedThisTurn) {
-      await recordHandoff(supabase, {
-        conversationId,
-        toKind: convo.assigned_agent_id ? "human" : "unassigned",
-        toId: convo.assigned_agent_id ?? null,
-        reason: "entrega_fallida",
-      });
-    }
+    // saludo y se quedó sin la redacción de verdad. T2 tapaba ese hueco
+    // escribiendo acá un `recordHandoff(entrega_fallida)` — SUPERADO el
+    // 19/9/2026 por T12 (cierra la decisión abierta #1 del mismo plan): ese
+    // traspaso volvía el caso IRRECUPERABLE ("no se reintenta para no
+    // duplicar" es justo lo que `entrega_fallida` significa en todos los
+    // demás caminos, CLAUDE.md), y acá SÍ es seguro reintentar — lo único
+    // que salió es la presentación de Seba, con `welcome_sent_at` ya sellado
+    // por `claimPresentation`, así que el reintento no vuelve a saludar. En
+    // vez del traspaso se lanza `ProviderFailedAfterGreetingError`: la cola
+    // (queue.ts) la reintenta como cualquier fallo transitorio, y el
+    // reintento reconoce el saludo ya enviado (ver el recorte al principio
+    // de esta función) y contesta lo que faltó. Sin saludo previo, nada
+    // cambia: el reconciliador sigue recogiendo la conversación sola.
     await resetStage(supabase, conversationId, "turno_clasificacion_fallida", convo.assigned_agent_id);
+    if (introducedThisTurn) {
+      throw new ProviderFailedAfterGreetingError(
+        conversationId,
+        `Seba se presentó, pero clasificar la intención falló después: ${errorText(classified.err)}`,
+        { cause: classified.err }
+      );
+    }
     return;
   }
 
@@ -1898,17 +1985,22 @@ async function runTurnPhases(
     // (`introducedThisTurn`), el último mensaje visible es su saludo —un
     // saliente exitoso, no el mensaje del cliente— y el reconciliador
     // (`last_message_direction.eq.inbound` o `last_message_status.eq.failed`,
-    // `reconciler.ts`) ya no vuelve a mirar esta conversación. El mismo
-    // `recordHandoff` que la clasificación fallida, solo con saludo previo.
-    if (introducedThisTurn) {
-      await recordHandoff(supabase, {
-        conversationId,
-        toKind: convo.assigned_agent_id ? "human" : "unassigned",
-        toId: convo.assigned_agent_id ?? null,
-        reason: "entrega_fallida",
-      });
-    }
+    // `reconciler.ts`) ya no vuelve a mirar esta conversación. T2 tapaba ese
+    // hueco con el mismo `recordHandoff(entrega_fallida)` que la puerta de
+    // clasificación fallida — SUPERADO el 19/9/2026 por T12 (cierra la
+    // decisión abierta #1 del mismo plan, ver el comentario gemelo de más
+    // arriba): ese traspaso hacía el caso IRRECUPERABLE cuando en realidad es
+    // seguro reintentar (lo único que salió fue la presentación de Seba, ya
+    // sellada). En vez del traspaso se lanza `ProviderFailedAfterGreetingError`,
+    // que la cola reintenta; sin saludo previo, nada cambia.
     await resetStage(supabase, conversationId, "turno_tool_loop_fallido", convo.assigned_agent_id);
+    if (introducedThisTurn) {
+      throw new ProviderFailedAfterGreetingError(
+        conversationId,
+        `Seba se presentó, pero el tool loop falló después: ${errorText(err)}`,
+        { cause: err }
+      );
+    }
     return;
   }
 
@@ -2406,6 +2498,21 @@ export async function runAgentTurn(conversationId: string, options: { vencioEn?:
     try {
       await runTurnPhases(supabase, target, convo, entrega, lease, tiempos, businessHours, links, lessons);
     } catch (err) {
+      // T12, plan "Seba sale sin pisar a nadie" (19/9/2026, cierra la
+      // decisión abierta #1): única excepción a "si `entrega.intentado`, no
+      // se reintenta" — se mira ANTES de esa regla. Lo único que salió en un
+      // turno que lanza esto es la presentación de Seba, con `welcome_sent_at`
+      // ya sellado por `claimPresentation`: un reintento no la duplica, solo
+      // vuelve a intentar la redacción que faltó (`runTurnPhases` reconoce el
+      // saludo en el historial y no vuelve a mandarlo, ver el recorte al
+      // principio de esa función). Se deja pasar el error TAL CUAL —sin
+      // envolver en `NonRetryableTurnError`— para que la cola (queue.ts) lo
+      // reintente como cualquier fallo transitorio común.
+      if (isProviderFailedAfterGreeting(err)) {
+        log.warn("turno_reintentable_tras_saludo", { conversationId, detail: errorText(err) });
+        throw err;
+      }
+
       if (!entrega.intentado) throw err;
 
       // El mensaje ya salió (o pudo haber salido) y lo que falló es un paso

@@ -719,6 +719,73 @@ en el commit `d9091e0`, T5).
   columna nueva; queda para una corrida futura si llega a importar en la
   práctica.
 
+### T12 — El turno se reintenta solo cuando el proveedor falla después del saludo (SIN COMMITEAR al escribir este punto)
+
+- **Archivos:** `src/lib/ai/turn-delivery.ts`, `src/lib/ai/turn-delivery.test.ts`,
+  `src/lib/ai/agent.ts`, `src/lib/ai/agent.test.ts` (`src/lib/ai/seba.ts` +
+  `seba.test.ts` ya estaban escritos en el árbol antes de este commit —
+  quedaron de un corte de luz anterior, ver la sección T12 del plan).
+- **Qué cambia para el usuario:** cierra la decisión abierta #1 del plan
+  (reabre D-B SOLO en este punto: en todos los demás caminos
+  `entrega_fallida` sigue significando "no se reintenta para no
+  duplicar"). Si el proveedor de IA falla DESPUÉS de que Seba ya mandó su
+  saludo —clasificando la intención, o dentro del tool loop— el turno YA
+  NO deja un traspaso `entrega_fallida` irrecuperable (T2, más arriba):
+  ahora lanza `ProviderFailedAfterGreetingError` y la cola lo reintenta
+  como cualquier fallo transitorio (hasta `MAX_ATTEMPTS = 3`, sin tocar
+  `queue.ts`) — es seguro porque lo único que salió fue la presentación,
+  ya sellada por `claimPresentation`, y ningún `deliver()` vive fuera de
+  `agent.ts`. El reintento reconoce el saludo ya enviado (compara byte a
+  byte con `isSebaGreeting`, `seba.ts`), lo recorta del historial ANTES de
+  calcular nada más, no vuelve a saludar y contesta lo que faltaba. Un
+  reintento —o cualquier invocación duplicada— sobre un saludo que YA fue
+  la respuesta completa (el cliente solo había dicho "hola") cierra en
+  silencio, sin llamar al modelo ni escribir traspaso
+  (`turno_saludo_ya_respondido`); si en cambio hay una escalada abierta y
+  el cliente solo agradeció, gana la guarda de cortesía existente (deja su
+  propio traspaso `cortesia_tras_escalada`), no este cierre silencioso.
+  Si los tres intentos de la cola fallan, `abandonado` sigue yendo a
+  `unassigned` como siempre (límite aceptado del plan, no corregido acá).
+- **Migración:** no.
+- **Variables de entorno:** ninguna.
+- **Toca UI o solo servidor:** solo servidor (recrear contenedor, ~20 s;
+  no hay cambios de UI).
+- **Qué mirar en los logs tras desplegar:** `turno_reintentable_tras_saludo`
+  (`log.warn`, en el `catch` de `runAgentTurn` — confirma que la cola va a
+  reintentar, no que algo esté mal); si un caso se agota, la cola deja
+  `cola_turno_fallido` en cada intento y `cola_turno_abandonado` al
+  tercero (ver `queue.ts`, sin tocar en esta tarea) — un `abandonado` que
+  venía de esta causa es récuperable a mano desde "Sin dueño", no un lead
+  perdido. `turno_saludo_ya_respondido` (`log.info`) es informativo, no
+  señal de problema.
+- **Qué se verificó:** `rtk npx vitest run src/lib/ai/seba.test.ts
+  src/lib/ai/turn-delivery.test.ts src/lib/ai/agent.test.ts
+  src/lib/ai/queue.test.ts` en verde (233 tests, con Redis arriba —
+  `queue.test.ts` confirmado EJECUTANDO, no saltado); `rtk npx tsc
+  --noEmit` y `rtk npm run lint` sin errores (los 4 warnings preexistentes
+  de `_cols`/`_isCol`/`_isVal` siguen ahí, sin relación con esta tarea).
+  Dos mutaciones de verificación, con respaldo `cp` (nunca `git checkout
+  --`): (1) quitar la excepción de `isProviderFailedAfterGreeting` en el
+  `catch` de `runAgentTurn` rompió los tres tests que esperan el error
+  reintentable (los dos de "CON saludo previo" y el de "no lo envuelve en
+  NonRetryableTurnError"); (2) quitar el recorte del saludo (apagar la
+  condición del reconocimiento) rompió los tres tests del reintento en sí
+  (no vuelve a saludar / turno espurio / la guarda de cortesía sigue
+  callando). Las dos veces, restaurado desde la copia y la suite volvió a
+  verde.
+- **Desvío sobre el orden descrito en el plan, hallado implementando:** el
+  plan describe la guarda de "turno espurio" antes que la de cortesía tras
+  escalada, pero un reintento sobre `["gracias"]` con una escalada
+  abierta calza AMBAS condiciones (un "gracias" solo es, a la vez,
+  "cortesía" para las dos guardas). Puesta antes, la guarda espuria se
+  comería el caso silenciosamente y la guarda de cortesía —que deja su
+  propio traspaso, importante para la bitácora de la escalada— nunca
+  llegaría a evaluarse. La implementación la deja DESPUÉS de la guarda de
+  cortesía (ver el comentario en `agent.ts` y la trampa nueva en
+  `CLAUDE.md`); el efecto observable del plan (el reintento con "gracias" +
+  escalada sigue callándose, con traspaso) queda igual, solo cambia CUÁL
+  de las dos guardas lo hace.
+
 ### T4 — El job `migraciones` del CI vuelve a verde (`932cb9e`)
 
 - **Archivo:** `supabase/tests/traspaso_sin_contenido_legible.sql`.

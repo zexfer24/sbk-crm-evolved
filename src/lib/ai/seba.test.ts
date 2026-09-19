@@ -4,6 +4,7 @@ import {
   TEXTO_CONFIRMAR_INVENTARIO,
   TEXTO_NO_IDENTIFICADO,
   TEXTO_SIN_STOCK,
+  isSebaGreeting,
   presentationGreetingFor,
   sebaGreeting,
 } from "@/lib/ai/seba";
@@ -75,5 +76,31 @@ describe("los textos fijos de R2/R3/R4 y la pregunta de filtro pasan la guarda",
 describe("la excepción de nombre solo deja pasar a Seba", () => {
   it("'mi nombre es Carlos' sigue dando persona", () => {
     expect(revealsIdentity("mi nombre es Carlos")?.categoria).toBe("persona");
+  });
+});
+
+// T12, plan "Seba sale sin pisar a nadie" (19/9/2026, decisión abierta #1):
+// el turno usa esto para reconocer, en un reintento, que la última línea del
+// historial ya es la presentación que salió antes — nunca algo que haya que
+// volver a redactar. Construido a partir de `sebaGreeting`, no de literales
+// repetidos a mano: estos tests confirman que reconoce las TRES franjas y
+// que no se confunde con otro texto que también empiece con "Hola".
+describe("isSebaGreeting", () => {
+  it.each<DayBand>(["mañana", "tarde", "noche"])("reconoce la presentación de la franja %s", (band) => {
+    expect(isSebaGreeting(sebaGreeting(band))).toBe(true);
+  });
+
+  it("no confunde otro texto que empieza con 'Hola'", () => {
+    expect(isSebaGreeting("Hola, ¿en qué te puedo ayudar?")).toBe(false);
+    expect(isSebaGreeting("Hola, buen día, mi nombre es Carlos.")).toBe(false);
+  });
+
+  it("no confunde la presentación con un pie de más o de menos (comparación exacta)", () => {
+    expect(isSebaGreeting(`${sebaGreeting("tarde")} `)).toBe(false);
+    expect(isSebaGreeting(sebaGreeting("tarde").slice(0, -1))).toBe(false);
+  });
+
+  it("una cadena vacía no calza ninguna franja", () => {
+    expect(isSebaGreeting("")).toBe(false);
   });
 });

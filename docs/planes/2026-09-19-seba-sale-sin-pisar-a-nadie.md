@@ -250,7 +250,7 @@ plan original), cada una con el mismo hash `6cc62ae` — no son tres commits.
 | 8 | Un STICKER del cliente hacía fallar el `every(isCourtesyOnly)` de la guarda de cortesía tras escalada (T3) — "gracias" + sticker dejaba pasar una segunda despedida encima de la primera. `customerBurst` salta el sticker sin contarlo ni cortar la ráfaga. | T1/T2/T3 | `6cc62ae` | Corregido |
 | 9 | El comentario de `reconciler.ts` sobre el diseño descartado (`awaiting_any_reply`) no reflejaba todavía que `reabierto` (T8) ya no cierra la escalada — quedaba como si el caso 5 de la revisión adversarial del 16/9 siguiera abierto. Comentario actualizado con la referencia cruzada a T8/`RAZONES_QUE_NO_CIERRAN_LA_ESCALADA`. **Va en el commit de T1/T2/T3, no en el de T8** (`68dacfb` solo toca `handoffs.ts`/su test). | T1/T2/T3 (comentario cruzado a T8) | `6cc62ae` | Corregido |
 | 10 | Las cinco migraciones (T5) traían `set local lock_timeout` pero, sin `psql -1`, era un NO-OP SILENCIOSO — la migración "funcionaba" igual sin el freno de lock. Cada una gana un bloque que ABORTA si `current_setting('lock_timeout')` sigue en `'0'`/`'0ms'`. | T5 | `d9091e0` | Corregido |
-| (sin número confirmado) | Tras el saludo de Seba, un fallo del proveedor deja `entrega_fallida` (T2) pero nada reintenta el turno — el chat queda esperando a un humano o a que el cliente vuelva a escribir. Reencolarlo reabriría la decisión D-B (`welcome_sent_at` ya sellado no volvería a saludar, pero sí repetiría fase 0/1/tool loop desde cero). | — | — | **Sin corregir — decisión abierta #1, ver más abajo** |
+| (sin número confirmado) | Tras el saludo de Seba, un fallo del proveedor deja `entrega_fallida` (T2) pero nada reintenta el turno — el chat queda esperando a un humano o a que el cliente vuelva a escribir. Reencolarlo reabriría la decisión D-B (`welcome_sent_at` ya sellado no volvería a saludar, pero sí repetiría fase 0/1/tool loop desde cero). | `ProviderFailedAfterGreetingError` (`turn-delivery.ts`) reemplaza el `recordHandoff(entrega_fallida)` de T2 en las dos salidas post-saludo; `runAgentTurn` la deja pasar tal cual (sin envolver en `NonRetryableTurnError`) y la cola la reintenta como cualquier fallo transitorio — el reintento reconoce el saludo ya enviado y no vuelve a saludar. | T12 | (sin commitear) | **Corregido (decisión #1 del operador — ver "Decisiones abiertas", más abajo, CERRADA)** |
 | (sin número confirmado) | `unassign` (`mutations.ts`) no vuelve a encender `ai_enabled` — a diferencia de `assignToMe`/`intervene` (T10), que sí lo apagan. Un "Asignarme" por error + "Desasignar" deja el chat sin dueño Y con Seba apagada, sin ningún mecanismo que la reencienda sola. | `reenableAiIfAdvisorNeverWrote` reenciende con un segundo `UPDATE` aparte SOLO si la IA se apagó por el propio tomar-a-mano (`aiWasSilencedByThisTakeover`, mira `silenciada_por_asesor` con `created_at >= assigned_at`) y el asesor nunca le escribió de verdad al cliente (`advisorWroteToCustomerSince`); nunca lanza, falla cerrado. | T11 | `824b56e` | **Corregido (decisión #2 del operador — ver "Decisiones abiertas", más abajo, CERRADA)** |
 
 (T4 y T8 también quedaron commiteados — `932cb9e` y `68dacfb`
@@ -263,11 +263,22 @@ No se corrigieron porque son decisiones de diseño, no bugs de una línea —
 quedan documentadas también en el Grupo E de
 `docs/entregas/2026-09-19-seba-sale-sin-pisar-a-nadie.md`:
 
-1. **Reencolar tras `entrega_fallida` post-saludo.** ¿Debe el reconciliador
-   (o algún otro mecanismo) reintentar la redacción real cuando el
-   proveedor falla justo después de que Seba ya saludó? Hoy el chat queda
-   con el traspaso correcto (nadie lo pierde), pero mudo hasta que un
-   humano lo note o el cliente vuelva a escribir.
+1. **Reencolar tras `entrega_fallida` post-saludo. CERRADA el 19/9/2026 por
+   T12** ("El turno se reintenta solo cuando el proveedor falla después del
+   saludo", mismo plan). El operador decidió que SÍ, con la condición de
+   que sea SEGURO: reabre D-B solo en este punto puntual (en todos los
+   demás caminos `entrega_fallida` sigue significando "no se reintenta
+   para no duplicar"). Las dos salidas que pueden caer justo después del
+   saludo ya no dejan `recordHandoff(entrega_fallida)` — lanzan
+   `ProviderFailedAfterGreetingError` (`turn-delivery.ts`), que
+   `runAgentTurn` deja pasar TAL CUAL en su `catch` (sin envolver en
+   `NonRetryableTurnError`) para que la cola la reintente igual que
+   cualquier fallo transitorio, sin tocar `queue.ts`. El reintento
+   reconoce el saludo ya enviado (`isSebaGreeting`, `seba.ts`), lo recorta
+   del historial ANTES de calcular nada más y no vuelve a presentarse. Ver
+   la sección T12 más abajo, la trampa correspondiente en `CLAUDE.md` y la
+   sección de T12 en `docs/entregas/2026-09-19-seba-sale-sin-pisar-a-nadie.md`
+   (Grupo E).
 2. **`unassign` y `ai_enabled`. CERRADA el 19/9/2026 por T11 (mismo día,
    corrección del orquestador sobre este mismo plan).** El operador decidió
    que SÍ: `unassign` vuelve a encender la IA, pero solo cuando la propia
@@ -284,9 +295,143 @@ quedan documentadas también en el Grupo E de
    exigiría una columna nueva; no se hizo en esta corrida.
 
 La decisión #1 (reencolar el turno tras un `entrega_fallida` post-saludo)
-sigue ABIERTA a propósito: reabre D-B (reencolar el turno reabriría si
-`entrega_fallida` sigue significando "no se reintenta para no duplicar") y
-no se toca el camino caliente del turno en la víspera del despliegue. Los
-chats que caen en ese caso quedan silenciosos pero NO invisibles (siguen
-en "Sin dueño"/"Pendientes" con su traspaso correspondiente) — es trabajo
-pendiente, no una regresión de la invariante "ningún lead invisible".
+quedó CERRADA por T12, más abajo en este mismo plan (ver la sección "T12 —
+El turno se reintenta solo cuando el proveedor falla después del saludo").
+Antes de T12 los chats que caían en ese caso quedaban silenciosos pero NO
+invisibles (seguían en "Sin dueño"/"Pendientes" con su traspaso
+correspondiente) — nunca fue una regresión de la invariante "ningún lead
+invisible", solo trabajo pendiente; con T12 ya ni siquiera quedan mudos:
+el turno se reintenta solo.
+
+## T12 — El turno se reintenta solo cuando el proveedor falla después del saludo (cierra la decisión abierta #1)
+
+**Decisión del operador (19/9/2026, tras el tercer corte de luz):** T12 sale
+ANTES del despliegue. Reabre D-B solo en este punto: `entrega_fallida` sigue
+significando "no se reintenta para no duplicar" en todos los demás caminos;
+acá el reintento es seguro y se explica por qué.
+
+**Por qué es seguro reintentar (verificado en el código el 19/9/2026):**
+
+1. Ningún `deliver()` vive fuera de `agent.ts`: las herramientas del tool
+   loop (`tools.ts`) no le envían nada al cliente. En las dos salidas que
+   toca T12 —clasificación fallida y el `catch` del tool loop— lo ÚNICO que
+   ya salió en el turno es la presentación de Seba.
+2. `claimPresentation` selló `welcome_sent_at` antes de enviar: el reintento
+   no vuelve a presentarse.
+3. La cola ya sabe reintentar un error común: `recordFailure` →
+   `RETRY_AFTER_ERROR_SECONDS`, y a los `MAX_ATTEMPTS = 3` deja `abandonado`
+   a `unassigned`. `queue.ts` NO se toca.
+
+**Cambios (un solo subagente, un solo commit, sin migración):**
+
+- `turn-delivery.ts`: `ProviderFailedAfterGreetingError` (con
+  `conversationId` y `cause`) + `isProviderFailedAfterGreeting`. Error
+  REINTENTABLE a propósito: es la única excepción a "si `entrega.intentado`,
+  no se reintenta".
+- `seba.ts`: `isSebaGreeting(text)` — ¿es EXACTAMENTE la presentación, en
+  cualquiera de las tres franjas? Construida sobre `sebaGreeting`, sin
+  repetir literales. (Ya escrita con sus tests antes del corte; está en
+  `git stash`, "T12 a medias".)
+- `agent.ts`, `runTurnPhases`:
+  - **Principio: el reintento ve EXACTAMENTE lo que vio el primer intento.**
+    `saludoPendienteDeRespuesta`: la última línea del historial es del
+    asistente y `isSebaGreeting` la reconoce → este turno ES el reintento.
+    En ese caso la línea del saludo se RECORTA de `history` Y de
+    `historyCreatedAt` (los dos arreglos, mismo índice) justo después de
+    `loadHistory`, antes de cualquier otro cálculo, y `introducedThisTurn =
+    true`. Así `customerMessage`, `rafagaCliente`, `mediaStreakWithoutText`,
+    fase 0, la clasificación y el tool loop reciben lo mismo que en el primer
+    intento (historial que termina en el cliente + el sufijo "el saludo ya
+    salió"). Revisión adversarial del 19/9/2026 — la primera versión de este
+    plan recortaba el saludo SOLO para la ráfaga y dejaba dos huecos:
+    (1) `agent.generate` recibía un historial terminado en un mensaje del
+    ASISTENTE — hay proveedores que lo tratan como prefill o devuelven
+    vacío, y el modelo "ya contestó"; (2) `mediaStreakWithoutText` y fase 0
+    veían un historial distinto al del primer intento.
+  - Turno espurio sobre un saludo que YA fue la respuesta completa: si
+    `saludoPendienteDeRespuesta` y la ráfaga recortada es solo
+    saludo/cortesía (el caso `soloSaludo` del primer intento, que retorna
+    ANTES de llamar al proveedor y por eso nunca es un reintento de T12), el
+    turno cierra con `resetStage` sin llamar al modelo ni escribir traspaso
+    (`awaiting_reply` ya quedó apagado por ese saludo): evita un segundo
+    "¿en qué te ayudo?" encima de la presentación.
+  - El reconocimiento depende de que el texto viaje sin transformar. Está
+    verificado: `send.ts` guarda `content: text` tal cual y `historyLine`
+    devuelve `row.content` crudo para un `text`. Si el reconocimiento
+    fallara, el lead quedaría mudo SIN rastro (sin `introducedThisTurn` no
+    hay ni throw ni traspaso, y el último mensaje visible es saliente) — por
+    eso el test (d) pasa por `loadHistory` de verdad con la fila que insertó
+    `sendAgentText`, no por un literal armado a mano.
+  - En las dos salidas por falla del proveedor, cuando `introducedThisTurn`:
+    se conservan `logTurn` y `resetStage`, se QUITA el `recordHandoff
+    (entrega_fallida)` de T2 y se lanza `ProviderFailedAfterGreetingError`.
+    Sin saludo previo no cambia nada (el reconciliador la recoge como hoy).
+- `agent.ts`, `runAgentTurn`: en el `catch`, antes de `if
+  (!entrega.intentado) throw err`, dejar pasar tal cual un
+  `ProviderFailedAfterGreetingError` (la cola lo reintenta). Log
+  `turno_reintentable_tras_saludo`.
+- La invariante "ningún lead invisible" se sostiene: mientras hay intentos,
+  el turno está en la cola; al agotarlos, `abandonado` → "Sin dueño".
+  Límite aceptado: `abandonado` va siempre a `unassigned`, también si el chat
+  tenía asesor (T2 lo mandaba a `human`); con asesor asignado el chat sigue
+  en "Tuyas"/"Pendientes" por `awaiting_reply` (el saludo es `is_auto_reply`).
+- Si el modelo llegó a escalar dentro del tool loop antes de que `generate`
+  lanzara, el reintento puede escalar otra vez: con asesor asignado cae en
+  la rama `alreadyAssigned` (solo nota); sin asesor deja una segunda fila
+  `escalada_sin_asesor`. Aceptado: es bitácora repetida, no un mensaje
+  repetido.
+- Casos revisados que NO necesitan código (quedan en la trampa de CLAUDE.md):
+  - El cliente escribe durante la espera del reintento (30 s + cron): su
+    mensaje queda DESPUÉS del saludo, la última línea es del cliente, no se
+    reconoce como reintento y el turno corre normal con el saludo en medio
+    del historial; si el proveedor vuelve a fallar, el último mensaje es
+    entrante y el reconciliador lo recoge como siempre.
+  - Un asesor escribe o toma el chat entre intentos: el reintento sale por
+    las guardas de apertura de siempre (`pausada`, `humano_se_adelanto`).
+  - Ráfaga en carrera (`hola` → turno `soloSaludo`; `precio…` llegó antes
+    del saludo): el segundo turno ve `[hola, precio, saludo]`, hoy mandaría
+    al modelo un historial terminado en asistente y, si el proveedor falla,
+    quedaría INVISIBLE (sin `introducedThisTurn`, último mensaje saliente).
+    Con T12 se recorta, contesta sin volver a saludar y, si falla, reintenta.
+  - `runAgentTurn` solo tiene dos llamadores: la cola y
+    `api/dev/simulate-message` (solo desarrollo, atrapa y devuelve 502). Al
+    quitar el traspaso de T2, la visibilidad de este caso depende de la
+    cola; no hay otro llamador en producción.
+  - `abandonado` NO está en `RAZONES_QUE_NO_CIERRAN_LA_ESCALADA`: si el
+    intento 1 llegó a escalar y los tres intentos fallan, esa fila cierra la
+    escalada para `escalationOpen` y un "gracias" posterior lo contesta
+    Seba en vez de callarse. Semántica que `abandonado` ya tenía; no se toca.
+  - Costo: bajo una caída del proveedor cada primer contacto reintenta hasta
+    3 veces (fase 0 + clasificación por intento, solo si responden); el tope
+    de gasto diario sigue mandando.
+- Docs en el mismo commit: trampa nueva en `CLAUDE.md` (y corrección de la
+  trampa de T2, que pasa a describir solo el caso sin reintento posible),
+  línea de `docs/GLOSARIO.md`, sección T12 en
+  `docs/entregas/2026-09-19-seba-sale-sin-pisar-a-nadie.md`, y el cierre de
+  la decisión #1 más arriba en este plan.
+
+**Tests (en el mismo commit):**
+
+- `seba.test.ts`: los de `isSebaGreeting` (ya escritos).
+- `turn-delivery.test.ts`: el error nuevo NO es `isNonRetryable`.
+- `agent.test.ts`: (a) clasificación fallida tras el saludo → lanza el error
+  reintentable, NO escribe `entrega_fallida`, `welcome_sent_at` queda
+  sellado; (b) lo mismo en el `catch` del tool loop; (c) sin saludo previo,
+  las dos salidas se comportan como hoy (no lanzan, no escriben traspaso);
+  (d) reintento: historial que termina en la presentación → no vuelve a
+  saludar, `buildInstructions` recibe `introducedThisTurn: true`, el
+  historial que llega a `generate` y a `classifyIntent` termina en el
+  mensaje del CLIENTE (no en el saludo), el turno contesta — y la fila del
+  saludo la arma el mismo camino que `sendAgentText`, leída por `loadHistory`
+  real; (d2) turno espurio sobre `[hola, saludo]` → cierra sin llamar al
+  modelo ni escribir traspaso; (d3) el cliente escribió después del saludo →
+  NO se trata como reintento, el saludo se queda en el historial; (e) reintento con "gracias" + escalada abierta → la guarda de
+  cortesía sigue callando (la ráfaga se calcula sin el saludo final);
+  (f) `runAgentTurn` deja pasar el error sin convertirlo en
+  `NonRetryableTurnError`. Los tests de T2 que esperaban `entrega_fallida`
+  se reescriben, no se borran sin reemplazo.
+- Mutación manual (con `cp`, nunca `git checkout --`): quitar la excepción
+  del `catch` de `runAgentTurn` → (f) debe romperse; quitar el recorte del
+  saludo en la ráfaga → (e) debe romperse.
+- Criterio de cierre: tsc, lint 0 errores, suite completa verde CON Redis,
+  build; después se sube a la rama del PR y se espera el CI real.
