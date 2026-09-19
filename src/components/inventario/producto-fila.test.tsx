@@ -27,12 +27,10 @@ vi.mock("@/lib/supabase/client", () => ({
 
 const updateProductWeight = vi.fn().mockResolvedValue(undefined);
 const updateProductStock = vi.fn().mockResolvedValue(undefined);
-const updateProductPrice = vi.fn().mockResolvedValue(undefined);
 const setProductActive = vi.fn().mockResolvedValue(undefined);
 vi.mock("@/lib/mutations", () => ({
   updateProductWeight: (...args: unknown[]) => updateProductWeight(...args),
   updateProductStock: (...args: unknown[]) => updateProductStock(...args),
-  updateProductPrice: (...args: unknown[]) => updateProductPrice(...args),
   setProductActive: (...args: unknown[]) => setProductActive(...args),
 }));
 
@@ -55,6 +53,10 @@ function product(over: Partial<Product> = {}): Product {
 
 function pesoInput() {
   return screen.getByLabelText("Peso de Carburador PZ27");
+}
+
+function stockInput() {
+  return screen.getByLabelText("Stock de Carburador PZ27");
 }
 
 describe("ProductoFila — el campo Peso", () => {
@@ -125,31 +127,50 @@ describe("ProductoFila — el campo Peso", () => {
 });
 
 /**
- * T7 (10/9/2026): el pie `.inv-bs` de la columna Precio tiene que existir
- * SIEMPRE (con o sin texto) para que Stock/Precio/Peso midan lo mismo de
- * alto — si solo aparece en USD, ese campo queda más alto y descuadra la
- * fila (ver `inventario-css.test.ts`, que mira `.inv-row`/`.inv-bs` en la
- * hoja de estilos porque jsdom no calcula ese layout).
+ * T1 del plan "El precio se lee en bolívares" (19/9/2026): el precio deja de
+ * editarse desde el CRM — llega de `products`, que se carga por fuera. Ya no
+ * hay un textbox "Precio de …", solo texto: bolívares arriba (la cifra
+ * principal, `priceDisplay`), dólares en el pie. Reemplaza al escenario
+ * anterior (10/9/2026, T7) donde era al revés — USD arriba, "Bs. …" chico
+ * SOLO en productos en dólares — y donde el campo todavía se guardaba con
+ * `updateProductPrice` (borrada en esta misma corrida). El pie `.inv-bs`
+ * sigue reservándose SIEMPRE (con o sin texto), mismo motivo de T7: si solo
+ * aparece a veces, ese campo queda más alto y descuadra Stock/Peso (ver
+ * `inventario-css.test.ts`, que mira la hoja de estilos porque jsdom no
+ * calcula ese layout).
  */
-describe("ProductoFila — el pie de la columna Precio", () => {
-  it("un producto en VES también renderiza el pie de Precio, vacío", () => {
-    const { container } = render(
-      <ProductoFila product={product({ currency: "VES", price: 900 })} bcvRate={40} />
-    );
-    const precioField = screen.getByLabelText("Precio de Carburador PZ27").closest(".inv-field");
-    const pie = precioField?.querySelector(".inv-bs");
-
-    expect(pie).not.toBeNull();
-    expect(pie).toHaveTextContent("");
-    void container;
+describe("ProductoFila — el precio, de solo lectura", () => {
+  it("ya no existe un textbox de Precio: es texto, no un input", () => {
+    render(<ProductoFila product={product()} bcvRate={40} />);
+    expect(screen.queryByRole("textbox", { name: /Precio de/ })).toBeNull();
   });
 
-  it("un producto en USD con tasa muestra el pie de Precio en bolívares", () => {
+  it("USD con tasa: bolívares como cifra principal, dólares en el pie", () => {
     render(<ProductoFila product={product({ currency: "USD", price: 25 })} bcvRate={40} />);
-    const precioField = screen.getByLabelText("Precio de Carburador PZ27").closest(".inv-field");
-    const pie = precioField?.querySelector(".inv-bs");
+    const precio = screen.getByLabelText("Precio de Carburador PZ27");
+    const pie = precio.closest(".inv-field")?.querySelector(".inv-bs");
 
-    expect(pie).toHaveTextContent("Bs. 1000.00");
+    expect(precio).toHaveTextContent("Bs. 1000.00");
+    expect(pie).toHaveTextContent("$ 25.00");
+  });
+
+  it("VES con tasa: bolívares como cifra principal, el equivalente en dólares en el pie", () => {
+    render(<ProductoFila product={product({ currency: "VES", price: 1000 })} bcvRate={40} />);
+    const precio = screen.getByLabelText("Precio de Carburador PZ27");
+    const pie = precio.closest(".inv-field")?.querySelector(".inv-bs");
+
+    expect(precio).toHaveTextContent("Bs. 1000.00");
+    expect(pie).toHaveTextContent("$ 25.00");
+  });
+
+  it("sin tasa no inventa el pie: la cifra principal queda en la moneda propia del producto", () => {
+    render(<ProductoFila product={product({ currency: "USD", price: 25 })} bcvRate={0} />);
+    const precio = screen.getByLabelText("Precio de Carburador PZ27");
+    const pie = precio.closest(".inv-field")?.querySelector(".inv-bs");
+
+    expect(precio).toHaveTextContent("$ 25.00");
+    expect(pie).not.toBeNull();
+    expect(pie).toHaveTextContent("");
   });
 
   it("los campos Stock y Peso también llevan su pie, vacío", () => {
@@ -159,5 +180,32 @@ describe("ProductoFila — el pie de la columna Precio", () => {
 
     expect(stockField?.querySelector(".inv-bs")).not.toBeNull();
     expect(pesoField?.querySelector(".inv-bs")).not.toBeNull();
+  });
+});
+
+/**
+ * Stock y Peso siguen siendo editables (D3 del plan: "el pedido habla solo
+ * de precios") — este caso de Stock no estaba cubierto en este archivo
+ * (solo Peso, T4 del 8/9/2026): lo suma esta corrida para dejar constancia
+ * de que el refactor del campo Precio no le tocó el guardado a los otros dos.
+ */
+describe("ProductoFila — Stock sigue guardando", () => {
+  beforeEach(() => {
+    refresh.mockClear();
+    toastDanger.mockClear();
+    updateProductStock.mockClear();
+    updateProductStock.mockResolvedValue(undefined);
+  });
+
+  it("escribir un stock nuevo y salir del campo lo guarda", async () => {
+    const user = userEvent.setup({ delay: null, pointerEventsCheck: 0 });
+    render(<ProductoFila product={product({ stockQuantity: 10 })} bcvRate={40} />);
+
+    await user.clear(stockInput());
+    await user.type(stockInput(), "14");
+    await user.tab();
+
+    await waitFor(() => expect(updateProductStock).toHaveBeenCalledWith(expect.anything(), "prod-1", 14));
+    await waitFor(() => expect(refresh).toHaveBeenCalled());
   });
 });

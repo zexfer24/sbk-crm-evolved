@@ -125,7 +125,18 @@
   border-color: var(--lm-wait-ink, var(--lm-line));
 }
 
-.inv-input-wrap input {
+/*
+ * `.inv-readonly` (T1, "El precio se lee en bolívares", 19/9/2026) es el
+ * `<span>` de solo lectura que reemplazó al `<input>` de Precio: entra en
+ * ESTE MISMO selector para heredar el `font-size: 13px` del input, no el de
+ * su contexto ambiente. Separado, el span quedaba con letra más grande y la
+ * caja de Precio medía 4px más de alto que Stock/Peso — verificado en Brave
+ * con `getBoundingClientRect` sobre las 5 filas (mismos `top`/`left`, alto
+ * 36 contra 32). Ver `.inv-input-wrap .inv-readonly` más abajo para lo que
+ * SÍ lo distingue de un campo editable.
+ */
+.inv-input-wrap input,
+.inv-input-wrap .inv-readonly {
   width: 100%;
   min-width: 0;
   border: none;
@@ -138,6 +149,18 @@
 
 .inv-input-wrap input:disabled {
   opacity: 0.5;
+}
+
+/*
+ * Un `<span>` no es foco-able, así que ya no dispara `.inv-input-wrap
+ * :focus-within` de arriba — no hace falta apagar nada para eso. Lo que sí
+ * hace falta es apagar el cursor de texto que un `<span>` de solo lectura
+ * puede sugerir al pasar el mouse, para que no parezca un campo editable
+ * como sus vecinos Stock/Peso.
+ */
+.inv-input-wrap .inv-readonly {
+  display: block;
+  cursor: default;
 }
 
 .inv-saved {

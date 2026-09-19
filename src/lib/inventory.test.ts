@@ -9,9 +9,9 @@ import {
   inventoryPageRange,
   inventoryTotalPages,
   parseInventoryParams,
-  parsePriceInput,
   parseStockInput,
   parseWeightInput,
+  priceDisplay,
   priceInBs,
   stockLevel,
   summarizeInventory,
@@ -101,22 +101,40 @@ describe("parseStockInput", () => {
   });
 });
 
-describe("parsePriceInput", () => {
-  it("acepta precios con hasta dos decimales", () => {
-    expect(parsePriceInput("25")).toEqual({ ok: true, value: 25 });
-    expect(parsePriceInput("25.50")).toEqual({ ok: true, value: 25.5 });
-    expect(parsePriceInput("0")).toEqual({ ok: true, value: 0 });
+// El precio se lee en bolívares y no se edita desde el CRM (19/9/2026):
+// `priceDisplay` reemplaza a `parsePriceInput`/`commitPrice`, que se
+// borraron con esta corrida.
+describe("priceDisplay", () => {
+  it("USD con tasa: bolívares arriba, dólares en el pie", () => {
+    expect(priceDisplay(product({ price: 25, currency: "USD" }), 40)).toEqual({
+      principal: "Bs. 1000.00",
+      pie: "$ 25.00",
+    });
   });
 
-  it("acepta la coma decimal, que es como se escribe acá", () => {
-    expect(parsePriceInput("25,50")).toEqual({ ok: true, value: 25.5 });
+  it("VES con tasa: bolívares arriba, dólares equivalentes en el pie", () => {
+    expect(priceDisplay(product({ price: 1000, currency: "VES" }), 40)).toEqual({
+      principal: "Bs. 1000.00",
+      pie: "$ 25.00",
+    });
   });
 
-  it("rechaza negativos, texto y más de dos decimales", () => {
-    expect(parsePriceInput("-5").ok).toBe(false);
-    expect(parsePriceInput("caro").ok).toBe(false);
-    expect(parsePriceInput("25.555").ok).toBe(false);
-    expect(parsePriceInput("").ok).toBe(false);
+  it("sin tasa: la moneda propia del producto arriba, sin pie inventado", () => {
+    expect(priceDisplay(product({ price: 25, currency: "USD" }), 0)).toEqual({
+      principal: "$ 25.00",
+      pie: null,
+    });
+    expect(priceDisplay(product({ price: 1000, currency: "VES" }), 0)).toEqual({
+      principal: "Bs. 1000.00",
+      pie: null,
+    });
+  });
+
+  it("tasa negativa se trata igual que sin tasa", () => {
+    expect(priceDisplay(product({ price: 25, currency: "USD" }), -1)).toEqual({
+      principal: "$ 25.00",
+      pie: null,
+    });
   });
 });
 

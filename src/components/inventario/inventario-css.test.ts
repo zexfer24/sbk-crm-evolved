@@ -74,4 +74,55 @@ describe("la hoja de estilos del inventario", () => {
       "sin `min-height` el pie de Stock/Peso (vacío) mide menos que el de Precio en USD y desalinea la fila"
     ).toMatch(/min-height:\s*14px\s*;/);
   });
+
+  /*
+   * T1, "El precio se lee en bolívares" (19/9/2026), corrección tras la
+   * verificación visual: el `<span className="inv-readonly">` que reemplazó
+   * al `<input>` de Precio quedaba con el `font-size` ambiente (más grande)
+   * en vez del `13px` que `.inv-input-wrap input` le da al input — la caja
+   * de Precio medía 36px de alto contra 32px de Stock/Peso (mismos
+   * `top`/`left`, medido con `getBoundingClientRect` en Brave). El arreglo
+   * es que `.inv-readonly` entre al MISMO selector que `input`, no una regla
+   * aparte con los mismos valores copiados a mano (eso se desalinearía de
+   * nuevo en cuanto alguien tocara un solo lado).
+   */
+  it(".inv-readonly comparte selector con el input: mismo font-size, para que la caja de Precio no quede más alta que Stock/Peso", async () => {
+    const css = await leerCss();
+    const inicio = css.indexOf(".inv-input-wrap input");
+    expect(inicio, "no se encontró la regla `.inv-input-wrap input` en inventario.css").toBeGreaterThanOrEqual(0);
+
+    const cierre = css.indexOf("}", inicio);
+    const regla = css.slice(inicio, cierre);
+    const selectorList = regla.slice(0, regla.indexOf("{"));
+    const cuerpo = regla.slice(regla.indexOf("{") + 1);
+
+    expect(
+      selectorList,
+      "`.inv-readonly` (el span de solo lectura de Precio) tiene que estar en el MISMO selector que `.inv-input-wrap input`: separado, hereda el font-size del contexto en vez del 13px del input y la caja de Precio vuelve a quedar 4px más alta"
+    ).toMatch(/\.inv-input-wrap\s+\.inv-readonly/);
+    expect(cuerpo, "el selector compartido tiene que fijar el mismo tamaño de letra que ya usa el input").toMatch(
+      /font-size:\s*13px\s*;/
+    );
+  });
+
+  it(".inv-readonly no se ve como un campo editable: sin cursor de texto", async () => {
+    const css = await leerCss();
+    // `.inv-input-wrap .inv-readonly` aparece DOS veces: como selector
+    // compartido con `input` (el test de arriba) y como regla propia con
+    // `cursor: default`. `bloque()` toma la primera coincidencia —acá hace
+    // falta la última—, así que se busca con un regex global.
+    const coincidencias = [
+      ...css.matchAll(/\.inv-input-wrap\s+\.inv-readonly\s*\{([^}]*)\}/g),
+    ];
+    expect(
+      coincidencias.length,
+      "se esperaban dos reglas para `.inv-input-wrap .inv-readonly`: el selector compartido con el input y la regla propia del cursor"
+    ).toBe(2);
+
+    const reglaPropia = coincidencias[coincidencias.length - 1][1];
+    expect(
+      reglaPropia,
+      "sin `cursor: default` el span de solo lectura puede sugerir con el mouse que se puede escribir ahí, como Stock/Peso"
+    ).toMatch(/cursor:\s*default\s*;/);
+  });
 });

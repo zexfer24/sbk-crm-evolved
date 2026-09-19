@@ -50,11 +50,51 @@ export function priceInBs(product: Product, rate: number): number | null {
   return Number((product.price * rate).toFixed(2));
 }
 
+export interface PriceDisplay {
+  /** La cifra grande de la fila. */
+  principal: string;
+  /** La línea chica en la otra moneda; `null` cuando no hay con qué convertir. */
+  pie: string | null;
+}
+
+/**
+ * Qué par de cifras pinta la fila de Inventario (19/9/2026, "El precio se
+ * lee en bolívares"): el operador pidió el bolívar arriba y el dólar abajo,
+ * al revés de lo que salió el 10/9/2026 (USD arriba, "Bs. …" chico). El
+ * precio deja de editarse desde acá en la misma corrida (llega de fuera, a
+ * `products`), así que este helper reemplaza a `parsePriceInput`/
+ * `commitPrice` como única lógica de precio que queda en el componente.
+ *
+ * No se apoya solo en `priceInBs`: para un producto en VES esa función
+ * devuelve el precio tal cual SIN mirar la tasa (ya está en bolívares), pero
+ * acá hace falta saber si hay tasa de verdad para poder convertir el pie a
+ * dólares — por eso la pregunta "¿hay tasa?" se hace antes, aparte.
+ */
+export function priceDisplay(product: Product, rate: number): PriceDisplay {
+  const hayTasa = rate > 0;
+
+  if (!hayTasa) {
+    // Sin tasa no hay con qué convertir: se muestra la moneda real del
+    // producto arriba y no se inventa un número en el pie.
+    const simbolo = product.currency === "VES" ? "Bs." : "$";
+    return { principal: `${simbolo} ${product.price.toFixed(2)}`, pie: null };
+  }
+
+  if (product.currency === "VES") {
+    return { principal: `Bs. ${product.price.toFixed(2)}`, pie: `$ ${(product.price / rate).toFixed(2)}` };
+  }
+
+  const bs = priceInBs(product, rate) as number; // hayTasa garantiza que no da null acá
+  return { principal: `Bs. ${bs.toFixed(2)}`, pie: `$ ${product.price.toFixed(2)}` };
+}
+
 // ---------------------------------------------------------------------------
 // Validación de la edición en línea
 //
 // Se escribe directo sobre lo que la IA va a leer, así que el formulario no
-// puede dejar pasar un stock negativo ni un precio con basura.
+// puede dejar pasar un stock negativo ni un peso con basura. El precio salió
+// de este grupo el 19/9/2026 ("El precio se lee en bolívares"): ya no se
+// edita desde acá, ver `priceDisplay` más arriba.
 // ---------------------------------------------------------------------------
 
 export type ParseResult<T = number> = { ok: true; value: T } | { ok: false; error: string };
@@ -69,29 +109,18 @@ export function parseStockInput(raw: string): ParseResult {
   return { ok: true, value };
 }
 
-export function parsePriceInput(raw: string): ParseResult {
-  // Acá el precio se escribe con coma: "25,50". La base guarda punto.
-  const text = raw.trim().replace(",", ".");
-  if (!text) return { ok: false, error: "Escribe el precio." };
-  if (!/^\d+(\.\d{1,2})?$/.test(text)) {
-    return { ok: false, error: "Usa un precio positivo con hasta dos decimales." };
-  }
-
-  const value = Number(text);
-  if (!Number.isFinite(value)) return { ok: false, error: "Ese precio no es un número." };
-  return { ok: true, value };
-}
-
 /** Tope del peso: de sobra para cualquier repuesto de moto, y calza con `numeric(8,3)`. */
 export const MAX_WEIGHT_KG = 9999.999;
 
 /**
  * Peso en kilos que Cashea exige para el envío gratis (T4, 8/9/2026).
  *
- * A diferencia de stock y precio, acá vacío es un valor válido: significa
- * "todavía sin cargar" (`value: null`), no un error. El resto de las reglas
- * copian a `parsePriceInput`: coma o punto decimal, sin negativos, con un
- * tope de decimales — acá tres, porque un tornillo puede pesar gramos.
+ * A diferencia de stock, acá vacío es un valor válido: significa "todavía
+ * sin cargar" (`value: null`), no un error. El resto de las reglas repiten
+ * el patrón que tenía `parsePriceInput` (borrada el 19/9/2026, "El precio se
+ * lee en bolívares": el precio dejó de editarse desde acá): coma o punto
+ * decimal, sin negativos, con un tope de decimales — acá tres, porque un
+ * tornillo puede pesar gramos.
  */
 export function parseWeightInput(raw: string): ParseResult<number | null> {
   const text = raw.trim().replace(",", ".");

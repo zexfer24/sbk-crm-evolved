@@ -6,14 +6,13 @@ import { Check, EyeOff, TriangleAlert } from "lucide-react";
 import { toast } from "@heroui/react";
 import type { Product } from "@/lib/types";
 import { createClient } from "@/lib/supabase/client";
-import { setProductActive, updateProductPrice, updateProductStock, updateProductWeight } from "@/lib/mutations";
+import { setProductActive, updateProductStock, updateProductWeight } from "@/lib/mutations";
 import {
   aiVisibility,
   formatWeightInput,
-  parsePriceInput,
   parseStockInput,
   parseWeightInput,
-  priceInBs,
+  priceDisplay,
   stockLevel,
 } from "@/lib/inventory";
 
@@ -31,16 +30,15 @@ export function ProductoFila({ product, bcvRate }: { product: Product; bcvRate: 
   const router = useRouter();
 
   const [stockDraft, setStockDraft] = useState(String(product.stockQuantity));
-  const [priceDraft, setPriceDraft] = useState(product.price.toFixed(2));
   const [weightDraft, setWeightDraft] = useState(formatWeightInput(product.weightKg));
   const [busy, setBusy] = useState(false);
-  const [savedField, setSavedField] = useState<"stock" | "precio" | "peso" | null>(null);
+  const [savedField, setSavedField] = useState<"stock" | "peso" | null>(null);
 
   const level = stockLevel(product);
   const visibility = aiVisibility(product);
-  const bs = priceInBs(product, bcvRate);
+  const price = priceDisplay(product, bcvRate);
 
-  async function save(field: "stock" | "precio" | "peso", action: () => Promise<void>, revert: () => void) {
+  async function save(field: "stock" | "peso", action: () => Promise<void>, revert: () => void) {
     setBusy(true);
     try {
       await action();
@@ -69,25 +67,6 @@ export function ProductoFila({ product, bcvRate }: { product: Product; bcvRate: 
       "stock",
       () => updateProductStock(createClient(), product.id, parsed.value),
       () => setStockDraft(String(product.stockQuantity))
-    );
-  }
-
-  async function commitPrice() {
-    const parsed = parsePriceInput(priceDraft);
-    if (!parsed.ok) {
-      setPriceDraft(product.price.toFixed(2));
-      toast.danger(parsed.error);
-      return;
-    }
-    if (parsed.value === product.price) {
-      setPriceDraft(parsed.value.toFixed(2));
-      return;
-    }
-
-    await save(
-      "precio",
-      () => updateProductPrice(createClient(), product.id, parsed.value),
-      () => setPriceDraft(product.price.toFixed(2))
     );
   }
 
@@ -166,34 +145,35 @@ export function ProductoFila({ product, bcvRate }: { product: Product; bcvRate: 
           />
           {savedField === "stock" && <Check size={13} className="inv-saved" aria-label="Guardado" />}
         </span>
-        {/* Pie vacío: Stock mide lo mismo que Precio en USD (T7, 10/9/2026). */}
+        {/* Pie vacío: Stock mide lo mismo que Precio cuando hay tasa (T7, 10/9/2026). */}
         <span className="inv-bs" aria-hidden="true" />
       </label>
 
       <label className="inv-field">
-        <span className="lm-eyebrow">Precio {product.currency === "VES" ? "(Bs)" : "(USD)"}</span>
+        <span className="lm-eyebrow">Precio</span>
+        {/*
+         * El precio deja de editarse desde acá el 19/9/2026 ("El precio se
+         * lee en bolívares"): llega de `products`, que se carga por fuera —
+         * ver D2 del plan. Ya no es un `<input>`, es texto de solo lectura
+         * (`lm-num` para la tipografía, `inv-readonly` para que comparta el
+         * `font-size` del input en `inventario.css` — sin esa clase la caja
+         * quedaba 4px más alta que Stock/Peso, corrección tras la
+         * verificación visual del 19/9/2026).
+         */}
         <span className="inv-input-wrap">
-          <input
-            className="lm-num"
-            value={priceDraft}
-            onChange={(e) => setPriceDraft(e.target.value)}
-            onBlur={commitPrice}
-            onKeyDown={onEnter}
-            onFocus={selectAll}
-            disabled={busy}
-            inputMode="decimal"
-            aria-label={`Precio de ${product.name}`}
-          />
-          {savedField === "precio" && <Check size={13} className="inv-saved" aria-label="Guardado" />}
+          <span className="lm-num inv-readonly" aria-label={`Precio de ${product.name}`}>
+            {price.principal}
+          </span>
         </span>
         {/*
-         * El pie SIEMPRE se renderiza (con o sin texto): si solo aparece en
-         * USD, ese campo queda más alto que Stock/Peso y, aunque la fila ya
-         * sea grid con `align-items: start`, los tres inputs dejan de medir
-         * lo mismo entre sí de un producto a otro (T7, 10/9/2026).
+         * El pie SIEMPRE se renderiza (con o sin texto): si solo aparece
+         * cuando hay tasa, ese campo queda más alto que Stock/Peso y, aunque
+         * la fila ya sea grid con `align-items: start`, los tres campos
+         * dejan de medir lo mismo entre sí de un producto a otro (T7,
+         * 10/9/2026 — la grilla de `.inv-row` no se toca en esta corrida).
          */}
-        {bs !== null && product.currency === "USD" ? (
-          <span className="inv-bs lm-num">Bs. {bs.toFixed(2)}</span>
+        {price.pie !== null ? (
+          <span className="inv-bs lm-num">{price.pie}</span>
         ) : (
           <span className="inv-bs" aria-hidden="true" />
         )}

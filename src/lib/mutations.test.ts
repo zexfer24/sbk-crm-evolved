@@ -254,9 +254,11 @@ describe("pinConversation / unpinConversation", () => {
 
 /**
  * T4 del plan "Seis frentes del buzón" (8/9/2026): peso en kilos para
- * Cashea. Igual que `updateProductPrice`, el UPDATE lleva la columna y
- * `updated_at` — nada más — y `null` es un guardado legítimo (vuelve a dejar
- * el repuesto "sin cargar").
+ * Cashea. El UPDATE lleva la columna y `updated_at` — nada más — y `null` es
+ * un guardado legítimo (vuelve a dejar el repuesto "sin cargar"). Hasta el
+ * 19/9/2026 este comentario decía "igual que `updateProductPrice`": esa
+ * mutación se borró ese día ("El precio se lee en bolívares") sin dejar test
+ * propio en este archivo — nunca lo tuvo.
  */
 describe("updateProductWeight", () => {
   function createFakeProductsSupabase() {

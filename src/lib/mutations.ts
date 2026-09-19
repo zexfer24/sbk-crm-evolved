@@ -865,15 +865,6 @@ export async function updateProductStock(supabase: SupabaseClient, productId: st
   if (error) throw error;
 }
 
-export async function updateProductPrice(supabase: SupabaseClient, productId: string, price: number) {
-  const { error } = await supabase
-    .from("products")
-    .update({ price, updated_at: new Date().toISOString() })
-    .eq("id", productId);
-
-  if (error) throw error;
-}
-
 /**
  * Peso en kilos para el envío (T4, "Seis frentes del buzón", 8/9/2026).
  *
@@ -881,6 +872,10 @@ export async function updateProductPrice(supabase: SupabaseClient, productId: st
  * cargar", el mismo estado en el que nace un producto nuevo. Cashea exige el
  * peso para calcular si el envío sale gratis; la IA no lo lee (fuera de
  * alcance de esta tarea).
+ *
+ * `updateProductPrice` —el mismo patrón, sobre `price`— se borró el
+ * 19/9/2026 ("El precio se lee en bolívares"): el precio dejó de editarse
+ * desde el CRM, llega de `products` cargada por fuera (D2 del plan).
  */
 export async function updateProductWeight(supabase: SupabaseClient, productId: string, weightKg: number | null) {
   const { error } = await supabase
