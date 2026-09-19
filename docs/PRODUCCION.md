@@ -1125,7 +1125,7 @@ Con todo configurado, esta lista debe pasar entera:
 
 - [ ] Una restauración de prueba devuelve los datos completos
 - [ ] `npm run build` sin errores ni warnings
-- [ ] `select count(*) from supabase_migrations.schema_migrations` devuelve 70 (recontado el 15/9/2026; decía 61 cuando se escribió esta guía)
+- [ ] `select count(*) from supabase_migrations.schema_migrations` devuelve 73 (recontado el 18/9/2026 tras `20260916010000`/`20260917010000`/`20260917020000`; decía 70 el 15/9/2026 y 61 cuando se escribió esta guía)
 - [ ] El bucket `whatsapp-media` es privado (`public = false`)
 - [ ] Una URL directa al bucket responde 400
 - [ ] `/api/media/...` sin sesión responde 401

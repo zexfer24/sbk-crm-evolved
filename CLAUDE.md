@@ -666,7 +666,15 @@ dejar rastro es lo que hacía desaparecer leads.
   igual (`turno_escenario_escalado_marcado`). El reconciliador no la
   reencola porque `ai_enabled = false`. Si alguna vez una escalada apaga
   `awaiting_reply`, el bug está en quien mandó el texto sin la marca, no
-  en la base.
+  en la base. **SUPERADO a medias el 18/9/2026 ("Seba atiende el
+  mostrador", D2/T4): la escalada YA NO apaga `ai_enabled`** (ver la
+  trampa "La escalada ya no apaga a Seba" más abajo), así que el freno
+  contra el reencolado deja de ser `ai_enabled = false` — pasa a ser el
+  predicado nuevo del reconciliador (`.or("last_message_direction.eq.
+  inbound,last_message_status.eq.failed")`) más la rama `alreadyAssigned`
+  de `escalate.ts`, que no vuelve a reclamar a un asesor distinto en cada
+  pregunta. El resto de este párrafo (marca `is_auto_reply`, cuenta
+  atascados en "Con asesor") sigue vigente tal cual.
 - **La IA saluda por franja UNA sola vez, y el saludo lo calcula el código,
   no el modelo ni el panel** (T3 y T4, "La voz de mostrador con nombre
   propio", 15/9/2026). El sufijo `needsGreeting` de `buildInstructions`
@@ -679,7 +687,19 @@ dejar rastro es lo que hacía desaparecer leads.
   operador pidió la franja de vuelta. No volver a meter el saludo en `TURNO
   ACTUAL`: el modelo copia lo que llega en cada turno, no solo en el
   primero. Ningún escenario del panel saluda (ver la trampa siguiente), así
-  que el saludo no depende de nada configurable.
+  que el saludo no depende de nada configurable. **SUPERADO el 18/9/2026
+  ("Seba atiende el mostrador", T2b, requisito 1 del cliente): el saludo
+  salió del prompt POR COMPLETO.** `needsGreeting` se retira; `prompt.ts`
+  pierde los imports `dayBand`/`greetingFor` y el helper `capitalizar`, y
+  `TurnContext` pasa a llevar `introducedThisTurn: boolean` (semántica
+  invertida: `true` solo cuando Seba se presentó EN ESTE MISMO TURNO). El
+  saludo estricto que pidió el cliente ("Hola, buen día, mi nombre es
+  Seba…") ya no lo redacta el modelo ni el sufijo: lo manda el TURNO
+  (`agent.ts`) como mensaje de texto propio, ANTES de fase 0/1 y del tool
+  loop, con `sebaGreeting(dayBand(now))` (`seba.ts`) — ver la trampa "Seba
+  se presenta por código" más abajo. La franja SÍ volvió (el 18/9 no
+  repite el bug del 14/9: sigue sin vivir en `turnClockLine`, que sigue sin
+  franja a propósito), pero ahora nace en `seba.ts`, no en `prompt.ts`.
 - **Los CHECK de `intent` viven en `20260914010000`; un valor nuevo en
   `INTENT_VALUES` (`classify.ts`) exige migración** (T1, 14/9/2026).
   `fuera_de_tema` existió en el código desde el 5/9 y en la base hasta el
@@ -734,7 +754,18 @@ dejar rastro es lo que hacía desaparecer leads.
   la escalada cambie y el 14/9 tapaban la `escalada` (una `asignada`
   posterior, o la propia segunda cortesía). **Toda razón nueva que se
   escriba por mensaje sin cambiar de dueño exige sumarse a esa constante**;
-  una razón desconocida cuenta como cierre y la IA atiende.
+  una razón desconocida cuenta como cierre y la IA atiende. **"`openTurn`
+  corta antes con `asignada`" dejó de ser cierto el 18/9/2026** ("Seba
+  atiende el mostrador", D2/T4, requisito 6 del cliente): las dos guardas
+  de apertura de `runAgentTurn` se fusionan en `if (!convo.ai_enabled)`
+  —un chat asignado con la IA ENCENDIDA ya no corta ahí—, así que la rama
+  `toKind: "human"` de esta guarda de cortesía deja de ser defensiva: un
+  cliente que agradece con la escalada todavía abierta Y un asesor ya
+  asignado ahora sí puede toparse con ella de verdad (antes solo la
+  alcanzaba el caso "sin asesor" de la devolución masiva). `escalationOpen`
+  no cambió: sigue mirando la última fila que cambia de manos, y
+  `silenciada_por_asesor` (ver más abajo) se suma a las razones que SÍ
+  cierran la escalada.
 - **Al segundo adjunto sin texto la IA escala en código, sin modelo** (T6,
   14/9/2026). `mediaStreakWithoutText` (`history-line.ts`) cuenta la racha
   de marcadores SIN pie desde el final; con dos y una respuesta de la IA en
@@ -882,6 +913,193 @@ dejar rastro es lo que hacía desaparecer leads.
   local lock_timeout` fuera de una transacción es un NO-OP silencioso y una
   falla a mitad de archivo sin `ON_ERROR_STOP` deja el trigger AFTER
   leyendo una columna que la sentencia siguiente nunca llegó a crear.
+- **Seba se presenta por CÓDIGO, no por el prompt, y `welcome_sent_at` es
+  el sello — excluyente con `WHATSAPP_WELCOME_TEMPLATE`** (T2b, plan "Seba
+  atiende el mostrador", 18/9/2026, requisito 1 del cliente). El saludo
+  estricto ("Hola, buen día, mi nombre es Seba. Soy tu asistente el día de
+  hoy en SBK MOTORS, ¿cómo puedo ayudarte?") lo manda `agent.ts` como
+  mensaje de texto propio, por `deliver()`, ANTES de fase 0, fase 1 y el
+  tool loop — nunca el modelo. `claimPresentation` (`UPDATE conversations
+  SET welcome_sent_at = now() WHERE id = ? AND welcome_sent_at IS NULL
+  RETURNING id`) reclama el sello ANTES de mandar nada; si el envío falla
+  o Meta lo rechaza, se revierte a `null` (mismo patrón que
+  `bienvenida_rechazada_por_meta`). Si el cliente solo saludó
+  (`isGreetingOnly`/`isCourtesyOnly`), el saludo de Seba ES la respuesta
+  completa del turno y se cierra sin llamar a fase 0/1 ni al tool loop —
+  tres llamadas al proveedor ahorradas. La migración `20260917010000`
+  reescribe la SEMÁNTICA de `welcome_sent_at`: hasta esa migración
+  significaba "última vez que salió la PLANTILLA de bienvenida de
+  WhatsApp" (`WHATSAPP_WELCOME_TEMPLATE`, vacía desde siempre — esa
+  semántica nunca se usó de verdad) y ahora significa "Seba ya se
+  presentó en esta conversación". Backfill: `coalesce(last_reply_at,
+  last_message_at, created_at)` —nunca `now()`— para todo chat con
+  `has_reply` (vitalicio); un chat que JAMÁS recibió nada queda en `null`
+  a propósito, porque la próxima vez que hable con ese cliente es, de
+  verdad, la primera. **Las dos semánticas son EXCLUYENTES por diseño**:
+  si algún día se configura `WHATSAPP_WELCOME_TEMPLATE`, `claimWelcome`
+  (`route.ts:316`) sellaría `welcome_sent_at` ANTES de que corra el turno
+  y Seba ya no tendría nada que reclamar — no se puede tener la plantilla
+  automática de Meta Y el saludo literal de Seba a la vez con la columna
+  actual. El webhook pone `welcome_sent_at: null` al reabrir un chat
+  cerrado (T2b, ver más abajo): el chat arranca de cero y Seba se
+  presenta de nuevo.
+- **La escalada ya NO apaga a Seba; lo que la apaga es un mensaje REAL del
+  asesor, por trigger** (T4, D2/D3, requisito 6 del cliente, 18/9/2026).
+  `escalate.ts` dejó de tocar `ai_enabled` en su `UPDATE` — asignar un
+  asesor ya no significa silenciar la IA: Seba sigue contestando en ese
+  chat (con o sin existencia, listas, dudas nuevas) hasta que alguien
+  humano le escriba de verdad al cliente. Lo que apaga `ai_enabled` es el
+  trigger nuevo `handle_agent_message_silences_ai()` (`AFTER INSERT ON
+  messages`, migración `20260917010000`), que dispara SOLO con
+  `sender_type = 'agent' AND direction = 'outbound' AND NOT
+  is_internal_note` — una nota interna NO apaga nada, sigue sin ser una
+  respuesta al cliente. También la apaga la pausa manual
+  (`setAiEnabled(false)`, `mutations.ts`), que hasta esta migración no
+  dejaba ninguna fila en la bitácora. Los dos caminos comparten la rama
+  nueva `silenciada_por_asesor` de `handle_conversation_ownership_change`
+  — **desvío aceptado sobre el diseño original de T0, hallado corriendo el
+  test SQL contra la primera versión de la migración**: la rama exige
+  además `old.assigned_agent_id IS NOT DISTINCT FROM new.assigned_agent_id`
+  (que `assigned_agent_id` NO cambie en el MISMO `UPDATE`), porque la
+  escalada de hoy todavía cambia `ai_enabled` y `assigned_agent_id` juntos
+  en un solo `UPDATE` (hasta que una tarea futura la reforme) y sin esa
+  guarda cada escalada dejaría una fila `silenciada_por_asesor` espuria
+  además de su propia fila `escalada`. `silenciada_por_asesor` SÍ cierra
+  una escalada abierta para `escalationOpen()` — un humano tomó el chat de
+  verdad —, así que NO está en `RAZONES_QUE_NO_CIERRAN_LA_ESCALADA`.
+- **`reclamado` exige sesión real desde el 18/9/2026 — sin `auth.uid() is
+  not null`, cada escalada de Seba dejaría una fila `reclamado` espuria**
+  (T0, hallazgo 1 del plan "Seba atiende el mostrador"). La rama
+  `reclamado` de `handle_conversation_ownership_change` decía "el asesor
+  asignado cambió sin que `ai_enabled` cambiara en el mismo `UPDATE`" —
+  exactamente lo que la escalada de Seba iba a hacer con D2 (cambiar SOLO
+  `assigned_agent_id`, dejando `ai_enabled` intacto). La escalada corre
+  con `service_role`, sin sesión de ningún asesor (ver "código de
+  servidor no es sinónimo de `service_role`" más arriba), así que
+  `auth.uid()` da `null` ahí; un asesor reclamando de verdad desde el
+  panel (`assignToMe`/`intervene`, `mutations.ts`) SÍ trae sesión. Sin
+  este candado el caso 1 de `tests/devolucion_a_la_ia.sql` ("escalada
+  simulada no deja fila") se habría puesto en rojo apenas saliera T4;
+  `tests/seba_y_escalada_viva.sql` (casos 1 y 2) prueba las dos ramas.
+- **El reconciliador y "el último mensaje VISIBLE" — el freno nuevo contra
+  el bucle nocturno de Seba** (hallazgo 2 del plan, 18/9/2026). Con D2 (la
+  escalada ya no apaga la IA) y P1 (de noche o domingo, sin asesores
+  conectados, Seba sigue vendiendo), una `escalada_sin_asesor` deja
+  `awaiting_reply = true` con la IA encendida y nadie asignado — y el
+  sello `ai_resume_cutoff_at` no se mueve, porque no hubo ninguna
+  devolución. Sin un freno más, `reconciler.ts` (y el botón "encender la
+  IA" de `unansweredFreeWork`, `data.ts`) volvían a encontrar esa misma
+  conversación "esperando, sin asesor, con la IA encendida" cada minuto,
+  la reencolaban, y el modelo volvía a escalar el MISMO mensaje del
+  cliente — para siempre, hasta que alguien escribiera. El freno:
+  `.or("last_message_direction.eq.inbound,last_message_status.eq.failed")`
+  sumado al `.eq("new_since_ai_resume", true)` que ya existía — solo
+  reencola si el ÚLTIMO mensaje VISIBLE de la conversación es del cliente
+  (la despedida de Seba con `is_auto_reply` sigue siendo un saliente, no
+  cuenta) o si el último saliente FALLÓ (`entrega_fallida`, el caso de
+  siempre). Una despedida que salió bien se queda quieta: el
+  reconciliador no reintenta una escalada que ya se hizo, solo turnos
+  huérfanos de verdad. Mismo predicado, mismo motivo, en `data.ts`
+  (`unansweredFreeWork`) — `reconciler.ts` no lo importa de ahí porque esa
+  función no está exportada y `data.ts` lo tocaba en paralelo otra tarea;
+  si el predicado de un lado cambia, hay que tocar el otro a mano.
+- **Escalar un chat YA asignado no reclama a otro asesor ni deja traspaso
+  nuevo — solo una nota de reiteración** (T4, hallazgo 3 del plan,
+  18/9/2026). Con la IA encendida tras escalar, el modelo puede volver a
+  llamar a `escalarAAsesor` en cada consulta de inventario del mismo chat
+  (las reglas de "repuesto encontrado"/"stock 0" escalan siempre, con o
+  sin existencia): sin esta rama, cada pregunta nueva le habría quitado el
+  chat al asesor que ya lo tenía para dárselo a otro por round-robin.
+  `escalateConversation` (`escalate.ts`) lee `assigned_agent_id`/
+  `ai_enabled` ANTES de reclamar; si ya hay asesor, NO llama a
+  `claimNextAvailableAgent`, actualiza `deal_status` solo si el motivo es
+  `intencion_compra`, deja una nota interna ("IA reiteró la escalada a
+  X…") y devuelve `alreadyAssigned: true` SIN `recordHandoff` — el aviso
+  de asignación (`assignment-notice.ts`) solo dispara con la razón
+  `escalada`, y repetirla en cada pregunta lo haría saltar sin que nada
+  cambiara de dueño de verdad.
+- **Toda salida de Seba mientras hay un asesor asignado es `is_auto_reply`,
+  y `stageFor` evita que el chat se caiga de "Escaladas" mientras el turno
+  trabaja** (T4, 18/9/2026). Con D2, un chat asignado ya no corta el turno
+  (ver la trampa de la guarda de cortesía, más arriba): `runTurnPhases`
+  calcula `const esperandoAsesor = Boolean(assignedAgentId)` y lo suma con
+  OR a cada `isAutoReply` de las salidas que hablan de verdad —la
+  redacción final del tool loop, la redirección de fuera de tema, y
+  `runPlaybook` (nuevo cuarto parámetro `opciones` de `sendPlaybookReply`,
+  `send.ts`)— para que ninguna cortesía de Seba apague `awaiting_reply` en
+  un chat que sigue esperando a esa persona. `stageFor(assignedAgentId,
+  etapa)` (`assignedAgentId ? "assigned" : etapa`) reemplaza las seis
+  escrituras crudas de `journey_stage` (apertura, inicio de cada
+  herramienta, los tres reseteos finales, `runPlaybook`) — sin esto la
+  píldora "Escaladas" (`inbox-filters.ts`, que mira el campo `journey_stage`
+  CRUDO) perdía el chat apenas el turno arrancaba a clasificar o a correr
+  una herramienta.
+- **Los tres textos fijos de Seba y la red de seguridad del catálogo viven
+  en CÓDIGO, no solo en el prompt — y la regla de la única pregunta**
+  (T3, requisitos 2/3/4/5 del cliente, 18/9/2026). `TEXTO_CONFIRMAR_
+  INVENTARIO`/`TEXTO_SIN_STOCK`/`TEXTO_NO_IDENTIFICADO` (`seba.ts`) son
+  literales byte a byte con lo que dictó el cliente. `CatalogOutcome`
+  acumula `ran`/`conExistencia`/`agotados`/`sinResultados`/`generico`
+  entre TODAS las llamadas al catálogo del mismo turno (un genérico
+  bloquea la red entera aunque otro campo haya quedado en `true`, nunca se
+  resetean); precedencia `conExistencia` → `generico` (pregunta de filtro,
+  NO escala ese turno — requisito 5, la única pregunta:
+  `!motoBrand && !motoModel && (quoted.length > 3 || hayMas)`) → todos en
+  cero → sin resultados. Si el modelo llega al final del tool loop sin
+  haber escalado por su cuenta, la red de seguridad de `agent.ts` (después
+  de la red de devolución/queja, ANTES de la guarda de identidad) escala
+  en código con el motivo que corresponda y, si el texto del modelo no
+  matchea `/asesor/i`, le anexa el texto fijo — así el texto anexado
+  también pasa por `applyIdentityGuard` como cualquier otro. Sin
+  `consulta_generica` en el enum: ese caso a propósito NO escala.
+- **Lecciones de Seba: el caché del prompt, y por qué
+  `products.sinonimos_busqueda` sigue durmiente** (T5/T5c, requisito 7 del
+  cliente, decisión P3, 18/9/2026). `ai_lessons` (migración
+  `20260917020000`) guarda notas (`kind='nota'`, prosa para el modelo) y
+  sinónimos (`kind='sinonimo'`, pares `synonym_from`/`synonym_to` para el
+  catálogo) con alcance `global` (default de la UI, decisión P2) o
+  `conversacion`. Las lecciones GLOBALES van PEGADAS al final de
+  `SYSTEM_PROMPT`, DENTRO del prefijo cacheable (`cacheablePrefix`,
+  `prompt.ts`): vacío sin lecciones (el prefijo sigue siendo exactamente
+  `SYSTEM_PROMPT`, ni un carácter de más, para no invalidar el caché de
+  los turnos que no tienen ninguna) y solo cambia cuando alguien enseña
+  algo nuevo, así que se cachea entre turnos igual. Las lecciones de LA
+  CONVERSACIÓN ACTUAL van en el SUFIJO (`buildChatLessonsLine`), que nunca
+  se cachea. Topes: `MAX_GLOBAL_LESSONS = 15`, `MAX_CHAT_LESSONS = 5`,
+  `MAX_LESSON_CHARS = 200` (clip defensivo aunque el CHECK de la base ya
+  lo garantice). `fetchTurnLessons` NUNCA lanza — error de la base →
+  lecciones vacías + `log.warn("turno_lecciones_no_legibles")`, el turno
+  sigue igual. Los sinónimos (P3) los lee `buildCatalogTool` (límite 200,
+  `is_active = true`) y los expande con `expandTerms` (`catalog-search.ts`)
+  ANTES de armar el filtro del catálogo — jerga del cliente ("pastilla")
+  que también encuentra el nombre real ("pastillas de freno"). **A
+  propósito NO se reutiliza `products.sinonimos_busqueda`** (columna de
+  `20260821000000`, hallazgo 9 del plan): esa columna solo se CUENTA para
+  el panel de Inventario (`inventory-data.ts`), nadie la consulta para
+  buscar, y sigue así — otra RLS, otro panel, y mezclar las dos fuentes de
+  sinónimos no estaba en el alcance de esta corrida.
+- **`desasignada_por_asesor` puede salir con `created_by = 'system'`
+  cuando es el CLIENTE quien reabre un chat cerrado, no solo cuando un
+  asesor lo hace a mano** (T2b, 18/9/2026). El webhook reclama la
+  reapertura (`UPDATE conversations SET status='open', ai_enabled=true,
+  assigned_agent_id=null, welcome_sent_at=null WHERE id=? AND
+  status='closed' RETURNING id` — el `.eq("status","closed")` evita que
+  dos webhooks concurrentes del mismo lote de Meta dupliquen el evento).
+  Si el chat estaba escalado al cerrarse, ese MISMO `UPDATE` cambia
+  `assigned_agent_id`/`ai_enabled` y dispara, DENTRO de
+  `handle_conversation_ownership_change`, las ramas
+  `desasignada_por_asesor`/`devuelto_a_ia` — con `created_by = 'system'`
+  porque nadie con sesión tocó nada (el webhook corre con `service_role`,
+  `auth.uid()` da `null`). Se acepta como rastro correcto ("el sistema le
+  devolvió el chat a la IA") y la fila explícita `reabierta_por_cliente`
+  (`recordHandoff`) queda SIEMPRE última, cerrando cualquier escalada
+  vieja que `escalationOpen` pudiera seguir viendo abierta. Este `UPDATE`
+  corre ANTES de insertar el mensaje entrante: el trigger BEFORE
+  `handle_conversation_ai_resume()` sella `ai_resume_cutoff_at` contra el
+  `last_customer_message_at` VIEJO, así que el mensaje que reabrió el chat
+  (con `created_at` de Meta, necesariamente posterior) no cae en la guarda
+  `mensaje_previo_a_devolucion` — es justo el mensaje que hay que
+  contestar, no uno que ya estaba ahí antes.
 ---
 
 # RTK (Rust Token Killer) - Token-Optimized Commands
