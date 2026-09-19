@@ -880,6 +880,10 @@ export function InboxSidebar({
         pinnedIds,
         unassignedIds,
         dayStart,
+        // D2 del plan "Nada sin leer…" (18/9/2026): la conversación abierta
+        // no se esfuma del corte de "hoy" al marcarse leída mientras el
+        // asesor la sigue mirando (ver `passesDayCut`, inbox-filters.ts).
+        keepId: selectedId,
       }),
     [
       searchableConversations,
@@ -892,6 +896,7 @@ export function InboxSidebar({
       pinnedIds,
       unassignedIds,
       dayStart,
+      selectedId,
     ]
   );
 

@@ -8,6 +8,7 @@ import {
   isUnassignedLead,
   isUnread,
   matchesDay,
+  passesDayCut,
   type HandoffKind,
 } from "@/lib/inbox-filters";
 
@@ -875,6 +876,105 @@ describe("matchesDay", () => {
   it("acepta cualquier objeto con solo lastMessageAt y createdAt, sin el resto de ConversationSummary", () => {
     const minimo = { lastMessageAt: "2026-09-08T10:00:00.000Z", createdAt: "2026-09-08T09:00:00.000Z" };
     expect(matchesDay(minimo, HOY_00_00_CARACAS)).toBe(true);
+  });
+});
+
+/**
+ * R1 del plan "Nada sin leer, un solo catálogo y la factura Saint"
+ * (18/9/2026, T1b, D1/D2): el pedido del cliente fue literal — "si el
+ * mensaje no está leído, no importa eso". `matchesDay` solo no alcanzaba:
+ * un chat sin leer que habló ayer desaparecía de la bandeja con "solo hoy"
+ * activo. `passesDayCut` envuelve `matchesDay` con dos excepciones: sin
+ * leer (D1) y la conversación seleccionada (`keepId`, D2 — al leerla
+ * `markRead` la deja en cero al instante y, sin este respaldo, se
+ * esfumaría de la lista mientras el asesor la está mirando).
+ */
+describe("passesDayCut", () => {
+  const HOY_00_00_CARACAS = "2026-09-08T04:00:00.000Z";
+  const AYER = "2026-09-07T10:00:00.000Z";
+
+  it("una no leída de ayer pasa el corte", () => {
+    const noLeidaDeAyer = conversation({ id: "no-leida-de-ayer", unreadCount: 3, lastMessageAt: AYER });
+    expect(passesDayCut(noLeidaDeAyer, HOY_00_00_CARACAS)).toBe(true);
+  });
+
+  it("una leída de ayer no pasa", () => {
+    const leidaDeAyer = conversation({ id: "leida-de-ayer", unreadCount: 0, lastMessageAt: AYER });
+    expect(passesDayCut(leidaDeAyer, HOY_00_00_CARACAS)).toBe(false);
+  });
+
+  it("apartada a mano pasa, aunque el contador esté en cero y sea de ayer", () => {
+    const apartada = conversation({
+      id: "apartada-de-ayer",
+      unreadCount: 0,
+      manuallyUnread: true,
+      lastMessageAt: AYER,
+    });
+    expect(passesDayCut(apartada, HOY_00_00_CARACAS)).toBe(true);
+  });
+
+  it("keepId pasa aunque esté leída y sea de ayer", () => {
+    const leidaDeAyer = conversation({ id: "abierta-de-ayer", unreadCount: 0, lastMessageAt: AYER });
+    expect(passesDayCut(leidaDeAyer, HOY_00_00_CARACAS, "abierta-de-ayer")).toBe(true);
+  });
+
+  it("keepId con OTRO id no rescata nada: solo protege a la seleccionada", () => {
+    const leidaDeAyer = conversation({ id: "abierta-de-ayer", unreadCount: 0, lastMessageAt: AYER });
+    expect(passesDayCut(leidaDeAyer, HOY_00_00_CARACAS, "otra-conversacion")).toBe(false);
+  });
+
+  it('con dayStart null ("Ver todo") deja pasar todo, leída o no', () => {
+    const leidaViejisima = conversation({ id: "viejisima", unreadCount: 0, lastMessageAt: "2020-01-01T00:00:00.000Z" });
+    expect(passesDayCut(leidaViejisima, null)).toBe(true);
+  });
+
+  it("una leída de HOY pasa igual, por matchesDay (sin depender de las excepciones)", () => {
+    const leidaDeHoy = conversation({ id: "leida-de-hoy", unreadCount: 0, lastMessageAt: "2026-09-08T10:00:00.000Z" });
+    expect(passesDayCut(leidaDeHoy, HOY_00_00_CARACAS)).toBe(true);
+  });
+});
+
+describe("applyInboxFilters — 'pending' muestra la no leída de ayer (D1)", () => {
+  const HOY_00_00_CARACAS = "2026-09-08T04:00:00.000Z";
+
+  it("una no leída de ayer, esperando respuesta del cliente, aparece en 'Pendientes' con dayStart de hoy", () => {
+    const noLeidaDeAyer = conversation({
+      id: "pendiente-no-leida-de-ayer",
+      unreadCount: 2,
+      lastMessageAt: "2026-09-07T10:00:00.000Z",
+      lastCustomerMessageAt: "2026-09-07T10:00:00.000Z",
+    });
+
+    const result = applyInboxFilters([noLeidaDeAyer], {
+      filter: "pending",
+      search: "",
+      tagId: null,
+      sort: "recent",
+      viewer: ANA,
+      dayStart: HOY_00_00_CARACAS,
+    });
+
+    expect(result.map((c) => c.id)).toEqual(["pendiente-no-leida-de-ayer"]);
+  });
+
+  it("una LEÍDA de ayer, esperando respuesta del cliente, NO aparece: el corte de día sigue vigente para lo leído", () => {
+    const leidaDeAyer = conversation({
+      id: "pendiente-leida-de-ayer",
+      unreadCount: 0,
+      lastMessageAt: "2026-09-07T10:00:00.000Z",
+      lastCustomerMessageAt: "2026-09-07T10:00:00.000Z",
+    });
+
+    const result = applyInboxFilters([leidaDeAyer], {
+      filter: "pending",
+      search: "",
+      tagId: null,
+      sort: "recent",
+      viewer: ANA,
+      dayStart: HOY_00_00_CARACAS,
+    });
+
+    expect(result.map((c) => c.id)).toEqual([]);
   });
 });
 

@@ -2574,4 +2574,93 @@ describe('InboxSidebar — el interruptor "Ver todo" (T1, 8/9/2026)', () => {
       since: HOY_00_00_CARACAS,
     });
   });
+
+  /**
+   * R1 del plan "Nada sin leer, un solo catálogo y la factura Saint"
+   * (18/9/2026, T1b, D1): con "solo hoy" activo, una conversación sin leer
+   * que habló ayer seguía viva en `conversations` (llega por realtime o por
+   * props, como cualquier fila cargada) pero antes de esta tarea
+   * `applyInboxFilters` la tapaba con `matchesDay` sin mirar si tenía
+   * mensajes por abrir. Filtro "Pendientes" (el que abre por defecto) para
+   * probar la fórmula completa: "habló hoy" O "sin leer".
+   */
+  it('una no leída de ayer aparece en "Pendientes" con dayScope "today"', async () => {
+    const pendienteNoLeidaDeAyer = pendingConversation({
+      id: "pendiente-no-leida-de-ayer",
+      unreadCount: 2,
+      lastMessageAt: "2026-09-07T10:00:00.000Z",
+    });
+
+    const { container } = render(
+      <InboxSidebar
+        conversations={[pendienteNoLeidaDeAyer]}
+        selectedId={null}
+        onSelect={() => {}}
+        currentAgent={JEFA}
+        allTags={ALL_TAGS}
+        bcvRate={null}
+        dayScope="today"
+        dayStart={HOY_00_00_CARACAS}
+        onDayScopeChange={() => {}}
+      />
+    );
+
+    await waitFor(() =>
+      expect(visibleIds(container)).toContain("pendiente-no-leida-de-ayer")
+    );
+  });
+
+  /**
+   * D2 del mismo plan: al abrir un chat viejo sin leer, `markRead` (el
+   * shell) lo pone en cero al instante. Sin el respaldo de `keepId`
+   * (`selectedId` en esta prop), la fila se esfumaría de la lista apenas se
+   * marca leída, mientras el asesor la sigue mirando — acá se simula ese
+   * instante con un `rerender` que baja `unreadCount` a cero sin soltar la
+   * selección.
+   */
+  it("la conversación abierta sigue en la lista después de marcarse leída, aunque sea de ayer", async () => {
+    const abiertaSinLeer = pendingConversation({
+      id: "abierta-de-ayer",
+      unreadCount: 3,
+      lastMessageAt: "2026-09-07T10:00:00.000Z",
+    });
+
+    const { container, rerender } = render(
+      <InboxSidebar
+        conversations={[abiertaSinLeer]}
+        selectedId="abierta-de-ayer"
+        onSelect={() => {}}
+        currentAgent={JEFA}
+        allTags={ALL_TAGS}
+        bcvRate={null}
+        dayScope="today"
+        dayStart={HOY_00_00_CARACAS}
+        onDayScopeChange={() => {}}
+      />
+    );
+
+    await waitFor(() => expect(visibleIds(container)).toContain("abierta-de-ayer"));
+
+    const yaLeida = pendingConversation({
+      id: "abierta-de-ayer",
+      unreadCount: 0,
+      lastMessageAt: "2026-09-07T10:00:00.000Z",
+    });
+
+    rerender(
+      <InboxSidebar
+        conversations={[yaLeida]}
+        selectedId="abierta-de-ayer"
+        onSelect={() => {}}
+        currentAgent={JEFA}
+        allTags={ALL_TAGS}
+        bcvRate={null}
+        dayScope="today"
+        dayStart={HOY_00_00_CARACAS}
+        onDayScopeChange={() => {}}
+      />
+    );
+
+    expect(visibleIds(container)).toContain("abierta-de-ayer");
+  });
 });

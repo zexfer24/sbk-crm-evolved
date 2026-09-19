@@ -112,6 +112,17 @@ export function isUnread(conversation: ConversationSummary): boolean {
  * esta función (`dashboard.ts` la replica en privado: ver el comentario del
  * ciclo ahí), así que el tipo de este parámetro queda documentado como el
  * contrato mínimo que cualquier forma de conversación tiene que cumplir.
+ *
+ * Esta función NO cambia de significado con el plan "Nada sin leer, un solo
+ * catálogo y la factura Saint" (R1, 18/9/2026): sigue siendo, nada más,
+ * "habló hoy" — la copia privada de `dashboard.ts` (el Recorrido, que no
+ * tiene noción de "leído") la sigue usando tal cual. Lo que SÍ cambió es
+ * quién la llama para decidir qué se pinta en la bandeja: `applyInboxFilters`
+ * dejó de invocarla directo y pasó a usar `passesDayCut` (más abajo), que la
+ * envuelve con dos excepciones —sin leer, y la conversación abierta— porque
+ * el pedido del cliente fue literal: "si el mensaje no está leído, no
+ * importa eso". Antes de esa fecha `matchesDay` sola SÍ era, de hecho, todo
+ * el corte de "hoy" que veía la bandeja; ya no lo es.
  */
 export function matchesDay(
   conversation: { lastMessageAt: string | null; createdAt: string },
@@ -122,6 +133,39 @@ export function matchesDay(
   const reference = conversation.lastMessageAt ?? conversation.createdAt;
   const value = Date.parse(reference);
   return !Number.isNaN(value) && value >= cutoff;
+}
+
+/**
+ * El corte de "hoy" que de verdad ve la bandeja desde el plan "Nada sin
+ * leer, un solo catálogo y la factura Saint" (R1, T1b, 18/9/2026, D1/D2).
+ * `matchesDay` sola volvía el corte absoluto: un cliente que escribió ayer y
+ * nadie abrió no aparecía ni contaba hasta que llegara otro mensaje o
+ * alguien tocara "Ver todo" — el agujero que el cliente reportó tal cual
+ * ("si el mensaje no está leído, no importa eso").
+ *
+ * Dos excepciones, en este orden:
+ * - **D1**: sin leer (`isUnread`) pasa el corte sin importar cuándo habló —
+ *   la misma definición GLOBAL que ya usa la píldora "No leídas".
+ * - **D2**: la conversación SELECCIONADA (`keepId`, que `inbox-sidebar.tsx`
+ *   llena con `selectedId`) también pasa. Al abrir un chat viejo sin leer,
+ *   `markRead` lo pone en cero al instante; sin este respaldo, D1 sola dejaría
+ *   que la fila se esfumara de la lista mientras el asesor la está mirando.
+ *   Al cambiar de chat, `keepId` deja de protegerlo y sale como cualquier
+ *   chat de ayer.
+ *
+ * `dayStart` nulo ("Ver todo") deja pasar cualquier cosa, igual que
+ * `matchesDay`. Fuera de esas excepciones, delega en `matchesDay` sin
+ * duplicar su comparación de fechas.
+ */
+export function passesDayCut(
+  conversation: ConversationSummary,
+  dayStart: string | null,
+  keepId?: string | null
+): boolean {
+  if (!dayStart) return true;
+  if (isUnread(conversation)) return true;
+  if (keepId != null && conversation.id === keepId) return true;
+  return matchesDay(conversation, dayStart);
 }
 
 /**
@@ -207,9 +251,18 @@ export interface InboxCriteria {
    * `null` con el interruptor "Ver todo" — sin corte. Opcional y sin default
    * en la firma, mismo motivo que `pinnedIds`: no obligar a cada llamador
    * existente (los tests de acá abajo que no ejercitan el día) a conocerlo —
-   * sin el campo, `matchesDay` no se aplica (ver más abajo).
+   * sin el campo, `passesDayCut` no filtra por día (ver más abajo).
    */
   dayStart?: string | null;
+  /**
+   * La conversación abierta (R1, T1b, 18/9/2026, D2): se le pasa tal cual a
+   * `passesDayCut` para que no desaparezca de la lista al leerse si es de un
+   * día anterior a `dayStart` — `inbox-sidebar.tsx` la llena con
+   * `selectedId`. Opcional y sin default, mismo motivo que `dayStart`: los
+   * llamadores que no abren un chat seleccionado (los tests de acá abajo)
+   * no tienen que conocerlo.
+   */
+  keepId?: string | null;
 }
 
 function matchesFilter(
@@ -362,7 +415,18 @@ function sortValue(conversation: ConversationSummary): number | null {
 
 export function applyInboxFilters(
   conversations: ConversationSummary[],
-  { filter, search, tagId, sort, viewer, messageHitIds, pinnedIds, unassignedIds, dayStart }: InboxCriteria
+  {
+    filter,
+    search,
+    tagId,
+    sort,
+    viewer,
+    messageHitIds,
+    pinnedIds,
+    unassignedIds,
+    dayStart,
+    keepId,
+  }: InboxCriteria
 ): ConversationSummary[] {
   const query = normalizeForSearch(search).trim();
 
@@ -374,8 +438,10 @@ export function applyInboxFilters(
       // La búsqueda mira TODO el historial (decisión del operador, T1,
       // 8/9/2026): con algo escrito en el cuadro, el corte de "hoy" no
       // aplica — si no, "bujía" no encontraría al cliente de la semana
-      // pasada que sí la compró.
-      (query.length > 0 || matchesDay(conversation, dayStart ?? null))
+      // pasada que sí la compró. `passesDayCut` y no `matchesDay` directo
+      // desde el plan del 18/9/2026 (R1, D1/D2): sin leer o seleccionada
+      // pasan aunque hayan hablado antes de hoy.
+      (query.length > 0 || passesDayCut(conversation, dayStart ?? null, keepId))
   );
 
   // Copia: ordenar in situ reordenaría la lista que vive en el estado de React.
