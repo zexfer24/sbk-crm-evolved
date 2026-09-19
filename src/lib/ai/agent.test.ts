@@ -128,6 +128,27 @@ interface FakeState {
   chatLessons: string[];
   /** Si viene con mensaje, las dos consultas de `ai_lessons` fallan (fetchTurnLessons nunca lanza: se cae a vacío + log.warn). */
   lessonsError: { message: string } | null;
+  /**
+   * T3, plan "Nada sin leer, un solo catálogo y la factura Saint" (18/9/2026):
+   * lo que devuelve `fetchActiveCatalogLinks` (data.ts), la quinta consulta
+   * del `Promise.all` de apertura, junto a `business_hours`. Vacío de
+   * fábrica: ningún test viejo de este archivo usa marcadores de catálogo, y
+   * con `[]` `playbookMessageText`/`matchPlaybook` se comportan byte a byte
+   * como antes de esta tarea.
+   */
+  catalogLinkRows: {
+    id: string;
+    key: string;
+    label: string;
+    url: string;
+    sort_order: number;
+    is_active: boolean;
+    updated_by: string | null;
+    created_at: string;
+    updated_at: string;
+  }[];
+  /** Si viene con mensaje, la consulta de `catalog_links` falla (fetchActiveCatalogLinks nunca lanza: se cae a `[]`). */
+  catalogLinksError: { message: string } | null;
 }
 
 const state: FakeState = {
@@ -160,6 +181,8 @@ const state: FakeState = {
   globalLessons: [],
   chatLessons: [],
   lessonsError: null,
+  catalogLinkRows: [],
+  catalogLinksError: null,
 };
 const conversationUpdates: Record<string, unknown>[] = [];
 /** Tarea 3 (14/9/2026): columnas pedidas en cada `select()` sobre `conversations`, para probar que trae display_name/profile_name. */
@@ -467,6 +490,23 @@ function createFakeSupabase() {
         };
       }
 
+      // T3, plan "Nada sin leer, un solo catálogo y la factura Saint"
+      // (18/9/2026): `fetchActiveCatalogLinks` (data.ts) hace
+      // `.select(...).eq("is_active", true).order("sort_order")` y devuelve
+      // el resultado directo de `.order()` (sin `.limit()`/`.maybeSingle()`).
+      if (table === "catalog_links") {
+        return {
+          select: () => ({
+            eq: () => ({
+              order: async () => ({
+                data: state.catalogLinksError ? null : state.catalogLinkRows,
+                error: state.catalogLinksError,
+              }),
+            }),
+          }),
+        };
+      }
+
       throw new Error(`Fake Supabase: tabla no soportada: ${table}`);
     },
   };
@@ -742,6 +782,8 @@ beforeEach(() => {
   state.globalLessons = [];
   state.chatLessons = [];
   state.lessonsError = null;
+  state.catalogLinkRows = [];
+  state.catalogLinksError = null;
   withinFreeformWindowOverride.fn = null;
   sendTypingIndicatorMock.mockClear();
   conversationUpdates.length = 0;
@@ -971,7 +1013,55 @@ describe("runAgentTurn — lo que llega sin texto", () => {
     // siendo el escenario.
     state.history = [
       { sender_type: "ai", content: null, is_internal_note: false, message_type: "image" },
-      { sender_type: "ai", content: playbookMessageText(pb), is_internal_note: false, message_type: "text" },
+      { sender_type: "ai", content: playbookMessageText(pb, []), is_internal_note: false, message_type: "text" },
+      { sender_type: "customer", content: "me pasas el catálogo?", is_internal_note: false, message_type: "text" },
+    ];
+
+    await runAgentTurn("conv-1");
+
+    expect(sendPlaybookReplyMock).not.toHaveBeenCalled();
+    expect(info).toHaveBeenCalledWith("escenario_no_se_repite", {
+      conversationId: "conv-1",
+      escenario: pb.name,
+      motivo: "fue_la_ultima_respuesta",
+    });
+  });
+
+  /**
+   * T3, plan "Nada sin leer, un solo catálogo y la factura Saint" (18/9/2026,
+   * D3/D4): `alreadySentPlaybook` compara contra el texto YA RESUELTO — el
+   * historial guarda lo que `sendPlaybookReply` mandó de verdad (la URL,
+   * nunca el marcador crudo), así que la comparación tiene que resolver el
+   * escenario contra los MISMOS catálogos que se leyeron al abrir el turno
+   * para reconocer su propio mensaje.
+   */
+  it("no repite un escenario con marcador de catálogo ya enviado: compara el texto RESUELTO", async () => {
+    const info = vi.spyOn(log, "info");
+    const pb = playbook({ responseText: "Acá tienes: {{catalogo:cascos}}" });
+    fetchActivePlaybooksMock.mockResolvedValue([pb]);
+    matchPlaybookMock.mockResolvedValue({ playbook: pb, usage: NO_USAGE });
+    state.catalogLinkRows = [
+      {
+        id: "link-1",
+        key: "cascos",
+        label: "Cascos",
+        url: "https://drive.google.com/cascos",
+        sort_order: 1,
+        is_active: true,
+        updated_by: null,
+        created_at: "2026-09-18T00:00:00.000Z",
+        updated_at: "2026-09-18T00:00:00.000Z",
+      },
+    ];
+    // El historial guarda el texto tal como salió la vez anterior: con la
+    // URL ya resuelta, nunca con `{{catalogo:cascos}}` crudo.
+    state.history = [
+      {
+        sender_type: "ai",
+        content: "Acá tienes: https://drive.google.com/cascos",
+        is_internal_note: false,
+        message_type: "text",
+      },
       { sender_type: "customer", content: "me pasas el catálogo?", is_internal_note: false, message_type: "text" },
     ];
 
@@ -1863,7 +1953,9 @@ describe("runAgentTurn — escenarios predeterminados", () => {
 
     expect(matchPlaybookMock).toHaveBeenCalled();
     expect(sendPlaybookReplyMock).toHaveBeenCalledTimes(1);
-    expect(sendPlaybookReplyMock).toHaveBeenCalledWith(expect.anything(), expect.anything(), pb, {
+    // T3, plan "Nada sin leer, un solo catálogo y la factura Saint" (18/9/2026):
+    // `sendPlaybookReply` gana el parámetro `links` entre `playbook` y `opciones`.
+    expect(sendPlaybookReplyMock).toHaveBeenCalledWith(expect.anything(), expect.anything(), pb, [], {
       isAutoReply: true,
     });
   });
@@ -2702,6 +2794,34 @@ describe("runAgentTurn — instrucciones que recibe el modelo", () => {
     await runAgentTurn("conv-1");
 
     expect(matchPlaybookMock.mock.calls[0][3]).toEqual(horario);
+  });
+
+  /**
+   * T3, plan "Nada sin leer, un solo catálogo y la factura Saint" (18/9/2026):
+   * los catálogos ACTIVOS se leen junto con `business_hours` (misma consulta
+   * en paralelo) y llegan también a `matchPlaybook` — es lo que le permite a
+   * fase 0 descartar un escenario con marcador sin resolver.
+   */
+  it("le pasa los catálogos activos a matchPlaybook", async () => {
+    state.catalogLinkRows = [
+      {
+        id: "link-1",
+        key: "cascos",
+        label: "Cascos",
+        url: "https://drive.google.com/cascos",
+        sort_order: 1,
+        is_active: true,
+        updated_by: null,
+        created_at: "2026-09-18T00:00:00.000Z",
+        updated_at: "2026-09-18T00:00:00.000Z",
+      },
+    ];
+
+    await runAgentTurn("conv-1");
+
+    expect(matchPlaybookMock.mock.calls[0][4]).toEqual([
+      expect.objectContaining({ key: "cascos", url: "https://drive.google.com/cascos" }),
+    ]);
   });
 
   /** Una fila rota (forma inválida) no tumba el turno: cae al horario por defecto. */

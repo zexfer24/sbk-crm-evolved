@@ -2,7 +2,7 @@ import "server-only";
 import { generateObject, type LanguageModelUsage, type ModelMessage } from "ai";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import type { Database } from "@/lib/supabase/database.types";
-import type { Playbook, PlaybookAfterSend, PlaybookAttachmentType, Tag, TagColor } from "@/lib/types";
+import type { CatalogLink, Playbook, PlaybookAfterSend, PlaybookAttachmentType, Tag, TagColor } from "@/lib/types";
 import { getClassifierModel } from "@/lib/ai/model";
 import {
   DEFAULT_BUSINESS_HOURS,
@@ -13,6 +13,7 @@ import {
 } from "@/lib/business-hours";
 import { formatCrmDateTime } from "@/lib/time-zone";
 import { isGreetingPlaybook } from "@/lib/ai/saludo";
+import { resolveCatalogMarkers } from "@/lib/catalog-links";
 import { errorText, log } from "@/lib/log";
 
 // ---------------------------------------------------------------------------
@@ -185,6 +186,26 @@ Responde solo con el nombre exacto del escenario, o con "${NO_MATCH}".`;
 }
 
 /**
+ * ¿Este escenario tiene algún `{{catalogo:<key>}}`/`{{catalogos}}` que NO
+ * resuelve contra los catálogos ACTIVOS de hoy?
+ *
+ * Mira `response_text` y, cuando el adjunto es de tipo `link`, también
+ * `attachment_url` — los dos sitios que `playbookMessageText` (send.ts)
+ * junta en el mensaje final. Un catálogo desactivado o borrado, o un
+ * `{{catalogos}}` sin NINGÚN catálogo activo (ajuste sobre D6 hallado al
+ * implementar esta tarea, ver `catalog-links.ts`), cuentan igual que un
+ * marcador mal escrito: D6 es "un marcador que no resuelve nunca llega al
+ * cliente".
+ */
+function hasUnresolvedCatalogMarker(playbook: Playbook, links: CatalogLink[]): boolean {
+  if (resolveCatalogMarkers(playbook.responseText, links).missing.length > 0) return true;
+  if (playbook.attachmentType === "link" && playbook.attachmentUrl) {
+    return resolveCatalogMarkers(playbook.attachmentUrl, links).missing.length > 0;
+  }
+  return false;
+}
+
+/**
  * Fase 0 del turno. Devuelve el escenario que aplica, o null.
  *
  * Nunca lanza: un fallo del proveedor no puede tumbar el turno, solo hace
@@ -198,7 +219,13 @@ export async function matchPlaybook(
   // Con default para no romper a los llamadores viejos ni a los tests que
   // todavía no pasan horario: cae al horario por defecto (Frente B3, "El
   // reloj dice la verdad", 5/9/2026).
-  businessHours: BusinessHours = DEFAULT_BUSINESS_HOURS
+  businessHours: BusinessHours = DEFAULT_BUSINESS_HOURS,
+  // T3, plan "Nada sin leer, un solo catálogo y la factura Saint" (18/9/2026,
+  // D6): los catálogos ACTIVOS leídos al abrir el turno. Con default `[]`
+  // por el mismo motivo que `businessHours` de arriba — un escenario sin
+  // ningún marcador de catálogo (la inmensa mayoría) no se entera de que
+  // este parámetro existe.
+  links: CatalogLink[] = []
 ): Promise<PlaybookMatch> {
   // Historia de este filtro, tres capítulos:
   //
@@ -230,9 +257,9 @@ export async function matchPlaybook(
   // de este escenario empieza saludando?" — y ahora se aplica siempre, sin
   // condición.
   const antes = playbooks.length;
-  const candidatos = playbooks.filter((p) => !isGreetingPlaybook(p.responseText));
-  if (candidatos.length < antes) {
-    const ignorados = antes - candidatos.length;
+  const sinSaludo = playbooks.filter((p) => !isGreetingPlaybook(p.responseText));
+  if (sinSaludo.length < antes) {
+    const ignorados = antes - sinSaludo.length;
     // `LogContext` (log.ts) solo acepta valores escalares: los nombres viajan
     // unidos por coma, no como arreglo.
     const nombres = playbooks
@@ -240,6 +267,22 @@ export async function matchPlaybook(
       .map((p) => p.name)
       .join(", ");
     log.info("escenarios_saludo_ignorados", { ignorados, nombres });
+  }
+
+  // T3, plan "Nada sin leer, un solo catálogo y la factura Saint" (18/9/2026,
+  // D6): mismo patrón que el descarte de saludo de arriba, para el marcador
+  // de catálogo. Un escenario con `{{catalogo:<key>}}`/`{{catalogos}}` sin
+  // resolver NUNCA llega al cliente — se saca de los candidatos ANTES de
+  // llamar al modelo, no se manda con el marcador crudo ni se le pide al
+  // modelo que "arregle" el texto.
+  const candidatos = sinSaludo.filter((p) => !hasUnresolvedCatalogMarker(p, links));
+  if (candidatos.length < sinSaludo.length) {
+    const ignorados = sinSaludo.length - candidatos.length;
+    const nombres = sinSaludo
+      .filter((p) => hasUnresolvedCatalogMarker(p, links))
+      .map((p) => p.name)
+      .join(", ");
+    log.info("escenarios_enlace_sin_resolver", { ignorados, nombres });
   }
 
   // Sin escenarios que puedan salir ahora no hay nada que elegir: se ahorra la

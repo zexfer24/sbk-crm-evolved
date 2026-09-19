@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import type { Playbook } from "@/lib/types";
+import type { CatalogLink, Playbook } from "@/lib/types";
 
 const generateObjectMock = vi.fn();
 
@@ -33,6 +33,22 @@ function playbook(name: string, overrides: Partial<Playbook> = {}): Playbook {
     afterSend: "wait",
     isActive: true,
     tags: [],
+    ...overrides,
+  };
+}
+
+/** T3, plan "Nada sin leer, un solo catálogo y la factura Saint" (18/9/2026). */
+function catalogLink(overrides: Partial<CatalogLink> = {}): CatalogLink {
+  return {
+    id: "link-1",
+    key: "cascos",
+    label: "Cascos",
+    url: "https://drive.google.com/cascos",
+    sortOrder: 1,
+    isActive: true,
+    updatedBy: null,
+    createdAt: "2026-09-18T00:00:00.000Z",
+    updatedAt: "2026-09-18T00:00:00.000Z",
     ...overrides,
   };
 }
@@ -207,6 +223,121 @@ describe("matchPlaybook · el saludo no tapa la pregunta real", () => {
 
     const call = generateObjectMock.mock.calls[0][0] as { system: string };
     expect(call.system).toContain("el saludo no cuenta");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// T3, plan "Nada sin leer, un solo catálogo y la factura Saint" (18/9/2026,
+// D6): un escenario con `{{catalogo:<key>}}`/`{{catalogos}}` que no resuelve
+// contra los catálogos ACTIVOS de hoy NUNCA llega al cliente — se saca de
+// los candidatos ANTES de llamar al modelo, mismo patrón que el descarte de
+// saludo de más arriba.
+// ---------------------------------------------------------------------------
+describe("matchPlaybook · el marcador de catálogo sin resolver no es candidato", () => {
+  it("un escenario con {{catalogo:x}} sin ningún catálogo cargado no entra al enum", async () => {
+    generateObjectMock.mockClear();
+    generateObjectMock.mockResolvedValue({ object: "ninguno", usage: USAGE });
+    const roto = playbook("Catálogo cascos", { responseText: "Acá tienes: {{catalogo:cascos}}" });
+    const ok = playbook("Ubicación", { responseText: "Estamos en tal parte" });
+
+    await matchPlaybook(HISTORY, [roto, ok], undefined, undefined, []);
+
+    const call = generateObjectMock.mock.calls[0][0] as { enum: string[] };
+    expect(call.enum).not.toContain("Catálogo cascos");
+    expect(call.enum).toContain("Ubicación");
+  });
+
+  it("con el catálogo activo cargado, el mismo escenario sí entra", async () => {
+    generateObjectMock.mockClear();
+    generateObjectMock.mockResolvedValue({ object: "Catálogo cascos", usage: USAGE });
+    const ok = playbook("Catálogo cascos", { responseText: "Acá tienes: {{catalogo:cascos}}" });
+
+    const result = await matchPlaybook(HISTORY, [ok], undefined, undefined, [catalogLink()]);
+
+    expect(result.playbook).toEqual(ok);
+  });
+
+  it("un catálogo INACTIVO deja el escenario fuera, igual que uno inexistente (D6)", async () => {
+    generateObjectMock.mockClear();
+    generateObjectMock.mockResolvedValue({ object: "ninguno", usage: USAGE });
+    const roto = playbook("Catálogo cascos", { responseText: "Acá tienes: {{catalogo:cascos}}" });
+
+    await matchPlaybook(HISTORY, [roto], undefined, undefined, [catalogLink({ isActive: false })]);
+
+    expect(generateObjectMock).not.toHaveBeenCalled();
+  });
+
+  it("{{catalogos}} sin NINGÚN catálogo activo también cuenta como sin resolver", async () => {
+    generateObjectMock.mockClear();
+    generateObjectMock.mockResolvedValue({ object: "ninguno", usage: USAGE });
+    const roto = playbook("Catálogo general", { responseText: "Ver también: {{catalogos}}" });
+
+    await matchPlaybook(HISTORY, [roto], undefined, undefined, []);
+
+    expect(generateObjectMock).not.toHaveBeenCalled();
+  });
+
+  it("un marcador dentro de attachment_url (adjunto tipo link) también cuenta", async () => {
+    generateObjectMock.mockClear();
+    generateObjectMock.mockResolvedValue({ object: "ninguno", usage: USAGE });
+    const roto = playbook("Con adjunto", {
+      responseText: "Mira esto",
+      attachmentUrl: "{{catalogo:cascos}}",
+      attachmentType: "link",
+    });
+
+    await matchPlaybook(HISTORY, [roto], undefined, undefined, []);
+
+    expect(generateObjectMock).not.toHaveBeenCalled();
+  });
+
+  it("un marcador dentro de attachment_url de un adjunto que NO es link no se evalúa (no se manda como texto)", async () => {
+    generateObjectMock.mockClear();
+    generateObjectMock.mockResolvedValue({ object: "Con adjunto", usage: USAGE });
+    const conAdjuntoDocumento = playbook("Con adjunto", {
+      responseText: "Mira esto",
+      attachmentUrl: "{{catalogo:cascos}}",
+      attachmentType: "document",
+    });
+
+    const result = await matchPlaybook(HISTORY, [conAdjuntoDocumento], undefined, undefined, []);
+
+    expect(result.playbook).toEqual(conAdjuntoDocumento);
+  });
+
+  it("sin ningún marcador, un escenario sigue siendo candidato aunque no haya catálogos cargados", async () => {
+    generateObjectMock.mockClear();
+    generateObjectMock.mockResolvedValue({ object: "Postventa Cashea", usage: USAGE });
+    const sinMarcador = playbook("Postventa Cashea");
+
+    const result = await matchPlaybook(HISTORY, [sinMarcador], undefined, undefined, []);
+
+    expect(result.playbook).toEqual(sinMarcador);
+  });
+
+  it("deja en el registro cuántos escenarios con enlace sin resolver ignoró, y cuáles", async () => {
+    const info = vi.spyOn(log, "info");
+    generateObjectMock.mockClear();
+    generateObjectMock.mockResolvedValue({ object: "Ubicación", usage: USAGE });
+    const roto = playbook("Catálogo cascos", { responseText: "Acá tienes: {{catalogo:cascos}}" });
+    const ok = playbook("Ubicación", { responseText: "Estamos en tal parte" });
+
+    await matchPlaybook(HISTORY, [roto, ok], undefined, undefined, []);
+
+    expect(info).toHaveBeenCalledWith("escenarios_enlace_sin_resolver", {
+      ignorados: 1,
+      nombres: "Catálogo cascos",
+    });
+  });
+
+  it("sin el parámetro links (llamador viejo), un escenario con marcador queda fuera igual (default [])", async () => {
+    generateObjectMock.mockClear();
+    generateObjectMock.mockResolvedValue({ object: "ninguno", usage: USAGE });
+    const roto = playbook("Catálogo cascos", { responseText: "Acá tienes: {{catalogo:cascos}}" });
+
+    await matchPlaybook(HISTORY, [roto]);
+
+    expect(generateObjectMock).not.toHaveBeenCalled();
   });
 });
 

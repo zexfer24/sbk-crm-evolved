@@ -9,9 +9,10 @@ import {
 } from "ai";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import type { Database } from "@/lib/supabase/database.types";
-import type { Playbook, Tag } from "@/lib/types";
+import type { CatalogLink, Playbook, Tag } from "@/lib/types";
 import { dayBand, parseBusinessHours, type BusinessHours, type BusinessStatus } from "@/lib/business-hours";
 import { createAdminClient } from "@/lib/supabase/admin";
+import { fetchActiveCatalogLinks } from "@/lib/data";
 import { classifyIntent, type Intent } from "@/lib/ai/classify";
 import { currentAgentModelLabel, getAgentModel } from "@/lib/ai/model";
 import { OFF_TOPIC_REPLY, SYSTEM_PROMPT, buildInstructions } from "@/lib/ai/prompt";
@@ -411,9 +412,16 @@ function alreadyRedirected(history: ModelMessage[]): boolean {
  * sigue siendo el texto del escenario para todo efecto práctico — la red de
  * "fue la última respuesta" no debe dejar de reconocerlo solo porque en el
  * medio se coló un adjunto.
+ *
+ * `links` (T3, plan "Nada sin leer, un solo catálogo y la factura Saint",
+ * 18/9/2026): la comparación es contra el texto YA RESUELTO — el mismo que
+ * `sendPlaybookReply` mandó la vez anterior, con la URL de `catalog_links`
+ * en vez del marcador. Si el supervisor cambia la URL entre dos turnos, esta
+ * red deja de reconocer el envío anterior y el escenario se repite una vez,
+ * con el link nuevo (riesgo aceptado, sección 5 del plan).
  */
-function alreadySentPlaybook(history: ModelMessage[], playbook: Playbook): boolean {
-  const enviado = playbookMessageText(playbook);
+function alreadySentPlaybook(history: ModelMessage[], playbook: Playbook, links: CatalogLink[]): boolean {
+  const enviado = playbookMessageText(playbook, links);
   for (let i = history.length - 1; i >= 0; i--) {
     const message = history[i];
     if (message.role !== "assistant") continue;
@@ -1048,6 +1056,13 @@ async function runPlaybook(
   entrega: TurnDelivery,
   lease: TurnLease,
   playbook: Playbook,
+  /**
+   * T3, plan "Nada sin leer, un solo catálogo y la factura Saint"
+   * (18/9/2026): los catálogos ACTIVOS leídos al abrir el turno — se
+   * reenvían tal cual a `sendPlaybookReply`, que es quien de verdad resuelve
+   * el marcador contra ellos.
+   */
+  links: CatalogLink[],
   tokens: TurnTokens,
   customerMessage: string | null,
   tiempos: TurnTiming,
@@ -1077,7 +1092,7 @@ async function runPlaybook(
   // termina acá sin enviar y sin etiquetar ni escalar: todo lo que sigue
   // acompaña a un mensaje que no salió.
   const salida = await deliver(supabase, target, entrega, lease, tiempos, "escenario", lastCustomerMessageAt, () =>
-    sendPlaybookReply(supabase, target, playbook, { isAutoReply: esperandoAsesor })
+    sendPlaybookReply(supabase, target, playbook, links, { isAutoReply: esperandoAsesor })
   );
   if (!salida) return;
   if (await deliveryFailed(supabase, target.conversationId, salida, assignedAgentId)) return;
@@ -1226,6 +1241,14 @@ async function runTurnPhases(
   lease: TurnLease,
   tiempos: TurnTiming,
   businessHours: BusinessHours,
+  /**
+   * Catálogos ACTIVOS leídos junto con `business_hours` (T3, plan "Nada sin
+   * leer, un solo catálogo y la factura Saint", 18/9/2026): se los pasa a
+   * `matchPlaybook` (fase 0, para descartar escenarios con marcador sin
+   * resolver) y a `alreadySentPlaybook`/`runPlaybook` (para comparar y
+   * mandar el texto YA resuelto).
+   */
+  links: CatalogLink[],
   lessons: TurnLessons
 ): Promise<void> {
   const conversationId = target.conversationId;
@@ -1515,7 +1538,7 @@ async function runTurnPhases(
   const [match, classified] = await medir(tiempos, "clasificacionMs", () => {
     const matchPromise: Promise<PlaybookMatch> = ultimoEsMarcador
       ? Promise.resolve({ playbook: null, usage: ZERO_USAGE })
-      : matchPlaybook(history, playbooks, undefined, businessHours);
+      : matchPlaybook(history, playbooks, undefined, businessHours, links);
 
     return Promise.all([
       // matchPlaybook nunca lanza: un fallo del proveedor deja el turno por el
@@ -1545,7 +1568,7 @@ async function runTurnPhases(
   // Dos redes, y se preguntan en este orden porque la primera es gratis: el
   // historial ya está en memoria, la ventana cuesta una consulta.
   if (match.playbook) {
-    const fueLaUltimaRespuesta = alreadySentPlaybook(history, match.playbook);
+    const fueLaUltimaRespuesta = alreadySentPlaybook(history, match.playbook, links);
     const yaSalioHacePoco =
       fueLaUltimaRespuesta ||
       (await playbookSentRecently(supabase, conversationId, match.playbook.id));
@@ -1573,6 +1596,7 @@ async function runTurnPhases(
           entrega,
           lease,
           match.playbook,
+          links,
           classifiedTokens,
           customerMessage,
           tiempos,
@@ -2002,6 +2026,7 @@ export async function runAgentTurn(conversationId: string, options: { vencioEn?:
     { data: conversation },
     { data: settingsRow, error: settingsError },
     lessons,
+    links,
   ] = await Promise.all([
     // agent_can_run junta el interruptor global y el tope de gasto del día.
     // La decisión vive en la base para que sea la misma la pregunte quien la
@@ -2031,6 +2056,15 @@ export async function runAgentTurn(conversationId: string, options: { vencioEn?:
     // `fetchTurnLessons` nunca lanza (ver su propio catch + log.warn), así
     // que este Promise.all no gana ninguna rama de error nueva por su culpa.
     fetchTurnLessons(supabase, conversationId),
+    // Enlaces de catálogo (T3, plan "Nada sin leer, un solo catálogo y la
+    // factura Saint", 18/9/2026, D3-D6): quinta consulta en paralelo, en el
+    // mismo Promise.all que `business_hours` porque tampoco depende de las
+    // otras — fase 0 (`matchPlaybook`) los necesita para saber qué
+    // escenarios tienen el marcador `{{catalogo:<key>}}`/`{{catalogos}}`
+    // resuelto, y `runPlaybook`/`sendPlaybookReply` para mandarlo resuelto.
+    // `fetchActiveCatalogLinks` nunca lanza (cae a `[]` ante error, igual
+    // que `fetchTurnLessons`), así que tampoco gana una rama de error nueva.
+    fetchActiveCatalogLinks(supabase),
   ]);
 
   // Tarea 5 (14/9/2026): un ERROR de la RPC (base caída, red cortada) no es
@@ -2247,7 +2281,7 @@ export async function runAgentTurn(conversationId: string, options: { vencioEn?:
     const arranque = Date.now();
 
     try {
-      await runTurnPhases(supabase, target, convo, entrega, lease, tiempos, businessHours, lessons);
+      await runTurnPhases(supabase, target, convo, entrega, lease, tiempos, businessHours, links, lessons);
     } catch (err) {
       if (!entrega.intentado) throw err;
 

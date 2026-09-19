@@ -1,8 +1,9 @@
 import "server-only";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import type { Database } from "@/lib/supabase/database.types";
-import type { Playbook } from "@/lib/types";
+import type { CatalogLink, Playbook } from "@/lib/types";
 import type { TurnTarget } from "@/lib/ai/turn-target";
+import { resolveCatalogMarkers } from "@/lib/catalog-links";
 import { MetaApiError, metaErrorCode, sendWhatsappMedia, sendWhatsappText } from "@/lib/whatsapp/meta-client";
 import { signedUrlForSending } from "@/lib/media-link";
 import { errorText, log } from "@/lib/log";
@@ -219,12 +220,27 @@ async function sendAgentMedia(
  * Un adjunto `link` se anexa al texto en vez de mandarse como archivo:
  * Meta solo puede adjuntar URLs que apunten directo a un archivo público, y
  * los catálogos suelen ser páginas web o carpetas compartidas.
+ *
+ * `links` (T3, plan "Nada sin leer, un solo catálogo y la factura Saint",
+ * 18/9/2026, D3/D4): resuelve `{{catalogo:<key>}}`/`{{catalogos}}` en el
+ * texto redactado Y en el adjunto `link`, contra la fuente única
+ * `catalog_links` — antes las URLs de Drive vivían pegadas a mano en el
+ * texto de cada escenario, y una rotación en Drive obligaba a editar cada
+ * copia por separado. Sin ningún marcador en `playbook`, el resultado es
+ * BYTE A BYTE el de antes de esta corrida: `resolveCatalogMarkers` deja
+ * intacto un texto sin marcadores. Fase 0 (`matchPlaybook`, playbooks.ts) ya
+ * sacó de los candidatos cualquier escenario cuyo marcador no resuelva
+ * (D6), así que para cuando esta función corre `missing` siempre viene
+ * vacío en un turno real — no hace falta mirarlo acá.
  */
-export function playbookMessageText(playbook: Playbook): string {
+export function playbookMessageText(playbook: Playbook, links: CatalogLink[]): string {
   const { attachmentUrl, attachmentType } = playbook;
-  return attachmentType === "link" && attachmentUrl
-    ? `${playbook.responseText}\n\n${attachmentUrl}`
-    : playbook.responseText;
+  const responseText = resolveCatalogMarkers(playbook.responseText, links).text;
+  if (attachmentType === "link" && attachmentUrl) {
+    const resolvedAttachment = resolveCatalogMarkers(attachmentUrl, links).text;
+    return `${responseText}\n\n${resolvedAttachment}`;
+  }
+  return responseText;
 }
 
 /**
@@ -242,6 +258,16 @@ export async function sendPlaybookReply(
   target: TurnTarget,
   playbook: Playbook,
   /**
+   * T3, plan "Nada sin leer, un solo catálogo y la factura Saint"
+   * (18/9/2026): los catálogos ACTIVOS leídos al abrir el turno, en el mismo
+   * `Promise.all` que `business_hours` (agent.ts) — se le pasan a
+   * `playbookMessageText` para resolver el marcador antes de mandarlo. Un
+   * escenario con marcador sin resolver ya quedó fuera de los candidatos en
+   * fase 0 (`matchPlaybook`), así que acá siempre llega algo que resuelve
+   * bien; se recibe igual para no duplicar esa garantía en dos sitios.
+   */
+  links: CatalogLink[],
+  /**
    * T4, "Seba atiende el mostrador" (18/9/2026, D2/D3): el mismo
    * `opciones?.isAutoReply` que ya recibe `sendAgentText` — `runPlaybook`
    * (agent.ts) lo arma con `esperandoAsesor` (el chat YA tenía asesor
@@ -254,7 +280,7 @@ export async function sendPlaybookReply(
 ): Promise<DeliveryOutcome> {
   const { attachmentUrl, attachmentType } = playbook;
 
-  const entrega = await sendAgentText(supabase, target, playbookMessageText(playbook), opciones);
+  const entrega = await sendAgentText(supabase, target, playbookMessageText(playbook, links), opciones);
 
   if (attachmentUrl && attachmentType && attachmentType !== "link") {
     await sendAgentMedia(supabase, target, attachmentType, attachmentUrl);

@@ -266,6 +266,15 @@ function createFakeSupabase() {
       if (table === "conversation_handoffs") {
         return { select: () => ({ eq: () => ({ eq: () => ({ order: () => ({ limit: async () => ({ data: [], error: null }) }) }) }) }) };
       }
+      // T3, plan "Nada sin leer, un solo catálogo y la factura Saint"
+      // (18/9/2026): `fetchActiveCatalogLinks` (data.ts) NO envuelve su
+      // consulta en try/catch —a diferencia de `fetchTurnLessons`—, así que
+      // sin este caso el `.from("catalog_links")` sin manejar tumbaría TODO
+      // el `Promise.all` de apertura de `runAgentTurn`. Sin ningún catálogo
+      // cargado, ningún test de este archivo usa marcadores.
+      if (table === "catalog_links") {
+        return { select: () => ({ eq: () => ({ order: async () => ({ data: [], error: null }) }) }) };
+      }
 
       throw new Error(`tabla no soportada: ${table}`);
     },

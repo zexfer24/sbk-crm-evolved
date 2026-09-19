@@ -151,6 +151,14 @@ function createFakeSupabase() {
       if (table === "agent_settings") {
         return { select: () => ({ eq: () => ({ maybeSingle: async () => ({ data: { business_hours: null }, error: null }) }) }) };
       }
+      // T3, plan "Nada sin leer, un solo catálogo y la factura Saint"
+      // (18/9/2026): `fetchActiveCatalogLinks` (data.ts) NO envuelve su
+      // consulta en try/catch, así que sin este caso el `.from("catalog_links")`
+      // sin manejar tumbaría TODO el `Promise.all` de apertura de
+      // `runAgentTurn`. Ninguna de estas conversaciones usa marcadores.
+      if (table === "catalog_links") {
+        return { select: () => ({ eq: () => ({ order: async () => ({ data: [], error: null }) }) }) };
+      }
 
       throw new Error(`Fake Supabase: tabla no soportada: ${table}`);
     },

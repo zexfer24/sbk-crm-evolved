@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import type { Playbook } from "@/lib/types";
+import type { CatalogLink, Playbook } from "@/lib/types";
 
 const sendWhatsappTextMock = vi.fn(async () => ({ whatsappMessageId: "wamid.texto" }));
 const sendWhatsappMediaMock = vi.fn(async () => ({ whatsappMessageId: "wamid.media" }));
@@ -62,12 +62,31 @@ function playbook(overrides: Partial<Playbook> = {}): Playbook {
   };
 }
 
+/** T3, plan "Nada sin leer, un solo catálogo y la factura Saint" (18/9/2026). */
+function catalogLink(overrides: Partial<CatalogLink> = {}): CatalogLink {
+  return {
+    id: "link-1",
+    key: "cascos",
+    label: "Cascos",
+    url: "https://drive.google.com/cascos",
+    sortOrder: 1,
+    isActive: true,
+    updatedBy: null,
+    createdAt: "2026-09-18T00:00:00.000Z",
+    updatedAt: "2026-09-18T00:00:00.000Z",
+    ...overrides,
+  };
+}
+
+/** Ningún test de este describe usa marcadores: `[]` reproduce el comportamiento de antes de T3 byte a byte. */
+const SIN_CATALOGOS: CatalogLink[] = [];
+
 describe("sendPlaybookReply", () => {
   it("envía el texto del escenario tal cual, sin adjunto", async () => {
     const { client, inserted } = createFakeSupabase();
 
     // @ts-expect-error -- fake mínimo suficiente para este test
-    await sendPlaybookReply(client, conversation(false), playbook());
+    await sendPlaybookReply(client, conversation(false), playbook(), SIN_CATALOGOS);
 
     expect(inserted).toHaveLength(1);
     expect(inserted[0].content).toBe("Claro, por acá te dejo el catálogo:");
@@ -81,7 +100,8 @@ describe("sendPlaybookReply", () => {
       // @ts-expect-error -- fake mínimo
       client,
       conversation(false),
-      playbook({ attachmentUrl: "https://sbk.example/catalogo", attachmentType: "link" })
+      playbook({ attachmentUrl: "https://sbk.example/catalogo", attachmentType: "link" }),
+      SIN_CATALOGOS
     );
 
     expect(inserted).toHaveLength(1);
@@ -95,7 +115,8 @@ describe("sendPlaybookReply", () => {
       // @ts-expect-error -- fake mínimo
       client,
       conversation(false),
-      playbook({ attachmentUrl: "https://sbk.example/catalogo.pdf", attachmentType: "document" })
+      playbook({ attachmentUrl: "https://sbk.example/catalogo.pdf", attachmentType: "document" }),
+      SIN_CATALOGOS
     );
 
     expect(inserted).toHaveLength(2);
@@ -114,7 +135,8 @@ describe("sendPlaybookReply", () => {
       // @ts-expect-error -- fake mínimo
       client,
       conversation(false),
-      playbook({ attachmentUrl: "https://sbk.example/catalogo.pdf", attachmentType: "document" })
+      playbook({ attachmentUrl: "https://sbk.example/catalogo.pdf", attachmentType: "document" }),
+      SIN_CATALOGOS
     );
 
     expect(sendWhatsappTextMock).not.toHaveBeenCalled();
@@ -132,11 +154,83 @@ describe("sendPlaybookReply", () => {
       // @ts-expect-error -- fake mínimo
       client,
       conversation(true),
-      playbook({ attachmentUrl: "https://sbk.example/catalogo.pdf", attachmentType: "document" })
+      playbook({ attachmentUrl: "https://sbk.example/catalogo.pdf", attachmentType: "document" }),
+      SIN_CATALOGOS
     );
 
     expect(sendWhatsappTextMock).toHaveBeenCalledTimes(1);
     expect(sendWhatsappMediaMock).toHaveBeenCalledTimes(1);
+  });
+});
+
+/**
+ * T3, plan "Nada sin leer, un solo catálogo y la factura Saint" (18/9/2026,
+ * D3/D4): `sendPlaybookReply`/`playbookMessageText` resuelven el marcador de
+ * catálogo contra la fuente única `catalog_links` en vez de depender de una
+ * URL pegada a mano en `response_text`/`attachment_url`.
+ */
+describe("sendPlaybookReply / playbookMessageText — resuelven el marcador de catálogo", () => {
+  it("resuelve {{catalogo:<key>}} en el texto redactado", async () => {
+    const { client, inserted } = createFakeSupabase();
+
+    await sendPlaybookReply(
+      // @ts-expect-error -- fake mínimo
+      client,
+      conversation(false),
+      playbook({ responseText: "Acá tienes: {{catalogo:cascos}}" }),
+      [catalogLink()]
+    );
+
+    expect(inserted[0].content).toBe("Acá tienes: https://drive.google.com/cascos");
+  });
+
+  it("resuelve {{catalogos}} expandiendo la lista completa de catálogos activos", async () => {
+    const { client, inserted } = createFakeSupabase();
+    const links = [
+      catalogLink(),
+      catalogLink({ id: "link-2", key: "resonadores", label: "Resonadores", url: "https://drive.google.com/resonadores", sortOrder: 2 }),
+    ];
+
+    await sendPlaybookReply(
+      // @ts-expect-error -- fake mínimo
+      client,
+      conversation(false),
+      playbook({ responseText: "Nuestros catálogos:\n{{catalogos}}" }),
+      links
+    );
+
+    expect(inserted[0].content).toBe(
+      "Nuestros catálogos:\n• Cascos: https://drive.google.com/cascos\n• Resonadores: https://drive.google.com/resonadores"
+    );
+  });
+
+  it("resuelve el marcador también dentro del adjunto tipo link", async () => {
+    const { client, inserted } = createFakeSupabase();
+
+    await sendPlaybookReply(
+      // @ts-expect-error -- fake mínimo
+      client,
+      conversation(false),
+      playbook({ responseText: "Acá va", attachmentUrl: "{{catalogo:cascos}}", attachmentType: "link" }),
+      [catalogLink()]
+    );
+
+    expect(inserted).toHaveLength(1);
+    expect(inserted[0].content).toBe("Acá va\n\nhttps://drive.google.com/cascos");
+  });
+
+  it("sin ningún marcador, el texto sale BYTE A BYTE igual que antes de esta corrida", async () => {
+    const { client, inserted } = createFakeSupabase();
+
+    await sendPlaybookReply(
+      // @ts-expect-error -- fake mínimo
+      client,
+      conversation(false),
+      playbook(),
+      [catalogLink()] // aunque haya catálogos cargados, sin marcador no cambia nada
+    );
+
+    expect(inserted[0].content).toBe("Claro, por acá te dejo el catálogo:");
   });
 });
 
@@ -303,7 +397,7 @@ describe("sendPlaybookReply — opciones (is_auto_reply)", () => {
     const { client, inserted } = createFakeSupabase();
 
     // @ts-expect-error -- fake mínimo
-    await sendPlaybookReply(client, conversation(false), playbook());
+    await sendPlaybookReply(client, conversation(false), playbook(), SIN_CATALOGOS);
 
     expect(inserted[0].is_auto_reply).toBe(false);
   });
@@ -316,6 +410,7 @@ describe("sendPlaybookReply — opciones (is_auto_reply)", () => {
       client,
       conversation(false),
       playbook(),
+      SIN_CATALOGOS,
       { isAutoReply: true }
     );
 
@@ -336,7 +431,8 @@ describe("sendPlaybookReply — el outcome que vuelve es el del texto, no el del
       // @ts-expect-error -- fake mínimo
       client,
       conversation(true),
-      playbook({ attachmentUrl: "https://sbk.example/catalogo.pdf", attachmentType: "document" })
+      playbook({ attachmentUrl: "https://sbk.example/catalogo.pdf", attachmentType: "document" }),
+      SIN_CATALOGOS
     );
 
     expect(outcome).toMatchObject({ whatsapp_status: "sent", whatsapp_message_id: "wamid.texto-ok" });
