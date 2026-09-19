@@ -3,17 +3,18 @@ import {
   isValidCedulaNumber,
   normalizeSaint,
   SALE_FIELD_LABELS,
+  validateSaleCart,
   validateSaleDraft,
   type SaleDraft,
 } from "@/lib/sale-draft";
 
 /**
  * Borrador válido de referencia: los nueve campos obligatorios de D11 (plan
- * "Nada sin leer, un solo catálogo y la factura Saint", 18/9/2026) más
- * `itemCount`, que no es uno de los nueve —esa regla ("al menos un
- * repuesto") es previa a este plan y sigue viviendo aparte, en
- * `close-sale-modal.tsx`, con su propio aviso— pero viaja en el borrador
- * porque representa TODO lo que hace falta para cerrar la venta.
+ * "Nada sin leer, un solo catálogo y la factura Saint", 18/9/2026). El
+ * carrito NO es uno de los nueve —esa regla ("al menos un repuesto") es
+ * previa a este plan y se valida aparte, con `validateSaleCart`— así que
+ * `SaleDraft` ya no lo lleva (retirado en la corrección R2 del 19/9/2026,
+ * ver el docblock de `SaleDraft` en `sale-draft.ts`).
  */
 function draftCompleto(overrides: Partial<SaleDraft> = {}): SaleDraft {
   return {
@@ -27,7 +28,6 @@ function draftCompleto(overrides: Partial<SaleDraft> = {}): SaleDraft {
     paymentMethod: "pago_movil",
     saintInvoiceNumber: "00123",
     paymentProofUrl: "https://example.com/proof.jpg",
-    itemCount: 1,
     ...overrides,
   };
 }
@@ -168,6 +168,25 @@ describe("isValidCedulaNumber", () => {
   it("rechaza cualquier cosa que no sean solo dígitos", () => {
     expect(isValidCedulaNumber("123abc")).toBe(false);
     expect(isValidCedulaNumber("")).toBe(false);
+  });
+});
+
+// Corrección R2 (revisión `code-review high` del 19/9/2026, plan "Nada sin
+// leer, un solo catálogo y la factura Saint"): `closeSaleWithContactInfo`
+// pasaba `itemCount` a `validateSaleDraft`, que nunca lo miraba —la regla
+// "al menos un repuesto" vivía solo en el toast del modal, sin una función
+// compartida que la mutación pudiera correr como segunda barrera de verdad.
+// `validateSaleCart` es esa función: pura, sin meter el carrito entre los
+// nueve campos de `validateSaleDraft` (no tiene un único `<input>` al que
+// atarle un error de formulario, D11 sigue siendo solo esos nueve).
+describe("validateSaleCart — el carrito no es uno de los nueve campos, pero sigue siendo obligatorio", () => {
+  it("un carrito vacío devuelve un mensaje", () => {
+    expect(validateSaleCart(0)).toBeTruthy();
+  });
+
+  it("un carrito con al menos un renglón no devuelve error", () => {
+    expect(validateSaleCart(1)).toBeNull();
+    expect(validateSaleCart(3)).toBeNull();
   });
 });
 

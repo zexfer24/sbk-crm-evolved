@@ -458,4 +458,66 @@ describe("CloseSaleModal — el asesor arma la venta, pero el precio lo pone el 
 
     await waitFor(() => expect(screen.getByLabelText("Nombre")).toHaveFocus());
   });
+
+  // Corrección R2 (revisión `code-review high`, 19/9/2026): hasta esta
+  // corrección `errors` solo se recalculaba entero al intentar guardar, así
+  // que un campo ya corregido conservaba su mensaje rojo hasta el próximo
+  // intento — el asesor corregía el nombre y el error seguía ahí debajo
+  // hasta volver a tocar "Guardar".
+  it("corregir un campo borra su error sin tocar los demás", async () => {
+    const contactoSinNombre: Contact = { ...CONTACT, displayName: null, profileName: null };
+    const user = crearUsuario();
+    renderModal([FOTO_COMPROBANTE], contactoSinNombre);
+    await waitForQuotes();
+
+    await user.click(screen.getByText("Carburador PZ27"));
+    // Deja Nombre y Método de pago sin completar; llena el resto.
+    await user.type(screen.getByLabelText("Cédula"), "12345678");
+    await user.selectOptions(screen.getByLabelText("Estado"), "Barinas");
+    await user.type(screen.getByLabelText("Ciudad"), "Barinas");
+    await user.type(screen.getByLabelText("Dirección"), "Calle Falsa 123");
+    await user.type(screen.getByLabelText("Número de factura Saint"), "00123");
+    await user.click(screen.getByLabelText("Usar esta foto como comprobante"));
+    await user.click(submitButton());
+
+    // Dos errores a la vez: nombre y método de pago.
+    await screen.findByText(/el nombre del cliente es obligatorio/i);
+    await screen.findByText(/elige con qué pagó/i);
+
+    // Corrige solo el nombre.
+    await user.type(screen.getByLabelText("Nombre"), "Cliente Demo");
+
+    await waitFor(() =>
+      expect(screen.queryByText(/el nombre del cliente es obligatorio/i)).not.toBeInTheDocument()
+    );
+    // El error del campo que NO se tocó sigue ahí: no se revalidó todo.
+    expect(screen.getByText(/elige con qué pagó/i)).toBeInTheDocument();
+  });
+
+  // Corrección R2, mismo motivo: el modal no se desmonta al cerrarse (sigue
+  // vivo con `isOpen=false`), así que sin un reseteo explícito los errores
+  // de un intento anterior le esperaban al asesor la próxima vez que abría
+  // el mismo modal.
+  it("reabrir el modal no arrastra errores de un intento anterior", async () => {
+    const contactoSinNombre: Contact = { ...CONTACT, displayName: null, profileName: null };
+    const user = crearUsuario();
+    const { rerender } = renderModal([FOTO_COMPROBANTE], contactoSinNombre);
+    await waitForQuotes();
+
+    await user.click(screen.getByText("Carburador PZ27"));
+    await user.click(submitButton());
+    await screen.findByText(/el nombre del cliente es obligatorio/i);
+
+    const props = {
+      onOpenChange: () => {},
+      conversationId: "conv-1",
+      contact: contactoSinNombre,
+      agent: AGENT,
+      messages: [FOTO_COMPROBANTE],
+    };
+    rerender(<CloseSaleModal isOpen={false} {...props} />);
+    rerender(<CloseSaleModal isOpen {...props} />);
+
+    expect(screen.queryByText(/el nombre del cliente es obligatorio/i)).not.toBeInTheDocument();
+  });
 });

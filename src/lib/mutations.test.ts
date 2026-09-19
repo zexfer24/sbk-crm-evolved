@@ -95,11 +95,20 @@ const CONTACT_DETAILS = {
 };
 
 describe("closeSaleWithContactInfo — el monto sale del catálogo, nunca de un número a mano", () => {
-  it("rechaza cerrar la venta sin un solo renglón", async () => {
-    const { client } = createFakeSupabase();
+  /**
+   * Corrección R2 (revisión `code-review high` del 19/9/2026): antes de
+   * este ajuste el `if (items.length === 0)` de acá arriba ya lanzaba, pero
+   * vivía suelto, desconectado de `validateSaleCart` (`sale-draft.ts`) — la
+   * misma regla que corre el toast del modal. Este caso deja explícito que
+   * NINGUNA fila se escribe (ni siquiera `orders`) antes del rechazo, no
+   * solo que la promesa se rechaza.
+   */
+  it("rechaza cerrar la venta sin un solo renglón, sin escribir nada en la base", async () => {
+    const { client, calls } = createFakeSupabase();
     await expect(
       closeSaleWithContactInfo(client, "conv-1", "contact-1", AGENT, CONTACT_DETAILS, [], 40)
     ).rejects.toThrow(/al menos un repuesto/i);
+    expect(calls).toHaveLength(0);
   });
 
   it("crea la orden con el total exacto de los renglones y enlaza la conversación", async () => {

@@ -14,6 +14,7 @@ import { cartToLineItems } from "@/lib/sale-cart";
 import {
   normalizeSaint,
   SALE_FIELD_LABELS,
+  validateSaleCart,
   validateSaleDraft,
   type SaleDraft,
   type SaleField,
@@ -61,6 +62,23 @@ export function CloseSaleModal({
   // problema que encontrara y nunca decía cuáles de los otros ocho también
   // faltaban.
   const [errors, setErrors] = useState<Partial<Record<SaleField, string>>>({});
+
+  // Corrección R2 (revisión `code-review high`, 19/9/2026): hasta esta
+  // corrección `errors` solo se recalculaba entero al enviar, así que cerrar
+  // el modal a medio llenar y volver a abrirlo dejaba los mensajes rojos de
+  // la vez anterior pegados en pantalla —el modal no se desmonta al
+  // cerrarse, sigue vivo con `isOpen=false`—. Limpiarlo desde un
+  // `useEffect(() => { if (!isOpen) return; setErrors({}); }, [isOpen])`
+  // dispara `react-hooks/set-state-in-effect` (setState síncrono dentro de
+  // un efecto, justo el patrón que React desaconseja); en su lugar se sigue
+  // "Adjusting state when a prop changes" (react.dev): comparar `isOpen`
+  // contra una copia de sí mismo guardada en estado y, si pasó a abrirse,
+  // limpiar `errors` DURANTE el render, antes de pintar.
+  const [wasOpen, setWasOpen] = useState(isOpen);
+  if (isOpen !== wasOpen) {
+    setWasOpen(isOpen);
+    if (isOpen) setErrors({});
+  }
 
   // Un ref por campo para poder enfocar "el primero inválido" (D10) sin
   // depender de que HeroUI reenvíe el ref con un tipo exacto compatible con
@@ -127,11 +145,29 @@ export function CloseSaleModal({
       if (uploadError) throw uploadError;
 
       setPaymentProofUrl(mediaUrlFor(path));
+      clearFieldError("paymentProofUrl");
     } catch {
       toast.danger("No se pudo subir el comprobante.");
     } finally {
       setIsUploadingProof(false);
     }
+  }
+
+  /**
+   * Corrección R2 (revisión `code-review high`, 19/9/2026): hasta esta
+   * corrección `errors` solo se recalculaba entero al enviar, así que un
+   * campo ya corregido conservaba su mensaje rojo hasta el próximo intento
+   * de guardar. Se borra SOLO el error del campo que cambió —no se
+   * revalida todo el formulario acá— para no pintarle un error a un campo
+   * que el asesor todavía no tocó.
+   */
+  function clearFieldError(field: SaleField) {
+    setErrors((prev) => {
+      if (!prev[field]) return prev;
+      const next = { ...prev };
+      delete next[field];
+      return next;
+    });
   }
 
   /** D10: enfoca el input del PRIMER campo inválido, en el orden visual del formulario (el mismo de `SALE_FIELD_LABELS`). */
@@ -173,9 +209,14 @@ export function CloseSaleModal({
   async function handleSubmit() {
     // El carrito no es uno de los nueve campos obligatorios de D11 —no tiene
     // un único input al que atarle un mensaje bajo un campo— así que sigue
-    // avisando con el mismo toast de siempre, antes de tocar el resto.
-    if (cart.length === 0) {
-      toast.danger("Agrega al menos un repuesto para cerrar la venta.");
+    // avisando con un toast en vez de un error de campo. Corrección R2
+    // (revisión `code-review high`, 19/9/2026): el mensaje ya no se escribe
+    // a mano acá — sale de `validateSaleCart`, la MISMA función que corre
+    // `closeSaleWithContactInfo` como segunda barrera, para que las dos
+    // copias de la regla no puedan desalinearse.
+    const cartError = validateSaleCart(cart.length);
+    if (cartError) {
+      toast.danger(cartError);
       return;
     }
 
@@ -190,7 +231,6 @@ export function CloseSaleModal({
       paymentMethod,
       saintInvoiceNumber,
       paymentProofUrl,
-      itemCount: cart.length,
     };
 
     const fieldErrors = validateSaleDraft(draft);
@@ -265,7 +305,10 @@ export function CloseSaleModal({
                   id="sale-name"
                   ref={nameRef}
                   value={displayName}
-                  onChange={(e) => setDisplayName(e.target.value)}
+                  onChange={(e) => {
+                    setDisplayName(e.target.value);
+                    clearFieldError("displayName");
+                  }}
                   fullWidth
                 />
                 {errors.displayName && (
@@ -295,7 +338,10 @@ export function CloseSaleModal({
                   <select
                     id="sale-cedula-type"
                     value={cedulaType}
-                    onChange={(e) => setCedulaType(e.target.value as CedulaType)}
+                    onChange={(e) => {
+                      setCedulaType(e.target.value as CedulaType);
+                      clearFieldError("cedula");
+                    }}
                     className="w-20 lm-select"
                   >
                     <option value="V">V</option>
@@ -305,7 +351,10 @@ export function CloseSaleModal({
                     id="sale-cedula-number"
                     ref={cedulaNumberRef}
                     value={cedulaNumber}
-                    onChange={(e) => setCedulaNumber(e.target.value)}
+                    onChange={(e) => {
+                      setCedulaNumber(e.target.value);
+                      clearFieldError("cedula");
+                    }}
                     placeholder="12345678"
                     fullWidth
                   />
@@ -325,7 +374,10 @@ export function CloseSaleModal({
                   id="sale-state"
                   ref={stateRef}
                   value={state}
-                  onChange={(e) => setState(e.target.value)}
+                  onChange={(e) => {
+                    setState(e.target.value);
+                    clearFieldError("state");
+                  }}
                   className="w-full lm-select"
                 >
                   <option value="">Selecciona un estado...</option>
@@ -346,7 +398,16 @@ export function CloseSaleModal({
                 <Label htmlFor="sale-city" className="lm-required">
                   Ciudad
                 </Label>
-                <Input id="sale-city" ref={cityRef} value={city} onChange={(e) => setCity(e.target.value)} fullWidth />
+                <Input
+                  id="sale-city"
+                  ref={cityRef}
+                  value={city}
+                  onChange={(e) => {
+                    setCity(e.target.value);
+                    clearFieldError("city");
+                  }}
+                  fullWidth
+                />
                 {errors.city && (
                   <p role="alert" className="lm-field-error">
                     {errors.city}
@@ -362,7 +423,10 @@ export function CloseSaleModal({
                   id="sale-address"
                   ref={addressRef}
                   value={address}
-                  onChange={(e) => setAddress(e.target.value)}
+                  onChange={(e) => {
+                    setAddress(e.target.value);
+                    clearFieldError("address");
+                  }}
                   rows={2}
                   fullWidth
                 />
@@ -381,7 +445,10 @@ export function CloseSaleModal({
                   id="sale-payment-method"
                   ref={paymentMethodRef}
                   value={paymentMethod}
-                  onChange={(e) => setPaymentMethod(e.target.value as PaymentMethod)}
+                  onChange={(e) => {
+                    setPaymentMethod(e.target.value as PaymentMethod);
+                    clearFieldError("paymentMethod");
+                  }}
                   className="w-full lm-select"
                 >
                   <option value="">Selecciona un método...</option>
@@ -406,7 +473,10 @@ export function CloseSaleModal({
                   id="sale-saint-invoice"
                   ref={saintRef}
                   value={saintInvoiceNumber}
-                  onChange={(e) => setSaintInvoiceNumber(e.target.value)}
+                  onChange={(e) => {
+                    setSaintInvoiceNumber(e.target.value);
+                    clearFieldError("saintInvoiceNumber");
+                  }}
                   maxLength={40}
                   placeholder="00123"
                   fullWidth
@@ -467,7 +537,10 @@ export function CloseSaleModal({
                               key={m.id}
                               type="button"
                               className="crm-proof-option"
-                              onClick={() => setPaymentProofUrl(m.mediaUrl)}
+                              onClick={() => {
+                                setPaymentProofUrl(m.mediaUrl);
+                                clearFieldError("paymentProofUrl");
+                              }}
                               aria-label="Usar esta foto como comprobante"
                             >
                               {/* eslint-disable-next-line @next/next/no-img-element */}

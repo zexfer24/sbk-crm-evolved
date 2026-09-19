@@ -20,12 +20,20 @@ import type { CedulaType, PaymentMethod } from "@/lib/types";
 // ---------------------------------------------------------------------------
 
 /**
- * Todo lo que hace falta para cerrar una venta. `itemCount` (los repuestos
- * del carrito) NO es uno de los nueve campos de D11 —esa regla ("al menos
- * un repuesto") es previa a este plan y sigue viviendo aparte, en
- * `close-sale-modal.tsx`, con su propio aviso, porque el carrito no tiene un
- * único campo de formulario al que atarle un mensaje— pero viaja acá porque
- * el borrador representa TODO el estado que el modal junta antes de guardar.
+ * Todo lo que hace falta para cerrar una venta, salvo el carrito. El carrito
+ * ("al menos un repuesto") NO es uno de los nueve campos de D11 —esa regla
+ * es previa a este plan y no tiene un único `<input>` de formulario al que
+ * atarle un mensaje— así que vive en su propia función, `validateSaleCart`,
+ * más abajo.
+ *
+ * Hasta la revisión `code-review high` del 19/9/2026 (corrección R2 del
+ * plan) este tipo traía además `itemCount: number`, y `closeSaleWithContactInfo`
+ * se lo pasaba a `validateSaleDraft` — que nunca lo miraba: la regla del
+ * carrito quedaba viviendo solo en el toast a mano del modal, sin ninguna
+ * función que la mutación pudiera correr de verdad como segunda barrera.
+ * `itemCount` se retiró de acá y `validateSaleCart` pasó a ser esa segunda
+ * barrera explícita, compartida por el modal (su toast) y por
+ * `closeSaleWithContactInfo`.
  */
 export interface SaleDraft {
   displayName: string;
@@ -38,7 +46,6 @@ export interface SaleDraft {
   paymentMethod: PaymentMethod | "";
   saintInvoiceNumber: string;
   paymentProofUrl: string | null;
-  itemCount: number;
 }
 
 /**
@@ -90,6 +97,24 @@ export function isValidCedulaNumber(value: string): boolean {
  */
 export function normalizeSaint(value: string): string {
   return value.trim().replace(/\s+/g, " ");
+}
+
+/**
+ * "Al menos un repuesto" (previa a D11, sigue sin ser uno de los nueve
+ * campos: el carrito no tiene un único `<input>` al que atarle un mensaje de
+ * formulario). Corrección R2 de la revisión `code-review high` del
+ * 19/9/2026: antes esta regla solo existía como un toast escrito a mano en
+ * `close-sale-modal.tsx` y, por separado, como un `if` suelto al principio
+ * de `closeSaleWithContactInfo` (`mutations.ts`) — dos copias de la misma
+ * idea, sin ninguna función que las uniera. Ahora las dos llaman a esta
+ * misma función pura, así que un carrito vacío nunca puede crear una orden
+ * de $0,00 con venta `won`, la escriba quien la escriba.
+ */
+export function validateSaleCart(itemCount: number): string | null {
+  if (itemCount === 0) {
+    return "Agrega al menos un repuesto para poder cerrar la venta.";
+  }
+  return null;
 }
 
 /**

@@ -18,8 +18,11 @@ import { PAYMENT_METHOD_LABELS } from "@/lib/types";
 // más abajo — otra tarea del mismo plan (T5) edita el bloque de arriba.
 import type { CatalogLinkDraft } from "@/lib/catalog-links";
 // T5, mismo plan: segunda barrera de "Cerrar venta" (D10) — import aparte,
-// mismo motivo que el de arriba.
-import { validateSaleDraft, normalizeSaint, type SaleDraft } from "@/lib/sale-draft";
+// mismo motivo que el de arriba. `validateSaleCart` se sumó en la
+// corrección R2 (revisión `code-review high`, 19/9/2026): antes el carrito
+// vacío se frenaba con un `if` suelto acá abajo, sin compartir función con
+// el toast del modal.
+import { validateSaleCart, validateSaleDraft, normalizeSaint, type SaleDraft } from "@/lib/sale-draft";
 import type { BusinessHours } from "@/lib/business-hours";
 import { fetchDefaultChannel } from "@/lib/data";
 // Sin "server-only": identity-guard.ts es un módulo puro (mismo motivo que
@@ -286,9 +289,14 @@ export async function closeSaleWithContactInfo(
   items: SaleLineItem[],
   bcvRate: number
 ) {
-  if (items.length === 0) {
-    throw new Error("Agrega al menos un repuesto para poder cerrar la venta.");
-  }
+  // El carrito no es uno de los nueve campos de `validateSaleDraft` (D11):
+  // se valida aparte con `validateSaleCart`, la MISMA función que corre el
+  // toast del modal. Corrección R2 (revisión `code-review high`, 19/9/2026):
+  // antes de esto la regla vivía como un `if` suelto acá, sin compartir
+  // función con el modal, y `itemCount` se le pasaba a `validateSaleDraft`
+  // sin que esa función lo mirara nunca.
+  const cartError = validateSaleCart(items.length);
+  if (cartError) throw new Error(cartError);
 
   // Segunda barrera (D10): el modal ya corre `validateSaleDraft` antes de
   // llegar acá, pero esta función se puede llamar desde cualquier otro lado
@@ -313,7 +321,6 @@ export async function closeSaleWithContactInfo(
     paymentMethod: details.paymentMethod,
     saintInvoiceNumber: details.saintInvoiceNumber,
     paymentProofUrl: details.paymentProofUrl,
-    itemCount: items.length,
   } satisfies SaleDraft);
   const primerError = Object.values(draftErrors)[0];
   if (primerError) throw new Error(primerError);
