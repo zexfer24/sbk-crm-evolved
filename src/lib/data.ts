@@ -18,6 +18,7 @@ import type {
   AgentTurn,
   AiLesson,
   BoardConversation,
+  CatalogLink,
   Contact,
   ContactName,
   ContactSummary,
@@ -2716,4 +2717,79 @@ export async function fetchLatestBcvRate(supabase: SupabaseClient): Promise<numb
 
   if (error || !data) return 0;
   return Number((data as { usd_to_ves: number }).usd_to_ves) || 0;
+}
+
+// ---------------------------------------------------------------------------
+// Enlaces de catálogo (T2, plan "Nada sin leer, un solo catálogo y la
+// factura Saint", 18/9/2026, D3). Fuente única de las URLs de Google Drive
+// que hoy están pegadas a mano en escenarios y mensajes rápidos — ver
+// `catalog-links.ts` para el porqué y `public.catalog_links` (migración
+// 20260918010000) para las columnas.
+// ---------------------------------------------------------------------------
+
+interface RawCatalogLink {
+  id: string;
+  key: string;
+  label: string;
+  url: string;
+  sort_order: number;
+  is_active: boolean;
+  updated_by: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+function mapCatalogLink(row: RawCatalogLink): CatalogLink {
+  return {
+    id: row.id,
+    key: row.key,
+    label: row.label,
+    url: row.url,
+    sortOrder: row.sort_order,
+    isActive: row.is_active,
+    updatedBy: row.updated_by,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  };
+}
+
+const CATALOG_LINK_COLUMNS = "id, key, label, url, sort_order, is_active, updated_by, created_at, updated_at";
+
+/**
+ * Todos los catálogos, activos e inactivos: lo que administra el panel de
+ * Control IA (sección "Enlaces de catálogo", T4a). Lanza ante un error —a
+ * diferencia de `fetchActiveCatalogLinks`, un supervisor mirando el panel sí
+ * necesita enterarse si la lectura falló, no ver una lista vacía como si no
+ * hubiera nada cargado.
+ */
+export async function fetchCatalogLinks(supabase: SupabaseClient): Promise<CatalogLink[]> {
+  const { data, error } = await supabase.from("catalog_links").select(CATALOG_LINK_COLUMNS).order("sort_order");
+
+  if (error) throw error;
+  return (data as RawCatalogLink[]).map(mapCatalogLink);
+}
+
+/**
+ * Solo los catálogos ACTIVOS, en orden — lo que consumen `resolveCatalogMarkers`
+ * en el turno de la IA (con el cliente admin, junto a `business_hours` en el
+ * mismo `Promise.all`, T3) y el shell de la bandeja para los mensajes
+ * rápidos de los asesores (T4b). NUNCA lanza: un enlace de catálogo es un
+ * dato de conveniencia, no algo que deba tumbar un turno o dejar sin abrir
+ * la bandeja — ante un error cae a `[]` (ningún marcador resuelve, D6 se
+ * encarga del resto) y deja el aviso en consola, mismo criterio que
+ * `fetchBusinessHours` de acá arriba.
+ */
+export async function fetchActiveCatalogLinks(supabase: SupabaseClient): Promise<CatalogLink[]> {
+  const { data, error } = await supabase
+    .from("catalog_links")
+    .select(CATALOG_LINK_COLUMNS)
+    .eq("is_active", true)
+    .order("sort_order");
+
+  if (error) {
+    console.error("No se pudieron leer los enlaces de catálogo, se sigue sin ninguno:", error);
+    return [];
+  }
+
+  return (data as RawCatalogLink[]).map(mapCatalogLink);
 }

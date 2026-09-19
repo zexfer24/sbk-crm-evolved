@@ -535,6 +535,30 @@ export interface AiLesson {
 }
 
 /**
+ * Un enlace de catálogo (T2, plan "Nada sin leer, un solo catálogo y la
+ * factura Saint", 18/9/2026, D3). Fuente única de las URLs de Google Drive
+ * que hoy están pegadas a mano en tres escenarios y cuatro mensajes rápidos
+ * — el catálogo de cascos tuvo cuatro IDs distintos en 25 días y el
+ * 18/9/2026 circulaban dos versiones a la vez. Se consume por MARCADOR
+ * (`{{catalogo:<key>}}`/`{{catalogos}}`, `catalog-links.ts`), nunca copiando
+ * `url`. Ver `public.catalog_links` (migración 20260918010000) para los
+ * CHECK exactos; este tipo es su espejo en la app.
+ */
+export interface CatalogLink {
+  id: string;
+  key: string;
+  label: string;
+  url: string;
+  sortOrder: number;
+  /** `false` lo saca de `{{catalogos}}` y deja SIN RESOLVER cualquier `{{catalogo:<key>}}` que lo referencie (D6). */
+  isActive: boolean;
+  /** El supervisor/admin que hizo el último cambio. `null` si se borró el agente (`on delete set null`). */
+  updatedBy: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+/**
  * Cortes de la bandeja. Primera reforma (28/8/2026, mañana): de cinco
  * píldoras que distinguían leído/asignado se pasó a tres iguales para todos
  * los roles — `pending`, `mine`, `all` — porque el corte por asignación no
