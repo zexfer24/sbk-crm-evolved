@@ -296,3 +296,17 @@ jobs:
           psql "postgresql://postgres:postgres@127.0.0.1:54322/postgres" \
             -v ON_ERROR_STOP=1 \
             -f supabase/tests/catalog_links.sql
+
+      # M2, plan "Nada sin leer, un solo catálogo y la factura Saint"
+      # (18/9/2026): `orders.saint_invoice_number` guarda el número de la
+      # factura emitida en Saint (el sistema administrativo del negocio) --
+      # DISTINTO de `invoices.number` (el correlativo interno del CRM). Nace
+      # nullable (las ventas cerradas antes del 18/9/2026 no lo tienen) y el
+      # CHECK exige, cuando no es null, el texto ya recortado y de 1 a 40
+      # caracteres; el modal "Cerrar venta" (T5 de este mismo plan) lo hace
+      # obligatorio del lado de la interfaz.
+      - name: orders.saint_invoice_number -- CHECK
+        run: |
+          psql "postgresql://postgres:postgres@127.0.0.1:54322/postgres" \
+            -v ON_ERROR_STOP=1 \
+            -f supabase/tests/factura_saint.sql

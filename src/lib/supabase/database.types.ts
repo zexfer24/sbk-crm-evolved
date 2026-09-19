@@ -1329,6 +1329,7 @@ export type Database = {
           currency: string
           id: string
           purchased_at: string
+          saint_invoice_number: string | null
           total_amount: number
         }
         Insert: {
@@ -1338,6 +1339,7 @@ export type Database = {
           currency?: string
           id?: string
           purchased_at?: string
+          saint_invoice_number?: string | null
           total_amount: number
         }
         Update: {
@@ -1347,6 +1349,7 @@ export type Database = {
           currency?: string
           id?: string
           purchased_at?: string
+          saint_invoice_number?: string | null
           total_amount?: number
         }
         Relationships: [
