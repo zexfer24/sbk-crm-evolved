@@ -373,18 +373,43 @@ dejar rastro es lo que hacía desaparecer leads.
   (`google/gemini-3.1-flash-lite` incluido) es
   `consulta_disponibilidad`↔`otro`, dos intenciones que hoy reciben las
   mismas herramientas en el tool loop.
-- **El corte "habló hoy" de la bandeja tiene UNA sola fuente** (T1 de "Seis
-  frentes del buzón", 8/9/2026): `useInboxDay(scope)` (`use-inbox-day.ts`,
-  vive en `crm-shell.tsx`) calcula la medianoche de Caracas con
-  `currentDayRange` y ese MISMO string viaja a `FetchConversationsOptions.since`,
-  a `fetchInboxCounts`, a `fetchUnassignedConversations` y a `matchesDay`
-  (`inbox-filters.ts`). La fórmula es `last_message_at >= hoy` O
-  (`last_message_at is null` Y `created_at >= hoy`) — la segunda pata existe
-  para que un contacto recién agregado desde la bandeja (T6, sin mensajes)
-  no desaparezca. No recalcular la medianoche en ningún otro sitio: dos
-  relojes desalineados hacen que un chat entre en la lista pero no en el
-  conteo. La búsqueda ignora el corte a propósito; el interruptor "Ver todo"
-  se guarda por visor en `localStorage` (`sbk.inbox.scope.<agentId>`).
+- **El corte "habló hoy" de la bandeja tiene UNA sola fuente, y desde el
+  18/9/2026 la fórmula es "habló hoy **o** no leída"** (T1 de "Seis frentes
+  del buzón", 8/9/2026; reescrita por R1 del plan "Nada sin leer, un solo
+  catálogo y la factura Saint", 18/9/2026). `useInboxDay(scope)`
+  (`use-inbox-day.ts`, vive en `crm-shell.tsx`) calcula la medianoche de
+  Caracas con `currentDayRange` y ese MISMO string sigue viajando a
+  `FetchConversationsOptions.since`/`fetchInboxCounts`/
+  `fetchUnassignedConversations` — cambió la fórmula que arma cada consulta
+  con ese string, no el número de relojes. Hasta el 18/9 la fórmula tenía
+  solo dos términos (`last_message_at >= hoy` O sin `last_message_at` con
+  `created_at >= hoy`) y un chat con mensajes SIN LEER se esfumaba de la
+  bandeja "solo hoy" apenas su último mensaje quedaba fuera del día — "si el
+  mensaje no está leído, no importa eso" fue el pedido literal del cliente.
+  `dayCutGroup(since)` (`data.ts`) arma ahora el grupo OR de CUATRO
+  términos —los dos de siempre más `unread_count > 0` y `manually_unread`,
+  sin ninguna condición de fecha— que usan `fetchConversationRows` y
+  `fetchInboxCounts`. En memoria, `passesDayCut(conversation, dayStart,
+  keepId?)` (`inbox-filters.ts`) es quien de verdad decide qué pinta la
+  bandeja: envuelve a `matchesDay` con dos excepciones, sin leer (`isUnread`)
+  y la conversación SELECCIONADA (`keepId`, que `inbox-sidebar.tsx` llena
+  con `selectedId`, D2) — sin la segunda, `markRead` borraría de la lista al
+  chat viejo que el asesor está mirando en el momento en que se marca
+  leído. `matchesDay` **no cambió de significado** (sigue siendo, nada más,
+  "habló hoy") y la copia privada de `dashboard.ts` (el Recorrido, sin
+  noción de "leído") tampoco se tocó — la reforma es de la bandeja, no del
+  corte de fecha en sí. En los conteos, `unread`/`mineUnread` DEJARON de
+  cruzar el grupo de día: una fila no leída ya lo pasa sola, y cruzarlo ahí
+  era justo lo que hacía desaparecer del CONTEO "No leídas" una conversación
+  no leída cuyo último mensaje quedaba fuera de "hoy" — el mismo agujero que
+  la lista tenía, pero en el número de la píldora. El `EXPLAIN ANALYZE`
+  local del 18/9 (28 filas de la base sembrada) NO fue concluyente para
+  saber si el planner cae en `BitmapOr` sobre `conversations_unread_pill_idx`
+  o en `Seq Scan`: falta medirlo en producción, con volumen real, tras el
+  deploy. No recalcular la medianoche en ningún otro sitio: dos relojes
+  desalineados hacen que un chat entre en la lista pero no en el conteo. La
+  búsqueda ignora el corte a propósito; el interruptor "Ver todo" se guarda
+  por visor en `localStorage` (`sbk.inbox.scope.<agentId>`).
 - **`intencion_compra` escala con el primer aviso, igual que devolución y
   queja** (revertido el 9/9/2026, corrida "El pase a ventas al primer sí").
   T2 del plan "Seis frentes del buzón" (8/9/2026) le había puesto una
@@ -1154,6 +1179,69 @@ dejar rastro es lo que hacía desaparecer leads.
   DISTINTA de la de `escalationOpen` (`.eq().not().order().limit()
   .maybeSingle()`): al implementarla rompió a la vez los fakes de
   `agent.test.ts`, `handoffs.test.ts` y `reconciler.test.ts`.
+- **Los enlaces de catálogo viven en UNA tabla, `public.catalog_links`, y se
+  consumen por MARCADOR — nunca copiando la URL** (D3/D4, plan "Nada sin
+  leer, un solo catálogo y la factura Saint", 18/9/2026). Una URL de Google
+  Drive pegada a mano dentro de `response_text`/`content` es el BUG que este
+  plan corrigió, no un dato legítimo: el catálogo de cascos tuvo CUATRO IDs
+  de Drive distintos en 25 días y el 18/9/2026 circulaban DOS versiones a la
+  vez (la IA con una URL, el mensaje rápido "Catalogo general" con otra)
+  porque la URL vivía copiada en más de un sitio. `{{catalogo:<key>}}`
+  resuelve a la URL de un catálogo puntual; `{{catalogos}}` a la lista
+  completa de activos, en orden (`resolveCatalogMarkers`,
+  `src/lib/catalog-links.ts`). Un marcador SIN RESOLVER —clave inactiva o
+  inexistente— nunca llega al cliente por ninguna de las dos vías, pero cada
+  una lo maneja distinto: fase 0 (`matchPlaybook`, `playbooks.ts`) SACA el
+  escenario de los candidatos ANTES de llamar al modelo (log
+  `escenarios_enlace_sin_resolver`, mismo patrón que el descarte de
+  escenarios que saludan); el composer, al usar un mensaje rápido, PEGA el
+  marcador tal cual y avisa con `toast.warning` — el asesor lo ve antes de
+  enviar y decide. `{{catalogos}}` con CERO catálogos activos también cuenta
+  como sin resolver (clave sintética `"catalogos"`): no se reemplaza por una
+  lista vacía, que habría mandado "Ver también: " sin nada detrás. Detalle
+  de implementación con trampa propia: `CATALOG_MARKER`/`CATALOG_LIST_MARKER`
+  son regex de MÓDULO con flag `g` — seguras con `.replace()` (la spec
+  reinicia `lastIndex` en cada llamada) pero NO con `.test()`/`.exec()`
+  repetidos sobre el mismo objeto, que arrastran `lastIndex` entre llamadas
+  y pueden devolver falsos negativos a partir de la segunda. `send.ts`
+  resuelve los marcadores con los enlaces ACTIVOS leídos al arrancar el
+  turno, y `alreadySentPlaybook` compara el texto YA RESUELTO: si un
+  supervisor cambia la URL de un catálogo entre dos turnos, un escenario que
+  ya se había mandado puede repetirse una vez, con el enlace nuevo —
+  aceptado y documentado en el plan, no un bug. La carga inicial de los
+  siete catálogos de producción es un SCRIPT revisado
+  (`scripts/sql/2026-09-18-catalogos-iniciales.sql`), no una migración —"el
+  contenido es del cliente, no del repo"—: llega con huecos `<<...>>` que
+  el Claude del VPS completa contra la base real, y una guarda propia
+  aborta el script entero si queda alguno sin completar; se corre DESPUÉS
+  del deploy del código, nunca antes (un marcador sin código que lo
+  resuelva es peor que la URL vieja que reemplaza). Cualquier test que
+  ejercite `runAgentTurn`/`reconcileOrphanTurns` de verdad con un fake de
+  Supabase necesita el caso `catalog_links` en su `from()` —sin él,
+  `fetchActiveCatalogLinks` no distingue "tabla no simulada" de "sin
+  catálogos" y el fake explota o miente en silencio— (ver `agent.test.ts`).
+- **`orders.saint_invoice_number` es nullable en la base y OBLIGATORIO en el
+  modal y en la mutación** (D9-D11, plan "Nada sin leer, un solo catálogo y
+  la factura Saint", 18/9/2026). Nullable porque las ventas cerradas antes
+  del 18/9/2026 no tienen ese dato y no hay forma de reconstruirlo
+  retroactivamente; obligatorio desde `close-sale-modal.tsx` (D10,
+  validación por campo con `validateSaleDraft`, `src/lib/sale-draft.ts`) y
+  otra vez, como SEGUNDA barrera, dentro de `closeSaleWithContactInfo`
+  (`mutations.ts`) antes de escribir nada — la validación del modal no
+  alcanza sola porque esa función se puede llamar desde cualquier otro
+  lado. Ojo con la colisión de nombres: **NO es `invoices.number`**, el
+  correlativo INTERNO del CRM ("SBK-000123"); son dos numeraciones de dos
+  sistemas distintos, Saint es el sistema administrativo del negocio. Sin
+  restricción de UNICIDAD a propósito: una factura Saint puede cubrir más
+  de un chat, y un rechazo por duplicado en el mostrador confundiría más de
+  lo que protege. El carrito vacío sigue avisando con el toast de siempre,
+  no con un mensaje bajo un campo — no es uno de los nueve campos
+  obligatorios porque el carrito no tiene un único `<input>` al que atarle
+  un error de formulario. El asterisco de "obligatorio" en las nueve
+  etiquetas es CSS puro (`.lm-required::after`, `theme.css`), nunca texto
+  real dentro del `<Label>`, precisamente para no romper
+  `getByLabelText("Nombre")` de los tests existentes — un asterisco de
+  verdad en el DOM cambia el nombre accesible del campo.
 ---
 
 # RTK (Rust Token Killer) - Token-Optimized Commands

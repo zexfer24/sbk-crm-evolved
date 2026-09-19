@@ -379,6 +379,69 @@ también rompía (antes de corregirlo) dos supuestos de
 fila") y sus casos 13/14/15 de `reclamado` — ver el comentario al final de
 la cabecera de ese archivo, corregido en la misma tanda.
 
+**`20260918010000_catalog_links`** (M1 del plan "Nada sin leer, un solo
+catálogo y la factura Saint", 18/9/2026). Va DESPUÉS de las dos migraciones
+de Seba (`20260917010000`/`20260917020000`) y ANTES del código de esta
+misma corrida: el turno (T3, `agent.ts`/`send.ts`/`playbooks.ts`) y el
+shell de la bandeja (T4b) leen `catalog_links` con `fetchActiveCatalogLinks`
+— a diferencia de `20260916010000`, acá NO hay guarda dura de "el `select`
+falla sin la tabla": esa función NUNCA lanza (T7 la reforzó con un
+`try/catch` propio para que tampoco lo haga ante una excepción de red, no
+solo ante un `error` devuelto) y cae a `[]` si la tabla todavía no existe,
+así que desplegar el código antes que la migración no tumba nada — solo
+deja sin resolver cualquier marcador `{{catalogo:...}}` hasta que la
+migración entre. Aplicar de todos modos con `psql -1 -v ON_ERROR_STOP=1`,
+mismo criterio de higiene que las anteriores. Trae: tabla
+`public.catalog_links` (`key`/`label`/`url`/`sort_order`/`is_active`/
+`updated_by`), RLS (`is_agent()` lee, `is_supervisor_or_admin()` escribe),
+índice parcial `(sort_order) where is_active`, trigger de `updated_at`,
+publicada en `supabase_realtime` con autoverificación (`raise exception` si
+no quedó publicada). Sin funciones `security definer`: la RLS de la tabla
+alcanza, no hacen falta revokes.
+
+Verificación después de aplicarla (solo lectura):
+
+```sql
+select count(*) from pg_policies where tablename = 'catalog_links';  -- 2
+select tablename from pg_publication_tables
+where pubname = 'supabase_realtime' and tablename = 'catalog_links';  -- una fila
+select count(*) from supabase_migrations.schema_migrations;  -- 74
+```
+
+Test: `tests/catalog_links.sql` (nueve casos, transacción con rollback),
+cableado al job `migraciones` del CI.
+
+**`20260918020000_factura_saint`** (M2 del mismo plan). Va DESPUÉS de
+`20260918010000` (mismo `ci.yml`, tablas distintas, coordinado en el mismo
+commit) y ANTES del código: el modal "Cerrar venta" (T5) y
+`closeSaleWithContactInfo` (`mutations.ts`) escriben
+`orders.saint_invoice_number` en cada venta nueva — sin la columna, el
+`insert` de `orders` falla y ninguna venta se puede cerrar mientras el
+código nuevo esté arriba. Trae: `orders.saint_invoice_number text`
+(nullable — las ventas cerradas antes del 18/9/2026 no lo tienen) con
+`orders_saint_invoice_number_check` (recortado, 1-40 caracteres cuando no
+es `null`), sin restricción de unicidad a propósito. Sin funciones
+`security definer`, sin RLS nueva (`orders_all` ya alcanza).
+`database.types.ts` gana la columna en `Row`/`Insert`/`Update` de `orders`.
+
+Verificación después de aplicarla (solo lectura):
+
+```sql
+select column_name, is_nullable from information_schema.columns
+where table_schema = 'public' and table_name = 'orders'
+  and column_name = 'saint_invoice_number';
+-- is_nullable = 'YES'
+
+select pg_get_constraintdef(oid) from pg_constraint
+where conrelid = 'public.orders'::regclass
+  and conname = 'orders_saint_invoice_number_check';
+
+select count(*) from supabase_migrations.schema_migrations;  -- 75
+```
+
+Test: `tests/factura_saint.sql` (cinco casos, transacción con rollback),
+cableado al job `migraciones` del CI justo después de `catalog_links.sql`.
+
 ### El lease del lock de turno de la IA
 
 La migración `20260829020000_conversations_turn_lock_lease.sql` agrega dos
@@ -1119,13 +1182,117 @@ push del tag.
 
 ---
 
+## 11. Entrega de "Seba atiende el mostrador" + "Nada sin leer, un solo catálogo y la factura Saint" (19/9/2026)
+
+Producción se midió por última vez en `3802fad` el 18/9/2026 (base en
+`20260915010000`, árbol y base coincidían). Todo lo commiteado después —las
+tres migraciones de "La IA no vuelve a pedir lo que ya pidió"/Seba
+(`20260916010000`, `20260917010000`, `20260917020000`), la corrida completa
+de "Seba atiende el mostrador" y esta corrida ("Nada sin leer, un solo
+catálogo y la factura Saint", migraciones `20260918010000`/`20260918020000`)
+— sigue pendiente de entrega. **Antes de calcular qué falta por entregar,
+confirmar en qué commit está producción de verdad** (`produccion..HEAD`,
+nunca el HEAD local): puede haber cambiado desde el 18/9 si otra sesión ya
+entregó parte de esto.
+
+**Orden de entrega, sin excepción — migración antes que el código en cada
+paso:**
+
+1. Respaldo (`scripts/backup.sh`, §8).
+2. `20260916010000_devolucion_a_la_ia.sql` con `psql -1 -v
+   ON_ERROR_STOP=1` si todavía no está aplicada (ver su entrega detallada
+   arriba, en la sección 2 — regla dura, columna GENERADA, `lock_timeout`
+   corto).
+3. Las dos migraciones de Seba, en orden, cada una con `psql -1 -v
+   ON_ERROR_STOP=1`: `20260917010000_seba_y_escalada_viva.sql`, después
+   `20260917020000_ai_lessons.sql`.
+4. Las dos migraciones de esta corrida, en orden, mismo criterio:
+   `20260918010000_catalog_links.sql`, después
+   `20260918020000_factura_saint.sql`.
+5. Registrar las cinco en `supabase_migrations.schema_migrations` (no se
+   registran solas) — verificar con `select count(*) from
+   supabase_migrations.schema_migrations` → 75.
+6. Recién entonces el código: push a `main` (Dokploy despliega solo con el
+   webhook, sin esperar al CI — mirar igual el CI después, con la API de
+   Actions de los Comandos de `CLAUDE.md`, y reproducir en local cualquier
+   falla que no quepa en las 10 anotaciones que muestra GitHub por paso).
+
+**Después del deploy del código (nunca antes — D8 del plan): completar y
+correr `scripts/sql/2026-09-18-catalogos-iniciales.sql`.** El archivo llega
+con marcadores de relleno `<<...>>` a propósito ("el contenido es del
+cliente, no del repo"): el implementador no inventó ningún valor. Pasos:
+
+1. Correr las dos consultas de ayuda que trae el propio archivo (comentario
+   en su cabecera, no se ejecutan solas) contra la base de producción para
+   encontrar los `id`/textos reales:
+   ```sql
+   select id, name, left(response_text, 80) as inicio
+     from ai_playbooks
+     where response_text ilike '%drive.google.com%' or name ilike '%catalog%' or name ilike '%ubicac%'
+     order by name;
+
+   select id, label, left(content, 80) as inicio
+     from quick_replies
+     where content ilike '%drive.google.com%'
+     order by label;
+   ```
+2. **Preguntar al cliente antes de completar el script**: "Lubricantes"
+   aparece DOS VECES en el escenario "Catálogo general", con dos archivos
+   de Drive distintos — ¿son dos catálogos reales o quedó uno viejo sin
+   borrar? Esto frena el SCRIPT, no el código: hasta la respuesta, cargar
+   los dos como `lubricantes`/`lubricantes-2` (el script ya trae ese
+   default).
+3. Completar los marcadores `<<...>>` de las tres tablas de relleno con los
+   valores reales (URLs de los 8 catálogos; `id` y texto YA con el
+   marcador de cada uno de los 3 escenarios y los 4 mensajes rápidos que
+   hoy llevan la URL pegada a mano).
+4. Correr en una sola transacción:
+   ```bash
+   docker exec -i supabase-db psql -U postgres -d postgres -1 -v ON_ERROR_STOP=1 \
+     -f - < scripts/sql/2026-09-18-catalogos-iniciales.sql
+   ```
+   El propio script aborta solo si queda algún `<<...>>` sin completar, y
+   falla al final si alguna de las filas tocadas todavía contiene
+   `drive.google.com` — no hace falta verificar eso a mano.
+
+**Verificación posterior** (secciones 4 y 7 del plan
+`docs/planes/2026-09-18-nada-sin-leer-un-solo-catalogo-y-la-factura-saint.md`):
+
+- Un chat con mensaje de "ayer" sin leer aparece en Pendientes y en el
+  número de la píldora con la bandeja en "solo hoy"; al abrirlo sigue en la
+  lista; al cambiar de chat, desaparece (R1, D1/D2).
+- **`EXPLAIN ANALYZE` de la consulta de Pendientes contra producción, con
+  volumen real** — el de la base local (28 filas, el 18/9) no fue
+  concluyente para saber si el planner hace `BitmapOr` sobre
+  `conversations_unread_pill_idx` o cae a `Seq Scan`; si sale `Seq Scan`,
+  el plan B (sección 5 del plan) es una segunda consulta "no leídas fuera
+  de hoy" unida en memoria, patrón `searchableConversations`.
+- Cargar un catálogo con una URL, escribir `{{catalogo:<key>}}` en un
+  escenario y `{{catalogos}}` en otro, y `{{catalogo:<key>}}` en un mensaje
+  rápido: el simulador de la IA manda la URL resuelta; "Usar" el mensaje
+  rápido pega la URL resuelta; cambiar la URL en el panel cambia los tres
+  sin tocar nada más; desactivar la clave hace que el escenario deje de ser
+  candidato (`escenarios_enlace_sin_resolver`) y el mensaje rápido avise
+  con el toast.
+- Tras correr el script de carga inicial, ninguna de las 3 filas de
+  `ai_playbooks` ni las 4 de `quick_replies` tocadas conserva
+  `drive.google.com` (el propio script ya lo exige para no dejar nada a
+  medias, pero conviene mirarlo de nuevo con la consulta del paso 1 de
+  arriba, ahora vacía).
+- Cerrar una venta sin factura Saint muestra el error bajo el campo y no
+  llama a la mutación; con los nueve datos guarda, el evento de sistema
+  nombra la factura y el detalle en Ventas la muestra (o "Sin número de
+  factura Saint" en una venta anterior al 18/9).
+
+---
+
 ## Comprobación final
 
 Con todo configurado, esta lista debe pasar entera:
 
 - [ ] Una restauración de prueba devuelve los datos completos
 - [ ] `npm run build` sin errores ni warnings
-- [ ] `select count(*) from supabase_migrations.schema_migrations` devuelve 73 (recontado el 18/9/2026 tras `20260916010000`/`20260917010000`/`20260917020000`; decía 70 el 15/9/2026 y 61 cuando se escribió esta guía)
+- [ ] `select count(*) from supabase_migrations.schema_migrations` devuelve 75 (recontado el 19/9/2026 tras `20260918010000`/`20260918020000`, "Nada sin leer, un solo catálogo y la factura Saint"; decía 73 el 18/9/2026 tras `20260916010000`/`20260917010000`/`20260917020000`, 70 el 15/9/2026 y 61 cuando se escribió esta guía)
 - [ ] El bucket `whatsapp-media` es privado (`public = false`)
 - [ ] Una URL directa al bucket responde 400
 - [ ] `/api/media/...` sin sesión responde 401
