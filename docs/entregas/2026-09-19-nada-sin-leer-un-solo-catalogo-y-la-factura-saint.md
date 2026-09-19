@@ -312,14 +312,39 @@ requiere entrega propia.
 
 `scripts/sql/2026-09-18-catalogos-iniciales.sql` no es código de la
 aplicación ni una migración: es un script de UNA SOLA vez que carga los
-ocho catálogos vigentes de producción (los siete de "Catálogo general" más
-Ubicación) y reemplaza la URL de Google Drive pegada a mano por su
-marcador en los 3 escenarios y los 4 mensajes rápidos que hoy la llevan
-escrita. **Se corre DESPUÉS del deploy del código de esta corrida, nunca
-antes** (D8 del plan): un marcador sin código que lo resuelva es peor que
-la URL vieja que reemplaza; con el código ya arriba, un marcador sin
-resolver por cualquier motivo queda contenido por D6 (fase 0 lo descarta,
-el composer avisa con toast) en vez de romper algo.
+**siete** catálogos vigentes de producción (los de "Catálogo general" —
+Cascos, Resonadores, Maletas, Exploradoras y Bombillos, Defensas,
+Lubricantes ×2) y reemplaza la URL de Google Drive pegada a mano por su
+marcador en los **dos** escenarios ("CATALOGO CASCOS" y "Catálogo general")
+y los cuatro mensajes rápidos que hoy la llevan escrita. **Se corre
+DESPUÉS del deploy del código de esta corrida, nunca antes** (D8 del
+plan): un marcador sin código que lo resuelva es peor que la URL vieja que
+reemplaza; con el código ya arriba, un marcador sin resolver por cualquier
+motivo queda contenido por D6 (fase 0 lo descarta, el composer avisa con
+toast) en vez de romper algo.
+
+**Corrección de la revisión `code-review high` del 19/9/2026 sobre esta
+misma corrida (R1, "correcciones de la revisión de código, parte
+catálogo") — dos cambios en el script, ya aplicados en el commit
+correspondiente, no algo que el Claude del VPS deba decidir:**
+
+- **"Ubicación" queda FUERA del script** (antes cargaba OCHO catálogos y
+  tocaba TRES escenarios, incluido "Ubicación"). Meter el Maps de la
+  tienda en `catalog_links` lo colaba dentro de `{{catalogos}}`
+  —`formatCatalogList` lista TODO enlace activo, mezclando la ubicación
+  con los catálogos de repuestos— y el Maps no rota como un Drive, así que
+  no gana nada entrando a la tabla. El escenario "Ubicación" conserva su
+  URL escrita a mano tal como está hoy; este script no lo toca.
+- **Los `update` ahora comprueban cuántas filas tocaron de verdad**: antes,
+  un `id` de otra base (copiado mal, o de un entorno distinto) afectaba
+  CERO filas sin avisar nada, y el chequeo final —que unía por ese mismo
+  `id`— tampoco lo notaba. Ahora cada `update` corre dentro de su propio
+  `do $$ ... $$` con `get diagnostics ... = row_count` y aborta si no
+  coincide con el tamaño de su tabla de relleno; la verificación final deja
+  de mirar "¿cuántas filas UNIDAS siguen con `drive.google.com`?" y pasa a
+  "¿cuántas de las filas de relleno tienen HOY una fila real, sin
+  `drive.google.com`?" — detecta tanto la URL no reemplazada como el `id`
+  que no corresponde a ninguna fila.
 
 El archivo llega con marcadores de relleno `<<...>>` a propósito — el
 implementador de T2 no inventó ningún valor de producción, ni URLs ni
@@ -330,7 +355,7 @@ implementador de T2 no inventó ningún valor de producción, ni URLs ni
    ```sql
    select id, name, left(response_text, 80) as inicio
      from ai_playbooks
-     where response_text ilike '%drive.google.com%' or name ilike '%catalog%' or name ilike '%ubicac%'
+     where response_text ilike '%drive.google.com%' or name ilike '%catalog%'
      order by name;
 
    select id, label, left(content, 80) as inicio
@@ -338,6 +363,8 @@ implementador de T2 no inventó ningún valor de producción, ni URLs ni
      where content ilike '%drive.google.com%'
      order by label;
    ```
+   (La consulta ya NO filtra por `name ilike '%ubicac%'`: "Ubicación" no
+   entra a este script — ver la corrección de arriba.)
 2. **Pregunta pendiente para el cliente, anotada en el propio script**:
    "Lubricantes" aparece DOS VECES en el escenario "Catálogo general", con
    dos URLs de Drive distintas — ¿son dos catálogos reales, o quedó uno
@@ -345,18 +372,20 @@ implementador de T2 no inventó ningún valor de producción, ni URLs ni
    que el cliente responda, el script carga los dos como
    `lubricantes`/`lubricantes-2` (ya es el default que trae).
 3. Completar en el propio archivo las tres tablas de relleno (sección 1):
-   las ocho URLs reales, y para cada uno de los 3 escenarios y 4 mensajes
-   rápidos, su `id` real y el texto completo YA con el marcador puesto en
-   el lugar de la URL.
+   las SIETE URLs reales, y para cada uno de los DOS escenarios y CUATRO
+   mensajes rápidos, su `id` real y el texto completo YA con el marcador
+   puesto en el lugar de la URL.
 4. Correr en una sola transacción:
    ```bash
    docker exec -i supabase-db psql -U postgres -d postgres -1 -v ON_ERROR_STOP=1 \
      -f - < scripts/sql/2026-09-18-catalogos-iniciales.sql
    ```
    El script se protege solo: aborta con un mensaje claro si queda algún
-   `<<...>>` sin completar (sección 2), y falla al final (sección 6) si,
-   tras el reemplazo, alguna de las filas tocadas todavía contiene
-   `drive.google.com` — no hace falta verificar eso a mano por separado.
+   `<<...>>` sin completar (sección 2), aborta si algún `update` tocó menos
+   filas de las esperadas (secciones 4/5, corrección del 19/9/2026), y
+   falla al final (sección 6) si, tras el reemplazo, alguna de las filas
+   tocadas todavía contiene `drive.google.com` — no hace falta verificar
+   nada de eso a mano por separado.
 
 ---
 

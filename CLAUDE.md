@@ -1208,18 +1208,55 @@ dejar rastro es lo que hacía desaparecer leads.
   turno, y `alreadySentPlaybook` compara el texto YA RESUELTO: si un
   supervisor cambia la URL de un catálogo entre dos turnos, un escenario que
   ya se había mandado puede repetirse una vez, con el enlace nuevo —
-  aceptado y documentado en el plan, no un bug. La carga inicial de los
-  siete catálogos de producción es un SCRIPT revisado
+  aceptado y documentado en el plan, no un bug. **Un marcador MAL ESCRITO
+  cuenta como sin resolver, no como texto normal** (corrección de la
+  revisión `code-review high`, 19/9/2026): `{{catalogo:cascos_nuevos}}` (guion
+  bajo), `{{catalogo: exploradoras y bombillos}}` (espacios), `{{catalogo}}`/
+  `{{catalogo:}}` (sin clave) o `{{catalogo:cascos` (sin cerrar) no calzan la
+  regex estricta —exige una clave `[a-z0-9-]+`— así que antes de esta
+  corrección `missing` quedaba `[]` y ese texto crudo se fugaba tal cual al
+  cliente. `resolveCatalogMarkers` suma un paso final, solo para DETECTAR
+  (`LOOSE_UNRESOLVED_MARKER`, nunca reemplaza nada): cualquier resto que
+  huela a `{{catalogo…}}` después de resolver los marcadores bien formados
+  entra a `missing` con su texto crudo recortado a 60 caracteres. **La clave
+  de un catálogo NO se puede editar** (mismo commit): al editar, el campo
+  quedaba de solo lectura desde `catalog-links-panel.tsx` — cambiarla
+  rompería en silencio todos los escenarios y mensajes rápidos que ya la
+  referencian; para "renombrar" hay que crear un catálogo nuevo. Desactivar
+  (no solo borrar) sigue ahora el mismo patrón "armar y confirmar", contando
+  también `{{catalogos}}` cuando el catálogo es el ÚLTIMO activo. La carga
+  inicial de los catálogos de producción es un SCRIPT revisado
   (`scripts/sql/2026-09-18-catalogos-iniciales.sql`), no una migración —"el
   contenido es del cliente, no del repo"—: llega con huecos `<<...>>` que
   el Claude del VPS completa contra la base real, y una guarda propia
   aborta el script entero si queda alguno sin completar; se corre DESPUÉS
   del deploy del código, nunca antes (un marcador sin código que lo
-  resuelva es peor que la URL vieja que reemplaza). Cualquier test que
-  ejercite `runAgentTurn`/`reconcileOrphanTurns` de verdad con un fake de
-  Supabase necesita el caso `catalog_links` en su `from()` —sin él,
-  `fetchActiveCatalogLinks` no distingue "tabla no simulada" de "sin
-  catálogos" y el fake explota o miente en silencio— (ver `agent.test.ts`).
+  resuelva es peor que la URL vieja que reemplaza). **"Ubicación" queda
+  FUERA de ese script a propósito** (corrección del 19/9/2026, antes cargaba
+  8 catálogos y tocaba 3 escenarios): meter el Maps de la tienda en
+  `catalog_links` lo colaba dentro de `{{catalogos}}` —`formatCatalogList`
+  lista TODO enlace activo, mezclando la ubicación con los catálogos de
+  repuestos— y el Maps no tiene el problema de rotación de IDs que esta
+  tabla resuelve; el escenario "Ubicación" conserva su URL escrita a mano y
+  el script no lo toca (7 catálogos, 2 escenarios). Cada `update` del script
+  corre dentro de su propio `do $$ ... $$` para poder leer `get diagnostics
+  ... = row_count` en el mismo bloque y abortar si no coincide con el
+  tamaño de su tabla de relleno —antes un `id` de otra base afectaba CERO
+  filas sin que nada lo notara, porque el chequeo final unía por ese mismo
+  `id` y un `join` contra una fila inexistente no suma nada al conteo de
+  "pendientes". `agent.ts` lee los catálogos con `fetchTurnCatalogLinks`
+  (`src/lib/ai/catalog-links.ts`, corrección del 19/9/2026), NO con
+  `fetchActiveCatalogLinks` de `data.ts`: la de `data.ts` también la usa el
+  navegador y avisa sus errores con `console.error` (no puede importar
+  `lib/log.ts` sin arrastrarlo al bundle del cliente); la de `agent.ts`
+  nunca lanza y avisa con `log.warn("turno_enlaces_no_legibles")` — antes
+  una lectura fallida se perdía en la consola del servidor sin dejar rastro
+  en la bitácora, y el único síntoma visible era `escenarios_enlace_sin_resolver`
+  culpando a la configuración del escenario. Cualquier test que ejercite
+  `runAgentTurn`/`reconcileOrphanTurns` de verdad con un fake de Supabase
+  necesita el caso `catalog_links` en su `from()` —sin él, ninguna de las
+  dos funciones distingue "tabla no simulada" de "sin catálogos" y el fake
+  explota o miente en silencio— (ver `agent.test.ts`).
 - **`orders.saint_invoice_number` es nullable en la base y OBLIGATORIO en el
   modal y en la mutación** (D9-D11, plan "Nada sin leer, un solo catálogo y
   la factura Saint", 18/9/2026). Nullable porque las ventas cerradas antes
@@ -1234,14 +1271,36 @@ dejar rastro es lo que hacía desaparecer leads.
   sistemas distintos, Saint es el sistema administrativo del negocio. Sin
   restricción de UNICIDAD a propósito: una factura Saint puede cubrir más
   de un chat, y un rechazo por duplicado en el mostrador confundiría más de
-  lo que protege. El carrito vacío sigue avisando con el toast de siempre,
-  no con un mensaje bajo un campo — no es uno de los nueve campos
-  obligatorios porque el carrito no tiene un único `<input>` al que atarle
-  un error de formulario. El asterisco de "obligatorio" en las nueve
-  etiquetas es CSS puro (`.lm-required::after`, `theme.css`), nunca texto
-  real dentro del `<Label>`, precisamente para no romper
-  `getByLabelText("Nombre")` de los tests existentes — un asterisco de
-  verdad en el DOM cambia el nombre accesible del campo.
+  lo que protege. El carrito vacío sigue avisando con un toast en vez de un
+  mensaje bajo un campo — no es uno de los nueve campos obligatorios porque
+  no tiene un único `<input>` al que atarle un error de formulario. El
+  asterisco de "obligatorio" en las nueve etiquetas es CSS puro
+  (`.lm-required::after`, `theme.css`), nunca texto real dentro del
+  `<Label>`, precisamente para no romper `getByLabelText("Nombre")` de los
+  tests existentes — un asterisco de verdad en el DOM cambia el nombre
+  accesible del campo.
+- **El carrito vacío también lanza dentro de la mutación, y los errores por
+  campo se limpian por campo, no todos juntos** (corrección R2, revisión
+  `code-review high` del 19/9/2026, sobre el plan de arriba). Hasta esa
+  revisión `closeSaleWithContactInfo` frenaba el carrito vacío con un `if`
+  suelto, sin relación con `validateSaleDraft` — y encima le pasaba
+  `itemCount` a esa función sin que `validateSaleDraft` lo mirara nunca, un
+  parámetro muerto que sugería una protección que no existía ahí. Ahora
+  `validateSaleCart(itemCount): string | null` (`sale-draft.ts`) es la ÚNICA
+  fuente de esa regla y la corren los DOS lados: el toast del modal y
+  `closeSaleWithContactInfo` como segunda barrera real, antes de escribir
+  una sola fila — un llamador nuevo que se salte el modal no puede crear una
+  orden de $0,00 con venta `won`. Aparte, hasta esa misma revisión `errors`
+  (D10) solo se recalculaba ENTERO al intentar guardar: corregir un campo no
+  borraba su propio mensaje hasta el próximo intento, y como el modal no se
+  desmonta al cerrarse (sigue vivo con `isOpen=false`), reabrirlo dejaba los
+  errores de la vez anterior pegados en pantalla. `clearFieldError(field)`
+  borra SOLO el error de un campo cuando cambia (nunca revalida el resto:
+  no hay que pintarle un error a un campo que el asesor todavía no tocó), y
+  el reseteo al reabrir sigue el patrón "Adjusting state when a prop
+  changes" de React —comparar `isOpen` contra una copia en estado y limpiar
+  `errors` DURANTE el render— en vez de un `setState` síncrono dentro de un
+  `useEffect`, que dispara `react-hooks/set-state-in-effect`.
 ---
 
 # RTK (Rust Token Killer) - Token-Optimized Commands

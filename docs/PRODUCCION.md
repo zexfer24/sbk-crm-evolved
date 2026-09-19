@@ -1228,7 +1228,7 @@ cliente, no del repo"): el implementador no inventó ningún valor. Pasos:
    ```sql
    select id, name, left(response_text, 80) as inicio
      from ai_playbooks
-     where response_text ilike '%drive.google.com%' or name ilike '%catalog%' or name ilike '%ubicac%'
+     where response_text ilike '%drive.google.com%' or name ilike '%catalog%'
      order by name;
 
    select id, label, left(content, 80) as inicio
@@ -1236,6 +1236,10 @@ cliente, no del repo"): el implementador no inventó ningún valor. Pasos:
      where content ilike '%drive.google.com%'
      order by label;
    ```
+   La consulta de `ai_playbooks` ya NO filtra por `name ilike '%ubicac%'`
+   (corrección de la revisión `code-review high`, 19/9/2026, punto 3): el
+   escenario "Ubicación" queda FUERA de este script a propósito —ver más
+   abajo— así que no hace falta encontrar su fila acá.
 2. **Preguntar al cliente antes de completar el script**: "Lubricantes"
    aparece DOS VECES en el escenario "Catálogo general", con dos archivos
    de Drive distintos — ¿son dos catálogos reales o quedó uno viejo sin
@@ -1243,17 +1247,26 @@ cliente, no del repo"): el implementador no inventó ningún valor. Pasos:
    los dos como `lubricantes`/`lubricantes-2` (el script ya trae ese
    default).
 3. Completar los marcadores `<<...>>` de las tres tablas de relleno con los
-   valores reales (URLs de los 8 catálogos; `id` y texto YA con el
-   marcador de cada uno de los 3 escenarios y los 4 mensajes rápidos que
-   hoy llevan la URL pegada a mano).
+   valores reales (URLs de los 7 catálogos de "Catálogo general"; `id` y
+   texto YA con el marcador de cada uno de los 2 escenarios —"CATALOGO
+   CASCOS" y "Catálogo general"— y los 4 mensajes rápidos que hoy llevan la
+   URL pegada a mano). **"Ubicación" NO entra a ninguna de las tres tablas**
+   (corrección del 19/9/2026, punto 3 de la revisión): meter el Maps de la
+   tienda en `catalog_links` lo colaría dentro de `{{catalogos}}` —la lista
+   completa mezclaría la ubicación con los catálogos de repuestos— y el
+   Maps no tiene el problema de rotación de IDs que esta tabla resuelve; el
+   escenario "Ubicación" conserva su URL escrita a mano tal como está hoy.
 4. Correr en una sola transacción:
    ```bash
    docker exec -i supabase-db psql -U postgres -d postgres -1 -v ON_ERROR_STOP=1 \
      -f - < scripts/sql/2026-09-18-catalogos-iniciales.sql
    ```
-   El propio script aborta solo si queda algún `<<...>>` sin completar, y
-   falla al final si alguna de las filas tocadas todavía contiene
-   `drive.google.com` — no hace falta verificar eso a mano.
+   El propio script aborta solo si queda algún `<<...>>` sin completar, si
+   algún `update` de la sección 4/5 tocó menos filas de las esperadas
+   (corrección del 19/9/2026, punto 2: un `id` que no exista en esta base
+   afecta CERO filas — antes eso pasaba desapercibido), y falla al final si
+   alguna de las filas tocadas todavía contiene `drive.google.com` — no
+   hace falta verificar nada de eso a mano.
 
 **Verificación posterior** (secciones 4 y 7 del plan
 `docs/planes/2026-09-18-nada-sin-leer-un-solo-catalogo-y-la-factura-saint.md`):
