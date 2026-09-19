@@ -5,6 +5,7 @@ import { Copy, Link2, Pencil, Plus, TriangleAlert, Trash2 } from "lucide-react";
 import { Button, Input, Label, toast } from "@heroui/react";
 import type { CatalogLink, Playbook, QuickReply } from "@/lib/types";
 import {
+  CATALOG_LIST_MARKER,
   CATALOG_MARKER,
   catalogMarkerFor,
   slugifyKey,
@@ -69,6 +70,20 @@ function referencedKeys(text: string | null | undefined): Set<string> {
   return keys;
 }
 
+/**
+ * ¿El texto lleva `{{catalogos}}` (la lista completa)? Corrección de la
+ * revisión `code-review high` del 19/9/2026, punto 4: `{{catalogos}}`
+ * necesita AL MENOS un catálogo activo para no quedar `missing`
+ * (`resolveCatalogMarkers`) — si la clave que se borra o se apaga es la
+ * ÚLTIMA activa, un texto con `{{catalogos}}` se rompe igual que uno con
+ * `{{catalogo:<esa-clave>}}`, aunque no la mencione por su nombre.
+ * `matchAll` clona el regex por spec (mismo motivo que `referencedKeys`).
+ */
+function referencesCatalogList(text: string | null | undefined): boolean {
+  if (!text) return false;
+  return [...text.matchAll(CATALOG_LIST_MARKER)].length > 0;
+}
+
 export function CatalogLinksPanel({
   links,
   canEdit,
@@ -87,6 +102,7 @@ export function CatalogLinksPanel({
   const [isSaving, setIsSaving] = useState(false);
   const [togglingId, setTogglingId] = useState<string | null>(null);
   const [confirmingDeleteId, setConfirmingDeleteId] = useState<string | null>(null);
+  const [confirmingDeactivateId, setConfirmingDeactivateId] = useState<string | null>(null);
 
   const activeCount = links.filter((l) => l.isActive).length;
   const sortedLinks = links.slice().sort((a, b) => a.sortOrder - b.sortOrder);
@@ -104,7 +120,10 @@ export function CatalogLinksPanel({
     setDraft({ key: link.key, label: link.label, url: link.url });
     setFieldErrors({});
     // Al editar, la clave ya existe: no se le pisa con el slug de la
-    // etiqueta cada vez que se retoca el nombre.
+    // etiqueta cada vez que se retoca el nombre. Además queda de solo
+    // lectura en el formulario (ver el input más abajo) — corrección de la
+    // revisión del 19/9/2026, punto 4: cambiarla en silencio rompería todos
+    // los textos que ya la usan; para "renombrar" hay que crear otro enlace.
     setKeyTouched(true);
     setIsFormOpen(true);
   }
@@ -156,7 +175,18 @@ export function CatalogLinksPanel({
     }
   }
 
+  /**
+   * Desactivar pide confirmar, mismo patrón "armar y confirmar" que borrar
+   * (corrección de la revisión del 19/9/2026, punto 4): apagar una clave en
+   * uso deja sin resolver todos los textos que la referencian, en silencio,
+   * igual que borrarla. Activar nunca pide nada — no rompe nada.
+   */
   async function handleToggle(link: CatalogLink) {
+    if (link.isActive && confirmingDeactivateId !== link.id) {
+      setConfirmingDeactivateId(link.id);
+      return;
+    }
+    setConfirmingDeactivateId(null);
     setTogglingId(link.id);
     try {
       await onToggle(link.id, !link.isActive);
@@ -167,25 +197,48 @@ export function CatalogLinksPanel({
     }
   }
 
-  /** Cuántos escenarios y mensajes rápidos quedarían con un marcador sin resolver si se borra esta clave (D3). */
-  function usageOf(key: string): { enEscenarios: number; enMensajesRapidos: number } {
-    const target = key.toLowerCase();
+  /**
+   * Cuántos escenarios y mensajes rápidos quedarían con un marcador sin
+   * resolver si se borra o se apaga este catálogo (D3). Cuenta también
+   * `{{catalogos}}` cuando `link` es el ÚLTIMO catálogo ACTIVO (corrección
+   * de la revisión del 19/9/2026, punto 4): sin ningún activo, la lista
+   * completa también queda `missing`.
+   */
+  function usageOf(link: CatalogLink): { enEscenarios: number; enMensajesRapidos: number } {
+    const target = link.key.toLowerCase();
+    const wouldEmptyList = link.isActive && activeCount <= 1;
     const enEscenarios = playbooks.filter(
-      (p) => referencedKeys(p.responseText).has(target) || referencedKeys(p.attachmentUrl).has(target)
+      (p) =>
+        referencedKeys(p.responseText).has(target) ||
+        referencedKeys(p.attachmentUrl).has(target) ||
+        (wouldEmptyList && (referencesCatalogList(p.responseText) || referencesCatalogList(p.attachmentUrl)))
     ).length;
-    const enMensajesRapidos = quickReplies.filter((r) => referencedKeys(r.content).has(target)).length;
+    const enMensajesRapidos = quickReplies.filter(
+      (r) => referencedKeys(r.content).has(target) || (wouldEmptyList && referencesCatalogList(r.content))
+    ).length;
     return { enEscenarios, enMensajesRapidos };
   }
 
-  function deleteButtonLabel(link: CatalogLink): string {
-    if (confirmingDeleteId !== link.id) return "Borrar";
-    const { enEscenarios, enMensajesRapidos } = usageOf(link.key);
+  /** Arma el texto "N escenarios y M mensajes rápidos" que comparten el borrado y el apagado. */
+  function usagePhrase(link: CatalogLink): string | null {
+    const { enEscenarios, enMensajesRapidos } = usageOf(link);
     const partes: string[] = [];
     if (enEscenarios > 0) partes.push(`${enEscenarios} ${enEscenarios === 1 ? "escenario" : "escenarios"}`);
     if (enMensajesRapidos > 0) {
       partes.push(`${enMensajesRapidos} ${enMensajesRapidos === 1 ? "mensaje rápido" : "mensajes rápidos"}`);
     }
-    return partes.length > 0 ? `¿Borrar? Lo usan ${partes.join(" y ")}` : "¿Confirmar borrado?";
+    return partes.length > 0 ? partes.join(" y ") : null;
+  }
+
+  function deleteButtonLabel(link: CatalogLink): string {
+    if (confirmingDeleteId !== link.id) return "Borrar";
+    const usos = usagePhrase(link);
+    return usos ? `¿Borrar? Lo usan ${usos}` : "¿Confirmar borrado?";
+  }
+
+  function toggleConfirmLabel(link: CatalogLink): string {
+    const usos = usagePhrase(link);
+    return usos ? `¿Desactivar? Lo usan ${usos}` : "¿Confirmar apagar?";
   }
 
   async function handleDeleteClick(link: CatalogLink) {
@@ -267,8 +320,13 @@ export function CatalogLinksPanel({
               onChange={(e) => handleKeyChange(e.target.value)}
               placeholder="cascos"
               fullWidth
+              disabled={editingId !== null}
             />
-            <span className="lm-hint">Se usa como {catalogMarkerFor(draft.key || "clave")}</span>
+            <span className="lm-hint">
+              {editingId
+                ? "La clave no se puede cambiar: renombrarla rompería en silencio todos los escenarios y mensajes rápidos que ya la usan. Para renombrar, crea un catálogo nuevo."
+                : `Se usa como ${catalogMarkerFor(draft.key || "clave")}`}
+            </span>
             {fieldErrors.key && (
               <p role="alert" className="lm-field-error">
                 {fieldErrors.key}
@@ -327,15 +385,33 @@ export function CatalogLinksPanel({
 
                 {canEdit && (
                   <div className="ac-agent-card-toggle">
-                    <span className="ac-agent-card-toggle-label">{link.isActive ? "Activo" : "Apagado"}</span>
-                    <button
-                      className="ac-switch"
-                      type="button"
-                      data-on={link.isActive}
-                      onClick={() => handleToggle(link)}
-                      disabled={togglingId === link.id}
-                      aria-label={link.isActive ? `Apagar el catálogo ${link.label}` : `Activar el catálogo ${link.label}`}
-                    />
+                    {confirmingDeactivateId === link.id ? (
+                      // Segundo paso del "armar y confirmar" (punto 4, corrección
+                      // 19/9/2026): en vez del switch, un botón de texto con la
+                      // cuenta de usos — mismo patrón que `deleteButtonLabel`.
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        onPress={() => handleToggle(link)}
+                        isDisabled={togglingId === link.id}
+                      >
+                        {toggleConfirmLabel(link)}
+                      </Button>
+                    ) : (
+                      <>
+                        <span className="ac-agent-card-toggle-label">{link.isActive ? "Activo" : "Apagado"}</span>
+                        <button
+                          className="ac-switch"
+                          type="button"
+                          data-on={link.isActive}
+                          onClick={() => handleToggle(link)}
+                          disabled={togglingId === link.id}
+                          aria-label={
+                            link.isActive ? `Apagar el catálogo ${link.label}` : `Activar el catálogo ${link.label}`
+                          }
+                        />
+                      </>
+                    )}
                   </div>
                 )}
               </div>

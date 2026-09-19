@@ -94,6 +94,19 @@ export function PlaybooksPanel({
 
   const activeCount = playbooks.filter((p) => p.isActive).length;
 
+  // El selector "Insertar catálogo" solo ofrece los catálogos ACTIVOS, en el
+  // orden del panel de enlaces (sort_order) — corrección de la revisión
+  // `code-review high` del 19/9/2026, punto 5: antes ofrecía CUALQUIER
+  // catálogo, en el orden en que llegó del servidor; pegar la clave de uno
+  // apagado (o desordenado, sin que importe, pero confuso para el
+  // supervisor) dejaba el marcador SIN RESOLVER apenas se guardaba el
+  // escenario (D6). Mismo filtro que `quick-replies-modal.tsx`
+  // (`activeCatalogLinks`).
+  const activeCatalogLinks = catalogLinks
+    .filter((link) => link.isActive)
+    .slice()
+    .sort((a, b) => a.sortOrder - b.sortOrder);
+
   function startCreate(prefill?: Partial<DraftState>) {
     setEditingId(null);
     setDraft({ ...EMPTY_DRAFT, ...prefill });
@@ -460,9 +473,12 @@ export function PlaybooksPanel({
                     <Label htmlFor="pb-response">Respuesta</Label>
                     {/* "Insertar catálogo" (T4a, D4): pega el marcador en el
                         cursor, no reemplaza nada — se puede insertar más de
-                        uno en el mismo texto. Sin catálogos cargados no tiene
-                        sentido mostrarla: no hay nada que insertar todavía. */}
-                    {catalogLinks.length > 0 && (
+                        uno en el mismo texto. Sin ningún catálogo ACTIVO no
+                        tiene sentido mostrarla: no hay nada que insertar
+                        todavía (punto 5, corrección 19/9/2026 — antes miraba
+                        `catalogLinks.length`, que cuenta también los
+                        apagados). */}
+                    {activeCatalogLinks.length > 0 && (
                       <select
                         value=""
                         onChange={(e) => {
@@ -476,7 +492,7 @@ export function PlaybooksPanel({
                       >
                         <option value="">Insertar catálogo…</option>
                         <option value={CATALOG_LIST_TOKEN}>Todos los catálogos</option>
-                        {catalogLinks.map((link) => (
+                        {activeCatalogLinks.map((link) => (
                           <option key={link.id} value={link.key}>
                             {link.label}
                           </option>

@@ -234,6 +234,50 @@ describe("resolveCatalogMarkers", () => {
     const segunda = resolveCatalogMarkers("{{catalogo:cascos}}", links);
     expect(primera).toEqual(segunda);
   });
+
+  /**
+   * Corrección de la revisión `code-review high` del 19/9/2026, punto 1: un
+   * marcador mal escrito (clave con espacio o guion bajo, sin clave, o sin
+   * cerrar) NO calzaba `CATALOG_MARKER`/`CATALOG_LIST_MARKER`, así que
+   * `missing` quedaba `[]` y el texto crudo se fugaba al cliente — rompía D6
+   * ("un marcador que no resuelve nunca llega al cliente"). Ahora cualquier
+   * resto que huela a `{{catalogo…}}` cuenta como sin resolver.
+   */
+  describe("un marcador mal escrito cuenta como sin resolver, no como texto normal", () => {
+    it.each([
+      "{{catalogo:cascos_nuevos}}",
+      "{{catalogo: exploradoras y bombillos}}",
+      "{{catalogo}}",
+      "{{catalogo:}}",
+    ])("«%s» queda en missing y el texto no cambia", (marcador) => {
+      const { text, missing } = resolveCatalogMarkers(`Ver: ${marcador}`, links);
+      expect(text).toBe(`Ver: ${marcador}`);
+      expect(missing).toHaveLength(1);
+      expect(missing[0].toLowerCase()).toContain("catalogo");
+    });
+
+    it("un marcador sin cerrar (nunca llega el '}}') también cuenta como sin resolver", () => {
+      const { text, missing } = resolveCatalogMarkers("Ver: {{catalogo:cascos", links);
+      expect(text).toBe("Ver: {{catalogo:cascos");
+      expect(missing).toHaveLength(1);
+    });
+
+    it("un `{{catálogo:X}}` bien formado con clave inexistente sigue yendo por el camino normal (missing = la clave, no el texto crudo)", () => {
+      const { missing } = resolveCatalogMarkers("{{catálogo:X}}", links);
+      expect(missing).toEqual(["X"]);
+    });
+
+    it("no duplica en missing un marcador puntual ya contado (clave inactiva)", () => {
+      const { missing } = resolveCatalogMarkers("{{catalogo:defensas}}", links);
+      expect(missing).toEqual(["defensas"]);
+    });
+
+    it("no duplica en missing la lista vacía ya contada", () => {
+      const sinActivos: CatalogLink[] = [link({ isActive: false })];
+      const { missing } = resolveCatalogMarkers("{{catalogos}}", sinActivos);
+      expect(missing).toEqual(["catalogos"]);
+    });
+  });
 });
 
 describe("catalogMarkerFor", () => {

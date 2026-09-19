@@ -12,7 +12,7 @@ import type { Database } from "@/lib/supabase/database.types";
 import type { CatalogLink, Playbook, Tag } from "@/lib/types";
 import { dayBand, parseBusinessHours, type BusinessHours, type BusinessStatus } from "@/lib/business-hours";
 import { createAdminClient } from "@/lib/supabase/admin";
-import { fetchActiveCatalogLinks } from "@/lib/data";
+import { fetchTurnCatalogLinks } from "@/lib/ai/catalog-links";
 import { classifyIntent, type Intent } from "@/lib/ai/classify";
 import { currentAgentModelLabel, getAgentModel } from "@/lib/ai/model";
 import { OFF_TOPIC_REPLY, SYSTEM_PROMPT, buildInstructions } from "@/lib/ai/prompt";
@@ -2062,9 +2062,14 @@ export async function runAgentTurn(conversationId: string, options: { vencioEn?:
     // otras — fase 0 (`matchPlaybook`) los necesita para saber qué
     // escenarios tienen el marcador `{{catalogo:<key>}}`/`{{catalogos}}`
     // resuelto, y `runPlaybook`/`sendPlaybookReply` para mandarlo resuelto.
-    // `fetchActiveCatalogLinks` nunca lanza (cae a `[]` ante error, igual
-    // que `fetchTurnLessons`), así que tampoco gana una rama de error nueva.
-    fetchActiveCatalogLinks(supabase),
+    // `fetchTurnCatalogLinks` (`ai/catalog-links.ts`, corrección de la
+    // revisión del 19/9/2026, punto 6) nunca lanza (cae a `[]` ante error,
+    // igual que `fetchTurnLessons`) y avisa con `log.warn` +
+    // `turno_enlaces_no_legibles` — antes esta consulta salía por
+    // `fetchActiveCatalogLinks` de `data.ts`, que avisa con `console.error`
+    // porque también la usa el navegador (`crm-shell.tsx`) y no puede
+    // importar `lib/log.ts` sin arrastrarlo al bundle del cliente.
+    fetchTurnCatalogLinks(supabase, conversationId),
   ]);
 
   // Tarea 5 (14/9/2026): un ERROR de la RPC (base caída, red cortada) no es

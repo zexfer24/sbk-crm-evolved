@@ -1076,6 +1076,29 @@ describe("runAgentTurn — lo que llega sin texto", () => {
   });
 });
 
+/**
+ * Corrección de la revisión `code-review high` del 19/9/2026, punto 6, sobre
+ * T3 del plan "Nada sin leer, un solo catálogo y la factura Saint"
+ * (18/9/2026): el turno lee los catálogos con `fetchTurnCatalogLinks`
+ * (`ai/catalog-links.ts`), que avisa por `log.warn` en vez del
+ * `console.error` de `fetchActiveCatalogLinks` (`data.ts`, que también usa
+ * el navegador). Una lectura fallida no debe tumbar el turno: sigue con `[]`
+ * catálogos, como si no hubiera ninguno cargado.
+ */
+describe("runAgentTurn — la lectura de catálogos puede fallar sin tumbar el turno", () => {
+  it("con la consulta de catalog_links rota, deja turno_enlaces_no_legibles y sigue sin catálogos", async () => {
+    const warn = vi.spyOn(log, "warn");
+    state.catalogLinksError = { message: "conexión perdida" };
+
+    await runAgentTurn("conv-1");
+
+    expect(warn).toHaveBeenCalledWith(
+      "turno_enlaces_no_legibles",
+      expect.objectContaining({ conversationId: "conv-1", detail: "conexión perdida" })
+    );
+  });
+});
+
 describe("runAgentTurn — ventana de 24 h de Meta", () => {
   const HACE_25_HORAS = () => new Date(Date.now() - 25 * 60 * 60 * 1000).toISOString();
 

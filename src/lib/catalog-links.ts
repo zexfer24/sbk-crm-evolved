@@ -181,8 +181,45 @@ export function resolveCatalogMarkers(text: string, links: CatalogLink[]): Resol
     return formatCatalogList(links);
   });
 
+  // Corrección de la revisión `code-review high` del 19/9/2026, punto 1: un
+  // marcador mal escrito —clave con espacio o guion bajo
+  // (`{{catalogo:cascos_nuevos}}`, `{{catalogo: exploradoras y bombillos}}`),
+  // sin clave (`{{catalogo}}`, `{{catalogo:}}`) o sin cerrar
+  // (`{{catalogo:cascos`)— no calzaba `CATALOG_MARKER` ni
+  // `CATALOG_LIST_MARKER` (la regex estricta exige una clave válida entre
+  // guiones), así que `missing` quedaba `[]`: fase 0 conservaba el escenario
+  // y el texto crudo salía tal cual por WhatsApp, contra D6 ("un marcador que
+  // no resuelve nunca llega al cliente"). Este paso final es una red más
+  // laxa: cualquier resto que TODAVÍA huela a `{{catalogo…}}` después de
+  // resolver los marcadores bien formados cuenta como sin resolver, con su
+  // texto crudo (recortado a 60 caracteres) como "clave" en `missing`. No
+  // reemplaza nada del texto — los cuatro consumidores (fase 0 del turno, el
+  // badge del panel, la marca de mensajes rápidos, el toast del composer)
+  // solo miran si `missing.length > 0`.
+  for (const match of withListResolved.matchAll(LOOSE_UNRESOLVED_MARKER)) {
+    const raw = match[0];
+    // Si el resto SÍ calza la regex estricta, ya se contó arriba (clave
+    // puntual sin catálogo activo, o `{{catalogos}}` sin ninguno activo):
+    // sumarlo de nuevo acá lo duplicaría en `missing` sin agregar nada. El
+    // reset de `lastIndex` es obligatorio antes de cada `.test()` — ver el
+    // comentario de `CATALOG_MARKER` más arriba.
+    CATALOG_MARKER.lastIndex = 0;
+    CATALOG_LIST_MARKER.lastIndex = 0;
+    if (CATALOG_MARKER.test(raw) || CATALOG_LIST_MARKER.test(raw)) continue;
+    missingKeys.add(raw.trim().slice(0, 60));
+  }
+
   return { text: withListResolved, missing: [...missingKeys] };
 }
+
+/**
+ * Red laxa para el resto de `resolveCatalogMarkers`: cualquier cosa que
+ * empiece como `{{catalogo`/`{{catalogos` (con o sin la "s", con o sin
+ * cerrar) cuenta como un intento de marcador mal escrito. Solo se usa para
+ * DETECTAR, nunca para reemplazar texto — ver el comentario dentro de
+ * `resolveCatalogMarkers`.
+ */
+const LOOSE_UNRESOLVED_MARKER = /\{\{\s*cat[aá]logos?\b[^}]*\}?\}?/gi;
 
 // ---------------------------------------------------------------------------
 // Aviso de "enlace escrito a mano" (D4). Mismo patrón que `hasHardcodedPrice`

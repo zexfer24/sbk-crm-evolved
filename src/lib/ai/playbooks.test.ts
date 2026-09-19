@@ -339,6 +339,30 @@ describe("matchPlaybook · el marcador de catálogo sin resolver no es candidato
 
     expect(generateObjectMock).not.toHaveBeenCalled();
   });
+
+  /**
+   * Corrección de la revisión `code-review high` del 19/9/2026, punto 1: un
+   * marcador mal escrito (clave con guion bajo, aquí) no calzaba la regex
+   * estricta de `resolveCatalogMarkers` y `missing` quedaba `[]` — el
+   * escenario seguía siendo candidato y el texto crudo `{{catalogo:…}}`
+   * podía salir tal cual por WhatsApp. Ahora la red laxa de
+   * `catalog-links.ts` lo marca igual que un marcador bien formado sin
+   * catálogo activo.
+   */
+  it("un escenario con un marcador MAL ESCRITO tampoco es candidato", async () => {
+    generateObjectMock.mockClear();
+    generateObjectMock.mockResolvedValue({ object: "ninguno", usage: USAGE });
+    const malEscrito = playbook("Catálogo mal escrito", {
+      responseText: "Acá tienes: {{catalogo:cascos_nuevos}}",
+    });
+    const ok = playbook("Ubicación", { responseText: "Estamos en tal parte" });
+
+    await matchPlaybook(HISTORY, [malEscrito, ok], undefined, undefined, [catalogLink()]);
+
+    const call = generateObjectMock.mock.calls[0][0] as { enum: string[] };
+    expect(call.enum).not.toContain("Catálogo mal escrito");
+    expect(call.enum).toContain("Ubicación");
+  });
 });
 
 describe("matchPlaybook · costo del turno", () => {

@@ -1,7 +1,7 @@
 /** @vitest-environment jsdom */
 import type { ComponentProps } from "react";
 import { describe, expect, it, vi, beforeEach } from "vitest";
-import { render, screen, waitFor } from "@testing-library/react";
+import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { PlaybooksPanel } from "@/components/agent-control/playbooks-panel";
 import type { CatalogLink, Playbook } from "@/lib/types";
@@ -194,5 +194,56 @@ describe("PlaybooksPanel — Insertar catálogo (T4a, D4)", () => {
     });
 
     expect(screen.queryByText("Enlace sin resolver")).not.toBeInTheDocument();
+  });
+
+  /**
+   * Corrección de la revisión `code-review high` del 19/9/2026, punto 5: el
+   * selector ofrecía CUALQUIER catálogo, activo o no — pegar la clave de uno
+   * apagado deja el marcador SIN RESOLVER apenas se guarda (D6), justo lo
+   * que este botón debería evitar. Mismo filtro que `quick-replies-modal.tsx`
+   * (`activeCatalogLinks`).
+   */
+  it("no ofrece un catálogo INACTIVO entre las opciones", async () => {
+    const user = userEvent.setup({ delay: null, pointerEventsCheck: 0 });
+    renderPanel({
+      catalogLinks: [
+        catalogLink({ id: "1", key: "cascos", label: "Cascos", isActive: true }),
+        catalogLink({ id: "2", key: "defensas", label: "Defensas", isActive: false }),
+      ],
+    });
+
+    await user.click(screen.getByRole("button", { name: "Nuevo escenario" }));
+
+    const selector = screen.getByLabelText("Insertar catálogo");
+    const opciones = within(selector).getAllByRole("option").map((o) => o.textContent);
+    expect(opciones).toContain("Cascos");
+    expect(opciones).not.toContain("Defensas");
+  });
+
+  it("con TODOS los catálogos inactivos, no muestra el selector (nada que insertar)", async () => {
+    const user = userEvent.setup({ delay: null, pointerEventsCheck: 0 });
+    renderPanel({ catalogLinks: [catalogLink({ key: "defensas", isActive: false })] });
+
+    await user.click(screen.getByRole("button", { name: "Nuevo escenario" }));
+
+    expect(screen.queryByLabelText("Insertar catálogo")).not.toBeInTheDocument();
+  });
+
+  it("ofrece los catálogos activos en el orden de sort_order, no el orden en que llegan", async () => {
+    const user = userEvent.setup({ delay: null, pointerEventsCheck: 0 });
+    renderPanel({
+      catalogLinks: [
+        catalogLink({ id: "1", key: "resonadores", label: "Resonadores", sortOrder: 2 }),
+        catalogLink({ id: "2", key: "cascos", label: "Cascos", sortOrder: 1 }),
+      ],
+    });
+
+    await user.click(screen.getByRole("button", { name: "Nuevo escenario" }));
+
+    const selector = screen.getByLabelText("Insertar catálogo");
+    const opciones = within(selector).getAllByRole("option").map((o) => o.textContent);
+    // Las dos primeras opciones son fijas ("Insertar catálogo…", "Todos los
+    // catálogos"); las claves empiezan en el índice 2.
+    expect(opciones.slice(2)).toEqual(["Cascos", "Resonadores"]);
   });
 });

@@ -143,6 +143,157 @@ describe("CatalogLinksPanel — solo lectura", () => {
   });
 });
 
+// ---------------------------------------------------------------------------
+// Corrección de la revisión `code-review high` del 19/9/2026, punto 4: (a)
+// renombrar la clave rompe en silencio todos los textos que ya la usan —
+// queda de solo lectura al editar; (b) desactivar una clave en uso tiene el
+// mismo patrón "armar y confirmar" que borrar, porque también deja textos
+// sin resolver; activar no pide nada porque nunca rompe nada.
+// ---------------------------------------------------------------------------
+describe("CatalogLinksPanel — editar: la clave es de solo lectura", () => {
+  it("al editar, el campo Clave queda deshabilitado y explica por qué", async () => {
+    const user = userEvent.setup({ delay: null, pointerEventsCheck: 0 });
+    render(
+      <CatalogLinksPanel
+        links={[link({ key: "cascos" })]}
+        canEdit
+        onCreate={onCreate}
+        onUpdate={onUpdate}
+        onDelete={onDelete}
+        onToggle={onToggle}
+        playbooks={[]}
+        quickReplies={[]}
+      />
+    );
+
+    await user.click(screen.getByRole("button", { name: "Editar Cascos" }));
+
+    expect(screen.getByLabelText("Clave del marcador")).toBeDisabled();
+    expect(screen.getByText(/no se puede cambiar/i)).toBeInTheDocument();
+  });
+
+  it("al crear (sin editar nada), la clave sigue editable", async () => {
+    render(
+      <CatalogLinksPanel
+        links={[]}
+        canEdit
+        onCreate={onCreate}
+        onUpdate={onUpdate}
+        onDelete={onDelete}
+        onToggle={onToggle}
+        playbooks={[]}
+        quickReplies={[]}
+      />
+    );
+
+    await userEvent.setup({ delay: null, pointerEventsCheck: 0 }).click(
+      screen.getByRole("button", { name: "Nuevo catálogo" })
+    );
+
+    expect(screen.getByLabelText("Clave del marcador")).not.toBeDisabled();
+  });
+});
+
+describe("CatalogLinksPanel — desactivar avisa cuántos textos usan la clave; activar no pide nada", () => {
+  it("desactivar con usos arma la confirmación con la cuenta, y el segundo clic desactiva", async () => {
+    const user = userEvent.setup({ delay: null, pointerEventsCheck: 0 });
+    render(
+      <CatalogLinksPanel
+        links={[link({ key: "cascos", isActive: true })]}
+        canEdit
+        onCreate={onCreate}
+        onUpdate={onUpdate}
+        onDelete={onDelete}
+        onToggle={onToggle}
+        playbooks={[playbook({ id: "pb-1", responseText: "Mira {{catalogo:cascos}}" })]}
+        quickReplies={[quickReply({ id: "qr-1", content: "Acá: {{catalogo:cascos}}" })]}
+      />
+    );
+
+    await user.click(screen.getByRole("button", { name: "Apagar el catálogo Cascos" }));
+
+    const confirmar = await screen.findByRole("button", {
+      name: "¿Desactivar? Lo usan 1 escenario y 1 mensaje rápido",
+    });
+    expect(onToggle).not.toHaveBeenCalled();
+
+    await user.click(confirmar);
+
+    await waitFor(() => expect(onToggle).toHaveBeenCalledWith("link-1", false));
+  });
+
+  it("desactivar sin ningún uso también pide confirmar, con texto genérico", async () => {
+    const user = userEvent.setup({ delay: null, pointerEventsCheck: 0 });
+    render(
+      <CatalogLinksPanel
+        links={[link({ key: "ubicacion", isActive: true })]}
+        canEdit
+        onCreate={onCreate}
+        onUpdate={onUpdate}
+        onDelete={onDelete}
+        onToggle={onToggle}
+        playbooks={[]}
+        quickReplies={[]}
+      />
+    );
+
+    await user.click(screen.getByRole("button", { name: "Apagar el catálogo Cascos" }));
+
+    const confirmar = await screen.findByRole("button", { name: "¿Confirmar apagar?" });
+    await user.click(confirmar);
+
+    await waitFor(() => expect(onToggle).toHaveBeenCalledWith("link-1", false));
+  });
+
+  it("activar no pide ninguna confirmación: un solo clic alcanza", async () => {
+    const user = userEvent.setup({ delay: null, pointerEventsCheck: 0 });
+    render(
+      <CatalogLinksPanel
+        links={[link({ key: "cascos", isActive: false })]}
+        canEdit
+        onCreate={onCreate}
+        onUpdate={onUpdate}
+        onDelete={onDelete}
+        onToggle={onToggle}
+        playbooks={[playbook({ id: "pb-1", responseText: "Mira {{catalogo:cascos}}" })]}
+        quickReplies={[]}
+      />
+    );
+
+    await user.click(screen.getByRole("button", { name: "Activar el catálogo Cascos" }));
+
+    await waitFor(() => expect(onToggle).toHaveBeenCalledWith("link-1", true));
+  });
+
+  /**
+   * D3/D4: `{{catalogos}}` necesita AL MENOS un catálogo activo para no ser
+   * `missing` (`resolveCatalogMarkers`). Si esta es la ÚLTIMA activa,
+   * apagarla rompe también cualquier texto con `{{catalogos}}`, aunque no la
+   * mencione por su clave puntual.
+   */
+  it("cuenta {{catalogos}} como uso cuando el enlace es el ÚLTIMO activo", async () => {
+    const user = userEvent.setup({ delay: null, pointerEventsCheck: 0 });
+    render(
+      <CatalogLinksPanel
+        links={[link({ id: "link-1", key: "cascos", isActive: true })]}
+        canEdit
+        onCreate={onCreate}
+        onUpdate={onUpdate}
+        onDelete={onDelete}
+        onToggle={onToggle}
+        playbooks={[playbook({ id: "pb-1", responseText: "Ver también: {{catalogos}}" })]}
+        quickReplies={[]}
+      />
+    );
+
+    await user.click(screen.getByRole("button", { name: "Apagar el catálogo Cascos" }));
+
+    expect(
+      await screen.findByRole("button", { name: "¿Desactivar? Lo usan 1 escenario" })
+    ).toBeInTheDocument();
+  });
+});
+
 describe("CatalogLinksPanel — copiar marcador", () => {
   it("copia el marcador canónico al portapapeles", async () => {
     const user = userEvent.setup({ delay: null, pointerEventsCheck: 0 });
