@@ -888,4 +888,27 @@ describe("escalationOpen", () => {
 
     expect(await escalationOpen(supabase, "conv-1")).toBe(false);
   });
+
+  // ---------------------------------------------------------------------------
+  // T8, plan "Seba sale sin pisar a nadie" (19/9/2026, hallazgo M6): `reabierto`
+  // la escribe el reconciliador CADA VEZ que reencola un turno huérfano, sin
+  // que nadie cambie de dueño -- igual que `asignada`/`pausada`/
+  // `agente_no_puede_correr`. Antes de esta tarea no estaba en
+  // `RAZONES_QUE_NO_CIERRAN_LA_ESCALADA`, así que un reencolado sobre una
+  // escalada abierta tapaba la fila `escalada`/`escalada_sin_asesor` y
+  // `escalationOpen` devolvía `false` -- la guarda de cortesía dejaba de
+  // disparar y la IA podía volver a despedirse encima de una escalada que
+  // seguía abierta de verdad.
+  // ---------------------------------------------------------------------------
+  it("true: 'escalada_sin_asesor' seguida de 'reabierto' (el reconciliador reencoló sin cambiar de dueño)", async () => {
+    const supabase = fakeSupabaseParaEscalationOpen({
+      filas: [
+        { reason: "escalada_sin_asesor", created_at: "2026-09-14T10:00:00.000Z" },
+        { reason: "reabierto", created_at: "2026-09-14T10:05:00.000Z" },
+      ],
+      mensajesDeAsesor: [],
+    });
+
+    expect(await escalationOpen(supabase, "conv-1")).toBe(true);
+  });
 });

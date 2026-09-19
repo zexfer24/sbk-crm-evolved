@@ -318,6 +318,18 @@ export async function recordHandoffAdmin(input: HandoffInput): Promise<boolean> 
  * cerrara, la guarda de cortesía (`cortesia_tras_escalada`) seguiría
  * callando a la IA sobre un chat que un asesor ya tomó de verdad.
  *
+ * T8 de "Seba sale sin pisar a nadie" (19/9/2026, hallazgo M6 de la
+ * inspección pre-despliegue del mismo día): `reabierto` SÍ suma a esta
+ * lista, con el mismo motivo que `asignada`/`pausada`/
+ * `agente_no_puede_correr` — la escribe el reconciliador (`reconciler.ts`)
+ * CADA VEZ que reencola un turno huérfano, sin que nadie cambie de dueño;
+ * no era ninguna decisión nueva sobre a quién pertenece la conversación,
+ * solo "vuelvo a intentar". Sin sumarla, un reencolado sobre una escalada
+ * abierta tapaba la fila `escalada`/`escalada_sin_asesor` como si fuera "lo
+ * último que pasó de verdad", `escalationOpen` daba `false` y la guarda de
+ * cortesía dejaba de disparar — la IA podía volver a despedirse dos veces
+ * sobre un cliente que seguía esperando al mismo asesor.
+ *
  * Ver la migración 20260830040000_conversation_handoffs.sql (el CHECK de
  * `reason`) y CLAUDE.md.
  */
@@ -329,6 +341,7 @@ const RAZONES_QUE_NO_CIERRAN_LA_ESCALADA: HandoffReason[] = [
   "humano_intervino",
   "humano_se_adelanto",
   "mensaje_previo_a_devolucion",
+  "reabierto",
 ];
 
 /**
