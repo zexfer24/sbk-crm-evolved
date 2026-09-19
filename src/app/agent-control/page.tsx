@@ -23,6 +23,7 @@ import {
 } from "@/lib/data";
 import { currentAgentModelLabel } from "@/lib/ai/model";
 import { AgentControlView } from "@/components/agent-control/agent-control-view";
+import { readListIfTableExists } from "@/app/agent-control/degradable-reads";
 
 export default async function AgentControlPage() {
   const supabase = await createClient();
@@ -65,10 +66,19 @@ export default async function AgentControlPage() {
     fetchAgentTools(supabase),
     fetchKnowledgeCategories(supabase),
     fetchKnowledgeEntries(supabase),
-    fetchLessons(supabase),
+    // T7 ("Seba sale sin pisar a nadie", 19/9/2026): estas dos son las
+    // lecturas más nuevas del panel (`ai_lessons`/`catalog_links`) y las
+    // únicas que pueden faltar en una base que todavía no corrió sus
+    // migraciones — degradan solas a `[]` para que las otras diecisiete no
+    // se caigan con ellas y el interruptor global de la IA siga alcanzable.
+    // Corrección del 19/9/2026 (hallazgo 6): solo degradan cuando el error
+    // dice de verdad "la tabla no existe" (42P01/PGRST205); un timeout o un
+    // 5xx se relanza y lo atrapa `error.tsx`, en vez de fingir un panel
+    // vacío que un supervisor podría leer como "se borraron los catálogos".
+    readListIfTableExists(fetchLessons(supabase), "las lecciones de la IA"),
     fetchTags(supabase),
     fetchWhatsappChannelHealth(supabase),
-    fetchCatalogLinks(supabase),
+    readListIfTableExists(fetchCatalogLinks(supabase), "los enlaces de catálogo"),
   ]);
 
   if (!currentAgent) {
