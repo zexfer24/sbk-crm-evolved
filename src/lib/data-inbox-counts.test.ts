@@ -469,12 +469,24 @@ describe("fetchInboxCounts", () => {
  * `data-conversations.test.ts` ya hace para el cursor combinado con
  * `unreadOnly` — así el test valida la COMBINACIÓN, no una copia a mano del
  * algoritmo que podría desincronizarse en silencio.
+ *
+ * D1 del plan "Nada sin leer, un solo catálogo y la factura Saint"
+ * (18/9/2026): el grupo de "habló hoy" (`dayGroup` acá abajo) pasó a CUATRO
+ * términos — se le sumaron `unread_count.gt.0`/`manually_unread.is.true`,
+ * así que una no leída pasa el corte de "hoy" sin importar cuándo fue su
+ * último mensaje. Por eso mismo, "unread"/"mineUnread" DEJAN de cruzarlo:
+ * cruzar un grupo que ya incluye "no leída" con el OR propio de "No leídas"
+ * era una condición redundante que, hasta esta fecha, dejaba afuera del
+ * CONTEO una conversación no leída de ayer — el mismo agujero que D1 le
+ * cierra a la lista.
  */
-describe('fetchInboxCounts — since ("habló hoy")', () => {
+describe('fetchInboxCounts — since ("habló hoy" o "no leída")', () => {
   const SINCE = "2026-09-08T04:00:00.000Z";
-  const sinceGroup = [
+  const dayGroup = [
     `last_message_at.gte.${pgrstLiteral(SINCE)}`,
     `and(last_message_at.is.null,created_at.gte.${pgrstLiteral(SINCE)})`,
+    "unread_count.gt.0",
+    "manually_unread.is.true",
   ];
 
   function fila(id: string, over: Partial<FilaConteo> = {}): FilaConteo {
@@ -503,7 +515,7 @@ describe('fetchInboxCounts — since ("habló hoy")', () => {
     expect(consultas[0].filtros).toContainEqual({
       op: "or",
       column: "",
-      value: orExpression([sinceGroup]),
+      value: orExpression([dayGroup]),
     });
   });
 
@@ -515,7 +527,7 @@ describe('fetchInboxCounts — since ("habló hoy")', () => {
     expect(consultas[2].filtros).toContainEqual({
       op: "or",
       column: "",
-      value: orExpression([sinceGroup]),
+      value: orExpression([dayGroup]),
     });
   });
 
@@ -528,11 +540,19 @@ describe('fetchInboxCounts — since ("habló hoy")', () => {
     expect(consultas[1].filtros).toContainEqual({
       op: "or",
       column: "",
-      value: orExpression([propio, sinceGroup]),
+      value: orExpression([propio, dayGroup]),
     });
   });
 
-  it('"unread" cruza su OR propio con el de since en una sola disyunción', async () => {
+  /**
+   * D1 (18/9/2026): "unread" YA NO cruza el grupo de día — el grupo de día
+   * ahora INCLUYE "no leída" (`dayGroup` de arriba), así que cruzarlo con el
+   * OR propio de esta píldora sería una condición redundante que, hasta esta
+   * fecha, dejaba afuera del CONTEO una no leída cuyo último mensaje quedaba
+   * fuera de "hoy". Este test prueba que `since` NO CAMBIA el `.or()` de
+   * "unread" frente al caso sin `since` (ver el test "sin since" más abajo).
+   */
+  it('"unread" NO cruza el grupo de día: su .or() es el mismo con o sin since', async () => {
     const { client, consultas } = createFakeSupabase([fila("conv-0")]);
 
     await fetchInboxCounts(client, "viewer-1", AHORA, { since: SINCE });
@@ -541,11 +561,11 @@ describe('fetchInboxCounts — since ("habló hoy")', () => {
     expect(consultas[3].filtros).toContainEqual({
       op: "or",
       column: "",
-      value: orExpression([propio, sinceGroup]),
+      value: orExpression([propio]),
     });
   });
 
-  it('"mineUnread" cruza su OR propio (el mismo de "unread") con el de since en una sola disyunción', async () => {
+  it('"mineUnread" (mismo motivo que "unread") NO cruza el grupo de día', async () => {
     const { client, consultas } = createFakeSupabase([fila("conv-0")]);
 
     await fetchInboxCounts(client, "viewer-1", AHORA, { since: SINCE });
@@ -559,7 +579,7 @@ describe('fetchInboxCounts — since ("habló hoy")', () => {
     expect(consultas[4].filtros).toContainEqual({
       op: "or",
       column: "",
-      value: orExpression([propio, sinceGroup]),
+      value: orExpression([propio]),
     });
   });
 
@@ -576,7 +596,7 @@ describe('fetchInboxCounts — since ("habló hoy")', () => {
     expect(consultas[5].filtros).toContainEqual({
       op: "or",
       column: "",
-      value: orExpression([propio, sinceGroup]),
+      value: orExpression([propio, dayGroup]),
     });
   });
 
@@ -588,7 +608,7 @@ describe('fetchInboxCounts — since ("habló hoy")', () => {
     expect(consultas[6].filtros).toContainEqual({
       op: "or",
       column: "",
-      value: orExpression([sinceGroup]),
+      value: orExpression([dayGroup]),
     });
   });
 
@@ -610,15 +630,28 @@ describe('fetchInboxCounts — since ("habló hoy")', () => {
     }
   });
 
-  it("con datos reales de hoy y de ayer, since deja solo lo de hoy en los conteos que lo cruzan", async () => {
+  it("con datos reales de hoy y de ayer, since deja solo lo de hoy (o lo no leído) en los conteos que lo cruzan", async () => {
     const rows = [
       // Hoy, pendiente sin asesor: cuenta en pending/pendingStale.
       fila("conv-hoy", { last_customer_message_at: ANTES_DEL_CORTE }),
-      // Ayer, pendiente sin asesor: pending/pendingStale la ven, since la saca.
+      // Ayer, pendiente sin asesor, YA LEÍDA: pending/pendingStale sin since
+      // la verían, since la saca — sigue siendo el caso que no pasa el
+      // corte, ver la trampa "Nada sin leer" (D1, 18/9/2026).
       fila("conv-ayer", {
         last_message_at: "2026-09-07T10:00:00.000Z",
         created_at: "2026-09-07T10:00:00.000Z",
         last_customer_message_at: ANTES_DEL_CORTE,
+      }),
+      // Ayer, pendiente sin asesor, SIN LEER: D1 (18/9/2026) — antes de esta
+      // fecha `since` la sacaba igual que a "conv-ayer" ("si el mensaje no
+      // está leído, no importa eso" era justo el agujero que reportó el
+      // cliente); ahora pasa el corte por el término `unread_count.gt.0` de
+      // `dayCutGroup` y cuenta en pending/pendingStale.
+      fila("conv-ayer-no-leida", {
+        last_message_at: "2026-09-07T10:00:00.000Z",
+        created_at: "2026-09-07T10:00:00.000Z",
+        last_customer_message_at: ANTES_DEL_CORTE,
+        unread_count: 2,
       }),
       // Recién creada hoy desde la bandeja (T6): sin last_message_at
       // todavía, pero created_at de hoy — since la deja pasar igual.
@@ -632,7 +665,7 @@ describe('fetchInboxCounts — since ("habló hoy")', () => {
 
     const result = await fetchInboxCounts(client, "viewer-1", AHORA, { since: SINCE });
 
-    expect(result.pending).toBe(2); // conv-hoy, conv-recien-creada
-    expect(result.pendingStale).toBe(2); // las dos están fuera de la ventana de 24h
+    expect(result.pending).toBe(3); // conv-hoy, conv-ayer-no-leida, conv-recien-creada
+    expect(result.pendingStale).toBe(3); // las tres están fuera de la ventana de 24h
   });
 });

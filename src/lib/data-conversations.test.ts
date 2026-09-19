@@ -945,12 +945,16 @@ describe("fetchConversations", () => {
      * con `limit` como cualquier otro filtro.
      */
     /**
-     * T1 del plan "Seis frentes del buzón" (8/9/2026): "habló hoy". El
-     * grupo se combina con `pendingWindow`/`unreadOnly`/`escalatedOnly`/el
-     * cursor en el MISMO `.or()` (`orExpression`, `src/lib/ai/pgrst.ts`) —
-     * acá alcanza con verlo solo, sin nada más que combinar.
+     * D1 del plan "Nada sin leer, un solo catálogo y la factura Saint"
+     * (18/9/2026): "habló hoy" **o** "no leída" — antes de esta fecha el
+     * grupo tenía solo los dos primeros términos (T1 del plan "Seis
+     * frentes del buzón", 8/9/2026) y una conversación sin leer con último
+     * mensaje de ayer no pasaba el corte de "hoy". El grupo se combina con
+     * `pendingWindow`/`unreadOnly`/`escalatedOnly`/el cursor en el MISMO
+     * `.or()` (`orExpression`, `src/lib/ai/pgrst.ts`) — acá alcanza con
+     * verlo solo, sin nada más que combinar.
      */
-    it('con since emite el OR de last_message_at/created_at ("habló hoy")', async () => {
+    it('con since emite el OR de cuatro términos ("habló hoy" o "no leída")', async () => {
       const rows = [
         conFecha(0, ANTES_DEL_CORTE),
         { ...makeRow(1), last_message_at: null as string | null },
@@ -964,7 +968,8 @@ describe("fetchConversations", () => {
         column: "",
         value:
           'last_message_at.gte."2026-09-08T04:00:00.000Z",' +
-          'and(last_message_at.is.null,created_at.gte."2026-09-08T04:00:00.000Z")',
+          'and(last_message_at.is.null,created_at.gte."2026-09-08T04:00:00.000Z"),' +
+          "unread_count.gt.0,manually_unread.is.true",
       });
     });
 

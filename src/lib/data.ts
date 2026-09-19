@@ -815,16 +815,27 @@ export interface FetchConversationsOptions {
    */
   embedLatestHandoff?: boolean;
   /**
-   * "Habló hoy" (T1 del plan "Seis frentes del buzón", 8/9/2026): solo
-   * conversaciones con `last_message_at` desde este instante ISO en
-   * adelante, o SIN `last_message_at` todavía pero `created_at` desde ese
-   * instante — T6 (misma corrida) crea contactos y su conversación desde la
-   * bandeja antes de que exista el primer mensaje, así que exigir solo
+   * "Habló hoy" **o** "no leída" (D1 del plan "Nada sin leer, un solo
+   * catálogo y la factura Saint", 18/9/2026). Hasta esa fecha la fórmula
+   * tenía solo la primera mitad (T1 del plan "Seis frentes del buzón",
+   * 8/9/2026): con la bandeja en "solo hoy", un chat con mensajes SIN LEER
+   * desaparecía de la lista y del conteo si su último mensaje era de ayer o
+   * de antes, hasta que llegara otro mensaje o alguien tocara "Ver todo" —
+   * "si el mensaje no está leído, no importa eso" fue el pedido del
+   * cliente. `dayCutGroup` (definida más abajo, junto a
+   * `fetchConversationRows`) arma el grupo de CUATRO términos: conversaciones
+   * con `last_message_at` desde este instante ISO en adelante, o SIN
+   * `last_message_at` todavía pero `created_at` desde ese instante — T6
+   * (plan "Seis frentes del buzón") crea contactos y su conversación desde
+   * la bandeja antes de que exista el primer mensaje, así que exigir solo
    * `last_message_at` las dejaría fuera de "hoy" el mismo día en que se
-   * crean. `undefined` (todo llamador antes de esta tarea) no agrega ninguna
-   * condición: la bandeja abre en la medianoche de `America/Caracas`
-   * calculada por `useInboxDay` (`src/lib/use-inbox-day.ts`), y el
-   * interruptor "Ver todo" del sidebar lo manda `undefined` a propósito.
+   * crean — o `unread_count > 0`, o `manually_unread`. Sigue habiendo UNA
+   * sola fuente (`useInboxDay` → `dayStart`, `src/lib/use-inbox-day.ts`):
+   * cambió la fórmula, no el número de relojes. `undefined` (todo llamador
+   * antes de la tarea T1 del 8/9/2026) no agrega ninguna condición: la
+   * bandeja abre en la medianoche de `America/Caracas` calculada por
+   * `useInboxDay`, y el interruptor "Ver todo" del sidebar lo manda
+   * `undefined` a propósito.
    *
    * Viaja como un grupo más de `orGroups` (igual que `unreadOnly`/
    * `pendingWindow: "stale"`/`escalatedOnly`/el cursor), nunca como un
@@ -832,8 +843,8 @@ export interface FetchConversationsOptions {
    * combinan de forma confiable en PostgREST (ver el comentario de
    * `orExpression` en `src/lib/ai/pgrst.ts`), así que este corte tiene que
    * entrar a la MISMA disyunción combinada que ya arma `fetchConversationRows`
-   * para que "hoy" quede en AND con el resto de los cortes (`unreadOnly`,
-   * el cursor de continuación, etc.) en vez de reemplazarlos.
+   * para que "hoy o no leída" quede en AND con el resto de los cortes
+   * (`unreadOnly`, el cursor de continuación, etc.) en vez de reemplazarlos.
    */
   since?: string;
 }
@@ -853,6 +864,31 @@ export interface FetchConversationsOptions {
  * dos páginas internas, la fila que quedaba justo en el borde no la pedía
  * ninguna página: pérdida silenciosa, sin error.
  */
+/**
+ * El grupo OR de "habló hoy o no leída" que comparten `fetchConversationRows`
+ * y `fetchInboxCounts` para el corte `since` (ver su comentario en
+ * `FetchConversationsOptions`).
+ *
+ * D1 del plan "Nada sin leer, un solo catálogo y la factura Saint"
+ * (18/9/2026): antes de esta fecha la fórmula tenía solo los primeros dos
+ * términos, y un chat con mensajes sin leer se esfumaba de la bandeja "solo
+ * hoy" apenas su último mensaje quedaba fuera del día — el agujero que
+ * reportó el cliente ("si el mensaje no está leído, no importa eso"). Los
+ * cuatro términos son alternativas: calzar con cualquiera alcanza para pasar
+ * el corte. `unread_count`/`manually_unread` no llevan ninguna condición de
+ * fecha a propósito — una no leída pasa el corte sin importar cuándo fue su
+ * último mensaje, esa es la exigencia completa.
+ */
+function dayCutGroup(since: string): string[] {
+  const sinceLiteral = pgrstLiteral(since);
+  return [
+    `last_message_at.gte.${sinceLiteral}`,
+    `and(last_message_at.is.null,created_at.gte.${sinceLiteral})`,
+    "unread_count.gt.0",
+    "manually_unread.is.true",
+  ];
+}
+
 async function fetchConversationRows<Raw extends CursorableRow>(
   supabase: SupabaseClient,
   select: string,
@@ -1004,16 +1040,10 @@ async function fetchConversationRows<Raw extends CursorableRow>(
       ]);
     }
     if (unreadOnly) orGroups.push(["unread_count.gt.0", "manually_unread.is.true"]);
-    if (since) {
-      // Ver el comentario de `since` en `FetchConversationsOptions`: sin
-      // `last_message_at` todavía (T6 crea la conversación antes del primer
-      // mensaje), cae a `created_at`.
-      const sinceLiteral = pgrstLiteral(since);
-      orGroups.push([
-        `last_message_at.gte.${sinceLiteral}`,
-        `and(last_message_at.is.null,created_at.gte.${sinceLiteral})`,
-      ]);
-    }
+    // Ver el comentario de `since` en `FetchConversationsOptions` y el de
+    // `dayCutGroup` más arriba: D1 (18/9/2026) sumó los dos términos de "no
+    // leída" al grupo de "hoy".
+    if (since) orGroups.push(dayCutGroup(since));
     if (escalatedOnly) {
       orGroups.push([
         "last_reply_sender.neq.agent",
@@ -1386,24 +1416,25 @@ export async function fetchInboxCounts(
   const count = () =>
     supabase.from("conversations").select("id", { count: "exact", head: true });
 
-  // "Habló hoy" (T1, 8/9/2026): el mismo grupo que arma `fetchConversationRows`
-  // para `since` en `data.ts` — se combina con el `.or()` propio de cada
-  // conteo (cuando lo tiene) en una sola llamada vía `orExpression`, nunca
-  // como un segundo `.or()` encadenado (ver el comentario de `since` en
-  // `FetchConversationsOptions`: PostgREST no combina de forma confiable dos
-  // `.or()` en la misma consulta). `null` con "Ver todo" (`since` sin
-  // valor): los seis conteos vuelven a mirar toda la base, igual que antes
-  // de esta tarea — por eso cada consulta de abajo solo agrega `.or()`
-  // cuando `sinceGroup` o su propio grupo existen, nunca incondicional.
-  const sinceGroup = since
-    ? [
-        `last_message_at.gte.${pgrstLiteral(since)}`,
-        `and(last_message_at.is.null,created_at.gte.${pgrstLiteral(since)})`,
-      ]
-    : null;
+  // "Habló hoy o no leída" (D1 del plan "Nada sin leer, un solo catálogo y
+  // la factura Saint", 18/9/2026): el mismo grupo de CUATRO términos que
+  // arma `dayCutGroup` para `fetchConversationRows` (ver su comentario y el
+  // de `since` en `FetchConversationsOptions`) — se combina con el `.or()`
+  // propio de cada conteo (cuando lo tiene) en una sola llamada vía
+  // `orExpression`, nunca como un segundo `.or()` encadenado (PostgREST no
+  // combina de forma confiable dos `.or()` en la misma consulta). `null` con
+  // "Ver todo" (`since` sin valor): los conteos vuelven a mirar toda la
+  // base, igual que antes de esta tarea — por eso cada consulta de abajo
+  // solo agrega `.or()` cuando `dayCut` o su propio grupo existen, nunca
+  // incondicional. En "unread"/"mineUnread" el grupo NO se cruza (ver más
+  // abajo, D1): una fila no leída ya pasa el corte por sí sola —cruzarlo ahí
+  // era, hasta esta fecha, lo que hacía desaparecer del CONTEO "No leídas"
+  // justo lo que esa píldora existe para mostrar cuando su último mensaje
+  // quedaba fuera de "hoy".
+  const dayCut = since ? dayCutGroup(since) : null;
 
   let pendingQuery = count().eq("awaiting_reply", true).neq("status", "closed");
-  if (sinceGroup) pendingQuery = pendingQuery.or(orExpression([sinceGroup]));
+  if (dayCut) pendingQuery = pendingQuery.or(orExpression([dayCut]));
 
   // Mismo predicado de "Pendientes" más el corte de ventana invertido, con
   // el mismo criterio de "fallar cerrado" que `withinFreeformWindow`: lo
@@ -1413,17 +1444,23 @@ export async function fetchInboxCounts(
   const pendingStaleGroups: string[][] = [
     [`last_customer_message_at.lte.${cutoff}`, "last_customer_message_at.is.null"],
   ];
-  if (sinceGroup) pendingStaleGroups.push(sinceGroup);
+  if (dayCut) pendingStaleGroups.push(dayCut);
   const pendingStaleQuery = count()
     .eq("awaiting_reply", true)
     .neq("status", "closed")
     .or(orExpression(pendingStaleGroups));
 
   let mineQuery = count().eq("assigned_agent_id", viewerId);
-  if (sinceGroup) mineQuery = mineQuery.or(orExpression([sinceGroup]));
+  if (dayCut) mineQuery = mineQuery.or(orExpression([dayCut]));
 
+  // D1 (18/9/2026): SIN cruzar `dayCut` acá a propósito (ver el comentario
+  // de arriba, donde se calcula) — el grupo de día ya incluye
+  // `unread_count.gt.0`/`manually_unread.is.true`, así que cruzarlo con el
+  // OR propio de "No leídas" es una condición redundante que, antes de esta
+  // fecha, dejaba afuera del CONTEO una conversación no leída cuyo último
+  // mensaje quedaba fuera de "hoy" — el mismo agujero que R1 le cerró a la
+  // LISTA.
   const unreadGroups: string[][] = [["unread_count.gt.0", "manually_unread.is.true"]];
-  if (sinceGroup) unreadGroups.push(sinceGroup);
   // Cerca del final del Promise.all para no correr los índices que ya usan
   // los tests de "pending"/"pendingStale"/"mine".
   const unreadQuery = count().or(orExpression(unreadGroups));
@@ -1432,9 +1469,9 @@ export async function fetchInboxCounts(
   // "unread" de arriba, más `assigned_agent_id = viewerId` por `.eq()` (se
   // combina con AND, como el resto de las condiciones sueltas de esta
   // función). Va justo al lado de "unread" en el Promise.all, a propósito —
-  // mismo motivo del comentario de arriba.
+  // mismo motivo del comentario de arriba. Tampoco cruza `dayCut`, por el
+  // mismo motivo que "unread".
   const mineUnreadGroups: string[][] = [["unread_count.gt.0", "manually_unread.is.true"]];
-  if (sinceGroup) mineUnreadGroups.push(sinceGroup);
   const mineUnreadQuery = count()
     .eq("assigned_agent_id", viewerId)
     .or(orExpression(mineUnreadGroups));
@@ -1446,7 +1483,7 @@ export async function fetchInboxCounts(
   const escalatedGroups: string[][] = [
     ["last_reply_sender.neq.agent", "last_reply_sender.is.null", "awaiting_reply.is.true"],
   ];
-  if (sinceGroup) escalatedGroups.push(sinceGroup);
+  if (dayCut) escalatedGroups.push(dayCut);
   const escalatedQuery = count()
     .eq("journey_stage", "assigned")
     .eq("ai_enabled", false)

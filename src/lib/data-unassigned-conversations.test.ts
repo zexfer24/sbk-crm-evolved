@@ -219,9 +219,13 @@ describe("fetchUnassignedConversations — since", () => {
 
     await fetchUnassignedConversations(client, { since: "2026-09-08T04:00:00.000Z" });
 
+    // D1 (18/9/2026): el grupo pasó de dos a cuatro términos ("habló hoy" o
+    // "no leída" — ver `dayCutGroup`, data.ts); acá solo importa que el
+    // string LLEGA completo hasta la consulta de candidatos.
     expect(orClauses).toEqual([
       'last_message_at.gte."2026-09-08T04:00:00.000Z",' +
-        'and(last_message_at.is.null,created_at.gte."2026-09-08T04:00:00.000Z")',
+        'and(last_message_at.is.null,created_at.gte."2026-09-08T04:00:00.000Z"),' +
+        "unread_count.gt.0,manually_unread.is.true",
     ]);
   });
 
