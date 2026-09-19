@@ -992,6 +992,21 @@ dejar rastro es lo que hacía desaparecer leads.
   además de su propia fila `escalada`. `silenciada_por_asesor` SÍ cierra
   una escalada abierta para `escalationOpen()` — un humano tomó el chat de
   verdad —, así que NO está en `RAZONES_QUE_NO_CIERRAN_LA_ESCALADA`.
+  **Actualizado el 19/9/2026 (T10, plan "Seba sale sin pisar a nadie",
+  decisión D-A):** hay un TERCER camino que apaga `ai_enabled`, y no pasa
+  por el trigger de mensajes de arriba. `assignToMe`/`intervene`
+  (`mutations.ts`) hacen su propio `UPDATE` explícito de `ai_enabled =
+  false` (`silenceAiForManualTakeover`), en una sentencia APARTE de la que
+  mueve `assigned_agent_id` — necesario porque, si fuera el mismo `UPDATE`,
+  el trigger no dejaría ninguna fila (ni `reclamado` ni
+  `silenciada_por_asesor`) en `conversation_handoffs`. Motivo: con la
+  guarda de apertura fusionada en `if (!convo.ai_enabled)` (este mismo
+  párrafo, arriba), un chat asignado A MANO con la IA todavía encendida ya
+  no cortaba el turno — un asesor que pulsaba "Asignarme"/"Intervenir" y
+  tardaba en escribir veía a Seba contestar primero. Ver la trampa de
+  `assignToMe`/`intervene` más abajo para el detalle completo y el UPDATE
+  operativo que hizo falta para los chats tomados a mano ANTES de este
+  código.
 - **`reclamado` exige sesión real desde el 18/9/2026 — sin `auth.uid() is
   not null`, cada escalada de Seba dejaría una fila `reclamado` espuria**
   (T0, hallazgo 1 del plan "Seba atiende el mostrador"). La rama
@@ -1301,6 +1316,251 @@ dejar rastro es lo que hacía desaparecer leads.
   changes" de React —comparar `isOpen` contra una copia en estado y limpiar
   `errors` DURANTE el render— en vez de un `setState` síncrono dentro de un
   `useEffect`, que dispara `react-hooks/set-state-in-effect`.
+- **Tomar un chat a mano apaga a Seba con DOS `UPDATE` en serie, nunca uno
+  — y el código nuevo no alcanza a los chats ya tomados ANTES del deploy**
+  (T10/C1, plan "Seba sale sin pisar a nadie", 19/9/2026). Hasta esta
+  corrida, `assignToMe`/`intervene` (`mutations.ts`) solo escribían
+  `assigned_agent_id`; con la guarda de apertura del turno fusionada en
+  `if (!convo.ai_enabled)` desde "Seba atiende el mostrador" (18/9/2026),
+  eso dejó de bastar para frenarlo — un asesor que pulsaba
+  "Asignarme"/"Intervenir" y tardaba dos minutos en escribir veía a Seba
+  contestar primero, en chats que la persona ya había tomado por su cuenta
+  (el requisito 6 del cliente, "Seba sigue hasta que el asesor escriba",
+  habla de los chats que SEBA escaló, no de estos). Ahora las dos
+  mutaciones hacen un SEGUNDO `UPDATE` propio —
+  `silenceAiForManualTakeover(supabase, conversationId,
+  previousAssignedAgentId)`, `ai_enabled = false`— DESPUÉS del que mueve
+  `assigned_agent_id`, **nunca en el mismo `UPDATE`**: el trigger
+  `handle_conversation_ownership_change` (`20260917010000`) solo deja la
+  fila `reclamado` si `ai_enabled` no cambia en ESE `UPDATE`, y solo deja
+  `silenciada_por_asesor` si `assigned_agent_id` no cambia en el suyo — un
+  `UPDATE` conjunto de las dos columnas no habría dejado NINGUNA fila en
+  `conversation_handoffs`, contra la invariante "ningún lead invisible".
+  **Corrección post-revisión (`code-review high`, 19/9/2026, hallazgo 3):
+  la primera versión de este UPDATE, si fallaba, lanzaba directo sin
+  ninguna compensación — el chat quedaba ASIGNADO con Seba ENCENDIDA, el
+  mismo C1 que T10 existe para cerrar, ahora disparado por un corte de red
+  en vez de por el diseño del UPDATE único. "No hay una 'deshacer la
+  asignación' que valga la pena ahí" (frase de la primera versión de este
+  plan) quedó FALSA.** Ahora `silenceAiForManualTakeover` reintenta el
+  apagado UNA vez; si vuelve a fallar, compensa devolviendo
+  `assigned_agent_id` al valor que tenía ANTES de la toma manual (leído con
+  `readAssignedAgentId` antes de cualquiera de los dos `UPDATE`) y lanza el
+  error ORIGINAL igual, para que el asesor vea que la acción no se
+  completó — si la propia compensación también falla, se lanza el error
+  original de todos modos y queda un `console.error` (este archivo corre en
+  el navegador, no puede importar `lib/log.ts`). El orden de los DOS
+  `UPDATE` originales no se invierte: apagar la IA primero y fallar el de
+  asignar después dejaría el chat SIN asesor Y SIN IA, peor que dejarlo
+  asignado con Seba encendida un rato. Este código SOLO protege las
+  asignaciones que ocurran DESPUÉS de desplegarlo: para los chats que un
+  asesor ya tenía asignados desde antes, hace falta el UPDATE operativo de
+  C1 al migrar (`update conversations set ai_enabled = false where
+  assigned_agent_id is not null and ai_enabled and status <> 'closed'`, ver
+  `docs/PRODUCCION.md` §11) — sin él, Seba seguiría corriendo turnos
+  completos en cualquier chat asignado a mano antes del deploy, invisible
+  hasta que alguien lo notara en la conversación real.
+- **El turno LANZA si no puede leer la conversación — un 400 de PostgREST
+  por una migración faltante ya no se lee como "la conversación no
+  existe"** (T1, plan "Seba sale sin pisar a nadie", 19/9/2026, hallazgo
+  C2). `runAgentTurn` leía `{ data: conversation }` sin mirar `error`: si
+  la fila existía pero el `select` fallaba —por ejemplo, un 400 porque el
+  código llegó a producción antes que la migración `20260916010000`, que
+  agrega la columna `ai_resume_cutoff_at` que ese mismo `select` pide—,
+  `conversation` quedaba `undefined` y el turno caía en la única rama muda
+  A PROPÓSITO de la función, pensada para un id borrado por FK, no para un
+  corte de infraestructura: sin traspaso, sin log, y la cola contaba el
+  turno como resuelto — la IA quedaba muda sin dejar ningún rastro.  Ahora,
+  con `error`, `log.error("turno_conversacion_no_consultable", {
+  conversationId, detail: errorText(error) })` + `throw` ANTES de
+  `entrega.intentado = true`, así que la cola reintenta un fallo
+  transitorio en vez de archivarlo como si el lead no existiera. Mismo
+  patrón que `turno_interruptor_no_consultable` (14/9/2026), aplicado a la
+  otra lectura de arranque del turno; `data === null` SIN error sigue
+  yendo por la rama de siempre.
+- **Un traspaso `entrega_fallida` cuando el proveedor falla DESPUÉS del
+  saludo de Seba — "el reconciliador la recoge sola" dejó de ser cierto el
+  18/9/2026** (T2, plan "Seba sale sin pisar a nadie", 19/9/2026, hallazgo
+  A2). Las dos salidas mudas del turno —clasificación fallida y el `catch`
+  del tool loop— llevaban un comentario que decía, con razón hasta esa
+  fecha, "no se escribe un traspaso nuevo… el reconciliador recoge la
+  conversación sola porque `awaiting_reply` sigue en `true`". Eso dejó de
+  ser cierto cuando Seba empezó a presentarse por código ANTES de fase
+  0/1 ("Seba atiende el mostrador", T2b): si el saludo salió EN ESTE
+  TURNO, el último mensaje visible de la conversación deja de ser del
+  cliente —es un saliente que sí se entregó— y el predicado nuevo del
+  reconciliador (`.or("last_message_direction.eq.inbound,last_message_
+  status.eq.failed")`, hallazgo 2 de "Seba atiende el mostrador") deja ese
+  caso AFUERA para siempre: un lead que recibió el saludo y se quedó sin
+  la redacción de verdad, sin traspaso, invisible para "Sin dueño". Ahora,
+  SOLO si `introducedThisTurn` es `true`, las dos salidas dejan
+  `recordHandoff({ reason: "entrega_fallida", toKind/toId según
+  convo.assigned_agent_id })` — decisión D-B del operador: no existe una
+  razón "falló el proveedor", y `entrega_fallida` ya significa "falló
+  después de haber intentado entregar y no se reintenta para no
+  duplicar", que es exactamente este caso, sin necesitar una sexta
+  migración con su propio CHECK. Sin saludo previo, el último mensaje
+  sigue siendo del cliente y el diagnóstico viejo sigue valiendo tal cual:
+  no se escribe nada nuevo.
+- **`soloSaludo` y la guarda de cortesía tras escalada miran la RÁFAGA
+  entera del cliente, no solo la última línea** (T3, plan "Seba sale sin
+  pisar a nadie", 19/9/2026, hallazgo A3 más un hallazgo nuevo de la misma
+  inspección). La cola agrupa ráfagas de mensajes seguidos antes de correr
+  un turno (ver más arriba, "La respuesta llega en siete segundos"): un
+  cliente que escribe "Precio del casco LS2" y, dos segundos después,
+  "Buenas tardes", le llega al turno como DOS líneas de cliente sin nada
+  del CRM entre medio. Las dos guardas leían solo la ÚLTIMA de esas líneas
+  (`customerMessage`/`lastCustomerMessage`) y trataban la ráfaga entera
+  como si el cliente solo hubiera saludado o agradecido —`soloSaludo`
+  mandaba el saludo de Seba y daba el turno por terminado sin contestar la
+  pregunta real; la guarda de cortesía ("¿tienen la bomba de aceite?" +
+  "gracias" con una escalada abierta) callaba el turno ENTERO—.
+  `customerBurst(history)` (`history-line.ts`) junta TODA la ráfaga final
+  del cliente —las líneas `user` consecutivas desde el final hasta la
+  primera que no lo sea, en orden cronológico—, y las dos guardas pasan a
+  exigir que CADA línea de la ráfaga, no solo la última, sea saludo
+  (`isGreetingOnly`) o cortesía (`isCourtesyOnly`); un marcador de media en
+  la ráfaga no es ni una cosa ni la otra, así que tira la condición a
+  `false` sola y el turno sigue de largo, dejando que
+  `MEDIA_RULES`/la racha de adjuntos hagan su trabajo. `customerMessage`
+  NO cambia de significado: sigue siendo solo la última línea, y sigue
+  siendo lo que se guarda en `agent_turns.customer_message`. **Corrección
+  post-revisión (`code-review high`, 19/9/2026, hallazgos 4 y 8): la
+  primera versión de `customerBurst` no tenía ninguna de las dos guardas
+  siguientes.** (1) No acotaba la ráfaga por TIEMPO — retrocedía hasta la
+  última línea del ASISTENTE sin mirar el reloj. Caso real: un cliente
+  escribe "¿ya me atienden?", nadie contesta (`pausada`), el chat se
+  cierra; DÍAS después reabre con "hola". Sin una línea del asistente en el
+  medio (el chat estaba cerrado, no silenciado por una respuesta), la
+  ráfaga vieja seguía "pegada" a la nueva y Seba habría redactado sobre un
+  mensaje de hace días que quedó sin responder A PROPÓSITO.
+  `CUSTOMER_BURST_GAP_MINUTES = 10` (`history-line.ts`) corta la ráfaga por
+  un hueco de tiempo entre líneas consecutivas del cliente, no solo por una
+  respuesta del CRM en el medio; una línea sin fecha parseable (o
+  comparada contra una que no la tiene) corta la ráfaga ahí mismo, de forma
+  conservadora — mejor perder una línea legítima que arrastrar un mensaje
+  viejo dejado sin responder a propósito. (2) Un STICKER del cliente
+  (`"[El cliente envió un sticker]"`, `CUSTOMER_STICKER_MARKER`) hacía
+  fallar el `every(isCourtesyOnly)` de la guarda de cortesía — "gracias" +
+  sticker de pulgar con una escalada abierta ya NO la callaba, y Seba
+  mandaba una segunda despedida encima de la primera. Un sticker no es ni
+  saludo ni cortesía ni una pregunta (mismo criterio que
+  `mediaStreakWithoutText`): `customerBurst` lo salta sin contarlo como
+  línea de la ráfaga ni cortarla — ni siquiera mueve la marca de tiempo de
+  referencia, como si nunca hubiera estado ahí.
+- **`reabierto` también cierra la escalada para `escalationOpen` —
+  `RAZONES_QUE_NO_CIERRAN_LA_ESCALADA` lo suma** (T8, plan "Seba sale sin
+  pisar a nadie", 19/9/2026, hallazgo M6). El reconciliador
+  (`reconciler.ts`) escribe `reabierto` CADA VEZ que reencola un turno
+  huérfano, sin que nadie cambie de dueño — es "vuelvo a intentar", no una
+  decisión nueva sobre a quién pertenece la conversación. Sin sumarla a la
+  constante (`handoffs.ts`), un reencolado sobre una escalada abierta
+  quedaba como "la última fila que cambia de manos" y tapaba la
+  `escalada`/`escalada_sin_asesor` de verdad: `escalationOpen` daba
+  `false` y la guarda de cortesía dejaba de disparar, así que la IA podía
+  volver a despedirse dos veces sobre un cliente que seguía esperando al
+  mismo asesor. Mismo criterio que `asignada`/`pausada`/
+  `agente_no_puede_correr`/`cortesia_tras_escalada`/`humano_intervino`/
+  `humano_se_adelanto`, ya en la lista.
+- **Control IA y Ventas ya tienen `error.tsx`, y en este Next 16.3 la prop
+  del boundary es `retry`, no `reset`** (T7, plan "Seba sale sin pisar a
+  nadie", 19/9/2026, hallazgo A4). Hasta esta corrida NINGUNA ruta de
+  `src/app` tenía un `error.tsx` propio: una lectura que fallara en el
+  `Promise.all` de ~19 lecturas de `agent-control/page.tsx`, o en
+  `fetchSales` de Ventas, caía en la pantalla 500 genérica de Next, sin
+  rail ni forma de volver — el interruptor global de la IA quedaba
+  inalcanzable justo cuando algo ya andaba mal. `node_modules/next/dist/
+  docs/01-app/03-api-reference/03-file-conventions/error.md` (AGENTS.md:
+  este Next no es el de la memoria) confirma `retry` ESTABLE desde la
+  16.3.0: reintenta re-pedir y re-renderizar el segmento sin recargar toda
+  la pestaña, así que los dos `error.tsx` nuevos (`agent-control/`,
+  `ventas/`) usan `retry`, no `reset` (que solo limpia el estado de React
+  sin volver a pedir nada — acá el error casi siempre viene de una lectura
+  contra Supabase). Los dos replican a mano el marco `.dash` > `.dash-
+  frame` > dos hijos directos (`AppRail` + contenido) por la trampa del
+  FRAGMENTO del 9/9/2026 — un tercer hijo directo le robaría la columna al
+  contenido. En Control IA, además, `readListIfTableExists`
+  (`agent-control/degradable-reads.ts`) envuelve las DOS lecturas MÁS
+  NUEVAS del panel (`fetchLessons`, `fetchCatalogLinks` — las tablas
+  `ai_lessons`/`catalog_links`, que LANZAN si faltan en la base de
+  destino) para que degraden solas a `[]` con `console.error` en vez de
+  tumbar las otras diecisiete junto con el interruptor global — un
+  `error.tsx` solo no alcanza para eso, porque reemplaza la pantalla
+  ENTERA, interruptor incluido. En Ventas no hay ninguna lectura que se
+  pueda degradar: `saint_invoice_number` viaja DENTRO del `select` de
+  `fetchSales`, así que ahí la única salida razonable es el boundary con
+  "Reintentar", no fingir una lista de ventas vacía. **Corrección
+  post-revisión (`code-review high`, 19/9/2026, hallazgos 5 y 6): dos
+  fallas de la primera versión.** (1) La función se llamaba
+  `readOptionalList` y tragaba CUALQUIER error, sin mirar cuál — un timeout
+  o un 5xx transitorio al leer `catalog_links` pintaba el panel vacío como
+  si de verdad no hubiera ningún catálogo, justo lo que CLAUDE.md prohíbe
+  ("`null` pinta —, nunca un cero que parezca verdad", trampa de
+  `agent_day_summary`). Renombrada `readListIfTableExists`: SOLO degrada a
+  `[]` cuando el error dice, de forma verificable por código, que la tabla
+  todavía no existe (`42P01`, `undefined_table` de Postgres, o `PGRST205`,
+  "no encontré esa relación en el caché de esquema" de PostgREST — lo que
+  pasa cuando la migración corrió pero nadie avisó con `notify pgrst`, ver
+  la trampa de las cinco migraciones más abajo); cualquier otro error se
+  RELANZA y lo atrapa `error.tsx` con su botón Reintentar. (2) Los dos
+  `error.tsx` dependían de que `dashboard.css` (`.dash`/`.dash-frame`/
+  `.dash-empty*`) ya estuviera insertada por el componente de vista real
+  (`AgentControlView`/`SalesView`) — que precisamente NO se monta cuando la
+  página lanza ANTES de renderizarlo. La verificación visual en `next dev`
+  salió bien porque el dev server sirve el CSS sin trocear por ruta, pero
+  el build de producción arma los chunks distinto y no hay garantía de que
+  ese `<link>` ya esté insertado. Los dos `error.tsx` importan
+  `@/components/dashboard/dashboard.css` de forma explícita ahora, sin
+  depender de que otro componente se haya montado antes.
+- **Las cinco migraciones de Seba/catálogo/factura se protegen con
+  `lock_timeout` y avisan a PostgREST con `notify pgrst`** (T5, plan "Seba
+  sale sin pisar a nadie", 19/9/2026, hallazgos A5/M1). Ninguna de las
+  cinco (`20260916010000`, `20260917010000`, `20260917020000`,
+  `20260918010000`, `20260918020000`) traía `notify pgrst, 'reload
+  schema'`: sin él, PostgREST sigue sirviendo el esquema cacheado y una
+  columna/tabla/CHECK/trigger recién creado da 400 hasta que alguien lo
+  recargue a mano — la MISMA causa raíz de la trampa de C2, de más arriba,
+  aplicada a cualquier consulta que dependa del esquema nuevo, no solo a
+  `runAgentTurn`. Las tres que todavía no traían `set local lock_timeout =
+  '5s'` (`20260917020000`, `20260918010000`, `20260918020000`) lo ganan al
+  inicio, mismo motivo que ya vale para `20260916010000`/`20260917010000`
+  (ver la trampa de "El trigger AFTER dejó con rastro tres movimientos de
+  dueño…" más arriba, sobre `psql -1 -v ON_ERROR_STOP=1`): `set local
+  lock_timeout` fuera de una transacción es un NO-OP silencioso, y en la
+  inspección previa al despliegue del 19/9/2026 se midió un INSERT del
+  webhook encolado 6,9 s detrás del lock de una de estas cinco
+  migraciones. Las cinco se aplican con `PGOPTIONS="-c lock_timeout=5s"` +
+  `psql -1 -v ON_ERROR_STOP=1` (ver `docs/PRODUCCION.md` §11), en el orden
+  de sus fechas, ANTES del código. **Corrección post-revisión (`code-review
+  high`, 19/9/2026, hallazgo 10): un NO-OP silencioso significa que
+  aplicarla SIN `-1` "funcionaba" igual — sin avisar que el `lock_timeout`
+  real nunca se puso.** Las cinco ganaron, justo después de su propio `set
+  local lock_timeout = '5s'`, un bloque `do $$ … if
+  current_setting('lock_timeout') in ('0', '0ms') then raise exception …
+  end if; $$` que ahora falla CERRADO: sin `psql -1 -v ON_ERROR_STOP=1` (o
+  el equivalente `PGOPTIONS="-c lock_timeout=5s"` sin `-1`, que también
+  pasa la guarda) la migración entera aborta con un mensaje explícito en
+  vez de aplicarse "a medias" sin el freno de lock que la justifica.
+  Verificado el 19/9/2026: `npx supabase db reset` (CLI 2.117.0) aplica las
+  cinco sin abortar — la CLI envuelve cada archivo de migración en su
+  propia transacción — y los tests de `supabase/tests/` pasan sobre esa
+  base reconstruida desde cero; el CI usa `supabase/setup-cli@v1` con
+  `version: latest`, así que la certeza total llega recién con el primer CI
+  real sobre este rango.
+- **Un test de `supabase/tests/` que hace `\i` de una migración NO se puede
+  correr con `docker exec -i … -f - < archivo`** (19/9/2026, verificando
+  T4/T5 de "Seba sale sin pisar a nadie"). `ventana_24h.sql`,
+  `traspaso_sin_contenido_legible.sql`, `preview_en_espanol.sql` y
+  `marca_sbk_motors.sql` reaplican una migración vieja con `\i
+  supabase/migrations/<archivo>.sql` para probar su backfill/idempotencia
+  — pero `\i` busca esa ruta DENTRO del contenedor, y `-f -` (stdin) no
+  lleva ningún archivo del repo adentro: `\i` falla con "No such file or
+  directory" aunque el resto del test compile bien. Hace falta copiar el
+  repo primero: `docker cp ./supabase <contenedor>:/tmp/repo/` y correr con
+  `-w /tmp/repo` para que la ruta relativa del `\i` resuelva:
+  `docker exec -w /tmp/repo <contenedor> psql -U postgres -d postgres -1 -v
+  ON_ERROR_STOP=1 -f supabase/tests/<archivo>.sql`. Los tests que NO usan
+  `\i` (la mayoría) sí corren con `-f - < archivo`, sin este paso extra.
 ---
 
 # RTK (Rust Token Killer) - Token-Optimized Commands

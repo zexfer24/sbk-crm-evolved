@@ -297,8 +297,15 @@ mostrador", `docs/planes/2026-09-17-seba-atiende-el-mostrador.md`,
 `handle_conversation_ownership_change`) y ANTES del código de la misma
 corrida, con la misma regla dura de siempre: aplicada a mano con `psql -1
 -v ON_ERROR_STOP=1` (§7 → "En Dokploy" → "Aplicarla a mano"), en su propio
-paso, después de `20260916010000` y antes de `20260915010000` si esa
-tampoco estuviera aplicada todavía. Trae:
+paso, después de `20260916010000` y antes de `20260917020000` (la
+siguiente de la cadena, `ai_lessons`). **Errata corregida el 19/9/2026
+(T9, plan "Seba sale sin pisar a nadie"):** esta línea decía "antes de
+`20260915010000` si esa tampoco estuviera aplicada todavía", que no tiene
+sentido — `20260915010000` es POSTERIOR en fecha a esta migración solo en
+apariencia de número de commit, pero su timestamp (15/9) es ANTERIOR al de
+`20260917010000` (17/9) y ya estaba aplicada en producción desde antes
+(confirmado en `3802fad`, medición del 18/9/2026); nunca podría ir
+"después" de una migración más vieja que ella misma. Trae:
 
 - Backfill de `welcome_sent_at` (deja de ser "última vez que se mandó la
   plantilla de bienvenida" — nunca se usó, `WHATSAPP_WELCOME_TEMPLATE` está
@@ -323,9 +330,27 @@ trigger fallaría en silencio, como cualquier `conversation_handoffs`
 roto). No hay guarda de "el `select` falla sin la columna" como en
 `20260916010000`: `welcome_sent_at` ya existía desde `20260819030000`, así
 que desplegar el código de esta corrida antes que la migración no rompe
-ningún `select` — solo deja el saludo de Seba mudo hasta que la migración
-entre (la columna sigue existiendo con la semántica vieja, y el código
-nuevo la lee igual, solo que con datos que el backfill todavía no corrigió).
+ningún `select`.
+
+**Errata corregida el 19/9/2026 (T9, plan "Seba sale sin pisar a nadie",
+hallazgo A1): esto NO "deja el saludo de Seba mudo hasta que la migración
+entre" — es justo lo contrario, y es la ventana de saludo real que hay que
+cuidar.** Bajo la semántica VIEJA, `welcome_sent_at` solo se llenaba al
+mandar la plantilla de bienvenida de WhatsApp, y
+`WHATSAPP_WELCOME_TEMPLATE` está vacía desde siempre — esa plantilla nunca
+se mandó, así que `welcome_sent_at` es `null` en prácticamente TODAS las
+conversaciones que existen hoy, tengan un mensaje o quinientos. Si el
+código de esta corrida llega a producción ANTES que la migración (o antes
+que su backfill), el turno lee esa misma columna, la encuentra en `null`
+para cualquier conversación —nueva o con meses de historial— y hace que
+Seba se presente a mitad de charla en cada una que reciba un turno: no hay
+ningún estado "mudo" intermedio. Por eso el orden importa tanto: la
+migración (con su backfill de `coalesce(last_reply_at, last_message_at,
+created_at)` para todo lo que tenga `has_reply`) tiene que estar aplicada
+ANTES del código, nunca al revés — y el paso 4 del orden de once pasos
+(§11) agrega un backfill acotado DESPUÉS del deploy para las conversaciones
+que recibieron su primera respuesta humana justo en el hueco entre la
+migración y el código.
 
 **Verificación después de aplicarla** (solo lectura):
 
@@ -1182,45 +1207,280 @@ push del tag.
 
 ---
 
-## 11. Entrega de "Seba atiende el mostrador" + "Nada sin leer, un solo catálogo y la factura Saint" (19/9/2026)
+## 11. Entrega de "Seba atiende el mostrador" + "Nada sin leer, un solo catálogo y la factura Saint" + "Seba sale sin pisar a nadie" (19/9/2026)
 
 Producción se midió por última vez en `3802fad` el 18/9/2026 (base en
 `20260915010000`, árbol y base coincidían). Todo lo commiteado después —las
 tres migraciones de "La IA no vuelve a pedir lo que ya pidió"/Seba
 (`20260916010000`, `20260917010000`, `20260917020000`), la corrida completa
-de "Seba atiende el mostrador" y esta corrida ("Nada sin leer, un solo
-catálogo y la factura Saint", migraciones `20260918010000`/`20260918020000`)
-— sigue pendiente de entrega. **Antes de calcular qué falta por entregar,
-confirmar en qué commit está producción de verdad** (`produccion..HEAD`,
-nunca el HEAD local): puede haber cambiado desde el 18/9 si otra sesión ya
-entregó parte de esto.
+de "Seba atiende el mostrador", "Nada sin leer, un solo catálogo y la
+factura Saint" (migraciones `20260918010000`/`20260918020000`) y las
+correcciones de "Seba sale sin pisar a nadie" (T1-T3, T5, T6, T7, T8, T10,
+sin migración propia — solo TOCA las cinco de arriba, editadas antes de que
+ninguna saliera de la máquina) — sigue pendiente de entrega. **Antes de
+calcular qué falta por entregar, confirmar en qué commit está producción de
+verdad** (`produccion..HEAD`, nunca el HEAD local): puede haber cambiado
+desde el 18/9 si otra sesión ya entregó parte de esto. El reporte por
+commit de "Nada sin leer, un solo catálogo y la factura Saint" ya está
+escrito aparte —
+`docs/entregas/2026-09-19-nada-sin-leer-un-solo-catalogo-y-la-factura-saint.md`—
+y el de "Seba sale sin pisar a nadie" en
+`docs/entregas/2026-09-19-seba-sale-sin-pisar-a-nadie.md`: esta sección da
+el ORDEN operativo completo, los dos documentos dan el detalle commit por
+commit.
 
-**Orden de entrega, sin excepción — migración antes que el código en cada
-paso:**
+**Nota de estado (19/9/2026, al escribir esta sección): T4 ("El job
+`migraciones` del CI vuelve a verde") estaba en curso al empezar a
+documentar este orden y terminó su cambio de código mientras tanto —
+verificar en el reporte de entrega (`docs/entregas/2026-09-19-seba-sale-sin-pisar-a-nadie.md`)
+si ya confirmó la suite completa de `supabase/tests/` en verde sobre una
+base reconstruida desde cero antes de dar el paso 6 por bueno.**
 
-1. Respaldo (`scripts/backup.sh`, §8).
-2. `20260916010000_devolucion_a_la_ia.sql` con `psql -1 -v
-   ON_ERROR_STOP=1` si todavía no está aplicada (ver su entrega detallada
-   arriba, en la sección 2 — regla dura, columna GENERADA, `lock_timeout`
-   corto).
-3. Las dos migraciones de Seba, en orden, cada una con `psql -1 -v
-   ON_ERROR_STOP=1`: `20260917010000_seba_y_escalada_viva.sql`, después
-   `20260917020000_ai_lessons.sql`.
-4. Las dos migraciones de esta corrida, en orden, mismo criterio:
-   `20260918010000_catalog_links.sql`, después
-   `20260918020000_factura_saint.sql`.
-5. Registrar las cinco en `supabase_migrations.schema_migrations` (no se
-   registran solas) — verificar con `select count(*) from
-   supabase_migrations.schema_migrations` → 75.
-6. Recién entonces el código: push a `main` (Dokploy despliega solo con el
-   webhook, sin esperar al CI — mirar igual el CI después, con la API de
-   Actions de los Comandos de `CLAUDE.md`, y reproducir en local cualquier
-   falla que no quepa en las 10 anotaciones que muestra GitHub por paso).
+### Orden corregido, once pasos (inspección pre-despliegue del 19/9/2026)
 
-**Después del deploy del código (nunca antes — D8 del plan): completar y
-correr `scripts/sql/2026-09-18-catalogos-iniciales.sql`.** El archivo llega
+Nace de tres auditorías de solo lectura sobre `3802fad..HEAD` (ver la
+memoria `inspeccion-pre-despliegue-19-9-2026` del operador) que encontraron
+dos críticos que el código de "Seba sale sin pisar a nadie" ya corrige
+(C1/T10, C2/T1) y varios hallazgos que solo se resuelven con el ORDEN de
+esta lista, no con código. Ningún paso se salta ni se reordena.
+
+**1. Medir (solo lectura, antes de tocar nada).** Corre las cuatro consultas
+de abajo contra producción y guarda los resultados — son la línea de base
+contra la que se compara después de migrar:
+
+```sql
+-- C1: cuántos chats asignados hoy corren con la IA todavía encendida (el
+-- UPDATE operativo del paso 4 los apaga; sirve para saber cuántas filas
+-- tocará antes de correrlo).
+select count(*) from public.conversations
+where status <> 'closed' and assigned_agent_id is not null and ai_enabled;
+
+-- A1: cuántos chats YA tienen una respuesta real pero welcome_sent_at
+-- todavía no existe con la semántica nueva — son los que el backfill de
+-- 20260917010000 va a sellar; el número da la magnitud del backfill
+-- (M5 lo mide en ~17 mil, hazlo de nuevo contra el volumen real de hoy).
+select count(*) from public.conversations
+where has_reply and welcome_sent_at is null;
+
+-- Transacciones largas / locks que puedan chocar con las cinco migraciones
+-- (todas tocan conversations, messages, orders — tablas calientes del
+-- camino de escritura del webhook).
+select pid, now() - xact_start as duracion, state, left(query, 100) as query
+from pg_stat_activity
+where xact_start is not null
+order by duracion desc
+limit 20;
+
+-- Tope de gasto vigente y consumo del día en curso (M4: con Seba
+-- trabajando turnos completos en chats asignados desde D2/T4 de "Seba
+-- atiende el mostrador", el gasto sube; mejor saber el margen ANTES de
+-- migrar que descubrirlo con el tope ya alcanzado).
+select s.daily_spend_cap_usd, public.agent_spend_today() as gasto_hoy
+from public.agent_settings s;
+```
+
+**2. Respaldo terminado** (`scripts/backup.sh`, §8) — esperar a que termine
+de verdad, no lanzarlo en paralelo con el paso 3.
+
+**3. Las cinco migraciones, en orden, fuera de hora pico, avisando al
+equipo ANTES de migrar.** Cada una con:
+
+```bash
+PGOPTIONS="-c lock_timeout=5s" psql -1 -v ON_ERROR_STOP=1 -f <archivo>.sql "$DATABASE_URL"
+```
+
+(o el equivalente `docker exec -i supabase-db psql -U postgres -d postgres
+-1 -v ON_ERROR_STOP=1 -f - < <archivo>.sql` si se corre dentro del
+contenedor — `PGOPTIONS` no aplica ahí porque `psql` ya corre local; usar
+en su lugar `-c "set lock_timeout='5s'"` como primer statement si hiciera
+falta un tope adicional al que cada migración ya trae con `set local
+lock_timeout = '5s'`, T5 de "Seba sale sin pisar a nadie" — las cinco lo
+traen desde esta corrida, no hace falta pasarlo por fuera).
+
+**Corrección post-revisión (`code-review high`, 19/9/2026, hallazgo 10):
+las cinco migraciones ahora ABORTAN solas si `-1`/`ON_ERROR_STOP=1` falta.**
+Justo después de su propio `set local lock_timeout = '5s'`, cada una trae
+un `do $$ … if current_setting('lock_timeout') in ('0', '0ms') then raise
+exception … end if; $$` — si el comando de arriba se corre sin `-1` (o sin
+el `PGOPTIONS`/`-c "set lock_timeout=..."` equivalente), el `set local` es
+un NO-OP silencioso y esta guarda lo detecta y aborta la migración ENTERA
+con un mensaje explícito, en vez de aplicarse igual sin el freno de lock
+que la justifica. Si alguna de las cinco aborta con ese mensaje, no es un
+bug de la migración: falta `-1 -v ON_ERROR_STOP=1` en el comando — repetir
+el comando de arriba tal cual, sin quitar ni bajar el `lock_timeout`.
+Verificado el 19/9/2026 con `npx supabase db reset` (CLI 2.117.0): las
+cinco aplican sin abortar porque esa CLI envuelve cada archivo de
+migración en su propia transacción. Orden estricto:
+
+1. `20260916010000_devolucion_a_la_ia.sql` (si no está aplicada — regla
+   dura, columna GENERADA).
+2. `20260917010000_seba_y_escalada_viva.sql`.
+3. `20260917020000_ai_lessons.sql`.
+4. `20260918010000_catalog_links.sql`.
+5. `20260918020000_factura_saint.sql`.
+
+**Aviso al equipo, justo antes de este paso, no después:** desde que
+`20260917010000` entra, CUALQUIER mensaje real que un asesor mande a un
+cliente (no una nota interna) apaga a Seba en ese chat —trigger
+`handle_agent_message_silences_ai`, ver CLAUDE.md, "La escalada ya NO apaga
+a Seba"—. Es el comportamiento nuevo que el cliente pidió (Seba sigue
+vendiendo hasta que una persona escriba de verdad), pero el equipo tiene
+que saberlo ANTES de que empiece a pasar: un asesor que manda un mensaje
+"solo para probar" en un chat que Seba está atendiendo bien lo silencia ahí
+mismo, sin aviso en pantalla más allá del interruptor del chat.
+
+Registrar las cinco en `supabase_migrations.schema_migrations` (no se
+registran solas) — verificar con `select count(*) from
+supabase_migrations.schema_migrations` → 75.
+
+**4. UPDATE operativo de C1** (mitigación para los chats que YA están
+asignados a mano desde antes de este deploy — el código de T10 solo
+protege las asignaciones que ocurran DESPUÉS de que el código esté vivo):
+
+```sql
+update public.conversations
+set ai_enabled = false
+where assigned_agent_id is not null and ai_enabled and status <> 'closed';
+```
+
+Corre DESPUÉS de las cinco migraciones (necesita el trigger de
+`20260917010000` para que la próxima vez que ese chat cambie de manos deje
+rastro en `conversation_handoffs`) y ANTES del push del código — si se
+corre después del push, hay una ventana donde Seba ya corre turnos
+completos en esos chats con la guarda nueva (`if (!convo.ai_enabled)`)
+sin que nada la frene todavía.
+
+**5. `notify pgrst` + los dos GET de humo.** Las cinco migraciones ya
+terminan en `notify pgrst, 'reload schema'` (T5, hallazgo M1 — antes
+NINGUNA lo traía y PostgREST seguía sirviendo el esquema cacheado). Antes
+de pushear el código, confirmar que el reload surtió efecto con dos GET
+directos contra PostgREST, uno por tabla nueva:
+
+```bash
+curl -s -o /dev/null -w "%{http_code}\n" "https://<tu-proyecto>.supabase.co/rest/v1/catalog_links?select=id&limit=1" \
+  -H "apikey: $SUPABASE_SERVICE_ROLE_KEY" -H "Authorization: Bearer $SUPABASE_SERVICE_ROLE_KEY"
+# 200 (con [] o filas) — nunca 400/404
+
+curl -s -o /dev/null -w "%{http_code}\n" "https://<tu-proyecto>.supabase.co/rest/v1/ai_lessons?select=id&limit=1" \
+  -H "apikey: $SUPABASE_SERVICE_ROLE_KEY" -H "Authorization: Bearer $SUPABASE_SERVICE_ROLE_KEY"
+# 200 (con [] o filas) — nunca 400/404
+```
+
+Si cualquiera de los dos da 400, `notify pgrst` no alcanzó (o PostgREST
+todavía no lo procesó) — esperar unos segundos y repetir antes de seguir;
+el código que se va a pushear en el paso 7 golpea estas dos tablas en el
+primer turno/carga de panel que le toque.
+
+**6. Comprobación única de tablas/columnas/trigger, ANTES del push.** Una
+sola consulta, todas las filas deben dar `ok = true`:
+
+```sql
+select 'conversations.ai_resume_cutoff_at' as chequeo,
+       exists (select 1 from information_schema.columns
+               where table_schema = 'public' and table_name = 'conversations'
+                 and column_name = 'ai_resume_cutoff_at') as ok
+union all
+select 'conversation_handoffs CHECK trae silenciada_por_asesor/reabierto',
+       pg_get_constraintdef(oid) ilike '%silenciada_por_asesor%'
+  from pg_constraint
+  where conrelid = 'public.conversation_handoffs'::regclass
+    and conname = 'conversation_handoffs_reason_check'
+union all
+select 'trigger messages_agent_silences_ai_trigger',
+       exists (select 1 from pg_trigger
+               where tgrelid = 'public.messages'::regclass
+                 and tgname = 'messages_agent_silences_ai_trigger'
+                 and not tgisinternal)
+union all
+select 'tabla ai_lessons',
+       exists (select 1 from information_schema.tables
+               where table_schema = 'public' and table_name = 'ai_lessons')
+union all
+select 'tabla catalog_links',
+       exists (select 1 from information_schema.tables
+               where table_schema = 'public' and table_name = 'catalog_links')
+union all
+select 'orders.saint_invoice_number',
+       exists (select 1 from information_schema.columns
+               where table_schema = 'public' and table_name = 'orders'
+                 and column_name = 'saint_invoice_number')
+union all
+select 'catalog_links publicada en supabase_realtime',
+       exists (select 1 from pg_publication_tables
+               where pubname = 'supabase_realtime' and tablename = 'catalog_links')
+union all
+select 'ai_lessons publicada en supabase_realtime',
+       exists (select 1 from pg_publication_tables
+               where pubname = 'supabase_realtime' and tablename = 'ai_lessons')
+order by chequeo;
+```
+
+(Las dos filas de "publicada en supabase_realtime" ya se autoverifican
+DENTRO de sus propias migraciones —`raise exception` si el `alter
+publication` no surtió efecto—, así que si las migraciones del paso 3
+terminaron sin error esas dos filas ya deberían dar `true`; repetirlas acá
+es la comprobación de una sola vez que reemplaza mirar cada migración por
+separado.)
+
+**7. Push del código.** Recién ahora — Dokploy despliega solo con el
+webhook, sin esperar al CI. Mirar igual el CI después (API pública de
+Actions, ver Comandos de `CLAUDE.md`) y reproducir en local cualquier falla
+que no quepa en las 10 anotaciones que muestra GitHub por paso.
+
+**8. Backfill acotado de `welcome_sent_at` + `vacuum analyze`.** El
+backfill grande ya corrió DENTRO de `20260917010000` (paso 3); este es
+el que cierra el hueco entre ESE backfill y el momento en que el código
+del paso 7 queda de verdad sirviendo tráfico —cualquier chat que recibió
+su primera respuesta humana justo en ese hueco (minutos, no horas) tiene
+`has_reply = true` pero `welcome_sent_at` le siguió quedando en `null`, y
+sin este segundo backfill Seba lo saludaría a mitad de charla en su
+próximo turno (ver la errata corregida sobre esta misma columna, más
+arriba en este documento)—. Es la MISMA sentencia del backfill original,
+y es segura de repetir: solo toca las filas que el primer backfill no
+alcanzó a tocar.
+
+```sql
+update public.conversations
+set welcome_sent_at = coalesce(last_reply_at, last_message_at, created_at)
+where welcome_sent_at is null and has_reply;
+
+vacuum analyze public.conversations;
+```
+
+El `vacuum analyze` es porque el backfill grande del paso 3 reescribe
+~17 mil filas de `conversations` (M5) — cada una dispara un evento de
+Realtime hacia cualquier cliente suscrito, y deja hinchazón (`bloat`) que
+conviene limpiar antes de que el planner empiece a decidir mal sobre esa
+tabla con estadísticas viejas.
+
+**9. Subir el tope de gasto + lección global.** Con Seba corriendo turnos
+completos en chats asignados (D2/T4 de "Seba atiende el mostrador") el
+gasto diario sube frente a la línea de base del paso 1 — subir
+`daily_spend_cap_usd` (panel Control IA, o `update public.agent_settings
+set daily_spend_cap_usd = <nuevo_valor>, updated_at = now();`) ANTES de que
+el tope viejo se alcance: con el tope agotado, el cron reencola hasta 50
+turnos/min (`AGENT_QUEUE_MAX_PER_RUN`) que vuelven a fallar por
+`agente_no_puede_correr`, inflando la bitácora sin que la IA responda nada
+(M4).
+
+Lección global del primer día (A7 — texto sugerido, cargarlo desde
+`/agent-control > Respuestas > Lecciones` como nota, alcance "global"; no
+es código, es la única palanca disponible el día 1 porque `PREGUNTA_FILTRO`
+—"Claro, ¿para qué modelo y año de moto las buscas?"— está fija en
+`tools.ts`, T3 de "Seba atiende el mostrador"):
+
+> Los cascos, aceites/lubricantes y maletas/baúles NO dependen del modelo
+> ni año de la moto del cliente. Si preguntás por filtro para uno de estos
+> productos, no preguntes por el modelo y año de la moto — preguntá por lo
+> que sí importa (talla del casco, litros/viscosidad del aceite, tamaño de
+> la maleta) o mostrá directamente las opciones disponibles si son pocas.
+
+**10. Script de catálogos** (después del código, nunca antes — D8 del plan
+"Nada sin leer, un solo catálogo y la factura Saint": un marcador sin
+código que lo resuelva es peor que la URL vieja que reemplaza). Completar y
+correr `scripts/sql/2026-09-18-catalogos-iniciales.sql`. El archivo llega
 con marcadores de relleno `<<...>>` a propósito ("el contenido es del
-cliente, no del repo"): el implementador no inventó ningún valor. Pasos:
+cliente, no del repo"); el implementador no inventó ningún valor. Pasos:
 
 1. Correr las dos consultas de ayuda que trae el propio archivo (comentario
    en su cabecera, no se ejecutan solas) contra la base de producción para
@@ -1250,26 +1510,100 @@ cliente, no del repo"): el implementador no inventó ningún valor. Pasos:
    valores reales (URLs de los 7 catálogos de "Catálogo general"; `id` y
    texto YA con el marcador de cada uno de los 2 escenarios —"CATALOGO
    CASCOS" y "Catálogo general"— y los 4 mensajes rápidos que hoy llevan la
-   URL pegada a mano). **"Ubicación" NO entra a ninguna de las tres tablas**
-   (corrección del 19/9/2026, punto 3 de la revisión): meter el Maps de la
-   tienda en `catalog_links` lo colaría dentro de `{{catalogos}}` —la lista
-   completa mezclaría la ubicación con los catálogos de repuestos— y el
-   Maps no tiene el problema de rotación de IDs que esta tabla resuelve; el
+   URL pegada a mano). Los huecos de texto usan dollar-quoting
+   (`$txt$<<...>>$txt$`, T6, "Seba sale sin pisar a nadie"): pegar el texto
+   real, con tildes o apóstrofos sin escapar, ya no rompe el INSERT.
+   **"Ubicación" NO entra a ninguna de las tres tablas** (corrección del
+   19/9/2026, punto 3 de la revisión): meter el Maps de la tienda en
+   `catalog_links` lo colaría dentro de `{{catalogos}}` —la lista completa
+   mezclaría la ubicación con los catálogos de repuestos— y el Maps no
+   tiene el problema de rotación de IDs que esta tabla resuelve; el
    escenario "Ubicación" conserva su URL escrita a mano tal como está hoy.
 4. Correr en una sola transacción:
    ```bash
    docker exec -i supabase-db psql -U postgres -d postgres -1 -v ON_ERROR_STOP=1 \
      -f - < scripts/sql/2026-09-18-catalogos-iniciales.sql
    ```
-   El propio script aborta solo si queda algún `<<...>>` sin completar, si
+   El propio script trae su propia guarda `\set ON_ERROR_STOP on` (T6,
+   segunda protección por si el flag de la línea de comandos se olvida),
+   aborta solo si queda algún `<<...>>` sin completar, si alguna clave
+   `{{catalogo:<key>}}` referenciada en los textos nuevos no existe ni en
+   la tabla de relleno ni ya activa en `catalog_links` (sección 2b, T6), si
    algún `update` de la sección 4/5 tocó menos filas de las esperadas
-   (corrección del 19/9/2026, punto 2: un `id` que no exista en esta base
-   afecta CERO filas — antes eso pasaba desapercibido), y falla al final si
-   alguna de las filas tocadas todavía contiene `drive.google.com` — no
-   hace falta verificar nada de eso a mano.
+   (corrección del 19/9/2026, punto 2), y falla al final si alguna de las
+   filas tocadas todavía contiene `drive.google.com` — no hace falta
+   verificar nada de eso a mano. Si una clave ya existía en `catalog_links`
+   (un supervisor la creó desde el panel), el script NO la pisa —`on
+   conflict (key) do nothing`, decisión D-C— y deja un `NOTICE` con la
+   clave, su URL actual y si está ACTIVA o INACTIVA (corrección del
+   19/9/2026, hallazgo 7a): leer la salida de `psql` para decidir si hace
+   falta actualizarla.
 
-**Verificación posterior** (secciones 4 y 7 del plan
-`docs/planes/2026-09-18-nada-sin-leer-un-solo-catalogo-y-la-factura-saint.md`):
+   **Dos secciones más, sumadas en la corrección post-revisión
+   (`code-review high`, 19/9/2026, hallazgos 7a y 7b sobre T6) — si el
+   script aborta en cualquiera de las dos, NO es un fallo de infraestructura,
+   es un dato mal cargado en el propio script:**
+   - **Sección 2c** aborta si algún texto nuevo trae un marcador de
+     catálogo MAL ESCRITO — `{{catalogo:cascos_nuevos}}` (guion bajo),
+     `{{catalogo: exploradoras y bombillos}}` (espacios dentro de la
+     clave), sin clave o sin cerrar — porque la aserción 2b (arriba) solo
+     mira la forma ESTRICTA del marcador y esos casos se le escapan tal
+     cual: el mensaje de la excepción nombra el texto sospechoso. Corregir
+     la clave/forma del marcador en el texto de la sección 1 y reintentar
+     — `{{Catálogo: cascos}}` (mayúscula, acento, espacios alrededor del
+     `:`) NO dispara esta guarda, resuelve normal.
+   - **Sección 3b** aborta DESPUÉS del INSERT de la sección 3 si alguna
+     clave referenciada por los textos nuevos sigue SIN estar ACTIVA en
+     `catalog_links` — pasa cuando esa clave YA existía INACTIVA (creada
+     desde el panel, o de una corrida anterior) y el `on conflict (key) do
+     nothing` la dejó tal cual: el script NO la activa por su cuenta (D-C,
+     es una decisión humana). Si esto aborta: activar la clave desde
+     `/agent-control` (panel de enlaces de catálogo) y volver a correr el
+     script — el `on conflict do nothing` hace la segunda corrida segura.
+
+**11. Vigilar `escenario_cedido_al_catalogo` y turnos con error**, durante
+las primeras horas después del deploy:
+
+- **A8 — "pásame el catálogo" cedido al catálogo de productos.** H1 de
+  "Seba atiende el mostrador" hace que un escenario calzado se CEDA al
+  flujo de catálogo cuando la intención clasificada es
+  `consulta_disponibilidad` — la sospecha es que un pedido genérico de
+  catálogo (sin nombrar un repuesto) también clasifique así y se ceda sin
+  necesidad, dejando al cliente sin el enlace que un escenario le habría
+  dado directo. Medir contra los últimos 100 turnos que tocaron el
+  escenario "Catálogo general", de dos maneras que se complementan (el
+  cedido NO dice "Catálogo general" en su resumen, así que ninguna de las
+  dos sola alcanza):
+  ```sql
+  -- Turnos donde el escenario "Catálogo general" SALIÓ tal cual (no se
+  -- cedió) en los últimos 100 turnos de esa conversación/escenario.
+  select count(*) from (
+    select summary from public.agent_turns
+    where summary = 'Escenario "Catálogo general".'
+    order by created_at desc
+    limit 100
+  ) as recientes;
+  ```
+  ```bash
+  # Turnos donde SÍ se cedió al catálogo (log estructurado, no queda en la
+  # base — event: escenario_cedido_al_catalogo, ver src/lib/log.ts).
+  # Ajustar al recolector de logs real de Dokploy/el VPS.
+  docker logs <contenedor-app> --since 24h 2>&1 | grep '"escenario_cedido_al_catalogo"' | grep '"Catálogo general"' | wc -l
+  ```
+  Si el número de cedidos es alto frente a los enviados tal cual, y el
+  cliente confirma que eran pedidos genéricos de catálogo (no de un
+  repuesto puntual), es una señal para revisar la precedencia de H1 en una
+  corrida futura — no se toca nada hoy, solo se mide.
+- **Turnos con error.** `select action, count(*) from public.agent_turns
+  where created_at > now() - interval '24 hours' group by action;` — vigilar
+  que `error` no suba frente al día anterior; cruzar con
+  `turno_conversacion_no_consultable` (C2/T1: ahora LANZA y la cola
+  reintenta, así que un pico ahí es infraestructura, no un bug mudo como
+  antes) y `entrega_fallida` en `conversation_handoffs` (T2: nuevo desde
+  esta corrida, solo debería aparecer tras un fallo real del proveedor
+  DESPUÉS del saludo de Seba).
+
+### Verificación posterior completa (secciones 4 y 7 del plan "Nada sin leer…" + criterio de terminado de "Seba sale sin pisar a nadie")
 
 - Un chat con mensaje de "ayer" sin leer aparece en Pendientes y en el
   número de la píldora con la bandeja en "solo hoy"; al abrirlo sigue en la
@@ -1287,7 +1621,7 @@ cliente, no del repo"): el implementador no inventó ningún valor. Pasos:
   sin tocar nada más; desactivar la clave hace que el escenario deje de ser
   candidato (`escenarios_enlace_sin_resolver`) y el mensaje rápido avise
   con el toast.
-- Tras correr el script de carga inicial, ninguna de las 3 filas de
+- Tras correr el script de carga inicial, ninguna de las 2 filas de
   `ai_playbooks` ni las 4 de `quick_replies` tocadas conserva
   `drive.google.com` (el propio script ya lo exige para no dejar nada a
   medias, pero conviene mirarlo de nuevo con la consulta del paso 1 de
@@ -1296,6 +1630,13 @@ cliente, no del repo"): el implementador no inventó ningún valor. Pasos:
   llama a la mutación; con los nueve datos guarda, el evento de sistema
   nombra la factura y el detalle en Ventas la muestra (o "Sin número de
   factura Saint" en una venta anterior al 18/9).
+- Asignarse un chat ("Asignarme"/"Intervenir") apaga la IA en ese chat de
+  inmediato (T10); tomar un chat que Seba ya tenía asignado desde antes del
+  deploy ya no compite con ella (paso 4, UPDATE operativo de C1).
+- Provocar un error en `/agent-control` y en `/ventas` (por ejemplo,
+  cortando la red un instante) muestra la pantalla con rail y "Reintentar"
+  en vez del 500 genérico de Next (T7) — verificación visual obligatoria en
+  Brave, jsdom no calcula layout.
 
 ---
 
