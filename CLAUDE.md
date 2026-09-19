@@ -1360,6 +1360,48 @@ dejar rastro es lo que hacía desaparecer leads.
   `docs/PRODUCCION.md` §11) — sin él, Seba seguiría corriendo turnos
   completos en cualquier chat asignado a mano antes del deploy, invisible
   hasta que alguien lo notara en la conversación real.
+- **`unassign` reenciende a Seba, pero SOLO si fue el propio tomar-a-mano
+  el que la apagó y el asesor nunca le escribió de verdad al cliente**
+  (T11, plan "Seba sale sin pisar a nadie", 19/9/2026 — cierra la decisión
+  abierta #2 de la revisión `code-review high` del mismo día). El bug sin
+  esto: T10 hizo que `assignToMe`/`intervene` apaguen `ai_enabled` con un
+  segundo `UPDATE`, pero `unassign` —el mismo interruptor de
+  `chat-panel.tsx`, del otro lado— solo tocaba `assigned_agent_id`. Un
+  asesor que pulsa "Asignarme" por error y enseguida "Desasignar" dejaba el
+  chat SIN dueño Y con Seba APAGADA: el reconciliador exige `ai_enabled =
+  true` para reencolar y el turno del webhook sale por `pausada` — mudo
+  hasta que alguien note el interruptor apagado. Ahora
+  `reenableAiIfAdvisorNeverWrote` (`mutations.ts`) reenciende con un
+  SEGUNDO `UPDATE` aparte del que desasigna (mismo motivo que T10: el
+  trigger `handle_conversation_ownership_change` deja `desasignada_por_
+  asesor` y `devuelto_a_ia` en dos pasos separados, y el BEFORE
+  `handle_conversation_ai_resume` sella `ai_resume_cutoff_at`) SOLO si
+  las CINCO condiciones se cumplen: la IA estaba apagada, el chat no está
+  cerrado, `assigned_at` no es `null`, existe una fila
+  `silenciada_por_asesor` con `created_at >= assigned_at` (la apagó el
+  PROPIO tomar-a-mano, no una pausa manual de antes de asignarse el chat
+  — sin esta condición, un chat pausado a propósito con `setAiEnabled(false)`
+  y asignado DESPUÉS, sin que el asesor tocara el interruptor, se
+  reencendía al desasignar, pisando una decisión explícita) y el asesor no
+  le mandó ningún mensaje real al cliente desde `assignedAt` (mismo
+  predicado que apaga la IA por trigger — `sender_type = 'agent'`,
+  `direction = 'outbound'`, `is_internal_note = false`; una nota interna
+  no cuenta). Consecuencia del sello: al reencenderse, Seba NO contesta el
+  mensaje que ya estaba pendiente antes de desasignar —cae en "Sin
+  dueño"—, solo los mensajes nuevos, igual que desasignar y reactivar a
+  mano por separado ya se comportaba. Cualquier lectura de la cadena que
+  falle deja la IA apagada (modo seguro): `console.error`, nunca lanza —
+  este archivo corre en el navegador, no puede importar `lib/log.ts`.
+  **Límite conocido y aceptado, no corregido:** reencender a mano, volver a
+  pausar y desasignar sin escribir, todo con el chat todavía asignado, deja
+  una fila `silenciada_por_asesor` indistinguible de la que dejó el propio
+  tomar-a-mano — no hay ninguna columna que diga cuál de los tres caminos
+  (pausa manual, primer mensaje real del asesor, o `silenceAiForManual
+  Takeover`) escribió esa fila, y la IA se reenciende igual; distinguirlo
+  exigiría una columna nueva. La OTRA decisión abierta de la misma revisión
+  —reencolar el turno tras un `entrega_fallida` post-saludo— sigue ABIERTA
+  a propósito: reabre D-B y no se toca el camino caliente en la víspera del
+  despliegue.
 - **El turno LANZA si no puede leer la conversación — un 400 de PostgREST
   por una migración faltante ya no se lee como "la conversación no
   existe"** (T1, plan "Seba sale sin pisar a nadie", 19/9/2026, hallazgo
@@ -1561,6 +1603,24 @@ dejar rastro es lo que hacía desaparecer leads.
   `docker exec -w /tmp/repo <contenedor> psql -U postgres -d postgres -1 -v
   ON_ERROR_STOP=1 -f supabase/tests/<archivo>.sql`. Los tests que NO usan
   `\i` (la mayoría) sí corren con `-f - < archivo`, sin este paso extra.
+  **Desde Git Bash, `docker cp ./supabase <contenedor>:/tmp/repo/` puede
+  fallar repetido por la conversión de rutas de MSYS** (ensayo del
+  despliegue, 19/9/2026): la ruta `/tmp/repo/` la reinterpreta MSYS antes
+  de que llegue a Docker. Dos formas, las dos con `MSYS_NO_PATHCONV=1`
+  delante de cualquier `docker exec -w /tmp/repo …` que siga:
+  - Con `docker cp` (crear el destino primero, `docker cp` no crea
+    directorios intermedios): `docker exec <contenedor> mkdir -p /tmp/repo`
+    y luego `MSYS_NO_PATHCONV=1 docker cp ./supabase
+    <contenedor>:/tmp/repo/supabase`.
+  - Sin `docker cp`, sin depender de cómo MSYS reescriba la ruta: `tar -cf -
+    supabase | docker exec -i <contenedor> sh -c "mkdir -p /tmp/repo && cd
+    /tmp/repo && tar -xf -"`.
+  Ojo con `supabase/tests/catalog_links.sql`: su fixture usa `key =
+  'cascos'`, y en una base donde YA corrió `scripts/sql/2026-09-18-catalogos-iniciales.sql`
+  (que carga esa misma clave en producción) choca con `duplicate key value
+  violates unique constraint` — es un artefacto de correr el test contra
+  una base de ensayo que ya tiene datos reales del script, no pasa en el
+  CI (que arranca de una base limpia con solo migraciones y seeds).
 ---
 
 # RTK (Rust Token Killer) - Token-Optimized Commands

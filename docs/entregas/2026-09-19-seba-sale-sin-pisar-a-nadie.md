@@ -18,7 +18,8 @@ nunca `3802fad..HEAD` a ciegas.
 Si producción sigue en `3802fad`, el rango pendiente son **31 commits
 commiteados** (`3802fad..def7484`, cinco migraciones) **más los
 commits de la corrida "Seba sale sin pisar a nadie"** (desde `d9091e0` hasta HEAD,
-sobre `def7484`: siete de código y uno de documentación; ninguna migración
+sobre `def7484`: ocho de código —el último es `824b56e`, T11— y dos de
+documentación; ninguna migración
 NUEVA, `d9091e0` edita in situ las cinco pendientes). Este documento cubre TODO ese rango,
 agrupado por corrida/tarea, en el orden en que hay que desplegarlo. **El
 orden operativo detallado, con las consultas SQL literales, está en
@@ -629,7 +630,10 @@ en el commit `d9091e0`, T5).
 - **Migración:** no (usa el trigger y el CHECK que ya trajo
   `20260917010000` del Grupo B — no hay columna ni razón nueva).
 - **Variables de entorno:** ninguna.
-- **Toca UI o solo servidor:** solo servidor (la mutación).
+- **Toca UI o solo servidor:** cliente — `mutations.ts` viaja en el bundle
+  del navegador (la mutación la ejecuta el panel con la sesión del asesor),
+  así que necesita el rebuild completo (~5 min), no solo recrear el
+  contenedor. Sin cambios visibles en pantalla.
 - **Qué se verificó:** `rtk npx vitest run src/lib/mutations.test.ts` en
   verde (orden de los dos `UPDATE`); caso 9 de
   `supabase/tests/seba_y_escalada_viva.sql` (dos `UPDATE` en serie con
@@ -652,6 +656,68 @@ en el commit `d9091e0`, T5).
   `UPDATE`) y lanza el error original igual. La frase "no hay una 'deshacer
   la asignación' que valga la pena ahí", del plan original, quedó FALSA —
   ver la trampa actualizada en `CLAUDE.md`.
+
+### T11 — `unassign` reenciende a Seba solo si el asesor nunca le escribió al cliente (`824b56e`)
+
+- **Archivos:** `src/lib/mutations.ts`, `src/lib/mutations.test.ts`.
+- **Qué cambia para el usuario:** cierra la decisión abierta #2 de la
+  revisión `code-review high` del 19/9/2026 (ver sección 6 del plan y
+  "Decisiones abiertas para el operador" abajo, ahora CERRADA). Hasta este
+  commit, "Asignarme"/"Intervenir" (T10) apagaban `ai_enabled` con un
+  segundo `UPDATE`, pero `unassign` — el mismo interruptor de
+  `chat-panel.tsx`, del otro lado — solo tocaba `assigned_agent_id`: un
+  asesor que se asignaba un chat por error y lo desasignaba enseguida
+  dejaba el chat SIN dueño Y con Seba APAGADA, sin ningún mecanismo que la
+  reencendiera sola (el reconciliador exige `ai_enabled = true`, el turno
+  del webhook sale por `pausada`). Ahora `unassign` reenciende con un
+  SEGUNDO `UPDATE` aparte del que desasigna, `reenableAiIfAdvisorNeverWrote`,
+  SOLO si se cumplen las CINCO condiciones: la IA estaba apagada, el chat
+  no está cerrado, `assigned_at` no es `null`, existe una fila
+  `silenciada_por_asesor` posterior a `assigned_at` (la apagó el PROPIO
+  tomar-a-mano de esta desasignación, no una pausa manual de antes de
+  asignarse el chat) y el asesor NUNCA le mandó un mensaje real al cliente
+  desde que se le asignó (mismo predicado que apaga la IA por trigger:
+  `sender_type = 'agent'`, `direction = 'outbound'`,
+  `is_internal_note = false`; una nota interna no cuenta). Consecuencia del
+  sello: Seba NO contesta el mensaje que ya estaba pendiente antes de
+  desasignar (cae en "Sin dueño"), solo los mensajes nuevos — igual que
+  desasignar y reactivar a mano ya se comportaba.
+- **Migración:** no (usa el trigger y el CHECK que ya trajo
+  `20260917010000` del Grupo B — mismo mecanismo que T10, sin columna ni
+  razón nueva).
+- **Variables de entorno:** ninguna.
+- **Toca UI o solo servidor:** cliente — `mutations.ts` viaja en el bundle
+  del navegador, necesita el rebuild completo (~5 min). Sin cambios en
+  `chat-panel.tsx`: el botón sigue llamando a `unassign` igual que antes.
+  Comprobado además contra la base local con sesión de asesor
+  (`set local role authenticated`): la secuencia tomar → desasignar deja
+  las cuatro filas (`reclamado`, `silenciada_por_asesor`,
+  `desasignada_por_asesor`, `devuelto_a_ia`), las dos lecturas de T11 pasan
+  la RLS y `ai_resume_cutoff_at` queda sellado.
+- **Qué se verificó:** `rtk npx vitest run src/lib/mutations.test.ts` — **67
+  tests en verde** (suite completa del archivo, no solo los de `unassign`).
+  Mutación de verificación (respaldo con `cp`, nunca `git checkout --`):
+  forzar `reenableAiIfAdvisorNeverWrote` a saltarse la condición de
+  `aiWasSilencedByThisTakeover` (reencender sin comprobar que fue el propio
+  tomar-a-mano el que apagó la IA) puso en rojo el caso del archivo que
+  cubre "una pausa manual de antes de asignarse el chat NO se reenciende al
+  desasignar" — confirmado antes de restaurar desde la copia.
+- **Ajuste sobre la primera versión, mismo día (corrección del
+  orquestador):** la primera versión de T11 reencendía con solo mirar "¿el
+  asesor escribió?", sin distinguir POR QUÉ estaba apagada la IA —
+  reencendía también sobre una pausa manual explícita de antes de
+  asignarse el chat, pisando esa decisión. `aiWasSilencedByThisTakeover`
+  (la condición del reloj contra `silenciada_por_asesor`) se sumó para
+  cerrar ese hueco. Ver la trampa nueva en `CLAUDE.md` y la línea de
+  `mutations.ts` en `docs/GLOSARIO.md`.
+- **Límite conocido y aceptado, no corregido en esta corrida:** reencender
+  a mano, pausar de nuevo y desasignar sin escribir, todo con el chat
+  todavía asignado, deja una fila `silenciada_por_asesor` indistinguible de
+  la del tomar-a-mano — no hay ninguna columna que diga cuál de los tres
+  caminos (pausa manual, primer mensaje real del asesor, tomar-a-mano)
+  escribió esa fila, y la IA se reenciende igual. Distinguirlo exigiría una
+  columna nueva; queda para una corrida futura si llega a importar en la
+  práctica.
 
 ### T4 — El job `migraciones` del CI vuelve a verde (`932cb9e`)
 
@@ -782,16 +848,15 @@ en el commit `d9091e0`, T5).
 
 ## Decisiones abiertas para el operador
 
-Dos hallazgos de DISEÑO de la revisión `code-review high` del 19/9/2026
-que NO se corrigieron en código — quedan anotados acá para que el operador
-decida, no son bugs que este plan haya dejado a medias sin avisar:
+Dos hallazgos de DISEÑO de la revisión `code-review high` del 19/9/2026.
+Una sigue abierta; la otra la cerró el operador el mismo día con T11.
 
-1. **Tras el saludo, un fallo del proveedor deja `entrega_fallida` y NADIE
-   reintenta el turno.** T2 (arriba) deja el traspaso correcto para que el
-   lead no quede invisible, pero eso es solo el registro — no hay ningún
-   mecanismo que vuelva a intentar redactar la respuesta real para ese
-   cliente; el chat queda esperando a un humano (o a que el cliente vuelva
-   a escribir) hasta que alguien lo note. El revisor propone que el
+1. **ABIERTA — Tras el saludo, un fallo del proveedor deja `entrega_fallida`
+   y NADIE reintenta el turno.** T2 (arriba) deja el traspaso correcto para
+   que el lead no quede invisible, pero eso es solo el registro — no hay
+   ningún mecanismo que vuelva a intentar redactar la respuesta real para
+   ese cliente; el chat queda esperando a un humano (o a que el cliente
+   vuelva a escribir) hasta que alguien lo note. El revisor propone que el
    reconciliador reencole ese turno en vez de solo dejar constancia — pero
    reencolarlo hoy no serviría de mucho: `welcome_sent_at` ya quedó
    sellado por `claimPresentation`, así que el turno reencolado NO volvería
@@ -799,18 +864,94 @@ decida, no son bugs que este plan haya dejado a medias sin avisar:
    tool loop desde cero sobre el mismo mensaje del cliente que ya falló una
    vez — reabre la decisión D-B de este mismo plan ("no existe una razón
    'falló el proveedor', `entrega_fallida` ya significa esto") y probablemente
-   necesite ese reencolado explícito, no solo el traspaso.
-2. **`unassign` no vuelve a encender `ai_enabled`.** Con T10 (D-A), tomar un
-   chat a mano ("Asignarme"/"Intervenir") apaga a Seba en ese chat con un
-   `UPDATE` explícito — pero `unassign` (`mutations.ts`, sin tocar en este
-   plan) solo quita `assigned_agent_id`, nunca vuelve a prender
-   `ai_enabled`. Un asesor que se asigna un chat "por error" y lo desasigna
-   de inmediato deja el chat SIN dueño Y con Seba apagada, hasta que alguien
-   la encienda a mano desde el interruptor del chat — un lead que debería
-   volver a estar atendido por la IA queda mudo en su lugar. No es lo mismo
-   que "Sin dueño" (que sigue teniendo un mecanismo — el reconciliador, la
-   devolución explícita— para que alguien lo retome); acá el chat ni
-   siquiera vuelve a intentar nada solo.
+   necesite ese reencolado explícito, no solo el traspaso. Se deja ABIERTA
+   a propósito: no se toca el camino caliente del turno en la víspera del
+   despliegue.
+2. **CERRADA el 19/9/2026 por T11 (ver su sección arriba, Grupo E).** El
+   operador decidió que `unassign` SÍ debe volver a encender `ai_enabled`
+   automáticamente, pero solo cuando fue la propia toma-a-mano de ESE
+   asesor la que la apagó (no una pausa manual de antes de asignarse el
+   chat) y el asesor nunca le escribió de verdad al cliente mientras lo
+   tuvo asignado. Antes de T11: con T10 (D-A), tomar un chat a mano
+   ("Asignarme"/"Intervenir") apagaba a Seba en ese chat con un `UPDATE`
+   explícito, pero `unassign` solo quitaba `assigned_agent_id`, nunca
+   volvía a prender `ai_enabled` — un asesor que se asignaba un chat "por
+   error" y lo desasignaba de inmediato dejaba el chat SIN dueño Y con Seba
+   apagada, hasta que alguien la encendiera a mano desde el interruptor del
+   chat. Límite conocido y aceptado que SÍ queda sin resolver: reencender a
+   mano, pausar de nuevo y desasignar sin escribir, todo con el chat
+   asignado, deja una fila `silenciada_por_asesor` indistinguible de la del
+   tomar-a-mano y la IA se reenciende igual — distinguir los tres caminos
+   que escriben esa razón exigiría una columna nueva.
+
+---
+
+## Ensayo del despliegue (19/9/2026)
+
+El 19/9/2026 se ENSAYÓ `docs/PRODUCCION.md` §11 de punta a punta contra una
+base LOCAL llevada al estado de producción: `npx supabase db reset
+--version 20260915010000` + los datos sembrados, y desde ahí las cinco
+migraciones a mano con `PGOPTIONS="-c lock_timeout=5s"` + `psql -1 -v
+ON_ERROR_STOP=1`, el UPDATE operativo de C1, los dos GET de humo contra
+PostgREST local, el backfill acotado del paso 8, el script de catálogos
+(dos corridas), y los 17 tests de `supabase/tests/`.
+
+**Resultado bueno:**
+
+- `pg_dump --schema-only --schema=public` del camino "producción + las
+  cinco migraciones a mano" es IDÉNTICO al de un reset completo desde cero
+  con `npx supabase db reset` (solo difieren los tokens aleatorios
+  `\restrict`/`\unrestrict` que `pg_dump` genera en cada corrida) — las
+  cinco migraciones, aplicadas a mano en el orden y con los flags que
+  indica §11, dejan el esquema exactamente igual que aplicarlas todas
+  seguidas desde una base vacía.
+- La guarda de transacción (el bloque que aborta si `lock_timeout` sigue
+  en `'0'`/`'0ms'`, hallazgo 10 de la sección 6 del plan) es la SEGUNDA
+  sentencia de las cinco migraciones, sin ningún DDL antes — abortar sin
+  `-1` no deja NADA aplicado de esa migración, confirmado corriendo cada
+  una sin el flag y verificando que el esquema queda intacto.
+- El UPDATE operativo de C1 (paso 4) dejó exactamente una fila
+  `silenciada_por_asesor` por cada chat que tocó (`created_by = 'system'`,
+  sin sesión) y CERO filas `reclamado` — el trigger se comporta como
+  documenta la migración.
+- `notify pgrst, 'reload schema'` hizo visibles `catalog_links`,
+  `ai_lessons` y `orders.saint_invoice_number` al primer GET contra
+  PostgREST local después de aplicar las migraciones — sin necesidad de
+  reiniciar el contenedor ni esperar más de unos segundos.
+
+**Defectos encontrados y corregidos en `docs/PRODUCCION.md` §11 (esta
+tarea, T9c):** ver los cinco puntos del punto A del encargo — el texto de
+la lección global medía 362 caracteres contra un CHECK de 200 (corregido a
+193); el backfill + `vacuum analyze` del paso 8 no pueden ir en el mismo
+comando (corregido a dos comandos separados, con la advertencia de por qué);
+faltaba el INSERT literal para registrar las cinco migraciones en
+`supabase_migrations.schema_migrations` (agregado); el script de catálogos
+deja dos WARNING inofensivos al correr con `-1` porque ya trae su propio
+`begin;`/`commit;` (documentado, sin cambiar el comando — §11 y la cabecera
+del propio script ya recomendaban la MISMA forma, sin contradicción entre
+los dos); repaso del resto del documento sin encontrar ningún otro bloque
+con `VACUUM`/similar ni otro texto sugerido que exceda un CHECK de longitud
+de la base (`catalog_links.label` ≤ 40, `ai_lessons.content` ≤ 200,
+confirmados contra las migraciones).
+
+**Lo que NO se pudo ensayar** (queda para el despliegue real, no es parte
+de esta tarea):
+
+- El respaldo real (`scripts/backup.sh`, §8) — el ensayo no lo corrió
+  contra la base local.
+- El push del código y el CI real sobre este rango (el ensayo se hizo
+  enteramente contra una base local; ningún commit de este rango salió de
+  esta máquina).
+- Cargar la lección global desde el panel `/agent-control > Respuestas >
+  Lecciones` con una sesión de supervisor real contra producción (el
+  ensayo verificó el CHECK con un INSERT directo, no el flujo de la UI).
+- Cualquier métrica con tráfico real (gasto diario, `escenario_cedido_al_
+  catalogo`, turnos con error) — el paso 11 de §11 exige volumen real de
+  producción, que una base local sembrada no reproduce.
+- El `EXPLAIN ANALYZE` de la consulta de Pendientes con volumen real (ya
+  señalado como pendiente en "Verificación posterior completa" — el de la
+  base local, 28 filas, no fue concluyente el 18/9/2026 y esta tarea no lo
+  repitió).
 
 ---
 
@@ -823,19 +964,34 @@ acotado, subir el tope de gasto, el script de catálogos, y qué vigilar las
 primeras horas). Antes de dar por cerrada la entrega completa de este
 documento:
 
-- **CONFIRMADO (T9b, 19/9/2026):** `rtk npm run test` — suite completa en
-  verde, **2560 tests**, con Redis levantado (`docker run -d --name
-  sbk_redis -p 6379:6379 redis:7-alpine redis-server --appendonly yes`, ver
-  CLAUDE.md); `rtk npx tsc --noEmit` — **sin errores**; `rtk npm run lint`
-  — **0 errores** (4 warnings preexistentes de variables sin usar en
-  tests, no introducidos por este rango). `rtk proxy npm run build`
-  pendiente de confirmar con `.next/BUILD_ID` nuevo — no verificado de
-  primera mano por T9b (fuera de su alcance: T9b es documentación pura, no
-  corre el build).
+- **CONFIRMADO por el orquestador sobre `824b56e`, el último commit de
+  código (19/9/2026; lo que sigue a ese commit es solo documentación):**
+  `rtk npm run test` — suite completa en verde, **2571 tests**, con Redis
+  levantado (`docker run -d --name sbk_redis -p 6379:6379 redis:7-alpine
+  redis-server --appendonly yes`, ver CLAUDE.md); `rtk npx tsc --noEmit` —
+  **sin errores**; `rtk npm run lint` — **0 errores** (4 warnings
+  preexistentes de variables sin usar en tests, no introducidos por este
+  rango); `rtk proxy npm run build` — **OK**, con `.next/BUILD_ID` nuevo
+  (16:57 del 19/9/2026).
 - **CONFIRMADO (T9b):** los **17 archivos** de `supabase/tests/` (no 18 —
   ver el punto 1 de "Problemas/desvíos") en verde sobre una base
   reconstruida desde cero.
 - Las tres mutaciones de verificación (T1, T3, y T2 si el subagente la
-  hizo) rompen su test correspondiente.
+  hizo) rompen su test correspondiente. **T11 (nueva, T9c):** mutación
+  sobre `reenableAiIfAdvisorNeverWrote` (saltarse `aiWasSilencedByThisTakeover`)
+  puso en rojo el caso que cubre "una pausa manual de antes de asignarse
+  el chat no se reenciende al desasignar", restaurado desde una copia
+  hecha con `cp` — **67 tests de `src/lib/mutations.test.ts` en verde**.
 - **CONFIRMADO (T9b):** verificación visual de T7 en Brave hecha el
   19/9/2026 (punto 2 de "Problemas/desvíos", arriba).
+- **CONFIRMADO (19/9/2026): réplica completa del job `verificar` del
+  CI**, en un contenedor `node:22` (v22.23.2, la misma major que usa el CI
+  — esta máquina corre Node 26 en local, ver la trampa "La suite local y el
+  CI no corren el mismo Node" en `CLAUDE.md`) sobre un CLON LIMPIO de
+  `824b56e`, el último commit de código de la corrida (se corrió antes
+  sobre `8ef9883` con el mismo resultado y 2560 tests; los commits
+  posteriores a `824b56e` son solo documentación): `npm ci`,
+  generación de tipos, `tsc --noEmit`, lint, **2571 tests** con
+  `--no-file-parallelism` (mismo flag que usa el job del CI, para
+  reproducir su contención real) y `npm run build` — los cinco pasos
+  terminaron OK.

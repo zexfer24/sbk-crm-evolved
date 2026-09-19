@@ -1330,8 +1330,21 @@ que saberlo ANTES de que empiece a pasar: un asesor que manda un mensaje
 mismo, sin aviso en pantalla más allá del interruptor del chat.
 
 Registrar las cinco en `supabase_migrations.schema_migrations` (no se
-registran solas) — verificar con `select count(*) from
-supabase_migrations.schema_migrations` → 75.
+registran solas) — **después de aplicar cada una con éxito** (o las cinco
+juntas al final, nunca antes de que la migración correspondiente haya
+entrado de verdad):
+
+```sql
+insert into supabase_migrations.schema_migrations (version, name) values
+  ('20260916010000', '20260916010000_devolucion_a_la_ia'),
+  ('20260917010000', '20260917010000_seba_y_escalada_viva'),
+  ('20260917020000', '20260917020000_ai_lessons'),
+  ('20260918010000', '20260918010000_catalog_links'),
+  ('20260918020000', '20260918020000_factura_saint');
+```
+
+Verificar con `select count(*) from supabase_migrations.schema_migrations` →
+75.
 
 **4. UPDATE operativo de C1** (mitigación para los chats que YA están
 asignados a mano desde antes de este deploy — el código de T10 solo
@@ -1349,6 +1362,13 @@ rastro en `conversation_handoffs`) y ANTES del push del código — si se
 corre después del push, hay una ventana donde Seba ya corre turnos
 completos en esos chats con la guarda nueva (`if (!convo.ai_enabled)`)
 sin que nada la frene todavía.
+
+Efecto colateral deseado (T11, "Seba sale sin pisar a nadie"): este UPDATE
+deja una fila `silenciada_por_asesor` por cada chat que toca (trigger
+`handle_conversation_ownership_change`). Para esos chats, un "Desasignar"
+posterior desde el panel —si el asesor nunca le escribió de verdad al
+cliente— va a reencender a Seba solo (`reenableAiIfAdvisorNeverWrote`,
+`mutations.ts`): es lo esperado, no un efecto secundario a corregir.
 
 **5. `notify pgrst` + los dos GET de humo.** Las cinco migraciones ya
 terminan en `notify pgrst, 'reload schema'` (T5, hallazgo M1 — antes
@@ -1439,12 +1459,29 @@ arriba en este documento)—. Es la MISMA sentencia del backfill original,
 y es segura de repetir: solo toca las filas que el primer backfill no
 alcanzó a tocar.
 
-```sql
+**Advertencia (hallada en el ensayo del 19/9/2026, ver "Ensayo del
+despliegue" en el reporte de entrega): el UPDATE y el `vacuum analyze` NO
+pueden ir en el mismo comando** — ni en un solo `psql -c "…; …;"` ni
+dentro del mismo archivo corrido con `-1`. En los dos casos Postgres agrupa
+las sentencias en una transacción implícita (el protocolo "simple query" de
+libpq envuelve varias sentencias separadas por `;` en una sola transacción,
+y `-1` fuerza lo mismo sobre un archivo entero), y `VACUUM cannot run inside
+a transaction block` aborta — **deshaciendo también el UPDATE**, sin dejar
+ningún rastro del backfill. Corren como DOS comandos separados:
+
+```bash
+# 8a. El UPDATE, solo. Verificar el "UPDATE n" que devuelve contra el
+# número de la línea de base del paso 1 (consulta A1) antes de seguir.
+psql -v ON_ERROR_STOP=1 "$DATABASE_URL" -c "
 update public.conversations
 set welcome_sent_at = coalesce(last_reply_at, last_message_at, created_at)
 where welcome_sent_at is null and has_reply;
+"
+```
 
-vacuum analyze public.conversations;
+```bash
+# 8b. Aparte, DESPUÉS de confirmar 8a. Nunca junto con el UPDATE de arriba.
+psql -v ON_ERROR_STOP=1 "$DATABASE_URL" -c "vacuum analyze public.conversations;"
 ```
 
 El `vacuum analyze` es porque el backfill grande del paso 3 reescribe
@@ -1467,13 +1504,16 @@ Lección global del primer día (A7 — texto sugerido, cargarlo desde
 `/agent-control > Respuestas > Lecciones` como nota, alcance "global"; no
 es código, es la única palanca disponible el día 1 porque `PREGUNTA_FILTRO`
 —"Claro, ¿para qué modelo y año de moto las buscas?"— está fija en
-`tools.ts`, T3 de "Seba atiende el mostrador"):
+`tools.ts`, T3 de "Seba atiende el mostrador"). **Ojo:** `ai_lessons.content`
+tiene un CHECK de 1 a 200 caracteres (`char_length(btrim(content)) between 1
+and 200`, migración `20260917020000`) — el texto sugerido en la primera
+versión de este paso medía 362 caracteres y el INSERT desde el panel habría
+fallado con `ai_lessons_content_check` (hallado en el ensayo del 19/9/2026,
+ver "Ensayo del despliegue" en el reporte de entrega). El de abajo mide 193:
 
-> Los cascos, aceites/lubricantes y maletas/baúles NO dependen del modelo
-> ni año de la moto del cliente. Si preguntás por filtro para uno de estos
-> productos, no preguntes por el modelo y año de la moto — preguntá por lo
-> que sí importa (talla del casco, litros/viscosidad del aceite, tamaño de
-> la maleta) o mostrá directamente las opciones disponibles si son pocas.
+> Cascos, aceites y maletas no dependen del modelo ni del año de la moto:
+> no los preguntes. Pregunta la talla del casco, la viscosidad del aceite o
+> el tamaño de la maleta, o muestra las opciones.
 
 **10. Script de catálogos** (después del código, nunca antes — D8 del plan
 "Nada sin leer, un solo catálogo y la factura Saint": un marcador sin
@@ -1524,6 +1564,18 @@ cliente, no del repo"); el implementador no inventó ningún valor. Pasos:
    docker exec -i supabase-db psql -U postgres -d postgres -1 -v ON_ERROR_STOP=1 \
      -f - < scripts/sql/2026-09-18-catalogos-iniciales.sql
    ```
+   Esta es la MISMA forma que trae la cabecera del propio script ("CÓMO
+   CORRERLO") — una sola forma recomendada, sin contradicción entre este
+   documento y el archivo. **Dos WARNING inofensivos, hallados en el
+   ensayo del 19/9/2026 (ver "Ensayo del despliegue" en el reporte de
+   entrega):** el script ya trae su propio `begin;`/`commit;`, y corrido
+   con `-1` (que abre su propia transacción alrededor de TODO el archivo)
+   aparecen "WARNING: there is already a transaction in progress" (al
+   llegar al `begin;` del script) y "WARNING: there is no transaction in
+   progress" (al final, cuando `-1` intenta cerrar una transacción que el
+   `commit;` del script ya cerró). Ninguno de los dos es un error — el
+   script sigue corriendo dentro de una sola transacción real, que es lo
+   que se busca — y no hay que investigarlos ni cambiar el comando.
    El propio script trae su propia guarda `\set ON_ERROR_STOP on` (T6,
    segunda protección por si el flag de la línea de comandos se olvida),
    aborta solo si queda algún `<<...>>` sin completar, si alguna clave

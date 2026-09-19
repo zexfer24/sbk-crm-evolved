@@ -251,7 +251,7 @@ plan original), cada una con el mismo hash `6cc62ae` — no son tres commits.
 | 9 | El comentario de `reconciler.ts` sobre el diseño descartado (`awaiting_any_reply`) no reflejaba todavía que `reabierto` (T8) ya no cierra la escalada — quedaba como si el caso 5 de la revisión adversarial del 16/9 siguiera abierto. Comentario actualizado con la referencia cruzada a T8/`RAZONES_QUE_NO_CIERRAN_LA_ESCALADA`. **Va en el commit de T1/T2/T3, no en el de T8** (`68dacfb` solo toca `handoffs.ts`/su test). | T1/T2/T3 (comentario cruzado a T8) | `6cc62ae` | Corregido |
 | 10 | Las cinco migraciones (T5) traían `set local lock_timeout` pero, sin `psql -1`, era un NO-OP SILENCIOSO — la migración "funcionaba" igual sin el freno de lock. Cada una gana un bloque que ABORTA si `current_setting('lock_timeout')` sigue en `'0'`/`'0ms'`. | T5 | `d9091e0` | Corregido |
 | (sin número confirmado) | Tras el saludo de Seba, un fallo del proveedor deja `entrega_fallida` (T2) pero nada reintenta el turno — el chat queda esperando a un humano o a que el cliente vuelva a escribir. Reencolarlo reabriría la decisión D-B (`welcome_sent_at` ya sellado no volvería a saludar, pero sí repetiría fase 0/1/tool loop desde cero). | — | — | **Sin corregir — decisión abierta #1, ver más abajo** |
-| (sin número confirmado) | `unassign` (`mutations.ts`) no vuelve a encender `ai_enabled` — a diferencia de `assignToMe`/`intervene` (T10), que sí lo apagan. Un "Asignarme" por error + "Desasignar" deja el chat sin dueño Y con Seba apagada, sin ningún mecanismo que la reencienda sola. | — | — | **Sin corregir — decisión abierta #2, ver más abajo** |
+| (sin número confirmado) | `unassign` (`mutations.ts`) no vuelve a encender `ai_enabled` — a diferencia de `assignToMe`/`intervene` (T10), que sí lo apagan. Un "Asignarme" por error + "Desasignar" deja el chat sin dueño Y con Seba apagada, sin ningún mecanismo que la reencienda sola. | `reenableAiIfAdvisorNeverWrote` reenciende con un segundo `UPDATE` aparte SOLO si la IA se apagó por el propio tomar-a-mano (`aiWasSilencedByThisTakeover`, mira `silenciada_por_asesor` con `created_at >= assigned_at`) y el asesor nunca le escribió de verdad al cliente (`advisorWroteToCustomerSince`); nunca lanza, falla cerrado. | T11 | `824b56e` | **Corregido (decisión #2 del operador — ver "Decisiones abiertas", más abajo, CERRADA)** |
 
 (T4 y T8 también quedaron commiteados — `932cb9e` y `68dacfb`
 respectivamente — pero no traen ningún hallazgo de esta revisión, así que
@@ -268,14 +268,25 @@ quedan documentadas también en el Grupo E de
    proveedor falla justo después de que Seba ya saludó? Hoy el chat queda
    con el traspaso correcto (nadie lo pierde), pero mudo hasta que un
    humano lo note o el cliente vuelva a escribir.
-2. **`unassign` y `ai_enabled`.** ¿Debe `unassign` volver a encender la IA
-   automáticamente, o dejarlo tal como está (el asesor la reenciende a
-   mano desde el interruptor del chat)? Hoy un "Asignarme" seguido de
-   "Desasignar" dejaría, sin este ajuste, un chat sin dueño y sin IA a la
-   vez.
+2. **`unassign` y `ai_enabled`. CERRADA el 19/9/2026 por T11 (mismo día,
+   corrección del orquestador sobre este mismo plan).** El operador decidió
+   que SÍ: `unassign` vuelve a encender la IA, pero solo cuando la propia
+   toma-a-mano de ESTE asesor fue lo que la apagó (no una pausa manual de
+   antes de asignarse el chat) y el asesor nunca le escribió de verdad al
+   cliente mientras lo tuvo asignado — ver `reenableAiIfAdvisorNeverWrote`
+   en `mutations.ts`, la trampa correspondiente en `CLAUDE.md` y la sección
+   de T11 en `docs/entregas/2026-09-19-seba-sale-sin-pisar-a-nadie.md`
+   (Grupo E). Límite conocido y aceptado: reencender a mano, pausar de
+   nuevo y desasignar sin escribir, todo con el chat asignado, deja una
+   fila `silenciada_por_asesor` indistinguible de la del tomar-a-mano y la
+   IA se reenciende igual — distinguir los tres caminos que escriben esa
+   razón (pausa manual, primer mensaje real del asesor, tomar-a-mano)
+   exigiría una columna nueva; no se hizo en esta corrida.
 
-Ninguna de las dos decisiones bloquea el despliegue de este plan: los
-chats que caen en cualquiera de los dos casos quedan silenciosos pero NO
-invisibles (siguen en "Sin dueño"/"Pendientes" con su traspaso
-correspondiente) — es trabajo pendiente, no una regresión de la invariante
-"ningún lead invisible".
+La decisión #1 (reencolar el turno tras un `entrega_fallida` post-saludo)
+sigue ABIERTA a propósito: reabre D-B (reencolar el turno reabriría si
+`entrega_fallida` sigue significando "no se reintenta para no duplicar") y
+no se toca el camino caliente del turno en la víspera del despliegue. Los
+chats que caen en ese caso quedan silenciosos pero NO invisibles (siguen
+en "Sin dueño"/"Pendientes" con su traspaso correspondiente) — es trabajo
+pendiente, no una regresión de la invariante "ningún lead invisible".
