@@ -285,12 +285,220 @@ export async function assignToMe(supabase: SupabaseClient, conversationId: strin
   );
 }
 
+/**
+ * T11 (19/9/2026): corrección del hallazgo #2 de la revisión `/code-review
+ * high` del 19/9/2026 sobre el plan "Seba sale sin pisar a nadie" —decisión
+ * abierta #2 del plan, resuelta por el operador—. `unassign` vuelve a
+ * encender `ai_enabled` SOLO si (a) fue el PROPIO tomar-a-mano de ESTE
+ * asesor el que la apagó (no una pausa manual de antes de asignarse el
+ * chat) y (b) el asesor nunca le escribió al cliente mientras lo tuvo
+ * asignado.
+ *
+ * El bug sin esto: T10 hizo que `assignToMe`/`intervene` apaguen
+ * `ai_enabled` con un segundo UPDATE, pero `unassign` —el mismo botón
+ * conmutador de `chat-panel.tsx`, del otro lado— solo tocaba
+ * `assigned_agent_id`. Un asesor que pulsa "Asignarme" por error y
+ * enseguida "Desasignar" dejaba el chat SIN dueño Y con Seba APAGADA: el
+ * reconciliador exige `ai_enabled = true` para reencolar (`reconciler.ts`)
+ * y el turno del webhook sale por `pausada` — mudo hasta que alguien note
+ * el interruptor apagado. Antes de T10 ese mismo ida y vuelta dejaba la IA
+ * encendida (`unassign` nunca tocaba `ai_enabled`).
+ *
+ * Ajuste post-primera-versión (mismo día, corrección del orquestador): la
+ * primera versión de T11 reencendía con solo mirar "¿el asesor escribió?",
+ * y eso reencendía CONTRA una decisión explícita: si alguien pausó la IA a
+ * propósito (`setAiEnabled(false)`) y DESPUÉS un asesor tomó ese mismo chat
+ * (`assigned_at` posterior a la pausa) sin escribir y lo soltó, la IA se
+ * reencendía igual — pisando la pausa manual. Ver el docblock de
+ * `aiWasSilencedByThisTakeover` más abajo para la condición nueva.
+ *
+ * Lee `assigned_at`/`ai_enabled`/`status` ANTES de desasignar (mismo
+ * patrón que `readAssignedAgentId` de T10, más arriba): el UPDATE que
+ * desasigna no toca esas tres columnas, así que da igual si se leen antes
+ * o después del UPDATE, pero leerlas antes sigue el estilo del archivo. Si
+ * la lectura falla, `readConversationBeforeUnassign` devuelve `null` y NO
+ * se reenciende nada — modo seguro, ver el docblock de
+ * `reenableAiIfAdvisorNeverWrote` más abajo.
+ */
+interface ConversationBeforeUnassign {
+  assignedAt: string | null;
+  aiEnabled: boolean;
+  status: string;
+}
+
+async function readConversationBeforeUnassign(
+  supabase: SupabaseClient,
+  conversationId: string
+): Promise<ConversationBeforeUnassign | null> {
+  const { data, error } = await supabase
+    .from("conversations")
+    .select("assigned_at, ai_enabled, status")
+    .eq("id", conversationId)
+    .single();
+  if (error) {
+    console.error(
+      `T11 (19/9/2026): no se pudo leer el estado de ${conversationId} antes de desasignar — no se reenciende la IA (modo seguro).`,
+      error
+    );
+    return null;
+  }
+  const row = data as { assigned_at: string | null; ai_enabled: boolean; status: string };
+  return { assignedAt: row.assigned_at, aiEnabled: row.ai_enabled, status: row.status };
+}
+
+/**
+ * ¿Hay algún mensaje REAL de un asesor al cliente —`sender_type = 'agent'`,
+ * `direction = 'outbound'`, `is_internal_note = false`— desde que se
+ * asignó el chat? Mismo predicado que apaga la IA por trigger
+ * (`handle_agent_message_silences_ai`, migración 20260917010000, ver
+ * `supabase/migrations/20260917010000_seba_y_escalada_viva.sql`): una nota
+ * interna posterior a `assignedAt` NO cuenta como haberle escrito al
+ * cliente, igual que tampoco apaga la IA por ese trigger.
+ */
+async function advisorWroteToCustomerSince(
+  supabase: SupabaseClient,
+  conversationId: string,
+  assignedAt: string
+): Promise<boolean> {
+  const { data, error } = await supabase
+    .from("messages")
+    .select("id")
+    .eq("conversation_id", conversationId)
+    .eq("sender_type", "agent")
+    .eq("direction", "outbound")
+    .eq("is_internal_note", false)
+    .gte("created_at", assignedAt)
+    .limit(1);
+  if (error) throw error;
+  return (data ?? []).length > 0;
+}
+
+/**
+ * ¿La IA se apagó por el PROPIO tomar-a-mano de esta desasignación, y no
+ * por una pausa manual de ANTES de que el chat se asignara? Condición
+ * agregada tras la primera versión de T11 (mismo día): sin ella, un chat
+ * pausado a propósito (`setAiEnabled(false)`) y asignado DESPUÉS —sin que
+ * el asesor volviera a tocar el interruptor— se reencendía al desasignar,
+ * pisando una decisión explícita.
+ *
+ * `silenciada_por_asesor` (migración 20260917010000,
+ * `handle_conversation_ownership_change`) es la MISMA fila para los tres
+ * caminos que apagan `ai_enabled`: una pausa manual (`setAiEnabled(false)`),
+ * un asesor mandando su primer mensaje real (`handle_agent_message_
+ * silences_ai`), y el segundo UPDATE de `silenceAiForManualTakeover` (T10).
+ * No hay ninguna columna que diga cuál de los tres fue — la única señal
+ * que los distingue es el RELOJ:
+ *
+ *   - Una pausa de ANTES de asignarse el chat deja su fila con
+ *     `created_at < assigned_at` (el chat todavía no tenía dueño cuando se
+ *     pausó).
+ *   - El segundo UPDATE de T10 corre INMEDIATAMENTE DESPUÉS del primero
+ *     (el que sella `assigned_at` vía `handle_conversation_assigned`,
+ *     BEFORE UPDATE OF assigned_agent_id, migración 20260822080000): son
+ *     dos peticiones HTTP consecutivas — el código hace `await` sobre la
+ *     primera antes de lanzar la segunda (`assignToMe`/`intervene`,
+ *     `readAssignedAgentId` → UPDATE assigned_agent_id → UPDATE
+ *     ai_enabled) — así que la segunda transacción no puede empezar antes
+ *     de que la primera haya sellado `assigned_at` con su propio `now()`.
+ *     Por eso su fila SIEMPRE nace con `created_at >= assigned_at`. Si las
+ *     dos cayeran en el mismo instante de reloj (dos transacciones
+ *     sucesivas con la misma marca de microsegundo), el `>=` las sigue
+ *     contando como "la apagó el propio tomar-a-mano" — una comparación
+ *     estricta `>` las habría descartado por error.
+ *   - Una pausa con `ai_enabled` YA en `false` no deja fila nueva (el
+ *     trigger exige `old.ai_enabled = true`): si el chat ya estaba pausado
+ *     cuando se asignó, esta consulta no encuentra ninguna fila posterior
+ *     a `assigned_at` y no reenciende — el modo seguro de siempre.
+ *
+ * Falla CERRADO, como el resto de esta cadena: ante un error de la
+ * consulta —o si algún día `conversation_handoffs_select using
+ * (is_agent())` (20260830040000) dejara de darle SELECT a un agente
+ * autenticado, cosa que hoy sí hace— NO se reenciende nada.
+ */
+async function aiWasSilencedByThisTakeover(
+  supabase: SupabaseClient,
+  conversationId: string,
+  assignedAt: string
+): Promise<boolean> {
+  const { data, error } = await supabase
+    .from("conversation_handoffs")
+    .select("id")
+    .eq("conversation_id", conversationId)
+    .eq("reason", "silenciada_por_asesor")
+    .gte("created_at", assignedAt)
+    .limit(1);
+  if (error) throw error;
+  return (data ?? []).length > 0;
+}
+
+/**
+ * Reenciende `ai_enabled` con un SEGUNDO UPDATE aparte del que desasigna —
+ * nunca en el mismo UPDATE: el trigger `handle_conversation_ownership_
+ * change` (20260916010000, ampliado en 20260917010000) escribe
+ * `desasignada_por_asesor` cuando `assigned_agent_id` cambia SIN que
+ * `ai_enabled` cambie en el mismo UPDATE, y `devuelto_a_ia` cuando
+ * `ai_enabled` pasa de `false` a `true`; un UPDATE conjunto de las dos
+ * columnas no dejaría NINGUNA fila en `conversation_handoffs`, contra la
+ * invariante "ningún lead invisible" (CLAUDE.md) — mismo motivo que T10.
+ * Y el trigger BEFORE `handle_conversation_ai_resume` sella
+ * `ai_resume_cutoff_at` al entrar a "IA encendida y sin asesor" solo
+ * cuando `ai_enabled` cambia de verdad en su propio UPDATE: es lo
+ * correcto, y es justo lo que ya pasa cuando un asesor desasigna y
+ * reactiva la IA a mano en dos pasos separados.
+ *
+ * Las dos comprobaciones —`aiWasSilencedByThisTakeover` primero, más
+ * barata de descartar el caso común (pausa manual anterior), y
+ * `advisorWroteToCustomerSince` después— tienen que ser AMBAS `true` para
+ * reencender: la primera dice "esto lo apagó el propio tomar-a-mano, no
+ * una decisión de antes"; la segunda dice "y en ese tiempo no le escribió
+ * de verdad al cliente".
+ *
+ * Nunca lanza: un fallo acá (de cualquiera de las dos lecturas, o de este
+ * mismo UPDATE) deja la IA apagada —el comportamiento de hoy, el asesor la
+ * reenciende con el interruptor del chat— en vez de deshacer la
+ * desasignación, que ya se completó cuando se llega a esta función. Se
+ * avisa con `console.error`: este archivo corre en el navegador y no puede
+ * importar `lib/log.ts` (server-only), mismo motivo que `human-handled.ts`.
+ */
+async function reenableAiIfAdvisorNeverWrote(
+  supabase: SupabaseClient,
+  conversationId: string,
+  previous: ConversationBeforeUnassign
+) {
+  if (previous.aiEnabled) return;
+  if (previous.status === "closed") return;
+  if (previous.assignedAt === null) return;
+
+  try {
+    const silencedByTakeover = await aiWasSilencedByThisTakeover(supabase, conversationId, previous.assignedAt);
+    if (!silencedByTakeover) return;
+
+    const advisorWrote = await advisorWroteToCustomerSince(supabase, conversationId, previous.assignedAt);
+    if (advisorWrote) return;
+
+    const { error } = await supabase.from("conversations").update({ ai_enabled: true }).eq("id", conversationId);
+    if (error) throw error;
+  } catch (err) {
+    console.error(
+      `T11 (19/9/2026): no se pudo reencender la IA en ${conversationId} tras desasignar — se deja apagada (modo seguro).`,
+      err
+    );
+  }
+}
+
 export async function unassign(supabase: SupabaseClient, conversationId: string, byAgent: Agent, currentAssigneeName: string | null) {
+  const previous = await readConversationBeforeUnassign(supabase, conversationId);
+
   const { error } = await supabase
     .from("conversations")
     .update({ assigned_agent_id: null })
     .eq("id", conversationId);
   if (error) throw error;
+
+  if (previous) {
+    await reenableAiIfAdvisorNeverWrote(supabase, conversationId, previous);
+  }
+
   await insertSystemEvent(
     supabase,
     conversationId,

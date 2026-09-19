@@ -252,7 +252,7 @@ describe("marcar una conversación como no leída", () => {
  * escribir también, por ejemplo, `last_customer_message_at` a mano, rompería
  * los dos candados documentados en CLAUDE.md sobre esa columna.
  */
-describe("setAiEnabled / unassign — devuelven el chat a la IA sin tocar messages", () => {
+describe("setAiEnabled — devuelve el chat a la IA sin tocar messages", () => {
   it("setAiEnabled(true) actualiza SOLO ai_enabled", async () => {
     const { client, calls } = createFakeSupabase();
 
@@ -260,15 +260,6 @@ describe("setAiEnabled / unassign — devuelven el chat a la IA sin tocar messag
 
     const update = calls.find((c) => c.table === "conversations" && c.op === "update");
     expect(update?.payload).toEqual({ ai_enabled: true });
-  });
-
-  it("unassign actualiza SOLO assigned_agent_id", async () => {
-    const { client, calls } = createFakeSupabase();
-
-    await unassign(client, "conv-1", AGENT, "María");
-
-    const update = calls.find((c) => c.table === "conversations" && c.op === "update");
-    expect(update?.payload).toEqual({ assigned_agent_id: null });
   });
 });
 
@@ -452,6 +443,386 @@ describe("assignToMe / intervene — apagan a Seba con DOS UPDATE en serie (T10,
       await expect(assignToMe(client, "conv-1", AGENT)).rejects.toBe(originalError);
 
       expect(calls.some((c) => c.table === "messages")).toBe(false);
+      expect(consoleErrorSpy).toHaveBeenCalled();
+    } finally {
+      consoleErrorSpy.mockRestore();
+    }
+  });
+});
+
+/**
+ * T11 (19/9/2026): corrección del hallazgo #2 de la revisión `/code-review
+ * high` sobre el plan "Seba sale sin pisar a nadie" (decisión abierta #2
+ * del plan). `unassign` lee `assigned_at`/`ai_enabled`/`status` ANTES de
+ * desasignar y, si el chat estaba tomado a mano con la IA apagada (T10),
+ * sin cerrar, con `assigned_at` real, con una fila `silenciada_por_asesor`
+ * POSTERIOR a `assigned_at` (la que dejó el propio tomar-a-mano de T10, no
+ * una pausa manual de antes de asignarse) y SIN que el asesor le haya
+ * escrito de verdad al cliente desde entonces, hace un SEGUNDO UPDATE
+ * aparte que reenciende `ai_enabled` — mismo motivo de "dos UPDATE en
+ * serie" que T10 (el trigger `handle_conversation_ownership_change`
+ * necesita que cada columna cambie en su propio UPDATE para dejar la fila
+ * correcta en `conversation_handoffs`).
+ *
+ * Ajuste del mismo día (corrección del orquestador sobre la primera
+ * versión de T11): sin la condición de `conversation_handoffs`, una pausa
+ * manual de ANTES de asignarse el chat (`setAiEnabled(false)` seguido,
+ * más tarde, de "Asignarme") se reencendía igual al desasignar sin haber
+ * escrito — pisando una decisión explícita de un supervisor.
+ */
+describe("unassign — reenciende la IA solo si fue el propio tomar-a-mano y el asesor nunca le escribió al cliente (T11, 19/9/2026)", () => {
+  const ASSIGNED_AT = "2026-09-19T10:00:00.000Z";
+
+  /**
+   * `conversationRow` describe lo que devuelve la lectura previa
+   * (`assigned_at`/`ai_enabled`/`status`); `conversationReadError`, en su
+   * lugar, hace fallar esa lectura. `handoffsResult` describe la respuesta
+   * de la consulta que busca una fila `silenciada_por_asesor` posterior a
+   * `assigned_at` — por defecto trae una (el caso común: la IA se apagó
+   * por el propio tomar-a-mano), así que los tests que no la mencionan
+   * ejercitan el camino "sí, fue el tomar-a-mano" sin tener que repetirlo.
+   * `messagesResult` describe la respuesta de la consulta que busca un
+   * mensaje real de asesor desde `assigned_at`. `secondUpdateError` hace
+   * fallar SOLO el segundo UPDATE (`ai_enabled: true`); el primero
+   * (`assigned_agent_id: null`) usa `firstUpdateError`.
+   */
+  function createFakeSupabaseForUnassign(
+    options: {
+      conversationRow?: { assigned_at: string | null; ai_enabled: boolean; status: string };
+      conversationReadError?: Error;
+      handoffsResult?: { data: { id: string }[] | null; error: Error | null };
+      messagesResult?: { data: { id: string }[] | null; error: Error | null };
+      firstUpdateError?: Error;
+      secondUpdateError?: Error;
+    } = {}
+  ) {
+    const calls: Array<
+      | { table: "conversations"; op: "select" }
+      | { table: "conversations"; op: "update"; payload: Record<string, unknown> }
+      | { table: "conversation_handoffs"; op: "select"; filters: Record<string, unknown> }
+      | { table: "messages"; op: "select"; filters: Record<string, unknown> }
+      | { table: "messages"; op: "insert"; payload: unknown }
+    > = [];
+
+    const client = {
+      from(table: string) {
+        if (table === "conversations") {
+          return {
+            select: () => ({
+              eq: () => ({
+                single: async () => {
+                  calls.push({ table, op: "select" });
+                  if (options.conversationReadError) {
+                    return { data: null, error: options.conversationReadError };
+                  }
+                  return {
+                    data: options.conversationRow ?? { assigned_at: ASSIGNED_AT, ai_enabled: false, status: "open" },
+                    error: null,
+                  };
+                },
+              }),
+            }),
+            update: (payload: Record<string, unknown>) => ({
+              eq: async () => {
+                calls.push({ table, op: "update", payload });
+                if ("assigned_agent_id" in payload && options.firstUpdateError) {
+                  return { error: options.firstUpdateError };
+                }
+                if ("ai_enabled" in payload && options.secondUpdateError) {
+                  return { error: options.secondUpdateError };
+                }
+                return { error: null };
+              },
+            }),
+          };
+        }
+        if (table === "conversation_handoffs") {
+          return {
+            select: () => {
+              const filters: Record<string, unknown> = {};
+              const chain = {
+                eq(col: string, val: unknown) {
+                  filters[col] = val;
+                  return chain;
+                },
+                gte(col: string, val: unknown) {
+                  filters[col] = val;
+                  return chain;
+                },
+                limit: async () => {
+                  calls.push({ table: "conversation_handoffs", op: "select", filters });
+                  return options.handoffsResult ?? { data: [{ id: "handoff-1" }], error: null };
+                },
+              };
+              return chain;
+            },
+          };
+        }
+        if (table === "messages") {
+          return {
+            select: () => {
+              const filters: Record<string, unknown> = {};
+              const chain = {
+                eq(col: string, val: unknown) {
+                  filters[col] = val;
+                  return chain;
+                },
+                gte(col: string, val: unknown) {
+                  filters[col] = val;
+                  return chain;
+                },
+                limit: async () => {
+                  calls.push({ table: "messages", op: "select", filters });
+                  return options.messagesResult ?? { data: [], error: null };
+                },
+              };
+              return chain;
+            },
+            insert: async (payload: unknown) => {
+              calls.push({ table: "messages", op: "insert", payload });
+              return { error: null };
+            },
+          };
+        }
+        throw new Error(`Fake Supabase: tabla no soportada en este test: ${table}`);
+      },
+    };
+
+    return { client: client as unknown as SupabaseClient, calls };
+  }
+
+  function conversationUpdatesOf(calls: ReturnType<typeof createFakeSupabaseForUnassign>["calls"]) {
+    return calls.filter((c) => c.table === "conversations" && c.op === "update") as {
+      table: "conversations";
+      op: "update";
+      payload: Record<string, unknown>;
+    }[];
+  }
+
+  it("caso 1 — tomado a mano (fila silenciada_por_asesor posterior a assigned_at), sin escribirle al cliente: dos UPDATE, desasignar y reencender", async () => {
+    const { client, calls } = createFakeSupabaseForUnassign({
+      conversationRow: { assigned_at: ASSIGNED_AT, ai_enabled: false, status: "open" },
+      handoffsResult: { data: [{ id: "handoff-1" }], error: null },
+      messagesResult: { data: [], error: null },
+    });
+
+    await unassign(client, "conv-1", AGENT, "María");
+
+    const updates = conversationUpdatesOf(calls);
+    expect(updates).toHaveLength(2);
+    expect(updates[0].payload).toEqual({ assigned_agent_id: null });
+    expect(updates[1].payload).toEqual({ ai_enabled: true });
+
+    // La consulta de conversation_handoffs busca la fila que deja el
+    // segundo UPDATE de silenceAiForManualTakeover (T10): mismo reason,
+    // posterior o igual a assigned_at.
+    const handoffsSelect = calls.find((c) => c.table === "conversation_handoffs" && c.op === "select");
+    expect(handoffsSelect && "filters" in handoffsSelect ? handoffsSelect.filters : null).toEqual({
+      conversation_id: "conv-1",
+      reason: "silenciada_por_asesor",
+      created_at: ASSIGNED_AT,
+    });
+
+    // La consulta de mensajes usa el MISMO predicado que apaga la IA por
+    // trigger (handle_agent_message_silences_ai): sender_type='agent',
+    // direction='outbound', is_internal_note=false, desde assigned_at.
+    const messagesSelect = calls.find((c) => c.table === "messages" && c.op === "select");
+    expect(messagesSelect && "filters" in messagesSelect ? messagesSelect.filters : null).toEqual({
+      conversation_id: "conv-1",
+      sender_type: "agent",
+      direction: "outbound",
+      is_internal_note: false,
+      created_at: ASSIGNED_AT,
+    });
+
+    expect(calls.some((c) => c.table === "messages" && c.op === "insert")).toBe(true);
+  });
+
+  it("caso 2 — el asesor SÍ le escribió al cliente después de assigned_at: un solo UPDATE, no reenciende", async () => {
+    const { client, calls } = createFakeSupabaseForUnassign({
+      conversationRow: { assigned_at: ASSIGNED_AT, ai_enabled: false, status: "open" },
+      messagesResult: { data: [{ id: "msg-1" }], error: null },
+    });
+
+    await unassign(client, "conv-1", AGENT, "María");
+
+    const updates = conversationUpdatesOf(calls);
+    expect(updates).toHaveLength(1);
+    expect(updates[0].payload).toEqual({ assigned_agent_id: null });
+  });
+
+  it("caso 3 — ai_enabled ya estaba en true (Seba escaló, nadie la apagó): un solo UPDATE, ni siquiera consulta handoffs/messages", async () => {
+    const { client, calls } = createFakeSupabaseForUnassign({
+      conversationRow: { assigned_at: ASSIGNED_AT, ai_enabled: true, status: "open" },
+    });
+
+    await unassign(client, "conv-1", AGENT, "María");
+
+    const updates = conversationUpdatesOf(calls);
+    expect(updates).toHaveLength(1);
+    expect(updates[0].payload).toEqual({ assigned_agent_id: null });
+    expect(calls.some((c) => c.table === "conversation_handoffs")).toBe(false);
+    expect(calls.some((c) => c.table === "messages" && c.op === "select")).toBe(false);
+  });
+
+  it("caso 4 — la conversación está cerrada: un solo UPDATE", async () => {
+    const { client, calls } = createFakeSupabaseForUnassign({
+      conversationRow: { assigned_at: ASSIGNED_AT, ai_enabled: false, status: "closed" },
+    });
+
+    await unassign(client, "conv-1", AGENT, "María");
+
+    const updates = conversationUpdatesOf(calls);
+    expect(updates).toHaveLength(1);
+    expect(calls.some((c) => c.table === "conversation_handoffs")).toBe(false);
+    expect(calls.some((c) => c.table === "messages" && c.op === "select")).toBe(false);
+  });
+
+  it("caso 5 — assigned_at es null: un solo UPDATE", async () => {
+    const { client, calls } = createFakeSupabaseForUnassign({
+      conversationRow: { assigned_at: null, ai_enabled: false, status: "open" },
+    });
+
+    await unassign(client, "conv-1", AGENT, "María");
+
+    const updates = conversationUpdatesOf(calls);
+    expect(updates).toHaveLength(1);
+    expect(calls.some((c) => c.table === "conversation_handoffs")).toBe(false);
+    expect(calls.some((c) => c.table === "messages" && c.op === "select")).toBe(false);
+  });
+
+  it("caso 6 — falla la lectura de mensajes: un solo UPDATE, no lanza, avisa por console.error", async () => {
+    const consoleErrorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      const { client, calls } = createFakeSupabaseForUnassign({
+        conversationRow: { assigned_at: ASSIGNED_AT, ai_enabled: false, status: "open" },
+        messagesResult: { data: null, error: new Error("corte de red") },
+      });
+
+      await expect(unassign(client, "conv-1", AGENT, "María")).resolves.toBeUndefined();
+
+      const updates = conversationUpdatesOf(calls);
+      expect(updates).toHaveLength(1);
+      expect(consoleErrorSpy).toHaveBeenCalled();
+    } finally {
+      consoleErrorSpy.mockRestore();
+    }
+  });
+
+  it("caso 7 — falla el segundo UPDATE (ai_enabled=true): no lanza, la desasignación queda hecha, avisa por console.error", async () => {
+    const consoleErrorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      const { client, calls } = createFakeSupabaseForUnassign({
+        conversationRow: { assigned_at: ASSIGNED_AT, ai_enabled: false, status: "open" },
+        messagesResult: { data: [], error: null },
+        secondUpdateError: new Error("no se pudo reencender"),
+      });
+
+      await expect(unassign(client, "conv-1", AGENT, "María")).resolves.toBeUndefined();
+
+      const updates = conversationUpdatesOf(calls);
+      expect(updates).toHaveLength(2);
+      expect(updates[0].payload).toEqual({ assigned_agent_id: null });
+      expect(updates[1].payload).toEqual({ ai_enabled: true });
+      expect(consoleErrorSpy).toHaveBeenCalled();
+    } finally {
+      consoleErrorSpy.mockRestore();
+    }
+  });
+
+  it("caso 8 — falla el primer UPDATE (assigned_agent_id): lanza como hoy, sin segundo UPDATE ni nota", async () => {
+    const { client, calls } = createFakeSupabaseForUnassign({
+      conversationRow: { assigned_at: ASSIGNED_AT, ai_enabled: false, status: "open" },
+      firstUpdateError: new Error("no se pudo desasignar"),
+    });
+
+    await expect(unassign(client, "conv-1", AGENT, "María")).rejects.toThrow(/no se pudo desasignar/i);
+
+    const updates = conversationUpdatesOf(calls);
+    expect(updates).toHaveLength(1);
+    expect(calls.some((c) => c.table === "messages" && c.op === "insert")).toBe(false);
+  });
+
+  it("una nota interna posterior a assigned_at no cuenta como haberle escrito al cliente: la consulta la excluye por is_internal_note=false", async () => {
+    // Una nota interna real quedaría filtrada por is_internal_note=false en
+    // la propia consulta (Postgres, no en memoria): acá se verifica que la
+    // consulta manda ese filtro, y que con la tabla vacía de mensajes NO
+    // internos ni de otro sentido (simulando que la única fila era la nota,
+    // que el filtro ya descartó) sí reenciende.
+    const { client, calls } = createFakeSupabaseForUnassign({
+      conversationRow: { assigned_at: ASSIGNED_AT, ai_enabled: false, status: "open" },
+      messagesResult: { data: [], error: null },
+    });
+
+    await unassign(client, "conv-1", AGENT, "María");
+
+    const messagesSelect = calls.find((c) => c.table === "messages" && c.op === "select");
+    expect(messagesSelect && "filters" in messagesSelect ? messagesSelect.filters.is_internal_note : undefined).toBe(false);
+
+    const updates = conversationUpdatesOf(calls);
+    expect(updates).toHaveLength(2);
+    expect(updates[1].payload).toEqual({ ai_enabled: true });
+  });
+
+  it("conversationRow ausente (lectura previa falló): no lanza, un solo UPDATE, no reenciende", async () => {
+    const consoleErrorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      const { client, calls } = createFakeSupabaseForUnassign({
+        conversationReadError: new Error("corte de red al leer"),
+      });
+
+      await expect(unassign(client, "conv-1", AGENT, "María")).resolves.toBeUndefined();
+
+      const updates = conversationUpdatesOf(calls);
+      expect(updates).toHaveLength(1);
+      expect(updates[0].payload).toEqual({ assigned_agent_id: null });
+      expect(consoleErrorSpy).toHaveBeenCalled();
+    } finally {
+      consoleErrorSpy.mockRestore();
+    }
+  });
+
+  /**
+   * Caso (a) del ajuste del orquestador: una pausa manual de ANTES de
+   * asignarse el chat (`setAiEnabled(false)`, o cualquier otro camino que
+   * deje `silenciada_por_asesor`) no debe reencenderse al desasignar sin
+   * haber escrito — esa fila queda ANTERIOR a `assigned_at`, así que la
+   * consulta con `created_at >= assigned_at` no la encuentra, y en el fake
+   * eso se simula con `handoffsResult: { data: [], error: null }` (como si
+   * el filtro de la base ya la hubiera descartado).
+   */
+  it("caso (a) — pausa manual ANTERIOR a assigned_at, tomado y desasignado sin escribir: un solo UPDATE, no reenciende", async () => {
+    const { client, calls } = createFakeSupabaseForUnassign({
+      conversationRow: { assigned_at: ASSIGNED_AT, ai_enabled: false, status: "open" },
+      handoffsResult: { data: [], error: null },
+    });
+
+    await unassign(client, "conv-1", AGENT, "María");
+
+    const updates = conversationUpdatesOf(calls);
+    expect(updates).toHaveLength(1);
+    expect(updates[0].payload).toEqual({ assigned_agent_id: null });
+    // Sin una fila silenciada_por_asesor posterior a assigned_at, ni
+    // siquiera vale la pena preguntar si el asesor escribió.
+    expect(calls.some((c) => c.table === "messages" && c.op === "select")).toBe(false);
+  });
+
+  /** Caso (b): cubierto por el caso 1 de arriba (fila posterior a assigned_at → reenciende). */
+
+  it("caso (c) — falla la lectura de conversation_handoffs: un solo UPDATE, no lanza, avisa por console.error", async () => {
+    const consoleErrorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      const { client, calls } = createFakeSupabaseForUnassign({
+        conversationRow: { assigned_at: ASSIGNED_AT, ai_enabled: false, status: "open" },
+        handoffsResult: { data: null, error: new Error("corte de red") },
+      });
+
+      await expect(unassign(client, "conv-1", AGENT, "María")).resolves.toBeUndefined();
+
+      const updates = conversationUpdatesOf(calls);
+      expect(updates).toHaveLength(1);
+      // Falla antes de llegar a preguntar por los mensajes.
+      expect(calls.some((c) => c.table === "messages" && c.op === "select")).toBe(false);
       expect(consoleErrorSpy).toHaveBeenCalled();
     } finally {
       consoleErrorSpy.mockRestore();
