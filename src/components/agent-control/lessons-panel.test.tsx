@@ -161,3 +161,75 @@ describe("LessonsPanel — borrar", () => {
     );
   });
 });
+
+describe("LessonsPanel — onChanged (19/9/2026, T2)", () => {
+  /*
+   * El panel dependía solo del canal Realtime de `ai_lessons` para verse al
+   * día — que se pospone con la pestaña oculta y que calla para siempre si el
+   * canal está caído — y el 19/9/2026 eso dejó la base en `is_active = false`
+   * con la pantalla diciendo "Activa". `onChanged` es la vía directa: se
+   * llama tras una mutación que salió bien, nunca si falló (ese camino ya
+   * tiene su propio toast).
+   */
+  it("tras apagar con éxito, llama a onChanged", async () => {
+    setLessonActiveMock.mockResolvedValueOnce(undefined);
+    const onChanged = vi.fn();
+    render(
+      <LessonsPanel
+        currentAgent={AGENTE}
+        lessons={[lesson({ createdBy: AGENTE.id, isActive: true })]}
+        onChanged={onChanged}
+      />
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: /apagar la lección de ana/i }));
+
+    await waitFor(() => expect(onChanged).toHaveBeenCalledTimes(1));
+    expect(dangerToast).not.toHaveBeenCalled();
+  });
+
+  it("si la mutación de apagar falla, NO llama a onChanged y sale el toast de error", async () => {
+    setLessonActiveMock.mockRejectedValueOnce(new Error("boom"));
+    const onChanged = vi.fn();
+    render(
+      <LessonsPanel
+        currentAgent={AGENTE}
+        lessons={[lesson({ createdBy: AGENTE.id, isActive: true })]}
+        onChanged={onChanged}
+      />
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: /apagar la lección de ana/i }));
+
+    await waitFor(() => expect(dangerToast).toHaveBeenCalledWith("No se pudo cambiar el estado de la lección."));
+    expect(onChanged).not.toHaveBeenCalled();
+  });
+
+  it("tras borrar con éxito, llama a onChanged", async () => {
+    deleteLessonMock.mockResolvedValueOnce(undefined);
+    const onChanged = vi.fn();
+    render(
+      <LessonsPanel currentAgent={AGENTE} lessons={[lesson({ createdBy: AGENTE.id })]} onChanged={onChanged} />
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: /^borrar$/i }));
+    fireEvent.click(screen.getByRole("button", { name: /confirmar/i }));
+
+    await waitFor(() => expect(onChanged).toHaveBeenCalledTimes(1));
+    expect(dangerToast).not.toHaveBeenCalled();
+  });
+
+  it("si la mutación de borrar falla, NO llama a onChanged y sale el toast de error", async () => {
+    deleteLessonMock.mockRejectedValueOnce(new Error("boom"));
+    const onChanged = vi.fn();
+    render(
+      <LessonsPanel currentAgent={AGENTE} lessons={[lesson({ createdBy: AGENTE.id })]} onChanged={onChanged} />
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: /^borrar$/i }));
+    fireEvent.click(screen.getByRole("button", { name: /confirmar/i }));
+
+    await waitFor(() => expect(dangerToast).toHaveBeenCalledWith("No se pudo borrar la lección."));
+    expect(onChanged).not.toHaveBeenCalled();
+  });
+});

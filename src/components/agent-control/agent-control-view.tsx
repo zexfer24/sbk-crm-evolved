@@ -626,7 +626,12 @@ export function AgentControlView({
                   </p>
                   <p className="ac-kill-note">
                     {settings.aiGloballyEnabled
-                      ? "Responde en cualquier conversación sin asesor asignado."
+                      ? // 19/9/2026, plan "El precio se lee en bolívares" (T2): el texto
+                        // viejo ("sin asesor asignado") quedó falso desde D2 de "Seba
+                        // atiende el mostrador" (18/9/2026) — la escalada ya no apaga a
+                        // Seba, así que sigue respondiendo con un asesor ya asignado
+                        // hasta que ESE asesor le escribe de verdad al cliente.
+                        "Responde en toda conversación hasta que un asesor le escribe al cliente."
                       : "No va a responder en ninguna conversación hasta que la reactives."}
                   </p>
                 </div>
@@ -985,7 +990,15 @@ export function AgentControlView({
               />
             )}
 
-            {tab === "lecciones" && <LessonsPanel currentAgent={currentAgent} lessons={lessons} />}
+            {tab === "lecciones" && (
+              // 19/9/2026 (T2): `refresh` directo, NO `scheduleRefresh` — el 19/9 se
+              // vio la base en `is_active = false` con la pantalla diciendo "Activa"
+              // porque el panel solo se ponía al día por el canal Realtime de
+              // `ai_lessons`, que `scheduleRefresh` pospone con la pestaña oculta y
+              // que no llega nunca si el canal está caído (ver la trampa del canal
+              // muerto de `conversation_handoffs`, 8/9/2026, en CLAUDE.md).
+              <LessonsPanel currentAgent={currentAgent} lessons={lessons} onChanged={refresh} />
+            )}
 
             {tab === "herramientas" && (
               <AgentToolsPanel

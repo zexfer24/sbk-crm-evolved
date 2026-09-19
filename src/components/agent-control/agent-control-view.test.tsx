@@ -244,6 +244,21 @@ describe("AgentControlView — encender la IA global pide confirmación", () => 
   });
 
   /**
+   * 19/9/2026, plan "El precio se lee en bolívares" (T2): el texto viejo
+   * ("sin asesor asignado") es falso desde D2 de "Seba atiende el mostrador"
+   * (18/9/2026) — la escalada ya no apaga a Seba, sigue respondiendo con un
+   * asesor asignado hasta que ESE asesor le escribe de verdad al cliente.
+   */
+  it("con la IA encendida, el texto dice hasta cuándo responde Seba, no que necesite un chat sin asesor", () => {
+    montar(encendida);
+
+    expect(
+      screen.getByText("Responde en toda conversación hasta que un asesor le escribe al cliente.")
+    ).toBeInTheDocument();
+    expect(screen.queryByText("Responde en cualquier conversación sin asesor asignado.")).not.toBeInTheDocument();
+  });
+
+  /**
    * Apagar tiene que parar TODO, no sólo escribir el interruptor.
    *
    * Escribiéndolo a secas quedaban vivas la cola llena y los turnos en vuelo,

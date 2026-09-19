@@ -20,6 +20,17 @@ import { deleteLesson, setLessonActive } from "@/lib/mutations";
 interface LessonsPanelProps {
   currentAgent: Agent;
   lessons: AiLesson[];
+  /**
+   * 19/9/2026 (T2, plan "El precio se lee en bolívares"): se llama SOLO tras
+   * un `setLessonActive`/`deleteLesson` que salió bien — nunca si la mutación
+   * falla, ese caso ya tiene su propio toast de error. Antes el panel
+   * dependía por completo del canal Realtime de `ai_lessons` para verse al
+   * día, y ese canal pospone con la pestaña oculta (`useLiveRefresh`) y no
+   * llega nunca si está caído: el 19/9/2026 la base quedó en
+   * `is_active = false` y la pantalla siguió diciendo "Activa". Opcional
+   * para no obligar a todos los tests existentes a pasarlo.
+   */
+  onChanged?: () => void | Promise<void>;
 }
 
 const SCOPE_LABEL: Record<AiLesson["scope"], string> = {
@@ -41,7 +52,7 @@ function puedeAdministrar(agent: Agent, lesson: AiLesson): boolean {
   return agent.role !== "agent" || lesson.createdBy === agent.id;
 }
 
-export function LessonsPanel({ currentAgent, lessons }: LessonsPanelProps) {
+export function LessonsPanel({ currentAgent, lessons, onChanged }: LessonsPanelProps) {
   const [togglingId, setTogglingId] = useState<string | null>(null);
   const [confirmingDeleteId, setConfirmingDeleteId] = useState<string | null>(null);
 
@@ -51,6 +62,7 @@ export function LessonsPanel({ currentAgent, lessons }: LessonsPanelProps) {
     setTogglingId(lesson.id);
     try {
       await setLessonActive(createClient(), lesson.id, !lesson.isActive);
+      await onChanged?.();
     } catch {
       toast.danger("No se pudo cambiar el estado de la lección.");
     } finally {
@@ -65,6 +77,7 @@ export function LessonsPanel({ currentAgent, lessons }: LessonsPanelProps) {
     }
     try {
       await deleteLesson(createClient(), lesson.id);
+      await onChanged?.();
     } catch {
       toast.danger("No se pudo borrar la lección.");
     } finally {
