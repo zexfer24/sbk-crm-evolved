@@ -122,6 +122,27 @@ function createFakeSupabase() {
         };
       }
 
+      // H2b, plan "Seba atiende el mostrador" (18/9/2026): `reopenedAtIfGraceWouldFire`
+      // (human-handled.ts) consulta esta tabla cuando la cláusula de gracia
+      // iba a disparar — pasa en "humano_intervino" y "humano_se_adelanto" de
+      // abajo, donde el mensaje del asesor es "ahora mismo". Sin fila: "nunca
+      // se reabrió", que es lo que necesita todo test de este describe
+      // escrito antes de H2 (ninguno arma una reapertura). No se prueba acá
+      // el caso de reapertura de verdad — eso lo cubre `agent.test.ts`.
+      if (table === "conversation_handoffs") {
+        return {
+          select: () => ({
+            eq: () => ({
+              eq: () => ({
+                order: () => ({
+                  limit: async () => ({ data: [], error: null }),
+                }),
+              }),
+            }),
+          }),
+        };
+      }
+
       if (table === "contact_tags") {
         return { upsert: () => Promise.resolve({ data: null, error: null }) };
       }

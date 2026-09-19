@@ -86,6 +86,17 @@ interface FakeState {
   /** Si viene con mensaje, esa segunda consulta de `escalationOpen` falla. */
   agentMessagesAfterHandoffError: { message: string } | null;
   /**
+   * H2b, plan "Seba atiende el mostrador" (18/9/2026): la fila más reciente
+   * de `conversation_handoffs` con `reason = "reabierta_por_cliente"` que
+   * `reopenedAtIfGraceWouldFire` (human-handled.ts) consulta cuando la
+   * cláusula de gracia iba a disparar — ver el docblock de esa función y el
+   * de `humanClaimsChat`. `null` de fábrica: "nunca se reabrió", que es el
+   * comportamiento de todos los tests de este archivo escritos antes de H2.
+   */
+  reopenedByCustomerRow: { created_at: string } | null;
+  /** Si viene con mensaje, esa consulta falla — se trata como "no hay reapertura" (falla cerrado, igual que el resto de human-handled.ts). */
+  reopenedByCustomerError: { message: string } | null;
+  /**
    * T2b, plan "Seba atiende el mostrador" (18/9/2026): qué devuelve el
    * reclamo de `claimPresentation` (`UPDATE ... WHERE id = ? AND
    * welcome_sent_at IS NULL ... SELECT id`). `true` de fábrica: la mayoría
@@ -141,6 +152,8 @@ const state: FakeState = {
   lastHandoffError: null,
   agentMessagesAfterHandoff: [],
   agentMessagesAfterHandoffError: null,
+  reopenedByCustomerRow: null,
+  reopenedByCustomerError: null,
   presentationClaimWins: true,
   presentationClaimError: null,
   onPresentationClaimed: null,
@@ -386,6 +399,15 @@ function createFakeSupabase() {
       // filtra una lista, es `agent.test.ts` el que arma el escenario -- así
       // que `.not()` es un passthrough: el filtro de verdad, sobre filas
       // crudas, lo ejercita `handoffs.test.ts` (mini PostgREST genérico).
+      // H2b, plan "Seba atiende el mostrador" (18/9/2026): esta tabla ahora
+      // tiene DOS consumidores con la misma raíz `.select().eq(...)` — se
+      // distinguen por el método que encadenan después del primer `.eq()`
+      // (`conversation_id`), no por el valor, porque este fake no captura qué
+      // se pidió en cada `.eq()`: `escalationOpen` sigue con `.not(...)`
+      // (Tarea 4/5, 14/9/2026) y termina en `.maybeSingle()`;
+      // `reopenedAtIfGraceWouldFire` (human-handled.ts) encadena un segundo
+      // `.eq("reason", "reabierta_por_cliente")` y termina en `.limit(1)`
+      // SIN `.maybeSingle()` — la consulta real trae una lista.
       if (table === "conversation_handoffs") {
         return {
           select: () => ({
@@ -397,6 +419,18 @@ function createFakeSupabase() {
                       data: state.lastHandoffError ? null : state.lastHandoffRow,
                       error: state.lastHandoffError,
                     }),
+                  }),
+                }),
+              }),
+              eq: () => ({
+                order: () => ({
+                  limit: async () => ({
+                    data: state.reopenedByCustomerError
+                      ? null
+                      : state.reopenedByCustomerRow
+                        ? [state.reopenedByCustomerRow]
+                        : [],
+                    error: state.reopenedByCustomerError,
                   }),
                 }),
               }),
@@ -700,6 +734,8 @@ beforeEach(() => {
   state.lastHandoffError = null;
   state.agentMessagesAfterHandoff = [];
   state.agentMessagesAfterHandoffError = null;
+  state.reopenedByCustomerRow = null;
+  state.reopenedByCustomerError = null;
   state.presentationClaimWins = true;
   state.presentationClaimError = null;
   state.onPresentationClaimed = null;
@@ -725,8 +761,19 @@ beforeEach(() => {
   });
   matchPlaybookMock.mockResolvedValue({ playbook: null, usage: NO_USAGE });
   playbookSentRecentlyMock.mockResolvedValue(false);
+  // H1, "Seba atiende el mostrador" (18/9/2026): el default de fábrica era
+  // "consulta_disponibilidad", y desde H1 esa intención hace que un
+  // escenario calzado se CEDA al catálogo (ver `escenario_cedido_al_catalogo`
+  // en agent.ts) en vez de mandarse — cambiar el default acá habría vuelto
+  // rojos, sin ninguna razón real, los ~20 tests de escenarios de este
+  // archivo que solo prueban la lógica de "calzó/no se repite/etiqueta" y
+  // nunca les importó la intención. "otro" es el valor neutro del
+  // clasificador (`classify.ts`: "ante la duda, otro") y no dispara ninguna
+  // rama especial (ni cede el escenario, ni es fuera_de_tema/devolución/
+  // queja), así que un escenario sigue saliendo tal cual salvo que un test
+  // pida explícitamente `consulta_disponibilidad`.
   classifyIntentMock.mockResolvedValue({
-    intent: "consulta_disponibilidad",
+    intent: "otro",
     usage: { inputTokens: 5, outputTokens: 1, totalTokens: 6 },
   });
   generateMock.mockResolvedValue({
@@ -1940,6 +1987,75 @@ describe("runAgentTurn — escenarios predeterminados", () => {
   });
 });
 
+/**
+ * H1, "Seba atiende el mostrador" (18/9/2026): escenario a mano del 18/9
+ * contra la base local — "¿tienen pastillas de freno?" y "tienen pastillas
+ * de freno para bera sbr 2020?" calzaron el escenario del panel "Catálogo
+ * general" 2 de 2 veces y el turno mandó "Claro que sí, por acá te dejo
+ * nuestro catálogo 👇" sin consultar `products`, sin la pregunta de filtro
+ * (exigencia 5 del cliente) y sin escalar — `agent_turns.summary` quedó
+ * `Escenario "Catálogo general".`. Decisión del operador: "el repuesto
+ * manda": con un escenario calzado, si la intención clasificada (que corre
+ * en paralelo con fase 0, no después) es `consulta_disponibilidad`, el
+ * escenario se cede al tool loop en vez de mandarse. Si la clasificación
+ * falló o la intención es otra, el escenario sale como siempre.
+ */
+describe("runAgentTurn — el repuesto manda (H1, 18/9/2026)", () => {
+  it("escenario calzado + consulta_disponibilidad: no manda el escenario, corre el tool loop y deja el log", async () => {
+    const info = vi.spyOn(log, "info");
+    const pb = playbook();
+    fetchActivePlaybooksMock.mockResolvedValue([pb]);
+    matchPlaybookMock.mockResolvedValue({ playbook: pb, usage: NO_USAGE });
+    classifyIntentMock.mockResolvedValue({
+      intent: "consulta_disponibilidad",
+      usage: { inputTokens: 5, outputTokens: 1, totalTokens: 6 },
+    });
+
+    await runAgentTurn("conv-1");
+
+    expect(sendPlaybookReplyMock).not.toHaveBeenCalled();
+    // El camino de escenario ahorra justo esto (ver el test de arriba "no
+    // llama al modelo redactor"); acá el ahorro no aplica porque el turno
+    // sigue por el flujo genérico — el tool loop SÍ corre.
+    expect(generateMock).toHaveBeenCalledTimes(1);
+    expect(sendAgentTextMock).toHaveBeenCalledTimes(1);
+    expect(info).toHaveBeenCalledWith("escenario_cedido_al_catalogo", {
+      conversationId: "conv-1",
+      escenario: pb.name,
+    });
+  });
+
+  it("escenario calzado + intención otro: se manda el escenario como siempre", async () => {
+    const info = vi.spyOn(log, "info");
+    const pb = playbook();
+    fetchActivePlaybooksMock.mockResolvedValue([pb]);
+    matchPlaybookMock.mockResolvedValue({ playbook: pb, usage: NO_USAGE });
+    classifyIntentMock.mockResolvedValue({
+      intent: "otro",
+      usage: { inputTokens: 5, outputTokens: 1, totalTokens: 6 },
+    });
+
+    await runAgentTurn("conv-1");
+
+    expect(sendPlaybookReplyMock).toHaveBeenCalledTimes(1);
+    expect(generateMock).not.toHaveBeenCalled();
+    expect(info).not.toHaveBeenCalledWith("escenario_cedido_al_catalogo", expect.anything());
+  });
+
+  it("escenario calzado + clasificación fallida: se manda el escenario como siempre", async () => {
+    const info = vi.spyOn(log, "info");
+    const pb = playbook();
+    fetchActivePlaybooksMock.mockResolvedValue([pb]);
+    matchPlaybookMock.mockResolvedValue({ playbook: pb, usage: NO_USAGE });
+    classifyIntentMock.mockRejectedValue(new Error("429 del proveedor"));
+
+    await runAgentTurn("conv-1");
+
+    expect(sendPlaybookReplyMock).toHaveBeenCalledTimes(1);
+    expect(info).not.toHaveBeenCalledWith("escenario_cedido_al_catalogo", expect.anything());
+  });
+});
+
 describe("runAgentTurn — etiquetas del escenario", () => {
   const ENVIO = { id: "tag-envio", label: "Envio", color: "accent" as const };
   const PENDIENTE = { id: "tag-pendiente", label: "pendiente-venta", color: "warning" as const };
@@ -2256,6 +2372,35 @@ describe("runAgentTurn — la guarda de humanos ya no es vitalicia (T7, 8/9/2026
     await runAgentTurn("conv-1");
 
     expect(classifyIntentMock).toHaveBeenCalled();
+  });
+});
+
+/**
+ * H2, plan "Seba atiende el mostrador" (18/9/2026, D2): un chat REABIERTO por
+ * el cliente arranca de cero — un mensaje de asesor de ANTES de esa
+ * reapertura no cuenta como "conversando ahora mismo" para la cláusula de
+ * gracia, aunque esté a minutos de `now`. Ver el docblock de
+ * `reopenedAtIfGraceWouldFire`/`humanClaimsChat` en human-handled.ts.
+ */
+describe("runAgentTurn — la reapertura por el cliente salta la gracia (H2, 18/9/2026)", () => {
+  it("asesor hace 5 min, reapertura hace 1 min, cliente escribe después: no sale por humano_intervino", async () => {
+    const ahora = Date.now();
+    state.conversation = {
+      ...state.conversation,
+      last_customer_message_at: new Date(ahora).toISOString(),
+    };
+    // El asesor escribió ANTES del último mensaje del cliente, pero hace solo
+    // 5 min — dentro de los 30 min de gracia por default, así que sin la
+    // reapertura la cláusula de gracia bloquearía el turno.
+    state.humanMessages = [{ created_at: new Date(ahora - 5 * 60_000).toISOString() }];
+    // La reapertura es POSTERIOR al mensaje del asesor: descuenta ese mensaje
+    // viejo y la gracia no dispara.
+    state.reopenedByCustomerRow = { created_at: new Date(ahora - 1 * 60_000).toISOString() };
+
+    await runAgentTurn("conv-1");
+
+    expect(classifyIntentMock).toHaveBeenCalled();
+    expect(handoffCalls.some((call) => call.p_reason === "humano_intervino")).toBe(false);
   });
 });
 

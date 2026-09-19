@@ -242,6 +242,21 @@ function createFakeSupabase(rows: FakeRow[], mensajes: FakeMensaje[] = []) {
         // algún asesor escribió en el chat. Sin este caso el fake lanzaba, el
         // filtro fallaba cerrado y el reconciliador no encolaba nada.
         if (tabla === "messages") return { select: () => mensajesBuilder() };
+        // H2b, plan "Seba atiende el mostrador" (18/9/2026): la misma
+        // `conversationsWrittenByHumans`, en su forma de LOTE, consulta esta
+        // tabla (`.in(...).eq("reason", "reabierta_por_cliente")`) SOLO para
+        // las conversaciones donde la gracia dispararía — acá siempre vacío:
+        // ninguna conversación de este archivo se reabrió, así que la gracia
+        // decide igual que antes de H2. La reapertura de verdad se prueba en
+        // agent.test.ts, contra `humanHasWritten` (el camino de UNA sola
+        // conversación).
+        if (tabla === "conversation_handoffs") {
+          return {
+            select: () => ({
+              in: () => ({ eq: async () => ({ data: [], error: null }) }),
+            }),
+          };
+        }
         throw new Error(`Fake Supabase: tabla no soportada: ${tabla}`);
       },
       rpc(fn: string, params?: Record<string, unknown>) {

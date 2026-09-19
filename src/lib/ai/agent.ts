@@ -1551,27 +1551,49 @@ async function runTurnPhases(
       (await playbookSentRecently(supabase, conversationId, match.playbook.id));
 
     if (!yaSalioHacePoco) {
-      await runPlaybook(
-        supabase,
-        target,
-        entrega,
-        lease,
-        match.playbook,
-        classifiedTokens,
-        customerMessage,
-        tiempos,
-        convo.last_customer_message_at,
-        businessHours,
-        convo.assigned_agent_id
-      );
-      return;
-    }
+      // H1, "Seba atiende el mostrador" (18/9/2026): escenario a mano del
+      // 18/9 — "¿tienen pastillas de freno?" y "tienen pastillas de freno
+      // para bera sbr 2020?" calzaron el escenario del panel "Catálogo
+      // general" DOS de dos veces y el turno mandó "Claro que sí, por acá
+      // te dejo nuestro catálogo" sin consultar el inventario, sin la
+      // pregunta de filtro (exigencia 5) y sin escalar. Decisión del
+      // operador: "el repuesto manda" — si la intención clasificada (que ya
+      // corrió en paralelo, arriba) es `consulta_disponibilidad`, el
+      // escenario se cede al tool loop, que sí busca en `products`, hace la
+      // pregunta de filtro cuando corresponde y escala con el texto fijo.
+      // Solo cede con una clasificación que salió bien: si falló (abajo,
+      // `!classified.ok`) o la intención es otra, el escenario se manda tal
+      // cual, como siempre.
+      const cedeAlCatalogo = classified.ok && classified.result.intent === "consulta_disponibilidad";
 
-    log.info("escenario_no_se_repite", {
-      conversationId,
-      escenario: match.playbook.name,
-      motivo: fueLaUltimaRespuesta ? "fue_la_ultima_respuesta" : "ventana_de_6h",
-    });
+      if (!cedeAlCatalogo) {
+        await runPlaybook(
+          supabase,
+          target,
+          entrega,
+          lease,
+          match.playbook,
+          classifiedTokens,
+          customerMessage,
+          tiempos,
+          convo.last_customer_message_at,
+          businessHours,
+          convo.assigned_agent_id
+        );
+        return;
+      }
+
+      log.info("escenario_cedido_al_catalogo", {
+        conversationId,
+        escenario: match.playbook.name,
+      });
+    } else {
+      log.info("escenario_no_se_repite", {
+        conversationId,
+        escenario: match.playbook.name,
+        motivo: fueLaUltimaRespuesta ? "fue_la_ultima_respuesta" : "ventana_de_6h",
+      });
+    }
   }
 
   if (!classified.ok) {

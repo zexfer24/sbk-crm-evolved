@@ -1100,6 +1100,60 @@ dejar rastro es lo que hacía desaparecer leads.
   (con `created_at` de Meta, necesariamente posterior) no cae en la guarda
   `mensaje_previo_a_devolucion` — es justo el mensaje que hay que
   contestar, no uno que ya estaba ahí antes.
+- **"El repuesto manda": un escenario calzado se CEDE al catálogo cuando la
+  intención clasificada es `consulta_disponibilidad`, nunca por su cuenta**
+  (H1, "Seba atiende el mostrador", 18/9/2026). Escenario a mano contra la
+  base local: "¿tienen pastillas de freno?" y "tienen pastillas de freno
+  para bera sbr 2020?" calzaron el escenario del panel "Catálogo general"
+  2 de 2 veces y el turno mandó "Claro que sí, por acá te dejo nuestro
+  catálogo 👇" sin consultar `products`, sin la pregunta de filtro
+  (requisito 5) y sin escalar — `agent_turns.summary` quedó `Escenario
+  "Catálogo general".`. En `runTurnPhases` (`agent.ts`), dentro del bloque
+  `if (match.playbook) { … if (!yaSalioHacePoco) { … } }`, justo antes de
+  `runPlaybook`: `cedeAlCatalogo = classified.ok && classified.result.intent
+  === "consulta_disponibilidad"`. La clasificación ya corrió EN PARALELO con
+  `matchPlaybook` (T4, "La respuesta llega en siete segundos", 7/9/2026),
+  así que preguntarle al resultado no cuesta una llamada extra ni cambia el
+  orden de nada. Si `cedeAlCatalogo` es `true`, el escenario NO se manda:
+  queda `log.info("escenario_cedido_al_catalogo", { conversationId,
+  escenario })` y el turno sigue por el flujo genérico (tool loop, T3 de
+  esta misma corrida: catálogo real, textos fijos, escalada). Si la
+  clasificación falló (`!classified.ok`) o la intención es otra
+  (`otro`/`devolucion`/`queja`/`fuera_de_tema`), el escenario sale igual que
+  siempre — el costo de la clasificación descartada ya se contaba en
+  `classifiedTokens` ANTES de esta rama, sin cambios. Efecto colateral en
+  `agent.test.ts`: el default de fábrica de `classifyIntentMock` en el
+  `beforeEach` global pasó de `"consulta_disponibilidad"` a `"otro"` — con
+  el default viejo, los ~20 tests de escenarios del archivo (que solo
+  prueban "calzó/no se repite/etiqueta" y nunca les importó la intención)
+  se habrían puesto rojos por esta regla sin tener nada que ver con ella;
+  "otro" es el valor neutro del clasificador y no dispara ninguna rama
+  especial. Un test nuevo pide `consulta_disponibilidad` explícitamente
+  para probar el cede.
+- **La reapertura por el cliente "salta la gracia" de `AI_HUMAN_GRACE_MINUTES`,
+  y un test que ejercita `runAgentTurn`/`reconcileOrphanTurns` de verdad
+  necesita un fake de `conversation_handoffs` con la forma de
+  `humanHasWritten`** (H2, "Seba atiende el mostrador", 18/9/2026). Caso
+  real, escenario a mano en local: un asesor escribió en un chat escalado,
+  el chat se cerró y el cliente volvió a escribir a los pocos segundos; el
+  webhook reabrió bien (IA encendida, sin asesor, `welcome_sent_at` en
+  null) pero el turno salió por `humano_intervino` —la cláusula de gracia
+  vio el mensaje del asesor ANTERIOR al cierre—, así que Seba no saludaba
+  hasta 30 min después y quedaba un traspaso `to_kind = 'human'` en un chat
+  que ya no tenía asesor. Ahora `humanClaimsChat` (`human-handled.ts`)
+  descuenta de la gracia todo mensaje de asesor anterior (o igual) a la
+  última fila `reabierta_por_cliente` de esa conversación: el chat
+  reabierto arranca de cero, como manda D2. La cláusula "el asesor se
+  adelantó al cliente" NO mira la reapertura. `humanHasWritten` y
+  `conversationsWrittenByHumans` consultan `conversation_handoffs` SOLO
+  cuando la gracia iba a disparar, y ante error de esa consulta fallan
+  cerrado (la gracia bloquea como antes) con `console.error`, no con
+  `lib/log.ts`: `human-handled.ts` no puede importar nada `server-only`
+  porque `data.ts` lo importa y llega al bundle del navegador. La forma de
+  la consulta es `.eq(conversation_id).eq(reason).order().limit()`,
+  DISTINTA de la de `escalationOpen` (`.eq().not().order().limit()
+  .maybeSingle()`): al implementarla rompió a la vez los fakes de
+  `agent.test.ts`, `handoffs.test.ts` y `reconciler.test.ts`.
 ---
 
 # RTK (Rust Token Killer) - Token-Optimized Commands

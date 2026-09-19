@@ -258,6 +258,14 @@ function createFakeSupabase() {
       if (table === "agent_settings") {
         return { select: () => ({ eq: () => ({ maybeSingle: async () => ({ data: { business_hours: null }, error: null }) }) }) };
       }
+      // H2 (18/9/2026): humanHasWritten pregunta por una reapertura reciente
+      // SOLO cuando la gracia dispararía (los cinco chats del incidente
+      // caen ahí — asesor a minutos del cliente). Ninguno de estos chats se
+      // reabrió nunca, así que la respuesta es siempre "no hay fila": la
+      // gracia sigue bloqueando exactamente igual que antes de H2.
+      if (table === "conversation_handoffs") {
+        return { select: () => ({ eq: () => ({ eq: () => ({ order: () => ({ limit: async () => ({ data: [], error: null }) }) }) }) }) };
+      }
 
       throw new Error(`tabla no soportada: ${table}`);
     },
@@ -481,18 +489,69 @@ interface MensajeAsesorFalso {
 }
 
 /**
- * Supabase falso para las pruebas unitarias: modela solo `messages`, con las
- * dos formas de consulta reales — individual (`humanHasWritten`) y de lote
- * (`conversationsWrittenByHumans`) — distinguidas por las columnas pedidas en
- * `select()`, igual que hace el Supabase real (una consulta u otra según qué
- * pidió el código, no según qué prueba está corriendo).
+ * Supabase falso para las pruebas unitarias: modela `messages` (con las dos
+ * formas de consulta reales — individual, de `humanHasWritten`, y de lote,
+ * de `conversationsWrittenByHumans` — distinguidas por las columnas pedidas
+ * en `select()`, igual que hace el Supabase real) y, desde H2 (18/9/2026),
+ * también `conversation_handoffs` — la consulta de reapertura, individual y
+ * de lote, con el mismo criterio de distinción.
+ *
+ * `reaperturas` son las filas `reason = 'reabierta_por_cliente'` que existen
+ * para esta prueba (vacío por default: "nunca se reabrió"). `reaperturaError`
+ * simula un fallo de ESA consulta puntual, sin tocar `messages` — para el
+ * caso 5 (fallar cerrado ante un error de la consulta nueva).
  */
-function fakeMessagesTable(mensajes: MensajeAsesorFalso[]) {
-  const llamadas: { tipo: "individual" | "lote"; conversationId?: string; ids?: string[]; umbral?: string }[] = [];
+function fakeMessagesTable(
+  mensajes: MensajeAsesorFalso[],
+  reaperturas: MensajeAsesorFalso[] = [],
+  reaperturaError: string | null = null
+) {
+  const llamadas: {
+    tipo: "individual" | "lote" | "reapertura-individual" | "reapertura-lote";
+    conversationId?: string;
+    ids?: string[];
+    umbral?: string;
+  }[] = [];
 
   return {
     llamadas,
     from(table: string) {
+      if (table === "conversation_handoffs") {
+        return {
+          select: (columnas: string) => {
+            if (columnas === "created_at") {
+              // humanHasWritten: .eq(conversation_id).eq(reason,'reabierta_por_cliente').order().limit(1)
+              return {
+                eq: (_c: string, conversationId: string) => ({
+                  eq: () => ({
+                    order: () => ({
+                      limit: async () => {
+                        llamadas.push({ tipo: "reapertura-individual", conversationId });
+                        if (reaperturaError) return { data: null, error: { message: reaperturaError } };
+                        const propias = reaperturas
+                          .filter((r) => r.conversation_id === conversationId)
+                          .sort((a, b) => (a.created_at < b.created_at ? 1 : -1));
+                        return { data: propias.slice(0, 1), error: null };
+                      },
+                    }),
+                  }),
+                }),
+              };
+            }
+            // conversationsWrittenByHumans: .in(ids).eq(reason,'reabierta_por_cliente')
+            return {
+              in: (_c: string, ids: string[]) => ({
+                eq: async () => {
+                  llamadas.push({ tipo: "reapertura-lote", ids });
+                  if (reaperturaError) return { data: null, error: { message: reaperturaError } };
+                  const filas = reaperturas.filter((r) => ids.includes(r.conversation_id));
+                  return { data: filas, error: null };
+                },
+              }),
+            };
+          },
+        };
+      }
       if (table !== "messages") throw new Error(`Fake Supabase: tabla no soportada: ${table}`);
       return {
         select: (columnas: string) => {
@@ -800,5 +859,267 @@ describe("humanClaimsChat (caso 9: la regla, pura)", () => {
   it("caso 5 — lcma null: no bloquea", () => {
     const humano = NOW - 1 * 60_000;
     expect(humanClaimsChat(new Date(humano).toISOString(), null, NOW, G)).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// H2, plan "Seba atiende el mostrador" (18/9/2026): "la reapertura salta la
+// gracia" (D2). Escenario a mano en base local: un asesor escribió en un
+// chat escalado, el chat se cerró y el cliente volvió a escribir a los pocos
+// segundos. El webhook reabre bien (`ai_enabled=true`, sin asesor) y deja
+// `reabierta_por_cliente`, pero la cláusula de gracia seguía viendo el
+// mensaje VIEJO del asesor y bloqueaba a Seba sobre un chat que ya no tenía
+// dueño humano.
+//
+// Los cinco casos numerados son los del brief de H2 (caso 5 = fallar
+// cerrado). Se repiten tres veces —humanHasWritten, conversationsWrittenByHumans
+// y humanClaimsChat pura— con el mismo criterio que el bloque de T7 de más
+// arriba: las tres tienen que decidir exactamente lo mismo.
+//
+// `G` acá es 10 minutos (la misma constante de arriba), para separar con
+// claridad "el asesor escribió hace poco" (dentro de la gracia) de "hace
+// mucho" (fuera) sin depender del default de 30.
+// ---------------------------------------------------------------------------
+
+describe("humanHasWritten — reapertura salta la gracia (D2, H2, 18/9/2026)", () => {
+  /** Caso 1: asesor hace 5 min, reapertura hace 1 min, cliente escribió DESPUÉS de reabrir. */
+  it("no bloquea si el asesor escribió antes de la última reapertura", async () => {
+    const humano = new Date(NOW - 5 * 60_000).toISOString();
+    const reapertura = new Date(NOW - 1 * 60_000).toISOString();
+    const lcma = new Date(NOW - 30_000).toISOString(); // el cliente reabrió y siguió escribiendo
+    const fake = fakeMessagesTable([{ conversation_id: "conv-x", created_at: humano }], [
+      { conversation_id: "conv-x", created_at: reapertura },
+    ]);
+
+    expect(await humanHasWritten(fake as never, "conv-x", lcma, { now: NOW, graceMinutes: G })).toBe(false);
+  });
+
+  /** Caso 2: asesor hace 5 min, SIN reapertura — la gracia sigue intacta. */
+  it("bloquea igual que antes si nunca hubo una reapertura", async () => {
+    const humano = new Date(NOW - 5 * 60_000).toISOString();
+    const lcma = new Date(NOW - 2 * 60_000).toISOString();
+    const fake = fakeMessagesTable([{ conversation_id: "conv-x", created_at: humano }]); // reaperturas: []
+
+    expect(await humanHasWritten(fake as never, "conv-x", lcma, { now: NOW, graceMinutes: G })).toBe(true);
+  });
+
+  /** Caso 3: reapertura hace 10 min, asesor escribió hace 2 min — DESPUÉS de reabrir: bloquea. */
+  it("bloquea si el asesor escribió después de la reapertura", async () => {
+    const reapertura = new Date(NOW - 10 * 60_000).toISOString();
+    const humano = new Date(NOW - 2 * 60_000).toISOString();
+    const lcma = new Date(NOW - 1 * 60_000).toISOString();
+    const fake = fakeMessagesTable([{ conversation_id: "conv-x", created_at: humano }], [
+      { conversation_id: "conv-x", created_at: reapertura },
+    ]);
+
+    expect(await humanHasWritten(fake as never, "conv-x", lcma, { now: NOW, graceMinutes: G })).toBe(true);
+  });
+
+  /** Caso 4: el asesor se adelantó al cliente — bloquea con o sin reapertura. */
+  it("bloquea por 'se adelantó' con reapertura de por medio, sin ni mirarla", async () => {
+    const lcma = new Date(NOW - 60 * 60_000).toISOString();
+    const humano = new Date(NOW - 45 * 60_000).toISOString(); // después de lcma
+    const reapertura = new Date(NOW - 50 * 60_000).toISOString(); // entre lcma y humano
+    const fake = fakeMessagesTable([{ conversation_id: "conv-x", created_at: humano }], [
+      { conversation_id: "conv-x", created_at: reapertura },
+    ]);
+
+    expect(await humanHasWritten(fake as never, "conv-x", lcma, { now: NOW, graceMinutes: G })).toBe(true);
+    // "Se adelantó" no necesita saber si hubo reapertura: no debería ni preguntar.
+    expect(fake.llamadas.some((l) => l.tipo === "reapertura-individual")).toBe(false);
+  });
+
+  it("bloquea por 'se adelantó' sin reapertura, igual que siempre", async () => {
+    const lcma = new Date(NOW - 60 * 60_000).toISOString();
+    const humano = new Date(NOW - 45 * 60_000).toISOString();
+    const fake = fakeMessagesTable([{ conversation_id: "conv-x", created_at: humano }]);
+
+    expect(await humanHasWritten(fake as never, "conv-x", lcma, { now: NOW, graceMinutes: G })).toBe(true);
+  });
+
+  /** Caso 5: la consulta de reapertura revienta — falla cerrado, con rastro en consola. */
+  it("falla cerrado si la consulta de reapertura revienta, y deja rastro", async () => {
+    const humano = new Date(NOW - 5 * 60_000).toISOString();
+    const lcma = new Date(NOW - 2 * 60_000).toISOString();
+    const fake = fakeMessagesTable([{ conversation_id: "conv-x", created_at: humano }], [], "se cayó la conexión");
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
+
+    try {
+      expect(await humanHasWritten(fake as never, "conv-x", lcma, { now: NOW, graceMinutes: G })).toBe(true);
+      expect(consoleError).toHaveBeenCalled();
+    } finally {
+      consoleError.mockRestore();
+    }
+  });
+
+  /** No se consulta la reapertura si la gracia no iba a disparar de todas formas (minimiza viajes). */
+  it("no consulta la reapertura si el asesor escribió hace más de G", async () => {
+    const humano = new Date(NOW - 45 * 60_000).toISOString();
+    const lcma = new Date(NOW - 5 * 60_000).toISOString();
+    const fake = fakeMessagesTable([{ conversation_id: "conv-x", created_at: humano }]);
+
+    await humanHasWritten(fake as never, "conv-x", lcma, { now: NOW, graceMinutes: G });
+
+    expect(fake.llamadas.some((l) => l.tipo === "reapertura-individual")).toBe(false);
+  });
+});
+
+describe("conversationsWrittenByHumans — reapertura salta la gracia (D2, H2, 18/9/2026)", () => {
+  /** Caso 1, en espejo. */
+  it("no bloquea si el asesor escribió antes de la última reapertura", async () => {
+    const humano = new Date(NOW - 5 * 60_000).toISOString();
+    const reapertura = new Date(NOW - 1 * 60_000).toISOString();
+    const lcma = new Date(NOW - 30_000).toISOString();
+    const fake = fakeMessagesTable([{ conversation_id: "conv-x", created_at: humano }], [
+      { conversation_id: "conv-x", created_at: reapertura },
+    ]);
+
+    const resultado = await conversationsWrittenByHumans(
+      fake as never,
+      [{ id: "conv-x", lastCustomerMessageAt: lcma }],
+      { now: NOW, graceMinutes: G }
+    );
+
+    expect(resultado.has("conv-x")).toBe(false);
+  });
+
+  /** Caso 2, en espejo. */
+  it("bloquea igual que antes si nunca hubo una reapertura", async () => {
+    const humano = new Date(NOW - 5 * 60_000).toISOString();
+    const lcma = new Date(NOW - 2 * 60_000).toISOString();
+    const fake = fakeMessagesTable([{ conversation_id: "conv-x", created_at: humano }]);
+
+    const resultado = await conversationsWrittenByHumans(
+      fake as never,
+      [{ id: "conv-x", lastCustomerMessageAt: lcma }],
+      { now: NOW, graceMinutes: G }
+    );
+
+    expect(resultado.has("conv-x")).toBe(true);
+  });
+
+  /** Caso 3, en espejo. */
+  it("bloquea si el asesor escribió después de la reapertura", async () => {
+    const reapertura = new Date(NOW - 10 * 60_000).toISOString();
+    const humano = new Date(NOW - 2 * 60_000).toISOString();
+    const lcma = new Date(NOW - 1 * 60_000).toISOString();
+    const fake = fakeMessagesTable([{ conversation_id: "conv-x", created_at: humano }], [
+      { conversation_id: "conv-x", created_at: reapertura },
+    ]);
+
+    const resultado = await conversationsWrittenByHumans(
+      fake as never,
+      [{ id: "conv-x", lastCustomerMessageAt: lcma }],
+      { now: NOW, graceMinutes: G }
+    );
+
+    expect(resultado.has("conv-x")).toBe(true);
+  });
+
+  /** Caso 4, en espejo: "se adelantó" no necesita mirar reaperturas. */
+  it("bloquea por 'se adelantó' con reapertura de por medio, sin ni mirarla", async () => {
+    const lcma = new Date(NOW - 60 * 60_000).toISOString();
+    const humano = new Date(NOW - 45 * 60_000).toISOString();
+    const reapertura = new Date(NOW - 50 * 60_000).toISOString();
+    const fake = fakeMessagesTable([{ conversation_id: "conv-x", created_at: humano }], [
+      { conversation_id: "conv-x", created_at: reapertura },
+    ]);
+
+    const resultado = await conversationsWrittenByHumans(
+      fake as never,
+      [{ id: "conv-x", lastCustomerMessageAt: lcma }],
+      { now: NOW, graceMinutes: G }
+    );
+
+    expect(resultado.has("conv-x")).toBe(true);
+    expect(fake.llamadas.some((l) => l.tipo === "reapertura-lote")).toBe(false);
+  });
+
+  /** Caso 5, en espejo. */
+  it("falla cerrado si la consulta de reapertura revienta, y deja rastro", async () => {
+    const humano = new Date(NOW - 5 * 60_000).toISOString();
+    const lcma = new Date(NOW - 2 * 60_000).toISOString();
+    const fake = fakeMessagesTable([{ conversation_id: "conv-x", created_at: humano }], [], "se cayó la conexión");
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
+
+    try {
+      const resultado = await conversationsWrittenByHumans(
+        fake as never,
+        [{ id: "conv-x", lastCustomerMessageAt: lcma }],
+        { now: NOW, graceMinutes: G }
+      );
+
+      expect(resultado.has("conv-x")).toBe(true);
+      expect(consoleError).toHaveBeenCalled();
+    } finally {
+      consoleError.mockRestore();
+    }
+  });
+
+  /** El lote solo pregunta por reaperturas de las conversaciones donde la gracia dispararía. */
+  it("consulta reaperturas en lote solo para los chats donde la gracia dispararía", async () => {
+    const graciaDispara = new Date(NOW - 5 * 60_000).toISOString(); // dentro de G=10
+    const graciaNoDispara = new Date(NOW - 45 * 60_000).toISOString(); // fuera de G=10
+    const lcmaReciente = new Date(NOW - 1 * 60_000).toISOString();
+    const fake = fakeMessagesTable([
+      { conversation_id: "conv-dispara", created_at: graciaDispara },
+      { conversation_id: "conv-no-dispara", created_at: graciaNoDispara },
+    ]);
+
+    await conversationsWrittenByHumans(
+      fake as never,
+      [
+        { id: "conv-dispara", lastCustomerMessageAt: lcmaReciente },
+        { id: "conv-no-dispara", lastCustomerMessageAt: lcmaReciente },
+      ],
+      { now: NOW, graceMinutes: G }
+    );
+
+    const llamadaLote = fake.llamadas.find((l) => l.tipo === "reapertura-lote");
+    expect(llamadaLote?.ids).toEqual(["conv-dispara"]);
+  });
+});
+
+describe("humanClaimsChat con reopenedAt — reapertura salta la gracia (D2, H2, 18/9/2026)", () => {
+  it("caso 1 — humano antes de la reapertura: no bloquea", () => {
+    const humano = NOW - 5 * 60_000;
+    const reapertura = NOW - 1 * 60_000;
+    const lcma = NOW - 30_000;
+    expect(
+      humanClaimsChat(new Date(humano).toISOString(), new Date(lcma).toISOString(), NOW, G, new Date(reapertura).toISOString())
+    ).toBe(false);
+  });
+
+  it("caso 2 — sin reapertura (null): la gracia decide como siempre", () => {
+    const humano = NOW - 5 * 60_000;
+    const lcma = NOW - 2 * 60_000;
+    expect(humanClaimsChat(new Date(humano).toISOString(), new Date(lcma).toISOString(), NOW, G, null)).toBe(true);
+  });
+
+  it("caso 3 — humano después de la reapertura: bloquea", () => {
+    const reapertura = NOW - 10 * 60_000;
+    const humano = NOW - 2 * 60_000;
+    const lcma = NOW - 1 * 60_000;
+    expect(
+      humanClaimsChat(new Date(humano).toISOString(), new Date(lcma).toISOString(), NOW, G, new Date(reapertura).toISOString())
+    ).toBe(true);
+  });
+
+  it("caso 4 — 'se adelantó' bloquea aunque la reapertura sea posterior al humano", () => {
+    const lcma = NOW - 60 * 60_000;
+    const humano = NOW - 45 * 60_000;
+    const reapertura = NOW - 50 * 60_000;
+    expect(
+      humanClaimsChat(new Date(humano).toISOString(), new Date(lcma).toISOString(), NOW, G, new Date(reapertura).toISOString())
+    ).toBe(true);
+  });
+
+  it("caso 5 — humano justo EN el instante de la reapertura: no bloquea (límite inclusivo)", () => {
+    const reapertura = NOW - 5 * 60_000;
+    const humano = reapertura; // mismo instante
+    const lcma = NOW - 1 * 60_000;
+    expect(
+      humanClaimsChat(new Date(humano).toISOString(), new Date(lcma).toISOString(), NOW, G, new Date(reapertura).toISOString())
+    ).toBe(false);
   });
 });
