@@ -673,6 +673,19 @@
   line-height: 1.45;
 }
 
+/* Aviso de "enlace escrito a mano" (T4a, plan "Nada sin leer, un solo
+   catálogo y la factura Saint", 18/9/2026, D4): mismo tono ámbar que
+   `.ac-badge[data-tone="wait"]", pero como línea de texto completa —acá va
+   la frase entera, no una etiqueta corta— debajo del campo de Respuesta. */
+.ac-pb-warning {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  color: var(--lm-wait-ink);
+  font-size: 11.5px;
+  line-height: 1.45;
+}
+
 /* --------------------------------------------------------------------------
    Tope de gasto diario de la IA
    -------------------------------------------------------------------------- */

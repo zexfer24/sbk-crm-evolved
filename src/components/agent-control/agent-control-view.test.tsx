@@ -45,6 +45,7 @@ vi.mock("@/lib/data", () => ({
   fetchAgentTurns: vi.fn(async () => []),
   fetchAgentMetrics: vi.fn(async () => []),
   fetchAllAgents: vi.fn(async () => []),
+  fetchCatalogLinks: vi.fn(async () => []),
   fetchKnowledgeCategories: vi.fn(async () => []),
   fetchKnowledgeEntries: vi.fn(async () => []),
   fetchLessons: vi.fn(async () => []),
@@ -60,14 +61,18 @@ const setAiGloballyEnabledMock = vi.fn(async (...args: unknown[]) => {
 
 vi.mock("@/lib/mutations", () => ({
   createAgentSuggestion: vi.fn(async () => {}),
+  createCatalogLink: vi.fn(async () => {}),
+  deleteCatalogLink: vi.fn(async () => {}),
   intervene: vi.fn(async () => {}),
   markSuggestionReviewed: vi.fn(async () => {}),
   setAgentActive: vi.fn(async () => {}),
   setAgentToolEnabled: vi.fn(async () => {}),
   setAiEnabled: vi.fn(async () => {}),
   setAiGloballyEnabled: (...args: unknown[]) => setAiGloballyEnabledMock(...args),
+  setCatalogLinkActive: vi.fn(async () => {}),
   setDailySpendCap: vi.fn(async () => {}),
   updateBusinessHours: vi.fn(async () => {}),
+  updateCatalogLink: vi.fn(async () => {}),
   updateModelPricing: vi.fn(async () => {}),
 }));
 
@@ -156,6 +161,7 @@ function montar(settings: AgentSettings) {
       initialKnowledgeCategories={[]}
       initialKnowledgeEntries={[]}
       initialLessons={[]}
+      initialCatalogLinks={[]}
       modelLabel="modelo-de-prueba"
     />
   );

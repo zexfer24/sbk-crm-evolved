@@ -8,6 +8,7 @@ import {
   fetchAgentTurns,
   fetchAllAgents,
   fetchBoardConversations,
+  fetchCatalogLinks,
   fetchCurrentAgent,
   fetchKnowledgeCategories,
   fetchKnowledgeEntries,
@@ -45,6 +46,7 @@ export default async function AgentControlPage() {
     lessons,
     tags,
     channelHealth,
+    catalogLinks,
   ] = await Promise.all([
     fetchCurrentAgent(supabase),
     // Solo el trabajo vivo: el panel muestra la cola de la IA y el roster,
@@ -66,6 +68,7 @@ export default async function AgentControlPage() {
     fetchLessons(supabase),
     fetchTags(supabase),
     fetchWhatsappChannelHealth(supabase),
+    fetchCatalogLinks(supabase),
   ]);
 
   if (!currentAgent) {
@@ -91,6 +94,7 @@ export default async function AgentControlPage() {
       initialKnowledgeEntries={knowledgeEntries}
       initialLessons={lessons}
       initialTags={tags}
+      initialCatalogLinks={catalogLinks}
       initialChannelHealth={channelHealth}
       modelLabel={currentAgentModelLabel()}
     />

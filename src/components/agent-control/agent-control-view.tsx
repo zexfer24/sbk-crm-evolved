@@ -16,6 +16,7 @@ import type {
   AgentTurnAction,
   AiLesson,
   BoardConversation,
+  CatalogLink,
   KnowledgeCategory,
   KnowledgeEntry,
   ModelPricing,
@@ -36,6 +37,7 @@ import {
   fetchAllAgents,
   fetchBoardConversationRow,
   fetchBoardConversations,
+  fetchCatalogLinks,
   fetchKnowledgeCategories,
   fetchKnowledgeEntries,
   fetchLessons,
@@ -47,16 +49,21 @@ import {
 } from "@/lib/data";
 import {
   createAgentSuggestion,
+  createCatalogLink,
+  deleteCatalogLink,
   intervene,
   markSuggestionReviewed,
   setAgentActive,
   setAgentToolEnabled,
   setAiEnabled,
   setAiGloballyEnabled,
+  setCatalogLinkActive,
   setDailySpendCap,
   updateBusinessHours,
+  updateCatalogLink,
   updateModelPricing,
 } from "@/lib/mutations";
+import type { CatalogLinkDraft } from "@/lib/catalog-links";
 import { contactName, initials } from "@/lib/dashboard";
 import type { BusinessHours } from "@/lib/business-hours";
 import { TOOL_KEYS } from "@/lib/agent-tool-keys";
@@ -106,6 +113,13 @@ interface AgentControlViewProps {
   initialLessons: AiLesson[];
   /** Catálogo de etiquetas del CRM: lo elige el formulario de escenarios. */
   initialTags: Tag[];
+  /**
+   * Enlaces de catálogo (T4a, plan "Nada sin leer, un solo catálogo y la
+   * factura Saint", 18/9/2026, D3): la fuente única que reemplaza las URLs
+   * de Drive pegadas a mano. Lista completa (activos e inactivos) — la
+   * administra el panel de "Respuestas predeterminadas".
+   */
+  initialCatalogLinks: CatalogLink[];
   /**
    * Salud del número (T3.4, 5/9/2026). Opcional y con default null: no vive
    * en el ciclo de refresco del resto del panel (informativa, sin canal de
@@ -205,6 +219,7 @@ export function AgentControlView({
   initialKnowledgeEntries,
   initialLessons,
   initialTags,
+  initialCatalogLinks,
   initialChannelHealth = null,
   modelLabel,
 }: AgentControlViewProps) {
@@ -244,6 +259,7 @@ export function AgentControlView({
   const [knowledgeCategories, setKnowledgeCategories] = useState(initialKnowledgeCategories);
   const [knowledgeEntries, setKnowledgeEntries] = useState(initialKnowledgeEntries);
   const [lessons, setLessons] = useState(initialLessons);
+  const [catalogLinks, setCatalogLinks] = useState(initialCatalogLinks);
   const [togglingKillSwitch, setTogglingKillSwitch] = useState(false);
   const [confirmingAiOn, setConfirmingAiOn] = useState(false);
   // null mientras se cuenta. El diálogo no deja encender hasta tener el
@@ -281,6 +297,7 @@ export function AgentControlView({
         nextKnowledgeCategories,
         nextKnowledgeEntries,
         nextLessons,
+        nextCatalogLinks,
       ] = await Promise.all([
         fetchAgentTurns(supabase),
         fetchAgentSettings(supabase),
@@ -295,6 +312,7 @@ export function AgentControlView({
         fetchKnowledgeCategories(supabase),
         fetchKnowledgeEntries(supabase),
         fetchLessons(supabase),
+        fetchCatalogLinks(supabase),
       ]);
       setTurns(nextTurns);
       setSettings(nextSettings);
@@ -309,6 +327,7 @@ export function AgentControlView({
       setKnowledgeCategories(nextKnowledgeCategories);
       setKnowledgeEntries(nextKnowledgeEntries);
       setLessons(nextLessons);
+      setCatalogLinks(nextCatalogLinks);
     } catch {
       // El siguiente cambio en tiempo real reintentará la sincronización.
     }
@@ -335,6 +354,11 @@ export function AgentControlView({
       // "Enseñar a Seba…" (T6, 18/9/2026): otro asesor puede escribir una
       // lección o desactivarla mientras este panel está abierto.
       .on("postgres_changes", { event: "*", schema: "public", table: "ai_lessons" }, () => scheduleRefresh())
+      // Enlaces de catálogo (T4a, 18/9/2026): otro supervisor puede cargar o
+      // apagar un catálogo mientras este panel está abierto. Publicada en
+      // Realtime desde la propia migración 20260918010000 (con
+      // autoverificación, ver la trampa del canal muerto del 8/9/2026).
+      .on("postgres_changes", { event: "*", schema: "public", table: "catalog_links" }, () => scheduleRefresh())
       .subscribe();
 
     return () => {
@@ -478,6 +502,33 @@ export function AgentControlView({
   async function saveBusinessHours(hours: BusinessHours) {
     await updateBusinessHours(supabase, currentAgent, hours);
     setSettings((s) => ({ ...s, businessHours: hours }));
+  }
+
+  // Enlaces de catálogo (T4a, 18/9/2026): `CatalogLinksPanel` (dentro de
+  // `PlaybooksPanel`) valida el borrador ANTES de llamar acá; estas cuatro
+  // solo tocan la base y refrescan — mismo patrón que `toggleTool`/
+  // `toggleAgentActive` de más arriba, no el de `saveSpendCap`/
+  // `saveBusinessHours` (que actualizan un único objeto de settings): acá
+  // cambia la FORMA de la lista (una fila más, una fila menos), así que se
+  // vuelve a pedir completa en vez de parchar el arreglo a mano.
+  async function createCatalogLinkEntry(draft: CatalogLinkDraft) {
+    await createCatalogLink(supabase, currentAgent, draft);
+    await refresh();
+  }
+
+  async function updateCatalogLinkEntry(id: string, draft: CatalogLinkDraft) {
+    await updateCatalogLink(supabase, currentAgent, id, draft);
+    await refresh();
+  }
+
+  async function deleteCatalogLinkEntry(id: string) {
+    await deleteCatalogLink(supabase, id);
+    await refresh();
+  }
+
+  async function toggleCatalogLinkEntry(id: string, isActive: boolean) {
+    await setCatalogLinkActive(supabase, currentAgent, id, isActive);
+    await refresh();
   }
 
   async function pauseAi(conversationId: string) {
@@ -978,6 +1029,11 @@ export function AgentControlView({
                 quickReplies={initialQuickReplies}
                 tags={initialTags}
                 canEdit={currentAgent.role === "supervisor" || currentAgent.role === "admin"}
+                catalogLinks={catalogLinks}
+                onCreateCatalogLink={createCatalogLinkEntry}
+                onUpdateCatalogLink={updateCatalogLinkEntry}
+                onDeleteCatalogLink={deleteCatalogLinkEntry}
+                onToggleCatalogLink={toggleCatalogLinkEntry}
               />
             )}
 

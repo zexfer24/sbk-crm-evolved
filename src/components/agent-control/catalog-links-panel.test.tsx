@@ -1,0 +1,227 @@
+/** @vitest-environment jsdom */
+import { describe, expect, it, vi, beforeEach } from "vitest";
+import { render, screen, waitFor } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
+import { CatalogLinksPanel } from "@/components/agent-control/catalog-links-panel";
+import type { CatalogLink, Playbook, QuickReply } from "@/lib/types";
+
+// ---------------------------------------------------------------------------
+// Mismo patrón que playbooks-panel.test.tsx: el toast real de HeroUI no
+// aporta nada acá y complica el DOM; el resto del módulo (Button, Input,
+// Label) queda intacto para poder escribir y guardar como lo haría alguien
+// de verdad.
+// ---------------------------------------------------------------------------
+vi.mock("@heroui/react", async (importOriginal) => {
+  const real = await importOriginal<typeof import("@heroui/react")>();
+  return { ...real, toast: { success: vi.fn(), danger: vi.fn() } };
+});
+
+function link(overrides: Partial<CatalogLink> = {}): CatalogLink {
+  return {
+    id: "link-1",
+    key: "cascos",
+    label: "Cascos",
+    url: "https://drive.google.com/file/d/abc123",
+    sortOrder: 1,
+    isActive: true,
+    updatedBy: "agent-1",
+    createdAt: "2026-09-18T10:00:00.000Z",
+    updatedAt: "2026-09-18T10:00:00.000Z",
+    ...overrides,
+  };
+}
+
+function playbook(overrides: Partial<Playbook> = {}): Playbook {
+  return {
+    id: "pb-1",
+    name: "Catálogo general",
+    triggerDescription: "el cliente pregunta por el catálogo",
+    responseText: "Acá va el catálogo 👇",
+    attachmentUrl: null,
+    attachmentType: null,
+    afterSend: "wait",
+    isActive: true,
+    tags: [],
+    ...overrides,
+  };
+}
+
+function quickReply(overrides: Partial<QuickReply> = {}): QuickReply {
+  return { id: "qr-1", label: "Catálogo", content: "Acá va el catálogo", ...overrides };
+}
+
+const onCreate = vi.fn(async () => {});
+const onUpdate = vi.fn(async () => {});
+const onDelete = vi.fn(async () => {});
+const onToggle = vi.fn(async () => {});
+
+beforeEach(() => {
+  onCreate.mockClear();
+  onUpdate.mockClear();
+  onDelete.mockClear();
+  onToggle.mockClear();
+});
+
+describe("CatalogLinksPanel — crear", () => {
+  it("propone la clave a partir de la etiqueta y crea con lo escrito", async () => {
+    const user = userEvent.setup({ delay: null, pointerEventsCheck: 0 });
+    render(
+      <CatalogLinksPanel
+        links={[]}
+        canEdit
+        onCreate={onCreate}
+        onUpdate={onUpdate}
+        onDelete={onDelete}
+        onToggle={onToggle}
+        playbooks={[]}
+        quickReplies={[]}
+      />
+    );
+
+    await user.click(screen.getByRole("button", { name: "Nuevo catálogo" }));
+    await user.type(screen.getByLabelText("Etiqueta"), "Exploradoras y Bombillos");
+
+    expect(screen.getByLabelText("Clave del marcador")).toHaveValue("exploradoras-y-bombillos");
+
+    await user.type(screen.getByLabelText("URL"), "https://drive.google.com/file/d/xyz");
+    await user.click(screen.getByRole("button", { name: "Crear catálogo" }));
+
+    await waitFor(() =>
+      expect(onCreate).toHaveBeenCalledWith({
+        key: "exploradoras-y-bombillos",
+        label: "Exploradoras y Bombillos",
+        url: "https://drive.google.com/file/d/xyz",
+      })
+    );
+  });
+
+  it("una fila inválida no guarda y muestra el mensaje de cada campo", async () => {
+    const user = userEvent.setup({ delay: null, pointerEventsCheck: 0 });
+    render(
+      <CatalogLinksPanel
+        links={[]}
+        canEdit
+        onCreate={onCreate}
+        onUpdate={onUpdate}
+        onDelete={onDelete}
+        onToggle={onToggle}
+        playbooks={[]}
+        quickReplies={[]}
+      />
+    );
+
+    await user.click(screen.getByRole("button", { name: "Nuevo catálogo" }));
+    await user.click(screen.getByRole("button", { name: "Crear catálogo" }));
+
+    expect(await screen.findAllByRole("alert")).toHaveLength(3);
+    expect(screen.getByText("La clave no puede estar vacía.")).toBeInTheDocument();
+    expect(screen.getByText("La etiqueta no puede estar vacía.")).toBeInTheDocument();
+    expect(screen.getByText("La URL debe empezar con http:// o https://.")).toBeInTheDocument();
+    expect(onCreate).not.toHaveBeenCalled();
+  });
+});
+
+describe("CatalogLinksPanel — solo lectura", () => {
+  it("canEdit=false esconde crear/editar/borrar/activar pero deja copiar el marcador", () => {
+    render(
+      <CatalogLinksPanel
+        links={[link()]}
+        canEdit={false}
+        onCreate={onCreate}
+        onUpdate={onUpdate}
+        onDelete={onDelete}
+        onToggle={onToggle}
+        playbooks={[]}
+        quickReplies={[]}
+      />
+    );
+
+    expect(screen.queryByRole("button", { name: "Nuevo catálogo" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Editar Cascos" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /^Borrar/ })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Copiar marcador" })).toBeInTheDocument();
+  });
+});
+
+describe("CatalogLinksPanel — copiar marcador", () => {
+  it("copia el marcador canónico al portapapeles", async () => {
+    const user = userEvent.setup({ delay: null, pointerEventsCheck: 0 });
+    // `userEvent.setup()` instala SU PROPIO stub de `navigator.clipboard` (con
+    // `writeText` real, que sí guarda el texto) apenas se llama — un mock
+    // propio puesto ANTES quedaría pisado. Se espía el método real con
+    // `vi.spyOn` en vez de reemplazarlo, así el clic sigue ejecutando el
+    // comportamiento de verdad y el espía solo registra la llamada.
+    const writeTextSpy = vi.spyOn(navigator.clipboard, "writeText");
+    const { toast } = await import("@heroui/react");
+    render(
+      <CatalogLinksPanel
+        links={[link({ key: "cascos" })]}
+        canEdit
+        onCreate={onCreate}
+        onUpdate={onUpdate}
+        onDelete={onDelete}
+        onToggle={onToggle}
+        playbooks={[]}
+        quickReplies={[]}
+      />
+    );
+
+    await user.click(screen.getByRole("button", { name: "Copiar marcador" }));
+
+    await waitFor(() => expect(writeTextSpy).toHaveBeenCalledWith("{{catalogo:cascos}}"));
+    expect(toast.success).toHaveBeenCalledWith("Marcador copiado");
+  });
+});
+
+describe("CatalogLinksPanel — borrar avisa cuántos textos usan la clave", () => {
+  it("el primer clic muestra la cuenta de escenarios y mensajes rápidos; el segundo borra", async () => {
+    const user = userEvent.setup({ delay: null, pointerEventsCheck: 0 });
+    render(
+      <CatalogLinksPanel
+        links={[link({ key: "cascos" })]}
+        canEdit
+        onCreate={onCreate}
+        onUpdate={onUpdate}
+        onDelete={onDelete}
+        onToggle={onToggle}
+        playbooks={[
+          playbook({ id: "pb-1", responseText: "Mira {{catalogo:cascos}}" }),
+          playbook({ id: "pb-2", responseText: "{{catalogo:cascos}} y {{catalogo:otro}}" }),
+        ]}
+        quickReplies={[quickReply({ id: "qr-1", content: "Acá: {{catalogo:cascos}}" })]}
+      />
+    );
+
+    await user.click(screen.getByRole("button", { name: /^Borrar$/ }));
+
+    expect(screen.getByText("¿Borrar? Lo usan 2 escenarios y 1 mensaje rápido")).toBeInTheDocument();
+    expect(onDelete).not.toHaveBeenCalled();
+
+    await user.click(screen.getByText("¿Borrar? Lo usan 2 escenarios y 1 mensaje rápido"));
+
+    await waitFor(() => expect(onDelete).toHaveBeenCalledWith("link-1"));
+  });
+
+  it("sin ningún uso, el segundo clic pide confirmar sin contar nada", async () => {
+    const user = userEvent.setup({ delay: null, pointerEventsCheck: 0 });
+    render(
+      <CatalogLinksPanel
+        links={[link({ key: "ubicacion" })]}
+        canEdit
+        onCreate={onCreate}
+        onUpdate={onUpdate}
+        onDelete={onDelete}
+        onToggle={onToggle}
+        playbooks={[]}
+        quickReplies={[]}
+      />
+    );
+
+    await user.click(screen.getByRole("button", { name: /^Borrar$/ }));
+
+    expect(screen.getByText("¿Confirmar borrado?")).toBeInTheDocument();
+    await user.click(screen.getByText("¿Confirmar borrado?"));
+
+    await waitFor(() => expect(onDelete).toHaveBeenCalledWith("link-1"));
+  });
+});

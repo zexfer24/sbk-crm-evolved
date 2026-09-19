@@ -1,13 +1,17 @@
 "use client";
 
 import { useRef, useState, type ChangeEvent } from "react";
+import { flushSync } from "react-dom";
 import { AlertTriangle, Link2, MessageSquarePlus, Paperclip, Pencil, Plus, Trash2, Upload, Zap } from "lucide-react";
 import { Button, Input, Label, Modal, TextArea, toast } from "@heroui/react";
-import type { AgentTurn, Playbook, PlaybookAfterSend, PlaybookAttachmentType, QuickReply, Tag } from "@/lib/types";
+import type { AgentTurn, CatalogLink, Playbook, PlaybookAfterSend, PlaybookAttachmentType, QuickReply, Tag } from "@/lib/types";
 import { createClient } from "@/lib/supabase/client";
 import { createPlaybook, deletePlaybook, PlaybookIdentityError, setPlaybookActive, updatePlaybook } from "@/lib/mutations";
 import { MEDIA_BUCKET, mediaUrlFor } from "@/lib/storage";
 import { hasHardcodedPrice } from "@/lib/playbook-price";
+import { catalogMarkerFor, hasRawUrl, resolveCatalogMarkers, type CatalogLinkDraft } from "@/lib/catalog-links";
+import { insertAtCaret } from "@/lib/composer-text";
+import { CatalogLinksPanel } from "@/components/agent-control/catalog-links-panel";
 
 interface PlaybooksPanelProps {
   playbooks: Playbook[];
@@ -16,6 +20,19 @@ interface PlaybooksPanelProps {
   /** El catálogo completo de etiquetas del CRM: es de donde se elige, no se crean acá. */
   tags: Tag[];
   canEdit: boolean;
+  /**
+   * Enlaces de catálogo (T4a, plan "Nada sin leer, un solo catálogo y la
+   * factura Saint", 18/9/2026, D3): la sección se pinta ARRIBA de los
+   * escenarios porque los dos alimentan el mismo marcador. La lista completa
+   * (activos e inactivos) también sirve para marcar, en la lista de
+   * escenarios de acá abajo, cuál quedó con un `{{catalogo:<key>}}` sin
+   * resolver.
+   */
+  catalogLinks: CatalogLink[];
+  onCreateCatalogLink: (draft: CatalogLinkDraft) => Promise<void>;
+  onUpdateCatalogLink: (id: string, draft: CatalogLinkDraft) => Promise<void>;
+  onDeleteCatalogLink: (id: string) => Promise<void>;
+  onToggleCatalogLink: (id: string, isActive: boolean) => Promise<void>;
 }
 
 const AFTER_SEND_LABEL: Record<PlaybookAfterSend, string> = {
@@ -29,6 +46,9 @@ const ATTACHMENT_LABEL: Record<PlaybookAttachmentType, string> = {
   document: "Documento",
   video: "Video",
 };
+
+/** El marcador de la lista completa de catálogos activos (D4). Literal y no un regex: acá se INSERTA, no se busca. */
+const CATALOG_LIST_TOKEN = "{{catalogos}}";
 
 interface DraftState {
   name: string;
@@ -50,7 +70,18 @@ const EMPTY_DRAFT: DraftState = {
   tagIds: [],
 };
 
-export function PlaybooksPanel({ playbooks, unmatchedTurns, quickReplies, tags, canEdit }: PlaybooksPanelProps) {
+export function PlaybooksPanel({
+  playbooks,
+  unmatchedTurns,
+  quickReplies,
+  tags,
+  canEdit,
+  catalogLinks,
+  onCreateCatalogLink,
+  onUpdateCatalogLink,
+  onDeleteCatalogLink,
+  onToggleCatalogLink,
+}: PlaybooksPanelProps) {
   const [editingId, setEditingId] = useState<string | null>(null);
   const [draft, setDraft] = useState<DraftState>(EMPTY_DRAFT);
   const [isFormOpen, setIsFormOpen] = useState(false);
@@ -59,6 +90,7 @@ export function PlaybooksPanel({ playbooks, unmatchedTurns, quickReplies, tags, 
   const [togglingId, setTogglingId] = useState<string | null>(null);
   const [isImportOpen, setIsImportOpen] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const responseFieldRef = useRef<HTMLTextAreaElement>(null);
 
   const activeCount = playbooks.filter((p) => p.isActive).length;
 
@@ -89,6 +121,26 @@ export function PlaybooksPanel({ playbooks, unmatchedTurns, quickReplies, tags, 
         ? current.tagIds.filter((id) => id !== tagId)
         : [...current.tagIds, tagId],
     }));
+  }
+
+  /**
+   * "Insertar catálogo" (T4a, D4): pega el marcador en la posición del
+   * cursor de la Respuesta, no al final. Mismo patrón que `wrapSelection`/
+   * `insertEmoji` de `composer.tsx` — `insertAtCaret` es el mismo módulo
+   * puro, y el `flushSync` es el mismo arreglo del 29/8/2026: sin el commit
+   * forzado, `setSelectionRange` puede perder la carrera contra el commit de
+   * React bajo CPU contendida y el cursor queda mal puesto.
+   */
+  function insertCatalogMarker(marker: string) {
+    const textarea = responseFieldRef.current;
+    const start = textarea?.selectionStart ?? draft.responseText.length;
+    const end = textarea?.selectionEnd ?? draft.responseText.length;
+    const { text, caret } = insertAtCaret(draft.responseText, start, end, marker);
+
+    flushSync(() => setDraft((current) => ({ ...current, responseText: text })));
+
+    textarea?.focus();
+    textarea?.setSelectionRange(caret, caret);
   }
 
   async function handleSave() {
@@ -185,6 +237,17 @@ export function PlaybooksPanel({ playbooks, unmatchedTurns, quickReplies, tags, 
 
   return (
     <>
+      <CatalogLinksPanel
+        links={catalogLinks}
+        canEdit={canEdit}
+        onCreate={onCreateCatalogLink}
+        onUpdate={onUpdateCatalogLink}
+        onDelete={onDeleteCatalogLink}
+        onToggle={onToggleCatalogLink}
+        playbooks={playbooks}
+        quickReplies={quickReplies}
+      />
+
       <section className="dash-panel">
         <div className="dash-panel-head">
           <h2 className="dash-panel-title">Respuestas que la IA envía sola</h2>
@@ -260,6 +323,23 @@ export function PlaybooksPanel({ playbooks, unmatchedTurns, quickReplies, tags, 
                     <span className="ac-badge" data-tone="wait" title="Este texto lleva un precio escrito a mano: no se actualiza solo. Revísalo.">
                       <AlertTriangle size={11} />
                       Precio a mano
+                    </span>
+                  )}
+                  {/* D6: un `{{catalogo:<key>}}` de una clave apagada o borrada
+                      queda igual de sin resolver que uno mal escrito — fase 0
+                      del turno ya lo saca de los candidatos (`escenarios_
+                      enlace_sin_resolver`), esto solo es el mismo aviso acá,
+                      donde el supervisor puede corregirlo. */}
+                  {(resolveCatalogMarkers(playbook.responseText, catalogLinks).missing.length > 0 ||
+                    (playbook.attachmentUrl &&
+                      resolveCatalogMarkers(playbook.attachmentUrl, catalogLinks).missing.length > 0)) && (
+                    <span
+                      className="ac-badge"
+                      data-tone="wait"
+                      title="Este escenario tiene un marcador de catálogo que no resuelve: no le llega al cliente."
+                    >
+                      <AlertTriangle size={11} />
+                      Enlace sin resolver
                     </span>
                   )}
                   <span className="ac-badge" data-tone={playbook.afterSend === "escalate" ? "plum" : "muted"}>
@@ -376,15 +456,50 @@ export function PlaybooksPanel({ playbooks, unmatchedTurns, quickReplies, tags, 
                 </div>
 
                 <div className="flex flex-col gap-1.5">
-                  <Label htmlFor="pb-response">Respuesta</Label>
+                  <div className="flex items-center justify-between gap-2">
+                    <Label htmlFor="pb-response">Respuesta</Label>
+                    {/* "Insertar catálogo" (T4a, D4): pega el marcador en el
+                        cursor, no reemplaza nada — se puede insertar más de
+                        uno en el mismo texto. Sin catálogos cargados no tiene
+                        sentido mostrarla: no hay nada que insertar todavía. */}
+                    {catalogLinks.length > 0 && (
+                      <select
+                        value=""
+                        onChange={(e) => {
+                          const value = e.target.value;
+                          if (!value) return;
+                          insertCatalogMarker(value === CATALOG_LIST_TOKEN ? value : catalogMarkerFor(value));
+                          e.target.value = "";
+                        }}
+                        className="lm-select"
+                        aria-label="Insertar catálogo"
+                      >
+                        <option value="">Insertar catálogo…</option>
+                        <option value={CATALOG_LIST_TOKEN}>Todos los catálogos</option>
+                        {catalogLinks.map((link) => (
+                          <option key={link.id} value={link.key}>
+                            {link.label}
+                          </option>
+                        ))}
+                      </select>
+                    )}
+                  </div>
                   <TextArea
                     id="pb-response"
+                    ref={responseFieldRef}
                     value={draft.responseText}
                     onChange={(e) => setDraft({ ...draft, responseText: e.target.value })}
                     rows={5}
                     fullWidth
                   />
                   <span className="lm-hint">Se envía tal cual, palabra por palabra.</span>
+                  {hasRawUrl(draft.responseText) && (
+                    <p className="ac-pb-warning">
+                      <AlertTriangle size={12} aria-hidden="true" />
+                      Este texto lleva un enlace escrito a mano; si es un catálogo, usa el marcador para que se
+                      actualice solo.
+                    </p>
+                  )}
                 </div>
 
                 <div className="flex flex-col gap-1.5">
