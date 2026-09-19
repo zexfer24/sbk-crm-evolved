@@ -180,12 +180,103 @@ export async function markConversationUnread(supabase: SupabaseClient, conversat
   if (error) throw error;
 }
 
+/**
+ * T10, plan "Seba sale sin pisar a nadie" (19/9/2026, decisión D-A): el
+ * UPDATE que apaga la IA al tomar un chat a mano, compartido por
+ * `assignToMe` e `intervene`. Tiene que ser un UPDATE APARTE del que toca
+ * `assigned_agent_id`, nunca el mismo: el trigger
+ * `handle_conversation_ownership_change` (migración 20260917010000) solo
+ * escribe la fila `reclamado` si `ai_enabled` NO cambia en el mismo UPDATE
+ * que `assigned_agent_id`, y solo escribe `silenciada_por_asesor` si
+ * `assigned_agent_id` NO cambia en el mismo UPDATE que `ai_enabled` — un
+ * UPDATE conjunto de las dos columnas no dejaría NINGUNA fila en
+ * `conversation_handoffs`, contra la invariante "ningún lead invisible"
+ * (CLAUDE.md). Si `ai_enabled` ya era `false`, este UPDATE es inocuo: el
+ * trigger exige `old.ai_enabled = true` para escribir
+ * `silenciada_por_asesor`, así que no deja una fila espuria.
+ *
+ * Por qué apagar a Seba al tomar el chat a mano: con la guarda de apertura
+ * del turno reducida a `if (!convo.ai_enabled)` (T4, "Seba atiende el
+ * mostrador", 18/9/2026), un chat asignado con la IA encendida ya no corta
+ * el turno — un asesor que pulsa "Asignarme"/"Intervenir" y tarda en
+ * escribir vería a Seba contestar primero. El requisito 6 del cliente
+ * ("Seba sigue hasta que el asesor escriba") habla de los chats que SEBA
+ * escaló, no de los que una persona tomó por su cuenta. El asesor puede
+ * reencender a Seba con el interruptor del chat.
+ *
+ * Corrección post-revisión (`code-review high`, 19/9/2026, hallazgo sobre
+ * C1): la primera versión de este UPDATE lanzaba directo si fallaba, y sin
+ * ninguna compensación el chat quedaba ASIGNADO con Seba ENCENDIDA — el
+ * mismo bug C1 que T10 existe para cerrar, solo que disparado por un corte
+ * de red en vez de por el diseño del UPDATE único. Ahora, si este UPDATE
+ * falla: (1) se reintenta UNA vez (cubre el caso común, un corte
+ * transitorio); (2) si vuelve a fallar, compensación de mejor esfuerzo:
+ * devolver `assigned_agent_id` al valor que tenía ANTES de esta toma manual
+ * — así el chat vuelve a quedar como estaba, ni asignado ni con Seba muda —
+ * y se lanza el error ORIGINAL igual, para que el asesor vea que la acción
+ * no se completó; (3) si la propia compensación también falla, se lanza el
+ * error original de todos modos y se deja un `console.error` — este archivo
+ * corre en el navegador (panel de supervisión), no puede importar
+ * `lib/log.ts` (server-only). El orden de los DOS UPDATE originales
+ * (asignar primero, apagar después) NO se invierte: apagar la IA primero y
+ * fallar el de asignar después dejaría el chat SIN asesor Y SIN IA, peor
+ * que dejarlo asignado con Seba encendida un rato.
+ */
+async function silenceAiForManualTakeover(
+  supabase: SupabaseClient,
+  conversationId: string,
+  previousAssignedAgentId: string | null
+) {
+  const attemptSilence = () =>
+    supabase.from("conversations").update({ ai_enabled: false }).eq("id", conversationId);
+
+  let { error } = await attemptSilence();
+  if (error) {
+    ({ error } = await attemptSilence());
+  }
+  if (!error) return;
+
+  const { error: compensationError } = await supabase
+    .from("conversations")
+    .update({ assigned_agent_id: previousAssignedAgentId })
+    .eq("id", conversationId);
+  if (compensationError) {
+    console.error(
+      "T10 (19/9/2026): no se pudo revertir assigned_agent_id tras fallar dos veces el apagado de la IA al tomar un chat a mano.",
+      compensationError
+    );
+  }
+  throw error;
+}
+
+/**
+ * Lee el `assigned_agent_id` vigente ANTES de tocarlo. Hace falta para la
+ * compensación de `silenceAiForManualTakeover`: si el UPDATE que apaga a
+ * Seba termina fallando, hay que saber a qué valor volver — y una vez que
+ * el primer UPDATE (el de la asignación) ya corrió, ese valor previo se
+ * perdió, así que se lee antes de cualquiera de los dos UPDATE.
+ */
+async function readAssignedAgentId(
+  supabase: SupabaseClient,
+  conversationId: string
+): Promise<string | null> {
+  const { data, error } = await supabase
+    .from("conversations")
+    .select("assigned_agent_id")
+    .eq("id", conversationId)
+    .single();
+  if (error) throw error;
+  return (data as { assigned_agent_id: string | null } | null)?.assigned_agent_id ?? null;
+}
+
 export async function assignToMe(supabase: SupabaseClient, conversationId: string, agent: Agent) {
+  const previousAssignedAgentId = await readAssignedAgentId(supabase, conversationId);
   const { error } = await supabase
     .from("conversations")
     .update({ assigned_agent_id: agent.id })
     .eq("id", conversationId);
   if (error) throw error;
+  await silenceAiForManualTakeover(supabase, conversationId, previousAssignedAgentId);
   await insertSystemEvent(
     supabase,
     conversationId,
@@ -230,11 +321,16 @@ export async function setAiEnabled(
 }
 
 export async function intervene(supabase: SupabaseClient, conversationId: string, agent: Agent) {
+  // Puede haber un asesor previo DISTINTO (intervenir un chat que ya tenía
+  // dueño): `previousAssignedAgentId` es a quien vuelve la compensación si
+  // el apagado de la IA termina fallando, no siempre `null`.
+  const previousAssignedAgentId = await readAssignedAgentId(supabase, conversationId);
   const { error } = await supabase
     .from("conversations")
     .update({ assigned_agent_id: agent.id })
     .eq("id", conversationId);
   if (error) throw error;
+  await silenceAiForManualTakeover(supabase, conversationId, previousAssignedAgentId);
   await insertSystemEvent(
     supabase,
     conversationId,

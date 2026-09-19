@@ -2,6 +2,7 @@ import { describe, expect, it, vi, beforeEach, afterEach } from "vitest";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import type { Agent, Contact, Message, Sale, Sticker } from "@/lib/types";
 import {
+  assignToMe,
   closeSaleWithContactInfo,
   createCatalogLink,
   createContactConversation,
@@ -11,6 +12,7 @@ import {
   deleteCatalogLink,
   deleteLesson,
   deleteSticker,
+  intervene,
   issueInvoice,
   LessonIdentityError,
   markConversationRead,
@@ -267,6 +269,193 @@ describe("setAiEnabled / unassign — devuelven el chat a la IA sin tocar messag
 
     const update = calls.find((c) => c.table === "conversations" && c.op === "update");
     expect(update?.payload).toEqual({ assigned_agent_id: null });
+  });
+});
+
+/**
+ * T10, plan "Seba sale sin pisar a nadie" (19/9/2026, decisión D-A):
+ * `assignToMe` e `intervene` apagan a Seba al tomar un chat a mano con DOS
+ * UPDATE en serie sobre `conversations` — nunca uno conjunto. El trigger
+ * `handle_conversation_ownership_change` (migración 20260917010000) solo
+ * escribe la fila `reclamado` si `ai_enabled` NO cambia en el MISMO UPDATE
+ * que `assigned_agent_id`, y solo escribe `silenciada_por_asesor` si
+ * `assigned_agent_id` NO cambia en el MISMO UPDATE que `ai_enabled`: un
+ * UPDATE conjunto no dejaría NINGUNA fila en `conversation_handoffs`,
+ * contra la invariante "ningún lead invisible" (CLAUDE.md). El caso SQL
+ * equivalente (asignar con sesión real, después apagar) vive en
+ * `supabase/tests/seba_y_escalada_viva.sql`.
+ *
+ * Corrección post-revisión (`code-review high`, 19/9/2026): la primera
+ * versión lanzaba directo si el segundo UPDATE (`ai_enabled = false`)
+ * fallaba, sin compensación — un corte de red ahí dejaba el chat ASIGNADO
+ * con Seba ENCENDIDA, el mismo bug C1 que esta tarea existe para cerrar.
+ * Los casos de abajo cubren el reintento único y la compensación de mejor
+ * esfuerzo (volver `assigned_agent_id` al valor previo a la toma manual).
+ */
+describe("assignToMe / intervene — apagan a Seba con DOS UPDATE en serie (T10, 19/9/2026)", () => {
+  /**
+   * `updateResults` describe, EN ORDEN, el error (o `null`) que devuelve
+   * cada UPDATE sucesivo sobre `conversations` dentro de una sola llamada a
+   * `assignToMe`/`intervene`: [asignar, apagar-intento-1, apagar-intento-2
+   * (solo si el 1 falla), revertir-compensación (solo si el 2 falla)].
+   * `select` (leer `assigned_agent_id` previo) se registra aparte, con
+   * `op: "select"`, y no consume `updateResults`.
+   */
+  function createFakeConversationsSupabase(
+    options: { previousAssignedAgentId?: string | null; updateResults?: (Error | null)[] } = {}
+  ) {
+    const calls: { table: string; op: "select" | "update"; payload?: Record<string, unknown> }[] = [];
+    const updateResults = options.updateResults ?? [];
+    let updateCallIndex = 0;
+    const client = {
+      from(table: string) {
+        if (table === "conversations") {
+          return {
+            select: () => ({
+              eq: () => ({
+                single: async () => {
+                  calls.push({ table, op: "select" });
+                  return {
+                    data: { assigned_agent_id: options.previousAssignedAgentId ?? null },
+                    error: null,
+                  };
+                },
+              }),
+            }),
+            update: (payload: Record<string, unknown>) => ({
+              eq: async () => {
+                calls.push({ table, op: "update", payload });
+                const error = updateResults[updateCallIndex] ?? null;
+                updateCallIndex += 1;
+                return { error };
+              },
+            }),
+          };
+        }
+        if (table === "messages") {
+          return {
+            insert: async (payload: unknown) => {
+              calls.push({ table, op: "update", payload: payload as Record<string, unknown> });
+              return { error: null };
+            },
+          };
+        }
+        throw new Error(`Fake Supabase: tabla no soportada en este test: ${table}`);
+      },
+    };
+    return { client: client as unknown as SupabaseClient, calls };
+  }
+
+  function conversationUpdatesOf(calls: { table: string; op: "select" | "update"; payload?: Record<string, unknown> }[]) {
+    return calls.filter((c) => c.table === "conversations" && c.op === "update");
+  }
+
+  it("assignToMe lee el asesor previo, hace dos UPDATE en orden y recién entonces deja la nota", async () => {
+    const { client, calls } = createFakeConversationsSupabase();
+
+    await assignToMe(client, "conv-1", AGENT);
+
+    expect(calls[0]).toEqual({ table: "conversations", op: "select" });
+    const conversationUpdates = conversationUpdatesOf(calls);
+    expect(conversationUpdates).toHaveLength(2);
+    expect(conversationUpdates[0].payload).toEqual({ assigned_agent_id: "agent-1" });
+    expect(conversationUpdates[1].payload).toEqual({ ai_enabled: false });
+
+    // La nota de sistema llega DESPUÉS del select y los dos UPDATE.
+    expect(calls[3].table).toBe("messages");
+  });
+
+  it("intervene hace dos UPDATE en orden: primero assigned_agent_id, después ai_enabled = false", async () => {
+    const { client, calls } = createFakeConversationsSupabase();
+
+    await intervene(client, "conv-1", AGENT);
+
+    const conversationUpdates = conversationUpdatesOf(calls);
+    expect(conversationUpdates).toHaveLength(2);
+    expect(conversationUpdates[0].payload).toEqual({ assigned_agent_id: "agent-1" });
+    expect(conversationUpdates[1].payload).toEqual({ ai_enabled: false });
+  });
+
+  it("assignToMe: si falla el primer UPDATE (assigned_agent_id), lanza antes de leer/apagar la IA", async () => {
+    const { client, calls } = createFakeConversationsSupabase({
+      updateResults: [new Error("no se pudo asignar")],
+    });
+
+    await expect(assignToMe(client, "conv-1", AGENT)).rejects.toThrow(/no se pudo asignar/i);
+
+    const conversationUpdates = conversationUpdatesOf(calls);
+    expect(conversationUpdates).toHaveLength(1);
+    expect(conversationUpdates[0].payload).toEqual({ assigned_agent_id: "agent-1" });
+    expect(calls.some((c) => c.table === "messages")).toBe(false);
+  });
+
+  it("assignToMe: si el UPDATE de ai_enabled falla UNA vez, el reintento pasa — no lanza y deja la nota de sistema", async () => {
+    const { client, calls } = createFakeConversationsSupabase({
+      updateResults: [null, new Error("corte de red transitorio"), null],
+    });
+
+    await assignToMe(client, "conv-1", AGENT);
+
+    const conversationUpdates = conversationUpdatesOf(calls);
+    // assignar + dos intentos de apagar (el primero falla, el segundo pasa)
+    // — sin una tercera fila de compensación, porque no hizo falta.
+    expect(conversationUpdates).toHaveLength(3);
+    expect(conversationUpdates[1].payload).toEqual({ ai_enabled: false });
+    expect(conversationUpdates[2].payload).toEqual({ ai_enabled: false });
+    expect(calls.some((c) => c.table === "messages")).toBe(true);
+  });
+
+  it("assignToMe: si el UPDATE de ai_enabled falla DOS veces, revierte assigned_agent_id al valor previo (null) y lanza — sin nota de sistema", async () => {
+    const originalError = new Error("no se pudo apagar la ia");
+    const { client, calls } = createFakeConversationsSupabase({
+      previousAssignedAgentId: null,
+      updateResults: [null, originalError, originalError, null],
+    });
+
+    await expect(assignToMe(client, "conv-1", AGENT)).rejects.toBe(originalError);
+
+    const conversationUpdates = conversationUpdatesOf(calls);
+    // asignar + dos intentos de apagar + la compensación que revierte.
+    expect(conversationUpdates).toHaveLength(4);
+    expect(conversationUpdates[3].payload).toEqual({ assigned_agent_id: null });
+    expect(calls.some((c) => c.table === "messages")).toBe(false);
+  });
+
+  it("intervene: si el UPDATE de ai_enabled falla DOS veces, revierte assigned_agent_id al asesor previo DISTINTO y lanza", async () => {
+    const originalError = new Error("no se pudo apagar la ia");
+    const { client, calls } = createFakeConversationsSupabase({
+      previousAssignedAgentId: "agent-2",
+      updateResults: [null, originalError, originalError, null],
+    });
+
+    await expect(intervene(client, "conv-1", AGENT)).rejects.toBe(originalError);
+
+    const conversationUpdates = conversationUpdatesOf(calls);
+    expect(conversationUpdates).toHaveLength(4);
+    expect(conversationUpdates[0].payload).toEqual({ assigned_agent_id: "agent-1" });
+    // La compensación vuelve al asesor que tenía el chat ANTES de intervenir,
+    // no a `null` — intervenir puede quitarle el chat a otro asesor.
+    expect(conversationUpdates[3].payload).toEqual({ assigned_agent_id: "agent-2" });
+    expect(calls.some((c) => c.table === "messages")).toBe(false);
+  });
+
+  it("assignToMe: si además falla la compensación, lanza el error ORIGINAL (no el de la compensación) y avisa por console.error", async () => {
+    const originalError = new Error("no se pudo apagar la ia");
+    const compensationError = new Error("no se pudo revertir");
+    const consoleErrorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      const { client, calls } = createFakeConversationsSupabase({
+        previousAssignedAgentId: null,
+        updateResults: [null, originalError, originalError, compensationError],
+      });
+
+      await expect(assignToMe(client, "conv-1", AGENT)).rejects.toBe(originalError);
+
+      expect(calls.some((c) => c.table === "messages")).toBe(false);
+      expect(consoleErrorSpy).toHaveBeenCalled();
+    } finally {
+      consoleErrorSpy.mockRestore();
+    }
   });
 });
 
