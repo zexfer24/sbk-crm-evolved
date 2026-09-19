@@ -41,6 +41,7 @@ const SALE: Sale = {
   dealVerifiedBy: null,
   dealPaymentMethod: "pago_movil",
   dealClosedBy: null,
+  saintInvoiceNumber: "00123",
   createdAt: "2026-09-08T11:00:00.000Z",
 };
 
@@ -165,5 +166,30 @@ describe("SaleDetailModal — sección Factura", () => {
 
     expect(screen.queryByRole("button", { name: /^emitir$/i })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /^anular$/i })).not.toBeInTheDocument();
+  });
+});
+
+// T6, plan "Nada sin leer, un solo catálogo y la factura Saint" (18/9/2026):
+// D9 exige mostrar el número de factura Saint en el detalle de la venta,
+// distinto del correlativo interno de `invoices`.
+describe("SaleDetailModal — número de factura Saint", () => {
+  it("con número, muestra «Factura Saint N.º 00123»", () => {
+    render(<SaleDetailModal {...baseProps()} currentAgent={AGENT} invoice={null} />);
+
+    expect(screen.getByText("Factura Saint N.º 00123")).toBeInTheDocument();
+  });
+
+  it("sin número (venta anterior al 18/9), muestra «Sin número de factura Saint»", () => {
+    render(
+      <SaleDetailModal
+        {...baseProps()}
+        sale={{ ...SALE, saintInvoiceNumber: null }}
+        currentAgent={AGENT}
+        invoice={null}
+      />
+    );
+
+    expect(screen.getByText("Sin número de factura Saint")).toBeInTheDocument();
+    expect(screen.queryByText(/Factura Saint N\.º/)).not.toBeInTheDocument();
   });
 });

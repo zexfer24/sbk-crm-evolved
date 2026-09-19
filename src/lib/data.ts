@@ -151,7 +151,7 @@ interface RawSale {
   deal_verified_at: string | null;
   deal_payment_method: Conversation["dealPaymentMethod"];
   created_at: string;
-  order: { total_amount: number; currency: string } | null;
+  order: { total_amount: number; currency: string; saint_invoice_number: string | null } | null;
   contact: RawContact;
   deal_verified_by: RawAgentRef | null;
   deal_closed_by: RawAgentRef | null;
@@ -361,6 +361,7 @@ function mapSale(row: RawSale): Sale {
     dealVerifiedBy: mapAgentRef(row.deal_verified_by),
     dealPaymentMethod: row.deal_payment_method,
     dealClosedBy: mapAgentRef(row.deal_closed_by),
+    saintInvoiceNumber: row.order?.saint_invoice_number ?? null,
     createdAt: row.created_at,
   };
 }
@@ -1604,7 +1605,7 @@ export async function searchConversationSummaries(
 const SALE_SELECT = `
   id, deal_status, deal_closed_at, deal_payment_proof_url, deal_verified,
   deal_verified_at, deal_payment_method, created_at,
-  order:orders(total_amount, currency),
+  order:orders(total_amount, currency, saint_invoice_number),
   contact:contacts(id, phone_number, display_name, profile_name, avatar_url,
     cedula_type, cedula_number, state, city, address),
   deal_verified_by:agents!conversations_deal_verified_by_fkey(id, display_name),

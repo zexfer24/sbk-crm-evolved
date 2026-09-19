@@ -344,6 +344,19 @@ export function SalesView({ currentAgent, initialSales, bcvRate }: SalesViewProp
                               Verificada
                             </span>
                           )}
+                          {/* D9, plan "Nada sin leer, un solo catálogo y la
+                              factura Saint" (18/9/2026): el chip solo sale
+                              cuando hay número — las ventas anteriores al
+                              18/9 no lo tienen, y un `ac-badge` mantiene la
+                              misma altura que "Verificada"/"Cerrada", así
+                              que agregarlo no desalinea la fila (trampa de
+                              Inventario del 10/9: ahí el problema era un
+                              vecino con una LÍNEA de más, no un chip). */}
+                          {sale.saintInvoiceNumber && (
+                            <span className="ac-badge" data-tone="muted">
+                              Saint {sale.saintInvoiceNumber}
+                            </span>
+                          )}
                         </div>
 
                         <div className="sales-row-actions">

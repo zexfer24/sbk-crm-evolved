@@ -42,6 +42,7 @@ function venta(overrides: Partial<Sale> = {}): Sale {
     dealVerifiedBy: null,
     dealPaymentMethod: null,
     dealClosedBy: null,
+    saintInvoiceNumber: null,
     createdAt: "2026-09-09T14:00:00.000Z",
     ...overrides,
   };

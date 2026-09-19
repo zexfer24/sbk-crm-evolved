@@ -85,6 +85,7 @@ function venta(overrides: Partial<Sale> = {}): Sale {
     dealVerifiedBy: null,
     dealPaymentMethod: null,
     dealClosedBy: null,
+    saintInvoiceNumber: null,
     createdAt: "2026-09-10T13:00:00.000Z",
     ...overrides,
   };
@@ -191,5 +192,18 @@ describe("SalesView / los números del día", () => {
 
     expect(screen.getByLabelText("Día siguiente")).toBeDisabled();
     expect(screen.getByText("Hoy")).toBeDisabled();
+  });
+
+  // T6, plan "Nada sin leer, un solo catálogo y la factura Saint" (18/9/2026).
+  it("muestra el chip de factura Saint solo en la venta que la tiene", () => {
+    liveSales = [
+      venta({ dealClosedAt: "2026-09-10T13:00:00.000Z", saintInvoiceNumber: "00123" }),
+      venta({ dealClosedAt: "2026-09-10T14:00:00.000Z", saintInvoiceNumber: null }),
+    ];
+
+    render(<SalesView currentAgent={AGENT} initialSales={liveSales} bcvRate={40} />);
+
+    expect(screen.getByText("Saint 00123")).toBeInTheDocument();
+    expect(screen.queryAllByText(/^Saint /).length).toBe(1);
   });
 });

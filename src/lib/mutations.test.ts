@@ -852,6 +852,7 @@ describe("createInvoiceForSale / issueInvoice / voidInvoice", () => {
     dealVerifiedBy: null,
     dealPaymentMethod: "pago_movil",
     dealClosedBy: null,
+    saintInvoiceNumber: null,
     createdAt: "2026-09-08T11:00:00.000Z",
   };
 

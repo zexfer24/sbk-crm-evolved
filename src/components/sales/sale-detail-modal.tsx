@@ -106,6 +106,18 @@ export function SaleDetailModal({
                   </span>
                 </p>
                 <p className="flex items-center gap-2">
+                  <Receipt size={13} className="text-muted" />
+                  {/* D9, plan "Nada sin leer, un solo catálogo y la factura
+                      Saint" (18/9/2026): las ventas cerradas antes de esa
+                      fecha no tienen número Saint (columna nullable), y se
+                      dice así en vez de mostrar un espacio vacío. */}
+                  <span>
+                    {sale.saintInvoiceNumber
+                      ? `Factura Saint N.º ${sale.saintInvoiceNumber}`
+                      : "Sin número de factura Saint"}
+                  </span>
+                </p>
+                <p className="flex items-center gap-2">
                   <UserCheck size={13} className="text-muted" />
                   {/* Las ventas cerradas antes de que existiera el campo no
                       dejaron autor recuperable: se dice, en vez de atribuirlas

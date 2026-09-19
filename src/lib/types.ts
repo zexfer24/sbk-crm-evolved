@@ -265,6 +265,15 @@ export interface Sale {
   dealVerifiedBy: AgentRef | null;
   dealPaymentMethod: PaymentMethod | null;
   dealClosedBy: AgentRef | null;
+  /**
+   * Número de la factura emitida en Saint, el sistema administrativo del
+   * negocio (D9, plan "Nada sin leer, un solo catálogo y la factura Saint",
+   * 18/9/2026). `null` en las ventas cerradas antes de esa fecha, que no lo
+   * tienen; el modal de Cerrar venta lo exige desde entonces. No confundir
+   * con `invoices.number` (el correlativo INTERNO `SBK-000123`): son dos
+   * números distintos para dos sistemas distintos.
+   */
+  saintInvoiceNumber: string | null;
   createdAt: string;
 }
 
