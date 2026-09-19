@@ -11,12 +11,31 @@ interface FakeState {
   /** Lo que devuelve la función agent_can_run() de la base. */
   canRun: boolean;
   conversation: Record<string, unknown> | null;
+  /**
+   * T1, plan "Seba sale sin pisar a nadie" (19/9/2026, C2): el error que
+   * devuelve la lectura de `conversations` en la apertura del turno —
+   * distinto de `data: null` sin error (la fila no existe, rama de siempre).
+   * `null` de fábrica: la consulta se comporta como antes de esta tarea. Sin
+   * esto, un 400 de PostgREST (p. ej. por faltar la migración
+   * `20260916010000`, columna `ai_resume_cutoff_at`) se leía como "la
+   * conversación no existe" y el turno se callaba sin traspaso ni log.
+   */
+  conversationError: { message: string } | null;
   history: {
     sender_type: string;
     content: string | null;
     is_internal_note: boolean;
     /** T3.2 (5/9/2026): loadHistory salta 'unsupported' explícito, sin depender de que content sea null. */
     message_type?: string;
+    /**
+     * T3, plan "Seba sale sin pisar a nadie" — corrección del 19/9/2026
+     * (`code-review high`, hallazgo 4): la fecha real de la fila, que
+     * `customerBurst` usa para acotar la ráfaga por tiempo. `undefined` de
+     * fábrica (como antes de esta corrección) para los tests que no la
+     * ejercitan — sin fecha, `customerBurst` trata la línea de forma
+     * conservadora (ver su docblock en history-line.ts).
+     */
+    created_at?: string;
   }[];
   historyOrderAscending: boolean | null;
   /** Claves encendidas en public.agent_tools. */
@@ -167,6 +186,7 @@ const state: FakeState = {
   agentSettingsBusinessHours: undefined,
   agentSettingsError: null,
   agentCanRunError: null,
+  conversationError: null,
   agentTurnInsertError: null,
   intentUpdateError: null,
   lastHandoffRow: null,
@@ -260,7 +280,9 @@ function createFakeSupabase() {
           select: (columns: string) => {
             conversationSelectColumns.push(columns);
             return {
-              eq: () => ({ maybeSingle: async () => ({ data: state.conversation }) }),
+              eq: () => ({
+                maybeSingle: async () => ({ data: state.conversation, error: state.conversationError }),
+              }),
             };
           },
           // T2b, plan "Seba atiende el mostrador" (18/9/2026): el turno usa
@@ -768,6 +790,7 @@ beforeEach(() => {
   state.agentSettingsBusinessHours = undefined;
   state.agentSettingsError = null;
   state.agentCanRunError = null;
+  state.conversationError = null;
   state.agentTurnInsertError = null;
   state.intentUpdateError = null;
   state.lastHandoffRow = null;
@@ -1239,6 +1262,34 @@ describe("runAgentTurn — salidas silenciosas de apertura", () => {
     expect(handoffCalls).toHaveLength(0);
     expect(matchPlaybookMock).not.toHaveBeenCalled();
     expect(sendAgentTextMock).not.toHaveBeenCalled();
+  });
+
+  /**
+   * T1, plan "Seba sale sin pisar a nadie" (19/9/2026, C2): antes de esta
+   * tarea la lectura de `conversations` se desestructuraba con `{ data:
+   * conversation }` a secas, así que un `error` acá (p. ej. un 400 de
+   * PostgREST por faltar la migración `20260916010000`, columna
+   * `ai_resume_cutoff_at`) dejaba `conversation` en `undefined` y el turno
+   * tomaba la misma rama muda que "la conversación no existe" — sin
+   * traspaso, sin log, la cola lo contaba como éxito. Mismo patrón que
+   * `turno_interruptor_no_consultable`: ahora lanza ANTES de
+   * `entrega.intentado = true`, así la cola reintenta sin riesgo de doble
+   * envío.
+   */
+  it("con error al leer la conversación al ABRIR el turno: lanza y no hay traspaso", async () => {
+    const error = vi.spyOn(log, "error");
+    state.conversationError = { message: "conexión perdida" };
+
+    await expect(runAgentTurn("conv-1")).rejects.toThrow(/conversación no consultable/);
+
+    expect(error).toHaveBeenCalledWith(
+      "turno_conversacion_no_consultable",
+      expect.objectContaining({ conversationId: "conv-1", detail: "conexión perdida" })
+    );
+    expect(handoffCalls).toHaveLength(0);
+    expect(matchPlaybookMock).not.toHaveBeenCalled();
+    expect(sendAgentTextMock).not.toHaveBeenCalled();
+    expect(sendPlaybookReplyMock).not.toHaveBeenCalled();
   });
 
   /**
@@ -3087,6 +3138,174 @@ describe("runAgentTurn — la presentación de Seba (T2b, 18/9/2026)", () => {
   });
 });
 
+/**
+ * T3, plan "Seba sale sin pisar a nadie" (19/9/2026, hallazgo nuevo de la
+ * inspección pre-despliegue, fila A3): la cola agrupa ráfagas de mensajes
+ * seguidos antes de correr un turno (CLAUDE.md, "La respuesta llega en
+ * siete segundos") — `soloSaludo` (T2b) y la guarda de cortesía tras
+ * escalada (Tarea 4, 14/9/2026) miraban SOLO la última línea del cliente, y
+ * las dos se comían una pregunta real que había llegado antes en la misma
+ * ráfaga. Las dos ahora usan `customerBurst` (history-line.ts): toda la
+ * ráfaga tiene que ser saludo/cortesía, no solo la última línea.
+ *
+ * `state.history` se escribe DESCENDENTE (más reciente primero), igual que
+ * el resto de este archivo.
+ */
+describe("runAgentTurn — el saludo y la cortesía miran la ráfaga entera (T3, 19/9/2026)", () => {
+  it("'Precio del casco LS2' + 'Buenas tardes' (ráfaga, chat nuevo): no es solo saludo, el turno llega a clasificar", async () => {
+    state.conversation = { ...state.conversation, welcome_sent_at: null };
+    // Un minuto de diferencia (corrección 19/9/2026, hallazgo 4): dentro del
+    // hueco de CUSTOMER_BURST_GAP_MINUTES, así que las dos líneas siguen
+    // siendo la MISMA ráfaga.
+    state.history = [
+      { sender_type: "customer", content: "Buenas tardes", is_internal_note: false, created_at: "2026-09-19T10:01:00.000Z" },
+      { sender_type: "customer", content: "Precio del casco LS2", is_internal_note: false, created_at: "2026-09-19T10:00:00.000Z" },
+    ];
+
+    await runAgentTurn("conv-1");
+
+    // Dos envíos: la presentación de Seba primero (no reemplaza el turno,
+    // la pregunta sigue sin contestar) y la redacción real después.
+    expect(sendAgentTextMock).toHaveBeenCalledTimes(2);
+    expect(sendAgentTextMock).toHaveBeenNthCalledWith(
+      1,
+      expect.anything(),
+      expect.anything(),
+      expect.any(String),
+      expect.objectContaining({ isAutoReply: true })
+    );
+    expect(classifyIntentMock).toHaveBeenCalledTimes(1);
+    expect(generateMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("'hola' + 'buenas' (ráfaga, ambas saludo): sigue siendo solo saludo, sin fase 0/1", async () => {
+    state.conversation = { ...state.conversation, welcome_sent_at: null };
+    state.history = [
+      { sender_type: "customer", content: "buenas", is_internal_note: false, created_at: "2026-09-19T10:01:00.000Z" },
+      { sender_type: "customer", content: "hola", is_internal_note: false, created_at: "2026-09-19T10:00:00.000Z" },
+    ];
+
+    await runAgentTurn("conv-1");
+
+    expect(sendAgentTextMock).toHaveBeenCalledTimes(1);
+    expect(sendAgentTextMock).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.anything(),
+      expect.any(String),
+      expect.objectContaining({ isAutoReply: false })
+    );
+    expect(matchPlaybookMock).not.toHaveBeenCalled();
+    expect(classifyIntentMock).not.toHaveBeenCalled();
+    expect(generateMock).not.toHaveBeenCalled();
+  });
+
+  it("foto sin pie + 'hola': no es solo saludo (el marcador de media en la ráfaga no es saludo ni cortesía)", async () => {
+    state.conversation = { ...state.conversation, welcome_sent_at: null };
+    state.history = [
+      { sender_type: "customer", content: "hola", is_internal_note: false, created_at: "2026-09-19T10:01:00.000Z" },
+      { sender_type: "customer", content: null, is_internal_note: false, message_type: "image", created_at: "2026-09-19T10:00:00.000Z" },
+    ];
+
+    await runAgentTurn("conv-1");
+
+    expect(sendAgentTextMock).toHaveBeenCalledTimes(2);
+    expect(sendAgentTextMock).toHaveBeenNthCalledWith(
+      1,
+      expect.anything(),
+      expect.anything(),
+      expect.any(String),
+      expect.objectContaining({ isAutoReply: true })
+    );
+    expect(classifyIntentMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("'¿tienen la bomba de aceite?' + 'gracias' (ráfaga) con una escalada abierta: el turno NO se calla", async () => {
+    state.history = [
+      { sender_type: "customer", content: "gracias", is_internal_note: false, created_at: "2026-09-19T10:01:00.000Z" },
+      { sender_type: "customer", content: "¿tienen la bomba de aceite?", is_internal_note: false, created_at: "2026-09-19T10:00:00.000Z" },
+    ];
+    state.lastHandoffRow = { reason: "escalada_sin_asesor", created_at: "2026-09-14T10:00:00.000Z" };
+    state.agentMessagesAfterHandoff = [];
+
+    await runAgentTurn("conv-1");
+
+    expect(classifyIntentMock).toHaveBeenCalled();
+    expect(sendAgentTextMock).toHaveBeenCalledTimes(1);
+    expect(handoffCalls.some((c) => c.p_reason === "cortesia_tras_escalada")).toBe(false);
+  });
+
+  it("'gracias' sola (ráfaga de una línea) con escalada abierta: se sigue callando como hoy", async () => {
+    state.history = [{ sender_type: "customer", content: "gracias", is_internal_note: false }];
+    state.lastHandoffRow = { reason: "escalada_sin_asesor", created_at: "2026-09-14T10:00:00.000Z" };
+    state.agentMessagesAfterHandoff = [];
+
+    await runAgentTurn("conv-1");
+
+    expect(sendAgentTextMock).not.toHaveBeenCalled();
+    expect(handoffCalls).toHaveLength(1);
+    expect(handoffCalls[0]).toMatchObject({ p_reason: "cortesia_tras_escalada" });
+  });
+
+  /**
+   * Corrección del 19/9/2026 (`code-review high`, hallazgo 4): la primera
+   * versión de `customerBurst` no acotaba por tiempo, solo por "hay una
+   * respuesta del CRM en el medio". Caso real: "¿ya me atienden?" se quedó
+   * sin contestar (`pausada`), el chat se cerró; DÍAS después el cliente
+   * reabre con "hola". Sin el corte por hueco, la ráfaga habría sido
+   * ["¿ya me atienden?", "hola"] — no solo saludo — y Seba habría redactado
+   * sobre una pregunta de hace tres días que quedó sin responder a
+   * propósito. Con el corte, la línea vieja queda fuera y sigue siendo solo
+   * saludo.
+   */
+  it("'¿ya me atienden?' de hace 3 días + 'hola' ahora: el hueco corta la ráfaga, sigue siendo solo saludo", async () => {
+    state.conversation = { ...state.conversation, welcome_sent_at: null };
+    state.history = [
+      { sender_type: "customer", content: "hola", is_internal_note: false, created_at: "2026-09-19T10:00:00.000Z" },
+      {
+        sender_type: "customer",
+        content: "¿ya me atienden?",
+        is_internal_note: false,
+        created_at: "2026-09-16T10:00:00.000Z",
+      },
+    ];
+
+    await runAgentTurn("conv-1");
+
+    expect(sendAgentTextMock).toHaveBeenCalledTimes(1);
+    expect(sendAgentTextMock).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.anything(),
+      expect.any(String),
+      expect.objectContaining({ isAutoReply: false })
+    );
+    expect(matchPlaybookMock).not.toHaveBeenCalled();
+    expect(classifyIntentMock).not.toHaveBeenCalled();
+    expect(generateMock).not.toHaveBeenCalled();
+  });
+
+  /**
+   * Corrección del 19/9/2026 (`code-review high`, hallazgo 8): un sticker
+   * hacía fallar el `every(isCourtesyOnly)` de la guarda de cortesía —
+   * "gracias" + sticker de pulgar con una escalada abierta ya no la callaba,
+   * y la IA mandaba una segunda despedida encima de la primera. El sticker
+   * se salta al armar la ráfaga: ["gracias"] sigue siendo pura cortesía.
+   */
+  it("'gracias' + sticker (ráfaga) con una escalada abierta: el sticker se ignora, el turno se calla igual", async () => {
+    state.history = [
+      { sender_type: "customer", content: null, message_type: "sticker", is_internal_note: false, created_at: "2026-09-19T10:01:00.000Z" },
+      { sender_type: "customer", content: "gracias", is_internal_note: false, created_at: "2026-09-19T10:00:00.000Z" },
+    ];
+    state.lastHandoffRow = { reason: "escalada_sin_asesor", created_at: "2026-09-14T10:00:00.000Z" };
+    state.agentMessagesAfterHandoff = [];
+
+    await runAgentTurn("conv-1");
+
+    expect(sendAgentTextMock).not.toHaveBeenCalled();
+    expect(handoffCalls).toHaveLength(1);
+    expect(handoffCalls[0]).toMatchObject({ p_reason: "cortesia_tras_escalada" });
+  });
+});
+
 describe("runAgentTurn — interruptores de herramientas", () => {
   it("con todo encendido, una consulta lleva catálogo, biblioteca y escalamiento", async () => {
     await runAgentTurn("conv-1");
@@ -3434,32 +3653,89 @@ describe("runAgentTurn — salidas que limpian su etapa", () => {
    * El corte de red de OpenRouter del 7/9/2026 a las 11:57 UTC pasó
    * exactamente por esta puerta: el turno registraba el fallo en
    * `agent_turns` pero dejaba `journey_stage = "classifying"` sin limpiar.
-   * Acá NO se escribe un traspaso nuevo — `agent_turns` con `action: "error"`
-   * ya es suficiente para que el reconciliador la recoja.
+   * Sin saludo previo (`welcome_sent_at` ya sellado, el default de la
+   * suite) el último mensaje sigue siendo del cliente: el reconciliador
+   * sigue recogiendo la conversación sola, así que acá NO hace falta
+   * ningún traspaso nuevo (T2, "Seba sale sin pisar a nadie", 19/9/2026).
    */
-  it("si la clasificación falla, la etapa no se queda en classifying", async () => {
+  it("si la clasificación falla SIN saludo previo, la etapa se limpia y no hay traspaso nuevo", async () => {
     classifyIntentMock.mockRejectedValue(new Error("rate limit"));
 
     await runAgentTurn("conv-1");
 
     expect(agentTurnInserts).toContainEqual(expect.objectContaining({ action: "error" }));
     expect(conversationUpdates).toContainEqual({ journey_stage: null, active_tool: null });
-    expect(handoffCalls.some((call) => call.p_reason === "sin_contenido_legible")).toBe(false);
+    expect(handoffCalls).toHaveLength(0);
+  });
+
+  /**
+   * T2, plan "Seba sale sin pisar a nadie" (19/9/2026, hallazgo A2). Con
+   * `welcome_sent_at: null` y una pregunta real detrás del saludo
+   * (`introducedThisTurn` termina en `true`), el saludo de Seba sale y
+   * QUEDA como el último mensaje visible; si clasificar falla después, el
+   * reconciliador (`last_message_direction.eq.inbound` o
+   * `last_message_status.eq.failed`) ya no vuelve a mirar la conversación
+   * — sin este `recordHandoff` el lead se queda sin respuesta Y sin
+   * traspaso. Sin asesor asignado, el traspaso va a `unassigned`.
+   */
+  it("si la clasificación falla CON saludo previo, deja entrega_fallida a unassigned", async () => {
+    state.conversation = { ...state.conversation, welcome_sent_at: null };
+    classifyIntentMock.mockRejectedValue(new Error("rate limit"));
+
+    await runAgentTurn("conv-1");
+
+    expect(sendAgentTextMock).toHaveBeenCalledTimes(1);
+    expect(agentTurnInserts).toContainEqual(expect.objectContaining({ action: "error" }));
+    expect(conversationUpdates).toContainEqual({ journey_stage: null, active_tool: null });
+    expect(handoffCalls).toHaveLength(1);
+    expect(handoffCalls[0]).toMatchObject({
+      p_conversation_id: "conv-1",
+      p_to_kind: "unassigned",
+      p_reason: "entrega_fallida",
+    });
   });
 
   /**
    * Antes este `catch` solo apagaba `active_tool` y dejaba `journey_stage`
-   * congelado en "classifying"/"tool_running". Tampoco escribe traspaso
-   * nuevo, por el mismo motivo que la clasificación fallida.
+   * congelado en "classifying"/"tool_running". Sin saludo previo, mismo
+   * motivo que la clasificación fallida: el último mensaje sigue siendo del
+   * cliente y el reconciliador la recoge como siempre.
    */
-  it("si el tool loop lanza, la etapa no se queda en tool_running", async () => {
+  it("si el tool loop lanza SIN saludo previo, la etapa se limpia y no hay traspaso nuevo", async () => {
     generateMock.mockRejectedValue(new Error("fetch failed"));
 
     await runAgentTurn("conv-1");
 
     expect(agentTurnInserts).toContainEqual(expect.objectContaining({ action: "error" }));
     expect(conversationUpdates).toContainEqual({ journey_stage: null, active_tool: null });
-    expect(handoffCalls.some((call) => call.p_reason === "sin_contenido_legible")).toBe(false);
+    expect(handoffCalls).toHaveLength(0);
+  });
+
+  /**
+   * T2, plan "Seba sale sin pisar a nadie" (19/9/2026, hallazgo A2). Mismo
+   * caso que la clasificación fallida, pero para el `catch` del tool loop,
+   * y con un asesor YA asignado (D2, "Seba atiende el mostrador": asignado +
+   * IA encendida corre el turno igual) — el traspaso tiene que respetar ese
+   * dueño, no mandarlo a `unassigned` y pisarlo.
+   */
+  it("si el tool loop lanza CON saludo previo y asesor asignado, deja entrega_fallida a ese asesor", async () => {
+    state.conversation = { ...state.conversation, welcome_sent_at: null, assigned_agent_id: "agent-9" };
+    generateMock.mockRejectedValue(new Error("fetch failed"));
+
+    await runAgentTurn("conv-1");
+
+    expect(sendAgentTextMock).toHaveBeenCalledTimes(1);
+    expect(agentTurnInserts).toContainEqual(expect.objectContaining({ action: "error" }));
+    // Con dueño asignado, `stageFor` deja "assigned" en vez de `null`
+    // (CLAUDE.md, trampa de la píldora "Escaladas" que mira el campo crudo).
+    expect(conversationUpdates).toContainEqual({ journey_stage: "assigned", active_tool: null });
+    expect(handoffCalls).toHaveLength(1);
+    expect(handoffCalls[0]).toMatchObject({
+      p_conversation_id: "conv-1",
+      p_to_kind: "human",
+      p_to_id: "agent-9",
+      p_reason: "entrega_fallida",
+    });
   });
 });
 

@@ -1,5 +1,12 @@
 import { describe, expect, it } from "vitest";
-import { historyLine, isHistoryMarker, mediaStreakWithoutText, type HistoryRow } from "@/lib/ai/history-line";
+import {
+  CUSTOMER_BURST_GAP_MINUTES,
+  customerBurst,
+  historyLine,
+  isHistoryMarker,
+  mediaStreakWithoutText,
+  type HistoryRow,
+} from "@/lib/ai/history-line";
 import { revealsIdentity } from "@/lib/ai/identity-guard";
 
 function row(overrides: Partial<HistoryRow>): HistoryRow {
@@ -345,6 +352,153 @@ describe("mediaStreakWithoutText", () => {
 
   it("historial vacío → todo en cero", () => {
     expect(mediaStreakWithoutText([])).toEqual({ adjuntos: 0, yaPreguntamos: false, tipos: [] });
+  });
+});
+
+/**
+ * T3, plan "Seba sale sin pisar a nadie" (19/9/2026, hallazgo A3): la cola
+ * agrupa ráfagas de mensajes seguidos antes de correr un turno — mirar solo
+ * la última línea del cliente (como hacía `lastCustomerMessage`, agent.ts)
+ * se comía una pregunta real que llegó antes de un saludo/cortesía de
+ * cierre en la misma ráfaga. `customerBurst` junta toda esa ráfaga final.
+ *
+ * Igual que `mediaStreakWithoutText`, el historial se escribe en orden
+ * CRONOLÓGICO (del más viejo al más nuevo) — la forma en la que `loadHistory`
+ * (agent.ts) se lo entrega.
+ *
+ * Corrección del 19/9/2026 (`code-review high`, hallazgos 4 y 8): las
+ * entradas de estos tests llevan `createdAt` cuando la línea NO es la más
+ * nueva de la ráfaga — la más nueva siempre entra sin fecha (ver el
+ * docblock de la función), así que agregarle una ahí sería ruido.
+ */
+describe("customerBurst", () => {
+  it("historial vacío → []", () => {
+    expect(customerBurst([])).toEqual([]);
+  });
+
+  it("una sola línea de cliente, SIN fecha → igual entra: es la más nueva, no hay contra qué medir un hueco", () => {
+    expect(customerBurst([{ role: "user", content: "hola" }])).toEqual(["hola"]);
+  });
+
+  it("dos líneas de cliente seguidas, con 1 minuto de diferencia → las dos, en orden cronológico", () => {
+    expect(
+      customerBurst([
+        { role: "user", content: "Precio del casco LS2", createdAt: "2026-09-19T10:00:00.000Z" },
+        { role: "user", content: "Buenas tardes", createdAt: "2026-09-19T10:01:00.000Z" },
+      ])
+    ).toEqual(["Precio del casco LS2", "Buenas tardes"]);
+  });
+
+  it("una respuesta de la IA en medio corta la ráfaga: solo cuenta lo posterior a esa respuesta", () => {
+    expect(
+      customerBurst([
+        { role: "user", content: "hola" },
+        { role: "assistant", content: "¡Bienvenido!" },
+        { role: "user", content: "buenas" },
+      ])
+    ).toEqual(["buenas"]);
+  });
+
+  it("el historial termina en una línea del asesor/IA: la ráfaga del cliente está vacía", () => {
+    expect(
+      customerBurst([
+        { role: "user", content: "hola" },
+        { role: "assistant", content: "¿en qué te ayudo?" },
+      ])
+    ).toEqual([]);
+  });
+
+  it("un marcador de media entra a la ráfaga tal cual, como cualquier otra línea de cliente", () => {
+    expect(
+      customerBurst([
+        { role: "user", content: "[El cliente envió una foto sin texto; no puedes verla]", createdAt: "2026-09-19T10:00:00.000Z" },
+        { role: "user", content: "hola", createdAt: "2026-09-19T10:00:30.000Z" },
+      ])
+    ).toEqual(["[El cliente envió una foto sin texto; no puedes verla]", "hola"]);
+  });
+
+  /**
+   * Hallazgo 4 (corrección del 19/9/2026): sin acotar por tiempo, dos
+   * líneas de cliente sin nada del CRM entre medio se consideraban la MISMA
+   * ráfaga sin importar cuánto tiempo real las separara. Caso real: "¿ya me
+   * atienden?" (`pausada`, chat cerrado) y, DÍAS después, "hola" al reabrir.
+   */
+  describe("hallazgo 4 — la ráfaga se acota por tiempo, no solo por 'no hubo respuesta del CRM en el medio'", () => {
+    it(`un hueco de exactamente ${CUSTOMER_BURST_GAP_MINUTES} minutos sigue siendo la MISMA ráfaga`, () => {
+      expect(
+        customerBurst([
+          { role: "user", content: "¿tienen aceite 20w50?", createdAt: "2026-09-19T10:00:00.000Z" },
+          { role: "user", content: "buenas", createdAt: "2026-09-19T10:10:00.000Z" },
+        ])
+      ).toEqual(["¿tienen aceite 20w50?", "buenas"]);
+    });
+
+    it(`un hueco de ${CUSTOMER_BURST_GAP_MINUTES + 1} minutos corta la ráfaga: solo entra la línea más nueva`, () => {
+      expect(
+        customerBurst([
+          { role: "user", content: "¿tienen aceite 20w50?", createdAt: "2026-09-19T10:00:00.000Z" },
+          { role: "user", content: "buenas", createdAt: "2026-09-19T10:11:00.000Z" },
+        ])
+      ).toEqual(["buenas"]);
+    });
+
+    it("caso real: '¿ya me atienden?' de hace 3 días + 'hola' al reabrir el chat — el hueco corta la línea vieja", () => {
+      expect(
+        customerBurst([
+          { role: "user", content: "¿ya me atienden?", createdAt: "2026-09-16T10:00:00.000Z" },
+          { role: "user", content: "hola", createdAt: "2026-09-19T10:00:00.000Z" },
+        ])
+      ).toEqual(["hola"]);
+    });
+
+    it("una línea vieja SIN createdAt corta la ráfaga (conservador): solo entra la línea más nueva, que sí lo tiene", () => {
+      expect(
+        customerBurst([
+          { role: "user", content: "¿ya me atienden?" },
+          { role: "user", content: "hola", createdAt: "2026-09-19T10:00:00.000Z" },
+        ])
+      ).toEqual(["hola"]);
+    });
+
+    it("la línea más nueva sin createdAt también corta lo que venga detrás, aunque esa línea de atrás sí tenga fecha", () => {
+      expect(
+        customerBurst([
+          { role: "user", content: "¿ya me atienden?", createdAt: "2026-09-19T09:59:00.000Z" },
+          { role: "user", content: "hola" },
+        ])
+      ).toEqual(["hola"]);
+    });
+  });
+
+  /**
+   * Hallazgo 8 (corrección del 19/9/2026): un sticker no es ni saludo ni
+   * cortesía ni una pregunta — se salta al armar la ráfaga, sin contar como
+   * línea ni cortarla (mismo criterio que ya usa `mediaStreakWithoutText`
+   * para no tratarlo como un adjunto pendiente).
+   */
+  describe("hallazgo 8 — un sticker se ignora: no cuenta ni corta la ráfaga", () => {
+    it("texto + sticker + texto: el sticker desaparece del resultado y no corta nada", () => {
+      expect(
+        customerBurst([
+          { role: "user", content: "hola", createdAt: "2026-09-19T10:00:00.000Z" },
+          { role: "user", content: "[El cliente envió un sticker]", createdAt: "2026-09-19T10:00:30.000Z" },
+          { role: "user", content: "buenas", createdAt: "2026-09-19T10:01:00.000Z" },
+        ])
+      ).toEqual(["hola", "buenas"]);
+    });
+
+    it("un sticker solo → [] (igual que antes de esta función existir, cuando lastCustomerMessage daba null para un marcador)", () => {
+      expect(customerBurst([{ role: "user", content: "[El cliente envió un sticker]" }])).toEqual([]);
+    });
+
+    it("'gracias' + sticker (el sticker es lo más nuevo): la ráfaga queda ['gracias']", () => {
+      expect(
+        customerBurst([
+          { role: "user", content: "gracias", createdAt: "2026-09-19T10:00:00.000Z" },
+          { role: "user", content: "[El cliente envió un sticker]", createdAt: "2026-09-19T10:01:00.000Z" },
+        ])
+      ).toEqual(["gracias"]);
+    });
   });
 });
 

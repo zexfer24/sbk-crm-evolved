@@ -31,7 +31,7 @@ import { escalateConversation, type EscalationMotivo } from "@/lib/ai/escalate";
 import { withConversationTurnLock, type TurnLease } from "@/lib/ai/conversation-lock";
 import { humanHasWritten } from "@/lib/ai/human-handled";
 import { ZERO_USAGE, fetchActivePlaybooks, matchPlaybook, playbookSentRecently, type PlaybookMatch } from "@/lib/ai/playbooks";
-import { historyLine, isHistoryMarker, mediaStreakWithoutText } from "@/lib/ai/history-line";
+import { customerBurst, historyLine, isHistoryMarker, mediaStreakWithoutText } from "@/lib/ai/history-line";
 import { customerFirstName } from "@/lib/ai/customer-name";
 import { playbookMessageText, sendAgentText, sendPlaybookReply, type DeliveryOutcome } from "@/lib/ai/send";
 import { buildTurnTarget, type AgentConversation, type TurnTarget } from "@/lib/ai/turn-target";
@@ -238,21 +238,34 @@ function addTokens(a: TurnTokens, b: TurnTokens): TurnTokens {
 const HISTORY_LIMIT = 15;
 
 /**
+ * Lo que devuelve `loadHistory`: el historial tal cual lo necesita el
+ * modelo (`messages`, sin fecha — es el tipo `ModelMessage` del SDK de IA,
+ * que no tiene dónde ponerla) más un arreglo paralelo (`createdAt`, mismo
+ * índice que `messages`) con la fecha real de cada fila, para quien SÍ la
+ * necesita (`customerBurst`, T3, corrección del 19/9/2026, hallazgo 4).
+ */
+interface LoadedHistory {
+  messages: ModelMessage[];
+  createdAt: (string | null)[];
+}
+
+/**
  * Últimos mensajes de la conversación, en orden cronológico.
  *
  * Se piden DESCENDENTES y se invierten. Pedirlos ascendentes con `limit`
  * traía los treinta MÁS ANTIGUOS: en un cliente recurrente la IA leía la
  * conversación de hace semanas y no veía el mensaje que tenía que responder.
  */
-async function loadHistory(supabase: SupabaseClient<Database>, conversationId: string): Promise<ModelMessage[]> {
+async function loadHistory(supabase: SupabaseClient<Database>, conversationId: string): Promise<LoadedHistory> {
   const { data } = await supabase
     .from("messages")
-    .select("sender_type, content, is_internal_note, message_type")
+    .select("sender_type, content, is_internal_note, message_type, created_at")
     .eq("conversation_id", conversationId)
     .order("created_at", { ascending: false })
     .limit(HISTORY_LIMIT);
 
   const messages: ModelMessage[] = [];
+  const createdAt: (string | null)[] = [];
   for (const row of [...(data ?? [])].reverse()) {
     // 'unsupported' (T3.2, 5/9/2026) es Meta avisando de un tipo que el CRM
     // no sabe representar: `content` ya queda null en la base, pero el
@@ -273,8 +286,12 @@ async function loadHistory(supabase: SupabaseClient<Database>, conversationId: s
     const linea = historyLine(row);
     if (!linea) continue;
     messages.push({ role: linea.role, content: linea.content });
+    // `row.created_at` sale de la misma fila que ya pasó `historyLine`, así
+    // que el índice de este arreglo calza siempre con el de `messages` —
+    // ninguna fila descartada deja un hueco entre los dos.
+    createdAt.push(row.created_at ?? null);
   }
-  return messages;
+  return { messages, createdAt };
 }
 
 /**
@@ -1270,7 +1287,7 @@ async function runTurnPhases(
     .update({ journey_stage: stageFor(convo.assigned_agent_id, "classifying"), active_tool: null })
     .eq("id", conversationId);
 
-  const history = await loadHistory(supabase, conversationId);
+  const { messages: history, createdAt: historyCreatedAt } = await loadHistory(supabase, conversationId);
   if (history.length === 0) {
     // Bug 2 / S4 (T4, corrida "La IA ve lo que llega", 8/9/2026): esto era un
     // `return` mudo — sin traspaso, y DESPUÉS de haber dejado journey_stage
@@ -1295,6 +1312,26 @@ async function runTurnPhases(
   }
 
   const customerMessage = lastCustomerMessage(history);
+
+  // T3, plan "Seba sale sin pisar a nadie" (19/9/2026, hallazgo A3): la
+  // ráfaga completa del cliente (mensajes seguidos sin nada del CRM entre
+  // medio) — ver el docblock de `customerBurst` en history-line.ts.
+  // `customerMessage` de arriba NO cambia de significado: sigue siendo SOLO
+  // la última línea, y sigue siendo lo que se guarda en la bitácora
+  // (`agent_turns.customer_message`). `rafagaCliente` es lo nuevo que usan
+  // `soloSaludo` y la guarda de cortesía de más abajo, para no perder una
+  // pregunta que llegó ANTES del saludo/cortesía final de la misma ráfaga.
+  //
+  // `history`/`historyCreatedAt` comparten índice (los arma `loadHistory` en
+  // el mismo bucle): zipearlos acá, y solo acá, es lo que le da a
+  // `customerBurst` la fecha de cada línea sin cargar con ella a `history`
+  // —el tipo que viaja tal cual hasta `agent.generate` (corrección del
+  // 19/9/2026, hallazgo 4: sin fecha, la ráfaga no distinguía "el cliente
+  // escribió dos líneas seguidas" de "el cliente escribió algo hace DÍAS que
+  // quedó sin responder a propósito, y ahora escribe de nuevo").
+  const rafagaCliente = customerBurst(
+    history.map((message, i) => ({ role: message.role, content: message.content, createdAt: historyCreatedAt[i] }))
+  );
 
   // Requisito 1 del cliente (18/9/2026, plan "Seba atiende el mostrador",
   // decisión D1): el primer mensaje de cada conversación —nueva, o reabierta
@@ -1329,8 +1366,19 @@ async function runTurnPhases(
       // tendría nada más que decir. `isGreetingOnly`/`isCourtesyOnly`
       // (saludo.ts) son las mismas dos preguntas que ya usa el resto del
       // turno para lo mismo, sobre texto de cliente.
+      //
+      // T3, plan "Seba sale sin pisar a nadie" (19/9/2026, hallazgo A3):
+      // hasta acá esto miraba solo `customerMessage` (la última línea) — la
+      // cola agrupa ráfagas, y "Precio del casco LS2" + "Buenas tardes" en
+      // dos mensajes seguidos leía nomás el saludo: el turno se callaba con
+      // la presentación sin haber contestado la pregunta real. Ahora exige
+      // que CADA línea de `rafagaCliente` sea saludo o cortesía, no solo la
+      // última — un marcador de media en la ráfaga ("[El cliente envió una
+      // foto...]") tira esto a `false` solo, porque no es ni una cosa ni la
+      // otra, y el turno sigue de largo dejando que MEDIA_RULES/la racha de
+      // adjuntos hagan su trabajo.
       const soloSaludo =
-        customerMessage !== null && (isGreetingOnly(customerMessage) || isCourtesyOnly(customerMessage));
+        rafagaCliente.length > 0 && rafagaCliente.every((linea) => isGreetingOnly(linea) || isCourtesyOnly(linea));
 
       const salida = await deliver(
         supabase,
@@ -1418,7 +1466,21 @@ async function runTurnPhases(
   // de esta misma guarda— tapaba la `escalada` y esta guarda dejaba de
   // disparar: la IA volvía a despedirse en cada mensaje de cortesía
   // posterior al primero.
-  if (customerMessage && isCourtesyOnly(customerMessage) && (await escalationOpen(supabase, conversationId))) {
+  //
+  // T3, plan "Seba sale sin pisar a nadie" (19/9/2026, hallazgo nuevo de la
+  // inspección pre-despliegue): esta guarda tenía el MISMO defecto que
+  // `soloSaludo` de más arriba — miraba solo `customerMessage`, la última
+  // línea. "¿Tienen la bomba de aceite?" + "gracias" en dos mensajes
+  // seguidos, con una escalada abierta, callaba el turno ENTERO sin
+  // contestar la pregunta real. Ahora exige que TODA `rafagaCliente` sea
+  // cortesía, no solo la última línea — una ráfaga vacía (el historial
+  // termina en una respuesta de la IA o de un asesor) tampoco dispara: no
+  // hay nada de qué "callarse".
+  if (
+    rafagaCliente.length > 0 &&
+    rafagaCliente.every((linea) => isCourtesyOnly(linea)) &&
+    (await escalationOpen(supabase, conversationId))
+  ) {
     await recordHandoff(supabase, {
       conversationId,
       toKind: convo.assigned_agent_id ? "human" : "unassigned",
@@ -1635,10 +1697,32 @@ async function runTurnPhases(
     });
     // Bug 2, hallazgo 2 del plan (T4, 8/9/2026): este `return` dejaba
     // journey_stage en "classifying" para siempre — el corte de red de
-    // OpenRouter del 7/9/2026 a las 11:57 UTC pasó justo por acá. NO se
-    // escribe un traspaso nuevo: agent_turns ya quedó con action: "error"
-    // arriba, y el reconciliador recoge la conversación sola porque
-    // awaiting_reply sigue en true.
+    // OpenRouter del 7/9/2026 a las 11:57 UTC pasó justo por acá.
+    //
+    // T2, plan "Seba sale sin pisar a nadie" (19/9/2026, hallazgo A2): el
+    // comentario decía "NO se escribe un traspaso nuevo... el reconciliador
+    // recoge la conversación sola porque awaiting_reply sigue en true", y
+    // eso dejó de ser cierto el 18/9/2026 cuando Seba empezó a presentarse
+    // por código, ANTES de este punto (`introducedThisTurn`, "Seba atiende
+    // el mostrador" T2b). Si el saludo salió EN ESTE TURNO, el último
+    // mensaje visible de la conversación ya no es del cliente — es un
+    // saliente que sí se entregó — y el predicado nuevo del reconciliador
+    // (`last_message_direction.eq.inbound` o `last_message_status.eq.failed`,
+    // `reconciler.ts`) deja afuera justo ese caso: un lead que recibió el
+    // saludo y se quedó sin la redacción de verdad, sin traspaso, invisible
+    // para "Sin dueño". Por eso acá sí hace falta un `recordHandoff` nuevo
+    // —mismo `toKind`/`toId` que ya usa la guarda de cortesía, arriba— pero
+    // SOLO si Seba se presentó este turno: sin saludo, el último mensaje
+    // sigue siendo del cliente y el diagnóstico viejo sigue valiendo tal
+    // cual, el reconciliador lo recoge como siempre.
+    if (introducedThisTurn) {
+      await recordHandoff(supabase, {
+        conversationId,
+        toKind: convo.assigned_agent_id ? "human" : "unassigned",
+        toId: convo.assigned_agent_id ?? null,
+        reason: "entrega_fallida",
+      });
+    }
     await resetStage(supabase, conversationId, "turno_clasificacion_fallida", convo.assigned_agent_id);
     return;
   }
@@ -1805,9 +1889,25 @@ async function runTurnPhases(
     });
     // Bug 2, hallazgo 2 del plan (T4, 8/9/2026): antes esto SOLO apagaba
     // active_tool y dejaba journey_stage en "classifying"/"tool_running"
-    // congelado para siempre. Mismo criterio que la puerta de clasificación
-    // fallida: sin traspaso nuevo (agent_turns ya quedó con action: "error"
-    // arriba, y el reconciliador la recoge sola), pero con la etapa limpia.
+    // congelado para siempre.
+    //
+    // T2, plan "Seba sale sin pisar a nadie" (19/9/2026, hallazgo A2): "sin
+    // traspaso nuevo... el reconciliador la recoge sola" era el mismo
+    // criterio que la puerta de clasificación fallida de arriba, y dejó de
+    // ser cierto por el mismo motivo: si Seba ya se presentó en este turno
+    // (`introducedThisTurn`), el último mensaje visible es su saludo —un
+    // saliente exitoso, no el mensaje del cliente— y el reconciliador
+    // (`last_message_direction.eq.inbound` o `last_message_status.eq.failed`,
+    // `reconciler.ts`) ya no vuelve a mirar esta conversación. El mismo
+    // `recordHandoff` que la clasificación fallida, solo con saludo previo.
+    if (introducedThisTurn) {
+      await recordHandoff(supabase, {
+        conversationId,
+        toKind: convo.assigned_agent_id ? "human" : "unassigned",
+        toId: convo.assigned_agent_id ?? null,
+        reason: "entrega_fallida",
+      });
+    }
     await resetStage(supabase, conversationId, "turno_tool_loop_fallido", convo.assigned_agent_id);
     return;
   }
@@ -2023,7 +2123,7 @@ export async function runAgentTurn(conversationId: string, options: { vencioEn?:
 
   const [
     { data: canRun, error: canRunError },
-    { data: conversation },
+    { data: conversation, error: conversationError },
     { data: settingsRow, error: settingsError },
     lessons,
     links,
@@ -2084,6 +2184,24 @@ export async function runAgentTurn(conversationId: string, options: { vencioEn?:
   if (canRunError) {
     log.error("turno_interruptor_no_consultable", { conversationId, detail: errorText(canRunError) });
     throw new Error(`agent_can_run no consultable: ${errorText(canRunError)}`, { cause: canRunError });
+  }
+
+  // T1, plan "Seba sale sin pisar a nadie" (19/9/2026, hallazgo C2): mismo
+  // motivo que `canRunError` de arriba, aplicado a la lectura de
+  // `conversations`. Antes esto se desestructuraba con `{ data: conversation
+  // }` a secas: si la fila existía pero la consulta fallaba (p. ej. un 400 de
+  // PostgREST porque el código llegó a producción sin la migración
+  // `20260916010000`, que agrega la columna `ai_resume_cutoff_at` que este
+  // mismo `select` pide), `conversation` quedaba en `undefined` y caía en la
+  // rama de más abajo "la conversación no existe" — la única salida muda a
+  // propósito de este turno, pensada para un id borrado con FK, no para un
+  // corte de infraestructura. La IA quedaba muda sin dejar traspaso ni log, y
+  // la cola contaba el turno como resuelto. Ahora lanza ANTES de
+  // `entrega.intentado = true`, así la cola reintenta un fallo transitorio en
+  // vez de archivarlo como si el lead no existiera.
+  if (conversationError) {
+    log.error("turno_conversacion_no_consultable", { conversationId, detail: errorText(conversationError) });
+    throw new Error(`conversación no consultable: ${errorText(conversationError)}`, { cause: conversationError });
   }
 
   if (settingsError) {

@@ -125,8 +125,12 @@ function lockIsActive(until: string | null, now: number): boolean {
  * contestarlo. Ese mensaje queda PENDIENTE y es ANTERIOR a la devolución.
  * Un filtro que solo mirara "¿salió algo después del último mensaje?" lo
  * habría dado por nuevo apenas alguien reactivara la IA, y la IA le habría
- * contestado un mensaje viejo dejando además el traspaso `reabierto` (que
- * cierra la escalada para `escalationOpen`).
+ * contestado un mensaje viejo dejando además el traspaso `reabierto`.
+ * (Corrección T9/hallazgo 9, revisión "Seba sale sin pisar a nadie",
+ * 19/9/2026: `reabierto` NO cierra la escalada para `escalationOpen` — desde
+ * T8 de ese plan vive en `RAZONES_QUE_NO_CIERRAN_LA_ESCALADA`, handoffs.ts,
+ * justo porque lo escribe el reconciliador por mensaje, sin que la
+ * conversación cambie de dueño.)
  *
  * `new_since_ai_resume` (columna generada, migración 20260916010000)
  * resuelve las dos fallas con una sola pregunta: ¿este mensaje del cliente

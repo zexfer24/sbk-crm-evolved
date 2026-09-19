@@ -143,13 +143,35 @@ const SIN_PIE_MARKERS: Record<string, string> = {
 };
 
 /**
- * Forma mínima que necesita `mediaStreakWithoutText`: tanto `HistoryLine`
- * (este archivo) como el `ModelMessage` que arma `loadHistory` en agent.ts
- * calzan sin adaptar nada — los dos tienen `role`/`content` de sobra.
+ * El literal exacto que arma `clienteMarker` para "sticker" (sin variante con
+ * pie). `mediaStreakWithoutText` ya lo trata aparte —no está en
+ * `SIN_PIE_MARKERS`, así que un sticker corta la racha sin contar como
+ * adjunto pendiente— y `customerBurst` (T3, corrección del 19/9/2026,
+ * hallazgo 8) lo usa para lo mismo con el mismo criterio: un sticker no es un
+ * pedido, y tampoco es una respuesta a nada.
+ */
+const CUSTOMER_STICKER_MARKER = "[El cliente envió un sticker]";
+
+/**
+ * Forma mínima que necesita `mediaStreakWithoutText`/`customerBurst`: tanto
+ * `HistoryLine` (este archivo) como el `ModelMessage` que arma `loadHistory`
+ * en agent.ts calzan sin adaptar nada — los dos tienen `role`/`content` de
+ * sobra.
+ *
+ * `createdAt` (T3, corrección del 19/9/2026, `code-review high` sobre el
+ * plan "Seba sale sin pisar a nadie", hallazgo 4): opcional a propósito.
+ * `ModelMessage` (el tipo del SDK de IA) no trae fecha — es el tipo que viaja
+ * hasta `agent.generate`, y ningún consumidor de esa forma tiene por qué
+ * cargar con un campo que no le sirve —, así que `agent.ts` arma, SOLO para
+ * `customerBurst`, un arreglo paralelo que junta cada mensaje con su
+ * `created_at` de la fila real. Una entrada sin `createdAt` (undefined, o un
+ * string que no parsea) se trata de forma conservadora: ver el docblock de
+ * `customerBurst`.
  */
 interface StreakEntry {
   role: string;
   content: unknown;
+  createdAt?: string | null;
 }
 
 export interface MediaStreak {
@@ -204,4 +226,136 @@ export function mediaStreakWithoutText(history: StreakEntry[]): MediaStreak {
   }
 
   return { adjuntos, yaPreguntamos, tipos };
+}
+
+// ---------------------------------------------------------------------------
+// T3, plan "Seba sale sin pisar a nadie" (19/9/2026, hallazgo nuevo de la
+// inspección pre-despliegue, fila A3 de la tabla del plan): la cola agrupa
+// ráfagas de mensajes seguidos antes de correr un turno (CLAUDE.md, "La
+// respuesta llega en siete segundos") — un cliente que escribe "Precio del
+// casco LS2" y, dos segundos después, "Buenas tardes" le llega al turno como
+// DOS líneas de cliente sin nada del CRM entre medio. `lastCustomerMessage`
+// (agent.ts) solo mira la ÚLTIMA de esas líneas: leía nomás "Buenas tardes"
+// y dos guardas del turno lo trataban como si el cliente solo hubiera
+// saludado —
+//
+//   - `soloSaludo` (agent.ts): mandaba el saludo de Seba y daba el turno por
+//     terminado, sin fase 0/1 ni tool loop, dejando la pregunta sin contestar.
+//   - la guarda de cortesía tras escalada abierta (agent.ts): "¿tienen la
+//     bomba de aceite?" + "gracias" con una escalada abierta callaba el
+//     turno ENTERO, no solo la cortesía.
+//
+// `customerBurst` es el arreglo: junta TODA la ráfaga final del cliente, no
+// solo la última línea, para que las dos guardas puedan exigir que CADA
+// línea de la ráfaga —no solo la de más atrás— sea saludo o cortesía.
+//
+// Corrección del 19/9/2026 (`code-review high` sobre el plan, hallazgos 4 y
+// 8 — la primera versión de esta función, arriba en el historial de este
+// archivo, no tenía ninguna de las dos):
+//
+//   - Hallazgo 4: la primera versión no acotaba la ráfaga por tiempo —
+//     retrocedía hasta la última línea del ASISTENTE, sin mirar el reloj.
+//     Caso real: un cliente escribe "¿ya me atienden?", nadie contesta
+//     (`pausada`), el chat se cierra; DÍAS después el cliente reabre con
+//     "hola". Como no hubo ninguna línea del asistente en el medio (el chat
+//     estaba cerrado, no silenciado por una respuesta), la ráfaga vieja
+//     seguía "pegada" a la nueva: ["¿ya me atienden?", "hola"] no es solo
+//     saludo, y Seba habría redactado sobre un mensaje de hace días que
+//     quedó sin respuesta A PROPÓSITO. `CUSTOMER_BURST_GAP_MINUTES` corta la
+//     ráfaga por un hueco de tiempo entre líneas consecutivas, no solo por
+//     una respuesta del CRM en el medio.
+//   - Hallazgo 8: un sticker del cliente ("[El cliente envió un sticker]")
+//     hacía fallar el `every(isCourtesyOnly)` de la guarda de cortesía —
+//     "gracias" + sticker de pulgar con una escalada abierta ya no la
+//     callaba, y la IA mandaba una segunda despedida encima de la primera.
+//     Un sticker no es ni saludo ni cortesía ni una pregunta (decisión 5 del
+//     plan "La voz cercana y la espera visible", 14/9/2026, la misma que ya
+//     sigue `mediaStreakWithoutText`): se salta, sin contar como línea de la
+//     ráfaga ni cortarla — ver `CUSTOMER_STICKER_MARKER`.
+// ---------------------------------------------------------------------------
+
+/**
+ * Hueco máximo, en minutos, entre dos líneas consecutivas del cliente para
+ * que sigan siendo la MISMA ráfaga. La cola agrupa ráfagas de mensajes
+ * seguidos en cuestión de SEGUNDOS (CLAUDE.md, "La respuesta llega en siete
+ * segundos": 2-6 s de silencio antes de correr el turno), así que 10 minutos
+ * es una holgura generosa — cualquier hueco mayor es, de verdad, una
+ * conversación distinta en el tiempo, no la misma ráfaga.
+ */
+export const CUSTOMER_BURST_GAP_MINUTES = 10;
+
+/** `value` como epoch-ms, o `null` si no es un string parseable — nunca `NaN`. */
+function parseTimestamp(value: string | null | undefined): number | null {
+  if (typeof value !== "string") return null;
+  const parsed = Date.parse(value);
+  return Number.isNaN(parsed) ? null : parsed;
+}
+
+/**
+ * Las líneas del CLIENTE consecutivas desde el final del historial, en orden
+ * CRONOLÓGICO (la más vieja primero), hasta la primera línea —yendo hacia
+ * atrás— que no sea del cliente: una respuesta de la IA o de un asesor corta
+ * la ráfaga, porque ya hay algo dicho después de ese silencio y lo que venga
+ * después es, de verdad, una ráfaga nueva. Además (hallazgo 4, 19/9/2026) se
+ * corta por TIEMPO: dos líneas de cliente seguidas —sin nada del CRM entre
+ * medio, pero separadas por más de `CUSTOMER_BURST_GAP_MINUTES`— tampoco son
+ * la misma ráfaga.
+ *
+ * La línea más NUEVA (la última del historial, si es del cliente) siempre
+ * entra, tenga o no `createdAt` — no hay contra qué medir un hueco todavía.
+ * A partir de ahí, cada línea más vieja se compara contra la marca de tiempo
+ * de la última línea YA aceptada: si a cualquiera de las dos —la nueva ya
+ * aceptada, o la que se está evaluando— le falta una fecha parseable, la
+ * decisión es conservadora y la ráfaga se corta ahí mismo (mejor perder una
+ * línea legítima sin fecha que arrastrar un mensaje de hace días que quedó
+ * sin responder a propósito: `pausada`, `mensaje_previo_a_devolucion`,
+ * `cortesia_tras_escalada`, un chat cerrado).
+ *
+ * Un marcador de media ("[El cliente envió una foto sin texto; no puedes
+ * verla]") entra a la ráfaga como una línea más, sin tratamiento especial:
+ * no hace falta descartarlo acá porque no es ni saludo ni cortesía, así que
+ * cualquier guarda que exija que TODA la ráfaga lo sea ya lo descarta sola
+ * (y el turno sigue de largo, dejando que `MEDIA_RULES`/la racha de adjuntos
+ * de más arriba hagan su trabajo). Un STICKER es la única excepción
+ * (hallazgo 8, 19/9/2026): se salta sin contar como línea ni cortar la
+ * ráfaga — ni siquiera actualiza la marca de tiempo de referencia, como si
+ * nunca hubiera estado ahí. Una ráfaga que queda vacía porque lo único que
+ * había era un sticker se comporta igual que antes de esta función existir
+ * (cuando `lastCustomerMessage` daba `null` para un marcador): ninguna de
+ * las dos guardas de `agent.ts` dispara con la ráfaga vacía, así que un
+ * sticker solo NO se trata como "el cliente solo saludó" ni como cortesía.
+ *
+ * Historial vacío, o el historial termina en una línea que no es del
+ * cliente, da `[]`. Comparte forma con `mediaStreakWithoutText`: acepta
+ * tanto `HistoryLine` (este archivo) como el `ModelMessage` de `loadHistory`
+ * (agent.ts) sin adaptar nada — `createdAt` es opcional, ver `StreakEntry`.
+ */
+export function customerBurst(history: StreakEntry[]): string[] {
+  const rafaga: string[] = [];
+  let referencia: number | null = null;
+
+  for (let i = history.length - 1; i >= 0; i--) {
+    const message = history[i];
+    if (message.role !== "user") break;
+    if (typeof message.content !== "string") break;
+
+    // Hallazgo 8: un sticker no cuenta ni corta — se lo salta tal cual,
+    // sin tocar `referencia` (la línea de atrás se sigue midiendo contra la
+    // última línea REAL ya aceptada, no contra el sticker que no lo es).
+    if (message.content === CUSTOMER_STICKER_MARKER) continue;
+
+    const actual = parseTimestamp(message.createdAt);
+    if (rafaga.length > 0) {
+      // No es la línea más nueva: hace falta poder medir el hueco. Sin
+      // fecha en cualquiera de las dos puntas, la decisión es conservadora
+      // (hallazgo 4): cortar acá.
+      if (actual === null || referencia === null) break;
+      if ((referencia - actual) / 60000 > CUSTOMER_BURST_GAP_MINUTES) break;
+    }
+
+    rafaga.unshift(message.content);
+    referencia = actual;
+  }
+
+  return rafaga;
 }
