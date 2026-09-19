@@ -18,8 +18,8 @@ nunca `3802fad..HEAD` a ciegas.
 Si producción sigue en `3802fad`, el rango pendiente son **31 commits
 commiteados** (`3802fad..def7484`, cinco migraciones) **más los
 commits de la corrida "Seba sale sin pisar a nadie"** (desde `d9091e0` hasta HEAD,
-sobre `def7484`: ocho de código —el último es `824b56e`, T11— y dos de
-documentación; ninguna migración
+sobre `def7484`: nueve de código —el último es `9888b40`, T12— y dos de
+documentación, más el commit que registra el CI real; ninguna migración
 NUEVA, `d9091e0` edita in situ las cinco pendientes). Este documento cubre TODO ese rango,
 agrupado por corrida/tarea, en el orden en que hay que desplegarlo. **El
 orden operativo detallado, con las consultas SQL literales, está en
@@ -1031,6 +1031,23 @@ acotado, subir el tope de gasto, el script de catálogos, y qué vigilar las
 primeras horas). Antes de dar por cerrada la entrega completa de este
 documento:
 
+- **CONFIRMADO por el orquestador sobre `9888b40` (T12, el último commit
+  de código de TODO el rango; 19/9/2026, tras el tercer corte de luz):**
+  `git fsck` limpio; `tsc` sin errores; lint 0 errores; suite completa
+  **2591 tests** en verde con Redis; build OK (`.next/BUILD_ID` 19:27);
+  17/17 tests SQL en el orden del CI; sin secretos en `3802fad..9888b40`;
+  las dos mutaciones de T12 rompen sus tests; tipos y los tests de los
+  archivos que T12 toca, en verde en `node:22` sobre clon limpio.
+- **CONFIRMADO: CI REAL en verde sobre `9888b40`** — corrida
+  `35476495087` de GitHub Actions, jobs `verificar` y `migraciones` los
+  dos `success`
+  (https://github.com/zexfer24/sbk-crm-evolved/actions/runs/35476495087).
+  Corrió sobre la rama desechable `ci/prueba-9888b40` (= `9888b40` + una
+  línea en `ci.yml` para que el workflow corra en `ci/**`; NO se fusiona):
+  el PR no se pudo abrir porque la cuenta con sesión en el navegador no es
+  colaboradora del repo. Es la primera vez que el job `migraciones`
+  reconstruye la base con la CLI `latest` y las cinco migraciones
+  pendientes con su guarda de transacción.
 - **CONFIRMADO por el orquestador sobre `824b56e`, el último commit de
   código (19/9/2026; lo que sigue a ese commit es solo documentación):**
   `rtk npm run test` — suite completa en verde, **2571 tests**, con Redis
