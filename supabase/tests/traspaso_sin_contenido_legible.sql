@@ -116,6 +116,58 @@ values
    '77777777-7777-7777-7777-777777777700',
    'classifying', null, now() + interval '1 minute');
 
+-- ---------------------------------------------------------------------------
+-- Saneamiento previo al \i (T4, corrida "Seba sale sin pisar a nadie",
+-- 19/9/2026): `supabase/seed.sql` deja un mensaje saliente de un asesor en
+-- la conversación 4 (venta cerrada, "¡Cerramos la venta! Gracias por tu
+-- compra 🎉") que, desde 20260917010000, dispara
+-- `messages_agent_silences_ai_trigger` -> `handle_agent_message_silences_ai`
+-- -> `handle_conversation_ownership_change`, dejando en
+-- `conversation_handoffs` una fila con `reason = 'silenciada_por_asesor'` --
+-- un valor que el CHECK de 20260908010000 (la migración que este archivo
+-- reaplica más abajo) todavía no admitía. Sin este borrado, el `\i` fallaba
+-- con "check constraint conversation_handoffs_reason_check ... is violated
+-- by some row" apenas intentaba recrear ese CHECK viejo: el job
+-- `migraciones` del CI quedaba rojo en TODO checkout limpio, no solo en
+-- este local, porque el seed corre siempre antes de este test. `reason not
+-- in (...)` (la lista completa vigente en 20260908010000, copiada de esa
+-- misma migración) en vez de nombrar `silenciada_por_asesor` a mano: así
+-- cualquier razón futura que el seed llegue a disparar por su cuenta -- vía
+-- un trigger que hoy no existe -- también se limpia sin tener que acordarse
+-- de tocar este archivo cada vez. No toca las filas de los casos 1 y 2 (ya
+-- se insertaron y verificaron arriba, con reason = 'sin_contenido_legible',
+-- que SÍ está en esa lista) ni nada fuera de esta transacción: se deshace
+-- con el `rollback` final, igual que el resto del archivo.
+-- ---------------------------------------------------------------------------
+delete from public.conversation_handoffs
+where reason not in (
+  'agente_no_puede_correr',
+  'conversacion_inexistente',
+  'pausada',
+  'asignada',
+  'humano_intervino',
+  'humano_se_adelanto',
+  'fuera_de_ventana',
+  'identidad_no_verificable',
+  'lock_perdido',
+  'abandonado',
+  'entrega_fallida',
+  'reabierto',
+  'escalado_por_ia',
+  'reclamado',
+  'devuelto_a_ia',
+  'cerrado',
+  'ventana_vencida',
+  'sla_vencido',
+  'escalada',
+  'escalada_sin_asesor',
+  'rechazado_por_meta',
+  'cerrada_por_asesor',
+  'reabierta_por_asesor',
+  'reabierta_por_cliente',
+  'sin_contenido_legible'
+);
+
 -- Reaplica la migración sobre los datos recién sembrados: demuestra el
 -- backfill Y, de paso, la idempotencia del CHECK (drop/add del mismo
 -- constraint, ya aplicado una vez al construir la base).
