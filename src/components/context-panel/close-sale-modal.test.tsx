@@ -3,7 +3,7 @@ import { describe, expect, it, vi, beforeEach } from "vitest";
 import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { CloseSaleModal } from "@/components/context-panel/close-sale-modal";
-import type { Agent, Contact, ConversationQuote, Product } from "@/lib/types";
+import type { Agent, Contact, ConversationQuote, Message, Product } from "@/lib/types";
 
 const closeSaleWithContactInfo = vi.fn().mockResolvedValue(undefined);
 
@@ -87,6 +87,30 @@ const AGENT: Agent = {
   isActive: true,
 };
 
+// T5, plan "Nada sin leer, un solo catálogo y la factura Saint" (18/9/2026,
+// D9-D11): desde esta corrida el comprobante también es obligatorio, y el
+// modal solo ofrece elegir una foto del chat o subir un archivo —el camino
+// más simple para un test es dar una foto entrante y elegirla.
+const FOTO_COMPROBANTE: Message = {
+  id: "msg-photo-1",
+  conversationId: "conv-1",
+  direction: "inbound",
+  senderType: "customer",
+  senderAgent: null,
+  messageType: "image",
+  content: null,
+  templateName: null,
+  mediaUrl: "https://example.com/comprobante.jpg",
+  isInternalNote: false,
+  whatsappStatus: null,
+  whatsappError: null,
+  whatsappErrorCode: null,
+  reactionEmoji: null,
+  replyToMessageId: null,
+  payload: null,
+  createdAt: "2026-09-19T12:00:00.000Z",
+};
+
 beforeEach(() => {
   closeSaleWithContactInfo.mockClear();
   fetchConversationQuotes.mockClear();
@@ -94,15 +118,15 @@ beforeEach(() => {
   searchActiveProducts.mockClear();
 });
 
-function renderModal() {
+function renderModal(messages: Message[] = [FOTO_COMPROBANTE], contact: Contact = CONTACT) {
   return render(
     <CloseSaleModal
       isOpen
       onOpenChange={() => {}}
       conversationId="conv-1"
-      contact={CONTACT}
+      contact={contact}
       agent={AGENT}
-      messages={[]}
+      messages={messages}
     />
   );
 }
@@ -138,12 +162,43 @@ function itemsSentToClose() {
   return closeSaleWithContactInfo.mock.calls[0][5];
 }
 
+/**
+ * Llena los OCHO campos obligatorios de D11 que este helper puede completar
+ * de un tirón (todos salvo el carrito, que cada test arma con lo que
+ * necesita probar): nombre, cédula, estado, ciudad, dirección, método de
+ * pago, factura Saint y comprobante (elige la foto entrante que
+ * `renderModal` ya deja disponible). El número de WhatsApp no se completa
+ * porque es de solo lectura —sale de `contact.phoneNumber`, siempre
+ * presente.
+ */
+async function completarDatosObligatorios(
+  user: ReturnType<typeof userEvent.setup>,
+  overrides: { displayName?: string; paymentMethod?: string; saintInvoiceNumber?: string } = {}
+) {
+  await user.type(screen.getByLabelText("Nombre"), overrides.displayName ?? "Cliente Demo");
+  await user.type(screen.getByLabelText("Cédula"), "12345678");
+  await user.selectOptions(screen.getByLabelText("Estado"), "Barinas");
+  await user.type(screen.getByLabelText("Ciudad"), "Barinas");
+  await user.type(screen.getByLabelText("Dirección"), "Calle Falsa 123");
+  await elegirMétodoDePago(user, overrides.paymentMethod ?? "pago_movil");
+  await user.type(screen.getByLabelText("Número de factura Saint"), overrides.saintInvoiceNumber ?? "00123");
+  await user.click(screen.getByLabelText("Usar esta foto como comprobante"));
+}
+
 describe("CloseSaleModal — el asesor arma la venta, pero el precio lo pone el catálogo", () => {
-  it("no deja cerrar la venta sin un solo renglón", async () => {
+  // D10 ("La voz cercana..."; en realidad D10 de este plan): el botón ya NO
+  // se deshabilita por el estado del carrito o de los campos —solo mientras
+  // se está guardando—, así que la regla se prueba clicando e
+  // inspeccionando el resultado, no el atributo `disabled`.
+  it("no llama a la mutación ni cierra el carrito vacío, y avisa del problema", async () => {
+    const user = crearUsuario();
     renderModal();
     await waitForQuotes();
 
-    expect(submitButton()).toBeDisabled();
+    await completarDatosObligatorios(user);
+    await user.click(submitButton());
+
+    expect(closeSaleWithContactInfo).not.toHaveBeenCalled();
   });
 
   // La regla que sostiene todo el módulo: el monto de una venta nunca se
@@ -162,8 +217,7 @@ describe("CloseSaleModal — el asesor arma la venta, pero el precio lo pone el 
     await waitForQuotes();
 
     await user.click(screen.getByText("Carburador PZ27"));
-    await user.type(screen.getByLabelText("Nombre"), "Cliente Demo");
-    await elegirMétodoDePago(user);
+    await completarDatosObligatorios(user);
     await user.click(submitButton());
 
     await waitFor(() => expect(closeSaleWithContactInfo).toHaveBeenCalledTimes(1));
@@ -190,8 +244,7 @@ describe("CloseSaleModal — el asesor arma la venta, pero el precio lo pone el 
     await waitFor(() => expect(screen.getByText("Bujía CR7HSA")).toBeInTheDocument());
     await user.click(screen.getByText("Bujía CR7HSA"));
 
-    await user.type(screen.getByLabelText("Nombre"), "Cliente Demo");
-    await elegirMétodoDePago(user);
+    await completarDatosObligatorios(user);
     await user.click(submitButton());
 
     await waitFor(() => expect(closeSaleWithContactInfo).toHaveBeenCalledTimes(1));
@@ -217,8 +270,7 @@ describe("CloseSaleModal — el asesor arma la venta, pero el precio lo pone el 
 
     await user.click(screen.getByLabelText("Quitar Carburador PZ27 de la venta"));
 
-    await user.type(screen.getByLabelText("Nombre"), "Cliente Demo");
-    await elegirMétodoDePago(user);
+    await completarDatosObligatorios(user);
     await user.click(submitButton());
 
     await waitFor(() => expect(closeSaleWithContactInfo).toHaveBeenCalledTimes(1));
@@ -236,8 +288,7 @@ describe("CloseSaleModal — el asesor arma la venta, pero el precio lo pone el 
     await user.click(screen.getByLabelText("Agregar una unidad de Carburador PZ27"));
     await user.click(screen.getByLabelText("Agregar una unidad de Carburador PZ27"));
 
-    await user.type(screen.getByLabelText("Nombre"), "Cliente Demo");
-    await elegirMétodoDePago(user);
+    await completarDatosObligatorios(user);
     await user.click(submitButton());
 
     await waitFor(() => expect(closeSaleWithContactInfo).toHaveBeenCalledTimes(1));
@@ -253,8 +304,7 @@ describe("CloseSaleModal — el asesor arma la venta, pero el precio lo pone el 
     await user.click(screen.getByLabelText("Restar una unidad de Carburador PZ27"));
     await user.click(screen.getByLabelText("Restar una unidad de Carburador PZ27"));
 
-    await user.type(screen.getByLabelText("Nombre"), "Cliente Demo");
-    await elegirMétodoDePago(user);
+    await completarDatosObligatorios(user);
     await user.click(submitButton());
 
     await waitFor(() => expect(closeSaleWithContactInfo).toHaveBeenCalledTimes(1));
@@ -273,8 +323,7 @@ describe("CloseSaleModal — el asesor arma la venta, pero el precio lo pone el 
     await waitFor(() => expect(screen.getByText("Bujía CR7HSA")).toBeInTheDocument());
     await user.click(screen.getByText("Bujía CR7HSA"));
 
-    await user.type(screen.getByLabelText("Nombre"), "Cliente Demo");
-    await elegirMétodoDePago(user);
+    await completarDatosObligatorios(user);
     await user.click(submitButton());
 
     await waitFor(() => expect(closeSaleWithContactInfo).toHaveBeenCalledTimes(1));
@@ -283,15 +332,83 @@ describe("CloseSaleModal — el asesor arma la venta, pero el precio lo pone el 
 
   // El método de pago quedaba en el comprobante, es decir, en una imagen que
   // hay que abrir una por una para saber con qué pagó cada cliente.
-  it("no deja cerrar la venta sin decir con qué se pagó", async () => {
+  it("no llama a la mutación sin decir con qué se pagó, y muestra el error bajo el campo", async () => {
     const user = crearUsuario();
     renderModal();
     await waitForQuotes();
 
     await user.click(screen.getByText("Carburador PZ27"));
     await user.type(screen.getByLabelText("Nombre"), "Cliente Demo");
+    await user.type(screen.getByLabelText("Cédula"), "12345678");
+    await user.selectOptions(screen.getByLabelText("Estado"), "Barinas");
+    await user.type(screen.getByLabelText("Ciudad"), "Barinas");
+    await user.type(screen.getByLabelText("Dirección"), "Calle Falsa 123");
+    await user.type(screen.getByLabelText("Número de factura Saint"), "00123");
+    await user.click(screen.getByLabelText("Usar esta foto como comprobante"));
+    // Sin elegir método de pago.
+    await user.click(submitButton());
 
-    expect(submitButton()).toBeDisabled();
+    expect(closeSaleWithContactInfo).not.toHaveBeenCalled();
+    // `role="alert"` no aporta nombre accesible por sí mismo (el rol no
+    // deriva el nombre de su contenido, solo de `aria-label`/
+    // `aria-labelledby`): se busca por el TEXTO y se confirma el rol aparte.
+    const error = await screen.findByText(/elige con qué pagó/i);
+    expect(error).toHaveAttribute("role", "alert");
+  });
+
+  it("sin factura Saint muestra el error bajo el campo y no llama a la mutación", async () => {
+    const user = crearUsuario();
+    renderModal();
+    await waitForQuotes();
+
+    await user.click(screen.getByText("Carburador PZ27"));
+    await user.type(screen.getByLabelText("Nombre"), "Cliente Demo");
+    await user.type(screen.getByLabelText("Cédula"), "12345678");
+    await user.selectOptions(screen.getByLabelText("Estado"), "Barinas");
+    await user.type(screen.getByLabelText("Ciudad"), "Barinas");
+    await user.type(screen.getByLabelText("Dirección"), "Calle Falsa 123");
+    await elegirMétodoDePago(user);
+    await user.click(screen.getByLabelText("Usar esta foto como comprobante"));
+    // Sin escribir la factura Saint.
+    await user.click(submitButton());
+
+    expect(closeSaleWithContactInfo).not.toHaveBeenCalled();
+    // "factura Saint" también aparece en la ETIQUETA del campo (que no
+    // desaparece), así que se busca entre los `role="alert"` en vez de por
+    // texto suelto, que sería ambiguo.
+    const alertas = await screen.findAllByRole("alert");
+    expect(alertas.some((el) => /factura saint/i.test(el.textContent ?? ""))).toBe(true);
+  });
+
+  it("sin comprobante muestra el error bajo el campo y no llama a la mutación", async () => {
+    const user = crearUsuario();
+    renderModal();
+    await waitForQuotes();
+
+    await user.click(screen.getByText("Carburador PZ27"));
+    await completarDatosObligatorios(user);
+    // Vuelve a quitar el comprobante que el helper ya había elegido.
+    await user.click(screen.getByLabelText("Quitar comprobante"));
+    await user.click(submitButton());
+
+    expect(closeSaleWithContactInfo).not.toHaveBeenCalled();
+    // Mismo motivo que arriba: "comprobante" también está en la etiqueta del
+    // campo, así que se busca entre los `role="alert"`.
+    const alertas = await screen.findAllByRole("alert");
+    expect(alertas.some((el) => /comprobante/i.test(el.textContent ?? ""))).toBe(true);
+  });
+
+  it("manda saintInvoiceNumber recortado, sin espacios de sobra", async () => {
+    const user = crearUsuario();
+    renderModal();
+    await waitForQuotes();
+
+    await user.click(screen.getByText("Carburador PZ27"));
+    await completarDatosObligatorios(user, { saintInvoiceNumber: "  00123  " });
+    await user.click(submitButton());
+
+    await waitFor(() => expect(closeSaleWithContactInfo).toHaveBeenCalledTimes(1));
+    expect(closeSaleWithContactInfo.mock.calls[0][4]).toMatchObject({ saintInvoiceNumber: "00123" });
   });
 
   it("no elige un método por defecto: la mitad de las ventas quedarían mal registradas", async () => {
@@ -307,8 +424,7 @@ describe("CloseSaleModal — el asesor arma la venta, pero el precio lo pone el 
     await waitForQuotes();
 
     await user.click(screen.getByText("Carburador PZ27"));
-    await user.type(screen.getByLabelText("Nombre"), "Cliente Demo");
-    await elegirMétodoDePago(user, "zelle");
+    await completarDatosObligatorios(user, { paymentMethod: "zelle" });
     await user.click(submitButton());
 
     await waitFor(() => expect(closeSaleWithContactInfo).toHaveBeenCalledTimes(1));
@@ -324,5 +440,22 @@ describe("CloseSaleModal — el asesor arma la venta, pero el precio lo pone el 
     const campo = screen.getByLabelText("Cierra la venta");
     expect(campo).toHaveValue(AGENT.displayName);
     expect(campo).toBeDisabled();
+  });
+
+  it("enfoca el primer campo inválido al intentar guardar sin llenar nada", async () => {
+    // El nombre del contacto de fábrica (`CONTACT.displayName`) ya precarga
+    // el campo "Nombre" con un valor válido, así que con ese contacto el
+    // primer campo REALMENTE inválido es la cédula (nace vacía). Un
+    // contacto sin nombre deja "Nombre" como el primero de verdad —el caso
+    // más simple de leer para esta prueba.
+    const contactoSinNombre: Contact = { ...CONTACT, displayName: null, profileName: null };
+    const user = crearUsuario();
+    renderModal([FOTO_COMPROBANTE], contactoSinNombre);
+    await waitForQuotes();
+
+    await user.click(screen.getByText("Carburador PZ27"));
+    await user.click(submitButton());
+
+    await waitFor(() => expect(screen.getByLabelText("Nombre")).toHaveFocus());
   });
 });

@@ -13,6 +13,13 @@ import type {
   WhatsappTemplate,
 } from "@/lib/types";
 import { PAYMENT_METHOD_LABELS } from "@/lib/types";
+// T2, plan "Nada sin leer, un solo catálogo y la factura Saint" (18/9/2026):
+// import aparte, en su propia línea, por el mismo motivo que el de stickers
+// más abajo — otra tarea del mismo plan (T5) edita el bloque de arriba.
+import type { CatalogLinkDraft } from "@/lib/catalog-links";
+// T5, mismo plan: segunda barrera de "Cerrar venta" (D10) — import aparte,
+// mismo motivo que el de arriba.
+import { validateSaleDraft, normalizeSaint, type SaleDraft } from "@/lib/sale-draft";
 import type { BusinessHours } from "@/lib/business-hours";
 import { fetchDefaultChannel } from "@/lib/data";
 // Sin "server-only": identity-guard.ts es un módulo puro (mismo motivo que
@@ -243,6 +250,16 @@ export interface ContactSaleDetails {
   paymentProofUrl: string | null;
   /** Con qué pagó. Obligatorio al cerrar; después no se edita. */
   paymentMethod: PaymentMethod;
+  /**
+   * Número de la factura emitida en Saint, el sistema administrativo del
+   * negocio (D9/D11, plan "Nada sin leer, un solo catálogo y la factura
+   * Saint", 18/9/2026). Ojo con la colisión de nombres: NO es
+   * `invoices.number` (el correlativo interno "SBK-000123") — son dos
+   * numeraciones de dos sistemas distintos. Obligatorio desde el modal;
+   * `orders.saint_invoice_number` es nullable en la base SOLO porque las
+   * ventas cerradas antes del 18/9/2026 no lo tienen.
+   */
+  saintInvoiceNumber: string;
 }
 
 /**
@@ -273,11 +290,46 @@ export async function closeSaleWithContactInfo(
     throw new Error("Agrega al menos un repuesto para poder cerrar la venta.");
   }
 
+  // Segunda barrera (D10): el modal ya corre `validateSaleDraft` antes de
+  // llegar acá, pero esta función se puede llamar desde cualquier otro lado
+  // (o desde un modal con un bug futuro), así que repite la MISMA validación
+  // y lanza el primer mensaje que encuentre, en el orden de
+  // `SALE_FIELD_LABELS`, antes de escribir una sola fila.
+  //
+  // `whatsappNumber` recibe un valor fijo no vacío a propósito: esta función
+  // nunca recibe ni escribe el teléfono del contacto (es de solo lectura en
+  // el modal) y su presencia ya la garantiza `contacts.phone_number not null
+  // unique` — no hay nada que revalidar acá, y no hay de dónde sacar el
+  // valor real sin cambiar la firma de la función por una regla que nunca
+  // puede fallar en este punto.
+  const draftErrors = validateSaleDraft({
+    displayName: details.displayName,
+    whatsappNumber: "(garantizado por contacts.phone_number)",
+    cedulaType: details.cedulaType ?? "",
+    cedulaNumber: details.cedulaNumber ?? "",
+    state: details.state ?? "",
+    city: details.city ?? "",
+    address: details.address ?? "",
+    paymentMethod: details.paymentMethod,
+    saintInvoiceNumber: details.saintInvoiceNumber,
+    paymentProofUrl: details.paymentProofUrl,
+    itemCount: items.length,
+  } satisfies SaleDraft);
+  const primerError = Object.values(draftErrors)[0];
+  if (primerError) throw new Error(primerError);
+
   const totalAmount = items.reduce((sum, item) => sum + item.unitPrice * item.quantity, 0);
+  const saintInvoiceNumber = normalizeSaint(details.saintInvoiceNumber);
 
   const { data: order, error: orderError } = await supabase
     .from("orders")
-    .insert({ contact_id: contactId, currency: "USD", total_amount: totalAmount, bcv_rate: bcvRate })
+    .insert({
+      contact_id: contactId,
+      currency: "USD",
+      total_amount: totalAmount,
+      bcv_rate: bcvRate,
+      saint_invoice_number: saintInvoiceNumber,
+    })
     .select("id")
     .single();
   if (orderError || !order) throw orderError ?? new Error("No se pudo crear la orden de la venta.");
@@ -339,7 +391,7 @@ export async function closeSaleWithContactInfo(
     supabase,
     conversationId,
     agent.id,
-    `Venta cerrada por ${agent.displayName} — $${totalAmount.toFixed(2)} · ${PAYMENT_METHOD_LABELS[details.paymentMethod]}${detalleAgregados}`
+    `Venta cerrada por ${agent.displayName} — $${totalAmount.toFixed(2)} · ${PAYMENT_METHOD_LABELS[details.paymentMethod]} · Factura Saint ${saintInvoiceNumber}${detalleAgregados}`
   );
 }
 
@@ -1346,4 +1398,65 @@ export async function createContactConversation(
   }
 
   return { conversationId, existed };
+}
+
+// ---------------------------------------------------------------------------
+// Enlaces de catálogo (T2, plan "Nada sin leer, un solo catálogo y la
+// factura Saint", 18/9/2026, D3). Fuente única que resuelve los marcadores
+// `{{catalogo:<key>}}`/`{{catalogos}}` (`catalog-links.ts`) para la IA (T3)
+// y los mensajes rápidos de los asesores (T4b). La validación de formato
+// (clave/etiqueta/URL) vive en `validateCatalogLinkDraft` y la corre el
+// panel ANTES de llamar acá — el CHECK de `catalog_links`
+// (20260918010000_catalog_links.sql) es la segunda barrera. No se repite acá
+// como sí hace `createPlaybook`/`createLesson` con `revealsIdentity`: un
+// enlace de catálogo no es texto que el modelo pueda usar para describirse,
+// así que no hay ningún riesgo de identidad que cerrar antes de escribir.
+// ---------------------------------------------------------------------------
+
+/**
+ * `sort_order` es la única columna que puede quedar AUSENTE a propósito: sin
+ * ella, un INSERT toma el default de la base (0) y un UPDATE simplemente no
+ * la toca —deja el orden que ya tenía la fila—. Es la misma función para las
+ * dos mutaciones porque el comportamiento que hace falta en cada una
+ * (nacer en 0 / no tocarla) es EXACTAMENTE lo que Postgres hace solo con
+ * omitir la clave.
+ */
+function catalogLinkRow(draft: CatalogLinkDraft, agent: Agent) {
+  const row: Record<string, unknown> = {
+    key: draft.key,
+    label: draft.label,
+    url: draft.url,
+    updated_by: agent.id,
+  };
+  if (draft.sortOrder !== undefined) row.sort_order = draft.sortOrder;
+  return row;
+}
+
+export async function createCatalogLink(supabase: SupabaseClient, agent: Agent, draft: CatalogLinkDraft) {
+  const { error } = await supabase.from("catalog_links").insert(catalogLinkRow(draft, agent));
+  if (error) throw error;
+}
+
+export async function updateCatalogLink(supabase: SupabaseClient, agent: Agent, id: string, draft: CatalogLinkDraft) {
+  const { error } = await supabase.from("catalog_links").update(catalogLinkRow(draft, agent)).eq("id", id);
+  if (error) throw error;
+}
+
+export async function deleteCatalogLink(supabase: SupabaseClient, id: string) {
+  const { error } = await supabase.from("catalog_links").delete().eq("id", id);
+  if (error) throw error;
+}
+
+/**
+ * Apagar un catálogo lo saca de `{{catalogos}}` y deja SIN RESOLVER
+ * cualquier `{{catalogo:<key>}}` que lo referencie (D6: fase 0 del turno lo
+ * descarta como candidato, el composer avisa con un toast) sin perder la
+ * URL guardada — mismo criterio que `setPlaybookActive`/`setLessonActive`.
+ */
+export async function setCatalogLinkActive(supabase: SupabaseClient, agent: Agent, id: string, isActive: boolean) {
+  const { error } = await supabase
+    .from("catalog_links")
+    .update({ is_active: isActive, updated_by: agent.id })
+    .eq("id", id);
+  if (error) throw error;
 }

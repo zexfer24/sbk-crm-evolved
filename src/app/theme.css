@@ -301,6 +301,40 @@
   outline-offset: 2px;
 }
 
+/* T5, "Nada sin leer, un solo catálogo y la factura Saint" (18/9/2026, D10):
+   el asterisco de un campo obligatorio es contenido GENERADO por CSS a
+   propósito —nunca texto real dentro del <Label>— porque los tests de
+   `close-sale-modal.test.tsx` ya usaban `getByLabelText("Nombre")` (texto
+   exacto, sin asterisco) antes de esta corrida; jsdom no aplica `::after`,
+   así que el DOM que ven los tests queda intacto y el asterisco solo se ve
+   en el navegador de verdad. */
+.lm-required::after {
+  content: " *";
+  color: var(--lm-hot);
+}
+
+/* El mensaje que aparece debajo de un campo inválido al intentar guardar
+   (D10: "validación por campo, no botón mudo"). `role="alert"` en el <p> es
+   lo que deja que un lector de pantalla lo anuncie solo, sin que el asesor
+   tenga que ir a buscarlo. */
+.lm-field-error {
+  padding-inline-start: var(--lm-field-pad-x);
+  color: var(--lm-hot-ink);
+  font-size: 11.5px;
+  line-height: 1.45;
+}
+
+/* Un <fieldset> nativo trae borde, relleno y un margen que ningún otro grupo
+   de campos de este formulario tiene (el navegador lo dibuja solo, no es
+   parte del diseño): sin este reseteo, "Comprobante de pago" se vería con
+   una caja alrededor que ningún otro campo del modal tiene. */
+.lm-fieldset-reset {
+  border: 0;
+  margin: 0;
+  padding: 0;
+  min-width: 0;
+}
+
 /* --------------------------------------------------------------------------
    Utilidades compartidas
    -------------------------------------------------------------------------- */

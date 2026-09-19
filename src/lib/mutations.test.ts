@@ -3,10 +3,12 @@ import type { SupabaseClient } from "@supabase/supabase-js";
 import type { Agent, Contact, Message, Sale, Sticker } from "@/lib/types";
 import {
   closeSaleWithContactInfo,
+  createCatalogLink,
   createContactConversation,
   createInvoiceForSale,
   createLesson,
   createSticker,
+  deleteCatalogLink,
   deleteLesson,
   deleteSticker,
   issueInvoice,
@@ -17,14 +19,17 @@ import {
   saveStickerFromMessage,
   sendStickerMessage,
   setAiEnabled,
+  setCatalogLinkActive,
   setLessonActive,
   unassign,
   unpinConversation,
+  updateCatalogLink,
   updateProductWeight,
   voidInvoice,
   type LessonDraft,
   type SaleLineItem,
 } from "@/lib/mutations";
+import type { CatalogLinkDraft } from "@/lib/catalog-links";
 
 const AGENT: Agent = {
   id: "agent-1",
@@ -86,6 +91,7 @@ const CONTACT_DETAILS = {
   address: "Calle Falsa 123",
   paymentProofUrl: "https://example.com/proof.jpg",
   paymentMethod: "pago_movil" as const,
+  saintInvoiceNumber: "00123",
 };
 
 describe("closeSaleWithContactInfo — el monto sale del catálogo, nunca de un número a mano", () => {
@@ -124,6 +130,67 @@ describe("closeSaleWithContactInfo — el monto sale del catálogo, nunca de un 
       deal_status: "won",
       order_id: "order-1",
     });
+  });
+
+  /**
+   * T5, plan "Nada sin leer, un solo catálogo y la factura Saint"
+   * (18/9/2026, D9-D11): la orden guarda el número de factura Saint
+   * NORMALIZADO (recortado y sin espacios dobles), y el evento de sistema
+   * lo nombra — el asesor que revisa la bitácora ya no tiene que abrir la
+   * orden para saber a qué factura corresponde el cierre.
+   */
+  it("guarda la factura Saint normalizada y la nombra en el evento de sistema", async () => {
+    const { client, calls } = createFakeSupabase();
+    const items: SaleLineItem[] = [
+      { id: "q-1", origin: "quote", productId: "prod-1", description: "Carburador PZ27", unitPrice: 18, quantity: 1 },
+    ];
+
+    await closeSaleWithContactInfo(
+      client,
+      "conv-1",
+      "contact-1",
+      AGENT,
+      { ...CONTACT_DETAILS, saintInvoiceNumber: "  00123   ABC  " },
+      items,
+      40
+    );
+
+    const orderInsert = calls.find((c) => c.table === "orders" && c.op === "insert");
+    expect(orderInsert?.payload).toMatchObject({ saint_invoice_number: "00123 ABC" });
+
+    const messageInsert = calls.find((c) => c.table === "messages" && c.op === "insert");
+    const payload = messageInsert?.payload as { content?: string } | undefined;
+    expect(payload?.content).toContain("Factura Saint 00123 ABC");
+  });
+
+  /**
+   * Segunda barrera de D10: la misma regla del modal (`validateSaleDraft`)
+   * corre acá y lanza ANTES de tocar la base — un llamador que se saltara
+   * la validación del modal (o un bug futuro en él) no deja una venta a
+   * medias escrita.
+   */
+  it("sin factura Saint lanza antes de escribir nada en la base", async () => {
+    const { client, calls } = createFakeSupabase();
+    const items: SaleLineItem[] = [
+      { id: "q-1", origin: "quote", productId: "prod-1", description: "Carburador PZ27", unitPrice: 18, quantity: 1 },
+    ];
+
+    await expect(
+      closeSaleWithContactInfo(client, "conv-1", "contact-1", AGENT, { ...CONTACT_DETAILS, saintInvoiceNumber: "   " }, items, 40)
+    ).rejects.toThrow(/factura saint/i);
+    expect(calls).toHaveLength(0);
+  });
+
+  it("sin comprobante de pago lanza antes de escribir nada en la base", async () => {
+    const { client, calls } = createFakeSupabase();
+    const items: SaleLineItem[] = [
+      { id: "q-1", origin: "quote", productId: "prod-1", description: "Carburador PZ27", unitPrice: 18, quantity: 1 },
+    ];
+
+    await expect(
+      closeSaleWithContactInfo(client, "conv-1", "contact-1", AGENT, { ...CONTACT_DETAILS, paymentProofUrl: null }, items, 40)
+    ).rejects.toThrow(/comprobante/i);
+    expect(calls).toHaveLength(0);
   });
 });
 
@@ -1118,5 +1185,152 @@ describe("createContactConversation — un contacto nace desde la bandeja", () =
     await expect(
       createContactConversation(client, { displayName: "Pedro", phoneNumber: "+584141234567", agent: AGENT })
     ).rejects.toEqual({ code: "42501" });
+  });
+});
+
+/**
+ * Enlaces de catálogo (T2, plan "Nada sin leer, un solo catálogo y la
+ * factura Saint", 18/9/2026, D3). Mismo patrón que el describe de
+ * "Lecciones de Seba" más arriba en este archivo
+ * (createLesson/setLessonActive/deleteLesson): createCatalogLink/
+ * updateCatalogLink/deleteCatalogLink/setCatalogLinkActive.
+ */
+describe("createCatalogLink / updateCatalogLink / deleteCatalogLink / setCatalogLinkActive — T2, 18/9/2026", () => {
+  function createCatalogLinkFakeSupabase() {
+    const calls: { op: "insert" | "update" | "delete"; payload?: unknown; id?: string }[] = [];
+    const client = {
+      from(table: string) {
+        if (table !== "catalog_links") throw new Error(`Fake Supabase: tabla no soportada en este test: ${table}`);
+        return {
+          insert: (payload: Record<string, unknown>) => {
+            calls.push({ op: "insert", payload });
+            return Promise.resolve({ error: null });
+          },
+          update: (payload: Record<string, unknown>) => ({
+            eq: async (_col: string, id: string) => {
+              calls.push({ op: "update", payload, id });
+              return { error: null };
+            },
+          }),
+          delete: () => ({
+            eq: async (_col: string, id: string) => {
+              calls.push({ op: "delete", id });
+              return { error: null };
+            },
+          }),
+        };
+      },
+    };
+    return { client: client as unknown as SupabaseClient, calls };
+  }
+
+  const CATALOG_AGENT: Agent = {
+    id: "agent-7",
+    displayName: "Rosa",
+    fullName: "Rosa Pérez",
+    avatarUrl: null,
+    role: "supervisor",
+    isActive: true,
+  };
+
+  function catalogDraft(overrides: Partial<CatalogLinkDraft> = {}): CatalogLinkDraft {
+    return {
+      key: "cascos",
+      label: "Cascos",
+      url: "https://drive.google.com/file/d/1iz77Lc",
+      ...overrides,
+    };
+  }
+
+  it("createCatalogLink inserta con updated_by = agent.id", async () => {
+    const { client, calls } = createCatalogLinkFakeSupabase();
+
+    await createCatalogLink(client, CATALOG_AGENT, catalogDraft());
+
+    expect(calls).toHaveLength(1);
+    expect(calls[0].op).toBe("insert");
+    const payload = calls[0].payload as Record<string, unknown>;
+    expect(payload.updated_by).toBe("agent-7");
+    expect(payload.key).toBe("cascos");
+    expect(payload.label).toBe("Cascos");
+    expect(payload.url).toBe("https://drive.google.com/file/d/1iz77Lc");
+  });
+
+  /**
+   * Sin `sortOrder` en el borrador, el INSERT no manda `sort_order`: la
+   * columna toma el DEFAULT de la base (0), no hace falta que la mutación lo
+   * calcule.
+   */
+  it("createCatalogLink sin sortOrder no manda sort_order (la base pone el default)", async () => {
+    const { client, calls } = createCatalogLinkFakeSupabase();
+
+    await createCatalogLink(client, CATALOG_AGENT, catalogDraft());
+
+    const payload = calls[0].payload as Record<string, unknown>;
+    expect("sort_order" in payload).toBe(false);
+  });
+
+  it("createCatalogLink con sortOrder lo manda tal cual", async () => {
+    const { client, calls } = createCatalogLinkFakeSupabase();
+
+    await createCatalogLink(client, CATALOG_AGENT, catalogDraft({ sortOrder: 3 }));
+
+    const payload = calls[0].payload as Record<string, unknown>;
+    expect(payload.sort_order).toBe(3);
+  });
+
+  it("updateCatalogLink actualiza key/label/url/updated_by por id", async () => {
+    const { client, calls } = createCatalogLinkFakeSupabase();
+
+    await updateCatalogLink(client, CATALOG_AGENT, "link-1", catalogDraft({ label: "Cascos nuevos" }));
+
+    expect(calls).toHaveLength(1);
+    expect(calls[0].op).toBe("update");
+    expect(calls[0].id).toBe("link-1");
+    const payload = calls[0].payload as Record<string, unknown>;
+    expect(payload.label).toBe("Cascos nuevos");
+    expect(payload.updated_by).toBe("agent-7");
+  });
+
+  /**
+   * Sin `sortOrder`, el UPDATE no toca esa columna: deja el orden que ya
+   * tenía la fila. Editar solo la URL de un catálogo no debe reordenar la
+   * lista de `{{catalogos}}` por accidente.
+   */
+  it("updateCatalogLink sin sortOrder no toca sort_order", async () => {
+    const { client, calls } = createCatalogLinkFakeSupabase();
+
+    await updateCatalogLink(client, CATALOG_AGENT, "link-1", catalogDraft());
+
+    const payload = calls[0].payload as Record<string, unknown>;
+    expect("sort_order" in payload).toBe(false);
+  });
+
+  it("deleteCatalogLink borra la fila por id", async () => {
+    const { client, calls } = createCatalogLinkFakeSupabase();
+
+    await deleteCatalogLink(client, "link-1");
+
+    expect(calls).toContainEqual({ op: "delete", id: "link-1" });
+  });
+
+  it("setCatalogLinkActive actualiza is_active y updated_by por id", async () => {
+    const { client, calls } = createCatalogLinkFakeSupabase();
+
+    await setCatalogLinkActive(client, CATALOG_AGENT, "link-1", false);
+
+    expect(calls).toContainEqual({
+      op: "update",
+      payload: { is_active: false, updated_by: "agent-7" },
+      id: "link-1",
+    });
+  });
+
+  it("propaga el error de la base en createCatalogLink en vez de tragárselo", async () => {
+    const client = {
+      from: () => ({ insert: async () => ({ error: new Error("no se pudo guardar") }) }),
+    } as unknown as SupabaseClient;
+
+    await expect(createCatalogLink(client, CATALOG_AGENT, catalogDraft())).rejects.toThrow(/no se pudo guardar/);
   });
 });
