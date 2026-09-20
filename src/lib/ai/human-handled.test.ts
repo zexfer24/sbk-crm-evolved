@@ -529,17 +529,32 @@ function fakeMessagesTable(
         return {
           select: (columnas: string) => {
             if (columnas === "created_at") {
-              // humanHasWritten: .eq(conversation_id).eq(reason,'reabierta_por_cliente').order().limit(1)
+              // humanHasWritten: .eq(conversation_id).eq(reason,'reabierta_por_cliente')
+              // .order("created_at", { ascending: false }).limit(1)
+              //
+              // 20/9/2026 ("El resguardo antes del push", tarea M1b, ítem 1):
+              // el `order()` de acá abajo antes IGNORABA el argumento de
+              // `ascending` y siempre devolvía la fila más reciente por su
+              // cuenta -- así que invertir el orden en el código real
+              // (`ascending: false` -> `true`) no cambiaba NADA en este fake y
+              // el mutante sobrevivía. Ahora el fake ordena de verdad según lo
+              // que le pide el código real, como haría PostgREST: con DOS
+              // reaperturas para el mismo chat, invertir el orden hace que se
+              // lea la MÁS VIEJA en vez de la más reciente.
               return {
                 eq: (_c: string, conversationId: string) => ({
                   eq: () => ({
-                    order: () => ({
+                    order: (_col: string, opciones: { ascending: boolean }) => ({
                       limit: async () => {
                         llamadas.push({ tipo: "reapertura-individual", conversationId });
                         if (reaperturaError) return { data: null, error: { message: reaperturaError } };
                         const propias = reaperturas
                           .filter((r) => r.conversation_id === conversationId)
-                          .sort((a, b) => (a.created_at < b.created_at ? 1 : -1));
+                          .sort((a, b) =>
+                            opciones.ascending
+                              ? a.created_at.localeCompare(b.created_at)
+                              : b.created_at.localeCompare(a.created_at)
+                          );
                         return { data: propias.slice(0, 1), error: null };
                       },
                     }),
@@ -1130,5 +1145,87 @@ describe("humanClaimsChat con reopenedAt — reapertura salta la gracia (D2, H2,
     expect(
       humanClaimsChat(new Date(humano).toISOString(), new Date(lcma).toISOString(), NOW, G, new Date(reapertura).toISOString())
     ).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Tarea M1b, plan "El resguardo antes del push" (20/9/2026, ítem 1): la
+// reapertura MÁS RECIENTE. Con dos reaperturas del mismo chat (un asesor
+// cierra dos veces, el cliente reabre dos veces), la cláusula de gracia tiene
+// que descontar contra la ÚLTIMA -- no contra la primera que aparezca en la
+// consulta ni contra la más vieja. Cubre las tres piezas de la regla:
+// - `reopenedAtIfGraceWouldFire` (humanHasWritten, individual): `.order()`
+//   real ahora sí distingue `ascending` (ver el fake de arriba).
+// - `conversationsWrittenByHumans` (lote): el reduce en memoria que arma
+//   `reopenedAtPorChat` con `fila.created_at > previo`.
+// - `humanClaimsChat`: el orden de sus dos `if` (se adelantó vs. reapertura).
+// ---------------------------------------------------------------------------
+
+describe("la reapertura MÁS RECIENTE, con DOS reaperturas del mismo chat (M1b, 20/9/2026)", () => {
+  /**
+   * Asesor escribió hace 5 min (dentro de G=10, antes del cliente). Dos
+   * reaperturas: una vieja (hace 8 min, ANTES del asesor) y una reciente
+   * (hace 2 min, DESPUÉS del asesor). Con la más reciente, el asesor quedó
+   * ANTES de la reapertura -> no bloquea. Si el código leyera la reapertura
+   * VIEJA en su lugar, el asesor quedaría DESPUÉS de doonde mira -> sí
+   * bloquearía: el resultado distingue cuál de las dos se usó.
+   */
+  it("humanHasWritten: con dos reaperturas, descuenta contra la MÁS RECIENTE, no la más vieja", async () => {
+    const humano = new Date(NOW - 5 * 60_000).toISOString();
+    const reaperturaVieja = new Date(NOW - 8 * 60_000).toISOString();
+    const reaperturaReciente = new Date(NOW - 2 * 60_000).toISOString();
+    const lcma = new Date(NOW - 1 * 60_000).toISOString();
+    // Se pasan en orden "al revés" (reciente primero) para no depender de que
+    // el fake reciba las filas ya ordenadas: la sola presencia de las dos
+    // basta para distinguir el mutante.
+    const fake = fakeMessagesTable(
+      [{ conversation_id: "conv-x", created_at: humano }],
+      [
+        { conversation_id: "conv-x", created_at: reaperturaReciente },
+        { conversation_id: "conv-x", created_at: reaperturaVieja },
+      ]
+    );
+
+    expect(await humanHasWritten(fake as never, "conv-x", lcma, { now: NOW, graceMinutes: G })).toBe(false);
+  });
+
+  it("conversationsWrittenByHumans: con dos reaperturas, descuenta contra la MÁS RECIENTE, no la más vieja", async () => {
+    const humano = new Date(NOW - 5 * 60_000).toISOString();
+    const reaperturaVieja = new Date(NOW - 8 * 60_000).toISOString();
+    const reaperturaReciente = new Date(NOW - 2 * 60_000).toISOString();
+    const lcma = new Date(NOW - 1 * 60_000).toISOString();
+    const fake = fakeMessagesTable(
+      [{ conversation_id: "conv-x", created_at: humano }],
+      [
+        { conversation_id: "conv-x", created_at: reaperturaVieja },
+        { conversation_id: "conv-x", created_at: reaperturaReciente },
+      ]
+    );
+
+    const resultado = await conversationsWrittenByHumans(
+      fake as never,
+      [{ id: "conv-x", lastCustomerMessageAt: lcma }],
+      { now: NOW, graceMinutes: G }
+    );
+
+    expect(resultado.has("conv-x")).toBe(false);
+  });
+
+  /**
+   * El orden de los dos `if` de `humanClaimsChat`: "se adelantó" tiene que
+   * decidirse ANTES de mirar la reapertura. Acá el asesor escribió DESPUÉS de
+   * `lcma` (se adelantó, debería bloquear siempre) pero también quedó ANTES o
+   * EN el instante de una reapertura posterior -- si el código mirara la
+   * reapertura primero, la daría por "de antes de reabrir" y NO bloquearía,
+   * al revés de lo que exige la regla ("se adelantó" no compite con la
+   * reapertura, ver el docblock de humanClaimsChat).
+   */
+  it("humanClaimsChat: 'se adelantó' se evalúa ANTES que la reapertura, no después", () => {
+    const lcma = NOW - 10 * 60_000; // cliente hace 10 min
+    const humano = NOW - 2 * 60_000; // asesor hace 2 min: después de lcma, se adelantó
+    const reapertura = NOW - 1 * 60_000; // reapertura hace 1 min: DESPUÉS del asesor
+    expect(
+      humanClaimsChat(new Date(humano).toISOString(), new Date(lcma).toISOString(), NOW, G, new Date(reapertura).toISOString())
+    ).toBe(true);
   });
 });
