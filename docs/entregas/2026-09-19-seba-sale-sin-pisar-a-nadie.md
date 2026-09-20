@@ -1119,6 +1119,16 @@ sobrevivían y los equivalentes van uno por uno.
 | `factura_saint.sql`: borde de 40 caracteres exactos del número Saint, y dos órdenes con el mismo número (D9, sin unicidad) | — | SOBREVIVÍA → test nuevo (Caso 4b, Caso 6) |
 | `seba_y_escalada_viva.sql`: `and ai_enabled` del trigger de silencio | — | EQUIVALENTE de facto para el caso existente — redundante con el WHEN del trigger AFTER (`old.ai_enabled IS DISTINCT FROM new.ai_enabled`); no verificado con una mutación real en esta sesión |
 
+**CI real en verde sobre `a2c8036`** (20/9/2026, run 35544951219, jobs
+`verificar` —Node 22— y `migraciones` —base desde cero—, los dos `success`),
+por la rama desechable `ci/resguardo-antes-del-push`, que lleva un commit
+extra (`f54a3d9`) que solo añade `ci/**` al disparador del workflow y NO se
+fusiona. En local: suite 2674 verde con Redis, `tsc` y `lint` sin errores,
+17 tests SQL verdes tras `db reset`, build de producción con `BUILD_ID` de las
+19:34. Ojo al construir en local: con `next dev` corriendo a la vez,
+`.next/dev/types/validator.ts` puede quedar truncado y tumbar el chequeo de
+tipos del build — parar el dev server y borrar `.next/dev` antes.
+
 ### Escenarios a mano del 20/9/2026 y el hallazgo K (`3d96863`)
 
 Webhook local por el canal `mock-phone-id-soporte` (envío simulado), modelo
