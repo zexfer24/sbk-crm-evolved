@@ -1399,6 +1399,29 @@ describe("runAgentTurn — salidas silenciosas de apertura", () => {
   });
 
   /**
+   * Mutación de verificación (resguardo antes del push, 20/9/2026, tarea
+   * M1/T3-a: "`stageFor` revertido solo en 'classifying'/'tool_running'" de
+   * la lista de sospechosas). El test de arriba solo mira el RESETEO final
+   * (`stageFor(assignedAgentId, null)`); nunca comprobaba la escritura de
+   * ARRANQUE de la clasificación (`stageFor(convo.assigned_agent_id,
+   * "classifying")`, agent.ts). Escribir el literal `"classifying"` ahí en
+   * vez de pasar por `stageFor` no rompía ningún test: el reseteo final
+   * seguía dejando "assigned" igual, tapando el hueco de en medio. (La
+   * escritura gemela de `"tool_running"` vive dentro de
+   * `onToolExecutionStart` del `ToolLoopAgent` real, que el mock de este
+   * archivo no invoca nunca — queda fuera del alcance de esta suite, no de
+   * esta corrección.)
+   */
+  it("con asesor asignado, la escritura al empezar a clasificar tampoco deja el literal 'classifying'", async () => {
+    state.conversation = { ...state.conversation, ai_enabled: true, assigned_agent_id: "agent-9" };
+
+    await runAgentTurn("conv-1");
+
+    expect(conversationUpdates.some((u) => u.journey_stage === "classifying")).toBe(false);
+    expect(conversationUpdates).toContainEqual({ journey_stage: "assigned", active_tool: null });
+  });
+
+  /**
    * Un contacto sin teléfono utilizable —borrado entre la consulta y la
    * respuesta, o con un dato corrupto— es la identidad rota que buildTurnTarget
    * corta antes de que el turno corra entero para terminar en una llamada a
@@ -1462,6 +1485,38 @@ describe("runAgentTurn — no contesta lo que llegó antes de la devolución (Ta
       p_reason: "mensaje_previo_a_devolucion",
     });
     expect(info).toHaveBeenCalledWith("turno_mensaje_previo_a_devolucion", { conversationId: "conv-1" });
+  });
+
+  /**
+   * Mutación de verificación (resguardo antes del push, 20/9/2026, tarea
+   * M1/T3-a: "orden `pausada`→sello" de la lista de sospechosas). El
+   * comentario del código dice "Va DESPUÉS de `pausada`: con la IA apagada
+   * en este chat, esa es la razón más específica y tiene que ganar aunque
+   * también calce esta" -- pero hasta esta tarea ningún test tenía las DOS
+   * condiciones a la vez (`ai_enabled=false` Y el sello cumplido) para
+   * comprobarlo. Sin este test, invertir el orden de los dos `if` en
+   * `agent.ts` no rompía nada: la conversación quedaba con el traspaso
+   * `mensaje_previo_a_devolucion` en vez de `pausada`, la razón MENOS
+   * específica ganando sobre la más específica.
+   */
+  it("con la IA apagada Y el sello cumplido a la vez, gana pausada (la razón más específica), no mensaje_previo_a_devolucion", async () => {
+    const sello = new Date(Date.now() - 60_000).toISOString();
+    state.conversation = {
+      ...state.conversation,
+      ai_enabled: false,
+      assigned_agent_id: null,
+      ai_resume_cutoff_at: sello,
+      last_customer_message_at: sello,
+    };
+
+    await runAgentTurn("conv-1");
+
+    expect(handoffCalls).toHaveLength(1);
+    expect(handoffCalls[0]).toMatchObject({
+      p_conversation_id: "conv-1",
+      p_to_kind: "unassigned",
+      p_reason: "pausada",
+    });
   });
 
   it("con last_customer_message_at posterior al sello, el turno redacta y envía aunque el historial ya traiga una salida de la IA fechada después (la forma de la carrera de ráfaga no lo calla)", async () => {
@@ -3174,6 +3229,39 @@ describe("runAgentTurn — la presentación de Seba (T2b, 18/9/2026)", () => {
   });
 
   /**
+   * Tanda 3, tarea M1c (20/9/2026), ítem 1: la rama de ERROR de
+   * `claimPresentation` — un fallo del UPDATE contra la base (no un "0
+   * filas", sino la consulta misma fallando) tiene que tratarse IGUAL que un
+   * reclamo perdido: no hay garantía de que el sello haya quedado puesto, así
+   * que mandar el saludo igual arriesgaría una presentación sin
+   * `welcome_sent_at` reflejando la realidad (o, peor, un `.select()`
+   * después de un `.update()` que ni siquiera corrió). `claimPresentation`
+   * devuelve `false` en el catch de error, mismo camino que "el reclamo
+   * pierde (0 filas)" de arriba: sin saludo, directo a la redacción, y con
+   * el log de diagnóstico puesto.
+   */
+  it("si el UPDATE de claimPresentation falla (error de la base), no saluda, sigue directo a la redacción y deja el log", async () => {
+    const errorSpy = vi.spyOn(log, "error");
+    state.conversation = { ...state.conversation, welcome_sent_at: null };
+    state.presentationClaimError = { message: "conexión perdida" };
+
+    await runAgentTurn("conv-1");
+
+    expect(sendAgentTextMock).toHaveBeenCalledTimes(1);
+    expect(sendAgentTextMock).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.anything(),
+      "respuesta redactada por el modelo",
+      expect.anything()
+    );
+    expect(classifyIntentMock).toHaveBeenCalledTimes(1);
+    expect(errorSpy).toHaveBeenCalledWith(
+      "turno_presentacion_reclamo_fallido",
+      expect.objectContaining({ conversationId: "conv-1", detail: "conexión perdida" })
+    );
+  });
+
+  /**
    * La guarda de `deliver()` frena DESPUÉS de que el reclamo ya selló
    * `welcome_sent_at` — acá, el interruptor global apagándose justo en el
    * hueco entre el reclamo y el siguiente guardián de `deliver()` (mismo
@@ -4573,6 +4661,62 @@ describe("runAgentTurn — T3: red de seguridad del catálogo", () => {
     expect(llamada[2]).toBe("Claro, ¿para qué modelo y año de moto las buscas?");
     const opciones = llamada[3] as { isAutoReply?: boolean } | undefined;
     expect(opciones?.isAutoReply).not.toBe(true);
+  });
+
+  /**
+   * Mutación de verificación (resguardo antes del push, 20/9/2026): el
+   * inventario tenía dudas sobre la PRECEDENCIA cuando dos llamadas del
+   * mismo turno dejan más de una bandera encendida a la vez —
+   * `CatalogOutcome` se ACUMULA, nunca se resetea (ver tools.ts). Cambiar el
+   * orden del `? :` en `agent.ts` (mirar `agotados` antes que
+   * `conExistencia`) tiene que poner ESTE test en rojo: `conExistencia` va
+   * primero porque "hay unidades de ALGO" pesa más que "otra búsqueda del
+   * mismo turno no encontró nada en stock".
+   */
+  it("con conExistencia Y agotados a la vez (dos búsquedas del mismo turno), gana confirmar_inventario", async () => {
+    buildCatalogToolMock.mockImplementationOnce((_deps, catalogOutcome) => {
+      catalogOutcome.ran = true;
+      catalogOutcome.conExistencia = true;
+      catalogOutcome.agotados = true;
+      return {};
+    });
+    generateMock.mockResolvedValueOnce({
+      text: "Tenemos el carburador en $18, pero las pastillas están agotadas.",
+      usage: NO_USAGE,
+      steps: [{}, {}],
+    });
+
+    await runAgentTurn("conv-1");
+
+    expect(escalateConversationMock).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ conversationId: "conv-1", motivo: "confirmar_inventario" })
+    );
+    const llamada = sendAgentTextMock.mock.calls[0];
+    expect(llamada[2]).toContain(TEXTO_CONFIRMAR_INVENTARIO);
+    expect(llamada[2]).not.toContain(TEXTO_SIN_STOCK);
+  });
+
+  /**
+   * Mutación de verificación: la rama `text.trim() ? … : textoFijo` de
+   * `agent.ts` — con el modelo devolviendo texto VACÍO (se quedó sin pasos
+   * antes de redactar nada), el texto fijo tiene que ser la respuesta
+   * ENTERA, sin un salto de línea sobrante al principio. Fusionar la rama en
+   * un solo template literal (`` `${text.trim()}\n${textoFijo}` ``) deja un
+   * "\n" colgando al inicio y este test se pone en rojo.
+   */
+  it("con texto vacío del modelo, el texto fijo es la respuesta ENTERA (sin salto de línea sobrante)", async () => {
+    buildCatalogToolMock.mockImplementationOnce((_deps, catalogOutcome) => {
+      catalogOutcome.ran = true;
+      catalogOutcome.conExistencia = true;
+      return {};
+    });
+    generateMock.mockResolvedValueOnce({ text: "", usage: NO_USAGE, steps: [{}, {}] });
+
+    await runAgentTurn("conv-1");
+
+    const llamada = sendAgentTextMock.mock.calls[0];
+    expect(llamada[2]).toBe(TEXTO_CONFIRMAR_INVENTARIO);
   });
 
   it("el modelo ya dijo 'asesor': no se anexa el texto fijo por encima", async () => {
