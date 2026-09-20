@@ -406,6 +406,37 @@ begin
 end $$;
 
 -- ---------------------------------------------------------------------------
+-- Caso 10 · el CHECK admite `fuera_de_tema_repetido` ("El resguardo antes
+-- del push", 20/9/2026, tarea C6) y sigue rechazando una razón inventada.
+-- Sin el valor en el CHECK, el `recordHandoff` de la segunda insistencia
+-- fuera de tema fallaría en silencio contra la base real -- la misma trampa
+-- de `fuera_de_tema` del 14/9/2026, invisible para los tests de TypeScript
+-- (usan fakes). Reusa la conversación del caso 6.
+-- ---------------------------------------------------------------------------
+do $$
+declare
+  conv_id uuid := 'c6c6c6c6-0000-0000-0000-000000000006';
+  v_rechazada boolean := false;
+begin
+  begin
+    insert into public.conversation_handoffs (conversation_id, from_kind, to_kind, reason, created_by)
+    values (conv_id, 'ai', 'unassigned', 'fuera_de_tema_repetido', 'system');
+  exception when check_violation then
+    insert into _errores(msg) values ('Caso 10: el CHECK rechazó fuera_de_tema_repetido.');
+  end;
+
+  begin
+    insert into public.conversation_handoffs (conversation_id, from_kind, to_kind, reason, created_by)
+    values (conv_id, 'ai', 'unassigned', 'razon_que_no_existe', 'system');
+  exception when check_violation then
+    v_rechazada := true;
+  end;
+  if not v_rechazada then
+    insert into _errores(msg) values ('Caso 10: el CHECK aceptó una razón inventada.');
+  end if;
+end $$;
+
+-- ---------------------------------------------------------------------------
 -- Veredicto
 -- ---------------------------------------------------------------------------
 do $$

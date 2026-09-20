@@ -1309,8 +1309,53 @@ que la justifica. Si alguna de las cinco aborta con ese mensaje, no es un
 bug de la migración: falta `-1 -v ON_ERROR_STOP=1` en el comando — repetir
 el comando de arriba tal cual, sin quitar ni bajar el `lock_timeout`.
 Verificado el 19/9/2026 con `npx supabase db reset` (CLI 2.117.0): las
-cinco aplican sin abortar porque esa CLI envuelve cada archivo de
-migración en su propia transacción. Orden estricto:
+cinco aplican sin abortar.
+
+**Corrección (revisión "El resguardo antes del push", tarea C5,
+20/9/2026): la frase de arriba es cierta a medias.** `npx supabase db
+reset` SÍ aplica cada migración de forma atómica (sondeado el 20/9/2026:
+una migración de prueba `create table …; select 1/0;` falla y la tabla no
+queda), pero con una transacción IMPLÍCITA del protocolo (un lote sin
+`BEGIN`), no con un BLOQUE de transacción. Para `set local lock_timeout`
+alcanza —por eso la guarda nunca disparó ahí—; para `lock table` no:
+Postgres exige un bloque explícito ("LOCK TABLE can only be used in
+transaction blocks"). Como el arreglo del interbloqueo del punto siguiente
+necesita `lock table`, `20260916010000` y `20260917010000` ahora traen su
+propio `begin;`/`commit;` dentro del archivo (no dependen de `-1` ni de la
+CLI). Consecuencia: en ESAS dos, olvidarse el `-1` ya no aborta —el
+archivo trae su transacción—, que es el lado seguro; con `-1` salen dos
+WARNING inofensivos ("already a transaction in progress" / "no transaction
+in progress"). Las otras tres no lo necesitaban: no tienen el patrón
+"candado de fila retenido + candado de tabla pedido después" que produce
+el ciclo, y su guarda sigue abortando sin `-1`.
+
+**Candados de tabla nuevos en `20260916010000` y `20260917010000`
+(hallazgo B/gemelo, tarea C5, 20/9/2026) — interbloqueo real, no solo
+teórico.** Reproducido contra la base local: 20 conexiones concurrentes
+imitando al webhook (`INSERT INTO messages` para `20260917010000`,
+`select record_handoff(...)` para `20260916010000`) durante la aplicación
+de la migración SIN estos candados producían `deadlock detected` de forma
+consistente (ver `docs/entregas/` de esta tarea para el texto exacto del
+error). Con los candados —`lock table … in share row exclusive mode` al
+principio del archivo, antes de tocar una sola fila de `conversations`—
+3 corridas seguidas de cada migración, mismo escenario de carga, dieron
+`RC=0` sin ningún deadlock:
+
+| Migración | Candados que toma (orden) | Bloquea | Segundos que el generador quedó esperando (3 corridas) |
+|---|---|---|---|
+| `20260916010000` | `conversation_handoffs` (SHARE ROW EXCLUSIVE) | Escrituras a `conversation_handoffs` (`record_handoff`, todo `INSERT`/`UPDATE`); las LECTURAS de la bitácora (`escalationOpen`, `humanClaimsChat`) siguen sin bloquearse | 4,1 s / 15,2 s / 4,3 s |
+| `20260917010000` | `conversation_handoffs`, después `messages` (SHARE ROW EXCLUSIVE, mismo orden alfabético en las dos migraciones) | Escrituras a `messages` (el `INSERT` del webhook) y a `conversation_handoffs`; las LECTURAS de ambas (la bandeja cargando mensajes, la bitácora) siguen sin bloquearse | 6,2 s / 15,6 s / 7,7 s |
+
+Aplicar las cinco fuera de hora pico sigue siendo la recomendación (no
+cambia con este arreglo): esos segundos son el tiempo que un webhook
+entrante para una conversación cualquiera —no solo las que toca el
+backfill— queda esperando a que la migración llegue al `commit;`. **Si
+cualquiera de las dos aborta por `lock_timeout` (55P03, "no se pudo
+obtener el candado en 5 s")**, no quedó nada a medias —la guarda del
+`begin;`/`commit;` explícito hace que el archivo sea atómico— así que se
+reintenta el mismo comando tal cual; un `lock_timeout` ahí es señal de
+tráfico más alto de lo esperado al momento de migrar, no de una migración
+rota. Orden estricto:
 
 1. `20260916010000_devolucion_a_la_ia.sql` (si no está aplicada — regla
    dura, columna GENERADA).

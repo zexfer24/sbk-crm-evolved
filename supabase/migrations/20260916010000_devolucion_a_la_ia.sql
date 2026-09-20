@@ -82,7 +82,30 @@
 --    new has no field new_since_ai_resume". El CI y `supabase db push` ya
 --    envuelven cada migración en su propia transacción; esta advertencia
 --    es para quien la aplique a mano contra `supabase-db`.
+--
+--    CORRECCIÓN (revisión "El resguardo antes del push", tarea C5,
+--    20/9/2026): esa frase es cierta A MEDIAS. `npx supabase db reset` SÍ
+--    aplica cada migración de forma atómica (sondeado el 20/9/2026 por el
+--    orquestador: una migración de prueba `create table …; select 1/0;`
+--    falla y la tabla NO queda), pero con una transacción IMPLÍCITA del
+--    protocolo (un lote sin `BEGIN`), no con un BLOQUE de transacción. Para
+--    `set local` alcanza -- por eso la guarda nunca disparó ahí --; para un
+--    `lock table` (necesario para el hallazgo del gemelo, más abajo) NO:
+--    Postgres exige un bloque explícito y con ese applier fallaba con
+--    "LOCK TABLE can only be used in transaction blocks", incluso en un
+--    archivo mínimo de prueba. Por eso este archivo ahora se envuelve en
+--    `begin;`/`commit;` EXPLÍCITOS (ver más abajo): abre su propio bloque
+--    sin depender de quién lo aplique. Efecto colateral aceptado: aplicado
+--    sin `-1`, la guarda "abortar si no hay transacción" ya no dispara
+--    nunca (el archivo trae la suya), que es el lado seguro. Aplicado con
+--    `psql -1` (el método que sigue pidiendo
+--    docs/PRODUCCION.md §11) produce dos WARNING inofensivos ("there is
+--    already a transaction in progress" / "there is no transaction in
+--    progress"), el mismo patrón ya documentado de
+--    `scripts/sql/2026-09-18-catalogos-iniciales.sql`.
 -- ---------------------------------------------------------------------------
+begin;
+
 set local lock_timeout = '5s';
 
 -- ---------------------------------------------------------------------------
@@ -118,6 +141,68 @@ begin
     raise exception 'Esta migración se aplica dentro de una transacción (psql -1 -v ON_ERROR_STOP=1): sin ella, set local lock_timeout es un no-op y el DDL correría sin límite de espera.';
   end if;
 end $$;
+
+-- ---------------------------------------------------------------------------
+-- Candado de TABLA por adelantado (hallazgo del "gemelo plausible" de
+-- 20260917010000/hallazgo B, revisión "El resguardo antes del push", tarea
+-- C5, 20/9/2026) -- interbloqueo real, reproducido contra la base local
+-- (30.000 conversaciones ya sembradas, 20 conexiones concurrentes llamando
+-- `select public.record_handoff(...)` -- el mismo camino que
+-- reconciler.ts/mutations.ts -- durante toda la aplicación de esta
+-- migración):
+--
+--   Proceso 1087 (esta migración) espera AccessExclusiveLock sobre
+--   `conversation_handoffs`; bloqueado por el proceso 1094.
+--   Proceso 1094 espera RowShareLock sobre `conversations` (el chequeo de
+--   FK de `record_handoff`); bloqueado por el proceso 1087.
+--   ERROR: deadlock detected (en la sentencia `alter table
+--   conversation_handoffs drop constraint` de la sección 4, más abajo) --
+--   y, en la misma corrida, 16 de los 20 llamadores concurrentes de
+--   `record_handoff` también recibieron `deadlock detected` en cadena
+--   (Postgres fue liberando víctimas una por una a medida que cada backend
+--   cumplía su propio `deadlock_timeout` mientras el ciclo seguía vivo,
+--   porque el generador reintentaba de inmediato con una conversación
+--   nueva): cada uno de esos 16 es un traspaso que se pierde en silencio
+--   si el llamador real no reintenta -- exactamente lo que la invariante
+--   "ningún lead invisible" prohíbe.
+--
+-- La causa es la misma que en 20260917010000: `alter table public.
+-- conversations add column new_since_ai_resume generated always as (...)
+-- stored` (sección 2, más abajo) reescribe la tabla entera con
+-- ACCESS EXCLUSIVE sobre `conversations`, y ese candado se retiene hasta el
+-- COMMIT -- no hasta que el ALTER termine. Un `record_handoff(...)` en
+-- vuelo toma ROW EXCLUSIVE sobre `conversation_handoffs` (para su propio
+-- INSERT) y, en el chequeo de la FK hacia `conversations` (RI_FKey_check_ins,
+-- un `select ... for key share` interno), se queda esperando el
+-- ACCESS EXCLUSIVE que esta migración ya tiene. Mientras tanto, esta
+-- migración sigue de largo y, en la sección 4, pide ACCESS EXCLUSIVE sobre
+-- `conversation_handoffs` para el `drop constraint`/`add constraint` -- y
+-- ahí se topa con el ROW EXCLUSIVE que ya tienen uno o más `record_handoff`
+-- en vuelo. Interbloqueo, mismo mecanismo, tabla distinta.
+--
+-- Mismo remedio que 20260917010000, mismo orden (alfabético, para que dos
+-- migraciones que necesiten ambas tablas las pidan siempre en el mismo
+-- orden entre sí): tomar el candado de `conversation_handoffs` ACÁ, ANTES
+-- de tocar una sola fila de `conversations`, para que un `record_handoff`
+-- en vuelo quede esperando SIN HABER TOMADO NADA TODAVÍA. `SHARE ROW
+-- EXCLUSIVE` (no `ACCESS EXCLUSIVE`): solo hace falta bloquear el INSERT de
+-- `record_handoff` (pide ROW EXCLUSIVE, que choca con SHARE ROW EXCLUSIVE);
+-- las lecturas de la bitácora (`escalationOpen()`, `humanClaimsChat`, todas
+-- `select` simples que piden ACCESS SHARE) siguen sin bloquearse. No hace
+-- falta un candado propio sobre `messages` acá: esta migración no la toca.
+--
+-- Verificado el 20/9/2026 (misma tarea, con el archivo ya en su forma FINAL
+-- -- incluido el `begin;`/`commit;` explícito de la cabecera): 3 corridas
+-- seguidas contra el mismo escenario de carga (30.000 conversaciones, 20
+-- llamadores concurrentes de `record_handoff` durante TODA la aplicación,
+-- vía `psql -1 -v ON_ERROR_STOP=1`) terminaron con RC=0, sin ningún
+-- deadlock, y con 0 errores del generador en las 3 corridas (43, 84 y 36
+-- llamadas a `record_handoff` completadas, ninguna perdida). El generador
+-- quedó bloqueado 4,1 s / 15,2 s / 4,3 s por corrida (el tiempo de la
+-- migración completa hasta el COMMIT) -- ver el reporte de la tarea C5
+-- para el detalle completo.
+-- ---------------------------------------------------------------------------
+lock table public.conversation_handoffs in share row exclusive mode;
 
 -- ---------------------------------------------------------------------------
 -- 1. ai_resume_cutoff_at -- el sello. Nace null: ninguna conversación
@@ -503,3 +588,9 @@ end $$;
 -- sin pisar a nadie" (19/9/2026, tarea T5, hallazgo M1: ninguna de las cinco
 -- migraciones de esta corrida lo traía).
 notify pgrst, 'reload schema';
+
+-- Cierra el `begin;` explícito de la cabecera (hallazgo del gemelo, tarea
+-- C5, 20/9/2026). NOTIFY entrega su aviso a los LISTENers recién al COMMIT
+-- de la transacción que lo emitió -- comportamiento normal de Postgres, así
+-- que ponerlo antes de este `commit;` es exactamente donde tiene que estar.
+commit;

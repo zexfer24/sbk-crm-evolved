@@ -82,7 +82,38 @@
 -- y sin `ON_ERROR_STOP=1` una sentencia de en medio que falle no tumba el
 -- resto del archivo, dejando el esquema a medias (p. ej. el CHECK ampliado
 -- sin el trigger que lo usa, o al revés).
+--
+-- `begin;`/`commit;` EXPLÍCITOS (revisión "El resguardo antes del push",
+-- tarea C5, 20/9/2026, hallazgo B): hasta esta corrida el archivo confiaba
+-- en que QUIEN LO APLICA lo envuelva en una transacción (`psql -1`).
+-- `npx supabase db reset` -- el método que este mismo repo usa para
+-- reconstruir la base en cada verificación, y el del job `migraciones` del
+-- CI -- SÍ aplica cada migración de forma atómica (sondeado el 20/9/2026
+-- por el orquestador: una migración de prueba `create table …; select
+-- 1/0;` falla y la tabla NO queda), pero lo hace con una transacción
+-- IMPLÍCITA del protocolo (un lote sin `BEGIN`), no con un BLOQUE de
+-- transacción. Para `set local lock_timeout` alcanza -- por eso la guarda
+-- de más abajo nunca disparó ahí, no fue casualidad --; para `lock table`
+-- (hallazgo B, la sección de más abajo) NO: Postgres exige un bloque
+-- explícito y con ese applier fallaba con "LOCK TABLE can only be used in
+-- transaction blocks", incluso en un archivo mínimo de prueba --
+-- reproducido a mano el 20/9/2026. El `begin;` de acá abajo (y el
+-- `commit;` al final del archivo, después del `notify pgrst`) abren ese
+-- bloque DENTRO del archivo, sin depender de quién lo aplique. Efecto
+-- colateral aceptado: aplicado sin `-1`, la guarda "abortar si no hay
+-- transacción" de más abajo ya no dispara nunca (el archivo trae la suya),
+-- que es el lado seguro. Aplicado con `psql -1` (el método
+-- que sigue pidiendo docs/PRODUCCION.md §11) produce dos WARNING
+-- inofensivos ("there is already a transaction in progress" al llegar a
+-- este `begin;`, "there is no transaction in progress" cuando `-1` intenta
+-- cerrar una transacción que el `commit;` de acá ya cerró) -- el mismo
+-- patrón, ya documentado, de `scripts/sql/2026-09-18-catalogos-iniciales.sql`
+-- -- y aplicado con `npx supabase db reset` (o cualquier `psql -f` sin
+-- `-1`) queda igual de atómico porque el `begin`/`commit` viajan DENTRO
+-- del propio archivo, no dependen de un flag externo.
 -- ============================================================================
+begin;
+
 set local lock_timeout = '5s';
 
 -- Guarda contra el no-op silencioso de `set local` -- mismo motivo y misma
@@ -97,6 +128,116 @@ begin
     raise exception 'Esta migración se aplica dentro de una transacción (psql -1 -v ON_ERROR_STOP=1): sin ella, set local lock_timeout es un no-op y el DDL correría sin límite de espera.';
   end if;
 end $$;
+
+-- ---------------------------------------------------------------------------
+-- Guarda de prerrequisito (hallazgo J, revisión "El resguardo antes del
+-- push", tarea C5, 20/9/2026): esta migración hace `create or replace
+-- function public.handle_conversation_ownership_change()` -- REPLACE, no
+-- creación nueva -- porque asume que 20260916010000 ya la creó (con sus dos
+-- revokes ya puestos, que un `create or replace` conserva). Si alguien
+-- aplica esta migración SIN haber aplicado antes 20260916010000, el
+-- `create or replace` la CREA de cero igual (Postgres no distingue "crear"
+-- de "reemplazar lo que no existía"): queda sin los dos revokes de esa
+-- migración, el trigger `messages_agent_silences_ai_trigger` de la sección 4
+-- de acá abajo apaga la IA sin que `handle_conversation_ownership_change`
+-- deje ninguna fila en `conversation_handoffs` (la columna
+-- `new_since_ai_resume` que esa función lee en su rama `unassigned` ni
+-- siquiera existe todavía), y la autoverificación de ESTA migración pasa
+-- igual (mira su propio CHECK/trigger, no las columnas de la otra). El
+-- reventón real llega recién cuando alguien aplica 20260916010000 después:
+-- su propio `create function` (sin `or replace`) revienta con "function
+-- already exists". Se detecta acá, temprano y con mensaje explícito, en vez
+-- de descubrirlo con una IA muda sin rastro o con la migración anterior
+-- rota.
+-- ---------------------------------------------------------------------------
+do $$
+begin
+  if to_regprocedure('public.handle_conversation_ai_resume()') is null
+    or not exists (
+      select 1 from information_schema.columns
+      where table_schema = 'public'
+        and table_name = 'conversations'
+        and column_name = 'ai_resume_cutoff_at'
+    )
+  then
+    raise exception '20260917010000: falta 20260916010000 (handle_conversation_ai_resume()/conversations.ai_resume_cutoff_at no existen) -- aplicar esa migración primero.';
+  end if;
+end $$;
+
+-- ---------------------------------------------------------------------------
+-- Candados de TABLA por adelantado (hallazgo B, revisión "El resguardo antes
+-- del push", tarea C5, 20/9/2026) -- interbloqueo real, reproducido contra
+-- la base local con 30.000 conversaciones candidatas al backfill y 20
+-- conexiones concurrentes insertando en `messages` (el mismo shape que el
+-- webhook, route.ts ~1358) durante toda la aplicación de esta migración:
+--
+--   Proceso 1772 (esta migración) espera AccessExclusiveLock sobre
+--   `messages`; bloqueado por el proceso 1837 (un INSERT del generador).
+--   Proceso 1837 espera ShareLock sobre la transacción 1852 (esta
+--   migración); bloqueado por el proceso 1772.
+--   ERROR: deadlock detected (en la sentencia `drop trigger ... on
+--   public.messages`, sección 4 de acá abajo).
+--
+-- La causa: el backfill de más abajo (sección 1) toma candados de FILA
+-- (FOR NO KEY UPDATE, implícitos en el UPDATE) sobre las conversaciones que
+-- toca y los retiene hasta el COMMIT -- no hasta que el UPDATE termine.
+-- Un webhook que inserta un mensaje entrante para UNA DE ESAS
+-- conversaciones toma ROW EXCLUSIVE sobre `messages` (para su propio
+-- INSERT) y después, en su trigger AFTER `handle_new_message()`, intenta
+-- actualizar esa fila de `conversations` -- y se queda esperando el
+-- candado que esta migración ya tiene. Mientras tanto, esta migración sigue
+-- de largo por el resto del archivo y, más abajo, pide ACCESS EXCLUSIVE
+-- sobre `messages` para el `drop trigger`/`create trigger` de la sección 4
+-- -- y ahí se topa con el ROW EXCLUSIVE que el webhook ya tiene sobre esa
+-- misma tabla. Ninguno de los dos puede seguir: interbloqueo.
+--
+-- El arreglo no es dejar de tomar los candados de fila del backfill (es
+-- inherente a cualquier UPDATE fila por fila: sin él no se puede sellar
+-- `welcome_sent_at` con el valor de cada conversación) sino invertir el
+-- ORDEN en que esta transacción pide sus candados de TABLA: tomar el de
+-- `messages` ACÁ, ANTES de tocar una sola fila de `conversations`, para que
+-- un INSERT entrante quede esperando SIN HABER TOMADO NADA TODAVÍA -- así
+-- no puede completar su parte del ciclo. `SHARE ROW EXCLUSIVE` (no
+-- `ACCESS EXCLUSIVE`) porque solo hace falta bloquear ESCRITURAS
+-- (INSERT/UPDATE piden ROW EXCLUSIVE, que sí choca con SHARE ROW EXCLUSIVE):
+-- un candado más fuerte bloquearía también las LECTURAS de la bandeja
+-- (SELECT sobre `messages`, que solo pide ACCESS SHARE y no choca con
+-- SHARE ROW EXCLUSIVE). El `drop trigger`/`create trigger` de la sección 4,
+-- más abajo, van a pedir ACCESS EXCLUSIVE sobre esta misma tabla -- eso es
+-- una escalada del candado DENTRO de la misma sesión/transacción, que
+-- Postgres concede sin esperar a nadie más (nadie más puede tener nada
+-- sobre `messages` a esta altura: el SHARE ROW EXCLUSIVE de acá ya excluye
+-- cualquier ROW EXCLUSIVE/SHARE/EXCLUSIVE nuevo desde el momento en que se
+-- concede).
+--
+-- El mismo patrón backfill-antes-que-ALTER se repite con
+-- `conversation_handoffs` (sección 2, más abajo): un `record_handoff(...)`
+-- en vuelo (reconciler.ts/mutations.ts, el mismo camino que el gemelo de
+-- 20260916010000) sobre una conversación que el backfill ya bloqueó toma
+-- ROW EXCLUSIVE sobre `conversation_handoffs` y se queda esperando esa fila
+-- de `conversations`; si eso ocurre justo cuando esta migración llega al
+-- `alter table conversation_handoffs drop constraint` de la sección 2,
+-- forma el mismo ciclo. Se cierra con el mismo remedio, en el mismo orden
+-- (alfabético, para que dos migraciones que necesiten las dos tablas las
+-- pidan siempre igual y no puedan interbloquearse ENTRE ellas): primero
+-- `conversation_handoffs`, después `messages`.
+--
+-- Verificado el 20/9/2026 (misma tarea, con el archivo ya en su forma FINAL
+-- -- incluido el `begin;`/`commit;` explícito de la cabecera): 3 corridas
+-- seguidas contra el mismo escenario de carga (30.000 conversaciones
+-- candidatas al backfill, 20 conexiones concurrentes insertando en
+-- `messages` durante TODA la aplicación, vía `psql -1 -v ON_ERROR_STOP=1`)
+-- terminaron con RC=0, sin ningún deadlock, y con el 100% de los INSERT
+-- del generador confirmados en `messages` al final (conteo exacto contra
+-- la base, sin pérdidas, en las 3 corridas: 47/47, 62/62, 44/44). El costo
+-- medido -- el tiempo que el generador quedó bloqueado, de punta a punta
+-- de la migración -- fue 6,2 s / 15,6 s / 7,7 s según cuántas filas tocó
+-- el backfill en cada corrida; aceptable fuera de hora pico. Ver
+-- docs/PRODUCCION.md §11 para la nota operativa de cuánto retiene al
+-- webhook en producción real.
+-- ---------------------------------------------------------------------------
+lock table public.conversation_handoffs in share row exclusive mode;
+lock table public.messages in share row exclusive mode;
 
 -- ---------------------------------------------------------------------------
 -- 1. Backfill de `welcome_sent_at` (hallazgo 4). Mismo criterio que
@@ -163,7 +304,14 @@ alter table public.conversation_handoffs
     -- T0, "Seba atiende el mostrador" (18/9/2026): un asesor manda su primer
     -- mensaje real, o alguien pausa la IA a mano -- los dos casos que apagan
     -- ai_enabled sin dejar rastro hasta hoy.
-    'silenciada_por_asesor'
+    'silenciada_por_asesor',
+    -- "El resguardo antes del push" (20/9/2026, tarea C6): a la segunda
+    -- insistencia fuera de tema el turno se calla; hasta hoy lo hacía SIN
+    -- traspaso (viola "ningún lead invisible") y el reconciliador lo
+    -- reencolaba cada minuto, pagando fase 0 y clasificación en cada vuelta.
+    -- Sin este valor acá, el INSERT de `recordHandoff` fallaría en silencio
+    -- contra la base -- la misma trampa de `fuera_de_tema` del 14/9/2026.
+    'fuera_de_tema_repetido'
   ));
 
 comment on column public.conversation_handoffs.reason is
@@ -391,6 +539,10 @@ begin
     raise exception '20260917010000: conversation_handoffs_reason_check no quedó con silenciada_por_asesor (definición: %)', def_reason;
   end if;
 
+  if def_reason not like '%fuera_de_tema_repetido%' then
+    raise exception '20260917010000: conversation_handoffs_reason_check no quedó con fuera_de_tema_repetido (definición: %)', def_reason;
+  end if;
+
   select count(*) into trg_count
     from pg_trigger
     where tgrelid = 'public.messages'::regclass
@@ -417,3 +569,11 @@ end $$;
 -- sin pisar a nadie" (19/9/2026, tarea T5, hallazgo M1: ninguna de las cinco
 -- migraciones de esta corrida lo traía).
 notify pgrst, 'reload schema';
+
+-- Cierra el `begin;` explícito de la cabecera (hallazgo B, tarea C5,
+-- 20/9/2026) -- ver el comentario de arriba de todo el archivo para el
+-- porqué. NOTIFY entrega su aviso a los LISTENers recién al COMMIT de la
+-- transacción que lo emitió -- comportamiento normal de Postgres, no un
+-- efecto de este cambio -- así que ponerlo antes de este `commit;` es
+-- exactamente donde tiene que estar.
+commit;
