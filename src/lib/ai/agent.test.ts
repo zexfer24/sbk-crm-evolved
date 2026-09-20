@@ -127,6 +127,14 @@ interface FakeState {
   /** Si viene con mensaje, el UPDATE del reclamo de presentación falla. */
   presentationClaimError: { message: string } | null;
   /**
+   * Hallazgo G, corrección de la Tanda 1 (20/9/2026): si viene con mensaje,
+   * el UPDATE de REVERSA (`rollbackPresentation`, `{ welcome_sent_at: null
+   * }`) falla — para probar que ese fallo no tapa el error ORIGINAL que
+   * disparó el rollback (G-2). `null` de fábrica: el resto de la suite
+   * revierte el sello sin problema.
+   */
+  presentationRollbackError: { message: string } | null;
+  /**
    * Gancho que corre justo DESPUÉS de que el reclamo de presentación gana
    * (la consulta ya devolvió éxito), para simular una carrera: algo cambia
    * en el estado justo en el hueco entre el reclamo y el siguiente guardián
@@ -197,6 +205,7 @@ const state: FakeState = {
   reopenedByCustomerError: null,
   presentationClaimWins: true,
   presentationClaimError: null,
+  presentationRollbackError: null,
   onPresentationClaimed: null,
   globalLessons: [],
   chatLessons: [],
@@ -317,8 +326,16 @@ function createFakeSupabase() {
                   conversationUpdates.push(values);
                   // Tarea 5 (14/9/2026): solo el UPDATE que toca `intent`
                   // puede fallar en estos tests — es el único que agent.ts
-                  // revisa.
-                  const error = "intent" in values ? state.intentUpdateError : null;
+                  // revisa. Hallazgo G (20/9/2026): sumado el UPDATE de
+                  // reversa del sello de presentación (`rollbackPresentation`,
+                  // `{ welcome_sent_at: null }`), el otro que agent.ts sí
+                  // mira el `error` de vuelta.
+                  const error =
+                    "intent" in values
+                      ? state.intentUpdateError
+                      : values.welcome_sent_at === null
+                        ? state.presentationRollbackError
+                        : null;
                   resolve({ data: null, error });
                 },
               };
@@ -801,6 +818,7 @@ beforeEach(() => {
   state.reopenedByCustomerError = null;
   state.presentationClaimWins = true;
   state.presentationClaimError = null;
+  state.presentationRollbackError = null;
   state.onPresentationClaimed = null;
   state.globalLessons = [];
   state.chatLessons = [];
@@ -2748,6 +2766,34 @@ describe("runAgentTurn — mensajes fuera de tema", () => {
     expect(sendAgentTextMock).toHaveBeenCalledTimes(1);
     expect(sendAgentTextMock.mock.calls[0][2]).toBe(OFF_TOPIC_REPLY);
     expect(agentTurnInserts[0]).toMatchObject({ intent: "fuera_de_tema", action: "answered" });
+    // Tarea C6, plan "El resguardo antes del push" (20/9/2026): la PRIMERA
+    // vez sí contesta — no hay nada de qué "callarse", así que no escribe el
+    // traspaso `fuera_de_tema_repetido` (ese caso es solo para la segunda
+    // insistencia, más abajo).
+    expect(handoffCalls).toHaveLength(0);
+  });
+
+  /**
+   * T4, "Seba atiende el mostrador" (18/9/2026, D2, requisito 6 del
+   * cliente): en un chat YA asignado esta redirección tampoco es una
+   * respuesta real -el cliente le sigue hablando a Seba, no a la persona que
+   * espera- así que sale marcada `is_auto_reply: true` desde el mismo envío.
+   * Tarea C6 (20/9/2026) suma esta prueba: hasta acá ningún test miraba las
+   * opciones de `sendAgentText`, solo el texto.
+   */
+  it("con asesor asignado, la PRIMERA redirección sale marcada is_auto_reply", async () => {
+    state.conversation = { ...state.conversation, ai_enabled: true, assigned_agent_id: "agent-9" };
+    classifyIntentMock.mockResolvedValue({
+      intent: "fuera_de_tema",
+      usage: { inputTokens: 5, outputTokens: 1, totalTokens: 6 },
+    });
+
+    await runAgentTurn("conv-1");
+
+    expect(sendAgentTextMock).toHaveBeenCalledTimes(1);
+    expect(sendAgentTextMock.mock.calls[0][2]).toBe(OFF_TOPIC_REPLY);
+    expect(sendAgentTextMock.mock.calls[0][3]).toMatchObject({ isAutoReply: true });
+    expect(handoffCalls).toHaveLength(0);
   });
 
   /**
@@ -2755,8 +2801,16 @@ describe("runAgentTurn — mensajes fuera de tema", () => {
    * durar indefinidamente — y del otro lado bien puede haber otro bot. Se
    * contesta una vez; a la segunda se calla, pero el turno igual queda en la
    * bitácora para que se vea en el panel.
+   *
+   * Tarea C6, plan "El resguardo antes del push" (20/9/2026, anexo de la
+   * Tanda 1, extensión del hallazgo A): hasta esta tarea ese `return` no
+   * dejaba ningún traspaso -violaba la invariante "ningún lead invisible" de
+   * CLAUDE.md y dejaba a `reconcileOrphanTurns` reencolando la conversación
+   * cada minuto durante hasta 24 h-. Ahora deja `fuera_de_tema_repetido`
+   * sobre el MISMO dueño que ya tenía la conversación (sin asesor:
+   * `unassigned`).
    */
-  it("no vuelve a contestar si su última respuesta ya fue la redirección", async () => {
+  it("no vuelve a contestar si su última respuesta ya fue la redirección, y deja el traspaso fuera_de_tema_repetido a 'unassigned'", async () => {
     classifyIntentMock.mockResolvedValue({
       intent: "fuera_de_tema",
       usage: { inputTokens: 5, outputTokens: 1, totalTokens: 6 },
@@ -2773,6 +2827,41 @@ describe("runAgentTurn — mensajes fuera de tema", () => {
     expect(sendAgentTextMock).not.toHaveBeenCalled();
     expect(generateMock).not.toHaveBeenCalled();
     expect(agentTurnInserts).toHaveLength(1);
+    expect(handoffCalls).toHaveLength(1);
+    expect(handoffCalls[0]).toMatchObject({
+      p_conversation_id: "conv-1",
+      p_to_kind: "unassigned",
+      p_reason: "fuera_de_tema_repetido",
+    });
+  });
+
+  /**
+   * Mismo caso, pero con un asesor ya asignado: el traspaso tiene que quedar
+   * sobre ESE dueño (`human` + su id), no `unassigned` — el silencio no le
+   * entrega el chat a nadie nuevo, solo reafirma a quien ya lo tenía.
+   */
+  it("segunda insistencia con asesor asignado: deja el traspaso fuera_de_tema_repetido a 'human' con su id", async () => {
+    state.conversation = { ...state.conversation, ai_enabled: true, assigned_agent_id: "agent-9" };
+    classifyIntentMock.mockResolvedValue({
+      intent: "fuera_de_tema",
+      usage: { inputTokens: 5, outputTokens: 1, totalTokens: 6 },
+    });
+    state.history = [
+      { sender_type: "customer", content: "dale va, ayúdame igual", is_internal_note: false },
+      { sender_type: "ai", content: OFF_TOPIC_REPLY, is_internal_note: false },
+      { sender_type: "customer", content: "escríbeme un poema", is_internal_note: false },
+    ];
+
+    await runAgentTurn("conv-1");
+
+    expect(sendAgentTextMock).not.toHaveBeenCalled();
+    expect(handoffCalls).toHaveLength(1);
+    expect(handoffCalls[0]).toMatchObject({
+      p_conversation_id: "conv-1",
+      p_to_kind: "human",
+      p_to_id: "agent-9",
+      p_reason: "fuera_de_tema_repetido",
+    });
   });
 
   /**
@@ -3134,6 +3223,53 @@ describe("runAgentTurn — la presentación de Seba (T2b, 18/9/2026)", () => {
     expect(conversationUpdates).toContainEqual({ welcome_sent_at: null });
     expect(handoffCalls).toContainEqual(
       expect.objectContaining({ p_conversation_id: "conv-1", p_to_kind: "unassigned", p_reason: "rechazado_por_meta" })
+    );
+  });
+
+  /**
+   * Hallazgo G, corrección de la Tanda 1 (20/9/2026), test G-1: hasta esta
+   * corrección el rollback de `welcome_sent_at` SOLO cubría `!salida` y
+   * `deliveryFailed` — si `deliver()` mismo LANZABA (acá, `stillEnabled`
+   * relanzando porque `agent_can_run` no es consultable, la misma carrera de
+   * "el interruptor se vuelve a revisar justo antes de enviar" pero
+   * ANTES de clasificar/redactar) la excepción salía con el sello YA puesto.
+   * `state.onPresentationClaimed` dispara justo en el hueco entre el reclamo
+   * (que ya selló `welcome_sent_at`) y el siguiente guardián de `deliver()`
+   * — mismo patrón que el test de arriba ("si deliver() frena justo después
+   * del reclamo"), pero acá el guardián LANZA en vez de devolver `false`.
+   */
+  it("G-1: si deliver() de la presentación LANZA, el sello vuelve a null y el error original se propaga", async () => {
+    state.conversation = { ...state.conversation, welcome_sent_at: null };
+    state.onPresentationClaimed = () => {
+      state.agentCanRunError = { message: "conexión perdida" };
+    };
+
+    await expect(runAgentTurn("conv-1")).rejects.toThrow(/agent_can_run no consultable/);
+
+    expect(sendAgentTextMock).not.toHaveBeenCalled();
+    expect(classifyIntentMock).not.toHaveBeenCalled();
+    expect(conversationUpdates).toContainEqual({ welcome_sent_at: null });
+  });
+
+  /**
+   * Test G-2: si ADEMÁS el UPDATE de reversa falla, el error que se propaga
+   * sigue siendo el ORIGINAL (`agent_can_run no consultable`), no el del
+   * rollback — `rollbackPresentation` nunca lanza por su cuenta, deja
+   * `log.error` y vuelve.
+   */
+  it("G-2: si el rollback del sello también falla, se propaga el error ORIGINAL y queda el log", async () => {
+    const errorSpy = vi.spyOn(log, "error");
+    state.conversation = { ...state.conversation, welcome_sent_at: null };
+    state.onPresentationClaimed = () => {
+      state.agentCanRunError = { message: "conexión perdida" };
+    };
+    state.presentationRollbackError = { message: "no se pudo revertir" };
+
+    await expect(runAgentTurn("conv-1")).rejects.toThrow(/agent_can_run no consultable/);
+
+    expect(errorSpy).toHaveBeenCalledWith(
+      "turno_presentacion_reclamo_no_revertido",
+      expect.objectContaining({ conversationId: "conv-1" })
     );
   });
 });
@@ -3740,6 +3876,124 @@ describe("runAgentTurn — salidas que limpian su etapa", () => {
     // (CLAUDE.md, trampa de la píldora "Escaladas" que mira el campo crudo).
     expect(conversationUpdates).toContainEqual({ journey_stage: "assigned", active_tool: null });
     expect(handoffCalls).toHaveLength(0);
+  });
+});
+
+/**
+ * Hallazgo C, revisión adversarial de la Tanda 1 (20/9/2026): la tercera
+ * puerta del mismo hueco que T2/T12 cierran arriba para los fallos del
+ * proveedor. Acá el proveedor NO falla — `agent.generate()` responde bien,
+ * pero el tool loop agota `MAX_STEPS` sin volver a redactar texto (cinco
+ * `consultarBiblioteca` seguidos, o `catalogOutcome.generico` bloqueando a
+ * propósito la red de seguridad del catálogo) y sin que el modelo haya
+ * llamado a `escalarAAsesor`. `text` queda `""` y `outcome.escalated` en
+ * `false`.
+ */
+describe("runAgentTurn — texto vacío sin escalar tras agotar los pasos (Hallazgo C, 20/9/2026)", () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  /**
+   * C-1: CON saludo previo (`welcome_sent_at: null`, el default de la
+   * suite de la presentación). El saludo sale bien —un solo envío— y el
+   * turno, al llegar al final con `text` vacío y sin escalar, lanza
+   * `ProviderFailedAfterGreetingError` en vez de terminar mudo: sin segundo
+   * envío, sin traspaso nuevo, y la cola reintenta.
+   */
+  it("C-1: CON saludo previo, texto vacío sin escalar → lanza ProviderFailedAfterGreetingError, sin segundo envío ni traspaso", async () => {
+    state.conversation = { ...state.conversation, welcome_sent_at: null };
+    generateMock.mockResolvedValue({
+      text: "",
+      usage: { inputTokens: 20, outputTokens: 0, totalTokens: 20 },
+      steps: [{}, {}, {}, {}, {}],
+    });
+
+    await expect(runAgentTurn("conv-1")).rejects.toMatchObject({
+      name: "ProviderFailedAfterGreetingError",
+      conversationId: "conv-1",
+    });
+
+    // Un solo envío: la presentación. El texto vacío del tool loop no generó
+    // un segundo mensaje (ni vacío ni de cortesía).
+    expect(sendAgentTextMock).toHaveBeenCalledTimes(1);
+    expect(handoffCalls).toHaveLength(0);
+  });
+
+  /**
+   * C-2: mismo caso, SIN saludo previo (`welcome_sent_at` ya sellado, el
+   * default de fábrica del `beforeEach` general). El turno NO lanza —el
+   * último mensaje visible sigue siendo del cliente, el reconciliador lo
+   * recoge solo— pero deja `log.warn("turno_sin_texto", …)` para que el caso
+   * sea visible, y el resumen de `agent_turns` nombra los pasos gastados en
+   * vez de quedar vacío.
+   */
+  it("C-2: SIN saludo previo, texto vacío sin escalar → no lanza, no envía, y queda el log.warn turno_sin_texto", async () => {
+    const warn = vi.spyOn(log, "warn");
+    generateMock.mockResolvedValue({
+      text: "",
+      usage: { inputTokens: 20, outputTokens: 0, totalTokens: 20 },
+      steps: [{}, {}, {}, {}, {}],
+    });
+
+    await runAgentTurn("conv-1");
+
+    expect(sendAgentTextMock).not.toHaveBeenCalled();
+    expect(warn).toHaveBeenCalledWith(
+      "turno_sin_texto",
+      expect.objectContaining({ conversationId: "conv-1", pasos: 5 })
+    );
+    expect(handoffCalls).toHaveLength(0);
+    expect(agentTurnInserts).toContainEqual(
+      expect.objectContaining({ action: "answered", summary: expect.stringMatching(/sin texto tras/i) })
+    );
+  });
+
+  /**
+   * Verificación adicional pedida por la tarea: el modelo puede escalar por
+   * su cuenta (llamando a `escalarAAsesor`, sin pasar por las redes de
+   * seguridad de devolución/queja ni de catálogo — p. ej. una
+   * `intencion_compra`) y devolver texto vacío después. Sin el bloque nuevo
+   * de `agent.ts` (`if (outcome.escalated && !text.trim())`) el cliente se
+   * quedaba sin una sola palabra aunque la conversación SÍ tuviera dueño:
+   * `escalateConversation` ya había dejado su traspaso, pero el `if
+   * (text.trim())` de más abajo saltaba el envío entero. Se simula la
+   * llamada del modelo mutando `outcome` desde `buildEscalateToolMock`, como
+   * el resto de este archivo (ver el comentario de ese mock).
+   */
+  it("el modelo escala por su cuenta (fuera de las redes de devolución/queja y catálogo) con texto vacío: igual se manda la despedida fija", async () => {
+    classifyIntentMock.mockResolvedValue({
+      intent: "otro",
+      usage: { inputTokens: 5, outputTokens: 1, totalTokens: 6 },
+    });
+    buildEscalateToolMock.mockImplementationOnce((_deps, outcome) => {
+      Object.assign(outcome, {
+        escalated: true,
+        assignedAgentName: "María",
+        unassigned: false,
+        businessStatus: undefined,
+        motivo: "intencion_compra",
+      });
+      return {};
+    });
+    generateMock.mockResolvedValueOnce({
+      text: "",
+      usage: { inputTokens: 20, outputTokens: 0, totalTokens: 20 },
+      steps: [{}, {}],
+    });
+
+    await runAgentTurn("conv-1");
+
+    expect(sendAgentTextMock).toHaveBeenCalledTimes(1);
+    expect(sendAgentTextMock).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.anything(),
+      DESPEDIDA_CON_ASESOR_ABIERTA,
+      expect.objectContaining({ isAutoReply: true })
+    );
+    expect(agentTurnInserts).toContainEqual(
+      expect.objectContaining({ action: "escalated" })
+    );
   });
 });
 

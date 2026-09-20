@@ -70,6 +70,7 @@ vi.mock("@/lib/redis", () => ({ getRedis: () => redis }));
 
 import { reconcileOrphanTurns, RECONCILE_BATCH_LIMIT, RECONCILE_QUEUE_KEY } from "@/lib/ai/reconciler";
 import { pendingAgentTurns } from "@/lib/ai/queue";
+import { log } from "@/lib/log";
 
 interface FakeRow {
   id: string;
@@ -135,7 +136,22 @@ interface FakeMensaje {
   created_at: string;
 }
 
-function createFakeSupabase(rows: FakeRow[], mensajes: FakeMensaje[] = []) {
+/**
+ * Una fila de `conversation_handoffs`, para las dos consultas de LECTURA que
+ * caen en esta tabla durante una pasada: la de `conversationsWrittenByHumans`
+ * (reaperturas, `human-handled.ts`) y la nueva de
+ * `conversationsWithDecidedSilence` (Tarea C1, "El resguardo antes del
+ * push", 20/9/2026). Los `record_handoff` (escrituras) siguen yendo por la
+ * RPC de `handoffCalls`, no por esta tabla — esto es solo lo que el
+ * reconciliador LEE de la bitácora.
+ */
+interface FakeHandoffRow {
+  conversation_id: string;
+  reason: string;
+  created_at: string;
+}
+
+function createFakeSupabase(rows: FakeRow[], mensajes: FakeMensaje[] = [], handoffs: FakeHandoffRow[] = []) {
   const handoffCalls: Record<string, unknown>[] = [];
 
   function builder() {
@@ -233,6 +249,35 @@ function createFakeSupabase(rows: FakeRow[], mensajes: FakeMensaje[] = []) {
     return api;
   }
 
+  /**
+   * Builder genérico de `conversation_handoffs`, a diferencia del stub fijo
+   * de antes de la Tarea C1 (20/9/2026): ahora dos consultas distintas caen
+   * acá —la reapertura de `conversationsWrittenByHumans`
+   * (`.in("conversation_id", …).eq("reason", "reabierta_por_cliente")`) y la
+   * de `conversationsWithDecidedSilence`
+   * (`.in("conversation_id", …).in("reason", […])`)— y un stub que solo
+   * entendiera la primera forma habría lanzado con la segunda. Acota por
+   * predicados igual que `builder()`/`mensajesBuilder()` de arriba, sin
+   * `.order()`/`.limit()` porque ninguna de las dos consultas los usa.
+   */
+  function handoffsBuilder() {
+    const predicados: ((h: FakeHandoffRow) => boolean)[] = [];
+    const api = {
+      eq(col: keyof FakeHandoffRow, val: unknown) {
+        predicados.push((h) => h[col] === val);
+        return api;
+      },
+      in(col: keyof FakeHandoffRow, vals: unknown[]) {
+        predicados.push((h) => vals.includes(h[col]));
+        return api;
+      },
+      then(resolve: (v: { data: FakeHandoffRow[]; error: null }) => unknown) {
+        return resolve({ data: handoffs.filter((h) => predicados.every((p) => p(h))), error: null });
+      },
+    };
+    return api;
+  }
+
   return {
     handoffCalls,
     client: {
@@ -245,18 +290,14 @@ function createFakeSupabase(rows: FakeRow[], mensajes: FakeMensaje[] = []) {
         // H2b, plan "Seba atiende el mostrador" (18/9/2026): la misma
         // `conversationsWrittenByHumans`, en su forma de LOTE, consulta esta
         // tabla (`.in(...).eq("reason", "reabierta_por_cliente")`) SOLO para
-        // las conversaciones donde la gracia dispararía — acá siempre vacío:
-        // ninguna conversación de este archivo se reabrió, así que la gracia
-        // decide igual que antes de H2. La reapertura de verdad se prueba en
-        // agent.test.ts, contra `humanHasWritten` (el camino de UNA sola
-        // conversación).
-        if (tabla === "conversation_handoffs") {
-          return {
-            select: () => ({
-              in: () => ({ eq: async () => ({ data: [], error: null }) }),
-            }),
-          };
-        }
+        // las conversaciones donde la gracia dispararía — con `handoffs`
+        // vacío por default (ninguna conversación de este archivo se
+        // reabrió), la gracia decide igual que antes de H2. La reapertura de
+        // verdad se prueba en agent.test.ts, contra `humanHasWritten` (el
+        // camino de UNA sola conversación). Tarea C1 (20/9/2026):
+        // `conversationsWithDecidedSilence` (handoffs.ts) también consulta
+        // esta tabla — ver `handoffsBuilder()` arriba.
+        if (tabla === "conversation_handoffs") return { select: () => handoffsBuilder() };
         throw new Error(`Fake Supabase: tabla no soportada: ${tabla}`);
       },
       rpc(fn: string, params?: Record<string, unknown>) {
@@ -284,7 +325,7 @@ describe("reconcileOrphanTurns — el predicado y la ventana", () => {
 
     const resultado = await reconcileOrphanTurns(client, AHORA);
 
-    expect(resultado).toEqual({ revisadas: 3, yaEnCola: 0, bloqueadasPorLock: 0, atendidasPorHumanos: 0, encoladas: 3 });
+    expect(resultado).toEqual({ revisadas: 3, yaEnCola: 0, bloqueadasPorLock: 0, atendidasPorHumanos: 0, silencioYaDecidido: 0, encoladas: 3 });
     expect(await pendingAgentTurns()).toBe(3);
     expect(handoffCalls).toHaveLength(3);
     for (const call of handoffCalls) {
@@ -320,7 +361,7 @@ describe("reconcileOrphanTurns — el predicado y la ventana", () => {
 
     const resultado = await reconcileOrphanTurns(client, AHORA);
 
-    expect(resultado).toEqual({ revisadas: 1, yaEnCola: 0, bloqueadasPorLock: 0, atendidasPorHumanos: 0, encoladas: 1 });
+    expect(resultado).toEqual({ revisadas: 1, yaEnCola: 0, bloqueadasPorLock: 0, atendidasPorHumanos: 0, silencioYaDecidido: 0, encoladas: 1 });
   });
 });
 
@@ -332,7 +373,7 @@ describe("reconcileOrphanTurns — no duplicar lo que ya está en curso", () => 
 
     const resultado = await reconcileOrphanTurns(client, AHORA);
 
-    expect(resultado).toEqual({ revisadas: 2, yaEnCola: 1, bloqueadasPorLock: 0, atendidasPorHumanos: 0, encoladas: 1 });
+    expect(resultado).toEqual({ revisadas: 2, yaEnCola: 1, bloqueadasPorLock: 0, atendidasPorHumanos: 0, silencioYaDecidido: 0, encoladas: 1 });
     // El score original no se tocó: el reconciliador no volvió a escribirla.
     expect(redis.scoreOf(RECONCILE_QUEUE_KEY, "conv-ya-en-cola")).toBe(AHORA + 5_000);
     expect(handoffCalls.map((c) => c.p_conversation_id)).toEqual(["conv-nueva"]);
@@ -374,6 +415,7 @@ describe("reconcileOrphanTurns — no duplicar lo que ya está en curso", () => 
       yaEnCola: 0,
       bloqueadasPorLock: 0,
       atendidasPorHumanos: 1,
+      silencioYaDecidido: 0,
       encoladas: 1,
     });
     expect(handoffCalls.map((c) => c.p_conversation_id)).toEqual(["conv-sola"]);
@@ -390,7 +432,7 @@ describe("reconcileOrphanTurns — no duplicar lo que ya está en curso", () => 
 
     const resultado = await reconcileOrphanTurns(client, AHORA);
 
-    expect(resultado).toEqual({ revisadas: 3, yaEnCola: 0, bloqueadasPorLock: 1, atendidasPorHumanos: 0, encoladas: 2 });
+    expect(resultado).toEqual({ revisadas: 3, yaEnCola: 0, bloqueadasPorLock: 1, atendidasPorHumanos: 0, silencioYaDecidido: 0, encoladas: 2 });
     expect(handoffCalls.map((c) => c.p_conversation_id).sort()).toEqual(["conv-lock-vencido", "conv-sin-lock"]);
     expect(redis.scoreOf(RECONCILE_QUEUE_KEY, "conv-con-lock")).toBeNull();
   });
@@ -420,7 +462,7 @@ describe("reconcileOrphanTurns — la guarda de humanos ya no es vitalicia (T7)"
 
     const resultado = await reconcileOrphanTurns(client, AHORA);
 
-    expect(resultado).toEqual({ revisadas: 1, yaEnCola: 0, bloqueadasPorLock: 0, atendidasPorHumanos: 0, encoladas: 1 });
+    expect(resultado).toEqual({ revisadas: 1, yaEnCola: 0, bloqueadasPorLock: 0, atendidasPorHumanos: 0, silencioYaDecidido: 0, encoladas: 1 });
     expect(handoffCalls.map((c) => c.p_conversation_id)).toEqual(["conv-humano-viejo"]);
     expect(await pendingAgentTurns()).toBe(1);
   });
@@ -445,7 +487,7 @@ describe("reconcileOrphanTurns — la guarda de humanos ya no es vitalicia (T7)"
 
     const resultado = await reconcileOrphanTurns(client, AHORA);
 
-    expect(resultado).toEqual({ revisadas: 1, yaEnCola: 0, bloqueadasPorLock: 0, atendidasPorHumanos: 1, encoladas: 0 });
+    expect(resultado).toEqual({ revisadas: 1, yaEnCola: 0, bloqueadasPorLock: 0, atendidasPorHumanos: 1, silencioYaDecidido: 0, encoladas: 0 });
     expect(handoffCalls).toHaveLength(0);
     expect(await pendingAgentTurns()).toBe(0);
   });
@@ -536,7 +578,7 @@ describe("reconcileOrphanTurns — nadie encola un mensaje anterior a la devoluc
 
     const resultado = await reconcileOrphanTurns(client, AHORA);
 
-    expect(resultado).toEqual({ revisadas: 1, yaEnCola: 0, bloqueadasPorLock: 0, atendidasPorHumanos: 0, encoladas: 1 });
+    expect(resultado).toEqual({ revisadas: 1, yaEnCola: 0, bloqueadasPorLock: 0, atendidasPorHumanos: 0, silencioYaDecidido: 0, encoladas: 1 });
     expect(handoffCalls.map((c) => c.p_conversation_id)).toEqual(["conv-mensaje-nuevo"]);
     expect(handoffCalls.every((c) => c.p_reason === "reabierto")).toBe(true);
     expect(await pendingAgentTurns()).toBe(1);
@@ -573,7 +615,7 @@ describe("reconcileOrphanTurns — no reencola una despedida de escalada que ya 
 
     const resultado = await reconcileOrphanTurns(client, AHORA);
 
-    expect(resultado).toEqual({ revisadas: 0, yaEnCola: 0, bloqueadasPorLock: 0, atendidasPorHumanos: 0, encoladas: 0 });
+    expect(resultado).toEqual({ revisadas: 0, yaEnCola: 0, bloqueadasPorLock: 0, atendidasPorHumanos: 0, silencioYaDecidido: 0, encoladas: 0 });
     expect(handoffCalls).toHaveLength(0);
     expect(await pendingAgentTurns()).toBe(0);
   });
@@ -615,13 +657,202 @@ describe("reconcileOrphanTurns — no reencola una despedida de escalada que ya 
   });
 });
 
+/**
+ * Tarea C1, plan "El resguardo antes del push" (20/9/2026, hallazgo A). Caso
+ * real: de noche, sin asesores conectados, Seba escala sin asesor
+ * (`escalada_sin_asesor`) y se despide con `is_auto_reply` —
+ * `awaiting_reply` sigue en `true` a propósito—; el cliente contesta "ok
+ * gracias"; el turno entra a la guarda de cortesía tras escalada abierta y se
+ * calla dejando `cortesia_tras_escalada`. Sin el filtro de
+ * `conversationsWithDecidedSilence` (handoffs.ts), el reconciliador vuelve a
+ * encontrar esa misma conversación un minuto después — nada en `conversations`
+ * distingue "el turno ya miró este mensaje y decidió callarse" de "un turno
+ * huérfano de verdad" — y la reencola para siempre hasta que se cierra la
+ * ventana de 24 h, escribiendo otra fila de bitácora en cada vuelta.
+ */
+describe("reconcileOrphanTurns — no reencola lo que el turno ya decidió callar (Tarea C1, 20/9/2026)", () => {
+  it("candidata con 'cortesia_tras_escalada' POSTERIOR a su último mensaje: no se encola ni deja 'reabierto'", async () => {
+    const lastCustomerMessageAt = "2026-08-30T14:00:00.000Z";
+    const rows = [baseRow("conv-cortesia-ya-decidida", { last_customer_message_at: lastCustomerMessageAt })];
+    const handoffs = [
+      {
+        conversation_id: "conv-cortesia-ya-decidida",
+        reason: "cortesia_tras_escalada",
+        created_at: "2026-08-30T14:00:05.000Z", // segundos después: el turno ya la miró.
+      },
+    ];
+    const { client, handoffCalls } = createFakeSupabase(rows, [], handoffs);
+
+    const resultado = await reconcileOrphanTurns(client, AHORA);
+
+    expect(resultado).toEqual({
+      revisadas: 1,
+      yaEnCola: 0,
+      bloqueadasPorLock: 0,
+      atendidasPorHumanos: 0,
+      silencioYaDecidido: 1,
+      encoladas: 0,
+    });
+    expect(handoffCalls).toHaveLength(0);
+    expect(await pendingAgentTurns()).toBe(0);
+  });
+
+  it("misma conversación, pero el cliente volvió a escribir DESPUÉS de esa cortesía: sí se encola", async () => {
+    const rows = [
+      baseRow("conv-cliente-volvio-a-escribir", { last_customer_message_at: "2026-08-30T14:10:00.000Z" }),
+    ];
+    const handoffs = [
+      {
+        conversation_id: "conv-cliente-volvio-a-escribir",
+        reason: "cortesia_tras_escalada",
+        created_at: "2026-08-30T14:00:05.000Z", // ANTES del mensaje nuevo del cliente.
+      },
+    ];
+    const { client, handoffCalls } = createFakeSupabase(rows, [], handoffs);
+
+    const resultado = await reconcileOrphanTurns(client, AHORA);
+
+    expect(resultado.silencioYaDecidido).toBe(0);
+    expect(resultado.encoladas).toBe(1);
+    expect(handoffCalls.map((c) => c.p_conversation_id)).toEqual(["conv-cliente-volvio-a-escribir"]);
+    expect(handoffCalls.every((c) => c.p_reason === "reabierto")).toBe(true);
+    expect(await pendingAgentTurns()).toBe(1);
+  });
+
+  it("candidata con 'reabierto'/'entrega_fallida' posterior: SÍ se encola (no son silencio decidido)", async () => {
+    const lastCustomerMessageAt = "2026-08-30T14:00:00.000Z";
+    const rows = [
+      baseRow("conv-reabierto-previo", { last_customer_message_at: lastCustomerMessageAt }),
+      baseRow("conv-entrega-fallida-previa", { last_customer_message_at: lastCustomerMessageAt }),
+    ];
+    const handoffs = [
+      // Una pasada anterior del propio reconciliador ya la reencoló una vez:
+      // `reabierto` NO es "el turno decidió callarse", es su propia mecánica
+      // de reintento — sumarla acá bloquearía a las pasadas siguientes para
+      // siempre (ver el comentario de `RAZONES_DE_SILENCIO_DECIDIDO`).
+      { conversation_id: "conv-reabierto-previo", reason: "reabierto", created_at: "2026-08-30T14:00:05.000Z" },
+      // Un envío que falló de verdad: `last_message_status = 'failed'` es
+      // justo la señal que el `.or(...)` de la consulta usa para decir "esto
+      // SÍ hay que reintentarlo".
+      {
+        conversation_id: "conv-entrega-fallida-previa",
+        reason: "entrega_fallida",
+        created_at: "2026-08-30T14:00:05.000Z",
+      },
+    ];
+    const { client, handoffCalls } = createFakeSupabase(rows, [], handoffs);
+
+    const resultado = await reconcileOrphanTurns(client, AHORA);
+
+    expect(resultado.silencioYaDecidido).toBe(0);
+    expect(resultado.encoladas).toBe(2);
+    expect(handoffCalls.map((c) => c.p_conversation_id).sort()).toEqual([
+      "conv-entrega-fallida-previa",
+      "conv-reabierto-previo",
+    ]);
+  });
+
+  it("si la consulta de traspasos de silencio falla, nadie se encola esa pasada y queda el log", async () => {
+    const rows = [baseRow("conv-cualquiera")];
+    const { client, handoffCalls } = createFakeSupabase(rows);
+    const errorSpy = vi.spyOn(log, "error");
+    // Se rompe la consulta a propósito: `.in()` sobre `reason` lanza en vez
+    // de resolver, simulando un corte de la base a mitad de la pasada.
+    const fromOriginal = client.from.bind(client);
+    client.from = ((tabla: string) => {
+      if (tabla === "conversation_handoffs") {
+        return {
+          select: () => ({
+            in: () => ({
+              in: () => {
+                throw new Error("conexión perdida");
+              },
+            }),
+          }),
+        };
+      }
+      return fromOriginal(tabla);
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    }) as any;
+
+    const resultado = await reconcileOrphanTurns(client, AHORA);
+
+    expect(resultado.encoladas).toBe(0);
+    expect(resultado.silencioYaDecidido).toBe(0);
+    expect(handoffCalls).toHaveLength(0);
+    expect(errorSpy).toHaveBeenCalledWith(
+      "reconciliador_silencio_no_consultable",
+      expect.objectContaining({ detail: expect.stringContaining("conexión perdida") })
+    );
+  });
+
+  it("borde: 'created_at' del traspaso IGUAL a 'last_customer_message_at': no se encola", async () => {
+    const mismaFecha = "2026-08-30T14:00:00.000Z";
+    const rows = [baseRow("conv-fecha-igual", { last_customer_message_at: mismaFecha })];
+    const handoffs = [{ conversation_id: "conv-fecha-igual", reason: "sin_contenido_legible", created_at: mismaFecha }];
+    const { client, handoffCalls } = createFakeSupabase(rows, [], handoffs);
+
+    const resultado = await reconcileOrphanTurns(client, AHORA);
+
+    expect(resultado.silencioYaDecidido).toBe(1);
+    expect(resultado.encoladas).toBe(0);
+    expect(handoffCalls).toHaveLength(0);
+  });
+
+  it("candidata con 'identidad_no_verificable' posterior a su último mensaje: no se encola", async () => {
+    const lastCustomerMessageAt = "2026-08-30T14:00:00.000Z";
+    const rows = [baseRow("conv-identidad-rota", { last_customer_message_at: lastCustomerMessageAt })];
+    const handoffs = [
+      {
+        conversation_id: "conv-identidad-rota",
+        reason: "identidad_no_verificable",
+        created_at: "2026-08-30T14:00:05.000Z",
+      },
+    ];
+    const { client, handoffCalls } = createFakeSupabase(rows, [], handoffs);
+
+    const resultado = await reconcileOrphanTurns(client, AHORA);
+
+    expect(resultado.silencioYaDecidido).toBe(1);
+    expect(resultado.encoladas).toBe(0);
+    expect(handoffCalls).toHaveLength(0);
+  });
+
+  /**
+   * Tarea C6, plan "El resguardo antes del push" (20/9/2026, anexo de la
+   * Tanda 1, extensión del hallazgo A): `fuera_de_tema_repetido` se suma a
+   * `RAZONES_DE_SILENCIO_DECIDIDO` (handoffs.ts) — el turno ya miró la
+   * segunda insistencia fuera de tema y decidió, a propósito, no responder;
+   * sin este filtro el reconciliador la reencolaba cada minuto durante hasta
+   * 24 h, pagando fase 0 y `classifyIntent` en cada vuelta.
+   */
+  it("candidata con 'fuera_de_tema_repetido' posterior a su último mensaje: no se encola", async () => {
+    const lastCustomerMessageAt = "2026-08-30T14:00:00.000Z";
+    const rows = [baseRow("conv-fuera-de-tema-repetido", { last_customer_message_at: lastCustomerMessageAt })];
+    const handoffs = [
+      {
+        conversation_id: "conv-fuera-de-tema-repetido",
+        reason: "fuera_de_tema_repetido",
+        created_at: "2026-08-30T14:00:05.000Z",
+      },
+    ];
+    const { client, handoffCalls } = createFakeSupabase(rows, [], handoffs);
+
+    const resultado = await reconcileOrphanTurns(client, AHORA);
+
+    expect(resultado.silencioYaDecidido).toBe(1);
+    expect(resultado.encoladas).toBe(0);
+    expect(handoffCalls).toHaveLength(0);
+  });
+});
+
 describe("reconcileOrphanTurns — sin candidatas", () => {
   it("sin nada que cumpla el predicado, no toca la cola ni escribe traspasos", async () => {
     const { client, handoffCalls } = createFakeSupabase([]);
 
     const resultado = await reconcileOrphanTurns(client, AHORA);
 
-    expect(resultado).toEqual({ revisadas: 0, yaEnCola: 0, bloqueadasPorLock: 0, atendidasPorHumanos: 0, encoladas: 0 });
+    expect(resultado).toEqual({ revisadas: 0, yaEnCola: 0, bloqueadasPorLock: 0, atendidasPorHumanos: 0, silencioYaDecidido: 0, encoladas: 0 });
     expect(await pendingAgentTurns()).toBe(0);
     expect(handoffCalls).toHaveLength(0);
   });

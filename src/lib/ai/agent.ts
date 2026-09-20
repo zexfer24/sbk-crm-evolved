@@ -1251,6 +1251,33 @@ async function claimPresentation(supabase: SupabaseClient<Database>, conversatio
 }
 
 /**
+ * Devuelve `welcome_sent_at` a `null` tras un intento de presentación que no
+ * llegó a buen puerto — para que el próximo mensaje del cliente encuentre de
+ * nuevo `welcome_sent_at IS NULL` y Seba se presente de verdad.
+ *
+ * Corrección de la Tanda 1 (hallazgo G, 20/9/2026): hasta acá el rollback
+ * eran dos `await supabase...update(...)` sueltos, uno por cada salida
+ * silenciosa (`!salida`, `deliveryFailed`) y NINGUNO cubría que `deliver()`
+ * mismo LANZARA —`stillEnabled` relanza cuando la RPC `agent_can_run` no es
+ * consultable (14/9/2026), y cualquier corte de base en el camino de
+ * `deliver()` se comporta igual—: la excepción salía de `runTurnPhases` sin
+ * pasar por ninguno de los dos `if`, dejando el sello puesto. El reintento de
+ * la cola encontraba `welcome_sent_at` ya no nulo y Seba nunca llegaba a
+ * presentarse, incumpliendo el requisito 1 del cliente.
+ *
+ * Nunca lanza por su cuenta: si el propio UPDATE de reversa falla, se deja
+ * `log.error` (con `errorText`, nunca `err instanceof Error ? …`, CLAUDE.md)
+ * y se vuelve sin relanzar — quien llama es dueño de decidir qué hacer con el
+ * error ORIGINAL, que no puede quedar tapado por un fallo del rollback.
+ */
+async function rollbackPresentation(supabase: SupabaseClient<Database>, conversationId: string): Promise<void> {
+  const { error } = await supabase.from("conversations").update({ welcome_sent_at: null }).eq("id", conversationId);
+  if (error) {
+    log.error("turno_presentacion_reclamo_no_revertido", { conversationId, detail: errorText(error) });
+  }
+}
+
+/**
  * Las tres fases del turno, con el destinatario ya verificado.
  *
  * Corre dentro del lock de conversación. Todo lo que le hable al cliente
@@ -1434,29 +1461,45 @@ async function runTurnPhases(
       const soloSaludo =
         rafagaCliente.length > 0 && rafagaCliente.every((linea) => isGreetingOnly(linea) || isCourtesyOnly(linea));
 
-      const salida = await deliver(
-        supabase,
-        target,
-        entrega,
-        lease,
-        tiempos,
-        "presentacion",
-        convo.last_customer_message_at,
-        () =>
-          sendAgentText(supabase, target, sebaGreeting(dayBand(new Date())), {
-            // `!soloSaludo`: si el cliente solo saludó, este mensaje ES la
-            // respuesta completa del turno y tiene que apagar
-            // `awaiting_reply` como cualquier respuesta real. Si en cambio
-            // sigue una redacción de verdad, el saludo NO puede apagarla
-            // todavía — si esa redacción termina escalando, el cliente
-            // tiene que seguir viéndose en "Pendientes" hasta que una
-            // persona le escriba (CLAUDE.md, "Toda salida de un turno que
-            // escaló es is_auto_reply"): apagarla acá la encendería de
-            // nuevo recién con la escalada, dejando una ventana falsa en el
-            // medio.
-            isAutoReply: !soloSaludo,
-          })
-      );
+      // Hallazgo G (Tanda 1, 20/9/2026): `deliver()` puede LANZAR (no solo
+      // devolver `null` o un `DeliveryOutcome` fallido) — `stillEnabled`
+      // relanza cuando `agent_can_run` no es consultable, y cualquier otro
+      // corte de base en el camino se comporta igual. Sin este `try/catch`
+      // la excepción salía de acá con el sello YA puesto por
+      // `claimPresentation`: el reintento de la cola encontraba
+      // `welcome_sent_at` no nulo y Seba nunca llegaba a presentarse. Se
+      // revierte el sello y se relanza el error ORIGINAL tal cual —el
+      // `catch` de más arriba (`runAgentTurn`) es quien decide si esto se
+      // reintenta, no acá.
+      let salida;
+      try {
+        salida = await deliver(
+          supabase,
+          target,
+          entrega,
+          lease,
+          tiempos,
+          "presentacion",
+          convo.last_customer_message_at,
+          () =>
+            sendAgentText(supabase, target, sebaGreeting(dayBand(new Date())), {
+              // `!soloSaludo`: si el cliente solo saludó, este mensaje ES la
+              // respuesta completa del turno y tiene que apagar
+              // `awaiting_reply` como cualquier respuesta real. Si en cambio
+              // sigue una redacción de verdad, el saludo NO puede apagarla
+              // todavía — si esa redacción termina escalando, el cliente
+              // tiene que seguir viéndose en "Pendientes" hasta que una
+              // persona le escriba (CLAUDE.md, "Toda salida de un turno que
+              // escaló es is_auto_reply"): apagarla acá la encendería de
+              // nuevo recién con la escalada, dejando una ventana falsa en el
+              // medio.
+              isAutoReply: !soloSaludo,
+            })
+        );
+      } catch (err) {
+        await rollbackPresentation(supabase, conversationId);
+        throw err;
+      }
 
       // `claimPresentation` ya selló `welcome_sent_at` ANTES de este envío.
       // Si `deliver()` frenó (lock perdido, interruptor apagado, un asesor
@@ -1467,11 +1510,11 @@ async function runTurnPhases(
       // presente de verdad. `deliver()`/`deliveryFailed()` ya dejaron su
       // propio traspaso; acá no hace falta uno nuevo.
       if (!salida) {
-        await supabase.from("conversations").update({ welcome_sent_at: null }).eq("id", conversationId);
+        await rollbackPresentation(supabase, conversationId);
         return;
       }
       if (await deliveryFailed(supabase, conversationId, salida, convo.assigned_agent_id)) {
-        await supabase.from("conversations").update({ welcome_sent_at: null }).eq("id", conversationId);
+        await rollbackPresentation(supabase, conversationId);
         return;
       }
 
@@ -1850,6 +1893,28 @@ async function runTurnPhases(
       );
       if (!salió) return;
       if (await deliveryFailed(supabase, conversationId, salió, convo.assigned_agent_id)) return;
+    } else {
+      // Tarea C6, plan "El resguardo antes del push" (20/9/2026, anexo de la
+      // Tanda 1, extensión del hallazgo A): a la segunda insistencia el turno
+      // decide bien callarse —repetir la misma redirección contra alguien que
+      // insiste (o contra otro bot) es un ping-pong sin final— pero hasta acá
+      // lo hacía con un `return` que no dejaba ningún traspaso, violando la
+      // invariante "ningún lead invisible" (CLAUDE.md) y dejando la
+      // conversación EXACTAMENTE en el estado que busca
+      // `reconcileOrphanTurns` (`awaiting_reply=true`, sin asesor, IA
+      // encendida, último mensaje entrante): la reencolaba cada minuto hasta
+      // 24 h, pagando fase 0 y `classifyIntent` contra el proveedor en cada
+      // vuelta solo para volver a callarse (handoffs.ts, antes anotado ahí
+      // como "DEUDA CONOCIDA"). Mismo patrón que la guarda de cortesía tras
+      // escalada: el traspaso queda con el MISMO dueño que ya tenía la
+      // conversación —el asesor asignado, o `unassigned` si no lo hay—
+      // porque este silencio no le entrega el chat a nadie nuevo.
+      await recordHandoff(supabase, {
+        conversationId,
+        toKind: convo.assigned_agent_id ? "human" : "unassigned",
+        toId: convo.assigned_agent_id ?? null,
+        reason: "fuera_de_tema_repetido",
+      });
     }
 
     await supabase
@@ -2095,6 +2160,20 @@ async function runTurnPhases(
     }
   }
 
+  // Hallazgo C, revisión adversarial de la Tanda 1 (20/9/2026): las dos redes
+  // de seguridad de arriba (devolución/queja, catálogo) ya cubren que
+  // `outcome.escalated` termine en `true` SIN texto —le ponen la despedida
+  // fija—, pero solo si ESAS ramas fueron las que escalaron. El modelo
+  // también puede llamar a `escalarAAsesor` por su cuenta (p. ej. una
+  // `intencion_compra` que no pasa por ninguna de las dos redes) y devolver
+  // texto vacío después: sin este bloque el cliente se quedaba sin una sola
+  // palabra —ni deliver() corría, porque el `if (text.trim())` de más abajo
+  // lo salta— aunque la conversación SÍ tuviera dueño (escalateConversation ya
+  // dejó su traspaso). Mismo texto fijo que ya usa la red de arriba.
+  if (outcome.escalated && !text.trim()) {
+    text = outcome.unassigned ? DESPEDIDA_SIN_ASESOR : despedidaConAsesor(outcome.businessStatus);
+  }
+
   // Guarda de identidad (6/9/2026): último control antes de hablarle al
   // cliente, sobre el texto que ya sobrevivió a la red de seguridad de
   // arriba. Solo actúa si de verdad hay algo que enviar — un turno que se
@@ -2113,6 +2192,39 @@ async function runTurnPhases(
     text = guarded.text;
     turnTokens = guarded.turnTokens;
     identityMark = guarded.marca;
+  }
+
+  // Hallazgo C (revisión adversarial de la Tanda 1, 20/9/2026): la tercera
+  // puerta del mismo hueco que T2/T12 ya cerraron para los fallos del
+  // proveedor. El tool loop puede agotar `MAX_STEPS` terminando en una
+  // llamada a herramienta sin volver a redactar nada —cinco
+  // `consultarBiblioteca` seguidos, o `catalogOutcome.generico` bloqueando a
+  // propósito la red de seguridad de arriba (requisito 5, la única
+  // pregunta)— y llegar acá con `text` vacío y `outcome.escalated` en
+  // `false` (el bloque de arriba solo llena `text` cuando SÍ escaló). Sin
+  // este `if`, el turno caía derecho al `if (text.trim())` de abajo —que no
+  // hace nada—, reseteaba `journey_stage` como si hubiera contestado y
+  // dejaba `logTurn` con `action: "answered"` y el resumen vacío: ni
+  // traspaso, ni mensaje, ni rastro legible en la bitácora.
+  //
+  // Es SEGURO reintentar con `ProviderFailedAfterGreetingError`, igual que
+  // los dos `catch` de arriba: para llegar hasta acá con `text` vacío,
+  // ningún `deliver()` de este tramo salió —devolución/queja y el catálogo
+  // ya habrían dejado texto en el bloque de arriba si hubieran escalado—,
+  // así que lo único que pudo haber salido en todo el turno es la
+  // presentación de Seba, y `claimPresentation` ya la selló. Sin saludo
+  // previo el comportamiento no cambia (el reconciliador sigue recogiendo la
+  // conversación sola porque el último mensaje visible sigue siendo del
+  // cliente), pero se deja un `log.warn` para que el caso sea VISIBLE en vez
+  // de un "answered" mudo con resumen vacío.
+  if (!text.trim() && !outcome.escalated) {
+    if (introducedThisTurn) {
+      throw new ProviderFailedAfterGreetingError(
+        conversationId,
+        "Seba se presentó, pero el turno terminó sin texto tras agotar sus pasos sin escalar."
+      );
+    }
+    log.warn("turno_sin_texto", { conversationId, intent, pasos: tiempos.pasos ?? null });
   }
 
   if (text.trim()) {
@@ -2189,7 +2301,14 @@ async function runTurnPhases(
       identityPrefix +
       (outcome.escalated
         ? `Escalado a ${outcome.assignedAgentName ?? "(sin asesor disponible)"}. Motivo: ${outcome.motivo}.`
-        : text),
+        // Hallazgo C (Tanda 1, 20/9/2026): solo se llega hasta acá con `text`
+        // vacío por el camino SIN saludo previo del `if` de arriba (con
+        // saludo, ya lanzó). Un resumen vacío en `agent_turns` no distingue
+        // este caso de un bug distinto; nombrar los pasos gastados es barato
+        // y deja el caso legible sin abrir el log de `turno_sin_texto`.
+        : text.trim()
+          ? text
+          : `Sin texto tras ${tiempos.pasos ?? "?"} pasos.`),
     tokens: turnTokens,
     customerMessage,
   });

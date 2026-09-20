@@ -3,7 +3,7 @@ import type { SupabaseClient } from "@supabase/supabase-js";
 import { getRedis } from "@/lib/redis";
 import { freeformWindowCutoff } from "@/lib/dashboard";
 import { enqueueAgentTurns } from "@/lib/ai/queue";
-import { recordHandoff } from "@/lib/ai/handoffs";
+import { recordHandoff, conversationsWithDecidedSilence } from "@/lib/ai/handoffs";
 import { conversationsWrittenByHumans } from "@/lib/ai/human-handled";
 import { errorText, log } from "@/lib/log";
 
@@ -59,6 +59,13 @@ export interface ReconcileResult {
   bloqueadasPorLock: number;
   /** Las descartó el filtro de "ya escribió una persona": ver el comentario en el cuerpo. */
   atendidasPorHumanos: number;
+  /**
+   * Las descartó el filtro de "el turno ya miró este mensaje y decidió
+   * callarse a propósito" (Tarea C1, "El resguardo antes del push",
+   * 20/9/2026): ver `RAZONES_DE_SILENCIO_DECIDIDO` en handoffs.ts y el
+   * comentario en el cuerpo de esta función.
+   */
+  silencioYaDecidido: number;
   /** Las que de verdad se reencolaron en esta pasada. */
   encoladas: number;
 }
@@ -68,6 +75,7 @@ const EMPTY_RESULT: ReconcileResult = {
   yaEnCola: 0,
   bloqueadasPorLock: 0,
   atendidasPorHumanos: 0,
+  silencioYaDecidido: 0,
   encoladas: 0,
 };
 
@@ -278,6 +286,50 @@ export async function reconcileOrphanTurns(
     }
   }
 
+  // Tarea C1, "El resguardo antes del push" (20/9/2026, hallazgo A): el turno
+  // puede decidir callarse sobre ESTE mensaje exacto del cliente y dejarlo
+  // dicho en la bitácora (`cortesia_tras_escalada`, `sin_contenido_legible`,
+  // `identidad_no_verificable` — ver `RAZONES_DE_SILENCIO_DECIDIDO` en
+  // handoffs.ts para el porqué de cada una y de las que quedaron afuera). Sin
+  // este filtro, esa misma conversación sigue cumpliendo el predicado de
+  // arriba —awaiting_reply, sin asesor, IA encendida, último mensaje del
+  // cliente— y el reconciliador la reencola cada minuto: el turno vuelve a
+  // mirar el MISMO mensaje, vuelve a callarse, escribe OTRO traspaso igual, y
+  // así hasta que se cierran las 24 h de la ventana de Meta. Caso real: una
+  // escalada sin asesor de noche (`escalada_sin_asesor`) se despide con
+  // `is_auto_reply`; el cliente contesta "ok gracias"; el turno calla con
+  // `cortesia_tras_escalada`; sin este filtro, esa despedida silenciosa se
+  // repetía cada minuto, gastando un cupo de `AGENT_MAX_TURNS_PER_MINUTE` por
+  // vuelta y atrasando turnos de clientes reales.
+  //
+  // Va DESPUÉS del filtro de humanos (menos candidatas a las que preguntarle
+  // a `conversation_handoffs`) y ANTES de Redis, mismo criterio que el filtro
+  // de arriba: evitar encolar trabajo que el turno va a descartar de todas
+  // formas, sin arriesgar nunca escribirle a un cliente de más (la peor
+  // consecuencia de un falso positivo acá es una respuesta tardía, nunca una
+  // duplicada — el turno vuelve a comprobar todo por su cuenta).
+  //
+  // Si el cliente escribe de nuevo, `last_customer_message_at` avanza más
+  // allá del traspaso de silencio y la conversación vuelve a ser candidata en
+  // la siguiente pasada — la comparación se rehace cada vez contra la fecha
+  // FRESCA que trae la consulta de arriba, no contra un valor cacheado.
+  let silencioYaDecidido = 0;
+  if (libres.length > 0) {
+    try {
+      const filasLibres = sinLock.filter((fila) => libres.includes(fila.id));
+      const conSilencio = await conversationsWithDecidedSilence(supabase, filasLibres);
+      const antes = libres.length;
+      libres = libres.filter((id) => !conSilencio.has(id));
+      silencioYaDecidido = antes - libres.length;
+    } catch (err) {
+      // Falla CERRADO, mismo criterio que el filtro de humanos de arriba:
+      // ante la duda no se encola esta pasada. Una pasada futura, con la
+      // consulta funcionando de nuevo, recupera lo que de verdad haga falta.
+      log.error("reconciliador_silencio_no_consultable", { detail: errorText(err) });
+      libres = [];
+    }
+  }
+
   // Encolar es idempotente (ver `AgentQueue.enqueue` en redis-queue.ts): re-
   // encolar algo que ya estaba solo le corre la ventana hacia adelante, no
   // duplica el turno. Por eso, si Redis no responde, el camino seguro es
@@ -322,6 +374,7 @@ export async function reconcileOrphanTurns(
     yaEnCola,
     bloqueadasPorLock,
     atendidasPorHumanos,
+    silencioYaDecidido,
     encoladas: porEncolar.length,
   };
 }

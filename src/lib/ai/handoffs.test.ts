@@ -259,7 +259,7 @@ vi.mock("@/lib/ai/knowledge", () => ({
 }));
 
 import { runAgentTurn } from "@/lib/ai/agent";
-import { escalationOpen } from "@/lib/ai/handoffs";
+import { escalationOpen, conversationsWithDecidedSilence } from "@/lib/ai/handoffs";
 import { log } from "@/lib/log";
 
 function baseConversation(overrides: Record<string, unknown> = {}) {
@@ -910,5 +910,186 @@ describe("escalationOpen", () => {
     });
 
     expect(await escalationOpen(supabase, "conv-1")).toBe(true);
+  });
+
+  // ---------------------------------------------------------------------------
+  // Tarea C6, plan "El resguardo antes del push" (20/9/2026, anexo de la
+  // Tanda 1, extensión del hallazgo A): `fuera_de_tema_repetido` se escribe
+  // sobre el MISMO dueño que ya tenía la conversación, sin que nadie cambie
+  // de manos -- igual que `cortesia_tras_escalada`/`asignada`/`pausada`. Sin
+  // sumarla a `RAZONES_QUE_NO_CIERRAN_LA_ESCALADA`, una segunda insistencia
+  // fuera de tema DURANTE una escalada abierta taparía la fila
+  // `escalada`/`escalada_sin_asesor` y el siguiente "gracias" del cliente
+  // recibiría una segunda despedida de la IA en vez de que la guarda de
+  // cortesía lo callara.
+  // ---------------------------------------------------------------------------
+  it("true: 'escalada' seguida de 'fuera_de_tema_repetido' (el cliente insistió fuera de tema, sin cambiar de dueño)", async () => {
+    const supabase = fakeSupabaseParaEscalationOpen({
+      filas: [
+        { reason: "escalada", created_at: "2026-09-14T10:00:00.000Z" },
+        { reason: "fuera_de_tema_repetido", created_at: "2026-09-14T10:05:00.000Z" },
+      ],
+      mensajesDeAsesor: [],
+    });
+
+    expect(await escalationOpen(supabase, "conv-1")).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// conversationsWithDecidedSilence — Tarea C1, plan "El resguardo antes del
+// push" (20/9/2026, hallazgo A). El reconciliador la usa para no reencolar
+// una conversación sobre la que el turno ya se calló a propósito (ver el
+// docblock largo de `RAZONES_DE_SILENCIO_DECIDIDO` en handoffs.ts).
+//
+// Fake mínimo de `conversation_handoffs`: solo entiende
+// `.select().in("conversation_id", …).in("reason", […])`, que es la única
+// forma que emite esta función — a diferencia del fake de
+// `fakeSupabaseParaEscalationOpen` de arriba, que imita `escalationOpen`.
+// ---------------------------------------------------------------------------
+
+interface FakeSilencioRow {
+  conversation_id: string;
+  created_at: string;
+  reason: string;
+}
+
+function fakeSupabaseParaSilencioDecidido(opts: { filas?: FakeSilencioRow[]; error?: { message: string } | null }) {
+  const { filas = [], error = null } = opts;
+  return {
+    from(table: string) {
+      if (table !== "conversation_handoffs") throw new Error(`Fake Supabase: tabla no soportada: ${table}`);
+      return {
+        select: () => ({
+          in: (colId: keyof FakeSilencioRow, ids: string[]) => ({
+            in: (colReason: keyof FakeSilencioRow, reasons: string[]) => {
+              if (error) return Promise.resolve({ data: null, error });
+              const data = filas.filter(
+                (fila) => ids.includes(fila[colId] as string) && reasons.includes(fila[colReason] as string)
+              );
+              return Promise.resolve({ data, error: null });
+            },
+          }),
+        }),
+      };
+    },
+  } as never;
+}
+
+describe("conversationsWithDecidedSilence", () => {
+  it("incluye la conversación cuando el traspaso de silencio es POSTERIOR a su último mensaje", async () => {
+    const supabase = fakeSupabaseParaSilencioDecidido({
+      filas: [{ conversation_id: "conv-1", reason: "cortesia_tras_escalada", created_at: "2026-09-20T10:00:05.000Z" }],
+    });
+
+    const resultado = await conversationsWithDecidedSilence(supabase, [
+      { id: "conv-1", lastCustomerMessageAt: "2026-09-20T10:00:00.000Z" },
+    ]);
+
+    expect(resultado.has("conv-1")).toBe(true);
+  });
+
+  it("borde: 'created_at' del traspaso IGUAL al último mensaje también cuenta como ya decidido", async () => {
+    const mismaFecha = "2026-09-20T10:00:00.000Z";
+    const supabase = fakeSupabaseParaSilencioDecidido({
+      filas: [{ conversation_id: "conv-1", reason: "sin_contenido_legible", created_at: mismaFecha }],
+    });
+
+    const resultado = await conversationsWithDecidedSilence(supabase, [
+      { id: "conv-1", lastCustomerMessageAt: mismaFecha },
+    ]);
+
+    expect(resultado.has("conv-1")).toBe(true);
+  });
+
+  it("NO incluye la conversación cuando el cliente escribió DESPUÉS del traspaso de silencio", async () => {
+    const supabase = fakeSupabaseParaSilencioDecidido({
+      filas: [{ conversation_id: "conv-1", reason: "identidad_no_verificable", created_at: "2026-09-20T10:00:00.000Z" }],
+    });
+
+    const resultado = await conversationsWithDecidedSilence(supabase, [
+      { id: "conv-1", lastCustomerMessageAt: "2026-09-20T10:05:00.000Z" },
+    ]);
+
+    expect(resultado.has("conv-1")).toBe(false);
+  });
+
+  it("una razón que NO está en la lista (p. ej. 'reabierto') no cuenta como silencio decidido", async () => {
+    // El fake filtra por `.in("reason", […])` como la consulta real, así que
+    // esta fila de 'reabierto' ni siquiera vuelve en el `data` — lo que
+    // prueba que la CONSTANTE, no una condición aparte en el código, es lo
+    // que decide qué razones importan acá.
+    const supabase = fakeSupabaseParaSilencioDecidido({
+      filas: [{ conversation_id: "conv-1", reason: "reabierto", created_at: "2026-09-20T10:00:05.000Z" }],
+    });
+
+    const resultado = await conversationsWithDecidedSilence(supabase, [
+      { id: "conv-1", lastCustomerMessageAt: "2026-09-20T10:00:00.000Z" },
+    ]);
+
+    expect(resultado.has("conv-1")).toBe(false);
+  });
+
+  /**
+   * Tarea C6, plan "El resguardo antes del push" (20/9/2026, anexo de la
+   * Tanda 1, extensión del hallazgo A): `fuera_de_tema_repetido` se suma a
+   * `RAZONES_DE_SILENCIO_DECIDIDO` (handoffs.ts) — sin ella, `reconciler.ts`
+   * volvía a encolar cada minuto una conversación sobre la que el turno ya
+   * decidió, dos veces, no responder porque el cliente insiste con algo
+   * fuera de tema.
+   */
+  it("'fuera_de_tema_repetido' cuenta como silencio decidido", async () => {
+    const supabase = fakeSupabaseParaSilencioDecidido({
+      filas: [{ conversation_id: "conv-1", reason: "fuera_de_tema_repetido", created_at: "2026-09-20T10:00:05.000Z" }],
+    });
+
+    const resultado = await conversationsWithDecidedSilence(supabase, [
+      { id: "conv-1", lastCustomerMessageAt: "2026-09-20T10:00:00.000Z" },
+    ]);
+
+    expect(resultado.has("conv-1")).toBe(true);
+  });
+
+  it("con varios traspasos de silencio para el mismo chat, compara contra el MÁS RECIENTE", async () => {
+    const supabase = fakeSupabaseParaSilencioDecidido({
+      filas: [
+        // El primero es viejo (antes del mensaje del cliente): solo no bloquearía.
+        { conversation_id: "conv-1", reason: "sin_contenido_legible", created_at: "2026-09-20T09:00:00.000Z" },
+        // El segundo es el que importa: posterior al mensaje del cliente.
+        { conversation_id: "conv-1", reason: "cortesia_tras_escalada", created_at: "2026-09-20T10:00:05.000Z" },
+      ],
+    });
+
+    const resultado = await conversationsWithDecidedSilence(supabase, [
+      { id: "conv-1", lastCustomerMessageAt: "2026-09-20T10:00:00.000Z" },
+    ]);
+
+    expect(resultado.has("conv-1")).toBe(true);
+  });
+
+  it("filas con lastCustomerMessageAt null no consultan nada y quedan afuera", async () => {
+    const supabase = fakeSupabaseParaSilencioDecidido({ filas: [] });
+
+    const resultado = await conversationsWithDecidedSilence(supabase, [
+      { id: "conv-1", lastCustomerMessageAt: null },
+    ]);
+
+    expect(resultado.size).toBe(0);
+  });
+
+  it("lote vacío no consulta la base y devuelve un Set vacío", async () => {
+    const supabase = fakeSupabaseParaSilencioDecidido({ filas: [] });
+
+    const resultado = await conversationsWithDecidedSilence(supabase, []);
+
+    expect(resultado.size).toBe(0);
+  });
+
+  it("un error de la consulta se propaga (lanza, no falla en silencio)", async () => {
+    const supabase = fakeSupabaseParaSilencioDecidido({ error: { message: "conexión perdida" } });
+
+    await expect(
+      conversationsWithDecidedSilence(supabase, [{ id: "conv-1", lastCustomerMessageAt: "2026-09-20T10:00:00.000Z" }])
+    ).rejects.toThrow("conexión perdida");
   });
 });

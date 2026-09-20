@@ -150,7 +150,186 @@ export type HandoffReason =
   // `mutations.ts`). La escribe el trigger `handle_conversation_ownership_change`
   // de esa migración, NUNCA TypeScript — mismo patrón que `devuelto_a_ia`/
   // `desasignada_por_asesor`/`reclamado`.
-  | "silenciada_por_asesor";
+  | "silenciada_por_asesor"
+  // Tarea C6, plan "El resguardo antes del push" (20/9/2026, anexo de la
+  // Tanda 1, extensión del hallazgo A): a la segunda insistencia con
+  // `intent === "fuera_de_tema"` (`alreadyRedirected`, agent.ts) el turno
+  // decide bien callarse -repetir la redirección contra alguien que insiste,
+  // o contra otro bot, es un ping-pong sin final- pero hasta esta tarea ese
+  // `return` no dejaba ningún traspaso. Cierra la deuda que el docblock de
+  // `RAZONES_DE_SILENCIO_DECIDIDO` (abajo) tenía anotada: sin esta fila,
+  // `reconcileOrphanTurns` reencolaba la conversación cada minuto durante
+  // hasta 24 h.
+  | "fuera_de_tema_repetido";
+
+/**
+ * Razones que significan "el turno ya miró ESTE mensaje del cliente y decidió
+ * callarse a propósito" — no un fallo transitorio, no una decisión que dependa
+ * de un interruptor global que puede volver a encenderse solo. Tarea C1,
+ * plan "El resguardo antes del push" (20/9/2026, hallazgo A).
+ *
+ * El bucle que esto corta: `reconcileOrphanTurns` (reconciler.ts) relee
+ * Postgres cada pasada y reencola cualquier conversación con
+ * `awaiting_reply`, sin asesor, con la IA encendida y el último mensaje
+ * visible del lado del cliente. Eso es EXACTAMENTE el estado en que queda una
+ * conversación después de que el turno escribe una de las razones de acá
+ * abajo — el turno ya contestó (con su silencio) al mensaje que dejó ese
+ * estado, pero nada en la fila de `conversations` lo distingue de un turno
+ * que nunca llegó a correr. Caso real que motivó esta tarea: de noche, sin
+ * asesores conectados, Seba escala (`escalada_sin_asesor`) y se despide con
+ * `is_auto_reply` — el cliente sigue esperando a una persona, así que
+ * `awaiting_reply` sigue en `true`, a propósito. El cliente contesta "ok
+ * gracias"; el turno entra a la guarda de cortesía (`runTurnPhases`,
+ * agent.ts), ve la escalada todavía abierta (`escalationOpen`) y se calla
+ * dejando `cortesia_tras_escalada` — la decisión correcta. Pero sin este
+ * filtro, el reconciliador vuelve a encontrar esa misma conversación un
+ * minuto después (nada cambió: sigue `awaiting_reply`, sin asesor, IA
+ * encendida, último mensaje del cliente), la reencola, el turno vuelve a
+ * callarse y escribe OTRA `cortesia_tras_escalada` — cada minuto, hasta que
+ * se cierran las 24 h de la ventana de Meta. Cada vuelta gasta un cupo de
+ * `AGENT_MAX_TURNS_PER_MINUTE` (atrasando turnos de clientes reales de
+ * verdad) y deja ~3 filas de bitácora por minuto y por chat.
+ *
+ * La regla: si existe un traspaso con una de estas razones cuyo `created_at`
+ * es POSTERIOR O IGUAL a `last_customer_message_at` de la conversación, el
+ * turno ya miró ese mensaje exacto y no hay nada nuevo que contestar — no se
+ * reencola. Si el cliente vuelve a escribir, `last_customer_message_at`
+ * avanza más allá de ese traspaso y la conversación vuelve a ser candidata
+ * (la comparación se rehace en cada pasada, contra el `last_customer_message_at`
+ * FRESCO que trae la consulta de `reconcileOrphanTurns`).
+ *
+ * Una por una, por qué cada razón entra:
+ *   - `cortesia_tras_escalada`: el caso de arriba. La escribe la guarda de
+ *     cortesía de `runTurnPhases` (agent.ts) cuando el último mensaje es puro
+ *     agradecimiento y la escalada sigue abierta.
+ *   - `sin_contenido_legible`: el turno abrió con un historial vacío tras
+ *     describir la media con `historyLine` (todo lo que llegó fue
+ *     `unsupported` o notas internas) — no hay nada legible que contestar
+ *     TODAVÍA, pero si el cliente manda algo más (otro adjunto, texto),
+ *     `last_customer_message_at` avanza y hay algo nuevo que mirar.
+ *   - `identidad_no_verificable`: `buildTurnTarget` (turn-target.ts) no pudo
+ *     armar un destinatario válido (contacto sin teléfono utilizable, fila
+ *     inconsistente) — "la identidad rota no se arregla sola" (comentario de
+ *     esa función), así que reintentar el MISMO mensaje cada minuto no
+ *     cambia nada; hace falta que alguien corrija el contacto o que el
+ *     cliente escriba de nuevo.
+ *   - `fuera_de_tema_repetido`: Tarea C6, plan "El resguardo antes del push"
+ *     (20/9/2026). La escribe `runTurnPhases` (agent.ts) cuando
+ *     `intent === "fuera_de_tema"` y `alreadyRedirected(history)` ya es
+ *     `true` — la segunda insistencia con algo fuera de tema, contra la que
+ *     repetir la misma redirección sería un ping-pong sin final. Mismo caso
+ *     que `cortesia_tras_escalada`: el turno ya miró ese mensaje y decidió
+ *     bien callarse, pero si el cliente vuelve a escribir algo NUEVO,
+ *     `last_customer_message_at` avanza y la conversación vuelve a ser
+ *     candidata.
+ *
+ * A propósito NO entran (el reconciliador SÍ debe seguir reintentando estas,
+ * o ya están cubiertas por otro filtro de la consulta):
+ *   - `entrega_fallida`/`rechazado_por_meta`: un envío que falló de verdad.
+ *     `last_message_status = 'failed'` es justo lo que el `.or(...)` de la
+ *     consulta usa para decir "esto SÍ hay que reintentarlo" — sumarlas acá
+ *     las volvería irrecuperables, al revés de lo que esas razones
+ *     significan (CLAUDE.md: "el reconciliador la reencola sola en ≤5 min").
+ *   - `agente_no_puede_correr`: depende de un interruptor GLOBAL que puede
+ *     volver a encenderse solo en cualquier momento sin que el cliente haga
+ *     nada — no es una decisión sobre ESE mensaje en particular.
+ *   - `abandonado`/`reabierto`: no son un silencio del turno sobre un
+ *     mensaje, son el resultado de la propia mecánica de reintentos de la
+ *     cola/el reconciliador. Sumar `reabierto` acá haría que la primera
+ *     pasada del reconciliador bloqueara para siempre a las pasadas
+ *     siguientes.
+ *   - `humano_intervino`/`humano_se_adelanto`: ya las descarta
+ *     `conversationsWrittenByHumans` (human-handled.ts), que corre ANTES de
+ *     este filtro en `reconcileOrphanTurns`.
+ *   - `mensaje_previo_a_devolucion`: ya la descarta la propia consulta con
+ *     `.eq("new_since_ai_resume", true)` — una fila con un mensaje anterior a
+ *     la devolución ni siquiera llega a ser candidata.
+ *   - `fuera_de_ventana`: ya la descarta `.gt("last_customer_message_at",
+ *     freeformWindowCutoff(now))`, el mismo corte que usa `withinFreeformWindow`.
+ *
+ * DEUDA CERRADA por la Tarea C6 (mismo plan, 20/9/2026): la investigación
+ * original que escribió este docblock (hallazgo A, misma fecha) había
+ * encontrado un `fuera_de_tema` REPETIDO (`agent.ts`, `alreadyRedirected`)
+ * dejando la conversación en este mismo estado —`awaiting_reply` sin tocar,
+ * sin asesor, IA encendida, último mensaje del cliente— sin escribir ningún
+ * traspaso en ese `return` (solo actualizaba `journey_stage` y la bitácora
+ * de `agent_turns`), así que un cliente que insistía dos veces con algo
+ * fuera de tema, sin asesor asignado, seguía reencolándose cada minuto hasta
+ * que se cerraba la ventana de 24 h. C6 le sumó su propio `recordHandoff`
+ * (razón `fuera_de_tema_repetido`, arriba) — ver ese caso en la lista de
+ * "una por una" más arriba.
+ */
+const RAZONES_DE_SILENCIO_DECIDIDO: HandoffReason[] = [
+  "cortesia_tras_escalada",
+  "sin_contenido_legible",
+  "identidad_no_verificable",
+  "fuera_de_tema_repetido",
+];
+
+/**
+ * De un lote de conversaciones candidatas a reencolarse, cuáles ya recibieron
+ * un "silencio decidido" (ver `RAZONES_DE_SILENCIO_DECIDIDO`) sobre su
+ * `last_customer_message_at` actual.
+ *
+ * Mismo patrón que `conversationsWrittenByHumans` (human-handled.ts): UNA
+ * sola consulta para todo el lote (`.in("conversation_id", ids).in("reason",
+ * […])`), un mapa en memoria con el `created_at` MÁS RECIENTE de cada
+ * conversación entre las razones de silencio (una conversación puede tener
+ * varias, de turnos distintos — solo importa la última), y la comparación de
+ * fechas con `Date.parse`.
+ *
+ * `>=`, no `>`: si el traspaso se escribió en el MISMO instante que
+ * `last_customer_message_at` (up to milisegundos, el caso normal: el turno
+ * lee esa fecha y escribe el traspaso microsegundos después, en el mismo
+ * turno), sigue siendo el mismo mensaje ya mirado — no hay nada nuevo.
+ *
+ * Filas con `lastCustomerMessageAt` null no consultan nada (no hay fecha con
+ * la que comparar); en la práctica `reconcileOrphanTurns` nunca las trae —
+ * su consulta exige `.gt("last_customer_message_at", …)` — pero se filtran
+ * igual acá para que esta función no dependa de esa garantía externa.
+ *
+ * Lanza ante un error de la consulta (no falla en silencio): el llamador
+ * decide la política de "fallar cerrado", igual que con
+ * `conversationsWrittenByHumans`/`humanHasWritten`.
+ */
+export async function conversationsWithDecidedSilence(
+  supabase: SupabaseClient<Database>,
+  rows: { id: string; lastCustomerMessageAt: string | null }[]
+): Promise<Set<string>> {
+  const conFecha = rows.filter((r) => r.lastCustomerMessageAt !== null) as {
+    id: string;
+    lastCustomerMessageAt: string;
+  }[];
+  if (conFecha.length === 0) return new Set();
+
+  const { data, error } = await supabase
+    .from("conversation_handoffs")
+    .select("conversation_id, created_at")
+    .in(
+      "conversation_id",
+      conFecha.map((r) => r.id)
+    )
+    .in("reason", RAZONES_DE_SILENCIO_DECIDIDO);
+
+  if (error) {
+    throw new Error(`No se pudo comprobar qué chats ya callaron a propósito sobre su último mensaje: ${error.message}`);
+  }
+
+  const ultimoSilencioPorChat = new Map<string, string>();
+  for (const fila of (data ?? []) as { conversation_id: string; created_at: string }[]) {
+    const previo = ultimoSilencioPorChat.get(fila.conversation_id);
+    if (!previo || fila.created_at > previo) ultimoSilencioPorChat.set(fila.conversation_id, fila.created_at);
+  }
+
+  const resultado = new Set<string>();
+  for (const fila of conFecha) {
+    const silencioAt = ultimoSilencioPorChat.get(fila.id);
+    if (silencioAt && Date.parse(silencioAt) >= Date.parse(fila.lastCustomerMessageAt)) {
+      resultado.add(fila.id);
+    }
+  }
+  return resultado;
+}
 
 export interface HandoffInput {
   conversationId: string;
@@ -330,6 +509,15 @@ export async function recordHandoffAdmin(input: HandoffInput): Promise<boolean> 
  * cortesía dejaba de disparar — la IA podía volver a despedirse dos veces
  * sobre un cliente que seguía esperando al mismo asesor.
  *
+ * Tarea C6, plan "El resguardo antes del push" (20/9/2026): `fuera_de_tema_repetido`
+ * suma a esta lista por el MISMO motivo que `cortesia_tras_escalada` —la
+ * escribe `runTurnPhases` (agent.ts) sobre el mismo dueño que ya tenía la
+ * conversación, sin que nadie cambie de manos. Si no estuviera acá, una
+ * segunda insistencia fuera de tema DURANTE una escalada abierta taparía la
+ * fila `escalada`/`escalada_sin_asesor`, `escalationOpen` daría `false`, y el
+ * siguiente "gracias" del cliente recibiría una SEGUNDA despedida de la IA en
+ * vez de que la guarda de cortesía lo callara.
+ *
  * Ver la migración 20260830040000_conversation_handoffs.sql (el CHECK de
  * `reason`) y CLAUDE.md.
  */
@@ -342,6 +530,7 @@ const RAZONES_QUE_NO_CIERRAN_LA_ESCALADA: HandoffReason[] = [
   "humano_se_adelanto",
   "mensaje_previo_a_devolucion",
   "reabierto",
+  "fuera_de_tema_repetido",
 ];
 
 /**
