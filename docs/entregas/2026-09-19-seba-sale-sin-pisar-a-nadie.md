@@ -17,10 +17,16 @@ nunca `3802fad..HEAD` a ciegas.
 
 Si producción sigue en `3802fad`, el rango pendiente son **31 commits
 commiteados** (`3802fad..def7484`, cinco migraciones) **más los
-commits de la corrida "Seba sale sin pisar a nadie"** (desde `d9091e0` hasta HEAD,
-sobre `def7484`: nueve de código —el último es `9888b40`, T12— y dos de
-documentación, más el commit que registra el CI real; ninguna migración
-NUEVA, `d9091e0` edita in situ las cinco pendientes). Este documento cubre TODO ese rango,
+commits de la corrida "Seba sale sin pisar a nadie"** (desde `d9091e0` hasta
+`003ada1`, sobre `def7484`: nueve de código —el último es `9888b40`, T12— y
+dos de documentación, más el commit que registra el CI real; ninguna
+migración NUEVA, `d9091e0` edita in situ las cinco pendientes) **más la
+corrida "El resguardo antes del push" (desde `003ada1` hasta el commit de documentación que sigue a `3d96863`,
+ver la sección nueva más abajo:** 1 commit de plan + 4 de correcciones
+A–J —uno `[migración]`, que sigue editando in situ las mismas cinco
+pendientes, ninguna migración nueva— + 6 de tests de la matriz de
+mutaciones + `3d96863`, la corrección K: Seba consulta el inventario antes
+de hablar de existencias). Este documento cubre TODO ese rango,
 agrupado por corrida/tarea, en el orden en que hay que desplegarlo. **El
 orden operativo detallado, con las consultas SQL literales, está en
 `docs/PRODUCCION.md` §11 ("Entrega de 'Seba atiende el mostrador' + 'Nada
@@ -916,24 +922,15 @@ en el commit `d9091e0`, T5).
 ## Decisiones abiertas para el operador
 
 Dos hallazgos de DISEÑO de la revisión `code-review high` del 19/9/2026.
-Una sigue abierta; la otra la cerró el operador el mismo día con T11.
+Las dos están cerradas: la primera por T12, la segunda por T11, el mismo día.
 
-1. **ABIERTA — Tras el saludo, un fallo del proveedor deja `entrega_fallida`
-   y NADIE reintenta el turno.** T2 (arriba) deja el traspaso correcto para
-   que el lead no quede invisible, pero eso es solo el registro — no hay
-   ningún mecanismo que vuelva a intentar redactar la respuesta real para
-   ese cliente; el chat queda esperando a un humano (o a que el cliente
-   vuelva a escribir) hasta que alguien lo note. El revisor propone que el
-   reconciliador reencole ese turno en vez de solo dejar constancia — pero
-   reencolarlo hoy no serviría de mucho: `welcome_sent_at` ya quedó
-   sellado por `claimPresentation`, así que el turno reencolado NO volvería
-   a saludar (correcto), pero además correría de nuevo la fase 0/1 y el
-   tool loop desde cero sobre el mismo mensaje del cliente que ya falló una
-   vez — reabre la decisión D-B de este mismo plan ("no existe una razón
-   'falló el proveedor', `entrega_fallida` ya significa esto") y probablemente
-   necesite ese reencolado explícito, no solo el traspaso. Se deja ABIERTA
-   a propósito: no se toca el camino caliente del turno en la víspera del
-   despliegue.
+1. **CERRADA el 19/9/2026 por T12 (`9888b40`, ver su sección arriba).** Era:
+   tras el saludo, un fallo del proveedor dejaba `entrega_fallida` y nadie
+   reintentaba el turno. T12 reemplaza ese traspaso por
+   `ProviderFailedAfterGreetingError`, que la cola reintenta sola; el
+   reintento recorta el saludo del historial y no vuelve a presentarse.
+   (Este punto siguió diciendo ABIERTA hasta el 20/9/2026 por descuido de
+   documentación; el código estaba cerrado desde T12.)
 2. **CERRADA el 19/9/2026 por T11 (ver su sección arriba, Grupo E).** El
    operador decidió que `unassign` SÍ debe volver a encender `ai_enabled`
    automáticamente, pero solo cuando fue la propia toma-a-mano de ESE
@@ -950,6 +947,256 @@ Una sigue abierta; la otra la cerró el operador el mismo día con T11.
    asignado, deja una fila `silenciada_por_asesor` indistinguible de la del
    tomar-a-mano y la IA se reenciende igual — distinguir los tres caminos
    que escriben esa razón exigiría una columna nueva.
+
+---
+
+## El resguardo antes del push (20/9/2026)
+
+Corrida nueva, plan `docs/planes/2026-09-20-el-resguardo-antes-del-push.md`,
+rama `resguardo-antes-del-push` desde `003ada1` (el HEAD con el que cerraba
+la sección anterior). Motivo: después de este push no habrá actualizaciones
+por un tiempo, así que antes de tocar producción se revisaron de código los
+tres rangos que nunca habían tenido revisión formal ("Seba atiende el
+mostrador", "El precio se lee en bolívares", los últimos commits de "Seba
+sale sin pisar a nadie") y se completó la matriz de mutaciones que quedaba
+pendiente de esas mismas corridas. **Regla de la corrida: no se toca código
+de producción salvo bug real** — de los diez hallazgos A–J que dejó la
+revisión, los diez eran bugs reales y el operador aprobó corregirlos todos
+antes de seguir; todo lo demás de este rango es tests y documentación.
+12 commits de `003ada1` a `3d96863`, más el commit de documentación que
+cierra esta misma sección:
+
+- `ffbe56d` — El plan queda escrito, con el anexo de las diez fallas A–J que
+  aprobó el operador. Sin código.
+- `4761f19` — **A**: el reconciliador ya no reencola cada minuto un chat que
+  el turno ya calló con un traspaso de silencio posterior al último mensaje
+  del cliente (`cortesia_tras_escalada`, `sin_contenido_legible`,
+  `identidad_no_verificable`, `fuera_de_tema_repetido`); antes, un "ok
+  gracias" tras una escalada sin asesor quedaba exactamente como el
+  reconciliador busca y gastaba un cupo de turno cada minuto hasta 24 h. La
+  segunda insistencia fuera de tema ya no se calla SIN traspaso (violaba
+  "ningún lead invisible"): deja `fuera_de_tema_repetido`, razón nueva que
+  entra al CHECK en el commit `[migración]` de abajo. **C**: un texto vacío
+  del modelo DESPUÉS del saludo de Seba ya no deja al cliente con la
+  presentación y nada más — lanza el error reintentable de T12 (o
+  `turno_sin_texto` en el log si no hubo saludo previo); si el modelo escaló
+  por su cuenta sin redactar, sale la despedida fija. **G**: si el envío de
+  la presentación de Seba lanza, el sello `welcome_sent_at` vuelve a `null`
+  (antes ese chat se quedaba sin que Seba se presentara nunca).
+- `13c73ac` — **D**: el UPDATE que reenciende a Seba al desasignar exige
+  ahora `assigned_agent_id is null` y `status <> 'closed'` (se escribía a
+  ciegas). **E**: la rama `alreadyAssigned` de la escalada etiqueta "Reclamo
+  · …" antes de retornar — con Seba encendida tras escalar, una queja en un
+  chat ya asignado se estaba quedando fuera de la cola de Reclamos. **F**:
+  la consulta de sinónimos filtra por alcance — uno guardado como "Solo
+  este chat" ya no expande búsquedas de inventario en los demás. **I**: el
+  contador de fallos de la cola se limpia al abandonar una conversación, así
+  el primer fallo de un turno nuevo no se abandona sin reintentos.
+- `a46ec3b` — **H**: la reapertura de un chat cerrado ahora comprueba el
+  `wamid` (dedupe, que vive en el INSERT) ANTES de reabrir. Antes corría
+  primero: una reentrega tardía de Meta de un mensaje YA guardado podía
+  reabrir con la IA encendida, sin asesor y el sello de presentación en
+  `null` un chat que un asesor ya había cerrado, y Seba saludaba y contestaba
+  un mensaje viejo.
+- `cf8b971` — `[migración]` **B**: `20260916010000` y `20260917010000` se
+  editan IN SITU — ninguna de las cinco está aplicada en producción — para
+  tomar `lock table … in share row exclusive mode` sobre
+  `conversation_handoffs` (y también `messages`, en la 0917, mismo orden
+  alfabético en las dos) ANTES de tocar una sola fila. Reproducido el
+  interbloqueo real contra la base local con 30 mil filas y 20 conexiones
+  concurrentes imitando al webhook (`deadlock detected` sin el candado); con
+  el candado, 3 corridas seguidas sin deadlock y sin mensajes perdidos, el
+  webhook esperando entre 4 y 16 s. `lock table` exige un BLOQUE de
+  transacción, que la transacción implícita de la CLI de Supabase no es, así
+  que las dos migraciones ahora traen su propio `begin;`/`commit;` — **quien
+  despliegue debe saber que en ESTAS DOS, y solo en estas dos, aplicar sin
+  `-1` YA NO aborta** (el archivo abre y cierra su propia transacción); con
+  `-1` salen dos WARNING inofensivos ("already a transaction in progress" /
+  "no transaction in progress"). Las otras tres migraciones no tienen este
+  patrón y sus guardas siguen abortando sin `-1`, sin cambios. **J**:
+  `20260917010000` aborta si falta `20260916010000` (antes creaba la función
+  de dueño sin revokes ni trigger y apagaba la IA sin dejar fila). De paso,
+  el CHECK de `conversation_handoffs.reason` admite la razón nueva
+  `fuera_de_tema_repetido` (autoverificación propia + caso 10 del test SQL).
+  `docs/PRODUCCION.md` §11 ya cuenta los candados, los segundos medidos bajo
+  carga y qué hacer si una migración aborta por `lock_timeout` — verificado
+  contra ese documento al escribir esta sección, coincide.
+- `0e42ac8` — Tests SQL (M3) contra los mutantes que sobrevivían: ni `anon`
+  NI `authenticated` pueden ejecutar las dos funciones de trigger de la
+  0916 (los chequeos viejos solo miraban `anon`); dos mensajes seguidos del
+  asesor dejan UNA sola fila `silenciada_por_asesor`; un entrante con
+  `sender_type='agent'` no apaga a Seba; `from_kind` correcto; las dos
+  ramas del backfill (`last_message_at`/`created_at`); bordes de `content`
+  y de un sinónimo sin `synonym_from` en `ai_lessons`; 40 caracteres
+  exactos y dos órdenes con el mismo número Saint aceptados (D9, sin
+  unicidad a propósito); clave de 31 caracteres y clave con guion bajo
+  rechazadas en `catalog_links`.
+- `6534f9f` — Los fakes de `mutations.test.ts` pasan a registrar operador +
+  columna + valor (antes no distinguían `.gte` de `.eq` ni miraban el valor
+  real de `.eq("id", …)` en los UPDATE de T10/T11); cinco mutaciones
+  aplicadas en vivo sobre `mutations.ts` confirman que ahora las cinco
+  mueren. Suma el cableado de Control IA/Ventas/catálogos bajo test:
+  `agent-control/page.test.ts` y `src/lib/data-sales.test.ts` (archivos
+  nuevos), más `wouldEmptyList`, edición sin choque de clave, y
+  `waitingForHuman` real en `chat-panel`.
+- `b8eec91` — Dos huecos puntuales de la matriz: el aviso "Enlace sin
+  resolver" de un escenario se prueba también cuando el marcador vive en el
+  ADJUNTO (`attachmentUrl`), no solo en el texto de respuesta; y "mi nombre
+  es Sebastián"/"me llamo Sebastián" siguen bloqueados como persona (al
+  lookahead `(?!seba\b)` de la guarda de identidad le faltaba cubrir sin el
+  `\b` los dos casos con test).
+- `b29983d` — Tests (M1a) sobre `lessons.ts`, `catalog-search.ts`,
+  `saludo.ts`, `tools.ts`, `prompt.ts`, `playbooks.ts`: 8 de 15 mutantes
+  sobrevivían y ahora mueren — filtro `.eq("kind","nota")` (sin él, los
+  SINÓNIMOS se colaban al prompt como si fueran notas), los topes
+  15/5/200 y `MAX_SYNONYM_LESSONS` fijados como literales (antes se medían
+  con el propio símbolo importado), "buenos días" pelado, genérico +
+  recorte a la vez, y el borde exacto de "más de tres" resultados.
+- `25b0bb2` — Tests (M1b) sobre `human-handled.ts`, el webhook,
+  `reconciler.ts`, `handoffs.ts`, `escalate.ts`, `history-line.ts`: 3 de 15
+  mutantes sobrevivían (los tres en `human-handled.ts`) y ahora mueren —
+  con DOS reaperturas del cliente, la gracia del asesor se descuenta contra
+  la MÁS RECIENTE (el fake de `conversation_handoffs` ignoraba `ascending`
+  y devolvía la fila más reciente por su cuenta) y `humanClaimsChat`
+  evalúa "se adelantó" ANTES que la reapertura, no después.
+- `41c9d6d` — Tests (M1+M1c) sobre `agent.ts`, `seba.ts`,
+  `turn-delivery.ts`: 22 mutaciones, 3 sobrevivían y ahora mueren —
+  `pausada` gana cuando la IA está apagada Y el sello de devolución se
+  cumple a la vez (el orden de las dos guardas invertido no rompía nada);
+  con asesor asignado, la escritura al empezar a clasificar pasa por
+  `stageFor` (el literal `"classifying"` sobrevivía; la mitad de
+  `"tool_running"` queda sin test, ver "Aceptado sin test" abajo); un error
+  del UPDATE de `claimPresentation` no deja a Seba muda para siempre — sigue
+  a la redacción y deja `turno_presentacion_reclamo_fallido` en el log.
+- `3d96863` — **Código (K).** Con intención `consulta_disponibilidad`, el
+  paso 0 del tool loop obliga a llamar a `buscarRepuesto`. Hallado en los
+  escenarios a mano (ver más abajo). Sin migración ni variables.
+
+**Qué cambia para quien despliega, en una frase:** ningún comportamiento
+nuevo visible para el cliente — son correcciones de bugs de lógica y tests
+que endurecen huecos ya existentes —, salvo que las dos migraciones editadas
+IN SITU (`20260916010000`, `20260917010000`) ahora abren su propia
+transacción con `lock table` y por eso toleran (no exigen) faltar el `-1`;
+el resto de `docs/PRODUCCION.md` §11 —orden de las cinco migraciones, UPDATE
+operativo de C1, `notify pgrst`, comprobación final— sigue igual, sin
+cambios de esta corrida.
+
+### Tabla de mutaciones consolidada
+
+Formato: área · mutación · resultado. Las que ya morían (cubiertas por la
+suite existente, sin cambios) se agrupan en una línea con su conteo; las que
+sobrevivían y los equivalentes van uno por uno.
+
+| Área | Mutación | Resultado |
+|---|---|---|
+| `agent.ts` + `seba.ts` + `turn-delivery.ts` (apertura, sello de devolución, red de la búsqueda en inventario, `cedeAlCatalogo`, `ProviderFailedAfterGreetingError`, `customerBurst`…) — 18 mutaciones | ya morían | MUERE |
+| `agent.ts`: orden `pausada` → sello de devolución (invertir cuál guarda corre primero) | — | SOBREVIVÍA → test nuevo |
+| `agent.ts`: `stageFor` en la escritura "classifying" con asesor asignado (literal sin pasar por `stageFor`) | — | SOBREVIVÍA → test nuevo (parcial; ver "tool_running" en Aceptado sin test) |
+| `agent.ts`: error del UPDATE de `claimPresentation` tratado como "reclamado" | — | SOBREVIVÍA → test nuevo |
+| `agent.ts`: recorte T12 sin `historyCreatedAt.pop()` | — | EQUIVALENTE — el único consumidor lee índices por debajo de `history.length` ya recortado |
+| `identity-guard.ts`: `(?!seba\b)` sin el `\b` en "me llamo"/"mi nombre es" | — | SOBREVIVÍA → test nuevo (2 casos: "mi nombre es Sebastián", "me llamo Sebastián") |
+| `lessons.ts`, `catalog-search.ts`, `saludo.ts`, `tools.ts`, `prompt.ts`, `playbooks.ts` — 7 mutaciones | ya morían | MUERE |
+| `lessons.ts`: quitar `.eq("kind","nota")` de las dos consultas | — | SOBREVIVÍA → test nuevo (sin él, los sinónimos se colaban al prompt como notas) |
+| `lessons.ts`: topes `MAX_GLOBAL_LESSONS`/`MAX_CHAT_LESSONS`/`MAX_LESSON_CHARS` (15/5/200) | — | SOBREVIVÍA → test nuevo (se medían con el propio símbolo importado; ahora literales) |
+| `saludo.ts`: `PALABRAS_SALUDO` sin "buenos"/"dias" ("buenos días" pelado) | — | SOBREVIVÍA → test nuevo |
+| `tools.ts`: aviso de recorte también en el caso genérico (`!generico && hayMas` → `hayMas`) | — | SOBREVIVÍA → test nuevo |
+| `tools.ts`: borde de "más de tres" resultados (`quoted.length > 3` → `>= 3`) | — | SOBREVIVÍA → test nuevo |
+| `tools.ts`: `MAX_SYNONYM_LESSONS` (tope real de `.limit()` en la consulta de sinónimos) | — | SOBREVIVÍA → test nuevo |
+| `playbooks-panel.tsx`: aviso "Enlace sin resolver" solo miraba `response_text`, no `attachmentUrl` | — | SOBREVIVÍA → test nuevo |
+| `human-handled.ts`, `route.ts` (webhook), `reconciler.ts`, `handoffs.ts`, `escalate.ts`, `history-line.ts` — 12 mutaciones | ya morían | MUERE |
+| `human-handled.ts`: `reopenedAtIfGraceWouldFire`/`conversationsWrittenByHumans`, `ascending` del fake de `conversation_handoffs` (con dos reaperturas, no descontaba contra la más reciente) | — | SOBREVIVÍA → test nuevo (2 casos) |
+| `human-handled.ts`: `humanClaimsChat`, orden de los dos `if` ("se adelantó" antes que la reapertura) | — | SOBREVIVÍA → test nuevo |
+| `mutations.ts` (T10/T11) — 5 mutaciones verificadas en vivo esta sesión (`.gte`→`.eq`, `.limit(1)`→`.limit(0)`, `.eq("id", …)` ausente/equivocado en los dos UPDATE de silenciar/reencender) | ya morían tras endurecer los fakes (6534f9f), reverificado en vivo | MUERE |
+| `catalog-links.ts`: `wouldEmptyList` con dos activos, `otherLinks = links` al editar, `URL_SCHEME_PATTERN` sin `^`, `.slice(0,60)`, reset de `lastIndex` de las regex `g` reusadas | — | SOBREVIVÍA → test nuevo (evidencia de diff con comentario fechado 20/9/2026, no re-mutado en vivo esta sesión) |
+| `sale-draft.ts`: `normalizeSaint` sin flag `g` (colapsa solo el primer grupo de espacios) | — | SOBREVIVÍA → test nuevo |
+| `chat-panel.tsx`: `waitingForHuman={false}` fijo en vez del real | — | SOBREVIVÍA → test nuevo |
+| `agent-control/page.tsx`: envolver una lectura distinta de `fetchLessons`/`fetchCatalogLinks` | — | SOBREVIVÍA → test nuevo (`page.test.ts`, archivo nuevo) |
+| Ventas (`data.ts`/`data-sales`): `saint_invoice_number` fuera del `select` de Ventas | — | SOBREVIVÍA → test nuevo (`data-sales.test.ts`, archivo nuevo) |
+| `devolucion_a_la_ia.sql`, `seba_y_escalada_viva.sql`, `factura_saint.sql`, `catalog_links.sql` — mutantes ya cubiertos por casos previos al corte de luz, confirmados en verde | ya cubiertos | MUERE |
+| `devolucion_a_la_ia.sql`: los revokes viejos solo comprobaban `anon`, no `authenticated`, contra las dos funciones de trigger | — | SOBREVIVÍA → test nuevo (Caso 12) |
+| `ai_lessons.sql`: política de SELECT `using (is_agent())` → `using (true)` | — | SOBREVIVÍA → test nuevo (Caso 7b: sesión con un uuid que nunca fue agente no ve nada) |
+| `catalog_links.sql`: CHECK de `key` con tope 31 (en vez de 30) o alfabeto que admite guion bajo | — | SOBREVIVÍA → test nuevo (Casos 3b/3c; la primera versión de los dos casos "moría" por el CHECK de `label`, no el de `key` — se acortaron los labels y se repitió el ciclo) |
+| `factura_saint.sql`: borde de 40 caracteres exactos del número Saint, y dos órdenes con el mismo número (D9, sin unicidad) | — | SOBREVIVÍA → test nuevo (Caso 4b, Caso 6) |
+| `seba_y_escalada_viva.sql`: `and ai_enabled` del trigger de silencio | — | EQUIVALENTE de facto para el caso existente — redundante con el WHEN del trigger AFTER (`old.ai_enabled IS DISTINCT FROM new.ai_enabled`); no verificado con una mutación real en esta sesión |
+
+### Escenarios a mano del 20/9/2026 y el hallazgo K (`3d96863`)
+
+Webhook local por el canal `mock-phone-id-soporte` (envío simulado), modelo
+local `gemini-3.1-flash-lite`, verificado en `messages`,
+`conversation_handoffs`, `conversations` y en el log del servidor:
+
+| # | Escenario | Resultado |
+|---|---|---|
+| 1 | Lead nuevo "hola" | ✅ solo el saludo de Seba, `welcome_sent_at` sellado, `awaiting_reply` apagado, sin traspasos |
+| 2 | "Precio del casco LS2" + "Buenas tardes" | ✅ saludo + respuesta real — y acá apareció **K** (abajo) |
+| 3 | Producto con existencia (bujía CR7HSA, carburador PZ27) | ✅ cotiza nombre y precio de `products`, texto de confirmar inventario, escalada `confirmar_inventario`, Seba sigue encendida, `is_auto_reply` |
+| 3b | Con el escenario "Catálogo general" activo | ✅ `escenario_cedido_al_catalogo` en el log, el PDF no sale |
+| 4 | Existencia 0 / consulta genérica | ✅ texto sin stock + escalada `sin_stock`; genérica: UNA pregunta, sin escalar |
+| 5 | Segunda consulta en el chat ya escalado | ✅ nota "IA reiteró la escalada", mismo asesor, un solo traspaso |
+| 6 | El asesor escribe dos veces | ✅ `ai_enabled=false` y UNA sola fila `silenciada_por_asesor` |
+| 10 | Proveedor caído tras el saludo | ✅ visto EN VIVO (cuota gratuita de Gemini agotada): `turno_reintentable_tras_saludo`, el reintento respondió sin segundo saludo |
+
+**K — Seba afirmaba existencias sin consultar el inventario.** En el
+escenario 2 el modelo contestó en un paso, sin herramientas: "Tenemos varios
+modelos de cascos LS2 disponibles", con CERO cascos en `products`. La red de
+seguridad del catálogo solo actúa si la herramienta llegó a correr, así que
+nada lo impedía. Corregido en `3d96863`: con intención
+`consulta_disponibilidad` y el interruptor del catálogo encendido, el paso 0
+del tool loop obliga a llamar a `buscarRepuesto` (`firstStepToolChoice`,
+`tool-choice.ts`, vía `prepareStep`). Repetido el mismo mensaje después del
+arreglo: llama a `buscarRepuesto`, no encuentra cascos, escala
+`no_identificado`. Sin migración, sin variables nuevas. **Verificar en
+producción** (modelo `gpt-5.6-luna` por OpenRouter) que el `toolChoice` a una
+herramienta puntual se respeta: en `turno_tiempos`, todo turno de
+`consulta_disponibilidad` debe traer `buscarRepuesto` en `herramientas`. Si
+el proveedor rechazara el `toolChoice`, el turno fallaría y la cola lo
+reintentaría — se vería como `cola_turno_fallido` repetido en consultas de
+disponibilidad.
+
+NO vistos el 20/9 (quedan para el operador en pantalla, o cubiertos solo por
+tests + mutación): 7 (Asignarme/Desasignar), 8 (reapertura), 9 ("gracias" con
+escalada abierta), 11 (marcador de catálogo en un escenario), 12 (venta con
+Saint), 13 (enlaces como SUPERVISOR, pendiente desde el 19/9) y 14 (seis
+secciones + `error.tsx` en build de producción). Observación sin corregir: en
+local, "¿dónde están ubicados?" escaló por `seguimiento` porque la biblioteca
+local no trae la ubicación; en producción vive en el escenario "Ubicación".
+
+### Aceptado sin test / pendiente
+
+- **`stageFor` en `"tool_running"`** (dentro de `onToolExecutionStart`): el
+  mock de `ToolLoopAgent` que comparten ~190 tests de `agent.test.ts` nunca
+  invoca esa callback — no es perseguible sin rehacer la fábrica compartida.
+  Documentado, no corregido.
+- **`historyCreatedAt.pop()` (recorte T12)**: equivalente, ver la tabla de
+  arriba — anotado, no perseguido.
+- **~30 mutantes SQL del subagente previo al corte de luz** (`scratchpad/m3/mut*.sql`,
+  mutA…mutAH, mut1/mut2/mut_col): no se repitió el ciclo mutar→rojo→restaurar
+  uno por uno en esta sesión; sus casos nuevos en `ai_lessons.sql`,
+  `devolucion_a_la_ia.sql` y `seba_y_escalada_viva.sql` corrieron en verde
+  contra la migración real.
+- **Tope de 41 de `catalog_links.label`** (CHECK `between 1 and 40`): sin
+  caso propio en `catalog_links.sql`.
+- **RLS select de `catalog_links` con sesión sin fila en `agents`** (mismo
+  patrón que el Caso 7b nuevo de `ai_lessons.sql`): no estaba en la lista
+  explícita de esta corrida para `catalog_links`.
+- **Corridas negativas (b)(c)(d)(f) del script de catálogos**
+  (`scripts/sql/2026-09-18-catalogos-iniciales.sql`): pendientes. La (a) se
+  hizo — con los huecos `<<...>>` sin completar, aborta nombrando los 13
+  huecos, `exit 3`, 0 filas escritas —; la (e) es el ensayo completo de §11
+  del 19/9/2026.
+- **Resto de la lista "deben morir" de M2 sin mutar en vivo esta sesión**
+  (cubiertos por tests con comentario fechado, no re-mutados): `setAiEnabled`,
+  `dayCutGroup`, `passesDayCut`, `unansweredFreeWork`,
+  `readListIfTableExists`, `error.tsx` con un tercer hijo directo,
+  `puedeAdministrar`, `priceDisplay`.
+- **Menores que el plan documenta sin corregir** (aceptados por el
+  operador junto con A–J): un mensaje de asesor `failed` igual apaga a
+  Seba; un sinónimo de varias palabras o de menos de 3 letras nunca calza;
+  una nota interna calla a Seba 30 min (preexistente, `AI_HUMAN_GRACE_MINUTES`);
+  el toast de error de lecciones si falla el refresco; la bitácora doble en
+  la compensación de T10; el límite aceptado de T11 es más amplio de lo
+  escrito (una sola pausa manual en un chat ya escalado basta para que no se
+  reencienda a Seba al desasignar).
 
 ---
 

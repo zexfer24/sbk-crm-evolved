@@ -1596,7 +1596,23 @@ dejar rastro es lo que hacía desaparecer leads.
   propia transacción — y los tests de `supabase/tests/` pasan sobre esa
   base reconstruida desde cero; el CI usa `supabase/setup-cli@v1` con
   `version: latest`, así que la certeza total llega recién con el primer CI
-  real sobre este rango.
+  real sobre este rango. **(Actualizado el 20/9/2026, revisión "El
+  resguardo antes del push", tarea C5, hallazgo B): la frase de arriba
+  ("aplicarla SIN `-1` aborta") sigue valiendo tal cual solo para TRES de
+  las cinco (`20260917020000`, `20260918010000`, `20260918020000`).**
+  `20260916010000` y `20260917010000` se editaron IN SITU para arreglar un
+  interbloqueo real con el webhook (`lock table … in share row exclusive
+  mode` sobre `conversation_handoffs`, y también sobre `messages` en la
+  0917, ANTES de tocar una sola fila — reproducido contra la base local con
+  30 mil filas y 20 conexiones concurrentes: `deadlock detected` sin el
+  candado, tres corridas limpias con él). `lock table` exige un BLOQUE de
+  transacción, que la transacción implícita de la CLI de Supabase NO es, así
+  que esas dos migraciones ahora traen su propio `begin;`/`commit;` —
+  consecuencia: en ESAS DOS, y solo en esas dos, olvidarse el `-1` YA NO
+  aborta (el archivo abre y cierra su propia transacción); con `-1` salen
+  dos WARNING inofensivos ("already a transaction in progress" / "no
+  transaction in progress"). Detalle completo, con los segundos que el
+  webhook quedó esperando bajo carga, en `docs/PRODUCCION.md` §11.
 - **Un test de `supabase/tests/` que hace `\i` de una migración NO se puede
   correr con `docker exec -i … -f - < archivo`** (19/9/2026, verificando
   T4/T5 de "Seba sale sin pisar a nadie"). `ventana_24h.sql`,
@@ -1691,6 +1707,49 @@ dejar rastro es lo que hacía desaparecer leads.
   fallan, `abandonado` va siempre a `unassigned` (aunque el chat tuviera
   asesor asignado) — con asesor, el chat sigue en "Tuyas"/"Pendientes" por
   `awaiting_reply` de todos modos, porque el saludo es `is_auto_reply`.
+- **Un fake de Supabase en un test puede tragarse el operador o el argumento
+  de un filtro, y un tope numérico probado contra su propio símbolo
+  importado no prueba el número** (revisión "El resguardo antes del push",
+  20/9/2026). Cuatro huecos del mismo tipo, en cuatro archivos: `mutations.test.ts`
+  no distinguía `.gte(...)` de `.eq(...)` ni miraba el VALOR del
+  `.eq("id", …)` de cada UPDATE — la condición más delicada de T11 (¿la
+  apagó ESTE tomar-a-mano? ¿el asesor escribió DESDE `assigned_at`?) podía
+  invertirse sin que nada se pusiera rojo; `human-handled.test.ts` ignoraba
+  el `ascending` de `.order("created_at", …)` sobre `conversation_handoffs`
+  y devolvía siempre la fila más reciente por su cuenta, así que invertir
+  el orden real no rompía nada; `lessons.test.ts` no aplicaba de verdad los
+  `.eq()` que le pasaba el código, y sin `.eq("kind", "nota")` los
+  SINÓNIMOS se colaban al prompt como si fueran notas sin que ningún test
+  lo notara; y los topes `MAX_GLOBAL_LESSONS`/`MAX_CHAT_LESSONS`/
+  `MAX_LESSON_CHARS` (15/5/200) se medían contra el propio símbolo
+  importado (`MAX + 10`), así que cambiar el número en el código de
+  producción no habría roto nada. Regla: un fake de Supabase nuevo registra
+  operador + columna + valor (y el argumento real de `.limit()`/`.order()`),
+  y un tope numérico se fija en el test con su literal, nunca con el
+  símbolo que ya está probando. Aparte: tras un corte de luz, el REPORTE de
+  un subagente de mutación se pierde aunque su trabajo en los archivos de
+  test sobreviva en el árbol de trabajo — la tabla de mutaciones
+  (`scratchpad/.../tabla.md`) se escribe a disco tras CADA mutación, no
+  solo al cierre, para que la sesión que retoma no tenga que re-mutar desde
+  cero lo que ya quedó confirmado verde/rojo/verde.
+- **Con intención `consulta_disponibilidad`, el primer paso del tool loop
+  OBLIGA a llamar a `buscarRepuesto`** (hallazgo K, "El resguardo antes del
+  push", 20/9/2026, `tool-choice.ts` + `prepareStep` en `agent.ts`). Caso
+  real, escenario a mano: "Precio del casco LS2" → el modelo contestó en un
+  paso, sin herramientas, "Tenemos varios modelos de cascos LS2
+  disponibles", con CERO cascos en `products`. La red de seguridad del
+  catálogo (`catalogOutcome.ran && …`) solo actúa si la herramienta llegó a
+  correr: prohibirlo en el prompt no alcanzaba, porque nada en código
+  obligaba a consultarla. El `toolChoice` rige SOLO el paso 0 (del 1 en
+  adelante el modelo tiene que poder redactar) y solo con el interruptor del
+  catálogo encendido; con otra intención nada cambia. El mock de
+  `ToolLoopAgent` de `agent.test.ts` captura `prepareStep` pero sigue sin
+  invocar `onToolExecutionStart`. En local, la cuota gratuita de Gemini es
+  de 15 peticiones por minuto: cuatro chats de prueba a la vez la agotan y
+  el turno sale por `turno_reintentable_tras_saludo` — no es un bug; y el
+  cron que drena los reintentos no corre en `next dev`, hay que llamar a
+  `api/cron/process-queue` a mano con `CRON_SECRET`.
+
 ---
 
 # RTK (Rust Token Killer) - Token-Optimized Commands
