@@ -176,6 +176,27 @@ describe("la excepción de Seba (18/9/2026)", () => {
   it("'me llamo Juan' sigue bloqueado como persona", () => {
     expect(revealsIdentity("me llamo Juan")?.categoria).toBe("persona");
   });
+
+  /**
+   * Mutación de verificación (resguardo antes del push, 20/9/2026, tarea
+   * M1/T3-a: "`(?!seba\\b)` sin `\\b`" de la lista de sospechosas). "Seba" es
+   * la ÚNICA excepción -- "Sebastián" es un nombre DISTINTO y tiene que
+   * seguir bloqueado como persona. Sin la frontera de palabra en el
+   * lookahead, `(?!seba)` "encuentra" el prefijo "seba" dentro de
+   * "sebastián" igual que dentro de "seba", así que el lookahead negativo
+   * falla en los dos casos y el patrón entero deja de calzar: "mi nombre es
+   * Sebastián" pasaría sin bloquear, dejando a la IA presentarse con un
+   * nombre que nunca dijo el guion. Ninguno de los dos tests de arriba ("Seba
+   * pasa", "Carlos bloqueado") distingue esto: "Sebastián" comparte el
+   * prefijo con la excepción pero no es la excepción.
+   */
+  it("'mi nombre es Sebastián' sigue bloqueado como persona (comparte el prefijo con la excepción, pero no ES la excepción)", () => {
+    expect(revealsIdentity("mi nombre es Sebastián")?.categoria).toBe("persona");
+  });
+
+  it("'me llamo Sebastián' sigue bloqueado como persona", () => {
+    expect(revealsIdentity("me llamo Sebastián")?.categoria).toBe("persona");
+  });
 });
 
 describe("pureza del módulo", () => {

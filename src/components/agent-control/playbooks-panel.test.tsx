@@ -197,6 +197,35 @@ describe("PlaybooksPanel — Insertar catálogo (T4a, D4)", () => {
   });
 
   /**
+   * Hueco hallado por la matriz de mutaciones del plan "El resguardo antes
+   * del push" (20/9/2026): la marca "Enlace sin resolver" también se calcula
+   * sobre `attachmentUrl` (D6), no solo sobre `responseText` — un escenario
+   * puede llevar el catálogo como adjunto en vez de escrito en el texto. Sin
+   * este test, borrar esa mitad de la condición no rompía nada.
+   */
+  it("un escenario con marcador de catálogo sin resolver en el ADJUNTO lleva la marca", () => {
+    renderPanel({
+      playbooks: [
+        playbook({ responseText: "Acá te paso el link.", attachmentUrl: "{{catalogo:cascos}}" }),
+      ],
+      catalogLinks: [],
+    });
+
+    expect(screen.getByText("Enlace sin resolver")).toBeInTheDocument();
+  });
+
+  it("con la clave del adjunto activa, el escenario NO lleva la marca de sin resolver", () => {
+    renderPanel({
+      playbooks: [
+        playbook({ responseText: "Acá te paso el link.", attachmentUrl: "{{catalogo:cascos}}" }),
+      ],
+      catalogLinks: [catalogLink({ key: "cascos" })],
+    });
+
+    expect(screen.queryByText("Enlace sin resolver")).not.toBeInTheDocument();
+  });
+
+  /**
    * Corrección de la revisión `code-review high` del 19/9/2026, punto 5: el
    * selector ofrecía CUALQUIER catálogo, activo o no — pegar la clave de uno
    * apagado deja el marcador SIN RESOLVER apenas se guarda (D6), justo lo
