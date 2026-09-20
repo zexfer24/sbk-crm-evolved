@@ -157,19 +157,44 @@ describe("processQueuedTurns", () => {
   /**
    * Pero no para siempre: una conversación que rompe en cada intento se
    * quedaría reclamando cupos y empujando al resto hacia atrás.
+   *
+   * Ajustada en I (20/9/2026, "El resguardo antes del push", C3): antes de
+   * esa corrida el abandono NO limpiaba el contador de fallos, así que
+   * CUALQUIER enqueue posterior de esta conversación —aunque fuera un
+   * mensaje nuevo del cliente, no un reintento del sistema— heredaba el
+   * contador ya en 3 y se abandonaba de una, sin gastar ningún intento
+   * nuevo; por eso 5 rondas (no múltiplo de 3) terminaban igual con la cola
+   * vacía. Con la limpieza, cada abandono reinicia el contador, así que hace
+   * falta un ciclo COMPLETO de `MAX_ATTEMPTS` fallos nuevos para volver a
+   * abandonar — la prueba ahora corre dos ciclos completos (6 rondas) y
+   * confirma que abandona DOS veces, no que la primera abandonada la deja
+   * muda para siempre ante cualquier fallo futuro.
    */
-  it("abandona la conversación que falla una y otra vez", async () => {
+  it("abandona la conversación que falla una y otra vez — y, si el cliente insiste, vuelve a intentarlo un ciclo completo antes de abandonar de nuevo", async () => {
     if (!disponible) return;
+    recordHandoffAdminMock.mockClear();
     runAgentTurnMock.mockImplementation(async () => {
       throw new Error("el modelo no respondió");
     });
 
-    for (let intento = 0; intento < 5; intento++) {
+    for (let intento = 0; intento < 3; intento++) {
       await enqueueAgentTurns(["conv-1"], { debounceSeconds: 0 });
       await processQueuedTurns();
     }
-
+    // Primer ciclo: abandonada, cola vacía.
     expect(await pendingAgentTurns()).toBe(0);
+    expect(recordHandoffAdminMock).toHaveBeenCalledTimes(1);
+
+    for (let intento = 0; intento < 3; intento++) {
+      await enqueueAgentTurns(["conv-1"], { debounceSeconds: 0 });
+      await processQueuedTurns();
+    }
+    // Segundo ciclo: el contador arrancó de cero tras el primer abandono, así
+    // que hicieron falta otros 3 fallos —no uno solo— para abandonar de
+    // nuevo. La cola sigue vacía, y ya son DOS abandonos, no uno que se
+    // repite en cada fallo futuro sin gastar reintentos.
+    expect(await pendingAgentTurns()).toBe(0);
+    expect(recordHandoffAdminMock).toHaveBeenCalledTimes(2);
   });
 
   /**
@@ -298,6 +323,62 @@ describe("processQueuedTurns", () => {
       toKind: "unassigned",
       reason: "abandonado",
     });
+  });
+
+  /**
+   * I (20/9/2026, "El resguardo antes del push", C3): al abandonar
+   * (MAX_ATTEMPTS) el contador de fallos de esa conversación NO se limpiaba
+   * — igual que sí pasa en el camino de éxito (`clearFailures` tras
+   * `runAgentTurn`) y en el de `NonRetryableTurnError` (test de arriba). Con
+   * el contador vivo hasta una hora (`FAILURE_TTL_SECONDS`), el PRIMER
+   * fallo de un turno NUEVO para esa misma conversación (el cliente volvió
+   * a escribir; un 429 suelto) ya arrancaba en `intentos = 4` — por encima
+   * de `MAX_ATTEMPTS` — y se abandonaba de una, sin ningún reintento. T12
+   * ("El turno se reintenta solo…", 19/9/2026) lo vuelve más probable: más
+   * turnos gastan intentos por conversación.
+   */
+  it("tras un abandono, un turno NUEVO que falla una vez se reintenta — no se abandona de nuevo", async () => {
+    if (!disponible) return;
+    const error = vi.spyOn(log, "error");
+    error.mockClear();
+    recordHandoffAdminMock.mockClear();
+    runAgentTurnMock.mockImplementation(async () => {
+      throw new Error("el modelo no respondió");
+    });
+
+    // Agota los tres intentos y abandona conv-1, igual que el test de arriba.
+    for (let intento = 0; intento < 3; intento++) {
+      await enqueueAgentTurns(["conv-1"], { debounceSeconds: 0 });
+      await processQueuedTurns();
+    }
+    expect(error).toHaveBeenCalledWith("cola_turno_abandonado", {
+      conversationId: "conv-1",
+      intentos: 3,
+      detail: "el modelo no respondió",
+    });
+
+    error.mockClear();
+    recordHandoffAdminMock.mockClear();
+
+    // El cliente vuelve a escribir (o un fallo transitorio suelto): un turno
+    // nuevo para la MISMA conversación, que falla una sola vez.
+    runAgentTurnMock.mockImplementationOnce(async () => {
+      throw new Error("corte de red pasajero");
+    });
+    await enqueueAgentTurns(["conv-1"], { debounceSeconds: 0 });
+    await processQueuedTurns();
+
+    // Sin la limpieza, esto habría sido "cola_turno_abandonado" con
+    // intentos: 4. Con la limpieza, arranca de cero: es solo el primer
+    // fallo de esta ronda, así que se reintenta.
+    expect(error).toHaveBeenCalledWith("cola_turno_fallido", {
+      conversationId: "conv-1",
+      intentos: 1,
+      detail: "corte de red pasajero",
+    });
+    expect(error).not.toHaveBeenCalledWith("cola_turno_abandonado", expect.anything());
+    expect(recordHandoffAdminMock).not.toHaveBeenCalled();
+    expect(await pendingAgentTurns()).toBe(1);
   });
 
   /**

@@ -46,6 +46,15 @@ interface Estado {
   };
   /** Si viene con mensaje, el `select` previo al reclamo falla — no debe tumbar la función (falla abierto hacia "no estaba asignada"). */
   currentConversationError: { message: string } | null;
+  /**
+   * E (20/9/2026): qué etiqueta existe ya en `tags`, por `label`. Vacío de
+   * fábrica (como el fake original, que siempre devolvía `data: null`); un
+   * test que quiera ejercitar el upsert de "Reclamo · …" precarga la que
+   * necesite.
+   */
+  tagsByLabel: Record<string, { id: string }>;
+  /** Cada upsert real hecho contra `contact_tags`. */
+  tagUpserts: Record<string, unknown>[];
 }
 
 function createFakeSupabase(): { client: unknown; estado: Estado } {
@@ -56,6 +65,8 @@ function createFakeSupabase(): { client: unknown; estado: Estado } {
     pasos: [],
     currentConversation: { assigned_agent_id: null, ai_enabled: true, assigned_agent: null },
     currentConversationError: null,
+    tagsByLabel: {},
+    tagUpserts: [],
   };
 
   const client = {
@@ -91,10 +102,21 @@ function createFakeSupabase(): { client: unknown; estado: Estado } {
         };
       }
       if (table === "tags") {
-        return { select: () => ({ eq: () => ({ maybeSingle: async () => ({ data: null }) }) }) };
+        return {
+          select: () => ({
+            eq: (_col: string, label: string) => ({
+              maybeSingle: async () => ({ data: estado.tagsByLabel[label] ?? null }),
+            }),
+          }),
+        };
       }
       if (table === "contact_tags") {
-        return { upsert: async () => ({ data: null, error: null }) };
+        return {
+          upsert: async (row: Record<string, unknown>) => {
+            estado.tagUpserts.push(row);
+            return { data: null, error: null };
+          },
+        };
       }
       throw new Error(`Fake Supabase: tabla no soportada: ${table}`);
     },
@@ -402,6 +424,90 @@ describe("escalateConversation — el chat ya tenía asesor asignado", () => {
 
     expect(result).toMatchObject({ escalated: true, assignedAgentName: "María" });
     expect(result.alreadyAssigned).toBeUndefined();
+  });
+
+  /**
+   * E (20/9/2026, "El resguardo antes del push", C3): la rama `yaAsignado`
+   * retornaba ANTES del bloque que etiqueta el contacto con "Reclamo · …"
+   * (motivo `queja`) — con la IA encendida tras escalar (D2), una queja
+   * sobre un chat YA asignado no recibía la etiqueta y no aparecía en la
+   * cola de Reclamos (`dashboard.ts`, que la arma solo con etiquetas que
+   * empiezan por "Reclamo").
+   */
+  it("motivo queja, chat ya asignado, con la etiqueta 'Reclamo · Atención' ya creada: SÍ hace el upsert, y sigue sin recordHandoff ni claimNextAvailableAgent", async () => {
+    claimNextAvailableAgentMock.mockClear();
+    const { client, estado } = createFakeSupabase();
+    estado.currentConversation = {
+      assigned_agent_id: "agent-9",
+      ai_enabled: true,
+      assigned_agent: { id: "agent-9", display_name: "Pedro" },
+    };
+    estado.tagsByLabel["Reclamo · Atención"] = { id: "tag-atencion" };
+
+    const result = await escalateConversation(
+      // @ts-expect-error -- fake mínimo
+      client,
+      { ...PARAMS, motivo: "queja" as const }
+    );
+
+    expect(estado.tagUpserts).toHaveLength(1);
+    expect(estado.tagUpserts[0]).toEqual({ contact_id: PARAMS.contactId, tag_id: "tag-atencion" });
+    expect(claimNextAvailableAgentMock).not.toHaveBeenCalled();
+    expect(estado.handoffs).toHaveLength(0);
+    expect(result).toMatchObject({ escalated: true, assignedAgentName: "Pedro", alreadyAssigned: true });
+  });
+
+  it("motivo queja, chat ya asignado, categoría explícita, con la etiqueta creada: usa el label de esa categoría", async () => {
+    const { client, estado } = createFakeSupabase();
+    estado.currentConversation = {
+      assigned_agent_id: "agent-9",
+      ai_enabled: true,
+      assigned_agent: { id: "agent-9", display_name: "Pedro" },
+    };
+    estado.tagsByLabel["Reclamo · Envío"] = { id: "tag-envio" };
+
+    await escalateConversation(
+      // @ts-expect-error -- fake mínimo
+      client,
+      { ...PARAMS, motivo: "queja" as const, categoriaReclamo: "Envío" as const }
+    );
+
+    expect(estado.tagUpserts).toEqual([{ contact_id: PARAMS.contactId, tag_id: "tag-envio" }]);
+  });
+
+  it("motivo queja, chat ya asignado, pero la etiqueta todavía no existe en 'tags': no hace ningún upsert", async () => {
+    const { client, estado } = createFakeSupabase();
+    estado.currentConversation = {
+      assigned_agent_id: "agent-9",
+      ai_enabled: true,
+      assigned_agent: { id: "agent-9", display_name: "Pedro" },
+    };
+
+    await escalateConversation(
+      // @ts-expect-error -- fake mínimo
+      client,
+      { ...PARAMS, motivo: "queja" as const }
+    );
+
+    expect(estado.tagUpserts).toHaveLength(0);
+  });
+
+  it("otro motivo (no queja), chat ya asignado, aunque la etiqueta exista: no hace ningún upsert", async () => {
+    const { client, estado } = createFakeSupabase();
+    estado.currentConversation = {
+      assigned_agent_id: "agent-9",
+      ai_enabled: true,
+      assigned_agent: { id: "agent-9", display_name: "Pedro" },
+    };
+    estado.tagsByLabel["Reclamo · Atención"] = { id: "tag-atencion" };
+
+    await escalateConversation(
+      // @ts-expect-error -- fake mínimo
+      client,
+      { ...PARAMS, motivo: "seguimiento" as const }
+    );
+
+    expect(estado.tagUpserts).toHaveLength(0);
   });
 });
 

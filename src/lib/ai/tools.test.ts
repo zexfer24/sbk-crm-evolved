@@ -63,18 +63,32 @@ interface FakeProductRow {
   product_compatibility: { moto_brand: string; moto_model: string }[];
 }
 
-/** Fila mínima de `ai_lessons` para simular un sinónimo de búsqueda (T5c, 18/9/2026). */
+/**
+ * Fila mínima de `ai_lessons` para simular un sinónimo de búsqueda (T5c,
+ * 18/9/2026). `scope`/`conversationId` son opcionales y por defecto simulan
+ * un sinónimo global de siempre (F, 20/9/2026, "El resguardo antes del
+ * push"): antes de esa corrida no existían, así que dejarlos sin poner
+ * mantiene el comportamiento de los tests viejos de este archivo.
+ */
 interface FakeSynonymRow {
   synonym_from: string;
   synonym_to: string;
+  scope?: "global" | "conversacion";
+  conversationId?: string;
 }
 
-function createFakeSupabase(products: FakeProductRow[], synonyms: FakeSynonymRow[] = []) {
+function createFakeSupabase(products: FakeProductRow[], synonyms: FakeSynonymRow[] = [], conversationId = "conv-1") {
   const insertedQuotes: Record<string, unknown>[] = [];
   /** Tope que la consulta le pidió a la base, o null si no pidió ninguno. */
   let appliedLimit: number | null = null;
   /** El filtro `.or()` que le llegó a `products` — sirve para ver qué términos quedaron tras expandir sinónimos (T5c, 18/9/2026). */
   let appliedFilter: string | null = null;
+  /**
+   * F (20/9/2026): el filtro `.or()` que le llegó a `ai_lessons` —
+   * `scope.eq.global,conversation_id.eq.<esta conversación>` — para poder
+   * assertar su literal exacto además de su efecto.
+   */
+  let appliedSynonymFilter: string | null = null;
 
   const client = {
     from(table: string) {
@@ -106,13 +120,26 @@ function createFakeSupabase(products: FakeProductRow[], synonyms: FakeSynonymRow
       // T5c (18/9/2026): sinónimos activos que `buildCatalogTool` lee antes
       // de armar el filtro. Vacío por defecto, para que el resto de los
       // tests de este archivo (que no ejercitan sinónimos) no tengan que
-      // enterarse de esta consulta nueva.
+      // enterarse de esta consulta nueva. F (20/9/2026): sumó `.or(...)`
+      // ANTES de `.limit()` — el fake simula el filtro real de la base:
+      // solo pasan los sinónimos `scope=global` o de ESTA conversación,
+      // igual que haría Postgres con la condición de verdad.
       if (table === "ai_lessons") {
         return {
           select: () => ({
             eq: () => ({
               eq: () => ({
-                limit: async () => ({ data: synonyms, error: null }),
+                or: (filter: string) => {
+                  appliedSynonymFilter = filter;
+                  return {
+                    limit: async () => ({
+                      data: synonyms.filter(
+                        (s) => (s.scope ?? "global") === "global" || s.conversationId === conversationId
+                      ),
+                      error: null,
+                    }),
+                  };
+                },
               }),
             }),
           }),
@@ -122,7 +149,13 @@ function createFakeSupabase(products: FakeProductRow[], synonyms: FakeSynonymRow
     },
   };
 
-  return { client, insertedQuotes, getAppliedLimit: () => appliedLimit, getAppliedFilter: () => appliedFilter };
+  return {
+    client,
+    insertedQuotes,
+    getAppliedLimit: () => appliedLimit,
+    getAppliedFilter: () => appliedFilter,
+    getAppliedSynonymFilter: () => appliedSynonymFilter,
+  };
 }
 
 describe("buildCatalogTool — registro de cotizaciones", () => {
@@ -298,8 +331,9 @@ describe("buildCatalogTool — sinónimos de búsqueda (T5c, 18/9/2026)", () => 
    * ("ignora los sinónimos inactivos"), donde es más directo de armar sin
    * fingir toda la cadena de Supabase.
    */
-  it("respeta el filtro is_active de la consulta: solo pide sinónimos activos", async () => {
+  it("respeta el filtro is_active de la consulta: solo pide sinónimos activos, y el alcance es global o de esta conversación", async () => {
     const filtrosVistos: unknown[] = [];
+    let synonymOrFilter: string | null = null;
     const client = {
       from(table: string) {
         if (table === "ai_lessons") {
@@ -310,7 +344,12 @@ describe("buildCatalogTool — sinónimos de búsqueda (T5c, 18/9/2026)", () => 
                 return {
                   eq: (col2: string, val2: unknown) => {
                     filtrosVistos.push([col2, val2]);
-                    return { limit: async () => ({ data: [], error: null }) };
+                    return {
+                      or: (filter: string) => {
+                        synonymOrFilter = filter;
+                        return { limit: async () => ({ data: [], error: null }) };
+                      },
+                    };
                   },
                 };
               },
@@ -339,6 +378,77 @@ describe("buildCatalogTool — sinónimos de búsqueda (T5c, 18/9/2026)", () => 
 
     expect(filtrosVistos).toContainEqual(["kind", "sinonimo"]);
     expect(filtrosVistos).toContainEqual(["is_active", true]);
+
+    // F (20/9/2026, "El resguardo antes del push", C3): sin este filtro, un
+    // sinónimo guardado como "Solo este chat" (scope='conversacion') se
+    // aplicaba a TODOS los chats. El literal exacto que le llega a `.or()`.
+    expect(synonymOrFilter).toBe(`scope.eq.global,conversation_id.eq."conv-1"`);
+  });
+
+  /**
+   * F (20/9/2026): un sinónimo "Solo este chat" de OTRA conversación no
+   * puede expandir la búsqueda de esta — el fake `createFakeSupabase` ya
+   * simula el filtro real (solo pasan `scope=global` o los de ESTA
+   * conversación), así que este caso ejercita el efecto, no solo el
+   * literal de arriba.
+   */
+  it("un sinónimo 'solo este chat' de OTRA conversación no expande la búsqueda de esta", async () => {
+    const { client, getAppliedFilter } = createFakeSupabase(
+      [
+        {
+          id: "prod-1",
+          name: "Pastillas de freno Bera",
+          brand: "Bera",
+          price: 12,
+          currency: "USD",
+          stock_quantity: 4,
+          product_compatibility: [],
+        },
+      ],
+      [{ synonym_from: "pastilla", synonym_to: "pastillas de freno", scope: "conversacion", conversationId: "conv-otro-chat" }],
+      "conv-1"
+    );
+
+    const tool = buildCatalogTool(
+      // @ts-expect-error -- fake mínimo
+      { supabase: client, conversationId: "conv-1", contactId: "contact-1" },
+      nuevoCatalogOutcome()
+    );
+
+    // @ts-expect-error -- firma simplificada del test
+    await tool.execute({ query: "pastilla" }, { toolCallId: "t1", messages: [] });
+
+    expect(getAppliedFilter()).toContain("pastilla");
+    expect(getAppliedFilter()).not.toContain("pastillas de freno");
+  });
+
+  it("un sinónimo 'solo este chat' de ESTA conversación SÍ expande la búsqueda", async () => {
+    const { client, getAppliedFilter } = createFakeSupabase(
+      [
+        {
+          id: "prod-1",
+          name: "Pastillas de freno Bera",
+          brand: "Bera",
+          price: 12,
+          currency: "USD",
+          stock_quantity: 4,
+          product_compatibility: [],
+        },
+      ],
+      [{ synonym_from: "pastilla", synonym_to: "pastillas de freno", scope: "conversacion", conversationId: "conv-1" }],
+      "conv-1"
+    );
+
+    const tool = buildCatalogTool(
+      // @ts-expect-error -- fake mínimo
+      { supabase: client, conversationId: "conv-1", contactId: "contact-1" },
+      nuevoCatalogOutcome()
+    );
+
+    // @ts-expect-error -- firma simplificada del test
+    await tool.execute({ query: "pastilla" }, { toolCallId: "t1", messages: [] });
+
+    expect(getAppliedFilter()).toContain("pastillas de freno");
   });
 });
 
@@ -935,7 +1045,9 @@ describe("un error de la base deja rastro en el log (D3, 6/9/2026)", () => {
         // "no soportada" antes de llegar siquiera a simular el fallo real.
         if (table === "ai_lessons") {
           return {
-            select: () => ({ eq: () => ({ eq: () => ({ limit: async () => ({ data: [], error: null }) }) }) }),
+            select: () => ({
+              eq: () => ({ eq: () => ({ or: () => ({ limit: async () => ({ data: [], error: null }) }) }) }),
+            }),
           };
         }
         throw new Error(`Fake Supabase: tabla no soportada en este test: ${table}`);
@@ -1229,7 +1341,9 @@ describe("buildCatalogTool — el CatalogOutcome se acumula entre llamadas del m
         // T5c (18/9/2026): igual que en `createFakeSupabase`, vacío por defecto.
         if (table === "ai_lessons") {
           return {
-            select: () => ({ eq: () => ({ eq: () => ({ limit: async () => ({ data: [], error: null }) }) }) }),
+            select: () => ({
+              eq: () => ({ eq: () => ({ or: () => ({ limit: async () => ({ data: [], error: null }) }) }) }),
+            }),
           };
         }
         throw new Error(`Fake Supabase: tabla no soportada en este test: ${table}`);

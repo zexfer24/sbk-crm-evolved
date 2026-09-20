@@ -498,7 +498,17 @@ describe("unassign — reenciende la IA solo si fue el propio tomar-a-mano y el 
   ) {
     const calls: Array<
       | { table: "conversations"; op: "select" }
-      | { table: "conversations"; op: "update"; payload: Record<string, unknown> }
+      | {
+          table: "conversations";
+          op: "update";
+          payload: Record<string, unknown>;
+          // D (20/9/2026, corrida "El resguardo antes del push"): el fake
+          // no distinguía operador — quitar el `.is(...)` del UPDATE de
+          // reencendido pasaba en verde igual. Ahora cada filtro de la
+          // cadena (`.eq`/`.is`/`.neq`) queda registrado en orden con su
+          // operador, columna y valor, para poder assertar los tres juntos.
+          filters: Array<{ op: "eq" | "is" | "neq"; column: string; value: unknown }>;
+        }
       | { table: "conversation_handoffs"; op: "select"; filters: Record<string, unknown> }
       | { table: "messages"; op: "select"; filters: Record<string, unknown> }
       | { table: "messages"; op: "insert"; payload: unknown }
@@ -522,9 +532,10 @@ describe("unassign — reenciende la IA solo si fue el propio tomar-a-mano y el 
                 },
               }),
             }),
-            update: (payload: Record<string, unknown>) => ({
-              eq: async () => {
-                calls.push({ table, op: "update", payload });
+            update: (payload: Record<string, unknown>) => {
+              const filters: Array<{ op: "eq" | "is" | "neq"; column: string; value: unknown }> = [];
+              const run = async () => {
+                calls.push({ table, op: "update", payload, filters });
                 if ("assigned_agent_id" in payload && options.firstUpdateError) {
                   return { error: options.firstUpdateError };
                 }
@@ -532,8 +543,30 @@ describe("unassign — reenciende la IA solo si fue el propio tomar-a-mano y el 
                   return { error: options.secondUpdateError };
                 }
                 return { error: null };
-              },
-            }),
+              };
+              // Encadenable como el builder real de Supabase: cada filtro
+              // devuelve el mismo builder (para poder seguir encadenando)
+              // y el builder es "thenable" en cualquier punto de la cadena
+              // (así `await update(...).eq(...)` sigue funcionando igual
+              // que antes de sumar `.is`/`.neq`).
+              const builder = {
+                eq: (column: string, value: unknown) => {
+                  filters.push({ op: "eq", column, value });
+                  return builder;
+                },
+                is: (column: string, value: unknown) => {
+                  filters.push({ op: "is", column, value });
+                  return builder;
+                },
+                neq: (column: string, value: unknown) => {
+                  filters.push({ op: "neq", column, value });
+                  return builder;
+                },
+                then: (onFulfilled: (v: { error: Error | null }) => unknown, onRejected?: (e: unknown) => unknown) =>
+                  run().then(onFulfilled, onRejected),
+              };
+              return builder;
+            },
           };
         }
         if (table === "conversation_handoffs") {
@@ -596,6 +629,7 @@ describe("unassign — reenciende la IA solo si fue el propio tomar-a-mano y el 
       table: "conversations";
       op: "update";
       payload: Record<string, unknown>;
+      filters: Array<{ op: "eq" | "is" | "neq"; column: string; value: unknown }>;
     }[];
   }
 
@@ -612,6 +646,17 @@ describe("unassign — reenciende la IA solo si fue el propio tomar-a-mano y el 
     expect(updates).toHaveLength(2);
     expect(updates[0].payload).toEqual({ assigned_agent_id: null });
     expect(updates[1].payload).toEqual({ ai_enabled: true });
+
+    // D (20/9/2026): el UPDATE que reenciende a Seba no se escribe a
+    // ciegas — condiciona `id`, `assigned_agent_id is null` y
+    // `status <> closed` para no pisar a un asesor que tomó el chat, o un
+    // cierre, ocurridos en la ventana de las 4 idas y vueltas HTTP de
+    // arriba.
+    expect(updates[1].filters).toEqual([
+      { op: "eq", column: "id", value: "conv-1" },
+      { op: "is", column: "assigned_agent_id", value: null },
+      { op: "neq", column: "status", value: "closed" },
+    ]);
 
     // La consulta de conversation_handoffs busca la fila que deja el
     // segundo UPDATE de silenceAiForManualTakeover (T10): mismo reason,

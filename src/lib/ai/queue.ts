@@ -489,6 +489,16 @@ async function ejecutarPasada(limit: number): Promise<ResultadoPasada> {
             toKind: "unassigned",
             reason: "abandonado",
           });
+
+          // I (20/9/2026, "El resguardo antes del push", C3): sin esto, el
+          // contador de fallos de esta conversación seguía vivo hasta una
+          // hora (`FAILURE_TTL_SECONDS`). Un turno NUEVO para la misma
+          // conversación —el cliente volvió a escribir, o un 429 suelto— ya
+          // arrancaba por encima de `MAX_ATTEMPTS` y se abandonaba de una,
+          // sin ningún reintento, exactamente como el camino de éxito
+          // (`clearFailures` tras `runAgentTurn`) y el de
+          // `NonRetryableTurnError` ya limpian el suyo por el mismo motivo.
+          await cola.clearFailures(conversationId);
         } else {
           log.error("cola_turno_fallido", { conversationId, intentos, detail });
           // Sin push a plazosDiferidos: ver el comentario de PlazoDiferido —

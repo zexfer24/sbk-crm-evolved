@@ -12,6 +12,11 @@ import { PREGUNTA_FILTRO, TEXTO_CONFIRMAR_INVENTARIO, TEXTO_NO_IDENTIFICADO, TEX
 import { inventoryAgeInstruction, inventoryFreshness } from "@/lib/inventory-freshness";
 import { errorText, log } from "@/lib/log";
 import type { BusinessHours, BusinessStatus } from "@/lib/business-hours";
+// F (20/9/2026, "El resguardo antes del push", C3): mismo escapado de
+// literales que `catalog-search.ts` usa para el `.or()` de `products` — acá
+// hace falta para no interpolar `conversationId` crudo en el `.or()` de
+// `ai_lessons` (ver más abajo).
+import { pgrstLiteral } from "@/lib/ai/pgrst";
 
 /**
  * Tope de repuestos que se le pasan al modelo de una vez.
@@ -210,11 +215,21 @@ export function buildCatalogTool({ supabase, conversationId }: ToolDeps, catalog
       // MISMO `.or()` que la búsqueda real, no en una segunda consulta. Un
       // error acá no frena la búsqueda: se sigue con los términos tal cual
       // llegaron, ni mejor ni peor que antes de esta tarea.
+      //
+      // F (20/9/2026, "El resguardo antes del push", C3): faltaba filtrar
+      // por ALCANCE. `teach-seba-modal.tsx` permite guardar un sinónimo como
+      // "Solo este chat" (`scope = 'conversacion'`, con `conversation_id`
+      // propio) — sin este `.or()`, esa consulta traía TODOS los sinónimos
+      // activos sin mirar su alcance, así que un sinónimo pensado para un
+      // solo cliente se aplicaba a cualquier chat que consultara el
+      // catálogo. Ahora solo entran los `scope = 'global'` (el default de la
+      // UI) o los que nacieron en ESTA conversación.
       const { data: synonymRows } = await supabase
         .from("ai_lessons")
         .select("synonym_from, synonym_to")
         .eq("kind", "sinonimo")
         .eq("is_active", true)
+        .or(`scope.eq.global,conversation_id.eq.${pgrstLiteral(conversationId)}`)
         .limit(MAX_SYNONYM_LESSONS);
 
       const synonyms: SearchSynonym[] = (synonymRows ?? [])

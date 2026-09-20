@@ -476,7 +476,22 @@ async function reenableAiIfAdvisorNeverWrote(
     const advisorWrote = await advisorWroteToCustomerSince(supabase, conversationId, previous.assignedAt);
     if (advisorWrote) return;
 
-    const { error } = await supabase.from("conversations").update({ ai_enabled: true }).eq("id", conversationId);
+    // D (20/9/2026, "El resguardo antes del push", C3): este UPDATE se
+    // escribía a ciegas después de 4 idas y vueltas HTTP (dos lecturas más
+    // el propio UPDATE de desasignar). Si en esa ventana otro asesor toma
+    // el chat (su `silenceAiForManualTakeover` no hace nada porque la IA
+    // ya estaba apagada) o el chat se cierra, este UPDATE lo pisaba igual
+    // — dejaba un chat ASIGNADO con Seba encendida (el C1 que T10 cerró) o
+    // uno CERRADO con la IA encendida. Condicionarlo con `assigned_agent_id
+    // is null` y `status <> closed` hace que, si cualquiera de las dos
+    // cosas ya cambió, el UPDATE no afecte ninguna fila (0 rows, sin
+    // error) y la IA se quede como está.
+    const { error } = await supabase
+      .from("conversations")
+      .update({ ai_enabled: true })
+      .eq("id", conversationId)
+      .is("assigned_agent_id", null)
+      .neq("status", "closed");
     if (error) throw error;
   } catch (err) {
     console.error(

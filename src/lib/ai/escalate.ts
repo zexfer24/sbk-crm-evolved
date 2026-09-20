@@ -40,6 +40,30 @@ export type EscalationMotivo =
   | "sin_stock"
   | "no_identificado";
 
+/**
+ * E (20/9/2026, "El resguardo antes del push", C3): la rama `yaAsignado` de
+ * `escalateConversation` retornaba ANTES de este bloque — con la IA
+ * encendida tras escalar (D2, "Seba atiende el mostrador", 18/9/2026), una
+ * queja sobre un chat YA asignado (segunda o siguiente consulta del mismo
+ * cliente) no recibía la etiqueta "Reclamo · …" y por lo tanto no aparecía
+ * en la cola de Reclamos (`dashboard.ts`, que la arma solo con etiquetas
+ * que empiezan por "Reclamo"). Se extrae a un helper para llamarlo desde
+ * las DOS ramas sin duplicar la consulta.
+ */
+async function tagAsReclamoIfNeeded(
+  supabase: SupabaseClient<Database>,
+  motivo: EscalationMotivo,
+  categoriaReclamo: ReclamoCategory | undefined,
+  contactId: string
+) {
+  if (motivo !== "queja") return;
+  const label = `Reclamo · ${categoriaReclamo ?? "Atención"}`;
+  const { data: tag } = await supabase.from("tags").select("id").eq("label", label).maybeSingle();
+  if (tag) {
+    await supabase.from("contact_tags").upsert({ contact_id: contactId, tag_id: tag.id });
+  }
+}
+
 export interface EscalateResult {
   /** El caso salió de manos de la IA. Es true aunque no haya habido a quién asignárselo. */
   escalated: boolean;
@@ -158,6 +182,10 @@ export async function escalateConversation(
       content: `IA reiteró la escalada a ${yaAsignado.displayName}. Motivo: ${motivo}. ${resumen}`,
     });
 
+    // E (20/9/2026): la queja SÍ se etiqueta también en esta rama — ver el
+    // comentario de `tagAsReclamoIfNeeded` más arriba.
+    await tagAsReclamoIfNeeded(supabase, motivo, categoriaReclamo, contactId);
+
     // Sin `recordHandoff`: reasignar el MISMO asesor no es un traspaso — el
     // aviso de asignación (`assignment-notice.ts`) solo dispara con la razón
     // `escalada`, y volver a escribirla en cada pregunta lo haría saltar de
@@ -210,13 +238,7 @@ export async function escalateConversation(
       : { conversationId, toKind: "unassigned", reason: "escalada_sin_asesor" }
   );
 
-  if (motivo === "queja") {
-    const label = `Reclamo · ${categoriaReclamo ?? "Atención"}`;
-    const { data: tag } = await supabase.from("tags").select("id").eq("label", label).maybeSingle();
-    if (tag) {
-      await supabase.from("contact_tags").upsert({ contact_id: contactId, tag_id: tag.id });
-    }
-  }
+  await tagAsReclamoIfNeeded(supabase, motivo, categoriaReclamo, contactId);
 
   return candidate
     ? { escalated: true, assignedAgentName: candidate.displayName, businessStatus: estadoHorario }
