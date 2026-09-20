@@ -122,6 +122,68 @@ begin
 end $$;
 
 -- ---------------------------------------------------------------------------
+-- Caso 3b · clave de 31 caracteres rechazada -- el tope del CHECK
+-- (`^[a-z0-9-]{1,30}$`) es 30, no 31 -- "El resguardo antes del push"
+-- (20/9/2026, tarea M3): una prueba de mutación cambiando `{1,30}` por
+-- `{1,31}` sobrevivía porque ningún caso probaba el borde superior de la
+-- longitud (el caso 2/3 solo prueban el ALFABETO, no el LARGO).
+-- ---------------------------------------------------------------------------
+do $$
+declare
+  se_insertó boolean := false;
+begin
+  begin
+    insert into public.catalog_links (id, key, label, url, updated_by) values (
+      'd2d2d2d2-0000-0000-0000-000000000031',
+      repeat('a', 31),
+      'Clave de 31, no debería pasar',
+      'https://drive.google.com/file/d/31/view',
+      'd1d1d1d1-0000-0000-0000-000000000002'
+    );
+    se_insertó := true;
+  exception
+    when check_violation then
+      -- Esperado: 23514, el CHECK inline de key (`^[a-z0-9-]{1,30}$`).
+      null;
+  end;
+
+  if se_insertó then
+    insert into _errores(msg) values ('Caso 3b (clave de 31 caracteres): el insert se aceptó -- el CHECK de key no está topando en 30.');
+  end if;
+end $$;
+
+-- ---------------------------------------------------------------------------
+-- Caso 3c · clave con GUION BAJO rechazada -- el alfabeto del CHECK es
+-- `[a-z0-9-]` (guion MEDIO), no `_` -- "El resguardo antes del push"
+-- (20/9/2026, tarea M3): la trampa de CLAUDE.md sobre marcadores mal
+-- escritos ("cascos_nuevos" con guion bajo) documenta justo este caso como
+-- "sin resolver" del lado de `resolveCatalogMarkers`, pero nada probaba que
+-- la BASE también lo rechace al crear el catálogo.
+-- ---------------------------------------------------------------------------
+do $$
+declare
+  se_insertó boolean := false;
+begin
+  begin
+    insert into public.catalog_links (id, key, label, url, updated_by) values (
+      'd2d2d2d2-0000-0000-0000-00000000003c',
+      'cascos_nuevos',
+      'Guion bajo, no debería pasar',
+      'https://drive.google.com/file/d/3c/view',
+      'd1d1d1d1-0000-0000-0000-000000000002'
+    );
+    se_insertó := true;
+  exception
+    when check_violation then
+      null;
+  end;
+
+  if se_insertó then
+    insert into _errores(msg) values ('Caso 3c (clave con guion bajo): el insert se aceptó -- el CHECK de key no está frenando el guion bajo.');
+  end if;
+end $$;
+
+-- ---------------------------------------------------------------------------
 -- Caso 4 · URL sin esquema (`http(s)://`) rechazada por el CHECK de `url`.
 -- ---------------------------------------------------------------------------
 do $$

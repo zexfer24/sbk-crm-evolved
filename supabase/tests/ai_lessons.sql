@@ -219,6 +219,52 @@ begin
 end $$;
 
 -- ---------------------------------------------------------------------------
+-- Caso 2b · el propio AUTOR (A) edita y borra SU PROPIA lección -- "El
+-- resguardo antes del push" (20/9/2026, tarea M3). Hasta esta corrida el
+-- archivo solo probaba que un agente AJENO (B) no puede tocarla (caso 3) y
+-- que un SUPERVISOR sí puede (caso 4); una prueba de mutación que le quitaba
+-- a `ai_lessons_update` la rama `or created_by = auth.uid()` (dejando SOLO
+-- `is_supervisor_or_admin()`) sobrevivía a los dos porque ninguno ejercitaba
+-- el camino del propio autor -- exactamente la mitad de la política que la
+-- migración documenta ("solo el autor o un supervisor/admin puede editar o
+-- borrar"). Usa una TERCERA lección, propia de este caso, para no interferir
+-- con la que los casos 3 y 4 necesitan intacta.
+-- ---------------------------------------------------------------------------
+do $$
+declare
+  filas integer;
+  activa boolean;
+begin
+  insert into public.ai_lessons (id, scope, kind, content, created_by) values (
+    'c5c5c5c5-0000-0000-0000-000000000003',
+    'global',
+    'nota',
+    'El repuesto de encendido de la Empire Keeway también calza en la TVS Star.',
+    'c1c1c1c1-0000-0000-0000-000000000001'
+  );
+
+  update public.ai_lessons set is_active = false where id = 'c5c5c5c5-0000-0000-0000-000000000003';
+  get diagnostics filas = row_count;
+  if filas is distinct from 1 then
+    insert into _errores(msg) values (format('Caso 2b (el autor edita lo suyo): UPDATE afectó %s fila(s), se esperaba 1.', filas));
+  end if;
+
+  select is_active into activa from public.ai_lessons where id = 'c5c5c5c5-0000-0000-0000-000000000003';
+  if activa is distinct from false then
+    insert into _errores(msg) values (format('Caso 2b (el autor edita lo suyo): is_active = %s, se esperaba false.', activa));
+  end if;
+
+  delete from public.ai_lessons where id = 'c5c5c5c5-0000-0000-0000-000000000003';
+  get diagnostics filas = row_count;
+  if filas is distinct from 1 then
+    insert into _errores(msg) values (format('Caso 2b (el autor borra lo suyo): DELETE afectó %s fila(s), se esperaba 1.', filas));
+  end if;
+exception
+  when others then
+    insert into _errores(msg) values (format('Caso 2b (el autor edita/borra lo suyo): falló y no debía -- %s', sqlerrm));
+end $$;
+
+-- ---------------------------------------------------------------------------
 -- Caso 3 · otro agente (B, ni supervisor ni autor) intenta UPDATE/DELETE de
 -- la lección de A → 0 filas afectadas (la política solo lo deja pasar por
 -- is_supervisor_or_admin() o created_by = auth.uid(); ninguna de las dos se
@@ -283,6 +329,33 @@ end $$;
 
 reset role;
 reset "request.jwt.claim.sub";
+
+-- ---------------------------------------------------------------------------
+-- Caso 7b · la política `ai_lessons_select` es `using (is_agent())`, no
+-- `using (true)` -- "El resguardo antes del push" (20/9/2026, tarea M3): con
+-- `handle_new_agent()` creando una fila espejo para TODO usuario de
+-- `auth.users`, cualquier sesión autenticada de las pruebas de arriba ya es
+-- agente y no distingue las dos políticas. Este caso usa un uuid que NUNCA
+-- se insertó en `auth.users` (por lo tanto tampoco en `agents`): con
+-- `is_agent()` de verdad, `auth.uid()` no calza ninguna fila y el SELECT
+-- debe devolver 0 filas; con `using (true)` devolvería todas.
+-- ---------------------------------------------------------------------------
+do $$
+declare
+  n integer;
+begin
+  set local role authenticated;
+  set local "request.jwt.claim.sub" = 'c1c1c1c1-0000-0000-0000-00000000ffff';
+
+  select count(*) into n from public.ai_lessons;
+
+  reset role;
+  reset "request.jwt.claim.sub";
+
+  if n is distinct from 0 then
+    insert into _errores(msg) values (format('Caso 7b (select sin fila en agents): %s fila(s) visibles, se esperaban 0 -- ai_lessons_select no está exigiendo is_agent().', n));
+  end if;
+end $$;
 
 -- ---------------------------------------------------------------------------
 -- Caso 8 · ai_lessons quedó publicada en supabase_realtime (mismo criterio

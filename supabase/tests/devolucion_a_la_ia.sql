@@ -75,10 +75,11 @@ insert into auth.users (id, email, raw_user_meta_data) values
 insert into public.whatsapp_channels (id, label, phone_number) values
   ('b8b8b8b8-0000-0000-0000-000000000000', 'Canal de prueba devolución a la IA', '+580000006000');
 
--- Diecisiete conversaciones propias, una por caso (el 12 -- permisos -- no
+-- Dieciocho conversaciones propias, una por caso (el 12 -- permisos -- no
 -- necesita ninguna). Los casos 13-16 son la corrección post-revisión del
 -- 16/9/2026 (`/code-review high`): `reclamado` (13, 14, 15) y la rama
--- `closed` de `v_to_kind` (16).
+-- `closed` de `v_to_kind` (16). El caso 17 se sumó el 20/9/2026 ("El
+-- resguardo antes del push", tarea M3).
 insert into public.contacts (id, phone_number) values
   ('b7b7b7b7-0000-0000-0000-000000000001', '+580000006001'), -- caso 1
   ('b7b7b7b7-0000-0000-0000-000000000002', '+580000006002'), -- caso 2
@@ -96,7 +97,8 @@ insert into public.contacts (id, phone_number) values
   ('b7b7b7b7-0000-0000-0000-000000000014', '+580000006014'), -- caso 13 (reclamado desde unassigned)
   ('b7b7b7b7-0000-0000-0000-000000000015', '+580000006015'), -- caso 14 (reclamado con IA encendida)
   ('b7b7b7b7-0000-0000-0000-000000000016', '+580000006016'), -- caso 15 (reclamado: reasignar X -> Y)
-  ('b7b7b7b7-0000-0000-0000-000000000017', '+580000006017'); -- caso 16 (cerrada, desasignar -> closed)
+  ('b7b7b7b7-0000-0000-0000-000000000017', '+580000006017'), -- caso 16 (cerrada, desasignar -> closed)
+  ('b7b7b7b7-0000-0000-0000-000000000018', '+580000006018'); -- caso 17 (reclamado con ai_enabled cambiando a la vez)
 
 insert into public.conversations (id, contact_id, whatsapp_channel_id) values
   ('b6b6b6b6-0000-0000-0000-000000000001', 'b7b7b7b7-0000-0000-0000-000000000001', 'b8b8b8b8-0000-0000-0000-000000000000'),
@@ -115,6 +117,7 @@ insert into public.conversations (id, contact_id, whatsapp_channel_id) values
   ('b6b6b6b6-0000-0000-0000-000000000014', 'b7b7b7b7-0000-0000-0000-000000000014', 'b8b8b8b8-0000-0000-0000-000000000000'),
   ('b6b6b6b6-0000-0000-0000-000000000015', 'b7b7b7b7-0000-0000-0000-000000000015', 'b8b8b8b8-0000-0000-0000-000000000000'),
   ('b6b6b6b6-0000-0000-0000-000000000016', 'b7b7b7b7-0000-0000-0000-000000000016', 'b8b8b8b8-0000-0000-0000-000000000000'),
+  ('b6b6b6b6-0000-0000-0000-000000000018', 'b7b7b7b7-0000-0000-0000-000000000018', 'b8b8b8b8-0000-0000-0000-000000000000'),
   ('b6b6b6b6-0000-0000-0000-000000000017', 'b7b7b7b7-0000-0000-0000-000000000017', 'b8b8b8b8-0000-0000-0000-000000000000');
 
 -- ---------------------------------------------------------------------------
@@ -580,11 +583,23 @@ begin
 end $$;
 
 -- ---------------------------------------------------------------------------
--- Caso 12 · permisos -- anon no puede ejecutar ninguna de las dos funciones
--- de esta migración (los dos revokes: PUBLIC y anon/authenticated). El
--- guardián general de permisos_funciones.sql ya recorre pg_proc entero;
--- esta aserción es la específica de esta migración, igual que awaiting_reply.sql
--- prueba su propio CHECK aparte del guardián general.
+-- Caso 12 · permisos -- ni anon NI authenticated pueden ejecutar ninguna de
+-- las dos funciones de esta migración (los dos revokes: PUBLIC y
+-- anon/authenticated). El guardián general de permisos_funciones.sql ya
+-- recorre pg_proc entero, pero SOLO mira anon (aserción 1 de ese archivo);
+-- esta aserción es la específica de esta migración, igual que
+-- awaiting_reply.sql prueba su propio CHECK aparte del guardián general.
+--
+-- Ampliado el 20/9/2026 ("El resguardo antes del push", tarea M3): una
+-- prueba de mutación encontró que `grant execute ... to authenticated` sobre
+-- estas dos funciones de TRIGGER sobrevivía a toda la suite -- ni este caso
+-- (que hasta entonces solo miraba anon) ni permisos_funciones.sql lo
+-- detectaban. Son funciones `returns trigger`: ningún rol necesita EXECUTE
+-- sobre ellas para que el trigger dispare (Postgres no comprueba EXECUTE del
+-- rol que dispara la operación al ejecutar un trigger, ver el comentario de
+-- la sección 5 de la migración) -- un grant a `authenticated` sería
+-- privilegio de más sin ningún uso legítimo, y solo esta aserción lo
+-- atrapa.
 -- ---------------------------------------------------------------------------
 do $$
 begin
@@ -593,6 +608,12 @@ begin
   end if;
   if has_function_privilege('anon', 'public.handle_conversation_ownership_change()', 'execute') then
     insert into _errores(msg) values ('Caso 12 (permisos): anon puede ejecutar handle_conversation_ownership_change().');
+  end if;
+  if has_function_privilege('authenticated', 'public.handle_conversation_ai_resume()', 'execute') then
+    insert into _errores(msg) values ('Caso 12 (permisos): authenticated puede ejecutar handle_conversation_ai_resume() -- es una función de trigger, ningún rol necesita EXECUTE sobre ella.');
+  end if;
+  if has_function_privilege('authenticated', 'public.handle_conversation_ownership_change()', 'execute') then
+    insert into _errores(msg) values ('Caso 12 (permisos): authenticated puede ejecutar handle_conversation_ownership_change() -- es una función de trigger, ningún rol necesita EXECUTE sobre ella.');
   end if;
 end $$;
 
@@ -821,6 +842,45 @@ begin
   ) into v_contada_en_sin_dueno;
   if v_contada_en_sin_dueno then
     insert into _errores(msg) values ('Caso 16 (cerrada, desasignar): unassigned_waiting_count() contaría este chat CERRADO en "Sin dueño".');
+  end if;
+end $$;
+
+-- ---------------------------------------------------------------------------
+-- Caso 17 · `reclamado` NO dispara cuando `ai_enabled` cambia EN EL MISMO
+-- UPDATE que `assigned_agent_id`, aunque el UPDATE traiga sesión real de un
+-- asesor (`auth.uid() is not null`) -- "El resguardo antes del push"
+-- (20/9/2026, tarea M3): una prueba de mutación quitando SOLO la condición
+-- `old.ai_enabled = new.ai_enabled` de la rama `reclamado` sobrevivía a los
+-- 16 casos de arriba, porque ninguno combina sesión real CON ai_enabled
+-- cambiando a la vez -- los casos 13/14/15 (reclamado) nunca tocan
+-- ai_enabled en su UPDATE, y el caso 1 (escalada simulada, que sí cambia las
+-- dos columnas) corre sin sesión. Sin esta guarda, una escalada hecha con
+-- sesión de un asesor (en vez de con `service_role`, como hace hoy
+-- `escalate.ts`) dejaría una fila `reclamado` espuria ADEMÁS de su propia
+-- fila `escalada`.
+-- ---------------------------------------------------------------------------
+do $$
+declare
+  conv_id uuid := 'b6b6b6b6-0000-0000-0000-000000000018';
+  agent_a uuid := 'b9b9b9b9-0000-0000-0000-000000000001';
+  v_count integer;
+begin
+  set local role authenticated;
+  set local "request.jwt.claim.sub" = 'b9b9b9b9-0000-0000-0000-000000000001';
+
+  -- Mismo UPDATE que una escalada (assigned_agent_id Y ai_enabled juntos),
+  -- pero CON sesión real -- a diferencia del caso 1, que corre sin sesión.
+  update public.conversations
+  set ai_enabled = false, assigned_agent_id = agent_a
+  where id = conv_id;
+
+  reset role;
+  reset "request.jwt.claim.sub";
+
+  select count(*) into v_count from public.conversation_handoffs
+    where conversation_id = conv_id and reason = 'reclamado';
+  if v_count is distinct from 0 then
+    insert into _errores(msg) values (format('Caso 17 (reclamado con sesión y ai_enabled cambiando a la vez): %s fila(s) reclamado, se esperaban 0 -- ai_enabled cambió en el mismo UPDATE.', v_count));
   end if;
 end $$;
 

@@ -138,6 +138,70 @@ begin
 end $$;
 
 -- ---------------------------------------------------------------------------
+-- Caso 4b · exactamente 40 caracteres SÍ se acepta -- el borde de arriba del
+-- CHECK ("El resguardo antes del push", 20/9/2026, tarea M3): el caso 4 solo
+-- prueba que 41 se rechaza; sin este caso, un mutante que topara en 39 (uno
+-- menos de lo real) también habría sobrevivido a toda la suite.
+-- ---------------------------------------------------------------------------
+do $$
+declare
+  guardado text;
+begin
+  insert into public.orders (id, contact_id, total_amount, currency, saint_invoice_number) values (
+    'e2e2e2e2-0000-0000-0000-00000000004b',
+    'e1e1e1e1-0000-0000-0000-000000000001',
+    50,
+    'USD',
+    repeat('9', 40)
+  );
+
+  select saint_invoice_number into guardado from public.orders
+    where id = 'e2e2e2e2-0000-0000-0000-00000000004b';
+  if guardado is distinct from repeat('9', 40) then
+    insert into _errores(msg) values (format('Caso 4b (40 caracteres): quedó guardado como %L, se esperaban 40 nueves.', guardado));
+  end if;
+exception
+  when others then
+    insert into _errores(msg) values (format('Caso 4b (40 caracteres): el insert falló y no debía -- %s', sqlerrm));
+end $$;
+
+-- ---------------------------------------------------------------------------
+-- Caso 6 · DOS órdenes con el MISMO número Saint se aceptan las dos -- D9,
+-- decisión explícita: sin restricción de unicidad, porque una factura Saint
+-- puede cubrir más de un chat y un rechazo por duplicado en el mostrador
+-- confundiría más de lo que protege ("El resguardo antes del push",
+-- 20/9/2026, tarea M3: sospechosa de sobrevivir si alguien agrega un
+-- `unique` -- este caso lo convierte en un mutante que MUERE de verdad).
+-- ---------------------------------------------------------------------------
+do $$
+declare
+  n integer;
+begin
+  insert into public.orders (id, contact_id, total_amount, currency, saint_invoice_number) values (
+    'e2e2e2e2-0000-0000-0000-000000000006',
+    'e1e1e1e1-0000-0000-0000-000000000001',
+    30,
+    'USD',
+    '00999'
+  );
+  insert into public.orders (id, contact_id, total_amount, currency, saint_invoice_number) values (
+    'e2e2e2e2-0000-0000-0000-000000000007',
+    'e1e1e1e1-0000-0000-0000-000000000001',
+    40,
+    'USD',
+    '00999'
+  );
+
+  select count(*) into n from public.orders where saint_invoice_number = '00999';
+  if n is distinct from 2 then
+    insert into _errores(msg) values (format('Caso 6 (dos órdenes, mismo número Saint): %s fila(s) encontradas, se esperaban 2 -- D9 no exige unicidad.', n));
+  end if;
+exception
+  when others then
+    insert into _errores(msg) values (format('Caso 6 (dos órdenes, mismo número Saint): el segundo insert falló y no debía (D9 dice que no hay restricción unique) -- %s', sqlerrm));
+end $$;
+
+-- ---------------------------------------------------------------------------
 -- Caso 5 · las filas VIEJAS (sin número Saint, ventas anteriores al
 -- 18/9/2026) quedan en NULL sin que el CHECK las toque -- D9: la columna
 -- nace nullable justo para esto.
