@@ -350,3 +350,40 @@ describe("ChatPanel — banner de anuncio en la cabecera", () => {
     expect(screen.queryByText(/Llegó desde el anuncio/)).not.toBeInTheDocument();
   });
 });
+
+// ---------------------------------------------------------------------------
+// 20/9/2026, "El resguardo antes del push" (T3-b, mínimo explícito): T4 de
+// "Seba atiende el mostrador" (18/9/2026) le pasa `waitingForHuman` a
+// `AiStatusBanner` calculado con `Boolean(conversation.assignedAgent)` -- un
+// chat asignado con la IA todavía encendida necesita el texto "hasta que el
+// asesor escriba", no "responde automáticamente" a secas. Sin este test, un
+// `waitingForHuman={false}` fijo (o cualquier otro valor que no dependa de
+// verdad de `assignedAgent`) sobrevivía la suite entera.
+// ---------------------------------------------------------------------------
+describe("ChatPanel — le pasa a AiStatusBanner el waitingForHuman real, según el asesor asignado", () => {
+  it("con un asesor asignado y la IA encendida, avisa que Seba responde HASTA que el asesor escriba", () => {
+    renderPanel([], {
+      conversation: {
+        ...conversacion,
+        aiEnabled: true,
+        assignedAgent: { id: "agent-2", displayName: "Marisol" },
+      } as unknown as Conversation,
+    });
+
+    expect(screen.getByText(/responde mientras el asesor no escriba/i)).toBeInTheDocument();
+    expect(screen.queryByText("La IA sigue respondiendo automáticamente")).not.toBeInTheDocument();
+  });
+
+  it("sin asesor asignado y la IA encendida, el aviso es el genérico de siempre", () => {
+    renderPanel([], {
+      conversation: {
+        ...conversacion,
+        aiEnabled: true,
+        assignedAgent: null,
+      } as unknown as Conversation,
+    });
+
+    expect(screen.getByText("La IA sigue respondiendo automáticamente")).toBeInTheDocument();
+    expect(screen.queryByText(/responde mientras el asesor no escriba/i)).not.toBeInTheDocument();
+  });
+});

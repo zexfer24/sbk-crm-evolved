@@ -4,12 +4,24 @@ import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { CloseSaleModal } from "@/components/context-panel/close-sale-modal";
 import type { Agent, Contact, ConversationQuote, Message, Product } from "@/lib/types";
+import { toast } from "@heroui/react";
 
 const closeSaleWithContactInfo = vi.fn().mockResolvedValue(undefined);
 
 vi.mock("@/lib/mutations", () => ({
   closeSaleWithContactInfo: (...args: unknown[]) => closeSaleWithContactInfo(...args),
 }));
+
+// 20/9/2026, "El resguardo antes del push" (M2/T2): el `toast.danger` del
+// carrito vacío no tenía ningún test que lo asegurara — la mutación que lo
+// quita del componente sobrevivía la suite entera. `toast` de `@heroui/react`
+// es una función real con métodos colgados (`toast.danger`, `toast.success`);
+// se mockea parcial (como en `error.test.tsx`) para poder espiar sin montar
+// un `ToastProvider`.
+vi.mock("@heroui/react", async (importOriginal) => {
+  const real = await importOriginal<typeof import("@heroui/react")>();
+  return { ...real, toast: { ...real.toast, danger: vi.fn(), success: vi.fn() } };
+});
 
 const QUOTES: ConversationQuote[] = [
   {
@@ -116,6 +128,8 @@ beforeEach(() => {
   fetchConversationQuotes.mockClear();
   fetchLatestBcvRate.mockClear();
   searchActiveProducts.mockClear();
+  vi.mocked(toast.danger).mockClear();
+  vi.mocked(toast.success).mockClear();
 });
 
 function renderModal(messages: Message[] = [FOTO_COMPROBANTE], contact: Contact = CONTACT) {
@@ -199,6 +213,10 @@ describe("CloseSaleModal — el asesor arma la venta, pero el precio lo pone el 
     await user.click(submitButton());
 
     expect(closeSaleWithContactInfo).not.toHaveBeenCalled();
+    // 20/9/2026: sin este assert, quitar el `toast.danger(cartError)` del
+    // componente sobrevivía la suite entera — nada más comprobaba que el
+    // asesor se entera de POR QUÉ no se cerró la venta.
+    expect(toast.danger).toHaveBeenCalledTimes(1);
   });
 
   // La regla que sostiene todo el módulo: el monto de una venta nunca se

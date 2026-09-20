@@ -92,6 +92,16 @@ describe("validateCatalogLinkDraft", () => {
     expect(validateCatalogLinkDraft(draft({ url: "http://maps.app.goo.gl/x" }), [])).toEqual({});
     expect(validateCatalogLinkDraft(draft({ url: "https://drive.google.com/x" }), [])).toEqual({});
   });
+
+  // T3-b (plan "El resguardo antes del push", 20/9/2026): `URL_SCHEME_PATTERN`
+  // exige el esquema al INICIO (`^https?:\/\/`) — una URL válida con texto
+  // delante (lo que alguien pegaría copiando el mensaje completo del chat) se
+  // rechaza igual que una sin esquema. Sin la ancla `^`, `hasRawUrl` (que sí
+  // busca la URL en cualquier posición) y `URL_SCHEME_PATTERN` (que exige que
+  // TODO el campo sea la URL) dejarían de distinguirse.
+  it("rechaza una URL con texto delante del esquema, aunque el esquema esté bien formado", () => {
+    expect(validateCatalogLinkDraft(draft({ url: "mira: https://drive.google.com/x" }), [])).toHaveProperty("url");
+  });
 });
 
 describe("slugifyKey — propone la clave a partir de la etiqueta", () => {
@@ -277,6 +287,20 @@ describe("resolveCatalogMarkers", () => {
       const { missing } = resolveCatalogMarkers("{{catalogos}}", sinActivos);
       expect(missing).toEqual(["catalogos"]);
     });
+
+    /**
+     * T3-b (20/9/2026): el recorte a 60 caracteres del texto crudo que
+     * `LOOSE_UNRESOLVED_MARKER` detecta — un marcador mal escrito larguísimo
+     * (con espacios internos, no calza la regex estricta) no debe crecer sin
+     * tope dentro de `missing`.
+     */
+    it("un marcador mal escrito larguísimo se recorta a 60 caracteres en missing", () => {
+      const marcadorLarguisimo = `{{catalogo: ${"x".repeat(80)}`;
+      const { missing } = resolveCatalogMarkers(`Ver: ${marcadorLarguisimo}`, links);
+      expect(missing).toHaveLength(1);
+      expect(missing[0].length).toBe(60);
+      expect(missing[0]).toBe(marcadorLarguisimo.slice(0, 60));
+    });
   });
 });
 
@@ -314,5 +338,30 @@ describe("CATALOG_MARKER / CATALOG_LIST_MARKER quedan exportados", () => {
   it("CATALOG_LIST_MARKER es global e insensible a mayúsculas", () => {
     expect(CATALOG_LIST_MARKER.flags).toContain("g");
     expect(CATALOG_LIST_MARKER.flags).toContain("i");
+  });
+});
+
+/**
+ * T3-b (plan "El resguardo antes del push", 20/9/2026): `CATALOG_MARKER`/
+ * `CATALOG_LIST_MARKER` son regex de MÓDULO con flag `g`, y la red laxa de
+ * `resolveCatalogMarkers` las reutiliza con `.test()` sobre distintos
+ * fragmentos (`raw`) dentro del MISMO recorrido de `matchAll` — por eso el
+ * código resetea `lastIndex = 0` antes de cada `.test()` (ver el comentario
+ * de `CATALOG_MARKER`). Con DOS marcadores puntuales de clave inexistente en
+ * el mismo texto, sin ese reset el primer `.test()` deja `lastIndex` en un
+ * valor > 0 y el segundo `.test()` (sobre un fragmento `raw` MÁS CORTO)
+ * busca desde ese punto, no encuentra nada y CATALOG_MARKER "olvida" que el
+ * segundo fragmento sí calzaba el patrón estricto — el código entonces lo
+ * cuenta OTRA VEZ como "marcador mal escrito", duplicando la clave ya
+ * contada (el texto crudo entero, además de la clave sola).
+ */
+describe("resolveCatalogMarkers — el reset de lastIndex entre dos marcadores puntuales sin resolver", () => {
+  it("dos claves inexistentes en el mismo texto no duplican entradas en missing", () => {
+    const links: CatalogLink[] = [link({ id: "1", key: "cascos" })];
+    const { missing } = resolveCatalogMarkers(
+      "{{catalogo:no-existe}} y {{catalogo:otro-no-existe}}",
+      links
+    );
+    expect(missing.sort()).toEqual(["no-existe", "otro-no-existe"]);
   });
 });

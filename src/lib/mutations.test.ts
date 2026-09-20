@@ -43,13 +43,26 @@ const AGENT: Agent = {
 };
 
 function createFakeSupabase() {
-  const calls: { table: string; op: "insert" | "update"; payload: unknown }[] = [];
+  // D (20/9/2026, M2/T3-b): mismo hueco documentado en los otros fakes de
+  // este archivo — `eq: async () => {...}` ignoraba sus argumentos. Un
+  // `.eq("id", conversationId)` cambiado por un id equivocado (el caso real
+  // sería `closeSaleWithContactInfo` actualizando la conversación o el
+  // contacto INCORRECTO) pasaba en verde igual. Ahora cada `update()` de
+  // `contacts`/`conversations` registra `eqColumn`/`eqValue`.
+  const calls: { table: string; op: "insert" | "update"; payload: unknown; eqColumn?: string; eqValue?: unknown }[] = [];
   let nextOrderId = 1;
 
   const client = {
     from(table: string) {
       if (table === "contacts") {
-        return { update: (payload: unknown) => ({ eq: async () => { calls.push({ table, op: "update", payload }); return { error: null }; } }) };
+        return {
+          update: (payload: unknown) => ({
+            eq: async (eqColumn: string, eqValue: unknown) => {
+              calls.push({ table, op: "update", payload, eqColumn, eqValue });
+              return { error: null };
+            },
+          }),
+        };
       }
       if (table === "orders") {
         return {
@@ -72,7 +85,14 @@ function createFakeSupabase() {
         };
       }
       if (table === "conversations") {
-        return { update: (payload: unknown) => ({ eq: async () => { calls.push({ table, op: "update", payload }); return { error: null }; } }) };
+        return {
+          update: (payload: unknown) => ({
+            eq: async (eqColumn: string, eqValue: unknown) => {
+              calls.push({ table, op: "update", payload, eqColumn, eqValue });
+              return { error: null };
+            },
+          }),
+        };
       }
       if (table === "messages") {
         return { insert: async (payload: unknown) => { calls.push({ table, op: "insert", payload }); return { error: null }; } };
@@ -141,6 +161,15 @@ describe("closeSaleWithContactInfo — el monto sale del catálogo, nunca de un 
       deal_status: "won",
       order_id: "order-1",
     });
+    // D (20/9/2026, M2/T3-b): el UPDATE de la conversación y el del
+    // contacto tienen que apuntar a los ids que llegaron, no a otros —
+    // sin esta aserción, `.eq("id", "conv-equivocada")` pasaba en verde.
+    expect(conversationUpdate?.eqColumn).toBe("id");
+    expect(conversationUpdate?.eqValue).toBe("conv-1");
+
+    const contactUpdate = calls.find((c) => c.table === "contacts" && c.op === "update");
+    expect(contactUpdate?.eqColumn).toBe("id");
+    expect(contactUpdate?.eqValue).toBe("contact-1");
   });
 
   /**
@@ -260,6 +289,9 @@ describe("setAiEnabled — devuelve el chat a la IA sin tocar messages", () => {
 
     const update = calls.find((c) => c.table === "conversations" && c.op === "update");
     expect(update?.payload).toEqual({ ai_enabled: true });
+    // D (20/9/2026, M2/T3-b): apunta a la conversación pedida, no a otra.
+    expect(update?.eqColumn).toBe("id");
+    expect(update?.eqValue).toBe("conv-1");
   });
 });
 
@@ -295,7 +327,19 @@ describe("assignToMe / intervene — apagan a Seba con DOS UPDATE en serie (T10,
   function createFakeConversationsSupabase(
     options: { previousAssignedAgentId?: string | null; updateResults?: (Error | null)[] } = {}
   ) {
-    const calls: { table: string; op: "select" | "update"; payload?: Record<string, unknown> }[] = [];
+    // D (20/9/2026, M2/T3-b): mismo hueco que el de `unassign` más abajo en
+    // este archivo — este fake ignoraba por completo los argumentos de
+    // `.eq(...)` (`eq: async () => {...}`). Un UPDATE que perdiera o
+    // cambiara su `.eq("id", conversationId)` (p. ej. apagando la IA de OTRA
+    // conversación por un id copiado mal) pasaba en verde igual. Ahora cada
+    // `.eq(col, val)` queda registrado junto al UPDATE.
+    const calls: {
+      table: string;
+      op: "select" | "update";
+      payload?: Record<string, unknown>;
+      eqColumn?: string;
+      eqValue?: unknown;
+    }[] = [];
     const updateResults = options.updateResults ?? [];
     let updateCallIndex = 0;
     const client = {
@@ -314,8 +358,8 @@ describe("assignToMe / intervene — apagan a Seba con DOS UPDATE en serie (T10,
               }),
             }),
             update: (payload: Record<string, unknown>) => ({
-              eq: async () => {
-                calls.push({ table, op: "update", payload });
+              eq: async (eqColumn: string, eqValue: unknown) => {
+                calls.push({ table, op: "update", payload, eqColumn, eqValue });
                 const error = updateResults[updateCallIndex] ?? null;
                 updateCallIndex += 1;
                 return { error };
@@ -337,7 +381,15 @@ describe("assignToMe / intervene — apagan a Seba con DOS UPDATE en serie (T10,
     return { client: client as unknown as SupabaseClient, calls };
   }
 
-  function conversationUpdatesOf(calls: { table: string; op: "select" | "update"; payload?: Record<string, unknown> }[]) {
+  function conversationUpdatesOf(
+    calls: {
+      table: string;
+      op: "select" | "update";
+      payload?: Record<string, unknown>;
+      eqColumn?: string;
+      eqValue?: unknown;
+    }[]
+  ) {
     return calls.filter((c) => c.table === "conversations" && c.op === "update");
   }
 
@@ -351,6 +403,12 @@ describe("assignToMe / intervene — apagan a Seba con DOS UPDATE en serie (T10,
     expect(conversationUpdates).toHaveLength(2);
     expect(conversationUpdates[0].payload).toEqual({ assigned_agent_id: "agent-1" });
     expect(conversationUpdates[1].payload).toEqual({ ai_enabled: false });
+    // D (20/9/2026, M2/T3-b): los DOS UPDATE tienen que apuntar a la MISMA
+    // conversación — sin esto, `.eq("id", "otra-conv")` pasaba en verde.
+    expect(conversationUpdates[0].eqColumn).toBe("id");
+    expect(conversationUpdates[0].eqValue).toBe("conv-1");
+    expect(conversationUpdates[1].eqColumn).toBe("id");
+    expect(conversationUpdates[1].eqValue).toBe("conv-1");
 
     // La nota de sistema llega DESPUÉS del select y los dos UPDATE.
     expect(calls[3].table).toBe("messages");
@@ -365,6 +423,8 @@ describe("assignToMe / intervene — apagan a Seba con DOS UPDATE en serie (T10,
     expect(conversationUpdates).toHaveLength(2);
     expect(conversationUpdates[0].payload).toEqual({ assigned_agent_id: "agent-1" });
     expect(conversationUpdates[1].payload).toEqual({ ai_enabled: false });
+    expect(conversationUpdates[0].eqValue).toBe("conv-1");
+    expect(conversationUpdates[1].eqValue).toBe("conv-1");
   });
 
   it("assignToMe: si falla el primer UPDATE (assigned_agent_id), lanza antes de leer/apagar la IA", async () => {
@@ -409,6 +469,11 @@ describe("assignToMe / intervene — apagan a Seba con DOS UPDATE en serie (T10,
     // asignar + dos intentos de apagar + la compensación que revierte.
     expect(conversationUpdates).toHaveLength(4);
     expect(conversationUpdates[3].payload).toEqual({ assigned_agent_id: null });
+    // D (20/9/2026, M2/T3-b): la compensación tiene su PROPIO `.eq(...)` —
+    // aparte del de `attemptSilence` — y también apunta a la conversación
+    // pedida.
+    expect(conversationUpdates[3].eqColumn).toBe("id");
+    expect(conversationUpdates[3].eqValue).toBe("conv-1");
     expect(calls.some((c) => c.table === "messages")).toBe(false);
   });
 
@@ -427,6 +492,7 @@ describe("assignToMe / intervene — apagan a Seba con DOS UPDATE en serie (T10,
     // La compensación vuelve al asesor que tenía el chat ANTES de intervenir,
     // no a `null` — intervenir puede quitarle el chat a otro asesor.
     expect(conversationUpdates[3].payload).toEqual({ assigned_agent_id: "agent-2" });
+    expect(conversationUpdates[3].eqValue).toBe("conv-1");
     expect(calls.some((c) => c.table === "messages")).toBe(false);
   });
 
@@ -509,8 +575,29 @@ describe("unassign — reenciende la IA solo si fue el propio tomar-a-mano y el 
           // operador, columna y valor, para poder assertar los tres juntos.
           filters: Array<{ op: "eq" | "is" | "neq"; column: string; value: unknown }>;
         }
-      | { table: "conversation_handoffs"; op: "select"; filters: Record<string, unknown> }
-      | { table: "messages"; op: "select"; filters: Record<string, unknown> }
+      // D (20/9/2026, corrida "El resguardo antes del push", M2/T3-b): mismo
+      // hueco que el de arriba, pero en las DOS consultas de T11 que buscan
+      // "¿pasó algo DESPUÉS de `assignedAt`?" — antes el fake guardaba los
+      // filtros en un objeto plano (`filters[col] = val`), y `.eq`/`.gte`
+      // escribían la MISMA clave sin distinguirse: cambiar `.gte("created_at",
+      // assignedAt)` por `.eq(...)` o `.lte(...)` (la condición "más delicada
+      // de T11", según el plan) pasaba en verde igual, y `.limit(1)` →
+      // `.limit(0)` tampoco lo notaba nadie porque el mock de `limit` ignoraba
+      // su argumento. Ahora cada filtro queda en un array con su operador
+      // (mismo patrón que el de `conversations.update` de arriba) y `limitArg`
+      // guarda el argumento real de `.limit(...)`.
+      | {
+          table: "conversation_handoffs";
+          op: "select";
+          filters: Array<{ op: "eq" | "gte"; column: string; value: unknown }>;
+          limitArg: number;
+        }
+      | {
+          table: "messages";
+          op: "select";
+          filters: Array<{ op: "eq" | "gte"; column: string; value: unknown }>;
+          limitArg: number;
+        }
       | { table: "messages"; op: "insert"; payload: unknown }
     > = [];
 
@@ -572,18 +659,18 @@ describe("unassign — reenciende la IA solo si fue el propio tomar-a-mano y el 
         if (table === "conversation_handoffs") {
           return {
             select: () => {
-              const filters: Record<string, unknown> = {};
+              const filters: Array<{ op: "eq" | "gte"; column: string; value: unknown }> = [];
               const chain = {
                 eq(col: string, val: unknown) {
-                  filters[col] = val;
+                  filters.push({ op: "eq", column: col, value: val });
                   return chain;
                 },
                 gte(col: string, val: unknown) {
-                  filters[col] = val;
+                  filters.push({ op: "gte", column: col, value: val });
                   return chain;
                 },
-                limit: async () => {
-                  calls.push({ table: "conversation_handoffs", op: "select", filters });
+                limit: async (limitArg: number) => {
+                  calls.push({ table: "conversation_handoffs", op: "select", filters, limitArg });
                   return options.handoffsResult ?? { data: [{ id: "handoff-1" }], error: null };
                 },
               };
@@ -594,18 +681,18 @@ describe("unassign — reenciende la IA solo si fue el propio tomar-a-mano y el 
         if (table === "messages") {
           return {
             select: () => {
-              const filters: Record<string, unknown> = {};
+              const filters: Array<{ op: "eq" | "gte"; column: string; value: unknown }> = [];
               const chain = {
                 eq(col: string, val: unknown) {
-                  filters[col] = val;
+                  filters.push({ op: "eq", column: col, value: val });
                   return chain;
                 },
                 gte(col: string, val: unknown) {
-                  filters[col] = val;
+                  filters.push({ op: "gte", column: col, value: val });
                   return chain;
                 },
-                limit: async () => {
-                  calls.push({ table: "messages", op: "select", filters });
+                limit: async (limitArg: number) => {
+                  calls.push({ table: "messages", op: "select", filters, limitArg });
                   return options.messagesResult ?? { data: [], error: null };
                 },
               };
@@ -660,25 +747,34 @@ describe("unassign — reenciende la IA solo si fue el propio tomar-a-mano y el 
 
     // La consulta de conversation_handoffs busca la fila que deja el
     // segundo UPDATE de silenceAiForManualTakeover (T10): mismo reason,
-    // posterior o igual a assigned_at.
+    // posterior O IGUAL a assigned_at (`.gte`, nunca `.eq`/`.lte` — D del
+    // 20/9/2026: es "la condición más delicada de T11" según el plan, y el
+    // fake viejo no distinguía el operador), y como mucho UNA fila
+    // (`.limit(1)`, nunca `.limit(0)` — con 0 el `.length > 0` de
+    // `aiWasSilencedByThisTakeover` daría siempre `false` aunque exista la
+    // fila, y con la Postgrest real un `limit(0)` ni siquiera es el mismo
+    // contrato que "hay al menos una").
     const handoffsSelect = calls.find((c) => c.table === "conversation_handoffs" && c.op === "select");
-    expect(handoffsSelect && "filters" in handoffsSelect ? handoffsSelect.filters : null).toEqual({
-      conversation_id: "conv-1",
-      reason: "silenciada_por_asesor",
-      created_at: ASSIGNED_AT,
-    });
+    expect(handoffsSelect && "filters" in handoffsSelect ? handoffsSelect.filters : null).toEqual([
+      { op: "eq", column: "conversation_id", value: "conv-1" },
+      { op: "eq", column: "reason", value: "silenciada_por_asesor" },
+      { op: "gte", column: "created_at", value: ASSIGNED_AT },
+    ]);
+    expect(handoffsSelect && "limitArg" in handoffsSelect ? handoffsSelect.limitArg : null).toBe(1);
 
     // La consulta de mensajes usa el MISMO predicado que apaga la IA por
     // trigger (handle_agent_message_silences_ai): sender_type='agent',
-    // direction='outbound', is_internal_note=false, desde assigned_at.
+    // direction='outbound', is_internal_note=false, desde assigned_at
+    // (`.gte`, no `.eq`/`.lte`), como mucho una fila (`.limit(1)`, no `.limit(0)`).
     const messagesSelect = calls.find((c) => c.table === "messages" && c.op === "select");
-    expect(messagesSelect && "filters" in messagesSelect ? messagesSelect.filters : null).toEqual({
-      conversation_id: "conv-1",
-      sender_type: "agent",
-      direction: "outbound",
-      is_internal_note: false,
-      created_at: ASSIGNED_AT,
-    });
+    expect(messagesSelect && "filters" in messagesSelect ? messagesSelect.filters : null).toEqual([
+      { op: "eq", column: "conversation_id", value: "conv-1" },
+      { op: "eq", column: "sender_type", value: "agent" },
+      { op: "eq", column: "direction", value: "outbound" },
+      { op: "eq", column: "is_internal_note", value: false },
+      { op: "gte", column: "created_at", value: ASSIGNED_AT },
+    ]);
+    expect(messagesSelect && "limitArg" in messagesSelect ? messagesSelect.limitArg : null).toBe(1);
 
     expect(calls.some((c) => c.table === "messages" && c.op === "insert")).toBe(true);
   });
@@ -802,7 +898,11 @@ describe("unassign — reenciende la IA solo si fue el propio tomar-a-mano y el 
     await unassign(client, "conv-1", AGENT, "María");
 
     const messagesSelect = calls.find((c) => c.table === "messages" && c.op === "select");
-    expect(messagesSelect && "filters" in messagesSelect ? messagesSelect.filters.is_internal_note : undefined).toBe(false);
+    const isInternalNoteFilter =
+      messagesSelect && "filters" in messagesSelect
+        ? messagesSelect.filters.find((f) => f.column === "is_internal_note")?.value
+        : undefined;
+    expect(isInternalNoteFilter).toBe(false);
 
     const updates = conversationUpdatesOf(calls);
     expect(updates).toHaveLength(2);

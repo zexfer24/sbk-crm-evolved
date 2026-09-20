@@ -294,6 +294,132 @@ describe("CatalogLinksPanel — desactivar avisa cuántos textos usan la clave; 
   });
 });
 
+// ---------------------------------------------------------------------------
+// 20/9/2026, "El resguardo antes del push" (T3-b): dos mínimos sobre
+// `handleSave` al EDITAR que no tenían test hermano. `otherLinks` (línea
+// ~150) ya filtra la propia fila antes de validar duplicados -- sin un test
+// que guarde de verdad en modo edición, una regresión ahí (comparar la fila
+// contra sí misma) pasaría desapercibida hasta producción.
+// ---------------------------------------------------------------------------
+describe("CatalogLinksPanel — guardar en modo edición no se choca con la propia fila", () => {
+  it("editar sin cambiar la clave guarda sin el error 'clave repetida'", async () => {
+    const user = userEvent.setup({ delay: null, pointerEventsCheck: 0 });
+    render(
+      <CatalogLinksPanel
+        links={[link({ id: "link-1", key: "cascos", label: "Cascos" })]}
+        canEdit
+        onCreate={onCreate}
+        onUpdate={onUpdate}
+        onDelete={onDelete}
+        onToggle={onToggle}
+        playbooks={[]}
+        quickReplies={[]}
+      />
+    );
+
+    await user.click(screen.getByRole("button", { name: "Editar Cascos" }));
+    await user.click(screen.getByRole("button", { name: "Guardar cambios" }));
+
+    expect(screen.queryByText("Ya existe un catálogo con esa clave.")).not.toBeInTheDocument();
+    await waitFor(() =>
+      expect(onUpdate).toHaveBeenCalledWith("link-1", {
+        key: "cascos",
+        label: "Cascos",
+        url: link().url,
+      })
+    );
+  });
+
+  it("editar solo la etiqueta no le pisa la clave con un slug recalculado", async () => {
+    const user = userEvent.setup({ delay: null, pointerEventsCheck: 0 });
+    render(
+      <CatalogLinksPanel
+        links={[link({ id: "link-1", key: "cascos", label: "Cascos" })]}
+        canEdit
+        onCreate={onCreate}
+        onUpdate={onUpdate}
+        onDelete={onDelete}
+        onToggle={onToggle}
+        playbooks={[]}
+        quickReplies={[]}
+      />
+    );
+
+    await user.click(screen.getByRole("button", { name: "Editar Cascos" }));
+    await user.type(screen.getByLabelText("Etiqueta"), " y accesorios");
+    await user.click(screen.getByRole("button", { name: "Guardar cambios" }));
+
+    await waitFor(() => expect(onUpdate).toHaveBeenCalled());
+    // La clave viaja intacta -- nunca "cascos-y-accesorios", que sería el
+    // slug de la etiqueta nueva si `keyTouched` no bloqueara el recálculo.
+    expect(onUpdate).toHaveBeenCalledWith("link-1", expect.objectContaining({ key: "cascos" }));
+  });
+});
+
+// 20/9/2026, "El resguardo antes del push" (T3-b, mínimo explícito): con DOS
+// catálogos activos, apagar UNO no debería contar `{{catalogos}}` como uso
+// -- la lista completa sigue teniendo al otro para resolverse. Sin este test,
+// una regresión que dejara `wouldEmptyList` fijo en `true` (o que ignorara
+// `activeCount`) pasaría desapercibida.
+describe("CatalogLinksPanel — con dos catálogos activos, apagar uno no vacía la lista", () => {
+  it("no cuenta {{catalogos}} como uso: queda el otro catálogo activo para resolverlo", async () => {
+    const user = userEvent.setup({ delay: null, pointerEventsCheck: 0 });
+    render(
+      <CatalogLinksPanel
+        links={[
+          link({ id: "link-1", key: "cascos", label: "Cascos", isActive: true, sortOrder: 1 }),
+          link({ id: "link-2", key: "guantes", label: "Guantes", isActive: true, sortOrder: 2 }),
+        ]}
+        canEdit
+        onCreate={onCreate}
+        onUpdate={onUpdate}
+        onDelete={onDelete}
+        onToggle={onToggle}
+        playbooks={[playbook({ id: "pb-1", responseText: "Ver también: {{catalogos}}" })]}
+        quickReplies={[]}
+      />
+    );
+
+    await user.click(screen.getByRole("button", { name: "Apagar el catálogo Cascos" }));
+
+    // Sin usos puntuales de "cascos" y sin contar {{catalogos}} (queda
+    // "guantes" activo), el aviso es el genérico, no el que cuenta usos.
+    expect(await screen.findByRole("button", { name: "¿Confirmar apagar?" })).toBeInTheDocument();
+  });
+});
+
+// 20/9/2026, "El resguardo antes del push" (sospechosa del plan, confirmada):
+// `usageOf` también mira `attachmentUrl` -- un escenario puede llevar el
+// marcador ahí en vez de (o además de) `responseText`. Sin este test, quitar
+// esa rama sobrevivía la suite entera.
+describe("CatalogLinksPanel — el marcador en attachmentUrl también cuenta como uso", () => {
+  it("un escenario que solo referencia la clave en attachmentUrl (no en responseText) cuenta al borrar", async () => {
+    const user = userEvent.setup({ delay: null, pointerEventsCheck: 0 });
+    render(
+      <CatalogLinksPanel
+        links={[link({ key: "cascos" })]}
+        canEdit
+        onCreate={onCreate}
+        onUpdate={onUpdate}
+        onDelete={onDelete}
+        onToggle={onToggle}
+        playbooks={[
+          playbook({
+            id: "pb-1",
+            responseText: "Acá va el catálogo",
+            attachmentUrl: "{{catalogo:cascos}}",
+          }),
+        ]}
+        quickReplies={[]}
+      />
+    );
+
+    await user.click(screen.getByRole("button", { name: /^Borrar$/ }));
+
+    expect(screen.getByText("¿Borrar? Lo usan 1 escenario")).toBeInTheDocument();
+  });
+});
+
 describe("CatalogLinksPanel — copiar marcador", () => {
   it("copia el marcador canónico al portapapeles", async () => {
     const user = userEvent.setup({ delay: null, pointerEventsCheck: 0 });

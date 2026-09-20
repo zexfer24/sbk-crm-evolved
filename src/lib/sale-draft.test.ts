@@ -199,6 +199,16 @@ describe("normalizeSaint — recorta y colapsa espacios", () => {
     expect(normalizeSaint("00123   ABC")).toBe("00123 ABC");
   });
 
+  // T3-b (plan "El resguardo antes del push", 20/9/2026): un solo grupo de
+  // espacios de más no distingue la regex con flag `g` de una sin ella —las
+  // dos colapsan igual cuando hay UN solo grupo. Con DOS grupos separados de
+  // espacios repetidos, la regex SIN `g` solo reemplaza el primero (el
+  // comportamiento de `String.prototype.replace` con una regex no global) y
+  // deja el segundo intacto.
+  it("colapsa CADA grupo de espacios repetidos, no solo el primero", () => {
+    expect(normalizeSaint("00123   ABC    DEF")).toBe("00123 ABC DEF");
+  });
+
   it("una cadena de solo espacios normaliza a vacío", () => {
     expect(normalizeSaint("    ")).toBe("");
   });
