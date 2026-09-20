@@ -52,6 +52,7 @@ import {
   TEXTO_SIN_STOCK,
 } from "@/lib/ai/seba";
 import { errorText, log } from "@/lib/log";
+import { firstStepToolChoice } from "@/lib/ai/tool-choice";
 import { withinFreeformWindow } from "@/lib/dashboard";
 import { isWithin24hWindow } from "@/lib/whatsapp-window";
 import { sendTypingIndicator } from "@/lib/whatsapp/meta-client";
@@ -1992,6 +1993,14 @@ async function runTurnPhases(
     tools,
     stopWhen: isStepCount(MAX_STEPS),
     providerOptions,
+    // Tarea K, "El resguardo antes del push" (20/9/2026): el paso 0 del tool
+    // loop fuerza `buscarRepuesto` en toda `consulta_disponibilidad` con el
+    // catálogo encendido, para que el modelo no pueda afirmar existencia de
+    // memoria (ver `tool-choice.ts` para el caso real y el porqué). Del paso
+    // 1 en adelante `firstStepToolChoice` devuelve `undefined` y el SDK usa
+    // la configuración de siempre (`toolChoice: "auto"`), o el turno nunca
+    // podría redactar ni escalar.
+    prepareStep: ({ stepNumber }) => firstStepToolChoice(intent, Boolean(tools.buscarRepuesto), stepNumber),
     // El reintento vive en el control de ritmo, que espera en segundos y
     // respeta Retry-After. El del SDK reintenta a ~2 s, o sea dentro de la
     // misma ventana de un minuto que acaba de rechazar la petición: no

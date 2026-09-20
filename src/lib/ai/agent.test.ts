@@ -636,8 +636,20 @@ const generateMock = vi.fn<() => Promise<{ text: string; usage: FakeUsage; steps
     steps: [{}, {}],
   })
 );
-/** Opciones con las que se construyó el ToolLoopAgent: es donde viajan las instrucciones. */
-const agentOptions: { instructions: string; tools: Record<string, unknown> }[] = [];
+/**
+ * Opciones con las que se construyó el ToolLoopAgent: es donde viajan las
+ * instrucciones. Tarea K, "El resguardo antes del push" (20/9/2026): suma
+ * `prepareStep` (opcional, como en el SDK real) para poder verificar, sin
+ * romper ninguno de los tests que ya miraban `instructions`/`tools`, que el
+ * paso 0 del tool loop fuerza `buscarRepuesto` en `consulta_disponibilidad`
+ * — la función real vive en `tool-choice.ts` y se prueba sola ahí; acá solo
+ * se verifica que `agent.ts` la conecta con las opciones correctas.
+ */
+const agentOptions: {
+  instructions: string;
+  tools: Record<string, unknown>;
+  prepareStep?: (options: { stepNumber: number }) => { toolChoice?: { type: string; toolName: string } } | undefined;
+}[] = [];
 /**
  * Guarda de identidad (6/9/2026): la ÚNICA reescritura que hace
  * `applyIdentityGuard` usa `generateText` (no `ToolLoopAgent` — las
@@ -654,7 +666,11 @@ const generateTextMock = vi.fn<
 vi.mock("ai", async (importOriginal) => ({
   ...(await importOriginal<typeof import("ai")>()),
   ToolLoopAgent: class {
-    constructor(options: { instructions: string; tools: Record<string, unknown> }) {
+    constructor(options: {
+      instructions: string;
+      tools: Record<string, unknown>;
+      prepareStep?: (options: { stepNumber: number }) => { toolChoice?: { type: string; toolName: string } } | undefined;
+    }) {
       agentOptions.push(options);
     }
     generate = generateMock;
@@ -3585,6 +3601,63 @@ describe("runAgentTurn — interruptores de herramientas", () => {
 
     expect(agentOptions[0].tools).not.toHaveProperty("buscarHistorialCompras");
     expect(agentOptions[0].tools).toHaveProperty("escalarAAsesor");
+  });
+
+  /**
+   * Tarea K, "El resguardo antes del push" (20/9/2026): caso real
+   * `db8d3120…`, "Precio del casco LS2" cotizado de memoria porque el
+   * modelo contestó en un paso sin llamar a `buscarRepuesto`. Acá no se
+   * ejercita `firstStepToolChoice` en sí (tiene sus propios tests puros en
+   * `tool-choice.test.ts`): solo que `agent.ts` la conecta al `prepareStep`
+   * del `ToolLoopAgent` con los argumentos correctos.
+   */
+  describe("forzar el catálogo en el primer paso (T. 'El resguardo antes del push', 20/9/2026)", () => {
+    it("con consulta_disponibilidad y el catálogo encendido, el paso 0 fuerza buscarRepuesto", async () => {
+      classifyIntentMock.mockResolvedValue({
+        intent: "consulta_disponibilidad",
+        usage: { inputTokens: 5, outputTokens: 1, totalTokens: 6 },
+      });
+
+      await runAgentTurn("conv-1");
+
+      expect(agentOptions[0].prepareStep).toBeTypeOf("function");
+      expect(agentOptions[0].prepareStep!({ stepNumber: 0 })).toEqual({
+        toolChoice: { type: "tool", toolName: "buscarRepuesto" },
+      });
+    });
+
+    it("del paso 1 en adelante, prepareStep no fuerza nada", async () => {
+      classifyIntentMock.mockResolvedValue({
+        intent: "consulta_disponibilidad",
+        usage: { inputTokens: 5, outputTokens: 1, totalTokens: 6 },
+      });
+
+      await runAgentTurn("conv-1");
+
+      expect(agentOptions[0].prepareStep!({ stepNumber: 1 })).toBeUndefined();
+    });
+
+    it("con otra intención, prepareStep no fuerza nada ni en el paso 0", async () => {
+      // El default del beforeEach ya es "otro" (ver el comentario de H1 más
+      // arriba): no hace falta pisar el mock, alcanza con no pedir
+      // "consulta_disponibilidad".
+      await runAgentTurn("conv-1");
+
+      expect(agentOptions[0].prepareStep!({ stepNumber: 0 })).toBeUndefined();
+    });
+
+    it("con el catálogo apagado, prepareStep no fuerza nada aunque la intención sea consulta_disponibilidad", async () => {
+      classifyIntentMock.mockResolvedValue({
+        intent: "consulta_disponibilidad",
+        usage: { inputTokens: 5, outputTokens: 1, totalTokens: 6 },
+      });
+      state.enabledToolKeys = ["buscar_historial_compras", "consultar_biblioteca"];
+
+      await runAgentTurn("conv-1");
+
+      expect(agentOptions[0].tools).not.toHaveProperty("buscarRepuesto");
+      expect(agentOptions[0].prepareStep!({ stepNumber: 0 })).toBeUndefined();
+    });
   });
 });
 
