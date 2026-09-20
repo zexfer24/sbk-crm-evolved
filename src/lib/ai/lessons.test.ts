@@ -8,6 +8,29 @@ import {
   fetchTurnLessons,
 } from "@/lib/ai/lessons";
 
+/**
+ * F (20/9/2026, "El resguardo antes del push"): el resto de este archivo mide
+ * el MECANISMO de recorte usando el propio símbolo importado
+ * (`MAX_GLOBAL_LESSONS + 10`, por ejemplo) — así que un cambio en el VALOR de
+ * la constante no pone rojo ningún test existente, porque cada test se
+ * reajusta solo. Estos tres fijan el número tal como lo documenta el
+ * comentario del módulo (presupuesto del plan "Seba atiende el mostrador",
+ * T5, 18/9/2026), para que cambiarlo por accidente sí se note.
+ */
+describe("los topes son los números exactos del plan (F, 20/9/2026)", () => {
+  it("MAX_GLOBAL_LESSONS es 15", () => {
+    expect(MAX_GLOBAL_LESSONS).toBe(15);
+  });
+
+  it("MAX_CHAT_LESSONS es 5", () => {
+    expect(MAX_CHAT_LESSONS).toBe(5);
+  });
+
+  it("MAX_LESSON_CHARS es 200", () => {
+    expect(MAX_LESSON_CHARS).toBe(200);
+  });
+});
+
 describe("buildGlobalLessonsBlock", () => {
   it("bloque vacío sin lecciones", () => {
     expect(buildGlobalLessonsBlock([])).toBe("");
@@ -119,6 +142,82 @@ function fakeSupabase(options: {
     },
   };
 }
+
+/**
+ * F (20/9/2026, "El resguardo antes del push"): `fakeSupabase` de arriba
+ * confía en que la consulta real filtra por `kind` — solo distingue `scope`
+ * para separar global de chat, así que nunca notaría que alguien le quitara
+ * el `.eq("kind", "nota")` a `fetchTurnLessons`. Este fake, en cambio, aplica
+ * de verdad TODOS los `.eq()` que la consulta le pasa contra un juego de
+ * filas con `kind` mixto (nota/sinonimo): si el filtro de `kind` desaparece,
+ * un sinónimo se cuela en el prompt como si fuera una lección de equipo.
+ */
+function fakeSupabaseConFilasMixtas(
+  filas: { scope: string; kind: string; content: string; conversation_id?: string; is_active?: boolean }[]
+) {
+  return {
+    from(table: string) {
+      if (table !== "ai_lessons") throw new Error(`Fake Supabase: tabla no soportada en este test: ${table}`);
+
+      const filters: Record<string, unknown> = {};
+      const builder = {
+        eq(col: string, val: unknown) {
+          filters[col] = val;
+          return builder;
+        },
+        order() {
+          return {
+            limit: async () => {
+              const rows = filas.filter((fila) =>
+                Object.entries(filters).every(([col, val]) => (fila as Record<string, unknown>)[col] === val)
+              );
+              return { data: rows.map((fila) => ({ content: fila.content })), error: null };
+            },
+          };
+        },
+      };
+      return { select: () => builder };
+    },
+  };
+}
+
+describe("fetchTurnLessons — filtra por kind = 'nota' (F, 20/9/2026)", () => {
+  it("un sinónimo global (kind='sinonimo') no se cuela entre las lecciones globales", async () => {
+    const supabase = fakeSupabaseConFilasMixtas([
+      { scope: "global", kind: "nota", is_active: true, content: "No prometas descuentos" },
+      { scope: "global", kind: "sinonimo", is_active: true, content: "pastilla -> pastillas de freno" },
+    ]);
+
+    // @ts-expect-error -- fake mínimo suficiente para este test
+    const lessons = await fetchTurnLessons(supabase, "conv-1");
+
+    expect(lessons.global).toEqual(["No prometas descuentos"]);
+  });
+
+  it("un sinónimo de esta conversación (kind='sinonimo') no se cuela entre las lecciones de chat", async () => {
+    const supabase = fakeSupabaseConFilasMixtas([
+      {
+        scope: "conversacion",
+        kind: "nota",
+        conversation_id: "conv-1",
+        is_active: true,
+        content: "Este cliente ya pagó con Cashea",
+      },
+      {
+        scope: "conversacion",
+        kind: "sinonimo",
+        conversation_id: "conv-1",
+        is_active: true,
+        content: "pastilla -> pastillas de freno",
+      },
+    ]);
+
+    // @ts-expect-error -- fake mínimo suficiente para este test
+    const lessons = await fetchTurnLessons(supabase, "conv-1");
+
+    expect(lessons.chat).toEqual(["Este cliente ya pagó con Cashea"]);
+  });
+});
 
 describe("fetchTurnLessons", () => {
   it("con lecciones en las dos tablas, las separa por scope", async () => {

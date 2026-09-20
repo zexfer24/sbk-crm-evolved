@@ -46,6 +46,21 @@ describe("isGreetingOnly", () => {
   it.each(["hola tienen pastillas", ""])("no reconoce %s como saludo puro", (texto) => {
     expect(isGreetingOnly(texto)).toBe(false);
   });
+
+  /**
+   * F (20/9/2026, "El resguardo antes del push"): ninguno de los casos de
+   * arriba ejercitaba "buenos" ni "dias" sueltos — "Buenas tardes!" ya
+   * calzaba solo con "buenas"/"tardes". Sin "buenos"/"dias" en
+   * PALABRAS_SALUDO, "buenos días" pelado (sin nada más que atender) se
+   * clasificaría como un mensaje normal en vez de solo-saludo, y Seba
+   * seguiría redactando fase 0/1/tool loop sobre un cliente que solo saludó.
+   */
+  it.each(["buenos días", "Buenos Dias", "buenas noches", "saludos"])(
+    "reconoce %s pelado como saludo puro del cliente",
+    (texto) => {
+      expect(isGreetingOnly(texto)).toBe(true);
+    }
+  );
 });
 
 describe("isGreetingPlaybook", () => {

@@ -89,6 +89,8 @@ function createFakeSupabase(products: FakeProductRow[], synonyms: FakeSynonymRow
    * assertar su literal exacto además de su efecto.
    */
   let appliedSynonymFilter: string | null = null;
+  /** F (20/9/2026): el tope (`MAX_SYNONYM_LESSONS`) que le llegó a `.limit()` en la consulta de sinónimos. */
+  let appliedSynonymLimit: number | null = null;
 
   const client = {
     from(table: string) {
@@ -132,12 +134,15 @@ function createFakeSupabase(products: FakeProductRow[], synonyms: FakeSynonymRow
                 or: (filter: string) => {
                   appliedSynonymFilter = filter;
                   return {
-                    limit: async () => ({
-                      data: synonyms.filter(
-                        (s) => (s.scope ?? "global") === "global" || s.conversationId === conversationId
-                      ),
-                      error: null,
-                    }),
+                    limit: async (n: number) => {
+                      appliedSynonymLimit = n;
+                      return {
+                        data: synonyms.filter(
+                          (s) => (s.scope ?? "global") === "global" || s.conversationId === conversationId
+                        ),
+                        error: null,
+                      };
+                    },
                   };
                 },
               }),
@@ -155,6 +160,7 @@ function createFakeSupabase(products: FakeProductRow[], synonyms: FakeSynonymRow
     getAppliedLimit: () => appliedLimit,
     getAppliedFilter: () => appliedFilter,
     getAppliedSynonymFilter: () => appliedSynonymFilter,
+    getAppliedSynonymLimit: () => appliedSynonymLimit,
   };
 }
 
@@ -420,6 +426,26 @@ describe("buildCatalogTool — sinónimos de búsqueda (T5c, 18/9/2026)", () => 
 
     expect(getAppliedFilter()).toContain("pastilla");
     expect(getAppliedFilter()).not.toContain("pastillas de freno");
+  });
+
+  /**
+   * F (20/9/2026): `MAX_SYNONYM_LESSONS` no se exporta (es privado de
+   * tools.ts), así que el único modo de fijar su valor exacto es mirar el
+   * tope que de verdad le llega a `.limit()` en la consulta de sinónimos.
+   */
+  it("pide como tope MAX_SYNONYM_LESSONS = 200 a la consulta de sinónimos", async () => {
+    const { client, getAppliedSynonymLimit } = createFakeSupabase([]);
+
+    const tool = buildCatalogTool(
+      // @ts-expect-error -- fake mínimo
+      { supabase: client, conversationId: "conv-1", contactId: "contact-1" },
+      nuevoCatalogOutcome()
+    );
+
+    // @ts-expect-error -- firma simplificada del test
+    await tool.execute({ query: "pastilla" }, { toolCallId: "t1", messages: [] });
+
+    expect(getAppliedSynonymLimit()).toBe(200);
   });
 
   it("un sinónimo 'solo este chat' de ESTA conversación SÍ expande la búsqueda", async () => {
@@ -1263,6 +1289,35 @@ describe("buildCatalogTool — consulta genérica: una pregunta de filtro, sin e
     expect(catalogOutcome.conExistencia).toBe(false);
   });
 
+  /**
+   * F (20/9/2026, "El resguardo antes del push"): con genérico Y recorte a la
+   * vez (más de 10 repuestos calzan), la instrucción del caso ya dice "no
+   * listes, pregunta primero" — avisar "hay más" ENCIMA de eso contradice el
+   * propio pedido. El `!generico &&` de la condición del recorte es lo que
+   * calla ese aviso quando el turno ya va a preguntar; sin él, el modelo
+   * recibiría las dos instrucciones a la vez.
+   */
+  it("genérico y con recorte a la vez: la instrucción de filtro NO se acompaña del aviso de recorte", async () => {
+    const { client } = createFakeSupabase(repuestosGenericos(15));
+    const catalogOutcome = nuevoCatalogOutcome();
+    const tool = buildCatalogTool(
+      // @ts-expect-error -- fake mínimo
+      { supabase: client, conversationId: "conv-1", contactId: "contact-1" },
+      catalogOutcome
+    );
+
+    // @ts-expect-error -- firma simplificada del test
+    const result = (await tool.execute({ query: "pastilla" }, { toolCallId: "t1", messages: [] })) as {
+      instruccionParaTuRespuesta?: string;
+      hayMas?: boolean;
+    };
+
+    expect(result.hayMas).toBe(true);
+    expect(catalogOutcome.generico).toBe(true);
+    expect(result.instruccionParaTuRespuesta).toContain(PREGUNTA_FILTRO);
+    expect(result.instruccionParaTuRespuesta).not.toMatch(/Hay más resultados de los que caben/i);
+  });
+
   it("con tres resultados o menos, no es genérico aunque no haya marca ni modelo", async () => {
     const { client } = createFakeSupabase(repuestosGenericos(2));
     const catalogOutcome = nuevoCatalogOutcome();
@@ -1275,6 +1330,31 @@ describe("buildCatalogTool — consulta genérica: una pregunta de filtro, sin e
     // @ts-expect-error -- firma simplificada del test
     await tool.execute({ query: "pastilla" }, { toolCallId: "t1", messages: [] });
 
+    expect(catalogOutcome.generico).toBe(false);
+    expect(catalogOutcome.conExistencia).toBe(true);
+  });
+
+  /**
+   * F (20/9/2026): "más de tres" es `> 3`, no `>= 3` — con EXACTAMENTE tres
+   * resultados (y sin recorte, porque tres no pasa el tope de diez) el caso
+   * sigue sin ser genérico. El test de arriba usa dos resultados y no
+   * ejercita este borde.
+   */
+  it("con EXACTAMENTE tres resultados, no es genérico (el corte es 'más de tres', no 'tres o más')", async () => {
+    const { client } = createFakeSupabase(repuestosGenericos(3));
+    const catalogOutcome = nuevoCatalogOutcome();
+    const tool = buildCatalogTool(
+      // @ts-expect-error -- fake mínimo
+      { supabase: client, conversationId: "conv-1", contactId: "contact-1" },
+      catalogOutcome
+    );
+
+    // @ts-expect-error -- firma simplificada del test
+    const result = (await tool.execute({ query: "pastilla" }, { toolCallId: "t1", messages: [] })) as {
+      hayMas?: boolean;
+    };
+
+    expect(result.hayMas).toBe(false);
     expect(catalogOutcome.generico).toBe(false);
     expect(catalogOutcome.conExistencia).toBe(true);
   });
