@@ -109,6 +109,13 @@ function createFakeAdminClient() {
    * estado real, como antes de esta tarea.
    */
   let forceStaleClosedReads = 0;
+  /**
+   * Tarea C4 (Tanda 1, "El resguardo antes del push", 20/9/2026): fuerza un
+   * error en la consulta que comprueba, ANTES de reabrir un chat cerrado, si
+   * el wamid del mensaje entrante ya está guardado. `false` de fábrica: por
+   * defecto la consulta contesta bien, mirando `insertedMessages` de verdad.
+   */
+  let forceMessageLookupError = false;
   const conversationUpdates: { id: string; patch: Record<string, unknown> }[] = [];
   /** Cada llamada a la RPC `record_handoff`, con sus parámetros. */
   const handoffCalls: Record<string, unknown>[] = [];
@@ -305,8 +312,26 @@ function createFakeAdminClient() {
         return {
           select() {
             return {
-              eq() {
-                return { maybeSingle: async () => ({ data: null, error: null }) };
+              eq(_col: string, value: string) {
+                return {
+                  maybeSingle: async () => {
+                    // Tarea C4 (20/9/2026): esta misma forma
+                    // (`select("id").eq("whatsapp_message_id", …).maybeSingle()`)
+                    // la usan DOS caminos reales -- la cita a un mensaje
+                    // propio (`message.context.id`) y, desde esta tarea, la
+                    // comprobación de reentrega antes de reabrir un chat
+                    // cerrado -- así que reflejar `insertedMessages` de
+                    // verdad sirve para los dos sin duplicar el fake.
+                    if (forceMessageLookupError) {
+                      return {
+                        data: null,
+                        error: { message: "conexión perdida al comprobar reentrega" },
+                      };
+                    }
+                    const existente = insertedMessages.get(value);
+                    return { data: existente ? { id: existente.id } : null, error: null };
+                  },
+                };
               },
             };
           },
@@ -415,6 +440,9 @@ function createFakeAdminClient() {
     setForceStaleClosedReads: (n: number) => {
       forceStaleClosedReads = n;
     },
+    setForceMessageLookupError: (value: boolean) => {
+      forceMessageLookupError = value;
+    },
     resetConversationRow: () => {
       conversationRow = {
         id: "conv-1",
@@ -456,6 +484,7 @@ const {
   resetChannelRows,
   setConversationRow,
   setForceStaleClosedReads,
+  setForceMessageLookupError,
   resetConversationRow,
   contactUpdates,
   setContactRows,
@@ -647,6 +676,7 @@ beforeEach(() => {
   contactUpdates.length = 0;
   resetConversationRow();
   setForceStaleClosedReads(0);
+  setForceMessageLookupError(false);
   resetChannelRows();
   resetContactRows();
   setContactUpdateConflict(false);
@@ -1833,6 +1863,89 @@ describe("POST /api/webhooks/whatsapp — el cliente vuelve sobre una conversaci
     expect(conversationUpdates.filter((u) => "status" in u.patch)).toHaveLength(1);
     expect(insertedRows.filter((r) => r.sender_type === "system" && r.content === "El cliente volvió a escribir")).toHaveLength(1);
     expect(handoffCalls.filter((c) => c.p_reason === "reabierta_por_cliente")).toHaveLength(1);
+  });
+
+  /**
+   * Hallazgo H, Tanda 1 de "El resguardo antes del push" (20/9/2026): la
+   * reapertura corría ANTES del dedupe de reentregas de Meta
+   * (`insertError.code === "23505"`, que vive en el INSERT del mensaje, más
+   * abajo en el archivo). Un asesor cierra el chat después de contestar; Meta
+   * reentrega tarde ese mismo mensaje YA guardado; sin este freno el webhook
+   * reabría igual -- IA encendida, sin asesor, sello de presentación a null,
+   * traspaso a la IA -- sobre un chat que un asesor había cerrado a
+   * propósito, sin que llegara ningún mensaje nuevo. Si ese chat había
+   * quedado con `awaiting_reply = true`, el reconciliador lo recogía y Seba
+   * saludaba y "contestaba" un mensaje VIEJO.
+   */
+  it("chat cerrado + wamid que ya estaba guardado (reentrega de Meta): no reabre, no deja traspaso ni encola turno", async () => {
+    const wamid = "wamid.reentrega-cerrada-1";
+
+    // Primer envío, con el chat todavía abierto (default): el mensaje se
+    // guarda de verdad, como cualquier mensaje normal.
+    const primera = await POST(fakeRequest(webhookBody(wamid)));
+    expect(primera.status).toBe(200);
+    expect(insertedMessages.has(wamid)).toBe(true);
+
+    // El asesor cierra el chat después de haber contestado.
+    setConversationRow({ status: "closed", ai_enabled: true });
+    conversationUpdates.length = 0;
+    handoffCalls.length = 0;
+    insertedRows.length = 0;
+    vi.mocked(enqueueAgentTurns).mockClear();
+
+    // Meta reentrega tarde el MISMO mensaje (entrega "at-least-once").
+    const segunda = await POST(fakeRequest(webhookBody(wamid)));
+
+    expect(segunda.status).toBe(200);
+    expect(conversationUpdates).toHaveLength(0);
+    expect(handoffCalls.some((c) => c.p_reason === "reabierta_por_cliente")).toBe(false);
+    expect(
+      insertedRows.some((r) => r.sender_type === "system" && r.content === "El cliente volvió a escribir")
+    ).toBe(false);
+    expect(enqueueAgentTurns).not.toHaveBeenCalled();
+  });
+
+  /**
+   * Mismo hallazgo H: un wamid NUEVO sobre un chat cerrado (el caso de
+   * siempre, sin reentrega detrás) tiene que seguir reabriendo tal cual --
+   * la comprobación nueva no puede frenar una reapertura legítima.
+   */
+  it("chat cerrado + wamid nuevo (sin reentrega): reabre como siempre", async () => {
+    setConversationRow({ status: "closed", ai_enabled: true });
+
+    const response = await POST(fakeRequest(webhookBody("wamid.reentrega-cerrada-wamid-nuevo-1")));
+
+    expect(response.status).toBe(200);
+    expect(conversationUpdates).toContainEqual({ id: "conv-1", patch: PATCH_REAPERTURA });
+    expect(handoffCalls).toContainEqual(
+      expect.objectContaining({
+        p_conversation_id: "conv-1",
+        p_to_kind: "ai",
+        p_reason: "reabierta_por_cliente",
+      })
+    );
+  });
+
+  /**
+   * Si la consulta que comprueba la reentrega falla (base caída, red
+   * cortada), se sigue el camino de siempre -- perder un mensaje real por no
+   * reabrir es peor que reabrir de más.
+   */
+  it("si falla la comprobación de reentrega antes de reabrir, se sigue el camino de siempre", async () => {
+    setConversationRow({ status: "closed", ai_enabled: true });
+    setForceMessageLookupError(true);
+
+    const response = await POST(fakeRequest(webhookBody("wamid.reentrega-consulta-rota-1")));
+
+    expect(response.status).toBe(200);
+    expect(conversationUpdates).toContainEqual({ id: "conv-1", patch: PATCH_REAPERTURA });
+    expect(handoffCalls).toContainEqual(
+      expect.objectContaining({
+        p_conversation_id: "conv-1",
+        p_to_kind: "ai",
+        p_reason: "reabierta_por_cliente",
+      })
+    );
   });
 });
 

@@ -1094,6 +1094,42 @@ export async function POST(request: Request) {
           // agrupó) dispararían el UPDATE dos veces y duplicarían el evento
           // de sistema y el traspaso.
           if (existingConversation.status === "closed") {
+            // H (Tanda 1 de "El resguardo antes del push", 20/9/2026): antes
+            // de reabrir hay que descartar que ESTE mensaje sea una
+            // REENTREGA de Meta (entrega "at-least-once") de uno que ya se
+            // guardó en un intento anterior. El dedupe de más abajo
+            // (`insertError.code === "23505"`) corre recién DESPUÉS del
+            // INSERT, pero la reapertura -- IA encendida, sin asesor, sello
+            // de presentación a null, traspaso `reabierta_por_cliente` -- ya
+            // se había disparado antes de llegar ahí: un asesor que cerró el
+            // chat a propósito lo veía reabierto sin ningún mensaje nuevo, y
+            // si había quedado con `awaiting_reply = true` el reconciliador
+            // lo recogía y Seba saludaba y "contestaba" un mensaje VIEJO que
+            // el cliente ya había escrito antes del cierre. Se verifica el
+            // wamid contra `messages` ANTES del UPDATE; ante un error de
+            // esta consulta se sigue el camino de siempre (reabrir) --
+            // perder un mensaje real por no reabrir es peor que reabrir de
+            // más.
+            const { data: yaGuardado, error: yaGuardadoError } = await supabase
+              .from("messages")
+              .select("id")
+              .eq("whatsapp_message_id", message.id)
+              .maybeSingle<{ id: string }>();
+
+            if (yaGuardadoError) {
+              console.error(
+                "Webhook de WhatsApp: error al comprobar reentrega antes de reabrir",
+                yaGuardadoError
+              );
+            }
+
+            if (yaGuardado) {
+              console.info(
+                `Webhook de WhatsApp: mensaje ${message.id} ya estaba guardado (reentrega de Meta), se ignora antes de reabrir.`
+              );
+              continue;
+            }
+
             const { data: reopened, error: reopenError } = await supabase
               .from("conversations")
               .update({ status: "open", ai_enabled: true, assigned_agent_id: null, welcome_sent_at: null })
