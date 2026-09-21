@@ -555,6 +555,15 @@ en el commit `d9091e0`, T5).
 
 ### T6 — Script de catálogos endurecido (`8bc3997`)
 
+**Actualizado el 21/9/2026 (T1, plan "Los catálogos se cargan a mano desde
+el panel; el script pasa a ser opcional"): este script y el paso 10 de
+`docs/PRODUCCION.md` §11 que lo corría DEJARON de ser obligatorios.** El
+operador decidió cargar cada catálogo a mano desde Control IA → Enlaces de
+catálogo, una vez que el código estuviera en producción; el script sigue
+en el repo, sin tocar, como alternativa para una carga masiva si el
+operador la pide expresamente. Los endurecimientos de abajo siguen siendo
+ciertos y aplican si alguna vez se corre.
+
 - **Archivo:** `scripts/sql/2026-09-18-catalogos-iniciales.sql` (no es
   código de la app ni una migración — script de una sola vez, revisado por
   un humano antes de correr).
@@ -1354,6 +1363,20 @@ esta entrega):
 - **Hueco de `agent_turns` del 29/8 al 6/9/2026**: sin filas en ese rango,
   causa no investigada en este reporte — cualquier métrica que promedie
   sobre ese período va a estar sesgada.
+
+**Actualización del 21/9/2026, mismo día, plan aparte (T1, "Los catálogos
+se cargan a mano desde el panel; el script pasa a ser opcional"): el
+despliegue del código de esta corrida (T6, arriba, y el script de D8 del
+Grupo D) ya NO incluye correr `scripts/sql/2026-09-18-catalogos-iniciales.sql`
+como paso obligatorio.** El operador decidió cargar cada URL de catálogo a
+mano desde Control IA → Enlaces de catálogo una vez que el código
+estuviera en producción, así que las dos preguntas pendientes que frenaban
+el script ("Lubricantes" ¿uno o dos catálogos?, ¿cuál PDF de cascos es el
+vigente?) dejaron de bloquear la entrega: se resuelven solas cuando el
+operador cargue cada catálogo, con la URL que él sabe que es la correcta.
+Detalle del camino manual en `docs/PRODUCCION.md` §11, paso 10 (reescrito
+ese mismo día); el script queda como alternativa opcional para una carga
+masiva, sin que el Claude del VPS lo corra por su cuenta.
 
 ---
 

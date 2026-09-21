@@ -1294,7 +1294,16 @@ dejar rastro es lo que hacía desaparecer leads.
   `runAgentTurn`/`reconcileOrphanTurns` de verdad con un fake de Supabase
   necesita el caso `catalog_links` en su `from()` —sin él, ninguna de las
   dos funciones distingue "tabla no simulada" de "sin catálogos" y el fake
-  explota o miente en silencio— (ver `agent.test.ts`).
+  explota o miente en silencio— (ver `agent.test.ts`). **Actualizado el
+  21/9/2026 (T1, plan "Los catálogos se cargan a mano desde el panel; el
+  script pasa a ser opcional"): la carga inicial deja de ser un paso
+  obligatorio del despliegue.** El operador decidió cargar cada catálogo a
+  mano desde el panel una vez que el código estuviera en producción (clave,
+  etiqueta y URL primero; recién después reemplazar la URL pegada a mano
+  por su marcador en el escenario/mensaje rápido) — el script sigue en el
+  repo como alternativa opcional para una carga masiva, sin tocar, y el
+  Claude del VPS no lo corre salvo pedido explícito del operador; ver
+  `docs/PRODUCCION.md` §11, paso 10.
 - **`orders.saint_invoice_number` es nullable en la base y OBLIGATORIO en el
   modal y en la mutación** (D9-D11, plan "Nada sin leer, un solo catálogo y
   la factura Saint", 18/9/2026). Nullable porque las ventas cerradas antes

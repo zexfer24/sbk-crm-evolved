@@ -1613,12 +1613,87 @@ ver "Ensayo del despliegue" en el reporte de entrega). El de abajo mide 193:
 > no los preguntes. Pregunta la talla del casco, la viscosidad del aceite o
 > el tamaño de la maleta, o muestra las opciones.
 
-**10. Script de catálogos** (después del código, nunca antes — D8 del plan
-"Nada sin leer, un solo catálogo y la factura Saint": un marcador sin
-código que lo resuelva es peor que la URL vieja que reemplaza). Completar y
-correr `scripts/sql/2026-09-18-catalogos-iniciales.sql`. El archivo llega
-con marcadores de relleno `<<...>>` a propósito ("el contenido es del
-cliente, no del repo"); el implementador no inventó ningún valor. Pasos:
+**10. (OPCIONAL — ya no es parte del camino obligatorio del despliegue)
+Catálogos: el operador los carga a mano desde el panel; el script queda
+como alternativa.** Decisión del operador del 21/9/2026 (T1 del plan "Los
+catálogos se cargan a mano desde el panel; el script pasa a ser opcional",
+literal: *"Los urls los pondremos en la sección que creamos en la sesión,
+para eso hay que esperar que esté en producción"*) — hasta esa fecha este
+paso era obligatorio (D8 del plan "Nada sin leer, un solo catálogo y la
+factura Saint") y dependía de dos respuestas del operador que nunca
+llegaron (ver más abajo); ya no bloquea nada. **El despliegue obligatorio
+termina en el paso 9** (push en el paso 7, backfill+tope de gasto en 8/9);
+este paso 10 queda para cuando el operador decida cargar cada catálogo, y
+el paso 11 (vigilar) no depende de él.
+
+**Camino principal — a mano, desde Control IA → Enlaces de catálogo, una
+vez que el código de esta corrida ya esté en producción:**
+
+1. Crear el catálogo (clave, etiqueta, URL, activo) ANTES de tocar ningún
+   texto. La clave solo admite minúsculas, números y guiones (`[a-z0-9-]+`)
+   y **NO se puede editar después** (`catalog-links-panel.tsx`, D del plan
+   "Nada sin leer…" — el campo queda de solo lectura al editar): acordarla
+   de una vez evita crear una fila que después haya que abandonar para
+   "renombrar" con una nueva. Claves sugeridas (las mismas que traía el
+   script): `cascos`, `resonadores`, `maletas`, `exploradoras-y-bombillos`,
+   `defensas`, `lubricantes` (y `lubricantes-2` si el segundo Drive de
+   "Lubricantes" resulta ser un catálogo real y no una URL vieja sin
+   borrar — ver la pregunta pendiente, en la descripción del script, abajo).
+2. Recién DESPUÉS editar el escenario o el mensaje rápido que hoy lleva la
+   URL de Drive pegada a mano y reemplazarla por `{{catalogo:<clave>}}` (o
+   `{{catalogos}}` para la lista completa). Al revés —marcador antes que el
+   catálogo exista y esté activo— fase 0 descarta el escenario de los
+   candidatos (log `escenarios_enlace_sin_resolver`) y el cliente se queda
+   sin PDF; en el composer, un mensaje rápido con un marcador sin resolver
+   se pega crudo con un `toast.warning` de aviso — el asesor lo ve antes de
+   mandarlo, no falla en silencio.
+3. `{{catalogos}}` lista TODOS los enlaces ACTIVOS de la tabla —no cargar
+   ahí "Ubicación" ni ningún enlace que no sea un catálogo de repuestos
+   (mismo motivo por el que el script los deja fuera, ver la descripción
+   del script más abajo: `formatCatalogList` mezclaría la ubicación de la
+   tienda con la lista de catálogos).
+4. Se puede migrar catálogo por catálogo, sin apuro: mientras un
+   escenario/mensaje rápido no se edite, sigue mandando la URL pegada a
+   mano de siempre — nada se rompe por tardar en migrar el resto. Verificar
+   cada uno mandando el escenario/mensaje rápido a un número de prueba
+   antes de darlo por migrado.
+
+Este camino resuelve solas, sin que nada quede bloqueado, las dos preguntas
+que hasta el 21/9/2026 frenaban el script (detalladas más abajo): el
+operador carga la URL que él sabe que es la vigente para "cascos", y decide
+si "Lubricantes" son uno o dos catálogos, en el momento en que migra cada
+escenario — no hace falta esperar su respuesta para nada más.
+
+Mientras nadie edite los textos, los escenarios y mensajes rápidos siguen
+mandando las URLs de Drive pegadas a mano, igual que hoy: no hay ningún
+apuro el día del deploy por este paso.
+
+**Sobre `ai_playbooks.cede_al_inventario` de "Catálogo general" (T5, "El
+catálogo configurado sale siempre", 21/9/2026): la migración
+`20260921010000` crea la columna con `default false` para TODOS los
+escenarios — quien la marcaba en `true` para "Catálogo general" era el
+`UPDATE` de la sección 5c del script, no la migración.** Si el script no se
+corre, "Catálogo general" queda con `cede_al_inventario = false` como
+cualquier otro escenario: mientras `buscar_repuesto` se despliega APAGADA
+(así se despliega, ver la medición del 21/9/2026 al principio de esta
+sección) esto no cambia nada, porque la segunda de las cuatro condiciones
+de H1/T5 ya frena la cesión sola. Si el operador enciende `buscar_repuesto`
+sin haber corrido el script, marcar la casilla "Cede al inventario cuando
+preguntan por un repuesto" a mano desde el editor de ese escenario en
+Control IA → Respuestas ANTES de encender la herramienta — ver "Al encender
+la consulta de productos", más abajo, que ya lo suma como primer punto a
+revisar.
+
+**Alternativa opcional — el script, para una carga masiva de una sola vez.**
+`scripts/sql/2026-09-18-catalogos-iniciales.sql` sigue en el repo, sin
+tocar, para cuando el operador prefiera migrar TODO de una vez en vez de
+catálogo por catálogo desde el panel. **El Claude del VPS no lo corre por
+su cuenta como parte de un despliegue — solo si el operador lo pide
+expresamente.** Si lo pide, sigue corriendo DESPUÉS del código, nunca antes
+(un marcador sin código que lo resuelva es peor que la URL vieja que
+reemplaza). El archivo llega con marcadores de relleno `<<...>>` a
+propósito ("el contenido es del cliente, no del repo"); el implementador no
+inventó ningún valor. Pasos:
 
 1. Correr las dos consultas de ayuda que trae el propio archivo (comentario
    en su cabecera, no se ejecutan solas) contra la base de producción para
@@ -1638,15 +1713,16 @@ cliente, no del repo"); el implementador no inventó ningún valor. Pasos:
    (corrección de la revisión `code-review high`, 19/9/2026, punto 3): el
    escenario "Ubicación" queda FUERA de este script a propósito —ver más
    abajo— así que no hace falta encontrar su fila acá.
-2. **Preguntar al cliente antes de completar el script — dos pendientes que
-   SOLO el operador puede resolver** (medidos el 21/9/2026, reporte de solo
-   lectura del VPS): esto frena el SCRIPT, no el código.
+2. **Las dos preguntas que hasta el 21/9/2026 frenaban este paso** (medidas
+   el 21/9/2026, reporte de solo lectura del VPS) **ya NO bloquean el
+   despliegue** —el camino principal es el panel, de arriba— pero siguen
+   siendo necesarias para completar el script si el operador elige correrlo:
    - "Lubricantes" aparece DOS VECES en el escenario "Catálogo general",
      con dos archivos de Drive distintos (`1db_N7X…` y `1rwcYTw…`) — ¿son
      dos catálogos reales o quedó uno viejo sin borrar? Uno probablemente
-     sea "Aceites", no un segundo "Lubricantes". Hasta la respuesta, cargar
-     los dos como `lubricantes`/`lubricantes-2` (el script ya trae ese
-     default).
+     sea "Aceites", no un segundo "Lubricantes". Hasta que el operador
+     responda (o los cargue él mismo desde el panel), el script trae como
+     default cargar los dos como `lubricantes`/`lubricantes-2`.
    - Los escenarios de la IA y los mensajes rápidos de los asesores usan
      PDFs DISTINTOS para "cascos": los escenarios de la IA apuntan al
      Drive `1iz77Lc…`, los mensajes rápidos de los asesores al `1fP3yQ5…`
@@ -1772,8 +1848,22 @@ horario con asesores mirando la bandeja (se revierte con un clic). Con la
 herramienta apagada, la cuarta condición de H1/T5 nunca importa: ningún
 escenario cede al inventario porque la segunda de las cuatro condiciones
 (`buscar_repuesto` encendida) ya falla sola, así que "CATALOGO CASCOS" y
-"Catálogo general" siguen mandando su PDF de siempre. Al encenderla,
-vigilar durante las primeras horas:
+"Catálogo general" siguen mandando su PDF de siempre.
+
+**Antes de encenderla (sumado el 21/9/2026, T1 del plan "Los catálogos se
+cargan a mano desde el panel; el script pasa a ser opcional"): verificar
+que "Catálogo general" tiene marcada la casilla "Cede al inventario cuando
+preguntan por un repuesto" en su editor de escenario.** Esa marca
+(`ai_playbooks.cede_al_inventario = true`) la ponía el `UPDATE` de la
+sección 5c del script de carga de catálogos (paso 10, arriba) — la
+migración `20260921010000` crea la columna con `default false` para TODOS
+los escenarios, la marca no es automática. Si el paso 10 se resolvió a mano
+desde el panel (el camino principal desde el 21/9/2026) en vez de con el
+script, nadie marcó esa casilla todavía: sin ella, la cuarta condición de
+H1/T5 falla y "Catálogo general" nunca cede al inventario aunque las otras
+tres se cumplan — no es un bug, pero conviene decidirlo a propósito antes
+de encender la herramienta, no descubrirlo después mirando por qué nunca
+cede. Al encenderla, vigilar durante las primeras horas:
 
 - `turno_tiempos` con `buscarRepuesto` en su columna `herramientas` en TODA
   fila con intención `consulta_disponibilidad` — si falta, la herramienta
@@ -1807,11 +1897,15 @@ vigilar durante las primeras horas:
   sin tocar nada más; desactivar la clave hace que el escenario deje de ser
   candidato (`escenarios_enlace_sin_resolver`) y el mensaje rápido avise
   con el toast.
-- Tras correr el script de carga inicial, ninguna de las 2 filas de
-  `ai_playbooks` ni las 4 de `quick_replies` tocadas conserva
-  `drive.google.com` (el propio script ya lo exige para no dejar nada a
-  medias, pero conviene mirarlo de nuevo con la consulta del paso 1 de
-  arriba, ahora vacía).
+- **Solo si se corrió el script de carga inicial** (paso 10, ahora
+  OPCIONAL — 21/9/2026, T1): ninguna de las 2 filas de `ai_playbooks` ni
+  las 4 de `quick_replies` tocadas conserva `drive.google.com` (el propio
+  script ya lo exige para no dejar nada a medias, pero conviene mirarlo de
+  nuevo con la consulta del paso 1 de arriba, ahora vacía). Si en cambio el
+  operador migró a mano desde el panel, esta verificación se hace escenario
+  por escenario a medida que se editan (ver el paso 3 del camino principal
+  del paso 10): un escenario sin editar sigue con `drive.google.com` a
+  propósito hasta que le toque su turno.
 - Cerrar una venta sin factura Saint muestra el error bajo el campo y no
   llama a la mutación; con los nueve datos guarda, el evento de sistema
   nombra la factura y el detalle en Ventas la muestra (o "Sin número de

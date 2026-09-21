@@ -310,6 +310,20 @@ requiere entrega propia.
 
 ## Script de carga inicial de catálogos (después del deploy, no antes)
 
+**Actualizado el 21/9/2026 (T1, plan "Los catálogos se cargan a mano desde
+el panel; el script pasa a ser opcional"): este script DEJÓ de ser un paso
+obligatorio del despliegue.** El operador decidió cargar cada URL de
+catálogo a mano desde Control IA → Enlaces de catálogo una vez que el
+código estuviera en producción ("Los urls los pondremos en la sección que
+creamos en la sesión, para eso hay que esperar que esté en producción") —
+el detalle del camino manual y de esta decisión vive en
+`docs/PRODUCCION.md` §11, paso 10. El resto de esta sección queda tal como
+se escribió el 18-19/9/2026, como referencia de lo que el script hace y de
+las dos preguntas pendientes que hasta entonces lo frenaban; sigue
+sirviendo si el operador alguna vez pide correrlo para una carga masiva,
+pero el Claude del VPS ya no lo corre por su cuenta como parte de un
+despliegue.
+
 `scripts/sql/2026-09-18-catalogos-iniciales.sql` no es código de la
 aplicación ni una migración: es un script de UNA SOLA vez que carga los
 **siete** catálogos vigentes de producción (los de "Catálogo general" —
@@ -406,7 +420,9 @@ implementador de T2 no inventó ningún valor de producción, ni URLs ni
   rápido pega la URL; cambiar la URL en el panel cambia los tres sin tocar
   nada más; desactivar la clave hace que el escenario deje de ser
   candidato y el mensaje rápido avise.
-- Tras correr el script de carga inicial, ninguna de las 7 filas tocadas
+- Tras correr el script de carga inicial (si se corre — actualización del
+  21/9/2026: ya no es obligatorio, ver la nota al principio de "Script de
+  carga inicial de catálogos", más arriba), ninguna de las 7 filas tocadas
   (`ai_playbooks`+`quick_replies`) conserva `drive.google.com`.
 - Cerrar una venta sin factura Saint muestra el error bajo el campo; con
   los nueve datos guarda, el evento de sistema nombra la factura y el
