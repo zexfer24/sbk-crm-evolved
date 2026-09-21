@@ -1315,6 +1315,14 @@ producción y "Catálogo general" marcado):**
 | "Quisiera ver el catalogo" | sale Catálogo general (`catalogo_apagado`) | sale Catálogo general (`cliente_pidio_catalogo`) |
 | "Buenas, tienen pastillas de freno?" | sale Catálogo general (`catalogo_apagado`) — igual que producción hoy | CEDE: `escenario_cedido_al_catalogo` → `buscarRepuesto` → sin existencia → escala `sin_stock` |
 
+**CI real en verde sobre `4aab349`** (21/9/2026, run 35566194167, `verificar`
+y `migraciones` en `success`, con el paso nuevo de
+`escenario_cede_al_inventario.sql`), por la rama desechable
+`ci/el-catalogo-configurado`. Verificación visual con Chromium real sobre el
+build de producción: badge solo en "Catálogo general", casilla apagada al
+crear, se enciende, su ayuda se lee, el modal no desborda y guardar escribe
+`cede_al_inventario = true`. **Este es el estado que sale a producción.**
+
 Los CUATRO mensajes se clasificaron `consulta_disponibilidad`: con H1 tal
 cual, los cuatro habrían perdido su respuesta configurada. Suite 2717 verde
 con Redis, `tsc` y `lint` sin errores, 18 tests SQL verdes tras `db reset`.
