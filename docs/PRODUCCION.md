@@ -1236,6 +1236,26 @@ verificar en el reporte de entrega (`docs/entregas/2026-09-19-seba-sale-sin-pisa
 si ya confirmó la suite completa de `supabase/tests/` en verde sobre una
 base reconstruida desde cero antes de dar el paso 6 por bueno.**
 
+**Sumado el 21/9/2026 (T5, plan "El catálogo configurado sale siempre"):
+una sexta migración se agrega al final del orden, `20260921010000_escenario_cede_al_inventario.sql`
+(columna `ai_playbooks.cede_al_inventario`) — ver el paso 3, más abajo. El
+reporte de entrega de esa corrida está en
+`docs/entregas/2026-09-19-seba-sale-sin-pisar-a-nadie.md`, sección "El
+catálogo configurado sale siempre (21/9/2026)" (agregada ese mismo día).
+
+**Medición de solo lectura, 21/9/2026 (VPS, 00:49 VET):** producción sigue
+en `3802fad`, base en `20260915010000` — sin cambios desde el 18/9.
+Volumen medido: 5.947 conversaciones, 113.308 mensajes, 50.264 traspasos.
+**Ventana recomendada para aplicar las seis migraciones fuera de hora
+pico: 03:00–05:00 VET** (1 y 0 mensajes entrantes en los últimos 7 días a
+esas horas; el pico del día es a las 11:00, con 1.444 mensajes). El UPDATE
+operativo del paso 4 (C1) tocaría **30 conversaciones** con el volumen de
+hoy. `buscar_repuesto` sigue **APAGADO en producción desde el 25/8** y,
+por decisión del operador, **SE DESPLIEGA APAGADO** — lo enciende él mismo
+después desde Control IA → Herramientas, en un horario con asesores
+mirando la bandeja; revertirlo es un clic (ver "Al encender la consulta de
+productos", después del paso 11).
+
 ### Orden corregido, once pasos (inspección pre-despliegue del 19/9/2026)
 
 Nace de tres auditorías de solo lectura sobre `3802fad..HEAD` (ver la
@@ -1282,8 +1302,9 @@ from public.agent_settings s;
 **2. Respaldo terminado** (`scripts/backup.sh`, §8) — esperar a que termine
 de verdad, no lanzarlo en paralelo con el paso 3.
 
-**3. Las cinco migraciones, en orden, fuera de hora pico, avisando al
-equipo ANTES de migrar.** Cada una con:
+**3. Las seis migraciones, en orden, fuera de hora pico (03:00–05:00 VET,
+medición del 21/9/2026 más arriba), avisando al equipo ANTES de migrar.**
+Cada una con:
 
 ```bash
 PGOPTIONS="-c lock_timeout=5s" psql -1 -v ON_ERROR_STOP=1 -f <archivo>.sql "$DATABASE_URL"
@@ -1294,22 +1315,31 @@ PGOPTIONS="-c lock_timeout=5s" psql -1 -v ON_ERROR_STOP=1 -f <archivo>.sql "$DAT
 contenedor — `PGOPTIONS` no aplica ahí porque `psql` ya corre local; usar
 en su lugar `-c "set lock_timeout='5s'"` como primer statement si hiciera
 falta un tope adicional al que cada migración ya trae con `set local
-lock_timeout = '5s'`, T5 de "Seba sale sin pisar a nadie" — las cinco lo
-traen desde esta corrida, no hace falta pasarlo por fuera).
+lock_timeout = '5s'` (T5 de "Seba sale sin pisar a nadie" para las cinco
+primeras; `20260921010000` lo trae con el mismo criterio, T1 de "El
+catálogo configurado sale siempre") — las seis lo traen, no hace falta
+pasarlo por fuera).
 
 **Corrección post-revisión (`code-review high`, 19/9/2026, hallazgo 10):
-las cinco migraciones ahora ABORTAN solas si `-1`/`ON_ERROR_STOP=1` falta.**
-Justo después de su propio `set local lock_timeout = '5s'`, cada una trae
-un `do $$ … if current_setting('lock_timeout') in ('0', '0ms') then raise
-exception … end if; $$` — si el comando de arriba se corre sin `-1` (o sin
-el `PGOPTIONS`/`-c "set lock_timeout=..."` equivalente), el `set local` es
-un NO-OP silencioso y esta guarda lo detecta y aborta la migración ENTERA
-con un mensaje explícito, en vez de aplicarse igual sin el freno de lock
-que la justifica. Si alguna de las cinco aborta con ese mensaje, no es un
-bug de la migración: falta `-1 -v ON_ERROR_STOP=1` en el comando — repetir
-el comando de arriba tal cual, sin quitar ni bajar el `lock_timeout`.
+las cinco migraciones de esa revisión ABORTAN solas si `-1`/`ON_ERROR_STOP=1`
+falta** (la sexta, `20260921010000` del 21/9, no viene de esa revisión pero
+sigue el mismo patrón — ver más abajo). Justo después de su propio `set
+local lock_timeout = '5s'`, cada una trae un `do $$ … if
+current_setting('lock_timeout') in ('0', '0ms') then raise exception … end
+if; $$` — si el comando de arriba se corre sin `-1` (o sin el
+`PGOPTIONS`/`-c "set lock_timeout=..."` equivalente), el `set local` es un
+NO-OP silencioso y esta guarda lo detecta y aborta la migración ENTERA con
+un mensaje explícito, en vez de aplicarse igual sin el freno de lock que la
+justifica. Si alguna de las seis aborta con ese mensaje, no es un bug de la
+migración: falta `-1 -v ON_ERROR_STOP=1` en el comando — repetir el
+comando de arriba tal cual, sin quitar ni bajar el `lock_timeout`.
 Verificado el 19/9/2026 con `npx supabase db reset` (CLI 2.117.0): las
-cinco aplican sin abortar.
+cinco de entonces aplican sin abortar. `20260921010000` (21/9/2026) trae la
+misma guarda por diseño (ver el propio archivo) y ya corrió sin abortar
+contra la base local de esta máquina (aplicada a mano con `psql -1 -v
+ON_ERROR_STOP=1`, autoverificación interna en verde) — falta que el cierre
+del plan la sume a la corrida de `npx supabase db reset` de las seis
+juntas, igual que se hizo con las cinco el 19/9.
 
 **Corrección (revisión "El resguardo antes del push", tarea C5,
 20/9/2026): la frase de arriba es cierta a medias.** `npx supabase db
@@ -1346,7 +1376,7 @@ principio del archivo, antes de tocar una sola fila de `conversations`—
 | `20260916010000` | `conversation_handoffs` (SHARE ROW EXCLUSIVE) | Escrituras a `conversation_handoffs` (`record_handoff`, todo `INSERT`/`UPDATE`); las LECTURAS de la bitácora (`escalationOpen`, `humanClaimsChat`) siguen sin bloquearse | 4,1 s / 15,2 s / 4,3 s |
 | `20260917010000` | `conversation_handoffs`, después `messages` (SHARE ROW EXCLUSIVE, mismo orden alfabético en las dos migraciones) | Escrituras a `messages` (el `INSERT` del webhook) y a `conversation_handoffs`; las LECTURAS de ambas (la bandeja cargando mensajes, la bitácora) siguen sin bloquearse | 6,2 s / 15,6 s / 7,7 s |
 
-Aplicar las cinco fuera de hora pico sigue siendo la recomendación (no
+Aplicar las seis fuera de hora pico sigue siendo la recomendación (no
 cambia con este arreglo): esos segundos son el tiempo que un webhook
 entrante para una conversación cualquiera —no solo las que toca el
 backfill— queda esperando a que la migración llegue al `commit;`. **Si
@@ -1363,6 +1393,15 @@ rota. Orden estricto:
 3. `20260917020000_ai_lessons.sql`.
 4. `20260918010000_catalog_links.sql`.
 5. `20260918020000_factura_saint.sql`.
+6. `20260921010000_escenario_cede_al_inventario.sql` (T1, "El catálogo
+   configurado sale siempre", 21/9/2026 — sin relación de dependencia con
+   las cinco de arriba, va al final solo porque es la última en llegar).
+   Verificar por efecto, no por registro:
+   ```sql
+   select column_default, is_nullable from information_schema.columns
+   where table_name = 'ai_playbooks' and column_name = 'cede_al_inventario';
+   -- 'false' | 'NO'
+   ```
 
 **Aviso al equipo, justo antes de este paso, no después:** desde que
 `20260917010000` entra, CUALQUIER mensaje real que un asesor mande a un
@@ -1374,8 +1413,8 @@ que saberlo ANTES de que empiece a pasar: un asesor que manda un mensaje
 "solo para probar" en un chat que Seba está atendiendo bien lo silencia ahí
 mismo, sin aviso en pantalla más allá del interruptor del chat.
 
-Registrar las cinco en `supabase_migrations.schema_migrations` (no se
-registran solas) — **después de aplicar cada una con éxito** (o las cinco
+Registrar las seis en `supabase_migrations.schema_migrations` (no se
+registran solas) — **después de aplicar cada una con éxito** (o las seis
 juntas al final, nunca antes de que la migración correspondiente haya
 entrado de verdad):
 
@@ -1385,11 +1424,13 @@ insert into supabase_migrations.schema_migrations (version, name) values
   ('20260917010000', '20260917010000_seba_y_escalada_viva'),
   ('20260917020000', '20260917020000_ai_lessons'),
   ('20260918010000', '20260918010000_catalog_links'),
-  ('20260918020000', '20260918020000_factura_saint');
+  ('20260918020000', '20260918020000_factura_saint'),
+  ('20260921010000', '20260921010000_escenario_cede_al_inventario');
 ```
 
 Verificar con `select count(*) from supabase_migrations.schema_migrations` →
-75.
+76 (75 con las primeras cinco, tal como decía esta sección antes del
+21/9/2026; +1 con `20260921010000`).
 
 **4. UPDATE operativo de C1** (mitigación para los chats que YA están
 asignados a mano desde antes de este deploy — el código de T10 solo
@@ -1401,12 +1442,14 @@ set ai_enabled = false
 where assigned_agent_id is not null and ai_enabled and status <> 'closed';
 ```
 
-Corre DESPUÉS de las cinco migraciones (necesita el trigger de
+Corre DESPUÉS de las seis migraciones (necesita el trigger de
 `20260917010000` para que la próxima vez que ese chat cambie de manos deje
 rastro en `conversation_handoffs`) y ANTES del push del código — si se
 corre después del push, hay una ventana donde Seba ya corre turnos
 completos en esos chats con la guarda nueva (`if (!convo.ai_enabled)`)
-sin que nada la frene todavía.
+sin que nada la frene todavía. Con el volumen medido el 21/9/2026 (más
+arriba), este UPDATE toca **30 conversaciones** — verificar el "UPDATE 30"
+que devuelve contra ese número antes de seguir.
 
 Efecto colateral deseado (T11, "Seba sale sin pisar a nadie"): este UPDATE
 deja una fila `silenciada_por_asesor` por cada chat que toca (trigger
@@ -1415,11 +1458,16 @@ posterior desde el panel —si el asesor nunca le escribió de verdad al
 cliente— va a reencender a Seba solo (`reenableAiIfAdvisorNeverWrote`,
 `mutations.ts`): es lo esperado, no un efecto secundario a corregir.
 
-**5. `notify pgrst` + los dos GET de humo.** Las cinco migraciones ya
+**5. `notify pgrst` + los dos GET de humo.** Las seis migraciones ya
 terminan en `notify pgrst, 'reload schema'` (T5, hallazgo M1 — antes
-NINGUNA lo traía y PostgREST seguía sirviendo el esquema cacheado). Antes
-de pushear el código, confirmar que el reload surtió efecto con dos GET
-directos contra PostgREST, uno por tabla nueva:
+NINGUNA lo traía y PostgREST seguía sirviendo el esquema cacheado;
+`20260921010000` lo suma con el mismo criterio). Antes de pushear el
+código, confirmar que el reload surtió efecto con dos GET directos contra
+PostgREST, uno por tabla nueva (`20260921010000` no agrega una tabla
+nueva —solo una columna a `ai_playbooks`, que ya se sirve por REST—, así
+que no hace falta un tercer GET: si el reload no llegó, el síntoma sería
+un 400 al mandar `cede_al_inventario` desde el panel, no un 400 en la
+tabla entera):
 
 ```bash
 curl -s -o /dev/null -w "%{http_code}\n" "https://<tu-proyecto>.supabase.co/rest/v1/catalog_links?select=id&limit=1" \
@@ -1469,6 +1517,11 @@ select 'orders.saint_invoice_number',
        exists (select 1 from information_schema.columns
                where table_schema = 'public' and table_name = 'orders'
                  and column_name = 'saint_invoice_number')
+union all
+select 'ai_playbooks.cede_al_inventario',
+       exists (select 1 from information_schema.columns
+               where table_schema = 'public' and table_name = 'ai_playbooks'
+                 and column_name = 'cede_al_inventario')
 union all
 select 'catalog_links publicada en supabase_realtime',
        exists (select 1 from pg_publication_tables
@@ -1585,12 +1638,22 @@ cliente, no del repo"); el implementador no inventó ningún valor. Pasos:
    (corrección de la revisión `code-review high`, 19/9/2026, punto 3): el
    escenario "Ubicación" queda FUERA de este script a propósito —ver más
    abajo— así que no hace falta encontrar su fila acá.
-2. **Preguntar al cliente antes de completar el script**: "Lubricantes"
-   aparece DOS VECES en el escenario "Catálogo general", con dos archivos
-   de Drive distintos — ¿son dos catálogos reales o quedó uno viejo sin
-   borrar? Esto frena el SCRIPT, no el código: hasta la respuesta, cargar
-   los dos como `lubricantes`/`lubricantes-2` (el script ya trae ese
-   default).
+2. **Preguntar al cliente antes de completar el script — dos pendientes que
+   SOLO el operador puede resolver** (medidos el 21/9/2026, reporte de solo
+   lectura del VPS): esto frena el SCRIPT, no el código.
+   - "Lubricantes" aparece DOS VECES en el escenario "Catálogo general",
+     con dos archivos de Drive distintos (`1db_N7X…` y `1rwcYTw…`) — ¿son
+     dos catálogos reales o quedó uno viejo sin borrar? Uno probablemente
+     sea "Aceites", no un segundo "Lubricantes". Hasta la respuesta, cargar
+     los dos como `lubricantes`/`lubricantes-2` (el script ya trae ese
+     default).
+   - Los escenarios de la IA y los mensajes rápidos de los asesores usan
+     PDFs DISTINTOS para "cascos": los escenarios de la IA apuntan al
+     Drive `1iz77Lc…`, los mensajes rápidos de los asesores al `1fP3yQ5…`
+     — ¿cuál de los dos es el vigente? El script carga una sola URL para
+     la clave `cascos` (compartida por escenarios y mensajes rápidos vía
+     `{{catalogo:cascos}}`), así que cargar el que no es no se nota hasta
+     que alguien lo abre y encuentra un PDF viejo.
 3. Completar los marcadores `<<...>>` de las tres tablas de relleno con los
    valores reales (URLs de los 7 catálogos de "Catálogo general"; `id` y
    texto YA con el marcador de cada uno de los 2 escenarios —"CATALOGO
@@ -1700,6 +1763,32 @@ las primeras horas después del deploy:
   esta corrida, solo debería aparecer tras un fallo real del proveedor
   DESPUÉS del saludo de Seba).
 
+### Al encender la consulta de productos (T5, "El catálogo configurado sale siempre", 21/9/2026)
+
+`buscar_repuesto` se despliega APAGADO, tal como está en producción desde
+el 25/8 (ver la medición del 21/9/2026, al principio de esta sección) — el
+operador decide cuándo encenderla, desde Control IA → Herramientas, en un
+horario con asesores mirando la bandeja (se revierte con un clic). Con la
+herramienta apagada, la cuarta condición de H1/T5 nunca importa: ningún
+escenario cede al inventario porque la segunda de las cuatro condiciones
+(`buscar_repuesto` encendida) ya falla sola, así que "CATALOGO CASCOS" y
+"Catálogo general" siguen mandando su PDF de siempre. Al encenderla,
+vigilar durante las primeras horas:
+
+- `turno_tiempos` con `buscarRepuesto` en su columna `herramientas` en TODA
+  fila con intención `consulta_disponibilidad` — si falta, la herramienta
+  no le está llegando al modelo en ese turno.
+- Los logs `escenario_no_cedido` y `escenario_cedido_al_catalogo`, contados
+  por motivo — cuántos escenarios calzados terminan cediendo al inventario
+  contra cuántos se mandan tal cual (mismas dos consultas del paso 11,
+  arriba, ahora con la herramienta encendida de verdad).
+- Escaladas por `sin_stock`: con el catálogo real, el volumen medido en la
+  auditoría anterior a esta corrida traía maletas (8 con existencia real,
+  pese al `sin_stock`), resonadores (3) y lubricantes (1) — revisar si esos
+  mismos productos se repiten con la herramienta ya encendida en
+  producción, o si eran ruido de una medición hecha con datos de otro
+  momento del inventario.
+
 ### Verificación posterior completa (secciones 4 y 7 del plan "Nada sin leer…" + criterio de terminado de "Seba sale sin pisar a nadie")
 
 - Un chat con mensaje de "ayer" sin leer aparece en Pendientes y en el
@@ -1743,7 +1832,7 @@ Con todo configurado, esta lista debe pasar entera:
 
 - [ ] Una restauración de prueba devuelve los datos completos
 - [ ] `npm run build` sin errores ni warnings
-- [ ] `select count(*) from supabase_migrations.schema_migrations` devuelve 75 (recontado el 19/9/2026 tras `20260918010000`/`20260918020000`, "Nada sin leer, un solo catálogo y la factura Saint"; decía 73 el 18/9/2026 tras `20260916010000`/`20260917010000`/`20260917020000`, 70 el 15/9/2026 y 61 cuando se escribió esta guía)
+- [ ] `select count(*) from supabase_migrations.schema_migrations` devuelve 76 (recontado el 21/9/2026 tras `20260921010000`, "El catálogo configurado sale siempre"; decía 75 el 19/9/2026 tras `20260918010000`/`20260918020000`, 73 el 18/9/2026 tras `20260916010000`/`20260917010000`/`20260917020000`, 70 el 15/9/2026 y 61 cuando se escribió esta guía)
 - [ ] El bucket `whatsapp-media` es privado (`public = false`)
 - [ ] Una URL directa al bucket responde 400
 - [ ] `/api/media/...` sin sesión responde 401

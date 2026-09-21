@@ -310,3 +310,14 @@ jobs:
           psql "postgresql://postgres:postgres@127.0.0.1:54322/postgres" \
             -v ON_ERROR_STOP=1 \
             -f supabase/tests/factura_saint.sql
+
+      # T1, plan "El catálogo configurado sale siempre" (21/9/2026):
+      # ai_playbooks.cede_al_inventario nace NOT NULL DEFAULT false; solo un
+      # supervisor/admin puede marcarla (misma política ai_playbooks_write de
+      # siempre, sin agujero nuevo para la columna) y un asesor corriente
+      # puede leerla pero no escribirla.
+      - name: escenario_cede_al_inventario -- columna, default y RLS
+        run: |
+          psql "postgresql://postgres:postgres@127.0.0.1:54322/postgres" \
+            -v ON_ERROR_STOP=1 \
+            -f supabase/tests/escenario_cede_al_inventario.sql

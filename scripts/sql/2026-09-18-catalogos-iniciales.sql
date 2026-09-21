@@ -5,10 +5,14 @@
 -- QUÉ HACE: en UNA transacción, (1) inserta en `public.catalog_links` los 7
 -- enlaces de Google Drive vigentes de producción, los que forman el
 -- escenario "Catálogo general" (Cascos, Resonadores, Maletas, Exploradoras y
--- Bombillos, Defensas, Lubricantes ×2) y (2) reemplaza la URL pegada a mano
+-- Bombillos, Defensas, Lubricantes ×2), (2) reemplaza la URL pegada a mano
 -- por su marcador (`{{catalogo:<key>}}`/`{{catalogos}}`,
 -- `src/lib/catalog-links.ts`) en los 2 escenarios y los 4 mensajes rápidos
--- que hoy la llevan escrita.
+-- que hoy la llevan escrita, y (3) marca `ai_playbooks.cede_al_inventario`
+-- de los DOS escenarios que toca: `true` en "Catálogo general" (el
+-- disparador ancho que H1 quiso frenar ante una consulta de inventario
+-- real), `false` EXPLÍCITO en "CATALOGO CASCOS" (T5, plan "El catálogo
+-- configurado sale siempre", 21/9/2026 -- ver la sección 5c, más abajo).
 --
 -- DECISIÓN DE LA REVISIÓN `code-review high` DEL 19/9/2026 (punto 3):
 -- "Ubicación" QUEDA FUERA de este script. La primera versión cargaba el
@@ -119,6 +123,23 @@
 --       capitalización o acento, con o sin cerrar) y que NO calce ni la
 --       forma estricta de un marcador puntual ni la de `{{catalogos}}` —y
 --       aborta nombrando el texto sospechoso.
+--
+-- SUMADO el 21/9/2026 (T5, plan "El catálogo configurado sale siempre"):
+-- desplegar H1 tal cual ("el repuesto manda", 18/9/2026, `agent.ts`) dejaba
+-- sin PDF al segundo motivo de contacto medido en producción -- "CATALOGO
+-- CASCOS" salió 535 veces y "Catálogo general" 161 en 15 días, con
+-- `buscar_repuesto` apagado desde el 25/8 -- porque un escenario calzado con
+-- intención `consulta_disponibilidad` se cedía SIEMPRE al inventario, sin
+-- mirar si la herramienta estaba encendida ni si el escenario era el
+-- disparador ancho de "Catálogo general" o uno específico como "CATALOGO
+-- CASCOS". `ai_playbooks.cede_al_inventario` (migración 20260921010000) es
+-- la cuarta de las cuatro condiciones de esa regla, y este script es quien
+-- la enciende en el ÚNICO escenario pensado para eso: la sección 2d (nueva)
+-- aborta ANTES de escribir nada si la columna todavía no existe, y la
+-- sección 5c (nueva, después de reemplazar los textos) marca "Catálogo
+-- general" en `true` y deja "CATALOGO CASCOS" en `false` EXPLÍCITO -- no
+-- alcanza con el DEFAULT de la columna porque acá se quiere que quede
+-- ESCRITA la decisión de cuál es cuál, no que se infiera por omisión.
 --
 -- QUIÉN LO COMPLETA Y LO CORRE: el Claude del VPS, DESPUÉS de desplegar el
 -- código de esta corrida (nunca antes: D4/D6 hacen que un marcador sin
@@ -377,6 +398,33 @@ end
 $$;
 
 -- ---------------------------------------------------------------------------
+-- 2d) GUARDA NUEVA (T5, plan "El catálogo configurado sale siempre",
+--     21/9/2026) — la columna `ai_playbooks.cede_al_inventario` (migración
+--     20260921010000) tiene que existir ANTES de que este script escriba
+--     una sola fila. Sin esta guarda, correrlo contra una base donde esa
+--     migración todavía no se aplicó fallaría recién en la sección 5c
+--     -- después de haber cargado ya los 7 catálogos y reemplazado los
+--     textos de los 2 escenarios y los 4 mensajes rápidos -- con un "column
+--     cede_al_inventario does not exist" que, aunque el `-1` de la línea de
+--     comandos deshace todo igual, no dice con claridad qué falta ni en qué
+--     orden aplicar las cosas. Mismo criterio que las secciones 2/2b/2c:
+--     comprobar antes de escribir, no confiar en que la migración "ya debe
+--     estar aplicada".
+-- ---------------------------------------------------------------------------
+
+do $$
+begin
+  if not exists (
+    select 1 from information_schema.columns
+    where table_schema = 'public' and table_name = 'ai_playbooks'
+      and column_name = 'cede_al_inventario'
+  ) then
+    raise exception 'scripts/sql/2026-09-18-catalogos-iniciales.sql: falta la columna public.ai_playbooks.cede_al_inventario -- aplica la migración 20260921010000_escenario_cede_al_inventario.sql (ANTES que este script) y vuelve a intentar. No se escribió nada.';
+  end if;
+end
+$$;
+
+-- ---------------------------------------------------------------------------
 -- 3) Carga de los 7 catálogos.
 --
 --    D-C (decisión del operador, 19/9/2026): si una clave YA existe en
@@ -509,6 +557,64 @@ begin
 
   if v_afectadas <> v_esperadas then
     raise exception 'El UPDATE de quick_replies tocó % fila(s) pero se esperaban % (uno por mensaje rápido en _mensajes_rapidos_valores) -- revisa que esos "id_texto" existan de verdad en esta base.', v_afectadas, v_esperadas;
+  end if;
+end
+$$;
+
+-- ---------------------------------------------------------------------------
+-- 5c) "El repuesto manda, con permiso del supervisor" (T5, plan "El catálogo
+--     configurado sale siempre", 21/9/2026) — de los DOS escenarios que este
+--     script toca, SOLO "Catálogo general" es el disparador ANCHO que H1
+--     (18/9/2026, "el repuesto manda", `agent.ts`) cede al inventario ante
+--     una intención `consulta_disponibilidad`: su `trigger_description`
+--     calza tanto "mándame el catálogo" como "¿tienen pastillas de freno?",
+--     y sin marcarlo el escenario se comía la consulta de un repuesto real.
+--     "CATALOGO CASCOS" es distinto -- dispara específico, para cascos, no
+--     compite con una consulta de inventario ancha -- así que manda su PDF
+--     SIEMPRE: se deja en `false` EXPLÍCITO (no basta con el DEFAULT de la
+--     columna) para que la decisión de cuál es cuál quede escrita acá, junto
+--     a la de "Catálogo general", y no dependa de que nadie mire el DEFAULT
+--     de `information_schema` para saberlo.
+--
+--     Reutiliza el mismo `id_texto` que la sección 1 ya trae para estos dos
+--     escenarios -- no hace falta un hueco `<<...>>` nuevo. Mismo patrón que
+--     las secciones 4/5: `GET DIAGNOSTICS ... = ROW_COUNT` y aborta si el
+--     UPDATE no afectó EXACTAMENTE 1 fila (un `id_texto` que no corresponda
+--     a ninguna fila de esta base no puede pasar desapercibido). Idempotente:
+--     una segunda corrida vuelve a dejar los mismos dos valores, sin cambiar
+--     nada más.
+-- ---------------------------------------------------------------------------
+
+do $$
+declare
+  v_afectadas integer;
+begin
+  update public.ai_playbooks p
+  set cede_al_inventario = true
+  from _escenarios_valores v
+  where v.escenario = 'Catálogo general'
+    and p.id = v.id_texto::uuid;
+
+  get diagnostics v_afectadas = row_count;
+  if v_afectadas <> 1 then
+    raise exception 'El UPDATE de cede_al_inventario = true sobre "Catálogo general" tocó % fila(s), se esperaba exactamente 1 -- revisa que ese "id_texto" exista de verdad en esta base.', v_afectadas;
+  end if;
+end
+$$;
+
+do $$
+declare
+  v_afectadas integer;
+begin
+  update public.ai_playbooks p
+  set cede_al_inventario = false
+  from _escenarios_valores v
+  where v.escenario = 'CATALOGO CASCOS'
+    and p.id = v.id_texto::uuid;
+
+  get diagnostics v_afectadas = row_count;
+  if v_afectadas <> 1 then
+    raise exception 'El UPDATE de cede_al_inventario = false sobre "CATALOGO CASCOS" tocó % fila(s), se esperaba exactamente 1 -- revisa que ese "id_texto" exista de verdad en esta base.', v_afectadas;
   end if;
 end
 $$;

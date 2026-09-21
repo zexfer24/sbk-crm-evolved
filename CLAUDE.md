@@ -1169,7 +1169,30 @@ dejar rastro es lo que hacía desaparecer leads.
   se habrían puesto rojos por esta regla sin tener nada que ver con ella;
   "otro" es el valor neutro del clasificador y no dispara ninguna rama
   especial. Un test nuevo pide `consulta_disponibilidad` explícitamente
-  para probar el cede.
+  para probar el cede. **(Actualizado el 21/9/2026, plan "El catálogo
+  configurado sale siempre"): "cedeAlCatalogo" pasó a exigir CUATRO
+  condiciones, no una.** Un reporte de solo lectura de producción (VPS,
+  21/9/2026, producción todavía en `3802fad`, sin desplegar H1) midió que
+  "CATALOGO CASCOS" (535 usos) y "Catálogo general" (161) en 15 días eran
+  el segundo motivo de contacto del negocio, el 30 % de las respuestas
+  predeterminadas — y que `buscar_repuesto` está APAGADA en producción
+  desde el 25/8. Desplegar H1 tal cual habría cedido esos pedidos a un
+  inventario apagado ("precios de los cascos" → escalada, en vez del PDF
+  que el escenario ya traía redactado). Las cuatro condiciones, TODAS a la
+  vez: (1) intención `consulta_disponibilidad` (esta, la de arriba); (2) la
+  herramienta `buscar_repuesto` está encendida (`agent_tools`, código,
+  `agent.ts`); (3) el mensaje del cliente —la ráfaga completa,
+  `customerBurst`— NO pide el catálogo (`pideCatalogo`,
+  `catalog-request.ts`); (4) el escenario tiene
+  `ai_playbooks.cede_al_inventario = true` (columna nueva, migración
+  `20260921010000`, default `false` — del catálogo real, SOLO "Catálogo
+  general" la lleva en `true`; "CATALOGO CASCOS" queda en `false`
+  explícito porque su disparador es específico, no compite con una
+  consulta de inventario ancha). Se despliega con `buscar_repuesto`
+  apagada (igual que hoy en producción): la condición (2) sola ya frena
+  cualquier cesión el día del deploy, hasta que el operador la encienda a
+  mano desde Control IA (ver `docs/PRODUCCION.md` §11, "Al encender la
+  consulta de productos").
 - **La reapertura por el cliente "salta la gracia" de `AI_HUMAN_GRACE_MINUTES`,
   y un test que ejercita `runAgentTurn`/`reconcileOrphanTurns` de verdad
   necesita un fake de `conversation_handoffs` con la forma de
@@ -1757,13 +1780,37 @@ dejar rastro es lo que hacía desaparecer leads.
   Seba pregunta. **La bandera gana SIEMPRE sobre el `query`**: como `query`
   es obligatorio, el modelo lo rellena con algo inventado ("repuesto
   genérico") aunque marque la bandera — medido; con la precedencia contraria
-  Seba cotizó productos al azar. **Comportamiento conocido, decisión del
-  operador del 20/9/2026:** pedir "el catálogo de cascos en PDF" se clasifica
-  como disponibilidad, el escenario del PDF se cede al inventario (H1) y Seba
-  escala sin mandar el enlace; se deja así, el catálogo lo manda el asesor.
+  Seba cotizó productos al azar. **REVERTIDO el 21/9/2026 (plan "El catálogo
+  configurado sale siempre"):** el 20/9/2026 esto quedaba como
+  "comportamiento conocido, decisión del operador: se deja así" — pedir "el
+  catálogo de cascos en PDF" se clasificaba como disponibilidad, el
+  escenario del PDF se cedía al inventario (H1) y Seba escalaba sin mandar
+  el enlace, dejando el catálogo en manos del asesor. Un reporte de solo
+  lectura del 21/9 mostró que ese caso NO era una rareza: "CATALOGO CASCOS"
+  y "Catálogo general" eran el 30 % de las respuestas predeterminadas en 15
+  días. La "salida propuesta y no implementada" de aquel momento —una
+  función pura que detecta si el mensaje nombra catálogo/pdf/lista de
+  precios— es, con las otras tres condiciones sumadas, la regla de las
+  cuatro condiciones que reemplaza a H1 (ver la viñeta "El repuesto manda",
+  más arriba, sección actualizada).
   Los escenarios de pantalla se pueden correr sin la extensión del navegador:
   Playwright con el Chromium de `~/AppData/Local/ms-playwright` contra el
   build de producción (`npm start`) calcula layout de verdad.
+- **El estado de producción no se supone, se pregunta** (21/9/2026, plan "El
+  catálogo configurado sale siempre"). `buscar_repuesto` estuvo APAGADA en
+  producción 27 días seguidos (desde el 25/8) sin que ninguna tarea
+  pendiente lo supiera, y tres corridas enteras —"Seba atiende el
+  mostrador", el hallazgo K y su corrección K2— se verificaron a mano en
+  local con la herramienta ENCENDIDA, exactamente al revés del estado real
+  que iban a encontrar el día del deploy. Desplegar H1 sin este plan habría
+  cedido "CATALOGO CASCOS"/"Catálogo general" —el 30 % de las respuestas
+  predeterminadas medidas en 15 días— a un inventario que en producción
+  sigue apagado, dejando sin PDF al segundo motivo de contacto del negocio.
+  Antes de cerrar un plan que dependa de un interruptor del panel
+  (`agent_tools`, `agent_settings`, un escenario de `ai_playbooks`), pedir
+  el reporte de solo lectura al Claude del VPS — el prompt vive en la
+  memoria del proyecto — en vez de asumir que "ya se debe haber encendido"
+  o que el estado de la última medición sigue vigente.
 
 ---
 

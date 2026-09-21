@@ -27,14 +27,21 @@ A–J —uno `[migración]`, que sigue editando in situ las mismas cinco
 pendientes, ninguna migración nueva— + 6 de tests de la matriz de
 mutaciones + `3d96863` y `028fabe`, las correcciones K y K2: Seba consulta
 el inventario antes de hablar de existencias, y pregunta cuando el cliente
-todavía no nombró nada). Este documento cubre TODO ese rango,
+todavía no nombró nada) **más la corrida "El catálogo configurado sale
+siempre" (21/9/2026, ver la sección nueva de más abajo, antes de "Ensayo
+del despliegue"): SÍ suma una migración nueva, `20260921010000` — el
+rango pendiente pasa de cinco a SEIS migraciones. El número exacto de
+commits de esta última corrida se completa en la sección nueva cuando
+termine el último subagente (T3/T4/T5); no lo repitas de memoria acá**.
+Este documento cubre TODO ese rango,
 agrupado por corrida/tarea, en el orden en que hay que desplegarlo. **El
 orden operativo detallado, con las consultas SQL literales, está en
 `docs/PRODUCCION.md` §11 ("Entrega de 'Seba atiende el mostrador' + 'Nada
 sin leer, un solo catálogo y la factura Saint' + 'Seba sale sin pisar a
 nadie'") — este documento da el detalle por commit, esa sección da el
-ORDEN de once pasos a seguir. Leer las dos, en ese orden: primero §11,
-después el detalle de cada commit acá abajo cuando haga falta.**
+ORDEN de once pasos a seguir (§11 ya cuenta seis migraciones). Leer las
+dos, en ese orden: primero §11, después el detalle de cada commit acá
+abajo cuando haga falta.**
 
 **Recordatorio permanente:** Dokploy despliega con el push, sin esperar al
 CI. Todo lo que la base necesita va ANTES de pushear. Después de cada push,
@@ -1194,7 +1201,7 @@ guion vive fuera del repo.
 | 12 | Cerrar venta | ✅ ocho errores por campo (el WhatsApp viene fijo del contacto; el carrito vacío avisa por toast, por diseño), corregir uno borra solo el suyo, al reabrir no quedan pegados, la orden guarda `SAINT-000777` normalizado, chip en Ventas |
 | 13 | Enlaces como SUPERVISOR (pendiente desde el 19/9) | ✅ clave con guion bajo y URL con texto delante se rechazan; crear; editar con la clave bloqueada; "Insertar catálogo" pega `{{catalogo:clave}}`; apagar y borrar en dos pasos; como asesor, sin botones de edición |
 | 14 | Seis secciones + `error.tsx` | ✅ grid de dos hijos (72 + 1368 px) en las seis, cero errores de consola; Ventas y Control IA muestran su pantalla de error con rail, CSS y "Reintentar" forzando un fallo real de lectura (columna y tabla renombradas un momento) |
-| 11 | Pedir el catálogo de cascos | ⚠️ **comportamiento conocido, decisión del operador (20/9/2026): se deja como está.** "envíame el catálogo de cascos en pdf" se clasifica `consulta_disponibilidad`, el escenario del PDF se cede al inventario (H1, `escenario_cedido_al_catalogo`), no hay cascos en `products` y Seba escala `no_identificado` sin mandar el enlace. El catálogo lo manda el asesor (mensaje rápido con `{{catalogo:clave}}`). Si en producción molesta, la salida propuesta y no implementada es una función pura: si el mensaje nombra catálogo/pdf/lista de precios, el escenario no se cede. |
+| 11 | Pedir el catálogo de cascos | ⚠️ ~~comportamiento conocido, decisión del operador (20/9/2026): se deja como está~~ — **REVERTIDO el 21/9/2026 por el operador, ver la sección nueva "El catálogo configurado sale siempre (21/9/2026)", más abajo, antes de "Ensayo del despliegue".** La salida "propuesta y no implementada" de esta fila (una función pura que detecta si el mensaje nombra catálogo/pdf/lista de precios) es, con cambios, la que se implementó como `pideCatalogo` (`catalog-request.ts`, T2). |
 
 En build de producción el webhook responde 503 sin `WHATSAPP_APP_SECRET`
 (correcto, por diseño): los escenarios por webhook solo corren en `next dev`.
@@ -1238,6 +1245,107 @@ vive en el escenario "Ubicación".
   la compensación de T10; el límite aceptado de T11 es más amplio de lo
   escrito (una sola pausa manual en un chat ya escalado basta para que no se
   reencienda a Seba al desasignar).
+
+---
+
+## El catálogo configurado sale siempre (21/9/2026)
+
+Plan: `docs/planes/2026-09-21-el-catalogo-configurado-sale-siempre.md`, rama
+`el-catalogo-configurado-sale-siempre` sobre `9e2cf1a`. Revierte, con
+condiciones, la fila 11 de la tabla de la "Segunda vuelta" de más arriba
+("comportamiento conocido, se deja como está") — ver esa fila, ya
+actualizada.
+
+**El hallazgo.** Un reporte de solo lectura de producción (VPS,
+21/9/2026 00:49 VET, producción en `3802fad`, base en `20260915010000`)
+midió que "CATALOGO CASCOS" salió 535 veces y "Catálogo general" 161 en 15
+días — el 30 % de todas las respuestas predeterminadas, segundo motivo de
+contacto después de precio/existencia. Desplegar H1 ("el repuesto manda",
+18/9/2026, `agent.ts`) tal cual —sin este plan— dejaba sin PDF a casi todos
+esos pedidos: con intención `consulta_disponibilidad` un escenario calzado
+se cede SIEMPRE al inventario, sin mirar si `buscar_repuesto` está
+encendida — y esa herramienta está APAGADA en producción desde el 25/8. La
+cadena real habría sido "precios de los cascos" → `consulta_disponibilidad`
+→ cedido a un inventario apagado → "un asesor te lo confirma" + escalada,
+en vez del catálogo que el escenario ya traía redactado. Decisión del
+operador: se despliega con `buscar_repuesto` apagado (igual que hoy en
+producción); él la enciende después desde Control IA (ver
+`docs/PRODUCCION.md` §11, "Al encender la consulta de productos", sección
+nueva de esta misma corrida).
+
+**La regla de las cuatro condiciones.** Un escenario calzado se cede al
+inventario SOLO si se cumplen las cuatro a la vez:
+
+1. la intención clasificada es `consulta_disponibilidad` (ya existía, H1);
+2. la herramienta `buscar_repuesto` está encendida (nueva);
+3. el mensaje del cliente (la ráfaga) NO pide el catálogo — no nombra
+   catálogo/pdf/lista de precios (`pideCatalogo`, `catalog-request.ts`, T2);
+4. el escenario tiene `cede_al_inventario = true` (columna nueva, default
+   `false`, migración `20260921010000`, T1). Del catálogo de escenarios de
+   producción, SOLO "Catálogo general" la lleva en `true` —"CATALOGO
+   CASCOS" queda en `false` explícito, porque su disparador es específico
+   (cascos) y no compite con una consulta de inventario ancha.
+
+**Commits de esta corrida:**
+
+- `8f60088` — plan escrito y aprobado.
+- `dc01c16` — T2, `pideCatalogo` reconoce cuándo el cliente pide el
+  catálogo como documento, con frases reales de producción.
+- `e8d50e9` — `[migración]` T1, `20260921010000`
+  (`ai_playbooks.cede_al_inventario`, default `false`).
+- `a9950cc` — T1 (tipos y lecturas), T3 y T4 en un solo commit, porque
+  comparten `agent.test.ts` y así ningún commit queda sin compilar:
+  `debeCederAlInventario` (`catalog-request.ts`) con las cuatro condiciones y
+  el log `escenario_no_cedido` con su motivo; casilla "Cede al inventario
+  cuando preguntan por un repuesto" en el editor de escenarios y badge en la
+  tarjeta; `playbookRow()` la manda en el insert y en el update.
+- el commit que sigue a `a9950cc` — T5: el paso de CI para
+  `escenario_cede_al_inventario.sql`, el script de catálogos marca
+  "Catálogo general", `docs/PRODUCCION.md` §11 (sexta migración), este
+  documento y `CLAUDE.md`.
+
+**Verificado a mano el 21/9/2026 (webhook local, base reconstruida desde
+cero con las seis migraciones, escenario "CATALOGO CASCOS" cargado como el de
+producción y "Catálogo general" marcado):**
+
+| Mensaje del cliente | Consulta de productos APAGADA (producción hoy) | ENCENDIDA |
+|---|---|---|
+| "Me puedes enviar el catalogo de los cascos" | sale CATALOGO CASCOS (`catalogo_apagado`) | sale CATALOGO CASCOS (`cliente_pidio_catalogo`) |
+| "Hola precios de los cascos" | sale CATALOGO CASCOS (`catalogo_apagado`) | sale CATALOGO CASCOS (escenario sin marcar) |
+| "Quisiera ver el catalogo" | sale Catálogo general (`catalogo_apagado`) | sale Catálogo general (`cliente_pidio_catalogo`) |
+| "Buenas, tienen pastillas de freno?" | sale Catálogo general (`catalogo_apagado`) — igual que producción hoy | CEDE: `escenario_cedido_al_catalogo` → `buscarRepuesto` → sin existencia → escala `sin_stock` |
+
+Los CUATRO mensajes se clasificaron `consulta_disponibilidad`: con H1 tal
+cual, los cuatro habrían perdido su respuesta configurada. Suite 2717 verde
+con Redis, `tsc` y `lint` sin errores, 18 tests SQL verdes tras `db reset`.
+
+**Sondeo del proveedor (riesgo de K/K2 sobre `buscarRepuesto`,
+DESCARTADO).** La sospecha antes de implementar T3: con `tool_choice`
+FORZADO (la herramienta `buscarRepuesto` obligatoria en el turno, igual que
+K/K2 de la corrida anterior), ¿el modelo de producción respeta el esquema
+de argumentos o improvisa? Sondeado contra `openai/gpt-5.6-luna` por
+OpenRouter, con `tool_choice` forzado: HTTP 200 en los dos casos probados,
+argumentos bien formados — `{"query":"casco LS2","clienteNoNombroRepuesto":false}`
+cuando el cliente nombra un repuesto, y `{"query":"","clienteNoNombroRepuesto":true}`
+cuando no nombra nada. El modelo real distingue los dos casos y llena el
+esquema como se espera; no hace falta ninguna guarda adicional en código
+para este riesgo.
+
+**Otros hallazgos del reporte de producción que NO son de este código**
+(quedan para que el operador o el Claude del VPS decidan aparte, no bloquean
+esta entrega):
+
+- **Error 130497 de Meta**: 54 rechazos el 19/9/2026, restricción por país
+  — hay que mirar el panel de Meta Business, no es un bug del CRM.
+- **`Nivel cashea` apagado el 17/9/2026 sin reemplazo**: 116 usos en 15
+  días antes de apagarse; nadie puso una alternativa en su lugar.
+- **El 90 % del log del contenedor es la advertencia de
+  `supabase.auth.getSession()`** (ruido, no error) y **el contenedor no
+  rota logs** — con ese volumen, cualquier búsqueda real en los logs de
+  producción es más lenta de lo necesario.
+- **Hueco de `agent_turns` del 29/8 al 6/9/2026**: sin filas en ese rango,
+  causa no investigada en este reporte — cualquier métrica que promedie
+  sobre ese período va a estar sesgada.
 
 ---
 
