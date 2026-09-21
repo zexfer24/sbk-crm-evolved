@@ -1820,6 +1820,63 @@ dejar rastro es lo que hacía desaparecer leads.
   el reporte de solo lectura al Claude del VPS — el prompt vive en la
   memoria del proyecto — en vez de asumir que "ya se debe haber encendido"
   o que el estado de la última medición sigue vigente.
+- **Una función `security invoker` que recorre una tabla con RLS paga la
+  política POR FILA, y medirla como superusuario no mide nada** (plan "La
+  escalada se hace una vez y la búsqueda responde", 21/9/2026). TODA
+  búsqueda por texto de `/inbox` dio 500 por `statement timeout` durante
+  semanas (156 de 156 en 48 h; media 3,3 s, máximo 7.991 ms contra los 8 s de
+  `authenticated`) mientras `search_conversations_by_message` medía 142–339
+  ms llamada a mano en el VPS — como superusuario, que salta RLS.
+  Reproducido en local con 115.000 mensajes: 75 ms como superusuario contra
+  1.468 ms como `authenticated` (234.613 buffers contra 4.706); el plan
+  mostraba `Seq Scan on messages` con `Filter: … AND is_agent()`, una llamada
+  a una función `security definer` por fila (`LIKE` no es leakproof, así que
+  con RLS tampoco puede ser condición del índice trigram). La migración
+  `20260921030000` la pasa a `plpgsql security definer` con `is_agent()`
+  chequeado UNA vez y `search_text like all (pats)` en positivo: 27 ms. **Para
+  medir una consulta de la app: `set local role authenticated` + `set local
+  request.jwt.claims` con el `sub` de un agente, dentro de una transacción.**
+  Su test (`supabase/tests/search_conversations_by_message.sql`) mide el
+  caso 8 con `clock_timestamp()` contra 500 ms, no con `statement_timeout`:
+  un `set local` dentro de un `do $$` no gobierna el statement que ya está
+  corriendo. El guardián estático `src/lib/permisos-funciones.test.ts`
+  cuenta las funciones `security definer` (22 desde esta migración): una
+  nueva lo pone rojo a propósito, y se suma a la lista solo si trae sus dos
+  revokes.
+- **Una escalada por turno, y con asesor asignado el modelo lo SABE** (T1/T2
+  del mismo plan, 21/9/2026). Medido en la primera hora tras desplegar
+  `0af0b2c`: 24 turnos escalados donde bastaban 9 (15 notas "IA reiteró la
+  escalada"), porque `esperandoAsesor` solo marcaba `isAutoReply` y nunca
+  llegaba al prompt; y dos turnos de 145.000 tokens de entrada y ~65.800 de
+  salida (0,108 USD y 5 min cada uno) que eran EXACTAMENTE los dos únicos
+  con `escalarAAsesor` llamada dos veces en el mismo turno. Ahora: (1)
+  `stepToolChoice` (`tool-choice.ts`) devuelve `toolChoice: "none"` en todo
+  paso posterior a una escalada —NO se corta con `stopWhen`, decisión D1:
+  así Seba redacta su despedida en vez de caer siempre en la fija—; (2)
+  `buildEscalateTool` memoriza la primera escalada del turno (`pending`,
+  asignado de forma síncrona: cubre dos tool calls en el mismo paso) y se
+  resetea si esa primera lanzó o no escaló; (3) `maxOutputTokens: 1500` (si
+  el modelo razona, el techo INCLUYE el razonamiento: un corte puede dejar
+  `text` vacío, que ya cubren la despedida fija y `turno_sin_texto`) y
+  `resumen` ≤ 600; (4) con asesor asignado, `yaEscalada` viaja SOLO en el
+  sufijo del prompt (el test compara `cacheablePrefix()` byte a byte), la
+  herramienta queda restringida a `motivo: "intencion_compra"` (D2) y se
+  omite del todo si `deal_status` ya es `in_progress`; (5) las dos redes de
+  seguridad en código no llaman a `escalateConversation` con asesor
+  asignado — la del catálogo sigue ANEXANDO su texto fijo, sin tocar la
+  base. `escalate.ts` no se tocó.
+- **`AI_AGENT_REASONING=off` no apaga el razonamiento: no opina** (T4b,
+  21/9/2026). `model.ts` omite `providerOptions` entero y queda el default
+  del proveedor; `@ai-sdk/openai@4` decide `isReasoningModel` con una regex
+  sobre el id (`gpt-5.6-luna` → `true`) y habla con OpenRouter por la
+  Responses API. `agent_turns.reasoning_tokens` (migración `20260921020000`,
+  `not null default 0`) mide desde ahora lo que el proveedor reporte en
+  `usage.outputTokenDetails.reasoningTokens`; Control IA lo pinta como
+  "Razonamiento: N" solo cuando es mayor que cero. Apagarlo de verdad sería
+  mandar `reasoning: "none"` explícito, y NO se hizo: hay que medir primero
+  con la columna nueva, y después comprobar que OpenRouter lo honra (el 8/9
+  Luna respondía `reasoningEffort is not supported`). La RPC
+  `agent_token_usage` no trae la columna: sumarla es otra migración.
 
 ---
 
