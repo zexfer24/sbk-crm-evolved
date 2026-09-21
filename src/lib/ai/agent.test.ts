@@ -776,6 +776,7 @@ function playbook(overrides: Partial<Playbook> = {}): Playbook {
     attachmentType: null,
     afterSend: "wait",
     isActive: true,
+    cedeAlInventario: false,
     tags: [],
     ...overrides,
   };
@@ -2252,19 +2253,97 @@ describe("runAgentTurn — escenarios predeterminados", () => {
  * `Escenario "Catálogo general".`. Decisión del operador: "el repuesto
  * manda": con un escenario calzado, si la intención clasificada (que corre
  * en paralelo con fase 0, no después) es `consulta_disponibilidad`, el
- * escenario se cede al tool loop en vez de mandarse. Si la clasificación
- * falló o la intención es otra, el escenario sale como siempre.
+ * escenario se cede al tool loop en vez de mandarse.
+ *
+ * Tarea 3, plan "El catálogo configurado sale siempre" (21/9/2026): H1 solo
+ * miraba esa intención, y el reporte de solo lectura de producción del
+ * 21/9 midió "CATALOGO CASCOS"/"Catálogo general" como el 30 % de las
+ * respuestas de escenario en 15 días — con `buscar_repuesto` APAGADO desde
+ * el 25/8/2026, desplegar H1 tal cual habría cedido esos pedidos a un
+ * inventario mudo. Ahora hacen falta las CUATRO condiciones de
+ * `debeCederAlInventario` (`catalog-request.ts`): la intención, la
+ * herramienta del catálogo encendida, que el cliente no haya pedido el
+ * catálogo como documento, y que el escenario esté marcado
+ * (`cedeAlInventario`). Si la clasificación falló o la intención es otra,
+ * el escenario sale como siempre, sin loguear motivo (ni siquiera es un
+ * caso de "el repuesto manda"); si la intención SÍ es
+ * `consulta_disponibilidad` pero una de las otras tres falla, el escenario
+ * también sale tal cual pero deja `escenario_no_cedido` con su motivo,
+ * para poder medirlo en producción.
  */
-describe("runAgentTurn — el repuesto manda (H1, 18/9/2026)", () => {
-  it("escenario calzado + consulta_disponibilidad: no manda el escenario, corre el tool loop y deja el log", async () => {
-    const info = vi.spyOn(log, "info");
-    const pb = playbook();
-    fetchActivePlaybooksMock.mockResolvedValue([pb]);
-    matchPlaybookMock.mockResolvedValue({ playbook: pb, usage: NO_USAGE });
+describe("runAgentTurn — el repuesto manda (H1, 18/9/2026 + T3 del 21/9/2026)", () => {
+  function conDisponibilidad(mensajeCliente: string) {
+    state.history = [{ sender_type: "customer", content: mensajeCliente, is_internal_note: false }];
     classifyIntentMock.mockResolvedValue({
       intent: "consulta_disponibilidad",
       usage: { inputTokens: 5, outputTokens: 1, totalTokens: 6 },
     });
+  }
+
+  it("(a) herramienta del catálogo apagada + escenario marcado: sale el escenario, motivo catalogo_apagado", async () => {
+    const info = vi.spyOn(log, "info");
+    const pb = playbook({ cedeAlInventario: true });
+    fetchActivePlaybooksMock.mockResolvedValue([pb]);
+    matchPlaybookMock.mockResolvedValue({ playbook: pb, usage: NO_USAGE });
+    state.enabledToolKeys = ["buscar_historial_compras", "consultar_biblioteca"]; // sin "buscar_repuesto"
+    conDisponibilidad("¿tienen pastillas de freno?");
+
+    await runAgentTurn("conv-1");
+
+    expect(sendPlaybookReplyMock).toHaveBeenCalledTimes(1);
+    expect(generateMock).not.toHaveBeenCalled();
+    expect(info).toHaveBeenCalledWith("escenario_no_cedido", {
+      conversationId: "conv-1",
+      escenario: pb.name,
+      motivo: "catalogo_apagado",
+    });
+    expect(info).not.toHaveBeenCalledWith("escenario_cedido_al_catalogo", expect.anything());
+  });
+
+  it("(b) encendida + marcado + el cliente pidió el catálogo: sale el escenario, motivo cliente_pidio_catalogo", async () => {
+    const info = vi.spyOn(log, "info");
+    const pb = playbook({ cedeAlInventario: true });
+    fetchActivePlaybooksMock.mockResolvedValue([pb]);
+    matchPlaybookMock.mockResolvedValue({ playbook: pb, usage: NO_USAGE });
+    conDisponibilidad("Me puedes enviar el catálogo de los cascos");
+
+    await runAgentTurn("conv-1");
+
+    expect(sendPlaybookReplyMock).toHaveBeenCalledTimes(1);
+    expect(generateMock).not.toHaveBeenCalled();
+    expect(info).toHaveBeenCalledWith("escenario_no_cedido", {
+      conversationId: "conv-1",
+      escenario: pb.name,
+      motivo: "cliente_pidio_catalogo",
+    });
+    expect(info).not.toHaveBeenCalledWith("escenario_cedido_al_catalogo", expect.anything());
+  });
+
+  it("(c) encendida + escenario NO marcado: sale el escenario, motivo escenario_no_marcado", async () => {
+    const info = vi.spyOn(log, "info");
+    const pb = playbook(); // cedeAlInventario: false, el default
+    fetchActivePlaybooksMock.mockResolvedValue([pb]);
+    matchPlaybookMock.mockResolvedValue({ playbook: pb, usage: NO_USAGE });
+    conDisponibilidad("Hola precios de los cascos");
+
+    await runAgentTurn("conv-1");
+
+    expect(sendPlaybookReplyMock).toHaveBeenCalledTimes(1);
+    expect(generateMock).not.toHaveBeenCalled();
+    expect(info).toHaveBeenCalledWith("escenario_no_cedido", {
+      conversationId: "conv-1",
+      escenario: pb.name,
+      motivo: "escenario_no_marcado",
+    });
+    expect(info).not.toHaveBeenCalledWith("escenario_cedido_al_catalogo", expect.anything());
+  });
+
+  it("(d) encendida + marcado + sin pedir el catálogo: cede, no manda el escenario, corre el tool loop y deja el log", async () => {
+    const info = vi.spyOn(log, "info");
+    const pb = playbook({ cedeAlInventario: true });
+    fetchActivePlaybooksMock.mockResolvedValue([pb]);
+    matchPlaybookMock.mockResolvedValue({ playbook: pb, usage: NO_USAGE });
+    conDisponibilidad("¿tienen pastillas de freno?");
 
     await runAgentTurn("conv-1");
 
@@ -2278,11 +2357,12 @@ describe("runAgentTurn — el repuesto manda (H1, 18/9/2026)", () => {
       conversationId: "conv-1",
       escenario: pb.name,
     });
+    expect(info).not.toHaveBeenCalledWith("escenario_no_cedido", expect.anything());
   });
 
-  it("escenario calzado + intención otro: se manda el escenario como siempre", async () => {
+  it("escenario calzado + intención otro: se manda el escenario como siempre, sin loguear motivo", async () => {
     const info = vi.spyOn(log, "info");
-    const pb = playbook();
+    const pb = playbook({ cedeAlInventario: true });
     fetchActivePlaybooksMock.mockResolvedValue([pb]);
     matchPlaybookMock.mockResolvedValue({ playbook: pb, usage: NO_USAGE });
     classifyIntentMock.mockResolvedValue({
@@ -2295,11 +2375,12 @@ describe("runAgentTurn — el repuesto manda (H1, 18/9/2026)", () => {
     expect(sendPlaybookReplyMock).toHaveBeenCalledTimes(1);
     expect(generateMock).not.toHaveBeenCalled();
     expect(info).not.toHaveBeenCalledWith("escenario_cedido_al_catalogo", expect.anything());
+    expect(info).not.toHaveBeenCalledWith("escenario_no_cedido", expect.anything());
   });
 
-  it("escenario calzado + clasificación fallida: se manda el escenario como siempre", async () => {
+  it("escenario calzado + clasificación fallida: se manda el escenario como siempre, sin loguear motivo", async () => {
     const info = vi.spyOn(log, "info");
-    const pb = playbook();
+    const pb = playbook({ cedeAlInventario: true });
     fetchActivePlaybooksMock.mockResolvedValue([pb]);
     matchPlaybookMock.mockResolvedValue({ playbook: pb, usage: NO_USAGE });
     classifyIntentMock.mockRejectedValue(new Error("429 del proveedor"));
@@ -2308,6 +2389,7 @@ describe("runAgentTurn — el repuesto manda (H1, 18/9/2026)", () => {
 
     expect(sendPlaybookReplyMock).toHaveBeenCalledTimes(1);
     expect(info).not.toHaveBeenCalledWith("escenario_cedido_al_catalogo", expect.anything());
+    expect(info).not.toHaveBeenCalledWith("escenario_no_cedido", expect.anything());
   });
 });
 

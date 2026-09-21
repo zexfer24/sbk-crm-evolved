@@ -121,7 +121,7 @@ export async function fetchActivePlaybooks(supabase: SupabaseClient<Database>): 
   const { data, error } = await supabase
     .from("ai_playbooks")
     .select(
-      "id, name, trigger_description, response_text, attachment_url, attachment_type, after_send, is_active, ai_playbook_tags(tag:tags(id, label, color))"
+      "id, name, trigger_description, response_text, attachment_url, attachment_type, after_send, is_active, cede_al_inventario, ai_playbook_tags(tag:tags(id, label, color))"
     )
     .eq("is_active", true)
     .order("name");
@@ -142,6 +142,11 @@ export async function fetchActivePlaybooks(supabase: SupabaseClient<Database>): 
     attachmentType: row.attachment_type as PlaybookAttachmentType | null,
     afterSend: row.after_send as PlaybookAfterSend,
     isActive: row.is_active,
+    // T1, plan "El catálogo configurado sale siempre" (21/9/2026): cuarta
+    // condición de "el repuesto manda" (H1) -- sin mapearla acá, `agent.ts`
+    // nunca podría saber si el supervisor marcó este escenario para ceder al
+    // inventario, aunque la columna ya viniera en el select.
+    cedeAlInventario: row.cede_al_inventario,
     tags: playbookTags(row as unknown as { ai_playbook_tags: RawPlaybookTag[] | null }),
   }));
 }

@@ -2144,11 +2144,15 @@ interface RawPlaybook {
   attachment_type: Playbook["attachmentType"];
   after_send: Playbook["afterSend"];
   is_active: boolean;
+  // T1, plan "El catálogo configurado sale siempre" (21/9/2026, migración
+  // 20260921010000): cuarta condición de "el repuesto manda" (H1) -- el
+  // supervisor la marca desde el panel, escenario por escenario.
+  cede_al_inventario: boolean;
   ai_playbook_tags: { tag: RawTag | null }[] | null;
 }
 
 const PLAYBOOK_COLUMNS =
-  "id, name, trigger_description, response_text, attachment_url, attachment_type, after_send, is_active, ai_playbook_tags(tag:tags(id, label, color))";
+  "id, name, trigger_description, response_text, attachment_url, attachment_type, after_send, is_active, cede_al_inventario, ai_playbook_tags(tag:tags(id, label, color))";
 
 function mapPlaybook(row: RawPlaybook): Playbook {
   return {
@@ -2160,6 +2164,7 @@ function mapPlaybook(row: RawPlaybook): Playbook {
     attachmentType: row.attachment_type,
     afterSend: row.after_send,
     isActive: row.is_active,
+    cedeAlInventario: row.cede_al_inventario,
     // `tag` en null es la carrera entre esta consulta y alguien borrando la
     // etiqueta: la cascada se lleva la fila, así que no hay nada que mostrar.
     tags: (row.ai_playbook_tags ?? [])

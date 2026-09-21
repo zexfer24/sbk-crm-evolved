@@ -44,6 +44,7 @@ import {
 } from "@/lib/ai/turn-delivery";
 import { recordHandoff, escalationOpen } from "@/lib/ai/handoffs";
 import { isCourtesyOnly, isGreetingOnly } from "@/lib/ai/saludo";
+import { debeCederAlInventario } from "@/lib/ai/catalog-request";
 import {
   isSebaGreeting,
   sebaGreeting,
@@ -1771,12 +1772,47 @@ async function runTurnPhases(
       // corrió en paralelo, arriba) es `consulta_disponibilidad`, el
       // escenario se cede al tool loop, que sí busca en `products`, hace la
       // pregunta de filtro cuando corresponde y escala con el texto fijo.
-      // Solo cede con una clasificación que salió bien: si falló (abajo,
-      // `!classified.ok`) o la intención es otra, el escenario se manda tal
-      // cual, como siempre.
-      const cedeAlCatalogo = classified.ok && classified.result.intent === "consulta_disponibilidad";
+      //
+      // Tarea 3, plan "El catálogo configurado sale siempre" (21/9/2026):
+      // esa única condición no alcanzaba. El reporte de solo lectura de
+      // producción del 21/9 midió "CATALOGO CASCOS" (535 usos) y "Catálogo
+      // general" (161) como el 30 % de las respuestas de escenario en 15
+      // días, y `buscar_repuesto` está APAGADO en producción desde el
+      // 25/8/2026 — desplegar H1 tal cual habría cedido esos pedidos a un
+      // inventario mudo, dejando sin PDF a casi todos los clientes que
+      // preguntan por el catálogo o por precios de un producto ya cubierto
+      // por un escenario. `debeCederAlInventario` (`catalog-request.ts`)
+      // junta las cuatro condiciones que aprobó el plan: la intención (esta
+      // misma, sin cambios), la herramienta del catálogo encendida, que el
+      // cliente no haya pedido el catálogo COMO DOCUMENTO (`pideCatalogo`,
+      // sobre `rafagaCliente` — la misma ráfaga que ya usan `soloSaludo` y
+      // la guarda de cortesía, más arriba) y que el escenario esté marcado
+      // (`cedeAlInventario`, columna nueva `ai_playbooks.cede_al_inventario`,
+      // default `false`: hoy solo "Catálogo general" se marca).
+      //
+      // Si la clasificación falló o la intención no es
+      // `consulta_disponibilidad`, `motivo` queda en `null` — ni siquiera es
+      // un caso de "el repuesto manda", así que no se loguea nada nuevo (el
+      // escenario sale tal cual, como siempre). Si la intención SÍ calza
+      // pero una de las otras tres condiciones falla, `escenario_no_cedido`
+      // deja el motivo (el primero que aplica, en el orden del plan) para
+      // poder medir en producción cuánto pesa cada uno.
+      const decision = debeCederAlInventario({
+        intencionOk: classified.ok,
+        intent: classified.ok ? classified.result.intent : "",
+        catalogoEncendido: enabledTools.has(TOOL_KEYS.catalog),
+        rafaga: rafagaCliente,
+        cedeAlInventario: match.playbook.cedeAlInventario,
+      });
 
-      if (!cedeAlCatalogo) {
+      if (!decision.cede) {
+        if (decision.motivo) {
+          log.info("escenario_no_cedido", {
+            conversationId,
+            escenario: match.playbook.name,
+            motivo: decision.motivo,
+          });
+        }
         await runPlaybook(
           supabase,
           target,

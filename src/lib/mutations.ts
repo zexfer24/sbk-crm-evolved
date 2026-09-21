@@ -911,6 +911,10 @@ function playbookRow(draft: PlaybookDraft) {
     attachment_url: draft.attachmentUrl,
     attachment_type: draft.attachmentType,
     after_send: draft.afterSend,
+    // T4, plan "El catálogo configurado sale siempre" (21/9/2026): la cuarta
+    // condición de "el repuesto manda" (columna `cede_al_inventario`, T1)
+    // viaja igual que cualquier otro campo del borrador, en insert y update.
+    cede_al_inventario: draft.cedeAlInventario,
   };
 }
 

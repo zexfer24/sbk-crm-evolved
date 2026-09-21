@@ -81,6 +81,7 @@ function playbook(overrides: Partial<Playbook> = {}): Playbook {
     attachmentType: null,
     afterSend: "wait",
     isActive: true,
+    cedeAlInventario: false,
     tags: [],
     ...overrides,
   };
@@ -274,5 +275,65 @@ describe("PlaybooksPanel — Insertar catálogo (T4a, D4)", () => {
     // Las dos primeras opciones son fijas ("Insertar catálogo…", "Todos los
     // catálogos"); las claves empiezan en el índice 2.
     expect(opciones.slice(2)).toEqual(["Cascos", "Resonadores"]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// T4, plan "El catálogo configurado sale siempre" (21/9/2026): la casilla
+// "Cede al inventario cuando preguntan por un repuesto" del editor de
+// escenarios. T1 ya dejó la columna, el tipo `Playbook.cedeAlInventario` y la
+// lectura del panel — acá falta la escritura y la interfaz.
+// ---------------------------------------------------------------------------
+const CEDE_LABEL = "Cede al inventario cuando preguntan por un repuesto";
+
+describe("PlaybooksPanel — cede al inventario (T4)", () => {
+  beforeEach(() => {
+    createPlaybook.mockReset();
+  });
+
+  it("la casilla aparece apagada al crear un escenario nuevo", async () => {
+    const user = userEvent.setup({ delay: null, pointerEventsCheck: 0 });
+    renderPanel();
+
+    await user.click(screen.getByRole("button", { name: "Nuevo escenario" }));
+
+    expect(screen.getByRole("button", { name: CEDE_LABEL })).toHaveAttribute("data-on", "false");
+  });
+
+  it("al editar un escenario marcado, la casilla aparece encendida", async () => {
+    const user = userEvent.setup({ delay: null, pointerEventsCheck: 0 });
+    renderPanel({ playbooks: [playbook({ cedeAlInventario: true })] });
+
+    await user.click(screen.getByRole("button", { name: "Editar" }));
+
+    expect(screen.getByRole("button", { name: CEDE_LABEL })).toHaveAttribute("data-on", "true");
+  });
+
+  it("guardar con la casilla encendida manda cedeAlInventario: true a createPlaybook", async () => {
+    const user = userEvent.setup({ delay: null, pointerEventsCheck: 0 });
+    createPlaybook.mockResolvedValueOnce(undefined);
+    renderPanel();
+
+    await user.click(screen.getByRole("button", { name: "Nuevo escenario" }));
+    await user.type(screen.getByLabelText("Nombre"), "Catálogo general");
+    await user.type(screen.getByLabelText("¿Cuándo aplica?"), "el cliente pide el catálogo");
+    await user.type(screen.getByLabelText("Respuesta"), "Acá va el catálogo.");
+    await user.click(screen.getByRole("button", { name: CEDE_LABEL }));
+    await user.click(screen.getByRole("button", { name: "Crear escenario" }));
+
+    await waitFor(() => expect(createPlaybook).toHaveBeenCalled());
+    const payload = createPlaybook.mock.calls[0]?.[1] as { cedeAlInventario?: boolean };
+    expect(payload.cedeAlInventario).toBe(true);
+  });
+
+  it("un escenario marcado muestra el badge 'Cede al inventario' y uno sin marcar no lo repite", () => {
+    renderPanel({
+      playbooks: [
+        playbook({ id: "pb-a", cedeAlInventario: true }),
+        playbook({ id: "pb-b", cedeAlInventario: false }),
+      ],
+    });
+
+    expect(screen.getAllByText("Cede al inventario")).toHaveLength(1);
   });
 });

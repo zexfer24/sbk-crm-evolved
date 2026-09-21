@@ -163,6 +163,12 @@ interface RawEscenario {
   attachment_type: string | null;
   after_send: string;
   is_active: boolean;
+  // Opcional: las fixtures de este comparador (JSON viejos) no traen esta
+  // columna, nacida en la migración 20260921010000 (T1, plan "El catálogo
+  // configurado sale siempre", 21/9/2026). El comparador solo mide acuerdo
+  // de CLASIFICACIÓN de escenario, no la cesión al inventario -- default a
+  // `false` alcanza.
+  cede_al_inventario?: boolean;
   tags: RawEscenarioTag[];
 }
 
@@ -187,6 +193,7 @@ function mapEscenario(raw: RawEscenario): Playbook {
     attachmentType: raw.attachment_type as PlaybookAttachmentType | null,
     afterSend: raw.after_send as PlaybookAfterSend,
     isActive: raw.is_active,
+    cedeAlInventario: raw.cede_al_inventario ?? false,
     tags: raw.tags.map((tag): Tag => ({ id: tag.id, label: tag.label, color: tag.color as TagColor })),
   };
 }

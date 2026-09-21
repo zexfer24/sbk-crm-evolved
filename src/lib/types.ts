@@ -462,6 +462,17 @@ export interface Playbook {
   afterSend: PlaybookAfterSend;
   isActive: boolean;
   /**
+   * Cuarta condición de "el repuesto manda" (H1, 18/9/2026) para que un
+   * escenario calzado se CEDA al inventario real en vez de mandar su texto
+   * predeterminado (T1, plan "El catálogo configurado sale siempre",
+   * 21/9/2026, migración `20260921010000`). Nace en `false`: producción
+   * medía "CATALOGO CASCOS"/"Catálogo general" como el 30 % de las
+   * respuestas predeterminadas en 15 días, y cederlas todas a un inventario
+   * que estaba apagado (`buscar_repuesto`, desde el 25/8/2026) las habría
+   * dejado sin su PDF. El supervisor la marca a mano desde el panel.
+   */
+  cedeAlInventario: boolean;
+  /**
    * Etiquetas que se aplican cuando este escenario responde, escale o no.
    *
    * Se llevan enteras y no como ids sueltos porque los dos lectores las

@@ -57,6 +57,15 @@ interface DraftState {
   attachmentUrl: string;
   attachmentType: PlaybookAttachmentType | "";
   afterSend: PlaybookAfterSend;
+  /**
+   * Cuarta condición de "el repuesto manda" (T4, plan "El catálogo
+   * configurado sale siempre", 21/9/2026). Apagada por default al crear:
+   * producción medía el 30 % de las respuestas predeterminadas saliendo de
+   * "CATALOGO CASCOS"/"Catálogo general", y cederlas todas de una sin que el
+   * supervisor las marque a mano habría mandado escenarios de un solo
+   * catálogo (cascos, maletas) al inventario real por error.
+   */
+  cedeAlInventario: boolean;
   tagIds: string[];
 }
 
@@ -67,6 +76,7 @@ const EMPTY_DRAFT: DraftState = {
   attachmentUrl: "",
   attachmentType: "",
   afterSend: "wait",
+  cedeAlInventario: false,
   tagIds: [],
 };
 
@@ -122,6 +132,7 @@ export function PlaybooksPanel({
       attachmentUrl: playbook.attachmentUrl ?? "",
       attachmentType: playbook.attachmentType ?? "",
       afterSend: playbook.afterSend,
+      cedeAlInventario: playbook.cedeAlInventario,
       tagIds: playbook.tags.map((tag) => tag.id),
     });
     setIsFormOpen(true);
@@ -176,6 +187,7 @@ export function PlaybooksPanel({
         attachmentUrl: url || null,
         attachmentType: type,
         afterSend: draft.afterSend,
+        cedeAlInventario: draft.cedeAlInventario,
         tagIds: draft.tagIds,
       };
 
@@ -353,6 +365,20 @@ export function PlaybooksPanel({
                     >
                       <AlertTriangle size={11} />
                       Enlace sin resolver
+                    </span>
+                  )}
+                  {/* T4, plan "El catálogo configurado sale siempre" (21/9/2026):
+                      aviso discreto de la cuarta condición de "el repuesto
+                      manda" — este escenario deja de mandar su texto cuando
+                      el cliente pregunta por un repuesto puntual (y la
+                      consulta de productos está encendida). */}
+                  {playbook.cedeAlInventario && (
+                    <span
+                      className="ac-badge"
+                      data-tone="muted"
+                      title="Si el cliente pregunta por un repuesto puntual y la consulta de productos está encendida, la IA busca en el inventario en vez de mandar esta respuesta."
+                    >
+                      Cede al inventario
                     </span>
                   )}
                   <span className="ac-badge" data-tone={playbook.afterSend === "escalate" ? "plum" : "muted"}>
@@ -586,6 +612,32 @@ export function PlaybooksPanel({
                   <span className="lm-hint">
                     Elige pasar a un asesor cuando la respuesta pide un dato que alguien tiene que revisar, como la
                     cédula para buscar una guía de envío.
+                  </span>
+                </div>
+
+                <div className="flex flex-col gap-1.5">
+                  {/* T4, plan "El catálogo configurado sale siempre" (21/9/2026):
+                      cuarta condición de "el repuesto manda" (H1, 18/9/2026,
+                      `agent.ts`). Reusa el mismo `ac-switch` que ya usan la
+                      lista de acá arriba y el resto de `agent-control/` — sin
+                      librería nueva. No es obligatoria: el asterisco de
+                      CLAUDE.md es CSS sobre `<Label>`, y este campo no lo
+                      lleva. */}
+                  <div className="flex items-center gap-2">
+                    <button
+                      className="ac-switch"
+                      type="button"
+                      data-on={draft.cedeAlInventario}
+                      onClick={() => setDraft((current) => ({ ...current, cedeAlInventario: !current.cedeAlInventario }))}
+                      aria-label="Cede al inventario cuando preguntan por un repuesto"
+                    />
+                    <Label>Cede al inventario cuando preguntan por un repuesto</Label>
+                  </div>
+                  <span className="lm-hint">
+                    Si el cliente pregunta por un repuesto puntual y la consulta de productos está encendida, Seba
+                    busca en el inventario en vez de mandar esta respuesta. Si pide el catálogo, esta respuesta sale
+                    igual. Déjalo apagado en los escenarios que mandan un catálogo de una categoría (cascos,
+                    maletas).
                   </span>
                 </div>
 

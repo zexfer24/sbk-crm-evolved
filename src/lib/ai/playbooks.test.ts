@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
+import type { SupabaseClient } from "@supabase/supabase-js";
 import type { CatalogLink, Playbook } from "@/lib/types";
 
 const generateObjectMock = vi.fn();
@@ -17,7 +18,7 @@ vi.mock("@/lib/ai/model", () => ({
   }),
 }));
 
-import { matchPlaybook, playbookSentRecently } from "@/lib/ai/playbooks";
+import { fetchActivePlaybooks, matchPlaybook, playbookSentRecently } from "@/lib/ai/playbooks";
 import { log } from "@/lib/log";
 
 const USAGE = { inputTokens: 10, outputTokens: 2, totalTokens: 12 };
@@ -32,6 +33,7 @@ function playbook(name: string, overrides: Partial<Playbook> = {}): Playbook {
     attachmentType: null,
     afterSend: "wait",
     isActive: true,
+    cedeAlInventario: false,
     tags: [],
     ...overrides,
   };
@@ -463,5 +465,107 @@ describe("playbookSentRecently — un escenario no se repite en el mismo chat", 
     const { client } = fakeSupabase([], { message: "connection reset" });
 
     expect(await playbookSentRecently(client, "conv-1", "pb-1", AHORA)).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// T1, plan "El catálogo configurado sale siempre" (21/9/2026): la lectura del
+// TURNO (`fetchActivePlaybooks`) tiene que traer `cede_al_inventario` en el
+// select y mapearla al campo `cedeAlInventario` del tipo de dominio -- sin
+// esto, la cuarta condición de "el repuesto manda" (H1) no puede evaluarse
+// nunca en `agent.ts`, aunque el supervisor haya marcado la casilla en el
+// panel.
+// ---------------------------------------------------------------------------
+interface FakeActivePlaybookRow {
+  id: string;
+  name: string;
+  trigger_description: string;
+  response_text: string;
+  attachment_url: string | null;
+  attachment_type: string | null;
+  after_send: string;
+  is_active: boolean;
+  cede_al_inventario: boolean;
+  ai_playbook_tags: { tag: { id: string; label: string; color: string } | null }[] | null;
+}
+
+function fakeActivePlaybooksSupabase(rows: FakeActivePlaybookRow[] | null, error: { message: string } | null = null) {
+  const calls: { select?: string; eq?: [string, unknown]; order?: string } = {};
+
+  const client = {
+    from(table: string) {
+      if (table !== "ai_playbooks") throw new Error(`tabla inesperada: ${table}`);
+      return {
+        select(columns: string) {
+          calls.select = columns;
+          return {
+            eq(column: string, value: unknown) {
+              calls.eq = [column, value];
+              return {
+                order(column2: string) {
+                  calls.order = column2;
+                  return Promise.resolve({ data: rows, error });
+                },
+              };
+            },
+          };
+        },
+      };
+    },
+  };
+
+  return { client: client as unknown as SupabaseClient, calls };
+}
+
+describe("fetchActivePlaybooks — la lectura del turno trae cede_al_inventario", () => {
+  it("pide la columna cede_al_inventario en el select", async () => {
+    const { client, calls } = fakeActivePlaybooksSupabase([]);
+
+    await fetchActivePlaybooks(client);
+
+    expect(calls.select).toContain("cede_al_inventario");
+  });
+
+  it("mapea cede_al_inventario = true al campo cedeAlInventario del Playbook", async () => {
+    const { client } = fakeActivePlaybooksSupabase([
+      {
+        id: "pb-catalogo-general",
+        name: "Catálogo general",
+        trigger_description: "el cliente pide el catálogo",
+        response_text: "Acá tienes nuestro catálogo.",
+        attachment_url: null,
+        attachment_type: null,
+        after_send: "wait",
+        is_active: true,
+        cede_al_inventario: true,
+        ai_playbook_tags: null,
+      },
+    ]);
+
+    const result = await fetchActivePlaybooks(client);
+
+    expect(result).toHaveLength(1);
+    expect(result[0].cedeAlInventario).toBe(true);
+  });
+
+  it("mapea cede_al_inventario = false (el default) al campo cedeAlInventario", async () => {
+    const { client } = fakeActivePlaybooksSupabase([
+      {
+        id: "pb-otro",
+        name: "Otro escenario",
+        trigger_description: "cuando aplica otro",
+        response_text: "texto de otro",
+        attachment_url: null,
+        attachment_type: null,
+        after_send: "wait",
+        is_active: true,
+        cede_al_inventario: false,
+        ai_playbook_tags: null,
+      },
+    ]);
+
+    const result = await fetchActivePlaybooks(client);
+
+    expect(result[0].cedeAlInventario).toBe(false);
   });
 });

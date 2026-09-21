@@ -57,6 +57,7 @@ function playbook(overrides: Partial<Playbook> = {}): Playbook {
     attachmentType: null,
     afterSend: "wait",
     isActive: true,
+    cedeAlInventario: false,
     tags: [],
     ...overrides,
   };

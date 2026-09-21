@@ -407,11 +407,17 @@ export type Database = {
           },
         ]
       }
+      // Tipo a mano (21/9/2026, plan "El catálogo configurado sale siempre",
+      // T1): `cede_al_inventario` nace en la migración 20260921010000. Se
+      // copia la columna a mano, mismo criterio que `ai_lessons`/
+      // `catalog_links` un poco más abajo -- el generador de tipos no corre
+      // en este repo.
       ai_playbooks: {
         Row: {
           after_send: string
           attachment_type: string | null
           attachment_url: string | null
+          cede_al_inventario: boolean
           created_at: string
           id: string
           is_active: boolean
@@ -424,6 +430,7 @@ export type Database = {
           after_send?: string
           attachment_type?: string | null
           attachment_url?: string | null
+          cede_al_inventario?: boolean
           created_at?: string
           id?: string
           is_active?: boolean
@@ -436,6 +443,7 @@ export type Database = {
           after_send?: string
           attachment_type?: string | null
           attachment_url?: string | null
+          cede_al_inventario?: boolean
           created_at?: string
           id?: string
           is_active?: boolean

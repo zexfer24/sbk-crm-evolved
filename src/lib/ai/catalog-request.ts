@@ -63,3 +63,66 @@ const PATRON_CATALOGO = /\b(catal[oa]gos?|pdf|listas?\s+de\s+precios?)\b/;
 export function pideCatalogo(lineas: readonly string[]): boolean {
   return lineas.some((linea) => PATRON_CATALOGO.test(normalize(linea)));
 }
+
+// ---------------------------------------------------------------------------
+// Tarea 3, plan "El catálogo configurado sale siempre" (21/9/2026).
+//
+// "El repuesto manda" (H1, "Seba atiende el mostrador", 18/9/2026) cedía un
+// escenario calzado al inventario con UNA sola condición: que la intención
+// clasificada fuera `consulta_disponibilidad`. El reporte de solo lectura de
+// producción del 21/9/2026 (VPS, base en `20260915010000`, sin H1 desplegado
+// todavía) midió "CATALOGO CASCOS" (535 usos) y "Catálogo general" (161) como
+// el 30 % de todas las respuestas de escenario en 15 días — y
+// `buscar_repuesto` está APAGADO en producción desde el 25/8/2026. Desplegar
+// H1 tal cual habría cedido esos pedidos a un inventario que no responde
+// nada, dejando sin PDF a casi todos los clientes que preguntan por el
+// catálogo o por precios de un producto ya cubierto por un escenario.
+//
+// `debeCederAlInventario` reemplaza esa única condición por las CUATRO que
+// aprobó el plan, evaluadas en el orden en que el operador pidió poder
+// medirlas (para que el log de abajo, en `agent.ts`, diga SIEMPRE la primera
+// que aplica, nunca varias a la vez):
+//   1. la clasificación salió bien y la intención es `consulta_disponibilidad`
+//      (la condición original de H1; si falla, no hay motivo que loguear —
+//      esto ni siquiera es un caso de "el repuesto manda").
+//   2. la herramienta del catálogo (`buscar_repuesto`) está encendida.
+//   3. el cliente NO pidió el catálogo como documento (`pideCatalogo`, T2).
+//   4. el escenario calzado tiene `cedeAlInventario = true` (T1, columna
+//      `ai_playbooks.cede_al_inventario`, default `false` — hoy solo
+//      "Catálogo general" se marca).
+// ---------------------------------------------------------------------------
+
+/** Por qué un escenario que SÍ calzó `consulta_disponibilidad` NO se cedió al inventario. */
+export type MotivoNoCedido = "catalogo_apagado" | "cliente_pidio_catalogo" | "escenario_no_marcado";
+
+export interface DecisionCesionInventario {
+  cede: boolean;
+  /** `null` cuando `cede` es `true`, o cuando ni siquiera aplica (intención distinta, clasificación fallida). */
+  motivo: MotivoNoCedido | null;
+}
+
+/**
+ * Decide si un escenario calzado se cede al tool loop (inventario real) en
+ * vez de mandarse tal cual. Pura: no consulta la base ni al modelo, recibe
+ * todo ya resuelto por el llamador (`agent.ts`).
+ */
+export function debeCederAlInventario(params: {
+  /** `classified.ok` — si la clasificación de intención falló, no hay decisión que tomar. */
+  intencionOk: boolean;
+  /** `classified.result.intent` cuando `intencionOk` es `true`; cualquier valor si no. */
+  intent: string;
+  /** `enabledTools.has(TOOL_KEYS.catalog)`. */
+  catalogoEncendido: boolean;
+  /** La ráfaga del cliente (`customerBurst`), la misma que usan `soloSaludo` y la guarda de cortesía. */
+  rafaga: readonly string[];
+  /** `match.playbook.cedeAlInventario`. */
+  cedeAlInventario: boolean;
+}): DecisionCesionInventario {
+  if (!(params.intencionOk && params.intent === "consulta_disponibilidad")) {
+    return { cede: false, motivo: null };
+  }
+  if (!params.catalogoEncendido) return { cede: false, motivo: "catalogo_apagado" };
+  if (pideCatalogo(params.rafaga)) return { cede: false, motivo: "cliente_pidio_catalogo" };
+  if (!params.cedeAlInventario) return { cede: false, motivo: "escenario_no_marcado" };
+  return { cede: true, motivo: null };
+}
