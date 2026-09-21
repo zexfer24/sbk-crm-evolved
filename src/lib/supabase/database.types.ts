@@ -203,6 +203,14 @@ export type Database = {
           model: string | null
           output_tokens: number | null
           playbook_id: string | null
+          // T4a, plan "La escalada se hace una vez y la búsqueda responde"
+          // (21/9/2026, migración 20260921020000): a diferencia de las demás
+          // columnas de tokens de arriba (nullable, "no se sabe"), esta nace
+          // `not null default 0` porque `0` tokens de razonamiento medidos es
+          // un valor legítimo y distinto de "no se midió" — mismo estilo que
+          // `cede_al_inventario` (l. 420), sin `| null` en Row y opcional sin
+          // `| null` en Insert/Update.
+          reasoning_tokens: number
           summary: string | null
           total_tokens: number | null
         }
@@ -218,6 +226,7 @@ export type Database = {
           model?: string | null
           output_tokens?: number | null
           playbook_id?: string | null
+          reasoning_tokens?: number
           summary?: string | null
           total_tokens?: number | null
         }
@@ -233,6 +242,7 @@ export type Database = {
           model?: string | null
           output_tokens?: number | null
           playbook_id?: string | null
+          reasoning_tokens?: number
           summary?: string | null
           total_tokens?: number | null
         }

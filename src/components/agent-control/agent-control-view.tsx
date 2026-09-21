@@ -875,6 +875,27 @@ export function AgentControlView({
                             <span className="ac-badge" data-tone={ACTION_TONE[t.action]}>
                               {ACTION_LABEL[t.action]}
                             </span>
+                            {/*
+                              T4b, "La escalada se hace una vez y la búsqueda
+                              responde" (21/9/2026): el hallazgo que motivó
+                              medir esto fueron dos turnos reales del
+                              21/9/2026 con ~65.800 tokens de SALIDA contra un
+                              mensaje visible de ~40 — la sospecha es
+                              razonamiento interno sin freno. El badge solo
+                              aparece con reasoningTokens > 0: la columna nace
+                              en 0 para la enorme mayoría de los turnos (sin
+                              razonamiento medido, o el proveedor no lo separó
+                              de la redacción), y pintarlo siempre habría
+                              tapado el feed con "Razonamiento: 0" en cada
+                              fila sin decir nada — acá 0 es dato real, no
+                              ambigüedad ("—" de CLAUDE.md), pero no es una
+                              anomalía que valga la pena señalar en la lista.
+                            */}
+                            {t.reasoningTokens > 0 && (
+                              <span className="ac-badge" data-tone="hot">
+                                Razonamiento: {t.reasoningTokens.toLocaleString("es-VE")}
+                              </span>
+                            )}
                             <span className="ac-feed-time">{timeLabel(t.createdAt)}</span>
                           </div>
                           {t.summary && <p className="ac-feed-summary">{t.summary}</p>}

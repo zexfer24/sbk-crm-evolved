@@ -960,6 +960,104 @@ describe("Tarea T5 — Lecciones de Seba en el prompt (18/9/2026)", () => {
     expect(instructions).toContain("Este cliente ya pagó con Cashea");
   });
 
+  /**
+   * T2, plan "La escalada se hace una vez y la búsqueda responde"
+   * (21/9/2026, D2 del operador). Medido en producción el 21/9/2026: 24
+   * turnos escalaron en código donde bastaban 9 — el modelo no sabía que el
+   * chat YA tenía asesor asignado y volvía a llamar `escalarAAsesor` en
+   * cada mensaje. `yaEscalada` avisa en el sufijo, nunca en el prefijo
+   * cacheado (el prefijo no depende del turno).
+   */
+  describe("Tarea T2, plan 'La escalada se hace una vez y la búsqueda responde' (21/9/2026)", () => {
+    it("sin yaEscalada, buildInstructions es idéntico al de antes de esta tarea", () => {
+      const conYaEscaladaFalse = buildInstructions({ ...TURN, yaEscalada: false });
+      const sinYaEscalada = buildInstructions(TURN);
+
+      expect(conYaEscaladaFalse).toBe(sinYaEscalada);
+      expect(sinYaEscalada).not.toMatch(/YA está asignado a un asesor/);
+    });
+
+    it("con yaEscalada, la línea vive SOLO en el sufijo — cacheablePrefix() no cambia", () => {
+      const conEscalada = buildInstructions({ ...TURN, yaEscalada: true });
+      const prefijo = cacheablePrefix();
+
+      expect(conEscalada.startsWith(prefijo)).toBe(true);
+      expect(conEscalada.slice(prefijo.length)).toMatch(/YA está asignado a un asesor/);
+    });
+
+    it("con lecciones globales, cacheablePrefix(lessons) sigue idéntico con y sin yaEscalada", () => {
+      const lessons = { global: ["No prometas descuentos por WhatsApp sin confirmar con un asesor."], chat: [] };
+      const conEscalada = buildInstructions({ ...TURN, yaEscalada: true, lessons });
+      const sinEscalada = buildInstructions({ ...TURN, yaEscalada: false, lessons });
+      const prefijo = cacheablePrefix(lessons);
+
+      expect(conEscalada.startsWith(prefijo)).toBe(true);
+      expect(sinEscalada.startsWith(prefijo)).toBe(true);
+    });
+
+    /**
+     * El protocolo del caso (CASE_SECTION, "5.2 Devolución"/"5.3 Queja")
+     * manda escalar SIEMPRE. Con un asesor que ya tiene el caso, esa regla
+     * tiene que ceder explícitamente: la línea del sufijo dice que gana por
+     * encima del protocolo, no solo que "no vuelvas a pasar el caso".
+     */
+    it("dice que gana sobre el protocolo del caso, incluso en devolución/queja", () => {
+      const devolucion = buildInstructions({
+        intent: "devolucion",
+        introducedThisTurn: false,
+        yaEscalada: true,
+      }).slice(SYSTEM_PROMPT.length);
+
+      expect(devolucion).toMatch(/gana sobre/i);
+      expect(devolucion).toMatch(/no lo vuelvas a pasar/i);
+    });
+
+    it("con la herramienta restringida disponible, suma la variante de 'solo si confirma compra'; sin ella, no la nombra", () => {
+      const conHerramienta = buildInstructions({
+        ...TURN,
+        yaEscalada: true,
+        escalateToolAvailable: true,
+      }).slice(SYSTEM_PROMPT.length);
+      const sinHerramienta = buildInstructions({
+        ...TURN,
+        yaEscalada: true,
+        escalateToolAvailable: false,
+      }).slice(SYSTEM_PROMPT.length);
+
+      expect(conHerramienta).toMatch(/solo usa escalarAAsesor/i);
+      expect(sinHerramienta).not.toMatch(/escalarAAsesor/i);
+    });
+
+    it("reescribe la línea de catálogo apagado cuando ya hay asesor: ya no pide 'pasa el caso'", () => {
+      const conAsesor = buildInstructions({ ...TURN, yaEscalada: true, missingCatalog: true }).slice(
+        SYSTEM_PROMPT.length
+      );
+      const sinAsesor = buildInstructions({ ...TURN, yaEscalada: false, missingCatalog: true }).slice(
+        SYSTEM_PROMPT.length
+      );
+
+      expect(conAsesor).toMatch(/ya tiene su caso/i);
+      expect(conAsesor).not.toMatch(/pasa el caso/i);
+      expect(sinAsesor).toMatch(/pasa el caso/i);
+    });
+
+    it("pasa la guarda de identidad, con y sin la herramienta disponible", () => {
+      const conHerramienta = buildInstructions({
+        ...TURN,
+        yaEscalada: true,
+        escalateToolAvailable: true,
+      }).slice(SYSTEM_PROMPT.length);
+      const sinHerramienta = buildInstructions({
+        ...TURN,
+        yaEscalada: true,
+        escalateToolAvailable: false,
+      }).slice(SYSTEM_PROMPT.length);
+
+      expect(revealsIdentity(conHerramienta)).toBeNull();
+      expect(revealsIdentity(sinHerramienta)).toBeNull();
+    });
+  });
+
   describe("el bloque de lecciones pasa por la guarda de identidad", () => {
     it("un bloque de ejemplo con lecciones limpias pasa la guarda de identidad", () => {
       const bloque = buildGlobalLessonsBlock([

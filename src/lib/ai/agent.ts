@@ -53,7 +53,7 @@ import {
   TEXTO_SIN_STOCK,
 } from "@/lib/ai/seba";
 import { errorText, log } from "@/lib/log";
-import { firstStepToolChoice } from "@/lib/ai/tool-choice";
+import { stepToolChoice } from "@/lib/ai/tool-choice";
 import { withinFreeformWindow } from "@/lib/dashboard";
 import { isWithin24hWindow } from "@/lib/whatsapp-window";
 import { sendTypingIndicator } from "@/lib/whatsapp/meta-client";
@@ -76,6 +76,22 @@ import { sendTypingIndicator } from "@/lib/whatsapp/meta-client";
 // ---------------------------------------------------------------------------
 
 const MAX_STEPS = 5;
+
+/**
+ * T1, plan "La escalada se hace una vez y la búsqueda responde" (21/9/2026).
+ * Techo de tokens de salida del `ToolLoopAgent`: hasta esta tarea nada lo
+ * limitaba. Medido en producción el 21/9/2026: ninguna respuesta legítima
+ * pasó de 400 tokens de salida; los dos únicos turnos donde
+ * `escalarAAsesor` (tools.ts) se llamó DOS veces en el mismo turno —sin
+ * ningún freno que lo impidiera— llegaron a 65.742 y 65.864 tokens de
+ * salida, 0,108 USD y 5 minutos de redacción cada uno. 1500 deja margen de
+ * sobra sobre cualquier respuesta real sin dejar que una espiral se coma el
+ * presupuesto. D1 del plan: esto NO es lo que corta el bucle de escaladas
+ * repetidas —eso es `stepToolChoice`, en `prepareStep` más abajo, y el
+ * corte dentro del mismo paso en `buildEscalateTool` (tools.ts)—, es la
+ * última red por si algo redacta de más pese a todo lo demás.
+ */
+const MAX_OUTPUT_TOKENS = 1500;
 
 // ---------------------------------------------------------------------------
 // Cuánto tarda un turno, por tramo.
@@ -217,6 +233,17 @@ interface TurnTokens {
    * rompe el prefijo, esto cae a cero y se ve en el panel.
    */
   cachedInputTokens: number;
+  /**
+   * Parte de `outputTokens` que el proveedor gastó en razonamiento interno,
+   * nunca visible en el texto que le llega al cliente (T4b, plan "La
+   * escalada se hace una vez y la búsqueda responde", 21/9/2026). Hasta esta
+   * tarea no se medía: el hallazgo que la motiva son dos turnos reales del
+   * 21/9/2026 con ~65.800 tokens de salida contra un mensaje visible de
+   * ~40 — la hipótesis es razonamiento interno de `openai/gpt-5.6-luna` (vía
+   * OpenRouter) que ninguna columna registraba. `0` cuando el proveedor no lo
+   * informa (no todos separan razonamiento de texto en `outputTokenDetails`).
+   */
+  reasoningTokens: number;
 }
 
 function tokensFromUsage(usage: LanguageModelUsage): TurnTokens {
@@ -225,6 +252,7 @@ function tokensFromUsage(usage: LanguageModelUsage): TurnTokens {
     outputTokens: usage.outputTokens ?? 0,
     totalTokens: usage.totalTokens ?? 0,
     cachedInputTokens: usage.inputTokenDetails?.cacheReadTokens ?? 0,
+    reasoningTokens: usage.outputTokenDetails?.reasoningTokens ?? 0,
   };
 }
 
@@ -234,6 +262,7 @@ function addTokens(a: TurnTokens, b: TurnTokens): TurnTokens {
     outputTokens: a.outputTokens + b.outputTokens,
     totalTokens: a.totalTokens + b.totalTokens,
     cachedInputTokens: a.cachedInputTokens + b.cachedInputTokens,
+    reasoningTokens: a.reasoningTokens + b.reasoningTokens,
   };
 }
 
@@ -488,6 +517,13 @@ async function logTurn(supabase: SupabaseClient<Database>, conversationId: strin
     output_tokens: params.tokens?.outputTokens ?? null,
     total_tokens: params.tokens?.totalTokens ?? null,
     cached_input_tokens: params.tokens?.cachedInputTokens ?? null,
+    // T4b, 21/9/2026: `reasoning_tokens` es `not null default 0` en la base
+    // (migración 20260921020000, T4a) — a diferencia de las otras columnas de
+    // tokens (nullable, `null` cuando el turno nunca llegó a medir nada),
+    // acá `0` SÍ es un valor medido y correcto para un turno sin `tokens`
+    // (p. ej. el error temprano de `runAgentTurn`), así que no hay ambigüedad
+    // que resolver con `null`.
+    reasoning_tokens: params.tokens?.reasoningTokens ?? 0,
     playbook_id: params.playbookId ?? null,
     customer_message: params.customerMessage ?? null,
   });
@@ -1994,7 +2030,23 @@ async function runTurnPhases(
 
   // Escalar no tiene interruptor: es la única salida hacia un humano. El
   // resto entra solo si su interruptor del panel está encendido.
-  const tools: ToolSet = { escalarAAsesor: buildEscalateTool(deps, outcome) };
+  //
+  // T2, plan "La escalada se hace una vez y la búsqueda responde"
+  // (21/9/2026, D2 del operador): con asesor asignado (`esperandoAsesor`,
+  // declarado al abrir esta función), `escalarAAsesor` se arma en modo
+  // RESTRINGIDO (enum de `motivo` = solo `intencion_compra`, ver
+  // `buildEscalateTool` en tools.ts) — y se OMITE DEL TODO si `deal_status`
+  // ya refleja esa intención de compra (`escalate.ts` deja
+  // `deal_status: "in_progress"` en cuanto el motivo es `intencion_compra`,
+  // con o sin asesor nuevo): no tiene sentido ofrecerle al modelo una
+  // herramienta para repetir una marca que ya está puesta.
+  const dealAlreadyInProgress = esperandoAsesor && convo.deal_status === "in_progress";
+  const tools: ToolSet = {};
+  if (dealAlreadyInProgress) {
+    log.info("escalarAAsesor_omitida_venta_en_curso", { conversationId });
+  } else {
+    tools.escalarAAsesor = buildEscalateTool(deps, outcome, { restrictedToPurchase: esperandoAsesor });
+  }
   if (intent === "devolucion") {
     if (enabledTools.has(TOOL_KEYS.orderHistory)) tools.buscarHistorialCompras = buildOrderHistoryTool(deps);
   } else if (intent !== "queja") {
@@ -2025,23 +2077,46 @@ async function runTurnPhases(
       businessHours,
       customerName,
       lessons,
+      // T2 (21/9/2026): el mismo booleano que decide el modo de la
+      // herramienta, arriba, le dice al modelo por qué la vuelve a ver
+      // recortada (o por qué ya no la ve). `escalateToolAvailable` viaja
+      // aparte porque `yaEscalada` puede ser `true` con la herramienta
+      // omitida del todo (`dealAlreadyInProgress`): el sufijo no puede
+      // pedirle al modelo que use algo que no le llegó.
+      yaEscalada: esperandoAsesor,
+      escalateToolAvailable: Boolean(tools.escalarAAsesor),
     }),
     tools,
+    // D1 del plan "La escalada se hace una vez y la búsqueda responde"
+    // (21/9/2026): esto NO cambia — el freno contra la escalada repetida no
+    // corta el bucle antes de tiempo, solo le quita al modelo la
+    // posibilidad de volver a usar herramientas (ver `prepareStep`, abajo).
+    // `stopWhen` sigue siendo el único techo de PASOS.
     stopWhen: isStepCount(MAX_STEPS),
     providerOptions,
     // Tarea K, "El resguardo antes del push" (20/9/2026): el paso 0 del tool
     // loop fuerza `buscarRepuesto` en toda `consulta_disponibilidad` con el
     // catálogo encendido, para que el modelo no pueda afirmar existencia de
     // memoria (ver `tool-choice.ts` para el caso real y el porqué). Del paso
-    // 1 en adelante `firstStepToolChoice` devuelve `undefined` y el SDK usa
-    // la configuración de siempre (`toolChoice: "auto"`), o el turno nunca
+    // 1 en adelante, sin escalada previa, no fuerza nada y el SDK usa la
+    // configuración de siempre (`toolChoice: "auto"`), o el turno nunca
     // podría redactar ni escalar.
-    prepareStep: ({ stepNumber }) => firstStepToolChoice(intent, Boolean(tools.buscarRepuesto), stepNumber),
+    //
+    // T1, "La escalada se hace una vez y la búsqueda responde" (21/9/2026):
+    // `stepToolChoice` compone esto con `outcome.escalated`, leído EN EL
+    // MOMENTO de cada paso (`execute` de `buildEscalateTool`, tools.ts, muta
+    // el mismo objeto `outcome` cuando el modelo escala de verdad) — si el
+    // turno ya escaló, el paso siguiente recibe `toolChoice: "none"` y solo
+    // puede redactar su despedida, nunca volver a llamar una herramienta.
+    prepareStep: ({ stepNumber }) => stepToolChoice(outcome.escalated, intent, Boolean(tools.buscarRepuesto), stepNumber),
     // El reintento vive en el control de ritmo, que espera en segundos y
     // respeta Retry-After. El del SDK reintenta a ~2 s, o sea dentro de la
     // misma ventana de un minuto que acaba de rechazar la petición: no
     // recupera nada y gasta el doble de cuota. Ver rate-limit.ts.
     maxRetries: 0,
+    // T1, mismo plan (21/9/2026): ver el comentario de `MAX_OUTPUT_TOKENS`,
+    // arriba, para la medición.
+    maxOutputTokens: MAX_OUTPUT_TOKENS,
     onToolExecutionStart: async ({ toolCall }) => {
       await supabase
         .from("conversations")
@@ -2116,7 +2191,18 @@ async function runTurnPhases(
 
   // Red de seguridad: devolución y queja SIEMPRE terminan escaladas. Si el
   // turno se quedó sin pasos sin lograrlo, se fuerza en código.
-  if (!outcome.escalated && (intent === "devolucion" || intent === "queja")) {
+  //
+  // T2, plan "La escalada se hace una vez y la búsqueda responde"
+  // (21/9/2026, D2 del operador): se SALTA con asesor asignado
+  // (`esperandoAsesor`) — el chat ya tiene dueño, así que forzar otra
+  // llamada a `escalateConversation` solo repetiría lo que ya hace la rama
+  // `alreadyAssigned` de `escalate.ts`: dejar una nota interna sin ningún
+  // efecto nuevo. En modo restringido el modelo ni siquiera puede pedir
+  // `devolucion`/`queja` (el esquema de `buildEscalateTool` no las admite),
+  // así que este caso solo puede darse porque el tool loop se quedó sin
+  // pasos sin escalar — el texto que haya redactado sale tal cual, sin la
+  // despedida fija de esta red.
+  if (!esperandoAsesor && !outcome.escalated && (intent === "devolucion" || intent === "queja")) {
     const forced = await escalateConversation(supabase, {
       conversationId,
       contactId: target.contactId,
@@ -2167,24 +2253,36 @@ async function runTurnPhases(
   // `conExistencia`/`agotados`/`sinResultados` en `true` (se acumulan, ver
   // `CatalogOutcome` en tools.ts): la pregunta sin contestar pesa más que
   // cualquier resultado a medias.
+  //
+  // T2 (21/9/2026, D2 del operador): con asesor asignado (`esperandoAsesor`)
+  // esta red deja de llamar a `escalateConversation` — mismo motivo que la
+  // red de devolución/queja de arriba, el chat ya tiene dueño. Lo que SÍ se
+  // conserva con asesor: el texto fijo del requisito 2/3/4 del cliente
+  // ("Seba atiende el mostrador"). El pedido del cliente era que estas
+  // respuestas SIEMPRE nombren al asesor, y eso sigue siendo cierto tenga o
+  // no el chat un dueño nuevo que reclamar — la diferencia es que acá no se
+  // vuelve a tocar la base.
   if (catalogOutcome.ran && !outcome.escalated && !catalogOutcome.generico) {
     const motivoCatalogo: EscalationMotivo = catalogOutcome.conExistencia
       ? "confirmar_inventario"
       : catalogOutcome.agotados
         ? "sin_stock"
         : "no_identificado";
-    const forced = await escalateConversation(supabase, {
-      conversationId,
-      contactId: target.contactId,
-      motivo: motivoCatalogo,
-      resumen: "El turno de la IA consultó el catálogo y se quedó sin pasos antes de escalar formalmente.",
-      businessHours,
-    });
-    outcome.escalated = forced.escalated;
-    outcome.assignedAgentName = forced.assignedAgentName ?? undefined;
-    outcome.unassigned = forced.unassigned;
-    outcome.businessStatus = forced.businessStatus;
-    outcome.motivo = motivoCatalogo;
+
+    if (!esperandoAsesor) {
+      const forced = await escalateConversation(supabase, {
+        conversationId,
+        contactId: target.contactId,
+        motivo: motivoCatalogo,
+        resumen: "El turno de la IA consultó el catálogo y se quedó sin pasos antes de escalar formalmente.",
+        businessHours,
+      });
+      outcome.escalated = forced.escalated;
+      outcome.assignedAgentName = forced.assignedAgentName ?? undefined;
+      outcome.unassigned = forced.unassigned;
+      outcome.businessStatus = forced.businessStatus;
+      outcome.motivo = motivoCatalogo;
+    }
 
     // El modelo puede haber cotizado o dicho "no lo manejo" SIN mencionar al
     // asesor —se quedó sin pasos antes de leer la instrucción del tool—, así
@@ -2398,7 +2496,11 @@ export async function runAgentTurn(conversationId: string, options: { vencioEn?:
         // a pedir lo que ya pidió", 16/9/2026): la guarda de
         // "mensaje_previo_a_devolucion" de más abajo la necesita fresca en
         // cada turno.
-        "id, contact_id, ai_enabled, assigned_agent_id, welcome_sent_at, last_customer_message_at, ai_resume_cutoff_at, contact:contacts(phone_number, display_name, profile_name), channel:whatsapp_channels(phone_number_id, status)"
+        // deal_status (T2, plan "La escalada se hace una vez y la búsqueda
+        // responde", 21/9/2026): con asesor asignado, `runTurnPhases` la usa
+        // para decidir si `escalarAAsesor` se ofrece o se omite del todo —
+        // ver el comentario largo en turn-target.ts.
+        "id, contact_id, ai_enabled, assigned_agent_id, welcome_sent_at, last_customer_message_at, ai_resume_cutoff_at, deal_status, contact:contacts(phone_number, display_name, profile_name), channel:whatsapp_channels(phone_number_id, status)"
       )
       .eq("id", conversationId)
       .maybeSingle(),

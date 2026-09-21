@@ -658,6 +658,17 @@ export interface AgentTurn {
   inputTokens: number | null;
   outputTokens: number | null;
   totalTokens: number | null;
+  /**
+   * Parte de `outputTokens` gastada en razonamiento interno del modelo, sin
+   * texto visible para el cliente (T4b, plan "La escalada se hace una vez y
+   * la búsqueda responde", 21/9/2026 — motivado por dos turnos reales del
+   * 21/9 con ~65.800 tokens de salida contra un mensaje de ~40). A
+   * diferencia de `inputTokens`/`outputTokens`/`totalTokens` (`null` en
+   * turnos de antes de que existiera la medición), esta columna nace `not
+   * null default 0` en la base: `0` es un valor medido ("no razonó", o el
+   * proveedor no lo separó), nunca "no se sabe" — por eso acá no es nullable.
+   */
+  reasoningTokens: number;
   /** Escenario que resolvió el turno. Null = no coincidió ninguno y respondió el flujo genérico. */
   playbookId: string | null;
   /** Último mensaje del cliente del turno. Es lo que alimenta la lista de escenarios faltantes. */

@@ -7,7 +7,13 @@ import { BUSINESS_NAME } from "@/lib/brand";
 import { getBcvRate } from "@/lib/ai/bcv";
 import { catalogFilter, expandTerms, rankByTerms, searchTerms, type SearchSynonym } from "@/lib/ai/catalog-search";
 import { formatQuote } from "@/lib/ai/precio";
-import { RECLAMO_CATEGORIES, escalateConversation, type EscalationMotivo } from "@/lib/ai/escalate";
+import {
+  RECLAMO_CATEGORIES,
+  escalateConversation,
+  type EscalateResult,
+  type EscalationMotivo,
+  type ReclamoCategory,
+} from "@/lib/ai/escalate";
 import { PREGUNTA_FILTRO, TEXTO_CONFIRMAR_INVENTARIO, TEXTO_NO_IDENTIFICADO, TEXTO_SIN_STOCK } from "@/lib/ai/seba";
 import { inventoryAgeInstruction, inventoryFreshness } from "@/lib/inventory-freshness";
 import { errorText, log } from "@/lib/log";
@@ -591,15 +597,188 @@ function escalationInstruction(status: BusinessStatus | undefined, assignedName:
   return `No hay ningún asesor conectado ahora y la tienda está cerrada. Dile al cliente, con calidez, que su caso quedó registrado y que un asesor le escribe ${status.nextOpening.dayLabel} a partir de las ${status.nextOpening.time}; agradécele la paciencia. NO prometas que lo atienden enseguida.${RECORDATORIO_SALUDO}`;
 }
 
+/** Los siete motivos de siempre, sin asesor asignado todavía. */
+const MOTIVOS_COMPLETOS = [
+  "devolucion",
+  "queja",
+  "intencion_compra",
+  "seguimiento",
+  "confirmar_inventario",
+  "sin_stock",
+  "no_identificado",
+] as const;
+
+/**
+ * T2, plan "La escalada se hace una vez y la búsqueda responde" (21/9/2026,
+ * D2 del operador). Medido en producción el 21/9/2026: en la primera hora
+ * del deploy, 24 de 34 turnos escalados eran repeticiones sobre un chat que
+ * YA tenía asesor asignado (bastaban 9) — el modelo no tenía forma de saber
+ * que el caso ya estaba en manos de alguien, así que volvía a llamar
+ * `escalarAAsesor` en cada mensaje del cliente. `escalate.ts` ya lo
+ * detectaba (rama `alreadyAssigned`, solo deja una nota interna "IA reiteró
+ * la escalada…"), pero la vuelta completa al proveedor ya se había pagado.
+ * Con un asesor asignado, `buildEscalateTool` recorta el enum de `motivo` a
+ * este único valor: la única razón real para volver a tocar la herramienta
+ * es que el cliente ACABA de confirmar que quiere comprar (deja
+ * `deal_status: "in_progress"`, ver `escalate.ts`), no repetir el pase.
+ */
+const MOTIVOS_RESTRINGIDOS = ["intencion_compra"] as const;
+
+const RESUMEN_DESCRIBE =
+  // T1 (21/9/2026): tope de 600 caracteres — las dos espirales medidas en
+  // producción también inflaban este campo en cada llamada repetida a la
+  // herramienta. Corrección 4b de la revisión de T1 (21/9/2026): el
+  // `.max(600)` ya existía, pero el describe no se lo decía al modelo —
+  // se enteraba recién por un error de validación que le quema un paso.
+  "Resumen para el asesor: qué quiere el cliente, qué compró si aplica, y por qué se escala. Máximo 600 caracteres.";
+
+/**
+ * "Solo si motivo='queja'…": la categoría queda igual en las dos variantes
+ * de la herramienta — en modo restringido el modelo nunca podrá elegir
+ * `queja` (el enum de `motivo` no la admite), así que este campo queda
+ * simplemente sin uso ahí, sin necesidad de un esquema aparte para omitirlo.
+ */
+function categoriaReclamoField() {
+  return z
+    .enum(RECLAMO_CATEGORIES)
+    .optional()
+    .describe("Solo si motivo='queja': la categoría que mejor describe el reclamo.");
+}
+
+/**
+ * El `execute` de `escalarAAsesor`, compartido entre el modo completo y el
+ * restringido — la única diferencia entre los dos es el ESQUEMA de entrada
+ * (`inputSchema`, más abajo), nunca qué hace la llamada una vez que zod ya
+ * validó `motivo`.
+ *
+ * `pending` guarda la promesa de la PRIMERA escalada de este turno (T1,
+ * 21/9/2026): se asigna de forma SÍNCRONA, antes del primer `await`, así que
+ * dos tool calls disparadas juntas en el mismo paso (sin esperar la primera)
+ * también quedan cubiertas — la segunda invocación ve `pending` ya asignado
+ * por la primera, sin haber corrido todavía ningún código asíncrono de por
+ * medio.
+ *
+ * Corrección 4a de la revisión de T1 (21/9/2026): hasta acá `pending` quedaba
+ * cacheado PARA SIEMPRE en cuanto la primera llamada terminaba — si
+ * `escalateConversation` lanzaba, o algún día devolviera `escalated: false`,
+ * un segundo intento legítimo del modelo en el MISMO turno se topaba con esa
+ * promesa rota/negativa sin poder volver a intentarlo de verdad. Ahora, si el
+ * resultado no cuajó (`!result.escalated`) o la promesa rechaza, `pending`
+ * vuelve a `null` para que la siguiente llamada invoque `escalateConversation`
+ * de nuevo — solo una escalada que SÍ salió bien queda cacheada el resto del
+ * turno.
+ */
+function buildEscalateExecute(
+  { supabase, conversationId, contactId, businessHours, now }: ToolDeps,
+  outcome: EscalationOutcome
+) {
+  let pending: Promise<EscalateResult & { instruccionParaTuRespuesta: string }> | null = null;
+
+  return async ({
+    motivo,
+    resumen,
+    categoriaReclamo,
+  }: {
+    motivo: EscalationMotivo;
+    resumen: string;
+    categoriaReclamo?: ReclamoCategory;
+  }) => {
+    // T1 (21/9/2026): ya hay una escalada en curso (o resuelta) en este
+    // turno — se devuelve el MISMO resultado sin tocar la base ni reclamar
+    // otro asesor. `escalateConversation` (escalate.ts) no se toca: la
+    // segunda llamada nunca llega a invocarla.
+    if (pending) {
+      log.info("escalada_repetida_en_el_turno", { conversationId, motivo });
+      return pending;
+    }
+
+    const attempt = (async () => {
+      const result = await escalateConversation(supabase, {
+        conversationId,
+        contactId,
+        motivo,
+        resumen,
+        categoriaReclamo,
+        businessHours,
+        now,
+      });
+
+      if (!result.escalated) {
+        // Corrección 4a: una escalada que no cuajó no puede dejar `pending`
+        // cacheado para el resto del turno.
+        pending = null;
+      }
+
+      outcome.escalated = result.escalated;
+      outcome.motivo = motivo;
+      outcome.assignedAgentName = result.assignedAgentName ?? undefined;
+      outcome.reason = result.reason;
+      outcome.unassigned = result.unassigned;
+      outcome.businessStatus = result.businessStatus;
+
+      // El modelo redacta el cierre con esto, así que se le dice en palabras
+      // qué prometer: ni con asesor ni sin él puede decir «ya te atienden»
+      // sin saber si la tienda está abierta (Tarea 5, 14/9/2026).
+      return {
+        ...result,
+        instruccionParaTuRespuesta: escalationInstruction(result.businessStatus, result.assignedAgentName ?? null),
+      };
+    })();
+
+    // Corrección 4a: si `escalateConversation` LANZA, `pending` se libera
+    // igual que cuando devuelve `escalated: false` — de lo contrario una
+    // excepción transitoria quedaría cacheada para siempre. El error sigue
+    // propagándose a quien esté esperando `attempt` (el tool loop del SDK);
+    // este `.catch` es solo para resetear la variable, nunca para tragarlo.
+    attempt.catch(() => {
+      pending = null;
+    });
+
+    pending = attempt;
+    return attempt;
+  };
+}
+
 // ---------------------------------------------------------------------------
 // Escalar a un asesor — devolucion, queja, e intención de compra dentro de
 // consulta_disponibilidad. Única forma de tocar dinero o cerrar un caso: la
 // IA nunca aprueba, rechaza ni cierra nada por su cuenta.
 // ---------------------------------------------------------------------------
 export function buildEscalateTool(
-  { supabase, conversationId, contactId, businessHours, now }: ToolDeps,
-  outcome: EscalationOutcome
+  deps: ToolDeps,
+  outcome: EscalationOutcome,
+  /**
+   * T2, plan "La escalada se hace una vez y la búsqueda responde"
+   * (21/9/2026, D2 del operador). `agent.ts` la pasa en `true` cuando el
+   * chat que abre el turno YA tiene asesor asignado — ver `esperandoAsesor`
+   * en `runTurnPhases`. Default `false`: sin asesor, la herramienta se
+   * arma exactamente como siempre.
+   */
+  opciones: { restrictedToPurchase?: boolean } = {}
 ) {
+  const restrictedToPurchase = opciones.restrictedToPurchase ?? false;
+  const execute = buildEscalateExecute(deps, outcome);
+
+  if (restrictedToPurchase) {
+    return tool({
+      // T2 (21/9/2026): con asesor asignado, la herramienta deja de ser "la
+      // única forma de pasar el caso" (ya está pasado) y pasa a ser
+      // solamente el gatillo para marcar que el cliente confirmó la compra.
+      description:
+        "Este chat YA tiene un asesor asignado que todavía no le escribió al cliente. Úsala SOLO cuando el cliente ACABA de confirmar que quiere comprar (motivo intencion_compra), para dejar marcada la venta en curso — no la llames para volver a pasar el caso ni para pedir que lo atiendan: el asesor ya lo tiene.",
+      inputSchema: z.object({
+        motivo: z
+          .enum(MOTIVOS_RESTRINGIDOS)
+          .describe(
+            "El único motivo posible en este chat: intencion_compra, cuando el cliente acaba de confirmar que quiere comprar. Deja marcada la venta en curso; no vuelve a pasar el caso, el asesor ya lo tiene."
+          ),
+        resumen: z.string().max(600).describe(RESUMEN_DESCRIBE),
+        categoriaReclamo: categoriaReclamoField(),
+      }),
+      execute,
+    });
+  }
+
   return tool({
     // 18/9/2026 (T2a, plan "Seba atiende el mostrador", requisito 6 del
     // cliente): hasta acá esta descripción decía "pausa la IA" — escalar
@@ -625,51 +804,13 @@ export function buildEscalateTool(
       // le pide al modelo que escale tras cotizar. Sin `consulta_generica`:
       // ese caso (requisito 5) pide una pregunta y a propósito no escala.
       motivo: z
-        .enum([
-          "devolucion",
-          "queja",
-          "intencion_compra",
-          "seguimiento",
-          "confirmar_inventario",
-          "sin_stock",
-          "no_identificado",
-        ])
+        .enum(MOTIVOS_COMPLETOS)
         .describe(
           "Por qué se escala: devolucion (quiere devolver o cambiar algo que ya compró), queja (reclamo), intencion_compra (quiere comprar y hay que cobrarle), seguimiento (avisar cuando llegue un repuesto agotado, una lista larga o de mayoreo, o cualquier postventa que no sea devolución ni queja), confirmar_inventario (el catálogo mostró un repuesto con existencia y hay que confirmar el inventario físico), sin_stock (el catálogo marca cero unidades), no_identificado (no se encontró el repuesto en el catálogo, o no quedó claro cuál es)."
         ),
-      resumen: z
-        .string()
-        .describe("Resumen para el asesor: qué quiere el cliente, qué compró si aplica, y por qué se escala."),
-      categoriaReclamo: z
-        .enum(RECLAMO_CATEGORIES)
-        .optional()
-        .describe("Solo si motivo='queja': la categoría que mejor describe el reclamo."),
+      resumen: z.string().max(600).describe(RESUMEN_DESCRIBE),
+      categoriaReclamo: categoriaReclamoField(),
     }),
-    execute: async ({ motivo, resumen, categoriaReclamo }) => {
-      const result = await escalateConversation(supabase, {
-        conversationId,
-        contactId,
-        motivo,
-        resumen,
-        categoriaReclamo,
-        businessHours,
-        now,
-      });
-
-      outcome.escalated = result.escalated;
-      outcome.motivo = motivo;
-      outcome.assignedAgentName = result.assignedAgentName ?? undefined;
-      outcome.reason = result.reason;
-      outcome.unassigned = result.unassigned;
-      outcome.businessStatus = result.businessStatus;
-
-      // El modelo redacta el cierre con esto, así que se le dice en palabras
-      // qué prometer: ni con asesor ni sin él puede decir «ya te atienden»
-      // sin saber si la tienda está abierta (Tarea 5, 14/9/2026).
-      return {
-        ...result,
-        instruccionParaTuRespuesta: escalationInstruction(result.businessStatus, result.assignedAgentName ?? null),
-      };
-    },
+    execute,
   });
 }

@@ -2,7 +2,7 @@
 import { describe, expect, it, vi, beforeEach } from "vitest";
 import { render, screen, fireEvent, waitFor } from "@testing-library/react";
 import { AgentControlView } from "@/components/agent-control/agent-control-view";
-import type { Agent, AgentSettings, Conversation } from "@/lib/types";
+import type { Agent, AgentSettings, AgentTurn, Conversation } from "@/lib/types";
 
 /**
  * El interruptor global es el único botón del CRM que le escribe a clientes
@@ -141,12 +141,12 @@ function liveConversation(id: string): Conversation {
   };
 }
 
-function montar(settings: AgentSettings) {
+function montar(settings: AgentSettings, turns: AgentTurn[] = []) {
   render(
     <AgentControlView
       currentAgent={currentAgent}
       initialConversations={[liveConversation("conv-1"), liveConversation("conv-2")]}
-      initialTurns={[]}
+      initialTurns={turns}
       initialTags={[]}
       initialSettings={settings}
       initialAgents={[currentAgent]}
@@ -169,6 +169,27 @@ function montar(settings: AgentSettings) {
 
 const apagada: AgentSettings = { aiGloballyEnabled: false, dailySpendCapUsd: null, spentTodayUsd: 0 };
 const encendida: AgentSettings = { aiGloballyEnabled: true, dailySpendCapUsd: null, spentTodayUsd: 0 };
+
+/** Un turno de la bitácora, tal como lo mapea `mapAgentTurn` (data.ts). */
+function fakeTurn(overrides: Partial<AgentTurn> = {}): AgentTurn {
+  return {
+    id: "turn-1",
+    conversationId: "conv-1",
+    contactName: "Cliente de Prueba",
+    intent: "otro",
+    action: "answered",
+    summary: "Respondió una consulta cualquiera.",
+    model: "modelo-de-prueba",
+    inputTokens: 20,
+    outputTokens: 8,
+    totalTokens: 28,
+    reasoningTokens: 0,
+    playbookId: null,
+    customerMessage: "hola",
+    createdAt: "2026-09-21T15:00:00.000Z",
+    ...overrides,
+  };
+}
 
 const backlogFetch = vi.fn(async (url: string) =>
   url === "/api/agent/stop"
@@ -282,5 +303,29 @@ describe("AgentControlView — encender la IA global pide confirmación", () => 
     // El interruptor no se escribe por separado: iría por detrás de la purga.
     expect(setAiGloballyEnabledMock).not.toHaveBeenCalled();
     expect(backlogFetch).not.toHaveBeenCalledWith("/api/agent/backlog", { method: "POST" });
+  });
+});
+
+/**
+ * T4b, plan "La escalada se hace una vez y la búsqueda responde" (21/9/2026).
+ *
+ * Motivo: dos turnos reales del 21/9/2026 gastaron ~65.800 tokens de SALIDA
+ * contra un mensaje visible al cliente de ~40 — razonamiento interno del
+ * modelo sin ningún dato que lo separara de la redacción. El feed "Actividad
+ * en vivo" es la lectura directa de `agent_turns` (no la RPC agregada
+ * `agent_token_usage`, que no trae esta columna): acá es donde el supervisor
+ * puede ver, turno por turno, cuál se fue de rango.
+ */
+describe("AgentControlView — tokens de razonamiento en el feed (T4b, 21/9/2026)", () => {
+  it("muestra el contador de razonamiento cuando el turno lo tuvo", () => {
+    montar(encendida, [fakeTurn({ reasoningTokens: 900 })]);
+
+    expect(screen.getByText("Razonamiento: 900")).toBeInTheDocument();
+  });
+
+  it("no muestra nada de razonamiento cuando el turno no razonó (0 es el valor normal, no una anomalía)", () => {
+    montar(encendida, [fakeTurn({ reasoningTokens: 0 })]);
+
+    expect(screen.queryByText(/Razonamiento/)).not.toBeInTheDocument();
   });
 });

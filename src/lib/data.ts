@@ -2089,6 +2089,10 @@ interface RawAgentTurn {
   input_tokens: number | null;
   output_tokens: number | null;
   total_tokens: number | null;
+  // T4b, plan "La escalada se hace una vez y la búsqueda responde"
+  // (21/9/2026): `not null default 0` en la base (migración 20260921020000),
+  // así que a diferencia de sus vecinas nunca llega null desde PostgREST.
+  reasoning_tokens: number;
   playbook_id: string | null;
   customer_message: string | null;
   created_at: string;
@@ -2101,7 +2105,7 @@ interface RawAgentTurn {
 // conversación en la lista completa del CRM, que era justo la lista que había
 // que dejar de cargar. Son 30 filas con tres campos, no un join caro.
 const AGENT_TURN_COLUMNS = `id, conversation_id, intent, action, summary, model, input_tokens,
-  output_tokens, total_tokens, playbook_id, customer_message, created_at,
+  output_tokens, total_tokens, reasoning_tokens, playbook_id, customer_message, created_at,
   conversation:conversations(contact:contacts(display_name, profile_name, phone_number))`;
 
 function mapAgentTurn(row: RawAgentTurn): AgentTurn {
@@ -2117,6 +2121,7 @@ function mapAgentTurn(row: RawAgentTurn): AgentTurn {
     inputTokens: row.input_tokens,
     outputTokens: row.output_tokens,
     totalTokens: row.total_tokens,
+    reasoningTokens: row.reasoning_tokens,
     playbookId: row.playbook_id,
     customerMessage: row.customer_message,
     createdAt: row.created_at,

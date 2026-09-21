@@ -59,3 +59,33 @@ export function firstStepToolChoice(
   if (!hasCatalogTool) return undefined;
   return { toolChoice: { type: "tool", toolName: CATALOG_TOOL_NAME } };
 }
+
+// ---------------------------------------------------------------------------
+// T1, plan "La escalada se hace una vez y la búsqueda responde" (21/9/2026).
+// Medido en producción el 21/9/2026: los dos únicos turnos donde
+// `escalarAAsesor` (tools.ts) se llamó DOS veces en el MISMO turno gastaron
+// 145.000 tokens de entrada y ~65.800 de salida cada uno (0,108 USD, 5
+// minutos de redacción) — nada en código impedía que, tras una escalada
+// exitosa, el modelo siguiera usando herramientas: `stopWhen:
+// isStepCount(MAX_STEPS)` (agent.ts) era el único freno, y la descripción
+// de la herramienta ("la IA sigue contestando en este chat…", tools.ts,
+// requisito 6 de "Seba atiende el mostrador") invita justamente a seguir.
+//
+// Decisión D1 del operador: NO cortar con `stopWhen` — eso habría dejado
+// SIEMPRE la despedida fija, sin darle al modelo la chance de una redacción
+// normal cuando la escalada fue lo único que hizo falta. En cambio, se le
+// quita al modelo la posibilidad de volver a tocar CUALQUIER herramienta en
+// el paso siguiente: `toolChoice: "none"` fuerza que ese paso sea pura
+// redacción (la despedida). Deliberadamente NO mira `stepNumber`: un turno
+// que ya escaló no vuelve a tener un "paso 0" legítimo para forzar
+// `buscarRepuesto` — si `escalated` es `true`, gana siempre.
+// ---------------------------------------------------------------------------
+export function stepToolChoice(
+  escalated: boolean,
+  intent: Intent,
+  hasCatalogTool: boolean,
+  stepNumber: number
+): { toolChoice: "none" } | ReturnType<typeof firstStepToolChoice> {
+  if (escalated) return { toolChoice: "none" };
+  return firstStepToolChoice(intent, hasCatalogTool, stepNumber);
+}

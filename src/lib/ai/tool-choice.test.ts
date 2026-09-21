@@ -3,7 +3,7 @@
 // para el caso real (`db8d3120…`, casco LS2 cotizado de memoria) y el
 // porqué de forzar `buscarRepuesto` en el paso 0.
 import { describe, expect, it } from "vitest";
-import { CATALOG_TOOL_NAME, firstStepToolChoice } from "@/lib/ai/tool-choice";
+import { CATALOG_TOOL_NAME, firstStepToolChoice, stepToolChoice } from "@/lib/ai/tool-choice";
 import type { Intent } from "@/lib/ai/classify";
 
 const FORZADO = { toolChoice: { type: "tool", toolName: CATALOG_TOOL_NAME } } as const;
@@ -34,5 +34,39 @@ describe("firstStepToolChoice", () => {
 
   it("ni intención ni herramienta correctas: no fuerza nada", () => {
     expect(firstStepToolChoice("otro", false, 0)).toBeUndefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// T1, plan "La escalada se hace una vez y la búsqueda responde" (21/9/2026).
+// Medido en producción el 21/9/2026: los dos únicos turnos donde
+// `escalarAAsesor` se llamó DOS veces en el mismo turno gastaron 145.000
+// tokens de entrada y ~65.800 de salida cada uno (0,108 USD, 5 minutos de
+// redacción) — nada frenaba al modelo de volver a usar herramientas después
+// de escalar. `stepToolChoice` compone la decisión completa de `prepareStep`
+// de `agent.ts`: si el turno YA escaló, fuerza `toolChoice: "none"` sin
+// mirar el paso ni la intención (D1 del plan: no se corta el bucle con
+// `stopWhen`, se le quita al modelo la posibilidad de volver a tocar una
+// herramienta). Si todavía no escaló, el comportamiento es EXACTAMENTE el
+// de `firstStepToolChoice` — sin este segundo caso, este test habría
+// quedado indistinguible de una reescritura completa de la función vieja.
+// ---------------------------------------------------------------------------
+describe("stepToolChoice", () => {
+  it("si el turno ya escaló, fuerza toolChoice: 'none' sin importar el paso ni la intención", () => {
+    expect(stepToolChoice(true, "consulta_disponibilidad", true, 0)).toEqual({ toolChoice: "none" });
+    expect(stepToolChoice(true, "consulta_disponibilidad", true, 1)).toEqual({ toolChoice: "none" });
+    expect(stepToolChoice(true, "otro", false, 3)).toEqual({ toolChoice: "none" });
+  });
+
+  it("si todavía no escaló, paso 0 con consulta_disponibilidad + catálogo encendido sigue forzando buscarRepuesto", () => {
+    expect(stepToolChoice(false, "consulta_disponibilidad", true, 0)).toEqual(FORZADO);
+  });
+
+  it("si todavía no escaló, del paso 1 en adelante no fuerza nada (igual que firstStepToolChoice)", () => {
+    expect(stepToolChoice(false, "consulta_disponibilidad", true, 1)).toBeUndefined();
+  });
+
+  it("si todavía no escaló, otra intención en el paso 0 no fuerza nada", () => {
+    expect(stepToolChoice(false, "otro", true, 0)).toBeUndefined();
   });
 });

@@ -368,6 +368,33 @@ export interface TurnContext {
    * lecciones: el prefijo sigue siendo exactamente SYSTEM_PROMPT.
    */
   lessons?: TurnLessons;
+  /**
+   * T2, plan "La escalada se hace una vez y la búsqueda responde"
+   * (21/9/2026, D2 del operador). `true` cuando `runTurnPhases` (agent.ts)
+   * abre el turno con un chat que YA tiene asesor asignado —el mismo
+   * booleano que ahí se llama `esperandoAsesor`—. Medido en producción el
+   * 21/9/2026: en la primera hora del deploy, 24 de 34 turnos escalados
+   * eran repeticiones sobre un chat que ya tenía dueño (bastaban 9): el
+   * modelo no tenía forma de saber que el chat ya estaba asignado, así que
+   * volvía a llamar `escalarAAsesor` en cada mensaje del cliente —
+   * `escalate.ts` lo detectaba (rama `alreadyAssigned`) y solo dejaba una
+   * nota interna, pero la vuelta completa al proveedor ya se había pagado.
+   * Va SOLO en el sufijo (nunca en `SYSTEM_PROMPT` ni en `cacheablePrefix`):
+   * depende de si ESTE chat tiene asesor, así que meterlo en el prefijo
+   * rompería el caché para cualquier otro turno.
+   */
+  yaEscalada?: boolean;
+  /**
+   * Con `yaEscalada`, si la herramienta `escalarAAsesor` SIGUE disponible en
+   * este turno (modo restringido, solo `intencion_compra` — ver
+   * `buildEscalateTool` en tools.ts) o si `agent.ts` la omitió del todo
+   * porque `deal_status` ya reflejaba la compra en curso. Ignorado sin
+   * `yaEscalada`. Sin esta distinción, el sufijo le diría al modelo "usa
+   * escalarAAsesor si el cliente confirma que quiere comprar" incluso
+   * cuando esa herramienta no está en la lista que recibió — una
+   * instrucción sobre algo que no puede hacer.
+   */
+  escalateToolAvailable?: boolean;
 }
 
 /**
@@ -423,6 +450,8 @@ export function buildInstructions({
   now,
   customerName,
   lessons,
+  yaEscalada,
+  escalateToolAvailable,
 }: TurnContext): string {
   const seccion = CASE_SECTION[intent] ?? CASE_SECTION.otro;
   const instante = now ?? new Date();
@@ -435,8 +464,30 @@ export function buildInstructions({
   // tenemos" o un precio salido de la nada. Se le cierra esa puerta acá.
   // Tarea 3 (14/9/2026): reescrito para pedir calidez al pasar el caso, en
   // vez del "ofrece pasar el caso" seco de antes.
+  //
+  // T2 (21/9/2026): con `yaEscalada` el asesor ya tiene el caso, así que
+  // "pasa el caso" (como si todavía no lo tuviera nadie) dejó de tener
+  // sentido — se reescribe para confirmar que ya está en manos de alguien.
   const catalog = missingCatalog
-    ? " La búsqueda de catálogo está apagada: no afirmes existencia ni precio. Dile con calidez que un asesor se lo confirma por acá y pasa el caso."
+    ? yaEscalada
+      ? " La búsqueda de catálogo está apagada: no afirmes existencia ni precio. Dile con calidez que un asesor ya tiene su caso y se lo confirma por acá."
+      : " La búsqueda de catálogo está apagada: no afirmes existencia ni precio. Dile con calidez que un asesor se lo confirma por acá y pasa el caso."
+    : "";
+
+  // T2, plan "La escalada se hace una vez y la búsqueda responde"
+  // (21/9/2026, D2 del operador): con un asesor ya asignado, el modelo tiene
+  // que dejar de tratar cada mensaje del cliente como una escalada nueva —
+  // 24 de 34 turnos escalados en la primera hora del deploy eran
+  // repeticiones sobre un chat que ya tenía dueño. La línea gana
+  // EXPLÍCITAMENTE sobre el protocolo del caso (sección 5.x, CASE_SECTION):
+  // devolución, queja y "repuesto encontrado" siguen mandando escalar
+  // siempre, pero ese mandato es para cuando nadie tiene el caso todavía.
+  const yaEscaladaLinea = yaEscalada
+    ? ` Este chat YA está asignado a un asesor que todavía no le escribió al cliente: NO lo vuelvas a pasar ni le prometas de nuevo que se lo vas a pasar — esto gana sobre cualquier protocolo de caso que diga que hay que escalar siempre (devolución, queja, un repuesto que encontraste). Contesta lo que el cliente pregunte con normalidad y, si hace falta, recuérdale con calidez que su caso ya lo tiene un asesor.${
+        escalateToolAvailable
+          ? " Solo usa escalarAAsesor si el cliente acaba de confirmar que quiere comprar, para dejar marcada la venta en curso."
+          : ""
+      }`
     : "";
 
   // Tarea 3 (14/9/2026): el nombre viaja en el sufijo, nunca en el bloque
@@ -459,5 +510,5 @@ export function buildInstructions({
 
 TURNO ACTUAL
 ${turnClockLine(instante, businessHours)}
-Caso identificado: ${intent}. Aplica el protocolo ${seccion}.${greeting}${catalog}${nombre}${leccionesDeChat}`;
+Caso identificado: ${intent}. Aplica el protocolo ${seccion}.${greeting}${catalog}${yaEscaladaLinea}${nombre}${leccionesDeChat}`;
 }

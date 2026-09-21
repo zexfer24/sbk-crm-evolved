@@ -53,6 +53,17 @@ export interface AgentConversation {
    * docs/planes/).
    */
   ai_resume_cutoff_at: string | null;
+  /**
+   * Columna `conversations.deal_status` (`text not null default 'none'`,
+   * migración 20260819000001). T2, plan "La escalada se hace una vez y la
+   * búsqueda responde" (21/9/2026): con asesor asignado, `runTurnPhases`
+   * mira este valor para decidir si `escalarAAsesor` se OMITE del todo —
+   * `escalate.ts` ya deja `deal_status: "in_progress"` cuando el motivo es
+   * `intencion_compra` (rama `alreadyAssigned` incluida), así que no tiene
+   * sentido ofrecerle al modelo una herramienta para repetir una marca que
+   * ya está puesta.
+   */
+  deal_status: string;
   contact: {
     phone_number: string;
     /**

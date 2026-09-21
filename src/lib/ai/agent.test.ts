@@ -606,6 +606,16 @@ interface FakeUsage {
   outputTokens: number;
   totalTokens: number;
   inputTokenDetails?: { noCacheTokens: number; cacheReadTokens: number; cacheWriteTokens: number };
+  /**
+   * T4b, plan "La escalada se hace una vez y la búsqueda responde"
+   * (21/9/2026): igual que `inputTokenDetails` de arriba, opcional y con sus
+   * dos campos también opcionales — así un mock puede mandar el objeto sin
+   * `reasoningTokens` (el caso real de un proveedor que separa texto de
+   * razonamiento pero no siempre reporta el segundo) sin que TypeScript se
+   * queje, y `tokensFromUsage` (agent.ts) tiene que leerlo con `?? 0` de
+   * todos modos.
+   */
+  outputTokenDetails?: { textTokens?: number; reasoningTokens?: number };
 }
 
 /**
@@ -644,11 +654,21 @@ const generateMock = vi.fn<() => Promise<{ text: string; usage: FakeUsage; steps
  * paso 0 del tool loop fuerza `buscarRepuesto` en `consulta_disponibilidad`
  * — la función real vive en `tool-choice.ts` y se prueba sola ahí; acá solo
  * se verifica que `agent.ts` la conecta con las opciones correctas.
+ *
+ * T1, plan "La escalada se hace una vez y la búsqueda responde" (21/9/2026):
+ * `prepareStep` ensancha su tipo de retorno para admitir `toolChoice: "none"`
+ * (`stepToolChoice`, tool-choice.ts, tras escalar); suma `maxOutputTokens` y
+ * `stopWhen` para poder afirmar el techo de tokens de salida y que el turno
+ * que NO escala conserva el freno de `MAX_STEPS` de siempre.
  */
 const agentOptions: {
   instructions: string;
   tools: Record<string, unknown>;
-  prepareStep?: (options: { stepNumber: number }) => { toolChoice?: { type: string; toolName: string } } | undefined;
+  prepareStep?: (options: {
+    stepNumber: number;
+  }) => { toolChoice?: { type: string; toolName: string } | "none" } | undefined;
+  maxOutputTokens?: number;
+  stopWhen?: (options: { steps: unknown[] }) => boolean | Promise<boolean>;
 }[] = [];
 /**
  * Guarda de identidad (6/9/2026): la ÚNICA reescritura que hace
@@ -669,7 +689,11 @@ vi.mock("ai", async (importOriginal) => ({
     constructor(options: {
       instructions: string;
       tools: Record<string, unknown>;
-      prepareStep?: (options: { stepNumber: number }) => { toolChoice?: { type: string; toolName: string } } | undefined;
+      prepareStep?: (options: {
+        stepNumber: number;
+      }) => { toolChoice?: { type: string; toolName: string } | "none" } | undefined;
+      maxOutputTokens?: number;
+      stopWhen?: (options: { steps: unknown[] }) => boolean | Promise<boolean>;
     }) {
       agentOptions.push(options);
     }
@@ -724,9 +748,16 @@ vi.mock("@/lib/dashboard", async (importOriginal) => {
  * efecto observable que si la herramienta hubiera corrido de verdad
  * (anexo A1, 5/9/2026).
  */
-const buildEscalateToolMock = vi.fn<(deps: unknown, outcome: Record<string, unknown>) => Record<string, never>>(
-  () => ({})
-);
+/**
+ * T2, plan "La escalada se hace una vez y la búsqueda responde" (21/9/2026):
+ * `buildEscalateTool` ganó un tercer parámetro (`{ restrictedToPurchase }`)
+ * que `agent.ts` pasa cuando el chat ya tiene asesor — el mock lo reenvía
+ * para que los tests de este archivo puedan comprobar CON QUÉ opciones
+ * `agent.ts` arma la herramienta, sin tener que levantar el `tools.ts` real.
+ */
+const buildEscalateToolMock = vi.fn<
+  (deps: unknown, outcome: Record<string, unknown>, opciones?: Record<string, unknown>) => Record<string, never>
+>(() => ({}));
 /**
  * T3, "Seba atiende el mostrador" (18/9/2026): mismo patrón que
  * `buildEscalateToolMock`, pero para el catálogo. `buildCatalogTool` real
@@ -745,7 +776,8 @@ const buildCatalogToolMock = vi.fn<(deps: unknown, catalogOutcome: Record<string
 vi.mock("@/lib/ai/tools", () => ({
   buildCatalogTool: (deps: unknown, catalogOutcome: Record<string, unknown>) =>
     buildCatalogToolMock(deps, catalogOutcome),
-  buildEscalateTool: (deps: unknown, outcome: Record<string, unknown>) => buildEscalateToolMock(deps, outcome),
+  buildEscalateTool: (deps: unknown, outcome: Record<string, unknown>, opciones?: Record<string, unknown>) =>
+    buildEscalateToolMock(deps, outcome, opciones),
   buildOrderHistoryTool: () => ({}),
 }));
 
@@ -809,6 +841,11 @@ beforeEach(() => {
     // pasaron por una devolución manual. Tarea 3, "La IA no vuelve a pedir
     // lo que ya pidió" (16/9/2026) — ver el describe de más abajo.
     ai_resume_cutoff_at: null,
+    // "none" de fábrica (T2, "La escalada se hace una vez y la búsqueda
+    // responde", 21/9/2026): la mayoría de las conversaciones de la suite
+    // nunca pasaron por una intención de compra ya marcada — ver el describe
+    // de más abajo para los tests que la ponen en "in_progress".
+    deal_status: "none",
     contact: { phone_number: "+584121112233" },
     channel: { phone_number_id: null, status: "demo" },
   };
@@ -3743,6 +3780,74 @@ describe("runAgentTurn — interruptores de herramientas", () => {
   });
 });
 
+/**
+ * T1, plan "La escalada se hace una vez y la búsqueda responde" (21/9/2026).
+ * Contexto medido en producción el 21/9/2026: los dos únicos turnos donde
+ * `escalarAAsesor` se llamó DOS veces en el mismo turno gastaron 145.000
+ * tokens de entrada y ~65.800 de salida cada uno (0,108 USD, 5 minutos de
+ * redacción). D1 del operador: no se corta con `stopWhen` — se le quita al
+ * modelo la posibilidad de volver a usar herramientas en el paso SIGUIENTE
+ * a una escalada (`stepToolChoice`, tool-choice.ts) y se le pone un techo de
+ * salida al `ToolLoopAgent` como última red.
+ */
+describe("runAgentTurn — techo de salida y freno a la escalada repetida (T1, 'La escalada se hace una vez y la búsqueda responde', 21/9/2026)", () => {
+  it("el ToolLoopAgent se construye con maxOutputTokens: 1500 (literal, no el símbolo importado — trampa CLAUDE.md)", async () => {
+    await runAgentTurn("conv-1");
+
+    expect(agentOptions[0].maxOutputTokens).toBe(1500);
+  });
+
+  /**
+   * Regresión: un turno que NO escala sigue topado en 5 pasos y sigue
+   * recibiendo sus herramientas de siempre — D1 dejó `stopWhen` intacto a
+   * propósito, el freno nuevo es solo sobre `toolChoice`.
+   */
+  it("un turno que no escala conserva stopWhen con el techo de 5 pasos y sus herramientas", async () => {
+    await runAgentTurn("conv-1");
+
+    expect(agentOptions[0].stopWhen).toBeTypeOf("function");
+    expect(await agentOptions[0].stopWhen!({ steps: [{}, {}, {}, {}, {}] })).toBe(true);
+    expect(await agentOptions[0].stopWhen!({ steps: [{}, {}, {}, {}] })).toBe(false);
+    expect(agentOptions[0].tools).toHaveProperty("escalarAAsesor");
+  });
+
+  /**
+   * `outcome.escalated` lo muta `execute` de `buildEscalateTool` (tools.ts)
+   * cuando el modelo llama a la herramienta de verdad; acá el tool loop está
+   * fingido (ver el comentario de `buildEscalateToolMock`, más arriba), así
+   * que mutarlo desde el mock simula que la escalada ya corrió ANTES de que
+   * `agent.ts` arme `prepareStep` — el mismo efecto observable que si
+   * hubiera corrido dentro de `agent.generate()`.
+   */
+  it("tras escalar, el paso siguiente del tool loop recibe toolChoice: 'none' (D1: no se corta con stopWhen)", async () => {
+    classifyIntentMock.mockResolvedValue({
+      intent: "consulta_disponibilidad",
+      usage: { inputTokens: 5, outputTokens: 1, totalTokens: 6 },
+    });
+    buildEscalateToolMock.mockImplementationOnce((_deps, outcome) => {
+      outcome.escalated = true;
+      return {};
+    });
+
+    await runAgentTurn("conv-1");
+
+    expect(agentOptions[0].prepareStep!({ stepNumber: 1 })).toEqual({ toolChoice: "none" });
+  });
+
+  it("antes de escalar, prepareStep se comporta como siempre (paso 0 con consulta_disponibilidad + catálogo encendido fuerza buscarRepuesto)", async () => {
+    classifyIntentMock.mockResolvedValue({
+      intent: "consulta_disponibilidad",
+      usage: { inputTokens: 5, outputTokens: 1, totalTokens: 6 },
+    });
+
+    await runAgentTurn("conv-1");
+
+    expect(agentOptions[0].prepareStep!({ stepNumber: 0 })).toEqual({
+      toolChoice: { type: "tool", toolName: "buscarRepuesto" },
+    });
+  });
+});
+
 describe("runAgentTurn — tokens cacheados", () => {
   /**
    * La entrada cacheada se factura mucho más barata que la normal. Sin
@@ -3771,6 +3876,127 @@ describe("runAgentTurn — tokens cacheados", () => {
     await runAgentTurn("conv-1");
 
     expect(agentTurnInserts[0]).toMatchObject({ cached_input_tokens: 0 });
+  });
+});
+
+/**
+ * T4b, plan "La escalada se hace una vez y la búsqueda responde" (21/9/2026).
+ *
+ * Contexto: el 21/9/2026 dos turnos reales gastaron ~65.800 tokens de SALIDA
+ * contra un mensaje visible al cliente de ~40 — la hipótesis es razonamiento
+ * interno de `openai/gpt-5.6-luna` que ningún dato separaba de la redacción.
+ * `agent_turns.reasoning_tokens` (migración 20260921020000, T4a) es la
+ * columna; esto prueba que `tokensFromUsage`/`addTokens` (agent.ts) de verdad
+ * lo extraen y lo suman a lo largo de las cuatro llamadas al proveedor que
+ * un turno puede hacer (reconocimiento de escenario, clasificación,
+ * redacción y —si dispara— la reescritura de la guarda de identidad).
+ */
+describe("runAgentTurn — tokens de razonamiento (T4b, 21/9/2026)", () => {
+  it("registra los tokens de razonamiento que informa la redacción", async () => {
+    generateMock.mockResolvedValueOnce({
+      text: "respuesta redactada por el modelo",
+      usage: {
+        inputTokens: 20,
+        outputTokens: 908,
+        totalTokens: 928,
+        outputTokenDetails: { textTokens: 8, reasoningTokens: 900 },
+      },
+      steps: [{}, {}],
+    });
+
+    await runAgentTurn("conv-1");
+
+    // El reconocimiento (NO_USAGE) y la clasificación (mock por defecto del
+    // beforeEach) no traen outputTokenDetails: 0 + 0 + 900 (redacción) = 900.
+    expect(agentTurnInserts[0]).toMatchObject({ reasoning_tokens: 900 });
+  });
+
+  it("guarda cero cuando el proveedor no informa outputTokenDetails en ninguna llamada", async () => {
+    await runAgentTurn("conv-1");
+
+    expect(agentTurnInserts[0]).toMatchObject({ reasoning_tokens: 0 });
+  });
+
+  it("guarda cero cuando outputTokenDetails viene sin el campo reasoningTokens", async () => {
+    generateMock.mockResolvedValueOnce({
+      text: "respuesta redactada por el modelo",
+      usage: {
+        inputTokens: 20,
+        outputTokens: 8,
+        totalTokens: 28,
+        // El proveedor separó texto de razonamiento pero no reportó cuánto
+        // fue razonamiento — el campo directamente no viene, no viene en 0.
+        outputTokenDetails: { textTokens: 8 },
+      },
+      steps: [{}, {}],
+    });
+
+    await runAgentTurn("conv-1");
+
+    expect(agentTurnInserts[0]).toMatchObject({ reasoning_tokens: 0 });
+  });
+
+  it("suma los tokens de razonamiento del reconocimiento, la clasificación y la redacción", async () => {
+    matchPlaybookMock.mockResolvedValueOnce({
+      playbook: null,
+      usage: {
+        inputTokens: 3,
+        outputTokens: 1,
+        totalTokens: 4,
+        outputTokenDetails: { textTokens: 1, reasoningTokens: 100 },
+      },
+    });
+    classifyIntentMock.mockResolvedValueOnce({
+      intent: "otro",
+      usage: {
+        inputTokens: 5,
+        outputTokens: 1,
+        totalTokens: 6,
+        outputTokenDetails: { textTokens: 1, reasoningTokens: 50 },
+      },
+    });
+    generateMock.mockResolvedValueOnce({
+      text: "respuesta redactada por el modelo",
+      usage: {
+        inputTokens: 20,
+        outputTokens: 8,
+        totalTokens: 28,
+        outputTokenDetails: { textTokens: 8, reasoningTokens: 900 },
+      },
+      steps: [{}, {}],
+    });
+
+    await runAgentTurn("conv-1");
+
+    // 100 (reconocimiento) + 50 (clasificación) + 900 (redacción) = 1050.
+    expect(agentTurnInserts[0]).toMatchObject({ reasoning_tokens: 1050 });
+  });
+
+  it("la reescritura de la guarda de identidad suma su propio razonamiento", async () => {
+    generateMock.mockResolvedValueOnce({
+      text: "¡Buenos días! Soy el asistente automatizado de SBK Motorcycles. El automático de la Horse está en 12$.",
+      usage: {
+        inputTokens: 20,
+        outputTokens: 8,
+        totalTokens: 28,
+        outputTokenDetails: { textTokens: 8, reasoningTokens: 40 },
+      },
+      steps: [{}, {}],
+    });
+    generateTextMock.mockResolvedValueOnce({
+      text: "¡Buenos días! Acá en SBK el automático de la Horse está en 12$.",
+      usage: {
+        inputTokens: 10,
+        outputTokens: 4,
+        totalTokens: 14,
+        outputTokenDetails: { textTokens: 4, reasoningTokens: 15 },
+      },
+    });
+
+    await runAgentTurn("conv-1");
+
+    // 40 (redacción bloqueada por la guarda) + 15 (reescritura) = 55.
+    expect(agentTurnInserts[0]).toMatchObject({ reasoning_tokens: 55 });
   });
 });
 
@@ -4917,6 +5143,193 @@ describe("runAgentTurn — T3: red de seguridad del catálogo", () => {
     expect(escalateConversationMock).not.toHaveBeenCalled();
     const llamada = sendAgentTextMock.mock.calls[0];
     expect(llamada[2]).toBe("Tenemos el carburador disponible, ya te paso con María para confirmar el inventario.");
+  });
+});
+
+/**
+ * T2, plan "La escalada se hace una vez y la búsqueda responde" (21/9/2026,
+ * D2 del operador). Medido en producción el 21/9/2026: en la primera hora
+ * del deploy, 24 de 34 turnos escalados eran repeticiones sobre un chat que
+ * YA tenía asesor asignado (bastaban 9). El modelo no sabía que el chat ya
+ * tenía dueño: `buildInstructions` no recibía nada que lo dijera, y las dos
+ * redes de seguridad en código (devolución/queja, catálogo) llamaban a
+ * `escalateConversation` igual que en un chat sin asesor —`escalate.ts` ya
+ * lo detectaba (rama `alreadyAssigned`, solo deja una nota interna), pero la
+ * vuelta completa al proveedor ya se había pagado.
+ */
+describe("runAgentTurn — T2: el modelo sabe que el chat ya tiene asesor (21/9/2026)", () => {
+  it("sin asesor asignado, buildEscalateTool se arma sin restricción, como siempre", async () => {
+    await runAgentTurn("conv-1");
+
+    expect(buildEscalateToolMock).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.anything(),
+      expect.objectContaining({ restrictedToPurchase: false })
+    );
+    expect(Object.keys(agentOptions[0].tools)).toContain("escalarAAsesor");
+    // Sin asesor, el sufijo no menciona ninguna asignación previa.
+    expect(agentOptions[0].instructions.slice(SYSTEM_PROMPT.length)).not.toMatch(/YA está asignado a un asesor/);
+  });
+
+  it("con asesor asignado y deal_status distinto de in_progress, la herramienta se arma en modo restringido", async () => {
+    state.conversation = { ...state.conversation, assigned_agent_id: "agent-9", deal_status: "none" };
+
+    await runAgentTurn("conv-1");
+
+    expect(buildEscalateToolMock).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.anything(),
+      expect.objectContaining({ restrictedToPurchase: true })
+    );
+    expect(Object.keys(agentOptions[0].tools)).toContain("escalarAAsesor");
+    const sufijo = agentOptions[0].instructions.slice(SYSTEM_PROMPT.length);
+    expect(sufijo).toMatch(/YA está asignado a un asesor/);
+    expect(sufijo).toMatch(/solo usa escalarAAsesor/i);
+  });
+
+  it("con asesor asignado y deal_status ya en in_progress, la herramienta se OMITE del todo", async () => {
+    state.conversation = { ...state.conversation, assigned_agent_id: "agent-9", deal_status: "in_progress" };
+
+    await runAgentTurn("conv-1");
+
+    expect(buildEscalateToolMock).not.toHaveBeenCalled();
+    expect(Object.keys(agentOptions[0].tools)).not.toContain("escalarAAsesor");
+    // El sufijo sigue avisando que ya hay asesor, pero sin nombrar una
+    // herramienta que este turno no recibió.
+    const sufijo = agentOptions[0].instructions.slice(SYSTEM_PROMPT.length);
+    expect(sufijo).toMatch(/YA está asignado a un asesor/);
+    expect(sufijo).not.toMatch(/escalarAAsesor/i);
+  });
+
+  it("un turno sobre un chat asignado responde al cliente sin llamar a escalateConversation ni dejar traspaso nuevo", async () => {
+    state.conversation = { ...state.conversation, assigned_agent_id: "agent-9", deal_status: "none" };
+
+    await runAgentTurn("conv-1");
+
+    expect(escalateConversationMock).not.toHaveBeenCalled();
+    expect(handoffCalls).toHaveLength(0);
+    expect(sendAgentTextMock).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.anything(),
+      "respuesta redactada por el modelo",
+      expect.objectContaining({ isAutoReply: true })
+    );
+  });
+
+  /**
+   * La red de seguridad de devolución/queja se SALTA con asesor asignado:
+   * escalar de nuevo un chat que ya tiene dueño solo dejaría una nota
+   * interna en `escalate.ts` (rama `alreadyAssigned`) sin ningún efecto
+   * nuevo — el modelo, en modo restringido, ni siquiera puede pedirlo (el
+   * esquema de `motivo` no admite "devolucion").
+   */
+  it("con asesor asignado, la red de devolución/queja NO llama a escalateConversation", async () => {
+    state.conversation = { ...state.conversation, assigned_agent_id: "agent-9", deal_status: "none" };
+    classifyIntentMock.mockResolvedValue({
+      intent: "devolucion",
+      usage: { inputTokens: 5, outputTokens: 1, totalTokens: 6 },
+    });
+    generateMock.mockResolvedValueOnce({
+      text: "Ya reviso tu caso, dame un segundo.",
+      usage: NO_USAGE,
+      steps: [{}],
+    });
+
+    await runAgentTurn("conv-1");
+
+    expect(escalateConversationMock).not.toHaveBeenCalled();
+    const llamada = sendAgentTextMock.mock.calls[0];
+    expect(llamada[2]).toBe("Ya reviso tu caso, dame un segundo.");
+  });
+
+  /** Regresión: sin asesor asignado, la red de devolución/queja sigue corriendo (test (f) del describe de la guarda de identidad, más arriba, ya la ejercita). */
+  it("sin asesor asignado, la red de devolución/queja SÍ llama a escalateConversation (regresión)", async () => {
+    classifyIntentMock.mockResolvedValue({
+      intent: "queja",
+      usage: { inputTokens: 5, outputTokens: 1, totalTokens: 6 },
+    });
+    generateMock.mockResolvedValueOnce({ text: "", usage: NO_USAGE, steps: [{}] });
+
+    await runAgentTurn("conv-1");
+
+    expect(escalateConversationMock).toHaveBeenCalledTimes(1);
+  });
+
+  /**
+   * La red de seguridad del catálogo se SALTA con asesor asignado —no llama
+   * a `escalateConversation`— pero el texto fijo del requisito 2/3/4 del
+   * cliente ("Seba atiende el mostrador") se sigue anexando si el modelo no
+   * mencionó "asesor": el chat ya tiene dueño, pero la respuesta igual tiene
+   * que nombrarlo.
+   */
+  it("con asesor asignado, la red del catálogo NO escala pero sigue anexando el texto fijo", async () => {
+    state.conversation = { ...state.conversation, assigned_agent_id: "agent-9", deal_status: "none" };
+    buildCatalogToolMock.mockImplementationOnce((_deps, catalogOutcome) => {
+      catalogOutcome.ran = true;
+      catalogOutcome.conExistencia = true;
+      return {};
+    });
+    generateMock.mockResolvedValueOnce({
+      text: "Tenemos el carburador en $18 y 12 unidades.",
+      usage: NO_USAGE,
+      steps: [{}, {}],
+    });
+
+    await runAgentTurn("conv-1");
+
+    expect(escalateConversationMock).not.toHaveBeenCalled();
+    const llamada = sendAgentTextMock.mock.calls[0];
+    expect(llamada[2]).toBe(`Tenemos el carburador en $18 y 12 unidades.\n${TEXTO_CONFIRMAR_INVENTARIO}`);
+    const opciones = llamada[3] as { isAutoReply?: boolean } | undefined;
+    expect(opciones?.isAutoReply).toBe(true);
+  });
+
+  /** Regresión: sin asesor, la red del catálogo sigue escalando en código (ya cubierto por el describe T3 de arriba; se repite acá el caso mínimo para dejar el contraste explícito). */
+  it("sin asesor asignado, la red del catálogo SÍ llama a escalateConversation (regresión)", async () => {
+    buildCatalogToolMock.mockImplementationOnce((_deps, catalogOutcome) => {
+      catalogOutcome.ran = true;
+      catalogOutcome.conExistencia = true;
+      return {};
+    });
+    generateMock.mockResolvedValueOnce({
+      text: "Tenemos el carburador en $18 y 12 unidades.",
+      usage: NO_USAGE,
+      steps: [{}, {}],
+    });
+
+    await runAgentTurn("conv-1");
+
+    expect(escalateConversationMock).toHaveBeenCalledTimes(1);
+  });
+
+  /**
+   * Punto 3 del prompt de la tarea: qué pasa con un chat asignado donde el
+   * modelo termina SIN texto y SIN escalar — mismo comportamiento que sin
+   * asesor (Hallazgo C, 20/9/2026): sin saludo previo, no lanza y deja
+   * `turno_sin_texto`; no hay ninguna rama nueva para este caso.
+   */
+  it("con asesor asignado, texto vacío sin escalar → no lanza, deja turno_sin_texto (mismo comportamiento que sin asesor)", async () => {
+    state.conversation = { ...state.conversation, assigned_agent_id: "agent-9", deal_status: "none" };
+    const warn = vi.spyOn(log, "warn");
+    classifyIntentMock.mockResolvedValue({
+      intent: "devolucion",
+      usage: { inputTokens: 5, outputTokens: 1, totalTokens: 6 },
+    });
+    generateMock.mockResolvedValue({
+      text: "",
+      usage: { inputTokens: 20, outputTokens: 0, totalTokens: 20 },
+      steps: [{}, {}, {}, {}, {}],
+    });
+
+    await runAgentTurn("conv-1");
+
+    expect(escalateConversationMock).not.toHaveBeenCalled();
+    expect(sendAgentTextMock).not.toHaveBeenCalled();
+    expect(warn).toHaveBeenCalledWith(
+      "turno_sin_texto",
+      expect.objectContaining({ conversationId: "conv-1", pasos: 5 })
+    );
+    expect(handoffCalls).toHaveLength(0);
   });
 });
 

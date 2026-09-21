@@ -1038,6 +1038,311 @@ describe("buildEscalateTool — intencion_compra escala con el primer aviso", ()
 });
 
 // ---------------------------------------------------------------------------
+// T1, plan "La escalada se hace una vez y la búsqueda responde" (21/9/2026).
+// Medido en producción el 21/9/2026: los dos únicos turnos donde
+// `escalarAAsesor` se llamó DOS veces en el mismo turno gastaron 145.000
+// tokens de entrada y ~65.800 de salida cada uno (0,108 USD, 5 min de
+// redacción). `prepareStep`/`tool-choice.ts` (ver agent.ts) frena el paso
+// SIGUIENTE, pero no cubre dos tool calls dentro del MISMO paso — acá se
+// prueba que `buildEscalateTool.execute` corta esa segunda llamada por su
+// cuenta, sin depender de `prepareStep`.
+// ---------------------------------------------------------------------------
+describe("buildEscalateTool — una escalada por turno (T1, 'La escalada se hace una vez y la búsqueda responde', 21/9/2026)", () => {
+  beforeEach(() => {
+    escalateConversationMock.mockReset();
+  });
+
+  it("la segunda llamada en el mismo turno NO llama a escalateConversation y devuelve el resultado de la primera", async () => {
+    escalateConversationMock.mockResolvedValue({ escalated: true, assignedAgentName: "María" });
+    const outcome: EscalationOutcome = { escalated: false };
+    const tool = buildEscalateTool(
+      // @ts-expect-error -- fake mínimo: la herramienta reenvía supabase tal
+      // cual a escalateConversation, que está mockeado en este archivo.
+      { supabase: {}, conversationId: "conv-1", contactId: "contact-1" },
+      outcome
+    );
+
+    const primerInput = { motivo: "intencion_compra" as const, resumen: "Quiere comprar un carburador" };
+    // @ts-expect-error -- la firma real de `execute` de `ai` es más genérica que lo que necesitamos simular acá
+    const primero = await tool.execute(primerInput, { toolCallId: "t1", messages: [] });
+
+    // Segunda llamada del MISMO turno, con un motivo/resumen distintos: si
+    // se ejecutara de nuevo, `escalateConversationMock` (con
+    // `mockResolvedValue` fijo) devolvería lo mismo igual, así que lo que
+    // prueba de verdad este test es el conteo de llamadas, no el contenido.
+    const segundoInput = { motivo: "seguimiento" as const, resumen: "Insiste en el mismo pedido" };
+    // @ts-expect-error -- idem
+    const segundo = await tool.execute(segundoInput, { toolCallId: "t2", messages: [] });
+
+    expect(escalateConversationMock).toHaveBeenCalledTimes(1);
+    expect(segundo).toEqual(primero);
+  });
+
+  it("dos tool calls en el mismo paso (sin esperar la primera) también dejan una sola escalada real", async () => {
+    escalateConversationMock.mockResolvedValue({ escalated: true, assignedAgentName: "María" });
+    const outcome: EscalationOutcome = { escalated: false };
+    const tool = buildEscalateTool(
+      // @ts-expect-error -- fake mínimo
+      { supabase: {}, conversationId: "conv-1", contactId: "contact-1" },
+      outcome
+    );
+    const input = { motivo: "intencion_compra" as const, resumen: "Quiere comprar un carburador" };
+
+    await Promise.all([
+      // @ts-expect-error -- idem
+      tool.execute(input, { toolCallId: "t1", messages: [] }),
+      // @ts-expect-error -- idem
+      tool.execute(input, { toolCallId: "t2", messages: [] }),
+    ]);
+
+    expect(escalateConversationMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("deja escalada_repetida_en_el_turno en el log al repetir la llamada", async () => {
+    escalateConversationMock.mockResolvedValue({ escalated: true, assignedAgentName: "María" });
+    const escrito: string[] = [];
+    const spy = vi.spyOn(console, "log").mockImplementation((line: unknown) => {
+      escrito.push(String(line));
+    });
+    const outcome: EscalationOutcome = { escalated: false };
+    const tool = buildEscalateTool(
+      // @ts-expect-error -- fake mínimo
+      { supabase: {}, conversationId: "conv-1", contactId: "contact-1" },
+      outcome
+    );
+    const input = { motivo: "intencion_compra" as const, resumen: "Quiere comprar un carburador" };
+
+    // @ts-expect-error -- idem
+    await tool.execute(input, { toolCallId: "t1", messages: [] });
+    // @ts-expect-error -- idem
+    await tool.execute(input, { toolCallId: "t2", messages: [] });
+    spy.mockRestore();
+
+    const aviso = escrito.map((line) => JSON.parse(line)).find((l) => l.event === "escalada_repetida_en_el_turno");
+    expect(aviso).toMatchObject({ level: "info", conversationId: "conv-1" });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// T1, mismo plan (21/9/2026): tope de 600 caracteres en `resumen` — las dos
+// espirales medidas en producción también inflaban este campo en cada
+// llamada repetida. El esquema real (no una copia) es lo único que puede
+// atrapar esto: llamar `tool.execute(...)` a mano no pasa por la validación
+// de zod (mismo motivo que el describe de "el esquema acepta el motivo
+// seguimiento", más arriba).
+// ---------------------------------------------------------------------------
+describe("buildEscalateTool — el resumen tiene tope de 600 caracteres (T1, 21/9/2026)", () => {
+  function schemaDeResumen() {
+    const tool = buildEscalateTool(
+      // @ts-expect-error -- fake mínimo: no se ejecuta nada, solo se lee el esquema.
+      { supabase: {}, conversationId: "conv-1", contactId: "contact-1" },
+      { escalated: false }
+    );
+    return (tool as unknown as { inputSchema: { shape: { resumen: { parse: (v: unknown) => unknown } } } })
+      .inputSchema.shape.resumen;
+  }
+
+  it("rechaza un resumen de 601 caracteres", () => {
+    expect(() => schemaDeResumen().parse("a".repeat(601))).toThrow();
+  });
+
+  it("acepta un resumen de exactamente 600 caracteres", () => {
+    expect(() => schemaDeResumen().parse("a".repeat(600))).not.toThrow();
+  });
+
+  /**
+   * Corrección 4b de la revisión de T1 (21/9/2026): el `.max(600)` del
+   * esquema existía, pero el `.describe()` no se lo decía al modelo — se
+   * enteraba recién por un error de validación que le quema un paso del tool
+   * loop. `.description` es la lectura real de zod (mismo patrón que el
+   * resto de este archivo lee `.inputSchema.shape`).
+   */
+  it("el describe del campo avisa el tope de 600 caracteres", () => {
+    const tool = buildEscalateTool(
+      // @ts-expect-error -- fake mínimo: no se ejecuta nada, solo se lee el esquema.
+      { supabase: {}, conversationId: "conv-1", contactId: "contact-1" },
+      { escalated: false }
+    );
+    const schema = (tool as unknown as { inputSchema: { shape: { resumen: { description?: string } } } }).inputSchema
+      .shape.resumen;
+
+    expect(schema.description).toMatch(/600 caracteres/i);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// T2, plan "La escalada se hace una vez y la búsqueda responde" (21/9/2026,
+// D2 del operador). Medido en producción el 21/9/2026: con asesor ya
+// asignado, el modelo repetía `escalarAAsesor` en cada mensaje del cliente
+// (24 de 34 escaladas en la primera hora del deploy, donde bastaban 9) —
+// `escalate.ts` lo detectaba (rama `alreadyAssigned`) pero la vuelta
+// completa al proveedor ya se había pagado. `buildEscalateTool` acepta ahora
+// un tercer parámetro (`{ restrictedToPurchase: true }`, que `agent.ts` pasa
+// cuando el chat ya tiene asesor) que recorta el enum de `motivo` a
+// `intencion_compra` — el modelo no puede siquiera intentar escalar con otro
+// motivo, el esquema lo rechaza antes de llegar a `execute`.
+// ---------------------------------------------------------------------------
+describe("buildEscalateTool — modo restringido con asesor asignado (T2, 21/9/2026)", () => {
+  beforeEach(() => {
+    escalateConversationMock.mockReset();
+  });
+
+  function schemaDeMotivoRestringido() {
+    const tool = buildEscalateTool(
+      // @ts-expect-error -- fake mínimo: no se ejecuta nada, solo se lee el esquema.
+      { supabase: {}, conversationId: "conv-1", contactId: "contact-1" },
+      { escalated: false },
+      { restrictedToPurchase: true }
+    );
+    return (tool as unknown as { inputSchema: { shape: { motivo: { parse: (v: unknown) => unknown } } } })
+      .inputSchema.shape.motivo;
+  }
+
+  it("el esquema SOLO acepta intencion_compra: rechaza los seis motivos restantes", () => {
+    const schema = schemaDeMotivoRestringido();
+
+    expect(() => schema.parse("intencion_compra")).not.toThrow();
+    expect(() => schema.parse("devolucion")).toThrow();
+    expect(() => schema.parse("queja")).toThrow();
+    expect(() => schema.parse("seguimiento")).toThrow();
+    expect(() => schema.parse("confirmar_inventario")).toThrow();
+    expect(() => schema.parse("sin_stock")).toThrow();
+    expect(() => schema.parse("no_identificado")).toThrow();
+  });
+
+  it("sin restrictedToPurchase (u omitido), el esquema conserva los siete motivos de siempre", () => {
+    const tool = buildEscalateTool(
+      // @ts-expect-error -- fake mínimo
+      { supabase: {}, conversationId: "conv-1", contactId: "contact-1" },
+      { escalated: false }
+    );
+    const schema = (tool as unknown as { inputSchema: { shape: { motivo: { parse: (v: unknown) => unknown } } } })
+      .inputSchema.shape.motivo;
+
+    for (const motivo of [
+      "devolucion",
+      "queja",
+      "intencion_compra",
+      "seguimiento",
+      "confirmar_inventario",
+      "sin_stock",
+      "no_identificado",
+    ]) {
+      expect(() => schema.parse(motivo)).not.toThrow();
+    }
+  });
+
+  it("la descripción de la herramienta avisa que el chat ya tiene asesor y que es solo para marcar la compra", () => {
+    const tool = buildEscalateTool(
+      // @ts-expect-error -- fake mínimo
+      { supabase: {}, conversationId: "conv-1", contactId: "contact-1" },
+      { escalated: false },
+      { restrictedToPurchase: true }
+    );
+
+    expect((tool as unknown as { description: string }).description).toMatch(/ya tiene un asesor/i);
+    expect((tool as unknown as { description: string }).description).toMatch(/intencion_compra|quiere comprar/i);
+  });
+
+  it("intencion_compra en modo restringido escala igual que siempre (reenvía a escalateConversation)", async () => {
+    escalateConversationMock.mockResolvedValue({ escalated: true, assignedAgentName: "María", alreadyAssigned: true });
+    const outcome: EscalationOutcome = { escalated: false };
+    const tool = buildEscalateTool(
+      // @ts-expect-error -- fake mínimo
+      { supabase: {}, conversationId: "conv-1", contactId: "contact-1" },
+      outcome,
+      { restrictedToPurchase: true }
+    );
+
+    const input = { motivo: "intencion_compra" as const, resumen: "Confirmó que quiere comprar el carburador" };
+    // @ts-expect-error -- firma simplificada del test
+    const result = (await tool.execute(input, { toolCallId: "t1", messages: [] })) as { escalated: boolean };
+
+    expect(escalateConversationMock).toHaveBeenCalledTimes(1);
+    expect(result.escalated).toBe(true);
+    expect(outcome.escalated).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Corrección 4a de la revisión de T1 (21/9/2026): hasta acá `pending` quedaba
+// cacheado PARA SIEMPRE en cuanto la primera llamada terminaba, sin mirar si
+// de verdad escaló. Si `escalateConversation` lanzaba (o algún día devolviera
+// `escalated: false`), un segundo intento legítimo del modelo en el MISMO
+// turno se topaba con la promesa rota/negativa de la primera, sin poder
+// volver a intentarlo — la única "segunda vuelta" posible quedaba tapada por
+// un error transitorio de la primera.
+// ---------------------------------------------------------------------------
+describe("buildEscalateTool — pending se libera si la primera escalada no cuajó (corrección 4a, 21/9/2026)", () => {
+  beforeEach(() => {
+    escalateConversationMock.mockReset();
+  });
+
+  it("si la primera llamada LANZA, un segundo intento vuelve a llamar a escalateConversation", async () => {
+    escalateConversationMock
+      .mockRejectedValueOnce(new Error("fetch failed"))
+      .mockResolvedValueOnce({ escalated: true, assignedAgentName: "María" });
+    const outcome: EscalationOutcome = { escalated: false };
+    const tool = buildEscalateTool(
+      // @ts-expect-error -- fake mínimo
+      { supabase: {}, conversationId: "conv-1", contactId: "contact-1" },
+      outcome
+    );
+    const input = { motivo: "intencion_compra" as const, resumen: "Quiere comprar un carburador" };
+
+    // @ts-expect-error -- idem
+    await expect(tool.execute(input, { toolCallId: "t1", messages: [] })).rejects.toThrow("fetch failed");
+
+    // @ts-expect-error -- idem
+    const segundo = (await tool.execute(input, { toolCallId: "t2", messages: [] })) as { escalated: boolean };
+
+    expect(escalateConversationMock).toHaveBeenCalledTimes(2);
+    expect(segundo.escalated).toBe(true);
+    expect(outcome.escalated).toBe(true);
+  });
+
+  it("si la primera llamada devuelve escalated: false, un segundo intento vuelve a llamar a escalateConversation", async () => {
+    escalateConversationMock
+      .mockResolvedValueOnce({ escalated: false })
+      .mockResolvedValueOnce({ escalated: true, assignedAgentName: "María" });
+    const outcome: EscalationOutcome = { escalated: false };
+    const tool = buildEscalateTool(
+      // @ts-expect-error -- fake mínimo
+      { supabase: {}, conversationId: "conv-1", contactId: "contact-1" },
+      outcome
+    );
+    const input = { motivo: "intencion_compra" as const, resumen: "Quiere comprar un carburador" };
+
+    // @ts-expect-error -- idem
+    const primero = (await tool.execute(input, { toolCallId: "t1", messages: [] })) as { escalated: boolean };
+    // @ts-expect-error -- idem
+    const segundo = (await tool.execute(input, { toolCallId: "t2", messages: [] })) as { escalated: boolean };
+
+    expect(primero.escalated).toBe(false);
+    expect(segundo.escalated).toBe(true);
+    expect(escalateConversationMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("mientras la primera llamada SÍ cuajó (escalated: true), una segunda sigue cacheada (regresión del test de T1)", async () => {
+    escalateConversationMock.mockResolvedValue({ escalated: true, assignedAgentName: "María" });
+    const outcome: EscalationOutcome = { escalated: false };
+    const tool = buildEscalateTool(
+      // @ts-expect-error -- fake mínimo
+      { supabase: {}, conversationId: "conv-1", contactId: "contact-1" },
+      outcome
+    );
+    const input = { motivo: "intencion_compra" as const, resumen: "Quiere comprar un carburador" };
+
+    // @ts-expect-error -- idem
+    await tool.execute(input, { toolCallId: "t1", messages: [] });
+    // @ts-expect-error -- idem
+    await tool.execute(input, { toolCallId: "t2", messages: [] });
+
+    expect(escalateConversationMock).toHaveBeenCalledTimes(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // D3 (6/9/2026): un error de Supabase en una herramienta del tool loop se
 // tragaba en silencio — la respuesta al modelo ya era "no se pudo consultar",
 // pero no quedaba ningún rastro en el log del servidor. El 5/9/2026 se buscó

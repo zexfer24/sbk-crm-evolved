@@ -433,6 +433,11 @@ describe("verificación de identidad", () => {
       // `null` de fábrica: ninguno de estos casos ejercita una devolución
       // manual. Tarea 3, "La IA no vuelve a pedir lo que ya pidió" (16/9/2026).
       ai_resume_cutoff_at: null,
+      // "none" de fábrica (T2, "La escalada se hace una vez y la búsqueda
+      // responde", 21/9/2026): ninguno de estos casos ejercita una venta en
+      // curso, y es el default real de la columna (`text not null default
+      // 'none'`, migración 20260819000001).
+      deal_status: "none",
       contact: { phone_number: "+584120000001" },
       channel: { phone_number_id: "pnid-1", status: "connected" },
       ...overrides,
