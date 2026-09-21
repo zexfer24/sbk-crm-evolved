@@ -1130,6 +1130,11 @@ fusiona. En local: suite 2674 verde con Redis, `tsc` y `lint` sin errores,
 `.next/dev/types/validator.ts` puede quedar truncado y tumbar el chequeo de
 tipos del build — parar el dev server y borrar `.next/dev` antes.
 
+**CI real en verde otra vez sobre `8e30b8e`** (run 35561307806, `verificar` y
+`migraciones` en `success`), ya con K2 y la segunda vuelta de escenarios:
+suite local 2677 verde, `tsc` y `lint` sin errores, build de producción
+limpio. Este es el estado que sale a producción.
+
 ### Escenarios a mano del 20/9/2026 y el hallazgo K (`3d96863`)
 
 Webhook local por el canal `mock-phone-id-soporte` (envío simulado), modelo
