@@ -1749,6 +1749,21 @@ dejar rastro es lo que hacía desaparecer leads.
   el turno sale por `turno_reintentable_tras_saludo` — no es un bug; y el
   cron que drena los reintentos no corre en `next dev`, hay que llamar a
   `api/cron/process-queue` a mano con `CRON_SECRET`.
+  **K2 (`028fabe`, mismo día):** obligar la búsqueda tenía un efecto
+  colateral — el clasificador llama `consulta_disponibilidad` a mensajes
+  vagos ("hola, otra consulta") y, sin producto que buscar, el turno
+  escalaba por `no_identificado`. `buscarRepuesto` tiene la entrada
+  `clienteNoNombroRepuesto`: con ella no toca la base, levanta `generico` y
+  Seba pregunta. **La bandera gana SIEMPRE sobre el `query`**: como `query`
+  es obligatorio, el modelo lo rellena con algo inventado ("repuesto
+  genérico") aunque marque la bandera — medido; con la precedencia contraria
+  Seba cotizó productos al azar. **Comportamiento conocido, decisión del
+  operador del 20/9/2026:** pedir "el catálogo de cascos en PDF" se clasifica
+  como disponibilidad, el escenario del PDF se cede al inventario (H1) y Seba
+  escala sin mandar el enlace; se deja así, el catálogo lo manda el asesor.
+  Los escenarios de pantalla se pueden correr sin la extensión del navegador:
+  Playwright con el Chromium de `~/AppData/Local/ms-playwright` contra el
+  build de producción (`npm start`) calcula layout de verdad.
 
 ---
 

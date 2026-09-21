@@ -25,8 +25,9 @@ corrida "El resguardo antes del push" (desde `003ada1` hasta el commit de docume
 ver la sección nueva más abajo:** 1 commit de plan + 4 de correcciones
 A–J —uno `[migración]`, que sigue editando in situ las mismas cinco
 pendientes, ninguna migración nueva— + 6 de tests de la matriz de
-mutaciones + `3d96863`, la corrección K: Seba consulta el inventario antes
-de hablar de existencias). Este documento cubre TODO ese rango,
+mutaciones + `3d96863` y `028fabe`, las correcciones K y K2: Seba consulta
+el inventario antes de hablar de existencias, y pregunta cuando el cliente
+todavía no nombró nada). Este documento cubre TODO ese rango,
 agrupado por corrida/tarea, en el orden en que hay que desplegarlo. **El
 orden operativo detallado, con las consultas SQL literales, está en
 `docs/PRODUCCION.md` §11 ("Entrega de 'Seba atiende el mostrador' + 'Nada
@@ -1163,13 +1164,38 @@ el proveedor rechazara el `toolChoice`, el turno fallaría y la cola lo
 reintentaría — se vería como `cola_turno_fallido` repetido en consultas de
 disponibilidad.
 
-NO vistos el 20/9 (quedan para el operador en pantalla, o cubiertos solo por
-tests + mutación): 7 (Asignarme/Desasignar), 8 (reapertura), 9 ("gracias" con
-escalada abierta), 11 (marcador de catálogo en un escenario), 12 (venta con
-Saint), 13 (enlaces como SUPERVISOR, pendiente desde el 19/9) y 14 (seis
-secciones + `error.tsx` en build de producción). Observación sin corregir: en
-local, "¿dónde están ubicados?" escaló por `seguimiento` porque la biblioteca
-local no trae la ubicación; en producción vive en el escenario "Ubicación".
+**K2 — efecto colateral de K, corregido en `028fabe`.** El clasificador
+llama `consulta_disponibilidad` a mensajes vagos ("hola, otra consulta",
+"buenas, tienen disponible?"); con K obligando la búsqueda y sin producto que
+buscar, el turno escalaba por `no_identificado`. `buscarRepuesto` gana la
+entrada `clienteNoNombroRepuesto`: con ella, no toca la base, levanta
+`generico` y Seba hace UNA pregunta sin escalar. La bandera gana siempre:
+medido contra el modelo real, que rellena el `query` obligatorio con algo
+inventado (`{"query":"repuesto genérico","clienteNoNombroRepuesto":true}`) —
+con la precedencia contraria Seba cotizó productos al azar. Verificado
+después: vago → una pregunta; casco LS2 → busca, escala `no_identificado`;
+filtro de aceite Bera SBR → cotiza y escala `confirmar_inventario`.
+
+**Segunda vuelta (noche del 20/9): todos los escenarios restantes, vistos.**
+Los de pantalla se corrieron con Chromium real (Playwright, headless,
+1440×900) contra el **build de producción** servido con `npm start`; el
+guion vive fuera del repo.
+
+| # | Escenario | Resultado |
+|---|---|---|
+| 7 | "Asignarme" y "Desasignar" sin escribir | ✅ `ai_enabled=false` + `reclamado` y `silenciada_por_asesor`; al desasignar, Seba encendida, sello puesto, `desasignada_por_asesor` + `devuelto_a_ia` |
+| 8 | Asesor escribe, se cierra, el cliente vuelve | ✅ reabre, `reabierta_por_cliente` última, Seba se presenta de nuevo sin la gracia de 30 min |
+| 9 | "gracias" con escalada abierta | ✅ silencio + `cortesia_tras_escalada` |
+| 12 | Cerrar venta | ✅ ocho errores por campo (el WhatsApp viene fijo del contacto; el carrito vacío avisa por toast, por diseño), corregir uno borra solo el suyo, al reabrir no quedan pegados, la orden guarda `SAINT-000777` normalizado, chip en Ventas |
+| 13 | Enlaces como SUPERVISOR (pendiente desde el 19/9) | ✅ clave con guion bajo y URL con texto delante se rechazan; crear; editar con la clave bloqueada; "Insertar catálogo" pega `{{catalogo:clave}}`; apagar y borrar en dos pasos; como asesor, sin botones de edición |
+| 14 | Seis secciones + `error.tsx` | ✅ grid de dos hijos (72 + 1368 px) en las seis, cero errores de consola; Ventas y Control IA muestran su pantalla de error con rail, CSS y "Reintentar" forzando un fallo real de lectura (columna y tabla renombradas un momento) |
+| 11 | Pedir el catálogo de cascos | ⚠️ **comportamiento conocido, decisión del operador (20/9/2026): se deja como está.** "envíame el catálogo de cascos en pdf" se clasifica `consulta_disponibilidad`, el escenario del PDF se cede al inventario (H1, `escenario_cedido_al_catalogo`), no hay cascos en `products` y Seba escala `no_identificado` sin mandar el enlace. El catálogo lo manda el asesor (mensaje rápido con `{{catalogo:clave}}`). Si en producción molesta, la salida propuesta y no implementada es una función pura: si el mensaje nombra catálogo/pdf/lista de precios, el escenario no se cede. |
+
+En build de producción el webhook responde 503 sin `WHATSAPP_APP_SECRET`
+(correcto, por diseño): los escenarios por webhook solo corren en `next dev`.
+Observación sin corregir: en local, "¿dónde están ubicados?" escaló por
+`seguimiento` porque la biblioteca local no trae la ubicación; en producción
+vive en el escenario "Ubicación".
 
 ### Aceptado sin test / pendiente
 
