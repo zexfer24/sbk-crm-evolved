@@ -161,7 +161,14 @@ declare
     -- agent_day_summary (migración 20260910010000, corrida "Los números del
     -- día"): mismo grupo que agent_metrics — la llama el navegador con
     -- sesión de asesor (resumen del propio día) y también el servidor.
-    'public.agent_day_summary(timestamptz, timestamptz)'
+    'public.agent_day_summary(timestamptz, timestamptz)',
+    -- search_conversations_by_message (T3, plan "La escalada se hace una
+    -- vez y la búsqueda responde", 21/9/2026, migración 20260921030000):
+    -- pasó de security invoker a security definer para que is_agent() se
+    -- compruebe UNA vez en vez de una vez por fila (ver CLAUDE.md/la
+    -- migración) — la llama el buscador de la bandeja (inbox-sidebar.tsx)
+    -- con sesión de asesor.
+    'public.search_conversations_by_message(text, integer)'
   ];
   f text;
   errores text := '';

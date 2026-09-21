@@ -61,8 +61,11 @@ import { describe, expect, it } from "vitest";
 
 const LISTA_BLANCA = new Set(["is_agent", "is_supervisor_or_admin"]);
 
-// Las 21 funciones `security definer` conocidas en el esquema `public` a
-// fecha 18/9/2026 (20 + handle_agent_message_silences_ai, sumada en
+// Las 22 funciones `security definer` conocidas en el esquema `public` a
+// fecha 21/9/2026 (21 + search_conversations_by_message, sumada en
+// 20260921030000_busqueda_de_mensajes_sin_rls_por_fila.sql — T3 del plan "La
+// escalada se hace una vez y la búsqueda responde". Las 21 anteriores: 20 +
+// handle_agent_message_silences_ai, sumada en
 // 20260917010000_seba_y_escalada_viva.sql — T0 del plan "Seba atiende el
 // mostrador". Las 20 anteriores: 19 + handle_conversation_ownership_change,
 // sumada en 20260916010000_devolucion_a_la_ia.sql — T1 de la corrida "La IA
@@ -83,7 +86,16 @@ const LISTA_BLANCA = new Set(["is_agent", "is_supervisor_or_admin"]);
 // criterio que las de trigger de arriba: nadie más que el propio disparador
 // necesita invocarla.
 //
-// Ninguna de las dos entra a LISTA_BLANCA: a diferencia de
+// search_conversations_by_message (21/9/2026) pasó de `security invoker` a
+// `security definer` para poder chequear `is_agent()` UNA sola vez al entrar
+// en vez de una vez por fila vía la política `messages_all` — el filtro
+// `LIKE ALL` sobre un arreglo constante recién puede empujarse al índice GIN
+// trigram de `messages.search_text` sin la evaluación correlacionada por
+// fila que RLS le imponía (ver la migración 20260921030000: 156 búsquedas de
+// /inbox en 48 h dieron 500 por `statement timeout`, ~1-1,5 s como
+// `authenticated` contra ~1-1,5 s, 20-140 ms con la función nueva).
+//
+// Ninguna de las tres entra a LISTA_BLANCA: a diferencia de
 // is_agent()/is_supervisor_or_admin() (que sostienen políticas RLS vivas y
 // por eso no se les puede tocar el EXECUTE), estas funciones traen los dos
 // revokes de siempre (`from public` y `from anon, authenticated`, en la
@@ -110,6 +122,7 @@ const FUNCIONES_SECURITY_DEFINER_CONOCIDAS = [
   "ai_turn_lock_renew",
   "ai_turn_lock_release",
   "record_handoff",
+  "search_conversations_by_message",
 ].sort();
 
 const DIR_MIGRACIONES = path.resolve(__dirname, "../../supabase/migrations");
@@ -243,8 +256,8 @@ describe("permisos de funciones security definer (guardián estático)", () => {
     .map(([nombre]) => nombre)
     .sort();
 
-  it("detecta exactamente las 21 funciones security definer conocidas", () => {
-    // Si esto falla con MENOS de las 21, el parser se está comiendo alguna
+  it("detecta exactamente las 22 funciones security definer conocidas", () => {
+    // Si esto falla con MENOS de las 22, el parser se está comiendo alguna
     // (regex de cabecera roto, `$$` no encontrado, etc.) y el resto de este
     // archivo no protege nada aunque pase en verde. Si falla con MÁS,
     // apareció una función security definer nueva: hay que sumarla a esta

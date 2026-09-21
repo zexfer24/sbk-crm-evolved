@@ -321,3 +321,33 @@ jobs:
           psql "postgresql://postgres:postgres@127.0.0.1:54322/postgres" \
             -v ON_ERROR_STOP=1 \
             -f supabase/tests/escenario_cede_al_inventario.sql
+
+      # T4a, plan "La escalada se hace una vez y la búsqueda responde"
+      # (21/9/2026, Frente 4): agent_turns.reasoning_tokens nace NOT NULL
+      # DEFAULT 0, sin backfill -- el hueco donde T4b va a medir el
+      # razonamiento interno del modelo que hoy AI_AGENT_REASONING=off deja
+      # sin cuantificar (dos turnos del 21/9/2026 gastaron ~65.800 tokens de
+      # salida contra un mensaje visible de ~40).
+      - name: agent_turns.reasoning_tokens -- columna y default
+        run: |
+          psql "postgresql://postgres:postgres@127.0.0.1:54322/postgres" \
+            -v ON_ERROR_STOP=1 \
+            -f supabase/tests/agent_turns_reasoning_tokens.sql
+
+      # T3, plan "La escalada se hace una vez y la búsqueda responde"
+      # (21/9/2026, Frente 1, D3): en producción TODA búsqueda de /inbox daba
+      # 500 por statement timeout (156 de 156 en 48 h) -- la función vieja
+      # (security invoker) evaluaba is_agent() por fila vía RLS y su filtro
+      # NOT EXISTS correlacionado no podía usar el índice GIN trigram de
+      # messages.search_text. La nueva (security definer, is_agent() UNA vez,
+      # LIKE ALL contra un arreglo constante) se midió contra ~100.000
+      # mensajes sembrados por este mismo test: la vieja tardó 1,0-1,2 s como
+      # authenticated, la nueva 20-140 ms -- el caso 8 (rendimiento) siembra
+      # ese volumen con session_replication_role=replica y compara contra un
+      # umbral de 500 ms. Puede sumar unos segundos al job por el sembrado;
+      # medido en local en ~6-7 s de más.
+      - name: search_conversations_by_message -- sin RLS por fila, 8+2 casos
+        run: |
+          psql "postgresql://postgres:postgres@127.0.0.1:54322/postgres" \
+            -v ON_ERROR_STOP=1 \
+            -f supabase/tests/search_conversations_by_message.sql
