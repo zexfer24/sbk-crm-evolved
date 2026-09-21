@@ -32,6 +32,7 @@ import {
   buildCatalogTool,
   buildEscalateTool,
   buildOrderHistoryTool,
+  PREGUNTA_QUE_BUSCA_INSTRUCTION,
   RECORDATORIO_SALUDO,
   type CatalogOutcome,
   type EscalationOutcome,
@@ -1392,6 +1393,158 @@ describe("buildCatalogTool — consulta genérica: una pregunta de filtro, sin e
 
     expect(catalogOutcome.generico).toBe(false);
   });
+});
+
+/**
+ * K2 (20/9/2026): corrige un efecto colateral de K (commit 3d96863, "Seba
+ * consulta el inventario antes de hablar de existencias"). Caso a mano del
+ * mismo día, +584140000012: el cliente reabrió un chat con "hola, otra
+ * consulta"; el clasificador lo marcó consulta_disponibilidad (la confusión
+ * consulta_disponibilidad↔otro es el desacuerdo dominante del clasificador,
+ * ver CLAUDE.md); K obligó al paso 0 a llamar a buscarRepuesto SIN que el
+ * cliente hubiera nombrado ningún repuesto; la herramienta devolvió sin
+ * resultados y la red de seguridad de agent.ts escaló con no_identificado
+ * ("no especificó qué repuesto..."), quemando un asesor por un mensaje vago
+ * que antes de K la IA respondía preguntando qué necesita.
+ */
+describe("buildCatalogTool — el cliente todavía no nombró repuesto (K2, 20/9/2026)", () => {
+  it("con la bandera y sin ningún término real en el query, NO consulta products ni sinónimos, y marca generico (no sinResultados)", async () => {
+    const { client, getAppliedFilter, getAppliedSynonymFilter } = createFakeSupabase([]);
+    const catalogOutcome = nuevoCatalogOutcome();
+    const tool = buildCatalogTool(
+      // @ts-expect-error -- fake mínimo
+      { supabase: client, conversationId: "conv-1", contactId: "contact-1" },
+      catalogOutcome
+    );
+
+    // @ts-expect-error -- firma simplificada del test
+    const result = (await tool.execute({ query: "", clienteNoNombroRepuesto: true }, { toolCallId: "t1", messages: [] })) as {
+      results: unknown[];
+      instruccionParaTuRespuesta?: string;
+    };
+
+    expect(result.results).toEqual([]);
+    expect(result.instruccionParaTuRespuesta).toBe(PREGUNTA_QUE_BUSCA_INSTRUCTION);
+    expect(catalogOutcome.ran).toBe(true);
+    expect(catalogOutcome.generico).toBe(true);
+    expect(catalogOutcome.sinResultados).toBe(false);
+    // Ni el catálogo ni los sinónimos se consultaron: el corte pasa ANTES.
+    expect(getAppliedFilter()).toBeNull();
+    expect(getAppliedSynonymFilter()).toBeNull();
+  });
+
+  /**
+   * K2b (20/9/2026): esta precedencia REEMPLAZA a la de K2 ("si el `query`
+   * trae un término real, se BUSCA y la bandera se ignora"). Medido contra
+   * el modelo real (gemini-3.1-flash-lite, conversación local del
+   * +584140000032, "buenas, tienen disponible?", consulta_disponibilidad):
+   * `query` es un string OBLIGATORIO del esquema, así que el modelo INVENTA
+   * un texto para rellenarlo aunque marque la bandera —se vio en el log
+   * temporal el argumento exacto `{"query":"repuesto genérico",
+   * "clienteNoNombroRepuesto":true}"`—, y con la precedencia vieja eso
+   * bastaba para que "repuesto"/"genérico" calzaran productos reales del
+   * catálogo: Seba cotizó carburador/filtros/pastillas al azar y escaló con
+   * confirmar_inventario. Justo el riesgo que K2 había anunciado sin
+   * corregir. Ahora la bandera gana SIEMPRE, sin mirar `terms`: el riesgo
+   * residual aceptado es que un modelo que la marque por error con un
+   * producto de verdad en el query (el caso del casco LS2) haga que Seba
+   * pregunte "¿qué buscas?" en vez de buscar — molesto (el cliente lo
+   * repite) pero inofensivo, frente a cotizar al azar y quemar un asesor.
+   */
+  it("con la bandera y un query inventado con palabras que calzarían productos reales, NO consulta products y pregunta igual", async () => {
+    const { client, getAppliedFilter, getAppliedSynonymFilter } = createFakeSupabase([
+      {
+        id: "prod-1",
+        name: "Carburador Genérico",
+        brand: "Genérico",
+        price: 18,
+        currency: "USD",
+        stock_quantity: 4,
+        product_compatibility: [],
+      },
+      {
+        id: "prod-2",
+        name: "Filtro de aire repuesto universal",
+        brand: "Genérico",
+        price: 6,
+        currency: "USD",
+        stock_quantity: 10,
+        product_compatibility: [],
+      },
+    ]);
+    const catalogOutcome = nuevoCatalogOutcome();
+    const tool = buildCatalogTool(
+      // @ts-expect-error -- fake mínimo
+      { supabase: client, conversationId: "conv-1", contactId: "contact-1" },
+      catalogOutcome
+    );
+
+    // Mismo texto que el modelo real mandó ese día: "repuesto genérico" NO
+    // es lo que el cliente dijo, es lo que el modelo inventó para llenar el
+    // campo obligatorio — y calza los dos productos del fake de arriba.
+    // @ts-expect-error -- firma simplificada del test
+    const result = (await tool.execute({ query: "repuesto genérico", clienteNoNombroRepuesto: true }, { toolCallId: "t1", messages: [] })) as {
+      results: unknown[];
+      instruccionParaTuRespuesta?: string;
+    };
+
+    expect(getAppliedFilter()).toBeNull();
+    expect(getAppliedSynonymFilter()).toBeNull();
+    expect(result.results).toEqual([]);
+    expect(result.instruccionParaTuRespuesta).toBe(PREGUNTA_QUE_BUSCA_INSTRUCTION);
+    expect(catalogOutcome.ran).toBe(true);
+    expect(catalogOutcome.generico).toBe(true);
+    expect(catalogOutcome.sinResultados).toBe(false);
+  });
+
+  /**
+   * Riesgo residual aceptado por K2b (ver el comentario del test de arriba
+   * y el de `PREGUNTA_QUE_BUSCA_INSTRUCTION` en tools.ts): si el modelo
+   * marca la bandera CON un producto de verdad en el query ("casco LS2"),
+   * ya no se busca — Seba pregunta igual. Documentado a propósito, no es un
+   * bug: el `.describe` de la bandera le dice al modelo que nunca la marque
+   * si nombró un producto; si igual lo hace, preguntar es el costo elegido
+   * frente a cotizar al azar.
+   */
+  it("con la bandera Y un query con un producto real, también pregunta: prioridad total de la bandera", async () => {
+    const { client, getAppliedFilter } = createFakeSupabase([
+      {
+        id: "prod-1",
+        name: "Casco LS2",
+        brand: "LS2",
+        price: 80,
+        currency: "USD",
+        stock_quantity: 3,
+        product_compatibility: [],
+      },
+    ]);
+    const catalogOutcome = nuevoCatalogOutcome();
+    const tool = buildCatalogTool(
+      // @ts-expect-error -- fake mínimo
+      { supabase: client, conversationId: "conv-1", contactId: "contact-1" },
+      catalogOutcome
+    );
+
+    // @ts-expect-error -- firma simplificada del test
+    const result = (await tool.execute({ query: "casco LS2", clienteNoNombroRepuesto: true }, { toolCallId: "t1", messages: [] })) as {
+      results: unknown[];
+      instruccionParaTuRespuesta?: string;
+    };
+
+    expect(getAppliedFilter()).toBeNull();
+    expect(result.results).toEqual([]);
+    expect(result.instruccionParaTuRespuesta).toBe(PREGUNTA_QUE_BUSCA_INSTRUCTION);
+    expect(catalogOutcome.generico).toBe(true);
+  });
+
+  /**
+   * (3) del punto "a" de la tarea original K2: sin la bandera el
+   * comportamiento tiene que ser IDÉNTICO al de hoy. No se duplica un caso
+   * nuevo — el test "sin términos de búsqueda reconocibles (query muy
+   * corta)..." de más arriba (describe "sin resultados, escala con
+   * no_identificado") ya ejercita exactamente este camino (`query: "   "`,
+   * sin `clienteNoNombroRepuesto`) y sirve de testigo.
+   */
 });
 
 describe("buildCatalogTool — el CatalogOutcome se acumula entre llamadas del mismo turno", () => {

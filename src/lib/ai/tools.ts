@@ -99,6 +99,50 @@ const SIN_STOCK_CASO_INSTRUCTION =
 const NO_IDENTIFICADO_INSTRUCTION =
   `No encontraste nada, o no queda claro cuál es: di «${TEXTO_NO_IDENTIFICADO}» y llama a escalarAAsesor con motivo no_identificado. No inventes ni sugieras alternativas.`;
 
+/**
+ * K2 (20/9/2026): corrige un efecto colateral de K (commit 3d96863, "Seba
+ * consulta el inventario antes de hablar de existencias"). Caso a mano del
+ * mismo día, conversación local del +584140000012: el cliente reabrió un
+ * chat con "hola, otra consulta"; el clasificador lo marcó
+ * `consulta_disponibilidad` (la confusión `consulta_disponibilidad`↔`otro`
+ * es el desacuerdo dominante del clasificador, ver CLAUDE.md, trampa "El
+ * comparador de clasificación"); `tool-choice.ts` obligó al paso 0 a llamar
+ * a `buscarRepuesto` SIN que el cliente hubiera nombrado ningún repuesto; la
+ * herramienta devolvió sin resultados (`catalogOutcome.sinResultados =
+ * true`) y la red de seguridad de `agent.ts` escaló con `no_identificado`
+ * ("El cliente desea realizar otra consulta, pero no especificó qué
+ * repuesto…"), quemando un asesor por cada mensaje vago — antes de K, Seba
+ * habría preguntado qué necesita.
+ *
+ * `clienteNoNombroRepuesto` le da al modelo una salida sin tocar la base:
+ * reutiliza la MISMA bandera `generico` que el requisito 5 de "Seba atiende
+ * el mostrador" («la única pregunta») ya usa para bloquear la red de
+ * seguridad del catálogo, así que no hace falta tocar `agent.ts`.
+ *
+ * K2b (20/9/2026): la primera versión de esta corrección hacía que la
+ * bandera SOLO ganara cuando `searchTerms(query)` no encontraba ningún
+ * término real, para no dejar de buscar un "casco LS2" nombrado de verdad.
+ * Medido contra el modelo real (gemini-3.1-flash-lite, conversación local
+ * del +584140000032, "buenas, tienen disponible?"): `query` es un string
+ * OBLIGATORIO del esquema, así que el modelo INVENTA un texto para llenarlo
+ * aunque marque la bandera — el log temporal capturó el argumento exacto
+ * `{"query":"repuesto genérico","clienteNoNombroRepuesto":true}`. Ese texto
+ * inventado trae palabras de sobra (≥3 letras) para calzar productos reales
+ * del catálogo, así que la precedencia vieja NUNCA protegía nada en la
+ * práctica: Seba cotizó carburador/filtros/pastillas al azar y escaló con
+ * `confirmar_inventario` sobre un cliente que solo había preguntado si
+ * había algo disponible.
+ *
+ * Ahora la bandera gana SIEMPRE, sin mirar `terms`, sin tocar la base (ni
+ * `products` ni `ai_lessons`). Riesgo residual aceptado: si el modelo la
+ * marca por error CON un producto de verdad en el `query` (el caso del
+ * casco LS2 que motivó la precedencia vieja), Seba pregunta "¿qué buscas?"
+ * en vez de buscar — molesto (el cliente tiene que repetirlo) pero
+ * inofensivo, frente a cotizar al azar y quemar un asesor de verdad.
+ */
+export const PREGUNTA_QUE_BUSCA_INSTRUCTION =
+  "El cliente todavía no dijo qué repuesto o producto busca: haz UNA sola pregunta para saber qué necesita y NO escales ni prometas un asesor en este turno. Con la respuesta vuelves a buscar.";
+
 /** El `updated_at` más viejo del grupo, o null si ninguna fila trae fecha. */
 function oldestUpdate(rows: { updated_at?: string | null }[]): string | null {
   const fechas = rows.map((row) => row.updated_at).filter((fecha): fecha is string => Boolean(fecha));
@@ -185,21 +229,50 @@ export function buildCatalogTool({ supabase, conversationId }: ToolDeps, catalog
     description:
       `Busca repuestos en el catálogo real de ${BUSINESS_NAME} por nombre o marca del repuesto, y opcionalmente filtra por marca/modelo de la moto del cliente. Devuelve precio en USD y Bs (tasa BCV del día) y el stock disponible. Si no devuelve nada, ese repuesto no existe en el catálogo — no te lo inventes.`,
     inputSchema: z.object({
-      query: z.string().describe("Qué repuesto busca el cliente, ej. 'carburador', 'bujía NGK', 'kit de arrastre'"),
+      // K2b (20/9/2026): "Si el cliente todavía no nombró ningún repuesto,
+      // deja este campo vacío ("") y marca clienteNoNombroRepuesto" — se
+      // suma esta frase al describe porque `query` sigue siendo obligatorio
+      // (no se cambia la forma del esquema: hay proveedores que tratan mal
+      // los campos opcionales) y sin esta instrucción el modelo rellena el
+      // campo con un texto inventado que la búsqueda real puede llegar a
+      // calzar (ver el comentario de PREGUNTA_QUE_BUSCA_INSTRUCTION).
+      query: z
+        .string()
+        .describe(
+          "Qué repuesto busca el cliente, ej. 'carburador', 'bujía NGK', 'kit de arrastre'. Si el cliente todavía no nombró ningún repuesto, deja este campo vacío (\"\") y marca clienteNoNombroRepuesto."
+        ),
       motoBrand: z.string().optional().describe("Marca de la moto del cliente, si la mencionó (ej. 'Bera')"),
       motoModel: z.string().optional().describe("Modelo de la moto del cliente, si lo mencionó (ej. 'SBR 200')"),
+      // K2 (20/9/2026): ver el comentario de PREGUNTA_QUE_BUSCA_INSTRUCTION.
+      clienteNoNombroRepuesto: z
+        .boolean()
+        .optional()
+        .describe(
+          "Marca true SOLO cuando el cliente todavía no dijo qué repuesto o producto busca (ej. 'tengo una consulta', 'otra pregunta', '¿tienen disponible?'). NUNCA la marques si nombró cualquier producto, aunque parezca que no lo vendemos (ej. 'casco LS2' SÍ es un producto nombrado: se busca)."
+        ),
     }),
-    execute: async ({ query, motoBrand, motoModel }) => {
+    execute: async ({ query, motoBrand, motoModel, clienteNoNombroRepuesto }) => {
       // T3 (18/9/2026): el tool "corrió" en cuanto el modelo lo invoca, sea
       // cual sea el resultado — la red de seguridad de `agent.ts` necesita
       // distinguir "nunca se consultó el catálogo" de "se consultó y no se
       // pudo decidir nada" (sin términos de búsqueda, o la consulta falló).
       catalogOutcome.ran = true;
 
+      // K2b (20/9/2026): la bandera gana SIEMPRE, sin mirar `terms` ni tocar
+      // la base (ni `products` ni `ai_lessons`) — ver el comentario largo de
+      // PREGUNTA_QUE_BUSCA_INSTRUCTION arriba: `query` es obligatorio, así
+      // que el modelo siempre manda algo aunque no haya repuesto que buscar,
+      // y ese "algo" puede calzar productos reales por accidente.
+      if (clienteNoNombroRepuesto === true) {
+        catalogOutcome.generico = true;
+        return { results: [], instruccionParaTuRespuesta: PREGUNTA_QUE_BUSCA_INSTRUCTION };
+      }
+
       // Palabra por palabra y sin acentos: buscar la frase completa hacía que
       // "bujía NGK" no encontrara la Bujía CR7HSA de NGK, y el agente
       // respondiera con toda seguridad que no la tenemos. Ver catalog-search.ts.
       const terms = searchTerms(query);
+
       if (terms.length === 0) {
         // Antes de T3 este caso volvía sin instrucción (uno de los "dos
         // sitios" del plan): el modelo se quedaba sin saber qué decir cuando
