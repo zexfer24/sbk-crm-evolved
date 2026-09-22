@@ -190,7 +190,7 @@ async function sendAgentMedia(
   const entrega = await entregar(target, async (accessToken) => {
     // El bucket es privado: Meta necesita un enlace firmado. Si el adjunto
     // apunta a una URL de fuera, se manda tal cual.
-    const link = await signedUrlForSending(url);
+    const link = await signedUrlForSending(url, { conversationId: target.conversationId });
     if (!link) throw new Error(`No se pudo preparar el adjunto ${url} para enviarlo.`);
 
     return sendWhatsappMedia(target.phoneNumberId!, accessToken, target.phoneNumber, mediaType, link);

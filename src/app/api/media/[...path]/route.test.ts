@@ -20,11 +20,16 @@ let sessionValue: { user: { id: string } } | null;
 let agentQueryResult: MaybeSingleResult;
 /** Argumentos con los que se llamó `.eq(...)` sobre `agents`. */
 const agentEqCalls: Array<[string, unknown]> = [];
+/** T7 (22/9/2026): simula un corte real de `getSession()`, no una sesión ausente. */
+let getSessionShouldThrow = false;
 
 function createFakeServerClient() {
   return {
     auth: {
-      getSession: async () => ({ data: { session: sessionValue } }),
+      getSession: async () => {
+        if (getSessionShouldThrow) throw new Error("conexión con Supabase Auth caída");
+        return { data: { session: sessionValue } };
+      },
     },
     from(table: string) {
       if (table !== "agents") throw new Error(`Tabla inesperada en el test: ${table}`);
@@ -72,6 +77,25 @@ vi.mock("@/lib/supabase/admin", () => ({
   createAdminClient: () => createAdminClientMock(),
 }));
 
+/** Eventos registrados por cada llamada a `log.warn`/`log.error` en el test. */
+const logCalls: Array<{ level: "warn" | "error"; event: string; context?: Record<string, unknown> }> = [];
+
+vi.mock("@/lib/log", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/lib/log")>();
+  return {
+    ...actual,
+    log: {
+      info: vi.fn(),
+      warn: (event: string, context?: Record<string, unknown>) => {
+        logCalls.push({ level: "warn", event, context });
+      },
+      error: (event: string, context?: Record<string, unknown>) => {
+        logCalls.push({ level: "error", event, context });
+      },
+    },
+  };
+});
+
 import { GET } from "./route";
 
 /** `_request` no lo lee la ruta: todo sale de `context.params`, que en Next 16 es una promesa. */
@@ -93,6 +117,8 @@ beforeEach(() => {
   storageFromCalls.length = 0;
   createSignedUrlCalls.length = 0;
   createAdminClientMock.mockClear();
+  logCalls.length = 0;
+  getSessionShouldThrow = false;
 });
 
 describe("GET /api/media/[...path] — el único portón del bucket privado", () => {
@@ -158,5 +184,58 @@ describe("GET /api/media/[...path] — el único portón del bucket privado", ()
     await callGet(["..", "otro-bucket", "archivo"]);
 
     expect(createSignedUrlCalls).toContainEqual(["../otro-bucket/archivo", 60]);
+  });
+
+  /**
+   * T7, plan "Nada se pierde en un corte ni en un deploy" (22/9/2026): antes
+   * ninguna rama de esta ruta dejaba rastro — un 401/403/404/500 real
+   * contra un asesor no aparecía en ningún log filtrable por evento.
+   */
+  describe("cada rama deja su evento en el log", () => {
+    it("sin sesión registra media.sin_sesion (warn)", async () => {
+      sessionValue = null;
+
+      await callGet(["conv-1", "wamid.abc.jpg"]);
+
+      expect(logCalls).toContainEqual({ level: "warn", event: "media.sin_sesion", context: undefined });
+    });
+
+    it("sin fila en agents registra media.sin_acceso (warn) con el userId de la sesión", async () => {
+      agentQueryResult = { data: null, error: null };
+
+      await callGet(["conv-1", "wamid.abc.jpg"]);
+
+      expect(logCalls).toContainEqual({
+        level: "warn",
+        event: "media.sin_acceso",
+        context: { userId: "agent-1" },
+      });
+    });
+
+    it("un error de Storage al firmar registra media.no_firmado (error) con el path y el detalle", async () => {
+      signedUrlResult = { data: null, error: { message: "Object not found" } };
+
+      await callGet(["conv-1", "no-existe.jpg"]);
+
+      expect(logCalls).toContainEqual({
+        level: "error",
+        event: "media.no_firmado",
+        context: { path: "conv-1/no-existe.jpg", detail: "Object not found" },
+      });
+    });
+
+    it("una excepción en getSession responde 500 y registra media.fallo (error)", async () => {
+      getSessionShouldThrow = true;
+
+      const res = await callGet(["conv-1", "wamid.abc.jpg"]);
+
+      expect(res.status).toBe(500);
+      expect(createAdminClientMock).not.toHaveBeenCalled();
+      expect(logCalls).toContainEqual({
+        level: "error",
+        event: "media.fallo",
+        context: { path: undefined, detail: "conexión con Supabase Auth caída" },
+      });
+    });
   });
 });

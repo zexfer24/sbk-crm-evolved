@@ -247,7 +247,7 @@ export async function POST(request: Request) {
         } else if (kind === "media") {
           // El bucket es privado: Meta necesita un enlace firmado, no la ruta
           // del CRM, que le pediría una sesión que no tiene.
-          const link = await signedUrlForSending(mediaUrl!);
+          const link = await signedUrlForSending(mediaUrl!, { messageId, conversationId });
           if (!link) throw new Error("No se pudo preparar el archivo para enviarlo por WhatsApp.");
 
           result = await sendWithRetry(() =>
