@@ -149,11 +149,27 @@ function createFakeSupabase() {
 
       if (table === "agent_turns") {
         return {
-          insert: () =>
-            state.agentTurnInsertShouldFail
-              ? Promise.reject(new Error("no se pudo escribir agent_turns"))
-              : Promise.resolve({ data: null, error: null }),
+          // T4, plan "Nada se pierde en un corte ni en un deploy"
+          // (21-22/9/2026): `logTurn` (agent.ts) pasó a
+          // `.insert(row).select("id").single()` — el reject simulado se
+          // mueve al final de la cadena, mismo comportamiento observable
+          // (la excepción sigue propagándose sin que `logTurn` la atrape).
+          insert: () => ({
+            select: () => ({
+              single: () =>
+                state.agentTurnInsertShouldFail
+                  ? Promise.reject(new Error("no se pudo escribir agent_turns"))
+                  : Promise.resolve({ data: { id: "turn-1" }, error: null }),
+            }),
+          }),
         };
+      }
+
+      // T4, mismo plan: `logTurnCalls` (agent.ts) — este archivo mockea
+      // `@/lib/ai/model` (ver más abajo), así que el registro de telemetría
+      // siempre queda vacío y este INSERT nunca llega a llamarse.
+      if (table === "agent_turn_calls") {
+        return { insert: () => Promise.resolve({ data: null, error: null }) };
       }
 
       // T3, plan "Nada sin leer, un solo catálogo y la factura Saint"

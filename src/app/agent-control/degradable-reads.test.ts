@@ -54,6 +54,28 @@ describe("readListIfTableExists", () => {
     spy.mockRestore();
   });
 
+  /**
+   * T4, plan "Nada se pierde en un corte ni en un deploy" (21-22/9/2026):
+   * `fetchTurnCallsByPhase` (data.ts) llama a la RPC `agent_turn_calls_by_phase`
+   * (migración 20260921040000) -- una función que falta da PGRST202, no
+   * PGRST205 (ese es para tablas). Mismo criterio, mismo destino: lista
+   * vacía en vez de tumbar el panel entero.
+   */
+  it("cae a la lista vacía si PostgREST dice PGRST202 (función RPC fuera del caché de esquema)", async () => {
+    const spy = vi.spyOn(console, "error").mockImplementation(() => {});
+    const error = postgrestError(
+      "PGRST202",
+      "Could not find the function public.agent_turn_calls_by_phase(days) in the schema cache"
+    );
+
+    const result = await readListIfTableExists(Promise.reject(error), "las llamadas por fase");
+
+    expect(result).toEqual([]);
+    expect(spy).toHaveBeenCalledTimes(1);
+
+    spy.mockRestore();
+  });
+
   it("RELANZA un error genérico (timeout, 5xx, corte de red) en vez de fingir una lista vacía", async () => {
     const error = postgrestError("57014", "canceling statement due to statement timeout");
 

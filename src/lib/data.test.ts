@@ -1,6 +1,13 @@
 import { describe, expect, it } from "vitest";
 import type { SupabaseClient } from "@supabase/supabase-js";
-import { fetchDefaultChannel, fetchMessages, searchConversationSummaries } from "@/lib/data";
+import {
+  fetchAgentTurns,
+  fetchDefaultChannel,
+  fetchMessages,
+  fetchTokenUsageSummary,
+  fetchTurnCallsByPhase,
+  searchConversationSummaries,
+} from "@/lib/data";
 
 // ---------------------------------------------------------------------------
 // Fake SupabaseClient: simula el query builder encadenable que usa
@@ -359,5 +366,242 @@ describe("fetchDefaultChannel", () => {
     const result = await fetchDefaultChannel(client);
 
     expect(result).toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// T4, plan "Nada se pierde en un corte ni en un deploy" (21-22/9/2026): tres
+// lecturas nuevas/ampliadas de la telemetría por turno. Fakes mínimos, uno
+// por función -- estas tres nunca comparten forma de query con las de arriba.
+// ---------------------------------------------------------------------------
+
+describe("fetchAgentTurns", () => {
+  /**
+   * `cached_input_tokens`/`steps`/`tools_used` se agregaron al SELECT en esta
+   * tarea -- sin este test, un `revert` accidental de esas tres columnas del
+   * string no lo detectaría ningún otro test de este archivo.
+   */
+  it("pide cached_input_tokens, steps y tools_used en el SELECT", async () => {
+    let columnasPedidas = "";
+    const client = {
+      from: (table: string) => {
+        if (table !== "agent_turns") throw new Error(`fake solo conoce "agent_turns", pidieron "${table}"`);
+        return {
+          select: (columns: string) => {
+            columnasPedidas = columns;
+            return {
+              order: () => ({
+                limit: async () => ({ data: [], error: null }),
+              }),
+            };
+          },
+        };
+      },
+    };
+
+    await fetchAgentTurns(client as unknown as SupabaseClient);
+
+    expect(columnasPedidas).toContain("cached_input_tokens");
+    expect(columnasPedidas).toContain("steps");
+    expect(columnasPedidas).toContain("tools_used");
+  });
+
+  it("mapea cached_input_tokens/steps/tools_used a camelCase, null incluido (turnos de antes de la migración)", async () => {
+    const client = {
+      from: () => ({
+        select: () => ({
+          order: () => ({
+            limit: async () => ({
+              data: [
+                {
+                  id: "turn-1",
+                  conversation_id: "conv-1",
+                  intent: "otro",
+                  action: "answered",
+                  summary: "ok",
+                  model: "openai/gpt-5.6-luna",
+                  input_tokens: 100,
+                  output_tokens: 20,
+                  total_tokens: 120,
+                  reasoning_tokens: 5,
+                  cached_input_tokens: 40,
+                  steps: 2,
+                  tools_used: "buscarRepuesto,escalarAAsesor",
+                  playbook_id: null,
+                  customer_message: "hola",
+                  created_at: "2026-09-22T10:00:00Z",
+                  conversation: null,
+                },
+                {
+                  id: "turn-2",
+                  conversation_id: "conv-2",
+                  intent: null,
+                  action: "answered",
+                  summary: null,
+                  model: null,
+                  input_tokens: null,
+                  output_tokens: null,
+                  total_tokens: null,
+                  reasoning_tokens: 0,
+                  cached_input_tokens: null,
+                  steps: null,
+                  tools_used: null,
+                  playbook_id: null,
+                  customer_message: null,
+                  created_at: "2026-09-01T00:00:00Z",
+                  conversation: null,
+                },
+              ],
+              error: null,
+            }),
+          }),
+        }),
+      }),
+    };
+
+    const result = await fetchAgentTurns(client as unknown as SupabaseClient);
+
+    expect(result[0]).toMatchObject({ cachedInputTokens: 40, steps: 2, toolsUsed: "buscarRepuesto,escalarAAsesor" });
+    expect(result[1]).toMatchObject({ cachedInputTokens: null, steps: null, toolsUsed: null });
+  });
+});
+
+interface RawTokenUsageFixtureRow {
+  day: string;
+  model: string;
+  input_tokens: number;
+  output_tokens: number;
+  total_tokens: number;
+  cached_input_tokens: number;
+  reasoning_tokens: number;
+}
+
+function fakeTokenUsageClient(rows: RawTokenUsageFixtureRow[]) {
+  const rpcCalls: { fn: string; params: unknown }[] = [];
+  const client = {
+    rpc: (fn: string, params?: unknown) => {
+      rpcCalls.push({ fn, params });
+      if (fn !== "agent_token_usage") throw new Error(`fake solo conoce "agent_token_usage", pidieron "${fn}"`);
+      return Promise.resolve({ data: rows, error: null });
+    },
+    from: (table: string) => {
+      if (table !== "model_pricing") throw new Error(`fake solo conoce "model_pricing", pidieron "${table}"`);
+      return { select: () => ({ order: async () => ({ data: [], error: null }) }) };
+    },
+  };
+  return { client: client as unknown as SupabaseClient, rpcCalls };
+}
+
+describe("fetchTokenUsageSummary", () => {
+  /**
+   * `agent_token_usage` se recreó (migración 20260921040000) con
+   * `cached_input_tokens`/`reasoning_tokens` — sin este test, sumarlos mal
+   * (o dejar de sumarlos) no lo detecta ningún otro test de este archivo.
+   * Modelo pricing vacío a propósito: no es lo que se prueba acá.
+   */
+  it("suma cached_input_tokens y reasoning_tokens de TODAS las filas, día×modelo incluido", async () => {
+    const { client } = fakeTokenUsageClient([
+      {
+        day: "2026-09-20",
+        model: "openai/gpt-5.6-luna",
+        input_tokens: 1000,
+        output_tokens: 200,
+        total_tokens: 1200,
+        cached_input_tokens: 300,
+        reasoning_tokens: 50,
+      },
+      {
+        day: "2026-09-21",
+        model: "openai/gpt-5.6-luna",
+        input_tokens: 500,
+        output_tokens: 100,
+        total_tokens: 600,
+        cached_input_tokens: 0,
+        reasoning_tokens: 20,
+      },
+      {
+        day: "2026-09-21",
+        model: "google/gemini-3.1-flash-lite",
+        input_tokens: 400,
+        output_tokens: 80,
+        total_tokens: 480,
+        cached_input_tokens: 120,
+        reasoning_tokens: 0,
+      },
+    ]);
+
+    const result = await fetchTokenUsageSummary(client, 30);
+
+    expect(result.totalCachedInputTokens).toBe(420); // 300 + 0 + 120
+    expect(result.totalReasoningTokens).toBe(70); // 50 + 20 + 0
+  });
+
+  it("pide los días pedidos a la RPC, sin fijarlos a 30", async () => {
+    const { client, rpcCalls } = fakeTokenUsageClient([]);
+
+    await fetchTokenUsageSummary(client, 7);
+
+    expect(rpcCalls).toHaveLength(1);
+    expect(rpcCalls[0]).toEqual({ fn: "agent_token_usage", params: { days: 7 } });
+  });
+
+  it("con cero filas, los dos totales nuevos son 0 (no undefined ni NaN)", async () => {
+    const { client } = fakeTokenUsageClient([]);
+
+    const result = await fetchTokenUsageSummary(client);
+
+    expect(result.totalCachedInputTokens).toBe(0);
+    expect(result.totalReasoningTokens).toBe(0);
+  });
+});
+
+describe("fetchTurnCallsByPhase", () => {
+  it("llama a la RPC agent_turn_calls_by_phase con los días pedidos y mapea las columnas a camelCase", async () => {
+    const rpcCalls: { fn: string; params: unknown }[] = [];
+    const client = {
+      rpc: (fn: string, params?: unknown) => {
+        rpcCalls.push({ fn, params });
+        return Promise.resolve({
+          data: [
+            {
+              phase: "redactar",
+              calls: 40,
+              input_tokens: 12000,
+              output_tokens: 3000,
+              cached_input_tokens: 5000,
+              reasoning_tokens: 900,
+              max_output_tokens_max: 1500,
+              tool_choice_none_calls: 6,
+            },
+          ],
+          error: null,
+        });
+      },
+    };
+
+    const result = await fetchTurnCallsByPhase(client as unknown as SupabaseClient, 14);
+
+    expect(rpcCalls).toEqual([{ fn: "agent_turn_calls_by_phase", params: { days: 14 } }]);
+    expect(result).toEqual([
+      {
+        phase: "redactar",
+        calls: 40,
+        inputTokens: 12000,
+        outputTokens: 3000,
+        cachedInputTokens: 5000,
+        reasoningTokens: 900,
+        maxOutputTokensMax: 1500,
+        toolChoiceNoneCalls: 6,
+      },
+    ]);
+  });
+
+  it("relanza el error de la RPC (p. ej. PGRST202, función sin migrar) — lo maneja el llamador con readListIfTableExists", async () => {
+    const error = { code: "PGRST202", message: "función no encontrada" };
+    const client = {
+      rpc: () => Promise.resolve({ data: null, error }),
+    };
+
+    await expect(fetchTurnCallsByPhase(client as unknown as SupabaseClient)).rejects.toBe(error);
   });
 });

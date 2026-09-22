@@ -16,22 +16,58 @@ vi.mock("@ai-sdk/google", () => ({ google: (id: string) => googleMock(id) }));
 
 /** Registra qué modelo se envolvió y con qué opciones de ritmo. */
 const envueltos: { modelo: unknown; fase: string; reintentos?: number }[] = [];
-const middlewarePorId = new Map<object, { fase: string; reintentos?: number }>();
+const rateLimitOptionsPorMiddleware = new Map<object, { fase: string; reintentos?: number }>();
+/**
+ * T4, plan "Nada se pierde en un corte ni en un deploy" (21-22/9/2026): la
+ * fase con la que se construyó CADA middleware de telemetría, para poder
+ * verificar que `build()` (model.ts) le pasa la MISMA fase que al control de
+ * ritmo -- las dos vienen del mismo `options.fase`, ninguna se inventa la
+ * suya.
+ */
+const telemetryFasePorMiddleware = new Map<object, string>();
 
 vi.mock("@/lib/ai/rate-limit", () => ({
   rateLimitMiddleware: (options: { fase: string; reintentos?: number }) => {
-    const middleware = { wrapGenerate: () => undefined };
-    middlewarePorId.set(middleware, options);
+    const middleware = { wrapGenerate: () => undefined, __origen: "rate-limit" as const };
+    rateLimitOptionsPorMiddleware.set(middleware, options);
+    return middleware;
+  },
+}));
+
+vi.mock("@/lib/ai/turn-telemetry", () => ({
+  telemetryMiddleware: (fase: string) => {
+    const middleware = { wrapGenerate: () => undefined, __origen: "telemetry" as const };
+    telemetryFasePorMiddleware.set(middleware, fase);
     return middleware;
   },
 }));
 
 vi.mock("ai", async (importOriginal) => ({
   ...(await importOriginal<typeof import("ai")>()),
-  wrapLanguageModel: ({ model, middleware }: { model: unknown; middleware: object }) => {
-    const options = middlewarePorId.get(middleware);
-    if (!options) throw new Error("se envolvió un modelo con un middleware que no es el del ritmo");
-    envueltos.push({ modelo: model, ...options });
+  // `build()` compone DOS middlewares (`middleware: [rateLimit, telemetry]`
+  // desde T4): este mock deja de aceptar un middleware suelto y exige el
+  // arreglo, en ESE orden -- rate-limit primero (queda por FUERA tras
+  // `wrapLanguageModel`), telemetría segundo (queda por DENTRO, pegada al
+  // modelo base). Ver el comentario de cabecera de turn-telemetry.ts para el
+  // porqué del orden: `duration_ms` tiene que medir la llamada real al
+  // proveedor, no la espera del control de ritmo.
+  wrapLanguageModel: ({ model, middleware }: { model: unknown; middleware: unknown[] }) => {
+    if (!Array.isArray(middleware) || middleware.length !== 2) {
+      throw new Error("build() tiene que envolver el modelo con exactamente [rateLimitMiddleware, telemetryMiddleware]");
+    }
+    const [primero, segundo] = middleware as { __origen?: string }[];
+    const rateLimitOptions = rateLimitOptionsPorMiddleware.get(middleware[0] as object);
+    const telemetryFase = telemetryFasePorMiddleware.get(middleware[1] as object);
+    if (primero?.__origen !== "rate-limit" || !rateLimitOptions) {
+      throw new Error("el primer middleware del arreglo no es el del ritmo -- el orden importa (rate-limit por fuera)");
+    }
+    if (segundo?.__origen !== "telemetry" || telemetryFase === undefined) {
+      throw new Error("el segundo middleware del arreglo no es el de telemetría -- el orden importa (telemetría por dentro)");
+    }
+    if (telemetryFase !== rateLimitOptions.fase) {
+      throw new Error(`rate-limit (${rateLimitOptions.fase}) y telemetría (${telemetryFase}) recibieron una fase distinta`);
+    }
+    envueltos.push({ modelo: model, ...rateLimitOptions });
     return { envuelto: model };
   },
 }));
@@ -225,5 +261,95 @@ describe("AI_AGENT_REASONING", () => {
     const modelo = getAgentModel("medium");
 
     expect(modelo.providerOptions).toBeUndefined();
+  });
+
+  // -------------------------------------------------------------------------
+  // T5 (plan "Nada se pierde en un corte ni en un deploy", 21-22/9/2026,
+  // hallazgo 6): `off` NO apaga el razonamiento de Luna -- solo deja de
+  // mandar el parámetro, y el proveedor razona con su propio default (58,5 %
+  // de la salida medida el 21/9/2026 con `off` puesto). El único apagado de
+  // verdad es `none`, que manda `reasoningEffort: "none"` explícito -- el SDK
+  // lo traduce a `reasoning: { effort: "none" }` en la Responses API
+  // (`node_modules/@ai-sdk/openai/dist/index.js:6408-6423`).
+  // -------------------------------------------------------------------------
+  it("con AI_AGENT_REASONING=none, el agente manda reasoningEffort: 'none', pisando el effort pedido", () => {
+    process.env.AI_AGENT_REASONING = "none";
+
+    const modelo = getAgentModel("medium");
+
+    expect(modelo.providerOptions).toEqual({ openai: { reasoningEffort: "none" } });
+  });
+
+  it("con AI_AGENT_REASONING=none, el clasificador también manda 'none', pisando 'low'", () => {
+    process.env.AI_AGENT_REASONING = "none";
+
+    const modelo = getClassifierModel("clasificar");
+
+    expect(modelo.providerOptions).toEqual({ openai: { reasoningEffort: "none" } });
+  });
+
+  it("con AI_AGENT_REASONING=NONE (mayúsculas), se normaliza igual que 'none'", () => {
+    process.env.AI_AGENT_REASONING = "NONE";
+
+    const modelo = getAgentModel("high");
+
+    expect(modelo.providerOptions).toEqual({ openai: { reasoningEffort: "none" } });
+  });
+
+  it("con Google, 'none' tampoco manda providerOptions -- Google no tiene este parámetro", () => {
+    process.env.AI_AGENT_MODEL = "gemini-3.1-flash-lite";
+    process.env.AI_AGENT_PROVIDER = "google";
+    process.env.AI_AGENT_REASONING = "none";
+
+    const modelo = getAgentModel("medium");
+
+    expect(modelo.providerOptions).toBeUndefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// T4, plan "Nada se pierde en un corte ni en un deploy" (21-22/9/2026): cada
+// modelo que sale de `build()` va envuelto con DOS middlewares, no uno --
+// `telemetryMiddleware` se suma a `rateLimitMiddleware`. El mock de
+// `wrapLanguageModel` de la cabecera de este archivo YA valida en cada test
+// de arriba que el arreglo tiene la forma y el ORDEN correctos (si no, la
+// prueba lanza antes de llegar a ninguna aserción); este describe agrega lo
+// que esos tests no cubren: la fase de la telemetría.
+// ---------------------------------------------------------------------------
+describe("telemetría por llamada", () => {
+  it("la telemetría del agente recibe la misma fase que el control de ritmo ('redactar')", () => {
+    getAgentModel("medium");
+
+    // El mock de wrapLanguageModel ya comprobó que las dos fases coinciden
+    // (o habría lanzado); acá solo se confirma cuál es.
+    expect(envueltos[0].fase).toBe("redactar");
+  });
+
+  it("la telemetría de la clasificación recibe 'clasificar' o 'escenario', según quien llame", () => {
+    getClassifierModel("clasificar");
+    getClassifierModel("escenario");
+
+    expect(envueltos[0].fase).toBe("clasificar");
+    expect(envueltos[1].fase).toBe("escenario");
+  });
+
+  /**
+   * `applyIdentityGuard` (agent.ts) es la ÚNICA llamada del turno con fase
+   * "identidad": pasa un segundo argumento a `getAgentModel` que hasta esta
+   * tarea no existía (siempre era "redactar", fijo). Sin este parámetro, la
+   * reescritura de identidad se habría anotado en `agent_turn_calls` como
+   * una llamada más del tool loop, mezclando dos fases que el CHECK de la
+   * base distingue a propósito.
+   */
+  it("getAgentModel acepta una fase explícita para la reescritura de identidad", () => {
+    getAgentModel("low", "identidad");
+
+    expect(envueltos[0].fase).toBe("identidad");
+  });
+
+  it("sin fase explícita, getAgentModel sigue usando 'redactar' (comportamiento de siempre)", () => {
+    getAgentModel("medium");
+
+    expect(envueltos[0].fase).toBe("redactar");
   });
 });

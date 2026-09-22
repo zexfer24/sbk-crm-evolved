@@ -54,6 +54,7 @@ import {
 } from "@/lib/ai/seba";
 import { errorText, log } from "@/lib/log";
 import { stepToolChoice } from "@/lib/ai/tool-choice";
+import { conTelemetriaDeTurno, turnCallsSnapshot } from "@/lib/ai/turn-telemetry";
 import { withinFreeformWindow } from "@/lib/dashboard";
 import { isWithin24hWindow } from "@/lib/whatsapp-window";
 import { sendTypingIndicator } from "@/lib/whatsapp/meta-client";
@@ -493,6 +494,59 @@ interface LogTurnParams {
   tokens: TurnTokens | null;
   playbookId?: string | null;
   customerMessage?: string | null;
+  /**
+   * T4, plan "Nada se pierde en un corte ni en un deploy" (21-22/9/2026): el
+   * MISMO objeto `TurnTiming` que el turno viene mutando desde que abrió
+   * (`newTurnTiming`, arriba). `logTurn` lo lee en el instante en que se
+   * llama -- cada uno de sus ~10 llamadores está en un punto distinto del
+   * turno, así que los tramos que todavía no corrieron quedan `null` sin que
+   * `logTurn` tenga que adivinar cuáles: `clasificacionMs`/`redaccionMs` son
+   * `null` en todo lo que retorna ANTES de fase 0/1 (presentación,
+   * soloSaludo, cortesía tras escalada, adjuntos sin texto); `redaccionMs`
+   * también es `null` si el clasificador falló antes de llegar al tool loop;
+   * y `envioMs` es `null` salvo que este mismo turno ya haya llamado a
+   * `deliver()` al menos una vez (lo mide `deliver`, no `logTurn`).
+   */
+  tiempos: TurnTiming;
+}
+
+/**
+ * Vuelca al registro las llamadas al proveedor que se acumularon en ESTE
+ * turno (`turnCallsSnapshot()`, turn-telemetry.ts) contra el `turnId` que
+ * acaba de asignarle `agent_turns`. Nunca lanza -- una fila de detalle que no
+ * se pudo escribir no puede tumbar un turno que ya le habló al cliente, mismo
+ * criterio que `logTurn`. Sin llamadas que volcar (un turno que se calló
+ * antes de tocar al proveedor, o el `INSERT` de arriba sin `select().single()`
+ * exitoso) no hace ningún viaje de más a la base.
+ */
+async function logTurnCalls(
+  supabase: SupabaseClient<Database>,
+  conversationId: string,
+  turnId: string
+): Promise<void> {
+  const calls = turnCallsSnapshot();
+  if (calls.length === 0) return;
+
+  const { error } = await supabase.from("agent_turn_calls").insert(
+    calls.map((call) => ({
+      turn_id: turnId,
+      conversation_id: conversationId,
+      sequence: call.sequence,
+      phase: call.phase,
+      input_tokens: call.inputTokens,
+      output_tokens: call.outputTokens,
+      cached_input_tokens: call.cachedInputTokens,
+      reasoning_tokens: call.reasoningTokens,
+      max_output_tokens: call.maxOutputTokens,
+      tool_choice: call.toolChoice,
+      finish_reason: call.finishReason,
+      duration_ms: call.durationMs,
+    }))
+  );
+
+  if (error) {
+    log.error("turno_llamadas_no_escritas", { conversationId, turnId, detail: errorText(error) });
+  }
 }
 
 /**
@@ -505,32 +559,58 @@ interface LogTurnParams {
  * cuando se buscó uno. No lanza: `logTurn` es observabilidad, nunca puede
  * tumbar un turno que ya le habló al cliente (o que decidió, correctamente,
  * callarse).
+ *
+ * T4, plan "Nada se pierde en un corte ni en un deploy" (21-22/9/2026): el
+ * `INSERT` pasa a pedir `.select("id").single()` porque `agent_turn_calls`
+ * (migración 20260921040000) necesita el `id` recién asignado como
+ * `turn_id` — sin él no hay a qué fila de detalle referenciar. Si el INSERT
+ * falla, o si por algún motivo vuelve sin `id`, no hay `turn_id` que usar:
+ * se deja el mismo `turno_bitacora_no_escrita` de siempre y se sale ANTES de
+ * `logTurnCalls` (las llamadas de este turno quedan sin escribir, pero eso
+ * ya lo cuenta ese mismo evento — no hace falta uno nuevo).
  */
 async function logTurn(supabase: SupabaseClient<Database>, conversationId: string, params: LogTurnParams) {
-  const { error } = await supabase.from("agent_turns").insert({
-    conversation_id: conversationId,
-    intent: params.intent,
-    action: params.action,
-    summary: params.summary.slice(0, 500),
-    model: currentAgentModelLabel(),
-    input_tokens: params.tokens?.inputTokens ?? null,
-    output_tokens: params.tokens?.outputTokens ?? null,
-    total_tokens: params.tokens?.totalTokens ?? null,
-    cached_input_tokens: params.tokens?.cachedInputTokens ?? null,
-    // T4b, 21/9/2026: `reasoning_tokens` es `not null default 0` en la base
-    // (migración 20260921020000, T4a) — a diferencia de las otras columnas de
-    // tokens (nullable, `null` cuando el turno nunca llegó a medir nada),
-    // acá `0` SÍ es un valor medido y correcto para un turno sin `tokens`
-    // (p. ej. el error temprano de `runAgentTurn`), así que no hay ambigüedad
-    // que resolver con `null`.
-    reasoning_tokens: params.tokens?.reasoningTokens ?? 0,
-    playbook_id: params.playbookId ?? null,
-    customer_message: params.customerMessage ?? null,
-  });
+  const { data, error } = await supabase
+    .from("agent_turns")
+    .insert({
+      conversation_id: conversationId,
+      intent: params.intent,
+      action: params.action,
+      summary: params.summary.slice(0, 500),
+      model: currentAgentModelLabel(),
+      input_tokens: params.tokens?.inputTokens ?? null,
+      output_tokens: params.tokens?.outputTokens ?? null,
+      total_tokens: params.tokens?.totalTokens ?? null,
+      cached_input_tokens: params.tokens?.cachedInputTokens ?? null,
+      // T4b, 21/9/2026: `reasoning_tokens` es `not null default 0` en la base
+      // (migración 20260921020000, T4a) — a diferencia de las otras columnas de
+      // tokens (nullable, `null` cuando el turno nunca llegó a medir nada),
+      // acá `0` SÍ es un valor medido y correcto para un turno sin `tokens`
+      // (p. ej. el error temprano de `runAgentTurn`), así que no hay ambigüedad
+      // que resolver con `null`.
+      reasoning_tokens: params.tokens?.reasoningTokens ?? 0,
+      playbook_id: params.playbookId ?? null,
+      customer_message: params.customerMessage ?? null,
+      // T4, plan "Nada se pierde en un corte ni en un deploy" (21-22/9/2026,
+      // migración 20260921040000): las seis columnas de telemetría del turno
+      // completo — ver el docblock de `LogTurnParams.tiempos` para cuáles
+      // quedan `null` según el punto del turno en que se llamó a `logTurn`.
+      steps: params.tiempos.pasos,
+      tools_used: params.tiempos.herramientas,
+      wait_ms: params.tiempos.esperaMs,
+      classification_ms: params.tiempos.clasificacionMs,
+      generation_ms: params.tiempos.redaccionMs,
+      delivery_ms: params.tiempos.envioMs,
+    })
+    .select("id")
+    .single();
 
-  if (error) {
+  if (error || !data) {
     log.error("turno_bitacora_no_escrita", { conversationId, action: params.action, detail: errorText(error) });
+    return;
   }
+
+  await logTurnCalls(supabase, conversationId, data.id);
 }
 
 /**
@@ -1029,7 +1109,11 @@ async function applyIdentityGuard(params: {
   let motivoFallo: "reescritura_fallida" | "sigue_calzando" = "reescritura_fallida";
 
   try {
-    const { model, providerOptions } = getAgentModel("low");
+    // T4, plan "Nada se pierde en un corte ni en un deploy" (21-22/9/2026):
+    // esta es la ÚNICA llamada de todo el turno con fase "identidad" -- sin
+    // pasarla, `build()` (model.ts) la anota como "redactar" por defecto y la
+    // telemetría mezclaría la reescritura de identidad con el tool loop.
+    const { model, providerOptions } = getAgentModel("low", "identidad");
     const result = await generateText({
       model,
       // SYSTEM_PROMPT como prefijo EXACTO: es lo único que el proveedor
@@ -1039,6 +1123,14 @@ async function applyIdentityGuard(params: {
       messages: [{ role: "user", content: text }],
       providerOptions,
       maxRetries: 0,
+      // Techo de salida (T5, plan "Nada se pierde en un corte ni en un
+      // deploy", 21-22/9/2026, hallazgo 5): esta llamada corría SIN
+      // `maxOutputTokens` -- la única del turno sin uno, porque nació antes
+      // de que `MAX_OUTPUT_TOKENS` existiera (T5, "La voz cercana y la
+      // espera visible", 14/9/2026). Mismo techo que la redacción: una
+      // reescritura no tiene motivo para gastar más que el texto que
+      // reescribe.
+      maxOutputTokens: MAX_OUTPUT_TOKENS,
     });
     turnTokens = addTokens(turnTokens, tokensFromUsage(result.usage));
 
@@ -1236,6 +1328,7 @@ async function runPlaybook(
       tokens,
       playbookId: playbook.id,
       customerMessage,
+      tiempos,
     });
     return;
   }
@@ -1252,6 +1345,7 @@ async function runPlaybook(
     tokens,
     playbookId: playbook.id,
     customerMessage,
+    tiempos,
   });
 }
 
@@ -1566,6 +1660,7 @@ async function runTurnPhases(
           summary: "Seba se presentó; el cliente solo saludó.",
           tokens: null,
           customerMessage,
+          tiempos,
         });
         return;
       }
@@ -1630,6 +1725,7 @@ async function runTurnPhases(
       summary: "Cortesía con escalada abierta: no se respondió.",
       tokens: null,
       customerMessage,
+      tiempos,
     });
     return;
   }
@@ -1706,6 +1802,7 @@ async function runTurnPhases(
       summary: `Segundo adjunto sin texto → ${forced.assignedAgentName ?? "(sin asesor disponible)"}.`,
       tokens: null,
       customerMessage,
+      tiempos,
     });
     return;
   }
@@ -1891,6 +1988,7 @@ async function runTurnPhases(
       summary: `Fallo al clasificar intención: ${errorText(classified.err)}`,
       tokens: classifiedTokens,
       customerMessage,
+      tiempos,
     });
     // Bug 2, hallazgo 2 del plan (T4, 8/9/2026): este `return` dejaba
     // journey_stage en "classifying" para siempre — el corte de red de
@@ -2001,6 +2099,7 @@ async function runTurnPhases(
       summary: repetido ? "Fuera de tema, insistiendo: no se respondió." : OFF_TOPIC_REPLY,
       tokens: classifyTokens,
       customerMessage,
+      tiempos,
     });
     return;
   }
@@ -2158,6 +2257,7 @@ async function runTurnPhases(
       summary: errorText(err),
       tokens: classifyTokens,
       customerMessage,
+      tiempos,
     });
     // Bug 2, hallazgo 2 del plan (T4, 8/9/2026): antes esto SOLO apagaba
     // active_tool y dejaba journey_stage en "classifying"/"tool_running"
@@ -2454,6 +2554,7 @@ async function runTurnPhases(
           : `Sin texto tras ${tiempos.pasos ?? "?"} pasos.`),
     tokens: turnTokens,
     customerMessage,
+    tiempos,
   });
 }
 
@@ -2471,8 +2572,21 @@ async function runTurnPhases(
  * ventana de silencio (diseño) de la espera en cola (atraso). Se queda vacío
  * en los turnos que no pasan por la cola (`api/dev/simulate-message`), y ahí
  * `debounceMs`/`colaMs` salen `null` sin que el turno se caiga por eso.
+ *
+ * T4, plan "Nada se pierde en un corte ni en un deploy" (21-22/9/2026): el
+ * cuerpo entero corre dentro de `conTelemetriaDeTurno` (turn-telemetry.ts) —
+ * abre el registro de llamadas al proveedor de ESTE turno antes de tocar
+ * nada, así que cualquier llamada que corra en el camino (fase 0/1 en
+ * paralelo, el tool loop, la reescritura de identidad) queda anotada en el
+ * mismo registro sin que ninguna función intermedia tenga que pasarlo a
+ * mano. `logTurn` (más arriba) lo lee con `turnCallsSnapshot()` en el
+ * momento en que escribe `agent_turns`.
  */
-export async function runAgentTurn(conversationId: string, options: { vencioEn?: number } = {}): Promise<void> {
+export function runAgentTurn(conversationId: string, options: { vencioEn?: number } = {}): Promise<void> {
+  return conTelemetriaDeTurno(() => runAgentTurnBody(conversationId, options));
+}
+
+async function runAgentTurnBody(conversationId: string, options: { vencioEn?: number } = {}): Promise<void> {
   const supabase = createAdminClient();
 
   const [

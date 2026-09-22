@@ -25,6 +25,7 @@ import type {
   QuickReply,
   Tag,
   TokenUsageSummary,
+  TurnCallsByPhase,
   WhatsappChannelHealth,
 } from "@/lib/types";
 import { createClient } from "@/lib/supabase/client";
@@ -45,8 +46,10 @@ import {
   fetchBacklogCounts,
   fetchPlaybooks,
   fetchTokenUsageSummary,
+  fetchTurnCallsByPhase,
   fetchUnmatchedTurns,
 } from "@/lib/data";
+import { readListIfTableExists } from "@/app/agent-control/degradable-reads";
 import {
   createAgentSuggestion,
   createCatalogLink,
@@ -174,6 +177,22 @@ const ACTION_TONE: Record<AgentTurnAction, string> = {
   error: "hot",
 };
 
+/**
+ * T4, plan "Nada se pierde en un corte ni en un deploy" (21-22/9/2026): las
+ * cuatro fases que reconoce `agent_turn_calls.phase` (migración
+ * 20260921040000) — `Record<string, string>` y no `Record<AgentTurnCallPhase,
+ * string>` a propósito: ese tipo vive en `@/lib/ai/turn-telemetry`, que es
+ * `server-only` y no se puede importar desde un componente cliente. Una fase
+ * que la RPC devuelva y este mapa no reconozca cae a su propio código crudo
+ * (`row.phase`), nunca a un texto inventado.
+ */
+const PHASE_LABEL: Record<string, string> = {
+  escenario: "Escenario",
+  clasificar: "Clasificar",
+  redactar: "Redactar",
+  identidad: "Identidad",
+};
+
 const TAB_TITLE: Record<AgentControlTab, string> = {
   ia: "Control del agente de IA",
   respuestas: "Respuestas predeterminadas",
@@ -250,6 +269,18 @@ export function AgentControlView({
   const [settings, setSettings] = useState(initialSettings);
   const [agents, setAgents] = useState(initialAgents);
   const [tokenUsage, setTokenUsage] = useState(initialTokenUsage);
+  /**
+   * T4, plan "Nada se pierde en un corte ni en un deploy" (21-22/9/2026):
+   * SIN prop `initial*` desde `page.tsx` a propósito — la tarea no incluía
+   * ese archivo en su alcance ("Archivos:" del plan), y este componente YA
+   * hace su propio refresco client-side con el Supabase del navegador (ver
+   * `refresh`, más abajo) para el resto del panel. `[]` de arranque, cargado
+   * al montar (efecto de más abajo) y en cada `refresh()`; `readListIfTableExists`
+   * lo degrada a `[]` si la migración 20260921040000 (RPC
+   * `agent_turn_calls_by_phase`) todavía no corrió en esta base (`PGRST202`),
+   * sin tumbar el resto del panel.
+   */
+  const [turnCallsByPhase, setTurnCallsByPhase] = useState<TurnCallsByPhase[]>([]);
   const [pricing, setPricing] = useState(initialPricing);
   const [suggestions, setSuggestions] = useState(initialSuggestions);
   const [agentMetrics, setAgentMetrics] = useState(initialAgentMetrics);
@@ -279,6 +310,28 @@ export function AgentControlView({
   const [suggestionText, setSuggestionText] = useState("");
   const [sendingSuggestion, setSendingSuggestion] = useState(false);
   const [resolvingSuggestionId, setResolvingSuggestionId] = useState<string | null>(null);
+
+  /**
+   * T4, plan "Nada se pierde en un corte ni en un deploy" (21-22/9/2026):
+   * APARTE del `Promise.all` de `refresh` (más abajo), a propósito —
+   * `fetchTurnCallsByPhase` pega contra la RPC `agent_turn_calls_by_phase`
+   * (migración 20260921040000, la más nueva del panel a esta fecha) y, sin
+   * `readListIfTableExists`, un `PGRST202` (función todavía no migrada)
+   * tiraría el `Promise.all` ENTERO junto con turnos/consumo/escenarios —
+   * exactamente el hallazgo A4/hallazgo 6 que motivó esa función (ver
+   * `degradable-reads.ts`). Un error genérico (timeout, 5xx) SÍ se relanza y
+   * lo atrapa el mismo `catch` silencioso de `refresh`: el siguiente evento
+   * de tiempo real reintenta.
+   */
+  const refreshTurnCallsByPhase = useCallback(async () => {
+    try {
+      const next = await readListIfTableExists(fetchTurnCallsByPhase(supabase), "las llamadas por fase");
+      setTurnCallsByPhase(next);
+    } catch {
+      // Mismo criterio que el catch de `refresh`: el siguiente cambio en
+      // tiempo real reintentará la sincronización.
+    }
+  }, [supabase]);
 
   // Todo lo del panel menos las conversaciones, que van por su propio carril.
   const refresh = useCallback(async () => {
@@ -330,12 +383,46 @@ export function AgentControlView({
       setCatalogLinks(nextCatalogLinks);
     } catch {
       // El siguiente cambio en tiempo real reintentará la sincronización.
+      // No incluye `turnCallsByPhase`: esa lectura corre APARTE, envuelta en
+      // `readListIfTableExists` (ver `refreshTurnCallsByPhase`, arriba) — un
+      // fallo ahí no puede tirar el resto de este refresco, que sí tiene que
+      // reflejar los cambios reales del panel.
     }
-  }, [supabase]);
+    await refreshTurnCallsByPhase();
+  }, [supabase, refreshTurnCallsByPhase]);
 
   // Agrupado y consciente de la pestaña: los eventos de estas tablas no
   // deben costar trece consultas cada uno en un panel que nadie está mirando.
   const scheduleRefresh = useLiveRefresh(refresh);
+
+  // Primera carga: `turnCallsByPhase` no llega como prop `initial*` desde
+  // `page.tsx` (ver el docblock de su `useState`, arriba) — sin este efecto
+  // la tabla "Por fase" se vería vacía hasta el primer evento de tiempo real
+  // o hasta la pasada de fondo de `useLiveRefresh` (hasta 5 minutos).
+  //
+  // Escrito inline, SIN llamar a `refreshTurnCallsByPhase` por nombre desde
+  // acá: `react-hooks/set-state-in-effect` sigue la referencia de una
+  // función `useCallback` hasta su `setTurnCallsByPhase` interno y la marca
+  // como "setState síncrono en el efecto" aunque esa escritura viva después
+  // de un `await`, dentro de su propio `try` — no distingue la asincronía.
+  // El `.then()` de acá abajo es la forma que el propio mensaje de la regla
+  // recomienda ("calling setState in a callback function"), y `cancelado`
+  // evita escribir el estado si el componente se desmontó antes de que la
+  // lectura resuelva.
+  useEffect(() => {
+    let cancelado = false;
+    readListIfTableExists(fetchTurnCallsByPhase(supabase), "las llamadas por fase")
+      .then((next) => {
+        if (!cancelado) setTurnCallsByPhase(next);
+      })
+      .catch(() => {
+        // Mismo criterio que el catch de `refreshTurnCallsByPhase`: el
+        // siguiente evento de tiempo real (o la pasada de fondo) reintenta.
+      });
+    return () => {
+      cancelado = true;
+    };
+  }, [supabase]);
 
   useEffect(() => {
     const channel = supabase
@@ -896,9 +983,38 @@ export function AgentControlView({
                                 Razonamiento: {t.reasoningTokens.toLocaleString("es-VE")}
                               </span>
                             )}
+                            {/*
+                              T4, plan "Nada se pierde en un corte ni en un
+                              deploy" (21-22/9/2026): mismo criterio que el
+                              badge de razonamiento de arriba -- solo aparece
+                              con `cachedInputTokens` positivo (`0`/`null` no
+                              dicen nada nuevo en la lista) y `> 0` para
+                              distinguir "cacheó de verdad" de "la columna
+                              nunca se llenó" (`null`, turnos de antes de esta
+                              tarea).
+                            */}
+                            {t.cachedInputTokens !== null && t.cachedInputTokens > 0 && (
+                              <span className="ac-badge" data-tone="good">
+                                Caché: {t.cachedInputTokens.toLocaleString("es-VE")}
+                              </span>
+                            )}
                             <span className="ac-feed-time">{timeLabel(t.createdAt)}</span>
                           </div>
                           {t.summary && <p className="ac-feed-summary">{t.summary}</p>}
+                          {/*
+                            T4, plan "Nada se pierde en un corte ni en un
+                            deploy" (21-22/9/2026): "N pasos · herramientas"
+                            solo si `steps` se midió (turnos de antes de la
+                            migración 20260921040000 quedan sin esta línea, no
+                            con un "null pasos" que no dice nada). Herramientas
+                            en blanco es un dato real (corrió y no usó
+                            ninguna), se pinta como "(ninguna)".
+                          */}
+                          {t.steps !== null && (
+                            <p className="ac-feed-summary">
+                              {t.steps.toLocaleString("es-VE")} pasos · {t.toolsUsed?.trim() ? t.toolsUsed : "(ninguna)"}
+                            </p>
+                          )}
                         </div>
                       );
                     })
@@ -926,6 +1042,28 @@ export function AgentControlView({
                   </span>
                   <span className="ac-tokens-stat-label">equivalente en USD</span>
                 </div>
+                {/*
+                  T4, plan "Nada se pierde en un corte ni en un deploy"
+                  (21-22/9/2026): los dos totales que `agent_token_usage`
+                  suma desde la migración 20260921040000 -- responden en dato
+                  si el prefijo estático de escenarios (T6 del mismo plan)
+                  de verdad hizo cachear más, y cuánto de la salida es
+                  razonamiento interno sin freno (el hallazgo que motivó todo
+                  el plan: dos turnos con ~65.800 tokens de salida contra un
+                  mensaje visible de ~40).
+                */}
+                <div className="ac-tokens-stat">
+                  <span className="ac-tokens-stat-value dash-num">
+                    {tokenUsage.totalCachedInputTokens.toLocaleString("es-VE")}
+                  </span>
+                  <span className="ac-tokens-stat-label">tokens de caché</span>
+                </div>
+                <div className="ac-tokens-stat">
+                  <span className="ac-tokens-stat-value dash-num">
+                    {tokenUsage.totalReasoningTokens.toLocaleString("es-VE")}
+                  </span>
+                  <span className="ac-tokens-stat-label">tokens de razonamiento</span>
+                </div>
               </div>
 
               <TokenUsageChart data={tokenUsage.byDay} />
@@ -941,6 +1079,43 @@ export function AgentControlView({
                       pricing={pricingByModel.get(usage.model)}
                       onSave={savePricing}
                     />
+                  ))
+                )}
+              </div>
+
+              {/*
+                T4, plan "Nada se pierde en un corte ni en un deploy"
+                (21-22/9/2026): la tabla chica "Por fase" -- responde en dato
+                la promesa 7.4 del informe del VPS del 21/9/2026
+                ("maxOutputTokens/toolChoice sin prueba directa"). Nunca se
+                lee `agent_turn_calls` directo (RLS sin política, ver la
+                migración 20260921040000): esto sale de la RPC
+                `agent_turn_calls_by_phase`, envuelta en
+                `readListIfTableExists` (`refreshTurnCallsByPhase`, arriba).
+              */}
+              <div className="dash-panel-head">
+                <h3 className="dash-panel-title">Por fase</h3>
+              </div>
+              <div className="ac-model-list">
+                {turnCallsByPhase.length === 0 ? (
+                  <p className="ac-live-empty">Todavía no hay llamadas medidas por fase.</p>
+                ) : (
+                  turnCallsByPhase.map((row) => (
+                    <div className="ac-model-row" key={row.phase}>
+                      <div className="ac-model-row-head">
+                        <span className="ac-model-name">{PHASE_LABEL[row.phase] ?? row.phase}</span>
+                        <span className="ac-model-tokens">{row.calls.toLocaleString("es-VE")} llamadas</span>
+                        <span className="ac-model-usd">
+                          {row.toolChoiceNoneCalls.toLocaleString("es-VE")} sin herramientas
+                        </span>
+                      </div>
+                      <span className="ac-model-tokens">
+                        Entrada: {row.inputTokens.toLocaleString("es-VE")} · Caché:{" "}
+                        {row.cachedInputTokens.toLocaleString("es-VE")} · Razonamiento:{" "}
+                        {row.reasoningTokens.toLocaleString("es-VE")} · Techo:{" "}
+                        {row.maxOutputTokensMax === null ? "—" : row.maxOutputTokensMax.toLocaleString("es-VE")}
+                      </span>
+                    </div>
                   ))
                 )}
               </div>

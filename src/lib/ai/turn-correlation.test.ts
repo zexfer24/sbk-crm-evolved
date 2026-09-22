@@ -136,15 +136,32 @@ function createFakeSupabase() {
 
       if (table === "agent_turns") {
         return {
+          // T4, plan "Nada se pierde en un corte ni en un deploy"
+          // (21-22/9/2026): `logTurn` (agent.ts) pasó a `.insert(row).select("id").single()`
+          // para obtener el `turn_id` de `agent_turn_calls` — mismo patrón
+          // que agent.test.ts.
           insert: (row: Record<string, unknown>) => {
             turnosRegistrados.push({
               conversationId: String(row.conversation_id),
               action: String(row.action),
               summary: String(row.summary),
             });
-            return Promise.resolve({ data: null, error: null });
+            return {
+              select: () => ({
+                single: async () => ({ data: { id: `turn-${turnosRegistrados.length}` }, error: null }),
+              }),
+            };
           },
         };
+      }
+
+      // T4, mismo plan: `logTurnCalls` (agent.ts) vuelca acá las llamadas
+      // que registró la telemetría del turno — este archivo mockea
+      // `@/lib/ai/model` (ver más abajo), así que el registro siempre queda
+      // vacío y este INSERT nunca se llama; el caso existe para que el fake
+      // no reviente si algún día deja de estarlo.
+      if (table === "agent_turn_calls") {
+        return { insert: () => Promise.resolve({ data: null, error: null }) };
       }
 
       // B3 (5/9/2026): runAgentTurn lee el horario al arrancar; sin fila cae al default.

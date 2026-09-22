@@ -36,6 +36,13 @@ vi.mock("@/lib/supabase/client", () => ({
 }));
 
 const fetchBacklogCountsMock = vi.fn(async () => ({ inWindow: 117, outOfWindow: 174 }));
+/**
+ * T4, plan "Nada se pierde en un corte ni en un deploy" (21-22/9/2026): el
+ * describe de telemetría, más abajo, sobrescribe la resolución para probar
+ * la tabla "Por fase"; el resto de los tests de este archivo se apoyan en su
+ * default (`[]`).
+ */
+const fetchTurnCallsByPhaseMock = vi.fn(async () => [] as unknown[]);
 
 vi.mock("@/lib/data", () => ({
   fetchAgentSettings: vi.fn(async () => ({ aiGloballyEnabled: true, dailySpendCapUsd: null, spentTodayUsd: 0 })),
@@ -51,8 +58,22 @@ vi.mock("@/lib/data", () => ({
   fetchLessons: vi.fn(async () => []),
   fetchModelPricing: vi.fn(async () => []),
   fetchPlaybooks: vi.fn(async () => []),
-  fetchTokenUsageSummary: vi.fn(async () => ({ totalTokens: 0, totalUsd: 0, hasUnpricedModels: false, byDay: [], byModel: [] })),
+  fetchTokenUsageSummary: vi.fn(async () => ({
+    totalTokens: 0,
+    totalUsd: 0,
+    hasUnpricedModels: false,
+    byDay: [],
+    byModel: [],
+    totalCachedInputTokens: 0,
+    totalReasoningTokens: 0,
+  })),
   fetchUnmatchedTurns: vi.fn(async () => []),
+  // T4, plan "Nada se pierde en un corte ni en un deploy" (21-22/9/2026): la
+  // vista pide esto en su propio ciclo de refresco (no viaja como prop
+  // `initial*` desde `page.tsx` — ver el docblock de la lectura en
+  // agent-control-view.tsx). `[]` de fábrica; el describe de telemetría más
+  // abajo sobrescribe la resolución para probar la tabla "Por fase".
+  fetchTurnCallsByPhase: () => fetchTurnCallsByPhaseMock(),
 }));
 
 const setAiGloballyEnabledMock = vi.fn(async (...args: unknown[]) => {
@@ -141,7 +162,14 @@ function liveConversation(id: string): Conversation {
   };
 }
 
-function montar(settings: AgentSettings, turns: AgentTurn[] = []) {
+function montar(
+  settings: AgentSettings,
+  turns: AgentTurn[] = [],
+  tokenUsageOverrides: Partial<{
+    totalCachedInputTokens: number;
+    totalReasoningTokens: number;
+  }> = {}
+) {
   render(
     <AgentControlView
       currentAgent={currentAgent}
@@ -150,7 +178,16 @@ function montar(settings: AgentSettings, turns: AgentTurn[] = []) {
       initialTags={[]}
       initialSettings={settings}
       initialAgents={[currentAgent]}
-      initialTokenUsage={{ totalTokens: 0, totalUsd: 0, hasUnpricedModels: false, byDay: [], byModel: [] }}
+      initialTokenUsage={{
+        totalTokens: 0,
+        totalUsd: 0,
+        hasUnpricedModels: false,
+        byDay: [],
+        byModel: [],
+        totalCachedInputTokens: 0,
+        totalReasoningTokens: 0,
+        ...tokenUsageOverrides,
+      }}
       initialPricing={[]}
       initialSuggestions={[]}
       initialAgentMetrics={[]}
@@ -184,6 +221,13 @@ function fakeTurn(overrides: Partial<AgentTurn> = {}): AgentTurn {
     outputTokens: 8,
     totalTokens: 28,
     reasoningTokens: 0,
+    // T4, plan "Nada se pierde en un corte ni en un deploy" (21-22/9/2026):
+    // `null` de fábrica, como un turno de antes de la migración
+    // 20260921040000 — los tests que ejercitan estas tres columnas las pisan
+    // con `overrides`.
+    cachedInputTokens: null,
+    steps: null,
+    toolsUsed: null,
     playbookId: null,
     customerMessage: "hola",
     createdAt: "2026-09-21T15:00:00.000Z",
@@ -327,5 +371,76 @@ describe("AgentControlView — tokens de razonamiento en el feed (T4b, 21/9/2026
     montar(encendida, [fakeTurn({ reasoningTokens: 0 })]);
 
     expect(screen.queryByText(/Razonamiento/)).not.toBeInTheDocument();
+  });
+});
+
+/**
+ * T4, plan "Nada se pierde en un corte ni en un deploy" (21-22/9/2026): la
+ * telemetría por llamada que se agrega a "Consumo de tokens" y al feed en
+ * vivo — dos totales nuevos, un badge de caché y la línea de pasos/herramientas.
+ */
+describe("AgentControlView — telemetría por llamada (T4, 21-22/9/2026)", () => {
+  it("pinta los dos totales nuevos de 'Consumo de tokens' (caché y razonamiento)", () => {
+    montar(encendida, [], { totalCachedInputTokens: 12345, totalReasoningTokens: 678 });
+
+    expect(screen.getByText("12.345")).toBeInTheDocument();
+    expect(screen.getByText("tokens de caché")).toBeInTheDocument();
+    expect(screen.getByText("678")).toBeInTheDocument();
+    expect(screen.getByText("tokens de razonamiento")).toBeInTheDocument();
+  });
+
+  it("muestra el badge de caché en el feed cuando el turno cacheó, y lo omite en 0 o null", () => {
+    montar(encendida, [
+      fakeTurn({ id: "turn-cache", cachedInputTokens: 1600 }),
+      fakeTurn({ id: "turn-sin-cache", conversationId: "conv-2", cachedInputTokens: 0 }),
+      fakeTurn({ id: "turn-viejo", conversationId: "conv-3", cachedInputTokens: null }),
+    ]);
+
+    expect(screen.getByText("Caché: 1.600")).toBeInTheDocument();
+    // Solo UN badge de caché: los otros dos turnos (0 y null) no lo pintan.
+    expect(screen.getAllByText(/^Caché:/)).toHaveLength(1);
+  });
+
+  it("muestra 'N pasos · herramientas' cuando el turno midió pasos, incluida la lista en blanco", () => {
+    montar(encendida, [
+      fakeTurn({ id: "turn-con-herramientas", steps: 3, toolsUsed: "buscarRepuesto,escalarAAsesor" }),
+      fakeTurn({ id: "turn-sin-herramientas", conversationId: "conv-2", steps: 1, toolsUsed: "" }),
+    ]);
+
+    expect(screen.getByText("3 pasos · buscarRepuesto,escalarAAsesor")).toBeInTheDocument();
+    expect(screen.getByText("1 pasos · (ninguna)")).toBeInTheDocument();
+  });
+
+  it("no muestra la línea de pasos en un turno de antes de la migración (steps: null)", () => {
+    montar(encendida, [fakeTurn({ steps: null, toolsUsed: null })]);
+
+    expect(screen.queryByText(/pasos ·/)).not.toBeInTheDocument();
+  });
+
+  it("pinta la tabla 'Por fase' con las filas que trae fetchTurnCallsByPhase", async () => {
+    fetchTurnCallsByPhaseMock.mockResolvedValueOnce([
+      {
+        phase: "redactar",
+        calls: 40,
+        inputTokens: 12000,
+        outputTokens: 3000,
+        cachedInputTokens: 5000,
+        reasoningTokens: 900,
+        maxOutputTokensMax: 1500,
+        toolChoiceNoneCalls: 6,
+      },
+    ]);
+
+    montar(encendida);
+
+    expect(await screen.findByText("Redactar")).toBeInTheDocument();
+    expect(screen.getByText("40 llamadas")).toBeInTheDocument();
+    expect(screen.getByText("6 sin herramientas")).toBeInTheDocument();
+  });
+
+  it("sin ninguna fila (la migración todavía no corrió, o no hay llamadas), pinta el vacío en vez de nada", () => {
+    montar(encendida);
+
+    expect(screen.getByText("Todavía no hay llamadas medidas por fase.")).toBeInTheDocument();
   });
 });

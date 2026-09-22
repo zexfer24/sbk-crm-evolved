@@ -4,6 +4,7 @@ import { google } from "@ai-sdk/google";
 import { wrapLanguageModel, type LanguageModel } from "ai";
 import type { SharedV4ProviderOptions } from "@ai-sdk/provider";
 import { rateLimitMiddleware } from "@/lib/ai/rate-limit";
+import { telemetryMiddleware, type AgentTurnCallPhase } from "@/lib/ai/turn-telemetry";
 
 // ---------------------------------------------------------------------------
 // Selección de modelo por variable de entorno: en producción, GPT-5.6 Luna
@@ -19,17 +20,32 @@ import { rateLimitMiddleware } from "@/lib/ai/rate-limit";
 // que es el único punto donde hay que imponerlo: no hay forma de conseguir un
 // modelo sin freno sin escribir una línea nueva acá.
 //
-// `AI_AGENT_REASONING` (S6, corrida "La IA ve lo que llega", 8/9/2026):
-// `gpt-5.6-luna`, el modelo real de producción, NO razona -- es un alias de
-// OpenRouter sin soporte para `reasoningEffort`, y `build()` se lo mandaba
-// de todas formas a TODO modelo del proveedor OpenAI. El AI SDK avisaba
-// `The feature "reasoningEffort" is not supported` 3-4 veces por turno (una
-// por llamada: reconocimiento de escenario, clasificación de intención,
-// redacción) y el esfuerzo configurado nunca se aplicaba -- el warning era
-// ruido, pero el silencio de fondo era que la perilla no hacía nada. La
-// variable gobierna el proceso completo, no el nombre del modelo: un
-// `gpt-5.6-luna` no razona hoy, pero un `gpt-5.6` a secas sí podría, así que
-// decidir por heurística sobre el id habría sido adivinar.
+// `AI_AGENT_REASONING` (S6, corrida "La IA ve lo que llega", 8/9/2026;
+// CORREGIDO T5, plan "Nada se pierde en un corte ni en un deploy",
+// 21-22/9/2026, hallazgo 6): el comentario de acá decía que `gpt-5.6-luna`
+// NO razona. Es FALSO -- se midió lo contrario el 21/9/2026 contra
+// `agent_turns.reasoning_tokens`: 58,5 % de la salida del modelo es
+// razonamiento. `@ai-sdk/openai@4.0.43` (el SDK instalado, no el que avisaba
+// el warning del 8/9 -- esa era otra versión) decide `isReasoningModel` con
+// una regex sobre el id (`getOpenAILanguageModelCapabilities`,
+// `node_modules/@ai-sdk/openai/dist/index.js:53`: `gptVersion != null &&
+// gptVersion.major >= 5 && !isGptChatModel` -- "gpt-5.6-luna" tiene major 5,
+// así que da `true`) y habla por la Responses API. Con `AI_AGENT_REASONING
+// = off` (producción) no viaja NADA de `providerOptions`, y el proveedor
+// razona con SU propio default (medium, según la documentación de OpenAI) --
+// "off" apaga el PARÁMETRO que este código manda, no el razonamiento del
+// modelo. Para apagarlo de verdad hace falta mandar `reasoningEffort: "none"`
+// expresamente: el SDK lo traduce a `reasoning: { effort: "none" }` en el
+// cuerpo de la Responses API (`dist/index.js:6408-6423`, el bloque
+// `...isReasoningModel && (resolvedReasoningEffort != null || …) && {
+// reasoning: { ...resolvedReasoningEffort != null && { effort:
+// resolvedReasoningEffort } … } }`). De ahí el valor nuevo `none` de esta
+// variable: `off` sigue sin mandar nada (el proveedor decide), `none` manda
+// el "none" explícito, y todo lo demás (ausente/`on`/basura) sigue mandando
+// el `effort` de siempre (`medium`/`low`) -- el operador decide cuál usar en
+// Dokploy después de leer `agent_turn_calls.reasoning_tokens` por fase (T4
+// del mismo plan). La variable sigue gobernando el PROCESO, no el nombre del
+// modelo: la decisión es de `.env`, no una heurística sobre el id acá.
 // ---------------------------------------------------------------------------
 
 type AiProvider = "openai" | "google";
@@ -37,13 +53,20 @@ type AiProvider = "openai" | "google";
 export type ReasoningEffort = "none" | "low" | "medium" | "high";
 
 /**
- * `on` por default: falta la variable, o trae cualquier cosa que no sea
- * exactamente `"off"`, y el esfuerzo se manda igual que siempre. Solo un
- * `"off"` explícito lo apaga -- así un typo en el .env ("Off", "0", vacío)
- * no apaga silenciosamente algo que sí se quería mandar.
+ * Tres estados, no dos (T5, plan "Nada se pierde en un corte ni en un
+ * deploy", 21-22/9/2026): `off` sigue sin mandar `providerOptions` --el
+ * proveedor razona con su propio default, ver el comentario de cabecera--,
+ * `none` manda el apagado EXPLÍCITO (`reasoningEffort: "none"`, que el SDK
+ * traduce a `reasoning: { effort: "none" }`), y cualquier otra cosa (falta
+ * la variable, `on`, o basura tipo "Off"/"0"/vacío con espacios) sigue
+ * mandando el `effort` de siempre -- un typo no puede apagar silenciosamente
+ * algo que sí se quería mandar.
  */
-function reasoningEnabled(): boolean {
-  return process.env.AI_AGENT_REASONING?.trim().toLowerCase() !== "off";
+function reasoningMode(): "off" | "none" | "on" {
+  const valor = process.env.AI_AGENT_REASONING?.trim().toLowerCase();
+  if (valor === "off") return "off";
+  if (valor === "none") return "none";
+  return "on";
 }
 
 function resolveModelId(): string {
@@ -83,7 +106,17 @@ interface AgentModel {
 }
 
 interface BuildOptions {
-  fase: string;
+  /**
+   * Qué fase del turno pide este modelo. Va, sin cambios, al control de ritmo
+   * (`RitmoOptions.fase`, rate-limit.ts, solo para sus registros) Y al
+   * middleware de telemetría (T4, plan "Nada se pierde en un corte ni en un
+   * deploy", 21-22/9/2026) como el `phase` de cada fila de
+   * `agent_turn_calls` -- por eso el tipo pasa de `string` a
+   * `AgentTurnCallPhase`: las cuatro fases que reconoce el CHECK de la base
+   * son EXACTAMENTE las cuatro que hoy pasan por acá (escenario, clasificar,
+   * redactar, identidad).
+   */
+  fase: AgentTurnCallPhase;
   reintentos?: number;
   /** Override explícito del proveedor. Solo lo usa el agente. */
   providerOverride?: string;
@@ -91,7 +124,15 @@ interface BuildOptions {
 
 function build(modelId: string, effort: ReasoningEffort, options: BuildOptions): AgentModel {
   const provider = resolveProvider(modelId, options.providerOverride);
-  const middleware = rateLimitMiddleware({ fase: options.fase, reintentos: options.reintentos });
+  // Orden del arreglo: ver la cabecera de turn-telemetry.ts para por qué
+  // `rateLimit` va PRIMERO (queda por FUERA tras `wrapLanguageModel`) y
+  // `telemetry` va SEGUNDO (queda por DENTRO, pegada al modelo base) --
+  // `duration_ms` tiene que medir la llamada real al proveedor, no la espera
+  // del control de ritmo.
+  const middleware = [
+    rateLimitMiddleware({ fase: options.fase, reintentos: options.reintentos }),
+    telemetryMiddleware(options.fase),
+  ];
 
   if (provider === "google") {
     return { model: wrapLanguageModel({ model: google(modelId), middleware }) };
@@ -99,27 +140,43 @@ function build(modelId: string, effort: ReasoningEffort, options: BuildOptions):
 
   const model = wrapLanguageModel({ model: openai(modelId), middleware });
 
-  // Sin `providerOptions` con `AI_AGENT_REASONING=off`: hoy el modelo de
-  // producción (Luna, vía OpenRouter) no soporta `reasoningEffort`, y
-  // mandarlo igual solo producía el warning del AI SDK sin aplicar nada.
-  if (!reasoningEnabled()) return { model };
+  const modo = reasoningMode();
 
-  return { model, providerOptions: { openai: { reasoningEffort: effort } } };
+  // `off`: sin `providerOptions` -- el proveedor razona con su propio
+  // default, este código no manda ningún parámetro (ver cabecera).
+  if (modo === "off") return { model };
+
+  // `none`: apagado EXPLÍCITO, pisa el `effort` que haya pedido el
+  // llamador (medium/low) -- es la única forma real de apagar el
+  // razonamiento de Luna, ver cabecera y hallazgo 6 del plan del 21/9/2026.
+  const effortFinal = modo === "none" ? "none" : effort;
+
+  return { model, providerOptions: { openai: { reasoningEffort: effortFinal } } };
 }
 
 /**
  * Modelo que redacta y usa herramientas. `effort` solo aplica al proveedor
- * OpenAI, y solo con `AI_AGENT_REASONING` en `on` (default); con `off` -- o
- * con Google, que lo ignora silenciosamente -- no viaja ningún
- * `providerOptions`.
+ * OpenAI, y solo con `AI_AGENT_REASONING` ausente/`on`/basura (default); con
+ * `off` no viaja ningún `providerOptions` (el proveedor decide su propio
+ * default), con `none` viaja el apagado explícito pisando `effort`, y con
+ * Google —que ignora `providerOptions` silenciosamente— tampoco viaja nada.
  *
  * Sin reintentos ante rate limit: este es el camino que termina en un envío al
  * cliente, y repetirlo sin clave de idempotencia arriesga un duplicado. Un
  * turno que se queda sin cuota acá falla y lo retoma la cola.
+ *
+ * `fase` (T4, plan "Nada se pierde en un corte ni en un deploy", 21-22/9/2026):
+ * `"redactar"` de fábrica -- el tool loop, que es quien llama esto sin
+ * segundo argumento -- pero `applyIdentityGuard` (agent.ts) también pasa por
+ * acá con `effort: "low"` para su ÚNICA reescritura, y esa llamada no es
+ * "redactar" para la telemetría: es su propia fase (`"identidad"`). Sin este
+ * parámetro, esa fila se habría anotado como una llamada más del tool loop,
+ * mezclando dos cosas que `agent_turn_calls.phase` (el CHECK de la base)
+ * distingue a propósito.
  */
-export function getAgentModel(effort: ReasoningEffort = "medium"): AgentModel {
+export function getAgentModel(effort: ReasoningEffort = "medium", fase: AgentTurnCallPhase = "redactar"): AgentModel {
   return build(resolveModelId(), effort, {
-    fase: "redactar",
+    fase,
     providerOverride: process.env.AI_AGENT_PROVIDER,
   });
 }
@@ -132,7 +189,7 @@ export function getAgentModel(effort: ReasoningEffort = "medium"): AgentModel {
  * manda nada al cliente, así que repetirlo no puede duplicar nada. Es la única
  * fase del turno donde reintentar es seguro.
  */
-export function getClassifierModel(fase: string): AgentModel {
+export function getClassifierModel(fase: AgentTurnCallPhase): AgentModel {
   const propio = resolveClassifierModelId();
 
   // Sin modelo propio de clasificación se usa el del agente TAL CUAL, override

@@ -176,6 +176,16 @@ interface FakeState {
   }[];
   /** Si viene con mensaje, la consulta de `catalog_links` falla (fetchActiveCatalogLinks nunca lanza: se cae a `[]`). */
   catalogLinksError: { message: string } | null;
+  /**
+   * T4, plan "Nada se pierde en un corte ni en un deploy" (21-22/9/2026): el
+   * `id` que el INSERT de `agent_turns` devuelve (`.select("id").single()`,
+   * lo que `logTurnCalls` necesita como `turn_id`). Fijo de fábrica —ningún
+   * test viejo de este archivo mira qué id sale, así que uno solo alcanza
+   * para toda la suite.
+   */
+  agentTurnInsertedId: string;
+  /** Si viene con mensaje, el INSERT de `agent_turn_calls` (logTurnCalls) falla — nunca lanza, deja `turno_llamadas_no_escritas`. */
+  agentTurnCallsInsertError: { message: string } | null;
 }
 
 const state: FakeState = {
@@ -212,11 +222,20 @@ const state: FakeState = {
   lessonsError: null,
   catalogLinkRows: [],
   catalogLinksError: null,
+  agentTurnInsertedId: "agent-turn-1",
+  agentTurnCallsInsertError: null,
 };
 const conversationUpdates: Record<string, unknown>[] = [];
 /** Tarea 3 (14/9/2026): columnas pedidas en cada `select()` sobre `conversations`, para probar que trae display_name/profile_name. */
 const conversationSelectColumns: string[] = [];
 const agentTurnInserts: Record<string, unknown>[] = [];
+/**
+ * T4, plan "Nada se pierde en un corte ni en un deploy" (21-22/9/2026): cada
+ * llamada a `.from("agent_turn_calls").insert(rows)` (`logTurnCalls`,
+ * agent.ts) — un elemento por INSERT, cada uno el arreglo de filas completo
+ * que le llegó (una por llamada al proveedor que hizo el turno).
+ */
+const agentTurnCallsInserts: Record<string, unknown>[][] = [];
 const contactTagUpserts: { rows: unknown; options: unknown }[] = [];
 /**
  * Anexo B2 (5/9/2026): cada UPDATE sobre `messages` (marcar `is_auto_reply`
@@ -446,9 +465,39 @@ function createFakeSupabase() {
 
       if (table === "agent_turns") {
         return {
+          // T4, plan "Nada se pierde en un corte ni en un deploy"
+          // (21-22/9/2026): `logTurn` pasó de `await .insert(row)` a
+          // `.insert(row).select("id").single()` — el `id` que devuelve es
+          // el `turn_id` que `logTurnCalls` necesita para las filas de
+          // `agent_turn_calls`.
           insert: (row: Record<string, unknown>) => {
             agentTurnInserts.push(row);
-            return Promise.resolve({ data: null, error: state.agentTurnInsertError });
+            return {
+              select: (_cols: string) => ({
+                single: async () =>
+                  state.agentTurnInsertError
+                    ? { data: null, error: state.agentTurnInsertError }
+                    : { data: { id: state.agentTurnInsertedId }, error: null },
+              }),
+            };
+          },
+        };
+      }
+
+      // T4, plan "Nada se pierde en un corte ni en un deploy" (21-22/9/2026):
+      // `logTurnCalls` (agent.ts) vuelca acá las llamadas al proveedor que
+      // `turnCallsSnapshot()` (turn-telemetry.ts) acumuló durante el turno.
+      // Con el mock de `ai` de este archivo (`ToolLoopAgent`/`generateText`
+      // fingidos, ver más abajo), el middleware REAL de telemetría no corre
+      // — `@/lib/ai/model` también está mockeado —, así que en la enorme
+      // mayoría de los tests este INSERT nunca se llama (`logTurnCalls` sale
+      // temprano con un arreglo vacío). Solo lo ejercitan los tests que
+      // seedean el registro a mano (ver el describe de telemetría).
+      if (table === "agent_turn_calls") {
+        return {
+          insert: (rows: Record<string, unknown>[]) => {
+            agentTurnCallsInserts.push(rows);
+            return Promise.resolve({ data: null, error: state.agentTurnCallsInsertError });
           },
         };
       }
@@ -797,6 +846,18 @@ import { revealsIdentity } from "@/lib/ai/identity-guard";
 import { playbookMessageText } from "@/lib/ai/send";
 import { sebaGreeting, TEXTO_CONFIRMAR_INVENTARIO, TEXTO_NO_IDENTIFICADO, TEXTO_SIN_STOCK } from "@/lib/ai/seba";
 import { log } from "@/lib/log";
+/**
+ * T4, plan "Nada se pierde en un corte ni en un deploy" (21-22/9/2026): SIN
+ * mockear -- a diferencia de `@/lib/ai/model` (mockeado más abajo), este
+ * archivo prueba `turn-telemetry.ts` de verdad. `runAgentTurn` (real, no
+ * mockeado) abre el registro con `conTelemetriaDeTurno`; el mock de
+ * `ToolLoopAgent.generate` de este archivo invoca este middleware a mano
+ * (ver el describe "telemetría por llamada") para simular, con params
+ * realistas, lo que el SDK real haría en cada paso -- el mock de
+ * `@/lib/ai/model` de más abajo hace que el middleware NUNCA corra por su
+ * cuenta a través del tool loop fingido.
+ */
+import { telemetryMiddleware } from "@/lib/ai/turn-telemetry";
 
 function playbook(overrides: Partial<Playbook> = {}): Playbook {
   return {
@@ -879,11 +940,14 @@ beforeEach(() => {
   state.lessonsError = null;
   state.catalogLinkRows = [];
   state.catalogLinksError = null;
+  state.agentTurnInsertedId = "agent-turn-1";
+  state.agentTurnCallsInsertError = null;
   withinFreeformWindowOverride.fn = null;
   sendTypingIndicatorMock.mockClear();
   conversationUpdates.length = 0;
   conversationSelectColumns.length = 0;
   agentTurnInserts.length = 0;
+  agentTurnCallsInserts.length = 0;
   contactTagUpserts.length = 0;
   messageUpdates.length = 0;
   pasos.length = 0;
@@ -3848,6 +3912,173 @@ describe("runAgentTurn — techo de salida y freno a la escalada repetida (T1, '
   });
 });
 
+/**
+ * T4, plan "Nada se pierde en un corte ni en un deploy" (21-22/9/2026).
+ *
+ * `@/lib/ai/model` está mockeado entero en este archivo (`getAgentModel`
+ * devuelve `{ model: "modelo-falso" }`), así que el middleware REAL de
+ * telemetría (`telemetryMiddleware`, turn-telemetry.ts, compuesto en
+ * `build()` de model.ts) nunca corre a través de `ToolLoopAgent`/
+ * `generateText` fingidos de este archivo — probarlo de verdad, con
+ * `params` reales, es trabajo de `model.test.ts` +
+ * `turn-telemetry.test.ts` (middleware con `params: { maxOutputTokens:
+ * 1500, toolChoice: { type: "none" } }` → fila con esos valores). Acá se
+ * prueba la otra mitad, la que SÍ vive en `agent.ts`: que `runAgentTurn`
+ * corre dentro de `conTelemetriaDeTurno` de verdad (turn-telemetry.ts NO
+ * está mockeado en este archivo) y que `logTurn` vuelca lo que el registro
+ * tenga al INSERT de `agent_turn_calls`, con el `turn_id` que acaba de
+ * recibir de `agent_turns`.
+ *
+ * Para la prueba directa que pedía el informe del VPS (7.4:
+ * "maxOutputTokens/toolChoice sin prueba directa") sin tener que levantar
+ * el SDK de IA entero, el mock de `ToolLoopAgent.generate` invoca el
+ * middleware de telemetría REAL (importado sin mockear) con los MISMOS
+ * `params` que `agent.ts` le pasaría al SDK en el paso que corre justo
+ * DESPUÉS de escalar (`agentOptions[0].maxOutputTokens`/
+ * `agentOptions[0].prepareStep({ stepNumber: 1 })`, ya verificados byte a
+ * byte por el describe de arriba) — es la opción más honesta entre las dos
+ * que dejaba abiertas el plan: no inventa un valor nuevo, reusa el mismo
+ * que el describe de arriba prueba que agent.ts construye de verdad.
+ */
+describe("runAgentTurn — telemetría por llamada (T4, 'Nada se pierde en un corte ni en un deploy', 21-22/9/2026)", () => {
+  it("logTurn no llama a agent_turn_calls cuando el turno no registró ninguna llamada (el mock de ToolLoopAgent no invoca telemetría por defecto)", async () => {
+    await runAgentTurn("conv-1");
+
+    expect(agentTurnCallsInserts).toHaveLength(0);
+  });
+
+  it("la fila de la fase 'redactar' que corre TRAS escalar lleva max_output_tokens: 1500 (literal) y tool_choice: 'none'", async () => {
+    // Mismo patrón que "tras escalar, el paso siguiente del tool loop recibe
+    // toolChoice: 'none'" del describe de arriba: mutar `outcome.escalated`
+    // desde `buildEscalateToolMock` simula que la escalada ya corrió ANTES
+    // de que `agent.ts` arme `prepareStep`.
+    buildEscalateToolMock.mockImplementationOnce((_deps, outcome) => {
+      outcome.escalated = true;
+      return {};
+    });
+    generateMock.mockImplementationOnce(async () => {
+      // El paso 1 (el que sigue a la escalada) es justo el que
+      // `agentOptions[0].prepareStep({ stepNumber: 1 })` ya prueba que
+      // recibe `toolChoice: "none"` -- acá se invoca el middleware REAL con
+      // esos mismos params, tal como el SDK real lo haría al ejecutar ese
+      // paso.
+      await telemetryMiddleware("redactar").wrapGenerate!({
+        doGenerate: async () => ({
+          content: [],
+          warnings: [],
+          finishReason: { unified: "stop", raw: "stop" },
+          usage: {
+            inputTokens: { total: 900, noCache: undefined, cacheRead: undefined, cacheWrite: undefined },
+            outputTokens: { total: 40, text: undefined, reasoning: undefined },
+          },
+        }),
+        doStream: async () => {
+          throw new Error("no se usa en este test");
+        },
+        params: { maxOutputTokens: 1500, toolChoice: { type: "none" }, prompt: [] } as never,
+        model: {} as never,
+      });
+      return {
+        text: "listo, ya te escaló con un asesor",
+        usage: { inputTokens: 20, outputTokens: 8, totalTokens: 28 },
+        steps: [{}, {}],
+      };
+    });
+
+    await runAgentTurn("conv-1");
+
+    // El paso 1 de verdad lleva ese `toolChoice` -- lo mismo que ya prueba
+    // el describe de arriba, repetido acá para que el test sea legible sin
+    // saltar de archivo.
+    expect(agentOptions[0].maxOutputTokens).toBe(1500);
+    expect(agentOptions[0].prepareStep!({ stepNumber: 1 })).toEqual({ toolChoice: "none" });
+
+    expect(agentTurnCallsInserts).toHaveLength(1);
+    const filas = agentTurnCallsInserts[0];
+    expect(filas).toHaveLength(1);
+    expect(filas[0]).toMatchObject({
+      turn_id: "agent-turn-1",
+      conversation_id: "conv-1",
+      phase: "redactar",
+      max_output_tokens: 1500,
+      tool_choice: "none",
+      input_tokens: 900,
+      output_tokens: 40,
+      finish_reason: "stop",
+    });
+  });
+
+  it("no lanza si el INSERT de agent_turn_calls falla, y deja turno_llamadas_no_escritas en el registro", async () => {
+    const error = vi.spyOn(log, "error");
+    state.agentTurnCallsInsertError = { message: "tabla sin permisos" };
+    generateMock.mockImplementationOnce(async () => {
+      await telemetryMiddleware("redactar").wrapGenerate!({
+        doGenerate: async () => ({
+          content: [],
+          warnings: [],
+          finishReason: { unified: "stop", raw: "stop" },
+          usage: {
+            inputTokens: { total: 1, noCache: undefined, cacheRead: undefined, cacheWrite: undefined },
+            outputTokens: { total: 1, text: undefined, reasoning: undefined },
+          },
+        }),
+        doStream: async () => {
+          throw new Error("no se usa en este test");
+        },
+        params: { prompt: [] } as never,
+        model: {} as never,
+      });
+      return {
+        text: "respuesta redactada por el modelo",
+        usage: { inputTokens: 20, outputTokens: 8, totalTokens: 28 },
+        steps: [{}, {}],
+      };
+    });
+
+    await expect(runAgentTurn("conv-1")).resolves.toBeUndefined();
+
+    expect(error).toHaveBeenCalledWith(
+      "turno_llamadas_no_escritas",
+      expect.objectContaining({ conversationId: "conv-1", turnId: "agent-turn-1", detail: "tabla sin permisos" })
+    );
+    // El turno siguió igual: el mensaje sí salió pese a que la fila de
+    // detalle no se pudo escribir.
+    expect(sendAgentTextMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("usa el turn_id que devolvió el INSERT de agent_turns, no uno fijo", async () => {
+    state.agentTurnInsertedId = "turn-distinto-99";
+    generateMock.mockImplementationOnce(async () => {
+      await telemetryMiddleware("redactar").wrapGenerate!({
+        doGenerate: async () => ({
+          content: [],
+          warnings: [],
+          finishReason: { unified: "stop", raw: "stop" },
+          usage: {
+            inputTokens: { total: 1, noCache: undefined, cacheRead: undefined, cacheWrite: undefined },
+            outputTokens: { total: 1, text: undefined, reasoning: undefined },
+          },
+        }),
+        doStream: async () => {
+          throw new Error("no se usa en este test");
+        },
+        params: { prompt: [] } as never,
+        model: {} as never,
+      });
+      return {
+        text: "respuesta redactada por el modelo",
+        usage: { inputTokens: 20, outputTokens: 8, totalTokens: 28 },
+        steps: [{}, {}],
+      };
+    });
+
+    await runAgentTurn("conv-1");
+
+    expect(agentTurnCallsInserts).toHaveLength(1);
+    expect(agentTurnCallsInserts[0][0]).toMatchObject({ turn_id: "turn-distinto-99" });
+  });
+});
+
 describe("runAgentTurn — tokens cacheados", () => {
   /**
    * La entrada cacheada se factura mucho más barata que la normal. Sin
@@ -5594,11 +5825,18 @@ describe("runAgentTurn — guarda de identidad", () => {
       system: string;
       messages: { role: string; content: string }[];
       maxRetries: number;
+      maxOutputTokens: number;
     };
     expect(opciones.system.startsWith(SYSTEM_PROMPT)).toBe(true);
     expect(opciones.system).toContain("asistente automatizado");
     expect(opciones.messages).toEqual([{ role: "user", content: borrador }]);
     expect(opciones.maxRetries).toBe(0);
+    // Techo de salida (T5, plan "Nada se pierde en un corte ni en un
+    // deploy", 21-22/9/2026, hallazgo 5): esta llamada corría sin ninguno.
+    // Literal, no el símbolo importado -- regla de "El resguardo antes del
+    // push", 20/9/2026: un tope medido contra su propio símbolo no prueba el
+    // número si alguien lo cambia en el código de producción.
+    expect(opciones.maxOutputTokens).toBe(1500);
     expect(getAgentModelCalls).toContain("low");
 
     expect(sendAgentTextMock).toHaveBeenCalledTimes(1);

@@ -33,7 +33,17 @@
  * se RELANZA: lo atrapa `error.tsx` con su botón Reintentar, en vez de
  * fingir que el panel está vacío.
  */
-const TABLA_INEXISTENTE = new Set(["42P01", "PGRST205"]);
+// `PGRST202` se suma acá (T4, plan "Nada se pierde en un corte ni en un
+// deploy", 21-22/9/2026): es el código propio de PostgREST para "función no
+// encontrada en el caché de esquema" -- el equivalente de PGRST205 pero para
+// una RPC (`fetchTurnCallsByPhase`, data.ts, llama a
+// `agent_turn_calls_by_phase`) en vez de una tabla. Misma causa (una
+// migración que corrió sin `notify pgrst`, o que directamente no corrió
+// todavía), mismo criterio: se degrada a lista vacía, nunca se confunde con
+// un timeout o un 5xx. El nombre de la función se conserva tal cual --
+// ampliar a "OrFunction" por un solo código más no valía renombrar los ~17
+// llamadores que ya existen en agent-control/page.tsx.
+const TABLA_INEXISTENTE = new Set(["42P01", "PGRST205", "PGRST202"]);
 
 /**
  * `PostgrestError` (`@supabase/postgrest-js`) siempre trae `code` como

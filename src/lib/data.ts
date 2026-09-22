@@ -39,6 +39,7 @@ import type {
   TicketTagsByContact,
   TokenUsageDay,
   TokenUsageSummary,
+  TurnCallsByPhase,
   WhatsappChannel,
   WhatsappChannelHealth,
   WhatsappTemplate,
@@ -2093,6 +2094,14 @@ interface RawAgentTurn {
   // (21/9/2026): `not null default 0` en la base (migración 20260921020000),
   // así que a diferencia de sus vecinas nunca llega null desde PostgREST.
   reasoning_tokens: number;
+  // T4, plan "Nada se pierde en un corte ni en un deploy" (21-22/9/2026,
+  // migración 20260921040000): tres columnas nuevas de telemetría por turno.
+  // `cached_input_tokens` ya existía desde 20260822090000 -- lo que sí es
+  // nuevo es que el panel por fin la lee (antes solo se escribía). Las tres
+  // nullable sin backfill: lo viejo no se puede reconstruir.
+  cached_input_tokens: number | null;
+  steps: number | null;
+  tools_used: string | null;
   playbook_id: string | null;
   customer_message: string | null;
   created_at: string;
@@ -2104,8 +2113,14 @@ interface RawAgentTurn {
 // El nombre del contacto viaja con el turno: el feed lo mostraba buscando la
 // conversación en la lista completa del CRM, que era justo la lista que había
 // que dejar de cargar. Son 30 filas con tres campos, no un join caro.
+//
+// T4, plan "Nada se pierde en un corte ni en un deploy" (21-22/9/2026):
+// `cached_input_tokens`/`steps`/`tools_used` se suman al SELECT -- el feed en
+// vivo pinta "Caché: N" junto a "Razonamiento: N" y "N pasos · herramientas"
+// cuando existen (ver agent-control-view.tsx).
 const AGENT_TURN_COLUMNS = `id, conversation_id, intent, action, summary, model, input_tokens,
-  output_tokens, total_tokens, reasoning_tokens, playbook_id, customer_message, created_at,
+  output_tokens, total_tokens, reasoning_tokens, cached_input_tokens, steps, tools_used,
+  playbook_id, customer_message, created_at,
   conversation:conversations(contact:contacts(display_name, profile_name, phone_number))`;
 
 function mapAgentTurn(row: RawAgentTurn): AgentTurn {
@@ -2122,6 +2137,9 @@ function mapAgentTurn(row: RawAgentTurn): AgentTurn {
     outputTokens: row.output_tokens,
     totalTokens: row.total_tokens,
     reasoningTokens: row.reasoning_tokens,
+    cachedInputTokens: row.cached_input_tokens,
+    steps: row.steps,
+    toolsUsed: row.tools_used,
     playbookId: row.playbook_id,
     customerMessage: row.customer_message,
     createdAt: row.created_at,
@@ -2373,6 +2391,12 @@ interface RawAgentTokenUsageRow {
   input_tokens: number;
   output_tokens: number;
   total_tokens: number;
+  // T4, plan "Nada se pierde en un corte ni en un deploy" (21-22/9/2026,
+  // migración 20260921040000): `agent_token_usage` se recreó con estas dos
+  // columnas más -- ver el comentario de `fetchTokenUsageSummary` de más
+  // abajo para qué hace el panel con ellas.
+  cached_input_tokens: number;
+  reasoning_tokens: number;
 }
 
 /**
@@ -2380,6 +2404,13 @@ interface RawAgentTokenUsageRow {
  * model_pricing, serie diaria (últimos 14 días, zero-filled) y desglose por
  * modelo. Se agrega en Postgres vía la función `agent_token_usage` (una fila
  * por día×modelo) para no depender del límite de filas de PostgREST.
+ *
+ * `totalCachedInputTokens`/`totalReasoningTokens` (T4, mismo plan): sumas
+ * simples sobre las filas del RPC, sin desglose por día ni por modelo --
+ * "Consumo de tokens" (agent-control-view.tsx) las pinta como dos totales
+ * más, junto a `totalTokens`/`totalUsd`, para poder confirmar en dato si T6
+ * (el prefijo estático de escenarios movido al final del prompt) de verdad
+ * hizo cachear más.
  */
 export async function fetchTokenUsageSummary(supabase: SupabaseClient, days = 30): Promise<TokenUsageSummary> {
   const [{ data: usageData, error: usageError }, pricing] = await Promise.all([
@@ -2394,6 +2425,8 @@ export async function fetchTokenUsageSummary(supabase: SupabaseClient, days = 30
 
   const byDayMap = new Map<string, number>();
   const byModelMap = new Map<string, { inputTokens: number; outputTokens: number; totalTokens: number }>();
+  let totalCachedInputTokens = 0;
+  let totalReasoningTokens = 0;
 
   for (const row of rows) {
     byDayMap.set(row.day, (byDayMap.get(row.day) ?? 0) + row.total_tokens);
@@ -2403,6 +2436,9 @@ export async function fetchTokenUsageSummary(supabase: SupabaseClient, days = 30
     current.outputTokens += row.output_tokens;
     current.totalTokens += row.total_tokens;
     byModelMap.set(row.model, current);
+
+    totalCachedInputTokens += row.cached_input_tokens ?? 0;
+    totalReasoningTokens += row.reasoning_tokens ?? 0;
   }
 
   const byDay: TokenUsageDay[] = [];
@@ -2433,7 +2469,44 @@ export async function fetchTokenUsageSummary(supabase: SupabaseClient, days = 30
   const totalUsd = byModel.reduce((sum, m) => sum + (m.usdCost ?? 0), 0);
   const hasUnpricedModels = byModel.some((m) => m.usdCost === null);
 
-  return { totalTokens, totalUsd, hasUnpricedModels, byDay, byModel };
+  return { totalTokens, totalUsd, hasUnpricedModels, byDay, byModel, totalCachedInputTokens, totalReasoningTokens };
+}
+
+interface RawTurnCallsByPhase {
+  phase: string;
+  calls: number;
+  input_tokens: number;
+  output_tokens: number;
+  cached_input_tokens: number;
+  reasoning_tokens: number;
+  max_output_tokens_max: number | null;
+  tool_choice_none_calls: number;
+}
+
+/**
+ * Agregado por fase de `agent_turn_calls` (T4, plan "Nada se pierde en un
+ * corte ni en un deploy", 21-22/9/2026). Se llama envuelta en
+ * `readListIfTableExists` (`@/app/agent-control/degradable-reads`) desde
+ * donde de verdad se consume -- la RPC puede faltar en una base que todavía
+ * no corrió la migración 20260921040000 (`PGRST202`, función no encontrada
+ * en el caché de esquema de PostgREST). Nunca se lee `agent_turn_calls`
+ * directo: la tabla nace con RLS SIN ninguna política (ver esa migración) y
+ * esta RPC es `security definer`, la única forma de leerla.
+ */
+export async function fetchTurnCallsByPhase(supabase: SupabaseClient, days = 30): Promise<TurnCallsByPhase[]> {
+  const { data, error } = await supabase.rpc("agent_turn_calls_by_phase", { days });
+  if (error) throw error;
+
+  return (data as RawTurnCallsByPhase[]).map((row) => ({
+    phase: row.phase,
+    calls: row.calls,
+    inputTokens: row.input_tokens,
+    outputTokens: row.output_tokens,
+    cachedInputTokens: row.cached_input_tokens,
+    reasoningTokens: row.reasoning_tokens,
+    maxOutputTokensMax: row.max_output_tokens_max,
+    toolChoiceNoneCalls: row.tool_choice_none_calls,
+  }));
 }
 
 interface RawAgentSuggestion {

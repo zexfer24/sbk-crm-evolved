@@ -669,6 +669,19 @@ export interface AgentTurn {
    * proveedor no lo separó), nunca "no se sabe" — por eso acá no es nullable.
    */
   reasoningTokens: number;
+  /**
+   * Parte de `inputTokens` servida desde el caché de prompts del proveedor,
+   * SUMADA entre todas las llamadas del turno (T4, plan "Nada se pierde en
+   * un corte ni en un deploy", 21-22/9/2026). `null` en los turnos de antes
+   * de que la columna existiera (20260822090000) -- mismo criterio que
+   * `inputTokens`/`outputTokens`/`totalTokens`, a diferencia de
+   * `reasoningTokens` que nace `not null default 0`.
+   */
+  cachedInputTokens: number | null;
+  /** Pasos que gastó el tool loop en este turno, contra el techo de 5. `null` en turnos de antes de esta columna (sin backfill). */
+  steps: number | null;
+  /** Nombres de las herramientas que el tool loop invocó, separados por coma (`""` si corrió y no usó ninguna). `null` en turnos de antes de esta columna. */
+  toolsUsed: string | null;
   /** Escenario que resolvió el turno. Null = no coincidió ninguno y respondió el flujo genérico. */
   playbookId: string | null;
   /** Último mensaje del cliente del turno. Es lo que alimenta la lista de escenarios faltantes. */
@@ -775,6 +788,38 @@ export interface TokenUsageSummary {
   hasUnpricedModels: boolean;
   byDay: TokenUsageDay[];
   byModel: ModelUsageSummary[];
+  /**
+   * Suma de `cached_input_tokens` de `agent_token_usage` (T4, plan "Nada se
+   * pierde en un corte ni en un deploy", 21-22/9/2026, migración
+   * 20260921040000): cuánto de la entrada se sirvió desde el caché de
+   * prompts del proveedor, mucho más barato que la entrada normal. Sirve
+   * para confirmar en dato si T6 (el prefijo estático de escenarios movido
+   * al final) de verdad hizo cachear más.
+   */
+  totalCachedInputTokens: number;
+  /** Suma de `reasoning_tokens` de `agent_token_usage`: razonamiento interno del proveedor, nunca visible para el cliente. */
+  totalReasoningTokens: number;
+}
+
+/**
+ * Una fila del agregado por fase de `agent_turn_calls` (T4, plan "Nada se
+ * pierde en un corte ni en un deploy", 21-22/9/2026, RPC
+ * `agent_turn_calls_by_phase`). Pintada en Control IA como la tabla chica
+ * "Por fase", bajo el consumo de tokens -- responde en dato la promesa 7.4
+ * del informe del VPS del 21/9/2026 ("maxOutputTokens/toolChoice sin prueba
+ * directa").
+ */
+export interface TurnCallsByPhase {
+  phase: string;
+  calls: number;
+  inputTokens: number;
+  outputTokens: number;
+  cachedInputTokens: number;
+  reasoningTokens: number;
+  /** El mayor `max_output_tokens` visto en esta fase durante la ventana. `null` sin ninguna llamada con techo explícito. */
+  maxOutputTokensMax: number | null;
+  /** Cuántas llamadas de esta fase salieron con `tool_choice = 'none'` -- el freno tras escalar (T2, "La escalada se hace una vez...", 21/9/2026). */
+  toolChoiceNoneCalls: number;
 }
 
 /** Sugerencia de un asesor humano al supervisor sobre cómo mejorar el bot. */

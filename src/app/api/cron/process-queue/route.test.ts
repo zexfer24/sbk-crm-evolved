@@ -9,7 +9,7 @@ import { describe, expect, it, vi, beforeEach } from "vitest";
 
 // `vi.hoisted` porque `vi.mock` se eleva sobre cualquier `const` normal: sin
 // esto, la fábrica ve `processQueuedTurnsMock` antes de que exista (TDZ).
-const { processQueuedTurnsMock, reconcileOrphanTurnsMock } = vi.hoisted(() => ({
+const { processQueuedTurnsMock, reconcileOrphanTurnsMock, redisSetMock, rpcMock } = vi.hoisted(() => ({
   processQueuedTurnsMock: vi.fn(async () => ({ processed: 2, failed: 1, deferred: 0 })),
   reconcileOrphanTurnsMock: vi.fn(async () => ({
     revisadas: 5,
@@ -17,6 +17,20 @@ const { processQueuedTurnsMock, reconcileOrphanTurnsMock } = vi.hoisted(() => ({
     bloqueadasPorLock: 1,
     encoladas: 3,
   })),
+  // T4, plan "Nada se pierde en un corte ni en un deploy" (21-22/9/2026): el
+  // purgado diario de `agent_turn_calls`. `redisSetMock` simula el `SET NX
+  // EX` del lock (por default gana el lock, como el primer disparo del día);
+  // `rpcMock` simula CUALQUIER RPC que el cliente admin (mockeado más abajo)
+  // reciba -- hoy solo `agent_turn_calls_purge`. Firmas amplias
+  // (`...args: unknown[]`, `data: number | null`) a propósito: los tests de
+  // abajo inspeccionan `mock.calls[0]` con varios argumentos y sobrescriben
+  // el resultado con `mockImplementationOnce`/`mockResolvedValueOnce` con
+  // formas distintas (éxito, error, lock perdido).
+  redisSetMock: vi.fn(async (..._args: unknown[]): Promise<string | null> => "OK"),
+  rpcMock: vi.fn(async (fn: string): Promise<{ data: number | null; error: { message: string } | null }> => {
+    if (fn === "agent_turn_calls_purge") return { data: 12, error: null };
+    throw new Error(`Fake Supabase: rpc no soportada: ${fn}`);
+  }),
 }));
 
 // Fábricas completas, sin `importOriginal`: el módulo real de la cola
@@ -30,13 +44,24 @@ vi.mock("@/lib/ai/reconciler", () => ({
   reconcileOrphanTurns: reconcileOrphanTurnsMock,
 }));
 
-// Cliente de juguete: alcanza con que exista, porque a quien se le pasa
-// -reconcileOrphanTurns- está mockeado entero y no lo va a usar de verdad.
+// Cliente de juguete: alcanza con que exista y responda a `.rpc()` -- el
+// purgado (T4) es lo único de esta ruta que lo usa de verdad;
+// `reconcileOrphanTurns` está mockeado entero y no lo toca.
 vi.mock("@/lib/supabase/admin", () => ({
-  createAdminClient: () => ({ marker: "admin-fake" }),
+  createAdminClient: () => ({ marker: "admin-fake", rpc: rpcMock }),
+}));
+
+// `getRedis()` real vive detrás de `REDIS_URL` (lib/redis.ts) -- acá alcanza
+// con un objeto de juguete cuyo `.set` es el mock hoisted.
+vi.mock("@/lib/redis", () => ({
+  getRedis: () => ({ set: redisSetMock }),
 }));
 
 import { POST } from "./route";
+// Sin mockear, a propósito: el describe de purgado (T4) espía sobre esto
+// para probar que un fallo de Redis o de la RPC deja rastro en el log en vez
+// de tragarse el error en silencio.
+import { log } from "@/lib/log";
 
 function sendRequest(headers: Record<string, string> = {}) {
   return new Request("http://crm.example/api/cron/process-queue", {
@@ -51,6 +76,13 @@ describe("POST /api/cron/process-queue — el portón que dispara gasto", () => 
     // (o falso negativo) por las llamadas acumuladas de tests anteriores.
     processQueuedTurnsMock.mockClear();
     reconcileOrphanTurnsMock.mockClear();
+    redisSetMock.mockClear();
+    redisSetMock.mockResolvedValue("OK");
+    rpcMock.mockClear();
+    rpcMock.mockImplementation(async (fn: string) => {
+      if (fn === "agent_turn_calls_purge") return { data: 12, error: null };
+      throw new Error(`Fake Supabase: rpc no soportada: ${fn}`);
+    });
   });
 
   it("sin CRON_SECRET configurado, responde 503 y no toca la cola", async () => {
@@ -230,5 +262,136 @@ describe("POST /api/cron/process-queue — el portón que dispara gasto", () => 
       if (previousSecret === undefined) delete process.env.CRON_SECRET;
       else process.env.CRON_SECRET = previousSecret;
     }
+  });
+});
+
+/**
+ * T4, plan "Nada se pierde en un corte ni en un deploy" (21-22/9/2026): el
+ * purgado diario de `agent_turn_calls`. Corre DESPUÉS de reconciliar y
+ * drenar, y nunca puede frenar ninguna de las dos cosas -- eso es lo que
+ * fijan estos tests, no que el purgado "funcione" (eso lo prueba la RPC en
+ * `supabase/tests/telemetria_del_turno.sql`).
+ */
+describe("POST /api/cron/process-queue — purgado diario de agent_turn_calls (T4)", () => {
+  // `beforeEach` NO se hereda entre describes hermanos -- el de arriba solo
+  // corre para los `it` del primer describe. Sin este, las llamadas de un
+  // test se acumulaban en el siguiente (el bug real que reveló la primera
+  // corrida de esta suite: 2 llamadas a la RPC en un test que esperaba 0).
+  beforeEach(() => {
+    processQueuedTurnsMock.mockClear();
+    reconcileOrphanTurnsMock.mockClear();
+    redisSetMock.mockClear();
+    redisSetMock.mockReset();
+    redisSetMock.mockResolvedValue("OK");
+    rpcMock.mockClear();
+    rpcMock.mockReset();
+    rpcMock.mockImplementation(async (fn: string) => {
+      if (fn === "agent_turn_calls_purge") return { data: 12, error: null };
+      throw new Error(`Fake Supabase: rpc no soportada: ${fn}`);
+    });
+  });
+
+  async function withSecret(fn: () => Promise<void>) {
+    const previousSecret = process.env.CRON_SECRET;
+    process.env.CRON_SECRET = "secreto-cron";
+    try {
+      await fn();
+    } finally {
+      if (previousSecret === undefined) delete process.env.CRON_SECRET;
+      else process.env.CRON_SECRET = previousSecret;
+    }
+  }
+
+  it("gana el lock del día y llama a la RPC con retain_days: 90", async () => {
+    await withSecret(async () => {
+      await POST(sendRequest({ authorization: "Bearer secreto-cron" }));
+
+      expect(redisSetMock).toHaveBeenCalledTimes(1);
+      const [key, valor, ...resto] = redisSetMock.mock.calls[0];
+      expect(key).toMatch(/^telemetria:purga:\d{4}-\d{2}-\d{2}$/);
+      expect(valor).toBe("1");
+      expect(resto).toEqual(["EX", 86_400, "NX"]);
+
+      expect(rpcMock).toHaveBeenCalledWith("agent_turn_calls_purge", { retain_days: 90 });
+    });
+  });
+
+  it("corre DESPUÉS de reconciliar y de drenar, no antes ni en paralelo", async () => {
+    await withSecret(async () => {
+      const orden: string[] = [];
+      reconcileOrphanTurnsMock.mockImplementationOnce(async () => {
+        orden.push("reconciliar");
+        return { revisadas: 0, yaEnCola: 0, bloqueadasPorLock: 0, encoladas: 0 };
+      });
+      processQueuedTurnsMock.mockImplementationOnce(async () => {
+        orden.push("drenar");
+        return { processed: 0, failed: 0, deferred: 0 };
+      });
+      redisSetMock.mockImplementationOnce(async () => {
+        orden.push("purgar");
+        return "OK";
+      });
+
+      await POST(sendRequest({ authorization: "Bearer secreto-cron" }));
+
+      expect(orden).toEqual(["reconciliar", "drenar", "purgar"]);
+    });
+  });
+
+  it("sin ganar el lock (otra instancia ya purgó hoy), no llama a la RPC — y el resto de la respuesta sigue igual", async () => {
+    await withSecret(async () => {
+      redisSetMock.mockResolvedValueOnce(null);
+
+      const response = await POST(sendRequest({ authorization: "Bearer secreto-cron" }));
+      const body = await response.json();
+
+      expect(response.status).toBe(200);
+      expect(rpcMock).not.toHaveBeenCalled();
+      expect(body).toEqual({
+        ok: true,
+        reconciled: { revisadas: 5, yaEnCola: 1, bloqueadasPorLock: 1, encoladas: 3 },
+        processed: 2,
+        failed: 1,
+        deferred: 0,
+      });
+    });
+  });
+
+  it("si Redis falla (getRedis().set lanza), no frena el cron: responde 200 igual y no llama a la RPC", async () => {
+    await withSecret(async () => {
+      const warn = vi.spyOn(log, "warn");
+      redisSetMock.mockRejectedValueOnce(new Error("ECONNREFUSED"));
+
+      const response = await POST(sendRequest({ authorization: "Bearer secreto-cron" }));
+
+      expect(response.status).toBe(200);
+      expect(rpcMock).not.toHaveBeenCalled();
+      expect(warn).toHaveBeenCalledWith("telemetria_purga_lock_no_disponible", { detail: "ECONNREFUSED" });
+    });
+  });
+
+  it("si la RPC de purgado falla, no frena el cron: responde 200 igual con log.warn telemetria_purga_fallida", async () => {
+    await withSecret(async () => {
+      const warn = vi.spyOn(log, "warn");
+      rpcMock.mockImplementationOnce(async () => ({ data: null, error: { message: "permiso denegado" } }));
+
+      const response = await POST(sendRequest({ authorization: "Bearer secreto-cron" }));
+      const body = await response.json();
+
+      expect(response.status).toBe(200);
+      expect(body.ok).toBe(true);
+      expect(warn).toHaveBeenCalledWith("telemetria_purga_fallida", { detail: "permiso denegado" });
+    });
+  });
+
+  it("purga de verdad: deja telemetria_purgada con las filas que devolvió la RPC", async () => {
+    await withSecret(async () => {
+      const info = vi.spyOn(log, "info");
+      rpcMock.mockImplementationOnce(async () => ({ data: 37, error: null }));
+
+      await POST(sendRequest({ authorization: "Bearer secreto-cron" }));
+
+      expect(info).toHaveBeenCalledWith("telemetria_purgada", { filas: 37 });
+    });
   });
 });
