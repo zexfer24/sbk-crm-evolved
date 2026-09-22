@@ -26,7 +26,7 @@ Para producción, copia `.env.production.example`. Las que **no pueden faltar**:
 | `WHATSAPP_WEBHOOK_VERIFY_TOKEN` | El que registres en Meta |
 | `OPENAI_API_KEY` | O `GOOGLE_GENERATIVE_AI_API_KEY` según el proveedor |
 | `AI_AGENT_PROVIDER` / `AI_AGENT_MODEL` | Proveedor y modelo del agente |
-| `AI_AGENT_REASONING` | `on`/`off`, default `on`. En `off` el agente y el clasificador no mandan `reasoningEffort` al proveedor. Ponla en `off` en producción mientras el modelo sea `gpt-5.6-luna` vía OpenRouter: no soporta razonamiento y con `on` el SDK deja el warning `reasoningEffort is not supported` varias veces por turno sin que el parámetro se aplique |
+| `AI_AGENT_REASONING` | `on`/`off`/`none`, default `on`. **Corregido el 22/9/2026** (antes esta fila decía que `gpt-5.6-luna` "no soporta razonamiento" — falso, medido en contra): `off` NO apaga el razonamiento de Luna — solo deja de mandar el parámetro `reasoningEffort`, y el proveedor razona igual con su propio default (58,5 % de la salida medida el 21/9/2026 con `off` puesto). `none` es el apagado REAL (`reasoningEffort: "none"` → el SDK lo traduce a `reasoning: { effort: "none" }`). `on`/ausente/basura mandan el esfuerzo de siempre (`medium`/`low`). Producción corre hoy en `off`; decidir si pasar a `none` DESPUÉS de leer `agent_turn_calls.reasoning_tokens` por fase (tabla nueva, ver §12) — no a ciegas |
 | `AI_HUMAN_GRACE_MINUTES` | Default 30. Minutos que un asesor "conserva" un chat después de escribir, aunque el cliente ya haya vuelto a escribir después de él. Súbela sin redeploy (solo cambiar la variable) si aparece `turno_persona_se_adelanto` sobre una conversación que un asesor está atendiendo ahora mismo |
 | `AGENT_MAX_CONCURRENT_TURNS` | Default 8 (antes 3, hasta el 7/9/2026). Turnos con el modelo abierto a la vez, en todo el sistema. Ver "Rampa de los topes" más abajo. Vuelta atrás: bajarla en Dokploy y redesplegar (~20 s de corte, sin rebuild si no cambió el código) |
 | `AGENT_MAX_TURNS_PER_MINUTE` | Default 30 (antes 4). El freno real de la cola: la espera de un cliente es cola ÷ este número. Medido el 7/9/2026: con 4, hasta 90 min de espera con 360 turnos acumulados. Ver "Rampa de los topes". Vuelta atrás: bajarla en Dokploy — es la palanca más rápida que hay, se lee en cada pasada |
@@ -857,6 +857,50 @@ curl -I https://<tu-dominio>          # 200, con strict-transport-security
 curl https://<tu-dominio>/api/health  # 200
 ```
 
+**Los logs del contenedor sobreviven al deploy desde el 22/9/2026** (T8, plan
+"Nada se pierde en un corte ni en un deploy"). El servicio `app` de
+`docker-compose.dokploy.yml` trae `logging: { driver: journald, options: {
+tag: "sbk-crm-app" } }`. El driver por defecto (`json-file`) guarda los logs
+DENTRO del contenedor, y Dokploy recrea el contenedor en cada deploy — se
+lleva los logs con él; el 21/9/2026 esto impidió comparar la tasa de cortes
+app↔PostgREST entre dos versiones desplegadas el mismo día, no había con qué.
+Con journald los logs quedan en el propio VPS (`/var/log/journal`,
+persistente) y sobreviven al recreate:
+
+```bash
+journalctl -o cat CONTAINER_TAG=sbk-crm-app --since "2h" | jq
+```
+
+`docker logs <contenedor>` sigue funcionando igual que siempre con este
+driver — nada se pierde, journald es un destino adicional, no un reemplazo.
+**No hay nada que fusionar a mano.** Dokploy REGENERA el `docker-compose`
+completo en cada deploy a partir del archivo del repo, inyectando los labels
+de Traefik desde su pestaña Domains — lo que en el servidor puede parecer
+"un compose editado a mano" es en realidad una reserialización de YAML hecha
+por la propia Dokploy; el bloque `logging:` viaja con el resto del archivo,
+sin ningún paso extra.
+
+Lo que sí conviene verificar tras el PRIMER deploy con este cambio:
+
+- Que el dominio sigue respondiendo (`curl -I https://<tu-dominio>`, arriba).
+- Que el contenedor conserva los labels de Traefik que Dokploy le inyecta:
+  ```bash
+  docker inspect <contenedor-app> --format '{{json .Config.Labels}}' | jq
+  ```
+  Si faltan los `traefik.*`, el dominio cae a 502 — volver a desplegar desde
+  el panel de Dokploy (no a mano) suele bastar.
+
+**Un `git reset --hard` A MANO en el servidor, fuera de un deploy real de
+Dokploy, sí tira los labels de Traefik** — el dominio cae a 502 hasta el
+próximo despliegue desde el panel, porque esa reserialización de YAML solo la
+hace Dokploy al desplegar, no algo que viva en el repo. No tocar el checkout
+del servidor a mano; si hace falta revertir, revertir el commit en Git y
+dejar que Dokploy redespliegue.
+
+Prerrequisitos de journald ya verificados por el VPS el 21/9/2026:
+`/var/log/journal` existe y es persistente, 422 MB usados, 162 GB libres, sin
+tocar `journald.conf`.
+
 ### Solo la imagen, sin compose
 
 ```bash
@@ -1067,15 +1111,29 @@ guarda las rutas, no el contenido. Para eso:
 
 Honestidad sobre el estado, para que nadie se lleve una sorpresa:
 
-- **No hay agregador de registros configurado.** El código ya emite una línea
-  JSON por evento (`{"level","event","ts",...}`), lista para que Loki, Datadog
-  o CloudWatch la indexen sin parsear texto, y oculta solo los valores
-  sensibles. Falta apuntar un recolector a la salida del contenedor y armar
-  las alertas. Los eventos que merecen una: `cola_encolar_fallido`,
-  `cola_turno_fallido`, `webhook_sin_secreto_en_produccion`,
-  `webhook_firma_invalida`, `identidad_reescrita` (una reescritura de la
-  guarda de identidad funcionó: vale la pena contarlas) e
-  `identidad_bloqueada` (un turno terminó escalado por esta guarda).
+- **Sigue sin haber agregador de registros ni alertas — lo que cambió el
+  22/9/2026 (T8, plan "Nada se pierde en un corte ni en un deploy") es que
+  los logs YA NO se pierden en cada deploy.** El código emite una línea JSON
+  por evento (`{"level","event","ts",...}`), lista para que Loki, Datadog o
+  CloudWatch la indexen sin parsear texto, y oculta solo los valores
+  sensibles; con `logging: driver: journald` (ver §7 → "En Dokploy") esa
+  salida ahora vive en `/var/log/journal` del propio VPS y sobrevive al
+  `recreate` del contenedor en cada deploy — antes se iba con el contenedor
+  viejo, y comparar la tasa de un evento entre dos versiones desplegadas el
+  mismo día era imposible por falta de datos, no de análisis. Sigue faltando
+  apuntar un recolector de verdad (Loki/Datadog/CloudWatch) a
+  `journalctl`/`docker logs` y armar las alertas — hoy la única forma de
+  mirar estos eventos es un `journalctl ... | jq` a mano (§12). Los eventos
+  que merecen una alerta real: `cola_encolar_fallido`, `cola_turno_fallido`,
+  `webhook_sin_secreto_en_produccion`, `webhook_firma_invalida`,
+  `identidad_reescrita` (una reescritura de la guarda de identidad funcionó:
+  vale la pena contarlas), `identidad_bloqueada` (un turno terminó escalado
+  por esta guarda) y, desde el 22/9/2026, `webhook_mensaje_no_guardado`/
+  `webhook_contacto_no_guardado`/`webhook_conversacion_no_creada`
+  (persistencia perdida, con o sin reintento de Meta), `base_agotada` (un
+  corte de la base que ni el reintento del cliente admin pudo resolver) y
+  `turno_llamadas_no_escritas` (la telemetría de un turno no se pudo volcar
+  — no afecta al cliente, pero sí a la visibilidad de §12).
 - **Un solo token de WhatsApp** para todos los canales. Con más de un número
   hay que extender `whatsapp_channels`.
 - **La PII no está cifrada en reposo.** Cédula, dirección y teléfono se
@@ -1920,13 +1978,157 @@ cede. Al encenderla, vigilar durante las primeras horas:
 
 ---
 
+## 12. Entrega de "Nada se pierde en un corte ni en un deploy" (22/9/2026)
+
+Origen: el informe de solo lectura del Claude del VPS del 21/9/2026 (tras
+desplegar `83bc558`) dejaba abiertos cortes app↔PostgREST sin diagnóstico, un
+500 opaco al bajar una imagen, instrumentación pendiente
+(`maxOutputTokens`/`toolChoice` sin prueba directa, tokens por fase
+inferidos, `agent_token_usage` sin razonamiento), el caché "cacheando cero"
+en la mitad de los turnos y que cada deploy destruye los logs. El plan
+completo, con las seis objeciones que la revisión del VPS incorporó, está en
+`docs/planes/2026-09-21-nada-se-pierde-en-un-corte-ni-en-un-deploy.md`; el
+reporte por commit, con marcadores para pegar los hashes reales, está en
+`docs/entregas/2026-09-22-nada-se-pierde-en-un-corte-ni-en-un-deploy.md` —
+esta sección da el ORDEN operativo, ese documento da el detalle commit por
+commit.
+
+### Orden
+
+1. **Confirmar que producción sigue en `83bc558` con 78 migraciones** (lo
+   que el informe del VPS del 21/9/2026 midió a las 23:27 UTC): `git -C
+   <checkout> rev-parse HEAD` y `select count(*) from
+   supabase_migrations.schema_migrations`. El rango de esta entrega es
+   `83bc558..HEAD` (7 commits, una sola migración, 78→79). Si producción ya
+   no está ahí, recalcular `produccion..HEAD` antes de seguir — nunca sobre
+   el HEAD local.
+2. Respaldo (`scripts/backup.sh`, §8).
+3. **Migración `20260921040000_telemetria_del_turno.sql` ANTES que el
+   código** — nace columnas nuevas en `agent_turns`, la tabla
+   `agent_turn_calls` (RLS habilitada SIN ninguna política, se lee solo por
+   RPC) y recrea `agent_token_usage()`. Aplicarla igual que las anteriores
+   de este mismo mes (`20260916010000` en adelante): la cabecera trae `set
+   local lock_timeout = '5s'` con una guarda que ABORTA si no corre dentro de
+   una transacción, así que hace falta `-1`:
+   ```bash
+   docker exec -i supabase-db env PGOPTIONS="-c lock_timeout=5s" psql -U postgres -d postgres \
+     -1 -v ON_ERROR_STOP=1 \
+     < supabase/migrations/20260921040000_telemetria_del_turno.sql
+   ```
+   Sale con `NOTICE: 20260921040000: autoverificación de agent_turn_calls y
+   sus tres RPC correcta.` si entró bien; con `EXCEPTION` si algo quedó a
+   medias — no seguir al paso 4 hasta que el NOTICE aparezca. Registrarla en
+   `supabase_migrations.schema_migrations` (paso 3 del patrón de §7 → "En
+   Dokploy"): el conteo pasa de **78 a 79** sobre lo que ya dejó "La
+   escalada se hace una vez y la búsqueda responde" (`20260921020000`,
+   `20260921030000`) — si producción todavía no tiene esas dos, aplicarlas
+   primero, en su propio orden, antes de esta.
+4. Push a `main` / redeploy desde Dokploy (el código de T1-T8 no funciona sin
+   la migración ya aplicada: `logTurn` pide `.select("id").single()` para
+   poder escribir en `agent_turn_calls`, y sin la tabla ese insert falla).
+5. **Verificar que el dominio sigue respondiendo y que el contenedor
+   conserva los labels de Traefik** tras este deploy en particular (ver §7 →
+   "En Dokploy", el bloque nuevo sobre journald) — es el primer deploy con
+   `logging: driver: journald` en el compose, y aunque Dokploy regenera el
+   YAML solo, vale la pena confirmarlo una vez:
+   ```bash
+   curl -I https://<tu-dominio>
+   docker inspect <contenedor-app> --format '{{json .Config.Labels}}' | jq
+   ```
+6. **Activar el access log de Traefik** (objeción 3 de la revisión del VPS:
+   el 500 real que un asesor vio al bajar una imagen el 21/9/2026 NO fue de
+   `/api/media`, ni de Storage, ni de Envoy — Storage registró la subida y
+   la firma en 200, y Envoy no vio NINGUNA petición de `facebookexternalua`
+   a esa hora. La petición de Meta murió ANTES de Envoy, en Traefik o el
+   borde TLS, y Traefik no tenía access log activado: ese es el hueco real,
+   no algo que este plan haya podido arreglar en el código). En la
+   configuración de Traefik de Dokploy (servicio `dokploy-traefik`), sumar:
+   ```yaml
+   accessLog:
+     filePath: /var/log/traefik/access.log
+     format: json
+     fields:
+       headers:
+         names:
+           User-Agent: keep
+   ```
+   y reiniciar Traefik. El próximo `131053` (o cualquier otro fallo de Meta
+   al bajar un adjunto saliente) se busca por `facebookexternalua` en ese
+   access log, cruzado con la hora del mensaje en `messages.created_at` —
+   esto es lo que hace falta para saber si la petición llegó a Traefik y qué
+   código le devolvió, cosa que hoy no se puede saber.
+
+### Verificación en producción, 24-48 h después
+
+- **Tokens por fase, la promesa 7.4 del informe del VPS del 21/9/2026**
+  ("maxOutputTokens/toolChoice sin prueba directa"):
+  ```sql
+  select phase, count(*), sum(reasoning_tokens), sum(cached_input_tokens),
+         max(max_output_tokens)
+  from agent_turn_calls
+  group by 1;
+  ```
+  La fase `escenario` deja de cachear cero (T6 movió el reloj al final del
+  prompt); `redactar` trae `1500` en todas (el techo que puso T5/T4b).
+- **`tool_choice = 'none'` en toda fila `redactar` posterior a una escalada
+  del mismo turno** — la prueba directa que faltaba (7.4 del informe):
+  ```sql
+  select turn_id, sequence, tool_choice, finish_reason
+  from agent_turn_calls
+  where phase = 'redactar'
+  order by turn_id, sequence;
+  ```
+  en un turno con dos filas `redactar`, la segunda (posterior a la escalada)
+  trae `tool_choice = 'none'`.
+- **Conteos de los eventos nuevos del webhook y del cliente admin** (cruzar
+  con `journalctl`, ver §7):
+  - `webhook_mensaje_no_guardado` con `retry` → cada uno seguido de un
+    `23505` (la reentrega de Meta lo encontró ya guardado) o de un guardado
+    exitoso — nunca un mensaje que se pierda dos veces seguidas.
+  - `webhook_canal_no_consultable` — debería ser rarísimo; si aparece
+    seguido, es un corte de la base más largo que lo que el reintento
+    cubre.
+  - `base_reintento`/`base_agotada` — el primero sin el segundo inmediato
+    después es la señal de que el reintento está funcionando; `base_agotada`
+    solo debería aparecer en cortes más largos que los ~1,3 s que cubren los
+    dos reintentos por defecto.
+  - `webhook_error_actualizar_estado` debería BAJAR frente a `base_reintento`
+    — los cortes cortos ya no llegan a ese llamador (hallazgo del plan
+    original, a confirmar en dato).
+- **`telemetria_purgada` una vez al día**, con `filas` creciendo a medida que
+  la tabla pasa los 90 días de retención — nunca dos veces el mismo día
+  (`journalctl`, evento `telemetria_purgada`, o su ausencia junto con
+  `telemetria_purga_lock_no_disponible` si Redis estuvo caído ese día).
+- **Tras el SIGUIENTE deploy** (no este, el que viene después):
+  ```bash
+  journalctl CONTAINER_TAG=sbk-crm-app --since "1 day" | head
+  ```
+  debe seguir mostrando los turnos del contenedor ANTERIOR — la prueba de
+  que journald sí sobrevive al `recreate` (antes de T8, `docker logs` contra
+  el contenedor nuevo no traía nada de antes del deploy).
+- **El 500 de la imagen**: si se repite, buscarlo primero en el access log
+  de Traefik (paso 6 de arriba) por `facebookexternalua`, no en la app —
+  ver el hallazgo 1 del plan y la trampa nueva en CLAUDE.md.
+
+### Qué NO cambia para el operador
+
+Ningún interruptor nuevo en Control IA. `AI_AGENT_REASONING=none` es
+OPCIONAL — producción sigue en `off` tras este deploy, y pasar a `none` es
+una decisión que se toma DESPUÉS de leer `agent_turn_calls.reasoning_tokens`
+por fase durante unos días, no algo que este plan decida de antemano (ver
+§1, fila de la variable). El resto del comportamiento visible para un
+asesor o un cliente no cambia: esta corrida es observabilidad y resiliencia
+de infraestructura, no una funcionalidad nueva.
+
+---
+
 ## Comprobación final
 
 Con todo configurado, esta lista debe pasar entera:
 
 - [ ] Una restauración de prueba devuelve los datos completos
 - [ ] `npm run build` sin errores ni warnings
-- [ ] `select count(*) from supabase_migrations.schema_migrations` devuelve 76 (recontado el 21/9/2026 tras `20260921010000`, "El catálogo configurado sale siempre"; decía 75 el 19/9/2026 tras `20260918010000`/`20260918020000`, 73 el 18/9/2026 tras `20260916010000`/`20260917010000`/`20260917020000`, 70 el 15/9/2026 y 61 cuando se escribió esta guía)
+- [ ] `select count(*) from supabase_migrations.schema_migrations` devuelve 79 en LOCAL tras `20260921040000` ("Nada se pierde en un corte ni en un deploy", 22/9/2026; ver §12) — 78 tras `20260921020000`/`20260921030000` ("La escalada se hace una vez y la búsqueda responde"), 76 el 21/9/2026 tras `20260921010000` ("El catálogo configurado sale siempre"), 75 el 19/9/2026 tras `20260918010000`/`20260918020000`, 73 el 18/9/2026 tras `20260916010000`/`20260917010000`/`20260917020000`, 70 el 15/9/2026 y 61 cuando se escribió esta guía. **El número en PRODUCCIÓN depende de cuántas de estas corridas ya se aplicaron allá — preguntar en qué commit está producción antes de asumir un valor (ver §11/§12).**
 - [ ] El bucket `whatsapp-media` es privado (`public = false`)
 - [ ] Una URL directa al bucket responde 400
 - [ ] `/api/media/...` sin sesión responde 401

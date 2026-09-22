@@ -56,7 +56,12 @@ reconstruye la base desde cero con las migraciones y seeds del repo.
    plazo y `.unref()`). `claimDue` devuelve también el vencimiento
    original del turno, con el que `turno_tiempos` separa `debounceMs` (la
    ventana de silencio, diseño) de `colaMs` (lo que esperó frenado,
-   atraso).
+   atraso). Desde el 22/9/2026 (T4, plan "Nada se pierde en un corte ni en
+   un deploy") la misma ruta, DESPUÉS de reconciliar y drenar, purga una vez
+   al día lo de `agent_turn_calls` más viejo que 90 días (`agent_turn_calls_
+   purge`, lock en Redis `telemetria:purga:<fecha>` para que dos disparos
+   del cron no purguen dos veces el mismo día) — nunca lanza ni frena la
+   cola, un fallo de Redis o de la RPC solo deja `log.warn`.
 3. El turno (`lib/ai/agent.ts`) corre en paralelo la fase 0 (¿calza un
    escenario/playbook del supervisor? → se envía tal cual) y la fase 1
    (clasificar intención → define qué herramientas recibe el modelo), y solo
@@ -336,12 +341,21 @@ dejar rastro es lo que hacía desaparecer leads.
   log** (8/9/2026): no escribir `err instanceof Error ? err.message :
   String(err)` en ningún sitio — un `PostgrestError` sale `[object Object]`
   por esa vía (`turno_lock_no_liberado`, `webhook_error_actualizar_estado`,
-  7/9/2026). **`AI_AGENT_REASONING=off` cuando el modelo no razona**:
-  producción corre `gpt-5.6-luna` vía OpenRouter (`OPENAI_BASE_URL`), el
-  SDK avisaba `reasoningEffort is not supported` 3-4 veces por turno y el
-  esfuerzo no se aplicaba. Un `fetch failed` hacia Meta es `origenDelFallo:
-  "red"` → traspaso `entrega_fallida`, no `rechazado_por_meta`; lo
-  reencola el reconciliador.
+  7/9/2026). **CORREGIDO el 22/9/2026 (T5, plan "Nada se pierde en un corte
+  ni en un deploy"): el título de esta viñeta hasta esa fecha decía
+  "`AI_AGENT_REASONING=off` cuando el modelo no razona" y daba por cierto
+  que producción corría `gpt-5.6-luna` vía OpenRouter sin razonar (el SDK
+  avisaba `reasoningEffort is not supported` 3-4 veces por turno, 8/9/2026,
+  y de ahí se asumió que el esfuerzo simplemente no se aplicaba). Es FALSO:
+  ese warning era de OTRA versión del SDK; con `@ai-sdk/openai@4.0.43` (el
+  instalado), Luna SÍ es modelo de razonamiento (`isReasoningModel` la
+  detecta por el id, major ≥ 5) y razona con el default del proveedor
+  aunque `AI_AGENT_REASONING=off` esté puesto — medido el 21/9/2026: 58,5 %
+  de la salida de Luna es razonamiento con `off`. Ver la trampa de
+  `AI_AGENT_REASONING` más abajo (misma fecha) para el estado real, el
+  valor `none` que sí lo apaga y dónde se mide.** Un `fetch failed` hacia
+  Meta es `origenDelFallo: "red"` → traspaso `entrega_fallida`, no
+  `rechazado_por_meta`; lo reencola el reconciliador.
 - **`queue.test.ts` y `redis-queue.test.ts` se saltan ENTEROS sin Redis**
   (`if (!disponible) return` al inicio del archivo; puerto 6379 cerrado en
   la máquina de esta corrida, 7/9/2026). Un test nuevo ahí "pasa" sin
@@ -1877,6 +1891,168 @@ dejar rastro es lo que hacía desaparecer leads.
   con la columna nueva, y después comprobar que OpenRouter lo honra (el 8/9
   Luna respondía `reasoningEffort is not supported`). La RPC
   `agent_token_usage` no trae la columna: sumarla es otra migración.
+  **Actualizado el 22/9/2026 (T5, plan "Nada se pierde en un corte ni en un
+  deploy"): las dos cosas que esta viñeta dejaba pendientes ya se hicieron.**
+  `AI_AGENT_REASONING` tiene un tercer valor, `none`, que SÍ manda el
+  apagado explícito (`reasoningEffort: "none"` → el SDK lo traduce a
+  `reasoning: { effort: "none" }` en el body de la Responses API); `off`
+  sigue sin mandar nada (el proveedor razona con su default) y `on`/ausente/
+  basura siguen mandando `medium`/`low`. Y `agent_token_usage` SÍ suma
+  `reasoning_tokens`/`cached_input_tokens` desde la migración
+  `20260921040000` (T3 del mismo plan, que de paso la pasó de
+  `security invoker` a `security definer` — pagaba `is_agent()` por fila,
+  mismo agujero que `search_conversations_by_message`). Producción sigue en
+  `off`: el operador decide si prueba `none` después de leer
+  `agent_turn_calls.reasoning_tokens` por fase (tabla nueva de la misma
+  migración, ver la trampa de `agent_turn_calls` más abajo).
+- **Meta descarga los adjuntos salientes desde una URL firmada de Supabase
+  Storage, NUNCA desde `/api/media/…` del CRM** (hallazgo 1, plan "Nada se
+  pierde en un corte ni en un deploy", 21-22/9/2026). El enlace que se le
+  manda a Meta lo arma `media-link.ts` (`createSignedUrl(path, 600)`) contra
+  el bucket; `/api/media` exige sesión de agente — a Meta le daría 401,
+  nunca 500. Caso real, 21/9/2026: un asesor vio un 500 al bajar una imagen
+  y la app "no registró nada" (la ruta no tenía un solo `log.*` ni
+  `try/catch`, T7 lo cerró), pero tampoco fue Storage ni Envoy — Storage
+  registró la subida y la firma en 200, y Envoy no vio NINGUNA petición de
+  `facebookexternalua` a esa hora. La petición de Meta murió ANTES de
+  Envoy, en Traefik o el borde TLS, y **Traefik no tenía access log
+  activado**: ese era el hueco real, no la app. Instrumentar `/api/media`
+  (T7) sigue valiendo por su propio motivo — un 401/403/404/500 real de un
+  ASESOR mirando una foto o un sticker no dejaba ninguna línea — pero no es
+  el arreglo de este incidente; el arreglo es activar el access log de
+  Traefik en el VPS (ver `docs/PRODUCCION.md` §12) y buscar el próximo
+  131053/500 por `facebookexternalua`.
+- **El webhook responde 503 a Meta SOLO ante un fallo TRANSITORIO de
+  persistencia, y la clasificación de "transitorio" mira también
+  `err.message`, no solo `err.code`** (T1/T2, plan "Nada se pierde en un
+  corte ni en un deploy", 21-22/9/2026). Hasta esa corrida, un corte de red
+  corto o un Postgres reiniciando entre la app y PostgREST perdía el
+  mensaje del cliente PARA SIEMPRE: los tres `continue` de pérdida real
+  (contacto, conversación nueva, mensaje entrante) hacían `console.error` y
+  el webhook respondía 200 igual — Meta no reintenta un 200. Ahora esos
+  `continue` levantan `persistenciaFallida` cuando `esFalloTransitorioDeBase`
+  (`errores-base.ts`) reconoce el fallo, y el `POST` responde 503
+  `{ok:false,retry:true}` al final (DESPUÉS de encolar los turnos de lo que
+  sí se guardó) para que Meta reentregue el lote — lo ya guardado cae en el
+  `23505` del dedupe y se ignora, lo perdido se guarda recién ahí. Un fallo
+  NO transitorio (payload raro, constraint) se queda en 200: un 5xx
+  permanente haría que Meta repita el mismo lote durante días. La
+  clasificación no se queda en `err.code`: `postgrest-js` convierte un 503
+  con cuerpo NO-JSON o sin `code` en `PostgrestError { code: "", message:
+  <cuerpo> }`, así que `esFalloTransitorioDeBase` también mira `err.message`
+  contra los patrones de Envoy (`upstream connect error`,
+  `disconnect/reset before headers`, `connection termination` — la familia
+  "antes de las cabeceras": la petición nunca llegó a PostgREST) y de Kong
+  (`name resolution failed`, `failure to get a peer from the ring-balancer`,
+  `invalid response was received from the upstream`). Verificado en local
+  con PostgREST parado: Kong respondió `503 {"message":"name resolution
+  failed"}`, sin esta clasificación por `message` el 503 se leía como un
+  fallo cualquiera, sin reintento y sin `persistenciaFallida`, y el webhook
+  respondía 200 con el mensaje perdido. En producción el proxy es Envoy, no
+  Kong (el stack `supabase-squad`), pero la clasificación cubre los dos: el
+  cuerpo real que sirve cada instancia no es el mismo en local que en el
+  VPS, y este código no debería depender de cuál proxy hay delante.
+  Corrección hallada en la verificación a mano del orquestador (22/9/2026,
+  "apagar PostgREST durante un POST al webhook local"): la PRIMERA lectura
+  del lote (el canal, `whatsapp_channels` por `phone_number_id`) no pasaba
+  por ninguno de estos inyectores — su `error` se descartaba y se leía como
+  "no hay canal registrado", así que un corte de la base justo en ESE paso
+  descartaba el lote entero con 200 antes de que el resto del código
+  llegara a correr; ahora deja `log.error("webhook_canal_no_consultable")`
+  y, si es transitorio, `persistenciaFallida = true`.
+- **El reintento del cliente admin nunca repite un `POST`/`PATCH`/`DELETE`
+  ambiguo: solo `GET`/`HEAD`, o un fallo que PRUEBE que la petición nunca
+  llegó al upstream** (T1, mismo plan, 21-22/9/2026). `createAdminClient()`
+  pasa `global: { fetch: fetchConReintentos(fetch) }` (cubre PostgREST, RPC
+  y Storage de un saque). `esReintentoSeguro(method, fallo)`
+  (`errores-base.ts`) reintenta si (a) el método es idempotente, o (b) el
+  fallo prueba que la conexión nunca se estableció — la familia Envoy/Kong
+  "antes de las cabeceras" y `ECONNREFUSED`/`EAI_AGAIN`. Un `POST` con
+  `ECONNRESET`/`ETIMEDOUT`/"fetch failed" ambiguo NO se reintenta:
+  PostgREST pudo haber ejecutado el INSERT y perderse solo la respuesta, y
+  reintentarlo duplicaría la fila — una fila duplicada en `agent_turns`
+  infla `agent_spend_today()`, la suma con la que `agent_can_run()` apaga a
+  Seba por tope de gasto. Ese caso se queda como siempre: `log.error(
+  "base_agotada")` y el llamador ve el error tal cual.
+- **`agent_turn_calls` tiene RLS habilitada SIN ninguna política — se lee
+  SOLO por RPC `security definer`, nunca con un `select` directo** (T3,
+  plan "Nada se pierde en un corte ni en un deploy", migración
+  `20260921040000`, 21-22/9/2026). Una fila por cada llamada al proveedor
+  dentro de un turno (escenario/clasificar/redactar/identidad, 3-7 por
+  turno, 1.100-2.500/día medidas el 21/9/2026 — más que `messages` hoy). Una
+  política `select using (is_agent())` ahí es EXACTAMENTE la que pagó
+  `messages` por fila y tumbó la búsqueda de `/inbox` 48 h
+  (`20260921030000`); a este volumen es una bomba de tiempo previsible, no
+  un accidente. Escribe `service_role` (bypassa RLS, pero igual necesita el
+  `grant` de tabla); se lee por `agent_turn_calls_by_phase(days)` (agregado
+  por fase) y se purga con `agent_turn_calls_purge(retain_days)` (cron
+  diario, guarda en Redis `telemetria:purga:<fecha>`, nunca frena la cola).
+  Un `select authenticated` directo sobre la tabla da **0 filas, no un
+  error** — RLS sin política filtra todo, no rechaza el permiso de tabla; un
+  test que quiera probar esto de verdad necesita comparar contra la RPC, no
+  contra un `select` a mano. Cualquier test que ejercite `runAgentTurn` con
+  un fake de Supabase necesita el caso `agent_turn_calls` en su `from()` Y
+  el `.select("id").single()` del insert de `agent_turns` (`logTurn` ahora
+  pide el `id` para poder referenciarlo como `turn_id`) — sin los dos, el
+  fake explota o miente en silencio, mismo criterio que `catalog_links`
+  (18/9/2026).
+- **La telemetría por llamada viaja por `AsyncLocalStorage`, con un orden de
+  middlewares que importa** (T4, mismo plan, 21-22/9/2026). `runAgentTurn`
+  corre su cuerpo entero dentro de `conTelemetriaDeTurno` (`turn-telemetry.ts`);
+  cualquier llamada al proveedor que corra ahí adentro —fase 0/1 en
+  paralelo, el tool loop, la reescritura de identidad— se anota sola en el
+  mismo registro, sin que ninguna función intermedia tenga que pasarlo a
+  mano. `build()` (`model.ts`) compone `[rateLimitMiddleware,
+  telemetryMiddleware]`, EN ESE ORDEN: `wrapLanguageModel` invierte el
+  arreglo y hace `reduce`, así que el PRIMERO queda envolviendo por FUERA y
+  el ÚLTIMO pegado al modelo base — con este orden, `duration_ms` mide la
+  llamada real al proveedor, nunca el sueño de `conRitmo` (que puede dormir
+  hasta 60 s). Con `ToolLoopAgent` MOCKEADO (como en la mayoría de
+  `agent.test.ts`) el middleware no corre nunca — un test que quiera probar
+  telemetría de verdad necesita un mock de modelo que sí pase por
+  `wrapLanguageModel`, o probar `telemetryMiddleware`/`turnCallsSnapshot`
+  aparte (`turn-telemetry.test.ts`), no a través de `agent.test.ts`.
+- **El reloj del prompt de escenarios va al FINAL a propósito, no en la
+  segunda línea** (T6, mismo plan, 21-22/9/2026). El caché de prompts del
+  proveedor cachea por PREFIJO idéntico entre llamadas: con el reloj arriba
+  (como hasta esa fecha), cada turno mandaba una hora distinta en los
+  primeros caracteres y el prefijo se rompía siempre — la llamada de fase 0
+  (`matchPlaybook`) nunca podía cachear, y un turno resuelto por escenario
+  hace SOLO esa llamada más la de intención. `buildPrompt` (`playbooks.ts`)
+  pone ahora todo lo estático (instrucción + catálogo + reglas) primero y el
+  párrafo de fecha/hora/franja/horario/estado al final, justo antes de
+  "Responde solo con el nombre exacto…". Sin promesa de efecto: con 14
+  escenarios activos el bloque estático ronda ~830 tokens, por debajo del
+  mínimo de ~1.024 de OpenAI — T4 mide después si de verdad alcanza.
+- **`lib/log.ts` oculta toda clave que contenga `phone`, aunque no sea un
+  dato personal** (corrección hallada en la verificación a mano del
+  orquestador, 22/9/2026, plan "Nada se pierde en un corte ni en un
+  deploy"). El primer intento de `webhook_canal_no_encontrado` usaba
+  `phoneNumberId` como clave y el evento salía con el valor tapado
+  (`[oculto]`) — inútil para saber QUÉ canal falta, aunque
+  `metadata.phone_number_id` es un id de infraestructura del NÚMERO DE
+  META, no el teléfono de un cliente. Se renombró a `canalMeta`. Antes de
+  nombrar una clave de log, comprobar que no contenga "phone" por
+  casualidad — el filtro de `lib/log.ts` no distingue intención.
+- **El canal del seed local queda `connected` con un token de Meta
+  vencido: para simular hay que ponerlo en `pending`** (hallazgo
+  del entorno, 22/9/2026, verificación de "Nada se pierde en un corte ni en
+  un deploy"). No mencionado en ningún plan porque no es del código, es del
+  seed (`supabase/seed.sql`) — un asesor que reproduzca un escenario a mano
+  contra la base local con el canal `connected` va a ver que la IA falla al
+  enviar por el token vencido, no por lo que está probando.
+- **Un `react-hooks/set-state-in-effect` con un `useCallback` llamado desde
+  un `useEffect` de montaje se dispara aunque el `setState` viva DESPUÉS de
+  un `await`** (T4, plan "Nada se pierde en un corte ni en un deploy",
+  21-22/9/2026). La regla sigue la referencia de la función hasta su
+  `setState` interno, no la asincronía real: `AgentControlView` necesita
+  cargar `turnCallsByPhase` al montar (sin prop `initial*`, esta tarea no
+  tocó `page.tsx`) y llamar a `refreshTurnCallsByPhase` (un `useCallback`)
+  por nombre desde el `useEffect` de montaje disparaba la regla igual. La
+  forma que el propio mensaje de la regla recomienda es un efecto INLINE
+  con `.then()`/`.catch()` (no `async () => {}` directo, que React no
+  soporta como cleanup) y una bandera `cancelado` para no escribir el
+  estado si el componente se desmontó antes de que la lectura resuelva.
 
 ---
 
