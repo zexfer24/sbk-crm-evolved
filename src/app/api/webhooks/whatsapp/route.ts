@@ -18,6 +18,7 @@ import { phoneNumberFromWaId } from "@/lib/whatsapp/phone";
 import { extensionForMime } from "@/lib/whatsapp/media-extension";
 import { pgrstLiteral } from "@/lib/ai/pgrst";
 import { log, errorText } from "@/lib/log";
+import { esFalloTransitorioDeBase } from "@/lib/supabase/errores-base";
 
 // ---------------------------------------------------------------------------
 // GET: handshake de verificación que exige Meta al registrar el webhook.
@@ -482,7 +483,7 @@ async function handleQualityUpdate(supabase: SupabaseClient, value: WebhookQuali
     .eq("id", channelId);
 
   if (error) {
-    console.error("Webhook de WhatsApp: error al guardar la calidad del número", error);
+    log.error("webhook_calidad_no_guardada", { channelId, detail: errorText(error) });
     return;
   }
 
@@ -522,7 +523,7 @@ async function handleAccountUpdate(supabase: SupabaseClient, value: WebhookAccou
     .eq("id", channelId);
 
   if (error) {
-    console.error("Webhook de WhatsApp: error al guardar la restricción de cuenta", error);
+    log.error("webhook_restriccion_no_guardada", { channelId, detail: errorText(error) });
     return;
   }
 
@@ -575,7 +576,7 @@ async function handleTemplateStatusUpdate(
   const { error } = await supabase.from("templates").update({ status }).eq("name", name).eq("language", language);
 
   if (error) {
-    console.error("Webhook de WhatsApp: error al actualizar el estado de la plantilla", error);
+    log.error("webhook_plantilla_no_actualizada", { name, language, detail: errorText(error) });
     return;
   }
 
@@ -787,6 +788,21 @@ function hasValidMetaSignature(rawBody: string, signatureHeader: string | null, 
   return timingSafeEqual(expectedBuf, actualBuf);
 }
 
+/**
+ * La respuesta final del POST, que depende de `persistenciaFallida` (D1,
+ * plan "Nada se pierde en un corte ni en un deploy", 21-22/9/2026): sin
+ * pérdidas, 200 de siempre; con alguna pérdida TRANSITORIA en este lote, 503
+ * `{ ok: false, retry: true }` para que Meta reentregue el lote completo. Dos
+ * salidas del POST responden "al final" (la de siempre y la de "la IA está
+ * apagada, no se encola nada") y las dos tienen que respetar la misma regla,
+ * de ahí el helper en vez de repetir el `if`.
+ */
+function respuestaWebhook(persistenciaFallida: boolean) {
+  return persistenciaFallida
+    ? NextResponse.json({ ok: false, retry: true }, { status: 503 })
+    : NextResponse.json({ ok: true });
+}
+
 export async function POST(request: Request) {
   const rawBody = await request.text();
   const appSecret = process.env.WHATSAPP_APP_SECRET;
@@ -815,6 +831,18 @@ export async function POST(request: Request) {
   // Freno de avalancha. Se responde 200 igual que en el camino normal: un
   // 429 haría que Meta reintente el mismo lote, que es justo lo contrario de
   // lo que se busca. El evento se descarta y queda el registro.
+  //
+  // D1, plan "Nada se pierde en un corte ni en un deploy" (21-22/9/2026): más
+  // abajo hay OTRO 200-que-no-es-200 (el 503 de `persistenciaFallida`) y la
+  // diferencia importa. Acá el evento se DESCARTA A PROPÓSITO -- nunca se
+  // intentó guardarlo, así que no hay nada que un reintento de Meta vaya a
+  // rescatar. El 503 es para lo contrario: algo SÍ se intentó guardar (un
+  // contacto, una conversación, un mensaje) y no se pudo por un corte
+  // TRANSITORIO de la base -- ahí sí vale que Meta reentregue el lote.
+  // Si la RPC misma falla (base caída), `allowed` llega `null` -- distinto
+  // de `false` -- así que el `if` de abajo no entra y el lote SIGUE
+  // procesándose: un corte del freno de avalancha no puede ser motivo para
+  // perder mensajes (verificado con test, 22/9/2026).
   const { data: allowed } = await supabase.rpc("rate_limit_allow", {
     p_bucket: "whatsapp-webhook",
     p_limit: WEBHOOK_RATE_LIMIT,
@@ -836,6 +864,18 @@ export async function POST(request: Request) {
    */
   const touchedByCustomer = new Map<string, number>();
   const mediaDownloadTasks: (() => Promise<void>)[] = [];
+  /**
+   * D1, plan "Nada se pierde en un corte ni en un deploy" (21-22/9/2026): se
+   * enciende cuando un contacto/conversación/mensaje de este lote no se pudo
+   * guardar por un corte TRANSITORIO de la base (`esFalloTransitorioDeBase`)
+   * -- nunca por un fallo de validación real (payload raro, constraint), que
+   * un reintento de Meta no arreglaría. Si queda arriba al terminar el POST,
+   * la respuesta es 503 en vez de 200 -- DESPUÉS de encolar los turnos de lo
+   * que sí se guardó -- para que Meta reentregue el lote completo: lo que ya
+   * se guardó cae en el `23505` del dedupe (más abajo) y se ignora; lo
+   * perdido recién ahí se guarda.
+   */
+  let persistenciaFallida = false;
 
   for (const entry of body.entry ?? []) {
     for (const change of entry.changes ?? []) {
@@ -913,14 +953,35 @@ export async function POST(request: Request) {
       const phoneNumberId = value.metadata?.phone_number_id;
       if (!phoneNumberId) continue;
 
-      const { data: channel } = await supabase
+      const { data: channel, error: channelError } = await supabase
         .from("whatsapp_channels")
         .select("id, phone_number_id, status")
         .eq("phone_number_id", phoneNumberId)
         .maybeSingle<WelcomeChannel>();
 
+      if (channelError) {
+        // Corrección hallada en la verificación a mano del orquestador
+        // (22/9/2026, "apagar PostgREST durante un POST al webhook local"):
+        // ESTA es la PRIMERA lectura del lote -- con Kong caído, Supabase
+        // devuelve un `error` acá (503 "name resolution failed") y antes se
+        // leía como `!channel`, exactamente el mismo agujero que T2 cerró
+        // tres pasos más adelante, pero en el primer paso: el lote entero se
+        // descartaba con 200 sin haber intentado guardar nada. Con un corte
+        // TRANSITORIO, `persistenciaFallida` deja que el 503 del final del
+        // POST le pida a Meta que reentregue.
+        log.error("webhook_canal_no_consultable", { canalMeta: phoneNumberId, detail: errorText(channelError) });
+        if (esFalloTransitorioDeBase(channelError)) persistenciaFallida = true;
+        continue;
+      }
+
       if (!channel) {
-        console.warn(`Webhook de WhatsApp: no hay canal registrado para phone_number_id=${phoneNumberId}`);
+        // La clave se llama `canalMeta`, no `phoneNumberId`: `lib/log.ts`
+        // oculta toda clave que contenga "phone" para no filtrar el teléfono
+        // de un cliente, pero acá es el id de infraestructura del NÚMERO DE
+        // META (`metadata.phone_number_id`), no un dato personal -- con el
+        // nombre viejo el evento salía con el valor tapado y no servía para
+        // saber QUÉ canal falta (22/9/2026).
+        log.warn("webhook_canal_no_encontrado", { canalMeta: phoneNumberId });
         continue;
       }
 
@@ -939,7 +1000,10 @@ export async function POST(request: Request) {
             .eq("whatsapp_message_id", message.reaction.message_id);
 
           if (reactionError) {
-            console.error("Webhook de WhatsApp: error al guardar la reacción", reactionError);
+            log.error("webhook_reaccion_no_guardada", {
+              whatsappMessageId: message.reaction.message_id,
+              detail: errorText(reactionError),
+            });
           }
           // No se encola turno de IA: reaccionar con un pulgar no es una
           // pregunta que haya que contestar.
@@ -988,11 +1052,11 @@ export async function POST(request: Request) {
 
           if (vieneConGaleria) {
             const motivo = message.errors?.[0];
-            console.info(
-              `Webhook de WhatsApp: Meta marcó el mensaje ${message.id} como no representable` +
-                (motivo ? ` (${motivo.code}: ${motivo.title ?? "sin título"})` : "") +
-                ". No se guarda: acompaña a una galería que ya se guardó aparte."
-            );
+            log.info("webhook_unsupported_con_galeria_omitido", {
+              whatsappMessageId: message.id,
+              codigo: motivo?.code ?? null,
+              titulo: motivo?.title ?? null,
+            });
             continue;
           }
 
@@ -1046,7 +1110,16 @@ export async function POST(request: Request) {
           .single();
 
         if (contactError || !contact) {
-          console.error("Webhook de WhatsApp: error al upsertar contacto", contactError);
+          // D1: sin contacto no hay a dónde colgar la conversación ni el
+          // mensaje -- este cliente se pierde entero para este intento. Si
+          // `contactError` prueba un corte transitorio de la base, la
+          // reentrega de Meta (503, al final del POST) es lo único que lo
+          // recupera.
+          log.error("webhook_contacto_no_guardado", {
+            whatsappMessageId: message.id,
+            detail: errorText(contactError),
+          });
+          if (esFalloTransitorioDeBase(contactError)) persistenciaFallida = true;
           continue;
         }
 
@@ -1117,16 +1190,14 @@ export async function POST(request: Request) {
               .maybeSingle<{ id: string }>();
 
             if (yaGuardadoError) {
-              console.error(
-                "Webhook de WhatsApp: error al comprobar reentrega antes de reabrir",
-                yaGuardadoError
-              );
+              log.error("webhook_reentrega_no_verificada", {
+                whatsappMessageId: message.id,
+                detail: errorText(yaGuardadoError),
+              });
             }
 
             if (yaGuardado) {
-              console.info(
-                `Webhook de WhatsApp: mensaje ${message.id} ya estaba guardado (reentrega de Meta), se ignora antes de reabrir.`
-              );
+              log.info("webhook_reentrega_ignorada_antes_de_reabrir", { whatsappMessageId: message.id });
               continue;
             }
 
@@ -1138,10 +1209,11 @@ export async function POST(request: Request) {
               .select("id");
 
             if (reopenError) {
-              console.error(
-                "Webhook de WhatsApp: error al reabrir conversación cerrada",
-                reopenError
-              );
+              log.error("webhook_conversacion_no_reabierta", {
+                conversationId,
+                whatsappMessageId: message.id,
+                detail: errorText(reopenError),
+              });
             } else if ((reopened?.length ?? 0) > 0) {
               await supabase
                 .from("messages")
@@ -1210,15 +1282,23 @@ export async function POST(request: Request) {
               .maybeSingle<{ id: string }>();
 
             if (!wonByOther) {
-              console.error(
-                "Webhook de WhatsApp: colisión al crear conversación pero no se encontró ninguna al releer",
-                conversationError
-              );
+              log.error("webhook_colision_conversacion_no_resuelta", {
+                whatsappMessageId: message.id,
+                detail: errorText(conversationError),
+              });
               continue;
             }
             conversationId = wonByOther.id;
           } else if (conversationError || !newConversation) {
-            console.error("Webhook de WhatsApp: error al crear conversación", conversationError);
+            // D1: la conversación es donde cuelgan el mensaje y la ventana de
+            // 24h -- sin ella, este mensaje tampoco se guarda. Mismo criterio
+            // que el contacto: un corte transitorio pide reentrega (503); un
+            // rechazo real de la consulta se queda en 200.
+            log.error("webhook_conversacion_no_creada", {
+              whatsappMessageId: message.id,
+              detail: errorText(conversationError),
+            });
+            if (esFalloTransitorioDeBase(conversationError)) persistenciaFallida = true;
             continue;
           } else {
             conversationId = newConversation.id;
@@ -1256,7 +1336,10 @@ export async function POST(request: Request) {
             .eq("id", conversationId);
 
           if (referralError) {
-            console.error("Webhook de WhatsApp: error al guardar el referral del anuncio", referralError);
+            log.error("webhook_referral_no_guardado", {
+              conversationId,
+              detail: errorText(referralError),
+            });
           } else {
             await supabase
               .from("messages")
@@ -1412,12 +1495,18 @@ export async function POST(request: Request) {
           if (insertError.code === "23505") {
             // Meta reentregó este webhook (entrega "at-least-once" de la
             // Cloud API): este mensaje ya se guardó en un intento anterior.
-            // No hay nada más que hacer para este mensaje puntual.
-            console.info(
-              `Webhook de WhatsApp: mensaje ${message.id} ya estaba guardado (reentrega de Meta), se ignora.`
-            );
+            // No hay nada más que hacer para este mensaje puntual -- y esto
+            // NO es persistenciaFallida: no se perdió nada, se ignora a
+            // propósito.
+            log.info("webhook_mensaje_duplicado", { whatsappMessageId: message.id });
           } else {
-            console.error("Webhook de WhatsApp: error al guardar mensaje entrante", insertError);
+            // D1: el sitio principal del hallazgo 2 del plan. Un corte
+            // transitorio acá perdía el mensaje del cliente para siempre.
+            log.error("webhook_mensaje_no_guardado", {
+              whatsappMessageId: message.id,
+              detail: errorText(insertError),
+            });
+            if (esFalloTransitorioDeBase(insertError)) persistenciaFallida = true;
           }
           continue;
         }
@@ -1439,13 +1528,21 @@ export async function POST(request: Request) {
                 .upload(path, bytes, { contentType: mimeType, upsert: true });
 
               if (uploadError) {
-                console.error("Webhook de WhatsApp: error al subir media a Storage", uploadError);
+                log.error("webhook_media_no_subida", {
+                  conversationId: convId,
+                  whatsappMessageId: waMessageId,
+                  detail: errorText(uploadError),
+                });
                 return;
               }
 
               await supabase.from("messages").update({ media_url: mediaUrlFor(path) }).eq("id", messageDbId);
             } catch (err) {
-              console.error("Webhook de WhatsApp: error al descargar media de Meta", err);
+              log.error("webhook_media_no_descargada", {
+                conversationId: convId,
+                whatsappMessageId: waMessageId,
+                detail: errorText(err),
+              });
             }
           });
         }
@@ -1564,7 +1661,11 @@ export async function POST(request: Request) {
         )
       );
 
-      return NextResponse.json({ ok: true });
+      // D1: aunque la IA esté apagada, si algo de este mismo lote no se pudo
+      // guardar por un corte transitorio, la reentrega de Meta sigue siendo
+      // la única forma de recuperarlo -- este `return` temprano también
+      // respeta `persistenciaFallida`.
+      return respuestaWebhook(persistenciaFallida);
     }
 
     // Se espera la ventana de silencio antes de atender: Meta manda un POST
@@ -1593,5 +1694,7 @@ export async function POST(request: Request) {
     }
   }
 
-  return NextResponse.json({ ok: true });
+  // D1: el 503 va DESPUÉS de encolar los turnos de lo que sí se guardó --
+  // perder ESE trabajo también sería peor que el 503.
+  return respuestaWebhook(persistenciaFallida);
 }

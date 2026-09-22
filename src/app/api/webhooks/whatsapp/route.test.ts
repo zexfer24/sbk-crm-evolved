@@ -67,6 +67,15 @@ const statusUpdates: { wamid: string; patch: Record<string, unknown> }[] = [];
 
 /** Lo que responde el límite de tasa; un test lo pone en false para probar el freno. */
 let rateLimitAllows = true;
+/**
+ * El error que devolvería la RPC `rate_limit_allow` si la base está caída.
+ * Corrección hallada en la verificación a mano del orquestador (22/9/2026):
+ * un error de esta RPC deja `allowed` en `null`, no en `false`, así que el
+ * `if (allowed === false)` de route.ts no descarta el lote -- el test que lo
+ * prueba pone esto y deja `rateLimitAllows` en `true` (la RPC ni siquiera
+ * llegó a contestar), mismo patrón que `aiCanRunError`.
+ */
+let rateLimitAllowError: { message: string } | null = null;
 /** El interruptor global. Se apaga en el test que comprueba que no se encola nada. */
 let aiCanRun = true;
 /**
@@ -130,6 +139,17 @@ function createFakeAdminClient() {
   ];
   const channelUpdates: { id: string; patch: Record<string, unknown> }[] = [];
   const templateUpdates: { name: string; language: string; patch: Record<string, unknown> }[] = [];
+  /**
+   * Corrección hallada en la verificación a mano del orquestador (22/9/2026,
+   * "apagar PostgREST durante un POST al webhook local"): fuerza el
+   * `.eq("phone_number_id", …).maybeSingle()` del canal -- la PRIMERA
+   * lectura del lote -- a devolver un error, para probar
+   * `webhook_canal_no_consultable`. `null` de fábrica: por defecto ve el
+   * canal fijo de siempre.
+   */
+  let forceChannelLookupError: { code?: string; message: string } | null = null;
+  /** Simula "no hay canal registrado" (`data: null, error: null`) sin depender de que el fake mire el `phoneNumberId` real -- lo ignora, igual que antes de esta tarea. */
+  let forceChannelNotFound = false;
 
   // T-S1 (6/9/2026): el contacto por defecto es el mismo remitente de
   // `webhookBody`/`webhookSystemBody` (+584120000000) con `id: "contact-1"`,
@@ -139,6 +159,34 @@ function createFakeAdminClient() {
   const contactUpdates: { id: string; patch: Record<string, unknown> }[] = [];
   /** Fuerza el UPDATE de `contacts` a devolver 23505, para simular la carrera del punto D2. */
   let contactUpdateConflict = false;
+
+  // -------------------------------------------------------------------------
+  // T2, plan "Nada se pierde en un corte ni en un deploy" (21-22/9/2026).
+  //
+  // Hasta esta tarea el fake solo conocía UNA conversación ("conv-1", del
+  // contacto "contact-1" de fábrica): el SELECT de "¿existe ya?" devolvía
+  // siempre esa misma fila sin mirar el `contact_id`, así que la rama de
+  // conversación NUEVA de route.ts (el `.insert()`) no tenía NINGÚN test.
+  // `otherConversations`/`contactToConversationId` modelan conversaciones
+  // adicionales creadas DURANTE un test (un segundo contacto en el mismo
+  // lote, o el camino feliz de "conversación nueva"); "conv-1" sigue
+  // resuelta aparte, contra la `conversationRow` mutable de siempre, para no
+  // tocar el comportamiento de ningún test que ya existía.
+  // -------------------------------------------------------------------------
+  const otherConversations = new Map<
+    string,
+    { id: string; last_customer_message_at: string | null; status: string; ai_enabled: boolean; assigned_agent_id: string | null }
+  >();
+  const contactToConversationId = new Map<string, string>();
+  let nextOtherConversationSeq = 2;
+  /** Fuerza el upsert de `contacts` a fallar para un teléfono puntual (contacto ~1048 de route.ts). */
+  let forceContactUpsertErrorFor: { phone: string; error: { code?: string; message: string } } | null = null;
+  /** Fuerza el insert de `conversations` a fallar para un contacto puntual (conversación ~1220 de route.ts). */
+  let forceConversationInsertErrorFor: { contactId: string; error: { code?: string; message: string } } | null = null;
+  /** Fuerza el insert de `messages` a fallar para un wamid puntual (mensaje ~1419 de route.ts). */
+  const forceMessageInsertErrorFor = new Map<string, { code?: string; message: string }>();
+  /** Fuerza el UPDATE de whatsapp_status a fallar (webhook_error_actualizar_estado). */
+  let forceStatusUpdateError: { code?: string; message: string } | null = null;
 
   const client = {
     from(table: string) {
@@ -153,10 +201,18 @@ function createFakeAdminClient() {
               {
                 eq() {
                   return {
-                    maybeSingle: async () => ({
-                      data: { id: "chan-1", phone_number_id: "1234567890", status: "connected" },
-                      error: null,
-                    }),
+                    maybeSingle: async () => {
+                      if (forceChannelLookupError) {
+                        return { data: null, error: forceChannelLookupError };
+                      }
+                      if (forceChannelNotFound) {
+                        return { data: null, error: null };
+                      }
+                      return {
+                        data: { id: "chan-1", phone_number_id: "1234567890", status: "connected" },
+                        error: null,
+                      };
+                    },
                   };
                 },
               }
@@ -192,10 +248,29 @@ function createFakeAdminClient() {
 
       if (table === "contacts") {
         return {
-          upsert() {
+          // T2, plan "Nada se pierde en un corte ni en un deploy" (21-22/9/2026):
+          // antes esto ignoraba el `row` entero y devolvía siempre "contact-1"
+          // -- ningún test podía tener un SEGUNDO contacto/conversación en el
+          // mismo lote (hacía falta para probar que el turno de la OTRA
+          // conversación se encola aunque otro mensaje del lote no se haya
+          // podido guardar). Ahora busca-o-crea por teléfono, como el upsert
+          // real, y respeta `forceContactUpsertErrorFor` para simular un
+          // corte de la base en ese paso puntual.
+          upsert(row: { phone_number: string }) {
             return {
               select() {
-                return { single: async () => ({ data: { id: "contact-1" }, error: null }) };
+                return {
+                  single: async () => {
+                    if (forceContactUpsertErrorFor && forceContactUpsertErrorFor.phone === row.phone_number) {
+                      return { data: null, error: forceContactUpsertErrorFor.error };
+                    }
+                    const existing = contactRows.find((r) => r.phone_number === row.phone_number);
+                    if (existing) return { data: { id: existing.id }, error: null };
+                    const id = `contact-${contactRows.length + 1}`;
+                    contactRows.push({ id, phone_number: row.phone_number });
+                    return { data: { id }, error: null };
+                  },
+                };
               },
             };
           },
@@ -237,13 +312,27 @@ function createFakeAdminClient() {
         return {
           select() {
             return {
-              eq() {
+              // T2, plan "Nada se pierde en un corte ni en un deploy"
+              // (21-22/9/2026): antes este SELECT devolvía SIEMPRE la misma
+              // `conversationRow` sin mirar `contact_id` -- ningún test podía
+              // ejercitar la rama de "conversación nueva" (el `.insert()` de
+              // route.ts, más abajo), que hasta esta tarea no tenía NINGUNA
+              // cobertura. Con un `contactId` distinto de "contact-1" (el
+              // contacto por defecto) busca en `contactToConversationId`; sin
+              // fila todavía, `data: null` -- exactamente lo que hace que
+              // route.ts entre a crear una conversación nueva.
+              eq(_col1: string, contactId: string) {
                 return {
                   eq() {
                     return {
                       // Ventana abierta a propósito: evita que el test dependa
                       // de la lógica de bienvenida (fuera de alcance acá).
                       maybeSingle: async () => {
+                        if (contactId !== "contact-1") {
+                          const convId = contactToConversationId.get(contactId);
+                          if (!convId) return { data: null, error: null };
+                          return { data: { ...otherConversations.get(convId) }, error: null };
+                        }
                         // T2b, plan "Seba atiende el mostrador" (18/9/2026):
                         // `forceStaleClosedReads` simula la lectura VIEJA que
                         // vería un segundo webhook concurrente del mismo
@@ -267,6 +356,36 @@ function createFakeAdminClient() {
               },
             };
           },
+          // T2: la rama de conversación NUEVA de route.ts -- sin cobertura
+          // hasta esta tarea porque el SELECT de arriba nunca devolvía
+          // `null`. `forceConversationInsertErrorFor` simula que ESE insert
+          // puntual falla (para probar `webhook_conversacion_no_creada`).
+          insert(row: { contact_id: string; whatsapp_channel_id: string }) {
+            return {
+              select() {
+                return {
+                  single: async () => {
+                    if (
+                      forceConversationInsertErrorFor &&
+                      forceConversationInsertErrorFor.contactId === row.contact_id
+                    ) {
+                      return { data: null, error: forceConversationInsertErrorFor.error };
+                    }
+                    const id = `conv-${nextOtherConversationSeq++}`;
+                    otherConversations.set(id, {
+                      id,
+                      last_customer_message_at: null,
+                      status: "open",
+                      ai_enabled: true,
+                      assigned_agent_id: null,
+                    });
+                    contactToConversationId.set(row.contact_id, id);
+                    return { data: { id }, error: null };
+                  },
+                };
+              },
+            };
+          },
           // T2b, plan "Seba atiende el mostrador" (18/9/2026): el webhook usa
           // `.update(...).eq(...)` de dos formas -- un `await` directo (el
           // UPDATE de `referral`, un solo `.eq()`) y el reclamo de reapertura
@@ -277,32 +396,42 @@ function createFakeAdminClient() {
           // ya usa welcome-race.test.ts para `claimWelcome`.
           update(patch: Record<string, unknown>) {
             return {
-              eq: (_col1: string, id: string) => ({
-                eq: (col2: string, val2: unknown) => ({
-                  select: async (_cols: string) => {
-                    // El reclamo filtra por el WHERE real: si la fila ya no
-                    // calza (otro webhook concurrente del mismo lote ya la
-                    // reabrió), el UPDATE no afecta ninguna fila.
-                    const calza = (conversationRow as Record<string, unknown>)[col2] === val2;
-                    if (!calza) return { data: [], error: null };
+              // T2: `target` generaliza este UPDATE a las conversaciones
+              // NUEVAS que `insert()` (arriba) haya creado en el test -- para
+              // "conv-1" sigue siendo la misma `conversationRow` mutable de
+              // siempre (ningún test viejo cambia de comportamiento).
+              eq: (_col1: string, id: string) => {
+                const target: Record<string, unknown> =
+                  id === "conv-1"
+                    ? (conversationRow as unknown as Record<string, unknown>)
+                    : ((otherConversations.get(id) ?? {}) as unknown as Record<string, unknown>);
+                return {
+                  eq: (col2: string, val2: unknown) => ({
+                    select: async (_cols: string) => {
+                      // El reclamo filtra por el WHERE real: si la fila ya no
+                      // calza (otro webhook concurrente del mismo lote ya la
+                      // reabrió), el UPDATE no afecta ninguna fila.
+                      const calza = target[col2] === val2;
+                      if (!calza) return { data: [], error: null };
+                      conversationUpdates.push({ id, patch });
+                      Object.assign(target, patch);
+                      return { data: [{ id }], error: null };
+                    },
+                  }),
+                  then: (resolve: (value: { data: null; error: null }) => void) => {
                     conversationUpdates.push({ id, patch });
-                    Object.assign(conversationRow, patch);
-                    return { data: [{ id }], error: null };
+                    // T2.1: la reapertura del webhook relee `status` en la
+                    // misma invocación cuando un lote trae varios mensajes del
+                    // mismo contacto — sin esto, el segundo mensaje del lote
+                    // vería la fila todavía `closed` y dispararía un segundo
+                    // traspaso. Con el reclamo (arriba) esto ya no hace falta
+                    // para la reapertura, pero el UPDATE de `referral` sigue
+                    // pasando por acá.
+                    if (typeof patch.status === "string") target.status = patch.status as string;
+                    resolve({ data: null, error: null });
                   },
-                }),
-                then: (resolve: (value: { data: null; error: null }) => void) => {
-                  conversationUpdates.push({ id, patch });
-                  // T2.1: la reapertura del webhook relee `status` en la
-                  // misma invocación cuando un lote trae varios mensajes del
-                  // mismo contacto — sin esto, el segundo mensaje del lote
-                  // vería la fila todavía `closed` y dispararía un segundo
-                  // traspaso. Con el reclamo (arriba) esto ya no hace falta
-                  // para la reapertura, pero el UPDATE de `referral` sigue
-                  // pasando por acá.
-                  if (typeof patch.status === "string") conversationRow.status = patch.status as string;
-                  resolve({ data: null, error: null });
-                },
-              }),
+                };
+              },
             };
           },
         };
@@ -340,6 +469,14 @@ function createFakeAdminClient() {
               select() {
                 return {
                   single: async () => {
+                    // T2, plan "Nada se pierde en un corte ni en un deploy"
+                    // (21-22/9/2026): un test fuerza el error de ESTE insert
+                    // puntual por wamid, para simular un corte transitorio (o
+                    // uno permanente) de la base al guardar el mensaje.
+                    const wamid = row.whatsapp_message_id;
+                    if (wamid && forceMessageInsertErrorFor.has(wamid)) {
+                      return { data: null, error: forceMessageInsertErrorFor.get(wamid)! };
+                    }
                     // Solo un wamid de verdad puede chocar: Postgres no
                     // considera duplicados dos NULL bajo una unique
                     // constraint, y acá pasa lo mismo con el evento de
@@ -347,7 +484,6 @@ function createFakeAdminClient() {
                     // whatsapp_message_id — sin este `if` colisionaría contra
                     // sí mismo entre pruebas (el Map de este cliente vive
                     // para todo el archivo, no se limpia en cada test).
-                    const wamid = row.whatsapp_message_id;
                     if (wamid && insertedMessages.has(wamid)) {
                       return {
                         data: null,
@@ -385,10 +521,19 @@ function createFakeAdminClient() {
                 // pedirle `.select()` para recuperar las filas tocadas. El
                 // webhook usa las dos formas, así que el doble también.
                 return Object.assign(Promise.resolve({ data: null, error: null }), {
-                  select: async () => ({
-                    data: [{ id: "msg-1", conversation_id: "conv-1" }],
-                    error: null,
-                  }),
+                  select: async () => {
+                    // T2 (route.test.ts:1587 lo nombraba y no lo probaba):
+                    // `forceStatusUpdateError` simula que ESTE UPDATE puntual
+                    // (el de whatsapp_status) falla, para probar
+                    // `webhook_error_actualizar_estado`.
+                    if ("whatsapp_status" in patch && forceStatusUpdateError) {
+                      return { data: null, error: forceStatusUpdateError };
+                    }
+                    return {
+                      data: [{ id: "msg-1", conversation_id: "conv-1" }],
+                      error: null,
+                    };
+                  },
                 });
               },
             };
@@ -401,7 +546,9 @@ function createFakeAdminClient() {
     // El límite de tasa vive en la base; acá siempre deja pasar salvo que un
     // test diga lo contrario.
     rpc: async (fn: string, params?: Record<string, unknown>) => {
-      if (fn === "rate_limit_allow") return { data: rateLimitAllows, error: null };
+      if (fn === "rate_limit_allow") {
+        return rateLimitAllowError ? { data: null, error: rateLimitAllowError } : { data: rateLimitAllows, error: null };
+      }
       // Con la IA apagada el webhook no encola: la cola dejaba de ser el
       // reflejo de lo que la IA iba a hacer y crecía con el interruptor abajo.
       if (fn === "agent_can_run") return { data: aiCanRunError ? null : aiCanRun, error: aiCanRunError };
@@ -458,6 +605,12 @@ function createFakeAdminClient() {
     resetChannelRows: () => {
       channelRows = [{ id: "chan-1", phone_number: "+15550001234", status: "connected" }];
     },
+    setForceChannelLookupError: (error: { code?: string; message: string } | null) => {
+      forceChannelLookupError = error;
+    },
+    setForceChannelNotFound: (value: boolean) => {
+      forceChannelNotFound = value;
+    },
     contactUpdates,
     setContactRows: (rows: { id: string; phone_number: string }[]) => {
       contactRows = rows;
@@ -467,6 +620,31 @@ function createFakeAdminClient() {
     },
     setContactUpdateConflict: (value: boolean) => {
       contactUpdateConflict = value;
+    },
+    // T2: setters/reset de los cuatro puntos de inyección de fallo -- los
+    // tres `continue` de pérdida (contacto/conversación/mensaje) más el
+    // UPDATE de estado (webhook_error_actualizar_estado).
+    setForceContactUpsertError: (phone: string, error: { code?: string; message: string } | null) => {
+      forceContactUpsertErrorFor = error ? { phone, error } : null;
+    },
+    setForceConversationInsertError: (contactId: string, error: { code?: string; message: string } | null) => {
+      forceConversationInsertErrorFor = error ? { contactId, error } : null;
+    },
+    setForceMessageInsertError: (wamid: string, error: { code?: string; message: string } | null) => {
+      if (error) forceMessageInsertErrorFor.set(wamid, error);
+      else forceMessageInsertErrorFor.delete(wamid);
+    },
+    setForceStatusUpdateError: (error: { code?: string; message: string } | null) => {
+      forceStatusUpdateError = error;
+    },
+    resetExtraConversations: () => {
+      otherConversations.clear();
+      contactToConversationId.clear();
+      nextOtherConversationSeq = 2;
+      forceContactUpsertErrorFor = null;
+      forceConversationInsertErrorFor = null;
+      forceMessageInsertErrorFor.clear();
+      forceStatusUpdateError = null;
     },
   };
 }
@@ -482,6 +660,8 @@ const {
   templateUpdates,
   setChannelRows,
   resetChannelRows,
+  setForceChannelLookupError,
+  setForceChannelNotFound,
   setConversationRow,
   setForceStaleClosedReads,
   setForceMessageLookupError,
@@ -490,6 +670,11 @@ const {
   setContactRows,
   resetContactRows,
   setContactUpdateConflict,
+  setForceContactUpsertError,
+  setForceConversationInsertError,
+  setForceMessageInsertError,
+  setForceStatusUpdateError,
+  resetExtraConversations,
 } = createFakeAdminClient();
 
 vi.mock("@/lib/supabase/admin", () => ({
@@ -678,8 +863,11 @@ beforeEach(() => {
   setForceStaleClosedReads(0);
   setForceMessageLookupError(false);
   resetChannelRows();
+  setForceChannelLookupError(null);
+  setForceChannelNotFound(false);
   resetContactRows();
   setContactUpdateConflict(false);
+  resetExtraConversations();
   vi.mocked(enqueueAgentTurns).mockClear();
   vi.mocked(processAfterDebounce).mockClear();
 });
@@ -1612,6 +1800,54 @@ describe("POST /api/webhooks/whatsapp — value.errors y el error del update de 
       spy.mockRestore();
     }
   });
+
+  /**
+   * T2, plan "Nada se pierde en un corte ni en un deploy" (21-22/9/2026): el
+   * describe de arriba se llama "...y el error del update de estados" desde
+   * siempre, pero nunca había probado esa segunda mitad -- el UPDATE de
+   * `whatsapp_status` que puede fallar (el trigger que impide retroceder el
+   * doble check, por ejemplo) quedaba sin cobertura. `webhook_error_actualizar_estado`
+   * no se toca en esta tarea (con T1 debería bajar solo), pero el test que
+   * faltaba sí se escribe acá.
+   */
+  it("un error al actualizar whatsapp_status deja webhook_error_actualizar_estado en el log, y sigue en 200", async () => {
+    setForceStatusUpdateError({ message: "trigger: no se puede retroceder el estado" });
+    const spy = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      const response = await POST(
+        fakeRequest({
+          entry: [
+            {
+              changes: [
+                {
+                  field: "messages",
+                  value: {
+                    metadata: { phone_number_id: "1234567890" },
+                    statuses: [{ id: "wamid.estado-fallido-1", status: "delivered" }],
+                  },
+                },
+              ],
+            },
+          ],
+        })
+      );
+
+      expect(response.status).toBe(200);
+      const eventos = spy.mock.calls.map((call) => JSON.parse(String(call[0])));
+      expect(
+        eventos.some(
+          (e) =>
+            e.event === "webhook_error_actualizar_estado" &&
+            e.whatsappMessageId === "wamid.estado-fallido-1" &&
+            typeof e.detalle === "string" &&
+            e.detalle.includes("no se puede retroceder")
+        )
+      ).toBe(true);
+    } finally {
+      spy.mockRestore();
+      setForceStatusUpdateError(null);
+    }
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -1691,6 +1927,366 @@ describe("POST /api/webhooks/whatsapp — por qué no se entregó", () => {
       whatsapp_error_code: null,
       whatsapp_error_detail: null,
     });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// T2, plan "Nada se pierde en un corte ni en un deploy" (21-22/9/2026).
+//
+// Hallazgo 2 del plan: un corte TRANSITORIO de la base al guardar el
+// contacto, la conversación o el mensaje entrante perdía ese mensaje del
+// cliente para siempre -- `console.error` + `continue`, respondiendo 200.
+// Meta no reintenta un 200. Ahora los tres `continue` de pérdida levantan
+// `persistenciaFallida` cuando `esFalloTransitorioDeBase(error)` es cierto,
+// y el POST responde 503 al final -- DESPUÉS de encolar los turnos de lo que
+// sí se guardó -- para que Meta reentregue el lote completo. Un fallo NO
+// transitorio (payload raro, constraint) sigue en 200: ahí no hay nada que
+// un reintento de Meta vaya a arreglar.
+// ---------------------------------------------------------------------------
+describe("POST /api/webhooks/whatsapp — persistencia fallida (D1)", () => {
+  /**
+   * Dos mensajes de DOS contactos distintos en el mismo lote -- el contacto
+   * por defecto ("+584120000000", contact-1/conv-1) y uno nuevo, que el
+   * fake crea de cero (contact-2/conv-2) mientras procesa este mismo POST.
+   * Hace falta un segundo contacto de verdad (no solo un segundo mensaje del
+   * mismo contacto) para probar que el turno de la OTRA conversación del
+   * lote se encola aunque la primera no se haya podido guardar.
+   */
+  function webhookBodyDosContactos(wamidA: string, wamidB: string) {
+    return {
+      entry: [
+        {
+          changes: [
+            {
+              field: "messages",
+              value: {
+                metadata: { phone_number_id: "1234567890" },
+                contacts: [
+                  { profile: { name: "Cliente Uno" }, wa_id: "584120000000" },
+                  { profile: { name: "Cliente Dos" }, wa_id: "584120000099" },
+                ],
+                messages: [
+                  {
+                    from: "584120000000",
+                    id: wamidA,
+                    timestamp: String(Math.floor(Date.now() / 1000)),
+                    type: "text",
+                    text: { body: "hola" },
+                  },
+                  {
+                    from: "584120000099",
+                    id: wamidB,
+                    timestamp: String(Math.floor(Date.now() / 1000) + 1),
+                    type: "text",
+                    text: { body: "hola desde el otro contacto" },
+                  },
+                ],
+              },
+            },
+          ],
+        },
+      ],
+    };
+  }
+
+  it("mensaje: un fallo TRANSITORIO responde 503 y deja webhook_mensaje_no_guardado, pero encola el turno de la OTRA conversación del lote", async () => {
+    const wamidFalla = "wamid.persistencia-mensaje-transitorio-A";
+    const wamidOk = "wamid.persistencia-mensaje-transitorio-B";
+    setForceMessageInsertError(wamidFalla, { code: "08006", message: "connection failure" });
+    const spy = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      const response = await POST(fakeRequest(webhookBodyDosContactos(wamidFalla, wamidOk)));
+
+      expect(response.status).toBe(503);
+      expect(await response.json()).toEqual({ ok: false, retry: true });
+
+      const eventos = spy.mock.calls.map((call) => JSON.parse(String(call[0])));
+      expect(
+        eventos.some(
+          (e) =>
+            e.event === "webhook_mensaje_no_guardado" &&
+            e.whatsappMessageId === wamidFalla &&
+            typeof e.detail === "string" &&
+            e.detail.includes("connection failure")
+        )
+      ).toBe(true);
+
+      // El mensaje que SÍ se guardó (otro contacto, otra conversación) igual
+      // encola su turno -- el 503 no debe tapar el trabajo que sí se hizo.
+      expect(enqueueAgentTurns).toHaveBeenCalledTimes(1);
+      expect(enqueueAgentTurns).toHaveBeenCalledWith(["conv-2"], expect.anything());
+    } finally {
+      spy.mockRestore();
+      setForceMessageInsertError(wamidFalla, null);
+    }
+  });
+
+  it("mensaje: un fallo NO transitorio responde 200 y deja el evento igual, sin frenar a Meta", async () => {
+    const wamid = "wamid.persistencia-mensaje-no-transitorio";
+    // 23502: NOT NULL violation -- un payload raro, no un corte de la base.
+    setForceMessageInsertError(wamid, { code: "23502", message: "null value in column violates not-null constraint" });
+    const spy = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      const response = await POST(fakeRequest(webhookBody(wamid)));
+
+      expect(response.status).toBe(200);
+      const eventos = spy.mock.calls.map((call) => JSON.parse(String(call[0])));
+      expect(eventos.some((e) => e.event === "webhook_mensaje_no_guardado" && e.whatsappMessageId === wamid)).toBe(
+        true
+      );
+      expect(enqueueAgentTurns).not.toHaveBeenCalled();
+    } finally {
+      spy.mockRestore();
+      setForceMessageInsertError(wamid, null);
+    }
+  });
+
+  it("mensaje: la reentrega (23505) sigue en 200 y NO deja webhook_mensaje_no_guardado", async () => {
+    const wamid = "wamid.persistencia-23505-sigue-en-200";
+    await POST(fakeRequest(webhookBody(wamid))); // primer intento: se guarda de verdad
+
+    const spy = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      const response = await POST(fakeRequest(webhookBody(wamid))); // reentrega de Meta
+
+      expect(response.status).toBe(200);
+      const eventos = spy.mock.calls.map((call) => JSON.parse(String(call[0])));
+      expect(eventos.some((e) => e.event === "webhook_mensaje_no_guardado")).toBe(false);
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it("contacto: un fallo TRANSITORIO al upsertar responde 503 y deja webhook_contacto_no_guardado", async () => {
+    const wamid = "wamid.persistencia-contacto-transitorio";
+    setForceContactUpsertError("+584120000000", { code: "53300", message: "too many connections for role" });
+    const spy = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      const response = await POST(fakeRequest(webhookBody(wamid)));
+
+      expect(response.status).toBe(503);
+      expect(await response.json()).toEqual({ ok: false, retry: true });
+      const eventos = spy.mock.calls.map((call) => JSON.parse(String(call[0])));
+      expect(
+        eventos.some(
+          (e) =>
+            e.event === "webhook_contacto_no_guardado" &&
+            e.whatsappMessageId === wamid &&
+            typeof e.detail === "string" &&
+            e.detail.includes("too many connections")
+        )
+      ).toBe(true);
+      // Sin contacto no hay a dónde colgar el mensaje: no se guarda nada y
+      // no hay turno que encolar.
+      expect(enqueueAgentTurns).not.toHaveBeenCalled();
+    } finally {
+      spy.mockRestore();
+      setForceContactUpsertError("+584120000000", null);
+    }
+  });
+
+  it("conversación: un fallo TRANSITORIO al crearla (contacto nuevo) responde 503 y deja webhook_conversacion_no_creada", async () => {
+    const wamid = "wamid.persistencia-conversacion-transitoria";
+    // Contacto nuevo (no "+584120000000"): el SELECT de "¿existe ya?" del
+    // fake devuelve null para cualquier contacto que no sea el de fábrica,
+    // así que route.ts entra a la rama de conversación NUEVA (.insert()).
+    // El fake crea ese contacto como "contact-2" (contactRows arranca en 1
+    // fila en cada test, ver beforeEach) -- por eso se puede fijar el fallo
+    // de antemano.
+    setForceConversationInsertError("contact-2", { code: "08006", message: "connection failure" });
+    const spy = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      const response = await POST(
+        fakeRequest({
+          entry: [
+            {
+              changes: [
+                {
+                  field: "messages",
+                  value: {
+                    metadata: { phone_number_id: "1234567890" },
+                    contacts: [{ profile: { name: "Cliente Nuevo" }, wa_id: "584120000077" }],
+                    messages: [
+                      {
+                        from: "584120000077",
+                        id: wamid,
+                        timestamp: String(Math.floor(Date.now() / 1000)),
+                        type: "text",
+                        text: { body: "hola, soy nuevo" },
+                      },
+                    ],
+                  },
+                },
+              ],
+            },
+          ],
+        })
+      );
+
+      expect(response.status).toBe(503);
+      expect(await response.json()).toEqual({ ok: false, retry: true });
+      const eventos = spy.mock.calls.map((call) => JSON.parse(String(call[0])));
+      expect(
+        eventos.some(
+          (e) =>
+            e.event === "webhook_conversacion_no_creada" &&
+            e.whatsappMessageId === wamid &&
+            typeof e.detail === "string" &&
+            e.detail.includes("connection failure")
+        )
+      ).toBe(true);
+      expect(enqueueAgentTurns).not.toHaveBeenCalled();
+    } finally {
+      spy.mockRestore();
+      setForceConversationInsertError("contact-2", null);
+    }
+  });
+
+  /**
+   * Objeción B del VPS (sumada al plan el 21/9/2026): D1 convierte la
+   * reentrega en un camino que Meta puede provocar A PROPÓSITO (mandó un
+   * lote, algo falló, reentrega el lote COMPLETO). Un lote reentregado trae
+   * mensajes que YA se guardaron (23505) junto a uno nuevo -- el turno no
+   * puede encolarse para la conversación VIEJA otra vez, solo para la del
+   * mensaje nuevo. Hoy ya es así por construcción (el `continue` del 23505
+   * corta antes de tocar `touchedByCustomer`), este test lo fija.
+   *
+   * A propósito con DOS CONTACTOS (conv-1 la vieja, conv-2 la nueva) y no
+   * dos mensajes del mismo contacto: `touchedByCustomer` es un `Map` por
+   * `conversationId`, así que un lote con dos mensajes de la MISMA
+   * conversación ya colapsa a una sola entrada pase lo que pase con el
+   * `continue` -- ese caso no distinguiría "se cortó antes" de "se agregó
+   * dos veces la misma clave". Con dos conversaciones distintas, un
+   * `continue` que se saltara SÍ agregaría la vieja (conv-1) al array.
+   */
+  it("la reentrega de un lote no encola el turno dos veces: solo la conversación del mensaje nuevo", async () => {
+    const waViejo = "wamid.reentrega-lote-viejo";
+    const waNuevo = "wamid.reentrega-lote-nuevo";
+
+    await POST(fakeRequest(webhookBody(waViejo))); // contact-1/conv-1, se guarda de verdad
+    expect(enqueueAgentTurns).toHaveBeenCalledTimes(1);
+    vi.mocked(enqueueAgentTurns).mockClear();
+
+    // waViejo reentregado (mismo contacto, 23505) junto a waNuevo, de un
+    // contacto que el CRM nunca había visto (crea contact-2/conv-2 en el
+    // mismo POST).
+    const response = await POST(fakeRequest(webhookBodyDosContactos(waViejo, waNuevo)));
+
+    expect(response.status).toBe(200);
+    expect(enqueueAgentTurns).toHaveBeenCalledTimes(1);
+    expect(enqueueAgentTurns).toHaveBeenCalledWith(["conv-2"], expect.anything());
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Corrección hallada en la verificación a mano del orquestador (22/9/2026,
+// escenario "apagar PostgREST durante un POST al webhook local"): con la
+// base caída, Kong responde 503 "name resolution failed" a TODO, y la
+// PRIMERA lectura del lote es la consulta del canal (`whatsapp_channels`,
+// antes de llegar a contacto/conversación/mensaje) -- el `error` de esa
+// consulta se descartaba y se leía como "no hay canal registrado"
+// (`webhook_canal_no_encontrado`), el mismo agujero que T2 cerró tres pasos
+// más adelante, pero en el primer paso: el lote entero se descartaba con 200
+// sin que ninguno de los tres inyectores de fallo de T2 llegara a correr.
+// ---------------------------------------------------------------------------
+describe("POST /api/webhooks/whatsapp — el canal no se puede consultar", () => {
+  it("canal: un fallo TRANSITORIO al consultarlo responde 503 y deja webhook_canal_no_consultable, sin guardar nada", async () => {
+    const wamid = "wamid.persistencia-canal-transitorio";
+    setForceChannelLookupError({ code: "08006", message: "connection failure" });
+    const spy = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      const response = await POST(fakeRequest(webhookBody(wamid)));
+
+      expect(response.status).toBe(503);
+      expect(await response.json()).toEqual({ ok: false, retry: true });
+      const eventos = spy.mock.calls.map((call) => JSON.parse(String(call[0])));
+      expect(
+        eventos.some(
+          (e) =>
+            e.event === "webhook_canal_no_consultable" &&
+            e.canalMeta === "1234567890" &&
+            typeof e.detail === "string" &&
+            e.detail.includes("connection failure")
+        )
+      ).toBe(true);
+      // Sin canal no hay a dónde colgar nada de este lote: no se guarda el
+      // mensaje ni se encola ningún turno.
+      expect(insertedRows).toHaveLength(0);
+      expect(enqueueAgentTurns).not.toHaveBeenCalled();
+    } finally {
+      spy.mockRestore();
+      setForceChannelLookupError(null);
+    }
+  });
+
+  it("canal: un fallo NO transitorio responde 200 y deja el evento igual, sin frenar a Meta", async () => {
+    const wamid = "wamid.persistencia-canal-no-transitorio";
+    // 42501: permiso denegado -- un rechazo real de la consulta, no un corte
+    // de la base.
+    setForceChannelLookupError({ code: "42501", message: "permission denied for table whatsapp_channels" });
+    const spy = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      const response = await POST(fakeRequest(webhookBody(wamid)));
+
+      expect(response.status).toBe(200);
+      const eventos = spy.mock.calls.map((call) => JSON.parse(String(call[0])));
+      expect(
+        eventos.some(
+          (e) => e.event === "webhook_canal_no_consultable" && e.canalMeta === "1234567890"
+        )
+      ).toBe(true);
+      expect(enqueueAgentTurns).not.toHaveBeenCalled();
+    } finally {
+      spy.mockRestore();
+      setForceChannelLookupError(null);
+    }
+  });
+
+  /**
+   * `phoneNumberId` como nombre de clave quedaba oculto por `lib/log.ts`
+   * (tapa toda clave que contenga "phone", pensado para el teléfono de un
+   * cliente) -- acá es el id del NÚMERO de Meta, infraestructura, no un dato
+   * del cliente. La clave se renombró a `canalMeta`: este test comprueba que
+   * el valor real llega LEGIBLE al evento, no `[oculto]`.
+   */
+  it("canal: sin canal y sin error, deja webhook_canal_no_encontrado con el id de Meta visible (no oculto)", async () => {
+    const wamid = "wamid.canal-no-encontrado";
+    setForceChannelNotFound(true);
+    const spy = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      const response = await POST(fakeRequest(webhookBody(wamid)));
+
+      expect(response.status).toBe(200);
+      const eventos = spy.mock.calls.map((call) => JSON.parse(String(call[0])));
+      const evento = eventos.find((e) => e.event === "webhook_canal_no_encontrado");
+      expect(evento?.canalMeta).toBe("1234567890");
+      expect(insertedRows).toHaveLength(0);
+      expect(enqueueAgentTurns).not.toHaveBeenCalled();
+    } finally {
+      spy.mockRestore();
+      setForceChannelNotFound(false);
+    }
+  });
+
+  /**
+   * Punto 3 de la corrección: la RPC `rate_limit_allow` (el freno de
+   * avalancha, ANTES del bucle de canales) también puede fallar por un corte
+   * de la base. Con error, `allowed` queda en `null` -- no `false` -- así
+   * que el `if (allowed === false)` de route.ts no descarta el lote: el
+   * mensaje se guarda igual y responde 200 de siempre.
+   */
+  it("el freno de avalancha (rate_limit_allow) fallando no descarta el lote: el mensaje se guarda igual", async () => {
+    const wamid = "wamid.rate-limit-allow-con-error";
+    rateLimitAllowError = { message: "connection failure" };
+    try {
+      const response = await POST(fakeRequest(webhookBody(wamid)));
+
+      expect(response.status).toBe(200);
+      expect(insertedMessages.has(wamid)).toBe(true);
+      expect(enqueueAgentTurns).toHaveBeenCalledTimes(1);
+    } finally {
+      rateLimitAllowError = null;
+    }
   });
 });
 
