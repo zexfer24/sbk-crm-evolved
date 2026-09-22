@@ -38,6 +38,18 @@ services:
         NEXT_PUBLIC_SUPABASE_ANON_KEY: ${NEXT_PUBLIC_SUPABASE_ANON_KEY}
         NEXT_PUBLIC_CRM_TIME_ZONE: ${NEXT_PUBLIC_CRM_TIME_ZONE:-America/Caracas}
     restart: unless-stopped
+    # El driver por defecto (`json-file`) guarda los logs DENTRO del
+    # contenedor, y Dokploy recrea el contenedor en cada deploy: se lleva los
+    # logs con él. El 21/9/2026 esto impidió comparar la tasa de cortes
+    # app↔PostgREST entre dos versiones desplegadas el mismo día — no había
+    # con qué. Con journald los logs quedan en el propio VPS (persistente
+    # desde antes, `/var/log/journal`) y sobreviven al recreate; se leen con
+    # `journalctl CONTAINER_TAG=sbk-crm-app --since "2h"` (`docker logs`
+    # sigue funcionando igual con este driver, no se pierde nada).
+    logging:
+      driver: journald
+      options:
+        tag: "sbk-crm-app"
     # Techos de recursos: el VPS (6 vCPU / 12 GB) también corre el stack de
     # Supabase, y sin límites un proceso desbocado se lleva el servidor entero
     # (pasó con la introspección de PostgREST). Los techos contienen, no
