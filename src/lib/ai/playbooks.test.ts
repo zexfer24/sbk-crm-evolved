@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import type { CatalogLink, Playbook } from "@/lib/types";
+import { DEFAULT_BUSINESS_HOURS, type BusinessHours } from "@/lib/business-hours";
 
 const generateObjectMock = vi.fn();
 
@@ -139,6 +140,58 @@ describe("matchPlaybook", () => {
 
     expect(result.playbook).toBeNull();
     expect(result.usage.totalTokens).toBe(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// T6, plan "Nada se pierde en un corte ni en un deploy" (22/9/2026, hallazgo
+// 4 del informe del VPS): el caché de prompts del proveedor cachea por
+// PREFIJO idéntico. Con el reloj en la segunda línea, el prefijo se rompía
+// en cada turno (cambia la hora) y esta llamada —la de fase 0, la única del
+// turno junto con la de intención cuando resuelve por escenario— nunca podía
+// cachear. El bloque estático (instrucción + catálogo + reglas) tiene que
+// quedar primero, byte a byte igual sin importar la hora; el reloj baja al
+// final, justo antes de la instrucción de cómo responder.
+// ---------------------------------------------------------------------------
+describe("matchPlaybook · el prefijo del prompt no cambia con la hora", () => {
+  it("el bloque estático es idéntico con dos `now`/horarios distintos, y el reloj queda al final", async () => {
+    const candidatos = [playbook("Postventa Cashea"), playbook("Catálogo general")];
+
+    generateObjectMock.mockClear();
+    generateObjectMock.mockResolvedValueOnce({ object: "ninguno", usage: USAGE });
+    // 9 am de un lunes: tienda abierta, franja mañana.
+    await matchPlaybook(HISTORY, candidatos, new Date("2026-09-07T13:00:00Z"), DEFAULT_BUSINESS_HOURS);
+    const systemA = (generateObjectMock.mock.calls[0][0] as { system: string }).system;
+
+    // Horario distinto (fin de semana también abierto) y hora distinta: 2 am
+    // de un domingo, tienda cerrada según el horario por defecto pero acá se
+    // le pasa uno que sí abre ese día — para que "estado" y "franja" cambien
+    // de verdad entre las dos llamadas, no solo la fecha en texto.
+    const otroHorario: BusinessHours = { ...DEFAULT_BUSINESS_HOURS, sun: [["09:00", "13:00"]] };
+    generateObjectMock.mockClear();
+    generateObjectMock.mockResolvedValueOnce({ object: "ninguno", usage: USAGE });
+    await matchPlaybook(HISTORY, candidatos, new Date("2026-09-06T06:00:00Z"), otroHorario);
+    const systemB = (generateObjectMock.mock.calls[0][0] as { system: string }).system;
+
+    // Los dos prompts hablan de horas distintas: si fueran iguales de punta a
+    // punta, el test no estaría probando nada.
+    expect(systemA).not.toBe(systemB);
+
+    const marcadorReloj = "Fecha y hora local:";
+    const prefijoA = systemA.slice(0, systemA.indexOf(marcadorReloj));
+    const prefijoB = systemB.slice(0, systemB.indexOf(marcadorReloj));
+    expect(prefijoA.length).toBeGreaterThan(0);
+    expect(prefijoA).toBe(prefijoB);
+
+    // El reloj aparece DESPUÉS del catálogo y de las reglas de duda —el
+    // bloque estático completo queda primero, no solo el catálogo.
+    const idxCatalogo = systemA.indexOf("Escenarios disponibles");
+    const idxDuda = systemA.indexOf("Ante la duda");
+    const idxReloj = systemA.indexOf(marcadorReloj);
+    expect(idxCatalogo).toBeGreaterThan(-1);
+    expect(idxDuda).toBeGreaterThan(-1);
+    expect(idxReloj).toBeGreaterThan(idxCatalogo);
+    expect(idxReloj).toBeGreaterThan(idxDuda);
   });
 });
 

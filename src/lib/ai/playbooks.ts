@@ -168,15 +168,30 @@ function playbookTags(row: { ai_playbook_tags: RawPlaybookTag[] | null }): Tag[]
  * reloj dice la verdad", 5/9/2026): antes el clasificador solo recibía la
  * fecha en texto ("4:45 p. m.") y tenía que deducir la franja él mismo para
  * comparar contra los disparadores de horario. Acá viene ya resuelta.
+ *
+ * El párrafo del reloj vive al FINAL del prompt, justo antes de la
+ * instrucción de cómo responder — no en la segunda línea, como hasta el
+ * 21/9/2026 (hallazgo 4 del informe del VPS, plan "Nada se pierde en un
+ * corte ni en un deploy", 22/9/2026). El caché de prompts del proveedor
+ * cachea por PREFIJO idéntico entre llamadas: con el reloj arriba, cada
+ * turno mandaba una hora distinta en los primeros caracteres y el prefijo se
+ * rompía siempre — esta llamada (la de fase 0) nunca podía cachear, y un
+ * turno resuelto por escenario hace solo esta llamada más la de intención.
+ * Con todo lo estático primero (instrucción + catálogo + reglas), el
+ * prefijo es el mismo turno tras turno; el reloj queda como el único tramo
+ * que cambia, al final. Sin promesa de efecto (nota A del VPS): con 14
+ * escenarios activos el bloque estático ronda ~830 tokens, por debajo del
+ * mínimo de ~1.024 del caché de OpenAI — T4 mide después si de verdad
+ * alcanza a cachear.
  */
 function buildPrompt(playbooks: Playbook[], now: Date, businessHours: BusinessHours = DEFAULT_BUSINESS_HOURS): string {
   const catalog = playbooks.map((p) => `- ${p.name}: ${p.triggerDescription}`).join("\n");
   const franja = dayBand(now);
   const estado = businessStatus(now, businessHours).open ? "abierta" : "cerrada";
 
-  return `Eres el clasificador de una repuestera de motos en Venezuela que atiende por WhatsApp. Tienes respuestas ya redactadas para ciertas situaciones. Tu única tarea es decidir cuál de ellas corresponde al ÚLTIMO mensaje del cliente, tomando en cuenta todo el contexto previo de la conversación.
+  const reloj = `Fecha y hora local: ${formatCrmDateTime(now)} (Venezuela) — franja: ${franja}. Horario de atención: ${describeSchedule(businessHours)}. Ahora mismo la tienda está ${estado}. Varios disparadores están escritos como franjas horarias: compruébalos contra ESA hora, no contra las palabras del cliente. Alguien puede escribir "buenas noches" a las once de la mañana.`;
 
-Fecha y hora local: ${formatCrmDateTime(now)} (Venezuela) — franja: ${franja}. Horario de atención: ${describeSchedule(businessHours)}. Ahora mismo la tienda está ${estado}. Varios disparadores están escritos como franjas horarias: compruébalos contra ESA hora, no contra las palabras del cliente. Alguien puede escribir "buenas noches" a las once de la mañana.
+  return `Eres el clasificador de una repuestera de motos en Venezuela que atiende por WhatsApp. Tienes respuestas ya redactadas para ciertas situaciones. Tu única tarea es decidir cuál de ellas corresponde al ÚLTIMO mensaje del cliente, tomando en cuenta todo el contexto previo de la conversación.
 
 Escenarios disponibles:
 ${catalog}
@@ -186,6 +201,8 @@ Si el cliente saluda Y pregunta algo en el mismo mensaje, el saludo no cuenta: c
 Responde "${NO_MATCH}" si ninguno calza con claridad.
 
 Ante la duda, responde "${NO_MATCH}". Equivocarse de escenario le manda al cliente un mensaje que no tiene nada que ver con lo que preguntó; responder "${NO_MATCH}" solo hace que otro agente atienda el caso con normalidad. Prefiere siempre el segundo error.
+
+${reloj}
 
 Responde solo con el nombre exacto del escenario, o con "${NO_MATCH}".`;
 }
