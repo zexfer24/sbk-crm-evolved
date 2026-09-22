@@ -190,13 +190,92 @@ export type Database = {
           },
         ]
       }
+      // T3, plan "Nada se pierde en un corte ni en un deploy" (21/9/2026,
+      // migración 20260921040000): una fila por cada llamada al proveedor
+      // dentro de un turno (escenario/clasificar/redactar/identidad).
+      // Insertada alfabéticamente entre `agent_turn_queue` y `agent_turns` --
+      // el generador de tipos no corre en este repo, mismo criterio que
+      // `ai_lessons`/`catalog_links` más abajo.
+      agent_turn_calls: {
+        Row: {
+          cached_input_tokens: number
+          conversation_id: string
+          created_at: string
+          duration_ms: number
+          finish_reason: string | null
+          id: string
+          input_tokens: number
+          max_output_tokens: number | null
+          output_tokens: number
+          phase: string
+          reasoning_tokens: number | null
+          sequence: number
+          tool_choice: string | null
+          turn_id: string
+        }
+        Insert: {
+          cached_input_tokens?: number
+          conversation_id: string
+          created_at?: string
+          duration_ms: number
+          finish_reason?: string | null
+          id?: string
+          input_tokens?: number
+          max_output_tokens?: number | null
+          output_tokens?: number
+          phase: string
+          reasoning_tokens?: number | null
+          sequence: number
+          tool_choice?: string | null
+          turn_id: string
+        }
+        Update: {
+          cached_input_tokens?: number
+          conversation_id?: string
+          created_at?: string
+          duration_ms?: number
+          finish_reason?: string | null
+          id?: string
+          input_tokens?: number
+          max_output_tokens?: number | null
+          output_tokens?: number
+          phase?: string
+          reasoning_tokens?: number | null
+          sequence?: number
+          tool_choice?: string | null
+          turn_id?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "agent_turn_calls_conversation_id_fkey"
+            columns: ["conversation_id"]
+            isOneToOne: false
+            referencedRelation: "conversations"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "agent_turn_calls_turn_id_fkey"
+            columns: ["turn_id"]
+            isOneToOne: false
+            referencedRelation: "agent_turns"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       agent_turns: {
         Row: {
           action: string
           cached_input_tokens: number | null
+          // T3, plan "Nada se pierde en un corte ni en un deploy" (21/9/2026,
+          // migración 20260921040000): seis columnas de telemetría del turno
+          // completo, nullable y SIN backfill -- lo viejo no se puede
+          // reconstruir, mismo estilo que `cached_input_tokens` de arriba.
+          classification_ms: number | null
           conversation_id: string
           created_at: string
           customer_message: string | null
+          delivery_ms: number | null
+          generation_ms: number | null
           id: string
           input_tokens: number | null
           intent: string | null
@@ -211,15 +290,21 @@ export type Database = {
           // `cede_al_inventario` (l. 420), sin `| null` en Row y opcional sin
           // `| null` en Insert/Update.
           reasoning_tokens: number
+          steps: number | null
           summary: string | null
+          tools_used: string | null
           total_tokens: number | null
+          wait_ms: number | null
         }
         Insert: {
           action: string
           cached_input_tokens?: number | null
+          classification_ms?: number | null
           conversation_id: string
           created_at?: string
           customer_message?: string | null
+          delivery_ms?: number | null
+          generation_ms?: number | null
           id?: string
           input_tokens?: number | null
           intent?: string | null
@@ -227,15 +312,21 @@ export type Database = {
           output_tokens?: number | null
           playbook_id?: string | null
           reasoning_tokens?: number
+          steps?: number | null
           summary?: string | null
+          tools_used?: string | null
           total_tokens?: number | null
+          wait_ms?: number | null
         }
         Update: {
           action?: string
           cached_input_tokens?: number | null
+          classification_ms?: number | null
           conversation_id?: string
           created_at?: string
           customer_message?: string | null
+          delivery_ms?: number | null
+          generation_ms?: number | null
           id?: string
           input_tokens?: number | null
           intent?: string | null
@@ -243,8 +334,11 @@ export type Database = {
           output_tokens?: number | null
           playbook_id?: string | null
           reasoning_tokens?: number
+          steps?: number | null
           summary?: string | null
+          tools_used?: string | null
           total_tokens?: number | null
+          wait_ms?: number | null
         }
         Relationships: [
           {
@@ -1732,6 +1826,10 @@ export type Database = {
         }[]
       }
       agent_spend_today: { Args: never; Returns: number }
+      // T3, plan "Nada se pierde en un corte ni en un deploy" (21/9/2026,
+      // migración 20260921040000): suma cached_input_tokens/reasoning_tokens
+      // y pasa a `security definer` (is_agent() una sola vez, ya no por fila
+      // vía RLS) -- mismo motivo que search_conversations_by_message.
       agent_token_usage: {
         Args: { days?: number }
         Returns: {
@@ -1740,7 +1838,32 @@ export type Database = {
           model: string
           output_tokens: number
           total_tokens: number
+          cached_input_tokens: number
+          reasoning_tokens: number
         }[]
+      }
+      // T3, plan "Nada se pierde en un corte ni en un deploy" (21/9/2026,
+      // migración 20260921040000): agregado por fase de agent_turn_calls
+      // para el panel de Control IA -- security definer, is_agent() una vez.
+      agent_turn_calls_by_phase: {
+        Args: { days?: number }
+        Returns: {
+          phase: string
+          calls: number
+          input_tokens: number
+          output_tokens: number
+          cached_input_tokens: number
+          reasoning_tokens: number
+          max_output_tokens_max: number | null
+          tool_choice_none_calls: number
+        }[]
+      }
+      // T3, plan "Nada se pierde en un corte ni en un deploy" (21/9/2026,
+      // migración 20260921040000): purga diaria de agent_turn_calls, SOLO
+      // service_role (la llama el cron con guarda en Redis).
+      agent_turn_calls_purge: {
+        Args: { retain_days?: number }
+        Returns: number
       }
       ai_turn_lock_acquire: {
         Args: { p_conversation_id: string; p_lease_seconds: number; p_token: string }

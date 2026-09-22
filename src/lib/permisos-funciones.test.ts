@@ -61,8 +61,12 @@ import { describe, expect, it } from "vitest";
 
 const LISTA_BLANCA = new Set(["is_agent", "is_supervisor_or_admin"]);
 
-// Las 22 funciones `security definer` conocidas en el esquema `public` a
-// fecha 21/9/2026 (21 + search_conversations_by_message, sumada en
+// Las 25 funciones `security definer` conocidas en el esquema `public` a
+// fecha 21/9/2026 (22 + agent_turn_calls_by_phase/agent_turn_calls_purge
+// [nuevas] + agent_token_usage [convertida de security invoker], sumadas en
+// 20260921040000_telemetria_del_turno.sql — T3 del plan "Nada se pierde en
+// un corte ni en un deploy". Las 22 anteriores: 21 +
+// search_conversations_by_message, sumada en
 // 20260921030000_busqueda_de_mensajes_sin_rls_por_fila.sql — T3 del plan "La
 // escalada se hace una vez y la búsqueda responde". Las 21 anteriores: 20 +
 // handle_agent_message_silences_ai, sumada en
@@ -95,11 +99,26 @@ const LISTA_BLANCA = new Set(["is_agent", "is_supervisor_or_admin"]);
 // /inbox en 48 h dieron 500 por `statement timeout`, ~1-1,5 s como
 // `authenticated` contra ~1-1,5 s, 20-140 ms con la función nueva).
 //
-// Ninguna de las tres entra a LISTA_BLANCA: a diferencia de
-// is_agent()/is_supervisor_or_admin() (que sostienen políticas RLS vivas y
-// por eso no se les puede tocar el EXECUTE), estas funciones traen los dos
-// revokes de siempre (`from public` y `from anon, authenticated`, en la
-// misma migración que las crea).
+// Tampoco entran a LISTA_BLANCA agent_turn_calls_by_phase/
+// agent_turn_calls_purge/agent_token_usage (21/9/2026, migración
+// 20260921040000, T3 del plan "Nada se pierde en un corte ni en un
+// deploy"): agent_turn_calls_by_phase e is_agent() UNA vez son el mismo
+// patrón que search_conversations_by_message (la tabla agent_turn_calls
+// nace con RLS habilitada SIN ninguna política -- objeción 1 de la revisión
+// del VPS del 21/9/2026: 3-7 filas por turno, 400-900 mil filas/año, más
+// volumen que `messages`, y una policy `using (is_agent())` es EXACTAMENTE
+// la que tumbó la búsqueda 48 h). agent_turn_calls_purge es un DELETE
+// masivo, SOLO service_role. agent_token_usage se recreó (DROP + CREATE, el
+// tipo de retorno cambia) pasando de security invoker a security definer
+// por el mismo motivo que search_conversations_by_message: pagaba
+// is_agent() por fila vía agent_turns_all.
+//
+// Ninguna de las seis (las tres de acá + las tres de arriba) entra a
+// LISTA_BLANCA: a diferencia de is_agent()/is_supervisor_or_admin() (que
+// sostienen políticas RLS vivas y por eso no se les puede tocar el
+// EXECUTE), estas funciones traen los dos revokes de siempre (`from
+// public` y `from anon, authenticated`, en la misma migración que las
+// crea/convierte).
 const FUNCIONES_SECURITY_DEFINER_CONOCIDAS = [
   "is_agent",
   "agent_day_summary",
@@ -123,6 +142,9 @@ const FUNCIONES_SECURITY_DEFINER_CONOCIDAS = [
   "ai_turn_lock_release",
   "record_handoff",
   "search_conversations_by_message",
+  "agent_token_usage",
+  "agent_turn_calls_by_phase",
+  "agent_turn_calls_purge",
 ].sort();
 
 const DIR_MIGRACIONES = path.resolve(__dirname, "../../supabase/migrations");
@@ -256,8 +278,8 @@ describe("permisos de funciones security definer (guardián estático)", () => {
     .map(([nombre]) => nombre)
     .sort();
 
-  it("detecta exactamente las 22 funciones security definer conocidas", () => {
-    // Si esto falla con MENOS de las 22, el parser se está comiendo alguna
+  it("detecta exactamente las 25 funciones security definer conocidas", () => {
+    // Si esto falla con MENOS de las 25, el parser se está comiendo alguna
     // (regex de cabecera roto, `$$` no encontrado, etc.) y el resto de este
     // archivo no protege nada aunque pase en verde. Si falla con MÁS,
     // apareció una función security definer nueva: hay que sumarla a esta

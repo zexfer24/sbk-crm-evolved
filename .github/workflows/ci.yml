@@ -351,3 +351,28 @@ jobs:
           psql "postgresql://postgres:postgres@127.0.0.1:54322/postgres" \
             -v ON_ERROR_STOP=1 \
             -f supabase/tests/search_conversations_by_message.sql
+
+      # T3, plan "Nada se pierde en un corte ni en un deploy" (21/9/2026,
+      # D2): el diagnóstico de las espirales de tokens del 21/9/2026 solo
+      # vivía en `log.info("turno_tiempos")` -- un log que un deploy destruye
+      # (T8 del mismo plan) -- y `agent_turns` guardaba un único total de
+      # tokens sumado entre 3-7 llamadas al proveedor por turno, sin poder
+      # saber cuánto costó cada fase ni si el tool_choice/maxOutputTokens que
+      # viajó tras escalar era el esperado (7.4 del informe del VPS). La
+      # tabla nueva `agent_turn_calls` nace con RLS habilitada SIN ninguna
+      # política (objeción 1 de la revisión del VPS: una policy
+      # `using (is_agent())` ahí es exactamente la que tumbó la búsqueda de
+      # /inbox 48 h, y esta tabla crece más rápido que `messages`); se lee
+      # solo por `agent_turn_calls_by_phase()` (security definer, is_agent()
+      # una vez) y se purga por `agent_turn_calls_purge()` (solo
+      # service_role). `agent_token_usage()` se recrea sumando
+      # caché/razonamiento y de paso deja de pagar is_agent() por fila --
+      # mismo agujero que search_conversations_by_message, mismo arreglo. El
+      # caso 9 (rendimiento) siembra ~200.000 filas y mide con
+      # clock_timestamp() contra un umbral de 500 ms, mismo criterio que el
+      # caso 8 de la búsqueda.
+      - name: agent_turn_calls -- RLS sin política, RPC por fase y purgado
+        run: |
+          psql "postgresql://postgres:postgres@127.0.0.1:54322/postgres" \
+            -v ON_ERROR_STOP=1 \
+            -f supabase/tests/telemetria_del_turno.sql
