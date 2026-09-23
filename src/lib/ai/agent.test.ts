@@ -694,22 +694,57 @@ const redisSeenStore = new Map<string, string>();
  * el mismo por otra vía).
  */
 const redisCedidoStore = new Map<string, number>();
+/**
+ * T6, plan "Seba no habla de más mientras el cliente espera al asesor"
+ * (22-23/9/2026): apagador único para simular un Redis caído -- ningún test
+ * de este archivo, antes de esta tarea, necesitaba tumbar la conexión falsa
+ * ENTERA (turn-seen.test.ts/turn-cession.test.ts tienen su propio `fallaCon`
+ * porque prueban esos módulos aislados). `claimGreetingWait` sí necesita un
+ * caso "sin Redis" en `agent.test.ts` porque su tercera salida
+ * (`"sin_redis"`) decide si el TURNO difiere o sigue de largo -- eso solo se
+ * puede ver corriendo `runAgentTurn` de punta a punta.
+ */
+let redisFailing = false;
 vi.mock("@/lib/redis", () => ({
   getRedis: () => ({
-    get: async (key: string) => redisSeenStore.get(key) ?? null,
+    get: async (key: string) => {
+      if (redisFailing) throw new Error("Redis no disponible (test)");
+      return redisSeenStore.get(key) ?? null;
+    },
+    // T6, plan "Seba no habla de más mientras el cliente espera al asesor"
+    // (22-23/9/2026): `claimGreetingWait` (greeting-wait.ts) reclama su
+    // rastro con `SET ... NX` sobre esta misma conexión falsa (comparte
+    // `redisSeenStore`: el prefijo de su clave, `turno:saludo_suelto:`,
+    // nunca choca con `turno:visto:`) — sin honrar `NX` de verdad, el
+    // segundo intento volvería a "ganar" el `SET` y jamás se distinguiría
+    // del primero. `writeSeen` (turn-seen.ts) nunca manda `NX`, así que su
+    // comportamiento de siempre —sobrescribir sin condición— no cambia.
     set: async (key: string, value: string, ..._args: unknown[]) => {
+      if (redisFailing) throw new Error("Redis no disponible (test)");
+      const nx = _args.some((arg) => typeof arg === "string" && arg.toUpperCase() === "NX");
+      if (nx && redisSeenStore.has(key)) return null;
       redisSeenStore.set(key, value);
       return "OK" as const;
     },
     incr: async (key: string) => {
+      if (redisFailing) throw new Error("Redis no disponible (test)");
       const next = (redisCedidoStore.get(key) ?? 0) + 1;
       redisCedidoStore.set(key, next);
       return next;
     },
-    expire: async () => 1,
+    expire: async () => {
+      if (redisFailing) throw new Error("Redis no disponible (test)");
+      return 1;
+    },
+    // `del` limpia en las DOS reservas falsas: el contador de cesiones
+    // (`turno:cedido:<id>`) y ahora también `redisSeenStore` —de donde
+    // `clearGreetingWait` borra su rastro (`turno:saludo_suelto:<id>`)—. Los
+    // prefijos de clave nunca se pisan entre sí, así que borrar de las dos a
+    // la vez es inofensivo para quien solo usaba una.
     del: async (key: string) => {
-      const existed = redisCedidoStore.delete(key);
-      return existed ? 1 : 0;
+      const existedInCedido = redisCedidoStore.delete(key);
+      const existedInSeen = redisSeenStore.delete(key);
+      return existedInCedido || existedInSeen ? 1 : 0;
     },
   }),
 }));
@@ -956,7 +991,14 @@ import { DESPEDIDA_MEDIA, DESPEDIDA_SIN_ASESOR, despedidaConAsesor, runAgentTurn
 import { OFF_TOPIC_REPLY, SYSTEM_PROMPT } from "@/lib/ai/prompt";
 import { revealsIdentity } from "@/lib/ai/identity-guard";
 import { playbookMessageText } from "@/lib/ai/send";
-import { sebaGreeting, TEXTO_CONFIRMAR_INVENTARIO, TEXTO_NO_IDENTIFICADO, TEXTO_SIN_STOCK } from "@/lib/ai/seba";
+import {
+  sebaGreeting,
+  sebaGreetingFollowUp,
+  TEXTO_CONFIRMAR_INVENTARIO,
+  TEXTO_NO_IDENTIFICADO,
+  TEXTO_SIN_STOCK,
+} from "@/lib/ai/seba";
+import { GreetingAwaitsQuestionError } from "@/lib/ai/greeting-wait";
 import { log } from "@/lib/log";
 /**
  * T4, plan "Nada se pierde en un corte ni en un deploy" (21-22/9/2026): SIN
@@ -1059,6 +1101,7 @@ beforeEach(() => {
   state.noteInsertError = null;
   redisSeenStore.clear();
   redisCedidoStore.clear();
+  redisFailing = false;
   withinFreeformWindowOverride.fn = null;
   sendTypingIndicatorMock.mockClear();
   conversationUpdates.length = 0;
@@ -6867,5 +6910,184 @@ describe("runAgentTurn — borrador cedido (T2, 22-23/9/2026)", () => {
 
     const acciones = agentTurnInserts.map((row) => row.action);
     expect(acciones).toEqual(["skipped", "skipped", "answered"]);
+  });
+});
+
+/**
+ * T6, plan "Seba no habla de más mientras el cliente espera al asesor"
+ * (22-23/9/2026, decisión del operador: "esperar la pregunta"). Caso RK200
+ * (22/9, medido por el VPS): el turno arrancó con solo "Buenas tardes" de un
+ * cliente que YA conocía a Seba; la pregunta real llegó 10 s después y el
+ * modelo corrió igual sobre ese historial, escalando sobre algo que el
+ * cliente ni había preguntado. `state.conversation.welcome_sent_at` ya viene
+ * sellado por el `beforeEach` general ("2026-08-22T10:00:00Z"), así que
+ * estos tests no necesitan tocarlo salvo el de "cliente nuevo".
+ */
+describe("runAgentTurn — saludo suelto de un cliente que ya conocía a Seba (T6, 22-23/9/2026)", () => {
+  afterEach(() => {
+    // Mismo motivo que el resto del archivo: un reloj congelado que se
+    // filtre a otro describe rompe cualquier prueba que dependa de la hora
+    // real.
+    vi.useRealTimers();
+  });
+
+  it("cliente conocido, pendientes = ['Buenas tardes'], sin escalada: primer intento — difiere sin modelo ni envío, y deja el rastro", async () => {
+    state.history = [{ sender_type: "customer", content: "Buenas tardes", is_internal_note: false }];
+
+    await expect(runAgentTurn("conv-1")).rejects.toThrow(GreetingAwaitsQuestionError);
+
+    expect(matchPlaybookMock).not.toHaveBeenCalled();
+    expect(classifyIntentMock).not.toHaveBeenCalled();
+    expect(generateMock).not.toHaveBeenCalled();
+    expect(sendAgentTextMock).not.toHaveBeenCalled();
+    expect(sendPlaybookReplyMock).not.toHaveBeenCalled();
+    expect(redisSeenStore.has("turno:saludo_suelto:conv-1")).toBe(true);
+    // Diferir no abandona la conversación (invariante "ningún lead
+    // invisible", CLAUDE.md): el turno sigue en la cola, así que acá no hay
+    // ningún dueño que cambiar ni traspaso que dejar.
+    expect(handoffCalls).toHaveLength(0);
+  });
+
+  it("segundo intento con el rastro puesto y todavía solo saludo: Seba contesta el saludo fijo, sin modelo, 'answered', marca vista y borra el rastro", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-09-18T00:30:00Z")); // 8:30 pm en Caracas → franja "noche"
+    redisSeenStore.set("turno:saludo_suelto:conv-1", "1");
+    state.history = [
+      {
+        sender_type: "customer",
+        content: "Buenas tardes",
+        is_internal_note: false,
+        created_at: "2026-09-18T00:28:00.000Z",
+        id: "m-saludo",
+      },
+    ];
+
+    await runAgentTurn("conv-1");
+
+    expect(matchPlaybookMock).not.toHaveBeenCalled();
+    expect(classifyIntentMock).not.toHaveBeenCalled();
+    expect(generateMock).not.toHaveBeenCalled();
+    expect(sendAgentTextMock).toHaveBeenCalledTimes(1);
+    expect(sendAgentTextMock).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.anything(),
+      sebaGreetingFollowUp("noche"),
+      // Es respuesta REAL: el cliente saludó y se le contestó, apaga
+      // `awaiting_reply` como cualquier otra respuesta -- no es la cortesía
+      // de una escalada.
+      expect.objectContaining({ isAutoReply: false })
+    );
+    expect(agentTurnInserts).toHaveLength(1);
+    expect(agentTurnInserts[0]).toMatchObject({
+      action: "answered",
+      summary: "Saludo suelto: Seba contestó sin esperar más.",
+    });
+    expect(redisSeenStore.has("turno:visto:conv-1")).toBe(true);
+    expect(redisSeenStore.has("turno:saludo_suelto:conv-1")).toBe(false);
+  });
+
+  it("segundo intento con la pregunta real ya en la ráfaga (['Buenas tardes', 'precio del RK200']): corre normal, modelo llamado, y el rastro sin uso se borra", async () => {
+    redisSeenStore.set("turno:saludo_suelto:conv-1", "1");
+    state.history = [
+      {
+        sender_type: "customer",
+        content: "precio del RK200",
+        is_internal_note: false,
+        created_at: "2026-09-22T15:24:24.000Z",
+        id: "m-pregunta",
+      },
+      {
+        sender_type: "customer",
+        content: "Buenas tardes",
+        is_internal_note: false,
+        created_at: "2026-09-22T15:24:14.000Z",
+        id: "m-saludo",
+      },
+    ];
+
+    await runAgentTurn("conv-1");
+
+    expect(classifyIntentMock).toHaveBeenCalledTimes(1);
+    expect(generateMock).toHaveBeenCalledTimes(1);
+    expect(sendAgentTextMock).toHaveBeenCalledTimes(1);
+    expect(sendAgentTextMock).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.anything(),
+      "respuesta redactada por el modelo",
+      expect.anything()
+    );
+    expect(redisSeenStore.has("turno:saludo_suelto:conv-1")).toBe(false);
+  });
+
+  it("cliente NUEVO saludando: sigue la presentación de Seba de siempre, no difiere ni toca el rastro", async () => {
+    state.conversation = { ...state.conversation, welcome_sent_at: null };
+    state.history = [{ sender_type: "customer", content: "Buenas tardes", is_internal_note: false }];
+
+    await expect(runAgentTurn("conv-1")).resolves.toBeUndefined();
+
+    expect(sendAgentTextMock).toHaveBeenCalledTimes(1);
+    expect(matchPlaybookMock).not.toHaveBeenCalled();
+    expect(classifyIntentMock).not.toHaveBeenCalled();
+    expect(redisSeenStore.has("turno:saludo_suelto:conv-1")).toBe(false);
+  });
+
+  it("con escalada abierta y solo saludo: no difiere -- sigue el camino de T5 (nota para el asesor), como hoy", async () => {
+    state.history = [{ sender_type: "customer", content: "Buenas tardes", is_internal_note: false }];
+    state.lastHandoffRow = { reason: "escalada_sin_asesor", created_at: "2026-09-22T09:14:26.000Z" };
+    state.agentMessagesAfterHandoff = [];
+    matchPlaybookMock.mockResolvedValue({ playbook: null, usage: NO_USAGE });
+
+    await expect(runAgentTurn("conv-1")).resolves.toBeUndefined();
+
+    expect(classifyIntentMock).not.toHaveBeenCalled();
+    expect(generateMock).not.toHaveBeenCalled();
+    expect(sendAgentTextMock).not.toHaveBeenCalled();
+    expect(messageInserts).toHaveLength(1);
+    expect(messageInserts[0].content).toContain("Buenas tardes");
+    expect(redisSeenStore.has("turno:saludo_suelto:conv-1")).toBe(false);
+  });
+
+  it("sin Redis: no difiere, sigue de largo como si esta tarea no existiera", async () => {
+    redisFailing = true;
+    state.history = [{ sender_type: "customer", content: "Buenas tardes", is_internal_note: false }];
+
+    await expect(runAgentTurn("conv-1")).resolves.toBeUndefined();
+
+    expect(classifyIntentMock).toHaveBeenCalledTimes(1);
+    expect(sendAgentTextMock).toHaveBeenCalledTimes(1);
+    expect(sendAgentTextMock).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.anything(),
+      "respuesta redactada por el modelo",
+      expect.anything()
+    );
+  });
+
+  /**
+   * Corrección hallada preparando la mutación de esta tarea (23/9/2026): con
+   * `welcome_sent_at: null` PERO el reclamo de la presentación PERDIDO (otra
+   * corrida ya lo selló, o simplemente no calzó), `convo.welcome_sent_at`
+   * sigue siendo `null` en memoria -- si el `if` de T6 solo mirara
+   * `primerPendienteEsSaludo`, sin `convo.welcome_sent_at !== null`, un
+   * saludo suelto en este chat también diferiría acá, aunque la IA nunca
+   * llegó a presentarse. La condición "ya se presentó antes" es justo lo que
+   * distingue este caso del de un cliente que sí la conoce.
+   */
+  it("cliente nuevo que perdió la carrera del reclamo de presentación: welcome_sent_at sigue null, T6 no dispara, sigue de largo", async () => {
+    state.conversation = { ...state.conversation, welcome_sent_at: null };
+    state.presentationClaimWins = false;
+    state.history = [{ sender_type: "customer", content: "Buenas tardes", is_internal_note: false }];
+
+    await expect(runAgentTurn("conv-1")).resolves.toBeUndefined();
+
+    expect(classifyIntentMock).toHaveBeenCalledTimes(1);
+    expect(sendAgentTextMock).toHaveBeenCalledTimes(1);
+    expect(sendAgentTextMock).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.anything(),
+      "respuesta redactada por el modelo",
+      expect.anything()
+    );
+    expect(redisSeenStore.has("turno:saludo_suelto:conv-1")).toBe(false);
   });
 });

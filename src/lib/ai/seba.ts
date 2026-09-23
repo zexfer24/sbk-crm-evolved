@@ -1,5 +1,5 @@
 import { AI_NAME, BUSINESS_NAME } from "@/lib/brand";
-import type { DayBand } from "@/lib/business-hours";
+import { greetingFor, type DayBand } from "@/lib/business-hours";
 
 // ---------------------------------------------------------------------------
 // 18/9/2026, plan "Seba atiende el mostrador" (requisitos 1, 2, 3 y 4 del
@@ -23,10 +23,16 @@ import type { DayBand } from "@/lib/business-hours";
 // desde acá para no duplicarlos.
 //
 // Módulo PURO a propósito, mismo patrón que `identity-guard.ts` y
-// `saludo.ts`: sin `import "server-only"`, y el único import de valor es
-// `brand.ts` (también puro). `DayBand` se importa solo como TIPO —se borra
-// en la compilación— para no arrastrar en runtime nada de `business-hours.ts`
-// hacia el lado que toque este módulo primero.
+// `saludo.ts`: sin `import "server-only"`. Hasta T6 (23/9/2026, plan "Seba
+// no habla de más mientras el cliente espera al asesor") el único import de
+// valor era `brand.ts` (también puro) y `DayBand` se traía solo como TIPO
+// —se borra en la compilación— para no arrastrar en runtime nada de
+// `business-hours.ts` hacia el lado que toque este módulo primero. T6 suma
+// `greetingFor` COMO VALOR a propósito: `sebaGreetingFollowUp` (más abajo)
+// lo necesita, y `business-hours.ts` es puro por diseño —su propio
+// encabezado dice "lo llama tanto el turno de IA (server) como el panel de
+// control (cliente)"— así que arrastrarlo acá no rompe nada que este módulo
+// no pudiera costar ya por otra vía.
 // ---------------------------------------------------------------------------
 
 /**
@@ -74,6 +80,27 @@ const ALL_DAY_BANDS: readonly DayBand[] = ["mañana", "tarde", "noche"];
  */
 export function isSebaGreeting(text: string): boolean {
   return ALL_DAY_BANDS.some((band) => sebaGreeting(band) === text);
+}
+
+/**
+ * T6, plan "Seba no habla de más mientras el cliente espera al asesor"
+ * (22-23/9/2026, decisión del operador "esperar la pregunta"): el saludo
+ * FIJO que Seba manda cuando un cliente que YA la conocía (`welcome_sent_at`
+ * sellado ANTES de este turno) vuelve a saludar solo, y ya se esperó una vez
+ * por si la pregunta real venía detrás (caso RK200, 22/9/2026: "Buenas
+ * tardes" solo, la pregunta llegó 10 s después y el modelo escaló sobre un
+ * historial viejo). Nunca lo redacta el modelo -- mismo criterio que
+ * `sebaGreeting` -- pero es un texto DISTINTO: reusar `sebaGreeting` habría
+ * hecho que Seba "se presentara" una segunda vez ("mi nombre es Seba...") en
+ * la misma conversación. Usa `greetingFor` (business-hours.ts), NO
+ * `presentationGreetingFor` de acá arriba -- esa es la frase de la
+ * PRESENTACIÓN ("buen día"), literal por dictado del cliente; esta es un
+ * saludo de VUELTA que el operador decidió sobre la marcha, y las dos se
+ * parecen pero no son el mismo texto.
+ */
+export function sebaGreetingFollowUp(band: DayBand): string {
+  const saludo = greetingFor(band);
+  return `¡${saludo.charAt(0).toUpperCase()}${saludo.slice(1)}! ¿En qué te puedo ayudar?`;
 }
 
 /**

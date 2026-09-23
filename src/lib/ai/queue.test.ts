@@ -40,6 +40,7 @@ import {
   processQueuedTurns,
 } from "@/lib/ai/queue";
 import { ConversationBusyError } from "@/lib/ai/conversation-lock";
+import { GreetingAwaitsQuestionError } from "@/lib/ai/greeting-wait";
 import { NonRetryableTurnError } from "@/lib/ai/turn-delivery";
 import { log } from "@/lib/log";
 
@@ -226,6 +227,47 @@ describe("processQueuedTurns", () => {
     if (!disponible) return;
     runAgentTurnMock.mockImplementation(async () => {
       throw new ConversationBusyError("conv-1");
+    });
+
+    for (let intento = 0; intento < 5; intento++) {
+      await enqueueAgentTurns(["conv-1"], { debounceSeconds: 0 });
+      await processQueuedTurns();
+    }
+
+    expect(await pendingAgentTurns()).toBe(1);
+  });
+
+  /**
+   * T6, plan "Seba no habla de más mientras el cliente espera al asesor"
+   * (22-23/9/2026): el turno pide esperar 8 s por si la pregunta real llega
+   * detrás de un saludo suelto (`GreetingAwaitsQuestionError`,
+   * greeting-wait.ts) — mismo mecanismo que el lock (`defer` +
+   * `registrarDiferidos`), no un camino nuevo: se pospone, no se cuenta como
+   * fallo.
+   */
+  it("pospone —no falla— el turno que pidió esperar la pregunta detrás de un saludo suelto", async () => {
+    if (!disponible) return;
+    runAgentTurnMock.mockImplementation(async () => {
+      throw new GreetingAwaitsQuestionError("conv-1");
+    });
+
+    await enqueueAgentTurns(["conv-1"], { debounceSeconds: 0 });
+    const resultado = await processQueuedTurns();
+
+    expect(resultado.deferred).toBe(1);
+    expect(resultado.failed).toBe(0);
+    expect(await pendingAgentTurns()).toBe(1);
+  });
+
+  /**
+   * Mismo contraste que "el turno pospuesto por lock no gasta los
+   * intentos": esperar la pregunta detrás de un saludo puede repetirse sin
+   * que la conversación se abandone — no consume `MAX_ATTEMPTS`.
+   */
+  it("el turno diferido por saludo suelto no gasta los intentos", async () => {
+    if (!disponible) return;
+    runAgentTurnMock.mockImplementation(async () => {
+      throw new GreetingAwaitsQuestionError("conv-1");
     });
 
     for (let intento = 0; intento < 5; intento++) {

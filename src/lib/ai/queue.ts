@@ -5,6 +5,7 @@ import { runAgentTurn } from "@/lib/ai/agent";
 import { isNonRetryable } from "@/lib/ai/turn-delivery";
 import { recordHandoffAdmin } from "@/lib/ai/handoffs";
 import { isConversationBusy } from "@/lib/ai/conversation-lock";
+import { GREETING_WAIT_SECONDS, isGreetingAwaitsQuestion } from "@/lib/ai/greeting-wait";
 import { errorText, log } from "@/lib/log";
 
 // ---------------------------------------------------------------------------
@@ -367,12 +368,19 @@ export async function processAfterDebounce(
  * `anticiparSiHayPendiente` cuando `cola.adelantar()` encuentra algo que
  * bajarle el vencimiento. Es un plazo más, no una razón para diferir: por
  * eso participa del mismo `Math.min(...plazos)` de `registrarDiferidos`.
+ *
+ * 23/9/2026 (T6, plan "Seba no habla de más mientras el cliente espera al
+ * asesor"): suma GREETING_WAIT_SECONDS (`greeting-wait.ts`) — el turno pide
+ * este plazo cuando ve un saludo suelto de un cliente conocido y quiere
+ * esperar por si la pregunta real llega detrás, mismo mecanismo que el lock
+ * (`ConversationBusyError`), otro motivo para diferir sin ser un fallo.
  */
 type PlazoDiferido =
   | typeof RETRY_WHEN_BUSY_SECONDS
   | typeof RETRY_WHEN_PACED_SECONDS
   | typeof RETRY_WHEN_LOCKED_SECONDS
-  | typeof RETRY_AFTER_ADVANCE_SECONDS;
+  | typeof RETRY_AFTER_ADVANCE_SECONDS
+  | typeof GREETING_WAIT_SECONDS;
 
 interface ResultadoPasada {
   result: QueueRunResult;
@@ -525,6 +533,21 @@ async function ejecutarPasada(limit: number): Promise<ResultadoPasada> {
           result.deferred++;
           plazosDiferidos.push(RETRY_WHEN_LOCKED_SECONDS);
           log.info("cola_turno_pospuesto_lock", { conversationId });
+          continue;
+        }
+
+        // T6, plan "Seba no habla de más mientras el cliente espera al
+        // asesor" (23/9/2026): el turno vio un saludo suelto de un cliente
+        // conocido y pidió esperar por si la pregunta real viene detrás — no
+        // es un fallo (no cuenta intento, `recordFailure` no corre) ni una
+        // conversación tomada, es una espera deliberada. Mismo patrón que el
+        // lock de arriba: se devuelve a la cola con `defer` y se sigue con
+        // el resto del cupo.
+        if (isGreetingAwaitsQuestion(err)) {
+          await cola.defer(conversationId, GREETING_WAIT_SECONDS);
+          result.deferred++;
+          plazosDiferidos.push(GREETING_WAIT_SECONDS);
+          log.info("cola_turno_diferido_saludo_suelto", { conversationId });
           continue;
         }
 

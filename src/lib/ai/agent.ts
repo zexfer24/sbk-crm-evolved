@@ -41,6 +41,7 @@ import {
 } from "@/lib/ai/history-line";
 import { readSeen, writeSeen } from "@/lib/ai/turn-seen";
 import { clearCessionCounter, shouldCedeDraft } from "@/lib/ai/turn-cession";
+import { claimGreetingWait, clearGreetingWait, GreetingAwaitsQuestionError } from "@/lib/ai/greeting-wait";
 import { customerFirstName } from "@/lib/ai/customer-name";
 import { playbookMessageText, sendAgentText, sendPlaybookReply, type DeliveryOutcome } from "@/lib/ai/send";
 import { buildTurnTarget, type AgentConversation, type TurnTarget } from "@/lib/ai/turn-target";
@@ -57,6 +58,7 @@ import { debeCederAlInventario } from "@/lib/ai/catalog-request";
 import {
   isSebaGreeting,
   sebaGreeting,
+  sebaGreetingFollowUp,
   TEXTO_CONFIRMAR_INVENTARIO,
   TEXTO_NO_IDENTIFICADO,
   TEXTO_SIN_STOCK,
@@ -783,7 +785,15 @@ async function humanWroteMeanwhile(
 }
 
 /** Desde qué punto del turno se está intentando hablar. Viaja al registro. */
-type SendPhase = "presentacion" | "escenario" | "fuera_de_tema" | "redaccion" | "adjuntos_sin_texto";
+type SendPhase =
+  | "presentacion"
+  | "escenario"
+  | "fuera_de_tema"
+  | "redaccion"
+  | "adjuntos_sin_texto"
+  // T6, plan "Seba no habla de más mientras el cliente espera al asesor"
+  // (22-23/9/2026): el saludo fijo del segundo intento (`sebaGreetingFollowUp`).
+  | "saludo_suelto";
 
 /**
  * La única puerta por la que un turno le pone algo delante al cliente.
@@ -2090,6 +2100,106 @@ async function runTurnPhases(
       tiempos,
     });
     return;
+  }
+
+  // T6, plan "Seba no habla de más mientras el cliente espera al asesor"
+  // (22-23/9/2026, decisión del operador: "esperar la pregunta"). Caso RK200
+  // (22/9, medido por el VPS): el turno arrancó con solo "Buenas tardes" de
+  // un cliente que YA conocía a Seba; la pregunta real llegó 10 s después, y
+  // el modelo corrió igual sobre ese historial -- escaló hablando de algo
+  // que el cliente ni había preguntado.
+  //
+  // A PROPÓSITO acá abajo: DESPUÉS del bloque de T5 (arriba), que SIEMPRE
+  // retorna cuando `escalationOpenNow` es `true` -- si esta línea corre es
+  // porque no hay ninguna escalada abierta ("con escalada abierta manda T5,
+  // no T6", plan) -- y DESPUÉS de la guarda de T12 (arriba), que ya sacó el
+  // caso "esto es un reintento de un saludo que ya se contestó". Con las dos
+  // ya evaluadas, pendientes puramente de saludo acá significan un cliente
+  // que saluda de nuevo EN MEDIO de una conversación viva, sin nada más
+  // urgente pendiente todavía.
+  //
+  // `convo.welcome_sent_at !== null && !introducedThisTurn`: Seba tiene que
+  // haberse presentado ANTES de este turno, no en este mismo turno ni en un
+  // reintento de T12 (los dos dejan `introducedThisTurn` en `true`) -- un
+  // cliente NUEVO saludando sigue el camino de la presentación de más
+  // arriba (`soloSaludo`), que esta tarea no toca.
+  //
+  // `primerPendienteEsSaludo` mira solo la línea MÁS VIEJA de `rafagaCliente`
+  // (la primera en llegar, orden cronológico -- ver `pendingCustomerLines`)
+  // para decidir si vale la pena seguir mirando esta rama: barato (nada de
+  // Redis todavía) y acota el caso a bursts que EMPIEZAN con un saludo
+  // suelto, que es el único lugar donde `claimGreetingWait` puede haber
+  // dejado algo que limpiar más abajo.
+  const primerPendienteEsSaludo = rafagaCliente.length > 0 && isGreetingOnly(rafagaCliente[0]);
+  if (convo.welcome_sent_at !== null && !introducedThisTurn && primerPendienteEsSaludo) {
+    if (rafagaCliente.every((linea) => isGreetingOnly(linea))) {
+      const espera = await claimGreetingWait(conversationId);
+
+      if (espera === "primer_intento") {
+        // Se pide el diferido LANZANDO: reusa el mecanismo que ya tiene la
+        // cola (`defer` + `registrarDiferidos`, queue.ts; ver
+        // `isGreetingAwaitsQuestion` ahí), no uno nuevo. Invariante "ningún
+        // lead invisible" (CLAUDE.md): esto NO abandona la conversación -- el
+        // turno sigue en la cola, reclamable en `GREETING_WAIT_SECONDS`, y
+        // nada de lo que el cliente escribió se pierde ni queda sin dueño.
+        log.info("turno_saludo_suelto_diferido", { conversationId });
+        throw new GreetingAwaitsQuestionError(conversationId);
+      }
+
+      if (espera === "segundo_intento") {
+        // Nadie mandó la pregunta real en el plazo: Seba contesta el saludo,
+        // fijo, sin modelo -- es respuesta REAL (`is_auto_reply: false`), el
+        // cliente saludó y se le contestó.
+        const salida = await deliver(
+          supabase,
+          target,
+          entrega,
+          lease,
+          tiempos,
+          "saludo_suelto",
+          convo.last_customer_message_at,
+          () =>
+            sendAgentText(supabase, target, sebaGreetingFollowUp(dayBand(new Date())), {
+              isAutoReply: false,
+            })
+        );
+        if (!salida) return;
+        if (await deliveryFailed(supabase, conversationId, salida, convo.assigned_agent_id)) return;
+
+        // T1 (22-23/9/2026): el saludo suelto SÍ salió -- el turno atendió
+        // de verdad lo que vio.
+        await marcarTurnoVisto();
+        // El rastro de espera terminó su función: se borra para que un
+        // saludo suelto FUTURO en esta misma conversación vuelva a esperar
+        // desde cero.
+        await clearGreetingWait(conversationId);
+        await resetStage(supabase, conversationId, "turno_saludo_suelto_respondido", convo.assigned_agent_id);
+        await logTurn(supabase, conversationId, {
+          intent: null,
+          action: "answered",
+          summary: "Saludo suelto: Seba contestó sin esperar más.",
+          tokens: null,
+          customerMessage,
+          tiempos,
+        });
+        return;
+      }
+
+      // "sin_redis": no se difiere -- el turno sigue de largo, como si esta
+      // tarea no existiera, mismo criterio que el resto de los mecanismos de
+      // Redis de este archivo (turn-seen.ts, turn-cession.ts).
+    } else {
+      // La pregunta real SÍ llegó detrás del saludo (o algo más, de
+      // cualquier forma): la espera del primer intento ya cumplió su
+      // función -- el turno la contesta TODO JUNTO por el camino de siempre
+      // (fase 0/1, tool loop), así que el rastro queda sin uso. Se borra
+      // acá -- "se contestó", cubre también "se cedió": si el flujo genérico
+      // termina cediendo el borrador más abajo (turn-cession.ts), esta
+      // limpieza ya corrió antes de esa decisión, y un saludo suelto nuevo
+      // en esta conversación no tiene por qué heredar un rastro de una
+      // ráfaga que ya se resolvió.
+      await clearGreetingWait(conversationId);
+    }
   }
 
   // Segundo adjunto sin texto seguido (Tarea 6, "La voz cercana y la espera
