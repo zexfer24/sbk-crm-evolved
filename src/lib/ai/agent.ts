@@ -52,7 +52,7 @@ import {
   type TurnDelivery,
 } from "@/lib/ai/turn-delivery";
 import { recordHandoff, escalationOpen } from "@/lib/ai/handoffs";
-import { isCourtesyOnly, isGreetingOnly } from "@/lib/ai/saludo";
+import { isCourtesyOnly, isFarewellPlaybook, isGreetingOnly } from "@/lib/ai/saludo";
 import { debeCederAlInventario } from "@/lib/ai/catalog-request";
 import {
   isSebaGreeting,
@@ -502,6 +502,39 @@ function alreadySentPlaybook(history: ModelMessage[], playbook: Playbook, links:
     return message.content === enviado;
   }
   return false;
+}
+
+/**
+ * Tope de fragmentos que la nota interna del camino "espera abierta" (T5,
+ * plan "Seba no habla de más mientras el cliente espera al asesor",
+ * 22-23/9/2026) cita textualmente. Pasado esto, la nota deja de ser un
+ * resumen legible para el asesor -- lo que sobra sigue completo en el chat,
+ * esto es solo el aviso.
+ */
+const NOTA_ESPERA_MAX_FRAGMENTOS = 5;
+
+/**
+ * Tope de caracteres por fragmento citado en esa misma nota: alcanza con que
+ * el asesor reconozca de qué línea se trata, no hace falta reproducir un
+ * mensaje larguísimo entero -- para eso está el chat.
+ */
+const NOTA_ESPERA_MAX_CHARS = 200;
+
+/**
+ * Arma el texto de la nota interna que deja el camino "espera abierta"
+ * cuando, con la escalada ya abierta, ningún escenario informativo calza con
+ * lo que el cliente agregó: los pendientes citados entre comillas,
+ * recortados y con tope de cantidad. Ver el comentario de cabecera de esa
+ * rama en `runTurnPhases`.
+ */
+function pendientesParaNota(rafagaCliente: string[]): string {
+  const citados = rafagaCliente.slice(0, NOTA_ESPERA_MAX_FRAGMENTOS).map((linea) => {
+    const recortada = linea.length > NOTA_ESPERA_MAX_CHARS ? `${linea.slice(0, NOTA_ESPERA_MAX_CHARS)}…` : linea;
+    return `«${recortada}»`;
+  });
+  const restantes = rafagaCliente.length - citados.length;
+  if (restantes > 0) citados.push(`(+${restantes} más)`);
+  return citados.join(" ");
 }
 
 interface LogTurnParams {
@@ -1265,15 +1298,29 @@ async function runPlaybook(
    * después de confirmar que el envío no falló, igual que las demás salidas
    * que sí atendieron lo que vieron.
    */
-  onDelivered: () => Promise<void>
+  onDelivered: () => Promise<void>,
+  /**
+   * T5, plan "Seba no habla de más mientras el cliente espera al asesor"
+   * (22-23/9/2026): `false` de fábrica, para no tocar a ningún llamador
+   * viejo. El camino "espera abierta" de `runTurnPhases` la manda en `true`
+   * cuando un escenario INFORMATIVO calza con una escalada ya abierta -- ahí
+   * `assignedAgentId` puede seguir en `null` (`escalada_sin_asesor`, de
+   * noche o domingo sin nadie conectado) y aun así el cliente sigue
+   * esperando a una PERSONA, no a Seba: `isAutoReply` tiene que salir en
+   * `true` igual, o `awaiting_reply` se apagaría solo, contra CLAUDE.md
+   * ("Toda salida de un turno que escaló es is_auto_reply").
+   */
+  forceAutoReply = false
 ): Promise<void> {
   // Con D2 la IA sigue respondiendo en un chat que YA tiene asesor: esa
   // respuesta es la misma cortesía automática de siempre —el cliente sigue
   // esperando a la PERSONA, no a Seba— así que sale marcada desde el envío,
   // no solo cuando el escenario decide escalar de nuevo (`afterSend:
   // "escalate"`, más abajo, que tiene su propio marcado posterior porque acá
-  // todavía no se sabe si va a hacer falta un asesor NUEVO).
-  const esperandoAsesor = Boolean(assignedAgentId);
+  // todavía no se sabe si va a hacer falta un asesor NUEVO). `forceAutoReply`
+  // (T5, más arriba) cubre el caso donde no hay assignedAgentId pero la
+  // escalada ya está abierta igual.
+  const esperandoAsesor = forceAutoReply || Boolean(assignedAgentId);
 
   // Última mirada a las guardas antes de hablarle al cliente. Si la IA se apagó
   // —o si un asesor se metió— mientras el modelo elegía el escenario, el turno
@@ -1813,6 +1860,15 @@ async function runTurnPhases(
     }
   }
 
+  // T5, plan "Seba no habla de más mientras el cliente espera al asesor"
+  // (22-23/9/2026): se consulta UNA sola vez por turno -- hasta esta tarea
+  // la guarda de cortesía de más abajo la pedía DENTRO de su propia
+  // condición, y el camino nuevo "espera abierta" (después del guardián de
+  // T12, más abajo) la necesita exactamente igual. Solo se pregunta si hay
+  // algo pendiente que mirar (`rafagaCliente.length > 0`): sin eso ninguna
+  // de las dos partes del turno que la usan puede disparar.
+  const escalationOpenNow = rafagaCliente.length > 0 ? await escalationOpen(supabase, conversationId) : false;
+
   // Guarda de cortesía tras una escalada abierta (Tarea 4, "La voz cercana y
   // la espera visible", 14/9/2026, decisión 4). ANTES de fase 0 y de
   // clasificar: tras la devolución masiva del 13/9/2026, un "Ok, muchas
@@ -1849,7 +1905,7 @@ async function runTurnPhases(
   if (
     rafagaCliente.length > 0 &&
     rafagaCliente.every((linea) => isCourtesyOnly(linea)) &&
-    (await escalationOpen(supabase, conversationId))
+    escalationOpenNow
   ) {
     await recordHandoff(supabase, {
       conversationId,
@@ -1902,6 +1958,137 @@ async function runTurnPhases(
     // — el turno decidió, con fundamento, que no había nada nuevo que
     // redactar.
     await marcarTurnoVisto();
+    return;
+  }
+
+  // T5, plan "Seba no habla de más mientras el cliente espera al asesor"
+  // (22-23/9/2026, opción (b) del operador, "un solo acuse por espera").
+  // Medido en producción el 22/9/2026 (caso SBR, ver el plan): con una
+  // escalada ABIERTA (`escalationOpenNow`, calculado arriba, junto a la
+  // guarda de cortesía) el mensaje que escaló YA fue el acuse -- ese mismo
+  // turno le dijo al cliente que un asesor toma su caso. De acá en más,
+  // mientras la escalada siga abierta, Seba SOLO le vuelve a hablar al
+  // cliente si un escenario INFORMATIVO calza -- nunca corre el tool loop ni
+  // clasifica la intención. 27 % de los mensajes de Seba salían con una
+  // escalada abierta el 22/9 (0-2 % antes del 18/9/2026, "Seba atiende el
+  // mostrador"), 76 de 142 puro relleno tipo "el asesor ya tiene tu caso",
+  // hasta 6 mensajes en la misma espera.
+  //
+  // Se descartan de los candidatos, ANTES de llamar a `matchPlaybook`:
+  //   - los de despedida (`isFarewellPlaybook`, saludo.ts) -- Seba ya se
+  //     despidió al escalar, y repetirla es justo el relleno medido el 22/9;
+  //   - los que escalan de nuevo al mandarse (`afterSend === "escalate"`) --
+  //     con la escalada YA abierta no tiene sentido que una respuesta
+  //     automática dispare una escalada nueva.
+  // `matchPlaybook` sigue sacando por su cuenta el saludo y el enlace sin
+  // resolver, como en la fase 0 normal (playbooks.ts).
+  //
+  // Interacción con la guarda de T12 (arriba): en teoría las dos podrían
+  // competir por el mismo caso ("ráfaga que es solo saludo/cortesía"), pero
+  // en la práctica no coexisten -- reabrir un chat cierra cualquier
+  // escalada vieja (`reabierta_por_cliente` no está en
+  // `RAZONES_QUE_NO_CIERRAN_LA_ESCALADA`, handoffs.ts) y Seba nunca vuelve a
+  // presentarse sin que el chat se haya reabierto antes, así que un
+  // reintento de saludo (`saludoPendienteDeRespuesta`) y una escalada
+  // abierta de la MISMA conversación no se dan a la vez. Ver el reporte de
+  // esta tarea para el detalle de esta revisión.
+  if (escalationOpenNow && rafagaCliente.length > 0) {
+    const playbooksEspera = (await fetchActivePlaybooks(supabase)).filter(
+      (p) => !isFarewellPlaybook(p.responseText) && p.afterSend !== "escalate"
+    );
+
+    // Mismo criterio que la fase 0 normal (más abajo, `ultimoEsMarcador`): un
+    // marcador de media nunca calza ningún disparador, así que preguntarle
+    // al proveedor sería gasto de balde.
+    const matchEspera: PlaybookMatch = lastUserLineIsMarker(history)
+      ? { playbook: null, usage: ZERO_USAGE }
+      : await matchPlaybook(history, playbooksEspera, undefined, businessHours, links);
+    const tokensEspera = tokensFromUsage(matchEspera.usage);
+
+    if (matchEspera.playbook) {
+      // T2, mismo plan: mismo punto de cesión que la fase 0 normal y el
+      // mismo motivo -- si llegó un fragmento más nuevo mientras se elegía
+      // el escenario, el turno que ya está en cola para esta conversación
+      // (T3, `88fe103`) lo va a ver junto con lo que sigue pendiente.
+      const cesionEspera = await shouldCedeDraft({ supabase, conversationId, hastaCargado, yaEscalo: false });
+      if (cesionEspera.cede) {
+        log.info("turno_cedido_a_rafaga", { conversationId, punto: "espera_abierta" });
+        await resetStage(supabase, conversationId, "turno_cedido_a_rafaga", convo.assigned_agent_id);
+        await logTurn(supabase, conversationId, {
+          intent: null,
+          action: "skipped",
+          summary: "Borrador cedido: llegó otro mensaje del cliente mientras se redactaba.",
+          tokens: tokensEspera,
+          customerMessage,
+          tiempos,
+        });
+        return;
+      }
+
+      await runPlaybook(
+        supabase,
+        target,
+        entrega,
+        lease,
+        matchEspera.playbook,
+        links,
+        tokensEspera,
+        customerMessage,
+        tiempos,
+        convo.last_customer_message_at,
+        businessHours,
+        convo.assigned_agent_id,
+        async () => {
+          await marcarTurnoVisto();
+          await clearCessionCounter(conversationId);
+        },
+        // forceAutoReply: con la escalada abierta el cliente sigue esperando
+        // a una persona, tenga o no asesor asignado todavía
+        // (`escalada_sin_asesor` de noche cuenta igual) -- awaiting_reply NO
+        // puede apagarse (CLAUDE.md, "Toda salida de un turno que escaló es
+        // is_auto_reply").
+        true
+      );
+      return;
+    }
+
+    // Ningún escenario informativo calzó: nada le llega al cliente -- el
+    // acuse ya salió con la escalada -- y lo que agregó queda anotado para
+    // que el asesor lo vea al entrar al chat. Mismo patrón que la nota que
+    // deja `escalate.ts` al reiterar una escalada ("IA reiteró la escalada a
+    // ...").
+    const { error: notaError } = await supabase.from("messages").insert({
+      conversation_id: conversationId,
+      direction: "outbound",
+      sender_type: "system",
+      message_type: "system_event",
+      is_internal_note: true,
+      content: `Mientras espera al asesor, el cliente agregó: ${pendientesParaNota(rafagaCliente)}`,
+    });
+
+    if (notaError) {
+      // Se lanza ANTES de marcar visto: si la nota no quedó escrita, el
+      // turno tiene que reintentarse -- lo que el cliente escribió no puede
+      // perderse solo porque no se pudo dejar el aviso para el asesor.
+      log.error("turno_nota_espera_no_escrita", { conversationId, detail: errorText(notaError) });
+      throw new Error(`No se pudo dejar la nota de espera para el asesor: ${errorText(notaError)}`, {
+        cause: notaError,
+      });
+    }
+
+    await marcarTurnoVisto();
+    await resetStage(supabase, conversationId, "turno_anotado_para_asesor", convo.assigned_agent_id);
+    log.info("turno_anotado_para_asesor", { conversationId });
+    await logTurn(supabase, conversationId, {
+      intent: null,
+      action: "skipped",
+      summary: `Espera con escalada abierta: anotado para el asesor (${rafagaCliente.length} pendiente${
+        rafagaCliente.length === 1 ? "" : "s"
+      }).`,
+      tokens: tokensEspera,
+      customerMessage,
+      tiempos,
+    });
     return;
   }
 

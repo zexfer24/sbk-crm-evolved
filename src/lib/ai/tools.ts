@@ -789,8 +789,19 @@ export function buildEscalateTool(
     // reescritura de `escalate.ts` para que de verdad deje de apagar
     // `ai_enabled` es tarea aparte (T4 del plan); acá solo se corrige lo que
     // el modelo lee sobre qué hace esta herramienta.
+    //
+    // Reescrito el 22-23/9/2026 (T5, plan "Seba no habla de más mientras el
+    // cliente espera al asesor", opción (b) del operador): "la IA sigue
+    // contestando en este chat" dejó de ser cierto — medido en producción el
+    // 22/9/2026, 27 % de los mensajes de Seba salían con una escalada
+    // abierta, la mayoría puro relleno ("el asesor ya tiene tu caso"), hasta
+    // 6 en la misma espera. Desde esta tarea, después de escalar, el chat
+    // pasa por el camino "espera abierta" de `runTurnPhases` (agent.ts): ni
+    // tool loop ni clasificación, solo un escenario ya redactado del panel
+    // si calza con lo que el cliente pregunta — el resto queda anotado para
+    // el asesor, sin mensaje nuevo al cliente.
     description:
-      "Escala la conversación a un asesor de la tienda: asigna al asesor con más tiempo sin recibir un cliente nuevo, y deja un resumen para que no tenga que volver a preguntar todo. La IA sigue contestando en este chat hasta que el asesor escriba. Es la única forma de tocar dinero real (devoluciones, ventas) o reclamos — la IA nunca los resuelve sola.",
+      "Escala la conversación a un asesor de la tienda: asigna al asesor con más tiempo sin recibir un cliente nuevo, y deja un resumen para que no tenga que volver a preguntar todo. Después de esto YA NO vas a poder redactar respuestas nuevas en este chat: si el cliente escribe algo más mientras espera, solo se le contesta si calza un escenario informativo ya armado del panel — lo demás queda anotado para que el asesor lo vea. Es la única forma de tocar dinero real (devoluciones, ventas) o reclamos — la IA nunca los resuelve sola.",
     inputSchema: z.object({
       // Tarea 7 ("El guion atiende a quien no es cliente…", 14/9/2026): suma
       // `seguimiento` (ya admitido por `EscalationMotivo` en escalate.ts,

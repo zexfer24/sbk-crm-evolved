@@ -206,6 +206,15 @@ interface FakeState {
   cessionLastCustomerMessageAt: string | null;
   /** Si viene con mensaje, esa relectura falla — `shouldCedeDraft` no cede y deja `turno_cesion_no_consultable`. */
   cessionLastCustomerMessageAtError: { message: string } | null;
+  /**
+   * T5, plan "Seba no habla de más mientras el cliente espera al asesor"
+   * (22-23/9/2026): el error que devuelve el `INSERT` de la nota interna que
+   * deja el camino "espera abierta" cuando ningún escenario informativo
+   * calza (`supabase.from("messages").insert(...)`, directo desde
+   * `runTurnPhases`, agent.ts). `null` de fábrica: la nota se escribe sin
+   * problema salvo que un test la ponga.
+   */
+  noteInsertError: { message: string } | null;
 }
 
 const state: FakeState = {
@@ -246,6 +255,7 @@ const state: FakeState = {
   agentTurnCallsInsertError: null,
   cessionLastCustomerMessageAt: null,
   cessionLastCustomerMessageAtError: null,
+  noteInsertError: null,
 };
 const conversationUpdates: Record<string, unknown>[] = [];
 /** Tarea 3 (14/9/2026): columnas pedidas en cada `select()` sobre `conversations`, para probar que trae display_name/profile_name. */
@@ -265,6 +275,13 @@ const contactTagUpserts: { rows: unknown; options: unknown }[] = [];
  * los filtros que le llegaron encadenados.
  */
 const messageUpdates: { values: Record<string, unknown>; filters: [string, unknown][] }[] = [];
+/**
+ * T5, plan "Seba no habla de más mientras el cliente espera al asesor"
+ * (22-23/9/2026): cada `INSERT` directo sobre `messages` que hace
+ * `runTurnPhases` (agent.ts) — hoy, solo la nota interna del camino "espera
+ * abierta" cuando ningún escenario informativo calza.
+ */
+const messageInserts: Record<string, unknown>[] = [];
 /** Cada llamada a la RPC `record_handoff`, con los parámetros que le llegaron. */
 const handoffCalls: Record<string, unknown>[] = [];
 /**
@@ -412,6 +429,14 @@ function createFakeSupabase() {
 
       if (table === "messages") {
         return {
+          // T5, plan "Seba no habla de más mientras el cliente espera al
+          // asesor" (22-23/9/2026): `INSERT` directo de la nota interna del
+          // camino "espera abierta" — `.insert({...})` sin encadenar nada
+          // más, `await`-ado directo por `runTurnPhases` (agent.ts).
+          insert: (row: Record<string, unknown>) => {
+            messageInserts.push(row);
+            return Promise.resolve({ data: null, error: state.noteInsertError });
+          },
           // Anexo B2 (5/9/2026): el UPDATE que marca `is_auto_reply` en la
           // despedida de un escenario que escaló sin asesores. La cadena real
           // termina en `.gt("created_at", ...)`, así que ahí se registra el
@@ -1031,6 +1056,7 @@ beforeEach(() => {
   state.agentTurnCallsInsertError = null;
   state.cessionLastCustomerMessageAt = null;
   state.cessionLastCustomerMessageAtError = null;
+  state.noteInsertError = null;
   redisSeenStore.clear();
   redisCedidoStore.clear();
   withinFreeformWindowOverride.fn = null;
@@ -1041,6 +1067,7 @@ beforeEach(() => {
   agentTurnCallsInserts.length = 0;
   contactTagUpserts.length = 0;
   messageUpdates.length = 0;
+  messageInserts.length = 0;
   pasos.length = 0;
   handoffCalls.length = 0;
   agentOptions.length = 0;
@@ -1847,7 +1874,19 @@ describe("runAgentTurn — guarda de cortesía tras una escalada abierta (Tarea 
     expect(handoffCalls.some((c) => c.p_reason === "cortesia_tras_escalada")).toBe(false);
   });
 
-  it("'gracias, y ¿tienen rines 17?' no es solo cortesía: turno normal aunque la escalada siga abierta", async () => {
+  /**
+   * Reescrito el 22-23/9/2026 (T5, plan "Seba no habla de más mientras el
+   * cliente espera al asesor", opción (b) del operador): hasta esta tarea
+   * "turno normal" significaba tool loop + clasificación + `sendAgentText`.
+   * Con la escalada ya abierta eso dejó de ser el flujo genérico — ahora
+   * "rines 17" no calza ningún escenario informativo, así que cae en la
+   * nota interna del camino "espera abierta" (agent.ts). Lo que este test
+   * protege sigue siendo lo mismo: la guarda de cortesía de arriba (que
+   * calla el turno entero) NO se traga una pregunta real — acá se ve en que
+   * NO deja `cortesia_tras_escalada` y en que la pregunta le llega al
+   * asesor (como nota), no que se pierde.
+   */
+  it("'gracias, y ¿tienen rines 17?' no es solo cortesía: la pregunta real llega al asesor por nota, aunque la escalada siga abierta", async () => {
     state.history = [
       { sender_type: "customer", content: "gracias, y ¿tienen rines 17?", is_internal_note: false },
     ];
@@ -1856,9 +1895,10 @@ describe("runAgentTurn — guarda de cortesía tras una escalada abierta (Tarea 
 
     await runAgentTurn("conv-1");
 
-    expect(classifyIntentMock).toHaveBeenCalled();
-    expect(sendAgentTextMock).toHaveBeenCalledTimes(1);
     expect(handoffCalls.some((c) => c.p_reason === "cortesia_tras_escalada")).toBe(false);
+    expect(sendAgentTextMock).not.toHaveBeenCalled();
+    expect(messageInserts).toHaveLength(1);
+    expect(messageInserts[0].content).toContain("gracias, y ¿tienen rines 17?");
   });
 
   it("mensaje de cortesía pero SIN ninguna escalada previa: turno normal", async () => {
@@ -1870,6 +1910,209 @@ describe("runAgentTurn — guarda de cortesía tras una escalada abierta (Tarea 
     expect(classifyIntentMock).toHaveBeenCalled();
     expect(sendAgentTextMock).toHaveBeenCalledTimes(1);
     expect(handoffCalls.some((c) => c.p_reason === "cortesia_tras_escalada")).toBe(false);
+  });
+});
+
+/**
+ * T5, plan "Seba no habla de más mientras el cliente espera al asesor"
+ * (22-23/9/2026, opción (b) del operador, "un solo acuse por espera").
+ * Medido en producción el 22/9/2026: 27 % de los mensajes de Seba salían
+ * con una escalada abierta, la mayoría puro relleno ("el asesor ya tiene
+ * tu caso"), hasta 6 en la misma espera (caso SBR, ver el plan). Con la
+ * escalada YA abierta (`escalationOpen`) y algo pendiente que la guarda de
+ * cortesía de arriba no se tragó, `runTurnPhases` deja de correr el tool
+ * loop y la clasificación: solo puede contestar con un escenario
+ * INFORMATIVO ya calzado por `matchPlaybook`, o anotar lo pendiente para
+ * el asesor sin mandarle nada nuevo al cliente.
+ */
+describe("runAgentTurn — camino 'espera abierta' con escalada abierta (T5, 22-23/9/2026)", () => {
+  it("'Y luces traseras de cruce' sin ningún escenario que calce: no corre el tool loop ni clasifica, no hay sendAgentText, y se inserta una nota con el texto — agent_turns queda 'skipped'", async () => {
+    state.history = [{ sender_type: "customer", content: "Y luces traseras de cruce", is_internal_note: false }];
+    state.lastHandoffRow = { reason: "escalada_sin_asesor", created_at: "2026-09-22T09:14:26.000Z" };
+    state.agentMessagesAfterHandoff = [];
+
+    await runAgentTurn("conv-1");
+
+    expect(generateMock).not.toHaveBeenCalled();
+    expect(classifyIntentMock).not.toHaveBeenCalled();
+    expect(sendAgentTextMock).not.toHaveBeenCalled();
+    expect(sendPlaybookReplyMock).not.toHaveBeenCalled();
+    expect(messageInserts).toHaveLength(1);
+    expect(messageInserts[0]).toMatchObject({
+      conversation_id: "conv-1",
+      direction: "outbound",
+      sender_type: "system",
+      is_internal_note: true,
+    });
+    expect(messageInserts[0].content).toContain("Y luces traseras de cruce");
+    expect(agentTurnInserts).toHaveLength(1);
+    expect(agentTurnInserts[0]).toMatchObject({ action: "skipped" });
+    // Sin traspaso: el dueño no cambia, la nota es el rastro (ver el
+    // comentario de esta rama en agent.ts contra "ningún lead invisible").
+    expect(handoffCalls).toHaveLength(0);
+  });
+
+  it("'¿Dónde están ubicados?' con un escenario 'Ubicación' que calza: sale con is_auto_reply", async () => {
+    const ubicacion = playbook({
+      id: "pb-ubicacion",
+      name: "Ubicación",
+      responseText: "Estamos ubicados en la Av. Los Próceres, Barinas.",
+    });
+    fetchActivePlaybooksMock.mockResolvedValue([ubicacion]);
+    matchPlaybookMock.mockResolvedValue({ playbook: ubicacion, usage: NO_USAGE });
+    state.history = [{ sender_type: "customer", content: "¿Dónde están ubicados?", is_internal_note: false }];
+    state.lastHandoffRow = { reason: "escalada_sin_asesor", created_at: "2026-09-22T09:14:26.000Z" };
+    state.agentMessagesAfterHandoff = [];
+
+    await runAgentTurn("conv-1");
+
+    expect(classifyIntentMock).not.toHaveBeenCalled();
+    expect(generateMock).not.toHaveBeenCalled();
+    expect(sendPlaybookReplyMock).toHaveBeenCalledTimes(1);
+    expect(sendPlaybookReplyMock.mock.calls[0][2]).toEqual(ubicacion);
+    expect(sendPlaybookReplyMock.mock.calls[0][4]).toEqual({ isAutoReply: true });
+    // Sin nota: el cliente SÍ recibió respuesta, no hace falta avisarle al
+    // asesor que algo quedó pendiente.
+    expect(messageInserts).toHaveLength(0);
+  });
+
+  it("el escenario de despedida y uno con after_send = escalate NO llegan como candidatos a matchPlaybook", async () => {
+    const despedida = playbook({
+      id: "pb-gracias",
+      name: "Gracias",
+      responseText: "¡Muchas gracias por preferirnos!🥰 Esperamos poder servirte nuevamente.🎊",
+    });
+    const reclamoQueEscala = playbook({
+      id: "pb-reclamo",
+      name: "Reclamo",
+      responseText: "Vamos a revisar tu caso con el equipo.",
+      afterSend: "escalate",
+    });
+    const ubicacion = playbook({
+      id: "pb-ubicacion",
+      name: "Ubicación",
+      responseText: "Estamos ubicados en la Av. Los Próceres, Barinas.",
+    });
+    fetchActivePlaybooksMock.mockResolvedValue([despedida, reclamoQueEscala, ubicacion]);
+    matchPlaybookMock.mockResolvedValue({ playbook: null, usage: NO_USAGE });
+    state.history = [{ sender_type: "customer", content: "Y luces traseras de cruce", is_internal_note: false }];
+    state.lastHandoffRow = { reason: "escalada_sin_asesor", created_at: "2026-09-22T09:14:26.000Z" };
+    state.agentMessagesAfterHandoff = [];
+
+    await runAgentTurn("conv-1");
+
+    expect(matchPlaybookMock).toHaveBeenCalledTimes(1);
+    const candidatos = matchPlaybookMock.mock.calls[0][1] as Playbook[];
+    expect(candidatos.map((p) => p.id)).toEqual(["pb-ubicacion"]);
+  });
+
+  /**
+   * Secuencia EXACTA del caso SBR medido en producción el 22/9/2026 (ver el
+   * plan): tres fragmentos del cliente después de escalar, cada uno en su
+   * propio turno de la cola. Sin marca previa en Redis (T1), cada turno deja
+   * su propia marca "visto hasta" al terminar (`marcarTurnoVisto`, llamada
+   * también en la rama de nota) — por eso el historial de cada turno trae
+   * `created_at`/`id`: sin fecha parseable la marca no se escribe y el turno
+   * siguiente volvería a ver el fragmento ya anotado.
+   */
+  it("los tres fragmentos del caso SBR, uno por turno: cero mensajes al cliente y tres notas", async () => {
+    state.lastHandoffRow = { reason: "escalada_sin_asesor", created_at: "2026-09-22T09:14:26.000Z" };
+    state.agentMessagesAfterHandoff = [];
+    matchPlaybookMock.mockResolvedValue({ playbook: null, usage: NO_USAGE });
+
+    // Turno 1: "Y luces traseras de cruce" (09:14:30), del más nuevo al más
+    // viejo, como se leen del historial.
+    state.history = [
+      {
+        sender_type: "customer",
+        content: "Y luces traseras de cruce",
+        is_internal_note: false,
+        created_at: "2026-09-22T09:14:30.000Z",
+        id: "m-luces",
+      },
+      {
+        sender_type: "customer",
+        content: "El guarda fango trasero con su tapa negra",
+        is_internal_note: false,
+        created_at: "2026-09-22T09:14:22.000Z",
+        id: "m-guardafango-1",
+      },
+      {
+        sender_type: "customer",
+        content: "Cuánto cuesta la parrilla de sbr",
+        is_internal_note: false,
+        created_at: "2026-09-22T09:14:11.000Z",
+        id: "m-parrilla",
+      },
+    ];
+    await runAgentTurn("conv-1");
+
+    // Turno 2: "El guarda fango si puede azul oscuro brillante" (09:15:15).
+    state.history = [
+      {
+        sender_type: "customer",
+        content: "El guarda fango si puede azul oscuro brillante",
+        is_internal_note: false,
+        created_at: "2026-09-22T09:15:15.000Z",
+        id: "m-guardafango-2",
+      },
+      ...state.history,
+    ];
+    await runAgentTurn("conv-1");
+
+    // Turno 3: "¿Cuánto sale el envío a Barinas?" (09:15:40).
+    state.history = [
+      {
+        sender_type: "customer",
+        content: "¿Cuánto sale el envío a Barinas?",
+        is_internal_note: false,
+        created_at: "2026-09-22T09:15:40.000Z",
+        id: "m-envio",
+      },
+      ...state.history,
+    ];
+    await runAgentTurn("conv-1");
+
+    expect(sendAgentTextMock).not.toHaveBeenCalled();
+    expect(sendPlaybookReplyMock).not.toHaveBeenCalled();
+    expect(generateMock).not.toHaveBeenCalled();
+    expect(classifyIntentMock).not.toHaveBeenCalled();
+    expect(messageInserts).toHaveLength(3);
+    expect(messageInserts[0].content).toContain("Y luces traseras de cruce");
+    expect(messageInserts[1].content).toContain("El guarda fango si puede azul oscuro brillante");
+    expect(messageInserts[2].content).toContain("¿Cuánto sale el envío a Barinas?");
+  });
+
+  it("si falla el insert de la nota, el turno lanza y no se escribe la marca 'visto hasta'", async () => {
+    state.history = [
+      {
+        sender_type: "customer",
+        content: "Y luces traseras de cruce",
+        is_internal_note: false,
+        created_at: "2026-09-22T09:14:30.000Z",
+        id: "m-luces",
+      },
+    ];
+    state.lastHandoffRow = { reason: "escalada_sin_asesor", created_at: "2026-09-22T09:14:26.000Z" };
+    state.agentMessagesAfterHandoff = [];
+    matchPlaybookMock.mockResolvedValue({ playbook: null, usage: NO_USAGE });
+    state.noteInsertError = { message: "conexión perdida" };
+
+    await expect(runAgentTurn("conv-1")).rejects.toThrow(/nota de espera/);
+
+    expect(redisSeenStore.has("turno:visto:conv-1")).toBe(false);
+    expect(agentTurnInserts).toHaveLength(0);
+  });
+
+  it("sin escalada abierta, un mensaje real sigue el flujo genérico de siempre (tool loop y clasificación)", async () => {
+    state.history = [{ sender_type: "customer", content: "Y luces traseras de cruce", is_internal_note: false }];
+    state.lastHandoffRow = null;
+
+    await runAgentTurn("conv-1");
+
+    expect(classifyIntentMock).toHaveBeenCalled();
+    expect(sendAgentTextMock).toHaveBeenCalledTimes(1);
+    expect(messageInserts).toHaveLength(0);
   });
 });
 
@@ -3733,7 +3976,18 @@ describe("runAgentTurn — el saludo y la cortesía miran la ráfaga entera (T3,
     expect(classifyIntentMock).toHaveBeenCalledTimes(1);
   });
 
-  it("'¿tienen la bomba de aceite?' + 'gracias' (ráfaga) con una escalada abierta: el turno NO se calla", async () => {
+  /**
+   * Reescrito el 22-23/9/2026 (T5, plan "Seba no habla de más mientras el
+   * cliente espera al asesor", opción (b) del operador): la ráfaga entera
+   * ["¿tienen la bomba de aceite?", "gracias"] no es pura cortesía (la
+   * primera línea es una pregunta real), así que la guarda de arriba no se
+   * traga la ráfaga — eso sigue siendo lo que este test protege. Pero "el
+   * turno NO se calla" hasta esta tarea quería decir tool loop +
+   * clasificación + `sendAgentText`; con la escalada abierta ninguna de las
+   * dos líneas calza un escenario informativo, así que ahora "no se calla"
+   * significa que la pregunta le llega al asesor por nota, no al cliente.
+   */
+  it("'¿tienen la bomba de aceite?' + 'gracias' (ráfaga) con una escalada abierta: la pregunta llega al asesor por nota, el turno NO se calla", async () => {
     state.history = [
       { sender_type: "customer", content: "gracias", is_internal_note: false, created_at: "2026-09-19T10:01:00.000Z" },
       { sender_type: "customer", content: "¿tienen la bomba de aceite?", is_internal_note: false, created_at: "2026-09-19T10:00:00.000Z" },
@@ -3743,9 +3997,10 @@ describe("runAgentTurn — el saludo y la cortesía miran la ráfaga entera (T3,
 
     await runAgentTurn("conv-1");
 
-    expect(classifyIntentMock).toHaveBeenCalled();
-    expect(sendAgentTextMock).toHaveBeenCalledTimes(1);
     expect(handoffCalls.some((c) => c.p_reason === "cortesia_tras_escalada")).toBe(false);
+    expect(sendAgentTextMock).not.toHaveBeenCalled();
+    expect(messageInserts).toHaveLength(1);
+    expect(messageInserts[0].content).toContain("¿tienen la bomba de aceite?");
   });
 
   it("'gracias' sola (ráfaga de una línea) con escalada abierta: se sigue callando como hoy", async () => {

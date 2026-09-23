@@ -67,9 +67,9 @@ describe("AiStatusBanner — dice la verdad sobre si la IA responde", () => {
  * cuanto el asesor escribe su primer mensaje.
  */
 describe("AiStatusBanner — waitingForHuman (chat ya asignado, IA encendida)", () => {
-  it("con asesor asignado e IA encendida, dice que Seba responde mientras el asesor no escriba", () => {
+  it("con asesor asignado e IA encendida, dice que Seba solo contesta con un escenario armado mientras el asesor no escriba", () => {
     renderBanner({ waitingForHuman: true });
-    expect(screen.getByText(/responde mientras el asesor no escriba/i)).toBeInTheDocument();
+    expect(screen.getByText(/solo contesta con un escenario armado mientras el asesor no escriba/i)).toBeInTheDocument();
     expect(screen.getByText(/se apaga con tu primer mensaje/i)).toBeInTheDocument();
     expect(screen.queryByText(/^La IA sigue respondiendo automáticamente$/)).not.toBeInTheDocument();
   });
@@ -77,18 +77,18 @@ describe("AiStatusBanner — waitingForHuman (chat ya asignado, IA encendida)", 
   it("sin asesor asignado, sigue con el texto genérico de siempre", () => {
     renderBanner({ waitingForHuman: false });
     expect(screen.getByText(/sigue respondiendo automáticamente/i)).toBeInTheDocument();
-    expect(screen.queryByText(/responde mientras el asesor no escriba/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/solo contesta con un escenario armado/i)).not.toBeInTheDocument();
   });
 
   it("waitingForHuman no manda si la IA está pausada en este chat", () => {
     renderBanner({ aiEnabled: false, waitingForHuman: true });
     expect(screen.getByText(/pausada en esta conversación/i)).toBeInTheDocument();
-    expect(screen.queryByText(/responde mientras el asesor no escriba/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/solo contesta con un escenario armado/i)).not.toBeInTheDocument();
   });
 
   it("waitingForHuman no manda si el interruptor global está apagado", () => {
     renderBanner({ aiGloballyEnabled: false, waitingForHuman: true });
     expect(screen.getByText(/apagada para todo el crm/i)).toBeInTheDocument();
-    expect(screen.queryByText(/responde mientras el asesor no escriba/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/solo contesta con un escenario armado/i)).not.toBeInTheDocument();
   });
 });

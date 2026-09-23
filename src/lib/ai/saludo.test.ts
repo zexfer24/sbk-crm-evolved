@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { isCourtesyOnly, isGreetingOnly, isGreetingPlaybook } from "@/lib/ai/saludo";
+import { isCourtesyOnly, isFarewellPlaybook, isGreetingOnly, isGreetingPlaybook } from "@/lib/ai/saludo";
 
 describe("isCourtesyOnly", () => {
   it.each([
@@ -89,5 +89,35 @@ describe("isGreetingPlaybook", () => {
     "¡Gracias por tu compra!",
   ])("no reconoce %s como texto de escenario de saludo", (texto) => {
     expect(isGreetingPlaybook(texto)).toBe(false);
+  });
+});
+
+// T5, plan "Seba no habla de más mientras el cliente espera al asesor"
+// (22-23/9/2026, opción (b) del operador). Con una escalada abierta, un
+// escenario de despedida no puede volver a salir -- el cliente sigue
+// esperando a una persona.
+describe("isFarewellPlaybook", () => {
+  it.each([
+    // El texto real del escenario "Gracias" del panel.
+    "¡Muchas gracias por preferirnos!🥰 Esperamos poder servirte nuevamente.🎊",
+    "Gracias por preferirnos, fue un placer atenderte.",
+    "Esperamos servirte pronto de nuevo.",
+    "Esperamos poder servirte otra vez.",
+    "Fue un placer ayudarte hoy.",
+    "¡Hasta pronto!",
+    "Vuelve pronto por acá.",
+    "Que tengas un buen día.",
+    "Que tengas un feliz día.",
+  ])("reconoce %s como texto de escenario de despedida", (texto) => {
+    expect(isFarewellPlaybook(texto)).toBe(true);
+  });
+
+  it.each([
+    "Estamos ubicados en la Av. Los Próceres, Barinas.",
+    "Tenemos tanque de EK Xpress disponible.",
+    "El horario es de lunes a viernes de 8 am a 6 pm.",
+    "Claro, por acá te dejo nuestro catálogo 👇",
+  ])("no reconoce %s como despedida", (texto) => {
+    expect(isFarewellPlaybook(texto)).toBe(false);
   });
 });

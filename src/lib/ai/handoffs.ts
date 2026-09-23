@@ -145,11 +145,16 @@ export type HandoffReason =
   // `ai_enabled` se apagó SIN que `assigned_agent_id` cambiara en el mismo
   // UPDATE — un asesor mandó su primer mensaje real (trigger AFTER INSERT ON
   // messages `handle_agent_message_silences_ai`, requisito 6 del cliente: la
-  // IA sigue contestando tras escalar hasta que el asesor escribe de
+  // IA sigue "cubriendo" el chat tras escalar hasta que el asesor escribe de
   // verdad) o alguien pausó la IA a mano (`setAiEnabled(false)`,
   // `mutations.ts`). La escribe el trigger `handle_conversation_ownership_change`
   // de esa migración, NUNCA TypeScript — mismo patrón que `devuelto_a_ia`/
-  // `desasignada_por_asesor`/`reclamado`.
+  // `desasignada_por_asesor`/`reclamado`. "Cubriendo" dejó de ser "contestar
+  // cualquier cosa" el 22-23/9/2026 (T5, plan "Seba no habla de más mientras
+  // el cliente espera al asesor"): con la escalada abierta, Seba solo
+  // contesta si un escenario informativo ya redactado del panel calza —lo
+  // demás queda anotado para el asesor, sin mensaje nuevo al cliente— hasta
+  // que este trigger apaga `ai_enabled` de verdad.
   | "silenciada_por_asesor"
   // Tarea C6, plan "El resguardo antes del push" (20/9/2026, anexo de la
   // Tanda 1, extensión del hallazgo A): a la segunda insistencia con

@@ -552,6 +552,22 @@ export function buildInstructions({
   // EXPLÍCITAMENTE sobre el protocolo del caso (sección 5.x, CASE_SECTION):
   // devolución, queja y "repuesto encontrado" siguen mandando escalar
   // siempre, pero ese mandato es para cuando nadie tiene el caso todavía.
+  //
+  // Revisado el 22-23/9/2026 (T5, plan "Seba no habla de más mientras el
+  // cliente espera al asesor", punto 4): con una escalada ABIERTA
+  // (`escalationOpen`, handoffs.ts) y algo pendiente del cliente,
+  // `runTurnPhases` (agent.ts) devuelve por el camino "espera abierta" ANTES
+  // de llegar a clasificar o a armar este sufijo — "contesta lo que el
+  // cliente pregunte con normalidad" ya NO describe ese caso, que ahora solo
+  // contesta con un escenario informativo o queda anotado para el asesor. No
+  // se reescribe: para que el tool loop llegue a leer esta línea con
+  // `yaEscalada` en `true` hace falta `esperandoAsesor` sin
+  // `escalationOpenNow`, algo que en la práctica no debería pasar mientras
+  // haya un asesor asignado con la IA encendida (ver el comentario de la
+  // guarda de T12 en agent.ts) — los casos donde SÍ se llega hasta acá son
+  // residuales, y tocar el sufijo por un caso que casi no ocurre no valía el
+  // riesgo de una redacción a medio probar. Si medir en producción muestra
+  // que este texto sí se lee con frecuencia, hay que revisarlo de nuevo.
   const yaEscaladaLinea = yaEscalada
     ? ` Este chat YA está asignado a un asesor que todavía no le escribió al cliente: NO lo vuelvas a pasar ni le prometas de nuevo que se lo vas a pasar — esto gana sobre cualquier protocolo de caso que diga que hay que escalar siempre (devolución, queja, un repuesto que encontraste). Contesta lo que el cliente pregunte con normalidad y, si hace falta, recuérdale con calidez que su caso ya lo tiene un asesor.${
         escalateToolAvailable

@@ -370,7 +370,7 @@ describe("ChatPanel — le pasa a AiStatusBanner el waitingForHuman real, según
       } as unknown as Conversation,
     });
 
-    expect(screen.getByText(/responde mientras el asesor no escriba/i)).toBeInTheDocument();
+    expect(screen.getByText(/solo contesta con un escenario armado mientras el asesor no escriba/i)).toBeInTheDocument();
     expect(screen.queryByText("La IA sigue respondiendo automáticamente")).not.toBeInTheDocument();
   });
 
@@ -384,6 +384,6 @@ describe("ChatPanel — le pasa a AiStatusBanner el waitingForHuman real, según
     });
 
     expect(screen.getByText("La IA sigue respondiendo automáticamente")).toBeInTheDocument();
-    expect(screen.queryByText(/responde mientras el asesor no escriba/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/solo contesta con un escenario armado/i)).not.toBeInTheDocument();
   });
 });

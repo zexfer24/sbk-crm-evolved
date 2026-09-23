@@ -47,6 +47,26 @@
 // su lista de palabras permitidas: es mejor tratar un mensaje ambiguo como
 // "hay algo más que atender" (se clasifica normal) que tragarse una pregunta
 // real dentro de lo que parecía una cortesía.
+//
+//   - `isFarewellPlaybook`: el texto YA REDACTADO de un escenario del panel
+//     ¿es una despedida? T5, plan "Seba no habla de más mientras el cliente
+//     espera al asesor" (22-23/9/2026, opción (b), "un solo acuse por
+//     espera"): con una escalada abierta, Seba deja de correr el tool loop y
+//     solo puede contestar con un escenario ya redactado del panel -- un
+//     escenario de despedida ahí sería Seba despidiéndose OTRA VEZ de
+//     alguien que sigue esperando a una persona, la respuesta hueca que
+//     medida el 22/9/2026 en producción (27 % de los mensajes de Seba con
+//     una escalada abierta, hasta 6 en una misma espera, la mayoría
+//     "el asesor ya tiene tu caso"). La usa `runTurnPhases` (agent.ts) para
+//     sacar los escenarios de despedida de los candidatos ANTES de llamar a
+//     `matchPlaybook` -- mismo patrón que `isGreetingPlaybook`, más abajo.
+//     Falla ABIERTO igual que las otras dos preguntas de este módulo: un
+//     falso POSITIVO (un escenario informativo que por casualidad calza el
+//     patrón) solo deja ese escenario afuera y el turno cae a la nota
+//     interna -- un mensaje de más para el asesor, no uno de más para el
+//     cliente; un falso NEGATIVO (una despedida que no se reconoce como tal)
+//     es justo el bug que esta función existe para evitar, así que la lista
+//     de patrones prefiere sobrar antes que faltar.
 // ---------------------------------------------------------------------------
 
 /** Tope de palabras: pasado esto, ya no es "solo un saludo/cortesía", es una oración. */
@@ -191,4 +211,26 @@ export function isGreetingOnly(text: string): boolean {
 export function isGreetingPlaybook(responseText: string): boolean {
   const texto = normalizar(responseText).replace(/^[^\p{L}]+/u, "");
   return /^(hola|buenas|buenos|buena|buen\s*dia|bienvenid)/.test(texto);
+}
+
+/**
+ * ¿El texto YA REDACTADO de un escenario es una DESPEDIDA? T5, plan "Seba no
+ * habla de más mientras el cliente espera al asesor" (22-23/9/2026). Se
+ * normaliza igual que el resto del módulo (sin acentos, minúsculas) y se
+ * compara contra frases sueltas en cualquier parte del texto -- a diferencia
+ * de `isGreetingPlaybook`, que ancla al INICIO (un saludo abre el mensaje),
+ * una despedida puede venir después de otra frase ("¡Fue un placer
+ * ayudarte! Que tengas un buen día.").
+ *
+ * Reconoce, como mínimo, el texto real del escenario "Gracias" del panel
+ * ("¡Muchas gracias por preferirnos!🥰 Esperamos poder servirte
+ * nuevamente.🎊") y las variantes que pidió el plan: "gracias por
+ * preferirnos", "esperamos (poder) servirte", "fue un placer", "hasta
+ * pronto", "vuelve pronto", "que tengas un buen/feliz día".
+ */
+export function isFarewellPlaybook(responseText: string): boolean {
+  const texto = normalizar(responseText);
+  return /(gracias por preferirnos|esperamos (poder )?servirte|fue un placer|hasta pronto|vuelve pronto|que tengas un (buen|feliz) dia)/.test(
+    texto
+  );
 }

@@ -54,13 +54,23 @@ function estadoDeLaIa({
     return { respondiendo: false, texto: "La IA está pausada en esta conversación" };
   }
   // T4, "Seba atiende el mostrador" (18/9/2026, D2/D3, requisito 6 del
-  // cliente): con asesor asignado, Seba sigue contestando — pero el asesor
-  // tiene que saber que es EXACTAMENTE hasta que él escriba, no una
+  // cliente): con asesor asignado, Seba sigue "cubriendo" el chat — pero el
+  // asesor tiene que saber que es EXACTAMENTE hasta que él escriba, no una
   // respuesta automática indefinida como en un chat sin dueño.
+  //
+  // T5, plan "Seba no habla de más mientras el cliente espera al asesor"
+  // (22-23/9/2026): hasta esta tarea el texto decía "responde mientras el
+  // asesor no escriba", dando a entender que Seba seguía contestando
+  // cualquier cosa — medido en producción el 22/9/2026, un chat así recibía
+  // hasta 6 mensajes de puro relleno mientras esperaba. Desde esta tarea
+  // Seba solo contesta con un escenario ya armado del panel; lo que el
+  // cliente agregue y no calce queda anotado para el asesor, no en un
+  // mensaje nuevo. El cartel tiene que decir eso, o el asesor sigue creyendo
+  // que el chat está "cubierto" en el sentido viejo.
   if (waitingForHuman) {
     return {
       respondiendo: true,
-      texto: `${AI_NAME} responde mientras el asesor no escriba; se apaga con tu primer mensaje`,
+      texto: `${AI_NAME} solo contesta con un escenario armado mientras el asesor no escriba; el resto queda anotado. Se apaga con tu primer mensaje`,
     };
   }
   return { respondiendo: true, texto: "La IA sigue respondiendo automáticamente" };
