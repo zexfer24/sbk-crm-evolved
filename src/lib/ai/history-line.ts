@@ -331,33 +331,13 @@ function parseTimestamp(value: string | null | undefined): number | null {
  * (agent.ts) sin adaptar nada — `createdAt` es opcional, ver `StreakEntry`.
  */
 export function customerBurst(history: StreakEntry[]): string[] {
-  const rafaga: string[] = [];
-  let referencia: number | null = null;
-
-  for (let i = history.length - 1; i >= 0; i--) {
-    const message = history[i];
-    if (message.role !== "user") break;
-    if (typeof message.content !== "string") break;
-
-    // Hallazgo 8: un sticker no cuenta ni corta — se lo salta tal cual,
-    // sin tocar `referencia` (la línea de atrás se sigue midiendo contra la
-    // última línea REAL ya aceptada, no contra el sticker que no lo es).
-    if (message.content === CUSTOMER_STICKER_MARKER) continue;
-
-    const actual = parseTimestamp(message.createdAt);
-    if (rafaga.length > 0) {
-      // No es la línea más nueva: hace falta poder medir el hueco. Sin
-      // fecha en cualquiera de las dos puntas, la decisión es conservadora
-      // (hallazgo 4): cortar acá.
-      if (actual === null || referencia === null) break;
-      if ((referencia - actual) / 60000 > CUSTOMER_BURST_GAP_MINUTES) break;
-    }
-
-    rafaga.unshift(message.content);
-    referencia = actual;
-  }
-
-  return rafaga;
+  // T4 (22-23/9/2026): el algoritmo en sí vive ahora en
+  // `customerBurstCandidates` (más abajo en este archivo, junto al resto de
+  // la maquinaria de "pendientes" que necesita conservar el `id` de cada
+  // línea) — `StreakEntry` es estructuralmente compatible con `PendingEntry`
+  // (el `id` que pide esa forma es opcional), así que este refactor no
+  // cambia el comportamiento de ningún llamador existente.
+  return customerBurstCandidates(history).map((entry) => entry.content);
 }
 
 // ---------------------------------------------------------------------------
@@ -458,13 +438,60 @@ interface PendingEntry extends StreakEntry {
  * cliente) — no hay nada más nuevo contra qué compararla, así que
  * descartarla dejaría un mensaje real sin contestar por un dato que falta.
  */
-export function pendingCustomerLines(history: PendingEntry[], seen: SeenMarker | null): string[] {
-  if (seen === null) return customerBurst(history);
+/**
+ * Forma enriquecida que usan, por dentro, `customerBurst` y
+ * `pendingCustomerLines`: el mismo `content` que le devuelven al llamador,
+ * más el `id` real de la fila y su fecha ya parseada a epoch-ms.
+ *
+ * T4, plan "Seba no habla de más mientras el cliente espera al asesor"
+ * (22-23/9/2026): `previousConversationCutoff` (más abajo) necesita saber
+ * EXACTAMENTE cuál es la primera línea pendiente —por su `id`, no por su
+ * texto, que puede repetirse ("gracias" dos veces en la misma conversación)—
+ * para buscar huecos solo en lo que queda antes de ella. En vez de que
+ * `previousConversationCutoff` recalculara la ráfaga a su manera (con el
+ * riesgo de que las dos funciones dejaran de estar de acuerdo en cuál es "la
+ * primera pendiente"), `pendingCustomerLines`/`customerBurst` pasan a armar
+ * esta forma internamente y devolver solo el `content` al público de
+ * siempre — un refactor sin cambio de comportamiento observable.
+ */
+interface PendingCandidate {
+  content: string;
+  id: string | null;
+  ms: number | null;
+}
+
+/** Mismo algoritmo que `customerBurst`, pero conservando `id`/`ms` de cada línea. */
+function customerBurstCandidates(history: PendingEntry[]): PendingCandidate[] {
+  const rafaga: PendingCandidate[] = [];
+  let referencia: number | null = null;
+
+  for (let i = history.length - 1; i >= 0; i--) {
+    const message = history[i];
+    if (message.role !== "user") break;
+    if (typeof message.content !== "string") break;
+    if (message.content === CUSTOMER_STICKER_MARKER) continue;
+
+    const actual = parseTimestamp(message.createdAt);
+    if (rafaga.length > 0) {
+      if (actual === null || referencia === null) break;
+      if ((referencia - actual) / 60000 > CUSTOMER_BURST_GAP_MINUTES) break;
+    }
+
+    rafaga.unshift({ content: message.content, id: message.id ?? null, ms: actual });
+    referencia = actual;
+  }
+
+  return rafaga;
+}
+
+/** Mismo algoritmo que `pendingCustomerLines`, pero conservando `id`/`ms` de cada línea (ver `PendingCandidate`). */
+function pendingCustomerCandidates(history: PendingEntry[], seen: SeenMarker | null): PendingCandidate[] {
+  if (seen === null) return customerBurstCandidates(history);
 
   const hastaMs = parseTimestamp(seen.hasta);
   const idsVistos = new Set(seen.ids);
 
-  const pendientes: { content: string; ms: number | null }[] = [];
+  const pendientes: PendingCandidate[] = [];
   for (let i = 0; i < history.length; i++) {
     const message = history[i];
     if (message.role !== "user") continue;
@@ -487,13 +514,13 @@ export function pendingCustomerLines(history: PendingEntry[], seen: SeenMarker |
       esPendiente = ms > hastaMs || (ms === hastaMs && !idsVistos.has(message.id ?? ""));
     }
 
-    if (esPendiente) pendientes.push({ content: message.content, ms });
+    if (esPendiente) pendientes.push({ content: message.content, id: message.id ?? null, ms });
   }
 
   // Mismo corte por hueco que customerBurst, pero sobre los PENDIENTES: dos
   // preguntas sueltas separadas por más de CUSTOMER_BURST_GAP_MINUTES no son
   // la misma ráfaga aunque las dos sean posteriores a la marca.
-  const resultado: string[] = [];
+  const resultado: PendingCandidate[] = [];
   let referencia: number | null = null;
   for (let i = pendientes.length - 1; i >= 0; i--) {
     const candidato = pendientes[i];
@@ -501,11 +528,15 @@ export function pendingCustomerLines(history: PendingEntry[], seen: SeenMarker |
       if (candidato.ms === null || referencia === null) break;
       if ((referencia - candidato.ms) / 60000 > CUSTOMER_BURST_GAP_MINUTES) break;
     }
-    resultado.unshift(candidato.content);
+    resultado.unshift(candidato);
     referencia = candidato.ms;
   }
 
   return resultado;
+}
+
+export function pendingCustomerLines(history: PendingEntry[], seen: SeenMarker | null): string[] {
+  return pendingCustomerCandidates(history, seen).map((entry) => entry.content);
 }
 
 /**
@@ -547,4 +578,95 @@ export function latestCustomerMarker(history: PendingEntry[]): SeenMarker | null
     .filter((id): id is string => typeof id === "string");
 
   return { hasta, ids };
+}
+
+// ---------------------------------------------------------------------------
+// T4, plan "Seba no habla de más mientras el cliente espera al asesor"
+// (22-23/9/2026): "el historial viejo marcado". Defecto A, medido en
+// producción el 22/9/2026 (hora VET): la última pregunta del cliente antes
+// de ese día fue "¿Tienen retrovisores de RK200?" del 3/9/2026, ya
+// respondida por un asesor ("se nos agotaron"). El 22/9 el cliente escribió
+// "Buenas tardes" y, segundos después, tres mensajes sobre las tapas de la
+// RK200 ("Llegaron las tapas de la Rk 200", "?", "Coño negro"). El turno que
+// atendió esa ráfaga cargó el historial completo —incluida la pregunta vieja
+// de los retrovisores— y nada le decía al modelo que esa pregunta ya estaba
+// atendida: escaló ofreciendo confirmar LOS RETROVISORES en vez de las
+// tapas, tomando una pregunta de hace 19 días como la consulta actual.
+//
+// `previousConversationCutoff` encuentra la primera línea PENDIENTE (con
+// `pendingCustomerCandidates`, la misma fuente que `pendingCustomerLines` —
+// así las dos SIEMPRE están de acuerdo en cuál es) y busca, en el historial
+// completo (cualquier rol) y SOLO hasta esa línea inclusive, el hueco de más
+// de `PREVIOUS_CONVERSATION_GAP_HOURS` horas entre dos líneas consecutivas
+// MÁS CERCANO a ella. Todo lo que queda ANTES de ese hueco es "de una
+// conversación anterior, ya atendida" — `agent.ts` le pasa la fecha del
+// corte a `buildInstructions` (prompt.ts), que se la dice al modelo en el
+// sufijo del turno.
+// ---------------------------------------------------------------------------
+
+/**
+ * Hueco mínimo, en HORAS, entre dos líneas consecutivas del historial para
+ * considerar que ahí termina una conversación anterior ya atendida. Ver el
+ * comentario de cabecera de esta sección para el caso real (unos 19 días
+ * entre la pregunta de los retrovisores del 3/9 y "Buenas tardes" del 22/9).
+ */
+export const PREVIOUS_CONVERSATION_GAP_HOURS = 12;
+
+export interface PreviousConversationCutoff {
+  /**
+   * El `created_at` (ISO) de la línea que arranca la conversación ACTUAL:
+   * todo lo que está en el historial ANTES de esta fecha es de una
+   * conversación anterior ya atendida.
+   */
+  cutoffAt: string;
+}
+
+/**
+ * `null` sin ninguna línea pendiente (nada que marcar como "actual", así que
+ * tampoco hay nada que marcar como "anterior") o si ningún hueco de más de
+ * `PREVIOUS_CONVERSATION_GAP_HOURS` horas aparece antes de la primera línea
+ * pendiente O EN el borde de ella (el par formado por la línea justo antes
+ * de la pendiente y la pendiente misma SÍ cuenta — es el caso normal cuando
+ * no hay ninguna línea "de colchón" entre la conversación vieja y la nueva,
+ * como una respuesta del asesor pegada directo a la pregunta vieja seguida
+ * de la pregunta nueva sin nada en el medio). Un hueco que cae DESPUÉS de la
+ * primera pendiente —entre dos líneas pendientes, o más adelante— nunca se
+ * mira: la conversación actual no se puede partir a la mitad.
+ *
+ * Recibe los mismos dos argumentos que `pendingCustomerLines` (el arreglo
+ * zipeado completo y la marca "visto hasta") y encuentra la primera línea
+ * pendiente por su cuenta, en vez de que `agent.ts` se la pase aparte —así
+ * las dos funciones siempre coinciden en cuál es esa línea, sin arriesgarse
+ * a que diverjan si algún día una de las dos cambia.
+ */
+export function previousConversationCutoff(
+  history: PendingEntry[],
+  seen: SeenMarker | null
+): PreviousConversationCutoff | null {
+  const primeraPendiente = pendingCustomerCandidates(history, seen)[0];
+  if (!primeraPendiente || primeraPendiente.id === null) return null;
+
+  const limite = history.findIndex((message) => message.id === primeraPendiente.id);
+  if (limite < 0) return null;
+
+  // El límite del bucle es INCLUSIVO (`i <= limite`, no `i < limite`): el
+  // par formado por la línea anterior a la pendiente y la pendiente misma
+  // también puede ser el hueco que separa las dos conversaciones — sin una
+  // línea de colchón (como "Buenas tardes" en el caso real) entre la
+  // pregunta vieja y la nueva, ESE es el único par que existe para
+  // detectarlo. Cuando ese es el par que corta, `cutoffAt` queda en el
+  // `created_at` de la propia línea pendiente: todo lo anterior a esa fecha
+  // (la conversación vieja) queda marcado, y la pendiente —que tiene
+  // exactamente esa fecha, no una anterior— no.
+  let cutoffAt: string | null = null;
+  for (let i = 1; i <= limite; i++) {
+    const anterior = parseTimestamp(history[i - 1].createdAt);
+    const actual = parseTimestamp(history[i].createdAt);
+    if (anterior === null || actual === null) continue;
+    if ((actual - anterior) / (60 * 60 * 1000) > PREVIOUS_CONVERSATION_GAP_HOURS) {
+      cutoffAt = history[i].createdAt as string;
+    }
+  }
+
+  return cutoffAt !== null ? { cutoffAt } : null;
 }

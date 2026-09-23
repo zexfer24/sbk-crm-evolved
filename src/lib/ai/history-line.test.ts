@@ -1,12 +1,14 @@
 import { describe, expect, it } from "vitest";
 import {
   CUSTOMER_BURST_GAP_MINUTES,
+  PREVIOUS_CONVERSATION_GAP_HOURS,
   customerBurst,
   historyLine,
   isHistoryMarker,
   latestCustomerMarker,
   mediaStreakWithoutText,
   pendingCustomerLines,
+  previousConversationCutoff,
   type HistoryRow,
   type SeenMarker,
 } from "@/lib/ai/history-line";
@@ -581,6 +583,107 @@ describe("pendingCustomerLines", () => {
     // disparar la guarda de cortesía tras escalada en agent.test.ts.
     const seen: SeenMarker = { hasta: "2026-09-22T15:24:44.000Z", ids: ["m-color"] };
     expect(pendingCustomerLines(history, seen)).toEqual(["Vale", "Gracias"]);
+  });
+});
+
+/**
+ * T4, plan "Seba no habla de más mientras el cliente espera al asesor"
+ * (22-23/9/2026): "el historial viejo marcado". Defecto A, medido en
+ * producción el 22/9/2026 (hora VET) — ver el comentario de cabecera de
+ * `pendingCustomerLines` para el caso completo. La última pregunta del
+ * cliente antes de ese día fue "¿Tienen retrovisores de RK200?" del
+ * 3/9/2026, ya respondida por un asesor ("se nos agotaron"); el 22/9 el
+ * cliente escribió "Buenas tardes" y, segundos después, tres mensajes sobre
+ * las tapas de la RK200. El turno tomó la pregunta vieja como la consulta
+ * actual y escaló ofreciendo confirmar LOS RETROVISORES en vez de las
+ * tapas — nada en el historial le decía al modelo que esa pregunta ya
+ * estaba atendida.
+ */
+describe("previousConversationCutoff", () => {
+  const HISTORIAL_RETROVISORES = [
+    { role: "user", content: "Tienen retrovisores de RK200 ?", createdAt: "2026-09-03T14:00:00.000Z", id: "m-retro" },
+    { role: "assistant", content: "se nos agotaron", createdAt: "2026-09-03T14:05:00.000Z", id: "m-agotaron" },
+    { role: "user", content: "Buenas tardes", createdAt: "2026-09-22T15:24:14.000Z", id: "m-tardes" },
+    { role: "user", content: "Llegaron las tapas de la Rk 200", createdAt: "2026-09-22T15:24:24.000Z", id: "m-tapas" },
+    { role: "user", content: "?", createdAt: "2026-09-22T15:24:26.000Z", id: "m-signo" },
+    { role: "user", content: "Coño negro", createdAt: "2026-09-22T15:24:28.000Z", id: "m-negro" },
+  ];
+
+  it("caso real: con la marca en 'Buenas tardes' (ya vista), el corte queda en 'Buenas tardes' — antes de eso es la conversación de los retrovisores, después son las tapas", () => {
+    const seen: SeenMarker = { hasta: "2026-09-22T15:24:14.000Z", ids: ["m-tardes"] };
+    expect(previousConversationCutoff(HISTORIAL_RETROVISORES, seen)).toEqual({
+      cutoffAt: "2026-09-22T15:24:14.000Z",
+    });
+  });
+
+  it("sin hueco de más de 12 h antes de la primera pendiente, no da corte", () => {
+    const history = [
+      { role: "user", content: "vieja", createdAt: "2026-09-22T09:00:00.000Z", id: "m1" },
+      { role: "assistant", content: "respuesta", createdAt: "2026-09-22T09:05:00.000Z" },
+      { role: "user", content: "nueva", createdAt: "2026-09-22T09:10:00.000Z", id: "m2" },
+    ];
+    const seen: SeenMarker = { hasta: "2026-09-22T09:00:00.000Z", ids: ["m1"] };
+    expect(previousConversationCutoff(history, seen)).toBeNull();
+  });
+
+  it("un hueco de más de 12 h que queda DESPUÉS de la primera pendiente no la parte", () => {
+    const history = [
+      { role: "user", content: "vieja", createdAt: "2026-09-22T09:00:00.000Z", id: "m1" },
+      { role: "user", content: "pendiente", createdAt: "2026-09-22T09:05:00.000Z", id: "m2" },
+      // Hueco de 20 h entre "pendiente" y lo que viene después — es DESPUÉS
+      // de la primera pendiente, así que no cuenta.
+      { role: "assistant", content: "respuesta tardía", createdAt: "2026-09-23T05:05:00.000Z" },
+    ];
+    const seen: SeenMarker = { hasta: "2026-09-22T08:00:00.000Z", ids: [] };
+    expect(previousConversationCutoff(history, seen)).toBeNull();
+  });
+
+  it(`hueco de EXACTAMENTE 12 horas: no corta (literal en el test, no el símbolo ${"PREVIOUS_CONVERSATION_GAP_HOURS"} importado — trampa CLAUDE.md)`, () => {
+    const history = [
+      { role: "user", content: "vieja", createdAt: "2026-09-01T00:00:00.000Z", id: "m1" },
+      // 2026-09-01T12:00:00.000Z es EXACTAMENTE 12 horas después: 12 * 60 *
+      // 60 * 1000 ms, escrito acá a mano, no con la constante importada.
+      { role: "user", content: "pendiente", createdAt: "2026-09-01T12:00:00.000Z", id: "m2" },
+    ];
+    const seen: SeenMarker = { hasta: "2026-08-31T23:00:00.000Z", ids: [] };
+    expect(previousConversationCutoff(history, seen)).toBeNull();
+  });
+
+  it("hueco de 12 horas y 1 minuto: SÍ corta (literal en el test, no el símbolo importado)", () => {
+    const history = [
+      { role: "user", content: "vieja", createdAt: "2026-09-01T00:00:00.000Z", id: "m1" },
+      { role: "user", content: "pendiente", createdAt: "2026-09-01T12:01:00.000Z", id: "m2" },
+    ];
+    const seen: SeenMarker = { hasta: "2026-08-31T23:00:00.000Z", ids: [] };
+    expect(previousConversationCutoff(history, seen)).toEqual({ cutoffAt: "2026-09-01T12:01:00.000Z" });
+  });
+
+  it("sin ninguna línea pendiente, no hay nada que cortar", () => {
+    const history = [{ role: "user", content: "todo visto", createdAt: "2026-09-01T00:00:00.000Z", id: "m1" }];
+    const seen: SeenMarker = { hasta: "2026-09-01T00:00:00.000Z", ids: ["m1"] };
+    expect(previousConversationCutoff(history, seen)).toBeNull();
+  });
+
+  it("la primera pendiente es la primera línea de todo el historial: nada antes que mirar", () => {
+    const history = [{ role: "user", content: "primera", createdAt: "2026-09-22T10:00:00.000Z", id: "m1" }];
+    expect(previousConversationCutoff(history, null)).toBeNull();
+  });
+
+  it("toma el hueco MÁS RECIENTE (el más cercano a la primera pendiente) cuando hay más de uno, aunque el más cercano termine EN la propia línea pendiente", () => {
+    const history = [
+      { role: "user", content: "hace un mes largo", createdAt: "2026-08-01T00:00:00.000Z", id: "m0" },
+      // Hueco de ~50 días acá.
+      { role: "user", content: "hace dos días", createdAt: "2026-09-20T00:00:00.000Z", id: "m1" },
+      // Hueco de ~2 días acá, más cerca de la pendiente: este es el que se
+      // reporta, aunque su segunda línea sea la propia pendiente.
+      { role: "user", content: "pendiente", createdAt: "2026-09-22T10:00:00.000Z", id: "m2" },
+    ];
+    const seen: SeenMarker = { hasta: "2026-09-21T00:00:00.000Z", ids: [] };
+    expect(previousConversationCutoff(history, seen)).toEqual({ cutoffAt: "2026-09-22T10:00:00.000Z" });
+  });
+
+  it(`la constante exportada vale ${12}`, () => {
+    expect(PREVIOUS_CONVERSATION_GAP_HOURS).toBe(12);
   });
 });
 

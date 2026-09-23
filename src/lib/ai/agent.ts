@@ -37,6 +37,7 @@ import {
   latestCustomerMarker,
   mediaStreakWithoutText,
   pendingCustomerLines,
+  previousConversationCutoff,
 } from "@/lib/ai/history-line";
 import { readSeen, writeSeen } from "@/lib/ai/turn-seen";
 import { customerFirstName } from "@/lib/ai/customer-name";
@@ -1595,6 +1596,18 @@ async function runTurnPhases(
   // history-line.ts para el caso real que motivó esto.
   const rafagaCliente = pendingCustomerLines(zipped, seen);
 
+  // T4, plan "Seba no habla de más mientras el cliente espera al asesor"
+  // (22-23/9/2026, "el historial viejo marcado"): dónde termina, si termina,
+  // una conversación anterior ya atendida — `previousConversationCutoff`
+  // encuentra la primera línea pendiente por su cuenta (mismos dos
+  // argumentos que `pendingCustomerLines`, así las dos SIEMPRE coinciden en
+  // cuál es esa línea) y busca el hueco de más de 12 h más cercano a ella.
+  // Caso real (defecto A, 22/9/2026): el turno tomó "¿Tienen retrovisores de
+  // RK200?" del 3/9, ya respondida, como la consulta actual del 22/9. Viaja
+  // a `buildInstructions` junto con `rafagaCliente` — ver el comentario de
+  // cabecera de `previousConversationCutoff` en history-line.ts.
+  const previousConversationCutoffAt = previousConversationCutoff(zipped, seen)?.cutoffAt ?? null;
+
   // T1, plan "Seba no habla de más mientras el cliente espera al asesor"
   // (22-23/9/2026): si HAY marca y no queda ni una línea pendiente, el turno
   // no tiene nada nuevo que atender — lo que el cliente dijo ya lo contestó
@@ -2303,6 +2316,12 @@ async function runTurnPhases(
       // pedirle al modelo que use algo que no le llegó.
       yaEscalada: esperandoAsesor,
       escalateToolAvailable: Boolean(tools.escalarAAsesor),
+      // T4, plan "Seba no habla de más mientras el cliente espera al
+      // asesor" (22-23/9/2026): los mismos `rafagaCliente`/
+      // `previousConversationCutoffAt` que ya se calcularon al abrir el
+      // turno, más arriba en esta función.
+      pendingCustomerLines: rafagaCliente,
+      previousConversationCutoffAt,
     }),
     tools,
     // D1 del plan "La escalada se hace una vez y la búsqueda responde"

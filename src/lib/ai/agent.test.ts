@@ -3873,6 +3873,48 @@ describe("runAgentTurn — la marca 'visto hasta' (T1, 22-23/9/2026)", () => {
   });
 });
 
+/**
+ * T4, plan "Seba no habla de más mientras el cliente espera al asesor"
+ * (22-23/9/2026, "el historial viejo marcado"). Secuencia EXACTA del caso
+ * real medido en producción el 22/9/2026 (hora VET): la última pregunta del
+ * cliente antes de ese día fue "¿Tienen retrovisores de RK200?" (3/9/2026),
+ * ya respondida por un asesor ("se nos agotaron"). El 22/9 el cliente
+ * escribió "Buenas tardes" (15:24:14, ya visto por el turno anterior) y,
+ * segundos después, "Llegaron las tapas de la Rk 200" (15:24:24), "?"
+ * (15:24:26) y "Coño negro" (15:24:28). El turno que ve esos tres como
+ * pendientes tomó, sin este prompt, la pregunta vieja de los retrovisores
+ * como la consulta actual.
+ */
+describe("runAgentTurn — el sufijo trae los pendientes y marca la conversación anterior (T4, 22-23/9/2026)", () => {
+  it("'tapas' aparece entre los pendientes del sufijo; 'retrovisores' nunca aparece", async () => {
+    state.history = [
+      { sender_type: "customer", content: "Coño negro", is_internal_note: false, created_at: "2026-09-22T15:24:28.000Z", id: "m-negro" },
+      { sender_type: "customer", content: "?", is_internal_note: false, created_at: "2026-09-22T15:24:26.000Z", id: "m-signo" },
+      { sender_type: "customer", content: "Llegaron las tapas de la Rk 200", is_internal_note: false, created_at: "2026-09-22T15:24:24.000Z", id: "m-tapas" },
+      { sender_type: "customer", content: "Buenas tardes", is_internal_note: false, created_at: "2026-09-22T15:24:14.000Z", id: "m-tardes" },
+      { sender_type: "agent", content: "se nos agotaron", is_internal_note: false, created_at: "2026-09-03T14:05:00.000Z", id: "m-agotaron" },
+      { sender_type: "customer", content: "Tienen retrovisores de RK200 ?", is_internal_note: false, created_at: "2026-09-03T14:00:00.000Z", id: "m-retro" },
+    ];
+    // El turno anterior ya vio hasta "Buenas tardes": los pendientes de ESTE
+    // turno son "Llegaron las tapas de la Rk 200", "?" y "Coño negro".
+    redisSeenStore.set("turno:visto:conv-1", JSON.stringify({ hasta: "2026-09-22T15:24:14.000Z", ids: ["m-tardes"] }));
+
+    await runAgentTurn("conv-1");
+
+    expect(agentOptions).toHaveLength(1);
+    const sufijo = agentOptions[0].instructions.slice(SYSTEM_PROMPT.length);
+    expect(sufijo).toMatch(/mensajes nuevos/i);
+    expect(sufijo).toContain("Llegaron las tapas de la Rk 200");
+    expect(sufijo).toContain("?");
+    expect(sufijo).toContain("Coño negro");
+    expect(sufijo).not.toMatch(/retrovisor/i);
+    // La conversación de los retrovisores queda marcada como "anterior,
+    // atendida": el corte es "Buenas tardes", el mensaje que separa la
+    // conversación vieja de la ráfaga del 22/9.
+    expect(sufijo).toMatch(/conversación anterior/i);
+  });
+});
+
 describe("runAgentTurn — interruptores de herramientas", () => {
   it("con todo encendido, una consulta lleva catálogo, biblioteca y escalamiento", async () => {
     await runAgentTurn("conv-1");

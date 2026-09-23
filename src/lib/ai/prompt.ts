@@ -4,6 +4,7 @@ import { AI_NAME, BUSINESS_NAME } from "@/lib/brand";
 import { DEFAULT_BUSINESS_HOURS, turnClockLine, type BusinessHours } from "@/lib/business-hours";
 import { PREGUNTA_FILTRO, TEXTO_CONFIRMAR_INVENTARIO, TEXTO_NO_IDENTIFICADO, TEXTO_SIN_STOCK } from "@/lib/ai/seba";
 import { buildChatLessonsLine, buildGlobalLessonsBlock, type TurnLessons } from "@/lib/ai/lessons";
+import { formatCrmDateTime } from "@/lib/time-zone";
 
 // ---------------------------------------------------------------------------
 // Identidad y reglas de comportamiento del agente de la tienda (el nombre del
@@ -395,6 +396,73 @@ export interface TurnContext {
    * instrucción sobre algo que no puede hacer.
    */
   escalateToolAvailable?: boolean;
+  /**
+   * T4, plan "Seba no habla de más mientras el cliente espera al asesor"
+   * (22-23/9/2026): los mensajes del cliente PENDIENTES de respuesta este
+   * turno (`rafagaCliente`/`pendingCustomerLines`, `agent.ts`), en orden
+   * cronológico, textuales. Defecto A, medido en producción el 22/9/2026: un
+   * turno cargó el historial completo —incluida una pregunta del cliente ya
+   * respondida 19 días antes— y el modelo tomó esa pregunta vieja como la
+   * consulta actual, porque nada le decía cuál de todo lo que veía era lo
+   * NUEVO. `undefined`/`[]`: no se agrega nada al sufijo (turnos viejos,
+   * tests que no lo pasan, o un turno sin pendientes que de todos modos
+   * entra al tool loop por otro motivo, como la racha de adjuntos).
+   */
+  pendingCustomerLines?: string[];
+  /**
+   * T4, mismo plan: el `created_at` (ISO) desde el cual arranca la
+   * conversación ACTUAL — todo lo que está en el historial ANTES de esa
+   * fecha es de una conversación anterior ya atendida
+   * (`previousConversationCutoff`, `history-line.ts`). `undefined`/`null`:
+   * no hay un hueco de más de `PREVIOUS_CONVERSATION_GAP_HOURS` horas antes
+   * de la primera línea pendiente, así que no hace falta marcar nada como
+   * viejo.
+   */
+  previousConversationCutoffAt?: string | null;
+}
+
+// ---------------------------------------------------------------------------
+// T4, plan "Seba no habla de más mientras el cliente espera al asesor"
+// (22-23/9/2026): las dos líneas nuevas del sufijo — "esto es lo nuevo que
+// tienes que responder" y "esto de acá es viejo, ya atendido". Van SOLO en
+// el sufijo (nunca en `SYSTEM_PROMPT` ni en `cacheablePrefix`): las dos
+// cambian de turno en turno, así que meterlas arriba rompería el prefijo
+// cacheado — mismo motivo que la hora, el nombre del cliente o `yaEscalada`.
+// ---------------------------------------------------------------------------
+
+/** Cuántos mensajes pendientes entran en el sufijo — el resto (los más viejos de la ráfaga) se recorta. */
+export const MAX_PENDING_LINES = 5;
+
+/** Tope de caracteres por mensaje pendiente en el texto que ve el modelo. */
+export const MAX_PENDING_LINE_CHARS = 300;
+
+function clip(text: string, max: number): string {
+  return text.length > max ? text.slice(0, max) : text;
+}
+
+/**
+ * "" sin pendientes (`undefined` o `[]`) — el caso normal en un turno que
+ * llega al tool loop por otro camino (la racha de adjuntos, por ejemplo).
+ * Se queda con los `MAX_PENDING_LINES` más NUEVOS (`.slice(-N)`, el final
+ * del arreglo, que `pendingCustomerLines`/`customerBurst` entregan en orden
+ * cronológico) porque, si hay que recortar la lista, lo que importa es lo
+ * más reciente — descartar lo viejo de la propia ráfaga pendiente, nunca lo
+ * nuevo.
+ */
+function buildPendingLine(lines: string[] | undefined): string {
+  if (!lines || lines.length === 0) return "";
+
+  const recientes = lines.slice(-MAX_PENDING_LINES).map((linea) => `«${clip(linea, MAX_PENDING_LINE_CHARS)}»`);
+
+  return `\n\nMensajes nuevos del cliente que tienes que responder ahora: ${recientes.join(", ")}. Responde a ESTO; lo anterior del historial es contexto.`;
+}
+
+/** "" sin corte (`undefined`/`null`) — la fecha se escribe en hora de Caracas, igual que el resto de `TURNO ACTUAL` (`turnClockLine`). */
+function buildPreviousConversationLine(cutoffAt: string | null | undefined): string {
+  if (!cutoffAt) return "";
+
+  const fecha = formatCrmDateTime(new Date(cutoffAt));
+  return `\n\nLo que está en el historial antes del ${fecha} es de una conversación anterior que ya fue atendida: úsalo solo como contexto (moto del cliente, lo que ya se le dijo) y nunca lo trates como la consulta actual ni lo menciones como si lo acabara de pedir.`;
 }
 
 /**
@@ -452,6 +520,8 @@ export function buildInstructions({
   lessons,
   yaEscalada,
   escalateToolAvailable,
+  pendingCustomerLines,
+  previousConversationCutoffAt,
 }: TurnContext): string {
   const seccion = CASE_SECTION[intent] ?? CASE_SECTION.otro;
   const instante = now ?? new Date();
@@ -506,9 +576,16 @@ export function buildInstructions({
   // justo antes de que el modelo redacte.
   const leccionesDeChat = buildChatLessonsLine(lessons?.chat ?? []);
 
+  // T4 (22-23/9/2026): las dos líneas nuevas van al final del todo, después
+  // de las lecciones de chat — son, junto con ellas, lo más específico de
+  // este turno puntual, y quedan pegadas justo antes de que el modelo
+  // redacte.
+  const pendientesLinea = buildPendingLine(pendingCustomerLines);
+  const conversacionAnteriorLinea = buildPreviousConversationLine(previousConversationCutoffAt);
+
   return `${cacheablePrefix(lessons)}
 
 TURNO ACTUAL
 ${turnClockLine(instante, businessHours)}
-Caso identificado: ${intent}. Aplica el protocolo ${seccion}.${greeting}${catalog}${yaEscaladaLinea}${nombre}${leccionesDeChat}`;
+Caso identificado: ${intent}. Aplica el protocolo ${seccion}.${greeting}${catalog}${yaEscaladaLinea}${nombre}${leccionesDeChat}${pendientesLinea}${conversacionAnteriorLinea}`;
 }

@@ -13,6 +13,7 @@ import {
 import { revealsIdentity } from "@/lib/ai/identity-guard";
 import { PREGUNTA_FILTRO, TEXTO_CONFIRMAR_INVENTARIO, TEXTO_NO_IDENTIFICADO, TEXTO_SIN_STOCK } from "@/lib/ai/seba";
 import { buildGlobalLessonsBlock } from "@/lib/ai/lessons";
+import { formatCrmDateTime } from "@/lib/time-zone";
 
 /**
  * Estimación conservadora de caracteres por token para español.
@@ -1077,5 +1078,130 @@ describe("Tarea T5 — Lecciones de Seba en el prompt (18/9/2026)", () => {
       expect(match).not.toBeNull();
       expect(match?.categoria).toBe("automatizacion");
     });
+  });
+});
+
+/**
+ * T4, plan "Seba no habla de más mientras el cliente espera al asesor"
+ * (22-23/9/2026, "el historial viejo marcado"). Defecto A, medido en
+ * producción el 22/9/2026: el turno tomó una pregunta ya respondida del
+ * 3/9/2026 ("¿Tienen retrovisores de RK200?") como la consulta actual del
+ * 22/9, porque nada en el prompt distinguía los mensajes NUEVOS del
+ * historial viejo. `pendingCustomerLines`/`previousConversationCutoffAt`
+ * viajan SOLO en el sufijo — `cacheablePrefix()` tiene que seguir siendo
+ * byte a byte SYSTEM_PROMPT (más el bloque de lecciones globales, si las
+ * hay), nunca depender de estos dos campos.
+ */
+describe("Tarea T4 — pendientes y conversación anterior (22-23/9/2026)", () => {
+  it("cacheablePrefix() no cambia con pendingCustomerLines ni con previousConversationCutoffAt", () => {
+    const sinNada = cacheablePrefix();
+    const instructions = buildInstructions({
+      ...TURN,
+      pendingCustomerLines: ["Llegaron las tapas de la Rk 200", "?", "Coño negro"],
+      previousConversationCutoffAt: "2026-09-22T15:24:14.000Z",
+    });
+
+    expect(cacheablePrefix()).toBe(sinNada);
+    expect(instructions.startsWith(SYSTEM_PROMPT)).toBe(true);
+    expect(instructions.slice(0, cacheablePrefix().length)).toBe(cacheablePrefix());
+  });
+
+  it("sin pendientes, el sufijo no agrega nada sobre 'mensajes nuevos'", () => {
+    const sinCampo = buildInstructions({ ...TURN }).slice(SYSTEM_PROMPT.length);
+    const conVacio = buildInstructions({ ...TURN, pendingCustomerLines: [] }).slice(SYSTEM_PROMPT.length);
+
+    expect(sinCampo).not.toMatch(/mensajes nuevos/i);
+    expect(conVacio).not.toMatch(/mensajes nuevos/i);
+  });
+
+  it("con pendientes, el sufijo los lista tal cual y dice que hay que responder a eso", () => {
+    const sufijo = buildInstructions({
+      ...TURN,
+      pendingCustomerLines: ["Llegaron las tapas de la Rk 200", "?", "Coño negro"],
+    }).slice(SYSTEM_PROMPT.length);
+
+    expect(sufijo).toMatch(/mensajes nuevos/i);
+    expect(sufijo).toContain("Llegaron las tapas de la Rk 200");
+    expect(sufijo).toContain("Coño negro");
+    expect(sufijo).toMatch(/responde a esto/i);
+  });
+
+  /** Caso real del defecto: el mensaje pendiente que el turno tiene que contestar es el de las tapas, no el viejo de los retrovisores. */
+  it("caso real: 'tapas' aparece entre los pendientes; 'retrovisores' nunca aparece en el sufijo (no se lo pasamos)", () => {
+    const sufijo = buildInstructions({
+      ...TURN,
+      pendingCustomerLines: ["Llegaron las tapas de la Rk 200", "?", "Coño negro"],
+      previousConversationCutoffAt: "2026-09-22T15:24:14.000Z",
+    }).slice(SYSTEM_PROMPT.length);
+
+    expect(sufijo).toMatch(/tapas/i);
+    expect(sufijo).not.toMatch(/retrovisor/i);
+  });
+
+  it("recorta cada línea pendiente a un largo razonable (300 caracteres)", () => {
+    const larguisima = "a".repeat(1000);
+    const sufijo = buildInstructions({ ...TURN, pendingCustomerLines: [larguisima] }).slice(SYSTEM_PROMPT.length);
+
+    expect(sufijo).not.toContain(larguisima);
+    expect(sufijo).toContain("a".repeat(300));
+    expect(sufijo).not.toContain("a".repeat(301));
+  });
+
+  it("con un tope de cantidad: muchas líneas pendientes no listan todas", () => {
+    const muchas = Array.from({ length: 20 }, (_, i) => `mensaje ${i}`);
+    const sufijo = buildInstructions({ ...TURN, pendingCustomerLines: muchas }).slice(SYSTEM_PROMPT.length);
+
+    expect(sufijo).toContain("mensaje 19"); // el más nuevo, al final del arreglo, se conserva
+    expect(sufijo).not.toContain("mensaje 0"); // el más viejo de la lista larga se recorta
+  });
+
+  it("marcadores de media pendientes aparecen tal cual entre los pendientes", () => {
+    const sufijo = buildInstructions({
+      ...TURN,
+      pendingCustomerLines: ["[El cliente envió una foto sin texto; no puedes verla]"],
+    }).slice(SYSTEM_PROMPT.length);
+
+    expect(sufijo).toContain("[El cliente envió una foto sin texto; no puedes verla]");
+  });
+
+  it("sin previousConversationCutoffAt, el sufijo no habla de 'conversación anterior'", () => {
+    const sufijo = buildInstructions({ ...TURN, pendingCustomerLines: ["hola"] }).slice(SYSTEM_PROMPT.length);
+
+    expect(sufijo).not.toMatch(/conversación anterior/i);
+  });
+
+  it("con previousConversationCutoffAt, el sufijo marca el corte con la fecha en hora de Caracas", () => {
+    const cutoffAt = "2026-09-22T15:24:14.000Z";
+    const sufijo = buildInstructions({
+      ...TURN,
+      pendingCustomerLines: ["Llegaron las tapas de la Rk 200"],
+      previousConversationCutoffAt: cutoffAt,
+    }).slice(SYSTEM_PROMPT.length);
+
+    expect(sufijo).toMatch(/conversación anterior/i);
+    expect(sufijo).toMatch(/ya fue atendida/i);
+    expect(sufijo).toContain(formatCrmDateTime(new Date(cutoffAt)));
+  });
+
+  it("previousConversationCutoffAt en null (o ausente) no agrega nada, aunque haya pendientes", () => {
+    const conNull = buildInstructions({
+      ...TURN,
+      pendingCustomerLines: ["hola"],
+      previousConversationCutoffAt: null,
+    }).slice(SYSTEM_PROMPT.length);
+    const ausente = buildInstructions({ ...TURN, pendingCustomerLines: ["hola"] }).slice(SYSTEM_PROMPT.length);
+
+    expect(conNull).not.toMatch(/conversación anterior/i);
+    expect(ausente).not.toMatch(/conversación anterior/i);
+  });
+
+  it("los dos textos nuevos pasan la guarda de identidad", () => {
+    const sufijo = buildInstructions({
+      ...TURN,
+      pendingCustomerLines: ["Llegaron las tapas de la Rk 200", "?", "Coño negro"],
+      previousConversationCutoffAt: "2026-09-22T15:24:14.000Z",
+    }).slice(SYSTEM_PROMPT.length);
+
+    expect(revealsIdentity(sufijo)).toBeNull();
   });
 });
