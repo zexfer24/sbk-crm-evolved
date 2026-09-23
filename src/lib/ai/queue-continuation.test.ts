@@ -68,6 +68,7 @@ import {
   resetContinuacionParaPruebas,
   stopAgentQueue,
 } from "@/lib/ai/queue";
+import { ConversationBusyError } from "@/lib/ai/conversation-lock";
 import { log } from "@/lib/log";
 
 beforeEach(async () => {
@@ -298,6 +299,64 @@ describe("continuación de la cola: no se solapa", () => {
     await processQueuedTurns();
 
     expect(vi.getTimerCount()).toBe(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// T3 ("Seba no habla de más mientras el cliente espera al asesor", 23/9/2026).
+//
+// El caso real de producción: B choca con el lock y programa la
+// continuación a los 30s de RETRY_WHEN_LOCKED_SECONDS (`cola_turno_pospuesto_
+// lock`); SEGUNDOS después el turno que sostenía ese lock (A) termina y
+// adelanta a B — sin la reprogramación de abajo, ese aviso se hubiera perdido
+// contra el "ya hay una esperando" de `registrarDiferidos`, y B habría
+// esperado los 30s completos de todos modos.
+// ---------------------------------------------------------------------------
+describe("continuación de la cola: el adelanto reprograma un plazo más corto", () => {
+  it("un turno que termina y adelanta reprograma la continuación, sin esperar el plazo largo ya programado", async () => {
+    process.env.AGENT_MAX_CONCURRENT_TURNS = "2"; // A y B necesitan cupo cada uno.
+
+    // A: se cuelga -representa el turno "en vuelo" que sostiene el lock real
+    // de conversation-lock.ts (acá no se ejerce; lo que importa es que
+    // todavía no volvió cuando B choca).
+    const liberarA: { fn: (() => void) | null } = { fn: null };
+    runAgentTurnMock.mockImplementationOnce(
+      () =>
+        new Promise<void>((resolve) => {
+          liberarA.fn = resolve;
+        })
+    );
+
+    await enqueueAgentTurns(["conv-1"], { debounceSeconds: 0 });
+    const pasadaA = processQueuedTurns(1);
+    await flushMicrotasks(); // A reclama y queda colgada de runAgentTurn.
+
+    // B: un fragmento nuevo de la MISMA conversación. El webhook lo encola
+    // de nuevo -ventana nueva- y lo procesa: choca con el lock (A sigue
+    // viva) y se difiere RETRY_WHEN_LOCKED_SECONDS (30s), programando una
+    // continuación a 30s.
+    runAgentTurnMock.mockImplementationOnce(async () => {
+      throw new ConversationBusyError("conv-1");
+    });
+    await enqueueAgentTurns(["conv-1"], { debounceSeconds: 0 });
+    const resultadoB = await processQueuedTurns(1);
+    expect(resultadoB.deferred).toBe(1);
+    expect(vi.getTimerCount()).toBe(1);
+
+    // Termina A: con el fix, esto adelanta el vencimiento del fragmento que
+    // volvió a la cola por el paso anterior y pide un despertador CORTO.
+    runAgentTurnMock.mockImplementation(async () => {});
+    liberarA.fn?.();
+    await pasadaA;
+    await flushMicrotasks();
+
+    // Sigue habiendo un solo timer -se REPROGRAMÓ, no se sumó un segundo-,
+    // ahora con el plazo corto: avanzar bastante menos que 30s alcanza para
+    // que dispare y reclame el fragmento.
+    expect(vi.getTimerCount()).toBe(1);
+    await vi.advanceTimersByTimeAsync(2_000);
+
+    expect(await pendingAgentTurns()).toBe(0);
   });
 });
 

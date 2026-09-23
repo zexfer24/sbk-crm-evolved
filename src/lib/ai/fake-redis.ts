@@ -26,6 +26,14 @@
  * (`liminal:agent:vencimiento:{id}`) para que sobreviva a los reintentos de
  * `defer`. Este doble espeja esa semántica con `strings` (la misma tabla que
  * ya usaba `set`/`incr`), no con un mecanismo nuevo.
+ *
+ * 23/9/2026 (T3, plan "Seba no habla de más..."): suma el reconocimiento de
+ * ADELANTAR_SCRIPT (redis-queue.ts) — el que baja a AHORA el vencimiento de
+ * una entrada que sigue pendiente, sin tocar nada más. `queue.ts` lo llama en
+ * `atender()` después de CADA turno que no chocó con el lock, así que las
+ * suites de `queue-continuation.test.ts`/`queue-limit.test.ts` (que corren
+ * sobre este doble) lo ejercitan en casi todos sus casos, aunque casi
+ * siempre no encuentre nada que adelantar (`false`).
  */
 
 function escapeRegExp(texto: string): string {
@@ -177,6 +185,21 @@ export class FakeRedis {
       if (this.zset(key).length >= Number(tope)) return false;
       await this.zadd(key, Number(score), String(member));
       return String(member);
+    }
+
+    // ADELANTAR_SCRIPT: si el miembro sigue pendiente con vencimiento
+    // futuro, lo baja a AHORA. No coincide con "ZRANGEBYSCORE"/
+    // "ZREMRANGEBYSCORE" (ninguno de los dos contiene "ZSCORE" como
+    // substring contiguo) así que el orden de estas comprobaciones no
+    // importa.
+    if (script.includes("ZSCORE")) {
+      const ahora = Number(args[1]);
+      const member = String(args[2]);
+      const score = await this.zscore(key, member);
+      if (score === null) return null; // Lua `false` → nil.
+      if (Number(score) <= ahora) return null;
+      await this.zadd(key, ahora, member);
+      return 1; // Lua `true` → entero 1.
     }
 
     throw new Error(`FakeRedis: script no reconocido:\n${script}`);

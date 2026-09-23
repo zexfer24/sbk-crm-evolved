@@ -233,6 +233,78 @@ describe("el vencimiento que trae el reclamo", () => {
   });
 });
 
+// ---------------------------------------------------------------------------
+// adelantar(): el aviso "esto ya se puede atender".
+//
+// 23/9/2026 (T3, plan "Seba no habla de más..."): el fragmento que choca con
+// el lock de conversación queda diferido 30s (RETRY_WHEN_LOCKED_SECONDS, en
+// queue.ts). Antes de esta corrida esperaba esos 30s completos aunque el
+// turno que sostenía el lock terminara mucho antes. `adelantar` es lo que
+// permite bajarle el vencimiento a AHORA sin tocar nada más.
+// ---------------------------------------------------------------------------
+describe("adelantar el vencimiento de una entrada pendiente", () => {
+  it("baja el score de una entrada futura, y el próximo reclamo la trae ya vencida", async () => {
+    if (!disponible) return;
+    const cola = createAgentQueue(redis);
+
+    await cola.enqueue("conv-1", 30);
+    expect(await cola.claimDue()).toBeNull(); // todavía no vence.
+
+    expect(await cola.adelantar("conv-1")).toBe(true);
+
+    expect((await cola.claimDue())?.conversationId).toBe("conv-1");
+  });
+
+  it("devuelve false si no hay ninguna entrada pendiente para esa conversación", async () => {
+    if (!disponible) return;
+    const cola = createAgentQueue(redis);
+
+    expect(await cola.adelantar("no-existe")).toBe(false);
+  });
+
+  it("devuelve false si la entrada ya venció -no hace falta adelantarla-", async () => {
+    if (!disponible) return;
+    const cola = createAgentQueue(redis);
+
+    await cola.enqueue("conv-1", 0);
+
+    expect(await cola.adelantar("conv-1")).toBe(false);
+    // Sigue tal cual: el reclamo normal la sigue encontrando vencida.
+    expect((await cola.claimDue())?.conversationId).toBe("conv-1");
+  });
+
+  it("no toca el vencimiento ORIGINAL que preserva claimDue", async () => {
+    if (!disponible) return;
+    const cola = createAgentQueue(redis);
+
+    await cola.enqueue("conv-1", 0);
+    const primero = await cola.claimDue();
+    await cola.defer("conv-1", 30); // vuelve a la cola, como si hubiera chocado con el lock.
+
+    expect(await cola.adelantar("conv-1")).toBe(true);
+
+    const segundo = await cola.claimDue();
+    expect(segundo?.vencioEn).toBe(primero?.vencioEn);
+  });
+
+  it("solo toca la conversación indicada, nunca otras que estén pendientes", async () => {
+    if (!disponible) return;
+    const cola = createAgentQueue(redis);
+
+    await cola.enqueue("v1", 30);
+    await cola.enqueue("v2", 30);
+    await cola.enqueue("conv-1", 30);
+
+    expect(await cola.adelantar("conv-1")).toBe(true);
+
+    // Solo conv-1 quedó vencida: el reclamo la trae a ella, no a v1 ni v2.
+    expect((await cola.claimDue())?.conversationId).toBe("conv-1");
+    // v1 y v2 siguen esperando su ventana completa, intactas.
+    expect(await cola.claimDue()).toBeNull();
+    expect(await cola.pending()).toBe(2);
+  });
+});
+
 describe("cupos de turnos simultáneos", () => {
   it("no entrega más cupos que el máximo configurado", async () => {
     if (!disponible) return;

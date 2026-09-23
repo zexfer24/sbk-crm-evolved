@@ -442,6 +442,113 @@ describe("processQueuedTurns", () => {
   });
 });
 
+// ---------------------------------------------------------------------------
+// T3 ("Seba no habla de más mientras el cliente espera al asesor", 23/9/2026).
+//
+// Antes de esta corrida, el fragmento que chocaba con el lock de conversación
+// esperaba los RETRY_WHEN_LOCKED_SECONDS completos (30s) aunque el turno que
+// sostenía ese lock terminara mucho antes -desde que la escalada ya no apaga
+// a Seba (18/9/2026), ESE fragmento es el que contesta lo que el cliente
+// preguntó de verdad, y la demora era el síntoma reportado ("antes
+// respondía en menos de 10s, ahora dura mucho").
+// ---------------------------------------------------------------------------
+describe("adelanto tras terminar un turno", () => {
+  it("el fragmento que choca con el lock se atiende sin esperar los 30 s, apenas termina el turno que lo sostenía", async () => {
+    if (!disponible) return;
+    const info = vi.spyOn(log, "info");
+    info.mockClear();
+
+    // A: se cuelga -representa el turno "en vuelo" que sostiene el lock de
+    // verdad (conversation-lock.ts, no ejercido acá): lo único que importa
+    // es que A todavía no volvió cuando B choca. La SEGUNDA llamada (B) choca
+    // con el lock; la TERCERA (el reclamo posterior a que A termine) tiene
+    // que poder correr normal, para comprobar que de verdad se atendió.
+    const liberarA: { fn: (() => void) | null } = { fn: null };
+    let llamada = 0;
+    runAgentTurnMock.mockImplementation(async () => {
+      llamada++;
+      if (llamada === 1) {
+        await new Promise<void>((resolve) => {
+          liberarA.fn = resolve;
+        });
+        return;
+      }
+      if (llamada === 2) throw new ConversationBusyError("conv-1");
+    });
+
+    await enqueueAgentTurns(["conv-1"], { debounceSeconds: 0 });
+    const pasadaA = processQueuedTurns(1); // el webhook de A: su propio lote.
+
+    // Deja que A reclame y quede colgada de runAgentTurn.
+    await new Promise((r) => setTimeout(r, 50));
+
+    // El cliente escribe un fragmento nuevo: el webhook lo encola de nuevo
+    // -ventana nueva- y lo procesa. Choca con el lock (A sigue viva) y se
+    // difiere RETRY_WHEN_LOCKED_SECONDS (30s).
+    await enqueueAgentTurns(["conv-1"], { debounceSeconds: 0 });
+    const resultadoB = await processQueuedTurns(1);
+    expect(resultadoB.deferred).toBe(1);
+
+    // Termina A: con el fix, esto adelanta el vencimiento del fragmento que
+    // quedó esperando.
+    liberarA.fn?.();
+    await pasadaA;
+
+    expect(info).toHaveBeenCalledWith("cola_turno_adelantado_tras_lock", { conversationId: "conv-1" });
+
+    // Sin esperar los 30 s: la PRÓXIMA pasada ya lo encuentra vencido.
+    const resultadoTrasA = await processQueuedTurns(1);
+    expect(resultadoTrasA.processed).toBe(1);
+    expect(await pendingAgentTurns()).toBe(0);
+  });
+
+  /**
+   * El otro lado de la moneda: el adelanto no puede convertirse en una
+   * puerta trasera para que un webhook (que solo trae SU propio lote, ver
+   * `processAfterDebounce`) termine drenando el atraso de conversaciones que
+   * no tienen nada que ver.
+   */
+  it("no hace que la pasada que lo dispara procese más que su propio límite ni toque otras conversaciones", async () => {
+    if (!disponible) return;
+
+    // Atraso ajeno, sin relación con conv-1.
+    await enqueueAgentTurns(["v1", "v2", "v3"], { debounceSeconds: 0 });
+
+    const liberarA: { fn: (() => void) | null } = { fn: null };
+    let vezB = false;
+    runAgentTurnMock.mockImplementation(async (id: string) => {
+      if (id !== "conv-1") return; // v1/v2/v3: éxito silencioso si algo las tocara.
+      if (!vezB) {
+        vezB = true;
+        await new Promise<void>((resolve) => {
+          liberarA.fn = resolve;
+        });
+        return;
+      }
+      throw new ConversationBusyError("conv-1");
+    });
+
+    await enqueueAgentTurns(["conv-1"], { debounceSeconds: -100 }); // la más vieja: se reclama primero.
+    const pasadaA = processQueuedTurns(1);
+    await new Promise((r) => setTimeout(r, 50));
+
+    await enqueueAgentTurns(["conv-1"], { debounceSeconds: -100 });
+    const resultadoB = await processQueuedTurns(1);
+    expect(resultadoB.deferred).toBe(1);
+
+    liberarA.fn?.();
+    const resultadoA = await pasadaA;
+
+    // A no procesó nada más que a sí misma, aunque el adelanto haya
+    // encontrado algo para bajarle el vencimiento.
+    expect(resultadoA.processed).toBe(1);
+    // El atraso ajeno sigue intacto, y conv-1 -ya adelantada- sigue
+    // esperando a que ALGUIEN la reclame: nadie del lote de A la tocó de
+    // más.
+    expect(await pendingAgentTurns()).toBe(4); // v1, v2, v3 + conv-1 (adelantada).
+  });
+});
+
 describe("tope de turnos por minuto", () => {
   /**
    * El freno que faltaba el 26 de agosto de 2026.

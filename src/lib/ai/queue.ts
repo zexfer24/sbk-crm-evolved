@@ -198,8 +198,33 @@ const RETRY_AFTER_ERROR_SECONDS = 30;
  * como mucho unos tres intentos antes de que el lock quede libre por vencido
  * — no hace falta reintentar más seguido: el presupuesto del minuto
  * (maxTurnsPerMinute) ya se gastó antes de llegar siquiera al lock.
+ *
+ * 23/9/2026 (T3, plan "Seba no habla de más..."): sigue siendo la red de
+ * seguridad de verdad —si el turno en vuelo muere sin soltar el lock (un
+ * proceso que se cae), este es el plazo que rescata el reintento— pero YA NO
+ * es lo que gobierna el caso común. Desde que la escalada no apaga a Seba
+ * ("Seba atiende el mostrador", 18/9/2026), el fragmento que choca acá casi
+ * siempre es el que contesta lo que el cliente preguntó de verdad, y esperar
+ * los 30s completos era el síntoma reportado ("antes respondía en menos de
+ * 10s, ahora dura mucho"). Ahora, cuando el turno que sostenía el lock
+ * TERMINA (bien o mal, ver `anticiparSiHayPendiente`), adelanta el
+ * vencimiento de este fragmento a AHORA — los 30s de acá solo se agotan si
+ * ese turno tarda de verdad, no en el camino feliz.
  */
 const RETRY_WHEN_LOCKED_SECONDS = 30;
+
+/**
+ * Plazo con el que se despierta, pronto, el fragmento que un turno dejó
+ * pendiente al chocar con su lock — una vez que ese lock ya se soltó.
+ *
+ * 23/9/2026 (T3): no hace falta que sea instantáneo (cero): un segundo de
+ * margen alcanza y evita una carrera de milisegundos contra el mismo lock
+ * que recién se soltó (el turno que lo tenía todavía puede tardar un
+ * instante en liberarlo de verdad en conversation-lock.ts). Es MENOR que los
+ * tres plazos existentes (3/20/30s) a propósito: es el único que representa
+ * "esto ya se puede atender", no "hay que esperar a que se resuelva algo".
+ */
+const RETRY_AFTER_ADVANCE_SECONDS = 1;
 
 /**
  * Intentos antes de abandonar una conversación.
@@ -337,8 +362,17 @@ export async function processAfterDebounce(
  * un error en caliente, a los pocos segundos, tiende a pegarle al mismo muro
  * otra vez (el modelo que rechazó, el dato corrupto); el cron ya lo cubre a
  * los 60 s, y no conviene que la cola se autodespierte para eso.
+ *
+ * 23/9/2026 (T3): suma RETRY_AFTER_ADVANCE_SECONDS — el que deja
+ * `anticiparSiHayPendiente` cuando `cola.adelantar()` encuentra algo que
+ * bajarle el vencimiento. Es un plazo más, no una razón para diferir: por
+ * eso participa del mismo `Math.min(...plazos)` de `registrarDiferidos`.
  */
-type PlazoDiferido = typeof RETRY_WHEN_BUSY_SECONDS | typeof RETRY_WHEN_PACED_SECONDS | typeof RETRY_WHEN_LOCKED_SECONDS;
+type PlazoDiferido =
+  | typeof RETRY_WHEN_BUSY_SECONDS
+  | typeof RETRY_WHEN_PACED_SECONDS
+  | typeof RETRY_WHEN_LOCKED_SECONDS
+  | typeof RETRY_AFTER_ADVANCE_SECONDS;
 
 interface ResultadoPasada {
   result: QueueRunResult;
@@ -389,6 +423,41 @@ async function ejecutarPasada(limit: number): Promise<ResultadoPasada> {
    * ningún otro trabajador puede colarse entre los dos.
    */
   let tomados = 0;
+
+  /**
+   * 23/9/2026 (T3): el turno para `conversationId` acaba de terminar —bien,
+   * o mal pero sin dejar la conversación tomada— así que el lock de
+   * `conversation-lock.ts` ya se soltó. Si un fragmento de ESTA MISMA
+   * conversación quedó pendiente por haber chocado con ese lock (o por
+   * cualquier otro motivo: `adelantar` no distingue por qué estaba
+   * diferido), no tiene sentido que espere el resto de su plazo — se
+   * adelanta su vencimiento a AHORA y se dispara un despertador corto
+   * (`RETRY_AFTER_ADVANCE_SECONDS`) para que alguien lo reclame pronto.
+   *
+   * A propósito NO reclama nada acá mismo (ni con `cola.claimDue()` ni
+   * incrementando `tomados`): esta pasada puede tener su `limit` ya
+   * agotado —el caso típico es el webhook, que solo trae el lote que él
+   * mismo encoló (ver `processAfterDebounce`)— y reclamar de más acá
+   * dejaría que el fragmento adelantado (u OTRA conversación con un
+   * vencimiento más viejo todavía) se cuele por encima de ese límite. El
+   * despertador corto vive en `registrarDiferidos`, que sí respeta
+   * `maxPerRun()` como límite propio, igual que ya hace con
+   * ritmo/cupo/lock.
+   *
+   * Un fallo de Redis acá no aborta el turno ni cambia nada más: peor
+   * caso, ese fragmento espera los RETRY_WHEN_LOCKED_SECONDS de siempre.
+   */
+  async function anticiparSiHayPendiente(conversationId: string): Promise<void> {
+    try {
+      const adelantado = await cola.adelantar(conversationId);
+      if (adelantado) {
+        plazosDiferidos.push(RETRY_AFTER_ADVANCE_SECONDS);
+        log.info("cola_turno_adelantado_tras_lock", { conversationId });
+      }
+    } catch (err) {
+      log.warn("cola_adelantar_fallido", { conversationId, detail: errorText(err) });
+    }
+  }
 
   async function atender(): Promise<void> {
     for (;;) {
@@ -444,6 +513,7 @@ async function ejecutarPasada(limit: number): Promise<ResultadoPasada> {
         await runAgentTurn(conversationId, { vencioEn });
         await cola.clearFailures(conversationId);
         result.processed++;
+        await anticiparSiHayPendiente(conversationId);
       } catch (err) {
         // La conversación ya tenía un turno de IA en curso (ver
         // conversation-lock.ts): no es un fallo del turno, es una carrera
@@ -457,6 +527,12 @@ async function ejecutarPasada(limit: number): Promise<ResultadoPasada> {
           log.info("cola_turno_pospuesto_lock", { conversationId });
           continue;
         }
+
+        // 23/9/2026 (T3): este turno terminó igual —mal, pero terminó— y
+        // soltó el lock de conversación. Si un fragmento de ESTA MISMA
+        // conversación quedó esperando por haber chocado con ese lock,
+        // conviene adelantarlo también acá, no solo en el camino feliz.
+        await anticiparSiHayPendiente(conversationId);
 
         const detail = errorText(err);
         result.failed++;
@@ -557,9 +633,21 @@ export async function processQueuedTurns(limit = maxPerRun()): Promise<QueueRunR
  * continuación SÍ puede reprogramarse a sí misma al terminar si todavía deja
  * diferidos (para no depender del cron si el atraso es grande) — la distingue
  * el parámetro `esPropiaContinuacion` de `registrarDiferidos`, no el estado.
+ *
+ * 23/9/2026 (T3): `continuacionPlazoSegundos` guarda CON qué plazo se programó
+ * el timer activo, para que `registrarDiferidos` pueda decidir si un plazo
+ * nuevo, más corto, amerita REPROGRAMARLO antes en vez de quedarse en
+ * silencio. Hace falta para el caso real de este plan: un fragmento choca
+ * con el lock y programa la continuación a 30s (RETRY_WHEN_LOCKED_SECONDS);
+ * segundos después el turno que sostenía ese lock termina y adelanta ese
+ * mismo fragmento (RETRY_AFTER_ADVANCE_SECONDS, 1s) — sin la reprogramación,
+ * ese aviso se habría perdido contra el "ya hay una esperando" de abajo, y el
+ * fragmento habría esperado los 30s completos de todos modos, que es
+ * exactamente el síntoma que este plan vino a cerrar.
  */
 let estadoContinuacion: "inactiva" | "programada" | "corriendo" = "inactiva";
 let continuacionTimer: ReturnType<typeof setTimeout> | null = null;
+let continuacionPlazoSegundos: number | null = null;
 
 /**
  * Decide si hace falta programar (o encadenar) la continuación, a partir de
@@ -573,6 +661,11 @@ let continuacionTimer: ReturnType<typeof setTimeout> | null = null;
  * al mismo tiempo la continuación se pueda reprogramar a sí misma apenas
  * termina (si no, un atraso grande nunca terminaría de drenarse solo: cada
  * ronda dejaría diferidos y nadie volvería a programar nada hasta el cron).
+ *
+ * 23/9/2026 (T3): si ya hay una "programada" pero el plazo nuevo es más
+ * CORTO que el que la programó, se cancela y se reprograma con el corto —ver
+ * `continuacionPlazoSegundos`—. Si es igual o más largo, silencio como
+ * siempre: esperar el mismo timer no empeora nada.
  */
 function registrarDiferidos(plazos: PlazoDiferido[], esPropiaContinuacion: boolean): void {
   if (plazos.length === 0) {
@@ -583,13 +676,22 @@ function registrarDiferidos(plazos: PlazoDiferido[], esPropiaContinuacion: boole
     return;
   }
 
-  if (estadoContinuacion === "programada") return; // ya hay una esperando: silencio.
-  if (estadoContinuacion === "corriendo" && !esPropiaContinuacion) return; // otra pasada mientras la continuación corre: silencio.
-
   const enSegundos = Math.min(...plazos);
+
+  if (estadoContinuacion === "programada") {
+    const puedeAdelantarse = continuacionPlazoSegundos !== null && enSegundos < continuacionPlazoSegundos;
+    if (!puedeAdelantarse) return; // ya hay una esperando, y no más corta: silencio.
+    if (continuacionTimer) clearTimeout(continuacionTimer);
+    continuacionTimer = null;
+  } else if (estadoContinuacion === "corriendo" && !esPropiaContinuacion) {
+    return; // otra pasada mientras la continuación corre: silencio.
+  }
+
   estadoContinuacion = "programada";
+  continuacionPlazoSegundos = enSegundos;
   continuacionTimer = setTimeout(() => {
     continuacionTimer = null;
+    continuacionPlazoSegundos = null;
     estadoContinuacion = "corriendo";
     void ejecutarPasada(maxPerRun())
       .then(({ plazosDiferidos }) => registrarDiferidos(plazosDiferidos, true))
@@ -598,6 +700,7 @@ function registrarDiferidos(plazos: PlazoDiferido[], esPropiaContinuacion: boole
         // registro es un despertador que se calla para siempre sin que nadie
         // se entere.
         estadoContinuacion = "inactiva";
+        continuacionPlazoSegundos = null;
         log.error("cola_continuacion_fallida", { detail: errorText(err) });
       });
   }, enSegundos * 1000 + WAKE_MARGIN_MS);
@@ -623,6 +726,7 @@ function registrarDiferidos(plazos: PlazoDiferido[], esPropiaContinuacion: boole
 function cancelarContinuacion(): void {
   if (continuacionTimer) clearTimeout(continuacionTimer);
   continuacionTimer = null;
+  continuacionPlazoSegundos = null;
   estadoContinuacion = "inactiva";
 }
 

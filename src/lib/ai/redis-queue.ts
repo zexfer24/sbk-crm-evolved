@@ -76,6 +76,39 @@ return {miembro, score}
 `;
 
 /**
+ * Adelanta a AHORA el vencimiento de una entrada que sigue pendiente, sin
+ * crear nada ni tocar la clave de vencimiento original.
+ *
+ * 23/9/2026 (T3, plan "Seba no habla de más mientras el cliente espera al
+ * asesor"): cuando un turno choca con el lock de conversación (ver
+ * `isConversationBusy` en `queue.ts`) vuelve a la cola diferido
+ * `RETRY_WHEN_LOCKED_SECONDS` (30s). Antes de esta corrida esperaba esos 30s
+ * completos aunque el turno que sostenía el lock terminara mucho antes —el
+ * cliente esperaba una respuesta que ya se podía dar. Este script deja que
+ * `queue.ts` avise "ya podés atenderla" apenas ese turno suelta el lock, bajando
+ * el score a `ARGV[1]` (el instante actual) SOLO si la entrada sigue ahí y su
+ * vencimiento es todavía futuro.
+ *
+ * A propósito NO toca `liminal:agent:vencimiento:{id}`: esa clave la siembra y
+ * la lee `claimDue` para separar, en `agent.ts`, la ventana de silencio
+ * (diseño) de la espera en cola (atraso) — bajar el score del zset no es un
+ * mensaje nuevo del cliente (`enqueue` sí la borra) ni un reintento del
+ * sistema por ritmo/cupo/error (`defer` sí la preserva): es una tercera cosa,
+ * "esto ya se puede atender", y no participa de esa cuenta.
+ *
+ * Atómico por el mismo motivo que los demás scripts: leer el score y decidir
+ * si conviene bajarlo tiene que ser una sola operación, para que dos
+ * llamadas a `adelantar` sobre la misma conversación no se pisen.
+ */
+const ADELANTAR_SCRIPT = `
+local score = redis.call('ZSCORE', KEYS[1], ARGV[2])
+if not score then return false end
+if tonumber(score) <= tonumber(ARGV[1]) then return false end
+redis.call('ZADD', KEYS[1], ARGV[1], ARGV[2])
+return true
+`;
+
+/**
  * Otorga un cupo solo si queda lugar, después de descartar los vencidos.
  * Contar y añadir en la misma operación evita que varias instancias vean
  * "queda lugar" a la vez y se pasen todas del tope.
@@ -116,6 +149,13 @@ export interface AgentQueue {
    * respuesta llega en siete segundos", 7/9/2026), sesgado hacia el verde.
    */
   defer(conversationId: string, seconds: number): Promise<void>;
+  /**
+   * Si `conversationId` sigue pendiente con un vencimiento en el futuro, lo
+   * baja a AHORA y devuelve `true`. Si no está en la cola (ya se reclamó, o
+   * nunca estuvo) o ya venció, no hace nada y devuelve `false`. NUNCA crea
+   * una entrada nueva — ver `ADELANTAR_SCRIPT`.
+   */
+  adelantar(conversationId: string): Promise<boolean>;
   /** Cuántos turnos hay esperando. */
   pending(): Promise<number>;
   /** Anota un intento fallido y devuelve cuántos lleva acumulados esa conversación. */
@@ -174,6 +214,14 @@ export function createAgentQueue(redis: Redis): AgentQueue {
         // conserva ESE — es el más viejo, y es el que importa.
         await redis.set(vencimientoKey(conversationId), scoreAnterior, "EX", VENCIMIENTO_TTL_SECONDS, "NX");
       }
+    },
+
+    async adelantar(conversationId) {
+      // Lua `true`/`false` cruzan a ioredis como `1`/`null` (mismo criterio
+      // que ya usan ACQUIRE_SLOT_SCRIPT/CONSUME_PACE_SCRIPT con `typeof ===
+      // "string"` para su propio caso de éxito).
+      const resultado = await redis.eval(ADELANTAR_SCRIPT, 1, QUEUE_KEY, Date.now(), conversationId);
+      return resultado === 1;
     },
 
     async pending() {
