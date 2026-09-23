@@ -359,3 +359,192 @@ export function customerBurst(history: StreakEntry[]): string[] {
 
   return rafaga;
 }
+
+// ---------------------------------------------------------------------------
+// T1, plan "Seba no habla de más mientras el cliente espera al asesor"
+// (22-23/9/2026, "lo ya respondido no se vuelve a responder"): `customerBurst`
+// solo mira las líneas de cliente CONSECUTIVAS desde el final del historial —
+// si el turno anterior alcanzó a contestar algo, la ráfaga queda vacía y dos
+// guardas de agent.ts (la de cortesía tras escalada, que exige
+// `rafagaCliente.length > 0`, y `soloSaludo`) dejan de disparar aunque el
+// cliente haya preguntado algo real antes de esa respuesta.
+//
+// Caso real medido en producción el 22/9/2026 (hora VET): 15:24:14 cliente
+// "Buenas tardes"; 15:24:24 "Llegaron las tapas de la Rk 200"; 15:24:26 "?";
+// 15:24:28 "Coño negro"; 15:24:33 escalada; 15:24:38 y 15:24:43 Seba
+// responde; 15:24:44 cliente "Color *"; 15:24:53 "Vale"; 15:24:54 "Gracias";
+// 15:24:59 Seba responde. El turno de las 15:25:06 carga el historial YA
+// TERMINADO en la respuesta de las 15:24:59: `customerBurst` da `[]` (no
+// termina en el cliente) y fase 0 compara contra el ÚLTIMO mensaje del
+// cliente ("Gracias") sin ver que "Color *"/"Vale" quedaron sin atender —
+// manda el escenario "Gracias" encima de una escalada abierta.
+//
+// La marca "visto hasta" (`turn-seen.ts`, Redis) recuerda, por conversación,
+// cuál fue la línea de cliente más nueva que el ÚLTIMO turno que atendió de
+// verdad llegó a cargar — esa línea (y cualquier otra con el mismo
+// `created_at` de segundo, ver `SeenMarker`) ya fue vista y NO cuenta como
+// pendiente. `pendingCustomerLines` recupera todas las líneas de cliente
+// MÁS NUEVAS que la marca, sin importar cuántas respuestas del asistente
+// queden en el medio. Para el caso de arriba: si un turno anterior dejó la
+// marca en "Color *" (15:24:44) —la última línea que ese turno llegó a
+// ver—, el turno de las 15:25:06 recupera ["Vale", "Gracias"] (las dos
+// líneas MÁS NUEVAS que "Color *"), y la guarda de cortesía tras escalada
+// dispara porque las dos son cortesía. Si en cambio la marca ya llegara
+// hasta "Gracias" (porque un turno más reciente la contestó), no quedaría
+// nada pendiente y el turno se cerraría con `turno_sin_mensaje_nuevo`.
+//
+// El caso inverso (dos, mismo plan): si un turno YA contestó ciertas líneas
+// y otro turno para la MISMA conversación sigue en cola (una ráfaga que
+// llegó mientras el primero redactaba), la marca que deja el primero hace
+// que el segundo no vuelva a tratar esas líneas como pendientes.
+// ---------------------------------------------------------------------------
+
+/**
+ * Lo que guarda `turn-seen.ts` en Redis: hasta qué mensaje del cliente vio
+ * el último turno que atendió de verdad esta conversación.
+ *
+ * `hasta` es el `created_at` (ISO) — con precisión de SEGUNDO, porque es la
+ * marca de tiempo de Meta — de la línea de cliente más nueva que ese turno
+ * cargó. `ids` son los `id` de `messages` que comparten exactamente ese
+ * `created_at`: dos fragmentos del cliente en el mismo segundo no se
+ * distinguen por fecha, así que hace falta el id para no tratar como
+ * "pendiente" uno que ya se vio.
+ */
+export interface SeenMarker {
+  hasta: string;
+  ids: string[];
+}
+
+/**
+ * Forma que necesitan `pendingCustomerLines`/`latestCustomerMarker`: lo mismo
+ * que `StreakEntry` (mismo motivo: acepta tanto `HistoryLine` como el
+ * `ModelMessage` que arma `loadHistory` en agent.ts) más el `id` real de la
+ * fila de `messages` — hace falta para desempatar dos fragmentos con el
+ * mismo `created_at` de segundo. `agent.ts` arma este arreglo con el mismo
+ * zip que ya usa para `customerBurst`, sumando un tercer arreglo paralelo
+ * (`historyIds`, mismo índice) que `loadHistory` arma en el mismo bucle que
+ * `createdAt`.
+ */
+interface PendingEntry extends StreakEntry {
+  id?: string | null;
+}
+
+/**
+ * Las líneas de CLIENTE más nuevas que la marca `seen`, en orden
+ * CRONOLÓGICO, sin importar si hay líneas del asistente en el medio — a
+ * diferencia de `customerBurst`, que corta en la primera línea (yendo desde
+ * el final hacia atrás) que no sea del cliente.
+ *
+ * `seen === null` (sin Redis, o conversación nunca vista por un turno que
+ * haya escrito la marca): el resultado es EXACTAMENTE `customerBurst(history)`
+ * — sin marca no hay de dónde sacar "hasta dónde ya se contestó", así que se
+ * conserva la regla de siempre.
+ *
+ * Con `seen` presente, una línea de cliente entra si:
+ *   - su `createdAt` es POSTERIOR a `seen.hasta`, o
+ *   - es el MISMO segundo (`createdAt === seen.hasta`) y su `id` NO está en
+ *     `seen.ids` (el empate de segundo que describe `SeenMarker`).
+ *
+ * Un STICKER se salta igual que en `customerBurst`: no es un pedido, no
+ * cuenta como línea pendiente ni corta nada. Y, igual que `customerBurst`,
+ * el resultado se acota por `CUSTOMER_BURST_GAP_MINUTES` entre líneas
+ * PENDIENTES consecutivas —yendo de la más nueva hacia atrás—: dos preguntas
+ * sueltas separadas por más de diez minutos, aunque las dos sean
+ * posteriores a la marca, no son la misma ráfaga.
+ *
+ * Una línea sin `createdAt` parseable es conservadora, mismo criterio que
+ * `customerBurst` (hallazgo 4, 19/9/2026): NO cuenta como pendiente, salvo
+ * que sea la última línea de TODO el historial (no solo la última de
+ * cliente) — no hay nada más nuevo contra qué compararla, así que
+ * descartarla dejaría un mensaje real sin contestar por un dato que falta.
+ */
+export function pendingCustomerLines(history: PendingEntry[], seen: SeenMarker | null): string[] {
+  if (seen === null) return customerBurst(history);
+
+  const hastaMs = parseTimestamp(seen.hasta);
+  const idsVistos = new Set(seen.ids);
+
+  const pendientes: { content: string; ms: number | null }[] = [];
+  for (let i = 0; i < history.length; i++) {
+    const message = history[i];
+    if (message.role !== "user") continue;
+    if (typeof message.content !== "string") continue;
+    // Mismo criterio que customerBurst (hallazgo 8): un sticker no es un
+    // pedido, se salta sin contar como línea.
+    if (message.content === CUSTOMER_STICKER_MARKER) continue;
+
+    const ms = parseTimestamp(message.createdAt);
+    let esPendiente: boolean;
+    if (ms === null) {
+      // Conservador: solo cuenta si es la última línea de TODO el historial.
+      esPendiente = i === history.length - 1;
+    } else if (hastaMs === null) {
+      // Defensivo: `turn-seen.ts` nunca escribe un `hasta` que no parsee,
+      // pero si algún día lo hiciera, tratar la marca como si no existiera
+      // es más seguro que descartar la ráfaga entera por un dato corrupto.
+      esPendiente = true;
+    } else {
+      esPendiente = ms > hastaMs || (ms === hastaMs && !idsVistos.has(message.id ?? ""));
+    }
+
+    if (esPendiente) pendientes.push({ content: message.content, ms });
+  }
+
+  // Mismo corte por hueco que customerBurst, pero sobre los PENDIENTES: dos
+  // preguntas sueltas separadas por más de CUSTOMER_BURST_GAP_MINUTES no son
+  // la misma ráfaga aunque las dos sean posteriores a la marca.
+  const resultado: string[] = [];
+  let referencia: number | null = null;
+  for (let i = pendientes.length - 1; i >= 0; i--) {
+    const candidato = pendientes[i];
+    if (resultado.length > 0) {
+      if (candidato.ms === null || referencia === null) break;
+      if ((referencia - candidato.ms) / 60000 > CUSTOMER_BURST_GAP_MINUTES) break;
+    }
+    resultado.unshift(candidato.content);
+    referencia = candidato.ms;
+  }
+
+  return resultado;
+}
+
+/**
+ * La marca que hay que dejar en Redis cuando un turno SÍ atendió de verdad
+ * lo que vio: la línea de cliente más nueva del historial que cargó ese
+ * turno (`hasta`), y los `id` de todas las líneas de cliente que comparten
+ * exactamente ese `created_at` de segundo (`ids` — el empate que resuelve
+ * `pendingCustomerLines`).
+ *
+ * `null` si el historial no trae ninguna línea de cliente con `createdAt`
+ * parseable — no hay nada que marcar como visto (agent.ts simplemente no
+ * escribe la marca en ese caso).
+ */
+export function latestCustomerMarker(history: PendingEntry[]): SeenMarker | null {
+  let hastaMs: number | null = null;
+  let hasta: string | null = null;
+
+  for (const message of history) {
+    if (message.role !== "user") continue;
+    if (typeof message.content !== "string") continue;
+    const ms = parseTimestamp(message.createdAt);
+    if (ms === null) continue;
+    if (hastaMs === null || ms > hastaMs) {
+      hastaMs = ms;
+      hasta = message.createdAt as string;
+    }
+  }
+
+  if (hasta === null || hastaMs === null) return null;
+
+  const ids = history
+    .filter(
+      (message) =>
+        message.role === "user" &&
+        typeof message.content === "string" &&
+        parseTimestamp(message.createdAt) === hastaMs
+    )
+    .map((message) => message.id)
+    .filter((id): id is string => typeof id === "string");
+
+  return { hasta, ids };
+}

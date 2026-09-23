@@ -36,6 +36,14 @@ interface FakeState {
      * conservadora (ver su docblock en history-line.ts).
      */
     created_at?: string;
+    /**
+     * T1, plan "Seba no habla de más mientras el cliente espera al asesor"
+     * (22-23/9/2026): el `id` real de la fila, que `pendingCustomerLines`/
+     * `latestCustomerMarker` (history-line.ts) usan para desempatar dos
+     * fragmentos del cliente con el mismo `created_at` de segundo.
+     * `undefined` de fábrica para los tests que no la ejercitan.
+     */
+    id?: string;
   }[];
   historyOrderAscending: boolean | null;
   /** Claves encendidas en public.agent_tools. */
@@ -602,6 +610,25 @@ function createFakeSupabase() {
 
 vi.mock("@/lib/supabase/admin", () => ({ createAdminClient: () => createFakeSupabase() }));
 
+/**
+ * T1, plan "Seba no habla de más mientras el cliente espera al asesor"
+ * (22-23/9/2026): fake de Redis PROPIO para la marca "visto hasta"
+ * (`turn-seen.ts`) — no el `FakeRedis` de fake-redis.ts, que es de la cola y
+ * otra tarea en paralelo (T3 del mismo plan) lo toca. Un `Map` en memoria
+ * detrás de `get`/`set` alcanza: acá interesa qué queda escrito bajo
+ * `turno:visto:<id>`, no la semántica de los scripts Lua de la cola.
+ */
+const redisSeenStore = new Map<string, string>();
+vi.mock("@/lib/redis", () => ({
+  getRedis: () => ({
+    get: async (key: string) => redisSeenStore.get(key) ?? null,
+    set: async (key: string, value: string, ..._args: unknown[]) => {
+      redisSeenStore.set(key, value);
+      return "OK" as const;
+    },
+  }),
+}));
+
 const matchPlaybookMock = vi.fn();
 const fetchActivePlaybooksMock = vi.fn(async () => [] as Playbook[]);
 /** Si este escenario ya salió en este chat dentro de la ventana de repetición. */
@@ -942,6 +969,7 @@ beforeEach(() => {
   state.catalogLinksError = null;
   state.agentTurnInsertedId = "agent-turn-1";
   state.agentTurnCallsInsertError = null;
+  redisSeenStore.clear();
   withinFreeformWindowOverride.fn = null;
   sendTypingIndicatorMock.mockClear();
   conversationUpdates.length = 0;
@@ -3729,6 +3757,122 @@ describe("runAgentTurn — el saludo y la cortesía miran la ráfaga entera (T3,
   });
 });
 
+/**
+ * T1, plan "Seba no habla de más mientras el cliente espera al asesor"
+ * (22-23/9/2026, "lo ya respondido no se vuelve a responder"): la marca
+ * "visto hasta" en Redis (`turn-seen.ts`) reemplaza a `customerBurst` a
+ * secas cuando existe — `pendingCustomerLines` recupera TODAS las líneas de
+ * cliente más nuevas que la marca, aunque el historial termine en una
+ * respuesta del asistente.
+ *
+ * Secuencia EXACTA del caso real medido en producción el 22/9/2026 (hora
+ * VET): cliente "Color *" (15:24:44), "Vale" (15:24:53), "Gracias"
+ * (15:24:54); Seba responde (15:24:59). El turno de las 15:25:06 carga el
+ * historial YA TERMINADO en esa respuesta — sin la marca, `customerBurst`
+ * da `[]` y la guarda de cortesía tras escalada no dispara (el bug real).
+ */
+describe("runAgentTurn — la marca 'visto hasta' (T1, 22-23/9/2026)", () => {
+  const HISTORIAL_CASO_1 = [
+    { sender_type: "ai", content: "¡Un gusto ayudarte!", is_internal_note: false, created_at: "2026-09-22T15:24:59.000Z" },
+    { sender_type: "customer", content: "Gracias", is_internal_note: false, created_at: "2026-09-22T15:24:54.000Z", id: "m-gracias" },
+    { sender_type: "customer", content: "Vale", is_internal_note: false, created_at: "2026-09-22T15:24:53.000Z", id: "m-vale" },
+    { sender_type: "customer", content: "Color *", is_internal_note: false, created_at: "2026-09-22T15:24:44.000Z", id: "m-color" },
+  ];
+
+  function seedMarker(hasta: string, ids: string[]) {
+    redisSeenStore.set("turno:visto:conv-1", JSON.stringify({ hasta, ids }));
+  }
+
+  it("marca en 'Color *' (ya visto): recupera ['Vale', 'Gracias'] pendientes → dispara cortesia_tras_escalada, sin llamar a matchPlaybook", async () => {
+    state.history = HISTORIAL_CASO_1;
+    state.lastHandoffRow = { reason: "escalada_sin_asesor", created_at: "2026-09-14T10:00:00.000Z" };
+    state.agentMessagesAfterHandoff = [];
+    seedMarker("2026-09-22T15:24:44.000Z", ["m-color"]);
+
+    await runAgentTurn("conv-1");
+
+    expect(matchPlaybookMock).not.toHaveBeenCalled();
+    expect(sendAgentTextMock).not.toHaveBeenCalled();
+    expect(handoffCalls).toHaveLength(1);
+    expect(handoffCalls[0]).toMatchObject({ p_reason: "cortesia_tras_escalada" });
+  });
+
+  it("marca en 'Gracias' (todo ya visto): no queda nada pendiente → turno_sin_mensaje_nuevo, sin modelo ni traspaso", async () => {
+    state.history = HISTORIAL_CASO_1;
+    state.lastHandoffRow = { reason: "escalada_sin_asesor", created_at: "2026-09-14T10:00:00.000Z" };
+    state.agentMessagesAfterHandoff = [];
+    seedMarker("2026-09-22T15:24:54.000Z", ["m-gracias"]);
+    const info = vi.spyOn(log, "info");
+
+    await runAgentTurn("conv-1");
+
+    expect(info).toHaveBeenCalledWith("turno_sin_mensaje_nuevo", { conversationId: "conv-1" });
+    expect(matchPlaybookMock).not.toHaveBeenCalled();
+    expect(classifyIntentMock).not.toHaveBeenCalled();
+    expect(sendAgentTextMock).not.toHaveBeenCalled();
+    // No cambia de dueño: lo que el cliente dijo ya lo contestó el turno
+    // anterior — no hay ningún `record_handoff` que escribir acá.
+    expect(handoffCalls).toHaveLength(0);
+  });
+
+  it("sin marca (Redis nunca la escribió, o el turno anterior nunca llegó a escribirla): comportamiento de hoy", async () => {
+    state.history = HISTORIAL_CASO_1;
+    state.lastHandoffRow = { reason: "escalada_sin_asesor", created_at: "2026-09-14T10:00:00.000Z" };
+    state.agentMessagesAfterHandoff = [];
+    // redisSeenStore queda vacío (beforeEach ya lo limpia): sin marca, la
+    // ráfaga vuelve a ser `customerBurst`, que da `[]` porque el historial
+    // termina en la respuesta de Seba — la guarda de cortesía no dispara y
+    // el turno sigue de largo a fase 0/1, tal como se comportaba ANTES de
+    // esta tarea.
+    await runAgentTurn("conv-1");
+
+    expect(handoffCalls.some((c) => c.p_reason === "cortesia_tras_escalada")).toBe(false);
+    expect(classifyIntentMock).toHaveBeenCalled();
+  });
+
+  it("una respuesta final entregada sin falla deja la marca en Redis con el created_at y el id más nuevos del historial cargado", async () => {
+    state.history = [
+      {
+        sender_type: "customer",
+        content: "hola, tienen cascos?",
+        is_internal_note: false,
+        created_at: "2026-09-22T12:00:00.000Z",
+        id: "m-1",
+      },
+    ];
+
+    await runAgentTurn("conv-1");
+
+    expect(sendAgentTextMock).toHaveBeenCalled();
+    const raw = redisSeenStore.get("turno:visto:conv-1");
+    expect(raw).toBeTruthy();
+    expect(JSON.parse(raw!)).toEqual({ hasta: "2026-09-22T12:00:00.000Z", ids: ["m-1"] });
+  });
+
+  it("cuando la entrega falla (fallo de red), la marca NO se escribe", async () => {
+    state.history = [
+      {
+        sender_type: "customer",
+        content: "hola, tienen cascos?",
+        is_internal_note: false,
+        created_at: "2026-09-22T12:00:00.000Z",
+        id: "m-1",
+      },
+    ];
+    sendAgentTextMock.mockResolvedValueOnce({
+      whatsapp_message_id: null,
+      whatsapp_status: "failed" as const,
+      whatsapp_error_code: null,
+      whatsapp_error_detail: "fetch failed",
+      origenDelFallo: "red" as const,
+    });
+
+    await runAgentTurn("conv-1");
+
+    expect(redisSeenStore.has("turno:visto:conv-1")).toBe(false);
+  });
+});
+
 describe("runAgentTurn — interruptores de herramientas", () => {
   it("con todo encendido, una consulta lleva catálogo, biblioteca y escalamiento", async () => {
     await runAgentTurn("conv-1");
@@ -4759,6 +4903,45 @@ describe("runAgentTurn — el reintento tras ProviderFailedAfterGreetingError (T
     expect(agentOptions[0].instructions.slice(SYSTEM_PROMPT.length)).toMatch(
       /seba acaba de presentarse en un mensaje aparte/i
     );
+  });
+
+  /**
+   * T1, plan "Seba no habla de más mientras el cliente espera al asesor"
+   * (22-23/9/2026): un reintento de T12 NUNCA escribió la marca "visto
+   * hasta" (falló ANTES de responder, `marcarTurnoVisto` no corre en ese
+   * camino) — así que, si existe alguna marca, es de un turno ANTERIOR al
+   * que se está reintentando, y el mensaje del cliente que dispara este
+   * reintento sigue siendo más nuevo que ella. El reintento no puede caer
+   * en la salida nueva `turno_sin_mensaje_nuevo`.
+   */
+  it("reintento con una marca VIEJA (de un turno anterior, no de este): no dispara turno_sin_mensaje_nuevo, sigue redactando", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-09-18T00:30:00Z"));
+    state.conversation = { ...state.conversation, welcome_sent_at: "2026-09-17T23:00:00Z" };
+    state.history = [
+      { sender_type: "agent", content: sebaGreeting("noche"), is_internal_note: false, created_at: "2026-09-18T00:29:00.000Z" },
+      {
+        sender_type: "customer",
+        content: "hola, tienen pastillas de freno",
+        is_internal_note: false,
+        created_at: "2026-09-18T00:28:00.000Z",
+        id: "m-pregunta",
+      },
+    ];
+    // Marca de un turno bien anterior — nada que ver con el mensaje que se
+    // está reintentando ahora.
+    redisSeenStore.set(
+      "turno:visto:conv-1",
+      JSON.stringify({ hasta: "2026-09-17T22:00:00.000Z", ids: [] })
+    );
+    const info = vi.spyOn(log, "info");
+
+    await runAgentTurn("conv-1");
+
+    expect(info).not.toHaveBeenCalledWith("turno_sin_mensaje_nuevo", expect.anything());
+    expect(classifyIntentMock).toHaveBeenCalledTimes(1);
+    expect(generateMock).toHaveBeenCalledTimes(1);
+    expect(sendAgentTextMock).toHaveBeenCalledTimes(1);
   });
 
   /**

@@ -4,8 +4,11 @@ import {
   customerBurst,
   historyLine,
   isHistoryMarker,
+  latestCustomerMarker,
   mediaStreakWithoutText,
+  pendingCustomerLines,
   type HistoryRow,
+  type SeenMarker,
 } from "@/lib/ai/history-line";
 import { revealsIdentity } from "@/lib/ai/identity-guard";
 
@@ -499,6 +502,114 @@ describe("customerBurst", () => {
         ])
       ).toEqual(["gracias"]);
     });
+  });
+});
+
+/**
+ * T1, plan "Seba no habla de más mientras el cliente espera al asesor"
+ * (22-23/9/2026): la ráfaga de líneas de cliente que le interesa al turno
+ * SIGUIENTE, medida contra la marca "visto hasta" (`turn-seen.ts`) en vez de
+ * (o, sin marca, además de) la ráfaga final del historial. Ver el
+ * comentario de cabecera en history-line.ts para el caso real del 22/9.
+ */
+describe("pendingCustomerLines", () => {
+  it("con marca nula, el resultado es EXACTAMENTE customerBurst(history)", () => {
+    const history = [
+      { role: "user", content: "hola", createdAt: "2026-09-22T10:00:00.000Z" },
+      { role: "assistant", content: "¿en qué te ayudo?", createdAt: "2026-09-22T10:00:05.000Z" },
+      { role: "user", content: "buenas", createdAt: "2026-09-22T10:00:10.000Z" },
+    ];
+    expect(pendingCustomerLines(history, null)).toEqual(customerBurst(history));
+  });
+
+  it("líneas pendientes ANTES y DESPUÉS de una respuesta del asistente entran las dos, sin que la respuesta las corte", () => {
+    const history = [
+      { role: "user", content: "primero", createdAt: "2026-09-22T10:00:00.000Z", id: "m1" },
+      { role: "assistant", content: "una respuesta cualquiera", createdAt: "2026-09-22T10:00:05.000Z" },
+      { role: "user", content: "segundo", createdAt: "2026-09-22T10:00:10.000Z", id: "m2" },
+    ];
+    const seen: SeenMarker = { hasta: "2026-09-22T09:59:00.000Z", ids: [] };
+    expect(pendingCustomerLines(history, seen)).toEqual(["primero", "segundo"]);
+  });
+
+  it("empate de segundo: el mismo created_at, resuelto por id — el que ya está en `ids` NO es pendiente", () => {
+    const history = [
+      { role: "user", content: "a", createdAt: "2026-09-22T10:00:00.000Z", id: "m1" },
+      { role: "user", content: "b", createdAt: "2026-09-22T10:00:00.000Z", id: "m2" },
+    ];
+    const seen: SeenMarker = { hasta: "2026-09-22T10:00:00.000Z", ids: ["m1"] };
+    expect(pendingCustomerLines(history, seen)).toEqual(["b"]);
+  });
+
+  it("un sticker se salta: no cuenta como pendiente aunque sea posterior a la marca", () => {
+    const history = [
+      { role: "user", content: "[El cliente envió un sticker]", createdAt: "2026-09-22T10:00:00.000Z", id: "m1" },
+      { role: "user", content: "hola", createdAt: "2026-09-22T10:00:05.000Z", id: "m2" },
+    ];
+    const seen: SeenMarker = { hasta: "2026-09-22T09:00:00.000Z", ids: [] };
+    expect(pendingCustomerLines(history, seen)).toEqual(["hola"]);
+  });
+
+  it(`un hueco de más de ${CUSTOMER_BURST_GAP_MINUTES} minutos entre pendientes consecutivos corta la ráfaga: solo entra la más nueva`, () => {
+    const history = [
+      { role: "user", content: "vieja", createdAt: "2026-09-22T09:00:00.000Z", id: "m1" },
+      { role: "user", content: "nueva", createdAt: "2026-09-22T09:15:00.000Z", id: "m2" },
+    ];
+    const seen: SeenMarker = { hasta: "2026-09-22T08:00:00.000Z", ids: [] };
+    expect(pendingCustomerLines(history, seen)).toEqual(["nueva"]);
+  });
+
+  it("una línea pendiente SIN createdAt, que no es la más nueva de todo el historial, se descarta (conservador)", () => {
+    const history = [
+      { role: "user", content: "sin fecha" },
+      { role: "user", content: "con fecha", createdAt: "2026-09-22T10:00:00.000Z", id: "m1" },
+    ];
+    const seen: SeenMarker = { hasta: "2026-09-22T09:00:00.000Z", ids: [] };
+    expect(pendingCustomerLines(history, seen)).toEqual(["con fecha"]);
+  });
+
+  it("caso real 22/9/2026: la marca en 'Color *' (ya vista por el turno anterior) recupera ['Vale', 'Gracias'], aunque Seba haya respondido en el medio", () => {
+    const history = [
+      { role: "user", content: "Color *", createdAt: "2026-09-22T15:24:44.000Z", id: "m-color" },
+      { role: "user", content: "Vale", createdAt: "2026-09-22T15:24:53.000Z", id: "m-vale" },
+      { role: "user", content: "Gracias", createdAt: "2026-09-22T15:24:54.000Z", id: "m-gracias" },
+      { role: "assistant", content: "¡Un gusto ayudarte!", createdAt: "2026-09-22T15:24:59.000Z" },
+    ];
+    // La marca dice "el turno anterior ya vio 'Color *'" (su id está en
+    // `ids`): esa línea queda EXCLUIDA de los pendientes, y quedan las dos
+    // que llegaron después — las dos de cortesía, que es justo lo que hace
+    // disparar la guarda de cortesía tras escalada en agent.test.ts.
+    const seen: SeenMarker = { hasta: "2026-09-22T15:24:44.000Z", ids: ["m-color"] };
+    expect(pendingCustomerLines(history, seen)).toEqual(["Vale", "Gracias"]);
+  });
+});
+
+describe("latestCustomerMarker", () => {
+  it("historial vacío → null", () => {
+    expect(latestCustomerMarker([])).toBeNull();
+  });
+
+  it("sin ninguna línea de cliente con createdAt parseable → null", () => {
+    expect(latestCustomerMarker([{ role: "user", content: "hola" }])).toBeNull();
+  });
+
+  it("toma la línea de cliente con el created_at MÁS NUEVO, ignorando las líneas del asistente", () => {
+    expect(
+      latestCustomerMarker([
+        { role: "user", content: "primero", createdAt: "2026-09-22T10:00:00.000Z", id: "m1" },
+        { role: "assistant", content: "respuesta", createdAt: "2026-09-22T10:05:00.000Z" },
+        { role: "user", content: "segundo", createdAt: "2026-09-22T10:10:00.000Z", id: "m2" },
+      ])
+    ).toEqual({ hasta: "2026-09-22T10:10:00.000Z", ids: ["m2"] });
+  });
+
+  it("dos líneas de cliente con el MISMO created_at (empate de segundo) → los dos ids", () => {
+    expect(
+      latestCustomerMarker([
+        { role: "user", content: "a", createdAt: "2026-09-22T10:00:00.000Z", id: "m1" },
+        { role: "user", content: "b", createdAt: "2026-09-22T10:00:00.000Z", id: "m2" },
+      ])
+    ).toEqual({ hasta: "2026-09-22T10:00:00.000Z", ids: ["m1", "m2"] });
   });
 });
 

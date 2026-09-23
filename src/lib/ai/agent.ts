@@ -31,7 +31,14 @@ import { escalateConversation, type EscalationMotivo } from "@/lib/ai/escalate";
 import { withConversationTurnLock, type TurnLease } from "@/lib/ai/conversation-lock";
 import { humanHasWritten } from "@/lib/ai/human-handled";
 import { ZERO_USAGE, fetchActivePlaybooks, matchPlaybook, playbookSentRecently, type PlaybookMatch } from "@/lib/ai/playbooks";
-import { customerBurst, historyLine, isHistoryMarker, mediaStreakWithoutText } from "@/lib/ai/history-line";
+import {
+  historyLine,
+  isHistoryMarker,
+  latestCustomerMarker,
+  mediaStreakWithoutText,
+  pendingCustomerLines,
+} from "@/lib/ai/history-line";
+import { readSeen, writeSeen } from "@/lib/ai/turn-seen";
 import { customerFirstName } from "@/lib/ai/customer-name";
 import { playbookMessageText, sendAgentText, sendPlaybookReply, type DeliveryOutcome } from "@/lib/ai/send";
 import { buildTurnTarget, type AgentConversation, type TurnTarget } from "@/lib/ai/turn-target";
@@ -279,13 +286,18 @@ const HISTORY_LIMIT = 15;
 /**
  * Lo que devuelve `loadHistory`: el historial tal cual lo necesita el
  * modelo (`messages`, sin fecha — es el tipo `ModelMessage` del SDK de IA,
- * que no tiene dónde ponerla) más un arreglo paralelo (`createdAt`, mismo
- * índice que `messages`) con la fecha real de cada fila, para quien SÍ la
- * necesita (`customerBurst`, T3, corrección del 19/9/2026, hallazgo 4).
+ * que no tiene dónde ponerla) más dos arreglos paralelos (mismo índice que
+ * `messages`) con datos de la fila real que el modelo no necesita pero
+ * `pendingCustomerLines`/`latestCustomerMarker` (history-line.ts) sí:
+ * `createdAt` (T3, corrección del 19/9/2026, hallazgo 4) y `ids` (T1, plan
+ * "Seba no habla de más mientras el cliente espera al asesor", 22-23/9/2026
+ * — el `id` real de `messages`, que hace falta para desempatar dos
+ * fragmentos del cliente con el mismo `created_at` de segundo).
  */
 interface LoadedHistory {
   messages: ModelMessage[];
   createdAt: (string | null)[];
+  ids: (string | null)[];
 }
 
 /**
@@ -298,13 +310,14 @@ interface LoadedHistory {
 async function loadHistory(supabase: SupabaseClient<Database>, conversationId: string): Promise<LoadedHistory> {
   const { data } = await supabase
     .from("messages")
-    .select("sender_type, content, is_internal_note, message_type, created_at")
+    .select("sender_type, content, is_internal_note, message_type, created_at, id")
     .eq("conversation_id", conversationId)
     .order("created_at", { ascending: false })
     .limit(HISTORY_LIMIT);
 
   const messages: ModelMessage[] = [];
   const createdAt: (string | null)[] = [];
+  const ids: (string | null)[] = [];
   for (const row of [...(data ?? [])].reverse()) {
     // 'unsupported' (T3.2, 5/9/2026) es Meta avisando de un tipo que el CRM
     // no sabe representar: `content` ya queda null en la base, pero el
@@ -325,12 +338,14 @@ async function loadHistory(supabase: SupabaseClient<Database>, conversationId: s
     const linea = historyLine(row);
     if (!linea) continue;
     messages.push({ role: linea.role, content: linea.content });
-    // `row.created_at` sale de la misma fila que ya pasó `historyLine`, así
-    // que el índice de este arreglo calza siempre con el de `messages` —
-    // ninguna fila descartada deja un hueco entre los dos.
+    // `row.created_at`/`row.id` salen de la misma fila que ya pasó
+    // `historyLine`, así que el índice de estos dos arreglos calza siempre
+    // con el de `messages` — ninguna fila descartada deja un hueco entre
+    // los tres.
     createdAt.push(row.created_at ?? null);
+    ids.push(row.id ?? null);
   }
-  return { messages, createdAt };
+  return { messages, createdAt, ids };
 }
 
 /**
@@ -1231,7 +1246,17 @@ async function runPlaybook(
    * `esperandoAsesor`, más abajo), y `journey_stage` no puede caer a `null`
    * al terminar (`stageFor`, ver el reseteo de más abajo).
    */
-  assignedAgentId: string | null
+  assignedAgentId: string | null,
+  /**
+   * T1, plan "Seba no habla de más mientras el cliente espera al asesor"
+   * (22-23/9/2026): deja la marca "visto hasta" en Redis. `runPlaybook` no
+   * tiene el historial zipeado a mano (vive en `runTurnPhases`) ni sabe por
+   * sí sola si la entrega salió bien —de ahí el callback, en vez de que esta
+   * función arme la marca por su cuenta—: se llama UNA sola vez, justo
+   * después de confirmar que el envío no falló, igual que las demás salidas
+   * que sí atendieron lo que vieron.
+   */
+  onDelivered: () => Promise<void>
 ): Promise<void> {
   // Con D2 la IA sigue respondiendo en un chat que YA tiene asesor: esa
   // respuesta es la misma cortesía automática de siempre —el cliente sigue
@@ -1250,6 +1275,8 @@ async function runPlaybook(
   );
   if (!salida) return;
   if (await deliveryFailed(supabase, target.conversationId, salida, assignedAgentId)) return;
+
+  await onDelivered();
 
   // Se etiqueta siempre que el escenario responda, escale o no: un escenario
   // que deja al cliente esperando también puede querer dejar marcado el caso.
@@ -1453,7 +1480,15 @@ async function runTurnPhases(
     .update({ journey_stage: stageFor(convo.assigned_agent_id, "classifying"), active_tool: null })
     .eq("id", conversationId);
 
-  const { messages: history, createdAt: historyCreatedAt } = await loadHistory(supabase, conversationId);
+  // T1, plan "Seba no habla de más mientras el cliente espera al asesor"
+  // (22-23/9/2026): la marca "visto hasta" no depende de nada que
+  // `loadHistory` calcule, así que se lee en paralelo con ella — el mismo
+  // criterio que ya usa el resto del turno para no encadenar lecturas que no
+  // dependen una de la otra.
+  const [{ messages: history, createdAt: historyCreatedAt, ids: historyIds }, seen] = await Promise.all([
+    loadHistory(supabase, conversationId),
+    readSeen(conversationId),
+  ]);
 
   // T12, plan "Seba sale sin pisar a nadie" (19/9/2026, cierra la decisión
   // abierta #1): ¿este turno es un REINTENTO de uno anterior que ya mandó la
@@ -1486,6 +1521,10 @@ async function runTurnPhases(
   ) {
     history.pop();
     historyCreatedAt.pop();
+    // T1 (22-23/9/2026): tercer arreglo paralelo, mismo motivo que los otros
+    // dos — el reintento tiene que ver EXACTAMENTE el historial que vio el
+    // primer intento, incluido qué `id` tenía cada línea.
+    historyIds.pop();
     introducedThisTurn = true;
     saludoPendienteDeRespuesta = true;
   }
@@ -1530,16 +1569,73 @@ async function runTurnPhases(
   // `soloSaludo` y la guarda de cortesía de más abajo, para no perder una
   // pregunta que llegó ANTES del saludo/cortesía final de la misma ráfaga.
   //
-  // `history`/`historyCreatedAt` comparten índice (los arma `loadHistory` en
-  // el mismo bucle): zipearlos acá, y solo acá, es lo que le da a
-  // `customerBurst` la fecha de cada línea sin cargar con ella a `history`
-  // —el tipo que viaja tal cual hasta `agent.generate` (corrección del
-  // 19/9/2026, hallazgo 4: sin fecha, la ráfaga no distinguía "el cliente
-  // escribió dos líneas seguidas" de "el cliente escribió algo hace DÍAS que
-  // quedó sin responder a propósito, y ahora escribe de nuevo").
-  const rafagaCliente = customerBurst(
-    history.map((message, i) => ({ role: message.role, content: message.content, createdAt: historyCreatedAt[i] }))
-  );
+  // `history`/`historyCreatedAt`/`historyIds` comparten índice (los arma
+  // `loadHistory` en el mismo bucle): zipearlos acá, y solo acá, es lo que
+  // le da a `pendingCustomerLines`/`latestCustomerMarker` la fecha y el id
+  // de cada línea sin cargar con ellos a `history` —el tipo que viaja tal
+  // cual hasta `agent.generate` (corrección del 19/9/2026, hallazgo 4: sin
+  // fecha, la ráfaga no distinguía "el cliente escribió dos líneas seguidas"
+  // de "el cliente escribió algo hace DÍAS que quedó sin responder a
+  // propósito, y ahora escribe de nuevo").
+  const zipped = history.map((message, i) => ({
+    role: message.role,
+    content: message.content,
+    createdAt: historyCreatedAt[i],
+    id: historyIds[i],
+  }));
+
+  // T1, plan "Seba no habla de más mientras el cliente espera al asesor"
+  // (22-23/9/2026): con la marca "visto hasta" presente, `rafagaCliente` deja
+  // de ser SOLO la ráfaga final (`customerBurst`) y pasa a ser TODA línea de
+  // cliente más nueva que lo que vio el último turno que atendió de verdad
+  // —aunque haya una respuesta del asistente en el medio—. Sin marca
+  // (`seen === null`: sin Redis, o esta conversación nunca la escribió), el
+  // resultado es EXACTAMENTE `customerBurst`, igual que antes de esta tarea.
+  // Ver el comentario de cabecera de `pendingCustomerLines` en
+  // history-line.ts para el caso real que motivó esto.
+  const rafagaCliente = pendingCustomerLines(zipped, seen);
+
+  // T1, plan "Seba no habla de más mientras el cliente espera al asesor"
+  // (22-23/9/2026): si HAY marca y no queda ni una línea pendiente, el turno
+  // no tiene nada nuevo que atender — lo que el cliente dijo ya lo contestó
+  // el turno anterior (dentro de esta misma ventana de historial). Sale
+  // ANTES de la presentación de Seba, de fase 0/1 y del tool loop: sin esto,
+  // dos turnos en cola para la MISMA conversación (una ráfaga que llegó
+  // mientras el primero redactaba) hacían que el segundo repitiera la
+  // respuesta del primero — caso 2 del plan.
+  //
+  // Sin traspaso: la invariante "ningún lead invisible" (CLAUDE.md) exige
+  // dejar rastro en toda salida silenciosa, pero acá NO hay nada que
+  // decidir sobre el dueño de la conversación — no cambia, y `awaiting_reply`
+  // tampoco se toca, porque lo que el cliente escribió ya recibió una
+  // respuesta real en un turno anterior. Un traspaso nuevo acá confundiría
+  // más de lo que aclara: no hubo ninguna decisión que registrar, solo un
+  // turno de más que no tenía nada que hacer.
+  //
+  // Un reintento de T12 (`saludoPendienteDeRespuesta`) nunca cae acá: ese
+  // turno falló ANTES de responder —solo la presentación de Seba salió, y
+  // eso no escribe marca (`marcarTurnoVisto` no corre en ese camino)—, así
+  // que la marca que exista (si existe alguna) es de un turno ANTERIOR al
+  // que se está reintentando, y el mensaje del cliente sigue siendo más
+  // nuevo que ella.
+  if (seen !== null && rafagaCliente.length === 0) {
+    log.info("turno_sin_mensaje_nuevo", { conversationId });
+    await resetStage(supabase, conversationId, "turno_sin_mensaje_nuevo", convo.assigned_agent_id);
+    return;
+  }
+
+  // T1 (22-23/9/2026): la marca que hay que dejar en Redis cuando el turno
+  // SÍ atendió de verdad lo que vio — nunca cuando `deliver()` devuelve
+  // `null` (frenos: lock perdido, interruptor apagado, un asesor se
+  // adelantó), cuando la entrega falla (`deliveryFailed`), cuando el turno
+  // lanza, ni en las salidas por humano/pausada/identidad (esas ni siquiera
+  // llegan a `runTurnPhases`, o no producen una respuesta real). Un solo
+  // punto para no repetir la misma llamada en cada salida que sí cuenta —
+  // ver `latestCustomerMarker` en history-line.ts para qué calcula.
+  async function marcarTurnoVisto(): Promise<void> {
+    const marca = latestCustomerMarker(zipped);
+    if (marca) await writeSeen(conversationId, marca);
+  }
 
   // Requisito 1 del cliente (18/9/2026, plan "Seba atiende el mostrador",
   // decisión D1): el primer mensaje de cada conversación —nueva, o reabierta
@@ -1654,6 +1750,10 @@ async function runTurnPhases(
         // Sin fase 0, fase 1 ni tool loop: tres llamadas al proveedor que un
         // "hola" pelado no iba a necesitar.
         await resetStage(supabase, conversationId, "turno_presentacion_saludo", convo.assigned_agent_id);
+        // T1 (22-23/9/2026): la presentación de Seba FUE la respuesta
+        // completa de este turno a lo que el cliente escribió — marca lo que
+        // vio, igual que cualquier otra salida que atendió de verdad.
+        await marcarTurnoVisto();
         await logTurn(supabase, conversationId, {
           intent: null,
           action: "answered",
@@ -1719,6 +1819,10 @@ async function runTurnPhases(
     });
     await resetStage(supabase, conversationId, "turno_cortesia_tras_escalada", convo.assigned_agent_id);
     log.info("turno_cortesia_tras_escalada", { conversationId });
+    // T1 (22-23/9/2026): el turno SÍ atendió lo que vio —decidió, con
+    // fundamento, que no hacía falta contestar nada nuevo—, así que marca
+    // hasta acá: el próximo turno no vuelve a evaluar esta misma cortesía.
+    await marcarTurnoVisto();
     await logTurn(supabase, conversationId, {
       intent: null,
       action: "answered",
@@ -1754,6 +1858,10 @@ async function runTurnPhases(
   ) {
     log.info("turno_saludo_ya_respondido", { conversationId });
     await resetStage(supabase, conversationId, "turno_saludo_ya_respondido", convo.assigned_agent_id);
+    // T1 (22-23/9/2026): mismo criterio que la guarda de cortesía de arriba
+    // — el turno decidió, con fundamento, que no había nada nuevo que
+    // redactar.
+    await marcarTurnoVisto();
     return;
   }
 
@@ -1795,6 +1903,10 @@ async function runTurnPhases(
     // (mismo motivo que el resto de los caminos que escalan primero y hablan
     // después, ver `deliveryFailed`).
     if (await deliveryFailed(supabase, conversationId, salida, convo.assigned_agent_id, true)) return;
+
+    // T1 (22-23/9/2026): la despedida por adjuntos sin texto SÍ salió —el
+    // turno atendió de verdad lo que vio.
+    await marcarTurnoVisto();
 
     await logTurn(supabase, conversationId, {
       intent: null,
@@ -1958,7 +2070,11 @@ async function runTurnPhases(
           tiempos,
           convo.last_customer_message_at,
           businessHours,
-          convo.assigned_agent_id
+          convo.assigned_agent_id,
+          // T1 (22-23/9/2026): el escenario de fase 0 SÍ atendió de verdad
+          // lo que el cliente escribió — se marca, en el único punto de
+          // `runPlaybook` donde ya se sabe que el envío no falló.
+          marcarTurnoVisto
         );
         return;
       }
@@ -2064,6 +2180,9 @@ async function runTurnPhases(
       );
       if (!salió) return;
       if (await deliveryFailed(supabase, conversationId, salió, convo.assigned_agent_id)) return;
+      // T1 (22-23/9/2026): la redirección SÍ salió — es una respuesta real a
+      // lo que el cliente escribió, aunque sea fuera de tema.
+      await marcarTurnoVisto();
     } else {
       // Tarea C6, plan "El resguardo antes del push" (20/9/2026, anexo de la
       // Tanda 1, extensión del hallazgo A): a la segunda insistencia el turno
@@ -2522,6 +2641,9 @@ async function runTurnPhases(
     // seguridad de arriba), así que si ya está en true acá el dueño de la
     // conversación ya quedó fijado y un rechazo de Meta no debe pisarlo.
     if (await deliveryFailed(supabase, conversationId, salida, convo.assigned_agent_id, outcome.escalated)) return;
+    // T1 (22-23/9/2026): la respuesta final del tool loop salió sin falla —
+    // el turno atendió de verdad lo que vio, escale o no.
+    await marcarTurnoVisto();
   }
 
   if (!outcome.escalated) {
