@@ -194,6 +194,18 @@ interface FakeState {
   agentTurnInsertedId: string;
   /** Si viene con mensaje, el INSERT de `agent_turn_calls` (logTurnCalls) falla — nunca lanza, deja `turno_llamadas_no_escritas`. */
   agentTurnCallsInsertError: { message: string } | null;
+  /**
+   * T2, plan "Seba no habla de más mientras el cliente espera al asesor"
+   * (22-23/9/2026): lo que devuelve la relectura de
+   * `conversations.last_customer_message_at` que hace `shouldCedeDraft`
+   * (turn-cession.ts) en los dos puntos de "borrador cedido". `null` de
+   * fábrica: sin fecha, `decideCession` nunca cede (ver su docblock), así
+   * que ningún test viejo de este archivo se entera de esta relectura
+   * nueva a menos que la ponga a mano.
+   */
+  cessionLastCustomerMessageAt: string | null;
+  /** Si viene con mensaje, esa relectura falla — `shouldCedeDraft` no cede y deja `turno_cesion_no_consultable`. */
+  cessionLastCustomerMessageAtError: { message: string } | null;
 }
 
 const state: FakeState = {
@@ -232,6 +244,8 @@ const state: FakeState = {
   catalogLinksError: null,
   agentTurnInsertedId: "agent-turn-1",
   agentTurnCallsInsertError: null,
+  cessionLastCustomerMessageAt: null,
+  cessionLastCustomerMessageAtError: null,
 };
 const conversationUpdates: Record<string, unknown>[] = [];
 /** Tarea 3 (14/9/2026): columnas pedidas en cada `select()` sobre `conversations`, para probar que trae display_name/profile_name. */
@@ -314,6 +328,30 @@ function createFakeSupabase() {
       if (table === "conversations") {
         return {
           select: (columns: string) => {
+            // T2, plan "Seba no habla de más mientras el cliente espera al
+            // asesor" (22-23/9/2026): `shouldCedeDraft` (turn-cession.ts)
+            // relee la conversación con este SELECT angosto, en los dos
+            // puntos de `runTurnPhases` — un tercer consumidor de
+            // `.from("conversations").select(...).eq(...).maybeSingle()`,
+            // distinto de la apertura del turno (que trae display_name/
+            // profile_name, ver el test de esa forma exacta más abajo) y
+            // distinto del reclamo de presentación (que es un `.update`,
+            // más abajo). Se distingue por columnas para no ensuciar
+            // `conversationSelectColumns` -- ese arreglo solo le importa a
+            // la apertura del turno -- ni obligar a los ~220 tests
+            // existentes a enterarse de esta relectura nueva.
+            if (columns === "last_customer_message_at") {
+              return {
+                eq: () => ({
+                  maybeSingle: async () => ({
+                    data: state.cessionLastCustomerMessageAtError
+                      ? null
+                      : { last_customer_message_at: state.cessionLastCustomerMessageAt },
+                    error: state.cessionLastCustomerMessageAtError,
+                  }),
+                }),
+              };
+            }
             conversationSelectColumns.push(columns);
             return {
               eq: () => ({
@@ -619,12 +657,34 @@ vi.mock("@/lib/supabase/admin", () => ({ createAdminClient: () => createFakeSupa
  * `turno:visto:<id>`, no la semántica de los scripts Lua de la cola.
  */
 const redisSeenStore = new Map<string, string>();
+/**
+ * T2, mismo plan (22-23/9/2026): el contador de "borrador cedido"
+ * (`turn-cession.ts`) comparte esta misma conexión falsa — `incr`/`expire`/
+ * `del` sobre un segundo `Map`, `turno:cedido:<id>`. La lógica FINA del tope
+ * (INCR + EXPIRE exactos, el corte en 2, Redis caído) ya la prueba
+ * `turn-cession.test.ts` con su propio espía; acá solo hace falta que estos
+ * tres métodos EXISTAN y se comporten (si no, cada cesión evaluada deja
+ * `turno_cesion_redis_no_disponible`/`turno_cesion_contador_no_borrado` en
+ * el log de cada test de este archivo, aunque el resultado —"no cede"— sea
+ * el mismo por otra vía).
+ */
+const redisCedidoStore = new Map<string, number>();
 vi.mock("@/lib/redis", () => ({
   getRedis: () => ({
     get: async (key: string) => redisSeenStore.get(key) ?? null,
     set: async (key: string, value: string, ..._args: unknown[]) => {
       redisSeenStore.set(key, value);
       return "OK" as const;
+    },
+    incr: async (key: string) => {
+      const next = (redisCedidoStore.get(key) ?? 0) + 1;
+      redisCedidoStore.set(key, next);
+      return next;
+    },
+    expire: async () => 1,
+    del: async (key: string) => {
+      const existed = redisCedidoStore.delete(key);
+      return existed ? 1 : 0;
     },
   }),
 }));
@@ -969,7 +1029,10 @@ beforeEach(() => {
   state.catalogLinksError = null;
   state.agentTurnInsertedId = "agent-turn-1";
   state.agentTurnCallsInsertError = null;
+  state.cessionLastCustomerMessageAt = null;
+  state.cessionLastCustomerMessageAtError = null;
   redisSeenStore.clear();
+  redisCedidoStore.clear();
   withinFreeformWindowOverride.fn = null;
   sendTypingIndicatorMock.mockClear();
   conversationUpdates.length = 0;
@@ -6325,5 +6388,229 @@ describe("Lecciones de Seba llegan al prompt del turno (T5, 18/9/2026)", () => {
       "turno_lecciones_no_legibles",
       expect.objectContaining({ conversationId: "conv-1", detail: "conexión perdida" })
     );
+  });
+});
+
+/**
+ * T2, plan "Seba no habla de más mientras el cliente espera al asesor"
+ * (22-23/9/2026): "borrador cedido". `state.cessionLastCustomerMessageAt`
+ * simula la relectura de `conversations.last_customer_message_at` que hace
+ * `shouldCedeDraft` (turn-cession.ts) en los dos puntos de `runTurnPhases` —
+ * `null` de fábrica (ver el docblock del campo en `FakeState`), así que
+ * estos tests son los únicos de todo el archivo que lo tocan.
+ */
+describe("runAgentTurn — borrador cedido (T2, 22-23/9/2026)", () => {
+  it("cesión en el punto 1 (después de fase 0/1, antes de mandar un escenario o el tool loop): no llama a sendPlaybookReply ni al ToolLoopAgent", async () => {
+    state.history = [
+      {
+        sender_type: "customer",
+        content: "Cuánto cuesta la parrilla de sbr",
+        is_internal_note: false,
+        created_at: "2026-09-22T09:14:11.000Z",
+        id: "m-parrilla",
+      },
+    ];
+    // Un fragmento nuevo ya está en la base cuando corre el punto 1 —
+    // llegó mientras este turno todavía cargaba/clasificaba.
+    state.cessionLastCustomerMessageAt = "2026-09-22T09:14:22.000Z";
+
+    await runAgentTurn("conv-1");
+
+    // Fase 0/1 SÍ corrió (el punto 1 va DESPUÉS de las dos): el chequeo
+    // necesita su resultado para decidir el `intent` de la fila `skipped`.
+    expect(classifyIntentMock).toHaveBeenCalledTimes(1);
+    expect(matchPlaybookMock).toHaveBeenCalledTimes(1);
+    // Pero ni el escenario ni el tool loop llegaron a correr.
+    expect(sendPlaybookReplyMock).not.toHaveBeenCalled();
+    expect(generateMock).not.toHaveBeenCalled();
+    expect(sendAgentTextMock).not.toHaveBeenCalled();
+
+    expect(agentTurnInserts).toHaveLength(1);
+    expect(agentTurnInserts[0]).toMatchObject({
+      action: "skipped",
+      summary: "Borrador cedido: llegó otro mensaje del cliente mientras se redactaba.",
+    });
+    // Los tokens de la clasificación (ya gastados) se cuentan igual.
+    expect(agentTurnInserts[0].total_tokens).toBeGreaterThan(0);
+
+    // Sin marca "visto hasta": todo lo que este turno cargó sigue pendiente.
+    expect(redisSeenStore.has("turno:visto:conv-1")).toBe(false);
+    // Sin traspaso: no cambia el dueño de la conversación.
+    expect(handoffCalls).toHaveLength(0);
+  });
+
+  it("cesión en el punto 2 (después del tool loop y la guarda de identidad, antes de entregar): generate corrió, no se entrega texto y logTurn recibe skipped con los tokens", async () => {
+    state.history = [
+      {
+        sender_type: "customer",
+        content: "El guarda fango trasero con su tapa negra",
+        is_internal_note: false,
+        created_at: "2026-09-22T09:14:22.000Z",
+        id: "m-guardafango",
+      },
+    ];
+    // Todavía nada nuevo cuando corre el punto 1 (sigue null → no cede) —
+    // el fragmento siguiente ("Y luces traseras de cruce") llega recién
+    // MIENTRAS el tool loop está redactando, dentro de `agent.generate()`.
+    generateMock.mockImplementationOnce(async () => {
+      state.cessionLastCustomerMessageAt = "2026-09-22T09:14:30.000Z";
+      return {
+        text: "Sí, tenemos el guardafango con tapa negra disponible.",
+        usage: { inputTokens: 20, outputTokens: 8, totalTokens: 28 },
+        steps: [{}],
+      };
+    });
+
+    await runAgentTurn("conv-1");
+
+    expect(generateMock).toHaveBeenCalledTimes(1);
+    expect(sendAgentTextMock).not.toHaveBeenCalled();
+
+    expect(agentTurnInserts).toHaveLength(1);
+    expect(agentTurnInserts[0]).toMatchObject({
+      action: "skipped",
+      summary: "Borrador cedido: llegó otro mensaje del cliente mientras se redactaba.",
+    });
+    // `turnTokens` incluye lo que gastó el tool loop, no solo fase 0/1.
+    expect(agentTurnInserts[0].output_tokens).toBeGreaterThanOrEqual(8);
+
+    expect(redisSeenStore.has("turno:visto:conv-1")).toBe(false);
+    expect(handoffCalls).toHaveLength(0);
+  });
+
+  it("sin cesión si el tool loop YA escaló en este turno (aunque llegue un mensaje más nuevo): la despedida sale igual", async () => {
+    state.history = [
+      {
+        sender_type: "customer",
+        content: "quiero comprar la moto completa",
+        is_internal_note: false,
+        created_at: "2026-09-22T09:14:22.000Z",
+        id: "m-compra",
+      },
+    ];
+    // `buildEscalateTool` se llama al armar las herramientas, ANTES de
+    // `agent.generate()` — mutar `outcome.escalated` ahí simula que la
+    // escalada de verdad ya corrió cuando el punto 2 pregunta.
+    buildEscalateToolMock.mockImplementationOnce((_deps, outcome) => {
+      outcome.escalated = true;
+      outcome.unassigned = false;
+      outcome.assignedAgentName = "María";
+      return {};
+    });
+    generateMock.mockImplementationOnce(async () => {
+      // Un mensaje más nuevo SÍ llega mientras se redacta la despedida —
+      // pero como ya escaló, no importa: tiene que salir igual.
+      state.cessionLastCustomerMessageAt = "2026-09-22T09:14:30.000Z";
+      return {
+        text: "Ya te paso con un asesor para cerrar la compra.",
+        usage: { inputTokens: 20, outputTokens: 8, totalTokens: 28 },
+        steps: [{}],
+      };
+    });
+
+    await runAgentTurn("conv-1");
+
+    expect(sendAgentTextMock).toHaveBeenCalledTimes(1);
+    expect(agentTurnInserts).toHaveLength(1);
+    expect(agentTurnInserts[0].action).toBe("escalated");
+    expect(agentTurnInserts[0].summary).not.toContain("Borrador cedido");
+    // Sí se marca lo visto: esta redacción SÍ atendió lo que vio.
+    expect(redisSeenStore.has("turno:visto:conv-1")).toBe(true);
+  });
+
+  it("sin cesión cuando la relectura de last_customer_message_at es EXACTAMENTE igual al hasta cargado (empate, no hay nada nuevo)", async () => {
+    state.history = [
+      {
+        sender_type: "customer",
+        content: "hola, tienen cascos?",
+        is_internal_note: false,
+        created_at: "2026-09-22T12:00:00.000Z",
+        id: "m-1",
+      },
+    ];
+    // Mismo instante que el `created_at` de la única línea del cliente: no
+    // es un mensaje nuevo, es el mismo que ya se cargó.
+    state.cessionLastCustomerMessageAt = "2026-09-22T12:00:00.000Z";
+
+    await runAgentTurn("conv-1");
+
+    expect(sendAgentTextMock).toHaveBeenCalledTimes(1);
+    expect(agentTurnInserts.some((row) => row.action === "skipped")).toBe(false);
+    expect(redisSeenStore.has("turno:visto:conv-1")).toBe(true);
+  });
+
+  /**
+   * Hallazgo del orquestador (23/9/2026): un cliente que no para de escribir
+   * en fragmentos podía quedarse SIN RESPUESTA para siempre. La primera
+   * versión de esta tarea borraba el contador de cesiones seguidas en el
+   * PUNTO 1 cada vez que ese punto decidía "no cede" — que es el caso normal
+   * de casi todos los turnos (fase 0/1 tarda ~2 s, rara vez alcanza a llegar
+   * un fragmento nuevo en ese hueco). Eso pisaba, en cada turno, lo que el
+   * PUNTO 2 del turno anterior acababa de incrementar: el contador nunca
+   * pasaba de 1, así que el tope (`CESSION_CAP = 2`) nunca se alcanzaba.
+   *
+   * Tres turnos SEGUIDOS para la MISMA conversación, cada uno "no cede en el
+   * punto 1, cede en el punto 2" (el fragmento siguiente llega justo
+   * mientras `agent.generate()` está redactando, mismo truco que el resto
+   * de este describe): con la corrección, el contador SÍ acumula 1 → 2 → 3,
+   * y el tercero topa (`> CESSION_CAP`) y entrega igual, aunque su propio
+   * punto 1 tampoco vea nada nuevo (el caso normal).
+   */
+  it("tres turnos seguidos que ceden en el punto 2 (sin cesión en el punto 1, el caso normal): el tercero topa y entrega igual", async () => {
+    const T0 = "2026-09-22T09:14:00.000Z";
+    const T1 = "2026-09-22T09:14:10.000Z";
+    const T2 = "2026-09-22T09:14:20.000Z";
+    const T3 = "2026-09-22T09:14:30.000Z";
+
+    // Turno A: nada nuevo en el punto 1 (cessionLastCustomerMessageAt == la
+    // línea que este turno cargó) — el caso normal, no el que dispara la
+    // cesión. Cede en el punto 2 porque el fragmento siguiente (T1) llega
+    // mientras `generate()` corre.
+    state.history = [
+      { sender_type: "customer", content: "Cuánto cuesta la parrilla de sbr", is_internal_note: false, created_at: T0, id: "m-a" },
+    ];
+    state.cessionLastCustomerMessageAt = T0;
+    generateMock.mockImplementationOnce(async () => {
+      state.cessionLastCustomerMessageAt = T1;
+      return { text: "texto A", usage: { inputTokens: 5, outputTokens: 2, totalTokens: 7 }, steps: [{}] };
+    });
+    await runAgentTurn("conv-1");
+
+    // Turno B: mismo patrón — el fragmento que llegó durante A (T1) es
+    // ahora lo más nuevo que B carga; nada más nuevo todavía en su punto 1.
+    // Cede en su punto 2 porque el fragmento siguiente (T2) llega mientras
+    // redacta.
+    state.history = [
+      { sender_type: "customer", content: "El guarda fango trasero con su tapa negra", is_internal_note: false, created_at: T1, id: "m-b" },
+    ];
+    generateMock.mockImplementationOnce(async () => {
+      state.cessionLastCustomerMessageAt = T2;
+      return { text: "texto B", usage: { inputTokens: 5, outputTokens: 2, totalTokens: 7 }, steps: [{}] };
+    });
+    await runAgentTurn("conv-1");
+
+    // Turno C: mismo patrón otra vez — pero esta es la TERCERA cesión
+    // seguida, así que el tope tiene que ganar y entregar de verdad.
+    state.history = [
+      { sender_type: "customer", content: "Y luces traseras de cruce", is_internal_note: false, created_at: T2, id: "m-c" },
+    ];
+    generateMock.mockImplementationOnce(async () => {
+      state.cessionLastCustomerMessageAt = T3;
+      return { text: "texto C", usage: { inputTokens: 5, outputTokens: 2, totalTokens: 7 }, steps: [{}] };
+    });
+    await runAgentTurn("conv-1");
+
+    expect(generateMock).toHaveBeenCalledTimes(3);
+    // A y B se callaron; C entregó.
+    expect(sendAgentTextMock).toHaveBeenCalledTimes(1);
+    expect(sendAgentTextMock).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.anything(),
+      "texto C",
+      expect.anything()
+    );
+
+    const acciones = agentTurnInserts.map((row) => row.action);
+    expect(acciones).toEqual(["skipped", "skipped", "answered"]);
   });
 });

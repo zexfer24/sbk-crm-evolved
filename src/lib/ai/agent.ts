@@ -40,6 +40,7 @@ import {
   previousConversationCutoff,
 } from "@/lib/ai/history-line";
 import { readSeen, writeSeen } from "@/lib/ai/turn-seen";
+import { clearCessionCounter, shouldCedeDraft } from "@/lib/ai/turn-cession";
 import { customerFirstName } from "@/lib/ai/customer-name";
 import { playbookMessageText, sendAgentText, sendPlaybookReply, type DeliveryOutcome } from "@/lib/ai/send";
 import { buildTurnTarget, type AgentConversation, type TurnTarget } from "@/lib/ai/turn-target";
@@ -505,7 +506,14 @@ function alreadySentPlaybook(history: ModelMessage[], playbook: Playbook, links:
 
 interface LogTurnParams {
   intent: Intent | null;
-  action: "answered" | "escalated" | "error";
+  // T2, plan "Seba no habla de más mientras el cliente espera al asesor"
+  // (22-23/9/2026): "skipped" ya existía en el CHECK de la base
+  // (`agent_turns.action`, migración 20260819040000 — "no corrió, guardrail")
+  // pero ningún llamador de este archivo lo usaba todavía. El "borrador
+  // cedido" es el primero: el turno SÍ redactó (o iba a redactar) y decidió,
+  // con fundamento, no mandarlo porque llegó algo más nuevo — no es un
+  // "answered" (no contestó nada) ni un "error" (no falló nada).
+  action: "answered" | "escalated" | "error" | "skipped";
   summary: string;
   tokens: TurnTokens | null;
   playbookId?: string | null;
@@ -1608,6 +1616,25 @@ async function runTurnPhases(
   // cabecera de `previousConversationCutoff` en history-line.ts.
   const previousConversationCutoffAt = previousConversationCutoff(zipped, seen)?.cutoffAt ?? null;
 
+  // T2, plan "Seba no habla de más mientras el cliente espera al asesor"
+  // (22-23/9/2026, "borrador cedido"): la línea de cliente MÁS NUEVA que
+  // ESTE turno llegó a cargar — el punto de comparación de `shouldCedeDraft`
+  // en los DOS puntos donde se pregunta si conviene ceder (después de fase
+  // 0/1, y justo antes de entregar la redacción final). Se calcula UNA sola
+  // vez contra el mismo `zipped` que ya arma `rafagaCliente`/
+  // `previousConversationCutoffAt`, arriba — no cambia durante el turno,
+  // porque el historial que cargó `loadHistory` tampoco cambia.
+  //
+  // No es lo mismo que `seen`/`marcarTurnoVisto`: esa marca es lo que un
+  // turno ANTERIOR llegó a atender (Redis, entre turnos); `hastaCargado` es
+  // lo que ESTE turno cargó al arrancar, y se compara contra una relectura
+  // de `conversations.last_customer_message_at` EN EL MOMENTO de decidir —
+  // no contra `convo.last_customer_message_at`, que se leyó ANTES de
+  // `loadHistory` y por eso daría una cesión falsa con un mensaje que ya
+  // está en el historial cargado (ver el comentario de cabecera de
+  // turn-cession.ts).
+  const hastaCargado = latestCustomerMarker(zipped)?.hasta ?? null;
+
   // T1, plan "Seba no habla de más mientras el cliente espera al asesor"
   // (22-23/9/2026): si HAY marca y no queda ni una línea pendiente, el turno
   // no tiene nada nuevo que atender — lo que el cliente dijo ya lo contestó
@@ -2006,6 +2033,58 @@ async function runTurnPhases(
     ? addTokens(matchTokens, tokensFromUsage(classified.result.usage))
     : matchTokens;
 
+  // T2, plan "Seba no habla de más mientras el cliente espera al asesor"
+  // (22-23/9/2026): "borrador cedido", PUNTO 1 — después de fase 0/1, ANTES
+  // de mandar un escenario (`runPlaybook`, más abajo) o de arrancar el tool
+  // loop. Nada pudo haber escalado todavía a esta altura del turno (la
+  // única forma de escalar es el tool loop o sus redes de seguridad, que
+  // corren después), así que `yaEscalo` va fijo en `false` — el chequeo se
+  // reduce a "¿llegó un mensaje más nuevo mientras corría fase 0/1?".
+  //
+  // Los tokens de la clasificación YA se gastaron —el comentario de arriba
+  // lo dice: se cuentan siempre—, así que se registran igual en la fila
+  // `skipped` (`agent_spend_today()` los suma de `agent_turns`, y ahí se
+  // aplica el tope de gasto: CLAUDE.md).
+  //
+  // Sin marca "visto hasta": el turno no atendió nada de verdad, así que no
+  // hay qué marcar como visto — todo lo que cargó sigue pendiente para el
+  // turno que ya está encolado para esta misma conversación (el webhook
+  // encola cada entrante; T3, `88fe103`, lo adelanta en cuanto se suelta el
+  // lock). Sin traspaso: ver el comentario de cabecera de turn-cession.ts
+  // para el porqué, contra la invariante "ningún lead invisible".
+  const cesionPunto1 = await shouldCedeDraft({
+    supabase,
+    conversationId,
+    hastaCargado,
+    yaEscalo: false,
+  });
+  if (cesionPunto1.cede) {
+    log.info("turno_cedido_a_rafaga", { conversationId, punto: "escenario_o_tool_loop" });
+    await resetStage(supabase, conversationId, "turno_cedido_a_rafaga", convo.assigned_agent_id);
+    await logTurn(supabase, conversationId, {
+      intent: classified.ok ? classified.result.intent : null,
+      action: "skipped",
+      summary: "Borrador cedido: llegó otro mensaje del cliente mientras se redactaba.",
+      tokens: classifiedTokens,
+      customerMessage,
+      tiempos,
+    });
+    return;
+  }
+  // Corrección tras revisión del orquestador (23/9/2026): NO se borra el
+  // contador acá. La primera versión de esta tarea llamaba a
+  // `clearCessionCounter` en cuanto este punto decidía "no cede" —pero "no
+  // cede en el punto 1" pasa CASI SIEMPRE (fase 0/1 dura ~2 s, casi nunca
+  // alcanza a llegar un fragmento nuevo en ese hueco): borrar acá pisaba, en
+  // cada turno, lo que el PUNTO 2 del turno anterior acababa de incrementar,
+  // y el contador nunca llegaba a superar 1 — un cliente que no paraba de
+  // escribir en fragmentos podía quedarse sin respuesta indefinidamente
+  // (turno A cede en el punto 2 → contador en 1; turno B no cede acá, lo
+  // borra a 0, cede en el punto 2 → contador en 1 de nuevo; turno C, igual;
+  // el tope de `CESSION_CAP` nunca se alcanzaba). El contador solo se borra
+  // donde de verdad se entrega algo — ver el comentario de cabecera de
+  // `clearCessionCounter` en turn-cession.ts.
+
   // Un escenario reconocido termina el turno... salvo que ya haya salido hace
   // poco en este mismo chat. En ese caso el turno NO se queda callado: cae al
   // flujo genérico, que es el que puede contestar lo que el cliente preguntó
@@ -2086,8 +2165,15 @@ async function runTurnPhases(
           convo.assigned_agent_id,
           // T1 (22-23/9/2026): el escenario de fase 0 SÍ atendió de verdad
           // lo que el cliente escribió — se marca, en el único punto de
-          // `runPlaybook` donde ya se sabe que el envío no falló.
-          marcarTurnoVisto
+          // `runPlaybook` donde ya se sabe que el envío no falló. T2, mismo
+          // plan (23/9/2026, corrección post-revisión): el mismo punto es
+          // donde de verdad se ENTREGÓ un escenario, así que es donde hay
+          // que borrar el contador de cesiones seguidas — nunca antes,
+          // "porque no se cedió" (ver el comentario de más arriba).
+          async () => {
+            await marcarTurnoVisto();
+            await clearCessionCounter(conversationId);
+          }
         );
         return;
       }
@@ -2609,6 +2695,40 @@ async function runTurnPhases(
   }
 
   if (text.trim()) {
+    // T2, plan "Seba no habla de más mientras el cliente espera al asesor"
+    // (22-23/9/2026): "borrador cedido", PUNTO 2 — después del tool loop y
+    // de la guarda de identidad, justo ANTES de entregar la redacción
+    // final. `outcome.escalated` ya está totalmente decidido a esta altura
+    // (el tool loop, la red de devolución/queja y la del catálogo ya
+    // corrieron): si el turno escaló, la despedida sale sí o sí —
+    // `shouldCedeDraft` ni siquiera toca la base cuando `yaEscalo` es
+    // `true`.
+    const cesionPunto2 = await shouldCedeDraft({
+      supabase,
+      conversationId,
+      hastaCargado,
+      yaEscalo: outcome.escalated,
+    });
+    if (cesionPunto2.cede) {
+      log.info("turno_cedido_a_rafaga", { conversationId, punto: "redaccion" });
+      await resetStage(supabase, conversationId, "turno_cedido_a_rafaga", convo.assigned_agent_id);
+      await logTurn(supabase, conversationId, {
+        intent,
+        action: "skipped",
+        summary: "Borrador cedido: llegó otro mensaje del cliente mientras se redactaba.",
+        tokens: turnTokens,
+        customerMessage,
+        tiempos,
+      });
+      return;
+    }
+    // Corrección tras revisión del orquestador (23/9/2026): el contador NO
+    // se borra acá todavía —"no cede" no es lo mismo que "se entregó"—, sino
+    // más abajo, junto con `marcarTurnoVisto()`, recién cuando `deliver()` y
+    // `deliveryFailed()` confirman que la redacción SALIÓ de verdad. Ver el
+    // comentario de cabecera de `clearCessionCounter` (turn-cession.ts) para
+    // la secuencia de tres turnos que este orden rompía.
+
     // Acá es donde más se nota: entre abrir el turno y llegar a esta línea
     // pasaron el reconocimiento de escenario, la clasificación y hasta cinco
     // pasos de tool loop. Es el punto del turno más lejano al momento en que
@@ -2663,6 +2783,10 @@ async function runTurnPhases(
     // T1 (22-23/9/2026): la respuesta final del tool loop salió sin falla —
     // el turno atendió de verdad lo que vio, escale o no.
     await marcarTurnoVisto();
+    // T2 (22-23/9/2026, corrección post-revisión del 23/9): recién ACÁ, con
+    // la entrega confirmada, se reinicia el contador de cesiones seguidas
+    // para la próxima ráfaga — no antes, "porque no se cedió".
+    await clearCessionCounter(conversationId);
   }
 
   if (!outcome.escalated) {

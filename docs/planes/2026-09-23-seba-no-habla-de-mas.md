@@ -57,7 +57,34 @@ Implementar ya; el reporte de latencia del VPS (T0) corre en paralelo.
   `isFarewellPlaybook` y la corrección de los textos que dicen "la IA sigue
   contestando" (`tools.ts`, `ai-status-banner.tsx`, `handoffs.ts`).
 
-Orden: T1 ∥ T3 → T4 → T2 → T5 (T1, T2, T4 y T5 tocan `agent.ts`).
+- **T6 — Saludo suelto de un cliente que ya conocía a Seba** (agregada el
+  23/9 tras el reporte de latencia del VPS; decisión del operador: "esperar la
+  pregunta"). Si los pendientes son SOLO saludo, Seba ya se presentó antes y
+  no hay escalada abierta, el turno no llama al modelo: se reprograma UNA vez
+  8 s más. Si en ese lapso llega la pregunta, se contesta todo junto; si no,
+  Seba devuelve un saludo fijo. Caso RK200: el turno arrancó con solo "Buenas
+  tardes", la pregunta llegó 10 s después y el modelo escaló sobre el
+  historial viejo.
+- **T7 — `agent_turns.wait_ms` guarda la espera en cola (`colaMs`)**, como
+  dice su comentario, y no la ventana de silencio más la cola (`esperaMs`).
+  Sin migración.
+
+Orden: T1 ∥ T3 → T4 → T2 → T5 → T6 → T7 (todas menos T3 tocan `agent.ts`).
+
+## Reporte de latencia del VPS (23/9/2026)
+
+- La mediana del último mensaje del cliente a la primera respuesta es de
+  ~11-13 s y es igual que antes del 21/9. Nunca fue "menos de 10 s" en
+  mediana.
+- Desglose: ~7,5 s de ventana de silencio (debounce más la entrega de Meta),
+  ~2,9 s de escenario y clasificación, ~2,7 s de redacción y ~0,6 s de envío.
+- El lock de 30 s aparece en 0-2 % de las ráfagas por día, y el freno de ritmo
+  nunca se alcanzó (pico de 6 turnos por minuto, con tope de 10).
+- Lo que se percibe como lento es que la respuesta útil llega en el segundo o
+  tercer mensaje.
+- Palanca sin código aprobada para probar DESPUÉS de este deploy:
+  `AI_AGENT_REASONING=none`, midiendo `agent_turn_calls` por fase.
+- No aprobadas: modelo chico para clasificar y bajar la ventana de silencio.
 Sin migración: la entrega puede ir a `main` (rango contra `cd5fbd3`).
 
 ## Verificación
