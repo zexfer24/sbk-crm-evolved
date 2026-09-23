@@ -2053,6 +2053,47 @@ dejar rastro es lo que hacía desaparecer leads.
   con `.then()`/`.catch()` (no `async () => {}` directo, que React no
   soporta como cleanup) y una bandera `cancelado` para no escribir el
   estado si el componente se desmontó antes de que la lectura resuelva.
+- **Con la escalada abierta, Seba no corre el tool loop: o calza un
+  escenario INFORMATIVO o los pendientes van a una nota para el asesor**
+  (T5, plan "Seba no habla de más", opción (b) del operador, 23/9/2026).
+  Medido el 22/9: 20-27 % de los mensajes de Seba salían con una escalada
+  abierta, hasta seis "el asesor ya tiene tu caso" en una misma espera. Con
+  `escalationOpen` y pendientes, `runTurnPhases` no clasifica: corre solo
+  fase 0 sin escenarios de despedida (`isFarewellPlaybook`, `saludo.ts`) ni
+  con `after_send = escalate`; si nada calza, deja una nota interna
+  («Mientras espera al asesor, el cliente agregó: …») y NO le escribe al
+  cliente. Si la nota falla, el turno lanza ANTES de marcar "visto hasta".
+  Los textos que decían "la IA sigue contestando" (`tools.ts`,
+  `ai-status-banner.tsx`, `handoffs.ts`) se corrigieron en el mismo commit.
+- **"Pendientes" de un turno = mensajes del cliente posteriores a la marca
+  "visto hasta" en Redis, no la ráfaga final del historial** (T1/T2/T6,
+  mismo plan). `turn-seen.ts` guarda, 6 h, hasta qué mensaje del cliente vio
+  el último turno que ATENDIÓ (con los ids del mismo segundo: Meta fecha al
+  segundo); sin pendientes el turno sale sin modelo
+  (`turno_sin_mensaje_nuevo`). Un turno cuyo cliente escribió mientras
+  redactaba cede el borrador (`turno_cedido_a_rafaga`, `turn-cession.ts`,
+  tope 2 cesiones seguidas) y lo contesta el turno ya encolado. Un saludo
+  suelto de un cliente que ya conocía a Seba espera 8 s la pregunta
+  (`greeting-wait.ts`, `cola.defer` sin gastar intentos) y, si no llega, sale
+  un saludo fijo sin modelo. **Sin Redis, las tres se comportan como antes
+  del plan** — un test de cualquiera de ellas sin Redis ni `FakeRedis` pasa
+  sin probar nada. El turno que choca con el lock ya no espera 30 s: el que
+  termina lo adelanta (`adelantar`, Lua en `redis-queue.ts`).
+- **`agent_turns.wait_ms` guarda desde el 23/9/2026 solo la espera en cola
+  (`colaMs`), no ventana de silencio + cola** (T7). Las series de antes del
+  deploy mezclan ~7,5 s de debounce: no compararlas con las de después
+  (`docs/PRODUCCION.md`). `null` = turno sin vencimiento (simulador).
+- **Tras un corte de luz, Windows puede reservar el 54321 y Kong queda sin
+  puerto en el host** (23/9/2026). `docker ps` muestra `8000/tcp` sin
+  `->`, `curl 127.0.0.1:54321` da 000 y la app registra `base_agotada`
+  "fetch failed" en todo; `netsh interface ipv4 show excludedportrange
+  protocol=tcp` lo confirma (rango 54241-54340). Sin admin, alcanza un relé:
+  `docker run -d --name kong_relay --network supabase_network_Liminal_CRM
+  -p 55321:8000 alpine/socat tcp-listen:8000,fork,reuseaddr
+  tcp-connect:supabase_kong_Liminal_CRM:8000` y levantar el dev con
+  `NEXT_PUBLIC_SUPABASE_URL=http://127.0.0.1:55321`. En local, Gemini
+  responde "high demand" a menudo: el turno falla por el proveedor, no por
+  el código.
 
 ---
 
