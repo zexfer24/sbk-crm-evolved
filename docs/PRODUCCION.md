@@ -2109,6 +2109,14 @@ commit.
 - **El 500 de la imagen**: si se repite, buscarlo primero en el access log
   de Traefik (paso 6 de arriba) por `facebookexternalua`, no en la app —
   ver el hallazgo 1 del plan y la trampa nueva en CLAUDE.md.
+- **`agent_turns.wait_ms` cambia de significado en el deploy de T7 del plan
+  "Seba no habla de más" (23/9/2026):** hasta ese commit guardaba
+  `esperaMs` (ventana de silencio + espera en cola); desde ese commit guarda
+  SOLO `colaMs` (la espera en cola, que es lo que el comentario de la
+  columna siempre dijo). Cualquier percentil o serie histórica calculado
+  sobre `wait_ms` de ANTES de ese deploy mezcla ~7,5 s de debounce (diseño,
+  no atraso) que las filas de DESPUÉS ya no traen — no comparar ambos lados
+  del corte como si fueran la misma métrica.
 
 ### Qué NO cambia para el operador
 

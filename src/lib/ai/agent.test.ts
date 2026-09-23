@@ -4959,6 +4959,46 @@ describe("runAgentTurn — tiempos del turno", () => {
       spy.mockRestore();
     }
   });
+
+  /**
+   * T7, plan "Seba no habla de más" (23/9/2026): el reporte de latencia del
+   * VPS medía `agent_turns.wait_ms` como si fuera la espera en cola sola
+   * (`colaMs`, lo que el comentario de la columna siempre dijo) y el número
+   * salía inflado por la ventana de silencio (~7,5 s de diseño) mezclada
+   * adentro (`esperaMs`) — un debounce normal parecía atraso. `logTurn`
+   * pasó de escribir `esperaMs` a escribir `colaMs`.
+   */
+  it("agent_turns.wait_ms guarda la espera en cola (colaMs), no la espera total (esperaMs)", async () => {
+    const ahora = Date.now();
+    state.conversation = {
+      ...state.conversation,
+      last_customer_message_at: new Date(ahora - 8000).toISOString(),
+    };
+
+    // Debounce de 3 s, cola de 5 s más: esperaMs (~8000) y colaMs (~5000)
+    // tienen que quedar claramente distintos para que la aserción no pase
+    // por casualidad si alguien vuelve a escribir esperaMs.
+    await runAgentTurn("conv-1", { vencioEn: ahora - 5000 });
+
+    expect(agentTurnInserts).toHaveLength(1);
+    const waitMs = agentTurnInserts[0].wait_ms as number;
+    expect(waitMs).toBeGreaterThanOrEqual(5000);
+    expect(waitMs).toBeLessThan(7000);
+  });
+
+  /**
+   * `api/dev/simulate-message` llama a `runAgentTurn` sin pasar por la cola:
+   * sin `vencioEn` la cola nunca dio por vencido nada, así que `colaMs`
+   * queda en `null` (la columna lo admite, migración 20260921040000, sin
+   * `not null`) — más honesto que inventar un 0 o seguir escribiendo
+   * `esperaMs` ahí.
+   */
+  it("sin vencimiento, agent_turns.wait_ms queda en null", async () => {
+    await runAgentTurn("conv-1");
+
+    expect(agentTurnInserts).toHaveLength(1);
+    expect(agentTurnInserts[0]).toMatchObject({ wait_ms: null });
+  });
 });
 
 /**

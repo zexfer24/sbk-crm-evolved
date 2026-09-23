@@ -656,7 +656,17 @@ async function logTurn(supabase: SupabaseClient<Database>, conversationId: strin
       // quedan `null` según el punto del turno en que se llamó a `logTurn`.
       steps: params.tiempos.pasos,
       tools_used: params.tiempos.herramientas,
-      wait_ms: params.tiempos.esperaMs,
+      // T7, plan "Seba no habla de más" (23/9/2026): el comentario de la
+      // columna (migración 20260921040000) siempre dijo "lo que el turno
+      // esperó frenado" — la espera en cola, `colaMs` — pero acá se escribía
+      // `esperaMs` (debounce + cola). El VPS midió esta columna como si fuera
+      // atraso puro y el debounce normal de ~7,5 s (diseño, no un problema)
+      // se leía como si la cola estuviera tapada. `colaMs` es `null` sin
+      // `vencioEn` válido (turnos fuera de la cola, como
+      // `api/dev/simulate-message`): la columna lo admite (nullable, sin
+      // `not null`) y `null` es más honesto que inventar un 0 que un
+      // percentil no podría distinguir de una cola real de cero milisegundos.
+      wait_ms: params.tiempos.colaMs,
       classification_ms: params.tiempos.clasificacionMs,
       generation_ms: params.tiempos.redaccionMs,
       delivery_ms: params.tiempos.envioMs,
