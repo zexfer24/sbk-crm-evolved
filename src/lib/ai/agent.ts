@@ -61,8 +61,10 @@ import {
   sebaGreetingFollowUp,
   TEXTO_CONFIRMAR_INVENTARIO,
   TEXTO_NO_IDENTIFICADO,
+  TEXTO_PRECIO_A_CONFIRMAR,
   TEXTO_SIN_STOCK,
 } from "@/lib/ai/seba";
+import { findUnsourcedFigure } from "@/lib/ai/price-guard";
 import { errorText, log } from "@/lib/log";
 import { stepToolChoice } from "@/lib/ai/tool-choice";
 import { conTelemetriaDeTurno, turnCallsSnapshot } from "@/lib/ai/turn-telemetry";
@@ -218,6 +220,35 @@ function toolNamesUsed(steps: readonly unknown[] | undefined): string {
     }
   }
   return nombres.join(",");
+}
+
+/**
+ * Las salidas (`output`) de cada herramienta que corrió en el tool loop, ya
+ * serializadas — fuente (a) de la guarda de cifras sin fuente (T3, plan "La
+ * búsqueda encuentra lo que el cliente pide", 25/9/2026, `price-guard.ts`):
+ * un precio que el catálogo acaba de cotizar EN ESTE turno tiene de dónde
+ * salir; uno que el modelo copió del historial o inventó, no. Mismo acceso
+ * defensivo que `toolNamesUsed`, arriba: `steps` es de un SDK externo y esto
+ * es una fuente para una guarda, nunca algo que pueda tumbar el turno.
+ */
+function toolResultTexts(steps: readonly unknown[] | undefined): string[] {
+  if (!steps) return [];
+  const textos: string[] = [];
+  for (const paso of steps) {
+    const resultados = (paso as { toolResults?: unknown }).toolResults;
+    if (!Array.isArray(resultados)) continue;
+    for (const resultado of resultados) {
+      const output = (resultado as { output?: unknown }).output;
+      if (output === undefined) continue;
+      try {
+        textos.push(JSON.stringify(output));
+      } catch {
+        // Una salida no serializable (referencia circular, BigInt) no puede
+        // tumbar el turno: se pierde esa fuente puntual, nada más.
+      }
+    }
+  }
+  return textos;
 }
 
 /**
@@ -2760,6 +2791,11 @@ async function runTurnPhases(
 
   let text = "";
   let turnTokens = classifyTokens;
+  // Fuente (a) de la guarda de cifras sin fuente (T3, price-guard.ts,
+  // 25/9/2026): se declara FUERA del `try` para poder leerla después, ya
+  // sobrevivido el tool loop — mismo motivo que `tiempos.pasos`/
+  // `tiempos.herramientas`, que también leen `result` una sola vez adentro.
+  let turnSteps: readonly unknown[] | undefined;
   try {
     // "Escribiendo…" hacia el cliente (T3.1, 4/9/2026), justo al arrancar la
     // parte cara del turno. No se espera: un typing que tarda no puede
@@ -2768,6 +2804,7 @@ async function runTurnPhases(
     fireTypingIndicator(supabase, target, convo.last_customer_message_at);
     const result = await medir(tiempos, "redaccionMs", () => agent.generate({ messages: history }));
     text = result.text ?? "";
+    turnSteps = result.steps;
     // Cuántos pasos gastó de verdad, contra el techo de MAX_STEPS. Sin este
     // número, "cinco es generoso" es una opinión: lo que se sabía del turno
     // era su coste total, que no distingue un paso caro de cuatro baratos.
@@ -2948,6 +2985,65 @@ async function runTurnPhases(
     text = outcome.unassigned ? DESPEDIDA_SIN_ASESOR : despedidaConAsesor(outcome.businessStatus);
   }
 
+  // Guarda de cifras sin fuente (T3, plan "La búsqueda encuentra lo que el
+  // cliente pide", 25/9/2026, `price-guard.ts`): dos casos reales de
+  // producción que ninguna red de arriba atrapaba. El 20/9/2026 a las 14:32,
+  // con el catálogo apagado, Seba escribió "El intercomunicador sale en
+  // *108$ BCV*" copiando al pie de la letra la respuesta de un ASESOR del
+  // 10/9 (244 h antes) — ese día el precio de verdad era 103,71: `precio3`
+  // es fijo en bolívares y el "$ BCV" se recalcula con la tasa del día, así
+  // que un precio de hace diez días ya no es el de hoy. El 13/9/2026 a las
+  // 21:04 Seba calculó cuotas de Cashea de memoria ("inicial *$36,60*, saldo
+  // *$85,40*, 6 cuotas de *$14,23*") — una cuenta que la sección 2 del
+  // prompt ya prohíbe, pero que un modelo puede hacer igual. Las dos son la
+  // misma falla de fondo: un número con símbolo de moneda que no vino de
+  // NADA de este turno.
+  //
+  // Fuentes permitidas (desvío 4 del plan, aprobado por el operador): (a) lo
+  // que cada herramienta acaba de devolver en este turno (`toolResultTexts`,
+  // arriba); (b) lo que el propio cliente escribió en su ráfaga pendiente
+  // (`rafagaCliente`) — así "tienen los de 44$?" habilita que Seba conteste
+  // "los de $44"; (c) las lecciones del turno, globales y de este chat — un
+  // operador puede cargar "compras mayores a 100 dólares" sin que la guarda
+  // la bloquee. NUNCA el historial completo: ahí es justo donde vivía el
+  // "108$ BCV" que Seba repitió diez días después.
+  //
+  // Mismo patrón que las dos redes de arriba: sin asesor asignado y sin
+  // escalada previa, se escala en código con "confirmar_inventario" (el
+  // mismo motivo que "repuesto encontrado con existencia" — acá también hay
+  // que confirmar el precio contra el sistema). Con asesor ya asignado no se
+  // vuelve a tocar la base (T2, "La escalada se hace una vez…", 21/9/2026),
+  // pero el texto se reemplaza igual: una cifra sin fuente no puede
+  // llegarle al cliente tenga o no dueño el chat. El texto reemplazado sigue
+  // pasando por la guarda de identidad, justo abajo, como cualquier otro.
+  let priceMark = false;
+  if (text.trim()) {
+    const fuentesPrecio = [...toolResultTexts(turnSteps), ...rafagaCliente, ...lessons.global, ...lessons.chat];
+    const cifraSinFuente = findUnsourcedFigure(text, fuentesPrecio);
+    if (cifraSinFuente) {
+      log.warn("cifra_sin_fuente", { conversationId, cifra: cifraSinFuente });
+
+      if (!esperandoAsesor && !outcome.escalated) {
+        const forced = await escalateConversation(supabase, {
+          conversationId,
+          contactId: target.contactId,
+          motivo: "confirmar_inventario",
+          resumen:
+            "La respuesta redactada daba una cifra de dinero sin fuente en este turno (precio del historial o una cuenta del modelo). Confirmar el precio de hoy.",
+          businessHours,
+        });
+        outcome.escalated = forced.escalated;
+        outcome.assignedAgentName = forced.assignedAgentName ?? undefined;
+        outcome.unassigned = forced.unassigned;
+        outcome.businessStatus = forced.businessStatus;
+        outcome.motivo = "confirmar_inventario";
+      }
+
+      text = outcome.unassigned ? `${TEXTO_PRECIO_A_CONFIRMAR} ${DESPEDIDA_SIN_ASESOR}` : TEXTO_PRECIO_A_CONFIRMAR;
+      priceMark = true;
+    }
+  }
+
   // Guarda de identidad (6/9/2026): último control antes de hablarle al
   // cliente, sobre el texto que ya sobrevivió a la red de seguridad de
   // arriba. Solo actúa si de verdad hay algo que enviar — un turno que se
@@ -3108,11 +3204,17 @@ async function runTurnPhases(
   // que cruzar con los logs de `identidad_reescrita`/`identidad_bloqueada`.
   const identityPrefix =
     identityMark === "reescrita" ? "[identidad reescrita] " : identityMark === "bloqueada" ? "[identidad bloqueada] " : "";
+  // Mismo criterio (T3, price-guard.ts, 25/9/2026): un supervisor ve de un
+  // vistazo que este turno traía una cifra de dinero sin fuente, sin tener
+  // que cruzar con `cifra_sin_fuente` en el log. Va ANTES del prefijo de
+  // identidad porque la guarda de precios corre primero en el turno.
+  const pricePrefix = priceMark ? "[cifra sin fuente] " : "";
 
   await logTurn(supabase, conversationId, {
     intent,
     action: outcome.escalated ? "escalated" : "answered",
     summary:
+      pricePrefix +
       identityPrefix +
       (outcome.escalated
         ? `Escalado a ${outcome.assignedAgentName ?? "(sin asesor disponible)"}. Motivo: ${outcome.motivo}.`

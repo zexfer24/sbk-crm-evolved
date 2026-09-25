@@ -996,6 +996,7 @@ import {
   sebaGreetingFollowUp,
   TEXTO_CONFIRMAR_INVENTARIO,
   TEXTO_NO_IDENTIFICADO,
+  TEXTO_PRECIO_A_CONFIRMAR,
   TEXTO_SIN_STOCK,
 } from "@/lib/ai/seba";
 import { GreetingAwaitsQuestionError } from "@/lib/ai/greeting-wait";
@@ -4751,6 +4752,10 @@ describe("runAgentTurn — tokens de razonamiento (T4b, 21/9/2026)", () => {
   });
 
   it("la reescritura de la guarda de identidad suma su propio razonamiento", async () => {
+    // `steps` trae una fuente para "12$" (T3, price-guard.ts, 25/9/2026): sin
+    // ella, la guarda de cifras sin fuente reemplazaría el borrador ENTERO
+    // antes de que la guarda de identidad llegara a verlo, y este test dejaría
+    // de probar lo que dice probar (el razonamiento de LA REESCRITURA).
     generateMock.mockResolvedValueOnce({
       text: "¡Buenos días! Soy el asistente automatizado de SBK Motorcycles. El automático de la Horse está en 12$.",
       usage: {
@@ -4759,7 +4764,7 @@ describe("runAgentTurn — tokens de razonamiento (T4b, 21/9/2026)", () => {
         totalTokens: 28,
         outputTokenDetails: { textTokens: 8, reasoningTokens: 40 },
       },
-      steps: [{}, {}],
+      steps: [{ toolResults: [{ output: { precio: "$12,00 BCV (Bs. 10.368,00)" } }] }, {}],
     });
     generateTextMock.mockResolvedValueOnce({
       text: "¡Buenos días! Acá en SBK el automático de la Horse está en 12$.",
@@ -5804,6 +5809,25 @@ describe("runAgentTurn — anexo A1 + Tarea 5: is_auto_reply en la despedida de 
  * el `catalogOutcome` que `runTurnPhases` construye ANTES de invocar
  * `agent.generate()`.
  */
+/**
+ * T3, plan "La búsqueda encuentra lo que el cliente pide" (25/9/2026): la
+ * guarda de cifras sin fuente (price-guard.ts) corre DESPUÉS de las redes de
+ * arriba, sobre el texto que ellas ya dejaron. Varios tests de este archivo
+ * (de antes de esa guarda existir) usan "$18"/"12$" como detalle realista de
+ * un carburador — sin una fuente, la guarda los reemplazaría enteros por
+ * `TEXTO_PRECIO_A_CONFIRMAR`, rompiendo sus aserciones sobre el texto exacto
+ * SIN que el motivo tenga nada que ver con lo que cada test prueba de
+ * verdad. Este `toolResults` simula lo que `buildCatalogTool` real habría
+ * devuelto en el mismo turno (la salida de la herramienta es fuente (a) de
+ * la guarda) — mismo patrón que la nota de cabecera de `buildCatalogToolMock`,
+ * más arriba: acá el tool loop está fingido, así que la fuente se inyecta a
+ * mano en los `steps` de `generateMock`.
+ */
+const TOOLRESULT_CARBURADOR_18 = [
+  { toolResults: [{ output: { nombre: "Carburador", precio: "$18,00 BCV (Bs. 15.552,00)" } }] },
+  {},
+];
+
 describe("runAgentTurn — T3: red de seguridad del catálogo", () => {
   it("con existencia y sin escalada del modelo, escala en código con confirmar_inventario y is_auto_reply", async () => {
     buildCatalogToolMock.mockImplementationOnce((_deps, catalogOutcome) => {
@@ -5813,10 +5837,12 @@ describe("runAgentTurn — T3: red de seguridad del catálogo", () => {
     });
     // El modelo cotizó, pero se quedó sin pasos antes de llamar a
     // `escalarAAsesor` — no menciona "asesor", así que la red debe anexarlo.
+    // `steps` trae la fuente del "$18" (ver TOOLRESULT_CARBURADOR_18) para
+    // que la guarda de precios (T3, price-guard.ts) no reemplace el texto.
     generateMock.mockResolvedValueOnce({
       text: "Tenemos el carburador en $18 y 12 unidades.",
       usage: NO_USAGE,
-      steps: [{}, {}],
+      steps: TOOLRESULT_CARBURADOR_18,
     });
 
     await runAgentTurn("conv-1");
@@ -5918,10 +5944,12 @@ describe("runAgentTurn — T3: red de seguridad del catálogo", () => {
       catalogOutcome.agotados = true;
       return {};
     });
+    // `steps` trae la fuente del "$18" (T3, price-guard.ts) — ver el
+    // comentario de `TOOLRESULT_CARBURADOR_18`, más arriba.
     generateMock.mockResolvedValueOnce({
       text: "Tenemos el carburador en $18, pero las pastillas están agotadas.",
       usage: NO_USAGE,
-      steps: [{}, {}],
+      steps: TOOLRESULT_CARBURADOR_18,
     });
 
     await runAgentTurn("conv-1");
@@ -6000,6 +6028,116 @@ describe("runAgentTurn — T3: red de seguridad del catálogo", () => {
     expect(escalateConversationMock).not.toHaveBeenCalled();
     const llamada = sendAgentTextMock.mock.calls[0];
     expect(llamada[2]).toBe("Tenemos el carburador disponible, ya te paso con María para confirmar el inventario.");
+  });
+});
+
+/**
+ * T3, plan "La búsqueda encuentra lo que el cliente pide" (25/9/2026): la
+ * guarda de cifras sin fuente (`price-guard.ts`), justo antes de la guarda de
+ * identidad. Mismo patrón que las dos redes de arriba, pero mirando el TEXTO
+ * final del modelo en vez de `intent`/`catalogOutcome`. Casos reales de
+ * producción: el 20/9/2026 Seba copió "108$ BCV" del historial (un asesor lo
+ * había escrito 244 h antes, con la tasa de otro día) y el 13/9/2026 calculó
+ * cuotas de Cashea de memoria — ninguna de las dos redes de arriba las
+ * atrapaba, porque no son devolución/queja ni pasan por el catálogo.
+ */
+describe("runAgentTurn — T3 (price-guard): guarda de cifras sin fuente", () => {
+  it("sin asesor y sin escalada previa: escala en código con confirmar_inventario y sale el texto fijo", async () => {
+    // Reproduce el caso real del 20/9/2026 tal cual: el precio de OTRO día
+    // queda en el HISTORIAL de esta misma conversación (un asesor lo había
+    // escrito antes) y el modelo lo copia — el historial NUNCA es una fuente
+    // válida para esta guarda (ver la mutación de verificación (b) del
+    // reporte de la tarea: pasar `history` como fuente pone este test rojo).
+    state.history = [
+      { sender_type: "agent", content: "El intercomunicador sale en 108$ BCV", is_internal_note: false },
+      { sender_type: "customer", content: "¿ese precio del intercomunicador sigue igual?", is_internal_note: false },
+    ];
+    generateMock.mockResolvedValueOnce({
+      text: "El intercomunicador sale en *108$ BCV*",
+      usage: NO_USAGE,
+      steps: [{}, {}],
+    });
+
+    await runAgentTurn("conv-1");
+
+    expect(escalateConversationMock).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ conversationId: "conv-1", motivo: "confirmar_inventario" })
+    );
+    const llamada = sendAgentTextMock.mock.calls[0];
+    expect(llamada[2]).toBe(TEXTO_PRECIO_A_CONFIRMAR);
+    const opciones = llamada[3] as { isAutoReply?: boolean } | undefined;
+    expect(opciones?.isAutoReply).toBe(true);
+  });
+
+  it("sin asesor y la escalada resulta sin nadie disponible: se agrega la despedida sin asesor", async () => {
+    escalateConversationMock.mockResolvedValueOnce({ escalated: true, unassigned: true, assignedAgentName: null });
+    generateMock.mockResolvedValueOnce({
+      text: "El intercomunicador sale en *108$ BCV*",
+      usage: NO_USAGE,
+      steps: [{}, {}],
+    });
+
+    await runAgentTurn("conv-1");
+
+    const llamada = sendAgentTextMock.mock.calls[0];
+    expect(llamada[2]).toBe(`${TEXTO_PRECIO_A_CONFIRMAR} ${DESPEDIDA_SIN_ASESOR}`);
+  });
+
+  it("con asesor asignado: NO llama a escalateConversation por esta guarda, pero igual reemplaza el texto", async () => {
+    state.conversation = { ...state.conversation, assigned_agent_id: "agent-9", deal_status: "none" };
+    generateMock.mockResolvedValueOnce({
+      text: "El intercomunicador sale en *108$ BCV*",
+      usage: NO_USAGE,
+      steps: [{}, {}],
+    });
+
+    await runAgentTurn("conv-1");
+
+    expect(escalateConversationMock).not.toHaveBeenCalled();
+    const llamada = sendAgentTextMock.mock.calls[0];
+    expect(llamada[2]).toBe(TEXTO_PRECIO_A_CONFIRMAR);
+  });
+
+  it("la misma cifra presente en un toolResult del tool loop: el texto sale tal cual, sin escalar por esta guarda", async () => {
+    generateMock.mockResolvedValueOnce({
+      text: "El repuesto cuesta $102,84 BCV (Bs. 88.000,00).",
+      usage: NO_USAGE,
+      steps: [{ toolResults: [{ output: { nombre: "Filtro de aceite", precio: "$102,84 BCV (Bs. 88.000,00)" } }] }, {}],
+    });
+
+    await runAgentTurn("conv-1");
+
+    expect(escalateConversationMock).not.toHaveBeenCalled();
+    const llamada = sendAgentTextMock.mock.calls[0];
+    expect(llamada[2]).toBe("El repuesto cuesta $102,84 BCV (Bs. 88.000,00).");
+  });
+
+  it("la cifra dicha por el cliente en su ráfaga pendiente: pasa sin escalar", async () => {
+    state.history = [{ sender_type: "customer", content: "tienen los de 44 dólares?", is_internal_note: false }];
+    generateMock.mockResolvedValueOnce({
+      text: "Sí, tenemos los de $44.",
+      usage: NO_USAGE,
+      steps: [{}, {}],
+    });
+
+    await runAgentTurn("conv-1");
+
+    expect(escalateConversationMock).not.toHaveBeenCalled();
+    const llamada = sendAgentTextMock.mock.calls[0];
+    expect(llamada[2]).toBe("Sí, tenemos los de $44.");
+  });
+
+  it("el summary de logTurn lleva el prefijo '[cifra sin fuente] '", async () => {
+    generateMock.mockResolvedValueOnce({
+      text: "El intercomunicador sale en *108$ BCV*",
+      usage: NO_USAGE,
+      steps: [{}, {}],
+    });
+
+    await runAgentTurn("conv-1");
+
+    expect((agentTurnInserts[0].summary as string).startsWith("[cifra sin fuente]")).toBe(true);
   });
 });
 
@@ -6126,10 +6264,14 @@ describe("runAgentTurn — T2: el modelo sabe que el chat ya tiene asesor (21/9/
       catalogOutcome.conExistencia = true;
       return {};
     });
+    // `steps` trae la fuente del "$18" (T3, price-guard.ts) — ver el
+    // comentario de `TOOLRESULT_CARBURADOR_18`, más arriba: la guarda de
+    // precios corre con o sin asesor asignado, así que sin fuente igual
+    // reemplazaría este texto.
     generateMock.mockResolvedValueOnce({
       text: "Tenemos el carburador en $18 y 12 unidades.",
       usage: NO_USAGE,
-      steps: [{}, {}],
+      steps: TOOLRESULT_CARBURADOR_18,
     });
 
     await runAgentTurn("conv-1");
@@ -6406,6 +6548,18 @@ describe("runAgentTurn — 'escribiendo…' hacia el cliente", () => {
  * Motorcycles" 34 de 68 y 26 de 151 veces pese a que el SYSTEM_PROMPT ya lo
  * prohibía; esta es la cerradura para cuando el guion vuelve a fallar.
  */
+/**
+ * T3, plan "La búsqueda encuentra lo que el cliente pide" (25/9/2026): los
+ * borradores de este describe usan "12$" como detalle realista del
+ * automático de la Horse (para probar que "automático" no dispara la guarda
+ * de IDENTIDAD, ver `identity-guard.ts`) — pero la guarda de PRECIOS corre
+ * ANTES, sobre ese mismo borrador. Sin una fuente para "12", reemplazaría el
+ * borrador entero por `TEXTO_PRECIO_A_CONFIRMAR` antes de que la guarda de
+ * identidad llegara a evaluarlo, y estos tests dejarían de probar lo que
+ * dicen probar.
+ */
+const TOOLRESULT_AUTOMATICO_12 = [{ toolResults: [{ output: { precio: "$12,00 BCV (Bs. 10.368,00)" } }] }, {}];
+
 describe("runAgentTurn — guarda de identidad", () => {
   it("(a) texto limpio: pasa sin llamada extra a generateText", async () => {
     const warn = vi.spyOn(log, "warn");
@@ -6415,7 +6569,7 @@ describe("runAgentTurn — guarda de identidad", () => {
     generateMock.mockResolvedValueOnce({
       text: "El automático de la Horse está en 12$ a tasa BCV",
       usage: { inputTokens: 20, outputTokens: 8, totalTokens: 28 },
-      steps: [{}, {}],
+      steps: TOOLRESULT_AUTOMATICO_12,
     });
 
     await runAgentTurn("conv-1");
@@ -6437,7 +6591,7 @@ describe("runAgentTurn — guarda de identidad", () => {
     generateMock.mockResolvedValueOnce({
       text: borrador,
       usage: { inputTokens: 20, outputTokens: 8, totalTokens: 28 },
-      steps: [{}, {}],
+      steps: TOOLRESULT_AUTOMATICO_12,
     });
     generateTextMock.mockResolvedValueOnce({
       text: reescrito,
@@ -6492,7 +6646,7 @@ describe("runAgentTurn — guarda de identidad", () => {
     generateMock.mockResolvedValueOnce({
       text: borrador,
       usage: { inputTokens: 20, outputTokens: 8, totalTokens: 28 },
-      steps: [{}, {}],
+      steps: TOOLRESULT_AUTOMATICO_12,
     });
     generateTextMock.mockResolvedValueOnce({
       text: reescritoQueSigueCalzando,
@@ -6533,7 +6687,7 @@ describe("runAgentTurn — guarda de identidad", () => {
     generateMock.mockResolvedValueOnce({
       text: "Soy un asistente virtual de SBK, el automático está en 12$.",
       usage: { inputTokens: 20, outputTokens: 8, totalTokens: 28 },
-      steps: [{}, {}],
+      steps: TOOLRESULT_AUTOMATICO_12,
     });
     generateTextMock.mockResolvedValueOnce({
       text: "Soy un asistente virtual de SBK, el automático está en 12$.",
