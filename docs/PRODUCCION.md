@@ -770,6 +770,12 @@ versión de Node insuficiente. Sale con error si algo de eso pasa.
   no, el certificado no se emite.
 - **cron** — procesa cada minuto lo que quede pendiente en la cola de turnos
   (cada 5 minutos hasta el 7/9/2026: ver "Rampa de los topes" más abajo).
+  Desde el plan "La tasa BCV se lee cuatro veces al día" (25/9/2026) el mismo
+  bucle también pregunta cada minuto si toca releer el BCV (`/api/cron/bcv-refresh`):
+  el shell no calcula horarios, la ruta decide contra `BCV_READ_HOURS`
+  (00/06/12/18 hora de Venezuela, `shouldRefetchBcv` en `bcv-schedule.ts`) si
+  de verdad hace falta salir a la red o si la llamada es solo una lectura de
+  la base.
 
 **Verificación:**
 
@@ -945,6 +951,8 @@ contra una base real y se comprobó de punta a punta.
 | El login no filtra credenciales | ✅ |
 | El cron procesa la cola con su token | `{"ok":true}` |
 | El cron sin token | 401 |
+| El cron relee el BCV con su token | 200, `refreshed` según toque o no |
+| El cron de BCV sin token | 401 |
 
 De ahí salió `extra_hosts`, que hace falta si Supabase corre en el mismo
 servidor: en Linux `host.docker.internal` no existe sin esa línea.
@@ -975,6 +983,17 @@ Define `CRON_SECRET` (una cadena larga y aleatoria) y llama cada minuto:
 
 ```cron
 * * * * * curl -fsS -X POST https://<tu-dominio>/api/cron/process-queue -H "Authorization: Bearer $CRON_SECRET" > /dev/null
+```
+
+Desde el plan "La tasa BCV se lee cuatro veces al día" (25/9/2026), sumar
+otra línea de cron con el mismo `CRON_SECRET` contra `/api/cron/bcv-refresh`
+(en Dokploy ya lo hace el propio servicio `cron` del compose, ver más
+arriba): el minuto no fuerza nada, la ruta decide contra
+`BCV_READ_HOURS`/`shouldRefetchBcv` (00/06/12/18 hora de Venezuela) si de
+verdad toca salir a bcv.org.ve.
+
+```cron
+* * * * * curl -fsS -X POST https://<tu-dominio>/api/cron/bcv-refresh -H "Authorization: Bearer $CRON_SECRET" > /dev/null
 ```
 
 Cada 5 minutos hasta el 7/9/2026: con los topes de turnos calibrados a ~4/min

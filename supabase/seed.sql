@@ -208,9 +208,17 @@ insert into public.order_items (order_id, product_id, description, quantity, uni
 -- ============================================================================
 -- TASA BCV del día (para no depender de bcv.org.ve en la primera prueba)
 -- ============================================================================
--- Tasa de arranque para que la demo pueda cotizar sin red. `fetched_on` va
--- en null a propósito: así la app la trata como "no sé de cuándo es" y sale a
--- buscar la real en el primer arranque, en vez de quedarse con este número.
+-- Tasa de arranque para que la demo pueda cotizar sin red. Desde el plan "La
+-- tasa BCV se lee cuatro veces al día" (25/9/2026) quien decide si hay que
+-- releer es `fetched_at` (instante de lectura) contra el último horario
+-- 00/06/12/18 VE cumplido (`shouldRefetchBcv`, `bcv-schedule.ts`) — no
+-- `fetched_on`, que sigue escribiéndose en cada upsert pero ya no gobierna
+-- nada. Este insert no la incluye, así que la fila nace con el default de la
+-- columna (`fetched_at timestamptz not null default now()`,
+-- `20260819040000_agent_backend.sql`): el momento en que corre el seed, no
+-- `null`. La app NO sale a buscar la tasa real de inmediato: se queda con
+-- este número hasta que pase el primer horario programado posterior al
+-- seed. `fetched_on` sigue en `null` porque nadie la usa para decidir nada.
 insert into public.exchange_rates (rate_date, usd_to_ves, source, fetched_on) values
   (current_date, 775.3356, 'bcv.org.ve', null)
 on conflict (rate_date) do nothing;

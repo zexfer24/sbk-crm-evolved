@@ -23,10 +23,14 @@ function formatDay(rateDate: string): string {
 }
 
 /**
- * El BCV publica el sábado la tasa que entra en vigencia el lunes, así que
- * durante el fin de semana la fecha de la tasa está en el futuro. Decir solo
- * "24 ago." cuando es sábado 22 se lee como un error; "rige lun 24" explica
- * por qué el número es el que es.
+ * El BCV suele publicar por la tarde la tasa que entra en vigencia el día
+ * hábil siguiente, así que la fecha de la tasa puede estar en el futuro —
+ * hasta el 24/9/2026 eso pasaba solo el fin de semana (sábado publicando la
+ * del lunes); desde el plan "La tasa BCV se lee cuatro veces al día"
+ * (25/9/2026, `BCV_READ_HOURS` en `bcv-schedule.ts`) puede pasar CUALQUIER
+ * día hábil, ya con la lectura de las 18:00. Decir solo "24 ago." cuando ya
+ * rige el 25 se lee como un error; "rige 25 sep." explica por qué el número
+ * es el que es.
  */
 function describeValidity(rateDate: string): { short: string; long: string } {
   const today = venezuelaDate();

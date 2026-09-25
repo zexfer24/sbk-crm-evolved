@@ -126,7 +126,7 @@ services:
   cron:
     image: alpine:3
     restart: unless-stopped
-    # Un sleep y un curl cada minuto: cualquier cosa por encima de este techo
+    # Un sleep y dos curl cada minuto: cualquier cosa por encima de este techo
     # no es este servicio.
     deploy:
       resources:
@@ -155,11 +155,21 @@ services:
       # topes destopados (queue.ts, rate-limit.ts) la red de seguridad ya no
       # necesita ser lenta a propósito: el freno de emergencia real es
       # agent_can_run() por turno, no este intervalo.
+      #
+      # Segundo curl (plan "La tasa BCV se lee cuatro veces al día",
+      # 25/9/2026): PREGUNTA cada minuto si toca releer el BCV, no fuerza
+      # nada. Este shell NO calcula horarios -esta imagen alpine no trae
+      # tzdata-, es `/api/cron/bcv-refresh` la que decide si de verdad toca
+      # salir a la red contra los horarios 00/06/12/18 VE (`shouldRefetchBcv`,
+      # bcv-schedule.ts); si no toca, la llamada es solo una lectura de la
+      # base.
       - |
         apk add --no-cache curl >/dev/null
         while true; do
           sleep 60
           curl -fsS -X POST http://app:3000/api/cron/process-queue \
+            -H "Authorization: Bearer $$CRON_SECRET" >/dev/null || true
+          curl -fsS -X POST http://app:3000/api/cron/bcv-refresh \
             -H "Authorization: Bearer $$CRON_SECRET" >/dev/null || true
         done
 

@@ -62,16 +62,17 @@ vi.mock("@/lib/ai/bcv-fetch", () => ({
   fetchBcvHtml: (url: string) => fetchBcvHtmlMock(url),
 }));
 
-import { getBcvRate } from "@/lib/ai/bcv";
+import { getBcvRate, resetBcvFailureBackoffForTests } from "@/lib/ai/bcv";
 
 interface EstadoSupabase {
   upsertCalls: Record<string, unknown>[];
 }
 
 /**
- * Supabase falso con la base SIEMPRE vacía (maybeSingle -> null): así cada
- * caso ejercita de verdad la lectura en vivo de bcv.org.ve, nunca la rama de
- * "ya había una tasa guardada y no hacía falta releer".
+ * Supabase falso con la base SIEMPRE vacía (maybeSingle -> null en las DOS
+ * consultas que hace `getBcvRate`, la de `rate_date` y la de `fetched_at`):
+ * así cada caso ejercita de verdad la lectura en vivo de bcv.org.ve, nunca la
+ * rama de "ya había una tasa guardada y no hacía falta releer".
  */
 function crearFakeSupabase(): { client: unknown; estado: EstadoSupabase } {
   const estado: EstadoSupabase = { upsertCalls: [] };
@@ -112,6 +113,10 @@ beforeEach(() => {
   vi.useFakeTimers();
   // Reloj por defecto: el mismo momento en que se capturó el fixture.
   vi.setSystemTime(new Date("2026-08-28T21:11:00-04:00"));
+  // La ventana de fallo es una variable de MÓDULO: sin resetearla, un test
+  // de esta suite que falla deja "encendida" la ventana para el siguiente y
+  // un caso que debería salir a la red (y no lo hace) miente en silencio.
+  resetBcvFailureBackoffForTests();
 });
 
 afterEach(() => {
@@ -129,12 +134,14 @@ describe("getBcvRate — parseo del HTML real de bcv.org.ve", () => {
     expect(resultado.rate).toBe(791.6667);
     expect(resultado.rateDate).toBe("2026-08-28");
     expect(resultado.isStale).toBe(false);
+    expect(resultado.refreshed).toBe(true);
     expect(estado.upsertCalls).toEqual([
       {
         rate_date: "2026-08-28",
         usd_to_ves: 791.6667,
         source: "bcv.org.ve",
         fetched_on: "2026-08-28",
+        fetched_at: new Date("2026-08-28T21:11:00-04:00").toISOString(),
       },
     ]);
   });
@@ -185,18 +192,21 @@ describe("getBcvRate — parseo del HTML real de bcv.org.ve", () => {
     expect(resultado.rateDate).toBe("2026-08-31");
   });
 
-  it("5. sin Fecha Valor, rateDate cae a la fecha de Venezuela del reloj falso", async () => {
-    // Se borra la frase "Fecha Valor:" (parseValueDate la busca literal):
-    // sin ella no hay content= que leer, y bcv.ts cae deliberadamente a
-    // venezuelaDate().
+  it("5. sin Fecha Valor y sin nada guardado, rechaza y no escribe", async () => {
+    // Se borra la frase "Fecha Valor:" (parseValueDate la busca literal): sin
+    // ella no hay content= que leer. Hasta el 24/9/2026 esto caía a
+    // venezuelaDate() y se guardaba como si rigiera desde HOY — el bug real:
+    // el sábado a las 18:00 el BCV ya muestra la tasa del lunes, y sin la
+    // fecha de vigencia no hay forma de saber si "hoy" es correcto o no. Sin
+    // fila guardada de la que salvarse, se trata como cualquier otra lectura
+    // fallida y rechaza, igual que los casos 6-11 de este archivo.
     const html = variante(FIXTURE_HTML, "Fecha Valor:", "Fecha:");
     fetchBcvHtmlMock.mockResolvedValue(html);
     vi.setSystemTime(new Date("2026-08-29T15:00:00-04:00"));
-    const { client } = crearFakeSupabase();
+    const { client, estado } = crearFakeSupabase();
 
-    const resultado = await llamarGetBcvRate(client);
-
-    expect(resultado.rateDate).toBe("2026-08-29");
+    await expect(llamarGetBcvRate(client)).rejects.toThrow(/No hay ninguna tasa BCV guardada/);
+    expect(estado.upsertCalls).toHaveLength(0);
   });
 
   it('6. sin bloque id="dolar" (renombrado), rechaza y no escribe', async () => {

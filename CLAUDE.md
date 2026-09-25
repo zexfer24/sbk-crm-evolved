@@ -2179,6 +2179,24 @@ dejar rastro es lo que hacía desaparecer leads.
   no existen) y cada corrida del cron deja una fila con `error` en
   `saint.sync_log` ("no se encontró ninguna tabla fuente…") — es el
   comportamiento esperado, no una falla que arreglar.
+- **La tasa BCV se relee por `fetched_at` (un instante) contra los horarios
+  00/06/12/18 VE, no por día calendario** (plan "La tasa BCV se lee cuatro
+  veces al día", 25/9/2026, `BCV_READ_HOURS` en `bcv-schedule.ts`). Caso real:
+  el 24/9 a las 23:53 el chip mostraba la tasa leída a las 07:08 con la del
+  25 ya publicada por el BCV — la regla vieja, "una vez por día calendario"
+  (`fetched_on`), no tenía forma de saber que había una tasa más nueva
+  esperando. `getBcvRate` compara `lastScheduledRead(now)` contra el
+  `fetched_at` MÁS RECIENTE guardado (`shouldRefetchBcv`); **el upsert TIENE
+  que escribir `fetched_at` explícito** — la columna trae `default now()`
+  (solo la fecha de creación de la fila), así que sin escribirlo ahí la regla
+  releería en cada request. Sin "Fecha Valor" en la página no se guarda nada
+  (se devuelve lo guardado con `isStale: true`): a las 18:00 el BCV ya
+  publica la tasa del día hábil siguiente, y guardarla como si rigiera desde
+  hoy pisaría la tasa buena del día en curso. La ventana de 5 min tras un
+  fallo (`BCV_FAILURE_BACKOFF_MS`) vive EN MEMORIA del proceso, no en Redis —
+  el cron (`/api/cron/bcv-refresh`) la ignora con `ignoreFailureBackoff`.
+  `fetched_on` sigue escribiéndose en cada upsert pero ya no decide nada;
+  borrarla es otra ola, con su propia migración.
 
 ---
 
