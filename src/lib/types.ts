@@ -938,6 +938,27 @@ export interface Product {
   compatibility: ProductCompatibility[];
   /** Kilogramos con 3 decimales; null = todavía sin cargar. Cashea lo exige para el envío gratis (T4, 8/9/2026). */
   weightKg: number | null;
+  /**
+   * Código de Saint, extraído por `saint.sync_products()` del `Código ERP: …`
+   * que traía `description` (T1, plan "El inventario llega de Saint y no se
+   * toca a mano", 25/9/2026, migración 20260925010000). Null en un producto
+   * que nunca se enlazó con Saint (los cinco del seed local, por ejemplo).
+   */
+  saintCode: string | null;
+  /**
+   * Cuándo apareció este producto por primera vez en Saint. Null en la carga
+   * inicial (nadie "llegó" el 24/8/2026, ya estaban) y en lo que nunca se
+   * enlazó. Es lo que mide `isNewFromSaint` para el badge "Nuevo desde
+   * Saint": 7 días, lo que tarda el asesor en cargarle el peso.
+   */
+  saintAddedAt: string | null;
+  /**
+   * Cuándo Saint dejó de traer este producto (desapareció de la fuente, o lo
+   * marcó `activo ≠ 1`). Null mientras sigue en Saint. No se usa para nada
+   * todavía en el CRM — queda disponible para cuando haga falta explicar por
+   * qué un producto está inactivo.
+   */
+  saintRemovedAt: string | null;
 }
 
 /**

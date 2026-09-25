@@ -3,13 +3,14 @@ import type { Product } from "@/lib/types";
 import {
   INVENTORY_PAGE_SIZE,
   LOW_STOCK_THRESHOLD,
+  NEW_FROM_SAINT_DAYS,
   aiVisibility,
   formatWeightInput,
   inventoryHref,
   inventoryPageRange,
   inventoryTotalPages,
+  isNewFromSaint,
   parseInventoryParams,
-  parseStockInput,
   parseWeightInput,
   priceDisplay,
   priceInBs,
@@ -30,6 +31,9 @@ function product(over: Partial<Product> = {}): Product {
     updatedAt: "2026-08-20T10:00:00Z",
     compatibility: [],
     weightKg: null,
+    saintCode: null,
+    saintAddedAt: null,
+    saintRemovedAt: null,
     ...over,
   };
 }
@@ -52,9 +56,13 @@ describe("stockLevel", () => {
 
 describe("aiVisibility", () => {
   // La herramienta de catálogo filtra `is_active = true`: un producto
-  // desactivado deja de existir para la IA, aunque tenga stock.
-  it("un producto inactivo no lo ve la IA", () => {
-    expect(aiVisibility(product({ isActive: false })).visible).toBe(false);
+  // desactivado deja de existir para la IA, aunque tenga stock. Desde
+  // que Saint es el único dueño del inventario (25/9/2026), inactivo ya no
+  // es "un asesor lo apagó": es que Saint lo dio de baja.
+  it("un producto inactivo no lo ve la IA, y el aviso dice que la baja es de Saint", () => {
+    const visibility = aiVisibility(product({ isActive: false }));
+    expect(visibility.visible).toBe(false);
+    expect(visibility.warning).toBe("Ya no está en Saint: la IA no lo ofrece ni lo cotiza.");
   });
 
   // El stock sí viaja al modelo, así que un agotado se sigue cotizando
@@ -86,18 +94,42 @@ describe("priceInBs", () => {
   });
 });
 
-describe("parseStockInput", () => {
-  it("acepta un entero no negativo", () => {
-    expect(parseStockInput("0")).toEqual({ ok: true, value: 0 });
-    expect(parseStockInput("14")).toEqual({ ok: true, value: 14 });
-    expect(parseStockInput(" 7 ")).toEqual({ ok: true, value: 7 });
+/**
+ * Badge "Nuevo desde Saint" (T2, plan "El inventario llega de Saint y no se
+ * toca a mano", 25/9/2026, decisión del operador del 24/9): se muestra 7
+ * días desde `saint_added_at` — lo que tarda el asesor en cargarle el peso a
+ * un producto recién llegado.
+ */
+describe("isNewFromSaint", () => {
+  const AHORA = new Date("2026-09-25T12:00:00Z");
+
+  function haceDias(dias: number): string {
+    return new Date(AHORA.getTime() - dias * 24 * 60 * 60 * 1000).toISOString();
+  }
+
+  it("el tope son 7 días", () => {
+    expect(NEW_FROM_SAINT_DAYS).toBe(7);
   });
 
-  it("rechaza vacío, negativos, decimales y texto", () => {
-    expect(parseStockInput("").ok).toBe(false);
-    expect(parseStockInput("-1").ok).toBe(false);
-    expect(parseStockInput("2.5").ok).toBe(false);
-    expect(parseStockInput("muchos").ok).toBe(false);
+  it("sin saintAddedAt nunca es nuevo", () => {
+    expect(isNewFromSaint({ saintAddedAt: null }, AHORA)).toBe(false);
+  });
+
+  it("llegó hace 1 día: es nuevo", () => {
+    expect(isNewFromSaint({ saintAddedAt: haceDias(1) }, AHORA)).toBe(true);
+  });
+
+  it("llegó hace 6 días y 23 horas: todavía es nuevo", () => {
+    const fecha = new Date(AHORA.getTime() - (6 * 24 + 23) * 60 * 60 * 1000).toISOString();
+    expect(isNewFromSaint({ saintAddedAt: fecha }, AHORA)).toBe(true);
+  });
+
+  it("llegó hace exactamente 7 días: ya no es nuevo", () => {
+    expect(isNewFromSaint({ saintAddedAt: haceDias(7) }, AHORA)).toBe(false);
+  });
+
+  it("llegó hace 30 días: ya no es nuevo", () => {
+    expect(isNewFromSaint({ saintAddedAt: haceDias(30) }, AHORA)).toBe(false);
   });
 });
 

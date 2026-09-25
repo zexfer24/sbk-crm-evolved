@@ -1,10 +1,19 @@
 // ---------------------------------------------------------------------------
 // Cuán viejo es el inventario.
 //
-// El catálogo se cargó el 24 de agosto de 2026 y no se volvió a tocar: 5.438
-// productos con el mismo `updated_at`. La sincronización vive en una aplicación
-// aparte del dueño y todavía no corre. Nadie lo sabía — ni el panel lo mostraba
-// ni la IA lo tenía en cuenta al cotizar.
+// Hasta el 25/9/2026 el catálogo era estático: se cargó el 24 de agosto y no
+// se volvía a tocar salvo que un asesor editara algo a mano. Desde la
+// migración 20260925010000 (T1, plan "El inventario llega de Saint y no se
+// toca a mano") eso cambió de raíz: `saint.sync_products()` corre cada
+// minuto y `updated_at` deja de significar "última vez que alguien lo tocó"
+// para pasar a significar "última vez que se CONFIRMÓ contra Saint" — el job
+// lo toca cuando algo cambió (nombre, precio, existencia, `is_active`) o,
+// si nada cambió, cada 6 horas mientras el agente de réplica siga vivo (late
+// heartbeat). Por eso un atraso de dos días o más ya NO es "el precio puede
+// haber cambiado sin que nadie se entere": con el job tocando la fila al
+// menos cada 6 horas, dos días de silencio significan que el job o la
+// réplica dejaron de correr — es una falla de sincronización, no una demora
+// normal.
 //
 // Es el mismo problema que la tasa del BCV, y se resuelve igual: el dato no se
 // esconde ni se descarta, se acompaña de su antigüedad y quien lo usa decide
@@ -13,16 +22,17 @@
 // precio sino la existencia: un stock de hace cuatro días puede hacer que la IA
 // le prometa a un cliente algo que ya se vendió.
 //
-// Esto NO sincroniza nada y no intenta hacerlo. Solo hace visible el atraso.
+// Esto NO sincroniza nada: solo hace visible cuándo la sincronización dejó de
+// confirmar el dato.
 // ---------------------------------------------------------------------------
 
 /**
  * A partir de cuántos días de antigüedad el inventario deja de afirmarse como
  * un hecho.
  *
- * Dos, por el mismo criterio que el BCV: un día de atraso es la vida normal de
- * un dato que se sincroniza a diario; dos ya significa que la sincronización no
- * está corriendo.
+ * Dos: con el job de Saint tocando la fila al menos cada 6 horas (mientras la
+ * réplica siga viva), pasar dos días sin confirmación ya no es una demora
+ * plausible — es la señal de que el job o la réplica dejaron de correr.
  */
 export const INVENTORY_STALE_DAYS = 2;
 
@@ -76,7 +86,10 @@ export function freshnessNote(freshness: InventoryFreshness): string {
   }
 
   if (isStale) {
-    return `Sin cambios desde hace ${ageDays} días. La IA cotiza con esto: precios y unidades pueden no estar al día.`;
+    return (
+      `Sin confirmar contra Saint desde hace ${ageDays} días: la sincronización debería tocar este dato al ` +
+      `menos cada 6 horas. La IA sigue cotizando con esto, pero puede no estar al día.`
+    );
   }
 
   return ageDays === 0

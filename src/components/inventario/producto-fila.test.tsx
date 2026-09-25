@@ -1,5 +1,5 @@
 /** @vitest-environment jsdom */
-import { describe, expect, it, vi, beforeEach } from "vitest";
+import { describe, expect, it, vi, beforeEach, afterEach } from "vitest";
 import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { Product } from "@/lib/types";
@@ -26,12 +26,8 @@ vi.mock("@/lib/supabase/client", () => ({
 }));
 
 const updateProductWeight = vi.fn().mockResolvedValue(undefined);
-const updateProductStock = vi.fn().mockResolvedValue(undefined);
-const setProductActive = vi.fn().mockResolvedValue(undefined);
 vi.mock("@/lib/mutations", () => ({
   updateProductWeight: (...args: unknown[]) => updateProductWeight(...args),
-  updateProductStock: (...args: unknown[]) => updateProductStock(...args),
-  setProductActive: (...args: unknown[]) => setProductActive(...args),
 }));
 
 function product(over: Partial<Product> = {}): Product {
@@ -47,16 +43,15 @@ function product(over: Partial<Product> = {}): Product {
     updatedAt: "2026-09-08T10:00:00Z",
     compatibility: [],
     weightKg: null,
+    saintCode: null,
+    saintAddedAt: null,
+    saintRemovedAt: null,
     ...over,
   };
 }
 
 function pesoInput() {
   return screen.getByLabelText("Peso de Carburador PZ27");
-}
-
-function stockInput() {
-  return screen.getByLabelText("Stock de Carburador PZ27");
 }
 
 describe("ProductoFila — el campo Peso", () => {
@@ -184,28 +179,70 @@ describe("ProductoFila — el precio, de solo lectura", () => {
 });
 
 /**
- * Stock y Peso siguen siendo editables (D3 del plan: "el pedido habla solo
- * de precios") — este caso de Stock no estaba cubierto en este archivo
- * (solo Peso, T4 del 8/9/2026): lo suma esta corrida para dejar constancia
- * de que el refactor del campo Precio no le tocó el guardado a los otros dos.
+ * T3 del plan "El inventario llega de Saint y no se toca a mano" (25/9/2026):
+ * Stock deja de editarse desde acá, mismo motivo y mismo patrón que el
+ * precio el 19/9/2026 — `saint.sync_products()` es el único que escribe
+ * `stock_quantity`. Reemplaza al escenario anterior ("Stock sigue
+ * guardando", sumado el 19/9/2026 para dejar constancia de que el refactor
+ * del precio no le tocaba el guardado a Stock/Peso): ahora es Stock el que
+ * deja de guardarse.
  */
-describe("ProductoFila — Stock sigue guardando", () => {
-  beforeEach(() => {
-    refresh.mockClear();
-    toastDanger.mockClear();
-    updateProductStock.mockClear();
-    updateProductStock.mockResolvedValue(undefined);
+describe("ProductoFila — el stock, de solo lectura", () => {
+  it("no hay un textbox de Stock: es texto, con el número tal cual llega de Saint", () => {
+    render(<ProductoFila product={product({ stockQuantity: 14 })} bcvRate={40} />);
+
+    expect(screen.queryByRole("textbox", { name: /Stock de/ })).toBeNull();
+    expect(screen.getByLabelText("Stock de Carburador PZ27")).toHaveTextContent("14");
+  });
+});
+
+/**
+ * El botón Activar/Desactivar salió de la fila el 25/9/2026: `is_active` ya
+ * no es una decisión que se tome desde el CRM, la escribe Saint. Que el
+ * repuesto esté oculto a la IA se sigue viendo (badge "Oculto a la IA",
+ * `aiVisibility`), pero ya no hay ninguna acción para cambiarlo acá.
+ */
+describe("ProductoFila — sin botón Activar/Desactivar", () => {
+  it("no hay ningún botón para cambiar la visibilidad a mano", () => {
+    render(<ProductoFila product={product({ isActive: true })} bcvRate={40} />);
+    expect(screen.queryByRole("button", { name: /activar|desactivar/i })).toBeNull();
   });
 
-  it("escribir un stock nuevo y salir del campo lo guarda", async () => {
-    const user = userEvent.setup({ delay: null, pointerEventsCheck: 0 });
-    render(<ProductoFila product={product({ stockQuantity: 10 })} bcvRate={40} />);
+  it("tampoco lo hay en un producto ya inactivo", () => {
+    render(<ProductoFila product={product({ isActive: false })} bcvRate={40} />);
+    expect(screen.queryByRole("button", { name: /activar|desactivar/i })).toBeNull();
+  });
+});
 
-    await user.clear(stockInput());
-    await user.type(stockInput(), "14");
-    await user.tab();
+/**
+ * Badge "Nuevo desde Saint" (T2/T3 del mismo plan, decisión del operador del
+ * 24/9/2026: 7 días desde `saintAddedAt`). Se prueba con el reloj fijo —
+ * `isNewFromSaint` usa `new Date()` por default, y un test que dependiera del
+ * reloj real sería frágil (CLAUDE.md, "nunca un test que dependa del reloj
+ * real").
+ */
+describe("ProductoFila — badge Nuevo desde Saint", () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-09-25T12:00:00Z"));
+  });
 
-    await waitFor(() => expect(updateProductStock).toHaveBeenCalledWith(expect.anything(), "prod-1", 14));
-    await waitFor(() => expect(refresh).toHaveBeenCalled());
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("se muestra cuando el producto llegó de Saint hace 1 día", () => {
+    render(<ProductoFila product={product({ saintAddedAt: "2026-09-24T12:00:00Z" })} bcvRate={40} />);
+    expect(screen.getByText("Nuevo desde Saint")).toBeInTheDocument();
+  });
+
+  it("no se muestra sin fecha de ingreso a Saint", () => {
+    render(<ProductoFila product={product({ saintAddedAt: null })} bcvRate={40} />);
+    expect(screen.queryByText("Nuevo desde Saint")).not.toBeInTheDocument();
+  });
+
+  it("no se muestra pasados los 7 días", () => {
+    render(<ProductoFila product={product({ saintAddedAt: "2026-09-17T12:00:00Z" })} bcvRate={40} />);
+    expect(screen.queryByText("Nuevo desde Saint")).not.toBeInTheDocument();
   });
 });

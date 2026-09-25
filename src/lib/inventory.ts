@@ -5,8 +5,16 @@ import type { Product } from "@/lib/types";
  *
  * El punto de esta sección es que lo que se ve acá es exactamente lo que la
  * herramienta de catálogo de la IA lee en el próximo turno: misma tabla
- * (`products`), sin copia intermedia ni sincronización. Por eso las reglas
- * de visibilidad de abajo replican las de `buildCatalogTool`.
+ * (`products`), sin copia intermedia. Por eso las reglas de visibilidad de
+ * abajo replican las de `buildCatalogTool`.
+ *
+ * Desde el 25/9/2026 (T1, plan "El inventario llega de Saint y no se toca a
+ * mano", migración 20260925010000) Saint es el único dueño de nombre,
+ * precio, existencia e `is_active`: `saint.sync_products()` los copia cada
+ * minuto y la base impide escribirlos desde la app. Lo único que este
+ * módulo sigue validando para el formulario es el peso — `parseStockInput`
+ * y el resto de la validación de stock/precio ya no tienen sentido y se
+ * retiraron.
  */
 
 /** Por debajo o igual a esto, el repuesto se muestra en amarillo. */
@@ -32,15 +40,43 @@ export interface AiVisibility {
  * repuesto lo saca del catálogo del modelo por completo. El stock, en
  * cambio, sí viaja al modelo — un repuesto activo en cero se le sigue
  * cotizando al cliente, con stock 0.
+ *
+ * Desde el 25/9/2026 un `is_active = false` ya no es una decisión que tomó
+ * un asesor desde este panel: es lo que copió `saint.sync_products()` — el
+ * producto desapareció de Saint, o Saint lo marcó `activo ≠ 1`. El aviso lo
+ * dice así, no como "alguien lo desactivó acá".
  */
 export function aiVisibility(product: Product): AiVisibility {
   if (!product.isActive) {
-    return { visible: false, warning: "Desactivado: la IA no lo ofrece ni lo cotiza." };
+    return { visible: false, warning: "Ya no está en Saint: la IA no lo ofrece ni lo cotiza." };
   }
   if (product.stockQuantity <= 0) {
     return { visible: true, warning: "Sin stock: la IA lo sigue cotizando e informa 0 disponibles." };
   }
   return { visible: true, warning: null };
+}
+
+/**
+ * Cuántos días se muestra el badge "Nuevo desde Saint" (decisión del
+ * operador, 24/9/2026): lo que tarda un asesor en cargarle el peso a un
+ * producto recién llegado del ERP.
+ */
+export const NEW_FROM_SAINT_DAYS = 7;
+
+/**
+ * Si este producto llegó de Saint hace poco (T2, plan "El inventario llega
+ * de Saint y no se toca a mano", 25/9/2026). `saintAddedAt` es null para
+ * cualquier producto que nunca se enlazó con Saint (los del seed local, por
+ * ejemplo) — nunca es "nuevo" sin ese dato, aunque tampoco sea viejo.
+ */
+export function isNewFromSaint(
+  product: Pick<Product, "saintAddedAt">,
+  now: Date = new Date(),
+  days = NEW_FROM_SAINT_DAYS
+): boolean {
+  if (!product.saintAddedAt) return false;
+  const elapsedMs = now.getTime() - new Date(product.saintAddedAt).getTime();
+  return elapsedMs < days * 24 * 60 * 60 * 1000;
 }
 
 /** Precio en bolívares a la tasa dada. Null si todavía no hay tasa que aplicar. */
@@ -92,22 +128,16 @@ export function priceDisplay(product: Product, rate: number): PriceDisplay {
 // Validación de la edición en línea
 //
 // Se escribe directo sobre lo que la IA va a leer, así que el formulario no
-// puede dejar pasar un stock negativo ni un peso con basura. El precio salió
-// de este grupo el 19/9/2026 ("El precio se lee en bolívares"): ya no se
-// edita desde acá, ver `priceDisplay` más arriba.
+// puede dejar pasar un peso con basura. El precio salió de este grupo el
+// 19/9/2026 ("El precio se lee en bolívares"): ya no se edita desde acá, ver
+// `priceDisplay` más arriba. El stock salió el 25/9/2026 ("El inventario
+// llega de Saint y no se toca a mano"): `parseStockInput`/`updateProductStock`
+// se borraron porque la base ya no deja escribir `stock_quantity` desde la
+// app — Saint es el único dueño. El peso es el único campo que sigue
+// editándose desde acá.
 // ---------------------------------------------------------------------------
 
 export type ParseResult<T = number> = { ok: true; value: T } | { ok: false; error: string };
-
-export function parseStockInput(raw: string): ParseResult {
-  const text = raw.trim();
-  if (!text) return { ok: false, error: "Escribe cuántas unidades hay." };
-  if (!/^\d+$/.test(text)) return { ok: false, error: "El stock son unidades enteras, sin decimales ni signos." };
-
-  const value = Number(text);
-  if (!Number.isSafeInteger(value)) return { ok: false, error: "Ese número es demasiado grande." };
-  return { ok: true, value };
-}
 
 /** Tope del peso: de sobra para cualquier repuesto de moto, y calza con `numeric(8,3)`. */
 export const MAX_WEIGHT_KG = 9999.999;
@@ -200,11 +230,19 @@ export type InventorySort = "nombre" | "stock" | "precio";
 const FILTERS: InventoryFilter[] = ["todos", "agotados", "bajo-stock", "inactivos", "sin-peso"];
 const SORTS: InventorySort[] = ["nombre", "stock", "precio"];
 
+/**
+ * `inactivos` pasó de "Desactivados" a "Fuera de Saint" el 25/9/2026 ("El
+ * inventario llega de Saint y no se toca a mano"): un `is_active = false` ya
+ * no es una decisión que tomó un asesor desde este panel, es lo que copió
+ * `saint.sync_products()` — el producto desapareció de la fuente, o Saint lo
+ * marcó `activo ≠ 1`. "Desactivados" sugería una acción manual que ya no
+ * existe acá.
+ */
 export const INVENTORY_FILTER_LABELS: Record<InventoryFilter, string> = {
   todos: "Todos",
   agotados: "Agotados",
   "bajo-stock": "Bajo stock",
-  inactivos: "Desactivados",
+  inactivos: "Fuera de Saint",
   "sin-peso": "Sin peso",
 };
 

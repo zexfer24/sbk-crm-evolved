@@ -1513,6 +1513,9 @@ export type Database = {
           is_active: boolean
           name: string
           price: number
+          saint_added_at: string | null
+          saint_code: string | null
+          saint_removed_at: string | null
           search_text: string | null
           stock_quantity: number
           updated_at: string
@@ -1527,6 +1530,9 @@ export type Database = {
           is_active?: boolean
           name: string
           price: number
+          saint_added_at?: string | null
+          saint_code?: string | null
+          saint_removed_at?: string | null
           stock_quantity?: number
           updated_at?: string
           weight_kg?: number | null
@@ -1540,6 +1546,9 @@ export type Database = {
           is_active?: boolean
           name?: string
           price?: number
+          saint_added_at?: string | null
+          saint_code?: string | null
+          saint_removed_at?: string | null
           stock_quantity?: number
           updated_at?: string
           weight_kg?: number | null

@@ -61,7 +61,7 @@ describe("InventarioView — la antigüedad del inventario se ve", () => {
     const tarjeta = pintar(haceDias(4));
 
     expect(tarjeta).toHaveTextContent("4 días");
-    expect(tarjeta).toHaveTextContent(/La IA cotiza con esto/i);
+    expect(tarjeta).toHaveTextContent(/La IA sigue cotizando con esto/i);
   });
 
   /** El mismo tratamiento visual que la tasa vieja: si no se distingue, no sirve de nada. */
@@ -100,5 +100,27 @@ describe("InventarioView — Sin peso", () => {
     pintar(haceDias(0));
 
     expect(screen.getByRole("link", { name: "Sin peso" })).toBeInTheDocument();
+  });
+});
+
+/**
+ * T3 del plan "El inventario llega de Saint y no se toca a mano" (25/9/2026):
+ * la pantalla deja de hablar de "copia ni sincronización en el medio" (era
+ * falso desde que `saint.sync_products()` corre cada minuto) y el filtro que
+ * antes se llamaba "Desactivados" pasa a nombrar la razón real —Saint dio de
+ * baja el repuesto, no un asesor desde acá.
+ */
+describe("InventarioView — textos de Saint", () => {
+  it("el subtítulo explica que Saint sincroniza nombre, precio y existencia cada minuto", () => {
+    pintar(haceDias(0));
+
+    expect(screen.getByText(/llegan de Saint cada minuto/i)).toBeInTheDocument();
+  });
+
+  it("la píldora del filtro se llama «Fuera de Saint», no «Desactivados»", () => {
+    pintar(haceDias(0));
+
+    expect(screen.getByRole("link", { name: "Fuera de Saint" })).toBeInTheDocument();
+    expect(screen.queryByRole("link", { name: "Desactivados" })).not.toBeInTheDocument();
   });
 });

@@ -1034,12 +1034,18 @@ describe("pinConversation / unpinConversation", () => {
 });
 
 /**
- * T4 del plan "Seis frentes del buzón" (8/9/2026): peso en kilos para
- * Cashea. El UPDATE lleva la columna y `updated_at` — nada más — y `null` es
- * un guardado legítimo (vuelve a dejar el repuesto "sin cargar"). Hasta el
- * 19/9/2026 este comentario decía "igual que `updateProductPrice`": esa
- * mutación se borró ese día ("El precio se lee en bolívares") sin dejar test
- * propio en este archivo — nunca lo tuvo.
+ * T2 del plan "El inventario llega de Saint y no se toca a mano" (25/9/2026):
+ * desde la migración 20260925010000 la base solo deja escribir `weight_kg` en
+ * `products` — un trigger `security invoker` fuerza `updated_at` a su valor
+ * viejo cuando escribe un asesor, y el VPS revoca el `grant update
+ * (updated_at)` a `authenticated` después del deploy. Mandar `updated_at` en
+ * el payload ya no logra nada (el trigger lo pisa) y el día que el VPS
+ * complete el revoke ni siquiera se puede mandar: el UPDATE entero fallaría
+ * por falta de permiso sobre esa columna. El payload es exactamente
+ * `{ weight_kg }`, sin nada más. Hasta el 19/9/2026 este comentario decía
+ * "igual que `updateProductPrice`": esa mutación se borró ese día ("El precio
+ * se lee en bolívares") sin dejar test propio en este archivo — nunca lo
+ * tuvo.
  */
 describe("updateProductWeight", () => {
   function createFakeProductsSupabase() {
@@ -1060,23 +1066,22 @@ describe("updateProductWeight", () => {
     return { client: client as unknown as SupabaseClient, calls };
   }
 
-  it("manda weight_kg y updated_at", async () => {
+  it("manda exactamente { weight_kg }, sin updated_at ni ninguna otra columna", async () => {
     const { client, calls } = createFakeProductsSupabase();
 
     await updateProductWeight(client, "prod-1", 0.25);
 
     expect(calls).toHaveLength(1);
     expect(calls[0].productId).toBe("prod-1");
-    expect(calls[0].payload).toMatchObject({ weight_kg: 0.25 });
-    expect(calls[0].payload).toHaveProperty("updated_at");
+    expect(calls[0].payload).toEqual({ weight_kg: 0.25 });
   });
 
-  it("guardar null vuelve a dejar el repuesto sin peso cargado", async () => {
+  it("guardar null vuelve a dejar el repuesto sin peso cargado, también con payload exacto", async () => {
     const { client, calls } = createFakeProductsSupabase();
 
     await updateProductWeight(client, "prod-1", null);
 
-    expect(calls[0].payload).toMatchObject({ weight_kg: null });
+    expect(calls[0].payload).toEqual({ weight_kg: null });
   });
 
   it("propaga el error de la base en vez de tragárselo", async () => {

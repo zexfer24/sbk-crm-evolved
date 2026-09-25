@@ -1234,18 +1234,18 @@ export async function updateContactProfile(
 // ---------------------------------------------------------------------------
 // Inventario
 //
-// Escriben sobre la misma tabla que lee la herramienta de catálogo del
-// agente: lo que se guarda acá es lo que la IA cotiza en el próximo turno.
+// Desde el 25/9/2026 (T2, plan "El inventario llega de Saint y no se toca a
+// mano", migración 20260925010000) Saint es el único dueño de nombre,
+// precio, existencia e `is_active` de `products`: los copia
+// `saint.sync_products()` cada minuto y la base tiene un candado (grants +
+// trigger `security invoker`) que impide que la app los escriba. El peso es
+// el ÚNICO dato del inventario que se sigue editando desde el CRM —Saint no
+// lo trae— y queda auditado en `product_weight_audit` por un segundo
+// trigger. `updateProductStock` y `setProductActive` se borraron ese día:
+// escribir `stock_quantity`/`is_active` desde acá ya no tiene efecto (el
+// trigger lo revertiría) y, apenas el VPS complete el revoke pendiente,
+// directamente fallaría por falta de permiso.
 // ---------------------------------------------------------------------------
-
-export async function updateProductStock(supabase: SupabaseClient, productId: string, stockQuantity: number) {
-  const { error } = await supabase
-    .from("products")
-    .update({ stock_quantity: stockQuantity, updated_at: new Date().toISOString() })
-    .eq("id", productId);
-
-  if (error) throw error;
-}
 
 /**
  * Peso en kilos para el envío (T4, "Seis frentes del buzón", 8/9/2026).
@@ -1255,25 +1255,19 @@ export async function updateProductStock(supabase: SupabaseClient, productId: st
  * peso para calcular si el envío sale gratis; la IA no lo lee (fuera de
  * alcance de esta tarea).
  *
+ * El payload manda SOLO `weight_kg`, sin `updated_at` (T2, "El inventario
+ * llega de Saint y no se toca a mano", 25/9/2026): el trigger de la base
+ * fuerza `updated_at` a su valor viejo cuando escribe un asesor —mandarlo acá
+ * no lograba nada— y el VPS va a revocar el `grant update (updated_at)` a
+ * `authenticated` después de desplegar esta corrida, así que mandarlo
+ * rompería el UPDATE entero por falta de permiso sobre esa columna.
+ *
  * `updateProductPrice` —el mismo patrón, sobre `price`— se borró el
  * 19/9/2026 ("El precio se lee en bolívares"): el precio dejó de editarse
  * desde el CRM, llega de `products` cargada por fuera (D2 del plan).
  */
 export async function updateProductWeight(supabase: SupabaseClient, productId: string, weightKg: number | null) {
-  const { error } = await supabase
-    .from("products")
-    .update({ weight_kg: weightKg, updated_at: new Date().toISOString() })
-    .eq("id", productId);
-
-  if (error) throw error;
-}
-
-/** Desactivar un repuesto lo saca del catálogo que ve la IA, sin borrar su historial de ventas. */
-export async function setProductActive(supabase: SupabaseClient, productId: string, isActive: boolean) {
-  const { error } = await supabase
-    .from("products")
-    .update({ is_active: isActive, updated_at: new Date().toISOString() })
-    .eq("id", productId);
+  const { error } = await supabase.from("products").update({ weight_kg: weightKg }).eq("id", productId);
 
   if (error) throw error;
 }

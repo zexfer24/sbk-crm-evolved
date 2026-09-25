@@ -36,6 +36,9 @@ function product(over: Partial<Product> = {}): Product {
     updatedAt: "2026-08-22T10:00:00.000Z",
     compatibility: [],
     weightKg: null,
+    saintCode: null,
+    saintAddedAt: null,
+    saintRemovedAt: null,
     ...over,
   };
 }

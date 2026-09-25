@@ -66,8 +66,8 @@ const EMPTY_BY_FILTER: Record<InventoryFilter, { title: string; hint: string }> 
     hint: `Nada bajó de ${LOW_STOCK_THRESHOLD} unidades.`,
   },
   inactivos: {
-    title: "No hay repuestos desactivados",
-    hint: "Todo el catálogo está visible para la IA.",
+    title: "Todo el catálogo sigue en Saint",
+    hint: "Ningún repuesto salió de la fuente todavía. Si Saint da de baja uno, aparece acá.",
   },
   "sin-peso": {
     title: "Todo el catálogo activo tiene peso cargado",
@@ -144,8 +144,8 @@ export function InventarioView({
               <div>
                 <h1 className="dash-title dash-display">Inventario</h1>
                 <p className="dash-subtitle">
-                  Esto es exactamente lo que la IA consulta al cotizarle a un cliente. Lo que cambies acá vale desde
-                  el próximo mensaje: no hay copia ni sincronización en el medio.
+                  Esto es exactamente lo que la IA consulta al cotizarle a un cliente. Nombre, precio y existencia
+                  llegan de Saint cada minuto y no se editan acá; lo único que se carga a mano es el peso.
                 </p>
               </div>
             </div>
@@ -172,9 +172,13 @@ export function InventarioView({
                 <span className="cli-stat-note">Cashea lo exige para el envío gratis.</span>
               </div>
               {/* La antigüedad del catálogo, por la misma razón que la fecha de
-                  la tasa: la sincronización vive en una aplicación aparte y
-                  puede llevar días sin correr sin que nada lo delate. Un stock
-                  de hace cuatro días le hace prometer a la IA algo ya vendido. */}
+                  la tasa: `updated_at` es desde el 25/9/2026 la última vez que
+                  `saint.sync_products()` confirmó esta fila contra Saint (la
+                  toca aunque nada haya cambiado, al menos cada 6 h mientras la
+                  réplica siga viva) — un atraso de días ya no es una demora
+                  normal, es la señal de que el job o la réplica se cayeron. Un
+                  stock de hace cuatro días le hace prometer a la IA algo ya
+                  vendido. */}
               <div className="cli-stat" data-stale={freshness.isStale ? "true" : undefined}>
                 <span className="lm-eyebrow">Actualizado</span>
                 <span className="lm-num cli-stat-value">{freshnessValue(freshness)}</span>

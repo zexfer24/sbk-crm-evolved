@@ -2,26 +2,24 @@
 
 import { useState, type FocusEvent, type KeyboardEvent } from "react";
 import { useRouter } from "next/navigation";
-import { Check, EyeOff, TriangleAlert } from "lucide-react";
+import { Check, EyeOff, Sparkles, TriangleAlert } from "lucide-react";
 import { toast } from "@heroui/react";
 import type { Product } from "@/lib/types";
 import { createClient } from "@/lib/supabase/client";
-import { setProductActive, updateProductStock, updateProductWeight } from "@/lib/mutations";
-import {
-  aiVisibility,
-  formatWeightInput,
-  parseStockInput,
-  parseWeightInput,
-  priceDisplay,
-  stockLevel,
-} from "@/lib/inventory";
+import { updateProductWeight } from "@/lib/mutations";
+import { aiVisibility, formatWeightInput, isNewFromSaint, parseWeightInput, priceDisplay, stockLevel } from "@/lib/inventory";
 
 /**
- * Una fila del inventario, editable en el sitio.
+ * Una fila del inventario.
  *
- * Lo que se guarda acá es exactamente lo que la herramienta de catálogo del
- * agente lee en el próximo turno: no hay copia intermedia. Por eso cada fila
- * dice explícitamente si la IA la está ofreciendo o no.
+ * Desde el 25/9/2026 ("El inventario llega de Saint y no se toca a mano",
+ * migración 20260925010000) Saint es el único dueño de nombre, precio,
+ * existencia y `is_active`: los copia `saint.sync_products()` cada minuto y
+ * la base tiene un candado (grants + trigger `security invoker`) que impide
+ * que la app los escriba — el mismo candado que ya sacó a Precio de esta
+ * fila el 19/9/2026 ("El precio se lee en bolívares") ahora también saca a
+ * Stock y al botón Activar/Desactivar. Lo único que sigue siendo editable
+ * desde acá es el peso, y queda auditado en `product_weight_audit`.
  *
  * Se guarda al salir del campo (o con Enter), no en cada tecla: escribir
  * "12" no debe pasar por un guardado intermedio en "1".
@@ -29,16 +27,16 @@ import {
 export function ProductoFila({ product, bcvRate }: { product: Product; bcvRate: number }) {
   const router = useRouter();
 
-  const [stockDraft, setStockDraft] = useState(String(product.stockQuantity));
   const [weightDraft, setWeightDraft] = useState(formatWeightInput(product.weightKg));
   const [busy, setBusy] = useState(false);
-  const [savedField, setSavedField] = useState<"stock" | "peso" | null>(null);
+  const [savedField, setSavedField] = useState<"peso" | null>(null);
 
   const level = stockLevel(product);
   const visibility = aiVisibility(product);
   const price = priceDisplay(product, bcvRate);
+  const nuevoDesdeSaint = isNewFromSaint(product);
 
-  async function save(field: "stock" | "peso", action: () => Promise<void>, revert: () => void) {
+  async function save(field: "peso", action: () => Promise<void>, revert: () => void) {
     setBusy(true);
     try {
       await action();
@@ -52,22 +50,6 @@ export function ProductoFila({ product, bcvRate }: { product: Product; bcvRate: 
     } finally {
       setBusy(false);
     }
-  }
-
-  async function commitStock() {
-    const parsed = parseStockInput(stockDraft);
-    if (!parsed.ok) {
-      setStockDraft(String(product.stockQuantity));
-      toast.danger(parsed.error);
-      return;
-    }
-    if (parsed.value === product.stockQuantity) return;
-
-    await save(
-      "stock",
-      () => updateProductStock(createClient(), product.id, parsed.value),
-      () => setStockDraft(String(product.stockQuantity))
-    );
   }
 
   async function commitWeight() {
@@ -87,18 +69,6 @@ export function ProductoFila({ product, bcvRate }: { product: Product; bcvRate: 
       () => updateProductWeight(createClient(), product.id, parsed.value),
       () => setWeightDraft(formatWeightInput(product.weightKg))
     );
-  }
-
-  async function toggleActive() {
-    setBusy(true);
-    try {
-      await setProductActive(createClient(), product.id, !product.isActive);
-      router.refresh();
-    } catch {
-      toast.danger("No se pudo cambiar la visibilidad del repuesto.");
-    } finally {
-      setBusy(false);
-    }
   }
 
   function onEnter(event: KeyboardEvent<HTMLInputElement>) {
@@ -131,21 +101,20 @@ export function ProductoFila({ product, bcvRate }: { product: Product; bcvRate: 
 
       <label className="inv-field">
         <span className="lm-eyebrow">Stock</span>
+        {/*
+         * Stock deja de editarse desde acá el 25/9/2026 ("El inventario
+         * llega de Saint y no se toca a mano"): llega de `products`, que
+         * `saint.sync_products()` sincroniza cada minuto. Mismo patrón que
+         * Precio (19/9/2026) — texto de solo lectura, `data-level` sigue en
+         * el `<span className="inv-input-wrap">` (no en el texto) para que
+         * el semáforo de `stockLevel` se siga pintando igual.
+         */}
         <span className="inv-input-wrap" data-level={level}>
-          <input
-            className="lm-num"
-            value={stockDraft}
-            onChange={(e) => setStockDraft(e.target.value)}
-            onBlur={commitStock}
-            onKeyDown={onEnter}
-            onFocus={selectAll}
-            disabled={busy}
-            inputMode="numeric"
-            aria-label={`Stock de ${product.name}`}
-          />
-          {savedField === "stock" && <Check size={13} className="inv-saved" aria-label="Guardado" />}
+          <span className="lm-num inv-readonly" aria-label={`Stock de ${product.name}`}>
+            {product.stockQuantity}
+          </span>
         </span>
-        {/* Pie vacío: Stock mide lo mismo que Precio cuando hay tasa (T7, 10/9/2026). */}
+        {/* Pie vacío: Stock mide lo mismo que Precio/Peso (T7, 10/9/2026). */}
         <span className="inv-bs" aria-hidden="true" />
       </label>
 
@@ -218,9 +187,19 @@ export function ProductoFila({ product, bcvRate }: { product: Product; bcvRate: 
           </span>
         )}
 
-        <button type="button" className="crm-pill" onClick={toggleActive} disabled={busy}>
-          {product.isActive ? "Desactivar" : "Activar"}
-        </button>
+        {nuevoDesdeSaint && (
+          <span
+            className="ac-badge"
+            data-tone="link"
+            title={`Entró desde Saint el ${new Date(product.saintAddedAt as string).toLocaleDateString("es-VE", {
+              day: "numeric",
+              month: "short",
+            })}; cargale el peso.`}
+          >
+            <Sparkles size={11} />
+            Nuevo desde Saint
+          </span>
+        )}
       </div>
     </li>
   );

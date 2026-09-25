@@ -7,13 +7,19 @@ import { inventoryPageRange, LOW_STOCK_THRESHOLD, type InventoryParams } from "@
  * Consultas de la sección Inventario.
  *
  * Leen la misma tabla `products` que la herramienta de catálogo del agente
- * (`buildCatalogTool`). No hay copia ni caché en el medio: guardar un stock
- * acá cambia lo que la IA cotiza en el siguiente mensaje del cliente.
+ * (`buildCatalogTool`). No hay copia ni caché en el medio: lo que se ve acá
+ * es exactamente lo que la IA cotiza en el siguiente mensaje del cliente.
+ *
+ * Desde la migración 20260925010000 (T1, plan "El inventario llega de Saint
+ * y no se toca a mano", 25/9/2026) `products` es de solo lectura para la
+ * app salvo `weight_kg`: nombre, precio, existencia e `is_active` los
+ * escribe `saint.sync_products()` cada minuto. Guardar acá NO cambia nada de
+ * lo que la IA cotiza — salvo el peso, que la IA ni siquiera lee.
  */
 
 const PRODUCT_SELECT = `
   id, name, brand, price, currency, stock_quantity, description,
-  is_active, updated_at, weight_kg,
+  is_active, updated_at, weight_kg, saint_code, saint_added_at, saint_removed_at,
   product_compatibility(id, moto_brand, moto_model)
 `;
 
@@ -28,6 +34,9 @@ interface RawProduct {
   is_active: boolean;
   updated_at: string;
   weight_kg: number | null;
+  saint_code: string | null;
+  saint_added_at: string | null;
+  saint_removed_at: string | null;
   product_compatibility: { id: string; moto_brand: string; moto_model: string }[] | null;
 }
 
@@ -43,6 +52,9 @@ function mapProduct(row: RawProduct): Product {
     isActive: row.is_active,
     updatedAt: row.updated_at,
     weightKg: row.weight_kg === null ? null : Number(row.weight_kg),
+    saintCode: row.saint_code,
+    saintAddedAt: row.saint_added_at,
+    saintRemovedAt: row.saint_removed_at,
     compatibility: (row.product_compatibility ?? []).map((c) => ({
       id: c.id,
       motoBrand: c.moto_brand,
@@ -115,8 +127,10 @@ export interface InventoryTotals {
   withoutWeight: number;
   /**
    * El `updated_at` más reciente de todo el catálogo, o null si no hay
-   * ninguno. Es la antigüedad del inventario entero: si el más nuevo tiene
-   * cuatro días, la sincronización no está corriendo.
+   * ninguno. Desde el 25/9/2026 `updated_at` significa "última vez
+   * confirmado contra Saint" (ver `inventory-freshness.ts`): si el más
+   * nuevo tiene varios días, el job `saint.sync_products()` o la réplica
+   * dejaron de correr — ya no es que "nadie tocó el stock a mano".
    */
   updatedAt: string | null;
 }

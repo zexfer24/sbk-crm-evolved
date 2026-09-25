@@ -116,7 +116,10 @@ multi-tenant— salvo las acciones sensibles, que exigen rol
 supervisor/admin **en RLS**, no solo en la interfaz. El bucket
 `whatsapp-media` es privado: el multimedia se sirve por `api/media/[...path]`
 con sesión. Inventario y catálogo de la IA son la MISMA tabla `products`, sin
-copia intermedia.
+copia intermedia. Desde el 25/9/2026 (migración `20260925010000`) esa tabla
+es de solo lectura para la app salvo `weight_kg`: Saint (vía la réplica
+Liminal) es su único dueño real — ver la trampa `products` es de solo
+lectura…, más abajo.
 
 ## Convenciones
 
@@ -2094,6 +2097,88 @@ dejar rastro es lo que hacía desaparecer leads.
   `NEXT_PUBLIC_SUPABASE_URL=http://127.0.0.1:55321`. En local, Gemini
   responde "high demand" a menudo: el turno falla por el proveedor, no por
   el código.
+- **`products` es de solo lectura para la app salvo `weight_kg`; el candado
+  está en la base (grants + trigger) y el dueño del dato es
+  `saint.sync_products()`** (25/9/2026, T1 del plan "El inventario llega de
+  Saint y no se toca a mano", migración `20260925010000`). Hasta esta fecha
+  `products` se cargó una sola vez el 24/8/2026 y quedó congelada —precios
+  13,4 % por debajo de Saint, 602 códigos que la IA no conocía, 24 nombres
+  viejos— mientras cualquier asesor logueado podía cambiar stock/precio o
+  borrar productos llamando a la API directo. Ahora `saint.sync_products()`
+  (`security definer`, esquema `saint`, nunca lanza —todo error queda en
+  `saint.sync_log.error`—) corre por **pg_cron cada minuto**, no por un
+  trigger sobre `saprod`: un trigger correría DENTRO de la transacción del
+  agente replicador Liminal y, si fallara, bloquearía la réplica en vivo; un
+  job de cron es independiente e idempotente (`IS DISTINCT FROM`, no
+  reescribe lo que no cambió). Fuente: `coalesce(p_source,
+  to_regclass('saint.saprod'), to_regclass('public.saprod'))` —hoy
+  `public.saprod`, la réplica todavía no mudó a `saint.saprod`—, copiada con
+  SQL dinámico a una tabla temporal porque el nombre de la tabla es un
+  `regclass` resuelto en tiempo de ejecución. Mapeo: `codprod`→`saint_code`
+  (columna nueva, backfillada el 25/9 desde `description` con la forma
+  exacta `"Código ERP: <codprod>"`, el único lugar donde vivía el código
+  antes de esta migración), `descrip`→`name`, `precio3`→`price` (`× 1` tal
+  cual, sin conversión — el 13,4 % de diferencia era la brecha que ya traía
+  Saint, no algo que esta migración inventa), `existen`→`stock_quantity`,
+  `coalesce(activo, 1) = 1`→`is_active` (si la fuente no tiene columna
+  `activo` —el caso de `public.saprod` hoy—, se trata como si todo
+  estuviera `activo = 1`). **Nada se borra**: un producto vinculado que
+  desaparece de la fuente se marca `is_active = false` y sella
+  `saint_removed_at`, nunca un `DELETE`. **`activo ≠ 1` se aplica SIEMPRE**,
+  sin tope y sin contar para la guarda (decisión del operador, 24/9/2026):
+  es una baja administrativa de Saint sobre un producto que SIGUE presente,
+  distinta de una desaparición — por eso no sella `saint_removed_at`.
+  **La guarda es solo para ausencias**: si la fuente cubre menos del 90 % de
+  los productos vinculados TODAVÍA NO REMOVIDOS, o la corrida daría de baja
+  por ausencia a más de 50, no se da de baja nada por ausencia
+  (`guarda_activada = true` en `saint.sync_log`); el cron nunca fuerza — el
+  VPS revisa `sync_log` y corre `select saint.sync_products(null, true)` a
+  mano para saltarla. Corrección del 25/9/2026 sobre la primera versión: el
+  denominador/numerador de la cobertura tienen que excluir lo que YA tiene
+  `saint_removed_at` — contándolo también, la cobertura solo podía bajar y
+  nunca recuperarse, y pasado el 10 % del catálogo removido la guarda
+  saltaba en TODAS las corridas siguientes, para siempre, aunque no hubiera
+  ninguna ausencia nueva que proteger. `updated_at` cambia de significado:
+  ya no es "última vez que alguien tocó la fila a mano", es **"última vez
+  que se confirmó contra Saint"** — el job la toca cuando algo cambió o,
+  cada 6 horas, aunque nada haya cambiado, y SOLO si el agente de réplica
+  está vivo (`liminal.agent_status` si existe, latido de menos de 15 min; si
+  no, `liminal.applied_events` con un evento de menos de 36 h; si ninguna de
+  las dos tablas existe, no se considera vivo — fallar cerrado, nunca
+  inventar que la réplica sigue corriendo). Dos triggers, no uno:
+  `products_read_only_before_trigger` (BEFORE, `security INVOKER` a
+  propósito —si fuera `definer`, `current_user` sería siempre `postgres` y
+  no frenaría a nadie—, deja pasar a `postgres`/`supabase_admin`, rechaza
+  todo lo demás salvo `weight_kg`) y `products_weight_audit_after_trigger`
+  (AFTER UPDATE OF `weight_kg`, `security DEFINER`, escribe en
+  `product_weight_audit` con `db_role` calculado por
+  `coalesce(nullif(current_setting('role'), 'none'), session_user)` —dentro
+  de un `definer`, `current_user` es siempre el dueño de la función, así que
+  el rol de SESIÓN es lo único que distingue quién escribió de verdad).
+  `product_weight_audit` y `saint.sync_log` llevan `revoke all ... from
+  anon, authenticated, service_role` EXPLÍCITO aunque nadie se lo pidió por
+  fuera: el `alter default privileges` de Supabase en `public` le da ALL a
+  esos tres roles a toda tabla nueva de fábrica (la misma trampa de las
+  funciones `security definer`, más arriba) — `saint.sync_log` vive en un
+  esquema propio que no hereda ese default, pero la migración no confía en
+  esa ausencia y lo deja explícito igual. El `grant update (weight_kg,
+  updated_at) on products to authenticated` es TEMPORAL a propósito: la
+  migración se aplica ANTES de que llegue el código nuevo, y el código VIEJO
+  que sigue corriendo en producción en ese hueco manda `updated_at` en el
+  payload de "guardar peso" — sin el grant de columna ese UPDATE fallaría
+  por permisos antes de llegar al trigger (que igual revierte `updated_at`).
+  El código nuevo (`updateProductWeight`, `mutations.ts`) ya manda SOLO
+  `{ weight_kg }`, así que tras el deploy el VPS corre `revoke update
+  (updated_at) on products from authenticated;` (ver
+  `docs/entregas/2026-09-25-inventario-desde-saint.md`). Un navegador con el
+  bundle viejo en caché verá a partir de ahí un toast de error al guardar el
+  peso hasta que recargue. En el seed
+  local, los 5 productos que no traen "Código ERP" en su `description`
+  quedan `saint_code = null` — sin vínculo, el job nunca los toca ni los da
+  de baja. En local no hay ninguna fuente (`saint.saprod`/`public.saprod`
+  no existen) y cada corrida del cron deja una fila con `error` en
+  `saint.sync_log` ("no se encontró ninguna tabla fuente…") — es el
+  comportamiento esperado, no una falla que arreglar.
 
 ---
 
