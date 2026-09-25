@@ -2130,13 +2130,58 @@ de infraestructura, no una funcionalidad nueva.
 
 ---
 
+## 13. Entrega de "El inventario llega de Saint y no se toca a mano" (25/9/2026)
+
+Origen: `public.products` (5.438 filas) se cargó una sola vez el 24/8/2026 y
+quedó congelada mientras la réplica Liminal ya copiaba `SAPROD` de Saint en
+vivo a `public.saprod`; el reporte completo con el paso a paso operativo
+(permisos a verificar ANTES de aplicar, comando de aplicación, verificación,
+la guarda de bajas y su forzado manual, la mudanza de `public.saprod` a
+`saint.saprod`, y qué revocar DESPUÉS del deploy del código) está en
+`docs/entregas/2026-09-25-inventario-desde-saint.md` — esta sección solo dice
+el orden y qué es nuevo en el stack.
+
+**Migración `20260925010000_inventario_desde_saint.sql`, SIEMPRE antes del
+código** — el commit de código lee `products.saint_added_at`/`saint_removed_at`,
+que no existen hasta que esta migración entra; sin ella, la pantalla de
+Inventario se cae al pedirlas en el `select`. Mismo patrón `set local
+lock_timeout` + guarda contra el no-op silencioso + `notify pgrst` que el
+resto de septiembre — `psql -1 -v ON_ERROR_STOP=1`, ver la entrega para el
+comando completo. Medida en local con volumen real (5.438 productos + 6.035
+filas de fuente): **0,79 s en total**, `saint.sync_products()` sola 260 ms —
+con `psql -1` el `ACCESS EXCLUSIVE` del `ALTER TABLE` dura hasta el COMMIT,
+así que la IA no lee `products` durante ese lapso.
+
+**Job de pg_cron nuevo en este stack** — hasta esta entrega, todo lo que
+corría "solo" en el servidor era el cron de Linux del VPS (`/api/cron/process-queue`,
+§7). Esta migración crea el PRIMER job de **pg_cron dentro de Postgres**:
+`saint-sync-products` (`* * * * *`, corre `saint.sync_products()`) y
+`saint-sync-log-purge` (`30 3 * * *`, purga `saint.sync_log`/`cron.job_run_details`).
+Verificar que la extensión existe y los jobs están agendados y activos:
+
+```sql
+select extname from pg_extension where extname = 'pg_cron';
+select jobid, jobname, schedule, active from cron.job order by jobname;
+```
+
+Reversa de emergencia sin tocar datos: `select cron.unschedule('saint-sync-products');`
+(detiene la sincronización; el candado sobre `products` se queda activo
+igual, la app sigue sin poder editar el inventario a mano).
+
+**Sin variables de entorno nuevas.** El único paso posterior al deploy del
+código es `revoke update (updated_at) on public.products from authenticated;`
+(la entrega trae el detalle completo y su verificación con
+`has_column_privilege`).
+
+---
+
 ## Comprobación final
 
 Con todo configurado, esta lista debe pasar entera:
 
 - [ ] Una restauración de prueba devuelve los datos completos
 - [ ] `npm run build` sin errores ni warnings
-- [ ] `select count(*) from supabase_migrations.schema_migrations` devuelve 79 en LOCAL tras `20260921040000` ("Nada se pierde en un corte ni en un deploy", 22/9/2026; ver §12) — 78 tras `20260921020000`/`20260921030000` ("La escalada se hace una vez y la búsqueda responde"), 76 el 21/9/2026 tras `20260921010000` ("El catálogo configurado sale siempre"), 75 el 19/9/2026 tras `20260918010000`/`20260918020000`, 73 el 18/9/2026 tras `20260916010000`/`20260917010000`/`20260917020000`, 70 el 15/9/2026 y 61 cuando se escribió esta guía. **El número en PRODUCCIÓN depende de cuántas de estas corridas ya se aplicaron allá — preguntar en qué commit está producción antes de asumir un valor (ver §11/§12).**
+- [ ] `select count(*) from supabase_migrations.schema_migrations` devuelve 80 en LOCAL tras `20260925010000` ("El inventario llega de Saint y no se toca a mano", 25/9/2026; ver §13) — 79 tras `20260921040000` ("Nada se pierde en un corte ni en un deploy", 22/9/2026; ver §12), 78 tras `20260921020000`/`20260921030000` ("La escalada se hace una vez y la búsqueda responde"), 76 el 21/9/2026 tras `20260921010000` ("El catálogo configurado sale siempre"), 75 el 19/9/2026 tras `20260918010000`/`20260918020000`, 73 el 18/9/2026 tras `20260916010000`/`20260917010000`/`20260917020000`, 70 el 15/9/2026 y 61 cuando se escribió esta guía. **El número en PRODUCCIÓN depende de cuántas de estas corridas ya se aplicaron allá — preguntar en qué commit está producción antes de asumir un valor (ver §11/§12/§13).**
 - [ ] El bucket `whatsapp-media` es privado (`public = false`)
 - [ ] Una URL directa al bucket responde 400
 - [ ] `/api/media/...` sin sesión responde 401

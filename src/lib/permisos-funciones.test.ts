@@ -61,9 +61,19 @@ import { describe, expect, it } from "vitest";
 
 const LISTA_BLANCA = new Set(["is_agent", "is_supervisor_or_admin"]);
 
-// Las 25 funciones `security definer` conocidas en el esquema `public` a
-// fecha 21/9/2026 (22 + agent_turn_calls_by_phase/agent_turn_calls_purge
-// [nuevas] + agent_token_usage [convertida de security invoker], sumadas en
+// Las 26 funciones `security definer` conocidas en el esquema `public` a
+// fecha 25/9/2026 (25 + log_product_weight_change, sumada en
+// 20260925010000_inventario_desde_saint.sql — T1 del plan "El inventario
+// llega de Saint y no se toca a mano". Ese mismo archivo también crea
+// saint.sync_products(), TAMBIÉN security definer, pero en el esquema
+// `saint` — este guardián solo mira `create function public.*` a
+// propósito [ver el comentario de extraerCreaciones], así que
+// sync_products() queda fuera de su alcance; sus dos revokes y su
+// autoverificación viven dentro de la propia migración, y
+// supabase/tests/saint_sync_products.sql [caso 10] los mide contra la base
+// real con has_function_privilege. Las 25 anteriores: 22 +
+// agent_turn_calls_by_phase/agent_turn_calls_purge [nuevas] +
+// agent_token_usage [convertida de security invoker], sumadas en
 // 20260921040000_telemetria_del_turno.sql — T3 del plan "Nada se pierde en
 // un corte ni en un deploy". Las 22 anteriores: 21 +
 // search_conversations_by_message, sumada en
@@ -113,8 +123,23 @@ const LISTA_BLANCA = new Set(["is_agent", "is_supervisor_or_admin"]);
 // por el mismo motivo que search_conversations_by_message: pagaba
 // is_agent() por fila vía agent_turns_all.
 //
-// Ninguna de las seis (las tres de acá + las tres de arriba) entra a
-// LISTA_BLANCA: a diferencia de is_agent()/is_supervisor_or_admin() (que
+// log_product_weight_change (25/9/2026, migración 20260925010000, T1 del
+// plan "El inventario llega de Saint y no se toca a mano") tampoco entra a
+// LISTA_BLANCA: dispara desde un trigger `after update of weight_kg on
+// public.products` para escribir en `product_weight_audit` -- una tabla
+// que nace sin ningún grant a la API (RLS habilitada sin política, revoke
+// all explícito de anon/authenticated/service_role) -- así que necesita
+// `security definer` para poder escribir ahí sin que el rol que disparó el
+// UPDATE (típicamente `authenticated`, un asesor cambiando el peso) tenga
+// ningún privilegio propio sobre esa tabla. Mismo criterio que el resto de
+// los triggers de esta lista: nadie más que el propio disparador necesita
+// invocarla, de ahí los dos revokes.
+//
+// Ninguna de las siete (agent_turn_calls_by_phase/agent_turn_calls_purge/
+// agent_token_usage, handle_conversation_ownership_change/
+// handle_agent_message_silences_ai/search_conversations_by_message, y
+// log_product_weight_change) entra a LISTA_BLANCA: a diferencia de
+// is_agent()/is_supervisor_or_admin() (que
 // sostienen políticas RLS vivas y por eso no se les puede tocar el
 // EXECUTE), estas funciones traen los dos revokes de siempre (`from
 // public` y `from anon, authenticated`, en la misma migración que las
@@ -145,6 +170,7 @@ const FUNCIONES_SECURITY_DEFINER_CONOCIDAS = [
   "agent_token_usage",
   "agent_turn_calls_by_phase",
   "agent_turn_calls_purge",
+  "log_product_weight_change",
 ].sort();
 
 const DIR_MIGRACIONES = path.resolve(__dirname, "../../supabase/migrations");
@@ -278,8 +304,8 @@ describe("permisos de funciones security definer (guardián estático)", () => {
     .map(([nombre]) => nombre)
     .sort();
 
-  it("detecta exactamente las 25 funciones security definer conocidas", () => {
-    // Si esto falla con MENOS de las 25, el parser se está comiendo alguna
+  it("detecta exactamente las 26 funciones security definer conocidas", () => {
+    // Si esto falla con MENOS de las 26, el parser se está comiendo alguna
     // (regex de cabecera roto, `$$` no encontrado, etc.) y el resto de este
     // archivo no protege nada aunque pase en verde. Si falla con MÁS,
     // apareció una función security definer nueva: hay que sumarla a esta

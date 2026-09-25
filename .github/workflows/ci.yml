@@ -376,3 +376,24 @@ jobs:
           psql "postgresql://postgres:postgres@127.0.0.1:54322/postgres" \
             -v ON_ERROR_STOP=1 \
             -f supabase/tests/telemetria_del_turno.sql
+
+      # T1, plan "El inventario llega de Saint y no se toca a mano"
+      # (25/9/2026): desde la migración 20260925010000, Saint (vía la
+      # réplica Liminal) es el único dueño real de public.products --
+      # saint.sync_products() (pg_cron, cada minuto) es la única escritura
+      # de verdad, y la base (grants de columna + un candado por trigger)
+      # impide editar el inventario a mano salvo weight_kg, que queda
+      # auditado en product_weight_audit. El test mide los 13 casos SQL del
+      # plan (carga inicial, idempotencia, la guarda de bajas por ausencia,
+      # fuente inexistente/con error, un producto que sale y vuelve, precio
+      # en cero, la confirmación cada 6 h con/sin latido del agente
+      # replicador, el candado como authenticated/service_role, los
+      # permisos de sync_products, forzar bajas con la guarda activada,
+      # más de 50 bajas por activo=0 sin activar la guarda, y una fuente sin
+      # columna activo) -- el caso 11 (mutación: apagar la guarda) es un
+      # ejercicio manual sobre el archivo de migración, no vive en este test.
+      - name: saint.sync_products -- guarda, candado y confirmación
+        run: |
+          psql "postgresql://postgres:postgres@127.0.0.1:54322/postgres" \
+            -v ON_ERROR_STOP=1 \
+            -f supabase/tests/saint_sync_products.sql

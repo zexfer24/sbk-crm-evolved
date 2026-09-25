@@ -209,12 +209,19 @@ end $$;
 --    (anexo B1, 5/9/2026) reemplaza handle_message_status_change() con
 --    `create or replace` — que conserva el ACL— y no encontró ningún hallazgo
 --    que corregir.
+--
+--    log_product_weight_change() (25/9/2026, migración 20260925010000, T1
+--    del plan "El inventario llega de Saint y no se toca a mano") se suma
+--    acá con el mismo criterio: dispara desde `after update of weight_kg on
+--    public.products`, escribe en product_weight_audit (una tabla sin
+--    ningún grant a la API) y nadie más que ese trigger necesita invocarla.
 -- ---------------------------------------------------------------------------
 do $$
 declare
   funciones text[] := array[
     'public.handle_new_message()',
-    'public.handle_message_status_change()'
+    'public.handle_message_status_change()',
+    'public.log_product_weight_change()'
   ];
   f text;
   errores text := '';
