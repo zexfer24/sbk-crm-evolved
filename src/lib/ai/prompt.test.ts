@@ -11,7 +11,13 @@ import {
   cacheablePrefix,
 } from "@/lib/ai/prompt";
 import { revealsIdentity } from "@/lib/ai/identity-guard";
-import { PREGUNTA_FILTRO, TEXTO_CONFIRMAR_INVENTARIO, TEXTO_NO_IDENTIFICADO, TEXTO_SIN_STOCK } from "@/lib/ai/seba";
+import {
+  PREGUNTA_FILTRO,
+  PREGUNTA_FILTRO_PRODUCTO,
+  TEXTO_CONFIRMAR_INVENTARIO,
+  TEXTO_NO_IDENTIFICADO,
+  TEXTO_SIN_STOCK,
+} from "@/lib/ai/seba";
 import { buildGlobalLessonsBlock } from "@/lib/ai/lessons";
 import { formatCrmDateTime } from "@/lib/time-zone";
 
@@ -1203,5 +1209,127 @@ describe("Tarea T4 — pendientes y conversación anterior (22-23/9/2026)", () =
     }).slice(SYSTEM_PROMPT.length);
 
     expect(revealsIdentity(sufijo)).toBeNull();
+  });
+});
+
+/**
+ * T4, plan "La búsqueda encuentra lo que el cliente pide" (25/9/2026).
+ * Caso real medido: 20/9 14:32 Seba escribió "El intercomunicador sale en
+ * *108$ BCV*" copiando el precio que un asesor había dado 244 horas antes
+ * (ese día la tasa daba 103,71, no 108); y el 13/9 21:04 la IA calculó
+ * cuotas de Cashea ("inicial $36,60, saldo $85,40, 6 cuotas de $14,23") sin
+ * que nadie se lo pidiera. Los cuatro cambios de esta tarea viven TODOS
+ * dentro de `SYSTEM_PROMPT` (el prefijo cacheable): nada se agrega al
+ * sufijo dinámico.
+ */
+describe("Tarea T4 — precio a tasa BCV, sin cuentas propias y dos preguntas de filtro (25/9/2026)", () => {
+  it("la sección 2 ya no manda decir 'no lo tenemos en el catálogo': ese caso lo resuelve TEXTO_NO_IDENTIFICADO en 5.1", () => {
+    expect(SYSTEM_PROMPT).not.toMatch(/no lo tenemos en el catálogo/i);
+    // La prohibición de inventar sigue intacta, solo que ya no arrastra la
+    // segunda orden (qué decir cuando no hay resultados), que era una regla
+    // distinta y ahora vive solo en 5.1.
+    expect(SYSTEM_PROMPT).toMatch(/Nunca inventes existencia, precio ni compatibilidad de un repuesto\./);
+  });
+
+  it("manda no hacer las cuentas del negocio: eso lo da el asesor", () => {
+    expect(SYSTEM_PROMPT).toMatch(/no sumas, no multiplicas ni calculas cuotas, iniciales, totales/i);
+    expect(SYSTEM_PROMPT).toMatch(/eso lo da el asesor/i);
+  });
+
+  it("puede decir la condición de Cashea tal como la trae la biblioteca, sin hacer la cuenta", () => {
+    expect(SYSTEM_PROMPT).toMatch(/condición de Cashea/i);
+    expect(SYSTEM_PROMPT).toMatch(/sin hacer la cuenta/i);
+  });
+
+  it("la regla de las cuentas está en el prefijo cacheable (cacheablePrefix), no en el sufijo", () => {
+    const prefijo = cacheablePrefix();
+
+    expect(prefijo).toMatch(/no sumas, no multiplicas ni calculas cuotas/i);
+  });
+
+  describe("sección 3 — los dos textos de filtro, según si el repuesto depende de la moto", () => {
+    const seccion3 = SYSTEM_PROMPT.slice(
+      SYSTEM_PROMPT.indexOf("3. CÓMO LLEVAS"),
+      SYSTEM_PROMPT.indexOf("4. HERRAMIENTAS")
+    );
+
+    it("nombra los dos textos literales", () => {
+      expect(seccion3).toContain(PREGUNTA_FILTRO);
+      expect(seccion3).toContain(PREGUNTA_FILTRO_PRODUCTO);
+    });
+
+    it("dice cuándo va cada uno: PREGUNTA_FILTRO si depende de la moto, PREGUNTA_FILTRO_PRODUCTO si no", () => {
+      expect(seccion3).toMatch(/depende de la moto/i);
+      expect(seccion3).toMatch(/piezas de motor/i);
+      expect(seccion3).toMatch(/frenos/i);
+      expect(seccion3).toMatch(/no depende/i);
+      expect(seccion3).toMatch(/aceites/i);
+      expect(seccion3).toMatch(/cascos/i);
+      expect(seccion3).toMatch(/intercomunicadores/i);
+      expect(seccion3).toMatch(/maletas/i);
+    });
+
+    it("sigue siendo UNA sola pregunta", () => {
+      expect(seccion3).toMatch(/única pregunta/i);
+      expect(seccion3).toMatch(/UNA sola pregunta de filtro/i);
+    });
+
+    it("los dos textos y la sección entera pasan la guarda de identidad", () => {
+      expect(revealsIdentity(PREGUNTA_FILTRO)).toBeNull();
+      expect(revealsIdentity(PREGUNTA_FILTRO_PRODUCTO)).toBeNull();
+      expect(revealsIdentity(seccion3)).toBeNull();
+    });
+  });
+
+  describe("sección 4 — el precio viene a tasa BCV y el historial nunca es el precio de hoy", () => {
+    const seccion4 = SYSTEM_PROMPT.slice(
+      SYSTEM_PROMPT.indexOf("4. HERRAMIENTAS"),
+      SYSTEM_PROMPT.indexOf("5. LOS CASOS")
+    );
+
+    it("describe el formato con BCV", () => {
+      expect(seccion4).toMatch(/BCV/);
+    });
+
+    it("manda buscar de nuevo en vez de repetir un precio del historial, sea de Seba o de un asesor", () => {
+      expect(seccion4).toMatch(/historial de la conversación/i);
+      expect(seccion4).toMatch(/no es el de hoy/i);
+      expect(seccion4).toMatch(/la tasa cambia/i);
+      expect(seccion4).toMatch(/se busca de nuevo/i);
+      // No debe seguir prometiendo una fecha fija ("del día"): la tasa se
+      // relee varias veces al día (ver bcv-schedule.ts) y "del día" sugiere
+      // una certeza que ya no es cierta a las 18:00.
+      expect(SYSTEM_PROMPT).not.toMatch(/tasa BCV del día/);
+    });
+
+    it("pasa la guarda de identidad", () => {
+      expect(revealsIdentity(seccion4)).toBeNull();
+    });
+  });
+
+  describe("sección 5.5 — si el cliente contesta la pregunta de filtro, se busca de nuevo", () => {
+    const seccion55 = SYSTEM_PROMPT.slice(SYSTEM_PROMPT.indexOf("5.5 Otro"), SYSTEM_PROMPT.indexOf("6. CÓMO ESCRIBES"));
+
+    it("manda buscar de nuevo con lo que el cliente contestó", () => {
+      expect(seccion55).toMatch(/contesta la pregunta de filtro/i);
+      expect(seccion55).toMatch(/buscas de nuevo/i);
+    });
+
+    it("pasa la guarda de identidad", () => {
+      expect(revealsIdentity(seccion55)).toBeNull();
+    });
+  });
+
+  it("el prefijo cacheable sigue siendo prefijo exacto de las instrucciones (nada de esto tocó el sufijo)", () => {
+    for (const intent of INTENT_VALUES) {
+      const instructions = buildInstructions({ intent, introducedThisTurn: false });
+      expect(instructions.startsWith(SYSTEM_PROMPT)).toBe(true);
+    }
+  });
+
+  it("el prefijo cacheable sigue por encima del umbral de 1024 tokens estimados", () => {
+    const tokensEstimados = SYSTEM_PROMPT.length / CHARS_PER_TOKEN;
+
+    expect(tokensEstimados).toBeGreaterThan(CACHE_MIN_TOKENS);
   });
 });

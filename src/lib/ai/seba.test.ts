@@ -1,8 +1,10 @@
 import { describe, expect, it } from "vitest";
 import {
   PREGUNTA_FILTRO,
+  PREGUNTA_FILTRO_PRODUCTO,
   TEXTO_CONFIRMAR_INVENTARIO,
   TEXTO_NO_IDENTIFICADO,
+  TEXTO_PRECIO_A_CONFIRMAR,
   TEXTO_SIN_STOCK,
   isSebaGreeting,
   presentationGreetingFor,
@@ -67,6 +69,23 @@ describe("los textos fijos de R2/R3/R4 y la pregunta de filtro pasan la guarda",
 
   it("PREGUNTA_FILTRO", () => {
     expect(revealsIdentity(PREGUNTA_FILTRO)).toBeNull();
+  });
+
+  // D1, plan "La búsqueda encuentra lo que el cliente pide" (25/9/2026,
+  // aprobada por el operador): PREGUNTA_FILTRO le pregunta al cliente por
+  // "modelo y año de moto", y esa pregunta no tiene sentido para un repuesto
+  // que no depende de la moto (un aceite, un casco, un intercomunicador, una
+  // maleta). PREGUNTA_FILTRO_PRODUCTO es el segundo texto fijo para ese caso.
+  it("PREGUNTA_FILTRO_PRODUCTO", () => {
+    expect(revealsIdentity(PREGUNTA_FILTRO_PRODUCTO)).toBeNull();
+  });
+
+  // T3, plan "La búsqueda encuentra lo que el cliente pide" (25/9/2026):
+  // texto fijo de la guarda de cifras sin fuente (price-guard.ts) — casos
+  // 20/9 (precio del historial) y 13/9 (cuotas de Cashea calculadas de
+  // memoria). Mismo control de sanidad que las demás despedidas fijas.
+  it("TEXTO_PRECIO_A_CONFIRMAR", () => {
+    expect(revealsIdentity(TEXTO_PRECIO_A_CONFIRMAR)).toBeNull();
   });
 });
 

@@ -137,3 +137,32 @@ export const TEXTO_NO_IDENTIFICADO =
  * catálogo cuando el resultado es genérico) la interpolan desde acá.
  */
 export const PREGUNTA_FILTRO = "Claro, ¿para qué modelo y año de moto las buscas?";
+
+/**
+ * D1, plan "La búsqueda encuentra lo que el cliente pide" (25/9/2026,
+ * decisión aprobada por el operador). `PREGUNTA_FILTRO` le pregunta al
+ * cliente por "modelo y año de moto", pero esa pregunta no tiene sentido
+ * para un repuesto que no depende de la moto: un aceite, un casco, un
+ * intercomunicador, una maleta se compran por marca, medida o modelo del
+ * PRODUCTO, no de la motocicleta — preguntarle la moto para "¿tienen
+ * cascos?" es la misma pregunta de relleno que la regla de la única
+ * pregunta (requisito 5) intenta evitar. `prompt.ts` (sección 3) nombra las
+ * dos y cuándo va cada una; `tools.ts` la usa cuando el resultado del
+ * catálogo es genérico y la moto llegó vacía o se ignoró (T2, mismo plan).
+ */
+export const PREGUNTA_FILTRO_PRODUCTO = "Claro, ¿tienes alguna marca, medida o modelo en mente?";
+
+/**
+ * T3, plan "La búsqueda encuentra lo que el cliente pide" (25/9/2026):
+ * despedida fija de la guarda de cifras sin fuente (`price-guard.ts`). Dos
+ * casos reales de producción: el 20/9/2026 Seba copió "108$ BCV" de un
+ * mensaje que un ASESOR había escrito 244 h antes (la tasa BCV ya había
+ * cambiado, así que ese número dejó de ser el precio de hoy), y el
+ * 13/9/2026 calculó cuotas de Cashea de memoria. Ninguna de las dos redes
+ * de seguridad de `agent.ts` las atrapaba —no son devolución/queja ni pasan
+ * por el catálogo—, así que la guarda nueva reemplaza el texto entero por
+ * este y pasa el caso a un asesor: el precio de hoy solo lo confirma una
+ * persona mirando el sistema, no un número que quedó pegado de otro día.
+ */
+export const TEXTO_PRECIO_A_CONFIRMAR =
+  "Para darte el precio de hoy te paso con un asesor, que te lo confirma por acá.";
