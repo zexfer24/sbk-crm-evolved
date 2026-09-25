@@ -11,6 +11,15 @@ base antes del código.
 
 ## 0. Antes de empezar: ¿en qué commit está producción?
 
+**CORRECCIÓN posterior (25/9/2026, plan "La búsqueda encuentra lo que el
+cliente pide", el mismo día): "el push a `main` no despliega" era FALSO —
+verificado en el VPS que `34a5b65` (el commit que reescribió esta frase en
+varios documentos) se pusheó a las 05:40:18 UTC y Dokploy desplegó SOLO a
+las 05:42, sin que nadie lo lanzara a mano. Push a `main` SÍ despliega; la
+corrección real, con la regla nueva de las ramas `entrega/<nombre>` para
+lo que lleva migración, vive en CLAUDE.md. Se deja el párrafo original tal
+cual porque esta entrega ya se consumió.**
+
 Confirmar qué commit corre hoy en la app de Dokploy. `origin/main` es
 `8cfc56a` y no hay nada más por encima. El push a `main` no despliega, así
 que lo esperable es que producción siga en `782e0a4`: desplegar `8cfc56a`

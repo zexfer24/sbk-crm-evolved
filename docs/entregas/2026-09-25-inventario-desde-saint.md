@@ -22,6 +22,14 @@ recibir dos commits, en este orden estricto:
 
 ## Orden obligatorio (no invertir)
 
+**CORRECCIÓN posterior (25/9/2026, plan "La búsqueda encuentra lo que el
+cliente pide"): la frase siguiente era FALSA y quedó corregida en
+CLAUDE.md/docs/PRODUCCION.md el mismo día — push a `main` SÍ despliega
+(verificado en el VPS: `34a5b65` se pusheó a las 05:40:18 UTC y Dokploy
+desplegó solo a las 05:42). Se deja el texto original tal cual porque este
+documento ya fue consumido y esta entrega ya se aplicó; la corrección real
+para entregas nuevas vive en CLAUDE.md.**
+
 El push a `main` NO despliega: el deploy es un paso aparte, desde Dokploy,
 y Dokploy **no aplica migraciones por sí solo**. Por eso:
 

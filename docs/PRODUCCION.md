@@ -836,21 +836,40 @@ migración nueva (título con `[migración]`), el orden es:
    para que el código que asume la migración ya aplicada no corra contra un
    esquema viejo.
 
+**CORRECCIÓN del 25/9/2026 (plan "La búsqueda encuentra lo que el cliente
+pide"): "push a `main` NO despliega" era FALSO — desde el 21/9/2026 esta
+sección lo daba por cierto (y una corrección anterior, también del
+21/9/2026, ya lo había escrito así), pero el operador lo verificó contra el
+VPS el 25/9/2026: el commit `34a5b65` se pusheó a las 05:40:18 UTC y
+Dokploy desplegó SOLO, sin que nadie lo lanzara a mano, a las 05:42
+(contenedor recreado, dominio respondiendo 200). Push a `main` SÍ
+despliega — Dokploy está configurado para redesplegar en cada push a esa
+rama. Por eso una entrega con migración (o que necesite verificarse ANTES
+de que el código llegue a producción) no se pushea a `main`: se pushea a
+una rama `entrega/<nombre>`, el VPS aplica la migración contra la base
+real y recién después hace `git checkout main && git merge --ff-only
+entrega/<nombre> && git push origin main` — ese fast-forward es lo que
+dispara el deploy. Los pasos de abajo (de antes de esta corrección) siguen
+describiendo bien EL ORDEN entre migración/variable/código; lo único que
+cambió es CUÁNDO se pushea a `main`: nunca antes de que la migración ya
+esté aplicada.**
+
 **Cuando el deploy lleva migración Y una variable de entorno nueva**
 (caso de la corrida "La IA ve lo que llega", 8/9/2026, migración
 `20260908010000` + `AI_AGENT_REASONING`): la variable va ANTES que el
 código, porque el contenedor nuevo lee el Environment al arrancar y el
 código llegaría antes que la base y que la variable si no se ordena así.
-(Push a `main` NO despliega: el deploy es un paso aparte que lanza el
-operador o el Claude del VPS desde Dokploy — corrección del operador,
-21/9/2026 y 25/9/2026.) Orden completo:
+Orden completo (con la corrección de arriba: el paso 4 es el push/merge a
+`main`, no un redeploy manual aparte):
 
 1. Respaldo (`scripts/backup.sh`, ver §8).
 2. La variable nueva (`AI_AGENT_REASONING=off` en el caso de esa corrida)
    en la pestaña **Environment** de Dokploy, **sin desplegar todavía**.
 3. Migración a mano contra `supabase-db` (pasos 2-3 de arriba) y su
    registro en `supabase_migrations.schema_migrations`.
-4. Deploy desde Dokploy (el push a `main` no lo dispara).
+4. Recién ahora, el fast-forward de `main` a la rama de la entrega (o el
+   redeploy desde el panel si el código ya estaba en `main`): ESO es lo que
+   dispara el deploy.
 5. Verificar en los logs del contenedor nuevo que NO aparece el warning
    `reasoningEffort is not supported` (confirma que la variable llegó antes
    que el código que la lee) y que `reconciliador_encolo_huerfanas`
@@ -1183,6 +1202,13 @@ O1–O6 hechas no se etiqueta `v1.1`.
 | O8 | Pedir al Claude del VPS revisar los cortes de conexión con la base: `docker logs` del contenedor de la app y de PostgREST/pooler alrededor de los 13 `turno_interruptor_no_consultable` y los 41 `webhook_error_actualizar_estado`; límites de conexiones del pooler; reinicios de contenedores. | Hallazgo 10 de la auditoría. Con T5 el síntoma deja de disfrazarse de "IA apagada", pero la causa es del VPS. | Cero `turno_interruptor_no_consultable` en 48 h. |
 
 ### Despliegue de v1.1 (15/9/2026, antes del push y en este orden)
+
+**Corrección del 25/9/2026: "el push a main no despliega" era falso (ver la
+corrección grande en §7 → "En Dokploy"); esta sección describe un deploy que
+ya ocurrió el 15/9/2026 y se deja tal cual, pero el orden real desde el
+25/9/2026 en adelante es aplicar la migración ANTES de pushear a `main` (o
+pushear a una rama `entrega/<nombre>` y hacer fast-forward recién con la
+migración ya aplicada), no pushear y esperar a un deploy manual aparte.**
 
 Todo lo que necesita la base va ANTES del deploy, que es un paso aparte
 desde Dokploy (el push a `main` no despliega).
@@ -1619,8 +1645,12 @@ terminaron sin error esas dos filas ya deberían dar `true`; repetirlas acá
 es la comprobación de una sola vez que reemplaza mirar cada migración por
 separado.)
 
-**7. Deploy del código.** Recién ahora, desde Dokploy — el push a `main`
-no despliega por sí solo. Mirar el CI antes de desplegar (API pública de
+**7. Deploy del código.** Recién ahora, desde Dokploy (corrección del
+25/9/2026: en esta fecha, 19/9/2026, se creía que el push a `main` no
+despliega por sí solo; desde el 25/9/2026 se sabe que SÍ — ver §7 → "En
+Dokploy" — así que "recién ahora" pasa a significar "recién ahora se
+pushea/hace fast-forward a `main`", no "recién ahora se dispara un deploy
+aparte"). Mirar el CI antes de desplegar (API pública de
 Actions, ver Comandos de `CLAUDE.md`) y reproducir en local cualquier falla
 que no quepa en las 10 anotaciones que muestra GitHub por paso.
 
@@ -2044,7 +2074,10 @@ commit.
    escalada se hace una vez y la búsqueda responde" (`20260921020000`,
    `20260921030000`) — si producción todavía no tiene esas dos, aplicarlas
    primero, en su propio orden, antes de esta.
-4. Deploy desde Dokploy (el push a `main` no despliega; el código de T1-T8 no funciona sin
+4. Deploy desde Dokploy (esta sección es del 22/9/2026, cuando se creía que
+   el push a `main` no despliega; desde el 25/9/2026 se sabe que SÍ — ver
+   §7 → "En Dokploy" — así que "deploy desde Dokploy" acá equivale a
+   pushear/fast-forward a `main`): el código de T1-T8 no funciona sin
    la migración ya aplicada: `logTurn` pide `.select("id").single()` para
    poder escribir en `agent_turn_calls`, y sin la tabla ese insert falla).
 5. **Verificar que el dominio sigue respondiendo y que el contenedor
@@ -2196,13 +2229,92 @@ código es `revoke update (updated_at) on public.products from authenticated;`
 
 ---
 
+## 14. Entrega de "La búsqueda encuentra lo que el cliente pide" (25-26/9/2026)
+
+Origen: `buscar_repuesto` está apagada en producción desde el 25/8/2026; al
+simularla contra el catálogo real (6.035 productos que llegan de Saint) la
+búsqueda vieja fallaba en casi la mitad de los casos — `.limit(31)` SIN
+`order`, subcadenas ("rin" traía ORINGS), sin plurales, sin números cortos
+("45", "DT 200"), filtrando por `product_compatibility` (0 filas). El
+reporte completo con el paso a paso operativo está en
+`docs/entregas/2026-09-26-la-busqueda-encuentra.md` — esta sección solo dice
+el orden.
+
+**Esta entrega NO se pushea a `main` directo — llega por la rama
+`entrega/busqueda-que-encuentra`.** Desde el 25/9/2026 push a `main` SÍ
+despliega (ver §7 → "En Dokploy"), así que una entrega con migración se
+verifica ANTES de que el código le llegue a producción: se pushea a una rama
+`entrega/<nombre>`, se aplica y verifica la migración contra la base real, y
+recién con eso confirmado se hace fast-forward de `main` a esa rama (ese
+fast-forward SÍ dispara el deploy). El orden completo:
+
+1. **Respaldo** (`scripts/backup.sh`, §8).
+2. **Simulacro de la migración** dentro de `BEGIN … ROLLBACK` contra
+   `supabase-db` — corre la migración entera, deja que el `NOTICE`/
+   `EXCEPTION` de autoverificación se vea, y revierte sin dejar nada
+   aplicado. Sirve para confirmar que entra limpia contra el esquema real de
+   producción (columnas, extensiones, nombres) antes de aplicarla de verdad.
+3. **Aplicar la migración**, ahora sí, con `psql -1 -v ON_ERROR_STOP=1`
+   (mismo patrón que el resto de septiembre — sin `-1` el `set local
+   lock_timeout` de la cabecera es un NO-OP silencioso y la guarda de la
+   propia migración aborta):
+   ```bash
+   docker exec -i supabase-db env PGOPTIONS="-c lock_timeout=5s" psql -U postgres -d postgres \
+     -1 -v ON_ERROR_STOP=1 \
+     < supabase/migrations/20260926010000_busqueda_ordena_antes_de_recortar.sql
+   ```
+   Esta migración solo CREA una función — no toca `products` ni bloquea
+   nada, así que no hace falta ninguna ventana de mantenimiento.
+4. **Verificar los permisos de la función** contra la base real (los dos
+   revokes + el grant a `service_role`, nunca confiar en leer el `.sql`):
+   ```sql
+   select
+     has_function_privilege('anon', 'public.buscar_productos(jsonb, jsonb, int)', 'execute') as anon_puede,
+     has_function_privilege('authenticated', 'public.buscar_productos(jsonb, jsonb, int)', 'execute') as authenticated_puede,
+     has_function_privilege('service_role', 'public.buscar_productos(jsonb, jsonb, int)', 'execute') as service_role_puede;
+   ```
+   Esperado: `anon_puede` y `authenticated_puede` en `false`,
+   `service_role_puede` en `true`. Si alguno da distinto, NO seguir al paso
+   siguiente — ver la trampa de "los dos revokes" en `CLAUDE.md`.
+5. **Fast-forward de `main` a `entrega/busqueda-que-encuentra`** — ESTE es
+   el paso que despliega:
+   ```bash
+   git fetch origin
+   git checkout main
+   git merge --ff-only origin/entrega/busqueda-que-encuentra
+   git push origin main
+   ```
+   Confirmar en Dokploy que el contenedor se recreó con el SHA nuevo
+   (`docker inspect <contenedor-app> --format '{{.Config.Image}}'`/logs de
+   arranque) y que el dominio sigue respondiendo (`curl -I
+   https://<tu-dominio>`).
+6. **Re-correr la simulación de §2.1/§2.3 del plan** (los 6 nombres reales
+   más "rin delantero bera kavak") llamando a `buscar_productos` DIRECTO
+   contra el catálogo real, ya con la función en producción, y comparar
+   contra la simulación vieja (la que midió 7 fallas de 16). Ver
+   `docs/entregas/2026-09-26-la-busqueda-encuentra.md` para las consultas
+   SQL exactas y cómo contar genérico/no_identificado sobre el resultado.
+7. **Recién entonces** el operador enciende `buscar_repuesto` desde Control
+   IA (interruptor por herramienta, `agent_tools`) — nunca antes: sin este
+   orden, un catálogo real que todavía no se verificó contra la función
+   nueva queda expuesto a los mismos 7 fallos de 16 que esta ola corrige.
+8. **Medir 48 h** tras encender la herramienta: turnos que cotizan (con
+   `TEXTO_CONFIRMAR_INVENTARIO`), turnos que preguntan (genérico,
+   `PREGUNTA_FILTRO`/`PREGUNTA_FILTRO_PRODUCTO`), `no_identificado`,
+   `log.warn("cifra_sin_fuente")` y 20 cotizaciones reales revisadas a mano
+   contra el precio de Saint. Consultas concretas en la entrega.
+
+**Sin variables de entorno nuevas.**
+
+---
+
 ## Comprobación final
 
 Con todo configurado, esta lista debe pasar entera:
 
 - [ ] Una restauración de prueba devuelve los datos completos
 - [ ] `npm run build` sin errores ni warnings
-- [ ] `select count(*) from supabase_migrations.schema_migrations` devuelve 80 en LOCAL tras `20260925010000` ("El inventario llega de Saint y no se toca a mano", 25/9/2026; ver §13) — 79 tras `20260921040000` ("Nada se pierde en un corte ni en un deploy", 22/9/2026; ver §12), 78 tras `20260921020000`/`20260921030000` ("La escalada se hace una vez y la búsqueda responde"), 76 el 21/9/2026 tras `20260921010000` ("El catálogo configurado sale siempre"), 75 el 19/9/2026 tras `20260918010000`/`20260918020000`, 73 el 18/9/2026 tras `20260916010000`/`20260917010000`/`20260917020000`, 70 el 15/9/2026 y 61 cuando se escribió esta guía. **El número en PRODUCCIÓN depende de cuántas de estas corridas ya se aplicaron allá — preguntar en qué commit está producción antes de asumir un valor (ver §11/§12/§13).**
+- [ ] `select count(*) from supabase_migrations.schema_migrations` devuelve 81 en LOCAL tras `20260926010000` ("La búsqueda encuentra lo que el cliente pide", 25-26/9/2026; ver §14) — 80 tras `20260925010000` ("El inventario llega de Saint y no se toca a mano", 25/9/2026; ver §13), 79 tras `20260921040000` ("Nada se pierde en un corte ni en un deploy", 22/9/2026; ver §12), 78 tras `20260921020000`/`20260921030000` ("La escalada se hace una vez y la búsqueda responde"), 76 el 21/9/2026 tras `20260921010000` ("El catálogo configurado sale siempre"), 75 el 19/9/2026 tras `20260918010000`/`20260918020000`, 73 el 18/9/2026 tras `20260916010000`/`20260917010000`/`20260917020000`, 70 el 15/9/2026 y 61 cuando se escribió esta guía. **El número en PRODUCCIÓN depende de cuántas de estas corridas ya se aplicaron allá — preguntar en qué commit está producción antes de asumir un valor (ver §11/§12/§13/§14).**
 - [ ] El bucket `whatsapp-media` es privado (`public = false`)
 - [ ] Una URL directa al bucket responde 400
 - [ ] `/api/media/...` sin sesión responde 401

@@ -686,11 +686,22 @@ dejar rastro es lo que hacía desaparecer leads.
   heredaban la píldora que guardaba el test anterior y el paso "Pruebas" del
   CI estuvo ROJO desde el 6/9 (`1379b2c`) hasta el 10/9 mientras la suite
   local daba verde. Nadie lo vio porque el deploy no espera al CI:
-  `2f80f1e`, la versión en producción, salió con el CI en rojo. **Push a
-  `main` NO despliega** (corrección del operador, 21/9 y 25/9/2026): el
-  deploy es un paso aparte que lanza el operador o el Claude del VPS desde
-  Dokploy. El orden "migraciones ANTES del código" se cuida al DESPLEGAR,
-  no al pushear — y un push no es motivo para frenar nada. Desde entonces `vitest.config.ts` pasa `--no-experimental-webstorage`
+  `2f80f1e`, la versión en producción, salió con el CI en rojo. **CORREGIDO
+  el 25/9/2026 (plan "La búsqueda encuentra lo que el cliente pide"): "push
+  a `main` NO despliega" era FALSO.** Esta misma viñeta, entre el 21/9 y el
+  25/9/2026, dijo lo contrario ("el deploy es un paso aparte que lanza el
+  operador o el Claude del VPS desde Dokploy… un push no es motivo para
+  frenar nada") — el operador lo corrigió el 25/9/2026 verificando contra
+  el VPS: `34a5b65` se pusheó a las 05:40:18 UTC y Dokploy desplegó SOLO,
+  sin que nadie lo lanzara a mano, a las 05:42 (contenedor recreado,
+  dominio respondiendo 200). **Push a `main` SÍ despliega.** Por eso una
+  entrega con migración, o que necesite verificarse ANTES de que el código
+  llegue a producción, no se pushea a `main`: se pushea a una rama
+  `entrega/<nombre>`, el VPS aplica la migración contra la base real y
+  recién después hace fast-forward de `main` a esa rama (eso es lo que
+  despliega). El CI solo corre sobre `main`/PR, así que una rama
+  `entrega/**` se reproduce en local (y, si hace falta, con una rama
+  `ci/**` desechable) antes del push. Desde entonces `vitest.config.ts` pasa `--no-experimental-webstorage`
   a los workers (`execArgv`), `vitest.setup.ts` vacía `localStorage` antes de
   cada test y `vitest.setup.test.ts` fija las dos cosas. **Después de cada
   push, mirar el CI**: sin `gh` alcanza la API pública (ver Comandos; campos
@@ -2200,6 +2211,72 @@ dejar rastro es lo que hacía desaparecer leads.
   el cron (`/api/cron/bcv-refresh`) la ignora con `ignoreFailureBackoff`.
   `fetched_on` sigue escribiéndose en cada upsert pero ya no decide nada;
   borrarla es otra ola, con su propia migración.
+- **La búsqueda del catálogo ordena y cuenta en SQL; nunca `.limit()` sin
+  `order` sobre `products`** (T1/T2, plan "La búsqueda encuentra lo que el
+  cliente pide", 25-26/9/2026). Hasta esta ola, `tools.ts` pedía 31 filas
+  con `.or(catalogFilter(...)).limit(31)` — SIN `order` — y recién después
+  ordenaba esas 31 en memoria: si el producto correcto no entraba entre los
+  primeros 31 que trajo Postgres sin ningún criterio, no aparecía nunca,
+  calzara como calzara. Medido en el VPS el 25/9/2026 contra 6.035
+  productos: "rin delantero bera kavak" devolvía ORINGS primero y el
+  producto correcto faltaba en 7 de 16 consultas. `public.buscar_productos`
+  (migración `20260926010000`) mueve el orden, el puntaje y los conteos a
+  SQL, calculados con funciones ventana sobre TODO el conjunto de
+  candidatos ANTES de aplicar el `limit` — nunca al revés. **La regla de
+  tolerancia:** con 1 a 3 grupos de términos hace falta que calcen TODOS
+  (`requerido = N`); con 4 o más se tolera que falte uno solo
+  (`requerido = N − 1`) — "asiento sbr original" (3/3) y "disco freno
+  delantero dt200" (4/4, tolera 3) siguen calzando igual. Sin filas, o con
+  `puntaje_maximo < requerido`, es `no_identificado`. **`product_compatibility`
+  tiene CERO filas hoy: la moto NUNCA filtra, solo ORDENA** — es un bono de
+  puntaje (`puntaje_moto`), nunca un requisito; moto vacía o sin calce no
+  excluye a nadie. La moto "calza" solo si el cliente la dio Y al menos una
+  fila del puntaje máximo la nombra (`puntaje_moto_maximo > 0`): si calza,
+  se cotiza SOLO esa moto y nunca es genérico (el cliente ya filtró lo que
+  pudo); si no calza (sin moto, o ninguna fila del máximo la nombra), la
+  moto se ignora por completo y rige la regla sin moto. Genérico =
+  `!motoCalza && coinciden > 3`, con `coinciden` sacado SIEMPRE de los
+  conteos que trae la base (`filas_con_puntaje_maximo`/
+  `filas_con_maximo_y_moto`), nunca de `quoted.length` sobre el arreglo ya
+  recortado a `MAX_CATALOG_RESULTS` — la mutación (c), reemplazar `coinciden`
+  por `quoted.length`, puso rojo el caso de "motul 5100 20w50" en la
+  verificación de esta ola.
+- **Una cifra de dinero de la IA necesita fuente EN EL TURNO** (T3, mismo
+  plan, `price-guard.ts`). Dos casos reales de producción: el 20/9/2026 a
+  las 14:32 Seba escribió "El intercomunicador sale en *108$ BCV*"
+  copiando al pie de la letra lo que un ASESOR había escrito 244 h antes —
+  la tasa BCV ya había cambiado, así que ese número dejó de ser el precio
+  de hoy; el 13/9/2026 a las 21:04 calculó cuotas de Cashea de memoria. Las
+  tres fuentes permitidas (`agent.ts`, justo antes de `applyIdentityGuard`)
+  son (a) lo que cada herramienta devolvió EN ESTE turno (`toolResultTexts`,
+  serializando `result.steps[].toolResults[].output`), (b) la ráfaga
+  pendiente del cliente y (c) las lecciones del turno (global + chat) —
+  **NUNCA el historial completo**, que es justo donde vivía el "108$ BCV"
+  repetido diez días después. Sin fuente, el texto se reemplaza entero por
+  `TEXTO_PRECIO_A_CONFIRMAR` y escala con `confirmar_inventario` si no hay
+  asesor asignado. **Un test que arma la salida del modelo con un precio a
+  mano necesita, además, un `toolResult` del mock con esa MISMA cifra** —
+  sin él, la guarda ve el precio como "sin fuente" y lo reemplaza, y un
+  test que no lo sepa se pone rojo por una razón que no tiene nada que ver
+  con lo que estaba probando (mismo criterio con el que `agent.test.ts`
+  verifica esta ola: los tests de "red de seguridad del catálogo" que ya
+  existían siguen verdes SIN editar sus aserciones porque sus mocks ya
+  traían la cifra en el `toolResult`).
+- **Un test SQL de orden tiene que insertar el ruido ANTES que la fila
+  correcta** (verificación de T1, mismo plan, `supabase/tests/
+  buscar_productos.sql`). La primera versión de la fixture insertaba los 6
+  productos correctos del plan y RECIÉN DESPUÉS el ruido (ORINGS, MAGNETO
+  DT200 MS, más de 31 filas con "delantero"/"freno"…) — y con eso, la
+  mutación "el límite antes del orden" (quitar el `order by` y aplicar el
+  `limit` directo sobre `candidatos_relevantes`) seguía dando VERDE: los
+  correctos, insertados primero, ya estaban entre las primeras filas que
+  Postgres devuelve por orden físico de inserción, así que el bug que la
+  migración corrige (el mismo de `tools.ts:333-335`, arriba) no se
+  manifestaba en el test aunque el código mutado lo reintrodujera de
+  verdad. Reordenar la fixture para insertar el RUIDO primero puso la
+  mutación en rojo como correspondía — un test de "esto ordena bien" tiene
+  que partir de datos que YA estén en el orden incorrecto, nunca del orden
+  que se espera que el código produzca.
 
 ---
 
