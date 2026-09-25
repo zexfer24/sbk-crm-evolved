@@ -5,7 +5,7 @@ import type { SupabaseClient } from "@supabase/supabase-js";
 import type { Database } from "@/lib/supabase/database.types";
 import { BUSINESS_NAME } from "@/lib/brand";
 import { getBcvRate } from "@/lib/ai/bcv";
-import { catalogFilter, expandTerms, rankByTerms, searchTerms, type SearchSynonym } from "@/lib/ai/catalog-search";
+import { catalogTermGroups, type SearchSynonym } from "@/lib/ai/catalog-search";
 import { formatQuote } from "@/lib/ai/precio";
 import {
   RECLAMO_CATEGORIES,
@@ -14,7 +14,13 @@ import {
   type EscalationMotivo,
   type ReclamoCategory,
 } from "@/lib/ai/escalate";
-import { PREGUNTA_FILTRO, TEXTO_CONFIRMAR_INVENTARIO, TEXTO_NO_IDENTIFICADO, TEXTO_SIN_STOCK } from "@/lib/ai/seba";
+import {
+  PREGUNTA_FILTRO,
+  PREGUNTA_FILTRO_PRODUCTO,
+  TEXTO_CONFIRMAR_INVENTARIO,
+  TEXTO_NO_IDENTIFICADO,
+  TEXTO_SIN_STOCK,
+} from "@/lib/ai/seba";
 import { inventoryAgeInstruction, inventoryFreshness } from "@/lib/inventory-freshness";
 import { errorText, log } from "@/lib/log";
 import type { BusinessHours, BusinessStatus } from "@/lib/business-hours";
@@ -35,16 +41,6 @@ import { pgrstLiteral } from "@/lib/ai/pgrst";
  * WhatsApp. Si hay más, conviene que la IA pida precisar antes que enumerar.
  */
 const MAX_CATALOG_RESULTS = 10;
-
-/**
- * Cuántas filas se le piden a la base antes de ordenar.
- *
- * La consulta une los términos con OR, así que trae de más a propósito:
- * "bujía NGK" calza tanto la bujía de NGK como cualquier otra bujía. Se
- * ordena por cuántos términos calzan y recién ahí se recorta a diez, para
- * que el recorte no se lleve por delante justo el que el cliente buscaba.
- */
-const CATALOG_FETCH_LIMIT = MAX_CATALOG_RESULTS * 3 + 1;
 
 /**
  * Tope de sinónimos activos (`ai_lessons.kind = 'sinonimo'`) que se leen en
@@ -70,7 +66,7 @@ const RECORTE_INSTRUCTION =
  * cuatro instrucciones, en este orden de precedencia (`generico` primero
  * porque es la única que le prohíbe escalar: requisito 5, la única
  * pregunta):
- *   1. `generico` — sin marca ni modelo de moto y varios repuestos calzan:
+ *   1. `generico` — varios repuestos calzan y ninguna moto los distingue:
  *      UNA pregunta de filtro, sin escalar en este turno.
  *   2. resultados con existencia — cotiza y escala con `confirmar_inventario`.
  *   3. resultados todos en cero — avisa y escala con `sin_stock`.
@@ -80,9 +76,31 @@ const RECORTE_INSTRUCTION =
  * (el cliente los dictó, o el operador los fijó para el caso 4): nunca se
  * escriben literales acá, para que no puedan desincronizarse de lo que dicta
  * el prompt (sección 5.1) ni de lo que exporta `seba.test.ts`.
+ *
+ * T2, plan "La búsqueda encuentra lo que el cliente pide" (25-26/9/2026, D1
+ * del operador): antes de esta ola la pregunta de filtro era SIEMPRE por la
+ * moto («¿para qué modelo y año?»), aunque el repuesto no dependiera de
+ * ella — un aceite o un casco no necesitan saber la moto, y preguntarla de
+ * todos modos era una vuelta de más. `GENERICO_INSTRUCTION` ahora lleva los
+ * DOS textos fijos y deja que el modelo elija cuál preguntar, según si el
+ * repuesto depende de la moto (piezas de motor, frenos, carrocería,
+ * eléctrico, transmisión → `PREGUNTA_FILTRO`) o no (aceites, cascos,
+ * intercomunicadores, maletas, accesorios → `PREGUNTA_FILTRO_PRODUCTO`) — el
+ * código no puede decidir esto solo, no sabe de qué categoría es cada
+ * repuesto.
  */
 const GENERICO_INSTRUCTION =
-  `El cliente no dijo modelo ni año de su moto y hay varios repuestos que calzan: haz UNA sola pregunta de filtro («${PREGUNTA_FILTRO}») y NO escales en este turno. Con la respuesta vuelves a buscar.`;
+  `El cliente no dio ningún dato que distinga cuál de los varios repuestos que calzan quiere: haz UNA sola pregunta de filtro y NO escales en este turno. Si el repuesto depende de la moto (piezas de motor, frenos, carrocería, eléctrico, transmisión), pregunta «${PREGUNTA_FILTRO}»; si no depende de la moto (aceites, cascos, intercomunicadores, maletas, accesorios), pregunta «${PREGUNTA_FILTRO_PRODUCTO}». Con la respuesta vuelves a buscar.`;
+
+/**
+ * T2 (25-26/9/2026, corrección del operador sobre la moto): el cliente SÍ
+ * dio marca o modelo de moto, pero ningún repuesto de los que más calzan la
+ * nombra — la moto no sirve para filtrar acá, así que volver a preguntarla
+ * sería pedirle al cliente que repita un dato que ya dio. Manda SOLO
+ * `PREGUNTA_FILTRO_PRODUCTO`, nunca `PREGUNTA_FILTRO`.
+ */
+const GENERICO_MOTO_IGNORADA_INSTRUCTION =
+  `El cliente ya dijo el modelo de su moto, pero ninguno de los repuestos que más calzan lo menciona: la moto no sirve para filtrar acá. Haz UNA sola pregunta de filtro, «${PREGUNTA_FILTRO_PRODUCTO}» (no vuelvas a preguntar por la moto, el cliente ya la dio), y NO escales en este turno. Con la respuesta vuelves a buscar.`;
 
 /**
  * Reemplaza a la vieja `SIN_STOCK_INSTRUCTION` ("alguno de estos repuestos
@@ -233,7 +251,7 @@ export interface CatalogOutcome {
 export function buildCatalogTool({ supabase, conversationId }: ToolDeps, catalogOutcome: CatalogOutcome) {
   return tool({
     description:
-      `Busca repuestos en el catálogo real de ${BUSINESS_NAME} por nombre o marca del repuesto, y opcionalmente filtra por marca/modelo de la moto del cliente. Devuelve precio en USD y Bs (tasa BCV del día) y el stock disponible. Si no devuelve nada, ese repuesto no existe en el catálogo — no te lo inventes.`,
+      `Busca repuestos en el catálogo real de ${BUSINESS_NAME} por nombre o marca del repuesto, y opcionalmente ordena primero los que calzan con la marca/modelo de la moto del cliente. Devuelve precio en USD y Bs (tasa BCV del día) y el stock disponible. Si no devuelve nada, ese repuesto no existe en el catálogo — no te lo inventes.`,
     inputSchema: z.object({
       // K2b (20/9/2026): "Si el cliente todavía no nombró ningún repuesto,
       // deja este campo vacío ("") y marca clienteNoNombroRepuesto" — se
@@ -242,13 +260,32 @@ export function buildCatalogTool({ supabase, conversationId }: ToolDeps, catalog
       // los campos opcionales) y sin esta instrucción el modelo rellena el
       // campo con un texto inventado que la búsqueda real puede llegar a
       // calzar (ver el comentario de PREGUNTA_QUE_BUSCA_INSTRUCTION).
+      //
+      // T2 (25-26/9/2026): "solo el nombre del repuesto y lo que lo
+      // distingue" — nada de relleno ("precio", "tienen", "para"): ese
+      // relleno ya lo descarta `catalogTermGroups` en código
+      // (`RELLENO`, catalog-search.ts), pero pedírselo también al modelo
+      // evita que arrastre una frase completa que diluye el puntaje de cada
+      // grupo con palabras que ningún producto va a contener.
       query: z
         .string()
         .describe(
-          "Qué repuesto busca el cliente, ej. 'carburador', 'bujía NGK', 'kit de arrastre'. Si el cliente todavía no nombró ningún repuesto, deja este campo vacío (\"\") y marca clienteNoNombroRepuesto."
+          "Solo el nombre del repuesto y lo que lo distingue -- marca, medida o modelo (ej. 'carburador', 'bujía NGK', 'maleta 45 litros'), sin relleno ('precio', 'tienen', 'para'). Si el cliente todavía no nombró ningún repuesto, deja este campo vacío (\"\") y marca clienteNoNombroRepuesto."
         ),
-      motoBrand: z.string().optional().describe("Marca de la moto del cliente, si la mencionó (ej. 'Bera')"),
-      motoModel: z.string().optional().describe("Modelo de la moto del cliente, si lo mencionó (ej. 'SBR 200')"),
+      // T2 (25-26/9/2026): motoBrand/motoModel ya NO filtran -- `product_
+      // compatibility` está vacía hoy (ver CLAUDE.md), así que un filtro
+      // real no tendría nada contra qué comparar. Lo que hacen es ORDENAR:
+      // `buscar_productos` les da un bono de orden a los repuestos cuyo
+      // nombre nombra la moto, y las nueve pastillas de freno de una BERA
+      // quedan primero entre las pastillas si el cliente ya dijo "BERA".
+      motoBrand: z
+        .string()
+        .optional()
+        .describe("Marca de la moto del cliente, si la mencionó (ej. 'Bera'). Ordena los resultados, no filtra."),
+      motoModel: z
+        .string()
+        .optional()
+        .describe("Modelo de la moto del cliente, si lo mencionó (ej. 'SBR 200'). Ordena los resultados, no filtra."),
       // K2 (20/9/2026): ver el comentario de PREGUNTA_QUE_BUSCA_INSTRUCTION.
       clienteNoNombroRepuesto: z
         .boolean()
@@ -264,22 +301,24 @@ export function buildCatalogTool({ supabase, conversationId }: ToolDeps, catalog
       // pudo decidir nada" (sin términos de búsqueda, o la consulta falló).
       catalogOutcome.ran = true;
 
-      // K2b (20/9/2026): la bandera gana SIEMPRE, sin mirar `terms` ni tocar
-      // la base (ni `products` ni `ai_lessons`) — ver el comentario largo de
-      // PREGUNTA_QUE_BUSCA_INSTRUCTION arriba: `query` es obligatorio, así
-      // que el modelo siempre manda algo aunque no haya repuesto que buscar,
-      // y ese "algo" puede calzar productos reales por accidente.
+      // K2b (20/9/2026): la bandera gana SIEMPRE, sin mirar los grupos ni
+      // tocar la base (ni `buscar_productos` ni `ai_lessons`) — ver el
+      // comentario largo de PREGUNTA_QUE_BUSCA_INSTRUCTION arriba: `query`
+      // es obligatorio, así que el modelo siempre manda algo aunque no haya
+      // repuesto que buscar, y ese "algo" puede calzar productos reales por
+      // accidente.
       if (clienteNoNombroRepuesto === true) {
         catalogOutcome.generico = true;
         return { results: [], instruccionParaTuRespuesta: PREGUNTA_QUE_BUSCA_INSTRUCTION };
       }
 
-      // Palabra por palabra y sin acentos: buscar la frase completa hacía que
-      // "bujía NGK" no encontrara la Bujía CR7HSA de NGK, y el agente
-      // respondiera con toda seguridad que no la tenemos. Ver catalog-search.ts.
-      const terms = searchTerms(query);
-
-      if (terms.length === 0) {
+      // T2 (25-26/9/2026): antes de tocar la base (ni siquiera los
+      // sinónimos), se comprueba si `query` deja algún término reconocible.
+      // Un sinónimo nunca CREA un grupo de la nada — solo suma una
+      // alternativa a un grupo que ya existe (ver `catalogTermGroups`) — así
+      // que esta comprobación con los sinónimos vacíos ya alcanza para saber
+      // si va a quedar algo que buscar.
+      if (catalogTermGroups(query).length === 0) {
         // Antes de T3 este caso volvía sin instrucción (uno de los "dos
         // sitios" del plan): el modelo se quedaba sin saber qué decir cuando
         // no había ni un término reconocible que buscar.
@@ -290,10 +329,11 @@ export function buildCatalogTool({ supabase, conversationId }: ToolDeps, catalog
       // Sinónimos de búsqueda (T5c, "Seba atiende el mostrador", 18/9/2026):
       // lo que un asesor le enseñó a Seba desde "Lecciones de Seba" —jerga
       // local que no calza con el nombre real del catálogo. Se leen ANTES de
-      // armar el filtro porque el término expandido tiene que entrar en el
-      // MISMO `.or()` que la búsqueda real, no en una segunda consulta. Un
-      // error acá no frena la búsqueda: se sigue con los términos tal cual
-      // llegaron, ni mejor ni peor que antes de esta tarea.
+      // armar los grupos porque el sinónimo tiene que entrar como una
+      // alternativa MÁS del mismo grupo (T2, catalogTermGroups), no en una
+      // segunda consulta. Un error acá no frena la búsqueda: se sigue con
+      // los términos tal cual llegaron, ni mejor ni peor que antes de esta
+      // tarea.
       //
       // F (20/9/2026, "El resguardo antes del push", C3): faltaba filtrar
       // por ALCANCE. `teach-seba-modal.tsx` permite guardar un sinónimo como
@@ -318,20 +358,28 @@ export function buildCatalogTool({ supabase, conversationId }: ToolDeps, catalog
         )
         .map((row) => ({ from: row.synonym_from, to: row.synonym_to }));
 
-      const expandedTerms = expandTerms(terms, synonyms);
+      // T1 (25-26/9/2026): los términos viajan como GRUPOS de alternativas
+      // (un grupo calza si calza cualquiera) — necesario para que el
+      // sinónimo sume una alternativa en vez de reemplazar el término, y
+      // para que "dt200"/"dt 200" sean el MISMO grupo. `gruposMoto` sale de
+      // la MISMA función, sin sinónimos: es jerga de moto ("bera", "sbr
+      // 200"), no del repuesto — si el cliente no dio marca ni modelo, da
+      // `[]` (grupos vacíos NUNCA excluyen nada, solo ordenan; ver la
+      // migración `20260926010000`).
+      const grupos = catalogTermGroups(query, synonyms);
+      const gruposMoto = catalogTermGroups(`${motoBrand ?? ""} ${motoModel ?? ""}`);
 
-      // `query` lo redacta el modelo a partir de lo que escribe el cliente:
-      // es entrada no confiable y el filtro `.or()` es un mini-lenguaje, no
-      // una cadena inerte. Sin entrecomillar, una coma en el texto agrega
-      // condiciones a la consulta (lo hace catalogFilter).
-      const { data: products, error } = await supabase
-        .from("products")
-        .select(
-          "id, name, brand, price, currency, stock_quantity, updated_at, search_text, product_compatibility(moto_brand, moto_model)"
-        )
-        .eq("is_active", true)
-        .or(catalogFilter(expandedTerms))
-        .limit(CATALOG_FETCH_LIMIT);
+      // T1 (25-26/9/2026): el orden, el puntaje y los conteos (cuántas filas
+      // calzan el máximo, con o sin la moto) se calculan en SQL, sobre TODO
+      // el conjunto de candidatos, ANTES de recortar a `MAX_CATALOG_RESULTS`
+      // — el bug de origen (`tools.ts:333-335` hasta esta tarea) era
+      // exactamente lo contrario: cortar con `.limit()` SIN order y recién
+      // después ordenar esas pocas filas en memoria.
+      const { data: rows, error } = await supabase.rpc("buscar_productos", {
+        p_terminos: grupos,
+        p_moto: gruposMoto,
+        p_limite: MAX_CATALOG_RESULTS,
+      });
 
       if (error) {
         // D3 (6/9/2026): antes este error se tragaba en silencio. El 5/9/2026
@@ -351,22 +399,69 @@ export function buildCatalogTool({ supabase, conversationId }: ToolDeps, catalog
         };
       }
 
-      const ranked = rankByTerms(products ?? [], expandedTerms);
-      const hayMas = ranked.length > MAX_CATALOG_RESULTS;
+      const candidatosRelevantes = rows ?? [];
 
-      let filtered = ranked.slice(0, MAX_CATALOG_RESULTS);
+      // T2 (25-26/9/2026, decisión del operador en el plan): con 1 a 3
+      // grupos hace falta que calcen TODOS; con 4 o más se tolera que falte
+      // uno solo (N-1) — "asiento sbr original" (3/3) y "disco freno
+      // delantero dt200" (4/4, tolera 3) siguen calzando igual, medido
+      // contra el catálogo real del VPS el 25/9/2026.
+      const requerido = grupos.length <= 3 ? grupos.length : grupos.length - 1;
+
+      if (candidatosRelevantes.length === 0 || candidatosRelevantes[0].puntaje_maximo < requerido) {
+        catalogOutcome.sinResultados = true;
+        return { results: [], instruccionParaTuRespuesta: NO_IDENTIFICADO_INSTRUCTION };
+      }
+
+      const puntajeMaximo = candidatosRelevantes[0].puntaje_maximo;
+      const puntajeMotoMaximo = candidatosRelevantes[0].puntaje_moto_maximo;
+
+      // Corrección del operador sobre la moto (plan, 25-26/9/2026): la moto
+      // solo "calza" si el cliente la dio Y al menos una de las filas del
+      // máximo puntaje la nombra. Si calza, se cotiza SOLO esa moto (nunca
+      // genérico: el cliente ya filtró lo que pudo). Si no calza —sin moto,
+      // o la moto no aparece en ninguna fila del máximo— la moto se ignora
+      // por completo y rige la regla sin moto.
+      const motoCalza = gruposMoto.length > 0 && puntajeMotoMaximo > 0;
+      const motoIgnorada = gruposMoto.length > 0 && !motoCalza;
+
+      const candidatos = motoCalza
+        ? candidatosRelevantes.filter((r) => r.puntaje === puntajeMaximo && r.puntaje_moto === puntajeMotoMaximo)
+        : candidatosRelevantes.filter((r) => r.puntaje === puntajeMaximo);
+
+      // Los conteos vienen de la base, calculados ANTES del límite (ver el
+      // comentario de la migración): `coinciden` nunca se mide contando el
+      // arreglo que llegó acá, que ya puede venir recortado a
+      // MAX_CATALOG_RESULTS por `p_limite`.
+      const coinciden = motoCalza
+        ? candidatosRelevantes[0].filas_con_maximo_y_moto
+        : candidatosRelevantes[0].filas_con_puntaje_maximo;
+      const hayMas = coinciden > MAX_CATALOG_RESULTS;
+
+      // T3 (18/9/2026, requisito 5 "única pregunta"), corregido por T2
+      // (25-26/9/2026): con la moto calzando NUNCA es genérico (el cliente
+      // ya filtró lo que pudo). Sin ella —dada o no— es genérico cuando más
+      // de tres filas comparten el puntaje máximo.
+      const generico = !motoCalza && coinciden > 3;
+
+      // T2 (25-26/9/2026): los filtros por `product_compatibility` se
+      // mantienen sobre `compatibilidad`, pero hoy esa tabla tiene 0 filas
+      // (medido en el VPS el 25/9/2026, ver CLAUDE.md) — así que
+      // `compatibilidad` llega siempre `[]` y este filtro no descarta nada
+      // todavía. El día que la tabla tenga datos, vuelve a filtrar solo.
+      let filtered = candidatos;
       if (motoBrand) {
         filtered = filtered.filter(
           (p) =>
-            p.product_compatibility.length === 0 ||
-            p.product_compatibility.some((c) => c.moto_brand.toLowerCase().includes(motoBrand.toLowerCase()))
+            p.compatibilidad.length === 0 ||
+            p.compatibilidad.some((c) => c.moto_brand.toLowerCase().includes(motoBrand.toLowerCase()))
         );
       }
       if (motoModel) {
         filtered = filtered.filter(
           (p) =>
-            p.product_compatibility.length === 0 ||
-            p.product_compatibility.some((c) => c.moto_model.toLowerCase().includes(motoModel.toLowerCase()))
+            p.compatibilidad.length === 0 ||
+            p.compatibilidad.some((c) => c.moto_model.toLowerCase().includes(motoModel.toLowerCase()))
         );
       }
 
@@ -379,7 +474,7 @@ export function buildCatalogTool({ supabase, conversationId }: ToolDeps, catalog
         precioUsd: p.currency === "USD" ? p.price : Number((p.price / rate).toFixed(2)),
         precioBs: p.currency === "USD" ? Number((p.price * rate).toFixed(2)) : p.price,
         stock: p.stock_quantity,
-        compatibleCon: p.product_compatibility.map((c) => `${c.moto_brand} ${c.moto_model}`),
+        compatibleCon: p.compatibilidad.map((c) => `${c.moto_brand} ${c.moto_model}`),
       }));
 
       // La antigüedad se mide por el repuesto MÁS VIEJO de los que se están
@@ -398,22 +493,15 @@ export function buildCatalogTool({ supabase, conversationId }: ToolDeps, catalog
         });
       }
 
-      // T3 (18/9/2026, requisito 5 "única pregunta"): una consulta genérica
-      // —sin marca ni modelo de moto— con varios repuestos que calzan no se
-      // responde con una lista: se le pide al modelo UNA sola pregunta de
-      // filtro y que NO escale en este turno. `hayMas` entra también porque
-      // un recorte de más de diez significa lo mismo que "varios calzan",
-      // aunque los primeros diez quepan en la respuesta.
-      const generico = !motoBrand && !motoModel && (quoted.length > 3 || hayMas);
-
       // Orden de precedencia dentro de esta llamada (genérico primero: es la
-      // única que le prohíbe escalar). Con `motoBrand`/`motoModel` dados
-      // nunca es genérico, aunque haya más de tres resultados — el cliente ya
-      // filtró lo que pudo, y no hay una sola pregunta más que valga la pena.
+      // única que le prohíbe escalar).
       let casoInstruccion: string;
       if (generico) {
         catalogOutcome.generico = true;
-        casoInstruccion = GENERICO_INSTRUCTION;
+        // T2 (25-26/9/2026, corrección del operador): si la moto llegó pero
+        // se ignoró, no tiene sentido volver a preguntarla — el texto fijo
+        // pasa a ser SOLO PREGUNTA_FILTRO_PRODUCTO.
+        casoInstruccion = motoIgnorada ? GENERICO_MOTO_IGNORADA_INSTRUCTION : GENERICO_INSTRUCTION;
       } else if (quoted.length === 0) {
         catalogOutcome.sinResultados = true;
         casoInstruccion = NO_IDENTIFICADO_INSTRUCTION;

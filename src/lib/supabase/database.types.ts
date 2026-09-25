@@ -1886,6 +1886,31 @@ export type Database = {
         Args: { p_conversation_id: string; p_lease_seconds: number; p_token: string }
         Returns: boolean
       }
+      // T2, plan "La búsqueda encuentra lo que el cliente pide" (25-26/9/2026,
+      // migración 20260926010000): busca por grupos de alternativas (un grupo
+      // calza si calza cualquiera), ordena y cuenta ANTES del límite --
+      // `buildCatalogTool` (tools.ts) es la única que la llama, con
+      // service_role. `compatibilidad` es el agregado de
+      // `product_compatibility` (hoy siempre `[]`, ver CLAUDE.md).
+      buscar_productos: {
+        Args: { p_terminos: Json; p_moto?: Json; p_limite?: number }
+        Returns: {
+          id: string
+          name: string
+          brand: string | null
+          price: number
+          currency: string
+          stock_quantity: number
+          updated_at: string | null
+          compatibilidad: { moto_brand: string; moto_model: string }[]
+          puntaje: number
+          puntaje_moto: number
+          puntaje_maximo: number
+          filas_con_puntaje_maximo: number
+          puntaje_moto_maximo: number
+          filas_con_maximo_y_moto: number
+        }[]
+      }
       claim_agent_turn: {
         Args: { p_max_attempts?: number; p_stale_seconds?: number }
         Returns: string
