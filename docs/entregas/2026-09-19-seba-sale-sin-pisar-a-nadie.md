@@ -43,8 +43,9 @@ ORDEN de once pasos a seguir (§11 ya cuenta seis migraciones). Leer las
 dos, en ese orden: primero §11, después el detalle de cada commit acá
 abajo cuando haga falta.**
 
-**Recordatorio permanente:** Dokploy despliega con el push, sin esperar al
-CI. Todo lo que la base necesita va ANTES de pushear. Después de cada push,
+**Recordatorio permanente:** el push a `main` NO despliega; el deploy es un
+paso aparte desde Dokploy, y no espera al CI. Todo lo que la base necesita
+va ANTES de desplegar. Después de cada push,
 mira igual el CI (API pública de Actions, sin `gh`, ver Comandos de
 `CLAUDE.md`) y reproduce en local cualquier falla que no quepa en las 10
 anotaciones que GitHub muestra por paso.

@@ -22,13 +22,12 @@ recibir dos commits, en este orden estricto:
 
 ## Orden obligatorio (no invertir)
 
-El push a `main` dispara el deploy de Dokploy, que **no aplica migraciones
-por sí solo**. Por eso:
+El push a `main` NO despliega: el deploy es un paso aparte, desde Dokploy,
+y Dokploy **no aplica migraciones por sí solo**. Por eso:
 
-1. Se pushea SOLO el commit `[migración]` primero.
-2. Vos la aplicás contra la base (sección "Aplicación", abajo) y confirmás
-   los conteos.
-3. Recién con esa confirmación, el orquestador pushea el commit de código.
+1. Aplicás la migración contra la base (sección "Aplicación", abajo) y
+   confirmás los conteos.
+2. Recién con esa confirmación, desplegás el commit de código.
 
 Al revés no es grave, pero sí visible: con la migración aplicada y el
 código VIEJO todavía corriendo, el campo Stock sigue mostrándose como
@@ -453,6 +452,6 @@ el salto y pregunte.
    "Verificación inmediata").
 6. `select count(*) from supabase_migrations.schema_migrations;` antes y
    después.
-7. Recién con todo eso en verde, dar luz verde al orquestador para pushear
+7. Recién con todo eso en verde, desplegar desde Dokploy
    el commit de código — y, después de que ese código esté en producción,
    confirmar el `revoke update (updated_at)` final.

@@ -278,9 +278,9 @@ order by chequeo;
 
 Todas las filas deben dar `ok = true`.
 
-### 7. Push del código
+### 7. Deploy del código
 
-Recién ahora — Dokploy despliega solo con el webhook, sin esperar al CI.
+Recién ahora, desde Dokploy — el push a `main` no despliega por sí solo.
 Mirar igual el CI después (API pública de Actions, ver Comandos de
 `CLAUDE.md`) y reproducir en local cualquier falla que no quepa en las 10
 anotaciones que muestra GitHub por paso.
@@ -535,7 +535,7 @@ verificar.
   mirando la bandeja — revertirlo es un clic. Registrar
   `escenario_no_cedido` con su `motivo` es lo que permite medir el efecto
   antes de decidir encenderla de forma permanente.
-- **Dokploy despliega con el push, sin esperar al CI.** CI real en verde
+- **El push a `main` no despliega; el deploy desde Dokploy no espera al CI.** CI real en verde
   sobre `4aab349` (run 35566194167) — mirar igual el CI después del push
   (API pública de GitHub Actions, ver Comandos de `CLAUDE.md`) y reproducir
   en local cualquier falla que no quepa en las 10 anotaciones que GitHub

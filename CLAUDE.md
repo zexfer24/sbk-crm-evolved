@@ -685,9 +685,12 @@ dejar rastro es lo que hacía desaparecer leads.
   uno real. Con esa diferencia, 15 tests de `inbox-sidebar.test.tsx`
   heredaban la píldora que guardaba el test anterior y el paso "Pruebas" del
   CI estuvo ROJO desde el 6/9 (`1379b2c`) hasta el 10/9 mientras la suite
-  local daba verde. Nadie lo vio porque Dokploy despliega con el push sin
-  esperar al CI: `2f80f1e`, la versión en producción, salió con el CI en
-  rojo. Desde entonces `vitest.config.ts` pasa `--no-experimental-webstorage`
+  local daba verde. Nadie lo vio porque el deploy no espera al CI:
+  `2f80f1e`, la versión en producción, salió con el CI en rojo. **Push a
+  `main` NO despliega** (corrección del operador, 21/9 y 25/9/2026): el
+  deploy es un paso aparte que lanza el operador o el Claude del VPS desde
+  Dokploy. El orden "migraciones ANTES del código" se cuida al DESPLEGAR,
+  no al pushear — y un push no es motivo para frenar nada. Desde entonces `vitest.config.ts` pasa `--no-experimental-webstorage`
   a los workers (`execArgv`), `vitest.setup.ts` vacía `localStorage` antes de
   cada test y `vitest.setup.test.ts` fija las dos cosas. **Después de cada
   push, mirar el CI**: sin `gh` alcanza la API pública (ver Comandos; campos

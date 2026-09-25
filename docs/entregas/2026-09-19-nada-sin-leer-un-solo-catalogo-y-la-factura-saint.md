@@ -27,8 +27,9 @@ propio reporte de entrega si existe aparte) y esta corrida
 (`f0a6ce6…e7d846e`, este documento). Si producción ya pasó de `c9b5959`,
 usa solo la parte de este documento que aplique.
 
-**Recordatorio permanente:** Dokploy despliega con el push, sin esperar al
-CI. Todo lo que la base necesita va ANTES de pushear (ver
+**Recordatorio permanente:** el push a `main` NO despliega; el deploy es un
+paso aparte desde Dokploy, y no espera al CI. Todo lo que la base necesita
+va ANTES de desplegar (ver
 `docs/PRODUCCION.md` §11, ya escrito con el orden completo de esta
 entrega). Después de cada push, mira igual el CI (API pública de Actions,
 sin `gh`, ver Comandos de `CLAUDE.md`) y reproduce en local cualquier falla

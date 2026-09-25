@@ -110,7 +110,7 @@ exactos y la verificación de cada paso). Resumen:
    ```
    Esperá el `NOTICE` de autoverificación antes de seguir. Registrarla en
    `supabase_migrations.schema_migrations`: el conteo pasa de 78 a 79.
-4. Push / redeploy.
+4. Deploy desde Dokploy (el push a `main` no despliega).
 5. Verificar dominio + labels de Traefik (primer deploy con `journald`).
 6. Activar el access log de Traefik (objeción 3, ver arriba y §12 paso 6) —
    independiente del código, es configuración de tu Traefik.

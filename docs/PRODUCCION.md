@@ -839,16 +839,18 @@ migración nueva (título con `[migración]`), el orden es:
 **Cuando el deploy lleva migración Y una variable de entorno nueva**
 (caso de la corrida "La IA ve lo que llega", 8/9/2026, migración
 `20260908010000` + `AI_AGENT_REASONING`): la variable va ANTES que el
-código, porque el push a `main` dispara el deploy solo (webhook de
-Dokploy) y el código llegaría antes que la base y que la variable si no se
-ordena así. Orden completo:
+código, porque el contenedor nuevo lee el Environment al arrancar y el
+código llegaría antes que la base y que la variable si no se ordena así.
+(Push a `main` NO despliega: el deploy es un paso aparte que lanza el
+operador o el Claude del VPS desde Dokploy — corrección del operador,
+21/9/2026 y 25/9/2026.) Orden completo:
 
 1. Respaldo (`scripts/backup.sh`, ver §8).
 2. La variable nueva (`AI_AGENT_REASONING=off` en el caso de esa corrida)
    en la pestaña **Environment** de Dokploy, **sin desplegar todavía**.
 3. Migración a mano contra `supabase-db` (pasos 2-3 de arriba) y su
    registro en `supabase_migrations.schema_migrations`.
-4. Push a `main` (el webhook de Dokploy despliega solo).
+4. Deploy desde Dokploy (el push a `main` no lo dispara).
 5. Verificar en los logs del contenedor nuevo que NO aparece el warning
    `reasoningEffort is not supported` (confirma que la variable llegó antes
    que el código que la lee) y que `reconciliador_encolo_huerfanas`
@@ -1182,8 +1184,8 @@ O1–O6 hechas no se etiqueta `v1.1`.
 
 ### Despliegue de v1.1 (15/9/2026, antes del push y en este orden)
 
-Dokploy despliega con el push, con demora variable y sin esperar al CI, así
-que todo lo que necesita la base va ANTES de pushear.
+Todo lo que necesita la base va ANTES del deploy, que es un paso aparte
+desde Dokploy (el push a `main` no despliega).
 
 1. Confirmar que producción sigue en `38a540e` (`git log --oneline
    38a540e..HEAD` da los commits del 14/9 y del 15/9).
@@ -1203,8 +1205,8 @@ que todo lo que necesita la base va ANTES de pushear.
    y avisar al operador cuáles empiezan saludando: la IA los va a ignorar
    (O3).
 5. O7 en Dokploy → Environment (`AGENT_MAX_TURNS_PER_MINUTE=40`,
-   `AI_MAX_REQUESTS_PER_MINUTE=160`), sin desplegar: el push redespliega y
-   las carga.
+   `AI_MAX_REQUESTS_PER_MINUTE=160`), sin desplegar: el deploy del paso
+   siguiente las carga.
 6. `git push origin main`. Mirar el CI (API de Actions: `head_sha`,
    `conclusion`) y `docker logs` del contenedor nuevo: el primer turno
    nuevo deja `escenarios_saludo_ignorados` si quedan escenarios de saludo;
@@ -1617,8 +1619,8 @@ terminaron sin error esas dos filas ya deberían dar `true`; repetirlas acá
 es la comprobación de una sola vez que reemplaza mirar cada migración por
 separado.)
 
-**7. Push del código.** Recién ahora — Dokploy despliega solo con el
-webhook, sin esperar al CI. Mirar igual el CI después (API pública de
+**7. Deploy del código.** Recién ahora, desde Dokploy — el push a `main`
+no despliega por sí solo. Mirar el CI antes de desplegar (API pública de
 Actions, ver Comandos de `CLAUDE.md`) y reproducir en local cualquier falla
 que no quepa en las 10 anotaciones que muestra GitHub por paso.
 
@@ -2042,7 +2044,7 @@ commit.
    escalada se hace una vez y la búsqueda responde" (`20260921020000`,
    `20260921030000`) — si producción todavía no tiene esas dos, aplicarlas
    primero, en su propio orden, antes de esta.
-4. Push a `main` / redeploy desde Dokploy (el código de T1-T8 no funciona sin
+4. Deploy desde Dokploy (el push a `main` no despliega; el código de T1-T8 no funciona sin
    la migración ya aplicada: `logTurn` pide `.select("id").single()` para
    poder escribir en `agent_turn_calls`, y sin la tabla ese insert falla).
 5. **Verificar que el dominio sigue respondiendo y que el contenedor
