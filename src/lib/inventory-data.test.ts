@@ -55,13 +55,16 @@ function orValues(calls: { method: string; args: unknown[] }[]): string[] {
 }
 
 describe("fetchProductsPage — filtro de búsqueda por palabras", () => {
-  it("'tubo cg' arma DOS .or(), uno por palabra, con las tres columnas cada uno", async () => {
+  it("'tubo cg' arma UN solo .or(), con and(or(...),or(...)) para las dos palabras", async () => {
     const { calls, builder } = fakeProductsQuery();
     await fetchProductsPage(fakeSupabase(builder), { query: "tubo cg", filter: "todos", sort: "nombre", page: 1 });
 
+    // Hallazgo 2 (`code-review high`, 27/9/2026): ya NO son dos `.or()`
+    // encadenados (PostgREST no garantiza combinarlos con AND detrás de un
+    // proxy) — es UNA sola llamada con la expresión completa.
     expect(orValues(calls)).toEqual([
-      'search_text.ilike."%tubo%",saint_code.ilike."%tubo%",description.ilike."%tubo%"',
-      'search_text.ilike."%cg%",saint_code.ilike."%cg%",description.ilike."%cg%"',
+      'and(or(search_text.ilike."%tubo%",saint_code.ilike."%tubo%",description.ilike."%tubo%"),' +
+        'or(search_text.ilike."%cg%",saint_code.ilike."%cg%",description.ilike."%cg%"))',
     ]);
   });
 
@@ -119,8 +122,8 @@ describe("searchActiveProducts — buscador del cierre de venta", () => {
     await searchActiveProducts(fakeSupabase(builder), "tubo cg");
 
     expect(orValues(calls)).toEqual([
-      'search_text.ilike."%tubo%",saint_code.ilike."%tubo%",description.ilike."%tubo%"',
-      'search_text.ilike."%cg%",saint_code.ilike."%cg%",description.ilike."%cg%"',
+      'and(or(search_text.ilike."%tubo%",saint_code.ilike."%tubo%",description.ilike."%tubo%"),' +
+        'or(search_text.ilike."%cg%",saint_code.ilike."%cg%",description.ilike."%cg%"))',
     ]);
     const eq = calls.find((c) => c.method === "eq");
     expect(eq?.args).toEqual(["is_active", true]);

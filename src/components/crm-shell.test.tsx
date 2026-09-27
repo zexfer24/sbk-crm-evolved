@@ -10,6 +10,8 @@ type ChannelHandler = (payload: { eventType: RealtimeEvent; new: Record<string, 
 
 interface Subscription {
   event: RealtimeEvent | "*";
+  /** El `filter` que le pasó el componente a `.on(...)`, si trajo alguno. */
+  filter?: string;
   handler: ChannelHandler;
 }
 
@@ -21,6 +23,14 @@ interface Subscription {
  * Respetar el tipo de evento no es un detalle: un canal suscrito solo a
  * INSERT no debe ver los UPDATE, y ese es justamente el fallo que estos
  * tests cuidan.
+ *
+ * Hallazgo 1, `code-review high` sobre d38a7e1..HEAD (27/9/2026): Supabase
+ * Realtime NO entrega un DELETE filtrado por una columna que no sea la
+ * primary key salvo `REPLICA IDENTITY FULL` (el registro viejo que manda
+ * para un DELETE solo trae la primary key sin eso) — `contact_tags` no la
+ * tiene. Este fake lo modela tal cual: un `trigger(..., "DELETE", ...)`
+ * NUNCA llega a un handler que se suscribió CON `filter`, para que un test
+ * que dependa de esa entrega falle igual que fallaría contra Supabase real.
  */
 function createFakeSupabase() {
   const subscriptionsByTable = new Map<string, Subscription[]>();
@@ -28,11 +38,11 @@ function createFakeSupabase() {
   const channel = {
     on(
       _type: string,
-      config: { event: RealtimeEvent | "*"; table: string },
+      config: { event: RealtimeEvent | "*"; table: string; filter?: string },
       handler: ChannelHandler
     ) {
       const list = subscriptionsByTable.get(config.table) ?? [];
-      list.push({ event: config.event, handler });
+      list.push({ event: config.event, filter: config.filter, handler });
       subscriptionsByTable.set(config.table, list);
       return channel;
     },
@@ -52,8 +62,10 @@ function createFakeSupabase() {
       eventType: RealtimeEvent = "INSERT",
       row: Record<string, unknown> = {}
     ) {
-      for (const { event, handler } of subscriptionsByTable.get(table) ?? []) {
-        if (event === "*" || event === eventType) handler({ eventType, new: row });
+      for (const { event, filter, handler } of subscriptionsByTable.get(table) ?? []) {
+        if (event !== "*" && event !== eventType) continue;
+        if (eventType === "DELETE" && filter) continue;
+        handler({ eventType, new: row });
       }
     },
   };
@@ -720,6 +732,146 @@ describe("CrmShell — las etiquetas del contacto abierto se siguen en vivo", ()
     });
 
     expect(fetchConversationMock).toHaveBeenCalledTimes(1);
+  });
+
+  /**
+   * Hallazgo 1, `code-review high` sobre d38a7e1..HEAD (27/9/2026): el
+   * canal de arriba, filtrado por `contact_id`, no entrega un DELETE que
+   * OTRO asesor haga sobre el mismo contacto (Supabase Realtime no manda el
+   * registro viejo completo sin `REPLICA IDENTITY FULL` — ver el fake, más
+   * arriba). Hace falta una escucha SIN filtro para ese caso.
+   */
+  it("un DELETE en contact_tags, SIN filtro (de cualquier contacto), también refresca el chat abierto", async () => {
+    await renderWithOpenConversation();
+    fetchConversationMock.mockClear();
+
+    act(() => {
+      // Sin `contact_id`: así llega de verdad el `old record` recortado de
+      // un DELETE sin REPLICA IDENTITY FULL.
+      fake.trigger("contact_tags", "DELETE", {});
+    });
+    await act(async () => {
+      vi.advanceTimersByTime(750);
+    });
+
+    expect(fetchConversationMock).toHaveBeenCalledWith(expect.anything(), "conv-1");
+  });
+
+  /**
+   * Hallazgo 3, `code-review high` sobre d38a7e1..HEAD (27/9/2026):
+   * `scheduleDetailRefresh` corría en CADA refresco del detalle (incluido
+   * el que dispara cada mensaje nuevo, vía el UPDATE de `conversations`) y
+   * armaba una referencia NUEVA de `openContactTags` aunque las etiquetas
+   * no hubieran cambiado — cada una de esas referencias nuevas bajaba hasta
+   * `ContextPanel` y de ahí al resto de la bandeja. `openContactTags` es un
+   * estado que SOLO escribe este efecto (ver su comentario grande en
+   * `crm-shell.tsx`), así que su referencia es la señal limpia: si no
+   * cambió, es que la comparación por id+label+color hizo su trabajo.
+   */
+  it("etiquetas sin cambios: no arma una referencia nueva de openContactTags", async () => {
+    await renderWithOpenConversation();
+    fetchConversationMock.mockClear();
+
+    act(() => {
+      fake.trigger("contact_tags", "INSERT", { contact_id: "contact-1" });
+    });
+    await act(async () => {
+      vi.advanceTimersByTime(750);
+    });
+    const primeraReferencia = contextPanelProps?.conversation.contact.tags;
+    expect(primeraReferencia).toEqual([]);
+
+    fetchConversationMock.mockClear();
+    act(() => {
+      fake.trigger("contact_tags", "INSERT", { contact_id: "contact-1" });
+    });
+    await act(async () => {
+      vi.advanceTimersByTime(750);
+    });
+
+    // Se volvió a pedir la conversación (`fetchConversation` no sabe de
+    // antemano si algo cambió), pero `buildConversation()` siempre da
+    // `tags: []` -- un arreglo NUEVO en cada llamada, aunque vacío igual que
+    // el anterior -- así que la referencia que llega al panel tiene que
+    // seguir siendo la misma.
+    expect(fetchConversationMock).toHaveBeenCalledTimes(1);
+    expect(contextPanelProps?.conversation.contact.tags).toBe(primeraReferencia);
+  });
+
+  it("si una etiqueta aplicada cambia de nombre, SÍ arma una referencia nueva", async () => {
+    await renderWithOpenConversation();
+    const tagV1 = { id: "tag-1", label: "VIP", color: "accent" as const };
+    fetchConversationMock.mockClear();
+    fetchConversationMock.mockResolvedValueOnce(
+      buildConversation({ contact: { ...buildConversation().contact, tags: [tagV1] } })
+    );
+
+    act(() => {
+      fake.trigger("contact_tags", "INSERT", { contact_id: "contact-1" });
+    });
+    await act(async () => {
+      vi.advanceTimersByTime(750);
+    });
+    const primeraReferencia = contextPanelProps?.conversation.contact.tags;
+    expect(primeraReferencia).toEqual([tagV1]);
+
+    const tagV2 = { ...tagV1, label: "VIP renombrada" };
+    fetchConversationMock.mockResolvedValueOnce(
+      buildConversation({ contact: { ...buildConversation().contact, tags: [tagV2] } })
+    );
+    act(() => {
+      fake.trigger("contact_tags", "INSERT", { contact_id: "contact-1" });
+    });
+    await act(async () => {
+      vi.advanceTimersByTime(750);
+    });
+
+    expect(contextPanelProps?.conversation.contact.tags).not.toBe(primeraReferencia);
+    expect(contextPanelProps?.conversation.contact.tags).toEqual([tagV2]);
+  });
+
+  /**
+   * Hallazgo 4, `code-review high` sobre d38a7e1..HEAD (27/9/2026): el
+   * canal `tags-changes` (catálogo global) solo llamaba a `fetchTags`
+   * cuando alguien renombraba/recoloreaba/borraba una etiqueta -- las
+   * etiquetas YA aplicadas al contacto abierto (`openContactTags`) seguían
+   * mostrando el nombre/color VIEJO hasta el próximo evento de
+   * `contact_tags`, que podía no llegar nunca si nadie tocaba esa relación.
+   */
+  it("renombrar una etiqueta global también refresca las etiquetas del chat abierto", async () => {
+    await renderWithOpenConversation();
+    const tagVieja = { id: "tag-1", label: "VIP", color: "accent" as const };
+    fetchConversationMock.mockClear();
+    // `mockResolvedValueOnce` (no `mockResolvedValue`, que quedaría pisando
+    // el default para el resto de los tests de este archivo): cada trigger
+    // consume la suya y el mock vuelve a su comportamiento normal después.
+    fetchConversationMock.mockResolvedValueOnce(
+      buildConversation({ contact: { ...buildConversation().contact, tags: [tagVieja] } })
+    );
+    // Deja que el chat abierto arranque con la etiqueta vieja, para que el
+    // renombre de abajo tenga algo que cambiar de verdad.
+    act(() => {
+      fake.trigger("contact_tags", "INSERT", { contact_id: "contact-1" });
+    });
+    await act(async () => {
+      vi.advanceTimersByTime(750);
+    });
+    fetchConversationMock.mockClear();
+
+    const tagRenombrada = { ...tagVieja, label: "VIP renombrada" };
+    fetchConversationMock.mockResolvedValueOnce(
+      buildConversation({ contact: { ...buildConversation().contact, tags: [tagRenombrada] } })
+    );
+
+    act(() => {
+      fake.trigger("tags", "UPDATE", { id: "tag-1", label: "VIP renombrada" });
+    });
+    await act(async () => {
+      vi.advanceTimersByTime(750);
+    });
+
+    expect(fetchConversationMock).toHaveBeenCalledWith(expect.anything(), "conv-1");
+    expect(contextPanelProps?.conversation.contact.tags).toEqual([tagRenombrada]);
   });
 });
 

@@ -110,6 +110,20 @@ function etiquetaQuitar(pending: PendingFile, index: number, todos: PendingFile[
     : `Quitar ${pending.file.name}`;
 }
 
+/**
+ * `true` si el pegado ocurrió sobre un campo de texto que no es el textarea
+ * del composer -- `<input>`, `<textarea>` o cualquier `contenteditable`
+ * (hallazgo 6, `code-review high` sobre d38a7e1..HEAD, 27/9/2026). Ese campo
+ * es el dueño del pegado: el composer no debe adjuntar nada ni robarle el
+ * foco. `EventTarget` puede no ser un `Element` (por ejemplo, `Window`), de
+ * ahí el chequeo de instancia antes de mirar la etiqueta o `isContentEditable`.
+ */
+function isEditableTarget(target: EventTarget | null): boolean {
+  if (!(target instanceof HTMLElement)) return false;
+  if (target.tagName === "INPUT" || target.tagName === "TEXTAREA") return true;
+  return target.isContentEditable;
+}
+
 export function Composer({
   conversation,
   messages,
@@ -293,17 +307,6 @@ export function Composer({
   /**
    * Ctrl+V con una captura en el portapapeles.
    *
-   * Es como llega la mayoría de las imágenes en una conversación de ventas:
-   * el asesor recorta la pantalla y pega. Obligarlo a guardar el archivo
-   * primero para después buscarlo con el clip es un rodeo que nadie hace.
-   *
-   * Solo se intercepta cuando el portapapeles trae archivos. Pegar texto —lo
-   * que más se pega— sigue siendo asunto del navegador, con su deshacer y su
-   * posición del cursor intactos.
-   */
-  /**
-   * Ctrl+V con una captura en el portapapeles.
-   *
    * Se escucha en el documento y no en el cuadro de texto. Nadie hace clic
    * dentro del cuadro antes de pegar: recorta la pantalla y pulsa Ctrl+V. Si
    * el foco quedó en el botón del clip, en la lista de conversaciones o en
@@ -316,13 +319,31 @@ export function Composer({
    * Solo se actúa cuando el portapapeles trae archivos, así que copiar y
    * pegar texto en cualquier otro campo de la pantalla sigue igual, con su
    * deshacer y la posición del cursor intactos.
+   *
+   * Corrección del hallazgo 6 (`code-review high` sobre d38a7e1..HEAD,
+   * 27/9/2026): hasta esa corrida solo se excluían los DOS modales propios
+   * de este componente (`isTemplateModalOpen`/`isQuickRepliesOpen`) — con
+   * `CloseSaleModal`/`ManageTagsModal` abiertos (montados en `ContextPanel`,
+   * otro árbol de React) o escribiendo en el buscador de `InventoryLookup`,
+   * pegar ahí igual le adjuntaba el archivo al COMPOSER y le robaba el foco,
+   * rompiendo el focus trap del diálogo: un Enter siguiente mandaba el
+   * adjunto al cliente en vez de completar lo que el asesor hacía en el otro
+   * campo. Ahora la exclusión es genérica en vez de una lista de estados:
+   * (a) cualquier diálogo abierto en la pantalla —HeroUI/react-aria montan
+   * `role="dialog"` de verdad en el DOM, así que `document.querySelector`
+   * lo detecta sin que el composer necesite saber cuántos modales existen ni
+   * plumbear su estado— es de quien esté trabajando ahí; (b) un pegado que
+   * ocurre con el foco en un campo editable AJENO (`<input>`/`<textarea>`/
+   * `contenteditable` que no sea el propio textarea) también es de ese
+   * campo. Sin diálogo y sin dueño (el foco en `body` o en el propio
+   * composer) es el único caso que adjunta y devuelve el foco.
    */
   useEffect(() => {
     if (!withinWindow) return;
 
     function onDocumentPaste(event: globalThis.ClipboardEvent) {
-      // Con un modal encima, el pegado es de quien esté trabajando ahí.
-      if (isTemplateModalOpen || isQuickRepliesOpen) return;
+      if (document.querySelector('[role="dialog"]')) return;
+      if (event.target !== textareaRef.current && isEditableTarget(event.target)) return;
       const files = Array.from(event.clipboardData?.files ?? []);
       if (files.length === 0) return;
 
@@ -339,7 +360,7 @@ export function Composer({
 
     document.addEventListener("paste", onDocumentPaste);
     return () => document.removeEventListener("paste", onDocumentPaste);
-  }, [withinWindow, isTemplateModalOpen, isQuickRepliesOpen]);
+  }, [withinWindow]);
 
   // Lo que puede abrirse en grande: los adjuntos con vista previa. Se guarda
   // qué posición ocupa cada uno para que abrir el tercero abra el tercero.

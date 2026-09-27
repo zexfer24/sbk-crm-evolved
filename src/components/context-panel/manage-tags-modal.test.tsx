@@ -36,6 +36,7 @@ vi.mock("@/lib/supabase/client", () => ({ createClient: vi.fn(() => ({})) }));
 const ALL_TAGS: Tag[] = [
   { id: "tag-1", label: "VIP", color: "accent" },
   { id: "tag-2", label: "Mayorista", color: "success" },
+  { id: "tag-3", label: "Premium", color: "warning" },
 ];
 
 beforeEach(() => {
@@ -48,7 +49,7 @@ function crearUsuario() {
   return userEvent.setup({ delay: null, pointerEventsCheck: 0 });
 }
 
-function renderModal(contactTags: Tag[] = [ALL_TAGS[0]]) {
+function renderModal(contactTags: Tag[] = [ALL_TAGS[0]], onContactTagsChanged?: () => void) {
   return render(
     <ManageTagsModal
       isOpen
@@ -56,6 +57,7 @@ function renderModal(contactTags: Tag[] = [ALL_TAGS[0]]) {
       tags={ALL_TAGS}
       contactId="contact-1"
       contactTags={contactTags}
+      onContactTagsChanged={onContactTagsChanged}
     />
   );
 }
@@ -79,6 +81,29 @@ describe("ManageTagsModal — sección 'En este chat' (D4)", () => {
 
     await waitFor(() => expect(addTagToContact).toHaveBeenCalledTimes(1));
     expect(addTagToContact).toHaveBeenCalledWith(expect.anything(), "contact-1", "tag-2");
+  });
+
+  it("aplicar con éxito avisa con onContactTagsChanged (hallazgo 1)", async () => {
+    const onContactTagsChanged = vi.fn();
+    const user = crearUsuario();
+    renderModal([ALL_TAGS[0]], onContactTagsChanged);
+
+    await user.click(screen.getByLabelText("Aplicar etiqueta Mayorista a este contacto"));
+
+    await waitFor(() => expect(addTagToContact).toHaveBeenCalledTimes(1));
+    expect(onContactTagsChanged).toHaveBeenCalledTimes(1);
+  });
+
+  it("un fallo al aplicar NO llama a onContactTagsChanged", async () => {
+    addTagToContact.mockRejectedValueOnce(new Error("fail"));
+    const onContactTagsChanged = vi.fn();
+    const user = crearUsuario();
+    renderModal([ALL_TAGS[0]], onContactTagsChanged);
+
+    await user.click(screen.getByLabelText("Aplicar etiqueta Mayorista a este contacto"));
+
+    await waitFor(() => expect(toast.danger).toHaveBeenCalledTimes(1));
+    expect(onContactTagsChanged).not.toHaveBeenCalled();
   });
 
   it("quitar llama a removeTagFromContact con el contacto y la etiqueta correctos", async () => {
@@ -128,17 +153,17 @@ describe("ManageTagsModal — sección 'En este chat' (D4)", () => {
  * servidor, y la reconcilia con la prop nueva cuando llega (o revierte si la
  * mutación falla).
  */
-describe("ManageTagsModal — aplicar/quitar es optimista y evita el doble clic", () => {
-  function promesaControlada<T>() {
-    let resolve!: (value: T) => void;
-    let reject!: (err: unknown) => void;
-    const promise = new Promise<T>((res, rej) => {
-      resolve = res;
-      reject = rej;
-    });
-    return { promise, resolve, reject };
-  }
+function promesaControlada<T>() {
+  let resolve!: (value: T) => void;
+  let reject!: (err: unknown) => void;
+  const promise = new Promise<T>((res, rej) => {
+    resolve = res;
+    reject = rej;
+  });
+  return { promise, resolve, reject };
+}
 
+describe("ManageTagsModal — aplicar/quitar es optimista y evita el doble clic", () => {
   it("aplicar mueve la etiqueta a 'aplicadas' al instante, antes de que la mutación resuelva", async () => {
     const { promise } = promesaControlada<void>();
     addTagToContact.mockReturnValueOnce(promise);
@@ -226,5 +251,81 @@ describe("ManageTagsModal — aplicar/quitar es optimista y evita el doble clic"
 
     expect(screen.getByLabelText("Quitar etiqueta Mayorista de este contacto")).toBeInTheDocument();
     expect(screen.getByLabelText("Quitar etiqueta Mayorista de este contacto")).not.toBeDisabled();
+  });
+});
+
+/**
+ * Hallazgo 5, `code-review high` sobre d38a7e1..HEAD (27/9/2026): un solo
+ * `busyTagId` para TODAS las etiquetas — clic en A y enseguida en B mientras
+ * A sigue en vuelo pisaba el id de A en `busyTagId`, y el `finally` de A (que
+ * resuelve primero) volvía a habilitar el botón de B aunque B siguiera
+ * viajando. Además, la reconciliación con la prop DURANTE el render
+ * descartaba cualquier optimismo pendiente: si la prop nueva solo traía la
+ * confirmación de A, `optimisticTags` se reemplazaba entero por esa prop y B
+ * "parpadeaba" de vuelta a disponibles hasta que su propia respuesta llegara.
+ */
+describe("ManageTagsModal — dos etiquetas en vuelo a la vez no se pisan", () => {
+  it("A y B en vuelo a la vez: el finally de A no habilita el botón de B", async () => {
+    const a = promesaControlada<void>();
+    const b = promesaControlada<void>();
+    addTagToContact.mockReturnValueOnce(a.promise).mockReturnValueOnce(b.promise);
+    const user = crearUsuario();
+    renderModal();
+
+    await user.click(screen.getByLabelText("Aplicar etiqueta Mayorista a este contacto"));
+    await user.click(screen.getByLabelText("Aplicar etiqueta Premium a este contacto"));
+
+    // Se resuelve A (la primera) mientras B sigue en vuelo.
+    a.resolve();
+    await waitFor(() => expect(addTagToContact).toHaveBeenCalledTimes(2));
+
+    // El botón de B (todavía sin confirmar) tiene que seguir deshabilitado:
+    // con un solo `busyTagId`, el `finally` de A lo habilitaba igual.
+    expect(screen.getByLabelText("Quitar etiqueta Premium de este contacto")).toBeDisabled();
+    // El de A, ya resuelto, queda habilitado.
+    expect(screen.getByLabelText("Quitar etiqueta Mayorista de este contacto")).not.toBeDisabled();
+
+    b.resolve();
+    await waitFor(() =>
+      expect(screen.getByLabelText("Quitar etiqueta Premium de este contacto")).not.toBeDisabled()
+    );
+  });
+
+  it("llega prop nueva con solo A confirmada: B sigue aplicada y deshabilitada (no parpadea)", async () => {
+    const a = promesaControlada<void>();
+    const b = promesaControlada<void>();
+    addTagToContact.mockReturnValueOnce(a.promise).mockReturnValueOnce(b.promise);
+    const user = crearUsuario();
+    const { rerender } = renderModal();
+
+    await user.click(screen.getByLabelText("Aplicar etiqueta Mayorista a este contacto"));
+    await user.click(screen.getByLabelText("Aplicar etiqueta Premium a este contacto"));
+
+    a.resolve();
+    await waitFor(() => expect(addTagToContact).toHaveBeenCalledTimes(2));
+
+    // Lo que haría `crm-shell.tsx` al refrescar: la prop trae SOLO la
+    // confirmación de A (Mayorista) — B (Premium) sigue en vuelo del lado
+    // del servidor.
+    rerender(
+      <ManageTagsModal
+        isOpen
+        onOpenChange={() => {}}
+        tags={ALL_TAGS}
+        contactId="contact-1"
+        contactTags={[ALL_TAGS[0], ALL_TAGS[1]]}
+      />
+    );
+
+    // B no puede parpadear de vuelta a "disponible": la reconciliación tiene
+    // que reaplicar la operación pendiente sobre la lista fresca del server.
+    expect(screen.getByLabelText("Quitar etiqueta Premium de este contacto")).toBeInTheDocument();
+    expect(screen.getByLabelText("Quitar etiqueta Premium de este contacto")).toBeDisabled();
+    expect(screen.queryByLabelText("Aplicar etiqueta Premium a este contacto")).not.toBeInTheDocument();
+
+    b.resolve();
+    await waitFor(() =>
+      expect(screen.getByLabelText("Quitar etiqueta Premium de este contacto")).not.toBeDisabled()
+    );
   });
 });

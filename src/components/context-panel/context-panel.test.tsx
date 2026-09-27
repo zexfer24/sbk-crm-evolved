@@ -1,6 +1,6 @@
 /** @vitest-environment jsdom */
 import { describe, expect, it, vi, beforeEach } from "vitest";
-import { render, screen } from "@testing-library/react";
+import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { ContextPanel } from "@/components/context-panel/context-panel";
 import type { Agent, Conversation, Tag } from "@/lib/types";
@@ -38,11 +38,12 @@ vi.mock("@/components/context-panel/inventory-lookup", () => ({
   },
 }));
 
+const removeTagFromContactMock = vi.fn().mockResolvedValue(undefined);
 vi.mock("@/lib/mutations", () => ({
   addNote: vi.fn(),
   addTagToContact: vi.fn(),
   deleteNote: vi.fn(),
-  removeTagFromContact: vi.fn(),
+  removeTagFromContact: (...args: unknown[]) => removeTagFromContactMock(...args),
   updateNote: vi.fn(),
 }));
 
@@ -124,9 +125,13 @@ const RATE: BcvRateSummary = { rate: 40, rateDate: "2026-09-27", isStale: false 
 beforeEach(() => {
   manageTagsModalProps.mockClear();
   inventoryLookupProps.mockClear();
+  removeTagFromContactMock.mockClear();
 });
 
-function renderPanel(overrides: Partial<Conversation> = {}) {
+function renderPanel(
+  overrides: Partial<Conversation> = {},
+  onContactTagsChanged?: () => void
+) {
   const conversation = buildConversation(overrides);
   return render(
     <ContextPanel
@@ -136,6 +141,7 @@ function renderPanel(overrides: Partial<Conversation> = {}) {
       allTags={ALL_TAGS}
       currentAgent={AGENT}
       bcvRate={RATE}
+      onContactTagsChanged={onContactTagsChanged}
     />
   );
 }
@@ -190,5 +196,45 @@ describe("ContextPanel — etiquetas recogidas e Inventario en su lugar (D4/D5)"
     // Node.DOCUMENT_POSITION_FOLLOWING (4): el segundo argumento va DESPUÉS del primero.
     expect(etiquetas.compareDocumentPosition(inventoryStub) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     expect(inventoryStub.compareDocumentPosition(notas) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+});
+
+/**
+ * Hallazgo 1, `code-review high` sobre d38a7e1..HEAD (27/9/2026): el canal
+ * `contact-tags-<id>` filtrado por `contact_id` no entrega DELETE filtrados
+ * (Realtime no manda el registro viejo completo salvo `REPLICA IDENTITY
+ * FULL`), así que la propia acción del asesor no puede depender de ese canal
+ * para verse reflejada — necesita avisar de una vez, con su propio callback.
+ */
+describe("ContextPanel — quitar una etiqueta avisa al shell (hallazgo 1)", () => {
+  it("el × de 'Etiquetas' llama a onContactTagsChanged tras quitar con éxito", async () => {
+    const user = userEvent.setup({ delay: null, pointerEventsCheck: 0 });
+    const onContactTagsChanged = vi.fn();
+    renderPanel({}, onContactTagsChanged);
+
+    await user.click(screen.getByLabelText("Quitar etiqueta VIP"));
+
+    await waitFor(() => expect(removeTagFromContactMock).toHaveBeenCalledTimes(1));
+    expect(onContactTagsChanged).toHaveBeenCalledTimes(1);
+  });
+
+  it("un fallo al quitar NO llama a onContactTagsChanged", async () => {
+    removeTagFromContactMock.mockRejectedValueOnce(new Error("fail"));
+    const user = userEvent.setup({ delay: null, pointerEventsCheck: 0 });
+    const onContactTagsChanged = vi.fn();
+    renderPanel({}, onContactTagsChanged);
+
+    await user.click(screen.getByLabelText("Quitar etiqueta VIP"));
+
+    await waitFor(() => expect(removeTagFromContactMock).toHaveBeenCalledTimes(1));
+    expect(onContactTagsChanged).not.toHaveBeenCalled();
+  });
+
+  it("ManageTagsModal recibe el mismo onContactTagsChanged para 'En este chat'", () => {
+    const onContactTagsChanged = vi.fn();
+    renderPanel({}, onContactTagsChanged);
+
+    const lastCall = manageTagsModalProps.mock.calls.at(-1)?.[0];
+    expect(lastCall.onContactTagsChanged).toBe(onContactTagsChanged);
   });
 });

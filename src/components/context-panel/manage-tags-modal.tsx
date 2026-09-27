@@ -23,6 +23,19 @@ interface ManageTagsModalProps {
    */
   contactId: string;
   contactTags: Tag[];
+  /**
+   * Avisa a `crm-shell.tsx` que ESTE agente acaba de aplicar o quitar una
+   * etiqueta, para que pida el detalle del chat abierto de una vez —
+   * hallazgo 1 (`code-review high` sobre d38a7e1..HEAD, 27/9/2026): el canal
+   * `contact-tags-<id>` filtrado por `contact_id` no entrega DELETE
+   * filtrados (Supabase Realtime no manda el registro viejo completo salvo
+   * `REPLICA IDENTITY FULL`), así que las acciones propias no pueden
+   * depender de ese canal para verse reflejadas — necesitan su propio
+   * aviso, inmediato, sin esperar a un evento que puede no llegar nunca.
+   * Opcional para no obligar a los tests que no lo necesitan (los propios de
+   * este módulo) a pasarlo.
+   */
+  onContactTagsChanged?: () => void;
 }
 
 const COLOR_OPTIONS: { value: TagColor; label: string }[] = [
@@ -33,19 +46,51 @@ const COLOR_OPTIONS: { value: TagColor; label: string }[] = [
   { value: "danger", label: "Rojo" },
 ];
 
-export function ManageTagsModal({ isOpen, onOpenChange, tags, contactId, contactTags }: ManageTagsModalProps) {
+export function ManageTagsModal({
+  isOpen,
+  onOpenChange,
+  tags,
+  contactId,
+  contactTags,
+  onContactTagsChanged,
+}: ManageTagsModalProps) {
   const [editingId, setEditingId] = useState<string | null>(null);
   const [label, setLabel] = useState("");
   const [color, setColor] = useState<TagColor>("default");
   const [isSaving, setIsSaving] = useState(false);
   const [isFormOpen, setIsFormOpen] = useState(false);
   const [deletingId, setDeletingId] = useState<string | null>(null);
-  // Etiqueta en vuelo (aplicando o quitando) en la sección "En este chat":
-  // deshabilita el botón del lado donde la etiqueta QUEDÓ tras el movimiento
-  // optimista (ver `optimisticTags`, abajo) — no el de origen, que ya
-  // desapareció de esa lista. El error real ya lo maneja la mutación con su
-  // propio toast.
-  const [busyTagId, setBusyTagId] = useState<string | null>(null);
+  /**
+   * Etiquetas en vuelo (aplicando o quitando) en la sección "En este chat":
+   * deshabilita el botón del lado donde la etiqueta QUEDÓ tras el movimiento
+   * optimista (ver `optimisticTags`, abajo) — no el de origen, que ya
+   * desapareció de esa lista. El error real ya lo maneja la mutación con su
+   * propio toast.
+   *
+   * Corrección del hallazgo 5 (`code-review high` sobre d38a7e1..HEAD,
+   * 27/9/2026): antes era un `busyTagId` ÚNICO para todas — un clic en A y
+   * enseguida en B (A todavía en vuelo) pisaba el id de A, y el `finally` de
+   * A (la primera en resolver) volvía a habilitar el botón de B aunque B
+   * siguiera viajando. Un `Set` de ids en vuelo deja que cada etiqueta lleve
+   * su propio estado, sin que una pise a la otra.
+   */
+  const [busyTagIds, setBusyTagIds] = useState<ReadonlySet<string>>(new Set());
+
+  /**
+   * Operaciones optimistas AÚN EN VUELO (mismo motivo del hallazgo 5): la
+   * reconciliación con la prop, más abajo, corría al recibir CUALQUIER
+   * `contactTags` nuevo y reemplazaba `optimisticTags` entero por esa prop —
+   * si la prop llegaba con la confirmación de A pero B seguía en vuelo (el
+   * servidor todavía no la confirmó), B "parpadeaba" de vuelta a
+   * disponibles hasta que su propia respuesta llegara.
+   *
+   * En ESTADO, no en un `ref`: la reconciliación de abajo la lee DURANTE el
+   * render (patrón "Adjusting state when a prop changes"), y
+   * `react-hooks/refs` prohíbe leer un `ref` ahí — un `ref` es un valor que
+   * React no necesita para pintar, así que leerlo en el cuerpo del
+   * componente puede quedar desincronizado con lo que de verdad se pintó.
+   */
+  const [pendingOps, setPendingOps] = useState(new Map<string, { type: "apply" | "remove"; tag: Tag }>());
 
   /**
    * Copia local de `contactTags`, movida al instante en cada clic —sin
@@ -56,44 +101,87 @@ export function ManageTagsModal({ isOpen, onOpenChange, tags, contactId, contact
    * DURANTE el render, no en un efecto —mismo patrón "Adjusting state when a
    * prop changes" que ya usa `close-sale-modal.tsx` (R2, 19/9/2026)—: cuando
    * `contactTags` cambia de referencia (la base ya confirmó el cambio, vía
-   * `crm-shell.tsx`), la copia local adopta ese valor como la nueva verdad,
-   * descartando cualquier optimismo pendiente. Si la mutación falla, el
-   * `catch` revierte a mano — no hay que esperar a que la prop cambie, que
-   * en ese caso nunca iba a cambiar.
+   * `crm-shell.tsx`), la copia local adopta ese valor como la nueva verdad
+   * y REAPLICA encima cualquier operación que siga en vuelo (`pendingOps`,
+   * hallazgo 5) — así una A confirmada y una B pendiente no se pisan. Si la
+   * mutación falla, el `catch` revierte a mano — no hay que esperar a que la
+   * prop cambie, que en ese caso nunca iba a cambiar.
    */
   const [optimisticTags, setOptimisticTags] = useState(contactTags);
   const [syncedContactTags, setSyncedContactTags] = useState(contactTags);
   if (contactTags !== syncedContactTags) {
     setSyncedContactTags(contactTags);
-    setOptimisticTags(contactTags);
+    let next = contactTags;
+    for (const [tagId, op] of pendingOps) {
+      if (op.type === "apply") {
+        if (!next.some((t) => t.id === tagId)) next = [...next, op.tag];
+      } else if (next.some((t) => t.id === tagId)) {
+        next = next.filter((t) => t.id !== tagId);
+      }
+    }
+    setOptimisticTags(next);
   }
 
   const contactTagIds = new Set(optimisticTags.map((t) => t.id));
   const availableForContact = tags.filter((t) => !contactTagIds.has(t.id));
 
+  function markBusy(tagId: string) {
+    setBusyTagIds((current) => new Set(current).add(tagId));
+  }
+
+  function clearBusy(tagId: string) {
+    setBusyTagIds((current) => {
+      const next = new Set(current);
+      next.delete(tagId);
+      return next;
+    });
+  }
+
+  function setPendingOp(tagId: string, op: { type: "apply" | "remove"; tag: Tag }) {
+    setPendingOps((current) => {
+      const next = new Map(current);
+      next.set(tagId, op);
+      return next;
+    });
+  }
+
+  function clearPendingOp(tagId: string) {
+    setPendingOps((current) => {
+      const next = new Map(current);
+      next.delete(tagId);
+      return next;
+    });
+  }
+
   async function handleApplyTag(tag: Tag) {
-    setBusyTagId(tag.id);
+    markBusy(tag.id);
+    setPendingOp(tag.id, { type: "apply", tag });
     setOptimisticTags((current) => [...current, tag]);
     try {
       await addTagToContact(createClient(), contactId, tag.id);
+      onContactTagsChanged?.();
     } catch {
       setOptimisticTags((current) => current.filter((t) => t.id !== tag.id));
       toast.danger("No se pudo añadir la etiqueta.");
     } finally {
-      setBusyTagId(null);
+      clearPendingOp(tag.id);
+      clearBusy(tag.id);
     }
   }
 
   async function handleRemoveTag(tag: Tag) {
-    setBusyTagId(tag.id);
+    markBusy(tag.id);
+    setPendingOp(tag.id, { type: "remove", tag });
     setOptimisticTags((current) => current.filter((t) => t.id !== tag.id));
     try {
       await removeTagFromContact(createClient(), contactId, tag.id);
+      onContactTagsChanged?.();
     } catch {
       setOptimisticTags((current) => [...current, tag]);
       toast.danger("No se pudo quitar la etiqueta.");
     } finally {
-      setBusyTagId(null);
+      clearPendingOp(tag.id);
+      clearBusy(tag.id);
     }
   }
 
@@ -169,7 +257,7 @@ export function ManageTagsModal({ isOpen, onOpenChange, tags, contactId, contact
                         type="button"
                         aria-label={`Quitar etiqueta ${tag.label} de este contacto`}
                         onClick={() => handleRemoveTag(tag)}
-                        disabled={busyTagId === tag.id}
+                        disabled={busyTagIds.has(tag.id)}
                       >
                         <Minus size={11} />
                       </button>
@@ -189,7 +277,7 @@ export function ManageTagsModal({ isOpen, onOpenChange, tags, contactId, contact
                         type="button"
                         aria-label={`Aplicar etiqueta ${tag.label} a este contacto`}
                         onClick={() => handleApplyTag(tag)}
-                        disabled={busyTagId === tag.id}
+                        disabled={busyTagIds.has(tag.id)}
                       >
                         <Plus size={11} />
                         {tag.label}

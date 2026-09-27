@@ -529,6 +529,71 @@ describe("Composer — lo que faltaba para escribir y adjuntar cómodo", () => {
 });
 
 /**
+ * Hallazgo 6, `code-review high` sobre d38a7e1..HEAD (27/9/2026): el
+ * listener de pegado en `document` solo excluía sus DOS propios modales
+ * (`isTemplateModalOpen`/`isQuickRepliesOpen`) — con `CloseSaleModal` o
+ * `ManageTagsModal` abiertos (montados en `ContextPanel`, otro árbol) o
+ * escribiendo en el cuadro de búsqueda de `InventoryLookup`, pegar ahí
+ * igual adjuntaba el archivo al COMPOSER y le robaba el foco, rompiendo el
+ * focus trap del diálogo: un Enter siguiente mandaba el adjunto al cliente
+ * en vez de completar lo que el asesor estaba haciendo en el otro campo.
+ */
+describe("Composer — pegar no le roba el foco a un diálogo abierto ni a otro campo", () => {
+  const foto = (nombre: string) => new File([new Uint8Array([1])], nombre, { type: "image/png" });
+
+  it("con cualquier diálogo abierto (role=dialog), pegar no adjunta ni mueve el foco", () => {
+    renderComposer();
+    const textarea = screen.getByRole("textbox", { name: "Mensaje" }) as HTMLTextAreaElement;
+    const focusSpy = vi.spyOn(textarea, "focus");
+    // Simula CloseSaleModal/ManageTagsModal (HeroUI monta role="dialog"),
+    // montados en `ContextPanel` -- otro árbol de React, ajeno al composer.
+    const dialog = document.createElement("div");
+    dialog.setAttribute("role", "dialog");
+    document.body.appendChild(dialog);
+
+    try {
+      fireEvent.paste(document.body, {
+        clipboardData: { files: [foto("captura.png")], items: [], getData: () => "" },
+      });
+
+      expect(screen.queryByRole("button", { name: "Quitar captura.png" })).not.toBeInTheDocument();
+      expect(focusSpy).not.toHaveBeenCalled();
+    } finally {
+      dialog.remove();
+    }
+  });
+
+  it("pegar con el foco en otro campo editable (input/textarea ajeno) no adjunta nada", () => {
+    renderComposer();
+    const otroInput = document.createElement("input");
+    document.body.appendChild(otroInput);
+
+    try {
+      fireEvent.paste(otroInput, {
+        clipboardData: { files: [foto("captura.png")], items: [], getData: () => "" },
+      });
+
+      expect(screen.queryByRole("button", { name: "Quitar captura.png" })).not.toBeInTheDocument();
+    } finally {
+      otroInput.remove();
+    }
+  });
+
+  it("pegar sin dueño (foco en body, zona neutra) sí adjunta y enfoca el textarea", () => {
+    renderComposer();
+    const textarea = screen.getByRole("textbox", { name: "Mensaje" }) as HTMLTextAreaElement;
+    const focusSpy = vi.spyOn(textarea, "focus");
+
+    fireEvent.paste(document.body, {
+      clipboardData: { files: [foto("captura.png")], items: [], getData: () => "" },
+    });
+
+    expect(screen.getByRole("button", { name: "Quitar captura.png" })).toBeInTheDocument();
+    expect(focusSpy).toHaveBeenCalled();
+  });
+});
+
+/**
  * "Escribiendo…" hacia Meta (T3.1, 4/9/2026). Meta apaga el indicador solo a
  * los 25 s (o al llegar la respuesta), así que una redacción que se alarga
  * necesita el aviso renovado antes de que expire — pero sin repetirlo en

@@ -25,9 +25,29 @@ interface ContextPanelProps {
    * moneda real del producto, sin inventar un dólar.
    */
   bcvRate: BcvRateSummary | null;
+  /**
+   * Avisa a `crm-shell.tsx` que ESTE agente acaba de aplicar o quitar una
+   * etiqueta del contacto abierto -- hallazgo 1 (`code-review high` sobre
+   * d38a7e1..HEAD, 27/9/2026). El × de "Etiquetas" (`handleRemoveTag`, acá
+   * mismo) y todo lo que haga `ManageTagsModal` ("En este chat") lo disparan:
+   * el canal `contact-tags-<id>` no entrega DELETE filtrados por
+   * `contact_id` (Realtime no manda el registro completo salvo `REPLICA
+   * IDENTITY FULL`), así que las acciones propias no pueden depender de ese
+   * canal para reflejarse. Opcional para no obligar a los tests que no lo
+   * ejercitan.
+   */
+  onContactTagsChanged?: () => void;
 }
 
-export function ContextPanel({ conversation, messages, notes, allTags, currentAgent, bcvRate }: ContextPanelProps) {
+export function ContextPanel({
+  conversation,
+  messages,
+  notes,
+  allTags,
+  currentAgent,
+  bcvRate,
+  onContactTagsChanged,
+}: ContextPanelProps) {
   const [noteDraft, setNoteDraft] = useState("");
   const [isSavingNote, setIsSavingNote] = useState(false);
   const [isCloseSaleOpen, setIsCloseSaleOpen] = useState(false);
@@ -46,6 +66,7 @@ export function ContextPanel({ conversation, messages, notes, allTags, currentAg
     try {
       const supabase = createClient();
       await removeTagFromContact(supabase, contact.id, tagId);
+      onContactTagsChanged?.();
     } catch {
       toast.danger("No se pudo quitar la etiqueta.");
     }
@@ -127,6 +148,7 @@ export function ContextPanel({ conversation, messages, notes, allTags, currentAg
         tags={allTags}
         contactId={contact.id}
         contactTags={contact.tags}
+        onContactTagsChanged={onContactTagsChanged}
       />
 
       <div className="crm-context-body">

@@ -94,10 +94,12 @@ interface CrmShellProps {
   initialPendingConversations?: ConversationSummary[];
   /**
    * TODAS las etiquetas creadas, incluidas las que nadie usa todavía:
-   * `ContextPanel` (`ManageTagsModal` y la lista de "aplicar etiqueta" al
-   * contacto) necesita poder ofrecer una categoría recién creada aunque
-   * ningún contacto la lleve aún. `fetchTags` (`@/lib/data`), sembrada desde
-   * `page.tsx`.
+   * `ContextPanel` se la pasa a `ManageTagsModal` (la sección "En este chat"
+   * aplica/quita; T6, plan "El mostrador busca sin salir del chat",
+   * 27/9/2026 — antes de esa corrida esa acción vivía en `ContextPanel`, con
+   * su propia lista de "+ disponibles") para que pueda ofrecer una etiqueta
+   * recién creada aunque ningún contacto la lleve aún. `fetchTags`
+   * (`@/lib/data`), sembrada desde `page.tsx`.
    */
   allTags: Tag[];
   /**
@@ -196,6 +198,29 @@ function realtimeStatusHandler(channelName: string, onResync: () => void) {
       onResync();
     }
   };
+}
+
+/**
+ * `true` si las dos listas de etiquetas son la MISMA colección (mismo id,
+ * label y color, sin importar el orden) — hallazgo 3, `code-review high`
+ * sobre d38a7e1..HEAD (27/9/2026). `scheduleDetailRefresh` (más abajo)
+ * corre en CADA refresco del detalle del chat abierto, incluido el que
+ * dispara cada mensaje nuevo (el UPDATE de `conversations`), y antes de esta
+ * corrección armaba una referencia NUEVA de `openContactTags` —y parchaba
+ * `conversations` con un `.map` nuevo— en CADA pasada, aunque las etiquetas
+ * no hubieran cambiado un poco: cada refresco de detalle rearmaba la
+ * bandeja entera de balde. Comparar por VALOR (no `===` de arreglo, que
+ * siempre da falso entre dos respuestas separadas del mismo `select`) deja
+ * que el llamador se quede con la referencia VIEJA cuando no cambió nada.
+ */
+function sameTags(a: readonly Tag[] | null, b: readonly Tag[]): boolean {
+  if (a === null) return false;
+  if (a.length !== b.length) return false;
+  const byId = new Map(a.map((tag) => [tag.id, tag]));
+  return b.every((tag) => {
+    const previous = byId.get(tag.id);
+    return previous !== undefined && previous.label === tag.label && previous.color === tag.color;
+  });
 }
 
 export function CrmShell({
@@ -861,6 +886,42 @@ export function CrmShell({
     setOpenContactTags(null);
   }
 
+  /**
+   * Pide de una vez el detalle del chat abierto para refrescar sus
+   * etiquetas — hallazgo 1 (`code-review high` sobre d38a7e1..HEAD,
+   * 27/9/2026). Dos llamadores: (a) `ContextPanel`/`ManageTagsModal`, tras
+   * aplicar o quitar una etiqueta con éxito ESTE MISMO agente — el canal
+   * `contact-tags-<id>` filtrado no entrega DELETE (ver su comentario, más
+   * abajo en el efecto del detalle), así que la propia acción no puede
+   * depender de Realtime para verse reflejada; (b) el canal `tags-changes`
+   * (catálogo GLOBAL de etiquetas), cuando alguien renombra/recolorea/borra
+   * una etiqueta que el contacto abierto ya lleva puesta — sin esto, la
+   * etiqueta seguía mostrando el nombre/color viejo hasta el próximo cambio
+   * en `contact_tags`, que podía no llegar nunca (hallazgo 4). SIN `cancelled`
+   * propio, a diferencia de `scheduleDetailRefresh`: no vive dentro de un
+   * efecto atado a `selectedId`, así que se protege comparando el id de la
+   * conversación al escribir cada estado (mismo patrón que `loadOlderMessages`,
+   * más abajo).
+   */
+  const refreshContactTagsNow = useCallback(() => {
+    if (!selectedId) return;
+    const conversationId = selectedId;
+    fetchConversation(supabase, conversationId)
+      .then((data) => {
+        if (!data) return;
+        setDetail((current) => (current?.id === conversationId || current === null ? data : current));
+        setOpenContactTags((current) => (sameTags(current, data.contact.tags) ? current : data.contact.tags));
+        setConversations((current) => {
+          const row = current.find((c) => c.id === conversationId);
+          if (!row || sameTags(row.contact.tags, data.contact.tags)) return current;
+          return current.map((c) =>
+            c.id === conversationId ? { ...c, contact: { ...c.contact, tags: data.contact.tags } } : c
+          );
+        });
+      })
+      .catch(() => {});
+  }, [selectedId, supabase, setConversations]);
+
   const selectedSummary = conversations.find((c) => c.id === selectedId) ?? null;
 
   // El detalle llega una vez; lo que cambia en vivo (contador, vista previa,
@@ -1082,22 +1143,36 @@ export function CrmShell({
   }, [supabase]);
 
   // Catálogo de etiquetas compartido entre agentes: se sincroniza en vivo.
+  //
+  // Hallazgo 4 (`code-review high` sobre d38a7e1..HEAD, 27/9/2026): este
+  // canal solo pedía `fetchTags` (el catálogo GLOBAL) — renombrar,
+  // recolorear o borrar una etiqueta que el CONTACTO ABIERTO ya llevaba
+  // puesta no se veía reflejado ahí: el panel se quedaba con el
+  // nombre/color viejo hasta el próximo cambio en `contact_tags`, que podía
+  // no llegar nunca. `refreshContactTagsNow` es la salida más simple que
+  // respeta la invariante de `openContactTags` (un estado que solo escribe
+  // ESE camino) — no hace falta filtrar qué etiqueta cambió ni si el
+  // contacto abierto la lleva: sin chat abierto no hace nada, y con uno
+  // abierto es una consulta barata y debounce no hace falta (un cambio de
+  // catálogo global no llega en ráfaga como los mensajes).
   useEffect(() => {
     const channel = supabase
       .channel("tags-changes")
       .on("postgres_changes", { event: "*", schema: "public", table: "tags" }, () => {
         fetchTags(supabase).then(setTags).catch(() => {});
+        refreshContactTagsNow();
       })
       .subscribe(
         realtimeStatusHandler("tags-changes", () => {
           fetchTags(supabase).then(setTags).catch(() => {});
+          refreshContactTagsNow();
         })
       );
 
     return () => {
       supabase.removeChannel(channel);
     };
-  }, [supabase]);
+  }, [supabase, refreshContactTagsNow]);
 
   // Carga el detalle de la conversación seleccionada y se suscribe a sus mensajes y notas nuevas.
   useEffect(() => {
@@ -1178,12 +1253,38 @@ export function CrmShell({
       // efecto, pero la declaración `function` se iza (hoisting) a la
       // cabecera del efecto: para cuando esta IIFE llega hasta acá (después
       // del primer `await`) ya existe, así que reusar su debounce es seguro.
+      //
+      // Hallazgo 1 (`code-review high` sobre d38a7e1..HEAD, 27/9/2026):
+      // Supabase Realtime NO entrega un DELETE filtrado por una columna que
+      // no sea la primary key salvo `REPLICA IDENTITY FULL` (el registro
+      // viejo que manda para un DELETE solo trae la primary key sin eso, y
+      // `contact_tags` no la tiene) — con `event: "*"` y el filtro de acá
+      // abajo, un asesor DISTINTO que quitaba una etiqueta nunca disparaba
+      // este canal, y `openContactTags` (que gana sobre la fila) se quedaba
+      // con la etiqueta quitada para siempre. INSERT/UPDATE sí filtran bien
+      // (el registro NUEVO trae todas las columnas): se quedan como antes,
+      // uno por evento para no perder el tipo. DELETE va SIN filtro —
+      // cualquier borrado en la tabla, de cualquier contacto, dispara el
+      // refetch debounceado de acá— porque no hay forma barata de acotarlo
+      // solo al contacto abierto; barato igual, porque este canal solo
+      // existe mientras HAY un chat abierto (vive y muere con este efecto).
+      // Las acciones del PROPIO agente no dependen de esto: avisan aparte
+      // con `onContactTagsChanged` (`refreshContactTagsNow`, más abajo en el
+      // componente).
       tagsChannel = supabase
         .channel(`contact-tags-${contactId}`)
         .on(
           "postgres_changes",
-          { event: "*", schema: "public", table: "contact_tags", filter: `contact_id=eq.${contactId}` },
+          { event: "INSERT", schema: "public", table: "contact_tags", filter: `contact_id=eq.${contactId}` },
           () => scheduleDetailRefresh()
+        )
+        .on(
+          "postgres_changes",
+          { event: "UPDATE", schema: "public", table: "contact_tags", filter: `contact_id=eq.${contactId}` },
+          () => scheduleDetailRefresh()
+        )
+        .on("postgres_changes", { event: "DELETE", schema: "public", table: "contact_tags" }, () =>
+          scheduleDetailRefresh()
         )
         .subscribe();
 
@@ -1236,7 +1337,18 @@ export function CrmShell({
           // `conversations`, ver su comentario más arriba) — es la única
           // fuente que ninguna OTRA cosa escribe, así que no puede perder una
           // carrera contra el refetch de cabecera de `watchContactTags`.
-          setOpenContactTags(data.contact.tags);
+          //
+          // Hallazgo 3 (`code-review high` sobre d38a7e1..HEAD, 27/9/2026):
+          // este refresco corre en CADA UPDATE de la conversación abierta —
+          // incluido el que dispara cada mensaje nuevo, arriba— así que sin
+          // el `sameTags` de acá abajo se armaba una referencia NUEVA de
+          // `openContactTags` (y se parchaba `conversations` con un `.map`
+          // nuevo, más abajo) en CADA mensaje, aunque las etiquetas no
+          // hubieran cambiado — la bandeja entera se volvía a renderizar de
+          // balde. `sameTags` compara por VALOR (id+label+color): si no
+          // cambió nada, el `setState` devuelve la MISMA referencia que ya
+          // tenía y React no repinta nada de más.
+          setOpenContactTags((current) => (sameTags(current, data.contact.tags) ? current : data.contact.tags));
           // También se intenta parchar la fila de la bandeja (best effort):
           // la usa el filtro por etiqueta del panel izquierdo
           // (`matchesTag`/`inbox-filters.ts`), que si no, seguiría sin ver
@@ -1251,11 +1363,13 @@ export function CrmShell({
           // el siguiente evento o con la pasada de fondo de 5 min
           // (`SAFETY_REFRESH_MS`); el panel del chat abierto, que es el
           // reporte real, ya no depende de esta fila en absoluto.
-          setConversations((current) =>
-            current.map((c) =>
+          setConversations((current) => {
+            const row = current.find((c) => c.id === conversationId);
+            if (!row || sameTags(row.contact.tags, data.contact.tags)) return current;
+            return current.map((c) =>
               c.id === conversationId ? { ...c, contact: { ...c.contact, tags: data.contact.tags } } : c
-            )
-          );
+            );
+          });
         });
       }, REALTIME_DEBOUNCE_MS);
     }
@@ -1436,6 +1550,7 @@ export function CrmShell({
               allTags={tags}
               currentAgent={currentAgent}
               bcvRate={bcvRate}
+              onContactTagsChanged={refreshContactTagsNow}
             />
           ) : (
             // Sin esto la columna queda como un panel blanco sin explicación:

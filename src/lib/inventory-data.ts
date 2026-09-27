@@ -1,6 +1,6 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
 import type { MotoCatalogSummary, Product, ProductCurrency } from "@/lib/types";
-import { productSearchFilters } from "@/lib/inventory-search";
+import { productSearchFilter } from "@/lib/inventory-search";
 import { inventoryPageRange, LOW_STOCK_THRESHOLD, type InventoryParams } from "@/lib/inventory";
 
 /**
@@ -74,15 +74,16 @@ export async function fetchProductsPage(
 ): Promise<ProductsPage> {
   let request = supabase.from("products").select(PRODUCT_SELECT, { count: "exact" });
 
-  // Un `.or()` por palabra (`inventory-search.ts`, T3, 27/9/2026): varios
-  // `.or()` encadenados en el mismo query builder se combinan con AND, así
-  // que "tubo cg" exige "tubo" Y "cg", cada uno en cualquiera de las tres
-  // columnas (search_text/saint_code/description) — antes era una sola frase
-  // completa contra name/brand/description, y "tubo cg" no calzaba con
-  // "TUBO ESCAPE CG 150".
-  for (const filter of productSearchFilters(query)) {
-    request = request.or(filter);
-  }
+  // UN solo `.or()` con la expresión completa (`inventory-search.ts`, T3,
+  // 27/9/2026; corregido para el hallazgo 2 del `code-review high` del
+  // 27/9/2026 — antes era un `.or()` por palabra encadenado, y `ai/pgrst.ts`
+  // ya documenta que PostgREST no combina de forma fiable varios `.or()` en
+  // la misma consulta): "tubo cg" exige "tubo" Y "cg", cada uno en cualquiera
+  // de las tres columnas (search_text/saint_code/description) — antes de T3
+  // era una sola frase completa contra name/brand/description, y "tubo cg"
+  // no calzaba con "TUBO ESCAPE CG 150".
+  const searchFilter = productSearchFilter(query);
+  if (searchFilter) request = request.or(searchFilter);
 
   // Los cortes de disponibilidad solo tienen sentido sobre lo que la IA ve:
   // un repuesto desactivado no es un agotado por reponer, es uno retirado.
@@ -217,13 +218,16 @@ export async function searchActiveProducts(
   query: string,
   limit = 8
 ): Promise<Product[]> {
-  const filters = productSearchFilters(query);
-  if (filters.length === 0) return [];
+  const filter = productSearchFilter(query);
+  if (!filter) return [];
 
-  let request = supabase.from("products").select(PRODUCT_SELECT).eq("is_active", true);
-  for (const filter of filters) request = request.or(filter);
-
-  const { data, error } = await request.order("name", { ascending: true }).limit(limit);
+  const { data, error } = await supabase
+    .from("products")
+    .select(PRODUCT_SELECT)
+    .eq("is_active", true)
+    .or(filter)
+    .order("name", { ascending: true })
+    .limit(limit);
 
   if (error) throw error;
   return ((data ?? []) as unknown as RawProduct[]).map(mapProduct);
@@ -246,13 +250,13 @@ export async function searchProductsForLookup(
   query: string,
   limit = 8
 ): Promise<Product[]> {
-  const filters = productSearchFilters(query);
-  if (filters.length === 0) return [];
+  const filter = productSearchFilter(query);
+  if (!filter) return [];
 
-  let request = supabase.from("products").select(PRODUCT_SELECT);
-  for (const filter of filters) request = request.or(filter);
-
-  const { data, error } = await request
+  const { data, error } = await supabase
+    .from("products")
+    .select(PRODUCT_SELECT)
+    .or(filter)
     .order("is_active", { ascending: false })
     .order("name", { ascending: true })
     .limit(limit);
