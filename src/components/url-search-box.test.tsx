@@ -119,6 +119,77 @@ describe("UrlSearchBox", () => {
     expect(screen.getByLabelText<HTMLInputElement>("Buscar clientes").value).toBe("ana");
   });
 
+  // Reporte del dueño y los asesores, 27/9/2026: "el cuadro me devuelve
+  // letras que ya borré". Causa (a): se empujó "tubo esc" a la URL, el
+  // asesor sigue borrando hasta "tub" ANTES de que vuelva la respuesta del
+  // servidor para "tubo esc" — esa respuesta atrasada no puede resucitar un
+  // texto que el propio cuadro ya dejó atrás.
+  it("no revive una letra borrada cuando la propia navegación llega tarde", () => {
+    const { rerender } = renderBox();
+    type("tubo esc");
+    flush(); // dispara el push real: la URL queda en "tubo esc"
+    type("tub"); // el asesor ya borró; el push de "tub" todavía no se disparó
+
+    rerender(
+      <UrlSearchBox basePath="/clientes" query="tubo esc" keep={{}} placeholder="Buscar" label="Buscar clientes" />
+    );
+
+    expect(screen.getByLabelText<HTMLInputElement>("Buscar clientes").value).toBe("tub");
+  });
+
+  // Corrección del orquestador, 27/9/2026: recordar solo el ÚLTIMO empuje no
+  // alcanza con un servidor lento. Si el asesor sigue escribiendo/borrando
+  // más rápido de lo que el servidor responde, puede haber DOS (o más)
+  // navegaciones en vuelo a la vez — "tubo esc" y, encima, "tub" — y las dos
+  // respuestas pueden llegar, en cualquier orden, después de que el asesor
+  // ya escribió otra cosa. Ninguna de las dos puede pisar el borrador.
+  it("no revive una letra borrada aunque el servidor tarde dos empujes en responder", () => {
+    const { rerender } = renderBox();
+    type("tubo esc");
+    flush(); // primer push real: la URL queda en "tubo esc"
+    type("tub");
+    flush(); // segundo push real: la URL queda en "tub" (el eco de "tubo esc" todavía no volvió)
+
+    rerender(
+      <UrlSearchBox basePath="/clientes" query="tubo esc" keep={{}} placeholder="Buscar" label="Buscar clientes" />
+    );
+    expect(screen.getByLabelText<HTMLInputElement>("Buscar clientes").value).toBe("tub");
+
+    rerender(
+      <UrlSearchBox basePath="/clientes" query="tub" keep={{}} placeholder="Buscar" label="Buscar clientes" />
+    );
+    expect(screen.getByLabelText<HTMLInputElement>("Buscar clientes").value).toBe("tub");
+  });
+
+  // Causa (b): `parseInventoryParams` (y el de Clientes) recortan la
+  // búsqueda con `trim()`, así que escribir "tubo " con el espacio final
+  // empuja "tubo" a la URL — la respuesta, sin el espacio, no puede borrar
+  // el espacio que el asesor todavía está escribiendo.
+  it("conserva el espacio final que el asesor sigue escribiendo", () => {
+    const { rerender } = renderBox();
+    type("tubo ");
+
+    rerender(
+      <UrlSearchBox basePath="/clientes" query="tubo" keep={{}} placeholder="Buscar" label="Buscar clientes" />
+    );
+
+    expect(screen.getByLabelText<HTMLInputElement>("Buscar clientes").value).toBe("tubo ");
+  });
+
+  // Una navegación que el cuadro NUNCA produjo (atrás/adelante del
+  // navegador, o un filtro que dispara otra búsqueda) sigue reemplazando el
+  // borrador — la regla nueva no debe volver el cuadro sordo a lo externo.
+  it("una navegación externa que el cuadro nunca empujó sí reemplaza el borrador", () => {
+    const { rerender } = renderBox({ query: "pedro" });
+    type("pe"); // el asesor empieza a escribir otra cosa, sin llegar a empujarla
+
+    rerender(
+      <UrlSearchBox basePath="/clientes" query="ana" keep={{}} placeholder="Buscar" label="Buscar clientes" />
+    );
+
+    expect(screen.getByLabelText<HTMLInputElement>("Buscar clientes").value).toBe("ana");
+  });
+
   it("el botón de limpiar solo aparece cuando hay texto", () => {
     renderBox();
     expect(screen.queryByLabelText("Limpiar búsqueda")).toBeNull();
