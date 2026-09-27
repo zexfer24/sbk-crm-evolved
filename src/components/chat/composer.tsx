@@ -131,6 +131,16 @@ export function Composer({
   const [uploadedCount, setUploadedCount] = useState(0);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  /**
+   * Guarda contra el doble Enter sobre el mismo lote de adjuntos (T2, "El
+   * mostrador busca sin salir del chat", 27/9/2026). `isUploading` (estado de
+   * React) no alcanza para frenar dos `keydown` de Enter que llegan en el
+   * MISMO tick, ANTES de que React llegue a aplicar el `setIsUploading(true)`
+   * del primero: los dos leerían el mismo `false` cerrado por el render
+   * vigente y las dos llamadas a `handleSendFiles` arrancarían la subida. Un
+   * ref se lee y se escribe en el acto, sin esperar a un render.
+   */
+  const sendingFilesRef = useRef(false);
 
   /**
    * Ya no alcanza con `isWithin24hWindow(lastCustomerMessageAt)` a secas
@@ -318,6 +328,13 @@ export function Composer({
 
       event.preventDefault();
       addFiles(files);
+      // Pegar casi nunca ocurre con el foco dentro del cuadro (T2, "El
+      // mostrador busca sin salir del chat", 27/9/2026: reporte del dueño,
+      // 27/9/2026) -- el asesor recorta la pantalla, el foco queda en
+      // cualquier lado (o en ninguno) y Enter no le llega a nada. Devolver el
+      // foco acá es lo que hace que Enter, después de pegar, funcione sin
+      // tocar el ratón.
+      textareaRef.current?.focus();
     }
 
     document.addEventListener("paste", onDocumentPaste);
@@ -352,7 +369,8 @@ export function Composer({
   }
 
   async function handleSendFiles() {
-    if (pendingFiles.length === 0 || isUploading) return;
+    if (pendingFiles.length === 0 || isUploading || sendingFilesRef.current) return;
+    sendingFilesRef.current = true;
     setIsUploading(true);
     setUploadedCount(0);
     try {
@@ -394,6 +412,7 @@ export function Composer({
       toast.danger(err instanceof Error ? err.message : "No se pudo enviar el archivo.");
     } finally {
       setIsUploading(false);
+      sendingFilesRef.current = false;
     }
   }
 
@@ -446,10 +465,25 @@ export function Composer({
     textarea?.setSelectionRange(caret, caret);
   }
 
+  /**
+   * Enter con una imagen pegada no hacía nada (T2, "El mostrador busca sin
+   * salir del chat", 27/9/2026; reporte del dueño, 27/9/2026): esta función
+   * siempre llamaba a `handleSend` (solo texto), mientras que el botón de
+   * enviar sí elegía `handleSendFiles` cuando había adjuntos. Con una imagen
+   * pegada y el cuadro de texto vacío, `handleSend` cortaba en su primera
+   * línea (`if (!content) return`) y Enter quedaba mudo. Ahora Enter elige la
+   * misma rama que el botón, y respeta la ventana de 24 h y el candado de
+   * "ya se está subiendo" igual que él (`isDisabled` del botón de enviar).
+   */
   function handleKeyDown(event: KeyboardEvent<HTMLTextAreaElement>) {
     if (event.key === "Enter" && !event.shiftKey) {
       event.preventDefault();
-      handleSend();
+      if (!withinWindow || isUploading) return;
+      if (pendingFiles.length > 0) {
+        handleSendFiles();
+      } else {
+        handleSend();
+      }
       return;
     }
 

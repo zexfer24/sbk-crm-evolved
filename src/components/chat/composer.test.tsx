@@ -786,3 +786,96 @@ describe("Composer — popover de emojis y stickers", () => {
     await waitFor(() => expect(deleteStickerMock).toHaveBeenCalled());
   });
 });
+
+/**
+ * T2, plan "El mostrador busca sin salir del chat" (27/9/2026, reporte del
+ * dueño): con una imagen pegada y el cuadro de texto vacío, Enter no hacía
+ * nada -- `handleKeyDown` llamaba siempre a `handleSend` (solo texto), nunca
+ * a `handleSendFiles`, que es lo que el BOTÓN de enviar sí elegía. Ahora
+ * Enter elige la misma rama que el botón.
+ */
+describe("Composer — Enter envía la imagen pegada", () => {
+  const foto = (nombre: string) => new File([new Uint8Array([1, 2, 3])], nombre, { type: "image/png" });
+
+  function pegar(target: HTMLElement, files: File[]) {
+    fireEvent.paste(target, {
+      clipboardData: { files, items: [], getData: () => "" },
+    });
+  }
+
+  beforeEach(() => {
+    sendMediaMessageMock.mockClear();
+  });
+
+  it("pegar una imagen y presionar Enter la envía, sin texto", async () => {
+    renderComposer();
+    const textarea = screen.getByRole("textbox", { name: "Mensaje" });
+
+    pegar(textarea, [foto("captura.png")]);
+    fireEvent.keyDown(textarea, { key: "Enter" });
+
+    await waitFor(() => expect(sendMediaMessageMock).toHaveBeenCalledTimes(1));
+    expect(sendMediaMessageMock).toHaveBeenCalledWith(
+      "conv-1",
+      expect.stringContaining("/api/media/outbound/conv-1/"),
+      "image",
+      undefined,
+      null
+    );
+  });
+
+  it("con texto ya escrito, Enter lo manda como pie de la imagen pegada", async () => {
+    const user = crearUsuario();
+    renderComposer();
+    const textarea = screen.getByRole("textbox", { name: "Mensaje" }) as HTMLTextAreaElement;
+
+    await user.type(textarea, "Así llegó el repuesto");
+    pegar(textarea, [foto("captura.png")]);
+    await user.keyboard("{Enter}");
+
+    await waitFor(() => expect(sendMediaMessageMock).toHaveBeenCalledTimes(1));
+    expect(sendMediaMessageMock).toHaveBeenCalledWith(
+      "conv-1",
+      expect.stringContaining("/api/media/outbound/conv-1/"),
+      "image",
+      "Así llegó el repuesto",
+      null
+    );
+  });
+
+  it("Shift+Enter no envía la imagen pegada", async () => {
+    const user = crearUsuario();
+    renderComposer();
+    const textarea = screen.getByRole("textbox", { name: "Mensaje" });
+
+    pegar(textarea, [foto("captura.png")]);
+    await user.keyboard("{Shift>}{Enter}{/Shift}");
+
+    expect(sendMediaMessageMock).not.toHaveBeenCalled();
+  });
+
+  it("dos Enter seguidos en el mismo tick suben el lote una sola vez", async () => {
+    renderComposer();
+    const textarea = screen.getByRole("textbox", { name: "Mensaje" });
+
+    pegar(textarea, [foto("captura.png")]);
+    // Sin `await` entre medio: el ref de "enviando" tiene que frenar el
+    // segundo Enter antes de que `isUploading` llegue a reflejarse en el
+    // render que vería un segundo `keydown` disparado en otro tick.
+    fireEvent.keyDown(textarea, { key: "Enter" });
+    fireEvent.keyDown(textarea, { key: "Enter" });
+
+    await waitFor(() => expect(sendMediaMessageMock).toHaveBeenCalledTimes(1));
+  });
+
+  it("tras pegar un archivo, el foco vuelve al cuadro de texto", () => {
+    renderComposer();
+    const textarea = screen.getByRole("textbox", { name: "Mensaje" }) as HTMLTextAreaElement;
+
+    // Se pega sobre el documento, no sobre el cuadro: es como llega en la
+    // vida real (nadie hace clic en el textarea antes de pegar).
+    pegar(document.body, [foto("captura.png")]);
+
+    expect(document.activeElement).toBe(textarea);
+  });
+});
