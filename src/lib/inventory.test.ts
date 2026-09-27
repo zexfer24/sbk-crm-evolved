@@ -168,6 +168,17 @@ describe("priceDisplay", () => {
       pie: null,
     });
   });
+
+  // 27/9/2026 ("El mostrador busca sin salir del chat", D1): el pie en
+  // dólares de un producto en VES redondea hacia arriba al siguiente
+  // múltiplo de $0,10 (usdFromBs), no al centavo más cercano. 87 / 40 = 2,175
+  // sin redondear.
+  it("VES con tasa: el pie en dólares redondea hacia arriba al siguiente múltiplo de $0,10", () => {
+    expect(priceDisplay(product({ price: 87, currency: "VES" }), 40)).toEqual({
+      principal: "Bs. 87.00",
+      pie: "$ 2.20",
+    });
+  });
 });
 
 describe("parseWeightInput", () => {

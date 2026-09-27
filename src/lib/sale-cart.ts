@@ -1,5 +1,6 @@
 import type { ConversationQuote, Product, SaleCartItem } from "@/lib/types";
 import type { SaleLineItem } from "@/lib/mutations";
+import { usdFromBs } from "@/lib/usd-price";
 
 /**
  * "Lo que lleva el cliente" mientras el asesor arma la venta.
@@ -57,11 +58,15 @@ export function addQuoteToCart(cart: SaleCartItem[], quote: ConversationQuote): 
  * Precio del repuesto en dólares, que es la moneda en la que se guarda la
  * venta. Null si el precio está en bolívares y todavía no hay tasa: meter un
  * cero en la venta sería peor que no dejar agregarlo.
+ *
+ * La conversión de un producto en VES pasa por `usdFromBs` (27/9/2026, plan
+ * "El mostrador busca sin salir del chat", D1/D3): redondeada hacia arriba a
+ * favor del negocio, igual que en Inventario y en la herramienta de catálogo
+ * de Seba, para que la venta cerrada cobre lo mismo que se cotizó en pantalla.
  */
 export function productPriceUsd(product: Product, bcvRate: number): number | null {
   if (product.currency === "USD") return product.price;
-  if (!bcvRate || bcvRate <= 0) return null;
-  return Number((product.price / bcvRate).toFixed(2));
+  return usdFromBs(product.price, bcvRate);
 }
 
 /** Agrega un repuesto del inventario que la IA no cotizó. */

@@ -1,4 +1,5 @@
 import type { Product } from "@/lib/types";
+import { usdFromBs } from "@/lib/usd-price";
 
 /**
  * Lógica pura de la sección Inventario.
@@ -105,6 +106,10 @@ export interface PriceDisplay {
  * devuelve el precio tal cual SIN mirar la tasa (ya está en bolívares), pero
  * acá hace falta saber si hay tasa de verdad para poder convertir el pie a
  * dólares — por eso la pregunta "¿hay tasa?" se hace antes, aparte.
+ *
+ * El pie en dólares de un producto en VES pasa por `usdFromBs` (27/9/2026,
+ * plan "El mostrador busca sin salir del chat", D1): antes se dividía y se
+ * redondeaba al centavo más cercano con `toFixed(2)`, a veces para abajo.
  */
 export function priceDisplay(product: Product, rate: number): PriceDisplay {
   const hayTasa = rate > 0;
@@ -117,7 +122,9 @@ export function priceDisplay(product: Product, rate: number): PriceDisplay {
   }
 
   if (product.currency === "VES") {
-    return { principal: `Bs. ${product.price.toFixed(2)}`, pie: `$ ${(product.price / rate).toFixed(2)}` };
+    // `hayTasa` garantiza rate > 0, así que `usdFromBs` no da null acá.
+    const usd = usdFromBs(product.price, rate) as number;
+    return { principal: `Bs. ${product.price.toFixed(2)}`, pie: `$ ${usd.toFixed(2)}` };
   }
 
   const bs = priceInBs(product, rate) as number; // hayTasa garantiza que no da null acá

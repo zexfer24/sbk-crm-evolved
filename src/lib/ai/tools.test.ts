@@ -321,6 +321,42 @@ describe("buildCatalogTool — registro de cotizaciones", () => {
     expect(result.results[0]).not.toHaveProperty("precioBs");
   });
 
+  /**
+   * 27/9/2026 ("El mostrador busca sin salir del chat", D1/D3): un repuesto
+   * cuyo precio real está en bolívares (Saint) se cotiza en dólares
+   * redondeado hacia ARRIBA al siguiente múltiplo de $0,10, no al centavo
+   * más cercano -- la misma regla que Inventario y el carrito del cierre de
+   * venta. `getBcvRate` está mockeada en 40 (arriba, línea 4); 87 / 40 =
+   * 2,175 sin redondear.
+   */
+  it("un repuesto en VES se cotiza en dólares redondeado hacia arriba al siguiente múltiplo de $0,10", async () => {
+    const { client, insertedQuotes } = createFakeSupabase([
+      {
+        id: "prod-ves-1",
+        name: "Carburador PZ27",
+        brand: "Genérico",
+        price: 87,
+        currency: "VES",
+        stock_quantity: 5,
+      },
+    ]);
+
+    const tool = buildCatalogTool({
+      // @ts-expect-error -- fake mínimo
+      supabase: client,
+      conversationId: "conv-1",
+      contactId: "contact-1",
+    }, nuevoCatalogOutcome());
+
+    // @ts-expect-error -- firma simplificada del test
+    const result = (await tool.execute({ query: "carburador" }, { toolCallId: "t1", messages: [] })) as {
+      results: { precio: string }[];
+    };
+
+    expect(result.results[0].precio).toBe("$2,20 BCV (Bs. 87,00)");
+    expect(insertedQuotes[0]).toMatchObject({ price_usd: 2.2, price_bs: 87, bcv_rate: 40 });
+  });
+
   it("no inserta nada en conversation_quotes si la búsqueda no encontró resultados", async () => {
     const { client, insertedQuotes } = createFakeSupabase([]);
     const tool = buildCatalogTool({

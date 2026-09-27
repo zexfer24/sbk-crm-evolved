@@ -22,6 +22,7 @@ import {
   TEXTO_SIN_STOCK,
 } from "@/lib/ai/seba";
 import { inventoryAgeInstruction, inventoryFreshness } from "@/lib/inventory-freshness";
+import { usdFromBs } from "@/lib/usd-price";
 import { errorText, log } from "@/lib/log";
 import type { BusinessHours, BusinessStatus } from "@/lib/business-hours";
 // F (20/9/2026, "El resguardo antes del push", C3): mismo escapado de
@@ -471,7 +472,13 @@ export function buildCatalogTool({ supabase, conversationId }: ToolDeps, catalog
         id: p.id,
         nombre: p.name,
         marca: p.brand,
-        precioUsd: p.currency === "USD" ? p.price : Number((p.price / rate).toFixed(2)),
+        // 27/9/2026 ("El mostrador busca sin salir del chat", D1/D3): el
+        // dólar de un repuesto en VES se redondea hacia arriba con
+        // `usdFromBs`, la MISMA regla que Inventario y el carrito del cierre
+        // de venta -- si no, el asesor cotiza $2,60 y Seba $2,54 por el
+        // mismo repuesto. `getBcvRate` nunca devuelve una tasa <= 0 (lanza
+        // antes), así que `usdFromBs` no da null acá.
+        precioUsd: p.currency === "USD" ? p.price : (usdFromBs(p.price, rate) as number),
         precioBs: p.currency === "USD" ? Number((p.price * rate).toFixed(2)) : p.price,
         stock: p.stock_quantity,
         compatibleCon: p.compatibilidad.map((c) => `${c.moto_brand} ${c.moto_model}`),
