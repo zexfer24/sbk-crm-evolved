@@ -1,6 +1,6 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
 import type { MotoCatalogSummary, Product, ProductCurrency } from "@/lib/types";
-import { orExpression, pgrstLiteral } from "@/lib/ai/pgrst";
+import { productSearchFilters } from "@/lib/inventory-search";
 import { inventoryPageRange, LOW_STOCK_THRESHOLD, type InventoryParams } from "@/lib/inventory";
 
 /**
@@ -74,12 +74,14 @@ export async function fetchProductsPage(
 ): Promise<ProductsPage> {
   let request = supabase.from("products").select(PRODUCT_SELECT, { count: "exact" });
 
-  if (query) {
-    // Mismo escapado que usa la herramienta del agente: el filtro `.or()`
-    // es un mini-lenguaje y el texto lo escribe una persona.
-    const term = pgrstLiteral(`%${query}%`);
-    const expression = orExpression([[`name.ilike.${term}`, `brand.ilike.${term}`, `description.ilike.${term}`]]);
-    request = request.or(expression);
+  // Un `.or()` por palabra (`inventory-search.ts`, T3, 27/9/2026): varios
+  // `.or()` encadenados en el mismo query builder se combinan con AND, así
+  // que "tubo cg" exige "tubo" Y "cg", cada uno en cualquiera de las tres
+  // columnas (search_text/saint_code/description) — antes era una sola frase
+  // completa contra name/brand/description, y "tubo cg" no calzaba con
+  // "TUBO ESCAPE CG 150".
+  for (const filter of productSearchFilters(query)) {
+    request = request.or(filter);
   }
 
   // Los cortes de disponibilidad solo tienen sentido sobre lo que la IA ve:
@@ -204,21 +206,54 @@ export async function fetchMotoCatalogSummary(supabase: SupabaseClient): Promise
  * Lo usa el buscador del cierre de venta. Solo trae activos porque son los
  * que la empresa está vendiendo hoy: un repuesto retirado del catálogo no
  * debería poder colarse en una venta nueva.
+ *
+ * Búsqueda por palabras desde el 27/9/2026 (T3): antes era una frase
+ * completa contra `name`/`brand`; ahora, misma regla de `inventory-search.ts`
+ * que `fetchProductsPage` — cada palabra en `search_text`, `saint_code` o
+ * `description` — así que un código Saint también encuentra su producto acá.
  */
 export async function searchActiveProducts(
   supabase: SupabaseClient,
   query: string,
   limit = 8
 ): Promise<Product[]> {
-  const text = query.trim();
-  if (!text) return [];
+  const filters = productSearchFilters(query);
+  if (filters.length === 0) return [];
 
-  const term = pgrstLiteral(`%${text}%`);
-  const { data, error } = await supabase
-    .from("products")
-    .select(PRODUCT_SELECT)
-    .eq("is_active", true)
-    .or(orExpression([[`name.ilike.${term}`, `brand.ilike.${term}`]]))
+  let request = supabase.from("products").select(PRODUCT_SELECT).eq("is_active", true);
+  for (const filter of filters) request = request.or(filter);
+
+  const { data, error } = await request.order("name", { ascending: true }).limit(limit);
+
+  if (error) throw error;
+  return ((data ?? []) as unknown as RawProduct[]).map(mapProduct);
+}
+
+/**
+ * Búsqueda de repuestos para el panel del buzón (T3, plan "El mostrador
+ * busca sin salir del chat", 27/9/2026 — pensada para que T6 la conecte al
+ * panel derecho del chat).
+ *
+ * A diferencia de `searchActiveProducts`, NO filtra por `is_active`: D5 del
+ * plan pide que un repuesto retirado también aparezca, marcado como tal en
+ * pantalla, para que el asesor no lo ofrezca sin saber que ya no se vende —
+ * el corte de disponibilidad es visual (T6), no de esta consulta. Por eso
+ * ordena los activos primero y recién después por nombre, en vez del orden
+ * alfabético liso de `searchActiveProducts`.
+ */
+export async function searchProductsForLookup(
+  supabase: SupabaseClient,
+  query: string,
+  limit = 8
+): Promise<Product[]> {
+  const filters = productSearchFilters(query);
+  if (filters.length === 0) return [];
+
+  let request = supabase.from("products").select(PRODUCT_SELECT);
+  for (const filter of filters) request = request.or(filter);
+
+  const { data, error } = await request
+    .order("is_active", { ascending: false })
     .order("name", { ascending: true })
     .limit(limit);
 

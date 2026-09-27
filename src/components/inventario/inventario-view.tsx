@@ -200,7 +200,7 @@ export function InventarioView({
                   basePath="/inventario"
                   query={params.query}
                   keep={keepInSearch}
-                  placeholder="Buscar repuesto por nombre, marca o descripción"
+                  placeholder="Buscar por nombre, marca o código"
                   label="Buscar en el inventario"
                 />
 
