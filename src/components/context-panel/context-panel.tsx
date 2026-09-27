@@ -1,20 +1,16 @@
 "use client";
 
 import { useState } from "react";
-import { Check, Handshake, IdCard, MapPin, Pencil, Phone, Plus, Radio, Settings2, Trash2, X } from "lucide-react";
+import { Check, Handshake, IdCard, MapPin, Pencil, Phone, Radio, Settings2, Trash2, X } from "lucide-react";
 import { Button, TextArea, toast } from "@heroui/react";
 import type { Agent, Conversation, Message, Note, Tag } from "@/lib/types";
 import { createClient } from "@/lib/supabase/client";
-import {
-  addNote,
-  addTagToContact,
-  deleteNote,
-  removeTagFromContact,
-  updateNote,
-} from "@/lib/mutations";
+import { addNote, deleteNote, removeTagFromContact, updateNote } from "@/lib/mutations";
 import { formatFullDateTime } from "@/lib/format";
 import { CloseSaleModal } from "@/components/context-panel/close-sale-modal";
 import { ManageTagsModal } from "@/components/context-panel/manage-tags-modal";
+import { InventoryLookup } from "@/components/context-panel/inventory-lookup";
+import type { BcvRateSummary } from "@/components/inbox/bcv-rate-chip";
 
 interface ContextPanelProps {
   conversation: Conversation;
@@ -22,9 +18,16 @@ interface ContextPanelProps {
   notes: Note[];
   allTags: Tag[];
   currentAgent: Agent;
+  /**
+   * Tasa del BCV del día, para la búsqueda de inventario del panel (T6, plan
+   * "El mostrador busca sin salir del chat", 27/9/2026, D5). `null` si no se
+   * pudo obtener ninguna: `InventoryLookup` lo entiende y muestra solo la
+   * moneda real del producto, sin inventar un dólar.
+   */
+  bcvRate: BcvRateSummary | null;
 }
 
-export function ContextPanel({ conversation, messages, notes, allTags, currentAgent }: ContextPanelProps) {
+export function ContextPanel({ conversation, messages, notes, allTags, currentAgent, bcvRate }: ContextPanelProps) {
   const [noteDraft, setNoteDraft] = useState("");
   const [isSavingNote, setIsSavingNote] = useState(false);
   const [isCloseSaleOpen, setIsCloseSaleOpen] = useState(false);
@@ -35,20 +38,9 @@ export function ContextPanel({ conversation, messages, notes, allTags, currentAg
   const [deletingNoteId, setDeletingNoteId] = useState<string | null>(null);
 
   const contact = conversation.contact;
-  const contactTagIds = new Set(contact.tags.map((t) => t.id));
-  const availableTags = allTags.filter((t) => !contactTagIds.has(t.id));
   const isDealWon = conversation.dealStatus === "won";
   const cedula = contact.cedulaType && contact.cedulaNumber ? `${contact.cedulaType}-${contact.cedulaNumber}` : null;
   const location = [contact.city, contact.state].filter(Boolean).join(", ");
-
-  async function handleAddTag(tagId: string) {
-    try {
-      const supabase = createClient();
-      await addTagToContact(supabase, contact.id, tagId);
-    } catch {
-      toast.danger("No se pudo añadir la etiqueta.");
-    }
-  }
 
   async function handleRemoveTag(tagId: string) {
     try {
@@ -129,7 +121,13 @@ export function ContextPanel({ conversation, messages, notes, allTags, currentAg
         messages={messages}
       />
 
-      <ManageTagsModal isOpen={isManageTagsOpen} onOpenChange={setIsManageTagsOpen} tags={allTags} />
+      <ManageTagsModal
+        isOpen={isManageTagsOpen}
+        onOpenChange={setIsManageTagsOpen}
+        tags={allTags}
+        contactId={contact.id}
+        contactTags={contact.tags}
+      />
 
       <div className="crm-context-body">
         <section className="crm-context-section">
@@ -189,23 +187,9 @@ export function ContextPanel({ conversation, messages, notes, allTags, currentAg
               <span style={{ color: "var(--lm-muted)", fontSize: 12 }}>Sin etiquetas todavía</span>
             )}
           </div>
-
-          {availableTags.length > 0 && (
-            <div className="crm-tags">
-              {availableTags.map((tag) => (
-                <button
-                  className="crm-tag crm-tag-add"
-                  key={tag.id}
-                  type="button"
-                  onClick={() => handleAddTag(tag.id)}
-                >
-                  <Plus size={11} />
-                  {tag.label}
-                </button>
-              ))}
-            </div>
-          )}
         </section>
+
+        <InventoryLookup bcvRate={bcvRate} />
 
         <section className="crm-context-section">
           <p className="lm-eyebrow">Notas internas</p>

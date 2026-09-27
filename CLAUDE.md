@@ -2277,6 +2277,34 @@ dejar rastro es lo que hacía desaparecer leads.
   mutación en rojo como correspondía — un test de "esto ordena bien" tiene
   que partir de datos que YA estén en el orden incorrecto, nunca del orden
   que se espera que el código produzca.
+- **El dólar convertido desde bolívares se redondea en UNA sola función,
+  `usdFromBs` (`usd-price.ts`), y el system prompt no lo sabe** (T1, plan
+  "El mostrador busca sin salir del chat", 27/9/2026). Pedido del cliente:
+  siempre hacia arriba al siguiente múltiplo de $0,10 (2,54 → 2,60; 2,01 →
+  2,10; un exacto como 2,00 no sube), "a favor del negocio y nunca se le
+  menciona al cliente". La usan Inventario (`priceDisplay`), el carrito del
+  cierre de venta (`productPriceUsd`, y por lo tanto `orders`/factura) y la
+  herramienta de catálogo de Seba (`precioUsd`): Seba cotiza el mismo
+  número que ve el asesor porque se lo entrega el código ya redondeado. **No
+  escribir `bs / rate` en ningún otro sitio, y no mencionar el redondeo en
+  `prompt.ts` ni en la descripción de una herramienta** —el pedido explícito
+  del cliente es que jamás se relacione con el prompt—; `usd-price.test.ts`
+  lo fija. Consecuencia aceptada: $ × tasa ya no da exactamente los Bs de
+  Saint. Un producto con `currency = 'USD'` no pasa por la función.
+- **Con `vi.useFakeTimers()`, el `waitFor` de Testing Library cuelga hasta
+  el `testTimeout`** (T6, 27/9/2026): sondea con sus propios temporizadores,
+  que quedan tan falsos como los del componente, y `asyncUtilTimeout` no lo
+  salva. Bajo timers falsos, no usar `waitFor`: avanzar el reloj
+  (`vi.advanceTimersByTime`) y ceder la cola de microtareas con
+  `await act(async () => { await Promise.resolve(); await Promise.resolve(); })`
+  (ver `inventory-lookup.test.tsx`).
+- **El Kong local puede no estar en 54321 ni en 8000: preguntarle a Docker**
+  (27/9/2026). `.env.local` dice `http://127.0.0.1:8000`; esa corrida Kong
+  estaba publicado en 55321 (`docker port supabase_kong_Liminal_CRM`). Las
+  `NEXT_PUBLIC_*` se hornean en el BUILD: para Playwright sobre producción,
+  `NEXT_PUBLIC_SUPABASE_URL=http://127.0.0.1:<puerto> rtk proxy npm run
+  build` y servir con `node .next/standalone/server.js` tras copiar
+  `.next/static` y `public/` a `.next/standalone/` (`output: "standalone"`).
 
 ---
 

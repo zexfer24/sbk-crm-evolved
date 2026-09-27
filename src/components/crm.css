@@ -1186,6 +1186,136 @@
   color: var(--lm-ink-soft);
 }
 
+/**
+ * Separador simple entre secciones de un modal (T7, 28/9/2026): usado por
+ * `ManageTagsModal` para no confundir "En este chat" con la lista global de
+ * abajo (crear/editar/borrar) — hasta esta corrida las dos vivían sin
+ * ningún corte visual entre sí. `<hr>` en vez de un `<div>` decorativo: es
+ * de verdad un cambio de tema entre dos secciones, y el elemento semántico
+ * ya trae `role="separator"` sin que haya que agregarlo a mano.
+ */
+.crm-divider {
+  margin: 2px 0;
+  border: none;
+  border-top: 1px solid var(--lm-line);
+}
+
+/* --------------------------------------------------------------------------
+   Búsqueda de inventario en el panel de contexto (T6, plan "El mostrador
+   busca sin salir del chat", 27/9/2026, D5). Sección de solo lectura entre
+   Etiquetas y Notas internas: el asesor chequea precio y existencia sin
+   salir del chat. La columna del panel es de ancho FIJO (`.crm-column`, 300px
+   con `min-width: 0; overflow: hidden`) — todo texto acá adentro necesita su
+   propio `min-width: 0` y una forma de no desbordar (trampa del 9/9/2026: un
+   hijo que se sale de su columna desarma la fila, aunque acá no hay grid de
+   por medio, solo flex, el mismo cuidado con nombres largos aplica).
+   -------------------------------------------------------------------------- */
+
+.crm-lookup-search {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  padding: 7px 11px;
+  border: 1px solid var(--lm-line);
+  border-radius: 9px;
+  background: var(--lm-sunken);
+  color: var(--lm-muted);
+}
+
+.crm-lookup-search:focus-within {
+  border-color: var(--lm-link);
+}
+
+.crm-lookup-search input {
+  flex: 1;
+  min-width: 0;
+  border: none;
+  outline: none;
+  background: transparent;
+  color: var(--lm-ink);
+  font-size: 13px;
+}
+
+.crm-lookup-search input::-webkit-search-cancel-button {
+  display: none;
+}
+
+.crm-lookup-hint {
+  margin: 0;
+  color: var(--lm-muted);
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.crm-lookup-results {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.crm-lookup-item {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+  padding: 8px 10px;
+  border-radius: 10px;
+  background: var(--lm-sunken);
+}
+
+.crm-lookup-item[data-retired="true"] {
+  opacity: 0.72;
+}
+
+.crm-lookup-item-head {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  min-width: 0;
+}
+
+.crm-lookup-name {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--lm-ink);
+}
+
+.crm-lookup-item-meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  color: var(--lm-muted);
+  font-size: 11.5px;
+}
+
+.crm-lookup-code[data-empty="true"] {
+  color: var(--lm-muted);
+  font-style: italic;
+}
+
+.crm-lookup-item-price {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  min-width: 0;
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--lm-ink);
+}
+
+.crm-lookup-price-alt {
+  font-weight: 500;
+  color: var(--lm-muted);
+}
+
 .crm-proof-picker {
   display: flex;
   flex-wrap: wrap;

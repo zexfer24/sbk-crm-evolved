@@ -820,11 +820,54 @@ export function CrmShell({
    */
   const [detail, setDetail] = useState<Conversation | null>(null);
 
+  /**
+   * Las etiquetas del contacto abierto, de una fuente APARTE de `conversations`
+   * (T7, 28/9/2026, revisión del orquestador de T6 "El mostrador busca sin
+   * salir del chat"). Hasta esa corrida `selectedConversation` tomaba las
+   * etiquetas SIEMPRE de `selectedSummary.contact.tags` (la fila de la
+   * bandeja) — y nada las refrescaba para el contacto abierto en particular,
+   * así que aplicar/quitar una etiqueta desde "En este chat"
+   * (`ManageTagsModal`) no se veía ni en el modal ni en los chips del panel.
+   *
+   * El panel NO puede depender SOLO de un parche directo sobre
+   * `conversations`: ese mismo array lo pisa `useLiveConversations` cada vez
+   * que `contact_tags` cambia EN CUALQUIER LADO (`watchContactTags`, más
+   * abajo) con un refetch de la CABECERA (`fetchInboxHead`) tomado de una
+   * foto de `conversations` capturada ANTES de que un parche así corriera —
+   * si el chat abierto queda fuera de esa cabecera, esa foto vieja puede
+   * resolver DESPUÉS y pisarlo (verificado con un test que fuerza ese
+   * orden). `scheduleDetailRefresh` (más abajo) SÍ sigue parchando
+   * `conversations` también, de rebote, para el filtro por etiqueta de la
+   * bandeja (`matchesTag`) — pero solo como mejor esfuerzo: ese parche
+   * puede perder la carrera de arriba en el caso raro de un chat fuera de
+   * la cabecera. `openContactTags` es un estado APARTE que nadie más
+   * escribe, así que NUNCA pierde esa carrera: gana siempre que tenga un
+   * valor, y por eso `selectedConversation` lo mira ANTES que a
+   * `selectedSummary.contact.tags`.
+   */
+  const [openContactTags, setOpenContactTags] = useState<Tag[] | null>(null);
+  // Con qué `selectedId` se calculó `openContactTags` la última vez. Al
+  // cambiar de conversación hay que soltar las etiquetas del contacto
+  // ANTERIOR (si no, se ven un instante en el chat nuevo hasta que su propio
+  // fetch llegue) — pero `setState` directo en el CUERPO del efecto de abajo
+  // dispara `react-hooks/set-state-in-effect` (cascada de renders). Mismo
+  // patrón "Adjusting state when a prop changes" que ya usa
+  // `close-sale-modal.tsx` (R2, 19/9/2026) y `url-search-box.tsx`
+  // (`lastQuery`, T4, 27/9/2026): comparar durante el RENDER y resetear ahí
+  // mismo, nunca dentro de un `useEffect`.
+  const [openContactTagsFor, setOpenContactTagsFor] = useState<string | null>(null);
+  if (selectedId !== openContactTagsFor) {
+    setOpenContactTagsFor(selectedId);
+    setOpenContactTags(null);
+  }
+
   const selectedSummary = conversations.find((c) => c.id === selectedId) ?? null;
 
   // El detalle llega una vez; lo que cambia en vivo (contador, vista previa,
-  // estado, etiquetas) sigue llegando por la lista y se le superpone. Lo que
-  // la fila no trae (asignación, venta) lo refresca el listener del detalle.
+  // estado) sigue llegando por la lista y se le superpone. Lo que la fila no
+  // trae (asignación, venta) lo refresca el listener del detalle; las
+  // etiquetas las manda `openContactTags` (arriba) cuando ya se sabe algo
+  // del contacto abierto, y si no, se cae al valor de la fila de siempre.
   const selectedConversation: Conversation | null =
     detail && detail.id === selectedId
       ? selectedSummary
@@ -845,9 +888,9 @@ export function CrmShell({
             intent: selectedSummary.intent,
             activeTool: selectedSummary.activeTool,
             welcomeSentAt: selectedSummary.welcomeSentAt,
-            contact: { ...detail.contact, tags: selectedSummary.contact.tags },
+            contact: { ...detail.contact, tags: openContactTags ?? selectedSummary.contact.tags },
           }
-        : detail
+        : { ...detail, contact: { ...detail.contact, tags: openContactTags ?? detail.contact.tags } }
       : null;
 
   // Al abrir un chat solo se traen los últimos mensajes. Esto pide el tramo
@@ -1069,6 +1112,18 @@ export function CrmShell({
     // Las notas se suscriben recién cuando el detalle dice quién es el
     // contacto; la variable vive acá para que el cleanup la alcance.
     let notesChannel: ReturnType<typeof supabase.channel> | null = null;
+    // Mismo motivo para las etiquetas del contacto (T7, 28/9/2026, revisión
+    // del orquestador de T6 "El mostrador busca sin salir del chat"):
+    // aplicar/quitar una etiqueta desde "En este chat" (`ManageTagsModal`)
+    // no se reflejaba —ni el modal ni los chips del panel— porque nadie
+    // escuchaba `contact_tags`. `useLiveConversations` ya tiene
+    // `watchContactTags` (`crm-shell.tsx:518`), pero ESE canal solo dispara
+    // un refetch de la CABECERA de la lista (`fetchInboxHead`, limitada a
+    // `INBOX_PAGE_SIZE`) — si el chat abierto no está en esa cabecera, la
+    // fila no se actualiza y el panel se queda con las etiquetas viejas. Acá
+    // se suscribe aparte, filtrado por el contacto abierto, para no depender
+    // de que esa conversación esté entre las más recientes.
+    let tagsChannel: ReturnType<typeof supabase.channel> | null = null;
 
     function refreshNotes(contactId: string) {
       fetchNotes(supabase, contactId).then((data) => {
@@ -1119,6 +1174,19 @@ export function CrmShell({
         )
         .subscribe();
 
+      // `scheduleDetailRefresh` está declarada más abajo en este mismo
+      // efecto, pero la declaración `function` se iza (hoisting) a la
+      // cabecera del efecto: para cuando esta IIFE llega hasta acá (después
+      // del primer `await`) ya existe, así que reusar su debounce es seguro.
+      tagsChannel = supabase
+        .channel(`contact-tags-${contactId}`)
+        .on(
+          "postgres_changes",
+          { event: "*", schema: "public", table: "contact_tags", filter: `contact_id=eq.${contactId}` },
+          () => scheduleDetailRefresh()
+        )
+        .subscribe();
+
       // También cuando el contador está en cero: el chat puede estar apartado
       // a mano, y abrirlo es exactamente lo que deshace ese apartado.
       const flags = summaryAtOpen ?? detailData;
@@ -1154,7 +1222,8 @@ export function CrmShell({
 
     // La fila de la lista no trae la asignación ni la venta: cuando cambian,
     // el detalle del chat abierto se vuelve a pedir por id. Debounced igual
-    // que los mensajes para no refetchear por cada UPDATE encadenado.
+    // que los mensajes para no refetchear por cada UPDATE encadenado. Mismo
+    // camino para las etiquetas (canal `tagsChannel`, arriba).
     let detailRefreshTimeout: ReturnType<typeof setTimeout> | null = null;
     function scheduleDetailRefresh() {
       if (detailRefreshTimeout) clearTimeout(detailRefreshTimeout);
@@ -1163,6 +1232,30 @@ export function CrmShell({
         fetchConversation(supabase, conversationId).then((data) => {
           if (cancelled || !data) return;
           setDetail((current) => (current?.id === conversationId || current === null ? data : current));
+          // Las etiquetas frescas van a `openContactTags` (estado APARTE de
+          // `conversations`, ver su comentario más arriba) — es la única
+          // fuente que ninguna OTRA cosa escribe, así que no puede perder una
+          // carrera contra el refetch de cabecera de `watchContactTags`.
+          setOpenContactTags(data.contact.tags);
+          // También se intenta parchar la fila de la bandeja (best effort):
+          // la usa el filtro por etiqueta del panel izquierdo
+          // (`matchesTag`/`inbox-filters.ts`), que si no, seguiría sin ver
+          // esta etiqueta hasta que la conversación entrara en la cabecera
+          // por su cuenta. Con un `setConversations` funcional (lee el
+          // estado más nuevo, nunca una foto vieja) esta escritura en sí no
+          // puede perder nada — lo que SÍ puede pasar, en el caso raro de un
+          // chat fuera de la cabecera con las dos respuestas resolviendo en
+          // el orden menos favorable, es que el refetch de cabecera de
+          // `watchContactTags` la vuelva a pisar con una foto tomada antes
+          // de este parche. Aceptado: la fila del filtro se autocorrige con
+          // el siguiente evento o con la pasada de fondo de 5 min
+          // (`SAFETY_REFRESH_MS`); el panel del chat abierto, que es el
+          // reporte real, ya no depende de esta fila en absoluto.
+          setConversations((current) =>
+            current.map((c) =>
+              c.id === conversationId ? { ...c, contact: { ...c.contact, tags: data.contact.tags } } : c
+            )
+          );
         });
       }, REALTIME_DEBOUNCE_MS);
     }
@@ -1252,6 +1345,7 @@ export function CrmShell({
       window.removeEventListener("focus", onPresenceReturn);
       supabase.removeChannel(messagesChannel);
       if (notesChannel) supabase.removeChannel(notesChannel);
+      if (tagsChannel) supabase.removeChannel(tagsChannel);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedId, supabase]);
@@ -1341,6 +1435,7 @@ export function CrmShell({
               notes={notes}
               allTags={tags}
               currentAgent={currentAgent}
+              bcvRate={bcvRate}
             />
           ) : (
             // Sin esto la columna queda como un panel blanco sin explicación:

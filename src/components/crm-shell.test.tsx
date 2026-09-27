@@ -160,7 +160,15 @@ vi.mock("@/components/chat/chat-panel", () => ({
     </>
   ),
 }));
-vi.mock("@/components/context-panel/context-panel", () => ({ ContextPanel: () => null }));
+// Capturado para T7 (28/9/2026): probar que las etiquetas frescas SÍ llegan
+// al panel real, la parte del reporte del orquestador que de verdad importa
+// (`selectedConversation.contact.tags`, no la fila de la bandeja, que es
+// mejor esfuerzo — ver el comentario grande de `openContactTags` en
+// `crm-shell.tsx`).
+let contextPanelProps: { conversation: Conversation } | null = null;
+vi.mock("@/components/context-panel/context-panel", () => ({
+  ContextPanel: (props: { conversation: Conversation }) => ((contextPanelProps = props), null),
+}));
 
 const fetchConversationsMock = vi.fn().mockResolvedValue([]);
 const fetchMessagesMock = vi.fn().mockResolvedValue([]);
@@ -641,6 +649,77 @@ describe("CrmShell — el chat sigue los cambios sobre mensajes ya guardados", (
     // El doble check azul (T3.1, 4/9/2026) viaja junto con el marcado del
     // CRM: el chat sigue abierto delante del asesor, así que de verdad se leyó.
     expect(sendReadReceiptMock).toHaveBeenCalledTimes(1);
+  });
+});
+
+/**
+ * T7 (28/9/2026, revisión del orquestador de T6 "El mostrador busca sin
+ * salir del chat"): aplicar o quitar una etiqueta desde "En este chat"
+ * (`ManageTagsModal`) no se veía reflejado —ni en el modal ni en los chips
+ * del panel— porque nada escuchaba `contact_tags` para EL CONTACTO ABIERTO.
+ * `useLiveConversations` ya trae `watchContactTags` (ver el describe "la
+ * bandeja no se rearma entera por cada cambio", más abajo), pero ese canal
+ * solo dispara un refetch de la CABECERA de la lista — si el chat abierto no
+ * está entre las conversaciones más recientes, esa pasada no lo toca.
+ */
+describe("CrmShell — las etiquetas del contacto abierto se siguen en vivo", () => {
+  it("un cambio en contact_tags del contacto abierto vuelve a pedir la conversación", async () => {
+    await renderWithOpenConversation();
+    fetchConversationMock.mockClear();
+
+    act(() => {
+      fake.trigger("contact_tags", "INSERT", { contact_id: "contact-1" });
+    });
+    await act(async () => {
+      vi.advanceTimersByTime(750);
+    });
+
+    expect(fetchConversationMock).toHaveBeenCalledWith(expect.anything(), "conv-1");
+  });
+
+  it("el panel real (ContextPanel) recibe las etiquetas frescas del contacto abierto", async () => {
+    await renderWithOpenConversation();
+    fetchConversationMock.mockClear();
+    const etiquetaNueva = { id: "tag-moroso", label: "Moroso", color: "danger" as const };
+    fetchConversationMock.mockResolvedValueOnce(
+      buildConversation({
+        id: "conv-1",
+        contact: { ...buildConversation().contact, tags: [etiquetaNueva] },
+      })
+    );
+
+    act(() => {
+      fake.trigger("contact_tags", "INSERT", { contact_id: "contact-1" });
+    });
+    await act(async () => {
+      vi.advanceTimersByTime(750);
+    });
+
+    // `selectedConversation` (`crm-shell.tsx`) arma las etiquetas visibles
+    // desde `openContactTags` cuando lo tiene — un estado APARTE de
+    // `conversations`, que nadie más escribe y por eso no puede perder la
+    // carrera contra el refetch de cabecera de `watchContactTags` (ver el
+    // comentario grande de `openContactTags`). Se prueba contra el panel
+    // REAL (`ContextPanel`, mockeado solo para capturar props) porque es lo
+    // que de verdad reportó el orquestador — la fila de la bandeja
+    // (`conversations`) es mejor esfuerzo y puede perder esa carrera sin que
+    // sea un bug: se autocorrige con el próximo evento o la pasada de fondo.
+    expect(contextPanelProps?.conversation.contact.tags).toEqual([etiquetaNueva]);
+  });
+
+  it("agrupa varios cambios seguidos en un solo refetch (debounce)", async () => {
+    await renderWithOpenConversation();
+    fetchConversationMock.mockClear();
+
+    act(() => {
+      fake.trigger("contact_tags", "INSERT", { contact_id: "contact-1" });
+      fake.trigger("contact_tags", "DELETE", { contact_id: "contact-1" });
+    });
+    await act(async () => {
+      vi.advanceTimersByTime(750);
+    });
+
+    expect(fetchConversationMock).toHaveBeenCalledTimes(1);
   });
 });
 

@@ -1,16 +1,28 @@
 "use client";
 
 import { useState } from "react";
-import { Check, Pencil, Plus, Tag as TagIcon, Trash2 } from "lucide-react";
+import { Check, Minus, Pencil, Plus, Tag as TagIcon, Trash2 } from "lucide-react";
 import { Button, Input, Label, Modal, toast } from "@heroui/react";
 import type { Tag, TagColor } from "@/lib/types";
 import { createClient } from "@/lib/supabase/client";
-import { createTag, deleteTag, updateTag } from "@/lib/mutations";
+import { addTagToContact, createTag, deleteTag, removeTagFromContact, updateTag } from "@/lib/mutations";
 
 interface ManageTagsModalProps {
   isOpen: boolean;
   onOpenChange: (open: boolean) => void;
   tags: Tag[];
+  /**
+   * El contacto de la conversación abierta y las etiquetas que ya lleva —
+   * D4, plan "El mostrador busca sin salir del chat" (27/9/2026). Antes de
+   * esta corrida `ContextPanel` pintaba, debajo de las aplicadas, una
+   * segunda lista con TODAS las disponibles como botones "+": era lo que le
+   * quitaba el espacio a la búsqueda de inventario que pide D5. Esa acción
+   * se mudó acá, a la sección "En este chat" — `ContextPanel` sigue siendo
+   * quien la aplica/quita de verdad (mismo `addTagToContact`/
+   * `removeTagFromContact`), solo que ahora vive detrás de "Gestionar".
+   */
+  contactId: string;
+  contactTags: Tag[];
 }
 
 const COLOR_OPTIONS: { value: TagColor; label: string }[] = [
@@ -21,13 +33,69 @@ const COLOR_OPTIONS: { value: TagColor; label: string }[] = [
   { value: "danger", label: "Rojo" },
 ];
 
-export function ManageTagsModal({ isOpen, onOpenChange, tags }: ManageTagsModalProps) {
+export function ManageTagsModal({ isOpen, onOpenChange, tags, contactId, contactTags }: ManageTagsModalProps) {
   const [editingId, setEditingId] = useState<string | null>(null);
   const [label, setLabel] = useState("");
   const [color, setColor] = useState<TagColor>("default");
   const [isSaving, setIsSaving] = useState(false);
   const [isFormOpen, setIsFormOpen] = useState(false);
   const [deletingId, setDeletingId] = useState<string | null>(null);
+  // Etiqueta en vuelo (aplicando o quitando) en la sección "En este chat":
+  // deshabilita el botón del lado donde la etiqueta QUEDÓ tras el movimiento
+  // optimista (ver `optimisticTags`, abajo) — no el de origen, que ya
+  // desapareció de esa lista. El error real ya lo maneja la mutación con su
+  // propio toast.
+  const [busyTagId, setBusyTagId] = useState<string | null>(null);
+
+  /**
+   * Copia local de `contactTags`, movida al instante en cada clic —sin
+   * esperar el viaje a la base— para que el asesor no vea la etiqueta
+   * seguir en "disponibles" y la vuelva a pulsar (revisión del orquestador
+   * de T6, 28/9/2026: esa segunda pulsación chocaba con la clave única de
+   * `contact_tags` y salía un toast de error). Se reconcilia con la prop
+   * DURANTE el render, no en un efecto —mismo patrón "Adjusting state when a
+   * prop changes" que ya usa `close-sale-modal.tsx` (R2, 19/9/2026)—: cuando
+   * `contactTags` cambia de referencia (la base ya confirmó el cambio, vía
+   * `crm-shell.tsx`), la copia local adopta ese valor como la nueva verdad,
+   * descartando cualquier optimismo pendiente. Si la mutación falla, el
+   * `catch` revierte a mano — no hay que esperar a que la prop cambie, que
+   * en ese caso nunca iba a cambiar.
+   */
+  const [optimisticTags, setOptimisticTags] = useState(contactTags);
+  const [syncedContactTags, setSyncedContactTags] = useState(contactTags);
+  if (contactTags !== syncedContactTags) {
+    setSyncedContactTags(contactTags);
+    setOptimisticTags(contactTags);
+  }
+
+  const contactTagIds = new Set(optimisticTags.map((t) => t.id));
+  const availableForContact = tags.filter((t) => !contactTagIds.has(t.id));
+
+  async function handleApplyTag(tag: Tag) {
+    setBusyTagId(tag.id);
+    setOptimisticTags((current) => [...current, tag]);
+    try {
+      await addTagToContact(createClient(), contactId, tag.id);
+    } catch {
+      setOptimisticTags((current) => current.filter((t) => t.id !== tag.id));
+      toast.danger("No se pudo añadir la etiqueta.");
+    } finally {
+      setBusyTagId(null);
+    }
+  }
+
+  async function handleRemoveTag(tag: Tag) {
+    setBusyTagId(tag.id);
+    setOptimisticTags((current) => current.filter((t) => t.id !== tag.id));
+    try {
+      await removeTagFromContact(createClient(), contactId, tag.id);
+    } catch {
+      setOptimisticTags((current) => [...current, tag]);
+      toast.danger("No se pudo quitar la etiqueta.");
+    } finally {
+      setBusyTagId(null);
+    }
+  }
 
   function startCreate() {
     setEditingId(null);
@@ -90,6 +158,61 @@ export function ManageTagsModal({ isOpen, onOpenChange, tags }: ManageTagsModalP
               <Modal.CloseTrigger />
             </Modal.Header>
             <Modal.Body className="flex flex-col gap-3">
+              <div className="flex flex-col gap-2">
+                <Label>En este chat</Label>
+                <div className="crm-tags">
+                  {optimisticTags.map((tag) => (
+                    <span className="crm-tag" key={tag.id} data-color={tag.color}>
+                      {tag.label}
+                      <button
+                        className="crm-tag-x"
+                        type="button"
+                        aria-label={`Quitar etiqueta ${tag.label} de este contacto`}
+                        onClick={() => handleRemoveTag(tag)}
+                        disabled={busyTagId === tag.id}
+                      >
+                        <Minus size={11} />
+                      </button>
+                    </span>
+                  ))}
+                  {optimisticTags.length === 0 && (
+                    <span className="text-sm text-muted">Sin etiquetas todavía.</span>
+                  )}
+                </div>
+
+                {availableForContact.length > 0 ? (
+                  <div className="crm-tags">
+                    {availableForContact.map((tag) => (
+                      <button
+                        className="crm-tag crm-tag-add"
+                        key={tag.id}
+                        type="button"
+                        aria-label={`Aplicar etiqueta ${tag.label} a este contacto`}
+                        onClick={() => handleApplyTag(tag)}
+                        disabled={busyTagId === tag.id}
+                      >
+                        <Plus size={11} />
+                        {tag.label}
+                      </button>
+                    ))}
+                  </div>
+                ) : (
+                  tags.length > 0 && <p className="text-sm text-muted">Ya tiene todas las etiquetas creadas.</p>
+                )}
+              </div>
+
+              {/*
+               * La lista de abajo (crear/editar/borrar) se confundía con "En
+               * este chat" — sin encabezado propio ni separador, las dos
+               * secciones se leían como una sola (captura `04-gestionar-
+               * etiquetas.png` de la verificación visual de T6, 27/9/2026).
+               * `<hr>` con la clase de línea que ya usa el resto del CRM
+               * (`--lm-line`, ver `crm-divider` en `crm.css`) en vez de un
+               * `border-top` puntual, para no inventar una regla nueva.
+               */}
+              <hr className="crm-divider" />
+              <Label>Todas las etiquetas</Label>
+
               {!isFormOpen && (
                 <Button variant="secondary" size="sm" onPress={startCreate} className="self-start">
                   <Plus size={14} />
