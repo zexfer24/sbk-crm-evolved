@@ -195,6 +195,8 @@ vecino que nombran.
 
 **Compartidos:** `url-search-box` (cuadro de búsqueda que escribe en la URL, lo usan Inventario y Clientes; T4, 27/9/2026: recuerda en estado la LISTA de lo que él mismo empujó a la URL para que un eco atrasado de su propia navegación —o el `trim()` del servidor— no le devuelva al asesor letras que ya borró; solo una `query` externa reemplaza el borrador).
 
+**inventario/:** `inventario-view` (la página de Inventario; placeholder "Buscar por nombre, marca o código" desde T3, 27/9/2026), `producto-fila` (una fila; solo el peso se edita; T5, 27/9/2026: el código Saint va como línea DEBAJO del nombre —`lm-num`, `aria-label` "Código <x>", "Sin código" si es null—, a propósito NO como columna nueva: `.inv-row` es grilla de columnas fijas, trampa del 10/9/2026; `inventario-css.test.ts` fija las cinco columnas).
+
 ## `supabase/`
 
 | Qué | Dónde |

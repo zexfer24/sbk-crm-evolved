@@ -83,6 +83,32 @@ export function ProductoFila({ product, bcvRate }: { product: Product; bcvRate: 
     <li className="inv-row" data-inactive={product.isActive ? undefined : "true"}>
       <div className="inv-identity">
         <span className="inv-name">{product.name}</span>
+        {/*
+         * T5, plan "El mostrador busca sin salir del chat" (27/9/2026):
+         * `saintCode` ya viajaba en `Product` desde el 25/9 (`saint_code`)
+         * pero la fila no lo pintaba, y los asesores y el dueño lo usan a
+         * diario para ubicar el mismo repuesto en Saint. Va como LÍNEA
+         * dentro de `.inv-identity` (columna 1 de `.inv-row`), no como
+         * columna nueva — la fila es un grid de columnas fijas a propósito
+         * (trampa del 10/9/2026: una columna de ancho variable desalinea
+         * Stock/Precio/Peso entre filas), y con `align-items: start` que la
+         * columna 1 crezca de alto no mueve a las demás. `lm-num` para que
+         * los dígitos no salten de ancho; `aria-label` explícito porque el
+         * texto visible es solo el número, y un lector de pantalla lo debe
+         * anunciar como "Código <x>", no leer el dígito suelto sin
+         * contexto. Sin código: texto "Sin código" (decisión: más claro
+         * para un lector de pantalla que un "—" atenuado, que puede
+         * leerse como "guion" o quedar mudo).
+         */}
+        {product.saintCode ? (
+          <span className="inv-saint-code lm-num" aria-label={`Código ${product.saintCode}`}>
+            {product.saintCode}
+          </span>
+        ) : (
+          <span className="inv-saint-code" data-empty="true" aria-label="Sin código Saint">
+            Sin código
+          </span>
+        )}
         <span className="inv-facts">
           {product.brand && <span className="inv-brand">{product.brand}</span>}
           {product.compatibility.length > 0 ? (

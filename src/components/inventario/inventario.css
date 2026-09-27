@@ -69,6 +69,27 @@
   color: var(--lm-ink);
 }
 
+/*
+ * T5, plan "El mostrador busca sin salir del chat" (27/9/2026): el código
+ * Saint va como línea DENTRO de `.inv-identity` (columna 1, `minmax(0,
+ * 1fr)` de `.inv-row`), nunca como columna nueva — la fila es un grid de
+ * columnas FIJAS a propósito (trampa del 10/9/2026: una columna de ancho
+ * variable desalinea Stock/Precio/Peso entre filas). Como `.inv-row` ancla
+ * sus columnas arriba (`align-items: start`), que esta línea haga crecer el
+ * alto de la columna 1 no mueve ni centra a las demás. `user-select: text`
+ * explícito porque el código se usa para copiar y pegar en Saint.
+ */
+.inv-saint-code {
+  font-size: 11.5px;
+  color: var(--lm-muted);
+  user-select: text;
+}
+
+.inv-saint-code[data-empty="true"] {
+  font-style: italic;
+  opacity: 0.75;
+}
+
 .inv-facts {
   display: flex;
   flex-wrap: wrap;

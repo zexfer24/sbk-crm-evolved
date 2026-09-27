@@ -125,4 +125,37 @@ describe("la hoja de estilos del inventario", () => {
       "sin `cursor: default` el span de solo lectura puede sugerir con el mouse que se puede escribir ahí, como Stock/Peso"
     ).toMatch(/cursor:\s*default\s*;/);
   });
+
+  /*
+   * T5, plan "El mostrador busca sin salir del chat" (27/9/2026): el código
+   * Saint se agrega como una LÍNEA debajo del nombre, dentro de
+   * `.inv-identity` (columna 1 de `.inv-row`, `minmax(0, 1fr)`) — decisión
+   * explícita para no tocar la plantilla de columnas fijas (trampa del
+   * 10/9/2026: una columna nueva de ancho variable vuelve a desalinear
+   * Stock/Precio/Peso entre filas). Como `.inv-row` ya ancla sus columnas
+   * arriba con `align-items: start` (ver el bloque de arriba), que la
+   * columna 1 crezca de alto no mueve ni centra a las demás — por eso este
+   * test NO exige que `grid-template-columns` cambie, exige que NO cambie.
+   */
+  it(".inv-row sigue con las mismas cinco columnas fijas: el código Saint no agrega una columna", async () => {
+    const css = await leerCss();
+    const regla = bloque(css, ".inv-row");
+    const plantilla = /grid-template-columns:\s*([^;]+);/.exec(regla);
+
+    expect(plantilla, "no se encontró `grid-template-columns` en `.inv-row`").not.toBeNull();
+    expect(
+      plantilla![1].trim(),
+      "el código Saint va DENTRO de la columna 1 (`.inv-identity`), como una línea nueva, no como columna: agregar una columna aquí reabre la trampa del 10/9/2026"
+    ).toBe("minmax(0, 1fr) 100px 150px 110px 300px");
+  });
+
+  it(".inv-saint-code existe, en fuente numérica y seleccionable para copiar", async () => {
+    const css = await leerCss();
+    const regla = bloque(css, ".inv-saint-code");
+
+    expect(
+      regla,
+      "sin `user-select: text` un padre con selección apagada podría impedir copiar el código con el mouse"
+    ).toMatch(/user-select:\s*text\s*;/);
+  });
 });

@@ -221,6 +221,37 @@ describe("ProductoFila — sin botón Activar/Desactivar", () => {
  * reloj real sería frágil (CLAUDE.md, "nunca un test que dependa del reloj
  * real").
  */
+/**
+ * T5 del plan "El mostrador busca sin salir del chat" (27/9/2026): el código
+ * Saint ya viaja en `Product.saintCode` (`saint_code`, columna del 25/9/2026)
+ * pero la fila no lo pintaba — los asesores y el dueño lo usan a diario para
+ * ubicar el mismo repuesto en Saint. Va como una línea DEBAJO del nombre
+ * (columna 1 de `.inv-row`, no una columna nueva) en fuente numérica
+ * (`lm-num`), seleccionable para copiar. Sin código: texto "Sin código"
+ * (decisión: más claro para un lector de pantalla que un "—" atenuado, que
+ * puede leerse como "guion" o quedar mudo).
+ */
+describe("ProductoFila — código Saint", () => {
+  it("pinta el código Saint en fuente numérica, con un aria-label que lo nombra", () => {
+    render(<ProductoFila product={product({ saintCode: "8842" })} bcvRate={40} />);
+
+    const codigo = screen.getByLabelText("Código 8842");
+    expect(codigo).toHaveTextContent("8842");
+    expect(codigo.className).toMatch(/\blm-num\b/);
+  });
+
+  it("es seleccionable para copiar: no vive dentro de un elemento que bloquee la selección", () => {
+    render(<ProductoFila product={product({ saintCode: "8842" })} bcvRate={40} />);
+    const codigo = screen.getByLabelText("Código 8842");
+    expect(codigo.tagName).not.toBe("BUTTON");
+  });
+
+  it("sin código Saint muestra el marcador vacío 'Sin código'", () => {
+    render(<ProductoFila product={product({ saintCode: null })} bcvRate={40} />);
+    expect(screen.getByText("Sin código")).toBeInTheDocument();
+  });
+});
+
 describe("ProductoFila — badge Nuevo desde Saint", () => {
   beforeEach(() => {
     vi.useFakeTimers();
