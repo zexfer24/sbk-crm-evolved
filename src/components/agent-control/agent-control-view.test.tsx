@@ -2,7 +2,7 @@
 import { describe, expect, it, vi, beforeEach } from "vitest";
 import { render, screen, fireEvent, waitFor } from "@testing-library/react";
 import { AgentControlView } from "@/components/agent-control/agent-control-view";
-import type { Agent, AgentSettings, AgentTurn, Conversation } from "@/lib/types";
+import type { Agent, AgentSettings, AgentTurn, Conversation, ModelUsageSummary } from "@/lib/types";
 
 /**
  * El interruptor global es el único botón del CRM que le escribe a clientes
@@ -168,11 +168,14 @@ function montar(
   tokenUsageOverrides: Partial<{
     totalCachedInputTokens: number;
     totalReasoningTokens: number;
-  }> = {}
+    byModel: ModelUsageSummary[];
+  }> = {},
+  /** T7 (28/9/2026): el rol de quien mira; por defecto, la supervisora de siempre. */
+  agent: Agent = currentAgent
 ) {
   render(
     <AgentControlView
-      currentAgent={currentAgent}
+      currentAgent={agent}
       initialConversations={[liveConversation("conv-1"), liveConversation("conv-2")]}
       initialTurns={turns}
       initialTags={[]}
@@ -442,5 +445,46 @@ describe("AgentControlView — telemetría por llamada (T4, 21-22/9/2026)", () =
     montar(encendida);
 
     expect(screen.getByText("Todavía no hay llamadas medidas por fase.")).toBeInTheDocument();
+  });
+});
+
+/**
+ * T7, plan "Seba encuentra, no insiste, y el mostrador no deja a nadie
+ * esperando" (28/9/2026). El interruptor global y las tarifas por modelo no
+ * tenían puerta de rol: un asesor corriente los veía activos, pulsaba, la
+ * base ignoraba el UPDATE sin error (RLS `agent_settings_update` /
+ * `model_pricing_*`) y la pantalla mostraba el cambio como hecho.
+ */
+describe("AgentControlView — puertas de rol de la configuración (T7)", () => {
+  const asesor: Agent = { ...currentAgent, id: "agent-9", displayName: "Asesor", role: "agent" };
+  const modelo: ModelUsageSummary = { model: "openai/gpt-x", totalTokens: 100, inputTokens: 60, outputTokens: 40, usdCost: 1 };
+
+  it("un asesor corriente ve el interruptor global deshabilitado y el motivo", () => {
+    montar(encendida, [], {}, asesor);
+
+    expect(screen.getByRole("button", { name: "Interruptor global de la IA" })).toBeDisabled();
+    expect(screen.getByText(/Solo un supervisor o admin puede cambiarlo/)).toBeInTheDocument();
+  });
+
+  it("un supervisor lo ve habilitado", () => {
+    montar(encendida);
+
+    expect(screen.getByRole("button", { name: "Interruptor global de la IA" })).toBeEnabled();
+  });
+
+  it("un asesor corriente no ve inputs ni botón para las tarifas, sí el aviso", () => {
+    montar(encendida, [], { byModel: [modelo] }, asesor);
+
+    expect(screen.getByText("openai/gpt-x")).toBeInTheDocument();
+    expect(screen.queryByLabelText(/\$\/1M input/)).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Guardar" })).not.toBeInTheDocument();
+    expect(screen.getByText(/Solo un supervisor o admin puede cambiar las tarifas/)).toBeInTheDocument();
+  });
+
+  it("un supervisor sí ve los inputs y el botón de tarifas", () => {
+    montar(encendida, [], { byModel: [modelo] });
+
+    expect(screen.getByLabelText(/\$\/1M input/)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Guardar" })).toBeInTheDocument();
   });
 });

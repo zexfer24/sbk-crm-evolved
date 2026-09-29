@@ -26,7 +26,8 @@ function createFakeSupabase() {
           insert: () => ({
             select: () => ({ single: async () => ({ data: { id: "pb-nuevo" }, error: null }) }),
           }),
-          update: () => ({ eq: async () => ({ error: null }) }),
+          // T7 (28/9/2026): el UPDATE pide la fila afectada con `.select("id")`.
+          update: () => ({ eq: () => ({ select: async () => ({ data: [{ id: "pb-1" }], error: null }) }) }),
         };
       }
 
@@ -40,10 +41,13 @@ function createFakeSupabase() {
           }),
           delete: () => ({
             eq: () => ({
-              in: async (_col: string, tagIds: string[]) => {
-                escrituras.push({ op: "delete", tagIds });
-                return { error: null };
-              },
+              in: (_col: string, tagIds: string[]) => ({
+                // T7 (28/9/2026): el DELETE pide las filas borradas con `.select("tag_id")`.
+                select: async () => {
+                  escrituras.push({ op: "delete", tagIds });
+                  return { data: tagIds.map((tag_id) => ({ tag_id })), error: null };
+                },
+              }),
             }),
           }),
           insert: async (payload: { playbook_id: string; tag_id: string }[]) => {

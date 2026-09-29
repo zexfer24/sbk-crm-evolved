@@ -240,9 +240,40 @@ export function Composer({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  /**
+   * Resuelve, al momento de MANDAR, cualquier `{{catalogo:<key>}}`/
+   * `{{catalogos}}` que siga en el texto (T7, plan "Seba encuentra, no
+   * insiste, y el mostrador no deja a nadie esperando", 28/9/2026).
+   *
+   * Caso real del 28/9/2026: los asesores mandaban un link de "CATALOGO
+   * CASCOS" distinto al de Seba porque el mensaje rápido llevaba la URL de
+   * Drive escrita a mano. Pegar un mensaje rápido ya resolvía su marcador
+   * (T4b, 18/9/2026), pero un marcador que quedó SIN resolver en el cuadro
+   * (catálogo apagado o inexistente al pegar, o escrito a mano por el
+   * asesor) salía crudo al cliente: el aviso de `handleSelectQuickReply`
+   * era solo un toast, no frenaba nada. Ahora la fuente única gobierna
+   * también el envío: con los catálogos activos de ESTE instante se resuelve
+   * lo que haya, y un marcador que no se puede resolver NO sale (D6: "un
+   * marcador que no resuelve nunca llega al cliente") — el texto se queda en
+   * el cuadro y se avisa igual que al pegar. Devuelve `null` si no se debe
+   * mandar.
+   */
+  function resolveOutgoingText(content: string): string | null {
+    const { text: resolved, missing } = resolveCatalogMarkers(content, catalogLinks);
+    if (missing.length > 0) {
+      for (const key of missing) {
+        toast.warning(`El catálogo «${key}» no está configurado`);
+      }
+      return null;
+    }
+    return resolved;
+  }
+
   function handleSend() {
     const content = text.trim();
     if (!content) return;
+    const outgoing = resolveOutgoingText(content);
+    if (outgoing === null) return;
 
     // El cuadro se vacía en el acto y el mensaje pasa a la cola del CRM.
     // Enviar es el gesto que más se repite acá, y el acuse tiene que ser
@@ -252,7 +283,7 @@ export function Composer({
     const replyTo = replyingTo?.id ?? null;
     setText("");
     onCancelReply();
-    onSendText(content, replyTo);
+    onSendText(outgoing, replyTo);
   }
 
   async function handleSelectTemplate(template: WhatsappTemplate, variables: string[]) {
@@ -391,6 +422,11 @@ export function Composer({
 
   async function handleSendFiles() {
     if (pendingFiles.length === 0 || isUploading || sendingFilesRef.current) return;
+    // El pie de la primera foto también pasa por la fuente única de catálogos
+    // (T7, 28/9/2026); si trae un marcador sin resolver, no se sube nada.
+    const rawCaption = text.trim();
+    const caption = rawCaption ? resolveOutgoingText(rawCaption) : undefined;
+    if (caption === null) return;
     sendingFilesRef.current = true;
     setIsUploading(true);
     setUploadedCount(0);
@@ -422,7 +458,7 @@ export function Composer({
           conversation.id,
           uploaded[i].url,
           uploaded[i].mediaType,
-          i === 0 ? text.trim() || undefined : undefined,
+          i === 0 ? caption || undefined : undefined,
           i === 0 ? (replyingTo?.id ?? null) : null
         );
       }

@@ -37,6 +37,15 @@ import { MEDIA_BUCKET, mediaUrlFor, storagePathFromUrl } from "@/lib/storage";
 import { isAnimatedWebp, isWithinStickerLimit, stickerRejectionMessage } from "@/lib/sticker-image";
 import { buildInvoiceDraft, formatInvoiceNumber } from "@/lib/invoices";
 import { fetchOrderItems, INVOICE_SELECT, mapInvoice, type RawInvoice } from "@/lib/invoices-data";
+// T7 (28/9/2026): `assertRowsAffected` y compañía viven aparte (ver `config-write.ts`);
+// se reexportan para que quien ya importa de este módulo no tenga que cambiar nada.
+import {
+  assertRowsAffected,
+  ONLY_AUTHOR_LESSON_MESSAGE,
+  ONLY_AUTHOR_NOTE_MESSAGE,
+  ONLY_AUTHOR_STICKER_MESSAGE,
+} from "@/lib/config-write";
+export { assertRowsAffected, CONFIG_WRITE_DENIED_MESSAGE, ConfigWriteDeniedError, configErrorMessage } from "@/lib/config-write";
 
 async function insertSystemEvent(
   supabase: SupabaseClient,
@@ -782,13 +791,15 @@ export async function addNote(supabase: SupabaseClient, contactId: string, agent
 }
 
 export async function updateNote(supabase: SupabaseClient, noteId: string, content: string) {
-  const { error } = await supabase.from("notes").update({ content }).eq("id", noteId);
+  const { data, error } = await supabase.from("notes").update({ content }).eq("id", noteId).select("id");
   if (error) throw error;
+  assertRowsAffected(data, ONLY_AUTHOR_NOTE_MESSAGE);
 }
 
 export async function deleteNote(supabase: SupabaseClient, noteId: string) {
-  const { error } = await supabase.from("notes").delete().eq("id", noteId);
+  const { data, error } = await supabase.from("notes").delete().eq("id", noteId).select("id");
   if (error) throw error;
+  assertRowsAffected(data, ONLY_AUTHOR_NOTE_MESSAGE);
 }
 
 export async function createTag(supabase: SupabaseClient, label: string, color: TagColor) {
@@ -812,20 +823,24 @@ export async function deleteTag(supabase: SupabaseClient, tagId: string) {
 }
 
 export async function setAiGloballyEnabled(supabase: SupabaseClient, agent: Agent, enabled: boolean) {
-  const { error } = await supabase
+  const { data, error } = await supabase
     .from("agent_settings")
     .update({ ai_globally_enabled: enabled, updated_by: agent.id, updated_at: new Date().toISOString() })
-    .eq("id", true);
+    .eq("id", true)
+    .select("id");
   if (error) throw error;
+  assertRowsAffected(data);
 }
 
 /** `null` quita el tope. RLS deja escribir agent_settings solo a supervisor/admin. */
 export async function setDailySpendCap(supabase: SupabaseClient, agent: Agent, capUsd: number | null) {
-  const { error } = await supabase
+  const { data, error } = await supabase
     .from("agent_settings")
     .update({ daily_spend_cap_usd: capUsd, updated_by: agent.id, updated_at: new Date().toISOString() })
-    .eq("id", true);
+    .eq("id", true)
+    .select("id");
   if (error) throw error;
+  assertRowsAffected(data);
 }
 
 /**
@@ -835,11 +850,13 @@ export async function setDailySpendCap(supabase: SupabaseClient, agent: Agent, c
  * de gasto.
  */
 export async function updateBusinessHours(supabase: SupabaseClient, agent: Agent, hours: BusinessHours) {
-  const { error } = await supabase
+  const { data, error } = await supabase
     .from("agent_settings")
     .update({ business_hours: hours, updated_by: agent.id, updated_at: new Date().toISOString() })
-    .eq("id", true);
+    .eq("id", true)
+    .select("id");
   if (error) throw error;
+  assertRowsAffected(data);
 }
 
 export async function createQuickReply(supabase: SupabaseClient, label: string, content: string) {
@@ -939,12 +956,14 @@ async function syncPlaybookTags(supabase: SupabaseClient, playbookId: string, ta
 
   const sobran = [...actuales].filter((tagId) => !pedidas.has(tagId));
   if (sobran.length > 0) {
-    const { error } = await supabase
+    const { data: borradas, error } = await supabase
       .from("ai_playbook_tags")
       .delete()
       .eq("playbook_id", playbookId)
-      .in("tag_id", sobran);
+      .in("tag_id", sobran)
+      .select("tag_id");
     if (error) throw error;
+    assertRowsAffected(borradas);
   }
 
   const faltan = tagIds.filter((tagId) => !actuales.has(tagId));
@@ -969,20 +988,23 @@ export async function createPlaybook(supabase: SupabaseClient, draft: PlaybookDr
 
 export async function updatePlaybook(supabase: SupabaseClient, id: string, draft: PlaybookDraft) {
   assertPlaybookIdentity(draft);
-  const { error } = await supabase.from("ai_playbooks").update(playbookRow(draft)).eq("id", id);
+  const { data, error } = await supabase.from("ai_playbooks").update(playbookRow(draft)).eq("id", id).select("id");
   if (error) throw error;
+  assertRowsAffected(data);
   await syncPlaybookTags(supabase, id, draft.tagIds);
 }
 
 export async function deletePlaybook(supabase: SupabaseClient, id: string) {
-  const { error } = await supabase.from("ai_playbooks").delete().eq("id", id);
+  const { data, error } = await supabase.from("ai_playbooks").delete().eq("id", id).select("id");
   if (error) throw error;
+  assertRowsAffected(data);
 }
 
 /** Apagar un escenario lo saca del reconocimiento sin perder el texto. */
 export async function setPlaybookActive(supabase: SupabaseClient, id: string, isActive: boolean) {
-  const { error } = await supabase.from("ai_playbooks").update({ is_active: isActive }).eq("id", id);
+  const { data, error } = await supabase.from("ai_playbooks").update({ is_active: isActive }).eq("id", id).select("id");
   if (error) throw error;
+  assertRowsAffected(data);
 }
 
 // ---------------------------------------------------------------------------
@@ -1054,13 +1076,15 @@ export async function createLesson(supabase: SupabaseClient, agent: Agent, draft
 
 /** `false` la saca del prompt del turno sin perder el texto ni el historial — mismo criterio que `setPlaybookActive`. */
 export async function setLessonActive(supabase: SupabaseClient, id: string, isActive: boolean) {
-  const { error } = await supabase.from("ai_lessons").update({ is_active: isActive }).eq("id", id);
+  const { data, error } = await supabase.from("ai_lessons").update({ is_active: isActive }).eq("id", id).select("id");
   if (error) throw error;
+  assertRowsAffected(data, ONLY_AUTHOR_LESSON_MESSAGE);
 }
 
 export async function deleteLesson(supabase: SupabaseClient, id: string) {
-  const { error } = await supabase.from("ai_lessons").delete().eq("id", id);
+  const { data, error } = await supabase.from("ai_lessons").delete().eq("id", id).select("id");
   if (error) throw error;
+  assertRowsAffected(data, ONLY_AUTHOR_LESSON_MESSAGE);
 }
 
 // ---------------------------------------------------------------------------
@@ -1069,11 +1093,13 @@ export async function deleteLesson(supabase: SupabaseClient, id: string) {
 // ---------------------------------------------------------------------------
 
 export async function setAgentToolEnabled(supabase: SupabaseClient, agent: Agent, key: string, enabled: boolean) {
-  const { error } = await supabase
+  const { data, error } = await supabase
     .from("agent_tools")
     .update({ is_enabled: enabled, updated_by: agent.id })
-    .eq("key", key);
+    .eq("key", key)
+    .select("key");
   if (error) throw error;
+  assertRowsAffected(data);
 }
 
 // ---------------------------------------------------------------------------
@@ -1088,8 +1114,9 @@ export async function createKnowledgeCategory(supabase: SupabaseClient, name: st
 
 /** Borra también sus entradas (on delete cascade): quien la borra ve la advertencia en el panel. */
 export async function deleteKnowledgeCategory(supabase: SupabaseClient, id: string) {
-  const { error } = await supabase.from("knowledge_categories").delete().eq("id", id);
+  const { data, error } = await supabase.from("knowledge_categories").delete().eq("id", id).select("id");
   if (error) throw error;
+  assertRowsAffected(data);
 }
 
 /** Campos editables de una entrada. `id` e `isActive` se manejan aparte. */
@@ -1121,19 +1148,30 @@ export async function updateKnowledgeEntry(
   id: string,
   draft: KnowledgeEntryDraft
 ) {
-  const { error } = await supabase.from("knowledge_entries").update(knowledgeEntryRow(draft, agent)).eq("id", id);
+  const { data, error } = await supabase
+    .from("knowledge_entries")
+    .update(knowledgeEntryRow(draft, agent))
+    .eq("id", id)
+    .select("id");
   if (error) throw error;
+  assertRowsAffected(data);
 }
 
 /** Apagar una entrada la esconde de la IA sin perder el texto. */
 export async function setKnowledgeEntryActive(supabase: SupabaseClient, id: string, isActive: boolean) {
-  const { error } = await supabase.from("knowledge_entries").update({ is_active: isActive }).eq("id", id);
+  const { data, error } = await supabase
+    .from("knowledge_entries")
+    .update({ is_active: isActive })
+    .eq("id", id)
+    .select("id");
   if (error) throw error;
+  assertRowsAffected(data);
 }
 
 export async function deleteKnowledgeEntry(supabase: SupabaseClient, id: string) {
-  const { error } = await supabase.from("knowledge_entries").delete().eq("id", id);
+  const { data, error } = await supabase.from("knowledge_entries").delete().eq("id", id).select("id");
   if (error) throw error;
+  assertRowsAffected(data);
 }
 
 /**
@@ -1150,8 +1188,9 @@ export async function deleteKnowledgeEntry(supabase: SupabaseClient, id: string)
  * banear su cuenta en auth, no este interruptor.
  */
 export async function setAgentActive(supabase: SupabaseClient, agentId: string, isActive: boolean) {
-  const { error } = await supabase.from("agents").update({ is_active: isActive }).eq("id", agentId);
+  const { data, error } = await supabase.from("agents").update({ is_active: isActive }).eq("id", agentId).select("id");
   if (error) throw error;
+  assertRowsAffected(data);
 }
 
 export async function createAgentSuggestion(supabase: SupabaseClient, agent: Agent, content: string) {
@@ -1160,11 +1199,13 @@ export async function createAgentSuggestion(supabase: SupabaseClient, agent: Age
 }
 
 export async function markSuggestionReviewed(supabase: SupabaseClient, suggestionId: string, reviewer: Agent) {
-  const { error } = await supabase
+  const { data, error } = await supabase
     .from("agent_suggestions")
     .update({ status: "reviewed", reviewed_at: new Date().toISOString(), reviewed_by: reviewer.id })
-    .eq("id", suggestionId);
+    .eq("id", suggestionId)
+    .select("id");
   if (error) throw error;
+  assertRowsAffected(data);
 }
 
 export async function updateModelPricing(
@@ -1174,14 +1215,21 @@ export async function updateModelPricing(
   outputPricePerMillion: number,
   agent: Agent
 ) {
-  const { error } = await supabase.from("model_pricing").upsert({
-    model,
-    input_price_per_million: inputPricePerMillion,
-    output_price_per_million: outputPricePerMillion,
-    updated_at: new Date().toISOString(),
-    updated_by: agent.id,
-  });
+  // Un upsert bajo RLS SÍ lanza 42501 (el INSERT propuesto también pasa por
+  // `with check`), a diferencia del UPDATE puro; se pide la fila igual por
+  // uniformidad y para no depender de ese detalle de Postgres.
+  const { data, error } = await supabase
+    .from("model_pricing")
+    .upsert({
+      model,
+      input_price_per_million: inputPricePerMillion,
+      output_price_per_million: outputPricePerMillion,
+      updated_at: new Date().toISOString(),
+      updated_by: agent.id,
+    })
+    .select("model");
   if (error) throw error;
+  assertRowsAffected(data);
 }
 
 // ---------------------------------------------------------------------------
@@ -1483,8 +1531,10 @@ export async function createSticker(
  * todavía apuntándolo.
  */
 export async function deleteSticker(supabase: SupabaseClient, sticker: Sticker): Promise<void> {
-  const { error } = await supabase.from("stickers").delete().eq("id", sticker.id);
+  const { data, error } = await supabase.from("stickers").delete().eq("id", sticker.id).select("id");
   if (error) throw error;
+  // 0 filas = la RLS (`stickers_delete`) lo ignoró: el archivo NO se toca.
+  assertRowsAffected(data, ONLY_AUTHOR_STICKER_MESSAGE);
 
   const path = storagePathFromUrl(sticker.url);
   if (!path) return;
@@ -1762,13 +1812,19 @@ export async function createCatalogLink(supabase: SupabaseClient, agent: Agent, 
 }
 
 export async function updateCatalogLink(supabase: SupabaseClient, agent: Agent, id: string, draft: CatalogLinkDraft) {
-  const { error } = await supabase.from("catalog_links").update(catalogLinkRow(draft, agent)).eq("id", id);
+  const { data, error } = await supabase
+    .from("catalog_links")
+    .update(catalogLinkRow(draft, agent))
+    .eq("id", id)
+    .select("id");
   if (error) throw error;
+  assertRowsAffected(data);
 }
 
 export async function deleteCatalogLink(supabase: SupabaseClient, id: string) {
-  const { error } = await supabase.from("catalog_links").delete().eq("id", id);
+  const { data, error } = await supabase.from("catalog_links").delete().eq("id", id).select("id");
   if (error) throw error;
+  assertRowsAffected(data);
 }
 
 /**
@@ -1778,9 +1834,11 @@ export async function deleteCatalogLink(supabase: SupabaseClient, id: string) {
  * URL guardada — mismo criterio que `setPlaybookActive`/`setLessonActive`.
  */
 export async function setCatalogLinkActive(supabase: SupabaseClient, agent: Agent, id: string, isActive: boolean) {
-  const { error } = await supabase
+  const { data, error } = await supabase
     .from("catalog_links")
     .update({ is_active: isActive, updated_by: agent.id })
-    .eq("id", id);
+    .eq("id", id)
+    .select("id");
   if (error) throw error;
+  assertRowsAffected(data);
 }

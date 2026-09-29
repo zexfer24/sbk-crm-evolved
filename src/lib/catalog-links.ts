@@ -234,3 +234,80 @@ const RAW_URL = /https?:\/\/\S+/i;
 export function hasRawUrl(text: string): boolean {
   return RAW_URL.test(text);
 }
+
+// ---------------------------------------------------------------------------
+// Aviso de "URL de Drive escrita a mano" en un mensaje rápido (T7, plan "Seba
+// encuentra, no insiste, y el mostrador no deja a nadie esperando",
+// 28/9/2026).
+//
+// Historia: el 28/9/2026 los asesores mandaban un link de "CATALOGO CASCOS"
+// distinto al de Seba. Causa confirmada en producción: el mensaje rápido
+// (`quick_replies`, que escribe CUALQUIER asesor) llevaba la URL de Drive
+// pegada a mano (`1wWJ1PvF…`, editada el 28/9 a las 15:44 UTC) mientras
+// `catalog_links.cascos` seguía en `1oDrYm…` desde el 25/9. `hasRawUrl` ya
+// avisaba de "un enlace escrito a mano" sin decir cuál era el arreglo; esta
+// función distingue los dos casos que sí tienen arreglo distinto:
+//
+//   - la URL COINCIDE con un catálogo configurado → se puede ofrecer el
+//     marcador exacto (`{{catalogo:<key>}}`), reemplazar es seguro;
+//   - la URL es de Drive, parece un catálogo (la palabra aparece en el título
+//     o en el texto) pero no coincide con ninguno → el enlace vive solo en
+//     este mensaje, y ese es justo el desvío: se avisa sin marcador sugerido.
+//
+// Pura, sin React: la usa el modal de mensajes rápidos.
+// ---------------------------------------------------------------------------
+
+export interface CatalogUrlHint {
+  kind: "coincide" | "parece-catalogo";
+  /** La URL de Drive tal como está escrita en el texto (sin puntuación pegada al final). */
+  url: string;
+  /** El marcador exacto a ofrecer; `null` si la URL no coincide con ningún catálogo. */
+  marker: string | null;
+  /** La etiqueta del catálogo que coincide; `null` si no coincide. */
+  catalogLabel: string | null;
+}
+
+// Se usa `String.matchAll`/`.test()` sobre copias creadas por llamada: los
+// regex con flag `g` de MÓDULO arrastran `lastIndex` entre `.test()` (ver
+// `CATALOG_MARKER`), así que estos son sin `g` y `matchAll` recibe uno nuevo.
+const DRIVE_URL_SOURCE = String.raw`https?:\/\/(?:drive|docs)\.google\.com\/[^\s<>"')\]]+`;
+const CATALOG_WORD = /cat[aá]logo/i;
+
+/** El ID de archivo de Drive: `/d/<id>` o `?id=<id>`; `null` si la URL no trae ninguno. */
+function driveFileId(url: string): string | null {
+  const byPath = /\/d\/([A-Za-z0-9_-]+)/.exec(url);
+  if (byPath) return byPath[1];
+  const byQuery = /[?&]id=([A-Za-z0-9_-]+)/.exec(url);
+  return byQuery ? byQuery[1] : null;
+}
+
+function normalizeUrl(url: string): string {
+  return url.trim().replace(/\/+$/, "").toLowerCase();
+}
+
+function sameDriveFile(a: string, b: string): boolean {
+  const idA = driveFileId(a);
+  const idB = driveFileId(b);
+  if (idA && idB) return idA === idB;
+  return normalizeUrl(a) === normalizeUrl(b);
+}
+
+export function catalogUrlHint(content: string, label: string, links: CatalogLink[]): CatalogUrlHint | null {
+  // La puntuación pegada al final ("…/view.", "…/view,") no es de la URL.
+  const urls = [...content.matchAll(new RegExp(DRIVE_URL_SOURCE, "gi"))].map((match) =>
+    match[0].replace(/[.,;:!?]+$/, "")
+  );
+  if (urls.length === 0) return null;
+
+  for (const url of urls) {
+    const found = links.find((link) => sameDriveFile(url, link.url));
+    if (found) {
+      return { kind: "coincide", url, marker: catalogMarkerFor(found.key), catalogLabel: found.label };
+    }
+  }
+
+  if (CATALOG_WORD.test(label) || CATALOG_WORD.test(content)) {
+    return { kind: "parece-catalogo", url: urls[0], marker: null, catalogLabel: null };
+  }
+  return null;
+}

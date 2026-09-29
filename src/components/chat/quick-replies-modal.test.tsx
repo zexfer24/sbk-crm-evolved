@@ -185,3 +185,90 @@ describe("QuickRepliesModal — la lista marca los mensajes con marcador sin res
     expect(screen.queryByText("Marcador sin resolver")).not.toBeInTheDocument();
   });
 });
+
+/**
+ * T7, plan "Seba encuentra, no insiste, y el mostrador no deja a nadie
+ * esperando" (28/9/2026). Causa confirmada en producción: "CATALOGO CASCOS"
+ * llevaba la URL de Drive escrita a mano (`1wWJ1PvF…`) y `catalog_links.cascos`
+ * otra (`1oDrYm…`): los asesores y Seba mandaban links distintos. `quick_replies`
+ * lo escribe cualquier asesor, así que el aviso tiene que aparecer al escribir.
+ */
+describe("QuickRepliesModal — aviso de URL de Drive escrita a mano (T7)", () => {
+  const aviso = /Usá el marcador para que Seba y los asesores manden el mismo link/;
+  const cascos = catalogo({ key: "cascos", label: "Cascos", url: "https://drive.google.com/file/d/1oDrYmAAA/view" });
+
+  it("una URL que coincide con un catálogo configurado avisa y ofrece el marcador exacto", async () => {
+    const user = crearUsuario();
+    renderModal({ catalogLinks: [cascos] });
+
+    await abrirFormulario(user);
+    await user.type(screen.getByLabelText("Título"), "CATALOGO CASCOS");
+    await user.click(screen.getByLabelText("Mensaje"));
+    await user.paste("Catálogo: https://drive.google.com/file/d/1oDrYmAAA/view");
+
+    expect(screen.getByText(aviso)).toBeInTheDocument();
+    expect(screen.getByText(/el marcador es \{\{catalogo:cascos\}\}/)).toBeInTheDocument();
+  });
+
+  it('"Reemplazar por el marcador" cambia la URL por {{catalogo:cascos}} en el texto', async () => {
+    const user = crearUsuario();
+    renderModal({ catalogLinks: [cascos] });
+
+    await abrirFormulario(user);
+    await user.click(screen.getByLabelText("Mensaje"));
+    await user.paste("Catálogo: https://drive.google.com/file/d/1oDrYmAAA/view gracias");
+    await user.click(screen.getByRole("button", { name: "Reemplazar por {{catalogo:cascos}}" }));
+
+    expect((screen.getByLabelText("Mensaje") as HTMLTextAreaElement).value).toBe("Catálogo: {{catalogo:cascos}} gracias");
+    expect(screen.queryByText(aviso)).not.toBeInTheDocument();
+  });
+
+  it("el caso real: título 'CATALOGO CASCOS' con otro ID de Drive avisa SIN marcador sugerido", async () => {
+    const user = crearUsuario();
+    renderModal({ catalogLinks: [cascos] });
+
+    await abrirFormulario(user);
+    await user.type(screen.getByLabelText("Título"), "CATALOGO CASCOS");
+    await user.click(screen.getByLabelText("Mensaje"));
+    await user.paste("Catálogo de cascos: https://drive.google.com/file/d/1wWJ1PvFBBB/view");
+
+    expect(screen.getByText(aviso)).toBeInTheDocument();
+    expect(screen.getByText(/no coincide con ningún catálogo configurado/)).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /Reemplazar por/ })).not.toBeInTheDocument();
+  });
+
+  it("una URL de Drive que no parece catálogo (foto suelta) cae en el aviso genérico, no en este", async () => {
+    const user = crearUsuario();
+    renderModal({ catalogLinks: [cascos] });
+
+    await abrirFormulario(user);
+    await user.type(screen.getByLabelText("Título"), "Foto del local");
+    await user.click(screen.getByLabelText("Mensaje"));
+    await user.paste("Mira: https://drive.google.com/file/d/1foto/view");
+
+    expect(screen.queryByText(aviso)).not.toBeInTheDocument();
+    expect(screen.getByText(/enlace escrito a mano/)).toBeInTheDocument();
+  });
+
+  it("sin URL de Drive no hay aviso", async () => {
+    const user = crearUsuario();
+    renderModal({ catalogLinks: [cascos] });
+
+    await abrirFormulario(user);
+    await user.type(screen.getByLabelText("Mensaje"), "Acá va {{catalogo:cascos}}");
+
+    expect(screen.queryByText(aviso)).not.toBeInTheDocument();
+  });
+
+  it("la lista marca los mensajes rápidos guardados con un enlace de Drive a mano", () => {
+    renderModal({
+      quickReplies: [
+        mensajeRapido({ label: "CATALOGO CASCOS", content: "Catálogo: https://drive.google.com/file/d/1wWJ1PvFBBB/view" }),
+        mensajeRapido({ label: "Gracias", content: "Gracias por tu compra." }),
+      ],
+      catalogLinks: [cascos],
+    });
+
+    expect(screen.getAllByText("Enlace de Drive escrito a mano")).toHaveLength(1);
+  });
+});

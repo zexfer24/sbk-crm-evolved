@@ -1111,17 +1111,22 @@ describe("createLesson / setLessonActive / deleteLesson — Lecciones de Seba (T
             calls.push({ op: "insert", payload });
             return Promise.resolve({ error: null });
           },
+          // T7 (28/9/2026): UPDATE/DELETE piden la fila afectada con `.select("id")`.
           update: (payload: Record<string, unknown>) => ({
-            eq: async (_col: string, id: string) => {
-              calls.push({ op: "update", payload, id });
-              return { error: null };
-            },
+            eq: (_col: string, id: string) => ({
+              select: async () => {
+                calls.push({ op: "update", payload, id });
+                return { data: [{ id }], error: null };
+              },
+            }),
           }),
           delete: () => ({
-            eq: async (_col: string, id: string) => {
-              calls.push({ op: "delete", id });
-              return { error: null };
-            },
+            eq: (_col: string, id: string) => ({
+              select: async () => {
+                calls.push({ op: "delete", id });
+                return { data: [{ id }], error: null };
+              },
+            }),
           }),
         };
       },
@@ -1276,10 +1281,13 @@ function createStickerFakeSupabase() {
           };
         },
         delete: () => ({
-          eq: async (_col: string, id: string) => {
-            tableCalls.push({ op: "delete", id });
-            return { error: null };
-          },
+          eq: (_col: string, id: string) => ({
+            // T7 (28/9/2026): el DELETE pide la fila borrada con `.select("id")`.
+            select: async () => {
+              tableCalls.push({ op: "delete", id });
+              return { data: [{ id }], error: null };
+            },
+          }),
         }),
       };
     },
@@ -1497,7 +1505,9 @@ describe("deleteSticker — borra la fila y el archivo, en ese orden", () => {
     const client = {
       from: () => ({
         delete: () => ({
-          eq: async () => ({ error: new Error("new row violates row-level security policy") }),
+          eq: () => ({
+            select: async () => ({ data: null, error: new Error("new row violates row-level security policy") }),
+          }),
         }),
       }),
       storage: { from: () => ({ remove: vi.fn() }) },
@@ -1926,17 +1936,22 @@ describe("createCatalogLink / updateCatalogLink / deleteCatalogLink / setCatalog
             calls.push({ op: "insert", payload });
             return Promise.resolve({ error: null });
           },
+          // T7 (28/9/2026): UPDATE/DELETE piden la fila afectada con `.select("id")`.
           update: (payload: Record<string, unknown>) => ({
-            eq: async (_col: string, id: string) => {
-              calls.push({ op: "update", payload, id });
-              return { error: null };
-            },
+            eq: (_col: string, id: string) => ({
+              select: async () => {
+                calls.push({ op: "update", payload, id });
+                return { data: [{ id }], error: null };
+              },
+            }),
           }),
           delete: () => ({
-            eq: async (_col: string, id: string) => {
-              calls.push({ op: "delete", id });
-              return { error: null };
-            },
+            eq: (_col: string, id: string) => ({
+              select: async () => {
+                calls.push({ op: "delete", id });
+                return { data: [{ id }], error: null };
+              },
+            }),
           }),
         };
       },

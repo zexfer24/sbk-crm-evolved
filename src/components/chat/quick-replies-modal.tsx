@@ -7,7 +7,7 @@ import { Button, Input, Label, Modal, TextArea, toast } from "@heroui/react";
 import type { CatalogLink, QuickReply } from "@/lib/types";
 import { createClient } from "@/lib/supabase/client";
 import { createQuickReply, deleteQuickReply, updateQuickReply } from "@/lib/mutations";
-import { catalogMarkerFor, hasRawUrl, resolveCatalogMarkers } from "@/lib/catalog-links";
+import { catalogMarkerFor, catalogUrlHint, hasRawUrl, resolveCatalogMarkers } from "@/lib/catalog-links";
 import { insertAtCaret } from "@/lib/composer-text";
 
 interface QuickRepliesModalProps {
@@ -76,6 +76,15 @@ export function QuickRepliesModal({ isOpen, onOpenChange, quickReplies, catalogL
     textarea?.focus();
     textarea?.setSelectionRange(caret, caret);
     setIsCatalogMenuOpen(false);
+  }
+
+  // T7 (28/9/2026): una URL de Drive escrita a mano en el mensaje es lo que
+  // hizo que los asesores mandaran un link de "CATALOGO CASCOS" distinto al
+  // de Seba. Con el formulario abierto se avisa en el momento de escribirla.
+  const catalogHint = isFormOpen ? catalogUrlHint(content, label, catalogLinks) : null;
+
+  function replaceUrlWithMarker(url: string, marker: string) {
+    setContent((current) => current.split(url).join(marker));
   }
 
   async function handleSave() {
@@ -187,7 +196,30 @@ export function QuickRepliesModal({ isOpen, onOpenChange, quickReplies, catalogL
                       rows={3}
                       fullWidth
                     />
-                    {hasRawUrl(content) && (
+                    {catalogHint && (
+                      <div role="alert" className="flex flex-col gap-1 text-xs text-warning">
+                        <p className="flex items-start gap-1">
+                          <TriangleAlert size={12} className="mt-0.5 shrink-0" />
+                          <span>
+                            Usá el marcador para que Seba y los asesores manden el mismo link.{" "}
+                            {catalogHint.marker
+                              ? `Este enlace ya es el catálogo «${catalogHint.catalogLabel}»: el marcador es ${catalogHint.marker}.`
+                              : "Este enlace de Drive no coincide con ningún catálogo configurado: cárgalo en Control IA, pestaña Respuestas, y usa su marcador."}
+                          </span>
+                        </p>
+                        {catalogHint.marker && (
+                          <Button
+                            size="sm"
+                            variant="secondary"
+                            className="self-start"
+                            onPress={() => replaceUrlWithMarker(catalogHint.url, catalogHint.marker as string)}
+                          >
+                            Reemplazar por {catalogHint.marker}
+                          </Button>
+                        )}
+                      </div>
+                    )}
+                    {!catalogHint && hasRawUrl(content) && (
                       <p className="flex items-center gap-1 text-xs text-warning">
                         <TriangleAlert size={12} />
                         Este texto lleva un enlace escrito a mano; si es un catálogo, usa el marcador para que se
@@ -214,6 +246,10 @@ export function QuickRepliesModal({ isOpen, onOpenChange, quickReplies, catalogL
                   // "Usar", no solo después de pegarlo (el toast de
                   // `composer.tsx` avisa recién en ese momento).
                   const unresolved = resolveCatalogMarkers(reply.content, catalogLinks).missing;
+                  // T7 (28/9/2026): el mismo aviso, ya guardado — así el
+                  // supervisor ve en la lista cuáles llevan un enlace de Drive
+                  // a mano sin abrir cada uno.
+                  const handWrittenLink = catalogUrlHint(reply.content, reply.label, catalogLinks);
                   return (
                     <div
                       key={reply.id}
@@ -226,6 +262,12 @@ export function QuickRepliesModal({ isOpen, onOpenChange, quickReplies, catalogL
                             <span className="inline-flex items-center gap-1 text-xs font-normal text-warning">
                               <TriangleAlert size={11} />
                               Marcador sin resolver
+                            </span>
+                          )}
+                          {handWrittenLink && (
+                            <span className="inline-flex items-center gap-1 text-xs font-normal text-warning">
+                              <TriangleAlert size={11} />
+                              Enlace de Drive escrito a mano
                             </span>
                           )}
                         </p>

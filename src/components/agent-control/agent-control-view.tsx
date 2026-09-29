@@ -67,6 +67,7 @@ import {
   updateModelPricing,
 } from "@/lib/mutations";
 import type { CatalogLinkDraft } from "@/lib/catalog-links";
+import { configErrorMessage } from "@/lib/config-write";
 import { contactName, initials } from "@/lib/dashboard";
 import type { BusinessHours } from "@/lib/business-hours";
 import { TOOL_KEYS } from "@/lib/agent-tool-keys";
@@ -453,11 +454,24 @@ export function AgentControlView({
     };
   }, [supabase, scheduleRefresh]);
 
+  /**
+   * Quién puede cambiar configuración (T7, 28/9/2026). Es el mismo criterio
+   * que la RLS (`is_supervisor_or_admin()`), calculado con el rol que llegó
+   * del servidor al cargar la página: si el rol cambió después, la pantalla
+   * no se entera hasta recargar, pero el guardado ya no miente —
+   * `assertRowsAffected` lanza y el toast dice por qué.
+   */
+  const canEditConfig = currentAgent.role === "supervisor" || currentAgent.role === "admin";
+
   async function toggleTool(tool: AgentTool) {
     setTogglingToolKey(tool.key);
     try {
       await setAgentToolEnabled(supabase, currentAgent, tool.key, !tool.isEnabled);
       await refresh();
+    } catch (error) {
+      // T7 (28/9/2026): antes el rechazo salía como promesa sin atrapar y el
+      // asesor no veía nada; ahora se ve el motivo (p. ej. "Solo un supervisor…").
+      toast.danger(configErrorMessage(error, "No se pudo cambiar la herramienta."));
     } finally {
       setTogglingToolKey(null);
     }
@@ -468,6 +482,8 @@ export function AgentControlView({
     try {
       await setAgentActive(supabase, agent.id, !agent.isActive);
       await refresh();
+    } catch (error) {
+      toast.danger(configErrorMessage(error, "No se pudo cambiar el reparto de este asesor."));
     } finally {
       setTogglingAgentId(null);
     }
@@ -563,7 +579,16 @@ export function AgentControlView({
         return;
       }
 
-      await setAiGloballyEnabled(supabase, currentAgent, true);
+      try {
+        await setAiGloballyEnabled(supabase, currentAgent, true);
+      } catch (error) {
+        // T7 (28/9/2026): sin permiso la base ignoraba el UPDATE y la pantalla
+        // igual mostraba la IA "encendida". Ahora el interruptor no cambia y
+        // el motivo se ve.
+        toast.danger(configErrorMessage(error, "No se pudo encender la IA. Vuelve a intentarlo."));
+        setConfirmingAiOn(false);
+        return;
+      }
       setSettings((s) => ({ ...s, aiGloballyEnabled: true }));
 
       // El interruptor ya quedó encendido. Si el repaso falla, la IA sigue
@@ -686,6 +711,8 @@ export function AgentControlView({
     try {
       await markSuggestionReviewed(supabase, id, currentAgent);
       await refresh();
+    } catch (error) {
+      toast.danger(configErrorMessage(error, "No se pudo marcar la sugerencia como revisada."));
     } finally {
       setResolvingSuggestionId(null);
     }
@@ -771,6 +798,7 @@ export function AgentControlView({
                         // hasta que ESE asesor le escribe de verdad al cliente.
                         "Responde en toda conversación hasta que un asesor le escribe al cliente."
                       : "No va a responder en ninguna conversación hasta que la reactives."}
+                    {!canEditConfig && " Solo un supervisor o admin puede cambiarlo."}
                   </p>
                 </div>
               </div>
@@ -782,7 +810,7 @@ export function AgentControlView({
                 type="button"
                 data-on={settings.aiGloballyEnabled}
                 onClick={toggleKillSwitch}
-                disabled={togglingKillSwitch}
+                disabled={togglingKillSwitch || !canEditConfig}
                 aria-label="Interruptor global de la IA"
               />
             </section>
@@ -861,13 +889,13 @@ export function AgentControlView({
 
             <SpendCapPanel
               settings={settings}
-              canEdit={currentAgent.role === "supervisor" || currentAgent.role === "admin"}
+              canEdit={canEditConfig}
               onSave={saveSpendCap}
             />
 
             <BusinessHoursPanel
               settings={settings}
-              canEdit={currentAgent.role === "supervisor" || currentAgent.role === "admin"}
+              canEdit={canEditConfig}
               onSave={saveBusinessHours}
             />
 
@@ -1077,6 +1105,7 @@ export function AgentControlView({
                       key={usage.model}
                       usage={usage}
                       pricing={pricingByModel.get(usage.model)}
+                      canEdit={canEditConfig}
                       onSave={savePricing}
                     />
                   ))
@@ -1224,7 +1253,7 @@ export function AgentControlView({
                 unmatchedTurns={unmatchedTurns}
                 quickReplies={initialQuickReplies}
                 tags={initialTags}
-                canEdit={currentAgent.role === "supervisor" || currentAgent.role === "admin"}
+                canEdit={canEditConfig}
                 catalogLinks={catalogLinks}
                 onCreateCatalogLink={createCatalogLinkEntry}
                 onUpdateCatalogLink={updateCatalogLinkEntry}
@@ -1238,7 +1267,7 @@ export function AgentControlView({
                 currentAgent={currentAgent}
                 categories={knowledgeCategories}
                 entries={knowledgeEntries}
-                canEdit={currentAgent.role === "supervisor" || currentAgent.role === "admin"}
+                canEdit={canEditConfig}
               />
             )}
 
@@ -1255,7 +1284,7 @@ export function AgentControlView({
             {tab === "herramientas" && (
               <AgentToolsPanel
                 tools={agentTools}
-                canEdit={currentAgent.role === "supervisor" || currentAgent.role === "admin"}
+                canEdit={canEditConfig}
                 togglingKey={togglingToolKey}
                 onToggle={toggleTool}
               />
@@ -1267,6 +1296,8 @@ export function AgentControlView({
                 conversations={conversations}
                 metrics={agentMetrics}
                 togglingAgentId={togglingAgentId}
+                canManageAll={canEditConfig}
+                currentAgentId={currentAgent.id}
                 onToggleActive={toggleAgentActive}
               />
             )}
@@ -1280,10 +1311,13 @@ export function AgentControlView({
 function ModelPricingRow({
   usage,
   pricing,
+  canEdit,
   onSave,
 }: {
   usage: ModelUsageSummary;
   pricing: ModelPricing | undefined;
+  /** Solo supervisor/admin cambian tarifas (RLS `model_pricing_*`); un asesor las ve, sin inputs ni botón. */
+  canEdit: boolean;
   onSave: (model: string, inputPricePerMillion: number, outputPricePerMillion: number) => Promise<void>;
 }) {
   const [inputPrice, setInputPrice] = useState(String(pricing?.inputPricePerMillion ?? ""));
@@ -1298,6 +1332,8 @@ function ModelPricingRow({
     setSaving(true);
     try {
       await onSave(usage.model, input, output);
+    } catch (error) {
+      toast.danger(configErrorMessage(error, "No se pudo guardar la tarifa."));
     } finally {
       setSaving(false);
     }
@@ -1313,40 +1349,47 @@ function ModelPricingRow({
           {usage.usdCost !== null && !pricing?.updatedBy && <span className="ac-model-usd-note"> · tarifa de ejemplo</span>}
         </span>
       </div>
-      <div className="ac-model-pricing">
-        <label className="ac-pricing-field">
-          $/1M input
-          <input
-            type="number"
-            step="0.0001"
-            min="0"
-            className="ac-pricing-input"
-            value={inputPrice}
-            onChange={(e) => setInputPrice(e.target.value)}
-            disabled={saving}
-          />
-        </label>
-        <label className="ac-pricing-field">
-          $/1M output
-          <input
-            type="number"
-            step="0.0001"
-            min="0"
-            className="ac-pricing-input"
-            value={outputPrice}
-            onChange={(e) => setOutputPrice(e.target.value)}
-            disabled={saving}
-          />
-        </label>
-        <button
-          className="crm-pill"
-          type="button"
-          onClick={save}
-          disabled={saving || !inputPrice.trim() || !outputPrice.trim()}
-        >
-          {saving ? "Guardando…" : "Guardar"}
-        </button>
-      </div>
+      {canEdit ? (
+        <div className="ac-model-pricing">
+          <label className="ac-pricing-field">
+            $/1M input
+            <input
+              type="number"
+              step="0.0001"
+              min="0"
+              className="ac-pricing-input"
+              value={inputPrice}
+              onChange={(e) => setInputPrice(e.target.value)}
+              disabled={saving}
+            />
+          </label>
+          <label className="ac-pricing-field">
+            $/1M output
+            <input
+              type="number"
+              step="0.0001"
+              min="0"
+              className="ac-pricing-input"
+              value={outputPrice}
+              onChange={(e) => setOutputPrice(e.target.value)}
+              disabled={saving}
+            />
+          </label>
+          <button
+            className="crm-pill"
+            type="button"
+            onClick={save}
+            disabled={saving || !inputPrice.trim() || !outputPrice.trim()}
+          >
+            {saving ? "Guardando…" : "Guardar"}
+          </button>
+        </div>
+      ) : (
+        <span className="ac-model-tokens">
+          $/1M input: {pricing?.inputPricePerMillion ?? "—"} · $/1M output: {pricing?.outputPricePerMillion ?? "—"} · Solo
+          un supervisor o admin puede cambiar las tarifas.
+        </span>
+      )}
     </div>
   );
 }

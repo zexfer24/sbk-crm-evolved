@@ -12,6 +12,14 @@ interface AgentsRosterPanelProps {
   conversations: BoardConversation[];
   metrics: AgentMetrics[];
   togglingAgentId: string | null;
+  /** Supervisor/admin: puede sacar o devolver al reparto a cualquiera (RLS `agents_update_by_supervisor`). */
+  canManageAll: boolean;
+  /**
+   * Un asesor corriente solo puede tocar SU fila (`agents_update_self`,
+   * `id = auth.uid()`); en la de otro, la base ignoraba el UPDATE sin error
+   * y el interruptor parecía funcionar (T7, 28/9/2026).
+   */
+  currentAgentId: string;
   onToggleActive: (agent: Agent) => void;
 }
 
@@ -29,6 +37,8 @@ export function AgentsRosterPanel({
   conversations,
   metrics,
   togglingAgentId,
+  canManageAll,
+  currentAgentId,
   onToggleActive,
 }: AgentsRosterPanelProps) {
   const activeCount = agents.filter((a) => a.isActive).length;
@@ -73,6 +83,7 @@ export function AgentsRosterPanel({
             );
             const unanswered = assigned.filter((c) => c.unreadCount > 0);
             const isToggling = togglingAgentId === agent.id;
+            const canToggle = canManageAll || agent.id === currentAgentId;
 
             return (
               <div className="ac-agent-card" key={agent.id}>
@@ -100,7 +111,8 @@ export function AgentsRosterPanel({
                       type="button"
                       data-on={agent.isActive}
                       onClick={() => onToggleActive(agent)}
-                      disabled={isToggling}
+                      disabled={isToggling || !canToggle}
+                      title={canToggle ? undefined : "Solo un supervisor o admin puede cambiar el reparto de otro asesor."}
                       aria-label={
                         agent.isActive
                           ? `Sacar a ${agent.displayName} del reparto: la IA no le asignará chats nuevos`

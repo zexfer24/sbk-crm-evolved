@@ -14,6 +14,7 @@ import {
   updateKnowledgeEntry,
 } from "@/lib/mutations";
 import "@/components/agent-control/knowledge.css";
+import { configErrorMessage } from "@/lib/config-write";
 
 interface KnowledgePanelProps {
   currentAgent: Agent;
@@ -139,8 +140,8 @@ export function KnowledgePanel({ currentAgent, categories, entries, canEdit }: K
         await createKnowledgeEntry(supabase, currentAgent, payload);
       }
       setIsEntryOpen(false);
-    } catch {
-      toast.danger("No se pudo guardar la entrada.");
+    } catch (error) {
+      toast.danger(configErrorMessage(error, "No se pudo guardar la entrada."));
     } finally {
       setIsSaving(false);
     }
@@ -150,8 +151,8 @@ export function KnowledgePanel({ currentAgent, categories, entries, canEdit }: K
     setTogglingId(entry.id);
     try {
       await setKnowledgeEntryActive(createClient(), entry.id, !entry.isActive);
-    } catch {
-      toast.danger("No se pudo cambiar el estado de la entrada.");
+    } catch (error) {
+      toast.danger(configErrorMessage(error, "No se pudo cambiar el estado de la entrada."));
     } finally {
       setTogglingId(null);
     }
@@ -160,8 +161,8 @@ export function KnowledgePanel({ currentAgent, categories, entries, canEdit }: K
   async function handleDeleteEntry(id: string) {
     try {
       await deleteKnowledgeEntry(createClient(), id);
-    } catch {
-      toast.danger("No se pudo borrar la entrada.");
+    } catch (error) {
+      toast.danger(configErrorMessage(error, "No se pudo borrar la entrada."));
     }
   }
 
@@ -192,8 +193,8 @@ export function KnowledgePanel({ currentAgent, categories, entries, canEdit }: K
     try {
       await deleteKnowledgeCategory(createClient(), category.id);
       if (filterCategoryId === category.id) setFilterCategoryId(null);
-    } catch {
-      toast.danger("No se pudo borrar la categoría.");
+    } catch (error) {
+      toast.danger(configErrorMessage(error, "No se pudo borrar la categoría."));
     } finally {
       setConfirmingDeleteCategoryId(null);
     }

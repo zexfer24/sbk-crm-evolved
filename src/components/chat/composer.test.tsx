@@ -172,12 +172,12 @@ function buildMessage(over: Partial<Message> = {}): Message {
   };
 }
 
-function renderComposer(
+function composerElement(
   messages: Message[] = [],
   conversation: Conversation = buildConversation(),
   extra: { quickReplies?: QuickReply[]; catalogLinks?: CatalogLink[] } = {}
 ) {
-  return render(
+  return (
     <Composer
       conversation={conversation}
       messages={messages}
@@ -190,6 +190,14 @@ function renderComposer(
       onSendText={onSendTextMock}
     />
   );
+}
+
+function renderComposer(
+  messages: Message[] = [],
+  conversation: Conversation = buildConversation(),
+  extra: { quickReplies?: QuickReply[]; catalogLinks?: CatalogLink[] } = {}
+) {
+  return render(composerElement(messages, conversation, extra));
 }
 
 /** Fábrica mínima de `QuickReply` para los tests de T4b (18/9/2026). */
@@ -374,6 +382,170 @@ describe("Composer — un mensaje rápido con marcador de catálogo", () => {
     const textarea = screen.getByRole("textbox", { name: "Mensaje" }) as HTMLTextAreaElement;
     expect(textarea.value).toBe("Gracias por tu compra.");
     expect(toastWarningMock).not.toHaveBeenCalled();
+  });
+});
+
+/**
+ * T7, plan "Seba encuentra, no insiste, y el mostrador no deja a nadie
+ * esperando" (28/9/2026). Caso real: los asesores mandaban un link de
+ * "CATALOGO CASCOS" distinto al de Seba porque el mensaje rápido llevaba la
+ * URL de Drive escrita a mano. La fuente única de los catálogos tiene que
+ * gobernar también lo que SALE, no solo lo que se pega: un marcador que
+ * quedó en el cuadro se resuelve al mandar, y uno que no se puede resolver no
+ * sale (D6).
+ */
+describe("Composer — los marcadores de catálogo se resuelven al MANDAR (T7)", () => {
+  beforeEach(() => {
+    onSendTextMock.mockClear();
+    toastWarningMock.mockClear();
+  });
+
+  const cascosVigente = (url: string) => buildCatalogLink({ key: "cascos", url });
+
+  async function usarMensajeRapidoYEnviar(user: ReturnType<typeof crearUsuario>) {
+    await user.click(screen.getByRole("button", { name: "Mensajes rápidos" }));
+    await user.click(screen.getByRole("button", { name: "Usar" }));
+    await user.click(screen.getByRole("textbox", { name: "Mensaje" }));
+    await user.keyboard("{Enter}");
+  }
+
+  it("un mensaje rápido con {{catalogo:cascos}} manda la URL vigente de catalog_links", async () => {
+    const user = crearUsuario();
+    renderComposer([], undefined, {
+      quickReplies: [buildQuickReply({ content: "Catálogo de cascos: {{catalogo:cascos}}" })],
+      catalogLinks: [cascosVigente("https://drive.google.com/file/d/1oDrYm-vigente")],
+    });
+
+    await usarMensajeRapidoYEnviar(user);
+
+    expect(onSendTextMock).toHaveBeenCalledWith("Catálogo de cascos: https://drive.google.com/file/d/1oDrYm-vigente", null);
+  });
+
+  it("si el link cambia en catalog_links, el MISMO mensaje rápido manda el nuevo", async () => {
+    const user = crearUsuario();
+    const mensajeRapido = buildQuickReply({ content: "Catálogo de cascos: {{catalogo:cascos}}" });
+    const { rerender } = renderComposer([], undefined, {
+      quickReplies: [mensajeRapido],
+      catalogLinks: [cascosVigente("https://drive.google.com/file/d/1oDrYm-viejo")],
+    });
+
+    await usarMensajeRapidoYEnviar(user);
+    expect(onSendTextMock).toHaveBeenLastCalledWith("Catálogo de cascos: https://drive.google.com/file/d/1oDrYm-viejo", null);
+
+    rerender(
+      composerElement([], undefined, {
+        quickReplies: [mensajeRapido],
+        catalogLinks: [cascosVigente("https://drive.google.com/file/d/1wWJ1PvF-nuevo")],
+      })
+    );
+
+    await usarMensajeRapidoYEnviar(user);
+    expect(onSendTextMock).toHaveBeenLastCalledWith("Catálogo de cascos: https://drive.google.com/file/d/1wWJ1PvF-nuevo", null);
+    expect(onSendTextMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("un marcador escrito a mano en el cuadro también se resuelve al enviar", async () => {
+    const user = crearUsuario();
+    renderComposer([], undefined, {
+      catalogLinks: [cascosVigente("https://drive.google.com/file/d/1oDrYm-vigente")],
+    });
+
+    const textarea = screen.getByRole("textbox", { name: "Mensaje" });
+    await user.click(textarea);
+    await user.paste("Mira {{catalogo:cascos}}");
+    await user.keyboard("{Enter}");
+
+    expect(onSendTextMock).toHaveBeenCalledWith("Mira https://drive.google.com/file/d/1oDrYm-vigente", null);
+  });
+
+  it("un marcador que no se puede resolver NO sale: el texto se queda en el cuadro y se avisa", async () => {
+    const user = crearUsuario();
+    renderComposer([], undefined, {
+      quickReplies: [buildQuickReply({ content: "Acá va {{catalogo:cascos}}" })],
+      catalogLinks: [], // catálogo inexistente: D6, el marcador crudo nunca llega al cliente
+    });
+
+    await usarMensajeRapidoYEnviar(user);
+
+    expect(onSendTextMock).not.toHaveBeenCalled();
+    expect((screen.getByRole("textbox", { name: "Mensaje" }) as HTMLTextAreaElement).value).toBe("Acá va {{catalogo:cascos}}");
+    expect(toastWarningMock).toHaveBeenCalledWith("El catálogo «cascos» no está configurado");
+  });
+
+  it("un catálogo apagado cuenta como sin resolver y tampoco sale", async () => {
+    const user = crearUsuario();
+    renderComposer([], undefined, {
+      quickReplies: [buildQuickReply({ content: "Acá va {{catalogo:cascos}}" })],
+      catalogLinks: [buildCatalogLink({ key: "cascos", isActive: false })],
+    });
+
+    await usarMensajeRapidoYEnviar(user);
+
+    expect(onSendTextMock).not.toHaveBeenCalled();
+  });
+
+  it("un marcador mal escrito ({{catalogo:cascos_nuevos}}) tampoco sale", async () => {
+    const user = crearUsuario();
+    renderComposer([], undefined, { catalogLinks: [cascosVigente("https://drive.google.com/file/d/1oDrYm")] });
+
+    const textarea = screen.getByRole("textbox", { name: "Mensaje" });
+    await user.click(textarea);
+    await user.paste("Mira {{catalogo:cascos_nuevos}}");
+    await user.keyboard("{Enter}");
+
+    expect(onSendTextMock).not.toHaveBeenCalled();
+    expect(toastWarningMock).toHaveBeenCalled();
+  });
+
+  it("un texto sin marcadores sale igual que antes, sin tocar el catálogo", async () => {
+    const user = crearUsuario();
+    renderComposer([], undefined, { catalogLinks: [cascosVigente("https://drive.google.com/file/d/1oDrYm")] });
+
+    await user.type(screen.getByRole("textbox", { name: "Mensaje" }), "Hola, ¿en qué te ayudo?");
+    await user.keyboard("{Enter}");
+
+    expect(onSendTextMock).toHaveBeenCalledWith("Hola, ¿en qué te ayudo?", null);
+    expect(toastWarningMock).not.toHaveBeenCalled();
+  });
+
+  function pegarFoto(textarea: HTMLElement) {
+    fireEvent.paste(textarea, {
+      clipboardData: {
+        files: [new File([new Uint8Array([1])], "a.png", { type: "image/png" })],
+        items: [],
+        getData: () => "",
+      },
+    });
+  }
+
+  it("el pie de una foto también resuelve el marcador", async () => {
+    const user = crearUsuario();
+    sendMediaMessageMock.mockClear();
+    renderComposer([], undefined, { catalogLinks: [cascosVigente("https://drive.google.com/file/d/1oDrYm-vigente")] });
+    const textarea = screen.getByRole("textbox", { name: "Mensaje" });
+
+    pegarFoto(textarea);
+    await user.click(textarea);
+    await user.paste("Catálogo {{catalogo:cascos}}");
+    await user.click(screen.getByRole("button", { name: /enviar/i }));
+
+    await waitFor(() => expect(sendMediaMessageMock).toHaveBeenCalledTimes(1));
+    expect(sendMediaMessageMock.mock.calls[0][3]).toBe("Catálogo https://drive.google.com/file/d/1oDrYm-vigente");
+  });
+
+  it("con un marcador sin resolver en el pie, la foto no se sube ni se manda", async () => {
+    const user = crearUsuario();
+    sendMediaMessageMock.mockClear();
+    renderComposer([], undefined, { catalogLinks: [] });
+    const textarea = screen.getByRole("textbox", { name: "Mensaje" });
+
+    pegarFoto(textarea);
+    await user.click(textarea);
+    await user.paste("Catálogo {{catalogo:cascos}}");
+    await user.click(screen.getByRole("button", { name: /enviar/i }));
+
+    expect(sendMediaMessageMock).not.toHaveBeenCalled();
+    expect(toastWarningMock).toHaveBeenCalledWith("El catálogo «cascos» no está configurado");
   });
 });
 

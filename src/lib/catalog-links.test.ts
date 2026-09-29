@@ -3,6 +3,7 @@ import {
   CATALOG_LIST_MARKER,
   CATALOG_MARKER,
   catalogMarkerFor,
+  catalogUrlHint,
   formatCatalogList,
   hasRawUrl,
   resolveCatalogMarkers,
@@ -363,5 +364,99 @@ describe("resolveCatalogMarkers — el reset de lastIndex entre dos marcadores p
       links
     );
     expect(missing.sort()).toEqual(["no-existe", "otro-no-existe"]);
+  });
+});
+
+/**
+ * T7, plan "Seba encuentra, no insiste, y el mostrador no deja a nadie
+ * esperando" (28/9/2026). Causa CONFIRMADA en producción el 28/9/2026: el
+ * mensaje rápido "CATALOGO CASCOS" llevaba la URL de Drive escrita a mano
+ * (`1wWJ1PvF…`, editada ese día a las 15:44 UTC) mientras
+ * `catalog_links.cascos` seguía en `1oDrYm…` desde el 25/9: los asesores y
+ * Seba leían de dos lugares distintos. `quick_replies` lo escribe cualquier
+ * asesor (RLS `is_agent()`), así que el panel tiene que avisar en el momento.
+ */
+describe("catalogUrlHint — una URL de Drive escrita a mano en un mensaje rápido", () => {
+  const cascos = link({ id: "c1", key: "cascos", label: "Cascos", url: "https://drive.google.com/file/d/1oDrYmAAA/view?usp=sharing" });
+
+  it("sin ninguna URL de Drive no hay aviso", () => {
+    expect(catalogUrlHint("Gracias por tu compra.", "Catálogo", [cascos])).toBeNull();
+    expect(catalogUrlHint("Mira https://sbkmotors.com/catalogo", "Catálogo", [cascos])).toBeNull();
+  });
+
+  it("una URL que ES la de un catálogo configurado ofrece el marcador exacto", () => {
+    const hint = catalogUrlHint(
+      "Catálogo de cascos: https://drive.google.com/file/d/1oDrYmAAA/view?usp=sharing",
+      "CATALOGO CASCOS",
+      [cascos]
+    );
+
+    expect(hint).toEqual({
+      kind: "coincide",
+      url: "https://drive.google.com/file/d/1oDrYmAAA/view?usp=sharing",
+      marker: "{{catalogo:cascos}}",
+      catalogLabel: "Cascos",
+    });
+  });
+
+  it("reconoce el mismo archivo aunque cambie la forma de la URL (mismo ID de Drive)", () => {
+    const hint = catalogUrlHint("https://drive.google.com/open?id=1oDrYmAAA", "Cascos", [cascos]);
+
+    expect(hint?.kind).toBe("coincide");
+    expect(hint?.marker).toBe("{{catalogo:cascos}}");
+  });
+
+  it("no arrastra la puntuación pegada a la URL", () => {
+    const hint = catalogUrlHint("Aquí: https://drive.google.com/file/d/1oDrYmAAA/view?usp=sharing.", "Cascos", [cascos]);
+
+    expect(hint?.kind).toBe("coincide");
+    expect(hint?.url.endsWith(".")).toBe(false);
+  });
+
+  it("el caso real: 'CATALOGO CASCOS' con otro ID de Drive (1wWJ1PvF…) avisa sin marcador sugerido", () => {
+    const hint = catalogUrlHint(
+      "Catálogo de cascos 👇 https://drive.google.com/file/d/1wWJ1PvFBBB/view",
+      "CATALOGO CASCOS",
+      [cascos]
+    );
+
+    expect(hint).toEqual({
+      kind: "parece-catalogo",
+      url: "https://drive.google.com/file/d/1wWJ1PvFBBB/view",
+      marker: null,
+      catalogLabel: null,
+    });
+  });
+
+  it("parece catálogo también por el texto (sin la palabra en el título)", () => {
+    const hint = catalogUrlHint("Te dejo el catálogo: https://drive.google.com/file/d/1xyz/view", "Enviar", []);
+
+    expect(hint?.kind).toBe("parece-catalogo");
+  });
+
+  it("una URL de Drive que no coincide y no parece catálogo (una foto suelta) no avisa", () => {
+    expect(catalogUrlHint("Mira la foto: https://drive.google.com/file/d/1foto/view", "Foto del local", [cascos])).toBeNull();
+  });
+
+  it("acepta docs.google.com y la palabra 'catalogo' sin tilde ni mayúsculas", () => {
+    const hint = catalogUrlHint("CATALOGO https://docs.google.com/document/d/1doc/edit", "x", []);
+
+    expect(hint?.kind).toBe("parece-catalogo");
+  });
+
+  it("con varias URLs, la que coincide manda", () => {
+    const hint = catalogUrlHint(
+      "https://drive.google.com/file/d/1otra/view y https://drive.google.com/file/d/1oDrYmAAA/view",
+      "CATALOGO",
+      [cascos]
+    );
+
+    expect(hint?.kind).toBe("coincide");
+  });
+
+  it("dos llamadas seguidas dan el mismo resultado (los regex de módulo no arrastran lastIndex)", () => {
+    const texto = "https://drive.google.com/file/d/1oDrYmAAA/view";
+    expect(catalogUrlHint(texto, "Cascos", [cascos])?.kind).toBe("coincide");
+    expect(catalogUrlHint(texto, "Cascos", [cascos])?.kind).toBe("coincide");
   });
 });

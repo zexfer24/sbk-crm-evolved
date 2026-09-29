@@ -31,7 +31,7 @@ function createFakeSupabase() {
           },
           update: (payload: Record<string, unknown>) => {
             payloadUpdate = payload;
-            return { eq: async () => ({ error: null }) };
+            return { eq: () => ({ select: async () => ({ data: [{ id: "pb-1" }], error: null }) }) };
           },
         };
       }
@@ -39,7 +39,7 @@ function createFakeSupabase() {
       if (table === "ai_playbook_tags") {
         return {
           select: () => ({ eq: async () => ({ data: [], error: null }) }),
-          delete: () => ({ eq: () => ({ in: async () => ({ error: null }) }) }),
+          delete: () => ({ eq: () => ({ in: () => ({ select: async () => ({ data: [{ tag_id: "t" }], error: null }) }) }) }),
           insert: async () => ({ error: null }),
         };
       }

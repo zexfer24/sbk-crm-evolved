@@ -58,6 +58,8 @@ describe("AgentsRosterPanel — la caja Sin asignar ya no se pinta", () => {
         conversations={sinAsignar}
         metrics={[]}
         togglingAgentId={null}
+        canManageAll
+        currentAgentId="a1"
         onToggleActive={vi.fn()}
       />
     );
@@ -76,6 +78,8 @@ describe("AgentsRosterPanel — la caja Sin asignar ya no se pinta", () => {
         conversations={sinAsignar}
         metrics={[]}
         togglingAgentId={null}
+        canManageAll
+        currentAgentId="a1"
         onToggleActive={vi.fn()}
       />
     );
@@ -95,6 +99,8 @@ describe("AgentsRosterPanel — la caja Sin asignar ya no se pinta", () => {
         conversations={sinAsignar}
         metrics={[]}
         togglingAgentId={null}
+        canManageAll
+        currentAgentId="a1"
         onToggleActive={vi.fn()}
       />
     );
@@ -112,6 +118,8 @@ describe("AgentsRosterPanel — la caja Sin asignar ya no se pinta", () => {
         conversations={asignados}
         metrics={[]}
         togglingAgentId={null}
+        canManageAll
+        currentAgentId="a1"
         onToggleActive={vi.fn()}
       />
     );
@@ -135,11 +143,63 @@ describe("AgentsRosterPanel — la caja Sin asignar ya no se pinta", () => {
         conversations={sinAsignar}
         metrics={[]}
         togglingAgentId={null}
+        canManageAll
+        currentAgentId="a1"
         onToggleActive={vi.fn()}
       />
     );
 
     const enlace = screen.getByText("1 sin asignar");
     expect(enlace).toHaveAttribute("href", "/inbox");
+  });
+});
+
+/**
+ * T7, plan "Seba encuentra, no insiste, y el mostrador no deja a nadie
+ * esperando" (28/9/2026). El interruptor del reparto no tenía puerta de rol:
+ * un asesor podía pulsar el de otro y la base ignoraba el UPDATE sin error
+ * (`agents_update_self` solo deja tocar la fila propia; el resto es de
+ * supervisor/admin). Un asesor corriente conserva el suyo.
+ */
+describe("AgentsRosterPanel — el reparto solo lo cambia quien puede", () => {
+  const agents = [agente("a1", "Ana"), agente("a2", "Beto")];
+
+  function botonesDeReparto() {
+    return screen.getAllByRole("button", { name: /reparto|Sacar a|Devolver a/ });
+  }
+
+  it("un asesor corriente puede cambiar su propia fila y no la de otro", () => {
+    render(
+      <AgentsRosterPanel
+        agents={agents}
+        conversations={[]}
+        metrics={[]}
+        togglingAgentId={null}
+        canManageAll={false}
+        currentAgentId="a1"
+        onToggleActive={vi.fn()}
+      />
+    );
+
+    expect(screen.getByRole("button", { name: /Sacar a Ana/ })).toBeEnabled();
+    expect(screen.getByRole("button", { name: /Sacar a Beto/ })).toBeDisabled();
+    expect(botonesDeReparto()).toHaveLength(2);
+  });
+
+  it("un supervisor puede cambiar cualquier fila", () => {
+    render(
+      <AgentsRosterPanel
+        agents={agents}
+        conversations={[]}
+        metrics={[]}
+        togglingAgentId={null}
+        canManageAll
+        currentAgentId="a1"
+        onToggleActive={vi.fn()}
+      />
+    );
+
+    expect(screen.getByRole("button", { name: /Sacar a Ana/ })).toBeEnabled();
+    expect(screen.getByRole("button", { name: /Sacar a Beto/ })).toBeEnabled();
   });
 });

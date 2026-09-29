@@ -23,14 +23,14 @@ function createFakeSupabase() {
           insert: () => ({
             select: () => ({ single: async () => ({ data: { id: "pb-nuevo" }, error: null }) }),
           }),
-          update: () => ({ eq: async () => ({ error: null }) }),
+          update: () => ({ eq: () => ({ select: async () => ({ data: [{ id: "pb-1" }], error: null }) }) }),
         };
       }
 
       if (table === "ai_playbook_tags") {
         return {
           select: () => ({ eq: async () => ({ data: [], error: null }) }),
-          delete: () => ({ eq: () => ({ in: async () => ({ error: null }) }) }),
+          delete: () => ({ eq: () => ({ in: () => ({ select: async () => ({ data: [{ tag_id: "t" }], error: null }) }) }) }),
           insert: async () => ({ error: null }),
         };
       }

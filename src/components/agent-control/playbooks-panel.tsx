@@ -12,6 +12,7 @@ import { hasHardcodedPrice } from "@/lib/playbook-price";
 import { catalogMarkerFor, hasRawUrl, resolveCatalogMarkers, type CatalogLinkDraft } from "@/lib/catalog-links";
 import { insertAtCaret } from "@/lib/composer-text";
 import { CatalogLinksPanel } from "@/components/agent-control/catalog-links-panel";
+import { configErrorMessage } from "@/lib/config-write";
 
 interface PlaybooksPanelProps {
   playbooks: Playbook[];
@@ -205,7 +206,7 @@ export function PlaybooksPanel({
         toast.danger(err.message);
       } else {
         const isDuplicate = err instanceof Error && err.message.includes("duplicate key");
-        toast.danger(isDuplicate ? "Ya existe un escenario con ese nombre." : "No se pudo guardar el escenario.");
+        toast.danger(isDuplicate ? "Ya existe un escenario con ese nombre." : configErrorMessage(err, "No se pudo guardar el escenario."));
       }
     } finally {
       setIsSaving(false);
@@ -245,8 +246,8 @@ export function PlaybooksPanel({
     setTogglingId(playbook.id);
     try {
       await setPlaybookActive(createClient(), playbook.id, !playbook.isActive);
-    } catch {
-      toast.danger("No se pudo cambiar el estado del escenario.");
+    } catch (error) {
+      toast.danger(configErrorMessage(error, "No se pudo cambiar el estado del escenario."));
     } finally {
       setTogglingId(null);
     }
@@ -255,8 +256,8 @@ export function PlaybooksPanel({
   async function handleDelete(id: string) {
     try {
       await deletePlaybook(createClient(), id);
-    } catch {
-      toast.danger("No se pudo borrar el escenario.");
+    } catch (error) {
+      toast.danger(configErrorMessage(error, "No se pudo borrar el escenario."));
     }
   }
 

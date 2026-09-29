@@ -12,6 +12,7 @@ import {
   type DayKey,
   type TimeRange,
 } from "@/lib/business-hours";
+import { configErrorMessage } from "@/lib/config-write";
 
 interface BusinessHoursPanelProps {
   settings: AgentSettings;
@@ -144,8 +145,8 @@ export function BusinessHoursPanel({ settings, canEdit, onSave }: BusinessHoursP
     try {
       await onSave(draft);
       toast.success("Horario de atención actualizado.");
-    } catch {
-      toast.danger("No se pudo guardar el horario de atención.");
+    } catch (error) {
+      toast.danger(configErrorMessage(error, "No se pudo guardar el horario de atención."));
     } finally {
       setIsSaving(false);
     }

@@ -4,6 +4,7 @@ import { useState } from "react";
 import { Wallet } from "lucide-react";
 import { Button, Input, toast } from "@heroui/react";
 import type { AgentSettings } from "@/lib/types";
+import { configErrorMessage } from "@/lib/config-write";
 
 interface SpendCapPanelProps {
   settings: AgentSettings;
@@ -40,8 +41,8 @@ export function SpendCapPanel({ settings, canEdit, onSave }: SpendCapPanelProps)
     setIsSaving(true);
     try {
       await onSave(parsed);
-    } catch {
-      toast.danger("No se pudo guardar el tope de gasto.");
+    } catch (error) {
+      toast.danger(configErrorMessage(error, "No se pudo guardar el tope de gasto."));
     } finally {
       setIsSaving(false);
     }

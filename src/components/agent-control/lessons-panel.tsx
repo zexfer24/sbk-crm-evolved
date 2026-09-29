@@ -6,6 +6,7 @@ import { Button, toast } from "@heroui/react";
 import type { Agent, AiLesson } from "@/lib/types";
 import { createClient } from "@/lib/supabase/client";
 import { deleteLesson, setLessonActive } from "@/lib/mutations";
+import { configErrorMessage } from "@/lib/config-write";
 
 // ---------------------------------------------------------------------------
 // "Lecciones de Seba" (T6, plan "Seba atiende el mostrador", 18/9/2026,
@@ -63,8 +64,8 @@ export function LessonsPanel({ currentAgent, lessons, onChanged }: LessonsPanelP
     try {
       await setLessonActive(createClient(), lesson.id, !lesson.isActive);
       await onChanged?.();
-    } catch {
-      toast.danger("No se pudo cambiar el estado de la lección.");
+    } catch (error) {
+      toast.danger(configErrorMessage(error, "No se pudo cambiar el estado de la lección."));
     } finally {
       setTogglingId(null);
     }
@@ -78,8 +79,8 @@ export function LessonsPanel({ currentAgent, lessons, onChanged }: LessonsPanelP
     try {
       await deleteLesson(createClient(), lesson.id);
       await onChanged?.();
-    } catch {
-      toast.danger("No se pudo borrar la lección.");
+    } catch (error) {
+      toast.danger(configErrorMessage(error, "No se pudo borrar la lección."));
     } finally {
       setConfirmingDeleteId(null);
     }

@@ -13,6 +13,7 @@ import {
   type CatalogLinkDraft,
   type CatalogLinkField,
 } from "@/lib/catalog-links";
+import { configErrorMessage } from "@/lib/config-write";
 
 // ---------------------------------------------------------------------------
 // "Enlaces de catálogo" (T4a, plan "Nada sin leer, un solo catálogo y la
@@ -168,8 +169,8 @@ export function CatalogLinksPanel({
       }
       setIsFormOpen(false);
       setFieldErrors({});
-    } catch {
-      toast.danger("No se pudo guardar el catálogo.");
+    } catch (error) {
+      toast.danger(configErrorMessage(error, "No se pudo guardar el catálogo."));
     } finally {
       setIsSaving(false);
     }
@@ -190,8 +191,8 @@ export function CatalogLinksPanel({
     setTogglingId(link.id);
     try {
       await onToggle(link.id, !link.isActive);
-    } catch {
-      toast.danger("No se pudo cambiar el estado del catálogo.");
+    } catch (error) {
+      toast.danger(configErrorMessage(error, "No se pudo cambiar el estado del catálogo."));
     } finally {
       setTogglingId(null);
     }
@@ -248,8 +249,8 @@ export function CatalogLinksPanel({
     }
     try {
       await onDelete(link.id);
-    } catch {
-      toast.danger("No se pudo borrar el catálogo.");
+    } catch (error) {
+      toast.danger(configErrorMessage(error, "No se pudo borrar el catálogo."));
     } finally {
       setConfirmingDeleteId(null);
     }
