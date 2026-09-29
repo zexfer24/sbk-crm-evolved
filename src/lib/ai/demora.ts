@@ -101,7 +101,11 @@ export interface ResultadoDemora {
   accion: AccionDemora;
   /** Episodio evaluado (la clave `(conversation_id, episode_at)` de la fila candado). Ausente si no hay episodio. */
   episodio?: { origen: OrigenEpisodio; episodeAt: Date };
-  /** Minutos enteros de espera: para `responder`, desde el mensaje que Seba contesta; para el resto, desde `episodeAt`. */
+  /**
+   * Minutos enteros de espera: para `responder`, desde el mensaje que Seba
+   * contesta; para `reasignar`, desde que el asesor saliente recibió el caso
+   * (`ultimaReasignacionAt ?? episodeAt`); para `avisar_supervisor`, desde `episodeAt`.
+   */
   esperaMinutos?: number;
   /** Solo con `reasignar`: asesor actual + los que ya rotaron en el episodio (D4). */
   excluir?: string[];
@@ -228,7 +232,10 @@ export function evaluarDemora(estado: EstadoDemora, now: Date, businessHours: Bu
       return {
         accion: "reasignar",
         episodio,
-        esperaMinutos: minutosEnteros(now, episodeAt),
+        // Lo que el asesor SALIENTE tuvo el caso (desde que se lo asignaron), no
+        // desde la escalada: la nota de la 2.ª reasignación decía "no contestó en
+        // 30 min" cuando lo tuvo 15 (29/9/2026, prueba a mano).
+        esperaMinutos: minutosEnteros(now, relojRotacion),
         excluir,
         reasignaciones,
         razon: "quince_minutos_sin_asesor",

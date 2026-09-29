@@ -108,6 +108,35 @@ describe("evaluarDemora — origen 1: escalada abierta sin mensaje del asesor", 
     expect([...(r.excluir ?? [])].sort()).toEqual([ASESOR_A, ASESOR_B].sort());
   });
 
+  it("esperaMinutos de la segunda reasignación cuenta lo que el asesor saliente tuvo el caso (15), no desde la escalada (30)", () => {
+    // 29/9/2026, prueba a mano: la nota decía "ASESOR 3 no contestó en 30 min"
+    // cuando ese asesor recibió el caso a las 10:15 y lo perdió a las 10:30.
+    const e = escaladaDe10({
+      asesorAsignadoId: ASESOR_B,
+      traspasos: [
+        { reason: "escalada", createdAt: lun(10, 0) },
+        { reason: "reasignada_por_demora", createdAt: lun(10, 15) },
+      ],
+      episodios: [
+        episodio({
+          episodeAt: lun(10, 0),
+          reassignments: 1,
+          agentesPrevios: [ASESOR_A],
+          ultimaReasignacionAt: lun(10, 15),
+        }),
+      ],
+    });
+    const r = evaluarDemora(e, lun(10, 30), HORARIO);
+    expect(r.accion).toBe("reasignar");
+    expect(r.esperaMinutos).toBe(15);
+  });
+
+  it("esperaMinutos de la primera reasignación sigue contando desde la escalada", () => {
+    const r = evaluarDemora(escaladaDe10(), lun(10, 15), HORARIO);
+    expect(r.accion).toBe("reasignar");
+    expect(r.esperaMinutos).toBe(15);
+  });
+
   it("14:59 no reasigna y 15:00 sí (no se adelanta el plazo)", () => {
     const e = escaladaDe10();
     expect(evaluarDemora(e, lun(10, 14, 59), HORARIO).accion).toBe("nada");

@@ -712,6 +712,12 @@ describe("procesarDemoras — el recorrido del plan de punta a punta", () => {
     await pasada(db, lun(10, 30));
     expect(db.conv("conv-1").assigned_agent_id).toBe(C);
     expect(db.handoffs("reasignada_por_demora")).toHaveLength(2);
+    // La nota de cada reasignación cuenta lo que ESE asesor tuvo el caso: 15 min
+    // los dos, no 15 y 30 (29/9/2026, prueba a mano).
+    const textos = db.tables.messages.filter((m) => m.is_internal_note === true).map((m) => String(m.content));
+    expect(textos).toHaveLength(2);
+    expect(textos[0]).toContain("Ana no contestó en 15 min");
+    expect(textos[1]).toContain("Beto no contestó en 15 min");
 
     // 10:45: tope. Aviso al supervisor al MISMO dueño, sin rotar.
     const r = await pasada(db, lun(10, 45));
