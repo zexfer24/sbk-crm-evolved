@@ -3,6 +3,7 @@ import {
   armarCotizacion,
   armarMensajeDeCotizacion,
   armarMensajeDePregunta,
+  lineaMasOpciones,
   preambuloDelModelo,
 } from "@/lib/ai/quote-message";
 import { moneyFigures } from "@/lib/ai/price-guard";
@@ -219,5 +220,61 @@ describe("armarMensajeDePregunta — la única pregunta de filtro sale LITERAL",
         PREGUNTA_FILTRO_PRODUCTO
       );
     }
+  });
+});
+
+/**
+ * 29/9/2026 (corrección de T3a/T3b, escenario "necesito un asiento sbr"): con la
+ * moto calzando y más de tres con existencia, se cotizan tres y el bloque
+ * cierra con cuántas opciones más hay. El texto lo pone el código, literal.
+ */
+describe("la línea de 'opciones más para tu moto' (29/9/2026)", () => {
+  const MAS_3 = "Hay 3 opciones más para tu moto; el asesor te muestra el resto.";
+
+  it("plural: 'Hay N opciones más para tu moto; el asesor te muestra el resto.'", () => {
+    expect(lineaMasOpciones(3)).toBe(MAS_3);
+  });
+
+  it("singular con N = 1", () => {
+    expect(lineaMasOpciones(1)).toBe("Hay 1 opción más para tu moto; el asesor te muestra el resto.");
+  });
+
+  it("el bloque la trae DESPUÉS de las líneas cotizadas, en el mismo bloque", () => {
+    const bloque = armarCotizacion([inca], { masOpciones: [{ productoPedido: null, cantidad: 3 }] });
+    expect(bloque).toBe(`• ACEITE INCA 20W50 4T: $2,20 BCV (Bs. 87,00) — 6 disponibles\n${MAS_3}`);
+  });
+
+  it("sin cantidad (o en cero) no agrega nada", () => {
+    expect(armarCotizacion([inca], { masOpciones: [] })).not.toContain("opci");
+    expect(armarCotizacion([inca], { masOpciones: [{ productoPedido: null, cantidad: 0 }] })).not.toContain("opci");
+  });
+
+  it("en una lista va por producto, dentro de su grupo", () => {
+    const asiento = { ...inca, productId: "a1", nombre: "ASIENTO SBR A", productoPedido: "asiento" };
+    const cubierta = { ...inca, productId: "c1", nombre: "CUBIERTA SBR", productoPedido: "cubierta" };
+    const bloque = armarCotizacion([asiento, cubierta], { masOpciones: [{ productoPedido: "asiento", cantidad: 2 }] });
+
+    expect(bloque.split("\n\n")).toEqual([
+      `*asiento*\n• ASIENTO SBR A: ${formatQuote(2.2, 87)} — 6 disponibles\nHay 2 opciones más para tu moto; el asesor te muestra el resto.`,
+      `*cubierta*\n• CUBIERTA SBR: ${formatQuote(2.2, 87)} — 6 disponibles`,
+    ]);
+  });
+
+  it("el mensaje completo la pone ANTES del texto fijo, y no cambia el texto fijo", () => {
+    const { texto } = armarMensajeDeCotizacion({
+      textoModelo: "",
+      lineas: [inca],
+      masOpciones: [{ productoPedido: null, cantidad: 3 }],
+    });
+
+    expect(texto).toBe(
+      `• ACEITE INCA 20W50 4T: $2,20 BCV (Bs. 87,00) — 6 disponibles\n${MAS_3}\n\n${TEXTO_CONFIRMAR_INVENTARIO}`
+    );
+  });
+
+  it("la línea no lleva cifras de dinero (no dispara la guarda de precios) ni delata identidad", () => {
+    const linea = lineaMasOpciones(7);
+    expect(moneyFigures(linea)).toEqual([]);
+    expect(revealsIdentity(linea)).toBeNull();
   });
 });

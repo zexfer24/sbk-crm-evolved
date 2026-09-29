@@ -285,6 +285,24 @@ export interface CatalogOutcome {
    * T6 escribe en `agent_turns`.
    */
   consultas: ConsultaCatalogo[];
+  /**
+   * 29/9/2026 (corrección de T3a, escenario "necesito un asiento sbr"): cuando
+   * la moto calza y hay MÁS de tres con existencia, se cotizan tres y aquí se
+   * anota cuántas otras con existencia quedaron sin mostrar (una entrada por
+   * búsqueda que recortó; `productoPedido` es el de la lista, o `null`). Vive
+   * aparte de `cotizacion` (que es por producto) y de `consultas` (que se
+   * persiste en `agent_turns.catalog_queries` y no debe cambiar de forma):
+   * `quote-message.ts` lo lee para cerrar el grupo con «Hay N opciones más
+   * para tu moto…», ANTES del texto fijo.
+   */
+  masOpciones: MasOpciones[];
+}
+
+/** Ver `CatalogOutcome.masOpciones`. */
+export interface MasOpciones {
+  productoPedido: string | null;
+  /** Otras con existencia que quedaron sin mostrar: el conteo de la base menos las que se cotizaron. */
+  cantidad: number;
 }
 
 /** Un producto que se le cotiza al cliente. Ver `CatalogOutcome.cotizacion`. */
@@ -438,6 +456,27 @@ function masViejo(fechas: (string | null)[]): string | null {
   return validas.length === 0 ? null : validas.reduce((viejo, f) => (f < viejo ? f : viejo));
 }
 
+/**
+ * Las filas con existencia ordenadas para elegir las tres que se cotizan
+ * cuando la moto calza y hay más de tres (29/9/2026). El orden que ya trae
+ * `buscar_productos` (puntaje, moto con nombre, empieza con el producto,
+ * cilindrada, opcionales) se CONSERVA: es relevancia. Lo que cambia es el
+ * desempate final: SQL desempata por nombre; acá, a igual relevancia gana la
+ * de MAYOR existencia (`stock_quantity` desc), sin migración. `Array.sort` es
+ * estable, así que a igualdad total queda el orden de la base. Límite: solo
+ * ve las filas que llegaron (`LIMITE_REINTENTO` = 50); con más de 50 del
+ * máximo+moto, las que SQL dejó fuera por nombre no compiten por existencia.
+ */
+function ordenarPorExistencia(filas: FilaBusqueda[]): FilaBusqueda[] {
+  return [...filas].sort(
+    (a, b) =>
+      Number(b.empieza_con_producto) - Number(a.empieza_con_producto) ||
+      b.puntaje_moto_cilindrada - a.puntaje_moto_cilindrada ||
+      b.puntaje_opcional - a.puntaje_opcional ||
+      b.stock_quantity - a.stock_quantity
+  );
+}
+
 type FilaBusqueda = Database["public"]["Functions"]["buscar_productos"]["Returns"][number];
 
 /** Un repuesto ya con el precio calculado, listo para mostrarle al modelo y para `cotizacion`. */
@@ -458,6 +497,8 @@ interface ResultadoUno {
   quoted: Cotizado[];
   /** Hay más filas del máximo que las que caben. */
   hayMas: boolean;
+  /** Con la moto calzando y más de tres con existencia: cuántas otras con existencia no se mostraron (0 en cualquier otro caso). */
+  masOpciones: number;
   /** Caso + (recorte) — la antigüedad del inventario la agrega quien arma la respuesta. */
   instrucciones: string[];
   /** Solo con `estado = "generico"`. */
@@ -550,6 +591,7 @@ export function buildCatalogTool(
       estado,
       quoted: [],
       hayMas: false,
+      masOpciones: 0,
       instrucciones: [],
       preguntaFiltro: null,
       clave: "",
@@ -713,7 +755,20 @@ export function buildCatalogTool(
     // lista; los otros muestran una selección a propósito y no dicen "hay más".
     let avisarRecorte = false;
 
-    if (motoCalza || coinciden <= MAX_SIN_PREGUNTA) {
+    // 29/9/2026, escenario a mano "necesito un asiento sbr": con seis
+    // "ASIENTO SBR …" con stock, "sbr" viaja a `moto` y los nombres lo
+    // contienen, así que la moto "calza" y esta rama cotizaba LOS SEIS (en
+    // producción hay muchos asientos con SBR en el nombre: saldría una lista
+    // larga). DECISIÓN DEL OPERADOR: con la moto calzando y MÁS de tres con
+    // existencia no se pregunta (el cliente ya filtró lo que pudo) ni se
+    // vuelca todo: se cotizan las tres más relevantes con existencia y se
+    // escala para que el asesor muestre el resto (`topeConMoto`). `conStock`
+    // ya cuenta solo las de esa moto (conteo de la base, nunca lo recortado).
+    // Con tres o menos con existencia, o con cero, nada cambia.
+    const topeConMoto = motoCalza && conStock > MAX_SIN_PREGUNTA;
+    let masOpciones = 0;
+
+    if ((motoCalza && !topeConMoto) || (!motoCalza && coinciden <= MAX_SIN_PREGUNTA)) {
       mostrados = candidatos;
       estado = mostrados.some((r) => r.stock_quantity > 0) ? "con_existencia" : "agotados";
       avisarRecorte = estado === "con_existencia" && hayMas;
@@ -724,13 +779,18 @@ export function buildCatalogTool(
       mostrados = candidatos;
       estado = "agotados";
     } else {
-      // Más de tres filas calzan, la moto no las distingue y alguna tiene
-      // stock. Lo que se cotiza son las que tienen existencia; si las que
-      // tienen stock quedaron más allá de `p_limite` (el orden las deja
-      // detrás de las agotadas con mejor coincidencia de nombre), se vuelve
-      // a pedir con más filas para encontrarlas.
-      const necesarias = Math.min(conStock, MAX_OPCIONES_SIN_PREGUNTA);
-      if (candidatos.filter((r) => r.stock_quantity > 0).length < necesarias) {
+      // Más de tres filas calzan y alguna tiene stock. Lo que se cotiza son
+      // las que tienen existencia; si las que hacen falta quedaron más allá
+      // de `p_limite` (el orden las deja detrás de las agotadas con mejor
+      // coincidencia de nombre), se vuelve a pedir con más filas para
+      // encontrarlas. Con `topeConMoto` hacen falta TODAS las del máximo+moto
+      // (hasta `LIMITE_REINTENTO`): para elegir las de mayor existencia hay
+      // que verlas todas, no solo las que cupieron en las primeras 10.
+      const necesarias = topeConMoto
+        ? Math.min(coinciden, LIMITE_REINTENTO)
+        : Math.min(conStock, MAX_OPCIONES_SIN_PREGUNTA);
+      const yaTraidas = topeConMoto ? candidatos.length : candidatos.filter((r) => r.stock_quantity > 0).length;
+      if (yaTraidas < necesarias) {
         const { data: masFilas, error: errorReintento } = await consultar(LIMITE_REINTENTO);
         if (errorReintento) {
           log.error("herramienta_catalogo_fallo", { conversationId, detail: errorText(errorReintento) });
@@ -741,7 +801,11 @@ export function buildCatalogTool(
       }
       const enStock = candidatos.filter((r) => r.stock_quantity > 0);
 
-      if (conStock <= MAX_SIN_PREGUNTA) {
+      if (topeConMoto) {
+        mostrados = ordenarPorExistencia(enStock).slice(0, MAX_OPCIONES_SIN_PREGUNTA);
+        estado = "con_existencia";
+        masOpciones = Math.max(0, conStock - mostrados.length);
+      } else if (conStock <= MAX_SIN_PREGUNTA) {
         mostrados = enStock;
         estado = "con_existencia";
       } else {
@@ -790,6 +854,7 @@ export function buildCatalogTool(
     return base(estado, {
       quoted,
       hayMas,
+      masOpciones,
       masViejo: masViejo(mostrados.map((r) => r.updated_at)),
       instrucciones: [
         estado === "con_existencia" ? CONFIRMAR_INVENTARIO_INSTRUCTION : SIN_STOCK_CASO_INSTRUCTION,
@@ -833,6 +898,8 @@ export function buildCatalogTool(
       default:
         catalogOutcome.sinResultados = true;
     }
+
+    if (r.masOpciones > 0) catalogOutcome.masOpciones.push({ productoPedido, cantidad: r.masOpciones });
 
     for (const q of r.quoted) {
       if (catalogOutcome.cotizacion.some((linea) => linea.productId === q.id)) continue;

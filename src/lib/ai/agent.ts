@@ -2737,6 +2737,7 @@ async function runTurnPhases(
     cotizacion: [],
     preguntaFiltro: null,
     consultas: [],
+    masOpciones: [],
   };
   // `businessHours` viaja en `deps` para `buildEscalateTool`, que lo usa en la
   // despedida sin asesores (Frente B4, "El reloj dice la verdad", 5/9/2026):
@@ -3098,6 +3099,7 @@ async function runTurnPhases(
       lineas: catalogOutcome.cotizacion,
       noEncontrados,
       correcciones,
+      masOpciones: catalogOutcome.masOpciones,
     });
     log.info("cotizacion_armada_por_codigo", {
       conversationId,

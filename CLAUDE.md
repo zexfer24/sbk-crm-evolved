@@ -2254,6 +2254,43 @@ dejar rastro es lo que hacía desaparecer leads.
   `coinciden` sacado de los conteos de la base) sigue vigente; el detalle
   nuevo está en la primera viñeta de esa fecha, más abajo ("La búsqueda del
   catálogo ya NO tolera que falte un grupo…").
+  **CORRECCIÓN del 29/9/2026 (Entrega A, escenario a mano "necesito un
+  asiento sbr"; decisión del operador): "se cotiza SOLO esa moto y nunca es
+  genérico" seguía cotizando TODO lo del máximo con la moto calzando — y con
+  seis "ASIENTO SBR …" con stock, "sbr" viaja a `moto`, los nombres lo
+  contienen, `puntaje_moto_maximo > 0` y Seba cotizó LOS SEIS de una vez (en
+  producción hay muchos asientos con SBR en el nombre: saldría una lista
+  larga).** Lo anterior sigue valiendo (con moto que calza NUNCA hay pregunta
+  de filtro), pero ahora hay un TOPE: con la moto calzando y MÁS de tres con
+  existencia (`filas_con_maximo_y_stock` de la base, que con moto que calza ya
+  cuenta solo las de esa moto; nunca `quoted.length`), `tools.ts` cotiza como
+  máximo las TRES más relevantes CON existencia, sin pregunta, con
+  `confirmar_inventario` (escala para que el asesor confirme y muestre el
+  resto). El orden de esas tres: el que trae SQL (puntaje, moto con nombre,
+  empieza con el producto, cilindrada, opcionales) y, a igual relevancia,
+  MAYOR `stock_quantity` primero — el desempate final de SQL es por nombre y se
+  reemplaza en TypeScript (`ordenarPorExistencia`), sin migración: 6 asientos
+  con existencias 1, 9, 3, 7, 2, 5 cotizan los de 9, 7 y 5. Como SQL solo
+  devuelve `p_limite` filas, con tope se vuelve a pedir `LIMITE_REINTENTO`
+  (50) cuando las del máximo+moto no cupieron en las primeras 10 (la misma
+  maquinaria del reintento de "las con stock quedaron fuera"); **límite
+  conocido: con más de 50 filas del máximo+moto, las que SQL dejó fuera por
+  nombre no compiten por existencia.** Con moto que calza y tres o menos con
+  existencia, o con cero (agotados, hasta tres listadas), nada cambia; sin
+  moto que calce tampoco (genérico/pregunta/memoria como siempre). Aplica a
+  cada producto de una lista (`productos`). El código cierra el grupo con la
+  línea literal «Hay N opciones más para tu moto; el asesor te muestra el
+  resto.» (N = total con existencia − las cotizadas; «Hay 1 opción más…» con
+  N = 1), armada por `quote-message.ts` (`lineaMasOpciones`) DESPUÉS de los
+  renglones y ANTES del texto fijo, solo en este caso. N viaja desde
+  `tools.ts` en `CatalogOutcome.masOpciones` (`{productoPedido, cantidad}`, una
+  entrada por búsqueda que recortó): NO en `ConsultaCatalogo` (se persiste en
+  `agent_turns.catalog_queries` y no debe cambiar de forma) ni en
+  `LineaCotizada` (es por producto, no por búsqueda). La línea no lleva
+  dinero (no toca `price-guard`) ni delata identidad; ambos pasan como con
+  cualquier texto armado. Ojo: "necesito un asiento sbr" tal cual, como
+  `query`, NO calza (`necesito` no es palabra de relleno para `catalogQuery`
+  y se exige como grupo): el modelo debe mandar "asiento sbr".
 - **Una cifra de dinero de la IA necesita fuente EN EL TURNO** (T3, mismo
   plan, `price-guard.ts`). Dos casos reales de producción: el 20/9/2026 a
   las 14:32 Seba escribió "El intercomunicador sale en *108$ BCV*"

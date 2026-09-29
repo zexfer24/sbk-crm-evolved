@@ -7718,6 +7718,86 @@ describe("runAgentTurn — la cotización la arma el código (T3b, 28/9/2026)", 
     );
   });
 
+  describe("la moto calza y hay más de tres con existencia (29/9/2026)", () => {
+    const asiento = (letra: string, stock: number, precioUsd: number, productoPedido: string | null = null): LineaCotizada => ({
+      productId: `as-${letra}`,
+      nombre: `ASIENTO SBR ${letra}`,
+      precioUsd,
+      precioBs: precioUsd * 40,
+      stock,
+      productoPedido,
+    });
+    const tres = [asiento("B", 9, 20), asiento("D", 7, 21), asiento("F", 5, 22)];
+    const toolResultTres = [
+      {
+        toolResults: [
+          {
+            output: {
+              results: [
+                { nombre: "ASIENTO SBR B", precio: "$20,00 BCV (Bs. 800,00)", stock: 9 },
+                { nombre: "ASIENTO SBR D", precio: "$21,00 BCV (Bs. 840,00)", stock: 7 },
+                { nombre: "ASIENTO SBR F", precio: "$22,00 BCV (Bs. 880,00)", stock: 5 },
+              ],
+            },
+          },
+        ],
+      },
+      {},
+    ];
+
+    it("el mensaje lleva exactamente tres renglones, luego 'Hay 3 opciones más…' y AL FINAL el texto fijo; pasa price-guard y se escala", async () => {
+      const warn = vi.spyOn(log, "warn");
+      catalogoEncontro(tres, { masOpciones: [{ productoPedido: null, cantidad: 3 }] });
+      generateMock.mockResolvedValueOnce({ text: "", usage: NO_USAGE, steps: toolResultTres });
+
+      await runAgentTurn("conv-1");
+
+      const texto = sendAgentTextMock.mock.calls[0][2] as string;
+      expect(texto).toBe(
+        [
+          "• ASIENTO SBR B: $20,00 BCV (Bs. 800,00) — 9 disponibles",
+          "• ASIENTO SBR D: $21,00 BCV (Bs. 840,00) — 7 disponibles",
+          "• ASIENTO SBR F: $22,00 BCV (Bs. 880,00) — 5 disponibles",
+          "Hay 3 opciones más para tu moto; el asesor te muestra el resto.",
+        ].join("\n") + `\n\n${TEXTO_CONFIRMAR_INVENTARIO}`
+      );
+      expect(texto.split("\n").filter((l) => l.startsWith("• "))).toHaveLength(3);
+      expect(warn).not.toHaveBeenCalledWith("cifra_sin_fuente", expect.anything());
+      expect(escalateConversationMock).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.objectContaining({ motivo: "confirmar_inventario" })
+      );
+    });
+
+    it("con una opción más, va en singular", async () => {
+      catalogoEncontro(tres, { masOpciones: [{ productoPedido: null, cantidad: 1 }] });
+      generateMock.mockResolvedValueOnce({ text: "", usage: NO_USAGE, steps: toolResultTres });
+
+      await runAgentTurn("conv-1");
+
+      expect(sendAgentTextMock.mock.calls[0][2]).toContain("Hay 1 opción más para tu moto; el asesor te muestra el resto.");
+    });
+
+    it("sin 'más opciones' (caso normal) la línea no aparece", async () => {
+      catalogoEncontro(tres, { masOpciones: [] });
+      generateMock.mockResolvedValueOnce({ text: "", usage: NO_USAGE, steps: toolResultTres });
+
+      await runAgentTurn("conv-1");
+
+      expect(sendAgentTextMock.mock.calls[0][2]).not.toContain("opciones más");
+      expect(sendAgentTextMock.mock.calls[0][2]).not.toContain("opción más");
+    });
+
+    it("la línea pasa por la guarda de identidad como el resto del texto (no dispara la reescritura)", async () => {
+      catalogoEncontro(tres, { masOpciones: [{ productoPedido: null, cantidad: 3 }] });
+      generateMock.mockResolvedValueOnce({ text: "", usage: NO_USAGE, steps: toolResultTres });
+
+      await runAgentTurn("conv-1");
+
+      expect(generateTextMock).not.toHaveBeenCalled();
+    });
+  });
+
   describe("el texto armado pasa por las mismas guardas que cualquier salida", () => {
     it("price-guard: las cifras del bloque tienen fuente en el toolResult del turno, y con la fuente el texto sale intacto", async () => {
       catalogoEncontro([LINEA_INCA]);

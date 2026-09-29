@@ -2,7 +2,7 @@ import { describirCorreccion, type CorreccionTermino } from "@/lib/ai/catalog-co
 import { formatQuote } from "@/lib/ai/precio";
 import { moneyFigures } from "@/lib/ai/price-guard";
 import { PREGUNTA_FILTRO, PREGUNTA_FILTRO_PRODUCTO, TEXTO_CONFIRMAR_INVENTARIO, TEXTO_SIN_STOCK } from "@/lib/ai/seba";
-import type { LineaCotizada } from "@/lib/ai/tools";
+import type { LineaCotizada, MasOpciones } from "@/lib/ai/tools";
 
 // ---------------------------------------------------------------------------
 // La cotización la arma el CÓDIGO, no el modelo (T3b, plan "Seba encuentra, no
@@ -41,6 +41,29 @@ export interface OpcionesCotizacion {
   noEncontrados?: readonly string[];
   /** Lo que el corrector de tipeos cambió: el bloque abre nombrándolo. */
   correcciones?: readonly CorreccionTermino[];
+  /**
+   * 29/9/2026: con la moto calzando y más de tres con existencia, cuántas
+   * otras quedaron sin mostrar (`CatalogOutcome.masOpciones`). Cierra el grupo
+   * del producto con `lineaMasOpciones`, después de sus renglones.
+   */
+  masOpciones?: readonly MasOpciones[];
+}
+
+/**
+ * La línea que cierra un grupo cuando se cotizaron tres y hay más con
+ * existencia para la moto del cliente. Literal dictado por el operador
+ * (29/9/2026). Sin cifras de dinero, así que no toca `price-guard`.
+ */
+export function lineaMasOpciones(cantidad: number): string {
+  const resto = cantidad === 1 ? "1 opción más" : `${cantidad} opciones más`;
+  return `Hay ${resto} para tu moto; el asesor te muestra el resto.`;
+}
+
+/** Suma lo que quedó sin mostrar de un producto (varias búsquedas del turno pueden apuntar al mismo). */
+function masOpcionesDe(opciones: OpcionesCotizacion, productoPedido: string | null): number {
+  return (opciones.masOpciones ?? [])
+    .filter((m) => m.productoPedido === productoPedido)
+    .reduce((suma, m) => suma + m.cantidad, 0);
 }
 
 /** "6 disponibles" / "1 disponible" / "Agotado". */
@@ -74,7 +97,10 @@ export function armarCotizacion(lineas: readonly LineaCotizada[], opciones: Opci
 
   const esLista = lineas.some((l) => l.productoPedido !== null);
   if (!esLista) {
-    if (lineas.length > 0) bloques.push(lineas.map(renglon).join("\n"));
+    if (lineas.length > 0) {
+      const mas = masOpcionesDe(opciones, null);
+      bloques.push([...lineas.map(renglon), ...(mas > 0 ? [lineaMasOpciones(mas)] : [])].join("\n"));
+    }
   } else {
     const grupos = new Map<string, LineaCotizada[]>();
     for (const linea of lineas) {
@@ -83,9 +109,12 @@ export function armarCotizacion(lineas: readonly LineaCotizada[], opciones: Opci
       grupo.push(linea);
       grupos.set(clave, grupo);
     }
-    bloques = [...grupos.entries()].map(([producto, delGrupo]) =>
-      [producto ? encabezado(producto) : null, ...delGrupo.map(renglon)].filter((x): x is string => x !== null).join("\n")
-    );
+    bloques = [...grupos.entries()].map(([producto, delGrupo]) => {
+      const mas = masOpcionesDe(opciones, producto || null);
+      return [producto ? encabezado(producto) : null, ...delGrupo.map(renglon), mas > 0 ? lineaMasOpciones(mas) : null]
+        .filter((x): x is string => x !== null)
+        .join("\n");
+    });
   }
 
   const faltantes = (opciones.noEncontrados ?? []).map((p) => `• ${p}: no lo encontré en el catálogo`);
@@ -170,6 +199,7 @@ export function armarMensajeDeCotizacion(params: {
   lineas: readonly LineaCotizada[];
   noEncontrados?: readonly string[];
   correcciones?: readonly CorreccionTermino[];
+  masOpciones?: readonly MasOpciones[];
 }): { texto: string; preambulo: string | null } {
   if (params.lineas.length === 0) return { texto: "", preambulo: null };
 
@@ -181,6 +211,7 @@ export function armarMensajeDeCotizacion(params: {
   const bloque = armarCotizacion(params.lineas, {
     noEncontrados: params.noEncontrados,
     correcciones: params.correcciones,
+    masOpciones: params.masOpciones,
   });
   const textoFijo = params.lineas.some((l) => l.stock > 0) ? TEXTO_CONFIRMAR_INVENTARIO : TEXTO_SIN_STOCK;
 
