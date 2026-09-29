@@ -4,7 +4,7 @@ name: CI
 # producción sin que estas tres puertas hayan pasado.
 on:
   push:
-    branches: [main]
+    branches: [main, "ci/**"]
   pull_request:
 
 jobs:
