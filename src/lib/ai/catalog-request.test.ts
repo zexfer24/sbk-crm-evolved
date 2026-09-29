@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { debeCederAlInventario, pideCatalogo } from "@/lib/ai/catalog-request";
+import { debeCederAlInventario, pideCatalogo, pideVerTodo } from "@/lib/ai/catalog-request";
 
 // Frases reales del reporte de solo lectura de producción (VPS, 21/9/2026,
 // plan "El catálogo configurado sale siempre") que SÍ piden el catálogo como
@@ -125,5 +125,56 @@ describe("debeCederAlInventario", () => {
         cedeAlInventario: false,
       })
     ).toEqual({ cede: false, motivo: "cliente_pidio_catalogo" });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// T3a, plan "Seba encuentra, no insiste, y el mostrador no deja a nadie
+// esperando" (28/9/2026): `pideVerTodo` decide si el cliente, ante una
+// pregunta de filtro, dijo que no sabe o que le muestren todo — en cuyo caso
+// Seba NO vuelve a preguntar y devuelve las tres opciones con existencia.
+// ---------------------------------------------------------------------------
+describe("pideVerTodo — el cliente pide ver opciones en vez de precisar", () => {
+  it.each([
+    ["no sé"],
+    ["No se"],
+    ["no sé cuál"],
+    ["Pues no sé la marca"],
+    ["ni idea"],
+    ["cualquiera"],
+    ["Cualquiera me sirve"],
+    ["cualquier marca"],
+    ["muéstrame todos"],
+    ["muestrame todo"],
+    ["Muéstrame todos los que tengas"],
+    ["los que tengas"],
+    ["Los que tengas está bien"],
+    ["todos los que tienes"],
+    ["me da igual"],
+    ["Me da lo mismo"],
+    ["lo que sea"],
+    ["quiero ver todos"],
+  ])("«%s» pide ver todo", (linea) => {
+    expect(pideVerTodo([linea])).toBe(true);
+  });
+
+  it.each([
+    ["cuánto cuesta el casco"],
+    ["tengo una sbr 200"],
+    ["la moto no se prende"],
+    ["para una bera socialista"],
+    ["negro talla M"],
+    ["20w50"],
+    [""],
+  ])("«%s» NO pide ver todo", (linea) => {
+    expect(pideVerTodo([linea])).toBe(false);
+  });
+
+  it("cualquier línea de la ráfaga alcanza", () => {
+    expect(pideVerTodo(["hola buenas", "no sé cuál"])).toBe(true);
+  });
+
+  it("una ráfaga vacía no pide nada", () => {
+    expect(pideVerTodo([])).toBe(false);
   });
 });

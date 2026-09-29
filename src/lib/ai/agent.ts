@@ -2703,6 +2703,11 @@ async function runTurnPhases(
     agotados: false,
     sinResultados: false,
     generico: false,
+    // T3a (28/9/2026): la cotización, la pregunta de filtro y el rastro de
+    // búsquedas que `buildCatalogTool` va llenando (T3b los consume).
+    cotizacion: [],
+    preguntaFiltro: null,
+    consultas: [],
   };
   // `businessHours` viaja en `deps` para `buildEscalateTool`, que lo usa en la
   // despedida sin asesores (Frente B4, "El reloj dice la verdad", 5/9/2026):
@@ -2712,6 +2717,9 @@ async function runTurnPhases(
     conversationId,
     contactId: target.contactId,
     businessHours,
+    // T3a (28/9/2026): la ráfaga pendiente, para que la herramienta del
+    // catálogo sepa si el cliente pidió ver todo y no le repita la pregunta.
+    rafagaCliente,
   };
 
   // Escalar no tiene interruptor: es la única salida hacia un humano. El

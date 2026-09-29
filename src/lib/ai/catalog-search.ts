@@ -46,9 +46,9 @@
 // `catalogQuery` es la entrada nueva: parte la consulta en cuatro
 // conjuntos —obligatorios (definen el puntaje), opcionales (solo desempatan),
 // moto con nombre y cilindrada (solo ordenan)— que `buscar_productos`
-// (migración 20260928010000) recibe por separado. `catalogTermGroups` queda
-// como estaba, para `tools.ts`, hasta que T3a cambie esa herramienta a
-// `catalogQuery`; después puede retirarse.
+// (migración 20260928010000) recibe por separado. `tools.ts` ya usa
+// `catalogQuery` (T3a, 28/9/2026); `catalogTermGroups` quedó sin llamadores de
+// producción y se conserva, con su test, solo hasta la limpieza.
 // ---------------------------------------------------------------------------
 
 /** Minúsculas y sin diacríticos, igual que hace unaccent() del lado de la base. */

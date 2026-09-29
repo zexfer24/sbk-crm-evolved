@@ -126,3 +126,60 @@ export function debeCederAlInventario(params: {
   if (!params.cedeAlInventario) return { cede: false, motivo: "escenario_no_marcado" };
   return { cede: true, motivo: null };
 }
+
+// ---------------------------------------------------------------------------
+// T3a, plan "Seba encuentra, no insiste, y el mostrador no deja a nadie
+// esperando" (28/9/2026): "una sola pregunta por pedido".
+//
+// El estudio del VPS (25-28/9) encontró la pregunta de filtro repetida hasta
+// tres veces al mismo cliente, y clientes que contestaban "no sé" o "los que
+// tengas" a una pregunta que Seba les volvía a hacer. `pideVerTodo` reconoce
+// esas respuestas —el cliente dice que no sabe precisar, o que le muestren
+// todo— para que la herramienta del catálogo NO pregunte y entregue las tres
+// opciones con existencia más relevantes.
+//
+// Pura, como `pideCatalogo`: mira la FORMA del texto del cliente, no llama a
+// nada. Recibe la ráfaga (la línea más vieja primero) y con que UNA línea lo
+// diga alcanza.
+//
+// Frases reconocidas, ya sin acentos ni mayúsculas ("no sé" == "no se"):
+//   - "no sé" / "no sé cuál" / "no sé la marca" / "ni idea": SOLO cuando la
+//     línea entera es eso (con un "pues"/"eh" delante). "no se prende" o "no
+//     se abre" NO cuentan: hablan de la moto, no de la pregunta.
+//   - "cualquiera", "cualquier marca".
+//   - "muéstrame/muéstrame todos", "quiero ver todos", "todos los que
+//     tienes", "los que tengas/tienes/tengan".
+//   - "me da igual", "me da lo mismo", "lo que sea".
+// Un falso positivo aquí es barato (Seba muestra tres opciones con existencia
+// en vez de preguntar), un falso negativo también (pregunta una vez más); por
+// eso la lista es corta y no intenta entender lenguaje libre.
+// ---------------------------------------------------------------------------
+
+/** "no sé" como respuesta completa (la línea entera), no como parte de otra frase. */
+const PATRON_NO_SE = /^(?:(?:pues|eh+|mm+|ah+|bueno|la verdad|sinceramente)\s+)*(?:no se|ni idea)(?:\s+(?:cual|cuales|que|la marca|el modelo|de cual|de que marca|nada))?$/;
+
+const PATRONES_VER_TODO: RegExp[] = [
+  /\bcualquier(?:a|as)?\b/,
+  /\b(?:muestrame|mostrame|ensename|pasame|mandame|dime)\s+(?:todos?|todas?)\b/,
+  /\bver\s+(?:todos?|todas?)\b/,
+  /\btodos?\s+los\s+que\b/,
+  /\btodas?\s+las\s+que\b/,
+  /\b(?:los|las)\s+que\s+(?:tengas|tienes|tienen|tengan|hay|haya)\b/,
+  /\b(?:me\s+)?da(?:\s+lo)?\s+(?:igual|mismo)\b/,
+  /\blo\s+que\s+sea\b/,
+];
+
+/**
+ * `true` si ALGUNA línea de la ráfaga del cliente dice que no sabe precisar o
+ * que le muestren todo (ver el comentario de cabecera para la lista exacta).
+ */
+export function pideVerTodo(lineas: readonly string[]): boolean {
+  return lineas.some((linea) => {
+    const texto = normalize(linea)
+      .replace(/[^a-z0-9\s]/g, " ")
+      .replace(/\s+/g, " ")
+      .trim();
+    if (!texto) return false;
+    return PATRON_NO_SE.test(texto) || PATRONES_VER_TODO.some((patron) => patron.test(texto));
+  });
+}

@@ -98,6 +98,9 @@ describe("resguardo: el redondeo a favor del negocio no se filtra al prompt", ()
       agotados: false,
       sinResultados: false,
       generico: false,
+      cotizacion: [],
+      preguntaFiltro: null,
+      consultas: [],
     };
     const tool = buildCatalogTool(
       // @ts-expect-error -- supabase no se usa de forma síncrona al construir la herramienta
