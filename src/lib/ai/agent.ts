@@ -8,7 +8,7 @@ import {
   type ToolSet,
 } from "ai";
 import type { SupabaseClient } from "@supabase/supabase-js";
-import type { Database } from "@/lib/supabase/database.types";
+import type { Database, Json } from "@/lib/supabase/database.types";
 import type { CatalogLink, Playbook, Tag } from "@/lib/types";
 import { dayBand, parseBusinessHours, type BusinessHours, type BusinessStatus } from "@/lib/business-hours";
 import { createAdminClient } from "@/lib/supabase/admin";
@@ -22,6 +22,7 @@ import {
   buildEscalateTool,
   buildOrderHistoryTool,
   type CatalogOutcome,
+  type ConsultaCatalogo,
   type EscalationOutcome,
 } from "@/lib/ai/tools";
 import { revealsIdentity, rewriteSuffix } from "@/lib/ai/identity-guard";
@@ -33,6 +34,7 @@ import { humanHasWritten } from "@/lib/ai/human-handled";
 import { ZERO_USAGE, fetchActivePlaybooks, matchPlaybook, playbookSentRecently, type PlaybookMatch } from "@/lib/ai/playbooks";
 import {
   historyLine,
+  captionOfCustomerMarker,
   isHistoryMarker,
   latestCustomerMarker,
   mediaStreakWithoutText,
@@ -395,12 +397,19 @@ async function loadHistory(supabase: SupabaseClient<Database>, conversationId: s
  * supervisor no puede crear un escenario a partir de "[El cliente envió una
  * foto sin texto; no puedes verla]" — no hay texto de cliente ahí, solo el
  * aviso que arma el CRM. Mejor una bitácora vacía que una engañosa.
+ *
+ * Excepción (T6, plan "Seba encuentra, no insiste, y el mostrador no deja a
+ * nadie esperando", 28/9/2026): un marcador CON pie ("[El cliente envió una
+ * foto. Pie: …]") devuelve el pie, que sí es texto que el cliente escribió;
+ * antes la bitácora quedaba en `null` con foto + pie. Solo cambia esta
+ * función: fase 0, la racha de adjuntos y `customerBurst` siguen viendo el
+ * marcador como marcador.
  */
 function lastCustomerMessage(history: ModelMessage[]): string | null {
   for (let i = history.length - 1; i >= 0; i--) {
     const message = history[i];
     if (message.role === "user" && typeof message.content === "string") {
-      return isHistoryMarker(message.content) ? null : message.content;
+      return isHistoryMarker(message.content) ? captionOfCustomerMarker(message.content) : message.content;
     }
   }
   return null;
@@ -589,6 +598,15 @@ interface LogTurnParams {
   playbookId?: string | null;
   customerMessage?: string | null;
   /**
+   * T6, plan "Seba encuentra, no insiste, y el mostrador no deja a nadie
+   * esperando" (28/9/2026): el rastro de las búsquedas del catálogo del turno
+   * (`CatalogOutcome.consultas`). Solo lo pasan los llamadores que corren
+   * DESPUÉS de armar el `catalogOutcome` (el tool loop y sus salidas); los
+   * demás lo omiten y la columna queda `null`. Vacío también queda `null`:
+   * un turno que nunca tocó el catálogo no tiene nada que registrar.
+   */
+  consultasCatalogo?: ConsultaCatalogo[];
+  /**
    * T4, plan "Nada se pierde en un corte ni en un deploy" (21-22/9/2026): el
    * MISMO objeto `TurnTiming` que el turno viene mutando desde que abrió
    * (`newTurnTiming`, arriba). `logTurn` lo lee en el instante en que se
@@ -685,6 +703,13 @@ async function logTurn(supabase: SupabaseClient<Database>, conversationId: strin
       reasoning_tokens: params.tokens?.reasoningTokens ?? 0,
       playbook_id: params.playbookId ?? null,
       customer_message: params.customerMessage ?? null,
+      // T6 (28/9/2026, migración 20260928040000): `Json` del tipo generado no
+      // acepta la interfaz tal cual, de ahí el cast; el contenido son solo
+      // cadenas, arreglos y `null`.
+      catalog_queries:
+        params.consultasCatalogo && params.consultasCatalogo.length > 0
+          ? (params.consultasCatalogo as unknown as Json)
+          : null,
       // T4, plan "Nada se pierde en un corte ni en un deploy" (21-22/9/2026,
       // migración 20260921040000): las seis columnas de telemetría del turno
       // completo — ver el docblock de `LogTurnParams.tiempos` para cuáles
@@ -2863,6 +2888,7 @@ async function runTurnPhases(
     turnTokens = addTokens(classifyTokens, tokensFromUsage(result.usage));
   } catch (err) {
     await logTurn(supabase, conversationId, {
+      consultasCatalogo: catalogOutcome.consultas,
       intent,
       action: "error",
       summary: errorText(err),
@@ -3253,6 +3279,7 @@ async function runTurnPhases(
       log.info("turno_cedido_a_rafaga", { conversationId, punto: "redaccion" });
       await resetStage(supabase, conversationId, "turno_cedido_a_rafaga", convo.assigned_agent_id);
       await logTurn(supabase, conversationId, {
+        consultasCatalogo: catalogOutcome.consultas,
         intent,
         action: "skipped",
         summary: "Borrador cedido: llegó otro mensaje del cliente mientras se redactaba.",
@@ -3348,6 +3375,7 @@ async function runTurnPhases(
   const pricePrefix = priceMark ? "[cifra sin fuente] " : "";
 
   await logTurn(supabase, conversationId, {
+    consultasCatalogo: catalogOutcome.consultas,
     intent,
     action: outcome.escalated ? "escalated" : "answered",
     summary:

@@ -60,6 +60,7 @@ import {
   TEXTO_SIN_STOCK,
 } from "@/lib/ai/seba";
 import { normalize } from "@/lib/ai/catalog-search";
+import { log } from "@/lib/log";
 
 /**
  * T3, "Seba atiende el mostrador" (18/9/2026): `buildCatalogTool` ganó un
@@ -2947,6 +2948,32 @@ describe("buildCatalogTool — lo que la herramienta deja en el CatalogOutcome (
       },
       expect.objectContaining({ query: "nada de nada", resultado: "sin_resultados" }),
     ]);
+  });
+
+  it("cada búsqueda deja un log.info busqueda_catalogo con lo que se buscó, sin claves que lib/log oculte", async () => {
+    const info = vi.spyOn(log, "info").mockImplementation(() => {});
+    const { client } = createFakeSupabase([fila("p1", "ASIENTO SBR NEGRO", 3)]);
+    const catalogOutcome = nuevoCatalogOutcome();
+    const tool = herramienta(client, catalogOutcome);
+
+    await correr(tool, { query: "asiento negro sbr 200" });
+    await correr(tool, { query: "nada de nada" });
+
+    const llamadas = info.mock.calls.filter(([evento]) => evento === "busqueda_catalogo");
+    expect(llamadas).toHaveLength(2);
+    expect(llamadas[0][1]).toEqual({
+      conversationId: "conv-1",
+      query: "asiento negro sbr 200",
+      productos: null,
+      moto: '[["sbr"]]',
+      grupos: '[["asiento"]]',
+      opcionales: '[["negro"]]',
+      corregido: null,
+      resultado: "con_existencia",
+    });
+    expect(llamadas[1][1]).toMatchObject({ query: "nada de nada", resultado: "sin_resultados" });
+    // `lib/log` tapa toda clave que contenga "phone": ninguna viaja.
+    expect(Object.keys(llamadas[0][1] as object).some((k) => /phone/i.test(k))).toBe(false);
   });
 
   it("una consulta sin ningún término reconocible queda como sin_terminos", async () => {

@@ -1322,6 +1322,32 @@ describe("runAgentTurn — lo que llega sin texto", () => {
     expect(agentTurnInserts[0]).toMatchObject({ customer_message: "Cualquiera de estos en talla L" });
   });
 
+  // T6, plan "Seba encuentra, no insiste, y el mostrador no deja a nadie
+  // esperando" (28/9/2026): el marcador con `Pie:` trae texto que el cliente
+  // SÍ escribió. Antes la bitácora quedaba en null con foto + pie.
+  it("una foto con pie como último mensaje guarda el PIE en agent_turns.customer_message (y fase 0 sigue sin ver otra cosa que el marcador)", async () => {
+    state.history = [
+      { sender_type: "customer", content: "Tienen este casco en talla M?", is_internal_note: false, message_type: "image" },
+    ];
+
+    await runAgentTurn("conv-1");
+
+    expect(agentTurnInserts[0]).toMatchObject({ customer_message: "Tienen este casco en talla M?" });
+    // El historial que ve el modelo no cambia: sigue siendo el marcador entre corchetes.
+    const enviados = matchPlaybookMock.mock.calls[0]?.[0] as { content: string }[] | undefined;
+    if (enviados) {
+      expect(enviados.map((m) => m.content)).toEqual(["[El cliente envió una foto. Pie: Tienen este casco en talla M?]"]);
+    }
+  });
+
+  it("un audio sin pie como último mensaje sigue dejando customer_message en null", async () => {
+    state.history = [{ sender_type: "customer", content: null, is_internal_note: false, message_type: "audio" }];
+
+    await runAgentTurn("conv-1");
+
+    expect(agentTurnInserts[0]).toMatchObject({ customer_message: null });
+  });
+
   /**
    * Hallazgo 6 del plan (8/9/2026): `alreadySentPlaybook` salta los
    * marcadores salientes al buscar "nuestra última respuesta" — si el
@@ -5968,6 +5994,68 @@ const TOOLRESULT_CARBURADOR_18 = [
   { toolResults: [{ output: { nombre: "Carburador", precio: "$18,00 BCV (Bs. 15.552,00)" } }] },
   {},
 ];
+
+/**
+ * T6, plan "Seba encuentra, no insiste, y el mostrador no deja a nadie
+ * esperando" (28/9/2026): `agent_turns.catalog_queries` guarda el rastro de
+ * las búsquedas del catálogo del turno (`CatalogOutcome.consultas`). Sin
+ * búsquedas queda en `null`, no en `[]`: la columna nace nullable y un turno
+ * que nunca tocó el catálogo no tiene nada que decir.
+ */
+describe("runAgentTurn — T6: agent_turns.catalog_queries", () => {
+  const consulta = {
+    query: "pastillas de freno sbr",
+    productos: null,
+    moto: [["sbr"]],
+    cilindrada: [],
+    grupos: [["pastilla", "pastillas"]],
+    opcionales: [],
+    corregido: null,
+    resultado: "con_existencia",
+  };
+
+  it("el insert de agent_turns lleva las consultas que acumuló buildCatalogTool, tal cual", async () => {
+    buildCatalogToolMock.mockImplementationOnce((_deps, catalogOutcome) => {
+      catalogOutcome.ran = true;
+      catalogOutcome.conExistencia = true;
+      (catalogOutcome.consultas as unknown[]).push(consulta, { ...consulta, query: "disco", resultado: "sin_resultados" });
+      return {};
+    });
+    generateMock.mockResolvedValueOnce({
+      text: "Tenemos el carburador en $18 y 12 unidades.",
+      usage: NO_USAGE,
+      steps: TOOLRESULT_CARBURADOR_18,
+    });
+
+    await runAgentTurn("conv-1");
+
+    expect(agentTurnInserts.at(-1)?.catalog_queries).toEqual([
+      consulta,
+      { ...consulta, query: "disco", resultado: "sin_resultados" },
+    ]);
+  });
+
+  it("si el tool loop lanza, la fila de error también conserva las consultas hechas antes del fallo", async () => {
+    buildCatalogToolMock.mockImplementationOnce((_deps, catalogOutcome) => {
+      catalogOutcome.ran = true;
+      (catalogOutcome.consultas as unknown[]).push(consulta);
+      return {};
+    });
+    generateMock.mockRejectedValueOnce(new Error("proveedor caído"));
+
+    await runAgentTurn("conv-1").catch(() => {});
+
+    const filaError = agentTurnInserts.find((f) => f.action === "error");
+    expect(filaError?.catalog_queries).toEqual([consulta]);
+  });
+
+  it("un turno que nunca tocó el catálogo escribe catalog_queries en null", async () => {
+    await runAgentTurn("conv-1");
+
+    expect(agentTurnInserts.length).toBeGreaterThan(0);
+    expect(agentTurnInserts.at(-1)).toHaveProperty("catalog_queries", null);
+  });
+});
 
 describe("runAgentTurn — T3: red de seguridad del catálogo", () => {
   it("con existencia y sin escalada del modelo, escala en código con confirmar_inventario y is_auto_reply", async () => {

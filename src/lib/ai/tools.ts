@@ -802,6 +802,22 @@ export function buildCatalogTool(
   /** Deja en el `CatalogOutcome` lo que decidió una búsqueda (acumulativo entre llamadas del turno). */
   function registrar(r: ResultadoUno, productoPedido: string | null): void {
     catalogOutcome.consultas.push(r.consulta);
+    // T6 (28/9/2026): una línea por búsqueda, para leer en el log de producción
+    // qué se buscó, con qué conjuntos y cómo terminó sin abrir `agent_turns`.
+    // Solo texto de producto y conjuntos de términos: nada del cliente. Ojo con
+    // los nombres de clave: `lib/log.ts` tapa cualquier clave que contenga
+    // "phone". `LogContext` solo admite valores primitivos, de ahí el JSON.
+    const enJson = (valor: unknown): string | null => (valor === null ? null : JSON.stringify(valor));
+    log.info("busqueda_catalogo", {
+      conversationId,
+      query: r.consulta.query,
+      productos: enJson(r.consulta.productos),
+      moto: enJson(r.consulta.moto),
+      grupos: enJson(r.consulta.grupos),
+      opcionales: enJson(r.consulta.opcionales),
+      corregido: enJson(r.consulta.corregido),
+      resultado: r.consulta.resultado,
+    });
 
     switch (r.estado) {
       case "generico":

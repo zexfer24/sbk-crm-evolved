@@ -116,6 +116,26 @@ export function isHistoryMarker(text: string): boolean {
   return /^\[(El cliente|El asesor) envió /.test(text);
 }
 
+/**
+ * El pie que el CLIENTE escribió dentro de un marcador de media, o `null` si
+ * el texto no es un marcador del cliente con pie (T6, plan "Seba encuentra,
+ * no insiste, y el mostrador no deja a nadie esperando", 28/9/2026).
+ *
+ * Solo la usa la bitácora (`lastCustomerMessage`, agent.ts): con foto + pie,
+ * `agent_turns.customer_message` quedaba `null` porque el marcador entero se
+ * descartaba, aunque el pie SÍ es texto de cliente. NO cambia lo que ve el
+ * modelo ni las demás funciones que tratan el marcador como marcador
+ * (`isHistoryMarker`, la racha de adjuntos, `customerBurst`). Los marcadores
+ * del asesor no cuentan (su pie no es del cliente) ni el sticker (no lleva
+ * pie). Acoplada a `clienteMarker`: `[El cliente envió <algo>. Pie: <pie>]`.
+ */
+export function captionOfCustomerMarker(text: string): string | null {
+  const m = /^\[El cliente envió [^.\]]+\. Pie: ([\s\S]+)\]$/.exec(text);
+  if (!m) return null;
+  const pieDelCliente = m[1].trim();
+  return pieDelCliente ? pieDelCliente : null;
+}
+
 // ---------------------------------------------------------------------------
 // Racha de adjuntos sin texto (Tarea 6, "La voz cercana y la espera visible",
 // 14/9/2026, decisión 5): 494 fotos y 117 audios en 72 h, y la IA repitiendo

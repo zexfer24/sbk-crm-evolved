@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   CUSTOMER_BURST_GAP_MINUTES,
+  captionOfCustomerMarker,
   PREVIOUS_CONVERSATION_GAP_HOURS,
   customerBurst,
   historyLine,
@@ -287,6 +288,36 @@ describe("isHistoryMarker", () => {
 
   it("una frase que menciona lo que envió el cliente pero no la escribió el CRM no es un marcador", () => {
     expect(isHistoryMarker("[El cliente dijo hola]")).toBe(false);
+  });
+});
+
+/**
+ * T6, plan "Seba encuentra, no insiste, y el mostrador no deja a nadie
+ * esperando" (28/9/2026): `agent_turns.customer_message` quedaba `null` con
+ * foto + pie porque el marcador se descartaba entero. El pie es texto que el
+ * cliente SÍ escribió; `captionOfCustomerMarker` lo saca del marcador.
+ */
+describe("captionOfCustomerMarker", () => {
+  it("devuelve el pie de cada marcador del cliente que lo lleva", () => {
+    for (const tipo of ["image", "video", "audio", "document"]) {
+      const linea = historyLine(row({ message_type: tipo, content: "  Tienen este casco en talla M?  " }));
+      expect(captionOfCustomerMarker(linea!.content)).toBe("Tienen este casco en talla M?");
+    }
+  });
+
+  it("un pie de varias líneas o con corchetes se devuelve entero", () => {
+    const linea = historyLine(row({ message_type: "image", content: "Bujía [NGK]\nla necesito hoy" }));
+    expect(captionOfCustomerMarker(linea!.content)).toBe("Bujía [NGK]\nla necesito hoy");
+  });
+
+  it("un marcador sin pie, un sticker, uno del asesor o un texto normal dan null", () => {
+    expect(captionOfCustomerMarker(historyLine(row({ message_type: "image", content: null }))!.content)).toBeNull();
+    expect(captionOfCustomerMarker(historyLine(row({ message_type: "sticker", content: null }))!.content)).toBeNull();
+    expect(
+      captionOfCustomerMarker(historyLine(row({ sender_type: "agent", message_type: "image", content: "Aquí va" }))!.content)
+    ).toBeNull();
+    expect(captionOfCustomerMarker("Pie: hola")).toBeNull();
+    expect(captionOfCustomerMarker("[urgente] necesito un caucho")).toBeNull();
   });
 });
 

@@ -266,6 +266,11 @@ export type Database = {
         Row: {
           action: string
           cached_input_tokens: number | null
+          // T6, plan "Seba encuentra, no insiste, y el mostrador no deja a nadie
+          // esperando" (28/9/2026, migración 20260928040000): arreglo de
+          // `ConsultaCatalogo` (tools.ts), una por búsqueda al catálogo. `null` =
+          // el turno no tocó el catálogo (o es anterior a la migración).
+          catalog_queries: Json | null
           // T3, plan "Nada se pierde en un corte ni en un deploy" (21/9/2026,
           // migración 20260921040000): seis columnas de telemetría del turno
           // completo, nullable y SIN backfill -- lo viejo no se puede
@@ -299,6 +304,7 @@ export type Database = {
         Insert: {
           action: string
           cached_input_tokens?: number | null
+          catalog_queries?: Json | null
           classification_ms?: number | null
           conversation_id: string
           created_at?: string
@@ -321,6 +327,7 @@ export type Database = {
         Update: {
           action?: string
           cached_input_tokens?: number | null
+          catalog_queries?: Json | null
           classification_ms?: number | null
           conversation_id?: string
           created_at?: string
