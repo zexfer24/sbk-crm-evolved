@@ -1927,6 +1927,15 @@ export type Database = {
           filas_con_maximo_y_stock: number
         }[]
       }
+      // T2, plan "Seba encuentra, no insiste, y el mostrador no deja a nadie
+      // esperando" (28/9/2026, migración 20260928020000): corrige tipeos
+      // contra el vocabulario de `products`. Devuelve SOLO los términos
+      // corregidos; `p_protegidos` (las motos conocidas) jamás se corrige. La
+      // llama `catalog-correction.ts` con service_role.
+      corregir_terminos: {
+        Args: { p_terminos: string[]; p_protegidos?: string[] }
+        Returns: { original: string; corregido: string }[]
+      }
       claim_agent_turn: {
         Args: { p_max_attempts?: number; p_stale_seconds?: number }
         Returns: string
