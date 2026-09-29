@@ -692,6 +692,73 @@ export type Database = {
         }
         Relationships: []
       }
+      conversation_cart_items: {
+        Row: {
+          // T8 (28/9/2026, migración 20260929010000): carrito persistente de una
+          // conversación. Sin precio a propósito: es el vigente (products + BCV).
+          added_by: string | null
+          conversation_id: string
+          created_at: string
+          id: string
+          origin: string
+          product_id: string
+          quantity: number
+          quote_id: string | null
+          updated_at: string
+        }
+        Insert: {
+          added_by?: string | null
+          conversation_id: string
+          created_at?: string
+          id?: string
+          origin: string
+          product_id: string
+          quantity: number
+          quote_id?: string | null
+          updated_at?: string
+        }
+        Update: {
+          added_by?: string | null
+          conversation_id?: string
+          created_at?: string
+          id?: string
+          origin?: string
+          product_id?: string
+          quantity?: number
+          quote_id?: string | null
+          updated_at?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "conversation_cart_items_added_by_fkey"
+            columns: ["added_by"]
+            isOneToOne: false
+            referencedRelation: "agents"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "conversation_cart_items_conversation_id_fkey"
+            columns: ["conversation_id"]
+            isOneToOne: false
+            referencedRelation: "conversations"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "conversation_cart_items_product_id_fkey"
+            columns: ["product_id"]
+            isOneToOne: false
+            referencedRelation: "products"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "conversation_cart_items_quote_id_fkey"
+            columns: ["quote_id"]
+            isOneToOne: false
+            referencedRelation: "conversation_quotes"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       conversation_handoffs: {
         Row: {
           conversation_id: string

@@ -3,7 +3,7 @@ import { describe, expect, it, vi, beforeEach } from "vitest";
 import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { ContextPanel } from "@/components/context-panel/context-panel";
-import type { Agent, Conversation, Tag } from "@/lib/types";
+import type { Agent, Conversation, ConversationCartItem, Product, Tag } from "@/lib/types";
 import type { BcvRateSummary } from "@/components/inbox/bcv-rate-chip";
 
 /**
@@ -26,8 +26,12 @@ vi.mock("@/components/context-panel/manage-tags-modal", () => ({
   },
 }));
 
+const closeSaleModalProps = vi.fn();
 vi.mock("@/components/context-panel/close-sale-modal", () => ({
-  CloseSaleModal: () => null,
+  CloseSaleModal: (props: unknown) => {
+    closeSaleModalProps(props);
+    return null;
+  },
 }));
 
 const inventoryLookupProps = vi.fn();
@@ -39,13 +43,22 @@ vi.mock("@/components/context-panel/inventory-lookup", () => ({
 }));
 
 const removeTagFromContactMock = vi.fn().mockResolvedValue(undefined);
+const addToCartMock = vi.fn().mockResolvedValue(undefined);
+const setCartQuantityMock = vi.fn().mockResolvedValue(undefined);
 vi.mock("@/lib/mutations", () => ({
   addNote: vi.fn(),
   addTagToContact: vi.fn(),
   deleteNote: vi.fn(),
   removeTagFromContact: (...args: unknown[]) => removeTagFromContactMock(...args),
   updateNote: vi.fn(),
+  // T8 (28/9/2026): el carrito de la conversación.
+  addToCart: (...args: unknown[]) => addToCartMock(...args),
+  addQuotesToCart: vi.fn(),
+  setCartQuantity: (...args: unknown[]) => setCartQuantityMock(...args),
+  removeFromCart: vi.fn(),
 }));
+
+vi.mock("@/lib/data", () => ({ fetchConversationQuotes: vi.fn().mockResolvedValue([]) }));
 
 vi.mock("@/lib/supabase/client", () => ({ createClient: vi.fn(() => ({})) }));
 
@@ -126,11 +139,47 @@ beforeEach(() => {
   manageTagsModalProps.mockClear();
   inventoryLookupProps.mockClear();
   removeTagFromContactMock.mockClear();
+  closeSaleModalProps.mockClear();
+  addToCartMock.mockClear();
+  setCartQuantityMock.mockClear();
 });
+
+const PRODUCTO: Product = {
+  id: "prod-1",
+  name: "Bujía CR7HSA",
+  brand: "NGK",
+  price: 3.25,
+  currency: "USD",
+  stockQuantity: 10,
+  description: null,
+  isActive: true,
+  updatedAt: "2026-09-29T00:00:00.000Z",
+  compatibility: [],
+  weightKg: null,
+  saintCode: null,
+  saintAddedAt: null,
+  saintRemovedAt: null,
+};
+
+const RENGLON: ConversationCartItem = {
+  id: "cart-1",
+  conversationId: "conv-1",
+  productId: "prod-1",
+  quantity: 2,
+  origin: "inventory",
+  quoteId: null,
+  quotedPriceUsd: null,
+  addedBy: "agent-1",
+  createdAt: "2026-09-29T10:00:00.000Z",
+  updatedAt: "2026-09-29T10:00:00.000Z",
+  product: PRODUCTO,
+};
 
 function renderPanel(
   overrides: Partial<Conversation> = {},
-  onContactTagsChanged?: () => void
+  onContactTagsChanged?: () => void,
+  cart: ConversationCartItem[] = [],
+  onCartChanged: () => void = () => {}
 ) {
   const conversation = buildConversation(overrides);
   return render(
@@ -141,6 +190,8 @@ function renderPanel(
       allTags={ALL_TAGS}
       currentAgent={AGENT}
       bcvRate={RATE}
+      cart={cart}
+      onCartChanged={onCartChanged}
       onContactTagsChanged={onContactTagsChanged}
     />
   );
@@ -236,5 +287,70 @@ describe("ContextPanel — quitar una etiqueta avisa al shell (hallazgo 1)", () 
 
     const lastCall = manageTagsModalProps.mock.calls.at(-1)?.[0];
     expect(lastCall.onContactTagsChanged).toBe(onContactTagsChanged);
+  });
+});
+
+/**
+ * T8, plan "Seba encuentra, no insiste, y el mostrador no deja a nadie
+ * esperando" (28/9/2026): el carrito vive en la conversación. El panel pinta
+ * «Lo que lleva el cliente» entre la búsqueda y las notas, la búsqueda ofrece
+ * «Agregar», y el modal de cierre recibe el MISMO carrito.
+ */
+describe("ContextPanel — el carrito de la conversación (T8)", () => {
+  it("pinta «Lo que lleva el cliente» entre la búsqueda de inventario y las Notas internas", () => {
+    renderPanel();
+
+    const inventoryStub = screen.getByTestId("inventory-lookup-stub");
+    const carrito = screen.getByText("Lo que lleva el cliente");
+    const notas = screen.getByText("Notas internas");
+
+    expect(inventoryStub.compareDocumentPosition(carrito) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(carrito.compareDocumentPosition(notas) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+
+  it("muestra los renglones del carrito que le llegan por props, con su precio vigente", () => {
+    renderPanel({}, undefined, [RENGLON]);
+
+    expect(screen.getByText("Bujía CR7HSA")).toBeInTheDocument();
+    // 2 x $3.25 = $6.50
+    expect(screen.getByTestId("cart-total")).toHaveTextContent("$6.50");
+  });
+
+  it("el «Agregar» de la búsqueda escribe en el carrito de ESTA conversación y refresca", async () => {
+    const onCartChanged = vi.fn();
+    renderPanel({}, undefined, [], onCartChanged);
+
+    const props = inventoryLookupProps.mock.calls.at(-1)?.[0] as { onAdd: (p: Product) => void };
+    expect(typeof props.onAdd).toBe("function");
+    props.onAdd(PRODUCTO);
+
+    await waitFor(() => expect(addToCartMock).toHaveBeenCalledTimes(1));
+    expect(addToCartMock.mock.calls[0][1]).toEqual({
+      conversationId: "conv-1",
+      productId: "prod-1",
+      quantity: 1,
+      origin: "inventory",
+    });
+    await waitFor(() => expect(onCartChanged).toHaveBeenCalled());
+  });
+
+  it("cambiar la cantidad de un renglón escribe en la base", async () => {
+    const user = userEvent.setup({ delay: null, pointerEventsCheck: 0 });
+    renderPanel({}, undefined, [RENGLON]);
+
+    await user.click(screen.getByRole("button", { name: "Agregar una unidad de Bujía CR7HSA" }));
+
+    await waitFor(() => expect(setCartQuantityMock).toHaveBeenCalledTimes(1));
+    expect(setCartQuantityMock.mock.calls[0].slice(1)).toEqual(["cart-1", 3]);
+  });
+
+  it("el modal de cierre recibe el mismo carrito y el mismo aviso de cambio", () => {
+    const onCartChanged = vi.fn();
+    renderPanel({}, undefined, [RENGLON], onCartChanged);
+
+    const props = closeSaleModalProps.mock.calls.at(-1)?.[0];
+    expect(props.cart).toEqual([RENGLON]);
+    expect(props.onCartChanged).toBe(onCartChanged);
+    expect(props.conversationId).toBe("conv-1");
   });
 });

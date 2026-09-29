@@ -42,14 +42,14 @@ const AGENT: Agent = {
   isActive: true,
 };
 
-function createFakeSupabase() {
+function createFakeSupabase(opts: { cartDeleteError?: { message: string } } = {}) {
   // D (20/9/2026, M2/T3-b): mismo hueco documentado en los otros fakes de
   // este archivo — `eq: async () => {...}` ignoraba sus argumentos. Un
   // `.eq("id", conversationId)` cambiado por un id equivocado (el caso real
   // sería `closeSaleWithContactInfo` actualizando la conversación o el
   // contacto INCORRECTO) pasaba en verde igual. Ahora cada `update()` de
   // `contacts`/`conversations` registra `eqColumn`/`eqValue`.
-  const calls: { table: string; op: "insert" | "update"; payload: unknown; eqColumn?: string; eqValue?: unknown }[] = [];
+  const calls: { table: string; op: "insert" | "update" | "delete"; payload: unknown; eqColumn?: string; eqValue?: unknown }[] = [];
   let nextOrderId = 1;
 
   const client = {
@@ -96,6 +96,17 @@ function createFakeSupabase() {
       }
       if (table === "messages") {
         return { insert: async (payload: unknown) => { calls.push({ table, op: "insert", payload }); return { error: null }; } };
+      }
+      if (table === "conversation_cart_items") {
+        // T8 (28/9/2026): el cierre de venta vacía el carrito de la conversación.
+        return {
+          delete: () => ({
+            eq: async (eqColumn: string, eqValue: unknown) => {
+              calls.push({ table, op: "delete", payload: null, eqColumn, eqValue });
+              return { error: opts.cartDeleteError ?? null };
+            },
+          }),
+        };
       }
       throw new Error(`Fake Supabase: tabla no soportada en este test: ${table}`);
     },
@@ -201,6 +212,59 @@ describe("closeSaleWithContactInfo — el monto sale del catálogo, nunca de un 
     const messageInsert = calls.find((c) => c.table === "messages" && c.op === "insert");
     const payload = messageInsert?.payload as { content?: string } | undefined;
     expect(payload?.content).toContain("Factura Saint 00123 ABC");
+  });
+
+  /**
+   * T8, plan "Seba encuentra, no insiste, y el mostrador no deja a nadie
+   * esperando" (28/9/2026): el carrito vive en la base y la venta lo
+   * consume. Sin vaciarlo, el mismo carrito reaparecería en el próximo
+   * "Cerrar venta" de esa conversación y se cobraría dos veces.
+   */
+  it("vacía el carrito de ESA conversación una vez cerrada la venta", async () => {
+    const { client, calls } = createFakeSupabase();
+    const items: SaleLineItem[] = [
+      { id: "cart-1", origin: "inventory", productId: "prod-1", description: "Carburador PZ27", unitPrice: 18, quantity: 1 },
+    ];
+
+    const result = await closeSaleWithContactInfo(client, "conv-1", "contact-1", AGENT, CONTACT_DETAILS, items, 40);
+
+    const cartDelete = calls.find((c) => c.table === "conversation_cart_items" && c.op === "delete");
+    expect(cartDelete?.eqColumn).toBe("conversation_id");
+    expect(cartDelete?.eqValue).toBe("conv-1");
+    expect(result).toEqual({ cartCleared: true });
+
+    // Recién DESPUÉS de dejar la venta escrita: si la orden falla, el carrito se conserva.
+    const orderAt = calls.findIndex((c) => c.table === "conversations" && c.op === "update");
+    const cartAt = calls.findIndex((c) => c.table === "conversation_cart_items");
+    expect(cartAt).toBeGreaterThan(orderAt);
+  });
+
+  it("si el vaciado del carrito falla, la venta queda cerrada y se avisa con cartCleared: false", async () => {
+    const { client, calls } = createFakeSupabase({ cartDeleteError: { message: "boom" } });
+    const items: SaleLineItem[] = [
+      { id: "cart-1", origin: "inventory", productId: "prod-1", description: "Carburador PZ27", unitPrice: 18, quantity: 1 },
+    ];
+
+    const result = await closeSaleWithContactInfo(client, "conv-1", "contact-1", AGENT, CONTACT_DETAILS, items, 40);
+
+    expect(result).toEqual({ cartCleared: false });
+    // La venta NO se revierte: orden, conversación ganada y evento de sistema siguen escritos.
+    expect(calls.some((c) => c.table === "orders" && c.op === "insert")).toBe(true);
+    expect(calls.find((c) => c.table === "conversations" && c.op === "update")?.payload).toMatchObject({
+      deal_status: "won",
+    });
+    expect(calls.some((c) => c.table === "messages" && c.op === "insert")).toBe(true);
+  });
+
+  it("si la venta falla antes de escribirse, el carrito no se toca", async () => {
+    const { client, calls } = createFakeSupabase();
+
+    await expect(
+      closeSaleWithContactInfo(client, "conv-1", "contact-1", AGENT, { ...CONTACT_DETAILS, paymentProofUrl: null }, [
+        { id: "cart-1", origin: "inventory", productId: "prod-1", description: "X", unitPrice: 1, quantity: 1 },
+      ], 40)
+    ).rejects.toThrow();
+    expect(calls.some((c) => c.table === "conversation_cart_items")).toBe(false);
   });
 
   /**

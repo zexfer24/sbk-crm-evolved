@@ -6,6 +6,7 @@ import type {
   AgentSettings,
   CatalogLink,
   Conversation,
+  ConversationCartItem,
   ConversationSummary,
   InboxDayScope,
   Message,
@@ -20,6 +21,7 @@ import {
   CHAT_MESSAGES_WINDOW,
   INBOX_PAGE_SIZE,
   fetchActiveCatalogLinks,
+  fetchCart,
   fetchConversation,
   fetchConversationIdByPhone,
   fetchConversationRow,
@@ -1464,6 +1466,95 @@ export function CrmShell({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedId, supabase]);
 
+  /**
+   * El carrito persistente de la conversación abierta (T8, plan "Seba
+   * encuentra, no insiste, y el mostrador no deja a nadie esperando",
+   * 28/9/2026, tabla `conversation_cart_items`). Mismo patrón que
+   * `loadedThread`: se guarda junto al id de SU conversación, así que lo que
+   * quedó guardado de un chat anterior sencillamente no es de este hilo y
+   * nunca se pinta bajo otro nombre — y es lo que evita que `CloseSaleModal`
+   * se abra con el carrito de otro cliente durante el instante entre elegir
+   * un chat y que llegue su lectura.
+   */
+  const [cartState, setCartState] = useState<{
+    conversationId: string;
+    items: ConversationCartItem[];
+  } | null>(null);
+  const cart = useMemo(
+    () => (cartState !== null && cartState.conversationId === selectedId ? cartState.items : []),
+    [cartState, selectedId]
+  );
+
+  // La conversación abierta AHORA, para que una respuesta atrasada de la
+  // lectura de un chat anterior no pise el carrito del chat actual.
+  const openConversationIdRef = useRef<string | null>(selectedId);
+  useEffect(() => {
+    openConversationIdRef.current = selectedId;
+  }, [selectedId]);
+
+  const refreshCart = useCallback(async () => {
+    const conversationId = openConversationIdRef.current;
+    if (!conversationId) return;
+    try {
+      const items = await fetchCart(supabase, conversationId);
+      if (openConversationIdRef.current !== conversationId) return;
+      setCartState({ conversationId, items });
+    } catch (error) {
+      // Se conserva lo que había en pantalla: un carrito que no se pudo leer
+      // no se pinta como vacío. `log.ts` es `server-only`: `console.warn` con
+      // el mismo estilo de evento (ver `realtimeStatusHandler`).
+      console.warn("carrito_no_leido", { conversationId, error });
+    }
+  }, [supabase]);
+
+  /**
+   * Cambios de OTROS asesores (o de otra pestaña): agrupados, como el resto
+   * de los canales de este archivo. Las escrituras del propio asesor no
+   * esperan a esto: `onCartChanged` llama a `refreshCart` directo.
+   */
+  const requestCartRefresh = useLiveRefresh(refreshCart);
+
+  useEffect(() => {
+    if (!selectedId) return;
+    const conversationId = selectedId;
+    let cancelled = false;
+
+    // Lectura inicial INLINE con `.then()` (y no llamando a `refreshCart`):
+    // la regla `react-hooks/set-state-in-effect` sigue la referencia de una
+    // función hasta su `setState` aunque viva detrás de un `await` (ver
+    // CLAUDE.md, trampa del 21-22/9/2026).
+    fetchCart(supabase, conversationId)
+      .then((items) => {
+        if (!cancelled) setCartState({ conversationId, items });
+      })
+      .catch((error) => {
+        console.warn("carrito_no_leido", { conversationId, error });
+      });
+
+    // `conversation_cart_items` tiene `replica identity full` (migración
+    // 20260929010000): un DELETE filtrado por `conversation_id` SÍ llega, a
+    // diferencia de `contact_tags`. Y va en la publicación `supabase_realtime`
+    // — sin eso este canal se suscribe bien y calla para siempre.
+    const channel = supabase
+      .channel(`cart-${conversationId}`)
+      .on(
+        "postgres_changes",
+        {
+          event: "*",
+          schema: "public",
+          table: "conversation_cart_items",
+          filter: `conversation_id=eq.${conversationId}`,
+        },
+        () => requestCartRefresh()
+      )
+      .subscribe(realtimeStatusHandler(`cart-${conversationId}`, requestCartRefresh));
+
+    return () => {
+      cancelled = true;
+      supabase.removeChannel(channel);
+    };
+  }, [selectedId, supabase, requestCartRefresh]);
+
   return (
     <div className="crm" data-view={mobileView}>
       <AppRail active="bandeja" variant="crm" />
@@ -1550,6 +1641,8 @@ export function CrmShell({
               allTags={tags}
               currentAgent={currentAgent}
               bcvRate={bcvRate}
+              cart={cart}
+              onCartChanged={refreshCart}
               onContactTagsChanged={refreshContactTagsNow}
             />
           ) : (

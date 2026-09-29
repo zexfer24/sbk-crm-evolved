@@ -8,6 +8,7 @@ import type { ConversationCursor } from "@/lib/inbox-paging";
 import { normalizeForSearch } from "@/lib/message-search";
 import { CRM_TIME_ZONE, currentDayRange } from "@/lib/time-zone";
 import { failureReason } from "@/lib/whatsapp/failure-reason";
+import { mapProduct, PRODUCT_SELECT, type RawProduct } from "@/lib/inventory-data";
 import type {
   Agent,
   AgentMetrics,
@@ -23,6 +24,7 @@ import type {
   ContactName,
   ContactSummary,
   Conversation,
+  ConversationCartItem,
   ConversationQuote,
   ConversationSummary,
   HourlyActivity,
@@ -1844,6 +1846,63 @@ export async function fetchConversationQuotes(
 
   if (error) throw error;
   return (data as RawConversationQuote[]).map(mapConversationQuote);
+}
+
+/**
+ * Carrito persistente de la conversación (T8, plan "Seba encuentra, no
+ * insiste, y el mostrador no deja a nadie esperando", 28/9/2026): cada
+ * renglón con su producto completo y, si vino de una cotización de Seba, el
+ * precio que se cotizó (`quotedPriceUsd`, solo para el aviso «cotizado $X ·
+ * hoy $Y» — el precio que cuenta es el vigente, ver `conversation-cart.ts`).
+ * Orden de llegada: el renglón nuevo queda abajo. Propaga el error: un
+ * carrito que no se pudo leer NO se pinta como vacío.
+ */
+interface RawCartItem {
+  id: string;
+  conversation_id: string;
+  product_id: string;
+  quantity: number;
+  origin: ConversationCartItem["origin"];
+  quote_id: string | null;
+  added_by: string | null;
+  created_at: string;
+  updated_at: string;
+  quote: { price_usd: number | string } | null;
+  product: RawProduct;
+}
+
+export async function fetchCart(
+  supabase: SupabaseClient,
+  conversationId: string
+): Promise<ConversationCartItem[]> {
+  const { data, error } = await supabase
+    .from("conversation_cart_items")
+    .select(
+      `id, conversation_id, product_id, quantity, origin, quote_id, added_by, created_at, updated_at,
+       quote:conversation_quotes(price_usd),
+       product:products(${PRODUCT_SELECT})`
+    )
+    .eq("conversation_id", conversationId)
+    .order("created_at", { ascending: true })
+    // Desempate estable: "Agregar cotizaciones" inserta varios renglones en
+    // una sola sentencia y todos comparten `created_at`; sin esto el orden de
+    // la lista podría saltar de un refresco a otro.
+    .order("id", { ascending: true });
+
+  if (error) throw error;
+  return ((data ?? []) as unknown as RawCartItem[]).map((row) => ({
+    id: row.id,
+    conversationId: row.conversation_id,
+    productId: row.product_id,
+    quantity: row.quantity,
+    origin: row.origin,
+    quoteId: row.quote_id,
+    quotedPriceUsd: row.quote ? Number(row.quote.price_usd) : null,
+    addedBy: row.added_by,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+    product: mapProduct(row.product),
+  }));
 }
 
 export async function fetchTemplates(

@@ -3,6 +3,7 @@ import type {
   Agent,
   AiLesson,
   CedulaType,
+  ConversationQuote,
   Invoice,
   MessageType,
   PaymentMethod,
@@ -608,6 +609,11 @@ export interface SaleLineItem {
   quantity: number;
 }
 
+/** Resultado de cerrar la venta: `cartCleared: false` = la venta quedó cerrada pero el carrito no se pudo vaciar. */
+export interface CloseSaleResult {
+  cartCleared: boolean;
+}
+
 export async function closeSaleWithContactInfo(
   supabase: SupabaseClient,
   conversationId: string,
@@ -616,7 +622,7 @@ export async function closeSaleWithContactInfo(
   details: ContactSaleDetails,
   items: SaleLineItem[],
   bcvRate: number
-) {
+): Promise<CloseSaleResult> {
   // El carrito no es uno de los nueve campos de `validateSaleDraft` (D11):
   // se valida aparte con `validateSaleCart`, la MISMA función que corre el
   // toast del modal. Corrección R2 (revisión `code-review high`, 19/9/2026):
@@ -711,6 +717,25 @@ export async function closeSaleWithContactInfo(
     .eq("id", conversationId);
   if (conversationError) throw conversationError;
 
+  // La venta ya está escrita: el carrito persistente de la conversación
+  // (T8, 28/9/2026) se consumió con ella y se vacía, o reaparecería en el
+  // próximo "Cerrar venta" de este chat y se cobraría dos veces. Si el
+  // vaciado falla NO se revierte la venta (ya está cerrada y facturable): se
+  // avisa con `cartCleared: false` para que el modal muestre un aviso y el
+  // asesor quite los renglones a mano. Este archivo corre en el navegador, no
+  // puede importar `lib/log.ts` (`server-only`): `console.error`.
+  let cartCleared = true;
+  try {
+    const { error: cartError } = await supabase
+      .from("conversation_cart_items")
+      .delete()
+      .eq("conversation_id", conversationId);
+    if (cartError) throw cartError;
+  } catch (cartErr) {
+    cartCleared = false;
+    console.error("carrito_no_vaciado_tras_venta", { conversationId, cartErr });
+  }
+
   // El evento deja constancia de cuánto de la venta NO pasó por el chat.
   // order_items no distingue la procedencia de cada renglón, así que este
   // es el único rastro de que el asesor agregó algo a mano.
@@ -728,6 +753,157 @@ export async function closeSaleWithContactInfo(
     agent.id,
     `Venta cerrada por ${agent.displayName} — $${totalAmount.toFixed(2)} · ${PAYMENT_METHOD_LABELS[details.paymentMethod]} · Factura Saint ${saintInvoiceNumber}${detalleAgregados}`
   );
+
+  return { cartCleared };
+}
+
+// ---------------------------------------------------------------------------
+// Carrito persistente de la conversación (T8, plan "Seba encuentra, no
+// insiste, y el mostrador no deja a nadie esperando", 28/9/2026).
+//
+// Tabla `conversation_cart_items`: solo `product_id` y `quantity` (el precio
+// es el vigente, D6). Un producto repetido SUMA unidades al mismo renglón.
+// ---------------------------------------------------------------------------
+
+const CART_QUANTITY_MESSAGE = "La cantidad tiene que ser un número entero de 1 o más.";
+const CART_ITEM_GONE_MESSAGE = "Ese renglón ya no está en el carrito: otro asesor pudo haberlo quitado.";
+/** Vueltas máximas del "leer, escribir si nada cambió". Sobra: dos asesores pisándose cuatro veces seguidas no ocurre. */
+const CART_ADD_MAX_ATTEMPTS = 4;
+
+function assertCartQuantity(quantity: number): void {
+  if (!Number.isInteger(quantity) || quantity < 1) throw new Error(CART_QUANTITY_MESSAGE);
+}
+
+export interface AddToCartInput {
+  conversationId: string;
+  productId: string;
+  /** Unidades a sumar; 1 si no se dice. */
+  quantity?: number;
+  origin: SaleItemOrigin;
+  /** Cotización de Seba de la que viene el renglón (solo `origin: "quote"`). */
+  quoteId?: string | null;
+}
+
+/**
+ * Agrega un producto al carrito de la conversación. Si el producto YA está,
+ * suma las unidades al mismo renglón (`unique (conversation_id,
+ * product_id)`): repetir no duplica el renglón, y tocar «Agregar» dos veces
+ * lleva dos unidades.
+ *
+ * No hay un `upsert` que sume: PostgREST reemplaza con los valores nuevos, no
+ * calcula `quantity + 1`. Una RPC lo haría en una sola sentencia, pero el plan
+ * pidió no sumar otra función a la base para esto, así que la suma se hace
+ * con CONCURRENCIA OPTIMISTA: se lee la cantidad, y el UPDATE lleva
+ * `.eq("quantity", <la que leí>)` — si otro asesor la cambió entre las dos
+ * cosas, afecta 0 filas y se vuelve a leer en vez de pisar su cambio. Si dos
+ * asesores crean el mismo renglón a la vez, el segundo INSERT falla con 23505
+ * y también reintenta (ahora encontrando el renglón, para sumarle).
+ */
+export async function addToCart(supabase: SupabaseClient, input: AddToCartInput): Promise<void> {
+  const quantity = input.quantity ?? 1;
+  assertCartQuantity(quantity);
+
+  for (let attempt = 0; attempt < CART_ADD_MAX_ATTEMPTS; attempt += 1) {
+    const { data: existing, error: readError } = await supabase
+      .from("conversation_cart_items")
+      .select("id, quantity")
+      .eq("conversation_id", input.conversationId)
+      .eq("product_id", input.productId)
+      .maybeSingle();
+    if (readError) throw readError;
+
+    if (existing) {
+      const { data: updated, error: updateError } = await supabase
+        .from("conversation_cart_items")
+        .update({ quantity: existing.quantity + quantity })
+        .eq("id", existing.id)
+        .eq("quantity", existing.quantity)
+        .select("id");
+      if (updateError) throw updateError;
+      if (updated && updated.length > 0) return;
+      // 0 filas: otro asesor cambió (o quitó) el renglón desde que lo leí.
+      continue;
+    }
+
+    const { error: insertError } = await supabase.from("conversation_cart_items").insert({
+      conversation_id: input.conversationId,
+      product_id: input.productId,
+      quantity,
+      origin: input.origin,
+      quote_id: input.quoteId ?? null,
+    });
+    if (!insertError) return;
+    // 23505: otro asesor creó el mismo renglón entre mi lectura y mi INSERT.
+    if (insertError.code !== "23505") throw insertError;
+  }
+
+  throw new Error("No se pudo agregar al carrito: otro asesor lo estaba cambiando a la vez. Inténtalo de nuevo.");
+}
+
+/**
+ * «Agregar cotizaciones de Seba»: un renglón por producto cotizado (la
+ * cotización más reciente de cada uno — `quotes` viene de la más nueva a la
+ * más vieja, `fetchConversationQuotes`), de a una unidad. NO suma a lo que ya
+ * estaba en el carrito: es `on conflict do nothing`, así que tocar el botón
+ * dos veces no duplica cantidades, y si otro asesor agregó uno a la vez no
+ * falla el lote entero. Se saltan las cotizaciones de un producto que ya no
+ * existe (`productId: null`). Devuelve cuántos renglones nuevos entraron.
+ */
+export async function addQuotesToCart(
+  supabase: SupabaseClient,
+  conversationId: string,
+  quotes: ConversationQuote[]
+): Promise<number> {
+  const seen = new Set<string>();
+  const rows: {
+    conversation_id: string;
+    product_id: string;
+    quantity: number;
+    origin: SaleItemOrigin;
+    quote_id: string;
+  }[] = [];
+  for (const quote of quotes) {
+    if (!quote.productId || seen.has(quote.productId)) continue;
+    seen.add(quote.productId);
+    rows.push({
+      conversation_id: conversationId,
+      product_id: quote.productId,
+      quantity: 1,
+      origin: "quote",
+      quote_id: quote.id,
+    });
+  }
+  if (rows.length === 0) return 0;
+
+  const { data, error } = await supabase
+    .from("conversation_cart_items")
+    .upsert(rows, { onConflict: "conversation_id,product_id", ignoreDuplicates: true })
+    .select("id");
+  if (error) throw error;
+  return data?.length ?? 0;
+}
+
+/** Fija la cantidad de un renglón. Lanza si el renglón ya no existe (lo quitó otro asesor). */
+export async function setCartQuantity(supabase: SupabaseClient, itemId: string, quantity: number): Promise<void> {
+  assertCartQuantity(quantity);
+  const { data, error } = await supabase
+    .from("conversation_cart_items")
+    .update({ quantity })
+    .eq("id", itemId)
+    .select("id");
+  if (error) throw error;
+  assertRowsAffected(data, CART_ITEM_GONE_MESSAGE);
+}
+
+/** Quita un renglón del carrito. Lanza si ya no estaba (o si la base ignoró el borrado). */
+export async function removeFromCart(supabase: SupabaseClient, itemId: string): Promise<void> {
+  const { data, error } = await supabase
+    .from("conversation_cart_items")
+    .delete()
+    .eq("id", itemId)
+    .select("id");
+  if (error) throw error;
+  assertRowsAffected(data, CART_ITEM_GONE_MESSAGE);
 }
 
 export async function verifySale(supabase: SupabaseClient, conversationId: string, agent: Agent) {

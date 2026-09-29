@@ -17,13 +17,13 @@ import { inventoryPageRange, LOW_STOCK_THRESHOLD, type InventoryParams } from "@
  * lo que la IA cotiza — salvo el peso, que la IA ni siquiera lee.
  */
 
-const PRODUCT_SELECT = `
+export const PRODUCT_SELECT = `
   id, name, brand, price, currency, stock_quantity, description,
   is_active, updated_at, weight_kg, saint_code, saint_added_at, saint_removed_at,
   product_compatibility(id, moto_brand, moto_model)
 `;
 
-interface RawProduct {
+export interface RawProduct {
   id: string;
   name: string;
   brand: string | null;
@@ -40,7 +40,7 @@ interface RawProduct {
   product_compatibility: { id: string; moto_brand: string; moto_model: string }[] | null;
 }
 
-function mapProduct(row: RawProduct): Product {
+export function mapProduct(row: RawProduct): Product {
   return {
     id: row.id,
     name: row.name,

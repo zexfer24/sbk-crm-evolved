@@ -467,3 +467,16 @@ jobs:
           psql "postgresql://postgres:postgres@127.0.0.1:54322/postgres" \
             -v ON_ERROR_STOP=1 \
             -f supabase/tests/agents_rol_sin_autoascenso.sql
+
+      # T8, plan "Seba encuentra, no insiste, y el mostrador no deja a nadie
+      # esperando" (28/9/2026, Entrega B): el carrito por conversación
+      # (conversation_cart_items). Fija RLS de agente (y que un autenticado que
+      # no es agente no ve nada), el unique (conversation_id, product_id), los
+      # CHECK de quantity/origin, las cascadas, y que la tabla esté en
+      # supabase_realtime con replica identity full -- sin eso el canal
+      # cart-<id> calla para siempre.
+      - name: carrito por conversación -- RLS, unique, CHECK y Realtime
+        run: |
+          psql "postgresql://postgres:postgres@127.0.0.1:54322/postgres" \
+            -v ON_ERROR_STOP=1 \
+            -f supabase/tests/carrito_por_conversacion.sql

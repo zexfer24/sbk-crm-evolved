@@ -3,14 +3,14 @@
 import { useEffect, useRef, useState, type ChangeEvent } from "react";
 import { Handshake, Upload, X } from "lucide-react";
 import { Button, Input, Label, Modal, TextArea, toast } from "@heroui/react";
-import type { Agent, CedulaType, Contact, Message, PaymentMethod, SaleCartItem } from "@/lib/types";
+import type { Agent, CedulaType, Contact, ConversationCartItem, Message, PaymentMethod } from "@/lib/types";
 import { PAYMENT_METHOD_LABELS, PAYMENT_METHODS } from "@/lib/types";
 import { VENEZUELA_STATES } from "@/lib/venezuela";
 import { createClient } from "@/lib/supabase/client";
 import { fetchLatestBcvRate } from "@/lib/data";
 import { MEDIA_BUCKET, mediaUrlFor } from "@/lib/storage";
 import { closeSaleWithContactInfo } from "@/lib/mutations";
-import { cartToLineItems } from "@/lib/sale-cart";
+import { cartToSaleLines, cartTotals, priceCartLines } from "@/lib/conversation-cart";
 import {
   normalizeSaint,
   SALE_FIELD_LABELS,
@@ -28,6 +28,14 @@ interface CloseSaleModalProps {
   contact: Contact;
   agent: Agent;
   messages: Message[];
+  /**
+   * El carrito persistente de la conversación (T8, plan "Seba encuentra, no
+   * insiste, y el mostrador no deja a nadie esperando", 28/9/2026): lo lee y
+   * mantiene vivo `crm-shell.tsx`. El modal ya no guarda un carrito propio.
+   */
+  cart: ConversationCartItem[];
+  /** Pide releer el carrito tras escribir en él (o tras cerrar la venta, que lo vacía). */
+  onCartChanged: () => void;
 }
 
 export function CloseSaleModal({
@@ -37,6 +45,8 @@ export function CloseSaleModal({
   contact,
   agent,
   messages,
+  cart,
+  onCartChanged,
 }: CloseSaleModalProps) {
   const [displayName, setDisplayName] = useState(contact.displayName ?? contact.profileName ?? "");
   const [cedulaType, setCedulaType] = useState<CedulaType | "">(contact.cedulaType ?? "V");
@@ -94,10 +104,9 @@ export function CloseSaleModal({
   const saintRef = useRef<HTMLInputElement>(null);
   const proofFieldsetRef = useRef<HTMLFieldSetElement>(null);
 
-  // Lo que lleva el cliente. El asesor lo arma: toma lo que la IA cotizó en
-  // el chat y agrega del inventario lo que haga falta. El precio siempre
-  // sale del catálogo — nunca se escribe a mano.
-  const [cart, setCart] = useState<SaleCartItem[]>([]);
+  // Lo que lleva el cliente vive en la base, no acá (T8, 28/9/2026): llega por
+  // props y `SaleItemsEditor` escribe en la tabla. El precio siempre sale del
+  // catálogo — nunca se escribe a mano — y es el VIGENTE al facturar (D6).
 
   // La tasa queda registrada en la orden para que el monto sea trazable
   // aunque la tasa cambie después. Antes se tomaba de la primera cotización,
@@ -220,6 +229,17 @@ export function CloseSaleModal({
       return;
     }
 
+    // Precio VIGENTE de cada renglón (D6). Un repuesto en bolívares sin tasa
+    // no tiene precio en dólares: meter un cero en la venta sería peor que no
+    // dejar cerrarla.
+    const pricedLines = priceCartLines(cart, bcvRate);
+    if (cartTotals(pricedLines).unpricedCount > 0) {
+      toast.danger(
+        "Hay renglones sin precio: falta la tasa del BCV para pasar a dólares un repuesto en bolívares."
+      );
+      return;
+    }
+
     const draft: SaleDraft = {
       displayName,
       whatsappNumber: contact.phoneNumber,
@@ -243,7 +263,7 @@ export function CloseSaleModal({
     setIsSaving(true);
     try {
       const supabase = createClient();
-      await closeSaleWithContactInfo(
+      const result = await closeSaleWithContactInfo(
         supabase,
         conversationId,
         contact.id,
@@ -261,10 +281,19 @@ export function CloseSaleModal({
           paymentMethod: paymentMethod as PaymentMethod,
           saintInvoiceNumber: normalizeSaint(saintInvoiceNumber),
         },
-        cartToLineItems(cart),
+        cartToSaleLines(pricedLines),
         bcvRate
       );
       toast.success("¡Venta cerrada!");
+      if (!result.cartCleared) {
+        // La venta YA está cerrada (no se revierte): solo el carrito quedó
+        // con los renglones, y reaparecerían en el próximo cierre de este chat.
+        toast.warning(
+          "La venta quedó cerrada, pero el carrito no se pudo vaciar. Quita los renglones a mano para que no se cobren de nuevo."
+        );
+      }
+      // El cierre vació el carrito en la base: que el panel lo relea.
+      onCartChanged();
       onOpenChange(false);
     } catch (err) {
       toast.danger(err instanceof Error ? err.message : "No se pudo cerrar la venta. Intenta de nuevo.");
@@ -293,8 +322,8 @@ export function CloseSaleModal({
               <SaleItemsEditor
                 conversationId={conversationId}
                 cart={cart}
-                onChange={setCart}
                 bcvRate={bcvRate}
+                onCartChanged={onCartChanged}
               />
 
               <div className="flex flex-col gap-1.5">

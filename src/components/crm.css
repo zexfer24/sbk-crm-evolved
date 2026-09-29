@@ -1316,6 +1316,152 @@
   color: var(--lm-muted);
 }
 
+/* --------------------------------------------------------------------------
+   Carrito por conversación (T8, plan "Seba encuentra, no insiste, y el
+   mostrador no deja a nadie esperando", 28/9/2026): «Lo que lleva el
+   cliente» en el panel derecho y en el editor del modal «Cerrar venta».
+   Renglón APILADO (nombre / cantidad y subtotal), no una fila ancha: la
+   columna del panel mide 300 px (268 en pantallas medianas) y todo texto
+   acá adentro lleva `min-width: 0` para no desbordarla. No se ha visto en
+   pantalla: jsdom no calcula layout (verificación visual pendiente).
+   -------------------------------------------------------------------------- */
+
+.crm-pcart {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+}
+
+.crm-pcart-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.crm-pcart-item {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+  padding: 8px 10px;
+  border-radius: 10px;
+  background: var(--lm-sunken);
+}
+
+.crm-pcart-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 6px;
+  min-width: 0;
+}
+
+.crm-pcart-name {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--lm-ink);
+}
+
+.crm-pcart-meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 8px;
+  min-width: 0;
+}
+
+.crm-pcart-change {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--lm-wait-ink);
+}
+
+.crm-pcart-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 10px;
+  min-width: 0;
+}
+
+.crm-pcart-price {
+  font-size: 12px;
+  color: var(--lm-muted);
+}
+
+.crm-pcart-subtotal {
+  margin-left: auto;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--lm-ink);
+}
+
+.crm-pcart-bs {
+  margin: 0;
+  text-align: right;
+  font-size: 11.5px;
+  color: var(--lm-muted);
+}
+
+.crm-pcart-warning {
+  margin: 0;
+  font-size: 11.5px;
+  line-height: 1.4;
+  color: var(--lm-wait-ink);
+}
+
+.crm-pcart-total-values {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 1px;
+}
+
+.crm-pcart-total-bs {
+  font-size: 11.5px;
+  font-weight: 500;
+  color: var(--lm-muted);
+}
+
+.crm-lookup-item-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  min-width: 0;
+}
+
+.crm-lookup-add {
+  display: inline-flex;
+  flex-shrink: 0;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 9px;
+  border: 1px solid var(--lm-line);
+  border-radius: 999px;
+  background: var(--lm-surface);
+  color: var(--lm-ink);
+  font-size: 11.5px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.crm-lookup-add:hover:not(:disabled) {
+  border-color: var(--lm-link);
+  color: var(--lm-link);
+}
+
+.crm-lookup-add:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
 .crm-proof-picker {
   display: flex;
   flex-wrap: wrap;

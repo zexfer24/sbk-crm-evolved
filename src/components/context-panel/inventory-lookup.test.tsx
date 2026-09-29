@@ -213,4 +213,61 @@ describe("InventoryLookup", () => {
     expect(screen.queryByText("Bujía CR7HSA")).not.toBeInTheDocument();
     expect(screen.getByText(/escribe un nombre, una marca o un código/i)).toBeInTheDocument();
   });
+
+  /**
+   * T8, plan "Seba encuentra, no insiste, y el mostrador no deja a nadie
+   * esperando" (28/9/2026): el resultado gana un botón «Agregar» al carrito
+   * de la conversación. Sigue siendo solo una búsqueda si el llamador no le
+   * pasa `onAdd`.
+   */
+  describe("botón Agregar al carrito (T8)", () => {
+    it("cada resultado activo ofrece «Agregar» y le entrega su producto a onAdd", async () => {
+      searchProductsForLookup.mockResolvedValue([product()]);
+      const onAdd = vi.fn();
+      render(<InventoryLookup bcvRate={RATE} onAdd={onAdd} />);
+
+      type("bujia");
+      flush();
+      await flushPromises();
+
+      fireEvent.click(screen.getByRole("button", { name: "Agregar Bujía CR7HSA al carrito" }));
+
+      expect(onAdd).toHaveBeenCalledTimes(1);
+      expect(onAdd).toHaveBeenCalledWith(expect.objectContaining({ id: "prod-1", name: "Bujía CR7HSA" }));
+    });
+
+    it("un repuesto retirado NO se puede agregar", async () => {
+      searchProductsForLookup.mockResolvedValue([product({ isActive: false })]);
+      render(<InventoryLookup bcvRate={RATE} onAdd={vi.fn()} />);
+
+      type("bujia");
+      flush();
+      await flushPromises();
+
+      expect(screen.getByText("Retirado")).toBeInTheDocument();
+      expect(screen.queryByRole("button", { name: /al carrito/i })).not.toBeInTheDocument();
+    });
+
+    it("sin onAdd no pinta ningún botón: sigue siendo una búsqueda de solo lectura", async () => {
+      searchProductsForLookup.mockResolvedValue([product()]);
+      render(<InventoryLookup bcvRate={RATE} />);
+
+      type("bujia");
+      flush();
+      await flushPromises();
+
+      expect(screen.queryByRole("button", { name: /al carrito/i })).not.toBeInTheDocument();
+    });
+
+    it("mientras el carrito escribe (addDisabled) el botón se deshabilita", async () => {
+      searchProductsForLookup.mockResolvedValue([product()]);
+      render(<InventoryLookup bcvRate={RATE} onAdd={vi.fn()} addDisabled />);
+
+      type("bujia");
+      flush();
+      await flushPromises();
+
+      expect(screen.getByRole("button", { name: "Agregar Bujía CR7HSA al carrito" })).toBeDisabled();
+    });
+  });
 });

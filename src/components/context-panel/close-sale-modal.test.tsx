@@ -1,15 +1,24 @@
 /** @vitest-environment jsdom */
 import { describe, expect, it, vi, beforeEach } from "vitest";
-import { render, screen, waitFor } from "@testing-library/react";
+import { act, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { CloseSaleModal } from "@/components/context-panel/close-sale-modal";
-import type { Agent, Contact, ConversationQuote, Message, Product } from "@/lib/types";
+import type { Agent, Contact, ConversationCartItem, ConversationQuote, Message, Product } from "@/lib/types";
 import { toast } from "@heroui/react";
 
-const closeSaleWithContactInfo = vi.fn().mockResolvedValue(undefined);
+const closeSaleWithContactInfo = vi.fn().mockResolvedValue({ cartCleared: true });
+const addToCart = vi.fn().mockResolvedValue(undefined);
+const addQuotesToCart = vi.fn().mockResolvedValue(0);
+const setCartQuantity = vi.fn().mockResolvedValue(undefined);
+const removeFromCart = vi.fn().mockResolvedValue(undefined);
 
 vi.mock("@/lib/mutations", () => ({
   closeSaleWithContactInfo: (...args: unknown[]) => closeSaleWithContactInfo(...args),
+  // T8 (28/9/2026): el carrito ya no vive en el estado del modal, se escribe en la base.
+  addToCart: (...args: unknown[]) => addToCart(...args),
+  addQuotesToCart: (...args: unknown[]) => addQuotesToCart(...args),
+  setCartQuantity: (...args: unknown[]) => setCartQuantity(...args),
+  removeFromCart: (...args: unknown[]) => removeFromCart(...args),
 }));
 
 // 20/9/2026, "El resguardo antes del push" (M2/T2): el `toast.danger` del
@@ -20,7 +29,7 @@ vi.mock("@/lib/mutations", () => ({
 // un `ToastProvider`.
 vi.mock("@heroui/react", async (importOriginal) => {
   const real = await importOriginal<typeof import("@heroui/react")>();
-  return { ...real, toast: { ...real.toast, danger: vi.fn(), success: vi.fn() } };
+  return { ...real, toast: { ...real.toast, danger: vi.fn(), success: vi.fn(), warning: vi.fn() } };
 });
 
 const QUOTES: ConversationQuote[] = [
@@ -60,6 +69,34 @@ const BUJIA: Product = {
   saintAddedAt: null,
   saintRemovedAt: null,
 };
+
+// T8 (28/9/2026, D6): el carrito guarda producto y cantidad, y el precio es el
+// VIGENTE. Seba cotizó el carburador a $18 (`q-1`); hoy vale $20.
+const CARBURADOR: Product = {
+  ...BUJIA,
+  id: "prod-1",
+  name: "Carburador PZ27",
+  brand: null,
+  price: 20,
+};
+
+function renglon(over: Partial<ConversationCartItem> = {}): ConversationCartItem {
+  const product = over.product ?? CARBURADOR;
+  return {
+    id: "cart-1",
+    conversationId: "conv-1",
+    productId: product.id,
+    quantity: 1,
+    origin: "quote",
+    quoteId: "q-1",
+    quotedPriceUsd: 18,
+    addedBy: "agent-1",
+    createdAt: "2026-09-29T10:00:00.000Z",
+    updatedAt: "2026-09-29T10:00:00.000Z",
+    product,
+    ...over,
+  };
+}
 
 const fetchConversationQuotes = vi.fn().mockResolvedValue(QUOTES);
 const fetchLatestBcvRate = vi.fn().mockResolvedValue(40);
@@ -128,14 +165,27 @@ const FOTO_COMPROBANTE: Message = {
 
 beforeEach(() => {
   closeSaleWithContactInfo.mockClear();
+  closeSaleWithContactInfo.mockResolvedValue({ cartCleared: true });
+  addToCart.mockClear();
+  addQuotesToCart.mockClear();
+  setCartQuantity.mockClear();
+  removeFromCart.mockClear();
   fetchConversationQuotes.mockClear();
   fetchLatestBcvRate.mockClear();
   searchActiveProducts.mockClear();
   vi.mocked(toast.danger).mockClear();
   vi.mocked(toast.success).mockClear();
+  vi.mocked(toast.warning).mockClear();
 });
 
-function renderModal(messages: Message[] = [FOTO_COMPROBANTE], contact: Contact = CONTACT) {
+const onCartChanged = vi.fn();
+
+function renderModal(
+  messages: Message[] = [FOTO_COMPROBANTE],
+  contact: Contact = CONTACT,
+  cart: ConversationCartItem[] = [renglon()]
+) {
+  onCartChanged.mockClear();
   return render(
     <CloseSaleModal
       isOpen
@@ -144,13 +194,22 @@ function renderModal(messages: Message[] = [FOTO_COMPROBANTE], contact: Contact 
       contact={contact}
       agent={AGENT}
       messages={messages}
+      cart={cart}
+      onCartChanged={onCartChanged}
     />
   );
 }
 
-/** Espera a que las cotizaciones del chat estén ofrecidas. */
+/** Espera a que el modal termine sus lecturas de arranque (tasa BCV y cotizaciones de Seba). */
 async function waitForQuotes() {
-  await waitFor(() => expect(screen.getByText("Carburador PZ27")).toBeInTheDocument());
+  await waitFor(() => {
+    expect(fetchLatestBcvRate).toHaveBeenCalled();
+    expect(fetchConversationQuotes).toHaveBeenCalled();
+  });
+  await act(async () => {
+    await Promise.resolve();
+    await Promise.resolve();
+  });
 }
 
 function submitButton() {
@@ -209,7 +268,7 @@ describe("CloseSaleModal — el asesor arma la venta, pero el precio lo pone el 
   // inspeccionando el resultado, no el atributo `disabled`.
   it("no llama a la mutación ni cierra el carrito vacío, y avisa del problema", async () => {
     const user = crearUsuario();
-    renderModal();
+    renderModal([FOTO_COMPROBANTE], CONTACT, []);
     await waitForQuotes();
 
     await completarDatosObligatorios(user);
@@ -232,31 +291,83 @@ describe("CloseSaleModal — el asesor arma la venta, pero el precio lo pone el 
     expect(screen.queryByLabelText(/precio/i)).not.toBeInTheDocument();
   });
 
-  it("cierra la venta con la cotización que el asesor tomó del chat", async () => {
+  // D6 (28/9/2026): el carrito guarda producto y cantidad; el precio es el
+  // VIGENTE. Seba cotizó el carburador a $18 y hoy vale $20: se factura $20.
+  it("cierra la venta con el carrito persistido, al precio de HOY y no al cotizado", async () => {
     const user = crearUsuario();
-    renderModal();
+    renderModal([FOTO_COMPROBANTE], CONTACT, [renglon({ quantity: 2 })]);
     await waitForQuotes();
 
-    await user.click(screen.getByText("Carburador PZ27"));
     await completarDatosObligatorios(user);
     await user.click(submitButton());
 
     await waitFor(() => expect(closeSaleWithContactInfo).toHaveBeenCalledTimes(1));
     expect(itemsSentToClose()).toEqual([
       {
-        id: "q-1",
+        id: "cart-1",
         origin: "quote",
         productId: "prod-1",
         description: "Carburador PZ27",
-        unitPrice: 18,
-        quantity: 1,
+        unitPrice: 20,
+        quantity: 2,
       },
     ]);
   });
 
+  it("avisa «cotizado $18.00 · hoy $20.00» en el renglón que vino de una cotización", async () => {
+    renderModal();
+    await waitForQuotes();
+
+    expect(screen.getByText("cotizado $18.00 · hoy $20.00")).toBeInTheDocument();
+  });
+
+  it("al cerrar la venta le pide al panel releer el carrito, que la venta dejó vacío", async () => {
+    const user = crearUsuario();
+    renderModal();
+    await waitForQuotes();
+
+    await completarDatosObligatorios(user);
+    await user.click(submitButton());
+
+    await waitFor(() => expect(closeSaleWithContactInfo).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(onCartChanged).toHaveBeenCalled());
+    expect(toast.success).toHaveBeenCalledWith("¡Venta cerrada!");
+    expect(toast.warning).not.toHaveBeenCalled();
+  });
+
+  it("si la venta se cerró pero el carrito no se pudo vaciar, avisa sin dar la venta por fallida", async () => {
+    closeSaleWithContactInfo.mockResolvedValueOnce({ cartCleared: false });
+    const user = crearUsuario();
+    renderModal();
+    await waitForQuotes();
+
+    await completarDatosObligatorios(user);
+    await user.click(submitButton());
+
+    await waitFor(() => expect(toast.warning).toHaveBeenCalledTimes(1));
+    expect(toast.warning).toHaveBeenCalledWith(expect.stringMatching(/carrito/i));
+    // La venta SÍ quedó cerrada: se celebra igual y no se muestra como error.
+    expect(toast.success).toHaveBeenCalledWith("¡Venta cerrada!");
+    expect(toast.danger).not.toHaveBeenCalled();
+  });
+
+  it("un renglón sin precio (repuesto en bolívares y sin tasa del BCV) impide cerrar la venta", async () => {
+    fetchLatestBcvRate.mockResolvedValueOnce(0);
+    const enBolivares: Product = { ...CARBURADOR, currency: "VES", price: 101 };
+    const user = crearUsuario();
+    renderModal([FOTO_COMPROBANTE], CONTACT, [renglon({ product: enBolivares })]);
+    await waitForQuotes();
+
+    await completarDatosObligatorios(user);
+    await user.click(submitButton());
+
+    expect(closeSaleWithContactInfo).not.toHaveBeenCalled();
+    expect(toast.danger).toHaveBeenCalledWith(expect.stringMatching(/sin precio|tasa/i));
+  });
+
   // Lo que faltaba: el cliente agrega algo al final que nunca pasó por el
   // chat, y antes eso obligaba a no cerrar la venta.
-  it("deja agregar un repuesto del inventario que la IA nunca cotizó", async () => {
+  it("deja agregar un repuesto del inventario: se escribe en el carrito de la base", async () => {
     const user = crearUsuario();
     renderModal();
     await waitForQuotes();
@@ -265,71 +376,65 @@ describe("CloseSaleModal — el asesor arma la venta, pero el precio lo pone el 
     await waitFor(() => expect(screen.getByText("Bujía CR7HSA")).toBeInTheDocument());
     await user.click(screen.getByText("Bujía CR7HSA"));
 
-    await completarDatosObligatorios(user);
-    await user.click(submitButton());
+    await waitFor(() => expect(addToCart).toHaveBeenCalledTimes(1));
+    expect(addToCart.mock.calls[0][1]).toEqual({
+      conversationId: "conv-1",
+      productId: "prod-9",
+      quantity: 1,
+      origin: "inventory",
+    });
+    await waitFor(() => expect(onCartChanged).toHaveBeenCalled());
+  });
 
-    await waitFor(() => expect(closeSaleWithContactInfo).toHaveBeenCalledTimes(1));
-    expect(itemsSentToClose()).toEqual([
-      {
-        id: "prod-9",
-        origin: "inventory",
-        productId: "prod-9",
-        description: "Bujía CR7HSA",
-        unitPrice: 3.25,
-        quantity: 1,
-      },
+  it("ofrece las cotizaciones de Seba que todavía no están en el carrito y las agrega con su vínculo", async () => {
+    const user = crearUsuario();
+    renderModal();
+    await waitForQuotes();
+
+    // El carburador (q-1) ya está en el carrito: solo se ofrece el kit de arrastre (q-2).
+    expect(screen.queryByRole("button", { name: /^carburador pz27.*\$18\.00$/i })).not.toBeInTheDocument();
+    await user.click(await screen.findByRole("button", { name: /^kit de arrastre.*\$32\.50$/i }));
+
+    await waitFor(() => expect(addToCart).toHaveBeenCalledTimes(1));
+    expect(addToCart.mock.calls[0][1]).toEqual({
+      conversationId: "conv-1",
+      productId: "prod-2",
+      quantity: 1,
+      origin: "quote",
+      quoteId: "q-2",
+    });
+  });
+
+  it("deja quitar un renglón: se borra de la base, no del estado del modal", async () => {
+    const user = crearUsuario();
+    renderModal([FOTO_COMPROBANTE], CONTACT, [
+      renglon(),
+      renglon({ id: "cart-2", product: { ...BUJIA, id: "prod-2", name: "Kit de arrastre" }, quoteId: null, quotedPriceUsd: null, origin: "inventory" }),
     ]);
-  });
-
-  it("deja quitar un renglón que ya no lleva el cliente", async () => {
-    const user = crearUsuario();
-    renderModal();
     await waitForQuotes();
 
-    await user.click(screen.getByText("Carburador PZ27"));
-    await user.click(screen.getByText("Kit de arrastre"));
+    await user.click(screen.getByLabelText("Quitar Carburador PZ27 del carrito"));
 
-    await user.click(screen.getByLabelText("Quitar Carburador PZ27 de la venta"));
-
-    await completarDatosObligatorios(user);
-    await user.click(submitButton());
-
-    await waitFor(() => expect(closeSaleWithContactInfo).toHaveBeenCalledTimes(1));
-    const items = itemsSentToClose();
-    expect(items).toHaveLength(1);
-    expect(items[0]).toMatchObject({ description: "Kit de arrastre" });
+    await waitFor(() => expect(removeFromCart).toHaveBeenCalledTimes(1));
+    expect(removeFromCart.mock.calls[0][1]).toBe("cart-1");
   });
 
-  it("deja subir la cantidad y el monto la sigue", async () => {
+  it("deja subir la cantidad: se escribe la cantidad nueva en la base", async () => {
     const user = crearUsuario();
-    renderModal();
+    renderModal([FOTO_COMPROBANTE], CONTACT, [renglon({ quantity: 2 })]);
     await waitForQuotes();
 
-    await user.click(screen.getByText("Carburador PZ27"));
-    await user.click(screen.getByLabelText("Agregar una unidad de Carburador PZ27"));
     await user.click(screen.getByLabelText("Agregar una unidad de Carburador PZ27"));
 
-    await completarDatosObligatorios(user);
-    await user.click(submitButton());
-
-    await waitFor(() => expect(closeSaleWithContactInfo).toHaveBeenCalledTimes(1));
-    expect(itemsSentToClose()[0]).toMatchObject({ quantity: 3, unitPrice: 18 });
+    await waitFor(() => expect(setCartQuantity).toHaveBeenCalledTimes(1));
+    expect(setCartQuantity.mock.calls[0].slice(1)).toEqual(["cart-1", 3]);
   });
 
   it("nunca baja de una unidad por más que se reste", async () => {
-    const user = crearUsuario();
-    renderModal();
+    renderModal([FOTO_COMPROBANTE], CONTACT, [renglon({ quantity: 1 })]);
     await waitForQuotes();
 
-    await user.click(screen.getByText("Carburador PZ27"));
-    await user.click(screen.getByLabelText("Restar una unidad de Carburador PZ27"));
-    await user.click(screen.getByLabelText("Restar una unidad de Carburador PZ27"));
-
-    await completarDatosObligatorios(user);
-    await user.click(submitButton());
-
-    await waitFor(() => expect(closeSaleWithContactInfo).toHaveBeenCalledTimes(1));
-    expect(itemsSentToClose()[0]).toMatchObject({ quantity: 1 });
+    expect(screen.getByLabelText("Restar una unidad de Carburador PZ27")).toBeDisabled();
   });
 
   // Antes la tasa salía de la primera cotización, así que una venta armada
@@ -338,11 +443,8 @@ describe("CloseSaleModal — el asesor arma la venta, pero el precio lo pone el 
   it("guarda la venta con la tasa del BCV vigente, aunque no haya cotizaciones", async () => {
     fetchConversationQuotes.mockResolvedValueOnce([]);
     const user = crearUsuario();
-    renderModal();
-
-    await user.type(screen.getByLabelText("Buscar repuesto en el inventario"), "bujía");
-    await waitFor(() => expect(screen.getByText("Bujía CR7HSA")).toBeInTheDocument());
-    await user.click(screen.getByText("Bujía CR7HSA"));
+    renderModal([FOTO_COMPROBANTE], CONTACT, [renglon({ origin: "inventory", quoteId: null, quotedPriceUsd: null })]);
+    await waitForQuotes();
 
     await completarDatosObligatorios(user);
     await user.click(submitButton());
@@ -358,7 +460,6 @@ describe("CloseSaleModal — el asesor arma la venta, pero el precio lo pone el 
     renderModal();
     await waitForQuotes();
 
-    await user.click(screen.getByText("Carburador PZ27"));
     await user.type(screen.getByLabelText("Nombre"), "Cliente Demo");
     await user.type(screen.getByLabelText("Cédula"), "12345678");
     await user.selectOptions(screen.getByLabelText("Estado"), "Barinas");
@@ -382,7 +483,6 @@ describe("CloseSaleModal — el asesor arma la venta, pero el precio lo pone el 
     renderModal();
     await waitForQuotes();
 
-    await user.click(screen.getByText("Carburador PZ27"));
     await user.type(screen.getByLabelText("Nombre"), "Cliente Demo");
     await user.type(screen.getByLabelText("Cédula"), "12345678");
     await user.selectOptions(screen.getByLabelText("Estado"), "Barinas");
@@ -406,7 +506,6 @@ describe("CloseSaleModal — el asesor arma la venta, pero el precio lo pone el 
     renderModal();
     await waitForQuotes();
 
-    await user.click(screen.getByText("Carburador PZ27"));
     await completarDatosObligatorios(user);
     // Vuelve a quitar el comprobante que el helper ya había elegido.
     await user.click(screen.getByLabelText("Quitar comprobante"));
@@ -424,7 +523,6 @@ describe("CloseSaleModal — el asesor arma la venta, pero el precio lo pone el 
     renderModal();
     await waitForQuotes();
 
-    await user.click(screen.getByText("Carburador PZ27"));
     await completarDatosObligatorios(user, { saintInvoiceNumber: "  00123  " });
     await user.click(submitButton());
 
@@ -444,7 +542,6 @@ describe("CloseSaleModal — el asesor arma la venta, pero el precio lo pone el 
     renderModal();
     await waitForQuotes();
 
-    await user.click(screen.getByText("Carburador PZ27"));
     await completarDatosObligatorios(user, { paymentMethod: "zelle" });
     await user.click(submitButton());
 
@@ -474,7 +571,6 @@ describe("CloseSaleModal — el asesor arma la venta, pero el precio lo pone el 
     renderModal([FOTO_COMPROBANTE], contactoSinNombre);
     await waitForQuotes();
 
-    await user.click(screen.getByText("Carburador PZ27"));
     await user.click(submitButton());
 
     await waitFor(() => expect(screen.getByLabelText("Nombre")).toHaveFocus());
@@ -491,7 +587,6 @@ describe("CloseSaleModal — el asesor arma la venta, pero el precio lo pone el 
     renderModal([FOTO_COMPROBANTE], contactoSinNombre);
     await waitForQuotes();
 
-    await user.click(screen.getByText("Carburador PZ27"));
     // Deja Nombre y Método de pago sin completar; llena el resto.
     await user.type(screen.getByLabelText("Cédula"), "12345678");
     await user.selectOptions(screen.getByLabelText("Estado"), "Barinas");
@@ -525,7 +620,6 @@ describe("CloseSaleModal — el asesor arma la venta, pero el precio lo pone el 
     const { rerender } = renderModal([FOTO_COMPROBANTE], contactoSinNombre);
     await waitForQuotes();
 
-    await user.click(screen.getByText("Carburador PZ27"));
     await user.click(submitButton());
     await screen.findByText(/el nombre del cliente es obligatorio/i);
 
@@ -535,6 +629,8 @@ describe("CloseSaleModal — el asesor arma la venta, pero el precio lo pone el 
       contact: contactoSinNombre,
       agent: AGENT,
       messages: [FOTO_COMPROBANTE],
+      cart: [renglon()],
+      onCartChanged,
     };
     rerender(<CloseSaleModal isOpen={false} {...props} />);
     rerender(<CloseSaleModal isOpen {...props} />);

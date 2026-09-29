@@ -993,15 +993,28 @@ export interface MotoCatalogSummary {
  */
 export type SaleItemOrigin = "quote" | "inventory";
 
-/** Un renglón de "lo que lleva el cliente" mientras se arma la venta. */
-export interface SaleCartItem {
-  /** Clave estable del renglón: el id de la cotización o el del producto. */
+/**
+ * Un renglón del carrito PERSISTENTE de una conversación (T8, plan "Seba
+ * encuentra, no insiste, y el mostrador no deja a nadie esperando",
+ * 28/9/2026, tabla `conversation_cart_items`). Guarda solo el producto y la
+ * cantidad: el precio NO viaja acá porque es el VIGENTE (D6) —
+ * `products` + tasa BCV, calculado por `priceCartLines`
+ * (`conversation-cart.ts`)—. `quotedPriceUsd` es lo único "viejo": el precio
+ * que Seba cotizó (`conversation_quotes.price_usd`) cuando el renglón vino de
+ * una cotización, solo para mostrar "cotizado $X · hoy $Y" — nunca se cobra.
+ */
+export interface ConversationCartItem {
   id: string;
-  origin: SaleItemOrigin;
-  productId: string | null;
-  description: string;
-  unitPriceUsd: number;
+  conversationId: string;
+  productId: string;
   quantity: number;
+  origin: SaleItemOrigin;
+  quoteId: string | null;
+  quotedPriceUsd: number | null;
+  addedBy: string | null;
+  createdAt: string;
+  updatedAt: string;
+  product: Product;
 }
 
 /**

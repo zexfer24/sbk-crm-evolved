@@ -3,7 +3,7 @@ import { describe, expect, it, vi, beforeEach, afterEach } from "vitest";
 import { render, act, screen } from "@testing-library/react";
 import { CrmShell } from "@/components/crm-shell";
 import { MessageBubble } from "@/components/chat/message-bubble";
-import type { Agent, Conversation, Message, QuickReply, Tag } from "@/lib/types";
+import type { Agent, Conversation, ConversationCartItem, Message, QuickReply, Tag } from "@/lib/types";
 
 type RealtimeEvent = "INSERT" | "UPDATE" | "DELETE";
 type ChannelHandler = (payload: { eventType: RealtimeEvent; new: Record<string, unknown> }) => void;
@@ -31,7 +31,15 @@ interface Subscription {
  * tiene. Este fake lo modela tal cual: un `trigger(..., "DELETE", ...)`
  * NUNCA llega a un handler que se suscribió CON `filter`, para que un test
  * que dependa de esa entrega falle igual que fallaría contra Supabase real.
+ *
+ * T8 (28/9/2026): `conversation_cart_items` SÍ tiene `replica identity full`
+ * (migración 20260929010000), así que un DELETE filtrado por
+ * `conversation_id` llega de verdad -- `REPLICA_FULL_TABLES` lo modela para
+ * que el test del carrito pueda probar el borrado de un renglón por otro
+ * asesor.
  */
+const REPLICA_FULL_TABLES = new Set(["conversation_cart_items"]);
+
 function createFakeSupabase() {
   const subscriptionsByTable = new Map<string, Subscription[]>();
 
@@ -57,6 +65,10 @@ function createFakeSupabase() {
       removeChannel: () => {},
       auth: { signOut: vi.fn() },
     },
+    /** Los `filter` con que el componente se suscribió a una tabla (uno por suscripción). */
+    filtersFor(table: string): (string | undefined)[] {
+      return (subscriptionsByTable.get(table) ?? []).map((sub) => sub.filter);
+    },
     trigger(
       table: string,
       eventType: RealtimeEvent = "INSERT",
@@ -64,7 +76,7 @@ function createFakeSupabase() {
     ) {
       for (const { event, filter, handler } of subscriptionsByTable.get(table) ?? []) {
         if (event !== "*" && event !== eventType) continue;
-        if (eventType === "DELETE" && filter) continue;
+        if (eventType === "DELETE" && filter && !REPLICA_FULL_TABLES.has(table)) continue;
         handler({ eventType, new: row });
       }
     },
@@ -177,9 +189,17 @@ vi.mock("@/components/chat/chat-panel", () => ({
 // (`selectedConversation.contact.tags`, no la fila de la bandeja, que es
 // mejor esfuerzo — ver el comentario grande de `openContactTags` en
 // `crm-shell.tsx`).
-let contextPanelProps: { conversation: Conversation } | null = null;
+let contextPanelProps: {
+  conversation: Conversation;
+  cart: ConversationCartItem[];
+  onCartChanged: () => void;
+} | null = null;
 vi.mock("@/components/context-panel/context-panel", () => ({
-  ContextPanel: (props: { conversation: Conversation }) => ((contextPanelProps = props), null),
+  ContextPanel: (props: {
+    conversation: Conversation;
+    cart: ConversationCartItem[];
+    onCartChanged: () => void;
+  }) => ((contextPanelProps = props), null),
 }));
 
 const fetchConversationsMock = vi.fn().mockResolvedValue([]);
@@ -206,6 +226,9 @@ const fetchConversationIdByPhoneMock = vi.fn().mockResolvedValue(null);
 // `crm-shell.tsx` use y falte acá tumba TODOS los tests de este archivo, no
 // solo el nuevo.
 const fetchActiveCatalogLinksMock = vi.fn().mockResolvedValue([]);
+
+// El carrito persistente de la conversación abierta (T8, 28/9/2026).
+const fetchCartMock = vi.fn().mockResolvedValue([]);
 
 const fetchAgentSettingsMock = vi.fn().mockResolvedValue({
   aiGloballyEnabled: true,
@@ -234,6 +257,7 @@ vi.mock("@/lib/data", () => ({
   fetchMessages: (...args: unknown[]) => fetchMessagesMock(...args),
   fetchMessagesBefore: vi.fn().mockResolvedValue([]),
   fetchNotes: vi.fn().mockResolvedValue([]),
+  fetchCart: (...args: unknown[]) => fetchCartMock(...args),
   fetchQuickReplies: vi.fn().mockResolvedValue([]),
   fetchActiveCatalogLinks: (...args: unknown[]) => fetchActiveCatalogLinksMock(...args),
   fetchTags: vi.fn().mockResolvedValue([]),
@@ -354,6 +378,9 @@ beforeEach(() => {
   fetchUnassignedConversationsMock.mockClear();
   fetchConversationIdByPhoneMock.mockClear();
   fetchConversationIdByPhoneMock.mockResolvedValue(null);
+  fetchCartMock.mockClear();
+  fetchCartMock.mockResolvedValue([]);
+  contextPanelProps = null;
   fetchMessagesMock.mockClear();
   fetchMessagesMock.mockResolvedValue([]); // cada test decide qué mensajes hay
   markConversationReadMock.mockClear();
@@ -597,6 +624,138 @@ async function renderWithOpenConversation() {
   fetchMessagesMock.mockClear();
   markConversationReadMock.mockClear();
 }
+
+function cartItem(over: Partial<ConversationCartItem> = {}): ConversationCartItem {
+  return {
+    id: "cart-1",
+    conversationId: "conv-1",
+    productId: "prod-1",
+    quantity: 1,
+    origin: "inventory",
+    quoteId: null,
+    quotedPriceUsd: null,
+    addedBy: "agent-1",
+    createdAt: "2026-09-29T10:00:00.000Z",
+    updatedAt: "2026-09-29T10:00:00.000Z",
+    product: {
+      id: "prod-1",
+      name: "Bujía CR7HSA",
+      brand: "NGK",
+      price: 3.25,
+      currency: "USD",
+      stockQuantity: 10,
+      description: null,
+      isActive: true,
+      updatedAt: "2026-09-29T00:00:00.000Z",
+      compatibility: [],
+      weightKg: null,
+      saintCode: null,
+      saintAddedAt: null,
+      saintRemovedAt: null,
+    },
+    ...over,
+  };
+}
+
+/**
+ * T8, plan "Seba encuentra, no insiste, y el mostrador no deja a nadie
+ * esperando" (28/9/2026): el carrito persistente de la conversación abierta
+ * se lee al abrirla y se sigue en vivo por el canal `cart-<id>`; sin lo
+ * segundo, lo que agrega otro asesor no se vería hasta recargar (y un canal
+ * sobre una tabla no publicada calla para siempre: la publicación la fija
+ * `supabase/tests/carrito_por_conversacion.sql`).
+ */
+describe("CrmShell — el carrito de la conversación abierta se sigue en vivo", () => {
+  it("al abrir el chat lee su carrito y se lo pasa al panel", async () => {
+    fetchCartMock.mockResolvedValue([cartItem()]);
+    await renderWithOpenConversation();
+
+    expect(fetchCartMock).toHaveBeenCalledWith(expect.anything(), "conv-1");
+    expect(contextPanelProps?.cart).toEqual([cartItem()]);
+  });
+
+  it("un renglón agregado por otro asesor (INSERT en la tabla) vuelve a leer el carrito", async () => {
+    await renderWithOpenConversation();
+    fetchCartMock.mockClear();
+    fetchCartMock.mockResolvedValue([cartItem({ id: "cart-2", quantity: 3 })]);
+
+    act(() => {
+      fake.trigger("conversation_cart_items", "INSERT", { conversation_id: "conv-1" });
+    });
+    await act(async () => {
+      vi.advanceTimersByTime(750);
+    });
+
+    expect(fetchCartMock).toHaveBeenCalledWith(expect.anything(), "conv-1");
+    expect(contextPanelProps?.cart.map((i) => i.id)).toEqual(["cart-2"]);
+  });
+
+  it("un renglón quitado por otro asesor (DELETE filtrado) también llega", async () => {
+    fetchCartMock.mockResolvedValue([cartItem()]);
+    await renderWithOpenConversation();
+    fetchCartMock.mockClear();
+    fetchCartMock.mockResolvedValue([]);
+
+    act(() => {
+      fake.trigger("conversation_cart_items", "DELETE", { id: "cart-1" });
+    });
+    await act(async () => {
+      vi.advanceTimersByTime(750);
+    });
+
+    expect(fetchCartMock).toHaveBeenCalledTimes(1);
+    expect(contextPanelProps?.cart).toEqual([]);
+  });
+
+  it("varios cambios seguidos (Agregar cotizaciones inserta varios renglones) son UNA sola lectura", async () => {
+    await renderWithOpenConversation();
+    fetchCartMock.mockClear();
+
+    act(() => {
+      fake.trigger("conversation_cart_items", "INSERT", { conversation_id: "conv-1" });
+      fake.trigger("conversation_cart_items", "INSERT", { conversation_id: "conv-1" });
+      fake.trigger("conversation_cart_items", "INSERT", { conversation_id: "conv-1" });
+    });
+    await act(async () => {
+      vi.advanceTimersByTime(750);
+    });
+
+    expect(fetchCartMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("el canal se filtra por la conversación abierta", async () => {
+    await renderWithOpenConversation();
+
+    expect(fake.filtersFor("conversation_cart_items")).toEqual(["conversation_id=eq.conv-1"]);
+  });
+
+  it("una escritura propia del panel (onCartChanged) relee el carrito SIN esperar al debounce", async () => {
+    await renderWithOpenConversation();
+    fetchCartMock.mockClear();
+    fetchCartMock.mockResolvedValue([cartItem({ id: "cart-9" })]);
+
+    await act(async () => {
+      contextPanelProps?.onCartChanged();
+    });
+
+    expect(fetchCartMock).toHaveBeenCalledWith(expect.anything(), "conv-1");
+    expect(contextPanelProps?.cart.map((i) => i.id)).toEqual(["cart-9"]);
+  });
+
+  it("una lectura que falla deja el carrito como estaba y no rompe el shell", async () => {
+    fetchCartMock.mockResolvedValue([cartItem()]);
+    await renderWithOpenConversation();
+    fetchCartMock.mockRejectedValue(new Error("red caída"));
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+    await act(async () => {
+      contextPanelProps?.onCartChanged();
+    });
+
+    expect(contextPanelProps?.cart).toEqual([cartItem()]);
+    warn.mockRestore();
+  });
+});
 
 describe("CrmShell — el chat sigue los cambios sobre mensajes ya guardados", () => {
   it("repinta el chat cuando un mensaje de la conversación abierta se actualiza", async () => {

@@ -3,13 +3,15 @@
 import { useState } from "react";
 import { Check, Handshake, IdCard, MapPin, Pencil, Phone, Radio, Settings2, Trash2, X } from "lucide-react";
 import { Button, TextArea, toast } from "@heroui/react";
-import type { Agent, Conversation, Message, Note, Tag } from "@/lib/types";
+import type { Agent, Conversation, ConversationCartItem, Message, Note, Tag } from "@/lib/types";
 import { createClient } from "@/lib/supabase/client";
 import { addNote, deleteNote, removeTagFromContact, updateNote } from "@/lib/mutations";
 import { formatFullDateTime } from "@/lib/format";
 import { CloseSaleModal } from "@/components/context-panel/close-sale-modal";
 import { ManageTagsModal } from "@/components/context-panel/manage-tags-modal";
 import { InventoryLookup } from "@/components/context-panel/inventory-lookup";
+import { ConversationCartBlock } from "@/components/context-panel/conversation-cart-block";
+import { useCartActions } from "@/components/context-panel/use-cart-actions";
 import type { BcvRateSummary } from "@/components/inbox/bcv-rate-chip";
 
 interface ContextPanelProps {
@@ -25,6 +27,15 @@ interface ContextPanelProps {
    * moneda real del producto, sin inventar un dólar.
    */
   bcvRate: BcvRateSummary | null;
+  /**
+   * Carrito persistente de la conversación abierta (T8, plan "Seba encuentra,
+   * no insiste, y el mostrador no deja a nadie esperando", 28/9/2026): lo
+   * lee y mantiene vivo `crm-shell.tsx` (canal Realtime `cart-<id>`) y acá se
+   * pinta como «Lo que lleva el cliente» y se le pasa al modal de cierre.
+   */
+  cart: ConversationCartItem[];
+  /** Pide a `crm-shell.tsx` releer el carrito (tras una escritura propia). */
+  onCartChanged: () => void;
   /**
    * Avisa a `crm-shell.tsx` que ESTE agente acaba de aplicar o quitar una
    * etiqueta del contacto abierto -- hallazgo 1 (`code-review high` sobre
@@ -46,6 +57,8 @@ export function ContextPanel({
   allTags,
   currentAgent,
   bcvRate,
+  cart,
+  onCartChanged,
   onContactTagsChanged,
 }: ContextPanelProps) {
   const [noteDraft, setNoteDraft] = useState("");
@@ -56,6 +69,12 @@ export function ContextPanel({
   const [editingNoteDraft, setEditingNoteDraft] = useState("");
   const [isSavingEdit, setIsSavingEdit] = useState(false);
   const [deletingNoteId, setDeletingNoteId] = useState<string | null>(null);
+
+  const cartActions = useCartActions({
+    conversationId: conversation.id,
+    bcvRate: bcvRate?.rate ?? 0,
+    onCartChanged,
+  });
 
   const contact = conversation.contact;
   const isDealWon = conversation.dealStatus === "won";
@@ -140,6 +159,8 @@ export function ContextPanel({
         contact={contact}
         agent={currentAgent}
         messages={messages}
+        cart={cart}
+        onCartChanged={onCartChanged}
       />
 
       <ManageTagsModal
@@ -211,7 +232,13 @@ export function ContextPanel({
           </div>
         </section>
 
-        <InventoryLookup bcvRate={bcvRate} />
+        <InventoryLookup
+          bcvRate={bcvRate}
+          onAdd={(product) => void cartActions.addProduct(product)}
+          addDisabled={cartActions.busy}
+        />
+
+        <ConversationCartBlock cart={cart} bcvRate={bcvRate?.rate ?? 0} actions={cartActions} />
 
         <section className="crm-context-section">
           <p className="lm-eyebrow">Notas internas</p>

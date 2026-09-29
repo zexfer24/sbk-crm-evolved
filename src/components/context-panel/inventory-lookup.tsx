@@ -1,7 +1,7 @@
 "use client";
 
 import { useRef, useState } from "react";
-import { Search } from "lucide-react";
+import { Plus, Search } from "lucide-react";
 import type { Product } from "@/lib/types";
 import { createClient } from "@/lib/supabase/client";
 import { searchProductsForLookup } from "@/lib/inventory-data";
@@ -17,7 +17,11 @@ import type { BcvRateSummary } from "@/components/inbox/bcv-rate-chip";
  * que el cliente ya estaba preguntando ahí mismo.
  *
  * Solo lectura en esta ola (D5): sin botón "insertar en el mensaje", eso
- * queda para otra corrida. Usa `searchProductsForLookup` (`inventory-data.ts`,
+ * queda para otra corrida. T8 (28/9/2026, plan "Seba encuentra, no insiste, y
+ * el mostrador no deja a nadie esperando"): cada resultado ACTIVO gana un
+ * botón «Agregar» al carrito de la conversación (`onAdd`); sin `onAdd` el
+ * componente sigue siendo la búsqueda de solo lectura de siempre, y un
+ * repuesto retirado nunca se puede agregar. Usa `searchProductsForLookup` (`inventory-data.ts`,
  * T3) — la misma regla de palabras/código Saint que Inventario, pero SIN
  * filtrar por `is_active`: un repuesto retirado también aparece, marcado
  * "Retirado", para que el asesor no lo ofrezca sin saberlo.
@@ -31,7 +35,15 @@ type LookupState =
   | { status: "error" }
   | { status: "ok"; term: string; products: Product[] };
 
-export function InventoryLookup({ bcvRate }: { bcvRate: BcvRateSummary | null }) {
+interface InventoryLookupProps {
+  bcvRate: BcvRateSummary | null;
+  /** Agrega el repuesto al carrito de la conversación. Sin esto no hay botón. */
+  onAdd?: (product: Product) => void;
+  /** Hay una escritura del carrito en curso: el botón «Agregar» se deshabilita. */
+  addDisabled?: boolean;
+}
+
+export function InventoryLookup({ bcvRate, onAdd, addDisabled = false }: InventoryLookupProps) {
   const [text, setText] = useState("");
   const [state, setState] = useState<LookupState>({ status: "idle" });
 
@@ -139,9 +151,23 @@ export function InventoryLookup({ bcvRate }: { bcvRate: BcvRateSummary | null })
                     {product.stockQuantity <= 0 ? "Sin stock" : `${product.stockQuantity} en stock`}
                   </span>
                 </div>
-                <div className="crm-lookup-item-price">
-                  <span className="lm-num">{price.principal}</span>
-                  {price.pie !== null && <span className="lm-num crm-lookup-price-alt">{price.pie}</span>}
+                <div className="crm-lookup-item-actions">
+                  <div className="crm-lookup-item-price">
+                    <span className="lm-num">{price.principal}</span>
+                    {price.pie !== null && <span className="lm-num crm-lookup-price-alt">{price.pie}</span>}
+                  </div>
+                  {onAdd && product.isActive && (
+                    <button
+                      type="button"
+                      className="crm-lookup-add"
+                      onClick={() => onAdd(product)}
+                      disabled={addDisabled}
+                      aria-label={`Agregar ${product.name} al carrito`}
+                    >
+                      <Plus size={12} />
+                      Agregar
+                    </button>
+                  )}
                 </div>
               </li>
             );
