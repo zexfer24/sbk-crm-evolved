@@ -29,6 +29,7 @@ f302421 Un supervisor enciende la reasignación por demora desde Control IA y se
 7e40472 Un cron de cada minuto reasigna el caso a los quince minutos de horario y avisa al supervisor al segundo intento fallido
 2bf27e3 La búsqueda del chat muestra veinte, carga más sin salir de la columna y marca la existencia con una pastilla
 + corrección de minutos en la nota de reasignación
++ Seba reactiva la IA sola tras responder por demora (cambio de diseño del operador, 29/9/2026, sin migración)
 + documentación (CLAUDE.md, PRODUCCION.md §16, GLOSARIO) y este archivo (punta de la rama)
 ```
 
@@ -53,6 +54,7 @@ del VPS lo tomó; si no se recreó, hay que hacer un redeploy del stack.
 - Suite completa: 3.874 tests en verde. `tsc` limpio, lint sin errores.
 - Los 29 archivos de `supabase/tests/` pasan sobre una base **reconstruida
   desde cero** (88 migraciones + seeds), corridos sin `-1`, como el CI.
+- Después del cambio de diseño de la reactivación se sumó un archivo, `supabase/tests/reactivacion_por_demora.sql` (30 en total): corrido contra la base local, más `invariante_leads.sql`, `devolucion_a_la_ia.sql` y `seba_y_escalada_viva.sql`. No es una migración.
 - `npm run build` correcto.
 - **CI real en verde** sobre `2bf27e3`: run 36605449748, por la rama
   desechable `ci/mostrador-sin-esperas` (`2bf27e3` + el commit del
@@ -74,7 +76,8 @@ del VPS lo tomó; si no se recreó, hay que hacer un redeploy del stack.
   - segunda reasignación a un tercer asesor → avisa al supervisor una vez y
     no rota más;
   - cliente sin respuesta durante 11 min con la IA pausada → Seba responde
-    sin escalar, `ai_enabled` sigue apagada y no responde dos veces;
+    sin escalar, no responde dos veces y (cambio de diseño posterior, ver
+    abajo) deja la IA REACTIVADA;
   - backlog anterior al encendido → nada;
   - secreto incorrecto → 401.
 
@@ -90,9 +93,14 @@ del VPS lo tomó; si no se recreó, hay que hacer un redeploy del stack.
    existencia se lee en una pastilla verde o roja.
 4. **Reasignación por demora (cuando se encienda).** A los 10 min sin
    respuesta, Seba contesta sin escalar y sin prometer precios, descuentos,
-   apartados ni envíos. A los 15 min de horario, el caso pasa a otro asesor,
-   nunca al mismo. Tras dos reasignaciones, se avisa a supervisores y
-   admins.
+   apartados ni envíos, **y si la IA de ese chat estaba pausada la vuelve a
+   encender** (los asesores no la reactivan después de hablar con el
+   cliente): Seba sigue atendiendo los mensajes siguientes hasta que un
+   asesor escriba de verdad, y ese primer mensaje la apaga otra vez. Para el
+   asesor, avisar: escribirle al cliente evita las tres cosas (la respuesta
+   de Seba, la reasignación y el aviso). A los 15 min de horario, el caso
+   pasa a otro asesor, nunca al mismo. Tras dos reasignaciones, se avisa a
+   supervisores y admins.
 
 ## Orden de encendido de la demora
 
@@ -106,6 +114,18 @@ esté apagada.
    así que nada del backlog anterior dispara.
 
 ## Decisiones y límites que conviene conocer
+
+- **La demora SÍ reactiva la IA (cambio de diseño del operador, 29/9/2026;
+  reemplaza la regla original "no reactiva la IA").** Solo si `ai_enabled`
+  estaba en `false`, DESPUÉS de enviar con éxito y dentro del lock, con un
+  UPDATE condicionado (`where ai_enabled = false`, filas verificadas) y sin
+  reactivar si un asesor escribió de verdad o el cliente escribió otra vez
+  mientras el turno corría. No hay migración: el trigger existente deja una
+  fila `devuelto_a_ia` de sistema, que el cron de demora reconoce (sistema +
+  dentro de los 10 min posteriores al `responded_at` del episodio) para no
+  darla por cierre de la escalada. Log: `ia_reactivada_por_demora` /
+  `ia_no_reactivada` (con motivo); nota interna "Seba reactivó la IA en este
+  chat…". Medición de 48 h y colisiones en `docs/PRODUCCION.md` §16.
 
 - **Los 15 minutos para reasignar son de horario laboral.** Los 10 minutos
   de Seba son de reloj de pared. Una escalada a las 17:50 no se reasigna a

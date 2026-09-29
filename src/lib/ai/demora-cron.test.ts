@@ -105,14 +105,17 @@ class Query implements PromiseLike<{ data: unknown; error: unknown }> {
   private upsertOpts: { onConflict?: string; ignoreDuplicates?: boolean } = {};
   private returning = false;
   private single: "maybe" | null = null;
+  /** Columnas pedidas en un `select("a, b")` de LECTURA: la salida se proyecta a ellas (un código que olvida pedir una columna la ve `undefined`, como con PostgREST). */
+  private columnas: string[] | null = null;
 
   constructor(
     private db: FakeDb,
     private table: string
   ) {}
 
-  select() {
+  select(columnas?: string) {
     this.returning = true;
+    if (columnas && columnas.trim() !== "*") this.columnas = columnas.split(",").map((c) => c.trim());
     return this;
   }
   insert(p: Row) {
@@ -247,6 +250,10 @@ class Query implements PromiseLike<{ data: unknown; error: unknown }> {
       });
     }
     if (this.lim !== null) salida = salida.slice(0, this.lim);
+    const columnas = this.columnas;
+    if (columnas) {
+      salida = salida.map((fila) => Object.fromEntries(columnas.map((c) => [c, fila[c]])));
+    }
     if (this.single === "maybe") return { data: salida[0] ?? null, error: null };
     return { data: salida, error: null };
   }
@@ -803,5 +810,173 @@ describe("procesarDemoras — el recorrido del plan de punta a punta", () => {
     db.clock = lun(10, 46);
     await procesarDemoras(cliente as never, { now: lun(10, 46) });
     expect(db.handoffs("demora_sin_asesor")).toHaveLength(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 29/9/2026, cambio de diseño del operador sobre la Entrega B: si Seba responde
+// por demora con la IA pausada, DESPUÉS de enviar la reactiva (`delay-turn.ts`).
+// El trigger de la base deja entonces una fila `devuelto_a_ia` con created_by =
+// 'system' (y, sin asesor, sella `ai_resume_cutoff_at`; ver
+// `supabase/tests/reactivacion_por_demora.sql`). `runDelayTurn` se mockea con el
+// EFECTO observable de esa reactivación sobre la base falsa, y el cron real
+// tiene que seguir reasignando y avisando como si nada.
+// ---------------------------------------------------------------------------
+describe("procesarDemoras — la reactivación de la IA por demora no corta la cadena", () => {
+  /** El turno por demora tal como queda en la base: respuesta de Seba + IA reactivada + la fila del trigger. */
+  function turnoQueReactiva(db: FakeDb, creadoPor = "system") {
+    runDelayTurnMock.mockImplementation(async (id: unknown) => {
+      const convId = String(id);
+      const conv = db.conv(convId);
+      msg(db, convId, "ai", new Date(db.clock.getTime() + 5_000), { content: "Un asesor te atiende en breve.", is_auto_reply: true });
+      if (conv.ai_enabled === false) {
+        conv.ai_enabled = true;
+        if (!conv.assigned_agent_id) conv.ai_resume_cutoff_at = conv.last_customer_message_at;
+        traspaso(db, convId, "devuelto_a_ia", new Date(db.clock.getTime() + 10_000), {
+          created_by: creadoPor,
+          to_kind: conv.assigned_agent_id ? "human" : "unassigned",
+          to_id: conv.assigned_agent_id ?? null,
+        });
+      }
+      return { enviado: true, motivo: "respuesta_del_modelo" };
+    });
+  }
+
+  it("(b) con asesor asignado: 10:10 Seba responde y reactiva; 10:15 reasigna, 10:30 reasigna, 10:45 avisa; una sola fila de episodio", async () => {
+    const db = nuevaBase();
+    sembrarAgentes(db, [
+      { id: A, nombre: "Ana", last: iso(en(27, 8)) },
+      { id: B, nombre: "Beto", last: iso(en(27, 12)) },
+      { id: C, nombre: "Carla", last: iso(en(27, 13)) },
+    ]);
+    // IA PAUSADA (el asesor tomó el chat y no escribió), cliente esperando desde las 10:00.
+    clienteEsperando(db, "conv-1", lun(10, 0), { ai_enabled: false });
+    turnoQueReactiva(db);
+
+    await pasada(db, lun(10, 10));
+    expect(runDelayTurnMock).toHaveBeenCalledTimes(1);
+    expect(db.conv("conv-1").ai_enabled).toBe(true);
+    expect(db.handoffs("devuelto_a_ia")).toHaveLength(1);
+
+    // 10:14: todavía nada.
+    await pasada(db, lun(10, 14, 59));
+    expect(db.handoffs("reasignada_por_demora")).toEqual([]);
+
+    await pasada(db, lun(10, 15));
+    expect(db.conv("conv-1").assigned_agent_id).toBe(B);
+    await pasada(db, lun(10, 30));
+    expect(db.conv("conv-1").assigned_agent_id).toBe(C);
+    const r = await pasada(db, lun(10, 45));
+    expect(r.avisar_supervisor).toBe(1);
+    expect(db.handoffs("reasignada_por_demora")).toHaveLength(2);
+    expect(db.handoffs("demora_sin_asesor")).toHaveLength(1);
+
+    // Ni otra respuesta de Seba (once por episodio) ni otro episodio: todo en la MISMA fila.
+    expect(runDelayTurnMock).toHaveBeenCalledTimes(1);
+    const filas = db.episodios("conv-1");
+    expect(filas).toHaveLength(1);
+    expect(filas[0]).toMatchObject({ origen: "cliente", reassignments: 2, agentes_previos: [A, B] });
+    expect(filas[0].episode_at).toBe(iso(lun(10, 0)));
+    // El cron no toca ai_enabled: la reactivó el turno (mockeado), no la rotación.
+    expect(db.updates.filter((u) => u.table === "conversations" && "ai_enabled" in u.payload)).toEqual([]);
+  });
+
+  it("(a) escalada SIN asesor: Seba responde y reactiva a las 10:12; la rotación (15 min desde el mensaje de las 10:02) sigue y llega al aviso", async () => {
+    const db = nuevaBase();
+    sembrarAgentes(db, [
+      { id: A, nombre: "Ana", last: iso(en(27, 8)) },
+      { id: B, nombre: "Beto", last: iso(en(27, 12)) },
+      { id: C, nombre: "Carla", last: iso(en(27, 13)) },
+    ]);
+    // Escalada sin asesor a las 10:00 con la IA pausada; el cliente volvió a escribir a las 10:02.
+    sembrarConv(db, "conv-1", {
+      assigned_agent_id: null,
+      ai_enabled: false,
+      awaiting_reply: true,
+      last_customer_message_at: iso(lun(10, 2)),
+    });
+    msg(db, "conv-1", "customer", lun(9, 58), { content: "necesito unas pastillas" });
+    traspaso(db, "conv-1", "escalada_sin_asesor", lun(10, 0), { to_kind: "unassigned", to_id: null });
+    msg(db, "conv-1", "ai", lun(10, 0, 5), { content: "Te paso con un asesor" });
+    msg(db, "conv-1", "customer", lun(10, 2), { content: "¿cuánto cuestan?" });
+    turnoQueReactiva(db);
+
+    await pasada(db, lun(10, 12));
+    expect(runDelayTurnMock).toHaveBeenCalledTimes(1);
+    expect(db.conv("conv-1").ai_enabled).toBe(true);
+
+    // Sin asesor asignado, lo único que deja a este chat "rotable" es que la escalada siga abierta
+    // para la demora: si la fila devuelto_a_ia la cerrara, la rotación se moriría acá.
+    const r = await pasada(db, lun(10, 17));
+    expect(r.reasignar).toBe(1);
+    expect(db.conv("conv-1").assigned_agent_id).toBe(A);
+    expect(db.handoffs("reasignada_por_demora")[0]).toMatchObject({ to_id: A, from_kind: "unassigned" });
+
+    await pasada(db, lun(10, 32));
+    expect(db.conv("conv-1").assigned_agent_id).toBe(B);
+    const r47 = await pasada(db, lun(10, 47));
+    expect(r47.avisar_supervisor).toBe(1);
+    expect(db.handoffs("reasignada_por_demora")).toHaveLength(2);
+
+    expect(runDelayTurnMock).toHaveBeenCalledTimes(1);
+    const filas = db.episodios("conv-1");
+    expect(filas).toHaveLength(1);
+    expect(filas[0]).toMatchObject({ origen: "cliente", reassignments: 2 });
+    expect(filas[0].episode_at).toBe(iso(lun(10, 2)));
+  });
+
+  it("(b) escalada CON asesor: Seba responde y reactiva a las 10:12, el cliente dice 'gracias' a las 10:13: el episodio de la ESCALADA (10:00) sigue y reasigna a las 10:15, 10:30, avisa a las 10:45", async () => {
+    const db = nuevaBase();
+    sembrarAgentes(db, [
+      { id: A, nombre: "Ana", last: iso(en(27, 8)) },
+      { id: B, nombre: "Beto", last: iso(en(27, 12)) },
+      { id: C, nombre: "Carla", last: iso(en(27, 13)) },
+    ]);
+    escaladaDe10(db, "conv-1", { ai_enabled: false, awaiting_reply: true, last_customer_message_at: iso(lun(10, 2)) });
+    msg(db, "conv-1", "customer", lun(10, 2), { content: "¿cuánto cuestan?" });
+    turnoQueReactiva(db);
+
+    await pasada(db, lun(10, 12));
+    expect(runDelayTurnMock).toHaveBeenCalledTimes(1);
+    expect(db.conv("conv-1").ai_enabled).toBe(true);
+
+    // Un "gracias" después apaga el episodio del cliente (ráfaga solo cortesía): queda el de la escalada.
+    msg(db, "conv-1", "customer", lun(10, 13), { content: "gracias" });
+    db.conv("conv-1").last_customer_message_at = iso(lun(10, 13));
+
+    await pasada(db, lun(10, 15));
+    expect(db.conv("conv-1").assigned_agent_id).toBe(B);
+    await pasada(db, lun(10, 30));
+    expect(db.conv("conv-1").assigned_agent_id).toBe(C);
+    const r = await pasada(db, lun(10, 45));
+    expect(r.avisar_supervisor).toBe(1);
+
+    expect(runDelayTurnMock).toHaveBeenCalledTimes(1);
+    const escalada = db.episodios("conv-1").find((e) => e.origen === "escalada");
+    expect(escalada).toMatchObject({ reassignments: 2, agentes_previos: [A, B] });
+    expect(escalada?.episode_at).toBe(iso(lun(10, 0)));
+  });
+
+  it("un devuelto_a_ia de un ASESOR (created_by user) sí corta la cadena: no se reasigna", async () => {
+    const db = nuevaBase();
+    sembrarAgentes(db, [{ id: A, nombre: "Ana" }, { id: B, nombre: "Beto" }]);
+    escaladaDe10(db, "conv-1", { ai_enabled: false });
+    // El episodio ya estaba respondido y un asesor le devolvió la IA a mano.
+    db.tables.conversation_delay_episodes.push({
+      conversation_id: "conv-1",
+      episode_at: iso(lun(10, 0)),
+      origen: "escalada",
+      responded_at: iso(lun(10, 10)),
+      reassignments: 0,
+      agentes_previos: [],
+      ultima_reasignacion_at: null,
+      supervisor_notified_at: null,
+    });
+    traspaso(db, "conv-1", "devuelto_a_ia", lun(10, 10, 20), { created_by: "user" });
+
+    await pasada(db, lun(10, 15));
+
+    expect(db.handoffs("reasignada_por_demora")).toEqual([]);
+    expect(db.conv("conv-1").assigned_agent_id).toBe(A);
   });
 });

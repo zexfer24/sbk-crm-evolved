@@ -2668,9 +2668,53 @@ dejar rastro es lo que hacía desaparecer leads.
   Siempre `is_auto_reply` y **su nota interna ("Seba respondió por demora de
   N min") es `sender_type = 'system'`, nunca 'agent'**: un mensaje de
   asesor dispararía `handle_agent_message_silences_ai` y apagaría la IA.
-  No cambia `ai_enabled`. Deuda conocida: `buscarRepuesto` en modo demora
+  Deuda conocida: `buscarRepuesto` en modo demora
   sigue devolviendo instrucciones que mencionan escalar; el modelo no tiene
   la herramienta, y si la llamara sale el texto fijo de espera.
+- **El turno por demora REACTIVA la IA después de responder, y esa
+  reactivación no corta la cadena de la demora** (cambio de diseño del
+  operador, 29/9/2026 —reemplaza la regla original de D2 "no reactiva la
+  IA", que la viñeta de arriba decía—: "si Seba va a responder a los 10
+  minutos porque ningún asesor respondió, activa nuevamente la IA y que
+  mande la respuesta, esto no debe colisionar; además nos aseguramos que la
+  IA se reactive sola porque los asesores no reactivan la IA luego de
+  hablar con el cliente"). `reactivarIA` (`delay-turn.ts`): SOLO si
+  `ai_enabled` era `false`, **DESPUÉS de enviar con éxito y de la marca
+  "visto hasta", DENTRO del lock, nunca antes** —con la IA encendida a
+  mitad del envío, un turno normal que lea la conversación en ese instante
+  ya no sale por `pausada` y contesta el mismo mensaje—, con relectura
+  fresca (si el cliente escribió otro mensaje mientras el turno corría NO se
+  reactiva, porque sin asesor el trigger sellaría ese mensaje nuevo como
+  "anterior a la devolución" y Seba lo callaría; si un asesor escribió de
+  verdad tampoco, le pisaría el chat), un UPDATE propio condicionado a
+  `ai_enabled = false` con las filas afectadas verificadas, un reintento
+  ante error de base, y nunca lanza (el mensaje ya salió; el cron no
+  reintenta). Logs `ia_reactivada_por_demora` / `ia_no_reactivada`
+  (`motivo`) y una nota interna aparte, de sistema ("Seba reactivó la IA…").
+  **Sin colisión con el turno normal, por trigger real** (medido en
+  `supabase/tests/reactivacion_por_demora.sql`): sin asesor asignado,
+  `handle_conversation_ai_resume` sella `ai_resume_cutoff_at` con el mensaje
+  ya contestado y la guarda `mensaje_previo_a_devolucion` calla al turno
+  viejo (y saca al chat del reconciliador vía `new_since_ai_resume`); **con
+  asesor asignado el trigger NO sella** (solo sella al entrar a "IA
+  encendida y sin asesor"), y lo único que frena el doble envío es la marca
+  "visto hasta" de Redis (TTL 6 h) más el `assigned_agent_id is null` del
+  reconciliador — sin Redis ese frena no existe, pero sin Redis tampoco hay
+  cola que dispare el turno. Un mensaje NUEVO del cliente queda por delante
+  de las dos y Seba lo atiende normal. **La cadena de la demora sigue:** la
+  reactivación deja `devuelto_a_ia` con `created_by = 'system'` (corre con
+  `service_role`, sin sesión), y esa razón CIERRA la escalada para
+  `escalationOpen` (a propósito: Seba tiene que volver a atender normal, no
+  quedarse en "solo nota" para siempre) pero NO para la demora —el cliente
+  sigue esperando a una persona—: `sinReactivacionesPorDemora` (`demora.ts`,
+  puro) la saca de los traspasos si es de sistema y cae entre el
+  `responded_at` de un episodio y 10 min después, sin marcas nuevas en la
+  base ni migración. Un `devuelto_a_ia` de un asesor (`created_by = 'user'`)
+  sí corta la cadena. Así el tope de 2, el episodio (misma fila) y la
+  reasignación de una escalada `escalada_sin_asesor` no se reinician por la
+  reactivación. La regla "el primer mensaje real del asesor apaga la IA"
+  (`handle_agent_message_silences_ai`) queda intacta y se aplica también
+  sobre una IA reactivada por la demora.
 - **`conversation_delay_episodes` la lee y escribe SOLO `service_role`, y un
   `select` de `authenticated` da `insufficient_privilege`, no 0 filas**
   (T10a, 29/9/2026). RLS habilitada sin política Y `revoke all` explícito a

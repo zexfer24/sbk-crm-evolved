@@ -596,3 +596,109 @@ describe("evaluarDemora — interruptor, backlog y horario", () => {
     expect(b).toEqual(a);
   });
 });
+
+// ---------------------------------------------------------------------------
+// 29/9/2026, cambio de diseño del operador sobre la Entrega B: cuando Seba
+// responde por demora con la IA pausada, DESPUÉS de enviar reactiva la IA
+// (`delay-turn.ts`). El trigger `handle_conversation_ownership_change` deja por
+// eso una fila `devuelto_a_ia` con created_by = 'system', y esa fila -- que para
+// `escalationOpen` SÍ cierra la escalada, porque Seba tiene que seguir
+// atendiendo normal -- NO puede cortar la cadena de la demora: sin esto, el caso
+// dejaría de reasignarse a los 15 min y nunca llegaría al aviso al supervisor
+// (la IA "resolvió" algo que sigue esperando a una persona).
+// ---------------------------------------------------------------------------
+describe("evaluarDemora — la reactivación de la IA por demora no corta la cadena", () => {
+  /** Seba respondió por demora a las 10:10 y reactivó la IA 20 s después (fila del trigger). */
+  function conReactivacion(parche: Partial<EstadoDemora> = {}, fila: Partial<{ reason: string; createdAt: Date; createdBy: string }> = {}) {
+    return escaladaDe10({
+      traspasos: [
+        { reason: "escalada", createdAt: lun(10, 0), createdBy: "system" },
+        { reason: "devuelto_a_ia", createdAt: lun(10, 10, 20), createdBy: "system", ...fila },
+      ],
+      episodios: [episodio({ episodeAt: lun(10, 0), respondedAt: lun(10, 10) })],
+      ...parche,
+    });
+  }
+
+  it("con asesor: tras la reactivación sigue reasignando a los 15 min", () => {
+    const r = evaluarDemora(conReactivacion(), lun(10, 15), HORARIO);
+    expect(r.accion).toBe("reasignar");
+    expect(r.episodio).toEqual({ origen: "escalada", episodeAt: lun(10, 0) });
+  });
+
+  it("sin asesor (escalada_sin_asesor): sigue reasignando a los 15 min", () => {
+    const e = conReactivacion({
+      asesorAsignadoId: null,
+      traspasos: [
+        { reason: "escalada_sin_asesor", createdAt: lun(10, 0), createdBy: "system" },
+        { reason: "devuelto_a_ia", createdAt: lun(10, 10, 20), createdBy: "system" },
+      ],
+    });
+    expect(evaluarDemora(e, lun(10, 15), HORARIO).accion).toBe("reasignar");
+  });
+
+  it("el tope y el episodio no se reinician: 10:15 → 10:30 → aviso 10:45 con la fila devuelto_a_ia en medio", () => {
+    const e = conReactivacion({
+      traspasos: [
+        { reason: "escalada", createdAt: lun(10, 0), createdBy: "system" },
+        { reason: "devuelto_a_ia", createdAt: lun(10, 10, 20), createdBy: "system" },
+        { reason: "reasignada_por_demora", createdAt: lun(10, 30), createdBy: "system" },
+      ],
+      episodios: [
+        episodio({
+          episodeAt: lun(10, 0),
+          respondedAt: lun(10, 10),
+          reassignments: 2,
+          agentesPrevios: [ASESOR_A, ASESOR_B],
+          ultimaReasignacionAt: lun(10, 30),
+        }),
+      ],
+    });
+    const r = evaluarDemora(e, lun(10, 45), HORARIO);
+    expect(r.accion).toBe("avisar_supervisor");
+    expect(r.episodio).toEqual({ origen: "escalada", episodeAt: lun(10, 0) });
+    expect(r.reasignaciones).toBe(2);
+  });
+
+  it("un devuelto_a_ia de un ASESOR (created_by user) sí cierra la escalada", () => {
+    const e = conReactivacion({}, { createdBy: "user" });
+    expect(evaluarDemora(e, lun(10, 15), HORARIO).accion).toBe("nada");
+  });
+
+  it("un devuelto_a_ia sin created_by (llamador viejo) sigue cerrando", () => {
+    const e = escaladaDe10({
+      traspasos: [
+        { reason: "escalada", createdAt: lun(10, 0) },
+        { reason: "devuelto_a_ia", createdAt: lun(10, 10, 20) },
+      ],
+      episodios: [episodio({ episodeAt: lun(10, 0), respondedAt: lun(10, 10) })],
+    });
+    expect(evaluarDemora(e, lun(10, 15), HORARIO).accion).toBe("nada");
+  });
+
+  it("un devuelto_a_ia de sistema ANTES de que Seba respondiera por demora sí cierra", () => {
+    const e = conReactivacion({}, { createdAt: lun(10, 5) });
+    expect(evaluarDemora(e, lun(10, 15), HORARIO).accion).toBe("nada");
+  });
+
+  it("un devuelto_a_ia de sistema sin ninguna respuesta por demora registrada sí cierra", () => {
+    const e = conReactivacion({ episodios: [episodio({ episodeAt: lun(10, 0), respondedAt: null })] });
+    expect(evaluarDemora(e, lun(10, 15), HORARIO).accion).toBe("nada");
+  });
+
+  it("un devuelto_a_ia de sistema muy posterior a la respuesta (pasaron más de 10 min) sí cierra: no es la reactivación", () => {
+    const e = conReactivacion({}, { createdAt: lun(10, 30, 5) });
+    expect(evaluarDemora(e, lun(10, 45), HORARIO).accion).toBe("nada");
+  });
+
+  it("solo se salta devuelto_a_ia: una desasignada_por_asesor de sistema pegada sí cierra", () => {
+    const e = conReactivacion({
+      traspasos: [
+        { reason: "escalada", createdAt: lun(10, 0), createdBy: "system" },
+        { reason: "desasignada_por_asesor", createdAt: lun(10, 10, 20), createdBy: "system" },
+        { reason: "devuelto_a_ia", createdAt: lun(10, 10, 20), createdBy: "system" },
+      ],
+    });
+    expect(evaluarDemora(e, lun(10, 15), HORARIO).accion).toBe("nada");
+  });
+});

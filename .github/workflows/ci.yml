@@ -494,3 +494,15 @@ jobs:
           psql "postgresql://postgres:postgres@127.0.0.1:54322/postgres" \
             -v ON_ERROR_STOP=1 \
             -f supabase/tests/demora_del_asesor.sql
+
+      # Cambio de diseño del operador sobre la Entrega B (29/9/2026, sin
+      # migración): el turno por demora reactiva la IA tras responder. El test
+      # fija lo que hacen los triggers YA vigentes de los que depende
+      # (handle_conversation_ai_resume sella solo sin asesor; la fila
+      # devuelto_a_ia queda con created_by = 'system'; el primer mensaje real
+      # del asesor apaga la IA otra vez y una nota de sistema no).
+      - name: reactivación de la IA por demora -- sello, bitácora y regla del asesor
+        run: |
+          psql "postgresql://postgres:postgres@127.0.0.1:54322/postgres" \
+            -v ON_ERROR_STOP=1 \
+            -f supabase/tests/reactivacion_por_demora.sql

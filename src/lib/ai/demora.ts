@@ -57,6 +57,12 @@ export type AccionDemora = "nada" | "responder" | "reasignar" | "avisar_supervis
 export interface TraspasoDemora {
   reason: string;
   createdAt: Date;
+  /**
+   * `created_by` de la fila (`system` | `user`). Solo lo usa
+   * `sinReactivacionesPorDemora`; un llamador que no lo pase (`undefined`) nunca
+   * ve su `devuelto_a_ia` reconocido como la reactivación de Seba.
+   */
+  createdBy?: string;
 }
 
 /** Una fila de `conversation_delay_episodes` (el candado de idempotencia). */
@@ -117,6 +123,51 @@ export interface ResultadoDemora {
 
 const RAZONES_ESCALADA = new Set(["escalada", "escalada_sin_asesor"]);
 const RAZON_REASIGNADA = "reasignada_por_demora";
+const RAZON_DEVUELTO_A_IA = "devuelto_a_ia";
+
+/**
+ * Cuánto después de reclamar la respuesta (`responded_at`) puede aparecer la
+ * fila `devuelto_a_ia` que deja la reactivación. El turno por demora dura
+ * segundos (clasificar + redactar + enviar) y una pasada del cron ejecuta como
+ * mucho 5 acciones en fila; diez minutos cubren el peor turno lento sin dejar
+ * que un `devuelto_a_ia` de sistema de otra época se confunda con esta.
+ */
+export const VENTANA_REACTIVACION_POR_DEMORA_MS = 10 * MS_POR_MINUTO;
+
+/**
+ * Saca de los traspasos la fila `devuelto_a_ia` que escribe el trigger de la
+ * base cuando Seba REACTIVA la IA después de responder por demora
+ * (`delay-turn.ts`, 29/9/2026, cambio de diseño del operador: "si Seba va a
+ * responder a los 10 minutos porque ningún asesor respondió, activa nuevamente
+ * la IA"). Para `escalationOpen` esa fila SÍ cierra la escalada -- Seba tiene que
+ * volver a atender normal, no quedarse anotando para siempre --, pero para la
+ * demora no cambió nada: el cliente sigue esperando a una PERSONA. Si cortara la
+ * cadena, un chat escalado dejaría de reasignarse a los 15 min y nunca llegaría
+ * al aviso al supervisor justo cuando Seba ya lo dio por atendido.
+ *
+ * Se reconoce por tres cosas a la vez, todas leídas de la base: la razón
+ * `devuelto_a_ia`, `created_by = 'system'` (el turno corre con `service_role`,
+ * sin sesión; cuando un asesor devuelve la IA a mano el trigger deja `user`), y
+ * que caiga en [`responded_at`, `responded_at` + 10 min] de algún episodio de la
+ * conversación. Sin marcas nuevas en la base: `responded_at` ya es el sello de
+ * que Seba habló, y la reactivación ocurre siempre después de ese reclamo.
+ *
+ * Una `desasignada_por_asesor` (o cualquier otra razón) pegada a la misma fila
+ * NO se salta: si además alguien soltó el caso, la escalada sí terminó.
+ */
+export function sinReactivacionesPorDemora(
+  traspasos: readonly TraspasoDemora[],
+  episodios: readonly EpisodioGuardado[]
+): TraspasoDemora[] {
+  const respondidos = episodios.flatMap((e) => (e.respondedAt ? [e.respondedAt.getTime()] : []));
+  if (respondidos.length === 0) return [...traspasos];
+  return traspasos.filter((t) => {
+    if (t.reason !== RAZON_DEVUELTO_A_IA || t.createdBy !== "system") return true;
+    const ms = t.createdAt.getTime();
+    const esReactivacion = respondidos.some((r) => ms >= r && ms - r <= VENTANA_REACTIVACION_POR_DEMORA_MS);
+    return !esReactivacion;
+  });
+}
 
 /**
  * `created_at` del traspaso ORIGINAL de la escalada abierta, o `null` si el
@@ -160,8 +211,9 @@ export function evaluarDemora(estado: EstadoDemora, now: Date, businessHours: Bu
   const lcma = estado.lastCustomerMessageAt;
   const posteriorAlEncendido = (fecha: Date) => fecha.getTime() > desde.getTime();
 
-  // Origen 1: escalada abierta, sin mensaje de asesor desde ella.
-  const escaladaAt = fechaDeLaEscalada(estado.traspasos);
+  // Origen 1: escalada abierta, sin mensaje de asesor desde ella. La
+  // reactivación de la IA por demora no cuenta como un movimiento de dueño.
+  const escaladaAt = fechaDeLaEscalada(sinReactivacionesPorDemora(estado.traspasos, estado.episodios));
   const escaladaAbierta = escaladaAt !== null && !(asesorAt && asesorAt.getTime() > escaladaAt.getTime());
   const origen1 = escaladaAbierta && posteriorAlEncendido(escaladaAt) ? escaladaAt : null;
 

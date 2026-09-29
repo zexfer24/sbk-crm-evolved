@@ -41,8 +41,17 @@ import { errorText, log } from "@/lib/log";
 //     esperando no impide que Seba conteste). Su ÚNICA puerta de envío es
 //     "un asesor escribió DESPUÉS del último mensaje del cliente"
 //     (`asesor_ya_respondio`), al abrir y otra vez justo antes de enviar.
-//   - NO cambia `ai_enabled`, no reactiva la IA y no toca
-//     `conversation_delay_episodes`: el episodio ya lo reclamó el cron.
+//   - NO toca `conversation_delay_episodes`: el episodio ya lo reclamó el cron.
+//   - REACTIVA la IA (cambio de diseño del operador, 29/9/2026, reemplaza la
+//     regla de D2 "no reactiva la IA"): "Si Seba va a responder a los 10 minutos
+//     porque ningún asesor respondió, activa nuevamente la IA y que mande la
+//     respuesta, esto no debe colisionar; además nos aseguramos que la IA se
+//     reactive sola porque los asesores no reactivan la IA luego de hablar con
+//     el cliente". Si `ai_enabled` era false, DESPUÉS de enviar con éxito y de
+//     marcar "visto hasta", todavía DENTRO del lock, un UPDATE propio y
+//     condicionado (`where ai_enabled = false`, con las filas afectadas
+//     verificadas) la vuelve a encender. Ver `reactivarIA`, abajo, para el
+//     porqué de cada guarda y del orden.
 //
 // El resto -- sin escalada por ningún camino, sin saludo, escenarios solo
 // `disponibleEnEspera`, sufijo del prompt con los límites -- vive en
@@ -161,10 +170,24 @@ async function runDelayTurnBody(conversationId: string, opts: DelayTurnOptions):
   const demora = newDemoraTurno(opts.esperaMinutos, now);
   const entrega = newTurnDelivery();
   const tiempos = newTurnTiming(lcma);
+  // Se anota ANTES de correr: la pregunta es "¿estaba apagada cuando este turno
+  // empezó?", no lo que diga la conversación cuando termine.
+  const iaEstabaApagada = !convo.ai_enabled;
 
   try {
     await withConversationTurnLock(supabase, conversationId, async (lease) => {
-      await runTurnPhases(supabase, target, convo, entrega, lease, tiempos, businessHours, links, lessons, demora);
+      try {
+        await runTurnPhases(supabase, target, convo, entrega, lease, tiempos, businessHours, links, lessons, demora);
+      } finally {
+        // En `finally`: si algo lanza DESPUÉS de que el mensaje salió (una
+        // etiqueta, la bitácora), el cliente ya recibió la respuesta y la IA
+        // tiene que quedar encendida igual -- el cron no reintenta este
+        // episodio (`responded_at` ya está reclamado). `demora.enviado` solo es
+        // true si el envío salió y Meta no lo rechazó.
+        if (iaEstabaApagada && demora.enviado) {
+          await reactivarIA(supabase, conversationId, lcma, opts.esperaMinutos, Boolean(convo.assigned_agent_id));
+        }
+      }
     });
   } catch (err) {
     // Otro turno tiene la conversación: no es un error, es una carrera normal
@@ -185,6 +208,104 @@ async function runDelayTurnBody(conversationId: string, opts: DelayTurnOptions):
 
   if (demora.enviado) return { enviado: true, motivo: demora.motivo ?? "respuesta_del_modelo" };
   return noEnviado(conversationId, demora.motivo ?? "sin_respuesta");
+}
+
+/**
+ * Vuelve a encender la IA de una conversación cuyo cliente acaba de recibir la
+ * respuesta por demora de Seba. Nunca lanza: el mensaje ya salió, y un fallo acá
+ * no puede convertir eso en un turno fallido (el cron lo reintentaría y el
+ * cliente recibiría dos respuestas). Si no se pudo, queda `log.error` y la IA
+ * sigue apagada -- exactamente como antes de este cambio, no peor.
+ *
+ * Por qué así y no de otra forma (29/9/2026, "esto no debe colisionar"):
+ *   - DESPUÉS de enviar, nunca antes. Con la IA encendida a mitad del envío, un
+ *     turno normal de la cola que lee la conversación en ese instante ya no se
+ *     corta en `pausada` y contesta el MISMO mensaje que Seba está mandando.
+ *   - DENTRO del lock, y después de que `runTurnPhases` dejó la marca "visto
+ *     hasta" en Redis: el turno normal que esperaba el lock la encuentra y sale
+ *     por `turno_sin_mensaje_nuevo`. Sin asesor asignado, además, el trigger
+ *     `handle_conversation_ai_resume` sella `ai_resume_cutoff_at` con este mismo
+ *     mensaje y el turno normal sale por `mensaje_previo_a_devolucion`; con
+ *     asesor el trigger no sella y el freno es la marca (medido en
+ *     `supabase/tests/reactivacion_por_demora.sql`). Un mensaje NUEVO del cliente
+ *     queda por delante de las dos y Seba lo atiende normal.
+ *   - Relectura fresca antes del UPDATE. (1) Si el cliente escribió un mensaje
+ *     nuevo mientras el turno corría, NO se reactiva: sin asesor el trigger
+ *     sellaría ese mensaje como "anterior a la devolución" y Seba lo callaría;
+ *     su propio episodio de demora lo atiende a los 10 min. (2) Si un asesor
+ *     escribió de verdad después del mensaje del cliente, tampoco: la IA
+ *     encendida le pisaría la conversación que acaba de tomar.
+ *   - UPDATE propio, condicionado a `ai_enabled = false` y con las filas
+ *     afectadas verificadas: si alguien ya la había encendido, 0 filas, sin nota
+ *     y sin fila de bitácora de más. Un solo reintento ante un error de base.
+ *   - No es una mutación del asesor: el trigger deja `devuelto_a_ia` con
+ *     `created_by = 'system'` (corre con `service_role`, sin sesión), y esa fila
+ *     es la que `demora.ts` reconoce para no darla por cierre de la escalada.
+ *     Cualquier mensaje real de un asesor sigue apagando la IA por trigger.
+ */
+async function reactivarIA(
+  supabase: ReturnType<typeof createAdminClient>,
+  conversationId: string,
+  ultimoMensajeDelCliente: string,
+  esperaMinutos: number,
+  conAsesorAsignado: boolean
+): Promise<void> {
+  try {
+    const { data: fresca, error: lecturaError } = await supabase
+      .from("conversations")
+      .select("ai_enabled, last_customer_message_at")
+      .eq("id", conversationId)
+      .maybeSingle();
+    if (lecturaError) throw new Error(`conversación no legible: ${errorText(lecturaError)}`);
+    if (!fresca) return;
+    if (fresca.ai_enabled) return sinReactivar(conversationId, "ya_estaba_encendida");
+    if (
+      fresca.last_customer_message_at === null ||
+      Date.parse(fresca.last_customer_message_at) !== Date.parse(ultimoMensajeDelCliente)
+    ) {
+      return sinReactivar(conversationId, "cliente_escribio_de_nuevo");
+    }
+    if (await asesorEscribioDespuesDe(supabase, conversationId, ultimoMensajeDelCliente)) {
+      return sinReactivar(conversationId, "asesor_escribio");
+    }
+
+    let filas: { id: string }[] | null = null;
+    let ultimoError: unknown = null;
+    for (let intento = 1; intento <= 2 && filas === null; intento++) {
+      const { data, error } = await supabase
+        .from("conversations")
+        .update({ ai_enabled: true })
+        .eq("id", conversationId)
+        .eq("ai_enabled", false)
+        .select("id");
+      if (error) ultimoError = error;
+      else filas = data ?? [];
+    }
+    if (filas === null) throw new Error(`no se pudo encender la IA: ${errorText(ultimoError)}`);
+    if (filas.length === 0) return sinReactivar(conversationId, "ya_estaba_encendida");
+
+    log.info("ia_reactivada_por_demora", { conversationId, esperaMinutos, conAsesorAsignado });
+
+    // Nota aparte de la de `registrarRespuestaPorDemora`: esa se escribe al
+    // enviar y esta solo si la IA quedó encendida de verdad. `sender_type =
+    // 'system'`, nunca 'agent': un mensaje de asesor apagaría la IA que
+    // acabamos de encender (`handle_agent_message_silences_ai`).
+    const { error: notaError } = await supabase.from("messages").insert({
+      conversation_id: conversationId,
+      direction: "outbound",
+      sender_type: "system",
+      message_type: "system_event",
+      is_internal_note: true,
+      content: `Seba reactivó la IA en este chat: nadie le había escrito al cliente en ${esperaMinutos} min. Seguirá atendiendo hasta que un asesor escriba.`,
+    });
+    if (notaError) log.warn("demora_nota_no_escrita", { conversationId, detail: errorText(notaError), nota: "reactivacion" });
+  } catch (err) {
+    log.error("ia_reactivada_por_demora_fallida", { conversationId, detail: errorText(err) });
+  }
+}
+
+function sinReactivar(conversationId: string, motivo: string): void {
+  log.info("ia_no_reactivada", { conversationId, motivo });
 }
 
 function noEnviado(conversationId: string, motivo: string): DelayTurnResult {

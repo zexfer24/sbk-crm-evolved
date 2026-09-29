@@ -2592,9 +2592,12 @@ reescribe un CHECK). No hace falta ventana de mantenimiento. Ninguna función
    a los 15 minutos de horario si no escriben), así que:
    1. Desplegar B (pasos 1-6) y confirmar que la demora sigue apagada.
    2. **Avisar a los asesores** —antes, no después— de la regla: a los 10
-      minutos sin que una persona escriba, Seba contesta al cliente; a los 15
-      minutos de horario, el caso pasa a otro asesor (y al segundo intento
-      fallido, a un supervisor). Escribirle al cliente lo evita.
+      minutos sin que una persona escriba, Seba contesta al cliente **y, si la
+      IA de ese chat estaba pausada, la vuelve a encender** (los asesores no
+      reactivan la IA después de hablar con el cliente; el primer mensaje real
+      de un asesor la apaga de nuevo, como siempre); a los 15 minutos de
+      horario, el caso pasa a otro asesor (y al segundo intento fallido, a un
+      supervisor). Escribirle al cliente lo evita.
    3. **Encender "Reasignar si el asesor tarda"** en Control IA (solo
       supervisor/admin). Encender sella `demora_activa_desde = now()`: es el
       corte del backlog, nada anterior a ese instante abre episodio, y
@@ -2618,10 +2621,13 @@ reescribe un CHECK). No hace falta ventana de mantenimiento. Ninguna función
      unidades, no duplica), recargar la pestaña (siguen ahí), abrir el mismo
      chat desde otro navegador (se ve en vivo), cerrar la venta (el carrito
      queda vacío).
-   - Demora, con la demora YA encendida y un chat de prueba: una escalada
-     sin que el asesor escriba → a los 10 minutos Seba responde una vez
-     ("Gracias por esperar…") y queda la nota "Seba respondió por demora de N
-     min"; a los 15 minutos de horario el chat pasa a otro asesor (nunca al
+   - Demora, con la demora YA encendida y un chat de prueba (con la IA
+     pausada): una escalada sin que el asesor escriba → a los 10 minutos Seba
+     responde una vez ("Gracias por esperar…"), quedan la nota "Seba respondió
+     por demora de N min" y la de "Seba reactivó la IA en este chat…", y el
+     chat pasa a tener `ai_enabled = true`; si el cliente escribe algo nuevo
+     Seba lo contesta con normalidad, y si un asesor escribe la IA se apaga
+     sola; a los 15 minutos de horario el chat pasa a otro asesor (nunca al
      mismo) y le aparece el aviso de asignación; sin más respuesta, a la
      tercera se avisa a un supervisor/admin y no se rota más.
 10. **Medir 48 h.**
@@ -2646,10 +2652,29 @@ reescribe un CHECK). No hace falta ventana de mantenimiento. Ninguna función
     where sender_type = 'system' and is_internal_note
       and content like 'Seba respondió por demora%'
       and created_at > now() - interval '48 hours';
+    -- cuántas veces reactivó la IA después de responder (una por chat que la tenía pausada)
+    select count(*) from public.messages
+    where sender_type = 'system' and is_internal_note
+      and content like 'Seba reactivó la IA%'
+      and created_at > now() - interval '48 hours';
+    -- colisión: una reactivación (devuelto_a_ia de sistema) seguida de DOS respuestas de la IA al mismo mensaje
+    -- debería dar 0; si da algo, abrir el chat y revisar los `turno_*` del log
+    select h.conversation_id, h.created_at
+    from public.conversation_handoffs h
+    where h.reason = 'devuelto_a_ia' and h.created_by = 'system'
+      and h.created_at > now() - interval '48 hours'
+      and (select count(*) from public.messages m
+           where m.conversation_id = h.conversation_id and m.sender_type = 'ai'
+             and m.direction = 'outbound' and not m.is_internal_note
+             and m.created_at between h.created_at - interval '2 minutes' and h.created_at + interval '2 minutes') > 1;
     ```
     (`conversation_delay_episodes` solo se lee como `postgres`/`service_role`.)
     Y en el log: `respuesta_por_demora` (con `via`: `respuesta_del_modelo`,
-    `escenario` o `texto_fijo`), `reasignada_por_demora`, `demora_sin_asesor`
+    `escenario` o `texto_fijo`), `ia_reactivada_por_demora` y `ia_no_reactivada`
+    (con `motivo`: `asesor_escribio`, `cliente_escribio_de_nuevo`,
+    `ya_estaba_encendida`; `ia_reactivada_por_demora_fallida` no debería
+    aparecer: es la IA que quedó pausada tras responder),
+    `reasignada_por_demora`, `demora_sin_asesor`
     y `demora_sin_respuesta` con su `motivo` (`asesor_ya_respondio`,
     `fuera_de_ventana`, `turno_en_curso`, `agente_no_puede_correr`… — cada uno
     es un turno por demora que NO salió y por qué). Vigilar además
@@ -2659,9 +2684,22 @@ reescribe un CHECK). No hace falta ventana de mantenimiento. Ninguna función
     los 10/15 minutos calzan con el ritmo real del mostrador, y si el tope de
     2 reasignaciones alcanza.
 
-**Lo que NO cambia:** la cola de turnos, `ai_enabled` (la demora nunca lo
-toca ni reactiva la IA) y la regla "un asesor que escribe apaga a Seba". La
-IA sigue sin escalar desde el turno por demora.
+**Cambio de diseño del 29/9/2026 (sin migración nueva):** el turno por demora
+SÍ reactiva la IA. Si `ai_enabled` estaba en `false`, después de enviar con
+éxito y dentro del lock de la conversación, un UPDATE condicionado la vuelve
+a encender (el trigger deja una fila `devuelto_a_ia` con `created_by =
+'system'`; sin asesor asignado además sella `ai_resume_cutoff_at`, así que
+el turno normal que llegue justo después no repite la respuesta). El cron de
+demora reconoce esa fila y NO la toma por cierre de la escalada, de modo que
+la reasignación a los 15 min y el aviso al supervisor siguen igual. No hay
+migración ni variable nueva: el único cambio de esquema/CI es el test
+`supabase/tests/reactivacion_por_demora.sql`, que fija lo que hacen los
+triggers (corre en el job `migraciones`).
+
+**Lo que NO cambia:** la cola de turnos, el interruptor global de la IA y la
+regla "un asesor que escribe apaga a Seba" (el primer mensaje real de un
+asesor apaga `ai_enabled` por trigger, también después de esta
+reactivación). La IA sigue sin escalar desde el turno por demora.
 
 ---
 

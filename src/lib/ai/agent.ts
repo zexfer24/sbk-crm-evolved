@@ -882,7 +882,9 @@ async function humanWroteMeanwhile(
 //   - La puerta de envío (`deliver`) NO usa la gracia de `humanHasWritten`: solo
 //     corta si un asesor escribió DESPUÉS del último mensaje del cliente.
 //   - Sale siempre `is_auto_reply` (el cliente sigue esperando a una persona) y
-//     deja una nota interna; nunca toca `ai_enabled`.
+//     deja una nota interna. `ai_enabled` NO lo toca este turno: si la IA estaba
+//     apagada, la reactiva `runDelayTurn` DESPUÉS de que todo esto terminó
+//     (29/9/2026, cambio de diseño del operador; ver `reactivarIA`).
 //   - Un corte silencioso NO escribe un traspaso a "sin dueño": el dueño de la
 //     conversación no cambió, y el candado del episodio ya es el rastro.
 // ---------------------------------------------------------------------------

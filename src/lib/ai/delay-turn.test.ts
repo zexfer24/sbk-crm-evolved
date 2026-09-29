@@ -48,6 +48,14 @@ interface FakeState {
   enabledToolKeys: string[];
   lockAcquired: boolean;
   noteInsertError: { message: string } | null;
+  /** UPDATEs de `ai_enabled` que fallan antes de dejar pasar uno (29/9/2026, reactivación). */
+  reactivacionFalla: number;
+  /** El UPDATE de reactivación no encuentra fila (alguien la encendió antes): 0 filas afectadas. */
+  reactivacionSinFilas: boolean;
+  /** Se ejecuta DENTRO de `ai_turn_lock_release` (el turno ya soltó todo lo suyo): "un turno normal que corre justo después". */
+  alSoltarElLock: (() => Promise<void>) | null;
+  /** Filas de `conversation_handoffs` que ven `escalationOpen`/`humanClaimsChat`. `null` = la tabla no existe para el turno por demora (lanza). */
+  traspasos: { reason: string; created_at: string }[] | null;
 }
 
 const state: FakeState = {
@@ -59,7 +67,16 @@ const state: FakeState = {
   enabledToolKeys: [],
   lockAcquired: true,
   noteInsertError: null,
+  reactivacionFalla: 0,
+  reactivacionSinFilas: false,
+  alSoltarElLock: null,
+  traspasos: null,
 };
+
+/** Orden de los hechos que importan para "sin colisión": `send`, `update:ai_enabled`, `nota:reactivacion`, `lock_release`. */
+const orden: string[] = [];
+/** Cada UPDATE de `conversations` con sus filtros (operador + columna + valor). */
+const updatesConFiltros: { values: Record<string, unknown>; filters: { op: string; col: string; val: unknown }[] }[] = [];
 
 /** Cada UPDATE sobre `conversations` (valores). Nada del turno por demora puede tocar `ai_enabled` ni `welcome_sent_at`. */
 const conversationUpdates: Record<string, unknown>[] = [];
@@ -101,7 +118,14 @@ function createFakeSupabase() {
       }
       if (fn === "ai_turn_lock_acquire") return Promise.resolve({ data: state.lockAcquired, error: null });
       if (fn === "ai_turn_lock_renew") return Promise.resolve({ data: true, error: null });
-      if (fn === "ai_turn_lock_release") return Promise.resolve({ data: true, error: null });
+      if (fn === "ai_turn_lock_release") {
+        orden.push("lock_release");
+        // De un solo uso: el turno normal que el gancho dispara también suelta SU lock.
+        const hook = state.alSoltarElLock;
+        state.alSoltarElLock = null;
+        if (!hook) return Promise.resolve({ data: true, error: null });
+        return hook().then(() => ({ data: true, error: null }));
+      }
       if (fn === "record_handoff") {
         handoffCalls.push(params ?? {});
         return Promise.resolve({ data: "handoff-1", error: null });
@@ -125,23 +149,60 @@ function createFakeSupabase() {
             if (columns === "last_customer_message_at") {
               consultasProhibidas.push("conversations.last_customer_message_at (cesión de borrador)");
             }
-            return { eq: () => ({ maybeSingle: async () => ({ data: state.conversation, error: null }) }) };
+            // Una copia, como la de PostgREST: el turno no comparte objeto con la "base".
+            return {
+              eq: () => ({
+                maybeSingle: async () => ({ data: state.conversation ? structuredClone(state.conversation) : null, error: null }),
+              }),
+            };
           },
-          update: (values: Record<string, unknown>) => ({
-            eq: () => {
-              conversationUpdates.push(values);
-              const resultado = { data: null, error: null };
-              return {
-                is: () => ({
+          update: (values: Record<string, unknown>) => {
+            const filters: { op: string; col: string; val: unknown }[] = [];
+            conversationUpdates.push(values);
+            const ejecutar = () => {
+              // Un UPDATE de `ai_enabled` se aplica de verdad sobre la conversación falsa
+              // (así el test ve el orden real) y refleja el sello del trigger
+              // `handle_conversation_ai_resume`: sin asesor, copia el último mensaje
+              // del cliente (`supabase/tests/reactivacion_por_demora.sql` lo fija).
+              if (!("ai_enabled" in values)) return { data: null as unknown, error: null as unknown };
+              orden.push("update:ai_enabled");
+              updatesConFiltros.push({ values, filters: [...filters] });
+              if (state.reactivacionFalla > 0) {
+                state.reactivacionFalla--;
+                return { data: null, error: { message: "corte de base" } };
+              }
+              if (state.reactivacionSinFilas) return { data: [], error: null };
+              const conv = state.conversation;
+              const coincide =
+                conv !== null &&
+                filters.every((f) => f.op !== "eq" || (f.col === "id" ? f.val === conv.id : conv[f.col] === f.val));
+              if (!coincide || !conv) return { data: [], error: null };
+              const eraApagada = conv.ai_enabled === false;
+              conv.ai_enabled = values.ai_enabled;
+              if (eraApagada && values.ai_enabled === true && !conv.assigned_agent_id) {
+                conv.ai_resume_cutoff_at = conv.last_customer_message_at;
+              }
+              return { data: [{ id: conv.id }], error: null };
+            };
+            const builder = {
+              eq: (col: string, val: unknown) => {
+                filters.push({ op: "eq", col, val });
+                return builder;
+              },
+              is: (col: string, val: unknown) => {
+                filters.push({ op: "is", col, val });
+                return {
                   select: async () => {
                     consultasProhibidas.push("conversations.update(...).is(...) (reclamo de presentación)");
                     return { data: [{ id: "conv-1" }], error: null };
                   },
-                }),
-                then: (resolve: (value: typeof resultado) => void) => resolve(resultado),
-              };
-            },
-          }),
+                };
+              },
+              select: async () => ejecutar(),
+              then: (resolve: (value: { data: unknown; error: unknown }) => void) => resolve(ejecutar()),
+            };
+            return builder;
+          },
         };
       }
 
@@ -149,6 +210,7 @@ function createFakeSupabase() {
         return {
           insert: (row: Record<string, unknown>) => {
             messageInserts.push(row);
+            if (typeof row.content === "string" && row.content.includes("reactivó la IA")) orden.push("nota:reactivacion");
             return Promise.resolve({ data: null, error: state.noteInsertError });
           },
           select: (columns: string) => {
@@ -196,6 +258,23 @@ function createFakeSupabase() {
             return q;
           },
         };
+      }
+
+      if (table === "conversation_handoffs" && state.traspasos !== null) {
+        // Solo lo leen `escalationOpen` y la gracia de `humanHasWritten` en un turno NORMAL
+        // (los tests de "sin colisión"); el turno por demora no la consulta.
+        const filas = state.traspasos;
+        const q = {
+          eq: () => q,
+          not: () => q,
+          in: () => q,
+          gt: () => q,
+          order: () => q,
+          limit: () => q,
+          maybeSingle: async () => ({ data: filas[0] ?? null, error: null }),
+          then: (resolve: (value: unknown) => void) => resolve({ data: filas, error: null }),
+        };
+        return { select: () => q };
       }
 
       if (table === "agent_tools") {
@@ -319,6 +398,7 @@ vi.mock("@/lib/ai/tools", () => ({
 vi.mock("@/lib/ai/knowledge", () => ({ buildKnowledgeTool: () => ({}) }));
 vi.mock("@/lib/whatsapp/meta-client", () => ({ sendTypingIndicator: vi.fn().mockResolvedValue(undefined) }));
 
+import { runAgentTurn } from "@/lib/ai/agent";
 import { runDelayTurn } from "@/lib/ai/delay-turn";
 import { cacheablePrefix } from "@/lib/ai/prompt";
 import { revealsIdentity } from "@/lib/ai/identity-guard";
@@ -394,6 +474,12 @@ beforeEach(() => {
   state.enabledToolKeys = ["buscar_repuesto", "buscar_historial_compras", "consultar_biblioteca"];
   state.lockAcquired = true;
   state.noteInsertError = null;
+  state.reactivacionFalla = 0;
+  state.reactivacionSinFilas = false;
+  state.alSoltarElLock = null;
+  state.traspasos = null;
+  orden.length = 0;
+  updatesConFiltros.length = 0;
   conversationUpdates.length = 0;
   messageInserts.length = 0;
   agentTurnInserts.length = 0;
@@ -417,8 +503,14 @@ beforeEach(() => {
     text: "texto reescrito limpio",
     usage: { inputTokens: 10, outputTokens: 4, totalTokens: 14 },
   });
-  sendAgentTextMock.mockResolvedValue(OUTCOME);
-  sendPlaybookReplyMock.mockResolvedValue(OUTCOME);
+  sendAgentTextMock.mockImplementation(async () => {
+    orden.push("send");
+    return OUTCOME;
+  });
+  sendPlaybookReplyMock.mockImplementation(async () => {
+    orden.push("send");
+    return OUTCOME;
+  });
   buildCatalogToolMock.mockImplementation(() => ({}));
 });
 
@@ -446,13 +538,13 @@ describe("runDelayTurn — quién puede recibir la respuesta", () => {
     expect(sendAgentTextMock.mock.calls[0][3]).toMatchObject({ isAutoReply: true });
   });
 
-  it("NO cambia ai_enabled ni toca la presentación de la conversación", async () => {
+  it("no toca la presentación ni el asesor de la conversación (la única escritura de ai_enabled es la reactivación, con su propio describe)", async () => {
     await correr();
 
     for (const valores of conversationUpdates) {
-      expect(valores).not.toHaveProperty("ai_enabled");
       expect(valores).not.toHaveProperty("welcome_sent_at");
       expect(valores).not.toHaveProperty("assigned_agent_id");
+      if ("ai_enabled" in valores) expect(valores).toEqual({ ai_enabled: true });
     }
     expect(consultasProhibidas).toEqual([]);
   });
@@ -863,7 +955,8 @@ describe("runDelayTurn — lo que deja escrito", () => {
 
     await correr(NOW_ABIERTO, 12);
 
-    const notas = messageInserts.filter((m) => m.is_internal_note === true);
+    // (Con la IA apagada hay además la nota de reactivación, que tiene su propio describe.)
+    const notas = messageInserts.filter((m) => m.is_internal_note === true && String(m.content).startsWith("Seba respondió"));
     expect(notas).toHaveLength(1);
     expect(notas[0]).toMatchObject({
       conversation_id: "conv-1",
@@ -974,5 +1067,306 @@ describe("runDelayTurn — casos que no corresponden (nunca lanzan)", () => {
     const resultado = await correr();
 
     expect(resultado).toEqual({ enviado: false, motivo: "sin_mensaje_del_cliente" });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 29/9/2026, cambio de diseño del operador sobre la Entrega B (reemplaza la regla
+// de D2 "no reactiva la IA"): "Si Seba va a responder a los 10 minutos porque
+// ningún asesor respondió, activa nuevamente la IA y que mande la respuesta,
+// esto no debe colisionar; además nos aseguramos que la IA se reactive sola
+// porque los asesores no reactivan la IA luego de hablar con el cliente".
+//
+// Reglas: (1) SOLO si la IA estaba apagada; (2) DESPUÉS de enviar con éxito y de
+// marcar "visto hasta", todavía DENTRO del lock; (3) nunca antes de enviar -- un
+// turno normal que corra a mitad del envío tiene que seguir viendo la IA
+// apagada (`pausada`), o contestaría el mismo mensaje dos veces; (4) un UPDATE
+// propio y condicionado (`ai_enabled = false`) que verifica las filas afectadas.
+// ---------------------------------------------------------------------------
+describe("runDelayTurn — reactiva la IA DESPUÉS de responder (29/9/2026)", () => {
+  it("con la IA apagada: envía, y recién entonces un UPDATE {ai_enabled: true} condicionado a ai_enabled = false, dentro del lock", async () => {
+    const info = vi.spyOn(log, "info");
+
+    const resultado = await correr();
+
+    expect(resultado.enviado).toBe(true);
+    expect(updatesConFiltros).toHaveLength(1);
+    expect(updatesConFiltros[0].values).toEqual({ ai_enabled: true });
+    expect(updatesConFiltros[0].filters).toContainEqual({ op: "eq", col: "id", val: "conv-1" });
+    expect(updatesConFiltros[0].filters).toContainEqual({ op: "eq", col: "ai_enabled", val: false });
+    expect(state.conversation?.ai_enabled).toBe(true);
+    const iEnvio = orden.indexOf("send");
+    const iUpdate = orden.indexOf("update:ai_enabled");
+    const iSoltar = orden.indexOf("lock_release");
+    expect(iEnvio).toBeGreaterThanOrEqual(0);
+    expect(iUpdate).toBeGreaterThan(iEnvio);
+    // Dentro del lock: el lock se suelta DESPUÉS de reactivar.
+    expect(iSoltar).toBeGreaterThan(iUpdate);
+    expect(info).toHaveBeenCalledWith("ia_reactivada_por_demora", expect.objectContaining({ conversationId: "conv-1" }));
+  });
+
+  it("deja una nota interna aparte, de sistema (nunca 'agent'), que dice que reactivó la IA", async () => {
+    await correr();
+
+    const notas = messageInserts.filter((m) => typeof m.content === "string" && m.content.includes("reactivó la IA"));
+    expect(notas).toHaveLength(1);
+    expect(notas[0]).toMatchObject({
+      conversation_id: "conv-1",
+      sender_type: "system",
+      message_type: "system_event",
+      is_internal_note: true,
+      direction: "outbound",
+    });
+    // Después del UPDATE (honesta: solo se escribe si la IA quedó encendida de verdad).
+    expect(orden.indexOf("nota:reactivacion")).toBeGreaterThan(orden.indexOf("update:ai_enabled"));
+    // Ningún mensaje de sistema o nota se hace pasar por asesor: apagaría la IA que acaba de encender.
+    expect(messageInserts.some((m) => m.sender_type === "agent")).toBe(false);
+  });
+
+  it("también reactiva cuando la respuesta es un escenario", async () => {
+    const ubicacion = playbook();
+    fetchActivePlaybooksMock.mockResolvedValue([ubicacion]);
+    matchPlaybookMock.mockResolvedValue({ playbook: ubicacion, usage: { inputTokens: 3, outputTokens: 1, totalTokens: 4 } });
+
+    const resultado = await correr();
+
+    expect(resultado).toEqual({ enviado: true, motivo: "escenario" });
+    expect(updatesConFiltros).toHaveLength(1);
+    expect(orden.indexOf("update:ai_enabled")).toBeGreaterThan(orden.indexOf("send"));
+  });
+
+  it("también reactiva cuando sale el texto fijo de espera (el modelo no dio texto)", async () => {
+    generateMock.mockResolvedValue({ text: "", usage: { inputTokens: 1, outputTokens: 0, totalTokens: 1 }, steps: [{}] });
+
+    const resultado = await correr();
+
+    expect(resultado).toEqual({ enviado: true, motivo: "texto_fijo" });
+    expect(updatesConFiltros).toHaveLength(1);
+  });
+
+  it("con un asesor asignado que nunca escribió reactiva igual, sin tocar assigned_agent_id", async () => {
+    armarChat(NOW_ABIERTO, { assigned_agent_id: "agente-1", ai_enabled: false });
+
+    await correr();
+
+    expect(updatesConFiltros).toHaveLength(1);
+    expect(state.conversation?.ai_enabled).toBe(true);
+    expect(state.conversation?.assigned_agent_id).toBe("agente-1");
+    for (const valores of conversationUpdates) expect(valores).not.toHaveProperty("assigned_agent_id");
+  });
+
+  it("si la IA ya estaba encendida no escribe NADA extra: ni UPDATE de ai_enabled ni nota de reactivación", async () => {
+    armarChat(NOW_ABIERTO, { assigned_agent_id: "agente-1", ai_enabled: true });
+
+    const resultado = await correr();
+
+    expect(resultado.enviado).toBe(true);
+    expect(updatesConFiltros).toEqual([]);
+    expect(messageInserts.filter((m) => String(m.content).includes("reactivó la IA"))).toEqual([]);
+    // Solo la nota de siempre: "Seba respondió por demora de N min".
+    expect(messageInserts.filter((m) => m.is_internal_note === true)).toHaveLength(1);
+  });
+
+  describe("nunca antes de enviar, y nada si no salió", () => {
+    it("un envío rechazado por Meta NO reactiva la IA (el cliente no recibió nada)", async () => {
+      sendAgentTextMock.mockResolvedValue({ ...OUTCOME, whatsapp_status: "failed", whatsapp_error_code: 131047, origenDelFallo: "meta" });
+
+      const resultado = await correr();
+
+      expect(resultado.enviado).toBe(false);
+      expect(updatesConFiltros).toEqual([]);
+      expect(state.conversation?.ai_enabled).toBe(false);
+      expect(messageInserts.filter((m) => String(m.content).includes("reactivó la IA"))).toEqual([]);
+    });
+
+    it("un asesor que ya respondió (no se envía nada) NO reactiva la IA", async () => {
+      const lcma = armarChat(NOW_ABIERTO);
+      state.agentMessages = [{ created_at: new Date(Date.parse(lcma) + 3 * MINUTO).toISOString(), direction: "outbound", is_internal_note: false }];
+
+      const resultado = await correr();
+
+      expect(resultado.motivo).toBe("asesor_ya_respondio");
+      expect(updatesConFiltros).toEqual([]);
+    });
+
+    it("fuera de la ventana de 24 h o con el interruptor global apagado: tampoco reactiva", async () => {
+      armarChat(NOW_ABIERTO, { last_customer_message_at: hace(25 * 60, NOW_ABIERTO) });
+      expect((await correr()).enviado).toBe(false);
+      state.canRun = false;
+      armarChat(NOW_ABIERTO);
+      expect((await correr()).enviado).toBe(false);
+      expect(updatesConFiltros).toEqual([]);
+    });
+
+    it("COLISIÓN EN VUELO: un turno normal que corre A MITAD del envío todavía ve la IA apagada (pausada) y no contesta el mismo mensaje", async () => {
+      state.traspasos = [];
+      let iaDuranteElEnvio: unknown = "no medido";
+      sendAgentTextMock.mockImplementationOnce(async () => {
+        orden.push("send");
+        iaDuranteElEnvio = state.conversation?.ai_enabled;
+        // La cola dispara un turno normal justo ahora (otro proceso, mismo mensaje).
+        await runAgentTurn("conv-1");
+        return OUTCOME;
+      });
+
+      const resultado = await correr();
+
+      expect(resultado.enviado).toBe(true);
+      expect(iaDuranteElEnvio).toBe(false);
+      // El turno normal SÍ corrió y se cortó en su guarda de apertura...
+      expect(handoffCalls).toContainEqual(expect.objectContaining({ p_reason: "pausada", p_to_kind: "unassigned" }));
+      // ...así que el cliente recibió UNA sola respuesta.
+      expect(sendAgentTextMock).toHaveBeenCalledTimes(1);
+      expect(state.conversation?.ai_enabled).toBe(true);
+    });
+  });
+
+  describe("no reactiva si el mundo cambió entre el envío y la reactivación", () => {
+    it("un asesor escribió de verdad justo después de la respuesta de Seba: la IA se queda apagada", async () => {
+      const lcma = armarChat(NOW_ABIERTO);
+      sendAgentTextMock.mockImplementationOnce(async () => {
+        orden.push("send");
+        // El asesor aparece mientras el mensaje de Seba sale (después del mensaje del cliente).
+        state.agentMessages = [{ created_at: new Date(Date.parse(lcma) + 6 * MINUTO).toISOString(), direction: "outbound", is_internal_note: false }];
+        return OUTCOME;
+      });
+      const info = vi.spyOn(log, "info");
+
+      const resultado = await correr();
+
+      expect(resultado.enviado).toBe(true);
+      expect(updatesConFiltros).toEqual([]);
+      expect(state.conversation?.ai_enabled).toBe(false);
+      expect(info).toHaveBeenCalledWith("ia_no_reactivada", expect.objectContaining({ conversationId: "conv-1", motivo: "asesor_escribio" }));
+    });
+
+    it("el cliente escribió un mensaje NUEVO mientras el turno corría: no se reactiva (el sello taparía ese mensaje)", async () => {
+      armarChat(NOW_ABIERTO);
+      sendAgentTextMock.mockImplementationOnce(async () => {
+        orden.push("send");
+        if (state.conversation) state.conversation.last_customer_message_at = new Date(NOW_ABIERTO.getTime() - 5_000).toISOString();
+        return OUTCOME;
+      });
+      const info = vi.spyOn(log, "info");
+
+      await correr();
+
+      expect(updatesConFiltros).toEqual([]);
+      expect(info).toHaveBeenCalledWith("ia_no_reactivada", expect.objectContaining({ motivo: "cliente_escribio_de_nuevo" }));
+    });
+
+    it("alguien ya la había encendido por otra vía (0 filas afectadas): no escribe la nota ni falla", async () => {
+      state.reactivacionSinFilas = true;
+      const info = vi.spyOn(log, "info");
+
+      const resultado = await correr();
+
+      expect(resultado.enviado).toBe(true);
+      expect(updatesConFiltros).toHaveLength(1);
+      expect(messageInserts.filter((m) => String(m.content).includes("reactivó la IA"))).toEqual([]);
+      expect(info).toHaveBeenCalledWith("ia_no_reactivada", expect.objectContaining({ motivo: "ya_estaba_encendida" }));
+    });
+  });
+
+  describe("una falla de la base al reactivar", () => {
+    it("reintenta UNA vez; si el segundo intento pasa, la IA queda encendida", async () => {
+      state.reactivacionFalla = 1;
+
+      const resultado = await correr();
+
+      expect(resultado.enviado).toBe(true);
+      expect(updatesConFiltros).toHaveLength(2);
+      expect(state.conversation?.ai_enabled).toBe(true);
+    });
+
+    it("si fallan los dos intentos deja log.error, no lanza y el resultado sigue siendo 'enviado' (no se reintenta el envío)", async () => {
+      state.reactivacionFalla = 2;
+      const error = vi.spyOn(log, "error");
+
+      const resultado = await correr();
+
+      expect(resultado.enviado).toBe(true);
+      expect(updatesConFiltros).toHaveLength(2);
+      expect(state.conversation?.ai_enabled).toBe(false);
+      expect(error).toHaveBeenCalledWith("ia_reactivada_por_demora_fallida", expect.objectContaining({ conversationId: "conv-1" }));
+      expect(messageInserts.filter((m) => String(m.content).includes("reactivó la IA"))).toEqual([]);
+    });
+  });
+
+  describe("sin colisión con el turno normal que corre justo DESPUÉS de reactivar", () => {
+    /** Lo que dejó la conversación tras la respuesta de Seba, visto por el siguiente turno (más nuevo primero). */
+    function historialTrasLaRespuesta(extra: { content: string; created_at: string; id: string }[] = []) {
+      const lcma = String(state.conversation?.last_customer_message_at);
+      state.history = [
+        ...extra.map((m) => ({ sender_type: "customer", content: m.content, is_internal_note: false, message_type: "text", created_at: m.created_at, id: m.id })),
+        { sender_type: "ai", content: "Claro, las pastillas para esa moto están en el sistema.", is_internal_note: false, message_type: "text", created_at: new Date(Date.parse(lcma) + 60_000).toISOString(), id: "m2" },
+        { sender_type: "customer", content: PREGUNTA, is_internal_note: false, message_type: "text", created_at: lcma, id: "m1" },
+      ];
+    }
+
+    it("CON asesor asignado (el trigger no sella): la marca 'visto hasta' impide contestar el mismo mensaje", async () => {
+      armarChat(NOW_ABIERTO, { assigned_agent_id: "agente-1" });
+      state.traspasos = [];
+      state.alSoltarElLock = async () => {
+        historialTrasLaRespuesta();
+        await runAgentTurn("conv-1");
+      };
+
+      const resultado = await correr();
+
+      expect(resultado.enviado).toBe(true);
+      // El turno normal corrió (la IA ya estaba encendida) y no mandó nada.
+      expect(state.conversation?.ai_enabled).toBe(true);
+      expect(state.conversation?.ai_resume_cutoff_at).toBeNull();
+      expect(sendAgentTextMock).toHaveBeenCalledTimes(1);
+      expect(generateMock).toHaveBeenCalledTimes(1);
+      expect(JSON.parse(redisStore.get("turno:visto:conv-1") ?? "null")).toMatchObject({ ids: ["m1"] });
+    });
+
+    it("SIN asesor (el trigger sella con el mensaje ya contestado): el turno normal se calla con mensaje_previo_a_devolucion", async () => {
+      armarChat(NOW_ABIERTO);
+      state.traspasos = [];
+      state.alSoltarElLock = async () => {
+        historialTrasLaRespuesta();
+        await runAgentTurn("conv-1");
+      };
+
+      await correr();
+
+      expect(state.conversation?.ai_resume_cutoff_at).toBe(state.conversation?.last_customer_message_at);
+      expect(handoffCalls).toContainEqual(expect.objectContaining({ p_reason: "mensaje_previo_a_devolucion" }));
+      expect(sendAgentTextMock).toHaveBeenCalledTimes(1);
+      expect(generateMock).toHaveBeenCalledTimes(1);
+    });
+
+    it.each([[null], ["agente-1"]])(
+      "un mensaje NUEVO del cliente posterior lo atiende Seba con normalidad (asesor: %s)",
+      async (asesor) => {
+        const lcmaViejo = armarChat(NOW_ABIERTO, { assigned_agent_id: asesor });
+        state.traspasos = [];
+        state.alSoltarElLock = async () => {
+          const lcmaNuevo = new Date(Date.parse(lcmaViejo) + 5 * MINUTO).toISOString();
+          if (state.conversation) state.conversation.last_customer_message_at = lcmaNuevo;
+          historialTrasLaRespuesta([{ content: "y también cadenas", created_at: lcmaNuevo, id: "m3" }]);
+          await runAgentTurn("conv-1");
+        };
+
+        await correr();
+
+        // 1 = la respuesta por demora; 2 = el turno normal atendiendo el mensaje nuevo.
+        expect(sendAgentTextMock).toHaveBeenCalledTimes(2);
+        expect(state.conversation?.ai_enabled).toBe(true);
+      }
+    );
+  });
+
+  describe("la regla 'el primer mensaje real del asesor apaga la IA' sigue intacta", () => {
+    it("el turno por demora nunca escribe como asesor: ninguna fila suya dispararía handle_agent_message_silences_ai", async () => {
+      await correr();
+
+      for (const fila of messageInserts) {
+        expect(fila.sender_type).not.toBe("agent");
+      }
+    });
   });
 });

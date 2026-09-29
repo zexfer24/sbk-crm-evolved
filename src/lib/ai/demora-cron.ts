@@ -39,9 +39,13 @@ import { isCourtesyOnly } from "@/lib/ai/saludo";
 //   - reasignar:  update … where reassignments = <valor leído> returning.
 //   - avisar:     update … where supervisor_notified_at is null returning.
 //
-// La IA NUNCA se reactiva desde acá (`ai_enabled` no se escribe): la demora
-// responde una vez por episodio con límites (D2) y reasigna, no devuelve el
-// chat a Seba.
+// Este cron NUNCA escribe `ai_enabled`: la reactivación de la IA tras responder
+// por demora (29/9/2026, cambio de diseño del operador) la hace el turno mismo
+// (`delay-turn.ts`, después de enviar y dentro del lock). Lo que sí le toca a
+// este archivo es que esa reactivación no corte la cadena: el trigger deja una
+// fila `devuelto_a_ia` de sistema y `evaluarDemora` la reconoce
+// (`sinReactivacionesPorDemora`, `demora.ts`) para que el caso siga
+// reasignándose a los 15 min y llegue al aviso al supervisor.
 //
 // Acotado a propósito: la consulta de candidatas nunca recorre la tabla —solo
 // conversaciones abiertas, dentro de la ventana de 24 h (origen "cliente") o
@@ -284,7 +288,7 @@ async function leerCandidatas(
 async function leerTraspasos(supabase: Supabase, ids: string[], desdeIso: string): Promise<Map<string, TraspasoDemora[]>> {
   const { data, error } = await supabase
     .from("conversation_handoffs")
-    .select("conversation_id, reason, created_at")
+    .select("conversation_id, reason, created_at, created_by")
     .in("conversation_id", ids)
     .gt("created_at", desdeIso)
     .not("reason", "in", `(${RAZONES_QUE_NO_CIERRAN_LA_ESCALADA.join(",")})`)
@@ -309,8 +313,8 @@ async function leerTraspasos(supabase: Supabase, ids: string[], desdeIso: string
  * reasignación abriría un episodio nuevo con el contador en cero y el tope de
  * dos no llegaría nunca (segunda corrección del operador, mutación (h) del plan).
  */
-function aTraspasoDemora(fila: { reason: string; created_at: string }): TraspasoDemora {
-  return { reason: fila.reason, createdAt: new Date(fila.created_at) };
+function aTraspasoDemora(fila: { reason: string; created_at: string; created_by?: string | null }): TraspasoDemora {
+  return { reason: fila.reason, createdAt: new Date(fila.created_at), createdBy: fila.created_by ?? undefined };
 }
 
 async function leerEpisodios(supabase: Supabase, ids: string[]): Promise<Map<string, EpisodioGuardado[]>> {
