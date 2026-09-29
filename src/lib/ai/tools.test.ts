@@ -710,11 +710,12 @@ describe("buildCatalogTool — tope de resultados", () => {
     // (10) y `buscar_productos` es quien ordena TODO el conjunto de
     // candidatos antes de recortar (antes: `.limit(31)` SIN order, el bug
     // de origen de esta ola). La PRIMERA llamada pide 10.
-    // 29/9/2026: con la moto calzando y más de tres con existencia la
-    // herramienta vuelve a pedir 50 (para elegir las de mayor existencia) y
-    // al modelo le llegan TRES, no diez.
+    // 29/9/2026: con la moto calzando y más de una con existencia la
+    // herramienta vuelve a pedir 50 (para elegir la de mayor existencia) y al
+    // modelo le llega UNA sola (hotfix del 29/9/2026, decisión del operador),
+    // no diez ni tres.
     expect(rpcCalls[0].p_limite).toBe(10);
-    expect(result.results.length).toBe(3);
+    expect(result.results.length).toBe(1);
   });
 
   it("avisa al modelo cuando hubo que recortar, para que pida precisar", async () => {
@@ -846,11 +847,35 @@ describe("buildCatalogTool — qué tan viejo es lo que está cotizando", () => 
    * lleva esa reserva. Al revés —quedarse con el más nuevo— dejaría pasar
    * justo el que puede estar vendido.
    */
-  it("mide por el resultado más viejo, no por el más reciente", async () => {
+  it("mide por lo que se cotiza: la mejor opción (la de más existencia) es la vieja aunque haya otra reciente", async () => {
+    // Hotfix 29/9/2026: se cotiza UNA sola, la de mayor existencia; la
+    // antigüedad se mide sobre esa, no sobre las que quedaron sin mostrar.
     const result = await cotizar([
-      producto({ id: "prod-1", updated_at: haceDias(0) }),
-      producto({ id: "prod-2", name: "Carburador PZ30", updated_at: haceDias(9) }),
+      producto({ id: "prod-1", stock_quantity: 3, updated_at: haceDias(0) }),
+      producto({ id: "prod-2", name: "Carburador PZ30", stock_quantity: 12, updated_at: haceDias(9) }),
     ]);
+
+    expect(result.inventarioDesactualizado).toBe(true);
+    expect(result.instruccionParaTuRespuesta).toMatch(/9 días/);
+  });
+
+  it("en una lista mide por el resultado más viejo de los cotizados, no por el más reciente", async () => {
+    const { client } = createFakeSupabase([
+      producto({ id: "prod-1", name: "Carburador PZ27", updated_at: haceDias(0) }),
+      producto({ id: "prod-2", name: "Bujia NGK", updated_at: haceDias(9) }),
+    ]);
+    const tool = buildCatalogTool({
+      // @ts-expect-error -- fake mínimo
+      supabase: client,
+      conversationId: "conv-1",
+      contactId: "contact-1",
+    }, nuevoCatalogOutcome());
+
+    // @ts-expect-error -- firma simplificada del test
+    const result = (await tool.execute({ query: "", productos: ["carburador", "bujia"] }, { toolCallId: "t1", messages: [] })) as {
+      inventarioDesactualizado?: boolean;
+      instruccionParaTuRespuesta?: string;
+    };
 
     expect(result.inventarioDesactualizado).toBe(true);
     expect(result.instruccionParaTuRespuesta).toMatch(/9 días/);
@@ -2596,13 +2621,14 @@ describe("buildCatalogTool — 'genérico' se decide con el stock (T3a)", () => 
     expect(result.instruccionParaTuRespuesta).toContain(TEXTO_SIN_STOCK);
     expect(result.instruccionParaTuRespuesta).toMatch(/motivo sin_stock/);
     expect(result.instruccionParaTuRespuesta).not.toMatch(/tenemos/i);
-    // No se listan siete agotados: alcanzan tres para que el asesor vea de qué se habla.
-    expect(result.results).toHaveLength(3);
-    expect(catalogOutcome.cotizacion).toHaveLength(3);
-    expect(insertedQuotes).toHaveLength(3);
+    // Hotfix 29/9/2026 (decisión del operador): con todo agotado se nombra
+    // SOLO el producto pedido (la mejor fila), nunca una lista de agotados.
+    expect(result.results).toHaveLength(1);
+    expect(catalogOutcome.cotizacion).toHaveLength(1);
+    expect(insertedQuotes).toHaveLength(1);
   });
 
-  it("de seis filas que calzan, dos con stock: cotiza SOLO esas dos y no pregunta", async () => {
+  it("de seis filas que calzan, dos con stock: cotiza UNA sola (la de más existencia) y no pregunta", async () => {
     const filas = [
       ...Array.from({ length: 4 }, (_, i) => fila(`sin-${i}`, `GUANTE INVIERNO SIN STOCK ${i}`, 0)),
       fila("con-1", "GUANTE INVIERNO ALPINESTARS", 3),
@@ -2613,7 +2639,8 @@ describe("buildCatalogTool — 'genérico' se decide con el stock (T3a)", () => 
 
     const result = await correr(herramienta(client, catalogOutcome), { query: "guante invierno" });
 
-    expect(result.results.map((r) => r.nombre).sort()).toEqual(["GUANTE INVIERNO ALPINESTARS", "GUANTE INVIERNO FOX"]);
+    // Hotfix 29/9/2026: una sola opción, la de mayor existencia (3 contra 2).
+    expect(result.results.map((r) => r.nombre)).toEqual(["GUANTE INVIERNO ALPINESTARS"]);
     expect(catalogOutcome.generico).toBe(false);
     expect(catalogOutcome.conExistencia).toBe(true);
     expect(result.instruccionParaTuRespuesta).toContain(TEXTO_CONFIRMAR_INVENTARIO);
@@ -2646,7 +2673,8 @@ describe("buildCatalogTool — 'genérico' se decide con el stock (T3a)", () => 
     const result = await correr(herramienta(client, catalogOutcome), { query: "bota impermeable" });
 
     expect(rpcCalls.map((c) => c.p_limite)).toEqual([10, 50]);
-    expect(result.results.map((r) => r.nombre).sort()).toEqual(["ZAPATO BOTA IMPERMEABLE A", "ZAPATO BOTA IMPERMEABLE B"]);
+    // Hotfix 29/9/2026: de las dos con stock se cotiza UNA, la de mayor existencia.
+    expect(result.results.map((r) => r.nombre)).toEqual(["ZAPATO BOTA IMPERMEABLE A"]);
     expect(catalogOutcome.conExistencia).toBe(true);
     expect(catalogOutcome.generico).toBe(false);
   });
@@ -2655,7 +2683,7 @@ describe("buildCatalogTool — 'genérico' se decide con el stock (T3a)", () => 
 describe("buildCatalogTool — una sola pregunta por pedido (T3a)", () => {
   const cascos = Array.from({ length: 5 }, (_, i) => fila(`casco-${i}`, `CASCO INTEGRAL MARCA ${i}`, 3, 50 + i));
 
-  it("la primera consulta genérica pregunta y deja preguntaHechaPara; la segunda, del mismo producto, entrega las tres con stock", async () => {
+  it("la primera consulta genérica pregunta y deja preguntaHechaPara; la segunda, del mismo producto, entrega UNA con stock", async () => {
     const { client } = createFakeSupabase(cascos);
 
     const primera = nuevoCatalogOutcome();
@@ -2672,7 +2700,7 @@ describe("buildCatalogTool — una sola pregunta por pedido (T3a)", () => {
     expect(segunda.generico).toBe(false);
     expect(segunda.preguntaFiltro).toBeNull();
     expect(segunda.conExistencia).toBe(true);
-    expect(r2.results).toHaveLength(3);
+    expect(r2.results).toHaveLength(1);
     expect(r2.instruccionParaTuRespuesta).toContain(TEXTO_CONFIRMAR_INVENTARIO);
     expect(r2.instruccionParaTuRespuesta).toMatch(/confirmar_inventario/);
   });
@@ -2699,7 +2727,7 @@ describe("buildCatalogTool — una sola pregunta por pedido (T3a)", () => {
 
     expect(outcome.generico).toBe(false);
     expect(outcome.conExistencia).toBe(true);
-    expect(result.results).toHaveLength(3);
+    expect(result.results).toHaveLength(1);
   });
 
   it("otro producto genérico distinto SÍ vuelve a preguntar", async () => {
@@ -2715,7 +2743,7 @@ describe("buildCatalogTool — una sola pregunta por pedido (T3a)", () => {
   });
 
   it.each([["no sé"], ["muéstrame todos"], ["los que tengas"], ["me da igual"]])(
-    "si la ráfaga del cliente dice «%s», NO pregunta: entrega las tres con stock y escala con confirmar_inventario",
+    "si la ráfaga del cliente dice «%s», NO pregunta: entrega UNA con stock y escala con confirmar_inventario",
     async (frase) => {
       const { client } = createFakeSupabase(cascos);
       const outcome = nuevoCatalogOutcome();
@@ -2727,7 +2755,7 @@ describe("buildCatalogTool — una sola pregunta por pedido (T3a)", () => {
       expect(outcome.generico).toBe(false);
       expect(outcome.preguntaFiltro).toBeNull();
       expect(outcome.conExistencia).toBe(true);
-      expect(result.results).toHaveLength(3);
+      expect(result.results).toHaveLength(1);
       expect(result.instruccionParaTuRespuesta).toContain(TEXTO_CONFIRMAR_INVENTARIO);
     }
   );
@@ -2884,7 +2912,7 @@ describe("buildCatalogTool — listas de productos (T3a, D5: máximo cinco)", ()
     expect(result.instruccionParaTuRespuesta).toContain(TEXTO_NO_IDENTIFICADO);
   });
 
-  it("en una lista un producto genérico no abre una pregunta: entrega hasta tres con stock", async () => {
+  it("en una lista un producto genérico no abre una pregunta: entrega UNA con stock", async () => {
     const cinco = Array.from({ length: 5 }, (_, i) => fila(`b-${i}`, `BATERIA MARCA ${i}`, 3));
     const { client } = createFakeSupabase(cinco);
     const catalogOutcome = nuevoCatalogOutcome();
@@ -2893,7 +2921,7 @@ describe("buildCatalogTool — listas de productos (T3a, D5: máximo cinco)", ()
 
     expect(catalogOutcome.generico).toBe(false);
     expect(catalogOutcome.preguntaFiltro).toBeNull();
-    expect(result.porProducto?.[0].results).toHaveLength(3);
+    expect(result.porProducto?.[0].results).toHaveLength(1);
   });
 
   it("el esquema acepta hasta cinco productos y rechaza seis", () => {
@@ -2909,71 +2937,73 @@ describe("buildCatalogTool — listas de productos (T3a, D5: máximo cinco)", ()
 /**
  * 29/9/2026, escenario a mano: "necesito un asiento sbr" con seis "ASIENTO SBR
  * …" con stock. "sbr" viaja a `moto` y los nombres lo contienen, así que la
- * moto "calza" y la rama vieja cotizaba LOS SEIS de una vez (en producción
- * hay muchos asientos con SBR en el nombre: saldría una lista larga).
- * DECISIÓN DEL OPERADOR: con la moto calzando y más de tres con existencia NO
- * se pregunta: se cotizan las tres más relevantes con existencia (a igual
- * relevancia, la de MAYOR existencia primero), el resto se cuenta en
- * `masOpciones` y se escala para que el asesor confirme.
+ * moto "calza" y la rama vieja cotizaba LOS SEIS de una vez.
+ *
+ * HOTFIX DE PRODUCCIÓN, 29/9/2026 (decisión del operador, reemplaza el tope de
+ * tres de la misma mañana): Seba cotizaba hasta tres opciones de cada cosa
+ * que pedía el cliente (más la línea «Hay N opciones más…») y mezclaba
+ * productos con stock 0 con los que tenían existencia. Ahora, SIEMPRE:
+ * - con stock se cotiza UNA sola opción, la mejor (relevancia de SQL y, a
+ *   igual relevancia, la de MAYOR existencia); nunca un agotado si hay alguno
+ *   con stock, y nunca la línea «Hay N opciones más» (`masOpciones` vacío);
+ * - si todo lo que calza está agotado, se nombra SOLO el producto pedido.
+ * La pregunta de filtro (genérico) no cambia.
  */
-describe("buildCatalogTool — la moto calza y hay más de tres con existencia (29/9/2026)", () => {
+describe("buildCatalogTool — una sola opción cotizada (hotfix 29/9/2026)", () => {
   const seisAsientos = (existencias: number[]) =>
     existencias.map((stock, i) => fila(`as-${i}`, `ASIENTO SBR ${String.fromCharCode(65 + i)}`, stock, 20 + i));
 
-  it("el caso real 'asiento sbr' con seis con stock: cotiza EXACTAMENTE tres, sin pregunta, con confirmar_inventario", async () => {
+  it("el caso real 'asiento sbr' con seis con stock: cotiza EXACTAMENTE una, sin pregunta, con confirmar_inventario", async () => {
     const { client, insertedQuotes } = createFakeSupabase(seisAsientos([1, 9, 3, 7, 2, 5]));
     const catalogOutcome = nuevoCatalogOutcome();
 
     const result = await correr(herramienta(client, catalogOutcome), { query: "asiento sbr" });
 
-    expect(result.results).toHaveLength(3);
+    expect(result.results).toHaveLength(1);
     expect(result.results.every((r) => r.stock > 0)).toBe(true);
     expect(catalogOutcome.generico).toBe(false);
     expect(catalogOutcome.preguntaFiltro).toBeNull();
     expect(catalogOutcome.conExistencia).toBe(true);
-    expect(catalogOutcome.cotizacion).toHaveLength(3);
-    expect(insertedQuotes).toHaveLength(3);
+    expect(catalogOutcome.cotizacion).toHaveLength(1);
+    expect(insertedQuotes).toHaveLength(1);
     expect(result.instruccionParaTuRespuesta).toContain(TEXTO_CONFIRMAR_INVENTARIO);
     expect(result.instruccionParaTuRespuesta).toMatch(/motivo confirmar_inventario/);
     expect(result.instruccionParaTuRespuesta).not.toMatch(/no afirmes que hay existencia/i);
   });
 
-  it("de las seis, se cotizan las de MAYOR existencia (9, 7 y 5) en ese orden, y quedan 3 opciones más", async () => {
+  it("(3) moto calza, seis con stock (1,9,3,7,2,5) a igual relevancia: cotiza SOLO la de 9 y `masOpciones` queda vacío", async () => {
     const { client } = createFakeSupabase(seisAsientos([1, 9, 3, 7, 2, 5]));
     const catalogOutcome = nuevoCatalogOutcome();
 
     const result = await correr(herramienta(client, catalogOutcome), { query: "asiento sbr" });
 
-    expect(result.results.map((r) => [r.nombre, r.stock])).toEqual([
-      ["ASIENTO SBR B", 9],
-      ["ASIENTO SBR D", 7],
-      ["ASIENTO SBR F", 5],
-    ]);
-    expect(catalogOutcome.cotizacion.map((l) => l.stock)).toEqual([9, 7, 5]);
-    expect(catalogOutcome.masOpciones).toEqual([{ productoPedido: null, cantidad: 3 }]);
+    expect(result.results.map((r) => [r.nombre, r.stock])).toEqual([["ASIENTO SBR B", 9]]);
+    expect(catalogOutcome.cotizacion.map((l) => l.stock)).toEqual([9]);
+    expect(catalogOutcome.masOpciones).toEqual([]);
+    expect(result.instruccionParaTuRespuesta).not.toMatch(/Hay más resultados de los que caben/i);
   });
 
-  it("con exactamente cuatro con stock: cotiza tres y queda 1 opción más", async () => {
+  it("con exactamente cuatro con stock: cotiza solo la de mayor existencia, sin 'opciones más'", async () => {
     const { client } = createFakeSupabase(seisAsientos([2, 4, 6, 8]));
     const catalogOutcome = nuevoCatalogOutcome();
 
     const result = await correr(herramienta(client, catalogOutcome), { query: "asiento sbr" });
 
-    expect(result.results.map((r) => r.stock)).toEqual([8, 6, 4]);
-    expect(catalogOutcome.masOpciones).toEqual([{ productoPedido: null, cantidad: 1 }]);
+    expect(result.results.map((r) => r.stock)).toEqual([8]);
+    expect(catalogOutcome.masOpciones).toEqual([]);
   });
 
-  it("los agotados no cuentan: seis del máximo con solo cuatro con stock => tres cotizadas con stock y 1 más", async () => {
+  it("los agotados no se mezclan: seis del máximo con cuatro con stock => una sola, la de más existencia", async () => {
     const { client } = createFakeSupabase(seisAsientos([0, 3, 0, 5, 4, 1]));
     const catalogOutcome = nuevoCatalogOutcome();
 
     const result = await correr(herramienta(client, catalogOutcome), { query: "asiento sbr" });
 
-    expect(result.results.map((r) => r.stock)).toEqual([5, 4, 3]);
-    expect(catalogOutcome.masOpciones).toEqual([{ productoPedido: null, cantidad: 1 }]);
+    expect(result.results.map((r) => r.stock)).toEqual([5]);
+    expect(catalogOutcome.masOpciones).toEqual([]);
   });
 
-  it("si las de más existencia quedaron más allá de las primeras 10 filas, vuelve a pedir 50 para elegir bien", async () => {
+  it("si la de más existencia quedó más allá de las primeras 10 filas, vuelve a pedir 50 para elegir bien", async () => {
     // Doce con stock 1 (por nombre van primero, A-L) y tres al final del
     // alfabeto con más existencia: la primera llamada (10 filas) no las trae.
     const filas = [
@@ -2988,32 +3018,68 @@ describe("buildCatalogTool — la moto calza y hay más de tres con existencia (
     const result = await correr(herramienta(client, catalogOutcome), { query: "asiento sbr" });
 
     expect(rpcCalls.map((c) => c.p_limite)).toEqual([10, 50]);
-    expect(result.results.map((r) => r.nombre)).toEqual(["ASIENTO SBR X", "ASIENTO SBR Y", "ASIENTO SBR Z"]);
-    // `coinciden`/`conStock` vienen de la base (15 con stock), no de lo recortado.
-    expect(catalogOutcome.masOpciones).toEqual([{ productoPedido: null, cantidad: 12 }]);
+    expect(result.results.map((r) => r.nombre)).toEqual(["ASIENTO SBR X"]);
+    expect(catalogOutcome.masOpciones).toEqual([]);
   });
 
-  it("NO REGRESION: moto que calza con dos con stock (y otras agotadas) => solo esas dos, sin 'mas opciones'", async () => {
+  it("(2) moto calza, UNA con stock y cinco agotadas: cotiza solo la de stock, nunca un agotado", async () => {
     const filas = [
-      fila("a", "ASIENTO SBR A", 4),
-      fila("b", "ASIENTO SBR B", 2),
-      fila("c", "ASIENTO SBR C", 0),
+      fila("a", "ASIENTO SBR A", 0),
+      fila("b", "ASIENTO SBR B", 0),
+      fila("c", "ASIENTO SBR C", 4),
       fila("d", "ASIENTO SBR D", 0),
       fila("e", "ASIENTO SBR E", 0),
+      fila("f", "ASIENTO SBR F", 0),
     ];
     const { client } = createFakeSupabase(filas);
     const catalogOutcome = nuevoCatalogOutcome();
 
     const result = await correr(herramienta(client, catalogOutcome), { query: "asiento sbr" });
 
-    expect(result.results.filter((r) => r.stock > 0).map((r) => r.nombre).sort()).toEqual(["ASIENTO SBR A", "ASIENTO SBR B"]);
+    expect(result.results.map((r) => [r.nombre, r.stock])).toEqual([["ASIENTO SBR C", 4]]);
     expect(catalogOutcome.conExistencia).toBe(true);
+    expect(catalogOutcome.agotados).toBe(false);
     expect(catalogOutcome.generico).toBe(false);
     expect(catalogOutcome.masOpciones).toEqual([]);
     expect(result.instruccionParaTuRespuesta).toContain(TEXTO_CONFIRMAR_INVENTARIO);
+    expect(result.instruccionParaTuRespuesta).not.toContain(TEXTO_SIN_STOCK);
   });
 
-  it("NO REGRESION: moto que calza con CERO con stock => agotados, hasta tres listadas, sin 'mas opciones'", async () => {
+  it("(1) sin moto, dos con stock y un agotado que calzan (3 o menos): cotiza UNA con stock, nunca el agotado", async () => {
+    const filas = [
+      fila("a", "PASTILLA FRENO AAA", 0),
+      fila("b", "PASTILLA FRENO BBB", 2),
+      fila("c", "PASTILLA FRENO CCC", 6),
+    ];
+    const { client, insertedQuotes } = createFakeSupabase(filas);
+    const catalogOutcome = nuevoCatalogOutcome();
+
+    const result = await correr(herramienta(client, catalogOutcome), { query: "pastilla freno" });
+
+    expect(result.results.map((r) => [r.nombre, r.stock])).toEqual([["PASTILLA FRENO CCC", 6]]);
+    expect(catalogOutcome.generico).toBe(false);
+    expect(catalogOutcome.conExistencia).toBe(true);
+    expect(catalogOutcome.agotados).toBe(false);
+    expect(catalogOutcome.cotizacion.map((l) => l.productId)).toEqual(["c"]);
+    expect(insertedQuotes.map((q) => q.product_id)).toEqual(["c"]);
+  });
+
+  it("(5) todos agotados (cinco filas): estado agotados con UN solo producto nombrado y el texto fijo", async () => {
+    const { client } = createFakeSupabase(Array.from({ length: 5 }, (_, i) => fila(`ag-${i}`, `PASTILLA FRENO ${i}`, 0)));
+    const catalogOutcome = nuevoCatalogOutcome();
+
+    const result = await correr(herramienta(client, catalogOutcome), { query: "pastilla freno" });
+
+    expect(catalogOutcome.agotados).toBe(true);
+    expect(catalogOutcome.conExistencia).toBe(false);
+    expect(catalogOutcome.generico).toBe(false);
+    expect(result.results).toHaveLength(1);
+    expect(catalogOutcome.cotizacion).toHaveLength(1);
+    expect(result.instruccionParaTuRespuesta).toContain(TEXTO_SIN_STOCK);
+    expect(result.instruccionParaTuRespuesta).toMatch(/motivo sin_stock/);
+  });
+
+  it("todos agotados con la moto calzando (seis asientos en cero): nombra SOLO uno", async () => {
     const { client } = createFakeSupabase(seisAsientos([0, 0, 0, 0, 0, 0]));
     const catalogOutcome = nuevoCatalogOutcome();
 
@@ -3022,9 +3088,56 @@ describe("buildCatalogTool — la moto calza y hay más de tres con existencia (
     expect(catalogOutcome.agotados).toBe(true);
     expect(catalogOutcome.conExistencia).toBe(false);
     expect(catalogOutcome.generico).toBe(false);
-    expect(result.results).toHaveLength(3);
+    expect(result.results).toHaveLength(1);
     expect(result.instruccionParaTuRespuesta).toContain(TEXTO_SIN_STOCK);
     expect(catalogOutcome.masOpciones).toEqual([]);
+  });
+
+  it("(4) ya se preguntó y hay más de tres con stock: cotiza UNA y no vuelve a preguntar", async () => {
+    const { client } = createFakeSupabase(Array.from({ length: 6 }, (_, i) => fila(`g-${i}`, `ASIENTO MARCA ${i}`, i + 1)));
+
+    // Primera vez: pregunta de filtro (no cambia).
+    const primera = nuevoCatalogOutcome();
+    await correr(herramienta(client, primera), { query: "asiento" });
+    expect(primera.generico).toBe(true);
+    expect(primera.masOpciones).toEqual([]);
+
+    // Otro turno: la pregunta ya se hizo, se entrega UNA, la de más existencia.
+    const segunda = nuevoCatalogOutcome();
+    const result = await correr(herramienta(client, segunda), { query: "asiento" });
+    expect(segunda.generico).toBe(false);
+    expect(segunda.conExistencia).toBe(true);
+    expect(result.results.map((r) => [r.nombre, r.stock])).toEqual([["ASIENTO MARCA 5", 6]]);
+    expect(segunda.masOpciones).toEqual([]);
+  });
+
+  it("(4) el cliente pide ver todo con más de tres con stock: cotiza UNA, la de más existencia", async () => {
+    const { client } = createFakeSupabase(Array.from({ length: 6 }, (_, i) => fila(`g-${i}`, `ASIENTO MARCA ${i}`, i + 1)));
+    const outcome = nuevoCatalogOutcome();
+
+    const result = await correr(herramienta(client, outcome, { rafagaCliente: ["Tienen asientos?", "muéstrame todos"] }), {
+      query: "asiento",
+    });
+
+    expect(outcome.generico).toBe(false);
+    expect(result.results.map((r) => r.stock)).toEqual([6]);
+    expect(outcome.masOpciones).toEqual([]);
+  });
+
+  it("(7) hay stock en la base pero las primeras 10 filas traídas son agotadas: reintenta con 50 y cotiza la de stock", async () => {
+    const filas = [
+      ...Array.from({ length: 12 }, (_, i) => fila(`sin-${i}`, `BOTA IMPERMEABLE ${i}`, 0)),
+      fila("con-1", "ZAPATO BOTA IMPERMEABLE A", 3),
+    ];
+    const { client, rpcCalls } = createFakeSupabase(filas);
+    const catalogOutcome = nuevoCatalogOutcome();
+
+    const result = await correr(herramienta(client, catalogOutcome), { query: "bota impermeable" });
+
+    expect(rpcCalls.map((c) => c.p_limite)).toEqual([10, 50]);
+    expect(result.results.map((r) => [r.nombre, r.stock])).toEqual([["ZAPATO BOTA IMPERMEABLE A", 3]]);
+    expect(catalogOutcome.conExistencia).toBe(true);
+    expect(catalogOutcome.agotados).toBe(false);
   });
 
   it("NO REGRESION: sin moto que calce, mas de tres con stock sigue siendo generico (pregunta) y no cuenta 'mas opciones'", async () => {
@@ -3037,11 +3150,12 @@ describe("buildCatalogTool — la moto calza y hay más de tres con existencia (
     expect(catalogOutcome.masOpciones).toEqual([]);
   });
 
-  it("en una lista, el tope aplica por producto y las 'mas opciones' se anotan por el producto que se pidio", async () => {
+  it("(6) en una lista, se cotiza UNA por producto (asientos y cubiertas)", async () => {
     const filas = [
       ...seisAsientos([1, 9, 3, 7, 2, 5]),
       fila("cub-1", "CUBIERTA SBR 80", 4),
       fila("cub-2", "CUBIERTA SBR 90", 2),
+      fila("cub-3", "CUBIERTA SBR 100", 0),
     ];
     const { client } = createFakeSupabase(filas);
     const catalogOutcome = nuevoCatalogOutcome();
@@ -3052,8 +3166,10 @@ describe("buildCatalogTool — la moto calza y hay más de tres con existencia (
       motoModel: "sbr",
     });
 
-    expect(result.porProducto?.map((r) => r.results.length)).toEqual([3, 2]);
-    expect(catalogOutcome.masOpciones).toEqual([{ productoPedido: "asiento", cantidad: 3 }]);
+    expect(result.porProducto?.map((r) => r.results.length)).toEqual([1, 1]);
+    expect(result.porProducto?.map((r) => r.results[0].stock)).toEqual([9, 4]);
+    expect(catalogOutcome.cotizacion).toHaveLength(2);
+    expect(catalogOutcome.masOpciones).toEqual([]);
   });
 });
 

@@ -56,13 +56,6 @@ const MAX_CATALOG_RESULTS = 10;
 const MAX_SYNONYM_LESSONS = 200;
 
 /**
- * Se le dice en palabras qué hacer con el recorte: si no, el modelo enumera
- * los que le llegaron como si fueran todo el catálogo.
- */
-const RECORTE_INSTRUCTION =
-  "Hay más resultados de los que caben acá. Muestra estos y pídele al cliente que precise (marca del repuesto, modelo de su moto) en vez de dar a entender que esto es todo lo que hay.";
-
-/**
  * T3, "Seba atiende el mostrador" (18/9/2026, requisitos 2/3/4 del cliente):
  * hasta esta corrida un repuesto en cero solo dejaba un aviso suelto
  * (`SIN_STOCK_INSTRUCTION`, ver abajo qué reemplazó) y nada obligaba a
@@ -114,11 +107,12 @@ function instruccionGenerica(pregunta: "moto" | "producto", motoIgnorada: boolea
 /**
  * Reemplaza a la vieja `SIN_STOCK_INSTRUCTION` ("alguno de estos repuestos
  * está en cero"), que solo avisaba sin obligar a escalar. Ahora, con AL
- * MENOS un resultado con existencia, se cotiza tal cual (los que estén en
- * cero se dicen como agotados) y se agrega el texto fijo del requisito 3.
+ * MENOS un resultado con existencia, se cotiza tal cual y se agrega el texto
+ * fijo del requisito 3. Hotfix del 29/9/2026: llega UNA sola opción y siempre
+ * con existencia (un agotado ya no viaja mezclado con las que tienen stock).
  */
 const CONFIRMAR_INVENTARIO_INSTRUCTION =
-  `Da nombre, precio y stock tal como llegan (si alguno está en cero, dilo como agotado) y agrega textual: «${TEXTO_CONFIRMAR_INVENTARIO}». Luego llama a escalarAAsesor con motivo confirmar_inventario en este mismo turno.`;
+  `Da nombre, precio y stock tal como llegan (es una sola opción: la mejor; no menciones otras ni ofrezcas más) y agrega textual: «${TEXTO_CONFIRMAR_INVENTARIO}». Luego llama a escalarAAsesor con motivo confirmar_inventario en este mismo turno.`;
 
 /** Todos los resultados en cero (requisito 4): el texto fijo reemplaza cualquier oferta de "hay unidades". */
 const SIN_STOCK_CASO_INSTRUCTION =
@@ -287,9 +281,13 @@ export interface CatalogOutcome {
   consultas: ConsultaCatalogo[];
   /**
    * 29/9/2026 (corrección de T3a, escenario "necesito un asiento sbr"): cuando
-   * la moto calza y hay MÁS de tres con existencia, se cotizan tres y aquí se
-   * anota cuántas otras con existencia quedaron sin mostrar (una entrada por
-   * búsqueda que recortó; `productoPedido` es el de la lista, o `null`). Vive
+   * la moto calza y hay MÁS de tres con existencia, se cotizaban tres y aquí se
+   * anotaba cuántas otras con existencia quedaban sin mostrar (una entrada por
+   * búsqueda que recortó; `productoPedido` es el de la lista, o `null`).
+   * HOTFIX DE PRODUCCIÓN, ESA MISMA TARDE (decisión del operador): ahora se
+   * cotiza UNA sola opción y nunca se cierra con «Hay N opciones más», así que
+   * este arreglo SIEMPRE queda vacío; el campo y la línea de `quote-message.ts`
+   * siguen en el código, sin uso, por si el operador cambia de idea. Vive
    * aparte de `cotizacion` (que es por producto) y de `consultas` (que se
    * persiste en `agent_turns.catalog_queries` y no debe cambiar de forma):
    * `quote-message.ts` lo lee para cerrar el grupo con «Hay N opciones más
@@ -383,13 +381,21 @@ const DESCRIPCION_DE_ESTADO: Record<ResultadoConsulta, string> = {
 // "una sola pregunta". Ver CLAUDE.md, trampa "La memoria del pedido".
 // ---------------------------------------------------------------------------
 
-/** Cuántos productos con existencia se entregan cuando NO se pregunta (ya se preguntó, o el cliente pidió ver todo). */
-const MAX_OPCIONES_SIN_PREGUNTA = 3;
+/**
+ * HOTFIX DE PRODUCCIÓN, 29/9/2026 (decisión del operador): por cada producto
+ * que pide el cliente se cotiza UNA sola opción. Hasta esa mañana se
+ * cotizaban hasta tres (`MAX_OPCIONES_SIN_PREGUNTA` = 3, más la línea «Hay N
+ * opciones más…» y el aviso de recorte) y, cuando lo que calzaba eran tres
+ * filas o menos, se mezclaban productos con stock 0 con los que tenían
+ * existencia. El cliente amenazó con cancelar el contrato por ese ruido.
+ * Con existencia se cotiza la mejor (relevancia de SQL y, a igual relevancia,
+ * la de MAYOR `stock_quantity`, `ordenarPorExistencia`); nunca un agotado si
+ * hay alguna con stock. Si todo está agotado, se nombra SOLO el producto
+ * pedido (la mejor fila). La pregunta de filtro no cambia.
+ */
+const MAX_OPCIONES_COTIZADAS = 1;
 
-/** Cuántos agotados se listan: alcanzan tres para que el asesor vea de qué se habla; siete agotados son ruido. */
-const MAX_AGOTADOS_LISTADOS = 3;
-
-/** Con este número de filas del máximo o menos no hay nada que preguntar: se cotizan todas. */
+/** Hasta este número de filas con existencia no hay nada que preguntar; con más y sin moto que calce, se pregunta (una vez). */
 const MAX_SIN_PREGUNTA = 3;
 
 /** Tope de filas al reintentar cuando las que tienen stock quedaron más allá de `MAX_CATALOG_RESULTS` (el máximo que admite la función SQL). */
@@ -457,8 +463,9 @@ function masViejo(fechas: (string | null)[]): string | null {
 }
 
 /**
- * Las filas con existencia ordenadas para elegir las tres que se cotizan
- * cuando la moto calza y hay más de tres (29/9/2026). El orden que ya trae
+ * Las filas con existencia ordenadas para elegir LA que se cotiza (hotfix del
+ * 29/9/2026: una sola; a la mañana eran las tres primeras y solo con la moto
+ * calzando). El orden que ya trae
  * `buscar_productos` (puntaje, moto con nombre, empieza con el producto,
  * cilindrada, opcionales) se CONSERVA: es relevancia. Lo que cambia es el
  * desempate final: SQL desempata por nombre; acá, a igual relevancia gana la
@@ -497,7 +504,7 @@ interface ResultadoUno {
   quoted: Cotizado[];
   /** Hay más filas del máximo que las que caben. */
   hayMas: boolean;
-  /** Con la moto calzando y más de tres con existencia: cuántas otras con existencia no se mostraron (0 en cualquier otro caso). */
+  /** Siempre 0 desde el hotfix del 29/9/2026 (se cotiza una sola opción y no se anuncian más); ver `CatalogOutcome.masOpciones`. */
   masOpciones: number;
   /** Caso + (recorte) — la antigüedad del inventario la agrega quien arma la respuesta. */
   instrucciones: string[];
@@ -751,81 +758,67 @@ export function buildCatalogTool(
 
     let estado: ResultadoConsulta;
     let mostrados: FilaBusqueda[];
-    // Solo el camino "se cotiza todo lo del máximo" puede haber recortado la
-    // lista; los otros muestran una selección a propósito y no dicen "hay más".
-    let avisarRecorte = false;
 
-    // 29/9/2026, escenario a mano "necesito un asiento sbr": con seis
-    // "ASIENTO SBR …" con stock, "sbr" viaja a `moto` y los nombres lo
-    // contienen, así que la moto "calza" y esta rama cotizaba LOS SEIS (en
-    // producción hay muchos asientos con SBR en el nombre: saldría una lista
-    // larga). DECISIÓN DEL OPERADOR: con la moto calzando y MÁS de tres con
-    // existencia no se pregunta (el cliente ya filtró lo que pudo) ni se
-    // vuelca todo: se cotizan las tres más relevantes con existencia y se
-    // escala para que el asesor muestre el resto (`topeConMoto`). `conStock`
-    // ya cuenta solo las de esa moto (conteo de la base, nunca lo recortado).
-    // Con tres o menos con existencia, o con cero, nada cambia.
-    const topeConMoto = motoCalza && conStock > MAX_SIN_PREGUNTA;
-    let masOpciones = 0;
-
-    if ((motoCalza && !topeConMoto) || (!motoCalza && coinciden <= MAX_SIN_PREGUNTA)) {
-      mostrados = candidatos;
-      estado = mostrados.some((r) => r.stock_quantity > 0) ? "con_existencia" : "agotados";
-      avisarRecorte = estado === "con_existencia" && hayMas;
-    } else if (conStock === 0) {
-      // T3a: más de tres filas calzan pero NINGUNA tiene stock: sin_stock,
-      // nunca genérico (siete botas en cero se preguntaban como si hubiera
-      // de dónde elegir).
-      mostrados = candidatos;
-      estado = "agotados";
-    } else {
-      // Más de tres filas calzan y alguna tiene stock. Lo que se cotiza son
-      // las que tienen existencia; si las que hacen falta quedaron más allá
-      // de `p_limite` (el orden las deja detrás de las agotadas con mejor
-      // coincidencia de nombre), se vuelve a pedir con más filas para
-      // encontrarlas. Con `topeConMoto` hacen falta TODAS las del máximo+moto
-      // (hasta `LIMITE_REINTENTO`): para elegir las de mayor existencia hay
-      // que verlas todas, no solo las que cupieron en las primeras 10.
-      const necesarias = topeConMoto
-        ? Math.min(coinciden, LIMITE_REINTENTO)
-        : Math.min(conStock, MAX_OPCIONES_SIN_PREGUNTA);
-      const yaTraidas = topeConMoto ? candidatos.length : candidatos.filter((r) => r.stock_quantity > 0).length;
-      if (yaTraidas < necesarias) {
-        const { data: masFilas, error: errorReintento } = await consultar(LIMITE_REINTENTO);
-        if (errorReintento) {
-          log.error("herramienta_catalogo_fallo", { conversationId, detail: errorText(errorReintento) });
-        } else {
-          filas = masFilas ?? filas;
-          candidatos = delMaximo(filas);
-        }
+    // HOTFIX DE PRODUCCIÓN, 29/9/2026 (decisión del operador): UNA sola opción
+    // cotizada por producto, y nunca un agotado si hay alguna con stock. Esta
+    // decisión REEMPLAZA a las cuatro ramas anteriores (`mostrados =
+    // candidatos`, que mezclaba stock y agotados y con la moto calzando podía
+    // llegar a diez; el tope de tres con la moto calzando y su «Hay N opciones
+    // más»; `conStock <= 3` y «ya se preguntó», que entregaban tres; y
+    // `MAX_AGOTADOS_LISTADOS`, que listaba tres agotados). La historia del
+    // tope de tres: 29/9/2026 por la mañana, escenario a mano «necesito un
+    // asiento sbr» con seis asientos con stock -- se cotizaban los seis; se
+    // recortó a tres y esa misma tarde el cliente pidió UNA.
+    //
+    // Lo único que no cambia es la pregunta de filtro: sin moto que calce y
+    // con más de tres con existencia, la primera vez se pregunta (una sola
+    // vez por pedido); con la moto calzando nunca se pregunta.
+    if (!motoCalza && conStock > MAX_SIN_PREGUNTA) {
+      const yaPreguntado = !preguntadosEnEsteTurno.has(clave) && yaSePregunto(clave, p.preguntaHechaPara);
+      if (p.permitirPregunta && !yaPreguntado && !p.verTodo) {
+        return base("generico", {
+          hayMas,
+          preguntaFiltro,
+          instrucciones: [instruccionGenerica(preguntaFiltro, motoIgnorada)],
+        });
       }
-      const enStock = candidatos.filter((r) => r.stock_quantity > 0);
+      // Ya se preguntó (o el cliente dijo que no sabe / que le muestren todo,
+      // o es una lista): no se vuelve a preguntar, se entrega la mejor.
+    }
 
-      if (topeConMoto) {
-        mostrados = ordenarPorExistencia(enStock).slice(0, MAX_OPCIONES_SIN_PREGUNTA);
-        estado = "con_existencia";
-        masOpciones = Math.max(0, conStock - mostrados.length);
-      } else if (conStock <= MAX_SIN_PREGUNTA) {
-        mostrados = enStock;
-        estado = "con_existencia";
+    // Las filas con existencia del máximo. Si la base dice que hay más de las
+    // que llegaron (las primeras `MAX_CATALOG_RESULTS` traen agotadas con
+    // mejor coincidencia de nombre y el orden deja las de stock detrás), se
+    // vuelve a pedir con más filas: para elegir la de mayor existencia hay que
+    // verlas todas, hasta `LIMITE_REINTENTO`. Con `conStock = 0` no se pide
+    // nada: no hay nada con existencia que encontrar.
+    let enStock = candidatos.filter((r) => r.stock_quantity > 0);
+    if (enStock.length < Math.min(conStock, LIMITE_REINTENTO)) {
+      const { data: masFilas, error: errorReintento } = await consultar(LIMITE_REINTENTO);
+      if (errorReintento) {
+        log.error("herramienta_catalogo_fallo", { conversationId, detail: errorText(errorReintento) });
       } else {
-        const yaPreguntado = !preguntadosEnEsteTurno.has(clave) && yaSePregunto(clave, p.preguntaHechaPara);
-        if (p.permitirPregunta && !yaPreguntado && !p.verTodo) {
-          return base("generico", {
-            hayMas,
-            preguntaFiltro,
-            instrucciones: [instruccionGenerica(preguntaFiltro, motoIgnorada)],
-          });
-        }
-        // Ya se preguntó (o el cliente dijo que no sabe / que le muestren
-        // todo, o es una lista): no se vuelve a preguntar, se entregan las
-        // tres opciones con existencia más relevantes.
-        mostrados = enStock.slice(0, MAX_OPCIONES_SIN_PREGUNTA);
-        estado = "con_existencia";
+        filas = masFilas ?? filas;
+        candidatos = delMaximo(filas);
+        enStock = candidatos.filter((r) => r.stock_quantity > 0);
       }
     }
 
-    if (estado === "agotados") mostrados = mostrados.slice(0, MAX_AGOTADOS_LISTADOS);
+    if (enStock.length > 0) {
+      mostrados = ordenarPorExistencia(enStock).slice(0, MAX_OPCIONES_COTIZADAS);
+      estado = "con_existencia";
+    } else if (conStock > 0) {
+      // Defensivo: la base dijo que había filas con existencia y no llegó
+      // ninguna (error del reintento). Cae al `sin_resultados` de abajo antes
+      // que nombrar un agotado como si fuera lo único que hay.
+      mostrados = [];
+      estado = "con_existencia";
+    } else {
+      // Todo lo que calza está agotado: se nombra SOLO el producto pedido, la
+      // mejor fila del máximo. Nunca se listan otros agotados.
+      mostrados = candidatos.slice(0, MAX_OPCIONES_COTIZADAS);
+      estado = "agotados";
+    }
 
     if (mostrados.length === 0) {
       // Defensivo: la base dijo que había filas del máximo y no llegó
@@ -854,12 +847,10 @@ export function buildCatalogTool(
     return base(estado, {
       quoted,
       hayMas,
-      masOpciones,
       masViejo: masViejo(mostrados.map((r) => r.updated_at)),
       instrucciones: [
         estado === "con_existencia" ? CONFIRMAR_INVENTARIO_INSTRUCTION : SIN_STOCK_CASO_INSTRUCTION,
         ...(correcciones ? [instruccionDeCorreccion(correcciones)] : []),
-        ...(avisarRecorte ? [RECORTE_INSTRUCTION] : []),
       ],
     });
   }

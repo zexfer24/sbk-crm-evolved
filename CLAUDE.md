@@ -2291,6 +2291,28 @@ dejar rastro es lo que hacía desaparecer leads.
   cualquier texto armado. Ojo: "necesito un asiento sbr" tal cual, como
   `query`, NO calza (`necesito` no es palabra de relleno para `catalogQuery`
   y se exige como grupo): el modelo debe mandar "asiento sbr".
+  **SUPERADO esa misma tarde por un hotfix de producción (29/9/2026, rama
+  `entrega/hotfix-stock`).** En producción, Seba cotizaba hasta 3 opciones de
+  cada cosa pedida y mezclaba productos en 0 con los que tenían existencia.
+  La causa de la mezcla era `mostrados = candidatos` con 3 coincidencias o
+  menos; con la moto calzando podían ser hasta 10. El operador reportó que
+  el cliente estaba a punto de cancelar el contrato.
+  Decisión del operador, con `MAX_OPCIONES_COTIZADAS = 1` en `tools.ts`:
+  - **Con existencia:** UNA sola opción por producto pedido, también dentro
+    de una lista. Es la primera de `ordenarPorExistencia` sobre las filas con
+    stock: relevancia de SQL y, a igual relevancia, mayor existencia.
+  - **Nunca un agotado** si hay alguna con stock.
+  - **Todo agotado:** se nombra SOLO la mejor fila del máximo.
+  - **Se retiran** la línea «Hay N opciones más» (`masOpciones` queda siempre
+    vacío; el campo y `lineaMasOpciones` siguen en el código sin uso) y
+    `RECORTE_INSTRUCTION`.
+  - **La pregunta de filtro no cambia:** sin moto que calce y con más de 3
+    con existencia, se pregunta una vez. Después (ya preguntado, «ver todo»,
+    listas) se entrega 1, no 3.
+  - **El reintento con `LIMITE_REINTENTO`** corre siempre que la base cuente
+    más filas con stock que las traídas.
+  **No volver a cotizar varias opciones del mismo producto sin preguntarle
+  al operador.**
 - **Una cifra de dinero de la IA necesita fuente EN EL TURNO** (T3, mismo
   plan, `price-guard.ts`). Dos casos reales de producción: el 20/9/2026 a
   las 14:32 Seba escribió "El intercomunicador sale en *108$ BCV*"
