@@ -33,6 +33,10 @@
   --lm-hot-rgb: 224 45 68;
   --lm-link: #4a63f0;
   --lm-good: #22a06b;
+  /* Componentes sueltos del verde, gemelo de --lm-hot-rgb: la pastilla de
+     existencia (T9, 29/9/2026) tiñe su fondo con rgb(var(--lm-good-rgb) / 0.14)
+     y así el tinte sigue al tema. */
+  --lm-good-rgb: 34 160 107;
   --lm-wait: #e79a24;
   --lm-plum: #7c5cf5;
 
@@ -44,6 +48,12 @@
   --lm-wait-ink: #8f5c0d;
   --lm-good-ink: #1a7a53;
   --lm-link-ink: #3346c9;
+  /* Texto de la pastilla de existencia (T9, 29/9/2026). El tinte verde de la
+     pastilla oscurece el fondo, y --lm-good-ink (#1a7a53) medía 4.06:1 sobre
+     él en claro (AA pide 4.5:1): este verde es un paso más profundo, 5.15:1.
+     El "Agotado" reutiliza el rojo tinta, que da 4.94:1. */
+  --lm-stock-in-ink: #14684a;
+  --lm-stock-out-ink: var(--lm-hot-ink);
 
   /* Lo que se pinta ENCIMA de un fondo --lm-ink (píldora activa, burbuja del
      asesor, hilo seleccionado). En claro la tinta es casi negra y encima va
@@ -139,6 +149,7 @@
   --lm-hot-rgb: 255 107 120;
   --lm-link: #7f92ff;
   --lm-good: #3ecb92;
+  --lm-good-rgb: 62 203 146;
   --lm-wait: #f0ad3c;
   --lm-plum: #a78bfa;
 
@@ -149,6 +160,8 @@
   --lm-wait-ink: #f5c56e;
   --lm-good-ink: #5fdaa9;
   --lm-link-ink: #a3b0ff;
+  /* Pastilla de existencia: en oscuro el verde tinta ya da 6.82:1. */
+  --lm-stock-in-ink: #5fdaa9;
 
   /* Sobre --lm-ink (ahora casi blanco) va el lienzo, no blanco. */
   --lm-on-ink-rgb: 11 12 18;

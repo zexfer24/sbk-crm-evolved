@@ -97,7 +97,8 @@ describe("InventoryLookup", () => {
     await flushPromises();
     expect(screen.getByText("Bujía CR7HSA")).toBeInTheDocument();
     expect(searchProductsForLookup).toHaveBeenCalledTimes(1);
-    expect(searchProductsForLookup).toHaveBeenCalledWith(expect.anything(), "bujia", 8);
+    // T9 (29/9/2026): páginas de 20, primera página desde el renglón 0.
+    expect(searchProductsForLookup).toHaveBeenCalledWith(expect.anything(), "bujia", 20, 0);
 
     expect(screen.getByText("1234")).toBeInTheDocument();
     expect(screen.getByText("12 en stock")).toBeInTheDocument();
@@ -127,6 +128,11 @@ describe("InventoryLookup", () => {
 
     await flushPromises();
     expect(screen.getByText("Retirado")).toBeInTheDocument();
+    // T9 (29/9/2026): antes llevaba `ac-badge`, una clase de la hoja de Control
+    // IA que NO se carga en /inbox — se veía como texto suelto y grande (lo
+    // destapó Playwright). Ahora es una clase de la hoja del propio panel.
+    expect(screen.getByText("Retirado")).toHaveClass("crm-lookup-retired");
+    expect(screen.getByText("Retirado")).not.toHaveClass("ac-badge");
   });
 
   it("sin código Saint dice 'Sin código'", async () => {
@@ -212,6 +218,185 @@ describe("InventoryLookup", () => {
     type("");
     expect(screen.queryByText("Bujía CR7HSA")).not.toBeInTheDocument();
     expect(screen.getByText(/escribe un nombre, una marca o un código/i)).toBeInTheDocument();
+  });
+
+  /**
+   * T9, plan "Seba encuentra, no insiste, y el mostrador no deja a nadie
+   * esperando" (29/9/2026, 3.3 + 3.5): la lista deja de cortarse en 8 sin
+   * avisar. Páginas de 20 con «Ver más», y la existencia es una pastilla.
+   * Que la lista scrollee sin empujar Notas es CSS (jsdom no calcula layout):
+   * lo fija `stock-pill-css.test.ts` y lo mide Playwright.
+   */
+  describe("«Ver más» y pastilla de existencia (T9)", () => {
+    function pagina(desde: number, cuantos: number): Product[] {
+      return Array.from({ length: cuantos }, (_, i) =>
+        product({ id: `p-${desde + i}`, name: `Bujía ${String(desde + i).padStart(2, "0")}` })
+      );
+    }
+
+    async function buscar(term = "bujia") {
+      type(term);
+      flush();
+      await flushPromises();
+    }
+
+    it("una página completa (20) ofrece «Ver más»", async () => {
+      searchProductsForLookup.mockResolvedValue(pagina(0, 20));
+      render(<InventoryLookup bcvRate={RATE} />);
+      await buscar();
+
+      expect(screen.getAllByRole("listitem")).toHaveLength(20);
+      expect(screen.getByRole("button", { name: /ver más/i })).toBeInTheDocument();
+    });
+
+    it("una página corta (menos de 20) NO ofrece «Ver más»: no hay nada detrás", async () => {
+      searchProductsForLookup.mockResolvedValue(pagina(0, 19));
+      render(<InventoryLookup bcvRate={RATE} />);
+      await buscar();
+
+      expect(screen.queryByRole("button", { name: /ver más/i })).not.toBeInTheDocument();
+    });
+
+    it("«Ver más» pide la página siguiente (desplazamiento 20) y la agrega debajo, sin reemplazar", async () => {
+      searchProductsForLookup.mockResolvedValueOnce(pagina(0, 20)).mockResolvedValueOnce(pagina(20, 10));
+      render(<InventoryLookup bcvRate={RATE} />);
+      await buscar();
+
+      fireEvent.click(screen.getByRole("button", { name: /ver más/i }));
+      await flushPromises();
+
+      expect(searchProductsForLookup).toHaveBeenLastCalledWith(expect.anything(), "bujia", 20, 20);
+      expect(screen.getAllByRole("listitem")).toHaveLength(30);
+      expect(screen.getByText("Bujía 00")).toBeInTheDocument();
+      expect(screen.getByText("Bujía 29")).toBeInTheDocument();
+      // La segunda página vino corta: ya no queda nada por pedir.
+      expect(screen.queryByRole("button", { name: /ver más/i })).not.toBeInTheDocument();
+    });
+
+    it("si la segunda página también viene completa, «Ver más» sigue ahí y el desplazamiento avanza", async () => {
+      searchProductsForLookup
+        .mockResolvedValueOnce(pagina(0, 20))
+        .mockResolvedValueOnce(pagina(20, 20))
+        .mockResolvedValueOnce(pagina(40, 5));
+      render(<InventoryLookup bcvRate={RATE} />);
+      await buscar();
+
+      fireEvent.click(screen.getByRole("button", { name: /ver más/i }));
+      await flushPromises();
+      expect(screen.getByRole("button", { name: /ver más/i })).toBeInTheDocument();
+
+      fireEvent.click(screen.getByRole("button", { name: /ver más/i }));
+      await flushPromises();
+
+      expect(searchProductsForLookup).toHaveBeenLastCalledWith(expect.anything(), "bujia", 20, 40);
+      expect(screen.getAllByRole("listitem")).toHaveLength(45);
+    });
+
+    it("una página vacía tras «Ver más» (el total era justo 20) esconde el botón", async () => {
+      searchProductsForLookup.mockResolvedValueOnce(pagina(0, 20)).mockResolvedValueOnce([]);
+      render(<InventoryLookup bcvRate={RATE} />);
+      await buscar();
+
+      fireEvent.click(screen.getByRole("button", { name: /ver más/i }));
+      await flushPromises();
+
+      expect(screen.getAllByRole("listitem")).toHaveLength(20);
+      expect(screen.queryByRole("button", { name: /ver más/i })).not.toBeInTheDocument();
+    });
+
+    it("no duplica un repuesto que ya estaba (la base cambió entre páginas)", async () => {
+      searchProductsForLookup
+        .mockResolvedValueOnce(pagina(0, 20))
+        .mockResolvedValueOnce([product({ id: "p-19", name: "Bujía 19" }), ...pagina(20, 2)]);
+      render(<InventoryLookup bcvRate={RATE} />);
+      await buscar();
+
+      fireEvent.click(screen.getByRole("button", { name: /ver más/i }));
+      await flushPromises();
+
+      expect(screen.getAllByText("Bujía 19")).toHaveLength(1);
+      expect(screen.getAllByRole("listitem")).toHaveLength(22);
+    });
+
+    it("si «Ver más» falla conserva lo que ya se veía y lo avisa", async () => {
+      searchProductsForLookup.mockResolvedValueOnce(pagina(0, 20)).mockRejectedValueOnce(new Error("fail"));
+      render(<InventoryLookup bcvRate={RATE} />);
+      await buscar();
+
+      fireEvent.click(screen.getByRole("button", { name: /ver más/i }));
+      await flushPromises();
+
+      expect(screen.getAllByRole("listitem")).toHaveLength(20);
+      expect(screen.getByRole("alert")).toHaveTextContent(/no se pudo cargar más/i);
+      // Se puede reintentar.
+      expect(screen.getByRole("button", { name: /ver más/i })).toBeEnabled();
+    });
+
+    it("mientras carga la página siguiente el botón se deshabilita (no se pide dos veces)", async () => {
+      let resolver: (value: Product[]) => void = () => {};
+      searchProductsForLookup.mockResolvedValueOnce(pagina(0, 20)).mockImplementationOnce(
+        () =>
+          new Promise<Product[]>((resolve) => {
+            resolver = resolve;
+          })
+      );
+      render(<InventoryLookup bcvRate={RATE} />);
+      await buscar();
+
+      fireEvent.click(screen.getByRole("button", { name: /ver más/i }));
+      await flushPromises();
+
+      const boton = screen.getByRole("button", { name: /cargando|ver más/i });
+      expect(boton).toBeDisabled();
+      fireEvent.click(boton);
+      expect(searchProductsForLookup).toHaveBeenCalledTimes(2);
+
+      await act(async () => {
+        resolver(pagina(20, 3));
+      });
+      expect(screen.getAllByRole("listitem")).toHaveLength(23);
+    });
+
+    it("la página siguiente de una búsqueda vieja no se pega a la búsqueda nueva", async () => {
+      let resolverPagina2: (value: Product[]) => void = () => {};
+      searchProductsForLookup
+        .mockResolvedValueOnce(pagina(0, 20))
+        .mockImplementationOnce(
+          () =>
+            new Promise<Product[]>((resolve) => {
+              resolverPagina2 = resolve;
+            })
+        )
+        .mockResolvedValueOnce([product({ id: "nuevo", name: "Cadena nueva" })]);
+      render(<InventoryLookup bcvRate={RATE} />);
+      await buscar();
+
+      fireEvent.click(screen.getByRole("button", { name: /ver más/i }));
+      // El asesor cambia de búsqueda mientras la página 2 sigue en vuelo.
+      type("cadena");
+      flush();
+      await flushPromises();
+      expect(screen.getByText("Cadena nueva")).toBeInTheDocument();
+
+      await act(async () => {
+        resolverPagina2(pagina(20, 5));
+      });
+      expect(screen.getAllByRole("listitem")).toHaveLength(1);
+      expect(screen.queryByText("Bujía 20")).not.toBeInTheDocument();
+    });
+
+    it("con existencia la pastilla dice cuántas hay; sin ninguna dice «Agotado»", async () => {
+      searchProductsForLookup.mockResolvedValue([
+        product({ id: "a", name: "Con stock", stockQuantity: 12 }),
+        product({ id: "b", name: "Sin nada", stockQuantity: 0 }),
+      ]);
+      render(<InventoryLookup bcvRate={RATE} />);
+      await buscar();
+
+      expect(screen.getByText("12 en stock")).toHaveAttribute("data-stock", "in");
+      expect(screen.getByText("Agotado")).toHaveAttribute("data-stock", "out");
+      expect(screen.queryByText("Sin stock")).not.toBeInTheDocument();
+    });
   });
 
   /**

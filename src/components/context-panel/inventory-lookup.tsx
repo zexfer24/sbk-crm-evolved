@@ -7,6 +7,7 @@ import { createClient } from "@/lib/supabase/client";
 import { searchProductsForLookup } from "@/lib/inventory-data";
 import { priceDisplay } from "@/lib/inventory";
 import { useDebouncedCallback } from "@/lib/use-debounced-callback";
+import { StockPill } from "@/components/context-panel/stock-pill";
 import type { BcvRateSummary } from "@/components/inbox/bcv-rate-chip";
 
 /**
@@ -25,15 +26,34 @@ import type { BcvRateSummary } from "@/components/inbox/bcv-rate-chip";
  * T3) — la misma regla de palabras/código Saint que Inventario, pero SIN
  * filtrar por `is_active`: un repuesto retirado también aparece, marcado
  * "Retirado", para que el asesor no lo ofrezca sin saberlo.
+ *
+ * T9 (29/9/2026, plan "Seba encuentra, no insiste, y el mostrador no deja a
+ * nadie esperando", 3.3 + 3.5): hasta esa fecha la búsqueda traía 8 y se
+ * cortaba ahí sin avisar —"cascos" tiene decenas de coincidencias y el asesor
+ * no tenía forma de ver más allá de las ocho primeras ni de saber que las
+ * había—. Ahora trae páginas de 20 y el botón «Ver más» pide la siguiente
+ * (`range()` en `searchProductsForLookup`); la lista scrollea dentro de sí
+ * misma (`.crm-lookup-results`, `max-height`) para que 30 o 60 resultados no
+ * empujen «Lo que lleva el cliente» ni Notas fuera de la pantalla. La
+ * existencia es una pastilla (`StockPill`).
  */
 const LOOKUP_DEBOUNCE_MS = 300;
-const LOOKUP_LIMIT = 8;
+const LOOKUP_LIMIT = 20;
 
 type LookupState =
   | { status: "idle" }
   | { status: "loading" }
   | { status: "error" }
-  | { status: "ok"; term: string; products: Product[] };
+  | {
+      status: "ok";
+      term: string;
+      products: Product[];
+      /** La última página vino completa: puede haber más detrás. */
+      hasMore: boolean;
+      loadingMore: boolean;
+      /** «Ver más» falló: se conserva lo que ya se veía y se puede reintentar. */
+      moreError: boolean;
+    };
 
 interface InventoryLookupProps {
   bcvRate: BcvRateSummary | null;
@@ -65,16 +85,55 @@ export function InventoryLookup({ bcvRate, onAdd, addDisabled = false }: Invento
 
     const mine = ++requestSeq.current;
     setState({ status: "loading" });
-    searchProductsForLookup(createClient(), term, LOOKUP_LIMIT)
+    searchProductsForLookup(createClient(), term, LOOKUP_LIMIT, 0)
       .then((products) => {
         if (requestSeq.current !== mine) return; // una búsqueda más nueva ya está en vuelo
-        setState({ status: "ok", term, products });
+        setState({
+          status: "ok",
+          term,
+          products,
+          hasMore: products.length >= LOOKUP_LIMIT,
+          loadingMore: false,
+          moreError: false,
+        });
       })
       .catch(() => {
         if (requestSeq.current !== mine) return;
         setState({ status: "error" });
       });
   }, LOOKUP_DEBOUNCE_MS);
+
+  // «Ver más»: pide la página siguiente y la agrega DEBAJO de lo que ya se ve.
+  // No incrementa `requestSeq` (no es una búsqueda nueva) pero sí lo compara:
+  // si mientras la página viaja el asesor cambia el texto o lo borra, esa
+  // respuesta es de una búsqueda vieja y no se pega a la lista nueva.
+  function loadMore() {
+    if (state.status !== "ok" || !state.hasMore || state.loadingMore) return;
+    const { term, products: current } = state;
+    const mine = requestSeq.current;
+
+    setState({ ...state, loadingMore: true, moreError: false });
+    searchProductsForLookup(createClient(), term, LOOKUP_LIMIT, current.length)
+      .then((page) => {
+        if (requestSeq.current !== mine) return;
+        // Si la base cambió entre las dos páginas, un repuesto puede aparecer
+        // en ambas: la key de React se repetiría. Se descarta el repetido.
+        const seen = new Set(current.map((p) => p.id));
+        const fresh = page.filter((p) => !seen.has(p.id));
+        setState({
+          status: "ok",
+          term,
+          products: [...current, ...fresh],
+          hasMore: page.length >= LOOKUP_LIMIT,
+          loadingMore: false,
+          moreError: false,
+        });
+      })
+      .catch(() => {
+        if (requestSeq.current !== mine) return;
+        setState({ status: "ok", term, products: current, hasMore: true, loadingMore: false, moreError: true });
+      });
+  }
 
   function onChange(value: string) {
     setText(value);
@@ -124,55 +183,68 @@ export function InventoryLookup({ bcvRate, onAdd, addDisabled = false }: Invento
       )}
 
       {state.status === "ok" && state.products.length > 0 && (
-        <ul className="crm-lookup-results">
-          {state.products.map((product) => {
-            const price = priceDisplay(product, rate);
-            return (
-              <li className="crm-lookup-item" key={product.id} data-retired={product.isActive ? undefined : "true"}>
-                <div className="crm-lookup-item-head">
-                  <span className="crm-lookup-name">{product.name}</span>
-                  {!product.isActive && (
-                    <span className="ac-badge" data-tone="muted">
-                      Retirado
-                    </span>
-                  )}
-                </div>
-                <div className="crm-lookup-item-meta">
-                  {product.saintCode ? (
-                    <span className="lm-num crm-lookup-code" aria-label={`Código ${product.saintCode}`}>
-                      {product.saintCode}
-                    </span>
-                  ) : (
-                    <span className="crm-lookup-code" data-empty="true" aria-label="Sin código Saint">
-                      Sin código
-                    </span>
-                  )}
-                  <span className="lm-num">
-                    {product.stockQuantity <= 0 ? "Sin stock" : `${product.stockQuantity} en stock`}
-                  </span>
-                </div>
-                <div className="crm-lookup-item-actions">
-                  <div className="crm-lookup-item-price">
-                    <span className="lm-num">{price.principal}</span>
-                    {price.pie !== null && <span className="lm-num crm-lookup-price-alt">{price.pie}</span>}
+        <>
+          <ul className="crm-lookup-results">
+            {state.products.map((product) => {
+              const price = priceDisplay(product, rate);
+              return (
+                <li className="crm-lookup-item" key={product.id} data-retired={product.isActive ? undefined : "true"}>
+                  <div className="crm-lookup-item-head">
+                    <span className="crm-lookup-name">{product.name}</span>
+                    {!product.isActive && (
+                      <span className="crm-lookup-retired">
+                        Retirado
+                      </span>
+                    )}
                   </div>
-                  {onAdd && product.isActive && (
-                    <button
-                      type="button"
-                      className="crm-lookup-add"
-                      onClick={() => onAdd(product)}
-                      disabled={addDisabled}
-                      aria-label={`Agregar ${product.name} al carrito`}
-                    >
-                      <Plus size={12} />
-                      Agregar
-                    </button>
-                  )}
-                </div>
-              </li>
-            );
-          })}
-        </ul>
+                  <div className="crm-lookup-item-meta">
+                    {product.saintCode ? (
+                      <span className="lm-num crm-lookup-code" aria-label={`Código ${product.saintCode}`}>
+                        {product.saintCode}
+                      </span>
+                    ) : (
+                      <span className="crm-lookup-code" data-empty="true" aria-label="Sin código Saint">
+                        Sin código
+                      </span>
+                    )}
+                    <StockPill quantity={product.stockQuantity} />
+                  </div>
+                  <div className="crm-lookup-item-actions">
+                    <div className="crm-lookup-item-price">
+                      <span className="lm-num">{price.principal}</span>
+                      {price.pie !== null && <span className="lm-num crm-lookup-price-alt">{price.pie}</span>}
+                    </div>
+                    {onAdd && product.isActive && (
+                      <button
+                        type="button"
+                        className="crm-lookup-add"
+                        onClick={() => onAdd(product)}
+                        disabled={addDisabled}
+                        aria-label={`Agregar ${product.name} al carrito`}
+                      >
+                        <Plus size={12} />
+                        Agregar
+                      </button>
+                    )}
+                  </div>
+                </li>
+              );
+            })}
+          </ul>
+
+          {/* Fuera de la lista que scrollea: el botón siempre está a la vista,
+              no hay que llegar al fondo de la lista para descubrirlo. */}
+          {state.moreError && (
+            <p className="crm-lookup-hint" role="alert">
+              No se pudo cargar más resultados.
+            </p>
+          )}
+          {state.hasMore && (
+            <button type="button" className="crm-lookup-more" onClick={loadMore} disabled={state.loadingMore}>
+              {state.loadingMore ? "Cargando…" : "Ver más"}
+            </button>
+          )}
+        </>
       )}
     </section>
   );

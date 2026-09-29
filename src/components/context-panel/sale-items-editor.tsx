@@ -9,6 +9,7 @@ import { fetchConversationQuotes } from "@/lib/data";
 import { searchActiveProducts } from "@/lib/inventory-data";
 import { productPriceUsd } from "@/lib/sale-cart";
 import { CartLines } from "@/components/context-panel/cart-lines";
+import { StockPill } from "@/components/context-panel/stock-pill";
 import { useCartActions } from "@/components/context-panel/use-cart-actions";
 
 /**
@@ -195,9 +196,7 @@ export function SaleItemsEditor({ conversationId, cart, bcvRate, onCartChanged }
                   <span className="crm-quote-name">{product.name}</span>
                   <span className="crm-cart-result-meta">
                     {product.brand && <span>{product.brand}</span>}
-                    <span data-empty={product.stockQuantity <= 0 ? "true" : undefined}>
-                      {product.stockQuantity <= 0 ? "Sin stock" : `${product.stockQuantity} en stock`}
-                    </span>
+                    <StockPill quantity={product.stockQuantity} />
                     {yaEsta && <span>Ya está en la venta: suma una unidad</span>}
                   </span>
                 </span>

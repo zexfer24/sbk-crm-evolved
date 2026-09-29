@@ -1248,13 +1248,76 @@
   line-height: 1.4;
 }
 
+/* T9 (29/9/2026): la lista scrollea por dentro. Con páginas de 20 y «Ver más»
+   (60 resultados no son raros), sin tope de alto empujaría «Lo que lleva el
+   cliente» y Notas fuera de la pantalla. `min(340px, 45vh)`: en una pantalla
+   baja no se come más de la mitad de la columna. Se deja ver a medias el
+   renglón siguiente a propósito: es lo que avisa que se puede bajar. */
 .crm-lookup-results {
   display: flex;
   flex-direction: column;
   gap: 6px;
+  max-height: min(340px, 45vh);
   margin: 0;
-  padding: 0;
+  padding: 0 4px 0 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-width: thin;
   list-style: none;
+}
+
+/* Los renglones no se encogen para "caber" en el alto máximo: se scrollea. */
+.crm-lookup-results > li {
+  flex-shrink: 0;
+}
+
+.crm-lookup-more {
+  align-self: stretch;
+  padding: 5px 10px;
+  border: 1px solid var(--lm-line);
+  border-radius: 999px;
+  background: var(--lm-surface);
+  color: var(--lm-ink);
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.crm-lookup-more:hover:not(:disabled) {
+  border-color: var(--lm-link);
+  color: var(--lm-link);
+}
+
+.crm-lookup-more:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
+/* Pastilla de existencia (T9, 29/9/2026, 3.5). Texto + color, nunca solo
+   color. Los tintes salen de los componentes rgb del tema (`--lm-good-rgb`,
+   `--lm-hot-rgb`) y el texto de `--lm-stock-in-ink`/`--lm-stock-out-ink`,
+   que cumplen AA (≥ 4.5:1) sobre ese tinte en claro y en oscuro. Se usa en la
+   búsqueda del chat, el carrito y el buscador de «Cerrar venta». */
+.crm-stock-pill {
+  display: inline-flex;
+  flex-shrink: 0;
+  align-items: center;
+  padding: 1px 8px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 1.5;
+  white-space: nowrap;
+}
+
+.crm-stock-pill[data-stock="in"] {
+  background: rgb(var(--lm-good-rgb) / 0.14);
+  color: var(--lm-stock-in-ink);
+}
+
+.crm-stock-pill[data-stock="out"] {
+  background: rgb(var(--lm-hot-rgb) / 0.14);
+  color: var(--lm-stock-out-ink);
 }
 
 .crm-lookup-item {
@@ -1286,6 +1349,20 @@
   color: var(--lm-ink);
 }
 
+/* «Retirado»: antes `ac-badge`, una clase de la hoja de Control IA que no
+   se carga en /inbox (se veía como texto suelto y grande). */
+.crm-lookup-retired {
+  flex-shrink: 0;
+  margin-left: auto;
+  padding: 1px 8px;
+  border-radius: 999px;
+  background: rgba(127, 127, 127, 0.18);
+  color: var(--lm-ink-soft);
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 1.5;
+}
+
 .crm-lookup-item-meta {
   display: flex;
   flex-wrap: wrap;
@@ -1303,12 +1380,19 @@
 
 .crm-lookup-item-price {
   display: flex;
+  flex-wrap: wrap;
   align-items: baseline;
-  gap: 8px;
+  gap: 0 8px;
   min-width: 0;
   font-size: 12.5px;
   font-weight: 600;
   color: var(--lm-ink);
+}
+
+/* Cada importe es una pieza: si no cabe al lado del otro, baja ENTERO en vez
+   de partirse después de «Bs.» o de «$» (visto a 1100 px, columna de 268). */
+.crm-lookup-item-price > span {
+  white-space: nowrap;
 }
 
 .crm-lookup-price-alt {
@@ -1322,8 +1406,9 @@
    cliente» en el panel derecho y en el editor del modal «Cerrar venta».
    Renglón APILADO (nombre / cantidad y subtotal), no una fila ancha: la
    columna del panel mide 300 px (268 en pantallas medianas) y todo texto
-   acá adentro lleva `min-width: 0` para no desbordarla. No se ha visto en
-   pantalla: jsdom no calcula layout (verificación visual pendiente).
+   acá adentro lleva `min-width: 0` para no desbordarla. Visto en pantalla
+   el 29/9/2026 (T9, Playwright sobre el build de producción, 1366 y 1100 px,
+   claro y oscuro): sin desbordes horizontales en la columna.
    -------------------------------------------------------------------------- */
 
 .crm-pcart {
@@ -1350,6 +1435,12 @@
   padding: 8px 10px;
   border-radius: 10px;
   background: var(--lm-sunken);
+}
+
+/* Renglón cuyo producto quedó en 0: se puede vender igual (puede haber
+   existencia física sin cargar), pero el borde rojo avisa. */
+.crm-pcart-item[data-agotado="true"] {
+  box-shadow: inset 0 0 0 1px rgb(var(--lm-hot-rgb) / 0.5);
 }
 
 .crm-pcart-head {
@@ -1431,9 +1522,10 @@
 
 .crm-lookup-item-actions {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   justify-content: space-between;
-  gap: 8px;
+  gap: 4px 8px;
   min-width: 0;
 }
 
@@ -2508,13 +2600,6 @@
   gap: 8px;
   font-size: 10.5px;
   color: var(--lm-muted);
-}
-
-/* Un repuesto agotado se puede vender igual (puede haber existencia física
-   sin cargar), pero el asesor tiene que verlo. */
-.crm-cart-result-meta span[data-empty="true"] {
-  color: var(--lm-hot-ink, var(--lm-muted));
-  font-weight: 600;
 }
 
 /* Acceso al historial anterior al tramo que se carga al abrir el chat. */

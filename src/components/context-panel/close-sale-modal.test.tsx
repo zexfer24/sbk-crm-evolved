@@ -367,6 +367,24 @@ describe("CloseSaleModal — el asesor arma la venta, pero el precio lo pone el 
 
   // Lo que faltaba: el cliente agrega algo al final que nunca pasó por el
   // chat, y antes eso obligaba a no cerrar la venta.
+  // T9 (29/9/2026, 3.5): el buscador del modal usa la misma pastilla de
+  // existencia que el panel del chat — y un agotado se sigue pudiendo agregar.
+  it("los resultados del buscador llevan la pastilla de existencia (con stock y agotado)", async () => {
+    searchActiveProducts.mockResolvedValueOnce([
+      { ...BUJIA, stockQuantity: 41 },
+      { ...BUJIA, id: "prod-10", name: "Bujía agotada", stockQuantity: 0 },
+    ]);
+    const user = crearUsuario();
+    renderModal();
+    await waitForQuotes();
+
+    await user.type(screen.getByLabelText("Buscar repuesto en el inventario"), "bujía");
+    await waitFor(() => expect(screen.getByText("Bujía CR7HSA")).toBeInTheDocument());
+
+    expect(screen.getByText("41 en stock")).toHaveAttribute("data-stock", "in");
+    expect(screen.getByText("Agotado")).toHaveAttribute("data-stock", "out");
+  });
+
   it("deja agregar un repuesto del inventario: se escribe en el carrito de la base", async () => {
     const user = crearUsuario();
     renderModal();

@@ -189,6 +189,32 @@ describe("ConversationCartBlock — con renglones", () => {
     expect(actions.remove).toHaveBeenCalledTimes(1);
   });
 
+  // T9 (29/9/2026, 3.5): la existencia también se ve en el carrito, y un
+  // renglón cuyo producto quedó en 0 se marca — se puede vender igual (puede
+  // haber existencia física sin cargar), pero el asesor tiene que enterarse.
+  it("cada renglón lleva la pastilla de existencia de su producto", () => {
+    setup([item({ product: product({ stockQuantity: 5 }) })]);
+
+    expect(screen.getByText("5 en stock")).toHaveAttribute("data-stock", "in");
+  });
+
+  it("un renglón cuyo producto quedó en 0 se marca «Agotado» y el renglón queda señalado", () => {
+    setup([
+      item({ product: product({ stockQuantity: 5 }) }),
+      item({
+        id: "cart-2",
+        productId: "prod-2",
+        product: product({ id: "prod-2", name: "Kit de arrastre", stockQuantity: 0 }),
+      }),
+    ]);
+
+    expect(screen.getByText("Agotado")).toHaveAttribute("data-stock", "out");
+    const renglonAgotado = screen.getByText("Kit de arrastre").closest("li");
+    expect(renglonAgotado).toHaveAttribute("data-agotado", "true");
+    const renglonConStock = screen.getByText("Carburador PZ27").closest("li");
+    expect(renglonConStock).not.toHaveAttribute("data-agotado");
+  });
+
   it("mientras hay una escritura en curso los controles se deshabilitan", () => {
     setup([item({ quantity: 2 })], makeActions({ busy: true }));
 

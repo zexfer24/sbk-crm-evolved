@@ -5,6 +5,7 @@ import { Minus, Plus, Sparkles, Trash2, UserPen } from "lucide-react";
 import type { ConversationCartItem } from "@/lib/types";
 import { cartTotals, priceCartLines, quoteComparisonLabel, type PricedCartLine } from "@/lib/conversation-cart";
 import type { CartActions } from "@/components/context-panel/use-cart-actions";
+import { StockPill } from "@/components/context-panel/stock-pill";
 
 /**
  * Los renglones del carrito persistente y su total (T8, plan "Seba encuentra,
@@ -76,7 +77,15 @@ export function CartLines({ cart, bcvRate, actions }: CartLinesProps) {
           const comparison = quoteComparisonLabel(line);
 
           return (
-            <li className="crm-pcart-item" key={item.id}>
+            <li
+              className="crm-pcart-item"
+              key={item.id}
+              // T9 (29/9/2026): el producto quedó en 0 desde que se agregó. Se
+              // puede vender igual (puede haber existencia física sin cargar),
+              // pero el renglón se marca para que el asesor no se entere en
+              // el mostrador.
+              data-agotado={item.product.stockQuantity <= 0 ? "true" : undefined}
+            >
               <div className="crm-pcart-head">
                 <span className="crm-pcart-name">{name}</span>
                 <button
@@ -102,6 +111,7 @@ export function CartLines({ cart, bcvRate, actions }: CartLinesProps) {
                   {item.origin === "quote" ? <Sparkles size={10} /> : <UserPen size={10} />}
                   {item.origin === "quote" ? "Cotizado por Seba" : "Agregado por un asesor"}
                 </span>
+                <StockPill quantity={item.product.stockQuantity} />
                 {comparison && (
                   <span className="crm-pcart-change" title="Se factura el precio de hoy">
                     {comparison}

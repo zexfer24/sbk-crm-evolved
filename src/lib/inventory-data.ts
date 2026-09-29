@@ -244,11 +244,21 @@ export async function searchActiveProducts(
  * el corte de disponibilidad es visual (T6), no de esta consulta. Por eso
  * ordena los activos primero y recién después por nombre, en vez del orden
  * alfabético liso de `searchActiveProducts`.
+ *
+ * Paginada desde el 29/9/2026 (T9, plan "Seba encuentra, no insiste, y el
+ * mostrador no deja a nadie esperando"): `limit` es el tamaño de la página y
+ * `offset` cuántos renglones saltar (`range(offset, offset + limit - 1)`).
+ * Hasta esa fecha el panel pedía 8 con `.limit(8)` y el resto de las
+ * coincidencias no se podía ver nunca. El desempate final por `id` es lo que
+ * hace estable la paginación: `name` no es único, y sin un orden total dos
+ * repuestos con el mismo nombre podían saltar de una página a otra o
+ * repetirse entre ellas.
  */
 export async function searchProductsForLookup(
   supabase: SupabaseClient,
   query: string,
-  limit = 8
+  limit = 20,
+  offset = 0
 ): Promise<Product[]> {
   const filter = productSearchFilter(query);
   if (!filter) return [];
@@ -259,7 +269,8 @@ export async function searchProductsForLookup(
     .or(filter)
     .order("is_active", { ascending: false })
     .order("name", { ascending: true })
-    .limit(limit);
+    .order("id", { ascending: true })
+    .range(offset, offset + limit - 1);
 
   if (error) throw error;
   return ((data ?? []) as unknown as RawProduct[]).map(mapProduct);

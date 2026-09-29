@@ -155,20 +155,32 @@ describe("searchProductsForLookup — panel del buzón (T6 la va a usar)", () =>
     expect(calls.find((c) => c.method === "eq" && c.args[0] === "is_active")).toBeUndefined();
 
     const order = calls.filter((c) => c.method === "order");
+    // T9 (29/9/2026): el desempate por `id` hace estable la paginación con
+    // `range()` — dos repuestos con el mismo nombre no pueden saltar de una
+    // página a otra ni repetirse entre ellas.
     expect(order).toEqual([
       { method: "order", args: ["is_active", { ascending: false }] },
       { method: "order", args: ["name", { ascending: true }] },
+      { method: "order", args: ["id", { ascending: true }] },
     ]);
   });
 
-  it("respeta el límite pasado (por defecto 8)", async () => {
+  it("pagina con range(): por defecto la primera página de 20", async () => {
     const { calls, builder } = fakeProductsQuery();
     await searchProductsForLookup(fakeSupabase(builder), "cg");
-    expect(calls.find((c) => c.method === "limit")?.args).toEqual([8]);
+
+    expect(calls.find((c) => c.method === "range")?.args).toEqual([0, 19]);
+    expect(calls.find((c) => c.method === "limit")).toBeUndefined();
+  });
+
+  it("respeta el tamaño de página y el desplazamiento pasados", async () => {
+    const { calls, builder } = fakeProductsQuery();
+    await searchProductsForLookup(fakeSupabase(builder), "cg", 3);
+    expect(calls.find((c) => c.method === "range")?.args).toEqual([0, 2]);
 
     const { calls: calls2, builder: builder2 } = fakeProductsQuery();
-    await searchProductsForLookup(fakeSupabase(builder2), "cg", 3);
-    expect(calls2.find((c) => c.method === "limit")?.args).toEqual([3]);
+    await searchProductsForLookup(fakeSupabase(builder2), "cg", 20, 40);
+    expect(calls2.find((c) => c.method === "range")?.args).toEqual([40, 59]);
   });
 
   it("query vacía no consulta nada y devuelve una lista vacía", async () => {
