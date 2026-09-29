@@ -39,6 +39,10 @@ export type Database = {
           ai_globally_enabled: boolean
           business_hours: Json
           daily_spend_cap_usd: number | null
+          // T10a (29/9/2026, migración 20260929020000): interruptor de la demora
+          // del asesor. Nace apagado; `demora_activa_desde` es el corte del backlog.
+          demora_activa: boolean
+          demora_activa_desde: string | null
           id: boolean
           updated_at: string
           updated_by: string | null
@@ -47,6 +51,8 @@ export type Database = {
           ai_globally_enabled?: boolean
           business_hours?: Json
           daily_spend_cap_usd?: number | null
+          demora_activa?: boolean
+          demora_activa_desde?: string | null
           id?: boolean
           updated_at?: string
           updated_by?: string | null
@@ -55,6 +61,8 @@ export type Database = {
           ai_globally_enabled?: boolean
           business_hours?: Json
           daily_spend_cap_usd?: number | null
+          demora_activa?: boolean
+          demora_activa_desde?: string | null
           id?: boolean
           updated_at?: string
           updated_by?: string | null
@@ -755,6 +763,53 @@ export type Database = {
             columns: ["quote_id"]
             isOneToOne: false
             referencedRelation: "conversation_quotes"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      conversation_delay_episodes: {
+        Row: {
+          // T10a (29/9/2026, migración 20260929020000): un episodio de espera sin
+          // atender por fila; la PK (conversation_id, episode_at) es el candado de
+          // idempotencia del cron de demora. RLS sin políticas: solo service_role.
+          agentes_previos: string[]
+          conversation_id: string
+          created_at: string
+          episode_at: string
+          origen: string
+          reassignments: number
+          responded_at: string | null
+          supervisor_notified_at: string | null
+          ultima_reasignacion_at: string | null
+        }
+        Insert: {
+          agentes_previos?: string[]
+          conversation_id: string
+          created_at?: string
+          episode_at: string
+          origen: string
+          reassignments?: number
+          responded_at?: string | null
+          supervisor_notified_at?: string | null
+          ultima_reasignacion_at?: string | null
+        }
+        Update: {
+          agentes_previos?: string[]
+          conversation_id?: string
+          created_at?: string
+          episode_at?: string
+          origen?: string
+          reassignments?: number
+          responded_at?: string | null
+          supervisor_notified_at?: string | null
+          ultima_reasignacion_at?: string | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "conversation_delay_episodes_conversation_id_fkey"
+            columns: ["conversation_id"]
+            isOneToOne: false
+            referencedRelation: "conversations"
             referencedColumns: ["id"]
           },
         ]

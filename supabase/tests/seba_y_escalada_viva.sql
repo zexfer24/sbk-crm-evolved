@@ -611,7 +611,7 @@ end $$;
 -- EXTRA · guardián de las razones de `conversation_handoffs_reason_check` --
 -- "El resguardo antes del push" (20/9/2026, tarea M3). Compara la lista real
 -- del CHECK (leída de `pg_constraint`, no del texto de ninguna migración)
--- contra la lista literal de los 30 valores vigentes hoy: si alguien agrega
+-- contra la lista literal de los 32 valores vigentes hoy (30 hasta 20260917010000 + los 2 de la demora, 20260929020000): si alguien agrega
 -- una razón nueva en TypeScript (`recordHandoff({ reason: "..." })`) sin
 -- sumar una migración que amplíe este CHECK, el INSERT falla en silencio
 -- contra la base real (la misma trampa de `fuera_de_tema` del 14/9/2026) --
@@ -627,7 +627,10 @@ declare
     'ventana_vencida','sla_vencido','escalada','escalada_sin_asesor','rechazado_por_meta',
     'cerrada_por_asesor','reabierta_por_asesor','reabierta_por_cliente','sin_contenido_legible',
     'cortesia_tras_escalada','desasignada_por_asesor','mensaje_previo_a_devolucion',
-    'silenciada_por_asesor','fuera_de_tema_repetido'
+    'silenciada_por_asesor','fuera_de_tema_repetido',
+    -- T10a, plan "Seba encuentra, no insiste, y el mostrador no deja a nadie
+    -- esperando" (29/9/2026, migración 20260929020000).
+    'reasignada_por_demora','demora_sin_asesor'
   ];
   v_reales text[];
   v_def text;
@@ -660,8 +663,8 @@ begin
     insert into _errores(msg) values (format('EXTRA (guardián de razones): el CHECK perdió valor(es) que se esperaban: %s.', v_faltan));
   end if;
 
-  if cardinality(v_reales) is distinct from 30 then
-    insert into _errores(msg) values (format('EXTRA (guardián de razones): el CHECK tiene %s valores, se esperaban 30.', cardinality(v_reales)));
+  if cardinality(v_reales) is distinct from 32 then
+    insert into _errores(msg) values (format('EXTRA (guardián de razones): el CHECK tiene %s valores, se esperaban 32.', cardinality(v_reales)));
   end if;
 end $$;
 

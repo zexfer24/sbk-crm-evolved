@@ -480,3 +480,17 @@ jobs:
           psql "postgresql://postgres:postgres@127.0.0.1:54322/postgres" \
             -v ON_ERROR_STOP=1 \
             -f supabase/tests/carrito_por_conversacion.sql
+
+      # T10a, plan "Seba encuentra, no insiste, y el mostrador no deja a nadie
+      # esperando" (29/9/2026, Entrega B): la base de la demora del asesor.
+      # conversation_handoffs.reason suma reasignada_por_demora y
+      # demora_sin_asesor (y conserva las 30 de antes), agent_settings gana el
+      # interruptor demora_activa (nace apagado) y demora_activa_desde, y
+      # conversation_delay_episodes es el candado de idempotencia del cron: PK
+      # (conversation_id, episode_at), claim con update ... where responded_at
+      # is null returning, RLS SIN políticas y solo service_role.
+      - name: demora del asesor -- CHECK de razones, interruptor y candado de episodios
+        run: |
+          psql "postgresql://postgres:postgres@127.0.0.1:54322/postgres" \
+            -v ON_ERROR_STOP=1 \
+            -f supabase/tests/demora_del_asesor.sql

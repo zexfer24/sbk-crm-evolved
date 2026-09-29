@@ -165,7 +165,17 @@ export type HandoffReason =
   // `RAZONES_DE_SILENCIO_DECIDIDO` (abajo) tenía anotada: sin esta fila,
   // `reconcileOrphanTurns` reencolaba la conversación cada minuto durante
   // hasta 24 h.
-  | "fuera_de_tema_repetido";
+  | "fuera_de_tema_repetido"
+  // T10a, plan "Seba encuentra, no insiste, y el mostrador no deja a nadie
+  // esperando" (29/9/2026, migración 20260929020000): SOLO el tipo y el CHECK de
+  // la base; la lógica que las escribe (cron de demora, `runDelayTurn`) y su
+  // clasificación en `escalationOpen` / `RAZONES_QUE_NO_CIERRAN_LA_ESCALADA` es
+  // de T10b. `reasignada_por_demora`: a los 15 min sin mensaje del asesor el chat
+  // pasa a otro asesor (SÍ cambia de manos; continúa el episodio de la escalada
+  // original, no abre uno nuevo). `demora_sin_asesor`: tope de 2 reasignaciones
+  // alcanzado o nadie a quien rotar (no cambia de dueño; avisa a supervisores).
+  | "reasignada_por_demora"
+  | "demora_sin_asesor";
 
 /**
  * Razones que significan "el turno ya miró ESTE mensaje del cliente y decidió
