@@ -118,4 +118,62 @@ describe("claimNextAvailableAgent", () => {
     const claimed = await claimNextAvailableAgent(client);
     expect(claimed).toBeNull();
   });
+
+  describe("excluir (T10b-2, reasignación por demora)", () => {
+    it("nunca devuelve a un asesor excluido, aunque sea el de last_assigned_at más antiguo", async () => {
+      const { client, rows } = createFakeSupabase([
+        { id: "a1", display_name: "Ana", is_active: true, last_assigned_at: null },
+        { id: "a2", display_name: "Beto", is_active: true, last_assigned_at: "2026-01-01T00:00:00Z" },
+      ]);
+
+      const claimed = await claimNextAvailableAgent(client, { excluir: ["a1"] });
+
+      expect(claimed?.id).toBe("a2");
+      // El excluido no se "marca" como asignado: su turno de reparto sigue intacto.
+      expect(rows.get("a1")?.last_assigned_at).toBeNull();
+    });
+
+    it("excluye varios a la vez, incluso más de los que caben en el pool de candidatos (5)", async () => {
+      const { client } = createFakeSupabase([
+        ...["a1", "a2", "a3", "a4", "a5", "a6"].map((id, i) => ({
+          id,
+          display_name: id,
+          is_active: true,
+          last_assigned_at: `2026-01-0${i + 1}T00:00:00Z`,
+        })),
+        { id: "a7", display_name: "Gabi", is_active: true, last_assigned_at: "2026-02-01T00:00:00Z" },
+      ]);
+
+      const claimed = await claimNextAvailableAgent(client, {
+        excluir: ["a1", "a2", "a3", "a4", "a5", "a6"],
+      });
+
+      expect(claimed?.id).toBe("a7");
+    });
+
+    it("si todos los activos están excluidos, no reclama a nadie (igual que sin asesores)", async () => {
+      const { client, rows } = createFakeSupabase([
+        { id: "a1", display_name: "Ana", is_active: true, last_assigned_at: null },
+        { id: "a2", display_name: "Beto", is_active: true, last_assigned_at: null },
+      ]);
+
+      const claimed = await claimNextAvailableAgent(client, { excluir: ["a1", "a2"] });
+
+      expect(claimed).toBeNull();
+      expect(rows.get("a1")?.last_assigned_at).toBeNull();
+      expect(rows.get("a2")?.last_assigned_at).toBeNull();
+    });
+
+    it("sin excluir (o con lista vacía) el reparto es el de siempre", async () => {
+      const filas: FakeAgentRow[] = [
+        { id: "a1", display_name: "Ana", is_active: true, last_assigned_at: "2026-01-01T00:00:00Z" },
+        { id: "a2", display_name: "Beto", is_active: true, last_assigned_at: null },
+      ];
+      const sinOpciones = await claimNextAvailableAgent(createFakeSupabase(filas).client);
+      const listaVacia = await claimNextAvailableAgent(createFakeSupabase(filas).client, { excluir: [] });
+
+      expect(sinOpciones?.id).toBe("a2");
+      expect(listaVacia?.id).toBe("a2");
+    });
+  });
 });

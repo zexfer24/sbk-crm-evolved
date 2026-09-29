@@ -29,6 +29,20 @@ describe("isAssignmentNotice", () => {
     expect(isAssignmentNotice(handoff(), MI_AGENTE)).toBe(true);
   });
 
+  it("avisa también cuando el cron de demora te reasignó el caso (reasignada_por_demora)", () => {
+    expect(isAssignmentNotice(handoff({ reason: "reasignada_por_demora" }), MI_AGENTE)).toBe(true);
+  });
+
+  it("no avisa con reasignada_por_demora si el caso se le pasó a OTRO asesor", () => {
+    expect(
+      isAssignmentNotice(handoff({ reason: "reasignada_por_demora", to_id: OTRO_AGENTE }), MI_AGENTE)
+    ).toBe(false);
+  });
+
+  it("no avisa con demora_sin_asesor: es el aviso a supervisores, no una asignación", () => {
+    expect(isAssignmentNotice(handoff({ reason: "demora_sin_asesor" }), MI_AGENTE)).toBe(false);
+  });
+
   it("no avisa con reason 'asignada': el turno la escribe en CADA mensaje de una conversación que ya tiene dueño, no solo cuando se asigna algo nuevo — avisar acá dispararía el aviso una vez por mensaje del cliente durante toda la conversación", () => {
     expect(isAssignmentNotice(handoff({ reason: "asignada" }), MI_AGENTE)).toBe(false);
   });

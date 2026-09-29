@@ -36,7 +36,13 @@ export interface AssignmentHandoffRow {
  *   - `to_kind === "human"`: el traspaso deja a un humano a cargo (no a la
  *     IA, no a nadie, no cierra el chat).
  *   - `to_id === myAgentId`: ese humano soy yo, no otro asesor.
- *   - `reason === "escalada"`: la razón, no un detalle de higiene.
+ *   - `reason === "escalada"` o `"reasignada_por_demora"`: la razón, no un
+ *     detalle de higiene. La segunda (T10b-2, 29/9/2026, "Nadie sin
+ *     atender") es el cron de demora quitándole el caso a un asesor que
+ *     llevaba 15 min sin contestar y dándotelo a vos: para quien lo recibe es
+ *     igual de nuevo que una escalada. `demora_sin_asesor` NO avisa aquí: es
+ *     el aviso a supervisores de que ya no hay a quién rotar, no una
+ *     asignación.
  *
  * `reason` es la trampa de este frente. `escalateConversation`
  * (`src/lib/ai/escalate.ts:110`) escribe `escalada` UNA sola vez, justo
@@ -66,7 +72,7 @@ export function isAssignmentNotice(handoff: AssignmentHandoffRow, myAgentId: str
     handoff.to_kind === "human" &&
     handoff.to_id !== null &&
     handoff.to_id === myAgentId &&
-    handoff.reason === "escalada"
+    (handoff.reason === "escalada" || handoff.reason === "reasignada_por_demora")
   );
 }
 
