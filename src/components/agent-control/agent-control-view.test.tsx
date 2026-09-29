@@ -79,6 +79,10 @@ vi.mock("@/lib/data", () => ({
 const setAiGloballyEnabledMock = vi.fn(async (...args: unknown[]) => {
   void args;
 });
+const setDemoraActivaMock = vi.fn(async (...args: unknown[]) => {
+  void args;
+  return null as string | null;
+});
 
 vi.mock("@/lib/mutations", () => ({
   createAgentSuggestion: vi.fn(async () => {}),
@@ -92,6 +96,7 @@ vi.mock("@/lib/mutations", () => ({
   setAiGloballyEnabled: (...args: unknown[]) => setAiGloballyEnabledMock(...args),
   setCatalogLinkActive: vi.fn(async () => {}),
   setDailySpendCap: vi.fn(async () => {}),
+  setDemoraActiva: (...args: unknown[]) => setDemoraActivaMock(...args),
   updateBusinessHours: vi.fn(async () => {}),
   updateCatalogLink: vi.fn(async () => {}),
   updateModelPricing: vi.fn(async () => {}),
@@ -246,6 +251,7 @@ const backlogFetch = vi.fn(async (url: string) =>
 
 beforeEach(() => {
   setAiGloballyEnabledMock.mockClear();
+  setDemoraActivaMock.mockClear();
   backlogFetch.mockClear();
   fetchBacklogCountsMock.mockClear();
   fetchBacklogCountsMock.mockResolvedValue({ inWindow: 117, outOfWindow: 174 });
@@ -486,5 +492,33 @@ describe("AgentControlView — puertas de rol de la configuración (T7)", () => 
 
     expect(screen.getByLabelText(/\$\/1M input/)).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Guardar" })).toBeInTheDocument();
+  });
+});
+
+/**
+ * T10b-5, plan "Seba encuentra…" (29/9/2026): el interruptor "Reasignar si el
+ * asesor tarda" vive en Control IA con la misma puerta de rol de T7 —el
+ * cron de demora le escribe a clientes reales y le quita casos a asesores—.
+ */
+describe("AgentControlView — interruptor de la demora del asesor (T10b-5)", () => {
+  const asesor: Agent = { ...currentAgent, id: "agent-9", displayName: "Asesor", role: "agent" };
+
+  it("un asesor corriente lo ve deshabilitado", () => {
+    montar(encendida, [], {}, asesor);
+
+    expect(screen.getByRole("switch", { name: "Reasignar si el asesor tarda" })).toBeDisabled();
+  });
+
+  it("un supervisor lo enciende: llama a setDemoraActiva(supabase, agente, true) y queda encendido", async () => {
+    setDemoraActivaMock.mockResolvedValueOnce("2026-09-29T15:30:00.000Z");
+    montar(encendida);
+
+    fireEvent.click(screen.getByRole("switch", { name: "Reasignar si el asesor tarda" }));
+
+    expect(setDemoraActivaMock).toHaveBeenCalledWith(expect.anything(), currentAgent, true);
+    await waitFor(() =>
+      expect(screen.getByRole("switch", { name: "Reasignar si el asesor tarda" })).toHaveAttribute("aria-checked", "true")
+    );
+    expect(screen.getByText(/Encendida desde/)).toBeInTheDocument();
   });
 });

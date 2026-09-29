@@ -62,6 +62,7 @@ import {
   setAiGloballyEnabled,
   setCatalogLinkActive,
   setDailySpendCap,
+  setDemoraActiva,
   updateBusinessHours,
   updateCatalogLink,
   updateModelPricing,
@@ -84,6 +85,7 @@ import { AppRail, AppTopNav } from "@/components/app-rail";
 import { ChannelHealthPanel } from "@/components/agent-control/channel-health-panel";
 import { SpendCapPanel } from "@/components/agent-control/spend-cap-panel";
 import { BusinessHoursPanel } from "@/components/agent-control/business-hours-panel";
+import { DemoraPanel } from "@/components/agent-control/demora-panel";
 import { TokenUsageChart } from "@/components/agent-control/token-usage-chart";
 // crm.css trae .crm-pill, que esta vista usa para los botones de acción de
 // cada conversación. Sin este import quedaban sin estilo: el ícono se
@@ -611,6 +613,17 @@ export function AgentControlView({
     setSettings((s) => ({ ...s, dailySpendCapUsd: capUsd }));
   }
 
+  // T10b-5 (29/9/2026): al encender, la mutación devuelve la fecha que escribió
+  // en `demora_activa_desde`; se refleja sin releer la fila entera.
+  async function saveDemoraActiva(activa: boolean) {
+    const desde = await setDemoraActiva(supabase, currentAgent, activa);
+    setSettings((s) => ({
+      ...s,
+      demoraActiva: activa,
+      demoraActivaDesde: desde ?? s.demoraActivaDesde ?? null,
+    }));
+  }
+
   async function saveBusinessHours(hours: BusinessHours) {
     await updateBusinessHours(supabase, currentAgent, hours);
     setSettings((s) => ({ ...s, businessHours: hours }));
@@ -898,6 +911,8 @@ export function AgentControlView({
               canEdit={canEditConfig}
               onSave={saveBusinessHours}
             />
+
+            <DemoraPanel settings={settings} canEdit={canEditConfig} onToggle={saveDemoraActiva} />
 
             <ChannelHealthPanel health={initialChannelHealth} />
 

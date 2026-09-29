@@ -145,3 +145,43 @@ export function shouldShowAssignmentNotice(
   if (!isAssignmentNotice(handoff, myAgentId)) return false;
   return markAssignmentNoticeSeen(handoff.id);
 }
+
+// ---------------------------------------------------------------------------
+// Aviso a SUPERVISORES y ADMINS por demora (T10b-5, plan "Seba encuentra…",
+// 29/9/2026).
+//
+// El cron de demora (`/api/cron/asesor-sin-responder`) reasigna un caso a
+// los 15 min de horario sin respuesta, máximo dos veces; a la tercera ya no
+// rota más y deja un traspaso `demora_sin_asesor` (mismo dueño, o ninguno si
+// la escalada nunca tuvo asesor). Ese traspaso es lo único que le avisa a
+// una PERSONA que un cliente lleva ~45 min esperando: `isAssignmentNotice` lo
+// rechaza a propósito (no es una asignación), así que esta regla es aparte.
+//
+// No mira `to_kind` ni `to_id`: el dueño puede ser un asesor, o nadie. Lo
+// único que decide es la razón y el ROL de quien mira. Un asesor común no lo
+// ve —el aviso es para quien puede reasignar a mano o llamar al asesor—, y un
+// rol sin resolver (null/undefined, la sesión todavía cargando) calla: en la
+// duda, un aviso de menos que uno a quien no le toca.
+// ---------------------------------------------------------------------------
+
+/** ¿Este traspaso es el "ya no hay a quién rotar" y este rol debe enterarse? */
+export function isDelayEscalationNotice(
+  handoff: AssignmentHandoffRow,
+  role: string | null | undefined
+): boolean {
+  return handoff.reason === "demora_sin_asesor" && (role === "supervisor" || role === "admin");
+}
+
+/**
+ * Regla + dedupe, igual que `shouldShowAssignmentNotice`. Comparte el `Set` de
+ * MÓDULO: los ids de handoff son únicos entre razones, así que no chocan con
+ * los de asignación, y es el mismo motivo —dos instancias de `AppRail`
+ * suscritas al mismo canal durante una navegación—.
+ */
+export function shouldShowDelayEscalationNotice(
+  handoff: AssignmentHandoffRow,
+  role: string | null | undefined
+): boolean {
+  if (!isDelayEscalationNotice(handoff, role)) return false;
+  return markAssignmentNoticeSeen(handoff.id);
+}

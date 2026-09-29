@@ -2782,7 +2782,7 @@ export async function fetchAgentSettings(supabase: SupabaseClient): Promise<Agen
   const [{ data, error }, { data: spentToday }] = await Promise.all([
     supabase
       .from("agent_settings")
-      .select("ai_globally_enabled, daily_spend_cap_usd, business_hours")
+      .select("ai_globally_enabled, daily_spend_cap_usd, business_hours, demora_activa, demora_activa_desde")
       .eq("id", true)
       .single(),
     supabase.rpc("agent_spend_today"),
@@ -2794,6 +2794,8 @@ export async function fetchAgentSettings(supabase: SupabaseClient): Promise<Agen
     dailySpendCapUsd: data.daily_spend_cap_usd === null ? null : Number(data.daily_spend_cap_usd),
     spentTodayUsd: Number(spentToday ?? 0),
     businessHours: parseBusinessHours(data.business_hours),
+    demoraActiva: data.demora_activa === true,
+    demoraActivaDesde: data.demora_activa_desde ?? null,
   };
 }
 

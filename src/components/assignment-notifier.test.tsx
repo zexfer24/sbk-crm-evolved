@@ -24,6 +24,10 @@ function createFakeSupabase() {
   const subscriptionsByTable = new Map<string, Subscription[]>();
 
   const session: { user: { id: string } } | null = { user: { id: "agente-1" } };
+  // Rol del usuario que mira la pantalla (T10b-5): el aviso de demora solo es
+  // para supervisor/admin. Antes de esta tarea el fake ni lo modelaba
+  // ("agente" no es un rol válido), y el aviso de asignación no lo mira.
+  let role = "agent";
   let contactImpl: () => Promise<{ data: unknown; error: unknown }> = async () => ({
     data: { contact: { display_name: "María Pérez", profile_name: null, phone_number: null } },
     error: null,
@@ -64,7 +68,7 @@ function createFakeSupabase() {
                         display_name: "Agente Uno",
                         full_name: null,
                         avatar_url: null,
-                        role: "agente",
+                        role,
                         is_active: true,
                       }
                     : null,
@@ -94,6 +98,9 @@ function createFakeSupabase() {
       for (const { event, handler } of subscriptionsByTable.get(table) ?? []) {
         if (event === "*" || event === eventType) handler({ eventType, new: row });
       }
+    },
+    setRole(next: string) {
+      role = next;
     },
     /** Solo para el test de "la consulta del nombre falla". */
     setContactFails() {
@@ -146,6 +153,18 @@ async function flush(ticks = 8) {
       await Promise.resolve();
     }
   });
+}
+
+/** Fila `demora_sin_asesor`: el cron de demora ya no tiene a quién rotar (dueño sin cambiar). */
+function demoraSinAsesorHandoff(overrides: Record<string, unknown> = {}) {
+  return {
+    id: "handoff-demora-1",
+    conversation_id: "conv-9",
+    to_kind: "human",
+    to_id: "agente-2",
+    reason: "demora_sin_asesor",
+    ...overrides,
+  };
 }
 
 beforeEach(() => {
@@ -255,5 +274,125 @@ describe("AssignmentNotifier", () => {
     await flush();
 
     expect(container.childElementCount).toBe(0);
+  });
+
+  describe("aviso a supervisores y admins por demora_sin_asesor (T10b-5, 29/9/2026)", () => {
+    it("un supervisor ve el toast con el nombre del contacto y el botón Abrir", async () => {
+      fake.setRole("supervisor");
+      render(<AssignmentNotifier />);
+      await flush();
+
+      act(() => {
+        fake.trigger("conversation_handoffs", "INSERT", demoraSinAsesorHandoff());
+      });
+      await flush();
+
+      expect(toastMock).toHaveBeenCalledTimes(1);
+      expect(toastMock).toHaveBeenCalledWith(
+        "Nadie atendió una conversación",
+        expect.objectContaining({
+          description: expect.stringContaining("María Pérez"),
+          timeout: 10000,
+        })
+      );
+      const options = toastMock.mock.calls[0][1] as { actionProps: { children: string; onPress: () => void } };
+      expect(options.actionProps.children).toBe("Abrir");
+      options.actionProps.onPress();
+      expect(pushMock).toHaveBeenCalledWith("/inbox?conversation=conv-9");
+    });
+
+    it("un admin también lo ve, aunque el traspaso quede sin dueño (to_kind unassigned)", async () => {
+      fake.setRole("admin");
+      render(<AssignmentNotifier />);
+      await flush();
+
+      act(() => {
+        fake.trigger(
+          "conversation_handoffs",
+          "INSERT",
+          demoraSinAsesorHandoff({ to_kind: "unassigned", to_id: null })
+        );
+      });
+      await flush();
+
+      expect(toastMock).toHaveBeenCalledTimes(1);
+    });
+
+    it("un asesor común NO lo ve, ni siquiera cuando el caso quedó a su nombre", async () => {
+      fake.setRole("agent");
+      render(<AssignmentNotifier />);
+      await flush();
+
+      act(() => {
+        fake.trigger("conversation_handoffs", "INSERT", demoraSinAsesorHandoff({ to_id: "agente-1" }));
+      });
+      await flush();
+
+      expect(toastMock).not.toHaveBeenCalled();
+    });
+
+    it("dos instancias montadas a la vez (cruce de section-skeleton) avisan una sola vez", async () => {
+      fake.setRole("supervisor");
+      render(
+        <>
+          <AssignmentNotifier />
+          <AssignmentNotifier />
+        </>
+      );
+      await flush();
+
+      act(() => {
+        fake.trigger("conversation_handoffs", "INSERT", demoraSinAsesorHandoff());
+      });
+      await flush();
+
+      expect(toastMock).toHaveBeenCalledTimes(1);
+    });
+
+    it("si la consulta del nombre falla, igual avisa con el texto neutro", async () => {
+      fake.setRole("supervisor");
+      fake.setContactFails();
+      render(<AssignmentNotifier />);
+      await flush();
+
+      act(() => {
+        fake.trigger("conversation_handoffs", "INSERT", demoraSinAsesorHandoff());
+      });
+      await flush();
+
+      expect(toastMock).toHaveBeenCalledTimes(1);
+      expect(toastMock).toHaveBeenCalledWith(
+        "Nadie atendió una conversación",
+        expect.objectContaining({ description: expect.not.stringContaining("María") })
+      );
+    });
+
+    it("una escalada normal para un supervisor sigue siendo el aviso de asignación de siempre, no este", async () => {
+      fake.setRole("supervisor");
+      render(<AssignmentNotifier />);
+      await flush();
+
+      act(() => {
+        fake.trigger("conversation_handoffs", "INSERT", escaladaHandoff());
+      });
+      await flush();
+
+      expect(toastMock).toHaveBeenCalledTimes(1);
+      expect(toastMock.mock.calls[0][0]).toBe("Te asignaron una conversación");
+    });
+
+    it("un traspaso demora_sin_asesor cuyo dueño soy yo NO dispara además el aviso de asignación", async () => {
+      fake.setRole("supervisor");
+      render(<AssignmentNotifier />);
+      await flush();
+
+      act(() => {
+        fake.trigger("conversation_handoffs", "INSERT", demoraSinAsesorHandoff({ to_id: "agente-1" }));
+      });
+      await flush();
+
+      expect(toastMock).toHaveBeenCalledTimes(1);
+      expect(toastMock.mock.calls[0][0]).toBe("Nadie atendió una conversación");
+    });
   });
 });

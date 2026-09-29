@@ -1020,6 +1020,44 @@ export async function setDailySpendCap(supabase: SupabaseClient, agent: Agent, c
 }
 
 /**
+ * Interruptor "Reasignar si el asesor tarda" (T10b-5, plan "Seba encuentra…",
+ * 29/9/2026, columnas de la migración 20260929020000). Solo supervisor/admin
+ * en RLS (`agent_settings_update`).
+ *
+ * ENCENDER escribe `demora_activa = true` Y `demora_activa_desde = now()`: es
+ * el corte del backlog —el cron de demora ignora todo episodio anterior a
+ * esa fecha, para que al encender no dispare de golpe sobre los casos que
+ * llevaban horas esperando—. Sin la segunda columna el corte quedaría en la
+ * fecha de una encendida anterior (o `null`) y el backlog sí dispararía.
+ *
+ * APAGAR escribe solo `demora_activa = false` y CONSERVA `demora_activa_desde`:
+ * deja constancia de cuándo estuvo encendida por última vez, no cuesta nada
+ * y no hay riesgo, porque el cron mira `demora_activa` primero y al volver a
+ * encender la fecha se renueva. Devuelve la fecha escrita al encender (para
+ * que la pantalla la muestre sin releer la fila) y `null` al apagar.
+ */
+export async function setDemoraActiva(
+  supabase: SupabaseClient,
+  agent: Agent,
+  activa: boolean
+): Promise<string | null> {
+  const now = new Date().toISOString();
+  const { data, error } = await supabase
+    .from("agent_settings")
+    .update({
+      demora_activa: activa,
+      ...(activa ? { demora_activa_desde: now } : {}),
+      updated_by: agent.id,
+      updated_at: now,
+    })
+    .eq("id", true)
+    .select("id");
+  if (error) throw error;
+  assertRowsAffected(data);
+  return activa ? now : null;
+}
+
+/**
  * Guarda el horario de atención (B5, "El reloj dice la verdad", 5/9/2026).
  * El panel ya valida el borrador con `validateDraft` antes de llamar acá; RLS
  * deja escribir `agent_settings` solo a supervisor/admin, igual que el tope

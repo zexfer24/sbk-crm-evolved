@@ -6,7 +6,11 @@ import { toast } from "@heroui/react";
 import { createClient } from "@/lib/supabase/client";
 import { fetchCurrentAgent } from "@/lib/data";
 import { nextRealtimeAction, type RealtimeStatus } from "@/lib/realtime-status";
-import { shouldShowAssignmentNotice, type AssignmentHandoffRow } from "@/lib/assignment-notice";
+import {
+  shouldShowAssignmentNotice,
+  shouldShowDelayEscalationNotice,
+  type AssignmentHandoffRow,
+} from "@/lib/assignment-notice";
 
 // ---------------------------------------------------------------------------
 // Aviso cuando la IA me acaba de asignar una conversación (T6, 8/9/2026).
@@ -35,6 +39,12 @@ import { shouldShowAssignmentNotice, type AssignmentHandoffRow } from "@/lib/ass
 
 const NOTICE_TIMEOUT_MS = 10000;
 
+/** Quién soy: el id (aviso de asignación) y el rol (aviso de demora a supervisores). */
+interface Me {
+  id: string;
+  role: string;
+}
+
 /**
  * Quién soy, resuelto una vez por instancia.
  *
@@ -49,8 +59,8 @@ const NOTICE_TIMEOUT_MS = 10000;
  * como prop rompería la premisa de "AppRail no sabe quién sos" (ver el
  * comentario de la tarea).
  */
-function useMyAgentId(): string | null {
-  const [agentId, setAgentId] = useState<string | null>(null);
+function useMe(): Me | null {
+  const [me, setMe] = useState<Me | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -58,7 +68,7 @@ function useMyAgentId(): string | null {
 
     fetchCurrentAgent(supabase)
       .then((agent) => {
-        if (!cancelled) setAgentId(agent?.id ?? null);
+        if (!cancelled) setMe(agent ? { id: agent.id, role: agent.role } : null);
       })
       .catch(() => {
         // Sin agente resuelto el aviso no puede dispararse para nadie —es
@@ -72,7 +82,7 @@ function useMyAgentId(): string | null {
     };
   }, []);
 
-  return agentId;
+  return me;
 }
 
 /**
@@ -108,17 +118,17 @@ async function fetchContactName(
 
 export function AssignmentNotifier() {
   const router = useRouter();
-  const myAgentIdRef = useRef<string | null>(null);
-  const myAgentId = useMyAgentId();
+  const meRef = useRef<Me | null>(null);
+  const me = useMe();
   // `router` de `useRouter()` es estable entre renders en la práctica, pero
-  // el patrón del archivo (ver `myAgentIdRef`) es dejar SIEMPRE un ref al
+  // el patrón del archivo (ver `meRef`) es dejar SIEMPRE un ref al
   // día en vez de confiar en eso a ojo: el efecto del canal se abre una
   // sola vez (`[]`) y no puede depender de un valor que cambie de render.
   const routerRef = useRef(router);
 
   useEffect(() => {
-    myAgentIdRef.current = myAgentId;
-  }, [myAgentId]);
+    meRef.current = me;
+  }, [me]);
 
   useEffect(() => {
     routerRef.current = router;
@@ -139,7 +149,7 @@ export function AssignmentNotifier() {
         // de la suscripción.
         { event: "INSERT", schema: "public", table: "conversation_handoffs", filter: "to_kind=eq.human" },
         (payload) => {
-          const myId = myAgentIdRef.current;
+          const myId = meRef.current?.id;
           if (!myId) return;
 
           const raw = payload.new as Record<string, unknown>;
@@ -166,6 +176,50 @@ export function AssignmentNotifier() {
               description: contactName ? `La IA te pasó a ${contactName}` : "La IA te pasó una conversación",
               timeout: NOTICE_TIMEOUT_MS,
               variant: "accent",
+              actionProps: {
+                children: "Abrir",
+                onPress: () => routerRef.current.push(`/inbox?conversation=${conversationId}`),
+              },
+            });
+          });
+        }
+      )
+      // Aviso a SUPERVISORES y ADMINS (T10b-5, 29/9/2026): el cron de demora
+      // dejó un `demora_sin_asesor` —ya rotó dos veces y nadie contestó—. Va en
+      // una suscripción APARTE con filtro por razón, no dentro de la de
+      // arriba: esa filtra `to_kind=eq.human` y este traspaso puede quedar
+      // SIN dueño (`unassigned`) cuando la escalada nunca tuvo asesor. El
+      // rol lo decide `shouldShowDelayEscalationNotice` (un asesor común no
+      // lo ve) y comparte el `Set` de MÓDULO del dedupe, por lo mismo que el
+      // aviso de asignación: dos instancias de `AppRail` durante el cruce de
+      // `section-skeleton`.
+      .on(
+        "postgres_changes",
+        { event: "INSERT", schema: "public", table: "conversation_handoffs", filter: "reason=eq.demora_sin_asesor" },
+        (payload) => {
+          const role = meRef.current?.role;
+          if (!role) return;
+
+          const raw = payload.new as Record<string, unknown>;
+          const handoff: AssignmentHandoffRow = {
+            id: String(raw.id ?? ""),
+            to_kind: String(raw.to_kind ?? ""),
+            to_id: raw.to_id === null || raw.to_id === undefined ? null : String(raw.to_id),
+            reason: String(raw.reason ?? ""),
+          };
+          if (!handoff.id) return;
+          if (!shouldShowDelayEscalationNotice(handoff, role)) return;
+
+          const conversationId = raw.conversation_id ? String(raw.conversation_id) : null;
+          if (!conversationId) return;
+
+          void fetchContactName(supabase, conversationId).then((contactName) => {
+            toast("Nadie atendió una conversación", {
+              description: contactName
+                ? `${contactName} ya se reasignó dos veces y ningún asesor contestó`
+                : "Una conversación ya se reasignó dos veces y ningún asesor contestó",
+              timeout: NOTICE_TIMEOUT_MS,
+              variant: "warning",
               actionProps: {
                 children: "Abrir",
                 onPress: () => routerRef.current.push(`/inbox?conversation=${conversationId}`),

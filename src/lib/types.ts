@@ -749,6 +749,18 @@ export interface AgentSettings {
    * llena.
    */
   businessHours?: BusinessHours;
+  /**
+   * Interruptor "Reasignar si el asesor tarda" (T10b-5, 29/9/2026, migración
+   * 20260929020000). Nace apagado. Opcional por la misma razón que
+   * `businessHours`: los fixtures de otros frentes no lo traen; quien lo lea
+   * trata `undefined` como apagado. `fetchAgentSettings` SIEMPRE lo llena.
+   */
+  demoraActiva?: boolean;
+  /**
+   * Cuándo se encendió por última vez: el corte del backlog (nada anterior
+   * dispara). Se conserva al apagar; al volver a encender se renueva.
+   */
+  demoraActivaDesde?: string | null;
 }
 
 /** Tarifa en USD por millón de tokens para un modelo — usada para calcular el costo del consumo de la IA. */

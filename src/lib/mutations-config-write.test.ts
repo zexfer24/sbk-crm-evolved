@@ -18,6 +18,7 @@ import {
   setAiGloballyEnabled,
   setCatalogLinkActive,
   setDailySpendCap,
+  setDemoraActiva,
   setKnowledgeEntryActive,
   setLessonActive,
   setPlaybookActive,
@@ -179,6 +180,8 @@ const CASES: {
 }[] = [
   { name: "setAiGloballyEnabled", table: "agent_settings", op: "update", denied: /supervisor o administrador/, run: (c) => setAiGloballyEnabled(c, SUPERVISOR, false) },
   { name: "setDailySpendCap", table: "agent_settings", op: "update", denied: /supervisor o administrador/, run: (c) => setDailySpendCap(c, SUPERVISOR, 5) },
+  { name: "setDemoraActiva (encender)", table: "agent_settings", op: "update", denied: /supervisor o administrador/, run: (c) => setDemoraActiva(c, SUPERVISOR, true) },
+  { name: "setDemoraActiva (apagar)", table: "agent_settings", op: "update", denied: /supervisor o administrador/, run: (c) => setDemoraActiva(c, SUPERVISOR, false) },
   { name: "updateBusinessHours", table: "agent_settings", op: "update", denied: /supervisor o administrador/, run: (c) => updateBusinessHours(c, SUPERVISOR, HOURS) },
   { name: "updatePlaybook", table: "ai_playbooks", op: "update", denied: /supervisor o administrador/, run: (c) => updatePlaybook(c, "pb-1", DRAFT_PLAYBOOK) },
   { name: "deletePlaybook", table: "ai_playbooks", op: "delete", denied: /supervisor o administrador/, run: (c) => deletePlaybook(c, "pb-1") },
@@ -249,6 +252,38 @@ describe.each(CASES)("$name — el guardado que la RLS ignora ya no pasa por bue
     const { client } = fakeSupabase({ rows: null, error: new Error("connection reset") });
 
     await expect(run(client)).rejects.toThrow(/connection reset/);
+  });
+});
+
+describe("setDemoraActiva — T10b-5, 29/9/2026", () => {
+  it("al ENCENDER escribe demora_activa = true Y demora_activa_desde = ahora (el corte del backlog)", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-09-29T15:30:00.000Z"));
+    try {
+      const { client, writes } = fakeSupabase({ rows: [{ id: true }] });
+
+      await setDemoraActiva(client, SUPERVISOR, true);
+
+      const write = writes.find((w) => w.table === "agent_settings" && w.op === "update");
+      expect(write?.payload).toMatchObject({
+        demora_activa: true,
+        demora_activa_desde: "2026-09-29T15:30:00.000Z",
+        updated_by: "sup-1",
+      });
+      expect(write?.filters).toContainEqual(["id", true]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("al APAGAR escribe solo demora_activa = false: no toca demora_activa_desde", async () => {
+    const { client, writes } = fakeSupabase({ rows: [{ id: true }] });
+
+    await setDemoraActiva(client, SUPERVISOR, false);
+
+    const write = writes.find((w) => w.table === "agent_settings" && w.op === "update");
+    expect(write?.payload).toMatchObject({ demora_activa: false, updated_by: "sup-1" });
+    expect(write?.payload).not.toHaveProperty("demora_activa_desde");
   });
 });
 

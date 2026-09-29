@@ -1,6 +1,8 @@
 import { describe, expect, it, beforeEach } from "vitest";
 import {
   isAssignmentNotice,
+  isDelayEscalationNotice,
+  shouldShowDelayEscalationNotice,
   markAssignmentNoticeSeen,
   resetAssignmentNoticeDedupe,
   shouldShowAssignmentNotice,
@@ -103,5 +105,51 @@ describe("dedupe por id de handoff (Set de módulo)", () => {
     // (no puede pasar en la práctica, pero prueba el aislamiento) quedaría
     // silenciada. markAssignmentNoticeSeen todavía la ve como nueva:
     expect(markAssignmentNoticeSeen("id-1")).toBe(true);
+  });
+});
+
+describe("isDelayEscalationNotice (T10b-5, 29/9/2026): el aviso a supervisores de que ya no hay a quién rotar", () => {
+  const SIN_ASESOR = { to_kind: "unassigned", to_id: null, reason: "demora_sin_asesor" };
+
+  it("avisa a un supervisor cuando llega demora_sin_asesor", () => {
+    expect(isDelayEscalationNotice(handoff(SIN_ASESOR), "supervisor")).toBe(true);
+  });
+
+  it("avisa a un admin", () => {
+    expect(isDelayEscalationNotice(handoff(SIN_ASESOR), "admin")).toBe(true);
+  });
+
+  it("avisa aunque el traspaso quede en manos de un asesor (mismo dueño): no mira to_kind ni to_id", () => {
+    expect(isDelayEscalationNotice(handoff({ reason: "demora_sin_asesor" }), "supervisor")).toBe(true);
+  });
+
+  it("NO avisa a un asesor común, ni siquiera si el traspaso lo deja a él como dueño", () => {
+    expect(isDelayEscalationNotice(handoff({ reason: "demora_sin_asesor", to_id: MI_AGENTE }), "agent")).toBe(false);
+  });
+
+  it("NO avisa si el rol todavía no se resolvió (null/undefined): en la duda, callar", () => {
+    expect(isDelayEscalationNotice(handoff(SIN_ASESOR), null)).toBe(false);
+    expect(isDelayEscalationNotice(handoff(SIN_ASESOR), undefined)).toBe(false);
+  });
+
+  it.each(["escalada", "reasignada_por_demora", "asignada", "escalada_sin_asesor"])(
+    "no avisa con la razón %s: solo demora_sin_asesor es este aviso",
+    (reason) => {
+      expect(isDelayEscalationNotice(handoff({ reason }), "supervisor")).toBe(false);
+    }
+  );
+});
+
+describe("shouldShowDelayEscalationNotice: la regla más el dedupe compartido", () => {
+  it("el mismo id dos veces avisa una sola vez", () => {
+    const fila = handoff({ id: "d-1", reason: "demora_sin_asesor", to_kind: "unassigned", to_id: null });
+    expect(shouldShowDelayEscalationNotice(fila, "supervisor")).toBe(true);
+    expect(shouldShowDelayEscalationNotice(fila, "supervisor")).toBe(false);
+  });
+
+  it("un asesor no gasta el dedupe: si después el rol se resuelve como supervisor, todavía avisa", () => {
+    const fila = handoff({ id: "d-2", reason: "demora_sin_asesor" });
+    expect(shouldShowDelayEscalationNotice(fila, "agent")).toBe(false);
+    expect(markAssignmentNoticeSeen("d-2")).toBe(true);
   });
 });
