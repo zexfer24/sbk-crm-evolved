@@ -992,6 +992,8 @@ import { OFF_TOPIC_REPLY, SYSTEM_PROMPT } from "@/lib/ai/prompt";
 import { revealsIdentity } from "@/lib/ai/identity-guard";
 import { playbookMessageText } from "@/lib/ai/send";
 import {
+  PREGUNTA_FILTRO,
+  PREGUNTA_FILTRO_PRODUCTO,
   sebaGreeting,
   sebaGreetingFollowUp,
   TEXTO_CONFIRMAR_INVENTARIO,
@@ -999,6 +1001,7 @@ import {
   TEXTO_PRECIO_A_CONFIRMAR,
   TEXTO_SIN_STOCK,
 } from "@/lib/ai/seba";
+import type { LineaCotizada } from "@/lib/ai/tools";
 import { GreetingAwaitsQuestionError } from "@/lib/ai/greeting-wait";
 import { log } from "@/lib/log";
 /**
@@ -7421,5 +7424,443 @@ describe("runAgentTurn — saludo suelto de un cliente que ya conocía a Seba (T
       expect.anything()
     );
     expect(redisSeenStore.has("turno:saludo_suelto:conv-1")).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// T3b, plan "Seba encuentra, no insiste, y el mostrador no deja a nadie
+// esperando" (28/9/2026): la cotización y la pregunta de filtro las arma el
+// CÓDIGO con lo que devolvió la herramienta del catálogo, y una promesa de
+// asesor sin escalada se vuelve verdad. Estudio del VPS (1.027 turnos, 25/9 →
+// 28/9/2026): "Inca 20W50 semi sintético" por "ACEITE INCA 20W50 4T", y el
+// caso de la cinta (buscó con existencia, escaló en el mismo turno y la
+// despedida se tragó la cotización).
+// ---------------------------------------------------------------------------
+const LINEA_INCA: LineaCotizada = {
+  productId: "p-inca",
+  nombre: "ACEITE INCA 20W50 4T",
+  precioUsd: 2.2,
+  precioBs: 87,
+  stock: 6,
+  productoPedido: null,
+};
+const LINEA_CASCO_AGOTADO: LineaCotizada = {
+  productId: "p-casco",
+  nombre: "CASCO LS2 FF353 NEGRO M",
+  precioUsd: 95,
+  precioBs: 3800,
+  stock: 0,
+  productoPedido: null,
+};
+/** Lo que el turno le dice al cliente por una línea, tal como lo arma `armarCotizacion`. */
+const RENGLON_INCA = "• ACEITE INCA 20W50 4T: $2,20 BCV (Bs. 87,00) — 6 disponibles";
+/** El `toolResult` real de la herramienta trae el precio ya escrito: es la fuente que la guarda de cifras acepta. */
+const TOOLRESULT_INCA = [
+  {
+    toolResults: [
+      { output: { results: [{ nombre: "ACEITE INCA 20W50 4T", precio: "$2,20 BCV (Bs. 87,00)", stock: 6 }] } },
+    ],
+  },
+  {},
+];
+const TOOLRESULT_CASCO = [
+  {
+    toolResults: [
+      { output: { results: [{ nombre: "CASCO LS2 FF353 NEGRO M", precio: "$95,00 BCV (Bs. 3.800,00)", stock: 0 }] } },
+    ],
+  },
+  {},
+];
+
+/** El modelo consultó el catálogo y encontró `lineas`. */
+function catalogoEncontro(lineas: LineaCotizada[], extra: Record<string, unknown> = {}) {
+  buildCatalogToolMock.mockImplementationOnce((_deps, catalogOutcome) => {
+    catalogOutcome.ran = true;
+    catalogOutcome.cotizacion = lineas;
+    catalogOutcome.conExistencia = lineas.some((l) => l.stock > 0);
+    catalogOutcome.agotados = lineas.some((l) => l.stock <= 0);
+    catalogOutcome.consultas = [];
+    Object.assign(catalogOutcome, extra);
+    return {};
+  });
+}
+
+describe("runAgentTurn — la cotización la arma el código (T3b, 28/9/2026)", () => {
+  it("el caso de la cinta: buscó con existencia, escaló en el mismo turno y el modelo solo se despidió: el cliente recibe la cotización y el texto fijo LITERAL", async () => {
+    catalogoEncontro([LINEA_INCA]);
+    buildEscalateToolMock.mockImplementationOnce((_deps, outcome) => {
+      outcome.escalated = true;
+      outcome.assignedAgentName = "María";
+      outcome.motivo = "confirmar_inventario";
+      return {};
+    });
+    generateMock.mockResolvedValueOnce({
+      text: "Listo, ya te paso con un asesor.",
+      usage: NO_USAGE,
+      steps: TOOLRESULT_INCA,
+    });
+
+    await runAgentTurn("conv-1");
+
+    const llamada = sendAgentTextMock.mock.calls[0];
+    expect(llamada[2]).toBe(`${RENGLON_INCA}\n\n${TEXTO_CONFIRMAR_INVENTARIO}`);
+    const opciones = llamada[3] as { isAutoReply?: boolean } | undefined;
+    expect(opciones?.isAutoReply).toBe(true);
+    // El modelo ya había escalado: el turno no vuelve a escalar.
+    expect(escalateConversationMock).not.toHaveBeenCalled();
+  });
+
+  it("sin escalada del modelo, la red del catálogo escala (confirmar_inventario) y el texto armado sale una sola vez, sin anexar el fijo dos veces", async () => {
+    catalogoEncontro([LINEA_INCA]);
+    generateMock.mockResolvedValueOnce({ text: "", usage: NO_USAGE, steps: TOOLRESULT_INCA });
+
+    await runAgentTurn("conv-1");
+
+    expect(escalateConversationMock).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ conversationId: "conv-1", motivo: "confirmar_inventario" })
+    );
+    const texto = sendAgentTextMock.mock.calls[0][2] as string;
+    expect(texto).toBe(`${RENGLON_INCA}\n\n${TEXTO_CONFIRMAR_INVENTARIO}`);
+    expect(texto.split(TEXTO_CONFIRMAR_INVENTARIO)).toHaveLength(2);
+  });
+
+  it("el nombre del producto es EXACTO aunque el modelo invente otro ('Inca 20W50 semi sintético')", async () => {
+    catalogoEncontro([LINEA_INCA]);
+    generateMock.mockResolvedValueOnce({
+      text: "Inca 20W50 semi sintético",
+      usage: NO_USAGE,
+      steps: TOOLRESULT_INCA,
+    });
+
+    await runAgentTurn("conv-1");
+
+    const texto = sendAgentTextMock.mock.calls[0][2] as string;
+    expect(texto).toContain("ACEITE INCA 20W50 4T");
+    expect(texto).not.toContain("semi sintético");
+    expect(texto).toBe(`${RENGLON_INCA}\n\n${TEXTO_CONFIRMAR_INVENTARIO}`);
+  });
+
+  it("un preámbulo de una línea sin cifras se conserva arriba del bloque", async () => {
+    catalogoEncontro([LINEA_INCA]);
+    generateMock.mockResolvedValueOnce({
+      text: "¡Claro! Mira lo que encontré.",
+      usage: NO_USAGE,
+      steps: TOOLRESULT_INCA,
+    });
+
+    await runAgentTurn("conv-1");
+
+    expect(sendAgentTextMock.mock.calls[0][2]).toBe(
+      `¡Claro! Mira lo que encontré.\n\n${RENGLON_INCA}\n\n${TEXTO_CONFIRMAR_INVENTARIO}`
+    );
+  });
+
+  it("un preámbulo con cifras de dinero se DESCARTA (y no dispara la guarda de cifras: nunca llega al cliente)", async () => {
+    const warn = vi.spyOn(log, "warn");
+    catalogoEncontro([LINEA_INCA]);
+    generateMock.mockResolvedValueOnce({
+      text: "Sale en $99 el aceite, ¡buen precio!",
+      usage: NO_USAGE,
+      steps: TOOLRESULT_INCA,
+    });
+
+    await runAgentTurn("conv-1");
+
+    const texto = sendAgentTextMock.mock.calls[0][2] as string;
+    expect(texto).toBe(`${RENGLON_INCA}\n\n${TEXTO_CONFIRMAR_INVENTARIO}`);
+    expect(texto).not.toContain("$99");
+    expect(warn).not.toHaveBeenCalledWith("cifra_sin_fuente", expect.anything());
+  });
+
+  it("agotado: el texto fijo es TEXTO_SIN_STOCK, literal, y el motivo de la escalada es sin_stock", async () => {
+    catalogoEncontro([LINEA_CASCO_AGOTADO]);
+    generateMock.mockResolvedValueOnce({
+      text: "¡Claro que sí, tenemos ese casco!",
+      usage: NO_USAGE,
+      steps: TOOLRESULT_CASCO,
+    });
+
+    await runAgentTurn("conv-1");
+
+    expect(escalateConversationMock).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ motivo: "sin_stock" })
+    );
+    const texto = sendAgentTextMock.mock.calls[0][2] as string;
+    expect(texto).toBe(`• CASCO LS2 FF353 NEGRO M: $95,00 BCV (Bs. 3.800,00) — Agotado\n\n${TEXTO_SIN_STOCK}`);
+  });
+
+  it("una lista: se agrupa por lo que el cliente pidió y lo que no apareció se dice tal cual", async () => {
+    catalogoEncontro(
+      [{ ...LINEA_INCA, productoPedido: "aceite" }],
+      {
+        consultas: [
+          { query: "aceite", productos: ["aceite", "cadena"], resultado: "con_existencia", corregido: null },
+          { query: "cadena", productos: ["aceite", "cadena"], resultado: "sin_resultados", corregido: null },
+        ],
+      }
+    );
+    generateMock.mockResolvedValueOnce({ text: "", usage: NO_USAGE, steps: TOOLRESULT_INCA });
+
+    await runAgentTurn("conv-1");
+
+    expect(sendAgentTextMock.mock.calls[0][2]).toBe(
+      `*aceite*\n${RENGLON_INCA}\n\n• cadena: no lo encontré en el catálogo\n\n${TEXTO_CONFIRMAR_INVENTARIO}`
+    );
+  });
+
+  it("con una corrección del corrector de tipeos, el mensaje abre nombrándola", async () => {
+    catalogoEncontro([LINEA_INCA], {
+      consultas: [
+        {
+          query: "aseite inca",
+          productos: null,
+          resultado: "con_existencia",
+          corregido: [{ original: "aseite", corregido: "aceite" }],
+        },
+      ],
+    });
+    generateMock.mockResolvedValueOnce({ text: "", usage: NO_USAGE, steps: TOOLRESULT_INCA });
+
+    await runAgentTurn("conv-1");
+
+    expect(sendAgentTextMock.mock.calls[0][2]).toBe(
+      `Como no encontré exactamente lo que escribiste, busqué ACEITE en lugar de aseite:\n${RENGLON_INCA}\n\n${TEXTO_CONFIRMAR_INVENTARIO}`
+    );
+  });
+
+  describe("el texto armado pasa por las mismas guardas que cualquier salida", () => {
+    it("price-guard: las cifras del bloque tienen fuente en el toolResult del turno, y con la fuente el texto sale intacto", async () => {
+      catalogoEncontro([LINEA_INCA]);
+      generateMock.mockResolvedValueOnce({ text: "", usage: NO_USAGE, steps: TOOLRESULT_INCA });
+
+      await runAgentTurn("conv-1");
+
+      expect(sendAgentTextMock.mock.calls[0][2]).toContain("$2,20 BCV (Bs. 87,00)");
+      expect(sendAgentTextMock.mock.calls[0][2]).not.toBe(TEXTO_PRECIO_A_CONFIRMAR);
+    });
+
+    it("price-guard: SIN esa fuente (un toolResult que no trae la cifra) el bloque armado se reemplaza igual — la guarda corre sobre el texto final", async () => {
+      const warn = vi.spyOn(log, "warn");
+      catalogoEncontro([LINEA_INCA]);
+      generateMock.mockResolvedValueOnce({ text: "", usage: NO_USAGE, steps: [{}, {}] });
+
+      await runAgentTurn("conv-1");
+
+      expect(warn).toHaveBeenCalledWith("cifra_sin_fuente", expect.objectContaining({ conversationId: "conv-1" }));
+      expect(sendAgentTextMock.mock.calls[0][2]).toBe(TEXTO_PRECIO_A_CONFIRMAR);
+    });
+
+    it("identidad: un nombre de catálogo con 'automático' o 'digital' no dispara la reescritura (la guarda corre sobre el texto armado)", async () => {
+      catalogoEncontro([
+        { ...LINEA_INCA, nombre: "TACOMETRO DIGITAL BERA SBR" },
+        { ...LINEA_INCA, productId: "p2", nombre: "AUTOMATICO HORSE" },
+      ]);
+      generateMock.mockResolvedValueOnce({
+        text: "",
+        usage: NO_USAGE,
+        steps: [
+          {
+            toolResults: [{ output: { results: [{ precio: "$2,20 BCV (Bs. 87,00)" }] } }],
+          },
+        ],
+      });
+
+      await runAgentTurn("conv-1");
+
+      expect(generateTextMock).not.toHaveBeenCalled();
+      expect(sendAgentTextMock.mock.calls[0][2]).toContain("TACOMETRO DIGITAL BERA SBR");
+    });
+  });
+
+  it("una cotización con una pregunta de filtro pendiente de OTRA búsqueda del mismo turno: gana la cotización y se escala", async () => {
+    catalogoEncontro([LINEA_INCA], { generico: true, preguntaFiltro: "producto" });
+    generateMock.mockResolvedValueOnce({ text: "", usage: NO_USAGE, steps: TOOLRESULT_INCA });
+
+    await runAgentTurn("conv-1");
+
+    expect(escalateConversationMock).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ motivo: "confirmar_inventario" })
+    );
+    expect(sendAgentTextMock.mock.calls[0][2]).toBe(`${RENGLON_INCA}\n\n${TEXTO_CONFIRMAR_INVENTARIO}`);
+  });
+});
+
+describe("runAgentTurn — la pregunta de filtro sale LITERAL (T3b, 28/9/2026)", () => {
+  function catalogoPregunta(pregunta: "moto" | "producto") {
+    buildCatalogToolMock.mockImplementationOnce((_deps, catalogOutcome) => {
+      catalogOutcome.ran = true;
+      catalogOutcome.generico = true;
+      catalogOutcome.preguntaFiltro = pregunta;
+      return {};
+    });
+  }
+
+  it("con preguntaFiltro 'producto' y sin cotización: sale PREGUNTA_FILTRO_PRODUCTO, no lo que redactó el modelo", async () => {
+    catalogoPregunta("producto");
+    generateMock.mockResolvedValueOnce({
+      text: "¿Qué marca de casco te gusta y para qué talla, y cuánto quieres gastar?",
+      usage: NO_USAGE,
+      steps: [{}, {}],
+    });
+
+    await runAgentTurn("conv-1");
+
+    expect(sendAgentTextMock.mock.calls[0][2]).toBe(PREGUNTA_FILTRO_PRODUCTO);
+    expect(escalateConversationMock).not.toHaveBeenCalled();
+  });
+
+  it("con preguntaFiltro 'moto': sale PREGUNTA_FILTRO, y una línea previa corta se conserva arriba", async () => {
+    catalogoPregunta("moto");
+    generateMock.mockResolvedValueOnce({
+      text: "¡Claro, con gusto!",
+      usage: NO_USAGE,
+      steps: [{}, {}],
+    });
+
+    await runAgentTurn("conv-1");
+
+    expect(sendAgentTextMock.mock.calls[0][2]).toBe(`¡Claro, con gusto!\n\n${PREGUNTA_FILTRO}`);
+  });
+
+  it("con texto vacío del modelo la pregunta igual sale (y el turno no queda mudo)", async () => {
+    catalogoPregunta("producto");
+    generateMock.mockResolvedValueOnce({ text: "", usage: NO_USAGE, steps: [{}, {}] });
+
+    await runAgentTurn("conv-1");
+
+    expect(sendAgentTextMock.mock.calls[0][2]).toBe(PREGUNTA_FILTRO_PRODUCTO);
+  });
+});
+
+describe("runAgentTurn — guarda de promesa falsa (T3b, 28/9/2026)", () => {
+  it("el texto afirma que un asesor ya tiene el caso, no hubo escalada y no hay asesor: se escala con seguimiento para que sea verdad", async () => {
+    generateMock.mockResolvedValueOnce({
+      text: "Un asesor ya tiene tu caso y te escribe en un momento.",
+      usage: NO_USAGE,
+      steps: [{}, {}],
+    });
+
+    await runAgentTurn("conv-1");
+
+    expect(escalateConversationMock).toHaveBeenCalledTimes(1);
+    expect(escalateConversationMock).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ conversationId: "conv-1", motivo: "seguimiento" })
+    );
+    const llamada = sendAgentTextMock.mock.calls[0];
+    expect(llamada[2]).toBe("Un asesor ya tiene tu caso y te escribe en un momento.");
+    const opciones = llamada[3] as { isAutoReply?: boolean } | undefined;
+    expect(opciones?.isAutoReply).toBe(true);
+  });
+
+  it("si la escalada resulta sin nadie disponible, se agrega la despedida sin asesor (la promesa no puede prometer una respuesta inmediata)", async () => {
+    escalateConversationMock.mockResolvedValueOnce({ escalated: true, unassigned: true, assignedAgentName: null });
+    generateMock.mockResolvedValueOnce({
+      text: "Ya te paso con un asesor.",
+      usage: NO_USAGE,
+      steps: [{}, {}],
+    });
+
+    await runAgentTurn("conv-1");
+
+    expect(sendAgentTextMock.mock.calls[0][2]).toBe(`Ya te paso con un asesor. ${DESPEDIDA_SIN_ASESOR}`);
+  });
+
+  it("si el turno YA escaló (por la herramienta del modelo), no vuelve a escalar", async () => {
+    buildEscalateToolMock.mockImplementationOnce((_deps, outcome) => {
+      outcome.escalated = true;
+      outcome.assignedAgentName = "María";
+      outcome.motivo = "intencion_compra";
+      return {};
+    });
+    generateMock.mockResolvedValueOnce({
+      text: "Ya te paso con un asesor.",
+      usage: NO_USAGE,
+      steps: [{}, {}],
+    });
+
+    await runAgentTurn("conv-1");
+
+    expect(escalateConversationMock).not.toHaveBeenCalled();
+    expect(sendAgentTextMock.mock.calls[0][2]).toBe("Ya te paso con un asesor.");
+  });
+
+  it("con asesor asignado no escala: la promesa ya es verdad", async () => {
+    state.conversation = { ...state.conversation, assigned_agent_id: "agent-9", deal_status: "none" };
+    generateMock.mockResolvedValueOnce({
+      text: "Un asesor ya tiene tu caso.",
+      usage: NO_USAGE,
+      steps: [{}, {}],
+    });
+
+    await runAgentTurn("conv-1");
+
+    expect(escalateConversationMock).not.toHaveBeenCalled();
+    expect(sendAgentTextMock.mock.calls[0][2]).toBe("Un asesor ya tiene tu caso.");
+  });
+
+  it("una frase condicional ('si quieres, te paso con un asesor') no es una promesa: no escala", async () => {
+    generateMock.mockResolvedValueOnce({
+      text: "Si quieres, te paso con un asesor.",
+      usage: NO_USAGE,
+      steps: [{}, {}],
+    });
+
+    await runAgentTurn("conv-1");
+
+    expect(escalateConversationMock).not.toHaveBeenCalled();
+    expect(sendAgentTextMock.mock.calls[0][2]).toBe("Si quieres, te paso con un asesor.");
+  });
+
+  it("un texto sin ninguna promesa de asesor no escala", async () => {
+    await runAgentTurn("conv-1");
+
+    expect(escalateConversationMock).not.toHaveBeenCalled();
+  });
+});
+
+describe("runAgentTurn — una queja SIEMPRE llama a escalateConversation (T3b, 28/9/2026)", () => {
+  it("con asesor asignado, la queja llama a escalateConversation (queda la nota de reiteración) en vez de callarse", async () => {
+    state.conversation = { ...state.conversation, assigned_agent_id: "agent-9", deal_status: "none" };
+    classifyIntentMock.mockResolvedValue({
+      intent: "queja",
+      usage: { inputTokens: 5, outputTokens: 1, totalTokens: 6 },
+    });
+    escalateConversationMock.mockResolvedValueOnce({
+      escalated: true,
+      assignedAgentName: "Pedro",
+      alreadyAssigned: true,
+    });
+    generateMock.mockResolvedValueOnce({
+      text: "Lamento lo que pasó, ya lo tenemos presente.",
+      usage: NO_USAGE,
+      steps: [{}],
+    });
+
+    await runAgentTurn("conv-1");
+
+    expect(escalateConversationMock).toHaveBeenCalledTimes(1);
+    expect(escalateConversationMock).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ conversationId: "conv-1", motivo: "queja" })
+    );
+    expect(sendAgentTextMock.mock.calls[0][2]).toBe("Lamento lo que pasó, ya lo tenemos presente.");
+  });
+
+  it("con asesor asignado y sin texto del modelo, la queja sale con la despedida con asesor (no queda muda)", async () => {
+    state.conversation = { ...state.conversation, assigned_agent_id: "agent-9", deal_status: "none" };
+    classifyIntentMock.mockResolvedValue({
+      intent: "queja",
+      usage: { inputTokens: 5, outputTokens: 1, totalTokens: 6 },
+    });
+    generateMock.mockResolvedValueOnce({ text: "", usage: NO_USAGE, steps: [{}] });
+
+    await runAgentTurn("conv-1");
+
+    expect(escalateConversationMock).toHaveBeenCalledTimes(1);
+    expect(sendAgentTextMock.mock.calls[0][2]).toBe(DESPEDIDA_CON_ASESOR_ABIERTA);
   });
 });

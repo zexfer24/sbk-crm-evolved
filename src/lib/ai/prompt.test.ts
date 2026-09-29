@@ -1009,7 +1009,7 @@ describe("Tarea T5 — Lecciones de Seba en el prompt (18/9/2026)", () => {
      * tiene que ceder explícitamente: la línea del sufijo dice que gana por
      * encima del protocolo, no solo que "no vuelvas a pasar el caso".
      */
-    it("dice que gana sobre el protocolo del caso, incluso en devolución/queja", () => {
+    it("dice que gana sobre el protocolo del caso, incluso en devolución", () => {
       const devolucion = buildInstructions({
         intent: "devolucion",
         introducedThisTurn: false,
@@ -1018,6 +1018,28 @@ describe("Tarea T5 — Lecciones de Seba en el prompt (18/9/2026)", () => {
 
       expect(devolucion).toMatch(/gana sobre/i);
       expect(devolucion).toMatch(/no lo vuelvas a pasar/i);
+    });
+
+    /**
+     * T3b, plan "Seba encuentra, no insiste, y el mostrador no deja a nadie
+     * esperando" (28/9/2026): "Una queja siempre se escala" (GUARDRAIL_RULES)
+     * chocaba con esta línea, que decía que ganaba sobre TODO protocolo que
+     * mande escalar, queja incluida. Con asesor asignado el sistema escala la
+     * queja en código (nota de reiteración): la excepción tiene que estar
+     * dicha, para que el modelo no la lea como "no la registres".
+     */
+    it("la queja es la excepción: no queda listada entre los protocolos que ceden", () => {
+      const queja = buildInstructions({
+        intent: "queja",
+        introducedThisTurn: false,
+        yaEscalada: true,
+      }).slice(SYSTEM_PROMPT.length);
+
+      expect(queja).not.toMatch(/escalar siempre \(devolución, queja/i);
+      expect(queja).toMatch(/excepción/i);
+      expect(queja).toMatch(/una queja siempre se escala/i);
+      // La regla del prompt estático y la del sufijo dicen lo mismo.
+      expect(GUARDRAIL_RULES).toMatch(/una queja siempre se escala/i);
     });
 
     it("con la herramienta restringida disponible, suma la variante de 'solo si confirma compra'; sin ella, no la nombra", () => {
@@ -1451,6 +1473,23 @@ describe("T4 — políticas con fuente, promesas verdaderas, pedidos viejos, lin
       expect(seccion51).toContain(TEXTO_NO_IDENTIFICADO);
       expect(seccion3).toContain(PREGUNTA_FILTRO);
       expect(seccion3).toContain(PREGUNTA_FILTRO_PRODUCTO);
+    });
+  });
+
+  describe("dependeDeLaMoto: cuándo usar la entrada de buscarRepuesto (T3b, 28/9/2026)", () => {
+    it("la sección 4 nombra la entrada y dice cuándo va en true y cuándo no", () => {
+      expect(seccion4).toContain("dependeDeLaMoto");
+      expect(seccion4).toMatch(/dependeDeLaMoto[^.]*modelo de (?:su|la) moto[^.]*true/i);
+      expect(seccion4).toMatch(/aceites, cascos, intercomunicadores, maletas, accesorios/i);
+    });
+
+    it("dice que el sistema elige la pregunta: el modelo solo declara si depende de la moto", () => {
+      expect(seccion4).toMatch(/el sistema (?:decide|elige) cuál/i);
+    });
+
+    it("el texto nuevo va en el prefijo cacheable y no en el sufijo del turno", () => {
+      expect(cacheablePrefix()).toContain("dependeDeLaMoto");
+      expect(buildInstructions(TURN).slice(cacheablePrefix().length)).not.toContain("dependeDeLaMoto");
     });
   });
 

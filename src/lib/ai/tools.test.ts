@@ -217,8 +217,21 @@ function simularBuscarProductos(products: FakeRpcRow[], args: AppliedRpcArgs) {
   }));
 }
 
-function createFakeSupabase(products: FakeRpcRow[], synonyms: FakeSynonymRow[] = [], conversationId = "conv-1") {
+function createFakeSupabase(
+  products: FakeRpcRow[],
+  synonyms: FakeSynonymRow[] = [],
+  conversationId = "conv-1",
+  /**
+   * T3b (28/9/2026): lo que devolvería `corregir_terminos` (migración
+   * 20260928020000) — solo para los términos que de verdad llegan en
+   * `p_terminos`, como haría la función real. Vacío por defecto: el corrector
+   * "no encuentra nada que corregir" y la búsqueda sigue como antes.
+   */
+  correcciones: { original: string; corregido: string }[] = []
+) {
   const insertedQuotes: Record<string, unknown>[] = [];
+  /** T3b: los argumentos de cada llamada a `corregir_terminos`, en orden. */
+  const correctorCalls: { p_terminos: string[]; p_protegidos: string[] }[] = [];
   /** T2 (25-26/9/2026): los argumentos de la última llamada a `buscar_productos`, o null si no se llegó a llamar. */
   let appliedRpcArgs: AppliedRpcArgs | null = null;
   /** T3a (28/9/2026): TODAS las llamadas a `buscar_productos`, en orden (listas de productos, reintento con más filas). */
@@ -240,10 +253,19 @@ function createFakeSupabase(products: FakeRpcRow[], synonyms: FakeSynonymRow[] =
     // conjunto COMPLETO (antes del límite) y recién ahí ordena y recorta a
     // `p_limite` — el mismo orden que `order by puntaje desc, puntaje_moto
     // desc, (stock_quantity > 0) desc, name`.
-    rpc(name: string, args: AppliedRpcArgs) {
+    rpc(name: string, rawArgs: AppliedRpcArgs | { p_terminos: string[]; p_protegidos: string[] }) {
+      if (name === "corregir_terminos") {
+        const a = rawArgs as { p_terminos: string[]; p_protegidos: string[] };
+        correctorCalls.push(a);
+        return Promise.resolve({
+          data: correcciones.filter((c) => a.p_terminos.includes(c.original)),
+          error: null,
+        });
+      }
       if (name !== "buscar_productos") {
         throw new Error(`Fake Supabase: rpc no soportada en este test: ${name}`);
       }
+      const args = rawArgs as AppliedRpcArgs;
       appliedRpcArgs = args;
       rpcCalls.push(args);
       return Promise.resolve({ data: simularBuscarProductos(products, args), error: null });
@@ -296,6 +318,7 @@ function createFakeSupabase(products: FakeRpcRow[], synonyms: FakeSynonymRow[] =
     client,
     insertedQuotes,
     rpcCalls,
+    correctorCalls,
     getAppliedRpcArgs: () => appliedRpcArgs,
     getAppliedSynonymFilter: () => appliedSynonymFilter,
     getAppliedSynonymLimit: () => appliedSynonymLimit,
@@ -2919,6 +2942,7 @@ describe("buildCatalogTool — lo que la herramienta deja en el CatalogOutcome (
         cilindrada: [["200"]],
         grupos: [["asiento"]],
         opcionales: [["negro"]],
+        corregido: null,
         resultado: "con_existencia",
       },
       expect.objectContaining({ query: "nada de nada", resultado: "sin_resultados" }),
@@ -2955,5 +2979,119 @@ describe("buildCatalogTool — sin Redis la herramienta sigue funcionando como a
     await correr(herramienta(client, segunda), { query: "casco" });
     expect(primera.generico).toBe(true);
     expect(segunda.generico).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// T3b, plan "Seba encuentra, no insiste, y el mostrador no deja a nadie
+// esperando" (28/9/2026): el segundo intento tolerante a tipeos (T2). Si el
+// primer intento no calza, se pide la corrección a `corregir_terminos` y se
+// reintenta UNA vez. Con corrección, la respuesta la nombra y el asesor
+// confirma (el cliente escribió una palabra que no estaba en el catálogo).
+// ---------------------------------------------------------------------------
+describe("buildCatalogTool — el corrector de tipeos como segundo intento (T3b)", () => {
+  const soporte = fila("sop", "SOPORTE CELULAR IPONE 11", 5, 12);
+
+  it("'soporte iphone' no calza; se corrige a ipone, se reintenta una vez, se cotiza y el asesor confirma", async () => {
+    const { client, rpcCalls, correctorCalls } = createFakeSupabase([soporte], [], "conv-1", [
+      { original: "iphone", corregido: "ipone" },
+    ]);
+    const catalogOutcome = nuevoCatalogOutcome();
+
+    const result = await correr(herramienta(client, catalogOutcome), { query: "soporte iphone" });
+
+    // El primer intento buscó lo que escribió el cliente; el segundo, lo corregido.
+    expect(rpcCalls.map((c) => c.p_terminos)).toEqual([[["soporte"], ["iphone"]], [["soporte"], ["ipone"]]]);
+    // Solo los términos obligatorios viajan al corrector; las motos conocidas van protegidas.
+    expect(correctorCalls).toHaveLength(1);
+    expect(correctorCalls[0].p_terminos).toEqual(["soporte", "iphone"]);
+    expect(correctorCalls[0].p_protegidos).toContain("bera");
+    expect(correctorCalls[0].p_protegidos).toContain("beta");
+
+    expect(result.results.map((r) => r.nombre)).toEqual(["SOPORTE CELULAR IPONE 11"]);
+    expect(result.instruccionParaTuRespuesta).toContain("busqué IPONE en lugar de iphone");
+    expect(result.instruccionParaTuRespuesta).toMatch(/motivo confirmar_inventario/);
+    expect(catalogOutcome.conExistencia).toBe(true);
+    expect(catalogOutcome.sinResultados).toBe(false);
+    expect(catalogOutcome.cotizacion.map((l) => l.nombre)).toEqual(["SOPORTE CELULAR IPONE 11"]);
+    expect(catalogOutcome.consultas).toEqual([
+      expect.objectContaining({
+        query: "soporte iphone",
+        grupos: [["soporte"], ["ipone"]],
+        corregido: [{ original: "iphone", corregido: "ipone" }],
+        resultado: "con_existencia",
+      }),
+    ]);
+  });
+
+  it("sin corrección posible (el corrector no devuelve nada): sigue como hoy, no identificado y sin segundo intento", async () => {
+    const { client, rpcCalls, correctorCalls } = createFakeSupabase([soporte]);
+    const catalogOutcome = nuevoCatalogOutcome();
+
+    const result = await correr(herramienta(client, catalogOutcome), { query: "soporte samsung" });
+
+    expect(correctorCalls).toHaveLength(1);
+    expect(rpcCalls).toHaveLength(1);
+    expect(result.results).toEqual([]);
+    expect(result.instruccionParaTuRespuesta).toContain(TEXTO_NO_IDENTIFICADO);
+    expect(catalogOutcome.sinResultados).toBe(true);
+    expect(catalogOutcome.consultas[0]).toEqual(expect.objectContaining({ corregido: null, resultado: "sin_resultados" }));
+  });
+
+  it("si el primer intento calza, la RPC del corrector NO se llama", async () => {
+    const { client, correctorCalls } = createFakeSupabase([soporte], [], "conv-1", [
+      { original: "soporte", corregido: "soporta" },
+    ]);
+
+    await correr(herramienta(client, nuevoCatalogOutcome()), { query: "soporte celular" });
+
+    expect(correctorCalls).toHaveLength(0);
+  });
+
+  it("si el reintento con lo corregido tampoco calza, sale no identificado y queda anotado lo que se intentó", async () => {
+    const { client, rpcCalls } = createFakeSupabase([soporte], [], "conv-1", [{ original: "iphone", corregido: "ipone" }]);
+    const catalogOutcome = nuevoCatalogOutcome();
+
+    // "cargador" no está en ningún nombre: aunque iphone se corrija, el grupo obligatorio no calza.
+    const result = await correr(herramienta(client, catalogOutcome), { query: "cargador iphone" });
+
+    expect(rpcCalls).toHaveLength(2);
+    expect(result.instruccionParaTuRespuesta).toContain(TEXTO_NO_IDENTIFICADO);
+    expect(catalogOutcome.sinResultados).toBe(true);
+    expect(catalogOutcome.consultas[0].corregido).toEqual([{ original: "iphone", corregido: "ipone" }]);
+  });
+
+  it("con lo corregido agotado, la instrucción sigue siendo la de sin stock y nombra la corrección", async () => {
+    const { client } = createFakeSupabase([fila("sop", "SOPORTE CELULAR IPONE 11", 0, 12)], [], "conv-1", [
+      { original: "iphone", corregido: "ipone" },
+    ]);
+    const catalogOutcome = nuevoCatalogOutcome();
+
+    const result = await correr(herramienta(client, catalogOutcome), { query: "soporte iphone" });
+
+    expect(catalogOutcome.agotados).toBe(true);
+    expect(result.instruccionParaTuRespuesta).toContain(TEXTO_SIN_STOCK);
+    expect(result.instruccionParaTuRespuesta).toContain("busqué IPONE en lugar de iphone");
+  });
+
+  it("en una lista, cada producto puede corregirse y el resumen lo nombra", async () => {
+    const { client, correctorCalls } = createFakeSupabase(
+      [fila("bat", "BATERIA BERA 12V", 4, 30), soporte],
+      [],
+      "conv-1",
+      [{ original: "iphone", corregido: "ipone" }]
+    );
+    const catalogOutcome = nuevoCatalogOutcome();
+
+    const result = await correr(herramienta(client, catalogOutcome), {
+      query: "",
+      productos: ["bateria", "soporte iphone"],
+    });
+
+    // La batería calza a la primera; solo "soporte iphone" pasa por el corrector.
+    expect(correctorCalls).toHaveLength(1);
+    expect(result.porProducto?.map((r) => r.estado)).toEqual(["con_existencia", "con_existencia"]);
+    expect(result.instruccionParaTuRespuesta).toContain("busqué IPONE en lugar de iphone");
+    expect(catalogOutcome.consultas.map((c) => c.corregido)).toEqual([null, [{ original: "iphone", corregido: "ipone" }]]);
   });
 });

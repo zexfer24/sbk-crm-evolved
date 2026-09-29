@@ -5,7 +5,8 @@ import type { SupabaseClient } from "@supabase/supabase-js";
 import type { Database } from "@/lib/supabase/database.types";
 import { BUSINESS_NAME } from "@/lib/brand";
 import { getBcvRate } from "@/lib/ai/bcv";
-import { catalogQuery, type SearchSynonym } from "@/lib/ai/catalog-search";
+import { catalogQuery, MOTOS_CONOCIDAS, type SearchSynonym } from "@/lib/ai/catalog-search";
+import { corregirTerminos, describirCorreccion, type CorreccionTermino } from "@/lib/ai/catalog-correction";
 import { guardarPedido, leerPedido } from "@/lib/ai/catalog-memory";
 import { pideVerTodo } from "@/lib/ai/catalog-request";
 import { formatQuote } from "@/lib/ai/precio";
@@ -130,6 +131,18 @@ const SIN_STOCK_CASO_INSTRUCTION =
  */
 const NO_IDENTIFICADO_INSTRUCTION =
   `No encontraste nada, o no queda claro cuál es: di «${TEXTO_NO_IDENTIFICADO}» y llama a escalarAAsesor con motivo no_identificado. No inventes ni sugieras alternativas.`;
+
+/**
+ * T3b (28/9/2026): el cliente escribió una palabra que el catálogo no tiene y
+ * el segundo intento buscó otra (`corregir_terminos`). El mensaje que sale
+ * (`agent.ts`) ya lo dice por código; esta frase le evita al modelo presentar
+ * el resultado como si fuera exactamente lo que el cliente pidió. El asesor
+ * confirma que es lo que buscaba (por eso la instrucción sigue siendo la de
+ * confirmar el inventario, aunque haya stock).
+ */
+function instruccionDeCorreccion(correcciones: readonly CorreccionTermino[]): string {
+  return `Ojo: como el catálogo no tiene lo que el cliente escribió, ${describirCorreccion(correcciones)}. No lo presentes como si fuera exactamente lo que pidió: un asesor confirma que es lo que busca.`;
+}
 
 /**
  * K2 (20/9/2026): corrige un efecto colateral de K (commit 3d96863, "Seba
@@ -306,6 +319,13 @@ export interface ConsultaCatalogo {
   cilindrada: string[][];
   grupos: string[][];
   opcionales: string[][];
+  /**
+   * T3b (28/9/2026): las palabras que el corrector de tipeos (T2) cambió para
+   * el SEGUNDO intento, o `null` si no hubo corrección. `grupos` ya trae lo
+   * corregido (lo que de verdad se buscó); `query` conserva lo que escribió
+   * el cliente. Se anota también cuando el reintento no encontró nada.
+   */
+  corregido: CorreccionTermino[] | null;
   resultado: ResultadoConsulta;
 }
 
@@ -543,6 +563,7 @@ export function buildCatalogTool(
         cilindrada: [],
         grupos: [],
         opcionales: [],
+        corregido: null,
         resultado: estado,
       },
       ...extra,
@@ -561,15 +582,21 @@ export function buildCatalogTool(
     if (moto.length === 0) moto = p.motoMemoria;
     let cilindrada = unirGrupos(cq.cilindrada, p.cilindradaEntrada);
     if (cilindrada.length === 0) cilindrada = p.cilindradaMemoria;
-    const clave = claveDelProducto(cq.grupos);
+    // T3b (28/9/2026): `grupos`/`clave`/`correcciones` son `let` porque el
+    // segundo intento del corrector de tipeos los reemplaza; `consulta` y
+    // `base` los leen al momento de armar el resultado, no al declararse.
+    let grupos = cq.grupos;
+    let clave = claveDelProducto(grupos);
+    let correcciones: CorreccionTermino[] | null = null;
 
     const consulta = (resultado: ResultadoConsulta): ConsultaCatalogo => ({
       query: p.texto,
       productos: p.productos,
       moto,
       cilindrada,
-      grupos: cq.grupos,
+      grupos,
       opcionales: cq.opcionales,
+      corregido: correcciones,
       resultado,
     });
     const base = (estado: ResultadoConsulta, extra: Partial<ResultadoUno> = {}) =>
@@ -581,7 +608,7 @@ export function buildCatalogTool(
     // era cortar con `.limit()` SIN order y ordenar después esas pocas filas.
     const consultar = async (limite: number) =>
       supabase.rpc("buscar_productos", {
-        p_terminos: cq.grupos,
+        p_terminos: grupos,
         p_opcionales: cq.opcionales,
         p_moto: moto,
         p_cilindrada: cilindrada,
@@ -608,9 +635,41 @@ export function buildCatalogTool(
     // TODOS — la marca ya no se descarta para "salvar" la búsqueda. Lo que
     // antes tumbaba un producto legítimo (una palabra descriptiva que el
     // nombre no trae) ahora es un opcional que solo desempata.
-    const requerido = cq.grupos.length;
+    const requerido = grupos.length;
+    const sinCoincidencia = (lista: FilaBusqueda[]) => lista.length === 0 || lista[0].puntaje_maximo < requerido;
 
-    if (filas.length === 0 || filas[0].puntaje_maximo < requerido) {
+    // T3b (28/9/2026): segundo intento tolerante a tipeos (T2, migración
+    // 20260928020000). SOLO si el primero no calzó los grupos obligatorios:
+    // un primer intento que calza nunca toca el corrector. `MOTOS_CONOCIDAS`
+    // va protegida ("beta" es una moto, no un tipeo de "bera"). Se reintenta
+    // UNA vez; sin corrección posible, o si el reintento tampoco calza, sigue
+    // el camino "no identificado" de siempre.
+    if (sinCoincidencia(filas)) {
+      const propuestas = await corregirTerminos(
+        supabase,
+        grupos.map((g) => g[0]).filter((t): t is string => Boolean(t)),
+        [...MOTOS_CONOCIDAS],
+        conversationId
+      );
+      if (propuestas.length > 0) {
+        const nuevoTermino = new Map(propuestas.map((c) => [c.original, c.corregido]));
+        correcciones = propuestas;
+        grupos = grupos.map((g) => {
+          const corregido = g[0] === undefined ? undefined : nuevoTermino.get(g[0]);
+          return corregido === undefined ? g : [corregido];
+        });
+        clave = claveDelProducto(grupos);
+
+        const reintento = await consultar(MAX_CATALOG_RESULTS);
+        if (reintento.error) {
+          log.error("herramienta_catalogo_fallo", { conversationId, detail: errorText(reintento.error) });
+        } else {
+          filas = reintento.data ?? [];
+        }
+      }
+    }
+
+    if (sinCoincidencia(filas)) {
       return base("sin_resultados", { instrucciones: [NO_IDENTIFICADO_INSTRUCTION] });
     }
 
@@ -734,6 +793,7 @@ export function buildCatalogTool(
       masViejo: masViejo(mostrados.map((r) => r.updated_at)),
       instrucciones: [
         estado === "con_existencia" ? CONFIRMAR_INVENTARIO_INSTRUCTION : SIN_STOCK_CASO_INSTRUCTION,
+        ...(correcciones ? [instruccionDeCorreccion(correcciones)] : []),
         ...(avisarRecorte ? [RECORTE_INSTRUCTION] : []),
       ],
     });
@@ -948,6 +1008,10 @@ export function buildCatalogTool(
         const resumen = `Resumen por producto, en el orden pedido: ${resultados
           .map((r, i) => `${lista[i]} (${DESCRIPCION_DE_ESTADO[r.estado]})`)
           .join(", ")}.`;
+        const correccionesDeLista = resultados
+          .filter((r) => r.quoted.length > 0)
+          .flatMap((r) => r.consulta.corregido ?? []);
+        const avisoCorreccion = correccionesDeLista.length > 0 ? instruccionDeCorreccion(correccionesDeLista) : null;
 
         await guardarPedido(conversationId, {
           ultimoQuery: pedido?.ultimoQuery ?? null,
@@ -966,7 +1030,7 @@ export function buildCatalogTool(
           tasaBcvUsada: rate,
           tasaDesactualizada: isStale,
           inventarioDesactualizado: freshness.isStale,
-          instruccionParaTuRespuesta: [casoLista, resumen, inventoryAgeInstruction(freshness)]
+          instruccionParaTuRespuesta: [casoLista, resumen, avisoCorreccion, inventoryAgeInstruction(freshness)]
             .filter((linea): linea is string => linea !== null)
             .join(" "),
         };

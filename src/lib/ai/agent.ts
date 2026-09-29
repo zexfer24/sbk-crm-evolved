@@ -61,10 +61,14 @@ import {
   sebaGreetingFollowUp,
   TEXTO_CONFIRMAR_INVENTARIO,
   TEXTO_NO_IDENTIFICADO,
+  PREGUNTA_FILTRO,
+  PREGUNTA_FILTRO_PRODUCTO,
   TEXTO_PRECIO_A_CONFIRMAR,
   TEXTO_SIN_STOCK,
 } from "@/lib/ai/seba";
 import { findUnsourcedFigure } from "@/lib/ai/price-guard";
+import { afirmaPromesaDeAsesor } from "@/lib/ai/promise-guard";
+import { armarMensajeDeCotizacion, armarMensajeDePregunta } from "@/lib/ai/quote-message";
 import { errorText, log } from "@/lib/log";
 import { stepToolChoice } from "@/lib/ai/tool-choice";
 import { conTelemetriaDeTurno, turnCallsSnapshot } from "@/lib/ai/turn-telemetry";
@@ -2909,7 +2913,18 @@ async function runTurnPhases(
   // así que este caso solo puede darse porque el tool loop se quedó sin
   // pasos sin escalar — el texto que haya redactado sale tal cual, sin la
   // despedida fija de esta red.
-  if (!esperandoAsesor && !outcome.escalated && (intent === "devolucion" || intent === "queja")) {
+  //
+  // T3b, plan "Seba encuentra, no insiste, y el mostrador no deja a nadie
+  // esperando" (28/9/2026): una QUEJA se salta esa excepción — "una queja
+  // siempre escala". Con asesor asignado el modelo está en modo restringido
+  // (solo `intencion_compra`), así que ni siquiera podía pedirla, y esta red
+  // se callaba: la queja no dejaba ningún rastro. `escalate.ts` ya resuelve
+  // el caso (rama `alreadyAssigned`: no reclama a otro asesor, deja la nota
+  // "IA reiteró la escalada" y etiqueta el reclamo), y si el modelo no
+  // redactó nada, sale la despedida con asesor en vez de una conversación
+  // muda. La devolución conserva la excepción de siempre.
+  const escalaPorReclamo = intent === "queja" || (!esperandoAsesor && intent === "devolucion");
+  if (!outcome.escalated && escalaPorReclamo) {
     const forced = await escalateConversation(supabase, {
       conversationId,
       contactId: target.contactId,
@@ -2969,7 +2984,12 @@ async function runTurnPhases(
   // respuestas SIEMPRE nombren al asesor, y eso sigue siendo cierto tenga o
   // no el chat un dueño nuevo que reclamar — la diferencia es que acá no se
   // vuelve a tocar la base.
-  if (catalogOutcome.ran && !outcome.escalated && !catalogOutcome.generico) {
+  //
+  // T3b (28/9/2026): con una COTIZACIÓN armada en el mismo turno, la red
+  // escala aunque otra búsqueda del turno haya dejado `generico`: el
+  // mensaje que sale (más abajo) cierra con el texto fijo que promete al
+  // asesor, y una promesa sin escalada es justo lo que esta corrida cierra.
+  if (catalogOutcome.ran && !outcome.escalated && (!catalogOutcome.generico || catalogOutcome.cotizacion.length > 0)) {
     const motivoCatalogo: EscalationMotivo = catalogOutcome.conExistencia
       ? "confirmar_inventario"
       : catalogOutcome.agotados
@@ -2999,7 +3019,9 @@ async function runTurnPhases(
     // el turno no redactó nada, el texto fijo queda como la respuesta
     // entera — ya trae la promesa completa, no hace falta una despedida
     // genérica encima.
-    if (!/asesor/i.test(text)) {
+    // T3b (28/9/2026): con cotización, el texto fijo YA va dentro del mensaje
+    // que arma el código (más abajo); anexarlo acá lo repetiría dos veces.
+    if (!/asesor/i.test(text) && catalogOutcome.cotizacion.length === 0) {
       const textoFijo =
         motivoCatalogo === "confirmar_inventario"
           ? TEXTO_CONFIRMAR_INVENTARIO
@@ -3022,6 +3044,82 @@ async function runTurnPhases(
   // dejó su traspaso). Mismo texto fijo que ya usa la red de arriba.
   if (outcome.escalated && !text.trim()) {
     text = outcome.unassigned ? DESPEDIDA_SIN_ASESOR : despedidaConAsesor(outcome.businessStatus);
+  }
+
+  // T3b, plan "Seba encuentra, no insiste, y el mostrador no deja a nadie
+  // esperando" (28/9/2026): la COTIZACIÓN y la PREGUNTA DE FILTRO las arma el
+  // código, no el modelo. Estudio del VPS (1.027 turnos, 25/9 → 28/9/2026):
+  // el modelo cambió "ACEITE INCA 20W50 4T" por "Inca 20W50 semi sintético", y
+  // en el caso de la cinta buscó con existencia, escaló en el mismo turno y su
+  // redacción final fue solo una despedida — el cliente nunca vio qué había ni
+  // a qué precio. Con `catalogOutcome.cotizacion` no vacía el mensaje es: una
+  // línea previa opcional del modelo (una línea, sin cifras, sin repetir nada)
+  // + el bloque con el nombre EXACTO y el precio ya calculado + el texto fijo
+  // LITERAL. Con `preguntaFiltro` y sin cotización: la pregunta literal. La
+  // escalada NO cambia (herramienta o red de seguridad, arriba); lo que cambia
+  // es que ya no puede tragarse lo que se cotizó. El texto armado sigue
+  // pasando por la guarda de cifras (sus números salen del `toolResult` del
+  // mismo turno) y por la de identidad, abajo, como cualquier otra salida.
+  if (catalogOutcome.cotizacion.length > 0) {
+    const noEncontrados = catalogOutcome.consultas
+      .filter((c) => c.productos !== null && c.resultado !== "con_existencia" && c.resultado !== "agotados" && c.resultado !== "generico")
+      .map((c) => c.query);
+    const correcciones = catalogOutcome.consultas
+      .filter((c) => c.resultado === "con_existencia" || c.resultado === "agotados")
+      .flatMap((c) => c.corregido ?? []);
+    const armado = armarMensajeDeCotizacion({
+      textoModelo: text,
+      lineas: catalogOutcome.cotizacion,
+      noEncontrados,
+      correcciones,
+    });
+    log.info("cotizacion_armada_por_codigo", {
+      conversationId,
+      lineas: catalogOutcome.cotizacion.length,
+      conPreambulo: armado.preambulo !== null,
+      textoDelModeloDescartado: text.trim() !== "" && armado.preambulo === null,
+    });
+    text = armado.texto;
+  } else if (catalogOutcome.preguntaFiltro) {
+    const armado = armarMensajeDePregunta({
+      textoModelo: text,
+      pregunta: catalogOutcome.preguntaFiltro === "moto" ? PREGUNTA_FILTRO : PREGUNTA_FILTRO_PRODUCTO,
+    });
+    log.info("pregunta_filtro_armada_por_codigo", {
+      conversationId,
+      pregunta: catalogOutcome.preguntaFiltro,
+      conPreambulo: armado.preambulo !== null,
+    });
+    text = armado.texto;
+  }
+
+  // Guarda de promesa falsa (T3b, 28/9/2026, `promise-guard.ts`): si el texto
+  // AFIRMA que un asesor ya tiene, revisa o va a atender el caso, y este turno
+  // no escaló ni hay asesor asignado, la frase es mentira — nadie sabe que el
+  // cliente espera (la invariante "ningún lead invisible"). En vez de
+  // censurarla se escala con `seguimiento`, para que se vuelva verdad. Corre
+  // ANTES de la guarda de cifras: si esa reemplaza el texto por su propia
+  // frase con promesa, ya trae su escalada (o ya la hubo).
+  if (text.trim() && !outcome.escalated && !esperandoAsesor) {
+    const promesa = afirmaPromesaDeAsesor(text);
+    if (promesa) {
+      log.warn("promesa_de_asesor_sin_escalada", { conversationId, frase: promesa.slice(0, 200) });
+      const forced = await escalateConversation(supabase, {
+        conversationId,
+        contactId: target.contactId,
+        motivo: "seguimiento",
+        resumen: `La respuesta de la IA decía "${promesa.slice(0, 200)}" pero el turno no había escalado. Se escaló para que la promesa sea verdad; revisar el hilo.`,
+        businessHours,
+      });
+      outcome.escalated = forced.escalated;
+      outcome.assignedAgentName = forced.assignedAgentName ?? undefined;
+      outcome.unassigned = forced.unassigned;
+      outcome.businessStatus = forced.businessStatus;
+      outcome.motivo = "seguimiento";
+      // Sin nadie disponible no se promete una respuesta inmediata: se suma la
+      // despedida sin asesor (mismo criterio que la guarda de cifras).
+      if (forced.unassigned) text = `${text.trim()} ${DESPEDIDA_SIN_ASESOR}`;
+    }
   }
 
   // Guarda de cifras sin fuente (T3, plan "La búsqueda encuentra lo que el
