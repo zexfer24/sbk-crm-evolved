@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { AI_NAME, BUSINESS_NAME } from "@/lib/brand";
 import { INTENT_VALUES } from "@/lib/ai/classify";
 import {
+  GUARDRAIL_RULES,
   MEDIA_RULES,
   OFF_TOPIC_REPLY,
   SALES_ACCEPTANCE_RULES,
@@ -1331,5 +1332,161 @@ describe("Tarea T4 — precio a tasa BCV, sin cuentas propias y dos preguntas de
     const tokensEstimados = SYSTEM_PROMPT.length / CHARS_PER_TOKEN;
 
     expect(tokensEstimados).toBeGreaterThan(CACHE_MIN_TOKENS);
+  });
+});
+
+/**
+ * T4, plan "Seba encuentra, no insiste, y el mostrador no deja a nadie
+ * esperando" (28/9/2026). Estudio del VPS (1.027 turnos, 25-28/9): Seba
+ * afirmaba políticas que la biblioteca no traía, prometía "un asesor ya tiene
+ * tu caso" sin haber escalado, retomaba pedidos de días atrás, reenviaba el
+ * mismo link cuando el cliente decía que no abría, y reescribía cotizaciones
+ * y preguntas que el código ya arma (T3b). Todo el texto nuevo vive dentro de
+ * SYSTEM_PROMPT (prefijo cacheable); el sufijo no cambia.
+ */
+describe("T4 — políticas con fuente, promesas verdaderas, pedidos viejos, links y cotización por código (28/9/2026)", () => {
+  const seccion4 = SYSTEM_PROMPT.slice(SYSTEM_PROMPT.indexOf("4. HERRAMIENTAS"), SYSTEM_PROMPT.indexOf("5. LOS CASOS"));
+  const seccion51 = SYSTEM_PROMPT.slice(
+    SYSTEM_PROMPT.indexOf("5.1 Consulta de disponibilidad"),
+    SYSTEM_PROMPT.indexOf("5.2 Devolución")
+  );
+  const seccion3 = SYSTEM_PROMPT.slice(SYSTEM_PROMPT.indexOf("3. CÓMO LLEVAS"), SYSTEM_PROMPT.indexOf("4. HERRAMIENTAS"));
+
+  it("las secciones 3, 4 y 5.1 reescritas pasan la guarda de identidad", () => {
+    expect(revealsIdentity(seccion3)).toBeNull();
+    expect(revealsIdentity(seccion4)).toBeNull();
+    expect(revealsIdentity(seccion51)).toBeNull();
+  });
+
+  it("GUARDRAIL_RULES es parte del bloque estático y de las instrucciones, y pasa la guarda de identidad", () => {
+    expect(SYSTEM_PROMPT).toContain(GUARDRAIL_RULES);
+    expect(buildInstructions(TURN)).toContain(GUARDRAIL_RULES);
+    expect(revealsIdentity(GUARDRAIL_RULES)).toBeNull();
+    expect(revealsIdentity(`${GUARDRAIL_RULES} Soy un asistente automatizado.`)).not.toBeNull();
+  });
+
+  describe("políticas: solo las que trae la biblioteca en este turno", () => {
+    it("nombra las cuatro políticas típicas y manda pasarlas al asesor si la biblioteca no las trae", () => {
+      expect(GUARDRAIL_RULES).toMatch(/solo afirmas una política si la biblioteca/i);
+      expect(GUARDRAIL_RULES).toMatch(/pago en divisas/i);
+      expect(GUARDRAIL_RULES).toMatch(/precio en divisas/i);
+      expect(GUARDRAIL_RULES).toMatch(/retiro en tienda/i);
+      expect(GUARDRAIL_RULES).toMatch(/garantías/i);
+      expect(GUARDRAIL_RULES).toMatch(/envíos por agencia/i);
+      expect(GUARDRAIL_RULES).toMatch(/no la inventes/i);
+      expect(GUARDRAIL_RULES).toMatch(/asesor/i);
+    });
+
+    it("la sección 4 ya no deja responder una política sin fuente", () => {
+      expect(seccion4).toMatch(/en este turno/i);
+    });
+  });
+
+  describe("promesas: nunca 'un asesor ya tiene tu caso' sin haber escalado en este turno", () => {
+    it("prohíbe las tres formas de la promesa y la ata a haber llamado a la herramienta de escalar", () => {
+      expect(GUARDRAIL_RULES).toMatch(/ya tiene tu caso/i);
+      expect(GUARDRAIL_RULES).toMatch(/ya lo revisa/i);
+      expect(GUARDRAIL_RULES).toMatch(/te va a atender/i);
+      expect(GUARDRAIL_RULES).toMatch(/si no llamaste a la herramienta de escalar en este turno/i);
+    });
+
+    it("una queja siempre se escala", () => {
+      expect(GUARDRAIL_RULES).toMatch(/una queja siempre se escala/i);
+    });
+  });
+
+  describe("pedidos viejos", () => {
+    it("lo pedido hace más de 12 horas no se retoma como pendiente", () => {
+      expect(GUARDRAIL_RULES).toMatch(/hace más de 12 horas/i);
+      expect(GUARDRAIL_RULES).toMatch(/no lo retomes como pendiente/i);
+      expect(GUARDRAIL_RULES).toMatch(/lo que pide ahora/i);
+    });
+
+    it("el 12 del texto es el hueco real de history-line.ts", async () => {
+      const { PREVIOUS_CONVERSATION_GAP_HOURS } = await import("@/lib/ai/history-line");
+
+      // Literal a propósito (trampa CLAUDE.md: un tope no se prueba contra su símbolo):
+      // si alguien cambia el hueco, este test obliga a revisar el texto del prompt.
+      expect(PREVIOUS_CONVERSATION_GAP_HOURS).toBe(12);
+    });
+  });
+
+  describe("'no me abre el link'", () => {
+    it("no reenvía el mismo link, ofrece fotos por un asesor y, con la tienda cerrada, dice cuándo abre sin escalar", () => {
+      expect(GUARDRAIL_RULES).toMatch(/no me abre el link/i);
+      expect(GUARDRAIL_RULES).toMatch(/no reenvíes el mismo link/i);
+      expect(GUARDRAIL_RULES).toMatch(/un asesor le mande fotos del producto/i);
+      expect(GUARDRAIL_RULES).toMatch(/tienda está cerrada/i);
+      expect(GUARDRAIL_RULES).toMatch(/TURNO ACTUAL/);
+      expect(GUARDRAIL_RULES).toMatch(/no escales/i);
+    });
+  });
+
+  describe("cotización y pregunta armadas por el sistema", () => {
+    it("explica que el sistema envía la cotización y la pregunta de filtro, y que el modelo no las reescribe", () => {
+      expect(GUARDRAIL_RULES).toMatch(/el sistema arma y envía la cotización/i);
+      expect(GUARDRAIL_RULES).toMatch(/nombre, precio, existencia/i);
+      expect(GUARDRAIL_RULES).toMatch(/pregunta de filtro/i);
+      expect(GUARDRAIL_RULES).toMatch(/no reescribas precios, nombres de productos ni esos textos/i);
+      expect(GUARDRAIL_RULES).toMatch(/una línea previa breve/i);
+    });
+
+    it("no menciona redondeos ni conversiones (CLAUDE.md: el redondeo de dólares jamás toca el prompt)", () => {
+      // La sección 4 ya decía "no los redondees" (copiar el precio tal cual) desde el
+      // 25/9: eso es una orden de NO tocar la cifra, no una mención del redondeo del
+      // negocio. Lo que no puede aparecer es el mecanismo ni el bloque nuevo.
+      expect(GUARDRAIL_RULES).not.toMatch(/redonde/i);
+      expect(SYSTEM_PROMPT).not.toMatch(/0,10|múltiplo|hacia arriba|a favor del negocio/i);
+    });
+
+    it("las reglas viejas ya no piden redactar la cotización ni la pregunta de filtro", () => {
+      expect(seccion51).not.toMatch(/da nombre, precio y stock tal como te llegan/i);
+      expect(seccion51).toMatch(/el sistema/i);
+      expect(seccion3).toMatch(/el sistema/i);
+    });
+
+    it("los textos fijos siguen citados literales para que el modelo sepa cuáles son", () => {
+      expect(seccion51).toContain(TEXTO_CONFIRMAR_INVENTARIO);
+      expect(seccion51).toContain(TEXTO_SIN_STOCK);
+      expect(seccion51).toContain(TEXTO_NO_IDENTIFICADO);
+      expect(seccion3).toContain(PREGUNTA_FILTRO);
+      expect(seccion3).toContain(PREGUNTA_FILTRO_PRODUCTO);
+    });
+  });
+
+  describe("prefijo cacheable", () => {
+    it("cacheablePrefix() es idéntico entre dos turnos con distinta hora, intención, nombre, pendientes y asesor", () => {
+      const a = buildInstructions({
+        intent: "consulta_disponibilidad",
+        introducedThisTurn: true,
+        now: new Date("2026-09-28T15:00:00Z"),
+        customerName: "Ana",
+        pendingCustomerLines: ["hola", "precio del casco"],
+        yaEscalada: true,
+        escalateToolAvailable: true,
+      });
+      const b = buildInstructions({
+        intent: "queja",
+        introducedThisTurn: false,
+        now: new Date("2026-09-29T02:00:00Z"),
+        previousConversationCutoffAt: "2026-09-28T10:00:00Z",
+      });
+      const prefijo = cacheablePrefix();
+
+      expect(a.startsWith(prefijo)).toBe(true);
+      expect(b.startsWith(prefijo)).toBe(true);
+      expect(prefijo).toContain(GUARDRAIL_RULES);
+    });
+
+    it("el sufijo no repite ninguna regla nueva", () => {
+      const sufijo = buildInstructions(TURN).slice(cacheablePrefix().length);
+
+      expect(sufijo).not.toContain("no reescribas precios");
+      expect(sufijo).not.toMatch(/ya tiene tu caso.*si no llamaste/i);
+    });
+
+    it("el prefijo sigue por encima del umbral de 1024 tokens estimados", () => {
+      expect(SYSTEM_PROMPT.length / CHARS_PER_TOKEN).toBeGreaterThan(CACHE_MIN_TOKENS);
+    });
   });
 });
