@@ -10,7 +10,13 @@ import {
 import type { SupabaseClient } from "@supabase/supabase-js";
 import type { Database, Json } from "@/lib/supabase/database.types";
 import type { CatalogLink, Playbook, Tag } from "@/lib/types";
-import { dayBand, parseBusinessHours, type BusinessHours, type BusinessStatus } from "@/lib/business-hours";
+import {
+  businessStatus,
+  dayBand,
+  parseBusinessHours,
+  type BusinessHours,
+  type BusinessStatus,
+} from "@/lib/business-hours";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { fetchTurnCatalogLinks } from "@/lib/ai/catalog-links";
 import { classifyIntent, type Intent } from "@/lib/ai/classify";
@@ -56,7 +62,7 @@ import {
 } from "@/lib/ai/turn-delivery";
 import { recordHandoff, escalationOpen } from "@/lib/ai/handoffs";
 import { isCourtesyOnly, isFarewellPlaybook, isGreetingOnly } from "@/lib/ai/saludo";
-import { debeCederAlInventario } from "@/lib/ai/catalog-request";
+import { debeCederAlInventario, type DecisionCesionInventario } from "@/lib/ai/catalog-request";
 import {
   isSebaGreeting,
   sebaGreeting,
@@ -67,6 +73,7 @@ import {
   PREGUNTA_FILTRO_PRODUCTO,
   TEXTO_PRECIO_A_CONFIRMAR,
   TEXTO_SIN_STOCK,
+  textoEsperaDemora,
 } from "@/lib/ai/seba";
 import { findUnsourcedFigure } from "@/lib/ai/price-guard";
 import { afirmaPromesaDeAsesor } from "@/lib/ai/promise-guard";
@@ -183,7 +190,7 @@ type TimingPhase = "clasificacionMs" | "redaccionMs" | "envioMs";
  * `api/dev/simulate-message`) o no finito, `debounceMs`/`colaMs` quedan en
  * `null` y solo `esperaMs` sigue midiendo, como medía antes de esta corrida.
  */
-function newTurnTiming(lastCustomerMessageAt: string | null, vencioEn?: number): TurnTiming {
+export function newTurnTiming(lastCustomerMessageAt: string | null, vencioEn?: number): TurnTiming {
   // Un solo Date.now(): es lo que garantiza, por construcción, que
   // debounceMs + colaMs === esperaMs, sin depender de que dos lecturas del
   // reloj caigan en el mismo milisegundo.
@@ -854,6 +861,131 @@ async function humanWroteMeanwhile(
   return true;
 }
 
+// ---------------------------------------------------------------------------
+// T10b-3, plan "Seba encuentra, no insiste, y el mostrador no deja a nadie
+// esperando" (29/9/2026, D2 del operador): el turno de Seba por DEMORA.
+//
+// Lo dispara `runDelayTurn` (`delay-turn.ts`), no la cola: el cliente lleva
+// `esperaMinutos` sin que una persona le escriba, y Seba contesta AUNQUE la IA
+// esté pausada o el chat tenga asesor -- con límites. Reusa `runTurnPhases`
+// (escenarios, clasificación, tool loop, guardas de cifras e identidad) con un
+// `DemoraTurno` en la mano; sin él, el turno es el de siempre, byte a byte.
+//
+// Lo que CAMBIA con un `DemoraTurno` (cada punto está comentado donde ocurre):
+//   - Ninguna escalada, por ningún camino: ni la herramienta `escalarAAsesor`,
+//     ni las redes de seguridad (devolución/queja, catálogo, promesa falsa,
+//     cifras, identidad, adjuntos sin texto). El asesor sigue a cargo; Seba
+//     acompaña. Escalar acá le quitaría el chat a quien ya lo tiene.
+//   - Ni saludo ni presentación: el cliente ya lleva minutos en la
+//     conversación, y `welcome_sent_at` no se toca.
+//   - Fase 0 solo con los escenarios `disponibleEnEspera` (D7) que no salieron.
+//   - La puerta de envío (`deliver`) NO usa la gracia de `humanHasWritten`: solo
+//     corta si un asesor escribió DESPUÉS del último mensaje del cliente.
+//   - Sale siempre `is_auto_reply` (el cliente sigue esperando a una persona) y
+//     deja una nota interna; nunca toca `ai_enabled`.
+//   - Un corte silencioso NO escribe un traspaso a "sin dueño": el dueño de la
+//     conversación no cambió, y el candado del episodio ya es el rastro.
+// ---------------------------------------------------------------------------
+
+/** Estado de un turno por demora. Lo crea `runDelayTurn` y lo lee de vuelta al terminar. */
+export interface DemoraTurno {
+  /** Minutos que el cliente lleva esperando (los pone el cron; van a la nota y al prompt). */
+  esperaMinutos: number;
+  /** El instante del turno: el reloj del prompt y el texto de "tienda cerrada" salen de acá. */
+  now: Date;
+  /** `true` cuando el mensaje SALIÓ (o Meta lo aceptó). */
+  enviado: boolean;
+  /** Por qué salió (`respuesta_del_modelo`, `escenario`, `texto_fijo`) o por qué no. `null` = el turno no llegó a decidir. */
+  motivo: string | null;
+}
+
+export function newDemoraTurno(esperaMinutos: number, now: Date): DemoraTurno {
+  return { esperaMinutos, now, enviado: false, motivo: null };
+}
+
+/**
+ * ¿Un asesor le escribió al cliente DESPUÉS de `since` (el último mensaje del
+ * cliente)? Es la ÚNICA puerta de envío del turno por demora -- mismo
+ * predicado que el trigger `handle_agent_message_silences_ai`: saliente, de un
+ * asesor humano, sin notas internas --, en lugar de la gracia de 30 min de
+ * `humanHasWritten` (que mira si el asesor "se adelantó" o escribió hace poco:
+ * justo lo que este turno existe para saltarse, porque un asesor que escribió
+ * hace 20 minutos y dejó al cliente esperando NO impide que Seba conteste).
+ *
+ * `gt`, no `gte`: un mensaje del asesor con el MISMO instante que el del
+ * cliente es anterior en la práctica (Meta fecha al segundo). LANZA ante un
+ * error de la consulta: es infraestructura, y "no pude preguntar" no es "no
+ * escribió" -- callarse en silencio dejaría al cliente sin respuesta y sin
+ * rastro.
+ */
+export async function asesorEscribioDespuesDe(
+  supabase: SupabaseClient<Database>,
+  conversationId: string,
+  since: string | null
+): Promise<boolean> {
+  if (since === null) return false;
+
+  const { data, error } = await supabase
+    .from("messages")
+    .select("id")
+    .eq("conversation_id", conversationId)
+    .eq("sender_type", "agent")
+    .eq("direction", "outbound")
+    .eq("is_internal_note", false)
+    .gt("created_at", since)
+    .limit(1);
+
+  if (error) {
+    throw new Error(`No se pudo comprobar si un asesor respondió en ${conversationId}: ${errorText(error)}`, {
+      cause: error,
+    });
+  }
+  return (data ?? []).length > 0;
+}
+
+/**
+ * Deja constancia de que Seba respondió por demora: el estado del turno, la
+ * nota interna que ve el asesor al abrir el chat y el log. Se llama UNA vez,
+ * DESPUÉS de que el envío salió. Nunca lanza: el mensaje ya está en manos del
+ * cliente y una nota que no se escribió no puede convertir eso en un turno
+ * fallido (que la cola/el cron reintentarían, duplicándolo).
+ *
+ * La nota es `sender_type = 'system'` a propósito, nunca 'agent': el trigger
+ * `handle_agent_message_silences_ai` apagaría la IA con un mensaje de asesor.
+ */
+async function registrarRespuestaPorDemora(
+  supabase: SupabaseClient<Database>,
+  conversationId: string,
+  demora: DemoraTurno,
+  via: "respuesta_del_modelo" | "escenario" | "texto_fijo"
+): Promise<void> {
+  demora.enviado = true;
+  demora.motivo = via;
+
+  try {
+    const { error } = await supabase.from("messages").insert({
+      conversation_id: conversationId,
+      direction: "outbound",
+      sender_type: "system",
+      message_type: "system_event",
+      is_internal_note: true,
+      content: `Seba respondió por demora de ${demora.esperaMinutos} min`,
+    });
+    if (error) {
+      log.error("demora_nota_no_escrita", { conversationId, detail: errorText(error) });
+    }
+  } catch (err) {
+    log.error("demora_nota_no_escrita", { conversationId, detail: errorText(err) });
+  }
+
+  log.info("respuesta_por_demora", { conversationId, esperaMinutos: demora.esperaMinutos, via });
+}
+
+/** Prefijo del resumen en `agent_turns`: un supervisor ve de un vistazo que ese turno fue por demora. */
+function prefijoDemora(demora?: DemoraTurno): string {
+  return demora ? `[respuesta por demora de ${demora.esperaMinutos} min] ` : "";
+}
+
 /** Desde qué punto del turno se está intentando hablar. Viaja al registro. */
 type SendPhase =
   | "presentacion"
@@ -903,7 +1035,15 @@ async function deliver<T>(
   tiempos: TurnTiming,
   fase: SendPhase,
   lastCustomerMessageAt: string | null,
-  enviar: () => Promise<T>
+  enviar: () => Promise<T>,
+  /**
+   * T10b-3 (29/9/2026): presente solo en el turno por demora. Cambia DOS
+   * cosas de esta puerta: (1) la guarda del asesor es `asesorEscribioDespuesDe`
+   * y no la gracia de `humanHasWritten`; (2) ninguna salida escribe un
+   * traspaso a "sin dueño" -- el dueño no cambió, y ese traspaso sacaría de
+   * "Tuyas" a un chat con asesor. El motivo del corte queda en `demora.motivo`.
+   */
+  demora?: DemoraTurno
 ): Promise<T | null> {
   const { conversationId } = target;
 
@@ -914,6 +1054,10 @@ async function deliver<T>(
   // del asesor.
   if (!(await lease.confirmar())) {
     log.warn("turno_lock_perdido_sin_enviar", { conversationId, fase });
+    if (demora) {
+      demora.motivo = "lock_perdido";
+      return null;
+    }
     await recordHandoff(supabase, { conversationId, toKind: "unassigned", reason: "lock_perdido" });
     return null;
   }
@@ -927,10 +1071,24 @@ async function deliver<T>(
     // cuál de las dos cayera el turno, y eso confundía la lectura (deuda
     // anotada el 5/9/2026 en el reporte de entrega de "Bandeja que no
     // pierde"). D2 (6/9/2026): ahora las dos escriben `agente_no_puede_correr`.
+    if (demora) {
+      demora.motivo = "agente_no_puede_correr";
+      return null;
+    }
     await recordHandoff(supabase, { conversationId, toKind: "unassigned", reason: "agente_no_puede_correr" });
     return null;
   }
-  if (await humanWroteMeanwhile(supabase, conversationId, lastCustomerMessageAt, fase)) {
+  if (demora) {
+    // Turno por demora: la ÚNICA guarda es "un asesor escribió después del
+    // mensaje del cliente" (ver `asesorEscribioDespuesDe`). Deja el mismo
+    // traspaso que la carrera normal: alguien de verdad ya atendió al cliente.
+    if (await asesorEscribioDespuesDe(supabase, conversationId, lastCustomerMessageAt)) {
+      log.warn("demora_asesor_ya_respondio", { conversationId, fase });
+      demora.motivo = "asesor_ya_respondio";
+      await recordHandoff(supabase, { conversationId, toKind: "human", reason: "humano_se_adelanto" });
+      return null;
+    }
+  } else if (await humanWroteMeanwhile(supabase, conversationId, lastCustomerMessageAt, fase)) {
     await recordHandoff(supabase, { conversationId, toKind: "human", reason: "humano_se_adelanto" });
     return null;
   }
@@ -1230,6 +1388,14 @@ async function applyIdentityGuard(params: {
   outcome: EscalationOutcome;
   turnTokens: TurnTokens;
   businessHours: BusinessHours;
+  /**
+   * T10b-3 (29/9/2026): el texto que sale cuando la guarda BLOQUEA, en un turno
+   * por demora. Con él la guarda NO escala (el asesor sigue a cargo) y no
+   * habla de asesores ni de despedidas: manda este texto de espera y ya.
+   * `undefined` en todo turno normal: la guarda escala y se despide como
+   * siempre.
+   */
+  respaldoSinEscalar?: string;
 }): Promise<{ text: string; turnTokens: TurnTokens; marca: "reescrita" | "bloqueada" | null }> {
   const { supabase, target, conversationId, outcome, businessHours } = params;
   const text = params.text;
@@ -1300,6 +1466,10 @@ async function applyIdentityGuard(params: {
     fragmento: ultimoCalce.fragmento,
     motivo: motivoFallo,
   });
+
+  if (params.respaldoSinEscalar !== undefined) {
+    return { text: params.respaldoSinEscalar, turnTokens, marca: "bloqueada" };
+  }
 
   if (!outcome.escalated) {
     // Mismo patrón que la red de seguridad de devolución/queja de arriba: si
@@ -1390,7 +1560,15 @@ async function runPlaybook(
    * `true` igual, o `awaiting_reply` se apagaría solo, contra CLAUDE.md
    * ("Toda salida de un turno que escaló es is_auto_reply").
    */
-  forceAutoReply = false
+  forceAutoReply = false,
+  /**
+   * T10b-3 (29/9/2026): presente solo en el turno por demora. Cambia cuatro
+   * cosas de este camino: la puerta de envío (`deliver`), qué pasa si Meta
+   * rechaza el mensaje (sin traspaso a "sin dueño"), que nunca escala
+   * (`afterSend = "escalate"` se ignora -- fase 0 ya los saca de los
+   * candidatos, esto es la segunda red), y que deja la nota interna.
+   */
+  demora?: DemoraTurno
 ): Promise<void> {
   // Con D2 la IA sigue respondiendo en un chat que YA tiene asesor: esa
   // respuesta es la misma cortesía automática de siempre —el cliente sigue
@@ -1406,19 +1584,36 @@ async function runPlaybook(
   // —o si un asesor se metió— mientras el modelo elegía el escenario, el turno
   // termina acá sin enviar y sin etiquetar ni escalar: todo lo que sigue
   // acompaña a un mensaje que no salió.
-  const salida = await deliver(supabase, target, entrega, lease, tiempos, "escenario", lastCustomerMessageAt, () =>
-    sendPlaybookReply(supabase, target, playbook, links, { isAutoReply: esperandoAsesor })
+  const salida = await deliver(
+    supabase,
+    target,
+    entrega,
+    lease,
+    tiempos,
+    "escenario",
+    lastCustomerMessageAt,
+    () => sendPlaybookReply(supabase, target, playbook, links, { isAutoReply: esperandoAsesor }),
+    demora
   );
   if (!salida) return;
-  if (await deliveryFailed(supabase, target.conversationId, salida, assignedAgentId)) return;
+  if (await deliveryFailed(supabase, target.conversationId, salida, assignedAgentId, Boolean(demora))) {
+    if (demora) {
+      // Sin traspaso: `deliveryFailed` ya dejó el log, y escribir "sin dueño"
+      // sacaría de "Tuyas" un chat que sigue teniendo asesor.
+      demora.motivo = "envio_fallido";
+      await resetStage(supabase, target.conversationId, "demora_envio_fallido", assignedAgentId);
+    }
+    return;
+  }
 
   await onDelivered();
+  if (demora) await registrarRespuestaPorDemora(supabase, target.conversationId, demora, "escenario");
 
   // Se etiqueta siempre que el escenario responda, escale o no: un escenario
   // que deja al cliente esperando también puede querer dejar marcado el caso.
   await applyPlaybookTags(supabase, target.conversationId, target.contactId, playbook.tags);
 
-  if (playbook.afterSend === "escalate") {
+  if (playbook.afterSend === "escalate" && !demora) {
     const result = await escalateConversation(supabase, {
       conversationId: target.conversationId,
       contactId: target.contactId,
@@ -1504,7 +1699,7 @@ async function runPlaybook(
   await logTurn(supabase, target.conversationId, {
     intent: null,
     action: "answered",
-    summary: `Escenario "${playbook.name}".${tagSummary(playbook.tags)}`,
+    summary: `${prefijoDemora(demora)}Escenario "${playbook.name}".${tagSummary(playbook.tags)}`,
     tokens,
     playbookId: playbook.id,
     customerMessage,
@@ -1579,7 +1774,7 @@ async function rollbackPresentation(supabase: SupabaseClient<Database>, conversa
  * pasa por `entrega`, que es lo que decide si un fallo posterior se puede
  * reintentar o no.
  */
-async function runTurnPhases(
+export async function runTurnPhases(
   supabase: SupabaseClient<Database>,
   target: TurnTarget,
   convo: AgentConversation,
@@ -1595,9 +1790,18 @@ async function runTurnPhases(
    * mandar el texto YA resuelto).
    */
   links: CatalogLink[],
-  lessons: TurnLessons
+  lessons: TurnLessons,
+  /**
+   * T10b-3 (29/9/2026): presente SOLO cuando el turno lo dispara
+   * `runDelayTurn` (Seba responde por demora, con la IA pausada o con asesor
+   * asignado). Ver el bloque de comentario sobre `DemoraTurno`, más arriba,
+   * para la lista completa de lo que cambia. Ausente, el turno es el de
+   * siempre.
+   */
+  demora?: DemoraTurno
 ): Promise<void> {
   const conversationId = target.conversationId;
+  const modoDemora = demora !== undefined;
 
   // T4, "Seba atiende el mostrador" (18/9/2026, D2/D3): con la escalada sin
   // apagar la IA, el turno entero corre en un chat que YA tiene asesor — la
@@ -1609,7 +1813,15 @@ async function runTurnPhases(
   // `awaiting_reply` no se apague solo, y `stageFor` (ver su comentario)
   // gobierna cada escritura de `journey_stage` de acá para abajo, para que
   // el chat no se caiga de la píldora "Escaladas" mientras el turno trabaja.
-  const esperandoAsesor = Boolean(convo.assigned_agent_id);
+  //
+  // T10b-3 (29/9/2026): en un turno por demora la respuesta es SIEMPRE una
+  // cortesía automática, tenga o no asesor asignado -- el cliente lleva
+  // minutos esperando a una persona (la escalada abierta sin asesor cuenta
+  // igual), y apagar `awaiting_reply` con este mensaje lo sacaría de
+  // "Pendientes" justo cuando más falta hace verlo. Ojo: `esperandoAsesor` NO
+  // significa "hay que dejar la línea de chat asignado en el prompt" en este
+  // modo -- eso se decide con `modoDemora` más abajo.
+  const esperandoAsesor = modoDemora || Boolean(convo.assigned_agent_id);
 
   await supabase
     .from("conversations")
@@ -1623,7 +1835,11 @@ async function runTurnPhases(
   // dependen una de la otra.
   const [{ messages: history, createdAt: historyCreatedAt, ids: historyIds }, seen] = await Promise.all([
     loadHistory(supabase, conversationId),
-    readSeen(conversationId),
+    // Turno por demora: NO se lee la marca. El mensaje del cliente puede estar
+    // "visto" por un turno anterior que solo lo anotó para el asesor
+    // (`turno_anotado_para_asesor`) y nunca lo contestó -- que es justo el
+    // caso que este turno existe para resolver.
+    modoDemora ? Promise.resolve(null) : readSeen(conversationId),
   ]);
 
   // T12, plan "Seba sale sin pisar a nadie" (19/9/2026, cierra la decisión
@@ -1650,6 +1866,7 @@ async function runTurnPhases(
   let saludoPendienteDeRespuesta = false;
   const ultimaLinea = history[history.length - 1];
   if (
+    !modoDemora &&
     ultimaLinea &&
     ultimaLinea.role === "assistant" &&
     typeof ultimaLinea.content === "string" &&
@@ -1689,7 +1906,9 @@ async function runTurnPhases(
     // algo), pero se trata igual que un historial vacío de verdad, sin
     // inventar un índice fuera de rango.
     log.warn("turno_sin_contenido_legible", { conversationId });
-    await recordHandoff(supabase, { conversationId, toKind: "unassigned", reason: "sin_contenido_legible" });
+    // Turno por demora: el dueño no cambia, así que no se escribe "sin dueño".
+    if (demora) demora.motivo = "sin_contenido_legible";
+    else await recordHandoff(supabase, { conversationId, toKind: "unassigned", reason: "sin_contenido_legible" });
     await resetStage(supabase, conversationId, "turno_sin_contenido_legible", convo.assigned_agent_id);
     return;
   }
@@ -1791,6 +2010,16 @@ async function runTurnPhases(
     return;
   }
 
+  // T10b-3 (29/9/2026): sin marca, `rafagaCliente` es la ráfaga final
+  // (`customerBurst`). Si quedó vacía, el historial termina en una respuesta
+  // (de Seba o de un asesor): no hay nada que contestar por demora.
+  if (demora && rafagaCliente.length === 0) {
+    log.info("demora_sin_mensaje_pendiente", { conversationId });
+    demora.motivo = "sin_mensaje_pendiente";
+    await resetStage(supabase, conversationId, "demora_sin_mensaje_pendiente", convo.assigned_agent_id);
+    return;
+  }
+
   // T1 (22-23/9/2026): la marca que hay que dejar en Redis cuando el turno
   // SÍ atendió de verdad lo que vio — nunca cuando `deliver()` devuelve
   // `null` (frenos: lock perdido, interruptor apagado, un asesor se
@@ -1833,7 +2062,12 @@ async function runTurnPhases(
   // siquiera entra —`convo.welcome_sent_at` ya no es `null`, porque
   // `claimPresentation` lo selló en el primer intento—, así que las dos
   // formas de quedar `true` son mutuamente excluyentes en el mismo turno.
-  if (convo.welcome_sent_at === null) {
+  //
+  // T10b-3 (29/9/2026): un turno por demora NUNCA se presenta ni saluda -- el
+  // cliente lleva minutos en la conversación --, y `welcome_sent_at` no se
+  // toca: si nadie se presentó, la presentación sigue siendo asunto del
+  // próximo turno normal.
+  if (!modoDemora && convo.welcome_sent_at === null) {
     const claimed = await claimPresentation(supabase, conversationId);
     if (claimed) {
       // "Solo saludó" decide si hace falta seguir redactando: un "hola" (o
@@ -1947,7 +2181,12 @@ async function runTurnPhases(
   // T12, más abajo) la necesita exactamente igual. Solo se pregunta si hay
   // algo pendiente que mirar (`rafagaCliente.length > 0`): sin eso ninguna
   // de las dos partes del turno que la usan puede disparar.
-  const escalationOpenNow = rafagaCliente.length > 0 ? await escalationOpen(supabase, conversationId) : false;
+  //
+  // T10b-3 (29/9/2026): en un turno por demora NO se consulta: las tres
+  // ramas que la usan (cortesía tras escalada, "espera abierta" y su nota)
+  // son para callarse, y este turno existe para hablar.
+  const escalationOpenNow =
+    !modoDemora && rafagaCliente.length > 0 ? await escalationOpen(supabase, conversationId) : false;
 
   // Guarda de cortesía tras una escalada abierta (Tarea 4, "La voz cercana y
   // la espera visible", 14/9/2026, decisión 4). ANTES de fase 0 y de
@@ -2232,7 +2471,9 @@ async function runTurnPhases(
   // suelto, que es el único lugar donde `claimGreetingWait` puede haber
   // dejado algo que limpiar más abajo.
   const primerPendienteEsSaludo = rafagaCliente.length > 0 && isGreetingOnly(rafagaCliente[0]);
-  if (convo.welcome_sent_at !== null && !introducedThisTurn && primerPendienteEsSaludo) {
+  // T10b-3: en un turno por demora tampoco se espera la pregunta -- un
+  // diferido no tiene a dónde volver (no hay cola).
+  if (!modoDemora && convo.welcome_sent_at !== null && !introducedThisTurn && primerPendienteEsSaludo) {
     if (rafagaCliente.every((linea) => isGreetingOnly(linea))) {
       const espera = await claimGreetingWait(conversationId);
 
@@ -2313,7 +2554,8 @@ async function runTurnPhases(
   // en código, directo, sin gastar fase 0/1 ni el tool loop —tres llamadas al
   // proveedor que un cuarto "¿qué es esto?" no iba a mejorar—.
   const racha = mediaStreakWithoutText(history);
-  if (racha.adjuntos >= 2 && racha.yaPreguntamos) {
+  // T10b-3: un turno por demora nunca escala en código.
+  if (!modoDemora && racha.adjuntos >= 2 && racha.yaPreguntamos) {
     const forced = await escalateConversation(supabase, {
       conversationId,
       contactId: target.contactId,
@@ -2363,10 +2605,23 @@ async function runTurnPhases(
   // improvise.
   // Los interruptores del panel se leen junto con los escenarios: ambos
   // son configuración que el equipo cambia en vivo y el turno respeta.
-  const [playbooks, enabledTools] = await Promise.all([
+  const [todosLosPlaybooks, enabledTools] = await Promise.all([
     fetchActivePlaybooks(supabase),
     fetchEnabledToolKeys(supabase),
   ]);
+
+  // T10b-3 (29/9/2026, D7): un turno por demora solo puede mandar los
+  // escenarios que el supervisor marcó `disponibleEnEspera` (Ubicación, Envio
+  // gratis Cashea, Postventa Cashea), y con los mismos dos descartes del
+  // camino "espera abierta" (más arriba): las despedidas (Seba ya se despidió,
+  // o nunca hubo nada que cerrar) y los que escalan al mandarse (este turno no
+  // escala). El no-repetir de 6 h se aplica después de calzar, igual que en la
+  // fase 0 normal.
+  const playbooks = modoDemora
+    ? todosLosPlaybooks.filter(
+        (p) => p.disponibleEnEspera && !isFarewellPlaybook(p.responseText) && p.afterSend !== "escalate"
+      )
+    : todosLosPlaybooks;
 
   // Las dos clasificaciones salen JUNTAS y no una detrás de la otra.
   //
@@ -2450,12 +2705,18 @@ async function runTurnPhases(
   // encola cada entrante; T3, `88fe103`, lo adelanta en cuanto se suelta el
   // lock). Sin traspaso: ver el comentario de cabecera de turn-cession.ts
   // para el porqué, contra la invariante "ningún lead invisible".
-  const cesionPunto1 = await shouldCedeDraft({
-    supabase,
-    conversationId,
-    hastaCargado,
-    yaEscalo: false,
-  });
+  //
+  // T10b-3 (29/9/2026): un turno por demora NO cede. Ceder es "ya hay otro
+  // turno encolado que contesta esto junto con lo nuevo", y acá no hay cola: la
+  // IA está pausada o el chat tiene asesor, así que nadie más va a contestar.
+  const cesionPunto1 = modoDemora
+    ? { cede: false }
+    : await shouldCedeDraft({
+        supabase,
+        conversationId,
+        hastaCargado,
+        yaEscalo: false,
+      });
   if (cesionPunto1.cede) {
     log.info("turno_cedido_a_rafaga", { conversationId, punto: "escenario_o_tool_loop" });
     await resetStage(supabase, conversationId, "turno_cedido_a_rafaga", convo.assigned_agent_id);
@@ -2532,7 +2793,11 @@ async function runTurnPhases(
       // pero una de las otras tres condiciones falla, `escenario_no_cedido`
       // deja el motivo (el primero que aplica, en el orden del plan) para
       // poder medir en producción cuánto pesa cada uno.
-      const decision = debeCederAlInventario({
+      // T10b-3: un turno por demora no cede al inventario (los escenarios que
+      // le quedan son informativos, no compiten con una consulta de stock).
+      const decision: DecisionCesionInventario = modoDemora
+        ? { cede: false, motivo: null }
+        : debeCederAlInventario({
         intencionOk: classified.ok,
         intent: classified.ok ? classified.result.intent : "",
         catalogoEncendido: enabledTools.has(TOOL_KEYS.catalog),
@@ -2570,8 +2835,12 @@ async function runTurnPhases(
           // "porque no se cedió" (ver el comentario de más arriba).
           async () => {
             await marcarTurnoVisto();
-            await clearCessionCounter(conversationId);
-          }
+            if (!modoDemora) await clearCessionCounter(conversationId);
+          },
+          // forceAutoReply: en un turno por demora el escenario también es una
+          // cortesía automática (T10b-3).
+          modoDemora,
+          demora
         );
         return;
       }
@@ -2589,7 +2858,11 @@ async function runTurnPhases(
     }
   }
 
-  if (!classified.ok) {
+  // T10b-3 (29/9/2026): en un turno por demora una clasificación fallida NO
+  // abandona -- no hay reconciliador que recoja la conversación, y el cliente
+  // lleva minutos esperando: sigue con la intención neutra ("otro") y, si el
+  // tool loop también falla, sale el texto fijo de espera.
+  if (!classified.ok && !modoDemora) {
     // Clasificar es lo único que se reintenta ante rate limit, y si aun así
     // falla el turno termina acá SIN responder. No hay intención por defecto:
     // adivinarla mandaría un mensaje genérico a alguien que preguntó algo
@@ -2641,14 +2914,18 @@ async function runTurnPhases(
     return;
   }
 
-  const intent: Intent = classified.result.intent;
+  if (!classified.ok) {
+    log.warn("demora_clasificacion_fallida", { conversationId, detail: errorText(classified.err) });
+  }
+  const intent: Intent = classified.ok ? classified.result.intent : "otro";
   const classifyTokens = classifiedTokens;
 
   // Observabilidad, no una barrera (Tarea 5, 14/9/2026, mismo criterio que
   // logTurn de arriba): que la columna `intent` de la conversación no se
   // pudiera guardar no puede tumbar el turno — el cliente ya está a punto de
   // recibir su respuesta.
-  {
+  // (T10b-3: un turno por demora no reclasifica la conversación.)
+  if (!modoDemora) {
     const { error } = await supabase.from("conversations").update({ intent }).eq("id", conversationId);
     if (error) {
       log.error("turno_intencion_no_guardada", { conversationId, detail: errorText(error) });
@@ -2659,7 +2936,10 @@ async function runTurnPhases(
   // parte cara— y el texto sale de una constante, así que no cuesta salida.
   // A la segunda insistencia ni se responde: repetir la misma línea contra
   // alguien que insiste (o contra otro bot) es un ping-pong sin final.
-  if (intent === "fuera_de_tema") {
+  // T10b-3: en un turno por demora no hay redirección -- el cliente lleva
+  // minutos esperando a una persona, y "yo te ayudo con repuestos" no es lo que
+  // necesita oír; lo atiende el modelo con los límites de D2.
+  if (intent === "fuera_de_tema" && !modoDemora) {
     const repetido = alreadyRedirected(history);
     if (!repetido) {
       const salió = await deliver(
@@ -2764,9 +3044,16 @@ async function runTurnPhases(
   // `deal_status: "in_progress"` en cuanto el motivo es `intencion_compra`,
   // con o sin asesor nuevo): no tiene sentido ofrecerle al modelo una
   // herramienta para repetir una marca que ya está puesta.
-  const dealAlreadyInProgress = esperandoAsesor && convo.deal_status === "in_progress";
+  //
+  // T10b-3 (29/9/2026, D2): un turno por demora NO recibe `escalarAAsesor` en
+  // ningún modo -- ni el completo ni el restringido. Es lo que hace que el
+  // modelo no pueda escalar aunque quiera; el prompt (`MODO ESPERA`) solo le
+  // explica por qué.
+  const dealAlreadyInProgress = !modoDemora && esperandoAsesor && convo.deal_status === "in_progress";
   const tools: ToolSet = {};
-  if (dealAlreadyInProgress) {
+  if (modoDemora) {
+    // Sin herramienta de escalar (ver arriba).
+  } else if (dealAlreadyInProgress) {
     log.info("escalarAAsesor_omitida_venta_en_curso", { conversationId });
   } else {
     tools.escalarAAsesor = buildEscalateTool(deps, outcome, { restrictedToPurchase: esperandoAsesor });
@@ -2807,7 +3094,10 @@ async function runTurnPhases(
       // aparte porque `yaEscalada` puede ser `true` con la herramienta
       // omitida del todo (`dealAlreadyInProgress`): el sufijo no puede
       // pedirle al modelo que use algo que no le llegó.
-      yaEscalada: esperandoAsesor,
+      // (T10b-3: en modo demora la línea de "chat asignado" no va -- habla de
+      // la herramienta de escalar, que este turno nunca recibe. La reemplaza
+      // `modoDemora`, más abajo.)
+      yaEscalada: esperandoAsesor && !modoDemora,
       escalateToolAvailable: Boolean(tools.escalarAAsesor),
       // T4, plan "Seba no habla de más mientras el cliente espera al
       // asesor" (22-23/9/2026): los mismos `rafagaCliente`/
@@ -2815,6 +3105,10 @@ async function runTurnPhases(
       // turno, más arriba en esta función.
       pendingCustomerLines: rafagaCliente,
       previousConversationCutoffAt,
+      // T10b-3 (29/9/2026, D2): los límites del turno por demora, solo en el
+      // sufijo. `now` alinea el reloj del prompt con el del turno.
+      modoDemora: demora ? { esperaMinutos: demora.esperaMinutos } : undefined,
+      now: demora?.now,
     }),
     tools,
     // D1 del plan "La escalada se hace una vez y la búsqueda responde"
@@ -2888,44 +3182,57 @@ async function runTurnPhases(
     tiempos.herramientas = toolNamesUsed(result.steps);
     turnTokens = addTokens(classifyTokens, tokensFromUsage(result.usage));
   } catch (err) {
-    await logTurn(supabase, conversationId, {
-      consultasCatalogo: catalogOutcome.consultas,
-      intent,
-      action: "error",
-      summary: errorText(err),
-      tokens: classifyTokens,
-      customerMessage,
-      tiempos,
-    });
-    // Bug 2, hallazgo 2 del plan (T4, 8/9/2026): antes esto SOLO apagaba
-    // active_tool y dejaba journey_stage en "classifying"/"tool_running"
-    // congelado para siempre.
-    //
-    // T2, plan "Seba sale sin pisar a nadie" (19/9/2026, hallazgo A2): "sin
-    // traspaso nuevo... el reconciliador la recoge sola" era el mismo
-    // criterio que la puerta de clasificación fallida de arriba, y dejó de
-    // ser cierto por el mismo motivo: si Seba ya se presentó en este turno
-    // (`introducedThisTurn`), el último mensaje visible es su saludo —un
-    // saliente exitoso, no el mensaje del cliente— y el reconciliador
-    // (`last_message_direction.eq.inbound` o `last_message_status.eq.failed`,
-    // `reconciler.ts`) ya no vuelve a mirar esta conversación. T2 tapaba ese
-    // hueco con el mismo `recordHandoff(entrega_fallida)` que la puerta de
-    // clasificación fallida — SUPERADO el 19/9/2026 por T12 (cierra la
-    // decisión abierta #1 del mismo plan, ver el comentario gemelo de más
-    // arriba): ese traspaso hacía el caso IRRECUPERABLE cuando en realidad es
-    // seguro reintentar (lo único que salió fue la presentación de Seba, ya
-    // sellada). En vez del traspaso se lanza `ProviderFailedAfterGreetingError`,
-    // que la cola reintenta; sin saludo previo, nada cambia.
-    await resetStage(supabase, conversationId, "turno_tool_loop_fallido", convo.assigned_agent_id);
-    if (introducedThisTurn) {
-      throw new ProviderFailedAfterGreetingError(
-        conversationId,
-        `Seba se presentó, pero el tool loop falló después: ${errorText(err)}`,
-        { cause: err }
-      );
+    if (modoDemora) {
+      // T10b-3 (29/9/2026): un turno por demora no abandona ni lanza si el
+      // proveedor falla -- el cliente lleva minutos esperando. `text` queda
+      // vacío y más abajo sale el texto fijo de espera. La bitácora y el log
+      // dejan el fallo a la vista.
+      log.warn("demora_redaccion_fallida", { conversationId, detail: errorText(err) });
+    } else {
+      await logTurn(supabase, conversationId, {
+        consultasCatalogo: catalogOutcome.consultas,
+        intent,
+        action: "error",
+        summary: errorText(err),
+        tokens: classifyTokens,
+        customerMessage,
+        tiempos,
+      });
+      // Bug 2, hallazgo 2 del plan (T4, 8/9/2026): antes esto SOLO apagaba
+      // active_tool y dejaba journey_stage en "classifying"/"tool_running"
+      // congelado para siempre.
+      //
+      // T2, plan "Seba sale sin pisar a nadie" (19/9/2026, hallazgo A2): "sin
+      // traspaso nuevo... el reconciliador la recoge sola" era el mismo
+      // criterio que la puerta de clasificación fallida de arriba, y dejó de
+      // ser cierto por el mismo motivo: si Seba ya se presentó en este turno
+      // (`introducedThisTurn`), el último mensaje visible es su saludo —un
+      // saliente exitoso, no el mensaje del cliente— y el reconciliador
+      // (`last_message_direction.eq.inbound` o `last_message_status.eq.failed`,
+      // `reconciler.ts`) ya no vuelve a mirar esta conversación. T2 tapaba ese
+      // hueco con el mismo `recordHandoff(entrega_fallida)` que la puerta de
+      // clasificación fallida — SUPERADO el 19/9/2026 por T12 (cierra la
+      // decisión abierta #1 del mismo plan, ver el comentario gemelo de más
+      // arriba): ese traspaso hacía el caso IRRECUPERABLE cuando en realidad es
+      // seguro reintentar (lo único que salió fue la presentación de Seba, ya
+      // sellada). En vez del traspaso se lanza `ProviderFailedAfterGreetingError`,
+      // que la cola reintenta; sin saludo previo, nada cambia.
+      await resetStage(supabase, conversationId, "turno_tool_loop_fallido", convo.assigned_agent_id);
+      if (introducedThisTurn) {
+        throw new ProviderFailedAfterGreetingError(
+          conversationId,
+          `Seba se presentó, pero el tool loop falló después: ${errorText(err)}`,
+          { cause: err }
+        );
+      }
+      return;
     }
-    return;
   }
+
+  // T10b-3 (29/9/2026): el texto fijo de un turno por demora -- con la tienda
+  // cerrada, nombra cuándo abre. Sale cuando el modelo no dejó nada que mandar
+  // y cuando la guarda de cifras o la de identidad reemplazan lo que dejó.
+  const textoDeEspera = demora ? textoEsperaDemora(businessStatus(demora.now, businessHours)) : "";
 
   // Red de seguridad: devolución y queja SIEMPRE terminan escaladas. Si el
   // turno se quedó sin pasos sin lograrlo, se fuerza en código.
@@ -2950,7 +3257,8 @@ async function runTurnPhases(
   // "IA reiteró la escalada" y etiqueta el reclamo), y si el modelo no
   // redactó nada, sale la despedida con asesor en vez de una conversación
   // muda. La devolución conserva la excepción de siempre.
-  const escalaPorReclamo = intent === "queja" || (!esperandoAsesor && intent === "devolucion");
+  // T10b-3: un turno por demora nunca escala, tampoco una queja.
+  const escalaPorReclamo = !modoDemora && (intent === "queja" || (!esperandoAsesor && intent === "devolucion"));
   if (!outcome.escalated && escalaPorReclamo) {
     const forced = await escalateConversation(supabase, {
       conversationId,
@@ -3204,7 +3512,14 @@ async function runTurnPhases(
         outcome.motivo = "confirmar_inventario";
       }
 
-      text = outcome.unassigned ? `${TEXTO_PRECIO_A_CONFIRMAR} ${DESPEDIDA_SIN_ASESOR}` : TEXTO_PRECIO_A_CONFIRMAR;
+      // T10b-3: en un turno por demora el reemplazo es el texto de espera --
+      // "te paso con un asesor" sería una promesa de escalada que este turno no
+      // hace.
+      text = demora
+        ? textoDeEspera
+        : outcome.unassigned
+          ? `${TEXTO_PRECIO_A_CONFIRMAR} ${DESPEDIDA_SIN_ASESOR}`
+          : TEXTO_PRECIO_A_CONFIRMAR;
       priceMark = true;
     }
   }
@@ -3223,6 +3538,7 @@ async function runTurnPhases(
       outcome,
       turnTokens,
       businessHours,
+      respaldoSinEscalar: demora ? textoDeEspera : undefined,
     });
     text = guarded.text;
     turnTokens = guarded.turnTokens;
@@ -3252,7 +3568,13 @@ async function runTurnPhases(
   // conversación sola porque el último mensaje visible sigue siendo del
   // cliente), pero se deja un `log.warn` para que el caso sea VISIBLE en vez
   // de un "answered" mudo con resumen vacío.
-  if (!text.trim() && !outcome.escalated) {
+  if (!text.trim() && !outcome.escalated && demora) {
+    // T10b-3 (29/9/2026): un turno por demora sin texto no se calla -- manda el
+    // texto fijo de espera. Sin saludo previo (`introducedThisTurn` es siempre
+    // false acá) no hay nada que reintentar.
+    log.warn("demora_sin_texto", { conversationId, intent, pasos: tiempos.pasos ?? null });
+    text = textoDeEspera;
+  } else if (!text.trim() && !outcome.escalated) {
     if (introducedThisTurn) {
       throw new ProviderFailedAfterGreetingError(
         conversationId,
@@ -3271,12 +3593,15 @@ async function runTurnPhases(
     // corrieron): si el turno escaló, la despedida sale sí o sí —
     // `shouldCedeDraft` ni siquiera toca la base cuando `yaEscalo` es
     // `true`.
-    const cesionPunto2 = await shouldCedeDraft({
-      supabase,
-      conversationId,
-      hastaCargado,
-      yaEscalo: outcome.escalated,
-    });
+    // (T10b-3: un turno por demora no cede, ver el punto 1.)
+    const cesionPunto2 = modoDemora
+      ? { cede: false }
+      : await shouldCedeDraft({
+          supabase,
+          conversationId,
+          hastaCargado,
+          yaEscalo: outcome.escalated,
+        });
     if (cesionPunto2.cede) {
       log.info("turno_cedido_a_rafaga", { conversationId, punto: "redaccion" });
       await resetStage(supabase, conversationId, "turno_cedido_a_rafaga", convo.assigned_agent_id);
@@ -3341,21 +3666,40 @@ async function runTurnPhases(
       () =>
         sendAgentText(supabase, target, text.trim(), {
           isAutoReply: outcome.escalated || esperandoAsesor,
-        })
+        }),
+      demora
     );
     if (!salida) return;
     // `outcome.escalated` es la bandera: `escalateConversation` SIEMPRE deja
     // su traspaso antes de devolver (por el tool del modelo o por la red de
     // seguridad de arriba), así que si ya está en true acá el dueño de la
     // conversación ya quedó fijado y un rechazo de Meta no debe pisarlo.
-    if (await deliveryFailed(supabase, conversationId, salida, convo.assigned_agent_id, outcome.escalated)) return;
+    if (
+      await deliveryFailed(supabase, conversationId, salida, convo.assigned_agent_id, outcome.escalated || modoDemora)
+    ) {
+      if (demora) {
+        // Sin traspaso a "sin dueño" (ver `runPlaybook`): el log ya quedó.
+        demora.motivo = "envio_fallido";
+        await resetStage(supabase, conversationId, "demora_envio_fallido", convo.assigned_agent_id);
+      }
+      return;
+    }
     // T1 (22-23/9/2026): la respuesta final del tool loop salió sin falla —
     // el turno atendió de verdad lo que vio, escale o no.
     await marcarTurnoVisto();
-    // T2 (22-23/9/2026, corrección post-revisión del 23/9): recién ACÁ, con
-    // la entrega confirmada, se reinicia el contador de cesiones seguidas
-    // para la próxima ráfaga — no antes, "porque no se cedió".
-    await clearCessionCounter(conversationId);
+    if (demora) {
+      await registrarRespuestaPorDemora(
+        supabase,
+        conversationId,
+        demora,
+        text.trim() === textoDeEspera ? "texto_fijo" : "respuesta_del_modelo"
+      );
+    } else {
+      // T2 (22-23/9/2026, corrección post-revisión del 23/9): recién ACÁ, con
+      // la entrega confirmada, se reinicia el contador de cesiones seguidas
+      // para la próxima ráfaga — no antes, "porque no se cedió".
+      await clearCessionCounter(conversationId);
+    }
   }
 
   if (!outcome.escalated) {
@@ -3381,6 +3725,7 @@ async function runTurnPhases(
     intent,
     action: outcome.escalated ? "escalated" : "answered",
     summary:
+      prefijoDemora(demora) +
       pricePrefix +
       identityPrefix +
       (outcome.escalated

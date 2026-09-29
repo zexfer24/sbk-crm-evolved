@@ -1,5 +1,5 @@
 import { AI_NAME, BUSINESS_NAME } from "@/lib/brand";
-import { greetingFor, type DayBand } from "@/lib/business-hours";
+import { greetingFor, type BusinessStatus, type DayBand } from "@/lib/business-hours";
 
 // ---------------------------------------------------------------------------
 // 18/9/2026, plan "Seba atiende el mostrador" (requisitos 1, 2, 3 y 4 del
@@ -166,3 +166,34 @@ export const PREGUNTA_FILTRO_PRODUCTO = "Claro, ¿tienes alguna marca, medida o 
  */
 export const TEXTO_PRECIO_A_CONFIRMAR =
   "Para darte el precio de hoy te paso con un asesor, que te lo confirma por acá.";
+
+/**
+ * T10b-3, plan "Seba encuentra, no insiste, y el mostrador no deja a nadie
+ * esperando" (29/9/2026, D2 del operador): el texto fijo del turno por DEMORA
+ * (`delay-turn.ts`) cuando el modelo no dejó nada que mandar -- sin texto, o
+ * porque la guarda de cifras o la de identidad lo reemplazaron. El cliente
+ * lleva minutos esperando a una persona: lo mínimo es decirle que su mensaje
+ * llegó y que un asesor le responde por acá, cálido y corto.
+ *
+ * SIN prometer tiempos ("en cuanto pueda", nunca "en 5 minutos"): Seba no
+ * decide cuándo escribe el asesor, y una hora dicha por ella es una promesa
+ * que nadie más está obligado a cumplir. Tampoco escala ni pasa el caso: el
+ * asesor ya lo tiene, o lo va a tener. Pasa la guarda de identidad (su test).
+ */
+export const TEXTO_ESPERA_DEMORA =
+  "Gracias por esperar. Ya tenemos tu mensaje y un asesor te responde por acá en cuanto pueda.";
+
+/**
+ * `TEXTO_ESPERA_DEMORA`, o -- con la tienda cerrada -- la versión que nombra
+ * cuándo abre: mismo criterio que `despedidaConAsesor` (agent.ts) cuando
+ * escala fuera de horario, para que el cliente no espere una respuesta que
+ * nadie va a dar hasta la mañana. `status` `undefined` se trata como tienda
+ * abierta (compatibilidad, igual que `despedidaConAsesor`).
+ */
+export function textoEsperaDemora(status?: BusinessStatus): string {
+  if (!status || status.open) return TEXTO_ESPERA_DEMORA;
+  if (!status.nextOpening) {
+    return "Gracias por escribirnos. La tienda está cerrada ahora; un asesor te responde por acá en cuanto vuelva a abrir.";
+  }
+  return `Gracias por escribirnos. La tienda está cerrada ahora; un asesor te responde por acá ${status.nextOpening.dayLabel} a partir de las ${status.nextOpening.time}.`;
+}

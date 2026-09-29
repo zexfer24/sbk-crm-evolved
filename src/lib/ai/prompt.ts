@@ -518,6 +518,31 @@ export interface TurnContext {
    * viejo.
    */
   previousConversationCutoffAt?: string | null;
+  /**
+   * T10b-3, plan "Seba encuentra, no insiste, y el mostrador no deja a nadie
+   * esperando" (29/9/2026, D2 del operador): presente SOLO cuando Seba
+   * responde por demora (`delay-turn.ts`) -- el cliente lleva
+   * `esperaMinutos` sin que una persona le escriba, y el turno corre con la
+   * IA pausada o con un asesor asignado. Suma al sufijo los límites de D2 (no
+   * escala, no promete nada que decida el asesor, el asesor sigue a cargo) y
+   * REEMPLAZA la línea de `yaEscalada`: esa habla de la herramienta
+   * `escalarAAsesor`, que un turno de demora nunca recibe. Va SOLO en el
+   * sufijo -- depende del turno, así que meterla en el prefijo rompería el
+   * caché de los demás.
+   */
+  modoDemora?: { esperaMinutos: number };
+}
+
+/**
+ * La línea del sufijo de un turno por demora (D2). Exportada para su test.
+ *
+ * "Gana sobre" a propósito: el protocolo del caso (5.2 devolución, 5.3 queja,
+ * 5.1 repuesto encontrado) manda escalar SIEMPRE, y sin esta frase el modelo
+ * intentaría hacerlo sin tener la herramienta. El texto pasa por la guarda de
+ * identidad en su test, igual que el resto del sufijo.
+ */
+export function buildDemoraLine(esperaMinutos: number): string {
+  return ` MODO ESPERA: el cliente lleva ${esperaMinutos} min esperando a que una persona le escriba y el asesor sigue a cargo de su caso; tú solo lo acompañas mientras tanto. Esto gana sobre cualquier protocolo que mande pasar o escalar el caso (devolución, queja, un repuesto encontrado, agotado o no identificado): NO escales ni le prometas que lo vas a pasar, porque no tienes esa herramienta ni esa facultad. Tampoco prometas precio especial, descuento, apartar o reservar un producto ni un envío: eso lo decide el asesor, y si te lo piden, dile con calidez que el asesor se lo confirma. Contesta solo lo que puedas afirmar con lo que ves en este turno (catálogo, biblioteca o lo que el cliente ya escribió). No te presentes ni saludes, y sé breve.`;
 }
 
 // ---------------------------------------------------------------------------
@@ -621,6 +646,7 @@ export function buildInstructions({
   escalateToolAvailable,
   pendingCustomerLines,
   previousConversationCutoffAt,
+  modoDemora,
 }: TurnContext): string {
   const seccion = CASE_SECTION[intent] ?? CASE_SECTION.otro;
   const instante = now ?? new Date();
@@ -637,8 +663,11 @@ export function buildInstructions({
   // T2 (21/9/2026): con `yaEscalada` el asesor ya tiene el caso, así que
   // "pasa el caso" (como si todavía no lo tuviera nadie) dejó de tener
   // sentido — se reescribe para confirmar que ya está en manos de alguien.
+  // T10b-3 (29/9/2026): en un turno por demora el asesor ya tiene el caso
+  // (o alguien lo está por tomar): "pasa el caso" tampoco tiene sentido.
+  const asesorTieneElCaso = Boolean(yaEscalada) || modoDemora !== undefined;
   const catalog = missingCatalog
-    ? yaEscalada
+    ? asesorTieneElCaso
       ? " La búsqueda de catálogo está apagada: no afirmes existencia ni precio. Dile con calidez que un asesor ya tiene su caso y se lo confirma por acá."
       : " La búsqueda de catálogo está apagada: no afirmes existencia ni precio. Dile con calidez que un asesor se lo confirma por acá y pasa el caso."
     : "";
@@ -667,7 +696,11 @@ export function buildInstructions({
   // residuales, y tocar el sufijo por un caso que casi no ocurre no valía el
   // riesgo de una redacción a medio probar. Si medir en producción muestra
   // que este texto sí se lee con frecuencia, hay que revisarlo de nuevo.
-  const yaEscaladaLinea = yaEscalada
+  //
+  // T10b-3 (29/9/2026): en modo demora esta línea NO va -- habla de la
+  // herramienta `escalarAAsesor`, que ese turno nunca recibe --; la reemplaza
+  // `buildDemoraLine`, que dice lo mismo sin nombrarla.
+  const yaEscaladaLinea = yaEscalada && modoDemora === undefined
     ? ` Este chat YA está asignado a un asesor que todavía no le escribió al cliente: NO lo vuelvas a pasar ni le prometas de nuevo que se lo vas a pasar — esto gana sobre los protocolos que mandan escalar (devolución, un repuesto que encontraste): el sistema ya deja constancia. La excepción es la queja: una queja siempre se escala, aunque el cliente ya esté esperando; la registra el sistema para el asesor que ya tiene el chat, y tú solo reconoces el problema y te disculpas como siempre, sin prometer nada. Contesta lo que el cliente pregunte con normalidad y, si hace falta, recuérdale con calidez que su caso ya lo tiene un asesor.${
         escalateToolAvailable
           ? " Solo usa escalarAAsesor si el cliente acaba de confirmar que quiere comprar, para dejar marcada la venta en curso."
@@ -697,10 +730,11 @@ export function buildInstructions({
   // redacte.
   const pendientesLinea = buildPendingLine(pendingCustomerLines);
   const conversacionAnteriorLinea = buildPreviousConversationLine(previousConversationCutoffAt);
+  const demoraLinea = modoDemora ? buildDemoraLine(modoDemora.esperaMinutos) : "";
 
   return `${cacheablePrefix(lessons)}
 
 TURNO ACTUAL
 ${turnClockLine(instante, businessHours)}
-Caso identificado: ${intent}. Aplica el protocolo ${seccion}.${greeting}${catalog}${yaEscaladaLinea}${nombre}${leccionesDeChat}${pendientesLinea}${conversacionAnteriorLinea}`;
+Caso identificado: ${intent}. Aplica el protocolo ${seccion}.${greeting}${catalog}${yaEscaladaLinea}${demoraLinea}${nombre}${leccionesDeChat}${pendientesLinea}${conversacionAnteriorLinea}`;
 }

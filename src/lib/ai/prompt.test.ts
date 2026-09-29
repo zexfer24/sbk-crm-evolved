@@ -1529,3 +1529,84 @@ describe("T4 — políticas con fuente, promesas verdaderas, pedidos viejos, lin
     });
   });
 });
+
+/**
+ * T10b-3, plan "Seba encuentra, no insiste, y el mostrador no deja a nadie
+ * esperando" (29/9/2026, D2 del operador): cuando Seba responde por demora
+ * (el cliente lleva minutos sin que una persona le escriba) tiene límites
+ * explícitos -- no escala, no promete nada que decida el asesor, y el asesor
+ * sigue a cargo. Viajan SOLO en el sufijo: `cacheablePrefix()` no puede
+ * cambiar por un turno de demora, o cada uno rompería el caché de los demás.
+ */
+describe("modo demora — los límites de D2 (29/9/2026)", () => {
+  const DEMORA = { esperaMinutos: 12 };
+
+  it("sin modoDemora, buildInstructions es idéntico al de antes de esta tarea", () => {
+    expect(buildInstructions({ ...TURN, modoDemora: undefined })).toBe(buildInstructions(TURN));
+    expect(buildInstructions(TURN)).not.toMatch(/MODO ESPERA/);
+  });
+
+  it("la línea vive SOLO en el sufijo: cacheablePrefix() no cambia, con y sin lecciones", () => {
+    const lessons = { global: ["No prometas descuentos por WhatsApp sin confirmar con un asesor."], chat: [] };
+    const normal = buildInstructions({ ...TURN, lessons });
+    const conDemora = buildInstructions({ ...TURN, lessons, modoDemora: DEMORA });
+    const prefijo = cacheablePrefix(lessons);
+
+    expect(normal.startsWith(prefijo)).toBe(true);
+    expect(conDemora.startsWith(prefijo)).toBe(true);
+    expect(conDemora.slice(prefijo.length)).toMatch(/MODO ESPERA/);
+    expect(cacheablePrefix()).toBe(SYSTEM_PROMPT);
+  });
+
+  it("nombra los minutos de espera", () => {
+    const sufijo = buildInstructions({ ...TURN, modoDemora: { esperaMinutos: 17 } }).slice(SYSTEM_PROMPT.length);
+
+    expect(sufijo).toMatch(/17 min/);
+  });
+
+  it("dice que no escala y que gana sobre los protocolos que mandan escalar", () => {
+    const sufijo = buildInstructions({ intent: "devolucion", introducedThisTurn: false, modoDemora: DEMORA }).slice(
+      SYSTEM_PROMPT.length
+    );
+
+    expect(sufijo).toMatch(/NO escales/);
+    expect(sufijo).toMatch(/gana sobre/i);
+  });
+
+  it("prohíbe prometer precio especial, descuento, apartado y envío, y deja al asesor a cargo", () => {
+    const sufijo = buildInstructions({ ...TURN, modoDemora: DEMORA }).slice(SYSTEM_PROMPT.length);
+
+    expect(sufijo).toMatch(/precio especial/i);
+    expect(sufijo).toMatch(/descuento/i);
+    expect(sufijo).toMatch(/apartar|reservar/i);
+    expect(sufijo).toMatch(/envío/i);
+    expect(sufijo).toMatch(/asesor sigue a cargo/i);
+  });
+
+  it("no suma la línea de 'chat asignado' ni menciona la herramienta de escalar, aunque llegue yaEscalada", () => {
+    const sufijo = buildInstructions({
+      ...TURN,
+      modoDemora: DEMORA,
+      yaEscalada: true,
+      escalateToolAvailable: true,
+    }).slice(SYSTEM_PROMPT.length);
+
+    expect(sufijo).not.toMatch(/YA está asignado a un asesor/);
+    expect(sufijo).not.toMatch(/usa escalarAAsesor/i);
+  });
+
+  it("con el catálogo apagado no pide 'pasa el caso': el asesor ya lo tiene", () => {
+    const sufijo = buildInstructions({ ...TURN, modoDemora: DEMORA, missingCatalog: true }).slice(
+      SYSTEM_PROMPT.length
+    );
+
+    expect(sufijo).toMatch(/ya tiene su caso/i);
+    expect(sufijo).not.toMatch(/pasa el caso/i);
+  });
+
+  it("pasa la guarda de identidad", () => {
+    const sufijo = buildInstructions({ ...TURN, modoDemora: DEMORA }).slice(SYSTEM_PROMPT.length);
+
+    expect(revealsIdentity(sufijo)).toBeNull();
+  });
+});

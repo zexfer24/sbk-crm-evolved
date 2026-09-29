@@ -8032,3 +8032,29 @@ describe("runAgentTurn — una queja SIEMPRE llama a escalateConversation (T3b, 
     expect(sendAgentTextMock.mock.calls[0][2]).toBe(DESPEDIDA_CON_ASESOR_ABIERTA);
   });
 });
+
+/**
+ * T10b-3, plan "Seba encuentra, no insiste, y el mostrador no deja a nadie
+ * esperando" (29/9/2026, D2): `runTurnPhases` ganó un parámetro `demora`
+ * opcional para el turno por demora (`delay-turn.ts`, que tiene su propio
+ * archivo de tests). Estos dos son los de NO REGRESIÓN: el turno normal que
+ * dispara la cola no se entera de que ese modo existe.
+ */
+describe("runAgentTurn — el modo demora no se filtra al turno normal (T10b-3, 29/9/2026)", () => {
+  it("arma la herramienta de escalar y el sufijo NO trae la línea MODO ESPERA", async () => {
+    await runAgentTurn("conv-1");
+
+    expect(buildEscalateToolMock).toHaveBeenCalledTimes(1);
+    expect(Object.keys(agentOptions[0].tools)).toContain("escalarAAsesor");
+    expect(agentOptions[0].instructions).not.toMatch(/MODO ESPERA/);
+  });
+
+  it("con un asesor ya asignado y la IA encendida, sigue con la línea 'chat asignado' de siempre, no la de demora", async () => {
+    state.conversation = { ...state.conversation, assigned_agent_id: "agente-1" };
+
+    await runAgentTurn("conv-1");
+
+    expect(agentOptions[0].instructions).toMatch(/YA está asignado a un asesor/);
+    expect(agentOptions[0].instructions).not.toMatch(/MODO ESPERA/);
+  });
+});
