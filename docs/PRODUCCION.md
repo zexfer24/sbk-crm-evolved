@@ -2470,13 +2470,208 @@ dólar) no se tocaron; las 1.788 cotizaciones con el precio correcto y las
 
 ---
 
+## 16. Entrega B de "Seba encuentra, no insiste, y el mostrador no deja a nadie esperando" (29/9/2026)
+
+Esta sección es SOLO la Entrega B (el mostrador): el carrito por conversación,
+el scroll con "Ver más" y la pastilla de existencia en el panel del chat, y
+"Nadie sin atender" (Seba contesta a los 10 minutos, el caso pasa a otro
+asesor a los 15 de horario y, agotadas dos reasignaciones, se avisa a los
+supervisores). Origen de esta última: 283 escaladas en 3 días, 201 sin un solo
+mensaje del asesor a los 15 minutos (en 62 el cliente ni volvió a escribir).
+La Entrega A (Seba, §15) sale en su propia rama. El plan completo está en
+`docs/planes/2026-09-28-seba-encuentra-y-el-mostrador-no-deja-esperando.md` y
+la nota de entrega con los SHA y los comandos exactos, en `docs/entregas/`
+(la redacta el orquestador al cerrar la entrega) — esta sección solo dice el
+orden y qué verificar.
+
+**Esta entrega NO se pushea a `main` directo — llega por la rama
+`entrega/mostrador-sin-esperas`** (misma regla que §14 y §15: push a `main` SÍ
+despliega, así que las migraciones se aplican y verifican ANTES del
+fast-forward). **La rama nace de la punta de A**: contiene también los commits
+de `entrega/seba-encuentra`, así que el fast-forward de `main` a esta rama
+despliega A y B juntas. Si la Entrega A todavía no se entregó, aplicar
+primero sus cinco migraciones (§15, paso 3) y recién después las dos de aquí.
+Producción quedará con 86 migraciones al terminar A (81 en `08e0fa5` + cinco);
+esta entrega suma **dos** y deja **88**.
+
+### Migraciones, en orden de fecha (TODAS ANTES del código)
+
+Cada una con `psql -1 -v ON_ERROR_STOP=1` (sin `-1`, el `set local
+lock_timeout` de la cabecera es un NO-OP silencioso y la guarda de la propia
+migración aborta con un mensaje explícito). Cada una termina con `notify
+pgrst` y se autoverifica con `raise exception` si algo no quedó como debía.
+
+| # | Migración | Qué hace | Ojo |
+|---|-----------|----------|-----|
+| 1 | `20260929010000_carrito_por_conversacion.sql` | Tabla `conversation_cart_items` (`product_id` + `quantity`, sin precio; `unique (conversation_id, product_id)`), RLS con cuatro políticas `is_agent()`, `replica identity full` y alta en la publicación `supabase_realtime`. | Sin la tabla publicada el canal `cart-<id>` se suscribe bien y calla para siempre (la migración lo autoverifica). El código nuevo lee la tabla al abrir un chat: sin la migración, el panel da 404. |
+| 2 | `20260929020000_demora_del_asesor.sql` | `conversation_delay_episodes` (RLS sin políticas, solo `service_role`); `agent_settings.demora_activa` (nace `false`) y `demora_activa_desde`; el CHECK de `conversation_handoffs.reason` pasa de 30 a **32** razones (`reasignada_por_demora`, `demora_sin_asesor`). | El `drop`/`add constraint` toma ACCESS EXCLUSIVE sobre `conversation_handoffs` mientras revisa las filas existentes: por eso va al final de la migración, con `lock_timeout = 5s`. Si aborta por el timeout, reintentar fuera de hora pico; NO subir el timeout. Sin ella, `recordHandoff` con `reasignada_por_demora` falla contra el CHECK viejo. |
+
+Ninguna bloquea nada de forma prolongada (la 1 crea una tabla nueva y toca la
+publicación; la 2 crea otra tabla, dos columnas nullable/con default y
+reescribe un CHECK). No hace falta ventana de mantenimiento. Ninguna función
+`security definer` nueva: nada que revocar.
+
+### Orden
+
+1. **Respaldo** (`scripts/backup.sh`, §8).
+2. **Simulacro de las dos** dentro de `BEGIN … ROLLBACK` contra
+   `supabase-db`, en orden, viendo los `NOTICE` de autoverificación y que
+   ninguna aborte.
+3. **Aplicar las dos, una por una, en el orden de la tabla**:
+   ```bash
+   for m in 20260929010000_carrito_por_conversacion \
+            20260929020000_demora_del_asesor; do
+     docker exec -i supabase-db env PGOPTIONS="-c lock_timeout=5s" psql -U postgres -d postgres \
+       -1 -v ON_ERROR_STOP=1 < "supabase/migrations/$m.sql" || break
+   done
+   ```
+   (`|| break`: si una aborta, NO seguir con la siguiente.)
+4. **Verificar contra la base real** (nunca leyendo el `.sql`):
+   ```sql
+   -- (a) el carrito: publicado en Realtime, réplica completa, RLS y cuatro políticas
+   select count(*) from pg_publication_tables
+   where pubname = 'supabase_realtime' and schemaname = 'public' and tablename = 'conversation_cart_items';   -- 1
+   select relreplident, relrowsecurity from pg_class
+   where oid = 'public.conversation_cart_items'::regclass;                                                  -- f, t
+   select count(*) from pg_policies where schemaname = 'public' and tablename = 'conversation_cart_items';  -- 4
+   select has_table_privilege('anon', 'public.conversation_cart_items', 'select') as anon_lee;              -- false
+   -- (b) la tabla de episodios: RLS sin políticas y cerrada a anon/authenticated
+   select relrowsecurity from pg_class where oid = 'public.conversation_delay_episodes'::regclass;          -- t
+   select count(*) from pg_policies where schemaname = 'public' and tablename = 'conversation_delay_episodes';   -- 0
+   select
+     has_table_privilege('authenticated', 'public.conversation_delay_episodes', 'select,insert,update,delete') as auth,
+     has_table_privilege('anon', 'public.conversation_delay_episodes', 'select,insert,update,delete') as anon,
+     has_table_privilege('service_role', 'public.conversation_delay_episodes', 'select,insert,update,delete') as service;
+   -- (c) el CHECK de razones: las dos nuevas, y ninguna vieja perdida
+   select pg_get_constraintdef(oid) like '%reasignada_por_demora%' as reasignada,
+          pg_get_constraintdef(oid) like '%demora_sin_asesor%' as sin_asesor,
+          pg_get_constraintdef(oid) like '%fuera_de_tema_repetido%' as conserva_la_ultima_vieja
+   from pg_constraint
+   where conrelid = 'public.conversation_handoffs'::regclass and conname = 'conversation_handoffs_reason_check';
+   -- (d) el interruptor: existe y nace APAGADO
+   select demora_activa, demora_activa_desde from public.agent_settings;
+   ```
+   Esperado: (a) `1`, `f | t`, `4`, `false`; (b) `t`, `0` y `false, false,
+   true` (`authenticated` NO puede ni leer la tabla: recibe
+   `insufficient_privilege`, no 0 filas); (c) `true, true, true`; (d) `false,
+   null`. Si alguno da distinto, NO seguir al paso 5.
+5. **Fast-forward de `main` a `entrega/mostrador-sin-esperas`** — ESTE es el
+   paso que despliega:
+   ```bash
+   git fetch origin
+   git checkout main
+   git merge --ff-only origin/entrega/mostrador-sin-esperas
+   git push origin main
+   ```
+   Confirmar en Dokploy que el contenedor se recreó con el SHA nuevo y que el
+   dominio responde. **Sin variables de entorno nuevas.**
+6. **Verificar que el servicio `cron` del compose tiene el `curl` nuevo.**
+   Esta entrega agrega una llamada a `/api/cron/asesor-sin-responder` en el
+   bucle de `cron` (en `docker-compose.yml` y en `docker-compose.dokploy.yml`)
+   y, a diferencia de un cambio de código, un cambio de compose puede exigir
+   que Dokploy recree ese servicio (redeploy del stack completo, no solo de
+   la imagen):
+   ```bash
+   docker inspect <contenedor-cron> --format '{{.Created}}'          # posterior al deploy
+   docker inspect <contenedor-cron> --format '{{json .Config.Cmd}}' | grep -c asesor-sin-responder   # >= 1
+   ```
+   Si el contenedor `cron` conserva la fecha vieja o el `grep` da 0, hacer el
+   redeploy del stack desde el panel de Dokploy (no a mano; ver §10 sobre los
+   labels de Traefik). Comprobar que el endpoint responde y que, con la demora
+   apagada, no hace nada:
+   ```bash
+   docker exec <contenedor-cron> sh -c \
+     'curl -sS -X POST http://app:3000/api/cron/asesor-sin-responder -H "Authorization: Bearer $CRON_SECRET"'
+   ```
+   Esperado: `{"ok":true,"activa":false,…}`. Un `401` es el `CRON_SECRET` mal
+   copiado; un `503`, que falta en el Environment.
+7. **Orden de encendido de la demora — DESPLEGAR B, AVISAR A LOS ASESORES,
+   ENCENDER.** La demora nace APAGADA y el cron ya corre cada minuto sin
+   efecto mientras esté así, de modo que el deploy es seguro por sí solo. Lo
+   que sí cambia la vida de los asesores es encenderla (pueden perder un caso
+   a los 15 minutos de horario si no escriben), así que:
+   1. Desplegar B (pasos 1-6) y confirmar que la demora sigue apagada.
+   2. **Avisar a los asesores** —antes, no después— de la regla: a los 10
+      minutos sin que una persona escriba, Seba contesta al cliente; a los 15
+      minutos de horario, el caso pasa a otro asesor (y al segundo intento
+      fallido, a un supervisor). Escribirle al cliente lo evita.
+   3. **Encender "Reasignar si el asesor tarda"** en Control IA (solo
+      supervisor/admin). Encender sella `demora_activa_desde = now()`: es el
+      corte del backlog, nada anterior a ese instante abre episodio, y
+      apagarla y volver a encenderla lo sella de nuevo (lo ocurrido con el
+      interruptor apagado no se persigue después).
+8. **Cambios visibles a avisar a los asesores** (no son fallas):
+   - **D6, el precio del carrito es el vigente.** Una cotización de Seba que
+     el asesor agrega al carrito se factura al precio de HOY, no al que se le
+     dijo al cliente; si difieren, el renglón muestra "cotizado $X · hoy $Y".
+     Es la decisión del plan (el carrito no guarda precio), no un bug.
+   - El panel del chat tiene un bloque **"Lo que lleva el cliente"** entre la
+     búsqueda de inventario y las notas: sobrevive a cerrar el modal o
+     recargar la pestaña, y otro asesor lo ve en vivo. "Cerrar venta" lo toma
+     tal cual y, al cerrar, lo vacía (si el vaciado falla, el modal avisa y
+     hay que quitar los renglones a mano).
+   - La búsqueda del panel trae hasta 20 resultados con "Ver más" y scroll
+     propio, y cada uno lleva su pastilla de existencia ("12 en stock" /
+     "Agotado"). (Solo código; verificar a ojo tras el deploy.)
+9. **Escenario a mano (en el simulador o con un chat de prueba).**
+   - Carrito: agregar dos repuestos desde la búsqueda, uno repetido (suma
+     unidades, no duplica), recargar la pestaña (siguen ahí), abrir el mismo
+     chat desde otro navegador (se ve en vivo), cerrar la venta (el carrito
+     queda vacío).
+   - Demora, con la demora YA encendida y un chat de prueba: una escalada
+     sin que el asesor escriba → a los 10 minutos Seba responde una vez
+     ("Gracias por esperar…") y queda la nota "Seba respondió por demora de N
+     min"; a los 15 minutos de horario el chat pasa a otro asesor (nunca al
+     mismo) y le aparece el aviso de asignación; sin más respuesta, a la
+     tercera se avisa a un supervisor/admin y no se rota más.
+10. **Medir 48 h.**
+    ```sql
+    -- cuántas reasignaciones y avisos a supervisor dejó la demora
+    select reason, count(*) from public.conversation_handoffs
+    where reason in ('reasignada_por_demora', 'demora_sin_asesor')
+      and created_at > now() - interval '48 hours'
+    group by 1;
+    -- episodios por origen: cuántos respondió Seba, cuántas reasignaciones, cuántos llegaron al tope
+    select origen,
+           count(*) as episodios,
+           count(responded_at) as respondio_seba,
+           coalesce(sum(reassignments), 0) as reasignaciones,
+           count(*) filter (where reassignments >= 2) as llegaron_al_tope,
+           count(supervisor_notified_at) as avisos_a_supervisor
+    from public.conversation_delay_episodes
+    where created_at > now() - interval '48 hours'
+    group by 1;
+    -- las notas internas que dejó cada respuesta de Seba por demora
+    select count(*) from public.messages
+    where sender_type = 'system' and is_internal_note
+      and content like 'Seba respondió por demora%'
+      and created_at > now() - interval '48 hours';
+    ```
+    (`conversation_delay_episodes` solo se lee como `postgres`/`service_role`.)
+    Y en el log: `respuesta_por_demora` (con `via`: `respuesta_del_modelo`,
+    `escenario` o `texto_fijo`), `reasignada_por_demora`, `demora_sin_asesor`
+    y `demora_sin_respuesta` con su `motivo` (`asesor_ya_respondio`,
+    `fuera_de_ventana`, `turno_en_curso`, `agente_no_puede_correr`… — cada uno
+    es un turno por demora que NO salió y por qué). Vigilar además
+    `reasignacion_sin_candidato` (nadie a quién rotar: se reintenta cada
+    minuto), `demora_encendida_sin_fecha` (no debería aparecer) y
+    `demora_conversacion_fallida`. Lo que hay que decidir con los datos: si
+    los 10/15 minutos calzan con el ritmo real del mostrador, y si el tope de
+    2 reasignaciones alcanza.
+
+**Lo que NO cambia:** la cola de turnos, `ai_enabled` (la demora nunca lo
+toca ni reactiva la IA) y la regla "un asesor que escribe apaga a Seba". La
+IA sigue sin escalar desde el turno por demora.
+
+---
+
 ## Comprobación final
 
 Con todo configurado, esta lista debe pasar entera:
 
 - [ ] Una restauración de prueba devuelve los datos completos
 - [ ] `npm run build` sin errores ni warnings
-- [ ] `select count(*) from supabase_migrations.schema_migrations` devuelve 86 en LOCAL tras `20260928050000` (Entrega A de "Seba encuentra, no insiste, y el mostrador no deja a nadie esperando", 28-29/9/2026; ver §15) — 81 tras `20260926010000` ("La búsqueda encuentra lo que el cliente pide", 25-26/9/2026; ver §14) — 80 tras `20260925010000` ("El inventario llega de Saint y no se toca a mano", 25/9/2026; ver §13), 79 tras `20260921040000` ("Nada se pierde en un corte ni en un deploy", 22/9/2026; ver §12), 78 tras `20260921020000`/`20260921030000` ("La escalada se hace una vez y la búsqueda responde"), 76 el 21/9/2026 tras `20260921010000` ("El catálogo configurado sale siempre"), 75 el 19/9/2026 tras `20260918010000`/`20260918020000`, 73 el 18/9/2026 tras `20260916010000`/`20260917010000`/`20260917020000`, 70 el 15/9/2026 y 61 cuando se escribió esta guía. **El número en PRODUCCIÓN depende de cuántas de estas corridas ya se aplicaron allá — preguntar en qué commit está producción antes de asumir un valor (ver §11/§12/§13/§14/§15).**
+- [ ] `select count(*) from supabase_migrations.schema_migrations` devuelve 88 en LOCAL tras `20260929020000` (Entrega B de la misma corrida: carrito por conversación y demora del asesor; ver §16) — 86 tras `20260928050000` (Entrega A de "Seba encuentra, no insiste, y el mostrador no deja a nadie esperando", 28-29/9/2026; ver §15) — 81 tras `20260926010000` ("La búsqueda encuentra lo que el cliente pide", 25-26/9/2026; ver §14) — 80 tras `20260925010000` ("El inventario llega de Saint y no se toca a mano", 25/9/2026; ver §13), 79 tras `20260921040000` ("Nada se pierde en un corte ni en un deploy", 22/9/2026; ver §12), 78 tras `20260921020000`/`20260921030000` ("La escalada se hace una vez y la búsqueda responde"), 76 el 21/9/2026 tras `20260921010000` ("El catálogo configurado sale siempre"), 75 el 19/9/2026 tras `20260918010000`/`20260918020000`, 73 el 18/9/2026 tras `20260916010000`/`20260917010000`/`20260917020000`, 70 el 15/9/2026 y 61 cuando se escribió esta guía. **El número en PRODUCCIÓN depende de cuántas de estas corridas ya se aplicaron allá — preguntar en qué commit está producción antes de asumir un valor (ver §11/§12/§13/§14/§15/§16).**
 - [ ] El bucket `whatsapp-media` es privado (`public = false`)
 - [ ] Una URL directa al bucket responde 400
 - [ ] `/api/media/...` sin sesión responde 401

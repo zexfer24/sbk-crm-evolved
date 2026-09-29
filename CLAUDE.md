@@ -2584,6 +2584,132 @@ dejar rastro es lo que hacía desaparecer leads.
   texto que el cliente escribió. Solo cambia esa función: fase 0, la racha
   de adjuntos y `customerBurst` siguen viendo el marcador como marcador, y
   `messages.content` sigue siendo solo lo que el cliente escribió.
+- **El carrito vive en la conversación (`conversation_cart_items`) y guarda
+  producto y cantidad, NUNCA precio: se factura el vigente** (T8, 29/9/2026,
+  Entrega B del plan "Seba encuentra, no insiste, y el mostrador no deja a
+  nadie esperando", migración `20260929010000`, decisión D6). Hasta esa
+  fecha "lo que lleva el cliente" solo existía en el estado de React de
+  `CloseSaleModal`: cerrar el modal o recargar la pestaña lo perdía todo, y
+  el asesor tenía que rearmarlo mirando el chat. Ahora el asesor lo va
+  llenando mientras conversa (botón Agregar en cada resultado de
+  `InventoryLookup`, o "Agregar cotizaciones de Seba"), otro asesor lo ve en
+  vivo y "Cerrar venta" lo toma tal cual. Como no hay columna de precio,
+  una cotización de Seba se factura al precio de HOY
+  (`productPriceUsd` + `usdFromBs`, `priceCartLines` en
+  `conversation-cart.ts`), no al que se le dijo al cliente: si difieren, el
+  renglón que vino de una cotización (`quote_id`) muestra "cotizado $X ·
+  hoy $Y" (`quoteComparisonLabel`) y se cobra el de hoy — es un **cambio
+  visible** que se avisa en la nota de entrega, no un bug. `sale-cart.ts`
+  quedó reducido a `productPriceUsd` (el carrito en memoria que enseñaba la
+  regla contraria se borró); el modal de cierre baja su PROPIA tasa BCV
+  (`fetchLatestBcvRate`) en vez de recibirla del panel. `addToCart`
+  (`mutations.ts`) NO es un `upsert`: PostgREST reemplaza, no calcula
+  `quantity + 1`, y el plan pidió no sumar una RPC — suma con concurrencia
+  optimista (lee la cantidad, el `UPDATE` lleva `.eq("quantity", leída)` y
+  `.select("id")`; con 0 filas vuelve a leer; un `23505` del INSERT también
+  reintenta; 4 vueltas y lanza "otro asesor lo estaba cambiando").
+  `setCartQuantity`/`removeFromCart` verifican filas (`assertRowsAffected`).
+  La tabla está en `supabase_realtime` con `replica identity full` (sin
+  ella, el DELETE filtrado por `conversation_id` no llega y el canal
+  `cart-<id>` de `crm-shell.tsx` calla; la migración se autoverifica).
+  `closeSaleWithContactInfo` crea `orders`/`order_items` desde el carrito y,
+  con la venta ya escrita, lo VACÍA y devuelve `{ cartCleared }`: si el
+  vaciado falla NO revierte la venta (ya está cerrada y facturable), el
+  modal avisa con un toast y el asesor quita los renglones a mano — dejarlos
+  los cobraría dos veces en el próximo cierre de ese chat.
+- **La demora del asesor tiene dos orígenes de episodio, gana el más
+  reciente, y `reasignada_por_demora` CONTINÚA el episodio, no abre uno**
+  (T10, 29/9/2026, migración `20260929020000`; `demora.ts`, puro). Medido en
+  producción: 283 escaladas en 3 días, 201 sin un solo mensaje del asesor a
+  los 15 min, y en 62 el cliente ni volvió a escribir. La despedida de Seba
+  al escalar mueve `last_reply_at`, así que un reloj atado a `awaiting_reply`
+  o al "último mensaje sin respuesta" NUNCA arrancaría. Origen 1: escalada
+  abierta sin mensaje de asesor desde ella (episodio = `created_at` del
+  traspaso ORIGINAL `escalada`/`escalada_sin_asesor`, sin importar
+  `awaiting_reply`). Origen 2: mensaje del cliente sin respuesta real
+  (episodio = `last_customer_message_at`, con las condiciones de siempre:
+  abierta, ventana de 24 h, ráfaga que no es solo cortesía/sticker, ningún
+  asesor escribió después). **Una `reasignada_por_demora` no abre episodio
+  nuevo** (segunda corrección del operador): acumula `reassignments` y
+  `agentes_previos` en la MISMA fila y fija `ultima_reasignacion_at`, desde
+  donde corren los 15 min siguientes. Si abriera uno, cada reasignación
+  reiniciaría el contador en 0, el tope de 2 no llegaría nunca y el caso
+  rotaría entre asesores cada 15 min sin fin (mutación (h) del plan: 10:00 →
+  10:15 → 10:30 → aviso a las 10:45). Los relojes: **10 min de reloj de
+  pared** para que Seba responda (una sola vez por episodio; en el origen 1
+  solo si el cliente escribió algo NUEVO después de la despedida) y **15 min
+  de HORARIO laboral** (`businessMinutesBetween`) para reasignar — una
+  escalada de las 17:50 no cumple sus 15 min a las 8:00 por haber dormido 14
+  horas. Tope 2: a la tercera se deja `demora_sin_asesor` UNA sola vez
+  (`supervisor_notified_at`) y no se rota más. `agent_settings.
+  demora_activa` nace `false` y `demora_activa_desde` (la escribe
+  `setDemoraActiva` al ENCENDER) es el corte del backlog: nada anterior a
+  esa fecha abre episodio, para que encender no dispare sobre cientos de
+  chats viejos; encendida sin fecha falla cerrado. **Decisión de diseño
+  avisada al operador:** un cliente que escribe de nuevo después de una
+  espera abre un episodio NUEVO con el contador en 0 (gana el más reciente),
+  aunque el chat ya hubiera rotado dos veces.
+- **El turno por demora es un camino PROPIO fuera de la cola, y su única
+  puerta es "un asesor escribió después del último mensaje del cliente"**
+  (T10b, 29/9/2026, `delay-turn.ts` + `runTurnPhases` con `modo demora`).
+  La cola no distingue tipo de turno (el ZSET guarda solo el
+  `conversationId`) y sus guardas de apertura —`ai_enabled` y
+  `humanHasWritten`— son justo las que este turno se salta: un chat con la
+  IA apagada porque el asesor lo tomó, o un asesor que escribió hace 20 min
+  y dejó al cliente esperando, no impiden que Seba conteste. Respeta
+  `agent_can_run()` (interruptor global y gasto; un ERROR de la RPC lanza,
+  solo un `false` es "no"), el lock por conversación (`turno_en_curso`) y la
+  ventana de 24 h. La puerta (`asesorEscribioDespuesDe`, mismo predicado que
+  el trigger que apaga la IA) se mira al abrir y otra vez justo antes de
+  enviar. **Nunca escala** —sin herramienta de escalar, sin escalada en las
+  redes de seguridad ni en `price-guard`—, no saluda, solo deja salir
+  escenarios `disponible_en_espera` no enviados, y sin texto usa
+  `TEXTO_ESPERA_DEMORA` (fuera de horario nombra la próxima apertura).
+  Siempre `is_auto_reply` y **su nota interna ("Seba respondió por demora de
+  N min") es `sender_type = 'system'`, nunca 'agent'**: un mensaje de
+  asesor dispararía `handle_agent_message_silences_ai` y apagaría la IA.
+  No cambia `ai_enabled`. Deuda conocida: `buscarRepuesto` en modo demora
+  sigue devolviendo instrucciones que mencionan escalar; el modelo no tiene
+  la herramienta, y si la llamara sale el texto fijo de espera.
+- **`conversation_delay_episodes` la lee y escribe SOLO `service_role`, y un
+  `select` de `authenticated` da `insufficient_privilege`, no 0 filas**
+  (T10a, 29/9/2026). RLS habilitada sin política Y `revoke all` explícito a
+  `public`/`anon`/`authenticated`: es distinto de `agent_turn_calls`
+  (RLS sin política pero con el grant de fábrica, donde el `select` directo
+  devuelve 0 filas sin error). Un test que quiera probarlo espera el error
+  de permiso. La clave `(conversation_id, episode_at)` ES el candado de
+  idempotencia del cron: `insert … on conflict do nothing` y `update …
+  where responded_at is null returning` (responder), `where reassignments =
+  <leído>` (reasignar), `where supervisor_notified_at is null` (avisar) —
+  solo la pasada que gana la escritura condicional actúa, aunque dos pasadas
+  hayan leído el mismo estado. El CHECK de `conversation_handoffs.reason`
+  se reescribió copiando las 30 razones vigentes de `20260917010000` más
+  las dos nuevas (32), con autoverificación; sin la lista entera, el `drop`
+  + `add` habría borrado en silencio cualquier razón omitida.
+- **El cron de demora cuenta ACCIONES, no conversaciones, y sin candidato no
+  escribe nada** (T10b-4, 29/9/2026, `/api/cron/asesor-sin-responder`,
+  `demora-cron.ts`). Bearer `CRON_SECRET` con `timingSafeEqual` (503 sin
+  secreto, 401 con uno que no calza), cada minuto desde el servicio `cron` de
+  los DOS compose. Actúa sobre 5 acciones como máximo por pasada
+  (`MAX_ACCIONES_POR_PASADA`; el resto espera un minuto), lee como mucho 50
+  candidatas por origen y no busca escaladas de más de 4 días. Con la demora
+  apagada responde `activa: false` sin leer ni escribir nada, así que el
+  `curl` puede quedar agendado desde el día del deploy. La reasignación
+  primero busca asesor (`claimNextAvailableAgent(supabase, { excluir })`,
+  que nunca repite al dueño actual ni a los del episodio, D4): si no hay a
+  quién rotar NO escribe episodio ni traspaso (`reasignacion_sin_candidato`)
+  y la próxima pasada lo reintenta. Deja `reasignada_por_demora` y una nota
+  al asesor anterior. **`escalationOpen` sigue leyendo la escalada como
+  abierta tras `reasignada_por_demora`** (el nuevo asesor todavía no
+  escribió; si cerrara, la guarda de cortesía volvería a despedir a un
+  cliente que espera) y **`demora_sin_asesor` está en
+  `RAZONES_QUE_NO_CIERRAN_LA_ESCALADA`** (se escribe sobre el mismo dueño).
+  `isAssignmentNotice` acepta `reasignada_por_demora` (para el asesor que
+  recibe es tan nueva como una escalada) y NO `demora_sin_asesor`;
+  `isDelayEscalationNotice` avisa de ese último traspaso SOLO a
+  supervisor/admin, con una SEGUNDA suscripción Realtime en
+  `AssignmentNotifier` (filtro `reason=eq.demora_sin_asesor`, sin `to_kind`
+  porque el caso puede quedar sin dueño). Rol sin resolver calla.
 
 ---
 
