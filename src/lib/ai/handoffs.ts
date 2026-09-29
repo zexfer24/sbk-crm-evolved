@@ -533,10 +533,20 @@ export async function recordHandoffAdmin(input: HandoffInput): Promise<boolean> 
  * siguiente "gracias" del cliente recibiría una SEGUNDA despedida de la IA en
  * vez de que la guarda de cortesía lo callara.
  *
+ * T10b-4, plan "Seba encuentra y el mostrador no deja esperando" (29/9/2026,
+ * "Nadie sin atender"): `demora_sin_asesor` (el cron de demora avisa a los
+ * supervisores tras dos reasignaciones sin respuesta) suma por el mismo motivo
+ * que `cortesia_tras_escalada`: se escribe sobre el MISMO dueño, sin mover el
+ * caso. `reasignada_por_demora` en cambio NO entra: SÍ cambia de manos, pero
+ * `escalationOpen` (abajo) la lee como continuación de la escalada original,
+ * no como cierre — un asesor que tomó el chat y nunca escribió no lo
+ * "resuelve", y si esta fila cerrara la escalada la guarda de cortesía
+ * volvería a despedir a un cliente que sigue esperando a una persona.
+ *
  * Ver la migración 20260830040000_conversation_handoffs.sql (el CHECK de
  * `reason`) y CLAUDE.md.
  */
-const RAZONES_QUE_NO_CIERRAN_LA_ESCALADA: HandoffReason[] = [
+export const RAZONES_QUE_NO_CIERRAN_LA_ESCALADA: HandoffReason[] = [
   "asignada",
   "pausada",
   "agente_no_puede_correr",
@@ -546,7 +556,11 @@ const RAZONES_QUE_NO_CIERRAN_LA_ESCALADA: HandoffReason[] = [
   "mensaje_previo_a_devolucion",
   "reabierto",
   "fuera_de_tema_repetido",
+  "demora_sin_asesor",
 ];
+
+/** Razones de la última fila que cambia de manos con las que una escalada se lee como abierta. */
+const RAZONES_DE_ESCALADA_ABIERTA = new Set<string>(["escalada", "escalada_sin_asesor", "reasignada_por_demora"]);
 
 /**
  * ¿Sigue abierta la última escalada de esta conversación? Tarea 4, "La voz
@@ -605,7 +619,9 @@ export async function escalationOpen(
       return false;
     }
 
-    if (!ultimoTraspaso || (ultimoTraspaso.reason !== "escalada" && ultimoTraspaso.reason !== "escalada_sin_asesor")) {
+    // `reasignada_por_demora` (T10b-4, 29/9/2026) continúa la escalada: el chat
+    // pasó a otro asesor que todavía no escribió, así que sigue abierta.
+    if (!ultimoTraspaso || !RAZONES_DE_ESCALADA_ABIERTA.has(ultimoTraspaso.reason)) {
       return false;
     }
 

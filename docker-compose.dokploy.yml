@@ -126,7 +126,7 @@ services:
   cron:
     image: alpine:3
     restart: unless-stopped
-    # Un sleep y dos curl cada minuto: cualquier cosa por encima de este techo
+    # Un sleep y tres curl cada minuto (la cola, la demora del asesor y la tasa BCV): cualquier cosa por encima de este techo
     # no es este servicio.
     deploy:
       resources:
@@ -168,6 +168,8 @@ services:
         while true; do
           sleep 60
           curl -fsS -X POST http://app:3000/api/cron/process-queue \
+            -H "Authorization: Bearer $$CRON_SECRET" >/dev/null || true
+          curl -fsS -X POST http://app:3000/api/cron/asesor-sin-responder \
             -H "Authorization: Bearer $$CRON_SECRET" >/dev/null || true
           curl -fsS -X POST http://app:3000/api/cron/bcv-refresh \
             -H "Authorization: Bearer $$CRON_SECRET" >/dev/null || true

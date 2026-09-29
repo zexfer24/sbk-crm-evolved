@@ -275,7 +275,7 @@ vi.mock("@/lib/ai/knowledge", () => ({
 }));
 
 import { runAgentTurn } from "@/lib/ai/agent";
-import { escalationOpen, conversationsWithDecidedSilence } from "@/lib/ai/handoffs";
+import { escalationOpen, conversationsWithDecidedSilence, RAZONES_QUE_NO_CIERRAN_LA_ESCALADA } from "@/lib/ai/handoffs";
 import { log } from "@/lib/log";
 
 function baseConversation(overrides: Record<string, unknown> = {}) {
@@ -949,6 +949,59 @@ describe("escalationOpen", () => {
     });
 
     expect(await escalationOpen(supabase, "conv-1")).toBe(true);
+  });
+
+  // ---------------------------------------------------------------------------
+  // T10b-4, plan "Seba encuentra y el mostrador no deja esperando" (29/9/2026,
+  // "Nadie sin atender"): `reasignada_por_demora` SÍ cambia de manos (el chat
+  // pasa a otro asesor), pero no cierra nada: continúa la escalada original. Si
+  // `escalationOpen` la leyera como "otro movimiento de dueño", después de la
+  // primera reasignación dejaría de ver la escalada abierta y la guarda de
+  // cortesía volvería a despedir a un cliente que sigue esperando a una
+  // persona. `demora_sin_asesor` (aviso al supervisor) se escribe sobre el
+  // MISMO dueño, así que no cierra ni abre nada.
+  // ---------------------------------------------------------------------------
+  it("true: 'escalada' seguida de 'reasignada_por_demora' (la escalada sigue abierta tras la reasignación)", async () => {
+    const supabase = fakeSupabaseParaEscalationOpen({
+      filas: [
+        { reason: "escalada", created_at: "2026-09-29T10:00:00.000Z" },
+        { reason: "reasignada_por_demora", created_at: "2026-09-29T10:15:00.000Z" },
+      ],
+      mensajesDeAsesor: [],
+    });
+
+    expect(await escalationOpen(supabase, "conv-1")).toBe(true);
+  });
+
+  it("true: 'escalada_sin_asesor' + dos 'reasignada_por_demora' + 'demora_sin_asesor' (el aviso al supervisor no cierra nada)", async () => {
+    const supabase = fakeSupabaseParaEscalationOpen({
+      filas: [
+        { reason: "escalada_sin_asesor", created_at: "2026-09-29T10:00:00.000Z" },
+        { reason: "reasignada_por_demora", created_at: "2026-09-29T10:15:00.000Z" },
+        { reason: "reasignada_por_demora", created_at: "2026-09-29T10:30:00.000Z" },
+        { reason: "demora_sin_asesor", created_at: "2026-09-29T10:45:00.000Z" },
+      ],
+      mensajesDeAsesor: [],
+    });
+
+    expect(await escalationOpen(supabase, "conv-1")).toBe(true);
+  });
+
+  it("false: 'reasignada_por_demora' y el asesor nuevo ya escribió (la escalada se atendió)", async () => {
+    const supabase = fakeSupabaseParaEscalationOpen({
+      filas: [
+        { reason: "escalada", created_at: "2026-09-29T10:00:00.000Z" },
+        { reason: "reasignada_por_demora", created_at: "2026-09-29T10:15:00.000Z" },
+      ],
+      mensajesDeAsesor: [{ id: "m-1" }],
+    });
+
+    expect(await escalationOpen(supabase, "conv-1")).toBe(false);
+  });
+
+  it("'demora_sin_asesor' está entre las razones que no cambian de manos", () => {
+    expect(RAZONES_QUE_NO_CIERRAN_LA_ESCALADA).toContain("demora_sin_asesor");
+    expect(RAZONES_QUE_NO_CIERRAN_LA_ESCALADA).not.toContain("reasignada_por_demora");
   });
 });
 
