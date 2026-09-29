@@ -397,3 +397,73 @@ jobs:
           psql "postgresql://postgres:postgres@127.0.0.1:54322/postgres" \
             -v ON_ERROR_STOP=1 \
             -f supabase/tests/saint_sync_products.sql
+
+      # T1, plan "La búsqueda encuentra lo que el cliente pide" (25-26/9/2026) y
+      # T1 de "Seba encuentra, no insiste, y el mostrador no deja a nadie esperando"
+      # (28/9/2026): buscar_productos ordena y cuenta en SQL ANTES de recortar, y
+      # desde 20260928010000 la marca es obligatoria (sin tolerancia N-1), las
+      # palabras descriptivas entran como opcionales que solo desempatan, la
+      # cilindrada solo ordena y una alternativa que termina en dígito lleva \M al
+      # final ("20/50" ya no trae el MOTUL 5000; "dt200" no calza "dt2000"). Este
+      # archivo existía desde el 26/9 pero no estaba cableado en este job -- se
+      # detectó al preparar la documentación de la entrega A (T11a, 29/9/2026). El
+      # ruido va insertado ANTES que las filas correctas: si no, quitar el ORDER BY
+      # no lo pondría en rojo (ver CLAUDE.md, "Un test SQL de orden tiene que
+      # insertar el ruido ANTES que la fila correcta").
+      - name: buscar_productos -- marca obligatoria, opcionales, cilindrada y orden
+        run: |
+          psql "postgresql://postgres:postgres@127.0.0.1:54322/postgres" \
+            -v ON_ERROR_STOP=1 \
+            -f supabase/tests/buscar_productos.sql
+
+      # T2, plan "Seba encuentra, no insiste, y el mostrador no deja a nadie
+      # esperando" (28/9/2026): corregir_terminos() es el segundo intento tolerante
+      # a tipeos de la búsqueda del catálogo (horsen -> horse, tisum -> timsun,
+      # iphone -> ipone). Es security invoker: la llama service_role, que ya salta la
+      # RLS. Los términos protegidos (MOTOS_CONOCIDAS) no se corrigen -- beta NO pasa
+      # a bera --, tampoco los números ni las palabras que ya están en el vocabulario.
+      - name: corregir_terminos -- tipeos corregidos y términos protegidos
+        run: |
+          psql "postgresql://postgres:postgres@127.0.0.1:54322/postgres" \
+            -v ON_ERROR_STOP=1 \
+            -f supabase/tests/corregir_terminos.sql
+
+      # T5, plan "Seba encuentra, no insiste, y el mostrador no deja a nadie
+      # esperando" (28/9/2026, D7): ai_playbooks.disponible_en_espera nace NOT NULL
+      # DEFAULT false y la migración marca por NOMBRE (sin acentos ni mayúsculas)
+      # Ubicación, Envio gratis Cashea y Postventa Cashea -- solo esos pueden salir
+      # con la escalada abierta. Como el backfill ya corrió al construir la base, el
+      # test reaplica la migración con `\i` (ruta relativa a la raíz del repo, que
+      # es donde corre este job) sobre filas sembradas por él mismo.
+      - name: escenario_disponible_en_espera -- columna, default y backfill por nombre
+        run: |
+          psql "postgresql://postgres:postgres@127.0.0.1:54322/postgres" \
+            -v ON_ERROR_STOP=1 \
+            -f supabase/tests/escenario_disponible_en_espera.sql
+
+      # T7, plan "Seba encuentra, no insiste, y el mostrador no deja a nadie
+      # esperando" (28/9/2026): bajo RLS, un UPDATE/DELETE que la política no deja
+      # pasar afecta 0 filas SIN error, y `const { error } = await ...update()` lo
+      # daba por guardado. Este test fija ese comportamiento tabla por tabla
+      # (catalog_links, ai_playbooks, agent_tools, knowledge_*, agent_settings,
+      # model_pricing) como un `authenticated` con rol `agent` -- es la razón de
+      # assertRowsAffected en mutations.ts. Como postgres se salta la RLS y no
+      # mediría nada, el test baja de rol de verdad.
+      - name: configuración solo supervisor -- un asesor afecta 0 filas, no recibe error
+        run: |
+          psql "postgresql://postgres:postgres@127.0.0.1:54322/postgres" \
+            -v ON_ERROR_STOP=1 \
+            -f supabase/tests/config_solo_supervisor.sql
+
+      # T7b, plan "Seba encuentra, no insiste, y el mostrador no deja a nadie
+      # esperando" (28/9/2026): la política agents_update_self era `using
+      # (id = auth.uid())` SIN with check, así que un asesor podía ejecutar `update
+      # agents set role = 'admin' where id = auth.uid()` y quedar con todos los
+      # permisos de supervisor. La migración 20260928050000 agrega un trigger que
+      # fija quién puede cambiar `role` e `id`; el test exige el mensaje del TRIGGER
+      # (no el de la RLS) en cada rechazo.
+      - name: agents.role -- un agente no se asciende solo
+        run: |
+          psql "postgresql://postgres:postgres@127.0.0.1:54322/postgres" \
+            -v ON_ERROR_STOP=1 \
+            -f supabase/tests/agents_rol_sin_autoascenso.sql

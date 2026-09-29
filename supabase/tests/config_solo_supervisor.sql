@@ -39,6 +39,10 @@ insert into auth.users (id, email, raw_user_meta_data) values
 update public.agents set role = 'supervisor' where id = 'c7c7c7c7-0000-0000-0000-000000000002';
 
 -- Fixtures creadas como postgres (sin RLS), antes de cambiar de rol.
+-- `buscar_repuesto` nace APAGADA en una base reconstruida desde cero (el CI):
+-- el test mide que A no la apague, así que primero tiene que estar encendida.
+update public.agent_tools set is_enabled = true where key = 'buscar_repuesto';
+
 insert into public.catalog_links (id, key, label, url, updated_by) values
   ('c7c7c7c7-1000-0000-0000-000000000001', 'config-test', 'Config test', 'https://drive.google.com/file/d/1original/view', 'c7c7c7c7-0000-0000-0000-000000000002');
 

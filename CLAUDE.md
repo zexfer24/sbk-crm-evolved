@@ -2223,7 +2223,7 @@ dejar rastro es lo que hacía desaparecer leads.
   (migración `20260926010000`) mueve el orden, el puntaje y los conteos a
   SQL, calculados con funciones ventana sobre TODO el conjunto de
   candidatos ANTES de aplicar el `limit` — nunca al revés. **La regla de
-  tolerancia:** con 1 a 3 grupos de términos hace falta que calcen TODOS
+  tolerancia (SUPERADA el 28/9/2026, ver el final de esta viñeta):** con 1 a 3 grupos de términos hace falta que calcen TODOS
   (`requerido = N`); con 4 o más se tolera que falte uno solo
   (`requerido = N − 1`) — "asiento sbr original" (3/3) y "disco freno
   delantero dt200" (4/4, tolera 3) siguen calzando igual. Sin filas, o con
@@ -2241,6 +2241,19 @@ dejar rastro es lo que hacía desaparecer leads.
   recortado a `MAX_CATALOG_RESULTS` — la mutación (c), reemplazar `coinciden`
   por `quoted.length`, puso rojo el caso de "motul 5100 20w50" en la
   verificación de esta ola.
+  **SUPERADO el 28/9/2026 (T1/T3a, plan "Seba encuentra, no insiste, y el
+  mostrador no deja a nadie esperando", migración `20260928010000`): la
+  tolerancia N−1 ya no existe.** Con 4 o más grupos, tolerar que faltara uno
+  descartaba la MARCA ("defensa gxs 250" traía DEFENSA BRZ 250); ahora
+  `requerido = grupos.length` siempre, las palabras descriptivas pasan a
+  opcionales que solo desempatan, la cilindrada solo ordena y "genérico"
+  mira el stock. Además la firma de `buscar_productos` pasó a cinco
+  parámetros y la moto "calza" solo por una moto con NOMBRE
+  (`puntaje_moto_nombre`), no por una cilindrada. Lo demás de esta viñeta
+  (orden y conteos en SQL antes del `limit`, la moto solo ordena,
+  `coinciden` sacado de los conteos de la base) sigue vigente; el detalle
+  nuevo está en la primera viñeta de esa fecha, más abajo ("La búsqueda del
+  catálogo ya NO tolera que falte un grupo…").
 - **Una cifra de dinero de la IA necesita fuente EN EL TURNO** (T3, mismo
   plan, `price-guard.ts`). Dos casos reales de producción: el 20/9/2026 a
   las 14:32 Seba escribió "El intercomunicador sale en *108$ BCV*"
@@ -2305,6 +2318,235 @@ dejar rastro es lo que hacía desaparecer leads.
   `NEXT_PUBLIC_SUPABASE_URL=http://127.0.0.1:<puerto> rtk proxy npm run
   build` y servir con `node .next/standalone/server.js` tras copiar
   `.next/static` y `public/` a `.next/standalone/` (`output: "standalone"`).
+- **La búsqueda del catálogo ya NO tolera que falte un grupo: la marca es
+  obligatoria, lo descriptivo es opcional y solo desempata** (T1/T3a, plan
+  "Seba encuentra, no insiste, y el mostrador no deja a nadie esperando",
+  28/9/2026, migración `20260928010000`). Estudio del VPS sobre 1.027 turnos
+  (25/9 → 28/9/2026): 457 fallidos en 280 conversaciones, y la búsqueda era
+  la primera causa. La tolerancia N−1 vivía en `tools.ts` (`requerido`), no
+  en SQL, y con 4 o más grupos descartaba la MARCA: "defensa gxs 250" y
+  "defensa ava mustang 250" traían DEFENSA BRZ 250 porque "defensa" y "250"
+  bastaban. Ahora `requerido = grupos.length`. Una palabra descriptiva que
+  no está en el nombre ("semi", "sintético", "integral", "delantero", un
+  color) tumbaba la búsqueda si era obligatoria ("aceite 20w50 semi
+  sintetico inca" no encontraba ACEITE INCA 20W50 4T): `catalogQuery`
+  (`catalog-search.ts`) separa `grupos` (obligatorios), `opcionales`
+  (`DESCRIPTIVAS`, lista cerrada y exportada; nunca excluyen, solo
+  desempatan por `puntaje_opcional`), `moto` (`MOTOS_CONOCIDAS`, exportada)
+  y `cilindrada`. **La cilindrada ("250", "200cc") solo ORDENA y NUNCA
+  vuelve verdadero a `motoCalza`** (corrección del operador): la RPC
+  devuelve `puntaje_moto_nombre` y `puntaje_moto_cilindrada` por separado,
+  y `puntaje_moto_maximo`/`filas_con_maximo_y_moto` se calculan SOLO con la
+  moto con nombre — `puntaje_moto` es la suma y es solo informativa, no
+  decidir por ella. **Un número que termina la alternativa lleva `\M` al
+  final** (`50` ya no calza `5000`: "aceite iphone 20/50" traía el MOTUL
+  5000; `dt200` ya no calza `DT2000`), y `11.7` acepta un prefijo de letras
+  para calzar el Givi `H11.7`. `empieza_con_producto` pone "RIN TRASERO
+  BERA" antes de "EJE RIN TRASERO BERA". **"Genérico" ahora mira el
+  stock** (`filas_con_maximo_y_stock`, ventana sobre todo el conjunto antes
+  del límite): más de tres filas que calzan pero ninguna con existencia
+  salen `sin_stock`, nunca genérico ("siete botas en cero se preguntaban
+  como si hubiera de dónde elegir"). **La firma de `buscar_productos`
+  cambió a CINCO parámetros** (`p_opcionales` y `p_cilindrada`; el plan
+  decía cuatro, la cilindrada aparte fue la corrección del operador) y la
+  migración retira la de tres con `drop function`: dos sobrecargas harían
+  ambigua la llamada por nombres. La llamada vieja de tres argumentos sigue
+  resolviendo a la nueva por los defaults, pero el código nuevo exige la
+  migración ANTES — sin ella, `p_opcionales` da 400. Acepta listas de hasta
+  5 productos (D5). `supabase/tests/buscar_productos.sql` inserta el ruido
+  ANTES de las filas correctas (ver la viñeta del test de orden).
+- **El corrector de tipeos es `public.corregir_terminos`, `security
+  invoker` A PROPÓSITO, y nunca corrige una moto conocida** (T2/T3b,
+  28/9/2026, migración `20260928020000`). Casos reales del estudio: "horsen"
+  por HORSE, "tisum"/"stinsun" por TIMSUN, "express" por XPRESS, "iphone"
+  por IPONE (la marca del aceite se llama así), "motopower" por MOTORPOWER,
+  "swhera" por SWITCHERA, "ciguañal" por CIGUEÑAL. Solo corre en el camino
+  SIN coincidencia: `buscarRepuesto` la llama una vez, reintenta con lo
+  corregido y `describirCorreccion` (`catalog-correction.ts`) se lo dice al
+  cliente ("busqué IPONE en lugar de iphone") con la instrucción en
+  `confirmar_inventario`. Corrige un término solo si tiene 4 letras o más,
+  no tiene dígitos, no está ya en el vocabulario (las palabras de
+  `search_text` de los productos activos con precio, calculadas AL VUELO:
+  ~6.000 filas y solo en el camino sin coincidencia) y **no está en
+  `p_protegidos`, que `tools.ts` llena con `MOTOS_CONOCIDAS`: "beta" es una
+  moto y NO un tipeo de "bera"** aunque esté a distancia 1. Umbral por
+  largo: 4 letras → distancia 1; 5 → 2; 6 o más → 3 (con similitud de
+  trigramas ≥ 0,3 a distancia 3). Es `invoker` y no `definer` porque la
+  única llamada llega con `service_role`, que ya salta la RLS: no hay
+  política por fila que ahorrar (el único motivo por el que otras funciones
+  son definer, `20260921030000`), y un definer solo sumaría superficie con
+  texto que viene de un cliente de WhatsApp; lleva igual los dos revokes y
+  `grant` a `service_role`, y el guardián `permisos-funciones.test.ts` no
+  la cuenta. **`fuzzystrmatch` se crea en el MISMO schema que `pg_trgm`**
+  (lo lee de `pg_extension`; en el Supabase self-hosted puede ser `public` o
+  `extensions`) y la migración falla cerrado si `search_path` de la función
+  no lo incluye. `corregirTerminos` (el envoltorio TypeScript) nunca lanza.
+- **La memoria del pedido de catálogo vive en Redis y, sin Redis, Seba se
+  comporta como antes** (T3a, 28/9/2026, `catalog-memory.ts`). Clave
+  `catalogo:pedido:<conversationId>`, TTL de 6 h (misma vara que la marca
+  "visto hasta"), guarda `{ultimoQuery, moto, cilindrada,
+  preguntaHechaPara}`. Cierra tres fallas del estudio: la respuesta suelta a
+  "¿qué medida?" ("24" tras asiento + sbr; "20w50" tras "aceite inca";
+  "Talla M" tras "casco frankie negro") se buscaba SOLA; la pregunta de
+  filtro se repetía porque nadie anotaba que ya se había hecho; y la moto
+  dada se perdía. Ahora, si el query no trae ningún término de producto, se
+  combina con `ultimoQuery` y la moto guardada; la pregunta se hace UNA vez
+  por pedido, y a la segunda — o si la ráfaga del cliente pide ver todo
+  (`pideVerTodo`: "no sé", "cualquiera", "muéstrame todos", "los que
+  tengas") — se entregan las 3 opciones con stock más relevantes y se
+  escala con `confirmar_inventario`. `leerPedido`/`guardarPedido` NUNCA
+  lanzan (`log.warn` con `errorText`). **Un test de esta memoria sin Redis
+  ni `FakeRedis` pasa sin probar nada** (mismo aviso que `turn-seen`,
+  `greeting-wait` y `queue.test.ts`): `catalog-memory.test.ts` usa
+  `FakeRedis`, y en producción la memoria solo existe con `REDIS_URL`.
+- **La cotización y la pregunta de filtro las arma el CÓDIGO, y la salida
+  del modelo se REEMPLAZA** (T3b, 28/9/2026, `quote-message.ts`). Dos casos
+  del estudio: el modelo cambió "ACEITE INCA 20W50 4T" por "Inca 20W50 semi
+  sintético" (el cliente pidió algo que la tienda no vende con ese nombre),
+  y el caso de la cinta — la búsqueda encontró el repuesto con existencia,
+  el modelo escaló en el mismo turno y su redacción final fue solo una
+  despedida: el cliente nunca vio qué había ni a qué precio. Con
+  `catalogOutcome.cotizacion` no vacía, el mensaje es: una línea previa
+  OPCIONAL del modelo (`preambuloDelModelo`: una sola línea de ≤ 240
+  caracteres; se DESCARTA, no se recorta, si trae cifras de dinero, un
+  texto fijo, el nombre de un producto cotizado, habla del asesor o
+  pregunta algo) + el bloque
+  con el nombre EXACTO del catálogo, "$X BCV (Bs. Y)" y "N disponibles" o
+  "Agotado" — el precio ya sale de `usdFromBs`/`formatQuote`, nada se
+  recalcula — + el texto fijo LITERAL (`TEXTO_CONFIRMAR_INVENTARIO` o
+  `TEXTO_SIN_STOCK`). Con `preguntaFiltro` y sin cotización, el texto es
+  `PREGUNTA_FILTRO` o `PREGUNTA_FILTRO_PRODUCTO` literal (la elige el modelo
+  con `dependeDeLaMoto`) más el preámbulo. **Un test que arma la salida del
+  modelo a mano ve el texto REEMPLAZADO por el armado**: si el turno tiene
+  cotización, hay que afirmar sobre el bloque armado, no sobre la frase que
+  puso el mock. La red de seguridad del catálogo ya NO anexa su texto fijo
+  cuando hay cotización (iría dos veces) y escala aunque otra búsqueda del
+  turno haya dejado `generico`. El texto armado sigue pasando por
+  `price-guard` (sus cifras salen del `toolResult` del mismo turno) y por la
+  guarda de identidad. Una QUEJA siempre escala: `escalaPorReclamo = intent
+  === "queja" || (!esperandoAsesor && intent === "devolucion")` — con
+  asesor asignado el modelo está restringido a `intencion_compra` y la red
+  se callaba; ahora la rama `alreadyAssigned` de `escalate.ts` deja la nota
+  de reiteración.
+- **Guarda de promesa falsa: si el texto dice que un asesor "ya tiene tu
+  caso" y el turno no escaló, se ESCALA para que sea verdad**
+  (`promise-guard.ts`, `afirmaPromesaDeAsesor`, T3b, 28/9/2026). El modelo
+  escribió "un asesor ya tiene tu caso" en turnos donde NUNCA llamó a
+  `escalarAAsesor`: sin traspaso ni dueño, el cliente esperaba a alguien que
+  nadie sabía que lo esperaba (la invariante "ningún lead invisible" rota
+  por una frase). En vez de censurar, `agent.ts` escala con `seguimiento` (y
+  si no hay nadie, suma `DESPEDIDA_SIN_ASESOR`), solo cuando `!outcome.
+  escalated && !esperandoAsesor`. Detecta AFIRMACIONES, frase por frase;
+  lo condicional ("si quieres, te paso con un asesor"), lo informativo ("los
+  asesores atienden de lunes a viernes") y las preguntas no cuentan. Corre
+  ANTES de la guarda de cifras. El guion (`GUARDRAIL_RULES`, sección 8 del
+  prefijo cacheable, T4) lo dice también, pero una prohibición en el prompt
+  no es una garantía. Mismo bloque del guion: solo políticas que la
+  biblioteca trae en el turno (divisas, retiro en tienda, garantías y
+  agencias sin fuente pasan al asesor), no retomar pedidos de hace más de
+  `PREVIOUS_CONVERSATION_GAP_HOURS` (12), y ante "no me abre el link" ofrecer
+  fotos en vez de reenviar el mismo enlace.
+- **Solo un escenario marcado `disponible_en_espera` puede salir con la
+  escalada abierta, y aun así no se repite** (T5, 28/9/2026, migración
+  `20260928030000`, decisión D7). Medido: un chat recibió el mismo PDF 8
+  veces en 20 minutos y "REDES" salió ante "esperaré al asesor". Hasta esa
+  fecha la rama de espera (`escalationOpenNow`, `agent.ts`) dejaba pasar
+  "todo lo que no sea despedida" y la regla de no repetir de la fase 0 no
+  la alcanzaba. Ahora el criterio es un PERMISO explícito
+  (`ai_playbooks.disponible_en_espera`, default `false`; el backfill marca
+  por NOMBRE, sin acentos ni mayúsculas, solo Ubicación, Envio gratis Cashea
+  y Postventa Cashea, con un `raise notice` del conteo y sin abortar si
+  falta alguno) y, calzado el escenario, rigen `alreadySentPlaybook` y
+  `playbookSentRecently` (ventana de 6 h): un escenario ya mandado se trata
+  como si no hubiera calzado y el pedido queda en la nota para el asesor.
+  Sin ningún candidato marcado ni siquiera se consulta al proveedor. Un
+  catálogo o "REDES" no salen mientras el cliente espera. El panel de
+  escenarios tiene el interruptor "Puede salir mientras espera al asesor".
+  **Tarea del operador, no de código:** marcar `cede_al_inventario` en
+  "CATALOGO CASCOS" desde el panel (ver `docs/PRODUCCION.md` §15).
+- **Un UPDATE/DELETE que la RLS bloquea afecta 0 filas SIN error: toda
+  mutación de configuración nueva lleva `.select("id")` y pasa por
+  `assertRowsAffected`** (T7, 28/9/2026, `config-write.ts`). Hasta esa
+  fecha `const { error } = await ...update()` daba por guardado un cambio
+  que la política ignoró (PostgREST responde 200/204), y el panel decía
+  "guardado" con la base intacta. Se reprodujo con un usuario `agent`
+  contra la base local (`supabase/tests/config_solo_supervisor.sql`, por
+  tabla: `catalog_links`, `ai_playbooks`, `agent_tools`, `knowledge_*`,
+  `agent_settings`, `model_pricing`). Ahora 22 mutaciones de
+  configuración (el plan contaba 20) y las de notas piden las filas
+  afectadas y lanzan `ConfigWriteDeniedError` ("Solo un supervisor o
+  administrador puede cambiar esto."; hay variantes para el autor de la
+  lección, la nota o el sticker); `configErrorMessage` lleva ese texto al
+  toast y deja el genérico para un error de red. `deleteSticker` ya no
+  borra el archivo si la fila no se borró. El `INSERT` no lo necesita: una
+  política de INSERT que rechaza SÍ lanza 42501 (el `upsert` de
+  `model_pricing` también). Tres controles no tenían puerta de rol —el
+  interruptor global de la IA, las tarifas por modelo y el roster— y los
+  manejadores que no atrapaban el error ahora muestran toast; un asesor
+  corriente toca solo SU fila del roster (`agents_update_self`). **Lo que
+  NO era la causa del link de catálogo distinto** (aunque se sospechó): los
+  paneles ya ocultaban la edición a un `agent`. La causa confirmada en
+  producción fue un mensaje rápido, ver la viñeta siguiente.
+- **Los mensajes rápidos resuelven `{{catalogo:clave}}` AL ENVIAR, y una URL
+  de Drive escrita a mano dispara un aviso** (T7, 28/9/2026). Caso real: los
+  asesores mandaban un link de "CATALOGO CASCOS" distinto al de Seba
+  porque el mensaje rápido (`quick_replies`, que escribe CUALQUIER asesor)
+  llevaba la URL pegada (`1wWJ1PvF…`, editada el 28/9 a las 15:44 UTC)
+  mientras `catalog_links.cascos` seguía en `1oDrYm…` desde el 25/9: dos
+  fuentes para el mismo catálogo. Pegar un mensaje rápido ya resolvía su
+  marcador (18/9/2026), pero un marcador que quedaba SIN resolver salía
+  crudo al cliente (el aviso era solo un toast). Ahora el composer
+  (`resolveOutgoingText`) resuelve, al mandar, cualquier marcador que siga
+  en el texto —y en el pie de la primera foto— con los catálogos activos de
+  ESE instante, y un marcador sin resolver NO sale (el texto queda en el
+  cuadro). `catalogUrlHint` (`catalog-links.ts`, pura) distingue dos casos
+  en el modal de mensajes rápidos y en su lista ("Enlace de Drive escrito a
+  mano"): la URL COINCIDE con un catálogo configurado (compara el ID de
+  archivo de Drive, no el string) y se ofrece el marcador exacto con un
+  botón, o parece un catálogo (Drive + "catálogo" en el título o el texto)
+  pero no coincide con ninguno y se avisa sin marcador sugerido. **Tarea
+  del operador, no de código:** reemplazar la URL a mano del mensaje rápido
+  "CATALOGO CASCOS" por `{{catalogo:cascos}}` y decidir cuál de los dos
+  links es el vigente para cargarlo en `catalog_links`.
+- **Un asesor podía darse a sí mismo `role = 'admin'`** (T7b, 28/9/2026,
+  migración `20260928050000`; hallazgo del operador al revisar la RLS de T7).
+  La política `agents_update_self` (`20260819000001`) era `for update using
+  (id = auth.uid())` SIN `with check`, y el único trigger de `agents` era
+  `set_agents_updated_at`: `update public.agents set role = 'admin' where id
+  = auth.uid()` afectaba 1 fila (comprobado en la base local) y desde ahí
+  `is_supervisor_or_admin()` daba `true` — configuración de la IA,
+  catálogos, facturas y todo lo "solo supervisor/admin" que la app protege
+  EN RLS quedaba a una llamada a la API de distancia. La interfaz nunca
+  escribe `role`, así que no se veía usando la app. Ahora la política lleva
+  `with check (id = auth.uid())` y el trigger BEFORE UPDATE OF `role, id`
+  (`enforce_agents_role_guard`, **`security invoker` a propósito**: con
+  `definer`, `current_user` sería siempre el dueño y no frenaría a nadie,
+  mismo motivo que `enforce_products_read_only`) rechaza cambiar el `id`,
+  exige supervisor/admin para cambiar un rol y **admin para otorgar o quitar
+  `admin`** (decisión del 28/9/2026: la app no escribe `role` en ningún
+  sitio, y así se cierra el ascenso en dos pasos supervisor → admin).
+  `postgres`, `supabase_admin` y `service_role` siguen pudiendo. Limitación
+  conocida: una función `security definer` de `postgres` que hiciera ese
+  UPDATE por un asesor pasaría el trigger; hoy no existe ninguna. Su test
+  (`supabase/tests/agents_rol_sin_autoascenso.sql`) exige el mensaje del
+  TRIGGER en cada rechazo, no el de la RLS, para que una política que
+  rechace por otro motivo no tape un trigger roto.
+- **`agent_turns.catalog_queries` guarda qué buscó el turno, y
+  `customer_message` ya no queda `null` con una foto que trae pie** (T6,
+  28/9/2026, migración `20260928040000`). `catalog_queries jsonb` es
+  nullable: `null` = el turno no tocó el catálogo o es anterior a la
+  migración (un arreglo vacío también se guarda como `null`). Cada llamada
+  a `buscarRepuesto` deja `{query, productos, moto, grupos, opcionales,
+  corregido, resultado}` (`CatalogOutcome.consultas`), también en la fila de
+  error, y un `log.info("busqueda_catalogo")`. Es lo que permite medir, con
+  la búsqueda nueva, cuántas salen `con_existencia`/`agotados`/`generico`/
+  `sin_resultados` y con qué corrección. `customer_message` lo llenaba
+  `lastCustomerMessage`, que descartaba todo lo que calzara
+  `isHistoryMarker` — incluido `[El cliente envió una foto. Pie: …]`;
+  `captionOfCustomerMarker` (`history-line.ts`) devuelve el pie, que sí es
+  texto que el cliente escribió. Solo cambia esa función: fase 0, la racha
+  de adjuntos y `customerBurst` siguen viendo el marcador como marcador, y
+  `messages.content` sigue siendo solo lo que el cliente escribió.
 
 ---
 

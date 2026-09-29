@@ -2308,13 +2308,172 @@ fast-forward SÍ dispara el deploy). El orden completo:
 
 ---
 
+## 15. Entrega A de "Seba encuentra, no insiste, y el mostrador no deja a nadie esperando" (28-29/9/2026)
+
+Origen: el estudio de solo lectura del VPS sobre 1.027 turnos (25/9 14:29 →
+28/9 19:07 UTC) dio 457 turnos fallidos en 280 conversaciones, 45 graves.
+Cuatro causas: la búsqueda descartaba la marca por la tolerancia N−1 y una
+palabra descriptiva la tumbaba; "genérico" no miraba el stock; la pregunta
+de filtro se repetía y nadie recordaba el pedido; y en la espera con
+escalada abierta se reenviaban escenarios (un chat recibió el mismo PDF 8
+veces en 20 minutos). Esta sección es SOLO la Entrega A (Seba). La Entrega B
+(el mostrador: carrito por conversación, scroll y existencia, reasignación
+por demora) sale aparte, desde la punta de A, en otra rama `entrega/*`, con
+sus propias migraciones y su propio orden de encendido. El plan completo
+está en `docs/planes/2026-09-28-seba-encuentra-y-el-mostrador-no-deja-esperando.md`
+y la nota de entrega con los SHA y los comandos exactos, en
+`docs/entregas/` (la redacta el orquestador al cerrar la entrega) — esta
+sección solo dice el orden y qué verificar.
+
+**Esta entrega NO se pushea a `main` directo — llega por la rama
+`entrega/seba-encuentra`** (misma regla que §14: push a `main` SÍ despliega,
+así que las migraciones se aplican y verifican ANTES del fast-forward).
+Producción y `origin/main` estaban en `08e0fa5` con 81 migraciones; la
+entrega suma **cinco** (el plan decía cuatro: la quinta, `20260928050000`,
+la agregó el operador tras el hallazgo de T7) y deja **86**.
+
+### Migraciones, en orden de fecha (TODAS ANTES del código)
+
+Cada una con `psql -1 -v ON_ERROR_STOP=1` (sin `-1`, el `set local
+lock_timeout` de la cabecera es un NO-OP silencioso y la guarda de la propia
+migración aborta con un mensaje explícito). Cada una termina con `notify
+pgrst` y se autoverifica con `raise exception` si algo no quedó como debía.
+
+| # | Migración | Qué hace | Ojo |
+|---|-----------|----------|-----|
+| 1 | `20260928010000_busqueda_marca_obligatoria.sql` | `buscar_productos` con firma nueva de **cinco** parámetros (`p_opcionales`, `p_cilindrada`); retira la de tres con `drop function`. Columnas nuevas: `puntaje_opcional`, `puntaje_moto_nombre`, `puntaje_moto_cilindrada`, `empieza_con_producto`, `filas_con_maximo_y_stock`. `\M` tras dígito, `11.7` ↔ `H11.7`. | El código nuevo llama con `p_opcionales`: sin esta migración da 400. El código viejo (tres argumentos) sigue resolviendo a la nueva por los defaults, así que el hueco entre migración y deploy no rompe nada. |
+| 2 | `20260928020000_corrector_de_terminos.sql` | `corregir_terminos(text[], text[])`, `security invoker`; crea `fuzzystrmatch` en el MISMO schema que `pg_trgm`. | Necesita permiso de `create extension`: correr como `postgres`. Si aborta con "fuzzystrmatch quedó en X y pg_trgm en Y" o "pg_trgm y fuzzystrmatch viven en el schema …", la extensión ya existía en otro lugar: leer el mensaje, no reintentar a ciegas. |
+| 3 | `20260928030000_escenario_disponible_en_espera.sql` | `ai_playbooks.disponible_en_espera boolean not null default false`; marca por nombre Ubicación, Envio gratis Cashea y Postventa Cashea. | Mirar el `NOTICE` del conteo: se esperan **3** (o menos, sin abortar, si alguno se llama distinto en producción — en ese caso marcarlos a mano desde el panel). |
+| 4 | `20260928040000_turnos_registran_busquedas.sql` | `agent_turns.catalog_queries jsonb`, nullable, sin backfill. | Sin ella, el `insert` de `logTurn` falla y aparece `turno_bitacora_no_escrita`. |
+| 5 | `20260928050000_agentes_no_se_ascienden_solos.sql` | `agents_update_self` gana `with check`; trigger `agents_role_guard` (`security invoker`) sobre `agents.role`/`agents.id`. | La app nunca escribe `role`, así que no cambia nada visible; sí cierra el hueco por el que un asesor se daba `role = 'admin'`. |
+
+Todas, sin `-1`, fallan cerradas; ninguna bloquea nada de forma prolongada
+(la 1 toma un lock breve sobre una función, la 2 sobre el catálogo de
+extensiones, la 3 y la 4 son `add column` sobre tablas chicas, la 5 sobre
+`agents`, de un puñado de filas). No hace falta ventana de mantenimiento.
+
+### Orden
+
+1. **Respaldo** (`scripts/backup.sh`, §8).
+2. **Simulacro de las cinco** dentro de `BEGIN … ROLLBACK` contra
+   `supabase-db`, en orden, viendo los `NOTICE` (sobre todo el conteo de la
+   3) y que ninguna aborte.
+3. **Aplicar las cinco, una por una, en el orden de la tabla**:
+   ```bash
+   for m in 20260928010000_busqueda_marca_obligatoria \
+            20260928020000_corrector_de_terminos \
+            20260928030000_escenario_disponible_en_espera \
+            20260928040000_turnos_registran_busquedas \
+            20260928050000_agentes_no_se_ascienden_solos; do
+     docker exec -i supabase-db env PGOPTIONS="-c lock_timeout=5s" psql -U postgres -d postgres \
+       -1 -v ON_ERROR_STOP=1 < "supabase/migrations/$m.sql" || break
+   done
+   ```
+   (`|| break`: si una aborta, NO seguir con la siguiente.)
+4. **Verificar contra la base real** (nunca leyendo el `.sql`):
+   ```sql
+   -- (a) los permisos de las dos funciones nuevas: anon/authenticated en false, service_role en true
+   select
+     has_function_privilege('anon', 'public.buscar_productos(jsonb, jsonb, int, jsonb, jsonb)', 'execute') as bp_anon,
+     has_function_privilege('authenticated', 'public.buscar_productos(jsonb, jsonb, int, jsonb, jsonb)', 'execute') as bp_auth,
+     has_function_privilege('service_role', 'public.buscar_productos(jsonb, jsonb, int, jsonb, jsonb)', 'execute') as bp_service,
+     has_function_privilege('anon', 'public.corregir_terminos(text[], text[])', 'execute') as ct_anon,
+     has_function_privilege('authenticated', 'public.corregir_terminos(text[], text[])', 'execute') as ct_auth,
+     has_function_privilege('service_role', 'public.corregir_terminos(text[], text[])', 'execute') as ct_service;
+   -- (b) UNA sola sobrecarga de buscar_productos (la de tres argumentos ya no existe)
+   select count(*) from pg_proc where proname = 'buscar_productos' and pronamespace = 'public'::regnamespace;   -- 1
+   -- (c) fuzzystrmatch y pg_trgm en el mismo schema
+   select extname, extnamespace::regnamespace from pg_extension where extname in ('pg_trgm', 'fuzzystrmatch');
+   -- (d) los escenarios marcados (esperadas 3)
+   select name, disponible_en_espera from public.ai_playbooks where disponible_en_espera order by name;
+   -- (e) la columna de la bitácora
+   select column_name, data_type, is_nullable from information_schema.columns
+   where table_schema = 'public' and table_name = 'agent_turns' and column_name = 'catalog_queries';
+   -- (f) el candado de roles: política con with check y trigger creado
+   select policyname, with_check is not null as con_with_check from pg_policies
+   where schemaname = 'public' and tablename = 'agents' and policyname = 'agents_update_self';
+   select tgname from pg_trigger where tgrelid = 'public.agents'::regclass and tgname = 'agents_role_guard';
+   ```
+   Esperado: (a) `false, false, true` dos veces; (b) `1`; (c) mismo schema;
+   (d) tres filas; (e) una fila `jsonb`, `YES`; (f) `con_with_check = true`
+   y el trigger presente. Si alguno da distinto, NO seguir al paso 5 — ver
+   la trampa de "los dos revokes" en `CLAUDE.md` para (a).
+5. **Fast-forward de `main` a `entrega/seba-encuentra`** — ESTE es el paso
+   que despliega:
+   ```bash
+   git fetch origin
+   git checkout main
+   git merge --ff-only origin/entrega/seba-encuentra
+   git push origin main
+   ```
+   Confirmar en Dokploy que el contenedor se recreó con el SHA nuevo y que
+   el dominio responde. **Sin variables de entorno nuevas**; la memoria del
+   pedido usa el `REDIS_URL` que ya está (sin Redis Seba se comporta como
+   antes, ver la trampa en `CLAUDE.md`).
+6. **Tareas del operador (no son de código), desde el panel, en este
+   orden:**
+   1. Decidir cuál de los dos links de "CATALOGO CASCOS" es el vigente —
+      `1wWJ1PvF…` (el que los asesores mandan, escrito a mano en el mensaje
+      rápido el 28/9 a las 15:44 UTC) o `1oDrYm…` (el de `catalog_links.cascos`
+      desde el 25/9)— y cargarlo en Control IA → Respuestas → Catálogos
+      (`cascos`).
+   2. **Reemplazar la URL a mano del mensaje rápido "CATALOGO CASCOS" por
+      `{{catalogo:cascos}}`** (el modal de mensajes rápidos ya ofrece el
+      botón "Reemplazar por {{catalogo:cascos}}" cuando la URL coincide con
+      un catálogo configurado). Es lo que deja UNA sola fuente para Seba y
+      para los asesores.
+   3. **Marcar "Cede al inventario" en el escenario "CATALOGO CASCOS"**
+      (`ai_playbooks.cede_al_inventario`, casilla del editor de escenario),
+      si el operador quiere que un pedido de cascos con un modelo concreto
+      cotice del inventario y no mande el PDF — ver la viñeta de las cuatro
+      condiciones en `CLAUDE.md`; sin la marca, "CATALOGO CASCOS" sigue
+      mandando su PDF como hoy.
+   4. Revisar en el panel de escenarios que solo Ubicación, Envio gratis
+      Cashea y Postventa Cashea tengan "Puede salir mientras espera al
+      asesor" (D7). Cualquier otro escenario que el operador quiera
+      disponible en la espera se marca a mano ahí.
+7. **Escenario a mano en producción, con `buscar_repuesto` ya encendida**
+   (o en el simulador): "Inca" (búsqueda con marca), "botas" (todo en cero
+   → `sin_stock`, no pregunta), "asiento sbr" y luego "24" (la respuesta
+   suelta se combina con el pedido), una lista "batería y arranque" (un
+   resultado por producto), un tipeo ("horsen") y un chat con la escalada
+   abierta al que se le repite "¿dónde quedan?" (la ubicación sale una vez,
+   no ocho).
+8. **Medir 48 h.**
+   ```sql
+   -- qué resultado dieron las búsquedas del catálogo (con_existencia, agotados, generico,
+   -- sin_resultados, sin_terminos, error)
+   select r->>'resultado' as resultado, count(*)
+   from public.agent_turns t, jsonb_array_elements(t.catalog_queries) r
+   where t.catalog_queries is not null and t.created_at > now() - interval '48 hours'
+   group by 1 order by 2 desc;
+   -- cuántas usaron el corrector
+   select count(*) from public.agent_turns t, jsonb_array_elements(t.catalog_queries) r
+   where t.created_at > now() - interval '48 hours' and jsonb_typeof(r->'corregido') = 'array';
+   ```
+   Y en el log: `busqueda_catalogo` (una por llamada),
+   `cotizacion_armada_por_codigo` y `pregunta_filtro_armada_por_codigo`
+   (cuántos mensajes salen armados por el código), `promesa_de_asesor_sin_escalada`
+   (cada una es una frase que ahora se volvió verdad al escalar — si son
+   muchas, el modelo sigue prometiendo), `escenario_espera_ya_enviado`
+   (cada uno es un envío repetido que ya no salió) y, sin subir,
+   `cifra_sin_fuente`. Contra el estudio de referencia (457 fallidos en
+   1.027 turnos, 45 graves): repetir la misma lectura de solo lectura y
+   comparar; revisar a mano 20 cotizaciones contra el precio de Saint.
+
+**Lo que NO cambia:** `cifra_sin_fuente` y `usdFromBs` (el redondeo del
+dólar) no se tocaron; las 1.788 cotizaciones con el precio correcto y las
+221 cifras con fuente del estudio son lo que hay que conservar.
+
+---
+
 ## Comprobación final
 
 Con todo configurado, esta lista debe pasar entera:
 
 - [ ] Una restauración de prueba devuelve los datos completos
 - [ ] `npm run build` sin errores ni warnings
-- [ ] `select count(*) from supabase_migrations.schema_migrations` devuelve 81 en LOCAL tras `20260926010000` ("La búsqueda encuentra lo que el cliente pide", 25-26/9/2026; ver §14) — 80 tras `20260925010000` ("El inventario llega de Saint y no se toca a mano", 25/9/2026; ver §13), 79 tras `20260921040000` ("Nada se pierde en un corte ni en un deploy", 22/9/2026; ver §12), 78 tras `20260921020000`/`20260921030000` ("La escalada se hace una vez y la búsqueda responde"), 76 el 21/9/2026 tras `20260921010000` ("El catálogo configurado sale siempre"), 75 el 19/9/2026 tras `20260918010000`/`20260918020000`, 73 el 18/9/2026 tras `20260916010000`/`20260917010000`/`20260917020000`, 70 el 15/9/2026 y 61 cuando se escribió esta guía. **El número en PRODUCCIÓN depende de cuántas de estas corridas ya se aplicaron allá — preguntar en qué commit está producción antes de asumir un valor (ver §11/§12/§13/§14).**
+- [ ] `select count(*) from supabase_migrations.schema_migrations` devuelve 86 en LOCAL tras `20260928050000` (Entrega A de "Seba encuentra, no insiste, y el mostrador no deja a nadie esperando", 28-29/9/2026; ver §15) — 81 tras `20260926010000` ("La búsqueda encuentra lo que el cliente pide", 25-26/9/2026; ver §14) — 80 tras `20260925010000` ("El inventario llega de Saint y no se toca a mano", 25/9/2026; ver §13), 79 tras `20260921040000` ("Nada se pierde en un corte ni en un deploy", 22/9/2026; ver §12), 78 tras `20260921020000`/`20260921030000` ("La escalada se hace una vez y la búsqueda responde"), 76 el 21/9/2026 tras `20260921010000` ("El catálogo configurado sale siempre"), 75 el 19/9/2026 tras `20260918010000`/`20260918020000`, 73 el 18/9/2026 tras `20260916010000`/`20260917010000`/`20260917020000`, 70 el 15/9/2026 y 61 cuando se escribió esta guía. **El número en PRODUCCIÓN depende de cuántas de estas corridas ya se aplicaron allá — preguntar en qué commit está producción antes de asumir un valor (ver §11/§12/§13/§14/§15).**
 - [ ] El bucket `whatsapp-media` es privado (`public = false`)
 - [ ] Una URL directa al bucket responde 400
 - [ ] `/api/media/...` sin sesión responde 401
