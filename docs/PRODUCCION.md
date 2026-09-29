@@ -2434,8 +2434,11 @@ extensiones, la 3 y la 4 son `add column` sobre tablas chicas, la 5 sobre
       disponible en la espera se marca a mano ahí.
 7. **Escenario a mano en producción, con `buscar_repuesto` ya encendida**
    (o en el simulador): "Inca" (búsqueda con marca), "botas" (todo en cero
-   → `sin_stock`, no pregunta), "asiento sbr" y luego "24" (la respuesta
-   suelta se combina con el pedido), una lista "batería y arranque" (un
+   → `sin_stock`, no pregunta), "asiento sbr" (la moto calza: como máximo tres
+   con existencia, desempatadas por mayor existencia, y «Hay N opciones más
+   para tu moto; el asesor te muestra el resto.» — corrección del 29/9/2026),
+   un pedido sin la moto en el nombre ("guardafango para horse") y luego "24"
+   (una sola pregunta; la respuesta suelta se combina con el pedido), una lista "batería y arranque" (un
    resultado por producto), un tipeo ("horsen") y un chat con la escalada
    abierta al que se le repite "¿dónde quedan?" (la ubicación sale una vez,
    no ocho).
