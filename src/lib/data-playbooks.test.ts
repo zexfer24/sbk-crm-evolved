@@ -20,6 +20,7 @@ interface FakeRow {
   after_send: string;
   is_active: boolean;
   cede_al_inventario: boolean;
+  disponible_en_espera?: boolean;
   ai_playbook_tags: { tag: { id: string; label: string; color: string } | null }[] | null;
 }
 
@@ -89,6 +90,46 @@ describe("fetchPlaybooks", () => {
     expect(result.map((p) => ({ id: p.id, cedeAlInventario: p.cedeAlInventario }))).toEqual([
       { id: "pb-1", cedeAlInventario: true },
       { id: "pb-2", cedeAlInventario: false },
+    ]);
+  });
+});
+
+// T5, plan "Seba encuentra, no insiste, y el mostrador no deja a nadie
+// esperando" (28/9/2026, D7): el panel tiene que traer y mapear
+// `disponible_en_espera`, o el interruptor del editor no tendría qué pintar.
+describe("fetchPlaybooks — disponible_en_espera (T5)", () => {
+  it("pide la columna disponible_en_espera en el select", async () => {
+    const { client, calls } = createFakeSupabase({ data: [], error: null });
+
+    await fetchPlaybooks(client);
+
+    expect(calls.select).toContain("disponible_en_espera");
+  });
+
+  it("mapea disponible_en_espera a disponibleEnEspera, en los dos valores", async () => {
+    const base = {
+      trigger_description: "cuando aplica",
+      response_text: "texto",
+      attachment_url: null,
+      attachment_type: null,
+      after_send: "wait",
+      is_active: true,
+      cede_al_inventario: false,
+      ai_playbook_tags: null,
+    };
+    const { client } = createFakeSupabase({
+      data: [
+        { ...base, id: "pb-1", name: "Ubicación", disponible_en_espera: true },
+        { ...base, id: "pb-2", name: "REDES", disponible_en_espera: false },
+      ],
+      error: null,
+    });
+
+    const result = await fetchPlaybooks(client);
+
+    expect(result.map((p) => ({ id: p.id, disponibleEnEspera: p.disponibleEnEspera }))).toEqual([
+      { id: "pb-1", disponibleEnEspera: true },
+      { id: "pb-2", disponibleEnEspera: false },
     ]);
   });
 });

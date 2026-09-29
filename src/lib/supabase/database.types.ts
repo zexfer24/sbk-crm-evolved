@@ -515,7 +515,8 @@ export type Database = {
       // T1): `cede_al_inventario` nace en la migración 20260921010000. Se
       // copia la columna a mano, mismo criterio que `ai_lessons`/
       // `catalog_links` un poco más abajo -- el generador de tipos no corre
-      // en este repo.
+      // en este repo. T5 (28/9/2026): `disponible_en_espera` nace en la
+      // migración 20260928030000, copiada a mano igual.
       ai_playbooks: {
         Row: {
           after_send: string
@@ -523,6 +524,7 @@ export type Database = {
           attachment_url: string | null
           cede_al_inventario: boolean
           created_at: string
+          disponible_en_espera: boolean
           id: string
           is_active: boolean
           name: string
@@ -536,6 +538,7 @@ export type Database = {
           attachment_url?: string | null
           cede_al_inventario?: boolean
           created_at?: string
+          disponible_en_espera?: boolean
           id?: string
           is_active?: boolean
           name: string
@@ -549,6 +552,7 @@ export type Database = {
           attachment_url?: string | null
           cede_al_inventario?: boolean
           created_at?: string
+          disponible_en_espera?: boolean
           id?: string
           is_active?: boolean
           name?: string

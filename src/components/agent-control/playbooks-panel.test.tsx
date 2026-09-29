@@ -82,6 +82,7 @@ function playbook(overrides: Partial<Playbook> = {}): Playbook {
     afterSend: "wait",
     isActive: true,
     cedeAlInventario: false,
+    disponibleEnEspera: false,
     tags: [],
     ...overrides,
   };
@@ -335,5 +336,83 @@ describe("PlaybooksPanel — cede al inventario (T4)", () => {
     });
 
     expect(screen.getAllByText("Cede al inventario")).toHaveLength(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// T5, plan "Seba encuentra, no insiste, y el mostrador no deja a nadie
+// esperando" (28/9/2026, D7): el interruptor "Puede salir mientras espera al
+// asesor". Sin él un escenario no sale con la escalada abierta (agent.ts).
+// ---------------------------------------------------------------------------
+const ESPERA_LABEL = "Puede salir mientras espera al asesor";
+
+describe("PlaybooksPanel — disponible en la espera (T5)", () => {
+  beforeEach(() => {
+    createPlaybook.mockReset();
+  });
+
+  it("el interruptor aparece apagado al crear un escenario nuevo y explica qué sí y qué no", async () => {
+    const user = userEvent.setup({ delay: null, pointerEventsCheck: 0 });
+    renderPanel();
+
+    await user.click(screen.getByRole("button", { name: "Nuevo escenario" }));
+
+    expect(screen.getByRole("button", { name: ESPERA_LABEL })).toHaveAttribute("data-on", "false");
+    expect(screen.getByText(/ubicación, envíos y postventa/i)).toBeInTheDocument();
+  });
+
+  it("al editar un escenario marcado, el interruptor aparece encendido", async () => {
+    const user = userEvent.setup({ delay: null, pointerEventsCheck: 0 });
+    renderPanel({ playbooks: [playbook({ disponibleEnEspera: true })] });
+
+    await user.click(screen.getByRole("button", { name: "Editar" }));
+
+    expect(screen.getByRole("button", { name: ESPERA_LABEL })).toHaveAttribute("data-on", "true");
+  });
+
+  it("guardar con el interruptor encendido manda disponibleEnEspera: true a createPlaybook, y sin tocarlo manda false", async () => {
+    const user = userEvent.setup({ delay: null, pointerEventsCheck: 0 });
+    createPlaybook.mockResolvedValue(undefined);
+    renderPanel();
+
+    await user.click(screen.getByRole("button", { name: "Nuevo escenario" }));
+    await user.type(screen.getByLabelText("Nombre"), "Ubicación");
+    await user.type(screen.getByLabelText("¿Cuándo aplica?"), "el cliente pregunta dónde queda la tienda");
+    await user.type(screen.getByLabelText("Respuesta"), "Estamos en Barinas.");
+    await user.click(screen.getByRole("button", { name: ESPERA_LABEL }));
+    await user.click(screen.getByRole("button", { name: "Crear escenario" }));
+
+    await waitFor(() => expect(createPlaybook).toHaveBeenCalledTimes(1));
+    expect((createPlaybook.mock.calls[0]?.[1] as { disponibleEnEspera?: boolean }).disponibleEnEspera).toBe(true);
+  });
+
+  it("sin tocar el interruptor, el borrador viaja con disponibleEnEspera: false", async () => {
+    const user = userEvent.setup({ delay: null, pointerEventsCheck: 0 });
+    createPlaybook.mockResolvedValue(undefined);
+    renderPanel();
+
+    await completarYGuardar(user);
+
+    await waitFor(() => expect(createPlaybook).toHaveBeenCalledTimes(1));
+    expect((createPlaybook.mock.calls[0]?.[1] as { disponibleEnEspera?: boolean }).disponibleEnEspera).toBe(false);
+  });
+
+  it("un escenario marcado muestra el badge 'Sale en la espera' y uno sin marcar no", () => {
+    renderPanel({
+      playbooks: [
+        playbook({ id: "pb-a", disponibleEnEspera: true }),
+        playbook({ id: "pb-b", disponibleEnEspera: false }),
+      ],
+    });
+
+    expect(screen.getAllByText("Sale en la espera")).toHaveLength(1);
+  });
+
+  it("sin permiso de edición no hay forma de abrir el formulario, así que el interruptor no se ofrece", () => {
+    renderPanel({ canEdit: false, playbooks: [playbook({ disponibleEnEspera: true })] });
+
+    expect(screen.queryByRole("button", { name: "Nuevo escenario" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Editar" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: ESPERA_LABEL })).not.toBeInTheDocument();
   });
 });

@@ -51,7 +51,7 @@ function createFakeSupabase() {
   return client as unknown as SupabaseClient;
 }
 
-function draft(cedeAlInventario: boolean): PlaybookDraft {
+function draft(cedeAlInventario: boolean, disponibleEnEspera = false): PlaybookDraft {
   return {
     name: "Catálogo general",
     triggerDescription: "el cliente pide el catálogo",
@@ -60,6 +60,7 @@ function draft(cedeAlInventario: boolean): PlaybookDraft {
     attachmentType: null,
     afterSend: "wait",
     cedeAlInventario,
+    disponibleEnEspera,
     tagIds: [],
   };
 }
@@ -86,5 +87,29 @@ describe("createPlaybook / updatePlaybook — cede_al_inventario (T4)", () => {
     await updatePlaybook(createFakeSupabase(), "pb-1", draft(true));
 
     expect(payloadUpdate).toMatchObject({ cede_al_inventario: true });
+  });
+});
+
+// T5, plan "Seba encuentra, no insiste, y el mostrador no deja a nadie
+// esperando" (28/9/2026, D7): el borrador lleva `disponibleEnEspera` hasta la
+// columna `disponible_en_espera`, en insert y en update. El fake de arriba ya
+// captura el payload completo.
+describe("createPlaybook / updatePlaybook — disponible_en_espera (T5)", () => {
+  it("el insert manda disponible_en_espera en true cuando el borrador lo trae encendido", async () => {
+    await createPlaybook(createFakeSupabase(), draft(false, true));
+
+    expect(payloadInsert).toMatchObject({ disponible_en_espera: true });
+  });
+
+  it("el insert manda disponible_en_espera en false cuando el borrador lo trae apagado", async () => {
+    await createPlaybook(createFakeSupabase(), draft(false, false));
+
+    expect(payloadInsert).toMatchObject({ disponible_en_espera: false });
+  });
+
+  it("el update manda disponible_en_espera con el valor del borrador, sin tocar cede_al_inventario", async () => {
+    await updatePlaybook(createFakeSupabase(), "pb-1", draft(false, true));
+
+    expect(payloadUpdate).toMatchObject({ disponible_en_espera: true, cede_al_inventario: false });
   });
 });

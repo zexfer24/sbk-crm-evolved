@@ -473,6 +473,16 @@ export interface Playbook {
    */
   cedeAlInventario: boolean;
   /**
+   * Permiso para que este escenario salga MIENTRAS el cliente espera a un
+   * asesor con la escalada abierta (T5, plan "Seba encuentra, no insiste, y
+   * el mostrador no deja a nadie esperando", 28/9/2026, D7, migración
+   * `20260928030000`). Nace en `false`: sin la marca el escenario no sale en
+   * la espera y el turno deja una nota interna para el asesor. Aun marcado no
+   * sale si es despedida, si escala al mandarse o si ya salió hace poco. El
+   * backfill marcó solo Ubicación, Envio gratis Cashea y Postventa Cashea.
+   */
+  disponibleEnEspera: boolean;
+  /**
    * Etiquetas que se aplican cuando este escenario responde, escale o no.
    *
    * Se llevan enteras y no como ids sueltos porque los dos lectores las

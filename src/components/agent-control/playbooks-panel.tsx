@@ -67,6 +67,13 @@ interface DraftState {
    * catálogo (cascos, maletas) al inventario real por error.
    */
   cedeAlInventario: boolean;
+  /**
+   * T5, plan "Seba encuentra, no insiste, y el mostrador no deja a nadie
+   * esperando" (28/9/2026, D7). Apagado por default al crear: solo lo
+   * merecen las respuestas que el cliente necesita mientras espera (ubicación,
+   * envíos, postventa), no un catálogo ni las redes.
+   */
+  disponibleEnEspera: boolean;
   tagIds: string[];
 }
 
@@ -78,6 +85,7 @@ const EMPTY_DRAFT: DraftState = {
   attachmentType: "",
   afterSend: "wait",
   cedeAlInventario: false,
+  disponibleEnEspera: false,
   tagIds: [],
 };
 
@@ -134,6 +142,7 @@ export function PlaybooksPanel({
       attachmentType: playbook.attachmentType ?? "",
       afterSend: playbook.afterSend,
       cedeAlInventario: playbook.cedeAlInventario,
+      disponibleEnEspera: playbook.disponibleEnEspera,
       tagIds: playbook.tags.map((tag) => tag.id),
     });
     setIsFormOpen(true);
@@ -189,6 +198,7 @@ export function PlaybooksPanel({
         attachmentType: type,
         afterSend: draft.afterSend,
         cedeAlInventario: draft.cedeAlInventario,
+        disponibleEnEspera: draft.disponibleEnEspera,
         tagIds: draft.tagIds,
       };
 
@@ -380,6 +390,18 @@ export function PlaybooksPanel({
                       title="Si el cliente pregunta por un repuesto puntual y la consulta de productos está encendida, la IA busca en el inventario en vez de mandar esta respuesta."
                     >
                       Cede al inventario
+                    </span>
+                  )}
+                  {/* T5 (28/9/2026, D7): este escenario puede salir aunque la
+                      conversación ya esté escalada y el cliente esté
+                      esperando al asesor. */}
+                  {playbook.disponibleEnEspera && (
+                    <span
+                      className="ac-badge"
+                      data-tone="muted"
+                      title="Si el cliente ya pidió un asesor y está esperando, la IA puede mandar esta respuesta una sola vez."
+                    >
+                      Sale en la espera
                     </span>
                   )}
                   <span className="ac-badge" data-tone={playbook.afterSend === "escalate" ? "plum" : "muted"}>
@@ -639,6 +661,30 @@ export function PlaybooksPanel({
                     busca en el inventario en vez de mandar esta respuesta. Si pide el catálogo, esta respuesta sale
                     igual. Déjalo apagado en los escenarios que mandan un catálogo de una categoría (cascos,
                     maletas).
+                  </span>
+                </div>
+
+                <div className="flex flex-col gap-1.5">
+                  {/* T5, plan "Seba encuentra, no insiste, y el mostrador no
+                      deja a nadie esperando" (28/9/2026, D7). Mismo
+                      `ac-switch` que la casilla de arriba. El editor solo
+                      abre con `canEdit` (los botones "Nuevo escenario" y
+                      "Editar" no se pintan sin él), así que el interruptor
+                      hereda esa puerta. */}
+                  <div className="flex items-center gap-2">
+                    <button
+                      className="ac-switch"
+                      type="button"
+                      data-on={draft.disponibleEnEspera}
+                      onClick={() => setDraft((current) => ({ ...current, disponibleEnEspera: !current.disponibleEnEspera }))}
+                      aria-label="Puede salir mientras espera al asesor"
+                    />
+                    <Label>Puede salir mientras espera al asesor</Label>
+                  </div>
+                  <span className="lm-hint">
+                    Cuando el cliente ya pidió un asesor y sigue esperando, Seba solo puede mandar los escenarios
+                    marcados acá, y una sola vez. Sirve para datos como ubicación, envíos y postventa; no lo
+                    enciendas en catálogos ni en redes.
                   </span>
                 </div>
 

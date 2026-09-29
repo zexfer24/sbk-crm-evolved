@@ -194,6 +194,8 @@ function mapEscenario(raw: RawEscenario): Playbook {
     afterSend: raw.after_send as PlaybookAfterSend,
     isActive: raw.is_active,
     cedeAlInventario: raw.cede_al_inventario ?? false,
+    // T5 (28/9/2026): el comparador solo clasifica, no simula la espera.
+    disponibleEnEspera: false,
     tags: raw.tags.map((tag): Tag => ({ id: tag.id, label: tag.label, color: tag.color as TagColor })),
   };
 }

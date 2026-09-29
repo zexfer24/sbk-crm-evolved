@@ -58,6 +58,7 @@ function playbook(overrides: Partial<Playbook> = {}): Playbook {
     afterSend: "wait",
     isActive: true,
     cedeAlInventario: false,
+    disponibleEnEspera: false,
     tags: [],
     ...overrides,
   };

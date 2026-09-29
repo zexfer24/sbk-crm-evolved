@@ -35,6 +35,7 @@ function playbook(name: string, overrides: Partial<Playbook> = {}): Playbook {
     afterSend: "wait",
     isActive: true,
     cedeAlInventario: false,
+    disponibleEnEspera: false,
     tags: [],
     ...overrides,
   };
@@ -539,6 +540,7 @@ interface FakeActivePlaybookRow {
   after_send: string;
   is_active: boolean;
   cede_al_inventario: boolean;
+  disponible_en_espera?: boolean;
   ai_playbook_tags: { tag: { id: string; label: string; color: string } | null }[] | null;
 }
 
@@ -620,5 +622,44 @@ describe("fetchActivePlaybooks — la lectura del turno trae cede_al_inventario"
     const result = await fetchActivePlaybooks(client);
 
     expect(result[0].cedeAlInventario).toBe(false);
+  });
+});
+
+// T5, plan "Seba encuentra, no insiste, y el mostrador no deja a nadie
+// esperando" (28/9/2026, D7): sin leer y mapear `disponible_en_espera`, la
+// rama de espera con escalada abierta de `agent.ts` no sabría qué escenarios
+// el supervisor dejó salir.
+describe("fetchActivePlaybooks — la lectura del turno trae disponible_en_espera (T5)", () => {
+  const base = {
+    trigger_description: "cuando aplica",
+    response_text: "texto",
+    attachment_url: null,
+    attachment_type: null,
+    after_send: "wait",
+    is_active: true,
+    cede_al_inventario: false,
+    ai_playbook_tags: null,
+  };
+
+  it("pide la columna disponible_en_espera en el select", async () => {
+    const { client, calls } = fakeActivePlaybooksSupabase([]);
+
+    await fetchActivePlaybooks(client);
+
+    expect(calls.select).toContain("disponible_en_espera");
+  });
+
+  it("mapea disponible_en_espera en los dos valores al campo disponibleEnEspera", async () => {
+    const { client } = fakeActivePlaybooksSupabase([
+      { ...base, id: "pb-ubicacion", name: "Ubicación", disponible_en_espera: true },
+      { ...base, id: "pb-redes", name: "REDES", disponible_en_espera: false },
+    ]);
+
+    const result = await fetchActivePlaybooks(client);
+
+    expect(result.map((p) => [p.id, p.disponibleEnEspera])).toEqual([
+      ["pb-ubicacion", true],
+      ["pb-redes", false],
+    ]);
   });
 });

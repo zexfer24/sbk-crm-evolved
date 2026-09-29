@@ -160,6 +160,7 @@ const DRAFT_PLAYBOOK = {
   attachmentType: null,
   afterSend: "wait",
   cedeAlInventario: false,
+  disponibleEnEspera: false,
   tagIds: [],
 } as unknown as PlaybookDraft;
 

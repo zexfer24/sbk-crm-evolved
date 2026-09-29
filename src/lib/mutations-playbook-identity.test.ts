@@ -51,6 +51,7 @@ function draft(responseText: string): PlaybookDraft {
     attachmentType: null,
     afterSend: "wait",
     cedeAlInventario: false,
+    disponibleEnEspera: false,
     tagIds: [],
   };
 }

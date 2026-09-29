@@ -73,6 +73,7 @@ function draft(tagIds: string[]): PlaybookDraft {
     attachmentType: null,
     afterSend: "wait",
     cedeAlInventario: false,
+    disponibleEnEspera: false,
     tagIds,
   };
 }

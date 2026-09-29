@@ -1025,6 +1025,7 @@ function playbook(overrides: Partial<Playbook> = {}): Playbook {
     afterSend: "wait",
     isActive: true,
     cedeAlInventario: false,
+    disponibleEnEspera: false,
     tags: [],
     ...overrides,
   };
@@ -2001,6 +2002,7 @@ describe("runAgentTurn — camino 'espera abierta' con escalada abierta (T5, 22-
       id: "pb-ubicacion",
       name: "Ubicación",
       responseText: "Estamos ubicados en la Av. Los Próceres, Barinas.",
+      disponibleEnEspera: true,
     });
     fetchActivePlaybooksMock.mockResolvedValue([ubicacion]);
     matchPlaybookMock.mockResolvedValue({ playbook: ubicacion, usage: NO_USAGE });
@@ -2025,17 +2027,22 @@ describe("runAgentTurn — camino 'espera abierta' con escalada abierta (T5, 22-
       id: "pb-gracias",
       name: "Gracias",
       responseText: "¡Muchas gracias por preferirnos!🥰 Esperamos poder servirte nuevamente.🎊",
+      // Marcados a propósito: aunque el supervisor los deje disponibles, la
+      // despedida y el que escala nunca salen en la espera.
+      disponibleEnEspera: true,
     });
     const reclamoQueEscala = playbook({
       id: "pb-reclamo",
       name: "Reclamo",
       responseText: "Vamos a revisar tu caso con el equipo.",
       afterSend: "escalate",
+      disponibleEnEspera: true,
     });
     const ubicacion = playbook({
       id: "pb-ubicacion",
       name: "Ubicación",
       responseText: "Estamos ubicados en la Av. Los Próceres, Barinas.",
+      disponibleEnEspera: true,
     });
     fetchActivePlaybooksMock.mockResolvedValue([despedida, reclamoQueEscala, ubicacion]);
     matchPlaybookMock.mockResolvedValue({ playbook: null, usage: NO_USAGE });
@@ -2048,6 +2055,137 @@ describe("runAgentTurn — camino 'espera abierta' con escalada abierta (T5, 22-
     expect(matchPlaybookMock).toHaveBeenCalledTimes(1);
     const candidatos = matchPlaybookMock.mock.calls[0][1] as Playbook[];
     expect(candidatos.map((p) => p.id)).toEqual(["pb-ubicacion"]);
+  });
+
+  /**
+   * T5, plan "Seba encuentra, no insiste, y el mostrador no deja a nadie
+   * esperando" (28/9/2026, D7): en la espera solo salen los escenarios que el
+   * supervisor marcó `disponibleEnEspera`. Un escenario válido pero sin la
+   * marca ("REDES", catálogos) no sale -- el turno deja la nota para el
+   * asesor -- aunque NO sea despedida ni escale.
+   */
+  it("un escenario sin disponibleEnEspera (REDES) no llega como candidato ni sale: el turno anota para el asesor", async () => {
+    const redes = playbook({
+      id: "pb-redes",
+      name: "REDES",
+      responseText: "Síguenos en nuestras redes @sbkmotors",
+      disponibleEnEspera: false,
+    });
+    const ubicacion = playbook({
+      id: "pb-ubicacion",
+      name: "Ubicación",
+      responseText: "Estamos ubicados en la Av. Los Próceres, Barinas.",
+      disponibleEnEspera: true,
+    });
+    fetchActivePlaybooksMock.mockResolvedValue([redes, ubicacion]);
+    matchPlaybookMock.mockResolvedValue({ playbook: null, usage: NO_USAGE });
+    state.history = [{ sender_type: "customer", content: "¿tienen instagram?", is_internal_note: false }];
+    state.lastHandoffRow = { reason: "escalada_sin_asesor", created_at: "2026-09-22T09:14:26.000Z" };
+    state.agentMessagesAfterHandoff = [];
+
+    await runAgentTurn("conv-1");
+
+    expect(matchPlaybookMock).toHaveBeenCalledTimes(1);
+    expect((matchPlaybookMock.mock.calls[0][1] as Playbook[]).map((p) => p.id)).toEqual(["pb-ubicacion"]);
+    expect(sendPlaybookReplyMock).not.toHaveBeenCalled();
+    expect(messageInserts).toHaveLength(1);
+    expect(messageInserts[0].content).toContain("¿tienen instagram?");
+  });
+
+  it("si ningún escenario está disponible en la espera, ni siquiera se le pregunta al proveedor: nota para el asesor", async () => {
+    const redes = playbook({ id: "pb-redes", name: "REDES", responseText: "Síguenos en redes", disponibleEnEspera: false });
+    fetchActivePlaybooksMock.mockResolvedValue([redes]);
+    state.history = [{ sender_type: "customer", content: "¿tienen instagram?", is_internal_note: false }];
+    state.lastHandoffRow = { reason: "escalada_sin_asesor", created_at: "2026-09-22T09:14:26.000Z" };
+    state.agentMessagesAfterHandoff = [];
+
+    await runAgentTurn("conv-1");
+
+    expect(matchPlaybookMock).not.toHaveBeenCalled();
+    expect(sendPlaybookReplyMock).not.toHaveBeenCalled();
+    expect(messageInserts).toHaveLength(1);
+  });
+
+  it("un escenario marcado disponibleEnEspera sale la primera vez, y se consulta la ventana de 6 h con su id", async () => {
+    const envio = playbook({
+      id: "pb-envio",
+      name: "Envio gratis Cashea",
+      responseText: "El envío con Cashea es gratis.",
+      disponibleEnEspera: true,
+    });
+    fetchActivePlaybooksMock.mockResolvedValue([envio]);
+    matchPlaybookMock.mockResolvedValue({ playbook: envio, usage: NO_USAGE });
+    state.history = [{ sender_type: "customer", content: "¿el envío es gratis con Cashea?", is_internal_note: false }];
+    state.lastHandoffRow = { reason: "escalada_sin_asesor", created_at: "2026-09-22T09:14:26.000Z" };
+    state.agentMessagesAfterHandoff = [];
+
+    await runAgentTurn("conv-1");
+
+    expect(sendPlaybookReplyMock).toHaveBeenCalledTimes(1);
+    expect(sendPlaybookReplyMock.mock.calls[0][2]).toEqual(envio);
+    expect(playbookSentRecentlyMock).toHaveBeenCalledWith(expect.anything(), "conv-1", "pb-envio");
+    expect(messageInserts).toHaveLength(0);
+  });
+
+  /**
+   * Misma regla de no repetir que la fase 0 (dos redes): en la espera el
+   * cliente puede repetir la pregunta ("¿dónde quedan?" dos veces) y el
+   * mismo texto no puede salir dos veces. Con el escenario repetido el turno
+   * sigue "como si no calzara": nada al cliente, nota para el asesor.
+   */
+  it("el mismo escenario disponible no sale dos veces en la espera: el historial delata la repetición", async () => {
+    const ubicacion = playbook({
+      id: "pb-ubicacion",
+      name: "Ubicación",
+      responseText: "Estamos ubicados en la Av. Los Próceres, Barinas.",
+      disponibleEnEspera: true,
+    });
+    fetchActivePlaybooksMock.mockResolvedValue([ubicacion]);
+    matchPlaybookMock.mockResolvedValue({ playbook: ubicacion, usage: NO_USAGE });
+    // Del más nuevo al más viejo, como los devuelve la consulta.
+    state.history = [
+      { sender_type: "customer", content: "¿dónde quedan?", is_internal_note: false },
+      { sender_type: "ai", content: ubicacion.responseText, is_internal_note: false },
+      { sender_type: "customer", content: "¿dónde están ubicados?", is_internal_note: false },
+    ];
+    state.lastHandoffRow = { reason: "escalada_sin_asesor", created_at: "2026-09-22T09:14:26.000Z" };
+    state.agentMessagesAfterHandoff = [];
+
+    await runAgentTurn("conv-1");
+
+    expect(sendPlaybookReplyMock).not.toHaveBeenCalled();
+    // La primera red es gratis: el historial ya alcanza, no se consulta la base.
+    expect(playbookSentRecentlyMock).not.toHaveBeenCalled();
+    expect(messageInserts).toHaveLength(1);
+    expect(messageInserts[0].content).toContain("¿dónde quedan?");
+    expect(generateMock).not.toHaveBeenCalled();
+  });
+
+  it("el mismo escenario disponible no sale dos veces en la espera: la ventana de 6 h lo frena aunque en el medio se haya dicho otra cosa", async () => {
+    const ubicacion = playbook({
+      id: "pb-ubicacion",
+      name: "Ubicación",
+      responseText: "Estamos ubicados en la Av. Los Próceres, Barinas.",
+      disponibleEnEspera: true,
+    });
+    fetchActivePlaybooksMock.mockResolvedValue([ubicacion]);
+    matchPlaybookMock.mockResolvedValue({ playbook: ubicacion, usage: NO_USAGE });
+    playbookSentRecentlyMock.mockResolvedValue(true);
+    state.history = [
+      { sender_type: "customer", content: "¿dónde quedan?", is_internal_note: false },
+      { sender_type: "ai", content: "Un asesor te atiende enseguida.", is_internal_note: false },
+      { sender_type: "customer", content: "¿dónde están ubicados?", is_internal_note: false },
+    ];
+    state.lastHandoffRow = { reason: "escalada_sin_asesor", created_at: "2026-09-22T09:14:26.000Z" };
+    state.agentMessagesAfterHandoff = [];
+
+    await runAgentTurn("conv-1");
+
+    expect(playbookSentRecentlyMock).toHaveBeenCalledWith(expect.anything(), "conv-1", "pb-ubicacion");
+    expect(sendPlaybookReplyMock).not.toHaveBeenCalled();
+    expect(messageInserts).toHaveLength(1);
+    expect(messageInserts[0].content).toContain("¿dónde quedan?");
+    expect(generateMock).not.toHaveBeenCalled();
   });
 
   /**

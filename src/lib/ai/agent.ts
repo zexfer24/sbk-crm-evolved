@@ -2025,7 +2025,15 @@ async function runTurnPhases(
   // mostrador"), 76 de 142 puro relleno tipo "el asesor ya tiene tu caso",
   // hasta 6 mensajes en la misma espera.
   //
-  // Se descartan de los candidatos, ANTES de llamar a `matchPlaybook`:
+  // Desde T5 del plan "Seba encuentra, no insiste, y el mostrador no deja a
+  // nadie esperando" (28/9/2026, D7) el criterio es un PERMISO explícito, no
+  // "todo lo que no sea despedida": solo son candidatos los escenarios que el
+  // supervisor marcó `disponibleEnEspera` (columna de la migración
+  // `20260928030000`; el backfill dejó marcados Ubicación, Envio gratis
+  // Cashea y Postventa Cashea). Un catálogo o las redes no salen mientras el
+  // cliente espera -- se manda cuando lo pide, y el asesor suele afinarlo --,
+  // así que quedan anotados en la nota para el asesor. Aun marcado, se
+  // descartan de los candidatos, ANTES de llamar a `matchPlaybook`:
   //   - los de despedida (`isFarewellPlaybook`, saludo.ts) -- Seba ya se
   //     despidió al escalar, y repetirla es justo el relleno medido el 22/9;
   //   - los que escalan de nuevo al mandarse (`afterSend === "escalate"`) --
@@ -2033,6 +2041,13 @@ async function runTurnPhases(
   //     automática dispare una escalada nueva.
   // `matchPlaybook` sigue sacando por su cuenta el saludo y el enlace sin
   // resolver, como en la fase 0 normal (playbooks.ts).
+  //
+  // Y DESPUÉS de calzar rige la MISMA regla de no repetir que la fase 0
+  // (`alreadySentPlaybook` contra el historial, y `playbookSentRecently`,
+  // ventana de 6 h contra `agent_turns`): sin ella, un cliente que repite
+  // "¿dónde quedan?" mientras espera recibiría la ubicación una y otra vez --
+  // el mismo relleno que este bloque existe para evitar. Un escenario ya
+  // mandado se trata como si no hubiera calzado: nota para el asesor.
   //
   // Interacción con la guarda de T12 (arriba): en teoría las dos podrían
   // competir por el mismo caso ("ráfaga que es solo saludo/cortesía"), pero
@@ -2045,18 +2060,33 @@ async function runTurnPhases(
   // esta tarea para el detalle de esta revisión.
   if (escalationOpenNow && rafagaCliente.length > 0) {
     const playbooksEspera = (await fetchActivePlaybooks(supabase)).filter(
-      (p) => !isFarewellPlaybook(p.responseText) && p.afterSend !== "escalate"
+      (p) => p.disponibleEnEspera && !isFarewellPlaybook(p.responseText) && p.afterSend !== "escalate"
     );
 
     // Mismo criterio que la fase 0 normal (más abajo, `ultimoEsMarcador`): un
     // marcador de media nunca calza ningún disparador, así que preguntarle
-    // al proveedor sería gasto de balde.
-    const matchEspera: PlaybookMatch = lastUserLineIsMarker(history)
-      ? { playbook: null, usage: ZERO_USAGE }
-      : await matchPlaybook(history, playbooksEspera, undefined, businessHours, links);
+    // al proveedor sería gasto de balde. Sin candidatos tampoco se le
+    // pregunta: con la lista vacía `matchPlaybook` ya devuelve sin llamar,
+    // pero saltarlo acá lo deja explícito.
+    const matchEspera: PlaybookMatch =
+      lastUserLineIsMarker(history) || playbooksEspera.length === 0
+        ? { playbook: null, usage: ZERO_USAGE }
+        : await matchPlaybook(history, playbooksEspera, undefined, businessHours, links);
     const tokensEspera = tokensFromUsage(matchEspera.usage);
 
-    if (matchEspera.playbook) {
+    // Misma regla de no repetir que la fase 0, con las mismas dos redes y en
+    // el mismo orden (la del historial es gratis). Si ya salió, sigue como si
+    // no hubiera calzado.
+    const escenarioEspera = matchEspera.playbook;
+    const escenarioYaSalio =
+      escenarioEspera !== null &&
+      (alreadySentPlaybook(history, escenarioEspera, links) ||
+        (await playbookSentRecently(supabase, conversationId, escenarioEspera.id)));
+    if (escenarioEspera && escenarioYaSalio) {
+      log.info("escenario_espera_ya_enviado", { conversationId, escenario: escenarioEspera.name });
+    }
+
+    if (escenarioEspera && !escenarioYaSalio) {
       // T2, mismo plan: mismo punto de cesión que la fase 0 normal y el
       // mismo motivo -- si llegó un fragmento más nuevo mientras se elegía
       // el escenario, el turno que ya está en cola para esta conversación
@@ -2081,7 +2111,7 @@ async function runTurnPhases(
         target,
         entrega,
         lease,
-        matchEspera.playbook,
+        escenarioEspera,
         links,
         tokensEspera,
         customerMessage,
@@ -2103,8 +2133,9 @@ async function runTurnPhases(
       return;
     }
 
-    // Ningún escenario informativo calzó: nada le llega al cliente -- el
-    // acuse ya salió con la escalada -- y lo que agregó queda anotado para
+    // Ningún escenario disponible en la espera calzó, o el que calzó ya salió
+    // hace poco: nada le llega al cliente -- el acuse ya salió con la
+    // escalada -- y lo que agregó queda anotado para
     // que el asesor lo vea al entrar al chat. Mismo patrón que la nota que
     // deja `escalate.ts` al reiterar una escalada ("IA reiteró la escalada a
     // ...").

@@ -121,7 +121,7 @@ export async function fetchActivePlaybooks(supabase: SupabaseClient<Database>): 
   const { data, error } = await supabase
     .from("ai_playbooks")
     .select(
-      "id, name, trigger_description, response_text, attachment_url, attachment_type, after_send, is_active, cede_al_inventario, ai_playbook_tags(tag:tags(id, label, color))"
+      "id, name, trigger_description, response_text, attachment_url, attachment_type, after_send, is_active, cede_al_inventario, disponible_en_espera, ai_playbook_tags(tag:tags(id, label, color))"
     )
     .eq("is_active", true)
     .order("name");
@@ -147,6 +147,10 @@ export async function fetchActivePlaybooks(supabase: SupabaseClient<Database>): 
     // nunca podría saber si el supervisor marcó este escenario para ceder al
     // inventario, aunque la columna ya viniera en el select.
     cedeAlInventario: row.cede_al_inventario,
+    // T5, plan "Seba encuentra, no insiste..." (28/9/2026, D7): sin mapearla
+    // acá la rama de espera con escalada abierta (`agent.ts`) nunca sabría
+    // qué escenarios el supervisor dejó salir mientras el cliente espera.
+    disponibleEnEspera: row.disponible_en_espera,
     tags: playbookTags(row as unknown as { ai_playbook_tags: RawPlaybookTag[] | null }),
   }));
 }

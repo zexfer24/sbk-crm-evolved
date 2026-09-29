@@ -932,6 +932,10 @@ function playbookRow(draft: PlaybookDraft) {
     // condición de "el repuesto manda" (columna `cede_al_inventario`, T1)
     // viaja igual que cualquier otro campo del borrador, en insert y update.
     cede_al_inventario: draft.cedeAlInventario,
+    // T5, plan "Seba encuentra, no insiste..." (28/9/2026, D7): permiso para
+    // salir mientras el cliente espera al asesor (columna
+    // `disponible_en_espera`, migración 20260928030000).
+    disponible_en_espera: draft.disponibleEnEspera,
   };
 }
 
