@@ -1,5 +1,14 @@
 import { describe, expect, it } from "vitest";
-import { catalogTermGroups, normalize, searchTerms, singular, type SearchSynonym } from "@/lib/ai/catalog-search";
+import {
+  catalogQuery,
+  catalogTermGroups,
+  DESCRIPTIVAS,
+  MOTOS_CONOCIDAS,
+  normalize,
+  searchTerms,
+  singular,
+  type SearchSynonym,
+} from "@/lib/ai/catalog-search";
 
 /**
  * Estos dos casos vienen de correr el agente contra el catálogo real, no de
@@ -213,3 +222,282 @@ describe("normalize", () => {
 // alternativa del mismo grupo (ver el describe de arriba, "un sinónimo
 // agrega el término real como alternativa del mismo grupo") — su cobertura
 // queda cubierta ahí, no hace falta duplicarla.
+
+// ---------------------------------------------------------------------------
+// T1, plan "Seba encuentra, no insiste, y el mostrador no deja a nadie
+// esperando" (28/9/2026): `catalogQuery` separa la consulta en cuatro
+// conjuntos que `buscar_productos` (migración 20260928010000) trata distinto:
+// obligatorios (definen el puntaje), opcionales (solo desempatan), moto con
+// nombre y cilindrada (solo ordenan). Casos reales del estudio del VPS.
+// ---------------------------------------------------------------------------
+
+describe("DESCRIPTIVAS", () => {
+  /**
+   * La lista es CERRADA a propósito (pedido del operador): una palabra que
+   * se cuela acá deja de exigirse en el nombre del producto. Fijarla con su
+   * literal obliga a que sumar o quitar una palabra pase por un test.
+   */
+  it("es exactamente la lista cerrada del pedido, ya normalizada y singularizada", () => {
+    expect([...DESCRIPTIVAS].sort()).toEqual(
+      [
+        // colores
+        "amarilla", "amarillo", "azul", "beige", "blanca", "blanco", "celeste", "color", "dorada", "dorado",
+        "gris", "marron", "morada", "morado", "naranja", "negra", "negro", "plateada", "plateado", "roja",
+        "rojo", "rosada", "rosado", "verde",
+        // acabado y posición
+        "brillante", "mate", "delantera", "delantero", "trasera", "trasero", "izquierda", "izquierdo",
+        "derecha", "derecho", "cromada", "cromado",
+        // calidad y tipo
+        "semi", "sintetico", "mineral", "original", "generico", "universal", "economico", "buena", "bueno",
+        "integral", "adaptable",
+        // otras
+        "moto", "talla", "4t", "2t", "edge", "juego", "par",
+      ].sort()
+    );
+  });
+});
+
+describe("MOTOS_CONOCIDAS", () => {
+  it("es exactamente la lista fijada (marcas y modelos que por sí solos nunca son un repuesto)", () => {
+    expect([...MOTOS_CONOCIDAS].sort()).toEqual(
+      [
+        "ava", "bajaj", "bera", "beta", "boxer", "brz", "cbf", "deer", "discover", "dsr", "ek", "empire", "gr",
+        "gs", "gxs", "haojue", "honda", "horse", "jaguar", "kavak", "kawasaki", "keeway", "klr", "ktm",
+        "lechuza", "md", "mustang", "nxr", "owen", "pulsar", "rk", "sbr", "socialista", "suzuki",
+        "tigrito", "tvs", "tx", "xpress", "xtz", "yamaha", "ybr",
+      ].sort()
+    );
+  });
+});
+
+describe("catalogQuery", () => {
+  const vacio = { grupos: [], opcionales: [], moto: [], cilindrada: [] };
+
+  it("una consulta vacía no devuelve nada", () => {
+    expect(catalogQuery("   ")).toEqual(vacio);
+  });
+
+  it("las palabras descriptivas van a opcionales, el producto y la marca quedan obligatorios", () => {
+    expect(catalogQuery("aceite 20w50 semi sintetico inca")).toEqual({
+      ...vacio,
+      grupos: [["aceite"], ["20w50"], ["inca"]],
+      opcionales: [["semi"], ["sintetico"]],
+    });
+    expect(catalogQuery("aceite motul 5100 15w50 semi sintetico")).toEqual({
+      ...vacio,
+      grupos: [["aceite"], ["motul"], ["5100"], ["15w50"]],
+      opcionales: [["semi"], ["sintetico"]],
+    });
+  });
+
+  it("'casco bonnie edge' y los colores/acabados son opcionales; 'original' tampoco cambia el conjunto obligatorio", () => {
+    expect(catalogQuery("casco bonnie edge")).toEqual({ ...vacio, grupos: [["casco"], ["bonnie"]], opcionales: [["edge"]] });
+    expect(catalogQuery("casco sirius electron integral gris mate")).toEqual({
+      ...vacio,
+      // `singular` le quita la "s" a "sirius" ("siriu"): calza igual por
+      // inicio de palabra en la base (\msiriu), así que no se toca acá.
+      grupos: [["casco"], ["siriu"], ["electron"]],
+      opcionales: [["integral"], ["gris"], ["mate"]],
+    });
+    expect(catalogQuery("aceite inca original")).toEqual({
+      ...vacio,
+      grupos: [["aceite"], ["inca"]],
+      opcionales: [["original"]],
+    });
+  });
+
+  it("el plural y el femenino de una descriptiva también son opcionales (cascos azules, verdes, grises)", () => {
+    expect(catalogQuery("cascos negros")).toEqual({ ...vacio, grupos: [["casco"]], opcionales: [["negro"]] });
+    expect(catalogQuery("cascos azules")).toEqual({ ...vacio, grupos: [["casco"]], opcionales: [["azul"]] });
+    expect(catalogQuery("cascos verdes")).toEqual({ ...vacio, grupos: [["casco"]], opcionales: [["verde"]] });
+    expect(catalogQuery("cascos grises")).toEqual({ ...vacio, grupos: [["casco"]], opcionales: [["gris"]] });
+    expect(catalogQuery("guantes originales")).toEqual({ ...vacio, grupos: [["guante"]], opcionales: [["original"]] });
+  });
+
+  it("'4 tiempos' y '2 tiempos' se convierten en el opcional 4t/2t (y '4t' escrito también)", () => {
+    expect(catalogQuery("oilstone 4 tiempos")).toEqual({ ...vacio, grupos: [["oilstone"]], opcionales: [["4t"]] });
+    expect(catalogQuery("aceite 2 tiempos")).toEqual({ ...vacio, grupos: [["aceite"]], opcionales: [["2t"]] });
+    expect(catalogQuery("oilstone 4t")).toEqual({ ...vacio, grupos: [["oilstone"]], opcionales: [["4t"]] });
+  });
+
+  describe("viscosidad", () => {
+    it("(0|5|10|15|20|25)/(20|30|40|50|60) produce UN solo grupo NNwNN", () => {
+      expect(catalogQuery("aceite iphone 20/50").grupos).toEqual([["aceite"], ["iphone"], ["20w50"]]);
+      expect(catalogQuery("aceite 10 40").grupos).toEqual([["aceite"], ["10w40"]]);
+      expect(catalogQuery("aceite 20-50").grupos).toEqual([["aceite"], ["20w50"]]);
+      expect(catalogQuery("aceite 15w-40").grupos).toEqual([["aceite"], ["15w40"]]);
+      expect(catalogQuery("aceite 20w50").grupos).toEqual([["aceite"], ["20w50"]]);
+    });
+
+    /** Una medida de caucho NO es un aceite: por eso los valores están restringidos. */
+    it("'90/90-18' (medida de caucho) NO se lee como viscosidad", () => {
+      expect(catalogQuery("caucho 90/90-18").grupos).toEqual([["caucho"], ["90"], ["18"]]);
+    });
+
+    /**
+     * Decisión del implementador (28/9/2026): un ancho de tres dígitos entre
+     * 50 y 400 pegado a una barra ("100/90-17", "80/100-14") es la medida del
+     * caucho, no la cilindrada de una moto — sin esto "caucho 100/90-17"
+     * perdía el 100 como requisito.
+     */
+    it("los números de una medida de caucho (110/90-17, 80/100-14) siguen siendo obligatorios, no cilindrada", () => {
+      expect(catalogQuery("caucho 110/90-17")).toEqual({ ...vacio, grupos: [["caucho"], ["110"], ["90"], ["17"]] });
+      expect(catalogQuery("caucho 80/100-14")).toEqual({ ...vacio, grupos: [["caucho"], ["80"], ["100"], ["14"]] });
+      // Pero una cilindrada suelta en la misma frase sigue siéndolo.
+      expect(catalogQuery("caucho 110/90-17 250").cilindrada).toEqual([["250"]]);
+    });
+  });
+
+  describe("moto con nombre y cilindrada", () => {
+    it("una moto conocida va a `moto`; el 250 suelto es cilindrada, no un término", () => {
+      expect(catalogQuery("defensa gxs 250")).toEqual({
+        ...vacio,
+        grupos: [["defensa"]],
+        moto: [["gxs"]],
+        cilindrada: [["250"]],
+      });
+      expect(catalogQuery("defensa ava mustang 250")).toEqual({
+        ...vacio,
+        grupos: [["defensa"]],
+        moto: [["ava"], ["mustang"]],
+        cilindrada: [["250"]],
+      });
+    });
+
+    it("'200cc' y '200 cc' son cilindrada sin la 'cc'", () => {
+      expect(catalogQuery("leva racing 200cc")).toEqual({ ...vacio, grupos: [["leva"], ["racing"]], cilindrada: [["200"]] });
+      expect(catalogQuery("leva racing 200 cc")).toEqual({ ...vacio, grupos: [["leva"], ["racing"]], cilindrada: [["200"]] });
+      expect(catalogQuery("aceite 50cc").cilindrada).toEqual([["50"]]);
+    });
+
+    it("un número suelto de 3 dígitos entre 50 y 400 es cilindrada; fuera de rango o de 2 dígitos es término", () => {
+      expect(catalogQuery("bujia 125")).toEqual({ ...vacio, grupos: [["bujia"]], cilindrada: [["125"]] });
+      expect(catalogQuery("cadena 400").cilindrada).toEqual([["400"]]);
+      expect(catalogQuery("cadena 428")).toEqual({ ...vacio, grupos: [["cadena"], ["428"]] });
+      expect(catalogQuery("maleta 45")).toEqual({ ...vacio, grupos: [["maleta"], ["45"]] });
+      expect(catalogQuery("cadena 520").grupos).toEqual([["cadena"], ["520"]]);
+    });
+
+    it("'sbr 200' es moto + cilindrada (la moto ya no se une con su número); 'ek' de 2 letras también es moto", () => {
+      expect(catalogQuery("sbr 200")).toEqual({ ...vacio, moto: [["sbr"]], cilindrada: [["200"]] });
+      expect(catalogQuery("bujia ek")).toEqual({ ...vacio, grupos: [["bujia"]], moto: [["ek"]] });
+    });
+
+    it("beta es una moto conocida (nunca un término obligatorio)", () => {
+      expect(catalogQuery("cadena beta")).toEqual({ ...vacio, grupos: [["cadena"]], moto: [["beta"]] });
+    });
+
+    it("'rin trasero bera': el producto obligatorio, el lado opcional y la moto con nombre", () => {
+      expect(catalogQuery("rin trasero bera")).toEqual({
+        ...vacio,
+        grupos: [["rin"]],
+        opcionales: [["trasero"]],
+        moto: [["bera"]],
+      });
+    });
+  });
+
+  describe("uniones letra + número (lo que ya hacía catalogTermGroups)", () => {
+    it("siglas de 1-2 letras se unen con su número en UN grupo (dt 200, cg 150)", () => {
+      expect(catalogQuery("dt 200")).toEqual({ ...vacio, grupos: [["dt200", "dt 200"]] });
+      expect(catalogQuery("cg 150")).toEqual({ ...vacio, grupos: [["cg150", "cg 150"]] });
+    });
+
+    it("letras de 3-4 con un número corto arman la sigla y la unión (rin 17)", () => {
+      expect(catalogQuery("rin 17")).toEqual({ ...vacio, grupos: [["rin"], ["rin17", "rin 17", "17"]] });
+    });
+
+    it("letras de 3-4 con una cilindrada NO se unen: la sigla queda obligatoria y el número ordena", () => {
+      expect(catalogQuery("rin 250")).toEqual({ ...vacio, grupos: [["rin"]], cilindrada: [["250"]] });
+    });
+
+    it("una descriptiva antes de un número no se une con él ('talla 38')", () => {
+      expect(catalogQuery("casco talla 38")).toEqual({ ...vacio, grupos: [["casco"], ["38"]], opcionales: [["talla"]] });
+    });
+
+    it("una descriptiva corta antes de un número tampoco se une ('par 12')", () => {
+      expect(catalogQuery("bujia par 12")).toEqual({ ...vacio, grupos: [["bujia"], ["12"]], opcionales: [["par"]] });
+    });
+  });
+
+  describe("palabras cortas que no se unen con el número siguiente", () => {
+    it.each([
+      ["maleta de 45", [["maleta"], ["45"]]],
+      ["caja del 45", [["caja"], ["45"]]],
+      ["filtro y 12", [["filtro"], ["12"]]],
+      ["cadena o 45", [["cadena"], ["45"]]],
+      ["correa a 45", [["correa"], ["45"]]],
+      ["correa al 45", [["correa"], ["45"]]],
+      ["tapa la 45", [["tapa"], ["45"]]],
+      ["tapa el 45", [["tapa"], ["45"]]],
+      ["tapa es 45", [["tapa"], ["45"]]],
+      ["tapa un 45", [["tapa"], ["45"]]],
+      ["tapa por 45", [["tapa"], ["45"]]],
+      ["tapa con 45", [["tapa"], ["45"]]],
+      ["tapa x 45", [["tapa"], ["45"]]],
+      ["tapa en 45", [["tapa"], ["45"]]],
+    ])("%s", (consulta, grupos) => {
+      expect(catalogQuery(consulta).grupos).toEqual(grupos);
+    });
+
+    it("'de 125' no se une con el número: 125 es cilindrada", () => {
+      expect(catalogQuery("bujia de 125")).toEqual({ ...vacio, grupos: [["bujia"]], cilindrada: [["125"]] });
+    });
+  });
+
+  describe("decimales", () => {
+    it("'11.7' se conserva entero (el punto lo escapa la base)", () => {
+      expect(catalogQuery("11.7")).toEqual({ ...vacio, grupos: [["11.7"]] });
+      expect(catalogQuery("base givi h11.7").grupos).toEqual([["base"], ["givi"], ["h11.7"]]);
+    });
+  });
+
+  describe("año", () => {
+    it("'año'/'ano' es relleno y el año que lo sigue se descarta (nunca es un requisito)", () => {
+      expect(catalogQuery("asiento sbr año 2020")).toEqual({ ...vacio, grupos: [["asiento"]], moto: [["sbr"]] });
+      expect(catalogQuery("asiento sbr ano 2020")).toEqual({ ...vacio, grupos: [["asiento"]], moto: [["sbr"]] });
+      expect(catalogQuery("asiento año")).toEqual({ ...vacio, grupos: [["asiento"]] });
+    });
+
+    it("'ano' también es relleno para searchTerms (comparte RELLENO)", () => {
+      expect(searchTerms("repuesto año")).toEqual(["repuesto"]);
+    });
+  });
+
+  describe("sinónimos y duplicados", () => {
+    it("un sinónimo activo suma su destino como alternativa del grupo obligatorio", () => {
+      const sinonimos: SearchSynonym[] = [{ from: "pastilla", to: "pastillas de freno" }];
+
+      expect(catalogQuery("pastilla bera", sinonimos)).toEqual({
+        ...vacio,
+        grupos: [["pastilla", "pastillas de freno"]],
+        moto: [["bera"]],
+      });
+    });
+
+    it("un sinónimo inactivo no suma nada", () => {
+      expect(catalogQuery("pastilla", [{ from: "pastilla", to: "pastillas de freno", isActive: false }]).grupos).toEqual([
+        ["pastilla"],
+      ]);
+    });
+
+    it("no repite un grupo, un opcional, una moto ni una cilindrada escritos dos veces", () => {
+      expect(catalogQuery("casco casco negro negro bera bera 250 250")).toEqual({
+        ...vacio,
+        grupos: [["casco"]],
+        opcionales: [["negro"]],
+        moto: [["bera"]],
+        cilindrada: [["250"]],
+      });
+    });
+
+    it("no pasa de 12 grupos obligatorios", () => {
+      const consulta = "aa1 bb2 cc3 dd4 ee5 ff6 gg7 hh8 ii9 jj10 kk11 ll12 mm13 nn14";
+      expect(catalogQuery(consulta).grupos).toHaveLength(12);
+    });
+  });
+
+  it("catalogTermGroups sigue devolviendo lo de siempre (la usa tools.ts hasta T3a)", () => {
+    expect(catalogTermGroups("sbr 200")).toEqual([["sbr"], ["sbr200", "sbr 200", "200"]]);
+  });
+});

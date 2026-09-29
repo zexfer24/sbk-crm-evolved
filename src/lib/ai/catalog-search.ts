@@ -29,6 +29,26 @@
 // y en minúsculas). `searchTerms` (plano) sigue existiendo porque también lo
 // usa la biblioteca (`knowledge.ts`); el catálogo usa además
 // `catalogTermGroups`, que agrupa alternativas — ver su comentario.
+//
+// T1, plan "Seba encuentra, no insiste, y el mostrador no deja a nadie
+// esperando" (28/9/2026): el estudio del VPS (1.027 turnos, 25-28/9) mostró
+// que ni siquiera eso alcanzaba, porque TODOS los términos pesaban igual:
+//
+//   - Una palabra descriptiva que no está en el nombre ("semi sintético",
+//     "gris", "delantero") tumbaba la búsqueda entera si era obligatoria, y
+//     la tolerancia N-1 de `tools.ts` la "arreglaba" tirando cualquier
+//     término al azar — incluida la MARCA ("defensa gxs 250" cotizaba una
+//     DEFENSA BRZ 250).
+//   - "250" o "200cc" sueltos son la cilindrada de la moto, no un término del
+//     producto; "sbr"/"bera"/"gxs" son la moto, no un repuesto.
+//   - "20/50" son dos números sueltos que calzaban "5000".
+//
+// `catalogQuery` es la entrada nueva: parte la consulta en cuatro
+// conjuntos —obligatorios (definen el puntaje), opcionales (solo desempatan),
+// moto con nombre y cilindrada (solo ordenan)— que `buscar_productos`
+// (migración 20260928010000) recibe por separado. `catalogTermGroups` queda
+// como estaba, para `tools.ts`, hasta que T3a cambie esa herramienta a
+// `catalogQuery`; después puede retirarse.
 // ---------------------------------------------------------------------------
 
 /** Minúsculas y sin diacríticos, igual que hace unaccent() del lado de la base. */
@@ -81,8 +101,14 @@ export function singular(word: string): string {
  * repuesto — dejarlas como término obligatorio le exige a CADA producto
  * contener la palabra "precio", cosa que ninguno hace. Se filtran DESPUÉS
  * de singularizar ("precios" -> "precio" -> se quita).
+ *
+ * 28/9/2026 (T1, plan "Seba encuentra, no insiste…"): se suma "ano" ("año"
+ * ya normalizado). "asiento sbr año 2020" exigía la palabra "ano" en el
+ * nombre de cada producto — ninguno la trae, y la búsqueda daba cero. Lo
+ * comparte `searchTerms` (la biblioteca): "garantía del año" tampoco
+ * necesita esa palabra para calzar un artículo.
  */
-const RELLENO = new Set(["para", "con", "del", "los", "las", "que", "una", "precio", "tienen", "hay"]);
+const RELLENO = new Set(["para", "con", "del", "los", "las", "que", "una", "precio", "tienen", "hay", "ano"]);
 
 /** Una palabra de 1 a 4 letras, candidata a unirse con el número que la sigue (dt, sbr, an...). */
 function esLetraCorta(token: string): boolean {
@@ -311,4 +337,259 @@ export function catalogTermGroups(query: string, synonyms: SearchSynonym[] = [])
   }
 
   return grupos.slice(0, MAX_GRUPOS);
+}
+
+// ---------------------------------------------------------------------------
+// catalogQuery — T1, plan "Seba encuentra, no insiste, y el mostrador no deja
+// a nadie esperando" (28/9/2026).
+// ---------------------------------------------------------------------------
+
+/**
+ * Palabras que describen el producto sin ser su nombre ni su marca: si el
+ * cliente las dice y el nombre del catálogo no las trae, el producto correcto
+ * NO debe caerse. Van a `opcionales`, que solo desempatan.
+ *
+ * La lista es CERRADA a propósito (pedido del operador, plan del 28/9/2026):
+ * cada palabra que se suma acá deja de exigirse en el nombre, así que sumar
+ * una es una decisión con test (`catalog-search.test.ts` fija la lista
+ * literal). Ya normalizada (sin acentos, minúsculas) y singularizada; el
+ * plural y el femenino se resuelven por `singularCatalogo`, y los que
+ * necesitan su propia forma (azul/verde/gris/adaptable, donde la regla de
+ * plural en "-es" corta de más) están en `PLURALES_IRREGULARES`.
+ */
+export const DESCRIPTIVAS: ReadonlySet<string> = new Set([
+  // colores
+  "negro", "negra", "blanco", "blanca", "rojo", "roja", "azul", "verde", "amarillo", "amarilla", "gris",
+  "naranja", "plateado", "plateada", "dorado", "dorada", "rosado", "rosada", "morado", "morada", "marron",
+  "celeste", "beige", "color",
+  // acabado y posición
+  "mate", "brillante", "delantero", "delantera", "trasero", "trasera", "izquierdo", "izquierda", "derecho",
+  "derecha", "cromado", "cromada",
+  // calidad y tipo
+  "semi", "sintetico", "mineral", "original", "generico", "universal", "economico", "bueno", "buena",
+  "integral", "adaptable",
+  // otras
+  "moto", "talla", "4t", "2t", "edge", "juego", "par",
+]);
+
+/**
+ * Marcas y modelos de moto que por sí solos nunca son un repuesto: van a
+ * `moto` (solo ORDENAN, y son lo único que puede volver verdadera la
+ * coincidencia de moto en `tools.ts`). Ya en minúsculas y singular.
+ *
+ * Los prefijos de modelo que casi siempre viajan pegados a su número ("dt",
+ * "cg", "gn", "en": "dt 200") NO están: se leerían como moto y perderían el
+ * número que los hace un modelo real.
+ */
+export const MOTOS_CONOCIDAS: ReadonlySet<string> = new Set([
+  // del catálogo de SBK Motors (nombres que aparecen en los productos)
+  "bera", "sbr", "kavak", "horse", "ek", "xpress", "tx", "gs", "gr", "rk", "owen", "jaguar", "lechuza",
+  "socialista", "brz", "ava", "mustang", "empire", "md", "beta", "gxs", "deer", "dsr", "tigrito",
+  // marcas y modelos comunes del rubro venezolano
+  "yamaha", "honda", "suzuki", "kawasaki", "keeway", "haojue", "bajaj", "tvs", "ktm", "ybr", "cbf", "xtz",
+  "klr", "nxr", "pulsar", "boxer", "discover",
+]);
+
+/**
+ * Plurales donde la regla de `singular` ("es" tras r/l/n/d/j/y) corta de
+ * más: "azules" -> "azu", "verdes" -> "verd", "adaptables" -> "adaptabl". Y
+ * "gris"/"grises": `singular` le quita la "s" a "gris" ("gri"). Solo lo usa
+ * `catalogQuery`.
+ */
+const PLURALES_IRREGULARES: Record<string, string> = {
+  gris: "gris",
+  azules: "azul",
+  verdes: "verde",
+  grises: "gris",
+  adaptables: "adaptable",
+};
+
+function singularCatalogo(word: string): string {
+  return PLURALES_IRREGULARES[word] ?? singular(word);
+}
+
+/**
+ * Palabras cortas que NO se unen con el número que las sigue: "maleta de 45"
+ * unía "de"+"45" en "de45" y el 45 dejaba de ser el requisito que era. Se
+ * saltan antes de cualquier otra regla.
+ */
+const NO_UNIR = new Set(["de", "del", "en", "y", "o", "a", "al", "la", "el", "es", "un", "por", "con", "x"]);
+
+/**
+ * Viscosidad de aceite: (0|5|10|15|20|25) y (20|30|40|50|60), separados por
+ * "/", "-", espacio o la "w" de siempre, valen UN solo término "NNwNN".
+ * Restringida a esos valores a propósito: "90/90-18" (medida de caucho) no
+ * puede leerse como aceite. Los lookarounds evitan tomar la cola de un
+ * número más largo ("100/90" no contiene "0/90").
+ */
+const VISCOSIDAD_CON_W = /(?<![0-9])(0|5|10|15|20|25)\s*w\s*[-/]?\s*(20|30|40|50|60)(?![0-9])/g;
+const VISCOSIDAD_SIN_W = /(?<![0-9a-z])(0|5|10|15|20|25)\s*[/\-\s]\s*(20|30|40|50|60)(?![0-9a-z])/g;
+const TIEMPOS = /(?<![0-9a-z])([24])\s*tiempos?(?![a-z])/g;
+
+/**
+ * Medida de caucho ("110/90-17", "80/100-14"): el ancho de tres dígitos NO es
+ * la cilindrada de una moto — es lo que distingue un caucho de otro. Los
+ * números pegados a una barra siguen siendo términos obligatorios, como
+ * "90/90-18" siempre lo fue (y la viscosidad, que también lleva barra, ya
+ * se convirtió en "NNwNN" antes de llegar acá).
+ */
+const MEDIDA_CAUCHO = /(?<![0-9])[0-9]{2,3}\s*\/\s*[0-9]{2,3}(?![0-9])/g;
+
+/** La cilindrada suelta: exactamente 3 dígitos entre 50 y 400 (con "cc" se acepta también de 2 dígitos). */
+function esCilindrada(token: string): boolean {
+  if (!/^[0-9]{3}$/.test(token)) return false;
+  const n = Number(token);
+  return n >= 50 && n <= 400;
+}
+
+export interface CatalogQuery {
+  /** Grupos OBLIGATORIOS de producto: definen el puntaje de `buscar_productos`. */
+  grupos: string[][];
+  /** Grupos que solo DESEMPATAN (colores, "semi", "delantero"…): nunca excluyen. */
+  opcionales: string[][];
+  /** Marca/modelo de moto CON NOMBRE: ordena, y es lo único que puede volver verdadera la coincidencia de moto. */
+  moto: string[][];
+  /** Cilindrada suelta ("250", "200cc" sin "cc"): solo ordena, jamás cuenta como moto. */
+  cilindrada: string[][];
+}
+
+/**
+ * Parte una consulta de catálogo en los cuatro conjuntos que recibe
+ * `buscar_productos`. Reglas (todas con test):
+ *
+ *   - Una palabra de `DESCRIPTIVAS` (singularizada) va a `opcionales`;
+ *     "4 tiempos"/"2 tiempos" es el opcional "4t"/"2t".
+ *   - Una palabra de `MOTOS_CONOCIDAS` va a `moto`, aunque tenga 2 letras.
+ *   - "NNNcc" y un número suelto de 3 dígitos entre 50 y 400 son cilindrada
+ *     (sin la "cc"); van a `cilindrada`. Un número de 2 dígitos, fuera de
+ *     rango ("45", "428") o pegado a una barra de medida de caucho
+ *     ("110/90-17") sigue siendo un término del producto.
+ *   - La viscosidad es UN grupo "NNwNN" (ver `VISCOSIDAD_SIN_W`).
+ *   - "11.7" se conserva con su punto (el decimal de un modelo, "H11.7").
+ *   - "año"/"ano" es relleno y el año de 4 dígitos que lo sigue se descarta:
+ *     nunca es un requisito del nombre.
+ *   - Las uniones letra+número de siempre (dt 200 -> dt200|dt 200; rin 17 ->
+ *     rin + rin17|rin 17|17) se conservan, salvo cuando el número es una
+ *     cilindrada y las letras son 3-4 ("rin 250"): la sigla queda obligatoria
+ *     y el número ordena. Las palabras de `NO_UNIR` no se unen con nada.
+ *   - Los sinónimos activos suman su destino como alternativa del grupo
+ *     OBLIGATORIO cuyo término coincide (como en `catalogTermGroups`).
+ *
+ * Deduplica cada conjunto; tope de 12 grupos en cada uno.
+ */
+export function catalogQuery(query: string, synonyms: SearchSynonym[] = []): CatalogQuery {
+  const texto = normalize(query)
+    .replace(VISCOSIDAD_CON_W, (_m, a: string, b: string) => ` ${a}w${b} `)
+    .replace(VISCOSIDAD_SIN_W, (_m, a: string, b: string) => ` ${a}w${b} `)
+    .replace(TIEMPOS, " $1t ");
+  const tokens = texto.match(/[a-z0-9]+(?:\.[0-9]+)*/g) ?? [];
+
+  // Posiciones de los números que forman parte de una medida de caucho:
+  // nunca se leen como cilindrada. Se calcula sobre la posición de cada token
+  // en `texto` (mismo orden que `tokens`).
+  const rangosCaucho = [...texto.matchAll(MEDIDA_CAUCHO)].map((m) => [m.index, m.index + m[0].length]);
+  const posiciones = [...texto.matchAll(/[a-z0-9]+(?:\.[0-9]+)*/g)].map((m) => m.index);
+  const enMedidaCaucho = (indiceToken: number): boolean =>
+    rangosCaucho.some(([desde, hasta]) => posiciones[indiceToken] >= desde && posiciones[indiceToken] < hasta);
+
+  const obligatorios: TerminoCrudo[] = [];
+  const opcionales: string[] = [];
+  const moto: string[] = [];
+  const cilindrada: string[] = [];
+
+  for (let i = 0; i < tokens.length; i++) {
+    const token = tokens[i];
+    const siguiente = tokens[i + 1];
+
+    if (NO_UNIR.has(token)) continue;
+
+    const enSingular = singularCatalogo(token);
+
+    if (enSingular === "ano") {
+      // "año 2020": el año que sigue nunca es un requisito del nombre.
+      if (siguiente !== undefined && /^(19|20)[0-9]{2}$/.test(siguiente)) i++;
+      continue;
+    }
+
+    if (MOTOS_CONOCIDAS.has(enSingular)) {
+      moto.push(enSingular);
+      continue;
+    }
+
+    const conCc = /^([0-9]{2,3})cc$/.exec(token);
+    if (conCc) {
+      cilindrada.push(conCc[1]);
+      continue;
+    }
+
+    if (esSoloDigitos(token)) {
+      if (esCilindrada(token) && !enMedidaCaucho(i)) cilindrada.push(token);
+      else if (token.length >= 2) obligatorios.push({ termino: token, alternativas: [token] });
+      continue;
+    }
+
+    if (
+      esLetraCorta(token) &&
+      siguiente !== undefined &&
+      esSoloDigitos(siguiente) &&
+      !RELLENO.has(enSingular) &&
+      !DESCRIPTIVAS.has(enSingular) &&
+      // "rin 250": las letras son una palabra completa y el número es la
+      // cilindrada de la moto — no se funden (con 1-2 letras, "dt 200", sí).
+      !(esCilindrada(siguiente) && !enMedidaCaucho(i + 1) && token.length >= 3)
+    ) {
+      const unido = token + siguiente;
+
+      if (token.length >= 3) {
+        obligatorios.push({ termino: enSingular, alternativas: [enSingular] });
+        obligatorios.push({ termino: unido, alternativas: [unido, `${token} ${siguiente}`, siguiente] });
+      } else {
+        obligatorios.push({ termino: unido, alternativas: [unido, `${token} ${siguiente}`] });
+      }
+
+      i++; // el número ya se consumió.
+      continue;
+    }
+
+    if (!esConservable(token)) continue;
+    if (RELLENO.has(enSingular)) continue;
+
+    if (DESCRIPTIVAS.has(enSingular)) {
+      opcionales.push(enSingular);
+      continue;
+    }
+
+    obligatorios.push({ termino: enSingular, alternativas: [enSingular] });
+  }
+
+  const grupos: string[][] = [];
+  const gruposVistos = new Set<string>();
+
+  for (const { termino, alternativas } of obligatorios) {
+    const grupo = [...new Set(alternativas)];
+
+    for (const synonym of synonyms) {
+      if (synonym.isActive === false) continue;
+      if (claveSinonimo(synonym.from) !== termino) continue;
+
+      const destino = normalizarDestinoSinonimo(synonym.to);
+      if (destino && !grupo.includes(destino)) grupo.push(destino);
+    }
+
+    const clave = grupo.join("\u0000");
+    if (gruposVistos.has(clave)) continue;
+    gruposVistos.add(clave);
+
+    grupos.push(grupo);
+  }
+
+  const aGrupos = (terminos: string[]): string[][] =>
+    [...new Set(terminos)].slice(0, MAX_GRUPOS).map((t) => [t]);
+
+  return {
+    grupos: grupos.slice(0, MAX_GRUPOS),
+    opcionales: aGrupos(opcionales),
+    moto: aGrupos(moto),
+    cilindrada: aGrupos(cilindrada),
+  };
 }

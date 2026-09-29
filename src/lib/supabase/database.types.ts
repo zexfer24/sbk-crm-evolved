@@ -1892,8 +1892,19 @@ export type Database = {
       // `buildCatalogTool` (tools.ts) es la única que la llama, con
       // service_role. `compatibilidad` es el agregado de
       // `product_compatibility` (hoy siempre `[]`, ver CLAUDE.md).
+      // T1, plan "Seba encuentra, no insiste, y el mostrador no deja a nadie
+      // esperando" (28/9/2026, migración 20260928010000): firma nueva con
+      // `p_opcionales` (solo desempatan) y `p_cilindrada` (solo ordena); la de
+      // tres parámetros se retiró. `puntaje_moto_maximo`/`filas_con_maximo_y_moto`
+      // salen SOLO de la moto con nombre (`puntaje_moto_nombre`).
       buscar_productos: {
-        Args: { p_terminos: Json; p_moto?: Json; p_limite?: number }
+        Args: {
+          p_terminos: Json
+          p_moto?: Json
+          p_limite?: number
+          p_opcionales?: Json
+          p_cilindrada?: Json
+        }
         Returns: {
           id: string
           name: string
@@ -1909,6 +1920,11 @@ export type Database = {
           filas_con_puntaje_maximo: number
           puntaje_moto_maximo: number
           filas_con_maximo_y_moto: number
+          puntaje_opcional: number
+          empieza_con_producto: boolean
+          puntaje_moto_nombre: number
+          puntaje_moto_cilindrada: number
+          filas_con_maximo_y_stock: number
         }[]
       }
       claim_agent_turn: {
