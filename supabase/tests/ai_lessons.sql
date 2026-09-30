@@ -206,6 +206,131 @@ begin
   end if;
 end $$;
 
+-- ---------------------------------------------------------------------------
+-- Casos 9 · kind = 'no_corregir' (A2 T6, plan "Seba no cotiza lo que no es",
+-- decisión D5, migración 20260930050000): la palabra que el corrector de
+-- tipeos NO debe tocar viaja en `synonym_from`; `synonym_to` queda null y el
+-- alcance es siempre global. Todos corren como el agente A (RLS activa).
+-- ---------------------------------------------------------------------------
+-- 9a · una lección válida entra (y la RLS de insert vale igual que para
+--      cualquier otro kind: created_by = auth.uid()).
+do $$
+declare
+  n integer;
+begin
+  insert into public.ai_lessons (id, scope, kind, content, synonym_from, created_by) values (
+    'c5c5c5c5-0000-0000-0000-000000000009',
+    'global',
+    'no_corregir',
+    'No corregir: beta',
+    'beta',
+    'c1c1c1c1-0000-0000-0000-000000000001'
+  );
+
+  select count(*) into n from public.ai_lessons
+    where id = 'c5c5c5c5-0000-0000-0000-000000000009' and kind = 'no_corregir' and synonym_from = 'beta';
+  if n is distinct from 1 then
+    insert into _errores(msg) values (format('Caso 9a (no_corregir válido): %s fila(s) encontradas, se esperaba 1.', n));
+  end if;
+exception
+  when others then
+    insert into _errores(msg) values (format('Caso 9a (no_corregir válido): el insert falló y no debía -- %s', sqlerrm));
+end $$;
+
+-- 9b · con synonym_to → rechazado por ai_lessons_no_corregir_requires_word.
+do $$
+declare
+  se_insertó boolean := false;
+begin
+  begin
+    insert into public.ai_lessons (id, scope, kind, content, synonym_from, synonym_to, created_by) values (
+      'c5c5c5c5-0000-0000-0000-00000000009b',
+      'global', 'no_corregir', 'No corregir: beta (con destino, no debería pasar)', 'beta', 'bera',
+      'c1c1c1c1-0000-0000-0000-000000000001'
+    );
+    se_insertó := true;
+  exception
+    when check_violation then
+      if sqlerrm not like '%ai_lessons_no_corregir_requires_word%' then
+        insert into _errores(msg) values (format('Caso 9b (no_corregir con synonym_to): falló, pero no por el CHECK esperado -- %s', sqlerrm));
+      end if;
+  end;
+  if se_insertó then
+    insert into _errores(msg) values ('Caso 9b (no_corregir con synonym_to): el insert se aceptó -- ai_lessons_no_corregir_requires_word no está frenando.');
+  end if;
+end $$;
+
+-- 9c · scope 'conversacion' → rechazado por el mismo CHECK (siempre global).
+do $$
+declare
+  se_insertó boolean := false;
+begin
+  begin
+    insert into public.ai_lessons (id, scope, kind, content, synonym_from, conversation_id, created_by) values (
+      'c5c5c5c5-0000-0000-0000-00000000009c',
+      'conversacion', 'no_corregir', 'No corregir: beta (solo un chat, no debería pasar)', 'beta',
+      'c4c4c4c4-0000-0000-0000-000000000001',
+      'c1c1c1c1-0000-0000-0000-000000000001'
+    );
+    se_insertó := true;
+  exception
+    when check_violation then
+      if sqlerrm not like '%ai_lessons_no_corregir_requires_word%' then
+        insert into _errores(msg) values (format('Caso 9c (no_corregir de un solo chat): falló, pero no por el CHECK esperado -- %s', sqlerrm));
+      end if;
+  end;
+  if se_insertó then
+    insert into _errores(msg) values ('Caso 9c (no_corregir de un solo chat): el insert se aceptó -- el CHECK no exige scope global.');
+  end if;
+end $$;
+
+-- 9d · sin la palabra (synonym_from null) → rechazado por el mismo CHECK.
+do $$
+declare
+  se_insertó boolean := false;
+begin
+  begin
+    insert into public.ai_lessons (id, scope, kind, content, created_by) values (
+      'c5c5c5c5-0000-0000-0000-00000000009d',
+      'global', 'no_corregir', 'No corregir: (sin palabra, no debería pasar)',
+      'c1c1c1c1-0000-0000-0000-000000000001'
+    );
+    se_insertó := true;
+  exception
+    when check_violation then
+      if sqlerrm not like '%ai_lessons_no_corregir_requires_word%' then
+        insert into _errores(msg) values (format('Caso 9d (no_corregir sin palabra): falló, pero no por el CHECK esperado -- %s', sqlerrm));
+      end if;
+  end;
+  if se_insertó then
+    insert into _errores(msg) values ('Caso 9d (no_corregir sin palabra): el insert se aceptó -- el CHECK no exige synonym_from.');
+  end if;
+end $$;
+
+-- 9e · un kind fuera de la lista sigue rechazado (el CHECK de kind se
+--      AMPLIÓ a tres valores, no se abrió).
+do $$
+declare
+  se_insertó boolean := false;
+begin
+  begin
+    insert into public.ai_lessons (id, scope, kind, content, created_by) values (
+      'c5c5c5c5-0000-0000-0000-00000000009e',
+      'global', 'otra_cosa', 'Kind inventado -- no debería pasar.',
+      'c1c1c1c1-0000-0000-0000-000000000001'
+    );
+    se_insertó := true;
+  exception
+    when check_violation then
+      if sqlerrm not like '%ai_lessons_kind_check%' then
+        insert into _errores(msg) values (format('Caso 9e (kind inventado): falló, pero no por ai_lessons_kind_check -- %s', sqlerrm));
+      end if;
+  end;
+  if se_insertó then
+    insert into _errores(msg) values ('Caso 9e (kind inventado): el insert se aceptó -- el CHECK de kind quedó abierto.');
+  end if;
+end $$;
+
 -- Segunda lección de A, propia para los casos 3 y 4 (edición/borrado ajeno).
 do $$
 begin
