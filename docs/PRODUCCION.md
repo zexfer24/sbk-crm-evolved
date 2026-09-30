@@ -2437,6 +2437,8 @@ extensiones, la 3 y la 4 son `add column` sobre tablas chicas, la 5 sobre
    → `sin_stock`, no pregunta), "asiento sbr" (la moto calza: como máximo tres
    con existencia, desempatadas por mayor existencia, y «Hay N opciones más
    para tu moto; el asesor te muestra el resto.» — corrección del 29/9/2026),
+   **[SUPERADO el 29/9/2026 por el hotfix `3d3e9a0` y el 30/9 por D6: UNA opción por
+   producto, sin «Hay N más»; ver §17, paso 8]**,
    un pedido sin la moto en el nombre ("guardafango para horse") y luego "24"
    (una sola pregunta; la respuesta suelta se combina con el pedido), una lista "batería y arranque" (un
    resultado por producto), un tipeo ("horsen") y un chat con la escalada
@@ -2703,13 +2705,258 @@ reactivación). La IA sigue sin escalar desde el turno por demora.
 
 ---
 
+## 17. Entrega A2 "Seba no cotiza lo que no es" (30/9/2026)
+
+Origen: la Entrega A (§15, `6c8ce24`) está en producción desde el 29/9 y el
+VPS le volvió a pasar los 597 turnos del estudio: 116 mejoran y **53
+empeoran**. El mismo 29/9 a las 13:14 VE un cliente con una SBR 2025 mandó una
+lista de cinco cosas y solo el asiento salió bien (cauchos de scooter de rin
+10 por "caucho trasero", kits de rodamiento de otras motos, un aditivo de
+metales por "aceite"). Tres de las causas eran errores de diseño de A: la
+moto calzaba por prefijo de palabra (`gr` contra GRIS), el año era un término
+obligatorio y el corrector de tipeos no tenía límites (pareja→para dio un
+agotado falso; vicera→visera cotizó una VISERA en vez del casco). A2 los
+corrige, suma la decisión D6 (una sola opción) y una pestaña «Búsquedas» en
+Control IA para supervisar todo esto sin abrir la base. El plan es
+`docs/planes/2026-09-30-seba-no-cotiza-lo-que-no-es.md`, los casos medidos por
+el VPS están en `docs/planes/2026-09-30-seba-a2-casos-del-vps.md` y la nota de
+entrega con la rama, el orden de commits y los casos esperados, en
+`docs/entregas/2026-09-30-seba-a2.md` — esta sección solo dice el orden y
+qué verificar.
+
+**Esta entrega NO se pushea a `main` directo — llega por la rama
+`entrega/seba-a2`** (misma regla que §14 a §16: push a `main` SÍ despliega, así
+que las migraciones se aplican y verifican ANTES del fast-forward). La rama
+nace de `3d3e9a0` (`main` con la Entrega B y el hotfix de "una sola opción");
+producción debería estar ahí con **88** migraciones — **preguntar en qué commit
+está antes de asumirlo** — y esta entrega suma **seis** y deja **94**. La
+numeración (`20260930*`) no depende de B (`20260929*`): el orden por fecha
+coincide con el orden de aplicación, y `migration list` no las muestra fuera
+de orden.
+
+### Migraciones, en orden de fecha (TODAS ANTES del código)
+
+Cada una con `psql -1 -v ON_ERROR_STOP=1` y `PGOPTIONS="-c lock_timeout=5s"`
+(sin `-1`, el `set local lock_timeout` de la cabecera es un NO-OP silencioso y
+la guarda de la propia migración aborta con un mensaje explícito). Cada una
+termina con `notify pgrst, 'reload schema'` (sin él, PostgREST sirve el
+esquema cacheado y la función nueva da 400) y se autoverifica con `raise
+exception` si algo no quedó como debía.
+
+| # | Migración | Qué hace | Ojo |
+|---|-----------|----------|-----|
+| 1 | `20260930010000_busqueda_por_palabra_moto_y_variantes.sql` | Helper `patron_busqueda(text, text)` (única fuente de los regex) y `buscar_productos` con **nueve** parámetros; retira la de cinco con `drop function`. La moto calza por palabra; columnas nuevas (`nombra_otra_moto`, `es_universal`, `puntaje_variante`…) y ventanas antes del límite; el desempate final es la existencia. | Todos los parámetros nuevos tienen default: el código viejo (tres a cinco argumentos) sigue resolviendo a la firma nueva, así que el hueco entre migración y deploy no rompe nada. El código NUEVO exige esta migración: sin ella `p_variantes` da 400. |
+| 2 | `20260930020000_corrector_con_limites.sql` | `clave_fonetica(text)` y `corregir_terminos` con **cuatro** parámetros (`p_marcas`, `p_excluidos`); retira la de dos con `drop function`. | Crea `fuzzystrmatch` con `create extension if not exists` en el MISMO schema que `pg_trgm`: correr como `postgres`. Si aborta con "fuzzystrmatch quedó en X y pg_trgm en Y" o "pg_trgm y fuzzystrmatch viven en el schema …", la extensión ya existía en otro lugar: leer el mensaje, no reintentar a ciegas. |
+| 3 | `20260930030000_terminos_relajables.sql` | `diagnosticar_terminos(jsonb, integer)` (D3: qué palabra tumba la búsqueda). | Requiere la 1 (usa `patron_busqueda`): si se aplicó fuera de orden, falla cerrada y lo dice. |
+| 4 | `20260930040000_sinonimos_de_seba.sql` | MIGRACIÓN DE DATOS: siembra 16 sinónimos globales en `ai_lessons` (`express`→`xpress`, `litros`→`lts`, `boca pato`→`pico pato`, `relacion`→`corona` y `piñon`…). Idempotente por par; `created_by` queda NULL a propósito. | Mirar el `NOTICE` del conteo (16 en una base sin sinónimos previos; si el operador ya había cargado alguno a mano no lo duplica). Editables desde Control IA → Lecciones. |
+| 5 | `20260930050000_leccion_no_corregir.sql` | Amplía el CHECK de `ai_lessons.kind` a `nota`/`sinonimo`/`no_corregir` y agrega `ai_lessons_no_corregir_requires_word`. | La palabra va en `synonym_from`, sin columna nueva; la RLS no cambia (cuatro políticas). Sin ella, el botón «No corregir esta palabra» da un error de CHECK. |
+| 6 | `20260930060000_resumen_busquedas.sql` | `resumen_busquedas(timestamptz)` y `terminos_de_busquedas(timestamptz)`, `security definer` con `is_agent()` chequeado UNA vez (la RLS por fila de `agent_turns` es el agujero de `20260921030000`). | Únicas funciones `security definer` nuevas: los dos revokes y `grant` a `authenticated` y `service_role`; el guardián `permisos-funciones.test.ts` cuenta ahora **28**. El código nuevo la llama al abrir Control IA: sin la migración, la pestaña «Búsquedas» avisa que no pudo leer (el resto del panel sigue). |
+
+Ninguna bloquea nada de forma prolongada: las funciones se reemplazan con
+`drop`/`create` dentro de la misma transacción (un lock breve sobre la función,
+con tope de 5 s), la 4 inserta 16 filas y la 5 reescribe un CHECK de una tabla
+chica. No hace falta ventana de mantenimiento.
+
+### Orden
+
+1. **Respaldo** (`scripts/backup.sh`, §8).
+2. **Simulacro de las seis** dentro de `BEGIN … ROLLBACK` contra `supabase-db`,
+   en orden, viendo los `NOTICE` (sobre todo el conteo de la 4 y el schema de
+   `fuzzystrmatch` de la 2) y que ninguna aborte.
+3. **Aplicar las seis, una por una, en el orden de la tabla**:
+   ```bash
+   for m in 20260930010000_busqueda_por_palabra_moto_y_variantes \
+            20260930020000_corrector_con_limites \
+            20260930030000_terminos_relajables \
+            20260930040000_sinonimos_de_seba \
+            20260930050000_leccion_no_corregir \
+            20260930060000_resumen_busquedas; do
+     docker exec -i supabase-db env PGOPTIONS="-c lock_timeout=5s" psql -U postgres -d postgres \
+       -1 -v ON_ERROR_STOP=1 < "supabase/migrations/$m.sql" || break
+   done
+   ```
+   (`|| break`: si una aborta, NO seguir con la siguiente.) Registrar cada una
+   en `supabase_migrations.schema_migrations` como en §7 (`insert … (version,
+   name)`), para que `supabase db push` no intente reaplicarla.
+4. **Verificar contra la base real** (nunca leyendo el `.sql`):
+   ```sql
+   -- (a) permisos: las funciones de búsqueda cerradas a authenticated y abiertas a service_role
+   select
+     has_function_privilege('anon', 'public.buscar_productos(jsonb, jsonb, integer, jsonb, jsonb, jsonb, jsonb, jsonb, jsonb)', 'execute') as bp_anon,
+     has_function_privilege('authenticated', 'public.buscar_productos(jsonb, jsonb, integer, jsonb, jsonb, jsonb, jsonb, jsonb, jsonb)', 'execute') as bp_auth,
+     has_function_privilege('service_role', 'public.buscar_productos(jsonb, jsonb, integer, jsonb, jsonb, jsonb, jsonb, jsonb, jsonb)', 'execute') as bp_service,
+     has_function_privilege('authenticated', 'public.corregir_terminos(text[], text[], text[], text[])', 'execute') as ct_auth,
+     has_function_privilege('service_role', 'public.corregir_terminos(text[], text[], text[], text[])', 'execute') as ct_service,
+     has_function_privilege('authenticated', 'public.diagnosticar_terminos(jsonb, integer)', 'execute') as dt_auth,
+     has_function_privilege('service_role', 'public.diagnosticar_terminos(jsonb, integer)', 'execute') as dt_service,
+     has_function_privilege('authenticated', 'public.patron_busqueda(text, text)', 'execute') as pb_auth,
+     has_function_privilege('authenticated', 'public.clave_fonetica(text)', 'execute') as cf_auth;
+   -- (b) las dos del panel: abiertas a authenticated, cerradas a anon
+   select
+     has_function_privilege('anon', 'public.resumen_busquedas(timestamptz)', 'execute') as rb_anon,
+     has_function_privilege('authenticated', 'public.resumen_busquedas(timestamptz)', 'execute') as rb_auth,
+     has_function_privilege('anon', 'public.terminos_de_busquedas(timestamptz)', 'execute') as tb_anon,
+     has_function_privilege('authenticated', 'public.terminos_de_busquedas(timestamptz)', 'execute') as tb_auth;
+   -- (c) UNA sola sobrecarga de cada una (las firmas viejas ya no existen)
+   select proname, count(*) from pg_proc
+   where pronamespace = 'public'::regnamespace and proname in ('buscar_productos', 'corregir_terminos')
+   group by 1;
+   -- (d) los patrones: 45 calza 45T y no 5000; la moto gr calza GR250 y no GRIS
+   select 'corona 45t' ~ public.patron_busqueda('45', 'prod')  as calza_45t,
+          'motul 5000' ~ public.patron_busqueda('50', 'prod')  as calza_5000,
+          'maleta gr250' ~ public.patron_busqueda('gr', 'moto') as calza_gr250,
+          'maleta gris' ~ public.patron_busqueda('gr', 'moto')  as calza_gris;
+   -- (e) fuzzystrmatch y pg_trgm en el mismo schema
+   select extname, extnamespace::regnamespace from pg_extension where extname in ('pg_trgm', 'fuzzystrmatch');
+   -- (f) los 16 sinónimos y el CHECK de la lección nueva
+   select count(*) from public.ai_lessons where kind = 'sinonimo' and scope = 'global' and created_by is null;
+   select pg_get_constraintdef(oid) like '%no_corregir%' as check_amplio
+   from pg_constraint where conrelid = 'public.ai_lessons'::regclass and conname = 'ai_lessons_kind_check';
+   select count(*) from pg_constraint
+   where conrelid = 'public.ai_lessons'::regclass and conname = 'ai_lessons_no_corregir_requires_word';
+   ```
+   Esperado: (a) `bp_anon`, `bp_auth`, `ct_auth`, `dt_auth`, `pb_auth` y
+   `cf_auth` en `false`; `bp_service`, `ct_service` y `dt_service` en `true`;
+   (b) `false, true, false, true`; (c) `buscar_productos | 1` y
+   `corregir_terminos | 1`; (d) `true, false, true, false`; (e) mismo
+   schema; (f) `16` (o más si el operador ya había cargado alguno a mano con
+   `created_by` nulo), `true` y `1`. Y la del panel **como un agente, no como
+   postgres** (`postgres` salta la RLS y no mide nada; ver la trampa de
+   `20260921030000` en `CLAUDE.md`):
+   ```sql
+   begin;
+   set local role authenticated;
+   select set_config('request.jwt.claims',
+     json_build_object('sub', (select id from public.agents limit 1), 'role', 'authenticated')::text, true);
+   select public.resumen_busquedas(now() - interval '7 days') is not null as resumen_ok;   -- true
+   rollback;
+   ```
+   Si alguno da distinto, NO seguir al paso 5 — ver la trampa de "los dos
+   revokes" en `CLAUDE.md` para (a) y (b).
+5. **El arnés, ANTES del fast-forward — el VPS repite el suyo.** El arnés del
+   repo (`npm run test:arnes`, ver `CLAUDE.md`) carga y borra un fixture de 301
+   productos `A2FIX-` en `products`: **no correrlo contra la base viva de
+   producción** (el CI ya lo corrió sobre una base reconstruida desde cero con
+   estas mismas migraciones, y en local contra la base de desarrollo). Lo que
+   sí hay que hacer es el equivalente del VPS: repetir sus 597 turnos del
+   estudio del 29/9 contra `entrega/seba-a2` —con las seis migraciones ya
+   aplicadas y la búsqueda de solo lectura— y comparar contra `3d3e9a0`.
+   **Criterio: 0 turnos peor.** Los 53 turnos "peor" de A tienen que quedar
+   resueltos o explicados uno por uno; los cambios deliberados de D1 (la nota
+   de entrega los lista: por ejemplo "rin trasero paleta" para una TX250 ya
+   no cotiza el RIN EK XPRESS, escala por nombrar otra moto) se explican, no
+   cuentan como peor. Con un solo turno peor sin explicar, NO hacer el
+   fast-forward.
+6. **Fast-forward de `main` a `entrega/seba-a2`** — ESTE es el paso que
+   despliega:
+   ```bash
+   git fetch origin
+   git checkout main
+   git merge --ff-only origin/entrega/seba-a2
+   git push origin main
+   ```
+   Confirmar en Dokploy que el contenedor se recreó con el SHA nuevo y que el
+   dominio responde. **Sin variables de entorno nuevas ni cambio de compose**;
+   la memoria del pedido usa el `REDIS_URL` que ya está (sin Redis Seba se
+   comporta como antes, ver la trampa en `CLAUDE.md`).
+7. **Verificar la pestaña «Búsquedas» (Control IA).** Entrar a `/agent-control`
+   con un usuario supervisor o admin y abrir la pestaña «Búsquedas del
+   catálogo», al lado de «Lecciones»:
+   - **Carga sin error.** El bloque A "Búsquedas del catálogo" muestra el
+     selector de período (Hoy / 7 días / 30 días) y sus números; la pestaña
+     lleva el contador de las búsquedas de HOY. Si dice "No se pudo cargar … falta
+     aplicar la migración 20260930060000", falta la 6 (o el `notify pgrst`): el
+     resto de Control IA tiene que seguir funcionando igual.
+   - **Filas de antes de A2.** Las búsquedas guardadas antes del deploy (v1,
+     sin la clave `v`) se leen igual: lo que no registraron se pinta «—» y el
+     resumen avisa cuántas son anteriores a A2. Nunca un cero que parezca
+     verdad.
+   - **Un turno nuevo.** Con `buscar_repuesto` encendida, mandar por WhatsApp
+     "aceite inca" a un chat de prueba: en segundos aparece la fila en "Turnos
+     con búsqueda" (refresco por `postgres_changes` sobre `agent_turns`; si no
+     aparece sola, recargar), y al expandirla se ve lo que se buscó, el
+     corrector, la decisión con sus conteos, lo cotizado y los avisos.
+   - **Los botones.** «Abrir chat» abre esa conversación; «Enseñar sinónimo»
+     abre el modal de lecciones con el primer término que no calzó ya
+     precargado y alcance global; en "Correcciones del corrector", «No corregir
+     esta palabra» crea una lección `no_corregir` que aparece en «Lecciones»
+     como "Palabra protegida del corrector" y se puede apagar.
+   - **Las cifras contra la base**, con la misma lectura que usa el panel:
+     ```sql
+     select coalesce(r->>'v', '1') as version, count(*)
+     from public.agent_turns t, jsonb_array_elements(t.catalog_queries) r
+     where t.catalog_queries is not null and t.created_at > now() - interval '48 hours'
+     group by 1;
+     ```
+     (a las pocas horas del deploy debe haber filas `2`, y el resumen de la
+     pestaña tiene que sumar lo mismo que esta consulta).
+8. **Escenario a mano en producción, con `buscar_repuesto` encendida** (o en el
+   simulador). Con **D6 cada producto pedido cotiza UNA opción** —la de mejor
+   relevancia y, a igual relevancia, la de más existencia—, sin "Hay N opciones
+   más" (lo que dice el paso 7 de §15 sobre "asiento sbr" quedó superado por el
+   hotfix del 29/9 y por D6):
+   - la lista real del 29/9 con una SBR 2025 ("caucho n° 18 delantero, caucho
+     n° trasero, rodamiento, asiento, aceite"): el asiento SBR de más
+     existencia, el rodamiento solo si es de la marca del cliente (un KIT
+     RODAMIENTO BERA que nombra solo la marca), y los otros tres "hay varias
+     opciones; el asesor te ayuda a elegir"; una sola escalada
+     `confirmar_inventario` con los cinco renglones en la nota;
+   - "casco frankie negro vicera azul": el CASCO FRANKIE NEGRO MATE V/AZUL,
+     nunca la VISERA; "llanta": sin resultados, nunca LIGA FRENO LATA;
+     "intercomunicador para parejas" + "ni idea": UN intercomunicador con
+     existencia, nunca un agotado;
+   - "muéstrame todas" tras "intercomunicador": hasta tres con existencia
+     (la única excepción de D6);
+   - "tanque azul" para una SBR con los azules agotados: "azul agotado" y UNA
+     alternativa SBR; "defensa" para una moto que ninguna nombra: escala sin
+     cotizar una de otra moto ni la primera por orden alfabético.
+9. **Medir 48 h.**
+   ```sql
+   -- qué tipo de aviso dio cada búsqueda v2
+   select a->>'tipo' as aviso, count(*)
+   from public.agent_turns t,
+        jsonb_array_elements(t.catalog_queries) r,
+        jsonb_array_elements(case when jsonb_typeof(r->'avisos') = 'array' then r->'avisos' else '[]'::jsonb end) a
+   where r->>'v' = '2' and t.created_at > now() - interval '48 hours'
+   group by 1 order by 2 desc;
+   -- cuántas búsquedas relajaron una palabra y cuántas correcciones descartó la guarda de producto
+   select count(*) filter (where jsonb_typeof(r->'relajados') = 'array' and jsonb_array_length(r->'relajados') > 0) as relajadas,
+          count(*) filter (where jsonb_typeof(r->'correccionDescartada') = 'array') as correcciones_descartadas,
+          count(*) filter (where jsonb_typeof(r->'corregido') = 'array') as correcciones_aplicadas
+   from public.agent_turns t, jsonb_array_elements(t.catalog_queries) r
+   where r->>'v' = '2' and t.created_at > now() - interval '48 hours';
+   -- el resultado de cada búsqueda, para comparar con las 48 h de A (§15, paso 8)
+   select r->>'resultado' as resultado, count(*)
+   from public.agent_turns t, jsonb_array_elements(t.catalog_queries) r
+   where t.catalog_queries is not null and t.created_at > now() - interval '48 hours'
+   group by 1 order by 2 desc;
+   ```
+   Y en el log: `busqueda_catalogo` (una por llamada),
+   `correccion_descartada_por_producto` (cada una es un tipeo que A habría
+   convertido en otro producto), `diagnostico_terminos_fallido` y
+   `correccion_terminos_fallida` (no deberían aparecer: sin diagnóstico no se
+   relaja nada y sin corrector se busca tal cual, pero indican una migración
+   faltante o un corte), `lecciones_no_corregir_no_legibles` y
+   `herramienta_catalogo_fallo`. Lo que hay que decidir con los datos: qué
+   sinónimos y qué «No corregir» faltan (los bloques C y D de la pestaña
+   existen para eso) y si el VPS, al repetir el estudio, mide menos de 53
+   turnos peor.
+
+**Lo que NO cambia:** la marca obligatoria (sin N−1), mirar el stock antes de
+decir "tenemos", una sola pregunta de filtro por pedido, la cotización armada
+por código, la memoria del pedido, `usdFromBs` y `cifra_sin_fuente`. La deuda
+conocida de `conversation_quotes` (un insert que falla sin que nadie lo mire)
+está en `CLAUDE.md` y no la toca esta entrega.
+
+---
+
 ## Comprobación final
 
 Con todo configurado, esta lista debe pasar entera:
 
 - [ ] Una restauración de prueba devuelve los datos completos
 - [ ] `npm run build` sin errores ni warnings
-- [ ] `select count(*) from supabase_migrations.schema_migrations` devuelve 88 en LOCAL tras `20260929020000` (Entrega B de la misma corrida: carrito por conversación y demora del asesor; ver §16) — 86 tras `20260928050000` (Entrega A de "Seba encuentra, no insiste, y el mostrador no deja a nadie esperando", 28-29/9/2026; ver §15) — 81 tras `20260926010000` ("La búsqueda encuentra lo que el cliente pide", 25-26/9/2026; ver §14) — 80 tras `20260925010000` ("El inventario llega de Saint y no se toca a mano", 25/9/2026; ver §13), 79 tras `20260921040000` ("Nada se pierde en un corte ni en un deploy", 22/9/2026; ver §12), 78 tras `20260921020000`/`20260921030000` ("La escalada se hace una vez y la búsqueda responde"), 76 el 21/9/2026 tras `20260921010000` ("El catálogo configurado sale siempre"), 75 el 19/9/2026 tras `20260918010000`/`20260918020000`, 73 el 18/9/2026 tras `20260916010000`/`20260917010000`/`20260917020000`, 70 el 15/9/2026 y 61 cuando se escribió esta guía. **El número en PRODUCCIÓN depende de cuántas de estas corridas ya se aplicaron allá — preguntar en qué commit está producción antes de asumir un valor (ver §11/§12/§13/§14/§15/§16).**
+- [ ] `select count(*) from supabase_migrations.schema_migrations` devuelve 94 en LOCAL tras `20260930060000` (Entrega A2 de "Seba no cotiza lo que no es", 30/9/2026: búsqueda por palabra, corrector con límites, sinónimos, lección "no corregir" y resumen de búsquedas; ver §17) — 88 en LOCAL tras `20260929020000` (Entrega B de la misma corrida: carrito por conversación y demora del asesor; ver §16) — 86 tras `20260928050000` (Entrega A de "Seba encuentra, no insiste, y el mostrador no deja a nadie esperando", 28-29/9/2026; ver §15) — 81 tras `20260926010000` ("La búsqueda encuentra lo que el cliente pide", 25-26/9/2026; ver §14) — 80 tras `20260925010000` ("El inventario llega de Saint y no se toca a mano", 25/9/2026; ver §13), 79 tras `20260921040000` ("Nada se pierde en un corte ni en un deploy", 22/9/2026; ver §12), 78 tras `20260921020000`/`20260921030000` ("La escalada se hace una vez y la búsqueda responde"), 76 el 21/9/2026 tras `20260921010000` ("El catálogo configurado sale siempre"), 75 el 19/9/2026 tras `20260918010000`/`20260918020000`, 73 el 18/9/2026 tras `20260916010000`/`20260917010000`/`20260917020000`, 70 el 15/9/2026 y 61 cuando se escribió esta guía. **El número en PRODUCCIÓN depende de cuántas de estas corridas ya se aplicaron allá — preguntar en qué commit está producción antes de asumir un valor (ver §11/§12/§13/§14/§15/§16/§17).**
 - [ ] El bucket `whatsapp-media` es privado (`public = false`)
 - [ ] Una URL directa al bucket responde 400
 - [ ] `/api/media/...` sin sesión responde 401

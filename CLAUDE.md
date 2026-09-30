@@ -24,6 +24,7 @@ otro Claude; los commits se le entregan con un reporte (ver Convenciones).
 npm run dev                        # Next dev (Supabase local: npx supabase start / db reset)
 rtk npm run test                   # Suite completa (vitest run)
 rtk npx vitest run <ruta>          # Un solo archivo de test
+npm run test:arnes                 # Arnés del catálogo (base y Redis reales; FUERA de la suite: ver Trampas)
 rtk npm run lint                   # ESLint
 rtk npx tsc --noEmit               # Tipos
 rtk proxy npm run build            # Build — ¡NUNCA `rtk next build`! (ver Trampas)
@@ -31,7 +32,9 @@ curl -s "https://api.github.com/repos/zexfer24/sbk-crm-evolved/actions/runs?per_
 ```
 
 CI (`.github/workflows/ci.yml`): tipos + lint + tests + build, y en paralelo
-reconstruye la base desde cero con las migraciones y seeds del repo.
+reconstruye la base desde cero con las migraciones y seeds del repo y, sobre
+esa base, corre el arnés del catálogo de Seba (Redis y PostgREST efímero;
+desde A2, 30/9/2026).
 
 ## Arquitectura
 
@@ -1149,6 +1152,10 @@ dejar rastro es lo que hacía desaparecer leads.
   el panel de Inventario (`inventory-data.ts`), nadie la consulta para
   buscar, y sigue así — otra RLS, otro panel, y mezclar las dos fuentes de
   sinónimos no estaba en el alcance de esta corrida.
+  **Actualizado el 30/9/2026 (A2):** `ai_lessons.kind` tiene un tercer valor,
+  `no_corregir` (migración `20260930050000`; la palabra va en `synonym_from`),
+  que no es prosa para el modelo ni un sinónimo: ver su viñeta al final. M4
+  (`20260930040000`) siembra 16 sinónimos globales, editables desde el panel.
 - **`desasignada_por_asesor` puede salir con `created_by = 'system'`
   cuando es el CLIENTE quien reabre un chat cerrado, no solo cuando un
   asesor lo hace a mano** (T2b, 18/9/2026). El webhook reclama la
@@ -2313,6 +2320,11 @@ dejar rastro es lo que hacía desaparecer leads.
     más filas con stock que las traídas.
   **No volver a cotizar varias opciones del mismo producto sin preguntarle
   al operador.**
+  **Actualizado el 30/9/2026 (A2): el operador respondió esa pregunta con
+  D6** (ver su viñeta al final): la regla sigue siendo UNA
+  (`MAX_OPCIONES_COTIZADAS = 1`), con una única excepción, el pedido
+  explícito de ver opciones (`pideVerOpciones`), que saca hasta tres con
+  existencia (`MAX_OPCIONES_EXPLICITAS = 3`), sin "Hay N más".
 - **Una cifra de dinero de la IA necesita fuente EN EL TURNO** (T3, mismo
   plan, `price-guard.ts`). Dos casos reales de producción: el 20/9/2026 a
   las 14:32 Seba escribió "El intercomunicador sale en *108$ BCV*"
@@ -2414,6 +2426,17 @@ dejar rastro es lo que hacía desaparecer leads.
   migración ANTES — sin ella, `p_opcionales` da 400. Acepta listas de hasta
   5 productos (D5). `supabase/tests/buscar_productos.sql` inserta el ruido
   ANTES de las filas correctas (ver la viñeta del test de orden).
+  **Actualizado el 30/9/2026 (A2, plan "Seba no cotiza lo que no es",
+  migración `20260930010000`): dos cosas de esta viñeta dejaron de ser
+  ciertas.** (1) La firma de `buscar_productos` pasó de cinco a NUEVE
+  parámetros (`p_variantes`, `p_moto_marca`, `p_motos_conocidas` y
+  `p_marcas_de_moto`, todos con default; el año viaja dentro de
+  `p_cilindrada`) y la de cinco se retiró con `drop function`. (2) "Un número
+  que termina la alternativa lleva `\M`" ya no vale: el sufijo es
+  `([^0-9]|$)` y lo arma `patron_busqueda` (45 calza 45T y 45LTS, 50 sigue sin
+  calzar 5000; ver su viñeta al final). Marca obligatoria, cilindrada que
+  solo ordena y "genérico" que mira el stock siguen vigentes; la moto ya no
+  calza por prefijo ni con una fila de otro producto (viñetas de A2).
 - **El corrector de tipeos es `public.corregir_terminos`, `security
   invoker` A PROPÓSITO, y nunca corrige una moto conocida** (T2/T3b,
   28/9/2026, migración `20260928020000`). Casos reales del estudio: "horsen"
@@ -2440,6 +2463,17 @@ dejar rastro es lo que hacía desaparecer leads.
   (lo lee de `pg_extension`; en el Supabase self-hosted puede ser `public` o
   `extensions`) y la migración falla cerrado si `search_path` de la función
   no lo incluye. `corregirTerminos` (el envoltorio TypeScript) nunca lanza.
+  **Actualizado el 30/9/2026 (A2, migración `20260930020000`): la RPC pasó de
+  dos a cuatro parámetros (`p_terminos`, `p_protegidos`, `p_marcas`,
+  `p_excluidos`; la firma vieja se retiró con `drop function`) y el
+  envoltorio de TypeScript de tres a cinco (`marcas` y `excluidos` = el
+  relleno) más `conversationId`.** El "umbral por largo" de arriba (4 → 1,
+  5 → 2, 6 o más → 3) ahora rige SOLO hacia una marca de `p_marcas`; hacia
+  cualquier otra palabra la distancia máxima es 1, o que suenen igual
+  (`clave_fonetica`); un término que es prefijo de una palabra del
+  vocabulario ya existe; el candidato necesita 5 letras (salvo que suene igual)
+  y no puede ser relleno; `p_protegidos` lleva además las lecciones
+  `no_corregir`. Ver la viñeta de los tres errores de la Entrega A.
 - **La memoria del pedido de catálogo vive en Redis y, sin Redis, Seba se
   comporta como antes** (T3a, 28/9/2026, `catalog-memory.ts`). Clave
   `catalogo:pedido:<conversationId>`, TTL de 6 h (misma vara que la marca
@@ -2458,6 +2492,14 @@ dejar rastro es lo que hacía desaparecer leads.
   ni `FakeRedis` pasa sin probar nada** (mismo aviso que `turn-seen`,
   `greeting-wait` y `queue.test.ts`): `catalog-memory.test.ts` usa
   `FakeRedis`, y en producción la memoria solo existe con `REDIS_URL`.
+  **Actualizado el 30/9/2026 (A2):** el valor guardado gana `anio` y
+  `preguntaTipo` (`"moto"` o `"producto"`: qué se preguntó) y `leerPedido`
+  sigue leyendo los objetos anteriores, sin esos campos; una respuesta suelta
+  que es un año, o un número de dos dígitos tras la pregunta por la MOTO, va a
+  `anio` (antes era un término obligatorio y "24" tras "asiento sbr" no
+  encontraba nada), y la misma respuesta tras la pregunta por el PRODUCTO
+  sigue siendo una medida. Las "3 opciones" de arriba quedaron superadas: ver
+  la viñeta de D6.
 - **La cotización y la pregunta de filtro las arma el CÓDIGO, y la salida
   del modelo se REEMPLAZA** (T3b, 28/9/2026, `quote-message.ts`). Dos casos
   del estudio: el modelo cambió "ACEITE INCA 20W50 4T" por "Inca 20W50 semi
@@ -2776,6 +2818,298 @@ dejar rastro es lo que hacía desaparecer leads.
   supervisor/admin, con una SEGUNDA suscripción Realtime en
   `AssignmentNotifier` (filtro `reason=eq.demora_sin_asesor`, sin `to_kind`
   porque el caso puede quedar sin dueño). Rol sin resolver calla.
+- **Tres errores de DISEÑO de la Entrega A que A2 corrige, y cómo quedó cada
+  uno** (plan "Seba no cotiza lo que no es", 30/9/2026, migraciones
+  `20260930010000` a `20260930030000`). La Entrega A (`6c8ce24`, en
+  producción desde el 29/9) parecía cerrada, pero el VPS le volvió a pasar
+  los 597 turnos del estudio y midió 116 mejores y 53 PEORES; el mismo 29/9 a
+  las 13:14 VE un cliente con una SBR 2025 mandó una lista de cinco cosas y
+  solo el asiento salió bien (cauchos de scooter de rin 10 por "caucho
+  trasero", kits de rodamiento de otras motos, un aditivo de metales por
+  "aceite"). Tres de las causas eran del diseño, no de un caso suelto.
+  (1) **La moto calzaba por PREFIJO de palabra** (`\m` a secas): `gr`
+  calzaba GRIS, y "maletas" para una GR 250 cotizaba solo MALETA REDONDA 34
+  LTS TOMCAT GRIS habiendo 15 maletas con existencia; además la marca sola
+  alcanzaba (`bera` calzaba las tapas SBR aunque la moto fuera una Milan).
+  Ahora la moto calza como PALABRA, con dígitos detrás o no (`\m alt
+  ([0-9]|\M)`: GR250 y "GR 250" sí, GRIS no) y la marca de moto —cuando el
+  cliente dio también el modelo— va a `p_moto_marca` y solo ORDENA.
+  (2) **El año era un término obligatorio del producto**: "un sbr 2023" tras
+  "amortiguador", "rojo 2014" tras "tanque rkv" (calzaba TANQUE OWEN 2014
+  AZUL) o "24" como respuesta a la pregunta por el año exigían esa cifra en
+  el nombre y no encontraban nada, o encontraban lo que no era. Ahora 1980 a
+  2035 van a `anio` (nunca a `grupos`; también el que sigue a la palabra
+  "año"), viajan dentro de `p_cilindrada` y solo ORDENAN; "dt 2014" ya no se
+  une en `dt2014`. (3) **El corrector de tipeos no tenía límites**: cambiaba
+  palabras bien escritas por otras que también existen (pareja→para dio un
+  AGOTADO FALSO en "intercomunicador para parejas" con cinco en existencia;
+  llanta→lata cotizó LIGA FRENO LATA; kenda→honda), volvía a pluralizar el
+  singular que el propio código había armado ("dientes", "brazos", "bidones")
+  y cambiaba el PRODUCTO pedido (vicera→visera cotizó una VISERA en vez del
+  CASCO FRANKIE NEGRO MATE V/AZUL). Ahora: un término que es prefijo de una
+  palabra del vocabulario ya existe y no se corrige; el candidato necesita 5
+  letras salvo que suene igual; se acepta a distancia 1, con la misma
+  `clave_fonetica` (rallo→rayo, vicera→visera) o hacia una MARCA de
+  `p_marcas` a mayor distancia (tisum→timsun); el relleno no es candidato; y
+  `tools.ts` aplica una GUARDA DE PRODUCTO: si la cabeza del pedido no se
+  corrigió y ninguna fila del reintento que de verdad calzó empieza con
+  ella, el reintento se descarta y queda anotado en `correccionDescartada`
+  (log `correccion_descartada_por_producto`); un reintento que ni calza se
+  descarta igual, para que D3 pueda relajar la palabra original. Los tres
+  tienen su resguardo: `supabase/tests/buscar_productos.sql` (GR contra
+  GRIS), `supabase/tests/corregir_terminos.sql` (la tabla de casos) y el caso
+  "casco frankie negro vicera azul" de `casos-a2.ts`.
+- **`catalog_queries` es un CONTRATO con la pestaña «Búsquedas»: cambiarle la
+  forma exige subir `v`, y el panel tiene que seguir leyendo las versiones
+  anteriores** (T5/T9, 30/9/2026). `ConsultaCatalogo` (`tools.ts`) pasó a
+  `v: 2` con `variantes`, `anio`, `motoMarca`, `motoIgnorada`, `calzaEntero`,
+  `relajados`, `avisos`, `correccionDescartada`, `decision`, `cotizados` y
+  `conteos`. Las filas v1 (desde el 28/9, sin clave `v`) siguen en la tabla
+  y el panel las lee igual: lo que falta se pinta "—", nunca un cero que
+  parezca verdad (misma regla que `agent_day_summary`), y
+  `resumen_busquedas` cuenta aparte cuántas búsquedas del período son v1 para
+  poder avisar "N búsquedas anteriores a A2 no registran avisos". Cada campo
+  jsonb se comprueba con `jsonb_typeof` antes de recorrerlo: una fila rara
+  (`{}`, un escalar) no puede romper la agregación de las demás. No hay
+  ninguna migración de `agent_turns` en esta entrega: la columna es la de
+  `20260928040000`. Una mutación de verificación (`catalog_queries` sin `v`,
+  o el panel asumiendo `v: 2`) tiene que poner algo en rojo, y
+  `catalog-searches-panel.test.tsx` prueba una fila v1.
+- **`public.patron_busqueda(alt, tipo)` es la ÚNICA fuente de los patrones de
+  la búsqueda, y las dos formas de terminar en dígito NO son intercambiables**
+  (M1 `20260930010000`, 30/9/2026). Antes cada consulta armaba su regex y
+  `diagnosticar_terminos` (M3) habría tenido su propia copia: un diagnóstico
+  que calza distinto que la búsqueda dice "existe" de algo que la búsqueda no
+  encuentra. Ahora `buscar_productos` y `diagnosticar_terminos` piden el
+  patrón al helper (`immutable`, con los dos revokes y `grant` a
+  `service_role`). Para producto/opcional/variante: `\m` al inicio; un término
+  alfabético de 3 letras o menos termina en `(s|es)?\M` (palabra ENTERA con
+  plural: "cro" no calza CROMADO, "rin" sí calza RINES); uno que termina en
+  dígito termina en `([^0-9]|$)` (45 calza 45T y 45LTS, y 50 sigue sin calzar
+  5000; `dt200` sigue sin calzar DT2000); uno que empieza en dígito y trae
+  punto acepta una letra antes (11.7 calza H11.7). Con un `\M` a secas se
+  pierde 45T (`45` seguido de `T` no es frontera de palabra); con
+  `([^0-9]|$)` en una palabra corta vuelve "cro" contra CROMADO: son las dos
+  mutaciones del plan (sección 8) y las dos tienen que dar rojo. Moto y marca
+  de moto llevan `\m … ([0-9]|\M)`; cilindrada y año, `(\m|[a-z]) … ([^0-9]|$)`.
+  Un cambio a este helper toca a la vez el simulador de TypeScript de
+  `src/lib/ai/__fixtures__/simulador-sql-a2.ts` (`patronBusqueda`), que lo
+  espeja para la suite normal.
+- **Las variantes son ESTRICTAS y las posicionales, PREFERENTES** (T2/T5,
+  30/9/2026). Color, acabado (mate, brillante, cromado), "edge", "paleta",
+  "rayo", "tornasol" y talla ("talla xl", "58cm", 2xl↔xxl) son `variantes`
+  (`VARIANTES`, lista cerrada y exportada de `catalog-search.ts`), un conjunto
+  aparte de los opcionales con su puntaje (`puntaje_variante`), su lugar en el
+  orden y sus ventanas (`filas_con_variante`, `filas_con_variante_y_stock`,
+  que exigen TODAS las variantes a la vez). Cuando alguna fila las trae
+  enteras, esas filas MANDAN: si alguna tiene existencia, restringen; si todas
+  están en 0 (D2), Seba dice "<variante> agotado" y ofrece UNA alternativa con
+  existencia de la misma moto o familia, nunca de otra ("tanque azul" para una
+  SBR: otros tanques SBR, jamás el EK XPRESS II azul); sin alternativa, escala
+  con el agotado a secas. Hasta A2 una variante solo ordenaba mezclada con los
+  opcionales y la tapaban el tope, el stock o la pregunta de filtro. Las
+  posicionales y de calidad ("delantero", "trasero", "semi", "original") siguen
+  siendo `opcionales`: preferentes, solo desempatan por `puntaje_opcional`, y
+  en cauchos y tripas ni eso (`ignorarOpcional`: "trasero" en un caucho es el
+  de la scooter de rin 10, no el de la moto del cliente). Ojo con la letra del
+  plan: la sección 5 decía que las posicionales "restringen solo si ese
+  subconjunto tiene stock"; en el código esa condición
+  (`restringeVariante`) es la de la variante, y las posicionales solo ordenan.
+- **"Otra moto", "universal", y las dos listas que `tools.ts` TIENE que pasar
+  SIEMPRE** (D1, M1, 30/9/2026). Cuando la moto del cliente no calza con
+  ningún nombre, la Entrega A cotizaba las tres primeras por ORDEN
+  ALFABÉTICO (BRZ, KAVAK, KLR). Ahora la base devuelve por fila
+  `nombra_moto`, `nombra_otra_moto` y `es_universal`, y ventanas
+  (`filas_que_nombran_moto`, `filas_universales`,
+  `filas_universales_con_stock`) calculadas antes del límite. **Un producto
+  nombra "otra moto" cuando su nombre calza alguna palabra de
+  `p_motos_conocidas`, no calza la moto del cliente Y NO ocurre que calce su
+  marca (`p_moto_marca`) sin nombrar ningún MODELO** (modelo = palabra de
+  `p_motos_conocidas` que no está en `p_marcas_de_moto`). Por eso "ASIENTO SBR
+  /SOC ORIGINAL" nombra dos motos y sí sirve para una SBR; "TAPA LATERAL BERA
+  SBR" no le sirve a una Milan aunque comparta "bera" (nombra el modelo sbr);
+  y BATERIA SECA JAGUAR/BERA nombra solo MARCAS, así que sí le sirve a una Bera
+  Socialista. **La marca sola NO rescata un producto: solo lo rescata si el
+  producto nombra únicamente marcas.** "Universal" es lo que no nombra ninguna
+  moto o dice UNIVERSAL. Qué se hace: si la familia depende de la moto (alguna
+  fila de la familia nombra una: `dependeDeMoto` en `tools.ts`; si la bandera
+  `dependeDeLaMoto` del modelo no está de acuerdo, gana la ventana), se
+  cotiza UNA de lo compatible (D6; universales y lo que nombra solo la marca
+  del cliente) con la línea "no encontré uno con el nombre de tu moto; estos son
+  de <marca> o universales"; con MÁS de tres compatibles con existencia se
+  hace la pregunta de filtro (una vez), y con cero se escala
+  `confirmar_inventario` sin cotizar; nunca un producto de otra moto ni el
+  primero alfabético. **`p_motos_conocidas` = `MOTOS_EN_NOMBRES`
+  (`tools.ts`): `MOTOS_CONOCIDAS` MÁS los prefijos de modelo `dt`, `cg` y
+  `gn`.** Sin esos tres, "DEFENSA DELANTERA SUPER DT LEFOR" pasaba por
+  universal y se le ofrecía a un cliente de Tigrito; no se suman a
+  `MOTOS_CONOCIDAS` porque en una consulta viajan pegados a su número y solos
+  no son nada. **`buscar_productos` con `p_motos_conocidas` o
+  `p_marcas_de_moto` omitidos no falla: sin la primera nada nombra moto y todo
+  es universal, sin la segunda toda palabra cuenta como modelo** — una
+  degradación silenciosa, la que esta viñeta existe para evitar;
+  `tools.ts` los pasa SIEMPRE, y el arnés y `tools.test.ts` lo fijan.
+- **La moto "calza" solo entre la FAMILIA del pedido, y queda una trampa
+  viva** (T5b, 30/9/2026, editada in situ en M1). La validación de T5 halló
+  que la moto calzaba con UNA sola fila del máximo aunque fuera de OTRO
+  producto: "aceite" para una Bera SBR puntuaba BOMBA DE ACEITE BERA SBR igual
+  que un aceite, `puntaje_moto_maximo` daba 1, la moto "calzaba" y Seba
+  cotizaba una bomba (el primer parche fue renombrar la fila del fixture, que
+  tapaba el error real y se rechazó). Ahora la FAMILIA son las filas del máximo
+  que EMPIEZAN con la cabeza del pedido (`empieza_con_producto`), o todo el
+  máximo si ninguna empieza con ella; `puntaje_moto_maximo` y
+  `filas_que_nombran_moto` salen SOLO de la familia (si contara la bomba,
+  "aceite" para una SBR creería que "el aceite depende de la moto" y saldría
+  por D1 en vez de por la regla sin moto: pregunta de filtro). Las demás
+  ventanas (existencia, universales, variante, `filas_con_puntaje_maximo`,
+  `filas_con_maximo_y_moto`) NO se restringen: `tools.ts` elige entre esas
+  mismas filas y el hotfix del 29/9 manda "nunca un agotado si hay con
+  existencia" (una primera versión las restringía todas y puso rojo
+  `ZAPATO BOTA IMPERMEABLE` con existencia contra las `BOTA …` en 0).
+  **La trampa que sigue viva:** con la moto que NO calza, una fila de otro
+  producto que nombra la moto SIGUE dentro del conjunto (la moto no filtra),
+  y si todo lo del producto pedido está agotado y esa fila tiene existencia,
+  podría ganar por existencia; solo el orden de relevancia (empieza con el
+  producto, y la moto solo cuenta en el orden si calza) la deja detrás de un
+  aceite con existencia. Casos que lo fijan:
+  `nr-08b-aceite-sbr-no-cotiza-la-bomba` y
+  `nr-08c-aceite-inca-sbr-cotiza-el-aceite` de `casos-a2.ts`.
+- **`p_marcas` del corrector es `MARCAS_DE_PRODUCTO`, no `MARCAS_CONOCIDAS`**
+  (T5b, 30/9/2026). `MARCAS_CONOCIDAS` = `MARCAS_DE_PRODUCTO` (timsun,
+  switchera, ipone, motorpower, motul, inca…) MÁS `MOTOS_CONOCIDAS`. M2 acepta
+  una corrección hacia una marca de `p_marcas` a distancia 2 o 3, y con las
+  motos dentro `kenda` (marca de cauchos, sin ningún producto que la nombre)
+  se "corregía" a `honda`: el SQL seguía proponiéndolo aunque el reintento se
+  descartara al no calzar. `tools.ts` pasa como `p_marcas` solo
+  `MARCAS_DE_PRODUCTO`; las motos siguen protegidas por `p_protegidos`
+  (`beta` no pasa a `bera`). horsen→horse, tisum/stinsun→timsun,
+  swhera→switchera, iphone→ipone y motopower→motorpower siguen corrigiéndose
+  (test en `tools.test.ts`). `MARCAS_CONOCIDAS` sigue sirviendo donde importa
+  lo contrario: D3 no relaja una marca (`esGrupoDeMarca`). `products.brand`
+  está vacía (0 de 6.065), por eso la lista vive en código y se fija con
+  test.
+- **D3 relaja una palabra por CO-OCURRENCIA con la cabeza, nunca una marca que
+  existe en el catálogo** (M3 `20260930030000` + `intentarRelajo` de
+  `tools.ts`, 30/9/2026). Con la marca obligatoria (la Entrega A, el caso
+  Inca) una palabra que no es ni producto ni marca —"pwk", "bomba",
+  "reborde", "silenciador", "scooter"— tumbaba la búsqueda entera: 25 casos
+  iguales y 6 peores en el estudio del VPS. El tercer intento (después del
+  corrector) llama a `diagnosticar_terminos(p_terminos, p_cabeza)`, que dice
+  por grupo si existe en algún producto activo con precio (`en_catalogo`) y si
+  algún producto lo trae junto a la cabeza (`con_cabeza`). **La cabeza es el
+  primer grupo que existe en el catálogo y no es un número suelto** ("30
+  litros" NO es un número suelto: puede ser la cabeza y con eso `ibk` se
+  relaja). Se relaja un grupo que no es la cabeza y que no existe o no
+  co-ocurre con ella; una MARCA que existe en el catálogo NUNCA se relaja
+  (`esGrupoDeMarca && enCatalogo`), pero una que no aparece en NINGÚN nombre
+  sí (el caso ICH); un número que sigue a una palabra relajada ("reborde de
+  11") se relaja con ella y tiene que quedar al menos un grupo que no sea un
+  número suelto. `diagnosticarTerminos` devuelve `null` si la medición falla:
+  ante la duda no se relaja NADA. Qué se dice: si calza, "No encontré "X" en
+  el nombre; esto es lo más parecido" y se escala `confirmar_inventario`; si
+  lo más parecido está en 0, "lo más parecido que encontré está agotado" y se
+  escala — nunca un agotado a secas.
+- **D6: UNA sola opción, con una única excepción, y "no sé" NO es la
+  excepción** (decisión del operador, 29-30/9/2026; resuelve la pregunta que
+  dejó el hotfix). Se cotiza UNA por producto pedido —la de mejor relevancia y,
+  a igual relevancia, la de más existencia, nunca un agotado junto a algo con
+  stock— en TODOS los caminos: moto que calza, universales de D1, ya
+  preguntado, listas. Y no existe "Hay N opciones más". **La excepción:** si
+  el cliente pide de forma EXPLÍCITA ver opciones ("muéstrame todas", "qué
+  opciones hay", "cuáles tienes", "qué tienes"; `pideVerOpciones`, `catalog-request.ts`),
+  salen hasta TRES con existencia (`MAX_OPCIONES_EXPLICITAS = 3`), por
+  relevancia y existencia, sin línea de restantes. "No sé", "ni idea", "no
+  tengo idea", "la que sea", "cualquiera", "el que tengas", "los que
+  tengan", "no tengo marca", "recomiéndame", "cuál me recomiendas", "el más
+  económico" y "la más barata" están en `pideVerTodo` (que incluye a
+  `pideVerOpciones`) y evitan que se REPITA la pregunta de filtro, pero dan
+  UNA, la mejor: el caso "intercomunicador" + "ni idea" del plan no sale
+  agotado. D2 (variante agotada) ofrece UNA alternativa. Sobre el plan de
+  A2: su sección 6 todavía dice "los 3 ASIENTO SBR … Hay N opciones más" y la
+  resolución 5 del orquestador "ya se preguntó y no llegó un dato → escala
+  sin cotizar"; las dos están SUPERADAS (el hotfix del 29/9 mantiene sus
+  tests y D6 manda), y `casos-a2.ts` ya espera lo vigente.
+- **La lección `no_corregir` y `resumen_busquedas` como `security definer`**
+  (D5 y T9, M5 `20260930050000` y M6 `20260930060000`, 30/9/2026). Un
+  corrector puede equivocarse con una palabra legítima (pareja→para fue el
+  caso), y hasta A2 protegerla exigía tocar código (`p_protegidos` venía solo
+  de `MOTOS_CONOCIDAS`). El botón "No corregir esta palabra" de la pestaña
+  «Búsquedas» guarda una lección global `kind = 'no_corregir'` (se puede
+  apagar) y `buildCatalogTool` la suma a `p_protegidos` (`leerNoCorregir`,
+  con el mismo alcance que los sinónimos). **La palabra va en `synonym_from`,
+  sin columna nueva** (se descartó `protected_word`: obligaría a regenerar
+  tipos y a tocar el panel sin ganar nada), con `synonym_to` siempre nulo y
+  `scope = 'global'` blindados por la constraint
+  `ai_lessons_no_corregir_requires_word`; las dos lecturas que ya existen
+  (`fetchTurnLessons` filtra `kind = 'nota'`, la de sinónimos filtra
+  `kind = 'sinonimo'`) discriminan por `kind`, así que una fila `no_corregir`
+  nunca se cuela al prompt ni al diccionario; quien lea `synonym_from` sin
+  mirar `kind` vería palabras que no son sinónimos. La RLS de `ai_lessons` no
+  cambia (siguen siendo cuatro políticas). Las 16 filas de sinónimos que
+  siembra M4 (`created_by` NULL a propósito, idempotente por par) las edita
+  cualquier supervisor/admin. **`resumen_busquedas(p_desde)` y
+  `terminos_de_busquedas(p_desde)` son `security definer` con `is_agent()`
+  chequeado UNA vez, no `invoker`** (desvío sobre la nota del operador,
+  aprobado en el plan): la política de `agent_turns` es `is_agent()` POR FILA
+  y recorrer 30 días de turnos así es la trampa que tumbó la búsqueda de
+  `/inbox` 48 h (`20260921030000`: 75 ms como superusuario, 1.468 ms como
+  `authenticated`). Llevan los dos revokes y `grant` a `authenticated` y
+  `service_role`; quien no es agente recibe `null`; el período se acota a 90
+  días. El guardián `permisos-funciones.test.ts` cuenta 28 funciones
+  `security definer`. Una función así medida como superusuario no mide nada:
+  probarla con `set local role authenticated`.
+- **El ARNÉS del catálogo (`npm run test:arnes`) corre en el CI y queda para
+  TODAS las entregas siguientes que toquen la búsqueda** (T7, 30/9/2026,
+  `scripts/arnes-catalogo-a2.test.ts` + `vitest.arnes.config.ts`). Los tests
+  de la suite normal usan un simulador en TypeScript del SQL
+  (`__fixtures__/simulador-sql-a2.ts`), y solo el arnés mide el SQL de verdad:
+  carga con `psql` como postgres el fixture (`catalogo-a2.ts`, 301 productos
+  cuyo código `A2FIX-####` va en `description`, con `saint_code` nulo para que
+  `saint.sync_products()` no los toque; `products` es de solo lectura para la
+  app), corre el `buildCatalogTool` REAL —cliente admin, las funciones de las
+  migraciones, los sinónimos de M4 y la memoria del pedido en Redis real—
+  sobre los ~149 casos de `casos-a2.ts` incluidas las conversaciones de dos
+  turnos, y exige **"cero casos peor"**: ningún caso puede fallar, con las
+  mismas aserciones que `tools.test.ts` (`verificar-caso-a2.ts`, compartidas a
+  propósito). Lo esperado de cada caso es el contrato del hotfix `3d3e9a0`
+  ajustado a D6 y a las decisiones del plan; un caso con `cambioDeliberado`
+  ya trae su expectativa nueva. Borra el fixture y las claves de Redis
+  SIEMPRE. **Está fuera de `npm run test`** (`vitest.config.ts` lo excluye)
+  y **FALLA, no se salta, sin Redis o sin PostgREST** —la trampa de
+  `queue.test.ts`, que "pasa" sin ejecutar una aserción—. En local necesita
+  `ARNES_SUPABASE_URL` con el puerto REAL de Kong
+  (`docker port supabase_kong_Liminal_CRM`; `.env.local` puede decir otro),
+  `REDIS_URL` y el contenedor de la base (`ARNES_DB_URL` o
+  `ARNES_DB_CONTAINER`). En el CI (job `migraciones`) hay un servicio Redis
+  y un PostgREST efímero de la imagen `public.ecr.aws/supabase/postgrest`
+  (con su `service_role` firmada en el paso: `supabase db start` levanta solo
+  Postgres); el arnés reescribe `/rest/v1/` con `ARNES_POSTGREST_URL`. **No
+  correrlo contra la base de producción**: inserta y borra productos; en el
+  VPS el equivalente es su propia repetición de los 597 turnos del estudio.
+  Cualquier cambio a `catalog-search.ts`, `tools.ts` o una migración de
+  `products` pasa por él antes del push.
+- **Deuda conocida: el insert en `conversation_quotes` con una conversación
+  que no existe falla por FK y `tools.ts` lo ignora sin mirar el error**
+  (30/9/2026, hallada al escribir el arnés). `guardarCotizaciones` hace
+  `await supabase.from("conversation_quotes").insert(…)` sin leer `error`: el
+  monto de una venta sale de lo que se cotizó ahí, así que una cotización que
+  no se guardó no deja rastro ni aviso. En producción la conversación siempre
+  existe, y el arnés usa conversaciones que no existen (UUID al azar), por lo
+  que NO ejercita ese insert: un arreglo futuro tiene que agregar su propio
+  test con una conversación real.
+
+- **Una tira de `.lm-pills` que no entra se envuelve en un CARRIL con
+  scroll; nunca se le pone `overflow` directo** (cierre de A2, 30/9/2026).
+  Control IA desbordaba la página entera a 390 px (`scrollWidth` 989): la
+  tira `.lm-pills.ac-tabs` es `inline-flex` de ancho `fit-content` con
+  píldoras `nowrap`, hija de la columna flex `.dash-content`, y arrastraba
+  todo. Ponerle `overflow-x: auto` a la propia tira descuadra la píldora
+  activa: la copia `.lm-pills-active` es `position: absolute; inset: 0` y
+  su `clip-path` mediría solo la parte visible. Ahora va dentro de
+  `FilterScroller` (el mismo de la bandeja) con la clase `.ac-tabs-scroll`
+  (`min-width: 0`, `max-width: 100%`, `overflow-x: auto`) y `.ac-tabs` con
+  `flex-shrink: 0`; `agent-control-css.test.ts` lo fija mirando la hoja,
+  porque jsdom no calcula layout.
 
 ---
 
