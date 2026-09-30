@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { ConversationCartItem, Product } from "@/lib/types";
 import {
+  cartSummaryText,
   cartToSaleLines,
   cartTotals,
   priceCartLines,
@@ -187,5 +188,73 @@ describe("cartToSaleLines — lo que recibe closeSaleWithContactInfo", () => {
       0
     );
     expect(cartToSaleLines(lines)).toEqual([]);
+  });
+});
+
+// T4 del plan "Ronda del cliente" (30/9/2026): el resumen que el asesor copia
+// o deja en el composer para mandarle al cliente lo que lleva.
+describe("cartSummaryText — el resumen del carrito para el cliente", () => {
+  function resumen(items: ConversationCartItem[], rate = 40) {
+    const lines = priceCartLines(items, rate);
+    return cartSummaryText(lines, cartTotals(lines));
+  }
+
+  it("un producto: nombre, SKU, precio y total", () => {
+    const text = resumen([
+      item({ product: product({ name: "Caucho 90/90-18 Kenda", price: 25, saintCode: "12345" }), quantity: 1 }),
+    ]);
+
+    expect(text).toBe(["Caucho 90/90-18 Kenda", "SKU: 12345", "Precio: $25.00", "", "Total: $25.00"].join("\n"));
+  });
+
+  it("dos productos y cantidad 2: el nombre lleva (x2), el precio c/u y el subtotal, y un renglón en blanco separa los bloques", () => {
+    const text = resumen([
+      item({ id: "a", product: product({ id: "p1", name: "Caucho 90/90-18 Kenda", price: 25, saintCode: "12345" }), quantity: 1 }),
+      item({ id: "b", product: product({ id: "p2", name: "Casco LS2 FF353", price: 40, saintCode: "67890" }), quantity: 2 }),
+    ]);
+
+    expect(text).toBe(
+      [
+        "Caucho 90/90-18 Kenda",
+        "SKU: 12345",
+        "Precio: $25.00",
+        "",
+        "Casco LS2 FF353 (x2)",
+        "SKU: 67890",
+        "Precio: $40.00 c/u · $80.00",
+        "",
+        "Total: $105.00",
+      ].join("\n")
+    );
+  });
+
+  it("un producto sin código Saint dice «sin código»", () => {
+    const text = resumen([item({ product: product({ saintCode: null }), quantity: 1 })]);
+
+    expect(text).toContain("SKU: sin código");
+  });
+
+  it("un producto en bolívares usa el precio ya redondeado por usdFromBs", () => {
+    // 101 Bs / 40 = 2,525 -> $2,60.
+    const text = resumen([item({ product: product({ currency: "VES", price: 101, saintCode: "9" }), quantity: 1 })]);
+
+    expect(text).toContain("Precio: $2.60");
+    expect(text).toContain("Total: $2.60");
+  });
+
+  it("si algún renglón no tiene precio en dólares, no hay resumen (no se manda un total falso)", () => {
+    const text = resumen(
+      [
+        item({ id: "a", quantity: 1 }),
+        item({ id: "b", product: product({ id: "p2", currency: "VES", price: 101 }), quantity: 1 }),
+      ],
+      0
+    );
+
+    expect(text).toBeNull();
+  });
+
+  it("un carrito vacío no tiene resumen", () => {
+    expect(resumen([])).toBeNull();
   });
 });

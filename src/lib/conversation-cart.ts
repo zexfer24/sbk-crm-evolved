@@ -96,6 +96,44 @@ export function quoteComparisonLabel(line: PricedCartLine): string | null {
   return `cotizado $${line.priceChange.quotedUsd.toFixed(2)} · hoy $${line.priceChange.todayUsd.toFixed(2)}`;
 }
 
+/** Dólares con dos decimales y punto, igual que `cart-lines.tsx` los pinta en el panel. */
+function formatUsd(value: number): string {
+  return `$${value.toFixed(2)}`;
+}
+
+/**
+ * El resumen del carrito para mandárselo al cliente (T4, plan "Ronda del
+ * cliente", 30/9/2026): un bloque por producto —nombre, SKU y precio— y el
+ * total al final. Con cantidad mayor que 1 el nombre lleva «(x2)» y el precio
+ * dice «$40.00 c/u · $80.00». El SKU es `products.saint_code` (no existe otra
+ * columna de código); sin él, «sin código».
+ *
+ * Devuelve `null` si el carrito está vacío o algún renglón no tiene precio en
+ * dólares (falta la tasa BCV): un resumen sin ese renglón daría un total falso
+ * y uno con «Sin tasa» escrito no es algo que se le mande a un cliente. Los
+ * montos son los VIGENTES (`priceCartLines`, D6), ya redondeados por
+ * `usdFromBs`: aquí no se recalcula ni se redondea nada.
+ */
+export function cartSummaryText(lines: PricedCartLine[], totals: CartTotals): string | null {
+  if (lines.length === 0) return null;
+  if (lines.some((line) => line.unitPriceUsd === null || line.subtotalUsd === null)) return null;
+
+  const blocks = lines.map((line) => {
+    const { product, quantity } = line.item;
+    // Los `null` ya se descartaron arriba; el `?? 0` solo calma al tipo.
+    const unit = line.unitPriceUsd ?? 0;
+    const subtotal = line.subtotalUsd ?? 0;
+    const name = quantity > 1 ? `${product.name} (x${quantity})` : product.name;
+    const price =
+      quantity > 1
+        ? `Precio: ${formatUsd(unit)} c/u · ${formatUsd(subtotal)}`
+        : `Precio: ${formatUsd(unit)}`;
+    return [name, `SKU: ${product.saintCode ?? "sin código"}`, price].join("\n");
+  });
+
+  return `${blocks.join("\n\n")}\n\nTotal: ${formatUsd(totals.usd)}`;
+}
+
 /**
  * Los renglones de la venta para `closeSaleWithContactInfo`: precio vigente y
  * vínculo con el catálogo por `product_id`. Los renglones sin precio en

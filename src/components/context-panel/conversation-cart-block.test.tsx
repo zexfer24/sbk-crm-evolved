@@ -1,10 +1,18 @@
 /** @vitest-environment jsdom */
 import { describe, expect, it, vi } from "vitest";
-import { fireEvent, render, screen } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { ConversationCartBlock } from "@/components/context-panel/conversation-cart-block";
 import type { CartActions } from "@/components/context-panel/use-cart-actions";
 import type { ConversationCartItem, Product } from "@/lib/types";
+
+// El toast real de HeroUI no aporta nada acá: se espía `success`/`danger` de
+// «Copiar» (T4, "Ronda del cliente", 30/9/2026) y el resto del módulo queda
+// intacto.
+vi.mock("@heroui/react", async (importOriginal) => {
+  const real = await importOriginal<typeof import("@heroui/react")>();
+  return { ...real, toast: { success: vi.fn(), danger: vi.fn(), warning: vi.fn() } };
+});
 
 // ---------------------------------------------------------------------------
 // T8, plan "Seba encuentra, no insiste, y el mostrador no deja a nadie
@@ -67,8 +75,11 @@ function makeActions(over: Partial<CartActions> = {}): CartActions {
 
 function setup(cart: ConversationCartItem[], actions = makeActions(), bcvRate = 40) {
   const user = userEvent.setup({ delay: null, pointerEventsCheck: 0 });
-  render(<ConversationCartBlock cart={cart} bcvRate={bcvRate} actions={actions} />);
-  return { user, actions };
+  const onSendToComposer = vi.fn();
+  render(
+    <ConversationCartBlock cart={cart} bcvRate={bcvRate} actions={actions} onSendToComposer={onSendToComposer} />
+  );
+  return { user, actions, onSendToComposer };
 }
 
 describe("ConversationCartBlock — carrito vacío", () => {
@@ -221,5 +232,69 @@ describe("ConversationCartBlock — con renglones", () => {
     expect(screen.getByRole("button", { name: "Agregar una unidad de Carburador PZ27" })).toBeDisabled();
     expect(screen.getByRole("button", { name: "Quitar Carburador PZ27 del carrito" })).toBeDisabled();
     expect(screen.getByRole("button", { name: /agregar cotizaciones de seba/i })).toBeDisabled();
+  });
+});
+
+// T4 del plan "Ronda del cliente" (30/9/2026): «Copiar» y «Enviar al chat» bajo
+// el total. El texto exacto lo cubre `cartSummaryText` en su propio test; acá
+// se prueba que los botones lo usan tal cual y cuándo existen.
+describe("ConversationCartBlock — copiar y enviar al chat", () => {
+  const TEXTO = ["Carburador PZ27", "SKU: A-100", "Precio: $20.00", "", "Total: $20.00"].join("\n");
+  const renglon = () => item({ quantity: 1, product: product({ saintCode: "A-100" }) });
+
+  it("con el carrito vacío no existen ni «Copiar» ni «Enviar al chat»", () => {
+    setup([]);
+
+    expect(screen.queryByRole("button", { name: /^copiar$/i })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /enviar al chat/i })).not.toBeInTheDocument();
+  });
+
+  it("«Copiar» pone el resumen exacto en el portapapeles y avisa con un toast", async () => {
+    const { user } = setup([renglon()]);
+    // `userEvent.setup()` instala su propio stub de `navigator.clipboard`: se
+    // espía DESPUÉS del setup (mismo criterio que catalog-links-panel.test.tsx).
+    const writeText = vi.spyOn(navigator.clipboard, "writeText");
+    const { toast } = await import("@heroui/react");
+
+    await user.click(screen.getByRole("button", { name: /^copiar$/i }));
+
+    await waitFor(() => expect(writeText).toHaveBeenCalledWith(TEXTO));
+    await waitFor(() => expect(toast.success).toHaveBeenCalledWith("Carrito copiado"));
+  });
+
+  it("si el portapapeles falla, avisa «No se pudo copiar»", async () => {
+    const { user } = setup([renglon()]);
+    vi.spyOn(navigator.clipboard, "writeText").mockRejectedValueOnce(new Error("denegado"));
+    const { toast } = await import("@heroui/react");
+
+    await user.click(screen.getByRole("button", { name: /^copiar$/i }));
+
+    await waitFor(() => expect(toast.danger).toHaveBeenCalledWith("No se pudo copiar"));
+  });
+
+  it("«Enviar al chat» entrega el mismo texto a onSendToComposer, sin copiar nada", async () => {
+    const { user, onSendToComposer } = setup([renglon()]);
+    const writeText = vi.spyOn(navigator.clipboard, "writeText");
+
+    await user.click(screen.getByRole("button", { name: /enviar al chat/i }));
+
+    expect(onSendToComposer).toHaveBeenCalledTimes(1);
+    expect(onSendToComposer).toHaveBeenCalledWith(TEXTO);
+    expect(writeText).not.toHaveBeenCalled();
+  });
+
+  it("con un renglón sin precio (falta la tasa BCV) los dos botones quedan deshabilitados y dicen por qué", async () => {
+    const { user, onSendToComposer } = setup([item({ product: product({ currency: "VES", price: 101 }) })], makeActions(), 0);
+    const copiar = screen.getByRole("button", { name: /^copiar$/i });
+    const enviar = screen.getByRole("button", { name: /enviar al chat/i });
+
+    expect(copiar).toBeDisabled();
+    expect(enviar).toBeDisabled();
+    // El `title` vive en el envoltorio del botón (el Button de HeroUI no lo pasa al DOM).
+    expect(copiar.closest("[title]")).toHaveAttribute("title", "Hay productos sin precio (falta la tasa BCV)");
+    expect(enviar.closest("[title]")).toHaveAttribute("title", "Hay productos sin precio (falta la tasa BCV)");
+
+    await user.click(enviar);
+    expect(onSendToComposer).not.toHaveBeenCalled();
   });
 });

@@ -683,6 +683,20 @@ export function CrmShell({
     }
   }
   /**
+   * El resumen del carrito que el asesor mandó al cuadro de mensaje con
+   * «Enviar al chat» (T4, plan "Ronda del cliente", 30/9/2026). `ContextPanel`
+   * y `ChatPanel` son hermanos: la señal pasa por acá. `seq` crece con cada
+   * pulsación (dos seguidas con el mismo texto son dos pedidos) y
+   * `conversationId` ata la señal al chat donde nació: a un chat distinto solo
+   * baja `null` (`el filtro de insertTextSignal`), así que la señal vieja no se
+   * inserta en el chat nuevo.
+   */
+  const [composerInsert, setComposerInsert] = useState<{
+    text: string;
+    seq: number;
+    conversationId: string;
+  } | null>(null);
+  /**
    * El hilo cargado, con la conversación a la que pertenece pegada al lado.
    *
    * Guardar el id junto a los mensajes —en vez de vaciar la lista al cambiar
@@ -1596,6 +1610,11 @@ export function CrmShell({
         <section className="crm-column crm-chat">
           {selectedConversation ? (
             <ChatPanel
+              insertTextSignal={
+                composerInsert && composerInsert.conversationId === selectedConversation.id
+                  ? { text: composerInsert.text, seq: composerInsert.seq }
+                  : null
+              }
               conversation={selectedConversation}
               messages={messages}
               templates={templates}
@@ -1644,6 +1663,13 @@ export function CrmShell({
               cart={cart}
               onCartChanged={refreshCart}
               onContactTagsChanged={refreshContactTagsNow}
+              onSendToComposer={(text) =>
+                setComposerInsert((prev) => ({
+                  text,
+                  seq: (prev?.seq ?? 0) + 1,
+                  conversationId: selectedConversation.id,
+                }))
+              }
             />
           ) : (
             // Sin esto la columna queda como un panel blanco sin explicación:

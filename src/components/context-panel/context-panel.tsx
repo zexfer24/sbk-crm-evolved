@@ -48,6 +48,12 @@ interface ContextPanelProps {
    * ejercitan.
    */
   onContactTagsChanged?: () => void;
+  /**
+   * «Enviar al chat» del carrito (T4, plan "Ronda del cliente", 30/9/2026):
+   * entrega el resumen a `crm-shell.tsx`, que lo baja al composer (hermano de
+   * este panel) para dejarlo en el cuadro de mensaje sin enviarlo.
+   */
+  onSendToComposer?: (text: string) => void;
 }
 
 export function ContextPanel({
@@ -60,6 +66,7 @@ export function ContextPanel({
   cart,
   onCartChanged,
   onContactTagsChanged,
+  onSendToComposer,
 }: ContextPanelProps) {
   const [noteDraft, setNoteDraft] = useState("");
   const [isSavingNote, setIsSavingNote] = useState(false);
@@ -238,7 +245,12 @@ export function ContextPanel({
           addDisabled={cartActions.busy}
         />
 
-        <ConversationCartBlock cart={cart} bcvRate={bcvRate?.rate ?? 0} actions={cartActions} />
+        <ConversationCartBlock
+          cart={cart}
+          bcvRate={bcvRate?.rate ?? 0}
+          actions={cartActions}
+          onSendToComposer={onSendToComposer}
+        />
 
         <section className="crm-context-section">
           <p className="lm-eyebrow">Notas internas</p>

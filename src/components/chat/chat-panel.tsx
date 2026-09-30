@@ -77,6 +77,13 @@ interface ChatPanelProps {
    * `system_event` solo informa, nunca ofrece el atajo.
    */
   onOpenConversationByPhone?: (phone: string) => Promise<boolean>;
+  /**
+   * Texto que el carrito del panel derecho deja en el cuadro de mensaje
+   * (T4, plan "Ronda del cliente", 30/9/2026): baja tal cual hasta
+   * `Composer.insertTextSignal`. `crm-shell.tsx` ya lo filtra por la
+   * conversación abierta.
+   */
+  insertTextSignal?: { text: string; seq: number } | null;
 }
 
 export function ChatPanel({
@@ -98,6 +105,7 @@ export function ChatPanel({
   onRetryOutbox,
   onDiscardOutbox,
   onOpenConversationByPhone,
+  insertTextSignal,
 }: ChatPanelProps) {
   const [isIntervening, setIsIntervening] = useState(false);
   const [replyingTo, setReplyingTo] = useState<Message | null>(null);
@@ -389,6 +397,7 @@ export function ChatPanel({
         onCancelReply={() => setReplyingTo(null)}
         onSendText={onSendText}
         openTemplateModalSignal={templateModalSignal}
+        insertTextSignal={insertTextSignal}
       />
 
       {teachingMessage && (

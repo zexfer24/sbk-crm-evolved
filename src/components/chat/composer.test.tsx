@@ -12,9 +12,18 @@ import type { Agent, CatalogLink, Conversation, Message, QuickReply, Sticker } f
  * un doble de `Button`/`TextArea`/`Modal`, solo un espía sobre `warning`.
  */
 const toastWarningMock = vi.fn();
+/** T4 "Ronda del cliente" (30/9/2026): «La ventana de 24 h está cerrada» al insertar el carrito. */
+const toastDangerMock = vi.fn();
 vi.mock("@heroui/react", async (importOriginal) => {
   const real = await importOriginal<typeof import("@heroui/react")>();
-  return { ...real, toast: { ...real.toast, warning: (...args: unknown[]) => toastWarningMock(...args) } };
+  return {
+    ...real,
+    toast: {
+      ...real.toast,
+      warning: (...args: unknown[]) => toastWarningMock(...args),
+      danger: (...args: unknown[]) => toastDangerMock(...args),
+    },
+  };
 });
 
 const sendMediaMessageMock = vi.fn().mockResolvedValue(undefined);
@@ -175,7 +184,11 @@ function buildMessage(over: Partial<Message> = {}): Message {
 function composerElement(
   messages: Message[] = [],
   conversation: Conversation = buildConversation(),
-  extra: { quickReplies?: QuickReply[]; catalogLinks?: CatalogLink[] } = {}
+  extra: {
+    quickReplies?: QuickReply[];
+    catalogLinks?: CatalogLink[];
+    insertTextSignal?: { text: string; seq: number } | null;
+  } = {}
 ) {
   return (
     <Composer
@@ -188,6 +201,7 @@ function composerElement(
       replyingTo={null}
       onCancelReply={vi.fn()}
       onSendText={onSendTextMock}
+      insertTextSignal={extra.insertTextSignal}
     />
   );
 }
@@ -195,7 +209,11 @@ function composerElement(
 function renderComposer(
   messages: Message[] = [],
   conversation: Conversation = buildConversation(),
-  extra: { quickReplies?: QuickReply[]; catalogLinks?: CatalogLink[] } = {}
+  extra: {
+    quickReplies?: QuickReply[];
+    catalogLinks?: CatalogLink[];
+    insertTextSignal?: { text: string; seq: number } | null;
+  } = {}
 ) {
   return render(composerElement(messages, conversation, extra));
 }
@@ -1114,5 +1132,81 @@ describe("Composer — Enter envía la imagen pegada", () => {
     pegar(document.body, [foto("captura.png")]);
 
     expect(document.activeElement).toBe(textarea);
+  });
+});
+
+// T4 del plan "Ronda del cliente" (30/9/2026): el carrito del panel derecho
+// deja su resumen en el cuadro de mensaje SIN enviarlo, con una señal por
+// contador (`insertTextSignal`), igual que `openTemplateModalSignal`.
+describe("Composer - insertar texto desde afuera (resumen del carrito)", () => {
+  beforeEach(() => {
+    onSendTextMock.mockClear();
+    toastDangerMock.mockClear();
+  });
+
+  it("la señal inserta el texto en un cuadro vacío, sin enviarlo, y enfoca el cuadro", () => {
+    const conversation = buildConversation();
+    const { rerender } = renderComposer([], conversation, { insertTextSignal: null });
+
+    rerender(composerElement([], conversation, { insertTextSignal: { text: "Total: $20.00", seq: 1 } }));
+
+    const textarea = screen.getByLabelText("Mensaje");
+    expect(textarea).toHaveValue("Total: $20.00");
+    expect(textarea).toHaveFocus();
+    expect(onSendTextMock).not.toHaveBeenCalled();
+  });
+
+  it("si ya había texto, lo AGREGA en una línea nueva en vez de pisarlo", () => {
+    const conversation = buildConversation();
+    const { rerender } = renderComposer([], conversation, { insertTextSignal: null });
+    fireEvent.change(screen.getByLabelText("Mensaje"), { target: { value: "Hola, te cuento:" } });
+
+    rerender(composerElement([], conversation, { insertTextSignal: { text: "Total: $20.00", seq: 1 } }));
+
+    expect(screen.getByLabelText("Mensaje")).toHaveValue("Hola, te cuento:\nTotal: $20.00");
+    expect(onSendTextMock).not.toHaveBeenCalled();
+  });
+
+  it("el mismo seq en otro render no vuelve a insertar (el texto no se duplica)", () => {
+    const conversation = buildConversation();
+    const senal = { text: "Total: $20.00", seq: 1 };
+    const { rerender } = renderComposer([], conversation, { insertTextSignal: null });
+
+    rerender(composerElement([], conversation, { insertTextSignal: senal }));
+    // Otra referencia con el mismo seq (el shell re-renderiza) y el asesor sigue escribiendo.
+    rerender(composerElement([], conversation, { insertTextSignal: { ...senal } }));
+    rerender(composerElement([], conversation, { insertTextSignal: { ...senal } }));
+
+    expect(screen.getByLabelText("Mensaje")).toHaveValue("Total: $20.00");
+  });
+
+  it("un seq nuevo inserta de nuevo (dos pulsaciones seguidas de «Enviar al chat»)", () => {
+    const conversation = buildConversation();
+    const { rerender } = renderComposer([], conversation, { insertTextSignal: null });
+
+    rerender(composerElement([], conversation, { insertTextSignal: { text: "A", seq: 1 } }));
+    rerender(composerElement([], conversation, { insertTextSignal: { text: "B", seq: 2 } }));
+
+    expect(screen.getByLabelText("Mensaje")).toHaveValue("A\nB");
+  });
+
+  it("una señal que ya estaba al montar no se aplica (es de un chat anterior)", () => {
+    renderComposer([], buildConversation(), { insertTextSignal: { text: "viejo", seq: 3 } });
+
+    expect(screen.getByLabelText("Mensaje")).toHaveValue("");
+  });
+
+  it("con la ventana de 24 h cerrada no inserta y avisa que hace falta una plantilla", () => {
+    const cerrada: Conversation = {
+      ...buildConversation(),
+      lastCustomerMessageAt: new Date(Date.now() - 30 * 3600 * 1000).toISOString(),
+    };
+    const { rerender } = renderComposer([], cerrada, { insertTextSignal: null });
+
+    rerender(composerElement([], cerrada, { insertTextSignal: { text: "Total: $20.00", seq: 1 } }));
+
+    expect(screen.getByLabelText("Mensaje")).toHaveValue("");
+    expect(toastDangerMock).toHaveBeenCalledWith("La ventana de 24 h está cerrada; usa una plantilla");
+    expect(onSendTextMock).not.toHaveBeenCalled();
   });
 });

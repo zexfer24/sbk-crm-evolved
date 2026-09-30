@@ -78,6 +78,19 @@ interface ComposerProps {
    * defecto: no cambia nada para quien no lo use.
    */
   openTemplateModalSignal?: number;
+  /**
+   * Un texto que llega de AFUERA para quedar en el cuadro de mensaje, SIN
+   * enviarse (T4, plan "Ronda del cliente", 30/9/2026): el botón «Enviar al
+   * chat» del carrito del panel derecho (`ContextPanel`, hermano de este
+   * árbol en `crm-shell.tsx`) deja ahí su resumen para que el asesor lo
+   * retoque. Señal por CONTADOR (`seq`), igual que `openTemplateModalSignal`:
+   * dos pulsaciones seguidas con el mismo texto son dos pedidos distintos, y
+   * un re-render con el mismo `seq` no repite el anterior. Se AGREGA al texto
+   * que ya hubiera (nunca lo pisa). Con la ventana de 24 h cerrada no se
+   * inserta: el cuadro está deshabilitado y se avisa. Opcional y `null` por
+   * defecto.
+   */
+  insertTextSignal?: { text: string; seq: number } | null;
 }
 
 function mediaTypeFromMime(mime: string): MessageType {
@@ -135,6 +148,7 @@ export function Composer({
   onCancelReply,
   onSendText,
   openTemplateModalSignal,
+  insertTextSignal,
 }: ComposerProps) {
   const [text, setText] = useState("");
   const [isUploading, setIsUploading] = useState(false);
@@ -231,6 +245,41 @@ export function Composer({
     }
     previousSignalRef.current = openTemplateModalSignal;
   }, [openTemplateModalSignal]);
+
+  /**
+   * Aplica `insertTextSignal` (T4, "Ronda del cliente", 30/9/2026). Sigue el
+   * patrón "ajustar estado cuando cambia un prop" de React (durante el
+   * render, no en un efecto: `react-hooks/set-state-in-effect` prohíbe el
+   * `setText` dentro del efecto): `insertState.seq` guarda el último `seq`
+   * visto y arranca con el que ya traiga la señal al MONTAR, así una señal
+   * que quedó de un chat anterior no se inserta en uno recién abierto. Solo
+   * se aplica un `seq` MAYOR al último visto, así que un re-render con la
+   * misma señal (o `withinWindow` cambiando después) no duplica el texto. Con
+   * la ventana de 24 h cerrada el `seq` se da por visto igual —si no, el
+   * texto aparecería solo cuando una plantilla reabra el chat— y se avisa en
+   * vez de insertar. Lo que no puede hacerse en el render (el toast y el
+   * foco) lo hace el efecto de abajo, leyendo `insertState`.
+   */
+  const [insertState, setInsertState] = useState({
+    seq: insertTextSignal?.seq ?? 0,
+    applied: false,
+    blocked: false,
+  });
+  if (insertTextSignal && insertTextSignal.seq > insertState.seq) {
+    setInsertState({ seq: insertTextSignal.seq, applied: true, blocked: !withinWindow });
+    if (withinWindow) {
+      const inserted = insertTextSignal.text;
+      setText((prev) => (prev.trim() ? `${prev}\n${inserted}` : inserted));
+    }
+  }
+  useEffect(() => {
+    if (!insertState.applied) return;
+    if (insertState.blocked) {
+      toast.danger("La ventana de 24 h está cerrada; usa una plantilla");
+    } else {
+      textareaRef.current?.focus();
+    }
+  }, [insertState]);
 
   // Libera los object URLs de preview al desmontar o al reemplazar la lista.
   useEffect(() => {

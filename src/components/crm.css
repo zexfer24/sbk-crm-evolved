@@ -3197,3 +3197,18 @@ button.crm-bubble-quote:hover {
     transform: translateX(-50%);
   }
 }
+
+/* T4, "Ronda del cliente" (30/9/2026): «Copiar» y «Enviar al chat» bajo el
+   total del carrito. Dos columnas iguales; el envoltorio lleva el `title` de
+   «falta la tasa BCV» porque un botón deshabilitado no recibe el hover. */
+.crm-pcart-share {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 6px;
+  margin-top: 8px;
+}
+
+.crm-pcart-share-btn {
+  display: block;
+  min-width: 0;
+}
