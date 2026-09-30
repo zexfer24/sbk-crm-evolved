@@ -1,5 +1,5 @@
 import path from "path";
-import { defineConfig } from "vitest/config";
+import { configDefaults, defineConfig } from "vitest/config";
 import react from "@vitejs/plugin-react";
 
 export default defineConfig({
@@ -13,6 +13,10 @@ export default defineConfig({
     react({ include: /\.[tj]sx$/ }),
   ],
   test: {
+    // 30/9/2026 (A2 T7): el arnés del catálogo necesita la base y Redis reales y
+    // toca `products` (carga y borra un fixture): no es una prueba de la suite.
+    // Se corre aparte, con `npm run test:arnes` (vitest.arnes.config.ts).
+    exclude: [...configDefaults.exclude, "scripts/arnes-catalogo-a2.test.ts"],
     // 28/8/2026: de los ~79 archivos de test solo ~19 tocan el DOM; los demás
     // construían un jsdom que nunca usaban, pagando su costo de CPU en cada
     // proceso del pool de forks. El default pasa a "node" y las pruebas que

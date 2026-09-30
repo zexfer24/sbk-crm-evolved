@@ -58,6 +58,19 @@ jobs:
 
   migraciones:
     runs-on: ubuntu-latest
+    # A2 T7 (30/9/2026): el arnés del catálogo (último paso) usa la memoria del
+    # pedido de Seba, que vive en Redis; con un fake no probaría nada. El servicio
+    # queda en localhost:6379 y ningún otro paso de este job lo toca.
+    services:
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
     steps:
       - uses: actions/checkout@v4
 
@@ -506,3 +519,90 @@ jobs:
           psql "postgresql://postgres:postgres@127.0.0.1:54322/postgres" \
             -v ON_ERROR_STOP=1 \
             -f supabase/tests/reactivacion_por_demora.sql
+
+      # A2 (30/9/2026), plan "Seba no cotiza lo que no es": tres tests SQL de la
+      # entrega que faltaban en este job (detectado al cerrar la entrega, al
+      # comparar `ls supabase/tests` contra los `-f` de este archivo). Los tres
+      # terminan en rollback y no dejan nada en la base.
+      #
+      # T3, M3 (20260930030000): diagnosticar_terminos dice, por cada grupo de
+      # alternativas de una búsqueda, si existe en el catálogo activo con precio y
+      # si existe junto a la cabeza -- con eso el código decide qué grupos relajar
+      # (D3) en vez de que una palabra inexistente ("pwk") tumbe toda la búsqueda.
+      - name: diagnosticar_terminos -- qué palabra tumba la búsqueda y cuál se relaja
+        run: |
+          psql "postgresql://postgres:postgres@127.0.0.1:54322/postgres"             -v ON_ERROR_STOP=1             -f supabase/tests/diagnosticar_terminos.sql
+
+      # T6, M4 (20260930040000): los 16 sinónimos de Seba sembrados como lecciones
+      # globales. Como la siembra ya corrió al construir la base, el test reaplica
+      # la migración DOS veces con `\i` (ruta relativa a la raíz del repo, que es
+      # donde corre este job) para probar los 16 pares y la idempotencia.
+      - name: sinonimos_de_seba -- 16 pares globales, sin duplicados, idempotente
+        run: |
+          psql "postgresql://postgres:postgres@127.0.0.1:54322/postgres"             -v ON_ERROR_STOP=1             -f supabase/tests/sinonimos_de_seba.sql
+
+      # T9, M6 (20260930060000): resumen_busquedas y terminos_de_busquedas, los
+      # números de la pestaña «Búsquedas» de Control IA. Filas v1 y v2 mezcladas,
+      # `catalog_queries` que no es un arreglo, quien no es agente recibe `null`
+      # (son security definer, ese chequeo es suyo) y los permisos (anon no, los
+      # otros sí: los DOS revokes más el grant).
+      - name: resumen_busquedas -- conteos v1/v2, términos, no-agente y permisos
+        run: |
+          psql "postgresql://postgres:postgres@127.0.0.1:54322/postgres"             -v ON_ERROR_STOP=1             -f supabase/tests/resumen_busquedas.sql
+
+      # A2 T7, plan "Seba no cotiza lo que no es" (30/9/2026): el ARNÉS del
+      # catálogo. Corre el `buildCatalogTool` REAL de Seba sobre los ~149 casos de
+      # `casos-a2.ts` contra la base que este mismo job acaba de reconstruir desde
+      # las migraciones (buscar_productos, corregir_terminos, sinónimos de M4…) y
+      # un Redis de verdad, con la regla «cero casos peor». Carga el fixture
+      # (301 productos A2FIX-) con psql como postgres y lo borra siempre. Queda
+      # para TODAS las entregas siguientes: cualquier cambio a la búsqueda, a
+      # `tools.ts` o a una migración de `products` tiene que pasarlo, porque los
+      # tests de la suite normal usan un simulador en TypeScript del SQL y solo
+      # este paso mide el SQL de verdad.
+      #
+      # `supabase db start` levanta SOLO Postgres (no hay API): para que el cliente
+      # admin de la app hable con la base hace falta un PostgREST. Se usa la misma
+      # imagen que la CLI local, con el rol `postgres` (el que ya usan los pasos de
+      # arriba) y un secreto de JWT efímero; la service_role se firma acá mismo.
+      # Sin Kong delante, el arnés reescribe `/rest/v1/` (ARNES_POSTGREST_URL, ver la
+      # cabecera de scripts/arnes-catalogo-a2.test.ts).
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+
+      - run: npm ci
+
+      - name: PostgREST efímero para el arnés
+        run: |
+          SECRETO_JWT="$(openssl rand -hex 32)"
+          docker run -d --name postgrest-arnes --network host             -e PGRST_DB_URI="postgres://postgres:postgres@127.0.0.1:54322/postgres"             -e PGRST_DB_SCHEMAS="public,graphql_public"             -e PGRST_DB_ANON_ROLE="anon"             -e PGRST_DB_EXTRA_SEARCH_PATH="public,extensions"             -e PGRST_DB_MAX_ROWS="1000"             -e PGRST_JWT_SECRET="$SECRETO_JWT"             public.ecr.aws/supabase/postgrest:v16.2
+          codigo=000
+          for _ in $(seq 1 30); do
+            codigo="$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:3000/ || true)"
+            [ "$codigo" != "000" ] && break
+            sleep 1
+          done
+          if [ "$codigo" = "000" ]; then
+            docker logs postgrest-arnes
+            echo "PostgREST no levantó en 30 s" >&2
+            exit 1
+          fi
+          CLAVE_SERVICE_ROLE="$(SECRETO_JWT="$SECRETO_JWT" node -e '
+            const c = require("crypto");
+            const b = (o) => Buffer.from(JSON.stringify(o)).toString("base64url");
+            const cuerpo = b({ alg: "HS256", typ: "JWT" }) + "." + b({ role: "service_role", iss: "arnes-ci", exp: 4102444800 });
+            process.stdout.write(cuerpo + "." + c.createHmac("sha256", process.env.SECRETO_JWT).update(cuerpo).digest("base64url"));
+          ')"
+          echo "::add-mask::$CLAVE_SERVICE_ROLE"
+          echo "SUPABASE_SERVICE_ROLE_KEY=$CLAVE_SERVICE_ROLE" >> "$GITHUB_ENV"
+
+      - name: Arnés del catálogo -- buildCatalogTool real, base real, Redis real, cero casos peor
+        run: npm run test:arnes
+        env:
+          # Solo es el prefijo que el arnés reescribe hacia PostgREST; no hay Kong.
+          NEXT_PUBLIC_SUPABASE_URL: http://127.0.0.1:54321
+          ARNES_POSTGREST_URL: http://127.0.0.1:3000
+          ARNES_DB_URL: postgresql://postgres:postgres@127.0.0.1:54322/postgres
+          REDIS_URL: redis://127.0.0.1:6379
