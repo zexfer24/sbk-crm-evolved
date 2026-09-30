@@ -40,6 +40,18 @@ vi.mock("@/components/agent-control/catalog-searches-panel", () => ({
   CatalogSearchesPanel: (props: { refreshToken: number }) => <div data-testid="panel-busquedas" data-token={props.refreshToken} />,
 }));
 vi.mock("@/components/app-rail", () => ({ AppRail: () => null, AppTopNav: () => null }));
+// T6, "Ronda del cliente" (30/9/2026): el panel «Equipo» tiene su propio
+// test; acá solo interesa que la vista lo monte para un admin y le pase los agentes.
+vi.mock("@/components/agent-control/team-panel", () => ({
+  TeamPanel: (props: { agents: { displayName: string }[]; onAgentRenamed: (id: string, name: string) => void }) => (
+    <div data-testid="panel-equipo">
+      {props.agents.map((a) => a.displayName).join(",")}
+      <button type="button" onClick={() => props.onAgentRenamed("agent-1", "Supervisora Renombrada")}>
+        renombrar
+      </button>
+    </div>
+  ),
+}));
 
 // T9 de A2: se guardan los handlers de `postgres_changes` por tabla para poder
 // emitir un INSERT de `agent_turns` como lo haría Realtime.
@@ -612,5 +624,40 @@ describe("AgentControlView — pestaña «Búsquedas» (T9 de A2, 30/9/2026)", (
     });
     // Y el contador de hoy se vuelve a pedir en el mismo refresco.
     expect(fetchSearchSummaryMock.mock.calls.length).toBeGreaterThanOrEqual(2);
+  });
+});
+
+describe("AgentControlView — pestaña «Equipo» (T6, Ronda del cliente, 30/9/2026)", () => {
+  beforeEach(() => {
+    pills.items = [];
+  });
+
+  it("no existe para un supervisor", async () => {
+    montar(encendida);
+    await waitFor(() => expect(pills.items.length).toBeGreaterThan(0));
+    expect(pills.items.some((item) => item.value === "equipo")).toBe(false);
+    expect(screen.queryByTestId("panel-equipo")).not.toBeInTheDocument();
+  });
+
+  it("existe para un admin, al final de la tira, y monta el panel con los agentes", async () => {
+    montar(encendida, [], {}, { ...currentAgent, role: "admin" });
+    await waitFor(() => expect(pills.items.some((item) => item.value === "equipo")).toBe(true));
+    expect(pills.items.at(-1)?.value).toBe("equipo");
+    expect(pills.items.find((item) => item.value === "equipo")?.label).toBe("Equipo");
+
+    act(() => pills.onChange("equipo"));
+    const panel = await screen.findByTestId("panel-equipo");
+    expect(panel).toHaveTextContent("Supervisora");
+    expect(screen.getByRole("heading", { level: 1 })).toHaveTextContent("Equipo");
+  });
+
+  it("al renombrar a alguien, la vista refleja el nombre nuevo sin recargar", async () => {
+    montar(encendida, [], {}, { ...currentAgent, role: "admin" });
+    await waitFor(() => expect(pills.items.some((item) => item.value === "equipo")).toBe(true));
+    act(() => pills.onChange("equipo"));
+    const panel = await screen.findByTestId("panel-equipo");
+
+    fireEvent.click(screen.getByRole("button", { name: "renombrar" }));
+    await waitFor(() => expect(panel).toHaveTextContent("Supervisora Renombrada"));
   });
 });

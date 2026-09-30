@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { Button, Modal, toast } from "@heroui/react";
-import { BookOpen, Bot, GraduationCap, Search, ShieldAlert, Users, Wrench, Zap } from "lucide-react";
+import { BookOpen, Bot, GraduationCap, KeyRound, Search, ShieldAlert, Users, Wrench, Zap } from "lucide-react";
 import type { BacklogCounts } from "@/lib/data";
 import { BUSINESS_NAME } from "@/lib/brand";
 import type {
@@ -77,6 +77,7 @@ import { formatTime12h } from "@/lib/format";
 import { useLiveConversations } from "@/lib/use-live-conversations";
 import { useLiveRefresh } from "@/lib/use-live-refresh";
 import { AgentsRosterPanel } from "@/components/agent-control/agent-roster-panel";
+import { TeamPanel } from "@/components/agent-control/team-panel";
 import { AgentToolsPanel } from "@/components/agent-control/agent-tools-panel";
 import { KnowledgePanel } from "@/components/agent-control/knowledge-panel";
 import { LessonsPanel } from "@/components/agent-control/lessons-panel";
@@ -139,7 +140,15 @@ interface AgentControlViewProps {
   modelLabel: string;
 }
 
-type AgentControlTab = "ia" | "respuestas" | "biblioteca" | "lecciones" | "busquedas" | "herramientas" | "agentes";
+type AgentControlTab =
+  | "ia"
+  | "respuestas"
+  | "biblioteca"
+  | "lecciones"
+  | "busquedas"
+  | "herramientas"
+  | "agentes"
+  | "equipo";
 
 // ---------------------------------------------------------------------------
 // Ritmo del repaso del atraso, para poder decírselo a quien aprieta el botón.
@@ -208,6 +217,7 @@ const TAB_TITLE: Record<AgentControlTab, string> = {
   busquedas: "Búsquedas del catálogo",
   herramientas: "Herramientas de la IA",
   agentes: "Control de agentes",
+  equipo: "Equipo",
 };
 
 const TAB_SUBTITLE: Record<AgentControlTab, string> = {
@@ -224,6 +234,7 @@ const TAB_SUBTITLE: Record<AgentControlTab, string> = {
     "Enciende o apaga cada capacidad de la IA por separado, sin apagarla completa: ella sigue atendiendo con lo que tenga disponible.",
   agentes:
     "Quién está disponible para que la IA le pase conversaciones, cuánta carga lleva encima y cómo viene rindiendo: hoy y en los últimos 30 días.",
+  equipo: "Cambia el nombre visible o la contraseña de cualquier cuenta del CRM, sin entrar a Supabase.",
 };
 
 function timeLabel(iso: string): string {
@@ -504,6 +515,16 @@ export function AgentControlView({
    * `assertRowsAffected` lanza y el toast dice por qué.
    */
   const canEditConfig = currentAgent.role === "supervisor" || currentAgent.role === "admin";
+  // T6, "Ronda del cliente" (30/9/2026): «Equipo» cambia nombres y contraseñas
+  // con service_role, así que ni siquiera se monta para un supervisor. La
+  // guarda de verdad es la de `PATCH /api/agents/[id]`; esto es solo pantalla.
+  const canManageAccounts = currentAgent.role === "admin";
+
+  // El nombre nuevo ya quedó en la base: se refleja acá sin esperar al
+  // refresco por Realtime (que igual llega, por el UPDATE de `agents`).
+  const renameAgentLocally = useCallback((agentId: string, displayName: string) => {
+    setAgents((prev) => prev.map((a) => (a.id === agentId ? { ...a, displayName } : a)));
+  }, []);
 
   async function toggleTool(tool: AgentTool) {
     setTogglingToolKey(tool.key);
@@ -802,7 +823,7 @@ export function AgentControlView({
               </div>
             </div>
 
-            {/* Carril que scrollea: a 390 px las siete pestañas no caben (ver agent-control.css). */}
+            {/* Carril que scrollea: a 390 px las siete pestañas (ocho para un admin) no caben (ver agent-control.css). */}
             <FilterScroller className="ac-tabs-scroll no-scrollbar">
               <SlidingPills
                 className="ac-tabs"
@@ -839,6 +860,9 @@ export function AgentControlView({
                     count: agentTools.length,
                   },
                   { value: "agentes", label: "Agentes", icon: <Users size={13} />, count: agents.length },
+                  ...(canManageAccounts
+                    ? [{ value: "equipo" as const, label: "Equipo", icon: <KeyRound size={13} /> }]
+                    : []),
                 ]}
               />
             </FilterScroller>
@@ -1373,6 +1397,10 @@ export function AgentControlView({
                 currentAgentId={currentAgent.id}
                 onToggleActive={toggleAgentActive}
               />
+            )}
+
+            {tab === "equipo" && canManageAccounts && (
+              <TeamPanel agents={agents} currentAgentId={currentAgent.id} onAgentRenamed={renameAgentLocally} />
             )}
           </div>
         </main>
