@@ -137,8 +137,13 @@ export function QuickRepliesModal({ isOpen, onOpenChange, quickReplies, catalogL
                 </Button>
               )}
 
+              {/* T2, "La ronda del cliente" (30/9/2026): los contenedores de este
+                  modal usan `--radius` (tarjeta), NUNCA `rounded-field`
+                  (`--field-radius: 999px`, solo para inputs). Con 999px este panel
+                  de ~246 px de alto se dibujaba como un óvalo gigante al editar:
+                  la «píldora» que el cliente veía en el modal. */}
               {isFormOpen && (
-                <div className="flex flex-col gap-2 rounded-field border border-border bg-surface p-3">
+                <div className="flex flex-col gap-2 rounded-[var(--radius)] border border-border bg-surface p-3">
                   <div className="flex flex-col gap-1">
                     <Label htmlFor="qr-label">Título</Label>
                     <Input id="qr-label" value={label} onChange={(e) => setLabel(e.target.value)} fullWidth />
@@ -160,12 +165,12 @@ export function QuickRepliesModal({ isOpen, onOpenChange, quickReplies, catalogL
                           <div
                             role="menu"
                             aria-label="Catálogos"
-                            className="lm-catalog-menu absolute right-0 z-10 mt-1 flex min-w-40 flex-col gap-0.5 rounded-field border border-border bg-surface p-1 shadow-md"
+                            className="lm-catalog-menu absolute right-0 z-10 mt-1 flex min-w-40 flex-col gap-0.5 rounded-[var(--radius)] border border-border bg-surface p-1 shadow-md"
                           >
                             <button
                               type="button"
                               role="menuitem"
-                              className="lm-catalog-menu-item rounded-field px-2 py-1 text-left text-sm hover:bg-default"
+                              className="lm-catalog-menu-item rounded-[var(--radius)] px-2 py-1 text-left text-sm hover:bg-default"
                               onClick={() => insertCatalogMarker("{{catalogos}}")}
                             >
                               Todos los catálogos
@@ -175,7 +180,7 @@ export function QuickRepliesModal({ isOpen, onOpenChange, quickReplies, catalogL
                                 key={link.id}
                                 type="button"
                                 role="menuitem"
-                                className="lm-catalog-menu-item rounded-field px-2 py-1 text-left text-sm hover:bg-default"
+                                className="lm-catalog-menu-item rounded-[var(--radius)] px-2 py-1 text-left text-sm hover:bg-default"
                                 onClick={() => insertCatalogMarker(catalogMarkerFor(link.key))}
                               >
                                 {link.label}
@@ -253,7 +258,7 @@ export function QuickRepliesModal({ isOpen, onOpenChange, quickReplies, catalogL
                   return (
                     <div
                       key={reply.id}
-                      className="flex items-start justify-between gap-3 rounded-field border border-border bg-surface p-3"
+                      className="flex items-start justify-between gap-3 rounded-[var(--radius)] border border-border bg-surface p-3"
                     >
                       <div className="min-w-0">
                         <p className="flex items-center gap-2 text-sm font-medium">

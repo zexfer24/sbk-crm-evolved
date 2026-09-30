@@ -272,3 +272,52 @@ describe("QuickRepliesModal — aviso de URL de Drive escrita a mano (T7)", () =
     expect(screen.getAllByText("Enlace de Drive escrito a mano")).toHaveLength(1);
   });
 });
+
+// ---------------------------------------------------------------------------
+// "La píldora del modal de mensajes rápidos" (T2, plan "La ronda del cliente",
+// 30/9/2026). El cliente veía una píldora en el modal, sobre todo al EDITAR un
+// mensaje. Diagnosticado en el navegador: no era el tooltip del botón ⚡
+// (cerrado), ni las píldoras de la bandeja a través del backdrop, ni un
+// z-index suelto -- era el propio panel del formulario. `rounded-field` es
+// `--field-radius: 999px` en `theme.css` (los INPUTS son píldora a propósito),
+// y el panel `div.rounded-field` que envuelve Título + Mensaje medía 464x246:
+// con 999px de radio un rectángulo de esa altura se dibuja como un óvalo
+// gigante que corta el textarea. Lo mismo, en menor grado, en cada fila de la
+// lista y en el menú de "Insertar catálogo". Los contenedores usan el radio
+// de tarjeta (`--radius`, 0,875 rem); `rounded-field` queda solo para campos.
+// jsdom no calcula layout, así que el test fija la CLASE de cada contenedor.
+// ---------------------------------------------------------------------------
+describe("QuickRepliesModal — los contenedores no son píldoras (T2, 30/9/2026)", () => {
+  it("el panel del formulario de edición usa el radio de tarjeta, no el de campo (999px)", async () => {
+    const user = crearUsuario();
+    renderModal({ quickReplies: [mensajeRapido({ label: "Horario de atención" })] });
+
+    await user.click(screen.getByRole("button", { name: "Editar" }));
+
+    const panel = screen.getByLabelText("Título").closest("div.border") as HTMLElement;
+    expect(panel, "no se encontró el panel del formulario").not.toBeNull();
+    expect(panel.className).not.toContain("rounded-field");
+    expect(panel.className).toContain("rounded-[var(--radius)]");
+  });
+
+  it("las filas de la lista usan el radio de tarjeta", () => {
+    renderModal({ quickReplies: [mensajeRapido({ label: "Horario de atención" })] });
+
+    const fila = screen.getByText("Horario de atención").closest("div.border") as HTMLElement;
+    expect(fila, "no se encontró la fila").not.toBeNull();
+    expect(fila.className).not.toContain("rounded-field");
+    expect(fila.className).toContain("rounded-[var(--radius)]");
+  });
+
+  it("el menú de «Insertar catálogo» usa el radio de tarjeta", async () => {
+    const user = crearUsuario();
+    renderModal({ catalogLinks: [catalogo()] });
+
+    await abrirFormulario(user);
+    await user.click(screen.getByRole("button", { name: /Insertar catálogo/ }));
+
+    const menu = screen.getByRole("menu", { name: "Catálogos" });
+    expect(menu.className).not.toContain("rounded-field");
+    expect(menu.className).toContain("rounded-[var(--radius)]");
+  });
+});
