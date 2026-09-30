@@ -168,7 +168,13 @@ declare
     -- compruebe UNA vez en vez de una vez por fila (ver CLAUDE.md/la
     -- migración) — la llama el buscador de la bandeja (inbox-sidebar.tsx)
     -- con sesión de asesor.
-    'public.search_conversations_by_message(text, integer)'
+    'public.search_conversations_by_message(text, integer)',
+    -- resumen_busquedas / terminos_de_busquedas (T9, plan "Seba no cotiza lo
+    -- que no es", 30/9/2026, migración 20260930060000): la pestaña
+    -- «Búsquedas» de Control IA las llama con sesión de asesor; security
+    -- definer con is_agent() UNA vez, mismo patrón que la de arriba.
+    'public.resumen_busquedas(timestamptz)',
+    'public.terminos_de_busquedas(timestamptz)'
   ];
   f text;
   errores text := '';

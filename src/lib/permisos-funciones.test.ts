@@ -61,8 +61,15 @@ import { describe, expect, it } from "vitest";
 
 const LISTA_BLANCA = new Set(["is_agent", "is_supervisor_or_admin"]);
 
-// Las 26 funciones `security definer` conocidas en el esquema `public` a
-// fecha 25/9/2026 (25 + log_product_weight_change, sumada en
+// Las 28 funciones `security definer` conocidas en el esquema `public` a
+// fecha 30/9/2026 (26 + resumen_busquedas/terminos_de_busquedas, sumadas en
+// 20260930060000_resumen_busquedas.sql — T9 del plan "Seba no cotiza lo que
+// no es", la pestaña «Búsquedas» de Control IA: agregan `agent_turns.
+// catalog_queries` en SQL con `is_agent()` chequeado UNA vez, porque la
+// política por fila de `agent_turns` es la misma trampa que tumbó la
+// búsqueda de /inbox [20260921030000]; llevan los dos revokes y el grant a
+// `authenticated`, nunca a LISTA_BLANCA. Las 26 anteriores, a 25/9/2026:
+// 25 + log_product_weight_change, sumada en
 // 20260925010000_inventario_desde_saint.sql — T1 del plan "El inventario
 // llega de Saint y no se toca a mano". Ese mismo archivo también crea
 // saint.sync_products(), TAMBIÉN security definer, pero en el esquema
@@ -171,6 +178,8 @@ const FUNCIONES_SECURITY_DEFINER_CONOCIDAS = [
   "agent_turn_calls_by_phase",
   "agent_turn_calls_purge",
   "log_product_weight_change",
+  "resumen_busquedas",
+  "terminos_de_busquedas",
 ].sort();
 
 const DIR_MIGRACIONES = path.resolve(__dirname, "../../supabase/migrations");
@@ -304,8 +313,8 @@ describe("permisos de funciones security definer (guardián estático)", () => {
     .map(([nombre]) => nombre)
     .sort();
 
-  it("detecta exactamente las 26 funciones security definer conocidas", () => {
-    // Si esto falla con MENOS de las 26, el parser se está comiendo alguna
+  it("detecta exactamente las 28 funciones security definer conocidas", () => {
+    // Si esto falla con MENOS de las 28, el parser se está comiendo alguna
     // (regex de cabecera roto, `$$` no encontrado, etc.) y el resto de este
     // archivo no protege nada aunque pase en verde. Si falla con MÁS,
     // apareció una función security definer nueva: hay que sumarla a esta
