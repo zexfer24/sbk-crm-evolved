@@ -3081,9 +3081,13 @@ dejar rastro es lo que hacía desaparecer leads.
   (`docker port supabase_kong_Liminal_CRM`; `.env.local` puede decir otro),
   `REDIS_URL` y el contenedor de la base (`ARNES_DB_URL` o
   `ARNES_DB_CONTAINER`). En el CI (job `migraciones`) hay un servicio Redis
-  y un PostgREST efímero de la imagen `public.ecr.aws/supabase/postgrest`
-  (con su `service_role` firmada en el paso: `supabase db start` levanta solo
-  Postgres); el arnés reescribe `/rest/v1/` con `ARNES_POSTGREST_URL`. **No
+  y un PostgREST efímero v16.2 (con su `service_role` firmada en el paso:
+  `supabase db start` levanta solo Postgres). La imagen se intenta de
+  `public.ecr.aws/supabase/postgrest` y, si ECR Public responde
+  `toomanyrequests: Data limit exceeded` —límite de descargas anónimas desde
+  las IPs compartidas de los runners; tumbó el primer CI de A2, run
+  36672947616, 30/9/2026—, cae a la oficial `postgrest/postgrest` de Docker
+  Hub, misma versión y probada con el arnés; el arnés reescribe `/rest/v1/` con `ARNES_POSTGREST_URL`. **No
   correrlo contra la base de producción**: inserta y borra productos; en el
   VPS el equivalente es su propia repetición de los 597 turnos del estudio.
   Cualquier cambio a `catalog-search.ts`, `tools.ts` o una migración de
