@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { Bot, Inbox, LogOut, Package, Receipt, Route, Users } from "lucide-react";
+import { Bot, Inbox, LogOut, Package, Receipt, Route, SquareKanban, Users } from "lucide-react";
 import { createClient } from "@/lib/supabase/client";
 import { SbkMark } from "@/components/sbk-logo";
 import { ThemeToggle } from "@/components/theme-toggle";
@@ -21,12 +21,21 @@ import { AssignmentNotifier } from "@/components/assignment-notifier";
  * enmarcadas) siguen siendo distintas en el CSS.
  */
 
-export type RailSection = "recorrido" | "bandeja" | "clientes" | "ventas" | "inventario" | "control";
+export type RailSection =
+  | "recorrido"
+  | "bandeja"
+  | "clientes"
+  | "casos"
+  | "ventas"
+  | "inventario"
+  | "control";
 
 const SECTIONS: { id: RailSection; href: string; label: string; Icon: typeof Route }[] = [
   { id: "recorrido", href: "/", label: "Recorrido", Icon: Route },
   { id: "bandeja", href: "/inbox", label: "Bandeja", Icon: Inbox },
   { id: "clientes", href: "/clientes", label: "Clientes", Icon: Users },
+  // El tablero de chats abiertos por etiqueta (T7, "La ronda del cliente", 30/9/2026).
+  { id: "casos", href: "/casos", label: "Casos", Icon: SquareKanban },
   { id: "ventas", href: "/ventas", label: "Ventas", Icon: Receipt },
   { id: "inventario", href: "/inventario", label: "Inventario", Icon: Package },
   { id: "control", href: "/agent-control", label: "Control de IA", Icon: Bot },

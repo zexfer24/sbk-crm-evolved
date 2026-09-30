@@ -39,6 +39,9 @@ const SECCIONES = [
   ["Recorrido", "/"],
   ["Bandeja", "/inbox"],
   ["Clientes", "/clientes"],
+  // «Casos» (T7, plan "La ronda del cliente", 30/9/2026): el tablero Kanban
+  // por etiqueta, entre Clientes y Ventas.
+  ["Casos", "/casos"],
   ["Ventas", "/ventas"],
   ["Inventario", "/inventario"],
   ["Control de IA", "/agent-control"],
@@ -47,12 +50,14 @@ const SECCIONES = [
 describe("AppRail", () => {
   // El rail estaba copiado en cuatro pantallas; el punto de extraerlo es que
   // agregar una sección no dependa de acordarse de editar las cuatro.
-  it("ofrece las seis secciones con su destino", () => {
+  it("ofrece las siete secciones con su destino, en orden", () => {
     render(<AppRail active="clientes" />);
 
     for (const [label, href] of SECCIONES) {
       expect(screen.getByLabelText(label).getAttribute("href")).toBe(href);
     }
+    const orden = Array.from(document.querySelectorAll(".dash-rail-btn[href]")).map((a) => a.getAttribute("aria-label"));
+    expect(orden).toEqual(SECCIONES.map(([label]) => label));
   });
 
   it("marca solo la sección activa", () => {

@@ -3,6 +3,7 @@ import { orExpression, pgrstLiteral } from "@/lib/ai/pgrst";
 import { conversationsWrittenByHumans } from "@/lib/ai/human-handled";
 import { DEFAULT_BUSINESS_HOURS, parseBusinessHours, type BusinessHours } from "@/lib/business-hours";
 import { freeformWindowCutoff, isTicketTag } from "@/lib/dashboard";
+import { CASE_BOARD_LIMIT } from "@/lib/case-board";
 import { isUnassignedLead } from "@/lib/inbox-filters";
 import type { ConversationCursor } from "@/lib/inbox-paging";
 import { normalizeForSearch } from "@/lib/message-search";
@@ -1155,6 +1156,32 @@ export async function fetchConversations(
     options
   );
   return rows.map(mapConversationSummary);
+}
+
+/**
+ * Los chats abiertos para el tablero de «Casos» (T7, plan "La ronda del
+ * cliente", 30/9/2026), con las etiquetas del contacto que definen su
+ * columna. Tope de `CASE_BOARD_LIMIT`: se pide uno de más para saber si hubo
+ * corte y que la pantalla lo diga, en vez de recortar en silencio.
+ */
+export async function fetchCaseBoard(
+  supabase: SupabaseClient
+): Promise<{ conversations: ConversationSummary[]; truncated: boolean }> {
+  const { data, error } = await supabase
+    .from("conversations")
+    .select(CONVERSATION_LIST_SELECT)
+    // «Abiertos» = todo lo que no está cerrado (incluye `pending`), igual que
+    // `activeOnly` de la bandeja (decisión del orquestador, 30/9/2026).
+    .neq("status", "closed")
+    .order("last_message_at", { ascending: false, nullsFirst: false })
+    .limit(CASE_BOARD_LIMIT + 1);
+
+  if (error) throw error;
+  const rows = (data as unknown as RawConversationSummary[] | null) ?? [];
+  return {
+    conversations: rows.slice(0, CASE_BOARD_LIMIT).map(mapConversationSummary),
+    truncated: rows.length > CASE_BOARD_LIMIT,
+  };
 }
 
 /** La misma consulta, con la fila liviana del tablero y de Control de IA. */

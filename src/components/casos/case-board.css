@@ -1,0 +1,711 @@
+/* ==========================================================================
+   Casos — el tablero de chats abiertos por etiqueta (T7, plan "La ronda del
+   cliente", 30/9/2026).
+
+   La idea visual: cada etiqueta es una BANDEJA hundida en el lienzo, con un
+   labio del color de la etiqueta arriba, y los chats son tarjetas que flotan
+   encima. Hundir la bandeja (en vez de levantarla como un panel más) es lo
+   que deja leer las tarjetas como objetos que se pueden agarrar y cambiar de
+   lugar. Solo tokens de theme.css: el tema oscuro sale gratis.
+   ========================================================================== */
+
+/* El color de cada etiqueta, en dos tonos: el lleno (labio, punto, borde al
+   recibir) y la tinta (texto sobre fondo teñido). Mismo reparto que
+   `.crm-tag[data-color]` en crm.css, sin rgba fijos. */
+.cb-column,
+.cb-menu-item {
+  --cb-tone: var(--lm-muted);
+  --cb-ink: var(--lm-ink-soft);
+}
+
+.cb-column[data-color="accent"],
+.cb-menu-item[data-color="accent"] {
+  --cb-tone: var(--lm-link);
+  --cb-ink: var(--lm-link-ink);
+}
+
+.cb-column[data-color="success"],
+.cb-menu-item[data-color="success"] {
+  --cb-tone: var(--lm-good);
+  --cb-ink: var(--lm-good-ink);
+}
+
+.cb-column[data-color="warning"],
+.cb-menu-item[data-color="warning"] {
+  --cb-tone: var(--lm-wait);
+  --cb-ink: var(--lm-wait-ink);
+}
+
+.cb-column[data-color="danger"],
+.cb-menu-item[data-color="danger"] {
+  --cb-tone: var(--lm-hot);
+  --cb-ink: var(--lm-hot-ink);
+}
+
+/* --------------------------------------------------------------------------
+   Cabecera
+   -------------------------------------------------------------------------- */
+
+.cb-head {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 16px 24px;
+  padding: 6px 4px 0;
+  min-width: 0;
+}
+
+.cb-head-text {
+  min-width: 0;
+}
+
+.cb-subtitle {
+  max-width: 62ch;
+}
+
+.cb-subtitle-hot {
+  color: var(--lm-hot-ink);
+}
+
+.cb-subtitle-hint {
+  display: block;
+  margin-top: 2px;
+  color: var(--lm-muted);
+  font-size: 13px;
+}
+
+.cb-tools {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.cb-search {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 40px;
+  padding: 0 14px;
+  width: min(280px, 100%);
+  min-width: 0;
+  border-radius: 999px;
+  background: var(--lm-surface);
+  box-shadow: var(--lm-shadow-sm);
+  color: var(--lm-muted);
+  transition: box-shadow 160ms ease;
+}
+
+.cb-search:focus-within {
+  box-shadow: var(--lm-shadow-sm), 0 0 0 2px var(--lm-link);
+}
+
+.cb-search input {
+  flex: 1;
+  min-width: 0;
+  border: 0;
+  outline: none;
+  background: transparent;
+  color: var(--lm-ink);
+  font: inherit;
+  font-size: 14px;
+}
+
+.cb-search input::placeholder {
+  color: var(--lm-muted);
+}
+
+.cb-select {
+  height: 40px;
+  max-width: 100%;
+  padding: 0 14px;
+  border: 0;
+  border-radius: 999px;
+  background: var(--lm-surface);
+  box-shadow: var(--lm-shadow-sm);
+  color: var(--lm-ink);
+  font: inherit;
+  font-size: 14px;
+  cursor: pointer;
+}
+
+.cb-select:focus-visible {
+  outline: 2px solid var(--lm-link);
+  outline-offset: 2px;
+}
+
+.cb-notice {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0;
+  padding: 10px 14px;
+  border-radius: 14px;
+  background: color-mix(in srgb, var(--lm-wait) 14%, var(--lm-surface));
+  color: var(--lm-wait-ink);
+  font-size: 13px;
+  font-weight: 500;
+}
+
+.cb-noresults {
+  gap: 8px;
+}
+
+.cb-clear {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 6px;
+  padding: 8px 14px;
+  border: 0;
+  border-radius: 999px;
+  background: var(--lm-ink);
+  color: var(--lm-on-ink);
+  font: inherit;
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: transform 140ms var(--lm-ease-out), background 160ms ease;
+}
+
+.cb-clear:hover {
+  background: var(--lm-ink-hover);
+}
+
+.cb-clear:active {
+  transform: scale(0.97);
+}
+
+/* --------------------------------------------------------------------------
+   El carril
+   El scroll horizontal es SOLO del carril: con `min-width: 0` y `max-width:
+   100%` se acota al ancho de `.dash-content` (una columna flex, cuyos hijos
+   por defecto no bajan del ancho de su contenido) y la página no desborda.
+   -------------------------------------------------------------------------- */
+
+.cb-board {
+  display: flex;
+  align-items: flex-start;
+  gap: 14px;
+  min-width: 0;
+  max-width: 100%;
+  overflow-x: auto;
+  overscroll-behavior-x: contain;
+  scroll-snap-type: x mandatory;
+  scroll-padding-inline: 4px;
+  padding: 4px 4px 14px;
+  scrollbar-width: thin;
+  scrollbar-color: var(--lm-canvas-edge) transparent;
+}
+
+/* El carril entra por columnas (abajo): no sube además entero, que sería
+   el mismo gesto dos veces. */
+.dash-content > .cb-board {
+  animation: none;
+}
+
+/* --------------------------------------------------------------------------
+   Columna = bandeja
+   -------------------------------------------------------------------------- */
+
+.cb-column {
+  position: relative;
+  display: flex;
+  flex: 0 0 300px;
+  flex-direction: column;
+  max-height: calc(100vh - 230px);
+  min-height: 220px;
+  scroll-snap-align: start;
+  padding: 10px;
+  border-radius: var(--lm-radius-panel);
+  background: color-mix(in srgb, var(--cb-tone) 5%, var(--lm-canvas-edge));
+  /* El labio de color: una sombra interior sigue la curva de las esquinas,
+     cosa que un border-top no hace. */
+  box-shadow: inset 0 4px 0 var(--cb-tone), inset 0 0 0 1px var(--lm-line);
+  transition: background 180ms ease, box-shadow 180ms ease;
+  animation: cb-column-rise 320ms var(--lm-ease-out) both;
+  animation-delay: calc(var(--cb-i, 0) * 45ms);
+}
+
+/* «Sin etiqueta» no tiene color: el labio se vuelve una línea punteada, la
+   bandeja de lo que todavía no se clasificó. */
+.cb-column[data-color="none"] {
+  background: var(--lm-canvas-edge);
+  box-shadow: inset 0 0 0 1px var(--lm-line);
+  outline: 1px dashed var(--lm-muted);
+  outline-offset: -5px;
+}
+
+@keyframes cb-column-rise {
+  from {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+}
+
+/* La columna que recibiría la tarjeta si se suelta ahora: se tiñe de su
+   color y dibuja el borde. Es la única respuesta que el arrastre nativo
+   deja dar mientras el cursor lleva la tarjeta. */
+.cb-column[data-receiving="true"] {
+  background: color-mix(in srgb, var(--cb-tone) 16%, var(--lm-canvas-edge));
+  box-shadow: inset 0 4px 0 var(--cb-tone), inset 0 0 0 2px var(--cb-tone);
+  outline: none;
+}
+
+.cb-column-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  padding: 8px 8px 12px 10px;
+}
+
+.cb-column-dot {
+  flex-shrink: 0;
+  width: 8px;
+  height: 8px;
+  border-radius: 999px;
+  background: var(--cb-tone);
+}
+
+.cb-column-title {
+  flex: 1;
+  min-width: 0;
+  margin: 0;
+  overflow: hidden;
+  color: var(--lm-ink);
+  font-size: 14px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.cb-stalled {
+  flex-shrink: 0;
+  padding: 3px 8px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--lm-hot) 14%, var(--lm-surface));
+  color: var(--lm-hot-ink);
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.cb-column-count {
+  flex-shrink: 0;
+  min-width: 28px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: var(--lm-surface);
+  color: var(--cb-ink);
+  font-size: 13px;
+  font-weight: 600;
+  text-align: center;
+}
+
+.cb-drop-hint {
+  margin: 0 0 8px;
+  padding: 8px;
+  border-radius: 14px;
+  background: color-mix(in srgb, var(--cb-tone) 14%, var(--lm-surface));
+  color: var(--cb-ink);
+  font-size: 12px;
+  font-weight: 600;
+  text-align: center;
+  animation: cb-fade-in 140ms ease-out both;
+}
+
+@keyframes cb-fade-in {
+  from {
+    opacity: 0;
+  }
+}
+
+.cb-column-empty {
+  display: grid;
+  place-items: center;
+  flex: 1;
+  min-height: 120px;
+  margin: 0;
+  border-radius: var(--lm-radius-card);
+  border: 1px dashed var(--lm-muted);
+  color: var(--lm-muted);
+  font-size: 12.5px;
+  opacity: 0.8;
+}
+
+.cb-cards {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-height: 0;
+  margin: 0;
+  padding: 2px 2px 4px;
+  overflow-y: auto;
+  list-style: none;
+  scrollbar-width: thin;
+  scrollbar-color: var(--lm-muted) transparent;
+}
+
+/* --------------------------------------------------------------------------
+   Tarjeta
+   -------------------------------------------------------------------------- */
+
+.cb-card {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 12px 12px 10px;
+  border-radius: var(--lm-radius-card);
+  background: var(--lm-surface);
+  box-shadow: var(--lm-shadow-sm);
+  color: var(--lm-ink);
+  cursor: grab;
+  transition: transform 180ms var(--lm-ease-out), box-shadow 180ms ease, opacity 160ms ease;
+}
+
+.cb-card:active {
+  cursor: grabbing;
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .cb-card:hover {
+    transform: translateY(-2px);
+    box-shadow: var(--lm-shadow-md);
+  }
+}
+
+/* El hueco que deja la tarjeta levantada: sigue ahí, atenuado, para que se
+   vea de dónde salió. */
+.cb-card[data-dragging="true"] {
+  opacity: 0.4;
+  transform: scale(0.98);
+  box-shadow: none;
+}
+
+.cb-card[data-pending="true"] {
+  cursor: progress;
+  opacity: 0.75;
+}
+
+/* El enlace cubre la tarjeta entera con su ::after; el botón del menú queda
+   por encima (z-index) para seguir siendo clicable. */
+.cb-card-link {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+  color: inherit;
+  text-decoration: none;
+}
+
+.cb-card-link::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+}
+
+.cb-card-link:focus-visible {
+  outline: none;
+}
+
+.cb-card:has(.cb-card-link:focus-visible) {
+  box-shadow: var(--lm-shadow-sm), 0 0 0 2px var(--lm-link);
+}
+
+.cb-card-top {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+
+.cb-card-avatar {
+  position: relative;
+  flex-shrink: 0;
+  display: grid;
+  place-items: center;
+  width: 32px;
+  height: 32px;
+  border-radius: 999px;
+  background: var(--lm-sunken);
+  color: var(--lm-ink-soft);
+  font-size: 11.5px;
+  font-weight: 600;
+}
+
+/* El punto rojo de "atascado", mordiendo el borde del avatar. */
+.cb-card-alert {
+  position: absolute;
+  top: -1px;
+  right: -1px;
+  width: 10px;
+  height: 10px;
+  border-radius: 999px;
+  background: var(--lm-hot);
+  box-shadow: 0 0 0 2px var(--lm-surface);
+}
+
+.cb-card-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  font-size: 13.5px;
+  font-weight: 600;
+  line-height: 1.25;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.cb-card-time {
+  flex-shrink: 0;
+  color: var(--lm-muted);
+  font-size: 11.5px;
+  white-space: nowrap;
+}
+
+.cb-card-preview {
+  display: -webkit-box;
+  overflow: hidden;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+  color: var(--lm-ink-soft);
+  font-size: 12.5px;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+
+.cb-card-preview[data-empty="true"] {
+  color: var(--lm-muted);
+  font-style: italic;
+}
+
+.cb-card-foot {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.cb-card-agent {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  color: var(--lm-ink-soft);
+  font-size: 11.5px;
+  font-weight: 500;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.cb-card-agent[data-empty="true"] {
+  color: var(--lm-muted);
+}
+
+.cb-unread {
+  flex-shrink: 0;
+  min-width: 20px;
+  padding: 1px 6px;
+  border-radius: 999px;
+  background: var(--lm-link-fill);
+  color: var(--lm-on-fill);
+  font-size: 11px;
+  font-weight: 600;
+  text-align: center;
+}
+
+.cb-unread-dot {
+  flex-shrink: 0;
+  width: 8px;
+  height: 8px;
+  border-radius: 999px;
+  background: var(--lm-link);
+}
+
+.cb-card-menu-btn {
+  position: relative;
+  z-index: 1;
+  flex-shrink: 0;
+  display: grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  margin: -4px -4px -4px 0;
+  border: 0;
+  border-radius: 999px;
+  background: transparent;
+  color: var(--lm-muted);
+  cursor: pointer;
+  transition: background 140ms ease, color 140ms ease, transform 120ms var(--lm-ease-out);
+}
+
+.cb-card-menu-btn:hover,
+.cb-card-menu-btn[aria-expanded="true"] {
+  background: var(--lm-sunken);
+  color: var(--lm-ink);
+}
+
+.cb-card-menu-btn:active {
+  transform: scale(0.92);
+}
+
+.cb-card-menu-btn:disabled {
+  cursor: progress;
+  opacity: 0.5;
+}
+
+.cb-sr {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
+/* La tarjeta que lleva el cursor (liftDragImage): la misma, levantada y
+   apenas girada. Vive fuera de pantalla el instante de la foto; el padding
+   deja lugar a la sombra para que el navegador no la recorte. */
+.cb-ghost {
+  position: fixed;
+  top: -1000px;
+  left: -1000px;
+  padding: 18px;
+  pointer-events: none;
+}
+
+.cb-ghost-card {
+  transform: rotate(-2.5deg);
+  box-shadow: var(--lm-shadow-lg);
+  opacity: 1;
+}
+
+/* --------------------------------------------------------------------------
+   Menú «Mover a…» (en un portal, fuera de .dash: trae su propia letra)
+   -------------------------------------------------------------------------- */
+
+.cb-menu {
+  position: fixed;
+  z-index: 60;
+  width: 232px;
+  max-height: min(360px, 70vh);
+  overflow-y: auto;
+  padding: 6px;
+  border-radius: 18px;
+  background: var(--lm-surface);
+  box-shadow: var(--lm-shadow-lg), 0 0 0 1px var(--lm-line);
+  color: var(--lm-ink);
+  font-family: var(--font-sans), system-ui, sans-serif;
+  transform-origin: top right;
+  animation: cb-menu-in 150ms var(--lm-ease-out) both;
+}
+
+@keyframes cb-menu-in {
+  from {
+    opacity: 0;
+    transform: scale(0.96) translateY(-4px);
+  }
+}
+
+.cb-menu-label {
+  margin: 0;
+  padding: 6px 10px 4px;
+  color: var(--lm-muted);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.cb-menu-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 9px 10px;
+  border: 0;
+  border-radius: 12px;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  font-size: 13.5px;
+  text-align: left;
+  cursor: pointer;
+  transition: background 120ms ease;
+}
+
+.cb-menu-item:hover,
+.cb-menu-item:focus-visible {
+  background: color-mix(in srgb, var(--cb-tone) 12%, var(--lm-surface));
+  outline: none;
+}
+
+.cb-menu-item-label {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.cb-menu-item-count {
+  color: var(--lm-muted);
+  font-size: 12px;
+}
+
+/* --------------------------------------------------------------------------
+   Teléfono: las columnas dejan asomar la siguiente, para que se entienda que
+   el carril sigue.
+   -------------------------------------------------------------------------- */
+
+@media (max-width: 760px) {
+  .cb-column {
+    flex-basis: min(300px, 84vw);
+    max-height: calc(100vh - 290px);
+  }
+
+  .cb-tools,
+  .cb-search {
+    width: 100%;
+  }
+
+  .cb-search {
+    flex: 1 1 180px;
+  }
+
+  .cb-select {
+    flex: 1 1 140px;
+  }
+
+  /* Sin hover no hay "levantar al pasar": el dedo arrastra con el menú. */
+  .cb-card {
+    cursor: default;
+  }
+}
+
+/* Movimiento reducido: nada se desplaza ni entra animado; quedan los
+   cambios de color, que son los que dicen qué columna recibe. */
+@media (prefers-reduced-motion: reduce) {
+  .cb-column,
+  .cb-drop-hint,
+  .cb-menu {
+    animation: none;
+  }
+
+  .cb-card,
+  .cb-card:hover,
+  .cb-card[data-dragging="true"],
+  .cb-ghost-card,
+  .cb-clear:active,
+  .cb-card-menu-btn:active {
+    transform: none;
+  }
+}
