@@ -2030,6 +2030,16 @@ export type Database = {
       // `p_opcionales` (solo desempatan) y `p_cilindrada` (solo ordena); la de
       // tres parámetros se retiró. `puntaje_moto_maximo`/`filas_con_maximo_y_moto`
       // salen SOLO de la moto con nombre (`puntaje_moto_nombre`).
+      // A2, T2, plan "Seba no cotiza lo que no es" (30/9/2026, migración
+      // 20260930010000): firma de NUEVE parámetros (las de cinco y ocho se retiraron).
+      // `p_cilindrada` lleva también el año; `p_variantes` (grupos que se
+      // cuentan TODOS a la vez) y `p_moto_marca` (solo ordena) son arreglos de
+      // arreglos; `p_motos_conocidas` es un arreglo PLANO de strings (tope 200)
+      // con el que la base dice si un nombre nombra alguna moto; `p_marcas_de_moto`
+      // (arreglo plano, tope 50) dice cuáles de esas palabras son MARCA (bera, ek,
+      // jaguar...): un nombre que solo nombra marcas y calza la marca del cliente
+      // no es de otra moto. Las columnas
+      // nuevas van al final; los tipos solo AGREGAN campos.
       buscar_productos: {
         Args: {
           p_terminos: Json
@@ -2037,6 +2047,10 @@ export type Database = {
           p_limite?: number
           p_opcionales?: Json
           p_cilindrada?: Json
+          p_variantes?: Json
+          p_moto_marca?: Json
+          p_motos_conocidas?: Json
+          p_marcas_de_moto?: Json
         }
         Returns: {
           id: string
@@ -2058,7 +2072,25 @@ export type Database = {
           puntaje_moto_nombre: number
           puntaje_moto_cilindrada: number
           filas_con_maximo_y_stock: number
+          puntaje_variante: number
+          puntaje_moto_marca: number
+          nombra_moto: boolean
+          nombra_otra_moto: boolean
+          es_universal: boolean
+          filas_que_nombran_moto: number
+          filas_universales: number
+          filas_universales_con_stock: number
+          filas_con_variante: number
+          filas_con_variante_y_stock: number
         }[]
+      }
+      // A2, T2 (30/9/2026, migración 20260930010000): única fuente de los
+      // patrones regex de la búsqueda (`tipo`: prod, opc, var, moto,
+      // moto_marca, cil, anio; "inicio" es interno). Immutable; solo
+      // service_role la ejecuta.
+      patron_busqueda: {
+        Args: { alt: string; tipo: string }
+        Returns: string
       }
       // T2, plan "Seba encuentra, no insiste, y el mostrador no deja a nadie
       // esperando" (28/9/2026, migración 20260928020000): corrige tipeos
@@ -2066,8 +2098,21 @@ export type Database = {
       // corregidos; `p_protegidos` (las motos conocidas) jamás se corrige. La
       // llama `catalog-correction.ts` con service_role.
       corregir_terminos: {
-        Args: { p_terminos: string[]; p_protegidos?: string[] }
+        Args: {
+          p_terminos: string[]
+          p_protegidos?: string[]
+          p_marcas?: string[]
+          p_excluidos?: string[]
+        }
         Returns: { original: string; corregido: string }[]
+      }
+      // A2, T3 (30/9/2026, migración 20260930030000): por cada grupo de
+      // alternativas dice si existe en el catálogo y si co-ocurre con la
+      // cabeza (p_cabeza, 0-based). La llama `catalog-correction.ts` con
+      // service_role.
+      diagnosticar_terminos: {
+        Args: { p_terminos: Json; p_cabeza: number }
+        Returns: { grupo_idx: number; en_catalogo: boolean; con_cabeza: boolean | null }[]
       }
       claim_agent_turn: {
         Args: { p_max_attempts?: number; p_stale_seconds?: number }
@@ -2111,6 +2156,19 @@ export type Database = {
           p_to_kind: string
         }
         Returns: string
+      }
+      // T9, plan "Seba no cotiza lo que no es" (30/9/2026, migración
+      // 20260930060000): agregados de `agent_turns.catalog_queries` para la
+      // pestaña «Búsquedas» de Control IA. `null` si quien llama no es agente.
+      // La forma del jsonb la fija `lib/data.ts` (`fetchSearchSummary`,
+      // `fetchSearchTerms`), que tolera claves ausentes.
+      resumen_busquedas: {
+        Args: { p_desde: string }
+        Returns: Json
+      }
+      terminos_de_busquedas: {
+        Args: { p_desde: string }
+        Returns: Json
       }
       search_conversations_by_message: {
         Args: { p_limit?: number; p_query: string }
