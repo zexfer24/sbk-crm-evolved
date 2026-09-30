@@ -1,7 +1,7 @@
 "use client";
 
 import { useRef, useState } from "react";
-import { Plus, Search } from "lucide-react";
+import { Plus, Search, X } from "lucide-react";
 import type { Product } from "@/lib/types";
 import { createClient } from "@/lib/supabase/client";
 import { searchProductsForLookup } from "@/lib/inventory-data";
@@ -36,6 +36,13 @@ import type { BcvRateSummary } from "@/components/inbox/bcv-rate-chip";
  * misma (`.crm-lookup-results`, `max-height`) para que 30 o 60 resultados no
  * empujen «Lo que lleva el cliente» ni Notas fuera de la pantalla. La
  * existencia es una pastilla (`StockPill`).
+ *
+ * T3 (30/9/2026, plan "Ronda del cliente"): los resultados salen de mayor a
+ * menor existencia (el orden va en SQL, ver `searchProductsForLookup`) y el
+ * cuadro gana un botón ✕ que borra solo el texto: el asesor no tiene que
+ * seleccionar y suprimir a mano entre un cliente y el siguiente. La X nativa
+ * del `type="search"` está oculta en `crm.css` (se veía distinta en cada
+ * navegador), así que este botón es el único.
  */
 const LOOKUP_DEBOUNCE_MS = 300;
 const LOOKUP_LIMIT = 20;
@@ -75,6 +82,7 @@ export function InventoryLookup({ bcvRate, onAdd, addDisabled = false }: Invento
   // debounced (nunca durante el render), así que no dispara
   // `react-hooks/refs`.
   const requestSeq = useRef(0);
+  const inputRef = useRef<HTMLInputElement>(null);
 
   const runSearch = useDebouncedCallback(() => {
     const term = text.trim();
@@ -148,6 +156,14 @@ export function InventoryLookup({ bcvRate, onAdd, addDisabled = false }: Invento
     runSearch();
   }
 
+  // El ✕ pasa por `onChange("")`: el MISMO camino que vaciar el cuadro a mano
+  // (idle sin esperar el debounce e invalidación de la búsqueda en vuelo). El
+  // foco vuelve al input para que el asesor siga escribiendo sin un clic más.
+  function clearSearch() {
+    onChange("");
+    inputRef.current?.focus();
+  }
+
   const rate = bcvRate?.rate ?? 0;
 
   return (
@@ -156,12 +172,18 @@ export function InventoryLookup({ bcvRate, onAdd, addDisabled = false }: Invento
       <div className="crm-lookup-search">
         <Search size={14} aria-hidden="true" />
         <input
+          ref={inputRef}
           type="search"
           value={text}
           onChange={(event) => onChange(event.target.value)}
           placeholder="Buscar por nombre, marca o código"
           aria-label="Buscar en el inventario"
         />
+        {text !== "" && (
+          <button type="button" className="crm-lookup-clear" onClick={clearSearch} aria-label="Borrar búsqueda">
+            <X size={14} aria-hidden="true" />
+          </button>
+        )}
       </div>
 
       {state.status === "idle" && (

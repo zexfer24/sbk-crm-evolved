@@ -242,8 +242,9 @@ export async function searchActiveProducts(
  * plan pide que un repuesto retirado también aparezca, marcado como tal en
  * pantalla, para que el asesor no lo ofrezca sin saber que ya no se vende —
  * el corte de disponibilidad es visual (T6), no de esta consulta. Por eso
- * ordena los activos primero y recién después por nombre, en vez del orden
- * alfabético liso de `searchActiveProducts`.
+ * ordena los activos primero y recién después por existencia (mayor a menor,
+ * T3 del 30/9/2026) y por nombre, en vez del orden alfabético liso de
+ * `searchActiveProducts`.
  *
  * Paginada desde el 29/9/2026 (T9, plan "Seba encuentra, no insiste, y el
  * mostrador no deja a nadie esperando"): `limit` es el tamaño de la página y
@@ -268,6 +269,12 @@ export async function searchProductsForLookup(
     .select(PRODUCT_SELECT)
     .or(filter)
     .order("is_active", { ascending: false })
+    // T3 (30/9/2026, plan "Ronda del cliente"): el asesor quiere ver primero lo
+    // que más hay. Va en SQL y no en memoria porque `range()` pagina: un orden
+    // en memoria solo reordenaría cada página de 20 por su cuenta. Postgres
+    // pone los NULL primero en un descendente; `nullsFirst: false` manda al
+    // final lo que no tiene existencia cargada.
+    .order("stock_quantity", { ascending: false, nullsFirst: false })
     .order("name", { ascending: true })
     .order("id", { ascending: true })
     .range(offset, offset + limit - 1);

@@ -1241,6 +1241,34 @@
   display: none;
 }
 
+/* T3 (30/9/2026, plan "Ronda del cliente"): ✕ que borra el texto de la
+   búsqueda. `flex-shrink: 0` para que un texto largo en el input no lo achique;
+   `margin-left: auto` no hace falta porque el input ya toma el espacio libre
+   (`flex: 1`) y lo deja pegado a la derecha. */
+.crm-lookup-clear {
+  display: inline-flex;
+  flex-shrink: 0;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  border: none;
+  border-radius: 50%;
+  background: transparent;
+  color: var(--lm-muted);
+  cursor: pointer;
+}
+
+.crm-lookup-clear:hover {
+  color: var(--lm-ink);
+}
+
+.crm-lookup-clear:focus-visible {
+  outline: 2px solid var(--lm-link);
+  outline-offset: 1px;
+}
+
 .crm-lookup-hint {
   margin: 0;
   color: var(--lm-muted);

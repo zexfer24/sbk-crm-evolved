@@ -148,7 +148,7 @@ describe("searchActiveProducts — buscador del cierre de venta", () => {
 });
 
 describe("searchProductsForLookup — panel del buzón (T6 la va a usar)", () => {
-  it("NO filtra por is_active y ordena activos primero, luego por nombre", async () => {
+  it("NO filtra por is_active y ordena activos primero, luego por mayor existencia y por nombre", async () => {
     const { calls, builder } = fakeProductsQuery();
     await searchProductsForLookup(fakeSupabase(builder), "cg");
 
@@ -158,8 +158,12 @@ describe("searchProductsForLookup — panel del buzón (T6 la va a usar)", () =>
     // T9 (29/9/2026): el desempate por `id` hace estable la paginación con
     // `range()` — dos repuestos con el mismo nombre no pueden saltar de una
     // página a otra ni repetirse entre ellas.
+    // T3 (30/9/2026, plan "Ronda del cliente"): entre `is_active` y `name` va
+    // la existencia de mayor a menor; `nullsFirst: false` manda los `null`
+    // (Postgres los pone primero en un orden descendente) al final.
     expect(order).toEqual([
       { method: "order", args: ["is_active", { ascending: false }] },
+      { method: "order", args: ["stock_quantity", { ascending: false, nullsFirst: false }] },
       { method: "order", args: ["name", { ascending: true }] },
       { method: "order", args: ["id", { ascending: true }] },
     ]);

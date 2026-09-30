@@ -221,6 +221,66 @@ describe("InventoryLookup", () => {
   });
 
   /**
+   * T3, plan "Ronda del cliente" (30/9/2026): botón ✕ que borra solo el texto
+   * de la búsqueda. Comparte el camino de «vaciar el cuadro» (idle inmediato e
+   * invalidación de la búsqueda en vuelo) y no toca el carrito.
+   */
+  describe("botón «Borrar búsqueda» (T3)", () => {
+    it("sin texto no hay botón", () => {
+      render(<InventoryLookup bcvRate={RATE} onAdd={vi.fn()} />);
+      expect(screen.queryByRole("button", { name: "Borrar búsqueda" })).not.toBeInTheDocument();
+
+      type("bujia");
+      expect(screen.getByRole("button", { name: "Borrar búsqueda" })).toBeInTheDocument();
+    });
+
+    it("vacía el campo, quita los resultados, devuelve el foco al input y no agrega nada al carrito", async () => {
+      searchProductsForLookup.mockResolvedValue([product()]);
+      const onAdd = vi.fn();
+      render(<InventoryLookup bcvRate={RATE} onAdd={onAdd} />);
+
+      type("bujia");
+      flush();
+      await flushPromises();
+      expect(screen.getByText("Bujía CR7HSA")).toBeInTheDocument();
+
+      fireEvent.click(screen.getByRole("button", { name: "Borrar búsqueda" }));
+
+      const input = screen.getByLabelText("Buscar en el inventario") as HTMLInputElement;
+      expect(input.value).toBe("");
+      expect(screen.queryByText("Bujía CR7HSA")).not.toBeInTheDocument();
+      expect(screen.getByText(/escribe un nombre, una marca o un código/i)).toBeInTheDocument();
+      expect(document.activeElement).toBe(input);
+      expect(onAdd).not.toHaveBeenCalled();
+      // Con el cuadro vacío el botón se va.
+      expect(screen.queryByRole("button", { name: "Borrar búsqueda" })).not.toBeInTheDocument();
+    });
+
+    it("una respuesta que llega después de borrar se descarta", async () => {
+      let resolveBusqueda: (value: Product[]) => void = () => {};
+      searchProductsForLookup.mockImplementationOnce(
+        () =>
+          new Promise<Product[]>((resolve) => {
+            resolveBusqueda = resolve;
+          })
+      );
+      render(<InventoryLookup bcvRate={RATE} />);
+
+      type("bujia");
+      flush();
+      expect(searchProductsForLookup).toHaveBeenCalledTimes(1);
+
+      fireEvent.click(screen.getByRole("button", { name: "Borrar búsqueda" }));
+
+      await act(async () => {
+        resolveBusqueda([product({ id: "tarde", name: "Resultado tardío" })]);
+      });
+      expect(screen.queryByText("Resultado tardío")).not.toBeInTheDocument();
+      expect(screen.getByText(/escribe un nombre, una marca o un código/i)).toBeInTheDocument();
+    });
+  });
+
+  /**
    * T9, plan "Seba encuentra, no insiste, y el mostrador no deja a nadie
    * esperando" (29/9/2026, 3.3 + 3.5): la lista deja de cortarse en 8 sin
    * avisar. Páginas de 20 con «Ver más», y la existencia es una pastilla.
