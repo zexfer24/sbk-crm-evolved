@@ -589,6 +589,9 @@
   border: 1px solid var(--lm-line);
   border-radius: 14px;
   background: var(--lm-surface);
+  /* 30/9/2026: una URL larga de catálogo no tiene puntos de corte y desbordaba
+     la tarjeta; con min-width: 0 el grid respeta el tamaño máximo. */
+  min-width: 0;
 }
 
 /* Un escenario apagado sigue visible pero se lee como inactivo. */
@@ -620,6 +623,9 @@
   color: var(--lm-muted);
   font-size: 11.5px;
   line-height: 1.45;
+  /* 30/9/2026: permite que la URL se parta en puntos de corte arbitrarios
+     en lugar de desbordar la tarjeta. */
+  overflow-wrap: anywhere;
 }
 
 .ac-pb-card-response {

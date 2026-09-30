@@ -61,3 +61,19 @@ describe("la hoja de estilos de Control IA", () => {
     expect(bloque(await leerCss(), ".ac-tabs")).toMatch(/flex-shrink:\s*0\s*;/);
   });
 });
+
+describe("la tarjeta de escenario con URL larga", () => {
+  it("la URL del catálogo no sale de los límites de la tarjeta", async () => {
+    const css = await leerCss();
+
+    expect(
+      bloque(css, ".ac-pb-card"),
+      "sin `min-width: 0` un hijo del grid no baja del ancho de su contenido"
+    ).toMatch(/min-width:\s*0\s*;/);
+
+    expect(
+      bloque(css, ".ac-pb-card-trigger"),
+      "sin `overflow-wrap: anywhere` la URL no tiene puntos de corte y desborda la tarjeta"
+    ).toMatch(/overflow-wrap:\s*anywhere\s*;/);
+  });
+});
