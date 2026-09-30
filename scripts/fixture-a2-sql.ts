@@ -34,46 +34,11 @@
 // ---------------------------------------------------------------------------
 import { mkdirSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
-import { CATALOGO_A2, PREFIJO_CODIGO_A2, type ProductoA2 } from "../src/lib/ai/__fixtures__/catalogo-a2";
+import { CATALOGO_A2 } from "../src/lib/ai/__fixtures__/catalogo-a2";
+import { armarSqlBorrado, armarSqlCarga } from "../src/lib/ai/__fixtures__/fixture-a2-sql";
 
-const CABECERA = `-- GENERADO por scripts/fixture-a2-sql.ts -- no editar a mano.
--- Catalogo de prueba de la Entrega A2 ("Seba no cotiza lo que no es").
--- Correr con psql como postgres (products es de solo lectura para la app):
---   docker exec -i supabase_db_Liminal_CRM psql -U postgres -d postgres -v ON_ERROR_STOP=1 -1 -f - < <este archivo>
--- No abre transaccion propia: psql -1 la abre.
-`;
-
-/** Un literal de texto de SQL: comillas simples duplicadas. */
-function literal(texto: string): string {
-  return `'${texto.replace(/'/g, "''")}'`;
-}
-
-/** El borrado de las filas del fixture (y solo ellas: las reconoce el prefijo en `description`). */
-const BORRAR = `delete from public.products where description like '${PREFIJO_CODIGO_A2}%';`;
-
-export function armarSqlBorrado(): string {
-  return `${CABECERA}
-${BORRAR}
-`;
-}
-
-export function armarSqlCarga(productos: readonly ProductoA2[]): string {
-  const filas = productos.map(
-    (p) =>
-      `  (${literal(p.nombre)}, null, ${p.precioBs.toFixed(2)}, ${literal(p.currency)}, ${p.stock}, ${literal(
-        `${p.codigo} - fixture del arnes A2 (no es Saint)`
-      )}, true)`
-  );
-
-  return `${CABECERA}
--- Una carga anterior se borra primero: correr esto dos veces no duplica nada.
-${BORRAR}
-
--- ${productos.length} productos. El ruido va PRIMERO (orden fisico de insercion).
-insert into public.products (name, brand, price, currency, stock_quantity, description, is_active) values
-${filas.join(",\n")};
-`;
-}
+// El armado vive en src/ (lo importa un test de src/, y Docker no copia scripts/).
+export { armarSqlBorrado, armarSqlCarga };
 
 function main(): void {
   const carpetaSql = join(dirname(process.argv[1] ?? "."), "sql");

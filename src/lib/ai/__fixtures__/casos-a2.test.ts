@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { CATALOGO_A2, PREFIJO_CODIGO_A2 } from "@/lib/ai/__fixtures__/catalogo-a2";
 import { CASOS_A2, SECCIONES_A2, type CasoA2, type EsperadoA2 } from "@/lib/ai/__fixtures__/casos-a2";
-import { armarSqlBorrado, armarSqlCarga } from "../../../../scripts/fixture-a2-sql";
+import { armarSqlBorrado, armarSqlCarga } from "@/lib/ai/__fixtures__/fixture-a2-sql";
 
 /**
  * Coherencia de los DATOS de la Entrega A2 (30/9/2026, plan "Seba no cotiza lo
