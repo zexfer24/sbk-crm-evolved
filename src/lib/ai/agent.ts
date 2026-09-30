@@ -77,7 +77,7 @@ import {
 } from "@/lib/ai/seba";
 import { findUnsourcedFigure } from "@/lib/ai/price-guard";
 import { afirmaPromesaDeAsesor } from "@/lib/ai/promise-guard";
-import { armarMensajeDeCotizacion, armarMensajeDePregunta } from "@/lib/ai/quote-message";
+import { armarMensajeDeCotizacion, armarMensajeDePregunta, notaDeBusquedas } from "@/lib/ai/quote-message";
 import { errorText, log } from "@/lib/log";
 import { stepToolChoice } from "@/lib/ai/tool-choice";
 import { conTelemetriaDeTurno, turnCallsSnapshot } from "@/lib/ai/turn-telemetry";
@@ -3019,7 +3019,10 @@ export async function runTurnPhases(
     cotizacion: [],
     preguntaFiltro: null,
     consultas: [],
-    masOpciones: [],
+    // A2 T5 (30/9/2026): los avisos de la búsqueda y el motivo de escalada que
+    // la red de seguridad debe usar aunque no haya nada cotizado con existencia.
+    avisos: [],
+    motivoForzado: null,
   };
   // `businessHours` viaja en `deps` para `buildEscalateTool`, que lo usa en la
   // despedida sin asesores (Frente B4, "El reloj dice la verdad", 5/9/2026):
@@ -3326,19 +3329,35 @@ export async function runTurnPhases(
   // escala aunque otra búsqueda del turno haya dejado `generico`: el
   // mensaje que sale (más abajo) cierra con el texto fijo que promete al
   // asesor, y una promesa sin escalada es justo lo que esta corrida cierra.
-  if (catalogOutcome.ran && !outcome.escalated && (!catalogOutcome.generico || catalogOutcome.cotizacion.length > 0)) {
-    const motivoCatalogo: EscalationMotivo = catalogOutcome.conExistencia
-      ? "confirmar_inventario"
-      : catalogOutcome.agotados
-        ? "sin_stock"
-        : "no_identificado";
+  //
+  // A2 T5 (30/9/2026, D1/D1b/D2): `motivoForzado` cubre lo que ningún indicador
+  // dice: la búsqueda decidió NO cotizar (la moto del cliente no calza con
+  // nada, un ítem genérico dentro de una lista) o cotizó la alternativa de una
+  // variante agotada, y el caso pasa a un asesor de todos modos. Gana sobre los
+  // indicadores y sobre `generico` (esos casos no dejan ninguna pregunta
+  // pendiente). La nota con los renglones (`notaDeBusquedas`) le dice al asesor
+  // qué se pidió y qué pasó con cada cosa.
+  if (
+    catalogOutcome.ran &&
+    !outcome.escalated &&
+    (!catalogOutcome.generico || catalogOutcome.cotizacion.length > 0 || catalogOutcome.motivoForzado !== null)
+  ) {
+    const motivoCatalogo: EscalationMotivo =
+      catalogOutcome.motivoForzado ??
+      (catalogOutcome.conExistencia ? "confirmar_inventario" : catalogOutcome.agotados ? "sin_stock" : "no_identificado");
 
     if (!esperandoAsesor) {
       const forced = await escalateConversation(supabase, {
         conversationId,
         contactId: target.contactId,
         motivo: motivoCatalogo,
-        resumen: "El turno de la IA consultó el catálogo y se quedó sin pasos antes de escalar formalmente.",
+        resumen: [
+          "El turno de la IA consultó el catálogo y se quedó sin pasos antes de escalar formalmente.",
+          notaDeBusquedas(catalogOutcome.consultas),
+        ]
+          .filter((parte) => parte !== "")
+          .join("\n")
+          .slice(0, 900),
         businessHours,
       });
       outcome.escalated = forced.escalated;
@@ -3358,7 +3377,7 @@ export async function runTurnPhases(
     // genérica encima.
     // T3b (28/9/2026): con cotización, el texto fijo YA va dentro del mensaje
     // que arma el código (más abajo); anexarlo acá lo repetiría dos veces.
-    if (!/asesor/i.test(text) && catalogOutcome.cotizacion.length === 0) {
+    if (!/asesor/i.test(text) && catalogOutcome.cotizacion.length === 0 && catalogOutcome.avisos.length === 0) {
       const textoFijo =
         motivoCatalogo === "confirmar_inventario"
           ? TEXTO_CONFIRMAR_INVENTARIO
@@ -3397,7 +3416,7 @@ export async function runTurnPhases(
   // es que ya no puede tragarse lo que se cotizó. El texto armado sigue
   // pasando por la guarda de cifras (sus números salen del `toolResult` del
   // mismo turno) y por la de identidad, abajo, como cualquier otra salida.
-  if (catalogOutcome.cotizacion.length > 0) {
+  if (catalogOutcome.cotizacion.length > 0 || catalogOutcome.avisos.length > 0) {
     const noEncontrados = catalogOutcome.consultas
       .filter((c) => c.productos !== null && c.resultado !== "con_existencia" && c.resultado !== "agotados" && c.resultado !== "generico")
       .map((c) => c.query);
@@ -3409,7 +3428,10 @@ export async function runTurnPhases(
       lineas: catalogOutcome.cotizacion,
       noEncontrados,
       correcciones,
-      masOpciones: catalogOutcome.masOpciones,
+      avisos: catalogOutcome.avisos,
+      // El orden en que el cliente pidió los productos de una lista: un ítem
+      // que solo tiene aviso (sin renglones) no aparece en la cotización.
+      ordenProductos: catalogOutcome.consultas.find((c) => c.productos !== null)?.productos ?? undefined,
     });
     log.info("cotizacion_armada_por_codigo", {
       conversationId,

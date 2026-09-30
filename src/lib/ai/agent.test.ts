@@ -992,16 +992,21 @@ import { OFF_TOPIC_REPLY, SYSTEM_PROMPT } from "@/lib/ai/prompt";
 import { revealsIdentity } from "@/lib/ai/identity-guard";
 import { playbookMessageText } from "@/lib/ai/send";
 import {
+  OTRA_OPCION_CON_EXISTENCIA,
   PREGUNTA_FILTRO,
   PREGUNTA_FILTRO_PRODUCTO,
   sebaGreeting,
   sebaGreetingFollowUp,
+  TEXTO_ASESOR_CONFIRMA,
   TEXTO_CONFIRMAR_INVENTARIO,
   TEXTO_NO_IDENTIFICADO,
   TEXTO_PRECIO_A_CONFIRMAR,
   TEXTO_SIN_STOCK,
+  textoMotoSinCalce,
+  textoVarianteAgotada,
+  textoVariasOpciones,
 } from "@/lib/ai/seba";
-import type { LineaCotizada } from "@/lib/ai/tools";
+import type { ConsultaCatalogo, LineaCotizada } from "@/lib/ai/tools";
 import { GreetingAwaitsQuestionError } from "@/lib/ai/greeting-wait";
 import { log } from "@/lib/log";
 /**
@@ -5996,6 +6001,37 @@ const TOOLRESULT_CARBURADOR_18 = [
 ];
 
 /**
+ * A2 T5 (30/9/2026): una `ConsultaCatalogo` v2 COMPLETA. La red de seguridad del
+ * catálogo arma la nota de la escalada con `notaDeBusquedas` (lee `decision` y
+ * `cotizados`), así que un fake a medias de `buildCatalogTool` ya no alcanza.
+ */
+function consultaV2(parcial: Partial<ConsultaCatalogo> = {}): ConsultaCatalogo {
+  return {
+    v: 2,
+    query: "pastillas de freno sbr",
+    productos: null,
+    moto: [],
+    cilindrada: [],
+    grupos: [],
+    opcionales: [],
+    variantes: [],
+    anio: [],
+    motoMarca: [],
+    motoIgnorada: false,
+    calzaEntero: false,
+    relajados: [],
+    avisos: [],
+    corregido: null,
+    correccionDescartada: null,
+    decision: "",
+    cotizados: [],
+    conteos: null,
+    resultado: "con_existencia",
+    ...parcial,
+  };
+}
+
+/**
  * T6, plan "Seba encuentra, no insiste, y el mostrador no deja a nadie
  * esperando" (28/9/2026): `agent_turns.catalog_queries` guarda el rastro de
  * las búsquedas del catálogo del turno (`CatalogOutcome.consultas`). Sin
@@ -6003,16 +6039,11 @@ const TOOLRESULT_CARBURADOR_18 = [
  * que nunca tocó el catálogo no tiene nada que decir.
  */
 describe("runAgentTurn — T6: agent_turns.catalog_queries", () => {
-  const consulta = {
-    query: "pastillas de freno sbr",
-    productos: null,
+  const consulta = consultaV2({
     moto: [["sbr"]],
-    cilindrada: [],
     grupos: [["pastilla", "pastillas"]],
-    opcionales: [],
-    corregido: null,
-    resultado: "con_existencia",
-  };
+    decision: "moto SBR calza: cotizó 1 (5 con existencia de 5)",
+  });
 
   it("el insert de agent_turns lleva las consultas que acumuló buildCatalogTool, tal cual", async () => {
     buildCatalogToolMock.mockImplementationOnce((_deps, catalogOutcome) => {
@@ -7684,8 +7715,8 @@ describe("runAgentTurn — la cotización la arma el código (T3b, 28/9/2026)", 
       [{ ...LINEA_INCA, productoPedido: "aceite" }],
       {
         consultas: [
-          { query: "aceite", productos: ["aceite", "cadena"], resultado: "con_existencia", corregido: null },
-          { query: "cadena", productos: ["aceite", "cadena"], resultado: "sin_resultados", corregido: null },
+          consultaV2({ query: "aceite", productos: ["aceite", "cadena"], resultado: "con_existencia" }),
+          consultaV2({ query: "cadena", productos: ["aceite", "cadena"], resultado: "sin_resultados" }),
         ],
       }
     );
@@ -7701,12 +7732,11 @@ describe("runAgentTurn — la cotización la arma el código (T3b, 28/9/2026)", 
   it("con una corrección del corrector de tipeos, el mensaje abre nombrándola", async () => {
     catalogoEncontro([LINEA_INCA], {
       consultas: [
-        {
+        consultaV2({
           query: "aseite inca",
-          productos: null,
           resultado: "con_existencia",
           corregido: [{ original: "aseite", corregido: "aceite" }],
-        },
+        }),
       ],
     });
     generateMock.mockResolvedValueOnce({ text: "", usage: NO_USAGE, steps: TOOLRESULT_INCA });
@@ -7716,86 +7746,6 @@ describe("runAgentTurn — la cotización la arma el código (T3b, 28/9/2026)", 
     expect(sendAgentTextMock.mock.calls[0][2]).toBe(
       `Como no encontré exactamente lo que escribiste, busqué ACEITE en lugar de aseite:\n${RENGLON_INCA}\n\n${TEXTO_CONFIRMAR_INVENTARIO}`
     );
-  });
-
-  describe("la moto calza y hay más de tres con existencia (29/9/2026)", () => {
-    const asiento = (letra: string, stock: number, precioUsd: number, productoPedido: string | null = null): LineaCotizada => ({
-      productId: `as-${letra}`,
-      nombre: `ASIENTO SBR ${letra}`,
-      precioUsd,
-      precioBs: precioUsd * 40,
-      stock,
-      productoPedido,
-    });
-    const tres = [asiento("B", 9, 20), asiento("D", 7, 21), asiento("F", 5, 22)];
-    const toolResultTres = [
-      {
-        toolResults: [
-          {
-            output: {
-              results: [
-                { nombre: "ASIENTO SBR B", precio: "$20,00 BCV (Bs. 800,00)", stock: 9 },
-                { nombre: "ASIENTO SBR D", precio: "$21,00 BCV (Bs. 840,00)", stock: 7 },
-                { nombre: "ASIENTO SBR F", precio: "$22,00 BCV (Bs. 880,00)", stock: 5 },
-              ],
-            },
-          },
-        ],
-      },
-      {},
-    ];
-
-    it("el mensaje lleva exactamente tres renglones, luego 'Hay 3 opciones más…' y AL FINAL el texto fijo; pasa price-guard y se escala", async () => {
-      const warn = vi.spyOn(log, "warn");
-      catalogoEncontro(tres, { masOpciones: [{ productoPedido: null, cantidad: 3 }] });
-      generateMock.mockResolvedValueOnce({ text: "", usage: NO_USAGE, steps: toolResultTres });
-
-      await runAgentTurn("conv-1");
-
-      const texto = sendAgentTextMock.mock.calls[0][2] as string;
-      expect(texto).toBe(
-        [
-          "• ASIENTO SBR B: $20,00 BCV (Bs. 800,00) — 9 disponibles",
-          "• ASIENTO SBR D: $21,00 BCV (Bs. 840,00) — 7 disponibles",
-          "• ASIENTO SBR F: $22,00 BCV (Bs. 880,00) — 5 disponibles",
-          "Hay 3 opciones más para tu moto; el asesor te muestra el resto.",
-        ].join("\n") + `\n\n${TEXTO_CONFIRMAR_INVENTARIO}`
-      );
-      expect(texto.split("\n").filter((l) => l.startsWith("• "))).toHaveLength(3);
-      expect(warn).not.toHaveBeenCalledWith("cifra_sin_fuente", expect.anything());
-      expect(escalateConversationMock).toHaveBeenCalledWith(
-        expect.anything(),
-        expect.objectContaining({ motivo: "confirmar_inventario" })
-      );
-    });
-
-    it("con una opción más, va en singular", async () => {
-      catalogoEncontro(tres, { masOpciones: [{ productoPedido: null, cantidad: 1 }] });
-      generateMock.mockResolvedValueOnce({ text: "", usage: NO_USAGE, steps: toolResultTres });
-
-      await runAgentTurn("conv-1");
-
-      expect(sendAgentTextMock.mock.calls[0][2]).toContain("Hay 1 opción más para tu moto; el asesor te muestra el resto.");
-    });
-
-    it("sin 'más opciones' (caso normal) la línea no aparece", async () => {
-      catalogoEncontro(tres, { masOpciones: [] });
-      generateMock.mockResolvedValueOnce({ text: "", usage: NO_USAGE, steps: toolResultTres });
-
-      await runAgentTurn("conv-1");
-
-      expect(sendAgentTextMock.mock.calls[0][2]).not.toContain("opciones más");
-      expect(sendAgentTextMock.mock.calls[0][2]).not.toContain("opción más");
-    });
-
-    it("la línea pasa por la guarda de identidad como el resto del texto (no dispara la reescritura)", async () => {
-      catalogoEncontro(tres, { masOpciones: [{ productoPedido: null, cantidad: 3 }] });
-      generateMock.mockResolvedValueOnce({ text: "", usage: NO_USAGE, steps: toolResultTres });
-
-      await runAgentTurn("conv-1");
-
-      expect(generateTextMock).not.toHaveBeenCalled();
-    });
   });
 
   describe("el texto armado pasa por las mismas guardas que cualquier salida", () => {
@@ -7853,6 +7803,119 @@ describe("runAgentTurn — la cotización la arma el código (T3b, 28/9/2026)", 
       expect.objectContaining({ motivo: "confirmar_inventario" })
     );
     expect(sendAgentTextMock.mock.calls[0][2]).toBe(`${RENGLON_INCA}\n\n${TEXTO_CONFIRMAR_INVENTARIO}`);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// A2 T5 (30/9/2026, plan "Seba no cotiza lo que no es"): el gancho de la red de
+// seguridad. `motivoForzado` escala aunque no haya nada cotizado con
+// existencia (moto sin calce, ítem genérico de una lista, alternativa de D2), la
+// nota del asesor lleva un renglón por pedido, y los avisos se pintan aunque no
+// haya ninguna línea cotizada.
+// ---------------------------------------------------------------------------
+describe("runAgentTurn — A2 T5: motivoForzado y avisos de la búsqueda", () => {
+  const AVISO_MOTO_SIN_CALCE = { tipo: "moto_sin_calce", productoPedido: null, moto: "DT 250" } as const;
+
+  it("moto sin calce: SIN cotización, con motivoForzado la red escala con confirmar_inventario y el cliente recibe la línea del aviso y el cierre del asesor (nunca 'quedan unidades')", async () => {
+    catalogoEncontro([], {
+      avisos: [AVISO_MOTO_SIN_CALCE],
+      motivoForzado: "confirmar_inventario",
+      consultas: [
+        consultaV2({
+          query: "parrilla",
+          resultado: "generico",
+          decision: "moto DT 250 sin calce y sin universales ni de su marca: se escala sin cotizar",
+        }),
+      ],
+    });
+    generateMock.mockResolvedValueOnce({ text: "Claro, déjame revisar.", usage: NO_USAGE, steps: [{}] });
+
+    await runAgentTurn("conv-1");
+
+    expect(escalateConversationMock).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ motivo: "confirmar_inventario" })
+    );
+    // La nota le dice al asesor qué se pidió y qué pasó con cada cosa.
+    const resumen = (escalateConversationMock.mock.calls[0][1] as { resumen: string }).resumen;
+    expect(resumen).toContain("Pedidos del cliente y qué pasó con cada uno:");
+    expect(resumen).toContain("- parrilla: moto DT 250 sin calce y sin universales ni de su marca: se escala sin cotizar");
+
+    const texto = sendAgentTextMock.mock.calls[0][2] as string;
+    expect(texto).toBe(`${textoMotoSinCalce("DT 250")}\n\n${TEXTO_ASESOR_CONFIRMA}`);
+    expect(texto).not.toContain(TEXTO_CONFIRMAR_INVENTARIO);
+  });
+
+  it("motivoForzado gana sobre los indicadores: con `agotados` en true (D2: la alternativa tiene existencia) el motivo es confirmar_inventario y no sin_stock", async () => {
+    const alternativa: LineaCotizada = { ...LINEA_INCA, nombre: "TANQUE SBR ROJO", esAlternativa: true };
+    catalogoEncontro([alternativa], {
+      conExistencia: false,
+      agotados: true,
+      motivoForzado: "confirmar_inventario",
+      avisos: [{ tipo: "variante_agotada", productoPedido: null, variante: "azul", conAlternativa: true }],
+      consultas: [consultaV2({ query: "tanque azul", resultado: "agotados" })],
+    });
+    generateMock.mockResolvedValueOnce({ text: "", usage: NO_USAGE, steps: TOOLRESULT_INCA });
+
+    await runAgentTurn("conv-1");
+
+    expect(escalateConversationMock).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ motivo: "confirmar_inventario" })
+    );
+    const texto = sendAgentTextMock.mock.calls[0][2] as string;
+    expect(texto).toBe(
+      `${textoVarianteAgotada("azul")}\n${OTRA_OPCION_CON_EXISTENCIA}\n• TANQUE SBR ROJO: $2,20 BCV (Bs. 87,00) — 6 disponibles\n\n${TEXTO_CONFIRMAR_INVENTARIO}`
+    );
+  });
+
+  it("una lista con un ítem cotizado y otro «varias opciones»: se pinta en el ORDEN PEDIDO, con el ítem sin renglones en su lugar", async () => {
+    catalogoEncontro([{ ...LINEA_INCA, productoPedido: "aceite" }], {
+      avisos: [{ tipo: "varias_opciones", productoPedido: "caucho" }],
+      motivoForzado: "confirmar_inventario",
+      consultas: [
+        consultaV2({ query: "caucho", productos: ["caucho", "aceite"], resultado: "generico" }),
+        consultaV2({ query: "aceite", productos: ["caucho", "aceite"], resultado: "con_existencia" }),
+      ],
+    });
+    generateMock.mockResolvedValueOnce({ text: "", usage: NO_USAGE, steps: TOOLRESULT_INCA });
+
+    await runAgentTurn("conv-1");
+
+    expect(sendAgentTextMock.mock.calls[0][2]).toBe(
+      `*caucho*\n${textoVariasOpciones("caucho")}\n\n*aceite*\n${RENGLON_INCA}\n\n${TEXTO_CONFIRMAR_INVENTARIO}`
+    );
+  });
+
+  it("SIN motivoForzado, un genérico que pregunta sigue sin escalar (la red no cambia)", async () => {
+    buildCatalogToolMock.mockImplementationOnce((_deps, catalogOutcome) => {
+      catalogOutcome.ran = true;
+      catalogOutcome.generico = true;
+      catalogOutcome.preguntaFiltro = "producto";
+      return {};
+    });
+    generateMock.mockResolvedValueOnce({ text: "", usage: NO_USAGE, steps: [{}] });
+
+    await runAgentTurn("conv-1");
+
+    expect(escalateConversationMock).not.toHaveBeenCalled();
+    expect(sendAgentTextMock.mock.calls[0][2]).toBe(PREGUNTA_FILTRO_PRODUCTO);
+  });
+
+  it("con asesor asignado la red no llama a escalar, pero el mensaje con avisos sale igual", async () => {
+    // El chat ya tiene dueño: `esperandoAsesor`. La red conserva el texto, no toca la base.
+    state.conversation = { ...state.conversation, ai_enabled: true, assigned_agent_id: "agent-9" };
+    catalogoEncontro([], {
+      avisos: [AVISO_MOTO_SIN_CALCE],
+      motivoForzado: "confirmar_inventario",
+      consultas: [consultaV2({ query: "parrilla", resultado: "generico", decision: "sin calce" })],
+    });
+    generateMock.mockResolvedValueOnce({ text: "", usage: NO_USAGE, steps: [{}] });
+
+    await runAgentTurn("conv-1");
+
+    expect(escalateConversationMock).not.toHaveBeenCalled();
+    expect(sendAgentTextMock.mock.calls[0][2]).toContain(textoMotoSinCalce("DT 250"));
   });
 });
 

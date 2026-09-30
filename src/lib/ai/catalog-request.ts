@@ -150,13 +150,25 @@ export function debeCederAlInventario(params: {
 //   - "muéstrame/muéstrame todos", "quiero ver todos", "todos los que
 //     tienes", "los que tengas/tienes/tengan".
 //   - "me da igual", "me da lo mismo", "lo que sea".
+//   - (A2 T6, 30/9/2026, plan "Seba no cotiza lo que no es") las respuestas
+//     reales del estudio del VPS que Seba seguía sin reconocer: "no tengo
+//     idea", "la/el que sea", "el/la que tengas", "los/las que tengan", "no
+//     tengo marca", "no tengo preferencia", "recomiéndame (uno)", "cuál/qué
+//     me recomiendas", y elegir por precio ("el más económico", "la más
+//     barata", "el más barato", también dentro de una pregunta como "¿cuál
+//     es la más barata para sbr?": es otra forma de pedir que Seba escoja).
+//     Lo barato dicho para RECHAZARLO ("la más barata no me sirve", "no me
+//     gusta el más económico") NO cuenta: una negación simple en la misma
+//     línea (`PATRON_RECHAZO`) lo saca. Es deliberadamente tosco —no entiende
+//     lenguaje libre— y, si falla, el costo es el de siempre: Seba muestra
+//     tres opciones en vez de preguntar una vez más.
 // Un falso positivo aquí es barato (Seba muestra tres opciones con existencia
 // en vez de preguntar), un falso negativo también (pregunta una vez más); por
 // eso la lista es corta y no intenta entender lenguaje libre.
 // ---------------------------------------------------------------------------
 
 /** "no sé" como respuesta completa (la línea entera), no como parte de otra frase. */
-const PATRON_NO_SE = /^(?:(?:pues|eh+|mm+|ah+|bueno|la verdad|sinceramente)\s+)*(?:no se|ni idea)(?:\s+(?:cual|cuales|que|la marca|el modelo|de cual|de que marca|nada))?$/;
+const PATRON_NO_SE = /^(?:(?:pues|eh+|mm+|ah+|bueno|la verdad|sinceramente)\s+)*(?:no se|ni idea|no tengo idea)(?:\s+(?:cual|cuales|que|la marca|el modelo|de cual|de que marca|de la marca|nada))?$/;
 
 const PATRONES_VER_TODO: RegExp[] = [
   /\bcualquier(?:a|as)?\b/,
@@ -166,20 +178,85 @@ const PATRONES_VER_TODO: RegExp[] = [
   /\btodas?\s+las\s+que\b/,
   /\b(?:los|las)\s+que\s+(?:tengas|tienes|tienen|tengan|hay|haya)\b/,
   /\b(?:me\s+)?da(?:\s+lo)?\s+(?:igual|mismo)\b/,
-  /\blo\s+que\s+sea\b/,
+  /\b(?:lo|la|el|los|las)\s+que\s+sea\b/,
+  // A2 T6: singular de "los que tengas".
+  /\b(?:el|la)\s+que\s+(?:tengas|tienes|tienen|tengan|hay|haya)\b/,
+  /\bno\s+tengo\s+(?:marca|preferencia|modelo)\b/,
+  /\brecomiendame\b/,
+  /\bme\s+recomiend(?:as|a)\b/,
+  /\b(?:cual|cuales|que)\s+recomiendas\b/,
 ];
+
+/** Elegir por precio ("el más económico", "la más barata"): Seba escoge. */
+const PATRON_PRECIO = /\b(?:el|la|los|las|lo)\s+mas\s+(?:economic[oa]s?|barat[oa]s?)\b/;
+
+/** Negación simple que vuelve a lo barato un rechazo, no un pedido. */
+const PATRON_RECHAZO =
+  /\bno\s+(?:me\s+)?(?:sirve|sirven|gusta|gustan|quiero|interesa|interesan|funciona|alcanza)\b/;
+
+/** La línea del cliente sin acentos ni puntuación, para comparar contra los patrones. */
+function textoPlano(linea: string): string {
+  return normalize(linea)
+    .replace(/[^a-z0-9\s]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+// ---------------------------------------------------------------------------
+// A2 T5, decisión D6 del operador (29/9/2026, noche): «ver opciones» es un
+// pedido EXPLÍCITO, y es la ÚNICA excepción a "Seba cotiza una sola opción".
+// «Muéstrame todas», «qué opciones hay», «cuáles tienes», «qué tienes» y sus
+// equivalentes sacan hasta tres opciones con existencia; «no sé», «ni idea»,
+// «la que sea», «recomiéndame», «el más económico»… NO lo son: le piden a Seba
+// que escoja, y da UNA (`pideVerTodo` las reconoce para no volver a preguntar,
+// pero no abren la excepción). Por eso los patrones de aquí son un subconjunto
+// aparte: solo los que dicen "quiero ver varias".
+//
+// Falsos positivos y negativos cuestan poco (tres opciones con existencia en
+// vez de una, o una en vez de tres); por eso la lista es corta y explícita, sin
+// intentar entender lenguaje libre. «No tengo opciones de pago» no cuenta:
+// «opciones» solo cuenta detrás de un verbo de mostrar, «qué/cuáles/otras» o
+// delante de «hay/tienes/tienen».
+// ---------------------------------------------------------------------------
+const VERBO_MOSTRAR = String.raw`(?:muestrame|mostrame|ensename|pasame|mandame|dime|dame|quiero\s+ver|ver)`;
+
+const PATRONES_VER_OPCIONES: RegExp[] = [
+  new RegExp(String.raw`\b${VERBO_MOSTRAR}\s+(?:todos?|todas?)\b`),
+  new RegExp(String.raw`\b${VERBO_MOSTRAR}\s+(?:(?:las|algunas|mas|otras)\s+)*opciones\b`),
+  /\btodos?\s+los\s+que\b/,
+  /\btodas?\s+las\s+que\b/,
+  /\b(?:que|cuales|cuantas)\s+(?:otras\s+)?opciones\b/,
+  /\bopciones\s+(?:hay|tienes|tienen|manejas|manejan|tenemos|disponibles)\b/,
+  /\botras\s+opciones\b/,
+  /\bcuales\s+(?:tienes|tienen|hay|manejas|manejan|tenemos|son)\b/,
+  /\bque\s+(?:mas\s+)?(?:tienes|tienen|manejas|manejan)\b/,
+  /\bque\s+(?:modelos|marcas|tipos|colores|tallas|medidas)\s+(?:hay|tienes|tienen|manejas|manejan)\b/,
+];
+
+/**
+ * `true` si ALGUNA línea de la ráfaga pide de forma explícita ver varias
+ * opciones (D6): es la única razón por la que Seba cotiza hasta tres. Las
+ * frases de «no sé precisar» NO cuentan (ver `pideVerTodo`).
+ */
+export function pideVerOpciones(lineas: readonly string[]): boolean {
+  return lineas.some((linea) => {
+    const texto = textoPlano(linea);
+    return texto !== "" && PATRONES_VER_OPCIONES.some((patron) => patron.test(texto));
+  });
+}
 
 /**
  * `true` si ALGUNA línea de la ráfaga del cliente dice que no sabe precisar o
  * que le muestren todo (ver el comentario de cabecera para la lista exacta).
+ * Incluye todo lo que `pideVerOpciones` reconoce: quien pide ver opciones
+ * tampoco quiere que se le vuelva a preguntar.
  */
 export function pideVerTodo(lineas: readonly string[]): boolean {
+  if (pideVerOpciones(lineas)) return true;
   return lineas.some((linea) => {
-    const texto = normalize(linea)
-      .replace(/[^a-z0-9\s]/g, " ")
-      .replace(/\s+/g, " ")
-      .trim();
+    const texto = textoPlano(linea);
     if (!texto) return false;
-    return PATRON_NO_SE.test(texto) || PATRONES_VER_TODO.some((patron) => patron.test(texto));
+    if (PATRON_NO_SE.test(texto) || PATRONES_VER_TODO.some((patron) => patron.test(texto))) return true;
+    return PATRON_PRECIO.test(texto) && !PATRON_RECHAZO.test(texto);
   });
 }

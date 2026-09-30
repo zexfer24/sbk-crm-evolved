@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { debeCederAlInventario, pideCatalogo, pideVerTodo } from "@/lib/ai/catalog-request";
+import { debeCederAlInventario, pideCatalogo, pideVerOpciones, pideVerTodo } from "@/lib/ai/catalog-request";
 
 // Frases reales del reporte de solo lectura de producción (VPS, 21/9/2026,
 // plan "El catálogo configurado sale siempre") que SÍ piden el catálogo como
@@ -158,6 +158,35 @@ describe("pideVerTodo — el cliente pide ver opciones en vez de precisar", () =
     expect(pideVerTodo([linea])).toBe(true);
   });
 
+  // A2 T6 (30/9/2026, plan "Seba no cotiza lo que no es", punto 6 de las
+  // correcciones del operador): respuestas reales del estudio del VPS a la
+  // pregunta de filtro que `pideVerTodo` no reconocía y que hacían a Seba
+  // volver a preguntar. Una frase por caso.
+  it.each([
+    ["no tengo idea"],
+    ["No tengo idea de la marca"],
+    ["la que sea"],
+    ["Cualquiera, la que sea"],
+    ["el que sea"],
+    ["el que tengas"],
+    ["la que tengas"],
+    ["los que tengan"],
+    ["las que tengan"],
+    ["no tengo marca"],
+    ["no tengo preferencia"],
+    ["recomiéndame"],
+    ["recomiendame uno"],
+    ["¿cuál me recomiendas?"],
+    ["qué me recomiendas"],
+    ["el más económico"],
+    ["la más barata"],
+    ["el más barato"],
+    // Elegir por precio es una forma de pedir que Seba escoja: cuenta.
+    ["¿cuál es la más barata para sbr?"],
+  ])("«%s» pide ver todo (A2 T6)", (linea) => {
+    expect(pideVerTodo([linea])).toBe(true);
+  });
+
   it.each([
     ["cuánto cuesta el casco"],
     ["tengo una sbr 200"],
@@ -166,6 +195,15 @@ describe("pideVerTodo — el cliente pide ver opciones en vez de precisar", () =
     ["negro talla M"],
     ["20w50"],
     [""],
+    // "no se prende"/"no se abre" hablan de la moto o del enlace, no de la
+    // pregunta de filtro.
+    ["no se abre el link"],
+    ["no se prende"],
+    ["no tengo la moto aquí"],
+    // Rechazar lo barato no es pedir que elijan por precio.
+    ["la más barata no me sirve"],
+    ["el más económico no me gusta"],
+    ["no tengo dinero ahora"],
   ])("«%s» NO pide ver todo", (linea) => {
     expect(pideVerTodo([linea])).toBe(false);
   });
@@ -176,5 +214,80 @@ describe("pideVerTodo — el cliente pide ver opciones en vez de precisar", () =
 
   it("una ráfaga vacía no pide nada", () => {
     expect(pideVerTodo([])).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// A2 T5, decisión D6 del operador (29/9/2026, noche): Seba cotiza UNA sola
+// opción en todos los casos, con UNA excepción — el cliente pide EXPLÍCITAMENTE
+// ver opciones («muéstrame todas», «qué opciones hay», «cuáles tienes», «qué
+// tienes»): entonces salen hasta tres. «No sé», «ni idea», «la que sea»,
+// «recomiéndame», «el más económico»… NO son esa excepción (dan una, la mejor,
+// y no vuelven a preguntar): siguen siendo `pideVerTodo`, no `pideVerOpciones`.
+// ---------------------------------------------------------------------------
+describe("pideVerOpciones — el pedido EXPLÍCITO de ver varias opciones (D6)", () => {
+  it.each([
+    ["muéstrame todas"],
+    ["muéstrame todos"],
+    ["Muestrame todo lo que tengas"],
+    ["Muéstrame todos los que tengas"],
+    ["quiero ver todos"],
+    ["quiero ver las opciones"],
+    ["dame opciones"],
+    ["¿qué opciones hay?"],
+    ["Qué opciones tienen"],
+    ["y qué otras opciones tienes"],
+    ["cuáles opciones manejan"],
+    ["otras opciones"],
+    ["¿cuáles tienes?"],
+    ["cuales tienen"],
+    ["¿cuáles hay?"],
+    ["¿qué tienes?"],
+    ["Qué tienen"],
+    ["qué manejan en aceites"],
+    ["todos los que tienes"],
+    ["todas las que tengan"],
+    ["¿qué marcas hay?"],
+    ["qué modelos tienen"],
+  ])("«%s» pide ver opciones", (linea) => {
+    expect(pideVerOpciones([linea])).toBe(true);
+  });
+
+  it.each([
+    // Las respuestas de «no sé precisar»: dan UNA (la mejor), no tres.
+    ["no sé"],
+    ["ni idea"],
+    ["no tengo idea"],
+    ["la que sea"],
+    ["cualquiera"],
+    ["el que tengas"],
+    ["los que tengan"],
+    ["no tengo marca"],
+    ["recomiéndame"],
+    ["¿cuál me recomiendas?"],
+    ["el más económico"],
+    ["la más barata"],
+    ["me da igual"],
+    // Nada que ver con ver opciones.
+    ["cuánto cuesta el casco"],
+    ["tengo una sbr 200"],
+    ["la moto no se prende"],
+    ["no tengo opciones de pago"],
+    ["no hay opciones en mi ciudad"],
+    ["negro talla M"],
+    [""],
+  ])("«%s» NO pide ver opciones", (linea) => {
+    expect(pideVerOpciones([linea])).toBe(false);
+  });
+
+  it("cualquier línea de la ráfaga alcanza; una ráfaga vacía no pide nada", () => {
+    expect(pideVerOpciones(["hola buenas", "qué opciones hay"])).toBe(true);
+    expect(pideVerOpciones([])).toBe(false);
+  });
+
+  it("todo lo que pide ver opciones también cuenta como `pideVerTodo` (no se le vuelve a preguntar)", () => {
+    for (const frase of ["muéstrame todas", "qué opciones hay", "cuáles tienes", "qué tienes", "dame opciones"]) {
+      expect(pideVerTodo([frase]), frase).toBe(true);
+    }
   });
 });

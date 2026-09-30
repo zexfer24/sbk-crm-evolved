@@ -20,6 +20,11 @@ import { errorText, log } from "@/lib/log";
 //     respuesta suelta no la pierda.
 //   - `preguntaHechaPara`: la clave del producto por el que ya se hizo la
 //     pregunta de filtro — "una sola pregunta por pedido".
+//   - (A2 T5, 30/9/2026) `anio` y `preguntaTipo`: el año de la moto y QUÉ se
+//     preguntó ("moto" o "producto"). Tras la pregunta por la moto, un número
+//     de dos dígitos es el año y la respuesta entera es la moto; tras la del
+//     producto, sigue siendo una medida. Las claves anteriores a A2 (sin
+//     esos dos campos) se siguen leyendo.
 //
 // TTL de 6 horas, igual que la marca "visto hasta" (`turn-seen.ts`): un
 // pedido que el cliente dejó ayer no debe contaminar una consulta de hoy, y
@@ -44,8 +49,22 @@ export interface PedidoCatalogo {
   moto: string[][];
   /** Cilindrada suelta que el cliente ya dio (`[["200"]]`). */
   cilindrada: string[][];
+  /**
+   * A2 T5 (30/9/2026): el año de la moto que el cliente ya dio (`[["2024"]]`).
+   * Solo ordena la búsqueda y jamás es un término del producto. Los objetos
+   * guardados antes de A2 no lo traen: se leen como `[]`.
+   */
+  anio: string[][];
   /** Clave del producto por el que ya se hizo la pregunta de filtro, o `null`. */
   preguntaHechaPara: string | null;
+  /**
+   * A2 T5 (30/9/2026): QUÉ se preguntó ("moto" = `PREGUNTA_FILTRO`, "producto"
+   * = `PREGUNTA_FILTRO_PRODUCTO`), o `null`. Decide cómo se lee la respuesta
+   * suelta: un número de 2 dígitos tras la pregunta por la MOTO es el año; tras
+   * la pregunta por el PRODUCTO sigue siendo una medida. Los objetos viejos no
+   * lo traen: se leen como `null`.
+   */
+  preguntaTipo: "moto" | "producto" | null;
 }
 
 function pedidoKey(conversationId: string): string {
@@ -59,16 +78,30 @@ function esGruposDeTexto(value: unknown): value is string[][] {
   );
 }
 
-/** ¿`value` tiene la forma de `PedidoCatalogo`? Protege contra un JSON viejo o corrupto en la clave. */
-function esPedidoCatalogo(value: unknown): value is PedidoCatalogo {
-  if (typeof value !== "object" || value === null) return false;
-  const { ultimoQuery, moto, cilindrada, preguntaHechaPara } = value as Record<string, unknown>;
-  return (
-    (ultimoQuery === null || typeof ultimoQuery === "string") &&
-    esGruposDeTexto(moto) &&
-    esGruposDeTexto(cilindrada) &&
-    (preguntaHechaPara === null || typeof preguntaHechaPara === "string")
-  );
+/**
+ * El pedido con su forma completa, o `null` si `value` no la tiene: protege
+ * contra un JSON corrupto en la clave. Un objeto anterior a A2 (sin `anio` ni
+ * `preguntaTipo`) se acepta con los dos en su valor neutro; uno con esos campos
+ * mal formados NO se adivina.
+ */
+function comoPedidoCatalogo(value: unknown): PedidoCatalogo | null {
+  if (typeof value !== "object" || value === null) return null;
+  const { ultimoQuery, moto, cilindrada, anio, preguntaHechaPara, preguntaTipo } = value as Record<string, unknown>;
+  if (!(ultimoQuery === null || typeof ultimoQuery === "string")) return null;
+  if (!esGruposDeTexto(moto) || !esGruposDeTexto(cilindrada)) return null;
+  if (!(preguntaHechaPara === null || typeof preguntaHechaPara === "string")) return null;
+  if (anio !== undefined && !esGruposDeTexto(anio)) return null;
+  if (preguntaTipo !== undefined && preguntaTipo !== null && preguntaTipo !== "moto" && preguntaTipo !== "producto") {
+    return null;
+  }
+  return {
+    ultimoQuery,
+    moto,
+    cilindrada,
+    anio: anio ?? [],
+    preguntaHechaPara,
+    preguntaTipo: preguntaTipo ?? null,
+  };
 }
 
 /**
@@ -79,8 +112,7 @@ export async function leerPedido(conversationId: string): Promise<PedidoCatalogo
   try {
     const raw = await getRedis().get(pedidoKey(conversationId));
     if (raw === null) return null;
-    const parsed: unknown = JSON.parse(raw);
-    return esPedidoCatalogo(parsed) ? parsed : null;
+    return comoPedidoCatalogo(JSON.parse(raw) as unknown);
   } catch (err) {
     log.warn("catalogo_pedido_no_legible", { conversationId, detail: errorText(err) });
     return null;

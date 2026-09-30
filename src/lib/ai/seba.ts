@@ -197,3 +197,83 @@ export function textoEsperaDemora(status?: BusinessStatus): string {
   }
   return `Gracias por escribirnos. La tienda está cerrada ahora; un asesor te responde por acá ${status.nextOpening.dayLabel} a partir de las ${status.nextOpening.time}.`;
 }
+
+// ---------------------------------------------------------------------------
+// A2 T5 (30/9/2026, plan "Seba no cotiza lo que no es"): los textos fijos de
+// los AVISOS de la búsqueda. Los pinta `quote-message.ts` tal cual; nunca los
+// redacta el modelo. Cada uno sale de una decisión del operador del 29/9/2026
+// (sección 2 del plan): D1 (moto que no calza: universales o "el asesor te
+// confirma"), D1b (ítem genérico en una lista), D2 (variante agotada y UNA
+// alternativa) y D3 (palabra que no está en el nombre). Sin cifras de dinero
+// (no tocan `price-guard`) y sin nada que la guarda de identidad detecte
+// (`seba.test.ts` lo comprueba).
+// ---------------------------------------------------------------------------
+
+/**
+ * D1: lo que se cotiza no nombra la moto del cliente, pero sirve: es universal
+ * o nombra solo la marca del cliente (`marca`, p. ej. "bera"; `null` si son
+ * solo universales). Con una sola opción va en singular (D6: se cotiza UNA).
+ */
+export function textoUniversales(marca: string | null, cantidad: number): string {
+  const uno = cantidad === 1;
+  const sujeto = uno ? "este es" : "estos son";
+  const universal = uno ? "universal" : "universales";
+  const cuales = marca ? `de ${marca.toUpperCase()} o ${universal}` : universal;
+  return `No encontré uno con el nombre de tu moto; ${sujeto} ${cuales}:`;
+}
+
+/** D1: ningún producto nombra la moto del cliente y no hay universales con existencia. */
+export function textoMotoSinCalce(moto: string): string {
+  return `El asesor te confirma cuál le sirve a tu ${moto}.`;
+}
+
+/** D1b: un ítem genérico dentro de una lista no se cotiza (nunca se elige a ciegas). */
+export function textoVariasOpciones(producto: string): string {
+  return `${producto}: hay varias opciones; el asesor te ayuda a elegir.`;
+}
+
+/** Los términos entre comillas, unidos con coma y "ni" antes del último. */
+function terminosEntreComillas(terminos: readonly string[]): string {
+  const citados = terminos.map((t) => `"${t}"`);
+  if (citados.length <= 1) return citados.join("");
+  return `${citados.slice(0, -1).join(", ")} ni ${citados[citados.length - 1]}`;
+}
+
+/** D3: se buscó sin una palabra que no está en ningún nombre (o no junto al producto); esto es lo más parecido. */
+export function textoRelajado(terminos: readonly string[]): string {
+  return `No encontré ${terminosEntreComillas(terminos)} en el nombre; esto es lo más parecido:`;
+}
+
+/** D3: lo más parecido está en cero. Nunca un agotado a secas. */
+export function textoRelajadoAgotado(terminos: readonly string[]): string {
+  return `No encontré ${terminosEntreComillas(terminos)} en el nombre y lo más parecido que encontré está agotado.`;
+}
+
+const TALLAS_DE_LETRAS = new Set(["s", "m", "l", "xl", "xxl", "xxxl", "2xl", "3xl"]);
+
+/**
+ * D2: "<variante> agotado". La variante llega como la dejó `catalogQuery`
+ * (minúsculas, sin acentos): un color, "edge", "paleta", una talla. Concuerda
+ * en género (colores y nombres en -a en femenino; las tallas van con la
+ * palabra "Talla").
+ */
+export function textoVarianteAgotada(variante: string): string {
+  const v = variante.trim();
+  if (/^[0-9]{2}$/.test(v) || TALLAS_DE_LETRAS.has(v.toLowerCase())) {
+    return `Talla ${v.toUpperCase()} agotada.`;
+  }
+  const capitalizada = `${v.charAt(0).toUpperCase()}${v.slice(1)}`;
+  return `${capitalizada} ${v.endsWith("a") ? "agotada" : "agotado"}.`;
+}
+
+/** D2: encabezado de la UNA alternativa con existencia que se ofrece cuando la variante pedida está agotada. */
+export const OTRA_OPCION_CON_EXISTENCIA = "Otra opción con existencia:";
+
+/**
+ * El cierre del mensaje cuando NO se cotizó nada (D1: moto sin calce; D1b:
+ * "hay varias opciones") y aun así se escala: `TEXTO_CONFIRMAR_INVENTARIO`
+ * diría "en inventario parece que quedan unidades" sobre un producto que no se
+ * nombró. Decisión de T5 (el plan no lo dicta): mismo tono que los demás.
+ */
+export const TEXTO_ASESOR_CONFIRMA =
+  "Te paso con un asesor para que te confirme cuál le sirve y te dé respuesta lo antes posible.";

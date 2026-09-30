@@ -2,6 +2,8 @@ import { describe, expect, it } from "vitest";
 import {
   PREGUNTA_FILTRO,
   PREGUNTA_FILTRO_PRODUCTO,
+  OTRA_OPCION_CON_EXISTENCIA,
+  TEXTO_ASESOR_CONFIRMA,
   TEXTO_CONFIRMAR_INVENTARIO,
   TEXTO_NO_IDENTIFICADO,
   TEXTO_PRECIO_A_CONFIRMAR,
@@ -9,6 +11,12 @@ import {
   isSebaGreeting,
   presentationGreetingFor,
   sebaGreeting,
+  textoMotoSinCalce,
+  textoRelajado,
+  textoRelajadoAgotado,
+  textoUniversales,
+  textoVarianteAgotada,
+  textoVariasOpciones,
 } from "@/lib/ai/seba";
 import { revealsIdentity } from "@/lib/ai/identity-guard";
 import type { DayBand } from "@/lib/business-hours";
@@ -121,5 +129,81 @@ describe("isSebaGreeting", () => {
 
   it("una cadena vacía no calza ninguna franja", () => {
     expect(isSebaGreeting("")).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// A2 T5 (30/9/2026, plan "Seba no cotiza lo que no es"): los textos fijos de
+// los AVISOS de la búsqueda (D1, D1b, D2, D3). Literales byte a byte: el
+// cliente y el operador los dictaron en las decisiones del plan (sección 2), y
+// `quote-message.ts` los pinta tal cual. Mismo control de sanidad que las demás
+// frases fijas: ninguna puede revelar identidad.
+// ---------------------------------------------------------------------------
+describe("textos fijos de los avisos de la búsqueda (A2)", () => {
+  it("D1, universales: 'estos son universales' y, si son de la marca del cliente, 'de <MARCA> o universales'; en singular con una sola opción", () => {
+    expect(textoUniversales(null, 2)).toBe("No encontré uno con el nombre de tu moto; estos son universales:");
+    expect(textoUniversales("bera", 2)).toBe("No encontré uno con el nombre de tu moto; estos son de BERA o universales:");
+    expect(textoUniversales(null, 1)).toBe("No encontré uno con el nombre de tu moto; este es universal:");
+    expect(textoUniversales("bera", 1)).toBe("No encontré uno con el nombre de tu moto; este es de BERA o universal:");
+  });
+
+  it("D1, moto sin calce: el asesor confirma cuál le sirve a SU moto", () => {
+    expect(textoMotoSinCalce("DT 250")).toBe("El asesor te confirma cuál le sirve a tu DT 250.");
+  });
+
+  it("D1b, ítem genérico dentro de una lista: 'hay varias opciones; el asesor te ayuda a elegir'", () => {
+    expect(textoVariasOpciones("caucho n° trasero")).toBe(
+      "caucho n° trasero: hay varias opciones; el asesor te ayuda a elegir."
+    );
+  });
+
+  it("D3, palabra relajada: 'No encontré \"X\" en el nombre; esto es lo más parecido'", () => {
+    expect(textoRelajado(["pwk"])).toBe('No encontré "pwk" en el nombre; esto es lo más parecido:');
+    expect(textoRelajado(["porta", "alforja"])).toBe(
+      'No encontré "porta" ni "alforja" en el nombre; esto es lo más parecido:'
+    );
+  });
+
+  it("D3, lo más parecido está agotado: nunca un agotado a secas", () => {
+    expect(textoRelajadoAgotado(["bomba"])).toBe(
+      'No encontré "bomba" en el nombre y lo más parecido que encontré está agotado.'
+    );
+    expect(textoRelajadoAgotado(["a", "b"])).toBe(
+      'No encontré "a" ni "b" en el nombre y lo más parecido que encontré está agotado.'
+    );
+  });
+
+  it("D2, variante agotada: '<variante> agotado' y la UNA alternativa con existencia", () => {
+    expect(textoVarianteAgotada("azul")).toBe("Azul agotado.");
+    expect(textoVarianteAgotada("39")).toBe("Talla 39 agotada.");
+    expect(textoVarianteAgotada("edge")).toBe("Edge agotado.");
+    // Concuerda en género: colores y nombres en -a van en femenino; las tallas de letras también.
+    expect(textoVarianteAgotada("roja")).toBe("Roja agotada.");
+    expect(textoVarianteAgotada("paleta")).toBe("Paleta agotada.");
+    expect(textoVarianteAgotada("xl")).toBe("Talla XL agotada.");
+    expect(textoVarianteAgotada("2xl")).toBe("Talla 2XL agotada.");
+    expect(OTRA_OPCION_CON_EXISTENCIA).toBe("Otra opción con existencia:");
+  });
+
+  it("el cierre cuando no se cotizó nada y aun así se escala", () => {
+    expect(TEXTO_ASESOR_CONFIRMA).toBe(
+      "Te paso con un asesor para que te confirme cuál le sirve y te dé respuesta lo antes posible."
+    );
+  });
+
+  it("ninguno revela identidad (guarda de identidad)", () => {
+    for (const texto of [
+      textoUniversales(null, 2),
+      textoUniversales("bera", 1),
+      textoMotoSinCalce("DT 250"),
+      textoVariasOpciones("caucho 18"),
+      textoRelajado(["pwk"]),
+      textoRelajadoAgotado(["pwk", "bomba"]),
+      textoVarianteAgotada("azul"),
+      OTRA_OPCION_CON_EXISTENCIA,
+      TEXTO_ASESOR_CONFIRMA,
+    ]) {
+      expect(revealsIdentity(texto), texto).toBeNull();
+    }
   });
 });

@@ -45,6 +45,7 @@ import {
   buildCatalogTool,
   buildEscalateTool,
   buildOrderHistoryTool,
+  MOTOS_EN_NOMBRES,
   PREGUNTA_QUE_BUSCA_INSTRUCTION,
   RECORDATORIO_SALUDO,
   type CatalogOutcome,
@@ -59,7 +60,18 @@ import {
   TEXTO_NO_IDENTIFICADO,
   TEXTO_SIN_STOCK,
 } from "@/lib/ai/seba";
-import { normalize } from "@/lib/ai/catalog-search";
+import { MARCAS_DE_MOTO, MARCAS_DE_PRODUCTO, MOTOS_CONOCIDAS, RELLENO_CATALOGO } from "@/lib/ai/catalog-search";
+import {
+  buscarProductosSim,
+  corregirTerminosSim,
+  diagnosticarTerminosSim,
+  SINONIMOS_M4,
+  type ArgsBuscarSim,
+  type FilaSim,
+} from "@/lib/ai/__fixtures__/simulador-sql-a2";
+import { CATALOGO_A2 } from "@/lib/ai/__fixtures__/catalogo-a2";
+import { CASOS_A2, type CasoA2, type EsperadoA2, type LlamadaA2 } from "@/lib/ai/__fixtures__/casos-a2";
+import { nuevoCatalogOutcome, verificarEsperadoA2 } from "@/lib/ai/__fixtures__/verificar-caso-a2";
 import { log } from "@/lib/log";
 
 /**
@@ -69,154 +81,63 @@ import { log } from "@/lib/log";
  * pueda escribir en él — así que este helper les da uno nuevo en cada
  * llamada, salvo los tests nuevos que sí lo inspeccionan.
  */
-function nuevoCatalogOutcome(): CatalogOutcome {
-  return {
-    ran: false,
-    conExistencia: false,
-    agotados: false,
-    sinResultados: false,
-    generico: false,
-    cotizacion: [],
-    preguntaFiltro: null,
-    consultas: [],
-    masOpciones: [],
-  };
-}
-
 beforeEach(() => {
   redisEstado.redis = new FakeRedis();
   redisEstado.falla = null;
 });
 
 /**
- * Fila mínima que `buscar_productos` (la migración 20260926010000)
- * devolvería. T2, plan "La búsqueda encuentra lo que el cliente pide"
- * (25-26/9/2026): reemplaza a la vieja `FakeProductRow` (una fila de
- * `products` con `product_compatibility` embebido) porque `buildCatalogTool`
- * ya no consulta `products` directo — llama al RPC.
+ * Fila mínima que `buscar_productos` (migración 20260930010000) devolvería.
+ * T2, plan "La búsqueda encuentra lo que el cliente pide" (25-26/9/2026):
+ * reemplaza a la vieja `FakeProductRow` (una fila de `products` con
+ * `product_compatibility` embebido) porque `buildCatalogTool` ya no consulta
+ * `products` directo — llama al RPC.
  *
- * `puntaje`/`puntaje_moto` son OPCIONALES: si no se dan, el fake los calcula
- * solo (`puntajeAuto`, más abajo) a partir de si el NOMBRE del producto
- * contiene alguna alternativa de CADA grupo de la consulta real — así la
- * mayoría de los tests no tiene que llevar la cuenta a mano de cuántos
- * términos calza cada fila, igual que `products.search_text` en la base
- * real. Los tests que necesitan control fino (una fila con puntaje MENOR al
- * máximo, a propósito; la moto que calza en una sola fila) lo pasan
- * explícito.
+ * A2 T5 (30/9/2026): el fake ya no aproxima el SQL con `includes()`: delega en
+ * `simulador-sql-a2.ts`, que replica `buscar_productos` de M1 (patrones por
+ * palabra, variantes, `nombra_otra_moto`, universales, ventanas antes del
+ * límite y el orden con desempate por existencia), `corregir_terminos` de M2 y
+ * `diagnosticar_terminos` de M3. `puntaje`/`puntaje_moto` siguen siendo
+ * OPCIONALES en la fila para los tests que necesitan control fino.
  */
-interface FakeRpcRow {
-  id: string;
-  name: string;
-  brand: string;
-  price: number;
-  currency: "USD" | "VES";
-  stock_quantity: number;
-  /** Opcional: sin fecha, la herramienta no puede saber la antigüedad y no avisa de nada. */
-  updated_at?: string;
-  compatibilidad?: { moto_brand: string; moto_model: string }[];
-  puntaje?: number;
-  /** Fuerza `puntaje_moto_nombre` (la moto CON NOMBRE; la cilindrada nunca cuenta acá). */
-  puntaje_moto?: number;
-}
-
-/**
- * Simula, sin ejecutar SQL, si `searchText` (el nombre del producto) calza
- * por lo menos una alternativa de CADA grupo — igual que el puntaje real
- * (inicio de palabra), pero con `includes()`: acá no se prueba la SQL (eso
- * lo hace `supabase/tests/buscar_productos.sql`), solo se deriva un puntaje
- * consistente sin que cada test lo escriba a mano.
- */
-function puntajeAuto(searchText: string, grupos: string[][]): number {
-  const texto = normalize(searchText);
-  return grupos.filter((grupo) => grupo.some((alt) => texto.includes(normalize(alt)))).length;
-}
+type FakeRpcRow = FilaSim;
 
 /**
  * Fila mínima de `ai_lessons` para simular un sinónimo de búsqueda (T5c,
  * 18/9/2026). `scope`/`conversationId` son opcionales y por defecto simulan
  * un sinónimo global de siempre (F, 20/9/2026, "El resguardo antes del
  * push"): antes de esa corrida no existían, así que dejarlos sin poner
- * mantiene el comportamiento de los tests viejos de este archivo.
+ * mantiene el comportamiento de los tests viejos de este archivo. A2 T5:
+ * `kind = "no_corregir"` simula una palabra marcada «No corregir» (D5; la
+ * palabra va en `synonym_from`).
  */
 interface FakeSynonymRow {
   synonym_from: string;
   synonym_to: string;
   scope?: "global" | "conversacion";
   conversationId?: string;
+  kind?: "sinonimo" | "no_corregir";
 }
 
-/** Los argumentos con los que `buildCatalogTool` llama a `buscar_productos` (migración 20260928010000). */
-interface AppliedRpcArgs {
+/** Los argumentos con los que `buildCatalogTool` llama a `buscar_productos` (los nueve de M1). */
+type AppliedRpcArgs = ArgsBuscarSim & {
   p_terminos: string[][];
   p_moto: string[][];
   p_limite: number;
   p_opcionales: string[][];
   p_cilindrada: string[][];
-}
+  p_variantes: string[][];
+  p_moto_marca: string[][];
+  p_motos_conocidas: string[];
+  p_marcas_de_moto: string[];
+};
 
-/**
- * Lo que devolvería `buscar_productos` (migración 20260928010000) para
- * `products`, sin ejecutar SQL: puntajes por inclusión de la alternativa en
- * el nombre, los conteos sobre el conjunto COMPLETO antes del límite, y el
- * MISMO orden que el SQL (puntaje, moto con nombre, empieza con el producto,
- * cilindrada, opcionales, con stock, nombre). Lo comparten los dos fakes de
- * este archivo. Cuando `puntaje`/`puntaje_moto` vienen en la fila, mandan
- * (los tests que necesitan control fino).
- */
-function simularBuscarProductos(products: FakeRpcRow[], args: AppliedRpcArgs) {
-  const conPuntaje = products
-    .map((p) => {
-      const texto = normalize(p.name);
-      return {
-        ...p,
-        puntaje: p.puntaje ?? puntajeAuto(p.name, args.p_terminos),
-        puntaje_opcional: puntajeAuto(p.name, args.p_opcionales ?? []),
-        puntaje_moto_nombre: p.puntaje_moto ?? puntajeAuto(p.name, args.p_moto ?? []),
-        puntaje_moto_cilindrada: puntajeAuto(p.name, args.p_cilindrada ?? []),
-        empieza_con_producto: (args.p_terminos[0] ?? []).some((alt) => texto.startsWith(normalize(alt))),
-      };
-    })
-    .filter((p) => p.puntaje > 0);
-
-  if (conPuntaje.length === 0) return [];
-
-  const puntajeMaximo = Math.max(...conPuntaje.map((p) => p.puntaje));
-  const delMaximo = conPuntaje.filter((p) => p.puntaje === puntajeMaximo);
-  const puntajeMotoMaximo = Math.max(0, ...delMaximo.map((p) => p.puntaje_moto_nombre));
-  const delMaximoYMoto = delMaximo.filter((p) => p.puntaje_moto_nombre === puntajeMotoMaximo);
-
-  const ordenado = [...conPuntaje].sort(
-    (a, b) =>
-      b.puntaje - a.puntaje ||
-      b.puntaje_moto_nombre - a.puntaje_moto_nombre ||
-      Number(b.empieza_con_producto) - Number(a.empieza_con_producto) ||
-      b.puntaje_moto_cilindrada - a.puntaje_moto_cilindrada ||
-      b.puntaje_opcional - a.puntaje_opcional ||
-      Number(b.stock_quantity > 0) - Number(a.stock_quantity > 0) ||
-      a.name.localeCompare(b.name)
-  );
-
-  return ordenado.slice(0, args.p_limite ?? 10).map((p) => ({
-    id: p.id,
-    name: p.name,
-    brand: p.brand,
-    price: p.price,
-    currency: p.currency,
-    stock_quantity: p.stock_quantity,
-    updated_at: p.updated_at ?? null,
-    compatibilidad: p.compatibilidad ?? [],
-    puntaje: p.puntaje,
-    puntaje_moto: p.puntaje_moto_nombre + p.puntaje_moto_cilindrada,
-    puntaje_maximo: puntajeMaximo,
-    filas_con_puntaje_maximo: delMaximo.length,
-    puntaje_moto_maximo: puntajeMotoMaximo,
-    filas_con_maximo_y_moto: delMaximoYMoto.length,
-    puntaje_opcional: p.puntaje_opcional,
-    empieza_con_producto: p.empieza_con_producto,
-    puntaje_moto_nombre: p.puntaje_moto_nombre,
-    puntaje_moto_cilindrada: p.puntaje_moto_cilindrada,
-    filas_con_maximo_y_stock: delMaximoYMoto.filter((f) => f.stock_quantity > 0).length,
-  }));
+/** Lo que el fake puede simular además de `buscar_productos`. */
+interface OpcionesFake {
+  /** `corregir_terminos` corre el simulador de M2 sobre `products` en vez de la tabla `correcciones` (A2 T5). */
+  correctorSimulado?: boolean;
+  /** `diagnosticar_terminos` (M3) existe: sin esto la RPC "no está" y D3 no relaja nada (falla cerrado, A2 T5). */
+  diagnostico?: boolean;
 }
 
 function createFakeSupabase(
@@ -229,11 +150,14 @@ function createFakeSupabase(
    * `p_terminos`, como haría la función real. Vacío por defecto: el corrector
    * "no encuentra nada que corregir" y la búsqueda sigue como antes.
    */
-  correcciones: { original: string; corregido: string }[] = []
+  correcciones: { original: string; corregido: string }[] = [],
+  opciones: OpcionesFake = {}
 ) {
   const insertedQuotes: Record<string, unknown>[] = [];
   /** T3b: los argumentos de cada llamada a `corregir_terminos`, en orden. */
-  const correctorCalls: { p_terminos: string[]; p_protegidos: string[] }[] = [];
+  const correctorCalls: { p_terminos: string[]; p_protegidos: string[]; p_marcas?: string[]; p_excluidos?: string[] }[] = [];
+  /** A2 T5: los argumentos de cada llamada a `diagnosticar_terminos`, en orden. */
+  const diagnosticoCalls: { p_terminos: string[][]; p_cabeza: number | null }[] = [];
   /** T2 (25-26/9/2026): los argumentos de la última llamada a `buscar_productos`, o null si no se llegó a llamar. */
   let appliedRpcArgs: AppliedRpcArgs | null = null;
   /** T3a (28/9/2026): TODAS las llamadas a `buscar_productos`, en orden (listas de productos, reintento con más filas). */
@@ -246,23 +170,36 @@ function createFakeSupabase(
   let appliedSynonymFilter: string | null = null;
   /** F (20/9/2026): el tope (`MAX_SYNONYM_LESSONS`) que le llegó a `.limit()` en la consulta de sinónimos. */
   let appliedSynonymLimit: number | null = null;
+  /** A2 T5: el `kind` de cada consulta a `ai_lessons`, en orden (sinonimo, no_corregir). */
+  const leccionesKinds: string[] = [];
 
   const client = {
     // T2 (25-26/9/2026): `buildCatalogTool` ya no consulta `products`
     // directo, llama a `buscar_productos` por RPC. El fake replica lo que
     // hace la migración: descarta lo que no calza ningún grupo (puntaje 0)
-    // ANTES de calcular los máximos, calcula los cuatro agregados sobre el
+    // ANTES de calcular los máximos, calcula los agregados sobre el
     // conjunto COMPLETO (antes del límite) y recién ahí ordena y recorta a
-    // `p_limite` — el mismo orden que `order by puntaje desc, puntaje_moto
-    // desc, (stock_quantity > 0) desc, name`.
-    rpc(name: string, rawArgs: AppliedRpcArgs | { p_terminos: string[]; p_protegidos: string[] }) {
+    // `p_limite`.
+    rpc(name: string, rawArgs: unknown) {
       if (name === "corregir_terminos") {
-        const a = rawArgs as { p_terminos: string[]; p_protegidos: string[] };
+        const a = rawArgs as { p_terminos: string[]; p_protegidos: string[]; p_marcas?: string[]; p_excluidos?: string[] };
         correctorCalls.push(a);
+        if (opciones.correctorSimulado) {
+          return Promise.resolve({
+            data: corregirTerminosSim(products, a.p_terminos, a.p_protegidos ?? [], a.p_marcas ?? [], a.p_excluidos ?? []),
+            error: null,
+          });
+        }
         return Promise.resolve({
           data: correcciones.filter((c) => a.p_terminos.includes(c.original)),
           error: null,
         });
+      }
+      if (name === "diagnosticar_terminos") {
+        if (!opciones.diagnostico) throw new Error("Fake Supabase: diagnosticar_terminos no está en este test");
+        const a = rawArgs as { p_terminos: string[][]; p_cabeza: number | null };
+        diagnosticoCalls.push(a);
+        return Promise.resolve({ data: diagnosticarTerminosSim(products, a.p_terminos, a.p_cabeza), error: null });
       }
       if (name !== "buscar_productos") {
         throw new Error(`Fake Supabase: rpc no soportada en este test: ${name}`);
@@ -270,7 +207,7 @@ function createFakeSupabase(
       const args = rawArgs as AppliedRpcArgs;
       appliedRpcArgs = args;
       rpcCalls.push(args);
-      return Promise.resolve({ data: simularBuscarProductos(products, args), error: null });
+      return Promise.resolve({ data: buscarProductosSim(products, args), error: null });
     },
     from(table: string) {
       if (table === "conversation_quotes") {
@@ -287,28 +224,35 @@ function createFakeSupabase(
       // enterarse de esta consulta nueva. F (20/9/2026): sumó `.or(...)`
       // ANTES de `.limit()` — el fake simula el filtro real de la base:
       // solo pasan los sinónimos `scope=global` o de ESTA conversación,
-      // igual que haría Postgres con la condición de verdad.
+      // igual que haría Postgres con la condición de verdad. A2 T5: el primer
+      // `.eq()` es el `kind` (sinonimo | no_corregir) y el fake FILTRA por él,
+      // como la base.
       if (table === "ai_lessons") {
         return {
           select: () => ({
-            eq: () => ({
-              eq: () => ({
-                or: (filter: string) => {
-                  appliedSynonymFilter = filter;
-                  return {
-                    limit: async (n: number) => {
-                      appliedSynonymLimit = n;
-                      return {
-                        data: synonyms.filter(
-                          (s) => (s.scope ?? "global") === "global" || s.conversationId === conversationId
-                        ),
-                        error: null,
-                      };
-                    },
-                  };
-                },
-              }),
-            }),
+            eq: (columna: string, kind: string) => {
+              if (columna === "kind") leccionesKinds.push(kind);
+              return {
+                eq: () => ({
+                  or: (filter: string) => {
+                    appliedSynonymFilter = filter;
+                    return {
+                      limit: async (n: number) => {
+                        appliedSynonymLimit = n;
+                        return {
+                          data: synonyms.filter(
+                            (s) =>
+                              (s.kind ?? "sinonimo") === kind &&
+                              ((s.scope ?? "global") === "global" || s.conversationId === conversationId)
+                          ),
+                          error: null,
+                        };
+                      },
+                    };
+                  },
+                }),
+              };
+            },
           }),
         };
       }
@@ -321,6 +265,8 @@ function createFakeSupabase(
     insertedQuotes,
     rpcCalls,
     correctorCalls,
+    diagnosticoCalls,
+    leccionesKinds,
     getAppliedRpcArgs: () => appliedRpcArgs,
     getAppliedSynonymFilter: () => appliedSynonymFilter,
     getAppliedSynonymLimit: () => appliedSynonymLimit,
@@ -2423,7 +2369,7 @@ describe("buildCatalogTool — el CatalogOutcome se acumula entre llamadas del m
         }
         const products = secuencia[llamada] ?? [];
         llamada += 1;
-        return { data: simularBuscarProductos(products, args), error: null };
+        return { data: buscarProductosSim(products, args), error: null };
       },
       from(table: string) {
         if (table === "conversation_quotes") {
@@ -2530,16 +2476,24 @@ describe("buildCatalogTool — la moto se normaliza siempre (T3a)", () => {
     await correr(herramienta(b.client, nuevoCatalogOutcome()), { query: "asiento", motoModel: "sbr" });
 
     expect(a.getAppliedRpcArgs()).toEqual(b.getAppliedRpcArgs());
+    // A2 T5: la firma es de NUEVE parámetros (M1, 20260930010000): las
+    // variantes, la marca de la moto y las dos listas planas (`p_motos_conocidas`
+    // y `p_marcas_de_moto`) viajan SIEMPRE — sin ellas nada "nombra moto" y
+    // todo es universal.
     expect(a.getAppliedRpcArgs()).toEqual({
       p_terminos: [["asiento"]],
       p_opcionales: [],
       p_moto: [["sbr"]],
       p_cilindrada: [],
       p_limite: 10,
+      p_variantes: [],
+      p_moto_marca: [],
+      p_motos_conocidas: [...MOTOS_EN_NOMBRES],
+      p_marcas_de_moto: [...MARCAS_DE_MOTO],
     });
   });
 
-  it("motoBrand + motoModel se suman como moto CON NOMBRE, y su cilindrada va aparte", async () => {
+  it("motoBrand + motoModel: el modelo es la moto CON NOMBRE, la marca solo ordena (A2) y su cilindrada va aparte", async () => {
     const { client, getAppliedRpcArgs } = createFakeSupabase([fila("a1", "Bateria Bera Socialista 200")]);
     await correr(herramienta(client, nuevoCatalogOutcome()), {
       query: "bateria",
@@ -2547,16 +2501,38 @@ describe("buildCatalogTool — la moto se normaliza siempre (T3a)", () => {
       motoModel: "Socialista 200",
     });
 
-    expect(getAppliedRpcArgs()?.p_moto).toEqual([["bera"], ["socialista"]]);
+    // A2 T4/T5: con marca Y modelo, la marca va a `p_moto_marca` (solo ordena)
+    // y el modelo a `p_moto` — "Bera Milan" ya no calza las tapas de la SBR
+    // por decir "bera". Antes (T3a) viajaban las dos como moto con nombre.
+    expect(getAppliedRpcArgs()?.p_moto).toEqual([["socialista"]]);
+    expect(getAppliedRpcArgs()?.p_moto_marca).toEqual([["bera"]]);
     expect(getAppliedRpcArgs()?.p_cilindrada).toEqual([["200"]]);
   });
 
-  it("los opcionales (colores, 'delantero') viajan aparte y no exigen nada al producto", async () => {
+  it("con solo la marca (motoBrand 'Bera'), la marca ES la moto con nombre", async () => {
+    const { client, getAppliedRpcArgs } = createFakeSupabase([fila("a1", "Bateria Bera SBR")]);
+    await correr(herramienta(client, nuevoCatalogOutcome()), { query: "bateria", motoBrand: "Bera" });
+
+    expect(getAppliedRpcArgs()?.p_moto).toEqual([["bera"]]);
+    expect(getAppliedRpcArgs()?.p_moto_marca).toEqual([]);
+  });
+
+  it("un año en la moto ('MD Aguila 2014') viaja dentro de p_cilindrada, junto a la cilindrada, y nunca como término", async () => {
+    const { client, getAppliedRpcArgs } = createFakeSupabase([fila("a1", "Bateria MD Aguila")]);
+    await correr(herramienta(client, nuevoCatalogOutcome()), { query: "bateria", motoModel: "MD Aguila 2014 150" });
+
+    expect(getAppliedRpcArgs()?.p_terminos).toEqual([["bateria"]]);
+    expect(getAppliedRpcArgs()?.p_cilindrada).toEqual([["150"], ["2014"]]);
+  });
+
+  it("los opcionales ('trasero') y las variantes (colores, tallas) viajan aparte y no exigen nada al producto", async () => {
     const { client, getAppliedRpcArgs } = createFakeSupabase([fila("r1", "Rin trasero Bera")]);
     await correr(herramienta(client, nuevoCatalogOutcome()), { query: "rin trasero negro" });
 
     expect(getAppliedRpcArgs()?.p_terminos).toEqual([["rin"]]);
-    expect(getAppliedRpcArgs()?.p_opcionales).toEqual([["trasero"], ["negro"]]);
+    expect(getAppliedRpcArgs()?.p_opcionales).toEqual([["trasero"]]);
+    // A2 T4: el color es una VARIANTE (estricta y preferente), ya no un opcional.
+    expect(getAppliedRpcArgs()?.p_variantes).toEqual([["negro"]]);
   });
 });
 
@@ -2572,7 +2548,7 @@ describe("buildCatalogTool — la cilindrada nunca vuelve verdadera la coinciden
   it.each([
     ["moto normalizada por el modelo", { query: "defensa", motoModel: "gxs 250" }],
     ["todo en el query", { query: "defensa gxs 250" }],
-  ])("'defensa gxs 250' (%s): NO cotiza DEFENSA BRZ 250 como coincidencia de moto, y la pregunta la hace sin repetir la moto", async (_caso, entrada) => {
+  ])("'defensa gxs 250' (%s): NO cotiza DEFENSA BRZ 250 como coincidencia de moto: ninguna defensa sirve para una GXS y se escala sin cotizar", async (_caso, entrada) => {
     const { client, getAppliedRpcArgs, insertedQuotes } = createFakeSupabase(defensas);
     const catalogOutcome = nuevoCatalogOutcome();
 
@@ -2582,15 +2558,21 @@ describe("buildCatalogTool — la cilindrada nunca vuelve verdadera la coinciden
     expect(getAppliedRpcArgs()?.p_moto).toEqual([["gxs"]]);
     expect(getAppliedRpcArgs()?.p_cilindrada).toEqual([["250"]]);
 
-    // La moto no calzó (ninguna fila dice "gxs"): NO restringe al 250 —
-    // sigue habiendo cuatro defensas y es genérico, sin cotizar ninguna.
-    expect(catalogOutcome.generico).toBe(true);
+    // La moto no calzó (ninguna fila dice "gxs") y TODAS las defensas nombran
+    // OTRA moto: nada es universal ni de la marca del cliente. A2 T5 (D1,
+    // resolución 2 del orquestador): la familia depende de la moto, así que no
+    // se elige a ciegas — se escala sin cotizar. ANTES (T3a) esto era una
+    // pregunta de filtro ("genérico"); la regla nueva la reemplaza, y la
+    // pregunta solo queda cuando hay MÁS de tres compatibles con existencia.
+    expect(catalogOutcome.generico).toBe(false);
+    expect(catalogOutcome.preguntaFiltro).toBeNull();
     expect(catalogOutcome.conExistencia).toBe(false);
     expect(catalogOutcome.cotizacion).toEqual([]);
     expect(insertedQuotes).toHaveLength(0);
     expect(result.results).toEqual([]);
-    // Ya dio la moto: no se le vuelve a preguntar (aunque la defensa dependa de ella).
-    expect(catalogOutcome.preguntaFiltro).toBe("producto");
+    expect(catalogOutcome.motivoForzado).toBe("confirmar_inventario");
+    expect(catalogOutcome.avisos).toEqual([{ tipo: "moto_sin_calce", productoPedido: null, moto: "GXS 250" }]);
+    expect(result.instruccionParaTuRespuesta).toMatch(/NO cotices ni elijas ninguno/);
   });
 
   it("'defensa ava mustang 250' tampoco cotiza DEFENSA BRZ 250: 'ava mustang' ES una moto con nombre y calza con la fila AVA", async () => {
@@ -2742,8 +2724,16 @@ describe("buildCatalogTool — una sola pregunta por pedido (T3a)", () => {
     expect(outcome.preguntaFiltro).toBe("producto");
   });
 
-  it.each([["no sé"], ["muéstrame todos"], ["los que tengas"], ["me da igual"]])(
-    "si la ráfaga del cliente dice «%s», NO pregunta: entrega UNA con stock y escala con confirmar_inventario",
+  it.each([
+    ["no sé"],
+    ["ni idea"],
+    ["los que tengas"],
+    ["me da igual"],
+    ["la que sea"],
+    ["recomiéndame"],
+    ["el más económico"],
+  ])(
+    "si la ráfaga del cliente dice «%s» (no sabe precisar), NO pregunta: entrega UNA con stock y escala con confirmar_inventario (D6: no es pedir opciones)",
     async (frase) => {
       const { client } = createFakeSupabase(cascos);
       const outcome = nuevoCatalogOutcome();
@@ -2756,6 +2746,30 @@ describe("buildCatalogTool — una sola pregunta por pedido (T3a)", () => {
       expect(outcome.preguntaFiltro).toBeNull();
       expect(outcome.conExistencia).toBe(true);
       expect(result.results).toHaveLength(1);
+      expect(result.instruccionParaTuRespuesta).toContain(TEXTO_CONFIRMAR_INVENTARIO);
+    }
+  );
+
+  // A2 T5, D6 (29/9/2026, noche): la ÚNICA excepción a "una sola opción". Un
+  // pedido EXPLÍCITO de ver opciones saca hasta tres con existencia, por
+  // relevancia y existencia, sin «Hay N más». (Este caso antes estaba en la
+  // tabla de arriba con «muéstrame todos» → UNA; D6 lo separó.)
+  it.each([["muéstrame todos"], ["muéstrame todas"], ["qué opciones hay"], ["cuáles tienes"], ["qué tienes"]])(
+    "si la ráfaga dice «%s» (pide ver opciones), NO pregunta y entrega hasta TRES con stock, las de más existencia primero, sin 'más opciones'",
+    async (frase) => {
+      const { client } = createFakeSupabase(cascos);
+      const outcome = nuevoCatalogOutcome();
+
+      const result = await correr(herramienta(client, outcome, { rafagaCliente: ["Tienen cascos?", frase] }), {
+        query: "casco",
+      });
+
+      expect(outcome.generico).toBe(false);
+      expect(outcome.preguntaFiltro).toBeNull();
+      expect(outcome.conExistencia).toBe(true);
+      expect(result.results).toHaveLength(3);
+      expect(result.results.every((r) => r.stock > 0)).toBe(true);
+      expect(outcome.cotizacion).toHaveLength(3);
       expect(result.instruccionParaTuRespuesta).toContain(TEXTO_CONFIRMAR_INVENTARIO);
     }
   );
@@ -2822,14 +2836,15 @@ describe("buildCatalogTool — la respuesta suelta se combina con el pedido ante
     expect((await pedidoGuardado())?.ultimoQuery).toBe("aceite inca 20w50");
   });
 
-  it("'Talla M' tras 'casco frankie negro' busca casco frankie con negro y talla como opcionales", async () => {
+  it("'Talla M' tras 'casco frankie negro' busca casco frankie con negro y la talla como VARIANTES (A2: estrictas y preferentes)", async () => {
     const { client, getAppliedRpcArgs } = createFakeSupabase([fila("c1", "CASCO FRANKIE NEGRO TALLA M")]);
     await correr(herramienta(client, nuevoCatalogOutcome()), { query: "casco frankie negro" });
 
     await correr(herramienta(client, nuevoCatalogOutcome()), { query: "Talla M" });
 
     expect(getAppliedRpcArgs()?.p_terminos).toEqual([["casco"], ["frankie"]]);
-    expect(getAppliedRpcArgs()?.p_opcionales).toEqual([["negro"], ["talla"]]);
+    expect(getAppliedRpcArgs()?.p_opcionales).toEqual([]);
+    expect(getAppliedRpcArgs()?.p_variantes).toEqual([["negro"], ["m"]]);
   });
 
   it("una respuesta con un término de producto NO se combina: es otro pedido", async () => {
@@ -2867,7 +2882,11 @@ describe("buildCatalogTool — listas de productos (T3a, D5: máximo cinco)", ()
 
     expect(rpcCalls).toHaveLength(2);
     expect(rpcCalls.map((c) => c.p_terminos)).toEqual([[["bateria"]], [["arranque"]]]);
-    for (const llamada of rpcCalls) expect(llamada.p_moto).toEqual([["bera"], ["socialista"]]);
+    // A2 T4/T5: el modelo es la moto con nombre; la marca solo ordena.
+    for (const llamada of rpcCalls) {
+      expect(llamada.p_moto).toEqual([["socialista"]]);
+      expect(llamada.p_moto_marca).toEqual([["bera"]]);
+    }
 
     expect(result.porProducto).toHaveLength(2);
     expect(result.porProducto?.map((r) => r.producto)).toEqual(["bateria", "arranque"]);
@@ -2912,16 +2931,28 @@ describe("buildCatalogTool — listas de productos (T3a, D5: máximo cinco)", ()
     expect(result.instruccionParaTuRespuesta).toContain(TEXTO_NO_IDENTIFICADO);
   });
 
-  it("en una lista un producto genérico no abre una pregunta: entrega UNA con stock", async () => {
+  // A2 T5, D1b (opción (a) del operador, 29/9/2026): un ítem genérico dentro
+  // de una lista NO se cotiza — nunca se elige a ciegas entre cinco baterías
+  // ("caucho n° 18 trasero", "rodamiento", "aceite" de la lista real del
+  // 29/9). ANTES (hotfix del 29/9, tarde) este test decía «entrega UNA con
+  // stock»: CAMBIÓ DE SENTIDO a propósito, y se avisa en el reporte de T5. Lo
+  // que se conserva del hotfix: una lista nunca abre una PREGUNTA.
+  it("en una lista un producto genérico no abre una pregunta ni se cotiza: queda como «varias opciones» y escala (D1b)", async () => {
     const cinco = Array.from({ length: 5 }, (_, i) => fila(`b-${i}`, `BATERIA MARCA ${i}`, 3));
-    const { client } = createFakeSupabase(cinco);
+    const { client, insertedQuotes } = createFakeSupabase(cinco);
     const catalogOutcome = nuevoCatalogOutcome();
 
     const result = await correr(herramienta(client, catalogOutcome), { query: "", productos: ["bateria"] });
 
     expect(catalogOutcome.generico).toBe(false);
     expect(catalogOutcome.preguntaFiltro).toBeNull();
-    expect(result.porProducto?.[0].results).toHaveLength(1);
+    expect(result.porProducto?.[0].results).toEqual([]);
+    expect(result.porProducto?.[0].estado).toBe("generico");
+    expect(catalogOutcome.cotizacion).toEqual([]);
+    expect(insertedQuotes).toHaveLength(0);
+    expect(catalogOutcome.avisos).toEqual([{ tipo: "varias_opciones", productoPedido: "bateria" }]);
+    expect(catalogOutcome.motivoForzado).toBe("confirmar_inventario");
+    expect(result.instruccionParaTuRespuesta).toMatch(/NO cotices ni elijas ninguno/);
   });
 
   it("el esquema acepta hasta cinco productos y rechaza seis", () => {
@@ -2945,7 +2976,7 @@ describe("buildCatalogTool — listas de productos (T3a, D5: máximo cinco)", ()
  * productos con stock 0 con los que tenían existencia. Ahora, SIEMPRE:
  * - con stock se cotiza UNA sola opción, la mejor (relevancia de SQL y, a
  *   igual relevancia, la de MAYOR existencia); nunca un agotado si hay alguno
- *   con stock, y nunca la línea «Hay N opciones más» (`masOpciones` vacío);
+ *   con stock, y nunca la línea «Hay N opciones más»;
  * - si todo lo que calza está agotado, se nombra SOLO el producto pedido.
  * La pregunta de filtro (genérico) no cambia.
  */
@@ -2971,7 +3002,7 @@ describe("buildCatalogTool — una sola opción cotizada (hotfix 29/9/2026)", ()
     expect(result.instruccionParaTuRespuesta).not.toMatch(/no afirmes que hay existencia/i);
   });
 
-  it("(3) moto calza, seis con stock (1,9,3,7,2,5) a igual relevancia: cotiza SOLO la de 9 y `masOpciones` queda vacío", async () => {
+  it("(3) moto calza, seis con stock (1,9,3,7,2,5) a igual relevancia: cotiza SOLO la de 9", async () => {
     const { client } = createFakeSupabase(seisAsientos([1, 9, 3, 7, 2, 5]));
     const catalogOutcome = nuevoCatalogOutcome();
 
@@ -2979,7 +3010,6 @@ describe("buildCatalogTool — una sola opción cotizada (hotfix 29/9/2026)", ()
 
     expect(result.results.map((r) => [r.nombre, r.stock])).toEqual([["ASIENTO SBR B", 9]]);
     expect(catalogOutcome.cotizacion.map((l) => l.stock)).toEqual([9]);
-    expect(catalogOutcome.masOpciones).toEqual([]);
     expect(result.instruccionParaTuRespuesta).not.toMatch(/Hay más resultados de los que caben/i);
   });
 
@@ -2990,7 +3020,6 @@ describe("buildCatalogTool — una sola opción cotizada (hotfix 29/9/2026)", ()
     const result = await correr(herramienta(client, catalogOutcome), { query: "asiento sbr" });
 
     expect(result.results.map((r) => r.stock)).toEqual([8]);
-    expect(catalogOutcome.masOpciones).toEqual([]);
   });
 
   it("los agotados no se mezclan: seis del máximo con cuatro con stock => una sola, la de más existencia", async () => {
@@ -3000,7 +3029,6 @@ describe("buildCatalogTool — una sola opción cotizada (hotfix 29/9/2026)", ()
     const result = await correr(herramienta(client, catalogOutcome), { query: "asiento sbr" });
 
     expect(result.results.map((r) => r.stock)).toEqual([5]);
-    expect(catalogOutcome.masOpciones).toEqual([]);
   });
 
   it("si la de más existencia quedó más allá de las primeras 10 filas, vuelve a pedir 50 para elegir bien", async () => {
@@ -3017,9 +3045,12 @@ describe("buildCatalogTool — una sola opción cotizada (hotfix 29/9/2026)", ()
 
     const result = await correr(herramienta(client, catalogOutcome), { query: "asiento sbr" });
 
-    expect(rpcCalls.map((c) => c.p_limite)).toEqual([10, 50]);
+    // A2 T5: desde M1 (20260930010000) el SQL desempata por EXISTENCIA antes
+    // que por nombre, así que X (20 u.) llega entre las primeras 10 filas y ya
+    // no hace falta pedir 50 (antes: [10, 50]). El sentido del test se
+    // conserva: la de más existencia es la que se cotiza.
+    expect(rpcCalls.map((c) => c.p_limite)).toEqual([10]);
     expect(result.results.map((r) => r.nombre)).toEqual(["ASIENTO SBR X"]);
-    expect(catalogOutcome.masOpciones).toEqual([]);
   });
 
   it("(2) moto calza, UNA con stock y cinco agotadas: cotiza solo la de stock, nunca un agotado", async () => {
@@ -3040,7 +3071,6 @@ describe("buildCatalogTool — una sola opción cotizada (hotfix 29/9/2026)", ()
     expect(catalogOutcome.conExistencia).toBe(true);
     expect(catalogOutcome.agotados).toBe(false);
     expect(catalogOutcome.generico).toBe(false);
-    expect(catalogOutcome.masOpciones).toEqual([]);
     expect(result.instruccionParaTuRespuesta).toContain(TEXTO_CONFIRMAR_INVENTARIO);
     expect(result.instruccionParaTuRespuesta).not.toContain(TEXTO_SIN_STOCK);
   });
@@ -3090,7 +3120,6 @@ describe("buildCatalogTool — una sola opción cotizada (hotfix 29/9/2026)", ()
     expect(catalogOutcome.generico).toBe(false);
     expect(result.results).toHaveLength(1);
     expect(result.instruccionParaTuRespuesta).toContain(TEXTO_SIN_STOCK);
-    expect(catalogOutcome.masOpciones).toEqual([]);
   });
 
   it("(4) ya se preguntó y hay más de tres con stock: cotiza UNA y no vuelve a preguntar", async () => {
@@ -3100,7 +3129,6 @@ describe("buildCatalogTool — una sola opción cotizada (hotfix 29/9/2026)", ()
     const primera = nuevoCatalogOutcome();
     await correr(herramienta(client, primera), { query: "asiento" });
     expect(primera.generico).toBe(true);
-    expect(primera.masOpciones).toEqual([]);
 
     // Otro turno: la pregunta ya se hizo, se entrega UNA, la de más existencia.
     const segunda = nuevoCatalogOutcome();
@@ -3108,10 +3136,21 @@ describe("buildCatalogTool — una sola opción cotizada (hotfix 29/9/2026)", ()
     expect(segunda.generico).toBe(false);
     expect(segunda.conExistencia).toBe(true);
     expect(result.results.map((r) => [r.nombre, r.stock])).toEqual([["ASIENTO MARCA 5", 6]]);
-    expect(segunda.masOpciones).toEqual([]);
   });
 
   it("(4) el cliente pide ver todo con más de tres con stock: cotiza UNA, la de más existencia", async () => {
+    const { client } = createFakeSupabase(Array.from({ length: 6 }, (_, i) => fila(`g-${i}`, `ASIENTO MARCA ${i}`, i + 1)));
+    const outcome = nuevoCatalogOutcome();
+
+    const result = await correr(herramienta(client, outcome, { rafagaCliente: ["Tienen asientos?", "no sé, el que sea"] }), {
+      query: "asiento",
+    });
+
+    expect(outcome.generico).toBe(false);
+    expect(result.results.map((r) => r.stock)).toEqual([6]);
+  });
+
+  it("(4b, D6) el cliente pide EXPLÍCITAMENTE ver opciones con más de tres con stock: hasta TRES, las de más existencia, sin 'más opciones'", async () => {
     const { client } = createFakeSupabase(Array.from({ length: 6 }, (_, i) => fila(`g-${i}`, `ASIENTO MARCA ${i}`, i + 1)));
     const outcome = nuevoCatalogOutcome();
 
@@ -3120,8 +3159,7 @@ describe("buildCatalogTool — una sola opción cotizada (hotfix 29/9/2026)", ()
     });
 
     expect(outcome.generico).toBe(false);
-    expect(result.results.map((r) => r.stock)).toEqual([6]);
-    expect(outcome.masOpciones).toEqual([]);
+    expect(result.results.map((r) => r.stock)).toEqual([6, 5, 4]);
   });
 
   it("(7) hay stock en la base pero las primeras 10 filas traídas son agotadas: reintenta con 50 y cotiza la de stock", async () => {
@@ -3147,7 +3185,6 @@ describe("buildCatalogTool — una sola opción cotizada (hotfix 29/9/2026)", ()
     await correr(herramienta(client, catalogOutcome), { query: "asiento" });
 
     expect(catalogOutcome.generico).toBe(true);
-    expect(catalogOutcome.masOpciones).toEqual([]);
   });
 
   it("(6) en una lista, se cotiza UNA por producto (asientos y cubiertas)", async () => {
@@ -3169,7 +3206,6 @@ describe("buildCatalogTool — una sola opción cotizada (hotfix 29/9/2026)", ()
     expect(result.porProducto?.map((r) => r.results.length)).toEqual([1, 1]);
     expect(result.porProducto?.map((r) => r.results[0].stock)).toEqual([9, 4]);
     expect(catalogOutcome.cotizacion).toHaveLength(2);
-    expect(catalogOutcome.masOpciones).toEqual([]);
   });
 });
 
@@ -3199,29 +3235,54 @@ describe("buildCatalogTool — lo que la herramienta deja en el CatalogOutcome (
     expect(catalogOutcome.cotizacion).toHaveLength(1);
   });
 
-  it("consultas registra una entrada por búsqueda, con los conjuntos que se mandaron y el resultado", async () => {
+  it("consultas registra una entrada por búsqueda (v2), con los conjuntos que se mandaron, lo que decidió y el resultado", async () => {
     const { client } = createFakeSupabase([fila("p1", "ASIENTO SBR NEGRO", 3)]);
     const catalogOutcome = nuevoCatalogOutcome();
 
     await correr(herramienta(client, catalogOutcome), { query: "asiento negro sbr 200" });
     await correr(herramienta(client, catalogOutcome), { query: "nada de nada" });
 
+    // A2 T5: `ConsultaCatalogo` pasa a la versión 2 (contrato con el panel de
+    // Búsquedas): trae `v: 2`, las variantes, el año, la marca, la decisión, lo
+    // cotizado y los conteos de la base. "negro" ya no es un opcional: es una
+    // VARIANTE.
     expect(catalogOutcome.consultas).toEqual([
       {
+        v: 2,
         query: "asiento negro sbr 200",
         productos: null,
         moto: [["sbr"]],
         cilindrada: [["200"]],
         grupos: [["asiento"]],
-        opcionales: [["negro"]],
+        opcionales: [],
+        variantes: [["negro"]],
+        anio: [],
+        motoMarca: [],
+        motoIgnorada: false,
+        calzaEntero: true,
+        relajados: [],
+        avisos: [],
         corregido: null,
+        correccionDescartada: null,
+        decision: "moto SBR 200 calza: cotizó 1 (1 con existencia de 1)",
+        cotizados: [{ productId: "p1", nombre: "ASIENTO SBR NEGRO", stock: 3, precioUsd: 10 }],
+        conteos: { calzan: 1, conStock: 1, nombranMoto: 1, universales: 0 },
         resultado: "con_existencia",
       },
-      expect.objectContaining({ query: "nada de nada", resultado: "sin_resultados" }),
+      expect.objectContaining({ v: 2, query: "nada de nada", resultado: "sin_resultados" }),
     ]);
   });
 
-  it("cada búsqueda deja un log.info busqueda_catalogo con lo que se buscó, sin claves que lib/log oculte", async () => {
+  it("el registro es JSON puro (se guarda tal cual en agent_turns.catalog_queries)", async () => {
+    const { client } = createFakeSupabase([fila("p1", "ASIENTO SBR NEGRO", 3)]);
+    const catalogOutcome = nuevoCatalogOutcome();
+
+    await correr(herramienta(client, catalogOutcome), { query: "asiento negro sbr 200" });
+
+    expect(JSON.parse(JSON.stringify(catalogOutcome.consultas))).toEqual(catalogOutcome.consultas);
+  });
+
+  it("cada búsqueda deja un log.info busqueda_catalogo con lo que se buscó y decidió, sin claves que lib/log oculte", async () => {
     const info = vi.spyOn(log, "info").mockImplementation(() => {});
     const { client } = createFakeSupabase([fila("p1", "ASIENTO SBR NEGRO", 3)]);
     const catalogOutcome = nuevoCatalogOutcome();
@@ -3238,8 +3299,9 @@ describe("buildCatalogTool — lo que la herramienta deja en el CatalogOutcome (
       productos: null,
       moto: '[["sbr"]]',
       grupos: '[["asiento"]]',
-      opcionales: '[["negro"]]',
+      opcionales: "[]",
       corregido: null,
+      decision: "moto SBR 200 calza: cotizó 1 (1 con existencia de 1)",
       resultado: "con_existencia",
     });
     expect(llamadas[1][1]).toMatchObject({ query: "nada de nada", resultado: "sin_resultados" });
@@ -3346,7 +3408,7 @@ describe("buildCatalogTool — el corrector de tipeos como segundo intento (T3b)
     expect(correctorCalls).toHaveLength(0);
   });
 
-  it("si el reintento con lo corregido tampoco calza, sale no identificado y queda anotado lo que se intentó", async () => {
+  it("si el reintento con lo corregido tampoco calza, sale no identificado y la corrección queda anotada como descartada", async () => {
     const { client, rpcCalls } = createFakeSupabase([soporte], [], "conv-1", [{ original: "iphone", corregido: "ipone" }]);
     const catalogOutcome = nuevoCatalogOutcome();
 
@@ -3356,7 +3418,12 @@ describe("buildCatalogTool — el corrector de tipeos como segundo intento (T3b)
     expect(rpcCalls).toHaveLength(2);
     expect(result.instruccionParaTuRespuesta).toContain(TEXTO_NO_IDENTIFICADO);
     expect(catalogOutcome.sinResultados).toBe(true);
-    expect(catalogOutcome.consultas[0].corregido).toEqual([{ original: "iphone", corregido: "ipone" }]);
+    // A2 T5: una corrección cuyo reintento tampoco calza NO se usa (D3 puede
+    // relajar las palabras originales): queda anotada como DESCARTADA y no como
+    // `corregido` (antes, T3b, quedaba en `corregido`). Sin esto el mensaje diría
+    // "busqué IPONE en lugar de iphone" de una búsqueda que no usó IPONE.
+    expect(catalogOutcome.consultas[0].corregido).toBeNull();
+    expect(catalogOutcome.consultas[0].correccionDescartada).toEqual([{ original: "iphone", corregido: "ipone" }]);
   });
 
   it("con lo corregido agotado, la instrucción sigue siendo la de sin stock y nombra la corrección", async () => {
@@ -3391,5 +3458,531 @@ describe("buildCatalogTool — el corrector de tipeos como segundo intento (T3b)
     expect(result.porProducto?.map((r) => r.estado)).toEqual(["con_existencia", "con_existencia"]);
     expect(result.instruccionParaTuRespuesta).toContain("busqué IPONE en lugar de iphone");
     expect(catalogOutcome.consultas.map((c) => c.corregido)).toEqual([null, [{ original: "iphone", corregido: "ipone" }]]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// A2 T5 (30/9/2026, plan "Seba no cotiza lo que no es", con D6): TODOS los
+// casos de `casos-a2.ts` contra la herramienta real de catálogo, con el fake
+// de Supabase apoyado en el simulador de M1/M2/M3 sobre el catálogo del
+// fixture (`catalogo-a2.ts`, el ruido primero) y los 16 sinónimos que siembra
+// M4. Lo que se fija es la DECISIÓN de `tools.ts` (qué se cotiza, qué se avisa,
+// qué motivo escala, qué queda en la memoria del pedido), no el SQL: el SQL lo
+// prueban `supabase/tests/*.sql` y el arnés T7 contra la base real.
+// ---------------------------------------------------------------------------
+describe("casos-a2: la herramienta decide cada caso del plan (D1, D1b, D2, D3, D5, D6)", () => {
+  const catalogo: FilaSim[] = CATALOGO_A2.map((p) => ({
+    id: p.codigo,
+    name: p.nombre,
+    brand: null,
+    price: p.precioBs,
+    currency: p.currency,
+    stock_quantity: p.stock,
+  }));
+  const sinonimos: FakeSynonymRow[] = SINONIMOS_M4.map((s) => ({ synonym_from: s.from, synonym_to: s.to }));
+
+  async function correrLlamada(client: unknown, llamada: LlamadaA2, rafaga: string[] | undefined) {
+    const outcome = nuevoCatalogOutcome();
+    const tool = herramienta(client, outcome, { rafagaCliente: rafaga });
+    await correr(tool, { ...llamada });
+    return outcome;
+  }
+
+  // Las aserciones viven en `__fixtures__/verificar-caso-a2.ts`: las comparte el arnés (T7), que corre los
+  // mismos casos contra la base y Redis reales y no puede decir algo distinto.
+  const verificar = async (esperado: EsperadoA2, outcome: CatalogOutcome, donde: string) =>
+    verificarEsperadoA2(esperado, outcome, donde);
+
+  it.each(CASOS_A2.map((c) => [c.id, c] as const))("%s", async (_id, caso: CasoA2) => {
+    const { client } = createFakeSupabase(catalogo, sinonimos, "conv-1", [], {
+      correctorSimulado: true,
+      diagnostico: true,
+    });
+
+    if (caso.turnoPrevio) {
+      const previo = await correrLlamada(client, caso.turnoPrevio.llamada, caso.turnoPrevio.rafagaCliente);
+      await verificar(caso.turnoPrevio.esperado, previo, `${caso.id} (turno previo)`);
+
+      const memoria = await pedidoGuardado();
+      const m = caso.turnoPrevio.memoria;
+      expect(memoria?.ultimoQuery, `${caso.id}: memoria.ultimoQuery`).toBe(m.ultimoQuery);
+      expect(memoria?.preguntaHechaPara, `${caso.id}: memoria.preguntaHechaPara`).toBe(m.preguntaHechaPara);
+      expect(memoria?.preguntaTipo, `${caso.id}: memoria.preguntaTipo`).toBe(m.preguntaTipo);
+      const motoGuardada = ((memoria?.moto ?? []) as string[][]).map((g) => g[0]);
+      expect(motoGuardada, `${caso.id}: memoria.moto`).toEqual(m.moto);
+      const anioGuardado = ((memoria?.anio ?? []) as string[][])[0]?.[0] ?? null;
+      expect(anioGuardado, `${caso.id}: memoria.anio`).toBe(m.anio);
+    }
+
+    const outcome = await correrLlamada(client, caso.llamada, caso.rafagaCliente);
+    await verificar(caso.esperado, outcome, caso.id);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// A2 T5 (30/9/2026): lo que los casos de `casos-a2.ts` no dicen por sí solos:
+// qué viaja al corrector y al diagnóstico, qué queda en la memoria, y los
+// bordes de D1/D2/D3 con D6.
+// ---------------------------------------------------------------------------
+describe("buildCatalogTool — A2 T5: el corrector, el diagnóstico y la memoria", () => {
+  it("MOTOS_EN_NOMBRES: todas las motos conocidas MÁS los prefijos de modelo dt, cg y gn (y no 'en')", () => {
+    for (const moto of MOTOS_CONOCIDAS) expect(MOTOS_EN_NOMBRES).toContain(moto);
+    for (const prefijo of ["dt", "cg", "gn"]) expect(MOTOS_EN_NOMBRES).toContain(prefijo);
+    expect(MOTOS_EN_NOMBRES).not.toContain("en");
+  });
+
+  it("un nombre con DT (sin DT en MOTOS_CONOCIDAS) NO es universal: no se le ofrece a un cliente de otra moto", async () => {
+    const { client } = createFakeSupabase([
+      fila("dt", "DEFENSA DELANTERA SUPER DT LEFOR", 6),
+      fila("brz", "DEFENSA BRZ 250", 5),
+    ]);
+    const outcome = nuevoCatalogOutcome();
+
+    await correr(herramienta(client, outcome), { query: "defensa", motoModel: "Tigrito", dependeDeLaMoto: true });
+
+    expect(outcome.cotizacion).toEqual([]);
+    expect(outcome.avisos).toEqual([{ tipo: "moto_sin_calce", productoPedido: null, moto: "TIGRITO" }]);
+  });
+
+  it("al corrector viajan las motos conocidas (protegidas), las marcas cerradas y el relleno (excluidos)", async () => {
+    const { client, correctorCalls } = createFakeSupabase([fila("s", "SOPORTE CELULAR IPONE 11", 5)]);
+
+    await correr(herramienta(client, nuevoCatalogOutcome()), { query: "soporte samsung" });
+
+    expect(correctorCalls).toHaveLength(1);
+    expect(correctorCalls[0].p_protegidos).toEqual(expect.arrayContaining([...MOTOS_CONOCIDAS]));
+    // T5b (30/9/2026): `p_marcas` son SOLO las marcas de producto. Con las motos dentro, una marca de
+    // moto a distancia 2 ganaba como "corrección" (kenda→honda); las motos siguen protegidas por
+    // `p_protegidos`, no por esta lista.
+    expect(correctorCalls[0].p_marcas).toEqual([...MARCAS_DE_PRODUCTO]);
+    expect(correctorCalls[0].p_marcas).toContain("timsun");
+    for (const moto of ["honda", "yamaha", "bera", "horse", "suzuki"]) {
+      expect(correctorCalls[0].p_marcas, `p_marcas no lleva la moto ${moto}`).not.toContain(moto);
+    }
+    expect(correctorCalls[0].p_excluidos).toEqual(expect.arrayContaining([...RELLENO_CATALOGO]));
+    expect(correctorCalls[0].p_excluidos).toContain("para");
+  });
+
+  it("T5b: «aceite» para una SBR con pocos aceites con existencia cotiza UN aceite, nunca la BOMBA DE ACEITE BERA SBR (aunque tenga más stock y nombre la moto)", async () => {
+    // La bomba no empieza con «aceite»: la moto no calza con ella (puntaje_moto_maximo = 0) y, sin moto
+    // que calce, nombrarla no la hace subir en el orden. Tiene MÁS existencia que los aceites: solo el
+    // orden por relevancia (empieza con el producto) antes que la existencia la deja atrás.
+    const { client } = createFakeSupabase([
+      fila("bomba", "BOMBA DE ACEITE BERA SBR", 9),
+      fila("a1", "ACEITE INCA 20W50 4T", 2),
+      fila("a2", "ACEITE OILSTONE 4T", 3),
+    ]);
+    const outcome = nuevoCatalogOutcome();
+
+    const result = await correr(herramienta(client, outcome), { query: "aceite", motoBrand: "Bera", motoModel: "SBR" });
+
+    expect(result.results.map((r) => r.nombre)).toEqual(["ACEITE OILSTONE 4T"]);
+    expect(outcome.cotizacion.map((l) => l.nombre)).toEqual(["ACEITE OILSTONE 4T"]);
+    expect(outcome.avisos).toEqual([]);
+  });
+
+  it("kenda NO se corrige hacia honda: ni propuesta ni reintento (T5b); D3 relaja la palabra", async () => {
+    // HONDA está en el catálogo (la pastilla) y a distancia 2 de "kenda". Era una MARCA de la lista que
+    // recibía el corrector (incluía las motos): el SQL la proponía y el reintento no calzaba. Ahora no
+    // hay ni propuesta: `correccionDescartada` queda en null (no solo "descartada").
+    const filas = [
+      fila("c1", "CAUCHO 120/70 TIMSUN", 5),
+      fila("h1", "PASTILLA FRENO DELANTERO HONDA CBF150", 4),
+    ];
+    const { client, rpcCalls, correctorCalls } = createFakeSupabase(filas, [], "conv-1", [], {
+      correctorSimulado: true,
+      diagnostico: true,
+    });
+    const outcome = nuevoCatalogOutcome();
+
+    await correr(herramienta(client, outcome), { query: "caucho kenda 70/120" });
+
+    expect(correctorCalls).toHaveLength(1);
+    const consulta = outcome.consultas[0];
+    expect(consulta.corregido).toBeNull();
+    expect(consulta.correccionDescartada).toBeNull();
+    expect(rpcCalls.flatMap((c) => c.p_terminos.flat()), "ningún intento buscó honda").not.toContain("honda");
+    expect(consulta.relajados).toEqual(["kenda"]);
+  });
+
+  it("las correcciones del plan siguen: horsen→horse (moto, distancia 1), tisum→timsun, stinsun→timsun, swhera→switchera (marca de producto), iphone→ipone, motopower→motorpower", async () => {
+    const filas = [
+      fila("a", "GUARDAFANGO DELANTERO HORSE NEGRO", 3),
+      fila("b", "CAUCHO 90/90 TIMSUN PISTA", 3),
+      fila("c", "CAUCHO SWITCHERA 100/90", 3),
+      fila("d", "ACEITE IPONE 20W50 4T", 3),
+      fila("e", "TRIPA 18 3.00 MOTORPOWER", 3),
+    ];
+    const esperado: [string, string, string][] = [
+      ["guardafango horsen", "horsen", "horse"],
+      ["caucho tisum", "tisum", "timsun"],
+      ["caucho stinsun", "stinsun", "timsun"],
+      ["caucho swhera", "swhera", "switchera"],
+      ["aceite iphone", "iphone", "ipone"],
+      ["tripa motopower", "motopower", "motorpower"],
+    ];
+    for (const [query, original, corregido] of esperado) {
+      const { client } = createFakeSupabase(filas, [], "conv-1", [], { correctorSimulado: true, diagnostico: true });
+      const outcome = nuevoCatalogOutcome();
+      await correr(herramienta(client, outcome), { query });
+      expect(outcome.consultas[0].corregido, query).toEqual([{ original, corregido }]);
+    }
+  });
+
+  it("D5: una palabra marcada «No corregir» viaja en p_protegidos (mismo alcance que los sinónimos) y el corrector la deja como está", async () => {
+    const filas = [fila("s", "SOPORTE CELULAR IPONE 11", 5)];
+    const leccion: FakeSynonymRow = { synonym_from: "iphone", synonym_to: "", kind: "no_corregir" };
+
+    // Sin la lección: iphone→ipone y se cotiza.
+    const sin = createFakeSupabase(filas, [], "conv-1", [], { correctorSimulado: true });
+    const outcomeSin = nuevoCatalogOutcome();
+    await correr(herramienta(sin.client, outcomeSin), { query: "soporte iphone" });
+    expect(outcomeSin.conExistencia).toBe(true);
+
+    // Con la lección: la palabra queda protegida y no se corrige.
+    const con = createFakeSupabase(filas, [leccion], "conv-1", [], { correctorSimulado: true });
+    const outcomeCon = nuevoCatalogOutcome();
+    await correr(herramienta(con.client, outcomeCon), { query: "soporte iphone" });
+
+    expect(con.correctorCalls[0].p_protegidos).toContain("iphone");
+    expect(con.leccionesKinds).toContain("no_corregir");
+    expect(outcomeCon.conExistencia).toBe(false);
+    expect(outcomeCon.consultas[0].corregido).toBeNull();
+  });
+
+  it("la lección «No corregir» de OTRA conversación no protege nada (alcance conversacion)", async () => {
+    const leccion: FakeSynonymRow = {
+      synonym_from: "iphone",
+      synonym_to: "",
+      kind: "no_corregir",
+      scope: "conversacion",
+      conversationId: "conv-ajena",
+    };
+    const { client, correctorCalls } = createFakeSupabase([fila("s", "SOPORTE CELULAR IPONE 11", 5)], [leccion], "conv-1", [], {
+      correctorSimulado: true,
+    });
+
+    await correr(herramienta(client, nuevoCatalogOutcome()), { query: "soporte iphone" });
+
+    expect(correctorCalls[0].p_protegidos).not.toContain("iphone");
+  });
+
+  it("D3 sin diagnóstico (la RPC falla): NO se relaja nada y sigue como no identificado, sin lanzar", async () => {
+    const { client, diagnosticoCalls } = createFakeSupabase([fila("s", "SOPORTE CELULAR IPONE 11", 5)]);
+    const outcome = nuevoCatalogOutcome();
+
+    const result = await correr(herramienta(client, outcome), { query: "soporte samsung" });
+
+    expect(diagnosticoCalls).toHaveLength(0);
+    expect(outcome.sinResultados).toBe(true);
+    expect(outcome.consultas[0].relajados).toEqual([]);
+    expect(result.instruccionParaTuRespuesta).toContain(TEXTO_NO_IDENTIFICADO);
+  });
+
+  it("D3: el diagnóstico se pide con la CABEZA — el primer grupo que existe y no es un número suelto ('ibk 30 litros': el grupo de litros)", async () => {
+    const { client, diagnosticoCalls } = createFakeSupabase(
+      [fila("m", "MALETA REDONDA 30 LITROS NEGRA", 2)],
+      SINONIMOS_M4.map((x) => ({ synonym_from: x.from, synonym_to: x.to })),
+      "conv-1",
+      [],
+      { diagnostico: true }
+    );
+    const outcome = nuevoCatalogOutcome();
+
+    await correr(herramienta(client, outcome), { query: "ibk 30 litros" });
+
+    // Primer intento con cabeza tentativa = 0 ("ibk", no es un número suelto)...
+    expect(diagnosticoCalls[0].p_cabeza).toBe(0);
+    // ...pero "ibk" no existe: la cabeza real es el grupo de litros (índice 1) y se vuelve a pedir con ella.
+    expect(diagnosticoCalls[1].p_cabeza).toBe(1);
+    expect(outcome.consultas[0].relajados).toEqual(["ibk"]);
+    expect(outcome.avisos).toEqual([{ tipo: "relajado", productoPedido: null, terminos: ["ibk"] }]);
+    expect(outcome.cotizacion.map((l) => l.nombre)).toEqual(["MALETA REDONDA 30 LITROS NEGRA"]);
+  });
+
+  it("D3: una marca que EXISTE en el catálogo nunca se relaja (el caso Inca no puede volver)", async () => {
+    const { client } = createFakeSupabase(
+      [fila("i", "ACEITE INCA 20W50 4T", 9), fila("m", "ACEITE MOTUL 5100 20W50 4T", 8), fila("o", "CASCO EDGE NEGRO", 4)],
+      [],
+      "conv-1",
+      [],
+      { diagnostico: true, correctorSimulado: true }
+    );
+    const outcome = nuevoCatalogOutcome();
+
+    // "inca" existe y NO co-ocurre con "casco": aun así no se relaja (es una marca conocida y existe).
+    await correr(herramienta(client, outcome), { query: "casco inca" });
+
+    expect(outcome.consultas[0].relajados).toEqual([]);
+    expect(outcome.sinResultados).toBe(true);
+  });
+
+  it("la memoria guarda el año (anio) y QUÉ se preguntó (preguntaTipo); las claves viejas se siguen leyendo", async () => {
+    const asientos = Array.from({ length: 5 }, (_, i) => fila(`a-${i}`, `ASIENTO MARCA ${i}`, 3));
+    const { client } = createFakeSupabase(asientos);
+
+    // Turno 1: el cliente da una moto con año y la herramienta pregunta por el producto.
+    await correr(herramienta(client, nuevoCatalogOutcome()), { query: "asiento", motoModel: "Kawasaki 2019", dependeDeLaMoto: true });
+    const memoria = await pedidoGuardado();
+    expect(memoria?.anio).toEqual([["2019"]]);
+    expect(memoria?.preguntaTipo).toBe("producto");
+    expect(memoria?.preguntaHechaPara).toBe("asiento");
+  });
+
+  it("tras la pregunta por la MOTO, «sbr 24» es el año 2024 de la moto (no la medida «24») y el producto sigue siendo el pedido anterior", async () => {
+    const { client, getAppliedRpcArgs } = createFakeSupabase([
+      fila("a1", "ASIENTO SBR NEGRO", 4),
+      fila("a2", "ASIENTO KAVAK", 5),
+      fila("a3", "ASIENTO HORSE", 6),
+      fila("a4", "ASIENTO EK OWEN", 7),
+    ]);
+    await correr(herramienta(client, nuevoCatalogOutcome()), { query: "asiento", dependeDeLaMoto: true });
+    expect((await pedidoGuardado())?.preguntaTipo).toBe("moto");
+
+    const outcome = nuevoCatalogOutcome();
+    await correr(herramienta(client, outcome), { query: "sbr 24" });
+
+    expect(getAppliedRpcArgs()?.p_terminos).toEqual([["asiento"]]);
+    expect(getAppliedRpcArgs()?.p_moto).toEqual([["sbr"]]);
+    expect(getAppliedRpcArgs()?.p_cilindrada).toEqual([["2024"]]);
+    expect(outcome.cotizacion.map((l) => l.nombre)).toEqual(["ASIENTO SBR NEGRO"]);
+    expect((await pedidoGuardado())?.anio).toEqual([["2024"]]);
+  });
+
+  it("tras la pregunta por el PRODUCTO, un número de dos dígitos sigue siendo una medida", async () => {
+    const cascos = Array.from({ length: 5 }, (_, i) => fila(`c-${i}`, `CASCO MARCA ${i} 24`, 3));
+    const { client, getAppliedRpcArgs } = createFakeSupabase(cascos);
+    await correr(herramienta(client, nuevoCatalogOutcome()), { query: "casco", dependeDeLaMoto: false });
+    expect((await pedidoGuardado())?.preguntaTipo).toBe("producto");
+
+    await correr(herramienta(client, nuevoCatalogOutcome()), { query: "24" });
+
+    expect(getAppliedRpcArgs()?.p_terminos).toEqual([["casco"], ["24"]]);
+    expect(getAppliedRpcArgs()?.p_cilindrada).toEqual([]);
+  });
+});
+
+describe("buildCatalogTool — A2 T5: la guarda de producto del corrector", () => {
+  const cascos = [
+    fila("v", "VISERA CASCO FRANKIE", 10),
+    fila("c1", "CASCO FRANKIE NEGRO", 3),
+    fila("c2", "CASCO FRANKIE BLANCO", 2),
+  ];
+  const vicera = [{ original: "vicera", corregido: "visera" }];
+
+  it("un reintento que CALZA pero cambia el producto pedido (vicera→visera cotizaba la VISERA en vez del casco) se descarta: D3 relaja la palabra", async () => {
+    const { client, rpcCalls } = createFakeSupabase(cascos, [], "conv-1", vicera, { diagnostico: true });
+    const outcome = nuevoCatalogOutcome();
+
+    await correr(herramienta(client, outcome), { query: "casco frankie vicera" });
+
+    // Los tres intentos: original, corrección (descartada) y sin la palabra.
+    expect(rpcCalls.map((c) => c.p_terminos)).toEqual([
+      [["casco"], ["frankie"], ["vicera"]],
+      [["casco"], ["frankie"], ["visera"]],
+      [["casco"], ["frankie"]],
+    ]);
+    const consulta = outcome.consultas[0];
+    expect(consulta.corregido).toBeNull();
+    expect(consulta.correccionDescartada).toEqual(vicera);
+    expect(consulta.relajados).toEqual(["vicera"]);
+    expect(outcome.cotizacion.map((l) => l.nombre)).not.toContain("VISERA CASCO FRANKIE");
+    expect(outcome.cotizacion.map((l) => l.nombre)).toEqual(["CASCO FRANKIE NEGRO"]);
+  });
+
+  it("si la CABEZA es la palabra corregida la guarda no aplica (timsum→timsun cambia la cabeza a propósito)", async () => {
+    const { client } = createFakeSupabase([fila("t", "CAUCHO TIMSUN PISTA", 5)], [], "conv-1", [
+      { original: "timsum", corregido: "timsun" },
+    ]);
+    const outcome = nuevoCatalogOutcome();
+
+    await correr(herramienta(client, outcome), { query: "timsum pista" });
+
+    expect(outcome.consultas[0].corregido).toEqual([{ original: "timsum", corregido: "timsun" }]);
+    expect(outcome.consultas[0].correccionDescartada).toBeNull();
+    expect(outcome.cotizacion.map((l) => l.nombre)).toEqual(["CAUCHO TIMSUN PISTA"]);
+  });
+
+  it("la guarda solo mira las filas que de verdad calzaron: una fila de menor puntaje que empieza con la cabeza no la salva", async () => {
+    // "CASCO FRANKIE NEGRO" empieza con la cabeza pero solo calza dos de los tres términos (puntaje 2 < 3).
+    const { client } = createFakeSupabase(cascos, [], "conv-1", vicera, { diagnostico: true });
+    const outcome = nuevoCatalogOutcome();
+
+    await correr(herramienta(client, outcome), { query: "casco frankie vicera" });
+
+    expect(outcome.consultas[0].correccionDescartada).toEqual(vicera);
+  });
+});
+
+describe("buildCatalogTool — A2 T5: D1, D2 y D6 en los bordes", () => {
+  it("D1: con un universal con existencia, la moto que no calza recibe UNO, con el aviso 'universales' (sin marca)", async () => {
+    const { client } = createFakeSupabase([
+      fila("brz", "TACOMETRO DIGITAL BRZ", 4),
+      fila("gr", "TACOMETRO DIGITAL GR250", 4),
+      fila("uni", "TACOMETRO DIGITAL UNIVERSAL", 5),
+    ]);
+    const outcome = nuevoCatalogOutcome();
+
+    const result = await correr(herramienta(client, outcome), { query: "tacometro digital", motoModel: "Tigrito", dependeDeLaMoto: true });
+
+    expect(result.results.map((r) => r.nombre)).toEqual(["TACOMETRO DIGITAL UNIVERSAL"]);
+    expect(outcome.avisos).toEqual([{ tipo: "universales", productoPedido: null, marca: null }]);
+    expect(outcome.motivoForzado).toBeNull();
+    expect(result.instruccionParaTuRespuesta).toMatch(/NO nombra la moto del cliente/);
+  });
+
+  it("D1: con más de tres compatibles con existencia se PREGUNTA (una vez); ya preguntado, se entrega UNA", async () => {
+    const universales = Array.from({ length: 5 }, (_, i) => fila(`u-${i}`, `FUNDA UNIVERSAL ${i}`, i + 1));
+    const { client } = createFakeSupabase([...universales, fila("brz", "FUNDA BRZ 250", 9)]);
+
+    const primera = nuevoCatalogOutcome();
+    await correr(herramienta(client, primera), { query: "funda", motoModel: "Tigrito", dependeDeLaMoto: true });
+    expect(primera.generico).toBe(true);
+    expect(primera.preguntaFiltro).toBe("producto");
+    expect(primera.cotizacion).toEqual([]);
+    // El aviso de una consulta que termina en pregunta NO se le dice al cliente...
+    expect(primera.avisos).toEqual([]);
+    // ...pero queda en el registro de la consulta.
+    expect(primera.consultas[0].motoIgnorada).toBe(true);
+
+    const segunda = nuevoCatalogOutcome();
+    await correr(herramienta(client, segunda), { query: "funda", motoModel: "Tigrito", dependeDeLaMoto: true });
+    expect(segunda.cotizacion.map((l) => l.nombre)).toEqual(["FUNDA UNIVERSAL 4"]);
+    expect(segunda.avisos).toEqual([{ tipo: "universales", productoPedido: null, marca: null }]);
+  });
+
+  it("D1: la marca del cliente cuenta: un producto que nombra SOLO la marca (bera) es compatible y se cotiza 'de BERA o universal'", async () => {
+    const { client } = createFakeSupabase([
+      fila("v", "BATERIA VSTROM 650", 4),
+      fila("j", "BATERIA SECA JAGUAR/BERA 12N6.5", 116),
+    ]);
+    const outcome = nuevoCatalogOutcome();
+
+    await correr(herramienta(client, outcome), {
+      query: "bateria",
+      motoBrand: "Bera",
+      motoModel: "Socialista",
+      dependeDeLaMoto: true,
+    });
+
+    expect(outcome.cotizacion.map((l) => l.nombre)).toEqual(["BATERIA SECA JAGUAR/BERA 12N6.5"]);
+    expect(outcome.avisos).toEqual([{ tipo: "universales", productoPedido: null, marca: "bera" }]);
+  });
+
+  it("D1: compatibles pero TODOS agotados: se nombra el mejor como agotado, no 'moto sin calce'", async () => {
+    const { client } = createFakeSupabase([fila("brz", "BATERIA BRZ", 4), fila("u", "BATERIA UNIVERSAL", 0)]);
+    const outcome = nuevoCatalogOutcome();
+
+    await correr(herramienta(client, outcome), { query: "bateria", motoModel: "Tigrito", dependeDeLaMoto: true });
+
+    expect(outcome.agotados).toBe(true);
+    expect(outcome.cotizacion.map((l) => [l.nombre, l.stock])).toEqual([["BATERIA UNIVERSAL", 0]]);
+    expect(outcome.avisos.map((a) => a.tipo)).not.toContain("moto_sin_calce");
+    expect(outcome.motivoForzado).toBeNull();
+  });
+
+  it("D1: la familia que NO nombra ninguna moto no depende de la moto: la moto dada se ignora y rige la regla sin moto", async () => {
+    const { client } = createFakeSupabase(Array.from({ length: 5 }, (_, i) => fila(`c-${i}`, `CASCO MARCA ${i}`, 3)));
+    const outcome = nuevoCatalogOutcome();
+
+    await correr(herramienta(client, outcome), { query: "casco", motoModel: "Tigrito" });
+
+    // Ninguna fila nombra una moto: ni 'moto sin calce' ni 'universales'; pregunta por el producto.
+    expect(outcome.preguntaFiltro).toBe("producto");
+    expect(outcome.avisos).toEqual([]);
+    expect(outcome.consultas[0].motoIgnorada).toBe(true);
+  });
+
+  it("D2: variante agotada con la moto calzando: UNA alternativa de esa MISMA moto, nunca de otra", async () => {
+    const { client } = createFakeSupabase([
+      fila("ek", "TANQUE EK XPRESS II AZUL", 6),
+      fila("a", "TANQUE SBR AZUL", 0),
+      fila("r", "TANQUE SBR ROJO", 5),
+      fila("b", "TANQUE SBR BLANCO", 3),
+    ]);
+    const outcome = nuevoCatalogOutcome();
+
+    await correr(herramienta(client, outcome), { query: "tanque azul", motoModel: "SBR", dependeDeLaMoto: true });
+
+    expect(outcome.cotizacion.map((l) => [l.nombre, l.esAlternativa])).toEqual([["TANQUE SBR ROJO", true]]);
+    expect(outcome.avisos).toEqual([
+      { tipo: "variante_agotada", productoPedido: null, variante: "azul", conAlternativa: true },
+    ]);
+    expect(outcome.motivoForzado).toBe("confirmar_inventario");
+  });
+
+  it("D2: variante agotada y NINGUNA alternativa con existencia: se nombra el agotado y el motivo natural es sin_stock", async () => {
+    const { client } = createFakeSupabase([fila("a", "TANQUE SBR AZUL", 0), fila("r", "TANQUE SBR ROJO", 0)]);
+    const outcome = nuevoCatalogOutcome();
+
+    await correr(herramienta(client, outcome), { query: "tanque azul", motoModel: "SBR" });
+
+    expect(outcome.cotizacion.map((l) => [l.nombre, l.stock])).toEqual([["TANQUE SBR AZUL", 0]]);
+    expect(outcome.avisos).toEqual([
+      { tipo: "variante_agotada", productoPedido: null, variante: "azul", conAlternativa: false },
+    ]);
+    expect(outcome.motivoForzado).toBeNull();
+    expect(outcome.agotados).toBe(true);
+  });
+
+  it("D2 con el pedido explícito de ver opciones: la alternativa sigue siendo UNA", async () => {
+    const { client } = createFakeSupabase([
+      fila("a", "CHAQUETA EDGE NEGRA", 0),
+      fila("m", "CHAQUETA MALLA", 9),
+      fila("c", "CHAQUETA CUERO", 7),
+      fila("i", "CHAQUETA IMPERMEABLE", 5),
+    ]);
+    const outcome = nuevoCatalogOutcome();
+
+    await correr(herramienta(client, outcome, { rafagaCliente: ["qué opciones hay"] }), { query: "chaqueta edge" });
+
+    expect(outcome.cotizacion.map((l) => l.nombre)).toEqual(["CHAQUETA MALLA"]);
+  });
+
+  it("D6: en una lista el pedido explícito de ver opciones NO aplica: una por producto", async () => {
+    const { client } = createFakeSupabase([
+      fila("a", "ASIENTO SBR A", 9),
+      fila("b", "ASIENTO SBR B", 7),
+      fila("c", "ASIENTO SBR C", 5),
+    ]);
+    const outcome = nuevoCatalogOutcome();
+
+    await correr(herramienta(client, outcome, { rafagaCliente: ["muéstrame todas"] }), {
+      query: "",
+      productos: ["asiento"],
+      motoModel: "sbr",
+    });
+
+    expect(outcome.cotizacion).toHaveLength(1);
+  });
+
+  it("D6: el pedido explícito de ver todas saca hasta tres, sin 'Hay N más'", async () => {
+    const { client } = createFakeSupabase(Array.from({ length: 8 }, (_, i) => fila(`s-${i}`, `ASIENTO SBR ${i}`, i + 1)));
+    const outcome = nuevoCatalogOutcome();
+
+    await correr(herramienta(client, outcome, { rafagaCliente: ["muéstrame todas"] }), { query: "asiento sbr" });
+
+    expect(outcome.cotizacion).toHaveLength(3);
+  });
+
+  it("una lista con un ítem que escala sin cotizar y otro cotizado: los dos avisos/renglones y el motivo forzado", async () => {
+    const { client } = createFakeSupabase([
+      fila("bat", "BATERIA BERA SOCIALISTA 12V", 4),
+      fila("h", "PARRILLA HORSE", 3),
+      fila("k", "PARRILLA KAVAK", 3),
+    ]);
+    const outcome = nuevoCatalogOutcome();
+
+    const result = await correr(herramienta(client, outcome), {
+      query: "",
+      productos: ["bateria", "parrilla"],
+      motoModel: "socialista",
+      dependeDeLaMoto: true,
+    });
+
+    expect(outcome.cotizacion.map((l) => [l.productoPedido, l.nombre])).toEqual([["bateria", "BATERIA BERA SOCIALISTA 12V"]]);
+    expect(outcome.avisos).toEqual([{ tipo: "moto_sin_calce", productoPedido: "parrilla", moto: "SOCIALISTA" }]);
+    expect(outcome.motivoForzado).toBe("confirmar_inventario");
+    expect(result.instruccionParaTuRespuesta).toContain(TEXTO_CONFIRMAR_INVENTARIO);
   });
 });

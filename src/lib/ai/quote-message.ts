@@ -1,8 +1,21 @@
 import { describirCorreccion, type CorreccionTermino } from "@/lib/ai/catalog-correction";
 import { formatQuote } from "@/lib/ai/precio";
 import { moneyFigures } from "@/lib/ai/price-guard";
-import { PREGUNTA_FILTRO, PREGUNTA_FILTRO_PRODUCTO, TEXTO_CONFIRMAR_INVENTARIO, TEXTO_SIN_STOCK } from "@/lib/ai/seba";
-import type { LineaCotizada, MasOpciones } from "@/lib/ai/tools";
+import {
+  OTRA_OPCION_CON_EXISTENCIA,
+  PREGUNTA_FILTRO,
+  PREGUNTA_FILTRO_PRODUCTO,
+  TEXTO_ASESOR_CONFIRMA,
+  TEXTO_CONFIRMAR_INVENTARIO,
+  TEXTO_SIN_STOCK,
+  textoMotoSinCalce,
+  textoRelajado,
+  textoRelajadoAgotado,
+  textoUniversales,
+  textoVarianteAgotada,
+  textoVariasOpciones,
+} from "@/lib/ai/seba";
+import type { AvisoCatalogo, ConsultaCatalogo, LineaCotizada } from "@/lib/ai/tools";
 
 // ---------------------------------------------------------------------------
 // La cotización la arma el CÓDIGO, no el modelo (T3b, plan "Seba encuentra, no
@@ -26,6 +39,13 @@ import type { LineaCotizada, MasOpciones } from "@/lib/ai/tools";
 // (las cifras salen del `toolResult` del mismo turno, así que tienen fuente) y
 // por la guarda de identidad, como cualquier otra salida.
 //
+// A2 T5 (30/9/2026, con D6): el bloque también pinta los AVISOS de la búsqueda
+// (universales, moto sin calce, «varias opciones», variante agotada con su UNA
+// alternativa, relajo) con los textos literales de `seba.ts`, y arma la nota de
+// la escalada (`notaDeBusquedas`). Nunca hay «Hay N más»: se cotiza UNA opción
+// (la línea `lineaMasOpciones` de la corrección del 29/9/2026 se borró en T5b,
+// 30/9/2026: desde el hotfix de esa misma tarde nadie la producía).
+//
 // Módulo PURO: sin `server-only` y sin acceso a la base. El único import de
 // `tools.ts` es de TIPO (se borra al compilar).
 // ---------------------------------------------------------------------------
@@ -42,28 +62,18 @@ export interface OpcionesCotizacion {
   /** Lo que el corrector de tipeos cambió: el bloque abre nombrándolo. */
   correcciones?: readonly CorreccionTermino[];
   /**
-   * 29/9/2026: con la moto calzando y más de tres con existencia, cuántas
-   * otras quedaron sin mostrar (`CatalogOutcome.masOpciones`). Cierra el grupo
-   * del producto con `lineaMasOpciones`, después de sus renglones.
+   * A2 T5 (30/9/2026): los avisos de la búsqueda (`CatalogOutcome.avisos`): D1
+   * (universales, moto sin calce), D1b (varias opciones), D2 (variante agotada
+   * y su UNA alternativa) y D3 (relajo). Cada uno se pinta en el grupo de su
+   * producto, con el texto literal de `seba.ts`.
    */
-  masOpciones?: readonly MasOpciones[];
-}
-
-/**
- * La línea que cierra un grupo cuando se cotizaron tres y hay más con
- * existencia para la moto del cliente. Literal dictado por el operador
- * (29/9/2026). Sin cifras de dinero, así que no toca `price-guard`.
- */
-export function lineaMasOpciones(cantidad: number): string {
-  const resto = cantidad === 1 ? "1 opción más" : `${cantidad} opciones más`;
-  return `Hay ${resto} para tu moto; el asesor te muestra el resto.`;
-}
-
-/** Suma lo que quedó sin mostrar de un producto (varias búsquedas del turno pueden apuntar al mismo). */
-function masOpcionesDe(opciones: OpcionesCotizacion, productoPedido: string | null): number {
-  return (opciones.masOpciones ?? [])
-    .filter((m) => m.productoPedido === productoPedido)
-    .reduce((suma, m) => suma + m.cantidad, 0);
+  avisos?: readonly AvisoCatalogo[];
+  /**
+   * Los productos de una lista en el orden en que se pidieron
+   * (`ConsultaCatalogo.productos`): un ítem que solo tiene aviso (sin
+   * renglones) no aparece en `lineas`, y sin este orden iría al final.
+   */
+  ordenProductos?: readonly string[];
 }
 
 /** "6 disponibles" / "1 disponible" / "Agotado". */
@@ -87,19 +97,73 @@ function renglon(linea: LineaCotizada): string {
 }
 
 /**
+ * La línea de un aviso que va ARRIBA de los renglones de su producto.
+ * `variante_agotada` sin alternativa no dice nada aparte: el renglón "Agotado"
+ * ya nombra el producto exacto (A2 T5). `nCotizadas` es cuántos renglones
+ * normales (no alternativa) lleva el producto: `textoUniversales` concuerda en
+ * singular/plural con él.
+ */
+function lineaDeAviso(aviso: AvisoCatalogo, nCotizadas: number): string | null {
+  switch (aviso.tipo) {
+    case "universales":
+      return textoUniversales(aviso.marca, nCotizadas);
+    case "moto_sin_calce":
+      return textoMotoSinCalce(aviso.moto);
+    case "relajado":
+      return textoRelajado(aviso.terminos);
+    case "relajado_agotado":
+      return textoRelajadoAgotado(aviso.terminos);
+    case "variante_agotada":
+      return aviso.conAlternativa ? textoVarianteAgotada(aviso.variante) : null;
+    case "varias_opciones":
+      return textoVariasOpciones(aviso.productoPedido);
+  }
+}
+
+/**
+ * El bloque de UN producto pedido: encabezado (solo en una lista), sus avisos,
+ * sus renglones y, si la variante pedida estaba agotada (D2), "Otra opción con
+ * existencia:" con la UNA alternativa. Un agotado nunca va junto a algo con
+ * existencia: quien arma las líneas ya lo garantiza (T5, hotfix del
+ * 29/9/2026).
+ */
+function bloqueDeProducto(
+  producto: string | null,
+  lineas: readonly LineaCotizada[],
+  avisos: readonly AvisoCatalogo[]
+): string {
+  const normales = lineas.filter((l) => !l.esAlternativa);
+  const alternativas = lineas.filter((l) => l.esAlternativa === true);
+  const lineasDeAvisos = avisos
+    .map((a) => lineaDeAviso(a, normales.length))
+    .filter((linea): linea is string => linea !== null);
+
+  return [
+    producto ? encabezado(producto) : null,
+    ...lineasDeAvisos,
+    ...normales.map(renglon),
+    ...(alternativas.length > 0 ? [OTRA_OPCION_CON_EXISTENCIA, ...alternativas.map(renglon)] : []),
+  ]
+    .filter((x): x is string => x !== null)
+    .join("\n");
+}
+
+/**
  * El bloque de cotización: un renglón por producto con el nombre exacto, el
- * precio "$X BCV (Bs. Y)" y la existencia. En una lista (alguna línea trae
- * `productoPedido`) se agrupa por el producto que se pidió, en el orden en que
- * se pidió. Cadena vacía si no hay nada que decir.
+ * precio "$X BCV (Bs. Y)" y la existencia. En una lista (alguna línea o aviso
+ * trae `productoPedido`) se agrupa por el producto que se pidió, en el orden en
+ * que se pidió (`ordenProductos`; sin él, primero los que tienen renglones).
+ * Los avisos de la búsqueda (A2 T5) se pintan en el grupo de su producto.
+ * Cadena vacía si no hay nada que decir.
  */
 export function armarCotizacion(lineas: readonly LineaCotizada[], opciones: OpcionesCotizacion = {}): string {
   let bloques: string[] = [];
+  const avisos = opciones.avisos ?? [];
 
-  const esLista = lineas.some((l) => l.productoPedido !== null);
+  const esLista = lineas.some((l) => l.productoPedido !== null) || avisos.some((a) => a.productoPedido !== null);
   if (!esLista) {
-    if (lineas.length > 0) {
-      const mas = masOpcionesDe(opciones, null);
-      bloques.push([...lineas.map(renglon), ...(mas > 0 ? [lineaMasOpciones(mas)] : [])].join("\n"));
+    if (lineas.length > 0 || avisos.length > 0) {
+      bloques.push(bloqueDeProducto(null, lineas, avisos));
     }
   } else {
     const grupos = new Map<string, LineaCotizada[]>();
@@ -109,12 +173,29 @@ export function armarCotizacion(lineas: readonly LineaCotizada[], opciones: Opci
       grupo.push(linea);
       grupos.set(clave, grupo);
     }
-    bloques = [...grupos.entries()].map(([producto, delGrupo]) => {
-      const mas = masOpcionesDe(opciones, producto || null);
-      return [producto ? encabezado(producto) : null, ...delGrupo.map(renglon), mas > 0 ? lineaMasOpciones(mas) : null]
-        .filter((x): x is string => x !== null)
-        .join("\n");
-    });
+    // Los productos que solo tienen aviso también son un grupo.
+    for (const aviso of avisos) {
+      const clave = aviso.productoPedido ?? "";
+      if (!grupos.has(clave)) grupos.set(clave, []);
+    }
+
+    let claves = [...grupos.keys()];
+    if (opciones.ordenProductos && opciones.ordenProductos.length > 0) {
+      const posicion = (clave: string): number => {
+        const i = opciones.ordenProductos?.indexOf(clave) ?? -1;
+        return i === -1 ? Number.MAX_SAFE_INTEGER : i;
+      };
+      // `sort` es estable: los que no están en el orden conservan el suyo.
+      claves = [...claves].sort((a, b) => posicion(a) - posicion(b));
+    }
+
+    bloques = claves.map((clave) =>
+      bloqueDeProducto(
+        clave || null,
+        grupos.get(clave) ?? [],
+        avisos.filter((a) => (a.productoPedido ?? "") === clave)
+      )
+    );
   }
 
   const faltantes = (opciones.noEncontrados ?? []).map((p) => `• ${p}: no lo encontré en el catálogo`);
@@ -189,19 +270,35 @@ export function preambuloDelModelo(
 }
 
 /**
+ * El texto fijo con el que cierra el mensaje, según lo que de verdad se dijo:
+ * con AL MENOS un renglón con existencia, el de confirmar inventario; con todo
+ * agotado (sin ningún ítem que se quede sin nombrar), el de sin stock; y si
+ * hay ítems que NO se cotizaron (moto sin calce, "varias opciones") o no hay
+ * ningún renglón, el del asesor: decir "quedan unidades" o "no quedan" de lo
+ * que no se nombró sería mentir (A2 T5).
+ */
+function textoFijoDeCierre(lineas: readonly LineaCotizada[], avisos: readonly AvisoCatalogo[]): string {
+  if (lineas.some((l) => l.stock > 0)) return TEXTO_CONFIRMAR_INVENTARIO;
+  const hayItemSinCotizar = avisos.some((a) => a.tipo === "moto_sin_calce" || a.tipo === "varias_opciones");
+  if (lineas.length > 0 && !hayItemSinCotizar) return TEXTO_SIN_STOCK;
+  return TEXTO_ASESOR_CONFIRMA;
+}
+
+/**
  * El mensaje completo de una cotización: preámbulo opcional + bloque + texto
- * fijo LITERAL (`TEXTO_CONFIRMAR_INVENTARIO` si algún renglón tiene stock,
- * `TEXTO_SIN_STOCK` si todo está agotado). `texto` es cadena vacía si no hay
- * ninguna línea cotizada: sin cotización no hay nada que armar por código.
+ * fijo LITERAL (`textoFijoDeCierre`). `texto` es cadena vacía si no hay ninguna
+ * línea cotizada NI aviso que decir: sin nada no hay qué armar por código.
  */
 export function armarMensajeDeCotizacion(params: {
   textoModelo: string;
   lineas: readonly LineaCotizada[];
   noEncontrados?: readonly string[];
   correcciones?: readonly CorreccionTermino[];
-  masOpciones?: readonly MasOpciones[];
+  avisos?: readonly AvisoCatalogo[];
+  ordenProductos?: readonly string[];
 }): { texto: string; preambulo: string | null } {
-  if (params.lineas.length === 0) return { texto: "", preambulo: null };
+  const avisos = params.avisos ?? [];
+  if (params.lineas.length === 0 && avisos.length === 0) return { texto: "", preambulo: null };
 
   // Todo agotado: una frase amable ("¡claro, tenemos ese casco!") contradiría
   // al renglón "Agotado", así que ahí no se conserva ninguna.
@@ -211,9 +308,10 @@ export function armarMensajeDeCotizacion(params: {
   const bloque = armarCotizacion(params.lineas, {
     noEncontrados: params.noEncontrados,
     correcciones: params.correcciones,
-    masOpciones: params.masOpciones,
+    avisos,
+    ordenProductos: params.ordenProductos,
   });
-  const textoFijo = params.lineas.some((l) => l.stock > 0) ? TEXTO_CONFIRMAR_INVENTARIO : TEXTO_SIN_STOCK;
+  const textoFijo = textoFijoDeCierre(params.lineas, avisos);
 
   return {
     texto: [preambulo, bloque, textoFijo].filter((parte): parte is string => Boolean(parte)).join("\n\n"),
@@ -242,4 +340,36 @@ export function armarMensajeDePregunta(params: {
     texto: [preambulo, params.pregunta].filter((parte): parte is string => Boolean(parte)).join("\n\n"),
     preambulo,
   };
+}
+
+/** Tope de la nota: el mismo `.max(600)` del `resumen` de `escalarAAsesor` (T1, 21/9/2026). */
+const MAX_NOTA_CARACTERES = 600;
+
+/**
+ * A2 T5 (30/9/2026): la nota que la red de seguridad de `agent.ts` le deja al
+ * asesor cuando escala en código tras consultar el catálogo: UN renglón por
+ * pedido con lo que decidió la búsqueda (`ConsultaCatalogo.decision`, texto
+ * fijo armado por el código) y lo que se cotizó. Producción del 29/9: la lista
+ * de cinco pedidos llegaba al asesor con «se quedó sin pasos antes de
+ * escalar» y ni un renglón de qué se había pedido ni qué pasó con cada cosa.
+ * Nunca pasa de `MAX_NOTA_CARACTERES`; si no cabe todo, corta en un renglón
+ * entero. Cadena vacía sin consultas.
+ */
+export function notaDeBusquedas(consultas: readonly ConsultaCatalogo[]): string {
+  if (consultas.length === 0) return "";
+
+  const renglones = consultas.map((c) => {
+    const decidio = c.decision !== "" ? c.decision : c.resultado;
+    const cotizados = c.cotizados.map((q) => q.nombre).join(", ");
+    return `- ${c.query}: ${decidio}${cotizados !== "" ? ` — ${cotizados}` : ""}`;
+  });
+
+  let nota = "Pedidos del cliente y qué pasó con cada uno:";
+  for (const renglon of renglones) {
+    if (`${nota}
+${renglon}`.length > MAX_NOTA_CARACTERES) break;
+    nota = `${nota}
+${renglon}`;
+  }
+  return nota;
 }

@@ -5,10 +5,27 @@ import type { SupabaseClient } from "@supabase/supabase-js";
 import type { Database } from "@/lib/supabase/database.types";
 import { BUSINESS_NAME } from "@/lib/brand";
 import { getBcvRate } from "@/lib/ai/bcv";
-import { catalogQuery, MOTOS_CONOCIDAS, type SearchSynonym } from "@/lib/ai/catalog-search";
-import { corregirTerminos, describirCorreccion, type CorreccionTermino } from "@/lib/ai/catalog-correction";
+import {
+  catalogQuery,
+  MARCAS_CONOCIDAS,
+  MARCAS_DE_MOTO,
+  MARCAS_DE_PRODUCTO,
+  motoDesdeTexto,
+  MOTOS_CONOCIDAS,
+  RELLENO_CATALOGO,
+  type MotoCorregida,
+  type MotoDesdeTexto,
+  type SearchSynonym,
+} from "@/lib/ai/catalog-search";
+import {
+  corregirTerminos,
+  describirCorreccion,
+  diagnosticarTerminos,
+  type CorreccionTermino,
+  type DiagnosticoGrupo,
+} from "@/lib/ai/catalog-correction";
 import { guardarPedido, leerPedido } from "@/lib/ai/catalog-memory";
-import { pideVerTodo } from "@/lib/ai/catalog-request";
+import { pideVerOpciones, pideVerTodo } from "@/lib/ai/catalog-request";
 import { formatQuote } from "@/lib/ai/precio";
 import {
   RECLAMO_CATEGORIES,
@@ -114,6 +131,16 @@ function instruccionGenerica(pregunta: "moto" | "producto", motoIgnorada: boolea
 const CONFIRMAR_INVENTARIO_INSTRUCTION =
   `Da nombre, precio y stock tal como llegan (es una sola opción: la mejor; no menciones otras ni ofrezcas más) y agrega textual: «${TEXTO_CONFIRMAR_INVENTARIO}». Luego llama a escalarAAsesor con motivo confirmar_inventario en este mismo turno.`;
 
+/**
+ * A2 T5 (30/9/2026, D1/D1b): la búsqueda decidió NO cotizar nada de este
+ * pedido y escalar de todos modos: la moto del cliente no calza con ningún
+ * producto y no hay universales con existencia (D1), o es un ítem genérico
+ * dentro de una lista (D1b). El mensaje que sale lo arma el código
+ * (`quote-message.ts`); a la herramienta solo le toca no elegir a ciegas.
+ */
+const ESCALAR_SIN_COTIZAR_INSTRUCTION =
+  "Ninguno de los productos que calzan sirve con seguridad para este cliente (o hay varios y no se distingue cuál): NO cotices ni elijas ninguno de esos. Di que un asesor le confirma cuál le sirve y llama a escalarAAsesor con motivo confirmar_inventario en este mismo turno; en el resumen nombra cada producto pedido y qué pasó con él.";
+
 /** Todos los resultados en cero (requisito 4): el texto fijo reemplaza cualquier oferta de "hay unidades". */
 const SIN_STOCK_CASO_INSTRUCTION =
   `Di textual: «${TEXTO_SIN_STOCK}» y llama a escalarAAsesor con motivo sin_stock.`;
@@ -136,6 +163,24 @@ const NO_IDENTIFICADO_INSTRUCTION =
  */
 function instruccionDeCorreccion(correcciones: readonly CorreccionTermino[]): string {
   return `Ojo: como el catálogo no tiene lo que el cliente escribió, ${describirCorreccion(correcciones)}. No lo presentes como si fuera exactamente lo que pidió: un asesor confirma que es lo que busca.`;
+}
+
+/**
+ * A2 T5, D1 (30/9/2026): lo cotizado no nombra la moto del cliente pero sirve
+ * (es universal o nombra solo la marca del cliente). El mensaje que sale ya lo
+ * dice por código; esta frase evita que el modelo lo presente como si fuera
+ * "para tu moto".
+ */
+const INSTRUCCION_UNIVERSALES =
+  "Ojo: lo que llega NO nombra la moto del cliente; es universal o de su marca. Dile que no encontraste uno con el nombre de su moto y que este le puede servir; un asesor confirma.";
+
+/**
+ * A2 T5, D3 (30/9/2026): se buscó sin una palabra que el cliente escribió y
+ * que no está en el nombre de ningún producto (o no junto al producto). Lo que
+ * llega es lo más parecido, no exactamente lo pedido.
+ */
+function instruccionDeRelajo(terminos: readonly string[]): string {
+  return `Ojo: no encontré ${terminos.map((t) => `"${t}"`).join(", ")} en el nombre de ningún producto; lo que llega es lo más parecido. No lo presentes como si fuera exactamente lo que pidió: un asesor confirma que es lo que busca.`;
 }
 
 /**
@@ -280,28 +325,46 @@ export interface CatalogOutcome {
    */
   consultas: ConsultaCatalogo[];
   /**
-   * 29/9/2026 (corrección de T3a, escenario "necesito un asiento sbr"): cuando
-   * la moto calza y hay MÁS de tres con existencia, se cotizaban tres y aquí se
-   * anotaba cuántas otras con existencia quedaban sin mostrar (una entrada por
-   * búsqueda que recortó; `productoPedido` es el de la lista, o `null`).
-   * HOTFIX DE PRODUCCIÓN, ESA MISMA TARDE (decisión del operador): ahora se
-   * cotiza UNA sola opción y nunca se cierra con «Hay N opciones más», así que
-   * este arreglo SIEMPRE queda vacío; el campo y la línea de `quote-message.ts`
-   * siguen en el código, sin uso, por si el operador cambia de idea. Vive
-   * aparte de `cotizacion` (que es por producto) y de `consultas` (que se
-   * persiste en `agent_turns.catalog_queries` y no debe cambiar de forma):
-   * `quote-message.ts` lo lee para cerrar el grupo con «Hay N opciones más
-   * para tu moto…», ANTES del texto fijo.
+   * A2 T5 (30/9/2026): los avisos de la búsqueda que SE LE DICEN al cliente
+   * (D1 universales / moto sin calce, D1b varias opciones, D2 variante agotada,
+   * D3 relajo): `quote-message.ts` los pinta con los textos literales de
+   * `seba.ts`. Acumulado entre llamadas del turno. Un aviso de una consulta que
+   * terminó en pregunta de filtro NO entra acá (el cliente ve la pregunta, no
+   * el aviso); ese vive solo en `ConsultaCatalogo.avisos`.
    */
-  masOpciones: MasOpciones[];
+  avisos: AvisoCatalogo[];
+  /**
+   * A2 T5 (30/9/2026): un motivo de escalada que la red de seguridad de
+   * `agent.ts` debe usar aunque NO haya quedado nada cotizado con existencia:
+   * la búsqueda decidió no cotizar (moto sin calce, ítem genérico en una lista)
+   * o cotizó una alternativa (D2) y el caso tiene que pasar a un asesor de todos
+   * modos. `null` = la red decide por los indicadores de siempre. Por ahora
+   * solo `confirmar_inventario`.
+   */
+  motivoForzado: EscalationMotivo | null;
 }
 
-/** Ver `CatalogOutcome.masOpciones`. */
-export interface MasOpciones {
-  productoPedido: string | null;
-  /** Otras con existencia que quedaron sin mostrar: el conteo de la base menos las que se cotizaron. */
-  cantidad: number;
-}
+/**
+ * A2 T5 (30/9/2026): lo que la búsqueda le avisa al cliente sobre UN pedido
+ * (`productoPedido`: el de la lista, o `null` en una consulta simple). Cada
+ * tipo sale de una decisión del plan (sección 2): D1 (`universales`,
+ * `moto_sin_calce`), D1b (`varias_opciones`), D2 (`variante_agotada`), D3
+ * (`relajado`, `relajado_agotado`). Es JSON puro: se guarda tal cual en
+ * `agent_turns.catalog_queries` (v2) y lo lee el panel de Búsquedas.
+ */
+export type AvisoCatalogo =
+  /** Lo cotizado no nombra la moto del cliente pero sirve: `marca` si es de su marca, `null` si solo universal. */
+  | { tipo: "universales"; productoPedido: string | null; marca: string | null }
+  /** Nada nombra la moto del cliente y no hay universales con existencia: se escala sin cotizar. */
+  | { tipo: "moto_sin_calce"; productoPedido: string | null; moto: string }
+  /** Se buscó sin `terminos` (no estaban en el nombre); lo cotizado es lo más parecido. */
+  | { tipo: "relajado"; productoPedido: string | null; terminos: string[] }
+  /** Igual, pero lo más parecido está agotado. */
+  | { tipo: "relajado_agotado"; productoPedido: string | null; terminos: string[] }
+  /** La variante pedida existe y está en cero; `conAlternativa` si se ofrece UNA otra con existencia. */
+  | { tipo: "variante_agotada"; productoPedido: string | null; variante: string; conAlternativa: boolean }
+  /** Ítem genérico dentro de una lista: no se cotiza, el asesor ayuda a elegir. */
+  | { tipo: "varias_opciones"; productoPedido: string };
 
 /** Un producto que se le cotiza al cliente. Ver `CatalogOutcome.cotizacion`. */
 export interface LineaCotizada {
@@ -313,6 +376,11 @@ export interface LineaCotizada {
   stock: number;
   /** El producto que el cliente pidió cuando la consulta fue una lista (`productos`); `null` en una búsqueda simple. */
   productoPedido: string | null;
+  /**
+   * A2 T5 (D2): es la UNA alternativa con existencia que se ofrece porque la
+   * variante pedida está agotada. La clave solo existe cuando es `true`.
+   */
+  esAlternativa?: boolean;
 }
 
 /** Cómo terminó una búsqueda. */
@@ -324,8 +392,19 @@ export type ResultadoConsulta =
   | "sin_terminos"
   | "error";
 
-/** El rastro de UNA búsqueda a `buscar_productos`. Ver `CatalogOutcome.consultas`. */
+/**
+ * El rastro de UNA búsqueda a `buscar_productos`. Ver `CatalogOutcome.consultas`.
+ *
+ * A2 T5 (30/9/2026): pasa a la versión 2 (`v: 2`). ES UN CONTRATO CON EL PANEL
+ * DE BÚSQUEDAS (Control IA, T9): se guarda tal cual en
+ * `agent_turns.catalog_queries`, y las filas anteriores a A2 (v1, sin `v` y sin
+ * los campos nuevos) siguen leyéndose — el panel pinta "—" donde falta algo.
+ * Cambiarle la forma exige subir `v` y que el panel siga leyendo las
+ * versiones anteriores.
+ */
 export interface ConsultaCatalogo {
+  /** Versión del registro: 2 desde A2. Las filas v1 no traen la clave. */
+  v: 2;
   /** El texto que de verdad se buscó (ya combinado con el pedido anterior si era una respuesta suelta). */
   query: string;
   /** La lista completa que mandó el modelo, o `null` si fue una consulta simple. */
@@ -335,13 +414,36 @@ export interface ConsultaCatalogo {
   cilindrada: string[][];
   grupos: string[][];
   opcionales: string[][];
+  /** Color, acabado, "edge"/"paleta"/"rayo" y talla: estrictas y preferentes (`catalogQuery`). */
+  variantes: string[][];
+  /** Año de la moto (solo ordena). */
+  anio: string[][];
+  /** La marca de la moto cuando el cliente dio también el modelo (solo ordena). */
+  motoMarca: string[][];
+  /** El cliente dio una moto y ningún producto del máximo la nombra: se ignoró para filtrar. */
+  motoIgnorada: boolean;
+  /** Alguna fila trae TODAS las variantes pedidas (`filas_con_variante > 0`). `false` sin variantes. */
+  calzaEntero: boolean;
+  /** Los términos que D3 relajó (normalizados), en el orden en que venían. Vacío si no se relajó nada. */
+  relajados: string[];
+  /** Todos los avisos de esta búsqueda, se hayan mostrado o no (una pregunta de filtro no los muestra). */
+  avisos: AvisoCatalogo[];
   /**
-   * T3b (28/9/2026): las palabras que el corrector de tipeos (T2) cambió para
-   * el SEGUNDO intento, o `null` si no hubo corrección. `grupos` ya trae lo
-   * corregido (lo que de verdad se buscó); `query` conserva lo que escribió
-   * el cliente. Se anota también cuando el reintento no encontró nada.
+   * T3b (28/9/2026): las palabras que se cambiaron para el SEGUNDO intento (el
+   * corrector de tipeos T2, y desde A2 también la moto corregida por alias o
+   * distancia 1: horsen→horse), o `null` si no hubo corrección. `grupos` ya
+   * trae lo corregido (lo que de verdad se buscó); `query` conserva lo que
+   * escribió el cliente. Se anota también cuando el reintento no encontró nada.
    */
   corregido: CorreccionTermino[] | null;
+  /** Correcciones que el corrector propuso y la guarda de producto descartó (vicera→visera), o `null`. */
+  correccionDescartada: CorreccionTermino[] | null;
+  /** Un texto corto y fijo, armado por el código, con lo que decidió la búsqueda ("moto SBR calza: cotizó 1 de 5 con existencia"). */
+  decision: string;
+  /** Lo que se le cotizó al cliente (renglones normales y la alternativa de D2). */
+  cotizados: { productId: string; nombre: string; stock: number; precioUsd: number }[];
+  /** Las ventanas de la base sobre el conjunto que decidió; `null` si no hubo filas. */
+  conteos: { calzan: number; conStock: number; nombranMoto: number; universales: number } | null;
   resultado: ResultadoConsulta;
 }
 
@@ -392,18 +494,56 @@ const DESCRIPCION_DE_ESTADO: Record<ResultadoConsulta, string> = {
  * la de MAYOR `stock_quantity`, `ordenarPorExistencia`); nunca un agotado si
  * hay alguna con stock. Si todo está agotado, se nombra SOLO el producto
  * pedido (la mejor fila). La pregunta de filtro no cambia.
+ *
+ * A2 T5, D6 (29/9/2026, noche): esa regla vale en TODOS los casos —moto que
+ * calza, universales de D1, alternativa de D2— y ya no existe «Hay N más».
  */
 const MAX_OPCIONES_COTIZADAS = 1;
+
+/**
+ * A2 T5, D6: la ÚNICA excepción. Si el cliente pide de forma EXPLÍCITA ver
+ * opciones (`pideVerOpciones`: «muéstrame todas», «qué opciones hay», «cuáles
+ * tienes», «qué tienes»), salen hasta tres con existencia, por relevancia y
+ * existencia, sin «Hay N más». «No sé», «ni idea», «la que sea» NO la abren.
+ */
+const MAX_OPCIONES_EXPLICITAS = 3;
 
 /** Hasta este número de filas con existencia no hay nada que preguntar; con más y sin moto que calce, se pregunta (una vez). */
 const MAX_SIN_PREGUNTA = 3;
 
-/** Tope de filas al reintentar cuando las que tienen stock quedaron más allá de `MAX_CATALOG_RESULTS` (el máximo que admite la función SQL). */
+/** Tope de filas al reintentar cuando las que hacen falta quedaron más allá de `MAX_CATALOG_RESULTS` (el máximo que admite la función SQL). */
 const LIMITE_REINTENTO = 50;
 
 /** Un grupo es "de producto" si es una palabra (no un número, una medida, una viscosidad ni un modelo con dígitos). */
 function esGrupoDeProducto(grupo: string[]): boolean {
   return /^[a-z]+$/.test(grupo[0] ?? "");
+}
+
+/**
+ * Un número SUELTO ("18", "130", "11.7"): todas sus alternativas son solo
+ * dígitos. Un grupo como "30 litros" (`[30lts, "30 lts", …]`) NO lo es: puede
+ * ser la cabeza de la búsqueda (resolución 4 del orquestador sobre D3).
+ */
+function esNumeroSuelto(grupo: string[]): boolean {
+  return grupo.length > 0 && grupo.every((alt) => /^[0-9]+(?:\.[0-9]+)?$/.test(alt));
+}
+
+/**
+ * Prefijos de modelo (dt, cg, gn): NO están en `MOTOS_CONOCIDAS` porque en una
+ * consulta casi siempre viajan pegados a su número y solos no son nada, pero un
+ * NOMBRE de producto que los trae SÍ nombra una moto. Sin ellos la "DEFENSA
+ * DELANTERA SUPER DT LEFOR" pasaba por UNIVERSAL (`nombra_moto` falso) y se le
+ * ofrecía a un cliente de Tigrito como "universal" (A2 T5, hallado al correr
+ * los casos 2.1). "en" no entra: es una palabra común de los nombres.
+ */
+const PREFIJOS_DE_MODELO = ["dt", "cg", "gn"];
+
+/** Las palabras con las que la base decide si un NOMBRE de producto nombra una moto (`p_motos_conocidas`). */
+export const MOTOS_EN_NOMBRES: readonly string[] = [...MOTOS_CONOCIDAS, ...PREFIJOS_DE_MODELO];
+
+/** El grupo trae alguna marca (comercial o de moto) de la lista cerrada `MARCAS_CONOCIDAS`. */
+function esGrupoDeMarca(grupo: string[]): boolean {
+  return grupo.some((alt) => MARCAS_CONOCIDAS.has(alt));
 }
 
 /** Une dos listas de grupos sin repetir (por el contenido del grupo), conservando el orden de aparición. */
@@ -419,16 +559,43 @@ function unirGrupos(a: string[][], b: string[][]): string[][] {
   return unidos;
 }
 
+/** Lo que se sabe de la moto por el texto que el MODELO escribió en `motoBrand`/`motoModel` (`motoDesdeTexto`). */
+type MotoEntrada = Pick<MotoDesdeTexto, "moto" | "motoMarca" | "cilindrada" | "anio" | "motoCorregida">;
+
 /**
- * La moto y la cilindrada que el MODELO pasó en `motoBrand`/`motoModel`: lo
- * que ese texto trae se toma como moto CON NOMBRE aunque no esté en
- * `MOTOS_CONOCIDAS` ("GN 125" llega como el grupo "gn125"): el modelo lo dijo
- * explícitamente como moto, a diferencia del `query`, donde una palabra
- * suelta puede ser cualquier cosa.
+ * Con un modelo entre las motos, las marcas pasan a `motoMarca` (solo
+ * ordenan): "Bera Milan" no calza las tapas de la Bera SBR por decir "bera".
+ * Es lo mismo que `catalogQuery`/`motoDesdeTexto` hacen con SU texto; acá se
+ * repite porque la moto puede venir de dos textos (la consulta y el modelo).
  */
-function motoDeTexto(texto: string): { moto: string[][]; cilindrada: string[][] } {
-  const q = catalogQuery(texto);
-  return { moto: unirGrupos(q.moto, q.grupos), cilindrada: q.cilindrada };
+function repartirMotoYMarca(moto: string[][], motoMarca: string[][]): { moto: string[][]; motoMarca: string[][] } {
+  const esMarca = (g: string[]) => g.length > 0 && MARCAS_DE_MOTO.has(g[0]);
+  if (!moto.some((g) => !esMarca(g))) return { moto, motoMarca };
+  return { moto: moto.filter((g) => !esMarca(g)), motoMarca: unirGrupos(motoMarca, moto.filter(esMarca)) };
+}
+
+/** La moto que dijeron dos textos distintos (el `motoBrand`/`motoModel` del modelo y la respuesta del cliente), unida y con la marca aparte si hay modelo. */
+function unirMotoEntrada(a: MotoEntrada, b: MotoEntrada): MotoEntrada {
+  const repartida = repartirMotoYMarca(unirGrupos(a.moto, b.moto), unirGrupos(a.motoMarca, b.motoMarca));
+  return {
+    moto: repartida.moto,
+    motoMarca: repartida.motoMarca,
+    cilindrada: unirGrupos(a.cilindrada, b.cilindrada),
+    anio: unirGrupos(a.anio, b.anio),
+    motoCorregida: [...a.motoCorregida, ...b.motoCorregida],
+  };
+}
+
+/** Las palabras de moto corregidas por alias o distancia 1 (horsen→horse) de las dos fuentes, sin repetir. */
+function unirCorregidas(a: readonly MotoCorregida[], b: readonly MotoCorregida[]): CorreccionTermino[] {
+  const vistas = new Set<string>();
+  const unidas: CorreccionTermino[] = [];
+  for (const c of [...a, ...b]) {
+    if (vistas.has(c.original)) continue;
+    vistas.add(c.original);
+    unidas.push({ original: c.original, corregido: c.corregido });
+  }
+  return unidas;
 }
 
 /**
@@ -463,23 +630,59 @@ function masViejo(fechas: (string | null)[]): string | null {
 }
 
 /**
- * Las filas con existencia ordenadas para elegir LA que se cotiza (hotfix del
- * 29/9/2026: una sola; a la mañana eran las tres primeras y solo con la moto
- * calzando). El orden que ya trae
- * `buscar_productos` (puntaje, moto con nombre, empieza con el producto,
- * cilindrada, opcionales) se CONSERVA: es relevancia. Lo que cambia es el
- * desempate final: SQL desempata por nombre; acá, a igual relevancia gana la
- * de MAYOR existencia (`stock_quantity` desc), sin migración. `Array.sort` es
- * estable, así que a igualdad total queda el orden de la base. Límite: solo
- * ve las filas que llegaron (`LIMITE_REINTENTO` = 50); con más de 50 del
- * máximo+moto, las que SQL dejó fuera por nombre no compiten por existencia.
+ * Tras preguntar POR LA MOTO ("¿para qué modelo y año?"), un número suelto de
+ * dos dígitos ("sbr 24") es el AÑO de la moto y no una medida: se reescribe
+ * como año de cuatro cifras para que `catalogQuery` lo mande a `anio` (que solo
+ * ordena) en vez de exigirlo como término del producto (A2 T5, plan 2.3: antes
+ * exigía "24" y no encontraba nada). Solo 00-35 y 80-99; un número pegado a
+ * otro signo ("20/50", "6301-2") no se toca.
  */
-function ordenarPorExistencia(filas: FilaBusqueda[]): FilaBusqueda[] {
+function dosDigitosComoAnio(texto: string): string {
+  return texto.replace(/(?<![\w/:.-])([0-9]{2})(?![\w/:.-])/g, (entero, dos: string) => {
+    const n = Number(dos);
+    if (n <= 35) return `20${dos}`;
+    if (n >= 80) return `19${dos}`;
+    return entero;
+  });
+}
+
+/** El nombre de la moto como se le dice al cliente: "DT 250", "BERA MILAN". */
+function nombreDeMoto(moto: string[][], motoMarca: string[][], cilindrada: string[][]): string {
+  return [...motoMarca, ...moto, ...cilindrada]
+    .map((g) => g[0])
+    .filter((t): t is string => Boolean(t))
+    .join(" ")
+    .toUpperCase();
+}
+
+/**
+ * Las filas ordenadas para elegir LA que se cotiza (hotfix del 29/9/2026; con
+ * D6 sigue siendo una, salvo el pedido explícito de ver opciones). Se conservan
+ * TODAS las llaves de relevancia que trae `buscar_productos`, en su mismo orden
+ * (puntaje, moto con nombre, variante, empieza con el producto, marca de moto,
+ * cilindrada/año, opcionales): es relevancia. El desempate final es la
+ * EXISTENCIA (`stock_quantity` desc) y nunca el nombre: nadie elige por orden
+ * alfabético antes que por existencia (decisión del operador). SQL ya desempata
+ * así desde M1; acá se repite porque solo se ven las filas que llegaron.
+ * `ignorarOpcional` (cauchos y tripas): "trasero"/"delantero" en un caucho es
+ * el de la scooter de rin 10, no el de la moto del cliente; ahí el opcional no
+ * decide. `Array.sort` es estable: a igualdad total queda el orden de la base.
+ */
+function ordenarPorExistencia(
+  filas: FilaBusqueda[],
+  { ignorarOpcional, motoCalza }: { ignorarOpcional: boolean; motoCalza: boolean }
+): FilaBusqueda[] {
   return [...filas].sort(
     (a, b) =>
+      b.puntaje - a.puntaje ||
+      // Solo si la moto calza (T5b): con moto que no calza, una fila de otro producto que la
+      // nombra no sube por nombrarla (mismo criterio que el `order by` de SQL).
+      (motoCalza ? b.puntaje_moto_nombre - a.puntaje_moto_nombre : 0) ||
+      b.puntaje_variante - a.puntaje_variante ||
       Number(b.empieza_con_producto) - Number(a.empieza_con_producto) ||
+      b.puntaje_moto_marca - a.puntaje_moto_marca ||
       b.puntaje_moto_cilindrada - a.puntaje_moto_cilindrada ||
-      b.puntaje_opcional - a.puntaje_opcional ||
+      (ignorarOpcional ? 0 : b.puntaje_opcional - a.puntaje_opcional) ||
       b.stock_quantity - a.stock_quantity
   );
 }
@@ -495,27 +698,32 @@ interface Cotizado {
   precioBs: number;
   stock: number;
   compatibleCon: string[];
+  /** D2: es la UNA alternativa con existencia que se ofrece porque la variante pedida está agotada. */
+  esAlternativa?: boolean;
 }
 
 /** Lo que decidió UNA búsqueda (un producto de una lista, o la consulta simple). */
 interface ResultadoUno {
   estado: ResultadoConsulta;
-  /** Lo que se le muestra al modelo y se cotiza: vacío salvo con_existencia/agotados. */
+  /** Lo que se le muestra al modelo y se cotiza: vacío salvo con_existencia/agotados (y la alternativa de D2). */
   quoted: Cotizado[];
   /** Hay más filas del máximo que las que caben. */
   hayMas: boolean;
-  /** Siempre 0 desde el hotfix del 29/9/2026 (se cotiza una sola opción y no se anuncian más); ver `CatalogOutcome.masOpciones`. */
-  masOpciones: number;
   /** Caso + (recorte) — la antigüedad del inventario la agrega quien arma la respuesta. */
   instrucciones: string[];
-  /** Solo con `estado = "generico"`. */
+  /** Solo con `estado = "generico"` que ES una pregunta. `null` = no se pregunta (moto sin calce, varias opciones). */
   preguntaFiltro: "moto" | "producto" | null;
   clave: string;
-  /** La moto y la cilindrada con las que de verdad se buscó (entrada + memoria). */
+  /** La moto, la cilindrada y el año con los que de verdad se buscó (entrada + memoria). */
   moto: string[][];
   cilindrada: string[][];
+  anio: string[][];
   /** El `updated_at` más viejo de lo que se muestra, para el aviso de antigüedad. */
   masViejo: string | null;
+  /** Los avisos de esta búsqueda (`AvisoCatalogo`); a la consulta van todos, al `CatalogOutcome` solo si no terminó en pregunta. */
+  avisos: AvisoCatalogo[];
+  /** El motivo de escalada que hay que usar aunque no haya nada cotizado con existencia (ver `CatalogOutcome.motivoForzado`). */
+  motivoForzado: EscalationMotivo | null;
   consulta: ConsultaCatalogo;
   /** Detalle del error de la base, si `estado = "error"`. */
   errorDetail?: string;
@@ -533,6 +741,7 @@ export function buildCatalogTool(
    */
   const preguntadosEnEsteTurno = new Set<string>();
   let sinonimosMemo: Promise<SearchSynonym[]> | null = null;
+  let noCorregirMemo: Promise<string[]> | null = null;
   let tasaMemo: ReturnType<typeof getBcvRate> | null = null;
 
   const leerSinonimos = (): Promise<SearchSynonym[]> => {
@@ -567,6 +776,39 @@ export function buildCatalogTool(
     return sinonimosMemo;
   };
 
+  /**
+   * A2 T5 (D5): las palabras que un asesor marcó «No corregir esta palabra»
+   * (`ai_lessons.kind = 'no_corregir'`, migración 20260930050000; la palabra va
+   * en `synonym_from`). Se suman a `p_protegidos` del corrector, MISMO alcance
+   * que los sinónimos (global o de esta conversación). Solo se lee cuando el
+   * corrector va a correr; un error deja `[]` y un `log.warn`: nunca frena la
+   * búsqueda.
+   */
+  const leerNoCorregir = (): Promise<string[]> => {
+    noCorregirMemo ??= (async () => {
+      try {
+        const { data, error } = await supabase
+          .from("ai_lessons")
+          .select("synonym_from")
+          .eq("kind", "no_corregir")
+          .eq("is_active", true)
+          .or(`scope.eq.global,conversation_id.eq.${pgrstLiteral(conversationId)}`)
+          .limit(MAX_SYNONYM_LESSONS);
+        if (error) {
+          log.warn("lecciones_no_corregir_no_legibles", { conversationId, detail: errorText(error) });
+          return [];
+        }
+        return (data ?? [])
+          .map((row) => row.synonym_from)
+          .filter((palabra): palabra is string => typeof palabra === "string" && palabra.trim() !== "");
+      } catch (err) {
+        log.warn("lecciones_no_corregir_no_legibles", { conversationId, detail: errorText(err) });
+        return [];
+      }
+    })();
+    return noCorregirMemo;
+  };
+
   const leerTasa = () => {
     tasaMemo ??= getBcvRate(supabase);
     return tasaMemo;
@@ -576,6 +818,19 @@ export function buildCatalogTool(
    * UNA búsqueda contra `buscar_productos` y la decisión completa sobre lo
    * que trajo. Nunca toca `catalogOutcome` ni Redis: solo decide (`registrar`
    * y el orquestador de abajo dejan el rastro).
+   *
+   * A2 T5 (30/9/2026, plan "Seba no cotiza lo que no es" con D6). El orden:
+   *   1. Primer intento con lo que escribió el cliente.
+   *   2. Si no calza todos los términos obligatorios: el corrector de tipeos,
+   *      con su guarda de producto (el reintento no puede cambiar el producto
+   *      pedido: vicera→visera cotizaba una VISERA en vez del CASCO).
+   *   3. Si todavía no calza: D3, relajar la palabra que no está en el nombre
+   *      (`diagnosticarTerminos`; sin diagnóstico no se relaja nada).
+   *   4. La decisión, con esta precedencia (cada paso cotiza UNA opción, D6):
+   *        variantes estrictas (D2) → moto que calza → moto que NO calza y
+   *        la familia depende de ella (D1: universales / de la marca / se
+   *        escala sin cotizar) → ítem genérico (pregunta, o «varias
+   *        opciones» dentro de una lista, D1b) → la mejor con existencia.
    */
   async function buscarUno(p: {
     texto: string;
@@ -583,38 +838,58 @@ export function buildCatalogTool(
     productoPedido: string | null;
     /** La lista completa que mandó el modelo, o null. */
     productos: string[] | null;
-    motoEntrada: string[][];
-    cilindradaEntrada: string[][];
+    /** La moto que el modelo escribió en `motoBrand`/`motoModel`. */
+    motoEntrada: MotoEntrada;
     /** Solo se usan si ni la consulta ni el modelo dieron moto (respuesta suelta). */
     motoMemoria: string[][];
     cilindradaMemoria: string[][];
+    anioMemoria: string[][];
     dependeDeLaMoto: boolean;
-    /** Falso en una lista: ahí nunca se pregunta, se entregan opciones. */
+    /** Falso en una lista: ahí nunca se pregunta; un ítem genérico queda como «varias opciones» (D1b). */
     permitirPregunta: boolean;
     preguntaHechaPara: string | null;
+    /** El cliente dijo que no sabe precisar o que le muestren todo: no se le vuelve a preguntar. */
     verTodo: boolean;
+    /** D6: el cliente pidió de forma EXPLÍCITA ver opciones: hasta tres con existencia. */
+    verOpciones: boolean;
   }): Promise<ResultadoUno> {
+    const consultaMinima = (estado: ResultadoConsulta): ConsultaCatalogo => ({
+      v: 2,
+      query: p.texto,
+      productos: p.productos,
+      moto: [],
+      cilindrada: [],
+      grupos: [],
+      opcionales: [],
+      variantes: [],
+      anio: [],
+      motoMarca: [],
+      motoIgnorada: false,
+      calzaEntero: false,
+      relajados: [],
+      avisos: [],
+      corregido: null,
+      correccionDescartada: null,
+      decision: "",
+      cotizados: [],
+      conteos: null,
+      resultado: estado,
+    });
+
     const vacio = (estado: ResultadoConsulta, extra: Partial<ResultadoUno> = {}): ResultadoUno => ({
       estado,
       quoted: [],
       hayMas: false,
-      masOpciones: 0,
       instrucciones: [],
       preguntaFiltro: null,
       clave: "",
       moto: [],
       cilindrada: [],
+      anio: [],
       masViejo: null,
-      consulta: {
-        query: p.texto,
-        productos: p.productos,
-        moto: [],
-        cilindrada: [],
-        grupos: [],
-        opcionales: [],
-        corregido: null,
-        resultado: estado,
-      },
+      avisos: [],
+      motivoForzado: null,
+      consulta: consultaMinima(estado),
       ...extra,
     });
 
@@ -627,41 +902,97 @@ export function buildCatalogTool(
     }
 
     const cq = catalogQuery(p.texto, await leerSinonimos());
-    let moto = unirGrupos(cq.moto, p.motoEntrada);
-    if (moto.length === 0) moto = p.motoMemoria;
-    let cilindrada = unirGrupos(cq.cilindrada, p.cilindradaEntrada);
-    if (cilindrada.length === 0) cilindrada = p.cilindradaMemoria;
+
+    // La moto: la de la consulta y la que escribió el modelo, con la marca
+    // aparte cuando también hay un modelo; y, si no hay ninguna, la de la
+    // memoria (respuesta suelta). La cilindrada y el año solo ORDENAN.
+    const repartida = repartirMotoYMarca(
+      unirGrupos(cq.moto, p.motoEntrada.moto),
+      unirGrupos(cq.motoMarca, p.motoEntrada.motoMarca)
+    );
+    const motoNombre = repartida.moto.length === 0 && repartida.motoMarca.length === 0 ? p.motoMemoria : repartida.moto;
+    const motoMarca = repartida.motoMarca;
+    const cilindradaDicha = unirGrupos(cq.cilindrada, p.motoEntrada.cilindrada);
+    const cilindrada = cilindradaDicha.length === 0 ? p.cilindradaMemoria : cilindradaDicha;
+    const anioDicho = unirGrupos(cq.anio, p.motoEntrada.anio);
+    const anio = anioDicho.length === 0 ? p.anioMemoria : anioDicho;
+
     // T3b (28/9/2026): `grupos`/`clave`/`correcciones` son `let` porque el
-    // segundo intento del corrector de tipeos los reemplaza; `consulta` y
-    // `base` los leen al momento de armar el resultado, no al declararse.
+    // segundo intento (corrector) y el tercero (D3) los reemplazan; `consulta`
+    // y `salida` los leen al momento de armar el resultado, no al declararse.
     let grupos = cq.grupos;
     let clave = claveDelProducto(grupos);
-    let correcciones: CorreccionTermino[] | null = null;
+    // La moto corregida por alias o distancia 1 (horsen→horse) se anota igual
+    // que un término corregido: el cliente ve "busqué HORSE en lugar de horsen".
+    let correcciones: CorreccionTermino[] = unirCorregidas(cq.motoCorregida, p.motoEntrada.motoCorregida);
+    let correccionDescartada: CorreccionTermino[] | null = null;
+    let relajados: string[] = [];
+    let motoIgnorada = false;
+    let calzaEntero = false;
+    let conteos: ConsultaCatalogo["conteos"] = null;
+    let decision = "";
+    let filas: FilaBusqueda[] = [];
 
     const consulta = (resultado: ResultadoConsulta): ConsultaCatalogo => ({
+      v: 2,
       query: p.texto,
       productos: p.productos,
-      moto,
+      moto: motoNombre,
       cilindrada,
       grupos,
       opcionales: cq.opcionales,
-      corregido: correcciones,
+      variantes: cq.variantes,
+      anio,
+      motoMarca,
+      motoIgnorada,
+      calzaEntero,
+      relajados,
+      avisos: [],
+      corregido: correcciones.length > 0 ? correcciones : null,
+      correccionDescartada,
+      decision,
+      cotizados: [],
+      conteos,
       resultado,
     });
-    const base = (estado: ResultadoConsulta, extra: Partial<ResultadoUno> = {}) =>
-      vacio(estado, { clave, moto, cilindrada, consulta: consulta(estado), ...extra });
+
+    /** El resultado de la búsqueda, con la consulta v2 al día (avisos, decisión y lo cotizado). */
+    const salida = (estado: ResultadoConsulta, extra: Partial<ResultadoUno> = {}, textoDecision?: string): ResultadoUno => {
+      if (textoDecision !== undefined) decision = textoDecision;
+      const quoted = extra.quoted ?? [];
+      return vacio(estado, {
+        clave,
+        moto: motoNombre,
+        cilindrada,
+        anio,
+        ...extra,
+        consulta: {
+          ...consulta(estado),
+          avisos: extra.avisos ?? [],
+          cotizados: quoted.map((q) => ({ productId: q.id, nombre: q.nombre, stock: q.stock, precioUsd: q.precioUsd })),
+        },
+      });
+    };
 
     // El orden, el puntaje y los conteos (cuántas filas calzan el máximo, con
-    // o sin la moto, con o sin stock) se calculan en SQL sobre TODO el
+    // o sin la moto, con o sin stock, cuántas nombran una moto, cuántas son
+    // universales, cuántas traen la variante) se calculan en SQL sobre TODO el
     // conjunto de candidatos, ANTES de recortar — el bug de origen (25/9)
     // era cortar con `.limit()` SIN order y ordenar después esas pocas filas.
+    // La firma es de NUEVE parámetros desde M1 (20260930010000):
+    // `p_motos_conocidas` y `p_marcas_de_moto` SIEMPRE viajan (sin ellas nada
+    // "nombra moto" y todo es universal).
     const consultar = async (limite: number) =>
       supabase.rpc("buscar_productos", {
         p_terminos: grupos,
         p_opcionales: cq.opcionales,
-        p_moto: moto,
-        p_cilindrada: cilindrada,
+        p_moto: motoNombre,
+        p_cilindrada: unirGrupos(cilindrada, anio),
         p_limite: limite,
+        p_variantes: cq.variantes,
+        p_moto_marca: motoMarca,
+        p_motos_conocidas: [...MOTOS_EN_NOMBRES],
+        p_marcas_de_moto: [...MARCAS_DE_MOTO],
       });
 
     const { data, error } = await consultar(MAX_CATALOG_RESULTS);
@@ -675,53 +1006,147 @@ export function buildCatalogTool(
       log.error("herramienta_catalogo_fallo", { conversationId, detail: errorText(error) });
       // T3 (18/9/2026): un error de la base tampoco deja decidir nada — la
       // red de seguridad de `agent.ts` lo trata como "no identificado".
-      return base("error", { instrucciones: [NO_IDENTIFICADO_INSTRUCTION], errorDetail: errorText(error) });
+      return salida("error", { instrucciones: [NO_IDENTIFICADO_INSTRUCTION], errorDetail: errorText(error) });
     }
 
-    let filas: FilaBusqueda[] = data ?? [];
+    filas = data ?? [];
 
     // T3a (28/9/2026): sin N-1. Con 1 o con 10 grupos hace falta que calcen
     // TODOS — la marca ya no se descarta para "salvar" la búsqueda. Lo que
     // antes tumbaba un producto legítimo (una palabra descriptiva que el
-    // nombre no trae) ahora es un opcional que solo desempata.
-    const requerido = grupos.length;
-    const sinCoincidencia = (lista: FilaBusqueda[]) => lista.length === 0 || lista[0].puntaje_maximo < requerido;
+    // nombre no trae) ahora es un opcional que solo desempata, o (A2, D3) un
+    // término que se relaja con aviso.
+    const sinCoincidencia = (lista: FilaBusqueda[]) => lista.length === 0 || lista[0].puntaje_maximo < grupos.length;
 
-    // T3b (28/9/2026): segundo intento tolerante a tipeos (T2, migración
-    // 20260928020000). SOLO si el primero no calzó los grupos obligatorios:
-    // un primer intento que calza nunca toca el corrector. `MOTOS_CONOCIDAS`
-    // va protegida ("beta" es una moto, no un tipeo de "bera"). Se reintenta
-    // UNA vez; sin corrección posible, o si el reintento tampoco calza, sigue
-    // el camino "no identificado" de siempre.
-    if (sinCoincidencia(filas)) {
+    // T3b (28/9/2026): segundo intento tolerante a tipeos (`corregir_terminos`).
+    // SOLO si el primero no calzó los grupos obligatorios: un primer intento
+    // que calza nunca toca el corrector. Se protegen las motos conocidas
+    // ("beta" es una moto, no un tipeo de "bera") y las palabras que un asesor
+    // marcó «No corregir» (D5); `p_marcas` son las marcas de PRODUCTO (solo
+    // hacia ellas se acepta una distancia 2 o 3; las motos NO van: kenda→honda,
+    // T5b, 30/9/2026) y `p_excluidos` el relleno.
+    // A2 T5: GUARDA DE PRODUCTO. Si el reintento calza pero ninguna fila
+    // empieza con la cabeza del pedido y la cabeza no se corrigió, la
+    // corrección cambió el producto (vicera→visera cotizaba VISERA CASCO
+    // FRANKIE en vez del CASCO): se descarta, se anota, y D3 relaja la palabra.
+    const intentarCorrector = async (): Promise<void> => {
       const propuestas = await corregirTerminos(
         supabase,
         grupos.map((g) => g[0]).filter((t): t is string => Boolean(t)),
-        [...MOTOS_CONOCIDAS],
+        [...MOTOS_CONOCIDAS, ...(await leerNoCorregir())],
+        [...MARCAS_DE_PRODUCTO],
+        [...RELLENO_CATALOGO],
         conversationId
       );
-      if (propuestas.length > 0) {
-        const nuevoTermino = new Map(propuestas.map((c) => [c.original, c.corregido]));
-        correcciones = propuestas;
-        grupos = grupos.map((g) => {
-          const corregido = g[0] === undefined ? undefined : nuevoTermino.get(g[0]);
-          return corregido === undefined ? g : [corregido];
-        });
-        clave = claveDelProducto(grupos);
+      if (propuestas.length === 0) return;
 
-        const reintento = await consultar(MAX_CATALOG_RESULTS);
-        if (reintento.error) {
-          log.error("herramienta_catalogo_fallo", { conversationId, detail: errorText(reintento.error) });
-        } else {
-          filas = reintento.data ?? [];
-        }
+      const nuevoTermino = new Map(propuestas.map((c) => [c.original, c.corregido]));
+      const originales = grupos;
+      grupos = originales.map((g) => {
+        const corregido = g[0] === undefined ? undefined : nuevoTermino.get(g[0]);
+        return corregido === undefined ? g : [corregido];
+      });
+
+      const reintento = await consultar(MAX_CATALOG_RESULTS);
+      if (reintento.error) {
+        log.error("herramienta_catalogo_fallo", { conversationId, detail: errorText(reintento.error) });
+        grupos = originales;
+        return;
       }
-    }
+      const filasReintento = reintento.data ?? [];
+
+      // Un reintento que no calza los términos corregidos no sirvió de nada: se
+      // vuelve a los términos originales (D3 los puede relajar) y la corrección
+      // queda solo anotada como descartada. Sin esto una "corrección" dudosa
+      // (vicera→visera, que existe en el catálogo) tapaba la palabra que D3
+      // habría relajado. (kenda→honda ya no llega hasta acá: T5b no pasa las
+      // motos como marcas al corrector.)
+      if (sinCoincidencia(filasReintento)) {
+        correccionDescartada = propuestas;
+        grupos = originales;
+        return;
+      }
+
+      // GUARDA DE PRODUCTO: solo miran las filas que de verdad calzaron (las de
+      // mejor puntaje); una fila de menor puntaje que empieza con la cabeza no
+      // cuenta.
+      const cabeza = originales[0];
+      const cabezaSeCorrigio = cabeza?.[0] !== undefined && nuevoTermino.has(cabeza[0]);
+      const guardaAplica = cabeza !== undefined && esGrupoDeProducto(cabeza) && !cabezaSeCorrigio;
+      const calzaron = filasReintento.filter((r) => r.puntaje === r.puntaje_maximo);
+      if (guardaAplica && !calzaron.some((r) => r.empieza_con_producto)) {
+        correccionDescartada = propuestas;
+        grupos = originales;
+        log.info("correccion_descartada_por_producto", {
+          conversationId,
+          correcciones: JSON.stringify(propuestas),
+        });
+        return;
+      }
+
+      correcciones = [...correcciones, ...propuestas];
+      clave = claveDelProducto(grupos);
+      filas = filasReintento;
+    };
+
+    // A2 T5, D3 (30/9/2026): tercer intento, DESPUÉS del corrector. Una
+    // palabra obligatoria que no está en el nombre ("pwk", "bomba", "reborde")
+    // tumbaba la búsqueda. `diagnosticarTerminos` dice, por grupo, si existe en
+    // el catálogo y si co-ocurre con la cabeza. La CABEZA es el primer grupo
+    // que existe y no es un número suelto. Se relaja un grupo que no es la
+    // cabeza, ni una marca (salvo una que no aparece en NINGÚN nombre: el caso
+    // ICH), y que no existe o no aparece junto a la cabeza; un número que
+    // complementa a una palabra relajada ("reborde de 11") se relaja con ella.
+    // Sin diagnóstico (`null`: falló la medición) no se relaja NADA.
+    const intentarRelajo = async (): Promise<void> => {
+      const primeroNoNumero = grupos.findIndex((g) => !esNumeroSuelto(g));
+      if (primeroNoNumero === -1) return;
+
+      let diagnostico: DiagnosticoGrupo[] | null = await diagnosticarTerminos(supabase, grupos, primeroNoNumero, conversationId);
+      if (!diagnostico || diagnostico.length === 0) return;
+      const existe = (i: number) => diagnostico?.find((d) => d.grupoIdx === i)?.enCatalogo === true;
+
+      const cabeza = grupos.findIndex((g, i) => !esNumeroSuelto(g) && existe(i));
+      if (cabeza === -1) return;
+      if (cabeza !== primeroNoNumero) {
+        diagnostico = await diagnosticarTerminos(supabase, grupos, cabeza, conversationId);
+        if (!diagnostico) return;
+      }
+
+      const relajar = new Set<number>();
+      grupos.forEach((g, i) => {
+        if (i === cabeza) return;
+        const d = diagnostico?.find((x) => x.grupoIdx === i);
+        if (!d) return;
+        if (esGrupoDeMarca(g) && d.enCatalogo) return;
+        if (!d.enCatalogo || d.conCabeza === false) relajar.add(i);
+      });
+      cq.gruposInfo.forEach((info, i) => {
+        if (i !== cabeza && info.numeroDe !== null && relajar.has(info.numeroDe)) relajar.add(i);
+      });
+      if (relajar.size === 0) return;
+
+      const indices = [...relajar].sort((a, b) => a - b);
+      relajados = indices.map((i) => grupos[i][0]).filter((t): t is string => Boolean(t));
+      grupos = grupos.filter((_, i) => !relajar.has(i));
+      clave = claveDelProducto(grupos);
+
+      const tercero = await consultar(MAX_CATALOG_RESULTS);
+      if (tercero.error) {
+        log.error("herramienta_catalogo_fallo", { conversationId, detail: errorText(tercero.error) });
+        return;
+      }
+      filas = tercero.data ?? [];
+    };
+
+    if (sinCoincidencia(filas)) await intentarCorrector();
+    if (sinCoincidencia(filas)) await intentarRelajo();
 
     if (sinCoincidencia(filas)) {
-      return base("sin_resultados", { instrucciones: [NO_IDENTIFICADO_INSTRUCTION] });
+      return salida("sin_resultados", { instrucciones: [NO_IDENTIFICADO_INSTRUCTION] }, "sin coincidencia con los términos obligatorios");
     }
 
+    // ---- La decisión ------------------------------------------------------
     const puntajeMaximo = filas[0].puntaje_maximo;
     const puntajeMotoMaximo = filas[0].puntaje_moto_maximo;
 
@@ -729,130 +1154,285 @@ export function buildCatalogTool(
     // solo "calza" si el cliente la dio Y al menos una de las filas del
     // máximo puntaje la nombra. Si calza, se cotiza SOLO esa moto (nunca
     // genérico: el cliente ya filtró lo que pudo). Si no calza la moto se
-    // ignora y rige la regla sin moto.
+    // ignora para filtrar y rige D1 (si la familia depende de la moto) o la
+    // regla sin moto.
     //
     // T3a (28/9/2026): `puntaje_moto_maximo` sale SOLO de la moto con nombre
-    // (`puntaje_moto_nombre`, ver 20260928010000): la cilindrada ("250")
-    // ordena pero NUNCA vuelve verdadero `motoCalza` — antes "defensa gxs
-    // 250" trataba como coincidencia de moto a una DEFENSA BRZ 250 solo por
-    // compartir el 250.
-    const motoDada = moto.length > 0;
+    // (`puntaje_moto_nombre`): la cilindrada ("250"), el año y la marca ordenan
+    // pero NUNCA vuelven verdadero `motoCalza`.
+    //
+    // T5b (30/9/2026): la base calcula `puntaje_moto_maximo` SOLO entre las filas
+    // que empiezan con el producto (si alguna lo hace): una BOMBA DE ACEITE que
+    // nombra la SBR ya no hace "calzar" la moto de un cliente que pidió aceite.
+    const motoDada = motoNombre.length > 0;
     const motoCalza = motoDada && puntajeMotoMaximo > 0;
-    const motoIgnorada = motoDada && !motoCalza;
+    motoIgnorada = motoDada && !motoCalza;
 
     const delMaximo = (lista: FilaBusqueda[]) =>
       lista.filter(
         (r) => r.puntaje === puntajeMaximo && (!motoCalza || r.puntaje_moto_nombre === puntajeMotoMaximo)
       );
-    let candidatos = delMaximo(filas);
 
-    // Los conteos vienen de la base, calculados ANTES del límite:
-    // `coinciden` nunca se mide contando el arreglo que llegó acá, que ya
-    // puede venir recortado a MAX_CATALOG_RESULTS.
+    // Los conteos vienen de la base, calculados ANTES del límite: nunca se
+    // miden contando el arreglo que llegó acá, que ya puede venir recortado.
     const coinciden = motoCalza ? filas[0].filas_con_maximo_y_moto : filas[0].filas_con_puntaje_maximo;
-    // Con la moto calzando, `filas_con_maximo_y_stock` ya cuenta solo las de
-    // esa moto; sin moto que calce cuenta todas las del máximo.
-    const conStock = filas[0].filas_con_maximo_y_stock;
+    // Con la moto calzando, las ventanas ya cuentan solo las de esa moto; sin
+    // moto que calce cuentan todas las del máximo.
+    const conStockVentana = filas[0].filas_con_maximo_y_stock;
+    const nombranMoto = filas[0].filas_que_nombran_moto;
+    const conVariante = filas[0].filas_con_variante;
+    const conVarianteYStock = filas[0].filas_con_variante_y_stock;
     const hayMas = coinciden > MAX_CATALOG_RESULTS;
     const preguntaFiltro: "moto" | "producto" = p.dependeDeLaMoto && !motoDada ? "moto" : "producto";
+    const cabezaEsCaucho = /^(caucho|tripa)$/.test(grupos[0]?.[0] ?? "");
+    const cuantas = p.verOpciones ? MAX_OPCIONES_EXPLICITAS : MAX_OPCIONES_COTIZADAS;
 
-    let estado: ResultadoConsulta;
-    let mostrados: FilaBusqueda[];
+    calzaEntero = cq.variantes.length > 0 && conVariante > 0;
+    conteos = { calzan: coinciden, conStock: conStockVentana, nombranMoto, universales: filas[0].filas_universales };
 
-    // HOTFIX DE PRODUCCIÓN, 29/9/2026 (decisión del operador): UNA sola opción
-    // cotizada por producto, y nunca un agotado si hay alguna con stock. Esta
-    // decisión REEMPLAZA a las cuatro ramas anteriores (`mostrados =
-    // candidatos`, que mezclaba stock y agotados y con la moto calzando podía
-    // llegar a diez; el tope de tres con la moto calzando y su «Hay N opciones
-    // más»; `conStock <= 3` y «ya se preguntó», que entregaban tres; y
-    // `MAX_AGOTADOS_LISTADOS`, que listaba tres agotados). La historia del
-    // tope de tres: 29/9/2026 por la mañana, escenario a mano «necesito un
-    // asiento sbr» con seis asientos con stock -- se cotizaban los seis; se
-    // recortó a tres y esa misma tarde el cliente pidió UNA.
-    //
-    // Lo único que no cambia es la pregunta de filtro: sin moto que calce y
-    // con más de tres con existencia, la primera vez se pregunta (una sola
-    // vez por pedido); con la moto calzando nunca se pregunta.
-    if (!motoCalza && conStock > MAX_SIN_PREGUNTA) {
-      const yaPreguntado = !preguntadosEnEsteTurno.has(clave) && yaSePregunto(clave, p.preguntaHechaPara);
-      if (p.permitirPregunta && !yaPreguntado && !p.verTodo) {
-        return base("generico", {
-          hayMas,
-          preguntaFiltro,
-          instrucciones: [instruccionGenerica(preguntaFiltro, motoIgnorada)],
-        });
-      }
-      // Ya se preguntó (o el cliente dijo que no sabe / que le muestren todo,
-      // o es una lista): no se vuelve a preguntar, se entrega la mejor.
-    }
+    const nVariantes = cq.variantes.length;
+    const esVariante = (r: FilaBusqueda) => nVariantes > 0 && r.puntaje_variante === nVariantes;
+    /** D2: la variante existe pero ninguna fila que la trae tiene existencia. */
+    const varianteAgotada = calzaEntero && conVarianteYStock === 0;
+    /** La variante existe con existencia: restringe (estricta y preferente). */
+    const restringeVariante = calzaEntero && conVarianteYStock > 0;
+    /** D1: el cliente dio una moto que no calza y la familia SÍ depende de la moto (alguna fila del máximo nombra una). */
+    const dependeDeMoto = motoIgnorada && nombranMoto > 0;
+    const varianteTexto = cq.variantes
+      .map((g) => g[0])
+      .filter((t): t is string => Boolean(t))
+      .join(" ");
+    const nombreMotoCliente = nombreDeMoto(motoNombre, motoMarca, cilindrada);
+    const ordenar = (lista: FilaBusqueda[]) => ordenarPorExistencia(lista, { ignorarOpcional: cabezaEsCaucho, motoCalza });
+    const conExistencia = (lista: FilaBusqueda[]) => lista.filter((r) => r.stock_quantity > 0);
 
-    // Las filas con existencia del máximo. Si la base dice que hay más de las
-    // que llegaron (las primeras `MAX_CATALOG_RESULTS` traen agotadas con
-    // mejor coincidencia de nombre y el orden deja las de stock detrás), se
-    // vuelve a pedir con más filas: para elegir la de mayor existencia hay que
-    // verlas todas, hasta `LIMITE_REINTENTO`. Con `conStock = 0` no se pide
-    // nada: no hay nada con existencia que encontrar.
-    let enStock = candidatos.filter((r) => r.stock_quantity > 0);
-    if (enStock.length < Math.min(conStock, LIMITE_REINTENTO)) {
+    // Las filas de trabajo: el máximo (y la moto, si calza), restringido a la
+    // variante cuando existe con existencia, y a lo compatible (universales o
+    // solo de la marca del cliente) cuando D1 aplica.
+    const calcularCandidatos = (): FilaBusqueda[] => {
+      let c = delMaximo(filas);
+      if (restringeVariante) c = c.filter(esVariante);
+      if (dependeDeMoto) c = c.filter((r) => !r.nombra_otra_moto);
+      return c;
+    };
+    const hayFilasSinTraer = () => delMaximo(filas).length < coinciden;
+    let yaReintento = false;
+    /** Una sola vez: pide más filas cuando las que hacen falta quedaron más allá de las primeras. */
+    const traerMasFilas = async (): Promise<void> => {
+      if (yaReintento) return;
+      yaReintento = true;
       const { data: masFilas, error: errorReintento } = await consultar(LIMITE_REINTENTO);
       if (errorReintento) {
         log.error("herramienta_catalogo_fallo", { conversationId, detail: errorText(errorReintento) });
-      } else {
-        filas = masFilas ?? filas;
-        candidatos = delMaximo(filas);
-        enStock = candidatos.filter((r) => r.stock_quantity > 0);
+        return;
       }
+      filas = masFilas ?? filas;
+    };
+
+    // Cuántas con existencia hay en ESTE conjunto: la ventana de la base
+    // cuando no se filtra en memoria; lo que llegó cuando D1 filtra.
+    const totalConStockDe = (c: FilaBusqueda[]) =>
+      dependeDeMoto ? conExistencia(c).length : restringeVariante ? conVarianteYStock : conStockVentana;
+
+    let candidatos = calcularCandidatos();
+    // Para elegir bien hacen falta las filas con existencia: si la base dice
+    // que hay más de las que llegaron (las primeras `MAX_CATALOG_RESULTS`
+    // traen agotadas con mejor coincidencia y el orden deja las de stock
+    // detrás), se vuelve a pedir con más filas. Con D1 no se sabe cuántas
+    // compatibles hay más allá de lo traído: se pide si llegaron 3 o menos.
+    const necesarias = dependeDeMoto ? MAX_SIN_PREGUNTA + 1 : Math.min(cuantas, totalConStockDe(candidatos));
+    if (conExistencia(candidatos).length < necesarias && hayFilasSinTraer()) {
+      await traerMasFilas();
+      candidatos = calcularCandidatos();
+    }
+    const enStock = conExistencia(candidatos);
+    const totalConStock = totalConStockDe(candidatos);
+    const textoConteo = `${totalConStock} con existencia de ${coinciden}`;
+
+    /** Precio ya calculado (`usdFromBs`) de las filas que se muestran. */
+    const cotizar = async (mostrados: FilaBusqueda[], alternativas: FilaBusqueda[] = []): Promise<Cotizado[]> => {
+      const { rate } = await leerTasa();
+      const armar = (r: FilaBusqueda, esAlternativa: boolean): Cotizado => ({
+        id: r.id,
+        nombre: r.name,
+        marca: r.brand,
+        // 27/9/2026 ("El mostrador busca sin salir del chat", D1/D3): el
+        // dólar de un repuesto en VES se redondea hacia arriba con
+        // `usdFromBs`, la MISMA regla que Inventario y el carrito del cierre
+        // de venta -- si no, el asesor cotiza $2,60 y Seba $2,54 por el
+        // mismo repuesto. `getBcvRate` nunca devuelve una tasa <= 0 (lanza
+        // antes), así que `usdFromBs` no da null acá.
+        precioUsd: r.currency === "USD" ? r.price : (usdFromBs(r.price, rate) as number),
+        precioBs: r.currency === "USD" ? Number((r.price * rate).toFixed(2)) : r.price,
+        stock: r.stock_quantity,
+        compatibleCon: r.compatibilidad.map((c) => `${c.moto_brand} ${c.moto_model}`),
+        ...(esAlternativa ? { esAlternativa: true } : {}),
+      });
+      return [...mostrados.map((r) => armar(r, false)), ...alternativas.map((r) => armar(r, true))];
+    };
+
+    const correccion = correcciones.length > 0 ? [instruccionDeCorreccion(correcciones)] : [];
+    const relajo = relajados.length > 0 ? [instruccionDeRelajo(relajados)] : [];
+    const avisoRelajado = (agotado: boolean): AvisoCatalogo[] =>
+      relajados.length > 0
+        ? [{ tipo: agotado ? "relajado_agotado" : "relajado", productoPedido: p.productoPedido, terminos: relajados }]
+        : [];
+
+    // ---- D2: la variante pedida existe y está en cero ----------------------
+    if (varianteAgotada && !(dependeDeMoto && candidatos.length === 0)) {
+      // UNA alternativa con existencia de la misma moto (o de la misma familia
+      // sin moto): del mismo conjunto del máximo. Si no hay ninguna, se dice
+      // que la variante está agotada y se escala sin ofrecer nada más.
+      const alternativa = ordenar(enStock).slice(0, 1);
+      if (alternativa.length > 0) {
+        const quoted = await cotizar([], alternativa);
+        return salida(
+          "agotados",
+          {
+            quoted,
+            hayMas,
+            masViejo: masViejo(alternativa.map((r) => r.updated_at)),
+            avisos: [
+              { tipo: "variante_agotada", productoPedido: p.productoPedido, variante: varianteTexto, conAlternativa: true },
+              ...avisoRelajado(false),
+            ],
+            motivoForzado: "confirmar_inventario",
+            instrucciones: [
+              `La variante que pidió el cliente (${varianteTexto}) está AGOTADA: dilo y ofrece SOLO esta otra opción con existencia. ${CONFIRMAR_INVENTARIO_INSTRUCTION}`,
+              ...correccion,
+              ...relajo,
+            ],
+          },
+          `variante ${varianteTexto} agotada: ofreció 1 alternativa con existencia (${textoConteo})`
+        );
+      }
+      const deLaVariante = candidatos.filter(esVariante);
+      const agotado = ordenar(deLaVariante.length > 0 ? deLaVariante : candidatos).slice(0, 1);
+      if (agotado.length === 0) {
+        return salida("sin_resultados", { instrucciones: [NO_IDENTIFICADO_INSTRUCTION] }, "sin filas que mostrar");
+      }
+      const quoted = await cotizar(agotado);
+      return salida(
+        "agotados",
+        {
+          quoted,
+          hayMas,
+          masViejo: masViejo(agotado.map((r) => r.updated_at)),
+          avisos: [
+            { tipo: "variante_agotada", productoPedido: p.productoPedido, variante: varianteTexto, conAlternativa: false },
+            ...avisoRelajado(true),
+          ],
+          instrucciones: [SIN_STOCK_CASO_INSTRUCTION, ...correccion, ...relajo],
+        },
+        `variante ${varianteTexto} agotada y sin otra opción con existencia`
+      );
     }
 
-    if (enStock.length > 0) {
-      mostrados = ordenarPorExistencia(enStock).slice(0, MAX_OPCIONES_COTIZADAS);
-      estado = "con_existencia";
-    } else if (conStock > 0) {
-      // Defensivo: la base dijo que había filas con existencia y no llegó
-      // ninguna (error del reintento). Cae al `sin_resultados` de abajo antes
-      // que nombrar un agotado como si fuera lo único que hay.
-      mostrados = [];
-      estado = "con_existencia";
-    } else {
-      // Todo lo que calza está agotado: se nombra SOLO el producto pedido, la
-      // mejor fila del máximo. Nunca se listan otros agotados.
-      mostrados = candidatos.slice(0, MAX_OPCIONES_COTIZADAS);
-      estado = "agotados";
+    // ---- D1: la moto no calza y no hay NADA compatible ----------------------
+    // (Si hay compatibles pero todos agotados, se sigue: se nombra el mejor como
+    // agotado, más abajo — «lo más parecido está agotado» nunca es «no hay».)
+    if (dependeDeMoto && candidatos.length === 0) {
+      return salida(
+        "generico",
+        {
+          hayMas,
+          avisos: [{ tipo: "moto_sin_calce", productoPedido: p.productoPedido, moto: nombreMotoCliente }],
+          motivoForzado: "confirmar_inventario",
+          instrucciones: [ESCALAR_SIN_COTIZAR_INSTRUCTION],
+        },
+        `moto ${nombreMotoCliente} sin calce y sin universales ni de su marca: se escala sin cotizar`
+      );
     }
 
-    if (mostrados.length === 0) {
-      // Defensivo: la base dijo que había filas del máximo y no llegó
-      // ninguna que mostrar (error del reintento). Mejor pasar el caso que
-      // cotizar con datos a medias.
-      return base("sin_resultados", { instrucciones: [NO_IDENTIFICADO_INSTRUCTION] });
+    // ---- Todo lo que calza está agotado -----------------------------------
+    if (totalConStock === 0) {
+      // Se nombra SOLO el producto pedido, la mejor fila del conjunto. Nunca se
+      // listan otros agotados. Lo más parecido en cero (D3) lo dice su aviso.
+      const agotado = ordenar(candidatos).slice(0, 1);
+      if (agotado.length === 0) {
+        return salida("sin_resultados", { instrucciones: [NO_IDENTIFICADO_INSTRUCTION] }, "sin filas que mostrar");
+      }
+      const quoted = await cotizar(agotado);
+      return salida(
+        "agotados",
+        {
+          quoted,
+          hayMas,
+          masViejo: masViejo(agotado.map((r) => r.updated_at)),
+          avisos: avisoRelajado(true),
+          instrucciones: [SIN_STOCK_CASO_INSTRUCTION, ...correccion, ...relajo],
+        },
+        `todo agotado (${coinciden} filas): nombró 1`
+      );
     }
 
-    const { rate } = await leerTasa();
-    const quoted: Cotizado[] = mostrados.map((r) => ({
-      id: r.id,
-      nombre: r.name,
-      marca: r.brand,
-      // 27/9/2026 ("El mostrador busca sin salir del chat", D1/D3): el
-      // dólar de un repuesto en VES se redondea hacia arriba con
-      // `usdFromBs`, la MISMA regla que Inventario y el carrito del cierre
-      // de venta -- si no, el asesor cotiza $2,60 y Seba $2,54 por el
-      // mismo repuesto. `getBcvRate` nunca devuelve una tasa <= 0 (lanza
-      // antes), así que `usdFromBs` no da null acá.
-      precioUsd: r.currency === "USD" ? r.price : (usdFromBs(r.price, rate) as number),
-      precioBs: r.currency === "USD" ? Number((r.price * rate).toFixed(2)) : r.price,
-      stock: r.stock_quantity,
-      compatibleCon: r.compatibilidad.map((c) => `${c.moto_brand} ${c.moto_model}`),
-    }));
+    // ---- Hay existencia: ¿se pregunta, se cotiza, o es un ítem genérico? ----
+    // Lo único que no cambia del hotfix es la pregunta de filtro: sin moto que
+    // calce y con más de tres con existencia, la primera vez se pregunta (una
+    // sola vez por pedido); con la moto calzando nunca se pregunta. En una
+    // lista (`permitirPregunta` falso) un ítem así NO se cotiza (D1b: nunca se
+    // elige a ciegas) y queda como «varias opciones» para el asesor.
+    if (!motoCalza && totalConStock > MAX_SIN_PREGUNTA) {
+      const yaPreguntado = !preguntadosEnEsteTurno.has(clave) && yaSePregunto(clave, p.preguntaHechaPara);
+      if (p.permitirPregunta && !yaPreguntado && !p.verTodo) {
+        return salida(
+          "generico",
+          {
+            hayMas,
+            preguntaFiltro,
+            avisos: [...avisoRelajado(false)],
+            instrucciones: [instruccionGenerica(preguntaFiltro, motoIgnorada)],
+          },
+          `genérico (${textoConteo}): pregunta de filtro por ${preguntaFiltro}`
+        );
+      }
+      if (!p.permitirPregunta) {
+        return salida(
+          "generico",
+          {
+            hayMas,
+            avisos: [{ tipo: "varias_opciones", productoPedido: p.productoPedido ?? p.texto }],
+            motivoForzado: "confirmar_inventario",
+            instrucciones: [ESCALAR_SIN_COTIZAR_INSTRUCTION],
+          },
+          `ítem genérico dentro de una lista (${textoConteo}): no se cotiza`
+        );
+      }
+      // Ya se preguntó (o el cliente dijo que no sabe / que le muestren todo):
+      // no se vuelve a preguntar, se entrega la mejor (hotfix del 29/9/2026).
+    }
 
-    return base(estado, {
-      quoted,
-      hayMas,
-      masViejo: masViejo(mostrados.map((r) => r.updated_at)),
-      instrucciones: [
-        estado === "con_existencia" ? CONFIRMAR_INVENTARIO_INSTRUCTION : SIN_STOCK_CASO_INSTRUCTION,
-        ...(correcciones ? [instruccionDeCorreccion(correcciones)] : []),
-      ],
-    });
+    const mostrados = ordenar(enStock).slice(0, cuantas);
+    const quoted = await cotizar(mostrados);
+    const avisos: AvisoCatalogo[] = [];
+    if (dependeDeMoto) {
+      // Lo que se cotiza no nombra la moto del cliente pero sirve: es universal
+      // o nombra solo la marca del cliente.
+      const deLaMarca = mostrados.some((r) => !r.es_universal);
+      avisos.push({
+        tipo: "universales",
+        productoPedido: p.productoPedido,
+        marca: deLaMarca ? (motoMarca[0]?.[0] ?? null) : null,
+      });
+    }
+    avisos.push(...avisoRelajado(false));
+
+    const quien = motoCalza
+      ? `moto ${nombreMotoCliente} calza`
+      : dependeDeMoto
+        ? `moto ${nombreMotoCliente} sin calce: compatibles`
+        : "sin moto que decida";
+    return salida(
+      "con_existencia",
+      {
+        quoted,
+        hayMas,
+        masViejo: masViejo(mostrados.map((r) => r.updated_at)),
+        avisos,
+        instrucciones: [CONFIRMAR_INVENTARIO_INSTRUCTION, ...(dependeDeMoto ? [INSTRUCCION_UNIVERSALES] : []), ...correccion, ...relajo],
+      },
+      `${quien}: cotizó ${mostrados.length} (${textoConteo})`
+    );
   }
 
   /** Deja en el `CatalogOutcome` lo que decidió una búsqueda (acumulativo entre llamadas del turno). */
@@ -872,13 +1452,22 @@ export function buildCatalogTool(
       grupos: enJson(r.consulta.grupos),
       opcionales: enJson(r.consulta.opcionales),
       corregido: enJson(r.consulta.corregido),
+      // A2 T5: la decisión en una línea (texto fijo armado por el código): lo
+      // que hace falta para leer POR QUÉ salió así sin abrir `agent_turns`.
+      decision: r.consulta.decision,
       resultado: r.consulta.resultado,
     });
 
     switch (r.estado) {
       case "generico":
-        catalogOutcome.generico = true;
-        catalogOutcome.preguntaFiltro = r.preguntaFiltro;
+        // Solo una PREGUNTA de filtro abre "hay una pregunta pendiente" (bloquea
+        // la red de seguridad). Un genérico que NO pregunta (A2: moto sin calce,
+        // «varias opciones» de una lista) escala sin cotizar: su motivo viaja en
+        // `motivoForzado`, no en este indicador.
+        if (r.preguntaFiltro !== null) {
+          catalogOutcome.generico = true;
+          catalogOutcome.preguntaFiltro = r.preguntaFiltro;
+        }
         break;
       case "con_existencia":
         catalogOutcome.conExistencia = true;
@@ -890,7 +1479,11 @@ export function buildCatalogTool(
         catalogOutcome.sinResultados = true;
     }
 
-    if (r.masOpciones > 0) catalogOutcome.masOpciones.push({ productoPedido, cantidad: r.masOpciones });
+    // A2 T5: los avisos se le dicen al cliente salvo que esta búsqueda haya
+    // terminado en una pregunta de filtro (ahí el cliente ve la pregunta, y el
+    // aviso queda solo en el registro de la consulta).
+    if (r.estado !== "generico" || r.preguntaFiltro === null) catalogOutcome.avisos.push(...r.avisos);
+    if (r.motivoForzado !== null) catalogOutcome.motivoForzado = r.motivoForzado;
 
     for (const q of r.quoted) {
       if (catalogOutcome.cotizacion.some((linea) => linea.productId === q.id)) continue;
@@ -901,6 +1494,7 @@ export function buildCatalogTool(
         precioBs: q.precioBs,
         stock: q.stock,
         productoPedido,
+        ...(q.esAlternativa ? { esAlternativa: true } : {}),
       });
     }
   }
@@ -1037,12 +1631,21 @@ export function buildCatalogTool(
 
       const pedido = await leerPedido(conversationId);
       const verTodo = pideVerTodo(rafagaCliente ?? []);
-      const motoDelModelo = motoDeTexto(`${motoBrand ?? ""} ${motoModel ?? ""}`);
+      // A2 T5, D6: solo el pedido EXPLÍCITO de ver opciones saca hasta tres.
+      const verOpciones = pideVerOpciones(rafagaCliente ?? []);
+      // La moto que el modelo escribió: `motoDesdeTexto` la entiende ("Bera
+      // Milan", "EK horsen", "GR 250", "MD Aguila 2014"): con marca Y modelo la
+      // marca solo ordena, un año y una cilindrada van aparte y una palabra
+      // tipeada a distancia 1 se corrige (horsen→horse).
+      const motoDelModelo = motoDesdeTexto(`${motoBrand ?? ""} ${motoModel ?? ""}`);
       const lista = (productos ?? []).map((producto) => producto.trim()).filter(Boolean);
 
       // ---- Lista de productos (D5, hasta cinco) ----------------------------
       if (lista.length > 0) {
-        const motoEntrada = unirGrupos(motoDelModelo.moto, catalogQuery(query).moto);
+        const motoEntrada: MotoEntrada = {
+          ...motoDelModelo,
+          moto: unirGrupos(motoDelModelo.moto, catalogQuery(query).moto),
+        };
         const resultados: ResultadoUno[] = [];
         for (const producto of lista) {
           const r = await buscarUno({
@@ -1050,13 +1653,14 @@ export function buildCatalogTool(
             productoPedido: producto,
             productos: lista,
             motoEntrada,
-            cilindradaEntrada: motoDelModelo.cilindrada,
             motoMemoria: [],
             cilindradaMemoria: [],
+            anioMemoria: [],
             dependeDeLaMoto: dependeDeLaMoto === true,
             permitirPregunta: false,
             preguntaHechaPara: null,
             verTodo: false,
+            verOpciones: false,
           });
           registrar(r, producto);
           resultados.push(r);
@@ -1072,13 +1676,20 @@ export function buildCatalogTool(
         }
         const freshness = avisoDeAntiguedad(masViejo(conProductos.map((r) => r.masViejo)));
 
-        const hayExistencia = resultados.some((r) => r.estado === "con_existencia");
+        // Con algo con existencia se cotiza y se escala como siempre; si NO
+        // quedó nada con existencia pero algún ítem se escala sin cotizar
+        // (`motivoForzado`: moto sin calce, «varias opciones»), esa es la
+        // instrucción; y solo con agotados, la de sin stock.
+        const hayExistencia = resultados.some((r) => r.quoted.some((q) => q.stock > 0));
         const hayAgotados = resultados.some((r) => r.estado === "agotados");
+        const hayForzado = resultados.some((r) => r.motivoForzado !== null);
         const casoLista = hayExistencia
-          ? `${CONFIRMAR_INVENTARIO_INSTRUCTION} La lista trae varios productos: nómbralos en el orden en que llegan; los que salen agotados o sin resultados, dilo tal cual, uno por uno.`
-          : hayAgotados
-            ? SIN_STOCK_CASO_INSTRUCTION
-            : NO_IDENTIFICADO_INSTRUCTION;
+          ? `${CONFIRMAR_INVENTARIO_INSTRUCTION} La lista trae varios productos: nómbralos en el orden en que llegan; los que salen agotados, sin resultados o «varias opciones», dilo tal cual, uno por uno.`
+          : hayForzado
+            ? ESCALAR_SIN_COTIZAR_INSTRUCTION
+            : hayAgotados
+              ? SIN_STOCK_CASO_INSTRUCTION
+              : NO_IDENTIFICADO_INSTRUCTION;
         const resumen = `Resumen por producto, en el orden pedido: ${resultados
           .map((r, i) => `${lista[i]} (${DESCRIPCION_DE_ESTADO[r.estado]})`)
           .join(", ")}.`;
@@ -1089,9 +1700,11 @@ export function buildCatalogTool(
 
         await guardarPedido(conversationId, {
           ultimoQuery: pedido?.ultimoQuery ?? null,
-          moto: motoEntrada.length > 0 ? motoEntrada : (pedido?.moto ?? []),
+          moto: motoEntrada.moto.length > 0 ? motoEntrada.moto : (pedido?.moto ?? []),
           cilindrada: motoDelModelo.cilindrada.length > 0 ? motoDelModelo.cilindrada : (pedido?.cilindrada ?? []),
+          anio: motoDelModelo.anio.length > 0 ? motoDelModelo.anio : (pedido?.anio ?? []),
           preguntaHechaPara: pedido?.preguntaHechaPara ?? null,
+          preguntaTipo: pedido?.preguntaTipo ?? null,
         });
 
         return {
@@ -1115,34 +1728,58 @@ export function buildCatalogTool(
       // (solo talla, color, año, medida, viscosidad, moto, cilindrada o un
       // número), es la respuesta a la pregunta anterior — se combina con el
       // último pedido en vez de buscarse sola ("24" tras "asiento" + sbr).
-      const esSuelta = !catalogQuery(query).grupos.some(esGrupoDeProducto);
-      const texto = esSuelta && pedido?.ultimoQuery ? `${pedido.ultimoQuery} ${query}`.trim() : query;
+      // A2 T5: tras la pregunta por la MOTO, un número de dos dígitos ("sbr
+      // 24") es el año, no una medida; tras la pregunta por el PRODUCTO sigue
+      // siendo una medida.
+      //
+      // A2 T5: si lo último que se preguntó fue la MOTO y la respuesta trae una
+      // ("Bera New Runner", "Toro Rex", "MD Aguila 2014", "sbr 24"), la respuesta
+      // ENTERA es la moto: `motoDesdeTexto` la lee toda como moto (la palabra "new"
+      // o "toro" no es un repuesto que haya que encontrar) y el producto sigue
+      // siendo el pedido anterior. Un número de dos dígitos es el año.
+      const respuestaComoAnio = dosDigitosComoAnio(query);
+      const q = catalogQuery(respuestaComoAnio);
+      const respondeLaMoto =
+        pedido?.preguntaTipo === "moto" &&
+        pedido.ultimoQuery !== null &&
+        (q.moto.length > 0 || q.motoMarca.length > 0 || q.anio.length > 0);
+      const esSuelta = !respondeLaMoto && !catalogQuery(query).grupos.some(esGrupoDeProducto);
+      const texto = respondeLaMoto
+        ? (pedido?.ultimoQuery ?? query)
+        : esSuelta && pedido?.ultimoQuery
+          ? `${pedido.ultimoQuery} ${query}`.trim()
+          : query;
 
       const r = await buscarUno({
         texto,
         productoPedido: null,
         productos: null,
-        motoEntrada: motoDelModelo.moto,
-        cilindradaEntrada: motoDelModelo.cilindrada,
+        motoEntrada: respondeLaMoto ? unirMotoEntrada(motoDelModelo, motoDesdeTexto(respuestaComoAnio)) : motoDelModelo,
         motoMemoria: esSuelta ? (pedido?.moto ?? []) : [],
         cilindradaMemoria: esSuelta ? (pedido?.cilindrada ?? []) : [],
+        anioMemoria: esSuelta ? (pedido?.anio ?? []) : [],
         dependeDeLaMoto: dependeDeLaMoto === true,
         permitirPregunta: true,
         preguntaHechaPara: pedido?.preguntaHechaPara ?? null,
         verTodo,
+        verOpciones,
       });
       registrar(r, null);
 
       // La memoria: el pedido acumulado (solo si tiene producto de verdad),
-      // la moto y cilindrada que rigieron (o las de antes, si esta consulta
-      // no dio ninguna) y, si se acaba de preguntar, por qué producto.
+      // la moto, cilindrada y año que rigieron (o los de antes, si esta consulta
+      // no dio ninguno) y, si se acaba de preguntar, por qué producto y qué
+      // se preguntó (la moto o el producto).
       const tieneProducto = r.consulta.grupos.some(esGrupoDeProducto);
-      if (r.estado === "generico") preguntadosEnEsteTurno.add(r.clave);
+      const sePregunto = r.estado === "generico" && r.preguntaFiltro !== null;
+      if (sePregunto) preguntadosEnEsteTurno.add(r.clave);
       await guardarPedido(conversationId, {
         ultimoQuery: tieneProducto ? texto : (pedido?.ultimoQuery ?? null),
         moto: r.moto.length > 0 ? r.moto : (pedido?.moto ?? []),
         cilindrada: r.cilindrada.length > 0 ? r.cilindrada : (pedido?.cilindrada ?? []),
-        preguntaHechaPara: r.estado === "generico" ? r.clave : (pedido?.preguntaHechaPara ?? null),
+        anio: r.anio.length > 0 ? r.anio : (pedido?.anio ?? []),
+        preguntaHechaPara: sePregunto ? r.clave : (pedido?.preguntaHechaPara ?? null),
+        preguntaTipo: sePregunto ? r.preguntaFiltro : (pedido?.preguntaTipo ?? null),
       });
 
       if (r.estado === "error") {

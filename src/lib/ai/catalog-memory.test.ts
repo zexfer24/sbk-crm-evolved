@@ -53,7 +53,9 @@ const pedido: PedidoCatalogo = {
   ultimoQuery: "asiento",
   moto: [["sbr"]],
   cilindrada: [["200"]],
+  anio: [["2024"]],
   preguntaHechaPara: "asiento",
+  preguntaTipo: "moto",
 };
 
 describe("guardarPedido / leerPedido", () => {
@@ -88,6 +90,46 @@ describe("guardarPedido / leerPedido", () => {
     expect(await leerPedido("conv-1")).toBeNull();
 
     await redis.set("catalogo:pedido:conv-1", JSON.stringify({ ultimoQuery: 5 }));
+    expect(await leerPedido("conv-1")).toBeNull();
+  });
+
+  // A2 T5 (30/9/2026): el pedido gana `anio` y `preguntaTipo`, pero las claves
+  // que ya están en Redis (TTL de 6 h) las escribió el código anterior: se
+  // siguen leyendo, con los campos nuevos en su valor neutro.
+  it("un objeto VIEJO (sin `anio` ni `preguntaTipo`) se sigue leyendo, con los campos nuevos vacíos", async () => {
+    await redis.set(
+      "catalogo:pedido:conv-1",
+      JSON.stringify({ ultimoQuery: "asiento", moto: [["sbr"]], cilindrada: [], preguntaHechaPara: "asiento" })
+    );
+
+    expect(await leerPedido("conv-1")).toEqual({
+      ultimoQuery: "asiento",
+      moto: [["sbr"]],
+      cilindrada: [],
+      anio: [],
+      preguntaHechaPara: "asiento",
+      preguntaTipo: null,
+    });
+  });
+
+  it("guarda y lee `anio` y `preguntaTipo` tal cual", async () => {
+    await guardarPedido("conv-1", { ...pedido, preguntaTipo: "producto", anio: [] });
+    const leido = await leerPedido("conv-1");
+    expect(leido?.preguntaTipo).toBe("producto");
+    expect(leido?.anio).toEqual([]);
+  });
+
+  it("un `preguntaTipo` desconocido o un `anio` con otra forma invalidan el objeto (no se adivina)", async () => {
+    await redis.set(
+      "catalogo:pedido:conv-1",
+      JSON.stringify({ ultimoQuery: null, moto: [], cilindrada: [], anio: [], preguntaHechaPara: null, preguntaTipo: "otra" })
+    );
+    expect(await leerPedido("conv-1")).toBeNull();
+
+    await redis.set(
+      "catalogo:pedido:conv-1",
+      JSON.stringify({ ultimoQuery: null, moto: [], cilindrada: [], anio: "2024", preguntaHechaPara: null, preguntaTipo: null })
+    );
     expect(await leerPedido("conv-1")).toBeNull();
   });
 });
