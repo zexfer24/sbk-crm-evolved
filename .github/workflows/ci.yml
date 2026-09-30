@@ -576,8 +576,22 @@ jobs:
 
       - name: PostgREST efímero para el arnés
         run: |
+          # ECR Public limita las descargas anónimas desde las IPs compartidas de
+          # los runners ("toomanyrequests: Data limit exceeded", run 36672947616,
+          # 30/9/2026). Se reintenta ahí y, si sigue limitado, se baja la MISMA
+          # versión de la imagen oficial de Docker Hub (probada con el arnés en local).
+          IMAGEN=""
+          for intento in 1 2 3; do
+            if docker pull -q public.ecr.aws/supabase/postgrest:v16.2; then IMAGEN=public.ecr.aws/supabase/postgrest:v16.2; break; fi
+            sleep $((intento * 5))
+          done
+          if [ -z "$IMAGEN" ]; then
+            docker pull -q postgrest/postgrest:v16.2
+            IMAGEN=postgrest/postgrest:v16.2
+          fi
+          echo "PostgREST desde $IMAGEN"
           SECRETO_JWT="$(openssl rand -hex 32)"
-          docker run -d --name postgrest-arnes --network host             -e PGRST_DB_URI="postgres://postgres:postgres@127.0.0.1:54322/postgres"             -e PGRST_DB_SCHEMAS="public,graphql_public"             -e PGRST_DB_ANON_ROLE="anon"             -e PGRST_DB_EXTRA_SEARCH_PATH="public,extensions"             -e PGRST_DB_MAX_ROWS="1000"             -e PGRST_JWT_SECRET="$SECRETO_JWT"             public.ecr.aws/supabase/postgrest:v16.2
+          docker run -d --name postgrest-arnes --network host             -e PGRST_DB_URI="postgres://postgres:postgres@127.0.0.1:54322/postgres"             -e PGRST_DB_SCHEMAS="public,graphql_public"             -e PGRST_DB_ANON_ROLE="anon"             -e PGRST_DB_EXTRA_SEARCH_PATH="public,extensions"             -e PGRST_DB_MAX_ROWS="1000"             -e PGRST_JWT_SECRET="$SECRETO_JWT"             "$IMAGEN"
           codigo=000
           for _ in $(seq 1 30); do
             codigo="$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:3000/ || true)"
