@@ -86,6 +86,16 @@ insert into public.products (id, name, brand, price, currency, stock_quantity, i
   ('b2000000-0000-0000-0000-000000000005', 'PATIN CADENA TX LECHUZA DSR TIGRITO KAVA', null, 7.00, 'USD', 3, true),
   ('b2000000-0000-0000-0000-000000000006', 'TENSOR CADENA TIEMPO EN125 AUTOASIA', null, 11.00, 'USD', 4, true);
 
+-- T5b (30/9/2026): RUIDO de las filas de OTRO producto que nombran la moto
+-- (caso 38). Van acá, en el bloque de ruido, ANTES que las filas correctas del
+-- caso: una consulta con `limit` aplicado antes del orden se quedaría con
+-- ellas. BOMBA DE ACEITE BERA SBR puntúa "aceite" igual que un aceite de
+-- verdad y nombra la SBR: con «aceite» para una SBR, la moto calzaba con ELLA
+-- y Seba cotizaba una bomba en vez de un aceite.
+insert into public.products (id, name, brand, price, currency, stock_quantity, is_active) values
+  ('bd000000-0000-0000-0000-000000000001', 'BOMBA DE ACEITE BERA SBR', null, 30.00, 'USD', 5, true),
+  ('bd000000-0000-0000-0000-000000000002', 'TENSOR DE CADENA BERA SBR', null, 9.00, 'USD', 4, true);
+
 -- Los 6 nombres reales del §2.1 del plan -- cada uno es la respuesta
 -- correcta de uno de los casos de abajo (salvo la cadena de tiempo, que
 -- entra como dato realista de más sin un caso dedicado).
@@ -420,28 +430,55 @@ end $$;
 -- ---------------------------------------------------------------------------
 -- Caso 13 · permisos: anon y authenticated NO pueden ejecutar la función
 -- (la llama service_role desde el servidor); service_role sí. 28/9/2026: la
--- firma es la de CINCO parámetros y la de tres YA NO EXISTE (un `drop
--- function` en la migración) -- si sobreviviera, PostgREST vería dos
--- sobrecargas y una llamada con nombres de parámetros sería ambigua.
+-- firma era de CINCO parámetros y la de tres se retiró con `drop function`.
+-- 30/9/2026 (A2, T2): la firma pasa a NUEVE parámetros (p_variantes,
+-- p_moto_marca, p_motos_conocidas, p_marcas_de_moto) y las de cinco y ocho YA NO EXISTEN -- cambio de
+-- semántica a propósito: si sobreviviera, PostgREST vería dos sobrecargas y
+-- una llamada con nombres de parámetros sería ambigua. `patron_busqueda`
+-- (helper immutable, única fuente de los patrones) lleva los mismos dos
+-- revokes y el grant a service_role: la llama buscar_productos, que es
+-- security invoker y corre con el rol de quien la invoca.
 -- ---------------------------------------------------------------------------
 do $$
 declare
   errores text := '';
+  v_sig text := 'public.buscar_productos(jsonb, jsonb, int, jsonb, jsonb, jsonb, jsonb, jsonb, jsonb)';
+  v_pat text := 'public.patron_busqueda(text, text)';
 begin
   if to_regprocedure('public.buscar_productos(jsonb, jsonb, int)') is not null then
     errores := errores || E'\n  - la firma vieja buscar_productos(jsonb, jsonb, int) sigue existiendo: la migración tenía que retirarla.';
   end if;
-  if to_regprocedure('public.buscar_productos(jsonb, jsonb, int, jsonb, jsonb)') is null then
-    errores := errores || E'\n  - no existe la firma nueva buscar_productos(jsonb, jsonb, int, jsonb, jsonb).';
+  if to_regprocedure('public.buscar_productos(jsonb, jsonb, int, jsonb, jsonb)') is not null then
+    errores := errores || E'\n  - la firma de cinco parámetros buscar_productos(jsonb, jsonb, int, jsonb, jsonb) sigue existiendo: la migración 20260930010000 tenía que retirarla.';
+  end if;
+  if to_regprocedure('public.buscar_productos(jsonb, jsonb, int, jsonb, jsonb, jsonb, jsonb, jsonb)') is not null then
+    errores := errores || E'\n  - la firma de ocho parámetros de buscar_productos() sigue existiendo: la migración 20260930010000 (p_marcas_de_moto) tenía que retirarla.';
+  end if;
+  if to_regprocedure(v_sig) is null then
+    errores := errores || E'\n  - no existe la firma nueva de nueve parámetros de buscar_productos().';
   else
-    if has_function_privilege('anon', 'public.buscar_productos(jsonb, jsonb, int, jsonb, jsonb)', 'execute') then
+    if has_function_privilege('anon', v_sig, 'execute') then
       errores := errores || E'\n  - anon puede ejecutar buscar_productos() y no debería.';
     end if;
-    if has_function_privilege('authenticated', 'public.buscar_productos(jsonb, jsonb, int, jsonb, jsonb)', 'execute') then
+    if has_function_privilege('authenticated', v_sig, 'execute') then
       errores := errores || E'\n  - authenticated puede ejecutar buscar_productos() y no debería -- ningún camino con sesión de asesor llama al catálogo, solo service_role.';
     end if;
-    if not has_function_privilege('service_role', 'public.buscar_productos(jsonb, jsonb, int, jsonb, jsonb)', 'execute') then
+    if not has_function_privilege('service_role', v_sig, 'execute') then
       errores := errores || E'\n  - service_role NO puede ejecutar buscar_productos() y sí debería -- es quien la llama desde agent.ts.';
+    end if;
+  end if;
+
+  if to_regprocedure(v_pat) is null then
+    errores := errores || E'\n  - no existe patron_busqueda(text, text).';
+  else
+    if has_function_privilege('anon', v_pat, 'execute') then
+      errores := errores || E'\n  - anon puede ejecutar patron_busqueda() y no debería.';
+    end if;
+    if has_function_privilege('authenticated', v_pat, 'execute') then
+      errores := errores || E'\n  - authenticated puede ejecutar patron_busqueda() y no debería.';
+    end if;
+    if not has_function_privilege('service_role', v_pat, 'execute') then
+      errores := errores || E'\n  - service_role NO puede ejecutar patron_busqueda() y la necesita (la llama buscar_productos con su rol).';
     end if;
   end if;
 
@@ -905,6 +942,790 @@ begin
   limit 1;
   if v_filas_moto is distinct from 1 or v_stock is distinct from 0 then
     insert into _errores(msg) values (format('Caso 26: botines con moto bera filas_con_maximo_y_moto=%s, filas_con_maximo_y_stock=%s; se esperaba 1 y 0.', v_filas_moto, v_stock));
+  end if;
+end $$;
+
+-- ===========================================================================
+-- A2, T2 (30/9/2026, plan "Seba no cotiza lo que no es"), migración bajo
+-- prueba adicional: 20260930010000_busqueda_por_palabra_moto_y_variantes.sql.
+--
+-- Casos 27-38: la moto calza por PALABRA ("gr" no calza GRIS), los números
+-- calzan con su sufijo de letras ("45" calza 45T y 45LTS, nunca 5000), una
+-- palabra corta calza entera con plural ("cro" no calza CROMADO), las
+-- variantes son un conjunto aparte con sus ventanas, "otra moto" y
+-- "universal" salen de p_motos_conocidas, la marca de moto y el año solo
+-- ORDENAN, y el desempate es por existencia y nunca por orden alfabético.
+--
+-- Fixture con el RUIDO PRIMERO en cada familia (GRIS antes que GR250, 4500
+-- antes que 45T, CROMADO antes que CRO...): con el orden físico de inserción
+-- a favor de la fila correcta, una mutación que rompa el patrón o el orden
+-- pasaría en verde (ver CLAUDE.md, "Un test SQL de orden tiene que insertar
+-- el ruido ANTES que la fila correcta"). Se inserta DESPUÉS de los casos
+-- 1-26, así que no altera sus conteos exactos.
+-- ===========================================================================
+
+insert into public.products (id, name, brand, price, currency, stock_quantity, is_active) values
+  -- Familia GR: los dos GRIS (ruido) antes que los GR250 / GR 250.
+  ('bc000000-0000-0000-0000-000000000001', 'MALETA REDONDA 34 LTS TOMCAT GRIS', null, 40.00, 'USD', 3, true),
+  ('bc000000-0000-0000-0000-000000000002', 'ESPEJO GRIS CROMADO', null, 9.00, 'USD', 4, true),
+  ('bc000000-0000-0000-0000-000000000003', 'PASTILLA FRENO GR250', null, 8.00, 'USD', 4, true),
+  ('bc000000-0000-0000-0000-000000000004', 'ESPEJO GR 250 IZQUIERDO', null, 9.00, 'USD', 2, true),
+  -- Familia 45: 450 y 4500 (ruido) antes que 45T y 45LTS.
+  ('bc000000-0000-0000-0000-000000000005', 'KIT ARRASTRE 450 REFORZADO', null, 30.00, 'USD', 2, true),
+  ('bc000000-0000-0000-0000-000000000006', 'CORONA 4500 GENERICA', null, 12.00, 'USD', 1, true),
+  ('bc000000-0000-0000-0000-000000000007', 'CORONA 45T HORSE', null, 14.00, 'USD', 200, true),
+  ('bc000000-0000-0000-0000-000000000008', 'MALETA CUADRADA 45LTS PLATA', null, 60.00, 'USD', 9, true),
+  -- Familia palabra corta: CROMADO y RING (ruido) antes que CRO y RINES.
+  ('bc000000-0000-0000-0000-000000000009', 'LUZ CRUCE CROMADO', null, 7.00, 'USD', 4, true),
+  ('bc000000-0000-0000-0000-000000000010', 'RING PROTECTOR CLUTCH', null, 5.00, 'USD', 1, true),
+  ('bc000000-0000-0000-0000-000000000011', 'ESTRIBO TIPO CRO NEGRO', null, 15.00, 'USD', 2, true),
+  ('bc000000-0000-0000-0000-000000000012', 'RINES ALUMINIO 17 NEGRO', null, 90.00, 'USD', 2, true),
+  -- Familia tanques (variantes, año, marca de moto): T1 y T2 son de OTRA moto.
+  ('bc000000-0000-0000-0000-000000000013', 'TANQUE COMBUSTIBLE EK XPRESS II AZUL', null, 50.00, 'USD', 5, true),
+  ('bc000000-0000-0000-0000-000000000014', 'TANQUE COMBUSTIBLE OWEN 2014 AZUL', null, 50.00, 'USD', 2, true),
+  ('bc000000-0000-0000-0000-000000000015', 'TANQUE COMBUSTIBLE BERA SBR AZUL', null, 55.00, 'USD', 0, true),
+  ('bc000000-0000-0000-0000-000000000016', 'TANQUE COMBUSTIBLE BERA SBR AZUL 2024', null, 58.00, 'USD', 0, true),
+  ('bc000000-0000-0000-0000-000000000017', 'TANQUE COMBUSTIBLE BERA SBR ROJO', null, 55.00, 'USD', 4, true),
+  ('bc000000-0000-0000-0000-000000000018', 'TANQUE COMBUSTIBLE BERA SBR NEGRO', null, 55.00, 'USD', 3, true),
+  -- Familia defensas (universales / otra moto). Se suman a DEFENSA BRZ 250 y
+  -- DEFENSA PROTECTOR MOTOR UNIVERSAL de la fixture de T1 (28/9/2026).
+  ('bc000000-0000-0000-0000-000000000019', 'DEFENSA DELANTERA KAVAK', null, 45.00, 'USD', 3, true),
+  ('bc000000-0000-0000-0000-000000000020', 'DEFENSA KLR NEGRA', null, 45.00, 'USD', 1, true),
+  ('bc000000-0000-0000-0000-000000000021', 'DEFENSA SLIDER PROTECTOR', null, 20.00, 'USD', 0, true),
+  ('bc000000-0000-0000-0000-000000000022', 'DEFENSA UNIVERSAL TIPO KAVAK', null, 25.00, 'USD', 1, true),
+  ('bc000000-0000-0000-0000-000000000023', 'DEFENSA DELANTERA SUPER DT LEFOR', null, 48.00, 'USD', 6, true),
+  -- «ASIENTO SBR /SOC ORIGINAL» nombra DOS motos y le sirve a una SBR.
+  ('bc000000-0000-0000-0000-000000000024', 'ASIENTO SBR /SOC ORIGINAL', null, 40.00, 'USD', 2, true),
+  -- Desempate: tres bujías iguales en todo salvo stock y nombre (el de más
+  -- stock es el último por orden alfabético) y una sin stock que sería la
+  -- primera alfabéticamente.
+  ('bc000000-0000-0000-0000-000000000025', 'BUJIA NGK AA0', null, 3.00, 'USD', 0, true),
+  ('bc000000-0000-0000-0000-000000000026', 'BUJIA NGK AAA', null, 3.00, 'USD', 1, true),
+  ('bc000000-0000-0000-0000-000000000027', 'BUJIA NGK BBB', null, 3.00, 'USD', 5, true),
+  ('bc000000-0000-0000-0000-000000000028', 'BUJIA NGK CCC', null, 3.00, 'USD', 9, true);
+
+-- Ayudante: ids en el orden en que la función los devuelve (límite 50).
+create function pg_temp._orden(
+  p_terminos jsonb,
+  p_moto jsonb default '[]'::jsonb,
+  p_opc jsonb default '[]'::jsonb,
+  p_cil jsonb default '[]'::jsonb,
+  p_var jsonb default '[]'::jsonb,
+  p_marca jsonb default '[]'::jsonb,
+  p_conocidas jsonb default '[]'::jsonb
+) returns uuid[] language sql as $f$
+  select coalesce(array_agg(t.id order by t.rn), '{}'::uuid[]) from (
+    select r.id, row_number() over () as rn
+    from public.buscar_productos(
+      p_terminos, p_moto, 50, p_opc, p_cil,
+      p_variantes => p_var, p_moto_marca => p_marca, p_motos_conocidas => p_conocidas
+    ) r
+  ) t
+$f$;
+
+-- ---------------------------------------------------------------------------
+-- Caso 27 · la moto calza por PALABRA (o palabra seguida de dígitos).
+--   a) moto "gr" contra maletas: MALETA ... TOMCAT GRIS NO calza la moto (con
+--      `\m` a secas, "gr" calzaba dentro de "GRIS"); ninguna maleta nombra gr,
+--      así que puntaje_moto_maximo = 0 y la moto no restringe nada.
+--   b) pastillas: PASTILLA FRENO GR250 sí calza (gr + dígitos) y queda
+--      primera; es la única del máximo con la moto.
+--   c) "GR 250" con espacio también calza.
+-- ---------------------------------------------------------------------------
+do $$
+declare
+  r record;
+  v_orden uuid[];
+begin
+  select puntaje_moto_nombre, puntaje_moto_maximo, filas_con_maximo_y_moto, filas_con_puntaje_maximo into r
+  from public.buscar_productos('[["maleta"]]'::jsonb, '[["gr"]]'::jsonb, 50)
+  where id = 'bc000000-0000-0000-0000-000000000001'::uuid;
+  if r.puntaje_moto_nombre is distinct from 0 or r.puntaje_moto_maximo is distinct from 0
+     or r.filas_con_maximo_y_moto is distinct from r.filas_con_puntaje_maximo then
+    insert into _errores(msg) values (format('Caso 27a: MALETA ... GRIS con moto "gr": puntaje_moto_nombre=%s, puntaje_moto_maximo=%s, filas_con_maximo_y_moto=%s de %s; se esperaba 0, 0 y todas -- "gr" no calza dentro de "GRIS".', r.puntaje_moto_nombre, r.puntaje_moto_maximo, r.filas_con_maximo_y_moto, r.filas_con_puntaje_maximo));
+  end if;
+
+  select puntaje_moto_nombre, puntaje_moto_maximo, filas_con_maximo_y_moto, filas_con_puntaje_maximo into r
+  from public.buscar_productos('[["pastilla"],["freno"]]'::jsonb, '[["gr"]]'::jsonb, 50)
+  where id = 'bc000000-0000-0000-0000-000000000003'::uuid;
+  v_orden := pg_temp._orden('[["pastilla"],["freno"]]'::jsonb, '[["gr"]]'::jsonb);
+  if r.puntaje_moto_nombre is distinct from 1 or r.puntaje_moto_maximo is distinct from 1
+     or r.filas_con_maximo_y_moto is distinct from 1 or r.filas_con_puntaje_maximo is distinct from 6
+     or v_orden[1] is distinct from 'bc000000-0000-0000-0000-000000000003'::uuid then
+    insert into _errores(msg) values (format('Caso 27b: PASTILLA FRENO GR250 con moto "gr": puntaje_moto_nombre=%s, puntaje_moto_maximo=%s, filas_con_maximo_y_moto=%s, filas_con_puntaje_maximo=%s, primero=%s; se esperaba 1, 1, 1, 6 y GR250 primera.', r.puntaje_moto_nombre, r.puntaje_moto_maximo, r.filas_con_maximo_y_moto, r.filas_con_puntaje_maximo, v_orden[1]));
+  end if;
+
+  select puntaje_moto_nombre into r
+  from public.buscar_productos('[["espejo"]]'::jsonb, '[["gr"]]'::jsonb, 50)
+  where id = 'bc000000-0000-0000-0000-000000000004'::uuid;
+  v_orden := pg_temp._orden('[["espejo"]]'::jsonb, '[["gr"]]'::jsonb);
+  if r.puntaje_moto_nombre is distinct from 1 or v_orden[1] is distinct from 'bc000000-0000-0000-0000-000000000004'::uuid then
+    insert into _errores(msg) values (format('Caso 27c: ESPEJO GR 250 con moto "gr": puntaje_moto_nombre=%s, primero=%s; se esperaba 1 y ESPEJO GR 250 primero ("GR 250" con espacio calza, GRIS no).', r.puntaje_moto_nombre, v_orden[1]));
+  end if;
+end $$;
+
+-- ---------------------------------------------------------------------------
+-- Caso 28 · un número calza con su sufijo de LETRAS, nunca de dígitos: "45"
+-- calza CORONA 45T y MALETA CUADRADA 45LTS, no CORONA 4500 ni 450; "50" no
+-- calza 5000 y "dt200" no calza DT2000 (casos 16 y 18, siguen valiendo).
+-- ---------------------------------------------------------------------------
+do $$
+declare
+  r record;
+  v_orden uuid[];
+begin
+  select puntaje into r from public.buscar_productos('[["corona"],["45"]]'::jsonb, '[]'::jsonb, 50)
+  where id = 'bc000000-0000-0000-0000-000000000007'::uuid;
+  v_orden := pg_temp._orden('[["corona"],["45"]]'::jsonb);
+  if r.puntaje is distinct from 2 or v_orden[1] is distinct from 'bc000000-0000-0000-0000-000000000007'::uuid then
+    insert into _errores(msg) values (format('Caso 28a: CORONA 45T con [corona][45]: puntaje=%s, primero=%s; se esperaba 2 y CORONA 45T primera ("45" calza "45T").', r.puntaje, v_orden[1]));
+  end if;
+
+  select puntaje into r from public.buscar_productos('[["corona"],["45"]]'::jsonb, '[]'::jsonb, 50)
+  where id = 'bc000000-0000-0000-0000-000000000006'::uuid;
+  if r.puntaje is distinct from 1 then
+    insert into _errores(msg) values (format('Caso 28a: CORONA 4500 trae puntaje %s, se esperaba 1 ("45" no calza "4500").', r.puntaje));
+  end if;
+
+  select puntaje into r from public.buscar_productos('[["maleta"],["45"]]'::jsonb, '[]'::jsonb, 50)
+  where id = 'bc000000-0000-0000-0000-000000000008'::uuid;
+  if r.puntaje is distinct from 2 then
+    insert into _errores(msg) values (format('Caso 28b: MALETA CUADRADA 45LTS trae puntaje %s con [maleta][45], se esperaba 2 ("45" calza "45LTS").', r.puntaje));
+  end if;
+
+  select puntaje into r from public.buscar_productos('[["kit"],["45"]]'::jsonb, '[]'::jsonb, 50)
+  where id = 'bc000000-0000-0000-0000-000000000005'::uuid;
+  if r.puntaje is distinct from 1 then
+    insert into _errores(msg) values (format('Caso 28c: KIT ARRASTRE 450 trae puntaje %s con [kit][45], se esperaba 1 ("45" no calza "450").', r.puntaje));
+  end if;
+end $$;
+
+-- ---------------------------------------------------------------------------
+-- Caso 29 · una palabra alfabética de 3 letras o menos calza como palabra
+-- ENTERA, con plural: "cro" no calza LUZ CRUCE CROMADO pero sí ESTRIBO TIPO
+-- CRO; "rin" calza RINES ALUMINIO pero no RING PROTECTOR.
+-- ---------------------------------------------------------------------------
+do $$
+declare
+  v_cro uuid[];
+  v_rin uuid[];
+begin
+  v_cro := pg_temp._orden('[["cro"]]'::jsonb);
+  if not ('bc000000-0000-0000-0000-000000000011'::uuid = any(v_cro)) then
+    insert into _errores(msg) values ('Caso 29: "cro" no trajo ESTRIBO TIPO CRO NEGRO.');
+  end if;
+  if 'bc000000-0000-0000-0000-000000000009'::uuid = any(v_cro) or 'bc000000-0000-0000-0000-000000000002'::uuid = any(v_cro) then
+    insert into _errores(msg) values ('Caso 29: "cro" calzó dentro de CROMADO -- una palabra de 3 letras o menos tiene que calzar entera.');
+  end if;
+
+  v_rin := pg_temp._orden('[["rin"]]'::jsonb);
+  if not ('bc000000-0000-0000-0000-000000000012'::uuid = any(v_rin)) then
+    insert into _errores(msg) values ('Caso 29: "rin" no trajo RINES ALUMINIO 17 NEGRO (el plural (s|es)? tiene que calzar).');
+  end if;
+  if 'bc000000-0000-0000-0000-000000000010'::uuid = any(v_rin) then
+    insert into _errores(msg) values ('Caso 29: "rin" calzó dentro de RING PROTECTOR CLUTCH.');
+  end if;
+end $$;
+
+-- ---------------------------------------------------------------------------
+-- Caso 30 · variantes: un conjunto APARTE de grupos (p_variantes) que ordena
+-- y se cuenta en ventanas ANTES del límite. Tanque SBR azul: los dos azules
+-- SBR están agotados y hay rojo y negro con stock.
+--   a) moto sbr + [azul]: la moto calza (1), las del máximo y la moto son 4
+--      (los EK/OWEN quedan fuera de la ventana); con variante 2, sin stock 0.
+--      Los dos azules SBR van primeros; los EK/OWEN (moto 0) detrás de todos
+--      los SBR aunque tengan stock.
+--   b) sin moto: 4 tanques azules en total, 2 con stock (EK y OWEN).
+--   c) las variantes son ESTRICTAS (TODAS): [azul][rojo] no calza ninguno;
+--      [azul][2024] calza solo el SBR azul 2024.
+--   d) sin variantes las ventanas de variante valen 0.
+-- ---------------------------------------------------------------------------
+do $$
+declare
+  r record;
+  v_orden uuid[];
+begin
+  select puntaje_moto_maximo, filas_con_puntaje_maximo, filas_con_maximo_y_moto, filas_con_maximo_y_stock,
+         filas_con_variante, filas_con_variante_y_stock into r
+  from public.buscar_productos('[["tanque"]]'::jsonb, '[["sbr"]]'::jsonb, 1,
+       p_variantes => '[["azul"]]'::jsonb, p_motos_conocidas => '["sbr","xpress","owen"]'::jsonb);
+  if r.puntaje_moto_maximo is distinct from 1 or r.filas_con_puntaje_maximo is distinct from 6
+     or r.filas_con_maximo_y_moto is distinct from 4 or r.filas_con_maximo_y_stock is distinct from 2
+     or r.filas_con_variante is distinct from 2 or r.filas_con_variante_y_stock is distinct from 0 then
+    insert into _errores(msg) values (format('Caso 30a: tanque + moto sbr + [azul]: moto_max=%s (1), filas_max=%s (6), max_y_moto=%s (4), max_y_stock=%s (2), con_variante=%s (2), con_variante_y_stock=%s (0).', r.puntaje_moto_maximo, r.filas_con_puntaje_maximo, r.filas_con_maximo_y_moto, r.filas_con_maximo_y_stock, r.filas_con_variante, r.filas_con_variante_y_stock));
+  end if;
+
+  v_orden := pg_temp._orden('[["tanque"]]'::jsonb, '[["sbr"]]'::jsonb, '[]'::jsonb, '[]'::jsonb, '[["azul"]]'::jsonb, '[]'::jsonb, '["sbr","xpress","owen"]'::jsonb);
+  if not (v_orden[1] in ('bc000000-0000-0000-0000-000000000015'::uuid, 'bc000000-0000-0000-0000-000000000016'::uuid)
+          and v_orden[2] in ('bc000000-0000-0000-0000-000000000015'::uuid, 'bc000000-0000-0000-0000-000000000016'::uuid)) then
+    insert into _errores(msg) values (format('Caso 30a: los dos primeros con [azul] + moto sbr deberían ser los tanques SBR azules; fueron %s y %s.', v_orden[1], v_orden[2]));
+  end if;
+  if array_position(v_orden, 'bc000000-0000-0000-0000-000000000013'::uuid) <= array_position(v_orden, 'bc000000-0000-0000-0000-000000000018'::uuid) then
+    insert into _errores(msg) values ('Caso 30a: el tanque EK XPRESS azul (otra moto, con stock 5) quedó por delante de un tanque SBR: la moto con nombre ordena antes que la variante.');
+  end if;
+
+  -- Banderas por fila, con la moto sbr y estas motos conocidas.
+  select nombra_moto, nombra_otra_moto, es_universal into r
+  from public.buscar_productos('[["tanque"]]'::jsonb, '[["sbr"]]'::jsonb, 50,
+       p_motos_conocidas => '["sbr","xpress","owen"]'::jsonb)
+  where id = 'bc000000-0000-0000-0000-000000000015'::uuid;
+  if r.nombra_moto is distinct from true or r.nombra_otra_moto is distinct from false or r.es_universal is distinct from false then
+    insert into _errores(msg) values (format('Caso 30a: TANQUE BERA SBR AZUL con moto sbr: nombra_moto=%s, nombra_otra_moto=%s, es_universal=%s; se esperaba true, false, false.', r.nombra_moto, r.nombra_otra_moto, r.es_universal));
+  end if;
+  select nombra_moto, nombra_otra_moto into r
+  from public.buscar_productos('[["tanque"]]'::jsonb, '[["sbr"]]'::jsonb, 50,
+       p_motos_conocidas => '["sbr","xpress","owen"]'::jsonb)
+  where id = 'bc000000-0000-0000-0000-000000000013'::uuid;
+  if r.nombra_moto is distinct from true or r.nombra_otra_moto is distinct from true then
+    insert into _errores(msg) values (format('Caso 30a: TANQUE EK XPRESS con moto sbr: nombra_moto=%s, nombra_otra_moto=%s; se esperaba true y true (es de otra moto).', r.nombra_moto, r.nombra_otra_moto));
+  end if;
+
+  -- b) sin moto.
+  select puntaje_moto_maximo, filas_con_variante, filas_con_variante_y_stock, puntaje_variante into r
+  from public.buscar_productos('[["tanque"]]'::jsonb, '[]'::jsonb, 50, p_variantes => '[["azul"]]'::jsonb)
+  where id = 'bc000000-0000-0000-0000-000000000015'::uuid;
+  if r.puntaje_moto_maximo is distinct from 0 or r.filas_con_variante is distinct from 4
+     or r.filas_con_variante_y_stock is distinct from 2 or r.puntaje_variante is distinct from 1 then
+    insert into _errores(msg) values (format('Caso 30b: tanque sin moto + [azul]: moto_max=%s (0), con_variante=%s (4), con_variante_y_stock=%s (2), puntaje_variante del SBR azul=%s (1).', r.puntaje_moto_maximo, r.filas_con_variante, r.filas_con_variante_y_stock, r.puntaje_variante));
+  end if;
+
+  -- c) TODAS las variantes.
+  select filas_con_variante, filas_con_variante_y_stock into r
+  from public.buscar_productos('[["tanque"]]'::jsonb, '[["sbr"]]'::jsonb, 1, p_variantes => '[["azul"],["rojo"]]'::jsonb)
+  ;
+  if r.filas_con_variante is distinct from 0 or r.filas_con_variante_y_stock is distinct from 0 then
+    insert into _errores(msg) values (format('Caso 30c: [azul][rojo] contó %s fila(s) con TODAS las variantes, se esperaban 0 (ningún tanque es azul y rojo).', r.filas_con_variante));
+  end if;
+  select filas_con_variante, filas_con_variante_y_stock into r
+  from public.buscar_productos('[["tanque"]]'::jsonb, '[["sbr"]]'::jsonb, 1, p_variantes => '[["azul"],["2024"]]'::jsonb);
+  v_orden := pg_temp._orden('[["tanque"]]'::jsonb, '[["sbr"]]'::jsonb, '[]'::jsonb, '[]'::jsonb, '[["azul"],["2024"]]'::jsonb);
+  if r.filas_con_variante is distinct from 1 or r.filas_con_variante_y_stock is distinct from 0
+     or v_orden[1] is distinct from 'bc000000-0000-0000-0000-000000000016'::uuid then
+    insert into _errores(msg) values (format('Caso 30c: [azul][2024] con moto sbr: con_variante=%s (1), con_variante_y_stock=%s (0), primero=%s (SBR AZUL 2024).', r.filas_con_variante, r.filas_con_variante_y_stock, v_orden[1]));
+  end if;
+
+  -- d) sin variantes.
+  select filas_con_variante, filas_con_variante_y_stock, puntaje_variante into r
+  from public.buscar_productos('[["tanque"]]'::jsonb, '[["sbr"]]'::jsonb, 1);
+  if r.filas_con_variante is distinct from 0 or r.filas_con_variante_y_stock is distinct from 0 or r.puntaje_variante is distinct from 0 then
+    insert into _errores(msg) values (format('Caso 30d: sin variantes: con_variante=%s, con_variante_y_stock=%s, puntaje_variante=%s; se esperaba 0, 0 y 0.', r.filas_con_variante, r.filas_con_variante_y_stock, r.puntaje_variante));
+  end if;
+end $$;
+
+-- ---------------------------------------------------------------------------
+-- Caso 31 · el año (2014) viaja en p_cilindrada: solo ORDENA. TANQUE OWEN 2014
+-- sube al primer lugar, ningún tanque desaparece y nunca vuelve verdadera la
+-- coincidencia de moto.
+-- ---------------------------------------------------------------------------
+do $$
+declare
+  r record;
+  v_orden uuid[];
+begin
+  v_orden := pg_temp._orden('[["tanque"]]'::jsonb, '[]'::jsonb, '[]'::jsonb, '[["2014"]]'::jsonb);
+  select puntaje_moto_cilindrada, puntaje_moto_maximo, filas_con_puntaje_maximo, filas_con_maximo_y_moto into r
+  from public.buscar_productos('[["tanque"]]'::jsonb, '[]'::jsonb, 50, p_cilindrada => '[["2014"]]'::jsonb)
+  where id = 'bc000000-0000-0000-0000-000000000014'::uuid;
+  if r.puntaje_moto_cilindrada is distinct from 1 or r.puntaje_moto_maximo is distinct from 0
+     or v_orden[1] is distinct from 'bc000000-0000-0000-0000-000000000014'::uuid
+     or cardinality(v_orden) <> 6 or r.filas_con_maximo_y_moto is distinct from r.filas_con_puntaje_maximo then
+    insert into _errores(msg) values (format('Caso 31: año 2014 en p_cilindrada: puntaje_moto_cilindrada=%s (1), puntaje_moto_maximo=%s (0), primero=%s (TANQUE OWEN 2014), %s fila(s) (6), max_y_moto=%s de %s.', r.puntaje_moto_cilindrada, r.puntaje_moto_maximo, v_orden[1], cardinality(v_orden), r.filas_con_maximo_y_moto, r.filas_con_puntaje_maximo));
+  end if;
+end $$;
+
+-- ---------------------------------------------------------------------------
+-- Caso 32 · la marca de moto (p_moto_marca) solo ORDENA: no vuelve verdadero
+-- puntaje_moto_maximo ni restringe ventanas. Va DESPUÉS de la moto con nombre
+-- y ANTES de la existencia: con marca bera, los tanques BERA (aunque estén
+-- agotados) van antes que el EK con stock 5; con moto ek + marca bera manda
+-- el EK.
+-- ---------------------------------------------------------------------------
+do $$
+declare
+  r record;
+  v_orden uuid[];
+begin
+  select puntaje_moto_marca, puntaje_moto_maximo, filas_con_maximo_y_moto, filas_con_puntaje_maximo into r
+  from public.buscar_productos('[["tanque"]]'::jsonb, '[]'::jsonb, 50, p_moto_marca => '[["bera"]]'::jsonb)
+  where id = 'bc000000-0000-0000-0000-000000000015'::uuid;
+  if r.puntaje_moto_marca is distinct from 1 or r.puntaje_moto_maximo is distinct from 0
+     or r.filas_con_maximo_y_moto is distinct from r.filas_con_puntaje_maximo then
+    insert into _errores(msg) values (format('Caso 32: marca bera: puntaje_moto_marca=%s (1), puntaje_moto_maximo=%s (0), max_y_moto=%s de %s -- la marca no puede volver verdadera la moto ni restringir.', r.puntaje_moto_marca, r.puntaje_moto_maximo, r.filas_con_maximo_y_moto, r.filas_con_puntaje_maximo));
+  end if;
+
+  v_orden := pg_temp._orden('[["tanque"]]'::jsonb, '[]'::jsonb, '[]'::jsonb, '[]'::jsonb, '[]'::jsonb, '[["bera"]]'::jsonb);
+  if array_position(v_orden, 'bc000000-0000-0000-0000-000000000013'::uuid) <= array_position(v_orden, 'bc000000-0000-0000-0000-000000000015'::uuid)
+     or array_position(v_orden, 'bc000000-0000-0000-0000-000000000014'::uuid) <= array_position(v_orden, 'bc000000-0000-0000-0000-000000000016'::uuid) then
+    insert into _errores(msg) values ('Caso 32: con marca bera, un tanque EK/OWEN quedó por delante de un tanque BERA agotado: la marca ordena antes que la existencia.');
+  end if;
+
+  select puntaje_moto_maximo, filas_con_maximo_y_moto into r
+  from public.buscar_productos('[["tanque"]]'::jsonb, '[["ek"]]'::jsonb, 1, p_moto_marca => '[["bera"]]'::jsonb);
+  v_orden := pg_temp._orden('[["tanque"]]'::jsonb, '[["ek"]]'::jsonb, '[]'::jsonb, '[]'::jsonb, '[]'::jsonb, '[["bera"]]'::jsonb);
+  if r.puntaje_moto_maximo is distinct from 1 or r.filas_con_maximo_y_moto is distinct from 1
+     or v_orden[1] is distinct from 'bc000000-0000-0000-0000-000000000013'::uuid then
+    insert into _errores(msg) values (format('Caso 32: moto ek + marca bera: puntaje_moto_maximo=%s (1), max_y_moto=%s (1), primero=%s (TANQUE EK XPRESS): la moto con nombre manda sobre la marca.', r.puntaje_moto_maximo, r.filas_con_maximo_y_moto, v_orden[1]));
+  end if;
+end $$;
+
+-- ---------------------------------------------------------------------------
+-- Caso 33 · "otra moto" y "universal" (D1) sobre las defensas. Motos conocidas
+-- brz, kavak, klr, dt. Siete defensas activas: BRZ 250 (2), PROTECTOR MOTOR
+-- UNIVERSAL (2), KAVAK (3), KLR (1), SLIDER PROTECTOR (0, no nombra moto),
+-- UNIVERSAL TIPO KAVAK (1: nombra kavak Y dice universal) y SUPER DT (6).
+--   a) moto tx (ninguna fila la nombra): las ventanas cubren las siete:
+--      nombran moto 5, universales 3 (PROTECTOR, SLIDER, UNIVERSAL KAVAK), con
+--      stock 2 (SLIDER está en 0); con stock en total 6.
+--   b) moto dt (calza SUPER DT): la ventana se restringe a esa fila.
+--   c) sin moto: nombra_otra_moto = nombra_moto.
+--   d) sin p_motos_conocidas nada nombra moto y todo es universal (degradación
+--      documentada: T5 siempre pasa la lista).
+-- ---------------------------------------------------------------------------
+do $$
+declare
+  r record;
+begin
+  select puntaje_moto_maximo, filas_con_puntaje_maximo, filas_que_nombran_moto, filas_universales,
+         filas_universales_con_stock, filas_con_maximo_y_stock into r
+  from public.buscar_productos('[["defensa"]]'::jsonb, '[["tx"]]'::jsonb, 1,
+       p_motos_conocidas => '["brz","kavak","klr","dt"]'::jsonb);
+  if r.puntaje_moto_maximo is distinct from 0 or r.filas_con_puntaje_maximo is distinct from 7
+     or r.filas_que_nombran_moto is distinct from 5 or r.filas_universales is distinct from 3
+     or r.filas_universales_con_stock is distinct from 2 or r.filas_con_maximo_y_stock is distinct from 6 then
+    insert into _errores(msg) values (format('Caso 33a: defensa + moto tx: moto_max=%s (0), filas_max=%s (7), nombran_moto=%s (5), universales=%s (3), universales_con_stock=%s (2), max_y_stock=%s (6).', r.puntaje_moto_maximo, r.filas_con_puntaje_maximo, r.filas_que_nombran_moto, r.filas_universales, r.filas_universales_con_stock, r.filas_con_maximo_y_stock));
+  end if;
+
+  -- Banderas por fila (moto tx).
+  select nombra_moto, nombra_otra_moto, es_universal into r
+  from public.buscar_productos('[["defensa"]]'::jsonb, '[["tx"]]'::jsonb, 50, p_motos_conocidas => '["brz","kavak","klr","dt"]'::jsonb)
+  where id = 'b8000000-0000-0000-0000-000000000005'::uuid; -- DEFENSA BRZ 250
+  if r.nombra_moto is distinct from true or r.nombra_otra_moto is distinct from true or r.es_universal is distinct from false then
+    insert into _errores(msg) values (format('Caso 33a: DEFENSA BRZ 250: nombra_moto=%s, nombra_otra_moto=%s, es_universal=%s; se esperaba true, true, false.', r.nombra_moto, r.nombra_otra_moto, r.es_universal));
+  end if;
+  select nombra_moto, nombra_otra_moto, es_universal into r
+  from public.buscar_productos('[["defensa"]]'::jsonb, '[["tx"]]'::jsonb, 50, p_motos_conocidas => '["brz","kavak","klr","dt"]'::jsonb)
+  where id = 'b8000000-0000-0000-0000-000000000006'::uuid; -- PROTECTOR MOTOR UNIVERSAL
+  if r.nombra_moto is distinct from false or r.nombra_otra_moto is distinct from false or r.es_universal is distinct from true then
+    insert into _errores(msg) values (format('Caso 33a: DEFENSA PROTECTOR MOTOR UNIVERSAL: nombra_moto=%s, nombra_otra_moto=%s, es_universal=%s; se esperaba false, false, true.', r.nombra_moto, r.nombra_otra_moto, r.es_universal));
+  end if;
+  select nombra_moto, nombra_otra_moto, es_universal into r
+  from public.buscar_productos('[["defensa"]]'::jsonb, '[["tx"]]'::jsonb, 50, p_motos_conocidas => '["brz","kavak","klr","dt"]'::jsonb)
+  where id = 'bc000000-0000-0000-0000-000000000021'::uuid; -- SLIDER PROTECTOR
+  if r.nombra_moto is distinct from false or r.nombra_otra_moto is distinct from false or r.es_universal is distinct from true then
+    insert into _errores(msg) values (format('Caso 33a: DEFENSA SLIDER PROTECTOR (sin moto en el nombre): nombra_moto=%s, nombra_otra_moto=%s, es_universal=%s; se esperaba false, false, true.', r.nombra_moto, r.nombra_otra_moto, r.es_universal));
+  end if;
+  select nombra_moto, nombra_otra_moto, es_universal into r
+  from public.buscar_productos('[["defensa"]]'::jsonb, '[["tx"]]'::jsonb, 50, p_motos_conocidas => '["brz","kavak","klr","dt"]'::jsonb)
+  where id = 'bc000000-0000-0000-0000-000000000022'::uuid; -- UNIVERSAL TIPO KAVAK
+  if r.nombra_moto is distinct from true or r.nombra_otra_moto is distinct from true or r.es_universal is distinct from true then
+    insert into _errores(msg) values (format('Caso 33a: DEFENSA UNIVERSAL TIPO KAVAK: nombra_moto=%s, nombra_otra_moto=%s, es_universal=%s; se esperaba true, true, true (nombra una moto pero dice UNIVERSAL).', r.nombra_moto, r.nombra_otra_moto, r.es_universal));
+  end if;
+
+  -- b) moto dt: calza SUPER DT.
+  select puntaje_moto_maximo, filas_con_maximo_y_moto, filas_que_nombran_moto, filas_universales,
+         filas_universales_con_stock, filas_con_maximo_y_stock into r
+  from public.buscar_productos('[["defensa"]]'::jsonb, '[["dt"]]'::jsonb, 1,
+       p_motos_conocidas => '["brz","kavak","klr","dt"]'::jsonb);
+  if r.puntaje_moto_maximo is distinct from 1 or r.filas_con_maximo_y_moto is distinct from 1
+     or r.filas_que_nombran_moto is distinct from 1 or r.filas_universales is distinct from 0
+     or r.filas_universales_con_stock is distinct from 0 or r.filas_con_maximo_y_stock is distinct from 1 then
+    insert into _errores(msg) values (format('Caso 33b: defensa + moto dt: moto_max=%s (1), max_y_moto=%s (1), nombran_moto=%s (1), universales=%s (0), universales_con_stock=%s (0), max_y_stock=%s (1) -- las ventanas se restringen a la moto que calza.', r.puntaje_moto_maximo, r.filas_con_maximo_y_moto, r.filas_que_nombran_moto, r.filas_universales, r.filas_universales_con_stock, r.filas_con_maximo_y_stock));
+  end if;
+  select nombra_otra_moto into r
+  from public.buscar_productos('[["defensa"]]'::jsonb, '[["dt"]]'::jsonb, 50, p_motos_conocidas => '["brz","kavak","klr","dt"]'::jsonb)
+  where id = 'bc000000-0000-0000-0000-000000000023'::uuid;
+  if r.nombra_otra_moto is distinct from false then
+    insert into _errores(msg) values (format('Caso 33b: DEFENSA SUPER DT con moto dt: nombra_otra_moto=%s, se esperaba false (es la moto del cliente).', r.nombra_otra_moto));
+  end if;
+  select nombra_otra_moto into r
+  from public.buscar_productos('[["defensa"]]'::jsonb, '[["dt"]]'::jsonb, 50, p_motos_conocidas => '["brz","kavak","klr","dt"]'::jsonb)
+  where id = 'bc000000-0000-0000-0000-000000000019'::uuid;
+  if r.nombra_otra_moto is distinct from true then
+    insert into _errores(msg) values (format('Caso 33b: DEFENSA KAVAK con moto dt: nombra_otra_moto=%s, se esperaba true.', r.nombra_otra_moto));
+  end if;
+
+  -- c) sin moto: nombra_otra_moto = nombra_moto.
+  select nombra_moto, nombra_otra_moto into r
+  from public.buscar_productos('[["defensa"]]'::jsonb, '[]'::jsonb, 50, p_motos_conocidas => '["brz","kavak","klr","dt"]'::jsonb)
+  where id = 'bc000000-0000-0000-0000-000000000020'::uuid; -- KLR
+  if r.nombra_moto is distinct from true or r.nombra_otra_moto is distinct from true then
+    insert into _errores(msg) values (format('Caso 33c: DEFENSA KLR sin moto del cliente: nombra_moto=%s, nombra_otra_moto=%s; se esperaba true y true.', r.nombra_moto, r.nombra_otra_moto));
+  end if;
+
+  -- d) sin p_motos_conocidas.
+  select filas_que_nombran_moto, filas_universales, nombra_moto, es_universal into r
+  from public.buscar_productos('[["defensa"]]'::jsonb, '[["tx"]]'::jsonb, 1);
+  if r.filas_que_nombran_moto is distinct from 0 or r.filas_universales is distinct from 7 or r.nombra_moto is distinct from false or r.es_universal is distinct from true then
+    insert into _errores(msg) values (format('Caso 33d: sin p_motos_conocidas: nombran_moto=%s (0), universales=%s (7), nombra_moto=%s, es_universal=%s.', r.filas_que_nombran_moto, r.filas_universales, r.nombra_moto, r.es_universal));
+  end if;
+end $$;
+
+-- ---------------------------------------------------------------------------
+-- Caso 34 · «ASIENTO SBR /SOC ORIGINAL» nombra DOS motos y sí le sirve a una
+-- SBR: con moto sbr, nombra_otra_moto = false. Con moto kavak, en cambio, sí
+-- es de otra moto. Y GOMA ASIENTO UNIVERSAL TRACTOR es universal por no
+-- nombrar ninguna.
+-- ---------------------------------------------------------------------------
+do $$
+declare
+  r record;
+begin
+  select nombra_moto, nombra_otra_moto, puntaje_moto_nombre into r
+  from public.buscar_productos('[["asiento"]]'::jsonb, '[["sbr"]]'::jsonb, 50, p_motos_conocidas => '["sbr","soc","kavak"]'::jsonb)
+  where id = 'bc000000-0000-0000-0000-000000000024'::uuid;
+  if r.nombra_moto is distinct from true or r.nombra_otra_moto is distinct from false or r.puntaje_moto_nombre is distinct from 1 then
+    insert into _errores(msg) values (format('Caso 34: ASIENTO SBR /SOC con moto sbr: nombra_moto=%s, nombra_otra_moto=%s, puntaje_moto_nombre=%s; se esperaba true, false, 1.', r.nombra_moto, r.nombra_otra_moto, r.puntaje_moto_nombre));
+  end if;
+
+  select nombra_otra_moto into r
+  from public.buscar_productos('[["asiento"]]'::jsonb, '[["kavak"]]'::jsonb, 50, p_motos_conocidas => '["sbr","soc","kavak"]'::jsonb)
+  where id = 'bc000000-0000-0000-0000-000000000024'::uuid;
+  if r.nombra_otra_moto is distinct from true then
+    insert into _errores(msg) values (format('Caso 34: ASIENTO SBR /SOC con moto kavak: nombra_otra_moto=%s, se esperaba true.', r.nombra_otra_moto));
+  end if;
+
+  select es_universal, nombra_moto into r
+  from public.buscar_productos('[["asiento"]]'::jsonb, '[["sbr"]]'::jsonb, 50, p_motos_conocidas => '["sbr","soc","kavak"]'::jsonb)
+  where id = 'b2000000-0000-0000-0000-000000000003'::uuid; -- GOMA ASIENTO UNIVERSAL TRACTOR
+  if r.es_universal is distinct from true or r.nombra_moto is distinct from false then
+    insert into _errores(msg) values (format('Caso 34: GOMA ASIENTO UNIVERSAL TRACTOR: es_universal=%s, nombra_moto=%s; se esperaba true y false.', r.es_universal, r.nombra_moto));
+  end if;
+end $$;
+
+-- ---------------------------------------------------------------------------
+-- Caso 34b · la MARCA de moto no cuenta para "otra moto" (desvío documentado
+-- en la migración): cliente con moto sbr y marca ek; TANQUE EK XPRESS II calza
+-- la marca (ek) pero nombra xpress, no sbr -> sigue siendo de otra moto.
+-- ---------------------------------------------------------------------------
+do $$
+declare
+  r record;
+begin
+  select nombra_otra_moto, puntaje_moto_marca into r
+  from public.buscar_productos('[["tanque"]]'::jsonb, '[["sbr"]]'::jsonb, 50,
+       p_moto_marca => '[["ek"]]'::jsonb, p_motos_conocidas => '["sbr","xpress","owen"]'::jsonb)
+  where id = 'bc000000-0000-0000-0000-000000000013'::uuid;
+  if r.nombra_otra_moto is distinct from true or r.puntaje_moto_marca is distinct from 1 then
+    insert into _errores(msg) values (format('Caso 34b: TANQUE EK XPRESS con moto sbr y marca ek: nombra_otra_moto=%s (true), puntaje_moto_marca=%s (1) -- la marca solo ordena, no vuelve "propio" a un producto de otro modelo.', r.nombra_otra_moto, r.puntaje_moto_marca));
+  end if;
+end $$;
+
+-- ---------------------------------------------------------------------------
+-- Caso 34c · MARCA SIN MODELO no es "otra moto" (refinamiento del coordinador,
+-- 30/9/2026, con p_marcas_de_moto): lista "batería" para una Bera Socialista
+-- tiene que poder cotizar BATERIA SECA JAGUAR/BERA 12N6.5 (nombra solo marcas:
+-- jaguar y bera), mientras que TAPA LATERAL BERA SBR para una Bera Milan sigue
+-- siendo de otra moto (nombra el MODELO sbr, distinto de milan). Ruido primero:
+-- baterías de otros modelos y tapas de otros modelos antes de las correctas.
+--   a) socialista + marca bera + marcas [bera, jaguar, ek]: JAGUAR/BERA no es
+--      otra moto; VSTROM y DR650 (modelos ajenos, sin marca del cliente) sí.
+--   b) milan + marca bera: TAPA LATERAL BERA SBR sí es otra moto (modelo sbr),
+--      TAPA LATERAL MILAN AZUL calza la moto (puntaje_moto_nombre = 1).
+--   c) SIN p_marcas_de_moto, todo cuenta como modelo y el comportamiento es el
+--      de antes: JAGUAR/BERA vuelve a ser otra moto.
+--   d) una marca solo se reconoce dentro del tope de 50 palabras.
+-- ---------------------------------------------------------------------------
+insert into public.products (id, name, brand, price, currency, stock_quantity, is_active) values
+  ('bc000000-0000-0000-0000-000000000029', 'BATERIA VSTROM 12V 10AH', null, 60.00, 'USD', 4, true),
+  ('bc000000-0000-0000-0000-000000000030', 'BATERIA DR650 12V', null, 55.00, 'USD', 3, true),
+  ('bc000000-0000-0000-0000-000000000031', 'TAPA LATERAL BERA SBR AZUL', null, 12.00, 'USD', 5, true),
+  ('bc000000-0000-0000-0000-000000000032', 'BATERIA SECA JAGUAR/BERA 12N6.5', null, 18.00, 'USD', 116, true),
+  ('bc000000-0000-0000-0000-000000000033', 'TAPA LATERAL MILAN AZUL', null, 12.00, 'USD', 2, true);
+
+do $$
+declare
+  r record;
+  v_conocidas jsonb := '["socialista","sbr","milan","bera","jaguar","vstrom","dr650","ek"]'::jsonb;
+  v_marcas jsonb := '["bera","jaguar","ek"]'::jsonb;
+  v_relleno jsonb;
+begin
+  -- a) Bera Socialista pide baterías.
+  select nombra_moto, nombra_otra_moto, es_universal into r
+  from public.buscar_productos('[["bateria"]]'::jsonb, '[["socialista"]]'::jsonb, 50,
+       p_moto_marca => '[["bera"]]'::jsonb, p_motos_conocidas => v_conocidas, p_marcas_de_moto => v_marcas)
+  where id = 'bc000000-0000-0000-0000-000000000032'::uuid;
+  if r.nombra_moto is distinct from true or r.nombra_otra_moto is distinct from false or r.es_universal is distinct from false then
+    insert into _errores(msg) values (format('Caso 34c: BATERIA SECA JAGUAR/BERA con moto socialista + marca bera: nombra_moto=%s (true), nombra_otra_moto=%s (false), es_universal=%s (false) -- nombra solo marcas, es de la marca del cliente.', r.nombra_moto, r.nombra_otra_moto, r.es_universal));
+  end if;
+  select nombra_otra_moto into r
+  from public.buscar_productos('[["bateria"]]'::jsonb, '[["socialista"]]'::jsonb, 50,
+       p_moto_marca => '[["bera"]]'::jsonb, p_motos_conocidas => v_conocidas, p_marcas_de_moto => v_marcas)
+  where id = 'bc000000-0000-0000-0000-000000000029'::uuid;
+  if r.nombra_otra_moto is distinct from true then
+    insert into _errores(msg) values (format('Caso 34c: BATERIA VSTROM con moto socialista + marca bera: nombra_otra_moto=%s, se esperaba true (modelo ajeno, sin la marca del cliente).', r.nombra_otra_moto));
+  end if;
+  select nombra_otra_moto into r
+  from public.buscar_productos('[["bateria"]]'::jsonb, '[["socialista"]]'::jsonb, 50,
+       p_moto_marca => '[["bera"]]'::jsonb, p_motos_conocidas => v_conocidas, p_marcas_de_moto => v_marcas)
+  where id = 'bc000000-0000-0000-0000-000000000030'::uuid;
+  if r.nombra_otra_moto is distinct from true then
+    insert into _errores(msg) values (format('Caso 34c: BATERIA DR650 con moto socialista + marca bera: nombra_otra_moto=%s, se esperaba true.', r.nombra_otra_moto));
+  end if;
+
+  -- b) Bera Milan pide tapas.
+  select nombra_otra_moto, puntaje_moto_marca into r
+  from public.buscar_productos('[["tapa"],["lateral"]]'::jsonb, '[["milan"]]'::jsonb, 50,
+       p_moto_marca => '[["bera"]]'::jsonb, p_motos_conocidas => v_conocidas, p_marcas_de_moto => v_marcas)
+  where id = 'bc000000-0000-0000-0000-000000000031'::uuid;
+  if r.nombra_otra_moto is distinct from true or r.puntaje_moto_marca is distinct from 1 then
+    insert into _errores(msg) values (format('Caso 34c: TAPA LATERAL BERA SBR con moto milan + marca bera: nombra_otra_moto=%s (true), puntaje_moto_marca=%s (1) -- la marca sola no rescata: nombra el modelo sbr.', r.nombra_otra_moto, r.puntaje_moto_marca));
+  end if;
+  select nombra_otra_moto, puntaje_moto_nombre into r
+  from public.buscar_productos('[["tapa"],["lateral"]]'::jsonb, '[["milan"]]'::jsonb, 50,
+       p_moto_marca => '[["bera"]]'::jsonb, p_motos_conocidas => v_conocidas, p_marcas_de_moto => v_marcas)
+  where id = 'bc000000-0000-0000-0000-000000000033'::uuid;
+  if r.nombra_otra_moto is distinct from false or r.puntaje_moto_nombre is distinct from 1 then
+    insert into _errores(msg) values (format('Caso 34c: TAPA LATERAL MILAN AZUL con moto milan: nombra_otra_moto=%s (false), puntaje_moto_nombre=%s (1).', r.nombra_otra_moto, r.puntaje_moto_nombre));
+  end if;
+
+  -- c) sin p_marcas_de_moto: comportamiento de antes.
+  select nombra_otra_moto into r
+  from public.buscar_productos('[["bateria"]]'::jsonb, '[["socialista"]]'::jsonb, 50,
+       p_moto_marca => '[["bera"]]'::jsonb, p_motos_conocidas => v_conocidas)
+  where id = 'bc000000-0000-0000-0000-000000000032'::uuid;
+  if r.nombra_otra_moto is distinct from true then
+    insert into _errores(msg) values (format('Caso 34c: sin p_marcas_de_moto, JAGUAR/BERA: nombra_otra_moto=%s, se esperaba true (todo cuenta como modelo: la marca sola no rescata).', r.nombra_otra_moto));
+  end if;
+
+  -- d) tope de 50 marcas: "bera" en la posición 51 no se lee, así que
+  -- jaguar/bera vuelve a contar como modelo -> otra moto; en la 50 sí se lee.
+  select jsonb_agg('zz' || g) into v_relleno from generate_series(1, 50) g;
+  select nombra_otra_moto into r
+  from public.buscar_productos('[["bateria"]]'::jsonb, '[["socialista"]]'::jsonb, 50,
+       p_moto_marca => '[["bera"]]'::jsonb, p_motos_conocidas => v_conocidas,
+       p_marcas_de_moto => (v_relleno || '["bera","jaguar"]'::jsonb))
+  where id = 'bc000000-0000-0000-0000-000000000032'::uuid;
+  if r.nombra_otra_moto is distinct from true then
+    insert into _errores(msg) values ('Caso 34c: las marcas después de la palabra 50 de p_marcas_de_moto se leyeron: el tope de 50 no se aplica.');
+  end if;
+  select jsonb_agg('zz' || g) into v_relleno from generate_series(1, 48) g;
+  select nombra_otra_moto into r
+  from public.buscar_productos('[["bateria"]]'::jsonb, '[["socialista"]]'::jsonb, 50,
+       p_moto_marca => '[["bera"]]'::jsonb, p_motos_conocidas => v_conocidas,
+       p_marcas_de_moto => (v_relleno || '["bera","jaguar"]'::jsonb))
+  where id = 'bc000000-0000-0000-0000-000000000032'::uuid;
+  if r.nombra_otra_moto is distinct from false then
+    insert into _errores(msg) values ('Caso 34c: las marcas en las posiciones 49 y 50 de p_marcas_de_moto no se leyeron.');
+  end if;
+
+  -- Basura: no lanza y no rescata.
+  select nombra_otra_moto into r
+  from public.buscar_productos('[["bateria"]]'::jsonb, '[["socialista"]]'::jsonb, 50,
+       p_moto_marca => '[["bera"]]'::jsonb, p_motos_conocidas => v_conocidas,
+       p_marcas_de_moto => '[null, 7, "", {"a":1}, ["bera"]]'::jsonb)
+  where id = 'bc000000-0000-0000-0000-000000000032'::uuid;
+  if r.nombra_otra_moto is distinct from true then
+    insert into _errores(msg) values ('Caso 34c: una entrada basura de p_marcas_de_moto rescató a JAGUAR/BERA.');
+  end if;
+end $$;
+
+-- ---------------------------------------------------------------------------
+-- Caso 35 · desempate: con todo igual, manda la EXISTENCIA y nunca el orden
+-- alfabético. Tres bujías con stock 1, 5 y 9 (el de más stock es el último
+-- por nombre) y una en 0 que sería la primera por nombre: CCC, BBB, AAA, AA0.
+-- (Cambio de semántica a propósito frente a 20260928010000, que desempataba
+-- por `stock > 0` y después por nombre: A, B, C.)
+-- ---------------------------------------------------------------------------
+do $$
+declare
+  v_orden uuid[];
+begin
+  v_orden := pg_temp._orden('[["bujia"]]'::jsonb);
+  if v_orden is distinct from array[
+       'bc000000-0000-0000-0000-000000000028'::uuid,
+       'bc000000-0000-0000-0000-000000000027'::uuid,
+       'bc000000-0000-0000-0000-000000000026'::uuid,
+       'bc000000-0000-0000-0000-000000000025'::uuid] then
+    insert into _errores(msg) values (format('Caso 35: el orden de las bujías fue %s; se esperaba CCC (9), BBB (5), AAA (1), AA0 (0) -- por existencia, no por nombre.', v_orden));
+  end if;
+end $$;
+
+-- ---------------------------------------------------------------------------
+-- Caso 36 · patron_busqueda: ÚNICA fuente de los patrones, con su forma exacta
+-- por tipo, immutable y sin comodines sin escapar. Los patrones de abajo se
+-- comparan literalmente: cualquier cambio tiene que ser deliberado (M3, el
+-- diagnóstico de términos relajables, usa la misma función).
+-- ---------------------------------------------------------------------------
+do $$
+declare
+  errores text := '';
+  v text;
+  r record;
+begin
+  for r in select * from (values
+    ('cro',    'prod', '\mcro(s|es)?\M'),
+    ('rin',    'opc',  '\mrin(s|es)?\M'),
+    ('45',     'prod', '\m45([^0-9]|$)'),
+    ('dt200',  'prod', '\mdt200([^0-9]|$)'),
+    ('dt 200', 'var',  '\mdt 200([^0-9]|$)'),
+    ('11.7',   'prod', '(\m|[a-z])11\.7([^0-9]|$)'),
+    ('inca',   'prod', '\minca'),
+    ('4t',     'var',  '\m4t'),
+    ('gr',     'moto', '\mgr([0-9]|\M)'),
+    ('bera',   'moto_marca', '\mbera([0-9]|\M)'),
+    ('250',    'cil',  '(\m|[a-z])250([^0-9]|$)'),
+    ('2014',   'anio', '(\m|[a-z])2014([^0-9]|$)'),
+    ('4*5-174l', 'prod', '\m4\*5\-174l'),
+    ('45',     'inicio', '^45([^0-9]|$)'),
+    ('inca',   'inicio', '^inca')
+  ) as t(alt, tipo, esperado)
+  loop
+    v := public.patron_busqueda(r.alt, r.tipo);
+    if v is distinct from r.esperado then
+      errores := errores || format(E'\n  - patron_busqueda(%L, %L) = %L, se esperaba %L.', r.alt, r.tipo, v, r.esperado);
+    end if;
+  end loop;
+
+  if (select provolatile from pg_proc where oid = 'public.patron_busqueda(text, text)'::regprocedure) <> 'i' then
+    errores := errores || E'\n  - patron_busqueda no es IMMUTABLE.';
+  end if;
+
+  begin
+    perform public.patron_busqueda('x', 'no_existe');
+    errores := errores || E'\n  - un tipo desconocido no lanzó error: un tipo mal escrito volvería la búsqueda ciega en silencio.';
+  exception when others then
+    null;
+  end;
+
+  if errores <> '' then
+    insert into _errores(msg) values (format('Caso 36 (patron_busqueda):%s', errores));
+  end if;
+end $$;
+
+-- ---------------------------------------------------------------------------
+-- Caso 37 · los topes de la función: p_motos_conocidas admite hasta 200
+-- palabras (un arreglo PLANO de strings); una entrada que no es string o
+-- viene vacía se ignora sin lanzar; con algo que no es un arreglo la función
+-- responde como sin motos.
+-- ---------------------------------------------------------------------------
+do $$
+declare
+  r record;
+  v_conocidas jsonb;
+begin
+  -- 250 palabras de relleno seguidas de "kavak" en la posición 251: el tope
+  -- de 200 la deja fuera, así que DEFENSA DELANTERA KAVAK no nombra moto.
+  select jsonb_agg('zz' || g) into v_conocidas from generate_series(1, 250) g;
+  v_conocidas := v_conocidas || '["kavak"]'::jsonb;
+  select nombra_moto into r
+  from public.buscar_productos('[["defensa"]]'::jsonb, '[]'::jsonb, 50, p_motos_conocidas => v_conocidas)
+  where id = 'bc000000-0000-0000-0000-000000000019'::uuid;
+  if r.nombra_moto is distinct from false then
+    insert into _errores(msg) values ('Caso 37: la palabra 251 de p_motos_conocidas se leyó: el tope de 200 no se aplica.');
+  end if;
+
+  -- La palabra 200 SÍ entra.
+  select jsonb_agg('zz' || g) into v_conocidas from generate_series(1, 199) g;
+  v_conocidas := v_conocidas || '["kavak"]'::jsonb;
+  select nombra_moto into r
+  from public.buscar_productos('[["defensa"]]'::jsonb, '[]'::jsonb, 50, p_motos_conocidas => v_conocidas)
+  where id = 'bc000000-0000-0000-0000-000000000019'::uuid;
+  if r.nombra_moto is distinct from true then
+    insert into _errores(msg) values ('Caso 37: la palabra 200 de p_motos_conocidas no se leyó.');
+  end if;
+
+  -- Entradas basura: no lanzan ni calzan.
+  select nombra_moto into r
+  from public.buscar_productos('[["defensa"]]'::jsonb, '[]'::jsonb, 50, p_motos_conocidas => '[null, 7, "", "  ", {"a":1}, ["kavak"]]'::jsonb)
+  where id = 'bc000000-0000-0000-0000-000000000019'::uuid;
+  if r.nombra_moto is distinct from false then
+    insert into _errores(msg) values ('Caso 37: una entrada basura de p_motos_conocidas calzó.');
+  end if;
+  select count(*) as n into r
+  from public.buscar_productos('[["defensa"]]'::jsonb, '[]'::jsonb, 50, p_motos_conocidas => '"kavak"'::jsonb, p_variantes => '"azul"'::jsonb, p_moto_marca => '7'::jsonb);
+  if r.n <> 7 then
+    insert into _errores(msg) values (format('Caso 37: con parámetros que no son arreglo la función devolvió %s fila(s), se esperaban 7 (las defensas, sin error).', r.n));
+  end if;
+end $$;
+
+-- ---------------------------------------------------------------------------
+-- Caso 38 · La moto "calza" solo entre la FAMILIA del pedido (T5b, 30/9/2026):
+-- las filas del máximo que EMPIEZAN con el producto, si alguna lo hace. Una
+-- BOMBA DE ACEITE que nombra la SBR no es un aceite y no vuelve verdadera la
+-- coincidencia de moto. Sin ninguna fila que empiece con el producto no se
+-- restringe nada. Lo que NO cambia (hotfix del 29/9: nunca un agotado si hay
+-- con existencia): las ventanas de existencia siguen contando todo el máximo.
+--   a) «aceite» + moto sbr: ningún aceite nombra la SBR, así que
+--      puntaje_moto_maximo = 0 aunque BOMBA DE ACEITE BERA SBR la nombre; la
+--      familia no depende de la moto (filas_que_nombran_moto = 0) y la bomba no
+--      sube en el orden por nombrar la moto.
+--   b) «cadena» + moto sbr: CADENA SBR 428H empieza con el producto y nombra la
+--      moto: la moto calza (1) y la fila que va primero es la CADENA; el tensor
+--      (que también nombra la SBR) sigue siendo del conjunto, pero no cuenta
+--      como "nombra moto" de la familia.
+--   c) las ventanas de existencia cuentan todo el máximo, la bomba incluida.
+--   d) [sbr][cadena]: ninguna fila empieza con «sbr», así que la familia es todo
+--      el máximo y nada se restringe.
+-- ---------------------------------------------------------------------------
+insert into public.products (id, name, brand, price, currency, stock_quantity, is_active) values
+  ('bd000000-0000-0000-0000-000000000003', 'CADENA SBR 428H', null, 14.00, 'USD', 3, true),
+  ('bd000000-0000-0000-0000-000000000004', 'CADENA UNIVERSAL 428H', null, 12.00, 'USD', 2, true);
+
+do $$
+declare
+  r record;
+  v_max bigint;
+  v_max_stock bigint;
+  v_orden text;
+begin
+  -- Todas las filas activas que calzan «aceite» (los aceites y la bomba).
+  select count(*), count(*) filter (where stock_quantity > 0) into v_max, v_max_stock
+  from public.products
+  where is_active and price > 0 and name ~* '\maceite';
+
+  -- a) «aceite» + moto sbr.
+  select puntaje_moto_maximo, filas_con_maximo_y_moto, filas_con_puntaje_maximo, filas_que_nombran_moto,
+         filas_con_maximo_y_stock into r
+  from public.buscar_productos('[["aceite"]]'::jsonb, '[["sbr"]]'::jsonb, 1,
+       p_motos_conocidas => '["sbr","bera","kavak","soc"]'::jsonb, p_marcas_de_moto => '["bera"]'::jsonb);
+  if r.puntaje_moto_maximo is distinct from 0 then
+    insert into _errores(msg) values (format('Caso 38a: «aceite» + moto sbr: puntaje_moto_maximo = %s, se esperaba 0 -- la moto calzó con BOMBA DE ACEITE BERA SBR, una fila que no empieza con el producto.', r.puntaje_moto_maximo));
+  end if;
+  if r.filas_que_nombran_moto is distinct from 0 then
+    insert into _errores(msg) values (format('Caso 38a: filas_que_nombran_moto = %s, se esperaba 0 -- la bomba nombra la SBR pero no es de la familia del pedido (con eso Seba creería que "el aceite depende de la moto").', r.filas_que_nombran_moto));
+  end if;
+  if r.filas_con_puntaje_maximo is distinct from v_max or r.filas_con_maximo_y_moto is distinct from v_max then
+    insert into _errores(msg) values (format('Caso 38a: filas_con_puntaje_maximo=%s y filas_con_maximo_y_moto=%s, se esperaba %s en las dos (con la moto que no calza, el conjunto es todo el máximo).', r.filas_con_puntaje_maximo, r.filas_con_maximo_y_moto, v_max));
+  end if;
+
+  select string_agg(name, ' | ' order by rn) into v_orden
+  from (select name, row_number() over () as rn
+        from public.buscar_productos('[["aceite"]]'::jsonb, '[["sbr"]]'::jsonb, 3,
+             p_motos_conocidas => '["sbr","bera","kavak","soc"]'::jsonb, p_marcas_de_moto => '["bera"]'::jsonb)) t;
+  if v_orden like '%BOMBA%' then
+    insert into _errores(msg) values (format('Caso 38a: la BOMBA DE ACEITE ocupa un lugar entre las tres primeras filas (%s); con la moto que no calza, una fila de otro producto no sube por nombrarla.', v_orden));
+  end if;
+
+  -- b) «cadena» + moto sbr.
+  select puntaje_moto_maximo, filas_con_maximo_y_moto, filas_que_nombran_moto into r
+  from public.buscar_productos('[["cadena"]]'::jsonb, '[["sbr"]]'::jsonb, 1,
+       p_motos_conocidas => '["sbr","bera","kavak","klr","en125"]'::jsonb, p_marcas_de_moto => '["bera"]'::jsonb);
+  if r.puntaje_moto_maximo is distinct from 1 or r.filas_con_maximo_y_moto is distinct from 2 or r.filas_que_nombran_moto is distinct from 1 then
+    insert into _errores(msg) values (format('Caso 38b: «cadena» + moto sbr: puntaje_moto_maximo=%s (1), filas_con_maximo_y_moto=%s (2: CADENA SBR y el tensor), filas_que_nombran_moto=%s (1: solo la familia, sin el tensor).', r.puntaje_moto_maximo, r.filas_con_maximo_y_moto, r.filas_que_nombran_moto));
+  end if;
+  select name into v_orden
+  from public.buscar_productos('[["cadena"]]'::jsonb, '[["sbr"]]'::jsonb, 1,
+       p_motos_conocidas => '["sbr","bera","kavak","klr","en125"]'::jsonb, p_marcas_de_moto => '["bera"]'::jsonb);
+  if v_orden is distinct from 'CADENA SBR 428H' then
+    insert into _errores(msg) values (format('Caso 38b: la primera fila fue %s, se esperaba CADENA SBR 428H.', v_orden));
+  end if;
+
+  -- c) las ventanas de existencia cuentan todo el máximo (la bomba, con su
+  --    stock, incluida): el hotfix "nunca un agotado si hay con existencia".
+  select filas_con_maximo_y_stock into r
+  from public.buscar_productos('[["aceite"]]'::jsonb, '[["sbr"]]'::jsonb, 1,
+       p_motos_conocidas => '["sbr","bera","kavak","soc"]'::jsonb, p_marcas_de_moto => '["bera"]'::jsonb);
+  if r.filas_con_maximo_y_stock is distinct from v_max_stock then
+    insert into _errores(msg) values (format('Caso 38c: filas_con_maximo_y_stock = %s, se esperaba %s (todo el máximo con existencia, la bomba incluida): las ventanas de existencia no se restringen a la familia.', r.filas_con_maximo_y_stock, v_max_stock));
+  end if;
+
+  -- d) [sbr][cadena]: ninguna fila empieza con «sbr»: nada se restringe y las
+  --    dos filas nombran una moto.
+  select puntaje_moto_maximo, filas_que_nombran_moto into r
+  from public.buscar_productos('[["sbr"],["cadena"]]'::jsonb, '[["sbr"]]'::jsonb, 1,
+       p_motos_conocidas => '["sbr","bera","kavak","klr","en125"]'::jsonb, p_marcas_de_moto => '["bera"]'::jsonb);
+  if r.puntaje_moto_maximo is distinct from 1 or r.filas_que_nombran_moto is distinct from 2 then
+    insert into _errores(msg) values (format('Caso 38d: [sbr][cadena]: puntaje_moto_maximo=%s (1) y filas_que_nombran_moto=%s (2); sin ninguna fila que empiece con el producto la familia es todo el máximo.', r.puntaje_moto_maximo, r.filas_que_nombran_moto));
   end if;
 end $$;
 
