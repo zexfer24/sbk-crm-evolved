@@ -39,14 +39,22 @@ function esCorreccion(fila: unknown): fila is CorreccionTermino {
 /**
  * Pide a la base la corrección de los términos que no calzaron. `protegidos`
  * son las palabras que jamás se tocan (`MOTOS_CONOCIDAS`: "beta" es una moto,
- * no un tipeo de "bera"). Devuelve SOLO los términos corregidos, en el orden
- * en que llegaron; `[]` si no hay nada que corregir o si algo falló.
- * `conversationId` es opcional y solo alimenta el log.
+ * no un tipeo de "bera"; más las lecciones `no_corregir`). `marcas` es la
+ * lista cerrada hacia la que se acepta una distancia de 2 o 3: las marcas de
+ * PRODUCTO (`MARCAS_DE_PRODUCTO`; T5b, 30/9/2026: sin las motos, "kenda" no
+ * se corregía a HONDA por distancia 2); `excluidos` es el relleno, que ni se corrige ni sirve
+ * de candidato. Firma de 4 parámetros de la RPC desde la migración
+ * 20260930020000 (A2, T3, 30/9/2026): la de dos parámetros se retiró.
+ * Devuelve SOLO los términos corregidos, en el orden en que llegaron; `[]` si
+ * no hay nada que corregir o si algo falló. `conversationId` es opcional y
+ * solo alimenta el log.
  */
 export async function corregirTerminos(
   supabase: SupabaseClient,
   terminos: string[],
   protegidos: string[],
+  marcas: string[],
+  excluidos: string[],
   conversationId?: string
 ): Promise<CorreccionTermino[]> {
   if (terminos.length === 0) return [];
@@ -55,6 +63,8 @@ export async function corregirTerminos(
     const { data, error } = await supabase.rpc("corregir_terminos", {
       p_terminos: terminos,
       p_protegidos: protegidos,
+      p_marcas: marcas,
+      p_excluidos: excluidos,
     });
 
     if (error) {
@@ -81,4 +91,69 @@ export function describirCorreccion(correcciones: readonly CorreccionTermino[]):
   if (partes.length === 0) return "";
   if (partes.length === 1) return `busqué ${partes[0]}`;
   return `busqué ${partes.slice(0, -1).join(", ")} y ${partes[partes.length - 1]}`;
+}
+
+/** Diagnóstico de UN grupo de alternativas contra el catálogo (`diagnosticar_terminos`). */
+export interface DiagnosticoGrupo {
+  /** Índice 0-based del grupo, en el orden en que se mandó. */
+  grupoIdx: number;
+  /** Algún producto activo con precio trae alguna alternativa del grupo. */
+  enCatalogo: boolean;
+  /** Algún producto trae el grupo Y la cabeza. `null` si no se mandó cabeza (o quedó fuera de rango). */
+  conCabeza: boolean | null;
+}
+
+function esDiagnostico(fila: unknown): fila is { grupo_idx: number; en_catalogo: boolean; con_cabeza: boolean | null } {
+  if (typeof fila !== "object" || fila === null) return false;
+  const { grupo_idx, en_catalogo, con_cabeza } = fila as Record<string, unknown>;
+  return (
+    typeof grupo_idx === "number" &&
+    typeof en_catalogo === "boolean" &&
+    (typeof con_cabeza === "boolean" || con_cabeza === null)
+  );
+}
+
+/**
+ * A2, T3 (30/9/2026, decisión D3): por cada grupo de alternativas dice si
+ * existe en el catálogo y si co-ocurre con la cabeza (`diagnosticar_terminos`,
+ * migración 20260930030000). `terminos` es el MISMO formato que
+ * `buscar_productos.p_terminos` (arreglo de grupos, cada uno un arreglo de
+ * alternativas ya normalizadas); `cabeza` es el índice 0-based del grupo
+ * cabeza o `null` si no hay. Alimenta el tercer intento de la búsqueda: relajar
+ * el grupo que no existe o que no co-ocurre con la cabeza.
+ *
+ * NUNCA LANZA. Sin grupos devuelve `[]` sin llamar a la base. Ante error de la
+ * base, excepción o una respuesta que no es un arreglo devuelve `null` (sin
+ * diagnóstico) y deja `diagnostico_terminos_fallido`: a propósito NO `[]`, que
+ * el llamador leería como "nada que relajar" cuando en realidad no se pudo
+ * medir; con `null` no debe relajar nada y sigue por el camino de siempre.
+ * Las filas mal formadas se descartan.
+ */
+export async function diagnosticarTerminos(
+  supabase: SupabaseClient,
+  terminos: string[][],
+  cabeza: number | null,
+  conversationId?: string
+): Promise<DiagnosticoGrupo[] | null> {
+  if (terminos.length === 0) return [];
+
+  try {
+    const { data, error } = await supabase.rpc("diagnosticar_terminos", {
+      p_terminos: terminos,
+      p_cabeza: cabeza,
+    });
+
+    if (error) {
+      log.warn("diagnostico_terminos_fallido", { conversationId, detail: errorText(error) });
+      return null;
+    }
+
+    if (!Array.isArray(data)) return null;
+    return data
+      .filter(esDiagnostico)
+      .map((fila) => ({ grupoIdx: fila.grupo_idx, enCatalogo: fila.en_catalogo, conCabeza: fila.con_cabeza }));
+  } catch (err) {
+    log.warn("diagnostico_terminos_fallido", { conversationId, detail: errorText(err) });
+    return null;
+  }
 }
