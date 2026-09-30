@@ -39,6 +39,18 @@ const SCOPE_LABEL: Record<AiLesson["scope"], string> = {
   conversacion: "Solo este chat",
 };
 
+/**
+ * `no_corregir` (T9 de A2, decisión D5, 30/9/2026): una palabra que el
+ * corrector de tipeos no debe tocar (la crea «No corregir esta palabra» de la
+ * pestaña «Búsquedas»). No es prosa para el modelo ni un sinónimo: se
+ * distingue por título y por cómo se lee, y se apaga con el mismo interruptor.
+ */
+const KIND_LABEL: Record<AiLesson["kind"], string> = {
+  nota: "Nota",
+  sinonimo: "Sinónimo de búsqueda",
+  no_corregir: "Palabra protegida del corrector",
+};
+
 function dateLabel(iso: string): string {
   return new Date(iso).toLocaleDateString("es-VE", { day: "numeric", month: "short" });
 }
@@ -117,9 +129,7 @@ export function LessonsPanel({ currentAgent, lessons, onChanged }: LessonsPanelP
               <div className="ac-pb-card" key={lesson.id} data-active={lesson.isActive}>
                 <div className="ac-pb-card-head">
                   <div className="ac-pb-card-who">
-                    <span className="ac-pb-card-name">
-                      {lesson.kind === "sinonimo" ? "Sinónimo de búsqueda" : "Nota"}
-                    </span>
+                    <span className="ac-pb-card-name">{KIND_LABEL[lesson.kind]}</span>
                     <span className="ac-pb-card-trigger">
                       {SCOPE_LABEL[lesson.scope]} · {lesson.authorName} · {dateLabel(lesson.createdAt)}
                     </span>
@@ -144,6 +154,9 @@ export function LessonsPanel({ currentAgent, lessons, onChanged }: LessonsPanelP
                   <p className="ac-pb-card-response ac-lesson-synonym">
                     «{lesson.synonymFrom}» → «{lesson.synonymTo}»
                   </p>
+                ) : lesson.kind === "no_corregir" ? (
+                  // La palabra va en `synonymFrom` (`content` es solo un texto de respaldo para el CHECK).
+                  <p className="ac-pb-card-response ac-lesson-synonym">Seba no corrige «{lesson.synonymFrom}»</p>
                 ) : (
                   <p className="ac-pb-card-response">{lesson.content}</p>
                 )}

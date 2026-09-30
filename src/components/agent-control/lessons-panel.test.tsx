@@ -114,6 +114,44 @@ describe("LessonsPanel — un sinónimo", () => {
   });
 });
 
+describe("LessonsPanel — una palabra protegida del corrector (T9 de A2, D5, 30/9/2026)", () => {
+  const protegida = (overrides: Partial<AiLesson> = {}) =>
+    lesson({
+      id: "lesson-nc",
+      kind: "no_corregir",
+      content: "No corregir «pareja»",
+      synonymFrom: "pareja",
+      synonymTo: null,
+      ...overrides,
+    });
+
+  it("se distingue de una nota y de un sinónimo: título propio y la palabra entre comillas, no el content crudo", () => {
+    render(<LessonsPanel currentAgent={AGENTE} lessons={[protegida()]} />);
+
+    expect(screen.getByText("Palabra protegida del corrector")).toBeInTheDocument();
+    expect(screen.getByText("Seba no corrige «pareja»")).toBeInTheDocument();
+    expect(screen.queryByText("Nota")).not.toBeInTheDocument();
+    expect(screen.queryByText("Sinónimo de búsqueda")).not.toBeInTheDocument();
+  });
+
+  it("se puede apagar con el mismo interruptor: el corrector vuelve a poder tocar la palabra", async () => {
+    setLessonActiveMock.mockResolvedValueOnce(undefined);
+    render(<LessonsPanel currentAgent={AGENTE} lessons={[protegida({ createdBy: AGENTE.id })]} />);
+
+    fireEvent.click(screen.getByRole("button", { name: /apagar la lección de ana/i }));
+
+    await waitFor(() =>
+      expect(setLessonActiveMock).toHaveBeenCalledWith(expect.objectContaining({ fakeClient: true }), "lesson-nc", false)
+    );
+  });
+
+  it("apagada, dice que Seba ya no la respeta", () => {
+    render(<LessonsPanel currentAgent={AGENTE} lessons={[protegida({ isActive: false })]} />);
+
+    expect(screen.getByText("Seba no la ve")).toBeInTheDocument();
+  });
+});
+
 describe("LessonsPanel — activar/desactivar", () => {
   it("el autor puede apagar su propia lección", async () => {
     render(<LessonsPanel currentAgent={AGENTE} lessons={[lesson({ createdBy: AGENTE.id, isActive: true })]} />);

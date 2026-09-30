@@ -2,6 +2,9 @@ import { describe, expect, it } from "vitest";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import {
   fetchAgentTurns,
+  fetchCatalogSearches,
+  fetchSearchSummary,
+  fetchSearchTerms,
   fetchDefaultChannel,
   fetchMessages,
   fetchTokenUsageSummary,
@@ -603,5 +606,285 @@ describe("fetchTurnCallsByPhase", () => {
     };
 
     await expect(fetchTurnCallsByPhase(client as unknown as SupabaseClient)).rejects.toBe(error);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Pestaña «Búsquedas» de Control IA (T9, plan "Seba no cotiza lo que no es",
+// 30/9/2026). `catalog_queries` guarda dos versiones a la vez: las filas v1
+// (28/9, sin `v`) y las v2 (A2, con `v: 2`). La lectura tiene que tragarse las
+// dos: lo que una v1 no trae es `null` (la pantalla lo pinta «—»), nunca un
+// arreglo vacío ni un cero que parezca un dato medido.
+// ---------------------------------------------------------------------------
+
+/** Una fila v1 tal como la dejó el turno del 28/9: SIN `v` y sin ningún campo de A2. */
+const FILA_V1 = {
+  query: "pastilla freno",
+  productos: null,
+  moto: [["sbr"]],
+  grupos: [["pastilla", "pastillas"], ["freno"]],
+  opcionales: [],
+  corregido: [{ original: "pastila", corregido: "pastilla" }],
+  resultado: "sin_resultados",
+};
+
+const FILA_V2 = {
+  v: 2,
+  query: "visera",
+  productos: ["visera", "guantes"],
+  moto: [],
+  cilindrada: [],
+  grupos: [["visera"]],
+  opcionales: [],
+  variantes: [["rojo"]],
+  anio: [],
+  motoMarca: [],
+  motoIgnorada: false,
+  calzaEntero: true,
+  relajados: ["semi"],
+  avisos: [
+    { tipo: "relajado", productoPedido: "visera", terminos: ["semi"] },
+    { tipo: "variante_agotada", productoPedido: "visera", variante: "rojo", conAlternativa: true },
+    { tipo: "universales", productoPedido: null, marca: "bera" },
+    { tipo: "varias_opciones", productoPedido: "guantes" },
+  ],
+  corregido: null,
+  correccionDescartada: [{ original: "vicera", corregido: "visera" }],
+  decision: "moto SBR calza: cotizó 1 de 5",
+  cotizados: [{ productId: "p1", nombre: "VISERA A", stock: 3, precioUsd: 5 }],
+  conteos: { calzan: 5, conStock: 2, nombranMoto: 1, universales: 0 },
+  resultado: "con_existencia",
+};
+
+function makeSearchClient(rows: unknown[], calls: { op: string; args: unknown[] }[] = []) {
+  const builder: Record<string, (...args: unknown[]) => unknown> = {};
+  for (const op of ["select", "not", "gte", "order"]) {
+    builder[op] = (...args: unknown[]) => {
+      calls.push({ op, args });
+      return builder;
+    };
+  }
+  builder.limit = (...args: unknown[]) => {
+    calls.push({ op: "limit", args });
+    return Promise.resolve({ data: rows, error: null });
+  };
+  return {
+    from: (table: string) => {
+      calls.push({ op: "from", args: [table] });
+      return builder;
+    },
+  };
+}
+
+describe("fetchCatalogSearches", () => {
+  const turno = (id: string, catalogQueries: unknown, extra: Record<string, unknown> = {}) => ({
+    id,
+    conversation_id: `conv-${id}`,
+    action: "answered",
+    summary: "listo",
+    customer_message: "pastillas de freno",
+    created_at: "2026-09-30T15:00:00.000Z",
+    catalog_queries: catalogQueries,
+    conversation: { contact: { display_name: "Ana", profile_name: null, phone_number: "+58414" } },
+    ...extra,
+  });
+
+  it("lee una fila v1 (sin `v`) con lo que falta en null, y una v2 completa, mezcladas", async () => {
+    const calls: { op: string; args: unknown[] }[] = [];
+    const client = makeSearchClient(
+      [turno("t1", [FILA_V1]), turno("t2", [FILA_V2, { ...FILA_V2, v: 2, query: "guantes" }])],
+      calls,
+    );
+
+    const result = await fetchCatalogSearches(client as unknown as SupabaseClient, {
+      desde: "2026-09-23T00:00:00.000Z",
+      limit: 50,
+    });
+
+    expect(result).toHaveLength(2);
+
+    const [t1, t2] = result;
+    expect(t1).toMatchObject({ id: "t1", conversationId: "conv-t1", contactName: "Ana", customerMessage: "pastillas de freno" });
+    const v1 = t1.consultas[0];
+    expect(v1.version).toBe(1);
+    expect(v1.query).toBe("pastilla freno");
+    expect(v1.terminos).toEqual(["pastilla", "freno"]);
+    expect(v1.moto).toEqual(["sbr"]);
+    expect(v1.corregido).toEqual([{ original: "pastila", corregido: "pastilla" }]);
+    expect(v1.resultado).toBe("sin_resultados");
+    // Lo que v1 no trae es null (se pinta «—»), no [] ni false.
+    expect(v1.avisos).toBeNull();
+    expect(v1.relajados).toBeNull();
+    expect(v1.cotizados).toBeNull();
+    expect(v1.conteos).toBeNull();
+    expect(v1.decision).toBeNull();
+    expect(v1.correccionDescartada).toBeNull();
+    expect(v1.variantes).toBeNull();
+    expect(v1.motoIgnorada).toBeNull();
+    expect(v1.calzaEntero).toBeNull();
+
+    expect(t2.consultas).toHaveLength(2);
+    const v2 = t2.consultas[0];
+    expect(v2.version).toBe(2);
+    expect(v2.productos).toEqual(["visera", "guantes"]);
+    expect(v2.variantes).toEqual(["rojo"]);
+    expect(v2.relajados).toEqual(["semi"]);
+    expect(v2.avisos).toEqual([
+      { tipo: "relajado", productoPedido: "visera", detalle: "semi" },
+      { tipo: "variante_agotada", productoPedido: "visera", detalle: "rojo" },
+      { tipo: "universales", productoPedido: null, detalle: "bera" },
+      { tipo: "varias_opciones", productoPedido: "guantes", detalle: null },
+    ]);
+    expect(v2.corregido).toEqual([]);
+    expect(v2.correccionDescartada).toEqual([{ original: "vicera", corregido: "visera" }]);
+    expect(v2.decision).toBe("moto SBR calza: cotizó 1 de 5");
+    expect(v2.cotizados).toEqual([{ productId: "p1", nombre: "VISERA A", stock: 3, precioUsd: 5 }]);
+    expect(v2.conteos).toEqual({ calzan: 5, conStock: 2, nombranMoto: 1, universales: 0 });
+    expect(v2.motoIgnorada).toBe(false);
+    expect(v2.calzaEntero).toBe(true);
+
+    // La consulta: solo turnos con rastro, dentro del período, más nuevos primero.
+    expect(calls).toContainEqual({ op: "from", args: ["agent_turns"] });
+    expect(calls).toContainEqual({ op: "not", args: ["catalog_queries", "is", null] });
+    expect(calls).toContainEqual({ op: "gte", args: ["created_at", "2026-09-23T00:00:00.000Z"] });
+    expect(calls).toContainEqual({ op: "order", args: ["created_at", { ascending: false }] });
+    expect(calls).toContainEqual({ op: "limit", args: [50] });
+  });
+
+  it("saca el motivo de la escalada del resumen del turno y tolera filas raras sin romper las demás", async () => {
+    const client = makeSearchClient([
+      turno("t1", [FILA_V1], { action: "escalated", summary: "Escalado a Luis. Motivo: confirmar_inventario." }),
+      turno("t2", {}), // no es un arreglo
+      turno("t3", []), // arreglo vacío: no hay búsqueda que mostrar
+      turno("t4", [42, { query: "x", resultado: "algo_nuevo" }]), // un escalar y un resultado desconocido
+    ]);
+
+    const result = await fetchCatalogSearches(client as unknown as SupabaseClient, { desde: "2026-09-23T00:00:00.000Z" });
+
+    expect(result.map((t) => t.id)).toEqual(["t1", "t4"]);
+    expect(result[0].escalationReason).toBe("confirmar_inventario");
+    expect(result[1].escalationReason).toBeNull();
+    expect(result[1].consultas).toHaveLength(1);
+    expect(result[1].consultas[0].resultado).toBeNull();
+  });
+
+  it("relanza el error de la lectura", async () => {
+    const error = { code: "57014", message: "statement timeout" };
+    const builder: Record<string, unknown> = {};
+    for (const op of ["select", "not", "gte", "order"]) builder[op] = () => builder;
+    builder.limit = () => Promise.resolve({ data: null, error });
+    const client = { from: () => builder };
+
+    await expect(
+      fetchCatalogSearches(client as unknown as SupabaseClient, { desde: "2026-09-23T00:00:00.000Z" }),
+    ).rejects.toBe(error);
+  });
+});
+
+describe("fetchSearchSummary / fetchSearchTerms", () => {
+  it("mapea el resumen de la RPC y trata como 0 lo que la RPC no mande", async () => {
+    const rpcCalls: { fn: string; params: unknown }[] = [];
+    const client = {
+      rpc: (fn: string, params?: unknown) => {
+        rpcCalls.push({ fn, params });
+        return Promise.resolve({
+          data: {
+            turnos: 5,
+            busquedas: 6,
+            v1: 2,
+            resultados: { con_existencia: 2, agotados: 1, generico: 1, sin_resultados: 2 },
+            avisos: { universales: 1, relajado: 1 },
+            correcciones: 2,
+            descartadas: 1,
+            relajos: 1,
+            relajos_cotizaron: 1,
+            cotizaciones: 3,
+            productos_distintos: 2,
+          },
+          error: null,
+        });
+      },
+    };
+
+    const result = await fetchSearchSummary(client as unknown as SupabaseClient, "2026-09-23T00:00:00.000Z");
+
+    expect(rpcCalls).toEqual([{ fn: "resumen_busquedas", params: { p_desde: "2026-09-23T00:00:00.000Z" } }]);
+    expect(result).toEqual({
+      turnos: 5,
+      busquedas: 6,
+      v1: 2,
+      resultados: { con_existencia: 2, agotados: 1, generico: 1, sin_resultados: 2, sin_terminos: 0, error: 0 },
+      avisos: {
+        universales: 1,
+        moto_sin_calce: 0,
+        relajado: 1,
+        relajado_agotado: 0,
+        variante_agotada: 0,
+        varias_opciones: 0,
+      },
+      correcciones: 2,
+      descartadas: 1,
+      relajos: 1,
+      relajosCotizaron: 1,
+      cotizaciones: 3,
+      productosDistintos: 2,
+    });
+  });
+
+  it("devuelve null cuando la RPC responde null (quien llama no es agente) y relanza sus errores", async () => {
+    const nulo = { rpc: () => Promise.resolve({ data: null, error: null }) };
+    expect(await fetchSearchSummary(nulo as unknown as SupabaseClient, "2026-09-23T00:00:00.000Z")).toBeNull();
+    expect(await fetchSearchTerms(nulo as unknown as SupabaseClient, "2026-09-23T00:00:00.000Z")).toBeNull();
+
+    const error = { code: "PGRST202", message: "función no encontrada" };
+    const roto = { rpc: () => Promise.resolve({ data: null, error }) };
+    await expect(fetchSearchSummary(roto as unknown as SupabaseClient, "2026-09-23T00:00:00.000Z")).rejects.toBe(error);
+    await expect(fetchSearchTerms(roto as unknown as SupabaseClient, "2026-09-23T00:00:00.000Z")).rejects.toBe(error);
+  });
+
+  it("mapea los términos y las correcciones de la RPC a camelCase", async () => {
+    const rpcCalls: { fn: string; params: unknown }[] = [];
+    const client = {
+      rpc: (fn: string, params?: unknown) => {
+        rpcCalls.push({ fn, params });
+        return Promise.resolve({
+          data: {
+            sin_calce: [{ termino: "freno", sin_resultados: 2, relajado: 0, ultima: "2026-09-30T10:00:00+00:00" }],
+            correcciones: [
+              {
+                original: "iphone",
+                corregido: "ipone",
+                veces: 2,
+                con_existencia: 1,
+                agotados: 1,
+                sin_resultados: 0,
+                otros: 0,
+                ultima: "2026-09-30T11:00:00+00:00",
+              },
+            ],
+          },
+          error: null,
+        });
+      },
+    };
+
+    const result = await fetchSearchTerms(client as unknown as SupabaseClient, "2026-08-31T00:00:00.000Z");
+
+    expect(rpcCalls).toEqual([{ fn: "terminos_de_busquedas", params: { p_desde: "2026-08-31T00:00:00.000Z" } }]);
+    expect(result).toEqual({
+      sinCalce: [{ termino: "freno", sinResultados: 2, relajado: 0, ultima: "2026-09-30T10:00:00+00:00" }],
+      correcciones: [
+        {
+          original: "iphone",
+          corregido: "ipone",
+          veces: 2,
+          conExistencia: 1,
+          agotados: 1,
+          sinResultados: 0,
+          otros: 0,
+          ultima: "2026-09-30T11:00:00+00:00",
+        },
+      ],
+    });
   });
 });

@@ -530,8 +530,11 @@ export type LessonScope = "global" | "conversacion";
  * `sinonimo`: un par `synonymFrom`/`synonymTo` que `catalog-search.ts` usa
  * para expandir la búsqueda del catálogo — nunca se le muestra al modelo
  * como prosa (ver `ai_lessons.kind` en la migración 20260917020000).
+ * `no_corregir` (A2 T9, D5, migración 20260930050000): una palabra que el
+ * corrector de tipeos no debe tocar; vive en `synonymFrom`, `synonymTo` es
+ * `null` y el alcance es siempre `global`.
  */
-export type LessonKind = "nota" | "sinonimo";
+export type LessonKind = "nota" | "sinonimo" | "no_corregir";
 
 /**
  * "Lecciones de Seba" (requisito 7 del cliente, plan "Seba atiende el
@@ -842,6 +845,139 @@ export interface TurnCallsByPhase {
   maxOutputTokensMax: number | null;
   /** Cuántas llamadas de esta fase salieron con `tool_choice = 'none'` -- el freno tras escalar (T2, "La escalada se hace una vez...", 21/9/2026). */
   toolChoiceNoneCalls: number;
+}
+
+// ---------------------------------------------------------------------------
+// Pestaña «Búsquedas» de Control IA (T9, plan "Seba no cotiza lo que no es",
+// 30/9/2026). Espejo, del lado del navegador, de lo que cada turno guarda en
+// `agent_turns.catalog_queries` (`ConsultaCatalogo`, `lib/ai/tools.ts`, que es
+// código de servidor y no se importa desde acá). ES UN CONTRATO: cambiarle la
+// forma a `ConsultaCatalogo` exige subir su `v` y que `mapCatalogSearchQuery`
+// (`data.ts`) siga leyendo las versiones anteriores. Todo lo que una fila v1
+// (sin `v`, anterior a A2) no trae llega como `null` y la pantalla lo pinta
+// «—», nunca como un cero o un vacío que parezca verdad.
+// ---------------------------------------------------------------------------
+
+/** Cómo terminó una búsqueda (`ResultadoConsulta` de tools.ts). */
+export type CatalogSearchResult =
+  | "con_existencia"
+  | "agotados"
+  | "generico"
+  | "sin_resultados"
+  | "sin_terminos"
+  | "error";
+
+/** Los tipos de aviso que la búsqueda le dice al cliente (`AvisoCatalogo` de tools.ts). */
+export type CatalogNoticeType =
+  | "universales"
+  | "moto_sin_calce"
+  | "relajado"
+  | "relajado_agotado"
+  | "variante_agotada"
+  | "varias_opciones";
+
+export interface CatalogSearchNotice {
+  tipo: CatalogNoticeType;
+  productoPedido: string | null;
+  /** Lo que el aviso nombra (los términos relajados, la variante agotada, la moto o la marca), ya como texto; `null` si no trae nada. */
+  detalle: string | null;
+}
+
+export interface CatalogCorrection {
+  original: string;
+  corregido: string;
+}
+
+/** Una búsqueda (una llamada a `buscar_productos`) dentro de un turno. */
+export interface CatalogSearchQuery {
+  /** 1 = fila anterior a A2 (sin `v`); 2 = con avisos, relajos y cotizados. */
+  version: 1 | 2;
+  /** El texto que de verdad se buscó. */
+  query: string;
+  /** La lista completa que mandó el modelo, o `null` si fue una consulta simple. */
+  productos: string[] | null;
+  /** Los términos OBLIGATORIOS (la primera alternativa de cada grupo). */
+  terminos: string[];
+  /** Moto con nombre. */
+  moto: string[];
+  /** Solo v2. */
+  variantes: string[] | null;
+  /** Solo v2. */
+  relajados: string[] | null;
+  /** Solo v2. */
+  avisos: CatalogSearchNotice[] | null;
+  /** Correcciones aplicadas. `[]` si no hubo. */
+  corregido: CatalogCorrection[];
+  /** Solo v2. */
+  correccionDescartada: CatalogCorrection[] | null;
+  /** Solo v2. */
+  decision: string | null;
+  /** Solo v2. */
+  cotizados: { productId: string; nombre: string; stock: number; precioUsd: number }[] | null;
+  /** Solo v2; también `null` si la búsqueda no trajo filas. */
+  conteos: { calzan: number; conStock: number; nombranMoto: number; universales: number } | null;
+  /** Solo v2. */
+  motoIgnorada: boolean | null;
+  /** Solo v2. */
+  calzaEntero: boolean | null;
+  resultado: CatalogSearchResult | null;
+}
+
+/** Un turno que tocó el catálogo, con todas sus búsquedas. */
+export interface CatalogSearchTurn {
+  id: string;
+  conversationId: string;
+  contactName: string | null;
+  createdAt: string;
+  customerMessage: string | null;
+  action: AgentTurnAction;
+  /** El motivo de la escalada del turno, si escaló. */
+  escalationReason: string | null;
+  consultas: CatalogSearchQuery[];
+}
+
+/** Bloque A: los conteos del período (RPC `resumen_busquedas`). */
+export interface SearchSummary {
+  turnos: number;
+  busquedas: number;
+  /** Cuántas búsquedas del período son v1 (no registran avisos, relajos ni cotizados). */
+  v1: number;
+  resultados: Record<CatalogSearchResult, number>;
+  avisos: Record<CatalogNoticeType, number>;
+  correcciones: number;
+  descartadas: number;
+  relajos: number;
+  /** Relajos que terminaron en un producto CON existencia. */
+  relajosCotizaron: number;
+  cotizaciones: number;
+  productosDistintos: number;
+}
+
+/** Bloque C: un término que no calzó (RPC `terminos_de_busquedas`). */
+export interface SearchMissingTerm {
+  termino: string;
+  /** Veces que estuvo entre los obligatorios de una búsqueda sin resultados. */
+  sinResultados: number;
+  /** Veces que D3 lo relajó. */
+  relajado: number;
+  ultima: string | null;
+}
+
+/** Bloque D: una corrección propuesta y en qué terminaron sus búsquedas. */
+export interface SearchCorrectionRow {
+  original: string;
+  corregido: string;
+  veces: number;
+  conExistencia: number;
+  agotados: number;
+  sinResultados: number;
+  otros: number;
+  ultima: string | null;
+}
+
+export interface SearchTerms {
+  sinCalce: SearchMissingTerm[];
+  correcciones: SearchCorrectionRow[];
 }
 
 /** Sugerencia de un asesor humano al supervisor sobre cómo mejorar el bot. */

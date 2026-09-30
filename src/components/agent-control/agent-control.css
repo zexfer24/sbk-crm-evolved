@@ -306,9 +306,25 @@
    -------------------------------------------------------------------------- */
 
 /* La apariencia la da data-tone="segmented" en sliding-pills.css; acá solo
-   la separación con el resto de la página. */
-.ac-tabs {
+   la separación con el resto de la página y el carril.
+
+   30/9/2026 (cierre de A2): con siete pestañas la tira mide 975 px y, como
+   hijo de la columna flex `.dash-content`, ensanchaba la página entera a
+   390 px (scrollWidth 989). El carril `.ac-tabs-scroll` la acota al ancho
+   disponible y scrollea; el scroll NO va en `.ac-tabs` porque su copia activa
+   (`.lm-pills-active`, `position: absolute; inset: 0`) mediría solo la parte
+   visible y el recorte quedaría corrido. En escritorio la tira cabe entera y
+   el carril no cambia nada. Ver agent-control-css.test.ts. */
+.ac-tabs-scroll {
+  min-width: 0;
+  max-width: 100%;
+  overflow-x: auto;
+  overscroll-behavior-x: contain;
   margin: 4px 0 18px;
+}
+
+.ac-tabs {
+  flex-shrink: 0;
 }
 
 /* --------------------------------------------------------------------------

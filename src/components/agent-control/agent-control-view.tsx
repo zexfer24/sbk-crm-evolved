@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { Button, Modal, toast } from "@heroui/react";
-import { BookOpen, Bot, GraduationCap, ShieldAlert, Users, Wrench, Zap } from "lucide-react";
+import { BookOpen, Bot, GraduationCap, Search, ShieldAlert, Users, Wrench, Zap } from "lucide-react";
 import type { BacklogCounts } from "@/lib/data";
 import { BUSINESS_NAME } from "@/lib/brand";
 import type {
@@ -45,6 +45,7 @@ import {
   fetchModelPricing,
   fetchBacklogCounts,
   fetchPlaybooks,
+  fetchSearchSummary,
   fetchTokenUsageSummary,
   fetchTurnCallsByPhase,
   fetchUnmatchedTurns,
@@ -79,7 +80,10 @@ import { AgentsRosterPanel } from "@/components/agent-control/agent-roster-panel
 import { AgentToolsPanel } from "@/components/agent-control/agent-tools-panel";
 import { KnowledgePanel } from "@/components/agent-control/knowledge-panel";
 import { LessonsPanel } from "@/components/agent-control/lessons-panel";
+import { CatalogSearchesPanel } from "@/components/agent-control/catalog-searches-panel";
+import { periodStart } from "@/lib/catalog-searches";
 import { PlaybooksPanel } from "@/components/agent-control/playbooks-panel";
+import { FilterScroller } from "@/components/inbox/filter-scroller";
 import { SlidingPills } from "@/components/sliding-pills";
 import { AppRail, AppTopNav } from "@/components/app-rail";
 import { ChannelHealthPanel } from "@/components/agent-control/channel-health-panel";
@@ -135,7 +139,7 @@ interface AgentControlViewProps {
   modelLabel: string;
 }
 
-type AgentControlTab = "ia" | "respuestas" | "biblioteca" | "lecciones" | "herramientas" | "agentes";
+type AgentControlTab = "ia" | "respuestas" | "biblioteca" | "lecciones" | "busquedas" | "herramientas" | "agentes";
 
 // ---------------------------------------------------------------------------
 // Ritmo del repaso del atraso, para poder decírselo a quien aprieta el botón.
@@ -201,6 +205,7 @@ const TAB_TITLE: Record<AgentControlTab, string> = {
   respuestas: "Respuestas predeterminadas",
   biblioteca: "Biblioteca de conocimiento",
   lecciones: "Lecciones de Seba",
+  busquedas: "Búsquedas del catálogo",
   herramientas: "Herramientas de la IA",
   agentes: "Control de agentes",
 };
@@ -213,6 +218,8 @@ const TAB_SUBTITLE: Record<AgentControlTab, string> = {
     "Lo que la IA sabe de la tienda más allá del catálogo: envíos, pagos, garantías, horarios… Escríbelo o importa un .md y la IA lo usa al responder.",
   lecciones:
     'Correcciones y sinónimos que los asesores le escribieron a Seba desde el chat con "Enseñar a Seba…": tienen prioridad sobre su criterio al responder.',
+  busquedas:
+    "Qué buscó Seba en el catálogo, qué decidió y en qué terminó: resultados, avisos, correcciones y lo que no encuentra.",
   herramientas:
     "Enciende o apaga cada capacidad de la IA por separado, sin apagarla completa: ella sigue atendiendo con lo que tenga disponible.",
   agentes:
@@ -294,6 +301,11 @@ export function AgentControlView({
   const [knowledgeEntries, setKnowledgeEntries] = useState(initialKnowledgeEntries);
   const [lessons, setLessons] = useState(initialLessons);
   const [catalogLinks, setCatalogLinks] = useState(initialCatalogLinks);
+  // T9 de A2 (30/9/2026): el contador de la pestaña «Búsquedas» (las de HOY) y
+  // el token con el que el panel sabe que tiene que volver a pedir sus datos.
+  // `undefined` = sin dato (la RPC falló o falta la migración): sin contador.
+  const [searchesToday, setSearchesToday] = useState<number | undefined>(undefined);
+  const [searchesRefreshToken, setSearchesRefreshToken] = useState(0);
   const [togglingKillSwitch, setTogglingKillSwitch] = useState(false);
   const [confirmingAiOn, setConfirmingAiOn] = useState(false);
   // null mientras se cuenta. El diálogo no deja encender hasta tener el
@@ -392,6 +404,17 @@ export function AgentControlView({
       // reflejar los cambios reales del panel.
     }
     await refreshTurnCallsByPhase();
+    // Aparte y fuera del `Promise.all` de arriba, igual que `turnCallsByPhase`:
+    // la RPC `resumen_busquedas` puede faltar en una base sin migrar y no
+    // puede tumbar el refresco de todo lo demás. El panel de Búsquedas pide
+    // sus propios datos cuando este token cambia.
+    try {
+      const resumen = await fetchSearchSummary(supabase, periodStart("hoy"));
+      setSearchesToday(resumen ? resumen.busquedas : undefined);
+    } catch {
+      setSearchesToday(undefined);
+    }
+    setSearchesRefreshToken((token) => token + 1);
   }, [supabase, refreshTurnCallsByPhase]);
 
   // Agrupado y consciente de la pestaña: los eventos de estas tablas no
@@ -421,6 +444,23 @@ export function AgentControlView({
       .catch(() => {
         // Mismo criterio que el catch de `refreshTurnCallsByPhase`: el
         // siguiente evento de tiempo real (o la pasada de fondo) reintenta.
+      });
+    return () => {
+      cancelado = true;
+    };
+  }, [supabase]);
+
+  // Primera carga del contador de «Búsquedas» (T9 de A2): inline y con
+  // `.then()` por la misma razón que el efecto de arriba
+  // (`react-hooks/set-state-in-effect`).
+  useEffect(() => {
+    let cancelado = false;
+    fetchSearchSummary(supabase, periodStart("hoy"))
+      .then((resumen) => {
+        if (!cancelado) setSearchesToday(resumen ? resumen.busquedas : undefined);
+      })
+      .catch(() => {
+        // Sin contador: la pestaña muestra su propio aviso al abrirla.
       });
     return () => {
       cancelado = true;
@@ -762,37 +802,46 @@ export function AgentControlView({
               </div>
             </div>
 
-            <SlidingPills
-              className="ac-tabs"
-              tone="segmented"
-              variant="tablist"
-              ariaLabel="Secciones de control"
-              value={tab}
-              onChange={setTab}
-              items={[
-                { value: "ia", label: "Control de IA" },
-                { value: "respuestas", label: "Respuestas", icon: <Zap size={13} />, count: playbooks.length },
-                {
-                  value: "biblioteca",
-                  label: "Biblioteca",
-                  icon: <BookOpen size={13} />,
-                  count: knowledgeEntries.length,
-                },
-                {
-                  value: "lecciones",
-                  label: "Lecciones",
-                  icon: <GraduationCap size={13} />,
-                  count: lessons.length,
-                },
-                {
-                  value: "herramientas",
-                  label: "Herramientas",
-                  icon: <Wrench size={13} />,
-                  count: agentTools.length,
-                },
-                { value: "agentes", label: "Agentes", icon: <Users size={13} />, count: agents.length },
-              ]}
-            />
+            {/* Carril que scrollea: a 390 px las siete pestañas no caben (ver agent-control.css). */}
+            <FilterScroller className="ac-tabs-scroll no-scrollbar">
+              <SlidingPills
+                className="ac-tabs"
+                tone="segmented"
+                variant="tablist"
+                ariaLabel="Secciones de control"
+                value={tab}
+                onChange={setTab}
+                items={[
+                  { value: "ia", label: "Control de IA" },
+                  { value: "respuestas", label: "Respuestas", icon: <Zap size={13} />, count: playbooks.length },
+                  {
+                    value: "biblioteca",
+                    label: "Biblioteca",
+                    icon: <BookOpen size={13} />,
+                    count: knowledgeEntries.length,
+                  },
+                  {
+                    value: "lecciones",
+                    label: "Lecciones",
+                    icon: <GraduationCap size={13} />,
+                    count: lessons.length,
+                  },
+                  {
+                    value: "busquedas",
+                    label: "Búsquedas",
+                    icon: <Search size={13} />,
+                    count: searchesToday,
+                  },
+                  {
+                    value: "herramientas",
+                    label: "Herramientas",
+                    icon: <Wrench size={13} />,
+                    count: agentTools.length,
+                  },
+                  { value: "agentes", label: "Agentes", icon: <Users size={13} />, count: agents.length },
+                ]}
+              />
+            </FilterScroller>
             {tab === "ia" && (
             <>
             <section className="dash-panel ac-kill" data-on={settings.aiGloballyEnabled}>
@@ -1294,6 +1343,15 @@ export function AgentControlView({
               // que no llega nunca si el canal está caído (ver la trampa del canal
               // muerto de `conversation_handoffs`, 8/9/2026, en CLAUDE.md).
               <LessonsPanel currentAgent={currentAgent} lessons={lessons} onChanged={refresh} />
+            )}
+
+            {tab === "busquedas" && (
+              <CatalogSearchesPanel
+                currentAgent={currentAgent}
+                lessons={lessons}
+                refreshToken={searchesRefreshToken}
+                onLessonsChanged={refresh}
+              />
             )}
 
             {tab === "herramientas" && (

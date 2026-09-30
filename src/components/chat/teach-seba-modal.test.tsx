@@ -202,4 +202,41 @@ describe("TeachSebaModal", () => {
 
     await waitFor(() => expect(dangerToast).toHaveBeenCalledWith("No se pudo guardar la lección. Intenta de nuevo."));
   });
+
+  // T9 de A2 (30/9/2026): la pestaña «Búsquedas» de Control IA abre el modal
+  // sin un mensaje del chat — con la búsqueda como contexto y el término que
+  // no calzó ya escrito.
+  it("sin mensaje, con initialKind y initialSynonymFrom: abre en 'sinonimo' con el término precargado, cita el contexto y guarda con messageId null", async () => {
+    createLessonMock.mockResolvedValue(undefined);
+    const user = crearUsuario();
+    renderModal({
+      message: undefined,
+      contextText: "pastilla de freno bera",
+      initialKind: "sinonimo",
+      initialSynonymFrom: "pastilla",
+      conversationId: "conv-3",
+      contactId: null,
+    });
+
+    expect(screen.getByText("pastilla de freno bera")).toBeInTheDocument();
+    expect(screen.getByLabelText("Cómo lo dice el cliente")).toHaveValue("pastilla");
+    expect(screen.getByRole("button", { name: "Sinónimo de búsqueda" })).toHaveAttribute("aria-pressed", "true");
+    // Alcance global por defecto.
+    expect(screen.getByRole("button", { name: "Todos los chats" })).toHaveAttribute("aria-pressed", "true");
+
+    await user.type(screen.getByLabelText("Cómo se llama en el catálogo"), "pastillas de freno");
+    await user.click(screen.getByRole("button", { name: /guardar/i }));
+
+    await waitFor(() => expect(createLessonMock).toHaveBeenCalled());
+    expect(createLessonMock.mock.calls[0][2]).toMatchObject({
+      scope: "global",
+      kind: "sinonimo",
+      synonymFrom: "pastilla",
+      synonymTo: "pastillas de freno",
+      messageId: null,
+      messageExcerpt: "pastilla de freno bera",
+      conversationId: null,
+      contactId: null,
+    });
+  });
 });

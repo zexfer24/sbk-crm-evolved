@@ -1,6 +1,6 @@
 /** @vitest-environment jsdom */
 import { describe, expect, it, vi, beforeEach } from "vitest";
-import { render, screen, fireEvent, waitFor } from "@testing-library/react";
+import { render, screen, fireEvent, waitFor, act } from "@testing-library/react";
 import { AgentControlView } from "@/components/agent-control/agent-control-view";
 import type { Agent, AgentSettings, AgentTurn, Conversation, ModelUsageSummary } from "@/lib/types";
 
@@ -22,13 +22,35 @@ vi.mock("@/components/agent-control/playbooks-panel", () => ({ PlaybooksPanel: (
 vi.mock("@/components/agent-control/spend-cap-panel", () => ({ SpendCapPanel: () => null }));
 vi.mock("@/components/agent-control/business-hours-panel", () => ({ BusinessHoursPanel: () => null }));
 vi.mock("@/components/agent-control/token-usage-chart", () => ({ TokenUsageChart: () => null }));
-vi.mock("@/components/sliding-pills", () => ({ SlidingPills: () => null }));
+// T9 de A2 (30/9/2026): SlidingPills captura sus props para poder probar la
+// pestaña «Búsquedas» (su contador y que al elegirla se pinta el panel).
+const pills = vi.hoisted(() => ({
+  items: [] as { value: string; label: string; count?: number }[],
+  onChange: (() => {}) as (value: string) => void,
+}));
+vi.mock("@/components/sliding-pills", () => ({
+  SlidingPills: (props: { items: { value: string; label: string; count?: number }[]; onChange: (value: string) => void }) => {
+    pills.items = props.items;
+    pills.onChange = props.onChange;
+    return null;
+  },
+}));
+// El panel de Búsquedas tiene su propio test; acá solo interesa que la vista lo monte y le suba el refreshToken.
+vi.mock("@/components/agent-control/catalog-searches-panel", () => ({
+  CatalogSearchesPanel: (props: { refreshToken: number }) => <div data-testid="panel-busquedas" data-token={props.refreshToken} />,
+}));
 vi.mock("@/components/app-rail", () => ({ AppRail: () => null, AppTopNav: () => null }));
 
+// T9 de A2: se guardan los handlers de `postgres_changes` por tabla para poder
+// emitir un INSERT de `agent_turns` como lo haría Realtime.
+const realtime = vi.hoisted(() => ({ handlers: {} as Record<string, () => void> }));
 vi.mock("@/lib/supabase/client", () => ({
   createClient: () => {
     const channel = {
-      on: () => channel,
+      on: (_type: string, filter: { table?: string }, cb: () => void) => {
+        if (filter.table) realtime.handlers[filter.table] = cb;
+        return channel;
+      },
       subscribe: () => channel,
     };
     return { channel: () => channel, removeChannel: () => {} };
@@ -43,6 +65,12 @@ const fetchBacklogCountsMock = vi.fn(async () => ({ inWindow: 117, outOfWindow: 
  * default (`[]`).
  */
 const fetchTurnCallsByPhaseMock = vi.fn(async () => [] as unknown[]);
+/** T9 de A2: el contador de «Búsquedas de hoy» de la pestaña. */
+const fetchSearchSummaryMock = vi.fn(async (supabase: unknown, desde: string) => {
+  void supabase;
+  void desde;
+  return { busquedas: 7 } as { busquedas: number } | null;
+});
 
 vi.mock("@/lib/data", () => ({
   fetchAgentSettings: vi.fn(async () => ({ aiGloballyEnabled: true, dailySpendCapUsd: null, spentTodayUsd: 0 })),
@@ -74,6 +102,7 @@ vi.mock("@/lib/data", () => ({
   // agent-control-view.tsx). `[]` de fábrica; el describe de telemetría más
   // abajo sobrescribe la resolución para probar la tabla "Por fase".
   fetchTurnCallsByPhase: () => fetchTurnCallsByPhaseMock(),
+  fetchSearchSummary: (supabase: unknown, desde: string) => fetchSearchSummaryMock(supabase, desde),
 }));
 
 const setAiGloballyEnabledMock = vi.fn(async (...args: unknown[]) => {
@@ -384,6 +413,20 @@ describe("AgentControlView — tokens de razonamiento en el feed (T4b, 21/9/2026
 });
 
 /**
+ * Cierre de A2 (30/9/2026): a 390 px la tira de pestañas ensanchaba la página
+ * entera (scrollWidth 989). La tira va dentro de un carril que scrollea
+ * (`.ac-tabs-scroll`); la regla de CSS la fija `agent-control-css.test.ts`, acá
+ * solo que la vista lo monte.
+ */
+describe("AgentControlView — la tira de pestañas va en un carril que scrollea", () => {
+  it("la vista monta el carril `.ac-tabs-scroll` (SlidingPills va simulado en este archivo, así que no se ve su tablist)", () => {
+    montar(encendida, []);
+
+    expect(document.querySelector(".ac-tabs-scroll")).not.toBeNull();
+  });
+});
+
+/**
  * T4, plan "Nada se pierde en un corte ni en un deploy" (21-22/9/2026): la
  * telemetría por llamada que se agrega a "Consumo de tokens" y al feed en
  * vivo — dos totales nuevos, un badge de caché y la línea de pasos/herramientas.
@@ -520,5 +563,54 @@ describe("AgentControlView — interruptor de la demora del asesor (T10b-5)", ()
       expect(screen.getByRole("switch", { name: "Reasignar si el asesor tarda" })).toHaveAttribute("aria-checked", "true")
     );
     expect(screen.getByText(/Encendida desde/)).toBeInTheDocument();
+  });
+});
+
+describe("AgentControlView — pestaña «Búsquedas» (T9 de A2, 30/9/2026)", () => {
+  beforeEach(() => {
+    fetchSearchSummaryMock.mockClear();
+    fetchSearchSummaryMock.mockResolvedValue({ busquedas: 7 });
+    pills.items = [];
+  });
+
+  it("la pestaña va al lado de «Lecciones» y su contador es el de las búsquedas de HOY", async () => {
+    montar(encendida);
+
+    await waitFor(() => expect(pills.items.find((item) => item.value === "busquedas")?.count).toBe(7));
+
+    const values = pills.items.map((item) => item.value);
+    expect(values.indexOf("busquedas")).toBe(values.indexOf("lecciones") + 1);
+    expect(pills.items.find((item) => item.value === "busquedas")?.label).toBe("Búsquedas");
+    // El contador pide «hoy»: una fecha ISO de la medianoche de Caracas, no un período largo.
+    const desde = fetchSearchSummaryMock.mock.calls[0][1] as string;
+    expect(Date.now() - new Date(desde).getTime()).toBeLessThan(24 * 60 * 60 * 1000 + 1000);
+  });
+
+  it("si el resumen falla (p. ej. migración sin aplicar) la pestaña queda sin contador, no rota", async () => {
+    fetchSearchSummaryMock.mockRejectedValue({ code: "PGRST202" });
+    montar(encendida);
+
+    await waitFor(() => expect(fetchSearchSummaryMock).toHaveBeenCalled());
+    const item = pills.items.find((entry) => entry.value === "busquedas");
+    expect(item).toBeDefined();
+    expect(item?.count).toBeUndefined();
+  });
+
+  it("al elegir la pestaña se monta el panel, y un INSERT de agent_turns por Realtime le sube el refreshToken", async () => {
+    montar(encendida);
+    await waitFor(() => expect(pills.items.some((item) => item.value === "busquedas")).toBe(true));
+    expect(screen.queryByTestId("panel-busquedas")).not.toBeInTheDocument();
+
+    act(() => pills.onChange("busquedas"));
+    const panel = await screen.findByTestId("panel-busquedas");
+    const antes = Number(panel.getAttribute("data-token"));
+
+    realtime.handlers["agent_turns"]();
+
+    await vi.waitFor(() => expect(Number(screen.getByTestId("panel-busquedas").getAttribute("data-token"))).toBeGreaterThan(antes), {
+      timeout: 5000,
+    });
+    // Y el contador de hoy se vuelve a pedir en el mismo refresco.
+    expect(fetchSearchSummaryMock.mock.calls.length).toBeGreaterThanOrEqual(2);
   });
 });

@@ -1305,6 +1305,39 @@ export async function deleteLesson(supabase: SupabaseClient, id: string) {
   assertRowsAffected(data, ONLY_AUTHOR_LESSON_MESSAGE);
 }
 
+/**
+ * «No corregir esta palabra» (T9 de A2, decisión D5 del plan "Seba no cotiza
+ * lo que no es", 30/9/2026): una lección GLOBAL `kind = 'no_corregir'` que
+ * el corrector de tipeos suma a sus palabras protegidas (`corregirTerminos`).
+ * La palabra va en `synonym_from`, en minúsculas; `synonym_to` es `null` y el
+ * alcance siempre global — el CHECK `ai_lessons_no_corregir_requires_word`
+ * (migración 20260930050000) lo exige. El caso que la motivó: "pareja" se
+ * corregía a "para" y Seba buscaba lo que el cliente nunca pidió.
+ *
+ * Pide la fila insertada (`.select("id")`) y la pasa por `assertRowsAffected`:
+ * un INSERT que la base no escribió no puede pasar por guardado. Si la
+ * palabra ya estaba protegida y activa NO se duplica: eso lo decide el
+ * llamador (que ya tiene la lista de lecciones y no ofrece el botón).
+ */
+export async function protectWordFromCorrection(supabase: SupabaseClient, agent: Agent, word: string) {
+  const palabra = word.trim().toLowerCase().slice(0, 100);
+  if (!palabra) throw new Error("La palabra a proteger está vacía.");
+
+  const { data, error } = await supabase
+    .from("ai_lessons")
+    .insert({
+      scope: "global",
+      kind: "no_corregir",
+      content: `No corregir «${palabra}»`,
+      synonym_from: palabra,
+      synonym_to: null,
+      created_by: agent.id,
+    })
+    .select("id");
+  if (error) throw error;
+  assertRowsAffected(data, ONLY_AUTHOR_LESSON_MESSAGE);
+}
+
 // ---------------------------------------------------------------------------
 // Interruptores de herramientas del agente. RLS solo deja escribir a
 // supervisores y admins; las filas las siembran las migraciones, no la app.

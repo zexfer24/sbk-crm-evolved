@@ -18,6 +18,7 @@ import {
   markConversationRead,
   markConversationUnread,
   pinConversation,
+  protectWordFromCorrection,
   saveStickerFromMessage,
   sendStickerMessage,
   setAiEnabled,
@@ -32,6 +33,7 @@ import {
   type SaleLineItem,
 } from "@/lib/mutations";
 import type { CatalogLinkDraft } from "@/lib/catalog-links";
+import { ConfigWriteDeniedError } from "@/lib/config-write";
 
 const AGENT: Agent = {
   id: "agent-1",
@@ -2131,5 +2133,71 @@ describe("createCatalogLink / updateCatalogLink / deleteCatalogLink / setCatalog
     } as unknown as SupabaseClient;
 
     await expect(createCatalogLink(client, CATALOG_AGENT, catalogDraft())).rejects.toThrow(/no se pudo guardar/);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// «No corregir esta palabra» (T9, D5, plan "Seba no cotiza lo que no es",
+// 30/9/2026): una lección global `kind = 'no_corregir'` cuya palabra va en
+// `synonym_from` (migración 20260930050000). La verificación de filas es una
+// segunda barrera: un INSERT que la base no llegara a escribir no puede
+// pasar como guardado.
+// ---------------------------------------------------------------------------
+describe("protectWordFromCorrection — «No corregir esta palabra» (T9, 30/9/2026)", () => {
+  const PROTECT_AGENT: Agent = {
+    id: "agent-7",
+    displayName: "Luis",
+    fullName: "Luis Pérez",
+    avatarUrl: null,
+    role: "supervisor",
+    isActive: true,
+  };
+
+  function fakeInsertClient(returned: unknown[] | null) {
+    const calls: { table: string; payload: Record<string, unknown>; selected: string | null }[] = [];
+    const client = {
+      from(table: string) {
+        return {
+          insert: (payload: Record<string, unknown>) => ({
+            select: async (columns: string) => {
+              calls.push({ table, payload, selected: columns });
+              return { data: returned, error: null };
+            },
+          }),
+        };
+      },
+    };
+    return { client: client as unknown as SupabaseClient, calls };
+  }
+
+  it("inserta una lección global no_corregir con la palabra en minúsculas, synonym_to null y created_by del agente", async () => {
+    const { client, calls } = fakeInsertClient([{ id: "l1" }]);
+
+    await protectWordFromCorrection(client, PROTECT_AGENT, "  Pareja ");
+
+    expect(calls).toHaveLength(1);
+    expect(calls[0].table).toBe("ai_lessons");
+    expect(calls[0].selected).toBe("id");
+    expect(calls[0].payload).toEqual({
+      scope: "global",
+      kind: "no_corregir",
+      content: "No corregir «pareja»",
+      synonym_from: "pareja",
+      synonym_to: null,
+      created_by: "agent-7",
+    });
+  });
+
+  it("lanza ConfigWriteDeniedError si la base no devolvió ninguna fila", async () => {
+    const { client } = fakeInsertClient([]);
+
+    await expect(protectWordFromCorrection(client, PROTECT_AGENT, "pareja")).rejects.toBeInstanceOf(ConfigWriteDeniedError);
+  });
+
+  it("rechaza una palabra vacía sin tocar la base", async () => {
+    const { client, calls } = fakeInsertClient([{ id: "l1" }]);
+
+    await expect(protectWordFromCorrection(client, PROTECT_AGENT, "   ")).rejects.toThrow(/vacía/);
+    expect(calls).toHaveLength(0);
   });
 });

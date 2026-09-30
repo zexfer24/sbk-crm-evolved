@@ -25,28 +25,55 @@ const MAX_LESSON_CHARS = 200;
 
 interface TeachSebaModalProps {
   isOpen: boolean;
-  /** El mensaje sobre el que se está enseñando: siempre uno concreto, nunca "ninguno todavía". */
-  message: Message;
+  /**
+   * El mensaje sobre el que se está enseñando. Desde el chat es siempre uno
+   * concreto; desde la pestaña «Búsquedas» de Control IA (T9 de A2,
+   * 30/9/2026) no hay un mensaje sino una búsqueda: se pasa `contextText` en
+   * su lugar y el modal lo muestra como cita y lo guarda como extracto.
+   */
+  message?: Message;
+  /** Sin `message`: el texto que se cita (lo que el cliente pidió). */
+  contextText?: string;
   agent: Agent;
-  conversationId: string;
-  contactId: string;
+  /** `null` (T9: un término de las búsquedas sin chat de origen): no hay «Solo este chat» que ofrecer, la lección es siempre global. */
+  conversationId: string | null;
+  contactId: string | null;
+  /**
+   * Valores iniciales (T9): «Enseñar sinónimo» desde una búsqueda abre el
+   * modal ya en `sinonimo` con el término que no calzó precargado. Solo
+   * cuentan al MONTAR el modal: quien lo usa lo monta con un `key` por
+   * destino en vez de mantenerlo vivo y cerrado.
+   */
+  initialKind?: LessonKind;
+  initialSynonymFrom?: string;
   onOpenChange: (open: boolean) => void;
 }
 
-export function TeachSebaModal({ isOpen, message, agent, conversationId, contactId, onOpenChange }: TeachSebaModalProps) {
+export function TeachSebaModal({
+  isOpen,
+  message,
+  contextText,
+  agent,
+  conversationId,
+  contactId,
+  initialKind = "nota",
+  initialSynonymFrom = "",
+  onOpenChange,
+}: TeachSebaModalProps) {
   const [scope, setScope] = useState<LessonScope>("global");
-  const [kind, setKind] = useState<LessonKind>("nota");
+  // La lección `no_corregir` la crea su propio botón, no este formulario.
+  const [kind, setKind] = useState<LessonKind>(initialKind === "sinonimo" ? "sinonimo" : "nota");
   const [content, setContent] = useState("");
-  const [synonymFrom, setSynonymFrom] = useState("");
+  const [synonymFrom, setSynonymFrom] = useState(initialSynonymFrom);
   const [synonymTo, setSynonymTo] = useState("");
   const [isSaving, setIsSaving] = useState(false);
   const [identityError, setIdentityError] = useState<string | null>(null);
 
   function reset() {
     setScope("global");
-    setKind("nota");
+    setKind(initialKind === "sinonimo" ? "sinonimo" : "nota");
     setContent("");
-    setSynonymFrom("");
+    setSynonymFrom(initialSynonymFrom);
     setSynonymTo("");
     setIdentityError(null);
   }
@@ -73,16 +100,16 @@ export function TeachSebaModal({ isOpen, message, agent, conversationId, contact
     setIdentityError(null);
     setIsSaving(true);
     try {
-      const excerptSource = message.content?.trim() || quotedTypeLabel(message);
+      const excerptSource = message ? message.content?.trim() || quotedTypeLabel(message) : (contextText?.trim() ?? "");
       const draft: LessonDraft = {
         scope,
         kind,
         content: trimmedContent,
         synonymFrom: kind === "sinonimo" ? synonymFrom.trim() : null,
         synonymTo: kind === "sinonimo" ? synonymTo.trim() : null,
-        messageId: message.id,
-        messageExcerpt: excerptSource.slice(0, MAX_LESSON_CHARS),
-        conversationId: scope === "conversacion" ? conversationId : null,
+        messageId: message?.id ?? null,
+        messageExcerpt: excerptSource ? excerptSource.slice(0, MAX_LESSON_CHARS) : null,
+        conversationId: scope === "conversacion" && conversationId ? conversationId : null,
         contactId,
       };
       await createLesson(createClient(), agent, draft);
@@ -113,12 +140,23 @@ export function TeachSebaModal({ isOpen, message, agent, conversationId, contact
             </Modal.Header>
 
             <Modal.Body className="flex flex-col gap-3">
-              <div className="crm-bubble-quote">
-                <QuotedThumb message={message} />
-                <div className="crm-quote-col">
-                  <QuotedText message={message} />
+              {message ? (
+                <div className="crm-bubble-quote">
+                  <QuotedThumb message={message} />
+                  <div className="crm-quote-col">
+                    <QuotedText message={message} />
+                  </div>
                 </div>
-              </div>
+              ) : (
+                contextText && (
+                  <div className="crm-bubble-quote">
+                    <div className="crm-quote-col">
+                      <span className="lm-hint">El cliente pidió</span>
+                      <p>{contextText}</p>
+                    </div>
+                  </div>
+                )
+              )}
 
               <div className="flex flex-col gap-1.5">
                 <Label>Tipo de lección</Label>
@@ -184,29 +222,31 @@ export function TeachSebaModal({ isOpen, message, agent, conversationId, contact
                 </div>
               )}
 
-              <div className="flex flex-col gap-1.5">
-                <Label>Alcance</Label>
-                <div className="flex gap-2" role="group" aria-label="Alcance de la lección">
-                  <button
-                    type="button"
-                    className="crm-pill"
-                    data-variant={scope === "global" ? "solid" : undefined}
-                    aria-pressed={scope === "global"}
-                    onClick={() => setScope("global")}
-                  >
-                    Todos los chats
-                  </button>
-                  <button
-                    type="button"
-                    className="crm-pill"
-                    data-variant={scope === "conversacion" ? "solid" : undefined}
-                    aria-pressed={scope === "conversacion"}
-                    onClick={() => setScope("conversacion")}
-                  >
-                    Solo este chat
-                  </button>
+              {conversationId && (
+                <div className="flex flex-col gap-1.5">
+                  <Label>Alcance</Label>
+                  <div className="flex gap-2" role="group" aria-label="Alcance de la lección">
+                    <button
+                      type="button"
+                      className="crm-pill"
+                      data-variant={scope === "global" ? "solid" : undefined}
+                      aria-pressed={scope === "global"}
+                      onClick={() => setScope("global")}
+                    >
+                      Todos los chats
+                    </button>
+                    <button
+                      type="button"
+                      className="crm-pill"
+                      data-variant={scope === "conversacion" ? "solid" : undefined}
+                      aria-pressed={scope === "conversacion"}
+                      onClick={() => setScope("conversacion")}
+                    >
+                      Solo este chat
+                    </button>
+                  </div>
                 </div>
-              </div>
+              )}
 
               {identityError && <p className="text-xs text-danger">{identityError}</p>}
             </Modal.Body>

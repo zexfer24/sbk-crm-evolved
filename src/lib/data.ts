@@ -17,9 +17,16 @@ import type {
   AgentSuggestion,
   AgentTool,
   AgentTurn,
+  AgentTurnAction,
   AiLesson,
   BoardConversation,
+  CatalogCorrection,
   CatalogLink,
+  CatalogNoticeType,
+  CatalogSearchNotice,
+  CatalogSearchQuery,
+  CatalogSearchResult,
+  CatalogSearchTurn,
   Contact,
   ContactName,
   ContactSummary,
@@ -37,6 +44,10 @@ import type {
   Playbook,
   QuickReply,
   Sale,
+  SearchCorrectionRow,
+  SearchMissingTerm,
+  SearchSummary,
+  SearchTerms,
   Tag,
   TicketTagsByContact,
   TokenUsageDay,
@@ -2571,6 +2582,278 @@ export async function fetchTurnCallsByPhase(supabase: SupabaseClient, days = 30)
     maxOutputTokensMax: row.max_output_tokens_max,
     toolChoiceNoneCalls: row.tool_choice_none_calls,
   }));
+}
+
+// ---------------------------------------------------------------------------
+// Pestaña «Búsquedas» de Control IA (T9, plan "Seba no cotiza lo que no es",
+// 30/9/2026). Ver el contrato en `types.ts` (`CatalogSearchQuery`): lo que una
+// fila v1 (sin `v`) no trae llega como `null`, jamás como un valor inventado.
+// Todo se lee de forma DEFENSIVA — `catalog_queries` es jsonb escrito por el
+// turno, sin ninguna restricción de forma en la base: un campo con otro tipo o
+// una fila rara no puede tumbar la lista entera.
+// ---------------------------------------------------------------------------
+
+const CATALOG_RESULTS: readonly CatalogSearchResult[] = [
+  "con_existencia",
+  "agotados",
+  "generico",
+  "sin_resultados",
+  "sin_terminos",
+  "error",
+];
+
+const CATALOG_NOTICE_TYPES: readonly CatalogNoticeType[] = [
+  "universales",
+  "moto_sin_calce",
+  "relajado",
+  "relajado_agotado",
+  "variante_agotada",
+  "varias_opciones",
+];
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function asStringOrNull(value: unknown): string | null {
+  return typeof value === "string" ? value : null;
+}
+
+function asCount(value: unknown): number {
+  return typeof value === "number" && Number.isFinite(value) ? value : 0;
+}
+
+/** Un arreglo de textos, o `null` si el campo no está o no es un arreglo (fila v1). */
+function stringListOrNull(value: unknown): string[] | null {
+  if (!Array.isArray(value)) return null;
+  return value.filter((item): item is string => typeof item === "string");
+}
+
+/** `[[a, b], [c]]` -> `[a, c]`: la primera alternativa de cada grupo. */
+function firstOfEachGroup(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  const out: string[] = [];
+  for (const group of value) {
+    const first = Array.isArray(group) ? group[0] : group;
+    if (typeof first === "string" && first.trim() !== "") out.push(first);
+  }
+  return out;
+}
+
+function corrections(value: unknown): CatalogCorrection[] | null {
+  if (!Array.isArray(value)) return null;
+  const out: CatalogCorrection[] = [];
+  for (const item of value) {
+    if (isRecord(item) && typeof item.original === "string" && typeof item.corregido === "string") {
+      out.push({ original: item.original, corregido: item.corregido });
+    }
+  }
+  return out;
+}
+
+function noticeDetail(raw: Record<string, unknown>): string | null {
+  const terminos = stringListOrNull(raw.terminos);
+  if (terminos && terminos.length > 0) return terminos.join(", ");
+  return asStringOrNull(raw.variante) ?? asStringOrNull(raw.moto) ?? asStringOrNull(raw.marca);
+}
+
+function catalogNotices(value: unknown): CatalogSearchNotice[] | null {
+  if (!Array.isArray(value)) return null;
+  const out: CatalogSearchNotice[] = [];
+  for (const item of value) {
+    if (!isRecord(item)) continue;
+    const tipo = CATALOG_NOTICE_TYPES.find((t) => t === item.tipo);
+    if (!tipo) continue;
+    out.push({ tipo, productoPedido: asStringOrNull(item.productoPedido), detalle: noticeDetail(item) });
+  }
+  return out;
+}
+
+function quotedProducts(value: unknown): CatalogSearchQuery["cotizados"] {
+  if (!Array.isArray(value)) return null;
+  const out: NonNullable<CatalogSearchQuery["cotizados"]> = [];
+  for (const item of value) {
+    if (!isRecord(item) || typeof item.productId !== "string") continue;
+    out.push({
+      productId: item.productId,
+      nombre: asStringOrNull(item.nombre) ?? "—",
+      stock: asCount(item.stock),
+      precioUsd: asCount(item.precioUsd),
+    });
+  }
+  return out;
+}
+
+function searchCounts(value: unknown): CatalogSearchQuery["conteos"] {
+  if (!isRecord(value)) return null;
+  return {
+    calzan: asCount(value.calzan),
+    conStock: asCount(value.conStock),
+    nombranMoto: asCount(value.nombranMoto),
+    universales: asCount(value.universales),
+  };
+}
+
+/** Una búsqueda (un elemento de `catalog_queries`), de cualquier versión. `null` si ni es un objeto. */
+export function mapCatalogSearchQuery(raw: unknown): CatalogSearchQuery | null {
+  if (!isRecord(raw)) return null;
+  const resultado = CATALOG_RESULTS.find((r) => r === raw.resultado) ?? null;
+  const version = raw.v === 2 ? 2 : 1;
+
+  return {
+    version,
+    query: asStringOrNull(raw.query) ?? "",
+    productos: stringListOrNull(raw.productos),
+    terminos: firstOfEachGroup(raw.grupos),
+    moto: firstOfEachGroup(raw.moto),
+    // Solo v2: sin `v` NO se leen aunque alguien los hubiera escrito, para que la pantalla no mezcle versiones.
+    variantes: version === 2 ? (Array.isArray(raw.variantes) ? firstOfEachGroup(raw.variantes) : null) : null,
+    relajados: version === 2 ? stringListOrNull(raw.relajados) : null,
+    avisos: version === 2 ? catalogNotices(raw.avisos) : null,
+    corregido: corrections(raw.corregido) ?? [],
+    correccionDescartada: version === 2 ? corrections(raw.correccionDescartada) ?? [] : null,
+    decision: version === 2 ? asStringOrNull(raw.decision) : null,
+    cotizados: version === 2 ? quotedProducts(raw.cotizados) : null,
+    conteos: version === 2 ? searchCounts(raw.conteos) : null,
+    motoIgnorada: version === 2 && typeof raw.motoIgnorada === "boolean" ? raw.motoIgnorada : null,
+    calzaEntero: version === 2 && typeof raw.calzaEntero === "boolean" ? raw.calzaEntero : null,
+    resultado,
+  };
+}
+
+interface RawCatalogSearchTurn {
+  id: string;
+  conversation_id: string;
+  action: string;
+  summary: string | null;
+  customer_message: string | null;
+  created_at: string;
+  catalog_queries: unknown;
+  conversation: {
+    contact: { display_name: string | null; profile_name: string | null; phone_number: string } | null;
+  } | null;
+}
+
+/** El motivo de una escalada, tal como lo deja `agent.ts` en el resumen del turno ("… Motivo: confirmar_inventario."). */
+function escalationReasonOf(action: string, summary: string | null): string | null {
+  if (action !== "escalated" || !summary) return null;
+  const match = /Motivo:\s*([^.\n]+?)\.?(?:\s|$)/.exec(summary);
+  return match ? match[1].trim() : null;
+}
+
+/**
+ * Los turnos que tocaron el catálogo desde `desde` (más nuevos primero), con
+ * todas sus búsquedas. La pestaña filtra y busca EN MEMORIA sobre esta lista:
+ * un turno con rastro pesa ~2 KB y el tope (200) mantiene la lectura en un
+ * puñado de filas. Los conteos y los términos de 30 días NO salen de acá sino
+ * de las RPC de más abajo — a ese volumen se agregan en SQL.
+ */
+export async function fetchCatalogSearches(
+  supabase: SupabaseClient,
+  options: { desde: string; limit?: number }
+): Promise<CatalogSearchTurn[]> {
+  const { data, error } = await supabase
+    .from("agent_turns")
+    .select(
+      "id, conversation_id, action, summary, customer_message, created_at, catalog_queries, conversation:conversations(contact:contacts(display_name, profile_name, phone_number))"
+    )
+    .not("catalog_queries", "is", null)
+    .gte("created_at", options.desde)
+    .order("created_at", { ascending: false })
+    .limit(options.limit ?? 200);
+
+  if (error) throw error;
+
+  const turns: CatalogSearchTurn[] = [];
+  for (const row of data as unknown as RawCatalogSearchTurn[]) {
+    if (!Array.isArray(row.catalog_queries)) continue;
+    const consultas = row.catalog_queries
+      .map(mapCatalogSearchQuery)
+      .filter((query): query is CatalogSearchQuery => query !== null);
+    if (consultas.length === 0) continue;
+
+    const contact = row.conversation?.contact ?? null;
+    turns.push({
+      id: row.id,
+      conversationId: row.conversation_id,
+      contactName: contact ? contact.display_name ?? contact.profile_name ?? contact.phone_number : null,
+      createdAt: row.created_at,
+      customerMessage: row.customer_message,
+      action: row.action as AgentTurnAction,
+      escalationReason: escalationReasonOf(row.action, row.summary),
+      consultas,
+    });
+  }
+  return turns;
+}
+
+function recordOf(value: unknown): Record<string, unknown> {
+  return isRecord(value) ? value : {};
+}
+
+/**
+ * Bloque A de la pestaña (RPC `resumen_busquedas`, migración 20260930060000).
+ * `null` cuando la RPC responde `null` (quien llama no es agente). Una clave
+ * que la RPC no mande cuenta como 0. Los errores se relanzan: quien la usa
+ * (`catalog-searches-panel.tsx`) los muestra como «No se pudo cargar», no como
+ * un resumen en cero.
+ */
+export async function fetchSearchSummary(supabase: SupabaseClient, desde: string): Promise<SearchSummary | null> {
+  const { data, error } = await supabase.rpc("resumen_busquedas", { p_desde: desde });
+  if (error) throw error;
+  if (!isRecord(data)) return null;
+
+  const resultados = recordOf(data.resultados);
+  const avisos = recordOf(data.avisos);
+
+  return {
+    turnos: asCount(data.turnos),
+    busquedas: asCount(data.busquedas),
+    v1: asCount(data.v1),
+    resultados: Object.fromEntries(CATALOG_RESULTS.map((key) => [key, asCount(resultados[key])])) as SearchSummary["resultados"],
+    avisos: Object.fromEntries(CATALOG_NOTICE_TYPES.map((key) => [key, asCount(avisos[key])])) as SearchSummary["avisos"],
+    correcciones: asCount(data.correcciones),
+    descartadas: asCount(data.descartadas),
+    relajos: asCount(data.relajos),
+    relajosCotizaron: asCount(data.relajos_cotizaron),
+    cotizaciones: asCount(data.cotizaciones),
+    productosDistintos: asCount(data.productos_distintos),
+  };
+}
+
+/** Bloques C y D (RPC `terminos_de_busquedas`): los términos que no calzaron y las correcciones. */
+export async function fetchSearchTerms(supabase: SupabaseClient, desde: string): Promise<SearchTerms | null> {
+  const { data, error } = await supabase.rpc("terminos_de_busquedas", { p_desde: desde });
+  if (error) throw error;
+  if (!isRecord(data)) return null;
+
+  const sinCalce: SearchMissingTerm[] = [];
+  for (const row of Array.isArray(data.sin_calce) ? data.sin_calce : []) {
+    if (!isRecord(row) || typeof row.termino !== "string") continue;
+    sinCalce.push({
+      termino: row.termino,
+      sinResultados: asCount(row.sin_resultados),
+      relajado: asCount(row.relajado),
+      ultima: asStringOrNull(row.ultima),
+    });
+  }
+
+  const correcciones: SearchCorrectionRow[] = [];
+  for (const row of Array.isArray(data.correcciones) ? data.correcciones : []) {
+    if (!isRecord(row) || typeof row.original !== "string" || typeof row.corregido !== "string") continue;
+    correcciones.push({
+      original: row.original,
+      corregido: row.corregido,
+      veces: asCount(row.veces),
+      conExistencia: asCount(row.con_existencia),
+      agotados: asCount(row.agotados),
+      sinResultados: asCount(row.sin_resultados),
+      otros: asCount(row.otros),
+      ultima: asStringOrNull(row.ultima),
+    });
+  }
+
+  return { sinCalce, correcciones };
 }
 
 interface RawAgentSuggestion {
