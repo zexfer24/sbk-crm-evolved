@@ -232,6 +232,7 @@ interface RawQuickReply {
   id: string;
   label: string;
   content: string;
+  owner_id: string | null;
 }
 
 interface RawHourlyActivity {
@@ -462,7 +463,7 @@ function mapMessage(row: RawMessage): Message {
 }
 
 function mapQuickReply(row: RawQuickReply): QuickReply {
-  return { id: row.id, label: row.label, content: row.content };
+  return { id: row.id, label: row.label, content: row.content, ownerId: row.owner_id ?? null };
 }
 
 function mapNote(row: RawNote): Note {
@@ -2171,7 +2172,7 @@ export async function fetchAgentMetrics(supabase: SupabaseClient, days = 30): Pr
 export async function fetchQuickReplies(supabase: SupabaseClient): Promise<QuickReply[]> {
   const { data, error } = await supabase
     .from("quick_replies")
-    .select("id, label, content")
+    .select("id, label, content, owner_id")
     .order("label");
   if (error) throw error;
   return (data as RawQuickReply[]).map(mapQuickReply);

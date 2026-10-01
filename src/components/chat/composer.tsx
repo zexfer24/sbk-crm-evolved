@@ -788,6 +788,7 @@ export function Composer({
         isOpen={isQuickRepliesOpen}
         onOpenChange={setIsQuickRepliesOpen}
         quickReplies={quickReplies}
+        currentAgentId={currentAgent.id}
         catalogLinks={catalogLinks}
         onSelect={handleSelectQuickReply}
       />

@@ -45,6 +45,7 @@ import {
   ONLY_AUTHOR_LESSON_MESSAGE,
   ONLY_AUTHOR_NOTE_MESSAGE,
   ONLY_AUTHOR_STICKER_MESSAGE,
+  QUICK_REPLY_NOT_YOURS_MESSAGE,
 } from "@/lib/config-write";
 export { assertRowsAffected, CONFIG_WRITE_DENIED_MESSAGE, ConfigWriteDeniedError, configErrorMessage } from "@/lib/config-write";
 
@@ -1073,24 +1074,48 @@ export async function updateBusinessHours(supabase: SupabaseClient, agent: Agent
   assertRowsAffected(data);
 }
 
-export async function createQuickReply(supabase: SupabaseClient, label: string, content: string) {
-  const { error } = await supabase.from("quick_replies").insert({ label, content });
+/**
+ * `ownerId` (T5b, "La ronda del cliente", 30/9/2026): `null` = compartido (lo
+ * ven todos los asesores, como hasta hoy); un id = personal, solo ese asesor.
+ * Un INSERT con el `owner_id` de OTRO asesor lo rechaza la RLS con 42501, así
+ * que no hace falta verificar filas acá.
+ */
+export async function createQuickReply(
+  supabase: SupabaseClient,
+  label: string,
+  content: string,
+  ownerId: string | null = null
+) {
+  const { error } = await supabase.from("quick_replies").insert({ label, content, owner_id: ownerId });
   if (error) throw error;
 }
 
+/**
+ * No toca `owner_id`: editar no convierte un mensaje personal en compartido ni
+ * al revés (la política de UPDATE también lo impide con su `with check`). Bajo
+ * RLS, editar el mensaje personal de otro asesor, o uno ya borrado, afecta 0
+ * filas SIN error: `.select("id")` + `assertRowsAffected` lo vuelve un error
+ * visible en vez de un "guardado" falso (T7, 28/9/2026, mismo mecanismo).
+ */
 export async function updateQuickReply(
   supabase: SupabaseClient,
   id: string,
   label: string,
   content: string
 ) {
-  const { error } = await supabase.from("quick_replies").update({ label, content }).eq("id", id);
+  const { data, error } = await supabase
+    .from("quick_replies")
+    .update({ label, content })
+    .eq("id", id)
+    .select("id");
   if (error) throw error;
+  assertRowsAffected(data, QUICK_REPLY_NOT_YOURS_MESSAGE);
 }
 
 export async function deleteQuickReply(supabase: SupabaseClient, id: string) {
-  const { error } = await supabase.from("quick_replies").delete().eq("id", id);
+  const { data, error } = await supabase.from("quick_replies").delete().eq("id", id).select("id");
   if (error) throw error;
+  assertRowsAffected(data, QUICK_REPLY_NOT_YOURS_MESSAGE);
 }
 
 // ---------------------------------------------------------------------------

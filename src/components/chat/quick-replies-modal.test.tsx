@@ -5,6 +5,8 @@ import userEvent from "@testing-library/user-event";
 import type { ComponentProps } from "react";
 import { QuickRepliesModal } from "@/components/chat/quick-replies-modal";
 import type { CatalogLink, QuickReply } from "@/lib/types";
+import { createQuickReply, deleteQuickReply, updateQuickReply } from "@/lib/mutations";
+import { ConfigWriteDeniedError } from "@/lib/config-write";
 
 // ---------------------------------------------------------------------------
 // T4b, plan "Nada sin leer, un solo catálogo y la factura Saint" (18/9/2026,
@@ -14,6 +16,13 @@ import type { CatalogLink, QuickReply } from "@/lib/types";
 // de guardar/editar/borrar un mensaje rápido ya no cambió con esta tarea y
 // no se repite acá.
 // ---------------------------------------------------------------------------
+
+// El toast real de HeroUI no aporta nada acá (mismo patrón que
+// catalog-links-panel.test.tsx); el resto del módulo queda intacto.
+vi.mock("@heroui/react", async (importOriginal) => {
+  const real = await importOriginal<typeof import("@heroui/react")>();
+  return { ...real, toast: { success: vi.fn(), danger: vi.fn(), warning: vi.fn() } };
+});
 
 vi.mock("@/lib/supabase/client", () => ({
   createClient: vi.fn(() => ({})),
@@ -52,9 +61,12 @@ function mensajeRapido(overrides: Partial<QuickReply> = {}): QuickReply {
     id: `qr-${Math.random().toString(36).slice(2)}`,
     label: "Catálogo general",
     content: "Acá va nuestro catálogo 👇",
+    ownerId: null,
     ...overrides,
   };
 }
+
+const ASESOR_ID = "agente-ana";
 
 function renderModal(props: Partial<ComponentProps<typeof QuickRepliesModal>> = {}) {
   const onSelect = vi.fn();
@@ -65,6 +77,7 @@ function renderModal(props: Partial<ComponentProps<typeof QuickRepliesModal>> = 
       onOpenChange={onOpenChange}
       quickReplies={[]}
       catalogLinks={[]}
+      currentAgentId={ASESOR_ID}
       onSelect={onSelect}
       {...props}
     />
@@ -319,5 +332,194 @@ describe("QuickRepliesModal — los contenedores no son píldoras (T2, 30/9/2026
     const menu = screen.getByRole("menu", { name: "Catálogos" });
     expect(menu.className).not.toContain("rounded-field");
     expect(menu.className).toContain("rounded-[var(--radius)]");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// T5b, plan "La ronda del cliente" (30/9/2026): mensajes rápidos PERSONALES.
+// La RLS (migración 20261001010000) ya entrega solo los compartidos y los del
+// propio asesor; el modal los separa en dos pestañas por `ownerId`.
+// ---------------------------------------------------------------------------
+describe("QuickRepliesModal — pestañas «Compartidos» y «Mis mensajes» (T5b)", () => {
+  const compartidos = [
+    mensajeRapido({ id: "c1", label: "Horario", content: "Atendemos de 8 a 18." }),
+    mensajeRapido({ id: "c2", label: "Ubicación", content: "Estamos en Barinas." }),
+    mensajeRapido({ id: "c3", label: "Garantía", content: "Tiene 30 días." }),
+  ];
+  const propios = [
+    mensajeRapido({ id: "p1", label: "Buenos días", content: "Buen día, soy Ana.", ownerId: ASESOR_ID }),
+    mensajeRapido({ id: "p2", label: "Buenas tardes", content: "Buenas tardes, soy Ana.", ownerId: ASESOR_ID }),
+  ];
+
+  it("muestra las dos pestañas, cada una con su conteo", () => {
+    renderModal({ quickReplies: [...compartidos, ...propios] });
+
+    expect(screen.getByRole("tab", { name: /^Compartidos\s*3$/ })).toBeInTheDocument();
+    expect(screen.getByRole("tab", { name: /^Mis mensajes\s*2$/ })).toBeInTheDocument();
+  });
+
+  it("abre en «Mis mensajes» cuando el asesor tiene al menos uno propio", () => {
+    renderModal({ quickReplies: [...compartidos, ...propios] });
+
+    expect(screen.getByRole("tab", { name: /^Mis mensajes/ })).toHaveAttribute("aria-selected", "true");
+    expect(screen.getByText("Buenos días")).toBeInTheDocument();
+    expect(screen.queryByText("Horario")).not.toBeInTheDocument();
+  });
+
+  it("abre en «Compartidos» cuando el asesor no tiene ninguno propio", () => {
+    renderModal({ quickReplies: compartidos });
+
+    expect(screen.getByRole("tab", { name: /^Compartidos/ })).toHaveAttribute("aria-selected", "true");
+    expect(screen.getByText("Horario")).toBeInTheDocument();
+  });
+
+  it("cada pestaña lista solo lo suyo, ordenado por título", async () => {
+    const user = crearUsuario();
+    renderModal({ quickReplies: [...compartidos, ...propios] });
+
+    await user.click(screen.getByRole("tab", { name: /^Compartidos/ }));
+
+    expect(screen.queryByText("Buenos días")).not.toBeInTheDocument();
+    const titulos = screen.getAllByText(/^(Horario|Ubicación|Garantía)$/).map((el) => el.textContent);
+    expect(titulos).toEqual(["Garantía", "Horario", "Ubicación"]);
+  });
+
+  it("un mensaje de OTRO asesor que llegara a la lista no se muestra en ninguna pestaña", async () => {
+    const user = crearUsuario();
+    renderModal({ quickReplies: [...compartidos, mensajeRapido({ label: "Ajeno", ownerId: "otro-asesor" })] });
+
+    expect(screen.queryByText("Ajeno")).not.toBeInTheDocument();
+    await user.click(screen.getByRole("tab", { name: /^Mis mensajes/ }));
+    expect(screen.queryByText("Ajeno")).not.toBeInTheDocument();
+  });
+
+  it("«Mis mensajes» vacío explica para qué sirve", async () => {
+    const user = crearUsuario();
+    renderModal({ quickReplies: compartidos });
+
+    await user.click(screen.getByRole("tab", { name: /^Mis mensajes/ }));
+
+    expect(
+      screen.getByText("Todavía no tienes mensajes propios. Crea tus saludos con tu nombre: solo tú los verás.")
+    ).toBeInTheDocument();
+  });
+
+  it("«Usar» funciona igual en las dos pestañas", async () => {
+    const user = crearUsuario();
+    const { onSelect } = renderModal({ quickReplies: [...compartidos, ...propios] });
+
+    // Ordenado por título: «Buenas tardes» va antes que «Buenos días».
+    await user.click(screen.getAllByRole("button", { name: "Usar" })[0]);
+    expect(onSelect).toHaveBeenLastCalledWith("Buenas tardes, soy Ana.");
+
+    await user.click(screen.getByRole("tab", { name: /^Compartidos/ }));
+    // Ordenado por título: «Garantía» es la primera.
+    await user.click(screen.getAllByRole("button", { name: "Usar" })[0]);
+    expect(onSelect).toHaveBeenLastCalledWith("Tiene 30 días.");
+  });
+});
+
+describe("QuickRepliesModal — crear un mensaje personal o compartido (T5b)", () => {
+  const propio = mensajeRapido({ id: "p1", label: "Buenos días", ownerId: ASESOR_ID });
+  const compartido = mensajeRapido({ id: "c1", label: "Horario", content: "Atendemos de 8 a 18." });
+
+  async function llenarYGuardar(user: ReturnType<typeof crearUsuario>) {
+    await user.type(screen.getByLabelText("Título"), "Buenas noches");
+    await user.type(screen.getByLabelText("Mensaje"), "Buenas noches, soy Ana.");
+    await user.click(screen.getByRole("button", { name: "Agregar" }));
+  }
+
+  it("desde «Mis mensajes», «Solo para mí» viene marcado y crea con el id del asesor", async () => {
+    const user = crearUsuario();
+    vi.mocked(createQuickReply).mockClear();
+    renderModal({ quickReplies: [propio, compartido] });
+
+    await abrirFormulario(user);
+    expect(screen.getByRole("checkbox", { name: "Solo para mí" })).toBeChecked();
+    await llenarYGuardar(user);
+
+    expect(createQuickReply).toHaveBeenCalledWith(
+      expect.anything(),
+      "Buenas noches",
+      "Buenas noches, soy Ana.",
+      ASESOR_ID
+    );
+  });
+
+  it("desde «Compartidos», «Solo para mí» viene desmarcado y crea con null", async () => {
+    const user = crearUsuario();
+    vi.mocked(createQuickReply).mockClear();
+    renderModal({ quickReplies: [compartido] });
+
+    await abrirFormulario(user);
+    expect(screen.getByRole("checkbox", { name: "Solo para mí" })).not.toBeChecked();
+    await llenarYGuardar(user);
+
+    expect(createQuickReply).toHaveBeenCalledWith(expect.anything(), "Buenas noches", "Buenas noches, soy Ana.", null);
+  });
+
+  it("desmarcar «Solo para mí» en «Mis mensajes» crea un compartido (null)", async () => {
+    const user = crearUsuario();
+    vi.mocked(createQuickReply).mockClear();
+    renderModal({ quickReplies: [propio] });
+
+    await abrirFormulario(user);
+    await user.click(screen.getByRole("checkbox", { name: "Solo para mí" }));
+    await llenarYGuardar(user);
+
+    expect(createQuickReply).toHaveBeenCalledWith(expect.anything(), "Buenas noches", "Buenas noches, soy Ana.", null);
+  });
+
+  it("marcar «Solo para mí» en «Compartidos» crea un personal", async () => {
+    const user = crearUsuario();
+    vi.mocked(createQuickReply).mockClear();
+    renderModal({ quickReplies: [compartido] });
+
+    await abrirFormulario(user);
+    await user.click(screen.getByRole("checkbox", { name: "Solo para mí" }));
+    await llenarYGuardar(user);
+
+    expect(createQuickReply).toHaveBeenCalledWith(
+      expect.anything(),
+      "Buenas noches",
+      "Buenas noches, soy Ana.",
+      ASESOR_ID
+    );
+  });
+
+  it("al EDITAR no aparece «Solo para mí»: un mensaje no cambia de tipo", async () => {
+    const user = crearUsuario();
+    vi.mocked(updateQuickReply).mockClear();
+    renderModal({ quickReplies: [propio, compartido] });
+
+    await user.click(screen.getByRole("button", { name: "Editar" }));
+
+    expect(screen.queryByRole("checkbox", { name: "Solo para mí" })).not.toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Guardar cambios" }));
+    expect(updateQuickReply).toHaveBeenCalledWith(expect.anything(), "p1", "Buenos días", expect.any(String));
+  });
+
+  it("un rechazo por permiso muestra el mensaje propio en el toast, no el genérico", async () => {
+    const user = crearUsuario();
+    const { toast } = await import("@heroui/react");
+    vi.mocked(deleteQuickReply).mockRejectedValueOnce(
+      new ConfigWriteDeniedError("Este mensaje rápido ya no existe o no es tuyo.")
+    );
+    renderModal({ quickReplies: [propio] });
+
+    await user.click(screen.getByRole("button", { name: "Borrar" }));
+
+    expect(toast.danger).toHaveBeenCalledWith("Este mensaje rápido ya no existe o no es tuyo.");
+  });
+
+  it("un error de red al borrar conserva el texto genérico", async () => {
+    const user = crearUsuario();
+    const { toast } = await import("@heroui/react");
+    vi.mocked(deleteQuickReply).mockRejectedValueOnce(new Error("fetch failed"));
+    renderModal({ quickReplies: [propio] });
+
+    await user.click(screen.getByRole("button", { name: "Borrar" }));
+
+    expect(toast.danger).toHaveBeenCalledWith("No se pudo borrar el mensaje rápido.");
   });
 });

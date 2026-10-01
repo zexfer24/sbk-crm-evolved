@@ -23,6 +23,13 @@ export const ONLY_AUTHOR_LESSON_MESSAGE = "Solo el autor de la lección o un sup
 export const ONLY_AUTHOR_NOTE_MESSAGE = "Solo el autor de la nota o un supervisor puede cambiar esto.";
 export const ONLY_AUTHOR_STICKER_MESSAGE = "Solo quien subió el sticker o un supervisor puede borrarlo.";
 
+/**
+ * Mensajes rápidos (T5b, 30/9/2026): con `owner_id` la RLS deja tocar un
+ * mensaje solo a su dueño, y uno compartido puede haberlo borrado otro asesor
+ * un segundo antes; en los dos casos el UPDATE/DELETE afecta 0 filas.
+ */
+export const QUICK_REPLY_NOT_YOURS_MESSAGE = "Este mensaje rápido ya no existe o no es tuyo.";
+
 /** La escritura llegó a la base y no cambió nada: casi siempre, la RLS la ignoró. */
 export class ConfigWriteDeniedError extends Error {
   name = "ConfigWriteDeniedError";

@@ -1694,6 +1694,7 @@ export type Database = {
           created_at: string
           id: string
           label: string
+          owner_id: string | null
           updated_at: string
         }
         Insert: {
@@ -1701,6 +1702,7 @@ export type Database = {
           created_at?: string
           id?: string
           label: string
+          owner_id?: string | null
           updated_at?: string
         }
         Update: {
@@ -1708,9 +1710,18 @@ export type Database = {
           created_at?: string
           id?: string
           label?: string
+          owner_id?: string | null
           updated_at?: string
         }
-        Relationships: []
+        Relationships: [
+          {
+            foreignKeyName: "quick_replies_owner_id_fkey"
+            columns: ["owner_id"]
+            isOneToOne: false
+            referencedRelation: "agents"
+            referencedColumns: ["id"]
+          },
+        ]
       }
       rate_limit_hits: {
         Row: {

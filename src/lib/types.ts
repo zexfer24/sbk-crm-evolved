@@ -439,6 +439,12 @@ export interface QuickReply {
   id: string;
   label: string;
   content: string;
+  /**
+   * Dueño del mensaje (T5b, "La ronda del cliente", 30/9/2026): `null` =
+   * compartido, lo ven y editan todos los asesores; con un id = personal, solo
+   * ese asesor (la RLS de la migración 20261001010000 ya filtra los ajenos).
+   */
+  ownerId: string | null;
 }
 
 /**

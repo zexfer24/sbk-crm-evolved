@@ -224,6 +224,7 @@ function buildQuickReply(over: Partial<QuickReply> = {}): QuickReply {
     id: `qr-${Math.random().toString(36).slice(2)}`,
     label: "Catálogo",
     content: "Acá va nuestro catálogo",
+    ownerId: null,
     ...over,
   };
 }

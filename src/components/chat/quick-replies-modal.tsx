@@ -7,13 +7,30 @@ import { Button, Input, Label, Modal, TextArea, toast } from "@heroui/react";
 import type { CatalogLink, QuickReply } from "@/lib/types";
 import { createClient } from "@/lib/supabase/client";
 import { createQuickReply, deleteQuickReply, updateQuickReply } from "@/lib/mutations";
+import { configErrorMessage } from "@/lib/config-write";
 import { catalogMarkerFor, catalogUrlHint, hasRawUrl, resolveCatalogMarkers } from "@/lib/catalog-links";
 import { insertAtCaret } from "@/lib/composer-text";
+import { SlidingPills } from "@/components/sliding-pills";
+
+/** Las dos pestañas de T5b: los compartidos (`ownerId === null`) y los del propio asesor. */
+type QuickReplyTab = "shared" | "mine";
+
+function byLabel(a: QuickReply, b: QuickReply) {
+  return a.label.localeCompare(b.label, "es");
+}
 
 interface QuickRepliesModalProps {
   isOpen: boolean;
   onOpenChange: (open: boolean) => void;
   quickReplies: QuickReply[];
+  /**
+   * El asesor que tiene el modal abierto (T5b, "La ronda del cliente",
+   * 30/9/2026): «Mis mensajes» son los que tienen `ownerId === currentAgentId`
+   * y un mensaje nuevo con «Solo para mí» nace con este `ownerId`. La RLS ya no
+   * entrega los personales de otros, pero el filtro por id también se hace acá:
+   * no depende de que la base sea la única barrera.
+   */
+  currentAgentId: string;
   /**
    * Los catálogos ACTIVOS (T4b, "Nada sin leer, un solo catálogo y la
    * factura Saint", 18/9/2026): alimentan el botón "Insertar catálogo" (una
@@ -24,7 +41,33 @@ interface QuickRepliesModalProps {
   onSelect: (content: string) => void;
 }
 
-export function QuickRepliesModal({ isOpen, onOpenChange, quickReplies, catalogLinks, onSelect }: QuickRepliesModalProps) {
+export function QuickRepliesModal({
+  isOpen,
+  onOpenChange,
+  quickReplies,
+  currentAgentId,
+  catalogLinks,
+  onSelect,
+}: QuickRepliesModalProps) {
+  const sharedReplies = quickReplies.filter((reply) => reply.ownerId === null).sort(byLabel);
+  const myReplies = quickReplies.filter((reply) => reply.ownerId === currentAgentId).sort(byLabel);
+
+  // Pestaña inicial: «Mis mensajes» si el asesor ya tiene alguno, porque es
+  // donde va a buscar sus saludos; si no, «Compartidos». Se recalcula cada vez
+  // que el modal se ABRE (patrón "Adjusting state when a prop changes" de
+  // React, durante el render): el componente vive montado aunque esté cerrado
+  // y los mensajes pueden llegar después del primer render.
+  const [tab, setTab] = useState<QuickReplyTab>(myReplies.length > 0 ? "mine" : "shared");
+  const [wasOpen, setWasOpen] = useState(isOpen);
+  if (isOpen !== wasOpen) {
+    setWasOpen(isOpen);
+    if (isOpen) setTab(myReplies.length > 0 ? "mine" : "shared");
+  }
+  const visibleReplies = tab === "mine" ? myReplies : sharedReplies;
+
+  // «Solo para mí» solo existe al CREAR: un mensaje no cambia de tipo al
+  // editarlo (la mutación de update ni siquiera manda `owner_id`).
+  const [onlyForMe, setOnlyForMe] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [label, setLabel] = useState("");
   const [content, setContent] = useState("");
@@ -44,6 +87,8 @@ export function QuickRepliesModal({ isOpen, onOpenChange, quickReplies, catalogL
     setEditingId(null);
     setLabel("");
     setContent("");
+    // Se crea donde el asesor está mirando: desde «Mis mensajes» nace personal.
+    setOnlyForMe(tab === "mine");
     setIsFormOpen(true);
     setIsCatalogMenuOpen(false);
   }
@@ -98,11 +143,14 @@ export function QuickRepliesModal({ isOpen, onOpenChange, quickReplies, catalogL
       if (editingId) {
         await updateQuickReply(supabase, editingId, label.trim(), content.trim());
       } else {
-        await createQuickReply(supabase, label.trim(), content.trim());
+        await createQuickReply(supabase, label.trim(), content.trim(), onlyForMe ? currentAgentId : null);
+        // Un mensaje recién creado se ve en su pestaña: crear un personal
+        // desde «Compartidos» (o al revés) lo dejaría fuera de la vista.
+        setTab(onlyForMe ? "mine" : "shared");
       }
       setIsFormOpen(false);
-    } catch {
-      toast.danger("No se pudo guardar el mensaje rápido.");
+    } catch (error) {
+      toast.danger(configErrorMessage(error, "No se pudo guardar el mensaje rápido."));
     } finally {
       setIsSaving(false);
     }
@@ -112,8 +160,8 @@ export function QuickRepliesModal({ isOpen, onOpenChange, quickReplies, catalogL
     try {
       const supabase = createClient();
       await deleteQuickReply(supabase, id);
-    } catch {
-      toast.danger("No se pudo borrar el mensaje rápido.");
+    } catch (error) {
+      toast.danger(configErrorMessage(error, "No se pudo borrar el mensaje rápido."));
     }
   }
 
@@ -130,6 +178,18 @@ export function QuickRepliesModal({ isOpen, onOpenChange, quickReplies, catalogL
               <Modal.CloseTrigger />
             </Modal.Header>
             <Modal.Body className="flex flex-col gap-3">
+              <SlidingPills
+                tone="segmented"
+                variant="tablist"
+                ariaLabel="Tipo de mensajes rápidos"
+                value={tab}
+                onChange={setTab}
+                items={[
+                  { value: "shared", label: "Compartidos", count: sharedReplies.length },
+                  { value: "mine", label: "Mis mensajes", count: myReplies.length },
+                ]}
+              />
+
               {!isFormOpen && (
                 <Button variant="secondary" size="sm" onPress={startCreate} className="self-start">
                   <Plus size={14} />
@@ -232,6 +292,17 @@ export function QuickRepliesModal({ isOpen, onOpenChange, quickReplies, catalogL
                       </p>
                     )}
                   </div>
+                  {!editingId && (
+                    <label className="flex items-center gap-2 text-sm">
+                      <input
+                        type="checkbox"
+                        checked={onlyForMe}
+                        onChange={(e) => setOnlyForMe(e.target.checked)}
+                        className="h-4 w-4"
+                      />
+                      Solo para mí
+                    </label>
+                  )}
                   <div className="flex justify-end gap-2">
                     <Button size="sm" variant="ghost" onPress={() => setIsFormOpen(false)}>
                       Cancelar
@@ -244,7 +315,7 @@ export function QuickRepliesModal({ isOpen, onOpenChange, quickReplies, catalogL
               )}
 
               <div className="flex flex-col gap-2">
-                {quickReplies.map((reply) => {
+                {visibleReplies.map((reply) => {
                   // D6: un `{{catalogo:<key>}}` que no calza con ningún
                   // catálogo activo se queda TAL CUAL en el texto -- acá se
                   // marca en la lista para que el asesor lo vea antes de
@@ -298,8 +369,12 @@ export function QuickRepliesModal({ isOpen, onOpenChange, quickReplies, catalogL
                     </div>
                   );
                 })}
-                {quickReplies.length === 0 && !isFormOpen && (
-                  <p className="text-sm text-muted">Todavía no hay mensajes rápidos creados.</p>
+                {visibleReplies.length === 0 && !isFormOpen && (
+                  <p className="text-sm text-muted">
+                    {tab === "mine"
+                      ? "Todavía no tienes mensajes propios. Crea tus saludos con tu nombre: solo tú los verás."
+                      : "Todavía no hay mensajes rápidos creados."}
+                  </p>
                 )}
               </div>
             </Modal.Body>
