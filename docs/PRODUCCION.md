@@ -2950,6 +2950,34 @@ está en `CLAUDE.md` y no la toca esta entrega.
 
 ---
 
+## 18. WhatsApp por 360dialog (8/10/2026)
+
+El número de Meta se perdió por facturación; el nuevo (+58 422 894 7095) vive
+en 360dialog. El código habla con los dos proveedores y elige por
+`WHATSAPP_PROVIDER` (sin definir = `meta`, como hasta `52a8b4c`). Paso a paso,
+con el SQL del canal y el `curl` del webhook:
+`docs/entregas/2026-10-08-360dialog.md`. Sin migraciones.
+
+| Variable | Con `meta` | Con `360dialog` |
+|---|---|---|
+| `WHATSAPP_PROVIDER` | `meta` o vacía | `360dialog` |
+| `WHATSAPP_ACCESS_TOKEN` | obligatoria para enviar | no se lee |
+| `WHATSAPP_APP_SECRET` | obligatoria en producción (firma HMAC) | no se lee |
+| `D360_API_KEY` | no se lee | obligatoria (header `D360-API-KEY`) |
+| `D360_BASE_URL` | no se lee | opcional, default `https://waba-v2.360dialog.io` |
+| `WHATSAPP_WEBHOOK_TOKEN` | no se lee | obligatoria en producción (header `X-SBK-Webhook-Token`) |
+
+**Verificación:** `/api/health` sin nada en `missing`; un texto entrante llega
+a la bandeja (si el log dice `webhook_token_invalido`, el header no llega o no
+coincide); una imagen entrante se ve en el chat; responden el asesor y Seba;
+salen los checks de entregado/leído.
+
+**Volver a Meta** (si algún día hace falta): `WHATSAPP_PROVIDER=meta` con
+`WHATSAPP_ACCESS_TOKEN` y `WHATSAPP_APP_SECRET` cargadas, actualizar la fila
+de `whatsapp_channels` con el `phone_number_id` de Meta y redesplegar.
+
+---
+
 ## Comprobación final
 
 Con todo configurado, esta lista debe pasar entera:

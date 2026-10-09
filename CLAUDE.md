@@ -264,6 +264,13 @@ dejar rastro es lo que hacía desaparecer leads.
   escrita); los seeds de catálogo y playbooks sí.
 - Sin `WHATSAPP_APP_SECRET` el webhook acepta cualquier POST (a propósito,
   solo para local). En producción es obligatoria — igual que `CRON_SECRET`.
+  **Desde el 8/10/2026 eso vale solo con `WHATSAPP_PROVIDER=meta`**: con
+  `360dialog` (que no firma) la puerta es el header `x-sbk-webhook-token`
+  contra `WHATSAPP_WEBHOOK_TOKEN`, nunca un token en la query (Traefik loguea
+  la URL). Las credenciales salen SOLO de `whatsappCredentials()`
+  (`whatsapp/provider.ts`): no leer `WHATSAPP_ACCESS_TOKEN` en ningún otro
+  sitio. La llave de 360dialog solo viaja a `D360_BASE_URL`
+  (`rewriteD360MediaUrl` rechaza cualquier otro host antes del `fetch`).
 - **Cerrar una función `security definer` a `anon` exige LOS DOS revokes, no
   uno.** El privilegio llega por dos vías independientes: el `EXECUTE` de
   fábrica que Postgres —no Supabase— concede a toda función nueva al
