@@ -5,6 +5,7 @@ import type { CatalogLink, Playbook } from "@/lib/types";
 import type { TurnTarget } from "@/lib/ai/turn-target";
 import { resolveCatalogMarkers } from "@/lib/catalog-links";
 import { MetaApiError, metaErrorCode, sendWhatsappMedia, sendWhatsappText } from "@/lib/whatsapp/meta-client";
+import { whatsappCredentialProblem, whatsappCredentials, type WhatsappCredentials } from "@/lib/whatsapp/provider";
 import { signedUrlForSending } from "@/lib/media-link";
 import { errorText, log } from "@/lib/log";
 
@@ -27,16 +28,18 @@ export type { AgentConversation, TurnTarget } from "@/lib/ai/turn-target";
 
 type MediaKind = "image" | "video" | "document";
 
-function accessTokenFor(target: TurnTarget): string | null {
+function credentialsFor(target: TurnTarget): WhatsappCredentials | null {
   const isRealChannel = target.channelStatus === "connected" && Boolean(target.phoneNumberId);
   if (!isRealChannel) return null;
 
-  const accessToken = process.env.WHATSAPP_ACCESS_TOKEN;
-  if (!accessToken) {
-    console.warn(`Respuesta de la IA no enviada por WhatsApp en ${target.conversationId}: falta WHATSAPP_ACCESS_TOKEN.`);
+  const credentials = whatsappCredentials();
+  if (!credentials) {
+    console.warn(
+      `Respuesta de la IA no enviada por WhatsApp en ${target.conversationId}: falta ${whatsappCredentialProblem()}.`
+    );
     return null;
   }
-  return accessToken;
+  return credentials;
 }
 
 /**
@@ -106,13 +109,13 @@ function columnasDeEntrega(entrega: DeliveryOutcome) {
 
 async function entregar(
   target: TurnTarget,
-  enviar: (accessToken: string) => Promise<{ whatsappMessageId: string }>
+  enviar: (credentials: WhatsappCredentials) => Promise<{ whatsappMessageId: string }>
 ): Promise<DeliveryOutcome> {
-  const accessToken = accessTokenFor(target);
-  if (!accessToken) return NO_ENVIADO;
+  const credentials = credentialsFor(target);
+  if (!credentials) return NO_ENVIADO;
 
   try {
-    const { whatsappMessageId } = await enviar(accessToken);
+    const { whatsappMessageId } = await enviar(credentials);
     return {
       whatsapp_message_id: whatsappMessageId,
       whatsapp_status: "sent",
@@ -161,8 +164,8 @@ export async function sendAgentText(
   text: string,
   opciones?: SendAgentTextOptions
 ): Promise<DeliveryOutcome> {
-  const entrega = await entregar(target, (accessToken) =>
-    sendWhatsappText(target.phoneNumberId!, accessToken, target.phoneNumber, text)
+  const entrega = await entregar(target, (credentials) =>
+    sendWhatsappText(target.phoneNumberId!, credentials, target.phoneNumber, text)
   );
 
   await supabase.from("messages").insert({
@@ -187,13 +190,13 @@ async function sendAgentMedia(
   // Lo más probable acá es que Meta no haya podido descargar el archivo desde
   // la URL configurada. El texto ya salió, así que el cliente no se queda sin
   // respuesta — pero el adjunto que no llegó tiene que verse como no llegado.
-  const entrega = await entregar(target, async (accessToken) => {
+  const entrega = await entregar(target, async (credentials) => {
     // El bucket es privado: Meta necesita un enlace firmado. Si el adjunto
     // apunta a una URL de fuera, se manda tal cual.
     const link = await signedUrlForSending(url, { conversationId: target.conversationId });
     if (!link) throw new Error(`No se pudo preparar el adjunto ${url} para enviarlo.`);
 
-    return sendWhatsappMedia(target.phoneNumberId!, accessToken, target.phoneNumber, mediaType, link);
+    return sendWhatsappMedia(target.phoneNumberId!, credentials, target.phoneNumber, mediaType, link);
   });
 
   await supabase.from("messages").insert({

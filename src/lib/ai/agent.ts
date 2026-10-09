@@ -84,6 +84,7 @@ import { conTelemetriaDeTurno, turnCallsSnapshot } from "@/lib/ai/turn-telemetry
 import { withinFreeformWindow } from "@/lib/dashboard";
 import { isWithin24hWindow } from "@/lib/whatsapp-window";
 import { sendTypingIndicator } from "@/lib/whatsapp/meta-client";
+import { whatsappCredentials } from "@/lib/whatsapp/provider";
 
 // ---------------------------------------------------------------------------
 // Orquestador del turno del agente. Dos tiempos:
@@ -481,13 +482,13 @@ function fireTypingIndicator(
 ): void {
   if (!isWithin24hWindow(lastCustomerMessageAt)) return;
   if (target.channelStatus !== "connected" || !target.phoneNumberId) return;
-  const accessToken = process.env.WHATSAPP_ACCESS_TOKEN;
-  if (!accessToken) return;
+  const credentials = whatsappCredentials();
+  if (!credentials) return;
 
   void lastInboundWamid(supabase, target.conversationId)
     .then((wamid) => {
       if (!wamid) return;
-      return sendTypingIndicator(target.phoneNumberId!, accessToken, wamid);
+      return sendTypingIndicator(target.phoneNumberId!, credentials, wamid);
     })
     // Red de más: `sendTypingIndicator` ya no lanza (ver meta-client.ts), pero
     // la consulta del wamid sí podría fallar contra la base. Cualquiera de

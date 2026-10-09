@@ -1,5 +1,5 @@
 import { createHmac } from "node:crypto";
-import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 
 // `after()` de Next.js exige contexto de request real; en el test lo
 // ejecutamos inline para poder esperar sus efectos.
@@ -837,6 +837,7 @@ let DEBOUNCE_SHORT_SECONDS: typeof import("@/lib/ai/queue").DEBOUNCE_SHORT_SECON
 // para poder pisarlo una vez con `mockResolvedValueOnce` en el test de la
 // nota de voz, sin afectar al resto (que dependen del default `image/jpeg`).
 let getMetaMediaUrl: typeof import("@/lib/whatsapp/meta-client").getMetaMediaUrl;
+let downloadMetaMedia: typeof import("@/lib/whatsapp/meta-client").downloadMetaMedia;
 
 // 29/8/2026: bajo inanición extrema de CPU la carga en frío del grafo
 // (cuatro fábricas con importOriginal) superó los 15 s del hookTimeout; el
@@ -846,7 +847,7 @@ beforeAll(async () => {
   ({ enqueueAgentTurns, processAfterDebounce, DEBOUNCE_SECONDS, DEBOUNCE_SHORT_SECONDS } = await import(
     "@/lib/ai/queue"
   ));
-  ({ getMetaMediaUrl } = await import("@/lib/whatsapp/meta-client"));
+  ({ getMetaMediaUrl, downloadMetaMedia } = await import("@/lib/whatsapp/meta-client"));
 }, 30_000);
 
 /** Limpieza uniforme del estado compartido a nivel de módulo, antes de cada prueba. */
@@ -1156,6 +1157,206 @@ describe("POST /api/webhooks/whatsapp — firma de Meta", () => {
       if (previousSecret === undefined) delete process.env.WHATSAPP_APP_SECRET;
       else process.env.WHATSAPP_APP_SECRET = previousSecret;
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 360dialog (plan "SBK CRM pasa a 360dialog", 8/10/2026, T3, D5-D7).
+//
+// 360dialog no firma con X-Hub-Signature-256: se autentica con un header que
+// nosotros le configuramos al registrar el webhook (`x-sbk-webhook-token`).
+// Cada proveedor tiene su ÚNICA puerta (D7): con 360dialog una firma de Meta
+// válida no autentica, y con meta el token no sirve.
+// ---------------------------------------------------------------------------
+describe("POST /api/webhooks/whatsapp — 360dialog", () => {
+  const TOKEN = "token-del-webhook-360";
+
+  function sign(rawBody: string, secret: string): string {
+    return "sha256=" + createHmac("sha256", secret).update(rawBody, "utf8").digest("hex");
+  }
+
+  /** Imagen entrante con el objeto de media a medida (`url` es opcional). */
+  function imagenBody(waMessageId: string, image: Record<string, unknown>) {
+    const base = webhookImageBody(waMessageId);
+    base.entry[0].changes[0].value.messages[0].image = image as never;
+    return base;
+  }
+
+  beforeEach(() => {
+    vi.stubEnv("WHATSAPP_PROVIDER", "360dialog");
+    vi.stubEnv("D360_API_KEY", "llave-360");
+    vi.stubEnv("WHATSAPP_WEBHOOK_TOKEN", TOKEN);
+    vi.stubEnv("WHATSAPP_APP_SECRET", "");
+    vi.stubEnv("WHATSAPP_ACCESS_TOKEN", "");
+    vi.mocked(getMetaMediaUrl).mockClear();
+    vi.mocked(downloadMetaMedia).mockClear();
+  });
+
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
+  it("sin el header del token rechaza con 401 y no guarda nada", async () => {
+    const waMessageId = "wamid.d360-sin-header";
+    const response = await POST(fakeRequest(webhookBody(waMessageId)));
+
+    expect(response.status).toBe(401);
+    expect(insertedMessages.has(waMessageId)).toBe(false);
+  });
+
+  it("con un token incorrecto (de otro largo o del mismo) rechaza con 401", async () => {
+    for (const [i, malo] of ["corto", TOKEN + "-y-mas-largo", "x".repeat(TOKEN.length)].entries()) {
+      const waMessageId = `wamid.d360-token-malo-${i}`;
+      const response = await POST(fakeRequest(webhookBody(waMessageId), { "x-sbk-webhook-token": malo }));
+
+      expect(response.status).toBe(401);
+      expect(insertedMessages.has(waMessageId)).toBe(false);
+    }
+  });
+
+  it("con el token correcto procesa el request", async () => {
+    const waMessageId = "wamid.d360-token-ok";
+    const response = await POST(fakeRequest(webhookBody(waMessageId), { "x-sbk-webhook-token": TOKEN }));
+
+    expect(response.status).toBe(200);
+    expect(insertedMessages.has(waMessageId)).toBe(true);
+  });
+
+  it("una firma de Meta válida SIN el token no autentica (D7)", async () => {
+    vi.stubEnv("WHATSAPP_APP_SECRET", "secreto-de-meta");
+    const waMessageId = "wamid.d360-firma-meta";
+    const body = webhookBody(waMessageId);
+
+    const response = await POST(
+      fakeRequest(body, { "x-hub-signature-256": sign(JSON.stringify(body), "secreto-de-meta") })
+    );
+
+    expect(response.status).toBe(401);
+    expect(insertedMessages.has(waMessageId)).toBe(false);
+  });
+
+  it("en producción, sin WHATSAPP_WEBHOOK_TOKEN rechaza con 503 aunque llegue un token", async () => {
+    vi.stubEnv("NODE_ENV", "production");
+    vi.stubEnv("WHATSAPP_WEBHOOK_TOKEN", "");
+    const waMessageId = "wamid.d360-prod-sin-token";
+
+    const response = await POST(fakeRequest(webhookBody(waMessageId), { "x-sbk-webhook-token": TOKEN }));
+
+    expect(response.status).toBe(503);
+    expect(insertedMessages.has(waMessageId)).toBe(false);
+  });
+
+  it("fuera de producción, sin WHATSAPP_WEBHOOK_TOKEN procesa el request (solo local)", async () => {
+    vi.stubEnv("WHATSAPP_WEBHOOK_TOKEN", "");
+    const waMessageId = "wamid.d360-local-sin-token";
+
+    const response = await POST(fakeRequest(webhookBody(waMessageId)));
+
+    expect(response.status).toBe(200);
+    expect(insertedMessages.has(waMessageId)).toBe(true);
+  });
+
+  it("un WHATSAPP_PROVIDER inválido responde 503 y no guarda nada", async () => {
+    vi.stubEnv("WHATSAPP_PROVIDER", "twilio");
+    const waMessageId = "wamid.d360-proveedor-invalido";
+
+    const response = await POST(fakeRequest(webhookBody(waMessageId), { "x-sbk-webhook-token": TOKEN }));
+
+    expect(response.status).toBe(503);
+    expect(insertedMessages.has(waMessageId)).toBe(false);
+  });
+
+  it("con meta, el token del webhook no sustituye a la firma", async () => {
+    vi.stubEnv("WHATSAPP_PROVIDER", "meta");
+    vi.stubEnv("WHATSAPP_APP_SECRET", "secreto-de-meta");
+    const waMessageId = "wamid.meta-con-token-360";
+
+    const response = await POST(fakeRequest(webhookBody(waMessageId), { "x-sbk-webhook-token": TOKEN }));
+
+    expect(response.status).toBe(401);
+    expect(insertedMessages.has(waMessageId)).toBe(false);
+  });
+
+  describe("multimedia", () => {
+    it("con `url` en el payload baja el archivo directo con credenciales 360 y no pide /{media_id}", async () => {
+      const waMessageId = "wamid.d360-media-url";
+      const url = "https://lookaside.fbsbx.com/whatsapp_business/attachments/?mid=1&ext=2&hash=3";
+
+      const response = await POST(
+        fakeRequest(imagenBody(waMessageId, { id: "media-360-1", mime_type: "image/png", url }), {
+          "x-sbk-webhook-token": TOKEN,
+        })
+      );
+      expect(response.status).toBe(200);
+
+      await vi.waitFor(() => expect(uploadedPaths).toContainEqual(`conv-1/${waMessageId}.png`), { timeout: 5000 });
+      expect(downloadMetaMedia).toHaveBeenCalledWith(
+        url,
+        expect.objectContaining({ provider: "360dialog", apiKey: "llave-360" })
+      );
+      expect(getMetaMediaUrl).not.toHaveBeenCalled();
+    });
+
+    it("si la descarga directa falla, cae al camino por /{media_id}", async () => {
+      const waMessageId = "wamid.d360-media-url-falla";
+      const url = "https://lookaside.fbsbx.com/whatsapp_business/attachments/?mid=9";
+      vi.mocked(downloadMetaMedia).mockRejectedValueOnce(new Error("410 Gone"));
+
+      const response = await POST(
+        fakeRequest(imagenBody(waMessageId, { id: "media-360-2", mime_type: "image/png", url }), {
+          "x-sbk-webhook-token": TOKEN,
+        })
+      );
+      expect(response.status).toBe(200);
+
+      await vi.waitFor(() => expect(uploadedPaths).toContainEqual(`conv-1/${waMessageId}.jpg`), { timeout: 5000 });
+      expect(getMetaMediaUrl).toHaveBeenCalledWith(
+        "media-360-2",
+        expect.objectContaining({ provider: "360dialog" })
+      );
+      expect(downloadMetaMedia).toHaveBeenCalledTimes(2);
+    });
+
+    it("sin `url` en el payload usa /{media_id}", async () => {
+      const waMessageId = "wamid.d360-media-sin-url";
+
+      const response = await POST(
+        fakeRequest(imagenBody(waMessageId, { id: "media-360-3", mime_type: "image/jpeg" }), {
+          "x-sbk-webhook-token": TOKEN,
+        })
+      );
+      expect(response.status).toBe(200);
+
+      await vi.waitFor(() => expect(uploadedPaths).toContainEqual(`conv-1/${waMessageId}.jpg`), { timeout: 5000 });
+      expect(getMetaMediaUrl).toHaveBeenCalledWith(
+        "media-360-3",
+        expect.objectContaining({ provider: "360dialog", apiKey: "llave-360" })
+      );
+      expect(downloadMetaMedia).toHaveBeenCalledTimes(1);
+    });
+
+    it("con meta ignora `url` del payload: sigue el camino de siempre", async () => {
+      vi.stubEnv("WHATSAPP_PROVIDER", "meta");
+      vi.stubEnv("WHATSAPP_ACCESS_TOKEN", "token-meta");
+      const waMessageId = "wamid.meta-media-url-ignorada";
+
+      const response = await POST(
+        fakeRequest(
+          imagenBody(waMessageId, { id: "media-meta-1", mime_type: "image/jpeg", url: "https://x.example/a" })
+        )
+      );
+      expect(response.status).toBe(200);
+
+      await vi.waitFor(() => expect(uploadedPaths).toContainEqual(`conv-1/${waMessageId}.jpg`), { timeout: 5000 });
+      expect(getMetaMediaUrl).toHaveBeenCalledWith(
+        "media-meta-1",
+        expect.objectContaining({ provider: "meta", accessToken: "token-meta" })
+      );
+      expect(downloadMetaMedia).toHaveBeenCalledWith(
+        "https://meta.example/file",
+        expect.objectContaining({ provider: "meta" })
+      );
+    });
   });
 });
 

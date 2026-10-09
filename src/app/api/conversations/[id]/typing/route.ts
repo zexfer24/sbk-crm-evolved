@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
 import { fetchCurrentAgent } from "@/lib/data";
 import { sendTypingIndicator } from "@/lib/whatsapp/meta-client";
+import { whatsappCredentials } from "@/lib/whatsapp/provider";
 
 // ---------------------------------------------------------------------------
 // "Escribiendo…" hacia el cliente, del lado del asesor humano (T3.1,
@@ -36,9 +37,9 @@ export async function POST(_request: Request, context: { params: Promise<{ id: s
   const conversation = conversationRow as unknown as TypingConversation | null;
 
   const isRealChannel = conversation?.channel.status === "connected" && conversation.channel.phone_number_id;
-  const accessToken = process.env.WHATSAPP_ACCESS_TOKEN;
+  const credentials = whatsappCredentials();
 
-  if (isRealChannel && accessToken) {
+  if (isRealChannel && credentials) {
     const { data: lastInbound } = await supabase
       .from("messages")
       .select("whatsapp_message_id")
@@ -50,7 +51,7 @@ export async function POST(_request: Request, context: { params: Promise<{ id: s
 
     const wamid = lastInbound?.whatsapp_message_id as string | null | undefined;
     if (wamid) {
-      await sendTypingIndicator(conversation.channel.phone_number_id!, accessToken, wamid);
+      await sendTypingIndicator(conversation.channel.phone_number_id!, credentials, wamid);
     }
   }
 

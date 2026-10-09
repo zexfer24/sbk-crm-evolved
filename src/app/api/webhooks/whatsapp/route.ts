@@ -1,4 +1,4 @@
-import { createHmac, timingSafeEqual } from "node:crypto";
+import { createHash, createHmac, timingSafeEqual } from "node:crypto";
 import { NextResponse, after } from "next/server";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import type { Json } from "@/lib/supabase/database.types";
@@ -11,6 +11,7 @@ import {
   metaErrorCode,
   sendWhatsappTemplate,
 } from "@/lib/whatsapp/meta-client";
+import { whatsappCredentials, whatsappProvider, type WhatsappCredentials } from "@/lib/whatsapp/provider";
 import { debounceSecondsFor, enqueueAgentTurns, processAfterDebounce } from "@/lib/ai/queue";
 import { recordHandoff } from "@/lib/ai/handoffs";
 import { MEDIA_BUCKET, mediaUrlFor } from "@/lib/storage";
@@ -44,6 +45,13 @@ interface WebhookMediaObject {
   id: string;
   mime_type?: string;
   caption?: string;
+  /**
+   * Solo con 360dialog (plan "SBK CRM pasa a 360dialog", 8/10/2026, D5): su
+   * documentación confirma que el webhook trae una URL de descarga pero no
+   * nombra el campo; se asume `url` (el nombre de la Cloud API reciente). Si
+   * no viene, o la descarga directa falla, se cae al camino por `id`.
+   */
+  url?: string;
 }
 
 interface WebhookMessage {
@@ -338,7 +346,7 @@ async function sendWelcome(
   channel: WelcomeChannel,
   conversationId: string,
   toPhoneNumber: string,
-  accessToken: string | undefined
+  credentials: WhatsappCredentials | null
 ): Promise<void> {
   const templateName = process.env.WHATSAPP_WELCOME_TEMPLATE;
   if (!templateName) return;
@@ -347,7 +355,7 @@ async function sendWelcome(
   // sin configurar o un canal desconectado no debe sellar la fecha — si se
   // arregla la configuración después, ese cliente tiene que poder recibir la
   // bienvenida igual.
-  if (channel.status !== "connected" || !channel.phone_number_id || !accessToken) {
+  if (channel.status !== "connected" || !channel.phone_number_id || !credentials) {
     log.warn("bienvenida_canal_no_disponible", { conversationId });
     return;
   }
@@ -363,7 +371,7 @@ async function sendWelcome(
   try {
     const { whatsappMessageId } = await sendWhatsappTemplate(
       channel.phone_number_id,
-      accessToken,
+      credentials,
       toPhoneNumber,
       templateName,
       language
@@ -789,6 +797,22 @@ function hasValidMetaSignature(rawBody: string, signatureHeader: string | null, 
 }
 
 /**
+ * Verifica el header `x-sbk-webhook-token` contra WHATSAPP_WEBHOOK_TOKEN
+ * (plan "SBK CRM pasa a 360dialog", 8/10/2026, D6): 360dialog no firma sus
+ * eventos, así que la autenticación es un secreto compartido que le
+ * configuramos al registrar el webhook. Se compara el SHA-256 de ambos con
+ * `timingSafeEqual`: siempre del mismo largo, así que ni la comparación ni el
+ * largo del token filtran nada. Nunca viaja en la query (queda en los logs
+ * del proxy).
+ */
+function hasValidWebhookToken(tokenHeader: string | null, secret: string): boolean {
+  if (!tokenHeader) return false;
+  const esperado = createHash("sha256").update(secret, "utf8").digest();
+  const recibido = createHash("sha256").update(tokenHeader, "utf8").digest();
+  return timingSafeEqual(esperado, recibido);
+}
+
+/**
  * La respuesta final del POST, que depende de `persistenciaFallida` (D1,
  * plan "Nada se pierde en un corte ni en un deploy", 21-22/9/2026): sin
  * pérdidas, 200 de siempre; con alguna pérdida TRANSITORIA en este lote, 503
@@ -805,9 +829,34 @@ function respuestaWebhook(persistenciaFallida: boolean) {
 
 export async function POST(request: Request) {
   const rawBody = await request.text();
+  const provider = whatsappProvider();
   const appSecret = process.env.WHATSAPP_APP_SECRET;
+  const webhookToken = process.env.WHATSAPP_WEBHOOK_TOKEN;
 
-  if (appSecret) {
+  // Cada proveedor tiene su ÚNICA puerta (plan "SBK CRM pasa a 360dialog",
+  // 8/10/2026, D7): con 360dialog una firma de Meta no autentica, y con meta
+  // el token no sirve. Un proveedor inválido es configuración rota: se
+  // rechaza en vez de adivinar con cuál de las dos puertas dejar pasar.
+  if (provider === null) {
+    log.error("whatsapp_proveedor_invalido");
+    return NextResponse.json({ error: "Webhook mal configurado." }, { status: 503 });
+  }
+
+  if (provider === "360dialog") {
+    if (webhookToken) {
+      if (!hasValidWebhookToken(request.headers.get("x-sbk-webhook-token"), webhookToken)) {
+        log.error("webhook_token_invalido");
+        return NextResponse.json({ error: "Token inválido." }, { status: 401 });
+      }
+    } else if (process.env.NODE_ENV === "production") {
+      // Mismo criterio que la firma de Meta: sin secreto no hay forma de
+      // distinguir un evento de 360dialog de uno inventado.
+      log.error("webhook_sin_secreto_en_produccion");
+      return NextResponse.json({ error: "Webhook mal configurado." }, { status: 503 });
+    } else {
+      log.warn("webhook_sin_verificacion_de_token");
+    }
+  } else if (appSecret) {
     const signature = request.headers.get("x-hub-signature-256");
     if (!hasValidMetaSignature(rawBody, signature, appSecret)) {
       log.error("webhook_firma_invalida");
@@ -853,7 +902,7 @@ export async function POST(request: Request) {
     log.warn("webhook_limitado", { limite: WEBHOOK_RATE_LIMIT, ventanaSegundos: WEBHOOK_RATE_WINDOW_SECONDS });
     return NextResponse.json({ ok: true, throttled: true });
   }
-  const accessToken = process.env.WHATSAPP_ACCESS_TOKEN;
+  const credentials = whatsappCredentials();
   /**
    * Conversaciones que recibieron un mensaje en este lote, con la ventana de
    * silencio que le toca a cada una.
@@ -1370,6 +1419,8 @@ export async function POST(request: Request) {
         let messageType: string = "text";
         let content: string | null = null;
         let pendingMediaId: string | null = null;
+        /** Solo 360dialog (D5): URL directa y mime que trajo el webhook, si trajo. */
+        let pendingMediaDirect: { url: string; mimeType: string } | null = null;
         /**
          * Lo que el cliente TECLEÓ, que no siempre es `content`.
          *
@@ -1396,6 +1447,9 @@ export async function POST(request: Request) {
           content = mediaObject?.caption ?? null;
           customerText = content;
           pendingMediaId = mediaObject?.id ?? null;
+          if (mediaObject?.url && mediaObject.mime_type) {
+            pendingMediaDirect = { url: mediaObject.url, mimeType: mediaObject.mime_type };
+          }
         } else if (message.type === "location" && message.location) {
           content = describirUbicacion(message.location);
         } else if (message.type === "contacts" && message.contacts?.length) {
@@ -1511,15 +1565,39 @@ export async function POST(request: Request) {
           continue;
         }
 
-        if (pendingMediaId && accessToken) {
+        if (pendingMediaId && credentials) {
           const messageDbId = insertedMessage.id;
           const convId = conversationId;
           const waMessageId = message.id;
           const mediaId = pendingMediaId;
+          const direct = credentials.provider === "360dialog" ? pendingMediaDirect : null;
           mediaDownloadTasks.push(async () => {
             try {
-              const { url, mimeType } = await getMetaMediaUrl(mediaId, accessToken);
-              const bytes = await downloadMetaMedia(url, accessToken);
+              let mimeType: string | undefined;
+              let bytes: Uint8Array | undefined;
+
+              // D5: con 360dialog el webhook puede traer la URL de descarga
+              // (vale ~5 min; esta tarea corre enseguida, tras responder). Si
+              // falla, no se da por perdido el archivo: se cae al camino por
+              // `id` (GET /{media_id}), el mismo que usa meta.
+              if (direct) {
+                try {
+                  bytes = await downloadMetaMedia(direct.url, credentials);
+                  mimeType = direct.mimeType;
+                } catch (err) {
+                  log.warn("webhook_media_url_directa_fallida", {
+                    conversationId: convId,
+                    whatsappMessageId: waMessageId,
+                    detail: errorText(err),
+                  });
+                }
+              }
+
+              if (bytes === undefined || mimeType === undefined) {
+                const resolved = await getMetaMediaUrl(mediaId, credentials);
+                mimeType = resolved.mimeType;
+                bytes = await downloadMetaMedia(resolved.url, credentials);
+              }
               const extension = extensionForMime(mimeType);
               const path = `${convId}/${waMessageId}.${extension}`;
 
@@ -1576,7 +1654,7 @@ export async function POST(request: Request) {
         // sola bienvenida sobrevive tanto a varios mensajes del cliente en
         // el mismo lote como a dos invocaciones concurrentes del webhook
         // (29/8/2026).
-        if (windowWasClosed) await sendWelcome(supabase, channel, conversationId, phoneNumber, accessToken);
+        if (windowWasClosed) await sendWelcome(supabase, channel, conversationId, phoneNumber, credentials);
       }
     }
   }

@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
 import { fetchCurrentAgent } from "@/lib/data";
 import { markWhatsappRead } from "@/lib/whatsapp/meta-client";
+import { whatsappCredentials } from "@/lib/whatsapp/provider";
 
 // ---------------------------------------------------------------------------
 // Doble check azul hacia el cliente (T3.1, 4/9/2026).
@@ -39,11 +40,11 @@ export async function POST(_request: Request, context: { params: Promise<{ id: s
   const conversation = conversationRow as unknown as ReadConversation | null;
 
   const isRealChannel = conversation?.channel.status === "connected" && conversation.channel.phone_number_id;
-  const accessToken = process.env.WHATSAPP_ACCESS_TOKEN;
+  const credentials = whatsappCredentials();
 
-  // Canal simulado, o falta la variable del token: no hay a quién avisarle.
+  // Canal simulado, o falta la credencial del proveedor (8/10/2026: Meta o 360dialog): no hay a quién avisarle.
   // Responde 200 igual — el chat de demo no tiene por qué fallar por esto.
-  if (isRealChannel && accessToken) {
+  if (isRealChannel && credentials) {
     const { data: lastInbound } = await supabase
       .from("messages")
       .select("whatsapp_message_id")
@@ -57,7 +58,7 @@ export async function POST(_request: Request, context: { params: Promise<{ id: s
     // Sin wamid no hay a qué mensaje apuntar el check: puede pasar en un chat
     // que solo tiene mensajes salientes (la IA saludó primero, por ejemplo).
     if (wamid) {
-      await markWhatsappRead(conversation.channel.phone_number_id!, accessToken, wamid);
+      await markWhatsappRead(conversation.channel.phone_number_id!, credentials, wamid);
     }
   }
 

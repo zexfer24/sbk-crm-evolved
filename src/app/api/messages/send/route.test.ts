@@ -168,6 +168,7 @@ beforeEach(() => {
 
 afterEach(() => {
   delete process.env.WHATSAPP_ACCESS_TOKEN;
+  vi.unstubAllEnvs();
 });
 
 describe("POST /api/messages/send — el asesor no espera a Meta", () => {
@@ -284,6 +285,36 @@ describe("POST /api/messages/send — el asesor no espera a Meta", () => {
     const res = await POST(sendRequest());
 
     expect(res.status).toBe(500);
+    expect(insertedRows).toHaveLength(0);
+    expect((await res.json()).error).toContain("WHATSAPP_ACCESS_TOKEN");
+  });
+
+  it("con 360dialog y su llave (sin WHATSAPP_ACCESS_TOKEN) el envío sale con credenciales 360", async () => {
+    delete process.env.WHATSAPP_ACCESS_TOKEN;
+    vi.stubEnv("WHATSAPP_PROVIDER", "360dialog");
+    vi.stubEnv("D360_API_KEY", "llave-360");
+
+    const res = await POST(sendRequest());
+    await flush();
+
+    expect(res.status).toBe(200);
+    expect(sendWhatsappTextMock).toHaveBeenCalledTimes(1);
+    expect(sendWhatsappTextMock.mock.calls[0][1]).toEqual({
+      provider: "360dialog",
+      apiKey: "llave-360",
+      baseUrl: "https://waba-v2.360dialog.io",
+    });
+  });
+
+  it("con 360dialog sin D360_API_KEY: 500 que nombra D360_API_KEY y sin fila", async () => {
+    delete process.env.WHATSAPP_ACCESS_TOKEN;
+    vi.stubEnv("WHATSAPP_PROVIDER", "360dialog");
+
+    const res = await POST(sendRequest());
+    const body = await res.json();
+
+    expect(res.status).toBe(500);
+    expect(body.error).toContain("D360_API_KEY");
     expect(insertedRows).toHaveLength(0);
   });
 });

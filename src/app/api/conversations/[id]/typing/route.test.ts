@@ -1,4 +1,4 @@
-import { describe, expect, it, vi, beforeEach } from "vitest";
+import { describe, expect, it, vi, beforeEach, afterEach } from "vitest";
 
 /**
  * `typing/route.ts` es "escribiendo…" hacia Meta desde el composer del
@@ -104,6 +104,16 @@ beforeEach(() => {
   lastInboundWamid = "wamid.ENTRANTE";
   sendTypingIndicatorMock.mockClear();
   process.env.WHATSAPP_ACCESS_TOKEN = "token-de-prueba";
+  delete process.env.WHATSAPP_PROVIDER;
+  delete process.env.D360_API_KEY;
+  delete process.env.D360_BASE_URL;
+});
+
+afterEach(() => {
+  delete process.env.WHATSAPP_ACCESS_TOKEN;
+  delete process.env.WHATSAPP_PROVIDER;
+  delete process.env.D360_API_KEY;
+  delete process.env.D360_BASE_URL;
 });
 
 describe("POST /api/conversations/[id]/typing", () => {
@@ -151,6 +161,34 @@ describe("POST /api/conversations/[id]/typing", () => {
 
     expect(res.status).toBe(200);
     expect(body).toEqual({ ok: true });
-    expect(sendTypingIndicatorMock).toHaveBeenCalledWith("1234567890", "token-de-prueba", "wamid.ENTRANTE");
+    expect(sendTypingIndicatorMock).toHaveBeenCalledWith(
+      "1234567890",
+      { provider: "meta", accessToken: "token-de-prueba", graphVersion: "v21.0" },
+      "wamid.ENTRANTE"
+    );
+  });
+
+  it("con 360dialog y su llave (sin WHATSAPP_ACCESS_TOKEN) llama con credenciales 360", async () => {
+    delete process.env.WHATSAPP_ACCESS_TOKEN;
+    process.env.WHATSAPP_PROVIDER = "360dialog";
+    process.env.D360_API_KEY = "llave-360";
+
+    const res = await POST(fakeRequest(), ctx("conv-1"));
+
+    expect(res.status).toBe(200);
+    expect(sendTypingIndicatorMock).toHaveBeenCalledWith(
+      "1234567890",
+      { provider: "360dialog", apiKey: "llave-360", baseUrl: "https://waba-v2.360dialog.io" },
+      "wamid.ENTRANTE"
+    );
+  });
+
+  it("con 360dialog sin D360_API_KEY no llama, pero responde 200", async () => {
+    process.env.WHATSAPP_PROVIDER = "360dialog";
+
+    const res = await POST(fakeRequest(), ctx());
+
+    expect(res.status).toBe(200);
+    expect(sendTypingIndicatorMock).not.toHaveBeenCalled();
   });
 });

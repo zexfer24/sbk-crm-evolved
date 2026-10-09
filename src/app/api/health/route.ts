@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { getRedis } from "@/lib/redis";
+import { whatsappProvider } from "@/lib/whatsapp/provider";
 
 // ---------------------------------------------------------------------------
 // Estado del servicio, para que un monitor externo avise cuando algo se cae
@@ -148,11 +149,23 @@ function checkConfig(): CheckResult & { missing: string[] } {
     "REDIS_URL",
   ];
 
-  // En producción el webhook se rechaza sin esta variable, así que su
-  // ausencia es una falla y no un aviso.
-  if (process.env.NODE_ENV === "production") required.push("WHATSAPP_APP_SECRET");
+  // En producción el webhook se rechaza sin la credencial de ENTRADA de su
+  // proveedor, así que su ausencia es una falla y no un aviso. Cada proveedor
+  // exige la suya y no la del otro (plan "SBK CRM pasa a 360dialog",
+  // 8/10/2026): meta firma con WHATSAPP_APP_SECRET; 360dialog manda un header
+  // con WHATSAPP_WEBHOOK_TOKEN y envía con D360_API_KEY. Un proveedor
+  // inválido (la variable existe pero con un valor que no es ninguno de los
+  // dos) se reporta igual como WHATSAPP_PROVIDER, aunque no esté vacía.
+  let proveedorInvalido = false;
+  if (process.env.NODE_ENV === "production") {
+    const provider = whatsappProvider();
+    if (provider === null) proveedorInvalido = true;
+    else if (provider === "360dialog") required.push("D360_API_KEY", "WHATSAPP_WEBHOOK_TOKEN");
+    else required.push("WHATSAPP_APP_SECRET");
+  }
 
   const missing = required.filter((name) => !process.env[name]);
+  if (proveedorInvalido) missing.push("WHATSAPP_PROVIDER");
   return { ok: missing.length === 0, missing };
 }
 

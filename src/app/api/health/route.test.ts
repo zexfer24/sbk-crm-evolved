@@ -211,6 +211,66 @@ describe("GET /api/health", () => {
   });
 
   /**
+   * Plan "SBK CRM pasa a 360dialog" (8/10/2026, T3): en producción se exige la
+   * credencial de entrada del proveedor ACTIVO, no la del otro. Sin definir
+   * WHATSAPP_PROVIDER es meta (D1), así que el test de arriba sigue valiendo.
+   */
+  describe("proveedor de WhatsApp en producción", () => {
+    beforeEach(() => {
+      vi.stubEnv("NODE_ENV", "production");
+      vi.stubEnv("WHATSAPP_APP_SECRET", "");
+      vi.stubEnv("D360_API_KEY", "");
+      vi.stubEnv("WHATSAPP_WEBHOOK_TOKEN", "");
+    });
+
+    it("con 360dialog exige D360_API_KEY y WHATSAPP_WEBHOOK_TOKEN, y no WHATSAPP_APP_SECRET", async () => {
+      vi.stubEnv("WHATSAPP_PROVIDER", "360dialog");
+
+      const response = await GET();
+      const body = await response.json();
+
+      expect(response.status).toBe(503);
+      expect(body.checks.config).toContain("D360_API_KEY");
+      expect(body.checks.config).toContain("WHATSAPP_WEBHOOK_TOKEN");
+      expect(body.checks.config).not.toContain("WHATSAPP_APP_SECRET");
+    });
+
+    it("con 360dialog y las dos variables definidas queda sano", async () => {
+      vi.stubEnv("WHATSAPP_PROVIDER", "360dialog");
+      vi.stubEnv("D360_API_KEY", "llave");
+      vi.stubEnv("WHATSAPP_WEBHOOK_TOKEN", "token");
+
+      const response = await GET();
+      const body = await response.json();
+
+      expect(response.status).toBe(200);
+      expect(body.checks.config).toBe("ok");
+    });
+
+    it("con meta exige WHATSAPP_APP_SECRET y no las de 360dialog", async () => {
+      vi.stubEnv("WHATSAPP_PROVIDER", "meta");
+
+      const response = await GET();
+      const body = await response.json();
+
+      expect(response.status).toBe(503);
+      expect(body.checks.config).toContain("WHATSAPP_APP_SECRET");
+      expect(body.checks.config).not.toContain("D360_API_KEY");
+      expect(body.checks.config).not.toContain("WHATSAPP_WEBHOOK_TOKEN");
+    });
+
+    it("un proveedor inválido reporta WHATSAPP_PROVIDER como faltante", async () => {
+      vi.stubEnv("WHATSAPP_PROVIDER", "twilio");
+
+      const response = await GET();
+      const body = await response.json();
+
+      expect(response.status).toBe(503);
+      expect(body.checks.config).toContain("WHATSAPP_PROVIDER");
+    });
+  });
+
+  /**
    * T3.4 (5/9/2026): calidad y límite del número, informativos como
    * unassigned_waiting y redis_persistence -- un número degradado sigue
    * entregando mensajes hasta que Meta lo restrinja de verdad, así que no

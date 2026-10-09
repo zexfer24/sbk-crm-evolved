@@ -1,5 +1,13 @@
 import { describe, expect, it, vi, beforeEach, afterEach } from "vitest";
 import { sendWhatsappTemplate } from "@/lib/whatsapp/meta-client";
+import type { WhatsappCredentials } from "@/lib/whatsapp/provider";
+
+const META: WhatsappCredentials = { provider: "meta", accessToken: "token-123", graphVersion: "v21.0" };
+const D360: WhatsappCredentials = {
+  provider: "360dialog",
+  apiKey: "key-360",
+  baseUrl: "https://waba-v2.360dialog.io",
+};
 
 /**
  * T3.3 (5/9/2026): `sendWhatsappTemplate` con `components` (variables del
@@ -24,7 +32,7 @@ afterEach(() => {
 
 describe("sendWhatsappTemplate", () => {
   it("sin components, el payload no lleva la clave (plantilla sin variables)", async () => {
-    await sendWhatsappTemplate("phone-id-1", "token-123", "+58123456789", "bienvenida", "es");
+    await sendWhatsappTemplate("phone-id-1", META, "+58123456789", "bienvenida", "es");
 
     const [, init] = fetchMock.mock.calls[0];
     const body = JSON.parse(init.body);
@@ -38,7 +46,7 @@ describe("sendWhatsappTemplate", () => {
   });
 
   it("con components, arma el body parameter posicional exacto que exige Meta", async () => {
-    await sendWhatsappTemplate("phone-id-1", "token-123", "+58123456789", "pedido_listo", "es", [
+    await sendWhatsappTemplate("phone-id-1", META, "+58123456789", "pedido_listo", "es", [
       {
         type: "body",
         parameters: [
@@ -66,7 +74,7 @@ describe("sendWhatsappTemplate", () => {
   });
 
   it("un arreglo vacío de components se trata igual que no mandar ninguno", async () => {
-    await sendWhatsappTemplate("phone-id-1", "token-123", "+58123456789", "bienvenida", "es", []);
+    await sendWhatsappTemplate("phone-id-1", META, "+58123456789", "bienvenida", "es", []);
 
     const [, init] = fetchMock.mock.calls[0];
     const body = JSON.parse(init.body);
@@ -74,7 +82,17 @@ describe("sendWhatsappTemplate", () => {
   });
 
   it("devuelve el wamid del mensaje enviado", async () => {
-    const result = await sendWhatsappTemplate("phone-id-1", "token-123", "+58123456789", "bienvenida", "es");
+    const result = await sendWhatsappTemplate("phone-id-1", META, "+58123456789", "bienvenida", "es");
     expect(result).toEqual({ whatsappMessageId: "wamid.NUEVO" });
+  });
+
+  it("con 360dialog, la plantilla va a {baseUrl}/messages con la llave de 360dialog", async () => {
+    await sendWhatsappTemplate("phone-id-1", D360, "+58123456789", "bienvenida", "es");
+
+    const [url, init] = fetchMock.mock.calls[0];
+    expect(url).toBe("https://waba-v2.360dialog.io/messages");
+    expect(init.headers["D360-API-KEY"]).toBe("key-360");
+    expect(init.headers.Authorization).toBeUndefined();
+    expect(JSON.parse(init.body).messaging_product).toBe("whatsapp");
   });
 });

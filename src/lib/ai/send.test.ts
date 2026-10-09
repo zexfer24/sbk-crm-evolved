@@ -271,6 +271,50 @@ describe("sendAgentText — el outcome vuelve", () => {
     expect(outcome).toMatchObject({ whatsapp_status: "sent", whatsapp_message_id: "wamid.ok" });
   });
 
+  it("con 360dialog y su llave (sin WHATSAPP_ACCESS_TOKEN) el envío sale con credenciales 360", async () => {
+    const { client } = createFakeSupabase();
+    delete process.env.WHATSAPP_ACCESS_TOKEN;
+    vi.stubEnv("WHATSAPP_PROVIDER", "360dialog");
+    vi.stubEnv("D360_API_KEY", "llave-360");
+    sendWhatsappTextMock.mockClear();
+    sendWhatsappTextMock.mockResolvedValueOnce({ whatsappMessageId: "wamid.d360" });
+
+    try {
+      // @ts-expect-error -- fake mínimo
+      const outcome = await sendAgentText(client, conversation(true), "hola");
+
+      expect(outcome).toMatchObject({ whatsapp_status: "sent", whatsapp_message_id: "wamid.d360" });
+      expect(sendWhatsappTextMock).toHaveBeenCalledWith(
+        "pnid-1",
+        { provider: "360dialog", apiKey: "llave-360", baseUrl: "https://waba-v2.360dialog.io" },
+        "+584121112233",
+        "hola"
+      );
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
+  it("con 360dialog sin D360_API_KEY no envía y el aviso nombra la variable que falta", async () => {
+    const { client } = createFakeSupabase();
+    delete process.env.WHATSAPP_ACCESS_TOKEN;
+    vi.stubEnv("WHATSAPP_PROVIDER", "360dialog");
+    sendWhatsappTextMock.mockClear();
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+    try {
+      // @ts-expect-error -- fake mínimo
+      const outcome = await sendAgentText(client, conversation(true), "hola");
+
+      expect(sendWhatsappTextMock).not.toHaveBeenCalled();
+      expect(outcome.whatsapp_message_id).toBeNull();
+      expect(warn.mock.calls.flat().join(" ")).toContain("D360_API_KEY");
+    } finally {
+      warn.mockRestore();
+      vi.unstubAllEnvs();
+    }
+  });
+
   it("cuando Meta rechaza el envío, devuelve whatsapp_status 'failed' con el código de error", async () => {
     const { client } = createFakeSupabase();
     process.env.WHATSAPP_ACCESS_TOKEN = "token-de-prueba";

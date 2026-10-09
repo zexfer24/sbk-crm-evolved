@@ -1,10 +1,18 @@
-// Cliente server-only para la WhatsApp Cloud API (Meta). Nunca importar desde
-// un componente cliente: usa el access token del canal vía variables de entorno.
+// Cliente server-only para la API de WhatsApp. Nunca importar desde un
+// componente cliente: usa las credenciales del proveedor vía variables de entorno.
+//
+// Desde el 8/10/2026 (plan "SBK CRM pasa a 360dialog") sirve a DOS proveedores:
+// la Cloud API de Meta y 360dialog, que habla el mismo payload pero con otro
+// host de envío, otra autenticación saliente (`D360-API-KEY` en vez de
+// `Authorization: Bearer`) y otra ruta para descargar multimedia. Se perdió el
+// número de Meta por facturación y el nuevo vive en 360dialog. Conserva el
+// nombre `meta-client.ts` y sus funciones a propósito (D3): renombrarlo era
+// ruido en seis importadores, el glosario y CLAUDE.md. Qué proveedor se usa
+// lo decide `WhatsappCredentials` (`provider.ts`), no este archivo.
 
 import { errorText, log } from "@/lib/log";
+import type { WhatsappCredentials } from "@/lib/whatsapp/provider";
 import type { WhatsappTemplateComponent } from "@/lib/whatsapp/template-variables";
-
-const GRAPH_API_VERSION = process.env.WHATSAPP_GRAPH_API_VERSION ?? "v21.0";
 
 export class MetaApiError extends Error {
   constructor(
@@ -43,17 +51,31 @@ interface SendResult {
 
 type MediaKind = "image" | "video" | "audio" | "document" | "sticker";
 
-async function callGraphApi(phoneNumberId: string, accessToken: string, body: Record<string, unknown>) {
-  const res = await fetch(`https://graph.facebook.com/${GRAPH_API_VERSION}/${phoneNumberId}/messages`, {
+/** Endpoint de envío: Meta lo ubica por número de teléfono; 360dialog lo ubica por la llave. */
+function messagesUrl(phoneNumberId: string, c: WhatsappCredentials): string {
+  return c.provider === "360dialog"
+    ? `${c.baseUrl}/messages`
+    : `https://graph.facebook.com/${c.graphVersion}/${phoneNumberId}/messages`;
+}
+
+/** Cabecera de autenticación de cada proveedor. La llave de 360dialog NUNCA va en `Authorization`. */
+function authHeaders(c: WhatsappCredentials): Record<string, string> {
+  return c.provider === "360dialog" ? { "D360-API-KEY": c.apiKey } : { Authorization: `Bearer ${c.accessToken}` };
+}
+
+async function callGraphApi(phoneNumberId: string, credentials: WhatsappCredentials, body: Record<string, unknown>) {
+  const res = await fetch(messagesUrl(phoneNumberId, credentials), {
     method: "POST",
     headers: {
-      Authorization: `Bearer ${accessToken}`,
+      ...authHeaders(credentials),
       "Content-Type": "application/json",
     },
     body: JSON.stringify({ messaging_product: "whatsapp", ...body }),
   });
 
-  const json = await res.json();
+  // D8: un 401 de 360dialog por llave inválida puede no ser JSON; sin el
+  // catch eso reventaba con un SyntaxError en vez de un MetaApiError con status.
+  const json = await res.json().catch(() => null);
 
   if (!res.ok) {
     const detail = json?.error?.message ?? "Error desconocido de la Cloud API de Meta";
@@ -69,12 +91,12 @@ function contextOf(replyToWamid?: string | null) {
 
 export async function sendWhatsappText(
   phoneNumberId: string,
-  accessToken: string,
+  credentials: WhatsappCredentials,
   to: string,
   body: string,
   replyToWamid?: string | null
 ): Promise<SendResult> {
-  const json = await callGraphApi(phoneNumberId, accessToken, {
+  const json = await callGraphApi(phoneNumberId, credentials, {
     to: toWaId(to),
     type: "text",
     text: { body },
@@ -85,7 +107,7 @@ export async function sendWhatsappText(
 
 export async function sendWhatsappTemplate(
   phoneNumberId: string,
-  accessToken: string,
+  credentials: WhatsappCredentials,
   to: string,
   templateName: string,
   languageCode: string,
@@ -96,7 +118,7 @@ export async function sendWhatsappTemplate(
   // `components: []` en plantillas sin parámetros.
   components?: WhatsappTemplateComponent[]
 ): Promise<SendResult> {
-  const json = await callGraphApi(phoneNumberId, accessToken, {
+  const json = await callGraphApi(phoneNumberId, credentials, {
     to: toWaId(to),
     type: "template",
     template: {
@@ -110,7 +132,7 @@ export async function sendWhatsappTemplate(
 
 export async function sendWhatsappMedia(
   phoneNumberId: string,
-  accessToken: string,
+  credentials: WhatsappCredentials,
   to: string,
   mediaType: MediaKind,
   link: string,
@@ -124,7 +146,7 @@ export async function sendWhatsappMedia(
   const mediaPayload =
     mediaType === "audio" || mediaType === "sticker" ? { link } : { link, caption: caption || undefined };
 
-  const json = await callGraphApi(phoneNumberId, accessToken, {
+  const json = await callGraphApi(phoneNumberId, credentials, {
     to: toWaId(to),
     type: mediaType,
     [mediaType]: mediaPayload,
@@ -139,20 +161,53 @@ export async function sendWhatsappMedia(
 
 export async function getMetaMediaUrl(
   mediaId: string,
-  accessToken: string
+  credentials: WhatsappCredentials
 ): Promise<{ url: string; mimeType: string }> {
-  const res = await fetch(`https://graph.facebook.com/${GRAPH_API_VERSION}/${mediaId}`, {
-    headers: { Authorization: `Bearer ${accessToken}` },
-  });
-  const json = await res.json();
+  const endpoint =
+    credentials.provider === "360dialog"
+      ? `${credentials.baseUrl}/${mediaId}`
+      : `https://graph.facebook.com/${credentials.graphVersion}/${mediaId}`;
+  const res = await fetch(endpoint, { headers: authHeaders(credentials) });
+  const json = await res.json().catch(() => null);
   if (!res.ok) {
     throw new MetaApiError(json?.error?.message ?? "No se pudo resolver la URL del media.", res.status, json);
   }
   return { url: json.url as string, mimeType: json.mime_type as string };
 }
 
-export async function downloadMetaMedia(url: string, accessToken: string): Promise<Uint8Array> {
-  const res = await fetch(url, { headers: { Authorization: `Bearer ${accessToken}` } });
+const HOST_MULTIMEDIA_DE_META = "lookaside.fbsbx.com";
+
+/**
+ * Convierte la URL de multimedia que entrega 360dialog (host de Meta, a veces
+ * con las barras escapadas como `https:\/\/…`) a la URL de 360dialog desde la
+ * que SÍ se puede descargar con su llave. D4: la llave solo viaja a
+ * `baseUrl`; si, ya reescrita, la URL no tiene el mismo origen, lanza — una
+ * URL que viene en el payload del webhook no puede llevarse la llave a otro host.
+ */
+export function rewriteD360MediaUrl(url: string, baseUrl: string): string {
+  const fueraDelHost = () => new Error("URL de multimedia fuera del host de 360dialog");
+
+  let parsed: URL;
+  let base: URL;
+  try {
+    parsed = new URL(url.replace(/\\/g, ""));
+    base = new URL(baseUrl);
+  } catch {
+    throw fueraDelHost();
+  }
+
+  const reescrita =
+    parsed.hostname === HOST_MULTIMEDIA_DE_META ? new URL(`${parsed.pathname}${parsed.search}`, base.origin) : parsed;
+
+  if (reescrita.origin !== base.origin) throw fueraDelHost();
+  return reescrita.toString();
+}
+
+export async function downloadMetaMedia(url: string, credentials: WhatsappCredentials): Promise<Uint8Array> {
+  // En 360dialog la reescritura (y su chequeo de origen) corre ANTES del fetch:
+  // una URL rechazada no hace ninguna petición ni expone la llave.
+  const destino = credentials.provider === "360dialog" ? rewriteD360MediaUrl(url, credentials.baseUrl) : url;
+  const res = await fetch(destino, { headers: authHeaders(credentials) });
   if (!res.ok) throw new MetaApiError("No se pudo descargar el archivo multimedia.", res.status, null);
   const buffer = await res.arrayBuffer();
   return new Uint8Array(buffer);
@@ -173,15 +228,15 @@ export async function downloadMetaMedia(url: string, accessToken: string): Promi
 
 async function notifyGraphApi(
   phoneNumberId: string,
-  accessToken: string,
+  credentials: WhatsappCredentials,
   body: Record<string, unknown>,
   evento: string
 ): Promise<void> {
   try {
-    const res = await fetch(`https://graph.facebook.com/${GRAPH_API_VERSION}/${phoneNumberId}/messages`, {
+    const res = await fetch(messagesUrl(phoneNumberId, credentials), {
       method: "POST",
       headers: {
-        Authorization: `Bearer ${accessToken}`,
+        ...authHeaders(credentials),
         "Content-Type": "application/json",
       },
       body: JSON.stringify({ messaging_product: "whatsapp", ...body }),
@@ -196,10 +251,14 @@ async function notifyGraphApi(
 }
 
 /** El doble check azul: le confirma a Meta que el mensaje del cliente ya se leyó. */
-export async function markWhatsappRead(phoneNumberId: string, accessToken: string, wamid: string): Promise<void> {
+export async function markWhatsappRead(
+  phoneNumberId: string,
+  credentials: WhatsappCredentials,
+  wamid: string
+): Promise<void> {
   await notifyGraphApi(
     phoneNumberId,
-    accessToken,
+    credentials,
     { status: "read", message_id: wamid },
     "whatsapp_marcar_leido_fallido"
   );
@@ -210,10 +269,14 @@ export async function markWhatsappRead(phoneNumberId: string, accessToken: strin
  * respuesta o a los 25 s, lo que pase primero—, así que solo tiene sentido
  * dispararlo justo antes de ponerse a redactar de verdad.
  */
-export async function sendTypingIndicator(phoneNumberId: string, accessToken: string, wamid: string): Promise<void> {
+export async function sendTypingIndicator(
+  phoneNumberId: string,
+  credentials: WhatsappCredentials,
+  wamid: string
+): Promise<void> {
   await notifyGraphApi(
     phoneNumberId,
-    accessToken,
+    credentials,
     { status: "read", message_id: wamid, typing_indicator: { type: "text" } },
     "whatsapp_typing_fallido"
   );

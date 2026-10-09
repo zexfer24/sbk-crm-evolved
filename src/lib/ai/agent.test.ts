@@ -6736,7 +6736,11 @@ describe("runAgentTurn — 'escribiendo…' hacia el cliente", () => {
     const turno = runAgentTurn("conv-1");
 
     await vi.waitFor(() => expect(sendTypingIndicatorMock).toHaveBeenCalledTimes(1));
-    expect(sendTypingIndicatorMock).toHaveBeenCalledWith("phone-id-1", "token-de-prueba", "wamid.ULTIMO_ENTRANTE");
+    expect(sendTypingIndicatorMock).toHaveBeenCalledWith(
+      "phone-id-1",
+      { provider: "meta", accessToken: "token-de-prueba", graphVersion: "v21.0" },
+      "wamid.ULTIMO_ENTRANTE"
+    );
     // El aviso ya llegó y el modelo TODAVÍA no devolvió nada: no lo esperó.
     expect(ordenDeLlamadas).toEqual(["typing"]);
 
@@ -6779,6 +6783,34 @@ describe("runAgentTurn — 'escribiendo…' hacia el cliente", () => {
     delete process.env.WHATSAPP_ACCESS_TOKEN;
 
     await runAgentTurn("conv-1");
+
+    expect(sendTypingIndicatorMock).not.toHaveBeenCalled();
+  });
+
+  it("con 360dialog y su llave (sin WHATSAPP_ACCESS_TOKEN) lo dispara con credenciales 360", async () => {
+    delete process.env.WHATSAPP_ACCESS_TOKEN;
+    vi.stubEnv("WHATSAPP_PROVIDER", "360dialog");
+    vi.stubEnv("D360_API_KEY", "llave-360");
+    try {
+      await runAgentTurn("conv-1");
+    } finally {
+      vi.unstubAllEnvs();
+    }
+
+    expect(sendTypingIndicatorMock).toHaveBeenCalledWith(
+      "phone-id-1",
+      { provider: "360dialog", apiKey: "llave-360", baseUrl: "https://waba-v2.360dialog.io" },
+      "wamid.ULTIMO_ENTRANTE"
+    );
+  });
+
+  it("con 360dialog sin D360_API_KEY no lo dispara", async () => {
+    vi.stubEnv("WHATSAPP_PROVIDER", "360dialog");
+    try {
+      await runAgentTurn("conv-1");
+    } finally {
+      vi.unstubAllEnvs();
+    }
 
     expect(sendTypingIndicatorMock).not.toHaveBeenCalled();
   });

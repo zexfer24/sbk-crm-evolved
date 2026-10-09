@@ -13,6 +13,7 @@ import {
   sendWhatsappTemplate,
   sendWhatsappText,
 } from "@/lib/whatsapp/meta-client";
+import { whatsappCredentialProblem, whatsappCredentials } from "@/lib/whatsapp/provider";
 import { buildTemplateBodyComponents, substituteTemplateVariables } from "@/lib/whatsapp/template-variables";
 
 interface SendMessageBody {
@@ -131,10 +132,11 @@ export async function POST(request: Request) {
 
   // Falta de configuración: mejor un error inmediato que un mensaje que se
   // guarda y muere en silencio en segundo plano.
-  const accessToken = process.env.WHATSAPP_ACCESS_TOKEN;
-  if (isRealChannel && !accessToken) {
+  // 8/10/2026: la credencial depende del proveedor (Meta o 360dialog).
+  const credentials = whatsappCredentials();
+  if (isRealChannel && !credentials) {
     return NextResponse.json(
-      { error: "El canal está marcado como conectado pero falta WHATSAPP_ACCESS_TOKEN en el servidor." },
+      { error: `El canal está marcado como conectado pero falta ${whatsappCredentialProblem()} en el servidor.` },
       { status: 500 }
     );
   }
@@ -237,7 +239,7 @@ export async function POST(request: Request) {
           result = await sendWithRetry(() =>
             sendWhatsappTemplate(
               phoneNumberId,
-              accessToken!,
+              credentials!,
               toPhoneNumber,
               templateName!,
               templateLanguage ?? "es",
@@ -253,7 +255,7 @@ export async function POST(request: Request) {
           result = await sendWithRetry(() =>
             sendWhatsappMedia(
               phoneNumberId,
-              accessToken!,
+              credentials!,
               toPhoneNumber,
               mediaType as "image" | "video" | "audio" | "document" | "sticker",
               link,
@@ -263,7 +265,7 @@ export async function POST(request: Request) {
           );
         } else {
           result = await sendWithRetry(() =>
-            sendWhatsappText(phoneNumberId, accessToken!, toPhoneNumber, content!, replyToWamid)
+            sendWhatsappText(phoneNumberId, credentials!, toPhoneNumber, content!, replyToWamid)
           );
         }
 
