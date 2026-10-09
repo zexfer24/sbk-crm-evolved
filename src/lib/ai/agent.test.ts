@@ -6787,7 +6787,9 @@ describe("runAgentTurn — 'escribiendo…' hacia el cliente", () => {
     expect(sendTypingIndicatorMock).not.toHaveBeenCalled();
   });
 
-  it("con 360dialog y su llave (sin WHATSAPP_ACCESS_TOKEN) lo dispara con credenciales 360", async () => {
+  // 9/10/2026: con 360dialog el typing gasta el cupo por número justo antes
+  // del envío real (429 "Too many requests for one number"): no se dispara.
+  it("con 360dialog y su llave NO lo dispara (el cupo por número es del envío real)", async () => {
     delete process.env.WHATSAPP_ACCESS_TOKEN;
     vi.stubEnv("WHATSAPP_PROVIDER", "360dialog");
     vi.stubEnv("D360_API_KEY", "llave-360");
@@ -6797,11 +6799,8 @@ describe("runAgentTurn — 'escribiendo…' hacia el cliente", () => {
       vi.unstubAllEnvs();
     }
 
-    expect(sendTypingIndicatorMock).toHaveBeenCalledWith(
-      "phone-id-1",
-      { provider: "360dialog", apiKey: "llave-360", baseUrl: "https://waba-v2.360dialog.io" },
-      "wamid.ULTIMO_ENTRANTE"
-    );
+    expect(sendTypingIndicatorMock).not.toHaveBeenCalled();
+    expect(sendAgentTextMock).toHaveBeenCalledTimes(1);
   });
 
   it("con 360dialog sin D360_API_KEY no lo dispara", async () => {

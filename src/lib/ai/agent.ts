@@ -484,6 +484,9 @@ function fireTypingIndicator(
   if (target.channelStatus !== "connected" || !target.phoneNumberId) return;
   const credentials = whatsappCredentials();
   if (!credentials) return;
+  // 9/10/2026: con 360dialog el typing se come el cupo por número ("Too many
+  // requests for one number") justo antes del envío real (ver typing/route.ts).
+  if (credentials.provider === "360dialog") return;
 
   void lastInboundWamid(supabase, target.conversationId)
     .then((wamid) => {

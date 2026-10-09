@@ -39,6 +39,13 @@ export async function POST(_request: Request, context: { params: Promise<{ id: s
   const isRealChannel = conversation?.channel.status === "connected" && conversation.channel.phone_number_id;
   const credentials = whatsappCredentials();
 
+  // 9/10/2026: 360dialog limita los POST por destinatario ("Too many requests
+  // for one number") y el "escribiendo…" se come ese cupo justo antes del
+  // envío real, que volvía 429 y quedaba `failed`. Con 360dialog no se manda.
+  if (credentials?.provider === "360dialog") {
+    return NextResponse.json({ ok: true });
+  }
+
   if (isRealChannel && credentials) {
     const { data: lastInbound } = await supabase
       .from("messages")

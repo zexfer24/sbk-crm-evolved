@@ -63,23 +63,76 @@ function authHeaders(c: WhatsappCredentials): Record<string, string> {
   return c.provider === "360dialog" ? { "D360-API-KEY": c.apiKey } : { Authorization: `Bearer ${c.accessToken}` };
 }
 
+/**
+ * Texto del error de un fallo de la API. Meta manda `{ error: { message } }`;
+ * 360dialog, en su 429, manda `{ error: "Too many requests for one number" }`
+ * (un STRING, no un objeto) y a veces solo `meta.developer_message`. Sin cuerpo
+ * legible se nombra al proveedor y el HTTP, para no mostrar "Error desconocido"
+ * sin saber de quién ni por qué.
+ */
+function detalleDelError(json: unknown, status: number, credentials: WhatsappCredentials): string {
+  const cuerpo = json as {
+    error?: string | { message?: string };
+    meta?: { developer_message?: string };
+  } | null;
+  const deError = typeof cuerpo?.error === "string" ? cuerpo.error : cuerpo?.error?.message;
+  return (
+    deError ??
+    cuerpo?.meta?.developer_message ??
+    `${credentials.provider === "360dialog" ? "360dialog" : "Meta"} respondió HTTP ${status} sin detalle`
+  );
+}
+
+/**
+ * Esperas entre reintentos de un 429, en ms (hasta 3 reintentos = 4 POST).
+ *
+ * 9/10/2026: 360dialog limita por DESTINATARIO ("Too many requests for one
+ * number"): dos POST al mismo número con menos de ~1-3 s de diferencia y el
+ * segundo vuelve 429, sin `Retry-After`. En producción 10 de 14 textos de un
+ * asesor quedaron `failed` porque el "escribiendo…" previo se había comido el
+ * cupo. Un 429 es un mensaje NO aceptado: repetirlo no duplica. Vive en la
+ * capa más baja para cubrir al asesor y a la IA con el mismo código.
+ */
+export const ESPERAS_429_MS = [1500, 3000, 5000] as const;
+const TOPE_RETRY_AFTER_MS = 10_000;
+
+function esperar(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/** Retry-After en segundos (>0) a ms con tope; `null` si no vino o no es numérico. */
+function retryAfterMs(res: Response): number | null {
+  // Defensivo: los mocks de los tests devuelven objetos sin `headers`.
+  const crudo = res.headers?.get?.("retry-after");
+  const segundos = crudo == null ? NaN : Number(crudo);
+  if (!Number.isFinite(segundos) || segundos <= 0) return null;
+  return Math.min(segundos * 1000, TOPE_RETRY_AFTER_MS);
+}
+
 async function callGraphApi(phoneNumberId: string, credentials: WhatsappCredentials, body: Record<string, unknown>) {
-  const res = await fetch(messagesUrl(phoneNumberId, credentials), {
+  const url = messagesUrl(phoneNumberId, credentials);
+  const init = {
     method: "POST",
     headers: {
       ...authHeaders(credentials),
       "Content-Type": "application/json",
     },
     body: JSON.stringify({ messaging_product: "whatsapp", ...body }),
-  });
+  };
+
+  let res = await fetch(url, init);
+  for (let intento = 1; res.status === 429 && intento <= ESPERAS_429_MS.length; intento++) {
+    log.warn("whatsapp_429_reintento", { intento, provider: credentials.provider });
+    await esperar(retryAfterMs(res) ?? ESPERAS_429_MS[intento - 1]);
+    res = await fetch(url, init);
+  }
 
   // D8: un 401 de 360dialog por llave inválida puede no ser JSON; sin el
   // catch eso reventaba con un SyntaxError en vez de un MetaApiError con status.
   const json = await res.json().catch(() => null);
 
   if (!res.ok) {
-    const detail = json?.error?.message ?? "Error desconocido de la Cloud API de Meta";
-    throw new MetaApiError(detail, res.status, json);
+    throw new MetaApiError(detalleDelError(json, res.status, credentials), res.status, json);
   }
 
   return json as { messages: { id: string }[] };
@@ -243,7 +296,7 @@ async function notifyGraphApi(
     });
     if (!res.ok) {
       const json = await res.json().catch(() => null);
-      log.warn(evento, { status: res.status, detail: json?.error?.message ?? null });
+      log.warn(evento, { status: res.status, detail: detalleDelError(json, res.status, credentials) });
     }
   } catch (err) {
     log.warn(evento, { detail: errorText(err) });

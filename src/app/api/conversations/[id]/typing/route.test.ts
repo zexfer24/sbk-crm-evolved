@@ -18,6 +18,7 @@ interface FakeAgent {
 let currentAgent: FakeAgent | null;
 let channelRow: { phone_number_id: string | null; status: string };
 let lastInboundWamid: string | null;
+let messagesQueried = false;
 
 vi.mock("@/lib/data", () => ({
   fetchCurrentAgent: vi.fn(async () => currentAgent),
@@ -40,6 +41,7 @@ function createFakeSessionClient() {
         };
       }
       if (table === "messages") {
+        messagesQueried = true;
         return {
           select() {
             return {
@@ -103,6 +105,7 @@ beforeEach(() => {
   channelRow = { phone_number_id: "1234567890", status: "connected" };
   lastInboundWamid = "wamid.ENTRANTE";
   sendTypingIndicatorMock.mockClear();
+  messagesQueried = false;
   process.env.WHATSAPP_ACCESS_TOKEN = "token-de-prueba";
   delete process.env.WHATSAPP_PROVIDER;
   delete process.env.D360_API_KEY;
@@ -168,19 +171,20 @@ describe("POST /api/conversations/[id]/typing", () => {
     );
   });
 
-  it("con 360dialog y su llave (sin WHATSAPP_ACCESS_TOKEN) llama con credenciales 360", async () => {
+  // 9/10/2026: con 360dialog el "escribiendo…" gasta el cupo por número justo
+  // antes del envío real (429 "Too many requests for one number"): no se manda.
+  it("con 360dialog y su llave responde 200 sin consultar el wamid ni llamar al proveedor", async () => {
     delete process.env.WHATSAPP_ACCESS_TOKEN;
     process.env.WHATSAPP_PROVIDER = "360dialog";
     process.env.D360_API_KEY = "llave-360";
 
     const res = await POST(fakeRequest(), ctx("conv-1"));
+    const body = await res.json();
 
     expect(res.status).toBe(200);
-    expect(sendTypingIndicatorMock).toHaveBeenCalledWith(
-      "1234567890",
-      { provider: "360dialog", apiKey: "llave-360", baseUrl: "https://waba-v2.360dialog.io" },
-      "wamid.ENTRANTE"
-    );
+    expect(body).toEqual({ ok: true });
+    expect(sendTypingIndicatorMock).not.toHaveBeenCalled();
+    expect(messagesQueried).toBe(false);
   });
 
   it("con 360dialog sin D360_API_KEY no llama, pero responde 200", async () => {

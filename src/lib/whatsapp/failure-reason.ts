@@ -88,6 +88,11 @@ export function failureReason(code: number | null, detail: string | null): strin
   }
 
   const texto = detail?.trim();
+  // 9/10/2026: el 429 de 360dialog ("Too many requests for one number") no trae
+  // código de Meta; sin esta frase el asesor veía el inglés crudo.
+  if (code === null && texto && /too many requests/i.test(texto)) {
+    return "WhatsApp limita los envíos seguidos al mismo cliente. Espera unos segundos y reintenta.";
+  }
   if (texto) return code === null ? texto : `${texto} (código ${code})`;
   if (code !== null) return `Meta rechazó el envío con el código ${code}.`;
 

@@ -116,6 +116,19 @@ describe("failureReason — tabla completa de códigos conocidos", () => {
   });
 });
 
+// 9/10/2026: 360dialog limita por destinatario y su 429 no trae código de Meta.
+describe("failureReason — 429 de 360dialog", () => {
+  it("sin código y con 'Too many requests' explica qué hacer", () => {
+    expect(failureReason(null, "Too many requests for one number")).toBe(
+      "WhatsApp limita los envíos seguidos al mismo cliente. Espera unos segundos y reintenta."
+    );
+  });
+
+  it("un código conocido sigue ganando sobre el texto", () => {
+    expect(failureReason(131056, "Too many requests for one number")).toMatch(/demasiados mensajes/i);
+  });
+});
+
 describe("failureAction", () => {
   it("131047 (ventana vencida) sugiere abrir el selector de plantillas", () => {
     expect(failureAction(131047)).toBe("abrir_plantillas");

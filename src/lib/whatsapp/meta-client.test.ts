@@ -5,6 +5,7 @@ import {
   markWhatsappRead,
   MetaApiError,
   metaErrorCode,
+  ESPERAS_429_MS,
   rewriteD360MediaUrl,
   sendTypingIndicator,
   sendWhatsappMedia,
@@ -259,8 +260,23 @@ describe("envío con 360dialog", () => {
 
     expect(err).toBeInstanceOf(MetaApiError);
     expect(err.status).toBe(401);
-    expect(err.message).toBe("Error desconocido de la Cloud API de Meta");
+    expect(err.message).toBe("360dialog respondió HTTP 401 sin detalle");
     expect(err.details).toBeNull();
+  });
+
+  it("un 401 sin JSON con credenciales de Meta nombra a Meta en el mensaje", async () => {
+    fetchMock.mockResolvedValue({
+      ok: false,
+      status: 401,
+      json: async () => {
+        throw new SyntaxError("Unexpected token U in JSON");
+      },
+    });
+
+    const err = await sendWhatsappText("p", META, "584121234567", "hola").catch((e) => e);
+
+    expect(err).toBeInstanceOf(MetaApiError);
+    expect(err.message).toBe("Meta respondió HTTP 401 sin detalle");
   });
 
   it("metaErrorCode lee error.code de un error 360dialog", async () => {
@@ -386,5 +402,117 @@ describe("downloadMetaMedia", () => {
 
     expect(err).toBeInstanceOf(MetaApiError);
     expect(err.status).toBe(404);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 9/10/2026: 360dialog limita por DESTINATARIO ("Too many requests for one
+// number"). El segundo POST al mismo número con menos de ~1-3 s de diferencia
+// vuelve 429 y el mensaje NO se acepta, así que repetirlo no duplica nada.
+// ---------------------------------------------------------------------------
+
+describe("429 de 360dialog en un envío", () => {
+  const OK = { ok: true, status: 200, json: async () => ({ messages: [{ id: "wamid.X" }] }) };
+  const LIMITE = {
+    ok: false,
+    status: 429,
+    json: async () => ({ error: "Too many requests for one number" }),
+  };
+  const conRetryAfter = (valor: string) => ({
+    ...LIMITE,
+    headers: { get: (k: string) => (k.toLowerCase() === "retry-after" ? valor : null) },
+  });
+
+  beforeEach(() => {
+    vi.useFakeTimers();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("un 429 seguido de un 200 se reintenta solo con el mismo POST", async () => {
+    const warn = vi.spyOn(log, "warn").mockImplementation(() => {});
+    fetchMock.mockResolvedValueOnce(LIMITE).mockResolvedValueOnce(OK);
+
+    const promesa = sendWhatsappText("p", D360, "584121234567", "hola");
+    await vi.advanceTimersByTimeAsync(ESPERAS_429_MS[0]);
+    const result = await promesa;
+
+    expect(result).toEqual({ whatsappMessageId: "wamid.X" });
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    const [url1, init1] = fetchMock.mock.calls[0];
+    const [url2, init2] = fetchMock.mock.calls[1];
+    expect(url2).toBe(url1);
+    expect(init2.body).toBe(init1.body);
+    expect(init2.headers).toEqual(init1.headers);
+    expect(warn).toHaveBeenCalledWith("whatsapp_429_reintento", { intento: 1, provider: "360dialog" });
+  });
+
+  it("cuatro 429 seguidos lanzan MetaApiError 429 con el texto del proveedor (4 fetch en total)", async () => {
+    vi.spyOn(log, "warn").mockImplementation(() => {});
+    fetchMock.mockResolvedValue(LIMITE);
+
+    const promesa = sendWhatsappText("p", D360, "584121234567", "hola").catch((e) => e);
+    await vi.advanceTimersByTimeAsync(ESPERAS_429_MS.reduce((a, b) => a + b, 0));
+    const err = await promesa;
+
+    expect(err).toBeInstanceOf(MetaApiError);
+    expect(err.status).toBe(429);
+    expect(err.message).toBe("Too many requests for one number");
+    expect(fetchMock).toHaveBeenCalledTimes(4);
+  });
+
+  it("un 400 no se reintenta: un solo fetch y el error tal cual", async () => {
+    fetchMock.mockResolvedValue({
+      ok: false,
+      status: 400,
+      json: async () => ({ error: { message: "Fuera de ventana", code: 131047 } }),
+    });
+
+    const err = await sendWhatsappText("p", D360, "584121234567", "hola").catch((e) => e);
+
+    expect(err).toBeInstanceOf(MetaApiError);
+    expect(err.status).toBe(400);
+    expect(err.message).toBe("Fuera de ventana");
+    expect(metaErrorCode(err)).toBe(131047);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("un Retry-After en segundos manda sobre la tabla de esperas", async () => {
+    vi.spyOn(log, "warn").mockImplementation(() => {});
+    fetchMock.mockResolvedValueOnce(conRetryAfter("2")).mockResolvedValueOnce(OK);
+
+    const promesa = sendWhatsappText("p", D360, "584121234567", "hola");
+    await vi.advanceTimersByTimeAsync(1999);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    await promesa;
+  });
+
+  it("un Retry-After enorme se topa en 10 s", async () => {
+    vi.spyOn(log, "warn").mockImplementation(() => {});
+    fetchMock.mockResolvedValueOnce(conRetryAfter("120")).mockResolvedValueOnce(OK);
+
+    const promesa = sendWhatsappText("p", D360, "584121234567", "hola");
+    await vi.advanceTimersByTimeAsync(9999);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    await promesa;
+  });
+
+  it("sendTypingIndicator con 429 no reintenta ni lanza: un solo fetch", async () => {
+    const warn = vi.spyOn(log, "warn").mockImplementation(() => {});
+    fetchMock.mockResolvedValue(LIMITE);
+
+    await expect(sendTypingIndicator("p", D360, "wamid.X")).resolves.toBeUndefined();
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(warn).toHaveBeenCalledWith(
+      "whatsapp_typing_fallido",
+      expect.objectContaining({ status: 429, detail: "Too many requests for one number" })
+    );
   });
 });
