@@ -20,6 +20,10 @@ import { whatsappCredentials } from "@/lib/whatsapp/provider";
 // ---------------------------------------------------------------------------
 
 interface ReadConversation {
+  // Hotfix 2 (9/10/2026): con 360dialog el check azul comparte el cupo por
+  // número con los envíos y `markWhatsappRead` necesita el teléfono para saber
+  // de qué fila es.
+  contact: { phone_number: string | null } | null;
   channel: { phone_number_id: string | null; status: string };
 }
 
@@ -34,7 +38,7 @@ export async function POST(_request: Request, context: { params: Promise<{ id: s
 
   const { data: conversationRow } = await supabase
     .from("conversations")
-    .select("channel:whatsapp_channels(phone_number_id, status)")
+    .select("contact:contacts(phone_number), channel:whatsapp_channels(phone_number_id, status)")
     .eq("id", conversationId)
     .maybeSingle();
   const conversation = conversationRow as unknown as ReadConversation | null;
@@ -58,7 +62,12 @@ export async function POST(_request: Request, context: { params: Promise<{ id: s
     // Sin wamid no hay a qué mensaje apuntar el check: puede pasar en un chat
     // que solo tiene mensajes salientes (la IA saludó primero, por ejemplo).
     if (wamid) {
-      await markWhatsappRead(conversation.channel.phone_number_id!, credentials, wamid);
+      await markWhatsappRead(
+        conversation.channel.phone_number_id!,
+        credentials,
+        wamid,
+        conversation.contact?.phone_number ?? null
+      );
     }
   }
 

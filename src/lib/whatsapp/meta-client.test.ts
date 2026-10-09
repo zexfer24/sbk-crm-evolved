@@ -13,6 +13,7 @@ import {
 } from "@/lib/whatsapp/meta-client";
 import type { WhatsappCredentials } from "@/lib/whatsapp/provider";
 import { log } from "@/lib/log";
+import { __reiniciarFilasParaTests } from "@/lib/whatsapp/fila-por-numero";
 
 // Plan "SBK CRM pasa a 360dialog" (8/10/2026), T1: el cliente recibe las
 // credenciales ya resueltas (`provider.ts`) en vez de un token suelto.
@@ -34,6 +35,9 @@ const D360: WhatsappCredentials = {
 const fetchMock = vi.fn();
 
 beforeEach(() => {
+  // Hotfix 2 (9/10/2026): la fila por número vive en memoria del proceso;
+  // cada test arranca con las filas y las horas de último 200 vacías.
+  __reiniciarFilasParaTests();
   vi.stubGlobal("fetch", fetchMock);
   fetchMock.mockReset();
   fetchMock.mockResolvedValue({
@@ -224,7 +228,7 @@ describe("envío con 360dialog", () => {
   });
 
   it("markWhatsappRead va a {baseUrl}/messages con la llave de 360dialog", async () => {
-    await markWhatsappRead("p", D360, "wamid.ENTRANTE");
+    await markWhatsappRead("p", D360, "wamid.ENTRANTE", "584121234567");
 
     const [url, init] = fetchMock.mock.calls[0];
     expect(url).toBe("https://waba-v2.360dialog.io/messages");
@@ -405,24 +409,28 @@ describe("downloadMetaMedia", () => {
   });
 });
 
+
 // ---------------------------------------------------------------------------
 // 9/10/2026: 360dialog limita por DESTINATARIO ("Too many requests for one
-// number"). El segundo POST al mismo número con menos de ~1-3 s de diferencia
+// number"). El segundo POST al mismo número con menos de ~1-5 s de diferencia
 // vuelve 429 y el mensaje NO se acepta, así que repetirlo no duplica nada.
+// Con Meta el reintento sigue siendo el de 5799edd (tabla de esperas, sin
+// fila); con 360dialog el hotfix 2 lo mueve DENTRO de la fila por número
+// (`fila-por-numero.ts`) y la espera mínima es la pausa de 5000 ms.
 // ---------------------------------------------------------------------------
 
-describe("429 de 360dialog en un envío", () => {
-  const OK = { ok: true, status: 200, json: async () => ({ messages: [{ id: "wamid.X" }] }) };
-  const LIMITE = {
-    ok: false,
-    status: 429,
-    json: async () => ({ error: "Too many requests for one number" }),
-  };
-  const conRetryAfter = (valor: string) => ({
-    ...LIMITE,
-    headers: { get: (k: string) => (k.toLowerCase() === "retry-after" ? valor : null) },
-  });
+const OK = { ok: true, status: 200, json: async () => ({ messages: [{ id: "wamid.X" }] }) };
+const LIMITE = {
+  ok: false,
+  status: 429,
+  json: async () => ({ error: "Too many requests for one number" }),
+};
+const conRetryAfter = (valor: string) => ({
+  ...LIMITE,
+  headers: { get: (k: string) => (k.toLowerCase() === "retry-after" ? valor : null) },
+});
 
+describe("429 de Meta en un envío (sin cambios respecto de 5799edd)", () => {
   beforeEach(() => {
     vi.useFakeTimers();
   });
@@ -431,12 +439,14 @@ describe("429 de 360dialog en un envío", () => {
     vi.useRealTimers();
   });
 
-  it("un 429 seguido de un 200 se reintenta solo con el mismo POST", async () => {
+  it("un 429 seguido de un 200 se reintenta solo con el mismo POST, a los 1500 ms", async () => {
     const warn = vi.spyOn(log, "warn").mockImplementation(() => {});
     fetchMock.mockResolvedValueOnce(LIMITE).mockResolvedValueOnce(OK);
 
-    const promesa = sendWhatsappText("p", D360, "584121234567", "hola");
-    await vi.advanceTimersByTimeAsync(ESPERAS_429_MS[0]);
+    const promesa = sendWhatsappText("p", META, "584121234567", "hola");
+    await vi.advanceTimersByTimeAsync(1499);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    await vi.advanceTimersByTimeAsync(1);
     const result = await promesa;
 
     expect(result).toEqual({ whatsappMessageId: "wamid.X" });
@@ -446,21 +456,95 @@ describe("429 de 360dialog en un envío", () => {
     expect(url2).toBe(url1);
     expect(init2.body).toBe(init1.body);
     expect(init2.headers).toEqual(init1.headers);
-    expect(warn).toHaveBeenCalledWith("whatsapp_429_reintento", { intento: 1, provider: "360dialog" });
+    expect(warn).toHaveBeenCalledWith("whatsapp_429_reintento", { intento: 1, provider: "meta", espera_ms: 1500 });
   });
 
-  it("cuatro 429 seguidos lanzan MetaApiError 429 con el texto del proveedor (4 fetch en total)", async () => {
+  it("cuatro 429 seguidos lanzan MetaApiError 429 (4 fetch en total, esperas 1500/3000/5000)", async () => {
+    vi.spyOn(log, "warn").mockImplementation(() => {});
+    fetchMock.mockResolvedValue(LIMITE);
+
+    const promesa = sendWhatsappText("p", META, "584121234567", "hola").catch((e) => e);
+    await vi.advanceTimersByTimeAsync(1500 + 3000 + 5000);
+    const err = await promesa;
+
+    expect(ESPERAS_429_MS).toEqual([1500, 3000, 5000]);
+    expect(err).toBeInstanceOf(MetaApiError);
+    expect(err.status).toBe(429);
+    expect(err.message).toBe("Too many requests for one number");
+    expect(fetchMock).toHaveBeenCalledTimes(4);
+  });
+
+  it("un Retry-After en segundos manda sobre la tabla de esperas", async () => {
+    vi.spyOn(log, "warn").mockImplementation(() => {});
+    fetchMock.mockResolvedValueOnce(conRetryAfter("2")).mockResolvedValueOnce(OK);
+
+    const promesa = sendWhatsappText("p", META, "584121234567", "hola");
+    await vi.advanceTimersByTimeAsync(1999);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    await promesa;
+  });
+
+  it("un Retry-After enorme se topa en 10 s", async () => {
+    vi.spyOn(log, "warn").mockImplementation(() => {});
+    fetchMock.mockResolvedValueOnce(conRetryAfter("120")).mockResolvedValueOnce(OK);
+
+    const promesa = sendWhatsappText("p", META, "584121234567", "hola");
+    await vi.advanceTimersByTimeAsync(9999);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    await promesa;
+  });
+});
+
+describe("429 de 360dialog en un envío", () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("un 429 seguido de un 200 se reintenta a los 5000 ms y no antes, con el mismo POST", async () => {
+    const warn = vi.spyOn(log, "warn").mockImplementation(() => {});
+    fetchMock.mockResolvedValueOnce(LIMITE).mockResolvedValueOnce(OK);
+
+    const promesa = sendWhatsappText("p", D360, "584121234567", "hola");
+    await vi.advanceTimersByTimeAsync(4999);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    await vi.advanceTimersByTimeAsync(1);
+    const result = await promesa;
+
+    expect(result).toEqual({ whatsappMessageId: "wamid.X" });
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    const [url1, init1] = fetchMock.mock.calls[0];
+    const [url2, init2] = fetchMock.mock.calls[1];
+    expect(url2).toBe(url1);
+    expect(init2.body).toBe(init1.body);
+    expect(init2.headers).toEqual(init1.headers);
+    expect(warn).toHaveBeenCalledWith("whatsapp_429_reintento", {
+      intento: 1,
+      provider: "360dialog",
+      espera_ms: 5000,
+      en_fila: 0,
+    });
+  });
+
+  it("siete 429 seguidos (1 + 6 reintentos) lanzan MetaApiError 429 con el texto del proveedor", async () => {
     vi.spyOn(log, "warn").mockImplementation(() => {});
     fetchMock.mockResolvedValue(LIMITE);
 
     const promesa = sendWhatsappText("p", D360, "584121234567", "hola").catch((e) => e);
-    await vi.advanceTimersByTimeAsync(ESPERAS_429_MS.reduce((a, b) => a + b, 0));
+    await vi.advanceTimersByTimeAsync(6 * 5000);
     const err = await promesa;
 
     expect(err).toBeInstanceOf(MetaApiError);
     expect(err.status).toBe(429);
     expect(err.message).toBe("Too many requests for one number");
-    expect(fetchMock).toHaveBeenCalledTimes(4);
+    expect(fetchMock).toHaveBeenCalledTimes(7);
   });
 
   it("un 400 no se reintenta: un solo fetch y el error tal cual", async () => {
@@ -479,12 +563,12 @@ describe("429 de 360dialog en un envío", () => {
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 
-  it("un Retry-After en segundos manda sobre la tabla de esperas", async () => {
+  it("un Retry-After menor a la pausa no la acorta: sigue esperando 5000 ms", async () => {
     vi.spyOn(log, "warn").mockImplementation(() => {});
     fetchMock.mockResolvedValueOnce(conRetryAfter("2")).mockResolvedValueOnce(OK);
 
     const promesa = sendWhatsappText("p", D360, "584121234567", "hola");
-    await vi.advanceTimersByTimeAsync(1999);
+    await vi.advanceTimersByTimeAsync(4999);
     expect(fetchMock).toHaveBeenCalledTimes(1);
     await vi.advanceTimersByTimeAsync(1);
     expect(fetchMock).toHaveBeenCalledTimes(2);
@@ -503,6 +587,20 @@ describe("429 de 360dialog en un envío", () => {
     await promesa;
   });
 
+  it("el 429 consume su cuerpo (text) antes de reintentar, para liberar la conexión", async () => {
+    vi.spyOn(log, "warn").mockImplementation(() => {});
+    const text = vi.fn(async () => "Too many requests");
+    fetchMock.mockResolvedValueOnce({ ...LIMITE, text }).mockResolvedValueOnce(OK);
+
+    const promesa = sendWhatsappText("p", D360, "584121234567", "hola");
+    await vi.advanceTimersByTimeAsync(0);
+    expect(text).toHaveBeenCalledTimes(1);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    await vi.advanceTimersByTimeAsync(5000);
+    await promesa;
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
   it("sendTypingIndicator con 429 no reintenta ni lanza: un solo fetch", async () => {
     const warn = vi.spyOn(log, "warn").mockImplementation(() => {});
     fetchMock.mockResolvedValue(LIMITE);
@@ -514,5 +612,212 @@ describe("429 de 360dialog en un envío", () => {
       "whatsapp_typing_fallido",
       expect.objectContaining({ status: 429, detail: "Too many requests for one number" })
     );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Hotfix 2 (9/10/2026): "Los mensajes al mismo cliente salen de a uno y en
+// orden por 360dialog". Cuatro textos rápidos de un asesor salieron 1.º, 3.º,
+// failed, 2.º porque cada envío reintentaba su 429 por su cuenta, en paralelo.
+// ---------------------------------------------------------------------------
+
+describe("fila por número con 360dialog", () => {
+  /** Registra la hora y el texto de cada POST de envío y responde con la cola dada. */
+  function registrarFetch(respuestas: unknown[]) {
+    const llamadas: { t: number; texto: string | undefined }[] = [];
+    const cola = [...respuestas];
+    fetchMock.mockImplementation(async (_url: string, init: { body: string }) => {
+      const cuerpo = JSON.parse(init.body) as { text?: { body: string } };
+      llamadas.push({ t: Date.now(), texto: cuerpo.text?.body });
+      return cola.shift() ?? OK;
+    });
+    return llamadas;
+  }
+
+  const conId = (k: string) => ({ ...OK, json: async () => ({ messages: [{ id: `wamid.${k}` }] }) });
+
+  beforeEach(() => {
+    vi.useFakeTimers();
+    vi.spyOn(log, "warn").mockImplementation(() => {});
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("tres textos al mismo número salen en orden, cada uno ≥ 5000 ms después del anterior", async () => {
+    const llamadas = registrarFetch([conId("1"), conId("2"), conId("3")]);
+
+    const p1 = sendWhatsappText("p", D360, "+58 412-123-4567", "uno");
+    const p2 = sendWhatsappText("p", D360, "584121234567", "dos");
+    const p3 = sendWhatsappText("p", D360, "584121234567", "tres");
+
+    await vi.advanceTimersByTimeAsync(0);
+    expect(llamadas.map((l) => l.texto)).toEqual(["uno"]);
+    await vi.advanceTimersByTimeAsync(4999);
+    expect(llamadas).toHaveLength(1);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(llamadas.map((l) => l.texto)).toEqual(["uno", "dos"]);
+    await vi.advanceTimersByTimeAsync(5000);
+    expect(llamadas.map((l) => l.texto)).toEqual(["uno", "dos", "tres"]);
+
+    expect(llamadas[1].t - llamadas[0].t).toBeGreaterThanOrEqual(5000);
+    expect(llamadas[2].t - llamadas[1].t).toBeGreaterThanOrEqual(5000);
+    await expect(Promise.all([p1, p2, p3])).resolves.toEqual([
+      { whatsappMessageId: "wamid.1" },
+      { whatsappMessageId: "wamid.2" },
+      { whatsappMessageId: "wamid.3" },
+    ]);
+  });
+
+  it("un mensaje no adelanta al que está reintentando un 429", async () => {
+    const llamadas = registrarFetch([LIMITE, LIMITE, conId("1"), conId("2")]);
+
+    const p1 = sendWhatsappText("p", D360, "584121234567", "uno");
+    const p2 = sendWhatsappText("p", D360, "584121234567", "dos");
+
+    await vi.advanceTimersByTimeAsync(0);
+    expect(llamadas.map((l) => l.texto)).toEqual(["uno"]);
+    await vi.advanceTimersByTimeAsync(5000);
+    expect(llamadas.map((l) => l.texto)).toEqual(["uno", "uno"]);
+    await vi.advanceTimersByTimeAsync(5000);
+    // El 200 del 1.º llegó a los 10 s; el 2.º espera la pausa desde ahí.
+    expect(llamadas.map((l) => l.texto)).toEqual(["uno", "uno", "uno"]);
+    const tAceptado = llamadas[2].t;
+    await vi.advanceTimersByTimeAsync(4999);
+    expect(llamadas).toHaveLength(3);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(llamadas.map((l) => l.texto)).toEqual(["uno", "uno", "uno", "dos"]);
+    expect(llamadas[3].t - tAceptado).toBeGreaterThanOrEqual(5000);
+
+    await expect(Promise.all([p1, p2])).resolves.toEqual([
+      { whatsappMessageId: "wamid.1" },
+      { whatsappMessageId: "wamid.2" },
+    ]);
+  });
+
+  it("si el 1.º agota sus 7 intentos con 429, falla él y el 2.º sale igual", async () => {
+    const llamadas = registrarFetch([LIMITE, LIMITE, LIMITE, LIMITE, LIMITE, LIMITE, LIMITE, conId("2")]);
+
+    const p1 = sendWhatsappText("p", D360, "584121234567", "uno").catch((e) => e);
+    const p2 = sendWhatsappText("p", D360, "584121234567", "dos");
+
+    await vi.advanceTimersByTimeAsync(30_000);
+    expect(llamadas.filter((l) => l.texto === "uno")).toHaveLength(7);
+    const err = await p1;
+    expect(err).toBeInstanceOf(MetaApiError);
+    expect(err.status).toBe(429);
+
+    await vi.advanceTimersByTimeAsync(0);
+    expect(llamadas.map((l) => l.texto).slice(-1)).toEqual(["dos"]);
+    await expect(p2).resolves.toEqual({ whatsappMessageId: "wamid.2" });
+  });
+
+  it("dos números distintos no se esperan: los dos POST salen en el mismo instante", async () => {
+    const llamadas = registrarFetch([conId("a"), conId("b")]);
+
+    const pa = sendWhatsappText("p", D360, "584121111111", "a");
+    const pb = sendWhatsappText("p", D360, "584122222222", "b");
+
+    await vi.advanceTimersByTimeAsync(0);
+    expect(llamadas.map((l) => l.texto).sort()).toEqual(["a", "b"]);
+    expect(llamadas[0].t).toBe(llamadas[1].t);
+    await Promise.all([pa, pb]);
+  });
+
+  it("con Meta, dos envíos al mismo número salen en paralelo (sin fila)", async () => {
+    registrarFetch([conId("1"), conId("2")]);
+
+    const p1 = sendWhatsappText("p", META, "584121234567", "uno");
+    const p2 = sendWhatsappText("p", META, "584121234567", "dos");
+
+    // Sin avanzar el reloj ni un ms: ambos fetch ya salieron.
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    await Promise.all([p1, p2]);
+  });
+
+  describe("marcar leído (mínima prioridad)", () => {
+    const NUMERO = "584121234567";
+
+    it("con un envío en curso al mismo número no manda nada", async () => {
+      let soltar!: (v: unknown) => void;
+      const colgado = new Promise((r) => (soltar = r));
+      fetchMock.mockImplementationOnce(() => colgado);
+
+      const envio = sendWhatsappText("p", D360, NUMERO, "hola");
+      await vi.advanceTimersByTimeAsync(0);
+      await markWhatsappRead("p", D360, "wamid.ENTRANTE", NUMERO);
+
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+      soltar(conId("1"));
+      await envio;
+    });
+
+    it("con un 200 aceptado hace menos de 5 s no manda nada", async () => {
+      fetchMock.mockResolvedValue(conId("1"));
+      await sendWhatsappText("p", D360, NUMERO, "hola");
+      await vi.advanceTimersByTimeAsync(4999);
+
+      await markWhatsappRead("p", D360, "wamid.ENTRANTE", NUMERO);
+
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+    });
+
+    it("con la fila libre y la pausa cumplida lo manda, y su 200 cuenta para la pausa del siguiente envío", async () => {
+      fetchMock.mockResolvedValue(conId("1"));
+      await sendWhatsappText("p", D360, NUMERO, "hola");
+      await vi.advanceTimersByTimeAsync(5000);
+
+      await markWhatsappRead("p", D360, "wamid.ENTRANTE", NUMERO);
+
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+      expect(JSON.parse(fetchMock.mock.calls[1][1].body)).toEqual({
+        messaging_product: "whatsapp",
+        status: "read",
+        message_id: "wamid.ENTRANTE",
+      });
+
+      const envio = sendWhatsappText("p", D360, NUMERO, "otro");
+      await vi.advanceTimersByTimeAsync(4999);
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(fetchMock).toHaveBeenCalledTimes(3);
+      await envio;
+    });
+
+    it("sin historial de envíos al número lo manda de una", async () => {
+      await markWhatsappRead("p", D360, "wamid.ENTRANTE", NUMERO);
+
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+    });
+
+    it("sin teléfono no manda nada (360dialog no puede saber de qué fila es)", async () => {
+      await markWhatsappRead("p", D360, "wamid.ENTRANTE");
+      await markWhatsappRead("p", D360, "wamid.ENTRANTE", null);
+
+      expect(fetchMock).not.toHaveBeenCalled();
+    });
+
+    it("un 429 del read no se reintenta ni espera: un solo fetch y no lanza", async () => {
+      fetchMock.mockResolvedValue(LIMITE);
+
+      await expect(markWhatsappRead("p", D360, "wamid.ENTRANTE", NUMERO)).resolves.toBeUndefined();
+
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+    });
+
+    it("con Meta se manda siempre, aunque haya un envío en curso al mismo número", async () => {
+      let soltar!: (v: unknown) => void;
+      const colgado = new Promise((r) => (soltar = r));
+      fetchMock.mockImplementationOnce(() => colgado);
+
+      const envio = sendWhatsappText("p", META, NUMERO, "hola");
+      await markWhatsappRead("p", META, "wamid.ENTRANTE", NUMERO);
+      await markWhatsappRead("p", META, "wamid.ENTRANTE");
+
+      expect(fetchMock).toHaveBeenCalledTimes(3);
+      soltar(conId("1"));
+      await envio;
+    });
   });
 });
