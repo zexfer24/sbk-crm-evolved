@@ -36,10 +36,16 @@
  * que pase adentro; `.inv-status` con `flex-wrap: wrap` deja que un
  * contenido que no entre baje de línea en vez de ensanchar la columna y
  * volver a correr todo.
+ *
+ * 12/10/2026 (plan "Precio promoción y precio estándar (envío MRW)"): suma
+ * UNA columna fija, la de Precio estándar, de 150px igual que Precio
+ * promoción (mismo pie "$ …" en bolívares). Fija por la misma razón de
+ * arriba: una columna `auto` o `fr` repartiría distinto en cada `<li>` según
+ * el contenido (y el texto "Más de 80 kg: fuera de la tabla MRW" es largo).
  */
 .inv-row {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 100px 150px 110px 300px;
+  grid-template-columns: minmax(0, 1fr) 100px 150px 150px 110px 300px;
   align-items: start;
   column-gap: 16px;
   row-gap: 8px;
@@ -201,6 +207,34 @@
   color: var(--lm-muted);
 }
 
+/*
+ * Línea "incluye envío MRW $ X" bajo el pie del Precio estándar (12/10/2026).
+ * `white-space: normal` a propósito: es texto libre y, si no cabe en 150px,
+ * debe bajar de línea en vez de ensanchar la columna fija.
+ */
+.inv-fee {
+  display: block;
+  font-size: 11px;
+  color: var(--lm-muted);
+  white-space: normal;
+}
+
+/*
+ * Precio estándar sin tarifa (12/10/2026): en la caja va un texto que dice
+ * por qué ("Cargá el peso", "Más de 80 kg…"), no una cifra. Atenuado y en
+ * cursiva para que no se lea como un precio, más chico y alineado a la
+ * izquierda para que un mensaje largo envuelva a dos líneas dentro de la
+ * columna fija en vez de cortarse.
+ */
+.inv-input-wrap .inv-readonly[data-empty="true"] {
+  font-size: 11.5px;
+  font-style: italic;
+  line-height: 1.25;
+  text-align: left;
+  white-space: normal;
+  color: var(--lm-muted);
+}
+
 .inv-status {
   display: flex;
   flex-wrap: wrap;
@@ -258,9 +292,28 @@
 
 /* --- Pantallas estrechas -------------------------------------------------- */
 
-@media (max-width: 760px) {
+/* Con la columna de Precio estándar (12/10/2026) los campos fijos suman
+   150px más: a 1024px el nombre quedaba en ~20px y se montaba sobre
+   "Stock" (visto con Playwright). Entre 761 y 1180px los badges de estado
+   bajan a su propia línea y le devuelven sus 300px al nombre; las columnas
+   de los campos siguen fijas, así que las filas siguen alineadas. */
+@media (min-width: 761px) and (max-width: 1180px) {
   .inv-row {
-    grid-template-columns: repeat(3, minmax(0, 1fr));
+    grid-template-columns: minmax(0, 1fr) 100px 150px 150px 110px;
+  }
+
+  .inv-status {
+    grid-column: 1 / -1;
+    justify-self: start;
+    justify-content: flex-start;
+  }
+}
+
+@media (max-width: 760px) {
+  /* Cuatro campos (Stock, Promoción, Estándar, Peso): dos columnas dejan
+     los pares Stock/Promoción y Estándar/Peso (12/10/2026). */
+  .inv-row {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
   .inv-identity,

@@ -65,6 +65,7 @@ const BUJIA: Product = {
   updatedAt: "2026-08-22T10:00:00.000Z",
   compatibility: [],
   weightKg: null,
+  shippingFeeUsd: null,
   saintCode: null,
   saintAddedAt: null,
   saintRemovedAt: null,

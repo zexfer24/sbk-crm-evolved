@@ -19,7 +19,7 @@ import { inventoryPageRange, LOW_STOCK_THRESHOLD, type InventoryParams } from "@
 
 export const PRODUCT_SELECT = `
   id, name, brand, price, currency, stock_quantity, description,
-  is_active, updated_at, weight_kg, saint_code, saint_added_at, saint_removed_at,
+  is_active, updated_at, weight_kg, tarifa_envio_usd, saint_code, saint_added_at, saint_removed_at,
   product_compatibility(id, moto_brand, moto_model)
 `;
 
@@ -34,6 +34,13 @@ export interface RawProduct {
   is_active: boolean;
   updated_at: string;
   weight_kg: number | null;
+  /**
+   * Campo calculado de PostgREST (12/10/2026, plan "Precio promoción y precio
+   * estándar (envío MRW)"): no es columna de `products` ni está en
+   * `database.types.ts`, por eso se tipa a mano acá. `numeric` puede llegar
+   * como texto.
+   */
+  tarifa_envio_usd: number | string | null;
   saint_code: string | null;
   saint_added_at: string | null;
   saint_removed_at: string | null;
@@ -52,6 +59,7 @@ export function mapProduct(row: RawProduct): Product {
     isActive: row.is_active,
     updatedAt: row.updated_at,
     weightKg: row.weight_kg === null ? null : Number(row.weight_kg),
+    shippingFeeUsd: row.tarifa_envio_usd == null ? null : Number(row.tarifa_envio_usd),
     saintCode: row.saint_code,
     saintAddedAt: row.saint_added_at,
     saintRemovedAt: row.saint_removed_at,

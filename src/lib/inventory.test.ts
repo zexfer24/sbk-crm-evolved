@@ -14,9 +14,11 @@ import {
   parseWeightInput,
   priceDisplay,
   priceInBs,
+  standardPriceDisplay,
   stockLevel,
   summarizeInventory,
 } from "@/lib/inventory";
+import { mapProduct, PRODUCT_SELECT, type RawProduct } from "@/lib/inventory-data";
 
 function product(over: Partial<Product> = {}): Product {
   return {
@@ -31,6 +33,7 @@ function product(over: Partial<Product> = {}): Product {
     updatedAt: "2026-08-20T10:00:00Z",
     compatibility: [],
     weightKg: null,
+    shippingFeeUsd: null,
     saintCode: null,
     saintAddedAt: null,
     saintRemovedAt: null,
@@ -178,6 +181,106 @@ describe("priceDisplay", () => {
       principal: "Bs. 87.00",
       pie: "$ 2.20",
     });
+  });
+});
+
+// 12/10/2026 (plan "Precio promoción y precio estándar (envío MRW)"): el
+// precio estándar es el precio promoción más la tarifa MRW que calcula la base.
+describe("standardPriceDisplay", () => {
+  it("VES con tasa: usa usdFromBs (redondeo hacia arriba) y suma la tarifa en ambas monedas", () => {
+    // 87 / 40 = 2,175 -> usdFromBs 2,20 (una división directa daría 2,18).
+    // Bs: 87 + round2(1,40 * 40) = 143,00. $: 2,20 + 1,40 = 3,60.
+    expect(
+      standardPriceDisplay(product({ price: 87, currency: "VES", weightKg: 1, shippingFeeUsd: 1.4 }), 40)
+    ).toEqual({ estado: "ok", principal: "Bs. 143.00", pie: "$ 3.60", tarifa: "$ 1.40" });
+  });
+
+  it("VES con tasa: evita el ruido de coma flotante al sumar", () => {
+    // 2,20 + 1,35 en coma flotante da 3,5500000000000003.
+    const r = standardPriceDisplay(product({ price: 87, currency: "VES", weightKg: 1, shippingFeeUsd: 1.35 }), 40);
+    expect(r).toEqual({ estado: "ok", principal: "Bs. 141.00", pie: "$ 3.55", tarifa: "$ 1.35" });
+  });
+
+  it("ejemplo de la especificación: $1,00 + $1,40 de envío = $2,40 en USD y en VES", () => {
+    expect(
+      standardPriceDisplay(product({ price: 1, currency: "USD", weightKg: 1, shippingFeeUsd: 1.4 }), 100)
+    ).toEqual({ estado: "ok", principal: "Bs. 240.00", pie: "$ 2.40", tarifa: "$ 1.40" });
+    expect(
+      standardPriceDisplay(product({ price: 100, currency: "VES", weightKg: 1, shippingFeeUsd: 1.4 }), 100)
+    ).toEqual({ estado: "ok", principal: "Bs. 240.00", pie: "$ 2.40", tarifa: "$ 1.40" });
+  });
+
+  it("USD con tasa: el dólar es precio + tarifa y los bolívares salen de esa suma", () => {
+    expect(
+      standardPriceDisplay(product({ price: 25, currency: "USD", weightKg: 2, shippingFeeUsd: 2.5 }), 40)
+    ).toEqual({ estado: "ok", principal: "Bs. 1100.00", pie: "$ 27.50", tarifa: "$ 2.50" });
+  });
+
+  it("sin tasa: no mezcla monedas distintas", () => {
+    expect(
+      standardPriceDisplay(product({ price: 1000, currency: "VES", weightKg: 1, shippingFeeUsd: 1.4 }), 0)
+    ).toEqual({ estado: "ok", principal: "Bs. 1000.00", pie: "+ $ 1.40 envío", tarifa: "$ 1.40" });
+    expect(
+      standardPriceDisplay(product({ price: 25, currency: "USD", weightKg: 1, shippingFeeUsd: 1.4 }), -1)
+    ).toEqual({ estado: "ok", principal: "$ 26.40", pie: null, tarifa: "$ 1.40" });
+  });
+
+  it("sin peso (null o 0): nunca un número", () => {
+    expect(standardPriceDisplay(product({ weightKg: null, shippingFeeUsd: null }), 40)).toEqual({
+      estado: "sin_peso",
+    });
+    expect(standardPriceDisplay(product({ weightKg: 0, shippingFeeUsd: null }), 40)).toEqual({
+      estado: "sin_peso",
+    });
+  });
+
+  it("80 kg o más: fuera de la tabla de tarifas", () => {
+    expect(standardPriceDisplay(product({ weightKg: 80, shippingFeeUsd: null }), 40)).toEqual({
+      estado: "fuera_de_tabla",
+    });
+    expect(standardPriceDisplay(product({ weightKg: 95, shippingFeeUsd: null }), 40)).toEqual({
+      estado: "fuera_de_tabla",
+    });
+  });
+
+  it("peso válido pero sin rango en la base: sin_tarifa", () => {
+    expect(standardPriceDisplay(product({ weightKg: 5, shippingFeeUsd: null }), 40)).toEqual({
+      estado: "sin_tarifa",
+    });
+  });
+});
+
+describe("mapProduct / PRODUCT_SELECT (tarifa MRW)", () => {
+  const raw = (over: Partial<RawProduct> = {}): RawProduct => ({
+    id: "p1",
+    name: "Carburador",
+    brand: null,
+    price: 25,
+    currency: "USD",
+    stock_quantity: 3,
+    description: null,
+    is_active: true,
+    updated_at: "2026-10-12T10:00:00Z",
+    weight_kg: 1,
+    tarifa_envio_usd: null,
+    saint_code: null,
+    saint_added_at: null,
+    saint_removed_at: null,
+    product_compatibility: null,
+    ...over,
+  });
+
+  it("convierte la tarifa que PostgREST entrega como texto", () => {
+    expect(mapProduct(raw({ tarifa_envio_usd: "1.40" })).shippingFeeUsd).toBe(1.4);
+    expect(mapProduct(raw({ tarifa_envio_usd: 2.5 })).shippingFeeUsd).toBe(2.5);
+  });
+
+  it("null se queda null", () => {
+    expect(mapProduct(raw({ tarifa_envio_usd: null })).shippingFeeUsd).toBeNull();
+  });
+
+  it("el select pide tarifa_envio_usd", () => {
+    expect(PRODUCT_SELECT).toContain("tarifa_envio_usd");
   });
 });
 

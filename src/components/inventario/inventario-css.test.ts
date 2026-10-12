@@ -137,7 +137,7 @@ describe("la hoja de estilos del inventario", () => {
    * columna 1 crezca de alto no mueve ni centra a las demás — por eso este
    * test NO exige que `grid-template-columns` cambie, exige que NO cambie.
    */
-  it(".inv-row sigue con las mismas cinco columnas fijas: el código Saint no agrega una columna", async () => {
+  it(".inv-row tiene seis columnas fijas (Precio estándar es la única agregada): el código Saint no agrega otra", async () => {
     const css = await leerCss();
     const regla = bloque(css, ".inv-row");
     const plantilla = /grid-template-columns:\s*([^;]+);/.exec(regla);
@@ -146,7 +146,7 @@ describe("la hoja de estilos del inventario", () => {
     expect(
       plantilla![1].trim(),
       "el código Saint va DENTRO de la columna 1 (`.inv-identity`), como una línea nueva, no como columna: agregar una columna aquí reabre la trampa del 10/9/2026"
-    ).toBe("minmax(0, 1fr) 100px 150px 110px 300px");
+    ).toBe("minmax(0, 1fr) 100px 150px 150px 110px 300px");
   });
 
   it(".inv-saint-code existe, en fuente numérica y seleccionable para copiar", async () => {
@@ -157,5 +157,46 @@ describe("la hoja de estilos del inventario", () => {
       regla,
       "sin `user-select: text` un padre con selección apagada podría impedir copiar el código con el mouse"
     ).toMatch(/user-select:\s*text\s*;/);
+  });
+
+  /*
+   * Plan "Precio promoción y precio estándar (envío MRW)" (12/10/2026): el
+   * campo Precio estándar suma UNA columna fija de 150px (la misma que
+   * Precio promoción, que lleva el mismo pie `.inv-bs`). En teléfono los
+   * cuatro campos quedan en pares (Stock/Promoción, Estándar/Peso) con dos
+   * columnas; identidad y estado siguen ocupando la fila entera.
+   */
+  it("en teléfono los cuatro campos caben en pares: dos columnas, identidad y estado a fila entera", async () => {
+    const css = await leerCss();
+    const inicio = css.indexOf("@media (max-width: 760px)");
+    expect(inicio, "no se encontró el breakpoint de teléfono en inventario.css").toBeGreaterThanOrEqual(0);
+    const movil = css.slice(inicio);
+    const fila = /\.inv-row\s*\{([^}]*)\}/.exec(movil);
+
+    expect(fila, "no se encontró `.inv-row` dentro del breakpoint de teléfono").not.toBeNull();
+    expect(fila![1], "con cuatro campos, tres columnas dejaban uno huérfano").toMatch(
+      /grid-template-columns:\s*repeat\(2,\s*minmax\(0,\s*1fr\)\)\s*;/
+    );
+    expect(movil).toMatch(/\.inv-identity,\s*\.inv-status\s*\{[^}]*grid-column:\s*1\s*\/\s*-1\s*;/);
+  });
+
+  it("entre 761 y 1180px el estado baja a su propia línea y le deja el ancho al nombre", async () => {
+    const css = await leerCss();
+    const inicio = css.indexOf("@media (min-width: 761px) and (max-width: 1180px)");
+    expect(inicio, "sin este breakpoint, a 1024px el nombre queda en ~20px").toBeGreaterThanOrEqual(0);
+    const medio = css.slice(inicio, css.indexOf("@media (max-width: 760px)"));
+    expect(medio).toMatch(/\.inv-row\s*\{[^}]*grid-template-columns:\s*minmax\(0, 1fr\) 100px 150px 150px 110px\s*;/);
+    expect(medio).toMatch(/\.inv-status\s*\{[^}]*grid-column:\s*1\s*\/\s*-1\s*;/);
+  });
+
+  it(".inv-fee es una línea chica y atenuada que sí puede envolver, y el texto vacío va atenuado en cursiva", async () => {
+    const css = await leerCss();
+    const fee = bloque(css, ".inv-fee");
+    expect(fee).toMatch(/font-size:\s*11px\s*;/);
+    expect(fee).toMatch(/color:\s*var\(--lm-muted\)\s*;/);
+    expect(fee).toMatch(/white-space:\s*normal\s*;/);
+
+    const vacio = bloque(css, '.inv-readonly[data-empty="true"]');
+    expect(vacio).toMatch(/font-style:\s*italic\s*;/);
   });
 });

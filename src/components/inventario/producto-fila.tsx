@@ -7,7 +7,23 @@ import { toast } from "@heroui/react";
 import type { Product } from "@/lib/types";
 import { createClient } from "@/lib/supabase/client";
 import { updateProductWeight } from "@/lib/mutations";
-import { aiVisibility, formatWeightInput, isNewFromSaint, parseWeightInput, priceDisplay, stockLevel } from "@/lib/inventory";
+import { fetchProduct } from "@/lib/inventory-data";
+import {
+  aiVisibility,
+  formatWeightInput,
+  isNewFromSaint,
+  parseWeightInput,
+  priceDisplay,
+  standardPriceDisplay,
+  stockLevel,
+} from "@/lib/inventory";
+
+/** Por qué no hay precio estándar (12/10/2026): nunca un número incompleto. */
+const MOTIVO_SIN_ESTANDAR = {
+  sin_peso: "Cargá el peso",
+  fuera_de_tabla: "Más de 80 kg: fuera de la tabla MRW",
+  sin_tarifa: "Sin tarifa MRW para este peso",
+} as const;
 
 /**
  * Una fila del inventario.
@@ -23,18 +39,42 @@ import { aiVisibility, formatWeightInput, isNewFromSaint, parseWeightInput, pric
  *
  * Se guarda al salir del campo (o con Enter), no en cada tecla: escribir
  * "12" no debe pasar por un guardado intermedio en "1".
+ *
+ * 12/10/2026 (plan "Precio promoción y precio estándar (envío MRW)"): el
+ * precio de hoy pasa a llamarse "Precio promoción" y al lado va el "Precio
+ * estándar" = promoción + envío MRW según el peso. La tarifa la calcula la
+ * base (`shippingFeeUsd`); acá solo se pinta. Como guardar el peso cambia esa
+ * tarifa, la fila lleva su propia copia del producto (`vivo`) y la relee tras
+ * guardar: `router.refresh()` también lo corrige, pero no es inmediato y el
+ * asesor acaba de teclear el peso esperando ver el precio ya.
  */
 export function ProductoFila({ product, bcvRate }: { product: Product; bcvRate: number }) {
   const router = useRouter();
 
+  const [vivo, setVivo] = useState(product);
+  const [propPrevio, setPropPrevio] = useState(product);
   const [weightDraft, setWeightDraft] = useState(formatWeightInput(product.weightKg));
   const [busy, setBusy] = useState(false);
   const [savedField, setSavedField] = useState<"peso" | null>(null);
 
-  const level = stockLevel(product);
-  const visibility = aiVisibility(product);
-  const price = priceDisplay(product, bcvRate);
-  const nuevoDesdeSaint = isNewFromSaint(product);
+  // Patrón "adjusting state when a prop changes" de React: cuando llega un
+  // producto nuevo del servidor (`router.refresh()`, otra página, otro
+  // filtro) `vivo` se alinea con él durante el render, sin un `setState` en
+  // un efecto (`react-hooks/set-state-in-effect`). El borrador del peso solo
+  // se pisa si el peso cambió de verdad: un refresh disparado por OTRA fila
+  // trae objetos nuevos para todas, y no debe borrarle al asesor lo que está
+  // tecleando acá.
+  if (product !== propPrevio) {
+    setPropPrevio(product);
+    setVivo(product);
+    if (product.weightKg !== propPrevio.weightKg) setWeightDraft(formatWeightInput(product.weightKg));
+  }
+
+  const level = stockLevel(vivo);
+  const visibility = aiVisibility(vivo);
+  const price = priceDisplay(vivo, bcvRate);
+  const estandar = standardPriceDisplay(vivo, bcvRate);
+  const nuevoDesdeSaint = isNewFromSaint(vivo);
 
   async function save(field: "peso", action: () => Promise<void>, revert: () => void) {
     setBusy(true);
@@ -55,19 +95,35 @@ export function ProductoFila({ product, bcvRate }: { product: Product; bcvRate: 
   async function commitWeight() {
     const parsed = parseWeightInput(weightDraft);
     if (!parsed.ok) {
-      setWeightDraft(formatWeightInput(product.weightKg));
+      setWeightDraft(formatWeightInput(vivo.weightKg));
       toast.danger(parsed.error);
       return;
     }
-    if (parsed.value === product.weightKg) {
+    if (parsed.value === vivo.weightKg) {
       setWeightDraft(formatWeightInput(parsed.value));
       return;
     }
 
     await save(
       "peso",
-      () => updateProductWeight(createClient(), product.id, parsed.value),
-      () => setWeightDraft(formatWeightInput(product.weightKg))
+      async () => {
+        const supabase = createClient();
+        await updateProductWeight(supabase, product.id, parsed.value);
+        // El peso ya quedó guardado. Releer el producto trae la tarifa MRW
+        // nueva (la calcula la base) para pintar el precio estándar al
+        // instante; si la relectura falla NO es un error de guardado —no se
+        // revierte ni se avisa—: se toma el peso nuevo y se descarta la tarifa
+        // vieja (era la del peso anterior: pintarla sería un precio estándar
+        // equivocado); `router.refresh()` trae la buena en cuanto llegue.
+        const sinTarifa = (actual: Product) => ({ ...actual, weightKg: parsed.value, shippingFeeUsd: null });
+        try {
+          const fresco = await fetchProduct(supabase, product.id);
+          setVivo((actual) => fresco ?? sinTarifa(actual));
+        } catch {
+          setVivo(sinTarifa);
+        }
+      },
+      () => setWeightDraft(formatWeightInput(vivo.weightKg))
     );
   }
 
@@ -145,7 +201,7 @@ export function ProductoFila({ product, bcvRate }: { product: Product; bcvRate: 
       </label>
 
       <label className="inv-field">
-        <span className="lm-eyebrow">Precio</span>
+        <span className="lm-eyebrow">Precio promoción</span>
         {/*
          * El precio deja de editarse desde acá el 19/9/2026 ("El precio se
          * lee en bolívares"): llega de `products`, que se carga por fuera —
@@ -156,7 +212,7 @@ export function ProductoFila({ product, bcvRate }: { product: Product; bcvRate: 
          * verificación visual del 19/9/2026).
          */}
         <span className="inv-input-wrap">
-          <span className="lm-num inv-readonly" aria-label={`Precio de ${product.name}`}>
+          <span className="lm-num inv-readonly" aria-label={`Precio promoción de ${product.name}`}>
             {price.principal}
           </span>
         </span>
@@ -173,6 +229,34 @@ export function ProductoFila({ product, bcvRate }: { product: Product; bcvRate: 
           <span className="inv-bs" aria-hidden="true" />
         )}
       </label>
+
+      {/*
+       * Precio estándar (12/10/2026): promoción + envío MRW por peso. Es un
+       * `<div>` y no un `<label>` porque no hay un input al que atarlo.
+       * Nunca un número incompleto: sin tarifa, un texto que dice por qué
+       * (y qué hacer). El pie `.inv-bs` se renderiza SIEMPRE, igual que en
+       * los demás campos, para que todos midan lo mismo (T7, 10/9/2026).
+       */}
+      <div className="inv-field">
+        <span className="lm-eyebrow">Precio estándar</span>
+        <span className="inv-input-wrap">
+          {estandar.estado === "ok" ? (
+            <span className="lm-num inv-readonly" aria-label={`Precio estándar de ${product.name}`}>
+              {estandar.principal}
+            </span>
+          ) : (
+            <span className="inv-readonly" data-empty="true">
+              {MOTIVO_SIN_ESTANDAR[estandar.estado]}
+            </span>
+          )}
+        </span>
+        {estandar.estado === "ok" && estandar.pie !== null ? (
+          <span className="inv-bs lm-num">{estandar.pie}</span>
+        ) : (
+          <span className="inv-bs" aria-hidden="true" />
+        )}
+        {estandar.estado === "ok" && <span className="inv-fee">incluye envío MRW {estandar.tarifa}</span>}
+      </div>
 
       <label className="inv-field">
         <span className="lm-eyebrow">Peso (kg)</span>
@@ -206,8 +290,12 @@ export function ProductoFila({ product, bcvRate }: { product: Product; bcvRate: 
           </span>
         )}
 
-        {product.weightKg === null && (
-          <span className="ac-badge" data-tone="wait" title="Cashea exige el peso para calcular el envío gratis">
+        {vivo.weightKg === null && (
+          <span
+            className="ac-badge"
+            data-tone="wait"
+            title="Cashea exige el peso para el envío gratis, y sin peso no hay precio estándar"
+          >
             <TriangleAlert size={11} />
             Sin peso
           </span>

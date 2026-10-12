@@ -131,6 +131,70 @@ export function priceDisplay(product: Product, rate: number): PriceDisplay {
   return { principal: `Bs. ${bs.toFixed(2)}`, pie: `$ ${product.price.toFixed(2)}` };
 }
 
+/** Qué pinta la fila para el "precio estándar" (promoción + envío MRW). */
+export type StandardPriceDisplay =
+  | { estado: "ok"; principal: string; pie: string | null; tarifa: string }
+  | { estado: "sin_peso" | "fuera_de_tabla" | "sin_tarifa" };
+
+/** Peso desde el cual la tabla MRW no tiene tarifa (kg). Solo clasifica el motivo; la tarifa la pone la base. */
+const PESO_FUERA_DE_TABLA_KG = 80;
+
+function round2(x: number): number {
+  return Math.round(x * 100) / 100;
+}
+
+/**
+ * Precio estándar = precio promoción (`price`) + tarifa de envío MRW
+ * (12/10/2026, plan "Precio promoción y precio estándar (envío MRW)").
+ *
+ * La tarifa (`shippingFeeUsd`) viene calculada de la base; acá solo se suma,
+ * la tabla de rangos no se duplica en TypeScript. Sin tarifa nunca se
+ * inventa un número: se devuelve el motivo (sin peso, fuera de la tabla o
+ * sin rango) para que la fila diga qué falta.
+ *
+ * El dólar de un producto en VES pasa por `usdFromBs`, igual que
+ * `priceDisplay` (regla del CLAUDE.md: la conversión Bs -> USD vive en una
+ * sola función). Se redondea la suma a centavos para quitar el ruido de coma
+ * flotante (2,2 + 1,35 = 3,5500000000000003). Sin tasa no se suman monedas
+ * distintas: un producto en VES muestra su precio en bolívares y el envío
+ * aparte en dólares.
+ */
+export function standardPriceDisplay(product: Product, rate: number): StandardPriceDisplay {
+  const fee = product.shippingFeeUsd;
+  if (fee === null) {
+    const peso = product.weightKg;
+    if (peso === null || peso <= 0) return { estado: "sin_peso" };
+    if (peso >= PESO_FUERA_DE_TABLA_KG) return { estado: "fuera_de_tabla" };
+    return { estado: "sin_tarifa" };
+  }
+
+  const tarifa = `$ ${fee.toFixed(2)}`;
+  const hayTasa = rate > 0;
+
+  if (!hayTasa) {
+    if (product.currency === "VES") {
+      return {
+        estado: "ok",
+        principal: `Bs. ${product.price.toFixed(2)}`,
+        pie: `+ $ ${fee.toFixed(2)} envío`,
+        tarifa,
+      };
+    }
+    return { estado: "ok", principal: `$ ${(product.price + fee).toFixed(2)}`, pie: null, tarifa };
+  }
+
+  if (product.currency === "VES") {
+    // `hayTasa` garantiza rate > 0, así que `usdFromBs` no da null acá.
+    const usd = round2((usdFromBs(product.price, rate) as number) + fee);
+    const bs = product.price + round2(fee * rate);
+    return { estado: "ok", principal: `Bs. ${bs.toFixed(2)}`, pie: `$ ${usd.toFixed(2)}`, tarifa };
+  }
+
+  const usd = round2(product.price + fee);
+  const bs = round2(usd * rate);
+  return { estado: "ok", principal: `Bs. ${bs.toFixed(2)}`, pie: `$ ${usd.toFixed(2)}`, tarifa };
+}
+
 // ---------------------------------------------------------------------------
 // Validación de la edición en línea
 //

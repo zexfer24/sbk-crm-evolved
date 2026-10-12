@@ -1103,6 +1103,14 @@ export interface Product {
   /** Kilogramos con 3 decimales; null = todavía sin cargar. Cashea lo exige para el envío gratis (T4, 8/9/2026). */
   weightKg: number | null;
   /**
+   * Tarifa de envío MRW en USD para este producto (12/10/2026, plan "Precio
+   * promoción y precio estándar (envío MRW)"). La calcula la base con un campo
+   * calculado de PostgREST (`tarifa_envio_usd`) a partir de `weightKg`; el
+   * cliente NO duplica la tabla de tarifas, solo la suma al precio. Null si el
+   * peso es null/≤ 0/≥ 80 kg o no hay un rango que lo cubra.
+   */
+  shippingFeeUsd: number | null;
+  /**
    * Código de Saint, extraído por `saint.sync_products()` del `Código ERP: …`
    * que traía `description` (T1, plan "El inventario llega de Saint y no se
    * toca a mano", 25/9/2026, migración 20260925010000). Null en un producto

@@ -25,6 +25,11 @@ vi.mock("@/lib/supabase/client", () => ({
   createClient: vi.fn(() => ({})),
 }));
 
+const fetchProduct = vi.fn();
+vi.mock("@/lib/inventory-data", () => ({
+  fetchProduct: (...args: unknown[]) => fetchProduct(...args),
+}));
+
 const updateProductWeight = vi.fn().mockResolvedValue(undefined);
 vi.mock("@/lib/mutations", () => ({
   updateProductWeight: (...args: unknown[]) => updateProductWeight(...args),
@@ -43,6 +48,7 @@ function product(over: Partial<Product> = {}): Product {
     updatedAt: "2026-09-08T10:00:00Z",
     compatibility: [],
     weightKg: null,
+    shippingFeeUsd: null,
     saintCode: null,
     saintAddedAt: null,
     saintRemovedAt: null,
@@ -60,6 +66,8 @@ describe("ProductoFila — el campo Peso", () => {
     toastDanger.mockClear();
     updateProductWeight.mockClear();
     updateProductWeight.mockResolvedValue(undefined);
+    fetchProduct.mockReset();
+    fetchProduct.mockResolvedValue(null);
   });
 
   it("arranca vacío cuando el producto todavía no tiene peso cargado", () => {
@@ -137,12 +145,12 @@ describe("ProductoFila — el campo Peso", () => {
 describe("ProductoFila — el precio, de solo lectura", () => {
   it("ya no existe un textbox de Precio: es texto, no un input", () => {
     render(<ProductoFila product={product()} bcvRate={40} />);
-    expect(screen.queryByRole("textbox", { name: /Precio de/ })).toBeNull();
+    expect(screen.queryByRole("textbox", { name: /Precio (promoción )?de/ })).toBeNull();
   });
 
   it("USD con tasa: bolívares como cifra principal, dólares en el pie", () => {
     render(<ProductoFila product={product({ currency: "USD", price: 25 })} bcvRate={40} />);
-    const precio = screen.getByLabelText("Precio de Carburador PZ27");
+    const precio = screen.getByLabelText("Precio promoción de Carburador PZ27");
     const pie = precio.closest(".inv-field")?.querySelector(".inv-bs");
 
     expect(precio).toHaveTextContent("Bs. 1000.00");
@@ -151,7 +159,7 @@ describe("ProductoFila — el precio, de solo lectura", () => {
 
   it("VES con tasa: bolívares como cifra principal, el equivalente en dólares en el pie", () => {
     render(<ProductoFila product={product({ currency: "VES", price: 1000 })} bcvRate={40} />);
-    const precio = screen.getByLabelText("Precio de Carburador PZ27");
+    const precio = screen.getByLabelText("Precio promoción de Carburador PZ27");
     const pie = precio.closest(".inv-field")?.querySelector(".inv-bs");
 
     expect(precio).toHaveTextContent("Bs. 1000.00");
@@ -160,7 +168,7 @@ describe("ProductoFila — el precio, de solo lectura", () => {
 
   it("sin tasa no inventa el pie: la cifra principal queda en la moneda propia del producto", () => {
     render(<ProductoFila product={product({ currency: "USD", price: 25 })} bcvRate={0} />);
-    const precio = screen.getByLabelText("Precio de Carburador PZ27");
+    const precio = screen.getByLabelText("Precio promoción de Carburador PZ27");
     const pie = precio.closest(".inv-field")?.querySelector(".inv-bs");
 
     expect(precio).toHaveTextContent("$ 25.00");
@@ -275,5 +283,133 @@ describe("ProductoFila — badge Nuevo desde Saint", () => {
   it("no se muestra pasados los 7 días", () => {
     render(<ProductoFila product={product({ saintAddedAt: "2026-09-17T12:00:00Z" })} bcvRate={40} />);
     expect(screen.queryByText("Nuevo desde Saint")).not.toBeInTheDocument();
+  });
+});
+
+/**
+ * Plan "Precio promoción y precio estándar (envío MRW)" (12/10/2026): la fila
+ * muestra el precio de hoy como "Precio promoción" y, al lado, el "Precio
+ * estándar" (promoción + envío MRW por peso). La tarifa la calcula la base
+ * (`shippingFeeUsd`); acá solo se pinta, y nunca un número incompleto: sin
+ * tarifa, un texto que dice por qué.
+ */
+describe("ProductoFila — precio promoción y precio estándar", () => {
+  beforeEach(() => {
+    refresh.mockClear();
+    toastDanger.mockClear();
+    updateProductWeight.mockReset();
+    updateProductWeight.mockResolvedValue(undefined);
+    fetchProduct.mockReset();
+  });
+
+  it("muestra los dos campos, Precio promoción y Precio estándar", () => {
+    render(<ProductoFila product={product()} bcvRate={40} />);
+    expect(screen.getByText("Precio promoción")).toBeInTheDocument();
+    expect(screen.getByText("Precio estándar")).toBeInTheDocument();
+  });
+
+  it("con tarifa: precio estándar en Bs., dólares en el pie y la línea del envío MRW", () => {
+    render(
+      <ProductoFila
+        product={product({ currency: "VES", price: 100, weightKg: 1, shippingFeeUsd: 1.4 })}
+        bcvRate={100}
+      />
+    );
+    const estandar = screen.getByLabelText("Precio estándar de Carburador PZ27");
+    const campo = estandar.closest(".inv-field");
+
+    expect(estandar).toHaveTextContent("Bs. 240.00");
+    expect(campo?.querySelector(".inv-bs")).toHaveTextContent("$ 2.40");
+    expect(campo?.querySelector(".inv-fee")).toHaveTextContent("incluye envío MRW $ 1.40");
+  });
+
+  it("el campo nuevo no es un label: no hay input al que atarlo", () => {
+    render(<ProductoFila product={product({ weightKg: 1, shippingFeeUsd: 1.4 })} bcvRate={40} />);
+    const campo = screen.getByLabelText("Precio estándar de Carburador PZ27").closest(".inv-field");
+    expect(campo?.tagName).toBe("DIV");
+  });
+
+  it("sin peso: pide cargar el peso y no inventa una cifra", () => {
+    render(<ProductoFila product={product({ weightKg: null, shippingFeeUsd: null })} bcvRate={40} />);
+    const campo = screen.getByText("Cargá el peso").closest(".inv-field");
+
+    expect(screen.getByText("Cargá el peso")).toHaveAttribute("data-empty", "true");
+    expect(campo?.querySelector(".inv-bs")).not.toBeNull();
+    expect(campo?.querySelector(".inv-fee")).toBeNull();
+    expect(screen.queryByLabelText("Precio estándar de Carburador PZ27")).toBeNull();
+  });
+
+  it("95 kg sin tarifa: dice que está fuera de la tabla MRW", () => {
+    render(<ProductoFila product={product({ weightKg: 95, shippingFeeUsd: null })} bcvRate={40} />);
+    expect(screen.getByText("Más de 80 kg: fuera de la tabla MRW")).toHaveAttribute("data-empty", "true");
+  });
+
+  it("peso dentro de la tabla pero sin tarifa: dice que no hay tarifa para ese peso", () => {
+    render(<ProductoFila product={product({ weightKg: 5, shippingFeeUsd: null })} bcvRate={40} />);
+    expect(screen.getByText("Sin tarifa MRW para este peso")).toHaveAttribute("data-empty", "true");
+  });
+
+  it("el badge Sin peso explica que sin peso no hay precio estándar", () => {
+    render(<ProductoFila product={product({ weightKg: null })} bcvRate={40} />);
+    expect(screen.getByText("Sin peso").closest(".ac-badge")).toHaveAttribute(
+      "title",
+      "Cashea exige el peso para el envío gratis, y sin peso no hay precio estándar"
+    );
+  });
+
+  it("al guardar un peso, el precio estándar aparece sin que cambie el prop", async () => {
+    fetchProduct.mockResolvedValue(product({ weightKg: 1, shippingFeeUsd: 1.4 }));
+    const user = userEvent.setup({ delay: null, pointerEventsCheck: 0 });
+    render(<ProductoFila product={product({ weightKg: null, shippingFeeUsd: null })} bcvRate={40} />);
+
+    expect(screen.getByText("Cargá el peso")).toBeInTheDocument();
+    await user.type(pesoInput(), "1");
+    await user.tab();
+
+    await waitFor(() => expect(fetchProduct).toHaveBeenCalledWith(expect.anything(), "prod-1"));
+    // 25 USD + 1.40 de envío = 26.40 USD = Bs. 1056.00 a tasa 40.
+    expect(await screen.findByLabelText("Precio estándar de Carburador PZ27")).toHaveTextContent("Bs. 1056.00");
+    expect(screen.queryByText("Cargá el peso")).toBeNull();
+    // El badge sale del estado vivo, no del prop viejo.
+    expect(screen.queryByText("Sin peso")).toBeNull();
+  });
+
+  it("si releer el producto falla, el peso SÍ se guardó: sin toast de error", async () => {
+    fetchProduct.mockRejectedValue(new Error("caído"));
+    const user = userEvent.setup({ delay: null, pointerEventsCheck: 0 });
+    render(<ProductoFila product={product({ weightKg: null, shippingFeeUsd: null })} bcvRate={40} />);
+
+    await user.type(pesoInput(), "1");
+    await user.tab();
+
+    await waitFor(() => expect(refresh).toHaveBeenCalled());
+    expect(updateProductWeight).toHaveBeenCalledWith(expect.anything(), "prod-1", 1);
+    expect(toastDanger).not.toHaveBeenCalled();
+    // No se revierte el borrador: el peso quedó guardado.
+    expect(pesoInput()).toHaveValue("1");
+  });
+
+  it("si releer el producto falla, no pinta la tarifa del peso anterior", async () => {
+    fetchProduct.mockRejectedValue(new Error("caído"));
+    const user = userEvent.setup({ delay: null, pointerEventsCheck: 0 });
+    // Peso 1 kg con su tarifa (1.40); se cambia a 9 kg y la relectura falla.
+    render(<ProductoFila product={product({ weightKg: 1, shippingFeeUsd: 1.4 })} bcvRate={40} />);
+    expect(screen.getByText("incluye envío MRW $ 1.40")).toBeInTheDocument();
+
+    await user.clear(pesoInput());
+    await user.type(pesoInput(), "9");
+    await user.tab();
+
+    await waitFor(() => expect(refresh).toHaveBeenCalled());
+    expect(screen.queryByText("incluye envío MRW $ 1.40")).toBeNull();
+    expect(screen.queryByLabelText("Precio estándar de Carburador PZ27")).toBeNull();
+  });
+
+  it("cuando el prop cambia (router.refresh), la fila toma el producto nuevo", () => {
+    const { rerender } = render(<ProductoFila product={product({ weightKg: null, shippingFeeUsd: null })} bcvRate={40} />);
+    expect(screen.getByText("Cargá el peso")).toBeInTheDocument();
+
+    rerender(<ProductoFila product={product({ weightKg: 1, shippingFeeUsd: 1.4 })} bcvRate={40} />);
+    expect(screen.getByLabelText("Precio estándar de Carburador PZ27")).toHaveTextContent("Bs. 1056.00");
   });
 });

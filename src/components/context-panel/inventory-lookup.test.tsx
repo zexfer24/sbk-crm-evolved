@@ -34,6 +34,7 @@ function product(overrides: Partial<Product> = {}): Product {
     updatedAt: "2026-09-27T00:00:00.000Z",
     compatibility: [],
     weightKg: null,
+    shippingFeeUsd: null,
     saintCode: "1234",
     saintAddedAt: null,
     saintRemovedAt: null,

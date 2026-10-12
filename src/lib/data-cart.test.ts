@@ -35,6 +35,7 @@ function rawItem(over: Record<string, unknown> = {}) {
       is_active: true,
       updated_at: "2026-09-29T09:00:00Z",
       weight_kg: null,
+      tarifa_envio_usd: null,
       saint_code: "A123",
       saint_added_at: null,
       saint_removed_at: null,
