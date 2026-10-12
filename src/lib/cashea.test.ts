@@ -15,6 +15,14 @@ import {
   type ConfigCashea,
   type NivelCashea,
 } from "@/lib/cashea";
+import {
+  AVISO_SEIS_CUOTAS,
+  ELECCION_CASHEA_INICIAL,
+  bsDeCents,
+  formatBs,
+  lineaInicial,
+  lineaResto,
+} from "@/lib/cashea";
 
 describe("toCents", () => {
   it("redondea a centavos y neutraliza lo inválido", () => {
@@ -224,5 +232,65 @@ describe("parseMontoInput", () => {
 
   it("rechaza montos desmedidos", () => {
     expect(parseMontoInput("1000001")).toEqual({ ok: false, error: "Ese monto es demasiado grande." });
+  });
+});
+
+describe("bsDeCents", () => {
+  it("convierte centavos de dólar a bolívares con la tasa del día", () => {
+    expect(bsDeCents(5450, 100)).toBe(5450);
+    expect(bsDeCents(333, 36.1234)).toBe(120.29);
+  });
+
+  it("sin tasa válida devuelve null, nunca un cero que parezca verdad", () => {
+    expect(bsDeCents(5450, 0)).toBeNull();
+    expect(bsDeCents(5450, -3)).toBeNull();
+    expect(bsDeCents(5450, NaN)).toBeNull();
+    expect(bsDeCents(5450, Infinity)).toBeNull();
+  });
+});
+
+describe("formatBs", () => {
+  it("usa el mismo formato es-VE que formatUsd, con punto de miles siempre", () => {
+    expect(formatBs(21800)).toBe("Bs. 21.800,00");
+    expect(formatBs(1350.5)).toBe("Bs. 1.350,50");
+    expect(formatBs(0)).toBe("Bs. 0,00");
+  });
+});
+
+describe("lineaInicial y lineaResto", () => {
+  it("lineaInicial nombra el porcentaje y el monto", () => {
+    const plan = calcularCashea({ montoCents: 21800, nivel: 4, cuotas: 6, bajada: false });
+    expect(lineaInicial(plan)).toBe("Inicial (25%): $54,50");
+  });
+
+  it("lineaResto: cuotas iguales", () => {
+    const plan = calcularCashea({ montoCents: 12000, nivel: 6, cuotas: 3, bajada: false });
+    expect(lineaResto(plan)).toBe("Resto: 3 cuotas de $32,00, cada 14 días, sin intereses.");
+  });
+
+  it("lineaResto: la última absorbe el centavo sobrante", () => {
+    const plan = calcularCashea({ montoCents: 11800, nivel: 4, cuotas: 6, bajada: true });
+    expect(lineaResto(plan)).toBe(
+      `Resto: 6 cuotas: 5 de ${formatUsd(plan.cuotaCents)} y la última de ${formatUsd(plan.montosCuotasCents[5])}, cada 14 días, sin intereses.`,
+    );
+    expect(plan.montosCuotasCents[5]).not.toBe(plan.cuotaCents);
+  });
+
+  it("mensajeWhatsApp contiene exactamente esas dos líneas", () => {
+    const plan = calcularCashea({ montoCents: 11800, nivel: 4, cuotas: 6, bajada: true });
+    const lineas = mensajeWhatsApp(plan, "Casco").split("\n");
+    expect(lineas).toContain(lineaInicial(plan));
+    expect(lineas).toContain(lineaResto(plan));
+  });
+});
+
+describe("AVISO_SEIS_CUOTAS y ELECCION_CASHEA_INICIAL", () => {
+  it("el aviso toma el umbral de CASHEA", () => {
+    expect(AVISO_SEIS_CUOTAS).toBe("Las 6 cuotas se habilitan con compras de más de $100,00.");
+    expect(AVISO_SEIS_CUOTAS).toContain(formatUsd(CASHEA.UMBRAL_6_CUOTAS_CENTS));
+  });
+
+  it("la elección inicial es nivel 6, 3 cuotas, sin bajada", () => {
+    expect(ELECCION_CASHEA_INICIAL).toEqual({ nivel: 6, cuotas: 3, bajada: false });
   });
 });

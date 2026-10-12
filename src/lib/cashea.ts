@@ -184,22 +184,61 @@ export function formatFechaCuota(fecha: Date): string {
   return fechaFormatter.format(fecha).replace(/\./g, "");
 }
 
-export function mensajeWhatsApp(plan: PlanCashea, producto: string): string {
+/** "Bs. 21.800,00": mismo formateador que `formatUsd`, con el punto de miles siempre. */
+export function formatBs(bs: number): string {
+  return `Bs. ${montoFormatter.format(bs)}`;
+}
+
+/**
+ * Centavos de dólar a bolívares con la tasa del día, a 2 decimales. `null`
+ * sin tasa válida: la pantalla omite la parte en Bs. en vez de pintar un
+ * "Bs. 0,00" que parezca verdad.
+ */
+export function bsDeCents(cents: number, rate: number): number | null {
+  if (!Number.isFinite(rate) || rate <= 0 || !Number.isFinite(cents)) return null;
+  return Math.round(cents * rate) / 100;
+}
+
+/** "Inicial (25%): $54,50". */
+export function lineaInicial(plan: PlanCashea): string {
+  return `Inicial (${plan.pct}%): ${formatUsd(plan.inicialCents)}`;
+}
+
+/**
+ * La línea "Resto: …" con sus dos variantes (cuotas iguales, o la última
+ * distinta por el redondeo). Vive aparte para que el mensaje de WhatsApp y
+ * cualquier otra pantalla digan exactamente lo mismo.
+ */
+export function lineaResto(plan: PlanCashea): string {
   const dias = CASHEA.DIAS_ENTRE_CUOTAS;
   const ultima = plan.montosCuotasCents[plan.cuotas - 1];
-  const resto =
-    ultima === plan.cuotaCents
-      ? `Resto: ${plan.cuotas} cuotas de ${formatUsd(plan.cuotaCents)}, cada ${dias} días, sin intereses.`
-      : `Resto: ${plan.cuotas} cuotas: ${plan.cuotas - 1} de ${formatUsd(plan.cuotaCents)} y la última de ${formatUsd(ultima)}, cada ${dias} días, sin intereses.`;
+  return ultima === plan.cuotaCents
+    ? `Resto: ${plan.cuotas} cuotas de ${formatUsd(plan.cuotaCents)}, cada ${dias} días, sin intereses.`
+    : `Resto: ${plan.cuotas} cuotas: ${plan.cuotas - 1} de ${formatUsd(plan.cuotaCents)} y la última de ${formatUsd(ultima)}, cada ${dias} días, sin intereses.`;
+}
+
+export function mensajeWhatsApp(plan: PlanCashea, producto: string): string {
   return [
     `¡Hola! Te comparto el plan con Cashea para ${producto}:`,
     `Monto total: ${formatUsd(plan.montoCents)}`,
     `Nivel Cashea: ${plan.nivel}`,
-    `Inicial (${plan.pct}%): ${formatUsd(plan.inicialCents)}`,
-    resto,
+    lineaInicial(plan),
+    lineaResto(plan),
     "¿Te lo apartamos?",
   ].join("\n");
 }
+
+/** Lo que el asesor elige en los controles: nivel, cuotas pedidas y promoción de bajada. */
+export interface EleccionCashea {
+  nivel: NivelCashea;
+  cuotas: CuotasCashea;
+  bajada: boolean;
+}
+
+export const ELECCION_CASHEA_INICIAL: Readonly<EleccionCashea> = { nivel: 6, cuotas: 3, bajada: false };
+
+/** Aviso fijo cuando las 6 cuotas no están disponibles; el monto sale de `CASHEA`. */
+export const AVISO_SEIS_CUOTAS = `Las 6 cuotas se habilitan con compras de más de ${formatUsd(CASHEA.UMBRAL_6_CUOTAS_CENTS)}.`;
 
 /** Tope del monto a calcular: de sobra para cualquier compra del mostrador. */
 const MAX_MONTO_USD = 1_000_000;
