@@ -3,7 +3,7 @@
 import { useState, type FocusEvent, type KeyboardEvent } from "react";
 import { useRouter } from "next/navigation";
 import { Check, EyeOff, Sparkles, TriangleAlert } from "lucide-react";
-import { Calculator } from "lucide-react";
+import { Calculator, Plus } from "lucide-react";
 import { toast } from "@heroui/react";
 import type { Product } from "@/lib/types";
 import { createClient } from "@/lib/supabase/client";
@@ -20,6 +20,7 @@ import {
   stockLevel,
 } from "@/lib/inventory";
 import { CasheaCalculadora } from "@/components/inventario/cashea-calculadora";
+import { useInventarioCarrito } from "@/components/inventario/inventario-carrito-context";
 
 /** Por qué no hay precio estándar (12/10/2026): nunca un número incompleto. */
 const MOTIVO_SIN_ESTANDAR = {
@@ -60,6 +61,8 @@ export function ProductoFila({ product, bcvRate }: { product: Product; bcvRate: 
   const [busy, setBusy] = useState(false);
   const [savedField, setSavedField] = useState<"peso" | null>(null);
   const [casheaAbierta, setCasheaAbierta] = useState(false);
+  // `null` fuera del provider (tests y pantallas viejas): sin carrito no hay «Agregar».
+  const carrito = useInventarioCarrito();
 
   // Patrón "adjusting state when a prop changes" de React: cuando llega un
   // producto nuevo del servidor (`router.refresh()`, otra página, otro
@@ -79,6 +82,7 @@ export function ProductoFila({ product, bcvRate }: { product: Product; bcvRate: 
   const price = priceDisplay(vivo, bcvRate);
   const estandar = standardPriceDisplay(vivo, bcvRate);
   const nuevoDesdeSaint = isNewFromSaint(vivo);
+  const enCarrito = carrito?.cantidadDe(vivo.id) ?? 0;
 
   async function save(field: "peso", action: () => Promise<void>, revert: () => void) {
     setBusy(true);
@@ -317,6 +321,33 @@ export function ProductoFila({ product, bcvRate }: { product: Product; bcvRate: 
             <Sparkles size={11} />
             Nuevo desde Saint
           </span>
+        )}
+
+        {/*
+         * Carrito de cotización (12/10/2026, plan "Carrito de cotización en el
+         * Inventario, con Cashea", T5). Va DENTRO de `.inv-status` y no como
+         * columna nueva: la fila es una grilla de columnas fijas (trampa del
+         * 10/9/2026) y `.inv-status` ya hace `flex-wrap`. No se ofrece sin
+         * provider, está deshabilitado si Saint dio de baja el producto y se
+         * deja agregar sin stock: el asesor puede cotizar algo que está por llegar.
+         */}
+        {carrito && (
+          <button
+            type="button"
+            className="ac-badge inv-accion"
+            data-tone="link"
+            disabled={!product.isActive}
+            title={product.isActive ? undefined : "Saint lo dio de baja"}
+            aria-label={
+              enCarrito > 0
+                ? `Sumar otra unidad de ${product.name} (hay ${enCarrito} en el carrito)`
+                : `Agregar ${product.name} al carrito`
+            }
+            onClick={() => carrito.agregar(vivo)}
+          >
+            <Plus size={11} aria-hidden="true" />
+            {enCarrito > 0 ? `En carrito ×${enCarrito}` : "Agregar"}
+          </button>
         )}
 
         {/* Calculadora Cashea (12/10/2026): una cuenta, no una venta; sale también sin stock o inactivo. */}

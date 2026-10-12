@@ -19,6 +19,8 @@ import { initials } from "@/lib/dashboard";
 import { AppRail, AppTopNav } from "@/components/app-rail";
 import { UrlSearchBox } from "@/components/url-search-box";
 import { ProductoFila } from "@/components/inventario/producto-fila";
+import { CarritoBoton } from "@/components/inventario/carrito-boton";
+import { InventarioCarritoProvider } from "@/components/inventario/inventario-carrito-provider";
 import type { BcvRateSummary } from "@/components/inbox/bcv-rate-chip";
 import "@/components/dashboard/dashboard.css";
 import "@/components/agent-control/agent-control.css";
@@ -116,217 +118,223 @@ export function InventarioView({
       }
     : EMPTY_BY_FILTER[params.filter];
 
+  // El provider no agrega DOM y envuelve `.dash` por FUERA: `.dash-frame` es un
+  // grid de dos columnas y un hijo de más le desarma la pantalla (trampa del
+  // 9/9/2026). El panel del carrito sale por el portal del Drawer.
   return (
-    <div className="dash">
-      <div className="dash-frame">
-        <AppRail active="inventario" />
+    <InventarioCarritoProvider agentId={currentAgent.id} bcvRate={rate}>
+      <div className="dash">
+        <div className="dash-frame">
+          <AppRail active="inventario" />
 
-        <main className="dash-main">
-          <div className="dash-content">
-            <header className="dash-topbar">
-              <p className="dash-brand">
-                <span className="dash-brand-mark" aria-hidden="true">
-                  <Package size={14} />
-                </span>
-                <span className="dash-brand-name">{BUSINESS_NAME}</span>
-              </p>
-
-              <AppTopNav active="inventario" />
-
-              <div className="dash-topbar-actions">
-                <span className="dash-icon-btn dash-icon-static" title={currentAgent.displayName}>
-                  <span style={{ fontSize: 12, fontWeight: 600 }}>{initials(currentAgent.displayName)}</span>
-                </span>
-              </div>
-            </header>
-
-            <div className="dash-header">
-              <div>
-                <h1 className="dash-title dash-display">Inventario</h1>
-                <p className="dash-subtitle">
-                  Esto es exactamente lo que la IA consulta al cotizarle a un cliente. Nombre, precio y existencia
-                  llegan de Saint cada minuto y no se editan acá; lo único que se carga a mano es el peso.
-                </p>
-              </div>
-            </div>
-
-            <div className="cli-stats">
-              <div className="cli-stat">
-                <span className="lm-eyebrow">Repuestos</span>
-                <span className="lm-num cli-stat-value">{totals.productos}</span>
-                <span className="cli-stat-note">{totals.activos} visibles para la IA</span>
-              </div>
-              <div className="cli-stat">
-                <span className="lm-eyebrow">Agotados</span>
-                <span className="lm-num cli-stat-value">{totals.agotados}</span>
-                <span className="cli-stat-note">Activos con stock en cero: la IA los cotiza igual.</span>
-              </div>
-              <div className="cli-stat">
-                <span className="lm-eyebrow">Bajo stock</span>
-                <span className="lm-num cli-stat-value">{totals.bajos}</span>
-                <span className="cli-stat-note">Quedan pocas unidades.</span>
-              </div>
-              <div className="cli-stat">
-                <span className="lm-eyebrow">Sin peso</span>
-                <span className="lm-num cli-stat-value">{totals.withoutWeight}</span>
-                <span className="cli-stat-note">Cashea lo exige para el envío gratis, y sin peso no hay precio estándar.</span>
-              </div>
-              {/* La antigüedad del catálogo, por la misma razón que la fecha de
-                  la tasa: `updated_at` es desde el 25/9/2026 la última vez que
-                  `saint.sync_products()` confirmó esta fila contra Saint (la
-                  toca aunque nada haya cambiado, al menos cada 6 h mientras la
-                  réplica siga viva) — un atraso de días ya no es una demora
-                  normal, es la señal de que el job o la réplica se cayeron. Un
-                  stock de hace cuatro días le hace prometer a la IA algo ya
-                  vendido. */}
-              <div className="cli-stat" data-stale={freshness.isStale ? "true" : undefined}>
-                <span className="lm-eyebrow">Actualizado</span>
-                <span className="lm-num cli-stat-value">{freshnessValue(freshness)}</span>
-                <span className="cli-stat-note">{freshnessNote(freshness)}</span>
-              </div>
-              {/* La fecha va pegada al número a propósito: con esta tasa se
-                  calculan precios, y una tasa de hace tres días se ve idéntica
-                  a la de hoy si solo se muestra el número. */}
-              <div className="cli-stat" data-stale={bcvRate?.isStale ? "true" : undefined}>
-                <span className="lm-eyebrow">Tasa BCV</span>
-                <span className="lm-num cli-stat-value">{bcvRate ? bcvRate.rate.toFixed(2) : "—"}</span>
-                <span className="cli-stat-note">{rateNote(bcvRate)}</span>
-              </div>
-            </div>
-
-            <section className="dash-panel">
-              <div className="cli-toolbar">
-                <UrlSearchBox
-                  basePath="/inventario"
-                  query={params.query}
-                  keep={keepInSearch}
-                  placeholder="Buscar por nombre, marca o código"
-                  label="Buscar en el inventario"
-                />
-
-                <div className="cli-filters" role="group" aria-label="Filtrar repuestos">
-                  {FILTERS.map((filter) => (
-                    <Link
-                      key={filter}
-                      className="crm-pill"
-                      href={inventoryHref({ ...params, filter, page: 1 })}
-                      {...(params.filter === filter ? { "data-active": "true", "aria-current": "true" as const } : {})}
-                    >
-                      {INVENTORY_FILTER_LABELS[filter]}
-                    </Link>
-                  ))}
-                </div>
-
-                <div className="cli-filters" role="group" aria-label="Ordenar repuestos">
-                  {SORTS.map((sort) => (
-                    <Link
-                      key={sort}
-                      className="crm-pill"
-                      href={inventoryHref({ ...params, sort, page: 1 })}
-                      {...(params.sort === sort ? { "data-active": "true", "aria-current": "true" as const } : {})}
-                    >
-                      {INVENTORY_SORT_LABELS[sort]}
-                    </Link>
-                  ))}
-                </div>
-              </div>
-
-              <div className="dash-panel-head">
-                <h2 className="dash-panel-title">
-                  {params.query ? `Resultados para «${params.query}»` : INVENTORY_FILTER_LABELS[params.filter]}
-                </h2>
-                <span className="dash-panel-spacer" />
-                <span className="dash-panel-note">
-                  {total === 0 ? "Sin resultados" : `${desde}–${hasta} de ${total}`}
-                </span>
-              </div>
-
-              {products.length === 0 ? (
-                <div className="dash-empty">
-                  <p className="dash-empty-title">{empty.title}</p>
-                  <p className="dash-empty-hint">{empty.hint}</p>
-                </div>
-              ) : (
-                <ul className="inv-list">
-                  {products.map((product) => (
-                    <ProductoFila key={product.id} product={product} bcvRate={rate} />
-                  ))}
-                </ul>
-              )}
-
-              {pages > 1 && (
-                <nav className="cli-pager" aria-label="Paginación del inventario">
-                  <Link
-                    className="crm-pill"
-                    href={inventoryHref({ ...params, page: Math.max(1, params.page - 1) })}
-                    aria-disabled={params.page === 1}
-                    {...(params.page === 1 ? { "data-disabled": "true" } : {})}
-                  >
-                    Anterior
-                  </Link>
-                  <span className="cli-pager-note">
-                    Página <span className="lm-num">{params.page}</span> de <span className="lm-num">{pages}</span>
+          <main className="dash-main">
+            <div className="dash-content">
+              <header className="dash-topbar">
+                <p className="dash-brand">
+                  <span className="dash-brand-mark" aria-hidden="true">
+                    <Package size={14} />
                   </span>
-                  <Link
-                    className="crm-pill"
-                    href={inventoryHref({ ...params, page: Math.min(pages, params.page + 1) })}
-                    aria-disabled={params.page === pages}
-                    {...(params.page === pages ? { "data-disabled": "true" } : {})}
-                  >
-                    Siguiente
-                  </Link>
-                </nav>
-              )}
-            </section>
-
-            <section className="dash-panel">
-              <div className="dash-panel-head">
-                <h2 className="dash-panel-title">Catálogo de motos</h2>
-                <span className="dash-panel-spacer" />
-                <span className="dash-panel-note">Solo lectura</span>
-              </div>
-
-              <div className="inv-catalog">
-                <p className="inv-catalog-intro">
-                  Estas tablas se importan del ERP y no se editan desde el CRM. Son las que permiten responder «¿qué
-                  otros modelos llevan el mismo motor que el mío?» y entender la jerga con la que el cliente pide un
-                  repuesto.
+                  <span className="dash-brand-name">{BUSINESS_NAME}</span>
                 </p>
 
-                <div className="inv-catalog-grid">
-                  <div className="inv-catalog-cell">
-                    <span className="lm-num">{catalog.engineFamilies}</span>
-                    <span>Familias de motor</span>
+                <AppTopNav active="inventario" />
+
+                <div className="dash-topbar-actions">
+                  <span className="dash-icon-btn dash-icon-static" title={currentAgent.displayName}>
+                    <span style={{ fontSize: 12, fontWeight: 600 }}>{initials(currentAgent.displayName)}</span>
+                  </span>
+                </div>
+              </header>
+
+              <div className="dash-header">
+                <div>
+                  <h1 className="dash-title dash-display">Inventario</h1>
+                  <p className="dash-subtitle">
+                    Esto es exactamente lo que la IA consulta al cotizarle a un cliente. Nombre, precio y existencia
+                    llegan de Saint cada minuto y no se editan acá; lo único que se carga a mano es el peso.
+                  </p>
+                </div>
+                <CarritoBoton />
+              </div>
+
+              <div className="cli-stats">
+                <div className="cli-stat">
+                  <span className="lm-eyebrow">Repuestos</span>
+                  <span className="lm-num cli-stat-value">{totals.productos}</span>
+                  <span className="cli-stat-note">{totals.activos} visibles para la IA</span>
+                </div>
+                <div className="cli-stat">
+                  <span className="lm-eyebrow">Agotados</span>
+                  <span className="lm-num cli-stat-value">{totals.agotados}</span>
+                  <span className="cli-stat-note">Activos con stock en cero: la IA los cotiza igual.</span>
+                </div>
+                <div className="cli-stat">
+                  <span className="lm-eyebrow">Bajo stock</span>
+                  <span className="lm-num cli-stat-value">{totals.bajos}</span>
+                  <span className="cli-stat-note">Quedan pocas unidades.</span>
+                </div>
+                <div className="cli-stat">
+                  <span className="lm-eyebrow">Sin peso</span>
+                  <span className="lm-num cli-stat-value">{totals.withoutWeight}</span>
+                  <span className="cli-stat-note">Cashea lo exige para el envío gratis, y sin peso no hay precio estándar.</span>
+                </div>
+                {/* La antigüedad del catálogo, por la misma razón que la fecha de
+                    la tasa: `updated_at` es desde el 25/9/2026 la última vez que
+                    `saint.sync_products()` confirmó esta fila contra Saint (la
+                    toca aunque nada haya cambiado, al menos cada 6 h mientras la
+                    réplica siga viva) — un atraso de días ya no es una demora
+                    normal, es la señal de que el job o la réplica se cayeron. Un
+                    stock de hace cuatro días le hace prometer a la IA algo ya
+                    vendido. */}
+                <div className="cli-stat" data-stale={freshness.isStale ? "true" : undefined}>
+                  <span className="lm-eyebrow">Actualizado</span>
+                  <span className="lm-num cli-stat-value">{freshnessValue(freshness)}</span>
+                  <span className="cli-stat-note">{freshnessNote(freshness)}</span>
+                </div>
+                {/* La fecha va pegada al número a propósito: con esta tasa se
+                    calculan precios, y una tasa de hace tres días se ve idéntica
+                    a la de hoy si solo se muestra el número. */}
+                <div className="cli-stat" data-stale={bcvRate?.isStale ? "true" : undefined}>
+                  <span className="lm-eyebrow">Tasa BCV</span>
+                  <span className="lm-num cli-stat-value">{bcvRate ? bcvRate.rate.toFixed(2) : "—"}</span>
+                  <span className="cli-stat-note">{rateNote(bcvRate)}</span>
+                </div>
+              </div>
+
+              <section className="dash-panel">
+                <div className="cli-toolbar">
+                  <UrlSearchBox
+                    basePath="/inventario"
+                    query={params.query}
+                    keep={keepInSearch}
+                    placeholder="Buscar por nombre, marca o código"
+                    label="Buscar en el inventario"
+                  />
+
+                  <div className="cli-filters" role="group" aria-label="Filtrar repuestos">
+                    {FILTERS.map((filter) => (
+                      <Link
+                        key={filter}
+                        className="crm-pill"
+                        href={inventoryHref({ ...params, filter, page: 1 })}
+                        {...(params.filter === filter ? { "data-active": "true", "aria-current": "true" as const } : {})}
+                      >
+                        {INVENTORY_FILTER_LABELS[filter]}
+                      </Link>
+                    ))}
                   </div>
-                  <div className="inv-catalog-cell">
-                    <span className="lm-num">{catalog.commercialModels}</span>
-                    <span>Modelos comerciales</span>
-                  </div>
-                  <div className="inv-catalog-cell">
-                    <span className="lm-num">{catalog.modelEngineLinks}</span>
-                    <span>Vínculos modelo–motor</span>
-                  </div>
-                  <div className="inv-catalog-cell">
-                    <span className="lm-num">{catalog.compatibilityRules}</span>
-                    <span>Reglas de compatibilidad</span>
-                  </div>
-                  <div className="inv-catalog-cell">
-                    <span className="lm-num">{catalog.searchSynonyms}</span>
-                    <span>Sinónimos de búsqueda</span>
+
+                  <div className="cli-filters" role="group" aria-label="Ordenar repuestos">
+                    {SORTS.map((sort) => (
+                      <Link
+                        key={sort}
+                        className="crm-pill"
+                        href={inventoryHref({ ...params, sort, page: 1 })}
+                        {...(params.sort === sort ? { "data-active": "true", "aria-current": "true" as const } : {})}
+                      >
+                        {INVENTORY_SORT_LABELS[sort]}
+                      </Link>
+                    ))}
                   </div>
                 </div>
 
-                {catalog.commercialModels === 0 && (
-                  <p className="inv-catalog-warning">
-                    El catálogo de motos está vacío en este entorno. La búsqueda de repuestos funciona igual, pero sin
-                    compatibilidad cruzada entre modelos.
-                  </p>
+                <div className="dash-panel-head">
+                  <h2 className="dash-panel-title">
+                    {params.query ? `Resultados para «${params.query}»` : INVENTORY_FILTER_LABELS[params.filter]}
+                  </h2>
+                  <span className="dash-panel-spacer" />
+                  <span className="dash-panel-note">
+                    {total === 0 ? "Sin resultados" : `${desde}–${hasta} de ${total}`}
+                  </span>
+                </div>
+
+                {products.length === 0 ? (
+                  <div className="dash-empty">
+                    <p className="dash-empty-title">{empty.title}</p>
+                    <p className="dash-empty-hint">{empty.hint}</p>
+                  </div>
+                ) : (
+                  <ul className="inv-list">
+                    {products.map((product) => (
+                      <ProductoFila key={product.id} product={product} bcvRate={rate} />
+                    ))}
+                  </ul>
                 )}
-              </div>
-            </section>
-          </div>
-        </main>
+
+                {pages > 1 && (
+                  <nav className="cli-pager" aria-label="Paginación del inventario">
+                    <Link
+                      className="crm-pill"
+                      href={inventoryHref({ ...params, page: Math.max(1, params.page - 1) })}
+                      aria-disabled={params.page === 1}
+                      {...(params.page === 1 ? { "data-disabled": "true" } : {})}
+                    >
+                      Anterior
+                    </Link>
+                    <span className="cli-pager-note">
+                      Página <span className="lm-num">{params.page}</span> de <span className="lm-num">{pages}</span>
+                    </span>
+                    <Link
+                      className="crm-pill"
+                      href={inventoryHref({ ...params, page: Math.min(pages, params.page + 1) })}
+                      aria-disabled={params.page === pages}
+                      {...(params.page === pages ? { "data-disabled": "true" } : {})}
+                    >
+                      Siguiente
+                    </Link>
+                  </nav>
+                )}
+              </section>
+
+              <section className="dash-panel">
+                <div className="dash-panel-head">
+                  <h2 className="dash-panel-title">Catálogo de motos</h2>
+                  <span className="dash-panel-spacer" />
+                  <span className="dash-panel-note">Solo lectura</span>
+                </div>
+
+                <div className="inv-catalog">
+                  <p className="inv-catalog-intro">
+                    Estas tablas se importan del ERP y no se editan desde el CRM. Son las que permiten responder «¿qué
+                    otros modelos llevan el mismo motor que el mío?» y entender la jerga con la que el cliente pide un
+                    repuesto.
+                  </p>
+
+                  <div className="inv-catalog-grid">
+                    <div className="inv-catalog-cell">
+                      <span className="lm-num">{catalog.engineFamilies}</span>
+                      <span>Familias de motor</span>
+                    </div>
+                    <div className="inv-catalog-cell">
+                      <span className="lm-num">{catalog.commercialModels}</span>
+                      <span>Modelos comerciales</span>
+                    </div>
+                    <div className="inv-catalog-cell">
+                      <span className="lm-num">{catalog.modelEngineLinks}</span>
+                      <span>Vínculos modelo–motor</span>
+                    </div>
+                    <div className="inv-catalog-cell">
+                      <span className="lm-num">{catalog.compatibilityRules}</span>
+                      <span>Reglas de compatibilidad</span>
+                    </div>
+                    <div className="inv-catalog-cell">
+                      <span className="lm-num">{catalog.searchSynonyms}</span>
+                      <span>Sinónimos de búsqueda</span>
+                    </div>
+                  </div>
+
+                  {catalog.commercialModels === 0 && (
+                    <p className="inv-catalog-warning">
+                      El catálogo de motos está vacío en este entorno. La búsqueda de repuestos funciona igual, pero sin
+                      compatibilidad cruzada entre modelos.
+                    </p>
+                  )}
+                </div>
+              </section>
+            </div>
+          </main>
+        </div>
       </div>
-    </div>
+    </InventarioCarritoProvider>
   );
 }

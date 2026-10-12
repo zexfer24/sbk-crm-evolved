@@ -1,9 +1,7 @@
 "use client";
 
 import {
-  createContext,
   useCallback,
-  useContext,
   useEffect,
   useMemo,
   useReducer,
@@ -24,6 +22,11 @@ import {
 import { fetchProductsByIds } from "@/lib/inventory-data";
 import { createClient } from "@/lib/supabase/client";
 import { CarritoPanel } from "@/components/inventario/carrito-panel";
+import {
+  CarritoContext,
+  useInventarioCarrito,
+  type InventarioCarritoValue,
+} from "@/components/inventario/inventario-carrito-context";
 
 /**
  * Estado del carrito de cotización del Inventario (12/10/2026, plan "Carrito
@@ -43,29 +46,9 @@ import { CarritoPanel } from "@/components/inventario/carrito-panel";
 
 export const CARRITO_STORAGE_PREFIX = "sbk:inventario-carrito:v1:";
 
-export interface InventarioCarritoValue {
-  lineas: LineaCarritoInventario[];
-  /** Suma de cantidades (no de renglones). */
-  unidades: number;
-  /** 0 si el producto no está en el carrito. */
-  cantidadDe(productId: string): number;
-  agregar(product: Product): void;
-  cambiarCantidad(productId: string, quantity: number): void;
-  quitar(productId: string): void;
-  vaciar(): void;
-  abierto: boolean;
-  abrir(): void;
-  cerrar(): void;
-  cashea: OpcionesCashea;
-  setCashea(cashea: OpcionesCashea): void;
-}
-
-const CarritoContext = createContext<InventarioCarritoValue | null>(null);
-
-/** `null` fuera del provider: la fila del Inventario se renderiza sin él en tests y pantallas viejas. */
-export function useInventarioCarrito(): InventarioCarritoValue | null {
-  return useContext(CarritoContext);
-}
+// El contexto, su tipo y el hook viven en `inventario-carrito-context.ts` (corta
+// el import circular con `carrito-panel.tsx`); se re-exportan para no romper imports.
+export { useInventarioCarrito, type InventarioCarritoValue };
 
 const CASHEA_INICIAL: OpcionesCashea = { activo: false, ...ELECCION_CASHEA_INICIAL };
 

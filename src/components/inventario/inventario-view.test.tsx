@@ -124,3 +124,32 @@ describe("InventarioView — textos de Saint", () => {
     expect(screen.queryByRole("link", { name: "Desactivados" })).not.toBeInTheDocument();
   });
 });
+
+/**
+ * T5, plan "Carrito de cotización en el Inventario, con Cashea" (12/10/2026):
+ * la vista queda envuelta en el provider del carrito y la cabecera trae el
+ * botón que abre el panel. `ProductoFila` está mockeada arriba, así que acá no
+ * se puede agregar nada: se prueba que el botón existe, arranca en cero y que
+ * la vista sigue pintando lo de siempre. Agregar desde una fila se prueba en
+ * `producto-fila-carrito.test.tsx`.
+ */
+describe("InventarioView — botón del carrito", () => {
+  it("la cabecera tiene «Carrito» sin unidades al arrancar", () => {
+    pintar(haceDias(0));
+
+    const boton = screen.getByRole("button", { name: "Abrir carrito" });
+    expect(boton).toHaveTextContent("Carrito");
+    expect(boton).not.toHaveTextContent("·");
+    expect(boton.closest(".dash-header")).not.toBeNull();
+  });
+
+  it("el provider no agrega nodos dentro de .dash: la vista conserva su estructura", () => {
+    pintar(haceDias(0));
+
+    const frame = document.querySelector(".dash-frame");
+    expect(frame).not.toBeNull();
+    // `.dash-frame` es un grid de dos columnas: el rail (mockeado a null) y `main`.
+    expect(frame!.childElementCount).toBe(1);
+    expect(document.querySelector(".dash")?.parentElement?.childElementCount).toBe(1);
+  });
+});
