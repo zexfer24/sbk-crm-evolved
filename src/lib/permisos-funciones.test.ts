@@ -61,7 +61,8 @@ import { describe, expect, it } from "vitest";
 
 const LISTA_BLANCA = new Set(["is_agent", "is_supervisor_or_admin"]);
 
-// Las 28 funciones `security definer` conocidas en el esquema `public` a
+// Las 29 funciones `security definer` conocidas (28 + tarifa_mrw_usd,
+// 20261012010000, 12/10/2026). Las 28 de
 // fecha 30/9/2026 (26 + resumen_busquedas/terminos_de_busquedas, sumadas en
 // 20260930060000_resumen_busquedas.sql — T9 del plan "Seba no cotiza lo que
 // no es", la pestaña «Búsquedas» de Control IA: agregan `agent_turns.
@@ -180,6 +181,10 @@ const FUNCIONES_SECURITY_DEFINER_CONOCIDAS = [
   "log_product_weight_change",
   "resumen_busquedas",
   "terminos_de_busquedas",
+  // 12/10/2026 (20261012010000_precio_estandar_mrw.sql): definer para leer
+  // shipping_rates sin pagar su RLS por tramo en cada producto; acceso
+  // chequeado una vez por llamada, con los dos revokes.
+  "tarifa_mrw_usd",
 ].sort();
 
 const DIR_MIGRACIONES = path.resolve(__dirname, "../../supabase/migrations");
@@ -313,8 +318,8 @@ describe("permisos de funciones security definer (guardián estático)", () => {
     .map(([nombre]) => nombre)
     .sort();
 
-  it("detecta exactamente las 28 funciones security definer conocidas", () => {
-    // Si esto falla con MENOS de las 28, el parser se está comiendo alguna
+  it("detecta exactamente las 29 funciones security definer conocidas", () => {
+    // Si esto falla con MENOS de las 29, el parser se está comiendo alguna
     // (regex de cabecera roto, `$$` no encontrado, etc.) y el resto de este
     // archivo no protege nada aunque pase en verde. Si falla con MÁS,
     // apareció una función security definer nueva: hay que sumarla a esta

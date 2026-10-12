@@ -174,7 +174,12 @@ declare
     -- «Búsquedas» de Control IA las llama con sesión de asesor; security
     -- definer con is_agent() UNA vez, mismo patrón que la de arriba.
     'public.resumen_busquedas(timestamptz)',
-    'public.terminos_de_busquedas(timestamptz)'
+    'public.terminos_de_busquedas(timestamptz)',
+    -- tarifa_mrw_usd (12/10/2026, migración 20261012010000): la usa el
+    -- campo calculado tarifa_envio_usd que Inventario pide con sesión de
+    -- asesor; security definer para no pagar la RLS de shipping_rates por
+    -- tramo en cada producto.
+    'public.tarifa_mrw_usd(numeric)'
   ];
   f text;
   errores text := '';

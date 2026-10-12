@@ -148,15 +148,42 @@ insert into public.shipping_rates (carrier, desde_kg, hasta_kg, tarifa_usd) valu
 -- ---------------------------------------------------------------------------
 -- 4. Funciones
 -- ---------------------------------------------------------------------------
+--
+-- Por qué `security definer` y por qué el campo calculado NO lleva
+-- `set search_path` (medido el 12/10/2026 contra la base local con 6.155
+-- productos, la mitad con peso, como `authenticated`):
+--
+--   - La primera versión eran dos funciones `invoker` con `set search_path`.
+--     Una página de Inventario (40 filas) no lo notaba, pero calcular la
+--     tarifa de TODO el catálogo tardaba 1,8–2,1 s contra 0,05 s sin el
+--     campo: cada producto pagaba una llamada a función entera y, dentro, la
+--     política `is_agent()` de `shipping_rates` POR TRAMO (34 por producto) —
+--     la misma trampa que tumbó la búsqueda de /inbox (20260921030000).
+--   - `tarifa_mrw_usd` pasa a `security definer`: lee `shipping_rates` sin
+--     RLS y chequea el acceso UNA vez por llamada. `tarifa_envio_usd` queda
+--     `invoker` y SIN `set search_path` para que Postgres pueda inlinearla
+--     (un `set` en la función lo impide); su cuerpo usa nombres calificados,
+--     así que no depende del search_path de quien la llama. Resultado: 0,35 s
+--     el catálogo entero (5-6 veces menos) y la página de 40 igual que sin el
+--     campo. Pesa el día que algo cotice el precio estándar en bloque (P2).
+--
+-- El chequeo de acceso: un usuario con sesión (`authenticated`) que no es
+-- agente recibe null, igual que si leyera la tabla con su RLS. `service_role`
+-- (el servidor; Seba si un día cotiza el precio estándar) y `postgres` (cron,
+-- tests) sí reciben la tarifa — `is_agent()` daría false para ellos porque no
+-- traen `auth.uid()`. `current_setting('role')` es el rol de la SESIÓN (el
+-- `set role` de PostgREST): dentro de un definer `current_user` sería siempre
+-- el dueño. `anon` ni siquiera puede ejecutarla (revokes abajo).
 create function public.tarifa_mrw_usd(p_peso numeric)
 returns numeric
 language sql
 stable
-security invoker
+security definer
 set search_path = public
 as $$
   select case
     when p_peso is null or p_peso <= 0 or p_peso >= 80 then null
+    when current_setting('role', true) = 'authenticated' and not public.is_agent() then null
     else (
       select r.tarifa_usd
       from public.shipping_rates r
@@ -171,12 +198,12 @@ comment on function public.tarifa_mrw_usd(numeric) is
   'Tarifa MRW en USD para un peso en kg: null si el peso es null, <= 0 o >= 80, o si ningún tramo lo cubre. Tramos [desde, hasta).';
 
 -- Campo calculado de PostgREST: `select=...,tarifa_envio_usd` sobre products.
+-- Sin `set search_path` A PROPÓSITO (inlining, ver arriba); nombres calificados.
 create function public.tarifa_envio_usd(p public.products)
 returns numeric
 language sql
 stable
 security invoker
-set search_path = public
 as $$
   select public.tarifa_mrw_usd(p.weight_kg);
 $$;

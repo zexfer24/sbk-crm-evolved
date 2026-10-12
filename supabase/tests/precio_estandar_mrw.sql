@@ -19,7 +19,7 @@
 begin;
 
 create temporary table _errores (msg text) on commit drop;
-grant insert on _errores to authenticated;
+grant insert on _errores to authenticated, service_role;
 
 -- Dos agentes: A (asesor, rol 'agent' por default) y S (supervisor).
 insert into auth.users (id, email, raw_user_meta_data) values
@@ -212,6 +212,60 @@ end $$;
 
 reset role;
 reset "request.jwt.claim.sub";
+
+-- ---------------------------------------------------------------------------
+-- tarifa_mrw_usd es security definer (12/10/2026, medición de rendimiento):
+-- un usuario con sesión que NO es agente no recibe nada, como si leyera la
+-- tabla con su RLS; service_role sí (no trae auth.uid(), is_agent() daría
+-- false). Y tarifa_envio_usd NO puede llevar `set search_path`: eso impide
+-- que Postgres la inlinee y el catálogo entero vuelve a tardar ~5 veces más.
+-- ---------------------------------------------------------------------------
+set local role authenticated;
+set local "request.jwt.claim.sub" = 'd8d8d8d8-0000-0000-0000-0000000000ff';
+
+do $$
+declare
+  t numeric;
+begin
+  select public.tarifa_mrw_usd(1) into t;
+  if t is not null then
+    insert into _errores(msg) values (format('Un usuario con sesión que no es agente recibió tarifa_mrw_usd(1) = %s, se esperaba null.', t));
+  end if;
+end $$;
+
+reset role;
+reset "request.jwt.claim.sub";
+set local role service_role;
+
+do $$
+declare
+  t numeric;
+begin
+  -- 3,5 kg y no 1 kg: el bloque del supervisor cambió el tramo de 1-2 kg.
+  select public.tarifa_mrw_usd(3.5) into t;
+  if t is distinct from 2.80 then
+    insert into _errores(msg) values (format('service_role recibió tarifa_mrw_usd(3.5) = %s, se esperaba 2.80.', t));
+  end if;
+end $$;
+
+reset role;
+
+do $$
+begin
+  if exists (
+    select 1 from pg_proc
+    where oid = 'public.tarifa_envio_usd(public.products)'::regprocedure
+      and proconfig is not null
+  ) then
+    insert into _errores(msg) values ('tarifa_envio_usd lleva configuración propia (set search_path): Postgres no la puede inlinear.');
+  end if;
+  if not exists (
+    select 1 from pg_proc
+    where oid = 'public.tarifa_mrw_usd(numeric)'::regprocedure and prosecdef
+  ) then
+    insert into _errores(msg) values ('tarifa_mrw_usd dejó de ser security definer: la RLS de shipping_rates vuelve a cobrarse por tramo en cada producto.');
+  end if;
+end $$;
 
 -- ---------------------------------------------------------------------------
 -- Veredicto
