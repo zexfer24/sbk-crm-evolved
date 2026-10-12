@@ -306,3 +306,16 @@ describe("ProductoFila — botón Cashea", () => {
     expect(screen.getByRole("button", { name: "Calcular Cashea de Carburador PZ27" })).toBeInTheDocument();
   });
 });
+
+/**
+ * T5, plan "Carrito de cotización en el Inventario, con Cashea" (12/10/2026):
+ * fuera del provider la fila se renderiza igual que antes (tests y pantallas
+ * viejas) — sin «Agregar». El botón «Cashea» no necesita el carrito.
+ */
+describe("ProductoFila — sin carrito", () => {
+  it("sin provider no se muestra «Agregar», pero «Cashea» sigue ahí", () => {
+    render(<ProductoFila product={product()} bcvRate={40} />);
+    expect(screen.queryByRole("button", { name: /al carrito/ })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Calcular Cashea de Carburador PZ27" })).toBeInTheDocument();
+  });
+});

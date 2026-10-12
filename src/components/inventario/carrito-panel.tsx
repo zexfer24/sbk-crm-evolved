@@ -13,7 +13,7 @@ import {
 } from "@/lib/inventario-carrito";
 import { CasheaControles } from "@/components/cashea/cashea-controles";
 import { CasheaResumen } from "@/components/cashea/cashea-resumen";
-import { useInventarioCarrito } from "@/components/inventario/inventario-carrito-provider";
+import { useInventarioCarrito } from "@/components/inventario/inventario-carrito-context";
 import "@/components/agent-control/agent-control.css";
 import "@/components/inventario/inventario.css";
 

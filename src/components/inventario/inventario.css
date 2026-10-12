@@ -771,3 +771,36 @@
     padding-left: 14px;
   }
 }
+
+/* --------------------------------------------------------------------------
+   Botones de la fila y de la cabecera (12/10/2026, plan "Carrito de
+   cotización en el Inventario, con Cashea", T5). «Agregar» y «Cashea» son
+   `.ac-badge` pero BOTONES: hay que quitarles el aspecto nativo y darles
+   mano y foco. Viven dentro de `.inv-status`, que ya hace `flex-wrap`.
+   -------------------------------------------------------------------------- */
+.inv-accion {
+  gap: 4px;
+  border: 0;
+  font-family: inherit;
+  cursor: pointer;
+}
+
+.inv-accion:hover:not(:disabled) {
+  filter: brightness(0.95);
+}
+
+.inv-accion:focus-visible {
+  outline: 2px solid var(--lm-link-ink);
+  outline-offset: 2px;
+}
+
+.inv-accion:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.inv-carrito-boton {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
