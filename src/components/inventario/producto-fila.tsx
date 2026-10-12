@@ -14,6 +14,7 @@ import {
   isNewFromSaint,
   parseWeightInput,
   priceDisplay,
+  sinPeso,
   standardPriceDisplay,
   stockLevel,
 } from "@/lib/inventory";
@@ -290,7 +291,7 @@ export function ProductoFila({ product, bcvRate }: { product: Product; bcvRate: 
           </span>
         )}
 
-        {vivo.weightKg === null && (
+        {sinPeso(vivo.weightKg) && (
           <span
             className="ac-badge"
             data-tone="wait"

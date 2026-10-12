@@ -14,11 +14,30 @@ import {
   parseWeightInput,
   priceDisplay,
   priceInBs,
+  sinPeso,
   standardPriceDisplay,
   stockLevel,
   summarizeInventory,
 } from "@/lib/inventory";
-import { mapProduct, PRODUCT_SELECT, type RawProduct } from "@/lib/inventory-data";
+import { mapProduct, PRODUCT_SELECT, SIN_PESO_FILTRO, type RawProduct } from "@/lib/inventory-data";
+
+/*
+ * 12/10/2026: un peso guardado en 0 es tan "sin cargar" como null — no hay
+ * tarifa MRW para 0 kg, así que tampoco precio estándar. Badge, filtro y
+ * contador "Sin peso" tienen que contar los dos casos, no solo null.
+ */
+describe("sinPeso", () => {
+  it("null y 0 son sin peso; cualquier positivo no", () => {
+    expect(sinPeso(null)).toBe(true);
+    expect(sinPeso(0)).toBe(true);
+    expect(sinPeso(0.001)).toBe(false);
+    expect(sinPeso(4.5)).toBe(false);
+  });
+
+  it("el filtro de PostgREST del filtro y del contador cubre null y 0", () => {
+    expect(SIN_PESO_FILTRO).toBe("weight_kg.is.null,weight_kg.eq.0");
+  });
+});
 
 function product(over: Partial<Product> = {}): Product {
   return {

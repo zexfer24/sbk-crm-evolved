@@ -123,6 +123,12 @@ describe("ProductoFila — el campo Peso", () => {
     expect(screen.getByText("Sin peso")).toBeInTheDocument();
   });
 
+  it("un peso guardado en 0 cuenta como sin peso: badge y precio estándar dicen lo mismo", () => {
+    render(<ProductoFila product={product({ weightKg: 0, shippingFeeUsd: null })} bcvRate={40} />);
+    expect(screen.getByText("Sin peso")).toBeInTheDocument();
+    expect(screen.getByText("Cargá el peso")).toBeInTheDocument();
+  });
+
   it("con peso cargado no muestra el badge", () => {
     render(<ProductoFila product={product({ weightKg: 3 })} bcvRate={40} />);
     expect(screen.queryByText("Sin peso")).not.toBeInTheDocument();

@@ -159,11 +159,22 @@ function round2(x: number): number {
  * distintas: un producto en VES muestra su precio en bolívares y el envío
  * aparte en dólares.
  */
+/**
+ * ¿Le falta el peso a este repuesto? (12/10/2026) Un peso guardado en 0 es
+ * tan "sin cargar" como null: el formulario lo acepta, pero no hay tarifa MRW
+ * para 0 kg y por lo tanto tampoco precio estándar. El badge "Sin peso" y
+ * `standardPriceDisplay` usan esta función; el filtro y el contador de la base
+ * usan la misma regla con `SIN_PESO_FILTRO` (`inventory-data.ts`).
+ */
+export function sinPeso(weightKg: number | null): boolean {
+  return weightKg === null || weightKg <= 0;
+}
+
 export function standardPriceDisplay(product: Product, rate: number): StandardPriceDisplay {
   const fee = product.shippingFeeUsd;
   if (fee === null) {
     const peso = product.weightKg;
-    if (peso === null || peso <= 0) return { estado: "sin_peso" };
+    if (peso === null || sinPeso(peso)) return { estado: "sin_peso" };
     if (peso >= PESO_FUERA_DE_TABLA_KG) return { estado: "fuera_de_tabla" };
     return { estado: "sin_tarifa" };
   }

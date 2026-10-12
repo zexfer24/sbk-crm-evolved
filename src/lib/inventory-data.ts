@@ -17,6 +17,16 @@ import { inventoryPageRange, LOW_STOCK_THRESHOLD, type InventoryParams } from "@
  * lo que la IA cotiza — salvo el peso, que la IA ni siquiera lee.
  */
 
+/**
+ * Filtro de PostgREST para "Sin peso" (filtro de la lista y contador de la
+ * cabecera), 12/10/2026: null O 0, la misma regla que `sinPeso`
+ * (`inventory.ts`). Hasta esa fecha solo contaba null, y un peso guardado en
+ * 0 quedaba sin badge ni contador aunque no tuviera precio estándar. Va en
+ * `.or()`: si además hay búsqueda, PostgREST combina los dos `or` con AND
+ * (verificado contra la base local).
+ */
+export const SIN_PESO_FILTRO = "weight_kg.is.null,weight_kg.eq.0";
+
 export const PRODUCT_SELECT = `
   id, name, brand, price, currency, stock_quantity, description,
   is_active, updated_at, weight_kg, tarifa_envio_usd, saint_code, saint_added_at, saint_removed_at,
@@ -102,7 +112,7 @@ export async function fetchProductsPage(
   } else if (filter === "inactivos") {
     request = request.eq("is_active", false);
   } else if (filter === "sin-peso") {
-    request = request.eq("is_active", true).is("weight_kg", null);
+    request = request.eq("is_active", true).or(SIN_PESO_FILTRO);
   }
 
   if (sort === "stock") request = request.order("stock_quantity", { ascending: true });
@@ -154,7 +164,7 @@ export async function fetchInventoryTotals(supabase: SupabaseClient): Promise<In
     countOnly().eq("is_active", true),
     countOnly().eq("is_active", true).lte("stock_quantity", 0),
     countOnly().eq("is_active", true).gt("stock_quantity", 0).lte("stock_quantity", LOW_STOCK_THRESHOLD),
-    countOnly().eq("is_active", true).is("weight_kg", null),
+    countOnly().eq("is_active", true).or(SIN_PESO_FILTRO),
     supabase.from("products").select("updated_at").order("updated_at", { ascending: false }).limit(1).maybeSingle(),
   ]);
 
