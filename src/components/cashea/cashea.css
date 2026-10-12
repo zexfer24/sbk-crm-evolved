@@ -1,0 +1,105 @@
+/* ==========================================================================
+   Cashea: controles (nivel, cuotas, bajada) y resumen del plan.
+   Se apoyan en .crm-pill y .ac-switch del resto del CRM (la vista que los
+   usa importa crm.css y agent-control.css); aquí solo vive lo propio.
+   ========================================================================== */
+
+.cashea-controles {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.cashea-grupo {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.cashea-grupo-titulo {
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--lm-muted);
+}
+
+/* flex-wrap: los seis niveles tienen que entrar a 375 px sin desbordar. */
+.cashea-pildoras {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.cashea-controles .crm-pill {
+  border: 1px solid transparent;
+}
+
+.cashea-controles .crm-pill[data-active="true"] {
+  background: var(--lm-surface);
+  border-color: var(--lm-link);
+  color: var(--lm-link-ink);
+}
+
+.cashea-nivel-pct {
+  font-size: 11.5px;
+  opacity: 0.8;
+}
+
+.cashea-aviso {
+  margin: 0;
+  font-size: 12px;
+  color: var(--lm-muted);
+}
+
+.cashea-bajada {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.cashea-bajada-texto {
+  font-size: 13px;
+  color: var(--lm-ink);
+}
+
+/* --- Resumen ------------------------------------------------------------- */
+
+.cashea-resumen {
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--lm-line);
+  border-radius: 10px;
+  background: var(--lm-surface);
+}
+
+.cashea-resumen-fila {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 4px 12px;
+  padding: 9px 12px;
+}
+
+.cashea-resumen-fila + .cashea-resumen-fila {
+  border-top: 1px solid var(--lm-line);
+}
+
+.cashea-resumen-etiqueta {
+  font-size: 12.5px;
+  color: var(--lm-muted);
+}
+
+.cashea-resumen-valor {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  font-size: 13px;
+  color: var(--lm-ink);
+  text-align: right;
+}
+
+.cashea-resumen-nota {
+  font-size: 11.5px;
+  color: var(--lm-muted);
+}
