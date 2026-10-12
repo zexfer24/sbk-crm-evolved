@@ -520,6 +520,14 @@ jobs:
             -v ON_ERROR_STOP=1 \
             -f supabase/tests/reactivacion_por_demora.sql
 
+      # Precio estándar (12/10/2026): tarifa de envío MRW por peso. Fija los
+      # bordes de tarifa_mrw_usd ([desde, hasta)), la cobertura sin huecos de
+      # los 34 tramos, la exclusión de solapes, la RLS (asesor lee, solo
+      # supervisor/admin escribe) y el campo calculado products.tarifa_envio_usd.
+      - name: precio estándar MRW -- tramos, exclusión, RLS y campo calculado
+        run: |
+          psql "postgresql://postgres:postgres@127.0.0.1:54322/postgres"             -v ON_ERROR_STOP=1             -f supabase/tests/precio_estandar_mrw.sql
+
       # A2 (30/9/2026), plan "Seba no cotiza lo que no es": tres tests SQL de la
       # entrega que faltaban en este job (detectado al cerrar la entrega, al
       # comparar `ls supabase/tests` contra los `-f` de este archivo). Los tres
