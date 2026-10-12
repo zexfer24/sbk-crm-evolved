@@ -175,8 +175,12 @@ extensión puede quedar.
     `usdFromBs`, y la tarifa vieja tras una relectura fallida.
 - **`tsc`** limpio; **lint** con 0 errores (7 warnings viejos);
   **`npm run build`** OK.
-- **CI real:** se corrió en una rama desechable `ci/precio-estandar-mrw`. El
-  resultado está en la sección de abajo.
+- **CI real en verde** sobre el contenido de `3ae41a7` (run 38324133879, en una
+  rama desechable `ci/**` que habilita el disparo; ya borrada). Incluye el job
+  de migraciones: base reconstruida desde cero con las 96 migraciones y los
+  tests SQL, con `precio_estandar_mrw.sql` y `permisos_funciones.sql`. El run
+  anterior, sobre la primera versión, cayó por `rate limit exceeded` al
+  instalar la CLI de Supabase, no por el código.
 - **Pantalla:** build de producción + Playwright a 1366, 1024 y 390 px, sin
   desborde horizontal y con las columnas alineadas entre filas.
   - Datos de prueba: Bujía USD con 1 kg, Carburador con 95 kg, Filtro VES
