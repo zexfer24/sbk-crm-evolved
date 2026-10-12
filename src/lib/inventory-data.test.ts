@@ -1,6 +1,12 @@
 import { describe, expect, it, vi } from "vitest";
 import type { SupabaseClient } from "@supabase/supabase-js";
-import { fetchProductsPage, searchActiveProducts, searchProductsForLookup } from "@/lib/inventory-data";
+import {
+  PRODUCT_SELECT,
+  fetchProductsByIds,
+  fetchProductsPage,
+  searchActiveProducts,
+  searchProductsForLookup,
+} from "@/lib/inventory-data";
 
 /**
  * Fake del query builder de PostgREST que REGISTRA operador, columna y valor
@@ -41,6 +47,7 @@ function fakeProductsQuery(result: { data?: unknown[]; error?: unknown; count?: 
     order: record("order"),
     range: terminate("range"),
     limit: terminate("limit"),
+    in: terminate("in"),
   };
 
   return { calls, builder };
@@ -193,5 +200,74 @@ describe("searchProductsForLookup — panel del buzón (T6 la va a usar)", () =>
 
     expect(result).toEqual([]);
     expect(calls).toEqual([]);
+  });
+});
+
+/**
+ * Fila cruda con la forma de PostgREST para `PRODUCT_SELECT` (los nombres de
+ * columna en snake_case). Sirve para probar que `fetchProductsByIds` pasa
+ * cada fila por `mapProduct`, no solo que devuelve algo.
+ */
+function rawProductRow(overrides: Record<string, unknown> = {}) {
+  return {
+    id: "p-1",
+    name: "PASTILLA FRENO DELANTERA",
+    brand: null,
+    price: "12.5",
+    currency: "USD",
+    stock_quantity: 7,
+    description: null,
+    is_active: true,
+    updated_at: "2026-10-12T10:00:00Z",
+    weight_kg: null,
+    saint_code: "PF-01",
+    saint_added_at: null,
+    saint_removed_at: null,
+    product_compatibility: [],
+    ...overrides,
+  };
+}
+
+describe("fetchProductsByIds — restaurar el carrito del Inventario (12/10/2026)", () => {
+  it("ids vacío devuelve [] y no toca supabase", async () => {
+    const { calls, builder } = fakeProductsQuery();
+    const supabase = fakeSupabase(builder);
+    const result = await fetchProductsByIds(supabase, []);
+
+    expect(result).toEqual([]);
+    expect(calls).toEqual([]);
+    expect(supabase.from).not.toHaveBeenCalled();
+  });
+
+  it("deduplica los ids y consulta con .in('id', ...) por los únicos, en orden de llegada", async () => {
+    const { calls, builder } = fakeProductsQuery();
+    await fetchProductsByIds(fakeSupabase(builder), ["a", "b", "a"]);
+
+    expect(calls.filter((c) => c.method === "in")).toEqual([{ method: "in", args: ["id", ["a", "b"]] }]);
+    expect(calls.find((c) => c.method === "select")?.args[0]).toBe(PRODUCT_SELECT);
+  });
+
+  it("mapea cada fila a Product (stock_quantity → stockQuantity, price → número)", async () => {
+    const { builder } = fakeProductsQuery({ data: [rawProductRow()] });
+    const result = await fetchProductsByIds(fakeSupabase(builder), ["p-1"]);
+
+    expect(result).toHaveLength(1);
+    expect(result[0]).toMatchObject({
+      id: "p-1",
+      name: "PASTILLA FRENO DELANTERA",
+      price: 12.5,
+      currency: "USD",
+      stockQuantity: 7,
+      saintCode: "PF-01",
+      compatibility: [],
+    });
+    expect(result[0]).not.toHaveProperty("stock_quantity");
+  });
+
+  it("lanza el error de supabase tal cual", async () => {
+    const boom = { message: "permission denied", code: "42501" };
+    const { builder } = fakeProductsQuery({ error: boom });
+
+    await expect(fetchProductsByIds(fakeSupabase(builder), ["p-1"])).rejects.toBe(boom);
   });
 });

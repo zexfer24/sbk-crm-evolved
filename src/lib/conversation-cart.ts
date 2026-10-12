@@ -23,8 +23,16 @@ import { productPriceUsd } from "@/lib/sale-cart";
  * total en bolívares — ver `cartTotals`. Todo son funciones puras.
  */
 
-export interface PricedCartLine {
-  item: ConversationCartItem;
+/**
+ * Lo mínimo que las reglas de precio necesitan de un renglón. El carrito de
+ * una conversación (`ConversationCartItem`) lo cumple, y también el carrito
+ * del Inventario (12/10/2026, sin conversación), que usa las mismas reglas
+ * sin tener id de conversación ni de renglón.
+ */
+export type PriceableCartItem = Pick<ConversationCartItem, "product" | "quantity" | "quotedPriceUsd">;
+
+export interface PricedCartLine<T extends PriceableCartItem = ConversationCartItem> {
+  item: T;
   /** Precio vigente por unidad, en dólares. `null` si es un producto en bolívares y no hay tasa. */
   unitPriceUsd: number | null;
   /** Precio vigente por unidad, en bolívares. `null` si es un producto en dólares y no hay tasa. */
@@ -51,7 +59,7 @@ function round2(value: number): number {
   return Number(value.toFixed(2));
 }
 
-export function priceCartLines(items: ConversationCartItem[], bcvRate: number): PricedCartLine[] {
+export function priceCartLines<T extends PriceableCartItem>(items: T[], bcvRate: number): PricedCartLine<T>[] {
   return items.map((item) => {
     const unitPriceUsd = productPriceUsd(item.product, bcvRate);
     const unitPriceBs = priceInBs(item.product, bcvRate);
@@ -74,7 +82,7 @@ export function priceCartLines(items: ConversationCartItem[], bcvRate: number): 
   });
 }
 
-export function cartTotals(lines: PricedCartLine[]): CartTotals {
+export function cartTotals(lines: PricedCartLine<PriceableCartItem>[]): CartTotals {
   let usd = 0;
   let bs: number | null = 0;
   let unpricedCount = 0;
@@ -91,7 +99,7 @@ export function cartTotals(lines: PricedCartLine[]): CartTotals {
 }
 
 /** «cotizado $18.00 · hoy $20.00» — solo si el precio de hoy no es el que cotizó Seba. */
-export function quoteComparisonLabel(line: PricedCartLine): string | null {
+export function quoteComparisonLabel(line: PricedCartLine<PriceableCartItem>): string | null {
   if (!line.priceChange) return null;
   return `cotizado $${line.priceChange.quotedUsd.toFixed(2)} · hoy $${line.priceChange.todayUsd.toFixed(2)}`;
 }
@@ -114,7 +122,7 @@ function formatUsd(value: number): string {
  * montos son los VIGENTES (`priceCartLines`, D6), ya redondeados por
  * `usdFromBs`: aquí no se recalcula ni se redondea nada.
  */
-export function cartSummaryText(lines: PricedCartLine[], totals: CartTotals): string | null {
+export function cartSummaryText(lines: PricedCartLine<PriceableCartItem>[], totals: CartTotals): string | null {
   if (lines.length === 0) return null;
   if (lines.some((line) => line.unitPriceUsd === null || line.subtotalUsd === null)) return null;
 

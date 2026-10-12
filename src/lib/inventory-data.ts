@@ -134,6 +134,24 @@ export async function fetchProduct(supabase: SupabaseClient, productId: string):
 }
 
 /**
+ * Productos por id, para restaurar el carrito del Inventario. Sin ids no consulta. El orden no está garantizado: lo decide quien llama.
+ *
+ * Nace el 12/10/2026 (plan "Carrito de cotización en el Inventario, con
+ * Cashea"): el carrito del Inventario se guarda en el navegador como ids y
+ * al volver a abrir la página hay que releer esos productos en una sola
+ * consulta, no uno por uno. Los ids repetidos se quitan antes de consultar
+ * para no pedir la misma fila dos veces.
+ */
+export async function fetchProductsByIds(supabase: SupabaseClient, ids: string[]): Promise<Product[]> {
+  const unicos = Array.from(new Set(ids));
+  if (unicos.length === 0) return [];
+
+  const { data, error } = await supabase.from("products").select(PRODUCT_SELECT).in("id", unicos);
+  if (error) throw error;
+  return ((data ?? []) as unknown as RawProduct[]).map(mapProduct);
+}
+
+/**
  * Contadores globales del inventario, calculados en la base.
  *
  * Se piden con `head: true`: PostgREST devuelve solo el conteo, sin traer
