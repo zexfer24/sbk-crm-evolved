@@ -67,3 +67,19 @@ sobre MRW; GLOSARIO; reporte de entrega.
 - Sin editar y en verde: `conversation-cart.test.ts`, `cart-lines`, `conversation-cart-block` y los
   tests actuales de la fila, la vista e `inventario-css.test.ts`.
 - Regla del operador: primero el test en rojo, después el código.
+
+## Cambio de base durante la ejecución (12/10/2026, noche)
+
+Mientras corría este plan, otra sesión terminó y subió la calculadora por producto
+(`entrega/calculadora-cashea` = `fbbf793`, y `-sobre-mrw` = `24d82cf`), construida encima del mismo
+`3884c07`. Como el pedido decía "si la calculadora ya está en curso, partí de su rama sin duplicar",
+la entrega se rehízo encima de la suya:
+
+- T6 (mi modal `calculadora-cashea-modal.tsx`) se DESCARTÓ: queda la calculadora de la otra sesión,
+  que salió del spec original.
+- T5 deja solo «Agregar» en la fila; el botón «Cashea» es el de la calculadora.
+- T7 (nueva): la calculadora pasa a usar `CasheaControles`/`CasheaResumen`, que adoptan su marcado y
+  sus textos (era la referencia; lo que ve el asesor no cambia), y el carrito adopta su regla de
+  cuotas (≤ $100 con 6 → 3, sin revivir el 6). El resumen del carrito suma "N cuotas, cada 14 días,
+  sin intereses" porque el operador pidió ver el número de cuotas en el total.
+- Las ramas `entrega/carrito-inventario-cashea[-sobre-mrw]` se reescribieron con esta versión.
