@@ -30,6 +30,14 @@ vi.mock("@/lib/mutations", () => ({
   updateProductWeight: (...args: unknown[]) => updateProductWeight(...args),
 }));
 
+// Calculadora Cashea (12/10/2026): el Modal real de HeroUI no existe en este
+// archivo (`@heroui/react` está mockeado arriba), así que el test solo verifica
+// que la fila abre el modal con el producto correcto, no lo que pinta adentro.
+vi.mock("@/components/inventario/cashea-calculadora", () => ({
+  CasheaCalculadora: ({ isOpen, product }: { isOpen: boolean; product: { name: string } }) =>
+    isOpen ? <div role="dialog" aria-label={`Cashea ${product.name}`} /> : null,
+}));
+
 function product(over: Partial<Product> = {}): Product {
   return {
     id: "prod-1",
@@ -275,5 +283,26 @@ describe("ProductoFila — badge Nuevo desde Saint", () => {
   it("no se muestra pasados los 7 días", () => {
     render(<ProductoFila product={product({ saintAddedAt: "2026-09-17T12:00:00Z" })} bcvRate={40} />);
     expect(screen.queryByText("Nuevo desde Saint")).not.toBeInTheDocument();
+  });
+});
+
+/**
+ * Botón "Cashea" (12/10/2026, plan "Calculadora Cashea en el Inventario", T3):
+ * abre la calculadora de una cuenta, no de una venta, así que sale también
+ * para un producto sin stock o inactivo.
+ */
+describe("ProductoFila — botón Cashea", () => {
+  it("abre el modal de Cashea del producto al pulsarlo, y no hay diálogo antes", async () => {
+    const user = userEvent.setup({ delay: null, pointerEventsCheck: 0 });
+    render(<ProductoFila product={product()} bcvRate={40} />);
+
+    expect(screen.queryByRole("dialog")).toBeNull();
+    await user.click(screen.getByRole("button", { name: "Calcular Cashea de Carburador PZ27" }));
+    expect(screen.getByRole("dialog", { name: "Cashea Carburador PZ27" })).toBeInTheDocument();
+  });
+
+  it("el botón también existe en un producto inactivo y sin stock", () => {
+    render(<ProductoFila product={product({ isActive: false, stockQuantity: 0 })} bcvRate={40} />);
+    expect(screen.getByRole("button", { name: "Calcular Cashea de Carburador PZ27" })).toBeInTheDocument();
   });
 });

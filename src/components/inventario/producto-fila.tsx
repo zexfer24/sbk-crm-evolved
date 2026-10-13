@@ -3,11 +3,13 @@
 import { useState, type FocusEvent, type KeyboardEvent } from "react";
 import { useRouter } from "next/navigation";
 import { Check, EyeOff, Sparkles, TriangleAlert } from "lucide-react";
+import { Calculator } from "lucide-react";
 import { toast } from "@heroui/react";
 import type { Product } from "@/lib/types";
 import { createClient } from "@/lib/supabase/client";
 import { updateProductWeight } from "@/lib/mutations";
 import { aiVisibility, formatWeightInput, isNewFromSaint, parseWeightInput, priceDisplay, stockLevel } from "@/lib/inventory";
+import { CasheaCalculadora } from "@/components/inventario/cashea-calculadora";
 
 /**
  * Una fila del inventario.
@@ -30,6 +32,7 @@ export function ProductoFila({ product, bcvRate }: { product: Product; bcvRate: 
   const [weightDraft, setWeightDraft] = useState(formatWeightInput(product.weightKg));
   const [busy, setBusy] = useState(false);
   const [savedField, setSavedField] = useState<"peso" | null>(null);
+  const [casheaAbierta, setCasheaAbierta] = useState(false);
 
   const level = stockLevel(product);
   const visibility = aiVisibility(product);
@@ -226,6 +229,19 @@ export function ProductoFila({ product, bcvRate }: { product: Product; bcvRate: 
             Nuevo desde Saint
           </span>
         )}
+
+        {/* Calculadora Cashea (12/10/2026): una cuenta, no una venta; sale también sin stock o inactivo. */}
+        <button
+          type="button"
+          className="ac-badge inv-cashea-trigger"
+          data-tone="link"
+          onClick={() => setCasheaAbierta(true)}
+          aria-label={`Calcular Cashea de ${product.name}`}
+        >
+          <Calculator size={11} />
+          Cashea
+        </button>
+        <CasheaCalculadora product={product} bcvRate={bcvRate} isOpen={casheaAbierta} onOpenChange={setCasheaAbierta} />
       </div>
     </li>
   );
