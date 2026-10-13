@@ -1,50 +1,68 @@
 /* ==========================================================================
    Cashea: controles (nivel, cuotas, bajada) y resumen del plan.
-   Se apoyan en .crm-pill y .ac-switch del resto del CRM (la vista que los
-   usa importa crm.css y agent-control.css); aquí solo vive lo propio.
+   Los comparten el carrito del Inventario y el modal de la calculadora
+   (12/10/2026, plan "Carrito de cotización en el Inventario, con Cashea", T7).
+   Los estilos salieron de `inv-cashea-*` en inventario.css sin cambiar un
+   valor, para que la calculadora se vea igual. Se apoyan en .ac-switch y
+   .lm-eyebrow del resto del CRM (la vista que los usa importa
+   agent-control.css); aquí solo vive lo propio.
    ========================================================================== */
 
 .cashea-controles {
   display: flex;
   flex-direction: column;
   gap: 12px;
+  min-width: 0;
 }
 
-.cashea-grupo {
+.cashea-bloque {
   display: flex;
   flex-direction: column;
   gap: 6px;
+  min-width: 0;
 }
 
-.cashea-grupo-titulo {
-  font-size: 12px;
-  font-weight: 500;
-  color: var(--lm-muted);
-}
-
-/* flex-wrap: los seis niveles tienen que entrar a 375 px sin desbordar. */
-.cashea-pildoras {
-  display: flex;
-  flex-wrap: wrap;
+.cashea-niveles {
+  display: grid;
+  grid-template-columns: repeat(6, minmax(0, 1fr));
   gap: 6px;
 }
 
-.cashea-controles .crm-pill {
-  border: 1px solid transparent;
+.cashea-cuotas {
+  display: flex;
+  gap: 6px;
 }
 
-.cashea-controles .crm-pill[data-active="true"] {
+.cashea-opcion {
+  min-width: 0;
+  padding: 7px 6px;
+  border: 1px solid var(--lm-line);
+  border-radius: 8px;
   background: var(--lm-surface);
+  color: var(--lm-ink);
+  font-size: 12.5px;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.cashea-cuotas .cashea-opcion {
+  flex: 1 1 0;
+}
+
+.cashea-opcion[aria-checked="true"],
+.cashea-opcion[aria-pressed="true"] {
   border-color: var(--lm-link);
+  background: color-mix(in srgb, var(--lm-link) 14%, transparent);
   color: var(--lm-link-ink);
+  font-weight: 600;
 }
 
-.cashea-nivel-pct {
-  font-size: 11.5px;
-  opacity: 0.8;
+.cashea-opcion:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
 }
 
-.cashea-aviso {
+.cashea-nota {
   margin: 0;
   font-size: 12px;
   color: var(--lm-muted);
@@ -53,53 +71,64 @@
 .cashea-bajada {
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-}
-
-.cashea-bajada-texto {
+  gap: 10px;
   font-size: 13px;
   color: var(--lm-ink);
+}
+
+/*
+ * `.ac-switch` apagado es rojo porque en Control IA "apagado" es una alarma.
+ * Acá "sin bajada" es la tabla normal de Cashea, no algo que corregir: el
+ * apagado va en gris neutro (visto en pantalla el 12/10/2026).
+ */
+.cashea-bajada .ac-switch:not([data-on="true"]) {
+  background: var(--lm-muted);
+}
+
+@media (max-width: 480px) {
+  .cashea-niveles {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
 }
 
 /* --- Resumen ------------------------------------------------------------- */
 
 .cashea-resumen {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px 14px;
+  margin: 0;
+}
+
+.cashea-resumen > div {
   display: flex;
   flex-direction: column;
-  border: 1px solid var(--lm-line);
-  border-radius: 10px;
-  background: var(--lm-surface);
+  gap: 2px;
+  min-width: 0;
 }
 
-.cashea-resumen-fila {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: baseline;
-  justify-content: space-between;
-  gap: 4px 12px;
-  padding: 9px 12px;
-}
-
-.cashea-resumen-fila + .cashea-resumen-fila {
-  border-top: 1px solid var(--lm-line);
-}
-
-.cashea-resumen-etiqueta {
-  font-size: 12.5px;
+.cashea-resumen dt {
+  font-size: 11.5px;
   color: var(--lm-muted);
 }
 
-.cashea-resumen-valor {
-  display: flex;
-  flex-direction: column;
-  align-items: flex-end;
-  font-size: 13px;
+.cashea-resumen dd {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 600;
   color: var(--lm-ink);
-  text-align: right;
 }
 
-.cashea-resumen-nota {
+.cashea-resumen-ultima {
   font-size: 11.5px;
+  font-weight: 400;
+  color: var(--lm-muted);
+}
+
+/* Bolívares y nota de cadencia: una línea chica debajo de la cifra en dólares. */
+.cashea-resumen-sub {
+  display: block;
+  font-size: 11.5px;
+  font-weight: 400;
   color: var(--lm-muted);
 }

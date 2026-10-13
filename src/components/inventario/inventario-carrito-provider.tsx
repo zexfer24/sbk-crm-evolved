@@ -16,6 +16,7 @@ import {
   leerCarritoGuardado,
   reducirCarrito,
   serializarCarrito,
+  totalesCarrito,
   type LineaCarritoInventario,
   type OpcionesCashea,
 } from "@/lib/inventario-carrito";
@@ -64,6 +65,15 @@ export function InventarioCarritoProvider({
   const [lineas, despachar] = useReducer(reducirCarrito, [] as LineaCarritoInventario[]);
   const [abierto, setAbierto] = useState(false);
   const [cashea, setCashea] = useState<OpcionesCashea>(CASHEA_INICIAL);
+
+  // Misma regla que la calculadora Cashea (T7): si había 6 cuotas elegidas y el
+  // total baja a $100 o menos, la elección pasa a 3, y subir el total de nuevo
+  // NO revive el 6 (el asesor no lo volvió a pedir). Se hace durante el render,
+  // sobre el propio estado del provider, y no en un efecto:
+  // `react-hooks/set-state-in-effect` lo prohíbe.
+  if (cashea.activo && totalesCarrito(lineas, bcvRate, cashea).cashea?.ajustado) {
+    setCashea({ ...cashea, cuotas: ELECCION_CASHEA_INICIAL.cuotas });
+  }
 
   // Refs y no estado: son banderas de control que no pintan nada, y un
   // `setState` aquí dispararía `react-hooks/set-state-in-effect`.

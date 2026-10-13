@@ -4,20 +4,19 @@ import { useId, useState } from "react";
 import { Calculator } from "lucide-react";
 import { Button, Modal, toast } from "@heroui/react";
 import {
-  NIVELES_CASHEA,
+  ELECCION_CASHEA_INICIAL,
   calcularCashea,
   comparativaNiveles,
   cronogramaCashea,
-  cuotasDisponibles,
   formatFechaCuota,
   formatUsd,
   mensajeWhatsApp,
   parseMontoInput,
-  porcentajeInicial,
   toCents,
-  type CuotasCashea,
-  type NivelCashea,
+  type EleccionCashea,
 } from "@/lib/cashea";
+import { CasheaControles } from "@/components/cashea/cashea-controles";
+import { CasheaResumen } from "@/components/cashea/cashea-resumen";
 import { productPriceUsd } from "@/lib/sale-cart";
 import type { Product } from "@/lib/types";
 
@@ -27,9 +26,6 @@ interface CasheaCalculadoraProps {
   isOpen: boolean;
   onOpenChange: (open: boolean) => void;
 }
-
-const NIVEL_INICIAL: NivelCashea = 6;
-const CUOTAS_INICIALES: CuotasCashea = 3;
 
 /**
  * Calculadora Cashea (12/10/2026, plan "Calculadora Cashea en el Inventario",
@@ -41,6 +37,11 @@ const CUOTAS_INICIALES: CuotasCashea = 3;
  * Todo el estado es local y se descarta al cerrar: no se guarda nada (ni
  * base ni localStorage). El precio sale SIEMPRE de `productPriceUsd`, el mismo
  * número que ve el asesor en la fila, el carrito y Seba.
+ *
+ * Nivel, cuotas, bajada y el resumen (inicial, cada cuota, financiado) son las
+ * piezas de `components/cashea/`, las mismas que usa el carrito (T7 del plan
+ * "Carrito de cotización en el Inventario, con Cashea"): salieron de este
+ * modal sin cambiar lo que hace ni lo que se ve.
  */
 export function CasheaCalculadora({ product, bcvRate, isOpen, onOpenChange }: CasheaCalculadoraProps) {
   const ids = useId();
@@ -49,16 +50,12 @@ export function CasheaCalculadora({ product, bcvRate, isOpen, onOpenChange }: Ca
 
   const [cantidadDraft, setCantidadDraft] = useState("1");
   const [montoManualDraft, setMontoManualDraft] = useState("");
-  const [nivel, setNivel] = useState<NivelCashea>(NIVEL_INICIAL);
-  const [cuotasElegidas, setCuotasElegidas] = useState<CuotasCashea>(CUOTAS_INICIALES);
-  const [bajada, setBajada] = useState(false);
+  const [eleccion, setEleccion] = useState<EleccionCashea>(ELECCION_CASHEA_INICIAL);
 
   function reset() {
     setCantidadDraft("1");
     setMontoManualDraft("");
-    setNivel(NIVEL_INICIAL);
-    setCuotasElegidas(CUOTAS_INICIALES);
-    setBajada(false);
+    setEleccion(ELECCION_CASHEA_INICIAL);
   }
 
   function handleOpenChange(open: boolean) {
@@ -75,21 +72,19 @@ export function CasheaCalculadora({ product, bcvRate, isOpen, onOpenChange }: Ca
   const manualCents = manual.ok && manual.value !== null ? toCents(manual.value) : null;
   const montoCents = manualCents ?? (precioUnitario === null ? 0 : toCents(precioUnitario) * cantidad);
 
-  const plan = calcularCashea({ montoCents, nivel, cuotas: cuotasElegidas, bajada });
-  const seisDisponible = cuotasDisponibles(montoCents).includes(6);
+  const plan = calcularCashea({ montoCents, ...eleccion });
 
   // Si el monto baja a $100 o menos con 6 elegidas, el plan ya se calcula con
   // 3; aquí además se registra, para que subir el monto de nuevo NO reviva el
   // 6 por su cuenta (el asesor no lo volvió a pedir). Se hace durante el
   // render y no en un efecto: `react-hooks/set-state-in-effect` lo prohíbe.
-  if (plan.ajustado && cuotasElegidas !== CUOTAS_INICIALES) {
-    setCuotasElegidas(CUOTAS_INICIALES);
+  if (plan.ajustado && eleccion.cuotas !== ELECCION_CASHEA_INICIAL.cuotas) {
+    setEleccion({ ...eleccion, cuotas: ELECCION_CASHEA_INICIAL.cuotas });
   }
 
   const cronograma = cronogramaCashea(plan, new Date());
-  const comparativa = comparativaNiveles(montoCents, plan.cuotas, bajada);
+  const comparativa = comparativaNiveles(montoCents, plan.cuotas, eleccion.bajada);
   const mensaje = mensajeWhatsApp(plan, product.name);
-  const ultimaCuotaCents = plan.montosCuotasCents[plan.cuotas - 1];
 
   async function handleCopiar() {
     try {
@@ -168,91 +163,14 @@ export function CasheaCalculadora({ product, bcvRate, isOpen, onOpenChange }: Ca
                 </strong>
               </p>
 
-              <div className="inv-cashea-bloque">
-                <span className="lm-eyebrow">Nivel Cashea</span>
-                <div className="inv-cashea-niveles" role="radiogroup" aria-label="Nivel Cashea">
-                  {NIVELES_CASHEA.map((n) => (
-                    <button
-                      key={n}
-                      type="button"
-                      role="radio"
-                      aria-checked={nivel === n}
-                      className="inv-cashea-opcion"
-                      onClick={() => setNivel(n)}
-                    >
-                      {`N${n} · ${porcentajeInicial(n, bajada)} %`}
-                    </button>
-                  ))}
-                </div>
-              </div>
+              <CasheaControles montoCents={montoCents} eleccion={eleccion} onChange={setEleccion} />
 
-              <div className="inv-cashea-bloque">
-                <span className="lm-eyebrow">Cuotas</span>
-                <div className="inv-cashea-cuotas" role="group" aria-label="Cuotas">
-                  <button
-                    type="button"
-                    className="inv-cashea-opcion"
-                    aria-pressed={plan.cuotas === 3}
-                    onClick={() => setCuotasElegidas(3)}
-                  >
-                    3 cuotas
-                  </button>
-                  <button
-                    type="button"
-                    className="inv-cashea-opcion"
-                    aria-pressed={plan.cuotas === 6}
-                    disabled={!seisDisponible}
-                    onClick={() => setCuotasElegidas(6)}
-                  >
-                    6 cuotas
-                  </button>
-                </div>
-                {!seisDisponible && (
-                  <p className="inv-cashea-nota" role="status">
-                    Con montos de $100 o menos solo está disponible el plan de 3 cuotas
-                  </p>
-                )}
-              </div>
-
-              {/* P2: si la bajada es definitiva, se borra este bloque */}
-              <div className="inv-cashea-bajada">
-                <button
-                  type="button"
-                  className="ac-switch"
-                  role="switch"
-                  aria-checked={bajada}
-                  data-on={bajada}
-                  aria-label="Bajada de inicial"
-                  onClick={() => setBajada((v) => !v)}
-                />
-                <span>Bajada de inicial</span>
-              </div>
-
-              <dl className="inv-cashea-resumen">
-                <div>
-                  <dt>Inicial</dt>
-                  <dd className="lm-num" data-testid="cashea-inicial">
-                    {`${formatUsd(plan.inicialCents)} (${plan.pct} %)`}
-                  </dd>
-                </div>
-                <div>
-                  <dt>Cada cuota</dt>
-                  <dd className="lm-num">
-                    {formatUsd(plan.cuotaCents)}
-                    {ultimaCuotaCents !== plan.cuotaCents && (
-                      <small className="inv-cashea-ultima">{` · la última, ${formatUsd(ultimaCuotaCents)}`}</small>
-                    )}
-                  </dd>
-                </div>
-                <div>
-                  <dt>Monto financiado</dt>
-                  <dd className="lm-num">{formatUsd(plan.financiadoCents)}</dd>
-                </div>
+              <CasheaResumen plan={plan} mostrarBs={false}>
                 <div>
                   <dt>Monto total</dt>
                   <dd className="lm-num">{formatUsd(montoCents)}</dd>
                 </div>
-              </dl>
+              </CasheaResumen>
 
               <div className="inv-cashea-bloque">
                 <span className="lm-eyebrow">Cronograma</span>
@@ -282,7 +200,7 @@ export function CasheaCalculadora({ product, bcvRate, isOpen, onOpenChange }: Ca
                     </thead>
                     <tbody>
                       {comparativa.map((fila) => (
-                        <tr key={fila.nivel} aria-current={fila.nivel === nivel ? "true" : undefined}>
+                        <tr key={fila.nivel} aria-current={fila.nivel === eleccion.nivel ? "true" : undefined}>
                           <td>{`N${fila.nivel}`}</td>
                           <td className="lm-num">{formatUsd(fila.inicialCents)}</td>
                           <td className="lm-num">{formatUsd(fila.cuotaCents)}</td>

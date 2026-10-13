@@ -19,27 +19,23 @@ function montar(montoCents: number, eleccion: EleccionCashea = ELECCION_CASHEA_I
 }
 
 describe("CasheaControles", () => {
-  it("muestra los seis niveles de N6 a N1 con su porcentaje de inicial", () => {
+  it("muestra los seis niveles de N6 a N1 como radios con su porcentaje de inicial", () => {
     montar(20000);
-    const grupo = screen.getByRole("group", { name: "Nivel Cashea" });
-    const botones = within(grupo).getAllByRole("button");
-    expect(botones).toHaveLength(NIVELES_CASHEA.length);
+    const grupo = screen.getByRole("radiogroup", { name: "Nivel Cashea" });
+    const radios = within(grupo).getAllByRole("radio");
+    expect(radios).toHaveLength(NIVELES_CASHEA.length);
     NIVELES_CASHEA.forEach((nivel, i) => {
       const pct = CASHEA.INICIAL_ESTANDAR[nivel];
-      expect(botones[i]).toHaveTextContent(`N${nivel}`);
-      expect(botones[i]).toHaveTextContent(`${pct}%`);
-      expect(botones[i]).toHaveAccessibleName(`Nivel ${nivel}, inicial ${pct}%`);
+      expect(radios[i]).toHaveAccessibleName(`N${nivel} · ${pct} %`);
     });
-    expect(botones[0]).toHaveAttribute("aria-pressed", "true");
-    expect(botones[0]).toHaveAttribute("data-active", "true");
-    expect(botones[1]).toHaveAttribute("aria-pressed", "false");
-    expect(botones[1]).not.toHaveAttribute("data-active");
+    expect(radios[0]).toHaveAttribute("aria-checked", "true");
+    expect(radios[1]).toHaveAttribute("aria-checked", "false");
   });
 
   it("un clic en N4 llama a onChange con el nivel 4 y el resto intacto", async () => {
     const user = userEvent.setup({ delay: null, pointerEventsCheck: 0 });
     const onChange = montar(20000);
-    await user.click(screen.getByRole("button", { name: "Nivel 4, inicial 25%" }));
+    await user.click(screen.getByRole("radio", { name: "N4 · 25 %" }));
     expect(onChange).toHaveBeenCalledWith({ ...ELECCION_CASHEA_INICIAL, nivel: 4 });
   });
 
@@ -79,11 +75,10 @@ describe("CasheaControles", () => {
     }
     render(<Envoltorio />);
 
-    const interruptor = screen.getByRole("switch", { name: "Inicial con bajada (promoción de Cashea)" });
-    expect(screen.getByText("Bajada de inicial")).toBeInTheDocument();
+    const interruptor = screen.getByRole("switch", { name: "Bajada de inicial" });
     expect(interruptor).toHaveAttribute("aria-checked", "false");
     expect(interruptor).toHaveAttribute("data-on", "false");
-    expect(screen.getByRole("button", { name: "Nivel 4, inicial 25%" })).toBeInTheDocument();
+    expect(screen.getByRole("radio", { name: "N4 · 25 %" })).toBeInTheDocument();
 
     await user.click(interruptor);
 
@@ -91,7 +86,7 @@ describe("CasheaControles", () => {
     expect(interruptor).toHaveAttribute("data-on", "true");
     for (const nivel of NIVELES_CASHEA) {
       expect(
-        screen.getByRole("button", { name: `Nivel ${nivel}, inicial ${CASHEA.INICIAL_BAJADA[nivel]}%` }),
+        screen.getByRole("radio", { name: `N${nivel} · ${CASHEA.INICIAL_BAJADA[nivel]} %` }),
       ).toBeInTheDocument();
     }
   });

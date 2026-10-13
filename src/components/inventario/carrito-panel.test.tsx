@@ -4,7 +4,7 @@ import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { Product } from "@/lib/types";
 import { textoCarritoParaCliente, totalesCarrito } from "@/lib/inventario-carrito";
-import { ELECCION_CASHEA_INICIAL } from "@/lib/cashea";
+import { AVISO_SEIS_CUOTAS, ELECCION_CASHEA_INICIAL } from "@/lib/cashea";
 import {
   CARRITO_STORAGE_PREFIX,
   InventarioCarritoProvider,
@@ -231,20 +231,23 @@ describe("el panel del carrito", () => {
 
       const interruptor = await screen.findByRole("switch", { name: "Financiar con Cashea" });
       expect(interruptor).toHaveAttribute("aria-checked", "false");
-      expect(screen.queryByRole("group", { name: "Nivel Cashea" })).toBeNull();
+      expect(screen.queryByRole("radiogroup", { name: "Nivel Cashea" })).toBeNull();
 
       await user.click(interruptor);
 
       expect(interruptor).toHaveAttribute("aria-checked", "true");
-      expect(screen.getByRole("group", { name: "Nivel Cashea" })).toBeInTheDocument();
+      expect(screen.getByRole("radiogroup", { name: "Nivel Cashea" })).toBeInTheDocument();
       expect(screen.getByRole("group", { name: "Cuotas" })).toBeInTheDocument();
 
       const t = totales();
       expect(within(t).getByText("Total en bolívares")).toBeInTheDocument();
       expect(within(t).getByText("Total en dólares")).toBeInTheDocument();
-      expect(within(t).getByText(/Inicial \(/)).toBeInTheDocument();
-      expect(within(t).getByText("Cuotas")).toBeInTheDocument();
-      expect(within(t).getByText("Financiado")).toBeInTheDocument();
+      expect(within(t).getByText("Inicial")).toBeInTheDocument();
+      expect(within(t).getByText("Cada cuota")).toBeInTheDocument();
+      expect(within(t).getByText("Monto financiado")).toBeInTheDocument();
+      // Con tasa, el resumen del carrito suma los bolívares de la inicial y la
+      // cuota (y el total en bolívares de arriba): tres en total, el financiado no.
+      expect(within(t).getAllByText(/^Bs\. /)).toHaveLength(3);
     });
 
     it("con 6 cuotas pedidas, al bajar el total a $100 o menos queda marcado 3 cuotas y se ve el aviso", async () => {
@@ -258,7 +261,31 @@ describe("el panel del carrito", () => {
       await user.click(screen.getByRole("button", { name: "Quitar Carburador PZ27" })); // queda $50
 
       expect(screen.getByRole("button", { name: "3 cuotas" })).toHaveAttribute("aria-pressed", "true");
-      expect(screen.getByText(/Las 6 cuotas se habilitan con compras de más de/)).toBeInTheDocument();
+      expect(screen.getByText(AVISO_SEIS_CUOTAS)).toBeInTheDocument();
+    });
+
+    it("con 6 elegidas, al bajar a $100 o menos pasa a 3 y subir el total NO revive el 6", async () => {
+      const user = montar();
+      await abrirConAyB(user); // $118 + $50 = $168
+      await user.click(await screen.findByRole("switch", { name: "Financiar con Cashea" }));
+      await user.click(screen.getByRole("button", { name: "6 cuotas" }));
+
+      await user.click(screen.getByRole("button", { name: "Quitar Carburador PZ27" })); // queda $50
+      expect(screen.getByRole("button", { name: "3 cuotas" })).toHaveAttribute("aria-pressed", "true");
+      expect(screen.getByRole("button", { name: "6 cuotas" })).toBeDisabled();
+      expect(screen.getByText(AVISO_SEIS_CUOTAS)).toBeInTheDocument();
+
+      // Vuelve a pasar de $100: el 6 se habilita, pero la elección ya es 3.
+      await user.click(screen.getByRole("button", { name: "Cerrar" }));
+      await waitFor(() => expect(screen.queryByText("Carrito de cotización")).toBeNull());
+      await user.click(screen.getByText("agregar A")); // $50 + $118 = $168
+      await user.click(screen.getByText("abrir carrito"));
+
+      const seis = await screen.findByRole("button", { name: "6 cuotas" });
+      expect(seis).toBeEnabled();
+      expect(seis).toHaveAttribute("aria-pressed", "false");
+      expect(screen.getByRole("button", { name: "3 cuotas" })).toHaveAttribute("aria-pressed", "true");
+      expect(screen.queryByText(AVISO_SEIS_CUOTAS)).toBeNull();
     });
 
     it("la elección de Cashea sobrevive a cerrar y reabrir el panel", async () => {
@@ -289,7 +316,7 @@ describe("el panel del carrito", () => {
       expect(
         screen.getByText("Falta la tasa BCV para un producto: no se puede financiar un total incompleto."),
       ).toBeInTheDocument();
-      expect(within(totales()).queryByText(/Inicial \(/)).toBeNull();
+      expect(within(totales()).queryByText("Inicial")).toBeNull();
       expect(within(totales()).getByText("Sin tasa")).toBeInTheDocument();
     });
   });
