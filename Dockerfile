@@ -34,6 +34,16 @@ ENV NEXT_PUBLIC_SUPABASE_URL=$NEXT_PUBLIC_SUPABASE_URL
 ENV NEXT_PUBLIC_SUPABASE_ANON_KEY=$NEXT_PUBLIC_SUPABASE_ANON_KEY
 ENV NEXT_PUBLIC_CRM_TIME_ZONE=$NEXT_PUBLIC_CRM_TIME_ZONE
 
+# Identificador del despliegue (next.config.ts, deploymentId): cada imagen
+# nueva necesita uno distinto para que las pestañas con el JavaScript viejo se
+# recarguen solas en vez de mezclar versiones (13/10/2026). Dokploy puede pasar
+# SOURCE_COMMIT como build arg; si no llega, next.config.ts usa un timestamp
+# del build. Va justo antes del build para no invalidar las capas de arriba.
+# El runner no necesita nada: `next build` deja el valor dentro de
+# .next/standalone/server.js.
+ARG SOURCE_COMMIT
+ARG NEXT_DEPLOYMENT_ID
+
 ENV NEXT_TELEMETRY_DISABLED=1
 RUN npm run build
 

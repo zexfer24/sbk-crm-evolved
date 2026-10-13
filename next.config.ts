@@ -1,4 +1,30 @@
 import type { NextConfig } from "next";
+import { deploymentIdDesde } from "./src/lib/deployment-id";
+
+// Identificador de ESTE build, para la protección contra desfase de versiones
+// (13/10/2026). Tras cada despliegue, una pestaña abierta con el JavaScript
+// viejo llamaba Server Actions con ids de la versión anterior y producción
+// registraba `Server Reference ID did not match`. Con un `deploymentId` Next
+// pone `?dpl=<id>` a los assets, manda `x-deployment-id` en cada navegación y,
+// si el id del cliente no es el del servidor, recarga la página completa
+// (docs: 01-app/03-api-reference/05-config/01-next-config-js/deploymentId.md).
+//
+// Build y servidor tienen que compartir el MISMO id, y con `output:
+// "standalone"` lo comparten solo: `next build` serializa la configuración ya
+// evaluada dentro de `.next/standalone/server.js` (`nextConfig = {...}`) y el
+// servidor la lee tal cual (`__NEXT_PRIVATE_STANDALONE_CONFIG`) sin volver a
+// ejecutar este archivo, así que un timestamp de respaldo NO se recalcula al
+// arrancar. Lo que sí podía romperse es que el propio build evalúe este
+// archivo más de una vez (workers) y saque dos timestamps distintos; por eso el
+// id resuelto se escribe en `NEXT_DEPLOYMENT_ID`: toda evaluación posterior,
+// en este proceso o en los hijos que heredan el entorno, reutiliza el mismo.
+//
+// Solo en producción: en `next dev` un id de timestamp no aporta nada.
+const deploymentId =
+  process.env.NODE_ENV === "production"
+    ? deploymentIdDesde(process.env, new Date())
+    : undefined;
+if (deploymentId) process.env.NEXT_DEPLOYMENT_ID = deploymentId;
 
 // Las mismas cabeceras que ponía el Caddyfile. Detrás del Traefik de Dokploy
 // no hay Caddy que las añada, y Traefik no las pone por su cuenta: puestas
@@ -23,6 +49,10 @@ const nextConfig: NextConfig = {
   // correr, dependencias incluidas. Es lo que permite que la imagen de
   // Docker no arrastre node_modules entero (ver Dockerfile).
   output: "standalone",
+
+  // Ver arriba: protección contra desfase de versiones entre pestañas viejas
+  // y el servidor recién desplegado.
+  deploymentId,
 
   // `X-Powered-By: Next.js` delata el framework sin darle nada al usuario.
   poweredByHeader: false,
