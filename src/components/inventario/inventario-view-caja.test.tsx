@@ -98,7 +98,7 @@ describe("InventarioView — rol caja", () => {
     pintar("caja");
 
     expect(screen.queryByRole("textbox")).toBeNull();
-    expect(screen.queryByRole("button", { name: "Falta el peso: cargalo →" })).toBeNull();
+    expect(screen.queryByRole("button", { name: /^Falta el peso: cargalo\s→$/ })).toBeNull();
     expect(screen.getByText("Sin peso cargado")).toBeInTheDocument();
   });
 

@@ -279,7 +279,9 @@ export function ProductoFila({
             // Acción pendiente, no un texto atenuado (13/10/2026): el asesor
             // que ve el hueco llega al campo de peso con un clic.
             <button type="button" className="inv-falta-peso" onClick={irAlPeso}>
-              Falta el peso: cargalo →
+              {/* Espacio duro antes de la flecha: en la caja de 150px la flecha
+                  quedaba sola en la segunda línea (visto con Playwright, 13/10/2026). */}
+              Falta el peso: {"cargalo →"}
             </button>
           ) : (
             <span className="inv-readonly" data-empty="true">

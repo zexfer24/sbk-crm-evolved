@@ -3050,24 +3050,30 @@ node --env-file=.env.local scripts/crear-usuario-caja.ts   --email caja1@sbk.com
   `app_metadata` de fábrica y escribe el que se le pasó DESPUÉS; el trigger
   `handle_new_agent()` corre en el INSERT y por createUser nace `agent`
   (medido el 13/10/2026). Una cuenta de caja creada por otro camino hay que
-  corregirla a mano: `update agents set role = 'caja', is_active = false where
-  id = '<uuid>';` (como `postgres`/`service_role`).
+  corregirla a mano, en la base Y en el JWT (como `postgres`): `update agents set
+  role = 'caja', is_active = false where id = '<uuid>';` y `update auth.users set
+  raw_app_meta_data = raw_app_meta_data || '{"role":"caja"}' where id = '<uuid>';`.
+  El segundo hace falta porque el middleware decide la navegación con
+  `app_metadata.role` del token, sin consultar la base: sin él, la cuenta no
+  ve datos (RLS) pero sí las pantallas vacías. Vale desde su próximo login.
 
 ### Convertir o quitar una cuenta
 
 - Pasar un asesor a caja o al revés: `update agents set role = ... where id =
-  ...;` como `postgres`/`service_role` (un supervisor también puede cambiar
-  roles, salvo otorgar o quitar `admin`).
+  ...;` como `postgres`/`service_role`, y el mismo cambio en
+  `auth.users.raw_app_meta_data` (`|| '{"role":"caja"}'`, o `- 'role'` para
+  devolverla a asesor) y cerrarle la sesión: el token viejo conserva el rol
+  anterior hasta que se renueva.
 - Quitar una cuenta de caja: borrar el usuario en Auth (la fila de `agents` cae
   en cascada).
 
-### Qué NO está resuelto en la base (la app lo filtra)
+### Lo que filtra la app, no la base
 
 `agent_metrics()` y `agent_day_summary()` listan `public.agents` entero, y
-supervisores/admins leen todas las filas de `agents`: una cuenta de caja
-aparece en esos listados con ceros. El roster de Control de agentes y
-`claimNextAvailableAgent` (que ya filtra `is_active = true`) tienen que
-descartar `role = 'caja'` en la app.
+supervisores/admins leen todas las filas de `agents`. La app descarta
+`role = 'caja'` en el reparto de escaladas (`claimNextAvailableAgent`), en
+los asesores asignables (`fetchAgents`) y en el roster de Control IA; la
+pestaña Equipo sí la muestra (para renombrarla o cambiarle la clave).
 
 ---
 

@@ -70,7 +70,7 @@ function pesoInput() {
 
 /** El botón del Precio estándar que manda a cargar el peso (T4, 13/10/2026). */
 function faltaPeso() {
-  return screen.getByRole("button", { name: "Falta el peso: cargalo →" });
+  return screen.getByRole("button", { name: /^Falta el peso: cargalo\s→$/ });
 }
 
 describe("ProductoFila — el campo Peso", () => {
@@ -388,7 +388,7 @@ describe("ProductoFila — precio promoción y precio estándar", () => {
     await waitFor(() => expect(fetchProduct).toHaveBeenCalledWith(expect.anything(), "prod-1"));
     // 25 USD + 1.40 de envío = 26.40 USD = Bs. 1056.00 a tasa 40.
     expect(await screen.findByLabelText("Precio estándar de Carburador PZ27")).toHaveTextContent("Bs. 1056.00");
-    expect(screen.queryByRole("button", { name: "Falta el peso: cargalo →" })).toBeNull();
+    expect(screen.queryByRole("button", { name: /^Falta el peso: cargalo\s→$/ })).toBeNull();
     // El badge sale del estado vivo, no del prop viejo.
     expect(screen.queryByText("Sin peso")).toBeNull();
   });
@@ -484,7 +484,7 @@ describe("ProductoFila — «Falta el peso» lleva al campo de peso", () => {
       </ul>
     );
 
-    const botones = screen.getAllByRole("button", { name: "Falta el peso: cargalo →" });
+    const botones = screen.getAllByRole("button", { name: /^Falta el peso: cargalo\s→$/ });
     expect(botones).toHaveLength(2);
 
     await user.click(botones[1]);
@@ -494,7 +494,7 @@ describe("ProductoFila — «Falta el peso» lleva al campo de peso", () => {
 
   it("los otros motivos (fuera de la tabla, sin tarifa) siguen siendo texto, no botón", () => {
     render(<ProductoFila product={product({ weightKg: 95, shippingFeeUsd: null })} bcvRate={40} />);
-    expect(screen.queryByRole("button", { name: "Falta el peso: cargalo →" })).toBeNull();
+    expect(screen.queryByRole("button", { name: /^Falta el peso: cargalo\s→$/ })).toBeNull();
     expect(screen.getByText("Más de 80 kg: fuera de la tabla MRW")).toBeInTheDocument();
   });
 });
@@ -519,7 +519,7 @@ describe("ProductoFila — solo lectura (rol caja)", () => {
   it("en lugar del botón, el Precio estándar dice «Sin peso cargado» como dato", () => {
     render(<ProductoFila product={product({ weightKg: null, shippingFeeUsd: null })} bcvRate={40} soloLectura />);
 
-    expect(screen.queryByRole("button", { name: "Falta el peso: cargalo →" })).toBeNull();
+    expect(screen.queryByRole("button", { name: /^Falta el peso: cargalo\s→$/ })).toBeNull();
     expect(screen.getByText("Sin peso cargado")).toHaveAttribute("data-empty", "true");
   });
 
