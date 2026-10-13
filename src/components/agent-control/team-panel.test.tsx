@@ -225,3 +225,18 @@ describe("TeamPanel — modal de edición", () => {
     expect(within(dialog).getByLabelText("Confirmar contraseña")).toHaveValue("");
   });
 });
+
+describe("TeamPanel — la caja se administra acá", () => {
+  it("lista una cuenta de caja con su etiqueta «Caja» (el roster de asesores la oculta)", () => {
+    render(
+      <TeamPanel
+        agents={[...AGENTS, { id: "a-4", displayName: "Cajero", fullName: null, avatarUrl: null, role: "caja", isActive: false }]}
+        currentAgentId="a-2"
+        onAgentRenamed={onAgentRenamed}
+      />
+    );
+
+    expect(screen.getByText("Cajero")).toBeInTheDocument();
+    expect(screen.getByText("Caja")).toBeInTheDocument();
+  });
+});

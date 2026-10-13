@@ -61,9 +61,12 @@ import { describe, expect, it } from "vitest";
 
 const LISTA_BLANCA = new Set(["is_agent", "is_supervisor_or_admin"]);
 
-// Las 29 funciones `security definer` conocidas (28 + tarifa_mrw_usd,
-// 20261012010000, 12/10/2026). Las 28 de
-// fecha 30/9/2026 (26 + resumen_busquedas/terminos_de_busquedas, sumadas en
+// Las 30 funciones `security definer` conocidas (29 + can_read_inventory,
+// 20261013010000, 13/10/2026: la barrera de SOLO LECTURA del Inventario para
+// el rol `caja`, con los dos revokes y grant a authenticated/service_role;
+// is_agent() ya no deja pasar a la caja y esta función sí). Las 29
+// anteriores: 28 + tarifa_mrw_usd, sumada en 20261012010000 (12/10/2026).
+// Las 28 de fecha 30/9/2026 (26 + resumen_busquedas/terminos_de_busquedas, sumadas en
 // 20260930060000_resumen_busquedas.sql — T9 del plan "Seba no cotiza lo que
 // no es", la pestaña «Búsquedas» de Control IA: agregan `agent_turns.
 // catalog_queries` en SQL con `is_agent()` chequeado UNA vez, porque la
@@ -185,6 +188,10 @@ const FUNCIONES_SECURITY_DEFINER_CONOCIDAS = [
   // shipping_rates sin pagar su RLS por tramo en cada producto; acceso
   // chequeado una vez por llamada, con los dos revokes.
   "tarifa_mrw_usd",
+  // 13/10/2026 (20261013010000_rol_caja.sql): "¿tiene fila en agents, con
+  // cualquier rol?". Las políticas de SELECT del inventario la invocan como
+  // `authenticated`, de ahí que lleve los dos revokes y luego el grant.
+  "can_read_inventory",
 ].sort();
 
 const DIR_MIGRACIONES = path.resolve(__dirname, "../../supabase/migrations");
@@ -318,7 +325,7 @@ describe("permisos de funciones security definer (guardián estático)", () => {
     .map(([nombre]) => nombre)
     .sort();
 
-  it("detecta exactamente las 29 funciones security definer conocidas", () => {
+  it("detecta exactamente las 30 funciones security definer conocidas", () => {
     // Si esto falla con MENOS de las 29, el parser se está comiendo alguna
     // (regex de cabecera roto, `$$` no encontrado, etc.) y el resto de este
     // archivo no protege nada aunque pase en verde. Si falla con MÁS,

@@ -2106,18 +2106,29 @@ export async function fetchTodayActivity(
   return Array.from({ length: 24 }, (_, hour) => byHour.get(hour) ?? { hour, inbound: 0, ai: 0, agent: 0 });
 }
 
+/**
+ * Los asesores asignables (selectores de "asignar a", Recorrido, Casos). El
+ * rol `caja` (13/10/2026) queda fuera EN LA CONSULTA: solo ve el Inventario,
+ * `is_agent()` le da false y no puede abrir una conversación, así que asignarle
+ * un chat lo dejaría invisible.
+ */
 export async function fetchAgents(supabase: SupabaseClient): Promise<Agent[]> {
   const { data, error } = await supabase
     .from("agents")
     .select("id, display_name, full_name, avatar_url, role, is_active")
     .eq("is_active", true)
+    .neq("role", "caja")
     .order("display_name");
 
   if (error) throw error;
   return (data as RawAgent[]).map((row) => mapAgent(row)!);
 }
 
-/** Roster completo (activos e inactivos) para la sección "Control de agentes". */
+/**
+ * Roster completo (activos e inactivos) para la sección "Control de agentes".
+ * Incluye las cuentas de caja a propósito: la pestaña «Equipo» (solo admin) las
+ * administra; el roster de asesores las filtra en pantalla.
+ */
 export async function fetchAllAgents(supabase: SupabaseClient): Promise<Agent[]> {
   const { data, error } = await supabase
     .from("agents")

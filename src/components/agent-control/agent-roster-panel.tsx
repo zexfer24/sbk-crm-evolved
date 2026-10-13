@@ -24,16 +24,17 @@ interface AgentsRosterPanelProps {
 }
 
 /** Asesores primero: son los que se revisan a diario para repartir carga. */
-const ROLE_ORDER: Record<Agent["role"], number> = { agent: 0, supervisor: 1, admin: 2 };
+const ROLE_ORDER: Record<Agent["role"], number> = { agent: 0, supervisor: 1, admin: 2, caja: 3 };
 
 const ROLE_LABEL: Record<Agent["role"], string> = {
   agent: "Asesor",
   supervisor: "Supervisor",
   admin: "Administrador",
+  caja: "Caja",
 };
 
 export function AgentsRosterPanel({
-  agents,
+  agents: allAccounts,
   conversations,
   metrics,
   togglingAgentId,
@@ -41,6 +42,9 @@ export function AgentsRosterPanel({
   currentAgentId,
   onToggleActive,
 }: AgentsRosterPanelProps) {
+  // La caja (13/10/2026) solo ve el Inventario y no entra al reparto: no es un
+  // asesor, así que no tiene tarjeta aquí. La pestaña «Equipo» la administra.
+  const agents = useMemo(() => allAccounts.filter((a) => a.role !== "caja"), [allAccounts]);
   const activeCount = agents.filter((a) => a.isActive).length;
   const metricsByAgent = useMemo(() => new Map(metrics.map((m) => [m.agentId, m])), [metrics]);
 

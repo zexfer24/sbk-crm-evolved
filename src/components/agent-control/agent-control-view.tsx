@@ -859,7 +859,7 @@ export function AgentControlView({
                     icon: <Wrench size={13} />,
                     count: agentTools.length,
                   },
-                  { value: "agentes", label: "Agentes", icon: <Users size={13} />, count: agents.length },
+                  { value: "agentes", label: "Agentes", icon: <Users size={13} />, count: agents.filter((a) => a.role !== "caja").length },
                   ...(canManageAccounts
                     ? [{ value: "equipo" as const, label: "Equipo", icon: <KeyRound size={13} /> }]
                     : []),

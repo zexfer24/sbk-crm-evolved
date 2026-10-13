@@ -13,7 +13,7 @@ import { describe, expect, it, vi, beforeEach } from "vitest";
  * `..` al final.
  */
 
-type MaybeSingleResult = { data: { id: string } | null; error: { message: string } | null };
+type MaybeSingleResult = { data: { id: string; role?: string } | null; error: { message: string } | null };
 type SignedUrlResult = { data: { signedUrl: string } | null; error: { message: string } | null };
 
 let sessionValue: { user: { id: string } } | null;
@@ -133,6 +133,18 @@ describe("GET /api/media/[...path] — el único portón del bucket privado", ()
 
   it("con sesión pero sin fila en agents responde 403 sin firmar", async () => {
     agentQueryResult = { data: null, error: null };
+
+    const res = await callGet(["conv-1", "wamid.abc.jpg"]);
+
+    expect(res.status).toBe(403);
+    expect(createAdminClientMock).not.toHaveBeenCalled();
+  });
+
+  // El rol `caja` (13/10/2026) solo ve el Inventario y no lee conversaciones:
+  // el multimedia de un chat tampoco. El middleware ya le da 403 a todo /api;
+  // esta es la segunda barrera, por si alguna vez se afloja la primera.
+  it("una cuenta de caja recibe 403 sin firmar nada", async () => {
+    agentQueryResult = { data: { id: "agent-1", role: "caja" }, error: null };
 
     const res = await callGet(["conv-1", "wamid.abc.jpg"]);
 

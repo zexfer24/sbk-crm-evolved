@@ -281,6 +281,9 @@ function sembrarAgentes(db: FakeDb, agentes: { id: string; nombre: string; last?
       id: a.id,
       display_name: a.nombre,
       is_active: a.activo ?? true,
+      // `agents.role` es NOT NULL (default 'agent'); `claimNextAvailableAgent`
+      // filtra `.neq("role", "caja")` y, como en SQL, un NULL no pasa ese filtro.
+      role: "agent",
       last_assigned_at: a.last ?? null,
     });
   }

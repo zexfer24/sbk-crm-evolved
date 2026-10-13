@@ -41,13 +41,29 @@ const SECTIONS: { id: RailSection; href: string; label: string; Icon: typeof Rou
   { id: "control", href: "/agent-control", label: "Control de IA", Icon: Bot },
 ];
 
+/**
+ * El rol `caja` (13/10/2026) solo ve el Inventario: se le deja esa única
+ * sección y se le oculta el resto. Es de pantalla; el candado de verdad es la
+ * RLS y el middleware (`rutaPermitidaParaCaja`).
+ */
+function seccionesVisibles(soloInventario: boolean) {
+  return soloInventario ? SECTIONS.filter((s) => s.id === "inventario") : SECTIONS;
+}
+
 interface AppRailProps {
   active: RailSection;
+  /**
+   * `true` para una cuenta de caja: solo la sección Inventario (más tema y
+   * cierre de sesión) y SIN `AssignmentNotifier`, que abre un canal de
+   * `conversation_handoffs` que esa cuenta no puede leer. Sin la prop, el
+   * rail es el de siempre.
+   */
+  soloInventario?: boolean;
   /** `crm` en la bandeja a pantalla completa; `dash` en las pantallas enmarcadas. */
   variant?: "crm" | "dash";
 }
 
-export function AppRail({ active, variant = "dash" }: AppRailProps) {
+export function AppRail({ active, variant = "dash", soloInventario = false }: AppRailProps) {
   const router = useRouter();
 
   async function signOut() {
@@ -65,7 +81,7 @@ export function AppRail({ active, variant = "dash" }: AppRailProps) {
           <SbkMark size={32} />
         </span>
 
-        {SECTIONS.map(({ id, href, label, Icon }) => (
+        {seccionesVisibles(soloInventario).map(({ id, href, label, Icon }) => (
           <Link
             key={id}
             className={`${variant}-rail-btn`}
@@ -92,16 +108,16 @@ export function AppRail({ active, variant = "dash" }: AppRailProps) {
           milisegundos durante una navegación), y el dedupe de
           `assignment-notice.ts` —un `Set` de MÓDULO— es lo que garantiza un
           solo aviso aunque haya dos instancias a la vez. */}
-      <AssignmentNotifier />
+      {!soloInventario && <AssignmentNotifier />}
     </>
   );
 }
 
 /** Los mismos destinos, para la barra de navegación superior de las pantallas enmarcadas. */
-export function AppTopNav({ active }: { active: RailSection }) {
+export function AppTopNav({ active, soloInventario = false }: { active: RailSection; soloInventario?: boolean }) {
   return (
     <nav className="dash-nav" aria-label="Navegación principal">
-      {SECTIONS.map(({ id, href, label }) => (
+      {seccionesVisibles(soloInventario).map(({ id, href, label }) => (
         <Link key={id} className="dash-nav-link" href={href} {...(active === id ? { "aria-current": "page" as const } : {})}>
           {label}
         </Link>

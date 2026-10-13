@@ -61,10 +61,13 @@ export async function GET(_request: Request, context: { params: Promise<{ path: 
     // en `agents`, igual que el resto de las políticas.
     const { data: agent } = await supabase
       .from("agents")
-      .select("id")
+      .select("id, role")
       .eq("id", session.user.id)
       .maybeSingle();
-    if (!agent) {
+    // El rol `caja` (13/10/2026) solo ve el Inventario y no lee conversaciones:
+    // su multimedia tampoco. El middleware ya le cierra todo /api; esto es la
+    // segunda barrera.
+    if (!agent || agent.role === "caja") {
       log.warn("media.sin_acceso", { userId: session.user.id });
       return NextResponse.json({ error: "Sin acceso." }, { status: 403 });
     }

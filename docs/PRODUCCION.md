@@ -2978,6 +2978,99 @@ de `whatsapp_channels` con el `phone_number_id` de Meta y redesplegar.
 
 ---
 
+## 19. El rol `caja`: usuarios que solo leen el Inventario (13/10/2026)
+
+Migración `20261013010000_rol_caja.sql` (commit aparte, con `[migración]` en
+el título). Una cuenta de caja entra al CRM y ve SOLO el Inventario: precio,
+existencia, peso y tarifa de envío. No ve conversaciones, clientes, ventas,
+facturas ni configuración, y no puede escribir nada (ni el peso). El candado
+está en la base (RLS), no en la interfaz.
+
+**Qué cambia en la base:** `agents.role` admite `'caja'`; `is_agent()` pasa a
+exigir `role <> 'caja'` (agent/supervisor/admin no notan nada); la función
+nueva `can_read_inventory()` abre políticas de SOLO LECTURA sobre `products`,
+`product_compatibility`, `exchange_rates` y las seis tablas del catálogo de
+motos; `tarifa_mrw_usd` usa esa función; la caja lee su propia fila de
+`agents` y no la edita; subir archivos al bucket `whatsapp-media` ahora exige
+ser agente.
+
+### Orden y comando
+
+La migración va ANTES del código que muestra el Inventario a la caja (el
+código nuevo asume que existe). Se aplica dentro de UNA transacción, como las
+anteriores — sin `-1`, el `set local lock_timeout` es un no-op y la migración
+aborta a propósito con un mensaje explícito:
+
+```bash
+PGOPTIONS="-c lock_timeout=5s" psql -1 -v ON_ERROR_STOP=1 -f supabase/migrations/20261013010000_rol_caja.sql
+```
+
+Toca `agents` (que `is_agent()` lee en todas las políticas) y la política de
+INSERT de `storage.objects`; el DDL es corto (milisegundos), pero evitar la
+hora pico. La migración se autoverifica y termina con `notify pgrst`.
+
+### Verificar
+
+1. Salida del `psql`: `autoverificación del rol caja correcta`, sin `ERROR`.
+2. Las funciones, desde `psql`:
+   ```sql
+   select has_function_privilege('anon',          'public.can_read_inventory()', 'EXECUTE'); -- false
+   select has_function_privilege('authenticated', 'public.can_read_inventory()', 'EXECUTE'); -- true
+   select has_function_privilege('anon',          'public.is_agent()',           'EXECUTE'); -- true (no se revoca nunca)
+   select pg_get_constraintdef(oid) from pg_constraint where conname = 'agents_role_check'; -- incluye 'caja'
+   ```
+3. Con la base de pruebas (no producción): `supabase/tests/rol_caja.sql`,
+   `agents_rol_sin_autoascenso.sql`, `precio_estandar_mrw.sql`,
+   `permisos_funciones.sql` y `config_solo_supervisor.sql` pasan.
+4. Un asesor real sigue entrando a la bandeja, ve conversaciones y puede
+   guardar el peso de un producto (nada cambió para él).
+
+### Crear usuarios de caja
+
+NO se crean desde el panel de Auth ni con un registro normal: así nacerían
+como asesores con acceso a todo. Se usa el script, que fija el rol y lo
+confirma leyendo de vuelta (si algo no calza, borra la cuenta y sale con
+código 1):
+
+```bash
+node --env-file=.env.local scripts/crear-usuario-caja.ts   --email caja1@sbk.com --password "una-clave-larga" --nombre "Caja 1"
+```
+
+- Variables: `NEXT_PUBLIC_SUPABASE_URL` y `SUPABASE_SERVICE_ROLE_KEY` (las del
+  contenedor de la app; en el VPS, con `docker exec` o exportándolas antes).
+- No hay `tsx` en el proyecto: Node 22.18+ corre el `.ts` directo (en uno
+  anterior, `node --experimental-strip-types ...`). Un aviso
+  `MODULE_TYPELESS_PACKAGE_JSON` es inofensivo.
+- Contraseña de 8 caracteres o más. Si el correo ya existe el script falla sin
+  tocarlo.
+- Resultado esperado: `Usuario de caja creado: ... role=caja, is_active=false`.
+  Comprobarlo: `select email, a.role, a.is_active from agents a join auth.users
+  u on u.id = a.id where u.email = 'caja1@sbk.com';`
+- Por qué el script fija el rol aparte: GoTrue inserta el usuario con el
+  `app_metadata` de fábrica y escribe el que se le pasó DESPUÉS; el trigger
+  `handle_new_agent()` corre en el INSERT y por createUser nace `agent`
+  (medido el 13/10/2026). Una cuenta de caja creada por otro camino hay que
+  corregirla a mano: `update agents set role = 'caja', is_active = false where
+  id = '<uuid>';` (como `postgres`/`service_role`).
+
+### Convertir o quitar una cuenta
+
+- Pasar un asesor a caja o al revés: `update agents set role = ... where id =
+  ...;` como `postgres`/`service_role` (un supervisor también puede cambiar
+  roles, salvo otorgar o quitar `admin`).
+- Quitar una cuenta de caja: borrar el usuario en Auth (la fila de `agents` cae
+  en cascada).
+
+### Qué NO está resuelto en la base (la app lo filtra)
+
+`agent_metrics()` y `agent_day_summary()` listan `public.agents` entero, y
+supervisores/admins leen todas las filas de `agents`: una cuenta de caja
+aparece en esos listados con ceros. El roster de Control de agentes y
+`claimNextAvailableAgent` (que ya filtra `is_active = true`) tienen que
+descartar `role = 'caja'` en la app.
+
+---
+
 ## Comprobación final
 
 Con todo configurado, esta lista debe pasar entera:

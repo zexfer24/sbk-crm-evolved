@@ -179,7 +179,11 @@ declare
     -- campo calculado tarifa_envio_usd que Inventario pide con sesión de
     -- asesor; security definer para no pagar la RLS de shipping_rates por
     -- tramo en cada producto.
-    'public.tarifa_mrw_usd(numeric)'
+    'public.tarifa_mrw_usd(numeric)',
+    -- can_read_inventory (13/10/2026, migración 20261013010000): la invocan,
+    -- como authenticated, las políticas de SELECT del Inventario (rol caja);
+    -- cerrada a anon, abierta a authenticated y service_role.
+    'public.can_read_inventory()'
   ];
   f text;
   errores text := '';

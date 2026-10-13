@@ -31,9 +31,10 @@ const ROLE_LABEL: Record<Agent["role"], string> = {
   agent: "Asesor",
   supervisor: "Supervisor",
   admin: "Administrador",
+  caja: "Caja",
 };
 
-const ROLE_ORDER: Record<Agent["role"], number> = { agent: 0, supervisor: 1, admin: 2 };
+const ROLE_ORDER: Record<Agent["role"], number> = { agent: 0, supervisor: 1, admin: 2, caja: 3 };
 
 interface TeamPanelProps {
   agents: Agent[];

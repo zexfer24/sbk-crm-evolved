@@ -203,3 +203,30 @@ describe("AgentsRosterPanel — el reparto solo lo cambia quien puede", () => {
     expect(screen.getByRole("button", { name: /Sacar a Beto/ })).toBeEnabled();
   });
 });
+
+describe("AgentsRosterPanel — el rol caja no es un asesor", () => {
+  // La caja (13/10/2026) solo ve el Inventario: no entra al reparto de
+  // escaladas, así que no tiene tarjeta, no cuenta en el total ni en el reparto.
+  it("no pinta la tarjeta de una cuenta de caja ni la cuenta en la nota del encabezado", () => {
+    const agents: Agent[] = [
+      agente("a1", "Ana"),
+      { ...agente("c1", "Cajero Principal"), role: "caja" },
+    ];
+
+    render(
+      <AgentsRosterPanel
+        agents={agents}
+        conversations={[]}
+        metrics={[]}
+        togglingAgentId={null}
+        canManageAll
+        currentAgentId="a1"
+        onToggleActive={vi.fn()}
+      />
+    );
+
+    expect(screen.getByText("Ana")).toBeInTheDocument();
+    expect(screen.queryByText("Cajero Principal")).not.toBeInTheDocument();
+    expect(screen.getByText(/1 en total · 1 en el reparto/)).toBeInTheDocument();
+  });
+});

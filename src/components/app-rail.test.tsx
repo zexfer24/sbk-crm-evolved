@@ -1,5 +1,5 @@
 /** @vitest-environment jsdom */
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { render, screen } from "@testing-library/react";
 import { AppRail, AppTopNav } from "@/components/app-rail";
 
@@ -34,6 +34,18 @@ vi.mock("@/lib/supabase/client", () => ({
 // `@heroui/react` no hace falta acá — mismo patrón que
 // `assignment-notifier.test.tsx`.
 vi.mock("@heroui/react", () => ({ toast: vi.fn() }));
+
+// El rol `caja` (13/10/2026) no debe montar el aviso de asignación: no lee
+// conversaciones, y su canal y su consulta del agente actual solo fallarían.
+// Se reemplaza por un espía que cuenta los renders y, como el real, devuelve
+// `null` (no suma ningún hijo al DOM: ver el test del fragmento).
+const notifierRenderizado = vi.hoisted(() => vi.fn());
+vi.mock("@/components/assignment-notifier", () => ({
+  AssignmentNotifier: () => {
+    notifierRenderizado();
+    return null;
+  },
+}));
 
 const SECCIONES = [
   ["Recorrido", "/"],
@@ -107,6 +119,46 @@ describe("AppRail", () => {
   });
 });
 
+describe("AppRail con soloInventario (rol caja)", () => {
+  beforeEach(() => notifierRenderizado.mockClear());
+
+  it("muestra solo Inventario, el tema y Cerrar sesión", () => {
+    const { container } = render(<AppRail active="inventario" soloInventario />);
+
+    const links = Array.from(container.querySelectorAll(".dash-rail-btn[href]")).map((a) => a.getAttribute("aria-label"));
+    expect(links).toEqual(["Inventario"]);
+    expect(screen.getByLabelText("Inventario").getAttribute("href")).toBe("/inventario");
+    expect(screen.getByLabelText("Inventario").getAttribute("data-active")).toBe("true");
+    expect(screen.getByLabelText("Cerrar sesión")).toBeTruthy();
+    expect(screen.getByLabelText(/Cambiar a modo/)).toBeTruthy();
+    for (const [label] of SECCIONES) {
+      if (label !== "Inventario") expect(screen.queryByLabelText(label)).toBeNull();
+    }
+  });
+
+  it("no monta el AssignmentNotifier", () => {
+    render(<AppRail active="inventario" soloInventario />);
+    expect(notifierRenderizado).not.toHaveBeenCalled();
+  });
+
+  it("sin la prop monta el notifier y las siete secciones, como siempre", () => {
+    const { container } = render(<AppRail active="inventario" />);
+    expect(notifierRenderizado).toHaveBeenCalled();
+    expect(container.querySelectorAll(".dash-rail-btn[href]").length).toBe(SECCIONES.length);
+  });
+
+  it("sigue entregando un solo hijo directo (el <nav>)", () => {
+    const { container } = render(<AppRail active="inventario" soloInventario />);
+    expect(container.childElementCount).toBe(1);
+    expect(container.firstElementChild?.tagName).toBe("NAV");
+  });
+
+  it("soloInventario={false} es igual que no pasarla", () => {
+    const { container } = render(<AppRail active="inventario" soloInventario={false} />);
+    expect(container.querySelectorAll(".dash-rail-btn[href]").length).toBe(SECCIONES.length);
+  });
+});
+
 describe("AppTopNav", () => {
   it("lleva las mismas secciones que el rail", () => {
     render(<AppTopNav active="ventas" />);
@@ -120,5 +172,13 @@ describe("AppTopNav", () => {
     render(<AppTopNav active="ventas" />);
     expect(screen.getByText("Ventas").getAttribute("aria-current")).toBe("page");
     expect(screen.getByText("Clientes").getAttribute("aria-current")).toBeNull();
+  });
+
+  it("con soloInventario lleva solo el enlace a Inventario", () => {
+    const { container } = render(<AppTopNav active="inventario" soloInventario />);
+
+    const links = Array.from(container.querySelectorAll("a")).map((a) => a.textContent);
+    expect(links).toEqual(["Inventario"]);
+    expect(screen.getByText("Inventario").getAttribute("href")).toBe("/inventario");
   });
 });

@@ -28,6 +28,7 @@ export interface ClaimedAgent {
  * (5 + excluidos) para que un pool de 5 lleno de excluidos no oculte a un
  * asesor elegible más allá del quinto puesto. Un excluido nunca se "marca"
  * con `last_assigned_at`: no recibió nada, su turno de reparto sigue igual.
+ * Nunca reparte al rol `caja` (filtro en la consulta, no en memoria).
  * Si todos los activos están excluidos devuelve `null`, igual que sin
  * asesores. Sin `excluir` (o vacío) el comportamiento es el de siempre.
  */
@@ -40,6 +41,11 @@ export async function claimNextAvailableAgent(
     .from("agents")
     .select("id, display_name, last_assigned_at")
     .eq("is_active", true)
+    // La caja (13/10/2026) solo ve el Inventario: en la base `is_agent()` le da
+    // false y no puede abrir conversaciones. Una cuenta de caja nace
+    // `is_active = false`, pero si alguien la activa, repartirle una escalada
+    // de WhatsApp la dejaría asignada a quien no puede leerla (lead invisible).
+    .neq("role", "caja")
     .order("last_assigned_at", { ascending: true, nullsFirst: true })
     .limit(5 + excluidos.size);
 

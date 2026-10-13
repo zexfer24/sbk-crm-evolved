@@ -7,7 +7,12 @@ interface FakeAgentRow {
   display_name: string;
   is_active: boolean;
   last_assigned_at: string | null;
+  /** Ausente = "agent". La caja (13/10/2026) solo ve el Inventario. */
+  role?: string;
 }
+
+/** Filtros que el código aplicó a la consulta de candidatos: operador + columna + valor. */
+type Filtro = { op: "eq" | "neq"; col: string; val: unknown };
 
 /**
  * Fake que simula el comportamiento atómico real de Postgres para
@@ -17,37 +22,54 @@ interface FakeAgentRow {
  */
 function createFakeSupabase(agents: FakeAgentRow[]) {
   const rows = new Map(agents.map((a) => [a.id, { ...a }]));
+  const filtros: Filtro[] = [];
 
   const client = {
     from(table: string) {
       if (table !== "agents") throw new Error(`tabla inesperada: ${table}`);
       return {
         select() {
-          return {
-            eq() {
+          // Cada filtro se APLICA de verdad (operador + columna + valor) y
+          // queda registrado: un fake que ignora el argumento deja pasar una
+          // consulta sin `.neq("role", "caja")` (CLAUDE.md, trampa de los fakes).
+          const aplicados: Filtro[] = [];
+          const builder = {
+            eq(col: string, val: unknown) {
+              aplicados.push({ op: "eq", col, val });
+              filtros.push({ op: "eq", col, val });
+              return builder;
+            },
+            neq(col: string, val: unknown) {
+              aplicados.push({ op: "neq", col, val });
+              filtros.push({ op: "neq", col, val });
+              return builder;
+            },
+            order() {
               return {
-                order() {
-                  return {
-                    limit(n: number) {
-                      // Copia como una respuesta real de PostgREST: un snapshot
-                      // JSON, no un puntero vivo a la fila en el servidor.
-                      const active = [...rows.values()]
-                        .map((r) => ({ ...r }))
-                        .filter((r) => r.is_active)
-                        .sort((a, b) => {
-                          if (a.last_assigned_at === b.last_assigned_at) return 0;
-                          if (a.last_assigned_at === null) return -1;
-                          if (b.last_assigned_at === null) return 1;
-                          return a.last_assigned_at.localeCompare(b.last_assigned_at);
-                        })
-                        .slice(0, n);
-                      return Promise.resolve({ data: active, error: null });
-                    },
-                  };
+                limit(n: number) {
+                  // Copia como una respuesta real de PostgREST: un snapshot
+                  // JSON, no un puntero vivo a la fila en el servidor.
+                  const candidatos = [...rows.values()]
+                    .map((r) => ({ ...r }))
+                    .filter((r) =>
+                      aplicados.every((f) => {
+                        const actual = (r as unknown as Record<string, unknown>)[f.col] ?? (f.col === "role" ? "agent" : undefined);
+                        return f.op === "eq" ? actual === f.val : actual !== f.val;
+                      })
+                    )
+                    .sort((a, b) => {
+                      if (a.last_assigned_at === b.last_assigned_at) return 0;
+                      if (a.last_assigned_at === null) return -1;
+                      if (b.last_assigned_at === null) return 1;
+                      return a.last_assigned_at.localeCompare(b.last_assigned_at);
+                    })
+                    .slice(0, n);
+                  return Promise.resolve({ data: candidatos, error: null });
                 },
               };
             },
           };
+          return builder;
         },
         update(values: { last_assigned_at: string }) {
           return {
@@ -84,7 +106,7 @@ function createFakeSupabase(agents: FakeAgentRow[]) {
     },
   };
 
-  return { client: client as unknown as SupabaseClient, rows };
+  return { client: client as unknown as SupabaseClient, rows, filtros };
 }
 
 describe("claimNextAvailableAgent", () => {
@@ -117,6 +139,43 @@ describe("claimNextAvailableAgent", () => {
     const { client } = createFakeSupabase([]);
     const claimed = await claimNextAvailableAgent(client);
     expect(claimed).toBeNull();
+  });
+
+  // El rol `caja` (13/10/2026) solo ve el Inventario: en la base `is_agent()`
+  // le da false y no lee conversaciones. Repartirle una escalada de WhatsApp
+  // la dejaría asignada a alguien que no puede abrirla. Una cuenta de caja
+  // nace `is_active = false`, pero alguien podría activarla.
+  describe("rol caja", () => {
+    it("la consulta de candidatos excluye el rol caja en la propia consulta (operador, columna y valor)", async () => {
+      const { client, filtros } = createFakeSupabase([
+        { id: "a1", display_name: "Ana", is_active: true, last_assigned_at: null },
+      ]);
+
+      await claimNextAvailableAgent(client);
+
+      expect(filtros).toContainEqual({ op: "neq", col: "role", val: "caja" });
+      expect(filtros).toContainEqual({ op: "eq", col: "is_active", val: true });
+    });
+
+    it("nunca reclama a una cuenta de caja activa, aunque tenga el last_assigned_at más antiguo", async () => {
+      const { client, rows } = createFakeSupabase([
+        { id: "c1", display_name: "Caja", is_active: true, last_assigned_at: null, role: "caja" },
+        { id: "a1", display_name: "Ana", is_active: true, last_assigned_at: "2026-01-01T00:00:00Z" },
+      ]);
+
+      const claimed = await claimNextAvailableAgent(client);
+
+      expect(claimed?.id).toBe("a1");
+      expect(rows.get("c1")?.last_assigned_at).toBeNull();
+    });
+
+    it("si solo hay cajas activas, no reclama a nadie", async () => {
+      const { client } = createFakeSupabase([
+        { id: "c1", display_name: "Caja", is_active: true, last_assigned_at: null, role: "caja" },
+      ]);
+
+      expect(await claimNextAvailableAgent(client)).toBeNull();
+    });
   });
 
   describe("excluir (T10b-2, reasignación por demora)", () => {

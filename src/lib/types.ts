@@ -1,6 +1,10 @@
 import type { BusinessHours } from "@/lib/business-hours";
 
-export type AgentRole = "agent" | "supervisor" | "admin";
+/**
+ * `caja` (13/10/2026): cuentas que solo VEN el Inventario. No son asesores: no
+ * reciben escaladas, no salen en listas de asignación ni en el roster.
+ */
+export type AgentRole = "agent" | "supervisor" | "admin" | "caja";
 
 /**
  * Lo mínimo para nombrar a un asesor en una fila de lista. Las filas de la

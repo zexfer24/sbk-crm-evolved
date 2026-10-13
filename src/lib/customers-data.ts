@@ -1,5 +1,6 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
 import type {
+  AgentRole,
   CustomerConversationRow,
   CustomerDetail,
   CustomerPurchase,
@@ -216,7 +217,7 @@ interface RawNoteRow {
     display_name: string;
     full_name: string | null;
     avatar_url: string | null;
-    role: "agent" | "supervisor" | "admin";
+    role: AgentRole;
     is_active: boolean;
   } | null;
 }
