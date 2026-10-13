@@ -7,8 +7,10 @@ import {
   INVENTORY_PAGE_SIZE,
   INVENTORY_SORT_LABELS,
   LOW_STOCK_THRESHOLD,
+  inventoryFilterHref,
   inventoryHref,
   inventoryTotalPages,
+  ordenPorDefecto,
   type InventoryFilter,
   type InventoryParams,
   type InventorySort,
@@ -20,6 +22,7 @@ import { AppRail, AppTopNav } from "@/components/app-rail";
 import { UrlSearchBox } from "@/components/url-search-box";
 import { ProductoFila } from "@/components/inventario/producto-fila";
 import { CarritoBoton } from "@/components/inventario/carrito-boton";
+import { InventarioPaginador } from "@/components/inventario/inventario-paginador";
 import { InventarioCarritoProvider } from "@/components/inventario/inventario-carrito-provider";
 import type { BcvRateSummary } from "@/components/inbox/bcv-rate-chip";
 import "@/components/dashboard/dashboard.css";
@@ -29,6 +32,7 @@ import "@/components/clientes/clientes.css";
 import "@/components/inventario/inventario.css";
 
 const FILTERS: InventoryFilter[] = ["todos", "agotados", "bajo-stock", "inactivos", "sin-peso"];
+// «existencia» no es una píldora: es el orden por defecto de «Sin peso» (ver `ordenPorDefecto`).
 const SORTS: InventorySort[] = ["nombre", "stock", "precio"];
 
 /**
@@ -108,8 +112,12 @@ export function InventarioView({
   // Se conservan filtro y orden al buscar; la página se reinicia.
   const keepInSearch: Record<string, string> = {
     ...(params.filter !== "todos" ? { filtro: params.filter } : {}),
-    ...(params.sort !== "nombre" ? { orden: params.sort } : {}),
+    ...(params.sort !== ordenPorDefecto(params.filter) ? { orden: params.sort } : {}),
   };
+
+  // Rol `caja` (13/10/2026): solo consulta. La base ya no le deja guardar el
+  // peso; la pantalla no le ofrece los campos, el rail le deja solo Inventario.
+  const soloLectura = currentAgent.role === "caja";
 
   const empty = params.query
     ? {
@@ -125,7 +133,7 @@ export function InventarioView({
     <InventarioCarritoProvider agentId={currentAgent.id} bcvRate={rate}>
       <div className="dash">
         <div className="dash-frame">
-          <AppRail active="inventario" />
+          <AppRail active="inventario" soloInventario={soloLectura} />
 
           <main className="dash-main">
             <div className="dash-content">
@@ -137,7 +145,7 @@ export function InventarioView({
                   <span className="dash-brand-name">{BUSINESS_NAME}</span>
                 </p>
 
-                <AppTopNav active="inventario" />
+                <AppTopNav active="inventario" soloInventario={soloLectura} />
 
                 <div className="dash-topbar-actions">
                   <span className="dash-icon-btn dash-icon-static" title={currentAgent.displayName}>
@@ -150,11 +158,11 @@ export function InventarioView({
                 <div>
                   <h1 className="dash-title dash-display">Inventario</h1>
                   <p className="dash-subtitle">
-                    Esto es exactamente lo que la IA consulta al cotizarle a un cliente. Nombre, precio y existencia
-                    llegan de Saint cada minuto y no se editan acá; lo único que se carga a mano es el peso.
+                    {soloLectura
+                      ? "Esto es exactamente lo que la IA consulta al cotizarle a un cliente. Nombre, precio y existencia llegan de Saint cada minuto: acá es solo consulta de precios, existencia y Cashea."
+                      : "Esto es exactamente lo que la IA consulta al cotizarle a un cliente. Nombre, precio y existencia llegan de Saint cada minuto y no se editan acá; lo único que se carga a mano es el peso."}
                   </p>
                 </div>
-                <CarritoBoton />
               </div>
 
               <div className="cli-stats">
@@ -201,7 +209,8 @@ export function InventarioView({
                 </div>
               </div>
 
-              <section className="dash-panel">
+              {/* `inv-panel-lista` deja aire debajo del paginador para el botón flotante del carrito. */}
+              <section className="dash-panel inv-panel-lista">
                 <div className="cli-toolbar">
                   <UrlSearchBox
                     basePath="/inventario"
@@ -216,7 +225,7 @@ export function InventarioView({
                       <Link
                         key={filter}
                         className="crm-pill"
-                        href={inventoryHref({ ...params, filter, page: 1 })}
+                        href={inventoryFilterHref(params, filter)}
                         {...(params.filter === filter ? { "data-active": "true", "aria-current": "true" as const } : {})}
                       >
                         {INVENTORY_FILTER_LABELS[filter]}
@@ -243,6 +252,10 @@ export function InventarioView({
                     {params.query ? `Resultados para «${params.query}»` : INVENTORY_FILTER_LABELS[params.filter]}
                   </h2>
                   <span className="dash-panel-spacer" />
+                  {/* «Sin peso» abre por existencia sin que ninguna píldora de orden lo diga: la nota lo hace explícito. */}
+                  {params.filter === "sin-peso" && params.sort === "existencia" && (
+                    <span className="dash-panel-note inv-orden-nota">Ordenado por existencia, de mayor a menor</span>
+                  )}
                   <span className="dash-panel-note">
                     {total === 0 ? "Sin resultados" : `${desde}–${hasta} de ${total}`}
                   </span>
@@ -256,34 +269,12 @@ export function InventarioView({
                 ) : (
                   <ul className="inv-list">
                     {products.map((product) => (
-                      <ProductoFila key={product.id} product={product} bcvRate={rate} />
+                      <ProductoFila key={product.id} product={product} bcvRate={rate} soloLectura={soloLectura} />
                     ))}
                   </ul>
                 )}
 
-                {pages > 1 && (
-                  <nav className="cli-pager" aria-label="Paginación del inventario">
-                    <Link
-                      className="crm-pill"
-                      href={inventoryHref({ ...params, page: Math.max(1, params.page - 1) })}
-                      aria-disabled={params.page === 1}
-                      {...(params.page === 1 ? { "data-disabled": "true" } : {})}
-                    >
-                      Anterior
-                    </Link>
-                    <span className="cli-pager-note">
-                      Página <span className="lm-num">{params.page}</span> de <span className="lm-num">{pages}</span>
-                    </span>
-                    <Link
-                      className="crm-pill"
-                      href={inventoryHref({ ...params, page: Math.min(pages, params.page + 1) })}
-                      aria-disabled={params.page === pages}
-                      {...(params.page === pages ? { "data-disabled": "true" } : {})}
-                    >
-                      Siguiente
-                    </Link>
-                  </nav>
-                )}
+                {pages > 1 && <InventarioPaginador params={params} pages={pages} />}
               </section>
 
               <section className="dash-panel">
@@ -332,6 +323,9 @@ export function InventarioView({
                 </div>
               </section>
             </div>
+
+            {/* Flotante (`position: fixed`): sale del flujo, así que no es una columna más de `.dash-frame` ni un bloque más de `.dash-content`. */}
+            <CarritoBoton />
           </main>
         </div>
       </div>

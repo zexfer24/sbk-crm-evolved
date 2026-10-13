@@ -6,10 +6,13 @@ import {
   NEW_FROM_SAINT_DAYS,
   aiVisibility,
   formatWeightInput,
+  inventoryFilterHref,
   inventoryHref,
   inventoryPageRange,
   inventoryTotalPages,
   isNewFromSaint,
+  ordenPorDefecto,
+  paginaFueraDeRango,
   parseInventoryParams,
   parseWeightInput,
   priceDisplay,
@@ -412,6 +415,86 @@ describe("inventoryHref", () => {
   });
 });
 
+/**
+ * T4 del plan "Inventario y caja" (13/10/2026): bajo el filtro «Sin peso» la
+ * lista abre ordenada por existencia (de mayor a menor), porque lo que hay en
+ * el mostrador es lo que el asesor puede pesar hoy. Es el orden POR DEFECTO de
+ * ese filtro, no una píldora más: un orden explícito en la URL —incluido
+ * «Por nombre», que bajo los demás filtros se omite por ser el default— se
+ * respeta siempre.
+ */
+describe("orden por defecto de «Sin peso»", () => {
+  it("ordenPorDefecto: existencia solo bajo sin-peso, nombre en los demás", () => {
+    expect(ordenPorDefecto("sin-peso")).toBe("existencia");
+    expect(ordenPorDefecto("todos")).toBe("nombre");
+    expect(ordenPorDefecto("agotados")).toBe("nombre");
+    expect(ordenPorDefecto("bajo-stock")).toBe("nombre");
+    expect(ordenPorDefecto("inactivos")).toBe("nombre");
+  });
+
+  it("parse: sin orden en la URL, «Sin peso» abre por existencia", () => {
+    expect(parseInventoryParams({ filtro: "sin-peso" }).sort).toBe("existencia");
+  });
+
+  it("parse: un orden explícito gana, incluido «nombre»", () => {
+    expect(parseInventoryParams({ filtro: "sin-peso", orden: "nombre" }).sort).toBe("nombre");
+    expect(parseInventoryParams({ filtro: "sin-peso", orden: "stock" }).sort).toBe("stock");
+    expect(parseInventoryParams({ filtro: "sin-peso", orden: "precio" }).sort).toBe("precio");
+  });
+
+  it("parse: un orden inventado cae al default del filtro", () => {
+    expect(parseInventoryParams({ filtro: "sin-peso", orden: "color" }).sort).toBe("existencia");
+    expect(parseInventoryParams({ orden: "color" }).sort).toBe("nombre");
+  });
+
+  it("parse: «existencia» es un orden válido también en la URL", () => {
+    expect(parseInventoryParams({ orden: "existencia" }).sort).toBe("existencia");
+  });
+
+  it("inventoryHref omite el orden cuando es el default del filtro", () => {
+    expect(inventoryHref({ query: "", filter: "sin-peso", sort: "existencia", page: 1 })).toBe(
+      "/inventario?filtro=sin-peso"
+    );
+  });
+
+  it("inventoryHref escribe orden=nombre bajo sin-peso: si no, el clic en «Por nombre» no haría nada", () => {
+    expect(inventoryHref({ query: "", filter: "sin-peso", sort: "nombre", page: 1 })).toBe(
+      "/inventario?filtro=sin-peso&orden=nombre"
+    );
+  });
+
+  it("la URL de sin-peso con orden=nombre vuelve a leerse como nombre (ida y vuelta)", () => {
+    const params = { query: "", filter: "sin-peso" as const, sort: "nombre" as const, page: 2 };
+    const url = new URL(inventoryHref(params), "http://x");
+    expect(parseInventoryParams(Object.fromEntries(url.searchParams))).toEqual(params);
+  });
+});
+
+describe("inventoryFilterHref — cambiar de filtro no arrastra un orden que no era del usuario", () => {
+  const base = { query: "", filter: "todos" as const, sort: "nombre" as const, page: 4 };
+
+  it("de «Todos» a «Sin peso» deja el default de sin-peso (nada de orden=nombre) y reinicia la página", () => {
+    expect(inventoryFilterHref(base, "sin-peso")).toBe("/inventario?filtro=sin-peso");
+  });
+
+  it("de «Sin peso» (existencia implícita) a «Todos» vuelve a nombre, sin orden en la URL", () => {
+    expect(inventoryFilterHref({ ...base, filter: "sin-peso", sort: "existencia" }, "todos")).toBe("/inventario");
+  });
+
+  it("un orden elegido a mano sobrevive al cambio de filtro", () => {
+    expect(inventoryFilterHref({ ...base, sort: "precio" }, "sin-peso")).toBe("/inventario?filtro=sin-peso&orden=precio");
+    expect(inventoryFilterHref({ ...base, filter: "sin-peso", sort: "nombre" }, "agotados")).toBe(
+      "/inventario?filtro=agotados"
+    );
+  });
+
+  it("conserva la búsqueda", () => {
+    expect(inventoryFilterHref({ ...base, query: "bujía" }, "sin-peso")).toBe(
+      "/inventario?q=buj%C3%ADa&filtro=sin-peso"
+    );
+  });
+});
+
 describe("paginación del inventario", () => {
   it("traduce la página a un rango", () => {
     expect(inventoryPageRange(1)).toEqual({ from: 0, to: INVENTORY_PAGE_SIZE - 1 });
@@ -421,5 +504,34 @@ describe("paginación del inventario", () => {
   it("cuenta al menos una página", () => {
     expect(inventoryTotalPages(0)).toBe(1);
     expect(inventoryTotalPages(INVENTORY_PAGE_SIZE + 1)).toBe(2);
+  });
+});
+
+/*
+ * 13/10/2026: una `?page=` fuera de rango (un enlace viejo, o un filtro que
+ * acorta la lista) llegaba a PostgREST como 416 y reventaba la pantalla.
+ * La página decide a dónde redirigir con esta función pura.
+ */
+describe("paginaFueraDeRango", () => {
+  it("dentro de rango no redirige", () => {
+    expect(paginaFueraDeRango(1, 400)).toBeNull();
+    expect(paginaFueraDeRango(10, 400)).toBeNull();
+    expect(paginaFueraDeRango(1, 40)).toBeNull();
+  });
+
+  it("la última página exacta no redirige (el borde)", () => {
+    expect(paginaFueraDeRango(10, 400)).toBeNull();
+    expect(paginaFueraDeRango(11, 401)).toBeNull();
+  });
+
+  it("pasarse del total manda a la última página", () => {
+    expect(paginaFueraDeRango(11, 400)).toBe(10);
+    expect(paginaFueraDeRango(999, 401)).toBe(11);
+  });
+
+  it("sin resultados, cualquier página mayor a 1 manda a la 1", () => {
+    expect(paginaFueraDeRango(2, 0)).toBe(1);
+    expect(paginaFueraDeRango(50, 0)).toBe(1);
+    expect(paginaFueraDeRango(1, 0)).toBeNull();
   });
 });

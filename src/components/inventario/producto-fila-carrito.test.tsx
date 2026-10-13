@@ -70,9 +70,44 @@ function conCarrito(p: Product) {
 }
 
 describe("ProductoFila — botones del carrito", () => {
-  it("dentro del provider muestra «Agregar» con su aria-label", () => {
+  it("dentro del provider muestra «Agregar al carrito» con su aria-label", () => {
     conCarrito(product());
-    expect(screen.getByRole("button", { name: "Agregar Carburador PZ27 al carrito" })).toBeInTheDocument();
+    const boton = screen.getByRole("button", { name: "Agregar Carburador PZ27 al carrito" });
+    expect(boton).toBeInTheDocument();
+    expect(boton).toHaveTextContent("Agregar al carrito");
+  });
+
+  /** T2, plan "Inventario y caja" (13/10/2026): botones de verdad en su propio bloque, no insignias entre los estados. */
+  it("«Agregar al carrito» y «Cashea» son botones en .inv-acciones, no dentro de .inv-status", () => {
+    const { container } = conCarrito(product());
+    const agregar = screen.getByRole("button", { name: "Agregar Carburador PZ27 al carrito" });
+    const cashea = screen.getByRole("button", { name: "Calcular Cashea de Carburador PZ27" });
+    const acciones = container.querySelector(".inv-acciones");
+
+    expect(acciones).toContainElement(agregar);
+    expect(acciones).toContainElement(cashea);
+    expect(agregar).toHaveClass("crm-pill", "inv-accion-btn");
+    expect(agregar.getAttribute("type")).toBe("button");
+    expect(agregar.querySelector("svg")).toHaveAttribute("aria-hidden", "true");
+    expect(container.querySelector(".inv-status")).not.toContainElement(agregar);
+    expect(container.querySelector(".inv-status")).not.toContainElement(cashea);
+    expect(container.querySelector("li")?.lastElementChild).toBe(acciones);
+  });
+
+  it("en solo lectura (caja) el carrito sigue disponible", async () => {
+    const user = userEvent.setup({ delay: null, pointerEventsCheck: 0 });
+    render(
+      <InventarioCarritoProvider agentId="agente-1" bcvRate={100}>
+        <ul>
+          <ProductoFila product={product()} bcvRate={100} soloLectura />
+        </ul>
+      </InventarioCarritoProvider>,
+    );
+
+    await user.click(screen.getByRole("button", { name: "Agregar Carburador PZ27 al carrito" }));
+    expect(
+      screen.getByRole("button", { name: /Sumar otra unidad de Carburador PZ27 \(hay 1 en el carrito\)/ }),
+    ).toBeInTheDocument();
   });
 
   it("cada clic suma una unidad y el texto pasa a «En carrito ×N»", async () => {

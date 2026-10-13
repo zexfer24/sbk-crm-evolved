@@ -2,7 +2,7 @@ import { redirect } from "next/navigation";
 import { createClient } from "@/lib/supabase/server";
 import { fetchCurrentAgent } from "@/lib/data";
 import { fetchInventoryTotals, fetchMotoCatalogSummary, fetchProductsPage } from "@/lib/inventory-data";
-import { parseInventoryParams } from "@/lib/inventory";
+import { inventoryHref, paginaFueraDeRango, parseInventoryParams } from "@/lib/inventory";
 import { getBcvRate } from "@/lib/ai/bcv";
 import { InventarioView } from "@/components/inventario/inventario-view";
 import type { BcvRateSummary } from "@/components/inbox/bcv-rate-chip";
@@ -46,6 +46,13 @@ export default async function InventarioPage({
     fetchMotoCatalogSummary(supabase),
     loadRate(supabase),
   ]);
+
+  // Una `?page=` más allá de la última (enlace viejo, o un filtro que acortó la
+  // lista) ya no revienta: se manda a la última página real (13/10/2026).
+  const paginaValida = paginaFueraDeRango(params.page, total);
+  if (paginaValida !== null) {
+    redirect(inventoryHref({ ...params, page: paginaValida }));
+  }
 
   return (
     <InventarioView

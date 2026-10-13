@@ -86,12 +86,22 @@ export interface ProductsPage {
   total: number;
 }
 
-export async function fetchProductsPage(
-  supabase: SupabaseClient,
-  { query, filter, sort, page }: InventoryParams
-): Promise<ProductsPage> {
-  let request = supabase.from("products").select(PRODUCT_SELECT, { count: "exact" });
+/**
+ * Aplica búsqueda y filtro de estado a una consulta de `products`. Una sola
+ * fuente para la página y para el reconteo de una página fuera de rango: si
+ * cada una armara sus filtros por su cuenta, el total del reconteo podría no
+ * ser el de la lista (13/10/2026).
+ */
+/** Los cuatro métodos de filtro que usa `aplicarFiltros`; el tipo completo del builder de PostgREST es demasiado profundo para inferirlo genérico (TS2589). */
+interface Filtrable {
+  or(filters: string): Filtrable;
+  eq(column: string, value: boolean): Filtrable;
+  lte(column: string, value: number): Filtrable;
+  gt(column: string, value: number): Filtrable;
+}
 
+function aplicarFiltros<T>(consulta: T, { query, filter }: InventoryParams): T {
+  let request = consulta as unknown as Filtrable;
   // UN solo `.or()` con la expresión completa (`inventory-search.ts`, T3,
   // 27/9/2026; corregido para el hallazgo 2 del `code-review high` del
   // 27/9/2026 — antes era un `.or()` por palabra encadenado, y `ai/pgrst.ts`
@@ -114,13 +124,52 @@ export async function fetchProductsPage(
   } else if (filter === "sin-peso") {
     request = request.eq("is_active", true).or(SIN_PESO_FILTRO);
   }
+  return request as unknown as T;
+}
+
+/**
+ * PostgREST contesta 416 (`PGRST103`, "Requested range not satisfiable")
+ * cuando el `range` empieza más allá de la última fila. No es una falla: es una
+ * página que no existe.
+ */
+function esRangoFueraDeLimite(error: unknown): boolean {
+  if (!error || typeof error !== "object") return false;
+  const { code, status } = error as { code?: unknown; status?: unknown };
+  return code === "PGRST103" || status === 416;
+}
+
+export async function fetchProductsPage(supabase: SupabaseClient, params: InventoryParams): Promise<ProductsPage> {
+  const { sort, page } = params;
+  let request = aplicarFiltros(supabase.from("products").select(PRODUCT_SELECT, { count: "exact" }), params);
 
   if (sort === "stock") request = request.order("stock_quantity", { ascending: true });
   else if (sort === "precio") request = request.order("price", { ascending: false });
-  else request = request.order("name", { ascending: true });
+  else if (sort === "existencia") {
+    // Orden por defecto de «Sin peso» (13/10/2026): lo que más hay primero.
+    // Con muchos repuestos en la misma existencia, `name` no alcanza como
+    // desempate (no es único) y la paginación repetiría o saltaría filas entre
+    // páginas: `id` cierra el orden total.
+    request = request
+      .order("stock_quantity", { ascending: false })
+      .order("name", { ascending: true })
+      .order("id", { ascending: true });
+  } else request = request.order("name", { ascending: true });
 
   const { from, to } = inventoryPageRange(page);
   const { data, error, count } = await request.range(from, to);
+
+  // Página fuera de rango (13/10/2026): un enlace viejo, o un filtro que
+  // acorta la lista, dejaba `?page=` más allá de la última y la pantalla
+  // reventaba con el 416. Se vuelve a contar con los mismos filtros para que
+  // la página pueda redirigir a la última página real.
+  if (error && esRangoFueraDeLimite(error)) {
+    const recuento = await aplicarFiltros(
+      supabase.from("products").select("id", { count: "exact", head: true }),
+      params
+    );
+    if (recuento.error) throw recuento.error;
+    return { products: [], total: recuento.count ?? 0 };
+  }
   if (error) throw error;
 
   const products = ((data ?? []) as unknown as RawProduct[]).map(mapProduct);

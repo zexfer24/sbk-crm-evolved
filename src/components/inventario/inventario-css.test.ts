@@ -137,7 +137,7 @@ describe("la hoja de estilos del inventario", () => {
    * columna 1 crezca de alto no mueve ni centra a las demás — por eso este
    * test NO exige que `grid-template-columns` cambie, exige que NO cambie.
    */
-  it(".inv-row tiene seis columnas fijas (Precio estándar es la única agregada): el código Saint no agrega otra", async () => {
+  it(".inv-row tiene siete columnas fijas (la de acciones es la única agregada): el código Saint no agrega otra", async () => {
     const css = await leerCss();
     const regla = bloque(css, ".inv-row");
     const plantilla = /grid-template-columns:\s*([^;]+);/.exec(regla);
@@ -146,7 +146,7 @@ describe("la hoja de estilos del inventario", () => {
     expect(
       plantilla![1].trim(),
       "el código Saint va DENTRO de la columna 1 (`.inv-identity`), como una línea nueva, no como columna: agregar una columna aquí reabre la trampa del 10/9/2026"
-    ).toBe("minmax(0, 1fr) 100px 150px 150px 110px 300px");
+    ).toBe("minmax(0, 1fr) 100px 150px 150px 110px 160px 140px");
   });
 
   it(".inv-saint-code existe, en fuente numérica y seleccionable para copiar", async () => {
@@ -177,7 +177,7 @@ describe("la hoja de estilos del inventario", () => {
     expect(fila![1], "con cuatro campos, tres columnas dejaban uno huérfano").toMatch(
       /grid-template-columns:\s*repeat\(2,\s*minmax\(0,\s*1fr\)\)\s*;/
     );
-    expect(movil).toMatch(/\.inv-identity,\s*\.inv-status\s*\{[^}]*grid-column:\s*1\s*\/\s*-1\s*;/);
+    expect(movil).toMatch(/\.inv-identity,\s*\.inv-status,\s*\.inv-acciones\s*\{[^}]*grid-column:\s*1\s*\/\s*-1\s*;/);
   });
 
   it("entre 761 y 1180px el estado baja a su propia línea y le deja el ancho al nombre", async () => {
@@ -187,6 +187,9 @@ describe("la hoja de estilos del inventario", () => {
     const medio = css.slice(inicio, css.indexOf("@media (max-width: 760px)"));
     expect(medio).toMatch(/\.inv-row\s*\{[^}]*grid-template-columns:\s*minmax\(0, 1fr\) 100px 150px 150px 110px\s*;/);
     expect(medio).toMatch(/\.inv-status\s*\{[^}]*grid-column:\s*1\s*\/\s*-1\s*;/);
+    // Los botones suben a la misma línea completa, ahora en fila.
+    expect(medio).toMatch(/\.inv-acciones\s*\{[^}]*grid-column:\s*1\s*\/\s*-1\s*;/);
+    expect(medio).toMatch(/\.inv-acciones\s*\{[^}]*flex-direction:\s*row\s*;/);
   });
 
   it(".inv-fee es una línea chica y atenuada que sí puede envolver, y el texto vacío va atenuado en cursiva", async () => {
@@ -198,5 +201,79 @@ describe("la hoja de estilos del inventario", () => {
 
     const vacio = bloque(css, '.inv-readonly[data-empty="true"]');
     expect(vacio).toMatch(/font-style:\s*italic\s*;/);
+  });
+
+  /*
+   * T2/T3 del plan "Inventario y caja" (13/10/2026): «Agregar al carrito» y
+   * «Cashea» salen de `.inv-status` a su propio bloque, columna de ancho FIJO
+   * (si fuera `auto` cada fila repartiría distinto según "En carrito ×99" vs
+   * "Agregar al carrito" y correría Stock/Precio/Peso, trampa del 10/9/2026).
+   */
+  it(".inv-acciones apila los botones y vive en una columna de ancho fijo, como la de estado", async () => {
+    const css = await leerCss();
+    const acciones = bloque(css, ".inv-acciones");
+    expect(acciones).toMatch(/display:\s*flex\s*;/);
+    expect(acciones).toMatch(/flex-direction:\s*column\s*;/);
+
+    const plantilla = /grid-template-columns:\s*([^;]+);/.exec(bloque(css, ".inv-row"))![1].trim();
+    const columnas = plantilla.split(/\s+(?![^()]*\))/);
+    expect(columnas).toHaveLength(7);
+    for (const columna of columnas.slice(1)) {
+      expect(columna, `la columna \`${columna}\` no es de ancho fijo`).toMatch(/^\d+px$/);
+    }
+  });
+
+  it("los botones de acción son píldoras de verdad: con mano, foco visible y deshabilitado apagado", async () => {
+    const css = await leerCss();
+    expect(bloque(css, ".crm-pill.inv-accion-btn")).toMatch(/justify-content:\s*center\s*;/);
+    expect(bloque(css, ".inv-accion-btn:focus-visible")).toMatch(/outline:/);
+    expect(bloque(css, ".inv-accion-btn:disabled")).toMatch(/cursor:\s*not-allowed\s*;/);
+  });
+
+  it("el carrito flotante va FIJO abajo a la derecha, redondo y por debajo del Drawer/Modal/Toast de HeroUI (z-50)", async () => {
+    const css = await leerCss();
+    const regla = bloque(css, ".inv-carrito-flotante");
+
+    expect(regla, "sin `position: fixed` el botón queda en el flujo y desarma la grilla de .dash-frame").toMatch(
+      /position:\s*fixed\s*;/
+    );
+    expect(regla).toMatch(/right:\s*24px\s*;/);
+    expect(regla).toMatch(/bottom:\s*24px\s*;/);
+    expect(regla).toMatch(/width:\s*56px\s*;/);
+    expect(regla).toMatch(/height:\s*56px\s*;/);
+    expect(regla).toMatch(/border-radius:\s*50%\s*;/);
+
+    // El Drawer, el Modal y el Toast de HeroUI usan `z-50` (node_modules/@heroui/styles): el botón tiene que quedar debajo.
+    const z = /z-index:\s*(\d+)\s*;/.exec(regla);
+    expect(z, "el botón flotante necesita un z-index propio").not.toBeNull();
+    expect(Number(z![1])).toBeLessThan(50);
+    expect(Number(z![1])).toBeGreaterThan(0);
+  });
+
+  it("en teléfono el carrito flotante se acerca al borde (16px)", async () => {
+    const css = await leerCss();
+    // Va DESPUÉS de la regla base (misma especificidad: gana la última), así que se busca en el último bloque de 760px.
+    const movil = css.slice(css.lastIndexOf("@media (max-width: 760px)"));
+    const regla = /\.inv-carrito-flotante\s*\{([^}]*)\}/.exec(movil);
+    expect(regla, "falta la regla móvil de `.inv-carrito-flotante`").not.toBeNull();
+    expect(regla![1]).toMatch(/right:\s*16px\s*;/);
+    expect(regla![1]).toMatch(/bottom:\s*16px\s*;/);
+  });
+
+  it("el globo de unidades está pegado a la esquina del botón y la sección de la lista deja aire para no taparle el paginador", async () => {
+    const css = await leerCss();
+    expect(bloque(css, ".inv-carrito-globo")).toMatch(/position:\s*absolute\s*;/);
+    // El paginador cierra la sección de la lista: sin este margen el botón flotante lo tapa al llegar al final de la lista.
+    const margen = /margin-bottom:\s*(\d+)px/.exec(bloque(css, ".inv-panel-lista"));
+    expect(margen, "`.inv-panel-lista` necesita `margin-bottom`").not.toBeNull();
+    expect(Number(margen![1])).toBeGreaterThanOrEqual(80);
+  });
+
+  it("«Falta el peso» se lee como una acción pendiente, no atenuada", async () => {
+    const css = await leerCss();
+    const regla = bloque(css, ".inv-falta-peso");
+    expect(regla).toMatch(/color:\s*var\(--lm-wait-ink/);
+    expect(regla).not.toMatch(/opacity/);
+    expect(regla).not.toMatch(/font-style:\s*italic/);
   });
 });

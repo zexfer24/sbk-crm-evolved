@@ -1,9 +1,8 @@
 "use client";
 
-import { useState, type FocusEvent, type KeyboardEvent } from "react";
+import { useRef, useState, type FocusEvent, type KeyboardEvent } from "react";
 import { useRouter } from "next/navigation";
-import { Check, EyeOff, Sparkles, TriangleAlert } from "lucide-react";
-import { Calculator, Plus } from "lucide-react";
+import { Calculator, Check, EyeOff, ShoppingCart, Sparkles, TriangleAlert } from "lucide-react";
 import { toast } from "@heroui/react";
 import type { Product } from "@/lib/types";
 import { createClient } from "@/lib/supabase/client";
@@ -22,9 +21,13 @@ import {
 import { CasheaCalculadora } from "@/components/inventario/cashea-calculadora";
 import { useInventarioCarrito } from "@/components/inventario/inventario-carrito-context";
 
-/** Por qué no hay precio estándar (12/10/2026): nunca un número incompleto. */
+/**
+ * Por qué no hay precio estándar (12/10/2026): nunca un número incompleto.
+ * `sin_peso` NO está acá desde el 13/10/2026: para quien puede editar es un
+ * botón que lleva al campo de peso, y para caja es un dato («Sin peso
+ * cargado»); los otros dos motivos no tienen acción posible desde la fila.
+ */
 const MOTIVO_SIN_ESTANDAR = {
-  sin_peso: "Cargá el peso",
   fuera_de_tabla: "Más de 80 kg: fuera de la tabla MRW",
   sin_tarifa: "Sin tarifa MRW para este peso",
 } as const;
@@ -52,8 +55,22 @@ const MOTIVO_SIN_ESTANDAR = {
  * guardar: `router.refresh()` también lo corrige, pero no es inmediato y el
  * asesor acaba de teclear el peso esperando ver el precio ya.
  */
-export function ProductoFila({ product, bcvRate }: { product: Product; bcvRate: number }) {
+export function ProductoFila({
+  product,
+  bcvRate,
+  soloLectura = false,
+}: {
+  product: Product;
+  bcvRate: number;
+  /**
+   * Rol `caja` (13/10/2026): la base solo le deja leer el inventario, así que
+   * el peso se muestra como texto —sin input, sin guardado ni botón «Falta el
+   * peso»—. Cashea y el carrito siguen: son consulta, no escritura.
+   */
+  soloLectura?: boolean;
+}) {
   const router = useRouter();
+  const pesoRef = useRef<HTMLInputElement>(null);
 
   const [vivo, setVivo] = useState(product);
   const [propPrevio, setPropPrevio] = useState(product);
@@ -141,6 +158,12 @@ export function ProductoFila({ product, bcvRate }: { product: Product; bcvRate: 
 
   function selectAll(event: FocusEvent<HTMLInputElement>) {
     event.currentTarget.select();
+  }
+
+  /** «Falta el peso: cargalo →»: lleva el cursor al campo de ESTA fila, con el contenido seleccionado. */
+  function irAlPeso() {
+    pesoRef.current?.focus();
+    pesoRef.current?.select();
   }
 
   return (
@@ -252,9 +275,15 @@ export function ProductoFila({ product, bcvRate }: { product: Product; bcvRate: 
             <span className="lm-num inv-readonly" aria-label={`Precio estándar de ${product.name}`}>
               {estandar.principal}
             </span>
+          ) : estandar.estado === "sin_peso" && !soloLectura ? (
+            // Acción pendiente, no un texto atenuado (13/10/2026): el asesor
+            // que ve el hueco llega al campo de peso con un clic.
+            <button type="button" className="inv-falta-peso" onClick={irAlPeso}>
+              Falta el peso: cargalo →
+            </button>
           ) : (
             <span className="inv-readonly" data-empty="true">
-              {MOTIVO_SIN_ESTANDAR[estandar.estado]}
+              {estandar.estado === "sin_peso" ? "Sin peso cargado" : MOTIVO_SIN_ESTANDAR[estandar.estado]}
             </span>
           )}
         </span>
@@ -266,24 +295,39 @@ export function ProductoFila({ product, bcvRate }: { product: Product; bcvRate: 
         {estandar.estado === "ok" && <span className="inv-fee">incluye envío MRW {estandar.tarifa}</span>}
       </div>
 
-      <label className="inv-field">
-        <span className="lm-eyebrow">Peso (kg)</span>
-        <span className="inv-input-wrap">
-          <input
-            className="lm-num"
-            value={weightDraft}
-            onChange={(e) => setWeightDraft(e.target.value)}
-            onBlur={commitWeight}
-            onKeyDown={onEnter}
-            onFocus={selectAll}
-            disabled={busy}
-            inputMode="decimal"
-            aria-label={`Peso de ${product.name}`}
-          />
-          {savedField === "peso" && <Check size={13} className="inv-saved" aria-label="Guardado" />}
-        </span>
-        <span className="inv-bs" aria-hidden="true" />
-      </label>
+      {soloLectura ? (
+        // Misma caja y mismo pie vacío que el campo editable: la fila no
+        // cambia de alto ni de columnas (trampa del 10/9/2026).
+        <div className="inv-field">
+          <span className="lm-eyebrow">Peso (kg)</span>
+          <span className="inv-input-wrap">
+            <span className="lm-num inv-readonly" aria-label={`Peso de ${product.name}`}>
+              {vivo.weightKg === null ? "—" : formatWeightInput(vivo.weightKg)}
+            </span>
+          </span>
+          <span className="inv-bs" aria-hidden="true" />
+        </div>
+      ) : (
+        <label className="inv-field">
+          <span className="lm-eyebrow">Peso (kg)</span>
+          <span className="inv-input-wrap">
+            <input
+              ref={pesoRef}
+              className="lm-num"
+              value={weightDraft}
+              onChange={(e) => setWeightDraft(e.target.value)}
+              onBlur={commitWeight}
+              onKeyDown={onEnter}
+              onFocus={selectAll}
+              disabled={busy}
+              inputMode="decimal"
+              aria-label={`Peso de ${product.name}`}
+            />
+            {savedField === "peso" && <Check size={13} className="inv-saved" aria-label="Guardado" />}
+          </span>
+          <span className="inv-bs" aria-hidden="true" />
+        </label>
+      )}
 
       <div className="inv-status">
         {visibility.visible ? (
@@ -316,26 +360,33 @@ export function ProductoFila({ product, bcvRate }: { product: Product; bcvRate: 
             title={`Entró desde Saint el ${new Date(product.saintAddedAt as string).toLocaleDateString("es-VE", {
               day: "numeric",
               month: "short",
-            })}; cargale el peso.`}
+            })}${soloLectura ? "." : "; cargale el peso."}`}
           >
             <Sparkles size={11} />
             Nuevo desde Saint
           </span>
         )}
+      </div>
 
-        {/*
-         * Carrito de cotización (12/10/2026, plan "Carrito de cotización en el
-         * Inventario, con Cashea", T5). Va DENTRO de `.inv-status` y no como
-         * columna nueva: la fila es una grilla de columnas fijas (trampa del
-         * 10/9/2026) y `.inv-status` ya hace `flex-wrap`. No se ofrece sin
-         * provider, está deshabilitado si Saint dio de baja el producto y se
-         * deja agregar sin stock: el asesor puede cotizar algo que está por llegar.
-         */}
+      {/*
+       * Acciones de la fila (13/10/2026, plan "Inventario y caja", T2): antes
+       * «Agregar» y «Cashea» eran insignias `.ac-badge` mezcladas con los
+       * estados y no se leían como botones. Ahora son botones de verdad en un
+       * bloque propio, ÚLTIMO hijo de la fila y con columna de ancho FIJO en
+       * `.inv-row` (trampa del 10/9/2026: una columna `auto` repartiría
+       * distinto en cada fila según "En carrito ×99" o "Agregar al carrito").
+       *
+       * Carrito (12/10/2026, plan "Carrito de cotización en el Inventario,
+       * con Cashea", T5): no se ofrece sin provider, está deshabilitado si
+       * Saint dio de baja el producto y se deja agregar sin stock: el asesor
+       * puede cotizar algo que está por llegar. Cashea (12/10/2026) es una
+       * cuenta, no una venta: sale también sin stock o inactivo.
+       */}
+      <div className="inv-acciones">
         {carrito && (
           <button
             type="button"
-            className="ac-badge inv-accion"
-            data-tone="link"
+            className="crm-pill inv-accion-btn"
             disabled={!product.isActive}
             title={product.isActive ? undefined : "Saint lo dio de baja"}
             aria-label={
@@ -345,20 +396,18 @@ export function ProductoFila({ product, bcvRate }: { product: Product; bcvRate: 
             }
             onClick={() => carrito.agregar(vivo)}
           >
-            <Plus size={11} aria-hidden="true" />
-            {enCarrito > 0 ? `En carrito ×${enCarrito}` : "Agregar"}
+            <ShoppingCart size={14} aria-hidden="true" />
+            {enCarrito > 0 ? `En carrito ×${enCarrito}` : "Agregar al carrito"}
           </button>
         )}
 
-        {/* Calculadora Cashea (12/10/2026): una cuenta, no una venta; sale también sin stock o inactivo. */}
         <button
           type="button"
-          className="ac-badge inv-cashea-trigger"
-          data-tone="link"
+          className="crm-pill inv-accion-btn"
           onClick={() => setCasheaAbierta(true)}
           aria-label={`Calcular Cashea de ${vivo.name}`}
         >
-          <Calculator size={11} />
+          <Calculator size={14} aria-hidden="true" />
           Cashea
         </button>
         <CasheaCalculadora product={vivo} bcvRate={bcvRate} isOpen={casheaAbierta} onOpenChange={setCasheaAbierta} />

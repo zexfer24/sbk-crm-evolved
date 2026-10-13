@@ -68,6 +68,11 @@ function pesoInput() {
   return screen.getByLabelText("Peso de Carburador PZ27");
 }
 
+/** El botón del Precio estándar que manda a cargar el peso (T4, 13/10/2026). */
+function faltaPeso() {
+  return screen.getByRole("button", { name: "Falta el peso: cargalo →" });
+}
+
 describe("ProductoFila — el campo Peso", () => {
   beforeEach(() => {
     refresh.mockClear();
@@ -134,7 +139,7 @@ describe("ProductoFila — el campo Peso", () => {
   it("un peso guardado en 0 cuenta como sin peso: badge y precio estándar dicen lo mismo", () => {
     render(<ProductoFila product={product({ weightKg: 0, shippingFeeUsd: null })} bcvRate={40} />);
     expect(screen.getByText("Sin peso")).toBeInTheDocument();
-    expect(screen.getByText("Cargá el peso")).toBeInTheDocument();
+    expect(faltaPeso()).toBeInTheDocument();
   });
 
   it("con peso cargado no muestra el badge", () => {
@@ -345,9 +350,9 @@ describe("ProductoFila — precio promoción y precio estándar", () => {
 
   it("sin peso: pide cargar el peso y no inventa una cifra", () => {
     render(<ProductoFila product={product({ weightKg: null, shippingFeeUsd: null })} bcvRate={40} />);
-    const campo = screen.getByText("Cargá el peso").closest(".inv-field");
+    const campo = faltaPeso().closest(".inv-field");
 
-    expect(screen.getByText("Cargá el peso")).toHaveAttribute("data-empty", "true");
+    expect(faltaPeso()).toHaveClass("inv-falta-peso");
     expect(campo?.querySelector(".inv-bs")).not.toBeNull();
     expect(campo?.querySelector(".inv-fee")).toBeNull();
     expect(screen.queryByLabelText("Precio estándar de Carburador PZ27")).toBeNull();
@@ -376,14 +381,14 @@ describe("ProductoFila — precio promoción y precio estándar", () => {
     const user = userEvent.setup({ delay: null, pointerEventsCheck: 0 });
     render(<ProductoFila product={product({ weightKg: null, shippingFeeUsd: null })} bcvRate={40} />);
 
-    expect(screen.getByText("Cargá el peso")).toBeInTheDocument();
+    expect(faltaPeso()).toBeInTheDocument();
     await user.type(pesoInput(), "1");
     await user.tab();
 
     await waitFor(() => expect(fetchProduct).toHaveBeenCalledWith(expect.anything(), "prod-1"));
     // 25 USD + 1.40 de envío = 26.40 USD = Bs. 1056.00 a tasa 40.
     expect(await screen.findByLabelText("Precio estándar de Carburador PZ27")).toHaveTextContent("Bs. 1056.00");
-    expect(screen.queryByText("Cargá el peso")).toBeNull();
+    expect(screen.queryByRole("button", { name: "Falta el peso: cargalo →" })).toBeNull();
     // El badge sale del estado vivo, no del prop viejo.
     expect(screen.queryByText("Sin peso")).toBeNull();
   });
@@ -421,7 +426,7 @@ describe("ProductoFila — precio promoción y precio estándar", () => {
 
   it("cuando el prop cambia (router.refresh), la fila toma el producto nuevo", () => {
     const { rerender } = render(<ProductoFila product={product({ weightKg: null, shippingFeeUsd: null })} bcvRate={40} />);
-    expect(screen.getByText("Cargá el peso")).toBeInTheDocument();
+    expect(faltaPeso()).toBeInTheDocument();
 
     rerender(<ProductoFila product={product({ weightKg: 1, shippingFeeUsd: 1.4 })} bcvRate={40} />);
     expect(screen.getByLabelText("Precio estándar de Carburador PZ27")).toHaveTextContent("Bs. 1056.00");
@@ -459,5 +464,116 @@ describe("ProductoFila — sin carrito", () => {
     render(<ProductoFila product={product()} bcvRate={40} />);
     expect(screen.queryByRole("button", { name: /al carrito/ })).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Calcular Cashea de Carburador PZ27" })).toBeInTheDocument();
+  });
+});
+
+/**
+ * T4 del plan "Inventario y caja" (13/10/2026): el Precio estándar vacío por
+ * falta de peso era un texto atenuado en cursiva que nadie leía como una tarea
+ * pendiente. Ahora, para quien puede editar, es un botón que lleva el foco al
+ * campo de peso de ESA fila; para quien no puede (caja) es un dato: «Sin peso
+ * cargado».
+ */
+describe("ProductoFila — «Falta el peso» lleva al campo de peso", () => {
+  it("al pulsarlo enfoca (y selecciona) el input de peso de ESA fila, no el de otra", async () => {
+    const user = userEvent.setup({ delay: null, pointerEventsCheck: 0 });
+    render(
+      <ul>
+        <ProductoFila product={product({ id: "a", name: "Carburador PZ27", weightKg: null })} bcvRate={40} />
+        <ProductoFila product={product({ id: "b", name: "Bujía NGK", weightKg: null })} bcvRate={40} />
+      </ul>
+    );
+
+    const botones = screen.getAllByRole("button", { name: "Falta el peso: cargalo →" });
+    expect(botones).toHaveLength(2);
+
+    await user.click(botones[1]);
+    expect(screen.getByLabelText("Peso de Bujía NGK")).toHaveFocus();
+    expect(screen.getByLabelText("Peso de Carburador PZ27")).not.toHaveFocus();
+  });
+
+  it("los otros motivos (fuera de la tabla, sin tarifa) siguen siendo texto, no botón", () => {
+    render(<ProductoFila product={product({ weightKg: 95, shippingFeeUsd: null })} bcvRate={40} />);
+    expect(screen.queryByRole("button", { name: "Falta el peso: cargalo →" })).toBeNull();
+    expect(screen.getByText("Más de 80 kg: fuera de la tabla MRW")).toBeInTheDocument();
+  });
+});
+
+describe("ProductoFila — solo lectura (rol caja)", () => {
+  it("el peso es texto: sin input, con el valor formateado", () => {
+    render(<ProductoFila product={product({ weightKg: 0.5 })} bcvRate={40} soloLectura />);
+
+    expect(screen.queryByRole("textbox")).toBeNull();
+    const campo = screen.getByText("Peso (kg)").closest(".inv-field");
+    expect(campo).toHaveTextContent("0.500");
+    expect(campo?.querySelector(".inv-readonly")).not.toBeNull();
+    // Mismo pie vacío que los demás campos: la fila no cambia de alto (trampa del 10/9/2026).
+    expect(campo?.querySelector(".inv-bs")).not.toBeNull();
+  });
+
+  it("sin peso cargado muestra «—» en el campo", () => {
+    render(<ProductoFila product={product({ weightKg: null })} bcvRate={40} soloLectura />);
+    expect(screen.getByText("Peso (kg)").closest(".inv-field")).toHaveTextContent("—");
+  });
+
+  it("en lugar del botón, el Precio estándar dice «Sin peso cargado» como dato", () => {
+    render(<ProductoFila product={product({ weightKg: null, shippingFeeUsd: null })} bcvRate={40} soloLectura />);
+
+    expect(screen.queryByRole("button", { name: "Falta el peso: cargalo →" })).toBeNull();
+    expect(screen.getByText("Sin peso cargado")).toHaveAttribute("data-empty", "true");
+  });
+
+  it("nunca guarda: ni tabulando por la fila", async () => {
+    const user = userEvent.setup({ delay: null, pointerEventsCheck: 0 });
+    updateProductWeight.mockClear();
+    render(<ProductoFila product={product({ weightKg: null })} bcvRate={40} soloLectura />);
+
+    await user.tab();
+    await user.tab();
+    expect(updateProductWeight).not.toHaveBeenCalled();
+  });
+
+  it("«Nuevo desde Saint» deja de pedir que se cargue el peso", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-09-25T12:00:00Z"));
+    try {
+      render(
+        <ProductoFila product={product({ saintAddedAt: "2026-09-24T12:00:00Z" })} bcvRate={40} soloLectura />
+      );
+      const title = screen.getByText("Nuevo desde Saint").closest(".ac-badge")?.getAttribute("title") ?? "";
+      expect(title).toMatch(/Entró desde Saint/);
+      expect(title).not.toMatch(/peso/i);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("Cashea sigue disponible", async () => {
+    const user = userEvent.setup({ delay: null, pointerEventsCheck: 0 });
+    render(<ProductoFila product={product()} bcvRate={40} soloLectura />);
+
+    await user.click(screen.getByRole("button", { name: "Calcular Cashea de Carburador PZ27" }));
+    expect(screen.getByRole("dialog", { name: "Cashea Carburador PZ27" })).toBeInTheDocument();
+  });
+
+  it("la insignia informativa «Sin peso» se queda", () => {
+    render(<ProductoFila product={product({ weightKg: null })} bcvRate={40} soloLectura />);
+    expect(screen.getByText("Sin peso")).toBeInTheDocument();
+  });
+});
+
+describe("ProductoFila — Cashea vive en el bloque de acciones, no entre las insignias", () => {
+  it("«Cashea» es un botón con ícono dentro de .inv-acciones, último hijo de la fila", () => {
+    const { container } = render(<ProductoFila product={product()} bcvRate={40} />);
+
+    const boton = screen.getByRole("button", { name: "Calcular Cashea de Carburador PZ27" });
+    const acciones = container.querySelector(".inv-acciones");
+    expect(acciones).not.toBeNull();
+    expect(acciones).toContainElement(boton as HTMLElement);
+    expect(boton).toHaveTextContent("Cashea");
+    expect(boton).toHaveClass("crm-pill", "inv-accion-btn");
+    expect(boton.querySelector("svg")).toHaveAttribute("aria-hidden", "true");
+    expect(container.querySelector(".inv-status")).not.toContainElement(boton);
+    expect(container.querySelector("li")?.lastElementChild).toBe(acciones);
   });
 });

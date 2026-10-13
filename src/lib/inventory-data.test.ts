@@ -123,6 +123,139 @@ describe("fetchProductsPage — filtro de búsqueda por palabras", () => {
   });
 });
 
+describe("fetchProductsPage — orden (T4, 13/10/2026)", () => {
+  function ordenes(calls: { method: string; args: unknown[] }[]) {
+    return calls.filter((c) => c.method === "order").map((c) => c.args);
+  }
+
+  it("«Sin peso» sin orden explícito pide primero lo que más hay: stock_quantity descendente, nombre y id de desempate", async () => {
+    const { calls, builder } = fakeProductsQuery();
+    // `sort: "existencia"` es lo que `parseInventoryParams` produce para sin-peso sin `orden` en la URL.
+    await fetchProductsPage(fakeSupabase(builder), { query: "", filter: "sin-peso", sort: "existencia", page: 1 });
+
+    expect(ordenes(calls)).toEqual([
+      ["stock_quantity", { ascending: false }],
+      ["name", { ascending: true }],
+      ["id", { ascending: true }],
+    ]);
+  });
+
+  it("«Sin peso» con orden=nombre explícito ordena por nombre, no por existencia", async () => {
+    const { calls, builder } = fakeProductsQuery();
+    await fetchProductsPage(fakeSupabase(builder), { query: "", filter: "sin-peso", sort: "nombre", page: 1 });
+
+    expect(ordenes(calls)).toEqual([["name", { ascending: true }]]);
+  });
+
+  it("los órdenes de siempre no cambian: stock ascendente y precio descendente", async () => {
+    const stock = fakeProductsQuery();
+    await fetchProductsPage(fakeSupabase(stock.builder), { query: "", filter: "todos", sort: "stock", page: 1 });
+    expect(ordenes(stock.calls)).toEqual([["stock_quantity", { ascending: true }]]);
+
+    const precio = fakeProductsQuery();
+    await fetchProductsPage(fakeSupabase(precio.builder), { query: "", filter: "todos", sort: "precio", page: 1 });
+    expect(ordenes(precio.calls)).toEqual([["price", { ascending: false }]]);
+  });
+});
+
+describe("fetchProductsPage — página fuera de rango (13/10/2026)", () => {
+  /**
+   * Fake aparte: la primera consulta (con `.range`) falla con PGRST103 y la
+   * de reconteo (`head: true`) devuelve el total. Registra todo lo que se le
+   * aplica a cada una para comprobar que lleva los MISMOS filtros.
+   */
+  function fakeFueraDeRango(total: number, error: unknown = { code: "PGRST103", message: "Requested range not satisfiable" }) {
+    const consultas: { calls: { method: string; args: unknown[] }[] }[] = [];
+
+    function nuevaConsulta() {
+      const calls: { method: string; args: unknown[] }[] = [];
+      consultas.push({ calls });
+      const chain = (method: string) => (...args: unknown[]) => {
+        calls.push({ method, args });
+        return builder;
+      };
+      const builder: Record<string, unknown> = {
+        select: chain("select"),
+        or: chain("or"),
+        eq: chain("eq"),
+        lte: chain("lte"),
+        gt: chain("gt"),
+        order: chain("order"),
+        range: (...args: unknown[]) => {
+          calls.push({ method: "range", args });
+          return Promise.resolve({ data: null, error, count: null });
+        },
+        // El reconteo no lleva range: se resuelve al esperar el builder.
+        then: (resolve: (v: unknown) => unknown) => resolve({ data: null, error: null, count: total }),
+      };
+      return builder;
+    }
+
+    return { consultas, supabase: { from: vi.fn(() => nuevaConsulta()) } as unknown as SupabaseClient };
+  }
+
+  it("devuelve products vacío y el total real en vez de lanzar", async () => {
+    const { supabase } = fakeFueraDeRango(61);
+    const result = await fetchProductsPage(supabase, { query: "", filter: "todos", sort: "nombre", page: 99 });
+
+    expect(result).toEqual({ products: [], total: 61 });
+  });
+
+  it("reconta con head:true, count exact y los MISMOS filtros", async () => {
+    const { consultas, supabase } = fakeFueraDeRango(5);
+    await fetchProductsPage(supabase, { query: "tubo cg", filter: "agotados", sort: "stock", page: 99 });
+
+    expect(consultas).toHaveLength(2);
+    const [primera, reconteo] = consultas;
+    expect(reconteo.calls.find((c) => c.method === "select")?.args[1]).toEqual({ count: "exact", head: true });
+    expect(reconteo.calls.some((c) => c.method === "range")).toBe(false);
+
+    const filtros = (c: { calls: { method: string; args: unknown[] }[] }) =>
+      c.calls.filter((x) => ["or", "eq", "lte", "gt"].includes(x.method));
+    expect(filtros(reconteo)).toEqual(filtros(primera));
+    expect(filtros(reconteo).length).toBeGreaterThan(0);
+  });
+
+  it("también reconoce el status 416", async () => {
+    const { supabase } = fakeFueraDeRango(3, { status: 416, message: "x" });
+    const result = await fetchProductsPage(supabase, { query: "", filter: "todos", sort: "nombre", page: 9 });
+
+    expect(result).toEqual({ products: [], total: 3 });
+  });
+
+  it("cualquier otro error sigue lanzando tal cual", async () => {
+    const boom = { code: "42501", message: "permission denied" };
+    const { supabase } = fakeFueraDeRango(0, boom);
+
+    await expect(
+      fetchProductsPage(supabase, { query: "", filter: "todos", sort: "nombre", page: 1 })
+    ).rejects.toBe(boom);
+  });
+
+  it("si el reconteo también falla, lanza ese error", async () => {
+    const boom = { code: "XX000", message: "caída" };
+    const consultas: unknown[] = [];
+    const supabase = {
+      from: vi.fn(() => {
+        const primera = consultas.length === 0;
+        consultas.push(1);
+        const builder: Record<string, unknown> = {
+          select: () => builder,
+          order: () => builder,
+          range: () =>
+            Promise.resolve({ data: null, error: { code: "PGRST103", message: "r" }, count: null }),
+          then: (resolve: (v: unknown) => unknown) => resolve({ data: null, error: primera ? null : boom, count: null }),
+        };
+        return builder;
+      }),
+    } as unknown as SupabaseClient;
+
+    await expect(
+      fetchProductsPage(supabase, { query: "", filter: "todos", sort: "nombre", page: 99 })
+    ).rejects.toBe(boom);
+  });
+});
+
 describe("searchActiveProducts — buscador del cierre de venta", () => {
   it("busca por palabra en las tres columnas y solo activos", async () => {
     const { calls, builder } = fakeProductsQuery();

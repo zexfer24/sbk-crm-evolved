@@ -307,10 +307,27 @@ export function summarizeInventory(products: Product[]): InventorySummary {
 // ---------------------------------------------------------------------------
 
 export type InventoryFilter = "todos" | "agotados" | "bajo-stock" | "inactivos" | "sin-peso";
-export type InventorySort = "nombre" | "stock" | "precio";
+/**
+ * `existencia` (13/10/2026, plan "Inventario y caja", T4) es el orden POR
+ * DEFECTO del filtro «Sin peso» —lo que más hay en el mostrador primero—, no
+ * una píldora más: ningún botón de la barra de orden lo ofrece. Se eligió un
+ * valor nuevo del orden, con default por filtro (`ordenPorDefecto`), en lugar
+ * de un `sortExplicit` aparte: así `params.sort` siempre dice cómo se ordena
+ * la lista y `fetchProductsPage` no necesita saber de dónde salió.
+ */
+export type InventorySort = "nombre" | "stock" | "precio" | "existencia";
 
 const FILTERS: InventoryFilter[] = ["todos", "agotados", "bajo-stock", "inactivos", "sin-peso"];
-const SORTS: InventorySort[] = ["nombre", "stock", "precio"];
+const SORTS: InventorySort[] = ["nombre", "stock", "precio", "existencia"];
+
+/**
+ * El orden que rige cuando la URL no trae `orden`: «Sin peso» abre por
+ * existencia (de mayor a menor), los demás filtros por nombre. Un orden
+ * escrito en la URL —incluido «nombre»— siempre gana.
+ */
+export function ordenPorDefecto(filter: InventoryFilter): InventorySort {
+  return filter === "sin-peso" ? "existencia" : "nombre";
+}
 
 /**
  * `inactivos` pasó de "Desactivados" a "Fuera de Saint" el 25/9/2026 ("El
@@ -332,6 +349,7 @@ export const INVENTORY_SORT_LABELS: Record<InventorySort, string> = {
   nombre: "Por nombre",
   stock: "Menos stock primero",
   precio: "Más caros primero",
+  existencia: "Más existencia primero",
 };
 
 export const INVENTORY_PAGE_SIZE = 40;
@@ -350,27 +368,53 @@ function first(value: string | string[] | undefined): string | undefined {
 }
 
 export function parseInventoryParams(raw: RawParams): InventoryParams {
-  const filter = first(raw.filtro);
+  const rawFilter = first(raw.filtro);
   const sort = first(raw.orden);
   const page = Number(first(raw.page));
+  const filter = FILTERS.includes(rawFilter as InventoryFilter) ? (rawFilter as InventoryFilter) : "todos";
 
   return {
     query: (first(raw.q) ?? "").trim(),
-    filter: FILTERS.includes(filter as InventoryFilter) ? (filter as InventoryFilter) : "todos",
-    sort: SORTS.includes(sort as InventorySort) ? (sort as InventorySort) : "nombre",
+    filter,
+    sort: SORTS.includes(sort as InventorySort) ? (sort as InventorySort) : ordenPorDefecto(filter),
     page: Number.isInteger(page) && page >= 1 ? page : 1,
   };
 }
 
+/**
+ * La URL omite el orden solo cuando es el default DEL FILTRO. Por eso bajo
+ * «Sin peso» el orden «nombre» sí se escribe (`orden=nombre`): si se omitiera,
+ * `parseInventoryParams` lo leería de vuelta como «existencia» y la píldora
+ * «Por nombre» no haría nada.
+ */
 export function inventoryHref({ query, filter, sort, page }: InventoryParams): string {
   const params = new URLSearchParams();
   if (query) params.set("q", query);
   if (filter !== "todos") params.set("filtro", filter);
-  if (sort !== "nombre") params.set("orden", sort);
+  if (sort !== ordenPorDefecto(filter)) params.set("orden", sort);
   if (page > 1) params.set("page", String(page));
 
   const qs = params.toString();
   return qs ? `/inventario?${qs}` : "/inventario";
+}
+
+/**
+ * Enlace de una píldora de filtro: cambia el filtro, reinicia la página y NO
+ * arrastra el orden por defecto del filtro anterior. Sin esto, pasar de
+ * «Sin peso» (orden implícito: existencia) a «Todos» escribiría
+ * `orden=existencia`, y pasar de «Todos» (nombre implícito) a «Sin peso»
+ * escribiría `orden=nombre`, que apagaría el default nuevo. Un orden que el
+ * asesor eligió a mano (cualquiera distinto del default del filtro actual)
+ * sí sobrevive al cambio.
+ */
+export function inventoryFilterHref(params: InventoryParams, filter: InventoryFilter): string {
+  const elegidoAMano = params.sort !== ordenPorDefecto(params.filter);
+  return inventoryHref({
+    ...params,
+    filter,
+    sort: elegidoAMano ? params.sort : ordenPorDefecto(filter),
+    page: 1,
+  });
 }
 
 export function inventoryPageRange(page: number, size: number = INVENTORY_PAGE_SIZE): { from: number; to: number } {
@@ -380,4 +424,16 @@ export function inventoryPageRange(page: number, size: number = INVENTORY_PAGE_S
 
 export function inventoryTotalPages(count: number, size: number = INVENTORY_PAGE_SIZE): number {
   return Math.max(1, Math.ceil(count / size));
+}
+
+/**
+ * A qué página hay que redirigir cuando la pedida no existe, o `null` si está
+ * bien (13/10/2026). Un enlace viejo, o un filtro que acorta la lista, dejaba
+ * `?page=` más allá de la última página: PostgREST contestaba 416 y la pantalla
+ * reventaba. Con resultados manda a la última página; sin resultados, a la 1.
+ */
+export function paginaFueraDeRango(page: number, total: number): number | null {
+  if (total <= 0) return page > 1 ? 1 : null;
+  const ultima = inventoryTotalPages(total);
+  return page > ultima ? ultima : null;
 }

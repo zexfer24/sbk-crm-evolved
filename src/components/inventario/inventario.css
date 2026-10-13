@@ -42,10 +42,20 @@
  * promoción (mismo pie "$ …" en bolívares). Fija por la misma razón de
  * arriba: una columna `auto` o `fr` repartiría distinto en cada `<li>` según
  * el contenido (y el texto "Más de 80 kg: fuera de la tabla MRW" es largo).
+ *
+ * 13/10/2026 (plan "Inventario y caja", T2): la última columna de 300px se
+ * parte en DOS fijas con la misma suma —160px de estado + 140px de acciones—,
+ * así el nombre conserva el ancho que ya tenía. «Agregar al carrito» y
+ * «Cashea» salieron de `.inv-status` (donde eran insignias entre los
+ * estados) a `.inv-acciones`, dos botones apilados; 140px alcanzan para «En
+ * carrito ×99» (ícono de 14px + 6px de hueco + ~80px de texto a 12px + el
+ * padding de la píldora). A 160px, las insignias que quedan en `.inv-status`
+ * ("La IA lo ofrece", "Sin peso", "Nuevo desde Saint") bajan de línea si no
+ * caben juntas, como ya hacían.
  */
 .inv-row {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 100px 150px 150px 110px 300px;
+  grid-template-columns: minmax(0, 1fr) 100px 150px 150px 110px 160px 140px;
   align-items: start;
   column-gap: 16px;
   row-gap: 8px;
@@ -235,6 +245,42 @@
   color: var(--lm-muted);
 }
 
+/*
+ * «Falta el peso: cargalo →» (13/10/2026, plan "Inventario y caja", T4):
+ * reemplaza al texto atenuado en cursiva "Cargá el peso" del Precio estándar.
+ * Es una tarea pendiente, no un dato vacío: color de advertencia, subrayado y
+ * sin atenuar, para que se lea como algo que se puede pulsar. Lleva el foco al
+ * campo de peso de la misma fila. `white-space: normal` por si no cabe en los
+ * 150px de la columna fija: baja de línea en vez de ensanchar.
+ */
+.inv-falta-peso {
+  display: block;
+  width: 100%;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  font: inherit;
+  font-size: 11.5px;
+  font-weight: 600;
+  line-height: 1.25;
+  text-align: left;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  white-space: normal;
+  color: var(--lm-wait-ink, var(--lm-link-ink));
+  cursor: pointer;
+}
+
+.inv-falta-peso:hover {
+  filter: brightness(0.9);
+}
+
+.inv-falta-peso:focus-visible {
+  outline: 2px solid var(--lm-link-ink);
+  outline-offset: 2px;
+  border-radius: 4px;
+}
+
 .inv-status {
   display: flex;
   flex-wrap: wrap;
@@ -242,6 +288,21 @@
   justify-content: flex-end;
   gap: 8px;
   justify-self: end;
+}
+
+/*
+ * Acciones de la fila (13/10/2026, plan "Inventario y caja", T2): los dos
+ * botones de verdad —«Agregar al carrito» y «Cashea»— apilados en la última
+ * columna fija de `.inv-row`. En pantallas estrechas el bloque pasa a línea
+ * completa y los botones a fila (ver los breakpoints de abajo).
+ */
+.inv-acciones {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 6px;
+  justify-self: stretch;
+  min-width: 0;
 }
 
 /* --- Catálogo de motos ---------------------------------------------------- */
@@ -307,6 +368,14 @@
     justify-self: start;
     justify-content: flex-start;
   }
+
+  /* Los botones suben a su propia línea completa, en fila. */
+  .inv-acciones {
+    grid-column: 1 / -1;
+    flex-direction: row;
+    flex-wrap: wrap;
+    justify-self: start;
+  }
 }
 
 @media (max-width: 760px) {
@@ -317,13 +386,24 @@
   }
 
   .inv-identity,
-  .inv-status {
+  .inv-status,
+  .inv-acciones {
     grid-column: 1 / -1;
   }
 
   .inv-status {
     justify-self: stretch;
     width: 100%;
+  }
+
+  /* Botones en fila, repartiéndose el ancho (13/10/2026). */
+  .inv-acciones {
+    flex-direction: row;
+    flex-wrap: wrap;
+  }
+
+  .inv-acciones .inv-accion-btn {
+    flex: 1 1 140px;
   }
 
   .inv-compat {
@@ -738,34 +818,135 @@
 }
 
 /* --------------------------------------------------------------------------
-   Botones de la fila y de la cabecera (12/10/2026, plan "Carrito de
-   cotización en el Inventario, con Cashea", T5). «Agregar» y «Cashea» son
-   `.ac-badge` pero BOTONES: hay que quitarles el aspecto nativo y darles
-   mano y foco. Viven dentro de `.inv-status`, que ya hace `flex-wrap`.
+   Botones de la fila (13/10/2026, plan "Inventario y caja", T2). «Agregar al
+   carrito» y «Cashea» son `.crm-pill` de verdad dentro de `.inv-acciones`
+   (antes eran insignias `.ac-badge` de `.inv-status`: no se leían como
+   botones). La píldora de fábrica es `--lm-sunken` y la fila, al pasar el
+   mouse, también: sin borde el botón se perdía sobre ella. `.crm-pill` va
+   delante del selector para ganar en especificidad sin depender del orden en
+   que Next arme las hojas.
    -------------------------------------------------------------------------- */
-.inv-accion {
-  gap: 4px;
-  border: 0;
+.crm-pill.inv-accion-btn {
+  justify-content: center;
+  gap: 6px;
+  padding: 6px 10px;
+  border: 1px solid var(--lm-line);
   font-family: inherit;
-  cursor: pointer;
+  font-size: 12px;
 }
 
-.inv-accion:hover:not(:disabled) {
-  filter: brightness(0.95);
+.crm-pill.inv-accion-btn:hover:not(:disabled) {
+  border-color: var(--lm-link);
+  color: var(--lm-link-ink);
 }
 
-.inv-accion:focus-visible {
+.crm-pill.inv-accion-btn:focus-visible {
   outline: 2px solid var(--lm-link-ink);
   outline-offset: 2px;
 }
 
-.inv-accion:disabled {
+.crm-pill.inv-accion-btn:disabled {
   opacity: 0.5;
   cursor: not-allowed;
 }
 
-.inv-carrito-boton {
+/* Sección de la lista: aire debajo del paginador para que el botón flotante del carrito no lo tape. */
+.inv-panel-lista {
+  margin-bottom: 80px;
+}
+
+/* --------------------------------------------------------------------------
+   Carrito flotante (13/10/2026, plan "Inventario y caja", T3): círculo fijo
+   abajo a la derecha. `position: fixed` lo saca del flujo — es lo que deja
+   montarlo dentro de la vista sin sumarle un hijo a la grilla de `.dash-frame`
+   (trampa del 9/9/2026). `z-index: 30`: el Drawer del carrito, el Modal de
+   Cashea y los toasts de HeroUI usan `z-50` (node_modules/@heroui/styles), así
+   que el botón queda debajo de todos ellos y nunca tapa un diálogo abierto.
+   -------------------------------------------------------------------------- */
+.inv-carrito-flotante {
+  position: fixed;
+  right: 24px;
+  bottom: 24px;
+  z-index: 30;
+  display: inline-grid;
+  place-items: center;
+  width: 56px;
+  height: 56px;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  background: var(--lm-ink);
+  color: var(--lm-on-ink);
+  box-shadow: 0 6px 20px rgb(0 0 0 / 0.25);
+  cursor: pointer;
+  transition: transform 150ms var(--lm-ease-out, ease-out), background 150ms ease;
+}
+
+.inv-carrito-flotante:hover {
+  background: var(--lm-ink-hover, var(--lm-ink));
+}
+
+.inv-carrito-flotante:active {
+  transform: scale(0.96);
+}
+
+.inv-carrito-flotante:focus-visible {
+  outline: 2px solid var(--lm-link-ink);
+  outline-offset: 3px;
+}
+
+.inv-carrito-globo {
+  position: absolute;
+  top: -4px;
+  right: -4px;
+  display: grid;
+  place-items: center;
+  min-width: 22px;
+  height: 22px;
+  padding: 0 6px;
+  border-radius: 999px;
+  background: var(--lm-hot-fill);
+  color: var(--lm-on-fill);
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 1;
+}
+
+/* En teléfono el botón se acerca al borde. Va DESPUÉS de la regla base: misma especificidad, gana la última. */
+@media (max-width: 760px) {
+  .inv-carrito-flotante {
+    right: 16px;
+    bottom: 16px;
+  }
+}
+
+/* --- Selector de página (13/10/2026) ------------------------------------- */
+
+.inv-paginador {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.inv-paginador-nota {
   display: inline-flex;
   align-items: center;
   gap: 6px;
+}
+
+.inv-paginador-input {
+  width: 4.5em;
+  padding: 4px 6px;
+  font: inherit;
+  font-size: 12px;
+  text-align: center;
+  color: var(--lm-ink);
+  background: transparent;
+  border: 1px solid var(--lm-line);
+  border-radius: 8px;
+}
+
+.inv-paginador-input:focus-visible {
+  outline: 2px solid var(--lm-ink);
+  outline-offset: 1px;
 }
