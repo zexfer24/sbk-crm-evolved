@@ -286,8 +286,9 @@ describe("lineaInicial y lineaResto", () => {
 
 describe("AVISO_SEIS_CUOTAS y ELECCION_CASHEA_INICIAL", () => {
   it("el aviso toma el umbral de CASHEA", () => {
-    expect(AVISO_SEIS_CUOTAS).toBe("Las 6 cuotas se habilitan con compras de más de $100,00.");
-    expect(AVISO_SEIS_CUOTAS).toContain(formatUsd(CASHEA.UMBRAL_6_CUOTAS_CENTS));
+    // Es el texto que la calculadora Cashea ya mostraba (12/10/2026): un solo aviso para los dos usos.
+    expect(AVISO_SEIS_CUOTAS).toBe("Con montos de $100 o menos solo está disponible el plan de 3 cuotas");
+    expect(AVISO_SEIS_CUOTAS).toContain(`$${CASHEA.UMBRAL_6_CUOTAS_CENTS / 100}`);
   });
 
   it("la elección inicial es nivel 6, 3 cuotas, sin bajada", () => {

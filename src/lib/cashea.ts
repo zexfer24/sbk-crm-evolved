@@ -237,8 +237,17 @@ export interface EleccionCashea {
 
 export const ELECCION_CASHEA_INICIAL: Readonly<EleccionCashea> = { nivel: 6, cuotas: 3, bajada: false };
 
-/** Aviso fijo cuando las 6 cuotas no están disponibles; el monto sale de `CASHEA`. */
-export const AVISO_SEIS_CUOTAS = `Las 6 cuotas se habilitan con compras de más de ${formatUsd(CASHEA.UMBRAL_6_CUOTAS_CENTS)}.`;
+/**
+ * Aviso fijo cuando las 6 cuotas no están disponibles; el monto sale de
+ * `CASHEA`. El texto es el que la calculadora Cashea ya mostraba (12/10/2026):
+ * al compartir los controles con el carrito se dejó UNO solo, el de la
+ * calculadora, que es la referencia.
+ */
+const UMBRAL_LEGIBLE =
+  CASHEA.UMBRAL_6_CUOTAS_CENTS % 100 === 0
+    ? `$${CASHEA.UMBRAL_6_CUOTAS_CENTS / 100}`
+    : formatUsd(CASHEA.UMBRAL_6_CUOTAS_CENTS);
+export const AVISO_SEIS_CUOTAS = `Con montos de ${UMBRAL_LEGIBLE} o menos solo está disponible el plan de 3 cuotas`;
 
 /** Tope del monto a calcular: de sobra para cualquier compra del mostrador. */
 const MAX_MONTO_USD = 1_000_000;

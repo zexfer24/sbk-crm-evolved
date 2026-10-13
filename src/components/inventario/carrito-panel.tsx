@@ -241,7 +241,7 @@ export function CarritoPanel({ bcvRate }: { bcvRate: number }) {
                       {totales.unpricedCount > 0 ? "Sin tasa" : formatUsd(toCents(totales.usd))}
                     </span>
                   </div>
-                  {totales.cashea && <CasheaResumen plan={totales.cashea} bcvRate={bcvRate} />}
+                  {totales.cashea && <CasheaResumen plan={totales.cashea} bcvRate={bcvRate} notaCadencia />}
                 </div>
 
                 <div className="inv-carrito-acciones">
