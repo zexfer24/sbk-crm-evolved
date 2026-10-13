@@ -18,6 +18,9 @@ interface FakeAgent {
 
 let currentAgent: FakeAgent | null;
 let channelRow: { phone_number_id: string | null; status: string };
+// Hotfix 2 (9/10/2026): la ruta pide también el teléfono del contacto; con
+// 360dialog `markWhatsappRead` lo necesita para saber de qué fila es el número.
+let contactRow: { phone_number: string | null } | null;
 let lastInboundWamid: string | null;
 
 vi.mock("@/lib/data", () => ({
@@ -33,7 +36,7 @@ function createFakeSessionClient() {
             return {
               eq() {
                 return {
-                  maybeSingle: async () => ({ data: { channel: channelRow }, error: null }),
+                  maybeSingle: async () => ({ data: { channel: channelRow, contact: contactRow }, error: null }),
                 };
               },
             };
@@ -102,6 +105,7 @@ beforeEach(() => {
     isActive: true,
   };
   channelRow = { phone_number_id: "1234567890", status: "connected" };
+  contactRow = { phone_number: "+58 412-123-4567" };
   lastInboundWamid = "wamid.ENTRANTE";
   markWhatsappReadMock.mockClear();
   process.env.WHATSAPP_ACCESS_TOKEN = "token-de-prueba";
@@ -165,7 +169,8 @@ describe("POST /api/conversations/[id]/read", () => {
     expect(markWhatsappReadMock).toHaveBeenCalledWith(
       "1234567890",
       { provider: "meta", accessToken: "token-de-prueba", graphVersion: "v21.0" },
-      "wamid.ENTRANTE"
+      "wamid.ENTRANTE",
+      "+58 412-123-4567"
     );
   });
 
@@ -180,7 +185,22 @@ describe("POST /api/conversations/[id]/read", () => {
     expect(markWhatsappReadMock).toHaveBeenCalledWith(
       "1234567890",
       { provider: "360dialog", apiKey: "llave-360", baseUrl: "https://waba-v2.360dialog.io" },
-      "wamid.ENTRANTE"
+      "wamid.ENTRANTE",
+      "+58 412-123-4567"
+    );
+  });
+
+  it("si el contacto no trae teléfono, pasa null como cuarto argumento", async () => {
+    contactRow = null;
+
+    const res = await POST(fakeRequest(), ctx());
+
+    expect(res.status).toBe(200);
+    expect(markWhatsappReadMock).toHaveBeenCalledWith(
+      "1234567890",
+      { provider: "meta", accessToken: "token-de-prueba", graphVersion: "v21.0" },
+      "wamid.ENTRANTE",
+      null
     );
   });
 

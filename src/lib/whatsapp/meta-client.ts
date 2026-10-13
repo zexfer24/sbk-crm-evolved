@@ -11,6 +11,15 @@
 // lo decide `WhatsappCredentials` (`provider.ts`), no este archivo.
 
 import { errorText, log } from "@/lib/log";
+import {
+  claveFila,
+  enFila,
+  esperaHastaPausa,
+  marcarAceptado,
+  PAUSA_360_MS,
+  REINTENTOS_429_360,
+  tareasEnFila,
+} from "@/lib/whatsapp/fila-por-numero";
 import type { WhatsappCredentials } from "@/lib/whatsapp/provider";
 import type { WhatsappTemplateComponent } from "@/lib/whatsapp/template-variables";
 
@@ -120,22 +129,58 @@ async function callGraphApi(phoneNumberId: string, credentials: WhatsappCredenti
     body: JSON.stringify({ messaging_product: "whatsapp", ...body }),
   };
 
-  let res = await fetch(url, init);
-  for (let intento = 1; res.status === 429 && intento <= ESPERAS_429_MS.length; intento++) {
-    log.warn("whatsapp_429_reintento", { intento, provider: credentials.provider });
-    await esperar(retryAfterMs(res) ?? ESPERAS_429_MS[intento - 1]);
-    res = await fetch(url, init);
-  }
-
   // D8: un 401 de 360dialog por llave inválida puede no ser JSON; sin el
   // catch eso reventaba con un SyntaxError en vez de un MetaApiError con status.
-  const json = await res.json().catch(() => null);
+  const leerRespuesta = async (res: Response) => {
+    const json = await res.json().catch(() => null);
+    if (!res.ok) {
+      throw new MetaApiError(detalleDelError(json, res.status, credentials), res.status, json);
+    }
+    return json as { messages: { id: string }[] };
+  };
 
-  if (!res.ok) {
-    throw new MetaApiError(detalleDelError(json, res.status, credentials), res.status, json);
+  if (credentials.provider === "360dialog") {
+    // Hotfix 2 (9/10/2026): todo POST al MISMO número sale de a uno, en orden
+    // de llegada, y el reintento del 429 vive DENTRO del turno de la fila para
+    // que un mensaje nunca adelante al que está reintentando (ver
+    // `fila-por-numero.ts` para la medición y el porqué).
+    const clave = claveFila("360dialog", body.to as string);
+    return enFila(clave, async () => {
+      const pausa = esperaHastaPausa(clave);
+      if (pausa > 0) await esperar(pausa);
+
+      let res = await fetch(url, init);
+      for (let intento = 1; ; intento++) {
+        if (res.ok) {
+          marcarAceptado(clave);
+          break;
+        }
+        if (res.status !== 429 || intento > REINTENTOS_429_360) break;
+        // Un 429 no acepta el mensaje: se consume su cuerpo para liberar la
+        // conexión (los mocks de los tests pueden no traer `text`).
+        if (typeof res.text === "function") await res.text().catch(() => "");
+        const espera = Math.max(PAUSA_360_MS, retryAfterMs(res) ?? 0);
+        log.warn("whatsapp_429_reintento", {
+          intento,
+          provider: credentials.provider,
+          espera_ms: espera,
+          en_fila: tareasEnFila(clave) - 1,
+        });
+        await esperar(espera);
+        res = await fetch(url, init);
+      }
+      return leerRespuesta(res);
+    });
   }
 
-  return json as { messages: { id: string }[] };
+  let res = await fetch(url, init);
+  for (let intento = 1; res.status === 429 && intento <= ESPERAS_429_MS.length; intento++) {
+    const espera = retryAfterMs(res) ?? ESPERAS_429_MS[intento - 1];
+    log.warn("whatsapp_429_reintento", { intento, provider: credentials.provider, espera_ms: espera });
+    await esperar(espera);
+    res = await fetch(url, init);
+  }
+  return leerRespuesta(res);
 }
 
 function contextOf(replyToWamid?: string | null) {
@@ -279,12 +324,13 @@ export async function downloadMetaMedia(url: string, credentials: WhatsappCreden
 // pedir el número del cliente.
 // ---------------------------------------------------------------------------
 
+/** `true` si el proveedor aceptó la señal (HTTP 2xx); nunca lanza. */
 async function notifyGraphApi(
   phoneNumberId: string,
   credentials: WhatsappCredentials,
   body: Record<string, unknown>,
   evento: string
-): Promise<void> {
+): Promise<boolean> {
   try {
     const res = await fetch(messagesUrl(phoneNumberId, credentials), {
       method: "POST",
@@ -298,23 +344,44 @@ async function notifyGraphApi(
       const json = await res.json().catch(() => null);
       log.warn(evento, { status: res.status, detail: detalleDelError(json, res.status, credentials) });
     }
+    return res.ok;
   } catch (err) {
     log.warn(evento, { detail: errorText(err) });
+    return false;
   }
 }
 
-/** El doble check azul: le confirma a Meta que el mensaje del cliente ya se leyó. */
+/**
+ * El doble check azul: le confirma al proveedor que el mensaje del cliente ya se leyó.
+ *
+ * Con 360dialog (hotfix 2, 9/10/2026) el read comparte el cupo por número con
+ * los envíos, así que es de MÍNIMA prioridad: nunca espera ni reintenta, y solo
+ * se manda si la fila de ese número está libre y la pausa ya se cumplió; si no,
+ * se omite en silencio (un check azul que no llegó no vale un mensaje de texto
+ * retrasado o fallido). Por eso necesita `to`, el teléfono del cliente: el
+ * body no lo lleva, pero la fila se identifica por número. Sin `to` no se manda.
+ * Con Meta el cupo no es por número y `to` se ignora.
+ */
 export async function markWhatsappRead(
   phoneNumberId: string,
   credentials: WhatsappCredentials,
-  wamid: string
+  wamid: string,
+  to?: string | null
 ): Promise<void> {
-  await notifyGraphApi(
-    phoneNumberId,
-    credentials,
-    { status: "read", message_id: wamid },
-    "whatsapp_marcar_leido_fallido"
-  );
+  const body = { status: "read", message_id: wamid };
+  const evento = "whatsapp_marcar_leido_fallido";
+
+  if (credentials.provider !== "360dialog") {
+    await notifyGraphApi(phoneNumberId, credentials, body, evento);
+    return;
+  }
+
+  if (!to) return;
+  const clave = claveFila("360dialog", to);
+  if (tareasEnFila(clave) > 0 || esperaHastaPausa(clave) > 0) return;
+  await enFila(clave, async () => {
+    if (await notifyGraphApi(phoneNumberId, credentials, body, evento)) marcarAceptado(clave);
+  });
 }
 
 /**
