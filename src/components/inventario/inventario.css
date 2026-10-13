@@ -330,3 +330,255 @@
     max-width: 100%;
   }
 }
+
+/* --- Calculadora Cashea (12/10/2026) ---------------------------------------
+   Modal del Inventario (cashea-calculadora.tsx). Todo con prefijo `inv-cashea-`
+   para no tocar la grilla de columnas fijas de `.inv-row`. Los contenedores
+   flex/grid llevan `min-width: 0` y la tabla vive en su propio carril con
+   scroll horizontal: sin eso, a 375 px la tabla de cuatro columnas ensancha el
+   modal entero (misma trampa que la tira de pestañas de Control IA, 30/9/2026).
+   jsdom no calcula layout: el ancho se verifica en el navegador. */
+
+.inv-cashea-body {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  min-width: 0;
+}
+
+.inv-cashea-producto {
+  margin: 0;
+  font-size: 13.5px;
+  font-weight: 600;
+  color: var(--lm-ink);
+  overflow-wrap: anywhere;
+}
+
+.inv-cashea-montos {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.inv-cashea-campo {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+
+.inv-cashea-campo label {
+  font-size: 12px;
+  color: var(--lm-muted);
+}
+
+.inv-cashea-input {
+  width: 100%;
+  min-width: 0;
+  padding: 7px 10px;
+  border: 1px solid var(--lm-line);
+  border-radius: 8px;
+  background: var(--lm-sunken);
+  color: var(--lm-ink);
+  font-size: 13px;
+}
+
+.inv-cashea-input:focus {
+  outline: none;
+  border-color: var(--lm-link);
+}
+
+.inv-cashea-mensaje {
+  resize: vertical;
+  font-family: inherit;
+  line-height: 1.45;
+}
+
+.inv-cashea-nota,
+.inv-cashea-aviso {
+  margin: 0;
+  font-size: 12px;
+  color: var(--lm-muted);
+}
+
+.inv-cashea-aviso {
+  color: var(--lm-wait-ink, var(--lm-muted));
+}
+
+.inv-cashea-monto {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  margin: 0;
+  padding: 10px 12px;
+  border: 1px solid var(--lm-line);
+  border-radius: 10px;
+  background: var(--lm-sunken);
+  font-size: 12.5px;
+  color: var(--lm-muted);
+}
+
+.inv-cashea-monto strong {
+  font-size: 20px;
+  font-weight: 600;
+  color: var(--lm-ink);
+}
+
+.inv-cashea-bloque {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+}
+
+.inv-cashea-niveles {
+  display: grid;
+  grid-template-columns: repeat(6, minmax(0, 1fr));
+  gap: 6px;
+}
+
+.inv-cashea-cuotas {
+  display: flex;
+  gap: 6px;
+}
+
+.inv-cashea-opcion {
+  min-width: 0;
+  padding: 7px 6px;
+  border: 1px solid var(--lm-line);
+  border-radius: 8px;
+  background: var(--lm-surface);
+  color: var(--lm-ink);
+  font-size: 12.5px;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.inv-cashea-cuotas .inv-cashea-opcion {
+  flex: 1 1 0;
+}
+
+.inv-cashea-opcion[aria-checked="true"],
+.inv-cashea-opcion[aria-pressed="true"] {
+  border-color: var(--lm-link);
+  background: color-mix(in srgb, var(--lm-link) 14%, transparent);
+  color: var(--lm-link-ink);
+  font-weight: 600;
+}
+
+.inv-cashea-opcion:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.inv-cashea-bajada {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 13px;
+  color: var(--lm-ink);
+}
+
+/*
+ * `.ac-switch` apagado es rojo porque en Control IA "apagado" es una alarma.
+ * Acá "sin bajada" es la tabla normal de Cashea, no algo que corregir: el
+ * apagado va en gris neutro (visto en pantalla el 12/10/2026).
+ */
+.inv-cashea-bajada .ac-switch:not([data-on="true"]) {
+  background: var(--lm-muted);
+}
+
+.inv-cashea-resumen {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px 14px;
+  margin: 0;
+}
+
+.inv-cashea-resumen > div {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.inv-cashea-resumen dt {
+  font-size: 11.5px;
+  color: var(--lm-muted);
+}
+
+.inv-cashea-resumen dd {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--lm-ink);
+}
+
+.inv-cashea-ultima {
+  font-size: 11.5px;
+  font-weight: 400;
+  color: var(--lm-muted);
+}
+
+.inv-cashea-cronograma {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  font-size: 13px;
+  color: var(--lm-ink);
+}
+
+.inv-cashea-tabla-wrap {
+  max-width: 100%;
+  overflow-x: auto;
+}
+
+.inv-cashea-tabla {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12.5px;
+}
+
+.inv-cashea-tabla th,
+.inv-cashea-tabla td {
+  padding: 6px 10px;
+  border-top: 1px solid var(--lm-line);
+  text-align: right;
+  white-space: nowrap;
+}
+
+.inv-cashea-tabla th:first-child,
+.inv-cashea-tabla td:first-child {
+  text-align: left;
+}
+
+.inv-cashea-tabla th {
+  border-top: none;
+  font-size: 11.5px;
+  font-weight: 500;
+  color: var(--lm-muted);
+}
+
+.inv-cashea-tabla tr[aria-current="true"] td {
+  background: color-mix(in srgb, var(--lm-link) 14%, transparent);
+  color: var(--lm-link-ink);
+  font-weight: 600;
+}
+
+@media (max-width: 480px) {
+  .inv-cashea-niveles {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+
+  .inv-cashea-montos {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .inv-cashea-monto strong {
+    font-size: 18px;
+  }
+}
