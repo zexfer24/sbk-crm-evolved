@@ -1,12 +1,14 @@
 "use client";
 
-import { useRef, useState } from "react";
+import { useRef, useState, type ChangeEvent } from "react";
 import { flushSync } from "react-dom";
-import { Link2, Pencil, Plus, Trash2, TriangleAlert, Zap } from "lucide-react";
+import { ImagePlus, Link2, Pencil, Plus, Trash2, TriangleAlert, X, Zap } from "lucide-react";
 import { Button, Input, Label, Modal, TextArea, toast } from "@heroui/react";
 import type { CatalogLink, QuickReply } from "@/lib/types";
 import { createClient } from "@/lib/supabase/client";
-import { createQuickReply, deleteQuickReply, updateQuickReply } from "@/lib/mutations";
+import { createQuickReply, deleteQuickReply, updateQuickReply, uploadQuickReplyPhoto } from "@/lib/mutations";
+import { QUICK_REPLY_MAX_PHOTOS, validateQuickReplyPhotos } from "@/lib/quick-reply-media";
+import { mediaUrlFor } from "@/lib/storage";
 import { configErrorMessage } from "@/lib/config-write";
 import { catalogMarkerFor, catalogUrlHint, hasRawUrl, resolveCatalogMarkers } from "@/lib/catalog-links";
 import { insertAtCaret } from "@/lib/composer-text";
@@ -38,7 +40,12 @@ interface QuickRepliesModalProps {
    * sin resolver" sobre cada mensaje rápido de la lista.
    */
   catalogLinks: CatalogLink[];
-  onSelect: (content: string) => void;
+  /**
+   * Entrega la respuesta ENTERA y no solo su texto (14/10/2026, "Respuestas
+   * rápidas con fotos"): el composer necesita `mediaPaths` para sumar las
+   * fotos como adjuntos pendientes.
+   */
+  onSelect: (reply: QuickReply) => void;
 }
 
 export function QuickRepliesModal({
@@ -71,6 +78,16 @@ export function QuickRepliesModal({
   const [editingId, setEditingId] = useState<string | null>(null);
   const [label, setLabel] = useState("");
   const [content, setContent] = useState("");
+  // Fotos de la respuesta (14/10/2026): rutas `quick-replies/…` YA subidas. Se
+  // suben al elegirlas, no al guardar, para que "Guardar" sea instantáneo y la
+  // miniatura salga de la ruta real que quedará en la base.
+  const [mediaPaths, setMediaPaths] = useState<string[]>([]);
+  const [uploadingCount, setUploadingCount] = useState(0);
+  // Cada vez que el formulario se abre, se edita otra respuesta o se cierra,
+  // sube la "época": una subida que termina DESPUÉS no debe colar su foto en un
+  // formulario que ya no es el suyo.
+  const formEpochRef = useRef(0);
+  const photoInputRef = useRef<HTMLInputElement>(null);
   const [isSaving, setIsSaving] = useState(false);
   const [isFormOpen, setIsFormOpen] = useState(false);
   const [isCatalogMenuOpen, setIsCatalogMenuOpen] = useState(false);
@@ -87,6 +104,8 @@ export function QuickRepliesModal({
     setEditingId(null);
     setLabel("");
     setContent("");
+    setMediaPaths([]);
+    formEpochRef.current += 1;
     // Se crea donde el asesor está mirando: desde «Mis mensajes» nace personal.
     setOnlyForMe(tab === "mine");
     setIsFormOpen(true);
@@ -97,6 +116,8 @@ export function QuickRepliesModal({
     setEditingId(reply.id);
     setLabel(reply.label);
     setContent(reply.content);
+    setMediaPaths(reply.mediaPaths);
+    formEpochRef.current += 1;
     setIsFormOpen(true);
     setIsCatalogMenuOpen(false);
   }
@@ -132,23 +153,70 @@ export function QuickRepliesModal({
     setContent((current) => current.split(url).join(marker));
   }
 
+  function closeForm() {
+    formEpochRef.current += 1;
+    setIsFormOpen(false);
+  }
+
+  /**
+   * Valida el lote ENTERO antes de subir nada (tipo, peso y tope de 10 contando
+   * las que ya lleva y las que están subiendo) y sube en paralelo. Una subida
+   * que falla no tira las que sí salieron: esas se quedan, en el orden elegido,
+   * y el primer error se avisa.
+   */
+  async function handlePhotosChosen(event: ChangeEvent<HTMLInputElement>) {
+    const files = Array.from(event.target.files ?? []);
+    event.target.value = "";
+    if (files.length === 0) return;
+
+    const rejection = validateQuickReplyPhotos(mediaPaths.length + uploadingCount, files);
+    if (rejection) {
+      toast.danger(rejection);
+      return;
+    }
+
+    const epoch = formEpochRef.current;
+    setUploadingCount((count) => count + files.length);
+    const supabase = createClient();
+    const results = await Promise.allSettled(files.map((file) => uploadQuickReplyPhoto(supabase, file)));
+    setUploadingCount((count) => count - files.length);
+    if (epoch !== formEpochRef.current) return;
+
+    const uploaded = results.flatMap((result) => (result.status === "fulfilled" ? [result.value] : []));
+    if (uploaded.length > 0) setMediaPaths((current) => [...current, ...uploaded]);
+    const failed = results.find((result): result is PromiseRejectedResult => result.status === "rejected");
+    if (failed) {
+      toast.danger(failed.reason instanceof Error ? failed.reason.message : "No se pudo subir la foto.");
+    }
+  }
+
+  function removePhoto(index: number) {
+    setMediaPaths((current) => current.filter((_, i) => i !== index));
+  }
+
   async function handleSave() {
-    if (!label.trim() || !content.trim()) {
-      toast.danger("Completa el título y el contenido.");
+    if (!label.trim()) {
+      toast.danger("Completa el título.");
+      return;
+    }
+    // Sin fotos el texto sigue siendo obligatorio; con al menos una puede ir
+    // vacío (una respuesta de solo fotos).
+    if (!content.trim() && mediaPaths.length === 0) {
+      toast.danger("Escribe el mensaje o agrega al menos una foto.");
       return;
     }
     setIsSaving(true);
     try {
       const supabase = createClient();
       if (editingId) {
-        await updateQuickReply(supabase, editingId, label.trim(), content.trim());
+        await updateQuickReply(supabase, editingId, label.trim(), content.trim(), mediaPaths);
       } else {
-        await createQuickReply(supabase, label.trim(), content.trim(), onlyForMe ? currentAgentId : null);
+        await createQuickReply(supabase, label.trim(), content.trim(), onlyForMe ? currentAgentId : null, mediaPaths);
         // Un mensaje recién creado se ve en su pestaña: crear un personal
         // desde «Compartidos» (o al revés) lo dejaría fuera de la vista.
         setTab(onlyForMe ? "mine" : "shared");
       }
-      setIsFormOpen(false);
+      closeForm();
     } catch (error) {
       toast.danger(configErrorMessage(error, "No se pudo guardar el mensaje rápido."));
     } finally {
@@ -292,6 +360,51 @@ export function QuickRepliesModal({
                       </p>
                     )}
                   </div>
+                  <div className="flex flex-col gap-1.5">
+                    <div className="flex items-center justify-between gap-2">
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        onPress={() => photoInputRef.current?.click()}
+                        isDisabled={mediaPaths.length + uploadingCount >= QUICK_REPLY_MAX_PHOTOS}
+                      >
+                        <ImagePlus size={13} />
+                        Agregar fotos
+                      </Button>
+                      <span className="flex items-center gap-2 text-xs text-muted">
+                        {uploadingCount > 0 && <span role="status">Subiendo…</span>}
+                        <span className="lm-num">
+                          {mediaPaths.length} de {QUICK_REPLY_MAX_PHOTOS}
+                        </span>
+                      </span>
+                    </div>
+                    <input
+                      ref={photoInputRef}
+                      type="file"
+                      accept="image/jpeg,image/png"
+                      multiple
+                      hidden
+                      onChange={handlePhotosChosen}
+                    />
+                    {mediaPaths.length > 0 && (
+                      <ul className="qr-photos">
+                        {mediaPaths.map((path, index) => (
+                          <li key={path} className="qr-photo">
+                            {/* eslint-disable-next-line @next/next/no-img-element -- ruta propia con sesión (/api/media), no una imagen optimizable */}
+                            <img src={mediaUrlFor(path)} alt={`Foto ${index + 1} de la respuesta rápida`} />
+                            <button
+                              type="button"
+                              className="qr-photo-remove"
+                              onClick={() => removePhoto(index)}
+                              aria-label={`Quitar foto ${index + 1}`}
+                            >
+                              <X size={12} />
+                            </button>
+                          </li>
+                        ))}
+                      </ul>
+                    )}
+                  </div>
                   {!editingId && (
                     <label className="flex items-center gap-2 text-sm">
                       <input
@@ -304,10 +417,10 @@ export function QuickRepliesModal({
                     </label>
                   )}
                   <div className="flex justify-end gap-2">
-                    <Button size="sm" variant="ghost" onPress={() => setIsFormOpen(false)}>
+                    <Button size="sm" variant="ghost" onPress={closeForm}>
                       Cancelar
                     </Button>
-                    <Button size="sm" variant="primary" onPress={handleSave} isDisabled={isSaving}>
+                    <Button size="sm" variant="primary" onPress={handleSave} isDisabled={isSaving || uploadingCount > 0}>
                       {editingId ? "Guardar cambios" : "Agregar"}
                     </Button>
                   </div>
@@ -334,6 +447,14 @@ export function QuickRepliesModal({
                       <div className="min-w-0">
                         <p className="flex items-center gap-2 text-sm font-medium">
                           {reply.label}
+                          {reply.mediaPaths.length > 0 && (
+                            <span
+                              className="inline-flex items-center text-xs font-normal text-muted"
+                              aria-label={`${reply.mediaPaths.length} ${reply.mediaPaths.length === 1 ? "foto" : "fotos"}`}
+                            >
+                              📷 {reply.mediaPaths.length}
+                            </span>
+                          )}
                           {unresolved.length > 0 && (
                             <span className="inline-flex items-center gap-1 text-xs font-normal text-warning">
                               <TriangleAlert size={11} />
@@ -347,7 +468,7 @@ export function QuickRepliesModal({
                             </span>
                           )}
                         </p>
-                        <p className="truncate text-xs text-muted">{reply.content}</p>
+                        <p className="truncate text-xs text-muted">{reply.content || "Solo fotos"}</p>
                       </div>
                       <div className="flex shrink-0 items-center gap-1">
                         <Button size="sm" variant="ghost" isIconOnly onPress={() => startEdit(reply)} aria-label="Editar">
@@ -362,7 +483,7 @@ export function QuickRepliesModal({
                         >
                           <Trash2 size={13} />
                         </Button>
-                        <Button size="sm" variant="secondary" onPress={() => onSelect(reply.content)}>
+                        <Button size="sm" variant="secondary" onPress={() => onSelect(reply)}>
                           Usar
                         </Button>
                       </div>

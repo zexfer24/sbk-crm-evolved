@@ -27,6 +27,8 @@ vi.mock("@heroui/react", async (importOriginal) => {
 });
 
 const sendMediaMessageMock = vi.fn().mockResolvedValue(undefined);
+/** 14/10/2026: espía compartido de `storage.upload`, para probar que las fotos guardadas NO se vuelven a subir. */
+const storageUploadMock = vi.fn().mockResolvedValue({ error: null });
 const onSendTextMock = vi.fn();
 /** T3.1 (4/9/2026): "escribiendo…" hacia Meta. Nunca lanza, así que el mock tampoco. */
 const sendTypingSignalMock = vi.fn().mockResolvedValue(undefined);
@@ -53,7 +55,7 @@ vi.mock("@/lib/supabase/client", () => ({
   createClient: vi.fn(() => ({
     storage: {
       from: vi.fn(() => ({
-        upload: vi.fn().mockResolvedValue({ error: null }),
+        upload: (...args: unknown[]) => storageUploadMock(...args),
         getPublicUrl: vi.fn(() => ({ data: { publicUrl: "https://example.com/file" } })),
       })),
     },
@@ -225,6 +227,7 @@ function buildQuickReply(over: Partial<QuickReply> = {}): QuickReply {
     label: "Catálogo",
     content: "Acá va nuestro catálogo",
     ownerId: null,
+    mediaPaths: [],
     ...over,
   };
 }
@@ -1209,5 +1212,166 @@ describe("Composer - insertar texto desde afuera (resumen del carrito)", () => {
     expect(screen.getByLabelText("Mensaje")).toHaveValue("");
     expect(toastDangerMock).toHaveBeenCalledWith("La ventana de 24 h está cerrada; usa una plantilla");
     expect(onSendTextMock).not.toHaveBeenCalled();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 14/10/2026, "Respuestas rápidas con fotos": al usar una respuesta, su texto
+// se pega como siempre y cada foto entra como adjunto pendiente que el asesor
+// puede quitar. Al enviar, las guardadas NO se vuelven a subir (ya viven en el
+// bucket): se manda `mediaUrlFor(ruta)`, la misma URL propia que ya acepta
+// `sendMediaMessage`, y las subidas en el momento siguen subiendo como antes.
+// ---------------------------------------------------------------------------
+describe("Composer — respuestas rápidas con fotos", () => {
+  const RUTA_A = "quick-replies/aaaa.jpg";
+  const RUTA_B = "quick-replies/bbbb.png";
+  const conFotos = (over: Partial<QuickReply> = {}) =>
+    buildQuickReply({ label: "Cascos", content: "Mira estos modelos", mediaPaths: [RUTA_A, RUTA_B], ...over });
+
+  const foto = (nombre: string) => new File([new Uint8Array([1, 2, 3])], nombre, { type: "image/png" });
+
+  function pegar(target: HTMLElement, files: File[]) {
+    fireEvent.paste(target, { clipboardData: { files, items: [], getData: () => "" } });
+  }
+
+  async function usarRespuesta(user: ReturnType<typeof crearUsuario>) {
+    await user.click(screen.getByRole("button", { name: "Mensajes rápidos" }));
+    await user.click(screen.getByRole("button", { name: "Usar" }));
+  }
+
+  beforeEach(() => {
+    sendMediaMessageMock.mockClear();
+    storageUploadMock.mockClear();
+    onSendTextMock.mockClear();
+  });
+
+  it("elegir una respuesta con 2 fotos agrega 2 adjuntos con su vista previa, y pega el texto", async () => {
+    const user = crearUsuario();
+    const { container } = renderComposer([], undefined, { quickReplies: [conFotos()] });
+
+    await usarRespuesta(user);
+
+    const imagenes = Array.from(container.querySelectorAll<HTMLImageElement>(".crm-attach-item img"));
+    expect(imagenes.map((img) => img.getAttribute("src"))).toEqual([
+      "/api/media/quick-replies/aaaa.jpg",
+      "/api/media/quick-replies/bbbb.png",
+    ]);
+    expect(screen.getAllByRole("button", { name: /^Quitar / })).toHaveLength(2);
+    expect((screen.getByRole("textbox", { name: "Mensaje" }) as HTMLTextAreaElement).value).toBe(
+      "Mira estos modelos"
+    );
+  });
+
+  it("el asesor puede quitar una foto guardada antes de enviar", async () => {
+    const user = crearUsuario();
+    renderComposer([], undefined, { quickReplies: [conFotos()] });
+    await usarRespuesta(user);
+
+    await user.click(screen.getByRole("button", { name: "Quitar Cascos · foto 1" }));
+    await user.click(screen.getByRole("button", { name: /enviar/i }));
+
+    await waitFor(() => expect(sendMediaMessageMock).toHaveBeenCalledTimes(1));
+    expect(sendMediaMessageMock.mock.calls[0][1]).toBe("/api/media/quick-replies/bbbb.png");
+  });
+
+  it("enviar NO sube las guardadas: manda mediaUrlFor(ruta) en orden, con el pie solo en la primera", async () => {
+    const user = crearUsuario();
+    renderComposer([], undefined, { quickReplies: [conFotos()] });
+    await usarRespuesta(user);
+
+    await user.click(screen.getByRole("button", { name: /enviar/i }));
+
+    await waitFor(() => expect(sendMediaMessageMock).toHaveBeenCalledTimes(2));
+    expect(storageUploadMock).not.toHaveBeenCalled();
+    expect(sendMediaMessageMock.mock.calls[0]).toEqual([
+      "conv-1",
+      "/api/media/quick-replies/aaaa.jpg",
+      "image",
+      "Mira estos modelos",
+      null,
+    ]);
+    expect(sendMediaMessageMock.mock.calls[1]).toEqual([
+      "conv-1",
+      "/api/media/quick-replies/bbbb.png",
+      "image",
+      undefined,
+      null,
+    ]);
+  });
+
+  it("tras enviar, los adjuntos y el texto se limpian", async () => {
+    const user = crearUsuario();
+    renderComposer([], undefined, { quickReplies: [conFotos()] });
+    await usarRespuesta(user);
+
+    await user.click(screen.getByRole("button", { name: /enviar/i }));
+
+    await waitFor(() => expect(screen.queryByRole("button", { name: /^Quitar / })).not.toBeInTheDocument());
+    expect((screen.getByRole("textbox", { name: "Mensaje" }) as HTMLTextAreaElement).value).toBe("");
+  });
+
+  it("mezcla: una foto subida en el momento y una guardada respetan el orden en que se adjuntaron", async () => {
+    const user = crearUsuario();
+    renderComposer([], undefined, {
+      quickReplies: [conFotos({ content: "", mediaPaths: [RUTA_A] })],
+    });
+    pegar(screen.getByRole("textbox", { name: "Mensaje" }), [foto("captura.png")]);
+    await usarRespuesta(user);
+
+    await user.click(screen.getByRole("button", { name: /enviar/i }));
+
+    await waitFor(() => expect(sendMediaMessageMock).toHaveBeenCalledTimes(2));
+    // Solo la subida en el momento toca el bucket.
+    expect(storageUploadMock).toHaveBeenCalledTimes(1);
+    expect(sendMediaMessageMock.mock.calls[0][1]).toEqual(expect.stringContaining("/api/media/outbound/conv-1/"));
+    expect(sendMediaMessageMock.mock.calls[1][1]).toBe("/api/media/quick-replies/aaaa.jpg");
+  });
+
+  it("una respuesta de SOLO fotos no toca el texto que ya había escrito", async () => {
+    const user = crearUsuario();
+    renderComposer([], undefined, { quickReplies: [conFotos({ content: "", mediaPaths: [RUTA_A] })] });
+    const textarea = screen.getByRole("textbox", { name: "Mensaje" }) as HTMLTextAreaElement;
+    await user.type(textarea, "Te mando fotos");
+
+    await usarRespuesta(user);
+
+    expect(textarea.value).toBe("Te mando fotos");
+    expect(screen.getAllByRole("button", { name: /^Quitar / })).toHaveLength(1);
+  });
+
+  it("una respuesta de solo fotos se puede enviar sin escribir nada (sin pie)", async () => {
+    const user = crearUsuario();
+    renderComposer([], undefined, { quickReplies: [conFotos({ content: "", mediaPaths: [RUTA_A] })] });
+    await usarRespuesta(user);
+
+    await user.click(screen.getByRole("button", { name: /enviar/i }));
+
+    await waitFor(() => expect(sendMediaMessageMock).toHaveBeenCalledTimes(1));
+    expect(sendMediaMessageMock.mock.calls[0][3]).toBeUndefined();
+    expect(storageUploadMock).not.toHaveBeenCalled();
+  });
+
+  it("una respuesta sin fotos sigue pegando solo el texto, sin adjuntos", async () => {
+    const user = crearUsuario();
+    renderComposer([], undefined, { quickReplies: [buildQuickReply({ content: "Gracias por tu compra." })] });
+
+    await usarRespuesta(user);
+
+    expect(screen.queryByRole("button", { name: /^Quitar / })).not.toBeInTheDocument();
+    expect((screen.getByRole("textbox", { name: "Mensaje" }) as HTMLTextAreaElement).value).toBe(
+      "Gracias por tu compra."
+    );
+  });
+
+  it("quitar una guardada no intenta liberar un object URL (no es un blob)", async () => {
+    const user = crearUsuario();
+    const revocar = vi.spyOn(URL, "revokeObjectURL");
+    renderComposer([], undefined, { quickReplies: [conFotos()] });
+    await usarRespuesta(user);
+
+    await user.click(screen.getByRole("button", { name: "Quitar Cascos · foto 1" }));
+
+    expect(revocar).not.toHaveBeenCalled();
+    revocar.mockRestore();
   });
 });

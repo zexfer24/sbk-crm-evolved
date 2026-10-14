@@ -100,11 +100,38 @@ function mediaTypeFromMime(mime: string): MessageType {
   return "document";
 }
 
-interface PendingFile {
-  id: string;
-  file: File;
-  mediaType: MessageType;
-  previewUrl: string | null;
+/**
+ * Un adjunto pendiente de enviar. Dos orígenes (14/10/2026, "Respuestas
+ * rápidas con fotos"):
+ *
+ * - `upload`: un archivo que el asesor eligió o pegó; se sube al bucket al
+ *   enviar. Su `previewUrl` es un object URL (blob) que hay que liberar.
+ * - `stored`: una foto de una respuesta rápida, que ya vive en el bucket bajo
+ *   `quick-replies/…`. NO se vuelve a subir: se manda `mediaUrlFor(path)`. Su
+ *   `previewUrl` es la ruta propia del CRM, no un blob, y no se libera.
+ */
+type PendingFile =
+  | {
+      source: "upload";
+      id: string;
+      /** Nombre para mostrar y para el botón de quitar (el del archivo). */
+      name: string;
+      file: File;
+      mediaType: MessageType;
+      previewUrl: string | null;
+    }
+  | {
+      source: "stored";
+      id: string;
+      name: string;
+      path: string;
+      mediaType: "image";
+      previewUrl: string;
+    };
+
+/** Solo un `blob:` hay que liberarlo; las fotos guardadas apuntan a una ruta del CRM. */
+function revokePreview(pending: PendingFile) {
+  if (pending.source === "upload" && pending.previewUrl) URL.revokeObjectURL(pending.previewUrl);
 }
 
 /**
@@ -117,10 +144,10 @@ interface PendingFile {
  * los nombres ya distinguen, se deja el nombre limpio.
  */
 function etiquetaQuitar(pending: PendingFile, index: number, todos: PendingFile[]): string {
-  const repetido = todos.some((otro) => otro.id !== pending.id && otro.file.name === pending.file.name);
+  const repetido = todos.some((otro) => otro.id !== pending.id && otro.name === pending.name);
   return repetido
-    ? `Quitar ${pending.file.name} (${index + 1} de ${todos.length})`
-    : `Quitar ${pending.file.name}`;
+    ? `Quitar ${pending.name} (${index + 1} de ${todos.length})`
+    : `Quitar ${pending.name}`;
 }
 
 /**
@@ -284,7 +311,7 @@ export function Composer({
   // Libera los object URLs de preview al desmontar o al reemplazar la lista.
   useEffect(() => {
     return () => {
-      pendingFiles.forEach((p) => p.previewUrl && URL.revokeObjectURL(p.previewUrl));
+      pendingFiles.forEach(revokePreview);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -354,22 +381,42 @@ export function Composer({
    * URL) y el asesor lo ve antes de enviar, así que se avisa con un toast en
    * vez de bloquear el pegado.
    */
-  function handleSelectQuickReply(content: string) {
-    const { text: resolved, missing } = resolveCatalogMarkers(content, catalogLinks);
-    setText((prev) => (prev ? `${prev}\n${resolved}` : resolved));
+  function handleSelectQuickReply(reply: QuickReply) {
+    // Una respuesta de SOLO fotos (14/10/2026) no trae texto: no se toca el
+    // cuadro, ni siquiera para agregarle un salto de línea vacío.
+    if (reply.content.trim()) {
+      const { text: resolved, missing } = resolveCatalogMarkers(reply.content, catalogLinks);
+      setText((prev) => (prev ? `${prev}\n${resolved}` : resolved));
+      for (const key of missing) {
+        toast.warning(`El catálogo «${key}» no está configurado`);
+      }
+    }
     setIsQuickRepliesOpen(false);
-    for (const key of missing) {
-      toast.warning(`El catálogo «${key}» no está configurado`);
+
+    // Las fotos entran como adjuntos pendientes, quitables antes de enviar. El
+    // composer no tiene tope de adjuntos, así que no hay nada que respetar acá.
+    if (reply.mediaPaths.length > 0) {
+      const stored: PendingFile[] = reply.mediaPaths.map((path, index) => ({
+        source: "stored",
+        id: `${Date.now()}-${Math.random().toString(36).slice(2)}-${index}`,
+        name: `${reply.label} · foto ${index + 1}`,
+        path,
+        mediaType: "image",
+        previewUrl: mediaUrlFor(path),
+      }));
+      setPendingFiles((prev) => [...prev, ...stored]);
     }
   }
 
   function addFiles(files: File[]) {
     if (files.length === 0) return;
 
-    const next: PendingFile[] = files.map((file) => {
+    const next: PendingFile[] = files.map((file): PendingFile => {
       const mediaType = mediaTypeFromMime(file.type);
       return {
+        source: "upload",
         id: `${Date.now()}-${Math.random().toString(36).slice(2)}`,
+        name: file.name,
         file,
         mediaType,
         previewUrl: mediaType === "image" || mediaType === "video" ? URL.createObjectURL(file) : null,
@@ -442,6 +489,10 @@ export function Composer({
     return () => document.removeEventListener("paste", onDocumentPaste);
   }, [withinWindow]);
 
+  // Solo los archivos que de verdad suben cuentan en "Subiendo N de M": las
+  // fotos guardadas de una respuesta rápida salen sin subirse (14/10/2026).
+  const uploadTotal = pendingFiles.filter((p) => p.source === "upload").length;
+
   // Lo que puede abrirse en grande: los adjuntos con vista previa. Se guarda
   // qué posición ocupa cada uno para que abrir el tercero abra el tercero.
   const previewItems: MediaItem[] = [];
@@ -452,20 +503,20 @@ export function Composer({
     previewItems.push({
       url: pending.previewUrl,
       type: pending.mediaType === "video" ? "video" : "image",
-      caption: pending.file.name,
+      caption: pending.name,
     });
   }
 
   function removePendingFile(id: string) {
     setPendingFiles((prev) => {
       const target = prev.find((p) => p.id === id);
-      if (target?.previewUrl) URL.revokeObjectURL(target.previewUrl);
+      if (target) revokePreview(target);
       return prev.filter((p) => p.id !== id);
     });
   }
 
   function clearPendingFiles() {
-    pendingFiles.forEach((p) => p.previewUrl && URL.revokeObjectURL(p.previewUrl));
+    pendingFiles.forEach(revokePreview);
     setPendingFiles([]);
   }
 
@@ -486,7 +537,14 @@ export function Composer({
       // fotos fueran cinco esperas seguidas. En paralelo es una sola espera,
       // la de la más lenta.
       const uploaded = await Promise.all(
-        pendingFiles.map(async ({ file, mediaType }) => {
+        pendingFiles.map(async (pending) => {
+          // Las fotos de una respuesta rápida ya viven en el bucket (14/10/2026):
+          // no se suben otra vez, se manda la misma URL propia del CRM que
+          // `/api/messages/send` firma para Meta del lado servidor.
+          if (pending.source === "stored") {
+            return { url: mediaUrlFor(pending.path), mediaType: pending.mediaType };
+          }
+          const { file, mediaType } = pending;
           // Id aleatorio y no el nombre del archivo: el bucket es privado,
           // pero una ruta adivinable seguiría siendo una pista de más.
           const extension = file.name.includes(".") ? `.${file.name.split(".").pop()}` : "";
@@ -649,9 +707,9 @@ export function Composer({
         </div>
       )}
 
-      {pendingFiles.length > 0 && isUploading && (
+      {uploadTotal > 0 && isUploading && (
         <p className="crm-attach-progress lm-num" role="status">
-          Subiendo {Math.min(uploadedCount + 1, pendingFiles.length)} de {pendingFiles.length}…
+          Subiendo {Math.min(uploadedCount + 1, uploadTotal)} de {uploadTotal}…
         </p>
       )}
 
@@ -668,7 +726,7 @@ export function Composer({
               {!p.previewUrl && (
                 <div className="crm-attach-doc">
                   <FileText size={16} />
-                  <span>{p.file.name}</span>
+                  <span>{p.name}</span>
                 </div>
               )}
               <button

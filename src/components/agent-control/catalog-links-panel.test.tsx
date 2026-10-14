@@ -49,7 +49,7 @@ function playbook(overrides: Partial<Playbook> = {}): Playbook {
 }
 
 function quickReply(overrides: Partial<QuickReply> = {}): QuickReply {
-  return { id: "qr-1", label: "Catálogo", content: "Acá va el catálogo", ownerId: null, ...overrides };
+  return { id: "qr-1", label: "Catálogo", content: "Acá va el catálogo", ownerId: null, mediaPaths: [], ...overrides };
 }
 
 const onCreate = vi.fn(async () => {});

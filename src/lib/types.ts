@@ -449,6 +449,13 @@ export interface QuickReply {
    * ese asesor (la RLS de la migración 20261001010000 ya filtra los ajenos).
    */
   ownerId: string | null;
+  /**
+   * Fotos de la respuesta (14/10/2026, "Respuestas rápidas con fotos"): hasta 10
+   * rutas `quick-replies/…` dentro del bucket `whatsapp-media`, en el orden en
+   * que salen. `[]` = solo texto. Al usarla en el chat entran como adjuntos
+   * pendientes que el asesor puede quitar antes de enviar.
+   */
+  mediaPaths: string[];
 }
 
 /**

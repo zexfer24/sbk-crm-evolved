@@ -1,11 +1,11 @@
 /** @vitest-environment jsdom */
-import { describe, expect, it, vi } from "vitest";
-import { render, screen } from "@testing-library/react";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { ComponentProps } from "react";
 import { QuickRepliesModal } from "@/components/chat/quick-replies-modal";
 import type { CatalogLink, QuickReply } from "@/lib/types";
-import { createQuickReply, deleteQuickReply, updateQuickReply } from "@/lib/mutations";
+import { createQuickReply, deleteQuickReply, updateQuickReply, uploadQuickReplyPhoto } from "@/lib/mutations";
 import { ConfigWriteDeniedError } from "@/lib/config-write";
 
 // ---------------------------------------------------------------------------
@@ -32,6 +32,7 @@ vi.mock("@/lib/mutations", () => ({
   createQuickReply: vi.fn(),
   updateQuickReply: vi.fn(),
   deleteQuickReply: vi.fn(),
+  uploadQuickReplyPhoto: vi.fn(),
 }));
 
 function crearUsuario() {
@@ -62,6 +63,7 @@ function mensajeRapido(overrides: Partial<QuickReply> = {}): QuickReply {
     label: "Catálogo general",
     content: "Acá va nuestro catálogo 👇",
     ownerId: null,
+    mediaPaths: [],
     ...overrides,
   };
 }
@@ -410,12 +412,12 @@ describe("QuickRepliesModal — pestañas «Compartidos» y «Mis mensajes» (T5
 
     // Ordenado por título: «Buenas tardes» va antes que «Buenos días».
     await user.click(screen.getAllByRole("button", { name: "Usar" })[0]);
-    expect(onSelect).toHaveBeenLastCalledWith("Buenas tardes, soy Ana.");
+    expect(onSelect).toHaveBeenLastCalledWith(expect.objectContaining({ content: "Buenas tardes, soy Ana." }));
 
     await user.click(screen.getByRole("tab", { name: /^Compartidos/ }));
     // Ordenado por título: «Garantía» es la primera.
     await user.click(screen.getAllByRole("button", { name: "Usar" })[0]);
-    expect(onSelect).toHaveBeenLastCalledWith("Tiene 30 días.");
+    expect(onSelect).toHaveBeenLastCalledWith(expect.objectContaining({ content: "Tiene 30 días." }));
   });
 });
 
@@ -442,7 +444,8 @@ describe("QuickRepliesModal — crear un mensaje personal o compartido (T5b)", (
       expect.anything(),
       "Buenas noches",
       "Buenas noches, soy Ana.",
-      ASESOR_ID
+      ASESOR_ID,
+      []
     );
   });
 
@@ -455,7 +458,7 @@ describe("QuickRepliesModal — crear un mensaje personal o compartido (T5b)", (
     expect(screen.getByRole("checkbox", { name: "Solo para mí" })).not.toBeChecked();
     await llenarYGuardar(user);
 
-    expect(createQuickReply).toHaveBeenCalledWith(expect.anything(), "Buenas noches", "Buenas noches, soy Ana.", null);
+    expect(createQuickReply).toHaveBeenCalledWith(expect.anything(), "Buenas noches", "Buenas noches, soy Ana.", null, []);
   });
 
   it("desmarcar «Solo para mí» en «Mis mensajes» crea un compartido (null)", async () => {
@@ -467,7 +470,7 @@ describe("QuickRepliesModal — crear un mensaje personal o compartido (T5b)", (
     await user.click(screen.getByRole("checkbox", { name: "Solo para mí" }));
     await llenarYGuardar(user);
 
-    expect(createQuickReply).toHaveBeenCalledWith(expect.anything(), "Buenas noches", "Buenas noches, soy Ana.", null);
+    expect(createQuickReply).toHaveBeenCalledWith(expect.anything(), "Buenas noches", "Buenas noches, soy Ana.", null, []);
   });
 
   it("marcar «Solo para mí» en «Compartidos» crea un personal", async () => {
@@ -483,7 +486,8 @@ describe("QuickRepliesModal — crear un mensaje personal o compartido (T5b)", (
       expect.anything(),
       "Buenas noches",
       "Buenas noches, soy Ana.",
-      ASESOR_ID
+      ASESOR_ID,
+      []
     );
   });
 
@@ -496,7 +500,7 @@ describe("QuickRepliesModal — crear un mensaje personal o compartido (T5b)", (
 
     expect(screen.queryByRole("checkbox", { name: "Solo para mí" })).not.toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "Guardar cambios" }));
-    expect(updateQuickReply).toHaveBeenCalledWith(expect.anything(), "p1", "Buenos días", expect.any(String));
+    expect(updateQuickReply).toHaveBeenCalledWith(expect.anything(), "p1", "Buenos días", expect.any(String), []);
   });
 
   it("un rechazo por permiso muestra el mensaje propio en el toast, no el genérico", async () => {
@@ -521,5 +525,225 @@ describe("QuickRepliesModal — crear un mensaje personal o compartido (T5b)", (
     await user.click(screen.getByRole("button", { name: "Borrar" }));
 
     expect(toast.danger).toHaveBeenCalledWith("No se pudo borrar el mensaje rápido.");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 14/10/2026, "Respuestas rápidas con fotos": hasta 10 fotos JPG/PNG (≤ 5 MB)
+// por respuesta. El modal las sube al elegirlas (Guardar espera a que
+// terminen), muestra miniaturas con su ✕ y permite guardar una respuesta de
+// SOLO fotos. El input es `hidden` y tiene `accept`, y `user.upload` respeta
+// `accept` (filtraría justo los tipos inválidos que se quieren probar), así
+// que los archivos se entregan con `fireEvent.change`.
+// ---------------------------------------------------------------------------
+describe("QuickRepliesModal — fotos (14/10/2026)", () => {
+  const foto = (name = "casco.jpg", type = "image/jpeg", size = 1000) => {
+    const file = new File([new Uint8Array(1)], name, { type });
+    Object.defineProperty(file, "size", { value: size });
+    return file;
+  };
+
+  function inputDeFotos(container: HTMLElement) {
+    return container.ownerDocument.querySelector('input[type="file"]') as HTMLInputElement;
+  }
+
+  function elegir(container: HTMLElement, files: File[]) {
+    fireEvent.change(inputDeFotos(container), { target: { files } });
+  }
+
+  const conFotos = (n: number) =>
+    mensajeRapido({
+      id: "f1",
+      label: "Cascos",
+      content: "Mira estos",
+      mediaPaths: Array.from({ length: n }, (_, i) => `quick-replies/${i}.jpg`),
+    });
+
+  async function toastDanger() {
+    const { toast } = await import("@heroui/react");
+    return vi.mocked(toast.danger);
+  }
+
+  beforeEach(async () => {
+    vi.mocked(uploadQuickReplyPhoto).mockReset();
+    vi.mocked(createQuickReply).mockClear();
+    vi.mocked(updateQuickReply).mockClear();
+    (await toastDanger()).mockClear();
+  });
+
+  it("el input solo ofrece JPG y PNG, admite varios y el botón «Agregar fotos» lo abre", async () => {
+    const user = crearUsuario();
+    const { container } = renderModal();
+    await abrirFormulario(user);
+
+    const input = inputDeFotos(container);
+    expect(input.accept).toBe("image/jpeg,image/png");
+    expect(input.multiple).toBe(true);
+    const clic = vi.spyOn(input, "click");
+    await user.click(screen.getByRole("button", { name: "Agregar fotos" }));
+    expect(clic).toHaveBeenCalled();
+  });
+
+  it("al elegir fotos las sube y muestra su miniatura con la URL propia del CRM", async () => {
+    const user = crearUsuario();
+    vi.mocked(uploadQuickReplyPhoto)
+      .mockResolvedValueOnce("quick-replies/a.jpg")
+      .mockResolvedValueOnce("quick-replies/b.png");
+    const { container } = renderModal();
+    await abrirFormulario(user);
+
+    const a = foto("a.jpg");
+    const b = foto("b.png", "image/png");
+    elegir(container, [a, b]);
+
+    await waitFor(() => expect(screen.getAllByRole("img")).toHaveLength(2));
+    expect(uploadQuickReplyPhoto).toHaveBeenCalledWith(expect.anything(), a);
+    expect(uploadQuickReplyPhoto).toHaveBeenCalledWith(expect.anything(), b);
+    expect(screen.getByAltText("Foto 1 de la respuesta rápida")).toHaveAttribute(
+      "src",
+      "/api/media/quick-replies/a.jpg"
+    );
+    expect(screen.getByAltText("Foto 2 de la respuesta rápida")).toHaveAttribute(
+      "src",
+      "/api/media/quick-replies/b.png"
+    );
+    expect(screen.getByText("2 de 10")).toBeInTheDocument();
+  });
+
+  it("mientras sube dice «Subiendo…» y deshabilita Guardar", async () => {
+    const user = crearUsuario();
+    let terminar!: (ruta: string) => void;
+    vi.mocked(uploadQuickReplyPhoto).mockReturnValueOnce(
+      new Promise<string>((resolve) => {
+        terminar = resolve;
+      })
+    );
+    const { container } = renderModal();
+    await abrirFormulario(user);
+    await user.type(screen.getByLabelText("Título"), "Cascos");
+
+    elegir(container, [foto()]);
+
+    expect(await screen.findByText("Subiendo…")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Agregar" })).toBeDisabled();
+
+    terminar("quick-replies/a.jpg");
+    await waitFor(() => expect(screen.queryByText("Subiendo…")).not.toBeInTheDocument());
+    expect(screen.getByRole("button", { name: "Agregar" })).toBeEnabled();
+  });
+
+  it("un tipo no admitido muestra el error y no sube nada", async () => {
+    const user = crearUsuario();
+    const { container } = renderModal();
+    await abrirFormulario(user);
+
+    elegir(container, [foto("a.webp", "image/webp")]);
+
+    expect(await toastDanger()).toHaveBeenCalledWith("Solo fotos JPG o PNG.");
+    expect(uploadQuickReplyPhoto).not.toHaveBeenCalled();
+  });
+
+  it("una foto de más de 5 MB muestra el error con su nombre y no sube nada", async () => {
+    const user = crearUsuario();
+    const { container } = renderModal();
+    await abrirFormulario(user);
+
+    elegir(container, [foto("enorme.jpg", "image/jpeg", 5 * 1024 * 1024 + 1)]);
+
+    expect(await toastDanger()).toHaveBeenCalledWith("La foto «enorme.jpg» pesa más de 5 MB.");
+    expect(uploadQuickReplyPhoto).not.toHaveBeenCalled();
+  });
+
+  it("pasarse de 10 (contando las que ya tiene) muestra el error y no sube nada", async () => {
+    const user = crearUsuario();
+    const { container } = renderModal({ quickReplies: [conFotos(9)] });
+    await user.click(screen.getByRole("button", { name: "Editar" }));
+    expect(screen.getByText("9 de 10")).toBeInTheDocument();
+
+    elegir(container, [foto("a.jpg"), foto("b.jpg")]);
+
+    expect(await toastDanger()).toHaveBeenCalledWith("Máximo 10 fotos por respuesta rápida.");
+    expect(uploadQuickReplyPhoto).not.toHaveBeenCalled();
+  });
+
+  it("quitar una foto la saca de la grilla y se guarda sin ella", async () => {
+    const user = crearUsuario();
+    renderModal({ quickReplies: [conFotos(2)] });
+    await user.click(screen.getByRole("button", { name: "Editar" }));
+    expect(screen.getAllByRole("img")).toHaveLength(2);
+
+    await user.click(screen.getByRole("button", { name: "Quitar foto 1" }));
+
+    expect(screen.getAllByRole("img")).toHaveLength(1);
+    expect(screen.getByText("1 de 10")).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Guardar cambios" }));
+    expect(updateQuickReply).toHaveBeenCalledWith(expect.anything(), "f1", "Cascos", "Mira estos", [
+      "quick-replies/1.jpg",
+    ]);
+  });
+
+  it("guardar con SOLO fotos (sin texto) crea con content vacío y sus mediaPaths", async () => {
+    const user = crearUsuario();
+    vi.mocked(uploadQuickReplyPhoto).mockResolvedValueOnce("quick-replies/a.jpg");
+    const { container } = renderModal();
+    await abrirFormulario(user);
+    await user.type(screen.getByLabelText("Título"), "Cascos");
+    elegir(container, [foto()]);
+    await waitFor(() => expect(screen.getAllByRole("img")).toHaveLength(1));
+
+    await user.click(screen.getByRole("button", { name: "Agregar" }));
+
+    expect(createQuickReply).toHaveBeenCalledWith(expect.anything(), "Cascos", "", null, ["quick-replies/a.jpg"]);
+    expect(await toastDanger()).not.toHaveBeenCalled();
+  });
+
+  it("sin texto ni fotos no guarda y avisa", async () => {
+    const user = crearUsuario();
+    renderModal();
+    await abrirFormulario(user);
+    await user.type(screen.getByLabelText("Título"), "Vacío");
+
+    await user.click(screen.getByRole("button", { name: "Agregar" }));
+
+    expect(createQuickReply).not.toHaveBeenCalled();
+    expect(await toastDanger()).toHaveBeenCalledWith("Escribe el mensaje o agrega al menos una foto.");
+  });
+
+  it("si una subida falla, avisa y conserva las que sí subieron", async () => {
+    const user = crearUsuario();
+    vi.mocked(uploadQuickReplyPhoto)
+      .mockResolvedValueOnce("quick-replies/a.jpg")
+      .mockRejectedValueOnce(new Error("bucket caído"));
+    const { container } = renderModal();
+    await abrirFormulario(user);
+
+    elegir(container, [foto("a.jpg"), foto("b.jpg")]);
+
+    const danger = await toastDanger();
+    await waitFor(() => expect(danger).toHaveBeenCalledWith("bucket caído"));
+    expect(screen.getAllByRole("img")).toHaveLength(1);
+  });
+
+  it("la lista marca con «📷 N» las respuestas que llevan fotos, y solo esas", () => {
+    renderModal({ quickReplies: [conFotos(3), mensajeRapido({ id: "s1", label: "Sin fotos" })] });
+
+    expect(screen.getByLabelText("3 fotos")).toHaveTextContent("📷 3");
+    expect(screen.getAllByText(/📷/)).toHaveLength(1);
+  });
+
+  it("con una sola foto el nombre accesible va en singular", () => {
+    renderModal({ quickReplies: [conFotos(1)] });
+
+    expect(screen.getByLabelText("1 foto")).toHaveTextContent("📷 1");
+  });
+
+  it("«Usar» entrega la respuesta ENTERA (con sus fotos), no solo el texto", async () => {
+    const user = crearUsuario();
+    const respuesta = conFotos(2);
+    const { onSelect } = renderModal({ quickReplies: [respuesta] });
+
+    await user.click(screen.getByRole("button", { name: "Usar" }));
+
+    expect(onSelect).toHaveBeenCalledWith(respuesta);
   });
 });

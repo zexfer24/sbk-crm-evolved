@@ -36,6 +36,12 @@ import { revealsIdentity, type IdentityMatch } from "@/lib/ai/identity-guard";
 // tareas del mismo plan lo editan en paralelo.
 import type { Message, Sticker } from "@/lib/types";
 import { MEDIA_BUCKET, mediaUrlFor, storagePathFromUrl } from "@/lib/storage";
+import {
+  QUICK_REPLY_MAX_PHOTOS,
+  isQuickReplyPath,
+  quickReplyPhotoPath,
+  validateQuickReplyPhotos,
+} from "@/lib/quick-reply-media";
 import { isAnimatedWebp, isWithinStickerLimit, stickerRejectionMessage } from "@/lib/sticker-image";
 import { buildInvoiceDraft, formatInvoiceNumber } from "@/lib/invoices";
 import { fetchOrderItems, INVOICE_SELECT, mapInvoice, type RawInvoice } from "@/lib/invoices-data";
@@ -1131,18 +1137,44 @@ export async function updateBusinessHours(supabase: SupabaseClient, agent: Agent
 }
 
 /**
+ * Reglas de las fotos de una respuesta rápida (14/10/2026), las mismas del
+ * CHECK de la base (máx. 10, rutas `quick-replies/…` sin `..`) más una que la
+ * base no puede saber: sin fotos el texto sigue siendo obligatorio, con al
+ * menos una el texto puede ir vacío (una respuesta de solo fotos). Se valida
+ * ANTES de tocar la base para que el asesor lea un mensaje claro y no un 23514.
+ */
+function assertQuickReplyContent(content: string, mediaPaths: string[]) {
+  if (mediaPaths.length > QUICK_REPLY_MAX_PHOTOS) {
+    throw new Error(`Máximo ${QUICK_REPLY_MAX_PHOTOS} fotos por respuesta rápida.`);
+  }
+  if (!mediaPaths.every(isQuickReplyPath)) {
+    throw new Error("Una de las fotos tiene una ruta inválida.");
+  }
+  if (!content.trim() && mediaPaths.length === 0) {
+    throw new Error("Escribe el mensaje o agrega al menos una foto.");
+  }
+}
+
+/**
  * `ownerId` (T5b, "La ronda del cliente", 30/9/2026): `null` = compartido (lo
  * ven todos los asesores, como hasta hoy); un id = personal, solo ese asesor.
  * Un INSERT con el `owner_id` de OTRO asesor lo rechaza la RLS con 42501, así
  * que no hace falta verificar filas acá.
+ *
+ * `mediaPaths` (14/10/2026): rutas de fotos ya subidas con
+ * `uploadQuickReplyPhoto`. Una respuesta puede ser solo fotos (`content` vacío).
  */
 export async function createQuickReply(
   supabase: SupabaseClient,
   label: string,
   content: string,
-  ownerId: string | null = null
+  ownerId: string | null = null,
+  mediaPaths: string[] = []
 ) {
-  const { error } = await supabase.from("quick_replies").insert({ label, content, owner_id: ownerId });
+  assertQuickReplyContent(content, mediaPaths);
+  const { error } = await supabase
+    .from("quick_replies")
+    .insert({ label, content: content.trim(), owner_id: ownerId, media_paths: mediaPaths });
   if (error) throw error;
 }
 
@@ -1152,22 +1184,48 @@ export async function createQuickReply(
  * RLS, editar el mensaje personal de otro asesor, o uno ya borrado, afecta 0
  * filas SIN error: `.select("id")` + `assertRowsAffected` lo vuelve un error
  * visible en vez de un "guardado" falso (T7, 28/9/2026, mismo mecanismo).
+ *
+ * `mediaPaths` es OBLIGATORIO (14/10/2026) y reemplaza la lista entera: un
+ * valor por omisión de `[]` borraría las fotos de una respuesta en silencio si
+ * un llamador futuro se olvidara de pasarlo.
  */
 export async function updateQuickReply(
   supabase: SupabaseClient,
   id: string,
   label: string,
-  content: string
+  content: string,
+  mediaPaths: string[]
 ) {
+  assertQuickReplyContent(content, mediaPaths);
   const { data, error } = await supabase
     .from("quick_replies")
-    .update({ label, content })
+    .update({ label, content: content.trim(), media_paths: mediaPaths })
     .eq("id", id)
     .select("id");
   if (error) throw error;
   assertRowsAffected(data, QUICK_REPLY_NOT_YOURS_MESSAGE);
 }
 
+/**
+ * Sube UNA foto de una respuesta rápida al bucket privado y devuelve su ruta
+ * (`quick-replies/<uuid>.jpg|png`), la que va en `media_paths`. Valida tipo y
+ * peso aquí también (no solo en el modal): Meta solo acepta JPEG/PNG de hasta
+ * 5 MB como `image`, y descubrirlo cuando el cliente no recibe la foto es tarde.
+ *
+ * Las fotos NUNCA se borran del bucket (ni al quitarlas de la respuesta ni al
+ * borrar la respuesta): un mensaje ya enviado guarda `media_url` apuntando a
+ * esta misma ruta y borrarla dejaría la burbuja con una imagen rota.
+ */
+export async function uploadQuickReplyPhoto(supabase: SupabaseClient, file: File): Promise<string> {
+  const rejection = validateQuickReplyPhotos(0, [file]);
+  if (rejection) throw new Error(rejection);
+  const path = quickReplyPhotoPath(file.type);
+  const { error } = await supabase.storage.from(MEDIA_BUCKET).upload(path, file, { contentType: file.type });
+  if (error) throw error;
+  return path;
+}
+
+/** `deleteQuickReply` NO toca storage: ver `uploadQuickReplyPhoto`. */
 export async function deleteQuickReply(supabase: SupabaseClient, id: string) {
   const { data, error } = await supabase.from("quick_replies").delete().eq("id", id).select("id");
   if (error) throw error;

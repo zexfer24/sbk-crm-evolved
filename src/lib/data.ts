@@ -233,6 +233,8 @@ interface RawQuickReply {
   label: string;
   content: string;
   owner_id: string | null;
+  /** Rutas `quick-replies/…` (14/10/2026). Defensivo: puede faltar o no ser un arreglo. */
+  media_paths?: unknown;
 }
 
 interface RawHourlyActivity {
@@ -463,7 +465,17 @@ function mapMessage(row: RawMessage): Message {
 }
 
 function mapQuickReply(row: RawQuickReply): QuickReply {
-  return { id: row.id, label: row.label, content: row.content, ownerId: row.owner_id ?? null };
+  return {
+    id: row.id,
+    label: row.label,
+    content: row.content,
+    ownerId: row.owner_id ?? null,
+    // Defensivo: la columna es `not null default '{}'`, pero un select viejo o
+    // un fake sin ella no debe tumbar la bandeja entera por un `.map` de null.
+    mediaPaths: Array.isArray(row.media_paths)
+      ? row.media_paths.filter((path): path is string => typeof path === "string")
+      : [],
+  };
 }
 
 function mapNote(row: RawNote): Note {
@@ -2187,7 +2199,7 @@ export async function fetchAgentMetrics(supabase: SupabaseClient, days = 30): Pr
 export async function fetchQuickReplies(supabase: SupabaseClient): Promise<QuickReply[]> {
   const { data, error } = await supabase
     .from("quick_replies")
-    .select("id, label, content, owner_id")
+    .select("id, label, content, owner_id, media_paths")
     .order("label");
   if (error) throw error;
   return (data as RawQuickReply[]).map(mapQuickReply);

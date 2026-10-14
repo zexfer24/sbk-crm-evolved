@@ -636,6 +636,51 @@
   cursor: pointer;
 }
 
+/* Fotos de una respuesta rápida (14/10/2026, "Respuestas rápidas con fotos"):
+   grilla compacta de miniaturas de 64 px dentro del formulario del modal. Se
+   envuelve sola (hasta 10 fotos) y cabe en 390 px de ancho sin desbordar: la
+   lista nunca fija un ancho, solo reparte las miniaturas en filas. */
+.qr-photos {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.qr-photo {
+  position: relative;
+  width: 64px;
+  height: 64px;
+  overflow: hidden;
+  border: 1px solid var(--lm-line);
+  border-radius: 10px;
+  background: var(--lm-sunken);
+}
+
+.qr-photo img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.qr-photo-remove {
+  position: absolute;
+  top: 3px;
+  right: 3px;
+  display: grid;
+  place-items: center;
+  width: 18px;
+  height: 18px;
+  border: 0;
+  border-radius: 999px;
+  background: rgba(0, 0, 0, 0.55);
+  color: #ffffff;
+  cursor: pointer;
+}
+
 /* Burbujas
    La esquina recortada del lado del emisor es lo que indica quién habla; el
    color solo distingue cliente, IA, asesor y nota interna. */
