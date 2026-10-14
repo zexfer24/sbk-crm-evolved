@@ -21,8 +21,10 @@
 --      can_read_inventory() es true para los cuatro roles y false para quien
 --      no tiene fila en agents.
 --   3. caja lee products, exchange_rates, product_compatibility y las seis
---      tablas del catálogo de motos, `tarifa_mrw_usd` y el campo calculado
---      `tarifa_envio_usd`, y SU fila de agents (ninguna otra).
+--      tablas del catálogo de motos y SU fila de agents (ninguna otra). NO
+--      recibe la tarifa de envío: `tarifa_mrw_usd` y el campo calculado
+--      `tarifa_envio_usd` le dan null (20261014030000, 14/10/2026: ve solo el
+--      precio promoción).
 --   4. caja no ve NI UNA FILA de ninguna otra tabla con RLS de `public`
 --      (barrido dinámico: una tabla nueva que olvide el candado lo pone en
 --      rojo) y no sube archivos al bucket de multimedia.
@@ -240,18 +242,31 @@ begin
   end loop;
 end $$;
 
--- Tarifa de envío: la función y el campo calculado sobre products.
+-- Tarifa de envío: la caja NO la recibe (20261014030000, 14/10/2026: ve solo
+-- el precio promoción). Recibe null, no un error -- `PRODUCT_SELECT` pide
+-- `tarifa_envio_usd` siempre y un fallo tumbaría el Inventario entero -- y
+-- sigue leyendo la fila del producto con precio, existencia y peso.
 do $$
 declare
   t numeric;
+  v_visible integer;
+  v_precio numeric;
+  v_stock integer;
+  v_peso numeric;
 begin
   t := public.tarifa_mrw_usd(1.0);
-  if t is null then
-    insert into _errores(msg) values ('caja: tarifa_mrw_usd(1.0) devolvió null.');
+  if t is not null then
+    insert into _errores(msg) values (format('caja: tarifa_mrw_usd(1.0) devolvió %s; la caja no debe recibir la tarifa (se esperaba null).', t));
   end if;
   select public.tarifa_envio_usd(p) into t from public.products p where p.id = 'e9e9e9e9-1000-0000-0000-000000000001';
-  if t is null then
-    insert into _errores(msg) values ('caja: tarifa_envio_usd(producto de 1 kg) devolvió null (¿no ve el producto?).');
+  if t is not null then
+    insert into _errores(msg) values (format('caja: tarifa_envio_usd(producto de 1 kg) devolvió %s; se esperaba null.', t));
+  end if;
+  select count(*), max(p.price), max(p.stock_quantity), max(p.weight_kg)
+    into v_visible, v_precio, v_stock, v_peso
+    from public.products p where p.id = 'e9e9e9e9-1000-0000-0000-000000000001';
+  if v_visible <> 1 or v_precio is null or v_stock is null or v_peso is null then
+    insert into _errores(msg) values (format('caja: debía seguir leyendo el producto de 1 kg con precio, existencia y peso (filas=%s, precio=%s, stock=%s, peso=%s).', v_visible, v_precio, v_stock, v_peso));
   end if;
 end $$;
 

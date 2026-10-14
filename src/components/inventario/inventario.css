@@ -63,6 +63,19 @@
   border-top: 1px solid var(--lm-line);
 }
 
+/*
+ * Fila de CAJA (14/10/2026, plan "La caja no ve el precio estándar"): sin la
+ * columna del Precio estándar, así que su plantilla es OTRA —seis columnas
+ * fijas, las mismas menos la de 150px—. `display: none` sobre el campo no
+ * serviría (la plantilla de siete seguiría repartiendo columnas) y sacar el
+ * hijo sin cambiar la plantilla correría Peso, estado y acciones una columna
+ * a la izquierda (trampa del 10/9/2026). Más específica que `.inv-row`, así
+ * que cada media query que redefine la grilla trae también su variante.
+ */
+.inv-row[data-solo-lectura="true"] {
+  grid-template-columns: minmax(0, 1fr) 100px 150px 110px 160px 140px;
+}
+
 .inv-row:hover {
   background: var(--lm-sunken);
 }
@@ -363,6 +376,11 @@
     grid-template-columns: minmax(0, 1fr) 100px 150px 150px 110px;
   }
 
+  /* Caja: sin la columna del estándar (ver `.inv-row[data-solo-lectura]`, arriba). */
+  .inv-row[data-solo-lectura="true"] {
+    grid-template-columns: minmax(0, 1fr) 100px 150px 110px;
+  }
+
   .inv-status {
     grid-column: 1 / -1;
     justify-self: start;
@@ -382,6 +400,11 @@
   /* Cuatro campos (Stock, Promoción, Estándar, Peso): dos columnas dejan
      los pares Stock/Promoción y Estándar/Peso (12/10/2026). */
   .inv-row {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  /* Caja: tres campos (Stock, Promoción, Peso) en las mismas dos columnas; el Peso queda solo en su fila. */
+  .inv-row[data-solo-lectura="true"] {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
