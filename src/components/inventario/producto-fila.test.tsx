@@ -516,11 +516,40 @@ describe("ProductoFila — solo lectura (rol caja)", () => {
     expect(screen.getByText("Peso (kg)").closest(".inv-field")).toHaveTextContent("—");
   });
 
-  it("en lugar del botón, el Precio estándar dice «Sin peso cargado» como dato", () => {
+  it("sin peso, la caja no ve ni el botón de peso ni el hueco del precio estándar", () => {
     render(<ProductoFila product={product({ weightKg: null, shippingFeeUsd: null })} bcvRate={40} soloLectura />);
 
     expect(screen.queryByRole("button", { name: /^Falta el peso: cargalo\s→$/ })).toBeNull();
-    expect(screen.getByText("Sin peso cargado")).toHaveAttribute("data-empty", "true");
+    expect(screen.queryByText("Sin peso cargado")).toBeNull();
+    expect(screen.queryByText(/Precio estándar/)).toBeNull();
+  });
+
+  it("con tarifa MRW cargada, la caja ve solo el precio promoción: ni columna estándar ni «incluye envío MRW»", () => {
+    const { container } = render(
+      <ProductoFila product={product({ weightKg: 1, shippingFeeUsd: 1.4 })} bcvRate={40} soloLectura />
+    );
+
+    expect(screen.getByText("Precio promoción")).toBeInTheDocument();
+    expect(screen.queryByText("Precio estándar")).toBeNull();
+    expect(screen.queryByText(/incluye envío MRW/)).toBeNull();
+    expect(screen.queryByLabelText(/Precio estándar de/)).toBeNull();
+    expect(container.innerHTML).not.toMatch(/est[aá]ndar/i);
+    // Quedan los tres campos de la fila de caja: Stock, Precio promoción y Peso.
+    expect(container.querySelectorAll(".inv-field")).toHaveLength(3);
+    expect(container.querySelector(".inv-row")).toHaveAttribute("data-solo-lectura", "true");
+  });
+
+  it("el título del badge «Sin peso» no nombra el precio estándar para la caja, pero sí para los demás roles", () => {
+    const { rerender } = render(<ProductoFila product={product({ weightKg: null })} bcvRate={40} soloLectura />);
+    const titleCaja = screen.getByText("Sin peso").closest(".ac-badge")?.getAttribute("title") ?? "";
+    expect(titleCaja).toBe("Cashea exige el peso para el envío gratis");
+    expect(titleCaja).not.toMatch(/est[aá]ndar/i);
+
+    rerender(<ProductoFila product={product({ weightKg: null })} bcvRate={40} />);
+    expect(screen.getByText("Sin peso").closest(".ac-badge")).toHaveAttribute(
+      "title",
+      "Cashea exige el peso para el envío gratis, y sin peso no hay precio estándar"
+    );
   });
 
   it("nunca guarda: ni tabulando por la fila", async () => {

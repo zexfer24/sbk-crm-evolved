@@ -55,7 +55,8 @@ export function ProductoFila({
   /**
    * Rol `caja` (13/10/2026): la base solo le deja leer el inventario, así que
    * el peso se muestra como texto —sin input, sin guardado ni botón «Falta el
-   * peso»—. Cashea y el carrito siguen: son consulta, no escritura.
+   * peso»—. Cashea y el carrito siguen: son consulta, no escritura. Desde el
+   * 14/10/2026 tampoco ve el Precio estándar (la columna no se renderiza).
    */
   soloLectura?: boolean;
 }) {
@@ -157,7 +158,11 @@ export function ProductoFila({
   }
 
   return (
-    <li className="inv-row" data-inactive={product.isActive ? undefined : "true"}>
+    <li
+      className="inv-row"
+      data-inactive={product.isActive ? undefined : "true"}
+      data-solo-lectura={soloLectura ? "true" : undefined}
+    >
       <div className="inv-identity">
         <span className="inv-name">{product.name}</span>
         {/*
@@ -257,35 +262,44 @@ export function ProductoFila({
        * Nunca un número incompleto: sin tarifa, un texto que dice por qué
        * (y qué hacer). El pie `.inv-bs` se renderiza SIEMPRE, igual que en
        * los demás campos, para que todos midan lo mismo (T7, 10/9/2026).
+       *
+       * 14/10/2026 (plan "La caja no ve el precio estándar"): la caja NO
+       * recibe este campo — ni el monto, ni «incluye envío MRW», ni el
+       * motivo — y la columna desaparece de verdad, no se vacía: la fila de
+       * caja lleva su propia plantilla de seis columnas (`data-solo-lectura`
+       * en `inventario.css`). Sacar el hijo con la plantilla de siete
+       * correría Peso, estado y acciones una columna (trampa del 10/9/2026).
        */}
-      <div className="inv-field">
-        <span className="lm-eyebrow">Precio estándar</span>
-        <span className="inv-input-wrap">
-          {estandar.estado === "ok" ? (
-            <span className="lm-num inv-readonly" aria-label={`Precio estándar de ${product.name}`}>
-              {estandar.principal}
-            </span>
-          ) : estandar.estado === "sin_peso" && !soloLectura ? (
-            // Acción pendiente, no un texto atenuado (13/10/2026): el asesor
-            // que ve el hueco llega al campo de peso con un clic.
-            <button type="button" className="inv-falta-peso" onClick={irAlPeso}>
-              {/* Espacio duro antes de la flecha: en la caja de 150px la flecha
-                  quedaba sola en la segunda línea (visto con Playwright, 13/10/2026). */}
-              Falta el peso: {"cargalo →"}
-            </button>
+      {!soloLectura && (
+        <div className="inv-field">
+          <span className="lm-eyebrow">Precio estándar</span>
+          <span className="inv-input-wrap">
+            {estandar.estado === "ok" ? (
+              <span className="lm-num inv-readonly" aria-label={`Precio estándar de ${product.name}`}>
+                {estandar.principal}
+              </span>
+            ) : estandar.estado === "sin_peso" ? (
+              // Acción pendiente, no un texto atenuado (13/10/2026): el asesor
+              // que ve el hueco llega al campo de peso con un clic.
+              <button type="button" className="inv-falta-peso" onClick={irAlPeso}>
+                {/* Espacio duro antes de la flecha: en la caja de 150px la flecha
+                    quedaba sola en la segunda línea (visto con Playwright, 13/10/2026). */}
+                Falta el peso: {"cargalo →"}
+              </button>
+            ) : (
+              <span className="inv-readonly" data-empty="true">
+                {MOTIVO_SIN_ESTANDAR[estandar.estado]}
+              </span>
+            )}
+          </span>
+          {estandar.estado === "ok" && estandar.pie !== null ? (
+            <span className="inv-bs lm-num">{estandar.pie}</span>
           ) : (
-            <span className="inv-readonly" data-empty="true">
-              {estandar.estado === "sin_peso" ? "Sin peso cargado" : MOTIVO_SIN_ESTANDAR[estandar.estado]}
-            </span>
+            <span className="inv-bs" aria-hidden="true" />
           )}
-        </span>
-        {estandar.estado === "ok" && estandar.pie !== null ? (
-          <span className="inv-bs lm-num">{estandar.pie}</span>
-        ) : (
-          <span className="inv-bs" aria-hidden="true" />
-        )}
-        {estandar.estado === "ok" && <span className="inv-fee">incluye envío MRW {estandar.tarifa}</span>}
-      </div>
+          {estandar.estado === "ok" && <span className="inv-fee">incluye envío MRW {estandar.tarifa}</span>}
+        </div>
+      )}
 
       {soloLectura ? (
         // Misma caja y mismo pie vacío que el campo editable: la fila no
@@ -338,7 +352,11 @@ export function ProductoFila({
           <span
             className="ac-badge"
             data-tone="wait"
-            title="Cashea exige el peso para el envío gratis, y sin peso no hay precio estándar"
+            title={
+              soloLectura
+                ? "Cashea exige el peso para el envío gratis"
+                : "Cashea exige el peso para el envío gratis, y sin peso no hay precio estándar"
+            }
           >
             <TriangleAlert size={11} />
             Sin peso

@@ -99,7 +99,8 @@ describe("InventarioView — rol caja", () => {
 
     expect(screen.queryByRole("textbox")).toBeNull();
     expect(screen.queryByRole("button", { name: /^Falta el peso: cargalo\s→$/ })).toBeNull();
-    expect(screen.getByText("Sin peso cargado")).toBeInTheDocument();
+    // El hueco del precio estándar ya no existe para la caja: ningún «Sin peso cargado».
+    expect(screen.queryByText("Sin peso cargado")).toBeNull();
   });
 
   it("el subtítulo habla de consulta, no de cargar el peso a mano", () => {
@@ -118,6 +119,38 @@ describe("InventarioView — rol caja", () => {
   });
 });
 
+describe("InventarioView — la caja no ve el precio estándar", () => {
+  it("ningún texto, title ni aria-label de la pantalla menciona el estándar (con peso y sin peso)", () => {
+    const { container, unmount } = pintar("caja");
+    expect(container.innerHTML).not.toMatch(/est[aá]ndar/i);
+    // El portal del carrito y los modales no viven en `container`: se mira todo el documento.
+    expect(document.body.innerHTML).not.toMatch(/est[aá]ndar/i);
+    expect(screen.queryByText("Precio estándar")).toBeNull();
+    expect(screen.getByText("Precio promoción")).toBeInTheDocument();
+    unmount();
+  });
+
+  it("la tarjeta «Sin peso» no habla del estándar para la caja, y para el asesor sigue igual", () => {
+    pintar("caja");
+    expect(screen.getByText("Cashea lo exige para el envío gratis.")).toBeInTheDocument();
+  });
+
+  it("con tarifa MRW cargada (un dato viejo en caché) la caja tampoco la ve", () => {
+    render(
+      <InventarioView
+        currentAgent={agente("caja")}
+        products={[{ ...PRODUCTO, weightKg: 1, shippingFeeUsd: 1.4 }]}
+        total={1}
+        totals={{ productos: 1, activos: 1, agotados: 0, bajos: 0, withoutWeight: 0, updatedAt: new Date().toISOString() }}
+        catalog={{ engineFamilies: 1, commercialModels: 1, modelEngineLinks: 1, compatibilityRules: 1, searchSynonyms: 1 }}
+        params={{ query: "", filter: "todos", sort: "nombre", page: 1 }}
+        bcvRate={{ rate: 40, rateDate: "2026-10-13", isStale: false }}
+      />
+    );
+    expect(document.body.innerHTML).not.toMatch(/est[aá]ndar|incluye envío MRW/i);
+  });
+});
+
 describe("InventarioView — un asesor sigue viendo todo", () => {
   it("rail completo, campo de peso y el subtítulo de siempre", () => {
     const { container } = pintar("agent");
@@ -125,5 +158,9 @@ describe("InventarioView — un asesor sigue viendo todo", () => {
     expect(container.querySelectorAll(".dash-rail-btn[href]").length).toBeGreaterThan(1);
     expect(screen.getByLabelText("Peso de Carburador PZ27")).toBeInTheDocument();
     expect(screen.getByText(/lo único que se carga a mano es el peso/i)).toBeInTheDocument();
+    expect(
+      screen.getByText("Cashea lo exige para el envío gratis, y sin peso no hay precio estándar.")
+    ).toBeInTheDocument();
+    expect(screen.getByText("Precio estándar")).toBeInTheDocument();
   });
 });

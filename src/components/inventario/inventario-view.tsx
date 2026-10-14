@@ -184,7 +184,11 @@ export function InventarioView({
                 <div className="cli-stat">
                   <span className="lm-eyebrow">Sin peso</span>
                   <span className="lm-num cli-stat-value">{totals.withoutWeight}</span>
-                  <span className="cli-stat-note">Cashea lo exige para el envío gratis, y sin peso no hay precio estándar.</span>
+                  <span className="cli-stat-note">
+                    {soloLectura
+                      ? "Cashea lo exige para el envío gratis."
+                      : "Cashea lo exige para el envío gratis, y sin peso no hay precio estándar."}
+                  </span>
                 </div>
                 {/* La antigüedad del catálogo, por la misma razón que la fecha de
                     la tasa: `updated_at` es desde el 25/9/2026 la última vez que

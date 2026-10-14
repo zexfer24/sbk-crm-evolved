@@ -192,6 +192,49 @@ describe("la hoja de estilos del inventario", () => {
     expect(medio).toMatch(/\.inv-acciones\s*\{[^}]*flex-direction:\s*row\s*;/);
   });
 
+  /*
+   * Rol caja (14/10/2026, plan "La caja no ve el precio estándar"): la fila de
+   * caja no pinta el campo Precio estándar, así que su grilla es OTRA, con
+   * seis columnas fijas — sacar un hijo de la fila con la plantilla de siete
+   * correría Peso, estado y acciones una columna a la izquierda de la suya
+   * (trampa del 10/9/2026). `display: none` sobre el campo tampoco sirve: la
+   * plantilla de siete seguiría repartiendo columnas. El atributo cuelga de
+   * la fila (`data-solo-lectura`), y cada breakpoint que redefine `.inv-row`
+   * trae su variante de caja (la regla base de caja, más específica, pisaría
+   * a la del breakpoint si no la tuviera).
+   */
+  it("la fila de caja tiene su propia plantilla de seis columnas fijas, sin la del Precio estándar", async () => {
+    const css = await leerCss();
+    const regla = bloque(css, '.inv-row[data-solo-lectura="true"]');
+    const plantilla = /grid-template-columns:\s*([^;]+);/.exec(regla);
+
+    expect(plantilla, "la fila de caja necesita su propio `grid-template-columns`").not.toBeNull();
+    expect(plantilla![1].trim()).toBe("minmax(0, 1fr) 100px 150px 110px 160px 140px");
+  });
+
+  it("cada breakpoint que redefine `.inv-row` redefine también la de caja, sin la columna del estándar", async () => {
+    const css = await leerCss();
+    const medioInicio = css.indexOf("@media (min-width: 761px) and (max-width: 1180px)");
+    const movilInicio = css.indexOf("@media (max-width: 760px)");
+    expect(medioInicio).toBeGreaterThanOrEqual(0);
+    expect(movilInicio).toBeGreaterThan(medioInicio);
+    const medio = css.slice(medioInicio, movilInicio);
+    const movil = css.slice(movilInicio, css.indexOf("/* --- Calculadora Cashea"));
+
+    expect(medio, "entre 761 y 1180px la caja necesita sus 4 columnas de campos").toMatch(
+      /\.inv-row\[data-solo-lectura="true"\]\s*\{[^}]*grid-template-columns:\s*minmax\(0, 1fr\) 100px 150px 110px\s*;/
+    );
+    expect(movil, "en teléfono la caja repite las dos columnas (Stock/Promoción, Peso)").toMatch(
+      /\.inv-row\[data-solo-lectura="true"\]\s*\{[^}]*grid-template-columns:\s*repeat\(2,\s*minmax\(0,\s*1fr\)\)\s*;/
+    );
+
+    // Toda redefinición de `.inv-row` en una media query tiene su gemela de caja.
+    const hojaConMedia = css.slice(medioInicio, css.indexOf("/* --- Calculadora Cashea"));
+    const normales = hojaConMedia.match(/\.inv-row\s*\{[^}]*grid-template-columns/g) ?? [];
+    const decaja = hojaConMedia.match(/\.inv-row\[data-solo-lectura="true"\]\s*\{[^}]*grid-template-columns/g) ?? [];
+    expect(decaja.length, "una media query redefine `.inv-row` sin variante de caja").toBe(normales.length);
+  });
+
   it(".inv-fee es una línea chica y atenuada que sí puede envolver, y el texto vacío va atenuado en cursiva", async () => {
     const css = await leerCss();
     const fee = bloque(css, ".inv-fee");
