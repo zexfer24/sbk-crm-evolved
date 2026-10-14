@@ -709,6 +709,8 @@ export type Database = {
           created_at: string
           id: string
           origin: string
+          // 14/10/2026 (migración 20261014010000): 'promocion' | 'estandar'.
+          price_kind: string
           product_id: string
           quantity: number
           quote_id: string | null
@@ -720,6 +722,7 @@ export type Database = {
           created_at?: string
           id?: string
           origin: string
+          price_kind?: string
           product_id: string
           quantity: number
           quote_id?: string | null
@@ -731,6 +734,7 @@ export type Database = {
           created_at?: string
           id?: string
           origin?: string
+          price_kind?: string
           product_id?: string
           quantity?: number
           quote_id?: string | null
