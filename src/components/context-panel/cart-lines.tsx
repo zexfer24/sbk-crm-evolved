@@ -2,8 +2,9 @@
 
 import { useState } from "react";
 import { Minus, Plus, Sparkles, Trash2, UserPen } from "lucide-react";
-import type { ConversationCartItem } from "@/lib/types";
+import type { CartPriceKind, ConversationCartItem } from "@/lib/types";
 import { cartTotals, priceCartLines, quoteComparisonLabel, type PricedCartLine } from "@/lib/conversation-cart";
+import { motivoSinEstandar, standardPriceDisplay } from "@/lib/inventory";
 import type { CartActions } from "@/components/context-panel/use-cart-actions";
 import { StockPill } from "@/components/context-panel/stock-pill";
 
@@ -16,6 +17,12 @@ import { StockPill } from "@/components/context-panel/stock-pill";
  *
  * Presentacional: los precios son los VIGENTES (`priceCartLines`, D6) y cada
  * acción se delega en `CartActions`.
+ *
+ * 14/10/2026: cada renglón trae un selector «Promoción» / «Estándar»
+ * (promoción + envío MRW). «Estándar» se deshabilita sin tarifa MRW, con el
+ * motivo en el `title`; un renglón estándar que perdió su tarifa (el peso se
+ * borró en Inventario después de agregarlo) queda sin precio y lo dice, porque
+ * bloquea el cierre de la venta.
  */
 
 interface CartLinesProps {
@@ -64,9 +71,55 @@ function QuantityField({ line, actions }: { line: PricedCartLine; actions: CartA
   );
 }
 
+/**
+ * Control segmentado de dos opciones (patrón radiogroup). Elegir la que ya
+ * está marcada no escribe nada.
+ */
+function PriceKindToggle({ line, bcvRate, actions }: { line: PricedCartLine; bcvRate: number; actions: CartActions }) {
+  const { item } = line;
+  const estandar = standardPriceDisplay(item.product, bcvRate);
+  const motivo = estandar.estado === "ok" ? undefined : motivoSinEstandar(estandar.estado);
+
+  function choose(kind: CartPriceKind) {
+    if (kind === item.priceKind) return;
+    void actions.setPriceKind(item.id, kind);
+  }
+
+  return (
+    <div className="crm-pcart-kind" role="radiogroup" aria-label={`Precio de ${item.product.name}`}>
+      <button
+        type="button"
+        role="radio"
+        aria-checked={item.priceKind === "promocion"}
+        className="crm-pcart-kind-btn"
+        disabled={actions.busy}
+        onClick={() => choose("promocion")}
+      >
+        Promoción
+      </button>
+      <button
+        type="button"
+        role="radio"
+        aria-checked={item.priceKind === "estandar"}
+        className="crm-pcart-kind-btn"
+        disabled={actions.busy || estandar.estado !== "ok"}
+        title={motivo}
+        onClick={() => choose("estandar")}
+      >
+        Estándar
+      </button>
+    </div>
+  );
+}
+
 export function CartLines({ cart, bcvRate, actions }: CartLinesProps) {
   const lines = priceCartLines(cart, bcvRate);
   const totals = cartTotals(lines);
+  // Un renglón estándar sin tarifa MRW no tiene precio por otra causa que la
+  // tasa: tiene su propio aviso y no entra a la cuenta del aviso de tasa.
+  const sinTarifa = (line: PricedCartLine) =>
+    line.item.priceKind === "estandar" && line.item.product.shippingFeeUsd === null;
+  const sinTasaCount = lines.filter((line) => line.unitPriceUsd === null && !sinTarifa(line)).length;
 
   return (
     <div className="crm-pcart">
@@ -143,12 +196,20 @@ export function CartLines({ cart, bcvRate, actions }: CartLinesProps) {
                 </div>
 
                 <span className="crm-pcart-price lm-num">
-                  {line.unitPriceUsd === null ? "Sin tasa" : `$${line.unitPriceUsd.toFixed(2)} c/u`}
+                  {line.unitPriceUsd === null ? (sinTarifa(line) ? "Sin precio" : "Sin tasa") : `$${line.unitPriceUsd.toFixed(2)} c/u`}
                 </span>
                 <span className="crm-pcart-subtotal lm-num">
-                  {line.subtotalUsd === null ? "Sin tasa" : `$${line.subtotalUsd.toFixed(2)}`}
+                  {line.subtotalUsd === null ? (sinTarifa(line) ? "Sin precio" : "Sin tasa") : `$${line.subtotalUsd.toFixed(2)}`}
                 </span>
               </div>
+
+              <PriceKindToggle line={line} bcvRate={bcvRate} actions={actions} />
+
+              {sinTarifa(line) && (
+                <p className="crm-pcart-warning" role="status">
+                  Sin tarifa MRW: cámbialo a promoción para poder cerrar
+                </p>
+              )}
 
               {line.subtotalBs !== null && (
                 <p className="crm-pcart-bs lm-num">Bs. {line.subtotalBs.toFixed(2)}</p>
@@ -158,11 +219,11 @@ export function CartLines({ cart, bcvRate, actions }: CartLinesProps) {
         })}
       </ul>
 
-      {totals.unpricedCount > 0 && (
+      {sinTasaCount > 0 && (
         <p className="crm-pcart-warning" role="status">
-          {totals.unpricedCount === 1
+          {sinTasaCount === 1
             ? "1 renglón sin precio (falta la tasa del BCV): no entra al total."
-            : `${totals.unpricedCount} renglones sin precio (falta la tasa del BCV): no entran al total.`}
+            : `${sinTasaCount} renglones sin precio (falta la tasa del BCV): no entran al total.`}
         </p>
       )}
 

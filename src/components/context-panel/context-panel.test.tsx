@@ -170,6 +170,7 @@ const RENGLON: ConversationCartItem = {
   origin: "inventory",
   quoteId: null,
   quotedPriceUsd: null,
+  priceKind: "promocion",
   addedBy: "agent-1",
   createdAt: "2026-09-29T10:00:00.000Z",
   updatedAt: "2026-09-29T10:00:00.000Z",
@@ -331,6 +332,7 @@ describe("ContextPanel — el carrito de la conversación (T8)", () => {
       productId: "prod-1",
       quantity: 1,
       origin: "inventory",
+      priceKind: "promocion",
     });
     await waitFor(() => expect(onCartChanged).toHaveBeenCalled());
   });

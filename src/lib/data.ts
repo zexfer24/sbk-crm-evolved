@@ -1903,6 +1903,8 @@ interface RawCartItem {
   quantity: number;
   origin: ConversationCartItem["origin"];
   quote_id: string | null;
+  /** 14/10/2026: la columna es `not null` con check, pero un valor raro se lee como promoción. */
+  price_kind?: string | null;
   added_by: string | null;
   created_at: string;
   updated_at: string;
@@ -1917,7 +1919,7 @@ export async function fetchCart(
   const { data, error } = await supabase
     .from("conversation_cart_items")
     .select(
-      `id, conversation_id, product_id, quantity, origin, quote_id, added_by, created_at, updated_at,
+      `id, conversation_id, product_id, quantity, origin, quote_id, price_kind, added_by, created_at, updated_at,
        quote:conversation_quotes(price_usd),
        product:products(${PRODUCT_SELECT})`
     )
@@ -1937,6 +1939,8 @@ export async function fetchCart(
     origin: row.origin,
     quoteId: row.quote_id,
     quotedPriceUsd: row.quote ? Number(row.quote.price_usd) : null,
+    // Defensivo: solo "estandar" cobra el envío; cualquier otra cosa es promoción.
+    priceKind: row.price_kind === "estandar" ? "estandar" : "promocion",
     addedBy: row.added_by,
     createdAt: row.created_at,
     updatedAt: row.updated_at,

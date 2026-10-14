@@ -183,6 +183,52 @@ export const MOTIVO_SIN_ESTANDAR = {
   sin_tarifa: "Sin tarifa MRW para este peso",
 } as const;
 
+/**
+ * Los números del precio estándar, sin formato (14/10/2026): promoción +
+ * tarifa MRW, en dólares y en bolívares. Es la ÚNICA aritmética del estándar:
+ * la usan la fila de Inventario y la búsqueda del chat (`standardPriceDisplay`,
+ * que solo le da formato) y el carrito del chat (`priceCartLines`, que cobra
+ * con estos números). Antes la suma vivía dentro de `standardPriceDisplay`
+ * como texto; para cobrarla hacía falta el número, y duplicarla habría dejado
+ * dos sumas que se pueden separar.
+ *
+ * `null` si el producto no tiene tarifa (nunca un número incompleto). Cada
+ * monto es `null` cuando no se puede expresar sin mezclar monedas: sin tasa,
+ * un producto en VES no tiene dólar ni bolívares estándar (el envío es en
+ * dólares y el precio en bolívares), y uno en USD no tiene bolívares.
+ */
+export function standardPriceAmounts(
+  product: Product,
+  rate: number
+): { usd: number | null; bs: number | null } | null {
+  const fee = product.shippingFeeUsd;
+  if (fee === null) return null;
+
+  if (!(rate > 0)) {
+    if (product.currency === "VES") return { usd: null, bs: null };
+    return { usd: round2(product.price + fee), bs: null };
+  }
+
+  if (product.currency === "VES") {
+    // `rate > 0` garantiza que `usdFromBs` no da null acá.
+    const usd = round2((usdFromBs(product.price, rate) as number) + fee);
+    const bs = product.price + round2(fee * rate);
+    return { usd, bs };
+  }
+
+  const usd = round2(product.price + fee);
+  return { usd, bs: round2(usd * rate) };
+}
+
+/**
+ * El motivo en texto de un estándar que no se puede calcular (14/10/2026): lo
+ * leen la búsqueda del chat y el carrito de la conversación, para que el
+ * botón «Estándar» deshabilitado diga lo mismo que dice la fila de Inventario.
+ */
+export function motivoSinEstandar(estado: "sin_peso" | "fuera_de_tabla" | "sin_tarifa"): string {
+  return estado === "sin_peso" ? "Sin peso cargado" : MOTIVO_SIN_ESTANDAR[estado];
+}
+
 export function standardPriceDisplay(product: Product, rate: number): StandardPriceDisplay {
   const fee = product.shippingFeeUsd;
   if (fee === null) {
@@ -193,30 +239,24 @@ export function standardPriceDisplay(product: Product, rate: number): StandardPr
   }
 
   const tarifa = `$ ${fee.toFixed(2)}`;
-  const hayTasa = rate > 0;
+  const amounts = standardPriceAmounts(product, rate) as { usd: number | null; bs: number | null };
 
-  if (!hayTasa) {
-    if (product.currency === "VES") {
-      return {
-        estado: "ok",
-        principal: `Bs. ${product.price.toFixed(2)}`,
-        pie: `+ $ ${fee.toFixed(2)} envío`,
-        tarifa,
-      };
-    }
-    return { estado: "ok", principal: `$ ${(product.price + fee).toFixed(2)}`, pie: null, tarifa };
+  if (amounts.usd === null) {
+    // Sin tasa y en bolívares: no se suman monedas distintas.
+    return {
+      estado: "ok",
+      principal: `Bs. ${product.price.toFixed(2)}`,
+      pie: `+ $ ${fee.toFixed(2)} envío`,
+      tarifa,
+    };
   }
 
-  if (product.currency === "VES") {
-    // `hayTasa` garantiza rate > 0, así que `usdFromBs` no da null acá.
-    const usd = round2((usdFromBs(product.price, rate) as number) + fee);
-    const bs = product.price + round2(fee * rate);
-    return { estado: "ok", principal: `Bs. ${bs.toFixed(2)}`, pie: `$ ${usd.toFixed(2)}`, tarifa };
+  if (amounts.bs === null) {
+    // Sin tasa y en dólares: la suma es en dólares y no hay equivalente en bolívares.
+    return { estado: "ok", principal: `$ ${amounts.usd.toFixed(2)}`, pie: null, tarifa };
   }
 
-  const usd = round2(product.price + fee);
-  const bs = round2(usd * rate);
-  return { estado: "ok", principal: `Bs. ${bs.toFixed(2)}`, pie: `$ ${usd.toFixed(2)}`, tarifa };
+  return { estado: "ok", principal: `Bs. ${amounts.bs.toFixed(2)}`, pie: `$ ${amounts.usd.toFixed(2)}`, tarifa };
 }
 
 // ---------------------------------------------------------------------------

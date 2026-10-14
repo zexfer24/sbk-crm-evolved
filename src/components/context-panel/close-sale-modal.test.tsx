@@ -91,6 +91,7 @@ function renglon(over: Partial<ConversationCartItem> = {}): ConversationCartItem
     origin: "quote",
     quoteId: "q-1",
     quotedPriceUsd: 18,
+    priceKind: "promocion",
     addedBy: "agent-1",
     createdAt: "2026-09-29T10:00:00.000Z",
     updatedAt: "2026-09-29T10:00:00.000Z",
@@ -289,7 +290,12 @@ describe("CloseSaleModal — el asesor arma la venta, pero el precio lo pone el 
     await waitForQuotes();
 
     expect(screen.queryByLabelText(/monto/i)).not.toBeInTheDocument();
-    expect(screen.queryByLabelText(/precio/i)).not.toBeInTheDocument();
+    // 14/10/2026: el selector «Promoción»/«Estándar» de cada renglón es un
+    // radiogroup con aria-label «Precio de …»: elige a qué precio del catálogo
+    // se cobra, no deja teclear una cifra. Lo que no puede existir es un
+    // CAMPO de texto o número para el precio.
+    expect(screen.queryByRole("textbox", { name: /precio/i })).not.toBeInTheDocument();
+    expect(screen.queryByRole("spinbutton", { name: /precio/i })).not.toBeInTheDocument();
   });
 
   // D6 (28/9/2026): el carrito guarda producto y cantidad; el precio es el
@@ -401,6 +407,7 @@ describe("CloseSaleModal — el asesor arma la venta, pero el precio lo pone el 
       productId: "prod-9",
       quantity: 1,
       origin: "inventory",
+      priceKind: "promocion",
     });
     await waitFor(() => expect(onCartChanged).toHaveBeenCalled());
   });

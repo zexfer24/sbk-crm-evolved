@@ -634,6 +634,7 @@ function cartItem(over: Partial<ConversationCartItem> = {}): ConversationCartIte
     origin: "inventory",
     quoteId: null,
     quotedPriceUsd: null,
+    priceKind: "promocion",
     addedBy: "agent-1",
     createdAt: "2026-09-29T10:00:00.000Z",
     updatedAt: "2026-09-29T10:00:00.000Z",

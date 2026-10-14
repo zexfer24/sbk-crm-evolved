@@ -1160,6 +1160,13 @@ export interface MotoCatalogSummary {
 export type SaleItemOrigin = "quote" | "inventory";
 
 /**
+ * A qué precio se cobra un renglón del carrito (14/10/2026): `promocion` es el
+ * precio del catálogo; `estandar` es ese precio MÁS el envío MRW por peso
+ * (`Product.shippingFeeUsd`). Lo elige el asesor por renglón.
+ */
+export type CartPriceKind = "promocion" | "estandar";
+
+/**
  * Un renglón del carrito PERSISTENTE de una conversación (T8, plan "Seba
  * encuentra, no insiste, y el mostrador no deja a nadie esperando",
  * 28/9/2026, tabla `conversation_cart_items`). Guarda solo el producto y la
@@ -1177,6 +1184,8 @@ export interface ConversationCartItem {
   origin: SaleItemOrigin;
   quoteId: string | null;
   quotedPriceUsd: number | null;
+  /** A qué precio se cobra: promoción (default) o estándar (promoción + envío MRW). */
+  priceKind: CartPriceKind;
   addedBy: string | null;
   createdAt: string;
   updatedAt: string;

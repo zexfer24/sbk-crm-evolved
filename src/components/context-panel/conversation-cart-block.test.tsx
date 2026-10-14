@@ -1,6 +1,6 @@
 /** @vitest-environment jsdom */
 import { describe, expect, it, vi } from "vitest";
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { ConversationCartBlock } from "@/components/context-panel/conversation-cart-block";
 import type { CartActions } from "@/components/context-panel/use-cart-actions";
@@ -54,6 +54,7 @@ function item(over: Partial<ConversationCartItem> = {}): ConversationCartItem {
     origin: "inventory",
     quoteId: null,
     quotedPriceUsd: null,
+    priceKind: "promocion",
     addedBy: "agent-1",
     createdAt: "2026-09-29T10:00:00.000Z",
     updatedAt: "2026-09-29T10:00:00.000Z",
@@ -69,6 +70,7 @@ function makeActions(over: Partial<CartActions> = {}): CartActions {
     addQuote: vi.fn().mockResolvedValue(undefined),
     addAllQuotes: vi.fn().mockResolvedValue(undefined),
     setQuantity: vi.fn().mockResolvedValue(undefined),
+    setPriceKind: vi.fn().mockResolvedValue(undefined),
     remove: vi.fn().mockResolvedValue(undefined),
     ...over,
   };
@@ -297,5 +299,107 @@ describe("ConversationCartBlock — copiar y enviar al chat", () => {
 
     await user.click(enviar);
     expect(onSendToComposer).not.toHaveBeenCalled();
+  });
+});
+
+// 14/10/2026: cada renglón se cobra a precio de promoción o estándar (promoción
+// + envío MRW), a elección del asesor, con un control segmentado.
+describe("ConversationCartBlock — precio de promoción o estándar por renglón", () => {
+  const conTarifa = () => product({ price: 25, weightKg: 2, shippingFeeUsd: 2.5 });
+
+  it("cada renglón trae un grupo «Precio de <repuesto>» con Promoción y Estándar, y marca el elegido", () => {
+    setup([item({ product: conTarifa(), priceKind: "estandar" })]);
+
+    const grupo = screen.getByRole("radiogroup", { name: "Precio de Carburador PZ27" });
+    const promocion = within(grupo).getByRole("radio", { name: "Promoción" });
+    const estandar = within(grupo).getByRole("radio", { name: "Estándar" });
+    expect(promocion).toHaveAttribute("aria-checked", "false");
+    expect(estandar).toHaveAttribute("aria-checked", "true");
+  });
+
+  it("un renglón estándar se cobra promoción + envío en el subtotal y en el total", () => {
+    setup([item({ product: conTarifa(), priceKind: "estandar", quantity: 2 })]);
+
+    expect(screen.getByText("$27.50 c/u")).toBeInTheDocument();
+    expect(screen.getByTestId("cart-total")).toHaveTextContent("$55.00");
+  });
+
+  it("elegir «Estándar» en un renglón de promoción llama a setPriceKind con «estandar»", async () => {
+    const { user, actions } = setup([item({ product: conTarifa(), priceKind: "promocion" })]);
+
+    await user.click(screen.getByRole("radio", { name: "Estándar" }));
+
+    expect(actions.setPriceKind).toHaveBeenCalledWith("cart-1", "estandar");
+  });
+
+  it("elegir «Promoción» en un renglón estándar llama a setPriceKind con «promocion»", async () => {
+    const { user, actions } = setup([item({ product: conTarifa(), priceKind: "estandar" })]);
+
+    await user.click(screen.getByRole("radio", { name: "Promoción" }));
+
+    expect(actions.setPriceKind).toHaveBeenCalledWith("cart-1", "promocion");
+  });
+
+  it("tocar el precio que ya está elegido no escribe nada", async () => {
+    const { user, actions } = setup([item({ product: conTarifa(), priceKind: "promocion" })]);
+
+    await user.click(screen.getByRole("radio", { name: "Promoción" }));
+
+    expect(actions.setPriceKind).not.toHaveBeenCalled();
+  });
+
+  it("sin tarifa MRW «Estándar» está deshabilitado y dice el motivo", async () => {
+    const { user, actions } = setup([item({ product: product({ weightKg: null, shippingFeeUsd: null }) })]);
+
+    const estandar = screen.getByRole("radio", { name: "Estándar" });
+    expect(estandar).toBeDisabled();
+    expect(estandar).toHaveAttribute("title", "Sin peso cargado");
+    await user.click(estandar);
+    expect(actions.setPriceKind).not.toHaveBeenCalled();
+  });
+
+  it("el motivo de «Estándar» deshabilitado distingue fuera de la tabla y sin rango", () => {
+    setup([
+      item({ id: "a", product: product({ id: "p1", name: "Pesado", weightKg: 95, shippingFeeUsd: null }) }),
+      item({ id: "b", product: product({ id: "p2", name: "Raro", weightKg: 10, shippingFeeUsd: null }) }),
+    ]);
+
+    const grupoPesado = screen.getByRole("radiogroup", { name: "Precio de Pesado" });
+    expect(within(grupoPesado).getByRole("radio", { name: "Estándar" })).toHaveAttribute(
+      "title",
+      "Más de 80 kg: fuera de la tabla MRW"
+    );
+    const grupoRaro = screen.getByRole("radiogroup", { name: "Precio de Raro" });
+    expect(within(grupoRaro).getByRole("radio", { name: "Estándar" })).toHaveAttribute(
+      "title",
+      "Sin tarifa MRW para este peso"
+    );
+  });
+
+  it("un renglón estándar que perdió su tarifa avisa que no se puede cerrar y deja volver a promoción", async () => {
+    const { user, actions } = setup([item({ priceKind: "estandar" })]);
+
+    expect(screen.getByText("Sin tarifa MRW: cámbialo a promoción para poder cerrar")).toBeInTheDocument();
+    expect(screen.getByTestId("cart-total")).toHaveTextContent("$0.00");
+
+    await user.click(screen.getByRole("radio", { name: "Promoción" }));
+    expect(actions.setPriceKind).toHaveBeenCalledWith("cart-1", "promocion");
+  });
+
+  it("el resumen para el cliente dice que el precio estándar incluye el envío", async () => {
+    const { user, onSendToComposer } = setup([
+      item({ quantity: 1, priceKind: "estandar", product: product({ price: 25, saintCode: "A-1", shippingFeeUsd: 2.5 }) }),
+    ]);
+
+    await user.click(screen.getByRole("button", { name: /enviar al chat/i }));
+
+    expect(onSendToComposer).toHaveBeenCalledWith(expect.stringContaining("Precio (incluye envío): $27.50"));
+  });
+
+  it("mientras hay una escritura en curso el selector se deshabilita", () => {
+    setup([item({ product: conTarifa() })], makeActions({ busy: true }));
+
+    expect(screen.getByRole("radio", { name: "Promoción" })).toBeDisabled();
+    expect(screen.getByRole("radio", { name: "Estándar" })).toBeDisabled();
   });
 });

@@ -1,11 +1,11 @@
 "use client";
 
 import { useRef, useState } from "react";
-import { Plus, Search, X } from "lucide-react";
-import type { Product } from "@/lib/types";
+import { Search, X } from "lucide-react";
+import type { CartPriceKind, Product } from "@/lib/types";
 import { createClient } from "@/lib/supabase/client";
 import { searchProductsForLookup } from "@/lib/inventory-data";
-import { MOTIVO_SIN_ESTANDAR, priceDisplay, standardPriceDisplay } from "@/lib/inventory";
+import { motivoSinEstandar, priceDisplay, standardPriceDisplay } from "@/lib/inventory";
 import { useDebouncedCallback } from "@/lib/use-debounced-callback";
 import { StockPill } from "@/components/context-panel/stock-pill";
 import type { BcvRateSummary } from "@/components/inbox/bcv-rate-chip";
@@ -50,6 +50,11 @@ import type { BcvRateSummary } from "@/components/inbox/bcv-rate-chip";
  * cotizaba desde el chat solo con el precio de promoción y tenía que ir a
  * Inventario a buscar el estándar. Sin tarifa se dice el motivo en texto,
  * nunca un número incompleto.
+ *
+ * Más tarde el mismo día: el asesor elige a qué precio se cobra. Cada resultado
+ * activo ofrece dos botones, «+ Promoción» y «+ Estándar» (`onAdd` recibe el
+ * `CartPriceKind`); «+ Estándar» se deshabilita sin tarifa MRW, con el motivo
+ * en el `title`, para que no entre al carrito un renglón sin precio.
  */
 const LOOKUP_DEBOUNCE_MS = 300;
 const LOOKUP_LIMIT = 20;
@@ -71,9 +76,9 @@ type LookupState =
 
 interface InventoryLookupProps {
   bcvRate: BcvRateSummary | null;
-  /** Agrega el repuesto al carrito de la conversación. Sin esto no hay botón. */
-  onAdd?: (product: Product) => void;
-  /** Hay una escritura del carrito en curso: el botón «Agregar» se deshabilita. */
+  /** Agrega el repuesto al carrito de la conversación, al precio elegido. Sin esto no hay botones. */
+  onAdd?: (product: Product, priceKind: CartPriceKind) => void;
+  /** Hay una escritura del carrito en curso: los botones de agregar se deshabilitan. */
   addDisabled?: boolean;
 }
 
@@ -261,7 +266,7 @@ export function InventoryLookup({ bcvRate, onAdd, addDisabled = false }: Invento
                           </>
                         ) : (
                           <span className="crm-lookup-price-missing" data-empty="true">
-                            {estandar.estado === "sin_peso" ? "Sin peso cargado" : MOTIVO_SIN_ESTANDAR[estandar.estado]}
+                            {motivoSinEstandar(estandar.estado)}
                           </span>
                         )}
                       </div>
@@ -270,16 +275,27 @@ export function InventoryLookup({ bcvRate, onAdd, addDisabled = false }: Invento
                       )}
                     </div>
                     {onAdd && product.isActive && (
-                      <button
-                        type="button"
-                        className="crm-lookup-add"
-                        onClick={() => onAdd(product)}
-                        disabled={addDisabled}
-                        aria-label={`Agregar ${product.name} al carrito`}
-                      >
-                        <Plus size={12} />
-                        Agregar
-                      </button>
+                      <div className="crm-lookup-add-group">
+                        <button
+                          type="button"
+                          className="crm-lookup-add"
+                          onClick={() => onAdd(product, "promocion")}
+                          disabled={addDisabled}
+                          aria-label={`Agregar ${product.name} a precio de promoción`}
+                        >
+                          + Promoción
+                        </button>
+                        <button
+                          type="button"
+                          className="crm-lookup-add"
+                          onClick={() => onAdd(product, "estandar")}
+                          disabled={addDisabled || estandar.estado !== "ok"}
+                          title={estandar.estado === "ok" ? undefined : motivoSinEstandar(estandar.estado)}
+                          aria-label={`Agregar ${product.name} a precio estándar`}
+                        >
+                          + Estándar
+                        </button>
+                      </div>
                     )}
                   </div>
                 </li>

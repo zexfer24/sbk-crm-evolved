@@ -20,6 +20,7 @@ function rawItem(over: Record<string, unknown> = {}) {
     quantity: 2,
     origin: "quote",
     quote_id: "q-1",
+    price_kind: "promocion",
     added_by: "agent-1",
     created_at: "2026-09-29T10:00:00Z",
     updated_at: "2026-09-29T10:05:00Z",
@@ -98,6 +99,7 @@ describe("fetchCart", () => {
 
     await fetchCart(client, "conv-1");
 
+    expect(calls.select).toContain("price_kind");
     expect(calls.select).toContain("product:products(");
     expect(calls.select).toContain("quote:conversation_quotes(price_usd)");
   });
@@ -126,6 +128,32 @@ describe("fetchCart", () => {
       saintCode: "A123",
     });
     expect(item.product.compatibility).toEqual([{ id: "c-1", motoBrand: "Bera", motoModel: "SBR" }]);
+  });
+
+  it("mapea price_kind a priceKind", async () => {
+    const { client } = createFakeSupabase({
+      data: [rawItem({ price_kind: "estandar" }), rawItem({ id: "cart-2", price_kind: "promocion" })],
+      error: null,
+    });
+
+    const items = await fetchCart(client, "conv-1");
+
+    expect(items.map((i) => i.priceKind)).toEqual(["estandar", "promocion"]);
+  });
+
+  it("un price_kind raro, nulo o ausente se lee como promocion (defensivo)", async () => {
+    const { client } = createFakeSupabase({
+      data: [
+        rawItem({ price_kind: "gratis" }),
+        rawItem({ id: "cart-2", price_kind: null }),
+        rawItem({ id: "cart-3", price_kind: undefined }),
+      ],
+      error: null,
+    });
+
+    const items = await fetchCart(client, "conv-1");
+
+    expect(items.map((i) => i.priceKind)).toEqual(["promocion", "promocion", "promocion"]);
   });
 
   it("un renglón sin cotización enlazada tiene quotedPriceUsd null", async () => {

@@ -2,10 +2,11 @@
 
 import { useCallback, useState } from "react";
 import { toast } from "@heroui/react";
-import type { ConversationQuote, Product } from "@/lib/types";
+import type { CartPriceKind, ConversationQuote, Product } from "@/lib/types";
 import { createClient } from "@/lib/supabase/client";
 import { fetchConversationQuotes } from "@/lib/data";
-import { addQuotesToCart, addToCart, removeFromCart, setCartQuantity } from "@/lib/mutations";
+import { addQuotesToCart, addToCart, removeFromCart, setCartPriceKind, setCartQuantity } from "@/lib/mutations";
+import { standardPriceAmounts } from "@/lib/inventory";
 import { productPriceUsd } from "@/lib/sale-cart";
 
 /**
@@ -25,10 +26,13 @@ import { productPriceUsd } from "@/lib/sale-cart";
 export interface CartActions {
   /** Hay una escritura en curso: los botones de agregar/cambiar se deshabilitan. */
   busy: boolean;
-  addProduct: (product: Product) => Promise<void>;
+  /** Agrega el repuesto a precio de promoción (default) o estándar (promoción + envío MRW). */
+  addProduct: (product: Product, priceKind?: CartPriceKind) => Promise<void>;
   addQuote: (quote: ConversationQuote) => Promise<void>;
   addAllQuotes: () => Promise<void>;
   setQuantity: (itemId: string, quantity: number) => Promise<void>;
+  /** Cambia a qué precio se cobra un renglón que ya está en el carrito. */
+  setPriceKind: (itemId: string, priceKind: CartPriceKind) => Promise<void>;
   remove: (itemId: string) => Promise<void>;
 }
 
@@ -62,16 +66,45 @@ export function useCartActions({ conversationId, bcvRate, onCartChanged }: UseCa
   );
 
   const addProduct = useCallback(
-    async (product: Product) => {
+    async (product: Product, priceKind: CartPriceKind = "promocion") => {
       // Un repuesto en bolívares sin tasa no se puede pasar a dólares: meterlo
       // dejaría un renglón sin precio que después bloquea el cierre.
+      const sinTasa = "Este repuesto tiene el precio en bolívares y todavía no hay tasa del BCV para convertirlo.";
       if (productPriceUsd(product, bcvRate) === null) {
-        toast.danger("Este repuesto tiene el precio en bolívares y todavía no hay tasa del BCV para convertirlo.");
+        toast.danger(sinTasa);
         return;
       }
-      await run("No se pudo agregar al carrito.", () =>
-        addToCart(createClient(), { conversationId, productId: product.id, quantity: 1, origin: "inventory" })
-      );
+      if (priceKind === "estandar") {
+        // 14/10/2026: lo mismo para el estándar. Sin tarifa MRW el renglón
+        // quedaría sin precio (nunca un número incompleto) y bloquearía el cierre.
+        const estandar = standardPriceAmounts(product, bcvRate);
+        if (estandar === null) {
+          toast.danger("Este repuesto no tiene tarifa MRW: no se puede cobrar a precio estándar.");
+          return;
+        }
+        if (estandar.usd === null) {
+          toast.danger(sinTasa);
+          return;
+        }
+      }
+      await run("No se pudo agregar al carrito.", async () => {
+        const resultado = await addToCart(createClient(), {
+          conversationId,
+          productId: product.id,
+          quantity: 1,
+          origin: "inventory",
+          priceKind,
+        });
+        // Un repuesto = un renglón: si ya estaba con el otro precio, la
+        // unidad se sumó Y el precio cambió; el asesor tiene que enterarse.
+        if (resultado?.priceKindChanged) {
+          toast.info(
+            priceKind === "estandar"
+              ? "Ese repuesto ya estaba en el carrito: ahora se cobra a precio estándar."
+              : "Ese repuesto ya estaba en el carrito: ahora se cobra a precio de promoción."
+          );
+        }
+      });
     },
     [bcvRate, conversationId, run]
   );
@@ -83,9 +116,9 @@ export function useCartActions({ conversationId, bcvRate, onCartChanged }: UseCa
         return;
       }
       const productId = quote.productId;
-      await run("No se pudo agregar al carrito.", () =>
-        addToCart(createClient(), { conversationId, productId, quantity: 1, origin: "quote", quoteId: quote.id })
-      );
+      await run("No se pudo agregar al carrito.", async () => {
+        await addToCart(createClient(), { conversationId, productId, quantity: 1, origin: "quote", quoteId: quote.id });
+      });
     },
     [conversationId, run]
   );
@@ -110,6 +143,13 @@ export function useCartActions({ conversationId, bcvRate, onCartChanged }: UseCa
     [run]
   );
 
+  const setPriceKind = useCallback(
+    async (itemId: string, priceKind: CartPriceKind) => {
+      await run("No se pudo cambiar el precio.", () => setCartPriceKind(createClient(), itemId, priceKind));
+    },
+    [run]
+  );
+
   const remove = useCallback(
     async (itemId: string) => {
       await run("No se pudo quitar el renglón.", () => removeFromCart(createClient(), itemId));
@@ -117,5 +157,5 @@ export function useCartActions({ conversationId, bcvRate, onCartChanged }: UseCa
     [run]
   );
 
-  return { busy, addProduct, addQuote, addAllQuotes, setQuantity, remove };
+  return { busy, addProduct, addQuote, addAllQuotes, setQuantity, setPriceKind, remove };
 }

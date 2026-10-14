@@ -2,6 +2,7 @@ import type { SupabaseClient } from "@supabase/supabase-js";
 import type {
   Agent,
   AiLesson,
+  CartPriceKind,
   CedulaType,
   ConversationQuote,
   Invoice,
@@ -771,8 +772,15 @@ const CART_ITEM_GONE_MESSAGE = "Ese renglón ya no está en el carrito: otro ase
 /** Vueltas máximas del "leer, escribir si nada cambió". Sobra: dos asesores pisándose cuatro veces seguidas no ocurre. */
 const CART_ADD_MAX_ATTEMPTS = 4;
 
+const CART_PRICE_KIND_MESSAGE = "El precio del renglón tiene que ser de promoción o estándar.";
+
 function assertCartQuantity(quantity: number): void {
   if (!Number.isInteger(quantity) || quantity < 1) throw new Error(CART_QUANTITY_MESSAGE);
+}
+
+/** 14/10/2026: la base tiene un CHECK, pero se rechaza antes de viajar para dar un mensaje legible. */
+function assertCartPriceKind(priceKind: string): asserts priceKind is CartPriceKind {
+  if (priceKind !== "promocion" && priceKind !== "estandar") throw new Error(CART_PRICE_KIND_MESSAGE);
 }
 
 export interface AddToCartInput {
@@ -783,6 +791,8 @@ export interface AddToCartInput {
   origin: SaleItemOrigin;
   /** Cotización de Seba de la que viene el renglón (solo `origin: "quote"`). */
   quoteId?: string | null;
+  /** A qué precio se cobra el renglón (14/10/2026); "promocion" si no se dice. */
+  priceKind?: CartPriceKind;
 }
 
 /**
@@ -790,6 +800,14 @@ export interface AddToCartInput {
  * suma las unidades al mismo renglón (`unique (conversation_id,
  * product_id)`): repetir no duplica el renglón, y tocar «Agregar» dos veces
  * lleva dos unidades.
+ *
+ * 14/10/2026 (precio elegido): un repuesto sigue siendo UN renglón aunque el
+ * asesor lo agregue a los dos precios. Si ya estaba con el OTRO precio, la
+ * unidad se suma Y el renglón pasa al precio recién elegido (decisión del
+ * operador: lo último que pidió el asesor manda); el UPDATE escribe
+ * `quantity` y `price_kind` juntos bajo el mismo control optimista. Devuelve
+ * `priceKindChanged` para que quien llama avise del cambio. Sin `priceKind` el
+ * renglón existente conserva su precio.
  *
  * No hay un `upsert` que sume: PostgREST reemplaza con los valores nuevos, no
  * calcula `quantity + 1`. Una RPC lo haría en una sola sentencia, pero el plan
@@ -800,28 +818,45 @@ export interface AddToCartInput {
  * asesores crean el mismo renglón a la vez, el segundo INSERT falla con 23505
  * y también reintenta (ahora encontrando el renglón, para sumarle).
  */
-export async function addToCart(supabase: SupabaseClient, input: AddToCartInput): Promise<void> {
+export async function addToCart(
+  supabase: SupabaseClient,
+  input: AddToCartInput
+): Promise<{ priceKindChanged: boolean }> {
   const quantity = input.quantity ?? 1;
   assertCartQuantity(quantity);
+  // Sin `priceKind` no se opina sobre el precio: un renglón NUEVO entra en
+  // promoción (default de la base, mandado explícito) y uno existente conserva
+  // el que tenía — así agregar una cotización de Seba (que no elige precio) no
+  // le quita el estándar a un renglón que el asesor ya había puesto así.
+  const requestedPriceKind = input.priceKind;
+  if (requestedPriceKind !== undefined) assertCartPriceKind(requestedPriceKind);
 
   for (let attempt = 0; attempt < CART_ADD_MAX_ATTEMPTS; attempt += 1) {
     const { data: existing, error: readError } = await supabase
       .from("conversation_cart_items")
-      .select("id, quantity")
+      .select("id, quantity, price_kind")
       .eq("conversation_id", input.conversationId)
       .eq("product_id", input.productId)
       .maybeSingle();
     if (readError) throw readError;
 
     if (existing) {
+      // Se anota ANTES de escribir: es lo que había cuando el asesor pidió agregar.
+      const previousPriceKind = existing.price_kind;
       const { data: updated, error: updateError } = await supabase
         .from("conversation_cart_items")
-        .update({ quantity: existing.quantity + quantity })
+        .update(
+          requestedPriceKind === undefined
+            ? { quantity: existing.quantity + quantity }
+            : { quantity: existing.quantity + quantity, price_kind: requestedPriceKind }
+        )
         .eq("id", existing.id)
         .eq("quantity", existing.quantity)
         .select("id");
       if (updateError) throw updateError;
-      if (updated && updated.length > 0) return;
+      if (updated && updated.length > 0) {
+        return { priceKindChanged: requestedPriceKind !== undefined && previousPriceKind !== requestedPriceKind };
+      }
       // 0 filas: otro asesor cambió (o quitó) el renglón desde que lo leí.
       continue;
     }
@@ -832,8 +867,9 @@ export async function addToCart(supabase: SupabaseClient, input: AddToCartInput)
       quantity,
       origin: input.origin,
       quote_id: input.quoteId ?? null,
+      price_kind: requestedPriceKind ?? "promocion",
     });
-    if (!insertError) return;
+    if (!insertError) return { priceKindChanged: false };
     // 23505: otro asesor creó el mismo renglón entre mi lectura y mi INSERT.
     if (insertError.code !== "23505") throw insertError;
   }
@@ -890,6 +926,26 @@ export async function setCartQuantity(supabase: SupabaseClient, itemId: string, 
   const { data, error } = await supabase
     .from("conversation_cart_items")
     .update({ quantity })
+    .eq("id", itemId)
+    .select("id");
+  if (error) throw error;
+  assertRowsAffected(data, CART_ITEM_GONE_MESSAGE);
+}
+
+/**
+ * Cambia a qué precio se cobra un renglón (14/10/2026): promoción o estándar
+ * (promoción + envío MRW). Solo escribe `price_kind`; el monto nunca se guarda
+ * (D6), se calcula al mirar y al facturar. Lanza si el renglón ya no existe.
+ */
+export async function setCartPriceKind(
+  supabase: SupabaseClient,
+  itemId: string,
+  priceKind: CartPriceKind
+): Promise<void> {
+  assertCartPriceKind(priceKind);
+  const { data, error } = await supabase
+    .from("conversation_cart_items")
+    .update({ price_kind: priceKind })
     .eq("id", itemId)
     .select("id");
   if (error) throw error;

@@ -241,7 +241,7 @@ export function ContextPanel({
 
         <InventoryLookup
           bcvRate={bcvRate}
-          onAdd={(product) => void cartActions.addProduct(product)}
+          onAdd={(product, priceKind) => void cartActions.addProduct(product, priceKind)}
           addDisabled={cartActions.busy}
         />
 

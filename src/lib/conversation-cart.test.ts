@@ -39,6 +39,7 @@ function item(over: Partial<ConversationCartItem> = {}): ConversationCartItem {
     origin: "inventory",
     quoteId: null,
     quotedPriceUsd: null,
+    priceKind: "promocion",
     addedBy: "agent-1",
     createdAt: "2026-09-29T10:00:00.000Z",
     updatedAt: "2026-09-29T10:00:00.000Z",
@@ -85,6 +86,76 @@ describe("priceCartLines — el precio es el VIGENTE (D6), nunca el cotizado", (
     expect(line.unitPriceUsd).toBe(20);
     expect(line.unitPriceBs).toBeNull();
     expect(line.subtotalBs).toBeNull();
+  });
+});
+
+// 14/10/2026: cada renglón se cobra a precio de promoción o estándar
+// (promoción + envío MRW), a elección del asesor. El estándar se calcula igual
+// que el precio vigente (D6): nada se guarda, todo sale del producto y la tasa.
+describe("priceCartLines — precio estándar (promoción + envío MRW)", () => {
+  const conTarifa = product({ price: 25, currency: "USD", weightKg: 2, shippingFeeUsd: 2.5 });
+
+  it("un renglón estándar se cobra a promoción + tarifa, en dólares y en bolívares", () => {
+    const [line] = priceCartLines([item({ product: conTarifa, priceKind: "estandar", quantity: 2 })], 40);
+    expect(line.unitPriceUsd).toBe(27.5);
+    expect(line.unitPriceBs).toBe(1100);
+    expect(line.subtotalUsd).toBe(55);
+    expect(line.subtotalBs).toBe(2200);
+  });
+
+  it("el mismo producto en promoción sigue cobrando solo su precio", () => {
+    const [line] = priceCartLines([item({ product: conTarifa, priceKind: "promocion" })], 40);
+    expect(line.unitPriceUsd).toBe(25);
+  });
+
+  it("estándar sin tarifa MRW queda SIN precio (no se inventa un número) y cuenta como renglón sin precio", () => {
+    const lines = priceCartLines([item({ priceKind: "estandar" })], 40);
+    expect(lines[0].unitPriceUsd).toBeNull();
+    expect(lines[0].unitPriceBs).toBeNull();
+    expect(lines[0].subtotalUsd).toBeNull();
+    expect(cartTotals(lines).unpricedCount).toBe(1);
+  });
+
+  it("estándar de un producto en bolívares usa usdFromBs + tarifa", () => {
+    const [line] = priceCartLines(
+      [item({ priceKind: "estandar", product: product({ price: 87, currency: "VES", shippingFeeUsd: 1.4 }) })],
+      40
+    );
+    expect(line.unitPriceUsd).toBe(3.6);
+    expect(line.unitPriceBs).toBe(143);
+  });
+
+  it("estándar de un producto en bolívares sin tasa queda sin precio en dólares", () => {
+    const [line] = priceCartLines(
+      [item({ priceKind: "estandar", product: product({ price: 87, currency: "VES", shippingFeeUsd: 1.4 }) })],
+      0
+    );
+    expect(line.unitPriceUsd).toBeNull();
+  });
+
+  it("el aviso «cotizado vs hoy» solo aplica a promoción: Seba cotiza promoción", () => {
+    const base = { origin: "quote" as const, quoteId: "q-1", quotedPriceUsd: 18, product: conTarifa };
+    const [promo] = priceCartLines([item({ ...base, priceKind: "promocion" })], 40);
+    expect(promo.priceChange).toEqual({ quotedUsd: 18, todayUsd: 25 });
+    const [estandar] = priceCartLines([item({ ...base, priceKind: "estandar" })], 40);
+    expect(estandar.priceChange).toBeNull();
+    expect(quoteComparisonLabel(estandar)).toBeNull();
+  });
+
+  it("un renglón sin priceKind (carrito de Inventario) se cobra a promoción", () => {
+    const [line] = priceCartLines([{ product: conTarifa, quantity: 1, quotedPriceUsd: null }], 40);
+    expect(line.unitPriceUsd).toBe(25);
+  });
+
+  it("el total suma cada renglón a su precio elegido", () => {
+    const lines = priceCartLines(
+      [
+        item({ id: "a", product: conTarifa, priceKind: "estandar" }),
+        item({ id: "b", productId: "p2", product: product({ id: "p2", price: 5 }), priceKind: "promocion", quantity: 2 }),
+      ],
+      40
+    );
+    expect(cartTotals(lines).usd).toBe(37.5);
   });
 });
 
@@ -183,6 +254,23 @@ describe("cartToSaleLines — lo que recibe closeSaleWithContactInfo", () => {
     ]);
   });
 
+  it("un renglón estándar se factura a precio estándar y lo dice en la descripción", () => {
+    const lines = priceCartLines(
+      [item({ id: "cart-9", priceKind: "estandar", product: product({ price: 25, shippingFeeUsd: 2.5 }), quantity: 2 })],
+      40
+    );
+    expect(cartToSaleLines(lines)).toEqual([
+      {
+        id: "cart-9",
+        origin: "inventory",
+        productId: "prod-1",
+        description: "Carburador PZ27 (precio estándar, incluye envío MRW)",
+        unitPrice: 27.5,
+        quantity: 2,
+      },
+    ]);
+  });
+
   it("deja fuera los renglones que no tienen precio calculable", () => {
     const lines = priceCartLines(
       [item({ id: "a", product: product({ currency: "VES", price: 101 }) })],
@@ -257,5 +345,38 @@ describe("cartSummaryText — el resumen del carrito para el cliente", () => {
 
   it("un carrito vacío no tiene resumen", () => {
     expect(resumen([])).toBeNull();
+  });
+
+  it("un renglón estándar dice que el precio incluye el envío", () => {
+    const text = resumen([
+      item({
+        product: product({ name: "Caucho 90/90-18 Kenda", price: 25, saintCode: "12345", shippingFeeUsd: 2.5 }),
+        priceKind: "estandar",
+        quantity: 1,
+      }),
+    ]);
+
+    expect(text).toBe(
+      ["Caucho 90/90-18 Kenda", "SKU: 12345", "Precio (incluye envío): $27.50", "", "Total: $27.50"].join("\n")
+    );
+  });
+
+  it("estándar con cantidad 2: c/u y subtotal, y el de promoción no cambia", () => {
+    const text = resumen([
+      item({
+        id: "a",
+        product: product({ id: "p1", name: "Casco LS2", price: 40, saintCode: "1", shippingFeeUsd: 5 }),
+        priceKind: "estandar",
+        quantity: 2,
+      }),
+      item({ id: "b", product: product({ id: "p2", name: "Guante", price: 10, saintCode: "2" }), quantity: 1 }),
+    ]);
+
+    expect(text).toContain("Precio (incluye envío): $45.00 c/u · $90.00");
+    expect(text).toContain("Precio: $10.00");
+  });
+
+  it("un renglón estándar sin tarifa deja el carrito sin resumen", () => {
+    expect(resumen([item({ priceKind: "estandar" })])).toBeNull();
   });
 });

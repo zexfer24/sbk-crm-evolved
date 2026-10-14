@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import type { ConversationQuote } from "@/lib/types";
-import { addQuotesToCart, addToCart, removeFromCart, setCartQuantity } from "@/lib/mutations";
+import { addQuotesToCart, addToCart, removeFromCart, setCartPriceKind, setCartQuantity } from "@/lib/mutations";
 
 // ---------------------------------------------------------------------------
 // T8, plan "Seba encuentra, no insiste, y el mostrador no deja a nadie
@@ -24,6 +24,8 @@ interface CartRow {
   quantity: number;
   origin: string;
   quote_id: string | null;
+  /** 14/10/2026: 'promocion' | 'estandar'. El fake NO inventa el default de la base: lo que llega es lo que se guarda. */
+  price_kind?: string;
 }
 
 interface Hooks {
@@ -55,6 +57,7 @@ function createCartFake(initial: CartRow[] = [], hooks: Hooks = {}) {
       quantity: payload.quantity,
       origin: payload.origin,
       quote_id: payload.quote_id ?? null,
+      price_kind: payload.price_kind,
     };
     rows.push(row);
     return { ok: true as const, row };
@@ -144,7 +147,7 @@ function createCartFake(initial: CartRow[] = [], hooks: Hooks = {}) {
     from(table: string) {
       if (table !== "conversation_cart_items") throw new Error(`Fake Supabase: tabla no soportada: ${table}`);
       return {
-        select: () => query("select"),
+        select: (columns?: string) => query("select", columns),
         update: (payload: unknown) => query("update", payload),
         insert: (payload: unknown) => query("insert", payload),
         upsert: (payload: unknown, options: unknown) => query("upsert", payload, options),
@@ -163,6 +166,7 @@ const ROW: CartRow = {
   quantity: 2,
   origin: "inventory",
   quote_id: null,
+  price_kind: "promocion",
 };
 
 describe("addToCart — un repetido SUMA unidades, nunca duplica el renglón", () => {
@@ -254,6 +258,158 @@ describe("addToCart — un repetido SUMA unidades, nunca duplica el renglón", (
     await expect(
       addToCart(client, { conversationId: "conv-1", productId: "prod-1", quantity: 1.5, origin: "inventory" })
     ).rejects.toThrow(/cantidad/i);
+    expect(log).toHaveLength(0);
+  });
+});
+
+// 14/10/2026: el asesor elige a qué precio se cobra cada renglón. Un repuesto
+// = un renglón (unicidad sin cambios): agregarlo con el OTRO precio suma la
+// unidad Y pasa el renglón al precio recién elegido.
+describe("addToCart — precio de promoción o estándar", () => {
+  it("un renglón nuevo entra con el precio elegido (el INSERT lo manda explícito)", async () => {
+    const { client, rows, log } = createCartFake();
+
+    const result = await addToCart(client, {
+      conversationId: "conv-1",
+      productId: "prod-1",
+      origin: "inventory",
+      priceKind: "estandar",
+    });
+
+    expect(rows[0].price_kind).toBe("estandar");
+    expect(log.find((l) => l.op === "insert")?.payload).toMatchObject({ price_kind: "estandar" });
+    expect(result).toEqual({ priceKindChanged: false });
+  });
+
+  it("sin priceKind entra en promoción, también explícito en el INSERT", async () => {
+    const { client, rows } = createCartFake();
+
+    await addToCart(client, { conversationId: "conv-1", productId: "prod-1", origin: "inventory" });
+
+    expect(rows[0].price_kind).toBe("promocion");
+  });
+
+  it("sin priceKind un renglón que ya estaba en estándar CONSERVA su precio (agregar una cotización no lo pisa)", async () => {
+    const { client, rows, log } = createCartFake([{ ...ROW, price_kind: "estandar" }]);
+
+    const result = await addToCart(client, {
+      conversationId: "conv-1",
+      productId: "prod-1",
+      origin: "quote",
+      quoteId: "q-1",
+    });
+
+    expect(rows[0]).toMatchObject({ quantity: 3, price_kind: "estandar" });
+    expect(log.find((l) => l.op === "update")?.payload).toEqual({ quantity: 3 });
+    expect(result).toEqual({ priceKindChanged: false });
+  });
+
+  it("la lectura del renglón existente pide también price_kind", async () => {
+    const { client, log } = createCartFake([ROW]);
+
+    await addToCart(client, { conversationId: "conv-1", productId: "prod-1", origin: "inventory" });
+
+    expect(String(log.find((l) => l.op === "select")?.payload)).toContain("price_kind");
+  });
+
+  it("agregar con el OTRO precio suma la unidad Y cambia el renglón al precio nuevo", async () => {
+    const { client, rows, log } = createCartFake([ROW]); // ROW: promoción, cantidad 2
+
+    const result = await addToCart(client, {
+      conversationId: "conv-1",
+      productId: "prod-1",
+      origin: "inventory",
+      priceKind: "estandar",
+    });
+
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({ quantity: 3, price_kind: "estandar" });
+    expect(log.find((l) => l.op === "update")?.payload).toEqual({ quantity: 3, price_kind: "estandar" });
+    expect(result).toEqual({ priceKindChanged: true });
+  });
+
+  it("agregar con el mismo precio solo suma la unidad y no avisa de cambio", async () => {
+    const { client, rows } = createCartFake([{ ...ROW, price_kind: "estandar" }]);
+
+    const result = await addToCart(client, {
+      conversationId: "conv-1",
+      productId: "prod-1",
+      origin: "inventory",
+      priceKind: "estandar",
+    });
+
+    expect(rows[0]).toMatchObject({ quantity: 3, price_kind: "estandar" });
+    expect(result).toEqual({ priceKindChanged: false });
+  });
+
+  it("el control optimista sigue vigente: el UPDATE lleva el id y la cantidad leída", async () => {
+    const { client, log } = createCartFake([ROW]);
+
+    await addToCart(client, {
+      conversationId: "conv-1",
+      productId: "prod-1",
+      origin: "inventory",
+      priceKind: "estandar",
+    });
+
+    expect(log.find((l) => l.op === "update")?.filters).toEqual([
+      ["id", "cart-1"],
+      ["quantity", 2],
+    ]);
+  });
+
+  it("rechaza un precio que no sea promocion ni estandar, sin tocar la base", async () => {
+    const { client, log } = createCartFake();
+
+    await expect(
+      addToCart(client, {
+        conversationId: "conv-1",
+        productId: "prod-1",
+        origin: "inventory",
+        priceKind: "gratis" as never,
+      })
+    ).rejects.toThrow(/precio/i);
+    expect(log).toHaveLength(0);
+  });
+});
+
+describe("setCartPriceKind — cambia el precio de un renglón", () => {
+  it("fija el precio del renglón pedido y de ningún otro, con el payload exacto", async () => {
+    const { client, rows, log } = createCartFake([ROW, { ...ROW, id: "cart-2", product_id: "prod-2" }]);
+
+    await setCartPriceKind(client, "cart-1", "estandar");
+
+    expect(rows.find((r) => r.id === "cart-1")?.price_kind).toBe("estandar");
+    expect(rows.find((r) => r.id === "cart-2")?.price_kind).toBe("promocion");
+    const update = log.find((l) => l.op === "update");
+    expect(update?.payload).toEqual({ price_kind: "estandar" });
+    expect(update?.filters).toEqual([["id", "cart-1"]]);
+  });
+
+  it("no toca la cantidad", async () => {
+    const { client, rows } = createCartFake([ROW]);
+
+    await setCartPriceKind(client, "cart-1", "estandar");
+
+    expect(rows[0].quantity).toBe(2);
+  });
+
+  it("si el renglón ya no existe lanza el mismo aviso que setCartQuantity", async () => {
+    const { client } = createCartFake([]);
+
+    await expect(setCartPriceKind(client, "cart-1", "estandar")).rejects.toThrow(/ya no está/i);
+  });
+
+  it("si la base ignora la escritura (0 filas) lanza", async () => {
+    const { client } = createCartFake([ROW], { ignoreWrites: true });
+
+    await expect(setCartPriceKind(client, "cart-1", "promocion")).rejects.toThrow();
+  });
+
+  it("un valor inválido lanza antes de escribir", async () => {
+    const { client, log } = createCartFake([ROW]);
+
+    await expect(setCartPriceKind(client, "cart-1", "gratis" as never)).rejects.toThrow(/precio/i);
     expect(log).toHaveLength(0);
   });
 });

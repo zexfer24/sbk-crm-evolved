@@ -18,6 +18,7 @@ import {
   priceDisplay,
   priceInBs,
   sinPeso,
+  standardPriceAmounts,
   standardPriceDisplay,
   stockLevel,
   summarizeInventory,
@@ -268,6 +269,49 @@ describe("standardPriceDisplay", () => {
   it("peso válido pero sin rango en la base: sin_tarifa", () => {
     expect(standardPriceDisplay(product({ weightKg: 5, shippingFeeUsd: null }), 40)).toEqual({
       estado: "sin_tarifa",
+    });
+  });
+});
+
+// 14/10/2026: el carrito del chat cobra a precio estándar, así que los números
+// salen de una función que `standardPriceDisplay` también usa (una sola
+// aritmética para la pantalla y para la factura).
+describe("standardPriceAmounts", () => {
+  it("sin tarifa MRW no hay montos: null, nunca un número incompleto", () => {
+    expect(standardPriceAmounts(product({ weightKg: 5, shippingFeeUsd: null }), 40)).toBeNull();
+    expect(standardPriceAmounts(product({ weightKg: null, shippingFeeUsd: null }), 0)).toBeNull();
+  });
+
+  it("VES con tasa: dólar con usdFromBs + tarifa, bolívares con la tarifa convertida", () => {
+    // 87 / 40 = 2,175 -> usdFromBs 2,20; + 1,40 = 3,60. Bs: 87 + round2(1,40 * 40) = 143.
+    expect(standardPriceAmounts(product({ price: 87, currency: "VES", shippingFeeUsd: 1.4 }), 40)).toEqual({
+      usd: 3.6,
+      bs: 143,
+    });
+  });
+
+  it("VES con tasa: sin ruido de coma flotante (2,20 + 1,35 = 3,55)", () => {
+    expect(standardPriceAmounts(product({ price: 87, currency: "VES", shippingFeeUsd: 1.35 }), 40)?.usd).toBe(3.55);
+  });
+
+  it("USD con tasa: precio + tarifa, y los bolívares salen de esa suma", () => {
+    expect(standardPriceAmounts(product({ price: 25, currency: "USD", shippingFeeUsd: 2.5 }), 40)).toEqual({
+      usd: 27.5,
+      bs: 1100,
+    });
+  });
+
+  it("USD sin tasa: el dólar sí se puede sumar, los bolívares no", () => {
+    expect(standardPriceAmounts(product({ price: 25, currency: "USD", shippingFeeUsd: 1.4 }), 0)).toEqual({
+      usd: 26.4,
+      bs: null,
+    });
+  });
+
+  it("VES sin tasa: no se mezclan monedas, ni dólar ni bolívares", () => {
+    expect(standardPriceAmounts(product({ price: 1000, currency: "VES", shippingFeeUsd: 1.4 }), 0)).toEqual({
+      usd: null,
+      bs: null,
     });
   });
 });

@@ -466,8 +466,8 @@ describe("InventoryLookup", () => {
    * de la conversación. Sigue siendo solo una búsqueda si el llamador no le
    * pasa `onAdd`.
    */
-  describe("botón Agregar al carrito (T8)", () => {
-    it("cada resultado activo ofrece «Agregar» y le entrega su producto a onAdd", async () => {
+  describe("botones Agregar al carrito (T8 y precio elegido, 14/10/2026)", () => {
+    it("cada resultado activo ofrece «+ Promoción» y le entrega su producto a onAdd con «promocion»", async () => {
       searchProductsForLookup.mockResolvedValue([product()]);
       const onAdd = vi.fn();
       render(<InventoryLookup bcvRate={RATE} onAdd={onAdd} />);
@@ -476,14 +476,60 @@ describe("InventoryLookup", () => {
       flush();
       await flushPromises();
 
-      fireEvent.click(screen.getByRole("button", { name: "Agregar Bujía CR7HSA al carrito" }));
+      fireEvent.click(screen.getByRole("button", { name: "Agregar Bujía CR7HSA a precio de promoción" }));
 
       expect(onAdd).toHaveBeenCalledTimes(1);
-      expect(onAdd).toHaveBeenCalledWith(expect.objectContaining({ id: "prod-1", name: "Bujía CR7HSA" }));
+      expect(onAdd).toHaveBeenCalledWith(expect.objectContaining({ id: "prod-1", name: "Bujía CR7HSA" }), "promocion");
     });
 
-    it("un repuesto retirado NO se puede agregar", async () => {
-      searchProductsForLookup.mockResolvedValue([product({ isActive: false })]);
+    it("«+ Estándar» entrega el producto con «estandar» cuando hay tarifa MRW", async () => {
+      searchProductsForLookup.mockResolvedValue([product({ weightKg: 1, shippingFeeUsd: 1.4 })]);
+      const onAdd = vi.fn();
+      render(<InventoryLookup bcvRate={RATE} onAdd={onAdd} />);
+
+      type("bujia");
+      flush();
+      await flushPromises();
+
+      fireEvent.click(screen.getByRole("button", { name: "Agregar Bujía CR7HSA a precio estándar" }));
+
+      expect(onAdd).toHaveBeenCalledTimes(1);
+      expect(onAdd).toHaveBeenCalledWith(expect.objectContaining({ id: "prod-1" }), "estandar");
+    });
+
+    it("sin tarifa MRW «+ Estándar» está deshabilitado y dice el motivo; «+ Promoción» sigue disponible", async () => {
+      searchProductsForLookup.mockResolvedValue([product({ weightKg: 95, shippingFeeUsd: null })]);
+      const onAdd = vi.fn();
+      render(<InventoryLookup bcvRate={RATE} onAdd={onAdd} />);
+
+      type("bujia");
+      flush();
+      await flushPromises();
+
+      const estandar = screen.getByRole("button", { name: "Agregar Bujía CR7HSA a precio estándar" });
+      expect(estandar).toBeDisabled();
+      expect(estandar).toHaveAttribute("title", "Más de 80 kg: fuera de la tabla MRW");
+      fireEvent.click(estandar);
+      expect(onAdd).not.toHaveBeenCalled();
+      expect(screen.getByRole("button", { name: "Agregar Bujía CR7HSA a precio de promoción" })).toBeEnabled();
+    });
+
+    it("sin peso cargado el motivo del botón «+ Estándar» es «Sin peso cargado»", async () => {
+      searchProductsForLookup.mockResolvedValue([product({ weightKg: null, shippingFeeUsd: null })]);
+      render(<InventoryLookup bcvRate={RATE} onAdd={vi.fn()} />);
+
+      type("bujia");
+      flush();
+      await flushPromises();
+
+      expect(screen.getByRole("button", { name: "Agregar Bujía CR7HSA a precio estándar" })).toHaveAttribute(
+        "title",
+        "Sin peso cargado"
+      );
+    });
+
+    it("un repuesto retirado NO se puede agregar a ningún precio", async () => {
+      searchProductsForLookup.mockResolvedValue([product({ isActive: false, weightKg: 1, shippingFeeUsd: 1.4 })]);
       render(<InventoryLookup bcvRate={RATE} onAdd={vi.fn()} />);
 
       type("bujia");
@@ -491,7 +537,7 @@ describe("InventoryLookup", () => {
       await flushPromises();
 
       expect(screen.getByText("Retirado")).toBeInTheDocument();
-      expect(screen.queryByRole("button", { name: /al carrito/i })).not.toBeInTheDocument();
+      expect(screen.queryByRole("button", { name: /^agregar/i })).not.toBeInTheDocument();
     });
 
     it("sin onAdd no pinta ningún botón: sigue siendo una búsqueda de solo lectura", async () => {
@@ -502,18 +548,19 @@ describe("InventoryLookup", () => {
       flush();
       await flushPromises();
 
-      expect(screen.queryByRole("button", { name: /al carrito/i })).not.toBeInTheDocument();
+      expect(screen.queryByRole("button", { name: /^agregar/i })).not.toBeInTheDocument();
     });
 
-    it("mientras el carrito escribe (addDisabled) el botón se deshabilita", async () => {
-      searchProductsForLookup.mockResolvedValue([product()]);
+    it("mientras el carrito escribe (addDisabled) los dos botones se deshabilitan", async () => {
+      searchProductsForLookup.mockResolvedValue([product({ weightKg: 1, shippingFeeUsd: 1.4 })]);
       render(<InventoryLookup bcvRate={RATE} onAdd={vi.fn()} addDisabled />);
 
       type("bujia");
       flush();
       await flushPromises();
 
-      expect(screen.getByRole("button", { name: "Agregar Bujía CR7HSA al carrito" })).toBeDisabled();
+      expect(screen.getByRole("button", { name: "Agregar Bujía CR7HSA a precio de promoción" })).toBeDisabled();
+      expect(screen.getByRole("button", { name: "Agregar Bujía CR7HSA a precio estándar" })).toBeDisabled();
     });
   });
 

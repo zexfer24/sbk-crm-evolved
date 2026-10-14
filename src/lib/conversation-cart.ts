@@ -1,6 +1,6 @@
-import type { ConversationCartItem } from "@/lib/types";
+import type { CartPriceKind, ConversationCartItem } from "@/lib/types";
 import type { SaleLineItem } from "@/lib/mutations";
-import { priceInBs } from "@/lib/inventory";
+import { priceInBs, standardPriceAmounts } from "@/lib/inventory";
 import { productPriceUsd } from "@/lib/sale-cart";
 
 /**
@@ -16,6 +16,16 @@ import { productPriceUsd } from "@/lib/sale-cart";
  * factura al precio de HOY. El precio cotizado sobrevive solo como dato para
  * avisar («cotizado $X · hoy $Y», `quoteComparisonLabel`): informa, no cobra.
  *
+ * 14/10/2026: cada renglón se cobra a PRECIO DE PROMOCIÓN o ESTÁNDAR
+ * (promoción + envío MRW por peso), a elección del asesor (`priceKind`). El
+ * estándar sigue la misma regla D6: no se guarda ningún monto, se calcula al
+ * mirar y al facturar con `standardPriceAmounts` (`inventory.ts`, la única
+ * aritmética de la suma). Un renglón estándar cuyo producto no tiene tarifa
+ * MRW queda SIN precio —nunca un número incompleto— y por eso bloquea el
+ * cierre igual que uno sin tasa. El aviso «cotizado vs hoy» es solo de
+ * promoción: Seba cotiza el precio de promoción, comparar contra el estándar
+ * mostraría una "diferencia" que es el envío.
+ *
  * NO redondea nada por su cuenta. La conversión de bolívares a dólares vive
  * en UNA sola función, `usdFromBs` (`usd-price.ts`), y llega acá a través de
  * `productPriceUsd`; el total en dólares SUMA los dólares ya redondeados por
@@ -29,7 +39,13 @@ import { productPriceUsd } from "@/lib/sale-cart";
  * del Inventario (12/10/2026, sin conversación), que usa las mismas reglas
  * sin tener id de conversación ni de renglón.
  */
-export type PriceableCartItem = Pick<ConversationCartItem, "product" | "quantity" | "quotedPriceUsd">;
+export type PriceableCartItem = Pick<ConversationCartItem, "product" | "quantity" | "quotedPriceUsd"> & {
+  /**
+   * Opcional a propósito: el carrito del Inventario (sin conversación) no
+   * elige precio y cobra siempre la promoción; ausente = `"promocion"`.
+   */
+  priceKind?: CartPriceKind;
+};
 
 export interface PricedCartLine<T extends PriceableCartItem = ConversationCartItem> {
   item: T;
@@ -61,12 +77,15 @@ function round2(value: number): number {
 
 export function priceCartLines<T extends PriceableCartItem>(items: T[], bcvRate: number): PricedCartLine<T>[] {
   return items.map((item) => {
-    const unitPriceUsd = productPriceUsd(item.product, bcvRate);
-    const unitPriceBs = priceInBs(item.product, bcvRate);
+    const estandar = item.priceKind === "estandar";
+    // Estándar sin tarifa: `standardPriceAmounts` da null y el renglón queda sin precio.
+    const standard = estandar ? standardPriceAmounts(item.product, bcvRate) : null;
+    const unitPriceUsd = estandar ? (standard?.usd ?? null) : productPriceUsd(item.product, bcvRate);
+    const unitPriceBs = estandar ? (standard?.bs ?? null) : priceInBs(item.product, bcvRate);
     const quotedPriceUsd = item.quotedPriceUsd;
 
     const priceChange =
-      quotedPriceUsd !== null && unitPriceUsd !== null && Math.abs(quotedPriceUsd - unitPriceUsd) >= 0.005
+      !estandar && quotedPriceUsd !== null && unitPriceUsd !== null && Math.abs(quotedPriceUsd - unitPriceUsd) >= 0.005
         ? { quotedUsd: quotedPriceUsd, todayUsd: unitPriceUsd }
         : null;
 
@@ -132,10 +151,12 @@ export function cartSummaryText(lines: PricedCartLine<PriceableCartItem>[], tota
     const unit = line.unitPriceUsd ?? 0;
     const subtotal = line.subtotalUsd ?? 0;
     const name = quantity > 1 ? `${product.name} (x${quantity})` : product.name;
+    // El estándar lo dice: el cliente tiene que saber que el envío ya va dentro.
+    const label = line.item.priceKind === "estandar" ? "Precio (incluye envío)" : "Precio";
     const price =
       quantity > 1
-        ? `Precio: ${formatUsd(unit)} c/u · ${formatUsd(subtotal)}`
-        : `Precio: ${formatUsd(unit)}`;
+        ? `${label}: ${formatUsd(unit)} c/u · ${formatUsd(subtotal)}`
+        : `${label}: ${formatUsd(unit)}`;
     return [name, `SKU: ${product.saintCode ?? "sin código"}`, price].join("\n");
   });
 
@@ -156,7 +177,11 @@ export function cartToSaleLines(lines: PricedCartLine[]): SaleLineItem[] {
       id: line.item.id,
       origin: line.item.origin,
       productId: line.item.productId,
-      description: line.item.product.name,
+      // Lo que queda en la orden y la factura tiene que decir a qué precio se cobró.
+      description:
+        line.item.priceKind === "estandar"
+          ? `${line.item.product.name} (precio estándar, incluye envío MRW)`
+          : line.item.product.name,
       unitPrice: line.unitPriceUsd,
       quantity: line.item.quantity,
     });

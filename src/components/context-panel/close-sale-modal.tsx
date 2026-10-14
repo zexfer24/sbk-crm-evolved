@@ -235,7 +235,7 @@ export function CloseSaleModal({
     const pricedLines = priceCartLines(cart, bcvRate);
     if (cartTotals(pricedLines).unpricedCount > 0) {
       toast.danger(
-        "Hay renglones sin precio: falta la tasa del BCV para pasar a dólares un repuesto en bolívares."
+        "Hay renglones sin precio: falta la tasa del BCV (repuesto en bolívares) o la tarifa MRW (precio estándar)."
       );
       return;
     }

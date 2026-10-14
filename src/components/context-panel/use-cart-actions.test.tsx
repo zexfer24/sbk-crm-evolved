@@ -17,11 +17,13 @@ import type { ConversationQuote, Product } from "@/lib/types";
 const addToCart = vi.fn();
 const addQuotesToCart = vi.fn();
 const setCartQuantity = vi.fn();
+const setCartPriceKind = vi.fn();
 const removeFromCart = vi.fn();
 vi.mock("@/lib/mutations", () => ({
   addToCart: (...args: unknown[]) => addToCart(...args),
   addQuotesToCart: (...args: unknown[]) => addQuotesToCart(...args),
   setCartQuantity: (...args: unknown[]) => setCartQuantity(...args),
+  setCartPriceKind: (...args: unknown[]) => setCartPriceKind(...args),
   removeFromCart: (...args: unknown[]) => removeFromCart(...args),
 }));
 
@@ -82,10 +84,11 @@ function setup(bcvRate = 40) {
 }
 
 beforeEach(() => {
-  for (const fn of [addToCart, addQuotesToCart, setCartQuantity, removeFromCart, fetchConversationQuotes, onCartChanged]) {
+  for (const fn of [addToCart, addQuotesToCart, setCartQuantity, setCartPriceKind, removeFromCart, fetchConversationQuotes, onCartChanged]) {
     fn.mockReset();
     fn.mockResolvedValue(undefined);
   }
+  addToCart.mockResolvedValue({ priceKindChanged: false });
   addQuotesToCart.mockResolvedValue(0);
   fetchConversationQuotes.mockResolvedValue([]);
   vi.mocked(toast.danger).mockClear();
@@ -105,6 +108,7 @@ describe("useCartActions — agregar un producto del inventario", () => {
       productId: "prod-1",
       quantity: 1,
       origin: "inventory",
+      priceKind: "promocion",
     });
     expect(onCartChanged).toHaveBeenCalledTimes(1);
   });
@@ -135,6 +139,86 @@ describe("useCartActions — agregar un producto del inventario", () => {
     await act(() => result.current.addProduct(product()));
 
     expect(toast.danger).toHaveBeenCalledWith("No se pudo agregar al carrito.");
+  });
+});
+
+// 14/10/2026: el carrito del chat cobra a promoción o a estándar (promoción +
+// envío MRW), a elección del asesor.
+describe("useCartActions — precio estándar", () => {
+  const conTarifa = () => product({ price: 25, weightKg: 2, shippingFeeUsd: 2.5 });
+
+  it("agregar a precio estándar manda priceKind «estandar» a la mutación", async () => {
+    const { result } = setup();
+
+    await act(() => result.current.addProduct(conTarifa(), "estandar"));
+
+    expect(addToCart).toHaveBeenCalledWith(CLIENT, {
+      conversationId: "conv-1",
+      productId: "prod-1",
+      quantity: 1,
+      origin: "inventory",
+      priceKind: "estandar",
+    });
+    expect(toast.info).not.toHaveBeenCalled();
+  });
+
+  it("estándar sin tarifa MRW no escribe y dice por qué", async () => {
+    const { result } = setup();
+
+    await act(() => result.current.addProduct(product({ shippingFeeUsd: null }), "estandar"));
+
+    expect(addToCart).not.toHaveBeenCalled();
+    expect(toast.danger).toHaveBeenCalledWith(
+      "Este repuesto no tiene tarifa MRW: no se puede cobrar a precio estándar."
+    );
+  });
+
+  it("estándar de un producto en bolívares sin tasa no escribe y avisa de la tasa", async () => {
+    const { result } = setup(0);
+
+    await act(() => result.current.addProduct(product({ currency: "VES", price: 100, shippingFeeUsd: 1.4 }), "estandar"));
+
+    expect(addToCart).not.toHaveBeenCalled();
+    expect(toast.danger).toHaveBeenCalledWith(expect.stringMatching(/tasa/i));
+  });
+
+  it("si el renglón ya estaba con el otro precio avisa que ahora se cobra a estándar", async () => {
+    addToCart.mockResolvedValueOnce({ priceKindChanged: true });
+    const { result } = setup();
+
+    await act(() => result.current.addProduct(conTarifa(), "estandar"));
+
+    expect(toast.info).toHaveBeenCalledWith("Ese repuesto ya estaba en el carrito: ahora se cobra a precio estándar.");
+  });
+
+  it("y si pasa a promoción, avisa que ahora se cobra a precio de promoción", async () => {
+    addToCart.mockResolvedValueOnce({ priceKindChanged: true });
+    const { result } = setup();
+
+    await act(() => result.current.addProduct(conTarifa(), "promocion"));
+
+    expect(toast.info).toHaveBeenCalledWith(
+      "Ese repuesto ya estaba en el carrito: ahora se cobra a precio de promoción."
+    );
+  });
+
+  it("setPriceKind cambia el precio del renglón y refresca", async () => {
+    const { result } = setup();
+
+    await act(() => result.current.setPriceKind("cart-1", "estandar"));
+
+    expect(setCartPriceKind).toHaveBeenCalledWith(CLIENT, "cart-1", "estandar");
+    expect(onCartChanged).toHaveBeenCalledTimes(1);
+  });
+
+  it("si setPriceKind falla avisa con el mensaje del error y refresca igual", async () => {
+    setCartPriceKind.mockRejectedValueOnce(new Error("Ese renglón ya no está en el carrito"));
+    const { result } = setup();
+
+    await act(() => result.current.setPriceKind("cart-1", "promocion"));
+
+    expect(toast.danger).toHaveBeenCalledWith("Ese renglón ya no está en el carrito");
+    expect(onCartChanged).toHaveBeenCalledTimes(1);
   });
 });
 
