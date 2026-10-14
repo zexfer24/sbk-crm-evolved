@@ -2981,8 +2981,9 @@ de `whatsapp_channels` con el `phone_number_id` de Meta y redesplegar.
 ## 19. El rol `caja`: usuarios que solo leen el Inventario (13/10/2026)
 
 Migración `20261013010000_rol_caja.sql` (commit aparte, con `[migración]` en
-el título). Una cuenta de caja entra al CRM y ve SOLO el Inventario: precio,
-existencia, peso y tarifa de envío. No ve conversaciones, clientes, ventas,
+el título). Una cuenta de caja entra al CRM y ve SOLO el Inventario: precio
+promoción, existencia y peso (la tarifa de envío y el precio estándar quedaron
+fuera el 14/10/2026, ver más abajo). No ve conversaciones, clientes, ventas,
 facturas ni configuración, y no puede escribir nada (ni el peso). El candado
 está en la base (RLS), no en la interfaz.
 
@@ -2990,7 +2991,7 @@ está en la base (RLS), no en la interfaz.
 exigir `role <> 'caja'` (agent/supervisor/admin no notan nada); la función
 nueva `can_read_inventory()` abre políticas de SOLO LECTURA sobre `products`,
 `product_compatibility`, `exchange_rates` y las seis tablas del catálogo de
-motos; `tarifa_mrw_usd` usa esa función; la caja lee su propia fila de
+motos (`tarifa_mrw_usd` ya NO la usa desde el 14/10/2026); la caja lee su propia fila de
 `agents` y no la edita; subir archivos al bucket `whatsapp-media` ahora exige
 ser agente.
 
@@ -3024,6 +3025,29 @@ hora pico. La migración se autoverifica y termina con `notify pgrst`.
    `permisos_funciones.sql` y `config_solo_supervisor.sql` pasan.
 4. Un asesor real sigue entrando a la bandeja, ve conversaciones y puede
    guardar el peso de un producto (nada cambió para él).
+
+### La caja no recibe la tarifa de envío ni ve el precio estándar (14/10/2026)
+
+Migración `20261014030000_caja_sin_precio_estandar.sql` (commit aparte, con
+`[migración]` en el título). `20261013010000` había dejado que la caja viera el
+precio estándar (precio + tarifa MRW); el operador pidió que vea SOLO el precio
+promoción. `tarifa_mrw_usd(numeric)` vuelve a chequear `is_agent()` (que
+excluye a la caja) en vez de `can_read_inventory()`: es `security definer` y
+lee `shipping_rates` sin RLS, por eso la fuga estaba ahí. La caja recibe
+`null`, no un error (el Inventario pide `tarifa_envio_usd` siempre y un fallo lo
+tumbaría entero); el campo calculado `tarifa_envio_usd` no se tocó, hereda el
+cambio. `can_read_inventory()` queda solo para las nueve políticas
+`<tabla>_select_inventario`. Se aplica igual que las demás, dentro de UNA
+transacción (sin `-1`, la guarda aborta con un mensaje explícito):
+
+```bash
+PGOPTIONS="-c lock_timeout=5s" psql -1 -v ON_ERROR_STOP=1 -f supabase/migrations/20261014030000_caja_sin_precio_estandar.sql
+```
+
+Verificar: salida `autoverificación correcta (la caja ya no recibe la tarifa de
+envío)`; `select prosrc from pg_proc where proname = 'tarifa_mrw_usd'` contiene
+`is_agent()` y no `can_read_inventory`; `supabase/tests/rol_caja.sql`,
+`precio_estandar_mrw.sql` y `permisos_funciones.sql` pasan.
 
 ### Crear usuarios de caja
 

@@ -178,7 +178,8 @@ declare
     -- tarifa_mrw_usd (12/10/2026, migración 20261012010000): la usa el
     -- campo calculado tarifa_envio_usd que Inventario pide con sesión de
     -- asesor; security definer para no pagar la RLS de shipping_rates por
-    -- tramo en cada producto.
+    -- tramo en cada producto. Desde 20261014030000 (14/10/2026) chequea
+    -- is_agent() y NO can_read_inventory(): la caja recibe null.
     'public.tarifa_mrw_usd(numeric)',
     -- can_read_inventory (13/10/2026, migración 20261013010000): la invocan,
     -- como authenticated, las políticas de SELECT del Inventario (rol caja);
