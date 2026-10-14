@@ -9,6 +9,7 @@ import { createClient } from "@/lib/supabase/client";
 import { updateProductWeight } from "@/lib/mutations";
 import { fetchProduct } from "@/lib/inventory-data";
 import {
+  MOTIVO_SIN_ESTANDAR,
   aiVisibility,
   formatWeightInput,
   isNewFromSaint,
@@ -20,17 +21,6 @@ import {
 } from "@/lib/inventory";
 import { CasheaCalculadora } from "@/components/inventario/cashea-calculadora";
 import { useInventarioCarrito } from "@/components/inventario/inventario-carrito-context";
-
-/**
- * Por qué no hay precio estándar (12/10/2026): nunca un número incompleto.
- * `sin_peso` NO está acá desde el 13/10/2026: para quien puede editar es un
- * botón que lleva al campo de peso, y para caja es un dato («Sin peso
- * cargado»); los otros dos motivos no tienen acción posible desde la fila.
- */
-const MOTIVO_SIN_ESTANDAR = {
-  fuera_de_tabla: "Más de 80 kg: fuera de la tabla MRW",
-  sin_tarifa: "Sin tarifa MRW para este peso",
-} as const;
 
 /**
  * Una fila del inventario.

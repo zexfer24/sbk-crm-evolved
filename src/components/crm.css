@@ -1423,6 +1423,45 @@
   white-space: nowrap;
 }
 
+/* Promoción y Estándar (14/10/2026): dos líneas etiquetadas, una debajo de la
+   otra, al lado del botón «Agregar». La etiqueta tiene ancho fijo para que las
+   dos cifras arranquen alineadas. Ocupa la fila entera: con `auto`, «Agregar»
+   saltaba entre el costado y abajo según el largo de cada cifra; así queda
+   siempre debajo, a la derecha, en todos los resultados. */
+.crm-lookup-prices {
+  display: flex;
+  flex: 1 1 100%;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.crm-lookup-price-label {
+  flex-shrink: 0;
+  width: 62px;
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--lm-muted);
+}
+
+/* Motivo por el que no hay estándar: puede partir línea (la columna mide 300 px).
+   Lleva el padre en el selector para ganarle en especificidad al nowrap de
+   `.crm-lookup-item-price > span`, que sigue valiendo para los importes. */
+.crm-lookup-item-price > .crm-lookup-price-missing {
+  white-space: normal;
+  font-size: 11.5px;
+  font-weight: 500;
+  font-style: italic;
+  color: var(--lm-muted);
+}
+
+/* «incluye envío MRW $ X»: alineado bajo las cifras (ancho de la etiqueta + gap). */
+.crm-lookup-fee {
+  padding-left: 70px;
+  font-size: 11px;
+  color: var(--lm-muted);
+}
+
 .crm-lookup-price-alt {
   font-weight: 500;
   color: var(--lm-muted);
@@ -1560,6 +1599,7 @@
 .crm-lookup-add {
   display: inline-flex;
   flex-shrink: 0;
+  margin-left: auto;
   align-items: center;
   gap: 4px;
   padding: 3px 9px;

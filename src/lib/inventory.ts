@@ -170,6 +170,19 @@ export function sinPeso(weightKg: number | null): boolean {
   return weightKg === null || weightKg <= 0;
 }
 
+/**
+ * Por qué no hay precio estándar (12/10/2026): nunca un número incompleto.
+ * `sin_peso` NO está acá desde el 13/10/2026: para quien puede editar es un
+ * botón que lleva al campo de peso, y para caja es un dato («Sin peso
+ * cargado»); los otros dos motivos no tienen acción posible desde la fila.
+ * Desde el 14/10/2026 la comparten la fila de Inventario y la búsqueda del
+ * chat (`inventory-lookup.tsx`), para que el motivo se lea igual en las dos.
+ */
+export const MOTIVO_SIN_ESTANDAR = {
+  fuera_de_tabla: "Más de 80 kg: fuera de la tabla MRW",
+  sin_tarifa: "Sin tarifa MRW para este peso",
+} as const;
+
 export function standardPriceDisplay(product: Product, rate: number): StandardPriceDisplay {
   const fee = product.shippingFeeUsd;
   if (fee === null) {

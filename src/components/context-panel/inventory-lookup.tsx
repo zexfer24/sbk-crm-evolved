@@ -5,7 +5,7 @@ import { Plus, Search, X } from "lucide-react";
 import type { Product } from "@/lib/types";
 import { createClient } from "@/lib/supabase/client";
 import { searchProductsForLookup } from "@/lib/inventory-data";
-import { priceDisplay } from "@/lib/inventory";
+import { MOTIVO_SIN_ESTANDAR, priceDisplay, standardPriceDisplay } from "@/lib/inventory";
 import { useDebouncedCallback } from "@/lib/use-debounced-callback";
 import { StockPill } from "@/components/context-panel/stock-pill";
 import type { BcvRateSummary } from "@/components/inbox/bcv-rate-chip";
@@ -43,6 +43,13 @@ import type { BcvRateSummary } from "@/components/inbox/bcv-rate-chip";
  * seleccionar y suprimir a mano entre un cliente y el siguiente. La X nativa
  * del `type="search"` está oculta en `crm.css` (se veía distinta en cada
  * navegador), así que este botón es el único.
+ *
+ * 14/10/2026: cada resultado pinta también el PRECIO ESTÁNDAR (promoción +
+ * envío MRW por peso, `standardPriceDisplay`), etiquetado «Promoción» /
+ * «Estándar» igual que la fila de Inventario. Hasta esa fecha el asesor
+ * cotizaba desde el chat solo con el precio de promoción y tenía que ir a
+ * Inventario a buscar el estándar. Sin tarifa se dice el motivo en texto,
+ * nunca un número incompleto.
  */
 const LOOKUP_DEBOUNCE_MS = 300;
 const LOOKUP_LIMIT = 20;
@@ -209,6 +216,7 @@ export function InventoryLookup({ bcvRate, onAdd, addDisabled = false }: Invento
           <ul className="crm-lookup-results">
             {state.products.map((product) => {
               const price = priceDisplay(product, rate);
+              const estandar = standardPriceDisplay(product, rate);
               return (
                 <li className="crm-lookup-item" key={product.id} data-retired={product.isActive ? undefined : "true"}>
                   <div className="crm-lookup-item-head">
@@ -232,9 +240,34 @@ export function InventoryLookup({ bcvRate, onAdd, addDisabled = false }: Invento
                     <StockPill quantity={product.stockQuantity} />
                   </div>
                   <div className="crm-lookup-item-actions">
-                    <div className="crm-lookup-item-price">
-                      <span className="lm-num">{price.principal}</span>
-                      {price.pie !== null && <span className="lm-num crm-lookup-price-alt">{price.pie}</span>}
+                    <div className="crm-lookup-prices">
+                      <div className="crm-lookup-item-price" data-kind="promo">
+                        <span className="crm-lookup-price-label">Promoción</span>
+                        <span className="lm-num" aria-label={`Precio promoción de ${product.name}`}>
+                          {price.principal}
+                        </span>
+                        {price.pie !== null && <span className="lm-num crm-lookup-price-alt">{price.pie}</span>}
+                      </div>
+                      <div className="crm-lookup-item-price" data-kind="estandar">
+                        <span className="crm-lookup-price-label">Estándar</span>
+                        {estandar.estado === "ok" ? (
+                          <>
+                            <span className="lm-num" aria-label={`Precio estándar de ${product.name}`}>
+                              {estandar.principal}
+                            </span>
+                            {estandar.pie !== null && (
+                              <span className="lm-num crm-lookup-price-alt">{estandar.pie}</span>
+                            )}
+                          </>
+                        ) : (
+                          <span className="crm-lookup-price-missing" data-empty="true">
+                            {estandar.estado === "sin_peso" ? "Sin peso cargado" : MOTIVO_SIN_ESTANDAR[estandar.estado]}
+                          </span>
+                        )}
+                      </div>
+                      {estandar.estado === "ok" && (
+                        <span className="crm-lookup-fee">incluye envío MRW {estandar.tarifa}</span>
+                      )}
                     </div>
                     {onAdd && product.isActive && (
                       <button

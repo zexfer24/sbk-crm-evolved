@@ -516,4 +516,62 @@ describe("InventoryLookup", () => {
       expect(screen.getByRole("button", { name: "Agregar Bujía CR7HSA al carrito" })).toBeDisabled();
     });
   });
+
+  /**
+   * 14/10/2026: cada resultado muestra además del precio de promoción el
+   * precio ESTÁNDAR (promoción + envío MRW), con etiquetas, igual que la fila
+   * de Inventario. Nunca un número incompleto: sin tarifa, el motivo en texto.
+   */
+  describe("InventoryLookup — precio estándar", () => {
+    async function buscarUno(p: Product, rate: BcvRateSummary | null = RATE) {
+      searchProductsForLookup.mockResolvedValue([p]);
+      render(<InventoryLookup bcvRate={rate} />);
+      type("bujia");
+      flush();
+      await flushPromises();
+    }
+
+    it("con tarifa y tasa pinta Promoción y Estándar etiquetados, con su pie y el envío MRW", async () => {
+      await buscarUno(product({ weightKg: 1, shippingFeeUsd: 1.4 }));
+
+      expect(screen.getByText("Promoción")).toBeInTheDocument();
+      expect(screen.getByText("Estándar")).toBeInTheDocument();
+      expect(screen.getByLabelText("Precio promoción de Bujía CR7HSA")).toHaveTextContent("Bs. 87.00");
+      // 87 + round2(1,4 * 40) = 143 Bs; pie: usdFromBs(87, 40) = 2,20 + 1,40 = 3,60.
+      expect(screen.getByLabelText("Precio estándar de Bujía CR7HSA")).toHaveTextContent("Bs. 143.00");
+      expect(screen.getByText("$ 3.60")).toBeInTheDocument();
+      expect(screen.getByText("incluye envío MRW $ 1.40")).toBeInTheDocument();
+    });
+
+    it("sin peso cargado dice «Sin peso cargado» y no inventa un estándar", async () => {
+      await buscarUno(product({ weightKg: null, shippingFeeUsd: null }));
+
+      const motivo = screen.getByText("Sin peso cargado");
+      expect(motivo).toHaveAttribute("data-empty", "true");
+      expect(screen.queryByLabelText("Precio estándar de Bujía CR7HSA")).toBeNull();
+      expect(screen.queryByText(/incluye envío MRW/)).toBeNull();
+    });
+
+    it("de 80 kg en adelante dice que está fuera de la tabla MRW", async () => {
+      await buscarUno(product({ weightKg: 95, shippingFeeUsd: null }));
+
+      expect(screen.getByText("Más de 80 kg: fuera de la tabla MRW")).toBeInTheDocument();
+      expect(screen.queryByLabelText("Precio estándar de Bujía CR7HSA")).toBeNull();
+    });
+
+    it("con peso pero sin rango en la tabla dice que no hay tarifa para ese peso", async () => {
+      await buscarUno(product({ weightKg: 10, shippingFeeUsd: null }));
+
+      expect(screen.getByText("Sin tarifa MRW para este peso")).toBeInTheDocument();
+      expect(screen.queryByLabelText("Precio estándar de Bujía CR7HSA")).toBeNull();
+    });
+
+    it("sin tasa BCV el estándar en bolívares lleva el envío aparte en dólares", async () => {
+      await buscarUno(product({ weightKg: 1, shippingFeeUsd: 1.4 }), null);
+
+      expect(screen.getByLabelText("Precio promoción de Bujía CR7HSA")).toHaveTextContent("Bs. 87.00");
+      expect(screen.getByLabelText("Precio estándar de Bujía CR7HSA")).toHaveTextContent("Bs. 87.00");
+      expect(screen.getByText("+ $ 1.40 envío")).toBeInTheDocument();
+    });
+  });
 });
