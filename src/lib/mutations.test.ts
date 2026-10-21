@@ -33,7 +33,7 @@ import {
   type SaleLineItem,
 } from "@/lib/mutations";
 import type { CatalogLinkDraft } from "@/lib/catalog-links";
-import { ConfigWriteDeniedError } from "@/lib/config-write";
+import { ConfigWriteDeniedError, PRODUCT_WEIGHT_NOT_SAVED_MESSAGE } from "@/lib/config-write";
 
 const AGENT: Agent = {
   id: "agent-1",
@@ -1114,17 +1114,22 @@ describe("pinConversation / unpinConversation", () => {
  * tuvo.
  */
 describe("updateProductWeight", () => {
-  function createFakeProductsSupabase() {
-    const calls: { table: string; payload: unknown; productId: string }[] = [];
+  // T10 (21/10/2026): el fake imita el encadenado real `update().eq().select("id")`
+  // y deja elegir las filas que "devuelve" la base: con la RLS ignorando el
+  // UPDATE, PostgREST responde 200 con `data: []`.
+  function createFakeProductsSupabase(rows: { id: string }[] = [{ id: "prod-1" }]) {
+    const calls: { table: string; payload: unknown; col: string; productId: string; selected: string }[] = [];
     const client = {
       from(table: string) {
         if (table !== "products") throw new Error(`Fake Supabase: tabla no soportada en este test: ${table}`);
         return {
           update: (payload: unknown) => ({
-            eq: async (_col: string, productId: string) => {
-              calls.push({ table, payload, productId });
-              return { error: null };
-            },
+            eq: (col: string, productId: string) => ({
+              select: async (selected: string) => {
+                calls.push({ table, payload, col, productId, selected });
+                return { data: rows, error: null };
+              },
+            }),
           }),
         };
       },
@@ -1132,13 +1137,15 @@ describe("updateProductWeight", () => {
     return { client: client as unknown as SupabaseClient, calls };
   }
 
-  it("manda exactamente { weight_kg }, sin updated_at ni ninguna otra columna", async () => {
+  it("manda exactamente { weight_kg }, sin updated_at ni ninguna otra columna, filtrando por id exacto", async () => {
     const { client, calls } = createFakeProductsSupabase();
 
     await updateProductWeight(client, "prod-1", 0.25);
 
     expect(calls).toHaveLength(1);
+    expect(calls[0].col).toBe("id");
     expect(calls[0].productId).toBe("prod-1");
+    expect(calls[0].selected).toBe("id");
     expect(calls[0].payload).toEqual({ weight_kg: 0.25 });
   });
 
@@ -1150,9 +1157,24 @@ describe("updateProductWeight", () => {
     expect(calls[0].payload).toEqual({ weight_kg: null });
   });
 
+  it("con una fila afectada no lanza", async () => {
+    const { client } = createFakeProductsSupabase([{ id: "prod-1" }]);
+
+    await expect(updateProductWeight(client, "prod-1", 1)).resolves.toBeUndefined();
+  });
+
+  it("con 0 filas afectadas (la RLS ignoró el UPDATE) lanza el mensaje del peso no guardado", async () => {
+    const { client } = createFakeProductsSupabase([]);
+
+    await expect(updateProductWeight(client, "prod-1", 1)).rejects.toThrow(PRODUCT_WEIGHT_NOT_SAVED_MESSAGE);
+    await expect(updateProductWeight(client, "prod-1", 1)).rejects.toBeInstanceOf(ConfigWriteDeniedError);
+  });
+
   it("propaga el error de la base en vez de tragárselo", async () => {
     const client = {
-      from: () => ({ update: () => ({ eq: async () => ({ error: new Error("no se pudo guardar") }) }) }),
+      from: () => ({
+        update: () => ({ eq: () => ({ select: async () => ({ data: null, error: new Error("no se pudo guardar") }) }) }),
+      }),
     } as unknown as SupabaseClient;
 
     await expect(updateProductWeight(client, "prod-1", 1)).rejects.toThrow(/no se pudo guardar/);

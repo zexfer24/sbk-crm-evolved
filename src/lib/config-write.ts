@@ -30,6 +30,15 @@ export const ONLY_AUTHOR_STICKER_MESSAGE = "Solo quien subió el sticker o un su
  */
 export const QUICK_REPLY_NOT_YOURS_MESSAGE = "Este mensaje rápido ya no existe o no es tuyo.";
 
+/**
+ * Peso de un producto (T10, 21/10/2026): `products` tiene RLS `is_agent()` y el
+ * grant de columna deja solo `weight_kg`; un usuario sin permiso (la caja) o un
+ * producto que ya no existe dan UPDATE de 0 filas sin error, y la interfaz
+ * decía "Peso guardado" con la base intacta.
+ */
+export const PRODUCT_WEIGHT_NOT_SAVED_MESSAGE =
+  "No se pudo guardar el peso: tu usuario no tiene permiso para cambiar el inventario o el producto ya no existe.";
+
 /** La escritura llegó a la base y no cambió nada: casi siempre, la RLS la ignoró. */
 export class ConfigWriteDeniedError extends Error {
   name = "ConfigWriteDeniedError";

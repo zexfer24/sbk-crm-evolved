@@ -52,6 +52,7 @@ import {
   ONLY_AUTHOR_LESSON_MESSAGE,
   ONLY_AUTHOR_NOTE_MESSAGE,
   ONLY_AUTHOR_STICKER_MESSAGE,
+  PRODUCT_WEIGHT_NOT_SAVED_MESSAGE,
   QUICK_REPLY_NOT_YOURS_MESSAGE,
 } from "@/lib/config-write";
 export { assertRowsAffected, CONFIG_WRITE_DENIED_MESSAGE, ConfigWriteDeniedError, configErrorMessage } from "@/lib/config-write";
@@ -1729,9 +1730,12 @@ export async function updateContactProfile(
  * desde el CRM, llega de `products` cargada por fuera (D2 del plan).
  */
 export async function updateProductWeight(supabase: SupabaseClient, productId: string, weightKg: number | null) {
-  const { error } = await supabase.from("products").update({ weight_kg: weightKg }).eq("id", productId);
+  // T10 (21/10/2026): un UPDATE que la RLS ignora afecta 0 filas SIN error;
+  // `.select("id")` + `assertRowsAffected` lo vuelve un error que el toast muestra.
+  const { data, error } = await supabase.from("products").update({ weight_kg: weightKg }).eq("id", productId).select("id");
 
   if (error) throw error;
+  assertRowsAffected(data, PRODUCT_WEIGHT_NOT_SAVED_MESSAGE);
 }
 
 // ---------------------------------------------------------------------------
