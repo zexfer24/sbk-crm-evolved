@@ -182,10 +182,17 @@ begin
     end if;
   end loop;
   -- Ninguna política de escritura de las que dependen de can_read_inventory().
+  -- ÚNICA excepción, deliberada: `presupuestos` (21/10/2026, migración
+  -- 20261021010000, decisión D4 del plan "Presupuestos y mensajes rápidos").
+  -- La caja atiende en físico y guarda presupuestos con nombre y apellido del
+  -- cliente; sus políticas de escritura exigen además ser el autor (o
+  -- supervisor/admin), y los renglones nunca le dejan el precio estándar.
+  -- Cualquier OTRA tabla que abra escritura a la caja sigue siendo un error.
   for p in
     select c.relname, pol.polname
       from pg_policy pol join pg_class c on c.oid = pol.polrelid
      where pol.polcmd <> 'r'
+       and c.relname <> 'presupuestos'
        and (pg_get_expr(pol.polqual, pol.polrelid) ilike '%can_read_inventory%'
          or pg_get_expr(pol.polwithcheck, pol.polrelid) ilike '%can_read_inventory%')
   loop
