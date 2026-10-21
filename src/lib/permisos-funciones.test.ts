@@ -61,7 +61,11 @@ import { describe, expect, it } from "vitest";
 
 const LISTA_BLANCA = new Set(["is_agent", "is_supervisor_or_admin"]);
 
-// Las 30 funciones `security definer` conocidas (29 + can_read_inventory,
+// Las 31 funciones `security definer` conocidas (30 + quick_replies_mas_usados,
+// 20261021020000, 21/10/2026: el ranking «Más usados» de los mensajes rápidos
+// lee `quick_reply_uses`, tabla con RLS sin política de select, con
+// `is_agent()` chequeado UNA vez; los dos revokes y grant a
+// authenticated/service_role, nunca a LISTA_BLANCA). Las 30 anteriores: 29 + can_read_inventory,
 // 20261013010000, 13/10/2026: la barrera de SOLO LECTURA del Inventario para
 // el rol `caja`, con los dos revokes y grant a authenticated/service_role;
 // is_agent() ya no deja pasar a la caja y esta función sí). Las 29
@@ -192,6 +196,10 @@ const FUNCIONES_SECURITY_DEFINER_CONOCIDAS = [
   // cualquier rol?". Las políticas de SELECT del inventario la invocan como
   // `authenticated`, de ahí que lleve los dos revokes y luego el grant.
   "can_read_inventory",
+  // 21/10/2026 (20261021020000_mensajes_rapidos_usos.sql): ranking «Más
+  // usados» de los mensajes rápidos; definer para no pagar una política por
+  // fila sobre `quick_reply_uses` (crece cientos de filas por día).
+  "quick_replies_mas_usados",
 ].sort();
 
 const DIR_MIGRACIONES = path.resolve(__dirname, "../../supabase/migrations");
@@ -325,8 +333,8 @@ describe("permisos de funciones security definer (guardián estático)", () => {
     .map(([nombre]) => nombre)
     .sort();
 
-  it("detecta exactamente las 30 funciones security definer conocidas", () => {
-    // Si esto falla con MENOS de las 29, el parser se está comiendo alguna
+  it("detecta exactamente las 31 funciones security definer conocidas", () => {
+    // Si esto falla con MENOS de las 31, el parser se está comiendo alguna
     // (regex de cabecera roto, `$$` no encontrado, etc.) y el resto de este
     // archivo no protege nada aunque pase en verde. Si falla con MÁS,
     // apareció una función security definer nueva: hay que sumarla a esta
