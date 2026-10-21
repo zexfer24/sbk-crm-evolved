@@ -1,6 +1,6 @@
 /** @vitest-environment jsdom */
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { ComponentProps } from "react";
 import { QuickRepliesModal } from "@/components/chat/quick-replies-modal";
@@ -511,7 +511,9 @@ describe("QuickRepliesModal — crear un mensaje personal o compartido (T5b)", (
     );
     renderModal({ quickReplies: [propio] });
 
+    // 21/10/2026 (T7): borrar pide confirmación dentro del renglón.
     await user.click(screen.getByRole("button", { name: "Borrar" }));
+    await user.click(screen.getByRole("button", { name: "Sí, borrar" }));
 
     expect(toast.danger).toHaveBeenCalledWith("Este mensaje rápido ya no existe o no es tuyo.");
   });
@@ -523,6 +525,7 @@ describe("QuickRepliesModal — crear un mensaje personal o compartido (T5b)", (
     renderModal({ quickReplies: [propio] });
 
     await user.click(screen.getByRole("button", { name: "Borrar" }));
+    await user.click(screen.getByRole("button", { name: "Sí, borrar" }));
 
     expect(toast.danger).toHaveBeenCalledWith("No se pudo borrar el mensaje rápido.");
   });
@@ -745,5 +748,302 @@ describe("QuickRepliesModal — fotos (14/10/2026)", () => {
     await user.click(screen.getByRole("button", { name: "Usar" }));
 
     expect(onSelect).toHaveBeenCalledWith(respuesta);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 21/10/2026, "Presupuestos y mensajes rápidos" (T7): buscador por palabra
+// clave (título primero, texto debajo), filtro Todos / Solo texto / Con fotos
+// y confirmación de borrado DENTRO del renglón. La confirmación no es otro
+// modal: este panel ya es un Modal y apilar dos en el teléfono deja
+// inalcanzable el de atrás.
+// ---------------------------------------------------------------------------
+describe("QuickRepliesModal — buscador y filtro (T7, 21/10/2026)", () => {
+  const catalogoGeneral = mensajeRapido({ id: "a", label: "Catálogo general", content: "Acá va nuestro catálogo 👇" });
+  const horario = mensajeRapido({ id: "b", label: "Horario", content: "Atendemos de lunes a viernes." });
+  const cascos = mensajeRapido({
+    id: "c",
+    label: "Cascos",
+    content: "Mira el catálogo de cascos",
+    mediaPaths: ["quick-replies/1.jpg", "quick-replies/2.jpg"],
+  });
+  const soloFotos = mensajeRapido({ id: "d", label: "Local", content: "", mediaPaths: ["quick-replies/3.jpg"] });
+  const todos = [catalogoGeneral, horario, cascos, soloFotos];
+
+  const buscador = () => screen.getByRole("searchbox", { name: "Buscar mensajes rápidos" });
+
+  it("el campo de búsqueda existe, con su placeholder, y la lista arranca completa", () => {
+    renderModal({ quickReplies: todos });
+
+    expect(buscador()).toHaveAttribute("placeholder", "Buscar por título…");
+    expect(screen.queryByText("También en el texto")).not.toBeInTheDocument();
+    for (const titulo of ["Catálogo general", "Horario", "Cascos", "Local"]) {
+      expect(screen.getByText(titulo)).toBeInTheDocument();
+    }
+  });
+
+  it("escribir filtra: primero el título, y debajo «También en el texto» los que calzan solo en el cuerpo", async () => {
+    const user = crearUsuario();
+    renderModal({ quickReplies: todos });
+
+    await user.type(buscador(), "CATALOGO");
+
+    expect(screen.getByText("También en el texto")).toBeInTheDocument();
+    expect(screen.queryByText("Horario")).not.toBeInTheDocument();
+    expect(screen.getAllByRole("button", { name: "Usar" })).toHaveLength(2);
+    // Orden en el DOM: la fila del título, el encabezado, la fila del texto.
+    const encabezado = screen.getByText("También en el texto");
+    const filaTitulo = document.querySelector("mark")?.closest("div.border") as HTMLElement;
+    const filaTexto = screen.getByText("Cascos").closest("div.border") as HTMLElement;
+    expect(filaTitulo).not.toBeNull();
+    expect(filaTitulo.compareDocumentPosition(encabezado) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(encabezado.compareDocumentPosition(filaTexto) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+
+  it("resalta con <mark> el trozo del título que calza, con su acento original", async () => {
+    const user = crearUsuario();
+    renderModal({ quickReplies: [catalogoGeneral] });
+
+    await user.type(buscador(), "cata");
+
+    const marcas = Array.from(document.querySelectorAll("mark")).map((m) => m.textContent);
+    expect(marcas).toEqual(["Catá"]);
+  });
+
+  it("sin encabezado «También en el texto» cuando nada calza solo en el cuerpo", async () => {
+    const user = crearUsuario();
+    renderModal({ quickReplies: todos });
+
+    await user.type(buscador(), "horario");
+
+    expect(screen.queryByText("También en el texto")).not.toBeInTheDocument();
+    expect(screen.getAllByRole("button", { name: "Usar" })).toHaveLength(1);
+  });
+
+  it("sin coincidencias dice «Ningún mensaje coincide con «{consulta}».»", async () => {
+    const user = crearUsuario();
+    renderModal({ quickReplies: todos });
+
+    await user.type(buscador(), "zzz");
+
+    expect(screen.getByText("Ningún mensaje coincide con «zzz».")).toBeInTheDocument();
+  });
+
+  it("«Con fotos» oculta los de solo texto, y «Solo texto» los que llevan fotos", async () => {
+    const user = crearUsuario();
+    renderModal({ quickReplies: todos });
+
+    await user.click(screen.getByRole("button", { name: /^Con fotos/ }));
+    expect(screen.queryByText("Horario")).not.toBeInTheDocument();
+    expect(screen.queryByText("Catálogo general")).not.toBeInTheDocument();
+    expect(screen.getByText("Cascos")).toBeInTheDocument();
+    expect(screen.getByText("Local")).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: /^Solo texto/ }));
+    expect(screen.queryByText("Cascos")).not.toBeInTheDocument();
+    expect(screen.getByText("Horario")).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: /^Todos/ }));
+    expect(screen.getAllByRole("button", { name: "Usar" })).toHaveLength(4);
+  });
+
+  it("el filtro de media se combina con la búsqueda", async () => {
+    const user = crearUsuario();
+    renderModal({ quickReplies: todos });
+
+    await user.click(screen.getByRole("button", { name: /^Con fotos/ }));
+    await user.type(buscador(), "catalogo");
+
+    // «Catálogo general» no lleva fotos; «Cascos» sí y lo nombra en el texto.
+    expect(screen.queryByText("Catálogo general")).not.toBeInTheDocument();
+    expect(screen.getByText("También en el texto")).toBeInTheDocument();
+    expect(screen.getByText("Cascos")).toBeInTheDocument();
+  });
+
+  it("cada filtro lleva el conteo de la pestaña activa", async () => {
+    const user = crearUsuario();
+    renderModal({
+      quickReplies: [...todos, mensajeRapido({ id: "p", label: "Mío", ownerId: ASESOR_ID })],
+    });
+
+    // Abre en «Mis mensajes» (hay uno propio): 1 en total, 1 solo texto, 0 con fotos.
+    expect(screen.getByRole("button", { name: /^Todos\s*1$/ })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /^Solo texto\s*1$/ })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /^Con fotos\s*0$/ })).toBeInTheDocument();
+
+    await user.click(screen.getByRole("tab", { name: /^Compartidos/ }));
+    expect(screen.getByRole("button", { name: /^Todos\s*4$/ })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /^Solo texto\s*2$/ })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /^Con fotos\s*2$/ })).toBeInTheDocument();
+  });
+
+  it("al cerrar y volver a abrir el modal, la búsqueda queda vacía y el filtro en «Todos»", async () => {
+    const user = crearUsuario();
+    const props = {
+      onOpenChange: vi.fn(),
+      quickReplies: todos,
+      catalogLinks: [],
+      currentAgentId: ASESOR_ID,
+      onSelect: vi.fn(),
+    };
+    const { rerender } = render(<QuickRepliesModal isOpen {...props} />);
+    await user.type(buscador(), "horario");
+    await user.click(screen.getByRole("button", { name: /^Con fotos/ }));
+
+    rerender(<QuickRepliesModal isOpen={false} {...props} />);
+    rerender(<QuickRepliesModal isOpen {...props} />);
+
+    expect((buscador() as HTMLInputElement).value).toBe("");
+    expect(screen.getByRole("button", { name: /^Todos/ })).toHaveAttribute("aria-pressed", "true");
+    expect(screen.getAllByRole("button", { name: "Usar" })).toHaveLength(4);
+  });
+
+  it("editar un mensaje no depende de la búsqueda: el formulario sigue mostrándose", async () => {
+    const user = crearUsuario();
+    renderModal({ quickReplies: todos });
+
+    await user.type(buscador(), "horario");
+    await user.click(screen.getByRole("button", { name: "Editar" }));
+
+    expect((screen.getByLabelText("Título") as HTMLInputElement).value).toBe("Horario");
+  });
+});
+
+describe("QuickRepliesModal — confirmar el borrado dentro del renglón (T7, 21/10/2026)", () => {
+  const compartido = mensajeRapido({ id: "c1", label: "Horario", content: "Atendemos de 8 a 18." });
+  const propio = mensajeRapido({ id: "p1", label: "Buenos días", ownerId: ASESOR_ID });
+
+  beforeEach(() => {
+    vi.mocked(deleteQuickReply).mockReset();
+  });
+
+  it("el primer clic en Borrar NO borra: muestra la franja de confirmación con el título", async () => {
+    const user = crearUsuario();
+    renderModal({ quickReplies: [compartido] });
+
+    await user.click(screen.getByRole("button", { name: "Borrar" }));
+
+    expect(deleteQuickReply).not.toHaveBeenCalled();
+    const franja = screen.getByRole("group", { name: "Confirmar borrado" });
+    expect(franja).toHaveTextContent("¿Borrar «Horario»?");
+    expect(franja).toHaveTextContent("No se puede deshacer.");
+  });
+
+  it("un mensaje compartido avisa que lo dejan de ver todos los asesores", async () => {
+    const user = crearUsuario();
+    renderModal({ quickReplies: [compartido] });
+
+    await user.click(screen.getByRole("button", { name: "Borrar" }));
+
+    expect(screen.getByRole("group", { name: "Confirmar borrado" })).toHaveTextContent(
+      "¿Borrar «Horario»? Lo dejan de ver todos los asesores. No se puede deshacer."
+    );
+  });
+
+  it("un mensaje propio avisa que solo lo ve el asesor", async () => {
+    const user = crearUsuario();
+    renderModal({ quickReplies: [propio] });
+
+    await user.click(screen.getByRole("button", { name: "Borrar" }));
+
+    expect(screen.getByRole("group", { name: "Confirmar borrado" })).toHaveTextContent(
+      "¿Borrar «Buenos días»? Solo lo ves tú. No se puede deshacer."
+    );
+  });
+
+  it("«Cancelar» cierra la franja sin borrar", async () => {
+    const user = crearUsuario();
+    renderModal({ quickReplies: [compartido] });
+
+    await user.click(screen.getByRole("button", { name: "Borrar" }));
+    const franja = screen.getByRole("group", { name: "Confirmar borrado" });
+    await user.click(within(franja).getByRole("button", { name: "Cancelar" }));
+
+    expect(screen.queryByRole("group", { name: "Confirmar borrado" })).not.toBeInTheDocument();
+    expect(deleteQuickReply).not.toHaveBeenCalled();
+  });
+
+  it("«Sí, borrar» borra UNA vez, con el id del renglón, y cierra la franja", async () => {
+    const user = crearUsuario();
+    vi.mocked(deleteQuickReply).mockResolvedValue(undefined);
+    renderModal({ quickReplies: [compartido] });
+
+    await user.click(screen.getByRole("button", { name: "Borrar" }));
+    await user.click(screen.getByRole("button", { name: "Sí, borrar" }));
+
+    expect(deleteQuickReply).toHaveBeenCalledTimes(1);
+    expect(deleteQuickReply).toHaveBeenCalledWith(expect.anything(), "c1");
+    await waitFor(() => expect(screen.queryByRole("group", { name: "Confirmar borrado" })).not.toBeInTheDocument());
+  });
+
+  it("armar otro renglón cancela la confirmación del anterior", async () => {
+    const user = crearUsuario();
+    renderModal({ quickReplies: [compartido, mensajeRapido({ id: "c2", label: "Garantía" })] });
+
+    // Orden por título: «Garantía» primero, «Horario» después.
+    await user.click(screen.getAllByRole("button", { name: "Borrar" })[0]);
+    await user.click(screen.getAllByRole("button", { name: "Borrar" })[1]);
+
+    const franjas = screen.getAllByRole("group", { name: "Confirmar borrado" });
+    expect(franjas).toHaveLength(1);
+    expect(franjas[0]).toHaveTextContent("¿Borrar «Horario»?");
+  });
+
+  it("si el borrado falla, avisa con el toast de siempre y la franja se cierra", async () => {
+    const user = crearUsuario();
+    const { toast } = await import("@heroui/react");
+    vi.mocked(toast.danger).mockClear();
+    vi.mocked(deleteQuickReply).mockRejectedValueOnce(new Error("fetch failed"));
+    renderModal({ quickReplies: [compartido] });
+
+    await user.click(screen.getByRole("button", { name: "Borrar" }));
+    await user.click(screen.getByRole("button", { name: "Sí, borrar" }));
+
+    expect(toast.danger).toHaveBeenCalledWith("No se pudo borrar el mensaje rápido.");
+    await waitFor(() => expect(screen.queryByRole("group", { name: "Confirmar borrado" })).not.toBeInTheDocument());
+  });
+
+  it("mientras borra, «Sí, borrar» queda ocupado y no se puede pulsar dos veces", async () => {
+    const user = crearUsuario();
+    let terminar!: () => void;
+    vi.mocked(deleteQuickReply).mockReturnValueOnce(
+      new Promise<void>((resolve) => {
+        terminar = resolve;
+      })
+    );
+    renderModal({ quickReplies: [compartido] });
+
+    await user.click(screen.getByRole("button", { name: "Borrar" }));
+    await user.click(screen.getByRole("button", { name: "Sí, borrar" }));
+
+    const ocupado = screen.getByRole("button", { name: "Borrando…" });
+    expect(ocupado).toBeDisabled();
+    // HeroUI filtra `aria-busy` del botón: el estado ocupado va en la franja.
+    expect(screen.getByRole("group", { name: "Confirmar borrado" })).toHaveAttribute("aria-busy", "true");
+    await user.click(ocupado);
+    expect(deleteQuickReply).toHaveBeenCalledTimes(1);
+
+    terminar();
+    await waitFor(() => expect(screen.queryByRole("group", { name: "Confirmar borrado" })).not.toBeInTheDocument());
+  });
+
+  it("cerrar el modal resetea la confirmación", async () => {
+    const user = crearUsuario();
+    const props = {
+      onOpenChange: vi.fn(),
+      quickReplies: [compartido],
+      catalogLinks: [],
+      currentAgentId: ASESOR_ID,
+      onSelect: vi.fn(),
+    };
+    const { rerender } = render(<QuickRepliesModal isOpen {...props} />);
+    await user.click(screen.getByRole("button", { name: "Borrar" }));
+    expect(screen.getByRole("group", { name: "Confirmar borrado" })).toBeInTheDocument();
+
+    rerender(<QuickRepliesModal isOpen={false} {...props} />);
+    rerender(<QuickRepliesModal isOpen {...props} />);
+
+    expect(screen.queryByRole("group", { name: "Confirmar borrado" })).not.toBeInTheDocument();
+    expect(deleteQuickReply).not.toHaveBeenCalled();
   });
 });

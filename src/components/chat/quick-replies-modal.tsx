@@ -13,6 +13,13 @@ import { configErrorMessage } from "@/lib/config-write";
 import { catalogMarkerFor, catalogUrlHint, hasRawUrl, resolveCatalogMarkers } from "@/lib/catalog-links";
 import { insertAtCaret } from "@/lib/composer-text";
 import { SlidingPills } from "@/components/sliding-pills";
+import {
+  buscarMensajesRapidos,
+  coincideMedia,
+  normalizarBusqueda,
+  resaltar,
+  type FiltroMedia,
+} from "@/lib/quick-reply-filter";
 
 /** Las dos pestañas de T5b: los compartidos (`ownerId === null`) y los del propio asesor. */
 type QuickReplyTab = "shared" | "mine";
@@ -59,6 +66,14 @@ export function QuickRepliesModal({
   const sharedReplies = quickReplies.filter((reply) => reply.ownerId === null).sort(byLabel);
   const myReplies = quickReplies.filter((reply) => reply.ownerId === currentAgentId).sort(byLabel);
 
+  // 21/10/2026, "Presupuestos y mensajes rápidos" (T7): buscador por palabra
+  // clave, filtro Todos / Solo texto / Con fotos y confirmación de borrado
+  // dentro del renglón. Los tres se reinician al cerrar el modal (abajo).
+  const [query, setQuery] = useState("");
+  const [mediaFilter, setMediaFilter] = useState<FiltroMedia>("todos");
+  const [confirmandoBorrarId, setConfirmandoBorrarId] = useState<string | null>(null);
+  const [borrandoId, setBorrandoId] = useState<string | null>(null);
+
   // Pestaña inicial: «Mis mensajes» si el asesor ya tiene alguno, porque es
   // donde va a buscar sus saludos; si no, «Compartidos». Se recalcula cada vez
   // que el modal se ABRE (patrón "Adjusting state when a prop changes" de
@@ -69,8 +84,23 @@ export function QuickRepliesModal({
   if (isOpen !== wasOpen) {
     setWasOpen(isOpen);
     if (isOpen) setTab(myReplies.length > 0 ? "mine" : "shared");
+    else {
+      setQuery("");
+      setMediaFilter("todos");
+      setConfirmandoBorrarId(null);
+    }
   }
-  const visibleReplies = tab === "mine" ? myReplies : sharedReplies;
+  const tabReplies = tab === "mine" ? myReplies : sharedReplies;
+  // Los conteos del filtro son los de la pestaña activa y NO dependen de la
+  // búsqueda: dicen cuántos hay de cada tipo, no cuántos calzaron.
+  const mediaCounts = {
+    todos: tabReplies.length,
+    texto: tabReplies.filter((reply) => coincideMedia(reply, "texto")).length,
+    fotos: tabReplies.filter((reply) => coincideMedia(reply, "fotos")).length,
+  };
+  const { porTitulo, porTexto } = buscarMensajesRapidos(tabReplies, query, mediaFilter);
+  const hayConsulta = normalizarBusqueda(query) !== "";
+  const hayResultados = porTitulo.length + porTexto.length > 0;
 
   // «Solo para mí» solo existe al CREAR: un mensaje no cambia de tipo al
   // editarlo (la mutación de update ni siquiera manda `owner_id`).
@@ -225,12 +255,132 @@ export function QuickRepliesModal({
   }
 
   async function handleDelete(id: string) {
+    setBorrandoId(id);
     try {
       const supabase = createClient();
       await deleteQuickReply(supabase, id);
     } catch (error) {
       toast.danger(configErrorMessage(error, "No se pudo borrar el mensaje rápido."));
+    } finally {
+      // Con éxito o con error la franja se cierra: si falló, el toast ya dijo
+      // por qué y el asesor vuelve a armar el borrado si quiere reintentar.
+      setBorrandoId(null);
+      setConfirmandoBorrarId((actual) => (actual === id ? null : actual));
     }
+  }
+
+  /**
+   * Pinta un texto con los trozos que calzan con la búsqueda dentro de
+   * `<mark>`. Sin consulta devuelve el texto tal cual (un solo nodo de texto).
+   */
+  function highlighted(text: string) {
+    if (!hayConsulta) return text;
+    return resaltar(text, query).map((chunk, index) =>
+      chunk.marcado ? (
+        <mark key={index} className="rounded-sm bg-warning/30 px-0.5 text-inherit">
+          {chunk.texto}
+        </mark>
+      ) : (
+        chunk.texto
+      )
+    );
+  }
+
+  function renderRow(reply: QuickReply) {
+    // D6: un `{{catalogo:<key>}}` que no calza con ningún
+    // catálogo activo se queda TAL CUAL en el texto -- acá se
+    // marca en la lista para que el asesor lo vea antes de
+    // "Usar", no solo después de pegarlo (el toast de
+    // `composer.tsx` avisa recién en ese momento).
+    const unresolved = resolveCatalogMarkers(reply.content, catalogLinks).missing;
+    // T7 (28/9/2026): el mismo aviso, ya guardado — así el
+    // supervisor ve en la lista cuáles llevan un enlace de Drive
+    // a mano sin abrir cada uno.
+    const handWrittenLink = catalogUrlHint(reply.content, reply.label, catalogLinks);
+    const confirmando = confirmandoBorrarId === reply.id;
+    const borrando = borrandoId === reply.id;
+    return (
+      <div
+        key={reply.id}
+        className="flex flex-col gap-2 rounded-[var(--radius)] border border-border bg-surface p-3"
+      >
+        <div className="flex items-start justify-between gap-3">
+          <div className="min-w-0">
+            <p className="flex items-center gap-2 text-sm font-medium">
+              <span>{highlighted(reply.label)}</span>
+              {reply.mediaPaths.length > 0 && (
+                <span
+                  className="inline-flex items-center text-xs font-normal text-muted"
+                  aria-label={`${reply.mediaPaths.length} ${reply.mediaPaths.length === 1 ? "foto" : "fotos"}`}
+                >
+                  📷 {reply.mediaPaths.length}
+                </span>
+              )}
+              {unresolved.length > 0 && (
+                <span className="inline-flex items-center gap-1 text-xs font-normal text-warning">
+                  <TriangleAlert size={11} />
+                  Marcador sin resolver
+                </span>
+              )}
+              {handWrittenLink && (
+                <span className="inline-flex items-center gap-1 text-xs font-normal text-warning">
+                  <TriangleAlert size={11} />
+                  Enlace de Drive escrito a mano
+                </span>
+              )}
+            </p>
+            <p className="truncate text-xs text-muted">{reply.content || "Solo fotos"}</p>
+          </div>
+          <div className="flex shrink-0 items-center gap-1">
+            <Button size="sm" variant="ghost" isIconOnly onPress={() => startEdit(reply)} aria-label="Editar">
+              <Pencil size={13} />
+            </Button>
+            <Button
+              size="sm"
+              variant="ghost"
+              isIconOnly
+              onPress={() => setConfirmandoBorrarId(reply.id)}
+              aria-label="Borrar"
+            >
+              <Trash2 size={13} />
+            </Button>
+            <Button size="sm" variant="secondary" onPress={() => onSelect(reply)}>
+              Usar
+            </Button>
+          </div>
+        </div>
+        {/* 21/10/2026 (T7): la confirmación vive en el renglón y no en otra
+            ventana. Este panel ya es un Modal; apilar un segundo en el teléfono
+            deja inalcanzable el de atrás. */}
+        {confirmando && (
+          <div
+            role="group"
+            aria-label="Confirmar borrado"
+            aria-busy={borrando}
+            className="flex flex-col gap-2 rounded-[var(--radius)] border border-danger/40 bg-danger/10 p-2 text-sm"
+          >
+            <p>
+              ¿Borrar «{reply.label}»?{" "}
+              {reply.ownerId === null ? "Lo dejan de ver todos los asesores." : "Solo lo ves tú."} No se puede
+              deshacer.
+            </p>
+            <div className="flex justify-end gap-2">
+              <Button size="sm" variant="ghost" onPress={() => setConfirmandoBorrarId(null)} isDisabled={borrando}>
+                Cancelar
+              </Button>
+              <Button
+                size="sm"
+                variant="danger"
+                onPress={() => handleDelete(reply.id)}
+                isDisabled={borrando}
+              >
+                {borrando ? "Borrando…" : "Sí, borrar"}
+              </Button>
+            </div>
+          </div>
+        )}
+      </div>
+    );
   }
 
   return (
@@ -255,6 +405,28 @@ export function QuickRepliesModal({
                 items={[
                   { value: "shared", label: "Compartidos", count: sharedReplies.length },
                   { value: "mine", label: "Mis mensajes", count: myReplies.length },
+                ]}
+              />
+
+              <Input
+                id="quick-replies-search"
+                type="search"
+                aria-label="Buscar mensajes rápidos"
+                placeholder="Buscar por título…"
+                value={query}
+                onChange={(e) => setQuery(e.target.value)}
+                fullWidth
+              />
+              <SlidingPills
+                tone="segmented"
+                variant="group"
+                ariaLabel="Tipo de contenido"
+                value={mediaFilter}
+                onChange={setMediaFilter}
+                items={[
+                  { value: "todos", label: "Todos", count: mediaCounts.todos },
+                  { value: "texto", label: "Solo texto", count: mediaCounts.texto },
+                  { value: "fotos", label: "Con fotos", count: mediaCounts.fotos },
                 ]}
               />
 
@@ -428,69 +600,22 @@ export function QuickRepliesModal({
               )}
 
               <div className="flex flex-col gap-2">
-                {visibleReplies.map((reply) => {
-                  // D6: un `{{catalogo:<key>}}` que no calza con ningún
-                  // catálogo activo se queda TAL CUAL en el texto -- acá se
-                  // marca en la lista para que el asesor lo vea antes de
-                  // "Usar", no solo después de pegarlo (el toast de
-                  // `composer.tsx` avisa recién en ese momento).
-                  const unresolved = resolveCatalogMarkers(reply.content, catalogLinks).missing;
-                  // T7 (28/9/2026): el mismo aviso, ya guardado — así el
-                  // supervisor ve en la lista cuáles llevan un enlace de Drive
-                  // a mano sin abrir cada uno.
-                  const handWrittenLink = catalogUrlHint(reply.content, reply.label, catalogLinks);
-                  return (
-                    <div
-                      key={reply.id}
-                      className="flex items-start justify-between gap-3 rounded-[var(--radius)] border border-border bg-surface p-3"
-                    >
-                      <div className="min-w-0">
-                        <p className="flex items-center gap-2 text-sm font-medium">
-                          {reply.label}
-                          {reply.mediaPaths.length > 0 && (
-                            <span
-                              className="inline-flex items-center text-xs font-normal text-muted"
-                              aria-label={`${reply.mediaPaths.length} ${reply.mediaPaths.length === 1 ? "foto" : "fotos"}`}
-                            >
-                              📷 {reply.mediaPaths.length}
-                            </span>
-                          )}
-                          {unresolved.length > 0 && (
-                            <span className="inline-flex items-center gap-1 text-xs font-normal text-warning">
-                              <TriangleAlert size={11} />
-                              Marcador sin resolver
-                            </span>
-                          )}
-                          {handWrittenLink && (
-                            <span className="inline-flex items-center gap-1 text-xs font-normal text-warning">
-                              <TriangleAlert size={11} />
-                              Enlace de Drive escrito a mano
-                            </span>
-                          )}
-                        </p>
-                        <p className="truncate text-xs text-muted">{reply.content || "Solo fotos"}</p>
-                      </div>
-                      <div className="flex shrink-0 items-center gap-1">
-                        <Button size="sm" variant="ghost" isIconOnly onPress={() => startEdit(reply)} aria-label="Editar">
-                          <Pencil size={13} />
-                        </Button>
-                        <Button
-                          size="sm"
-                          variant="ghost"
-                          isIconOnly
-                          onPress={() => handleDelete(reply.id)}
-                          aria-label="Borrar"
-                        >
-                          <Trash2 size={13} />
-                        </Button>
-                        <Button size="sm" variant="secondary" onPress={() => onSelect(reply)}>
-                          Usar
-                        </Button>
-                      </div>
-                    </div>
-                  );
-                })}
-                {visibleReplies.length === 0 && !isFormOpen && (
+                {porTitulo.map(renderRow)}
+                {porTexto.length > 0 && (
+                  <p className="mt-1 text-xs font-medium uppercase tracking-wide text-muted">También en el texto</p>
+                )}
+                {porTexto.map(renderRow)}
+                {!hayResultados && hayConsulta && (
+                  <p className="text-sm text-muted">Ningún mensaje coincide con «{query.trim()}».</p>
+                )}
+                {!hayResultados && !hayConsulta && tabReplies.length > 0 && (
+                  <p className="text-sm text-muted">
+                    {mediaFilter === "fotos"
+                      ? "Ningún mensaje de esta pestaña lleva fotos."
+                      : "Todos los mensajes de esta pestaña llevan fotos."}
+                  </p>
+                )}
+                {tabReplies.length === 0 && !isFormOpen && (
                   <p className="text-sm text-muted">
                     {tab === "mine"
                       ? "Todavía no tienes mensajes propios. Crea tus saludos con tu nombre: solo tú los verás."
