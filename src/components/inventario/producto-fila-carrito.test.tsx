@@ -61,7 +61,7 @@ function product(over: Partial<Product> = {}): Product {
 
 function conCarrito(p: Product) {
   return render(
-    <InventarioCarritoProvider agentId="agente-1" bcvRate={100}>
+    <InventarioCarritoProvider agentId="agente-1" bcvRate={100} soloLectura={false} role="agent">
       <ul>
         <ProductoFila product={p} bcvRate={100} />
       </ul>
@@ -97,7 +97,7 @@ describe("ProductoFila — botones del carrito", () => {
   it("en solo lectura (caja) el carrito sigue disponible", async () => {
     const user = userEvent.setup({ delay: null, pointerEventsCheck: 0 });
     render(
-      <InventarioCarritoProvider agentId="agente-1" bcvRate={100}>
+      <InventarioCarritoProvider agentId="agente-1" bcvRate={100} soloLectura={false} role="agent">
         <ul>
           <ProductoFila product={product()} bcvRate={100} soloLectura />
         </ul>

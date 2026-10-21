@@ -3423,3 +3423,172 @@ button.crm-bubble-quote:hover {
   display: block;
   min-width: 0;
 }
+
+/* 21/10/2026 (plan "Presupuestos y mensajes rápidos", T6): peso editable en
+   cada resultado de la búsqueda, el pliegue «Qué copiar» del carrito y la
+   lista de presupuestos del cliente. Todo cabe en los 268-300 px del panel:
+   las filas envuelven en vez de empujar la columna. */
+.crm-lookup-weight {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+  font-size: 11.5px;
+}
+
+.crm-lookup-weight:not([data-editing="true"]) {
+  flex-direction: row;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 8px;
+}
+
+.crm-lookup-weight-text {
+  color: var(--lm-muted);
+}
+
+.crm-lookup-weight-text[data-empty="true"] {
+  font-style: italic;
+}
+
+.crm-lookup-weight-btn {
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--lm-link);
+  font-size: 11.5px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.crm-lookup-weight-btn:hover {
+  text-decoration: underline;
+}
+
+.crm-lookup-weight-edit {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+/* El campo y su sufijo «kg» forman una sola caja, como los campos de Inventario. */
+.crm-lookup-weight-field {
+  display: inline-flex;
+  flex: 1 1 90px;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+  padding: 3px 8px;
+  border: 1px solid var(--lm-line);
+  border-radius: 8px;
+  background: var(--lm-surface);
+}
+
+.crm-lookup-weight-field:focus-within {
+  border-color: var(--lm-link);
+}
+
+.crm-lookup-weight-field input {
+  flex: 1;
+  min-width: 0;
+  border: 0;
+  outline: none;
+  background: transparent;
+  color: var(--lm-ink);
+  font-size: 12.5px;
+}
+
+.crm-lookup-weight-unit {
+  color: var(--lm-muted);
+  font-size: 11.5px;
+}
+
+.crm-lookup-weight-error {
+  margin: 0;
+  color: var(--lm-hot-ink);
+  font-size: 11.5px;
+  line-height: 1.35;
+}
+
+.crm-pcart-copy-toggle,
+.crm-presup-toggle {
+  display: inline-flex;
+  align-items: center;
+  align-self: flex-start;
+  gap: 4px;
+  max-width: 100%;
+  padding: 2px 0;
+  border: 0;
+  background: transparent;
+  color: var(--lm-muted);
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.crm-pcart-copy-toggle:hover,
+.crm-presup-toggle:hover {
+  color: var(--lm-link);
+}
+
+.crm-presup {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+  padding-top: 8px;
+  border-top: 1px solid var(--lm-line);
+}
+
+.crm-presup-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.crm-presup-item {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 3px;
+  min-width: 0;
+  padding: 8px 10px;
+  border: 1px solid var(--lm-line);
+  border-radius: 10px;
+  background: var(--lm-surface);
+}
+
+.crm-presup-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  width: 100%;
+  min-width: 0;
+}
+
+.crm-presup-name {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--lm-ink);
+}
+
+.crm-presup-date {
+  flex-shrink: 0;
+  color: var(--lm-muted);
+  font-size: 11.5px;
+}
+
+.crm-presup-meta,
+.crm-presup-compare {
+  margin: 0;
+  color: var(--lm-muted);
+  font-size: 11.5px;
+}

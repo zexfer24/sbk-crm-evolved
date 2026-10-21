@@ -1,14 +1,15 @@
-import type { Product } from "@/lib/types";
+import type { CartPriceKind, Product } from "@/lib/types";
 import {
   cartSummaryText,
   cartTotals,
   priceCartLines,
   type PricedCartLine,
 } from "@/lib/conversation-cart";
+import { OPCIONES_COPIA_INICIALES, type OpcionesCopia } from "@/lib/copia-carrito";
+import { motivoSinEstandar, standardPriceDisplay } from "@/lib/inventory";
 import {
   bsDeCents,
   calcularCashea,
-  formatBs,
   lineaInicial,
   lineaResto,
   toCents,
@@ -26,21 +27,36 @@ import {
  * opcional, los avisos por renglón y el texto para WhatsApp.
  *
  * D6 (igual que el carrito de una conversación, `conversation-cart.ts`): en
- * localStorage se guarda SOLO `[{productId, quantity}]`. El precio no se
- * guarda nunca; sale de `products` + tasa BCV en el momento de mirar, así que
- * una cotización armada ayer se ve al precio de hoy. Por eso `quotedPriceUsd`
- * es siempre `null` aquí: existe solo para cumplir `PriceableCartItem` y
- * reutilizar `priceCartLines`/`cartTotals`/`cartSummaryText` sin copiarlos.
+ * localStorage se guarda SOLO `[{productId, quantity, priceKind}]`. El precio
+ * no se guarda nunca; sale de `products` + tasa BCV en el momento de mirar, así
+ * que una cotización armada ayer se ve al precio de hoy. `quotedPriceUsd` es
+ * `null` en el carrito armado a mano; solo trae valor cuando el carrito viene
+ * de reabrir un presupuesto guardado (21/10/2026, `lineasDePresupuesto`), y
+ * entonces es referencia, nunca se cobra (D1). Existe para cumplir
+ * `PriceableCartItem` y reutilizar `priceCartLines`/`cartTotals`/
+ * `cartSummaryText` sin copiarlos.
+ *
+ * 21/10/2026 ("Presupuestos y mensajes rápidos", T3): cada renglón lleva su
+ * `priceKind` (promoción o estándar, como el carrito del chat). Hasta esa
+ * fecha este carrito cobraba SIEMPRE la promoción —no había forma de elegir—
+ * y el asesor que quería cotizar con el envío MRW incluido tenía que sumarlo a
+ * mano. Un JSON guardado antes de esa fecha no trae `priceKind` y se lee como
+ * promoción, que es lo que ese carrito cobraba.
  */
 
 export interface LineaCarritoInventario {
   product: Product;
   quantity: number;
-  quotedPriceUsd: null;
+  /** Solo referencia (D1): lo que se cotizó al guardar el presupuesto reabierto; nunca se cobra. */
+  quotedPriceUsd: number | null;
+  priceKind: CartPriceKind;
 }
 
 export type AccionCarrito =
-  | { tipo: "agregar"; product: Product }
+  /** Sin `priceKind` entra a precio de promoción. Si el producto ya estaba, suma 1 y queda a ese precio. */
+  | { tipo: "agregar"; product: Product; priceKind?: CartPriceKind }
+  /** Cambia el precio de TODOS los renglones a la vez. */
+  | { tipo: "precio"; priceKind: CartPriceKind }
   | { tipo: "cantidad"; productId: string; quantity: number }
   | { tipo: "quitar"; productId: string }
   | { tipo: "vaciar" }
@@ -57,14 +73,19 @@ export function reducirCarrito(
 ): LineaCarritoInventario[] {
   switch (accion.tipo) {
     case "agregar": {
+      const priceKind = accion.priceKind ?? "promocion";
       const existe = estado.some((l) => l.product.id === accion.product.id);
-      if (!existe) return [...estado, { product: accion.product, quantity: 1, quotedPriceUsd: null }];
+      if (!existe) return [...estado, { product: accion.product, quantity: 1, quotedPriceUsd: null, priceKind }];
       // Se refresca `product` con el recibido: la fila de Inventario que el
       // asesor acaba de tocar es más nueva que la copia que guardó el carrito.
       return estado.map((l) =>
-        l.product.id === accion.product.id ? { ...l, product: accion.product, quantity: l.quantity + 1 } : l,
+        l.product.id === accion.product.id
+          ? { ...l, product: accion.product, quantity: l.quantity + 1, priceKind }
+          : l,
       );
     }
+    case "precio":
+      return estado.map((l) => (l.priceKind === accion.priceKind ? l : { ...l, priceKind: accion.priceKind }));
     case "cantidad": {
       if (!esCantidadValida(accion.quantity)) return estado;
       if (!estado.some((l) => l.product.id === accion.productId)) return estado;
@@ -99,17 +120,35 @@ export function reducirCarrito(
 export interface GuardadoCarrito {
   productId: string;
   quantity: number;
+  priceKind: CartPriceKind;
 }
 
 export function serializarCarrito(lineas: LineaCarritoInventario[]): string {
-  const guardado: GuardadoCarrito[] = lineas.map((l) => ({ productId: l.product.id, quantity: l.quantity }));
+  const guardado: GuardadoCarrito[] = lineas.map((l) => ({
+    productId: l.product.id,
+    quantity: l.quantity,
+    priceKind: l.priceKind,
+  }));
   return JSON.stringify(guardado);
+}
+
+/** Defensivo: solo «estandar» cobra el envío; ausente o cualquier otra cosa es promoción (lo que cobraba el carrito antes del 21/10/2026). */
+function priceKindGuardado(valor: unknown): CartPriceKind {
+  return valor === "estandar" ? "estandar" : "promocion";
+}
+
+/** A qué precio se cobra el carrito entero: uno común, `"mixto"` si hay de los dos, `null` si está vacío. */
+export function precioDelCarrito(lineas: LineaCarritoInventario[]): CartPriceKind | "mixto" | null {
+  if (lineas.length === 0) return null;
+  const primero = lineas[0].priceKind;
+  return lineas.every((l) => l.priceKind === primero) ? primero : "mixto";
 }
 
 /**
  * Lo que dejó localStorage, sin fiarse de nada: el valor lo pudo escribir una
  * versión vieja, otra pestaña o el propio navegador. Nunca lanza. Una entrada
- * mala se descarta sola; los ids repetidos se fusionan sumando cantidades.
+ * mala se descarta sola; los ids repetidos se fusionan sumando cantidades (y
+ * conservan el `priceKind` de la primera aparición).
  */
 export function leerCarritoGuardado(raw: string | null): GuardadoCarrito[] {
   if (raw === null) return [];
@@ -124,12 +163,12 @@ export function leerCarritoGuardado(raw: string | null): GuardadoCarrito[] {
   const porId = new Map<string, GuardadoCarrito>();
   for (const entrada of parsed) {
     if (typeof entrada !== "object" || entrada === null) continue;
-    const { productId, quantity } = entrada as Record<string, unknown>;
+    const { productId, quantity, priceKind } = entrada as Record<string, unknown>;
     if (typeof productId !== "string" || productId === "") continue;
     if (!esCantidadValida(quantity)) continue;
     const previa = porId.get(productId);
     if (previa) previa.quantity += quantity;
-    else porId.set(productId, { productId, quantity });
+    else porId.set(productId, { productId, quantity, priceKind: priceKindGuardado(priceKind) });
   }
   return [...porId.values()];
 }
@@ -188,35 +227,58 @@ export function totalesCarrito(
   };
 }
 
-/** Avisos de un renglón, en este orden: baja de Saint, sin stock, stock insuficiente, sin precio. */
+/**
+ * Avisos de un renglón, en este orden: baja de Saint, sin stock, stock
+ * insuficiente, sin precio. Un estándar sin tarifa MRW dice POR QUÉ (sin peso,
+ * fuera de la tabla, sin rango) con el mismo texto de la fila del Inventario
+ * (`motivoSinEstandar`); si la tarifa existe y lo que falta es la tasa (un
+ * producto en bolívares), sigue el aviso de siempre.
+ */
 export function avisosRenglon(linea: PricedCartLine<LineaCarritoInventario>): string[] {
   const { product, quantity } = linea.item;
   const avisos: string[] = [];
   if (!product.isActive) avisos.push("Saint lo dio de baja");
   if (product.stockQuantity <= 0) avisos.push("Sin stock");
   else if (product.stockQuantity < quantity) avisos.push(`Solo hay ${product.stockQuantity}`);
-  if (linea.unitPriceUsd === null) avisos.push("Sin precio (falta la tasa)");
+  if (linea.unitPriceUsd === null) {
+    // `estado` depende solo del peso y la tarifa cuando no hay tarifa: la tasa no entra.
+    const estandar = linea.item.priceKind === "estandar" ? standardPriceDisplay(product, 0) : null;
+    if (estandar && estandar.estado !== "ok") {
+      avisos.push(`Sin precio estándar: ${motivoSinEstandar(estandar.estado)}`);
+    } else {
+      avisos.push("Sin precio (falta la tasa)");
+    }
+  }
   return avisos;
 }
 
 /**
  * El texto para pegar en WhatsApp: el resumen del carrito de una conversación
- * (`cartSummaryText`, mismo formato que ya conocen los clientes) más el total
- * en bolívares y, si hay plan, el financiamiento Cashea con las mismas líneas
- * que la calculadora (`lineaInicial`/`lineaResto`). Sin saludo: el asesor lo
- * escribe él. `null` con carrito vacío o con algún renglón sin precio.
+ * (`cartSummaryText`, mismo formato que ya conocen los clientes, con el total
+ * en bolívares incluido) y, si hay plan, el financiamiento Cashea con las
+ * mismas líneas que la calculadora (`lineaInicial`/`lineaResto`). Sin saludo:
+ * el asesor lo escribe él. `null` con carrito vacío o con algún renglón sin
+ * precio que una casilla encendida necesite.
+ *
+ * 21/10/2026: `opciones` son las casillas de «qué incluir al copiar»
+ * (`copia-carrito.ts`). El total en bolívares ya no se agrega acá —viene de
+ * `cartSummaryText`— y el plan Cashea sale solo con `planCashea` encendida.
+ * `totales.cashea` ya es `null` cuando algún renglón no tiene precio, así que
+ * el plan nunca se agrega sobre un total falso.
  */
-export function textoCarritoParaCliente(totales: TotalesCarritoInventario): string | null {
-  const base = cartSummaryText(totales.lineas, {
-    usd: totales.usd,
-    bs: totales.bs,
-    unpricedCount: totales.unpricedCount,
-  });
+export function textoCarritoParaCliente(
+  totales: TotalesCarritoInventario,
+  opciones: OpcionesCopia = OPCIONES_COPIA_INICIALES,
+): string | null {
+  const base = cartSummaryText(
+    totales.lineas,
+    { usd: totales.usd, bs: totales.bs, unpricedCount: totales.unpricedCount },
+    opciones,
+  );
   if (base === null) return null;
 
   let texto = base;
-  if (totales.bs !== null) texto += `\nTotal en bolívares: ${formatBs(totales.bs)}`;
-  if (totales.cashea) {
+  if (opciones.planCashea && totales.cashea) {
     const plan = totales.cashea;
     texto += `\n\nFinanciado con Cashea (nivel ${plan.nivel}):\n${lineaInicial(plan)}\n${lineaResto(plan)}`;
   }

@@ -93,7 +93,7 @@ function Arnes() {
 function montar() {
   const user = userEvent.setup({ delay: null, pointerEventsCheck: 0 });
   render(
-    <InventarioCarritoProvider agentId={AGENTE} bcvRate={TASA}>
+    <InventarioCarritoProvider agentId={AGENTE} bcvRate={TASA} soloLectura={false} role="agent">
       <Arnes />
     </InventarioCarritoProvider>,
   );
@@ -216,7 +216,7 @@ describe("el panel del carrito", () => {
       );
     }
     render(
-      <InventarioCarritoProvider agentId={AGENTE} bcvRate={TASA}>
+      <InventarioCarritoProvider agentId={AGENTE} bcvRate={TASA} soloLectura={false} role="agent">
         <Poco />
       </InventarioCarritoProvider>,
     );
@@ -306,7 +306,7 @@ describe("el panel del carrito", () => {
     it("con un renglón sin precio avisa que falta la tasa y no muestra plan", async () => {
       const user = userEvent.setup({ delay: null, pointerEventsCheck: 0 });
       render(
-        <InventarioCarritoProvider agentId={AGENTE} bcvRate={0}>
+        <InventarioCarritoProvider agentId={AGENTE} bcvRate={0} soloLectura={false} role="agent">
           <Arnes />
         </InventarioCarritoProvider>,
       );
@@ -335,8 +335,8 @@ describe("el panel del carrito", () => {
       const esperado = textoCarritoParaCliente(
         totalesCarrito(
           [
-            { product: PA, quantity: 1, quotedPriceUsd: null },
-            { product: PB, quantity: 1, quotedPriceUsd: null },
+            { product: PA, quantity: 1, quotedPriceUsd: null, priceKind: "promocion" },
+            { product: PB, quantity: 1, quotedPriceUsd: null, priceKind: "promocion" },
           ],
           TASA,
           { activo: false, ...ELECCION_CASHEA_INICIAL },
@@ -362,7 +362,7 @@ describe("el panel del carrito", () => {
     it("Copiar queda deshabilitado si un renglón no tiene precio", async () => {
       const user = userEvent.setup({ delay: null, pointerEventsCheck: 0 });
       render(
-        <InventarioCarritoProvider agentId={AGENTE} bcvRate={0}>
+        <InventarioCarritoProvider agentId={AGENTE} bcvRate={0} soloLectura={false} role="agent">
           <Arnes />
         </InventarioCarritoProvider>,
       );
@@ -422,16 +422,18 @@ describe("la persistencia del carrito", () => {
     await waitFor(() => expect(screen.queryByText("Carrito de cotización")).toBeNull());
     await user.click(screen.getByText("agregar C"));
     expect(JSON.parse(localStorage.getItem(CLAVE)!)).toEqual([
-      { productId: "b", quantity: 3 },
-      { productId: "a", quantity: 2 },
-      { productId: "c", quantity: 1 },
+      { productId: "b", quantity: 3, priceKind: "promocion" },
+      { productId: "a", quantity: 2, priceKind: "promocion" },
+      { productId: "c", quantity: 1, priceKind: "promocion" },
     ]);
   });
 
   it("agregar guarda en la clave del asesor y vaciar deja una lista vacía", async () => {
     const user = montar();
     await user.click(screen.getByText("agregar A"));
-    expect(JSON.parse(localStorage.getItem(CLAVE)!)).toEqual([{ productId: "a", quantity: 1 }]);
+    expect(JSON.parse(localStorage.getItem(CLAVE)!)).toEqual([
+      { productId: "a", quantity: 1, priceKind: "promocion" },
+    ]);
     expect(fetchProductsByIds).not.toHaveBeenCalled();
 
     await user.click(screen.getByText("abrir carrito"));

@@ -1,8 +1,9 @@
 "use client";
 
 import { useState } from "react";
-import { Copy, Trash2 } from "lucide-react";
+import { Copy, Save, Trash2 } from "lucide-react";
 import { Drawer, toast } from "@heroui/react";
+import type { AgentRole } from "@/lib/types";
 import type { PricedCartLine } from "@/lib/conversation-cart";
 import { formatBs, formatUsd, toCents } from "@/lib/cashea";
 import {
@@ -11,9 +12,15 @@ import {
   totalesCarrito,
   type LineaCarritoInventario,
 } from "@/lib/inventario-carrito";
+import { guardarPresupuesto } from "@/lib/presupuestos-data";
+import { nombreCompletoPresupuesto, puedeEditarPresupuesto, renglonesParaGuardar } from "@/lib/presupuestos";
+import { createClient } from "@/lib/supabase/client";
 import { CasheaControles } from "@/components/cashea/cashea-controles";
 import { CasheaResumen } from "@/components/cashea/cashea-resumen";
 import { useInventarioCarrito } from "@/components/inventario/inventario-carrito-context";
+import { GuardarPresupuestoModal, type DatosPresupuestoForm } from "@/components/presupuestos/guardar-presupuesto-modal";
+import { OpcionesCopiaCasillas } from "@/components/presupuestos/opciones-copia";
+import { useOpcionesCopia } from "@/components/presupuestos/use-opciones-copia";
 import "@/components/agent-control/agent-control.css";
 import "@/components/inventario/inventario.css";
 
@@ -28,6 +35,16 @@ import "@/components/inventario/inventario.css";
  *
  * Es un `Drawer` de HeroUI (placement derecha): corre en jsdom, así que el
  * test lo ejerce de verdad y no hizo falta caer al `Modal`.
+ *
+ * 21/10/2026 ("Presupuestos y mensajes rápidos", T4): el panel gana tres
+ * cosas. (1) El interruptor «Cobrar precio estándar (envío por peso)», que
+ * pasa TODO el carrito al estándar: antes cobraba siempre la promoción y el
+ * envío por peso había que sumarlo a mano. No existe para la caja. (2) Las
+ * casillas de «qué incluir al copiar» con una vista previa del texto exacto
+ * que se copia; si un renglón no tiene precio, la vista previa se cambia por
+ * el motivo y Copiar queda deshabilitado (D5: nunca se mezcla un precio sin
+ * envío). (3) «Guardar presupuesto», que guarda el carrito con el nombre y el
+ * apellido del cliente, como nuevo o como cambios al presupuesto abierto.
  */
 
 const SIN_MONTO = "—";
@@ -99,7 +116,10 @@ function Renglon({
       <div className="inv-carrito-renglon-cabeza">
         <div className="inv-carrito-renglon-id">
           <span className="inv-carrito-nombre">{product.name}</span>
-          <span className="inv-carrito-codigo lm-num">{product.saintCode ?? "Sin código"}</span>
+          <span className="inv-carrito-codigo lm-num">
+            {product.saintCode ?? "Sin código"}
+            {linea.item.priceKind === "estandar" && <span className="inv-carrito-marca">Estándar</span>}
+          </span>
         </div>
         <button
           type="button"
@@ -140,17 +160,30 @@ function Renglon({
   );
 }
 
-export function CarritoPanel({ bcvRate }: { bcvRate: number }) {
+export function CarritoPanel({
+  bcvRate,
+  agentId,
+  role,
+}: {
+  bcvRate: number;
+  agentId: string;
+  role: AgentRole;
+}) {
   const carrito = useInventarioCarrito();
   const [confirmandoVaciar, setConfirmandoVaciar] = useState(false);
+  const [guardando, setGuardando] = useState(false);
+  const [opcionesCopia, setOpcionesCopia] = useOpcionesCopia(agentId);
 
   // Fuera del provider no hay carrito que mostrar.
   if (!carrito) return null;
 
-  const { lineas, abierto, cerrar, cashea, setCashea } = carrito;
+  const { lineas, abierto, cerrar, cashea, setCashea, presupuestoActivo, priceKind } = carrito;
   const totales = totalesCarrito(lineas, bcvRate, cashea);
-  const texto = textoCarritoParaCliente(totales);
+  const texto = textoCarritoParaCliente(totales, opcionesCopia);
   const vacio = lineas.length === 0;
+  const estandarEncendido = priceKind === "estandar";
+  const puedeGuardarCambios =
+    presupuestoActivo !== null && puedeEditarPresupuesto(presupuestoActivo, { id: agentId, role });
 
   async function copiar() {
     if (texto === null) return;
@@ -160,6 +193,31 @@ export function CarritoPanel({ bcvRate }: { bcvRate: number }) {
     } catch {
       toast.danger("No se pudo copiar");
     }
+  }
+
+  async function guardar(datos: DatosPresupuestoForm, modo: "cambios" | "nuevo") {
+    if (!carrito) return;
+    const reemplaza = modo === "cambios" && presupuestoActivo !== null;
+    const id = await guardarPresupuesto(createClient(), {
+      id: reemplaza ? presupuestoActivo.id : null,
+      clienteNombre: datos.nombre,
+      clienteApellido: datos.apellido,
+      contactId: null,
+      conversationId: null,
+      origen: "inventario",
+      nota: datos.nota || null,
+      items: renglonesParaGuardar(totales.lineas),
+    });
+    const activo = {
+      id,
+      clienteNombre: datos.nombre,
+      clienteApellido: datos.apellido,
+      nota: datos.nota || null,
+      // Un supervisor que cambia un presupuesto ajeno no se lo apropia.
+      createdBy: reemplaza ? presupuestoActivo.createdBy : agentId,
+    };
+    carrito.marcarPresupuestoGuardado(activo);
+    toast.success(`Presupuesto de ${nombreCompletoPresupuesto(activo)} guardado`);
   }
 
   return (
@@ -178,7 +236,17 @@ export function CarritoPanel({ bcvRate }: { bcvRate: number }) {
         <Drawer.Content placement="right">
           <Drawer.Dialog className="inv-carrito-dialogo">
             <Drawer.Header className="inv-carrito-cabecera">
-              <Drawer.Heading>Carrito de cotización</Drawer.Heading>
+              <div className="inv-carrito-titulo">
+                <Drawer.Heading>Carrito de cotización</Drawer.Heading>
+                {presupuestoActivo && (
+                  <div className="inv-carrito-activo">
+                    <span className="inv-carrito-chip">{nombreCompletoPresupuesto(presupuestoActivo)}</span>
+                    <span className="inv-carrito-activo-nota">
+                      Presupuesto guardado · los cambios no se guardan solos
+                    </span>
+                  </div>
+                )}
+              </div>
               <Drawer.CloseTrigger aria-label="Cerrar" />
             </Drawer.Header>
 
@@ -187,6 +255,26 @@ export function CarritoPanel({ bcvRate }: { bcvRate: number }) {
                 <p className="inv-carrito-vacio">Agregá repuestos desde la lista con «Agregar».</p>
               ) : (
                 <>
+                  {carrito.puedeCobrarEstandar && (
+                    <div className="inv-carrito-estandar">
+                      <div className="inv-carrito-cashea-cabeza">
+                        <span>Cobrar precio estándar (envío por peso)</span>
+                        <button
+                          type="button"
+                          role="switch"
+                          className="ac-switch"
+                          aria-checked={estandarEncendido}
+                          aria-label="Cobrar precio estándar (envío por peso)"
+                          data-on={estandarEncendido}
+                          onClick={() => carrito.setCobrarEstandar(!estandarEncendido)}
+                        />
+                      </div>
+                      {priceKind === "mixto" && (
+                        <p className="inv-carrito-nota">Algunos renglones van con estándar</p>
+                      )}
+                    </div>
+                  )}
+
                   <ul className="inv-carrito-lista" aria-label="Productos del carrito">
                     {totales.lineas.map((linea) => (
                       <Renglon
@@ -224,6 +312,24 @@ export function CarritoPanel({ bcvRate }: { bcvRate: number }) {
                         />
                       ))}
                   </div>
+
+                  <div className="inv-carrito-copia">
+                    <OpcionesCopiaCasillas
+                      opciones={opcionesCopia}
+                      onChange={setOpcionesCopia}
+                      mostrarCashea={true}
+                      idPrefix="carrito-inv-copia"
+                    />
+                    {texto === null ? (
+                      <p className="inv-carrito-nota" role="status">
+                        Completa el precio de los renglones marcados para copiar.
+                      </p>
+                    ) : (
+                      <pre className="inv-carrito-previa" aria-label="Vista previa del texto">
+                        {texto}
+                      </pre>
+                    )}
+                  </div>
                 </>
               )}
             </Drawer.Body>
@@ -254,6 +360,10 @@ export function CarritoPanel({ bcvRate }: { bcvRate: number }) {
                     <Copy size={13} aria-hidden="true" />
                     Copiar para WhatsApp
                   </button>
+                  <button type="button" className="crm-pill" onClick={() => setGuardando(true)} disabled={vacio}>
+                    <Save size={13} aria-hidden="true" />
+                    Guardar presupuesto
+                  </button>
                   {confirmandoVaciar ? (
                     <span className="inv-carrito-confirmar">
                       <span>¿Vaciar el carrito?</span>
@@ -279,6 +389,23 @@ export function CarritoPanel({ bcvRate }: { bcvRate: number }) {
                 </div>
               </Drawer.Footer>
             )}
+
+            {/* Dentro del diálogo y no al lado: así el modal es un overlay hijo del panel y no le cierra el panel al hacer clic. */}
+            <GuardarPresupuestoModal
+              isOpen={guardando}
+              onOpenChange={setGuardando}
+              inicial={
+                presupuestoActivo
+                  ? {
+                      nombre: presupuestoActivo.clienteNombre,
+                      apellido: presupuestoActivo.clienteApellido,
+                      nota: presupuestoActivo.nota ?? "",
+                    }
+                  : { nombre: "", apellido: "", nota: "" }
+              }
+              puedeGuardarCambios={puedeGuardarCambios}
+              onGuardar={guardar}
+            />
           </Drawer.Dialog>
         </Drawer.Content>
       </Drawer.Backdrop>

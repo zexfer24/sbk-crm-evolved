@@ -130,7 +130,12 @@ export function InventarioView({
   // grid de dos columnas y un hijo de más le desarma la pantalla (trampa del
   // 9/9/2026). El panel del carrito sale por el portal del Drawer.
   return (
-    <InventarioCarritoProvider agentId={currentAgent.id} bcvRate={rate}>
+    <InventarioCarritoProvider
+      agentId={currentAgent.id}
+      bcvRate={rate}
+      soloLectura={soloLectura}
+      role={currentAgent.role}
+    >
       <div className="dash">
         <div className="dash-frame">
           <AppRail active="inventario" soloInventario={soloLectura} />

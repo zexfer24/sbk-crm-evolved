@@ -2,6 +2,8 @@ import type { CartPriceKind, ConversationCartItem } from "@/lib/types";
 import type { SaleLineItem } from "@/lib/mutations";
 import { priceInBs, standardPriceAmounts } from "@/lib/inventory";
 import { productPriceUsd } from "@/lib/sale-cart";
+import { formatBs } from "@/lib/cashea";
+import { OPCIONES_COPIA_INICIALES, type OpcionesCopia } from "@/lib/copia-carrito";
 
 /**
  * Precios y totales del carrito persistente de una conversación (T8, plan
@@ -135,32 +137,64 @@ function formatUsd(value: number): string {
  * dice «$40.00 c/u · $80.00». El SKU es `products.saint_code` (no existe otra
  * columna de código); sin él, «sin código».
  *
- * Devuelve `null` si el carrito está vacío o algún renglón no tiene precio en
- * dólares (falta la tasa BCV): un resumen sin ese renglón daría un total falso
- * y uno con «Sin tasa» escrito no es algo que se le mande a un cliente. Los
+ * 21/10/2026 ("Presupuestos y mensajes rápidos", T3): el rótulo es SIEMPRE
+ * «Precio». Hasta esa fecha un renglón de precio estándar decía «Precio
+ * (incluye envío)»; el cliente pidió que esa frase no le llegue al comprador
+ * (el envío ya va dentro del número, no hace falta nombrarlo). Además cada
+ * parte se puede apagar con `opciones` (las casillas de «qué incluir al
+ * copiar», `copia-carrito.ts`): código, cantidad, precio unitario, subtotal,
+ * total en dólares y total en bolívares. Con todas encendidas el texto es el
+ * de siempre más la línea «Total en bolívares», que ahora sale por defecto
+ * también desde el chat (antes solo la agregaba el carrito del Inventario).
+ * El nombre del producto siempre va.
+ *
+ * Devuelve `null` si el carrito está vacío o si alguna casilla que depende
+ * del precio (unitario, subtotal, total $, total Bs) está encendida y algún
+ * renglón no tiene precio en dólares (falta la tasa BCV o la tarifa MRW): un
+ * resumen sin ese renglón daría un total falso y uno con «Sin tasa» escrito
+ * no es algo que se le mande a un cliente. Con las cuatro apagadas la lista
+ * de nombres sale aunque falte algún precio: no se está diciendo ninguno. Los
  * montos son los VIGENTES (`priceCartLines`, D6), ya redondeados por
  * `usdFromBs`: aquí no se recalcula ni se redondea nada.
  */
-export function cartSummaryText(lines: PricedCartLine<PriceableCartItem>[], totals: CartTotals): string | null {
+export function cartSummaryText(
+  lines: PricedCartLine<PriceableCartItem>[],
+  totals: CartTotals,
+  opciones: OpcionesCopia = OPCIONES_COPIA_INICIALES
+): string | null {
   if (lines.length === 0) return null;
-  if (lines.some((line) => line.unitPriceUsd === null || line.subtotalUsd === null)) return null;
+  const dependeDelPrecio =
+    opciones.precioUnitario || opciones.subtotal || opciones.totalUsd || opciones.totalBs;
+  if (dependeDelPrecio && lines.some((line) => line.unitPriceUsd === null || line.subtotalUsd === null)) {
+    return null;
+  }
 
   const blocks = lines.map((line) => {
     const { product, quantity } = line.item;
-    // Los `null` ya se descartaron arriba; el `?? 0` solo calma al tipo.
-    const unit = line.unitPriceUsd ?? 0;
-    const subtotal = line.subtotalUsd ?? 0;
-    const name = quantity > 1 ? `${product.name} (x${quantity})` : product.name;
-    // El estándar lo dice: el cliente tiene que saber que el envío ya va dentro.
-    const label = line.item.priceKind === "estandar" ? "Precio (incluye envío)" : "Precio";
-    const price =
-      quantity > 1
-        ? `${label}: ${formatUsd(unit)} c/u · ${formatUsd(subtotal)}`
-        : `${label}: ${formatUsd(unit)}`;
-    return [name, `SKU: ${product.saintCode ?? "sin código"}`, price].join("\n");
+    const name = opciones.cantidad && quantity > 1 ? `${product.name} (x${quantity})` : product.name;
+    const rows = [name];
+    if (opciones.codigo) rows.push(`SKU: ${product.saintCode ?? "sin código"}`);
+
+    // Si una casilla de precio está encendida, los `null` ya se descartaron
+    // arriba; el `?? 0` solo calma al tipo.
+    const parts: string[] = [];
+    if (opciones.precioUnitario) {
+      const unit = formatUsd(line.unitPriceUsd ?? 0);
+      parts.push(quantity > 1 ? `${unit} c/u` : unit);
+    }
+    if (opciones.subtotal && (quantity > 1 || !opciones.precioUnitario)) {
+      parts.push(formatUsd(line.subtotalUsd ?? 0));
+    }
+    if (parts.length > 0) rows.push(`Precio: ${parts.join(" · ")}`);
+    return rows.join("\n");
   });
 
-  return `${blocks.join("\n\n")}\n\nTotal: ${formatUsd(totals.usd)}`;
+  const footer: string[] = [];
+  if (opciones.totalUsd) footer.push(`Total: ${formatUsd(totals.usd)}`);
+  if (opciones.totalBs && totals.bs !== null) footer.push(`Total en bolívares: ${formatBs(totals.bs)}`);
+
+  const body = blocks.join("\n\n");
+  return footer.length > 0 ? `${body}\n\n${footer.join("\n")}` : body;
 }
 
 /**

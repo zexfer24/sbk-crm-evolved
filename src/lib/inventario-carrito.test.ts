@@ -1,10 +1,12 @@
 import { describe, expect, it } from "vitest";
-import type { Product } from "@/lib/types";
+import type { CartPriceKind, Product } from "@/lib/types";
 import { priceInBs } from "@/lib/inventory";
 import { calcularCashea, type EleccionCashea } from "@/lib/cashea";
+import { OPCIONES_COPIA_INICIALES } from "@/lib/copia-carrito";
 import {
   avisosRenglon,
   leerCarritoGuardado,
+  precioDelCarrito,
   reducirCarrito,
   serializarCarrito,
   textoCarritoParaCliente,
@@ -35,8 +37,8 @@ function product(over: Partial<Product> = {}): Product {
   };
 }
 
-function linea(p: Product, quantity = 1): LineaCarritoInventario {
-  return { product: p, quantity, quotedPriceUsd: null };
+function linea(p: Product, quantity = 1, priceKind: CartPriceKind = "promocion"): LineaCarritoInventario {
+  return { product: p, quantity, quotedPriceUsd: null, priceKind };
 }
 
 const SIN_CASHEA: OpcionesCashea = { activo: false, nivel: 6, cuotas: 3, bajada: false };
@@ -57,6 +59,41 @@ describe("reducirCarrito", () => {
     const estado = reducirCarrito([linea(a, 3)], { tipo: "agregar", product: b });
     expect(estado.map((l) => [l.product.id, l.quantity])).toEqual([["a", 3], ["b", 1]]);
     expect(estado[1].quotedPriceUsd).toBeNull();
+  });
+
+  it("agregar sin priceKind entra a precio de promoción; con priceKind entra a ese precio", () => {
+    const a = product({ id: "a" });
+    expect(reducirCarrito([], { tipo: "agregar", product: a })[0].priceKind).toBe("promocion");
+    expect(reducirCarrito([], { tipo: "agregar", product: a, priceKind: "estandar" })[0].priceKind).toBe("estandar");
+  });
+
+  it("agregar uno repetido con otro priceKind suma 1 y le pone ese precio", () => {
+    const a = product({ id: "a" });
+    const estado = reducirCarrito([linea(a, 2, "promocion")], { tipo: "agregar", product: a, priceKind: "estandar" });
+    expect(estado).toHaveLength(1);
+    expect(estado[0].quantity).toBe(3);
+    expect(estado[0].priceKind).toBe("estandar");
+  });
+
+  it("agregar uno repetido sin priceKind lo deja en promoción (el valor por defecto manda)", () => {
+    const a = product({ id: "a" });
+    const estado = reducirCarrito([linea(a, 1, "estandar")], { tipo: "agregar", product: a });
+    expect(estado[0].priceKind).toBe("promocion");
+  });
+
+  it("precio pone el mismo priceKind en TODOS los renglones y conserva lo demás", () => {
+    const estado = [linea(product({ id: "a" }), 2, "promocion"), linea(product({ id: "b" }), 1, "estandar")];
+    const nuevo = reducirCarrito(estado, { tipo: "precio", priceKind: "estandar" });
+    expect(nuevo.map((l) => [l.product.id, l.quantity, l.priceKind])).toEqual([
+      ["a", 2, "estandar"],
+      ["b", 1, "estandar"],
+    ]);
+    expect(reducirCarrito(nuevo, { tipo: "precio", priceKind: "promocion" }).every((l) => l.priceKind === "promocion")).toBe(true);
+  });
+
+  it("restaurar conserva el priceKind de las líneas restauradas", () => {
+    const nuevo = reducirCarrito([], { tipo: "restaurar", lineas: [linea(product({ id: "a" }), 2, "estandar")] });
+    expect(nuevo[0].priceKind).toBe("estandar");
   });
 
   it("agregar uno repetido suma 1 y refresca el producto con el recibido", () => {
@@ -127,7 +164,7 @@ describe("leerCarritoGuardado", () => {
       { quantity: 2 },
       { productId: "ok", quantity: 2 },
     ]);
-    expect(leerCarritoGuardado(raw)).toEqual([{ productId: "ok", quantity: 2 }]);
+    expect(leerCarritoGuardado(raw)).toEqual([{ productId: "ok", quantity: 2, priceKind: "promocion" }]);
   });
 
   it("fusiona ids repetidos sumando cantidades y conserva la posición de la primera aparición", () => {
@@ -137,20 +174,46 @@ describe("leerCarritoGuardado", () => {
       { productId: "a", quantity: 3 },
     ]);
     expect(leerCarritoGuardado(raw)).toEqual([
-      { productId: "a", quantity: 4 },
-      { productId: "b", quantity: 2 },
+      { productId: "a", quantity: 4, priceKind: "promocion" },
+      { productId: "b", quantity: 2, priceKind: "promocion" },
     ]);
   });
 
-  it("ida y vuelta con serializarCarrito: solo guarda productId y cantidad", () => {
-    const raw = serializarCarrito(CARRITO_218);
+  it("un JSON viejo sin priceKind se lee como promoción", () => {
+    const raw = JSON.stringify([{ productId: "a", quantity: 1 }]);
+    expect(leerCarritoGuardado(raw)).toEqual([{ productId: "a", quantity: 1, priceKind: "promocion" }]);
+  });
+
+  it("un priceKind desconocido o que no es texto se lee como promoción; «estandar» se respeta", () => {
+    const raw = JSON.stringify([
+      { productId: "a", quantity: 1, priceKind: "estandar" },
+      { productId: "b", quantity: 1, priceKind: "premium" },
+      { productId: "c", quantity: 1, priceKind: 7 },
+    ]);
+    expect(leerCarritoGuardado(raw).map((g) => [g.productId, g.priceKind])).toEqual([
+      ["a", "estandar"],
+      ["b", "promocion"],
+      ["c", "promocion"],
+    ]);
+  });
+
+  it("ids repetidos con distinto priceKind: gana el de la primera aparición", () => {
+    const raw = JSON.stringify([
+      { productId: "a", quantity: 1, priceKind: "estandar" },
+      { productId: "a", quantity: 2, priceKind: "promocion" },
+    ]);
+    expect(leerCarritoGuardado(raw)).toEqual([{ productId: "a", quantity: 3, priceKind: "estandar" }]);
+  });
+
+  it("ida y vuelta con serializarCarrito: solo guarda productId, cantidad y a qué precio se cobra", () => {
+    const raw = serializarCarrito([linea(CASCO, 1, "estandar"), linea(GUANTE, 2)]);
     expect(JSON.parse(raw)).toEqual([
-      { productId: "casco", quantity: 1 },
-      { productId: "guante", quantity: 2 },
+      { productId: "casco", quantity: 1, priceKind: "estandar" },
+      { productId: "guante", quantity: 2, priceKind: "promocion" },
     ]);
     expect(leerCarritoGuardado(raw)).toEqual([
-      { productId: "casco", quantity: 1 },
-      { productId: "guante", quantity: 2 },
+      { productId: "casco", quantity: 1, priceKind: "estandar" },
+      { productId: "guante", quantity: 2, priceKind: "promocion" },
     ]);
   });
 });
@@ -200,6 +263,42 @@ describe("totalesCarrito sin Cashea", () => {
   it("los renglones vienen ya con precio, iguales a priceCartLines", () => {
     const t = totalesCarrito(CARRITO_218, 100, SIN_CASHEA);
     expect(t.lineas).toEqual(priceCartLines(CARRITO_218, 100));
+  });
+});
+
+describe("totalesCarrito con precio estándar (21/10/2026)", () => {
+  const CON_TARIFA = product({ id: "t", name: "Caucho", price: 25, currency: "USD", weightKg: 2, shippingFeeUsd: 2.5 });
+
+  it("cada renglón se cobra a su priceKind: el estándar suma la tarifa MRW, la promoción no", () => {
+    const t = totalesCarrito([linea(CON_TARIFA, 2, "estandar"), linea(product({ id: "u", price: 10 }), 1)], 40, SIN_CASHEA);
+    expect(t.usd).toBe(65);
+    expect(t.unpricedCount).toBe(0);
+    expect(totalesCarrito([linea(CON_TARIFA, 2, "promocion")], 40, SIN_CASHEA).usd).toBe(50);
+  });
+
+  it("un estándar sin tarifa (sin peso) cuenta como renglón sin precio y apaga Cashea", () => {
+    const sinPeso = product({ id: "s", price: 25, weightKg: null, shippingFeeUsd: null });
+    const t = totalesCarrito([linea(sinPeso, 1, "estandar")], 40, conCashea());
+    expect(t.unpricedCount).toBe(1);
+    expect(t.usd).toBe(0);
+    expect(t.cashea).toBeNull();
+  });
+});
+
+describe("precioDelCarrito", () => {
+  it("es null con el carrito vacío", () => {
+    expect(precioDelCarrito([])).toBeNull();
+  });
+
+  it("devuelve el precio común cuando todos los renglones coinciden", () => {
+    expect(precioDelCarrito([linea(product({ id: "a" })), linea(product({ id: "b" }))])).toBe("promocion");
+    expect(precioDelCarrito([linea(product({ id: "a" }), 1, "estandar")])).toBe("estandar");
+  });
+
+  it("devuelve «mixto» cuando hay de los dos", () => {
+    expect(
+      precioDelCarrito([linea(product({ id: "a" }), 1, "estandar"), linea(product({ id: "b" }), 1, "promocion")]),
+    ).toBe("mixto");
   });
 });
 
@@ -253,6 +352,31 @@ describe("avisosRenglon", () => {
     ]);
   });
 
+  it("estándar sin peso: el aviso dice el motivo con el mismo texto de la fila del Inventario", () => {
+    const avisosEstandar = (p: Product) => avisosRenglon(priceCartLines([linea(p, 1, "estandar")], 100)[0]);
+    expect(avisosEstandar(product({ weightKg: null, shippingFeeUsd: null }))).toEqual([
+      "Sin precio estándar: Sin peso cargado",
+    ]);
+    expect(avisosEstandar(product({ weightKg: 120, shippingFeeUsd: null }))).toEqual([
+      "Sin precio estándar: Más de 80 kg: fuera de la tabla MRW",
+    ]);
+    expect(avisosEstandar(product({ weightKg: 5, shippingFeeUsd: null }))).toEqual([
+      "Sin precio estándar: Sin tarifa MRW para este peso",
+    ]);
+  });
+
+  it("estándar con tarifa pero en bolívares y sin tasa sigue diciendo que falta la tasa", () => {
+    const enBs = product({ currency: "VES", price: 100, weightKg: 2, shippingFeeUsd: 2.5 });
+    expect(avisosRenglon(priceCartLines([linea(enBs, 1, "estandar")], 0)[0])).toEqual(["Sin precio (falta la tasa)"]);
+  });
+
+  it("estándar sano no tiene avisos, y en promoción un producto sin peso tampoco los tiene", () => {
+    const sano = product({ weightKg: 2, shippingFeeUsd: 2.5 });
+    expect(avisosRenglon(priceCartLines([linea(sano, 1, "estandar")], 100)[0])).toEqual([]);
+    const sinPeso = product({ weightKg: null, shippingFeeUsd: null });
+    expect(avisosRenglon(priceCartLines([linea(sinPeso, 1, "promocion")], 100)[0])).toEqual([]);
+  });
+
   it("combinados salen en orden: baja, sin stock, solo hay N, sin precio", () => {
     expect(avisos(product({ isActive: false, stockQuantity: 0, currency: "VES", price: 100 }), 2, 0)).toEqual([
       "Saint lo dio de baja",
@@ -284,6 +408,33 @@ describe("textoCarritoParaCliente", () => {
         "Inicial (25%): $54,50\n" +
         "Resto: 6 cuotas de $27,25, cada 14 días, sin intereses.",
     );
+  });
+
+  it("con planCashea apagado el plan no se agrega aunque Cashea esté activo", () => {
+    const totales = totalesCarrito(CARRITO_218, 100, conCashea());
+    expect(textoCarritoParaCliente(totales, { ...OPCIONES_COPIA_INICIALES, planCashea: false })).toBe(BASE);
+  });
+
+  it("con las opciones iniciales el texto es el de siempre (con y sin Cashea)", () => {
+    const sinPlan = totalesCarrito(CARRITO_218, 100, SIN_CASHEA);
+    expect(textoCarritoParaCliente(sinPlan, OPCIONES_COPIA_INICIALES)).toBe(textoCarritoParaCliente(sinPlan));
+    const conPlan = totalesCarrito(CARRITO_218, 100, conCashea());
+    expect(textoCarritoParaCliente(conPlan, OPCIONES_COPIA_INICIALES)).toContain("Financiado con Cashea (nivel 4)");
+  });
+
+  it("las casillas del chat también valen aquí: sin código ni total en bolívares", () => {
+    const totales = totalesCarrito(CARRITO_218, 100, SIN_CASHEA);
+    const texto = textoCarritoParaCliente(totales, { ...OPCIONES_COPIA_INICIALES, codigo: false, totalBs: false });
+    expect(texto).toBe(
+      "Casco LS2\nPrecio: $118.00\n\nGuante (x2)\nPrecio: $50.00 c/u · $100.00\n\nTotal: $218.00",
+    );
+  });
+
+  it("un renglón estándar se copia sin la frase del envío", () => {
+    const conTarifa = product({ id: "t", name: "Caucho", price: 25, saintCode: "T-1", weightKg: 2, shippingFeeUsd: 2.5 });
+    const texto = textoCarritoParaCliente(totalesCarrito([linea(conTarifa, 1, "estandar")], 40, SIN_CASHEA));
+    expect(texto).not.toContain("incluye envío");
+    expect(texto).toContain("Precio: $27.50");
   });
 
   it("es null con un renglón sin precio y con el carrito vacío", () => {

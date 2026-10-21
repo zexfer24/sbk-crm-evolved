@@ -243,6 +243,9 @@ export function ContextPanel({
           bcvRate={bcvRate}
           onAdd={(product, priceKind) => void cartActions.addProduct(product, priceKind)}
           addDisabled={cartActions.busy}
+          // 21/10/2026: la caja no ve el chat, pero por si el panel llegara a
+          // montarse con ella, el peso no se ofrece (la base decide igual).
+          puedeEditarPeso={currentAgent.role !== "caja"}
         />
 
         <ConversationCartBlock
@@ -250,6 +253,11 @@ export function ContextPanel({
           bcvRate={bcvRate?.rate ?? 0}
           actions={cartActions}
           onSendToComposer={onSendToComposer}
+          agentId={currentAgent.id}
+          conversationId={conversation.id}
+          contactId={contact.id}
+          contactDisplayName={contact.displayName ?? contact.profileName}
+          onCartChanged={onCartChanged}
         />
 
         <section className="crm-context-section">

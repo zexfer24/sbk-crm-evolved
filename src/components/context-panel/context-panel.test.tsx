@@ -60,6 +60,15 @@ vi.mock("@/lib/mutations", () => ({
 
 vi.mock("@/lib/data", () => ({ fetchConversationQuotes: vi.fn().mockResolvedValue([]) }));
 
+// 21/10/2026 (plan "Presupuestos y mensajes rápidos", T6): el bloque del
+// carrito lee los presupuestos del contacto; `presupuestos-cliente.test.tsx`
+// cubre su comportamiento, acá solo importa que el panel le pase el contacto.
+const fetchPresupuestosMock = vi.fn().mockResolvedValue([]);
+vi.mock("@/lib/presupuestos-data", () => ({
+  fetchPresupuestos: (...args: unknown[]) => fetchPresupuestosMock(...args),
+  guardarPresupuesto: vi.fn(),
+}));
+
 vi.mock("@/lib/supabase/client", () => ({ createClient: vi.fn(() => ({})) }));
 
 function buildConversation(overrides: Partial<Conversation> = {}): Conversation {
@@ -142,6 +151,7 @@ beforeEach(() => {
   closeSaleModalProps.mockClear();
   addToCartMock.mockClear();
   setCartQuantityMock.mockClear();
+  fetchPresupuestosMock.mockClear();
 });
 
 const PRODUCTO: Product = {
@@ -355,5 +365,45 @@ describe("ContextPanel — el carrito de la conversación (T8)", () => {
     expect(props.cart).toEqual([RENGLON]);
     expect(props.onCartChanged).toBe(onCartChanged);
     expect(props.conversationId).toBe("conv-1");
+  });
+});
+
+/**
+ * 21/10/2026 (plan "Presupuestos y mensajes rápidos", T6): lo que el panel le
+ * pasa a las piezas nuevas: el peso editable solo para quien no es caja, y el
+ * contacto a los presupuestos del cliente.
+ */
+describe("ContextPanel — peso y presupuestos del cliente (T6)", () => {
+  function renderConRol(role: Agent["role"]) {
+    return render(
+      <ContextPanel
+        conversation={buildConversation()}
+        messages={[]}
+        notes={[]}
+        allTags={ALL_TAGS}
+        currentAgent={{ ...AGENT, role }}
+        bcvRate={RATE}
+        cart={[]}
+        onCartChanged={() => {}}
+      />
+    );
+  }
+
+  it("un asesor puede editar el peso desde la búsqueda", () => {
+    renderConRol("agent");
+
+    expect(inventoryLookupProps.mock.calls.at(-1)?.[0]).toMatchObject({ puedeEditarPeso: true });
+  });
+
+  it("la caja no ve los botones de peso", () => {
+    renderConRol("caja");
+
+    expect(inventoryLookupProps.mock.calls.at(-1)?.[0]).toMatchObject({ puedeEditarPeso: false });
+  });
+
+  it("lee los presupuestos del contacto del chat abierto", async () => {
+    renderConRol("agent");
+
+    await waitFor(() => expect(fetchPresupuestosMock).toHaveBeenCalledWith(expect.anything(), { contactId: "contact-1" }));
   });
 });

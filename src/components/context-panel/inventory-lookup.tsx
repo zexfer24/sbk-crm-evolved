@@ -1,11 +1,21 @@
 "use client";
 
-import { useRef, useState } from "react";
+import { useRef, useState, type KeyboardEvent } from "react";
 import { Search, X } from "lucide-react";
+import { toast } from "@heroui/react";
 import type { CartPriceKind, Product } from "@/lib/types";
 import { createClient } from "@/lib/supabase/client";
-import { searchProductsForLookup } from "@/lib/inventory-data";
-import { motivoSinEstandar, priceDisplay, standardPriceDisplay } from "@/lib/inventory";
+import { fetchProduct, searchProductsForLookup } from "@/lib/inventory-data";
+import { updateProductWeight } from "@/lib/mutations";
+import { configErrorMessage } from "@/lib/config-write";
+import {
+  formatWeightInput,
+  motivoSinEstandar,
+  parseWeightInput,
+  priceDisplay,
+  sinPeso,
+  standardPriceDisplay,
+} from "@/lib/inventory";
 import { useDebouncedCallback } from "@/lib/use-debounced-callback";
 import { StockPill } from "@/components/context-panel/stock-pill";
 import type { BcvRateSummary } from "@/components/inbox/bcv-rate-chip";
@@ -55,6 +65,15 @@ import type { BcvRateSummary } from "@/components/inbox/bcv-rate-chip";
  * activo ofrece dos botones, «+ Promoción» y «+ Estándar» (`onAdd` recibe el
  * `CartPriceKind`); «+ Estándar» se deshabilita sin tarifa MRW, con el motivo
  * en el `title`, para que no entre al carrito un renglón sin precio.
+ *
+ * 21/10/2026 (plan "Presupuestos y mensajes rápidos", T6): cada resultado
+ * muestra su PESO y deja cargarlo o corregirlo ahí mismo (`PesoDelResultado`).
+ * Sin peso no hay precio estándar, y el asesor que lo ve faltar no tiene por
+ * qué salir a Inventario: al guardar se relee el producto (la tarifa MRW la
+ * calcula la base) y el resultado se reemplaza en la lista, así que el
+ * estándar y «+ Estándar» se actualizan solos. `products` es de solo lectura
+ * salvo `weight_kg`; `puedeEditarPeso` esconde los botones a quien no debe
+ * (la caja), y la barrera real sigue siendo la base.
  */
 const LOOKUP_DEBOUNCE_MS = 300;
 const LOOKUP_LIMIT = 20;
@@ -80,9 +99,159 @@ interface InventoryLookupProps {
   onAdd?: (product: Product, priceKind: CartPriceKind) => void;
   /** Hay una escritura del carrito en curso: los botones de agregar se deshabilitan. */
   addDisabled?: boolean;
+  /** Muestra «Cargar peso»/«Editar». Default `true`; el panel lo apaga para la caja. */
+  puedeEditarPeso?: boolean;
 }
 
-export function InventoryLookup({ bcvRate, onAdd, addDisabled = false }: InventoryLookupProps) {
+/** «3,2»: el peso para leer, con coma y sin ceros de relleno (el campo editable usa `formatWeightInput`). */
+function pesoLegible(weightKg: number): string {
+  return String(weightKg).replace(".", ",");
+}
+
+interface PesoDelResultadoProps {
+  product: Product;
+  puedeEditar: boolean;
+  /** El producto releído tras guardar: reemplaza al de la lista. */
+  onGuardado: (product: Product) => void;
+}
+
+/**
+ * La línea «Peso» de un resultado, con su edición en línea (21/10/2026). Guarda
+ * con Enter o con «Guardar»; Escape cancela. Un valor inválido muestra el
+ * error bajo el campo sin llamar a la base; si la base falla, el campo queda
+ * abierto con lo escrito y el toast dice por qué.
+ */
+function PesoDelResultado({ product, puedeEditar, onGuardado }: PesoDelResultadoProps) {
+  const [editando, setEditando] = useState(false);
+  const [borrador, setBorrador] = useState("");
+  const [error, setError] = useState<string | null>(null);
+  const [guardando, setGuardando] = useState(false);
+
+  const faltaPeso = sinPeso(product.weightKg);
+
+  function abrir() {
+    setBorrador(formatWeightInput(product.weightKg));
+    setError(null);
+    setEditando(true);
+  }
+
+  function cancelar() {
+    setEditando(false);
+    setError(null);
+  }
+
+  async function guardar() {
+    if (guardando) return;
+    const parsed = parseWeightInput(borrador);
+    if (!parsed.ok) {
+      setError(parsed.error);
+      return;
+    }
+    // Mismo peso: nada que escribir.
+    if (parsed.value === product.weightKg) {
+      cancelar();
+      return;
+    }
+
+    setGuardando(true);
+    try {
+      const supabase = createClient();
+      try {
+        await updateProductWeight(supabase, product.id, parsed.value);
+      } catch (err) {
+        toast.danger(configErrorMessage(err, "No se pudo guardar el peso."));
+        return;
+      }
+      // El peso ya quedó guardado. Releer trae la tarifa MRW nueva (la calcula
+      // la base); si la relectura falla NO es un error de guardado: se toma el
+      // peso nuevo y se descarta la tarifa vieja, que era la del peso anterior
+      // (pintarla sería un precio estándar equivocado). Mismo criterio que
+      // `commitWeight` de `producto-fila.tsx`.
+      const sinTarifa: Product = { ...product, weightKg: parsed.value, shippingFeeUsd: null };
+      let fresco: Product;
+      try {
+        fresco = (await fetchProduct(supabase, product.id)) ?? sinTarifa;
+      } catch {
+        fresco = sinTarifa;
+      }
+      onGuardado(fresco);
+      toast.success("Peso guardado");
+      setEditando(false);
+      setError(null);
+    } finally {
+      setGuardando(false);
+    }
+  }
+
+  function onKeyDown(event: KeyboardEvent<HTMLInputElement>) {
+    if (event.key === "Enter") {
+      event.preventDefault();
+      void guardar();
+    } else if (event.key === "Escape") {
+      event.preventDefault();
+      cancelar();
+    }
+  }
+
+  if (editando) {
+    return (
+      <div className="crm-lookup-weight" data-editing="true">
+        <div className="crm-lookup-weight-edit">
+          <span className="crm-lookup-weight-field">
+            <input
+              className="lm-num"
+              value={borrador}
+              onChange={(event) => {
+                setBorrador(event.target.value);
+                setError(null);
+              }}
+              onKeyDown={onKeyDown}
+              inputMode="decimal"
+              autoFocus
+              aria-label={`Peso en kg de ${product.name}`}
+              aria-invalid={error ? true : undefined}
+            />
+            <span className="crm-lookup-weight-unit">kg</span>
+          </span>
+          <button
+            type="button"
+            className="crm-lookup-add"
+            onClick={() => void guardar()}
+            disabled={guardando}
+            aria-label={`Guardar peso de ${product.name}`}
+          >
+            Guardar
+          </button>
+        </div>
+        {error && (
+          <p className="crm-lookup-weight-error" role="alert">
+            {error}
+          </p>
+        )}
+      </div>
+    );
+  }
+
+  return (
+    <div className="crm-lookup-weight">
+      <span className="crm-lookup-weight-text" data-empty={faltaPeso ? "true" : undefined}>
+        {faltaPeso ? "Sin peso" : `Peso ${pesoLegible(product.weightKg as number)} kg`}
+      </span>
+      {puedeEditar && (
+        <button
+          type="button"
+          className="crm-lookup-weight-btn"
+          onClick={abrir}
+          aria-label={`${faltaPeso ? "Cargar" : "Editar"} peso de ${product.name}`}
+        >
+          {faltaPeso ? "Cargar peso" : "Editar"}
+        </button>
+      )}
+    </div>
+  );
+}
+
+export function InventoryLookup({ bcvRate, onAdd, addDisabled = false, puedeEditarPeso = true }: InventoryLookupProps) {
   const [text, setText] = useState("");
   const [state, setState] = useState<LookupState>({ status: "idle" });
 
@@ -176,6 +345,16 @@ export function InventoryLookup({ bcvRate, onAdd, addDisabled = false }: Invento
     inputRef.current?.focus();
   }
 
+  // El producto releído tras guardar un peso reemplaza al de la lista (misma
+  // posición): así el estándar y «+ Estándar» se recalculan sin buscar de nuevo.
+  function reemplazarProducto(fresco: Product) {
+    setState((actual) =>
+      actual.status === "ok"
+        ? { ...actual, products: actual.products.map((p) => (p.id === fresco.id ? fresco : p)) }
+        : actual
+    );
+  }
+
   const rate = bcvRate?.rate ?? 0;
 
   return (
@@ -244,6 +423,11 @@ export function InventoryLookup({ bcvRate, onAdd, addDisabled = false }: Invento
                     )}
                     <StockPill quantity={product.stockQuantity} />
                   </div>
+                  <PesoDelResultado
+                    product={product}
+                    puedeEditar={puedeEditarPeso}
+                    onGuardado={reemplazarProducto}
+                  />
                   <div className="crm-lookup-item-actions">
                     <div className="crm-lookup-prices">
                       <div className="crm-lookup-item-price" data-kind="promo">

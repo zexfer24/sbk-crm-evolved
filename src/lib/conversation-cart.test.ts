@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { ConversationCartItem, Product } from "@/lib/types";
+import { OPCIONES_COPIA_INICIALES, type OpcionesCopia } from "@/lib/copia-carrito";
 import {
   cartSummaryText,
   cartToSaleLines,
@@ -282,24 +283,29 @@ describe("cartToSaleLines — lo que recibe closeSaleWithContactInfo", () => {
 
 // T4 del plan "Ronda del cliente" (30/9/2026): el resumen que el asesor copia
 // o deja en el composer para mandarle al cliente lo que lleva.
+// 21/10/2026, "Presupuestos y mensajes rápidos" (T3): el rótulo es siempre
+// «Precio» (el cliente pidió que NO diga «incluye envío»), el total en
+// bolívares sale por defecto y cada parte se puede apagar con las casillas.
 describe("cartSummaryText — el resumen del carrito para el cliente", () => {
-  function resumen(items: ConversationCartItem[], rate = 40) {
+  function resumen(items: ConversationCartItem[], rate = 40, opciones?: OpcionesCopia) {
     const lines = priceCartLines(items, rate);
-    return cartSummaryText(lines, cartTotals(lines));
+    return cartSummaryText(lines, cartTotals(lines), opciones);
   }
 
-  it("un producto: nombre, SKU, precio y total", () => {
+  function sin(...claves: (keyof OpcionesCopia)[]): OpcionesCopia {
+    const opciones = { ...OPCIONES_COPIA_INICIALES };
+    for (const clave of claves) opciones[clave] = false;
+    return opciones;
+  }
+
+  const DOS_PRODUCTOS = [
+    item({ id: "a", product: product({ id: "p1", name: "Caucho 90/90-18 Kenda", price: 25, saintCode: "12345" }), quantity: 1 }),
+    item({ id: "b", product: product({ id: "p2", name: "Casco LS2 FF353", price: 40, saintCode: "67890" }), quantity: 2 }),
+  ];
+
+  it("un producto: nombre, SKU, precio, total y total en bolívares", () => {
     const text = resumen([
       item({ product: product({ name: "Caucho 90/90-18 Kenda", price: 25, saintCode: "12345" }), quantity: 1 }),
-    ]);
-
-    expect(text).toBe(["Caucho 90/90-18 Kenda", "SKU: 12345", "Precio: $25.00", "", "Total: $25.00"].join("\n"));
-  });
-
-  it("dos productos y cantidad 2: el nombre lleva (x2), el precio c/u y el subtotal, y un renglón en blanco separa los bloques", () => {
-    const text = resumen([
-      item({ id: "a", product: product({ id: "p1", name: "Caucho 90/90-18 Kenda", price: 25, saintCode: "12345" }), quantity: 1 }),
-      item({ id: "b", product: product({ id: "p2", name: "Casco LS2 FF353", price: 40, saintCode: "67890" }), quantity: 2 }),
     ]);
 
     expect(text).toBe(
@@ -308,13 +314,29 @@ describe("cartSummaryText — el resumen del carrito para el cliente", () => {
         "SKU: 12345",
         "Precio: $25.00",
         "",
-        "Casco LS2 FF353 (x2)",
-        "SKU: 67890",
-        "Precio: $40.00 c/u · $80.00",
-        "",
-        "Total: $105.00",
+        "Total: $25.00",
+        "Total en bolívares: Bs. 1.000,00",
       ].join("\n")
     );
+  });
+
+  it("con todas las casillas, el texto es el de siempre más la línea de bolívares", () => {
+    // El literal de antes de T3 (sin bolívares) es el mismo con `totalBs` apagado.
+    const sinBs = [
+      "Caucho 90/90-18 Kenda",
+      "SKU: 12345",
+      "Precio: $25.00",
+      "",
+      "Casco LS2 FF353 (x2)",
+      "SKU: 67890",
+      "Precio: $40.00 c/u · $80.00",
+      "",
+      "Total: $105.00",
+    ].join("\n");
+
+    expect(resumen(DOS_PRODUCTOS, 40, sin("totalBs"))).toBe(sinBs);
+    expect(resumen(DOS_PRODUCTOS)).toBe(`${sinBs}\nTotal en bolívares: Bs. 4.200,00`);
+    expect(resumen(DOS_PRODUCTOS, 40, OPCIONES_COPIA_INICIALES)).toBe(resumen(DOS_PRODUCTOS));
   });
 
   it("un producto sin código Saint dice «sin código»", () => {
@@ -329,6 +351,7 @@ describe("cartSummaryText — el resumen del carrito para el cliente", () => {
 
     expect(text).toContain("Precio: $2.60");
     expect(text).toContain("Total: $2.60");
+    expect(text).toContain("Total en bolívares: Bs. 101,00");
   });
 
   it("si algún renglón no tiene precio en dólares, no hay resumen (no se manda un total falso)", () => {
@@ -347,21 +370,24 @@ describe("cartSummaryText — el resumen del carrito para el cliente", () => {
     expect(resumen([])).toBeNull();
   });
 
-  it("un renglón estándar dice que el precio incluye el envío", () => {
-    const text = resumen([
-      item({
-        product: product({ name: "Caucho 90/90-18 Kenda", price: 25, saintCode: "12345", shippingFeeUsd: 2.5 }),
-        priceKind: "estandar",
-        quantity: 1,
-      }),
-    ]);
-
-    expect(text).toBe(
-      ["Caucho 90/90-18 Kenda", "SKU: 12345", "Precio (incluye envío): $27.50", "", "Total: $27.50"].join("\n")
+  it("un renglón estándar ya NO dice «incluye envío»: el rótulo es siempre «Precio»", () => {
+    const text = resumen(
+      [
+        item({
+          product: product({ name: "Caucho 90/90-18 Kenda", price: 25, saintCode: "12345", shippingFeeUsd: 2.5 }),
+          priceKind: "estandar",
+          quantity: 1,
+        }),
+      ],
+      40,
+      sin("totalBs")
     );
+
+    expect(text).not.toContain("incluye envío");
+    expect(text).toBe(["Caucho 90/90-18 Kenda", "SKU: 12345", "Precio: $27.50", "", "Total: $27.50"].join("\n"));
   });
 
-  it("estándar con cantidad 2: c/u y subtotal, y el de promoción no cambia", () => {
+  it("estándar con cantidad 2: c/u y subtotal, sin la frase del envío en ningún renglón", () => {
     const text = resumen([
       item({
         id: "a",
@@ -372,11 +398,117 @@ describe("cartSummaryText — el resumen del carrito para el cliente", () => {
       item({ id: "b", product: product({ id: "p2", name: "Guante", price: 10, saintCode: "2" }), quantity: 1 }),
     ]);
 
-    expect(text).toContain("Precio (incluye envío): $45.00 c/u · $90.00");
+    expect(text).not.toContain("incluye envío");
+    expect(text).toContain("Precio: $45.00 c/u · $90.00");
     expect(text).toContain("Precio: $10.00");
   });
 
   it("un renglón estándar sin tarifa deja el carrito sin resumen", () => {
     expect(resumen([item({ priceKind: "estandar" })])).toBeNull();
+  });
+
+  describe("casillas de qué incluir", () => {
+    it("sin código: desaparece la línea SKU de todos los renglones", () => {
+      const text = resumen(DOS_PRODUCTOS, 40, sin("codigo", "totalBs")) as string;
+
+      expect(text).not.toContain("SKU");
+      expect(text).toBe(
+        [
+          "Caucho 90/90-18 Kenda",
+          "Precio: $25.00",
+          "",
+          "Casco LS2 FF353 (x2)",
+          "Precio: $40.00 c/u · $80.00",
+          "",
+          "Total: $105.00",
+        ].join("\n")
+      );
+    });
+
+    it("sin cantidad: el nombre no lleva (xN), pero el precio sigue diciendo c/u y subtotal", () => {
+      const text = resumen(DOS_PRODUCTOS, 40, sin("cantidad", "totalBs")) as string;
+
+      expect(text).not.toContain("(x2)");
+      expect(text).toContain("Casco LS2 FF353\nSKU: 67890\nPrecio: $40.00 c/u · $80.00");
+    });
+
+    it("solo subtotal: una sola cifra por renglón, también con cantidad 1", () => {
+      const text = resumen(DOS_PRODUCTOS, 40, sin("precioUnitario", "totalBs")) as string;
+
+      expect(text).toContain("Caucho 90/90-18 Kenda\nSKU: 12345\nPrecio: $25.00");
+      expect(text).toContain("Casco LS2 FF353 (x2)\nSKU: 67890\nPrecio: $80.00");
+      expect(text).not.toContain("c/u");
+    });
+
+    it("solo precio unitario: con cantidad 2 dice «c/u» sin subtotal; con cantidad 1 la cifra sola", () => {
+      const text = resumen(DOS_PRODUCTOS, 40, sin("subtotal", "totalBs")) as string;
+
+      expect(text).toContain("Precio: $25.00\n");
+      expect(text).toContain("Precio: $40.00 c/u\n");
+      expect(text).not.toContain("$80.00");
+    });
+
+    it("sin precio unitario ni subtotal: el renglón no lleva línea de precio", () => {
+      const text = resumen(DOS_PRODUCTOS, 40, sin("precioUnitario", "subtotal", "totalBs")) as string;
+
+      expect(text).not.toContain("Precio:");
+      expect(text).toContain("Caucho 90/90-18 Kenda\nSKU: 12345\n\nCasco LS2 FF353 (x2)");
+    });
+
+    it("sin total en dólares ni en bolívares: el texto termina en el último renglón", () => {
+      const text = resumen(DOS_PRODUCTOS, 40, sin("totalUsd", "totalBs")) as string;
+
+      expect(text).not.toContain("Total");
+      expect(text.endsWith("Precio: $40.00 c/u · $80.00")).toBe(true);
+    });
+
+    it("con y sin bolívares: la línea va pegada a la del total", () => {
+      const con = resumen(DOS_PRODUCTOS) as string;
+      expect(con.endsWith("Total: $105.00\nTotal en bolívares: Bs. 4.200,00")).toBe(true);
+
+      const sinBs = resumen(DOS_PRODUCTOS, 40, sin("totalBs")) as string;
+      expect(sinBs).not.toContain("bolívares");
+    });
+
+    it("solo total en bolívares: sale esa línea sola, sin «Total:»", () => {
+      const text = resumen(DOS_PRODUCTOS, 40, sin("totalUsd")) as string;
+
+      expect(text.endsWith("\n\nTotal en bolívares: Bs. 4.200,00")).toBe(true);
+      expect(text).not.toContain("Total: $");
+    });
+
+    it("sin tasa (bolívares nulos) la línea de bolívares se omite sin anular el resumen", () => {
+      const text = resumen([item({ quantity: 1 })], 0) as string;
+
+      expect(text).toContain("Total: $20.00");
+      expect(text).not.toContain("bolívares");
+    });
+
+    it("todas las casillas de precio apagadas: la lista de nombres sale aunque falte el precio de un renglón", () => {
+      const items = [
+        item({ id: "a", product: product({ id: "p1", name: "Caucho" }) }),
+        item({ id: "b", product: product({ id: "p2", name: "Casco", currency: "VES", price: 101 }), quantity: 2 }),
+      ];
+      const opciones = sin("precioUnitario", "subtotal", "totalUsd", "totalBs");
+
+      // Sin tasa, el segundo renglón no tiene precio en dólares.
+      expect(resumen(items, 0, opciones)).toBe(
+        ["Caucho", "SKU: sin código", "", "Casco (x2)", "SKU: sin código"].join("\n")
+      );
+    });
+
+    it.each(["precioUnitario", "subtotal", "totalUsd", "totalBs"] as const)(
+      "con «%s» encendida y un renglón sin precio, no hay resumen",
+      (clave) => {
+        const items = [item({ id: "b", product: product({ id: "p2", currency: "VES", price: 101 }) })];
+        const todasApagadas = sin("precioUnitario", "subtotal", "totalUsd", "totalBs");
+
+        expect(resumen(items, 0, { ...todasApagadas, [clave]: true })).toBeNull();
+      }
+    );
+
+    it("un carrito vacío sigue sin resumen con cualquier combinación", () => {
+      expect(resumen([], 40, sin("precioUnitario", "subtotal", "totalUsd", "totalBs"))).toBeNull();
+    });
   });
 });

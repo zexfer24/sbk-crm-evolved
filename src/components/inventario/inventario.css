@@ -773,6 +773,84 @@
   color: var(--lm-wait-ink, var(--lm-muted));
 }
 
+/* 21/10/2026 ("Presupuestos y mensajes rápidos", T4). Título con el chip del
+   presupuesto abierto, interruptor del precio estándar, marca por renglón y
+   vista previa de lo que se copia. */
+.inv-carrito-titulo {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+
+.inv-carrito-activo {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 8px;
+}
+
+.inv-carrito-chip {
+  max-width: 100%;
+  overflow: hidden;
+  padding: 2px 10px;
+  border: 1px solid var(--lm-line);
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--lm-ink);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.inv-carrito-activo-nota {
+  font-size: 11.5px;
+  color: var(--lm-muted);
+}
+
+.inv-carrito-estandar {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 12px;
+  border: 1px solid var(--lm-line);
+  border-radius: 12px;
+}
+
+.inv-carrito-marca {
+  margin-left: 6px;
+  padding: 1px 6px;
+  border: 1px solid var(--lm-line);
+  border-radius: 999px;
+  font-size: 10.5px;
+  font-weight: 600;
+  color: var(--lm-ink-soft);
+}
+
+.inv-carrito-copia {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 12px;
+  border: 1px solid var(--lm-line);
+  border-radius: 12px;
+}
+
+.inv-carrito-previa {
+  max-height: 220px;
+  margin: 0;
+  overflow: auto;
+  padding: 10px 12px;
+  border-radius: 8px;
+  background: var(--lm-sunken);
+  font: inherit;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--lm-ink);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
 /* Pie: lo único que no se desplaza. Con Cashea puede crecer; se acota para que
    la lista siga teniendo sitio y el pie desplaza por dentro si hace falta. */
 .drawer__footer.inv-carrito-pie {

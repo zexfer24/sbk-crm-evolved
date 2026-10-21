@@ -4,6 +4,8 @@ import { act, render, screen, fireEvent } from "@testing-library/react";
 import { InventoryLookup } from "@/components/context-panel/inventory-lookup";
 import type { Product } from "@/lib/types";
 import type { BcvRateSummary } from "@/components/inbox/bcv-rate-chip";
+import { ConfigWriteDeniedError } from "@/lib/config-write";
+import { toast } from "@heroui/react";
 
 /**
  * T6, plan "El mostrador busca sin salir del chat" (27/9/2026, D5).
@@ -15,9 +17,24 @@ import type { BcvRateSummary } from "@/components/inbox/bcv-rate-chip";
  */
 
 const searchProductsForLookup = vi.fn();
+const fetchProduct = vi.fn();
 vi.mock("@/lib/inventory-data", () => ({
   searchProductsForLookup: (...args: unknown[]) => searchProductsForLookup(...args),
+  fetchProduct: (...args: unknown[]) => fetchProduct(...args),
 }));
+
+// 21/10/2026 (plan "Presupuestos y mensajes rápidos", T6): el peso se edita
+// desde la búsqueda. `config-write` NO se mockea: el mensaje de un permiso
+// denegado tiene que salir del módulo real.
+const updateProductWeight = vi.fn();
+vi.mock("@/lib/mutations", () => ({
+  updateProductWeight: (...args: unknown[]) => updateProductWeight(...args),
+}));
+
+vi.mock("@heroui/react", async (importOriginal) => {
+  const real = await importOriginal<typeof import("@heroui/react")>();
+  return { ...real, toast: { success: vi.fn(), danger: vi.fn(), warning: vi.fn(), info: vi.fn() } };
+});
 
 vi.mock("@/lib/supabase/client", () => ({ createClient: vi.fn(() => ({})) }));
 
@@ -46,6 +63,11 @@ const RATE: BcvRateSummary = { rate: 40, rateDate: "2026-09-27", isStale: false 
 
 beforeEach(() => {
   searchProductsForLookup.mockReset();
+  fetchProduct.mockReset();
+  updateProductWeight.mockReset();
+  updateProductWeight.mockResolvedValue(undefined);
+  vi.mocked(toast.success).mockClear();
+  vi.mocked(toast.danger).mockClear();
   vi.useFakeTimers();
 });
 
@@ -619,6 +641,250 @@ describe("InventoryLookup", () => {
       expect(screen.getByLabelText("Precio promoción de Bujía CR7HSA")).toHaveTextContent("Bs. 87.00");
       expect(screen.getByLabelText("Precio estándar de Bujía CR7HSA")).toHaveTextContent("Bs. 87.00");
       expect(screen.getByText("+ $ 1.40 envío")).toBeInTheDocument();
+    });
+  });
+
+  /**
+   * 21/10/2026 (plan "Presupuestos y mensajes rápidos", T6): el peso se ve y se
+   * carga desde el chat. Sin peso no hay precio estándar, y el asesor que lo
+   * ve faltar tiene que poder arreglarlo sin salir a Inventario. Al guardar se
+   * relee el producto: la tarifa MRW la calcula la base.
+   */
+  describe("peso editable", () => {
+    async function buscarUno(p: Product, props: Partial<React.ComponentProps<typeof InventoryLookup>> = {}) {
+      searchProductsForLookup.mockResolvedValue([p]);
+      render(<InventoryLookup bcvRate={RATE} onAdd={vi.fn()} {...props} />);
+      type("bujia");
+      flush();
+      await flushPromises();
+    }
+
+    async function guardarConEnter(valor: string) {
+      const campo = screen.getByLabelText("Peso en kg de Bujía CR7HSA");
+      fireEvent.change(campo, { target: { value: valor } });
+      fireEvent.keyDown(campo, { key: "Enter" });
+      await flushPromises();
+      await flushPromises();
+    }
+
+    it("con peso muestra «Peso 3,2 kg» y el botón «Editar»", async () => {
+      await buscarUno(product({ weightKg: 3.2 }));
+
+      expect(screen.getByText("Peso 3,2 kg")).toBeInTheDocument();
+      expect(screen.getByRole("button", { name: "Editar peso de Bujía CR7HSA" })).toHaveTextContent("Editar");
+    });
+
+    it("sin peso muestra «Sin peso» y el botón «Cargar peso»", async () => {
+      await buscarUno(product({ weightKg: null }));
+
+      expect(screen.getByText("Sin peso")).toBeInTheDocument();
+      expect(screen.getByRole("button", { name: "Cargar peso de Bujía CR7HSA" })).toHaveTextContent("Cargar peso");
+    });
+
+    it("un peso en 0 también cuenta como sin cargar", async () => {
+      await buscarUno(product({ weightKg: 0 }));
+
+      expect(screen.getByText("Sin peso")).toBeInTheDocument();
+    });
+
+    it("«Cargar peso» abre el campo con sufijo kg y el botón «Guardar»", async () => {
+      await buscarUno(product({ weightKg: null }));
+
+      fireEvent.click(screen.getByRole("button", { name: "Cargar peso de Bujía CR7HSA" }));
+
+      const campo = screen.getByLabelText("Peso en kg de Bujía CR7HSA");
+      expect(campo).toHaveAttribute("inputmode", "decimal");
+      expect(campo).toHaveValue("");
+      expect(screen.getByText("kg")).toBeInTheDocument();
+      expect(screen.getByRole("button", { name: "Guardar peso de Bujía CR7HSA" })).toHaveTextContent("Guardar");
+    });
+
+    it("«Editar» abre el campo con el peso actual", async () => {
+      await buscarUno(product({ weightKg: 3.2 }));
+
+      fireEvent.click(screen.getByRole("button", { name: "Editar peso de Bujía CR7HSA" }));
+
+      expect(screen.getByLabelText("Peso en kg de Bujía CR7HSA")).toHaveValue("3.200");
+    });
+
+    it("«1,8» + Enter guarda, relee el producto y habilita «+ Estándar» con el precio nuevo", async () => {
+      await buscarUno(product({ weightKg: null, shippingFeeUsd: null }));
+      expect(screen.getByRole("button", { name: "Agregar Bujía CR7HSA a precio estándar" })).toBeDisabled();
+      fetchProduct.mockResolvedValue(product({ weightKg: 1.8, shippingFeeUsd: 1.4 }));
+
+      fireEvent.click(screen.getByRole("button", { name: "Cargar peso de Bujía CR7HSA" }));
+      await guardarConEnter("1,8");
+
+      expect(updateProductWeight).toHaveBeenCalledTimes(1);
+      expect(updateProductWeight).toHaveBeenCalledWith(expect.anything(), "prod-1", 1.8);
+      expect(fetchProduct).toHaveBeenCalledWith(expect.anything(), "prod-1");
+      // La escritura va antes que la relectura.
+      expect(updateProductWeight.mock.invocationCallOrder[0]).toBeLessThan(fetchProduct.mock.invocationCallOrder[0]);
+      expect(toast.success).toHaveBeenCalledWith("Peso guardado");
+      // El producto releído reemplazó al de la lista: peso, estándar y botón.
+      expect(screen.getByText("Peso 1,8 kg")).toBeInTheDocument();
+      expect(screen.getByLabelText("Precio estándar de Bujía CR7HSA")).toHaveTextContent("Bs. 143.00");
+      expect(screen.getByRole("button", { name: "Agregar Bujía CR7HSA a precio estándar" })).toBeEnabled();
+      // El campo se cierra.
+      expect(screen.queryByLabelText("Peso en kg de Bujía CR7HSA")).not.toBeInTheDocument();
+    });
+
+    it("el botón «Guardar» hace lo mismo que Enter", async () => {
+      await buscarUno(product({ weightKg: null }));
+      fetchProduct.mockResolvedValue(product({ weightKg: 2, shippingFeeUsd: 2 }));
+      fireEvent.click(screen.getByRole("button", { name: "Cargar peso de Bujía CR7HSA" }));
+      fireEvent.change(screen.getByLabelText("Peso en kg de Bujía CR7HSA"), { target: { value: "2" } });
+
+      fireEvent.click(screen.getByRole("button", { name: "Guardar peso de Bujía CR7HSA" }));
+      await flushPromises();
+      await flushPromises();
+
+      expect(updateProductWeight).toHaveBeenCalledWith(expect.anything(), "prod-1", 2);
+    });
+
+    it("un campo vacío es válido: quita el peso (null)", async () => {
+      await buscarUno(product({ weightKg: 3.2 }));
+      fetchProduct.mockResolvedValue(product({ weightKg: null, shippingFeeUsd: null }));
+      fireEvent.click(screen.getByRole("button", { name: "Editar peso de Bujía CR7HSA" }));
+
+      await guardarConEnter("");
+
+      expect(updateProductWeight).toHaveBeenCalledWith(expect.anything(), "prod-1", null);
+      expect(screen.getByText("Sin peso")).toBeInTheDocument();
+    });
+
+    it("un valor inválido muestra el error bajo el campo y no llama a la base", async () => {
+      await buscarUno(product({ weightKg: null }));
+      fireEvent.click(screen.getByRole("button", { name: "Cargar peso de Bujía CR7HSA" }));
+
+      await guardarConEnter("abc");
+
+      expect(updateProductWeight).not.toHaveBeenCalled();
+      expect(fetchProduct).not.toHaveBeenCalled();
+      expect(screen.getByRole("alert")).toHaveTextContent("Usa un peso positivo en kilos, con hasta tres decimales.");
+      // El campo sigue abierto para corregir.
+      expect(screen.getByLabelText("Peso en kg de Bujía CR7HSA")).toBeInTheDocument();
+    });
+
+    it("escribir de nuevo borra el error", async () => {
+      await buscarUno(product({ weightKg: null }));
+      fireEvent.click(screen.getByRole("button", { name: "Cargar peso de Bujía CR7HSA" }));
+      await guardarConEnter("abc");
+
+      fireEvent.change(screen.getByLabelText("Peso en kg de Bujía CR7HSA"), { target: { value: "1" } });
+
+      expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    });
+
+    it("Escape cancela: cierra el campo sin guardar ni cambiar el peso", async () => {
+      await buscarUno(product({ weightKg: 3.2 }));
+      fireEvent.click(screen.getByRole("button", { name: "Editar peso de Bujía CR7HSA" }));
+      const campo = screen.getByLabelText("Peso en kg de Bujía CR7HSA");
+      fireEvent.change(campo, { target: { value: "9" } });
+
+      fireEvent.keyDown(campo, { key: "Escape" });
+
+      expect(screen.queryByLabelText("Peso en kg de Bujía CR7HSA")).not.toBeInTheDocument();
+      expect(updateProductWeight).not.toHaveBeenCalled();
+      expect(screen.getByText("Peso 3,2 kg")).toBeInTheDocument();
+    });
+
+    it("si la base falla el campo sigue abierto con lo escrito y sale el toast genérico", async () => {
+      await buscarUno(product({ weightKg: null }));
+      updateProductWeight.mockRejectedValue(new Error("red"));
+      fireEvent.click(screen.getByRole("button", { name: "Cargar peso de Bujía CR7HSA" }));
+
+      await guardarConEnter("1,8");
+
+      expect(toast.danger).toHaveBeenCalledWith("No se pudo guardar el peso.");
+      expect(toast.success).not.toHaveBeenCalled();
+      expect(fetchProduct).not.toHaveBeenCalled();
+      expect(screen.getByLabelText("Peso en kg de Bujía CR7HSA")).toHaveValue("1,8");
+      expect(screen.queryByText("Peso 1,8 kg")).not.toBeInTheDocument();
+    });
+
+    it("si la RLS ignoró la escritura el toast dice quién puede hacerlo", async () => {
+      await buscarUno(product({ weightKg: null }));
+      updateProductWeight.mockRejectedValue(
+        new ConfigWriteDeniedError("Solo un supervisor o administrador puede cambiar esto.")
+      );
+      fireEvent.click(screen.getByRole("button", { name: "Cargar peso de Bujía CR7HSA" }));
+
+      await guardarConEnter("1");
+
+      expect(toast.danger).toHaveBeenCalledWith("Solo un supervisor o administrador puede cambiar esto.");
+    });
+
+    it("si el peso se guardó pero la relectura falla, el peso nuevo se ve sin inventar un estándar viejo", async () => {
+      await buscarUno(product({ weightKg: 5, shippingFeeUsd: 3 }));
+      fetchProduct.mockRejectedValue(new Error("red"));
+      fireEvent.click(screen.getByRole("button", { name: "Editar peso de Bujía CR7HSA" }));
+
+      await guardarConEnter("1,8");
+
+      expect(toast.success).toHaveBeenCalledWith("Peso guardado");
+      expect(screen.getByText("Peso 1,8 kg")).toBeInTheDocument();
+      // La tarifa vieja era la del peso anterior: no se pinta como estándar.
+      expect(screen.queryByLabelText("Precio estándar de Bujía CR7HSA")).not.toBeInTheDocument();
+    });
+
+    it("mientras guarda, el botón queda deshabilitado y no se guarda dos veces", async () => {
+      await buscarUno(product({ weightKg: null }));
+      let terminar: () => void = () => {};
+      updateProductWeight.mockImplementation(() => new Promise<void>((resolve) => (terminar = resolve)));
+      fetchProduct.mockResolvedValue(product({ weightKg: 1.8, shippingFeeUsd: 1.4 }));
+      fireEvent.click(screen.getByRole("button", { name: "Cargar peso de Bujía CR7HSA" }));
+      fireEvent.change(screen.getByLabelText("Peso en kg de Bujía CR7HSA"), { target: { value: "1,8" } });
+
+      fireEvent.click(screen.getByRole("button", { name: "Guardar peso de Bujía CR7HSA" }));
+      await flushPromises();
+      expect(screen.getByRole("button", { name: "Guardar peso de Bujía CR7HSA" })).toBeDisabled();
+      fireEvent.keyDown(screen.getByLabelText("Peso en kg de Bujía CR7HSA"), { key: "Enter" });
+      expect(updateProductWeight).toHaveBeenCalledTimes(1);
+
+      await act(async () => {
+        terminar();
+      });
+      await flushPromises();
+      await flushPromises();
+      expect(screen.getByText("Peso 1,8 kg")).toBeInTheDocument();
+    });
+
+    it("con puedeEditarPeso={false} no hay botón para cargar ni editar, pero el peso se sigue viendo", async () => {
+      await buscarUno(product({ weightKg: 3.2 }), { puedeEditarPeso: false });
+
+      expect(screen.getByText("Peso 3,2 kg")).toBeInTheDocument();
+      expect(screen.queryByRole("button", { name: /peso de/i })).not.toBeInTheDocument();
+    });
+
+    it("con puedeEditarPeso={false} y sin peso solo dice «Sin peso»", async () => {
+      await buscarUno(product({ weightKg: null }), { puedeEditarPeso: false });
+
+      expect(screen.getByText("Sin peso")).toBeInTheDocument();
+      expect(screen.queryByRole("button", { name: /cargar peso/i })).not.toBeInTheDocument();
+    });
+
+    it("cada resultado edita su propio peso: guardar uno no toca a los demás", async () => {
+      searchProductsForLookup.mockResolvedValue([
+        product({ id: "a", name: "Bujía A", weightKg: null }),
+        product({ id: "b", name: "Bujía B", weightKg: 4 }),
+      ]);
+      render(<InventoryLookup bcvRate={RATE} onAdd={vi.fn()} />);
+      type("bujia");
+      flush();
+      await flushPromises();
+      fetchProduct.mockResolvedValue(product({ id: "a", name: "Bujía A", weightKg: 1, shippingFeeUsd: 1 }));
+
+      fireEvent.click(screen.getByRole("button", { name: "Cargar peso de Bujía A" }));
+      const campo = screen.getByLabelText("Peso en kg de Bujía A");
+      fireEvent.change(campo, { target: { value: "1" } });
+      fireEvent.keyDown(campo, { key: "Enter" });
+      await flushPromises();
+      await flushPromises();
+
+      expect(updateProductWeight).toHaveBeenCalledWith(expect.anything(), "a", 1);
+      expect(screen.getByText("Peso 1 kg")).toBeInTheDocument();
+      expect(screen.getByText("Peso 4 kg")).toBeInTheDocument();
     });
   });
 });

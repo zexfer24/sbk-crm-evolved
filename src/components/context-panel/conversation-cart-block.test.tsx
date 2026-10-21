@@ -1,7 +1,8 @@
 /** @vitest-environment jsdom */
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import { toast } from "@heroui/react";
 import { ConversationCartBlock } from "@/components/context-panel/conversation-cart-block";
 import type { CartActions } from "@/components/context-panel/use-cart-actions";
 import type { ConversationCartItem, Product } from "@/lib/types";
@@ -12,6 +13,28 @@ import type { ConversationCartItem, Product } from "@/lib/types";
 vi.mock("@heroui/react", async (importOriginal) => {
   const real = await importOriginal<typeof import("@heroui/react")>();
   return { ...real, toast: { success: vi.fn(), danger: vi.fn(), warning: vi.fn() } };
+});
+
+// 21/10/2026 (plan "Presupuestos y mensajes rápidos", T6): el bloque guarda el
+// carrito como presupuesto y lista los del cliente. Supabase y las lecturas/
+// escrituras de presupuestos se mockean; `PresupuestosCliente` se prueba aparte.
+const guardarPresupuesto = vi.fn();
+const fetchPresupuestos = vi.fn();
+vi.mock("@/lib/presupuestos-data", () => ({
+  guardarPresupuesto: (...args: unknown[]) => guardarPresupuesto(...args),
+  fetchPresupuestos: (...args: unknown[]) => fetchPresupuestos(...args),
+}));
+vi.mock("@/lib/supabase/client", () => ({ createClient: vi.fn(() => ({ marca: "cliente" })) }));
+vi.mock("@/lib/mutations", () => ({ addToCart: vi.fn() }));
+
+beforeEach(() => {
+  guardarPresupuesto.mockReset();
+  guardarPresupuesto.mockResolvedValue("pres-nuevo");
+  fetchPresupuestos.mockReset();
+  fetchPresupuestos.mockResolvedValue([]);
+  window.localStorage.clear();
+  vi.mocked(toast.success).mockClear();
+  vi.mocked(toast.danger).mockClear();
 });
 
 // ---------------------------------------------------------------------------
@@ -80,7 +103,17 @@ function setup(cart: ConversationCartItem[], actions = makeActions(), bcvRate = 
   const user = userEvent.setup({ delay: null, pointerEventsCheck: 0 });
   const onSendToComposer = vi.fn();
   render(
-    <ConversationCartBlock cart={cart} bcvRate={bcvRate} actions={actions} onSendToComposer={onSendToComposer} />
+    <ConversationCartBlock
+      cart={cart}
+      bcvRate={bcvRate}
+      actions={actions}
+      onSendToComposer={onSendToComposer}
+      agentId="agent-1"
+      conversationId="conv-1"
+      contactId="contact-1"
+      contactDisplayName="María José Pérez"
+      onCartChanged={vi.fn()}
+    />
   );
   return { user, actions, onSendToComposer };
 }
@@ -242,7 +275,15 @@ describe("ConversationCartBlock — con renglones", () => {
 // el total. El texto exacto lo cubre `cartSummaryText` en su propio test; acá
 // se prueba que los botones lo usan tal cual y cuándo existen.
 describe("ConversationCartBlock — copiar y enviar al chat", () => {
-  const TEXTO = ["Carburador PZ27", "SKU: A-100", "Precio: $20.00", "", "Total: $20.00"].join("\n");
+  // 21/10/2026 (T3): el resumen trae por defecto el total en bolívares ($20 x 40 = Bs. 800,00).
+  const TEXTO = [
+    "Carburador PZ27",
+    "SKU: A-100",
+    "Precio: $20.00",
+    "",
+    "Total: $20.00",
+    "Total en bolívares: Bs. 800,00",
+  ].join("\n");
   const renglon = () => item({ quantity: 1, product: product({ saintCode: "A-100" }) });
 
   it("con el carrito vacío no existen ni «Copiar» ni «Enviar al chat»", () => {
@@ -386,14 +427,19 @@ describe("ConversationCartBlock — precio de promoción o estándar por rengló
     expect(actions.setPriceKind).toHaveBeenCalledWith("cart-1", "promocion");
   });
 
-  it("el resumen para el cliente dice que el precio estándar incluye el envío", async () => {
+  // 21/10/2026: INVERTIDO. Antes el resumen decía «Precio (incluye envío)»; el
+  // cliente pidió que el texto que se manda NO diga «incluye envío» (el precio
+  // estándar ya lo lleva sumado) y el rótulo es siempre «Precio».
+  it("el resumen para el cliente NO dice «incluye envío» aunque el renglón sea estándar", async () => {
     const { user, onSendToComposer } = setup([
       item({ quantity: 1, priceKind: "estandar", product: product({ price: 25, saintCode: "A-1", shippingFeeUsd: 2.5 }) }),
     ]);
 
     await user.click(screen.getByRole("button", { name: /enviar al chat/i }));
 
-    expect(onSendToComposer).toHaveBeenCalledWith(expect.stringContaining("Precio (incluye envío): $27.50"));
+    const texto = onSendToComposer.mock.calls[0][0] as string;
+    expect(texto).toContain("Precio: $27.50");
+    expect(texto).not.toMatch(/incluye env[ií]o/i);
   });
 
   it("mientras hay una escritura en curso el selector se deshabilita", () => {
@@ -401,5 +447,187 @@ describe("ConversationCartBlock — precio de promoción o estándar por rengló
 
     expect(screen.getByRole("radio", { name: "Promoción" })).toBeDisabled();
     expect(screen.getByRole("radio", { name: "Estándar" })).toBeDisabled();
+  });
+});
+
+// 21/10/2026 (plan "Presupuestos y mensajes rápidos", T6): qué se copia.
+describe("ConversationCartBlock — qué copiar", () => {
+  const renglon = () => item({ quantity: 1, product: product({ saintCode: "A-100" }) });
+
+  it("las casillas empiezan plegadas detrás de «Qué copiar» (aria-expanded)", async () => {
+    const { user } = setup([renglon()]);
+    const boton = screen.getByRole("button", { name: /qué copiar/i });
+
+    expect(boton).toHaveAttribute("aria-expanded", "false");
+    expect(screen.queryByLabelText("Código")).not.toBeInTheDocument();
+
+    await user.click(boton);
+
+    expect(boton).toHaveAttribute("aria-expanded", "true");
+    expect(screen.getByLabelText("Código")).toBeChecked();
+    // El chat no calcula Cashea: la casilla no se ofrece.
+    expect(screen.queryByLabelText("Plan Cashea")).not.toBeInTheDocument();
+  });
+
+  it("desmarcar «Código» y copiar: el portapapeles no trae SKU", async () => {
+    const { user } = setup([renglon()]);
+    await user.click(screen.getByRole("button", { name: /qué copiar/i }));
+    await user.click(screen.getByLabelText("Código"));
+    const writeText = vi.spyOn(navigator.clipboard, "writeText");
+
+    await user.click(screen.getByRole("button", { name: /^copiar$/i }));
+
+    await waitFor(() => expect(writeText).toHaveBeenCalledTimes(1));
+    const texto = writeText.mock.calls[0][0];
+    expect(texto).not.toContain("SKU:");
+    expect(texto).toContain("Carburador PZ27");
+  });
+
+  it("desmarcar «Código» y enviar al chat: el texto entregado tampoco trae SKU", async () => {
+    const { user, onSendToComposer } = setup([renglon()]);
+    await user.click(screen.getByRole("button", { name: /qué copiar/i }));
+    await user.click(screen.getByLabelText("Código"));
+
+    await user.click(screen.getByRole("button", { name: /enviar al chat/i }));
+
+    expect(onSendToComposer.mock.calls[0][0]).not.toContain("SKU:");
+  });
+
+  it("la elección se recuerda por asesor: se guarda en localStorage con su id", async () => {
+    const { user } = setup([renglon()]);
+    await user.click(screen.getByRole("button", { name: /qué copiar/i }));
+    await user.click(screen.getByLabelText("Subtotal"));
+
+    const guardado = Object.entries(window.localStorage).find(([clave]) => clave.endsWith("agent-1"));
+    expect(guardado).toBeDefined();
+    expect(JSON.parse(guardado![1]).subtotal).toBe(false);
+  });
+
+  it("desmarcar el total en bolívares quita esa línea del texto", async () => {
+    const { user, onSendToComposer } = setup([renglon()]);
+    await user.click(screen.getByRole("button", { name: /qué copiar/i }));
+    await user.click(screen.getByLabelText("Total Bs"));
+
+    await user.click(screen.getByRole("button", { name: /enviar al chat/i }));
+
+    expect(onSendToComposer.mock.calls[0][0]).not.toContain("Total en bolívares");
+  });
+
+  it("con el carrito vacío no hay «Qué copiar»", () => {
+    setup([]);
+
+    expect(screen.queryByRole("button", { name: /qué copiar/i })).not.toBeInTheDocument();
+  });
+});
+
+// 21/10/2026: guardar el carrito del chat como presupuesto del cliente.
+describe("ConversationCartBlock — guardar presupuesto", () => {
+  it("sin renglones no hay botón «Guardar presupuesto»", () => {
+    setup([]);
+
+    expect(screen.queryByRole("button", { name: /guardar presupuesto/i })).not.toBeInTheDocument();
+  });
+
+  it("abre el modal con el nombre del contacto separado en nombre y apellido", async () => {
+    const { user } = setup([item()]);
+
+    await user.click(screen.getByRole("button", { name: /guardar presupuesto/i }));
+
+    expect(await screen.findByLabelText(/^Nombre/)).toHaveValue("María");
+    expect(screen.getByLabelText(/^Apellido/)).toHaveValue("José Pérez");
+    // Desde el chat siempre se crea uno nuevo: sin «Guardar cambios».
+    expect(screen.queryByRole("button", { name: /guardar cambios/i })).not.toBeInTheDocument();
+  });
+
+  it("guarda con origen «chat», contacto, conversación, id null y el tipo de precio de cada renglón", async () => {
+    const { user } = setup([
+      item({ quantity: 2, priceKind: "promocion" }),
+      item({
+        id: "cart-2",
+        productId: "prod-2",
+        product: product({ id: "prod-2", name: "Kit de arrastre", price: 25, weightKg: 2, shippingFeeUsd: 2.5 }),
+        quantity: 1,
+        priceKind: "estandar",
+      }),
+    ]);
+    await user.click(screen.getByRole("button", { name: /guardar presupuesto/i }));
+    await screen.findByLabelText(/^Nombre/);
+    fireEvent.change(screen.getByLabelText(/Nota/), { target: { value: "Paga el viernes" } });
+
+    await user.click(screen.getByRole("button", { name: "Guardar" }));
+
+    await waitFor(() => expect(guardarPresupuesto).toHaveBeenCalledTimes(1));
+    expect(guardarPresupuesto).toHaveBeenCalledWith(
+      { marca: "cliente" },
+      {
+        id: null,
+        clienteNombre: "María",
+        clienteApellido: "José Pérez",
+        contactId: "contact-1",
+        conversationId: "conv-1",
+        origen: "chat",
+        nota: "Paga el viernes",
+        items: [
+          { product_id: "prod-1", quantity: 2, price_kind: "promocion", precio_cotizado_usd: 20 },
+          { product_id: "prod-2", quantity: 1, price_kind: "estandar", precio_cotizado_usd: 27.5 },
+        ],
+      }
+    );
+    const { toast } = await import("@heroui/react");
+    await waitFor(() => expect(toast.success).toHaveBeenCalledWith("Presupuesto de María José Pérez guardado"));
+  });
+
+  it("sin nota manda nota null", async () => {
+    const { user } = setup([item()]);
+    await user.click(screen.getByRole("button", { name: /guardar presupuesto/i }));
+    await screen.findByLabelText(/^Nombre/);
+
+    await user.click(screen.getByRole("button", { name: "Guardar" }));
+
+    await waitFor(() => expect(guardarPresupuesto).toHaveBeenCalled());
+    expect(guardarPresupuesto.mock.calls[0][1].nota).toBeNull();
+  });
+
+  it("tras guardar vuelve a leer los presupuestos del cliente", async () => {
+    const { user } = setup([item()]);
+    await waitFor(() => expect(fetchPresupuestos).toHaveBeenCalledTimes(1));
+    await user.click(screen.getByRole("button", { name: /guardar presupuesto/i }));
+    await screen.findByLabelText(/^Nombre/);
+
+    await user.click(screen.getByRole("button", { name: "Guardar" }));
+
+    await waitFor(() => expect(fetchPresupuestos).toHaveBeenCalledTimes(2));
+  });
+
+  it("si guardar falla el modal sigue abierto con el motivo y no hay toast de éxito", async () => {
+    guardarPresupuesto.mockRejectedValueOnce(new Error("No se pudo guardar por la red."));
+    const { user } = setup([item()]);
+    await user.click(screen.getByRole("button", { name: /guardar presupuesto/i }));
+    await screen.findByLabelText(/^Nombre/);
+
+    await user.click(screen.getByRole("button", { name: "Guardar" }));
+
+    expect(await screen.findByText("No se pudo guardar por la red.")).toBeInTheDocument();
+    const { toast } = await import("@heroui/react");
+    expect(toast.success).not.toHaveBeenCalled();
+  });
+
+  it("con un renglón sin precio (falta la tasa) guarda igual con precio cotizado null", async () => {
+    const { user } = setup([item({ product: product({ currency: "VES", price: 101 }) })], makeActions(), 0);
+    await user.click(screen.getByRole("button", { name: /guardar presupuesto/i }));
+    await screen.findByLabelText(/^Nombre/);
+
+    await user.click(screen.getByRole("button", { name: "Guardar" }));
+
+    await waitFor(() => expect(guardarPresupuesto).toHaveBeenCalled());
+    expect(guardarPresupuesto.mock.calls[0][1].items[0].precio_cotizado_usd).toBeNull();
+  });
+});
+
+describe("ConversationCartBlock — presupuestos del cliente", () => {
+  it("monta los presupuestos del contacto aunque el carrito esté vacío", async () => {
+    setup([]);
+
+    await waitFor(() => expect(fetchPresupuestos).toHaveBeenCalledWith({ marca: "cliente" }, { contactId: "contact-1" }));
   });
 });

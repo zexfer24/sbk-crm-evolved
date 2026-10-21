@@ -59,7 +59,7 @@ function Agregador() {
 function montar() {
   const user = userEvent.setup({ delay: null, pointerEventsCheck: 0 });
   const { container } = render(
-    <InventarioCarritoProvider agentId="agente-1" bcvRate={100}>
+    <InventarioCarritoProvider agentId="agente-1" bcvRate={100} soloLectura={false} role="agent">
       <Agregador />
       <CarritoBoton />
     </InventarioCarritoProvider>,
