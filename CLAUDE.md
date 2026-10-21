@@ -3122,6 +3122,24 @@ dejar rastro es lo que hacía desaparecer leads.
   `flex-shrink: 0`; `agent-control-css.test.ts` lo fija mirando la hoja,
   porque jsdom no calcula layout.
 
+- **«Precio» a secas en el texto copiado** (21/10/2026). `cartSummaryText`
+  NUNCA dice «incluye envío», por pedido del cliente: el estándar suma el
+  envío MRW pero no lo anuncia. La descripción de la venta (`cartToSaleLines`)
+  sí lo dice a propósito, porque es la factura. No volver a ponerlo en el
+  texto que va al cliente.
+
+- **Un presupuesto guarda producto, cantidad y tipo de precio, nunca el precio
+  que se cobra** (21/10/2026, D1). Al reabrirlo se cobra el de hoy;
+  `precio_cotizado_usd` y `total_cotizado_usd` son solo referencia («cotizado
+  $X»). La caja no puede guardar un renglón estándar: la política de
+  `presupuesto_items` exige `is_agent()` para eso.
+
+- **«Más usados» cuenta envíos, no aperturas, y corta en la medianoche de
+  Caracas que calcula `useInboxDay` (`src/lib/use-inbox-day.ts`)** (21/10/2026). No recalcular
+  esa medianoche en el modal. `quick_reply_uses` no tiene `select` directo: se
+  lee SOLO por la RPC `security definer`, y un `select` como `authenticated` da
+  error de permiso, no 0 filas.
+
 ---
 
 # RTK (Rust Token Killer) - Token-Optimized Commands

@@ -3099,6 +3099,42 @@ supervisores/admins leen todas las filas de `agents`. La app descarta
 los asesores asignables (`fetchAgents`) y en el roster de Control IA; la
 pestaña Equipo sí la muestra (para renombrarla o cambiarle la clave).
 
+### Presupuestos guardados y mensajes rápidos más usados (21/10/2026)
+
+Ronda del cliente: presupuestos guardados (`presupuestos` y `presupuesto_items`),
+registro de usos de mensajes rápidos con el ranking «Más usados», el carrito de
+/inventario que cobra el estándar con un interruptor, el texto copiado sin
+«incluye envío», casillas de qué copiar, calculadora fija en /inventario, peso
+editable desde el chat, y buscador, filtro de fotos y confirmación de borrado en
+los mensajes rápidos.
+
+**Orden:** aplicar las dos migraciones ANTES del código, en este orden y cada una
+con `-1` (una transacción por archivo; sin `-1` la guarda de `lock_timeout` aborta
+con un mensaje explícito):
+
+```bash
+PGOPTIONS="-c lock_timeout=5s" psql -1 -v ON_ERROR_STOP=1 -f supabase/migrations/20261021010000_presupuestos.sql
+PGOPTIONS="-c lock_timeout=5s" psql -1 -v ON_ERROR_STOP=1 -f supabase/migrations/20261021020000_mensajes_rapidos_usos.sql
+```
+
+Sin ellas, el panel de presupuestos y la franja «Más usados» dan 400. El registro
+de usos falla en silencio y no frena ningún envío.
+
+**Verificación SQL tras aplicar:**
+
+- `select has_function_privilege('anon', 'public.quick_replies_mas_usados(timestamptz,integer,integer)', 'execute');` → `false`
+- `select relrowsecurity from pg_class where relname in ('presupuestos','presupuesto_items','quick_reply_uses');` → los tres `true`.
+
+**Verificación en la app tras el deploy:**
+
+- En /inventario, armar un carrito, encender «Cobrar precio estándar», guardar un presupuesto y verlo en «Presupuestos guardados».
+- Copiar el texto del carrito y confirmar que no dice «incluye envío».
+- En el chat, cargar un peso desde la búsqueda de Inventario.
+- En mensajes rápidos, enviar uno y comprobar que al día siguiente aparece en «Más usados».
+
+**Rol caja:** puede ver y guardar presupuestos (siempre en promoción) y usa la
+calculadora. No registra usos de mensajes rápidos, porque no tiene chat.
+
 ---
 
 ## Comprobación final
