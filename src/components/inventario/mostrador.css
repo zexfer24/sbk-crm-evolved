@@ -9,22 +9,34 @@
    `mostrador-css.test.ts`, que lee esta hoja.
    ========================================================================== */
 
-/* --- Grilla: la lista a la izquierda, la calculadora fija a la derecha ------ */
+/* --- Grilla: tres tramos ----------------------------------------------------
+   21/10/2026 (T12): la grilla de dos columnas (lista + 320px de calculadora)
+   dejaba la lista en ~920px a 1440px y el nombre del producto en ~60px:
+   «Carburador» se montaba sobre «STOCK» y el código quedaba cortado (medido con
+   Playwright). La fila mínima legible de la lista pide ~1180px de panel, así que
+   la vista en dos columnas solo cabe desde ~1720px de viewport.
+     - desde 1720px: lista + calculadora sticky en 320px a la derecha;
+     - 761 a 1719px (el valor por defecto): UNA columna, la calculadora ARRIBA como
+       barra horizontal sticky, siempre abierta, a todo el ancho;
+     - hasta 760px: plegable, con el botón «Calculadora».  */
 
 .inv-mostrador {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 320px;
-  gap: 18px;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 14px;
   align-items: start;
 }
 
-/* --- Calculadora ---------------------------------------------------------- */
+/* --- Calculadora (barra horizontal por defecto) ---------------------------- */
 
 .inv-calc {
+  order: -1;
   position: sticky;
-  top: 16px;
+  /* Por debajo del botón flotante del carrito (z-index 30) y del Drawer (z-50). */
+  top: 8px;
+  z-index: 20;
   min-width: 0;
-  padding: 18px 18px 20px;
+  padding: 12px 16px;
 }
 
 /* En ancho no hay botón: el cuerpo se ve siempre. */
@@ -42,17 +54,29 @@
   cursor: pointer;
 }
 
+/* La barra no tiene título: ahorra la altura que no le sobra. */
 .inv-calc-titulo {
+  display: none;
   margin: 0 0 12px;
   font-size: 15px;
   font-weight: 600;
   letter-spacing: -0.02em;
 }
 
+/* Tres grupos en fila: [moneda + monto + resultado] · [nivel + cuotas + bajada] ·
+   [inicial / cuota / copiar]. */
 .inv-calc-cuerpo {
+  display: grid;
+  grid-template-columns: minmax(220px, 1fr) minmax(380px, 1.7fr) minmax(300px, 1.4fr);
+  gap: 10px 20px;
+  align-items: start;
+  min-width: 0;
+}
+
+.inv-calc-grupo {
   display: flex;
   flex-direction: column;
-  gap: 12px;
+  gap: 8px;
   min-width: 0;
 }
 
@@ -127,7 +151,7 @@
   flex-direction: column;
   gap: 2px;
   margin: 0;
-  padding: 12px 14px;
+  padding: 8px 12px;
   border-radius: 10px;
   background: var(--lm-sunken);
 }
@@ -138,7 +162,7 @@
 }
 
 .inv-calc-resultado strong {
-  font-size: 26px;
+  font-size: 22px;
   font-weight: 600;
   letter-spacing: -0.02em;
   overflow-wrap: anywhere;
@@ -148,6 +172,155 @@
   display: flex;
   flex-wrap: wrap;
   gap: 6px;
+}
+
+/* --- Niveles Cashea dentro de la calculadora --------------------------------
+   `cashea.css` es compartido con el carrito y no se toca: las reglas van acotadas
+   a `.inv-calc`. Con 6 columnas de 41px, «N4 · 25 %» se desbordaba sobre su
+   vecino (medido a 320px, 21/10/2026): en la columna van 3x2; en la barra, 6 en
+   fila con el texto a un tamaño que cabe. Nunca se parte el texto. */
+.inv-calc .cashea-niveles {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.inv-calc .cashea-opcion {
+  min-width: 0;
+  white-space: nowrap;
+}
+
+/* --- Barra (761 a 1719px) ---------------------------------------------------
+   Compacta (objetivo: ~170px de alto con un monto escrito): sin los rótulos «Nivel
+   Cashea»/«Cuotas» (los radios conservan su aria-label), moneda junto al monto,
+   cuotas junto a la bajada de inicial y las cifras del plan en tres columnas. */
+@media (min-width: 761px) and (max-width: 1719px) {
+  .inv-calc-grupo[data-grupo="monto"] {
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr);
+    gap: 8px 10px;
+    align-items: end;
+  }
+
+  .inv-calc-grupo[data-grupo="monto"] > * {
+    grid-column: 1 / -1;
+  }
+
+  .inv-calc-grupo[data-grupo="monto"] > .inv-calc-moneda {
+    grid-column: 1;
+    grid-row: 1;
+    grid-template-columns: repeat(2, 44px);
+  }
+
+  .inv-calc-grupo[data-grupo="monto"] > .inv-calc-campo {
+    grid-column: 2;
+    grid-row: 1;
+  }
+
+  .inv-calc .cashea-niveles {
+    grid-template-columns: repeat(6, minmax(0, 1fr));
+  }
+
+  .inv-calc .cashea-opcion {
+    padding: 6px 2px;
+    font-size: 11.5px;
+  }
+
+  .inv-calc .cashea-controles {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    gap: 8px 14px;
+    align-items: center;
+  }
+
+  .inv-calc .cashea-controles > .cashea-bloque:first-child {
+    grid-column: 1 / -1;
+  }
+
+  .inv-calc .cashea-controles .lm-eyebrow {
+    display: none;
+  }
+
+  .inv-calc .cashea-nota {
+    font-size: 11px;
+  }
+
+  .inv-calc .cashea-resumen {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 4px 12px;
+  }
+
+  .inv-calc .cashea-resumen dd {
+    font-size: 13px;
+  }
+
+  .inv-calc-grupo[data-grupo="resumen"] .inv-calc-acciones {
+    margin-top: 2px;
+  }
+}
+
+/* Por debajo de 1200px no caben los tres grupos en fila: el plan pasa a una
+   segunda fila a todo el ancho, con el botón al lado de las cifras. */
+@media (min-width: 761px) and (max-width: 1199px) {
+  .inv-calc-cuerpo {
+    grid-template-columns: minmax(220px, 1fr) minmax(0, 1.6fr);
+  }
+
+  .inv-calc-grupo[data-grupo="resumen"] {
+    grid-column: 1 / -1;
+    flex-direction: row;
+    align-items: flex-end;
+    justify-content: space-between;
+    gap: 16px;
+  }
+
+  .inv-calc-grupo[data-grupo="resumen"] .cashea-resumen {
+    flex: 1 1 auto;
+  }
+}
+
+@media (min-width: 761px) and (max-width: 960px) {
+  .inv-calc .cashea-opcion {
+    font-size: 10.5px;
+  }
+}
+
+/* --- Dos columnas (desde 1720px) --------------------------------------------- */
+@media (min-width: 1720px) {
+  .inv-mostrador {
+    grid-template-columns: minmax(0, 1fr) 320px;
+    gap: 18px;
+    align-items: start;
+  }
+
+  .inv-calc {
+    order: 0;
+    position: sticky;
+    top: 16px;
+    z-index: auto;
+    padding: 18px 18px 20px;
+  }
+
+  .inv-calc-titulo {
+    display: block;
+  }
+
+  .inv-calc-cuerpo {
+    display: flex;
+    flex-direction: column;
+    align-items: stretch;
+    gap: 12px;
+  }
+
+  .inv-calc-grupo {
+    gap: 12px;
+  }
+
+  .inv-calc-resultado {
+    padding: 12px 14px;
+  }
+
+  .inv-calc-resultado strong {
+    font-size: 26px;
+  }
 }
 
 /* --- Presupuestos guardados ------------------------------------------------ */
@@ -243,34 +416,36 @@
    Una columna: la calculadora sube ANTES de la lista como un panel plegable
    (el botón `.inv-calc-toggle` aparece y `data-abierta` decide si se ve el
    cuerpo). Sin sticky: pegada a una lista de una sola columna taparía las filas. */
-@media (max-width: 1180px) {
-  .inv-mostrador {
-    grid-template-columns: minmax(0, 1fr);
-  }
-
+@media (max-width: 760px) {
   .inv-calc {
-    order: -1;
     position: static;
+    padding: 18px 18px 20px;
   }
 
   .inv-calc-toggle {
     display: flex;
   }
 
-  .inv-calc-titulo {
-    display: none;
+  .inv-calc-cuerpo {
+    display: flex;
+    flex-direction: column;
+    align-items: stretch;
+    gap: 12px;
+    margin-top: 12px;
   }
 
-  .inv-calc-cuerpo {
-    margin-top: 12px;
+  .inv-calc-grupo {
+    gap: 12px;
   }
 
   .inv-calc-cuerpo[data-abierta="false"] {
     display: none;
   }
-}
 
-@media (max-width: 760px) {
+  .inv-calc .cashea-niveles {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+
   .inv-presupuestos-barra,
   .inv-presupuestos-lista,
   .inv-presupuestos-estado {

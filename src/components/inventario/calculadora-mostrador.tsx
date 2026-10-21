@@ -156,85 +156,94 @@ export function CalculadoraMostrador({ bcvRate, totalCarritoUsd, agentId }: Calc
       </button>
       <h2 className="inv-calc-titulo">Calculadora</h2>
 
+      {/* Tres grupos (21/10/2026, T12): en 761-1719px el cuerpo es una barra horizontal
+          [moneda + monto + resultado] · [nivel + cuotas + bajada] · [plan + copiar]; en la
+          columna de 320px y en la versión plegable los grupos solo apilan sus hijos. */}
       <div id="calc-cuerpo" className="inv-calc-cuerpo" data-abierta={abierta ? "true" : "false"}>
-        <div className="inv-calc-moneda" role="group" aria-label="Moneda del monto">
-          <button
-            type="button"
-            className="inv-calc-opcion"
-            aria-pressed={moneda === "bs"}
-            disabled={sinTasa}
-            onClick={() => cambiarMoneda("bs")}
-          >
-            Bs
-          </button>
-          <button
-            type="button"
-            className="inv-calc-opcion"
-            aria-pressed={moneda === "usd"}
-            onClick={() => cambiarMoneda("usd")}
-          >
-            $
-          </button>
-        </div>
-
-        {sinTasa && <p className="inv-calc-aviso">Sin tasa BCV de hoy: escribe el monto en dólares</p>}
-
-        <div className="inv-calc-campo">
-          <label htmlFor="calc-monto">{moneda === "bs" ? "Monto en bolívares" : "Monto en dólares"}</label>
-          <input
-            id="calc-monto"
-            className="inv-calc-input"
-            type="text"
-            inputMode="decimal"
-            autoComplete="off"
-            placeholder={moneda === "bs" ? "Ej. 18.524,40" : "Ej. 86"}
-            value={borrador}
-            onChange={(e) => setBorrador(e.target.value)}
-          />
-        </div>
-        {errorMonto && (
-          <p className="inv-calc-aviso" data-tone="error">
-            {errorMonto}
-          </p>
-        )}
-
-        {tieneTotal && (
-          <div className="inv-calc-acciones">
-            <Button variant="secondary" size="sm" onPress={usarTotalDelCarrito}>
-              Usar total del carrito
-            </Button>
+        <div className="inv-calc-grupo" data-grupo="monto">
+          <div className="inv-calc-moneda" role="group" aria-label="Moneda del monto">
+            <button
+              type="button"
+              className="inv-calc-opcion"
+              aria-pressed={moneda === "bs"}
+              disabled={sinTasa}
+              onClick={() => cambiarMoneda("bs")}
+            >
+              Bs
+            </button>
+            <button
+              type="button"
+              className="inv-calc-opcion"
+              aria-pressed={moneda === "usd"}
+              onClick={() => cambiarMoneda("usd")}
+            >
+              $
+            </button>
           </div>
-        )}
 
-        {usd !== null && (
-          <p className="inv-calc-resultado" data-testid="calc-resultado">
-            {moneda === "bs" ? (
-              <>
-                <small>{`÷ tasa BCV de hoy (${tasaTexto})`}</small>
-                <strong className="lm-num">{formatUsd(montoCents)}</strong>
-              </>
-            ) : bsDelMonto !== null ? (
-              <>
-                <small>{`× tasa BCV de hoy (${tasaTexto})`}</small>
-                <strong className="lm-num">{formatBs(bsDelMonto)}</strong>
-              </>
-            ) : (
-              <>
-                <small>Sin tasa para pasar a bolívares</small>
-                <strong className="lm-num">{formatUsd(montoCents)}</strong>
-              </>
-            )}
-          </p>
-        )}
+          {sinTasa && <p className="inv-calc-aviso">Sin tasa BCV de hoy: escribe el monto en dólares</p>}
+
+          <div className="inv-calc-campo">
+            <label htmlFor="calc-monto">{moneda === "bs" ? "Monto en bolívares" : "Monto en dólares"}</label>
+            <input
+              id="calc-monto"
+              className="inv-calc-input"
+              type="text"
+              inputMode="decimal"
+              autoComplete="off"
+              placeholder={moneda === "bs" ? "Ej. 18.524,40" : "Ej. 86"}
+              value={borrador}
+              onChange={(e) => setBorrador(e.target.value)}
+            />
+          </div>
+          {errorMonto && (
+            <p className="inv-calc-aviso" data-tone="error">
+              {errorMonto}
+            </p>
+          )}
+
+          {tieneTotal && (
+            <div className="inv-calc-acciones">
+              <Button variant="secondary" size="sm" onPress={usarTotalDelCarrito}>
+                Usar total del carrito
+              </Button>
+            </div>
+          )}
+
+          {usd !== null && (
+            <p className="inv-calc-resultado" data-testid="calc-resultado">
+              {moneda === "bs" ? (
+                <>
+                  <small>{`÷ tasa BCV de hoy (${tasaTexto})`}</small>
+                  <strong className="lm-num">{formatUsd(montoCents)}</strong>
+                </>
+              ) : bsDelMonto !== null ? (
+                <>
+                  <small>{`× tasa BCV de hoy (${tasaTexto})`}</small>
+                  <strong className="lm-num">{formatBs(bsDelMonto)}</strong>
+                </>
+              ) : (
+                <>
+                  <small>Sin tasa para pasar a bolívares</small>
+                  <strong className="lm-num">{formatUsd(montoCents)}</strong>
+                </>
+              )}
+            </p>
+          )}
+        </div>
 
         {montoCents > 0 && (
           <>
-            <CasheaControles montoCents={montoCents} eleccion={eleccion} onChange={setEleccion} />
-            <CasheaResumen plan={plan} bcvRate={bcvRate} mostrarBs notaCadencia />
-            <div className="inv-calc-acciones">
-              <Button variant="primary" size="sm" onPress={copiarPlan}>
-                Copiar plan
-              </Button>
+            <div className="inv-calc-grupo" data-grupo="plan">
+              <CasheaControles montoCents={montoCents} eleccion={eleccion} onChange={setEleccion} />
+            </div>
+            <div className="inv-calc-grupo" data-grupo="resumen">
+              <CasheaResumen plan={plan} bcvRate={bcvRate} mostrarBs notaCadencia />
+              <div className="inv-calc-acciones">
+                <Button variant="primary" size="sm" onPress={copiarPlan}>
+                  Copiar plan
+                </Button>
+              </div>
             </div>
           </>
         )}
