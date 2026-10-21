@@ -16,7 +16,12 @@ import type { Agent, CatalogLink, Conversation, Message, MessageType, QuickReply
 import { isComposerWindowOpen } from "@/lib/whatsapp-window";
 import { contactName } from "@/lib/dashboard";
 import { createClient } from "@/lib/supabase/client";
-import { sendMediaMessage, sendTemplateMessage, sendTypingSignal } from "@/lib/mutations";
+import {
+  registrarUsoMensajesRapidos,
+  sendMediaMessage,
+  sendTemplateMessage,
+  sendTypingSignal,
+} from "@/lib/mutations";
 import { MEDIA_BUCKET, mediaUrlFor } from "@/lib/storage";
 import { insertAtCaret } from "@/lib/composer-text";
 import { resolveCatalogMarkers } from "@/lib/catalog-links";
@@ -91,6 +96,14 @@ interface ComposerProps {
    * defecto.
    */
   insertTextSignal?: { text: string; seq: number } | null;
+  /**
+   * Medianoche de Caracas de hoy (el string de `useInboxDay("today")`, que baja
+   * de `crm-shell.tsx`): se la pasa al modal de mensajes rápidos para la franja
+   * «Más usados» (T8, plan "Presupuestos y mensajes rápidos", 21/10/2026). No se
+   * recalcula acá: dos relojes desalineados son el bug que esa trampa de
+   * CLAUDE.md describe. Opcional; sin ella el modal no muestra la franja.
+   */
+  masUsadosHasta?: string | null;
 }
 
 function mediaTypeFromMime(mime: string): MessageType {
@@ -176,6 +189,7 @@ export function Composer({
   onSendText,
   openTemplateModalSignal,
   insertTextSignal,
+  masUsadosHasta,
 }: ComposerProps) {
   const [text, setText] = useState("");
   const [isUploading, setIsUploading] = useState(false);
@@ -196,6 +210,34 @@ export function Composer({
    * ref se lee y se escribe en el acto, sin esperar a un render.
    */
   const sendingFilesRef = useRef(false);
+
+  /**
+   * Los mensajes rápidos que están DENTRO del borrador (T8, plan
+   * "Presupuestos y mensajes rápidos", 21/10/2026, decisión D8): se anotan al
+   * elegirlos y se registran como "usos" recién al ENVIAR -- elegir uno y
+   * arrepentirse no cuenta. Sin repetidos. Hasta esta tarea, al elegir un
+   * mensaje rápido se perdía el vínculo con él: el texto entraba al cuadro y
+   * nadie sabía de dónde venía.
+   */
+  const [usosEnBorrador, setUsosEnBorrador] = useState<string[]>([]);
+  // Otro chat, otro borrador: ajustar estado durante el render (patrón de
+  // React para "cuando cambia un prop"); `setState` en un efecto lo prohíbe
+  // `react-hooks/set-state-in-effect`.
+  const [usosConversationId, setUsosConversationId] = useState(conversation.id);
+  if (usosConversationId !== conversation.id) {
+    setUsosConversationId(conversation.id);
+    setUsosEnBorrador([]);
+  }
+  // Cuadro vacío y sin fotos guardadas de un mensaje rápido: el asesor lo
+  // borró todo, lo que sale ya no es ese mensaje. Una foto SUBIDA a mano
+  // (`upload`) no lo sostiene: no viene de ningún mensaje rápido.
+  if (
+    usosEnBorrador.length > 0 &&
+    !text.trim() &&
+    !pendingFiles.some((pending) => pending.source === "stored")
+  ) {
+    setUsosEnBorrador([]);
+  }
 
   /**
    * Ya no alcanza con `isWithin24hWindow(lastCustomerMessageAt)` a secas
@@ -345,6 +387,26 @@ export function Composer({
     return resolved;
   }
 
+  /**
+   * Anota el uso de los mensajes rápidos que salieron en este envío. Es
+   * fire-and-forget A PROPÓSITO (T8, 21/10/2026): ni se espera antes de
+   * enviar ni su fallo se avisa -- una fila de estadística jamás puede
+   * retrasar ni tumbar el mensaje al cliente. El caso real que lo exige: un
+   * usuario con rol caja no pasa la política de insert de `quick_reply_uses`
+   * (`is_agent()`), y esa llamada rechazada no debe notarse. Corre en el
+   * navegador: `console.error`, nunca `lib/log.ts`.
+   */
+  function registrarUsos(ids: string[]) {
+    if (ids.length === 0) return;
+    try {
+      registrarUsoMensajesRapidos(createClient(), ids, conversation.id).catch((err) =>
+        console.error("registrar_uso_mensajes_rapidos", err)
+      );
+    } catch (err) {
+      console.error("registrar_uso_mensajes_rapidos", err);
+    }
+  }
+
   function handleSend() {
     const content = text.trim();
     if (!content) return;
@@ -359,6 +421,8 @@ export function Composer({
     const replyTo = replyingTo?.id ?? null;
     setText("");
     onCancelReply();
+    registrarUsos(usosEnBorrador);
+    setUsosEnBorrador([]);
     onSendText(outgoing, replyTo);
   }
 
@@ -392,6 +456,7 @@ export function Composer({
       }
     }
     setIsQuickRepliesOpen(false);
+    setUsosEnBorrador((prev) => (prev.includes(reply.id) ? prev : [...prev, reply.id]));
 
     // Las fotos entran como adjuntos pendientes, quitables antes de enviar. El
     // composer no tiene tope de adjuntos, así que no hay nada que respetar acá.
@@ -530,6 +595,10 @@ export function Composer({
     sendingFilesRef.current = true;
     setIsUploading(true);
     setUploadedCount(0);
+    // El uso se anota con el primer archivo que de verdad salió (T8,
+    // 21/10/2026): si ninguno sale, el asesor sigue con su borrador y puede
+    // reintentar; si salió alguno, el mensaje rápido ya se envió.
+    let usoRegistrado = false;
     try {
       const supabase = createClient();
 
@@ -568,6 +637,10 @@ export function Composer({
           i === 0 ? caption || undefined : undefined,
           i === 0 ? (replyingTo?.id ?? null) : null
         );
+        if (!usoRegistrado) {
+          usoRegistrado = true;
+          registrarUsos(usosEnBorrador);
+        }
       }
       clearPendingFiles();
       setText("");
@@ -577,6 +650,7 @@ export function Composer({
     } finally {
       setIsUploading(false);
       sendingFilesRef.current = false;
+      if (usoRegistrado) setUsosEnBorrador([]);
     }
   }
 
@@ -848,6 +922,7 @@ export function Composer({
         quickReplies={quickReplies}
         currentAgentId={currentAgent.id}
         catalogLinks={catalogLinks}
+        masUsadosHasta={masUsadosHasta}
         onSelect={handleSelectQuickReply}
       />
     </div>

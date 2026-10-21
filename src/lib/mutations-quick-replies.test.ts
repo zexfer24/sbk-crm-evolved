@@ -1,6 +1,12 @@
 import { describe, expect, it, vi } from "vitest";
 import type { SupabaseClient } from "@supabase/supabase-js";
-import { createQuickReply, deleteQuickReply, updateQuickReply, uploadQuickReplyPhoto } from "@/lib/mutations";
+import {
+  createQuickReply,
+  deleteQuickReply,
+  registrarUsoMensajesRapidos,
+  updateQuickReply,
+  uploadQuickReplyPhoto,
+} from "@/lib/mutations";
 import { ConfigWriteDeniedError, configErrorMessage } from "@/lib/config-write";
 
 // ---------------------------------------------------------------------------
@@ -325,6 +331,55 @@ describe("uploadQuickReplyPhoto", () => {
 
     await expect(uploadQuickReplyPhoto(client, archivo("a.jpg", "image/jpeg"))).rejects.toMatchObject({
       message: "bucket caído",
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// T8, plan "Presupuestos y mensajes rápidos" (21/10/2026): cada envío de un
+// mensaje rápido deja una fila en `quick_reply_uses`. `agent_id` NO viaja: lo
+// pone la base (`default auth.uid()`) y la política de insert exige que sea el
+// del que escribe. Un INSERT no necesita `assertRowsAffected`: una política
+// que rechaza sí lanza 42501.
+// ---------------------------------------------------------------------------
+describe("registrarUsoMensajesRapidos", () => {
+  it("inserta una fila por mensaje con la conversación, sin agent_id", async () => {
+    const { client, llamadas } = fakeSupabase();
+
+    await registrarUsoMensajesRapidos(client, ["qr-1", "qr-2"], "conv-1");
+
+    expect(llamadas).toHaveLength(1);
+    expect(llamadas[0]).toMatchObject({ op: "insert", table: "quick_reply_uses" });
+    expect(llamadas[0].payload).toEqual([
+      { quick_reply_id: "qr-1", conversation_id: "conv-1" },
+      { quick_reply_id: "qr-2", conversation_id: "conv-1" },
+    ]);
+  });
+
+  it("quita los ids repetidos: un mensaje usado dos veces en el mismo envío cuenta una", async () => {
+    const { client, llamadas } = fakeSupabase();
+
+    await registrarUsoMensajesRapidos(client, ["qr-1", "qr-1", "qr-2", "qr-1"], null);
+
+    expect(llamadas[0].payload).toEqual([
+      { quick_reply_id: "qr-1", conversation_id: null },
+      { quick_reply_id: "qr-2", conversation_id: null },
+    ]);
+  });
+
+  it("con cero ids no llama a la base", async () => {
+    const { client, llamadas } = fakeSupabase();
+
+    await registrarUsoMensajesRapidos(client, [], "conv-1");
+
+    expect(llamadas).toHaveLength(0);
+  });
+
+  it("lanza el error de la base", async () => {
+    const { client } = fakeSupabase({ error: { code: "42501", message: "rls" } });
+
+    await expect(registrarUsoMensajesRapidos(client, ["qr-1"], "conv-1")).rejects.toMatchObject({
+      code: "42501",
     });
   });
 });

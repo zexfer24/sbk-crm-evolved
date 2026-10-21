@@ -1615,6 +1615,7 @@ export function CrmShell({
                   ? { text: composerInsert.text, seq: composerInsert.seq }
                   : null
               }
+              masUsadosHasta={agentDayStart}
               conversation={selectedConversation}
               messages={messages}
               templates={templates}

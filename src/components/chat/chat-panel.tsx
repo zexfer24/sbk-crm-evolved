@@ -84,6 +84,13 @@ interface ChatPanelProps {
    * conversación abierta.
    */
   insertTextSignal?: { text: string; seq: number } | null;
+  /**
+   * Medianoche de Caracas de hoy (`useInboxDay("today")` de `crm-shell.tsx`),
+   * para la franja «Más usados» del modal de mensajes rápidos (T8, plan
+   * "Presupuestos y mensajes rápidos", 21/10/2026). Baja tal cual hasta
+   * `Composer`; no se recalcula en ningún otro sitio. Opcional.
+   */
+  masUsadosHasta?: string | null;
 }
 
 export function ChatPanel({
@@ -106,6 +113,7 @@ export function ChatPanel({
   onDiscardOutbox,
   onOpenConversationByPhone,
   insertTextSignal,
+  masUsadosHasta,
 }: ChatPanelProps) {
   const [isIntervening, setIsIntervening] = useState(false);
   const [replyingTo, setReplyingTo] = useState<Message | null>(null);
@@ -398,6 +406,7 @@ export function ChatPanel({
         onSendText={onSendText}
         openTemplateModalSignal={templateModalSignal}
         insertTextSignal={insertTextSignal}
+        masUsadosHasta={masUsadosHasta}
       />
 
       {teachingMessage && (

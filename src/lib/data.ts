@@ -2205,6 +2205,41 @@ export async function fetchQuickReplies(supabase: SupabaseClient): Promise<Quick
   return (data as RawQuickReply[]).map(mapQuickReply);
 }
 
+/** Un mensaje rápido del ranking «Más usados» y cuántas veces lo enviaron. */
+export interface MensajeRapidoMasUsado {
+  quickReplyId: string;
+  usos: number;
+}
+
+/**
+ * Los 5 mensajes rápidos más enviados por el EQUIPO en los últimos 30 días
+ * (T8, plan "Presupuestos y mensajes rápidos", 21/10/2026, decisión D8).
+ *
+ * `hasta` es la medianoche de Caracas de hoy: el MISMO string de
+ * `useInboxDay("today")` que usa la bandeja (CLAUDE.md, trampa del corte
+ * "habló hoy"; no se recalcula acá). La RPC cuenta usos en
+ * `[hasta - 30 días, hasta)`, así que el ranking no se mueve en todo el día.
+ * `quick_reply_uses` no tiene política de select a propósito (una política
+ * `is_agent()` por fila es la trampa de 20260921030000): se lee SOLO por la
+ * RPC, que ya filtra lo que quien consulta puede ver. `usos` llega como
+ * bigint (texto en JSON si desborda): se pasa a número.
+ */
+export async function fetchMensajesRapidosMasUsados(
+  supabase: SupabaseClient,
+  hasta: string
+): Promise<MensajeRapidoMasUsado[]> {
+  const { data, error } = await supabase.rpc("quick_replies_mas_usados", {
+    p_hasta: hasta,
+    p_dias: 30,
+    p_limite: 5,
+  });
+  if (error) throw error;
+  return ((data ?? []) as { quick_reply_id: string; usos: number | string }[]).map((row) => ({
+    quickReplyId: row.quick_reply_id,
+    usos: Number(row.usos),
+  }));
+}
+
 interface RawAgentTurn {
   id: string;
   conversation_id: string;

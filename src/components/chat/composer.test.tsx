@@ -3,7 +3,15 @@ import { describe, expect, it, vi, beforeEach, afterEach } from "vitest";
 import { render, screen, fireEvent, waitFor, act, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { Composer } from "@/components/chat/composer";
-import type { Agent, CatalogLink, Conversation, Message, QuickReply, Sticker } from "@/lib/types";
+import type {
+  Agent,
+  CatalogLink,
+  Conversation,
+  Message,
+  QuickReply,
+  Sticker,
+  WhatsappTemplate,
+} from "@/lib/types";
 
 /**
  * T4b (18/9/2026): `handleSelectQuickReply` avisa con `toast.warning` cuando
@@ -27,6 +35,9 @@ vi.mock("@heroui/react", async (importOriginal) => {
 });
 
 const sendMediaMessageMock = vi.fn().mockResolvedValue(undefined);
+/** T8 (21/10/2026): el registro del uso de un mensaje rápido; fire-and-forget, nunca debe frenar el envío. */
+const registrarUsoMock = vi.fn().mockResolvedValue(undefined);
+const sendTemplateMessageMock = vi.fn().mockResolvedValue(undefined);
 /** 14/10/2026: espía compartido de `storage.upload`, para probar que las fotos guardadas NO se vuelven a subir. */
 const storageUploadMock = vi.fn().mockResolvedValue({ error: null });
 const onSendTextMock = vi.fn();
@@ -40,7 +51,8 @@ const fetchStickersMock = vi.fn().mockResolvedValue([]);
 
 vi.mock("@/lib/mutations", () => ({
   sendMediaMessage: (...args: unknown[]) => sendMediaMessageMock(...args),
-  sendTemplateMessage: vi.fn().mockResolvedValue(undefined),
+  registrarUsoMensajesRapidos: (...args: unknown[]) => registrarUsoMock(...args),
+  sendTemplateMessage: (...args: unknown[]) => sendTemplateMessageMock(...args),
   sendTypingSignal: (...args: unknown[]) => sendTypingSignalMock(...args),
   sendStickerMessage: (...args: unknown[]) => sendStickerMessageMock(...args),
   deleteSticker: (...args: unknown[]) => deleteStickerMock(...args),
@@ -189,6 +201,7 @@ function composerElement(
   extra: {
     quickReplies?: QuickReply[];
     catalogLinks?: CatalogLink[];
+    templates?: WhatsappTemplate[];
     insertTextSignal?: { text: string; seq: number } | null;
   } = {}
 ) {
@@ -196,7 +209,7 @@ function composerElement(
     <Composer
       conversation={conversation}
       messages={messages}
-      templates={[]}
+      templates={extra.templates ?? []}
       quickReplies={extra.quickReplies ?? []}
       catalogLinks={extra.catalogLinks ?? []}
       currentAgent={AGENT}
@@ -214,6 +227,7 @@ function renderComposer(
   extra: {
     quickReplies?: QuickReply[];
     catalogLinks?: CatalogLink[];
+    templates?: WhatsappTemplate[];
     insertTextSignal?: { text: string; seq: number } | null;
   } = {}
 ) {
@@ -1373,5 +1387,196 @@ describe("Composer — respuestas rápidas con fotos", () => {
 
     expect(revocar).not.toHaveBeenCalled();
     revocar.mockRestore();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// T8, plan "Presupuestos y mensajes rápidos" (21/10/2026, decisión D8): cada
+// ENVÍO de lo que salió de un mensaje rápido deja un uso para el ranking «Más
+// usados». Elegirlo no cuenta (el asesor puede arrepentirse); enviar sí. El
+// registro es fire-and-forget: ni se espera ni puede tumbar el mensaje.
+// ---------------------------------------------------------------------------
+describe("Composer — registro del uso de mensajes rápidos (T8)", () => {
+  const RUTA = "quick-replies/aaaa.jpg";
+
+  beforeEach(() => {
+    registrarUsoMock.mockReset();
+    registrarUsoMock.mockResolvedValue(undefined);
+    sendTemplateMessageMock.mockClear();
+    onSendTextMock.mockClear();
+    sendMediaMessageMock.mockClear();
+    toastDangerMock.mockClear();
+  });
+
+  async function usar(user: ReturnType<typeof crearUsuario>, indice = 0) {
+    await user.click(screen.getByRole("button", { name: "Mensajes rápidos" }));
+    await user.click(screen.getAllByRole("button", { name: "Usar" })[indice]);
+  }
+
+  async function enter(user: ReturnType<typeof crearUsuario>) {
+    await user.click(screen.getByRole("textbox", { name: "Mensaje" }));
+    await user.keyboard("{Enter}");
+  }
+
+  it("elegir un mensaje rápido y enviar el texto registra su id UNA vez, con la conversación", async () => {
+    const user = crearUsuario();
+    const qr = buildQuickReply({ id: "qr-horario", content: "Atendemos de 8 a 18" });
+    renderComposer([], undefined, { quickReplies: [qr] });
+
+    await usar(user);
+    expect(registrarUsoMock).not.toHaveBeenCalled(); // elegirlo no cuenta
+    await enter(user);
+
+    expect(onSendTextMock).toHaveBeenCalledWith("Atendemos de 8 a 18", null);
+    expect(registrarUsoMock).toHaveBeenCalledTimes(1);
+    expect(registrarUsoMock).toHaveBeenCalledWith(expect.anything(), ["qr-horario"], "conv-1");
+  });
+
+  it("un mensaje con fotos enviado por el camino de archivos también se registra", async () => {
+    const user = crearUsuario();
+    const qr = buildQuickReply({ id: "qr-cascos", content: "Mira estos", mediaPaths: [RUTA] });
+    renderComposer([], undefined, { quickReplies: [qr] });
+
+    await usar(user);
+    await user.click(screen.getByRole("button", { name: /enviar/i }));
+
+    await waitFor(() => expect(sendMediaMessageMock).toHaveBeenCalledTimes(1));
+    expect(registrarUsoMock).toHaveBeenCalledTimes(1);
+    expect(registrarUsoMock).toHaveBeenCalledWith(expect.anything(), ["qr-cascos"], "conv-1");
+  });
+
+  it("texto escrito a mano no registra nada", async () => {
+    const user = crearUsuario();
+    renderComposer([], undefined, { quickReplies: [buildQuickReply()] });
+
+    await user.type(screen.getByRole("textbox", { name: "Mensaje" }), "hola, ¿qué necesitas?");
+    await user.keyboard("{Enter}");
+
+    expect(onSendTextMock).toHaveBeenCalledTimes(1);
+    expect(registrarUsoMock).not.toHaveBeenCalled();
+  });
+
+  it("dos mensajes rápidos en el mismo envío se registran, cada uno una vez, aunque se repita uno", async () => {
+    const user = crearUsuario();
+    const a = buildQuickReply({ id: "qr-a", label: "Alfa", content: "Uno" });
+    const b = buildQuickReply({ id: "qr-b", label: "Beta", content: "Dos" });
+    renderComposer([], undefined, { quickReplies: [a, b] });
+
+    await usar(user, 0); // Alfa
+    await usar(user, 0); // Alfa otra vez
+    await usar(user, 1); // Beta
+    await enter(user);
+
+    expect(registrarUsoMock).toHaveBeenCalledTimes(1);
+    expect(registrarUsoMock.mock.calls[0][1]).toEqual(["qr-a", "qr-b"]);
+  });
+
+  it("después de enviar, el siguiente envío a mano ya no arrastra el uso anterior", async () => {
+    const user = crearUsuario();
+    renderComposer([], undefined, { quickReplies: [buildQuickReply({ id: "qr-1", content: "Hola" })] });
+
+    await usar(user);
+    await enter(user);
+    expect(registrarUsoMock).toHaveBeenCalledTimes(1);
+
+    await user.type(screen.getByRole("textbox", { name: "Mensaje" }), "otra cosa");
+    await user.keyboard("{Enter}");
+
+    expect(onSendTextMock).toHaveBeenCalledTimes(2);
+    expect(registrarUsoMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("si registrar el uso falla, el mensaje igual se envía, no hay toast y queda un console.error", async () => {
+    const user = crearUsuario();
+    const consola = vi.spyOn(console, "error").mockImplementation(() => {});
+    registrarUsoMock.mockRejectedValueOnce(new Error("rol caja: sin permiso"));
+    renderComposer([], undefined, { quickReplies: [buildQuickReply({ content: "Gracias" })] });
+
+    await usar(user);
+    await enter(user);
+
+    // Se entregó al instante: el registro no se esperó.
+    expect(onSendTextMock).toHaveBeenCalledWith("Gracias", null);
+    await waitFor(() =>
+      expect(consola).toHaveBeenCalledWith("registrar_uso_mensajes_rapidos", expect.any(Error))
+    );
+    expect(toastDangerMock).not.toHaveBeenCalled();
+    consola.mockRestore();
+  });
+
+  it("cambiar de conversación vacía los usos pendientes", async () => {
+    const user = crearUsuario();
+    const qr = buildQuickReply({ id: "qr-1", content: "Hola" });
+    const { rerender } = renderComposer([], undefined, { quickReplies: [qr] });
+
+    await usar(user);
+    // Mismo texto en el cuadro (el composer sigue montado), otro chat.
+    rerender(composerElement([], { ...buildConversation(), id: "conv-2" }, { quickReplies: [qr] }));
+    await enter(user);
+
+    expect(onSendTextMock).toHaveBeenCalledTimes(1);
+    expect(registrarUsoMock).not.toHaveBeenCalled();
+  });
+
+  it("si el asesor borra el texto del mensaje rápido y escribe otro, ya no cuenta como uso", async () => {
+    const user = crearUsuario();
+    renderComposer([], undefined, { quickReplies: [buildQuickReply({ content: "Hola" })] });
+
+    await usar(user);
+    await user.clear(screen.getByRole("textbox", { name: "Mensaje" }));
+    await user.type(screen.getByRole("textbox", { name: "Mensaje" }), "mejor esto");
+    await user.keyboard("{Enter}");
+
+    expect(onSendTextMock).toHaveBeenCalledTimes(1);
+    expect(registrarUsoMock).not.toHaveBeenCalled();
+  });
+
+  it("un mensaje de solo fotos cuenta aunque el cuadro esté vacío (las fotos guardadas lo mantienen vivo)", async () => {
+    const user = crearUsuario();
+    const qr = buildQuickReply({ id: "qr-fotos", content: "", mediaPaths: [RUTA] });
+    renderComposer([], undefined, { quickReplies: [qr] });
+
+    await usar(user);
+    await user.click(screen.getByRole("button", { name: /enviar/i }));
+
+    await waitFor(() => expect(registrarUsoMock).toHaveBeenCalledTimes(1));
+    expect(registrarUsoMock).toHaveBeenCalledWith(expect.anything(), ["qr-fotos"], "conv-1");
+  });
+
+  it("quitar la única foto guardada de un mensaje de solo fotos descarta su uso", async () => {
+    const user = crearUsuario();
+    const qr = buildQuickReply({ id: "qr-fotos", label: "Fotos", content: "", mediaPaths: [RUTA] });
+    renderComposer([], undefined, { quickReplies: [qr] });
+
+    await usar(user);
+    await user.click(screen.getByRole("button", { name: "Quitar Fotos · foto 1" }));
+    await user.type(screen.getByRole("textbox", { name: "Mensaje" }), "a mano");
+    await user.keyboard("{Enter}");
+
+    expect(onSendTextMock).toHaveBeenCalledTimes(1);
+    expect(registrarUsoMock).not.toHaveBeenCalled();
+  });
+
+  it("enviar una plantilla no registra usos, aunque hubiera un mensaje rápido elegido", async () => {
+    const user = crearUsuario();
+    const plantilla: WhatsappTemplate = {
+      id: "tpl-1",
+      name: "reabrir_chat",
+      language: "es",
+      category: "utility",
+      bodyPreview: "Hola, seguimos atentos.",
+      status: "approved",
+    };
+    renderComposer([], undefined, {
+      quickReplies: [buildQuickReply({ content: "Hola" })],
+      templates: [plantilla],
+    });
+
+    await usar(user);
+    await user.click(screen.getByRole("button", { name: "Plantillas preaprobadas" }));
+    await user.click(screen.getByRole("button", { name: "Usar" }));
+
+    await waitFor(() => expect(sendTemplateMessageMock).toHaveBeenCalledTimes(1));
+    expect(registrarUsoMock).not.toHaveBeenCalled();
   });
 });

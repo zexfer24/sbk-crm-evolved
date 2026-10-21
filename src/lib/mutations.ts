@@ -1232,6 +1232,30 @@ export async function deleteQuickReply(supabase: SupabaseClient, id: string) {
   assertRowsAffected(data, QUICK_REPLY_NOT_YOURS_MESSAGE);
 }
 
+/**
+ * Anota que un asesor envió mensajes rápidos (T8, plan "Presupuestos y
+ * mensajes rápidos", 21/10/2026, decisión D8): una fila en `quick_reply_uses`
+ * por mensaje distinto, para el ranking «Más usados» del modal.
+ *
+ * `agent_id` NO se manda: la base lo pone (`default auth.uid()`) y la política
+ * de insert exige que sea el de quien escribe. Sin ids no toca la base. Un
+ * INSERT que la RLS rechaza lanza 42501 por sí solo, así que no necesita
+ * `assertRowsAffected`. El composer lo llama sin esperarlo: registrar un uso
+ * nunca puede retrasar ni tumbar el envío del mensaje.
+ */
+export async function registrarUsoMensajesRapidos(
+  supabase: SupabaseClient,
+  quickReplyIds: string[],
+  conversationId: string | null
+): Promise<void> {
+  const ids = [...new Set(quickReplyIds)];
+  if (ids.length === 0) return;
+  const { error } = await supabase
+    .from("quick_reply_uses")
+    .insert(ids.map((quick_reply_id) => ({ quick_reply_id, conversation_id: conversationId })));
+  if (error) throw error;
+}
+
 // ---------------------------------------------------------------------------
 // Escenarios de la IA (respuestas predeterminadas). RLS solo deja escribir a
 // supervisores y admins: esto es lo que la IA le dice sola a los clientes.

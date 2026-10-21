@@ -2,11 +2,13 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import { toast } from "@heroui/react";
 import type { ComponentProps } from "react";
-import { QuickRepliesModal } from "@/components/chat/quick-replies-modal";
+import { QuickRepliesModal, __reiniciarCacheMasUsados } from "@/components/chat/quick-replies-modal";
 import type { CatalogLink, QuickReply } from "@/lib/types";
 import { createQuickReply, deleteQuickReply, updateQuickReply, uploadQuickReplyPhoto } from "@/lib/mutations";
 import { ConfigWriteDeniedError } from "@/lib/config-write";
+import { fetchMensajesRapidosMasUsados } from "@/lib/data";
 
 // ---------------------------------------------------------------------------
 // T4b, plan "Nada sin leer, un solo catálogo y la factura Saint" (18/9/2026,
@@ -26,6 +28,12 @@ vi.mock("@heroui/react", async (importOriginal) => {
 
 vi.mock("@/lib/supabase/client", () => ({
   createClient: vi.fn(() => ({})),
+}));
+
+// T8 (21/10/2026): el modal pide el ranking «Más usados» a la RPC; los tests no
+// necesitan el resto de `data.ts` (que arrastra medio CRM).
+vi.mock("@/lib/data", () => ({
+  fetchMensajesRapidosMasUsados: vi.fn(),
 }));
 
 vi.mock("@/lib/mutations", () => ({
@@ -1045,5 +1053,180 @@ describe("QuickRepliesModal — confirmar el borrado dentro del renglón (T7, 21
 
     expect(screen.queryByRole("group", { name: "Confirmar borrado" })).not.toBeInTheDocument();
     expect(deleteQuickReply).not.toHaveBeenCalled();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// T8, plan "Presupuestos y mensajes rápidos" (21/10/2026, decisión D8): la
+// franja «Más usados» arriba del modal. `masUsadosHasta` es la medianoche de
+// Caracas que baja de `useInboxDay`: cambia una vez al día, y por eso el
+// ranking se pide UNA vez por día y por pestaña (caché de módulo).
+// ---------------------------------------------------------------------------
+describe("QuickRepliesModal — Más usados (T8)", () => {
+  const HASTA = "2026-10-21T04:00:00.000Z";
+  const fetchMasUsados = vi.mocked(fetchMensajesRapidosMasUsados);
+
+  const horario = mensajeRapido({ id: "qr-horario", label: "Horario", content: "De 8 a 18" });
+  const cascos = mensajeRapido({ id: "qr-cascos", label: "Cascos", content: "Mira", mediaPaths: ["quick-replies/a.jpg"] });
+  const saludo = mensajeRapido({ id: "qr-saludo", label: "Saludo", content: "Buen día" });
+
+  function propsBase(extra: Partial<ComponentProps<typeof QuickRepliesModal>> = {}) {
+    return {
+      quickReplies: [horario],
+      catalogLinks: [],
+      currentAgentId: ASESOR_ID,
+      onSelect: vi.fn(),
+      onOpenChange: vi.fn(),
+      masUsadosHasta: HASTA,
+      ...extra,
+    };
+  }
+
+  beforeEach(() => {
+    __reiniciarCacheMasUsados();
+    fetchMasUsados.mockReset();
+    // El mock de `toast` es compartido por todo el archivo: sin limpiarlo, el
+    // `danger` de un test anterior contaminaría el «no hay toast» de abajo.
+    vi.mocked(toast.danger).mockClear();
+  });
+
+  it("pinta las tarjetas en el orden del ranking, con sus envíos y el conteo de fotos", async () => {
+    fetchMasUsados.mockResolvedValue([
+      { quickReplyId: "qr-cascos", usos: 12 },
+      { quickReplyId: "qr-horario", usos: 1 },
+    ]);
+    renderModal({ quickReplies: [horario, cascos, saludo], masUsadosHasta: HASTA });
+
+    const franja = await screen.findByRole("region", { name: "Más usados" });
+
+    expect(fetchMasUsados).toHaveBeenCalledWith(expect.anything(), HASTA);
+    expect(within(franja).getByText("Actualizado hoy a las 00:00 · últimos 30 días")).toBeInTheDocument();
+    const tarjetas = within(franja).getAllByRole("button");
+    expect(tarjetas).toHaveLength(2);
+    expect(tarjetas[0]).toHaveTextContent("Cascos");
+    expect(tarjetas[0]).toHaveTextContent("12 envíos");
+    expect(tarjetas[0]).toHaveTextContent("📷 1");
+    expect(tarjetas[1]).toHaveTextContent("Horario");
+    expect(tarjetas[1]).toHaveTextContent("1 envío");
+    expect(tarjetas[1]).not.toHaveTextContent("1 envíos");
+    expect(tarjetas[1]).not.toHaveTextContent("📷");
+  });
+
+  it("un id que el asesor no ve (no está en quickReplies) no aparece", async () => {
+    fetchMasUsados.mockResolvedValue([
+      { quickReplyId: "qr-ajeno", usos: 40 },
+      { quickReplyId: "qr-horario", usos: 3 },
+    ]);
+    renderModal({ quickReplies: [horario], masUsadosHasta: HASTA });
+
+    const franja = await screen.findByRole("region", { name: "Más usados" });
+
+    expect(within(franja).getAllByRole("button")).toHaveLength(1);
+    expect(within(franja).getByRole("button")).toHaveTextContent("Horario");
+  });
+
+  it("si ningún id del ranking es visible, no se pinta la franja", async () => {
+    fetchMasUsados.mockResolvedValue([{ quickReplyId: "qr-ajeno", usos: 40 }]);
+    renderModal({ quickReplies: [horario], masUsadosHasta: HASTA });
+
+    await waitFor(() => expect(fetchMasUsados).toHaveBeenCalled());
+    await Promise.resolve();
+
+    expect(screen.queryByRole("region", { name: "Más usados" })).not.toBeInTheDocument();
+  });
+
+  it("un clic en una tarjeta equivale a «Usar»: entrega el mensaje entero", async () => {
+    const user = crearUsuario();
+    fetchMasUsados.mockResolvedValue([{ quickReplyId: "qr-cascos", usos: 5 }]);
+    const { onSelect } = renderModal({ quickReplies: [horario, cascos], masUsadosHasta: HASTA });
+
+    const franja = await screen.findByRole("region", { name: "Más usados" });
+    await user.click(within(franja).getByRole("button"));
+
+    expect(onSelect).toHaveBeenCalledTimes(1);
+    expect(onSelect).toHaveBeenCalledWith(cascos);
+  });
+
+  it("sin masUsadosHasta no consulta la RPC ni pinta la franja", async () => {
+    renderModal({ quickReplies: [horario] });
+
+    await Promise.resolve();
+
+    expect(fetchMasUsados).not.toHaveBeenCalled();
+    expect(screen.queryByRole("region", { name: "Más usados" })).not.toBeInTheDocument();
+  });
+
+  it("con el modal cerrado no consulta nada", async () => {
+    renderModal({ isOpen: false, quickReplies: [horario], masUsadosHasta: HASTA });
+
+    await Promise.resolve();
+
+    expect(fetchMasUsados).not.toHaveBeenCalled();
+  });
+
+  it("abrirlo dos veces con el mismo masUsadosHasta pide el ranking UNA sola vez", async () => {
+    fetchMasUsados.mockResolvedValue([{ quickReplyId: "qr-horario", usos: 2 }]);
+    const props = propsBase();
+    const { rerender } = render(<QuickRepliesModal isOpen {...props} />);
+    await screen.findByRole("region", { name: "Más usados" });
+
+    rerender(<QuickRepliesModal isOpen={false} {...props} />);
+    rerender(<QuickRepliesModal isOpen {...props} />);
+    await screen.findByRole("region", { name: "Más usados" });
+
+    expect(fetchMasUsados).toHaveBeenCalledTimes(1);
+  });
+
+  it("al cambiar el día (otro masUsadosHasta) vuelve a pedirlo", async () => {
+    fetchMasUsados.mockResolvedValue([{ quickReplyId: "qr-horario", usos: 2 }]);
+    const { rerender } = render(<QuickRepliesModal isOpen {...propsBase()} />);
+    await screen.findByRole("region", { name: "Más usados" });
+
+    rerender(<QuickRepliesModal isOpen {...propsBase({ masUsadosHasta: "2026-10-22T04:00:00.000Z" })} />);
+
+    await waitFor(() => expect(fetchMasUsados).toHaveBeenCalledTimes(2));
+  });
+
+  it("si la RPC falla no hay franja ni toast, queda un console.error y la próxima apertura reintenta", async () => {
+    const consola = vi.spyOn(console, "error").mockImplementation(() => {});
+    fetchMasUsados.mockRejectedValueOnce(new Error("timeout"));
+    const props = propsBase();
+    const { rerender } = render(<QuickRepliesModal isOpen {...props} />);
+
+    await waitFor(() => expect(consola).toHaveBeenCalledWith("mensajes_rapidos_mas_usados", expect.any(Error)));
+    expect(screen.queryByRole("region", { name: "Más usados" })).not.toBeInTheDocument();
+    expect(toast.danger).not.toHaveBeenCalled();
+
+    // Una promesa fallida no se queda en la caché: reabrir vuelve a pedirla.
+    fetchMasUsados.mockResolvedValueOnce([{ quickReplyId: "qr-horario", usos: 2 }]);
+    rerender(<QuickRepliesModal isOpen={false} {...props} />);
+    rerender(<QuickRepliesModal isOpen {...props} />);
+    await screen.findByRole("region", { name: "Más usados" });
+    expect(fetchMasUsados).toHaveBeenCalledTimes(2);
+    consola.mockRestore();
+  });
+
+  it("la franja no se filtra con la búsqueda", async () => {
+    const user = crearUsuario();
+    fetchMasUsados.mockResolvedValue([{ quickReplyId: "qr-horario", usos: 2 }]);
+    renderModal({ quickReplies: [horario, saludo], masUsadosHasta: HASTA });
+    const franja = await screen.findByRole("region", { name: "Más usados" });
+
+    await user.type(screen.getByRole("searchbox", { name: "Buscar mensajes rápidos" }), "saludo");
+
+    expect(within(franja).getByRole("button")).toHaveTextContent("Horario");
+  });
+
+  it("se oculta mientras se crea o edita un mensaje", async () => {
+    const user = crearUsuario();
+    fetchMasUsados.mockResolvedValue([{ quickReplyId: "qr-horario", usos: 2 }]);
+    renderModal({ quickReplies: [horario], masUsadosHasta: HASTA });
+    await screen.findByRole("region", { name: "Más usados" });
+
+    await abrirFormulario(user);
+
+    expect(screen.queryByRole("region", { name: "Más usados" })).not.toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Cancelar" }));
+    expect(await screen.findByRole("region", { name: "Más usados" })).toBeInTheDocument();
   });
 });

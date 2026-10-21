@@ -1611,6 +1611,124 @@ export type Database = {
           },
         ]
       }
+      // 21/10/2026 (migración 20261021010000, plan "Presupuestos y mensajes
+      // rápidos"): renglones de un presupuesto guardado. No se actualizan, se
+      // reemplazan (sin grant de UPDATE). La caja no puede guardar 'estandar'.
+      presupuesto_items: {
+        Row: {
+          created_at: string
+          id: string
+          // Precio unitario vigente al guardar: solo referencia, se cobra el de hoy.
+          precio_cotizado_usd: number | null
+          presupuesto_id: string
+          // 'promocion' | 'estandar'
+          price_kind: string
+          product_id: string
+          quantity: number
+        }
+        Insert: {
+          created_at?: string
+          id?: string
+          precio_cotizado_usd?: number | null
+          presupuesto_id: string
+          price_kind?: string
+          product_id: string
+          quantity: number
+        }
+        Update: {
+          created_at?: string
+          id?: string
+          precio_cotizado_usd?: number | null
+          presupuesto_id?: string
+          price_kind?: string
+          product_id?: string
+          quantity?: number
+        }
+        Relationships: [
+          {
+            foreignKeyName: "presupuesto_items_presupuesto_id_fkey"
+            columns: ["presupuesto_id"]
+            isOneToOne: false
+            referencedRelation: "presupuestos"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "presupuesto_items_product_id_fkey"
+            columns: ["product_id"]
+            isOneToOne: false
+            referencedRelation: "products"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      // 21/10/2026 (migración 20261021010000): presupuestos guardados por
+      // cliente. Se escriben por la RPC `guardar_presupuesto`.
+      presupuestos: {
+        Row: {
+          cliente_apellido: string
+          cliente_nombre: string
+          contact_id: string | null
+          conversation_id: string | null
+          created_at: string
+          created_by: string | null
+          id: string
+          nota: string | null
+          // 'inventario' | 'chat'
+          origen: string
+          // Referencia (D1): nunca se cobra, se factura el precio de hoy.
+          total_cotizado_usd: number | null
+          updated_at: string
+        }
+        Insert: {
+          cliente_apellido: string
+          cliente_nombre: string
+          contact_id?: string | null
+          conversation_id?: string | null
+          created_at?: string
+          created_by?: string | null
+          id?: string
+          nota?: string | null
+          origen?: string
+          total_cotizado_usd?: number | null
+          updated_at?: string
+        }
+        Update: {
+          cliente_apellido?: string
+          cliente_nombre?: string
+          contact_id?: string | null
+          conversation_id?: string | null
+          created_at?: string
+          created_by?: string | null
+          id?: string
+          nota?: string | null
+          origen?: string
+          total_cotizado_usd?: number | null
+          updated_at?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "presupuestos_contact_id_fkey"
+            columns: ["contact_id"]
+            isOneToOne: false
+            referencedRelation: "contacts"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "presupuestos_conversation_id_fkey"
+            columns: ["conversation_id"]
+            isOneToOne: false
+            referencedRelation: "conversations"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "presupuestos_created_by_fkey"
+            columns: ["created_by"]
+            isOneToOne: false
+            referencedRelation: "agents"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       product_compatibility: {
         Row: {
           id: string
@@ -1726,6 +1844,55 @@ export type Database = {
             columns: ["owner_id"]
             isOneToOne: false
             referencedRelation: "agents"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      // 21/10/2026 (migración 20261021020000): un uso por cada envío de un
+      // mensaje rápido. Sin política de select: se lee solo por la RPC
+      // `quick_replies_mas_usados`; authenticated solo inserta.
+      quick_reply_uses: {
+        Row: {
+          agent_id: string
+          conversation_id: string | null
+          id: string
+          quick_reply_id: string
+          used_at: string
+        }
+        Insert: {
+          agent_id?: string
+          conversation_id?: string | null
+          id?: string
+          quick_reply_id: string
+          used_at?: string
+        }
+        Update: {
+          agent_id?: string
+          conversation_id?: string | null
+          id?: string
+          quick_reply_id?: string
+          used_at?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "quick_reply_uses_agent_id_fkey"
+            columns: ["agent_id"]
+            isOneToOne: false
+            referencedRelation: "agents"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "quick_reply_uses_conversation_id_fkey"
+            columns: ["conversation_id"]
+            isOneToOne: false
+            referencedRelation: "conversations"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "quick_reply_uses_quick_reply_id_fkey"
+            columns: ["quick_reply_id"]
+            isOneToOne: false
+            referencedRelation: "quick_replies"
             referencedColumns: ["id"]
           },
         ]
@@ -2148,6 +2315,23 @@ export type Database = {
         }
         Returns: undefined
       }
+      // 21/10/2026 (migración 20261021010000): guarda (p_id null) o REEMPLAZA
+      // un presupuesto y sus renglones en una sola llamada atómica. p_items:
+      // [{ product_id, quantity, price_kind, precio_cotizado_usd | null }],
+      // de 1 a 100. security invoker: la RLS manda. Devuelve el id.
+      guardar_presupuesto: {
+        Args: {
+          p_id: string | null
+          p_cliente_nombre: string
+          p_cliente_apellido: string
+          p_contact_id: string | null
+          p_conversation_id: string | null
+          p_origen: string
+          p_nota: string | null
+          p_items: Json
+        }
+        Returns: string
+      }
       is_agent: { Args: never; Returns: boolean }
       is_supervisor_or_admin: { Args: never; Returns: boolean }
       message_activity_by_hour: {
@@ -2157,6 +2341,17 @@ export type Database = {
           ai: number
           hour: number
           inbound: number
+        }[]
+      }
+      // 21/10/2026 (migración 20261021020000): ranking «Más usados» del
+      // EQUIPO en [p_hasta - p_dias, p_hasta), solo de mensajes que quien
+      // consulta ve (compartidos y propios). p_dias 1..90, p_limite 1..20;
+      // quien no es agente (caja) recibe cero filas. security definer.
+      quick_replies_mas_usados: {
+        Args: { p_dias?: number; p_hasta: string; p_limite?: number }
+        Returns: {
+          quick_reply_id: string
+          usos: number
         }[]
       }
       rate_limit_allow: {

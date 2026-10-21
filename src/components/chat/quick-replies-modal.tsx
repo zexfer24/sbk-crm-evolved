@@ -1,11 +1,12 @@
 "use client";
 
-import { useRef, useState, type ChangeEvent } from "react";
+import { useEffect, useRef, useState, type ChangeEvent } from "react";
 import { flushSync } from "react-dom";
 import { ImagePlus, Link2, Pencil, Plus, Trash2, TriangleAlert, X, Zap } from "lucide-react";
 import { Button, Input, Label, Modal, TextArea, toast } from "@heroui/react";
 import type { CatalogLink, QuickReply } from "@/lib/types";
 import { createClient } from "@/lib/supabase/client";
+import { fetchMensajesRapidosMasUsados, type MensajeRapidoMasUsado } from "@/lib/data";
 import { createQuickReply, deleteQuickReply, updateQuickReply, uploadQuickReplyPhoto } from "@/lib/mutations";
 import { QUICK_REPLY_MAX_PHOTOS, validateQuickReplyPhotos } from "@/lib/quick-reply-media";
 import { mediaUrlFor } from "@/lib/storage";
@@ -26,6 +27,36 @@ type QuickReplyTab = "shared" | "mine";
 
 function byLabel(a: QuickReply, b: QuickReply) {
   return a.label.localeCompare(b.label, "es");
+}
+
+/**
+ * El ranking «Más usados» se pide UNA vez por día y por pestaña (T8, plan
+ * "Presupuestos y mensajes rápidos", 21/10/2026): la clave es `masUsadosHasta`,
+ * la medianoche de Caracas de hoy, que cambia solo cuando cambia el día. El
+ * modal vive montado en cada chat y se abre muchas veces; sin esta caché cada
+ * apertura sería una consulta a la RPC para un número que no se mueve en todo
+ * el día. Se guarda la PROMESA (no el resultado) para que dos aperturas
+ * seguidas, antes de que llegue la primera respuesta, compartan la misma
+ * consulta. Una promesa fallida sale de la caché: la próxima apertura reintenta
+ * en vez de quedarse sin franja hasta recargar la pestaña.
+ */
+const cacheMasUsados = new Map<string, Promise<MensajeRapidoMasUsado[]>>();
+
+/** Solo para los tests: cada uno parte sin ranking en caché. */
+export function __reiniciarCacheMasUsados() {
+  cacheMasUsados.clear();
+}
+
+function cargarMasUsados(hasta: string): Promise<MensajeRapidoMasUsado[]> {
+  const guardada = cacheMasUsados.get(hasta);
+  if (guardada) return guardada;
+  // `async` para que un fallo SÍNCRONO al armar el cliente también sea un rechazo.
+  const promesa = (async () => fetchMensajesRapidosMasUsados(createClient(), hasta))();
+  cacheMasUsados.set(hasta, promesa);
+  promesa.catch(() => {
+    if (cacheMasUsados.get(hasta) === promesa) cacheMasUsados.delete(hasta);
+  });
+  return promesa;
 }
 
 interface QuickRepliesModalProps {
@@ -53,6 +84,14 @@ interface QuickRepliesModalProps {
    * fotos como adjuntos pendientes.
    */
   onSelect: (reply: QuickReply) => void;
+  /**
+   * Medianoche de Caracas de hoy (T8, 21/10/2026): el string de
+   * `useInboxDay("today")`, que baja de `crm-shell.tsx` por `ChatPanel` y
+   * `Composer`. Con él se pide la franja «Más usados»; sin él (llamadores
+   * anteriores, tests) no se consulta nada ni se pinta la franja. NO se
+   * recalcula acá: CLAUDE.md, trampa del corte "habló hoy".
+   */
+  masUsadosHasta?: string | null;
 }
 
 export function QuickRepliesModal({
@@ -62,6 +101,7 @@ export function QuickRepliesModal({
   currentAgentId,
   catalogLinks,
   onSelect,
+  masUsadosHasta,
 }: QuickRepliesModalProps) {
   const sharedReplies = quickReplies.filter((reply) => reply.ownerId === null).sort(byLabel);
   const myReplies = quickReplies.filter((reply) => reply.ownerId === currentAgentId).sort(byLabel);
@@ -73,6 +113,38 @@ export function QuickRepliesModal({
   const [mediaFilter, setMediaFilter] = useState<FiltroMedia>("todos");
   const [confirmandoBorrarId, setConfirmandoBorrarId] = useState<string | null>(null);
   const [borrandoId, setBorrandoId] = useState<string | null>(null);
+
+  // «Más usados» (T8, 21/10/2026): se guarda junto con el `hasta` al que
+  // pertenece para no pintar el ranking de ayer mientras llega el de hoy. Efecto
+  // inline con `.then()` y bandera `cancelado`: un `setState` dentro de un
+  // `useCallback` llamado desde el efecto dispara `react-hooks/set-state-in-effect`
+  // aunque viva tras un `await` (CLAUDE.md, trampa de T4 del 22/9/2026).
+  const [masUsados, setMasUsados] = useState<{ hasta: string; items: MensajeRapidoMasUsado[] } | null>(null);
+  useEffect(() => {
+    if (!isOpen || !masUsadosHasta) return;
+    let cancelado = false;
+    cargarMasUsados(masUsadosHasta)
+      .then((items) => {
+        if (!cancelado) setMasUsados({ hasta: masUsadosHasta, items });
+      })
+      .catch((error) => {
+        // Sin toast: la franja es un atajo, no una dependencia del modal.
+        console.error("mensajes_rapidos_mas_usados", error);
+      });
+    return () => {
+      cancelado = true;
+    };
+  }, [isOpen, masUsadosHasta]);
+
+  // Solo los que ESTE asesor ve (la RPC ya filtra, pero la lista que tiene el
+  // modal es la que manda), en el orden del ranking.
+  const masUsadosVisibles =
+    masUsados && masUsados.hasta === masUsadosHasta
+      ? masUsados.items.flatMap((item) => {
+          const reply = quickReplies.find((candidate) => candidate.id === item.quickReplyId);
+          return reply ? [{ reply, usos: item.usos }] : [];
+        })
+      : [];
 
   // Pestaña inicial: «Mis mensajes» si el asesor ya tiene alguno, porque es
   // donde va a buscar sus saludos; si no, «Compartidos». Se recalcula cada vez
@@ -396,6 +468,28 @@ export function QuickRepliesModal({
               <Modal.CloseTrigger />
             </Modal.Header>
             <Modal.Body className="flex flex-col gap-3">
+              {/* T8 (21/10/2026): entre el título y las pestañas, sin filtrarse
+                  con la búsqueda; se esconde mientras el formulario está abierto. */}
+              {!isFormOpen && masUsadosVisibles.length > 0 && (
+                <section aria-label="Más usados" className="qr-top">
+                  <div className="qr-top-head">
+                    <h3 className="qr-top-title">Más usados</h3>
+                    <p className="qr-top-note">Actualizado hoy a las 00:00 · últimos 30 días</p>
+                  </div>
+                  <div className="qr-top-list">
+                    {masUsadosVisibles.map(({ reply, usos }) => (
+                      <button key={reply.id} type="button" className="qr-top-card" onClick={() => onSelect(reply)}>
+                        <span className="qr-top-label">{reply.label}</span>
+                        <span className="qr-top-meta">
+                          <span className="lm-num">{usos === 1 ? "1 envío" : `${usos} envíos`}</span>
+                          {reply.mediaPaths.length > 0 && <span>📷 {reply.mediaPaths.length}</span>}
+                        </span>
+                      </button>
+                    ))}
+                  </div>
+                </section>
+              )}
+
               <SlidingPills
                 tone="segmented"
                 variant="tablist"
