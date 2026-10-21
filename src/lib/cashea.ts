@@ -217,9 +217,15 @@ export function lineaResto(plan: PlanCashea): string {
     : `Resto: ${plan.cuotas} cuotas: ${plan.cuotas - 1} de ${formatUsd(plan.cuotaCents)} y la última de ${formatUsd(ultima)}, cada ${dias} días, sin intereses.`;
 }
 
-export function mensajeWhatsApp(plan: PlanCashea, producto: string): string {
+/**
+ * Sin `producto` (la calculadora del mostrador parte de un monto suelto, no de
+ * un artículo; 21/10/2026) el saludo queda «…el plan con Cashea:». Antes la
+ * calculadora pasaba «Monto» y el cliente leía «para Monto».
+ */
+export function mensajeWhatsApp(plan: PlanCashea, producto?: string): string {
+  const nombre = producto?.trim();
   return [
-    `¡Hola! Te comparto el plan con Cashea para ${producto}:`,
+    nombre ? `¡Hola! Te comparto el plan con Cashea para ${nombre}:` : "¡Hola! Te comparto el plan con Cashea:",
     `Monto total: ${formatUsd(plan.montoCents)}`,
     `Nivel Cashea: ${plan.nivel}`,
     lineaInicial(plan),
@@ -267,5 +273,45 @@ export function parseMontoInput(raw: string): ParseResult<number | null> {
   const value = Number(text);
   if (!Number.isFinite(value)) return { ok: false, error: "Escribe un monto en dólares, con hasta dos decimales." };
   if (value > MAX_MONTO_USD) return { ok: false, error: "Ese monto es demasiado grande." };
+  return { ok: true, value };
+}
+
+/** Tope del monto en bolívares: de sobra para cualquier compra del mostrador. */
+const MAX_MONTO_BS = 1_000_000_000;
+
+const ERROR_MONTO_BS = "Escribe un monto en bolívares, por ejemplo 18.524,40.";
+
+/**
+ * Monto en BOLÍVARES tal como se escribe en Venezuela (21/10/2026, plan
+ * "Presupuestos y mensajes rápidos", T11): «18.524,40» es dieciocho mil y pico.
+ * `parseMontoInput` es para dólares y rechaza «1.234» a propósito (ahí el punto
+ * es decimal); en Bs el asesor escribe o pega el punto de miles y verlo como
+ * error era el reclamo. Vacío es válido (`null`).
+ *
+ * - Con coma: la coma es el decimal (hasta 2 dígitos) y los puntos, de miles,
+ *   en grupos de 3 ("18.52,40" es error).
+ * - Sin coma: «18.524» y «1.500» son miles; un punto con 1 o 2 decimales
+ *   («18524.4», «2.50») es el decimal. Ambigüedad real de «1.500» (¿1,5?): en
+ *   bolívares los montos de mostrador son de miles, se lee como 1500.
+ */
+export function parseMontoBsInput(raw: string): ParseResult<number | null> {
+  const text = raw.trim();
+  if (!text) return { ok: true, value: null };
+
+  let normalizado: string;
+  if (text.includes(",")) {
+    if (!/^(\d+|\d{1,3}(\.\d{3})+),\d{1,2}$/.test(text)) return { ok: false, error: ERROR_MONTO_BS };
+    normalizado = text.replace(/\./g, "").replace(",", ".");
+  } else if (/^\d{1,3}(\.\d{3})+$/.test(text)) {
+    normalizado = text.replace(/\./g, "");
+  } else if (/^\d+(\.\d{1,2})?$/.test(text)) {
+    normalizado = text;
+  } else {
+    return { ok: false, error: ERROR_MONTO_BS };
+  }
+
+  const value = Number(normalizado);
+  if (!Number.isFinite(value)) return { ok: false, error: ERROR_MONTO_BS };
+  if (value > MAX_MONTO_BS) return { ok: false, error: "Ese monto es demasiado grande." };
   return { ok: true, value };
 }

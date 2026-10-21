@@ -18,6 +18,13 @@ import { InventarioView } from "@/components/inventario/inventario-view";
 vi.mock("@/components/app-rail", () => ({ AppRail: () => null, AppTopNav: () => null }));
 vi.mock("@/components/url-search-box", () => ({ UrlSearchBox: () => null }));
 vi.mock("@/components/inventario/producto-fila", () => ({ ProductoFila: () => null }));
+// El panel «Presupuestos guardados» lee de la base al montar (21/10/2026, T5): aquí llega vacío.
+vi.mock("@/lib/supabase/client", () => ({ createClient: () => ({}) }));
+vi.mock("@/lib/presupuestos-data", () => ({
+  fetchPresupuestos: vi.fn().mockResolvedValue([]),
+  borrarPresupuesto: vi.fn(),
+  borrarMisPresupuestos: vi.fn(),
+}));
 
 const ASESOR: Agent = {
   id: "agent-1",
@@ -214,5 +221,36 @@ describe("InventarioView — orden por defecto de «Sin peso»", () => {
     pintarOrden("todos", "nombre");
     expect(screen.getByRole("link", { name: "Sin peso" })).toHaveAttribute("href", "/inventario?filtro=sin-peso");
     expect(screen.queryByText(/Ordenado por existencia/)).toBeNull();
+  });
+});
+
+/**
+ * T5 del plan "Presupuestos y mensajes rápidos" (21/10/2026): «Presupuestos
+ * guardados» y la calculadora fija se montan DENTRO de `.dash-content`; ningún
+ * hijo directo nuevo en `.dash-frame` (trampa del grid de dos columnas,
+ * 9/9/2026). El rail está mockeado a `null`: el marco solo tiene a `<main>`.
+ * El caso con el rail real (dos hijos) está en `inventario-view-caja.test.tsx`.
+ */
+describe("InventarioView — presupuestos y calculadora del mostrador", () => {
+  it("las dos piezas viven dentro de .dash-content", () => {
+    pintar(haceDias(0));
+
+    const contenido = document.querySelector(".dash-content");
+    expect(contenido).not.toBeNull();
+    expect(contenido!.querySelector(".inv-presupuestos")).not.toBeNull();
+    expect(contenido!.querySelector(".inv-calc")).not.toBeNull();
+    expect(screen.getByRole("heading", { name: "Presupuestos guardados" })).toBeInTheDocument();
+    expect(screen.getByRole("textbox", { name: "Monto en bolívares" })).toBeInTheDocument();
+  });
+
+  it("la calculadora comparte grilla con la lista de repuestos y no cuelga de .dash-frame", () => {
+    pintar(haceDias(0));
+
+    const mostrador = document.querySelector(".inv-mostrador");
+    expect(mostrador).not.toBeNull();
+    expect(mostrador!.parentElement).toHaveClass("dash-content");
+    expect(mostrador!.querySelector(".inv-panel-lista")).not.toBeNull();
+    expect(mostrador!.querySelector(".inv-calc")).not.toBeNull();
+    expect(document.querySelector(".dash-frame")!.childElementCount).toBe(1);
   });
 });

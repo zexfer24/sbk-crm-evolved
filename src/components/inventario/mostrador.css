@@ -1,0 +1,280 @@
+/* ==========================================================================
+   Mostrador de /inventario (21/10/2026, plan "Presupuestos y mensajes
+   rápidos", T5): el panel «Presupuestos guardados» y la calculadora fija.
+
+   Trampa de layout (9/9/2026): `.dash-frame` es una grilla de DOS columnas y un
+   hijo directo de más la desarma. Todo lo de este archivo vive DENTRO de
+   `.dash-content`; la calculadora comparte una grilla propia (`.inv-mostrador`)
+   con la lista, no con el marco. jsdom no calcula layout: el resguardo es
+   `mostrador-css.test.ts`, que lee esta hoja.
+   ========================================================================== */
+
+/* --- Grilla: la lista a la izquierda, la calculadora fija a la derecha ------ */
+
+.inv-mostrador {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 320px;
+  gap: 18px;
+  align-items: start;
+}
+
+/* --- Calculadora ---------------------------------------------------------- */
+
+.inv-calc {
+  position: sticky;
+  top: 16px;
+  min-width: 0;
+  padding: 18px 18px 20px;
+}
+
+/* En ancho no hay botón: el cuerpo se ve siempre. */
+.inv-calc-toggle {
+  display: none;
+  align-items: center;
+  justify-content: space-between;
+  width: 100%;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--lm-ink);
+  font: inherit;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.inv-calc-titulo {
+  margin: 0 0 12px;
+  font-size: 15px;
+  font-weight: 600;
+  letter-spacing: -0.02em;
+}
+
+.inv-calc-cuerpo {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  min-width: 0;
+}
+
+.inv-calc-moneda {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 6px;
+}
+
+.inv-calc-opcion {
+  padding: 7px 10px;
+  border: 1px solid var(--lm-line);
+  border-radius: 8px;
+  background: var(--lm-surface);
+  color: var(--lm-ink);
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.inv-calc-opcion[aria-pressed="true"] {
+  border-color: var(--lm-link);
+  background: color-mix(in srgb, var(--lm-link) 14%, transparent);
+  color: var(--lm-link-ink);
+  font-weight: 600;
+}
+
+.inv-calc-opcion:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.inv-calc-campo {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+
+.inv-calc-campo label {
+  font-size: 12px;
+  color: var(--lm-muted);
+}
+
+.inv-calc-input {
+  width: 100%;
+  min-width: 0;
+  padding: 8px 10px;
+  border: 1px solid var(--lm-line);
+  border-radius: 8px;
+  background: var(--lm-sunken);
+  color: var(--lm-ink);
+  font-size: 14px;
+}
+
+.inv-calc-input:focus {
+  outline: none;
+  border-color: var(--lm-link);
+}
+
+.inv-calc-aviso {
+  margin: 0;
+  font-size: 12px;
+  color: var(--lm-wait-ink, var(--lm-muted));
+}
+
+.inv-calc-aviso[data-tone="error"] {
+  color: var(--lm-hot-ink);
+}
+
+.inv-calc-resultado {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin: 0;
+  padding: 12px 14px;
+  border-radius: 10px;
+  background: var(--lm-sunken);
+}
+
+.inv-calc-resultado small {
+  font-size: 11.5px;
+  color: var(--lm-muted);
+}
+
+.inv-calc-resultado strong {
+  font-size: 26px;
+  font-weight: 600;
+  letter-spacing: -0.02em;
+  overflow-wrap: anywhere;
+}
+
+.inv-calc-acciones {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+/* --- Presupuestos guardados ------------------------------------------------ */
+
+.inv-presupuestos-barra {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+  padding: 0 26px 14px;
+}
+
+.inv-presupuestos-buscar {
+  flex: 1 1 220px;
+}
+
+.inv-presupuestos-lista {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  max-height: 340px;
+  margin: 0;
+  padding: 0 26px 18px;
+  list-style: none;
+  overflow-y: auto;
+}
+
+.inv-presupuesto {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px 16px;
+  padding: 12px 14px;
+  border: 1px solid var(--lm-line);
+  border-radius: 10px;
+  background: var(--lm-surface);
+}
+
+.inv-presupuesto-datos {
+  flex: 1 1 260px;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+}
+
+.inv-presupuesto-nombre {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 4px 12px;
+  font-weight: 600;
+}
+
+.inv-presupuesto-total {
+  font-weight: 600;
+}
+
+.inv-presupuesto-meta,
+.inv-presupuesto-nota {
+  margin: 0;
+  font-size: 12px;
+  color: var(--lm-muted);
+}
+
+.inv-presupuesto-nota {
+  font-style: italic;
+  overflow-wrap: anywhere;
+}
+
+.inv-presupuesto-cambio {
+  margin: 0;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--lm-wait-ink, var(--lm-muted));
+}
+
+.inv-presupuesto-acciones {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.inv-presupuestos-estado {
+  margin: 0;
+  padding: 4px 26px 20px;
+  font-size: 13px;
+  color: var(--lm-muted);
+}
+
+/* --- Pantallas estrechas ---------------------------------------------------
+   Una columna: la calculadora sube ANTES de la lista como un panel plegable
+   (el botón `.inv-calc-toggle` aparece y `data-abierta` decide si se ve el
+   cuerpo). Sin sticky: pegada a una lista de una sola columna taparía las filas. */
+@media (max-width: 1180px) {
+  .inv-mostrador {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .inv-calc {
+    order: -1;
+    position: static;
+  }
+
+  .inv-calc-toggle {
+    display: flex;
+  }
+
+  .inv-calc-titulo {
+    display: none;
+  }
+
+  .inv-calc-cuerpo {
+    margin-top: 12px;
+  }
+
+  .inv-calc-cuerpo[data-abierta="false"] {
+    display: none;
+  }
+}
+
+@media (max-width: 760px) {
+  .inv-presupuestos-barra,
+  .inv-presupuestos-lista,
+  .inv-presupuestos-estado {
+    padding-left: 14px;
+    padding-right: 14px;
+  }
+}

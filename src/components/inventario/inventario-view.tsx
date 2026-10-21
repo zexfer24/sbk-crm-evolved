@@ -24,12 +24,15 @@ import { ProductoFila } from "@/components/inventario/producto-fila";
 import { CarritoBoton } from "@/components/inventario/carrito-boton";
 import { InventarioPaginador } from "@/components/inventario/inventario-paginador";
 import { InventarioCarritoProvider } from "@/components/inventario/inventario-carrito-provider";
+import { PresupuestosPanel } from "@/components/inventario/presupuestos-panel";
+import { CalculadoraMostradorConCarrito } from "@/components/inventario/calculadora-mostrador";
 import type { BcvRateSummary } from "@/components/inbox/bcv-rate-chip";
 import "@/components/dashboard/dashboard.css";
 import "@/components/agent-control/agent-control.css";
 import "@/components/crm.css";
 import "@/components/clientes/clientes.css";
 import "@/components/inventario/inventario.css";
+import "@/components/inventario/mostrador.css";
 
 const FILTERS: InventoryFilter[] = ["todos", "agotados", "bajo-stock", "inactivos", "sin-peso"];
 // «existencia» no es una píldora: es el orden por defecto de «Sin peso» (ver `ordenPorDefecto`).
@@ -218,73 +221,84 @@ export function InventarioView({
                 </div>
               </div>
 
-              {/* `inv-panel-lista` deja aire debajo del paginador para el botón flotante del carrito. */}
-              <section className="dash-panel inv-panel-lista">
-                <div className="cli-toolbar">
-                  <UrlSearchBox
-                    basePath="/inventario"
-                    query={params.query}
-                    keep={keepInSearch}
-                    placeholder="Buscar por nombre, marca o código"
-                    label="Buscar en el inventario"
-                  />
+              {/* Presupuestos guardados y calculadora fija (21/10/2026, "Presupuestos y mensajes
+                  rápidos", T5): las dos piezas viven DENTRO de `.dash-content`, nunca como
+                  hijo directo de `.dash-frame` (grid de dos columnas, trampa del 9/9/2026).
+                  La calculadora comparte grilla con la lista (`.inv-mostrador`) para quedar
+                  fija a su lado al bajar. */}
+              <PresupuestosPanel agentId={currentAgent.id} role={currentAgent.role} bcvRate={rate} />
 
-                  <div className="cli-filters" role="group" aria-label="Filtrar repuestos">
-                    {FILTERS.map((filter) => (
-                      <Link
-                        key={filter}
-                        className="crm-pill"
-                        href={inventoryFilterHref(params, filter)}
-                        {...(params.filter === filter ? { "data-active": "true", "aria-current": "true" as const } : {})}
-                      >
-                        {INVENTORY_FILTER_LABELS[filter]}
-                      </Link>
-                    ))}
+              <div className="inv-mostrador">
+                {/* `inv-panel-lista` deja aire debajo del paginador para el botón flotante del carrito. */}
+                <section className="dash-panel inv-panel-lista">
+                  <div className="cli-toolbar">
+                    <UrlSearchBox
+                      basePath="/inventario"
+                      query={params.query}
+                      keep={keepInSearch}
+                      placeholder="Buscar por nombre, marca o código"
+                      label="Buscar en el inventario"
+                    />
+
+                    <div className="cli-filters" role="group" aria-label="Filtrar repuestos">
+                      {FILTERS.map((filter) => (
+                        <Link
+                          key={filter}
+                          className="crm-pill"
+                          href={inventoryFilterHref(params, filter)}
+                          {...(params.filter === filter ? { "data-active": "true", "aria-current": "true" as const } : {})}
+                        >
+                          {INVENTORY_FILTER_LABELS[filter]}
+                        </Link>
+                      ))}
+                    </div>
+
+                    <div className="cli-filters" role="group" aria-label="Ordenar repuestos">
+                      {SORTS.map((sort) => (
+                        <Link
+                          key={sort}
+                          className="crm-pill"
+                          href={inventoryHref({ ...params, sort, page: 1 })}
+                          {...(params.sort === sort ? { "data-active": "true", "aria-current": "true" as const } : {})}
+                        >
+                          {INVENTORY_SORT_LABELS[sort]}
+                        </Link>
+                      ))}
+                    </div>
                   </div>
 
-                  <div className="cli-filters" role="group" aria-label="Ordenar repuestos">
-                    {SORTS.map((sort) => (
-                      <Link
-                        key={sort}
-                        className="crm-pill"
-                        href={inventoryHref({ ...params, sort, page: 1 })}
-                        {...(params.sort === sort ? { "data-active": "true", "aria-current": "true" as const } : {})}
-                      >
-                        {INVENTORY_SORT_LABELS[sort]}
-                      </Link>
-                    ))}
+                  <div className="dash-panel-head">
+                    <h2 className="dash-panel-title">
+                      {params.query ? `Resultados para «${params.query}»` : INVENTORY_FILTER_LABELS[params.filter]}
+                    </h2>
+                    <span className="dash-panel-spacer" />
+                    {/* «Sin peso» abre por existencia sin que ninguna píldora de orden lo diga: la nota lo hace explícito. */}
+                    {params.filter === "sin-peso" && params.sort === "existencia" && (
+                      <span className="dash-panel-note inv-orden-nota">Ordenado por existencia, de mayor a menor</span>
+                    )}
+                    <span className="dash-panel-note">
+                      {total === 0 ? "Sin resultados" : `${desde}–${hasta} de ${total}`}
+                    </span>
                   </div>
-                </div>
 
-                <div className="dash-panel-head">
-                  <h2 className="dash-panel-title">
-                    {params.query ? `Resultados para «${params.query}»` : INVENTORY_FILTER_LABELS[params.filter]}
-                  </h2>
-                  <span className="dash-panel-spacer" />
-                  {/* «Sin peso» abre por existencia sin que ninguna píldora de orden lo diga: la nota lo hace explícito. */}
-                  {params.filter === "sin-peso" && params.sort === "existencia" && (
-                    <span className="dash-panel-note inv-orden-nota">Ordenado por existencia, de mayor a menor</span>
+                  {products.length === 0 ? (
+                    <div className="dash-empty">
+                      <p className="dash-empty-title">{empty.title}</p>
+                      <p className="dash-empty-hint">{empty.hint}</p>
+                    </div>
+                  ) : (
+                    <ul className="inv-list">
+                      {products.map((product) => (
+                        <ProductoFila key={product.id} product={product} bcvRate={rate} soloLectura={soloLectura} />
+                      ))}
+                    </ul>
                   )}
-                  <span className="dash-panel-note">
-                    {total === 0 ? "Sin resultados" : `${desde}–${hasta} de ${total}`}
-                  </span>
-                </div>
 
-                {products.length === 0 ? (
-                  <div className="dash-empty">
-                    <p className="dash-empty-title">{empty.title}</p>
-                    <p className="dash-empty-hint">{empty.hint}</p>
-                  </div>
-                ) : (
-                  <ul className="inv-list">
-                    {products.map((product) => (
-                      <ProductoFila key={product.id} product={product} bcvRate={rate} soloLectura={soloLectura} />
-                    ))}
-                  </ul>
-                )}
+                  {pages > 1 && <InventarioPaginador params={params} pages={pages} />}
+                </section>
 
-                {pages > 1 && <InventarioPaginador params={params} pages={pages} />}
-              </section>
+                <CalculadoraMostradorConCarrito bcvRate={rate} agentId={currentAgent.id} />
+              </div>
 
               <section className="dash-panel">
                 <div className="dash-panel-head">

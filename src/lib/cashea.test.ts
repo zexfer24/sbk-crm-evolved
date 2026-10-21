@@ -9,6 +9,7 @@ import {
   formatFechaCuota,
   formatUsd,
   mensajeWhatsApp,
+  parseMontoBsInput,
   parseMontoInput,
   porcentajeInicial,
   toCents,
@@ -213,6 +214,14 @@ describe("mensajeWhatsApp", () => {
     const plan = calcularCashea({ montoCents: 8500, nivel: 6, cuotas: 3, bajada: true });
     expect(mensajeWhatsApp(plan, "Guantes")).toContain("Inicial (0%): $0,00");
   });
+
+  it("sin producto (ausente o vacío) la primera línea no dice «para»", () => {
+    const plan = calcularCashea({ montoCents: 8600, nivel: 6, cuotas: 3, bajada: false });
+    for (const mensaje of [mensajeWhatsApp(plan), mensajeWhatsApp(plan, ""), mensajeWhatsApp(plan, "  ")]) {
+      expect(mensaje.split("\n")[0]).toBe("¡Hola! Te comparto el plan con Cashea:");
+      expect(mensaje).not.toContain("para");
+    }
+  });
 });
 
 describe("parseMontoInput", () => {
@@ -232,6 +241,46 @@ describe("parseMontoInput", () => {
 
   it("rechaza montos desmedidos", () => {
     expect(parseMontoInput("1000001")).toEqual({ ok: false, error: "Ese monto es demasiado grande." });
+  });
+});
+
+describe("parseMontoBsInput", () => {
+  it("la coma es el decimal y los puntos son de miles", () => {
+    expect(parseMontoBsInput("18.524,40")).toEqual({ ok: true, value: 18524.4 });
+    expect(parseMontoBsInput("18524,40")).toEqual({ ok: true, value: 18524.4 });
+    expect(parseMontoBsInput("1.000.000,5")).toEqual({ ok: true, value: 1000000.5 });
+    expect(parseMontoBsInput("18,5")).toEqual({ ok: true, value: 18.5 });
+  });
+
+  it("sin coma, un punto con grupos de tres dígitos es de miles", () => {
+    expect(parseMontoBsInput("18.524")).toEqual({ ok: true, value: 18524 });
+    expect(parseMontoBsInput("1.500")).toEqual({ ok: true, value: 1500 });
+    expect(parseMontoBsInput("1.000.000")).toEqual({ ok: true, value: 1000000 });
+  });
+
+  it("sin coma, un punto con uno o dos decimales es el decimal", () => {
+    expect(parseMontoBsInput("18524.4")).toEqual({ ok: true, value: 18524.4 });
+    expect(parseMontoBsInput("2.50")).toEqual({ ok: true, value: 2.5 });
+    expect(parseMontoBsInput("18524")).toEqual({ ok: true, value: 18524 });
+    expect(parseMontoBsInput(" 7 ")).toEqual({ ok: true, value: 7 });
+  });
+
+  it("vacío es válido y significa «todavía no hay monto»", () => {
+    expect(parseMontoBsInput("")).toEqual({ ok: true, value: null });
+    expect(parseMontoBsInput("   ")).toEqual({ ok: true, value: null });
+  });
+
+  it("rechaza lo que no es un monto en bolívares", () => {
+    const error = "Escribe un monto en bolívares, por ejemplo 18.524,40.";
+    for (const raw of ["18.52,40", "12.3456", "-5", "abc", "1,234,5", "18.524,456", "1.5.0"]) {
+      expect(parseMontoBsInput(raw)).toEqual({ ok: false, error });
+    }
+  });
+
+  it("rechaza montos desmedidos pero acepta el tope", () => {
+    expect(parseMontoBsInput("1.000.000.000")).toEqual({ ok: true, value: 1_000_000_000 });
+    expect(parseMontoBsInput("1.000.000.001")).toEqual({ ok: false, error: "Ese monto es demasiado grande." });
+    expect(parseMontoBsInput("2.000.000.000,50")).toEqual({ ok: false, error: "Ese monto es demasiado grande." });
   });
 });
 

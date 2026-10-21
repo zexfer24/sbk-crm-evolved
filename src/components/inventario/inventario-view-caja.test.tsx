@@ -34,6 +34,13 @@ vi.mock("@/lib/inventory-data", () => ({
 
 vi.mock("@/lib/mutations", () => ({ updateProductWeight: vi.fn() }));
 
+// «Presupuestos guardados» (21/10/2026, T5): la caja también lo usa (D4); aquí llega vacío.
+vi.mock("@/lib/presupuestos-data", () => ({
+  fetchPresupuestos: vi.fn().mockResolvedValue([]),
+  borrarPresupuesto: vi.fn(),
+  borrarMisPresupuestos: vi.fn(),
+}));
+
 // El aviso de asignación no se monta para caja (lo prueba app-rail.test.tsx); aquí no hace falta su canal.
 vi.mock("@/components/assignment-notifier", () => ({ AssignmentNotifier: () => null }));
 vi.mock("@/components/url-search-box", () => ({ UrlSearchBox: () => null }));
@@ -97,7 +104,8 @@ describe("InventarioView — rol caja", () => {
   it("no hay campos de peso: el peso se ve como texto", () => {
     pintar("caja");
 
-    expect(screen.queryByRole("textbox")).toBeNull();
+    // La calculadora del mostrador (D4: la caja también la usa) trae su propio campo de monto.
+    expect(screen.queryAllByRole("textbox").filter((el) => el.id !== "calc-monto")).toEqual([]);
     expect(screen.queryByRole("button", { name: /^Falta el peso: cargalo\s→$/ })).toBeNull();
     // El hueco del precio estándar ya no existe para la caja: ningún «Sin peso cargado».
     expect(screen.queryByText("Sin peso cargado")).toBeNull();
@@ -148,6 +156,17 @@ describe("InventarioView — la caja no ve el precio estándar", () => {
       />
     );
     expect(document.body.innerHTML).not.toMatch(/est[aá]ndar|incluye envío MRW/i);
+  });
+});
+
+describe("InventarioView — la caja usa los presupuestos y la calculadora (D4)", () => {
+  it("las dos piezas están, dentro de .dash-content, y .dash-frame sigue con sus dos hijos (rail + main)", () => {
+    const { container } = pintar("caja");
+
+    expect(screen.getByRole("heading", { name: "Presupuestos guardados" })).toBeInTheDocument();
+    expect(container.querySelector(".dash-content .inv-calc")).not.toBeNull();
+    expect(container.querySelector(".dash-content .inv-presupuestos")).not.toBeNull();
+    expect(container.querySelector(".dash-frame")!.childElementCount).toBe(2);
   });
 });
 
