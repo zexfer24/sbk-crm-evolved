@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useState, useSyncExternalStore } from "react";
+import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { ChevronDown } from "lucide-react";
 import { Button, toast } from "@heroui/react";
 import {
@@ -35,7 +35,17 @@ import "./mostrador.css";
  * redondeo en la pantalla (CLAUDE.md, 27/9/2026). De dólares a bolívares,
  * `bsDeCents`. El estado es local; lo único que se recuerda, por asesor y en
  * este navegador, es la moneda elegida.
+ *
+ * 23/10/2026: la barra de búsqueda de la lista también queda fija, debajo de
+ * esta cuando la calculadora es una barra horizontal. Como su alto es variable
+ * (cambia con el plan, un aviso o el ancho), el componente lo publica en la
+ * variable CSS `--inv-calc-alto` sobre `.inv-mostrador` con un ResizeObserver
+ * — sin setState, la variable vive en el DOM — y `mostrador.css` la suma al
+ * `top` de la barra. Sin ResizeObserver (jsdom) no publica nada y el `top`
+ * cae al valor sin calculadora.
  */
+
+export const VARIABLE_ALTO_CALCULADORA = "--inv-calc-alto";
 
 export const CLAVE_MONEDA_PREFIX = "sbk:calculadora-mostrador:moneda:v1:";
 
@@ -78,6 +88,25 @@ interface CalculadoraMostradorProps {
 
 export function CalculadoraMostrador({ bcvRate, totalCarritoUsd, agentId }: CalculadoraMostradorProps) {
   const sinTasa = !(bcvRate > 0);
+  const calcRef = useRef<HTMLElement>(null);
+
+  useEffect(() => {
+    const el = calcRef.current;
+    const contenedor = el?.closest<HTMLElement>(".inv-mostrador");
+    if (!el || !contenedor || typeof ResizeObserver === "undefined") return;
+    const publicar = () =>
+      contenedor.style.setProperty(
+        VARIABLE_ALTO_CALCULADORA,
+        `${Math.ceil(el.getBoundingClientRect().height)}px`,
+      );
+    publicar();
+    const observador = new ResizeObserver(publicar);
+    observador.observe(el);
+    return () => {
+      observador.disconnect();
+      contenedor.style.removeProperty(VARIABLE_ALTO_CALCULADORA);
+    };
+  }, []);
 
   // La moneda recordada se lee con `useSyncExternalStore`: en el servidor y en
   // la hidratación vale `null` (arranca en Bs) y recién ahí se aplica lo guardado,
@@ -143,7 +172,7 @@ export function CalculadoraMostrador({ bcvRate, totalCarritoUsd, agentId }: Calc
   const tieneTotal = totalCarritoUsd !== null && totalCarritoUsd > 0;
 
   return (
-    <aside className="dash-panel inv-calc" aria-label="Calculadora del mostrador">
+    <aside ref={calcRef} className="dash-panel inv-calc" aria-label="Calculadora del mostrador">
       <button
         type="button"
         className="inv-calc-toggle"

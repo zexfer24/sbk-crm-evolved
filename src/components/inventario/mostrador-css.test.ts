@@ -142,6 +142,39 @@ describe("la hoja de estilos del mostrador", () => {
     expect(css).toMatch(/\.inv-calc\s+\.cashea-opcion\s*\{[^}]*min-width:\s*0\s*;[^}]*white-space:\s*nowrap\s*;/);
   });
 
+  it("la barra de búsqueda y filtros de la lista queda fija debajo de la calculadora (23/10/2026)", async () => {
+    const css = await leerCss();
+    const barra = bloque(css, ".inv-panel-lista > .cli-toolbar");
+
+    expect(barra, "sin sticky la barra se va con el scroll mientras la calculadora baja").toMatch(
+      /position:\s*sticky\s*;/,
+    );
+    expect(
+      barra,
+      "el `top` suma el alto de la calculadora, que el componente publica en --inv-calc-alto",
+    ).toMatch(/top:[^;]*var\(--inv-calc-alto/);
+    expect(barra, "sin fondo propio las filas se verían a través de la barra").toMatch(/background:/);
+    const zBarra = /z-index:\s*(\d+)\s*;/.exec(barra);
+    const zCalc = /z-index:\s*(\d+)\s*;/.exec(bloque(css, ".inv-calc"));
+    expect(zBarra, "la barra sticky necesita z-index para quedar sobre las filas").not.toBeNull();
+    expect(zCalc).not.toBeNull();
+    expect(Number(zBarra![1]), "la calculadora tiene que quedar por encima de la barra").toBeLessThan(
+      Number(zCalc![1]),
+    );
+  });
+
+  it("desde 1720px la barra de la lista se pega a 16px: la calculadora está al costado, no encima", async () => {
+    const ancho = media(await leerCss(), "min-width: 1720px");
+
+    expect(ancho).toMatch(/\.inv-panel-lista\s*>\s*\.cli-toolbar\s*\{[^}]*top:\s*16px\s*;/);
+  });
+
+  it("hasta 760px la barra de la lista no es sticky, igual que la calculadora: taparía filas en el celular", async () => {
+    const angosto = media(await leerCss(), "max-width: 760px");
+
+    expect(angosto).toMatch(/\.inv-panel-lista\s*>\s*\.cli-toolbar\s*\{[^}]*position:\s*static\s*;/);
+  });
+
   it("en la barra los niveles caben en una sola fila de seis", async () => {
     const barra = media(await leerCss(), "min-width: 761px) and (max-width: 1719px");
 

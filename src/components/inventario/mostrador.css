@@ -18,7 +18,10 @@
      - desde 1720px: lista + calculadora sticky en 320px a la derecha;
      - 761 a 1719px (el valor por defecto): UNA columna, la calculadora ARRIBA como
        barra horizontal sticky, siempre abierta, a todo el ancho;
-     - hasta 760px: plegable, con el botón «Calculadora».  */
+     - hasta 760px: plegable, con el botón «Calculadora».
+   23/10/2026: la barra de búsqueda y filtros de la lista (`.cli-toolbar`) también
+   queda fija al bajar, igual que la calculadora (pedido de los asesores). En la
+   barra horizontal se pega justo debajo de ella; en dos columnas, a su altura.  */
 
 .inv-mostrador {
   display: grid;
@@ -188,6 +191,24 @@
   white-space: nowrap;
 }
 
+/* --- Barra de búsqueda y filtros de la lista, fija (23/10/2026) ---------------
+   Los asesores pidieron: «así como baja la calculadora, que también baje la barra
+   de búsqueda». Sticky dentro de `.inv-panel-lista`, que dura lo que la lista.
+   En el tramo por defecto la calculadora es una barra de alto variable pegada a
+   `top: 8px`, así que esta se pega debajo: 8px (top de la calculadora) + su alto,
+   que `CalculadoraMostrador` publica en `--inv-calc-alto` sobre `.inv-mostrador`
+   (sin esa variable, 0px), + 8px de aire. z-index 19: por debajo de la calculadora
+   (20). `.cli-toolbar` es de `clientes.css` (compartida con Clientes) y no tiene
+   fondo: se lo damos aquí, acotado a la lista del Inventario, y se redondean solo
+   las esquinas de arriba para que calce con el panel. */
+.inv-panel-lista > .cli-toolbar {
+  position: sticky;
+  top: calc(8px + var(--inv-calc-alto, 0px) + 8px);
+  z-index: 19;
+  background: var(--lm-surface);
+  border-radius: var(--lm-radius-panel) var(--lm-radius-panel) 0 0;
+}
+
 /* --- Barra (761 a 1719px) ---------------------------------------------------
    Compacta (objetivo: ~170px de alto con un monto escrito): sin los rótulos «Nivel
    Cashea»/«Cuotas» (los radios conservan su aria-label), moneda junto al monto,
@@ -297,6 +318,11 @@
     top: 16px;
     z-index: auto;
     padding: 18px 18px 20px;
+  }
+
+  /* La calculadora está al costado, no encima: la barra solo deja el aire de 16px. */
+  .inv-panel-lista > .cli-toolbar {
+    top: 16px;
   }
 
   .inv-calc-titulo {
@@ -420,6 +446,11 @@
   .inv-calc {
     position: static;
     padding: 18px 18px 20px;
+  }
+
+  /* Igual que la calculadora: pegada a una lista de una columna taparía las filas. */
+  .inv-panel-lista > .cli-toolbar {
+    position: static;
   }
 
   .inv-calc-toggle {

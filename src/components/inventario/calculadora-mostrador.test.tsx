@@ -1,5 +1,5 @@
 /** @vitest-environment jsdom */
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import {
@@ -8,7 +8,11 @@ import {
   formatBs,
   mensajeWhatsApp,
 } from "@/lib/cashea";
-import { CalculadoraMostrador, CLAVE_MONEDA_PREFIX } from "@/components/inventario/calculadora-mostrador";
+import {
+  CalculadoraMostrador,
+  CLAVE_MONEDA_PREFIX,
+  VARIABLE_ALTO_CALCULADORA,
+} from "@/components/inventario/calculadora-mostrador";
 
 /**
  * Calculadora fija del mostrador (21/10/2026, plan "Presupuestos y mensajes
@@ -269,5 +273,93 @@ describe("CalculadoraMostrador — plegable en pantallas angostas", () => {
     const { container } = pintar();
     const aside = container.querySelector("aside");
     expect(aside).toHaveClass("dash-panel", "inv-calc");
+  });
+});
+
+describe("CalculadoraMostrador — publica su alto para la barra fija de la lista (23/10/2026)", () => {
+  class FakeResizeObserver {
+    static instances: FakeResizeObserver[] = [];
+    disconnect = vi.fn();
+    observed: Element[] = [];
+    private readonly cb: ResizeObserverCallback;
+
+    constructor(cb: ResizeObserverCallback) {
+      this.cb = cb;
+      FakeResizeObserver.instances.push(this);
+    }
+
+    observe(el: Element) {
+      this.observed.push(el);
+    }
+    unobserve() {}
+    trigger() {
+      this.cb([] as unknown as ResizeObserverEntry[], this as unknown as ResizeObserver);
+    }
+  }
+
+  let altoReal = 170;
+
+  beforeEach(() => {
+    FakeResizeObserver.instances = [];
+    altoReal = 170;
+    vi.stubGlobal("ResizeObserver", FakeResizeObserver);
+    // jsdom no calcula layout: el alto que un navegador mediría se fuerza aquí.
+    vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(
+      () => ({ height: altoReal, width: 0, top: 0, left: 0, right: 0, bottom: 0, x: 0, y: 0, toJSON() {} }) as DOMRect,
+    );
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.restoreAllMocks();
+  });
+
+  function pintarDentroDelMostrador() {
+    return render(
+      <div className="inv-mostrador" data-testid="mostrador">
+        <CalculadoraMostrador bcvRate={215.4} totalCarritoUsd={null} agentId={AGENTE} />
+      </div>,
+    );
+  }
+
+  it("la variable se llama --inv-calc-alto: es el nombre que lee mostrador.css", () => {
+    expect(VARIABLE_ALTO_CALCULADORA).toBe("--inv-calc-alto");
+  });
+
+  it("publica el alto de la calculadora en .inv-mostrador, lo actualiza al cambiar de tamaño y lo quita al desmontar", () => {
+    const { unmount } = pintarDentroDelMostrador();
+    const mostrador = screen.getByTestId("mostrador");
+    const aside = mostrador.querySelector("aside");
+
+    expect(mostrador.style.getPropertyValue("--inv-calc-alto")).toBe("170px");
+    expect(FakeResizeObserver.instances).toHaveLength(1);
+    expect(FakeResizeObserver.instances[0].observed).toEqual([aside]);
+
+    altoReal = 200;
+    FakeResizeObserver.instances[0].trigger();
+    expect(mostrador.style.getPropertyValue("--inv-calc-alto")).toBe("200px");
+
+    unmount();
+    expect(mostrador.style.getPropertyValue("--inv-calc-alto")).toBe("");
+    expect(FakeResizeObserver.instances[0].disconnect).toHaveBeenCalledTimes(1);
+  });
+
+  it("redondea hacia arriba el alto fraccionario: una barra de 170,2px publica 171px", () => {
+    altoReal = 170.2;
+    pintarDentroDelMostrador();
+
+    expect(screen.getByTestId("mostrador").style.getPropertyValue("--inv-calc-alto")).toBe("171px");
+  });
+
+  it("sin ResizeObserver (navegador viejo, jsdom) no lanza y no publica nada", () => {
+    vi.stubGlobal("ResizeObserver", undefined);
+
+    expect(() => pintarDentroDelMostrador()).not.toThrow();
+    expect(screen.getByTestId("mostrador").style.getPropertyValue("--inv-calc-alto")).toBe("");
+  });
+
+  it("fuera de .inv-mostrador no hace nada ni lanza", () => {
+    expect(() => pintar()).not.toThrow();
+    expect(FakeResizeObserver.instances).toHaveLength(0);
   });
 });
