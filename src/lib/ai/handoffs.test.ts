@@ -999,6 +999,31 @@ describe("escalationOpen", () => {
     expect(await escalationOpen(supabase, "conv-1")).toBe(false);
   });
 
+  // ---------------------------------------------------------------------------
+  // 24/10/2026, caso `75e26065…`: `sin_mensaje_nuevo` se escribe sobre el MISMO
+  // dueño cuando el turno no tiene nada nuevo que contestar (un sticker tras
+  // dos respuestas, o un mensaje ya anotado como nota para el asesor). Si
+  // cerrara la escalada, la guarda de cortesía volvería a despedir a un cliente
+  // que sigue esperando a una persona y Seba dejaría de anotar para el asesor
+  // -- por eso NO se reusó `sin_contenido_legible`, que no está en la lista.
+  // ---------------------------------------------------------------------------
+  it("true: 'escalada_sin_asesor' seguida de 'sin_mensaje_nuevo' (el silencio no cierra la escalada)", async () => {
+    const supabase = fakeSupabaseParaEscalationOpen({
+      filas: [
+        { reason: "escalada_sin_asesor", created_at: "2026-10-01T10:00:00.000Z" },
+        { reason: "sin_mensaje_nuevo", created_at: "2026-10-01T10:05:00.000Z" },
+      ],
+      mensajesDeAsesor: [],
+    });
+
+    expect(await escalationOpen(supabase, "conv-1")).toBe(true);
+  });
+
+  it("'sin_mensaje_nuevo' está entre las razones que no cambian de manos (y 'sin_contenido_legible' sigue fuera)", () => {
+    expect(RAZONES_QUE_NO_CIERRAN_LA_ESCALADA).toContain("sin_mensaje_nuevo");
+    expect(RAZONES_QUE_NO_CIERRAN_LA_ESCALADA).not.toContain("sin_contenido_legible");
+  });
+
   it("'demora_sin_asesor' está entre las razones que no cambian de manos", () => {
     expect(RAZONES_QUE_NO_CIERRAN_LA_ESCALADA).toContain("demora_sin_asesor");
     expect(RAZONES_QUE_NO_CIERRAN_LA_ESCALADA).not.toContain("reasignada_por_demora");
@@ -1117,6 +1142,36 @@ describe("conversationsWithDecidedSilence", () => {
     ]);
 
     expect(resultado.has("conv-1")).toBe(true);
+  });
+
+  /**
+   * 24/10/2026, caso `75e26065…`: `sin_mensaje_nuevo` es un silencio decidido.
+   * Mientras el traspaso sea posterior o igual al último mensaje del cliente
+   * (un sticker, en el caso real) el reconciliador no la reencola; si el
+   * cliente escribe algo después, vuelve a ser candidata.
+   */
+  it("'sin_mensaje_nuevo' cuenta como silencio decidido: el traspaso es posterior al sticker", async () => {
+    const supabase = fakeSupabaseParaSilencioDecidido({
+      filas: [{ conversation_id: "conv-1", reason: "sin_mensaje_nuevo", created_at: "2026-10-01T18:14:40.000Z" }],
+    });
+
+    const resultado = await conversationsWithDecidedSilence(supabase, [
+      { id: "conv-1", lastCustomerMessageAt: "2026-10-01T18:14:36.000Z" },
+    ]);
+
+    expect(resultado.has("conv-1")).toBe(true);
+  });
+
+  it("'sin_mensaje_nuevo': si el cliente escribe DESPUÉS del traspaso, vuelve a ser candidata", async () => {
+    const supabase = fakeSupabaseParaSilencioDecidido({
+      filas: [{ conversation_id: "conv-1", reason: "sin_mensaje_nuevo", created_at: "2026-10-01T18:14:40.000Z" }],
+    });
+
+    const resultado = await conversationsWithDecidedSilence(supabase, [
+      { id: "conv-1", lastCustomerMessageAt: "2026-10-01T18:20:00.000Z" },
+    ]);
+
+    expect(resultado.has("conv-1")).toBe(false);
   });
 
   it("con varios traspasos de silencio para el mismo chat, compara contra el MÁS RECIENTE", async () => {

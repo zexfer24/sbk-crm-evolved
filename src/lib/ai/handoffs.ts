@@ -175,7 +175,14 @@ export type HandoffReason =
   // original, no abre uno nuevo). `demora_sin_asesor`: tope de 2 reasignaciones
   // alcanzado o nadie a quien rotar (no cambia de dueño; avisa a supervisores).
   | "reasignada_por_demora"
-  | "demora_sin_asesor";
+  | "demora_sin_asesor"
+  // 24/10/2026 (migración 20261024010000): el turno salió por
+  // `turno_sin_mensaje_nuevo` (agent.ts) con el historial cargado terminando
+  // en una línea del cliente. Caso `75e26065…`: un sticker tras dos respuestas
+  // de Seba dejaba `rafagaCliente` vacía (el sticker no cuenta como pedido) y
+  // el reconciliador la reencoló 162 veces en ~3 h sin rastro. Se escribe
+  // SOBRE el mismo dueño, sin moverlo.
+  | "sin_mensaje_nuevo";
 
 /**
  * Razones que significan "el turno ya miró ESTE mensaje del cliente y decidió
@@ -237,6 +244,19 @@ export type HandoffReason =
  *     bien callarse, pero si el cliente vuelve a escribir algo NUEVO,
  *     `last_customer_message_at` avanza y la conversación vuelve a ser
  *     candidata.
+ *   - `sin_mensaje_nuevo`: 24/10/2026. La escribe `runTurnPhases` (agent.ts)
+ *     cuando el turno sale por `turno_sin_mensaje_nuevo` y el historial
+ *     cargado termina en una línea del cliente. Caso real `75e26065…`
+ *     (1/10/2026): texto → Seba responde → texto → Seba responde → STICKER;
+ *     `pendingCustomerCandidates` salta el sticker (no es un pedido), la marca
+ *     "visto hasta" de Redis cubría todo lo demás y el turno salía mudo, pero
+ *     el sticker había movido `last_customer_message_at` y dejado el último
+ *     mensaje como entrante: el reconciliador la reencoló 162 veces en ~3 h,
+ *     sin ninguna fila en `agent_turns`. La segunda puerta es la nota para el
+ *     asesor (escalada abierta y SIN asesor: la nota es `sender_type =
+ *     'system'`, no cambia la dirección del último mensaje) — cada 6 h, al
+ *     vencer la marca, se repetía. Si el cliente escribe algo posterior,
+ *     `last_customer_message_at` avanza y vuelve a ser candidata.
  *
  * A propósito NO entran (el reconciliador SÍ debe seguir reintentando estas,
  * o ya están cubiertas por otro filtro de la consulta):
@@ -279,6 +299,7 @@ const RAZONES_DE_SILENCIO_DECIDIDO: HandoffReason[] = [
   "sin_contenido_legible",
   "identidad_no_verificable",
   "fuera_de_tema_repetido",
+  "sin_mensaje_nuevo",
 ];
 
 /**
@@ -543,6 +564,18 @@ export async function recordHandoffAdmin(input: HandoffInput): Promise<boolean> 
  * "resuelve", y si esta fila cerrara la escalada la guarda de cortesía
  * volvería a despedir a un cliente que sigue esperando a una persona.
  *
+ * 24/10/2026: `sin_mensaje_nuevo` suma a esta lista (y a
+ * `RAZONES_DE_SILENCIO_DECIDIDO`) por el mismo motivo que
+ * `cortesia_tras_escalada`: la escribe `runTurnPhases` (agent.ts) cuando el
+ * turno no tiene nada nuevo que contestar —caso `75e26065…`: un sticker tras
+ * dos respuestas de Seba, o un mensaje ya anotado como nota para el asesor—
+ * sobre el MISMO dueño. Se descartó reusar `sin_contenido_legible`
+ * justamente porque NO está acá: escribirla cerraría una escalada abierta
+ * para `escalationOpen` y para la demora (`demora-cron.ts` filtra con esta
+ * misma lista), y Seba dejaría de anotar los pendientes para el asesor. Con
+ * una `escalada` seguida de `sin_mensaje_nuevo`, `escalationOpen` sigue
+ * leyéndola abierta.
+ *
  * Ver la migración 20260830040000_conversation_handoffs.sql (el CHECK de
  * `reason`) y CLAUDE.md.
  */
@@ -557,6 +590,7 @@ export const RAZONES_QUE_NO_CIERRAN_LA_ESCALADA: HandoffReason[] = [
   "reabierto",
   "fuera_de_tema_repetido",
   "demora_sin_asesor",
+  "sin_mensaje_nuevo",
 ];
 
 /** Razones de la última fila que cambia de manos con las que una escalada se lee como abierta. */

@@ -1996,13 +1996,35 @@ export async function runTurnPhases(
   // mientras el primero redactaba) hacían que el segundo repitiera la
   // respuesta del primero — caso 2 del plan.
   //
-  // Sin traspaso: la invariante "ningún lead invisible" (CLAUDE.md) exige
-  // dejar rastro en toda salida silenciosa, pero acá NO hay nada que
-  // decidir sobre el dueño de la conversación — no cambia, y `awaiting_reply`
-  // tampoco se toca, porque lo que el cliente escribió ya recibió una
-  // respuesta real en un turno anterior. Un traspaso nuevo acá confundiría
-  // más de lo que aclara: no hubo ninguna decisión que registrar, solo un
-  // turno de más que no tenía nada que hacer.
+  // Traspaso `sin_mensaje_nuevo` (24/10/2026) SOLO si el historial cargado
+  // termina en una línea del CLIENTE. El "Sin traspaso" original de T1
+  // (23/9/2026) —"no hubo ninguna decisión que registrar, solo un turno de
+  // más"— sigue valiendo para el caso que lo motivó: el historial termina en
+  // una RESPUESTA (de Seba o de un asesor), el cliente ya fue contestado,
+  // `awaiting_reply` está apagado y el reconciliador no vuelve a encontrar la
+  // conversación. Pero quedó SUPERADO cuando el historial termina en el
+  // cliente, porque ahí la conversación sigue cumpliendo el predicado del
+  // reconciliador (último mensaje entrante, `awaiting_reply`) y esta salida
+  // muda la dejaba reencolándose cada minuto, sin una fila en `agent_turns`.
+  // Caso real `75e26065-0800-4427-92a1-cc8e68e9d5ba` (1/10/2026): texto →
+  // Seba responde → texto → Seba responde → STICKER; la marca cubría el
+  // último texto, `pendingCustomerCandidates` salta el sticker (no es un
+  // pedido: eso NO cambió), `rafagaCliente` quedaba vacía y el turno salía
+  // por acá — 162 `reabierto` en ~3 h. La segunda puerta de la misma salida
+  // es la nota para el asesor (escalada abierta y SIN asesor, más abajo): la
+  // nota es `sender_type = 'system'`, no cambia la dirección del último
+  // mensaje, y la pasada siguiente la reencola; el turno sale mudo por acá
+  // hasta que vence la marca (6 h) y se repite la nota.
+  //
+  // La razón es NUEVA a propósito (`sin_mensaje_nuevo`, handoffs.ts) y no
+  // `sin_contenido_legible`: esa NO está en `RAZONES_QUE_NO_CIERRAN_LA_
+  // ESCALADA`, así que escribirla cerraría una escalada abierta para
+  // `escalationOpen` y para la demora, y Seba dejaría de anotar los
+  // pendientes para el asesor. Esta se escribe sobre el MISMO dueño (el
+  // asesor asignado, o `unassigned`) y entra en las dos listas. Si el
+  // cliente escribe algo posterior, `last_customer_message_at` avanza y la
+  // conversación vuelve a ser candidata del reconciliador. `awaiting_reply`
+  // no se toca. Un turno por demora nunca llega acá (no lee la marca).
   //
   // Un reintento de T12 (`saludoPendienteDeRespuesta`) nunca cae acá: ese
   // turno falló ANTES de responder —solo la presentación de Seba salió, y
@@ -2012,6 +2034,14 @@ export async function runTurnPhases(
   // nuevo que ella.
   if (seen !== null && rafagaCliente.length === 0) {
     log.info("turno_sin_mensaje_nuevo", { conversationId });
+    if (!modoDemora && history[history.length - 1]?.role === "user") {
+      await recordHandoff(supabase, {
+        conversationId,
+        reason: "sin_mensaje_nuevo",
+        toKind: convo.assigned_agent_id ? "human" : "unassigned",
+        toId: convo.assigned_agent_id ?? null,
+      });
+    }
     await resetStage(supabase, conversationId, "turno_sin_mensaje_nuevo", convo.assigned_agent_id);
     return;
   }

@@ -4349,6 +4349,106 @@ describe("runAgentTurn — la marca 'visto hasta' (T1, 22-23/9/2026)", () => {
     expect(handoffCalls).toHaveLength(0);
   });
 
+  /**
+   * 24/10/2026, caso real `75e26065-0800-4427-92a1-cc8e68e9d5ba` (1/10/2026):
+   * texto 18:13:45 → Seba responde → texto 18:14:04 → Seba responde → STICKER
+   * 18:14:36. La marca cubre el texto de 18:14:04; el sticker no cuenta como
+   * pedido, así que no queda nada pendiente y el turno salía mudo por
+   * `turno_sin_mensaje_nuevo`, mientras el reconciliador (sticker = último
+   * mensaje entrante) la reencolaba 162 veces en ~3 h. `state.history` va del
+   * más nuevo al más viejo (el fake lo invierte, como el `order desc` real).
+   */
+  const HISTORIAL_STICKER_TRAS_RESPUESTA = [
+    { sender_type: "customer", content: null, message_type: "sticker", is_internal_note: false, created_at: "2026-10-01T18:14:36.000Z", id: "m-sticker" },
+    { sender_type: "ai", content: "Claro, ¿para qué moto?", is_internal_note: false, created_at: "2026-10-01T18:14:10.000Z" },
+    { sender_type: "customer", content: "precio del asiento", is_internal_note: false, created_at: "2026-10-01T18:14:04.000Z", id: "m-asiento" },
+    { sender_type: "ai", content: "¡Hola! Con gusto te ayudo.", is_internal_note: false, created_at: "2026-10-01T18:13:50.000Z" },
+    { sender_type: "customer", content: "hola", is_internal_note: false, created_at: "2026-10-01T18:13:45.000Z", id: "m-hola" },
+  ];
+
+  it("sticker tras dos respuestas con la marca en el último texto: deja 'sin_mensaje_nuevo' (unassigned), sin modelo ni envío", async () => {
+    state.history = HISTORIAL_STICKER_TRAS_RESPUESTA;
+    seedMarker("2026-10-01T18:14:04.000Z", ["m-asiento"]);
+    const info = vi.spyOn(log, "info");
+
+    await runAgentTurn("conv-1");
+
+    expect(info).toHaveBeenCalledWith("turno_sin_mensaje_nuevo", { conversationId: "conv-1" });
+    expect(matchPlaybookMock).not.toHaveBeenCalled();
+    expect(classifyIntentMock).not.toHaveBeenCalled();
+    expect(generateMock).not.toHaveBeenCalled();
+    expect(sendAgentTextMock).not.toHaveBeenCalled();
+    expect(handoffCalls).toHaveLength(1);
+    expect(handoffCalls[0]).toMatchObject({
+      p_conversation_id: "conv-1",
+      p_reason: "sin_mensaje_nuevo",
+      p_to_kind: "unassigned",
+    });
+    expect(handoffCalls[0].p_to_id).toBeUndefined();
+  });
+
+  it("lo mismo con asesor asignado (y la IA encendida): el traspaso va al asesor, 'human' con su id", async () => {
+    state.conversation = { ...state.conversation, ai_enabled: true, assigned_agent_id: "agent-9" };
+    state.history = HISTORIAL_STICKER_TRAS_RESPUESTA;
+    seedMarker("2026-10-01T18:14:04.000Z", ["m-asiento"]);
+
+    await runAgentTurn("conv-1");
+
+    expect(generateMock).not.toHaveBeenCalled();
+    expect(sendAgentTextMock).not.toHaveBeenCalled();
+    expect(handoffCalls).toHaveLength(1);
+    expect(handoffCalls[0]).toMatchObject({
+      p_reason: "sin_mensaje_nuevo",
+      p_to_kind: "human",
+      p_to_id: "agent-9",
+    });
+  });
+
+  it("la segunda puerta (nota para el asesor): la marca cubre la última línea del cliente y el historial termina en ella → 'sin_mensaje_nuevo'", async () => {
+    // Escalada abierta SIN asesor: un turno anterior anotó este mensaje en una
+    // nota interna (que `loadHistory` no cuenta), marcó "visto" y salió. El
+    // reconciliador lo reencola porque el último mensaje sigue siendo entrante.
+    state.history = [
+      { sender_type: "customer", content: "¿tienen pastillas para la SBR?", is_internal_note: false, created_at: "2026-10-01T18:20:00.000Z", id: "m-pastillas" },
+      { sender_type: "ai", content: "Te paso con un asesor.", is_internal_note: false, created_at: "2026-10-01T18:19:00.000Z" },
+    ];
+    state.lastHandoffRow = { reason: "escalada_sin_asesor", created_at: "2026-10-01T18:19:00.000Z" };
+    state.agentMessagesAfterHandoff = [];
+    seedMarker("2026-10-01T18:20:00.000Z", ["m-pastillas"]);
+
+    await runAgentTurn("conv-1");
+
+    expect(generateMock).not.toHaveBeenCalled();
+    expect(sendAgentTextMock).not.toHaveBeenCalled();
+    expect(handoffCalls).toHaveLength(1);
+    expect(handoffCalls[0]).toMatchObject({ p_reason: "sin_mensaje_nuevo", p_to_kind: "unassigned" });
+  });
+
+  it("sin marca (Redis caído o vencida) y el sticker como último mensaje: NO sale por turno_sin_mensaje_nuevo, el turno sigue de largo y deja su fila", async () => {
+    // 5.4 del plan: sin marca `rafagaCliente` también queda vacía (el sticker
+    // se salta), pero la salida muda solo existe con marca. El historial
+    // termina en el marcador del sticker, así que fase 0 se salta
+    // (`lastUserLineIsMarker`) y el turno clasifica y redacta como cualquier
+    // otro: deja `agent_turns`, no un silencio.
+    state.history = HISTORIAL_STICKER_TRAS_RESPUESTA;
+    const info = vi.spyOn(log, "info");
+
+    await runAgentTurn("conv-1");
+
+    expect(info).not.toHaveBeenCalledWith("turno_sin_mensaje_nuevo", expect.anything());
+    expect(handoffCalls.some((c) => c.p_reason === "sin_mensaje_nuevo")).toBe(false);
+    expect(matchPlaybookMock).not.toHaveBeenCalled();
+    expect(classifyIntentMock).toHaveBeenCalled();
+    expect(generateMock).toHaveBeenCalled();
+  });
+
+  // (e) El turno por demora no puede llegar a esta salida: NO lee la marca
+  // ("visto hasta") a propósito (`modoDemora ? null : readSeen`), así que
+  // `seen !== null` es imposible ahí y su propia salida
+  // (`demora_sin_mensaje_pendiente`) no escribe traspaso. Lo fija
+  // `delay-turn.test.ts`; la condición `!modoDemora` de la salida nueva es
+  // un cinturón defensivo sin camino alcanzable que probar desde acá.
+
   it("sin marca (Redis nunca la escribió, o el turno anterior nunca llegó a escribirla): comportamiento de hoy", async () => {
     state.history = HISTORIAL_CASO_1;
     state.lastHandoffRow = { reason: "escalada_sin_asesor", created_at: "2026-09-14T10:00:00.000Z" };
