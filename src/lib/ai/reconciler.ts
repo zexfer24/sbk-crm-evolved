@@ -46,7 +46,8 @@ export const RECONCILE_QUEUE_KEY = "liminal:agent:turns";
  * la vez. Soltarlas todas de golpe reventaría los cupos de turnos simultáneos
  * y el ritmo por minuto hacia el proveedor (ver `queue.ts`): esos frenos
  * están pensados para el goteo normal de mensajes entrantes, no para un
- * alud. Se recuperan de a 50, una vez por pasada del cron (cada 5 minutos).
+ * alud. Se recuperan de a 50, una vez por pasada del cron (cada minuto desde
+ * el 7/9/2026; antes cada 5).
  */
 export const RECONCILE_BATCH_LIMIT = 50;
 
@@ -66,6 +67,13 @@ export interface ReconcileResult {
    * comentario en el cuerpo de esta función.
    */
   silencioYaDecidido: number;
+  /**
+   * `true` si la pasada ni siquiera consultó `conversations` porque la IA no
+   * puede correr (interruptor global apagado, tope de gasto del día, o la
+   * propia RPC `agent_can_run` no respondió: falla cerrado). Ver el párrafo
+   * del 24/10/2026 en `reconcileOrphanTurns`.
+   */
+  iaNoPuedeCorrer: boolean;
   /** Las que de verdad se reencolaron en esta pasada. */
   encoladas: number;
 }
@@ -76,6 +84,7 @@ const EMPTY_RESULT: ReconcileResult = {
   bloqueadasPorLock: 0,
   atendidasPorHumanos: 0,
   silencioYaDecidido: 0,
+  iaNoPuedeCorrer: false,
   encoladas: 0,
 };
 
@@ -178,11 +187,39 @@ function lockIsActive(until: string | null, now: number): boolean {
  * columnas que `handle_new_message()` mantiene desde 20260822060000 (ver
  * `unansweredFreeWork` en `data.ts`, que gana el mismo `.or()` por el mismo
  * motivo — el botón "encender la IA" del atraso sufre el mismo bucle).
+ *
+ * El reconciliador es la cuarta puerta del botón de apagado (24/10/2026).
+ * `src/app/api/agent/stop/route.ts` enumera las tres que el apagado ya
+ * cerraba —los turnos en vuelo (`stillEnabled`), la cola (`stopAgentQueue`) y
+ * el webhook (`agent_can_run` antes de encolar)— y esta nunca se cerró: el
+ * cron la llama cada minuto sin condiciones. Con la IA apagada, cada pasada
+ * reencolaba hasta 50 conversaciones y escribía un `reabierto` por cada una;
+ * el turno abría, `agent_can_run()` daba `false`, escribía
+ * `agente_no_puede_correr` y salía; un minuto después, otra vez. Medido en
+ * producción el 21-22/10/2026 con la IA apagada: 12.735 `reabierto` y 16.530
+ * `agente_no_puede_correr` en 24 h, el 91 % de las 455.242 filas de
+ * `conversation_handoffs`. Ahora la pasada pregunta `agent_can_run()` ANTES de
+ * tocar `conversations`: con `false` no consulta, no encola y no escribe
+ * nada, y tampoco loguea (son 1.440 pasadas al día; la IA apagada es un
+ * estado, no un evento). La RPC cubre también el tope de gasto diario, no solo
+ * el interruptor global. Ante un error de la RPC se FALLA CERRADO, como los
+ * demás filtros de esta función: no saber si la IA puede correr no autoriza a
+ * soltar 50 turnos por minuto, y la pasada siguiente lo reintenta.
  */
 export async function reconcileOrphanTurns(
   supabase: SupabaseClient,
   now: number = Date.now()
 ): Promise<ReconcileResult> {
+  try {
+    const { data: puedeCorrer, error: errorInterruptor } = await supabase.rpc("agent_can_run");
+    if (errorInterruptor) throw errorInterruptor;
+    // Cualquier valor que no sea `true` (false, null) cuenta como apagada.
+    if (puedeCorrer !== true) return { ...EMPTY_RESULT, iaNoPuedeCorrer: true };
+  } catch (err) {
+    log.error("reconciliador_agent_can_run_fallido", { detail: errorText(err) });
+    return { ...EMPTY_RESULT, iaNoPuedeCorrer: true };
+  }
+
   const { data, error } = await supabase
     .from("conversations")
     .select("id, ai_turn_lock_until, last_customer_message_at")
@@ -375,6 +412,7 @@ export async function reconcileOrphanTurns(
     bloqueadasPorLock,
     atendidasPorHumanos,
     silencioYaDecidido,
+    iaNoPuedeCorrer: false,
     encoladas: porEncolar.length,
   };
 }

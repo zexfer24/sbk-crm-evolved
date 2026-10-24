@@ -54,6 +54,11 @@ class FakeRedis {
     return 0;
   }
 
+  /** Solo para los tests: lo que hace el reclamo de la cola cuando un turno arranca (saca al miembro del ZSET). */
+  async zrem(key: string, member: string): Promise<number> {
+    return this.set(key).delete(member) ? 1 : 0;
+  }
+
   /** Solo para las aserciones de los tests: score crudo o null si no está. */
   scoreOf(key: string, member: string): number | null {
     return this.set(key).get(member) ?? null;
@@ -151,8 +156,23 @@ interface FakeHandoffRow {
   created_at: string;
 }
 
-function createFakeSupabase(rows: FakeRow[], mensajes: FakeMensaje[] = [], handoffs: FakeHandoffRow[] = []) {
+/**
+ * Qué responde la RPC `agent_can_run` del fake (24/10/2026): `true` por
+ * defecto, así los tests escritos antes de la puerta del interruptor no
+ * cambian; `false` es la IA apagada (interruptor global o tope de gasto), un
+ * `{ error }` es una respuesta con fallo de PostgREST y `"lanza"` es una
+ * excepción de transporte.
+ */
+type RespuestaAgentCanRun = boolean | { error: { message: string } } | "lanza";
+
+function createFakeSupabase(
+  rows: FakeRow[],
+  mensajes: FakeMensaje[] = [],
+  handoffs: FakeHandoffRow[] = [],
+  agentCanRun: RespuestaAgentCanRun = true
+) {
   const handoffCalls: Record<string, unknown>[] = [];
+  const consultas = { conversations: 0, agentCanRun: 0 };
 
   function builder() {
     const predicates: ((r: FakeRow) => boolean)[] = [];
@@ -280,9 +300,13 @@ function createFakeSupabase(rows: FakeRow[], mensajes: FakeMensaje[] = [], hando
 
   return {
     handoffCalls,
+    consultas,
     client: {
       from(tabla: string) {
-        if (tabla === "conversations") return { select: () => builder() };
+        if (tabla === "conversations") {
+          consultas.conversations++;
+          return { select: () => builder() };
+        }
         // `conversationsWrittenByHumans` (human-handled.ts) pregunta acá si
         // algún asesor escribió en el chat. Sin este caso el fake lanzaba, el
         // filtro fallaba cerrado y el reconciliador no encolaba nada.
@@ -301,6 +325,12 @@ function createFakeSupabase(rows: FakeRow[], mensajes: FakeMensaje[] = [], hando
         throw new Error(`Fake Supabase: tabla no soportada: ${tabla}`);
       },
       rpc(fn: string, params?: Record<string, unknown>) {
+        if (fn === "agent_can_run") {
+          consultas.agentCanRun++;
+          if (agentCanRun === "lanza") return Promise.reject(new Error("conexión perdida"));
+          if (typeof agentCanRun === "object") return Promise.resolve({ data: null, error: agentCanRun.error });
+          return Promise.resolve({ data: agentCanRun, error: null });
+        }
         if (fn !== "record_handoff") throw new Error(`Fake Supabase: rpc no soportada: ${fn}`);
         handoffCalls.push(params ?? {});
         return Promise.resolve({ data: "handoff-1", error: null });
@@ -325,7 +355,7 @@ describe("reconcileOrphanTurns — el predicado y la ventana", () => {
 
     const resultado = await reconcileOrphanTurns(client, AHORA);
 
-    expect(resultado).toEqual({ revisadas: 3, yaEnCola: 0, bloqueadasPorLock: 0, atendidasPorHumanos: 0, silencioYaDecidido: 0, encoladas: 3 });
+    expect(resultado).toEqual({ revisadas: 3, yaEnCola: 0, bloqueadasPorLock: 0, atendidasPorHumanos: 0, silencioYaDecidido: 0, iaNoPuedeCorrer: false, encoladas: 3 });
     expect(await pendingAgentTurns()).toBe(3);
     expect(handoffCalls).toHaveLength(3);
     for (const call of handoffCalls) {
@@ -361,7 +391,7 @@ describe("reconcileOrphanTurns — el predicado y la ventana", () => {
 
     const resultado = await reconcileOrphanTurns(client, AHORA);
 
-    expect(resultado).toEqual({ revisadas: 1, yaEnCola: 0, bloqueadasPorLock: 0, atendidasPorHumanos: 0, silencioYaDecidido: 0, encoladas: 1 });
+    expect(resultado).toEqual({ revisadas: 1, yaEnCola: 0, bloqueadasPorLock: 0, atendidasPorHumanos: 0, silencioYaDecidido: 0, iaNoPuedeCorrer: false, encoladas: 1 });
   });
 });
 
@@ -373,7 +403,7 @@ describe("reconcileOrphanTurns — no duplicar lo que ya está en curso", () => 
 
     const resultado = await reconcileOrphanTurns(client, AHORA);
 
-    expect(resultado).toEqual({ revisadas: 2, yaEnCola: 1, bloqueadasPorLock: 0, atendidasPorHumanos: 0, silencioYaDecidido: 0, encoladas: 1 });
+    expect(resultado).toEqual({ revisadas: 2, yaEnCola: 1, bloqueadasPorLock: 0, atendidasPorHumanos: 0, silencioYaDecidido: 0, iaNoPuedeCorrer: false, encoladas: 1 });
     // El score original no se tocó: el reconciliador no volvió a escribirla.
     expect(redis.scoreOf(RECONCILE_QUEUE_KEY, "conv-ya-en-cola")).toBe(AHORA + 5_000);
     expect(handoffCalls.map((c) => c.p_conversation_id)).toEqual(["conv-nueva"]);
@@ -416,6 +446,7 @@ describe("reconcileOrphanTurns — no duplicar lo que ya está en curso", () => 
       bloqueadasPorLock: 0,
       atendidasPorHumanos: 1,
       silencioYaDecidido: 0,
+      iaNoPuedeCorrer: false,
       encoladas: 1,
     });
     expect(handoffCalls.map((c) => c.p_conversation_id)).toEqual(["conv-sola"]);
@@ -432,7 +463,7 @@ describe("reconcileOrphanTurns — no duplicar lo que ya está en curso", () => 
 
     const resultado = await reconcileOrphanTurns(client, AHORA);
 
-    expect(resultado).toEqual({ revisadas: 3, yaEnCola: 0, bloqueadasPorLock: 1, atendidasPorHumanos: 0, silencioYaDecidido: 0, encoladas: 2 });
+    expect(resultado).toEqual({ revisadas: 3, yaEnCola: 0, bloqueadasPorLock: 1, atendidasPorHumanos: 0, silencioYaDecidido: 0, iaNoPuedeCorrer: false, encoladas: 2 });
     expect(handoffCalls.map((c) => c.p_conversation_id).sort()).toEqual(["conv-lock-vencido", "conv-sin-lock"]);
     expect(redis.scoreOf(RECONCILE_QUEUE_KEY, "conv-con-lock")).toBeNull();
   });
@@ -462,7 +493,7 @@ describe("reconcileOrphanTurns — la guarda de humanos ya no es vitalicia (T7)"
 
     const resultado = await reconcileOrphanTurns(client, AHORA);
 
-    expect(resultado).toEqual({ revisadas: 1, yaEnCola: 0, bloqueadasPorLock: 0, atendidasPorHumanos: 0, silencioYaDecidido: 0, encoladas: 1 });
+    expect(resultado).toEqual({ revisadas: 1, yaEnCola: 0, bloqueadasPorLock: 0, atendidasPorHumanos: 0, silencioYaDecidido: 0, iaNoPuedeCorrer: false, encoladas: 1 });
     expect(handoffCalls.map((c) => c.p_conversation_id)).toEqual(["conv-humano-viejo"]);
     expect(await pendingAgentTurns()).toBe(1);
   });
@@ -487,7 +518,7 @@ describe("reconcileOrphanTurns — la guarda de humanos ya no es vitalicia (T7)"
 
     const resultado = await reconcileOrphanTurns(client, AHORA);
 
-    expect(resultado).toEqual({ revisadas: 1, yaEnCola: 0, bloqueadasPorLock: 0, atendidasPorHumanos: 1, silencioYaDecidido: 0, encoladas: 0 });
+    expect(resultado).toEqual({ revisadas: 1, yaEnCola: 0, bloqueadasPorLock: 0, atendidasPorHumanos: 1, silencioYaDecidido: 0, iaNoPuedeCorrer: false, encoladas: 0 });
     expect(handoffCalls).toHaveLength(0);
     expect(await pendingAgentTurns()).toBe(0);
   });
@@ -578,7 +609,7 @@ describe("reconcileOrphanTurns — nadie encola un mensaje anterior a la devoluc
 
     const resultado = await reconcileOrphanTurns(client, AHORA);
 
-    expect(resultado).toEqual({ revisadas: 1, yaEnCola: 0, bloqueadasPorLock: 0, atendidasPorHumanos: 0, silencioYaDecidido: 0, encoladas: 1 });
+    expect(resultado).toEqual({ revisadas: 1, yaEnCola: 0, bloqueadasPorLock: 0, atendidasPorHumanos: 0, silencioYaDecidido: 0, iaNoPuedeCorrer: false, encoladas: 1 });
     expect(handoffCalls.map((c) => c.p_conversation_id)).toEqual(["conv-mensaje-nuevo"]);
     expect(handoffCalls.every((c) => c.p_reason === "reabierto")).toBe(true);
     expect(await pendingAgentTurns()).toBe(1);
@@ -615,7 +646,7 @@ describe("reconcileOrphanTurns — no reencola una despedida de escalada que ya 
 
     const resultado = await reconcileOrphanTurns(client, AHORA);
 
-    expect(resultado).toEqual({ revisadas: 0, yaEnCola: 0, bloqueadasPorLock: 0, atendidasPorHumanos: 0, silencioYaDecidido: 0, encoladas: 0 });
+    expect(resultado).toEqual({ revisadas: 0, yaEnCola: 0, bloqueadasPorLock: 0, atendidasPorHumanos: 0, silencioYaDecidido: 0, iaNoPuedeCorrer: false, encoladas: 0 });
     expect(handoffCalls).toHaveLength(0);
     expect(await pendingAgentTurns()).toBe(0);
   });
@@ -691,6 +722,7 @@ describe("reconcileOrphanTurns — no reencola lo que el turno ya decidió calla
       bloqueadasPorLock: 0,
       atendidasPorHumanos: 0,
       silencioYaDecidido: 1,
+      iaNoPuedeCorrer: false,
       encoladas: 0,
     });
     expect(handoffCalls).toHaveLength(0);
@@ -846,13 +878,187 @@ describe("reconcileOrphanTurns — no reencola lo que el turno ya decidió calla
   });
 });
 
+/**
+ * La cuarta puerta del botón de apagado (24/10/2026). Con la IA apagada
+ * (interruptor global o tope de gasto) el cron igual reencolaba hasta 50
+ * conversaciones por minuto, escribía `reabierto` por cada una, el turno
+ * abría, `agent_can_run()` daba `false` y escribía `agente_no_puede_correr`:
+ * 12.735 y 16.530 filas en 24 h (91 % de `conversation_handoffs`). Ahora la
+ * pasada pregunta primero y, si la IA no puede correr, no consulta, no
+ * encola y no escribe nada.
+ */
+describe("reconcileOrphanTurns — respeta el interruptor de la IA (24/10/2026)", () => {
+  const tres = () => [baseRow("conv-1"), baseRow("conv-2"), baseRow("conv-3")];
+  const SIN_NADA = {
+    revisadas: 0,
+    yaEnCola: 0,
+    bloqueadasPorLock: 0,
+    atendidasPorHumanos: 0,
+    silencioYaDecidido: 0,
+    iaNoPuedeCorrer: true,
+    encoladas: 0,
+  };
+
+  it("agent_can_run = false con 3 candidatas: no consulta conversations, no encola y no escribe 'reabierto'", async () => {
+    const errorSpy = vi.spyOn(log, "error").mockClear();
+    const { client, handoffCalls, consultas } = createFakeSupabase(tres(), [], [], false);
+
+    const resultado = await reconcileOrphanTurns(client, AHORA);
+
+    expect(resultado).toEqual(SIN_NADA);
+    expect(consultas.agentCanRun).toBe(1);
+    expect(consultas.conversations).toBe(0);
+    expect(handoffCalls).toHaveLength(0);
+    expect(await pendingAgentTurns()).toBe(0);
+    // 1.440 pasadas al día: la IA apagada es el estado normal, no se loguea.
+    expect(errorSpy).not.toHaveBeenCalled();
+  });
+
+  it("la RPC devuelve error: falla cerrado, no encola y deja log.error", async () => {
+    const errorSpy = vi.spyOn(log, "error").mockClear();
+    const { client, handoffCalls, consultas } = createFakeSupabase(
+      tres(),
+      [],
+      [],
+      { error: { message: "permission denied" } }
+    );
+
+    const resultado = await reconcileOrphanTurns(client, AHORA);
+
+    expect(resultado).toEqual(SIN_NADA);
+    expect(consultas.conversations).toBe(0);
+    expect(handoffCalls).toHaveLength(0);
+    expect(await pendingAgentTurns()).toBe(0);
+    expect(errorSpy).toHaveBeenCalledWith("reconciliador_agent_can_run_fallido", expect.any(Object));
+  });
+
+  it("la RPC lanza: falla cerrado, no encola y deja log.error con el detalle", async () => {
+    const errorSpy = vi.spyOn(log, "error").mockClear();
+    const { client, handoffCalls, consultas } = createFakeSupabase(tres(), [], [], "lanza");
+
+    const resultado = await reconcileOrphanTurns(client, AHORA);
+
+    expect(resultado).toEqual(SIN_NADA);
+    expect(consultas.conversations).toBe(0);
+    expect(handoffCalls).toHaveLength(0);
+    expect(await pendingAgentTurns()).toBe(0);
+    expect(errorSpy).toHaveBeenCalledWith(
+      "reconciliador_agent_can_run_fallido",
+      expect.objectContaining({ detail: expect.stringContaining("conexión perdida") })
+    );
+  });
+
+  it("agent_can_run = true: todo igual que antes (3 encoladas, 3 'reabierto', iaNoPuedeCorrer = false)", async () => {
+    const { client, handoffCalls, consultas } = createFakeSupabase(tres(), [], [], true);
+
+    const resultado = await reconcileOrphanTurns(client, AHORA);
+
+    expect(resultado).toEqual({
+      revisadas: 3,
+      yaEnCola: 0,
+      bloqueadasPorLock: 0,
+      atendidasPorHumanos: 0,
+      silencioYaDecidido: 0,
+      iaNoPuedeCorrer: false,
+      encoladas: 3,
+    });
+    expect(consultas.agentCanRun).toBe(1);
+    expect(handoffCalls).toHaveLength(3);
+    expect(await pendingAgentTurns()).toBe(3);
+  });
+});
+
+/**
+ * Caso real `75e26065-0800-4427-92a1-cc8e68e9d5ba` (1/10/2026, reproducido el
+ * 24/10/2026). El último mensaje fue un sticker del cliente (18:14:36 UTC),
+ * 21 s después de una respuesta de la IA. El turno lo vio, no encontró nada
+ * nuevo que contestar (`turno_sin_mensaje_nuevo`) y salió callado SIN traspaso:
+ * la conversación seguía cumpliendo el predicado (awaiting_reply, sin asesor,
+ * IA encendida, último mensaje entrante) y el reconciliador la reencoló 162
+ * veces en ~3 h (162 `reabierto`). Ahora el turno deja `sin_mensaje_nuevo`
+ * (`RAZONES_DE_SILENCIO_DECIDIDO`) y la pasada siguiente la deja quieta hasta
+ * que el cliente escriba algo nuevo. Este test simula el traspaso del turno
+ * como una fila del fake; que el turno de verdad lo escriba lo prueba
+ * agent.test.ts.
+ */
+describe("reconcileOrphanTurns — caso 75e26065: sticker tras una respuesta de la IA (24/10/2026)", () => {
+  const ID = "75e26065-0800-4427-92a1-cc8e68e9d5ba";
+
+  it("se encola una vez; con el traspaso 'sin_mensaje_nuevo' no se reencola; con un texto nuevo del cliente sí", async () => {
+    // Línea de tiempo real: 18:13:45 texto, 18:14:00 respuesta de la IA,
+    // 18:14:04 texto, 18:14:15 respuesta de la IA, 18:14:36 sticker.
+    const stickerAt = "2026-10-01T18:14:36.000Z";
+    const fila = baseRow(ID, {
+      last_customer_message_at: stickerAt,
+      last_message_at: stickerAt,
+      last_message_direction: "inbound",
+      last_message_status: null,
+    });
+    const handoffs: FakeHandoffRow[] = [];
+    const { client, handoffCalls } = createFakeSupabase([fila], [], handoffs);
+
+    // Pasada 1 (18:15:00): el turno todavía no miró el sticker.
+    const pasada1 = await reconcileOrphanTurns(client, Date.parse("2026-10-01T18:15:00.000Z"));
+    expect(pasada1).toEqual({
+      revisadas: 1,
+      yaEnCola: 0,
+      bloqueadasPorLock: 0,
+      atendidasPorHumanos: 0,
+      silencioYaDecidido: 0,
+      iaNoPuedeCorrer: false,
+      encoladas: 1,
+    });
+    expect(handoffCalls).toHaveLength(1);
+    expect(handoffCalls[0]).toMatchObject({ p_conversation_id: ID, p_reason: "reabierto" });
+
+    // El turno arranca (la cola la saca del ZSET), ve que no hay mensaje
+    // nuevo y deja su traspaso, POSTERIOR al sticker.
+    await redis.zrem(RECONCILE_QUEUE_KEY, ID);
+    handoffs.push({ conversation_id: ID, reason: "sin_mensaje_nuevo", created_at: "2026-10-01T18:15:10.000Z" });
+
+    // Pasada 2 (un minuto después): nada nuevo que contestar, queda quieta.
+    const pasada2 = await reconcileOrphanTurns(client, Date.parse("2026-10-01T18:16:00.000Z"));
+    expect(pasada2).toEqual({
+      revisadas: 1,
+      yaEnCola: 0,
+      bloqueadasPorLock: 0,
+      atendidasPorHumanos: 0,
+      silencioYaDecidido: 1,
+      iaNoPuedeCorrer: false,
+      encoladas: 0,
+    });
+    expect(handoffCalls).toHaveLength(1); // ningún 'reabierto' nuevo
+    expect(await pendingAgentTurns()).toBe(0);
+
+    // El cliente escribe un texto nuevo, posterior al traspaso.
+    const textoNuevoAt = "2026-10-01T18:17:30.000Z";
+    fila.last_customer_message_at = textoNuevoAt;
+    fila.last_message_at = textoNuevoAt;
+
+    // Pasada 3: el mensaje es posterior al silencio decidido, vuelve a ser candidata.
+    const pasada3 = await reconcileOrphanTurns(client, Date.parse("2026-10-01T18:18:00.000Z"));
+    expect(pasada3).toEqual({
+      revisadas: 1,
+      yaEnCola: 0,
+      bloqueadasPorLock: 0,
+      atendidasPorHumanos: 0,
+      silencioYaDecidido: 0,
+      iaNoPuedeCorrer: false,
+      encoladas: 1,
+    });
+    expect(handoffCalls).toHaveLength(2);
+    expect(handoffCalls[1]).toMatchObject({ p_conversation_id: ID, p_reason: "reabierto" });
+    expect(await pendingAgentTurns()).toBe(1);
+  });
+});
+
 describe("reconcileOrphanTurns — sin candidatas", () => {
   it("sin nada que cumpla el predicado, no toca la cola ni escribe traspasos", async () => {
     const { client, handoffCalls } = createFakeSupabase([]);
 
     const resultado = await reconcileOrphanTurns(client, AHORA);
 
-    expect(resultado).toEqual({ revisadas: 0, yaEnCola: 0, bloqueadasPorLock: 0, atendidasPorHumanos: 0, silencioYaDecidido: 0, encoladas: 0 });
+    expect(resultado).toEqual({ revisadas: 0, yaEnCola: 0, bloqueadasPorLock: 0, atendidasPorHumanos: 0, silencioYaDecidido: 0, iaNoPuedeCorrer: false, encoladas: 0 });
     expect(await pendingAgentTurns()).toBe(0);
     expect(handoffCalls).toHaveLength(0);
   });
