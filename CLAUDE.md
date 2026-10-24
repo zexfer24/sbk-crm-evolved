@@ -3134,6 +3134,20 @@ dejar rastro es lo que hacía desaparecer leads.
   $X»). La caja no puede guardar un renglón estándar: la política de
   `presupuesto_items` exige `is_agent()` para eso.
 
+- **El reconciliador pregunta `agent_can_run()` antes de nada, y toda salida
+  del turno que deja el historial terminando en el cliente escribe un
+  traspaso de silencio decidido** (24/10/2026, "El reconciliador respeta el
+  interruptor", migración `20261024010000`). Con la IA apagada el
+  reconciliador reencolaba cada minuto: 12.735 `reabierto` + 16.530
+  `agente_no_puede_correr` en 24 h, el 91 % de `conversation_handoffs`. Y con
+  la IA encendida, `turno_sin_mensaje_nuevo` salía mudo cuando lo último era
+  un sticker (la marca "visto hasta" lo salta) o lo ya anotado para el
+  asesor: caso `75e26065…`, 162 `reabierto` en 3 h. Esa salida escribe ahora
+  `sin_mensaje_nuevo`, que está en `RAZONES_DE_SILENCIO_DECIDIDO` **y** en
+  `RAZONES_QUE_NO_CIERRAN_LA_ESCALADA`. No se reusó `sin_contenido_legible`
+  porque esa cierra la escalada y Seba dejaría de anotar para el asesor.
+  **Una razón de silencio nueva tiene que estar en las dos listas.**
+
 - **«Más usados» cuenta envíos, no aperturas, y corta en la medianoche de
   Caracas que calcula `useInboxDay` (`src/lib/use-inbox-day.ts`)** (21/10/2026). No recalcular
   esa medianoche en el modal. `quick_reply_uses` no tiene `select` directo: se
