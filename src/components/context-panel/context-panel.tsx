@@ -257,6 +257,9 @@ export function ContextPanel({
           conversationId={conversation.id}
           contactId={contact.id}
           contactDisplayName={contact.displayName ?? contact.profileName}
+          contactPhone={contact.phoneNumber}
+          contactCedulaType={contact.cedulaType}
+          contactCedulaNumber={contact.cedulaNumber}
           onCartChanged={onCartChanged}
         />
 

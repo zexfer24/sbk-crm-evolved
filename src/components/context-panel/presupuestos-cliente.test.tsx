@@ -5,6 +5,7 @@ import { toast } from "@heroui/react";
 import { PresupuestosCliente } from "@/components/context-panel/presupuestos-cliente";
 import type { Presupuesto, PresupuestoItem } from "@/lib/presupuestos";
 import type { Product } from "@/lib/types";
+import type { BorradorSaint } from "@/lib/saint-borradores";
 
 /**
  * 21/10/2026, plan "Presupuestos y mensajes rápidos", T6: los presupuestos
@@ -24,6 +25,18 @@ const addToCart = vi.fn();
 vi.mock("@/lib/mutations", () => ({ addToCart: (...args: unknown[]) => addToCart(...args) }));
 
 vi.mock("@/lib/supabase/client", () => ({ createClient: vi.fn(() => ({ marca: "cliente" })) }));
+
+// 25/10/2026 (plan "Enviar a SAINT", T3): el estado de los envíos a SAINT viene
+// de un hook con Realtime; acá se controla a mano. El botón y el modal se
+// prueban en `saint/enviar-a-saint.test.tsx`.
+const borradoresPorOrigen = new Map<string, BorradorSaint>();
+const usoBorradores = vi.fn();
+vi.mock("@/components/saint/use-borradores-saint", () => ({
+  useBorradoresSaint: (...args: unknown[]) => {
+    usoBorradores(...args);
+    return { porOrigen: borradoresPorOrigen, ahora: new Date("2026-10-25T14:00:30.000Z"), recargar: vi.fn() };
+  },
+}));
 
 vi.mock("@heroui/react", async (importOriginal) => {
   const real = await importOriginal<typeof import("@heroui/react")>();
@@ -91,6 +104,9 @@ function setup(over: Partial<React.ComponentProps<typeof PresupuestosCliente>> =
     conversationId: "conv-1",
     bcvRate: 40,
     contactDisplayName: "María Pérez",
+    contactPhone: "04141234567",
+    contactCedulaType: "V" as const,
+    contactCedulaNumber: "12345678",
     onCartChanged,
     recargarClave: 0,
     ...over,
@@ -105,6 +121,8 @@ beforeEach(() => {
   addToCart.mockResolvedValue({ priceKindChanged: false });
   vi.mocked(toast.success).mockClear();
   vi.mocked(toast.danger).mockClear();
+  borradoresPorOrigen.clear();
+  usoBorradores.mockClear();
 });
 
 describe("PresupuestosCliente — carga", () => {
@@ -307,5 +325,56 @@ describe("PresupuestosCliente — pasar al carrito", () => {
     await waitFor(() => expect(screen.getByRole("button", { name: /pasar al carrito/i })).toBeDisabled());
     terminar({ priceKindChanged: false });
     await waitFor(() => expect(screen.getByRole("button", { name: /pasar al carrito/i })).not.toBeDisabled());
+  });
+});
+
+describe("PresupuestosCliente — enviar a SAINT", () => {
+  it("cada presupuesto desplegado lleva su «Enviar a SAINT», y el hook sigue los ids de la lista", async () => {
+    fetchPresupuestos.mockResolvedValue([presupuesto(), presupuesto({ id: "pres-2" })]);
+    setup();
+    fireEvent.click(await screen.findByRole("button", { name: "2 guardados de María" }));
+
+    expect(screen.getAllByRole("button", { name: /enviar a saint/i })).toHaveLength(2);
+    expect(usoBorradores).toHaveBeenLastCalledWith("presupuesto", ["pres-1", "pres-2"]);
+  });
+
+  it("precarga el modal con el nombre del presupuesto y la cédula y el teléfono del contacto", async () => {
+    fetchPresupuestos.mockResolvedValue([presupuesto({ clienteNombre: "Luis", clienteApellido: "Gómez" })]);
+    setup();
+    fireEvent.click(await screen.findByRole("button", { name: "1 guardado de María" }));
+
+    fireEvent.click(screen.getByRole("button", { name: /enviar a saint/i }));
+
+    expect(await screen.findByLabelText("Nombre")).toHaveValue("Luis");
+    expect(screen.getByLabelText("Apellido")).toHaveValue("Gómez");
+    expect(screen.getByLabelText("Cédula")).toHaveValue("12345678");
+    expect(screen.getByLabelText("Teléfono")).toHaveValue("04141234567");
+  });
+
+  it("muestra el estado del último envío de ese presupuesto, no el de otro", async () => {
+    borradoresPorOrigen.set("pres-2", {
+      id: "b-1",
+      origen: "presupuesto",
+      origenId: "pres-2",
+      creadoPor: "agent-1",
+      cedulaTipo: "V",
+      cedulaNumero: "12345678",
+      nombre: "María",
+      apellido: "Pérez",
+      telefono: "04141234567",
+      estado: "creado",
+      numeroSaint: "FAC-77",
+      codclie: null,
+      clienteCreado: null,
+      error: null,
+      createdAt: "2026-10-25T14:00:00.000Z",
+      procesadoAt: "2026-10-25T14:00:10.000Z",
+    });
+    fetchPresupuestos.mockResolvedValue([presupuesto(), presupuesto({ id: "pres-2" })]);
+    setup();
+    fireEvent.click(await screen.findByRole("button", { name: "2 guardados de María" }));
+
+    expect(screen.getAllByRole("status")).toHaveLength(1);
+    expect(screen.getByRole("status")).toHaveTextContent("En SAINT como FAC-77");
   });
 });

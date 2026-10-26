@@ -2307,6 +2307,44 @@ export type Database = {
         Args: { p_conversation_id: string; p_debounce_seconds?: number }
         Returns: undefined
       }
+      // 25/10/2026 (plan "Enviar a SAINT"): último envío a SAINT por origen
+      // (presupuesto o carrito). Lee de liminal.saint_borradores.
+      borradores_saint: {
+        Args: { p_origen_ids: string[] }
+        Returns: {
+          id: string
+          origen: string
+          origen_id: string
+          creado_por: string | null
+          cedula_tipo: string
+          cedula_numero: string
+          nombre: string
+          apellido: string
+          telefono: string
+          estado: string
+          numero_saint: string | null
+          codclie: string | null
+          cliente_creado: boolean | null
+          error: string | null
+          created_at: string
+          procesado_at: string | null
+        }[]
+      }
+      // 25/10/2026 (plan "Enviar a SAINT"): inserta un borrador `pendiente`
+      // armando los ítems desde la base. Errores: 22023 saint_dato_invalido
+      // (details en español), 42501 saint_sin_permiso, 23505 envío en curso.
+      enviar_borrador_saint: {
+        Args: {
+          p_origen: string
+          p_origen_id: string
+          p_cedula_tipo: string
+          p_cedula_numero: string
+          p_nombre: string
+          p_apellido: string
+          p_telefono: string
+        }
+        Returns: string
+      }
       finish_agent_turn: {
         Args: {
           p_conversation_id: string

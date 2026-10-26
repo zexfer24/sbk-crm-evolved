@@ -19,6 +19,8 @@ import { createClient } from "@/lib/supabase/client";
 import { CRM_TIME_ZONE } from "@/lib/time-zone";
 import type { AgentRole } from "@/lib/types";
 import { ConfirmDialog } from "@/components/confirm-dialog";
+import { EnviarASaint } from "@/components/saint/enviar-a-saint";
+import { useBorradoresSaint } from "@/components/saint/use-borradores-saint";
 import { useInventarioCarrito } from "@/components/inventario/inventario-carrito-context";
 import { useOpcionesCopia } from "@/components/presupuestos/use-opciones-copia";
 import "./mostrador.css";
@@ -38,6 +40,12 @@ import "./mostrador.css";
  * `console.error`, nunca a `lib/log.ts`. La barrera real de los permisos es la
  * RLS de `presupuestos`; aquí solo se esconde el botón «Borrar» que no
  * corresponde.
+ *
+ * 25/10/2026 (plan "Enviar a SAINT", T3): cada tarjeta lleva «Enviar a SAINT»
+ * con el estado de su último envío, en vivo. Es de todos, caja incluida: no
+ * depende de quién guardó el presupuesto. Un presupuesto de /inventario no
+ * tiene contacto, así que el modal precarga solo nombre y apellido; la cédula
+ * y el teléfono salen del último envío si lo hubo.
  */
 
 /** Tope de tarjetas pintadas: el buscador filtra sobre todas, pero 50 bastan para scrollear. */
@@ -106,6 +114,11 @@ export function PresupuestosPanel({ agentId, role, bcvRate }: PresupuestosPanelP
   const todos = lista ?? [];
   const propios = todos.filter((p) => p.createdBy === agentId);
   const visibles = filtrarPresupuestos(todos, { texto, soloDe: vista === "mios" ? agentId : null });
+  const pintados = visibles.slice(0, MAX_VISIBLES);
+  const { porOrigen: envios, ahora, recargar: recargarEnvios } = useBorradoresSaint(
+    "presupuesto",
+    pintados.map((p) => p.id),
+  );
 
   async function confirmarBorrarUno(p: Presupuesto) {
     try {
@@ -239,7 +252,7 @@ export function PresupuestosPanel({ agentId, role, bcvRate }: PresupuestosPanelP
         </p>
       ) : (
         <ul className="inv-presupuestos-lista">
-          {visibles.slice(0, MAX_VISIBLES).map((p) => {
+          {pintados.map((p) => {
             const lineas = lineasDePresupuesto(p);
             const totales = totalesCarrito(lineas, bcvRate, CASHEA_APAGADO);
             const cambio = comparacionTotal(p, bcvRate);
@@ -284,6 +297,22 @@ export function PresupuestosPanel({ agentId, role, bcvRate }: PresupuestosPanelP
                     </button>
                   )}
                 </div>
+
+                <EnviarASaint
+                  origen="presupuesto"
+                  origenId={p.id}
+                  productos={p.items.map((i) => i.product)}
+                  inicial={{
+                    cedulaTipo: "",
+                    cedulaNumero: "",
+                    nombre: p.clienteNombre,
+                    apellido: p.clienteApellido,
+                    telefono: "",
+                  }}
+                  ultimo={envios.get(p.id) ?? null}
+                  ahora={ahora}
+                  onEnviado={recargarEnvios}
+                />
               </li>
             );
           })}

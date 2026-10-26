@@ -71,6 +71,17 @@ vi.mock("@/lib/presupuestos-data", () => ({
 
 vi.mock("@/lib/supabase/client", () => ({ createClient: vi.fn(() => ({})) }));
 
+// 25/10/2026 (plan "Enviar a SAINT", T3): el bloque del carrito sigue los
+// envíos a SAINT por Realtime; `saint/*.test.tsx` y el bloque cubren su
+// comportamiento, acá el hook queda inerte.
+const usoBorradoresSaint = vi.fn();
+vi.mock("@/components/saint/use-borradores-saint", () => ({
+  useBorradoresSaint: (...args: unknown[]) => {
+    usoBorradoresSaint(...args);
+    return { porOrigen: new Map(), ahora: new Date("2026-10-25T14:00:30.000Z"), recargar: vi.fn() };
+  },
+}));
+
 function buildConversation(overrides: Partial<Conversation> = {}): Conversation {
   return {
     id: "conv-1",
@@ -309,6 +320,13 @@ describe("ContextPanel — quitar una etiqueta avisa al shell (hallazgo 1)", () 
  * «Agregar», y el modal de cierre recibe el MISMO carrito.
  */
 describe("ContextPanel — el carrito de la conversación (T8)", () => {
+  it("pasa al bloque el contacto para «Enviar a SAINT»: el carrito de ESTA conversación", () => {
+    renderPanel({}, undefined, [RENGLON]);
+
+    expect(usoBorradoresSaint).toHaveBeenCalledWith("carrito", ["conv-1"]);
+    expect(screen.getByRole("button", { name: /enviar a saint/i })).toBeInTheDocument();
+  });
+
   it("pinta «Lo que lleva el cliente» entre la búsqueda de inventario y las Notas internas", () => {
     renderPanel();
 

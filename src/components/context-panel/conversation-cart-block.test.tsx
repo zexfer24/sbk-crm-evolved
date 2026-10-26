@@ -6,6 +6,7 @@ import { toast } from "@heroui/react";
 import { ConversationCartBlock } from "@/components/context-panel/conversation-cart-block";
 import type { CartActions } from "@/components/context-panel/use-cart-actions";
 import type { ConversationCartItem, Product } from "@/lib/types";
+import type { BorradorSaint } from "@/lib/saint-borradores";
 
 // El toast real de HeroUI no aporta nada acá: se espía `success`/`danger` de
 // «Copiar» (T4, "Ronda del cliente", 30/9/2026) y el resto del módulo queda
@@ -27,6 +28,18 @@ vi.mock("@/lib/presupuestos-data", () => ({
 vi.mock("@/lib/supabase/client", () => ({ createClient: vi.fn(() => ({ marca: "cliente" })) }));
 vi.mock("@/lib/mutations", () => ({ addToCart: vi.fn() }));
 
+// 25/10/2026 (plan "Enviar a SAINT", T3): el estado de los envíos a SAINT viene
+// de un hook con Realtime; acá se controla a mano. El botón y el modal se
+// prueban en `saint/enviar-a-saint.test.tsx`.
+const borradoresPorOrigen = new Map<string, BorradorSaint>();
+const usoBorradores = vi.fn();
+vi.mock("@/components/saint/use-borradores-saint", () => ({
+  useBorradoresSaint: (...args: unknown[]) => {
+    usoBorradores(...args);
+    return { porOrigen: borradoresPorOrigen, ahora: new Date("2026-10-25T14:00:30.000Z"), recargar: vi.fn() };
+  },
+}));
+
 beforeEach(() => {
   guardarPresupuesto.mockReset();
   guardarPresupuesto.mockResolvedValue("pres-nuevo");
@@ -35,6 +48,8 @@ beforeEach(() => {
   window.localStorage.clear();
   vi.mocked(toast.success).mockClear();
   vi.mocked(toast.danger).mockClear();
+  borradoresPorOrigen.clear();
+  usoBorradores.mockClear();
 });
 
 // ---------------------------------------------------------------------------
@@ -112,6 +127,9 @@ function setup(cart: ConversationCartItem[], actions = makeActions(), bcvRate = 
       conversationId="conv-1"
       contactId="contact-1"
       contactDisplayName="María José Pérez"
+      contactPhone="04141234567"
+      contactCedulaType="V"
+      contactCedulaNumber="12345678"
       onCartChanged={vi.fn()}
     />
   );
@@ -629,5 +647,65 @@ describe("ConversationCartBlock — presupuestos del cliente", () => {
     setup([]);
 
     await waitFor(() => expect(fetchPresupuestos).toHaveBeenCalledWith({ marca: "cliente" }, { contactId: "contact-1" }));
+  });
+});
+
+describe("ConversationCartBlock — enviar a SAINT", () => {
+  it("con renglones ofrece «Enviar a SAINT»", () => {
+    setup([item({ product: product({ saintCode: "A-100" }) })]);
+
+    expect(screen.getByRole("button", { name: /enviar a saint/i })).toBeEnabled();
+    expect(usoBorradores).toHaveBeenCalledWith("carrito", ["conv-1"]);
+  });
+
+  it("un producto sin código SAINT en el carrito bloquea el botón y lo dice", () => {
+    setup([item({ product: product({ saintCode: null }) })]);
+
+    expect(screen.getByRole("button", { name: /enviar a saint/i })).toBeDisabled();
+    expect(screen.getByText("Sin código SAINT: Carburador PZ27.")).toBeInTheDocument();
+  });
+
+  it("precarga el modal con el contacto: cédula, nombre, apellido y teléfono", async () => {
+    const { user } = setup([item({ product: product({ saintCode: "A-100" }) })]);
+
+    await user.click(screen.getByRole("button", { name: /enviar a saint/i }));
+
+    expect(await screen.findByLabelText("Cédula")).toHaveValue("12345678");
+    expect(screen.getByLabelText("Tipo de cédula")).toHaveValue("V");
+    expect(screen.getByLabelText("Nombre")).toHaveValue("María");
+    expect(screen.getByLabelText("Apellido")).toHaveValue("José Pérez");
+    expect(screen.getByLabelText("Teléfono")).toHaveValue("04141234567");
+  });
+
+  it("con el carrito vacío no hay botón, pero un envío anterior sigue mostrando su estado", () => {
+    borradoresPorOrigen.set("conv-1", {
+      id: "b-1",
+      origen: "carrito",
+      origenId: "conv-1",
+      creadoPor: "agent-1",
+      cedulaTipo: "V",
+      cedulaNumero: "12345678",
+      nombre: "María",
+      apellido: "Pérez",
+      telefono: "04141234567",
+      estado: "creado",
+      numeroSaint: "FAC-77",
+      codclie: null,
+      clienteCreado: null,
+      error: null,
+      createdAt: "2026-10-25T14:00:00.000Z",
+      procesadoAt: "2026-10-25T14:00:10.000Z",
+    });
+    setup([]);
+
+    expect(screen.queryByRole("button", { name: /enviar a saint/i })).not.toBeInTheDocument();
+    expect(screen.getByRole("status")).toHaveTextContent("En SAINT como FAC-77");
+  });
+
+  it("con el carrito vacío y sin envíos no pinta nada de SAINT", () => {
+    setup([]);
+
+    expect(screen.queryByRole("button", { name: /enviar a saint/i })).not.toBeInTheDocument();
+    expect(screen.queryByRole("status")).not.toBeInTheDocument();
   });
 });

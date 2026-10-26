@@ -3,7 +3,7 @@
 import { useState } from "react";
 import { ChevronDown, ChevronRight, Copy, MessageSquarePlus, Save, Sparkles } from "lucide-react";
 import { Button, toast } from "@heroui/react";
-import type { ConversationCartItem } from "@/lib/types";
+import type { CedulaType, ConversationCartItem } from "@/lib/types";
 import { createClient } from "@/lib/supabase/client";
 import { cartSummaryText, cartTotals, priceCartLines } from "@/lib/conversation-cart";
 import { guardarPresupuesto } from "@/lib/presupuestos-data";
@@ -14,6 +14,8 @@ import type { CartActions } from "@/components/context-panel/use-cart-actions";
 import { GuardarPresupuestoModal, type DatosPresupuestoForm } from "@/components/presupuestos/guardar-presupuesto-modal";
 import { OpcionesCopiaCasillas } from "@/components/presupuestos/opciones-copia";
 import { useOpcionesCopia } from "@/components/presupuestos/use-opciones-copia";
+import { EnviarASaint } from "@/components/saint/enviar-a-saint";
+import { useBorradoresSaint } from "@/components/saint/use-borradores-saint";
 
 /**
  * «Lo que lleva el cliente» en el panel derecho del chat (T8, plan "Seba
@@ -34,6 +36,13 @@ import { useOpcionesCopia } from "@/components/presupuestos/use-opciones-copia";
  * presupuesto del contacto (siempre uno nuevo desde el chat). (3) Debajo, los
  * presupuestos que ese contacto ya tiene, para pasarlos al carrito
  * (`PresupuestosCliente`).
+ *
+ * 25/10/2026 (plan "Enviar a SAINT", T3): «Enviar a SAINT» manda el carrito
+ * como factura en espera (origen `carrito`, id = la conversación). El
+ * contacto precarga cédula, nombre, apellido y teléfono del modal. Con el
+ * carrito vacío NO hay botón, pero si ese chat tuvo un envío antes su línea de
+ * estado sigue visible (`soloEstado`): el asesor vacía el carrito y quiere
+ * saber si SAINT llegó a crearlo.
  */
 
 interface ConversationCartBlockProps {
@@ -53,6 +62,11 @@ interface ConversationCartBlockProps {
   contactId: string;
   /** Precarga el nombre y el apellido del modal de «Guardar presupuesto». */
   contactDisplayName: string | null;
+  /** Teléfono del contacto: precarga el modal de «Enviar a SAINT». */
+  contactPhone: string;
+  /** Cédula del contacto, si la tiene: precarga el modal de «Enviar a SAINT». */
+  contactCedulaType: CedulaType | null;
+  contactCedulaNumber: string | null;
   /** Pide a `crm-shell.tsx` releer el carrito: `PresupuestosCliente` lo usa tras pasar un presupuesto. */
   onCartChanged: () => void;
 }
@@ -68,6 +82,9 @@ export function ConversationCartBlock({
   conversationId,
   contactId,
   contactDisplayName,
+  contactPhone,
+  contactCedulaType,
+  contactCedulaNumber,
   onCartChanged,
 }: ConversationCartBlockProps) {
   const [opcionesCopia, setOpcionesCopia] = useOpcionesCopia(agentId);
@@ -75,6 +92,8 @@ export function ConversationCartBlock({
   const [guardarAbierto, setGuardarAbierto] = useState(false);
   // Sube al guardar un presupuesto para que `PresupuestosCliente` relea su lista.
   const [recargarClave, setRecargarClave] = useState(0);
+  const { porOrigen: envios, ahora, recargar: recargarEnvios } = useBorradoresSaint("carrito", [conversationId]);
+  const ultimoEnvio = envios.get(conversationId) ?? null;
 
   // El mismo cálculo que pinta `CartLines`; `null` si el carrito está vacío o
   // algún renglón no tiene precio en dólares.
@@ -175,7 +194,35 @@ export function ConversationCartBlock({
             <Save size={13} />
             Guardar presupuesto
           </Button>
+
+          <EnviarASaint
+            origen="carrito"
+            origenId={conversationId}
+            productos={cart.map((i) => i.product)}
+            inicial={{
+              cedulaTipo: contactCedulaType ?? "",
+              cedulaNumero: contactCedulaNumber ?? "",
+              ...separarNombreContacto(contactDisplayName),
+              telefono: contactPhone,
+            }}
+            ultimo={ultimoEnvio}
+            ahora={ahora}
+            onEnviado={recargarEnvios}
+          />
         </>
+      )}
+
+      {cart.length === 0 && ultimoEnvio && (
+        <EnviarASaint
+          origen="carrito"
+          origenId={conversationId}
+          productos={[]}
+          inicial={{ cedulaTipo: "", cedulaNumero: "", nombre: "", apellido: "", telefono: "" }}
+          ultimo={ultimoEnvio}
+          ahora={ahora}
+          onEnviado={recargarEnvios}
+          soloEstado
+        />
       )}
 
       <Button
@@ -204,6 +251,9 @@ export function ConversationCartBlock({
         conversationId={conversationId}
         bcvRate={bcvRate}
         contactDisplayName={contactDisplayName}
+        contactPhone={contactPhone}
+        contactCedulaType={contactCedulaType}
+        contactCedulaNumber={contactCedulaNumber}
         onCartChanged={onCartChanged}
         recargarClave={recargarClave}
       />

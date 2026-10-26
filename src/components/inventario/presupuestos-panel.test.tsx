@@ -4,6 +4,7 @@ import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { Product } from "@/lib/types";
 import type { Presupuesto } from "@/lib/presupuestos";
+import type { BorradorSaint } from "@/lib/saint-borradores";
 import { lineasDePresupuesto } from "@/lib/presupuestos";
 import { textoCarritoParaCliente, totalesCarrito } from "@/lib/inventario-carrito";
 import { ELECCION_CASHEA_INICIAL } from "@/lib/cashea";
@@ -44,6 +45,18 @@ vi.mock("@/lib/presupuestos-data", () => ({
   fetchPresupuestos: (...args: unknown[]) => fetchPresupuestos(...args),
   borrarPresupuesto: (...args: unknown[]) => borrarPresupuesto(...args),
   borrarMisPresupuestos: (...args: unknown[]) => borrarMisPresupuestos(...args),
+}));
+
+// 25/10/2026 (plan "Enviar a SAINT", T3): el estado de los envíos a SAINT viene
+// de un hook con Realtime; acá se controla a mano. El botón y el modal se
+// prueban en `saint/enviar-a-saint.test.tsx`.
+const borradoresPorOrigen = new Map<string, BorradorSaint>();
+const usoBorradores = vi.fn();
+vi.mock("@/components/saint/use-borradores-saint", () => ({
+  useBorradoresSaint: (...args: unknown[]) => {
+    usoBorradores(...args);
+    return { porOrigen: borradoresPorOrigen, ahora: new Date("2026-10-25T14:00:30.000Z"), recargar: vi.fn() };
+  },
 }));
 
 const YO = "agente-1";
@@ -155,6 +168,8 @@ beforeEach(() => {
   borrarMisPresupuestos.mockReset();
   toastSuccess.mockClear();
   toastDanger.mockClear();
+  borradoresPorOrigen.clear();
+  usoBorradores.mockClear();
   fetchPresupuestos.mockResolvedValue([MIO_1, MIO_2, AJENO]);
 });
 
@@ -520,5 +535,65 @@ describe("PresupuestosPanel — «Copiar»", () => {
     expect(esperado).toContain("Carburador PZ27");
     await waitFor(() => expect(writeText).toHaveBeenCalledWith(esperado));
     expect(toastSuccess).toHaveBeenCalled();
+  });
+});
+
+describe("PresupuestosPanel — enviar a SAINT", () => {
+  it("cada tarjeta lleva su «Enviar a SAINT» y el hook sigue las tarjetas visibles", async () => {
+    pintar();
+    await screen.findByText("María Pérez");
+
+    expect(screen.getAllByRole("button", { name: /enviar a saint/i })).toHaveLength(2);
+    expect(usoBorradores).toHaveBeenLastCalledWith("presupuesto", ["pr-1", "pr-2"]);
+  });
+
+  it("también lo ve la caja", async () => {
+    pintar({ role: "caja" });
+    await screen.findByText("María Pérez");
+
+    expect(screen.getAllByRole("button", { name: /enviar a saint/i })).toHaveLength(2);
+  });
+
+  it("el modal precarga el nombre y deja la cédula y el teléfono vacíos (no hay contacto)", async () => {
+    const user = usuario();
+    pintar();
+    await screen.findByText("María Pérez");
+
+    await user.click(screen.getAllByRole("button", { name: /enviar a saint/i })[0]);
+
+    expect(await screen.findByLabelText("Nombre")).toHaveValue("María");
+    expect(screen.getByLabelText("Apellido")).toHaveValue("Pérez");
+    expect(screen.getByLabelText("Cédula")).toHaveValue("");
+    expect(screen.getByLabelText("Teléfono")).toHaveValue("");
+  });
+
+  it("completa cédula y teléfono con los del último envío de ese presupuesto", async () => {
+    borradoresPorOrigen.set("pr-1", {
+      id: "b-1",
+      origen: "presupuesto",
+      origenId: "pr-1",
+      creadoPor: YO,
+      cedulaTipo: "E",
+      cedulaNumero: "87654321",
+      nombre: "María",
+      apellido: "Pérez",
+      telefono: "04125550000",
+      estado: "error",
+      numeroSaint: null,
+      codclie: null,
+      clienteCreado: null,
+      error: "SAINT rechazó la cédula.",
+      createdAt: "2026-10-25T14:00:00.000Z",
+      procesadoAt: null,
+    });
+    const user = usuario();
+    pintar();
+    await screen.findByText("María Pérez");
+
+    expect(screen.getByRole("status")).toHaveTextContent("SAINT rechazó la cédula.");
+    await user.click(screen.getAllByRole("button", { name: /enviar a saint/i })[0]);
+
+    expect(await screen.findByLabelText("Cédula")).toHaveValue("87654321");
+    expect(screen.getByLabelText("Teléfono")).toHaveValue("04125550000");
   });
 });

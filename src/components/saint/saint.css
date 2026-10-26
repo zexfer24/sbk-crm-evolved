@@ -1,0 +1,115 @@
+/* ==========================================================================
+   «Enviar a SAINT» (25/10/2026, plan "Enviar a SAINT", T3). Una pieza chica
+   que vive en tres sitios: la columna del chat (268-300 px), la tarjeta de un
+   presupuesto en esa misma columna y la tarjeta de /inventario. Por eso es una
+   columna que se encoge (`min-width: 0`) y envuelve el texto largo en vez de
+   empujar a su padre.
+   ========================================================================== */
+
+.saint-envio {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+  width: 100%;
+  margin-top: 6px;
+}
+
+.saint-envio-btn {
+  display: block;
+  min-width: 0;
+}
+
+/* La línea de estado: punto de color (o spinner) + texto, y debajo el detalle. */
+.saint-estado {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  min-width: 0;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--lm-ink-soft);
+}
+
+.saint-estado-texto {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.saint-estado-detalle {
+  font-weight: 400;
+  color: var(--lm-muted);
+}
+
+.saint-estado[data-tono="ok"] {
+  color: var(--lm-good-ink);
+}
+
+.saint-estado[data-tono="error"] {
+  color: var(--lm-hot-ink);
+}
+
+.saint-estado[data-tono="alerta"] {
+  color: var(--lm-wait-ink);
+}
+
+.saint-estado[data-tono="progreso"] {
+  color: var(--lm-link-ink);
+}
+
+.saint-spinner {
+  flex-shrink: 0;
+  width: 11px;
+  height: 11px;
+  margin-top: 2px;
+  border: 2px solid currentColor;
+  border-right-color: transparent;
+  border-radius: 50%;
+  animation: saint-giro 0.8s linear infinite;
+}
+
+@keyframes saint-giro {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .saint-spinner {
+    animation-duration: 2.4s;
+  }
+}
+
+.saint-hint {
+  margin: 0;
+  font-size: 11.5px;
+  color: var(--lm-wait-ink);
+  overflow-wrap: anywhere;
+}
+
+/* En la tarjeta de /inventario (`.inv-presupuesto` es una fila que envuelve):
+   el envío ocupa su propia fila, con el estado a la izquierda y el botón a un
+   ancho razonable en vez de estirarse por toda la tarjeta. */
+.inv-presupuesto > .saint-envio {
+  flex: 1 1 100%;
+  flex-direction: row;
+  flex-wrap: wrap;
+  align-items: center;
+  margin-top: 0;
+}
+
+.inv-presupuesto > .saint-envio .saint-estado {
+  flex: 1 1 220px;
+}
+
+.inv-presupuesto > .saint-envio .saint-envio-btn {
+  flex: 0 0 200px;
+  max-width: 100%;
+}
+
+.inv-presupuesto > .saint-envio .saint-hint {
+  flex: 1 1 100%;
+}

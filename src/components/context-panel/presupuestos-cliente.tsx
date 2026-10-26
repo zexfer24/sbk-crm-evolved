@@ -14,8 +14,11 @@ import {
   separarNombreContacto,
   type Presupuesto,
 } from "@/lib/presupuestos";
+import type { CedulaType } from "@/lib/types";
 import { ELECCION_CASHEA_INICIAL } from "@/lib/cashea";
 import { totalesCarrito } from "@/lib/inventario-carrito";
+import { EnviarASaint } from "@/components/saint/enviar-a-saint";
+import { useBorradoresSaint } from "@/components/saint/use-borradores-saint";
 
 /**
  * Los presupuestos guardados del contacto del chat, debajo de «Lo que lleva el
@@ -33,6 +36,12 @@ import { totalesCarrito } from "@/lib/inventario-carrito";
  * Sin Realtime a propósito: la lista se relee al montar, al cambiar de
  * contacto y cuando el bloque guarda uno nuevo (`recargarClave`). Sin
  * presupuestos no pinta nada, ni el título.
+ *
+ * 25/10/2026 (plan "Enviar a SAINT", T3): cada presupuesto lleva su «Enviar a
+ * SAINT» con el estado del último envío. Ese estado SÍ es en vivo (Realtime
+ * por `useBorradoresSaint`, origen `presupuesto`): lo cambia un agente externo
+ * y nadie más avisa. Cédula y teléfono vienen del contacto del chat; nombre y
+ * apellido, del presupuesto.
  */
 
 interface PresupuestosClienteProps {
@@ -41,6 +50,10 @@ interface PresupuestosClienteProps {
   bcvRate: number;
   /** Nombre del contacto del chat: el botón dice «N guardados de María». */
   contactDisplayName: string | null;
+  /** Datos del contacto del chat: precargan el modal de «Enviar a SAINT». */
+  contactPhone: string;
+  contactCedulaType: CedulaType | null;
+  contactCedulaNumber: string | null;
   /** Pide a `crm-shell.tsx` releer el carrito (tras escribir en él). */
   onCartChanged: () => void;
   /** El bloque la incrementa al guardar un presupuesto para que esta lista se relea. */
@@ -65,6 +78,9 @@ export function PresupuestosCliente({
   conversationId,
   bcvRate,
   contactDisplayName,
+  contactPhone,
+  contactCedulaType,
+  contactCedulaNumber,
   onCartChanged,
   recargarClave,
 }: PresupuestosClienteProps) {
@@ -92,6 +108,14 @@ export function PresupuestosCliente({
 
   // Una carga de OTRO contacto (el asesor cambió de chat) no se pinta.
   const actual = carga && carga.contactId === contactId ? carga : null;
+
+  // Antes de los `return` tempranos: un hook no puede ir después de ellos.
+  const listaCargada = actual?.status === "ok" ? actual.lista : null;
+  const { porOrigen: envios, ahora, recargar: recargarEnvios } = useBorradoresSaint(
+    "presupuesto",
+    (listaCargada ?? []).map((p) => p.id),
+  );
+
   if (actual === null) return null;
 
   if (actual.status === "error") {
@@ -177,6 +201,21 @@ export function PresupuestosCliente({
                   <ShoppingCart size={12} aria-hidden="true" />
                   Pasar al carrito
                 </button>
+                <EnviarASaint
+                  origen="presupuesto"
+                  origenId={presupuesto.id}
+                  productos={presupuesto.items.map((i) => i.product)}
+                  inicial={{
+                    cedulaTipo: contactCedulaType ?? "",
+                    cedulaNumero: contactCedulaNumber ?? "",
+                    nombre: presupuesto.clienteNombre,
+                    apellido: presupuesto.clienteApellido,
+                    telefono: contactPhone,
+                  }}
+                  ultimo={envios.get(presupuesto.id) ?? null}
+                  ahora={ahora}
+                  onEnviado={recargarEnvios}
+                />
               </li>
             );
           })}
