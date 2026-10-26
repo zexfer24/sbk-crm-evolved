@@ -3154,6 +3154,15 @@ dejar rastro es lo que hacía desaparecer leads.
   lee SOLO por la RPC `security definer`, y un `select` como `authenticated` da
   error de permiso, no 0 filas.
 
+- **`liminal.saint_borradores` es un CONTRATO con el agente LiminalReplicant:
+  no se le cambia una columna sin coordinarlo con ese repo** (25/10/2026,
+  «Enviar a SAINT», migración `20261025010000`). PostgREST no expone
+  `liminal`: el CRM escribe y lee SOLO por las RPC `enviar_borrador_saint` y
+  `borradores_saint` de `public`, y escucha por Realtime con `schema:
+  "liminal"`. Los ítems los arma la RPC desde la base; el precio nunca viaja
+  (lo pone SAINT). Con el agente apagado, los envíos se acumulan en
+  `pendiente` y se procesan TODOS al encenderlo.
+
 ---
 
 # RTK (Rust Token Killer) - Token-Optimized Commands
