@@ -192,12 +192,16 @@ export function ContextPanel({
             <Radio size={13} />
             <span>{conversation.channel.label}</span>
           </p>
-          {cedula && (
-            <p className="crm-context-fact">
-              <IdCard size={13} />
+          {/* 26/10/2026: la fila existe siempre; tras cerrar una venta el
+              contacto se relee con la cédula por realtime y cambia sola. */}
+          <p className="crm-context-fact">
+            <IdCard size={13} />
+            {cedula ? (
               <span className="lm-num">{cedula}</span>
-            </p>
-          )}
+            ) : (
+              <span style={{ color: "var(--lm-muted)" }}>Sin cédula</span>
+            )}
+          </p>
           {(location || contact.address) && (
             <p className="crm-context-fact">
               <MapPin size={13} />
@@ -246,6 +250,9 @@ export function ContextPanel({
           // 21/10/2026: la caja no ve el chat, pero por si el panel llegara a
           // montarse con ella, el peso no se ofrece (la base decide igual).
           puedeEditarPeso={currentAgent.role !== "caja"}
+          // 26/10/2026: el buscador ocupaba media columna aunque no se usara;
+          // ahora se pliega y recuerda por visor si quedó abierto.
+          desplegable
         />
 
         <ConversationCartBlock

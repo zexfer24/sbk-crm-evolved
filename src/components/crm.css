@@ -2801,6 +2801,40 @@
   border: 1px solid var(--lm-border, var(--lm-muted));
   border-radius: 10px;
   padding: 6px;
+  /* 26/10/2026: con páginas de 30 y «Ver más», la lista empujaba el modal
+     entero; ahora tiene su propia barra y el scroll no se escapa al modal. */
+  max-height: 320px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+.crm-cart-more {
+  align-self: center;
+  flex-shrink: 0;
+  margin-top: 2px;
+  padding: 6px 14px;
+  border: 1px solid var(--lm-border, var(--lm-muted));
+  border-radius: 7px;
+  background: transparent;
+  color: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.crm-cart-more:hover:not(:disabled) {
+  background: var(--lm-sunken);
+}
+
+.crm-cart-more:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+/* 26/10/2026: «Productos a Facturar» encabeza la sección; un punto más que
+   las etiquetas de HeroUI (text-sm, 500) para que se lea como título. */
+.crm-sale-items-title {
+  font-size: 16px;
+  font-weight: 600;
 }
 
 .crm-cart-result {
@@ -3591,4 +3625,46 @@ button.crm-bubble-quote:hover {
   margin: 0;
   color: var(--lm-muted);
   font-size: 11.5px;
+}
+
+/* «Inventario» plegable del panel del chat (26/10/2026): el título pasa a ser
+   un botón con el aspecto del eyebrow (`.lm-eyebrow`, theme.css). El cuerpo
+   conserva el mismo hueco de 8px que tenía como hijo directo de la sección. */
+.crm-lookup-toggle {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  width: 100%;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--lm-muted);
+  font: inherit;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+  text-align: left;
+  cursor: pointer;
+}
+
+.crm-lookup-toggle:hover {
+  color: var(--lm-link);
+}
+
+.crm-lookup-toggle:focus-visible {
+  outline: 2px solid var(--lm-link);
+  outline-offset: 2px;
+  border-radius: 4px;
+}
+
+.crm-lookup-body {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+}
+
+.crm-lookup-body[hidden] {
+  display: none;
 }

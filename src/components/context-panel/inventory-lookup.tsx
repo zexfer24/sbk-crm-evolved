@@ -1,7 +1,8 @@
 "use client";
 
-import { useRef, useState, type KeyboardEvent } from "react";
-import { Search, X } from "lucide-react";
+import { useId, useRef, useState, type KeyboardEvent } from "react";
+import { ChevronDown, ChevronRight, Search, X } from "lucide-react";
+import { flushSync } from "react-dom";
 import { toast } from "@heroui/react";
 import type { CartPriceKind, Product } from "@/lib/types";
 import { createClient } from "@/lib/supabase/client";
@@ -78,6 +79,18 @@ import type { BcvRateSummary } from "@/components/inbox/bcv-rate-chip";
 const LOOKUP_DEBOUNCE_MS = 300;
 const LOOKUP_LIMIT = 20;
 
+/** Preferencia por visor de «Inventario» plegable (26/10/2026): "1" abierto, "0" cerrado. */
+const OPEN_KEY = "sbk.panel.inventario.abierto";
+
+/** Lee la preferencia; ante cualquier fallo de `localStorage` (o sin valor) arranca cerrado. */
+function readOpenPreference(): boolean {
+  try {
+    return localStorage.getItem(OPEN_KEY) === "1";
+  } catch {
+    return false;
+  }
+}
+
 type LookupState =
   | { status: "idle" }
   | { status: "loading" }
@@ -101,6 +114,12 @@ interface InventoryLookupProps {
   addDisabled?: boolean;
   /** Muestra «Cargar peso»/«Editar». Default `true`; el panel lo apaga para la caja. */
   puedeEditarPeso?: boolean;
+  /**
+   * 26/10/2026: el título pasa a ser un botón que pliega el buscador; arranca
+   * cerrado y recuerda la preferencia. Default `false`: sin el prop todo se ve
+   * como siempre (el panel del chat lo enciende).
+   */
+  desplegable?: boolean;
 }
 
 /** «3,2»: el peso para leer, con coma y sin ceros de relleno (el campo editable usa `formatWeightInput`). */
@@ -251,7 +270,10 @@ function PesoDelResultado({ product, puedeEditar, onGuardado }: PesoDelResultado
   );
 }
 
-export function InventoryLookup({ bcvRate, onAdd, addDisabled = false, puedeEditarPeso = true }: InventoryLookupProps) {
+export function InventoryLookup({ bcvRate, onAdd, addDisabled = false, puedeEditarPeso = true, desplegable = false }: InventoryLookupProps) {
+  const bodyId = useId();
+  // Sin `desplegable` siempre abierto; con él, la preferencia guardada (o cerrado).
+  const [abierto, setAbierto] = useState<boolean>(() => (desplegable ? readOpenPreference() : true));
   const [text, setText] = useState("");
   const [state, setState] = useState<LookupState>({ status: "idle" });
 
@@ -355,152 +377,178 @@ export function InventoryLookup({ bcvRate, onAdd, addDisabled = false, puedeEdit
     );
   }
 
+  // Alternar guarda la preferencia (en try/catch: la UI funciona sin storage).
+  // Al ABRIR el foco va al input; el cuerpo sigue montado (solo `hidden`), pero un
+  // elemento `hidden` no admite foco hasta que el render lo muestra: `flushSync`
+  // aplica el cambio antes de enfocar.
+  function alternar() {
+    const siguiente = !abierto;
+    flushSync(() => setAbierto(siguiente));
+    try {
+      localStorage.setItem(OPEN_KEY, siguiente ? "1" : "0");
+    } catch {
+      /* sin storage: la preferencia no se recuerda, nada más */
+    }
+    if (siguiente) {
+      inputRef.current?.focus();
+    }
+  }
+
   const rate = bcvRate?.rate ?? 0;
 
   return (
     <section className="crm-context-section">
-      <p className="lm-eyebrow">Inventario</p>
-      <div className="crm-lookup-search">
-        <Search size={14} aria-hidden="true" />
-        <input
-          ref={inputRef}
-          type="search"
-          value={text}
-          onChange={(event) => onChange(event.target.value)}
-          placeholder="Buscar por nombre, marca o código"
-          aria-label="Buscar en el inventario"
-        />
-        {text !== "" && (
-          <button type="button" className="crm-lookup-clear" onClick={clearSearch} aria-label="Borrar búsqueda">
-            <X size={14} aria-hidden="true" />
-          </button>
-        )}
-      </div>
-
-      {state.status === "idle" && (
-        <p className="crm-lookup-hint">
-          Escribe un nombre, una marca o un código Saint para ver existencia y precio.
-        </p>
+      {desplegable ? (
+        <button
+          type="button"
+          className="crm-lookup-toggle"
+          aria-expanded={abierto}
+          aria-controls={bodyId}
+          onClick={alternar}
+        >
+          {abierto ? <ChevronDown size={14} aria-hidden="true" /> : <ChevronRight size={14} aria-hidden="true" />}
+          Inventario
+        </button>
+      ) : (
+        <p className="lm-eyebrow">Inventario</p>
       )}
-
-      {state.status === "loading" && <p className="crm-lookup-hint">Buscando…</p>}
-
-      {state.status === "error" && (
-        <p className="crm-lookup-hint" role="alert">
-          No se pudo buscar en el inventario.
-        </p>
-      )}
-
-      {state.status === "ok" && state.products.length === 0 && (
-        <p className="crm-lookup-hint">Ningún repuesto coincide con «{state.term}».</p>
-      )}
-
-      {state.status === "ok" && state.products.length > 0 && (
-        <>
-          <ul className="crm-lookup-results">
-            {state.products.map((product) => {
-              const price = priceDisplay(product, rate);
-              const estandar = standardPriceDisplay(product, rate);
-              return (
-                <li className="crm-lookup-item" key={product.id} data-retired={product.isActive ? undefined : "true"}>
-                  <div className="crm-lookup-item-head">
-                    <span className="crm-lookup-name">{product.name}</span>
-                    {!product.isActive && (
-                      <span className="crm-lookup-retired">
-                        Retirado
-                      </span>
-                    )}
-                  </div>
-                  <div className="crm-lookup-item-meta">
-                    {product.saintCode ? (
-                      <span className="lm-num crm-lookup-code" aria-label={`Código ${product.saintCode}`}>
-                        {product.saintCode}
-                      </span>
-                    ) : (
-                      <span className="crm-lookup-code" data-empty="true" aria-label="Sin código Saint">
-                        Sin código
-                      </span>
-                    )}
-                    <StockPill quantity={product.stockQuantity} />
-                  </div>
-                  <PesoDelResultado
-                    product={product}
-                    puedeEditar={puedeEditarPeso}
-                    onGuardado={reemplazarProducto}
-                  />
-                  <div className="crm-lookup-item-actions">
-                    <div className="crm-lookup-prices">
-                      <div className="crm-lookup-item-price" data-kind="promo">
-                        <span className="crm-lookup-price-label">Promoción</span>
-                        <span className="lm-num" aria-label={`Precio promoción de ${product.name}`}>
-                          {price.principal}
-                        </span>
-                        {price.pie !== null && <span className="lm-num crm-lookup-price-alt">{price.pie}</span>}
-                      </div>
-                      <div className="crm-lookup-item-price" data-kind="estandar">
-                        <span className="crm-lookup-price-label">Estándar</span>
-                        {estandar.estado === "ok" ? (
-                          <>
-                            <span className="lm-num" aria-label={`Precio estándar de ${product.name}`}>
-                              {estandar.principal}
-                            </span>
-                            {estandar.pie !== null && (
-                              <span className="lm-num crm-lookup-price-alt">{estandar.pie}</span>
-                            )}
-                          </>
-                        ) : (
-                          <span className="crm-lookup-price-missing" data-empty="true">
-                            {motivoSinEstandar(estandar.estado)}
-                          </span>
-                        )}
-                      </div>
-                      {estandar.estado === "ok" && (
-                        <span className="crm-lookup-fee">incluye envío MRW {estandar.tarifa}</span>
-                      )}
-                    </div>
-                    {onAdd && product.isActive && (
-                      <div className="crm-lookup-add-group">
-                        <button
-                          type="button"
-                          className="crm-lookup-add"
-                          onClick={() => onAdd(product, "promocion")}
-                          disabled={addDisabled}
-                          aria-label={`Agregar ${product.name} a precio de promoción`}
-                        >
-                          + Promoción
-                        </button>
-                        <button
-                          type="button"
-                          className="crm-lookup-add"
-                          onClick={() => onAdd(product, "estandar")}
-                          disabled={addDisabled || estandar.estado !== "ok"}
-                          title={estandar.estado === "ok" ? undefined : motivoSinEstandar(estandar.estado)}
-                          aria-label={`Agregar ${product.name} a precio estándar`}
-                        >
-                          + Estándar
-                        </button>
-                      </div>
-                    )}
-                  </div>
-                </li>
-              );
-            })}
-          </ul>
-
-          {/* Fuera de la lista que scrollea: el botón siempre está a la vista,
-              no hay que llegar al fondo de la lista para descubrirlo. */}
-          {state.moreError && (
-            <p className="crm-lookup-hint" role="alert">
-              No se pudo cargar más resultados.
-            </p>
-          )}
-          {state.hasMore && (
-            <button type="button" className="crm-lookup-more" onClick={loadMore} disabled={state.loadingMore}>
-              {state.loadingMore ? "Cargando…" : "Ver más"}
+      <div id={bodyId} className="crm-lookup-body" hidden={!abierto}>
+        <div className="crm-lookup-search">
+          <Search size={14} aria-hidden="true" />
+          <input
+            ref={inputRef}
+            type="search"
+            value={text}
+            onChange={(event) => onChange(event.target.value)}
+            placeholder="Buscar por nombre, marca o código"
+            aria-label="Buscar en el inventario"
+          />
+          {text !== "" && (
+            <button type="button" className="crm-lookup-clear" onClick={clearSearch} aria-label="Borrar búsqueda">
+              <X size={14} aria-hidden="true" />
             </button>
           )}
-        </>
-      )}
+        </div>
+
+        {state.status === "loading" && <p className="crm-lookup-hint">Buscando…</p>}
+
+        {state.status === "error" && (
+          <p className="crm-lookup-hint" role="alert">
+            No se pudo buscar en el inventario.
+          </p>
+        )}
+
+        {state.status === "ok" && state.products.length === 0 && (
+          <p className="crm-lookup-hint">Ningún repuesto coincide con «{state.term}».</p>
+        )}
+
+        {state.status === "ok" && state.products.length > 0 && (
+          <>
+            <ul className="crm-lookup-results">
+              {state.products.map((product) => {
+                const price = priceDisplay(product, rate);
+                const estandar = standardPriceDisplay(product, rate);
+                return (
+                  <li className="crm-lookup-item" key={product.id} data-retired={product.isActive ? undefined : "true"}>
+                    <div className="crm-lookup-item-head">
+                      <span className="crm-lookup-name">{product.name}</span>
+                      {!product.isActive && (
+                        <span className="crm-lookup-retired">
+                          Retirado
+                        </span>
+                      )}
+                    </div>
+                    <div className="crm-lookup-item-meta">
+                      {product.saintCode ? (
+                        <span className="lm-num crm-lookup-code" aria-label={`Código ${product.saintCode}`}>
+                          {product.saintCode}
+                        </span>
+                      ) : (
+                        <span className="crm-lookup-code" data-empty="true" aria-label="Sin código Saint">
+                          Sin código
+                        </span>
+                      )}
+                      <StockPill quantity={product.stockQuantity} />
+                    </div>
+                    <PesoDelResultado
+                      product={product}
+                      puedeEditar={puedeEditarPeso}
+                      onGuardado={reemplazarProducto}
+                    />
+                    <div className="crm-lookup-item-actions">
+                      <div className="crm-lookup-prices">
+                        <div className="crm-lookup-item-price" data-kind="promo">
+                          <span className="crm-lookup-price-label">Promoción</span>
+                          <span className="lm-num" aria-label={`Precio promoción de ${product.name}`}>
+                            {price.principal}
+                          </span>
+                          {price.pie !== null && <span className="lm-num crm-lookup-price-alt">{price.pie}</span>}
+                        </div>
+                        <div className="crm-lookup-item-price" data-kind="estandar">
+                          <span className="crm-lookup-price-label">Estándar</span>
+                          {estandar.estado === "ok" ? (
+                            <>
+                              <span className="lm-num" aria-label={`Precio estándar de ${product.name}`}>
+                                {estandar.principal}
+                              </span>
+                              {estandar.pie !== null && (
+                                <span className="lm-num crm-lookup-price-alt">{estandar.pie}</span>
+                              )}
+                            </>
+                          ) : (
+                            <span className="crm-lookup-price-missing" data-empty="true">
+                              {motivoSinEstandar(estandar.estado)}
+                            </span>
+                          )}
+                        </div>
+                        {estandar.estado === "ok" && (
+                          <span className="crm-lookup-fee">incluye envío MRW {estandar.tarifa}</span>
+                        )}
+                      </div>
+                      {onAdd && product.isActive && (
+                        <div className="crm-lookup-add-group">
+                          <button
+                            type="button"
+                            className="crm-lookup-add"
+                            onClick={() => onAdd(product, "promocion")}
+                            disabled={addDisabled}
+                            aria-label={`Agregar ${product.name} a precio de promoción`}
+                          >
+                            + Promoción
+                          </button>
+                          <button
+                            type="button"
+                            className="crm-lookup-add"
+                            onClick={() => onAdd(product, "estandar")}
+                            disabled={addDisabled || estandar.estado !== "ok"}
+                            title={estandar.estado === "ok" ? undefined : motivoSinEstandar(estandar.estado)}
+                            aria-label={`Agregar ${product.name} a precio estándar`}
+                          >
+                            + Estándar
+                          </button>
+                        </div>
+                      )}
+                    </div>
+                  </li>
+                );
+              })}
+            </ul>
+
+            {/* Fuera de la lista que scrollea: el botón siempre está a la vista,
+                no hay que llegar al fondo de la lista para descubrirlo. */}
+            {state.moreError && (
+              <p className="crm-lookup-hint" role="alert">
+                No se pudo cargar más resultados.
+              </p>
+            )}
+            {state.hasMore && (
+              <button type="button" className="crm-lookup-more" onClick={loadMore} disabled={state.loadingMore}>
+                {state.loadingMore ? "Cargando…" : "Ver más"}
+              </button>
+            )}
+          </>
+        )}
+      </div>
     </section>
   );
 }

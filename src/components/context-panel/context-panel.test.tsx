@@ -274,6 +274,47 @@ describe("ContextPanel — etiquetas recogidas e Inventario en su lugar (D4/D5)"
 });
 
 /**
+ * 26/10/2026: la fila de cédula se pinta SIEMPRE. Tras cerrar una venta el
+ * contacto se relee con la cédula por realtime, y la fila tiene que existir
+ * para que cambie sola de «Sin cédula» a la cédula.
+ */
+describe("ContextPanel — fila de cédula siempre visible", () => {
+  function conContacto(cedulaType: "V" | "E" | null, cedulaNumber: string | null): Conversation {
+    const base = buildConversation();
+    return { ...base, contact: { ...base.contact, cedulaType, cedulaNumber } };
+  }
+
+  it("sin cédula dice «Sin cédula»", () => {
+    renderPanel();
+    expect(screen.getByText("Sin cédula")).toBeInTheDocument();
+  });
+
+  it("con cédula la muestra y no dice «Sin cédula»", () => {
+    renderPanel({ contact: conContacto("V", "12345678").contact });
+    expect(screen.getByText("V-12345678")).toBeInTheDocument();
+    expect(screen.queryByText("Sin cédula")).not.toBeInTheDocument();
+  });
+
+  it("pasa de «Sin cédula» a la cédula cuando el contacto se relee", () => {
+    const props = {
+      messages: [],
+      notes: [],
+      allTags: ALL_TAGS,
+      currentAgent: AGENT,
+      bcvRate: RATE,
+      cart: [],
+      onCartChanged: () => {},
+    };
+    const { rerender } = render(<ContextPanel conversation={conContacto(null, null)} {...props} />);
+    expect(screen.getByText("Sin cédula")).toBeInTheDocument();
+
+    rerender(<ContextPanel conversation={conContacto("V", "12345678")} {...props} />);
+    expect(screen.getByText("V-12345678")).toBeInTheDocument();
+    expect(screen.queryByText("Sin cédula")).not.toBeInTheDocument();
+  });
+});
+
+/**
  * Hallazgo 1, `code-review high` sobre d38a7e1..HEAD (27/9/2026): el canal
  * `contact-tags-<id>` filtrado por `contact_id` no entrega DELETE filtrados
  * (Realtime no manda el registro viejo completo salvo `REPLICA IDENTITY

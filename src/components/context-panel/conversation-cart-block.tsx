@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import { ChevronDown, ChevronRight, Copy, MessageSquarePlus, Save, Sparkles } from "lucide-react";
+import { ChevronDown, ChevronRight, Copy, MessageSquarePlus, Save } from "lucide-react";
 import { Button, toast } from "@heroui/react";
 import type { CedulaType, ConversationCartItem } from "@/lib/types";
 import { createClient } from "@/lib/supabase/client";
@@ -136,7 +136,7 @@ export function ConversationCartBlock({
 
       {cart.length === 0 ? (
         <p className="crm-lookup-hint">
-          Todavía no hay nada. Agrega repuestos desde el inventario de arriba o trae lo que Seba cotizó.
+          Todavía no hay nada. Agrega repuestos desde el inventario de arriba.
         </p>
       ) : (
         <>
@@ -224,17 +224,6 @@ export function ConversationCartBlock({
           soloEstado
         />
       )}
-
-      <Button
-        size="sm"
-        variant="secondary"
-        fullWidth
-        isDisabled={actions.busy}
-        onPress={() => void actions.addAllQuotes()}
-      >
-        <Sparkles size={13} />
-        Agregar cotizaciones de Seba
-      </Button>
 
       {cart.length > 0 && (
         <GuardarPresupuestoModal

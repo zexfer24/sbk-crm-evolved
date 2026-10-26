@@ -278,6 +278,29 @@ describe("searchActiveProducts — buscador del cierre de venta", () => {
     ]);
   });
 
+  it("ordena por mayor existencia (nulos al final), luego nombre y luego id", async () => {
+    const { calls, builder } = fakeProductsQuery();
+    await searchActiveProducts(fakeSupabase(builder), "cg");
+
+    const order = calls.filter((c) => c.method === "order");
+    expect(order.map((c) => c.args)).toEqual([
+      ["stock_quantity", { ascending: false, nullsFirst: false }],
+      ["name", { ascending: true }],
+      ["id", { ascending: true }],
+    ]);
+  });
+
+  it("pagina de a 30: range(0, 29) por defecto y range(30, 59) con offset 30", async () => {
+    const first = fakeProductsQuery();
+    await searchActiveProducts(fakeSupabase(first.builder), "cg");
+    expect(first.calls.find((c) => c.method === "range")?.args).toEqual([0, 29]);
+    expect(first.calls.find((c) => c.method === "limit")).toBeUndefined();
+
+    const second = fakeProductsQuery();
+    await searchActiveProducts(fakeSupabase(second.builder), "cg", 30, 30);
+    expect(second.calls.find((c) => c.method === "range")?.args).toEqual([30, 59]);
+  });
+
   it("query vacía no consulta nada y devuelve una lista vacía", async () => {
     const { calls, builder } = fakeProductsQuery();
     const result = await searchActiveProducts(fakeSupabase(builder), "   ");

@@ -297,11 +297,20 @@ export async function fetchMotoCatalogSummary(supabase: SupabaseClient): Promise
  * completa contra `name`/`brand`; ahora, misma regla de `inventory-search.ts`
  * que `fetchProductsPage` — cada palabra en `search_text`, `saint_code` o
  * `description` — así que un código Saint también encuentra su producto acá.
+ *
+ * Paginada y con lo que hay primero (26/10/2026): el modal mostraba 8 en
+ * orden alfabético, así que los agotados tapaban a los que sí había. Ahora
+ * ordena por existencia (mayor a menor, sin cargar al final), luego `name` y
+ * por último `id` —orden total, para que `range()` pagine estable aunque dos
+ * repuestos se llamen igual— y pide `limit` renglones desde `offset`. No usa
+ * `searchProductsForLookup` porque esa incluye inactivos y un producto
+ * retirado no se factura.
  */
 export async function searchActiveProducts(
   supabase: SupabaseClient,
   query: string,
-  limit = 8
+  limit = 30,
+  offset = 0
 ): Promise<Product[]> {
   const filter = productSearchFilter(query);
   if (!filter) return [];
@@ -311,8 +320,10 @@ export async function searchActiveProducts(
     .select(PRODUCT_SELECT)
     .eq("is_active", true)
     .or(filter)
+    .order("stock_quantity", { ascending: false, nullsFirst: false })
     .order("name", { ascending: true })
-    .limit(limit);
+    .order("id", { ascending: true })
+    .range(offset, offset + limit - 1);
 
   if (error) throw error;
   return ((data ?? []) as unknown as RawProduct[]).map(mapProduct);

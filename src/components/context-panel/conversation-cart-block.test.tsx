@@ -137,20 +137,20 @@ function setup(cart: ConversationCartItem[], actions = makeActions(), bcvRate = 
 }
 
 describe("ConversationCartBlock — carrito vacío", () => {
-  it("dice qué es y cómo llenarlo, y ofrece traer lo que cotizó Seba", () => {
+  it("dice qué es y cómo llenarlo, con el texto exacto", () => {
     setup([]);
 
     expect(screen.getByText("Lo que lleva el cliente")).toBeInTheDocument();
-    expect(screen.getByText(/todavía no hay nada/i)).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: /agregar cotizaciones de seba/i })).toBeInTheDocument();
+    expect(
+      screen.getByText("Todavía no hay nada. Agrega repuestos desde el inventario de arriba."),
+    ).toBeInTheDocument();
   });
 
-  it("«Agregar cotizaciones de Seba» dispara la acción", async () => {
-    const { user, actions } = setup([]);
+  // 26/10/2026: el botón se retiró de la UI (la acción queda en el hook).
+  it("ya no ofrece «Agregar cotizaciones de Seba»", () => {
+    setup([]);
 
-    await user.click(screen.getByRole("button", { name: /agregar cotizaciones de seba/i }));
-
-    expect(actions.addAllQuotes).toHaveBeenCalledTimes(1);
+    expect(screen.queryByRole("button", { name: /agregar cotizaciones de seba/i })).not.toBeInTheDocument();
   });
 });
 
@@ -285,7 +285,6 @@ describe("ConversationCartBlock — con renglones", () => {
 
     expect(screen.getByRole("button", { name: "Agregar una unidad de Carburador PZ27" })).toBeDisabled();
     expect(screen.getByRole("button", { name: "Quitar Carburador PZ27 del carrito" })).toBeDisabled();
-    expect(screen.getByRole("button", { name: /agregar cotizaciones de seba/i })).toBeDisabled();
   });
 });
 

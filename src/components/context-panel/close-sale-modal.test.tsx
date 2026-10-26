@@ -392,6 +392,83 @@ describe("CloseSaleModal — el asesor arma la venta, pero el precio lo pone el 
     expect(screen.getByText("Agotado")).toHaveAttribute("data-stock", "out");
   });
 
+  // 26/10/2026: el buscador pagina de a 30 y el título habla de facturar.
+  function pagina(prefijo: string, cantidad: number): Product[] {
+    return Array.from({ length: cantidad }, (_, i) => ({
+      ...BUJIA,
+      id: `${prefijo}-${i}`,
+      name: `${prefijo} ${String(i).padStart(2, "0")}`,
+    }));
+  }
+
+  it("pide la primera página de 30 con offset 0", async () => {
+    const user = crearUsuario();
+    renderModal();
+    await waitForQuotes();
+
+    await user.type(screen.getByLabelText("Buscar repuesto en el inventario"), "bujía");
+    await waitFor(() => expect(screen.getByText("Bujía CR7HSA")).toBeInTheDocument());
+
+    expect(searchActiveProducts).toHaveBeenLastCalledWith(expect.anything(), "bujía", 30, 0);
+  });
+
+  it("con 30 resultados ofrece «Ver más» y los nuevos quedan debajo de los primeros", async () => {
+    searchActiveProducts.mockResolvedValueOnce(pagina("Primero", 30));
+    searchActiveProducts.mockResolvedValueOnce(pagina("Segundo", 5));
+    const user = crearUsuario();
+    renderModal();
+    await waitForQuotes();
+
+    await user.type(screen.getByLabelText("Buscar repuesto en el inventario"), "bujía");
+    const verMas = await screen.findByRole("button", { name: "Ver más" });
+    await user.click(verMas);
+
+    await waitFor(() => expect(screen.getByText("Segundo 00")).toBeInTheDocument());
+    expect(searchActiveProducts).toHaveBeenLastCalledWith(expect.anything(), "bujía", 30, 30);
+
+    const primero = screen.getByText("Primero 29");
+    const segundo = screen.getByText("Segundo 00");
+    expect(primero.compareDocumentPosition(segundo) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    // La segunda página llegó corta: ya no hay más que pedir.
+    expect(screen.queryByRole("button", { name: "Ver más" })).not.toBeInTheDocument();
+  });
+
+  it("con menos de 30 resultados no ofrece «Ver más»", async () => {
+    searchActiveProducts.mockResolvedValueOnce(pagina("Unico", 29));
+    const user = crearUsuario();
+    renderModal();
+    await waitForQuotes();
+
+    await user.type(screen.getByLabelText("Buscar repuesto en el inventario"), "bujía");
+    await waitFor(() => expect(screen.getByText("Unico 28")).toBeInTheDocument());
+
+    expect(screen.queryByRole("button", { name: "Ver más" })).not.toBeInTheDocument();
+  });
+
+  it("si «Ver más» falla avisa con un toast y conserva lo ya mostrado", async () => {
+    searchActiveProducts.mockResolvedValueOnce(pagina("Primero", 30));
+    searchActiveProducts.mockRejectedValueOnce(new Error("boom"));
+    const user = crearUsuario();
+    renderModal();
+    await waitForQuotes();
+
+    await user.type(screen.getByLabelText("Buscar repuesto en el inventario"), "bujía");
+    await user.click(await screen.findByRole("button", { name: "Ver más" }));
+
+    await waitFor(() => expect(toast.danger).toHaveBeenCalled());
+    expect(screen.getByText("Primero 00")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Ver más" })).toBeEnabled();
+  });
+
+  it("el título de la sección es «Productos a Facturar» y no lleva el párrafo de ayuda", async () => {
+    renderModal();
+    await waitForQuotes();
+
+    expect(screen.getByText("Productos a Facturar")).toBeInTheDocument();
+    expect(screen.queryByText("¿Qué lleva el cliente?")).not.toBeInTheDocument();
+    expect(screen.queryByText(/Es el mismo carrito del panel del chat/)).not.toBeInTheDocument();
+  });
+
   it("deja agregar un repuesto del inventario: se escribe en el carrito de la base", async () => {
     const user = crearUsuario();
     renderModal();

@@ -103,9 +103,10 @@ async function flushPromises() {
 }
 
 describe("InventoryLookup", () => {
-  it("arranca vacío con una sugerencia de qué escribir, sin buscar nada", () => {
+  it("arranca vacío, sin texto de ayuda y sin buscar nada", () => {
+    // 26/10/2026: el párrafo de ayuda del estado inicial se eliminó.
     render(<InventoryLookup bcvRate={RATE} />);
-    expect(screen.getByText(/escribe un nombre, una marca o un código/i)).toBeInTheDocument();
+    expect(screen.queryByText(/escribe un nombre, una marca o un código/i)).not.toBeInTheDocument();
     expect(searchProductsForLookup).not.toHaveBeenCalled();
   });
 
@@ -240,7 +241,7 @@ describe("InventoryLookup", () => {
 
     type("");
     expect(screen.queryByText("Bujía CR7HSA")).not.toBeInTheDocument();
-    expect(screen.getByText(/escribe un nombre, una marca o un código/i)).toBeInTheDocument();
+    expect(screen.queryByText(/escribe un nombre, una marca o un código/i)).not.toBeInTheDocument();
   });
 
   /**
@@ -272,7 +273,7 @@ describe("InventoryLookup", () => {
       const input = screen.getByLabelText("Buscar en el inventario") as HTMLInputElement;
       expect(input.value).toBe("");
       expect(screen.queryByText("Bujía CR7HSA")).not.toBeInTheDocument();
-      expect(screen.getByText(/escribe un nombre, una marca o un código/i)).toBeInTheDocument();
+      expect(screen.queryByText(/escribe un nombre, una marca o un código/i)).not.toBeInTheDocument(); // 26/10/2026: sin texto de ayuda
       expect(document.activeElement).toBe(input);
       expect(onAdd).not.toHaveBeenCalled();
       // Con el cuadro vacío el botón se va.
@@ -299,7 +300,7 @@ describe("InventoryLookup", () => {
         resolveBusqueda([product({ id: "tarde", name: "Resultado tardío" })]);
       });
       expect(screen.queryByText("Resultado tardío")).not.toBeInTheDocument();
-      expect(screen.getByText(/escribe un nombre, una marca o un código/i)).toBeInTheDocument();
+      expect(screen.queryByText(/ningún repuesto|Resultado tardío/)).not.toBeInTheDocument(); // 26/10/2026: ya no hay texto de ayuda en idle
     });
   });
 
@@ -886,5 +887,78 @@ describe("InventoryLookup", () => {
       expect(screen.getByText("Peso 1 kg")).toBeInTheDocument();
       expect(screen.getByText("Peso 4 kg")).toBeInTheDocument();
     });
+  });
+});
+
+/**
+ * 26/10/2026: el buscador se puede plegar (`desplegable`). Arranca cerrado,
+ * recuerda la preferencia por visor y, cerrado, conserva lo escrito.
+ */
+describe("InventoryLookup desplegable", () => {
+  const CLAVE = "sbk.panel.inventario.abierto";
+
+  it("sin `desplegable` el input está visible y no hay botón de título", () => {
+    render(<InventoryLookup bcvRate={RATE} />);
+    expect(screen.getByLabelText("Buscar en el inventario")).toBeVisible();
+    expect(screen.queryByRole("button", { name: "Inventario" })).not.toBeInTheDocument();
+  });
+
+  it("con `desplegable` y sin preferencia arranca cerrado", () => {
+    render(<InventoryLookup bcvRate={RATE} desplegable />);
+    expect(screen.getByRole("button", { name: "Inventario" })).toHaveAttribute("aria-expanded", "false");
+    expect(screen.getByLabelText("Buscar en el inventario")).not.toBeVisible();
+  });
+
+  it("pulsar el botón abre el cuerpo y lleva el foco al input", () => {
+    render(<InventoryLookup bcvRate={RATE} desplegable />);
+    fireEvent.click(screen.getByRole("button", { name: "Inventario" }));
+    expect(screen.getByRole("button", { name: "Inventario" })).toHaveAttribute("aria-expanded", "true");
+    const input = screen.getByLabelText("Buscar en el inventario");
+    expect(input).toBeVisible();
+    expect(input).toHaveFocus();
+  });
+
+  it("guarda la preferencia y un render nuevo con «1» arranca abierto", () => {
+    const { unmount } = render(<InventoryLookup bcvRate={RATE} desplegable />);
+    fireEvent.click(screen.getByRole("button", { name: "Inventario" }));
+    expect(localStorage.getItem(CLAVE)).toBe("1");
+    unmount();
+    render(<InventoryLookup bcvRate={RATE} desplegable />);
+    expect(screen.getByRole("button", { name: "Inventario" })).toHaveAttribute("aria-expanded", "true");
+    expect(screen.getByLabelText("Buscar en el inventario")).toBeVisible();
+  });
+
+  it("si localStorage lanza, arranca cerrado y alternar no rompe", () => {
+    const getSpy = vi.spyOn(Storage.prototype, "getItem").mockImplementation(() => {
+      throw new Error("bloqueado");
+    });
+    const setSpy = vi.spyOn(Storage.prototype, "setItem").mockImplementation(() => {
+      throw new Error("bloqueado");
+    });
+    try {
+      render(<InventoryLookup bcvRate={RATE} desplegable />);
+      expect(screen.getByRole("button", { name: "Inventario" })).toHaveAttribute("aria-expanded", "false");
+      fireEvent.click(screen.getByRole("button", { name: "Inventario" }));
+      expect(screen.getByRole("button", { name: "Inventario" })).toHaveAttribute("aria-expanded", "true");
+    } finally {
+      getSpy.mockRestore();
+      setSpy.mockRestore();
+    }
+  });
+
+  it("cerrar y reabrir conserva el texto escrito", () => {
+    render(<InventoryLookup bcvRate={RATE} desplegable />);
+    const boton = screen.getByRole("button", { name: "Inventario" });
+    fireEvent.click(boton);
+    type("bujia");
+    fireEvent.click(boton);
+    expect(screen.getByLabelText("Buscar en el inventario")).not.toBeVisible();
+    fireEvent.click(boton);
+    expect(screen.getByLabelText("Buscar en el inventario")).toHaveValue("bujia");
+  });
+
+  it("no pinta el texto de ayuda en el estado inicial", () => {
+    render(<InventoryLookup bcvRate={RATE} desplegable />);
+    expect(screen.queryByText(/Escribe un nombre, una marca o un código Saint/)).not.toBeInTheDocument();
   });
 });

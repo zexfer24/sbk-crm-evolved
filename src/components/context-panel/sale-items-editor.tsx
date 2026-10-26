@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Plus, Search } from "lucide-react";
 import { Label, toast } from "@heroui/react";
 import type { ConversationCartItem, ConversationQuote, Product } from "@/lib/types";
@@ -13,8 +13,8 @@ import { StockPill } from "@/components/context-panel/stock-pill";
 import { useCartActions } from "@/components/context-panel/use-cart-actions";
 
 /**
- * Qué lleva el cliente, editable por el asesor, dentro del modal «Cerrar
- * venta».
+ * «Productos a Facturar» (antes «¿Qué lleva el cliente?»), editable por el
+ * asesor, dentro del modal «Cerrar venta».
  *
  * T8 (28/9/2026, plan "Seba encuentra, no insiste, y el mostrador no deja a
  * nadie esperando"): esto ya NO es un carrito propio del modal. Muestra el
@@ -29,6 +29,8 @@ import { useCartActions } from "@/components/context-panel/use-cart-actions";
  * precio avisa «cotizado $X · hoy $Y».
  */
 const SEARCH_DEBOUNCE_MS = 300;
+/** Renglones por página del buscador (26/10/2026): una página llena ofrece «Ver más». */
+const PAGINA_INVENTARIO = 30;
 
 interface SaleItemsEditorProps {
   conversationId: string;
@@ -53,6 +55,11 @@ export function SaleItemsEditor({ conversationId, cart, bcvRate, onCartChanged }
   // corre el debounce de una búsqueda nueva, no se muestran los resultados
   // de la anterior — y vaciar el cuadro no necesita tocar el estado.
   const [results, setResults] = useState<{ term: string; items: Product[] }>({ term: "", items: [] });
+  // «Ver más» (26/10/2026): si la última página llegó llena, puede haber otra.
+  const [hasMore, setHasMore] = useState(false);
+  const [isLoadingMore, setIsLoadingMore] = useState(false);
+  // Término vigente, para descartar la respuesta de un «Ver más» que quedó vieja.
+  const termRef = useRef("");
 
   useEffect(() => {
     let cancelled = false;
@@ -73,6 +80,10 @@ export function SaleItemsEditor({ conversationId, cart, bcvRate, onCartChanged }
     };
   }, [conversationId]);
 
+  useEffect(() => {
+    termRef.current = search.trim();
+  }, [search]);
+
   // Búsqueda en el inventario, con una pausa para no consultar por tecla.
   useEffect(() => {
     const text = search.trim();
@@ -81,9 +92,11 @@ export function SaleItemsEditor({ conversationId, cart, bcvRate, onCartChanged }
     let cancelled = false;
     const timer = setTimeout(() => {
       setIsSearching(true);
-      searchActiveProducts(createClient(), text)
+      searchActiveProducts(createClient(), text, PAGINA_INVENTARIO, 0)
         .then((data) => {
-          if (!cancelled) setResults({ term: text, items: data });
+          if (cancelled) return;
+          setResults({ term: text, items: data });
+          setHasMore(data.length === PAGINA_INVENTARIO);
         })
         .catch(() => {
           if (!cancelled) toast.danger("No se pudo buscar en el inventario.");
@@ -116,6 +129,23 @@ export function SaleItemsEditor({ conversationId, cart, bcvRate, onCartChanged }
     return quotes.findIndex((q) => q.productId === quote.productId) === index;
   });
 
+  async function handleLoadMore() {
+    const asked = results.term;
+    const offset = results.items.length;
+    setIsLoadingMore(true);
+    try {
+      const data = await searchActiveProducts(createClient(), asked, PAGINA_INVENTARIO, offset);
+      // Si el asesor cambió el término mientras cargaba, esta página ya no es suya.
+      if (termRef.current !== asked) return;
+      setResults((prev) => (prev.term === asked ? { term: asked, items: [...prev.items, ...data] } : prev));
+      setHasMore(data.length === PAGINA_INVENTARIO);
+    } catch {
+      if (termRef.current === asked) toast.danger("No se pudo cargar más del inventario.");
+    } finally {
+      setIsLoadingMore(false);
+    }
+  }
+
   async function handleAddProduct(product: Product) {
     await actions.addProduct(product);
     setSearch("");
@@ -123,11 +153,7 @@ export function SaleItemsEditor({ conversationId, cart, bcvRate, onCartChanged }
 
   return (
     <div className="flex flex-col gap-1.5">
-      <Label>¿Qué lleva el cliente?</Label>
-      <p className="lm-hint">
-        Es el mismo carrito del panel del chat: lo que agregues, quites o cambies aquí queda guardado. El precio
-        siempre sale del catálogo y se factura el de hoy.
-      </p>
+      <Label className="crm-sale-items-title">Productos a Facturar</Label>
 
       {cart.length === 0 ? (
         <p className="crm-quote-empty text-xs text-muted">
@@ -205,6 +231,16 @@ export function SaleItemsEditor({ conversationId, cart, bcvRate, onCartChanged }
               </button>
             );
           })}
+          {hasMore && (
+            <button
+              type="button"
+              className="crm-cart-more"
+              disabled={isLoadingMore}
+              onClick={() => void handleLoadMore()}
+            >
+              {isLoadingMore ? "Cargando…" : "Ver más"}
+            </button>
+          )}
         </div>
       )}
     </div>
