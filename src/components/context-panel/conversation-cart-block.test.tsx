@@ -28,15 +28,17 @@ vi.mock("@/lib/presupuestos-data", () => ({
 vi.mock("@/lib/supabase/client", () => ({ createClient: vi.fn(() => ({ marca: "cliente" })) }));
 vi.mock("@/lib/mutations", () => ({ addToCart: vi.fn() }));
 
-// 25/10/2026 (plan "Enviar a SAINT", T3): el estado de los envíos a SAINT viene
-// de un hook con Realtime; acá se controla a mano. El botón y el modal se
-// prueban en `saint/enviar-a-saint.test.tsx`.
-const borradoresPorOrigen = new Map<string, BorradorSaint>();
-const usoBorradores = vi.fn();
+// 28/10/2026: el bloque NO debe suscribirse a los envíos del CARRITO (lo hace
+// `ContextPanel`): si algún día vuelve a llamar al hook con ese origen, estos
+// tests revientan. Los presupuestos del cliente (`PresupuestosCliente`, que
+// vive dentro del bloque) sí tienen su propia suscripción, de origen
+// `presupuesto`.
 vi.mock("@/components/saint/use-borradores-saint", () => ({
-  useBorradoresSaint: (...args: unknown[]) => {
-    usoBorradores(...args);
-    return { porOrigen: borradoresPorOrigen, ahora: new Date("2026-10-25T14:00:30.000Z"), recargar: vi.fn() };
+  useBorradoresSaint: (origen: string) => {
+    if (origen === "carrito") {
+      throw new Error("ConversationCartBlock no debe llamar a useBorradoresSaint(\"carrito\"): lo recibe por props");
+    }
+    return { porOrigen: new Map(), ahora: new Date("2026-10-25T14:00:30.000Z"), recargar: vi.fn() };
   },
 }));
 
@@ -48,8 +50,6 @@ beforeEach(() => {
   window.localStorage.clear();
   vi.mocked(toast.success).mockClear();
   vi.mocked(toast.danger).mockClear();
-  borradoresPorOrigen.clear();
-  usoBorradores.mockClear();
 });
 
 // ---------------------------------------------------------------------------
@@ -114,15 +114,55 @@ function makeActions(over: Partial<CartActions> = {}): CartActions {
   };
 }
 
-function setup(cart: ConversationCartItem[], actions = makeActions(), bcvRate = 40) {
+// 28/10/2026 (plan "Facturar en SAINT sale del fondo del panel", T3): el bloque
+// ya no llama a `useBorradoresSaint` (lo hace `ContextPanel`, para que haya una
+// sola suscripción Realtime y «Cerrar venta» pueda mirar el mismo envío): el
+// último envío, el reloj y la recarga llegan por props.
+const AHORA = new Date("2026-10-25T14:00:30.000Z");
+
+function envio(estado: BorradorSaint["estado"], over: Partial<BorradorSaint> = {}): BorradorSaint {
+  return {
+    id: "b-1",
+    origen: "carrito",
+    origenId: "conv-1",
+    creadoPor: "agent-1",
+    cedulaTipo: "V",
+    cedulaNumero: "12345678",
+    nombre: "María",
+    apellido: "Pérez",
+    telefono: "04141234567",
+    estado,
+    numeroSaint: estado === "creado" ? "FAC-77" : null,
+    codclie: null,
+    clienteCreado: null,
+    error: estado === "error" ? "SAINT rechazó el artículo" : null,
+    createdAt: "2026-10-25T14:00:00.000Z",
+    procesadoAt: estado === "creado" || estado === "error" ? "2026-10-25T14:00:10.000Z" : null,
+    ...over,
+  };
+}
+
+interface SetupOpciones {
+  ultimoEnvio?: BorradorSaint | null;
+  isDealWon?: boolean;
+  sinComposer?: boolean;
+}
+
+function setup(
+  cart: ConversationCartItem[],
+  actions = makeActions(),
+  bcvRate = 40,
+  { ultimoEnvio = null, isDealWon = false, sinComposer = false }: SetupOpciones = {},
+) {
   const user = userEvent.setup({ delay: null, pointerEventsCheck: 0 });
   const onSendToComposer = vi.fn();
+  const onEnviosRecargar = vi.fn();
   render(
     <ConversationCartBlock
       cart={cart}
       bcvRate={bcvRate}
       actions={actions}
-      onSendToComposer={onSendToComposer}
+      onSendToComposer={sinComposer ? undefined : onSendToComposer}
       agentId="agent-1"
       conversationId="conv-1"
       contactId="contact-1"
@@ -131,9 +171,13 @@ function setup(cart: ConversationCartItem[], actions = makeActions(), bcvRate = 
       contactCedulaType="V"
       contactCedulaNumber="12345678"
       onCartChanged={vi.fn()}
+      ultimoEnvio={ultimoEnvio}
+      ahora={AHORA}
+      onEnviosRecargar={onEnviosRecargar}
+      isDealWon={isDealWon}
     />
   );
-  return { user, actions, onSendToComposer };
+  return { user, actions, onSendToComposer, onEnviosRecargar };
 }
 
 describe("ConversationCartBlock — carrito vacío", () => {
@@ -649,62 +693,272 @@ describe("ConversationCartBlock — presupuestos del cliente", () => {
   });
 });
 
-describe("ConversationCartBlock — enviar a SAINT", () => {
-  it("con renglones ofrece «Enviar a SAINT»", () => {
+describe("ConversationCartBlock — facturar en SAINT", () => {
+  it("con renglones ofrece «Facturar en SAINT», el botón principal (primary)", () => {
     setup([item({ product: product({ saintCode: "A-100" }) })]);
 
-    expect(screen.getByRole("button", { name: /enviar a saint/i })).toBeEnabled();
-    expect(usoBorradores).toHaveBeenCalledWith("carrito", ["conv-1"]);
+    const boton = screen.getByRole("button", { name: /facturar en saint/i });
+    expect(boton).toBeEnabled();
+    expect(boton).toHaveClass("button--primary");
+  });
+
+  it("el último envío llega por props (el bloque ya no abre su propia suscripción)", () => {
+    setup([item({ product: product({ saintCode: "A-100" }) })], makeActions(), 40, {
+      ultimoEnvio: envio("creado"),
+    });
+
+    expect(screen.getByRole("status")).toHaveTextContent("En SAINT como FAC-77");
   });
 
   it("un producto sin código SAINT en el carrito bloquea el botón y lo dice", () => {
     setup([item({ product: product({ saintCode: null }) })]);
 
-    expect(screen.getByRole("button", { name: /enviar a saint/i })).toBeDisabled();
+    expect(screen.getByRole("button", { name: /facturar en saint/i })).toBeDisabled();
     expect(screen.getByText("Sin código SAINT: Carburador PZ27.")).toBeInTheDocument();
   });
 
   it("precarga el modal con el contacto: cédula, nombre, apellido y teléfono", async () => {
     const { user } = setup([item({ product: product({ saintCode: "A-100" }) })]);
 
-    await user.click(screen.getByRole("button", { name: /enviar a saint/i }));
+    await user.click(screen.getByRole("button", { name: /facturar en saint/i }));
 
     expect(await screen.findByLabelText("Cédula")).toHaveValue("12345678");
     expect(screen.getByLabelText("Tipo de cédula")).toHaveValue("V");
     expect(screen.getByLabelText("Nombre")).toHaveValue("María");
     expect(screen.getByLabelText("Apellido")).toHaveValue("José Pérez");
-    expect(screen.getByLabelText("Teléfono")).toHaveValue("04141234567");
+    expect(screen.getByLabelText("Teléfono (opcional)")).toHaveValue("04141234567");
   });
 
   it("con el carrito vacío no hay botón, pero un envío anterior sigue mostrando su estado", () => {
-    borradoresPorOrigen.set("conv-1", {
-      id: "b-1",
-      origen: "carrito",
-      origenId: "conv-1",
-      creadoPor: "agent-1",
-      cedulaTipo: "V",
-      cedulaNumero: "12345678",
-      nombre: "María",
-      apellido: "Pérez",
-      telefono: "04141234567",
-      estado: "creado",
-      numeroSaint: "FAC-77",
-      codclie: null,
-      clienteCreado: null,
-      error: null,
-      createdAt: "2026-10-25T14:00:00.000Z",
-      procesadoAt: "2026-10-25T14:00:10.000Z",
-    });
-    setup([]);
+    setup([], makeActions(), 40, { ultimoEnvio: envio("creado") });
 
-    expect(screen.queryByRole("button", { name: /enviar a saint/i })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /facturar en saint/i })).not.toBeInTheDocument();
     expect(screen.getByRole("status")).toHaveTextContent("En SAINT como FAC-77");
+    // Sin renglones tampoco hay indicador de pasos ni pie.
+    expect(screen.queryByRole("list", { name: "Pasos de la venta" })).not.toBeInTheDocument();
+    expect(screen.queryByTestId("cart-total")).not.toBeInTheDocument();
   });
 
   it("con el carrito vacío y sin envíos no pinta nada de SAINT", () => {
     setup([]);
 
-    expect(screen.queryByRole("button", { name: /enviar a saint/i })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /facturar en saint/i })).not.toBeInTheDocument();
     expect(screen.queryByRole("status")).not.toBeInTheDocument();
+  });
+});
+
+// 28/10/2026 (plan "Facturar en SAINT sale del fondo del panel", T3): el
+// indicador de tres pasos. El estado va en TEXTO (oculto a la vista), no solo
+// en color.
+describe("ConversationCartBlock — pasos de la venta", () => {
+  const renglonConCodigo = () => item({ product: product({ saintCode: "A-100" }) });
+
+  function pasos() {
+    const lista = screen.getByRole("list", { name: "Pasos de la venta" });
+    return within(lista).getAllByRole("listitem");
+  }
+
+  it("son tres, en orden: Armar, En espera en SAINT, Cerrar", () => {
+    setup([renglonConCodigo()]);
+
+    const items = pasos();
+    expect(items).toHaveLength(3);
+    expect(items[0]).toHaveTextContent("Armar");
+    expect(items[1]).toHaveTextContent("En espera en SAINT");
+    expect(items[2]).toHaveTextContent("Cerrar");
+  });
+
+  it("el indicador va arriba de los renglones", () => {
+    setup([renglonConCodigo()]);
+
+    const lista = screen.getByRole("list", { name: "Pasos de la venta" });
+    const nombre = screen.getByText("Carburador PZ27");
+    expect(lista.compareDocumentPosition(nombre) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+
+  it("con renglones y sin envío: Armar hecho, los otros dos pendientes", () => {
+    setup([renglonConCodigo()]);
+
+    const [armar, saint, cerrar] = pasos();
+    expect(armar).toHaveTextContent(/Armar.*hecho/);
+    expect(saint).toHaveTextContent(/En espera en SAINT.*pendiente/);
+    expect(cerrar).toHaveTextContent(/Cerrar.*pendiente/);
+  });
+
+  it.each(["pendiente", "procesando"] as const)("con un envío %s el paso 2 está en curso, no hecho", (estado) => {
+    setup([renglonConCodigo()], makeActions(), 40, { ultimoEnvio: envio(estado) });
+
+    const [, saint] = pasos();
+    expect(saint).toHaveTextContent(/En espera en SAINT.*en curso/);
+    expect(saint).not.toHaveTextContent(/hecho/);
+    expect(saint).toHaveAttribute("data-estado", "en_curso");
+  });
+
+  it("con el envío creado el paso 2 está hecho", () => {
+    setup([renglonConCodigo()], makeActions(), 40, { ultimoEnvio: envio("creado") });
+
+    const [, saint, cerrar] = pasos();
+    expect(saint).toHaveTextContent(/En espera en SAINT.*hecho/);
+    expect(cerrar).toHaveTextContent(/Cerrar.*pendiente/);
+  });
+
+  it("con el envío en error el paso 2 dice «con error»", () => {
+    setup([renglonConCodigo()], makeActions(), 40, { ultimoEnvio: envio("error") });
+
+    const [, saint] = pasos();
+    expect(saint).toHaveTextContent(/En espera en SAINT.*con error/);
+    expect(saint).toHaveAttribute("data-estado", "error");
+  });
+
+  it("con la venta cerrada el paso 3 está hecho", () => {
+    setup([renglonConCodigo()], makeActions(), 40, { ultimoEnvio: envio("creado"), isDealWon: true });
+
+    const [armar, saint, cerrar] = pasos();
+    expect(armar).toHaveTextContent(/hecho/);
+    expect(saint).toHaveTextContent(/hecho/);
+    expect(cerrar).toHaveTextContent(/Cerrar.*hecho/);
+  });
+});
+
+// 28/10/2026 (T3): el pie con el total, «Facturar en SAINT» y los tres atajos.
+describe("ConversationCartBlock — el pie y los atajos", () => {
+  const renglon = () => item({ quantity: 1, product: product({ saintCode: "A-100" }) });
+  const TEXTO = [
+    "Carburador PZ27",
+    "SKU: A-100",
+    "Precio: $20.00",
+    "",
+    "Total: $20.00",
+    "Total en bolívares: Bs. 800,00",
+  ].join("\n");
+
+  it("el total vive en el pie, no en la lista de renglones, y no se repite", () => {
+    setup([
+      item({ quantity: 2 }),
+      item({ id: "cart-2", productId: "prod-2", product: product({ id: "prod-2", name: "Kit", price: 5 }), quantity: 1 }),
+    ]);
+
+    const totales = screen.getAllByTestId("cart-total");
+    expect(totales).toHaveLength(1);
+    expect(totales[0].closest(".crm-pcart-foot")).not.toBeNull();
+    expect(totales[0]).toHaveTextContent("$45.00");
+    expect(totales[0]).toHaveTextContent("Bs. 1800.00");
+  });
+
+  it("el pie reúne el total, «Facturar en SAINT» y los atajos", () => {
+    setup([renglon()]);
+
+    const pie = screen.getByTestId("cart-total").closest(".crm-pcart-foot") as HTMLElement;
+    expect(within(pie).getByRole("button", { name: /facturar en saint/i })).toBeInTheDocument();
+    expect(within(pie).getByRole("button", { name: "Copiar" })).toBeInTheDocument();
+    expect(within(pie).getByRole("button", { name: "Enviar al chat" })).toBeInTheDocument();
+    expect(within(pie).getByRole("button", { name: "Guardar presupuesto" })).toBeInTheDocument();
+  });
+
+  it("los atajos muestran texto corto pero tienen nombre accesible completo", () => {
+    setup([renglon()]);
+
+    expect(screen.getByRole("button", { name: "Copiar" })).toHaveTextContent("Copiar");
+    expect(screen.getByRole("button", { name: "Enviar al chat" })).toHaveTextContent("Al chat");
+    expect(screen.getByRole("button", { name: "Guardar presupuesto" })).toHaveTextContent("Guardar");
+  });
+
+  it("«Copiar» copia el resumen exacto", async () => {
+    const { user } = setup([renglon()]);
+    const writeText = vi.spyOn(navigator.clipboard, "writeText");
+
+    await user.click(screen.getByRole("button", { name: "Copiar" }));
+
+    await waitFor(() => expect(writeText).toHaveBeenCalledWith(TEXTO));
+  });
+
+  it("«Al chat» entrega el resumen a onSendToComposer", async () => {
+    const { user, onSendToComposer } = setup([renglon()]);
+
+    await user.click(screen.getByRole("button", { name: "Enviar al chat" }));
+
+    expect(onSendToComposer).toHaveBeenCalledWith(TEXTO);
+  });
+
+  it("«Guardar» abre el modal de guardar presupuesto", async () => {
+    const { user } = setup([renglon()]);
+
+    await user.click(screen.getByRole("button", { name: "Guardar presupuesto" }));
+
+    expect(await screen.findByLabelText(/^Nombre/)).toHaveValue("María");
+  });
+
+  it("sin handler de composer «Al chat» queda deshabilitado", () => {
+    setup([renglon()], makeActions(), 40, { sinComposer: true });
+
+    expect(screen.getByRole("button", { name: "Enviar al chat" })).toBeDisabled();
+  });
+});
+
+// 28/10/2026 (T3): «Qué copiar» como módulo desplegable con contador y vista previa.
+describe("ConversationCartBlock — «Qué copiar» con vista previa", () => {
+  const renglon = () => item({ quantity: 1, product: product({ saintCode: "A-100" }) });
+
+  it("el contador «N de 7» sale de los datos y baja al desmarcar una casilla", async () => {
+    const { user } = setup([renglon()]);
+    const toggle = screen.getByRole("button", { name: /qué copiar/i });
+
+    expect(toggle).toHaveTextContent("7 de 7");
+
+    await user.click(toggle);
+    await user.click(screen.getByLabelText("Código"));
+
+    expect(toggle).toHaveTextContent("6 de 7");
+  });
+
+  it("está FUERA y DESPUÉS del pie, no pegado a él", () => {
+    setup([renglon()]);
+
+    const pie = screen.getByTestId("cart-total").closest(".crm-pcart-foot") as HTMLElement;
+    const toggle = screen.getByRole("button", { name: /qué copiar/i });
+    expect(pie.contains(toggle)).toBe(false);
+    expect(pie.compareDocumentPosition(toggle) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+
+  it("plegado no muestra la vista previa; abierto la muestra", async () => {
+    const { user } = setup([renglon()]);
+
+    expect(screen.queryByLabelText("Vista previa del texto")).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: /qué copiar/i }));
+
+    expect(screen.getByLabelText("Vista previa del texto")).toBeInTheDocument();
+  });
+
+  it("la vista previa es EXACTAMENTE el texto que copia «Copiar»", async () => {
+    const { user } = setup([renglon()]);
+    await user.click(screen.getByRole("button", { name: /qué copiar/i }));
+    await user.click(screen.getByLabelText("Código"));
+    const writeText = vi.spyOn(navigator.clipboard, "writeText");
+
+    await user.click(screen.getByRole("button", { name: "Copiar" }));
+
+    await waitFor(() => expect(writeText).toHaveBeenCalledTimes(1));
+    const vista = screen.getByLabelText("Vista previa del texto");
+    expect(vista.textContent).toBe(writeText.mock.calls[0][0]);
+    expect(vista.textContent).not.toContain("SKU:");
+  });
+
+  it("la vista previa cambia al marcar o desmarcar una casilla", async () => {
+    const { user } = setup([renglon()]);
+    await user.click(screen.getByRole("button", { name: /qué copiar/i }));
+    expect(screen.getByLabelText("Vista previa del texto").textContent).toContain("Total en bolívares");
+
+    await user.click(screen.getByLabelText("Total Bs"));
+
+    expect(screen.getByLabelText("Vista previa del texto").textContent).not.toContain("Total en bolívares");
+  });
+
+  it("con un renglón sin precio la vista previa dice por qué no hay texto", async () => {
+    const { user } = setup([item({ product: product({ currency: "VES", price: 101 }) })], makeActions(), 0);
+    await user.click(screen.getByRole("button", { name: /qué copiar/i }));
+
+    expect(screen.queryByLabelText("Vista previa del texto")).not.toBeInTheDocument();
+    expect(screen.getByText(/no hay vista previa/i)).toHaveTextContent(/sin precio/i);
   });
 });

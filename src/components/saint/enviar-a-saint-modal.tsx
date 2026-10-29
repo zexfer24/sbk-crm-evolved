@@ -15,9 +15,11 @@ import {
 } from "@/lib/saint-borradores";
 
 /**
- * El modal de «Enviar a SAINT» (25/10/2026, plan "Enviar a SAINT", T3): pide
- * los datos del cliente que SAINT necesita —cédula V/E, nombre, apellido y
- * teléfono— y llama a la RPC que deja el borrador `pendiente`. Solo viajan
+ * El modal de «Facturar en SAINT» (25/10/2026, plan "Enviar a SAINT", T3;
+ * renombrado el 28/10/2026): pide los datos del cliente que SAINT necesita
+ * —cédula V/E, nombre y apellido obligatorios; teléfono OPCIONAL desde el
+ * 28/10, hay clientes de mostrador que no lo dan y la base ya acepta vacío— y
+ * llama a la RPC que deja el borrador `pendiente`. Solo viajan
  * esos datos y los artículos; el precio lo pone SAINT.
  *
  * Las reglas (qué se exige, qué texto sale) son de `saint-borradores.ts`; aquí
@@ -75,7 +77,7 @@ export function EnviarASaintModal({ isOpen, onOpenChange, origen, origenId, inic
     setEnviando(true);
     try {
       await enviarBorradorSaint(createClient(), { origen, origenId, datos });
-      toast.success("Enviado a SAINT. Te avisamos aquí cuando quede creado.");
+      toast.success("Enviado a SAINT para facturar. Te avisamos aquí cuando quede creado.");
       onOpenChange(false);
       onEnviado();
     } catch (error) {
@@ -102,13 +104,13 @@ export function EnviarASaintModal({ isOpen, onOpenChange, origen, origenId, inic
               <Modal.Icon>
                 <Send size={18} />
               </Modal.Icon>
-              <Modal.Heading>Enviar a SAINT</Modal.Heading>
+              <Modal.Heading>Facturar en SAINT</Modal.Heading>
               <Modal.CloseTrigger />
             </Modal.Header>
             <Modal.Body className="flex flex-col gap-4">
               <p className="text-sm">
-                Se crea una factura en espera en SAINT con estos datos y los artículos de la lista. El precio lo pone
-                SAINT.
+                Se crea un documento en espera en SAINT con los artículos de la lista; el precio lo pone SAINT. El
+                nombre y la cédula quedan guardados en el cliente.
               </p>
 
               <div className="flex flex-col gap-1.5">
@@ -177,9 +179,7 @@ export function EnviarASaintModal({ isOpen, onOpenChange, origen, origenId, inic
               </div>
 
               <div className="flex flex-col gap-1.5">
-                <Label htmlFor="saint-telefono" className="lm-required">
-                  Teléfono
-                </Label>
+                <Label htmlFor="saint-telefono">Teléfono (opcional)</Label>
                 <Input
                   id="saint-telefono"
                   type="tel"
@@ -200,7 +200,7 @@ export function EnviarASaintModal({ isOpen, onOpenChange, origen, origenId, inic
                 Cancelar
               </Button>
               <Button variant="primary" onPress={() => void enviar()} isDisabled={enviando}>
-                {enviando ? "Enviando…" : "Enviar"}
+                {enviando ? "Enviando…" : "Facturar en SAINT"}
               </Button>
             </Modal.Footer>
           </Modal.Dialog>

@@ -328,13 +328,13 @@ describe("PresupuestosCliente — pasar al carrito", () => {
   });
 });
 
-describe("PresupuestosCliente — enviar a SAINT", () => {
-  it("cada presupuesto desplegado lleva su «Enviar a SAINT», y el hook sigue los ids de la lista", async () => {
+describe("PresupuestosCliente — facturar en SAINT", () => {
+  it("cada presupuesto desplegado lleva su «Facturar en SAINT», y el hook sigue los ids de la lista", async () => {
     fetchPresupuestos.mockResolvedValue([presupuesto(), presupuesto({ id: "pres-2" })]);
     setup();
     fireEvent.click(await screen.findByRole("button", { name: "2 guardados de María" }));
 
-    expect(screen.getAllByRole("button", { name: /enviar a saint/i })).toHaveLength(2);
+    expect(screen.getAllByRole("button", { name: /facturar en saint/i })).toHaveLength(2);
     expect(usoBorradores).toHaveBeenLastCalledWith("presupuesto", ["pres-1", "pres-2"]);
   });
 
@@ -343,12 +343,12 @@ describe("PresupuestosCliente — enviar a SAINT", () => {
     setup();
     fireEvent.click(await screen.findByRole("button", { name: "1 guardado de María" }));
 
-    fireEvent.click(screen.getByRole("button", { name: /enviar a saint/i }));
+    fireEvent.click(screen.getByRole("button", { name: /facturar en saint/i }));
 
     expect(await screen.findByLabelText("Nombre")).toHaveValue("Luis");
     expect(screen.getByLabelText("Apellido")).toHaveValue("Gómez");
     expect(screen.getByLabelText("Cédula")).toHaveValue("12345678");
-    expect(screen.getByLabelText("Teléfono")).toHaveValue("04141234567");
+    expect(screen.getByLabelText("Teléfono (opcional)")).toHaveValue("04141234567");
   });
 
   it("muestra el estado del último envío de ese presupuesto, no el de otro", async () => {

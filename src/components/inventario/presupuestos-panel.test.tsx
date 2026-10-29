@@ -538,12 +538,12 @@ describe("PresupuestosPanel — «Copiar»", () => {
   });
 });
 
-describe("PresupuestosPanel — enviar a SAINT", () => {
-  it("cada tarjeta lleva su «Enviar a SAINT» y el hook sigue las tarjetas visibles", async () => {
+describe("PresupuestosPanel — facturar en SAINT", () => {
+  it("cada tarjeta lleva su «Facturar en SAINT» y el hook sigue las tarjetas visibles", async () => {
     pintar();
     await screen.findByText("María Pérez");
 
-    expect(screen.getAllByRole("button", { name: /enviar a saint/i })).toHaveLength(2);
+    expect(screen.getAllByRole("button", { name: /facturar en saint/i })).toHaveLength(2);
     expect(usoBorradores).toHaveBeenLastCalledWith("presupuesto", ["pr-1", "pr-2"]);
   });
 
@@ -551,7 +551,7 @@ describe("PresupuestosPanel — enviar a SAINT", () => {
     pintar({ role: "caja" });
     await screen.findByText("María Pérez");
 
-    expect(screen.getAllByRole("button", { name: /enviar a saint/i })).toHaveLength(2);
+    expect(screen.getAllByRole("button", { name: /facturar en saint/i })).toHaveLength(2);
   });
 
   it("el modal precarga el nombre y deja la cédula y el teléfono vacíos (no hay contacto)", async () => {
@@ -559,12 +559,12 @@ describe("PresupuestosPanel — enviar a SAINT", () => {
     pintar();
     await screen.findByText("María Pérez");
 
-    await user.click(screen.getAllByRole("button", { name: /enviar a saint/i })[0]);
+    await user.click(screen.getAllByRole("button", { name: /facturar en saint/i })[0]);
 
     expect(await screen.findByLabelText("Nombre")).toHaveValue("María");
     expect(screen.getByLabelText("Apellido")).toHaveValue("Pérez");
     expect(screen.getByLabelText("Cédula")).toHaveValue("");
-    expect(screen.getByLabelText("Teléfono")).toHaveValue("");
+    expect(screen.getByLabelText("Teléfono (opcional)")).toHaveValue("");
   });
 
   it("completa cédula y teléfono con los del último envío de ese presupuesto", async () => {
@@ -591,9 +591,9 @@ describe("PresupuestosPanel — enviar a SAINT", () => {
     await screen.findByText("María Pérez");
 
     expect(screen.getByRole("status")).toHaveTextContent("SAINT rechazó la cédula.");
-    await user.click(screen.getAllByRole("button", { name: /enviar a saint/i })[0]);
+    await user.click(screen.getAllByRole("button", { name: /facturar en saint/i })[0]);
 
     expect(await screen.findByLabelText("Cédula")).toHaveValue("87654321");
-    expect(screen.getByLabelText("Teléfono")).toHaveValue("04125550000");
+    expect(screen.getByLabelText("Teléfono (opcional)")).toHaveValue("04125550000");
   });
 });

@@ -1,6 +1,6 @@
 /** @vitest-environment jsdom */
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { render, screen, waitFor } from "@testing-library/react";
+import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { EnviarASaint } from "@/components/saint/enviar-a-saint";
 import type { BorradorSaint, DatosClienteSaint } from "@/lib/saint-borradores";
@@ -86,7 +86,15 @@ function montar(over: Partial<Props> = {}) {
   return { user, onEnviado, props, ...vista };
 }
 
-const boton = () => screen.getByRole("button", { name: /enviar a saint/i });
+// 28/10/2026 (plan "Facturar en SAINT sale del fondo del panel"): el botón de
+// la tarjeta y el de confirmar dentro del modal se llaman IGUAL («Facturar en
+// SAINT»). Por eso el primero se busca en toda la pantalla ANTES de abrir el
+// modal (con el modal abierto el resto queda aria-hidden y ni aparece) y el
+// segundo SIEMPRE acotado al diálogo con `within`: así un test nunca pulsa uno
+// creyendo que es el otro.
+const boton = () => screen.getByRole("button", { name: /facturar en saint/i });
+const botonDelModal = () =>
+  within(screen.getByRole("dialog")).getByRole("button", { name: "Facturar en SAINT" });
 
 beforeEach(() => {
   enviarBorradorSaint.mockReset();
@@ -153,12 +161,29 @@ describe("EnviarASaint — el botón", () => {
   });
 });
 
+describe("EnviarASaint — variante del botón", () => {
+  // HeroUI marca la variante del Button con la clase `button--<variante>`.
+  it("sin `variante` el botón sigue siendo secundario", () => {
+    montar();
+
+    expect(boton()).toHaveClass("button--secondary");
+    expect(boton()).not.toHaveClass("button--primary");
+  });
+
+  it("`variante=\"primary\"` llega al botón", () => {
+    montar({ variante: "primary" });
+
+    expect(boton()).toHaveClass("button--primary");
+    expect(boton()).not.toHaveClass("button--secondary");
+  });
+});
+
 describe("EnviarASaint — solo el estado", () => {
   it("`soloEstado` pinta la línea de estado sin botón", () => {
     montar({ soloEstado: true, productos: [], ultimo: borrador({ estado: "creado", numeroSaint: "FAC-77" }) });
 
     expect(screen.getByRole("status")).toHaveTextContent("En SAINT como FAC-77");
-    expect(screen.queryByRole("button", { name: /enviar a saint/i })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /facturar en saint/i })).not.toBeInTheDocument();
   });
 });
 
@@ -169,11 +194,11 @@ describe("EnviarASaint — reenvío y modal", () => {
 
     await user.click(boton());
 
-    expect(await screen.findByText("¿Enviar de nuevo a SAINT?")).toBeInTheDocument();
+    expect(await screen.findByText("¿Facturar de nuevo en SAINT?")).toBeInTheDocument();
     expect(screen.getByText(textoConfirmacionReenvio("presupuesto", "FAC-77", ultimo.createdAt))).toBeInTheDocument();
     expect(screen.queryByLabelText("Nombre")).not.toBeInTheDocument();
 
-    await user.click(screen.getByRole("button", { name: "Sí, enviar de nuevo" }));
+    await user.click(screen.getByRole("button", { name: "Sí, facturar de nuevo" }));
 
     expect(await screen.findByLabelText("Nombre")).toBeInTheDocument();
   });
@@ -184,7 +209,7 @@ describe("EnviarASaint — reenvío y modal", () => {
     await user.click(boton());
     await user.click(await screen.findByRole("button", { name: "Cancelar" }));
 
-    await waitFor(() => expect(screen.queryByText("¿Enviar de nuevo a SAINT?")).not.toBeInTheDocument());
+    await waitFor(() => expect(screen.queryByText("¿Facturar de nuevo en SAINT?")).not.toBeInTheDocument());
     expect(screen.queryByLabelText("Nombre")).not.toBeInTheDocument();
   });
 
@@ -195,7 +220,7 @@ describe("EnviarASaint — reenvío y modal", () => {
     await user.click(boton());
 
     expect(await screen.findByLabelText("Nombre")).toBeInTheDocument();
-    expect(screen.queryByText("¿Enviar de nuevo a SAINT?")).not.toBeInTheDocument();
+    expect(screen.queryByText("¿Facturar de nuevo en SAINT?")).not.toBeInTheDocument();
   });
 
   it("sin envíos abre el modal directo, con el texto de qué se manda", async () => {
@@ -203,11 +228,13 @@ describe("EnviarASaint — reenvío y modal", () => {
 
     await user.click(boton());
 
-    expect(await screen.findByText(/Se crea una factura en espera en SAINT/)).toBeInTheDocument();
+    expect(await screen.findByText(/Se crea un documento en espera en SAINT/)).toBeInTheDocument();
+    expect(screen.getByText(/nombre y la cédula quedan guardados en el cliente/)).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Facturar en SAINT" })).toBeInTheDocument();
     expect(screen.getByLabelText("Nombre")).toHaveValue("María");
     expect(screen.getByLabelText("Apellido")).toHaveValue("Pérez");
     expect(screen.getByLabelText("Cédula")).toHaveValue("12345678");
-    expect(screen.getByLabelText("Teléfono")).toHaveValue("04141234567");
+    expect(screen.getByLabelText("Teléfono (opcional)")).toHaveValue("04141234567");
     expect(screen.getByLabelText("Tipo de cédula")).toHaveValue("V");
   });
 
@@ -221,7 +248,7 @@ describe("EnviarASaint — reenvío y modal", () => {
 
     expect(await screen.findByLabelText("Cédula")).toHaveValue("87654321");
     expect(screen.getByLabelText("Tipo de cédula")).toHaveValue("E");
-    expect(screen.getByLabelText("Teléfono")).toHaveValue("04125550000");
+    expect(screen.getByLabelText("Teléfono (opcional)")).toHaveValue("04125550000");
     // El nombre y el apellido de `inicial` mandan.
     expect(screen.getByLabelText("Nombre")).toHaveValue("José");
     expect(screen.getByLabelText("Apellido")).toHaveValue("Núñez");
@@ -235,7 +262,7 @@ describe("EnviarASaint — reenvío y modal", () => {
     await user.click(boton());
 
     expect(await screen.findByLabelText("Cédula")).toHaveValue("12345678");
-    expect(screen.getByLabelText("Teléfono")).toHaveValue("04141234567");
+    expect(screen.getByLabelText("Teléfono (opcional)")).toHaveValue("04141234567");
   });
 });
 
@@ -252,26 +279,59 @@ describe("EnviarASaint — validación y envío", () => {
   it("(f) un mensaje por campo y no se llama a la base", async () => {
     const { user } = await abrirVacio();
 
-    await user.click(screen.getByRole("button", { name: "Enviar" }));
+    await user.click(botonDelModal());
 
     expect(await screen.findByText("Elige si la cédula es V o E.")).toBeInTheDocument();
     expect(screen.getByText("Falta el nombre.")).toBeInTheDocument();
     expect(screen.getByText("Falta el apellido.")).toBeInTheDocument();
-    expect(screen.getByText(/Teléfono inválido/)).toBeInTheDocument();
+    // El teléfono es opcional: vacío no genera error.
+    expect(screen.queryByText(/Teléfono inválido/)).not.toBeInTheDocument();
     expect(enviarBorradorSaint).not.toHaveBeenCalled();
   });
 
   it("(f) editar un campo borra SOLO su error", async () => {
     const { user } = await abrirVacio();
-    await user.click(screen.getByRole("button", { name: "Enviar" }));
+    await user.click(botonDelModal());
     await screen.findByText("Falta el nombre.");
 
     await user.type(screen.getByLabelText("Nombre"), "A");
 
     expect(screen.queryByText("Falta el nombre.")).not.toBeInTheDocument();
     expect(screen.getByText("Falta el apellido.")).toBeInTheDocument();
-    expect(screen.getByText(/Teléfono inválido/)).toBeInTheDocument();
     expect(screen.getByText("Elige si la cédula es V o E.")).toBeInTheDocument();
+  });
+
+  it("el teléfono se marca «(opcional)» y no lleva el asterisco de obligatorio; los otros tres sí", async () => {
+    await abrirVacio();
+
+    const telefono = screen.getByText("Teléfono (opcional)");
+    expect(telefono).not.toHaveClass("lm-required");
+    expect(screen.getByText("Cédula")).toHaveClass("lm-required");
+    expect(screen.getByText("Nombre")).toHaveClass("lm-required");
+    expect(screen.getByText("Apellido")).toHaveClass("lm-required");
+  });
+
+  it("sin teléfono el envío sale igual, con el teléfono vacío", async () => {
+    const { user, onEnviado } = montar({ inicial: { ...INICIAL, telefono: "" } });
+    await user.click(boton());
+    await screen.findByLabelText("Nombre");
+
+    await user.click(botonDelModal());
+
+    await waitFor(() => expect(enviarBorradorSaint).toHaveBeenCalledTimes(1));
+    expect(enviarBorradorSaint.mock.calls[0][1].datos).toEqual({ ...INICIAL, telefono: "" });
+    expect(onEnviado).toHaveBeenCalledTimes(1);
+  });
+
+  it("un teléfono mal escrito sigue bloqueando el envío", async () => {
+    const { user } = montar({ inicial: { ...INICIAL, telefono: "0412-555" } });
+    await user.click(boton());
+    await screen.findByLabelText("Nombre");
+
+    await user.click(botonDelModal());
+
+    expect(await screen.findByText(/Teléfono inválido/)).toBeInTheDocument();
+    expect(enviarBorradorSaint).not.toHaveBeenCalled();
   });
 
   it("(g) un envío correcto llama a la base con los argumentos exactos, avisa y avisa al padre", async () => {
@@ -279,7 +339,7 @@ describe("EnviarASaint — validación y envío", () => {
     await user.click(boton());
     await screen.findByLabelText("Nombre");
 
-    await user.click(screen.getByRole("button", { name: "Enviar" }));
+    await user.click(botonDelModal());
 
     await waitFor(() => expect(enviarBorradorSaint).toHaveBeenCalledTimes(1));
     expect(enviarBorradorSaint).toHaveBeenCalledWith(
@@ -287,7 +347,7 @@ describe("EnviarASaint — validación y envío", () => {
       { origen: "presupuesto", origenId: "pr-1", datos: INICIAL },
     );
     await waitFor(() =>
-      expect(toastSuccess).toHaveBeenCalledWith("Enviado a SAINT. Te avisamos aquí cuando quede creado."),
+      expect(toastSuccess).toHaveBeenCalledWith("Enviado a SAINT para facturar. Te avisamos aquí cuando quede creado."),
     );
     expect(onEnviado).toHaveBeenCalledTimes(1);
     await waitFor(() => expect(screen.queryByLabelText("Nombre")).not.toBeInTheDocument());
@@ -296,12 +356,12 @@ describe("EnviarASaint — validación y envío", () => {
   it("(g) manda lo que el asesor editó en el modal", async () => {
     const { user } = montar();
     await user.click(boton());
-    const telefono = await screen.findByLabelText("Teléfono");
+    const telefono = await screen.findByLabelText("Teléfono (opcional)");
     await user.clear(telefono);
     await user.type(telefono, "+584121112233");
     await user.selectOptions(screen.getByLabelText("Tipo de cédula"), "E");
 
-    await user.click(screen.getByRole("button", { name: "Enviar" }));
+    await user.click(botonDelModal());
 
     await waitFor(() => expect(enviarBorradorSaint).toHaveBeenCalled());
     expect(enviarBorradorSaint.mock.calls[0][1].datos).toEqual({
@@ -317,7 +377,7 @@ describe("EnviarASaint — validación y envío", () => {
     await user.click(boton());
     await screen.findByLabelText("Nombre");
 
-    await user.click(screen.getByRole("button", { name: "Enviar" }));
+    await user.click(botonDelModal());
 
     await waitFor(() => expect(toastDanger).toHaveBeenCalledWith("Ya hay un envío en curso."));
     expect(screen.getByLabelText("Nombre")).toBeInTheDocument();
@@ -336,14 +396,14 @@ describe("EnviarASaint — validación y envío", () => {
     await user.click(boton());
     await screen.findByLabelText("Nombre");
 
-    await user.click(screen.getByRole("button", { name: "Enviar" }));
+    await user.click(botonDelModal());
 
     await waitFor(() => expect(toastDanger).toHaveBeenCalledWith("La cédula ya existe con otro nombre en SAINT."));
   });
 
   it("al reabrir el modal los errores de la vez anterior no quedan pegados", async () => {
     const { user } = await abrirVacio();
-    await user.click(screen.getByRole("button", { name: "Enviar" }));
+    await user.click(botonDelModal());
     await screen.findByText("Falta el nombre.");
     await user.keyboard("{Escape}");
     await waitFor(() => expect(screen.queryByLabelText("Nombre")).not.toBeInTheDocument());

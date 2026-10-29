@@ -1661,12 +1661,30 @@
   color: var(--lm-wait-ink);
 }
 
+/* 28/10/2026 (plan «Facturar en SAINT sale del fondo del panel», T2): la
+   fila de abajo son DOS columnas —izquierda lo que se edita (cantidad y precio
+   c/u), derecha lo que se cobra (subtotal y bolívares, alineados a la
+   derecha)—. Antes cantidad, precio c/u y subtotal compartían una fila con
+   `flex-wrap` y los bolívares caían solos al pie de la tarjeta. */
 .crm-pcart-row {
   display: flex;
-  flex-wrap: wrap;
-  align-items: center;
+  align-items: flex-start;
+  justify-content: space-between;
   gap: 4px 10px;
   min-width: 0;
+}
+
+.crm-pcart-col-qty,
+.crm-pcart-col-total {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+}
+
+.crm-pcart-col-total {
+  align-items: flex-end;
+  text-align: right;
 }
 
 .crm-pcart-price {
@@ -1675,15 +1693,14 @@
 }
 
 .crm-pcart-subtotal {
-  margin-left: auto;
-  font-size: 13px;
-  font-weight: 600;
+  font-size: 15px;
+  font-weight: 700;
+  line-height: 20px;
   color: var(--lm-ink);
 }
 
 .crm-pcart-bs {
   margin: 0;
-  text-align: right;
   font-size: 11.5px;
   color: var(--lm-muted);
 }
@@ -1696,12 +1713,14 @@
 }
 
 /* Selector «Promoción» / «Estándar» de cada renglón del carrito (14/10/2026):
-   control segmentado compacto; el activo se marca con aria-checked, igual que
-   la píldora oscura del resto del CRM. Cabe en la columna de 268 px. */
+   control segmentado; el activo se marca con aria-checked, igual que la píldora
+   oscura del resto del CRM. Desde el 28/10/2026 ocupa TODO el ancho de la
+   tarjeta y sus dos botones se reparten ese ancho por igual (antes eran una
+   píldora chica pegada a la izquierda). */
 .crm-pcart-kind {
-  display: inline-flex;
-  align-self: flex-start;
-  max-width: 100%;
+  display: flex;
+  width: 100%;
+  box-sizing: border-box;
   padding: 2px;
   border: 1px solid var(--lm-line);
   border-radius: 999px;
@@ -1709,7 +1728,9 @@
 }
 
 .crm-pcart-kind-btn {
-  padding: 2px 10px;
+  flex: 1 1 0;
+  min-width: 0;
+  padding: 3px 10px;
   border: 0;
   border-radius: 999px;
   background: transparent;
@@ -3443,19 +3464,206 @@ button.crm-bubble-quote:hover {
   }
 }
 
-/* T4, "Ronda del cliente" (30/9/2026): «Copiar» y «Enviar al chat» bajo el
-   total del carrito. Dos columnas iguales; el envoltorio lleva el `title` de
-   «falta la tasa BCV» porque un botón deshabilitado no recibe el hover. */
-.crm-pcart-share {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 6px;
-  margin-top: 8px;
-}
-
+/* T4, "Ronda del cliente" (30/9/2026): los botones de «Copiar» y «Enviar al
+   chat» llevan un envoltorio con el `title` de «falta la tasa BCV» porque un
+   botón deshabilitado no recibe el hover. */
 .crm-pcart-share-btn {
   display: block;
   min-width: 0;
+}
+
+/* --------------------------------------------------------------------------
+   28/10/2026 (plan "Facturar en SAINT sale del fondo del panel", T3): el
+   panel de venta del chat. Todo cabe en los 268 px de la columna (236 útiles
+   con el relleno del cuerpo): nada fija un ancho mínimo y los textos largos
+   envuelven en vez de empujar a la sección.
+   -------------------------------------------------------------------------- */
+
+/* Indicador de tres pasos: Armar → En espera en SAINT → Cerrar. Compacto, una
+   sola fila; el estado se pinta con el color de la marca Y con texto oculto a
+   la vista (`.crm-pcart-paso-estado`), nunca solo con color. */
+.crm-pcart-pasos {
+  display: flex;
+  align-items: flex-start;
+  gap: 4px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.crm-pcart-paso {
+  position: relative;
+  display: flex;
+  flex: 1 1 0;
+  flex-direction: column;
+  align-items: center;
+  gap: 3px;
+  min-width: 0;
+  color: var(--lm-muted);
+  font-size: 10.5px;
+  font-weight: 600;
+  line-height: 1.2;
+  text-align: center;
+}
+
+.crm-pcart-paso-marca {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  border: 1.5px solid currentColor;
+  border-radius: 50%;
+}
+
+.crm-pcart-paso-nombre {
+  max-width: 100%;
+  overflow-wrap: anywhere;
+}
+
+/* Solo para lectores de pantalla. */
+.crm-pcart-paso-estado {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
+/* Las variantes `-ink` de cada color: el texto de 10,5 px necesita el contraste. */
+.crm-pcart-paso[data-estado="hecho"] {
+  color: var(--lm-good-ink);
+}
+
+.crm-pcart-paso[data-estado="hecho"] .crm-pcart-paso-marca {
+  background: var(--lm-good-ink);
+  color: var(--lm-surface);
+  border-color: var(--lm-good-ink);
+}
+
+.crm-pcart-paso[data-estado="en_curso"] {
+  color: var(--lm-wait-ink);
+}
+
+.crm-pcart-paso[data-estado="error"] {
+  color: var(--lm-hot-ink);
+}
+
+.crm-pcart-paso[data-estado="pendiente"] .crm-pcart-paso-marca {
+  border-style: dashed;
+}
+
+/* El spinner de SAINT trae un `margin-top` pensado para alinear con texto. */
+.crm-pcart-paso-marca .saint-spinner {
+  margin-top: 0;
+}
+
+/* El PIE: total + «Facturar en SAINT» + atajos. Es hijo de la sección (que es
+   una columna flex), así que `sticky` lo pega al borde de abajo del panel
+   MIENTRAS la sección está a la vista y se va con ella al salir; fondo opaco
+   para que los renglones no se vean por debajo. No agrega columnas a ningún
+   grid: es un solo hijo más dentro de `.crm-context-section`.
+   `bottom` es el NEGATIVO del padding inferior de `.crm-context-body` (20px):
+   con `bottom: 0` el pie se pegaba 20px por encima del borde y por esa franja
+   se veían pasar los renglones (visto en el navegador el 28/10/2026). */
+.crm-pcart-foot {
+  position: sticky;
+  bottom: -20px;
+  z-index: 2;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+  padding: 10px 0 2px;
+  border-top: 1px solid var(--lm-line);
+  background: var(--lm-surface);
+}
+
+.crm-pcart-foot-total {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.crm-pcart-foot-usd {
+  font-size: 20px;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+  line-height: 1.1;
+}
+
+/* El estado del envío (ya con su propio margen superior) y el botón principal
+   pegados al total. */
+.crm-pcart-foot .saint-envio {
+  margin-top: 0;
+}
+
+/* Tres atajos en una fila: ícono + texto corto (el nombre accesible completo va
+   en el `aria-label`). Relleno lateral mínimo para que «Guardar» y «Al chat»
+   entren en ~74 px. */
+.crm-pcart-atajos {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 6px;
+}
+
+.crm-pcart-atajo {
+  min-width: 0;
+  padding-inline: 4px;
+  gap: 4px;
+  font-size: 11.5px;
+}
+
+/* «Qué copiar»: módulo plegable debajo del pie, separado de él. */
+.crm-pcart-copia {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+  padding-top: 4px;
+}
+
+.crm-pcart-copia-cuenta {
+  margin-left: auto;
+  padding: 0 6px;
+  border-radius: 999px;
+  background: var(--lm-sunken);
+  color: var(--lm-ink-soft);
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.crm-pcart-copia .crm-pcart-copy-toggle {
+  align-self: stretch;
+}
+
+/* La vista previa es EXACTAMENTE el texto que copian «Copiar» y «Al chat». */
+.crm-pcart-preview {
+  margin: 0;
+  padding: 8px 10px;
+  border-radius: 10px;
+  background: var(--lm-sunken);
+  color: var(--lm-ink-soft);
+  font-family: var(--font-mono), ui-monospace, monospace;
+  font-size: 11px;
+  line-height: 1.45;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  max-height: 220px;
+  overflow-y: auto;
+}
+
+.crm-pcart-preview-vacia {
+  margin: 0;
+  color: var(--lm-muted);
+  font-size: 11.5px;
+  line-height: 1.4;
 }
 
 /* 21/10/2026 (plan "Presupuestos y mensajes rápidos", T6): peso editable en

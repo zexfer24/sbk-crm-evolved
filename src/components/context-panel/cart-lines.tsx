@@ -23,12 +23,27 @@ import { StockPill } from "@/components/context-panel/stock-pill";
  * motivo en el `title`; un renglón estándar que perdió su tarifa (el peso se
  * borró en Inventario después de agregarlo) queda sin precio y lo dice, porque
  * bloquea el cierre de la venta.
+ *
+ * 28/10/2026 (plan «Facturar en SAINT sale del fondo del panel», T2): la
+ * tarjeta separa lo que se EDITA de lo que se COBRA. Orden: nombre y papelera;
+ * origen, existencia y aviso de cotización; el selector Promoción/Estándar a
+ * todo el ancho; y una fila de dos columnas —izquierda cantidad y precio c/u,
+ * derecha subtotal en dólares y debajo los bolívares—. Antes la cantidad, el
+ * precio c/u y el subtotal se apretaban en una sola fila de 268 px y los
+ * bolívares quedaban sueltos al final de la tarjeta. Sin datos nuevos ni
+ * perdidos: solo cambió de sitio.
  */
 
 interface CartLinesProps {
   cart: ConversationCartItem[];
   bcvRate: number;
   actions: CartActions;
+  /**
+   * Pinta el bloque «Total» al pie (default `true`). El panel del chat lo
+   * apaga porque ahí el total vive en otro sitio (28/10/2026, plan «Facturar
+   * en SAINT sale del fondo del panel», T2); el modal «Cerrar venta» lo deja.
+   */
+  mostrarTotal?: boolean;
 }
 
 /**
@@ -112,7 +127,7 @@ function PriceKindToggle({ line, bcvRate, actions }: { line: PricedCartLine; bcv
   );
 }
 
-export function CartLines({ cart, bcvRate, actions }: CartLinesProps) {
+export function CartLines({ cart, bcvRate, actions, mostrarTotal = true }: CartLinesProps) {
   const lines = priceCartLines(cart, bcvRate);
   const totals = cartTotals(lines);
   // Un renglón estándar sin tarifa MRW no tiene precio por otra causa que la
@@ -172,47 +187,50 @@ export function CartLines({ cart, bcvRate, actions }: CartLinesProps) {
                 )}
               </div>
 
+              <PriceKindToggle line={line} bcvRate={bcvRate} actions={actions} />
+
               <div className="crm-pcart-row">
-                <div className="crm-quote-qty">
-                  <button
-                    type="button"
-                    onClick={() => void actions.setQuantity(item.id, item.quantity - 1)}
-                    disabled={actions.busy || item.quantity <= 1}
-                    aria-label={`Restar una unidad de ${name}`}
-                  >
-                    <Minus size={12} />
-                  </button>
-                  {/* `key` con la cantidad: si cambia desde afuera (Realtime, otro
-                      asesor) el campo se remonta y el borrador se reinicia. */}
-                  <QuantityField key={`${item.id}-${item.quantity}`} line={line} actions={actions} />
-                  <button
-                    type="button"
-                    onClick={() => void actions.setQuantity(item.id, item.quantity + 1)}
-                    disabled={actions.busy}
-                    aria-label={`Agregar una unidad de ${name}`}
-                  >
-                    <Plus size={12} />
-                  </button>
+                <div className="crm-pcart-col-qty">
+                  <div className="crm-quote-qty">
+                    <button
+                      type="button"
+                      onClick={() => void actions.setQuantity(item.id, item.quantity - 1)}
+                      disabled={actions.busy || item.quantity <= 1}
+                      aria-label={`Restar una unidad de ${name}`}
+                    >
+                      <Minus size={12} />
+                    </button>
+                    {/* `key` con la cantidad: si cambia desde afuera (Realtime, otro
+                        asesor) el campo se remonta y el borrador se reinicia. */}
+                    <QuantityField key={`${item.id}-${item.quantity}`} line={line} actions={actions} />
+                    <button
+                      type="button"
+                      onClick={() => void actions.setQuantity(item.id, item.quantity + 1)}
+                      disabled={actions.busy}
+                      aria-label={`Agregar una unidad de ${name}`}
+                    >
+                      <Plus size={12} />
+                    </button>
+                  </div>
+                  <span className="crm-pcart-price lm-num">
+                    {line.unitPriceUsd === null ? (sinTarifa(line) ? "Sin precio" : "Sin tasa") : `$${line.unitPriceUsd.toFixed(2)} c/u`}
+                  </span>
                 </div>
 
-                <span className="crm-pcart-price lm-num">
-                  {line.unitPriceUsd === null ? (sinTarifa(line) ? "Sin precio" : "Sin tasa") : `$${line.unitPriceUsd.toFixed(2)} c/u`}
-                </span>
-                <span className="crm-pcart-subtotal lm-num">
-                  {line.subtotalUsd === null ? (sinTarifa(line) ? "Sin precio" : "Sin tasa") : `$${line.subtotalUsd.toFixed(2)}`}
-                </span>
+                <div className="crm-pcart-col-total">
+                  <span className="crm-pcart-subtotal lm-num">
+                    {line.subtotalUsd === null ? (sinTarifa(line) ? "Sin precio" : "Sin tasa") : `$${line.subtotalUsd.toFixed(2)}`}
+                  </span>
+                  {line.subtotalBs !== null && (
+                    <span className="crm-pcart-bs lm-num">Bs. {line.subtotalBs.toFixed(2)}</span>
+                  )}
+                </div>
               </div>
-
-              <PriceKindToggle line={line} bcvRate={bcvRate} actions={actions} />
 
               {sinTarifa(line) && (
                 <p className="crm-pcart-warning" role="status">
                   Sin tarifa MRW: cámbialo a promoción para poder cerrar
                 </p>
-              )}
-
-              {line.subtotalBs !== null && (
-                <p className="crm-pcart-bs lm-num">Bs. {line.subtotalBs.toFixed(2)}</p>
               )}
             </li>
           );
@@ -227,13 +245,15 @@ export function CartLines({ cart, bcvRate, actions }: CartLinesProps) {
         </p>
       )}
 
-      <div className="crm-quote-total" data-testid="cart-total">
-        <span>Total</span>
-        <span className="lm-num crm-pcart-total-values">
-          <span>${totals.usd.toFixed(2)}</span>
-          {totals.bs !== null && <span className="crm-pcart-total-bs">Bs. {totals.bs.toFixed(2)}</span>}
-        </span>
-      </div>
+      {mostrarTotal && (
+        <div className="crm-quote-total" data-testid="cart-total">
+          <span>Total</span>
+          <span className="lm-num crm-pcart-total-values">
+            <span>${totals.usd.toFixed(2)}</span>
+            {totals.bs !== null && <span className="crm-pcart-total-bs">Bs. {totals.bs.toFixed(2)}</span>}
+          </span>
+        </div>
+      )}
     </div>
   );
 }

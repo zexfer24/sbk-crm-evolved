@@ -18,8 +18,10 @@ import { EnviarASaintModal } from "@/components/saint/enviar-a-saint-modal";
 import "./saint.css";
 
 /**
- * «Enviar a SAINT» con su línea de estado (25/10/2026, plan "Enviar a SAINT",
- * T3). Un mismo componente para los tres sitios donde se manda algo a SAINT:
+ * «Facturar en SAINT» con su línea de estado (25/10/2026, plan "Enviar a
+ * SAINT", T3; renombrado el 28/10/2026 por el plan "Facturar en SAINT sale del
+ * fondo del panel": el operador quiso que el botón diga lo que hace, y el
+ * nombre es el mismo en los tres sitios). Un mismo componente para los tres sitios donde se manda algo a SAINT:
  * el carrito del chat, los presupuestos del cliente en el panel del chat y los
  * presupuestos de /inventario.
  *
@@ -50,6 +52,13 @@ interface EnviarASaintProps {
    * mostrando qué pasó con él, pero no hay nada que enviar.
    */
   soloEstado?: boolean;
+  /**
+   * Cómo se pinta el botón (28/10/2026, plan "Facturar en SAINT sale del fondo
+   * del panel"). `secondary` por defecto, como en las tarjetas de presupuestos;
+   * el carrito del chat lo sube a `primary` porque es la acción principal de su
+   * bloque.
+   */
+  variante?: "primary" | "secondary";
 }
 
 export function EnviarASaint({
@@ -61,6 +70,7 @@ export function EnviarASaint({
   ahora,
   onEnviado,
   soloEstado = false,
+  variante = "secondary",
 }: EnviarASaintProps) {
   const [confirmando, setConfirmando] = useState(false);
   const [modalAbierto, setModalAbierto] = useState(false);
@@ -111,9 +121,9 @@ export function EnviarASaint({
           {/* El `title` va en el envoltorio: el Button de HeroUI no lo pasa al DOM,
               y un botón deshabilitado tampoco recibe el hover. */}
           <span className="saint-envio-btn" title={motivo}>
-            <Button size="sm" variant="secondary" fullWidth isDisabled={motivo !== undefined} onPress={alPulsar}>
+            <Button size="sm" variant={variante} fullWidth isDisabled={motivo !== undefined} onPress={alPulsar}>
               <Send size={13} />
-              Enviar a SAINT
+              Facturar en SAINT
             </Button>
           </span>
 
@@ -123,9 +133,9 @@ export function EnviarASaint({
             <ConfirmDialog
               isOpen={confirmando}
               onOpenChange={setConfirmando}
-              titulo="¿Enviar de nuevo a SAINT?"
+              titulo="¿Facturar de nuevo en SAINT?"
               descripcion={textoConfirmacionReenvio(origen, decision.numeroSaint, decision.createdAt)}
-              confirmarEtiqueta="Sí, enviar de nuevo"
+              confirmarEtiqueta="Sí, facturar de nuevo"
               onConfirmar={() => setModalAbierto(true)}
             />
           )}

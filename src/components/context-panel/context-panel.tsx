@@ -13,6 +13,8 @@ import { InventoryLookup } from "@/components/context-panel/inventory-lookup";
 import { ConversationCartBlock } from "@/components/context-panel/conversation-cart-block";
 import { useCartActions } from "@/components/context-panel/use-cart-actions";
 import type { BcvRateSummary } from "@/components/inbox/bcv-rate-chip";
+import { useBorradoresSaint } from "@/components/saint/use-borradores-saint";
+import { varianteCerrarVenta } from "@/lib/panel-venta";
 
 interface ContextPanelProps {
   conversation: Conversation;
@@ -83,6 +85,14 @@ export function ContextPanel({
     onCartChanged,
   });
 
+  // 28/10/2026 (plan "Facturar en SAINT sale del fondo del panel", T3): el
+  // último envío a SAINT se sigue desde acá, UNA sola vez (una suscripción
+  // Realtime): lo necesitan el bloque del carrito, que lo pinta, y «Cerrar
+  // venta», que cede el énfasis a «Facturar en SAINT» hasta que SAINT crea la
+  // factura.
+  const { porOrigen: envios, ahora, recargar: recargarEnvios } = useBorradoresSaint("carrito", [conversation.id]);
+  const ultimoEnvio = envios.get(conversation.id) ?? null;
+
   const contact = conversation.contact;
   const isDealWon = conversation.dealStatus === "won";
   const cedula = contact.cedulaType && contact.cedulaNumber ? `${contact.cedulaType}-${contact.cedulaNumber}` : null;
@@ -149,7 +159,11 @@ export function ContextPanel({
     <>
       <div className="crm-context-head">
         <Button
-          variant={isDealWon ? "secondary" : "primary"}
+          variant={varianteCerrarVenta({
+            ventaCerrada: isDealWon,
+            hayRenglones: cart.length > 0,
+            estadoEnvio: ultimoEnvio?.estado ?? null,
+          })}
           fullWidth
           isDisabled={isDealWon}
           onPress={() => setIsCloseSaleOpen(true)}
@@ -268,6 +282,10 @@ export function ContextPanel({
           contactCedulaType={contact.cedulaType}
           contactCedulaNumber={contact.cedulaNumber}
           onCartChanged={onCartChanged}
+          ultimoEnvio={ultimoEnvio}
+          ahora={ahora}
+          onEnviosRecargar={recargarEnvios}
+          isDealWon={isDealWon}
         />
 
         <section className="crm-context-section">

@@ -3161,7 +3161,12 @@ dejar rastro es lo que hacía desaparecer leads.
   `borradores_saint` de `public`, y escucha por Realtime con `schema:
   "liminal"`. Los ítems los arma la RPC desde la base; el precio nunca viaja
   (lo pone SAINT). Con el agente apagado, los envíos se acumulan en
-  `pendiente` y se procesan TODOS al encenderlo.
+  `pendiente` y se procesan TODOS al encenderlo. Desde `20261028010000`
+  (28/10/2026, «Facturar en SAINT») el teléfono puede llegar vacío (`''`:
+  pendiente de confirmar en LiminalReplicant, bloqueante de despliegue), y la
+  RPC sobrescribe `display_name`, `cedula_type` y `cedula_number` del contacto
+  en CADA envío (antes: solo la cédula, y solo si faltaba). El teléfono del
+  contacto nunca se toca.
 
 ---
 

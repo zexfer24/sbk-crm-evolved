@@ -72,6 +72,16 @@ describe("enviarBorradorSaint", () => {
     ]);
   });
 
+  it("sin teléfono manda cadena vacía a la RPC, no null ni espacios (28/10/2026)", async () => {
+    const fake = crearFake({ data: "uuid-nuevo" });
+    await enviarBorradorSaint(fake.supabase, {
+      origen: "carrito",
+      origenId: "c-7",
+      datos: { cedulaTipo: "V", cedulaNumero: "26075817", nombre: "Ana", apellido: "Pérez", telefono: "   " },
+    });
+    expect(fake.llamadas[0].args).toMatchObject({ p_telefono: "" });
+  });
+
   it("relanza el error de la base TAL CUAL (conserva code, message y details)", async () => {
     const error = { code: "22023", message: "saint_dato_invalido", details: "Falta algo." };
     const fake = crearFake({ error });

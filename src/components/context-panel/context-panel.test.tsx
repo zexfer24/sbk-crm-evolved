@@ -5,6 +5,7 @@ import userEvent from "@testing-library/user-event";
 import { ContextPanel } from "@/components/context-panel/context-panel";
 import type { Agent, Conversation, ConversationCartItem, Product, Tag } from "@/lib/types";
 import type { BcvRateSummary } from "@/components/inbox/bcv-rate-chip";
+import type { BorradorSaint } from "@/lib/saint-borradores";
 
 /**
  * T6, plan "El mostrador busca sin salir del chat" (27/9/2026, D4/D5).
@@ -71,14 +72,16 @@ vi.mock("@/lib/presupuestos-data", () => ({
 
 vi.mock("@/lib/supabase/client", () => ({ createClient: vi.fn(() => ({})) }));
 
-// 25/10/2026 (plan "Enviar a SAINT", T3): el bloque del carrito sigue los
-// envíos a SAINT por Realtime; `saint/*.test.tsx` y el bloque cubren su
-// comportamiento, acá el hook queda inerte.
+// 25/10/2026 (plan "Enviar a SAINT", T3): los envíos a SAINT se siguen por
+// Realtime; `saint/*.test.tsx` y el bloque cubren su comportamiento. Desde el
+// 28/10/2026 (plan "Facturar en SAINT sale del fondo del panel", T3) el hook lo
+// llama `ContextPanel` y los envíos se controlan a mano desde acá.
+const borradoresPorOrigen = new Map<string, BorradorSaint>();
 const usoBorradoresSaint = vi.fn();
 vi.mock("@/components/saint/use-borradores-saint", () => ({
   useBorradoresSaint: (...args: unknown[]) => {
     usoBorradoresSaint(...args);
-    return { porOrigen: new Map(), ahora: new Date("2026-10-25T14:00:30.000Z"), recargar: vi.fn() };
+    return { porOrigen: borradoresPorOrigen, ahora: new Date("2026-10-25T14:00:30.000Z"), recargar: vi.fn() };
   },
 }));
 
@@ -163,6 +166,8 @@ beforeEach(() => {
   addToCartMock.mockClear();
   setCartQuantityMock.mockClear();
   fetchPresupuestosMock.mockClear();
+  borradoresPorOrigen.clear();
+  usoBorradoresSaint.mockClear();
 });
 
 const PRODUCTO: Product = {
@@ -361,11 +366,11 @@ describe("ContextPanel — quitar una etiqueta avisa al shell (hallazgo 1)", () 
  * «Agregar», y el modal de cierre recibe el MISMO carrito.
  */
 describe("ContextPanel — el carrito de la conversación (T8)", () => {
-  it("pasa al bloque el contacto para «Enviar a SAINT»: el carrito de ESTA conversación", () => {
+  it("pasa al bloque el contacto para «Facturar en SAINT»: el carrito de ESTA conversación", () => {
     renderPanel({}, undefined, [RENGLON]);
 
     expect(usoBorradoresSaint).toHaveBeenCalledWith("carrito", ["conv-1"]);
-    expect(screen.getByRole("button", { name: /enviar a saint/i })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /facturar en saint/i })).toBeInTheDocument();
   });
 
   it("pinta «Lo que lleva el cliente» entre la búsqueda de inventario y las Notas internas", () => {
@@ -464,5 +469,77 @@ describe("ContextPanel — peso y presupuestos del cliente (T6)", () => {
     renderConRol("agent");
 
     await waitFor(() => expect(fetchPresupuestosMock).toHaveBeenCalledWith(expect.anything(), { contactId: "contact-1" }));
+  });
+});
+
+/**
+ * 28/10/2026 (plan "Facturar en SAINT sale del fondo del panel", T3): «Cerrar
+ * venta» cede el énfasis a «Facturar en SAINT» mientras haya carrito sin
+ * factura creada, para que nunca haya dos botones negros a la vez.
+ */
+describe("ContextPanel — énfasis de «Cerrar venta» y suscripción a los envíos", () => {
+  function envio(estado: BorradorSaint["estado"]): BorradorSaint {
+    return {
+      id: "b-1",
+      origen: "carrito",
+      origenId: "conv-1",
+      creadoPor: "agent-1",
+      cedulaTipo: "V",
+      cedulaNumero: "12345678",
+      nombre: "María",
+      apellido: "Pérez",
+      telefono: "",
+      estado,
+      numeroSaint: estado === "creado" ? "FAC-77" : null,
+      codclie: null,
+      clienteCreado: null,
+      error: null,
+      createdAt: "2026-10-25T14:00:00.000Z",
+      procesadoAt: null,
+    };
+  }
+  const cerrarVenta = () => screen.getByRole("button", { name: /cerrar venta/i });
+
+  it("sin carrito es primary", () => {
+    renderPanel();
+
+    expect(cerrarVenta()).toHaveClass("button--primary");
+  });
+
+  it("con carrito y sin envío es secondary: el principal es facturar", () => {
+    renderPanel({}, undefined, [RENGLON]);
+
+    expect(cerrarVenta()).toHaveClass("button--secondary");
+    expect(screen.getByRole("button", { name: /facturar en saint/i })).toHaveClass("button--primary");
+  });
+
+  it("con carrito y un envío en curso sigue secondary", () => {
+    borradoresPorOrigen.set("conv-1", envio("procesando"));
+    renderPanel({}, undefined, [RENGLON]);
+
+    expect(cerrarVenta()).toHaveClass("button--secondary");
+  });
+
+  it("con carrito y el envío creado es primary: ahora toca cerrar", () => {
+    borradoresPorOrigen.set("conv-1", envio("creado"));
+    renderPanel({}, undefined, [RENGLON]);
+
+    expect(cerrarVenta()).toHaveClass("button--primary");
+  });
+
+  it("con la venta ganada es «Venta cerrada», secondary y deshabilitado", () => {
+    borradoresPorOrigen.set("conv-1", envio("creado"));
+    renderPanel({ dealStatus: "won" }, undefined, [RENGLON]);
+
+    const boton = screen.getByRole("button", { name: /venta cerrada/i });
+    expect(boton).toHaveClass("button--secondary");
+    expect(boton).toBeDisabled();
+  });
+
+  it("el paso «Cerrar» del bloque queda hecho con la venta ganada", () => {
+    renderPanel({ dealStatus: "won" }, undefined, [RENGLON]);
+
+    const pasos = screen.getAllByRole("listitem").filter((li) => li.closest('[aria-label="Pasos de la venta"]'));
+    expect(pasos[2]).toHaveTextContent(/Cerrar.*hecho/);
   });
 });

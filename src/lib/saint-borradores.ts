@@ -115,7 +115,10 @@ export function validarClienteSaint(d: DatosClienteSaint): Partial<Record<CampoC
   }
   if (!d.nombre.trim()) errores.nombre = "Falta el nombre.";
   if (!d.apellido.trim()) errores.apellido = "Falta el apellido.";
-  if (!esTelefonoSaintValido(d.telefono)) {
+  // 28/10/2026 (plan "Facturar en SAINT sale del fondo del panel"): el teléfono
+  // es OPCIONAL — hay clientes de mostrador que no lo dan y la base ya acepta
+  // vacío. Si trae algo, el formato se sigue exigiendo.
+  if (d.telefono.trim() !== "" && !esTelefonoSaintValido(d.telefono)) {
     errores.telefono = "Teléfono inválido: solo dígitos, con + inicial opcional.";
   }
   return errores;
@@ -167,7 +170,7 @@ function fechaCaracas(iso: string): string {
 export function textoConfirmacionReenvio(origen: OrigenSaint, numeroSaint: string | null, createdAt: string): string {
   const que = origen === "presupuesto" ? "presupuesto" : "carrito";
   const como = numeroSaint ? ` como ${numeroSaint}` : "";
-  return `Este ${que} ya se envió a SAINT${como} el ${fechaCaracas(createdAt)}. ¿Enviar de nuevo?`;
+  return `Este ${que} ya se envió a SAINT${como} el ${fechaCaracas(createdAt)}. ¿Facturar de nuevo?`;
 }
 
 export type TonoEstado = "progreso" | "ok" | "error" | "alerta";

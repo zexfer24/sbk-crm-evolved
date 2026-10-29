@@ -143,6 +143,23 @@ describe("validarClienteSaint", () => {
       "Teléfono inválido: solo dígitos, con + inicial opcional.",
     );
   });
+  // 28/10/2026, plan "Facturar en SAINT sale del fondo del panel": el teléfono
+  // pasa a ser opcional (la base ya acepta vacío); si trae algo se sigue
+  // validando el formato.
+  it("teléfono vacío o solo espacios: no es error (es opcional)", () => {
+    expect(validarClienteSaint({ ...bueno, telefono: "" })).toEqual({});
+    expect(validarClienteSaint({ ...bueno, telefono: "   " })).toEqual({});
+  });
+  it("teléfono con algo mal escrito sigue siendo error aunque sea opcional", () => {
+    expect(validarClienteSaint({ ...bueno, telefono: "abc" }).telefono).toBe(
+      "Teléfono inválido: solo dígitos, con + inicial opcional.",
+    );
+    expect(validarClienteSaint({ ...bueno, telefono: " 0412-555 " }).telefono).toBeDefined();
+  });
+  it("sin teléfono, nombre, apellido y cédula siguen siendo obligatorios", () => {
+    const e = validarClienteSaint({ cedulaTipo: "", cedulaNumero: "", nombre: "", apellido: "", telefono: "" });
+    expect(Object.keys(e).sort()).toEqual(["apellido", "cedula", "nombre"]);
+  });
   it("devuelve solo los campos que fallan", () => {
     expect(Object.keys(validarClienteSaint({ ...bueno, nombre: "" }))).toEqual(["nombre"]);
   });
@@ -191,22 +208,22 @@ describe("decidirEnvio", () => {
 describe("textoConfirmacionReenvio", () => {
   it("presupuesto con número", () => {
     expect(textoConfirmacionReenvio("presupuesto", "004036", "2026-10-24T14:52:00.000Z")).toBe(
-      "Este presupuesto ya se envió a SAINT como 004036 el 24/10 10:52. ¿Enviar de nuevo?",
+      "Este presupuesto ya se envió a SAINT como 004036 el 24/10 10:52. ¿Facturar de nuevo?",
     );
   });
   it("carrito con número", () => {
     expect(textoConfirmacionReenvio("carrito", "004036", "2026-10-24T14:52:00.000Z")).toBe(
-      "Este carrito ya se envió a SAINT como 004036 el 24/10 10:52. ¿Enviar de nuevo?",
+      "Este carrito ya se envió a SAINT como 004036 el 24/10 10:52. ¿Facturar de nuevo?",
     );
   });
   it("sin número", () => {
     expect(textoConfirmacionReenvio("presupuesto", null, "2026-10-24T14:52:00.000Z")).toBe(
-      "Este presupuesto ya se envió a SAINT el 24/10 10:52. ¿Enviar de nuevo?",
+      "Este presupuesto ya se envió a SAINT el 24/10 10:52. ¿Facturar de nuevo?",
     );
   });
   it("la fecha se lee en Caracas, no en UTC: 02:30Z del 25 es 22:30 del 24", () => {
     expect(textoConfirmacionReenvio("carrito", null, "2026-10-25T02:30:00.000Z")).toBe(
-      "Este carrito ya se envió a SAINT el 24/10 22:30. ¿Enviar de nuevo?",
+      "Este carrito ya se envió a SAINT el 24/10 22:30. ¿Facturar de nuevo?",
     );
   });
   it("usa 24 horas y la medianoche es 00, no 24", () => {
