@@ -3168,6 +3168,18 @@ dejar rastro es lo que hacía desaparecer leads.
   en CADA envío (antes: solo la cédula, y solo si faltaba). El teléfono del
   contacto nunca se toca.
 
+- **El nombre de un canal Realtime es único POR SUSCRIPCIÓN, nunca por id**
+  (hotfix 29/10/2026, `nombreCanalUnico`, `realtime-channel-name.ts`).
+  `/inventario` se caía («This page couldn't load») al guardar el primer
+  presupuesto: `CarritoPanel` y `PresupuestosPanel` montaban
+  `useBorradoresSaint("presupuesto", [mismoId])`; realtime-js DEVUELVE el
+  canal existente con ese topic y su `on()` lanza después de `subscribe()`,
+  desde un `useEffect`. Y `removeChannel` saca el canal de la lista recién
+  cuando el servidor confirma: un remontaje con el mismo nombre recibe el
+  canal que se va y queda mudo. Un fake que crea un canal nuevo en cada
+  `channel()` NO atrapa esto; los de `use-borradores-saint.test.tsx` y
+  `assignment-notifier.test.tsx` imitan la semántica real.
+
 ---
 
 # RTK (Rust Token Killer) - Token-Optimized Commands
