@@ -916,6 +916,52 @@
   color: rgba(255, 255, 255, 0.75);
 }
 
+/* Nota de voz con la píldora de velocidad al lado (29/10/2026). El audio
+   tiene base fija de 300px (los controles nativos se deforman por debajo)
+   y se estira hasta llenar la burbuja; la píldora no encoge. Cuando la
+   burbuja no da para el audio y la píldora juntos, la píldora baja a otra
+   línea y `margin-left: auto` la deja a la derecha (medido con Chromium el
+   29/10/2026: la burbuja ofrece 275 px de contenido a 900 px de viewport y
+   237 px a 390 px). NO va `justify-content: flex-end`: con el audio de 300px
+   más ancho que la burbuja angosta, el desborde se iba a la izquierda y lo
+   cortaba; con el margen automático el desborde sale a la derecha. */
+.crm-audio {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 4px;
+  min-width: 0;
+}
+
+.crm-audio audio {
+  flex: 1 1 300px;
+}
+
+.crm-audio-speed {
+  flex-shrink: 0;
+  margin-left: auto;
+  width: 42px;
+  height: 26px;
+  border: 0;
+  border-radius: 999px;
+  background: rgba(127, 127, 127, 0.18);
+  color: inherit;
+  font-size: 11.5px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  cursor: pointer;
+}
+
+.crm-audio-speed:hover {
+  background: rgba(127, 127, 127, 0.28);
+}
+
+.crm-audio-speed:focus-visible {
+  outline: 2px solid var(--lm-accent, currentColor);
+  outline-offset: 2px;
+}
+
 .crm-audio-error {
   display: flex;
   align-items: center;

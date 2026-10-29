@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   AudioLines,
   Bot,
@@ -13,6 +13,13 @@ import {
 } from "lucide-react";
 import type { Agent, Message } from "@/lib/types";
 import { AI_NAME } from "@/lib/brand";
+import {
+  formatAudioSpeed,
+  nextAudioSpeed,
+  readAudioSpeed,
+  saveAudioSpeed,
+  type AudioSpeed,
+} from "@/lib/audio-speed";
 import { formatMessageTime } from "@/lib/format";
 import { useLongPress } from "@/lib/use-long-press";
 import { failureAction } from "@/lib/whatsapp/failure-reason";
@@ -31,6 +38,24 @@ export function AudioContent({ url }: { url: string }) {
   const [failed, setFailed] = useState(false);
   const [errorCode, setErrorCode] = useState<number | undefined>(undefined);
   const [attempt, setAttempt] = useState(0);
+  // Velocidad de reproducción (29/10/2026): se recuerda por navegador y
+  // sobrevive a "Reintentar", que remonta el `<audio>` (`key={attempt}`).
+  const [rate, setRate] = useState<AudioSpeed>(readAudioSpeed);
+  const audioRef = useRef<HTMLAudioElement>(null);
+
+  // El navegador devuelve `playbackRate` a `defaultPlaybackRate` cada vez que
+  // carga un `src` nuevo, así que se fijan LOS DOS y se reaplican también en
+  // `loadedmetadata`; con solo el efecto, un reintento arrancaba a 1×.
+  const applyRate = (el: HTMLAudioElement | null) => {
+    if (!el) return;
+    el.defaultPlaybackRate = rate;
+    el.playbackRate = rate;
+  };
+  useEffect(() => {
+    if (!failed) applyRate(audioRef.current);
+    // `applyRate` se redefine en cada render pero solo depende de `rate`.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [rate, attempt, failed]);
 
   if (failed) {
     // El código 4 (MEDIA_ERR_SRC_NOT_SUPPORTED) NO significa siempre "códec no
@@ -102,19 +127,35 @@ export function AudioContent({ url }: { url: string }) {
   }
 
   return (
-    // Los controles nativos de audio se colapsan/deforman por debajo de
-    // ~300px de ancho en Chrome/Edge — por eso el mínimo generoso acá.
-    <audio
-      key={attempt}
-      src={url}
-      controls
-      preload="metadata"
-      onError={(event) => {
-        setFailed(true);
-        setErrorCode(event.currentTarget.error?.code);
-      }}
-      className="mb-1 h-11 w-full min-w-[300px]"
-    />
+    <div className="crm-audio">
+      {/* Los controles nativos de audio se colapsan/deforman por debajo de
+          ~300px de ancho en Chrome/Edge — por eso el mínimo generoso acá. */}
+      <audio
+        ref={audioRef}
+        key={attempt}
+        src={url}
+        controls
+        preload="metadata"
+        onError={(event) => {
+          setFailed(true);
+          setErrorCode(event.currentTarget.error?.code);
+        }}
+        onLoadedMetadata={(event) => applyRate(event.currentTarget)}
+        className="h-11 w-full min-w-[300px]"
+      />
+      <button
+        type="button"
+        className="crm-audio-speed"
+        onClick={() => {
+          const next = nextAudioSpeed(rate);
+          setRate(next);
+          saveAudioSpeed(next);
+        }}
+        aria-label={`Velocidad de reproducción ${formatAudioSpeed(rate)}, cambiar`}
+      >
+        {formatAudioSpeed(rate)}
+      </button>
+    </div>
   );
 }
 

@@ -125,6 +125,77 @@ describe("AudioContent", () => {
     expect(screen.getByText("No se pudo cargar el audio.")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /reintentar/i })).toBeInTheDocument();
   });
+
+  // 29/10/2026: píldora de velocidad estilo WhatsApp (1× → 1.5× → 2× → 2.5× →
+  // 3× → 1×), recordada por asesor en el navegador (`sbk.audio.velocidad`).
+  describe("velocidad de reproducción", () => {
+    const pill = () => screen.getByRole("button", { name: /velocidad/i });
+    const audioEl = () => document.querySelector("audio") as HTMLAudioElement;
+
+    it("arranca en 1× con el audio a velocidad normal", () => {
+      render(<AudioContent url={AUDIO_URL} />);
+      expect(pill()).toHaveTextContent("1×");
+      expect(audioEl().playbackRate).toBe(1);
+    });
+
+    it("cada clic avanza la velocidad, la aplica al audio (actual y por defecto) y la guarda", () => {
+      render(<AudioContent url={AUDIO_URL} />);
+
+      for (const rate of [1.5, 2, 2.5, 3, 1]) {
+        fireEvent.click(pill());
+        expect(pill()).toHaveTextContent(`${rate}×`);
+        expect(audioEl().playbackRate).toBe(rate);
+        expect(audioEl().defaultPlaybackRate).toBe(rate);
+        expect(localStorage.getItem("sbk.audio.velocidad")).toBe(String(rate));
+      }
+    });
+
+    it("recuerda la velocidad guardada al montar un audio nuevo", () => {
+      localStorage.setItem("sbk.audio.velocidad", "2");
+      render(<AudioContent url={AUDIO_URL} />);
+      expect(pill()).toHaveTextContent("2×");
+      expect(audioEl().playbackRate).toBe(2);
+    });
+
+    it("al reintentar tras un error, el audio nuevo conserva la velocidad elegida", () => {
+      render(<AudioContent url={AUDIO_URL} />);
+      fireEvent.click(pill()); // 1.5×
+      fireEvent.click(pill()); // 2×
+      fireEvent.click(pill()); // 2.5×
+      const viejo = audioEl();
+
+      Object.defineProperty(viejo, "error", { value: { code: 2 }, configurable: true });
+      fireEvent.error(viejo);
+      fireEvent.click(screen.getByRole("button", { name: /reintentar/i }));
+
+      const nuevo = audioEl();
+      expect(nuevo).not.toBe(viejo);
+      expect(nuevo.playbackRate).toBe(2.5);
+      expect(pill()).toHaveTextContent("2.5×");
+    });
+
+    it("con el error en pantalla no se muestra la píldora de velocidad", () => {
+      render(<AudioContent url={AUDIO_URL} />);
+      const audio = audioEl();
+      Object.defineProperty(audio, "error", { value: { code: 2 }, configurable: true });
+      fireEvent.error(audio);
+
+      expect(screen.getByText("No se pudo cargar el audio.")).toBeInTheDocument();
+      expect(screen.queryByRole("button", { name: /velocidad/i })).toBeNull();
+    });
+
+    it("al cargar los metadatos reaplica la velocidad (el navegador la resetea con cada src nuevo)", () => {
+      render(<AudioContent url={AUDIO_URL} />);
+      fireEvent.click(pill()); // 1.5×
+      fireEvent.click(pill()); // 2×
+
+      audioEl().playbackRate = 1;
+      fireEvent.loadedMetadata(audioEl());
+
+      expect(audioEl().playbackRate).toBe(2);
+      expect(audioEl().defaultPlaybackRate).toBe(2);
+    });
+  });
 });
 
 describe("MessageBubble — llegar hasta el mensaje citado", () => {
