@@ -56,6 +56,16 @@ import {
  * caja (`soloLectura`) no ve el precio estándar —la base le da la tarifa MRW
  * `null`—, así que su carrito queda SIEMPRE en promoción aunque
  * localStorage diga otra cosa (decisión D4).
+ *
+ * 28/10/2026 ("El carrito de cotización se ordena", T1): la preferencia de
+ * estándar YA NO se guarda. Decisión del operador: "cada artículo entra a
+ * precio promoción; el estándar se activa a mano y no se recuerda para el
+ * próximo carrito". Antes, un asesor que cobraba estándar una vez abría el
+ * siguiente carrito (otro cliente) ya encendido y cotizaba a estándar sin
+ * darse cuenta. Ahora el interruptor arranca apagado, vuelve a apagarse al
+ * vaciar o cambiar de asesor, y al restaurar un carrito guardado refleja los
+ * renglones (encendido solo si TODOS son estándar). La clave vieja
+ * `ESTANDAR_STORAGE_PREFIX` solo se conserva para borrarla al montar.
  */
 
 export const CARRITO_STORAGE_PREFIX = "sbk:inventario-carrito:v1:";
@@ -67,16 +77,6 @@ export const PRESUPUESTO_STORAGE_PREFIX = "sbk:inventario-carrito:presupuesto:v1
 export { useInventarioCarrito, type InventarioCarritoValue };
 
 const CASHEA_INICIAL: OpcionesCashea = { activo: false, ...ELECCION_CASHEA_INICIAL };
-
-/** `localStorage` puede no existir (servidor) o estar bloqueado: en cualquiera de los dos casos, apagado. */
-function leerPreferenciaEstandar(agentId: string): boolean {
-  if (typeof window === "undefined") return false;
-  try {
-    return window.localStorage.getItem(`${ESTANDAR_STORAGE_PREFIX}${agentId}`) === "1";
-  } catch {
-    return false;
-  }
-}
 
 /**
  * El presupuesto abierto que dejó localStorage, sin fiarse de nada (lo pudo
@@ -132,17 +132,18 @@ export function InventarioCarritoProvider({
   const [cashea, setCashea] = useState<OpcionesCashea>(CASHEA_INICIAL);
   const [presupuestoActivo, setPresupuestoActivo] = useState<PresupuestoActivo | null>(null);
 
-  // La preferencia de estándar se lee al montar y se relee si cambia el asesor,
-  // con el patrón "Adjusting state when a prop changes" (durante el render) y no
-  // con un `setState` dentro de un efecto (`react-hooks/set-state-in-effect`).
-  const [estandarElegido, setEstandarElegido] = useState(() => leerPreferenciaEstandar(agentId));
+  // El interruptor de estándar arranca apagado y vuelve a apagarse si cambia el
+  // asesor (28/10/2026: ya no se recuerda), con el patrón "Adjusting state when
+  // a prop changes" (durante el render) y no con un `setState` dentro de un
+  // efecto (`react-hooks/set-state-in-effect`).
+  const [estandarElegido, setEstandarElegido] = useState(false);
   const [agenteDeLaPreferencia, setAgenteDeLaPreferencia] = useState(agentId);
   if (agentId !== agenteDeLaPreferencia) {
     setAgenteDeLaPreferencia(agentId);
-    setEstandarElegido(leerPreferenciaEstandar(agentId));
+    setEstandarElegido(false);
   }
   const puedeCobrarEstandar = !soloLectura;
-  // La caja nunca cobra estándar, diga lo que diga la preferencia guardada.
+  // La caja nunca cobra estándar, diga lo que diga el estado.
   const cobrarEstandar = puedeCobrarEstandar && estandarElegido;
 
   // Misma regla que la calculadora Cashea (T7): si había 6 cuotas elegidas y el
@@ -170,6 +171,8 @@ export function InventarioCarritoProvider({
   useEffect(() => {
     hidratado.current = false;
     escrituraActiva.current = true;
+    // Resto de la versión anterior, que guardaba la preferencia (28/10/2026).
+    escribirClave(claveEstandar, null);
 
     let crudo: string | null = null;
     let crudoPresupuesto: string | null = null;
@@ -214,6 +217,12 @@ export function InventarioCarritoProvider({
         }
         hidratado.current = true;
         despachar({ tipo: "restaurar", lineas: restauradas });
+        // El interruptor refleja lo restaurado: encendido solo si TODOS los
+        // renglones son estándar, para que un carrito en curso recargado no
+        // quede "mixto" por accidente. La caja nunca lo enciende.
+        setEstandarElegido(
+          !soloLectura && restauradas.length > 0 && restauradas.every((l) => l.priceKind === "estandar"),
+        );
         // El presupuesto abierto solo tiene sentido con renglones: si ya no
         // quedó ninguno (productos borrados), se descarta.
         if (restauradas.length === 0) escribirClave(clavePresupuesto, null);
@@ -230,7 +239,7 @@ export function InventarioCarritoProvider({
     return () => {
       cancelado = true;
     };
-  }, [clave, clavePresupuesto, soloLectura]);
+  }, [clave, claveEstandar, clavePresupuesto, soloLectura]);
 
   // Escritura en cada cambio, solo tras hidratar.
   useEffect(() => {
@@ -259,6 +268,8 @@ export function InventarioCarritoProvider({
   const quitar = useCallback((productId: string) => despachar({ tipo: "quitar", productId }), []);
   const vaciar = useCallback(() => {
     despachar({ tipo: "vaciar" });
+    // Un carrito vacío vuelve a promoción: el estándar no se arrastra al próximo (28/10/2026).
+    setEstandarElegido(false);
     setPresupuestoActivo(null);
     escribirClave(clavePresupuesto, null);
   }, [clavePresupuesto]);
@@ -269,10 +280,9 @@ export function InventarioCarritoProvider({
     (valor: boolean) => {
       if (soloLectura) return;
       setEstandarElegido(valor);
-      escribirClave(claveEstandar, valor ? "1" : "0");
       despachar({ tipo: "precio", priceKind: valor ? "estandar" : "promocion" });
     },
-    [soloLectura, claveEstandar],
+    [soloLectura],
   );
 
   const marcarPresupuestoGuardado = useCallback(
@@ -307,10 +317,9 @@ export function InventarioCarritoProvider({
       // El interruptor refleja lo que trae el presupuesto: estándar si todos lo son.
       const todosEstandar = nuevas.length > 0 && nuevas.every((l) => l.priceKind === "estandar");
       setEstandarElegido(todosEstandar);
-      if (!soloLectura) escribirClave(claveEstandar, todosEstandar ? "1" : "0");
       setAbierto(true);
     },
-    [soloLectura, claveEstandar, marcarPresupuestoGuardado],
+    [soloLectura, marcarPresupuestoGuardado],
   );
 
   const valor = useMemo<InventarioCarritoValue>(

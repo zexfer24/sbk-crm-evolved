@@ -312,6 +312,56 @@ describe("la hoja de estilos del inventario", () => {
     expect(Number(margen![1])).toBeGreaterThanOrEqual(80);
   });
 
+  /*
+   * 28/10/2026, plan "El carrito de cotización se ordena", T3: el cuerpo del
+   * panel lleva solo los artículos y es lo único que se desplaza; el pie es
+   * fijo (sin scroll propio) y el desplegable de opciones desplaza por dentro
+   * al abrirse, para que los totales y los botones nunca queden tapados.
+   */
+  it("el cuerpo del carrito desplaza con barra visible, sin saltos, y la lista nunca se aplasta", async () => {
+    const css = await leerCss();
+    const regla = bloque(css, ".inv-carrito-cuerpo");
+
+    expect(regla, "sin `overflow-y: auto` el último artículo no se alcanza").toMatch(/overflow-y:\s*auto\s*;/);
+    expect(regla, "sin `min-height` la lista se aplasta cuando el pie crece").toMatch(/min-height:\s*\d+px\s*;/);
+    expect(regla, "sin `scrollbar-gutter: stable` el contenido salta al aparecer la barra").toMatch(
+      /scrollbar-gutter:\s*stable\s*;/
+    );
+  });
+
+  it("el pie del carrito no desplaza por su cuenta (el desplegable lo hace por dentro)", async () => {
+    const css = await leerCss();
+    const regla = bloque(css, ".drawer__footer.inv-carrito-pie");
+
+    expect(regla, "con scroll en el pie, abrir las opciones taparía los botones").not.toMatch(/overflow-y/);
+    expect(regla).toMatch(/max-height:\s*60%\s*;/);
+  });
+
+  // 28/10/2026, T3c: el desplegable abierto y los totales comparten UNA zona que
+  // desplaza; las acciones quedan fuera, fijas. Un solo scroll, nunca anidado.
+  it("el desplegable y los totales comparten una zona que desplaza; el cuerpo del desplegable no tiene scroll propio", async () => {
+    const css = await leerCss();
+    const zona = bloque(css, ".inv-carrito-pie-ajustes");
+
+    expect(zona, "sin `overflow-y: auto` abrir las opciones con Cashea dejaría el cuerpo en unos pocos px").toMatch(
+      /overflow-y:\s*auto\s*;/
+    );
+    expect(zona, "sin `min-height: 0` un hijo flex no se encoge por debajo de su contenido").toMatch(
+      /min-height:\s*0\s*;/
+    );
+    expect(
+      bloque(css, ".inv-carrito-opciones-cuerpo"),
+      "un scroll dentro de otro scroll es inusable"
+    ).not.toMatch(/overflow-y/);
+  });
+
+  it("las acciones nunca se encogen: quedan fijas debajo de la zona desplazable", async () => {
+    const css = await leerCss();
+
+    expect(bloque(css, ".inv-carrito-acciones")).toMatch(/flex-shrink:\s*0\s*;/);
+    expect(bloque(css, ".inv-carrito-totales")).toMatch(/flex-shrink:\s*0\s*;/);
+  });
+
   it("«Falta el peso» se lee como una acción pendiente, no atenuada", async () => {
     const css = await leerCss();
     const regla = bloque(css, ".inv-falta-peso");

@@ -262,6 +262,8 @@ Palabras que aparecen en el código, en `catalog_queries` y en la pestaña «Bú
 
 **saint/ (25/10/2026, Enviar a SAINT):** `enviar-a-saint.tsx` (`EnviarASaint`: el botón «Enviar a SAINT», la confirmación de reenvío y la línea de estado; tests en `enviar-a-saint.test.tsx`), `enviar-a-saint-modal.tsx` (modal de datos del cliente: cédula V/E, nombre, apellido y teléfono), `use-borradores-saint.ts` (hook `useBorradoresSaint`: lee el último envío por origen y lo mantiene en vivo por Realtime, `schema: "liminal"`; tests en `use-borradores-saint.test.tsx`) y `saint.css` (estilos del bloque).
 
+**Carrito de cotización (28/10/2026, plan "El carrito de cotización se ordena"):** `inventario/carrito-panel.tsx` deja en el cuerpo SOLO los artículos (lista con scroll visible); el pie fijo lleva el desplegable «Opciones de cotización» (cerrado por defecto; precio estándar, Cashea y qué incluir al copiar; la caja ve solo Cashea), los totales y los botones Enviar a SAINT · Guardar presupuesto · Copiar · Vaciar (la caja sin Copiar). «Enviar a SAINT» guarda el carrito como presupuesto (nuevo, o el abierto si se puede editar) y envía ese presupuesto, con la prop `prepararOrigen` de `saint/enviar-a-saint.tsx` y `enviar-a-saint-modal.tsx`. `inventario-carrito-provider.tsx` ya no guarda la preferencia de estándar: cada carrito arranca en promoción.
+
 ## `supabase/`
 
 | Qué | Dónde |

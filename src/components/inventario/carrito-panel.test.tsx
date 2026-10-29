@@ -42,6 +42,25 @@ vi.mock("@/lib/inventory-data", () => ({
   fetchProductsByIds: (...args: unknown[]) => fetchProductsByIds(...args),
 }));
 
+// 28/10/2026 (plan "El carrito de cotización se ordena", T3): «Enviar a SAINT»
+// guarda el carrito como presupuesto y luego envía ESE presupuesto.
+const guardarPresupuesto = vi.fn();
+vi.mock("@/lib/presupuestos-data", async (importOriginal) => {
+  const original = await importOriginal<typeof import("@/lib/presupuestos-data")>();
+  return { ...original, guardarPresupuesto: (...args: unknown[]) => guardarPresupuesto(...args) };
+});
+
+const enviarBorradorSaint = vi.fn();
+vi.mock("@/lib/saint-borradores-data", () => ({
+  enviarBorradorSaint: (...args: unknown[]) => enviarBorradorSaint(...args),
+  fetchUltimosBorradores: vi.fn().mockResolvedValue(new Map()),
+}));
+
+// Sin el hook real no hay canal Realtime ni lectura de borradores: el cliente de este test es un objeto de mentira.
+vi.mock("@/components/saint/use-borradores-saint", () => ({
+  useBorradoresSaint: () => ({ porOrigen: new Map(), ahora: new Date("2026-10-28T14:00:00.000Z"), recargar: vi.fn() }),
+}));
+
 const TASA = 100;
 const AGENTE = "agente-1";
 const CLAVE = `${CARRITO_STORAGE_PREFIX}${AGENTE}`;
@@ -84,6 +103,32 @@ function Arnes() {
         agregar inactivo
       </button>
       <button onClick={carrito.abrir}>abrir carrito</button>
+      <button
+        onClick={() =>
+          carrito.marcarPresupuestoGuardado({
+            id: "pr-activo",
+            clienteNombre: "Ana",
+            clienteApellido: "Gómez",
+            nota: "nota vieja",
+            createdBy: AGENTE,
+          })
+        }
+      >
+        marcar presupuesto propio
+      </button>
+      <button
+        onClick={() =>
+          carrito.marcarPresupuestoGuardado({
+            id: "pr-ajeno",
+            clienteNombre: "Luis",
+            clienteApellido: "Rojas",
+            nota: null,
+            createdBy: "otro-agente",
+          })
+        }
+      >
+        marcar presupuesto ajeno
+      </button>
       <span data-testid="unidades">{carrito.unidades}</span>
       <span data-testid="cantidad-b">{carrito.cantidadDe("b")}</span>
     </div>
@@ -104,6 +149,43 @@ function totales() {
   return screen.getByLabelText("Totales");
 }
 
+/** Abre «Opciones de cotización» si está cerrado (el estado sobrevive a cerrar y reabrir el panel). */
+async function abrirOpciones(user: ReturnType<typeof userEvent.setup>) {
+  const disparador = await screen.findByRole("button", { name: /Opciones de cotización/ });
+  if (disparador.getAttribute("aria-expanded") !== "true") await user.click(disparador);
+  return disparador;
+}
+
+function montarCaja() {
+  const user = userEvent.setup({ delay: null, pointerEventsCheck: 0 });
+  render(
+    <InventarioCarritoProvider agentId={AGENTE} bcvRate={TASA} soloLectura={true} role="caja">
+      <Arnes />
+    </InventarioCarritoProvider>,
+  );
+  return user;
+}
+
+/** Llena el modal de SAINT; con `nombre`/`apellido` los escribe (si no, quedan los que ya traía). */
+async function llenarSaint(
+  user: ReturnType<typeof userEvent.setup>,
+  datos: { nombre?: string; apellido?: string } = {},
+) {
+  const nombre = await screen.findByLabelText("Nombre");
+  await user.selectOptions(screen.getByLabelText("Tipo de cédula"), "V");
+  await user.type(screen.getByLabelText("Cédula"), "12345678");
+  await user.type(screen.getByLabelText("Teléfono"), "04141234567");
+  if (datos.nombre !== undefined) {
+    await user.clear(nombre);
+    await user.type(nombre, datos.nombre);
+  }
+  if (datos.apellido !== undefined) {
+    const apellido = screen.getByLabelText("Apellido");
+    await user.clear(apellido);
+    await user.type(apellido, datos.apellido);
+  }
+}
+
 async function abrirConAyB(user: ReturnType<typeof userEvent.setup>) {
   await user.click(screen.getByText("agregar A"));
   await user.click(screen.getByText("agregar B"));
@@ -116,6 +198,10 @@ beforeEach(() => {
   toastWarning.mockClear();
   fetchProductsByIds.mockReset();
   fetchProductsByIds.mockResolvedValue([]);
+  guardarPresupuesto.mockReset();
+  guardarPresupuesto.mockResolvedValue("pr-nuevo");
+  enviarBorradorSaint.mockReset();
+  enviarBorradorSaint.mockResolvedValue("b-nuevo");
 });
 
 afterEach(() => {
@@ -131,7 +217,7 @@ describe("el panel del carrito", () => {
     expect(screen.getByText(/Agregá repuestos desde la lista con «Agregar»/)).toBeInTheDocument();
     expect(screen.queryByLabelText("Totales")).toBeNull();
     expect(screen.queryByRole("switch", { name: "Financiar con Cashea" })).toBeNull();
-    expect(screen.queryByRole("button", { name: "Copiar para WhatsApp" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Copiar" })).toBeNull();
     expect(screen.queryByRole("button", { name: "Vaciar" })).toBeNull();
   });
 
@@ -230,6 +316,7 @@ describe("el panel del carrito", () => {
       const user = montar();
       await abrirConAyB(user);
 
+      await abrirOpciones(user);
       const interruptor = await screen.findByRole("switch", { name: "Financiar con Cashea" });
       expect(interruptor).toHaveAttribute("aria-checked", "false");
       expect(screen.queryByRole("radiogroup", { name: "Nivel Cashea" })).toBeNull();
@@ -254,6 +341,7 @@ describe("el panel del carrito", () => {
     it("con 6 cuotas pedidas, al bajar el total a $100 o menos queda marcado 3 cuotas y se ve el aviso", async () => {
       const user = montar();
       await abrirConAyB(user); // $118 + $50 = $168
+      await abrirOpciones(user);
       await user.click(await screen.findByRole("switch", { name: "Financiar con Cashea" }));
 
       await user.click(screen.getByRole("button", { name: "6 cuotas" }));
@@ -268,6 +356,7 @@ describe("el panel del carrito", () => {
     it("con 6 elegidas, al bajar a $100 o menos pasa a 3 y subir el total NO revive el 6", async () => {
       const user = montar();
       await abrirConAyB(user); // $118 + $50 = $168
+      await abrirOpciones(user);
       await user.click(await screen.findByRole("switch", { name: "Financiar con Cashea" }));
       await user.click(screen.getByRole("button", { name: "6 cuotas" }));
 
@@ -292,11 +381,13 @@ describe("el panel del carrito", () => {
     it("la elección de Cashea sobrevive a cerrar y reabrir el panel", async () => {
       const user = montar();
       await abrirConAyB(user);
+      await abrirOpciones(user);
       await user.click(await screen.findByRole("switch", { name: "Financiar con Cashea" }));
       await user.click(screen.getByRole("button", { name: "Cerrar" }));
       await waitFor(() => expect(screen.queryByText("Carrito de cotización")).toBeNull());
 
       await user.click(screen.getByText("abrir carrito"));
+      await abrirOpciones(user);
       expect(await screen.findByRole("switch", { name: "Financiar con Cashea" })).toHaveAttribute(
         "aria-checked",
         "true",
@@ -312,6 +403,7 @@ describe("el panel del carrito", () => {
       );
       await user.click(screen.getByText("agregar A"));
       await user.click(screen.getByText("abrir carrito"));
+      await abrirOpciones(user);
       await user.click(await screen.findByRole("switch", { name: "Financiar con Cashea" }));
 
       expect(
@@ -323,14 +415,14 @@ describe("el panel del carrito", () => {
   });
 
   describe("acciones", () => {
-    it("Copiar para WhatsApp escribe el texto del carrito y avisa", async () => {
+    it("Copiar escribe el texto del carrito y avisa", async () => {
       const writeText = vi.fn().mockResolvedValue(undefined);
       const user = montar();
       // userEvent.setup instala su propio portapapeles: se pisa DESPUÉS.
       Object.defineProperty(navigator, "clipboard", { value: { writeText }, configurable: true });
       await abrirConAyB(user);
 
-      await user.click(await screen.findByRole("button", { name: "Copiar para WhatsApp" }));
+      await user.click(await screen.findByRole("button", { name: "Copiar" }));
 
       const esperado = textoCarritoParaCliente(
         totalesCarrito(
@@ -353,7 +445,7 @@ describe("el panel del carrito", () => {
       Object.defineProperty(navigator, "clipboard", { value: { writeText }, configurable: true });
       await abrirConAyB(user);
 
-      await user.click(await screen.findByRole("button", { name: "Copiar para WhatsApp" }));
+      await user.click(await screen.findByRole("button", { name: "Copiar" }));
 
       await waitFor(() => expect(toastDanger).toHaveBeenCalledWith("No se pudo copiar"));
       expect(toastSuccess).not.toHaveBeenCalled();
@@ -368,7 +460,7 @@ describe("el panel del carrito", () => {
       );
       await user.click(screen.getByText("agregar A"));
       await user.click(screen.getByText("abrir carrito"));
-      expect(await screen.findByRole("button", { name: "Copiar para WhatsApp" })).toBeDisabled();
+      expect(await screen.findByRole("button", { name: "Copiar" })).toBeDisabled();
     });
 
     it("Vaciar pide confirmación; «No» la cancela y «Sí, vaciar» deja el estado vacío", async () => {
@@ -389,6 +481,264 @@ describe("el panel del carrito", () => {
       expect(screen.getByText(/Agregá repuestos desde la lista/)).toBeInTheDocument();
       expect(screen.queryByLabelText("Totales")).toBeNull();
     });
+  });
+});
+
+/**
+ * 28/10/2026, plan "El carrito de cotización se ordena", T3: el cuerpo lleva
+ * SOLO los artículos; el pie lleva, en orden, el desplegable «Opciones de
+ * cotización», los totales y los botones.
+ */
+describe("el orden del panel", () => {
+  it("el cuerpo del panel solo lleva la lista: los interruptores y las casillas no están dentro del cuerpo", async () => {
+    const user = montar();
+    await abrirConAyB(user);
+    await abrirOpciones(user);
+
+    const cuerpo = document.querySelector<HTMLElement>(".inv-carrito-cuerpo");
+    expect(cuerpo).not.toBeNull();
+    expect(within(cuerpo!).getByRole("list", { name: "Productos del carrito" })).toBeInTheDocument();
+    expect(within(cuerpo!).queryAllByRole("switch")).toHaveLength(0);
+    expect(within(cuerpo!).queryAllByRole("checkbox")).toHaveLength(0);
+    expect(within(cuerpo!).queryByText("Qué incluir al copiar")).toBeNull();
+  });
+
+  it("«Opciones de cotización» arranca cerrado y al abrirlo muestra precio estándar, Cashea y qué incluir al copiar, en ese orden", async () => {
+    const user = montar();
+    await abrirConAyB(user);
+
+    const disparador = await screen.findByRole("button", { name: /Opciones de cotización/ });
+    expect(disparador).toHaveAttribute("aria-expanded", "false");
+    expect(screen.queryByRole("switch", { name: "Financiar con Cashea" })).toBeNull();
+    expect(screen.queryByText("Qué incluir al copiar")).toBeNull();
+
+    await user.click(disparador);
+
+    expect(disparador).toHaveAttribute("aria-expanded", "true");
+    const estandar = screen.getByRole("switch", { name: "Cobrar precio estándar (envío por peso)" });
+    const cashea = screen.getByRole("switch", { name: "Financiar con Cashea" });
+    const copia = screen.getByText("Qué incluir al copiar");
+    const despues = Node.DOCUMENT_POSITION_FOLLOWING;
+    expect(estandar.compareDocumentPosition(cashea) & despues).toBeTruthy();
+    expect(cashea.compareDocumentPosition(copia) & despues).toBeTruthy();
+  });
+
+  it("cerrado, el desplegable marca «Cashea» cuando Cashea está encendido y «Estándar» cuando el carrito va en estándar", async () => {
+    const user = montar();
+    await abrirConAyB(user);
+    const disparador = await abrirOpciones(user);
+    expect(within(disparador).queryByText("Cashea")).toBeNull();
+    expect(within(disparador).queryByText("Estándar")).toBeNull();
+
+    await user.click(screen.getByRole("switch", { name: "Financiar con Cashea" }));
+    await user.click(screen.getByRole("switch", { name: "Cobrar precio estándar (envío por peso)" }));
+    // Abierto, las marcas sobran: ahí están los interruptores.
+    expect(within(disparador).queryByText("Cashea")).toBeNull();
+
+    await user.click(disparador);
+
+    expect(disparador).toHaveAttribute("aria-expanded", "false");
+    expect(within(disparador).getByText("Cashea")).toBeInTheDocument();
+    expect(within(disparador).getByText("Estándar")).toBeInTheDocument();
+  });
+
+  it("los botones salen en orden: Enviar a SAINT, Guardar presupuesto, Copiar, Vaciar", async () => {
+    const user = montar();
+    await abrirConAyB(user);
+
+    const acciones = document.querySelector<HTMLElement>(".inv-carrito-acciones");
+    expect(acciones).not.toBeNull();
+    const nombres = within(acciones!)
+      .getAllByRole("button")
+      .map((boton) => boton.textContent?.trim());
+    expect(nombres).toEqual(["Enviar a SAINT", "Guardar presupuesto", "Copiar", "Vaciar"]);
+  });
+
+  it("el desplegable va antes que «Total en bolívares» en el pie, y el pie después de la lista", async () => {
+    const user = montar();
+    await abrirConAyB(user);
+
+    const pie = document.querySelector<HTMLElement>(".inv-carrito-pie");
+    expect(pie).not.toBeNull();
+    const disparador = within(pie!).getByRole("button", { name: /Opciones de cotización/ });
+    const total = within(pie!).getByText("Total en bolívares");
+    expect(disparador.compareDocumentPosition(total) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+
+    const lista = screen.getByRole("list", { name: "Productos del carrito" });
+    expect(lista.compareDocumentPosition(disparador) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+
+  it("el desplegable y los totales van dentro de la zona desplazable; las acciones quedan fuera de ella", async () => {
+    const user = montar();
+    await abrirConAyB(user);
+
+    const zona = document.querySelector<HTMLElement>(".inv-carrito-pie-ajustes");
+    expect(zona, "falta la zona desplazable del pie").not.toBeNull();
+    expect(within(zona!).getByRole("button", { name: /Opciones de cotización/ })).toBeTruthy();
+    expect(within(zona!).getByText("Total en bolívares")).toBeTruthy();
+    expect(within(zona!).queryByRole("button", { name: /Enviar a SAINT/ })).toBeNull();
+    expect(within(zona!).queryByRole("button", { name: /Guardar presupuesto/ })).toBeNull();
+  });
+
+  it("con el carrito en estándar aparece la nota de SAINT; en promoción no", async () => {
+    const NOTA = "SAINT pone su propio precio: el envío por peso no viaja.";
+    const user = montar();
+    await abrirConAyB(user);
+    expect(screen.queryByText(NOTA)).toBeNull();
+
+    await abrirOpciones(user);
+    await user.click(screen.getByRole("switch", { name: "Cobrar precio estándar (envío por peso)" }));
+    expect(screen.getByText(NOTA)).toBeInTheDocument();
+
+    await user.click(screen.getByRole("switch", { name: "Cobrar precio estándar (envío por peso)" }));
+    expect(screen.queryByText(NOTA)).toBeNull();
+  });
+});
+
+describe("Enviar a SAINT desde el carrito", () => {
+  it("sin presupuesto abierto, enviar guarda un presupuesto NUEVO con nombre y apellido del formulario y envía su id con origen presupuesto", async () => {
+    const orden: string[] = [];
+    guardarPresupuesto.mockImplementation(async () => {
+      orden.push("guardar");
+      return "pr-nuevo";
+    });
+    enviarBorradorSaint.mockImplementation(async () => {
+      orden.push("enviar");
+      return "b-nuevo";
+    });
+    const user = montar();
+    await user.click(screen.getByText("agregar A"));
+    await user.click(screen.getByText("agregar C"));
+    await user.click(screen.getByText("abrir carrito"));
+
+    await user.click(await screen.findByRole("button", { name: /Enviar a SAINT/ }));
+    await llenarSaint(user, { nombre: "Carla", apellido: "Pérez" });
+    await user.click(screen.getByRole("button", { name: "Enviar" }));
+
+    await waitFor(() => expect(enviarBorradorSaint).toHaveBeenCalledTimes(1));
+    expect(orden).toEqual(["guardar", "enviar"]);
+    expect(guardarPresupuesto).toHaveBeenCalledTimes(1);
+    expect(guardarPresupuesto.mock.calls[0][1]).toMatchObject({
+      id: null,
+      clienteNombre: "Carla",
+      clienteApellido: "Pérez",
+      contactId: null,
+      conversationId: null,
+      origen: "inventario",
+      nota: null,
+    });
+    expect(guardarPresupuesto.mock.calls[0][1].items).toEqual([
+      expect.objectContaining({ product_id: "a", quantity: 1, price_kind: "promocion" }),
+      expect.objectContaining({ product_id: "c", quantity: 1, price_kind: "promocion" }),
+    ]);
+    expect(enviarBorradorSaint.mock.calls[0][1]).toMatchObject({ origen: "presupuesto", origenId: "pr-nuevo" });
+    // El carrito queda marcado como ese presupuesto: el chip del encabezado lo dice.
+    await waitFor(() => expect(screen.getByText("Carla Pérez")).toBeInTheDocument());
+  });
+
+  it("con un presupuesto abierto editable, enviar actualiza ESE presupuesto y envía su id", async () => {
+    guardarPresupuesto.mockResolvedValue("pr-activo");
+    const user = montar();
+    await user.click(screen.getByText("agregar A"));
+    await user.click(screen.getByText("marcar presupuesto propio"));
+    await user.click(screen.getByText("abrir carrito"));
+
+    await user.click(await screen.findByRole("button", { name: /Enviar a SAINT/ }));
+    await llenarSaint(user);
+    expect(screen.getByLabelText("Nombre")).toHaveValue("Ana");
+    await user.click(screen.getByRole("button", { name: "Enviar" }));
+
+    await waitFor(() => expect(enviarBorradorSaint).toHaveBeenCalledTimes(1));
+    expect(guardarPresupuesto.mock.calls[0][1]).toMatchObject({
+      id: "pr-activo",
+      clienteNombre: "Ana",
+      clienteApellido: "Gómez",
+      nota: "nota vieja",
+    });
+    expect(enviarBorradorSaint.mock.calls[0][1]).toMatchObject({ origen: "presupuesto", origenId: "pr-activo" });
+  });
+
+  it("con un presupuesto abierto que el asesor no puede editar, enviar crea uno nuevo", async () => {
+    guardarPresupuesto.mockResolvedValue("pr-copia");
+    const user = montar();
+    await user.click(screen.getByText("agregar A"));
+    await user.click(screen.getByText("marcar presupuesto ajeno"));
+    await user.click(screen.getByText("abrir carrito"));
+
+    await user.click(await screen.findByRole("button", { name: /Enviar a SAINT/ }));
+    await llenarSaint(user);
+    await user.click(screen.getByRole("button", { name: "Enviar" }));
+
+    await waitFor(() => expect(enviarBorradorSaint).toHaveBeenCalledTimes(1));
+    expect(guardarPresupuesto.mock.calls[0][1]).toMatchObject({ id: null, nota: null });
+    expect(enviarBorradorSaint.mock.calls[0][1]).toMatchObject({ origenId: "pr-copia" });
+  });
+
+  it("si guardar falla, no se envía", async () => {
+    guardarPresupuesto.mockRejectedValue(new Error("sin permiso"));
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    const user = montar();
+    await user.click(screen.getByText("agregar A"));
+    await user.click(screen.getByText("abrir carrito"));
+
+    await user.click(await screen.findByRole("button", { name: /Enviar a SAINT/ }));
+    await llenarSaint(user, { nombre: "Carla", apellido: "Pérez" });
+    await user.click(screen.getByRole("button", { name: "Enviar" }));
+
+    await waitFor(() => expect(toastDanger).toHaveBeenCalled());
+    expect(enviarBorradorSaint).not.toHaveBeenCalled();
+    expect(toastSuccess).not.toHaveBeenCalled();
+  });
+
+  it("un producto sin código SAINT deshabilita Enviar a SAINT", async () => {
+    const user = montar();
+    await abrirConAyB(user); // B no tiene código SAINT
+
+    expect(await screen.findByRole("button", { name: /Enviar a SAINT/ })).toBeDisabled();
+    expect(screen.getByText("Sin código SAINT: Bujía NGK.")).toBeInTheDocument();
+  });
+});
+
+describe("el panel para la caja", () => {
+  it("la caja ve en el desplegable solo «Financiar con Cashea»: ni estándar ni qué incluir al copiar", async () => {
+    const user = montarCaja();
+    await user.click(screen.getByText("agregar A"));
+    await user.click(screen.getByText("abrir carrito"));
+    await abrirOpciones(user);
+
+    expect(screen.getByRole("switch", { name: "Financiar con Cashea" })).toBeInTheDocument();
+    expect(screen.getAllByRole("switch")).toHaveLength(1);
+    expect(screen.queryByText("Qué incluir al copiar")).toBeNull();
+    expect(screen.queryAllByRole("checkbox")).toHaveLength(0);
+    expect(screen.queryByLabelText("Vista previa del texto")).toBeNull();
+  });
+
+  it("la caja no tiene botón Copiar y sí Enviar a SAINT, Guardar presupuesto y Vaciar", async () => {
+    const user = montarCaja();
+    await user.click(screen.getByText("agregar A"));
+    await user.click(screen.getByText("abrir carrito"));
+
+    const acciones = await waitFor(() => {
+      const nodo = document.querySelector<HTMLElement>(".inv-carrito-acciones");
+      expect(nodo).not.toBeNull();
+      return nodo!;
+    });
+    const nombres = within(acciones)
+      .getAllByRole("button")
+      .map((boton) => boton.textContent?.trim());
+    expect(nombres).toEqual(["Enviar a SAINT", "Guardar presupuesto", "Vaciar"]);
+    expect(screen.queryByRole("button", { name: "Copiar" })).toBeNull();
+  });
+
+  it("para la caja ningún texto, title ni aria-label del panel menciona 'estándar' (cerrado y abierto el desplegable)", async () => {
+    const user = montarCaja();
+    await user.click(screen.getByText("agregar A"));
+    await user.click(screen.getByText("abrir carrito"));
+    await screen.findByRole("button", { name: /Opciones de cotización/ });
+    expect(document.body.innerHTML).not.toMatch(/est[aá]ndar/i);
+
+    await abrirOpciones(user);
+    expect(document.body.innerHTML).not.toMatch(/est[aá]ndar/i);
   });
 });
 

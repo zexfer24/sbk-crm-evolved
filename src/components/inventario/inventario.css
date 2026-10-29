@@ -616,12 +616,22 @@
   border-bottom: 1px solid var(--lm-line);
 }
 
+/* 28/10/2026 (plan "El carrito de cotización se ordena", T3): el cuerpo lleva
+   SOLO la lista y es lo único que se desplaza. `overflow-y: auto` ya lo trae de
+   fábrica `.drawer__body`, pero se declara aquí para que no dependa de HeroUI
+   (un test de hoja lo fija). `min-height` impide que el pie, al crecer con el
+   desplegable abierto, aplaste la lista; la barra fina y el `scrollbar-gutter`
+   la dejan a la vista sin que el contenido salte cuando aparece. */
 .inv-carrito-cuerpo {
   display: flex;
   flex-direction: column;
-  gap: 16px;
+  min-height: 140px;
   padding: 12px 20px;
   margin: 0;
+  overflow-y: auto;
+  scrollbar-width: thin;
+  scrollbar-color: var(--lm-line) transparent;
+  scrollbar-gutter: stable;
 }
 
 .inv-carrito-vacio {
@@ -851,24 +861,106 @@
   overflow-wrap: anywhere;
 }
 
-/* Pie: lo único que no se desplaza. Con Cashea puede crecer; se acota para que
-   la lista siga teniendo sitio y el pie desplaza por dentro si hace falta. */
+/* Pie: no se desplaza NUNCA por su cuenta (28/10/2026, T3: antes tenía
+   `overflow-y: auto` y al crecer con Cashea tapaba los botones). Se acota a 60 %
+   para que la lista siga teniendo sitio; quien absorbe el exceso es
+   `.inv-carrito-pie-ajustes`, la zona que desplaza, y las acciones quedan fijas. */
 .drawer__footer.inv-carrito-pie {
   flex-direction: column;
   align-items: stretch;
   justify-content: flex-start;
   gap: 12px;
-  max-height: 55%;
-  overflow-y: auto;
+  max-height: 60%;
   margin: 0;
   padding: 12px 20px 16px;
   border-top: 1px solid var(--lm-line);
   background: var(--lm-surface, var(--lm-sunken));
 }
 
+/* Zona desplazable del pie (28/10/2026, T3c): el desplegable «Opciones de
+   cotización» y los totales comparten UN scroll; los botones de acción quedan
+   fuera, fijos abajo. Medido en Chromium con Cashea encendido: el resumen de
+   Cashea mide ~140 px dentro de los totales y, con el scroll solo en el cuerpo
+   del desplegable, este quedaba en 86 px a 1366x768 y en 12 px a 1366x600:
+   inutilizable. Con una sola zona, todo lo de arriba se alcanza desplazando. */
+.inv-carrito-pie-ajustes {
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 auto;
+  gap: 12px;
+  min-height: 0;
+  overflow-y: auto;
+  scrollbar-width: thin;
+  scrollbar-color: var(--lm-line) transparent;
+}
+
+/* Desplegable «Opciones de cotización» (28/10/2026, T3): primero de la zona
+   desplazable. No se encoge: crece con su contenido y desplaza la zona. */
+.inv-carrito-opciones {
+  display: flex;
+  flex-direction: column;
+  flex-shrink: 0;
+  border: 1px solid var(--lm-line);
+  border-radius: 12px;
+}
+
+.inv-carrito-opciones-boton {
+  display: flex;
+  align-items: center;
+  flex-shrink: 0;
+  gap: 8px;
+  width: 100%;
+  padding: 10px 12px;
+  border: 0;
+  background: transparent;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--lm-ink);
+  text-align: left;
+  cursor: pointer;
+}
+
+.inv-carrito-opciones-boton:focus-visible {
+  outline: 2px solid var(--lm-link);
+  outline-offset: -2px;
+  border-radius: 12px;
+}
+
+/* Las etiquetas «Estándar»/«Cashea» del botón cerrado no llevan el margen de la
+   que va junto al código del renglón. */
+.inv-carrito-opciones-boton .inv-carrito-marca {
+  margin-left: 0;
+}
+
+.inv-carrito-opciones-chevron {
+  flex-shrink: 0;
+  margin-left: auto;
+  transition: transform 0.15s;
+}
+
+.inv-carrito-opciones-boton[data-abierto="true"] .inv-carrito-opciones-chevron {
+  transform: rotate(180deg);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .inv-carrito-opciones-chevron {
+    transition: none;
+  }
+}
+
+/* Abierto, crece con su contenido (sin scroll propio: desplaza la zona del
+   pie, T3c). Sus tres bloques ya traen su propio borde. */
+.inv-carrito-opciones-cuerpo {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 0 12px 12px;
+}
+
 .inv-carrito-totales {
   display: flex;
   flex-direction: column;
+  flex-shrink: 0;
   gap: 6px;
 }
 
@@ -886,7 +978,16 @@
   font-weight: 700;
 }
 
+/* Acciones: «Enviar a SAINT» a fila completa y debajo la fila de píldoras. */
 .inv-carrito-acciones {
+  display: flex;
+  flex-direction: column;
+  flex-shrink: 0;
+  align-items: stretch;
+  gap: 8px;
+}
+
+.inv-carrito-acciones-fila {
   display: flex;
   flex-wrap: wrap;
   align-items: center;

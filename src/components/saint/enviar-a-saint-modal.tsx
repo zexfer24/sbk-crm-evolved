@@ -5,6 +5,7 @@ import { Send } from "lucide-react";
 import { Button, Input, Label, Modal, toast } from "@heroui/react";
 import type { CedulaType } from "@/lib/types";
 import { createClient } from "@/lib/supabase/client";
+import { configErrorMessage } from "@/lib/config-write";
 import { enviarBorradorSaint } from "@/lib/saint-borradores-data";
 import {
   mensajeErrorEnvio,
@@ -34,9 +35,23 @@ interface EnviarASaintModalProps {
   /** Lo que aparece al abrir. */
   inicial: DatosClienteSaint;
   onEnviado: () => void;
+  /**
+   * Corre antes del envío, con los datos ya validados; devuelve el id del origen
+   * que se envía (el carrito del Inventario se guarda como presupuesto aquí).
+   * Si lanza, no se envía nada.
+   */
+  prepararOrigen?: (datos: DatosClienteSaint) => Promise<string>;
 }
 
-export function EnviarASaintModal({ isOpen, onOpenChange, origen, origenId, inicial, onEnviado }: EnviarASaintModalProps) {
+export function EnviarASaintModal({
+  isOpen,
+  onOpenChange,
+  origen,
+  origenId,
+  inicial,
+  onEnviado,
+  prepararOrigen,
+}: EnviarASaintModalProps) {
   const [datos, setDatos] = useState<DatosClienteSaint>(inicial);
   const [errores, setErrores] = useState<Partial<Record<CampoClienteSaint, string>>>({});
   const [enviando, setEnviando] = useState(false);
@@ -73,8 +88,25 @@ export function EnviarASaintModal({ isOpen, onOpenChange, origen, origenId, inic
     if (Object.keys(encontrados).length > 0) return;
 
     setEnviando(true);
+
+    // 28/10/2026 (plan "El carrito de cotización se ordena", T2): el carrito del
+    // Inventario no existe en la base; `prepararOrigen` lo guarda como
+    // presupuesto y devuelve su id. Si falla NO se envía nada y el modal queda
+    // abierto con lo escrito.
+    let id = origenId;
+    if (prepararOrigen) {
+      try {
+        id = await prepararOrigen(datos);
+      } catch (error) {
+        console.error("saint_preparar_fallido", error);
+        toast.danger(configErrorMessage(error, "No se pudo guardar el presupuesto antes de enviarlo."));
+        setEnviando(false);
+        return;
+      }
+    }
+
     try {
-      await enviarBorradorSaint(createClient(), { origen, origenId, datos });
+      await enviarBorradorSaint(createClient(), { origen, origenId: id, datos });
       toast.success("Enviado a SAINT. Te avisamos aquí cuando quede creado.");
       onOpenChange(false);
       onEnviado();
