@@ -401,6 +401,17 @@ describe("EnviarASaint — validación y envío", () => {
     await waitFor(() => expect(toastDanger).toHaveBeenCalledWith("La cédula ya existe con otro nombre en SAINT."));
   });
 
+  it("sin prepararOrigen envía con el origenId de la prop", async () => {
+    const { user } = montar({ origenId: "pr-prop" });
+    await user.click(boton());
+    await screen.findByLabelText("Nombre");
+
+    await user.click(botonDelModal());
+
+    await waitFor(() => expect(enviarBorradorSaint).toHaveBeenCalledTimes(1));
+    expect(enviarBorradorSaint.mock.calls[0][1].origenId).toBe("pr-prop");
+  });
+
   it("al reabrir el modal los errores de la vez anterior no quedan pegados", async () => {
     const { user } = await abrirVacio();
     await user.click(botonDelModal());
@@ -412,5 +423,65 @@ describe("EnviarASaint — validación y envío", () => {
     await screen.findByLabelText("Nombre");
 
     expect(screen.queryByText("Falta el nombre.")).not.toBeInTheDocument();
+  });
+});
+
+/**
+ * 28/10/2026, plan "El carrito de cotización se ordena", T2: el carrito del
+ * Inventario no existe en la base, así que `prepararOrigen` lo guarda como
+ * presupuesto ANTES del envío y devuelve el id que se manda.
+ */
+describe("EnviarASaint — prepararOrigen", () => {
+  it("con prepararOrigen, primero lo llama con los datos del formulario y envía con el id que devuelve", async () => {
+    const orden: string[] = [];
+    const prepararOrigen = vi.fn(async () => {
+      orden.push("preparar");
+      return "pr-guardado";
+    });
+    enviarBorradorSaint.mockImplementation(async () => {
+      orden.push("enviar");
+      return "b-nuevo";
+    });
+    const { user, onEnviado } = montar({ origenId: "pr-de-la-prop", prepararOrigen });
+    await user.click(boton());
+    await screen.findByLabelText("Nombre");
+
+    await user.click(botonDelModal());
+
+    await waitFor(() => expect(enviarBorradorSaint).toHaveBeenCalledTimes(1));
+    expect(prepararOrigen).toHaveBeenCalledTimes(1);
+    expect(prepararOrigen).toHaveBeenCalledWith(INICIAL);
+    expect(orden).toEqual(["preparar", "enviar"]);
+    expect(enviarBorradorSaint).toHaveBeenCalledWith(
+      { marca: "cliente" },
+      { origen: "presupuesto", origenId: "pr-guardado", datos: INICIAL },
+    );
+    await waitFor(() => expect(onEnviado).toHaveBeenCalledTimes(1));
+  });
+
+  it("si prepararOrigen lanza, no envía, avisa con el texto de guardado y el modal sigue abierto", async () => {
+    const prepararOrigen = vi.fn().mockRejectedValue(new Error("boom"));
+    const { user, onEnviado } = montar({ prepararOrigen });
+    await user.click(boton());
+    await screen.findByLabelText("Nombre");
+
+    await user.click(botonDelModal());
+
+    await waitFor(() =>
+      expect(toastDanger).toHaveBeenCalledWith("No se pudo guardar el presupuesto antes de enviarlo."),
+    );
+    expect(enviarBorradorSaint).not.toHaveBeenCalled();
+    expect(onEnviado).not.toHaveBeenCalled();
+    expect(toastSuccess).not.toHaveBeenCalled();
+    expect(console.error).toHaveBeenCalledWith("saint_preparar_fallido", expect.anything());
+    expect(screen.getByLabelText("Nombre")).toBeInTheDocument();
+    // El botón vuelve a quedar disponible para reintentar.
+    expect(botonDelModal()).toBeEnabled();
+  });
+
+  it("con origenId vacío y prepararOrigen, el botón Facturar en SAINT está habilitado", () => {
+    montar({ origenId: "", prepararOrigen: vi.fn() });
+
+    expect(boton()).toBeEnabled();
   });
 });

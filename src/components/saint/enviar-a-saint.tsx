@@ -59,6 +59,13 @@ interface EnviarASaintProps {
    * bloque.
    */
   variante?: "primary" | "secondary";
+  /**
+   * Corre antes del envío, con los datos ya validados; devuelve el id del origen
+   * que se envía (el carrito del Inventario se guarda como presupuesto aquí).
+   * Si lanza, no se envía nada. Con esta prop `origenId` puede ser `""` (carrito
+   * sin presupuesto todavía): no deshabilita el botón.
+   */
+  prepararOrigen?: (datos: DatosClienteSaint) => Promise<string>;
 }
 
 export function EnviarASaint({
@@ -71,6 +78,7 @@ export function EnviarASaint({
   onEnviado,
   soloEstado = false,
   variante = "secondary",
+  prepararOrigen,
 }: EnviarASaintProps) {
   const [confirmando, setConfirmando] = useState(false);
   const [modalAbierto, setModalAbierto] = useState(false);
@@ -147,6 +155,7 @@ export function EnviarASaint({
             origenId={origenId}
             inicial={inicialDelModal}
             onEnviado={onEnviado}
+            prepararOrigen={prepararOrigen}
           />
         </>
       )}

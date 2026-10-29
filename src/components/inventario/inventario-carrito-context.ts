@@ -47,9 +47,9 @@ export interface InventarioCarritoValue {
   setCashea(cashea: OpcionesCashea): void;
   /** A qué precio se cobra el carrito entero; `"mixto"` si hay de los dos, `null` si está vacío. */
   priceKind: CartPriceKind | "mixto" | null;
-  /** Preferencia para lo que se agrega; siempre `false` para la caja. */
+  /** Interruptor de este carrito: lo que se agrega entra a estándar mientras esté encendido; siempre `false` para la caja. No se recuerda (28/10/2026): arranca apagado y dura lo que dura el carrito. */
   cobrarEstandar: boolean;
-  /** Pasa TODOS los renglones al precio elegido y recuerda la preferencia. No hace nada para la caja. */
+  /** Pasa TODOS los renglones al precio elegido. No se guarda para el próximo carrito. No hace nada para la caja. */
   setCobrarEstandar(valor: boolean): void;
   /** `false` para la caja: la base no le entrega la tarifa MRW (decisión D4). */
   puedeCobrarEstandar: boolean;
