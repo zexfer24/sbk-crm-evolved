@@ -1,6 +1,13 @@
 # Entrega «Facturar en SAINT» (28/10/2026)
 
-Rama `entrega/facturar-en-saint`, partida de `main` = `a01e29d`. **UNA migración**, que se aplica ANTES del fast-forward de `main` y ANTES de que el código nuevo llegue a producción. Sin variables de entorno nuevas. Toca base (RPC), UI y tests.
+Rama `entrega/facturar-en-saint`, partida de `main` = `a01e29d`, con la rama `entrega/carrito-opciones-cotizacion` (`e7f3332`, sin migración, su nota es `docs/entregas/2026-10-28-carrito-opciones-cotizacion.md`) unida adentro. Lleva **UNA migración** y ninguna variable de entorno nueva. Toca la base (RPC), la UI y los tests.
+
+**Orden real (29/10/2026, decisión del operador): el código va a `main` ANTES que la migración.** Es seguro porque el código funciona con la RPC del 25/10:
+- un envío con el teléfono vacío lo rechaza la RPC vieja con «Teléfono inválido.», antes de que llegue al agente, y el asesor ve ese aviso;
+- el contacto se actualiza como hasta hoy (solo la cédula, si faltaba), aunque el modal ya diga que el nombre y la cédula quedan guardados;
+- todo lo demás (pasos, pie, «Qué copiar», carrito de cotización) no depende de la migración.
+
+La migración se aplica **después**, y solo cuando LiminalReplicant confirme el teléfono vacío (ver el bloqueante).
 
 Qué hace: el botón «Enviar a SAINT» pasa a llamarse «Facturar en SAINT» en los tres sitios donde aparece (carrito del chat, presupuestos del cliente en el panel del chat y «Presupuestos guardados» de /inventario). El carrito del chat se reordena para que el camino visible sea armar → facturar en SAINT → cerrar: indicador de tres pasos, pie pegado con el total y el botón negro, y «Qué copiar» plegado con el contador «N de 7». «Cerrar venta» baja a secundario mientras no haya factura creada en SAINT, así que nunca hay dos botones negros a la vez. El teléfono deja de ser obligatorio para facturar, y cada envío actualiza el nombre y la cédula del contacto.
 
@@ -11,10 +18,10 @@ Decisiones:
 
 ## ⚠ Bloqueante de despliegue: LiminalReplicant
 
-Antes de pushear `main`, confirmar en el repo LiminalReplicant que el agente **acepta `telefono = ''` al crear el cliente en SAINT**. El agente recibe el teléfono; la migración supone que no lo necesita para facturar (así lo dice su cabecera), pero nada en este repo confirma que lo tolere vacío.
+Antes de **aplicar la migración**, confirmar en el repo LiminalReplicant que el agente **acepta `telefono = ''` al crear el cliente en SAINT**. El agente recibe el teléfono, y nada en este repo confirma que lo tolere vacío.
 
-- Si lo acepta: seguir.
-- Si lo rechaza: **no desplegar el código**. Cada envío sin teléfono quedaría en `error` con el motivo del agente, y el asesor vería un fallo por cada factura sin teléfono. Hay que corregir el agente primero, o revertir la opción de teléfono opcional en `validarClienteSaint` y en la migración.
+- Si lo acepta: aplicar la migración (pasos abajo).
+- Si lo rechaza: **no aplicar la migración**. Con ella, cada envío sin teléfono llegaría al agente y quedaría en `error`. Hay que corregir el agente primero. Mientras tanto, el código desplegado sigue funcionando con la RPC vieja: el asesor tiene que escribir el teléfono.
 
 ## ⚠ Duda abierta: qué número es `numero_saint`
 
@@ -35,6 +42,8 @@ select to_regclass('liminal.saint_borradores') is not null as cola,
 
 ## Pasos en el VPS
 
+El código ya llegó a `main`, y con eso a producción (ver «Entrega por rama»). Lo que queda en el VPS es la migración, cuando se cumpla el bloqueante:
+
 1. La comprobación de arriba.
 2. Aplicar con `PGOPTIONS="-c lock_timeout=5s" psql -1 -v ON_ERROR_STOP=1 -f supabase/migrations/20261028010000_saint_telefono_opcional_y_contacto.sql`.
    - Es re-ejecutable (`create or replace`).
@@ -46,8 +55,7 @@ select to_regclass('liminal.saint_borradores') is not null as cola,
             has_function_privilege('authenticated', 'public.enviar_borrador_saint(text, uuid, text, text, text, text, text)', 'EXECUTE'), -- true
             pg_get_functiondef('public.enviar_borrador_saint(text, uuid, text, text, text, text, text)'::regprocedure) like '%display_name%'; -- true
      ```
-3. Fast-forward de `main` a `entrega/facturar-en-saint`. **Esto despliega** (ver «Entrega por rama» abajo).
-4. Mirar el CI del push a `main`: el paso nuevo `saint_telefono_opcional_y_contacto` tiene que quedar verde junto al de `saint_borradores`.
+3. No hace falta redesplegar: la migración solo cambia la RPC, y PostgREST recarga el esquema con el `notify pgrst` del final.
 
 ## Verificación en producción (después del deploy)
 
@@ -65,6 +73,7 @@ select to_regclass('liminal.saint_borradores') is not null as cola,
   El `display_name` y la cédula coinciden con lo que tipeó el asesor, y `phone_number` no cambió.
 - **Caja:** facturar un presupuesto con un usuario `caja`. El envío sale sin error y el contacto no cambia (la RLS descarta el UPDATE).
 - **Carrito del chat a 268 px:** el pie con el total y «Facturar en SAINT» queda visible y el texto no se corta.
+- **Antes de la migración** (lo que hay justo después del deploy): un envío con el teléfono vacío muestra «Teléfono inválido.» y no deja fila. Con el teléfono escrito, el envío sale como el 25/10.
 
 Si el agente de producción sigue con `Borradores:Enabled=false`, los envíos quedan en `pendiente` y a los 2 minutos la UI muestra «SAINT no responde». Revisar y cancelar los pendientes viejos antes de encenderlo, como en la entrega del 25/10.
 
@@ -74,14 +83,10 @@ Si el agente de producción sigue con `Borradores:Enabled=false`, los envíos qu
 |---|---|---|---|---|
 | 1 | `6def482` [migración] Facturar en SAINT acepta el teléfono vacío y deja el nombre y la cédula en el cliente | **Sí**, `20261028010000_saint_telefono_opcional_y_contacto.sql` (+ `supabase/tests/saint_telefono_opcional_y_contacto.sql`, `supabase/tests/saint_borradores.sql` ajustado y los dos pasos de CI en `.github/workflows/ci.yml`) | No | Solo base |
 | 2 | `b618caf` El carrito del chat lleva a «Facturar en SAINT» con el total siempre a la vista | No (usa la 1) | No | UI + cliente; glosario y `CLAUDE.md` van en este commit |
-| 3 | Este reporte | No | No | Solo docs |
-
-Verificado en local (28/10/2026): suite completa (5628 tests), `tsc` y lint
-verdes, build de producción OK, y vista previa en el navegador a 300 px en
-modo claro y oscuro (pasos, pie pegado, «Qué copiar» y el modal). Los tests
-SQL se corrieron en un Postgres de ensayo porque Docker no arrancaba en la
-máquina de desarrollo: el CI los repite contra la base reconstruida desde
-cero.
+| 3 | `799cd34` Este reporte (primera versión) | No | No | Solo docs |
+| 4 | `e7f3332` Carrito de cotización del Inventario (otra rama, ver su nota) | No | No | UI |
+| 5 | `44038a8` Unión de las dos ramas | No | No | UI + tests |
+| 6 | Este reporte (orden real y verificación) | No | No | Solo docs |
 
 Rebuild completo: cambia el bundle del cliente.
 
@@ -107,23 +112,27 @@ Rebuild completo: cambia el bundle del cliente.
 
 ## Verificado
 
-Pendiente de registrar antes del push, con la salida real de cada comando:
-- `supabase/tests/saint_telefono_opcional_y_contacto.sql` (y `saint_borradores.sql`) contra la base reconstruida con `npx supabase db reset`;
-- `rtk npm run test`;
-- `rtk npx tsc --noEmit` y `rtk npm run lint`;
-- la migración aplicada dos veces seguidas con `psql -1`, para comprobar que es re-ejecutable;
-- la verificación visual del pie y de las columnas a 268 px y 1100/1366 px (Playwright sobre el build de producción, `resize_window`).
+En local, el 29/10/2026, sobre la rama ya unida (`44038a8`):
+- `rtk npm run test`: 5655 tests en verde (254 archivos).
+- `rtk npx tsc --noEmit`: sin errores.
+- `rtk npm run lint`: 0 errores (7 warnings viejos de otros tests).
+- `rtk proxy npm run build`: compila, con `BUILD_ID` nuevo.
+- Mutaciones, cada una con su test en rojo: teléfono obligatorio otra vez, pie sin `sticky`, paso 2 hecho con `pendiente` y «Cerrar venta» siempre `primary`.
+- Vista en el navegador del carrito del chat a 300 px, en claro y oscuro:
+  - pasos en cada estado;
+  - pie pegado al hacer scroll por 6 renglones; ahí se vio y se corrigió una franja de 20 px por debajo, que ahora fija un test de hoja;
+  - «Qué copiar» abierto con su vista previa;
+  - el modal con «Teléfono (opcional)».
+
+**Lo que NO se pudo verificar en local:** Docker Desktop no arrancaba en la máquina. Los tests SQL (`saint_telefono_opcional_y_contacto.sql` y `saint_borradores.sql`) se corrieron en un Postgres de ensayo, sin el Supabase local, y ahí pasaron, incluidas dos mutaciones. El CI del push a `main` los repite contra la base reconstruida desde cero: **mirar que esos dos pasos queden verdes.**
 
 ## Entrega por rama
 
-- Se pushea a `entrega/facturar-en-saint`, **nunca directo a `main`**: un push a `main` despliega solo (Dokploy), y esta entrega necesita la migración aplicada antes del código.
-- Orden:
-  1. `git push origin entrega/facturar-en-saint`.
-  2. El VPS corre las comprobaciones y aplica la migración (paso 2 arriba).
-  3. Confirmar el bloqueante de LiminalReplicant.
-  4. Fast-forward de `main`: `git push origin entrega/facturar-en-saint:main`. Esto despliega.
-  5. Mirar el CI del push a `main`.
-- No commitear ni pushear desde el worktree sin la instrucción del operador.
+El operador pidió el push a `main` el 29/10/2026. Como el código es compatible con la RPC vieja (ver arriba), el orden quedó así:
+1. `git push origin entrega/facturar-en-saint:main`. **Esto despliega** (Dokploy), sin la migración.
+2. Mirar el CI de ese push: los pasos `saint_borradores` y `saint_telefono_opcional_y_contacto` tienen que quedar verdes.
+3. Confirmar el bloqueante de LiminalReplicant.
+4. El VPS corre las comprobaciones y aplica la migración (pasos arriba).
 
 ## Lo que NO se probó
 
