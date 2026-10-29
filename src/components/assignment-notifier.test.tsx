@@ -8,20 +8,44 @@ type RealtimeEvent = "INSERT" | "UPDATE" | "DELETE";
 type ChannelHandler = (payload: { eventType: RealtimeEvent; new: Record<string, unknown> }) => void;
 
 interface Subscription {
+  table: string;
   event: RealtimeEvent | "*";
   handler: ChannelHandler;
 }
 
+type ChannelState = "closed" | "joining" | "joined" | "leaving";
+
+interface FakeChannel {
+  topic: string;
+  state: ChannelState;
+  subscriptions: Subscription[];
+  on(
+    type: string,
+    config: { event: RealtimeEvent | "*"; table: string },
+    handler: ChannelHandler
+  ): FakeChannel;
+  subscribe(callback?: (status: string) => void): FakeChannel;
+}
+
 /**
- * Fake mínimo del cliente realtime de Supabase, copiado de
- * `crm-shell.test.tsx` (`createFakeSupabase`, líneas 25-60) — respeta el
- * tipo de evento, igual que el original — y extendido con lo que
- * `AssignmentNotifier` necesita además del canal: `auth.getSession()` para
- * resolver quién soy (`fetchCurrentAgent`, `src/lib/data.ts`) y
- * `from("conversations")` para el nombre del contacto.
+ * Fake del cliente realtime de Supabase, copiado de `crm-shell.test.tsx`
+ * (`createFakeSupabase`) y extendido con lo que `AssignmentNotifier` necesita
+ * además del canal: `auth.getSession()` para resolver quién soy
+ * (`fetchCurrentAgent`, `src/lib/data.ts`) y `from("conversations")` para el
+ * nombre del contacto.
+ *
+ * 29/10/2026 (hotfix "/inventario se cae al guardar un presupuesto"): el canal
+ * del fake era UN solo objeto para todo `channel(...)`, con un `on()` que nunca
+ * lanzaba, y por eso no podía atrapar el fallo real. Ahora imita los tres
+ * comportamientos de realtime-js 2.112.3 que lo causan: (1) `channel(topic)`
+ * devuelve el canal que ya existe con ese topic; (2) `on("postgres_changes")`
+ * lanza si el canal ya está `joining`/`joined`; (3) `removeChannel` es
+ * asíncrono — deja el canal en `leaving` y solo sale del registro cuando el
+ * servidor confirma (`confirmarSalidas()` en el fake). Y el INSERT se despacha
+ * a TODOS los canales `joined` del registro, como haría el servidor.
  */
 function createFakeSupabase() {
-  const subscriptionsByTable = new Map<string, Subscription[]>();
+  const channels = new Map<string, FakeChannel>();
 
   const session: { user: { id: string } } | null = { user: { id: "agente-1" } };
   // Rol del usuario que mira la pantalla (T10b-5): el aviso de demora solo es
@@ -33,26 +57,38 @@ function createFakeSupabase() {
     error: null,
   });
 
-  const channel = {
-    on(
-      _type: string,
-      config: { event: RealtimeEvent | "*"; table: string },
-      handler: ChannelHandler
-    ) {
-      const list = subscriptionsByTable.get(config.table) ?? [];
-      list.push({ event: config.event, handler });
-      subscriptionsByTable.set(config.table, list);
-      return channel;
-    },
-    subscribe() {
-      return channel;
-    },
-  };
-
   return {
     supabase: {
-      channel: () => channel,
-      removeChannel: () => {},
+      channel(nombre: string) {
+        const topic = `realtime:${nombre}`;
+        const existente = channels.get(topic);
+        if (existente) return existente;
+        const canal: FakeChannel = {
+          topic,
+          state: "closed",
+          subscriptions: [],
+          on(_type, config, handler) {
+            if (canal.state === "joining" || canal.state === "joined") {
+              throw new Error(
+                `cannot add \`postgres_changes\` callbacks for ${canal.topic} after \`subscribe()\`.`
+              );
+            }
+            canal.subscriptions.push({ table: config.table, event: config.event, handler });
+            return canal;
+          },
+          subscribe() {
+            if (canal.state === "closed") canal.state = "joined";
+            return canal;
+          },
+        };
+        channels.set(topic, canal);
+        return canal;
+      },
+      removeChannel(canal: FakeChannel) {
+        // Como realtime-js: pasa a "leaving" y sigue en la lista hasta que el
+        // servidor confirma la salida.
+        canal.state = "leaving";
+      },
       auth: {
         getSession: async () => ({ data: { session } }),
       },
@@ -95,8 +131,22 @@ function createFakeSupabase() {
       eventType: RealtimeEvent = "INSERT",
       row: Record<string, unknown> = {}
     ) {
-      for (const { event, handler } of subscriptionsByTable.get(table) ?? []) {
-        if (event === "*" || event === eventType) handler({ eventType, new: row });
+      // El servidor entrega el INSERT a todos los canales unidos.
+      for (const canal of [...channels.values()]) {
+        if (canal.state !== "joined") continue;
+        for (const sub of canal.subscriptions) {
+          if (sub.table !== table) continue;
+          if (sub.event === "*" || sub.event === eventType) sub.handler({ eventType, new: row });
+        }
+      }
+    },
+    /** El servidor confirma las salidas: los canales en "leaving" salen del registro. */
+    confirmarSalidas() {
+      for (const [topic, canal] of channels) {
+        if (canal.state === "leaving") {
+          canal.state = "closed";
+          channels.delete(topic);
+        }
       }
     },
     setRole(next: string) {
@@ -250,6 +300,32 @@ describe("AssignmentNotifier", () => {
     await flush();
 
     expect(toastMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("dos instancias vivas a la vez no lanzan, avisan una sola vez y, al irse una, la otra sigue recibiendo (canal único por suscripción)", async () => {
+    // Sin nombre único por suscripción, la segunda instancia recibe el canal
+    // ya unido y `on()` lanza "cannot add `postgres_changes` callbacks … after
+    // `subscribe()`" desde un useEffect (hotfix 29/10/2026).
+    const primera = render(<AssignmentNotifier />);
+    const segunda = render(<AssignmentNotifier />);
+    await flush();
+
+    act(() => {
+      fake.trigger("conversation_handoffs", "INSERT", escaladaHandoff());
+    });
+    await flush();
+    expect(toastMock).toHaveBeenCalledTimes(1);
+
+    primera.unmount();
+    fake.confirmarSalidas();
+
+    act(() => {
+      fake.trigger("conversation_handoffs", "INSERT", escaladaHandoff({ id: "handoff-2" }));
+    });
+    await flush();
+    expect(toastMock).toHaveBeenCalledTimes(2);
+
+    segunda.unmount();
   });
 
   it("el 'Abrir' del toast navega a la conversación asignada", async () => {

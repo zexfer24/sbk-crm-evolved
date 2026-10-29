@@ -4,6 +4,7 @@ import { useCallback, useEffect, useState } from "react";
 import { createClient } from "@/lib/supabase/client";
 import { fetchUltimosBorradores } from "@/lib/saint-borradores-data";
 import { borradorDesdeFila, type BorradorSaint, type FilaBorradorSaint, type OrigenSaint } from "@/lib/saint-borradores";
+import { nombreCanalUnico } from "@/lib/realtime-channel-name";
 import { nextRealtimeAction, type RealtimeStatus } from "@/lib/realtime-status";
 
 /**
@@ -102,7 +103,12 @@ export function useBorradoresSaint(
 
     // Un solo id: filtro exacto. Varios: por tipo de origen y se filtra aquí.
     const filter = ids.length === 1 ? `origen_id=eq.${ids[0]}` : `origen=eq.${origen}`;
-    const nombre = `saint-borradores-${origen}-${ids.length === 1 ? ids[0] : `${ids.length}-${ids[0].slice(0, 8)}`}`;
+    // Nombre ÚNICO por suscripción (29/10/2026): /inventario monta este hook dos
+    // veces con el mismo origen e id y realtime-js devuelve el canal que ya
+    // existe con ese topic, donde `.on()` lanza. Ver `realtime-channel-name.ts`.
+    const nombre = nombreCanalUnico(
+      `saint-borradores-${origen}-${ids.length === 1 ? ids[0] : `${ids.length}-${ids[0].slice(0, 8)}`}`,
+    );
     let anterior: RealtimeStatus | null = null;
     const channel = supabase
       .channel(nombre)

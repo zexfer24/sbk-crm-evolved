@@ -6,6 +6,7 @@ import { toast } from "@heroui/react";
 import { createClient } from "@/lib/supabase/client";
 import { fetchCurrentAgent } from "@/lib/data";
 import { nextRealtimeAction, type RealtimeStatus } from "@/lib/realtime-status";
+import { nombreCanalUnico } from "@/lib/realtime-channel-name";
 import {
   shouldShowAssignmentNotice,
   shouldShowDelayEscalationNotice,
@@ -137,8 +138,16 @@ export function AssignmentNotifier() {
   useEffect(() => {
     const supabase = createClient();
 
+    // Nombre único POR SUSCRIPCIÓN (hotfix 29/10/2026, "/inventario se cae al
+    // guardar un presupuesto"): `AppRail` vive en las seis secciones y en
+    // `section-skeleton`, así que durante una navegación hay dos instancias, y
+    // realtime-js devuelve el canal existente para el mismo topic —con
+    // `.on()` lanzando si ya está unido, o recibiendo el canal que `removeChannel`
+    // todavía no sacó de la lista—. El dedupe de avisos ya es de módulo, así
+    // que dos suscripciones no duplican toasts.
+    const nombre = nombreCanalUnico("assignment-notice");
     const channel = supabase
-      .channel("assignment-notice")
+      .channel(nombre)
       .on(
         "postgres_changes",
         // El filtro por `to_kind` es estático y recorta ruido (los INSERT de
@@ -242,7 +251,7 @@ export function AssignmentNotifier() {
       const action = nextRealtimeAction(previousStatus, status);
       previousStatus = status;
       if (action === "log_down") {
-        console.warn("realtime_canal_caido", { channelName: "assignment-notice", status });
+        console.warn("realtime_canal_caido", { channelName: nombre, status });
       }
     });
 

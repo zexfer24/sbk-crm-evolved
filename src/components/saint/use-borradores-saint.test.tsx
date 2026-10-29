@@ -1,5 +1,6 @@
 /** @vitest-environment jsdom */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { StrictMode } from "react";
 import { act, renderHook, waitFor } from "@testing-library/react";
 import type { BorradorSaint, FilaBorradorSaint } from "@/lib/saint-borradores";
 import { borradorDesdeFila } from "@/lib/saint-borradores";
@@ -12,36 +13,82 @@ import { useBorradoresSaint } from "@/components/saint/use-borradores-saint";
  * estado y cuándo se vuelve a leer.
  */
 
+type EstadoCanal = "closed" | "joining" | "joined" | "leaving";
+
+/**
+ * Fake con la semántica REAL de realtime-js 2.112.3 (29/10/2026, hotfix
+ * "/inventario se cae al guardar un presupuesto"). El fake anterior creaba un
+ * canal nuevo en cada `channel()` y por eso nunca vio el fallo:
+ * - `channel(nombre)` devuelve el canal que ya esté en la lista con ese topic.
+ * - `on("postgres_changes")` lanza si el canal está joining/joined.
+ * - `subscribe` solo actúa con el canal cerrado.
+ * - `removeChannel` pasa el canal a "leaving" y lo saca de la lista recién
+ *   cuando el servidor confirma (aquí: `confirmarSalidas()`).
+ */
 interface CanalFalso {
   nombre: string;
+  topic: string;
+  /** Estado del canal en realtime-js. */
+  estado: EstadoCanal;
   suscripciones: { evento: string; opciones: Record<string, unknown>; callback: (payload: { new: unknown }) => void }[];
-  estado: ((status: string) => void) | null;
+  /** El callback de estado que se pasó a `subscribe` (SUBSCRIBED, CHANNEL_ERROR…). */
+  alEstado: ((status: string) => void) | null;
   on: (evento: string, opciones: Record<string, unknown>, callback: (payload: { new: unknown }) => void) => CanalFalso;
   subscribe: (callback: (status: string) => void) => CanalFalso;
 }
 
+/** Todos los canales que se CREARON, en orden (no los que `channel()` reutiliza). */
 const canales: CanalFalso[] = [];
+/** La lista de canales del cliente, por topic: de aquí los saca `confirmarSalidas()`. */
+const registro = new Map<string, CanalFalso>();
 const removeChannel = vi.fn();
+
+function crearCanal(nombre: string): CanalFalso {
+  const topic = `realtime:${nombre}`;
+  const canal: CanalFalso = {
+    nombre,
+    topic,
+    estado: "closed",
+    suscripciones: [],
+    alEstado: null,
+    on(evento, opciones, callback) {
+      if (canal.estado === "joining" || canal.estado === "joined") {
+        throw new Error(`cannot add \`postgres_changes\` callbacks for ${topic} after \`subscribe()\`.`);
+      }
+      canal.suscripciones.push({ evento, opciones, callback });
+      return canal;
+    },
+    subscribe(callback) {
+      if (canal.estado === "closed") {
+        canal.estado = "joined";
+        canal.alEstado = callback;
+      }
+      return canal;
+    },
+  };
+  canales.push(canal);
+  registro.set(topic, canal);
+  return canal;
+}
+
 const supabaseFalso = {
-  channel: vi.fn((nombre: string) => {
-    const canal: CanalFalso = {
-      nombre,
-      suscripciones: [],
-      estado: null,
-      on(evento, opciones, callback) {
-        canal.suscripciones.push({ evento, opciones, callback });
-        return canal;
-      },
-      subscribe(callback) {
-        canal.estado = callback;
-        return canal;
-      },
-    };
-    canales.push(canal);
-    return canal;
-  }),
-  removeChannel: (canal: unknown) => removeChannel(canal),
+  channel: vi.fn((nombre: string) => registro.get(`realtime:${nombre}`) ?? crearCanal(nombre)),
+  removeChannel: (canal: CanalFalso) => {
+    removeChannel(canal);
+    canal.estado = "leaving";
+  },
 };
+
+/** Simula el "ok" del servidor a las salidas pendientes: recién entonces el canal sale de la lista. */
+function confirmarSalidas() {
+  for (const [topic, canal] of [...registro]) {
+    if (canal.estado === "leaving") {
+      canal.estado = "closed";
+      registro.delete(topic);
+    }
+  }
+}
+
 vi.mock("@/lib/supabase/client", () => ({ createClient: () => supabaseFalso }));
 
 const fetchUltimosBorradores = vi.fn();
@@ -83,6 +130,7 @@ function evento(canal: CanalFalso, nueva: FilaBorradorSaint) {
 
 beforeEach(() => {
   canales.length = 0;
+  registro.clear();
   removeChannel.mockReset();
   supabaseFalso.channel.mockClear();
   fetchUltimosBorradores.mockReset();
@@ -178,6 +226,67 @@ describe("useBorradoresSaint — carga y canal", () => {
   });
 });
 
+describe("useBorradoresSaint — canal único por suscripción", () => {
+  // Hotfix 29/10/2026: en /inventario, CarritoPanel y PresupuestosPanel montan el
+  // hook con el MISMO origen e id y el nombre del canal salía solo de los ids.
+  const ID = "pr-1";
+
+  it("(a) dos hooks montados a la vez no lanzan y cada uno tiene su canal joined", async () => {
+    expect(() => {
+      renderHook(() => useBorradoresSaint("presupuesto", [ID]));
+      renderHook(() => useBorradoresSaint("presupuesto", [ID]));
+    }).not.toThrow();
+
+    expect(canales).toHaveLength(2);
+    expect(canales.map((c) => c.estado)).toEqual(["joined", "joined"]);
+    expect(canales[0].topic).not.toBe(canales[1].topic);
+    await act(async () => {});
+  });
+
+  it("(b) al desmontar el primero, el segundo sigue joined y recibe eventos", async () => {
+    const primero = renderHook(() => useBorradoresSaint("presupuesto", [ID]));
+    const segundo = renderHook(() => useBorradoresSaint("presupuesto", [ID]));
+    await act(async () => {});
+    const [canal1, canal2] = canales;
+
+    primero.unmount();
+    confirmarSalidas();
+
+    expect(canal1.estado).toBe("closed");
+    expect(canal2.estado).toBe("joined");
+    expect(registro.get(canal2.topic)).toBe(canal2);
+    expect(registro.has(canal1.topic)).toBe(false);
+
+    evento(canal2, fila());
+    expect(segundo.result.current.porOrigen.get(ID)?.estado).toBe("pendiente");
+  });
+
+  it("(c) un remontaje con la salida sin confirmar termina con una suscripción joined que recibe eventos", async () => {
+    const primero = renderHook(() => useBorradoresSaint("presupuesto", [ID]));
+    await act(async () => {});
+    primero.unmount();
+    // Sin `confirmarSalidas()`: el canal viejo sigue en la lista, "leaving".
+
+    const segundo = renderHook(() => useBorradoresSaint("presupuesto", [ID]));
+    await act(async () => {});
+
+    const vivo = canales[canales.length - 1];
+    expect(vivo.estado).toBe("joined");
+    evento(vivo, fila());
+    expect(segundo.result.current.porOrigen.get(ID)?.estado).toBe("pendiente");
+  });
+
+  it("(c) bajo StrictMode (efecto, limpieza, efecto) la suscripción final queda joined y recibe eventos", async () => {
+    const { result } = renderHook(() => useBorradoresSaint("presupuesto", [ID]), { wrapper: StrictMode });
+    await act(async () => {});
+
+    const vivo = canales[canales.length - 1];
+    expect(vivo.estado).toBe("joined");
+    evento(vivo, fila());
+    expect(result.current.porOrigen.get(ID)?.estado).toBe("pendiente");
+  });
+});
+
 describe("useBorradoresSaint — eventos", () => {
   it("un INSERT/UPDATE de un origen pedido reemplaza al actual si es más nuevo o igual", async () => {
     fetchUltimosBorradores.mockResolvedValue(mapa(fila()));
@@ -238,11 +347,11 @@ describe("useBorradoresSaint — resincronización", () => {
     await waitFor(() => expect(canales).toHaveLength(1));
     expect(fetchUltimosBorradores).toHaveBeenCalledTimes(1);
 
-    act(() => canales[0].estado?.("SUBSCRIBED"));
+    act(() => canales[0].alEstado?.("SUBSCRIBED"));
     expect(fetchUltimosBorradores).toHaveBeenCalledTimes(1);
 
-    act(() => canales[0].estado?.("CHANNEL_ERROR"));
-    act(() => canales[0].estado?.("SUBSCRIBED"));
+    act(() => canales[0].alEstado?.("CHANNEL_ERROR"));
+    act(() => canales[0].alEstado?.("SUBSCRIBED"));
 
     await waitFor(() => expect(fetchUltimosBorradores).toHaveBeenCalledTimes(2));
   });
