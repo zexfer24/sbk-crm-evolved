@@ -27,9 +27,13 @@
 --      en blanco, origen inválido => 22023 con el detail EXACTO (son los textos
 --      del agente). Más de 9999 unidades de un código y más de 100 códigos.
 --   f. La caja envía un presupuesto => ok; la caja envía un carrito => 42501.
---   g. Desde el carrito la cédula tipeada se guarda en el contacto SOLO si le
---      faltaba; nunca pisa una cédula existente ni toca teléfono ni nombre.
---      Desde un presupuesto no se toca ningún contacto.
+--   g. Desde el carrito el nombre, el apellido y la cédula tipeados se guardan
+--      en el contacto SIEMPRE (gana el último envío, aunque ya tuviera otros);
+--      el teléfono del contacto nunca se toca. (28/10/2026: antes la cédula se
+--      guardaba SOLO si faltaba y nunca se tocaba el nombre; el cambio y sus
+--      casos de presupuesto viven en saint_telefono_opcional_y_contacto.sql.)
+--      El presupuesto enviado por la CAJA no toca su contacto (la RLS de
+--      `contacts` le da 0 filas).
 --   h. `borradores_saint` devuelve solo el ÚLTIMO envío de cada origen y no
 --      lista un origen sin envíos; un arreglo enorme no lanza (se recorta a 500).
 --   i. anon no ejecuta ninguna de las dos RPC ni lee la tabla.
@@ -346,9 +350,9 @@ select pg_temp.esperar('Casos d/e/j: no quedó ninguna fila de los orígenes rec
   '^filas=0$');
 
 -- ---------------------------------------------------------------------------
--- Caso g · desde el carrito la cédula se guarda en el contacto SOLO si faltaba
+-- Caso g · desde el carrito lo tipeado se guarda en el contacto SIEMPRE (28/10/2026)
 -- ---------------------------------------------------------------------------
--- cv2 (contacto SIN cédula): queda con la tipeada.
+-- cv2 (contacto SIN cédula): queda con la tipeada y con el nombre del formulario.
 select pg_temp.esperar('Caso g: envío de cv2',
   pg_temp.probar($q$select public.enviar_borrador_saint('carrito', 'b0d9e800-3000-0000-0000-000000000002', 'e', '12345678', 'Beto', 'Rojas', '+584149999999')$q$),
   '^filas=1$');
@@ -364,20 +368,21 @@ begin
   if c.cedula_type is distinct from 'E' or c.cedula_number is distinct from '12345678' then
     insert into _errores(msg) values (format('Caso g: el contacto sin cédula debía quedar con E/12345678 y quedó %L/%L.', c.cedula_type, c.cedula_number));
   end if;
-  if c.phone_number is distinct from '+580000009302' or c.display_name is distinct from 'Contacto sin cédula' then
-    insert into _errores(msg) values (format('Caso g: se tocó el teléfono o el nombre del contacto (%L / %L).', c.phone_number, c.display_name));
+  if c.phone_number is distinct from '+580000009302' or c.display_name is distinct from 'Beto Rojas' then
+    insert into _errores(msg) values (format('Caso g: el teléfono no debía tocarse y el nombre debía quedar "Beto Rojas" (%L / %L).', c.phone_number, c.display_name));
   end if;
-  -- cv1 (contacto CON cédula E 99999999): el envío del caso a usó V 11111111 y NO la pisó.
+  -- cv1 (contacto CON cédula E 99999999): el envío del caso a usó V 11111111 y
+  -- SÍ la pisó (28/10/2026: gana el último envío; antes no la pisaba).
   select * into c from public.contacts where id = 'b0d9e800-2000-0000-0000-000000000001';
-  if c.cedula_type is distinct from 'E' or c.cedula_number is distinct from '99999999' then
-    insert into _errores(msg) values (format('Caso g: la cédula existente se pisó (%L/%L).', c.cedula_type, c.cedula_number));
+  if c.cedula_type is distinct from 'V' or c.cedula_number is distinct from '11111111' or c.display_name is distinct from 'Ana Pérez' then
+    insert into _errores(msg) values (format('Caso g: el contacto con cédula debía quedar con V/11111111 y "Ana Pérez" (gana el último envío) y quedó %L/%L/%L.', c.cedula_type, c.cedula_number, c.display_name));
   end if;
   if c.phone_number is distinct from '+580000009301' then
     insert into _errores(msg) values (format('Caso g: se pisó el teléfono del contacto con cédula (%L).', c.phone_number));
   end if;
 end $$;
 
--- Un número en blanco ('   ') cuenta como faltante: se completa.
+-- Un número en blanco ('   ') en el contacto también se reemplaza por lo tipeado.
 update public.contacts set cedula_type = 'V', cedula_number = '   ' where id = 'b0d9e800-2000-0000-0000-000000000003';
 insert into public.conversation_cart_items (conversation_id, product_id, quantity, origin)
   values ('b0d9e800-3000-0000-0000-000000000003', 'b0d9e800-4000-0000-0000-000000000003', 1, 'inventory');
@@ -439,14 +444,16 @@ select pg_temp.esperar('Caso f: la caja no hace UPDATE',
 reset role;
 reset "request.jwt.claim.sub";
 
--- Caso g (presupuesto): ningún contacto se tocó, ni siquiera el del presupuesto.
+-- Caso g (presupuesto de la CAJA): el contacto del presupuesto queda intacto (la caja no
+-- pasa is_agent(): su UPDATE sobre `contacts` afecta 0 filas por RLS y el envío sigue;
+-- lo que hace un asesor con un presupuesto está en saint_telefono_opcional_y_contacto.sql).
 do $$
 declare
   c record;
 begin
   select * into c from public.contacts where id = 'b0d9e800-2000-0000-0000-000000000007';
   if c.cedula_type is not null or c.cedula_number is not null then
-    insert into _errores(msg) values (format('Caso g: un presupuesto no debía tocar contactos y el 7 quedó con %L/%L.', c.cedula_type, c.cedula_number));
+    insert into _errores(msg) values (format('Caso g: la caja no debía tocar el contacto del presupuesto y el 7 quedó con %L/%L.', c.cedula_type, c.cedula_number));
   end if;
 end $$;
 

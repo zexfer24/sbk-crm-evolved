@@ -558,6 +558,22 @@ jobs:
         run: |
           psql "postgresql://postgres:postgres@127.0.0.1:54322/postgres"             -v ON_ERROR_STOP=1             -f supabase/tests/resumen_busquedas.sql
 
+      # Enviar a SAINT (20261025010000): la cola de borradores y sus dos RPC. No
+      # estaba en el CI desde el 25/10; se suma el 28/10/2026 porque T0 de
+      # "Facturar en SAINT" reescribió sus aserciones del contacto (caso g).
+      - name: saint_borradores -- cola hacia SAINT, RPC y RLS
+        run: |
+          psql "postgresql://postgres:postgres@127.0.0.1:54322/postgres"             -v ON_ERROR_STOP=1             -f supabase/tests/saint_borradores.sql
+
+      # Facturar en SAINT T0 (20261028010000, 28/10/2026): enviar_borrador_saint
+      # acepta el teléfono vacío y guarda nombre y cédula tipeados en el contacto
+      # del carrito o del presupuesto (gana el último envío, el teléfono del
+      # contacto no se toca). Corre como `authenticated`/caja con la RLS real y
+      # termina en rollback.
+      - name: saint_telefono_opcional_y_contacto -- teléfono opcional y contacto al día
+        run: |
+          psql "postgresql://postgres:postgres@127.0.0.1:54322/postgres"             -v ON_ERROR_STOP=1             -f supabase/tests/saint_telefono_opcional_y_contacto.sql
+
       # A2 T7, plan "Seba no cotiza lo que no es" (30/9/2026): el ARNÉS del
       # catálogo. Corre el `buildCatalogTool` REAL de Seba sobre los ~149 casos de
       # `casos-a2.ts` contra la base que este mismo job acaba de reconstruir desde
