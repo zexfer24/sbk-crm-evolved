@@ -61,7 +61,13 @@ import { describe, expect, it } from "vitest";
 
 const LISTA_BLANCA = new Set(["is_agent", "is_supervisor_or_admin"]);
 
-// Las 31 funciones `security definer` conocidas (30 + quick_replies_mas_usados,
+// Las 32 funciones `security definer` conocidas (31 + precio_divisa_usd,
+// 20261030010000, 30/10/2026: campo calculado de PostgREST sobre `products`
+// que lee `precio1` de la réplica de SAINT (`saprod`) para que el CRM no
+// necesite ningún permiso directo sobre ella; acceso chequeado UNA vez con
+// `can_read_inventory()` [la caja SÍ ve el precio divisa], los dos revokes y
+// grant a authenticated/service_role, nunca a LISTA_BLANCA). Las 31
+// anteriores: 30 + quick_replies_mas_usados,
 // 20261021020000, 21/10/2026: el ranking «Más usados» de los mensajes rápidos
 // lee `quick_reply_uses`, tabla con RLS sin política de select, con
 // `is_agent()` chequeado UNA vez; los dos revokes y grant a
@@ -200,6 +206,11 @@ const FUNCIONES_SECURITY_DEFINER_CONOCIDAS = [
   // usados» de los mensajes rápidos; definer para no pagar una política por
   // fila sobre `quick_reply_uses` (crece cientos de filas por día).
   "quick_replies_mas_usados",
+  // 30/10/2026 (20261030010000_precio_divisa_saint.sql): precio divisa =
+  // SAPROD.Precio1 de la réplica de SAINT, leído en vivo; definer para que
+  // `authenticated` no necesite permiso sobre `saprod` (que esa misma
+  // migración le cierra), con los dos revokes.
+  "precio_divisa_usd",
 ].sort();
 
 const DIR_MIGRACIONES = path.resolve(__dirname, "../../supabase/migrations");
@@ -333,8 +344,8 @@ describe("permisos de funciones security definer (guardián estático)", () => {
     .map(([nombre]) => nombre)
     .sort();
 
-  it("detecta exactamente las 31 funciones security definer conocidas", () => {
-    // Si esto falla con MENOS de las 31, el parser se está comiendo alguna
+  it("detecta exactamente las 32 funciones security definer conocidas", () => {
+    // Si esto falla con MENOS de las 32, el parser se está comiendo alguna
     // (regex de cabecera roto, `$$` no encontrado, etc.) y el resto de este
     // archivo no protege nada aunque pase en verde. Si falla con MÁS,
     // apareció una función security definer nueva: hay que sumarla a esta
