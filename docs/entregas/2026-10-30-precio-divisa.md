@@ -107,6 +107,6 @@ Cómo leerlo:
      - en el panel del chat sale «Divisa $ 18.46» o «Sin precio en SAINT», sin botón de agregar.
    - La columna nueva mide **110px y no 150px**: con 150px el nombre del producto quedaba en 118 px a 1366 y en 84 px a 1000. Con 110px queda en 158 y 124 px.
 
-## Hallazgo aparte (no lo introduce esta entrega)
+## Nota sobre la prueba como caja (descartado, no es un bug)
 
-Un usuario de **caja** que abre `/inbox?conversation=<id>` dispara el error **React #441**. Se reprodujo idéntico en `a1db46c` (antes de esta entrega), sobre el build de producción. `/inventario` como caja queda limpio. Queda pendiente de diagnosticar aparte.
+En la primera corrida como caja apareció el error React #441 («falló el render de un Server Component») en `/inbox`, y se reprodujo igual en `a1db46c`. Era un artefacto de la prueba. Para simular la caja solo se había cambiado `agents.role`, y el token seguía siendo de agente: una cuenta de caja real lleva además `app_metadata.role = 'caja'`, y con eso el proxy la redirige de `/inbox` a `/inventario` antes de renderizar (`middleware.test.ts` lo fija). Repetido con la caja configurada como en producción: `/inbox` termina en `/inventario`, sin errores de consola.
