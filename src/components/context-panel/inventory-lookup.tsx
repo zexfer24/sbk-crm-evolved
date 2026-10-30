@@ -13,9 +13,11 @@ import {
   formatWeightInput,
   motivoSinEstandar,
   parseWeightInput,
+  precioDivisaDisplay,
   priceDisplay,
   sinPeso,
   standardPriceDisplay,
+  TEXTO_SIN_PRECIO_SAINT,
 } from "@/lib/inventory";
 import { useDebouncedCallback } from "@/lib/use-debounced-callback";
 import { StockPill } from "@/components/context-panel/stock-pill";
@@ -448,6 +450,7 @@ export function InventoryLookup({ bcvRate, onAdd, addDisabled = false, puedeEdit
               {state.products.map((product) => {
                 const price = priceDisplay(product, rate);
                 const estandar = standardPriceDisplay(product, rate);
+                const divisa = precioDivisaDisplay(product);
                 return (
                   <li className="crm-lookup-item" key={product.id} data-retired={product.isActive ? undefined : "true"}>
                     <div className="crm-lookup-item-head">
@@ -483,6 +486,20 @@ export function InventoryLookup({ bcvRate, onAdd, addDisabled = false, puedeEdit
                             {price.principal}
                           </span>
                           {price.pie !== null && <span className="lm-num crm-lookup-price-alt">{price.pie}</span>}
+                        </div>
+                        {/* Divisa (30/10/2026, plan "Precio divisa desde SAINT"): Precio1 de
+                            SAINT en USD, solo informativo — sin botón de agregar. */}
+                        <div className="crm-lookup-item-price" data-kind="divisa">
+                          <span className="crm-lookup-price-label">Divisa</span>
+                          {divisa.estado === "ok" ? (
+                            <span className="lm-num" aria-label={`Precio divisa de ${product.name}`}>
+                              {divisa.principal}
+                            </span>
+                          ) : (
+                            <span className="crm-lookup-price-missing" data-empty="true">
+                              {TEXTO_SIN_PRECIO_SAINT}
+                            </span>
+                          )}
                         </div>
                         <div className="crm-lookup-item-price" data-kind="estandar">
                           <span className="crm-lookup-price-label">Estándar</span>

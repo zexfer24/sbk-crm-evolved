@@ -52,6 +52,7 @@ function product(overrides: Partial<Product> = {}): Product {
     compatibility: [],
     weightKg: null,
     shippingFeeUsd: null,
+    precioDivisaUsd: null,
     saintCode: "1234",
     saintAddedAt: null,
     saintRemovedAt: null,
@@ -887,6 +888,37 @@ describe("InventoryLookup", () => {
       expect(screen.getByText("Peso 1 kg")).toBeInTheDocument();
       expect(screen.getByText("Peso 4 kg")).toBeInTheDocument();
     });
+  });
+});
+
+/**
+ * 30/10/2026 (plan "Precio divisa desde SAINT"): el Precio1 de SAINT en USD va
+ * entre Promoción y Estándar, solo informativo: sin botón de agregar.
+ */
+describe("InventoryLookup — Divisa", () => {
+  async function buscarUno(p: Product) {
+    searchProductsForLookup.mockResolvedValue([p]);
+    render(<InventoryLookup bcvRate={RATE} onAdd={vi.fn()} />);
+    type("bujia");
+    flush();
+    await flushPromises();
+  }
+
+  it("muestra la etiqueta Divisa con el valor en dólares", async () => {
+    await buscarUno(product({ precioDivisaUsd: 12.35 }));
+    expect(screen.getByText("Divisa")).toBeInTheDocument();
+    expect(screen.getByLabelText("Precio divisa de Bujía CR7HSA")).toHaveTextContent("$ 12.35");
+  });
+
+  it("sin dato (o con 0) dice 'Sin precio en SAINT', nunca '$ 0.00'", async () => {
+    await buscarUno(product({ precioDivisaUsd: 0 }));
+    expect(screen.getByText("Sin precio en SAINT")).toBeInTheDocument();
+    expect(screen.queryByLabelText("Precio divisa de Bujía CR7HSA")).not.toBeInTheDocument();
+  });
+
+  it("no hay ningún botón para agregar a precio divisa", async () => {
+    await buscarUno(product({ precioDivisaUsd: 12.35 }));
+    expect(screen.queryByRole("button", { name: /divisa/i })).not.toBeInTheDocument();
   });
 });
 

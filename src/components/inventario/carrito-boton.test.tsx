@@ -44,6 +44,7 @@ const PRODUCTO: Product = {
   saintAddedAt: null,
   saintRemovedAt: null,
   shippingFeeUsd: null,
+  precioDivisaUsd: null,
 };
 
 /** Agrega unidades desde el contexto, como lo haría una fila. */

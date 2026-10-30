@@ -33,6 +33,7 @@ function product(over: Partial<Product> = {}): Product {
     saintAddedAt: null,
     saintRemovedAt: null,
     shippingFeeUsd: null,
+    precioDivisaUsd: null,
     ...over,
   };
 }

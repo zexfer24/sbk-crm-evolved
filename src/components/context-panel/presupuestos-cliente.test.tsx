@@ -57,6 +57,7 @@ function product(over: Partial<Product> = {}): Product {
     compatibility: [],
     weightKg: 2,
     shippingFeeUsd: 2.5,
+    precioDivisaUsd: null,
     saintCode: "A-100",
     saintAddedAt: null,
     saintRemovedAt: null,

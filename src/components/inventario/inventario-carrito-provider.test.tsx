@@ -75,6 +75,7 @@ function product(over: Partial<Product> = {}): Product {
     saintAddedAt: null,
     saintRemovedAt: null,
     shippingFeeUsd: null,
+    precioDivisaUsd: null,
     ...over,
   };
 }
@@ -97,6 +98,7 @@ const PS = product({
   currency: "USD",
   weightKg: null,
   shippingFeeUsd: null,
+  precioDivisaUsd: null,
   saintCode: "SS-001",
 });
 

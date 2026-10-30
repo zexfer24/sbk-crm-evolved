@@ -72,6 +72,7 @@ const PRODUCTO: Product = {
   saintAddedAt: null,
   saintRemovedAt: null,
   shippingFeeUsd: null,
+  precioDivisaUsd: null,
 };
 
 function pintar(role: Agent["role"]) {

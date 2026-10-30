@@ -57,6 +57,7 @@ function product(over: Partial<Product> = {}): Product {
     compatibility: [],
     weightKg: null,
     shippingFeeUsd: null,
+    precioDivisaUsd: null,
     saintCode: null,
     saintAddedAt: null,
     saintRemovedAt: null,
@@ -534,8 +535,9 @@ describe("ProductoFila — solo lectura (rol caja)", () => {
     expect(screen.queryByText(/incluye envío MRW/)).toBeNull();
     expect(screen.queryByLabelText(/Precio estándar de/)).toBeNull();
     expect(container.innerHTML).not.toMatch(/est[aá]ndar/i);
-    // Quedan los tres campos de la fila de caja: Stock, Precio promoción y Peso.
-    expect(container.querySelectorAll(".inv-field")).toHaveLength(3);
+    // Quedan los cuatro campos de la fila de caja: Stock, Precio promoción,
+    // Precio divisa (30/10/2026, la caja sí lo ve) y Peso.
+    expect(container.querySelectorAll(".inv-field")).toHaveLength(4);
     expect(container.querySelector(".inv-row")).toHaveAttribute("data-solo-lectura", "true");
   });
 
@@ -604,5 +606,44 @@ describe("ProductoFila — Cashea vive en el bloque de acciones, no entre las in
     expect(boton.querySelector("svg")).toHaveAttribute("aria-hidden", "true");
     expect(container.querySelector(".inv-status")).not.toContainElement(boton);
     expect(container.querySelector("li")?.lastElementChild).toBe(acciones);
+  });
+});
+
+// 30/10/2026 (plan "Precio divisa desde SAINT"): el Precio1 de SAINT (USD) va entre
+// promoción y estándar, solo informativo.
+describe("ProductoFila — el Precio divisa", () => {
+  it("las etiquetas salen en el orden Precio promoción, Precio divisa, Precio estándar", () => {
+    render(<ProductoFila product={product({ precioDivisaUsd: 12.35 })} bcvRate={40} />);
+    const textos = Array.from(document.querySelectorAll(".lm-eyebrow")).map((e) => e.textContent);
+    const promo = textos.indexOf("Precio promoción");
+    const divisa = textos.indexOf("Precio divisa");
+    const estandar = textos.indexOf("Precio estándar");
+    expect(promo).toBeGreaterThanOrEqual(0);
+    expect(divisa).toBe(promo + 1);
+    expect(estandar).toBe(divisa + 1);
+  });
+
+  it("con precio muestra '$ 12.35' con su aria-label", () => {
+    render(<ProductoFila product={product({ precioDivisaUsd: 12.35 })} bcvRate={40} />);
+    expect(screen.getByLabelText("Precio divisa de Carburador PZ27")).toHaveTextContent("$ 12.35");
+  });
+
+  it("sin dato (null) dice 'Sin precio en SAINT'", () => {
+    render(<ProductoFila product={product({ precioDivisaUsd: null })} bcvRate={40} />);
+    expect(screen.getByText("Sin precio en SAINT")).toBeInTheDocument();
+    expect(screen.queryByLabelText("Precio divisa de Carburador PZ27")).not.toBeInTheDocument();
+  });
+
+  it("un 0 no es un precio: dice 'Sin precio en SAINT' y nunca '$ 0.00'", () => {
+    render(<ProductoFila product={product({ precioDivisaUsd: 0 })} bcvRate={40} />);
+    expect(screen.getByText("Sin precio en SAINT")).toBeInTheDocument();
+    expect(screen.queryByText("$ 0.00")).not.toBeInTheDocument();
+  });
+
+  it("la caja (soloLectura) ve el Precio divisa pero NO el Precio estándar", () => {
+    render(<ProductoFila product={product({ precioDivisaUsd: 12.35 })} bcvRate={40} soloLectura />);
+    expect(screen.getByText("Precio divisa")).toBeInTheDocument();
+    expect(screen.getByLabelText("Precio divisa de Carburador PZ27")).toHaveTextContent("$ 12.35");
+    expect(screen.queryByText("Precio estándar")).not.toBeInTheDocument();
   });
 });

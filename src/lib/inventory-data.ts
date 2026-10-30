@@ -29,7 +29,7 @@ export const SIN_PESO_FILTRO = "weight_kg.is.null,weight_kg.eq.0";
 
 export const PRODUCT_SELECT = `
   id, name, brand, price, currency, stock_quantity, description,
-  is_active, updated_at, weight_kg, tarifa_envio_usd, saint_code, saint_added_at, saint_removed_at,
+  is_active, updated_at, weight_kg, tarifa_envio_usd, precio_divisa_usd, saint_code, saint_added_at, saint_removed_at,
   product_compatibility(id, moto_brand, moto_model)
 `;
 
@@ -51,6 +51,13 @@ export interface RawProduct {
    * como texto.
    */
   tarifa_envio_usd: number | string | null;
+  /**
+   * Campo calculado de PostgREST (30/10/2026, plan "Precio divisa desde SAINT",
+   * migración 20261030010000): el `Precio1` de SAINT en USD, ya redondeado a 2
+   * decimales. No es columna de `products` ni está en `database.types.ts`, por
+   * eso se tipa a mano. `numeric` puede llegar como texto.
+   */
+  precio_divisa_usd: number | string | null;
   saint_code: string | null;
   saint_added_at: string | null;
   saint_removed_at: string | null;
@@ -70,6 +77,7 @@ export function mapProduct(row: RawProduct): Product {
     updatedAt: row.updated_at,
     weightKg: row.weight_kg === null ? null : Number(row.weight_kg),
     shippingFeeUsd: row.tarifa_envio_usd == null ? null : Number(row.tarifa_envio_usd),
+    precioDivisaUsd: row.precio_divisa_usd == null ? null : Number(row.precio_divisa_usd),
     saintCode: row.saint_code,
     saintAddedAt: row.saint_added_at,
     saintRemovedAt: row.saint_removed_at,

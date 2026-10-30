@@ -52,10 +52,18 @@
  * padding de la píldora). A 160px, las insignias que quedan en `.inv-status`
  * ("La IA lo ofrece", "Sin peso", "Nuevo desde Saint") bajan de línea si no
  * caben juntas, como ya hacían.
+ *
+ * 30/10/2026 (plan "Precio divisa desde SAINT"): suma OTRA columna fija,
+ * la de Precio divisa, entre promoción y estándar (mismo motivo: una columna
+ * `auto` repartiría distinto en cada `<li>`). Total: ocho columnas. Mide
+ * 110px, no 150px como las otras de precio: con 150px el nombre del producto
+ * quedaba en 118px a 1366 y en 84px a 1000 (medido con Playwright); el monto
+ * ("$ 18.46") cabe de sobra y "Sin precio en SAINT" baja a dos líneas dentro
+ * de su caja, como ya hace "Falta el peso: cargalo →".
  */
 .inv-row {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 100px 150px 150px 110px 160px 140px;
+  grid-template-columns: minmax(0, 1fr) 100px 150px 110px 150px 110px 160px 140px;
   align-items: start;
   column-gap: 16px;
   row-gap: 8px;
@@ -73,7 +81,7 @@
  * que cada media query que redefine la grilla trae también su variante.
  */
 .inv-row[data-solo-lectura="true"] {
-  grid-template-columns: minmax(0, 1fr) 100px 150px 110px 160px 140px;
+  grid-template-columns: minmax(0, 1fr) 100px 150px 110px 110px 160px 140px;
 }
 
 .inv-row:hover {
@@ -373,12 +381,12 @@
    de los campos siguen fijas, así que las filas siguen alineadas. */
 @media (min-width: 761px) and (max-width: 1180px) {
   .inv-row {
-    grid-template-columns: minmax(0, 1fr) 100px 150px 150px 110px;
+    grid-template-columns: minmax(0, 1fr) 100px 150px 110px 150px 110px;
   }
 
   /* Caja: sin la columna del estándar (ver `.inv-row[data-solo-lectura]`, arriba). */
   .inv-row[data-solo-lectura="true"] {
-    grid-template-columns: minmax(0, 1fr) 100px 150px 110px;
+    grid-template-columns: minmax(0, 1fr) 100px 150px 110px 110px;
   }
 
   .inv-status {
@@ -397,13 +405,14 @@
 }
 
 @media (max-width: 760px) {
-  /* Cuatro campos (Stock, Promoción, Estándar, Peso): dos columnas dejan
-     los pares Stock/Promoción y Estándar/Peso (12/10/2026). */
+  /* Cinco campos (Stock, Promoción, Divisa, Estándar, Peso): dos columnas dejan
+     los pares Stock/Promoción y Divisa/Estándar, y el Peso solo en su fila
+     (12/10/2026; Divisa se suma el 30/10/2026). */
   .inv-row {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
-  /* Caja: tres campos (Stock, Promoción, Peso) en las mismas dos columnas; el Peso queda solo en su fila. */
+  /* Caja: cuatro campos (Stock, Promoción, Divisa, Peso) en las mismas dos columnas: pares Stock/Promoción y Divisa/Peso. */
   .inv-row[data-solo-lectura="true"] {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }

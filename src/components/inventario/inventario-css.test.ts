@@ -137,7 +137,7 @@ describe("la hoja de estilos del inventario", () => {
    * columna 1 crezca de alto no mueve ni centra a las demás — por eso este
    * test NO exige que `grid-template-columns` cambie, exige que NO cambie.
    */
-  it(".inv-row tiene siete columnas fijas (la de acciones es la única agregada): el código Saint no agrega otra", async () => {
+  it(".inv-row tiene ocho columnas fijas (Precio divisa es la última agregada): el código Saint no agrega otra", async () => {
     const css = await leerCss();
     const regla = bloque(css, ".inv-row");
     const plantilla = /grid-template-columns:\s*([^;]+);/.exec(regla);
@@ -146,7 +146,7 @@ describe("la hoja de estilos del inventario", () => {
     expect(
       plantilla![1].trim(),
       "el código Saint va DENTRO de la columna 1 (`.inv-identity`), como una línea nueva, no como columna: agregar una columna aquí reabre la trampa del 10/9/2026"
-    ).toBe("minmax(0, 1fr) 100px 150px 150px 110px 160px 140px");
+    ).toBe("minmax(0, 1fr) 100px 150px 110px 150px 110px 160px 140px");
   });
 
   it(".inv-saint-code existe, en fuente numérica y seleccionable para copiar", async () => {
@@ -165,8 +165,13 @@ describe("la hoja de estilos del inventario", () => {
    * Precio promoción, que lleva el mismo pie `.inv-bs`). En teléfono los
    * cuatro campos quedan en pares (Stock/Promoción, Estándar/Peso) con dos
    * columnas; identidad y estado siguen ocupando la fila entera.
+   *
+   * 30/10/2026 (plan "Precio divisa desde SAINT"): suma OTRA columna fija de
+   * 150px, Precio divisa, entre promoción y estándar. La plantilla general
+   * pasa a ocho columnas, la de caja a siete; en teléfono los cinco campos
+   * siguen en dos columnas (Stock/Promoción, Divisa/Estándar, Peso solo).
    */
-  it("en teléfono los cuatro campos caben en pares: dos columnas, identidad y estado a fila entera", async () => {
+  it("en teléfono los cinco campos caben en dos columnas, identidad y estado a fila entera", async () => {
     const css = await leerCss();
     const inicio = css.indexOf("@media (max-width: 760px)");
     expect(inicio, "no se encontró el breakpoint de teléfono en inventario.css").toBeGreaterThanOrEqual(0);
@@ -174,7 +179,7 @@ describe("la hoja de estilos del inventario", () => {
     const fila = /\.inv-row\s*\{([^}]*)\}/.exec(movil);
 
     expect(fila, "no se encontró `.inv-row` dentro del breakpoint de teléfono").not.toBeNull();
-    expect(fila![1], "con cuatro campos, tres columnas dejaban uno huérfano").toMatch(
+    expect(fila![1], "con cinco campos, tres columnas dejaban huérfanos").toMatch(
       /grid-template-columns:\s*repeat\(2,\s*minmax\(0,\s*1fr\)\)\s*;/
     );
     expect(movil).toMatch(/\.inv-identity,\s*\.inv-status,\s*\.inv-acciones\s*\{[^}]*grid-column:\s*1\s*\/\s*-1\s*;/);
@@ -185,7 +190,7 @@ describe("la hoja de estilos del inventario", () => {
     const inicio = css.indexOf("@media (min-width: 761px) and (max-width: 1180px)");
     expect(inicio, "sin este breakpoint, a 1024px el nombre queda en ~20px").toBeGreaterThanOrEqual(0);
     const medio = css.slice(inicio, css.indexOf("@media (max-width: 760px)"));
-    expect(medio).toMatch(/\.inv-row\s*\{[^}]*grid-template-columns:\s*minmax\(0, 1fr\) 100px 150px 150px 110px\s*;/);
+    expect(medio).toMatch(/\.inv-row\s*\{[^}]*grid-template-columns:\s*minmax\(0, 1fr\) 100px 150px 110px 150px 110px\s*;/);
     expect(medio).toMatch(/\.inv-status\s*\{[^}]*grid-column:\s*1\s*\/\s*-1\s*;/);
     // Los botones suben a la misma línea completa, ahora en fila.
     expect(medio).toMatch(/\.inv-acciones\s*\{[^}]*grid-column:\s*1\s*\/\s*-1\s*;/);
@@ -203,13 +208,13 @@ describe("la hoja de estilos del inventario", () => {
    * trae su variante de caja (la regla base de caja, más específica, pisaría
    * a la del breakpoint si no la tuviera).
    */
-  it("la fila de caja tiene su propia plantilla de seis columnas fijas, sin la del Precio estándar", async () => {
+  it("la fila de caja tiene su propia plantilla de siete columnas fijas, sin la del Precio estándar", async () => {
     const css = await leerCss();
     const regla = bloque(css, '.inv-row[data-solo-lectura="true"]');
     const plantilla = /grid-template-columns:\s*([^;]+);/.exec(regla);
 
     expect(plantilla, "la fila de caja necesita su propio `grid-template-columns`").not.toBeNull();
-    expect(plantilla![1].trim()).toBe("minmax(0, 1fr) 100px 150px 110px 160px 140px");
+    expect(plantilla![1].trim()).toBe("minmax(0, 1fr) 100px 150px 110px 110px 160px 140px");
   });
 
   it("cada breakpoint que redefine `.inv-row` redefine también la de caja, sin la columna del estándar", async () => {
@@ -221,8 +226,8 @@ describe("la hoja de estilos del inventario", () => {
     const medio = css.slice(medioInicio, movilInicio);
     const movil = css.slice(movilInicio, css.indexOf("/* --- Calculadora Cashea"));
 
-    expect(medio, "entre 761 y 1180px la caja necesita sus 4 columnas de campos").toMatch(
-      /\.inv-row\[data-solo-lectura="true"\]\s*\{[^}]*grid-template-columns:\s*minmax\(0, 1fr\) 100px 150px 110px\s*;/
+    expect(medio, "entre 761 y 1180px la caja necesita sus 5 columnas de campos").toMatch(
+      /\.inv-row\[data-solo-lectura="true"\]\s*\{[^}]*grid-template-columns:\s*minmax\(0, 1fr\) 100px 150px 110px 110px\s*;/
     );
     expect(movil, "en teléfono la caja repite las dos columnas (Stock/Promoción, Peso)").toMatch(
       /\.inv-row\[data-solo-lectura="true"\]\s*\{[^}]*grid-template-columns:\s*repeat\(2,\s*minmax\(0,\s*1fr\)\)\s*;/
@@ -260,7 +265,7 @@ describe("la hoja de estilos del inventario", () => {
 
     const plantilla = /grid-template-columns:\s*([^;]+);/.exec(bloque(css, ".inv-row"))![1].trim();
     const columnas = plantilla.split(/\s+(?![^()]*\))/);
-    expect(columnas).toHaveLength(7);
+    expect(columnas).toHaveLength(8);
     for (const columna of columnas.slice(1)) {
       expect(columna, `la columna \`${columna}\` no es de ancho fijo`).toMatch(/^\d+px$/);
     }

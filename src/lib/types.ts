@@ -1122,6 +1122,14 @@ export interface Product {
    */
   shippingFeeUsd: number | null;
   /**
+   * Precio divisa en USD: el `Precio1` de SAINT (`SAPROD`), que calcula la base
+   * (campo calculado de PostgREST `precio_divisa_usd`, migración 20261030010000).
+   * Solo informativo (30/10/2026, plan "Precio divisa desde SAINT"): no entra al
+   * carrito, presupuestos, factura ni a Seba. `null` = SAINT no trae precio; un
+   * 0 o un negativo tampoco es un precio (ver `precioDivisaDisplay`).
+   */
+  precioDivisaUsd: number | null;
+  /**
    * Código de Saint, extraído por `saint.sync_products()` del `Código ERP: …`
    * que traía `description` (T1, plan "El inventario llega de Saint y no se
    * toca a mano", 25/9/2026, migración 20260925010000). Null en un producto

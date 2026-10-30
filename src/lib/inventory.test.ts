@@ -15,6 +15,7 @@ import {
   paginaFueraDeRango,
   parseInventoryParams,
   parseWeightInput,
+  precioDivisaDisplay,
   priceDisplay,
   priceInBs,
   sinPeso,
@@ -57,6 +58,7 @@ function product(over: Partial<Product> = {}): Product {
     compatibility: [],
     weightKg: null,
     shippingFeeUsd: null,
+    precioDivisaUsd: null,
     saintCode: null,
     saintAddedAt: null,
     saintRemovedAt: null,
@@ -329,6 +331,7 @@ describe("mapProduct / PRODUCT_SELECT (tarifa MRW)", () => {
     updated_at: "2026-10-12T10:00:00Z",
     weight_kg: 1,
     tarifa_envio_usd: null,
+    precio_divisa_usd: null,
     saint_code: null,
     saint_added_at: null,
     saint_removed_at: null,
@@ -347,6 +350,38 @@ describe("mapProduct / PRODUCT_SELECT (tarifa MRW)", () => {
 
   it("el select pide tarifa_envio_usd", () => {
     expect(PRODUCT_SELECT).toContain("tarifa_envio_usd");
+  });
+
+  // 30/10/2026 (plan "Precio divisa desde SAINT"): campo calculado de PostgREST,
+  // `numeric` que puede llegar como texto.
+  it("convierte el precio divisa que PostgREST entrega como texto o número", () => {
+    expect(mapProduct(raw({ precio_divisa_usd: "12.35" })).precioDivisaUsd).toBe(12.35);
+    expect(mapProduct(raw({ precio_divisa_usd: 7 })).precioDivisaUsd).toBe(7);
+  });
+
+  it("precio divisa null se queda null (nunca 0)", () => {
+    expect(mapProduct(raw({ precio_divisa_usd: null })).precioDivisaUsd).toBeNull();
+  });
+
+  it("el select pide precio_divisa_usd", () => {
+    expect(PRODUCT_SELECT).toContain("precio_divisa_usd");
+  });
+});
+
+// 30/10/2026 (plan "Precio divisa desde SAINT"): el precio divisa es
+// `SAPROD.Precio1` de SAINT, ya en USD. Solo informativo: no se convierte con la tasa.
+describe("precioDivisaDisplay", () => {
+  it("un precio real se pinta con el mismo formato '$ 12.35' que el pie de priceDisplay", () => {
+    expect(precioDivisaDisplay({ precioDivisaUsd: 12.35 })).toEqual({ estado: "ok", principal: "$ 12.35" });
+    expect(precioDivisaDisplay({ precioDivisaUsd: 1234.5 })).toEqual({ estado: "ok", principal: "$ 1234.50" });
+  });
+
+  it("0, negativo, null o NaN no son un precio: 'sin_precio', nunca '$ 0.00'", () => {
+    expect(precioDivisaDisplay({ precioDivisaUsd: 0 })).toEqual({ estado: "sin_precio" });
+    expect(precioDivisaDisplay({ precioDivisaUsd: -3 })).toEqual({ estado: "sin_precio" });
+    expect(precioDivisaDisplay({ precioDivisaUsd: null })).toEqual({ estado: "sin_precio" });
+    expect(precioDivisaDisplay({ precioDivisaUsd: Number.NaN })).toEqual({ estado: "sin_precio" });
+    expect(precioDivisaDisplay({ precioDivisaUsd: Number.POSITIVE_INFINITY })).toEqual({ estado: "sin_precio" });
   });
 });
 

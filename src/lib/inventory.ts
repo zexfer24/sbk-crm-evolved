@@ -131,6 +131,25 @@ export function priceDisplay(product: Product, rate: number): PriceDisplay {
   return { principal: `Bs. ${bs.toFixed(2)}`, pie: `$ ${product.price.toFixed(2)}` };
 }
 
+/** Texto cuando SAINT no trae precio divisa (nunca un `$ 0.00`). */
+export const TEXTO_SIN_PRECIO_SAINT = "Sin precio en SAINT";
+
+/** Qué pinta la fila / el buscador para el "precio divisa" (Precio1 de SAINT, en USD). */
+export type PrecioDivisaDisplay = { estado: "ok"; principal: string } | { estado: "sin_precio" };
+
+/**
+ * Precio divisa = `Precio1` de SAINT (30/10/2026, plan "Precio divisa desde
+ * SAINT"). Ya viene en dólares, así que NO pasa por `usdFromBs` ni por la tasa
+ * BCV. Solo informativo. `null`, no finito, 0 o negativo no son un precio real
+ * (SAINT guarda 0 donde no hay dato): "sin_precio", nunca "$ 0.00". Mismo
+ * formato "$ 12.35" que el pie de `priceDisplay`.
+ */
+export function precioDivisaDisplay(product: Pick<Product, "precioDivisaUsd">): PrecioDivisaDisplay {
+  const v = product.precioDivisaUsd;
+  if (v === null || !Number.isFinite(v) || v <= 0) return { estado: "sin_precio" };
+  return { estado: "ok", principal: `$ ${round2(v).toFixed(2)}` };
+}
+
 /** Qué pinta la fila para el "precio estándar" (promoción + envío MRW). */
 export type StandardPriceDisplay =
   | { estado: "ok"; principal: string; pie: string | null; tarifa: string }

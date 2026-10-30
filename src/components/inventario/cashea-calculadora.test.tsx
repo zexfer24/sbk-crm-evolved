@@ -41,6 +41,7 @@ function producto(overrides: Partial<Product> = {}): Product {
     saintAddedAt: null,
     saintRemovedAt: null,
     shippingFeeUsd: null,
+    precioDivisaUsd: null,
     ...overrides,
   };
 }

@@ -14,10 +14,12 @@ import {
   formatWeightInput,
   isNewFromSaint,
   parseWeightInput,
+  precioDivisaDisplay,
   priceDisplay,
   sinPeso,
   standardPriceDisplay,
   stockLevel,
+  TEXTO_SIN_PRECIO_SAINT,
 } from "@/lib/inventory";
 import { CasheaCalculadora } from "@/components/inventario/cashea-calculadora";
 import { useInventarioCarrito } from "@/components/inventario/inventario-carrito-context";
@@ -89,6 +91,7 @@ export function ProductoFila({
   const visibility = aiVisibility(vivo);
   const price = priceDisplay(vivo, bcvRate);
   const estandar = standardPriceDisplay(vivo, bcvRate);
+  const divisa = precioDivisaDisplay(vivo);
   const nuevoDesdeSaint = isNewFromSaint(vivo);
   const enCarrito = carrito?.cantidadDe(vivo.id) ?? 0;
 
@@ -255,6 +258,33 @@ export function ProductoFila({
           <span className="inv-bs" aria-hidden="true" />
         )}
       </label>
+
+      {/*
+       * Precio divisa (30/10/2026, plan "Precio divisa desde SAINT"): el
+       * `Precio1` de SAINT, ya en USD, entre promoción y estándar. Solo
+       * informativo: sin botón ni conversión con la tasa. Lo ve también la caja
+       * (decisión del operador), por eso va FUERA del `!soloLectura` — y por eso
+       * cada plantilla de `.inv-row` en `inventario.css` suma su columna fija de
+       * 110px (un hijo de más sin columna correría Peso, estado y acciones,
+       * trampa del 10/9/2026). `<div>`, no `<label>`: no hay input al que
+       * atarlo. El pie `.inv-bs` va SIEMPRE, vacío, para que mida lo mismo que
+       * los demás campos.
+       */}
+      <div className="inv-field">
+        <span className="lm-eyebrow">Precio divisa</span>
+        <span className="inv-input-wrap">
+          {divisa.estado === "ok" ? (
+            <span className="lm-num inv-readonly" aria-label={`Precio divisa de ${product.name}`}>
+              {divisa.principal}
+            </span>
+          ) : (
+            <span className="inv-readonly" data-empty="true">
+              {TEXTO_SIN_PRECIO_SAINT}
+            </span>
+          )}
+        </span>
+        <span className="inv-bs" aria-hidden="true" />
+      </div>
 
       {/*
        * Precio estándar (12/10/2026): promoción + envío MRW por peso. Es un
