@@ -3180,6 +3180,16 @@ dejar rastro es lo que hacía desaparecer leads.
   `channel()` NO atrapa esto; los de `use-borradores-saint.test.tsx` y
   `assignment-notifier.test.tsx` imitan la semántica real.
 
+- **El «Precio divisa» se lee EN VIVO de `saprod` por el campo calculado
+  `products.precio_divisa_usd`, y la app nunca toca `saprod` con la sesión
+  del usuario** (30/10/2026, migración `20261030010000`). La función es
+  `security definer` (misma resolución `saint.saprod` → `public.saprod` que
+  `sync_products`), devuelve `round(precio1, 2)` tal cual y la UI lee ≤ 0
+  como «Sin precio en SAINT». La misma migración revoca todo sobre `saprod` a
+  `anon`/`authenticated`: no agregar `saprod` a Realtime ni leerla desde el
+  cliente. Es USD de SAINT, no pasa por `usdFromBs`. `PRODUCT_SELECT` lo pide
+  siempre: sin la migración, el inventario entero da 400.
+
 ---
 
 # RTK (Rust Token Killer) - Token-Optimized Commands
