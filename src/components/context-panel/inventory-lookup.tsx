@@ -1,7 +1,7 @@
 "use client";
 
 import { useId, useRef, useState, type KeyboardEvent } from "react";
-import { ChevronDown, ChevronRight, Search, X } from "lucide-react";
+import { Camera, ChevronDown, ChevronRight, Search, X } from "lucide-react";
 import { flushSync } from "react-dom";
 import { toast } from "@heroui/react";
 import type { CartPriceKind, Product } from "@/lib/types";
@@ -20,6 +20,8 @@ import {
   TEXTO_SIN_PRECIO_SAINT,
 } from "@/lib/inventory";
 import { useDebouncedCallback } from "@/lib/use-debounced-callback";
+import { fotoPrincipal } from "@/lib/product-photos";
+import { productPhotoCaption } from "@/lib/product-photo-caption";
 import { StockPill } from "@/components/context-panel/stock-pill";
 import type { BcvRateSummary } from "@/components/inbox/bcv-rate-chip";
 
@@ -77,6 +79,14 @@ import type { BcvRateSummary } from "@/components/inbox/bcv-rate-chip";
  * estándar y «+ Estándar» se actualizan solos. `products` es de solo lectura
  * salvo `weight_kg`; `puedeEditarPeso` esconde los botones a quien no debe
  * (la caja), y la barrera real sigue siendo la base.
+ *
+ * 30/10/2026 (plan «Cada repuesto con su foto», T6, D2/D3): con `onEnviarFoto`
+ * cada resultado muestra la miniatura de su foto principal y un botón «Enviar
+ * foto» que la manda al cliente de la conversación abierta, con el pie
+ * «nombre — precio» (`productPhotoCaption`) que una casilla puede quitar. El
+ * envío vive en el padre (`onEnviarFoto`) y la ventana de 24 h también
+ * (`enviarFotoDeshabilitado`): este componente solo pinta y evita el doble
+ * envío. Sin `onEnviarFoto` no aparece nada de esto.
  */
 const LOOKUP_DEBOUNCE_MS = 300;
 const LOOKUP_LIMIT = 20;
@@ -122,6 +132,14 @@ interface InventoryLookupProps {
    * como siempre (el panel del chat lo enciende).
    */
   desplegable?: boolean;
+  /**
+   * 30/10/2026: manda la foto principal del repuesto al cliente. `caption` es
+   * el pie «nombre — precio», o `null` si el asesor desmarcó la casilla. Sin
+   * esto no hay miniaturas, casilla ni botón «Enviar foto».
+   */
+  onEnviarFoto?: (product: Product, caption: string | null) => Promise<void>;
+  /** Motivo por el que NO se puede enviar (p. ej. ventana de 24 h cerrada): deshabilita el botón y va en su `title`. */
+  enviarFotoDeshabilitado?: string;
 }
 
 /** «3,2»: el peso para leer, con coma y sin ceros de relleno (el campo editable usa `formatWeightInput`). */
@@ -272,12 +290,74 @@ function PesoDelResultado({ product, puedeEditar, onGuardado }: PesoDelResultado
   );
 }
 
-export function InventoryLookup({ bcvRate, onAdd, addDisabled = false, puedeEditarPeso = true, desplegable = false }: InventoryLookupProps) {
+interface EnviarFotoBotonProps {
+  product: Product;
+  /** El pie ya resuelto según la casilla: `null` = sin pie. */
+  caption: string | null;
+  onEnviarFoto: (product: Product, caption: string | null) => Promise<void>;
+  motivoDeshabilitado?: string;
+}
+
+/**
+ * «Enviar foto» de un resultado (30/10/2026). El doble clic no manda dos fotos:
+ * un `ref` cierra el paso al instante (el estado `enviando` tarda un render en
+ * deshabilitar el botón) y el botón queda inerte hasta que la promesa termina,
+ * salga bien o mal. Un fallo avisa con toast y rehabilita el botón: nada queda
+ * colgado.
+ */
+function EnviarFotoBoton({ product, caption, onEnviarFoto, motivoDeshabilitado }: EnviarFotoBotonProps) {
+  const [enviando, setEnviando] = useState(false);
+  const enCurso = useRef(false);
+  const tieneFoto = fotoPrincipal(product) !== null;
+
+  async function enviar() {
+    if (enCurso.current) return;
+    enCurso.current = true;
+    setEnviando(true);
+    try {
+      await onEnviarFoto(product, caption);
+      toast.success("Foto enviada");
+    } catch (err) {
+      toast.danger(err instanceof Error && err.message ? err.message : "No se pudo enviar la foto.");
+    } finally {
+      enCurso.current = false;
+      setEnviando(false);
+    }
+  }
+
+  const title = !tieneFoto ? "Este repuesto no tiene foto" : motivoDeshabilitado;
+
+  return (
+    <button
+      type="button"
+      className="crm-lookup-add crm-lookup-photo-btn"
+      onClick={() => void enviar()}
+      disabled={!tieneFoto || Boolean(motivoDeshabilitado) || enviando}
+      title={title}
+      aria-label={`Enviar foto de ${product.name}`}
+    >
+      <Camera size={12} aria-hidden="true" />
+      {tieneFoto ? (enviando ? "Enviando…" : "Enviar foto") : "Sin foto"}
+    </button>
+  );
+}
+
+export function InventoryLookup({
+  bcvRate,
+  onAdd,
+  addDisabled = false,
+  puedeEditarPeso = true,
+  desplegable = false,
+  onEnviarFoto,
+  enviarFotoDeshabilitado,
+}: InventoryLookupProps) {
   const bodyId = useId();
   // Sin `desplegable` siempre abierto; con él, la preferencia guardada (o cerrado).
   const [abierto, setAbierto] = useState<boolean>(() => (desplegable ? readOpenPreference() : true));
   const [text, setText] = useState("");
   const [state, setState] = useState<LookupState>({ status: "idle" });
+  // Casilla «Poner nombre y precio en el pie» (30/10/2026): marcada por defecto.
+  const [conPie, setConPie] = useState(true);
 
   // Número de secuencia de la búsqueda en vuelo: una respuesta que llega
   // DESPUÉS de que ya se lanzó una búsqueda más nueva no puede pisar lo que
@@ -432,6 +512,13 @@ export function InventoryLookup({ bcvRate, onAdd, addDisabled = false, puedeEdit
           )}
         </div>
 
+        {onEnviarFoto && (
+          <label className="crm-lookup-option">
+            <input type="checkbox" checked={conPie} onChange={(event) => setConPie(event.target.checked)} />
+            Poner nombre y precio en el pie
+          </label>
+        )}
+
         {state.status === "loading" && <p className="crm-lookup-hint">Buscando…</p>}
 
         {state.status === "error" && (
@@ -451,8 +538,8 @@ export function InventoryLookup({ bcvRate, onAdd, addDisabled = false, puedeEdit
                 const price = priceDisplay(product, rate);
                 const estandar = standardPriceDisplay(product, rate);
                 const divisa = precioDivisaDisplay(product);
-                return (
-                  <li className="crm-lookup-item" key={product.id} data-retired={product.isActive ? undefined : "true"}>
+                const cabecera = (
+                  <>
                     <div className="crm-lookup-item-head">
                       <span className="crm-lookup-name">{product.name}</span>
                       {!product.isActive && (
@@ -473,6 +560,29 @@ export function InventoryLookup({ bcvRate, onAdd, addDisabled = false, puedeEdit
                       )}
                       <StockPill quantity={product.stockQuantity} />
                     </div>
+                  </>
+                );
+                const principal = onEnviarFoto ? fotoPrincipal(product) : null;
+                return (
+                  <li className="crm-lookup-item" key={product.id} data-retired={product.isActive ? undefined : "true"}>
+                    {onEnviarFoto ? (
+                      // Con envío de fotos, la miniatura va a la izquierda del nombre.
+                      <div className="crm-lookup-item-top">
+                        {principal ? (
+                          <span className="crm-lookup-thumb">
+                            {/* eslint-disable-next-line @next/next/no-img-element -- URL pública del bucket, miniatura de 56 px */}
+                            <img src={principal.url} alt="" loading="lazy" />
+                          </span>
+                        ) : (
+                          <span className="crm-lookup-thumb" data-empty="true" aria-hidden="true">
+                            <Camera size={16} />
+                          </span>
+                        )}
+                        <div className="crm-lookup-item-top-body">{cabecera}</div>
+                      </div>
+                    ) : (
+                      cabecera
+                    )}
                     <PesoDelResultado
                       product={product}
                       puedeEditar={puedeEditarPeso}
@@ -522,27 +632,39 @@ export function InventoryLookup({ bcvRate, onAdd, addDisabled = false, puedeEdit
                           <span className="crm-lookup-fee">incluye envío MRW {estandar.tarifa}</span>
                         )}
                       </div>
-                      {onAdd && product.isActive && (
+                      {((onAdd && product.isActive) || onEnviarFoto) && (
                         <div className="crm-lookup-add-group">
-                          <button
-                            type="button"
-                            className="crm-lookup-add"
-                            onClick={() => onAdd(product, "promocion")}
-                            disabled={addDisabled}
-                            aria-label={`Agregar ${product.name} a precio de promoción`}
-                          >
-                            + Promoción
-                          </button>
-                          <button
-                            type="button"
-                            className="crm-lookup-add"
-                            onClick={() => onAdd(product, "estandar")}
-                            disabled={addDisabled || estandar.estado !== "ok"}
-                            title={estandar.estado === "ok" ? undefined : motivoSinEstandar(estandar.estado)}
-                            aria-label={`Agregar ${product.name} a precio estándar`}
-                          >
-                            + Estándar
-                          </button>
+                          {onEnviarFoto && (
+                            <EnviarFotoBoton
+                              product={product}
+                              caption={conPie ? productPhotoCaption(product, rate) : null}
+                              onEnviarFoto={onEnviarFoto}
+                              motivoDeshabilitado={enviarFotoDeshabilitado}
+                            />
+                          )}
+                          {onAdd && product.isActive && (
+                            <>
+                              <button
+                                type="button"
+                                className="crm-lookup-add"
+                                onClick={() => onAdd(product, "promocion")}
+                                disabled={addDisabled}
+                                aria-label={`Agregar ${product.name} a precio de promoción`}
+                              >
+                                + Promoción
+                              </button>
+                              <button
+                                type="button"
+                                className="crm-lookup-add"
+                                onClick={() => onAdd(product, "estandar")}
+                                disabled={addDisabled || estandar.estado !== "ok"}
+                                title={estandar.estado === "ok" ? undefined : motivoSinEstandar(estandar.estado)}
+                                aria-label={`Agregar ${product.name} a precio estándar`}
+                              >
+                                + Estándar
+                              </button>
+                            </>
+                          )}
                         </div>
                       )}
                     </div>

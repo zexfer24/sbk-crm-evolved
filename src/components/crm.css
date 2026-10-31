@@ -1860,6 +1860,58 @@
   cursor: default;
 }
 
+/* 30/10/2026 (plan «Cada repuesto con su foto», T6): envío de la foto del
+   repuesto al cliente desde el buscador. La casilla del pie va arriba de los
+   resultados; cada resultado gana una miniatura de 56 px a la izquierda del
+   nombre (o un recuadro punteado si no tiene foto). */
+.crm-lookup-option {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--lm-ink-soft);
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.crm-lookup-item-top {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  min-width: 0;
+}
+
+.crm-lookup-item-top-body {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+}
+
+.crm-lookup-thumb {
+  display: inline-flex;
+  flex: 0 0 56px;
+  align-items: center;
+  justify-content: center;
+  width: 56px;
+  height: 56px;
+  overflow: hidden;
+  border: 1px solid var(--lm-line);
+  border-radius: 11px;
+  background: var(--lm-surface);
+}
+
+.crm-lookup-thumb img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.crm-lookup-thumb[data-empty="true"] {
+  border-style: dashed;
+  color: var(--lm-muted);
+}
+
 .crm-proof-picker {
   display: flex;
   flex-wrap: wrap;

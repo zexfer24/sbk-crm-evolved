@@ -6,6 +6,7 @@ import type { Product } from "@/lib/types";
 import type { BcvRateSummary } from "@/components/inbox/bcv-rate-chip";
 import { ConfigWriteDeniedError } from "@/lib/config-write";
 import { toast } from "@heroui/react";
+import { productPhotoCaption } from "@/lib/product-photo-caption";
 
 /**
  * T6, plan "El mostrador busca sin salir del chat" (27/9/2026, D5).
@@ -56,6 +57,7 @@ function product(overrides: Partial<Product> = {}): Product {
     saintCode: "1234",
     saintAddedAt: null,
     saintRemovedAt: null,
+    fotos: [],
     ...overrides,
   };
 }
@@ -992,5 +994,156 @@ describe("InventoryLookup desplegable", () => {
   it("no pinta el texto de ayuda en el estado inicial", () => {
     render(<InventoryLookup bcvRate={RATE} desplegable />);
     expect(screen.queryByText(/Escribe un nombre, una marca o un código Saint/)).not.toBeInTheDocument();
+  });
+});
+
+/**
+ * 30/10/2026, plan «Cada repuesto con su foto», T6 (D2/D3): cada resultado
+ * muestra la miniatura de su foto principal y un botón «Enviar foto» que manda
+ * esa foto al cliente de la conversación abierta, con el pie «nombre — precio»
+ * (desactivable). Todo entra por props opcionales: sin `onEnviarFoto` nada de
+ * esto aparece y los tests de arriba siguen igual.
+ */
+describe("InventoryLookup — enviar foto", () => {
+  const FOTO = {
+    id: "foto-1",
+    storagePath: "prod-1/a.jpg",
+    url: "https://x.supabase.co/storage/v1/object/public/product-photos/prod-1/a.jpg",
+    isPrimary: true,
+    position: 0,
+  };
+  const OTRA = { ...FOTO, id: "foto-2", url: "https://x.supabase.co/otra.jpg", isPrimary: false, position: 1 };
+
+  async function buscar(products: Product[]) {
+    searchProductsForLookup.mockResolvedValue(products);
+    type("bujia");
+    flush();
+    await flushPromises();
+  }
+
+  it("sin onEnviarFoto no hay botón, ni casilla, ni miniatura", async () => {
+    render(<InventoryLookup bcvRate={RATE} />);
+    await buscar([product({ fotos: [FOTO] })]);
+
+    expect(screen.queryByRole("button", { name: /enviar foto/i })).not.toBeInTheDocument();
+    expect(screen.queryByRole("checkbox")).not.toBeInTheDocument();
+    expect(document.querySelector("img")).toBeNull();
+  });
+
+  it("con foto, el clic llama onEnviarFoto con el producto y el pie de productPhotoCaption", async () => {
+    const onEnviarFoto = vi.fn().mockResolvedValue(undefined);
+    render(<InventoryLookup bcvRate={RATE} onEnviarFoto={onEnviarFoto} />);
+    const p = product({ fotos: [FOTO] });
+    await buscar([p]);
+
+    fireEvent.click(screen.getByRole("button", { name: /enviar foto/i }));
+    await flushPromises();
+
+    expect(onEnviarFoto).toHaveBeenCalledTimes(1);
+    expect(onEnviarFoto).toHaveBeenCalledWith(p, productPhotoCaption(p, RATE.rate));
+    expect(onEnviarFoto.mock.calls[0][1]).toContain("Bujía CR7HSA");
+    expect(toast.success).toHaveBeenCalledWith("Foto enviada");
+  });
+
+  it("con la casilla desmarcada el pie va null", async () => {
+    const onEnviarFoto = vi.fn().mockResolvedValue(undefined);
+    render(<InventoryLookup bcvRate={RATE} onEnviarFoto={onEnviarFoto} />);
+    await buscar([product({ fotos: [FOTO] })]);
+
+    const casilla = screen.getByRole("checkbox", { name: /poner nombre y precio en el pie/i });
+    expect(casilla).toBeChecked();
+    fireEvent.click(casilla);
+    expect(casilla).not.toBeChecked();
+
+    fireEvent.click(screen.getByRole("button", { name: /enviar foto/i }));
+    await flushPromises();
+
+    expect(onEnviarFoto).toHaveBeenCalledWith(expect.objectContaining({ id: "prod-1" }), null);
+  });
+
+  it("sin foto el botón queda deshabilitado con su motivo y no envía", async () => {
+    const onEnviarFoto = vi.fn().mockResolvedValue(undefined);
+    render(<InventoryLookup bcvRate={RATE} onEnviarFoto={onEnviarFoto} />);
+    await buscar([product({ fotos: [] })]);
+
+    const boton = screen.getByRole("button", { name: /enviar foto/i });
+    expect(boton).toBeDisabled();
+    expect(boton).toHaveAttribute("title", "Este repuesto no tiene foto");
+    expect(boton).toHaveTextContent("Sin foto");
+    fireEvent.click(boton);
+    expect(onEnviarFoto).not.toHaveBeenCalled();
+  });
+
+  it("enviarFotoDeshabilitado deshabilita el botón con ese title", async () => {
+    const onEnviarFoto = vi.fn().mockResolvedValue(undefined);
+    render(
+      <InventoryLookup
+        bcvRate={RATE}
+        onEnviarFoto={onEnviarFoto}
+        enviarFotoDeshabilitado="La ventana de 24 h está cerrada"
+      />
+    );
+    await buscar([product({ fotos: [FOTO] })]);
+
+    const boton = screen.getByRole("button", { name: /enviar foto/i });
+    expect(boton).toBeDisabled();
+    expect(boton).toHaveAttribute("title", "La ventana de 24 h está cerrada");
+    fireEvent.click(boton);
+    expect(onEnviarFoto).not.toHaveBeenCalled();
+  });
+
+  it("doble clic rápido envía una sola vez; al terminar el botón vuelve a estar disponible", async () => {
+    let resolver: () => void = () => {};
+    const onEnviarFoto = vi.fn(
+      () =>
+        new Promise<void>((resolve) => {
+          resolver = resolve;
+        })
+    );
+    render(<InventoryLookup bcvRate={RATE} onEnviarFoto={onEnviarFoto} />);
+    await buscar([product({ fotos: [FOTO] })]);
+
+    const boton = screen.getByRole("button", { name: /enviar foto/i });
+    fireEvent.click(boton);
+    fireEvent.click(boton);
+    expect(onEnviarFoto).toHaveBeenCalledTimes(1);
+    expect(boton).toBeDisabled();
+
+    resolver();
+    await flushPromises();
+    expect(toast.success).toHaveBeenCalledTimes(1);
+    expect(boton).not.toBeDisabled();
+  });
+
+  it("si el envío falla avisa con toast.danger y rehabilita el botón", async () => {
+    const onEnviarFoto = vi.fn().mockRejectedValue(new Error("Meta rechazó la imagen"));
+    render(<InventoryLookup bcvRate={RATE} onEnviarFoto={onEnviarFoto} />);
+    await buscar([product({ fotos: [FOTO] })]);
+
+    const boton = screen.getByRole("button", { name: /enviar foto/i });
+    fireEvent.click(boton);
+    await flushPromises();
+
+    expect(toast.danger).toHaveBeenCalledWith("Meta rechazó la imagen");
+    expect(toast.success).not.toHaveBeenCalled();
+    expect(boton).not.toBeDisabled();
+  });
+
+  it("la miniatura usa la URL de la foto principal", async () => {
+    render(<InventoryLookup bcvRate={RATE} onEnviarFoto={vi.fn()} />);
+    await buscar([product({ fotos: [FOTO, OTRA] })]);
+
+    const img = document.querySelector("img");
+    expect(img).not.toBeNull();
+    expect(img).toHaveAttribute("src", FOTO.url);
+    expect(img).toHaveAttribute("loading", "lazy");
+  });
+
+  it("sin foto no hay <img>: se pinta un recuadro vacío", async () => {
+    render(<InventoryLookup bcvRate={RATE} onEnviarFoto={vi.fn()} />);
+    await buscar([product({ fotos: [] })]);
+
+    expect(document.querySelector("img")).toBeNull();
+    expect(document.querySelector(".crm-lookup-thumb[data-empty='true']")).not.toBeNull();
   });
 });

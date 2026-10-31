@@ -1,11 +1,13 @@
 "use client";
 
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { Check, Handshake, IdCard, MapPin, Pencil, Phone, Radio, Settings2, Trash2, X } from "lucide-react";
 import { Button, TextArea, toast } from "@heroui/react";
-import type { Agent, Conversation, ConversationCartItem, Message, Note, Tag } from "@/lib/types";
+import type { Agent, Conversation, ConversationCartItem, Message, Note, Product, Tag } from "@/lib/types";
 import { createClient } from "@/lib/supabase/client";
-import { addNote, deleteNote, removeTagFromContact, updateNote } from "@/lib/mutations";
+import { addNote, deleteNote, removeTagFromContact, sendMediaMessage, updateNote } from "@/lib/mutations";
+import { isComposerWindowOpen } from "@/lib/whatsapp-window";
+import { fotoPrincipal } from "@/lib/product-photos";
 import { formatFullDateTime } from "@/lib/format";
 import { CloseSaleModal } from "@/components/context-panel/close-sale-modal";
 import { ManageTagsModal } from "@/components/context-panel/manage-tags-modal";
@@ -92,6 +94,23 @@ export function ContextPanel({
   // factura.
   const { porOrigen: envios, ahora, recargar: recargarEnvios } = useBorradoresSaint("carrito", [conversation.id]);
   const ultimoEnvio = envios.get(conversation.id) ?? null;
+
+  // 30/10/2026 (plan «Cada repuesto con su foto», T6, D3): «Enviar foto» del
+  // buscador. `/api/messages/send` NO revisa la ventana de 24 h (Meta rechaza
+  // con 131047 y llega recién por el webhook), así que se revisa acá con la
+  // MISMA regla y los mismos argumentos que el composer.
+  const ventanaAbierta = useMemo(
+    () => isComposerWindowOpen(conversation.lastCustomerMessageAt, messages),
+    [conversation.lastCustomerMessageAt, messages]
+  );
+
+  // La URL es la pública del bucket `product-photos`: pasa tal cual a Meta
+  // (no es del bucket privado) y la burbuja la pinta directo.
+  async function enviarFotoDelRepuesto(product: Product, caption: string | null) {
+    const foto = fotoPrincipal(product);
+    if (!foto) throw new Error("Este repuesto no tiene foto.");
+    await sendMediaMessage(conversation.id, foto.url, "image", caption ?? undefined);
+  }
 
   const contact = conversation.contact;
   const isDealWon = conversation.dealStatus === "won";
@@ -267,6 +286,9 @@ export function ContextPanel({
           // 26/10/2026: el buscador ocupaba media columna aunque no se usara;
           // ahora se pliega y recuerda por visor si quedó abierto.
           desplegable
+          // 30/10/2026: enviar la foto principal del repuesto a ESTA conversación.
+          onEnviarFoto={enviarFotoDelRepuesto}
+          enviarFotoDeshabilitado={ventanaAbierta ? undefined : "La ventana de 24 h está cerrada"}
         />
 
         <ConversationCartBlock

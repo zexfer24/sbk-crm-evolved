@@ -46,6 +46,7 @@ vi.mock("@/components/context-panel/inventory-lookup", () => ({
 const removeTagFromContactMock = vi.fn().mockResolvedValue(undefined);
 const addToCartMock = vi.fn().mockResolvedValue(undefined);
 const setCartQuantityMock = vi.fn().mockResolvedValue(undefined);
+const sendMediaMessageMock = vi.fn().mockResolvedValue(undefined);
 vi.mock("@/lib/mutations", () => ({
   addNote: vi.fn(),
   addTagToContact: vi.fn(),
@@ -57,6 +58,8 @@ vi.mock("@/lib/mutations", () => ({
   addQuotesToCart: vi.fn(),
   setCartQuantity: (...args: unknown[]) => setCartQuantityMock(...args),
   removeFromCart: vi.fn(),
+  // 30/10/2026 (plan «Cada repuesto con su foto», T6): «Enviar foto» del buscador.
+  sendMediaMessage: (...args: unknown[]) => sendMediaMessageMock(...args),
 }));
 
 vi.mock("@/lib/data", () => ({ fetchConversationQuotes: vi.fn().mockResolvedValue([]) }));
@@ -165,6 +168,7 @@ beforeEach(() => {
   closeSaleModalProps.mockClear();
   addToCartMock.mockClear();
   setCartQuantityMock.mockClear();
+  sendMediaMessageMock.mockClear();
   fetchPresupuestosMock.mockClear();
   borradoresPorOrigen.clear();
   usoBorradoresSaint.mockClear();
@@ -187,6 +191,7 @@ const PRODUCTO: Product = {
   saintCode: null,
   saintAddedAt: null,
   saintRemovedAt: null,
+  fotos: [],
 };
 
 const RENGLON: ConversationCartItem = {
@@ -542,5 +547,60 @@ describe("ContextPanel — énfasis de «Cerrar venta» y suscripción a los env
 
     const pasos = screen.getAllByRole("listitem").filter((li) => li.closest('[aria-label="Pasos de la venta"]'));
     expect(pasos[2]).toHaveTextContent(/Cerrar.*hecho/);
+  });
+});
+
+/**
+ * 30/10/2026, plan «Cada repuesto con su foto», T6 (D2/D3): el panel le pasa al
+ * buscador el envío de la foto principal del repuesto a la conversación
+ * abierta, y deshabilita el botón cuando la ventana de 24 h está cerrada
+ * (el servidor NO la revisa; el cliente sí, con la misma regla del composer).
+ */
+describe("ContextPanel — Enviar foto desde el buscador", () => {
+  const FOTO_URL = "https://x.supabase.co/storage/v1/object/public/product-photos/prod-1/a.jpg";
+  const CON_FOTO: Product = {
+    ...PRODUCTO,
+    fotos: [{ id: "foto-1", storagePath: "prod-1/a.jpg", url: FOTO_URL, isPrimary: true, position: 0 }],
+  };
+
+  type PropsBuscador = {
+    onEnviarFoto?: (product: Product, caption: string | null) => Promise<void>;
+    enviarFotoDeshabilitado?: string;
+  };
+  function propsBuscador(): PropsBuscador {
+    return inventoryLookupProps.mock.calls.at(-1)?.[0] as PropsBuscador;
+  }
+
+  it("con ventana abierta, enviar manda la URL pública como imagen con el pie", async () => {
+    renderPanel();
+    const props = propsBuscador();
+    expect(props.enviarFotoDeshabilitado).toBeUndefined();
+
+    await props.onEnviarFoto!(CON_FOTO, "Bujía CR7HSA — $3,25 BCV (Bs. 130,00)");
+
+    expect(sendMediaMessageMock).toHaveBeenCalledWith(
+      "conv-1",
+      FOTO_URL,
+      "image",
+      "Bujía CR7HSA — $3,25 BCV (Bs. 130,00)"
+    );
+  });
+
+  it("sin pie (casilla desmarcada) manda la imagen sin caption", async () => {
+    renderPanel();
+    await propsBuscador().onEnviarFoto!(CON_FOTO, null);
+    expect(sendMediaMessageMock).toHaveBeenCalledWith("conv-1", FOTO_URL, "image", undefined);
+  });
+
+  it("con la ventana cerrada, el botón llega deshabilitado con el motivo", () => {
+    const hace30h = new Date(Date.now() - 30 * 60 * 60 * 1000).toISOString();
+    renderPanel({ lastCustomerMessageAt: hace30h });
+    expect(propsBuscador().enviarFotoDeshabilitado).toBe("La ventana de 24 h está cerrada");
+  });
+
+  it("un repuesto sin foto no manda nada (el botón ya viene deshabilitado en el buscador)", async () => {
+    renderPanel();
+    await expect(propsBuscador().onEnviarFoto!(PRODUCTO, null)).rejects.toThrow(/no tiene foto/i);
+    expect(sendMediaMessageMock).not.toHaveBeenCalled();
   });
 });
