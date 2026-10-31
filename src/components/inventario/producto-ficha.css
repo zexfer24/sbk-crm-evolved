@@ -1,0 +1,418 @@
+/*
+ * Ficha lateral del repuesto (30/10/2026, plan «Cada repuesto con su foto»,
+ * T4). Copia fiel de los bloques `.ficha*`, `.galeria-*`, `.dropzone` y
+ * `.cashea-check*` de `mockups/inventario-fotos`, con los tokens reales de la
+ * app (`--lm-*`). Es un archivo propio y no se toca `inventario.css`: el panel
+ * vive en un portal (Drawer de HeroUI), así que no hereda nada de la vista.
+ *
+ * Los selectores del diálogo llevan `.drawer__dialog` delante para ganarle en
+ * especificidad al `w-80 p-6` de fábrica sin depender del orden de las hojas
+ * (mismo criterio que `.inv-carrito-dialogo`). Sin desbordes a 390 px: el ancho
+ * es `min(600px, 100vw)` y todo lo que puede crecer lleva `min-width: 0`.
+ */
+
+.drawer__dialog.inv-ficha {
+  width: min(600px, 100vw);
+  max-width: 100vw;
+  padding: 0;
+  gap: 0;
+  background: var(--lm-surface);
+}
+
+/* Cabecera fija: el nombre y las insignias; el botón de cerrar lo posiciona HeroUI. */
+.drawer__header.ficha-cabecera {
+  position: relative;
+  flex-direction: row;
+  align-items: flex-start;
+  padding: 18px 56px 14px 22px;
+  border-bottom: 1px solid var(--lm-line);
+  background: var(--lm-surface);
+}
+
+.ficha-titulo {
+  min-width: 0;
+}
+
+.ficha-nombre {
+  margin: 0;
+  font-size: 17px;
+  font-weight: 600;
+  letter-spacing: -0.02em;
+  line-height: 1.3;
+  overflow-wrap: anywhere;
+}
+
+.ficha-subtitulo {
+  margin: 4px 0 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+  font-size: 12px;
+  color: var(--lm-muted);
+}
+
+.ficha-marca {
+  padding: 1px 6px;
+  border: 1px solid var(--lm-line);
+  border-radius: 5px;
+}
+
+/* El cuerpo es lo único que desplaza; cabecera y pie quedan a la vista. */
+.drawer__body.ficha-cuerpo {
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+  min-height: 0;
+  margin: 0;
+  padding: 18px 22px 24px;
+  overflow-y: auto;
+  scrollbar-width: thin;
+  scrollbar-color: var(--lm-line) transparent;
+}
+
+.ficha-seccion {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-width: 0;
+}
+
+.ficha-seccion h3 {
+  margin: 0;
+}
+
+/* ---- Galería ---------------------------------------------------------- */
+
+.galeria-principal {
+  position: relative;
+  aspect-ratio: 4 / 3;
+  border-radius: 18px;
+  overflow: hidden;
+  /* El mockup usaba `--photo-bg`, que no existe en la app: mismo degradado con tokens reales. */
+  background: radial-gradient(120% 100% at 50% 20%, var(--lm-surface) 0%, var(--lm-sunken) 100%);
+  border: 1px solid var(--lm-line);
+  display: grid;
+  place-items: center;
+}
+
+.galeria-principal img {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+}
+
+.galeria-principal .ac-badge {
+  position: absolute;
+  top: 12px;
+  left: 12px;
+}
+
+.galeria-herr {
+  position: absolute;
+  right: 10px;
+  bottom: 10px;
+  left: 10px;
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+.galeria-herr button {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 6px 10px;
+  border: 0;
+  border-radius: 999px;
+  /* Píldora clara sobre la foto en ambos temas: la foto no cambia con el tema. */
+  background: rgba(255, 255, 255, 0.94);
+  color: #23252f;
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.12);
+}
+
+.galeria-herr button[data-variant="danger"] {
+  color: #b01d31;
+}
+
+.galeria-herr button:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+
+.galeria-tira {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.galeria-tira button {
+  position: relative;
+  width: 68px;
+  height: 68px;
+  border-radius: 12px;
+  border: 2px solid transparent;
+  background: radial-gradient(120% 100% at 50% 20%, var(--lm-surface) 0%, var(--lm-sunken) 100%);
+  padding: 0;
+  overflow: hidden;
+  cursor: pointer;
+  outline: 1px solid var(--lm-line);
+}
+
+.galeria-tira button img {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+}
+
+.galeria-tira button[aria-current="true"] {
+  border-color: var(--lm-link);
+}
+
+.galeria-tira button:focus-visible {
+  outline: 2px solid var(--lm-link);
+  outline-offset: 2px;
+}
+
+.galeria-tira .estrella {
+  position: absolute;
+  top: 3px;
+  left: 3px;
+  display: grid;
+  place-items: center;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: #fff;
+  color: #e79a24;
+}
+
+.galeria-tira .estrella svg {
+  fill: currentColor;
+}
+
+.galeria-tira .agregar {
+  background: var(--lm-sunken);
+  outline-style: dashed;
+  color: var(--lm-muted);
+  display: grid;
+  place-items: center;
+}
+
+.galeria-tira .agregar:hover:not(:disabled) {
+  color: var(--lm-link-ink);
+  outline-color: var(--lm-link);
+}
+
+.galeria-tira .agregar:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+
+.dropzone {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  aspect-ratio: 4 / 3;
+  border: 2px dashed var(--lm-line);
+  border-radius: 18px;
+  background: var(--lm-sunken);
+  color: var(--lm-muted);
+  text-align: center;
+  padding: 20px;
+  cursor: pointer;
+  width: 100%;
+  font: inherit;
+}
+
+.dropzone:hover:not(:disabled) {
+  border-color: var(--lm-link);
+  color: var(--lm-link-ink);
+}
+
+.dropzone:focus-visible {
+  outline: 2px solid var(--lm-link);
+  outline-offset: 2px;
+}
+
+.dropzone:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
+.dropzone strong {
+  color: var(--lm-ink);
+  font-size: 14px;
+}
+
+.dropzone span {
+  font-size: 12.5px;
+}
+
+.dropzone[data-solo-lectura="true"] {
+  cursor: default;
+}
+
+.dropzone[data-solo-lectura="true"]:hover {
+  border-color: var(--lm-line);
+  color: var(--lm-muted);
+}
+
+.ficha-hint {
+  margin: 0;
+  font-size: 11.5px;
+  color: var(--lm-muted);
+  line-height: 1.45;
+}
+
+/* ---- Datos de Saint --------------------------------------------------- */
+
+.ficha-datos {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 8px;
+}
+
+.ficha-dato {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 10px 12px;
+  border-radius: 12px;
+  background: var(--lm-sunken);
+  min-width: 0;
+}
+
+.ficha-dato .lm-eyebrow {
+  font-size: 10px;
+}
+
+.ficha-dato strong {
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.ficha-dato small {
+  color: var(--lm-muted);
+  font-size: 11px;
+}
+
+/* El stock con su color: verde > 5, naranja 1-5, rojo 0 (mismo código que la tarjeta). */
+.ficha-stock {
+  display: inline-grid;
+  place-items: center;
+  align-self: flex-start;
+  min-width: 36px;
+  height: 26px;
+  padding: 0 8px;
+  border-radius: 8px;
+  border: 1px solid rgba(34, 160, 107, 0.45);
+  background: rgba(34, 160, 107, 0.08);
+  color: var(--lm-good-ink);
+  font-family: var(--font-mono);
+  font-size: 12.5px;
+  font-weight: 600;
+}
+
+.ficha-stock[data-level="bajo"] {
+  border-color: rgba(231, 154, 36, 0.55);
+  background: rgba(231, 154, 36, 0.1);
+  color: var(--lm-wait-ink);
+}
+
+.ficha-stock[data-level="agotado"] {
+  border-color: rgb(var(--lm-hot-rgb) / 0.45);
+  background: rgb(var(--lm-hot-rgb) / 0.08);
+  color: var(--lm-hot-ink);
+}
+
+/* ---- Para Cashea ------------------------------------------------------ */
+
+.cashea-check {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 14px 16px;
+  border-radius: 16px;
+  border: 1px solid var(--lm-line);
+}
+
+.cashea-check-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.cashea-check-head strong {
+  font-size: 14px;
+}
+
+.cashea-check ul {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-size: 13px;
+}
+
+.cashea-check li {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.cashea-check li[data-ok="true"] svg {
+  color: var(--lm-good);
+}
+
+.cashea-check li[data-ok="false"] {
+  color: var(--lm-ink-soft);
+}
+
+.cashea-check li[data-ok="false"] svg {
+  color: var(--lm-wait);
+}
+
+/* ---- Pie fijo --------------------------------------------------------- */
+
+.drawer__footer.ficha-pie {
+  flex-direction: row;
+  flex-wrap: wrap;
+  justify-content: stretch;
+  gap: 8px;
+  margin: 0;
+  padding: 14px 22px;
+  border-top: 1px solid var(--lm-line);
+  background: var(--lm-surface);
+}
+
+.ficha-pie .crm-pill {
+  flex: 1 1 150px;
+  justify-content: center;
+  padding: 9px 14px;
+}
+
+.ficha-pie .crm-pill:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+@media (max-width: 480px) {
+  .drawer__header.ficha-cabecera {
+    padding-left: 16px;
+  }
+
+  .drawer__body.ficha-cuerpo,
+  .drawer__footer.ficha-pie {
+    padding-inline: 16px;
+  }
+}
