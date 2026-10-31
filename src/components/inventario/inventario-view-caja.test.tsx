@@ -1,6 +1,7 @@
 /** @vitest-environment jsdom */
 import { describe, expect, it, vi } from "vitest";
-import { render, screen } from "@testing-library/react";
+import { render, screen, within } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import type { Agent, Product } from "@/lib/types";
 import { InventarioView } from "@/components/inventario/inventario-view";
 
@@ -173,15 +174,77 @@ describe("InventarioView — la caja usa los presupuestos y la calculadora (D4)"
 });
 
 describe("InventarioView — un asesor sigue viendo todo", () => {
-  it("rail completo, campo de peso y el subtítulo de siempre", () => {
+  it("rail completo, campo de peso y la columna del estándar; sin subtítulo (30/10/2026)", () => {
     const { container } = pintar("agent");
 
     expect(container.querySelectorAll(".dash-rail-btn[href]").length).toBeGreaterThan(1);
     expect(screen.getByLabelText("Peso de Carburador PZ27")).toBeInTheDocument();
-    expect(screen.getByText(/lo único que se carga a mano es el peso/i)).toBeInTheDocument();
+    // Decisión del operador (30/10/2026): solo la caja conserva el subtítulo bajo «Inventario».
+    expect(container.querySelector(".dash-subtitle")).toBeNull();
+    expect(screen.queryByText(/lo único que se carga a mano es el peso/i)).toBeNull();
     expect(
       screen.getByText("Cashea lo exige para el envío gratis, y sin peso no hay precio estándar.")
     ).toBeInTheDocument();
     expect(screen.getByText("Precio estándar")).toBeInTheDocument();
+  });
+});
+
+/**
+ * 30/10/2026 (plan «Cada repuesto con su foto», T5a): la lista rediseñada y la
+ * ficha, con el rol de caja. Acá se usan la fila y la ficha REALES.
+ */
+describe("InventarioView — la caja en la lista nueva", () => {
+  it("el encabezado único no trae «Estándar» y se marca como el de caja (misma plantilla de seis columnas)", () => {
+    const { container } = pintar("caja");
+    const cabecera = container.querySelector(".inv-head") as HTMLElement;
+
+    expect(cabecera).toHaveAttribute("data-solo-lectura", "true");
+    expect(Array.from(cabecera.children).map((c) => c.textContent)).toEqual([
+      "Repuesto",
+      "Stock",
+      "Promoción",
+      "Divisa",
+      "Peso (kg)",
+      "",
+    ]);
+    expect(container.querySelector(".inv-row")).toHaveAttribute("data-solo-lectura", "true");
+  });
+
+  it("el asesor sí ve «Estándar» en el encabezado, con la plantilla completa", () => {
+    const { container } = pintar("agent");
+    const cabecera = container.querySelector(".inv-head") as HTMLElement;
+
+    expect(cabecera).not.toHaveAttribute("data-solo-lectura");
+    expect(within(cabecera).getByText("Estándar")).toBeInTheDocument();
+  });
+
+  it("la caja conserva su subtítulo bajo «Inventario»", () => {
+    const { container } = pintar("caja");
+    expect(container.querySelector(".dash-subtitle")).toHaveTextContent(/llegan de Saint cada minuto/i);
+  });
+
+  it("la caja no ve el «Agregar foto» de la fila: su miniatura vacía dice «Ver ficha de …»", () => {
+    pintar("caja");
+    expect(screen.getByRole("button", { name: "Ver ficha de Carburador PZ27" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /Agregar foto a/ })).toBeNull();
+  });
+
+  it("un supervisor sí ve «Agregar foto a …» en la miniatura vacía", () => {
+    pintar("supervisor");
+    expect(screen.getByRole("button", { name: "Agregar foto a Carburador PZ27" })).toBeInTheDocument();
+  });
+
+  it("la caja abre la ficha del repuesto sin botones de gestión de fotos ni precio estándar", async () => {
+    pintar("caja");
+
+    await userEvent
+      .setup({ delay: null, pointerEventsCheck: 0 })
+      .click(screen.getByRole("button", { name: "Ver ficha de Carburador PZ27" }));
+
+    const ficha = await screen.findByRole("dialog");
+    expect(within(ficha).getByText("Carburador PZ27")).toBeInTheDocument();
+    expect(within(ficha).queryByText(/Agregar la primera foto/)).toBeNull();
+    expect(within(ficha).queryByRole("button", { name: /Agregar foto/ })).toBeNull();
+    expect(document.body.innerHTML).not.toMatch(/est[aá]ndar/i);
   });
 });

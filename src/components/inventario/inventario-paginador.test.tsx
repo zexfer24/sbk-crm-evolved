@@ -1,6 +1,6 @@
 /** @vitest-environment jsdom */
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { render, screen } from "@testing-library/react";
+import { render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { InventoryParams } from "@/lib/inventory";
 
@@ -9,7 +9,7 @@ vi.mock("next/navigation", () => ({
   useRouter: () => ({ push }),
 }));
 
-import { InventarioPaginador, paginaDestino } from "@/components/inventario/inventario-paginador";
+import { InventarioPaginador, paginaDestino, paginasVisibles } from "@/components/inventario/inventario-paginador";
 
 const base: InventoryParams = { query: "", filter: "todos", sort: "nombre", page: 3 };
 
@@ -63,12 +63,17 @@ describe("InventarioPaginador", () => {
     expect(input).toHaveAttribute("type", "number");
     expect(input).toHaveAttribute("min", "1");
     expect(input).toHaveAttribute("max", "155");
-    expect(screen.getByText("155")).toBeInTheDocument();
+    // Con los números de página, "155" también es un enlace: el total se busca DENTRO del formulario.
+    expect(within(input.closest("form") as HTMLElement).getByText("155")).toBeInTheDocument();
   });
 
-  it("marca la página actual con aria-current", () => {
+  it("marca la página actual con aria-current, UNA sola vez, y es el número, no el formulario", () => {
     const { container } = renderPaginador();
-    expect(container.querySelector('[aria-current="page"]')).not.toBeNull();
+    const actuales = container.querySelectorAll('[aria-current="page"]');
+
+    expect(actuales).toHaveLength(1);
+    expect(actuales[0].tagName).toBe("A");
+    expect(actuales[0]).toHaveTextContent("3");
   });
 
   it("Enter en el input navega a esa página", async () => {
@@ -180,5 +185,111 @@ describe("InventarioPaginador", () => {
     renderPaginador({ page: 155 });
     expect(screen.getByRole("link", { name: "Siguiente" })).toHaveAttribute("data-disabled", "true");
     expect(screen.getByRole("link", { name: "Anterior" })).not.toHaveAttribute("data-disabled");
+  });
+});
+
+/**
+ * Números de página (30/10/2026, plan «Cada repuesto con su foto», T5a). Con ~160
+ * páginas no caben todos: la primera, la última, la actual y sus vecinas, con «…»
+ * en los huecos. Son ENLACES (funcionan sin JavaScript y se abren en otra
+ * pestaña); el campo «Ir a la página» queda para saltos largos.
+ */
+describe("paginasVisibles", () => {
+  it("página 1 de 161: 1, 2, …, 161", () => {
+    expect(paginasVisibles(1, 161)).toEqual([1, 2, "…", 161]);
+  });
+
+  it("página 87 de 161: 1, …, 86, 87, 88, …, 161", () => {
+    expect(paginasVisibles(87, 161)).toEqual([1, "…", 86, 87, 88, "…", 161]);
+  });
+
+  it("página 161 de 161: 1, …, 160, 161", () => {
+    expect(paginasVisibles(161, 161)).toEqual([1, "…", 160, 161]);
+  });
+
+  it("sin huecos no pone «…»: página 2 de 4 son todas", () => {
+    expect(paginasVisibles(2, 4)).toEqual([1, 2, 3, 4]);
+  });
+
+  it("cada hueco se marca con «…», aunque falte una sola página (como el mockup: 4 de 6 → 1, …, 3, 4, 5, 6)", () => {
+    expect(paginasVisibles(3, 7)).toEqual([1, 2, 3, 4, "…", 7]);
+    expect(paginasVisibles(4, 6)).toEqual([1, "…", 3, 4, 5, 6]);
+    expect(paginasVisibles(5, 9)).toEqual([1, "…", 4, 5, 6, "…", 9]);
+  });
+
+  it("una sola página: solo la 1", () => {
+    expect(paginasVisibles(1, 1)).toEqual([1]);
+  });
+});
+
+describe("InventarioPaginador — números de página", () => {
+  function numeros() {
+    return within(screen.getByRole("navigation", { name: "Paginación del inventario" }))
+      .getAllByRole("link", { name: /^Página \d+$/ })
+      .map((a) => a.textContent);
+  }
+
+  it("página 1 de 161: 1 2 … 161", () => {
+    const { container } = renderPaginador({ page: 1 }, 161);
+    expect(numeros()).toEqual(["1", "2", "161"]);
+    expect(container.querySelectorAll(".inv-pag-pages .salto")).toHaveLength(1);
+  });
+
+  it("página 87 de 161: 1 … 86 87 88 … 161", () => {
+    const { container } = renderPaginador({ page: 87 }, 161);
+    expect(numeros()).toEqual(["1", "86", "87", "88", "161"]);
+    expect(container.querySelectorAll(".inv-pag-pages .salto")).toHaveLength(2);
+  });
+
+  it("página 161 de 161: 1 … 160 161", () => {
+    renderPaginador({ page: 161 }, 161);
+    expect(numeros()).toEqual(["1", "160", "161"]);
+  });
+
+  it("el «…» es decorativo: no se anuncia ni se puede pulsar", () => {
+    const { container } = renderPaginador({ page: 87 }, 161);
+    for (const salto of container.querySelectorAll(".inv-pag-pages .salto")) {
+      expect(salto).toHaveAttribute("aria-hidden", "true");
+      expect(salto.tagName).not.toBe("A");
+    }
+  });
+
+  it("aria-current=page solo en la actual", () => {
+    renderPaginador({ page: 87 }, 161);
+    expect(screen.getByRole("link", { name: "Página 87" })).toHaveAttribute("aria-current", "page");
+    expect(screen.getByRole("link", { name: "Página 86" })).not.toHaveAttribute("aria-current");
+    expect(screen.getByRole("link", { name: "Página 161" })).not.toHaveAttribute("aria-current");
+  });
+
+  it("cada número es un enlace que conserva búsqueda, filtro y orden; la página 1 no deja ?page=", () => {
+    renderPaginador({ query: "tubo cg", filter: "agotados", sort: "precio", page: 87 }, 161);
+
+    const url = new URL(screen.getByRole("link", { name: "Página 88" }).getAttribute("href") as string, "http://localhost");
+    expect(url.pathname).toBe("/inventario");
+    expect(url.searchParams.get("q")).toBe("tubo cg");
+    expect(url.searchParams.get("filtro")).toBe("agotados");
+    expect(url.searchParams.get("orden")).toBe("precio");
+    expect(url.searchParams.get("page")).toBe("88");
+
+    const primera = new URL(screen.getByRole("link", { name: "Página 1" }).getAttribute("href") as string, "http://localhost");
+    expect(primera.searchParams.has("page")).toBe(false);
+  });
+
+  it("las flechas son íconos con aria-label (Anterior / Siguiente), sin texto visible", () => {
+    renderPaginador({ page: 5 }, 161);
+
+    const anterior = screen.getByRole("link", { name: "Anterior" });
+    const siguiente = screen.getByRole("link", { name: "Siguiente" });
+    expect(anterior).toHaveTextContent("");
+    expect(siguiente).toHaveTextContent("");
+    expect(anterior.querySelector("svg")).toHaveAttribute("aria-hidden", "true");
+    expect(siguiente.querySelector("svg")).toHaveAttribute("aria-hidden", "true");
+  });
+
+  it("el formulario «Ir a la página» sigue ahí, a la par de los números", () => {
+    renderPaginador({ page: 87 }, 161);
+    const nav = screen.getByRole("navigation", { name: "Paginación del inventario" });
+    expect(within(nav).getByLabelText("Ir a la página")).toBeInTheDocument();
+    expect(within(nav).getByRole("button", { name: "Ir" })).toBeInTheDocument();
   });
 });

@@ -327,48 +327,15 @@
   margin-top: auto;
 }
 
-.inv-icon-btn {
-  display: grid;
-  place-items: center;
+/*
+ * El botón de ícono base (38x38, colores del carrito y de Cashea) vive en
+ * `inventario.css` desde el 30/10/2026 (T5a): la FILA de la lista también lo
+ * usa y no puede depender de que esta hoja de la cuadrícula esté cargada. La
+ * tarjeta solo lo estira a su mitad del ancho.
+ */
+.inv-card-acciones .inv-icon-btn {
   width: 100%;
   height: 40px;
-  flex-shrink: 0;
-  padding: 0;
-  border: 0;
-  border-radius: 11px;
-  cursor: pointer;
-  transition: background 150ms ease, transform 120ms var(--lm-ease-out), box-shadow 150ms ease;
-}
-
-.inv-icon-btn:active:not(:disabled) {
-  transform: scale(0.94);
-}
-
-.inv-icon-btn:focus-visible {
-  outline: 2px solid var(--lm-link);
-  outline-offset: 2px;
-}
-
-.inv-icon-btn:disabled {
-  opacity: 0.45;
-  cursor: not-allowed;
-}
-
-.inv-icon-btn[data-tipo="carrito"] {
-  background: var(--lm-link);
-  color: #fff;
-}
-
-.inv-icon-btn[data-tipo="carrito"]:hover:not(:disabled) {
-  background: var(--lm-link-fill);
-}
-
-.inv-icon-btn[data-tipo="cashea"] {
-  background: var(--lm-sunken);
-}
-
-.inv-icon-btn[data-tipo="cashea"]:hover {
-  background: var(--lm-canvas-edge);
 }
 
 /* Tarjeta angosta (dos columnas en el teléfono): las cifras se apilan. */

@@ -1,8 +1,15 @@
+import { cookies } from "next/headers";
 import { redirect } from "next/navigation";
 import { createClient } from "@/lib/supabase/server";
 import { fetchCurrentAgent } from "@/lib/data";
 import { fetchInventoryTotals, fetchMotoCatalogSummary, fetchProductsPage } from "@/lib/inventory-data";
-import { inventoryHref, paginaFueraDeRango, parseInventoryParams } from "@/lib/inventory";
+import {
+  INVENTORY_VIEW_COOKIE,
+  inventoryHref,
+  paginaFueraDeRango,
+  parseInventoryParams,
+  parseInventoryView,
+} from "@/lib/inventory";
 import { getBcvRate } from "@/lib/ai/bcv";
 import { InventarioView } from "@/components/inventario/inventario-view";
 import type { BcvRateSummary } from "@/components/inbox/bcv-rate-chip";
@@ -35,6 +42,15 @@ export default async function InventarioPage({
   const supabase = await createClient();
   const [raw, currentAgent] = await Promise.all([searchParams, fetchCurrentAgent(supabase)]);
 
+  // La vista (lista o cuadrícula) que eligió este asesor se lee AQUÍ, en el servidor
+  // (30/10/2026, plan «Cada repuesto con su foto», D4): así el primer render ya sale
+  // con la vista correcta, sin el parpadeo de "lista y un instante después cuadrícula"
+  // que dejaría leerla en el navegador. En este Next `cookies()` es asíncrona
+  // (node_modules/next/dist/docs/01-app/03-api-reference/04-functions/cookies.md) y
+  // leerla vuelve la ruta dinámica, lo que ya era: `createClient()` también lee cookies.
+  // Un valor ausente o desconocido cae en Lista (`parseInventoryView`).
+  const vista = parseInventoryView((await cookies()).get(INVENTORY_VIEW_COOKIE)?.value);
+
   if (!currentAgent) {
     redirect("/login");
   }
@@ -63,6 +79,7 @@ export default async function InventarioPage({
       catalog={catalog}
       params={params}
       bcvRate={bcvRate}
+      vista={vista}
     />
   );
 }

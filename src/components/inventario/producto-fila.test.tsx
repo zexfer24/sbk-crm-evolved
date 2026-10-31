@@ -1,6 +1,6 @@
 /** @vitest-environment jsdom */
 import { describe, expect, it, vi, beforeEach, afterEach } from "vitest";
-import { render, screen, waitFor } from "@testing-library/react";
+import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { Product } from "@/lib/types";
 import { ProductoFila } from "@/components/inventario/producto-fila";
@@ -329,7 +329,7 @@ describe("ProductoFila — precio promoción y precio estándar", () => {
     expect(screen.getByText("Precio estándar")).toBeInTheDocument();
   });
 
-  it("con tarifa: precio estándar en Bs., dólares en el pie y la línea del envío MRW", () => {
+  it("con tarifa: precio estándar en Bs., dólares en el pie y la línea «incluye envío» (sin «MRW»)", () => {
     render(
       <ProductoFila
         product={product({ currency: "VES", price: 100, weightKg: 1, shippingFeeUsd: 1.4 })}
@@ -341,7 +341,10 @@ describe("ProductoFila — precio promoción y precio estándar", () => {
 
     expect(estandar).toHaveTextContent("Bs. 240.00");
     expect(campo?.querySelector(".inv-bs")).toHaveTextContent("$ 2.40");
-    expect(campo?.querySelector(".inv-fee")).toHaveTextContent("incluye envío MRW $ 1.40");
+    expect(campo?.querySelector(".inv-fee")).toHaveTextContent("incluye envío $ 1.40");
+    // 30/10/2026: el pedido del cliente es que el pie nunca diga «MRW»; el monto va en su propio `lm-num`.
+    expect(campo?.querySelector(".inv-fee")).not.toHaveTextContent(/MRW/);
+    expect(campo?.querySelector(".inv-fee .lm-num")).toHaveTextContent("$ 1.40");
   });
 
   it("el campo nuevo no es un label: no hay input al que atarlo", () => {
@@ -414,15 +417,15 @@ describe("ProductoFila — precio promoción y precio estándar", () => {
     fetchProduct.mockRejectedValue(new Error("caído"));
     const user = userEvent.setup({ delay: null, pointerEventsCheck: 0 });
     // Peso 1 kg con su tarifa (1.40); se cambia a 9 kg y la relectura falla.
-    render(<ProductoFila product={product({ weightKg: 1, shippingFeeUsd: 1.4 })} bcvRate={40} />);
-    expect(screen.getByText("incluye envío MRW $ 1.40")).toBeInTheDocument();
+    const { container } = render(<ProductoFila product={product({ weightKg: 1, shippingFeeUsd: 1.4 })} bcvRate={40} />);
+    expect(container.querySelector(".inv-fee")).toHaveTextContent("incluye envío $ 1.40");
 
     await user.clear(pesoInput());
     await user.type(pesoInput(), "9");
     await user.tab();
 
     await waitFor(() => expect(refresh).toHaveBeenCalled());
-    expect(screen.queryByText("incluye envío MRW $ 1.40")).toBeNull();
+    expect(container.querySelector(".inv-fee")).toBeNull();
     expect(screen.queryByLabelText("Precio estándar de Carburador PZ27")).toBeNull();
   });
 
@@ -526,14 +529,14 @@ describe("ProductoFila — solo lectura (rol caja)", () => {
     expect(screen.queryByText(/Precio estándar/)).toBeNull();
   });
 
-  it("con tarifa MRW cargada, la caja ve solo el precio promoción: ni columna estándar ni «incluye envío MRW»", () => {
+  it("con tarifa MRW cargada, la caja ve solo el precio promoción: ni columna estándar ni «incluye envío»", () => {
     const { container } = render(
       <ProductoFila product={product({ weightKg: 1, shippingFeeUsd: 1.4 })} bcvRate={40} soloLectura />
     );
 
     expect(screen.getByText("Precio promoción")).toBeInTheDocument();
     expect(screen.queryByText("Precio estándar")).toBeNull();
-    expect(screen.queryByText(/incluye envío MRW/)).toBeNull();
+    expect(screen.queryByText(/incluye envío/)).toBeNull();
     expect(screen.queryByLabelText(/Precio estándar de/)).toBeNull();
     expect(container.innerHTML).not.toMatch(/est[aá]ndar/i);
     // Quedan los cuatro campos de la fila de caja: Stock, Precio promoción,
@@ -594,19 +597,151 @@ describe("ProductoFila — solo lectura (rol caja)", () => {
   });
 });
 
-describe("ProductoFila — Cashea vive en el bloque de acciones, no entre las insignias", () => {
-  it("«Cashea» es un botón con ícono dentro de .inv-acciones, último hijo de la fila", () => {
+describe("ProductoFila — los dos botones de ícono viven en el bloque de acciones", () => {
+  it("«Cashea» es un botón de ícono con el logo, dentro de .inv-acciones, último hijo de la fila", () => {
     const { container } = render(<ProductoFila product={product()} bcvRate={40} />);
 
     const boton = screen.getByRole("button", { name: "Calcular Cashea de Carburador PZ27" });
     const acciones = container.querySelector(".inv-acciones");
     expect(acciones).not.toBeNull();
     expect(acciones).toContainElement(boton as HTMLElement);
-    expect(boton).toHaveTextContent("Cashea");
-    expect(boton).toHaveClass("crm-pill", "inv-accion-btn");
-    expect(boton.querySelector("svg")).toHaveAttribute("aria-hidden", "true");
-    expect(container.querySelector(".inv-status")).not.toContainElement(boton);
+    // 30/10/2026: ya no es una píldora con texto sino un botón de ícono (el logo amarillo de Cashea).
+    expect(boton).toHaveClass("inv-icon-btn");
+    expect(boton).toHaveAttribute("data-tipo", "cashea");
+    expect(boton).toHaveAttribute("title", "Calcular Cashea");
+    expect(boton).not.toHaveTextContent("Cashea");
+    expect(boton.querySelector("svg rect")).toHaveAttribute("fill", "#FFF83D");
+    // La columna `.inv-status` desapareció: las insignias bajaron bajo el nombre.
+    expect(container.querySelector(".inv-status")).toBeNull();
     expect(container.querySelector("li")?.lastElementChild).toBe(acciones);
+  });
+});
+
+/**
+ * 30/10/2026 (plan «Cada repuesto con su foto», T5a): la fila pierde la columna
+ * de estado y el texto de compatibilidad, gana la foto de 72 px y el nombre
+ * como botones que abren la ficha, y las insignias bajan bajo el nombre.
+ */
+describe("ProductoFila — identidad: foto, nombre e insignias", () => {
+  function conFoto(over: Partial<Product> = {}) {
+    return product({
+      fotos: [
+        { id: "f1", storagePath: "prod-1/f1.jpg", url: "https://cdn.test/prod-1/f1.jpg", isPrimary: true, position: 0 },
+        { id: "f2", storagePath: "prod-1/f2.jpg", url: "https://cdn.test/prod-1/f2.jpg", isPrimary: false, position: 1 },
+      ],
+      ...over,
+    });
+  }
+
+  it("ya no pinta el texto de compatibilidad ni la insignia «La IA lo ofrece»", () => {
+    const { container } = render(
+      <ProductoFila product={product({ compatibility: [{ id: "c1", motoBrand: "Bera", motoModel: "SBR" }] })} bcvRate={40} />
+    );
+
+    expect(screen.queryByText("Sin compatibilidad declarada")).toBeNull();
+    expect(screen.queryByText(/Bera SBR/)).toBeNull();
+    expect(screen.queryByText("La IA lo ofrece")).toBeNull();
+    expect(container.querySelector(".inv-compat")).toBeNull();
+  });
+
+  it("sin compatibilidad declarada tampoco dice nada", () => {
+    render(<ProductoFila product={product({ compatibility: [] })} bcvRate={40} />);
+    expect(screen.queryByText("Sin compatibilidad declarada")).toBeNull();
+  });
+
+  it("las insignias salen BAJO el nombre, dentro de .inv-identity, con las mismas condiciones y title de siempre", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-09-25T12:00:00Z"));
+    try {
+      const { container } = render(
+        <ProductoFila
+          product={product({ stockQuantity: 0, weightKg: null, saintAddedAt: "2026-09-24T12:00:00Z" })}
+          bcvRate={40}
+        />
+      );
+      const identidad = container.querySelector(".inv-identity") as HTMLElement;
+
+      const sinStock = within(identidad).getByText("Sin stock").closest(".ac-badge");
+      expect(sinStock).toHaveAttribute("data-tone", "wait");
+      expect(sinStock).toHaveAttribute("title", "Sin stock: la IA lo sigue cotizando e informa 0 disponibles.");
+      expect(within(identidad).getByText("Sin peso").closest(".ac-badge")).toHaveAttribute("data-tone", "wait");
+      expect(within(identidad).getByText("Nuevo desde Saint").closest(".ac-badge")).toHaveAttribute("data-tone", "link");
+      expect(identidad.querySelector(".inv-badges")).not.toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("un repuesto fuera de Saint dice «Oculto a la IA» (muted) y no «Sin stock»", () => {
+    const { container } = render(<ProductoFila product={product({ isActive: false, stockQuantity: 0 })} bcvRate={40} />);
+    const identidad = container.querySelector(".inv-identity") as HTMLElement;
+
+    const oculto = within(identidad).getByText("Oculto a la IA").closest(".ac-badge");
+    expect(oculto).toHaveAttribute("data-tone", "muted");
+    expect(oculto).toHaveAttribute("title", "Ya no está en Saint: la IA no lo ofrece ni lo cotiza.");
+    expect(screen.queryByText("Sin stock")).toBeNull();
+  });
+
+  it("con stock y peso no hay ninguna insignia", () => {
+    const { container } = render(<ProductoFila product={product({ weightKg: 2 })} bcvRate={40} />);
+    expect(container.querySelector(".inv-badges")).toBeNull();
+    expect(container.querySelector(".ac-badge")).toBeNull();
+  });
+
+  it("con foto, el botón de la miniatura dice «Ver fotos de …», muestra la principal y cuenta las fotos", () => {
+    const { container } = render(<ProductoFila product={conFoto()} bcvRate={40} puedeEditarFotos />);
+
+    const foto = screen.getByRole("button", { name: "Ver fotos de Carburador PZ27" });
+    expect(foto).toHaveClass("foto-thumb");
+    expect(foto.querySelector("img")).toHaveAttribute("src", "https://cdn.test/prod-1/f1.jpg");
+    expect(foto).toHaveTextContent("2");
+    expect(container.querySelector(".foto-thumb[data-vacia]")).toBeNull();
+  });
+
+  it("sin foto: con permiso dice «Agregar foto a …»; sin permiso, «Ver ficha de …»", () => {
+    const { unmount } = render(<ProductoFila product={product()} bcvRate={40} puedeEditarFotos />);
+    expect(screen.getByRole("button", { name: "Agregar foto a Carburador PZ27" })).toHaveAttribute("data-vacia", "true");
+    unmount();
+
+    render(<ProductoFila product={product()} bcvRate={40} />);
+    expect(screen.queryByRole("button", { name: "Agregar foto a Carburador PZ27" })).toBeNull();
+    expect(screen.getByRole("button", { name: "Ver ficha de Carburador PZ27" })).toHaveAttribute("data-vacia", "true");
+  });
+
+  it("tocar la foto y tocar el nombre abren la ficha de ESE repuesto", async () => {
+    const user = userEvent.setup({ delay: null, pointerEventsCheck: 0 });
+    const onAbrirFicha = vi.fn();
+    render(<ProductoFila product={conFoto()} bcvRate={40} onAbrirFicha={onAbrirFicha} />);
+
+    await user.click(screen.getByRole("button", { name: "Ver fotos de Carburador PZ27" }));
+    expect(onAbrirFicha).toHaveBeenLastCalledWith("prod-1");
+
+    onAbrirFicha.mockClear();
+    await user.click(screen.getByRole("button", { name: "Carburador PZ27" }));
+    expect(onAbrirFicha).toHaveBeenCalledTimes(1);
+    expect(onAbrirFicha).toHaveBeenCalledWith("prod-1");
+  });
+});
+
+/** El semáforo del stock (umbral de bajo stock en 5, 30/10/2026), con literales y no con el símbolo (trampa del 20/9). */
+describe("ProductoFila — el color del stock", () => {
+  it.each([
+    [0, "agotado"],
+    [1, "bajo"],
+    [3, "bajo"],
+    [5, "bajo"],
+    [6, "disponible"],
+    [40, "disponible"],
+  ])("con %i unidades la caja del stock es «%s»", (stockQuantity, nivel) => {
+    render(<ProductoFila product={product({ stockQuantity })} bcvRate={40} />);
+
+    const caja = screen.getByLabelText("Stock de Carburador PZ27").closest(".inv-input-wrap");
+    expect(caja).toHaveAttribute("data-level", nivel);
+  });
+
+  it("solo la caja del stock lleva data-level", () => {
+    const { container } = render(<ProductoFila product={product()} bcvRate={40} />);
+    expect(container.querySelectorAll("[data-level]")).toHaveLength(1);
   });
 });
 

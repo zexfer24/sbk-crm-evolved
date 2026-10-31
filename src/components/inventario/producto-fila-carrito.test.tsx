@@ -76,11 +76,14 @@ describe("ProductoFila — botones del carrito", () => {
     conCarrito(product());
     const boton = screen.getByRole("button", { name: "Agregar Carburador PZ27 al carrito" });
     expect(boton).toBeInTheDocument();
-    expect(boton).toHaveTextContent("Agregar al carrito");
+    // 30/10/2026: botón de ícono. El texto vive en el title, no en el contenido.
+    expect(boton).toHaveAttribute("title", "Agregar al carrito");
+    expect(boton).toHaveAttribute("data-tipo", "carrito");
+    expect(boton).not.toHaveTextContent("Agregar");
   });
 
-  /** T2, plan "Inventario y caja" (13/10/2026): botones de verdad en su propio bloque, no insignias entre los estados. */
-  it("«Agregar al carrito» y «Cashea» son botones en .inv-acciones, no dentro de .inv-status", () => {
+  /** T2, plan "Inventario y caja" (13/10/2026): botones de verdad en su propio bloque; 30/10/2026: ahora de ícono. */
+  it("«Agregar al carrito» y «Cashea» son botones de ícono en .inv-acciones", () => {
     const { container } = conCarrito(product());
     const agregar = screen.getByRole("button", { name: "Agregar Carburador PZ27 al carrito" });
     const cashea = screen.getByRole("button", { name: "Calcular Cashea de Carburador PZ27" });
@@ -88,11 +91,11 @@ describe("ProductoFila — botones del carrito", () => {
 
     expect(acciones).toContainElement(agregar);
     expect(acciones).toContainElement(cashea);
-    expect(agregar).toHaveClass("crm-pill", "inv-accion-btn");
+    expect(agregar).toHaveClass("inv-icon-btn");
+    expect(cashea).toHaveClass("inv-icon-btn");
     expect(agregar.getAttribute("type")).toBe("button");
     expect(agregar.querySelector("svg")).toHaveAttribute("aria-hidden", "true");
-    expect(container.querySelector(".inv-status")).not.toContainElement(agregar);
-    expect(container.querySelector(".inv-status")).not.toContainElement(cashea);
+    expect(container.querySelector(".inv-status")).toBeNull();
     expect(container.querySelector("li")?.lastElementChild).toBe(acciones);
   });
 
@@ -112,18 +115,17 @@ describe("ProductoFila — botones del carrito", () => {
     ).toBeInTheDocument();
   });
 
-  it("cada clic suma una unidad y el texto pasa a «En carrito ×N»", async () => {
+  it("cada clic suma una unidad y el aria-label dice cuántas hay", async () => {
     const user = userEvent.setup({ delay: null, pointerEventsCheck: 0 });
     conCarrito(product());
 
     await user.click(screen.getByRole("button", { name: "Agregar Carburador PZ27 al carrito" }));
     const uno = screen.getByRole("button", { name: /Sumar otra unidad de Carburador PZ27 \(hay 1 en el carrito\)/ });
-    expect(uno).toHaveTextContent("En carrito ×1");
 
     await user.click(uno);
     expect(
       screen.getByRole("button", { name: /Sumar otra unidad de Carburador PZ27 \(hay 2 en el carrito\)/ }),
-    ).toHaveTextContent("En carrito ×2");
+    ).toBeInTheDocument();
   });
 
   it("un producto que Saint dio de baja no se puede agregar", () => {

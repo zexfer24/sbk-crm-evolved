@@ -27,7 +27,9 @@ import { describe, expect, it } from "vitest";
 async function leerCss() {
   const { readFile } = await import("node:fs/promises");
   const { join } = await import("node:path");
-  return readFile(join(process.cwd(), "src/components/inventario/inventario.css"), "utf8");
+  const css = await readFile(join(process.cwd(), "src/components/inventario/inventario.css"), "utf8");
+  // Windows: git puede entregar CRLF; los cortes por "\n}\n" de abajo dependen de LF.
+  return css.replace(/\r\n/g, "\n");
 }
 
 function bloque(css: string, selector: string) {
@@ -53,16 +55,20 @@ describe("la hoja de estilos del inventario", () => {
     ).not.toMatch(/flex-wrap/);
   });
 
-  it(".inv-row NO termina la plantilla de columnas en `auto`", async () => {
+  it("NINGUNA plantilla de `.inv-row` ni de `.inv-head` termina en `auto` (ni en la lista ancha ni en los container queries)", async () => {
     const css = await leerCss();
-    const regla = bloque(css, ".inv-row");
-    const plantilla = /grid-template-columns:\s*([^;]+);/.exec(regla);
+    const plantillas = [...css.matchAll(/\.inv-(?:row|head)[^{}]*\{([^}]*)\}/g)]
+      .map((m) => /grid-template-columns:\s*([^;]+);/.exec(m[1])?.[1].trim())
+      .filter((p): p is string => Boolean(p));
 
-    expect(plantilla, "no se encontró `grid-template-columns` en `.inv-row`").not.toBeNull();
-    expect(
-      plantilla![1].trim(),
-      "una última columna `auto` toma el ancho de SU `.inv-status` —variable según el badge de cada fila— y ese sobrante corre a Stock/Precio/Peso hasta ~38px entre una fila y otra: la última columna tiene que ser un ancho fijo"
-    ).not.toMatch(/auto\s*$/);
+    // 2 anchas (fila y encabezado) x 2 (general y caja) + los container queries.
+    expect(plantillas.length, "no se encontraron las plantillas de columnas").toBeGreaterThanOrEqual(8);
+    for (const plantilla of plantillas) {
+      expect(
+        plantilla,
+        "una última columna `auto` toma el ancho de SU contenido —variable según la fila— y ese sobrante corre a Stock/Precio/Peso entre una fila y otra: la última columna tiene que ser un ancho fijo o `minmax(0, 1fr)`"
+      ).not.toMatch(/auto\s*$/);
+    }
   });
 
   it(".inv-bs reserva su alto aunque esté vacío, para que las columnas midan igual", async () => {
@@ -137,16 +143,45 @@ describe("la hoja de estilos del inventario", () => {
    * columna 1 crezca de alto no mueve ni centra a las demás — por eso este
    * test NO exige que `grid-template-columns` cambie, exige que NO cambie.
    */
-  it(".inv-row tiene ocho columnas fijas (Precio divisa es la última agregada): el código Saint no agrega otra", async () => {
+  it(".inv-row y .inv-head tienen siete columnas (identidad + seis fijas): el código Saint no agrega otra", async () => {
     const css = await leerCss();
-    const regla = bloque(css, ".inv-row");
-    const plantilla = /grid-template-columns:\s*([^;]+);/.exec(regla);
+    const esperada = "minmax(0, 1fr) 64px 116px 88px 140px 76px 84px";
 
-    expect(plantilla, "no se encontró `grid-template-columns` en `.inv-row`").not.toBeNull();
-    expect(
-      plantilla![1].trim(),
-      "el código Saint va DENTRO de la columna 1 (`.inv-identity`), como una línea nueva, no como columna: agregar una columna aquí reabre la trampa del 10/9/2026"
-    ).toBe("minmax(0, 1fr) 100px 150px 110px 150px 110px 160px 140px");
+    for (const selector of [".inv-row", ".inv-head"]) {
+      const plantilla = /grid-template-columns:\s*([^;]+);/.exec(bloque(css, selector));
+      expect(plantilla, `no se encontró \`grid-template-columns\` en \`${selector}\``).not.toBeNull();
+      expect(
+        plantilla![1].trim(),
+        "el código Saint va DENTRO de la columna 1 (`.inv-identity`), como una línea, no como columna: agregar una columna aquí reabre la trampa del 10/9/2026. 30/10/2026: 64 stock, 116 promoción, 88 divisa, 140 estándar, 76 peso, 84 los dos botones de ícono"
+      ).toBe(esperada);
+    }
+  });
+
+  it(".inv-row y .inv-head son GRID con las cajas ancladas arriba y el padding de 26px de la tarjeta", async () => {
+    const css = await leerCss();
+    const fila = bloque(css, ".inv-row");
+    const cabecera = bloque(css, ".inv-head");
+
+    expect(fila).toMatch(/column-gap:\s*14px\s*;/);
+    expect(fila).toMatch(/padding:\s*10px 26px\s*;/);
+    expect(cabecera).toMatch(/display:\s*grid\s*;/);
+    expect(cabecera).toMatch(/column-gap:\s*14px\s*;/);
+    // Mismo padding lateral que la fila, o las etiquetas se corren de sus cajas.
+    expect(cabecera).toMatch(/padding:\s*0 26px 8px\s*;/);
+  });
+
+  it("el encabezado único: etiquetas chicas en mayúsculas, centradas salvo «Repuesto»", async () => {
+    const css = await leerCss();
+    const etiqueta = bloque(css, ".inv-head span");
+    expect(etiqueta).toMatch(/font-size:\s*10\.5px\s*;/);
+    expect(etiqueta).toMatch(/text-transform:\s*uppercase\s*;/);
+    expect(etiqueta).toMatch(/color:\s*var\(--lm-muted\)\s*;/);
+    expect(bloque(css, ".inv-head span:not(:first-child)")).toMatch(/text-align:\s*center\s*;/);
+  });
+
+  it(".inv-panel-lista declara el container `invpanel`: sin él las tres container queries de la lista no hacen nada", async () => {
+    const css = await leerCss();
+    expect(bloque(css, ".inv-panel-lista")).toMatch(/container:\s*invpanel\s*\/\s*inline-size\s*;/);
   });
 
   it(".inv-saint-code existe, en fuente numérica y seleccionable para copiar", async () => {
@@ -160,122 +195,217 @@ describe("la hoja de estilos del inventario", () => {
   });
 
   /*
-   * Plan "Precio promoción y precio estándar (envío MRW)" (12/10/2026): el
-   * campo Precio estándar suma UNA columna fija de 150px (la misma que
-   * Precio promoción, que lleva el mismo pie `.inv-bs`). En teléfono los
-   * cuatro campos quedan en pares (Stock/Promoción, Estándar/Peso) con dos
-   * columnas; identidad y estado siguen ocupando la fila entera.
-   *
-   * 30/10/2026 (plan "Precio divisa desde SAINT"): suma OTRA columna fija de
-   * 150px, Precio divisa, entre promoción y estándar. La plantilla general
-   * pasa a ocho columnas, la de caja a siete; en teléfono los cinco campos
-   * siguen en dos columnas (Stock/Promoción, Divisa/Estándar, Peso solo).
+   * 30/10/2026 (plan «Cada repuesto con su foto», T5a): la lista se acomoda al
+   * ancho del PANEL (container query `invpanel`, que declara `.inv-panel-lista`),
+   * no al de la ventana: a ≥ 1720 px la calculadora pasa al costado y el panel se
+   * angosta sin que la ventana cambie, y los `@media` de antes no lo veían.
+   * Reemplaza a los tres bloques de `@media` que fijaban las plantillas de ocho
+   * columnas (general, 761–1180 px y teléfono). Tres escalones de panel:
+   * ≥ 1080 (una sola fila con encabezado), < 1080 (datos en 5 columnas, botones a
+   * la derecha del nombre), < 760 (3 columnas) y < 600 (2 columnas, botones abajo).
+   * Cada uno redefine TAMBIÉN la plantilla de caja: la regla base de caja, más
+   * específica, pisaría a la del breakpoint si no la tuviera.
    */
-  it("en teléfono los cinco campos caben en dos columnas, identidad y estado a fila entera", async () => {
-    const css = await leerCss();
-    const inicio = css.indexOf("@media (max-width: 760px)");
-    expect(inicio, "no se encontró el breakpoint de teléfono en inventario.css").toBeGreaterThanOrEqual(0);
-    const movil = css.slice(inicio);
-    const fila = /\.inv-row\s*\{([^}]*)\}/.exec(movil);
+  function consulta(css: string, ancho: number): string {
+    const inicio = css.indexOf(`@container invpanel (max-width: ${ancho}px)`);
+    expect(inicio, `falta \`@container invpanel (max-width: ${ancho}px)\` en inventario.css`).toBeGreaterThanOrEqual(0);
+    // Los container queries de la lista no anidan reglas con llaves dobles: la primera "\n}\n" las cierra.
+    return css.slice(inicio, css.indexOf("\n}\n", inicio));
+  }
 
-    expect(fila, "no se encontró `.inv-row` dentro del breakpoint de teléfono").not.toBeNull();
-    expect(fila![1], "con cinco campos, tres columnas dejaban huérfanos").toMatch(
-      /grid-template-columns:\s*repeat\(2,\s*minmax\(0,\s*1fr\)\)\s*;/
+  it("existen las tres container queries del panel (1079 / 759 / 599) y NO queda ningún @media que redefina `.inv-row`", async () => {
+    const css = await leerCss();
+    consulta(css, 1079);
+    consulta(css, 759);
+    consulta(css, 599);
+
+    expect(css, "las plantillas por ancho de ventana quedaron reemplazadas por las del panel").not.toContain(
+      "@media (min-width: 761px) and (max-width: 1180px)"
     );
-    expect(movil).toMatch(/\.inv-identity,\s*\.inv-status,\s*\.inv-acciones\s*\{[^}]*grid-column:\s*1\s*\/\s*-1\s*;/);
+    for (const m of css.matchAll(/^@media[^{]*\{/gm)) {
+      const resto = css.slice(m.index, css.indexOf("\n}\n", m.index));
+      expect(resto, `el ${m[0].trim()} redefine \`.inv-row\`: tiene que ir en un container query del panel`).not.toMatch(
+        /\.inv-row[^{]*\{[^}]*grid-template-columns/
+      );
+    }
   });
 
-  it("entre 761 y 1180px el estado baja a su propia línea y le deja el ancho al nombre", async () => {
+  it("panel < 1080: sin encabezado, datos en 5 columnas (caja 4), identidad a la izquierda y botones a la derecha del nombre", async () => {
     const css = await leerCss();
-    const inicio = css.indexOf("@media (min-width: 761px) and (max-width: 1180px)");
-    expect(inicio, "sin este breakpoint, a 1024px el nombre queda en ~20px").toBeGreaterThanOrEqual(0);
-    const medio = css.slice(inicio, css.indexOf("@media (max-width: 760px)"));
-    expect(medio).toMatch(/\.inv-row\s*\{[^}]*grid-template-columns:\s*minmax\(0, 1fr\) 100px 150px 110px 150px 110px\s*;/);
-    expect(medio).toMatch(/\.inv-status\s*\{[^}]*grid-column:\s*1\s*\/\s*-1\s*;/);
-    // Los botones suben a la misma línea completa, ahora en fila.
-    expect(medio).toMatch(/\.inv-acciones\s*\{[^}]*grid-column:\s*1\s*\/\s*-1\s*;/);
-    expect(medio).toMatch(/\.inv-acciones\s*\{[^}]*flex-direction:\s*row\s*;/);
+    const q = consulta(css, 1079);
+
+    expect(q).toMatch(/\.inv-head\s*\{[^}]*display:\s*none\s*;/);
+    // Sin encabezado, cada caja lleva su propia etiqueta.
+    expect(q).toMatch(/\.inv-row \.inv-field > \.lm-eyebrow\s*\{[^}]*display:\s*block\s*;/);
+    expect(q).toMatch(/\.inv-row\s*\{[^}]*grid-template-columns:\s*repeat\(5, minmax\(0, 1fr\)\)\s*;/);
+    expect(q).toMatch(/\.inv-row\[data-solo-lectura="true"\]\s*\{[^}]*grid-template-columns:\s*repeat\(4, minmax\(0, 1fr\)\)\s*;/);
+    expect(q).toMatch(/\.inv-row \.inv-identity\s*\{[^}]*grid-row:\s*1\s*;[^}]*grid-column:\s*1 \/ -2\s*;/);
+    expect(q).toMatch(/\.inv-row \.inv-acciones\s*\{[^}]*grid-row:\s*1\s*;[^}]*grid-column:\s*-2 \/ -1\s*;/);
+  });
+
+  it("panel < 760: los datos pasan a 3 columnas, también en caja", async () => {
+    const css = await leerCss();
+    const q = consulta(css, 759);
+
+    expect(q).toMatch(/\.inv-row,\s*\.inv-row\[data-solo-lectura="true"\]\s*\{[^}]*grid-template-columns:\s*repeat\(3, minmax\(0, 1fr\)\)\s*;/);
+  });
+
+  it("panel < 600: 2 columnas, identidad y botones a todo el ancho (botones abajo, repartidos), foto de 64px", async () => {
+    const css = await leerCss();
+    const q = consulta(css, 599);
+
+    expect(q).toMatch(/\.inv-row,\s*\.inv-row\[data-solo-lectura="true"\]\s*\{[^}]*grid-template-columns:\s*repeat\(2, minmax\(0, 1fr\)\)\s*;[^}]*padding:\s*12px 16px\s*;/);
+    expect(q).toMatch(/\.inv-row \.inv-identity\s*\{[^}]*grid-column:\s*1 \/ -1\s*;/);
+    expect(q).toMatch(/\.inv-row \.inv-acciones\s*\{[^}]*grid-row:\s*auto\s*;[^}]*grid-column:\s*1 \/ -1\s*;/);
+    expect(q).toMatch(/\.inv-row \.inv-acciones \.inv-icon-btn\s*\{[^}]*flex:\s*1 1 0\s*;/);
+    expect(q).toMatch(/\.inv-row \.foto-thumb\s*\{[^}]*width:\s*64px\s*;[^}]*height:\s*64px\s*;/);
+    // La caja «Ordenar por» se ancla a la izquierda: a la derecha se saldría del panel.
+    expect(q).toMatch(/\.inv-orden-menu\s*\{[^}]*right:\s*auto\s*;[^}]*left:\s*0\s*;/);
   });
 
   /*
    * Rol caja (14/10/2026, plan "La caja no ve el precio estándar"): la fila de
-   * caja no pinta el campo Precio estándar, así que su grilla es OTRA, con
-   * seis columnas fijas — sacar un hijo de la fila con la plantilla de siete
-   * correría Peso, estado y acciones una columna a la izquierda de la suya
-   * (trampa del 10/9/2026). `display: none` sobre el campo tampoco sirve: la
-   * plantilla de siete seguiría repartiendo columnas. El atributo cuelga de
-   * la fila (`data-solo-lectura`), y cada breakpoint que redefine `.inv-row`
-   * trae su variante de caja (la regla base de caja, más específica, pisaría
-   * a la del breakpoint si no la tuviera).
+   * caja no pinta el campo Precio estándar, así que su grilla es OTRA — sacar un
+   * hijo de la fila con la plantilla completa correría Peso y los botones una
+   * columna a la izquierda de la suya (trampa del 10/9/2026). `display: none`
+   * sobre el campo tampoco sirve: la plantilla completa seguiría repartiendo
+   * columnas. El atributo cuelga de la fila (`data-solo-lectura`) y del
+   * encabezado, que tiene que coincidir columna a columna con ella.
    */
-  it("la fila de caja tiene su propia plantilla de siete columnas fijas, sin la del Precio estándar", async () => {
+  it("la fila y el encabezado de caja tienen su propia plantilla de seis columnas, sin la del Precio estándar", async () => {
     const css = await leerCss();
-    const regla = bloque(css, '.inv-row[data-solo-lectura="true"]');
-    const plantilla = /grid-template-columns:\s*([^;]+);/.exec(regla);
 
-    expect(plantilla, "la fila de caja necesita su propio `grid-template-columns`").not.toBeNull();
-    expect(plantilla![1].trim()).toBe("minmax(0, 1fr) 100px 150px 110px 110px 160px 140px");
+    for (const selector of ['.inv-row[data-solo-lectura="true"]', '.inv-head[data-solo-lectura="true"]']) {
+      const plantilla = /grid-template-columns:\s*([^;]+);/.exec(bloque(css, selector));
+      expect(plantilla, `${selector} necesita su propio \`grid-template-columns\``).not.toBeNull();
+      expect(plantilla![1].trim()).toBe("minmax(0, 1fr) 64px 116px 88px 76px 84px");
+    }
   });
 
-  it("cada breakpoint que redefine `.inv-row` redefine también la de caja, sin la columna del estándar", async () => {
-    const css = await leerCss();
-    const medioInicio = css.indexOf("@media (min-width: 761px) and (max-width: 1180px)");
-    const movilInicio = css.indexOf("@media (max-width: 760px)");
-    expect(medioInicio).toBeGreaterThanOrEqual(0);
-    expect(movilInicio).toBeGreaterThan(medioInicio);
-    const medio = css.slice(medioInicio, movilInicio);
-    const movil = css.slice(movilInicio, css.indexOf("/* --- Calculadora Cashea"));
-
-    expect(medio, "entre 761 y 1180px la caja necesita sus 5 columnas de campos").toMatch(
-      /\.inv-row\[data-solo-lectura="true"\]\s*\{[^}]*grid-template-columns:\s*minmax\(0, 1fr\) 100px 150px 110px 110px\s*;/
-    );
-    expect(movil, "en teléfono la caja repite las dos columnas (Stock/Promoción, Peso)").toMatch(
-      /\.inv-row\[data-solo-lectura="true"\]\s*\{[^}]*grid-template-columns:\s*repeat\(2,\s*minmax\(0,\s*1fr\)\)\s*;/
-    );
-
-    // Toda redefinición de `.inv-row` en una media query tiene su gemela de caja.
-    const hojaConMedia = css.slice(medioInicio, css.indexOf("/* --- Calculadora Cashea"));
-    const normales = hojaConMedia.match(/\.inv-row\s*\{[^}]*grid-template-columns/g) ?? [];
-    const decaja = hojaConMedia.match(/\.inv-row\[data-solo-lectura="true"\]\s*\{[^}]*grid-template-columns/g) ?? [];
-    expect(decaja.length, "una media query redefine `.inv-row` sin variante de caja").toBe(normales.length);
-  });
-
-  it(".inv-fee es una línea chica y atenuada que sí puede envolver, y el texto vacío va atenuado en cursiva", async () => {
+  it(".inv-fee y .inv-bs van alineados a la derecha, 11px, sin partir línea el envío", async () => {
     const css = await leerCss();
     const fee = bloque(css, ".inv-fee");
     expect(fee).toMatch(/font-size:\s*11px\s*;/);
+    expect(fee).toMatch(/line-height:\s*14px\s*;/);
     expect(fee).toMatch(/color:\s*var\(--lm-muted\)\s*;/);
-    expect(fee).toMatch(/white-space:\s*normal\s*;/);
+    expect(fee).toMatch(/text-align:\s*right\s*;/);
+    expect(fee, "«incluye envío $X» no puede partir línea: se leería como dos notas").toMatch(/white-space:\s*nowrap\s*;/);
+    expect(fee).toMatch(/padding-right:\s*9px\s*;/);
+
+    const pie = bloque(css, ".inv-bs");
+    expect(pie).toMatch(/text-align:\s*right\s*;/);
+    expect(pie).toMatch(/font-size:\s*11px\s*;/);
+    expect(pie).toMatch(/line-height:\s*14px\s*;/);
+    expect(pie).toMatch(/padding-right:\s*9px\s*;/);
+    expect(bloque(css, ".inv-fee .lm-num"), "el monto del envío va un tono más oscuro").toMatch(/color:\s*var\(--lm-ink-soft\)\s*;/);
 
     const vacio = bloque(css, '.inv-readonly[data-empty="true"]');
     expect(vacio).toMatch(/font-style:\s*italic\s*;/);
   });
 
+  it("la columna `.inv-status` ya no existe: las insignias bajaron bajo el nombre", async () => {
+    const css = await leerCss();
+    // Solo reglas: los comentarios históricos sí nombran la columna que se fue.
+    expect(css).not.toMatch(/^\.inv-status\s*[{,]/m);
+    expect(css).not.toMatch(/^\s*\.inv-status[^{]*\{/m);
+    expect(css).not.toMatch(/^\s*\.inv-compat[\w-]*\s*[{,]/m);
+  });
+
+  it("la etiqueta de cada caja se oculta en el layout ancho (la da el encabezado) y va centrada", async () => {
+    const css = await leerCss();
+    const regla = bloque(css, ".inv-row .inv-field > .lm-eyebrow");
+    expect(regla).toMatch(/display:\s*none\s*;/);
+    expect(regla).toMatch(/text-align:\s*center\s*;/);
+  });
+
+  it("el stock se pinta con su semáforo: verde disponible, naranja bajo, rojo agotado (mismos tonos que la tarjeta)", async () => {
+    const css = await leerCss();
+
+    expect(bloque(css, '.inv-input-wrap[data-level="disponible"]')).toMatch(
+      /border-color:\s*rgba\(34, 160, 107, 0\.45\)\s*;[^}]*background:\s*rgba\(34, 160, 107, 0\.08\)\s*;/
+    );
+    expect(bloque(css, '.inv-input-wrap[data-level="bajo"]')).toMatch(
+      /border-color:\s*rgba\(231, 154, 36, 0\.55\)\s*;[^}]*background:\s*rgba\(231, 154, 36, 0\.1\)\s*;/
+    );
+    expect(bloque(css, '.inv-input-wrap[data-level="agotado"]')).toMatch(
+      /border-color:\s*rgb\(var\(--lm-hot-rgb\) \/ 0\.45\)\s*;[^}]*background:\s*rgb\(var\(--lm-hot-rgb\) \/ 0\.08\)\s*;/
+    );
+    expect(bloque(css, '.inv-input-wrap[data-level="disponible"] .inv-readonly')).toMatch(
+      /color:\s*var\(--lm-good-ink\)\s*;[^}]*font-weight:\s*600\s*;/
+    );
+  });
+
   /*
-   * T2/T3 del plan "Inventario y caja" (13/10/2026): «Agregar al carrito» y
-   * «Cashea» salen de `.inv-status` a su propio bloque, columna de ancho FIJO
-   * (si fuera `auto` cada fila repartiría distinto según "En carrito ×99" vs
-   * "Agregar al carrito" y correría Stock/Precio/Peso, trampa del 10/9/2026).
+   * T2/T3 del plan "Inventario y caja" (13/10/2026): los botones salen de
+   * `.inv-status` a su propio bloque, en una columna de ancho FIJO (si fuera
+   * `auto` cada fila repartiría distinto y correría Stock/Precio/Peso, trampa del
+   * 10/9/2026). 30/10/2026: ahora son dos botones de ÍCONO (38x38, radio 11) lado
+   * a lado y alineados a la derecha — antes dos píldoras con texto apiladas.
    */
-  it(".inv-acciones apila los botones y vive en una columna de ancho fijo, como la de estado", async () => {
+  it(".inv-acciones pone los dos botones de ícono en fila, a la derecha, en una columna de ancho fijo", async () => {
     const css = await leerCss();
     const acciones = bloque(css, ".inv-acciones");
     expect(acciones).toMatch(/display:\s*flex\s*;/);
-    expect(acciones).toMatch(/flex-direction:\s*column\s*;/);
+    expect(acciones).toMatch(/flex-direction:\s*row\s*;/);
+    expect(acciones).toMatch(/justify-content:\s*flex-end\s*;/);
+    expect(acciones, "hijo de grid con `min-width: 0` (regla de la casa)").toMatch(/min-width:\s*0\s*;/);
 
     const plantilla = /grid-template-columns:\s*([^;]+);/.exec(bloque(css, ".inv-row"))![1].trim();
     const columnas = plantilla.split(/\s+(?![^()]*\))/);
-    expect(columnas).toHaveLength(8);
+    expect(columnas).toHaveLength(7);
     for (const columna of columnas.slice(1)) {
       expect(columna, `la columna \`${columna}\` no es de ancho fijo`).toMatch(/^\d+px$/);
     }
   });
 
-  it("los botones de acción son píldoras de verdad: con mano, foco visible y deshabilitado apagado", async () => {
+  it("los botones de ícono: 38x38 con radio 11, carrito azul, Cashea sobre fondo hundido, foco visible y deshabilitado apagado", async () => {
     const css = await leerCss();
-    expect(bloque(css, ".crm-pill.inv-accion-btn")).toMatch(/justify-content:\s*center\s*;/);
-    expect(bloque(css, ".inv-accion-btn:focus-visible")).toMatch(/outline:/);
-    expect(bloque(css, ".inv-accion-btn:disabled")).toMatch(/cursor:\s*not-allowed\s*;/);
+    const base = bloque(css, ".inv-icon-btn");
+    expect(base).toMatch(/width:\s*38px\s*;/);
+    expect(base).toMatch(/height:\s*38px\s*;/);
+    expect(base).toMatch(/border-radius:\s*11px\s*;/);
+    expect(bloque(css, '.inv-icon-btn[data-tipo="carrito"]')).toMatch(/background:\s*var\(--lm-link\)\s*;/);
+    expect(bloque(css, '.inv-icon-btn[data-tipo="cashea"]')).toMatch(/background:\s*var\(--lm-sunken\)\s*;/);
+    expect(bloque(css, ".inv-icon-btn:focus-visible")).toMatch(/outline:/);
+    expect(bloque(css, ".inv-icon-btn:disabled")).toMatch(/cursor:\s*not-allowed\s*;/);
+  });
+
+  it("la foto de la fila mide 72px y el nombre es un botón que no se ve como botón", async () => {
+    const css = await leerCss();
+    expect(bloque(css, ".inv-row .foto-thumb")).toMatch(/width:\s*72px\s*;[^}]*height:\s*72px\s*;/);
+    const nombre = bloque(css, ".inv-name");
+    expect(nombre).toMatch(/cursor:\s*pointer\s*;/);
+    expect(nombre).toMatch(/background:\s*none\s*;/);
+  });
+
+  /*
+   * La caja «Ordenar por» vive DENTRO de la barra sticky (`.cli-toolbar`, z-index
+   * 19 en mostrador.css): su menú tiene que quedar por encima de las filas, y a la
+   * izquierda en teléfono (ver el container query de 599px, arriba).
+   */
+  it("el menú «Ordenar por» se ancla a la derecha de su botón y flota por encima de las filas", async () => {
+    const css = await leerCss();
+    expect(bloque(css, ".inv-orden")).toMatch(/position:\s*relative\s*;/);
+    const menu = bloque(css, ".inv-orden-menu");
+    expect(menu).toMatch(/position:\s*absolute\s*;/);
+    expect(menu).toMatch(/right:\s*0\s*;/);
+    expect(Number(/z-index:\s*(\d+)\s*;/.exec(menu)?.[1]), "sin z-index propio las filas lo tapan").toBeGreaterThan(0);
+    expect(bloque(css, ".inv-orden-punto")).toMatch(/background:\s*var\(--lm-link\)\s*;/);
+  });
+
+  it("el grid de tarjetas KPI deja entrar las 7 en una fila a 1280px: 150px mínimos, sobreescrito aquí y no en clientes.css", async () => {
+    const css = await leerCss();
+    const regla = bloque(css, ".cli-stats.inv-stats");
+    expect(regla).toMatch(/grid-template-columns:\s*repeat\(auto-fit, minmax\(150px, 1fr\)\)\s*;/);
+    // «Con foto» se distingue con un tinte azul y lleva una barra de avance.
+    expect(bloque(css, '.cli-stat[data-nuevo="true"]')).toMatch(/border-color:/);
+    expect(bloque(css, ".cli-stat-bar span")).toMatch(/background:\s*var\(--lm-link\)\s*;/);
+  });
+
+  it("el interruptor Lista / Cuadrícula y el paginador numerado tienen sus reglas", async () => {
+    const css = await leerCss();
+    expect(bloque(css, '.inv-vista button[aria-pressed="true"]')).toMatch(/font-weight:\s*600\s*;/);
+    expect(bloque(css, '.inv-pag-pages a[aria-current="page"]')).toMatch(/background:\s*var\(--lm-ink\)\s*;/);
   });
 
   it("el carrito flotante va FIJO abajo a la derecha, redondo y por debajo del Drawer/Modal/Toast de HeroUI (z-50)", async () => {

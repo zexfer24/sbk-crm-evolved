@@ -60,50 +60,188 @@
  * quedaba en 118px a 1366 y en 84px a 1000 (medido con Playwright); el monto
  * ("$ 18.46") cabe de sobra y "Sin precio en SAINT" baja a dos líneas dentro
  * de su caja, como ya hace "Falta el peso: cargalo →".
+ *
+ * 30/10/2026 (plan «Cada repuesto con su foto», T5a): la lista se rehace. Una
+ * sola fila con un ENCABEZADO común (`.inv-head`, mismas columnas) y siete
+ * columnas: identidad + Stock 64 + Promoción 116 + Divisa 88 + Estándar 140 +
+ * Peso 76 + los dos botones de ícono 84 (2 x 38 + 6 de hueco). Se fue la
+ * columna de estado (`.inv-status`: las insignias bajaron bajo el nombre) y
+ * con ella los 160px que le quitaban sitio al nombre. Las columnas ya no se
+ * achican con `@media` sobre la VENTANA sino con container queries sobre el
+ * PANEL (`.inv-panel-lista`, más abajo): a ≥ 1720 px la calculadora pasa al
+ * costado y el panel se angosta sin que la ventana cambie. Las siete siguen
+ * fijas salvo la primera, por la trampa del 10/9/2026.
  */
 .inv-row {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 100px 150px 110px 150px 110px 160px 140px;
+  grid-template-columns: minmax(0, 1fr) 64px 116px 88px 140px 76px 84px;
   align-items: start;
-  column-gap: 16px;
-  row-gap: 8px;
-  padding: 12px 26px;
+  column-gap: 14px;
+  row-gap: 10px;
+  padding: 10px 26px;
   border-top: 1px solid var(--lm-line);
 }
 
 /*
  * Fila de CAJA (14/10/2026, plan "La caja no ve el precio estándar"): sin la
- * columna del Precio estándar, así que su plantilla es OTRA —seis columnas
- * fijas, las mismas menos la de 150px—. `display: none` sobre el campo no
- * serviría (la plantilla de siete seguiría repartiendo columnas) y sacar el
- * hijo sin cambiar la plantilla correría Peso, estado y acciones una columna
- * a la izquierda (trampa del 10/9/2026). Más específica que `.inv-row`, así
- * que cada media query que redefine la grilla trae también su variante.
+ * columna del Precio estándar, así que su plantilla es OTRA —seis columnas, las
+ * mismas menos la de 140px—. `display: none` sobre el campo no serviría (la
+ * plantilla de siete seguiría repartiendo columnas) y sacar el hijo sin cambiar
+ * la plantilla correría Peso y los botones una columna a la izquierda (trampa
+ * del 10/9/2026). Más específica que `.inv-row`, así que cada container query
+ * que redefine la grilla trae también su variante.
  */
 .inv-row[data-solo-lectura="true"] {
-  grid-template-columns: minmax(0, 1fr) 100px 150px 110px 110px 160px 140px;
+  grid-template-columns: minmax(0, 1fr) 64px 116px 88px 76px 84px;
+}
+
+/*
+ * Encabezado único de la lista (30/10/2026): un hermano de la `ul`, no un `li`
+ * de ella, para que la lista solo contenga repuestos (un lector de pantalla
+ * cuenta sus ítems) y porque es decorativo: lleva `aria-hidden` y cada caja ya
+ * tiene su `aria-label`. Mismo padding lateral y mismas columnas que la fila: si
+ * una difiere, las etiquetas se corren de sus cajas.
+ */
+.inv-head {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 64px 116px 88px 140px 76px 84px;
+  align-items: end;
+  column-gap: 14px;
+  padding: 0 26px 8px;
+}
+
+.inv-head[data-solo-lectura="true"] {
+  grid-template-columns: minmax(0, 1fr) 64px 116px 88px 76px 84px;
+}
+
+.inv-head span {
+  min-width: 0;
+  color: var(--lm-muted);
+  font-size: 10.5px;
+  font-weight: 600;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+}
+
+/* Cada etiqueta centrada sobre su caja (menos «Repuesto» y la celda vacía de los botones). */
+.inv-head span:not(:first-child) {
+  text-align: center;
 }
 
 .inv-row:hover {
   background: var(--lm-sunken);
 }
 
-/* Un repuesto desactivado no existe para la IA: se ve apagado. */
-.inv-row[data-inactive="true"] .inv-identity {
+/* Un repuesto fuera de Saint no existe para la IA: se ve apagado (el texto, no la foto ni los botones). */
+.inv-row[data-inactive="true"] .inv-identity-text {
   opacity: 0.55;
 }
 
+/* Foto + texto, lado a lado (antes una sola columna de texto). */
 .inv-identity {
+  display: flex;
+  gap: 14px;
+  min-width: 0;
+  align-items: flex-start;
+}
+
+.inv-identity-text {
   display: flex;
   flex-direction: column;
   gap: 3px;
   min-width: 0;
+  padding-top: 2px;
 }
 
+/* Miniatura de 72px (30/10/2026): botón que abre la ficha. Sin foto, un hueco punteado con ícono. */
+.foto-thumb {
+  position: relative;
+  display: grid;
+  place-items: center;
+  flex-shrink: 0;
+  width: 52px;
+  height: 52px;
+  padding: 0;
+  overflow: hidden;
+  border: 1px solid var(--lm-line);
+  border-radius: 11px;
+  background: radial-gradient(120% 100% at 50% 20%, var(--lm-surface) 0%, var(--lm-sunken) 100%);
+  cursor: pointer;
+}
+
+.foto-thumb img {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+}
+
+.foto-thumb:focus-visible {
+  outline: 2px solid var(--lm-link);
+  outline-offset: 2px;
+}
+
+.foto-thumb[data-vacia="true"] {
+  border-style: dashed;
+  background: var(--lm-sunken);
+  color: var(--lm-muted);
+}
+
+.foto-thumb[data-vacia="true"]:hover {
+  border-color: var(--lm-link);
+  color: var(--lm-link-ink);
+}
+
+.foto-thumb .foto-count {
+  position: absolute;
+  right: 3px;
+  bottom: 3px;
+  padding: 0 4px;
+  border-radius: 5px;
+  background: rgba(12, 13, 18, 0.72);
+  color: #fff;
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+  font-weight: 600;
+}
+
+.inv-row .foto-thumb {
+  width: 72px;
+  height: 72px;
+  border-radius: 14px;
+}
+
+/* El nombre abre la ficha: es un botón, pero se lee como texto con subrayado al pasar. */
 .inv-name {
+  padding: 0;
+  border: 0;
+  background: none;
+  font: inherit;
   font-size: 13.5px;
   font-weight: 600;
   color: var(--lm-ink);
+  text-align: left;
+  overflow-wrap: anywhere;
+  cursor: pointer;
+}
+
+.inv-name:hover {
+  color: var(--lm-link-ink);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.inv-name:focus-visible {
+  outline: 2px solid var(--lm-link);
+  outline-offset: 2px;
+  border-radius: 4px;
+}
+
+/* Insignias BAJO el nombre (Sin stock, Oculto a la IA, Sin peso, Nuevo desde Saint). */
+.inv-badges {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 2px;
 }
 
 /*
@@ -142,17 +280,6 @@
   border-radius: 5px;
 }
 
-.inv-compat {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  max-width: 260px;
-}
-
-.inv-compat-any {
-  font-style: italic;
-}
-
 .inv-field {
   display: flex;
   flex-direction: column;
@@ -174,13 +301,25 @@
   border-color: var(--lm-link);
 }
 
-/* El color del stock repite el semáforo de `stockLevel`. */
-.inv-input-wrap[data-level="agotado"] {
-  border-color: var(--lm-hot-ink, var(--lm-line));
+/*
+ * El stock se pinta con el semáforo de `stockLevel` (30/10/2026, D6): más de 5
+ * verde, de 1 a 5 naranja, 0 rojo — los mismos tonos que la cajita de la
+ * tarjeta de la cuadrícula (`.inv-stock-caja`). Antes solo cambiaba el borde, y
+ * un stock en cero se perdía entre las cajas grises de al lado.
+ */
+.inv-input-wrap[data-level="disponible"] {
+  border-color: rgba(34, 160, 107, 0.45);
+  background: rgba(34, 160, 107, 0.08);
 }
 
 .inv-input-wrap[data-level="bajo"] {
-  border-color: var(--lm-wait-ink, var(--lm-line));
+  border-color: rgba(231, 154, 36, 0.55);
+  background: rgba(231, 154, 36, 0.1);
+}
+
+.inv-input-wrap[data-level="agotado"] {
+  border-color: rgb(var(--lm-hot-rgb) / 0.45);
+  background: rgb(var(--lm-hot-rgb) / 0.08);
 }
 
 /*
@@ -221,6 +360,42 @@
   cursor: default;
 }
 
+/* El texto de la cifra del stock toma el color de su nivel (va después de la regla base: gana por especificidad). */
+.inv-input-wrap[data-level="disponible"] .inv-readonly {
+  color: var(--lm-good-ink);
+  font-weight: 600;
+}
+
+.inv-input-wrap[data-level="bajo"] .inv-readonly {
+  color: var(--lm-wait-ink);
+  font-weight: 600;
+}
+
+.inv-input-wrap[data-level="agotado"] .inv-readonly {
+  color: var(--lm-hot-ink);
+  font-weight: 600;
+}
+
+/*
+ * Dentro de la fila (30/10/2026) las cajas son más ajustadas y la cifra baja a
+ * 12.5px. El `<input>` del peso baja con ella: con 13px contra 12.5px de las
+ * demás la caja del peso mediría 1px más y la fila dejaría de verse pareja.
+ */
+.inv-row .inv-input-wrap {
+  padding: 4px 8px;
+}
+
+.inv-row .inv-input-wrap input,
+.inv-row .inv-readonly {
+  font-size: 12.5px;
+}
+
+/* Con el encabezado común, la etiqueta de cada caja sobra en el layout ancho; en los angostos vuelve (container queries). */
+.inv-row .inv-field > .lm-eyebrow {
+  display: none;
+  text-align: center;
+}
+
 .inv-saved {
   color: var(--lm-good-ink, var(--lm-link));
   flex-shrink: 0;
@@ -234,20 +409,35 @@
 .inv-bs {
   display: block;
   min-height: 14px;
+  padding-right: 9px;
   font-size: 11px;
+  line-height: 14px;
   color: var(--lm-muted);
+  text-align: right;
 }
 
 /*
- * Línea "incluye envío MRW $ X" bajo el pie del Precio estándar (12/10/2026).
- * `white-space: normal` a propósito: es texto libre y, si no cabe en 150px,
- * debe bajar de línea en vez de ensanchar la columna fija.
+ * Línea "incluye envío $ X" bajo el pie del Precio estándar (12/10/2026; el
+ * 30/10/2026 pasó de «incluye envío MRW» a «incluye envío» por pedido del
+ * cliente). Los pies de debajo de cada caja van a la DERECHA, como la cifra de
+ * arriba, y con el mismo tamaño y alto de línea: «$ 1.40» e «incluye envío
+ * $ 0.70» se leen como una sola nota. Ya no parte línea (`nowrap`): a 11px
+ * «incluye envío $ 10.30» mide ~105px y la columna fija de 140px lo aloja con
+ * sus 9px de padding; partido se leía como dos notas distintas.
  */
 .inv-fee {
   display: block;
+  padding-right: 9px;
   font-size: 11px;
+  line-height: 14px;
   color: var(--lm-muted);
-  white-space: normal;
+  text-align: right;
+  white-space: nowrap;
+}
+
+/* El monto del envío, un tono más oscuro que el rótulo. */
+.inv-fee .lm-num {
+  color: var(--lm-ink-soft);
 }
 
 /*
@@ -302,28 +492,359 @@
   border-radius: 4px;
 }
 
-.inv-status {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  justify-content: flex-end;
-  gap: 8px;
-  justify-self: end;
-}
-
 /*
  * Acciones de la fila (13/10/2026, plan "Inventario y caja", T2): los dos
- * botones de verdad —«Agregar al carrito» y «Cashea»— apilados en la última
- * columna fija de `.inv-row`. En pantallas estrechas el bloque pasa a línea
- * completa y los botones a fila (ver los breakpoints de abajo).
+ * botones —«Agregar al carrito» y «Cashea»— en la última columna fija de
+ * `.inv-row`. 30/10/2026: dejaron de ser dos píldoras con texto apiladas (140px
+ * de columna) y son dos botones de ÍCONO de 38x38 lado a lado, pegados a la
+ * derecha (84px = 2 x 38 + 6). En los paneles angostos suben junto al nombre o
+ * bajan a todo el ancho (container queries, abajo).
  */
 .inv-acciones {
   display: flex;
-  flex-direction: column;
-  align-items: stretch;
+  flex-direction: row;
+  justify-content: flex-end;
+  align-items: flex-start;
   gap: 6px;
-  justify-self: stretch;
   min-width: 0;
+}
+
+/*
+ * Botón de ícono (30/10/2026): carrito con «+» (azul) y logo de Cashea (fondo
+ * hundido). Vive acá y no en `inventario-cuadricula.css` porque la FILA lo usa
+ * aunque la cuadrícula no se pinte; la tarjeta lo estira a su ancho con
+ * `.inv-card-acciones .inv-icon-btn` (ahí).
+ */
+.inv-icon-btn {
+  display: grid;
+  place-items: center;
+  width: 38px;
+  height: 38px;
+  flex-shrink: 0;
+  padding: 0;
+  border: 0;
+  border-radius: 11px;
+  cursor: pointer;
+  transition: background 150ms ease, transform 120ms var(--lm-ease-out), box-shadow 150ms ease;
+}
+
+.inv-icon-btn:active:not(:disabled) {
+  transform: scale(0.94);
+}
+
+.inv-icon-btn:focus-visible {
+  outline: 2px solid var(--lm-link);
+  outline-offset: 2px;
+}
+
+.inv-icon-btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.inv-icon-btn[data-tipo="carrito"] {
+  background: var(--lm-link);
+  color: #fff;
+}
+
+.inv-icon-btn[data-tipo="carrito"]:hover:not(:disabled) {
+  background: var(--lm-link-fill);
+}
+
+.inv-icon-btn[data-tipo="cashea"] {
+  background: var(--lm-sunken);
+}
+
+.inv-icon-btn[data-tipo="cashea"]:hover {
+  background: var(--lm-canvas-edge);
+}
+
+/* --- Tarjetas de resumen (30/10/2026) -------------------------------------------
+   `.cli-stats` es de `clientes.css` (compartida con Clientes y Ventas) y NO se
+   toca: con `minmax(180px, 1fr)` seis tarjetas entran en una fila a 1280px pero
+   la séptima («Con foto») la manda abajo. `.cli-stats.inv-stats` (dos clases:
+   gana sin depender del orden de las hojas) baja el mínimo a 150px y las siete
+   entran en 1122px, que es lo que mide el área de contenido a 1280. */
+.cli-stats.inv-stats {
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+}
+
+/* «Con foto» se distingue de las demás con un tinte azul tenue: es el avance de una carga manual, no un inventario. */
+.cli-stat[data-nuevo="true"] {
+  border-color: color-mix(in srgb, var(--lm-link) 45%, transparent);
+  background: color-mix(in srgb, var(--lm-link) 8%, transparent);
+}
+
+.cli-stat-total {
+  margin-left: 4px;
+  color: var(--lm-muted);
+  font-size: 13px;
+  font-weight: 500;
+}
+
+.cli-stat-bar {
+  display: block;
+  height: 4px;
+  margin-top: 2px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: var(--lm-sunken);
+}
+
+.cli-stat-bar span {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: var(--lm-link);
+}
+
+/* --- Interruptor Lista / Cuadrícula (30/10/2026) ---------------------------- */
+.inv-vista {
+  display: inline-flex;
+  gap: 2px;
+  margin-left: auto;
+  padding: 3px;
+  border-radius: 999px;
+  background: var(--lm-sunken);
+}
+
+.inv-vista button {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 12px;
+  border: 0;
+  border-radius: 999px;
+  background: transparent;
+  color: var(--lm-ink-soft);
+  font-size: 12.5px;
+  font-weight: 500;
+  cursor: pointer;
+}
+
+.inv-vista button[aria-pressed="true"] {
+  background: var(--lm-surface);
+  color: var(--lm-ink);
+  box-shadow: var(--lm-shadow-sm);
+  font-weight: 600;
+}
+
+.inv-vista button:focus-visible {
+  outline: 2px solid var(--lm-link);
+  outline-offset: 2px;
+}
+
+/* --- Caja «Ordenar por» (30/10/2026) ----------------------------------------
+   Reemplaza a las dos tiras de píldoras (filtros y orden). Vive DENTRO de la
+   barra sticky (`.inv-panel-lista > .cli-toolbar`, z-index 19 en mostrador.css,
+   que no se toca): el menú es `position: absolute` con su propio z-index dentro
+   de ese contexto de apilamiento, así que queda por encima de las filas aunque
+   la barra esté pegada. Anclado a la derecha del botón; en panel < 600px lo
+   ancla a la izquierda el container query de arriba. */
+.inv-orden {
+  position: relative;
+  flex-shrink: 0;
+}
+
+.inv-orden-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px 8px 14px;
+  border: 1px solid var(--lm-line);
+  border-radius: 9px;
+  background: var(--lm-surface);
+  color: var(--lm-ink);
+  font-size: 13px;
+  font-weight: 500;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.inv-orden-btn:hover {
+  border-color: var(--lm-canvas-edge);
+  background: var(--lm-sunken);
+}
+
+.inv-orden-btn[aria-expanded="true"] {
+  border-color: var(--lm-link);
+}
+
+.inv-orden-btn:focus-visible {
+  outline: 2px solid var(--lm-link);
+  outline-offset: 2px;
+}
+
+.inv-orden-btn svg {
+  flex-shrink: 0;
+  color: var(--lm-muted);
+}
+
+.inv-orden-chevron {
+  transition: transform 160ms var(--lm-ease-out);
+}
+
+.inv-orden-btn[aria-expanded="true"] .inv-orden-chevron {
+  transform: rotate(180deg);
+}
+
+/* Punto azul: hay un filtro o un orden distinto del que rige por defecto. */
+.inv-orden-punto {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--lm-link);
+}
+
+.inv-orden-menu {
+  position: absolute;
+  z-index: 30;
+  top: calc(100% + 6px);
+  right: 0;
+  width: min(280px, calc(100vw - 48px));
+  padding: 6px;
+  border: 1px solid var(--lm-line);
+  border-radius: 14px;
+  background: var(--lm-surface);
+  box-shadow: var(--lm-shadow-lg);
+  animation: inv-orden-fade 120ms ease both;
+}
+
+@keyframes inv-orden-fade {
+  from {
+    opacity: 0;
+  }
+}
+
+.inv-orden-grupo + .inv-orden-grupo {
+  margin-top: 4px;
+  padding-top: 4px;
+  border-top: 1px solid var(--lm-line);
+}
+
+.inv-orden-titulo {
+  margin: 6px 10px 4px;
+  color: var(--lm-muted);
+  font-size: 10.5px;
+  font-weight: 600;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+}
+
+.inv-orden-menu a {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 8px 10px;
+  border-radius: 9px;
+  color: var(--lm-ink);
+  font-size: 13px;
+  text-align: left;
+  text-decoration: none;
+}
+
+.inv-orden-menu a:hover {
+  background: var(--lm-sunken);
+}
+
+.inv-orden-menu a:focus-visible {
+  outline: 2px solid var(--lm-link);
+  outline-offset: -2px;
+}
+
+.inv-orden-menu a[aria-current="true"] {
+  font-weight: 600;
+}
+
+/* La marca de verificación ocupa su sitio siempre (oculta) para que los textos no salten al activar uno. */
+.inv-orden-check {
+  flex-shrink: 0;
+  color: var(--lm-link);
+  visibility: hidden;
+}
+
+.inv-orden-menu a[aria-current="true"] .inv-orden-check {
+  visibility: visible;
+}
+
+.inv-orden-nuevo {
+  margin-left: auto;
+  padding: 1px 6px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--lm-link) 16%, transparent);
+  color: var(--lm-link-ink);
+  font-size: 10px;
+  font-weight: 600;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .inv-orden-menu {
+    animation: none;
+  }
+
+  .inv-orden-chevron {
+    transition: none;
+  }
+}
+
+/* --- Paginador numerado (30/10/2026) ------------------------------------------
+   Va ANTES de los container queries de abajo: el de panel < 600px le baja el
+   padding lateral, y a igual especificidad gana la regla que viene después. */
+.inv-pag {
+  flex-wrap: wrap;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 14px 26px 22px;
+}
+
+.inv-pag-pages {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px;
+}
+
+.inv-pag-pages a,
+.inv-pag-pages .salto {
+  display: grid;
+  place-items: center;
+  min-width: 32px;
+  height: 32px;
+  padding: 0 8px;
+  border-radius: 999px;
+  background: var(--lm-sunken);
+  color: var(--lm-ink-soft);
+  font-family: var(--font-mono);
+  font-size: 12.5px;
+  text-decoration: none;
+}
+
+.inv-pag-pages a:hover {
+  background: var(--lm-canvas-edge);
+  color: var(--lm-ink);
+}
+
+.inv-pag-pages a:focus-visible {
+  outline: 2px solid var(--lm-link);
+  outline-offset: 2px;
+}
+
+.inv-pag-pages a[aria-current="page"] {
+  background: var(--lm-ink);
+  color: var(--lm-on-ink);
+}
+
+/* Anterior en la primera página y Siguiente en la última: se ven apagados y no hacen nada. */
+.inv-pag-pages a[aria-disabled="true"] {
+  opacity: 0.4;
+  pointer-events: none;
+}
+
+.inv-pag-pages .salto {
+  min-width: 18px;
+  padding: 0 2px;
+  background: transparent;
 }
 
 /* --- Catálogo de motos ---------------------------------------------------- */
@@ -372,74 +893,93 @@
   color: var(--lm-wait-ink, var(--lm-muted));
 }
 
-/* --- Pantallas estrechas -------------------------------------------------- */
+/* --- Paneles estrechos (container queries sobre `.inv-panel-lista`) ----------
+   30/10/2026 (plan «Cada repuesto con su foto», T5a). Reemplazan a los dos
+   `@media` de antes (761–1180px y ≤ 760px): la lista se acomoda al ancho del
+   PANEL, no al de la ventana (a ≥ 1720px la calculadora pasa al costado y el
+   panel se angosta sin que la ventana cambie). Los hijos de la grilla llevan
+   `min-width: 0` (`.inv-field`, `.inv-acciones`, `.inv-identity`) y ninguna
+   plantilla termina en `auto` (trampa del 10/9/2026). Cada escalón redefine
+   TAMBIÉN la fila de caja, que es más específica que `.inv-row`.
 
-/* Con la columna de Precio estándar (12/10/2026) los campos fijos suman
-   150px más: a 1024px el nombre quedaba en ~20px y se montaba sobre
-   "Stock" (visto con Playwright). Entre 761 y 1180px los badges de estado
-   bajan a su propia línea y le devuelven sus 300px al nombre; las columnas
-   de los campos siguen fijas, así que las filas siguen alineadas. */
-@media (min-width: 761px) and (max-width: 1180px) {
+   Panel < 1080px: sin encabezado; la foto y el nombre arriba con los botones a
+   su derecha (los dos primeros hijos van a la fila 1) y los cinco datos debajo
+   (caja: cuatro), cada uno con su etiqueta, ahora sí visible y centrada. */
+@container invpanel (max-width: 1079px) {
+  .inv-head {
+    display: none;
+  }
+
+  .inv-row .inv-field > .lm-eyebrow {
+    display: block;
+  }
+
   .inv-row {
-    grid-template-columns: minmax(0, 1fr) 100px 150px 110px 150px 110px;
+    grid-template-columns: repeat(5, minmax(0, 1fr));
+    padding: 12px 26px;
   }
 
-  /* Caja: sin la columna del estándar (ver `.inv-row[data-solo-lectura]`, arriba). */
   .inv-row[data-solo-lectura="true"] {
-    grid-template-columns: minmax(0, 1fr) 100px 150px 110px 110px;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
   }
 
-  .inv-status {
-    grid-column: 1 / -1;
-    justify-self: start;
-    justify-content: flex-start;
+  .inv-row .inv-identity {
+    grid-row: 1;
+    grid-column: 1 / -2;
   }
 
-  /* Los botones suben a su propia línea completa, en fila. */
-  .inv-acciones {
-    grid-column: 1 / -1;
-    flex-direction: row;
-    flex-wrap: wrap;
-    justify-self: start;
+  .inv-row .inv-acciones {
+    grid-row: 1;
+    grid-column: -2 / -1;
   }
 }
 
-@media (max-width: 760px) {
-  /* Cinco campos (Stock, Promoción, Divisa, Estándar, Peso): dos columnas dejan
-     los pares Stock/Promoción y Divisa/Estándar, y el Peso solo en su fila
-     (12/10/2026; Divisa se suma el 30/10/2026). */
-  .inv-row {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
+/* Panel < 760px: los datos pasan a tres columnas (los botones siguen a la derecha del nombre). */
+@container invpanel (max-width: 759px) {
+  .inv-row,
+  .inv-row[data-solo-lectura="true"] {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
   }
+}
 
-  /* Caja: cuatro campos (Stock, Promoción, Divisa, Peso) en las mismas dos columnas: pares Stock/Promoción y Divisa/Peso. */
+/* Panel < 600px (teléfono): dos columnas; los botones no caben a la derecha y bajan a todo el ancho. */
+@container invpanel (max-width: 599px) {
+  .inv-row,
   .inv-row[data-solo-lectura="true"] {
     grid-template-columns: repeat(2, minmax(0, 1fr));
+    padding: 12px 16px;
   }
 
-  .inv-identity,
-  .inv-status,
-  .inv-acciones {
+  .inv-row .inv-identity {
     grid-column: 1 / -1;
   }
 
-  .inv-status {
-    justify-self: stretch;
-    width: 100%;
+  .inv-row .inv-acciones {
+    grid-row: auto;
+    grid-column: 1 / -1;
   }
 
-  /* Botones en fila, repartiéndose el ancho (13/10/2026). */
-  .inv-acciones {
-    flex-direction: row;
-    flex-wrap: wrap;
+  .inv-row .inv-acciones .inv-icon-btn {
+    flex: 1 1 0;
+    width: auto;
   }
 
-  .inv-acciones .inv-accion-btn {
-    flex: 1 1 140px;
+  .inv-row .foto-thumb {
+    width: 64px;
+    height: 64px;
   }
 
-  .inv-compat {
-    max-width: 100%;
+  .dash-panel-head,
+  .cli-toolbar,
+  .inv-pag {
+    padding-left: 16px;
+    padding-right: 16px;
+  }
+
+  /* La caja «Ordenar por» baja a la segunda línea: se ancla a la izquierda o se saldría del panel. */
+  .inv-orden-menu {
+    right: auto;
+    left: 0;
   }
 }
 
@@ -1028,42 +1568,17 @@
   }
 }
 
-/* --------------------------------------------------------------------------
-   Botones de la fila (13/10/2026, plan "Inventario y caja", T2). «Agregar al
-   carrito» y «Cashea» son `.crm-pill` de verdad dentro de `.inv-acciones`
-   (antes eran insignias `.ac-badge` de `.inv-status`: no se leían como
-   botones). La píldora de fábrica es `--lm-sunken` y la fila, al pasar el
-   mouse, también: sin borde el botón se perdía sobre ella. `.crm-pill` va
-   delante del selector para ganar en especificidad sin depender del orden en
-   que Next arme las hojas.
-   -------------------------------------------------------------------------- */
-.crm-pill.inv-accion-btn {
-  justify-content: center;
-  gap: 6px;
-  padding: 6px 10px;
-  border: 1px solid var(--lm-line);
-  font-family: inherit;
-  font-size: 12px;
-}
-
-.crm-pill.inv-accion-btn:hover:not(:disabled) {
-  border-color: var(--lm-link);
-  color: var(--lm-link-ink);
-}
-
-.crm-pill.inv-accion-btn:focus-visible {
-  outline: 2px solid var(--lm-link-ink);
-  outline-offset: 2px;
-}
-
-.crm-pill.inv-accion-btn:disabled {
-  opacity: 0.5;
-  cursor: not-allowed;
-}
-
-/* Sección de la lista: aire debajo del paginador para que el botón flotante del carrito no lo tape. */
+/*
+ * Sección de la lista: aire debajo del paginador para que el botón flotante del
+ * carrito no lo tape. 30/10/2026: además es el CONTAINER `invpanel` — las container
+ * queries de `.inv-row` (arriba) y de la cuadrícula (`inventario-cuadricula.css`)
+ * miden el ancho de ESTE panel, no el de la ventana. `inline-size` aplica
+ * contención en el eje horizontal: el panel ya no puede crecer por su contenido,
+ * que es lo que queremos (vive en una grilla `minmax(0, 1fr)`).
+ */
 .inv-panel-lista {
   margin-bottom: 80px;
+  container: invpanel / inline-size;
 }
 
 /* --------------------------------------------------------------------------

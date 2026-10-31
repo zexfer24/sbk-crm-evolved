@@ -3,6 +3,7 @@
 import { useState, type FormEvent } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
+import { ChevronLeft, ChevronRight } from "lucide-react";
 import { inventoryHref, type InventoryParams } from "@/lib/inventory";
 
 /**
@@ -25,19 +26,40 @@ export function paginaDestino(texto: string, pages: number): number | null {
   return entero;
 }
 
+/**
+ * Qué números de página se dibujan (30/10/2026, plan «Cada repuesto con su foto»,
+ * T5a; `paginasVisibles()` del mockup): la primera, la última, la actual y sus
+ * dos vecinas. Todo hueco entre dos números se marca con un «…», aunque falte una
+ * sola página — con ~160 páginas el caso común es 1 … 86 87 88 … 161.
+ */
+export function paginasVisibles(actual: number, total: number): (number | "…")[] {
+  const conservadas = [...new Set([1, total, actual - 1, actual, actual + 1].filter((n) => n >= 1 && n <= total))].sort(
+    (a, b) => a - b
+  );
+
+  const salida: (number | "…")[] = [];
+  conservadas.forEach((n, i) => {
+    if (i > 0 && n - conservadas[i - 1] > 1) salida.push("…");
+    salida.push(n);
+  });
+  return salida;
+}
+
 interface InventarioPaginadorProps {
   params: InventoryParams;
   pages: number;
 }
 
 /**
- * Paginación del Inventario: Anterior/Siguiente (enlaces, funcionan sin
- * JavaScript) y un campo "Ir a la página".
+ * Paginación del Inventario: flechas y números de página (enlaces, funcionan
+ * sin JavaScript y se abren en otra pestaña) y un campo "Ir a la página" para
+ * los saltos largos.
  *
- * `aria-current="page"` va en el indicador "Página N de M" y no en el input:
- * el input es un control para CAMBIAR de página, no el marcador de la actual, y
- * el indicador es el único elemento que dice cuál es sin depender del valor
- * que el asesor esté tecleando.
+ * `aria-current="page"` va en el NÚMERO de la página actual. Antes iba en el
+ * indicador "Página N de M" del formulario porque era lo único que decía cuál
+ * era; con los números, ese indicador es solo el rótulo de un control para
+ * CAMBIAR de página y no debe repetir la marca (dos `aria-current="page"` en el
+ * mismo `nav` se anuncian como dos páginas actuales).
  */
 export function InventarioPaginador({ params, pages }: InventarioPaginadorProps) {
   const router = useRouter();
@@ -68,22 +90,53 @@ export function InventarioPaginador({ params, pages }: InventarioPaginadorProps)
     router.push(inventoryHref({ ...params, page: destino }));
   }
 
+  const numeros = paginasVisibles(params.page, pages);
+
   return (
-    <nav className="cli-pager" aria-label="Paginación del inventario">
-      <Link
-        className="crm-pill"
-        href={inventoryHref({ ...params, page: Math.max(1, params.page - 1) })}
-        aria-disabled={params.page === 1}
-        {...(params.page === 1 ? { "data-disabled": "true" } : {})}
-      >
-        Anterior
-      </Link>
+    <nav className="cli-pager inv-pag" aria-label="Paginación del inventario">
+      <div className="inv-pag-pages">
+        <Link
+          href={inventoryHref({ ...params, page: Math.max(1, params.page - 1) })}
+          aria-label="Anterior"
+          aria-disabled={params.page === 1}
+          {...(params.page === 1 ? { "data-disabled": "true" } : {})}
+        >
+          <ChevronLeft size={15} aria-hidden="true" />
+        </Link>
+
+        {numeros.map((numero, indice) =>
+          numero === "…" ? (
+            // Decorativo: ni se anuncia ni se puede pulsar (las páginas de en medio se alcanzan con el campo de al lado).
+            <span key={`salto-${indice}`} className="salto" aria-hidden="true">
+              …
+            </span>
+          ) : (
+            <Link
+              key={numero}
+              href={inventoryHref({ ...params, page: numero })}
+              aria-label={`Página ${numero}`}
+              {...(numero === params.page ? { "aria-current": "page" as const } : {})}
+            >
+              {numero}
+            </Link>
+          )
+        )}
+
+        <Link
+          href={inventoryHref({ ...params, page: Math.min(pages, params.page + 1) })}
+          aria-label="Siguiente"
+          aria-disabled={params.page === pages}
+          {...(params.page === pages ? { "data-disabled": "true" } : {})}
+        >
+          <ChevronRight size={15} aria-hidden="true" />
+        </Link>
+      </div>
 
       {/* noValidate: el max/min del input solo orienta al teclado; sin esto el
           navegador bloquea el envío de un 999 con su globo nativo y nunca llega
           `paginaDestino`, que es quien acota el número a la última página. */}
       <form className="inv-paginador" onSubmit={irA} noValidate>
-        <span className="cli-pager-note inv-paginador-nota" aria-current="page">
+        <span className="cli-pager-note inv-paginador-nota">
           Página{" "}
           <input
             className="inv-paginador-input lm-num"
@@ -101,15 +154,6 @@ export function InventarioPaginador({ params, pages }: InventarioPaginadorProps)
           Ir
         </button>
       </form>
-
-      <Link
-        className="crm-pill"
-        href={inventoryHref({ ...params, page: Math.min(pages, params.page + 1) })}
-        aria-disabled={params.page === pages}
-        {...(params.page === pages ? { "data-disabled": "true" } : {})}
-      >
-        Siguiente
-      </Link>
     </nav>
   );
 }

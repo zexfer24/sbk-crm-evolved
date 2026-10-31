@@ -2,9 +2,10 @@
 
 import { useRef, useState, type FocusEvent, type KeyboardEvent } from "react";
 import { useRouter } from "next/navigation";
-import { Calculator, Check, EyeOff, ShoppingCart, Sparkles, TriangleAlert } from "lucide-react";
+import { Camera, Check, EyeOff, ImagePlus, Sparkles, TriangleAlert } from "lucide-react";
 import { toast } from "@heroui/react";
 import type { Product } from "@/lib/types";
+import { fotoPrincipal } from "@/lib/product-photos";
 import { createClient } from "@/lib/supabase/client";
 import { updateProductWeight } from "@/lib/mutations";
 import { fetchProduct } from "@/lib/inventory-data";
@@ -22,6 +23,8 @@ import {
   TEXTO_SIN_PRECIO_SAINT,
 } from "@/lib/inventory";
 import { CasheaCalculadora } from "@/components/inventario/cashea-calculadora";
+import { CasheaLogo } from "@/components/inventario/cashea-logo";
+import { CarritoMasIcon } from "@/components/inventario/iconos";
 import { useInventarioCarrito } from "@/components/inventario/inventario-carrito-context";
 
 /**
@@ -51,6 +54,8 @@ export function ProductoFila({
   product,
   bcvRate,
   soloLectura = false,
+  puedeEditarFotos = false,
+  onAbrirFicha,
 }: {
   product: Product;
   bcvRate: number;
@@ -61,6 +66,10 @@ export function ProductoFila({
    * 14/10/2026 tampoco ve el Precio estándar (la columna no se renderiza).
    */
   soloLectura?: boolean;
+  /** Supervisor y admin (D1): sin foto, la miniatura ofrece «Agregar foto». */
+  puedeEditarFotos?: boolean;
+  /** Abre la ficha del repuesto (foto y nombre); la vista monta UNA sola ficha. */
+  onAbrirFicha?: (productId: string) => void;
 }) {
   const router = useRouter();
   const pesoRef = useRef<HTMLInputElement>(null);
@@ -94,6 +103,10 @@ export function ProductoFila({
   const divisa = precioDivisaDisplay(vivo);
   const nuevoDesdeSaint = isNewFromSaint(vivo);
   const enCarrito = carrito?.cantidadDe(vivo.id) ?? 0;
+  const principal = fotoPrincipal(vivo);
+  const faltaPeso = sinPeso(vivo.weightKg);
+  // Sin ninguna insignia no se pinta ni el contenedor: una fila normal queda limpia.
+  const hayInsignias = !visibility.visible || visibility.warning !== null || faltaPeso || nuevoDesdeSaint;
 
   async function save(field: "peso", action: () => Promise<void>, revert: () => void) {
     setBusy(true);
@@ -166,48 +179,121 @@ export function ProductoFila({
       data-inactive={product.isActive ? undefined : "true"}
       data-solo-lectura={soloLectura ? "true" : undefined}
     >
+      {/*
+        * Identidad (30/10/2026, plan «Cada repuesto con su foto», T5a): la
+        * miniatura de 72 px y el nombre abren la ficha; el código, la marca y
+        * las insignias van bajo el nombre. Se fue la columna `.inv-status` —
+        * el color del stock ya dice «agotado», y «La IA lo ofrece» era ruido
+        * en el 99 % de las filas— y el texto de compatibilidad (decisión del
+        * operador: casi todas decían «Sin compatibilidad declarada»).
+        */}
       <div className="inv-identity">
-        <span className="inv-name">{product.name}</span>
-        {/*
-         * T5, plan "El mostrador busca sin salir del chat" (27/9/2026):
-         * `saintCode` ya viajaba en `Product` desde el 25/9 (`saint_code`)
-         * pero la fila no lo pintaba, y los asesores y el dueño lo usan a
-         * diario para ubicar el mismo repuesto en Saint. Va como LÍNEA
-         * dentro de `.inv-identity` (columna 1 de `.inv-row`), no como
-         * columna nueva — la fila es un grid de columnas fijas a propósito
-         * (trampa del 10/9/2026: una columna de ancho variable desalinea
-         * Stock/Precio/Peso entre filas), y con `align-items: start` que la
-         * columna 1 crezca de alto no mueve a las demás. `lm-num` para que
-         * los dígitos no salten de ancho; `aria-label` explícito porque el
-         * texto visible es solo el número, y un lector de pantalla lo debe
-         * anunciar como "Código <x>", no leer el dígito suelto sin
-         * contexto. Sin código: texto "Sin código" (decisión: más claro
-         * para un lector de pantalla que un "—" atenuado, que puede
-         * leerse como "guion" o quedar mudo).
-         */}
-        {product.saintCode ? (
-          <span className="inv-saint-code lm-num" aria-label={`Código ${product.saintCode}`}>
-            {product.saintCode}
-          </span>
+        {principal ? (
+          <button
+            type="button"
+            className="foto-thumb"
+            aria-label={`Ver fotos de ${product.name}`}
+            onClick={() => onAbrirFicha?.(product.id)}
+          >
+            {/* eslint-disable-next-line @next/next/no-img-element -- URL pública de Storage ya dimensionada; no pasa por el optimizador de Next */}
+            <img src={principal.url} alt="" loading="lazy" />
+            {vivo.fotos.length > 1 && <span className="foto-count">{vivo.fotos.length}</span>}
+          </button>
         ) : (
-          <span className="inv-saint-code" data-empty="true" aria-label="Sin código Saint">
-            Sin código
-          </span>
+          <button
+            type="button"
+            className="foto-thumb"
+            data-vacia="true"
+            aria-label={puedeEditarFotos ? `Agregar foto a ${product.name}` : `Ver ficha de ${product.name}`}
+            title={puedeEditarFotos ? "Agregar foto" : "Sin foto"}
+            onClick={() => onAbrirFicha?.(product.id)}
+          >
+            {puedeEditarFotos ? <ImagePlus size={20} aria-hidden="true" /> : <Camera size={20} aria-hidden="true" />}
+          </button>
         )}
-        <span className="inv-facts">
-          {product.brand && <span className="inv-brand">{product.brand}</span>}
-          {product.compatibility.length > 0 ? (
-            <span className="inv-compat" title={product.compatibility.map((c) => `${c.motoBrand} ${c.motoModel}`).join(", ")}>
-              {product.compatibility
-                .slice(0, 2)
-                .map((c) => `${c.motoBrand} ${c.motoModel}`)
-                .join(" · ")}
-              {product.compatibility.length > 2 && ` +${product.compatibility.length - 2}`}
+
+        <div className="inv-identity-text">
+          <button type="button" className="inv-name" onClick={() => onAbrirFicha?.(product.id)}>
+            {product.name}
+          </button>
+          {/*
+           * T5, plan "El mostrador busca sin salir del chat" (27/9/2026):
+           * `saintCode` ya viajaba en `Product` desde el 25/9 (`saint_code`)
+           * pero la fila no lo pintaba, y los asesores y el dueño lo usan a
+           * diario para ubicar el mismo repuesto en Saint. Va como LÍNEA
+           * dentro de `.inv-identity` (columna 1 de `.inv-row`), no como
+           * columna nueva — la fila es un grid de columnas fijas a propósito
+           * (trampa del 10/9/2026: una columna de ancho variable desalinea
+           * Stock/Precio/Peso entre filas), y con `align-items: start` que la
+           * columna 1 crezca de alto no mueve a las demás. `lm-num` para que
+           * los dígitos no salten de ancho; `aria-label` explícito porque el
+           * texto visible es solo el número, y un lector de pantalla lo debe
+           * anunciar como "Código <x>", no leer el dígito suelto sin
+           * contexto. Sin código: texto "Sin código" (decisión: más claro
+           * para un lector de pantalla que un "—" atenuado, que puede
+           * leerse como "guion" o quedar mudo).
+           */}
+          {product.saintCode ? (
+            <span className="inv-saint-code lm-num" aria-label={`Código ${product.saintCode}`}>
+              {product.saintCode}
             </span>
           ) : (
-            <span className="inv-compat inv-compat-any">Sin compatibilidad declarada</span>
+            <span className="inv-saint-code" data-empty="true" aria-label="Sin código Saint">
+              Sin código
+            </span>
           )}
-        </span>
+          {product.brand && (
+            <span className="inv-facts">
+              <span className="inv-brand">{product.brand}</span>
+            </span>
+          )}
+          {hayInsignias && (
+            <span className="inv-badges">
+              {visibility.visible ? (
+                visibility.warning ? (
+                  <span className="ac-badge" data-tone="wait" title={visibility.warning}>
+                    <TriangleAlert size={11} />
+                    Sin stock
+                  </span>
+                ) : null
+              ) : (
+                <span className="ac-badge" data-tone="muted" title={visibility.warning ?? undefined}>
+                  <EyeOff size={11} />
+                  Oculto a la IA
+                </span>
+              )}
+
+              {faltaPeso && (
+                <span
+                  className="ac-badge"
+                  data-tone="wait"
+                  title={
+                    soloLectura
+                      ? "Cashea exige el peso para el envío gratis"
+                      : "Cashea exige el peso para el envío gratis, y sin peso no hay precio estándar"
+                  }
+                >
+                  <TriangleAlert size={11} />
+                  Sin peso
+                </span>
+              )}
+
+              {nuevoDesdeSaint && (
+                <span
+                  className="ac-badge"
+                  data-tone="link"
+                  title={`Entró desde Saint el ${new Date(product.saintAddedAt as string).toLocaleDateString("es-VE", {
+                    day: "numeric",
+                    month: "short",
+                  })}${soloLectura ? "." : "; cargale el peso."}`}
+                >
+                  <Sparkles size={11} />
+                  Nuevo desde Saint
+                </span>
+              )}
+            </span>
+          )}
+        </div>
       </div>
 
       <label className="inv-field">
@@ -327,7 +413,12 @@ export function ProductoFila({
           ) : (
             <span className="inv-bs" aria-hidden="true" />
           )}
-          {estandar.estado === "ok" && <span className="inv-fee">incluye envío MRW {estandar.tarifa}</span>}
+          {estandar.estado === "ok" && (
+            // «incluye envío», nunca «MRW» (pedido del cliente, 30/10/2026): el monto va aparte, en `lm-num`.
+            <span className="inv-fee">
+              incluye envío <span className="lm-num">{estandar.tarifa}</span>
+            </span>
+          )}
         </div>
       )}
 
@@ -365,49 +456,6 @@ export function ProductoFila({
         </label>
       )}
 
-      <div className="inv-status">
-        {visibility.visible ? (
-          <span className="ac-badge" data-tone={visibility.warning ? "wait" : "good"} title={visibility.warning ?? undefined}>
-            {visibility.warning ? <TriangleAlert size={11} /> : null}
-            {visibility.warning ? "Sin stock" : "La IA lo ofrece"}
-          </span>
-        ) : (
-          <span className="ac-badge" data-tone="muted" title={visibility.warning ?? undefined}>
-            <EyeOff size={11} />
-            Oculto a la IA
-          </span>
-        )}
-
-        {sinPeso(vivo.weightKg) && (
-          <span
-            className="ac-badge"
-            data-tone="wait"
-            title={
-              soloLectura
-                ? "Cashea exige el peso para el envío gratis"
-                : "Cashea exige el peso para el envío gratis, y sin peso no hay precio estándar"
-            }
-          >
-            <TriangleAlert size={11} />
-            Sin peso
-          </span>
-        )}
-
-        {nuevoDesdeSaint && (
-          <span
-            className="ac-badge"
-            data-tone="link"
-            title={`Entró desde Saint el ${new Date(product.saintAddedAt as string).toLocaleDateString("es-VE", {
-              day: "numeric",
-              month: "short",
-            })}${soloLectura ? "." : "; cargale el peso."}`}
-          >
-            <Sparkles size={11} />
-            Nuevo desde Saint
-          </span>
-        )}
-      </div>
-
       {/*
        * Acciones de la fila (13/10/2026, plan "Inventario y caja", T2): antes
        * «Agregar» y «Cashea» eran insignias `.ac-badge` mezcladas con los
@@ -415,6 +463,13 @@ export function ProductoFila({
        * bloque propio, ÚLTIMO hijo de la fila y con columna de ancho FIJO en
        * `.inv-row` (trampa del 10/9/2026: una columna `auto` repartiría
        * distinto en cada fila según "En carrito ×99" o "Agregar al carrito").
+       *
+       * 30/10/2026 (plan «Cada repuesto con su foto», T5a): pasan a ser dos
+       * botones de ÍCONO de 38x38 (`.inv-icon-btn`, carrito con «+» y logo de
+       * Cashea) lado a lado. Sin texto, el conteo ya no se ve en el botón: lo
+       * dice su `aria-label` ("hay N en el carrito") y el globo del carrito
+       * flotante. Deuda conocida: quien mira la lista no ve de un vistazo qué
+       * repuestos ya agregó.
        *
        * Carrito (12/10/2026, plan "Carrito de cotización en el Inventario,
        * con Cashea", T5): no se ofrece sin provider, está deshabilitado si
@@ -426,9 +481,10 @@ export function ProductoFila({
         {carrito && (
           <button
             type="button"
-            className="crm-pill inv-accion-btn"
+            className="inv-icon-btn"
+            data-tipo="carrito"
             disabled={!product.isActive}
-            title={product.isActive ? undefined : "Saint lo dio de baja"}
+            title={product.isActive ? "Agregar al carrito" : "Saint lo dio de baja"}
             aria-label={
               enCarrito > 0
                 ? `Sumar otra unidad de ${product.name} (hay ${enCarrito} en el carrito)`
@@ -436,19 +492,19 @@ export function ProductoFila({
             }
             onClick={() => carrito.agregar(vivo)}
           >
-            <ShoppingCart size={14} aria-hidden="true" />
-            {enCarrito > 0 ? `En carrito ×${enCarrito}` : "Agregar al carrito"}
+            <CarritoMasIcon />
           </button>
         )}
 
         <button
           type="button"
-          className="crm-pill inv-accion-btn"
-          onClick={() => setCasheaAbierta(true)}
+          className="inv-icon-btn"
+          data-tipo="cashea"
+          title="Calcular Cashea"
           aria-label={`Calcular Cashea de ${vivo.name}`}
+          onClick={() => setCasheaAbierta(true)}
         >
-          <Calculator size={14} aria-hidden="true" />
-          Cashea
+          <CasheaLogo />
         </button>
         <CasheaCalculadora product={vivo} bcvRate={bcvRate} isOpen={casheaAbierta} onOpenChange={setCasheaAbierta} />
       </div>

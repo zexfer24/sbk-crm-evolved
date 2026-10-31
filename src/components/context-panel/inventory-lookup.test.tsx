@@ -613,7 +613,7 @@ describe("InventoryLookup", () => {
       // 87 + round2(1,4 * 40) = 143 Bs; pie: usdFromBs(87, 40) = 2,20 + 1,40 = 3,60.
       expect(screen.getByLabelText("Precio estándar de Bujía CR7HSA")).toHaveTextContent("Bs. 143.00");
       expect(screen.getByText("$ 3.60")).toBeInTheDocument();
-      expect(screen.getByText("incluye envío MRW $ 1.40")).toBeInTheDocument();
+      expect(screen.getByText("incluye envío $ 1.40")).toBeInTheDocument();
     });
 
     it("sin peso cargado dice «Sin peso cargado» y no inventa un estándar", async () => {
@@ -622,7 +622,7 @@ describe("InventoryLookup", () => {
       const motivo = screen.getByText("Sin peso cargado");
       expect(motivo).toHaveAttribute("data-empty", "true");
       expect(screen.queryByLabelText("Precio estándar de Bujía CR7HSA")).toBeNull();
-      expect(screen.queryByText(/incluye envío MRW/)).toBeNull();
+      expect(screen.queryByText(/incluye envío/)).toBeNull();
     });
 
     it("de 80 kg en adelante dice que está fuera de la tabla MRW", async () => {

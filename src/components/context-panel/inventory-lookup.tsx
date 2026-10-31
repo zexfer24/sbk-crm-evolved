@@ -629,7 +629,7 @@ export function InventoryLookup({
                           )}
                         </div>
                         {estandar.estado === "ok" && (
-                          <span className="crm-lookup-fee">incluye envío MRW {estandar.tarifa}</span>
+                          <span className="crm-lookup-fee">incluye envío {estandar.tarifa}</span>
                         )}
                       </div>
                       {((onAdd && product.isActive) || onEnviarFoto) && (
