@@ -1,0 +1,431 @@
+/*
+ * Vista CUADRÍCULA de /inventario (30/10/2026, plan «Cada repuesto con su foto»,
+ * T5b). Copia fiel del bloque «Vista CUADRÍCULA» de `mockups/inventario-fotos`,
+ * con los tokens reales de la app (`--lm-*`). Es un archivo propio y no se toca
+ * `inventario.css`: la lista (filas) y la cuadrícula comparten vista pero no
+ * reglas, y así cada una se puede cambiar sin descuadrar a la otra.
+ *
+ * La tarjeta es su propio contenedor (`container: tarjeta`): lo que cambia con
+ * su ancho (cifras apiladas) mira a la tarjeta, no a la pantalla, porque la
+ * misma tarjeta mide 150 px en el teléfono y 300 en el escritorio con el panel
+ * del carrito abierto. El panel declara `container: invpanel` en la vista.
+ */
+
+.inv-grid {
+  list-style: none;
+  margin: 0;
+  padding: 18px 26px 26px;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  gap: 16px;
+  border-top: 1px solid var(--lm-line);
+}
+
+.inv-card {
+  container: tarjeta / inline-size;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  min-width: 0;
+  padding: 12px 12px 14px;
+  border: 1px solid var(--lm-line);
+  border-radius: 20px;
+  background: var(--lm-surface);
+  transition: box-shadow 180ms ease, transform 180ms var(--lm-ease-out);
+}
+
+.inv-card:hover {
+  box-shadow: var(--lm-shadow-md);
+  transform: translateY(-2px);
+}
+
+/* Un repuesto que Saint dio de baja se atenúa, pero sus botones siguen legibles. */
+.inv-card[data-inactive="true"] > :not(.inv-card-acciones) {
+  opacity: 0.6;
+}
+
+/* La foto, en un recuadro propio con aire alrededor. */
+.inv-card-foto {
+  position: relative;
+  width: 100%;
+  aspect-ratio: 16 / 10;
+  border: 0;
+  border-radius: 14px;
+  padding: 0;
+  overflow: hidden;
+  /* El mockup usaba `--photo-bg`, que no existe en la app: mismo degradado con tokens reales. */
+  background: radial-gradient(120% 100% at 50% 20%, var(--lm-surface) 0%, var(--lm-sunken) 100%);
+  cursor: pointer;
+  display: grid;
+  place-items: center;
+}
+
+.inv-card-foto:focus-visible {
+  outline: 2px solid var(--lm-link);
+  outline-offset: 2px;
+}
+
+.inv-card-foto img {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+}
+
+.inv-card-foto[data-vacia="true"] {
+  background: var(--lm-sunken);
+  outline: 1.5px dashed var(--lm-line);
+  outline-offset: -1.5px;
+  color: var(--lm-muted);
+  align-content: center;
+  gap: 8px;
+}
+
+.inv-card-foto[data-vacia="true"]:focus-visible {
+  outline: 2px solid var(--lm-link);
+  outline-offset: 2px;
+}
+
+.inv-card-foto[data-vacia="true"] .vacia-txt {
+  font-size: 12px;
+}
+
+.inv-card-foto .agregar-foto {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 12px;
+  border-radius: 999px;
+  background: var(--lm-surface);
+  color: var(--lm-link-ink);
+  font-size: 12px;
+  font-weight: 600;
+  box-shadow: var(--lm-shadow-sm);
+}
+
+/* Contador de fotos, abajo a la izquierda. */
+.inv-card-count {
+  position: absolute;
+  left: 8px;
+  bottom: 8px;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 7px;
+  border-radius: 999px;
+  background: rgba(12, 13, 18, 0.72);
+  color: #fff;
+  font-size: 11px;
+  font-weight: 600;
+}
+
+/* Píldora de estado arriba a la derecha (En stock / Bajo stock / Agotado / Oculto a la IA). */
+.inv-estado {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 3px 9px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.94);
+  font-size: 11px;
+  font-weight: 600;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.08);
+}
+
+.inv-estado::before {
+  content: "";
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: currentColor;
+}
+
+.inv-estado[data-tone="good"] {
+  color: #1a7a53;
+}
+
+.inv-estado[data-tone="wait"] {
+  color: #8f5c0d;
+  background: rgba(255, 244, 224, 0.96);
+}
+
+.inv-estado[data-tone="hot"] {
+  color: #b01d31;
+  background: rgba(255, 234, 236, 0.96);
+}
+
+.inv-estado[data-tone="muted"] {
+  color: #474a60;
+}
+
+.inv-card-titulo {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+}
+
+.inv-card-nombre {
+  margin: 0;
+  font-size: 13.5px;
+  font-weight: 700;
+  line-height: 1.3;
+  letter-spacing: -0.01em;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.inv-card-codigo {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  font-size: 11.5px;
+  color: var(--lm-muted);
+}
+
+.inv-card-codigo [data-empty="true"] {
+  font-style: italic;
+  opacity: 0.75;
+}
+
+/* Stock | Promoción | Estándar, separados por líneas finas. */
+.inv-card-cifras {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) minmax(0, 1fr);
+}
+
+.inv-cifra {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+  padding: 0 8px;
+  border-left: 1px solid var(--lm-line);
+}
+
+.inv-cifra:first-child {
+  padding-left: 0;
+  border-left: 0;
+}
+
+.inv-cifra:last-child {
+  padding-right: 0;
+}
+
+.inv-cifra .etq {
+  font-size: 11px;
+  color: var(--lm-muted);
+  white-space: nowrap;
+}
+
+/*
+ * Sin `white-space: nowrap` a propósito: un precio largo tiene que partir en el
+ * espacio de «Bs.» y bajar de línea, nunca cortarse ni salirse de su columna.
+ */
+.inv-cifra .val {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  font-size: 12.5px;
+  font-weight: 500;
+  color: var(--lm-ink);
+}
+
+.inv-cifra .sub {
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  color: var(--lm-muted);
+  white-space: nowrap;
+}
+
+/* Los textos de motivo («Sin precio en SAINT», «Más de 80 kg…») sí son prosa: pueden partir. */
+.inv-cifra .motivo {
+  font-family: inherit;
+  white-space: normal;
+}
+
+.inv-cifra .falta {
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--lm-wait-ink);
+  font-size: 11.5px;
+  font-weight: 600;
+  text-align: left;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  cursor: pointer;
+}
+
+/* El stock, en una cajita con el color de su nivel (verde, naranja, rojo). */
+.inv-stock-caja {
+  display: inline-grid;
+  place-items: center;
+  align-self: flex-start;
+  min-width: 36px;
+  height: 26px;
+  padding: 0 8px;
+  border-radius: 8px;
+  border: 1px solid rgba(34, 160, 107, 0.45);
+  background: rgba(34, 160, 107, 0.08);
+  color: var(--lm-good-ink);
+  font-family: var(--font-mono);
+  font-size: 12.5px;
+  font-weight: 600;
+}
+
+.inv-stock-caja[data-level="bajo"] {
+  border-color: rgba(231, 154, 36, 0.55);
+  background: rgba(231, 154, 36, 0.1);
+  color: var(--lm-wait-ink);
+}
+
+.inv-stock-caja[data-level="agotado"] {
+  border-color: rgb(var(--lm-hot-rgb) / 0.45);
+  background: rgb(var(--lm-hot-rgb) / 0.08);
+  color: var(--lm-hot-ink);
+}
+
+.inv-card-pie {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px 10px;
+  padding-top: 10px;
+  border-top: 1px solid var(--lm-line);
+  font-size: 11.5px;
+  color: var(--lm-muted);
+}
+
+.inv-card-pie > span {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.inv-card-pie > .sin-peso {
+  color: var(--lm-wait-ink);
+}
+
+.inv-card-pie strong {
+  color: var(--lm-ink);
+  font-family: var(--font-mono);
+  font-weight: 600;
+}
+
+/* Dos botones de ícono a lo ancho, siempre al fondo de la tarjeta. */
+.inv-card-acciones {
+  display: grid;
+  grid-auto-flow: column;
+  grid-auto-columns: minmax(0, 1fr);
+  gap: 8px;
+  margin-top: auto;
+}
+
+.inv-icon-btn {
+  display: grid;
+  place-items: center;
+  width: 100%;
+  height: 40px;
+  flex-shrink: 0;
+  padding: 0;
+  border: 0;
+  border-radius: 11px;
+  cursor: pointer;
+  transition: background 150ms ease, transform 120ms var(--lm-ease-out), box-shadow 150ms ease;
+}
+
+.inv-icon-btn:active:not(:disabled) {
+  transform: scale(0.94);
+}
+
+.inv-icon-btn:focus-visible {
+  outline: 2px solid var(--lm-link);
+  outline-offset: 2px;
+}
+
+.inv-icon-btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.inv-icon-btn[data-tipo="carrito"] {
+  background: var(--lm-link);
+  color: #fff;
+}
+
+.inv-icon-btn[data-tipo="carrito"]:hover:not(:disabled) {
+  background: var(--lm-link-fill);
+}
+
+.inv-icon-btn[data-tipo="cashea"] {
+  background: var(--lm-sunken);
+}
+
+.inv-icon-btn[data-tipo="cashea"]:hover {
+  background: var(--lm-canvas-edge);
+}
+
+/* Tarjeta angosta (dos columnas en el teléfono): las cifras se apilan. */
+@container tarjeta (max-width: 230px) {
+  .inv-card-cifras {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 8px;
+  }
+
+  .inv-cifra {
+    padding: 8px 0 0;
+    border-left: 0;
+    border-top: 1px solid var(--lm-line);
+  }
+
+  .inv-cifra:first-child {
+    padding-top: 0;
+    border-top: 0;
+    flex-direction: row;
+    align-items: center;
+    justify-content: space-between;
+  }
+
+  .inv-card-foto {
+    aspect-ratio: 4 / 3;
+  }
+
+  .inv-card-foto .agregar-foto {
+    padding: 5px 9px;
+    font-size: 11px;
+  }
+
+  .inv-card-foto[data-vacia="true"] .vacia-ic {
+    display: none;
+  }
+}
+
+/*
+ * Teléfono: dos tarjetas por fila. La vista declara `.inv-panel-lista {
+ * container: invpanel / inline-size }`; esta regla solo la consume.
+ */
+@container invpanel (max-width: 599px) {
+  .inv-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 10px;
+    padding: 14px 12px 18px;
+  }
+
+  .inv-grid .inv-card {
+    padding: 8px 8px 10px;
+    gap: 10px;
+    border-radius: 16px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .inv-card:hover {
+    transform: none;
+  }
+}
