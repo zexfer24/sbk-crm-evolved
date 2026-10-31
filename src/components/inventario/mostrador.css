@@ -200,13 +200,43 @@
    (sin esa variable, 0px), + 8px de aire. z-index 19: por debajo de la calculadora
    (20). `.cli-toolbar` es de `clientes.css` (compartida con Clientes) y no tiene
    fondo: se lo damos aquí, acotado a la lista del Inventario, y se redondean solo
-   las esquinas de arriba para que calce con el panel. */
+   las esquinas de arriba para que calce con el panel.
+
+   30/10/2026: pegada, por el hueco del `top` y por las esquinas redondeadas se
+   veían pasar las filas de la lista, y el asesor las confundía con las de
+   arriba. `::before` tapa ese hueco y el alto de las esquinas con el color de la
+   página; `::after` es el fondo redondeado de la barra, encima de la tapa. Las
+   dos llevan z-index negativo: el sticky con z-index abre un contexto propio, así
+   que quedan sobre las filas pero debajo del buscador y las píldoras. El alto del
+   hueco vive en `--inv-barra-top` para que `top` y la tapa no se desalineen. */
 .inv-panel-lista > .cli-toolbar {
+  --inv-barra-top: calc(8px + var(--inv-calc-alto, 0px) + 8px);
   position: sticky;
-  top: calc(8px + var(--inv-calc-alto, 0px) + 8px);
+  top: var(--inv-barra-top);
   z-index: 19;
+}
+
+.inv-panel-lista > .cli-toolbar::before {
+  content: "";
+  position: absolute;
+  /* 12px de más a los lados: tapa también la sombra del panel en el hueco. */
+  left: -12px;
+  right: -12px;
+  top: calc(-1 * var(--inv-barra-top));
+  height: calc(var(--inv-barra-top) + var(--lm-radius-panel));
+  background: var(--lm-canvas);
+  z-index: -2;
+  pointer-events: none;
+}
+
+.inv-panel-lista > .cli-toolbar::after {
+  content: "";
+  position: absolute;
+  inset: 0;
   background: var(--lm-surface);
   border-radius: var(--lm-radius-panel) var(--lm-radius-panel) 0 0;
+  z-index: -1;
+  pointer-events: none;
 }
 
 /* --- Barra (761 a 1719px) ---------------------------------------------------
@@ -322,7 +352,7 @@
 
   /* La calculadora está al costado, no encima: la barra solo deja el aire de 16px. */
   .inv-panel-lista > .cli-toolbar {
-    top: 16px;
+    --inv-barra-top: 16px;
   }
 
   .inv-calc-titulo {
@@ -451,6 +481,14 @@
   /* Igual que la calculadora: pegada a una lista de una columna taparía las filas. */
   .inv-panel-lista > .cli-toolbar {
     position: static;
+    background: var(--lm-surface);
+    border-radius: var(--lm-radius-panel) var(--lm-radius-panel) 0 0;
+  }
+
+  /* Sin sticky no hay hueco que tapar, y la tapa absoluta taparía la calculadora de arriba. */
+  .inv-panel-lista > .cli-toolbar::before,
+  .inv-panel-lista > .cli-toolbar::after {
+    display: none;
   }
 
   .inv-calc-toggle {
