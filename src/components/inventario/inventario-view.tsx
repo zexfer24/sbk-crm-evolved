@@ -82,6 +82,10 @@ const EMPTY_BY_FILTER: Record<InventoryFilter, { title: string; hint: string }> 
     title: "Todo el catálogo activo tiene peso cargado",
     hint: "Cashea ya puede calcular el envío gratis con lo que hay.",
   },
+  "sin-foto": {
+    title: "Todos los repuestos tienen foto",
+    hint: "Carga fotos desde la ficha de cada repuesto.",
+  },
 };
 
 interface InventarioViewProps {

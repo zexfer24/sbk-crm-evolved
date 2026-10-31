@@ -655,6 +655,7 @@ function cartItem(over: Partial<ConversationCartItem> = {}): ConversationCartIte
       saintCode: null,
       saintAddedAt: null,
       saintRemovedAt: null,
+      fotos: [],
     },
     ...over,
   };

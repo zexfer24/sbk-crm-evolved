@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import {
   PRODUCT_SELECT,
+  fetchInventoryTotals,
   fetchProductsByIds,
   fetchProductsPage,
   searchActiveProducts,
@@ -425,5 +426,179 @@ describe("fetchProductsByIds — restaurar el carrito del Inventario (12/10/2026
     const { builder } = fakeProductsQuery({ error: boom });
 
     await expect(fetchProductsByIds(fakeSupabase(builder), ["p-1"])).rejects.toBe(boom);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 30/10/2026 (plan «Cada repuesto con su foto», T2)
+// ---------------------------------------------------------------------------
+
+describe("fetchProductsPage — filtro «Sin foto» (anti-join de PostgREST)", () => {
+  // OJO: este test prueba la CONSULTA que se arma (alias en el select + `.is`),
+  // no que PostgREST la entienda. `sin_foto:product_photos!left(id)` + `is.null`
+  // es el anti-join documentado, pero hay que comprobarlo contra un PostgREST
+  // real con la tabla creada por T1 antes de fusionar.
+  it("con filter «sin-foto» el select suma el alias sin_foto:product_photos!left(id) y se aplica is('sin_foto', null)", async () => {
+    const { calls, builder } = fakeProductsQuery();
+    await fetchProductsPage(fakeSupabase(builder), { query: "", filter: "sin-foto", sort: "nombre", page: 1 });
+
+    const select = calls.find((c) => c.method === "select");
+    expect(select?.args[0]).toContain("sin_foto:product_photos!left(id)");
+    // El resto del select de siempre sigue ahí.
+    expect(select?.args[0]).toContain("product_photos(id, storage_path, is_primary, position)");
+    expect(calls.filter((c) => c.method === "is")).toEqual([{ method: "is", args: ["sin_foto", null] }]);
+  });
+
+  // Corrección del orquestador (30/10/2026): «Sin foto» sirve para saber a qué
+  // repuesto le falta foto; uno que Saint dio de baja no importa. Igual que «Sin peso».
+  it("«Sin foto» lista solo repuestos activos: eq('is_active', true) además del anti-join", async () => {
+    const { calls, builder } = fakeProductsQuery();
+    await fetchProductsPage(fakeSupabase(builder), { query: "", filter: "sin-foto", sort: "nombre", page: 1 });
+
+    expect(calls.filter((c) => c.method === "eq")).toEqual([{ method: "eq", args: ["is_active", true] }]);
+  });
+
+  it("con cualquier otro filtro NO aparece el alias ni el .is()", async () => {
+    for (const filter of ["todos", "agotados", "bajo-stock", "inactivos", "sin-peso"] as const) {
+      const { calls, builder } = fakeProductsQuery();
+      await fetchProductsPage(fakeSupabase(builder), { query: "", filter, sort: "nombre", page: 1 });
+
+      const select = calls.find((c) => c.method === "select");
+      expect(select?.args[0], filter).not.toContain("sin_foto");
+      expect(
+        calls.some((c) => c.method === "is"),
+        filter
+      ).toBe(false);
+    }
+  });
+
+  it("el reconteo de una página fuera de rango también lleva el anti-join (misma fuente de filtros)", async () => {
+    const calls: { method: string; args: unknown[] }[] = [];
+    const builder: Record<string, unknown> = {};
+    for (const m of ["select", "or", "eq", "lte", "gt", "is", "order"]) {
+      builder[m] = (...args: unknown[]) => {
+        calls.push({ method: m, args });
+        return builder;
+      };
+    }
+    builder.range = () => Promise.resolve({ data: null, error: { code: "PGRST103" }, count: null });
+    // El reconteo (head) no pasa por `range`: se espera directamente el builder.
+    builder.then = (resolve: (v: unknown) => void) => resolve({ data: null, error: null, count: 3 });
+
+    const resultado = await fetchProductsPage(fakeSupabase(builder), {
+      query: "",
+      filter: "sin-foto",
+      sort: "nombre",
+      page: 99,
+    });
+
+    expect(resultado).toEqual({ products: [], total: 3 });
+    const selects = calls.filter((c) => c.method === "select");
+    expect(selects).toHaveLength(2);
+    // El reconteo necesita el alias: sin él, `.is("sin_foto", null)` apuntaría a un embed que no existe.
+    expect(selects[1].args[0]).toBe("id, sin_foto:product_photos!left(id)");
+    expect(calls.filter((c) => c.method === "is")).toHaveLength(2);
+    expect(calls.filter((c) => c.method === "eq")).toEqual([
+      { method: "eq", args: ["is_active", true] },
+      { method: "eq", args: ["is_active", true] },
+    ]);
+  });
+});
+
+describe("fetchProductsPage — «Bajo stock» usa el umbral de 5", () => {
+  it("lte('stock_quantity', 5) y gt('stock_quantity', 0), con literales", async () => {
+    const { calls, builder } = fakeProductsQuery();
+    await fetchProductsPage(fakeSupabase(builder), { query: "", filter: "bajo-stock", sort: "nombre", page: 1 });
+
+    expect(calls.filter((c) => c.method === "lte")).toEqual([{ method: "lte", args: ["stock_quantity", 5] }]);
+    expect(calls.filter((c) => c.method === "gt")).toEqual([{ method: "gt", args: ["stock_quantity", 0] }]);
+  });
+});
+
+describe("fetchProductsPage — las fotos llegan en cada Product", () => {
+  it("mapea product_photos a fotos ordenadas con la URL pública del bucket", async () => {
+    const { builder } = fakeProductsQuery({
+      data: [
+        rawProductRow({
+          product_photos: [
+            { id: "f2", storage_path: "p-1/f2.jpg", is_primary: false, position: 1 },
+            { id: "f1", storage_path: "p-1/f1.jpg", is_primary: true, position: 4 },
+          ],
+        }),
+      ],
+    });
+    const supabase = {
+      from: vi.fn(() => builder),
+      storage: {
+        from: vi.fn((bucket: string) => ({
+          getPublicUrl: (path: string) => ({ data: { publicUrl: `https://sb.test/${bucket}/${path}` } }),
+        })),
+      },
+    } as unknown as SupabaseClient;
+
+    const { products } = await fetchProductsPage(supabase, { query: "", filter: "todos", sort: "nombre", page: 1 });
+
+    expect(products[0].fotos.map((f) => [f.id, f.url, f.isPrimary])).toEqual([
+      ["f1", "https://sb.test/product-photos/p-1/f1.jpg", true],
+      ["f2", "https://sb.test/product-photos/p-1/f2.jpg", false],
+    ]);
+  });
+});
+
+describe("fetchInventoryTotals — conFoto", () => {
+  /**
+   * Fake por tabla: cada `from(tabla)` registra sus llamadas y su builder se
+   * puede esperar (thenable) con el `count` de esa tabla. `products` responde 7
+   * y `product_photos` 17, para que un cruce de tablas se note.
+   */
+  function fakeTotals(photosError: unknown = null) {
+    const llamadas: { tabla: string; method: string; args: unknown[] }[] = [];
+    const supabase = {
+      from: (tabla: string) => {
+        const resultado = {
+          data: null,
+          error: tabla === "product_photos" ? photosError : null,
+          count: tabla === "product_photos" ? 17 : 7,
+        };
+        const b: Record<string, unknown> = {};
+        for (const m of ["select", "eq", "lte", "gt", "or", "order", "limit"]) {
+          b[m] = (...args: unknown[]) => {
+            llamadas.push({ tabla, method: m, args });
+            return b;
+          };
+        }
+        b.maybeSingle = () => Promise.resolve({ data: { updated_at: "2026-10-30T10:00:00Z" }, error: null });
+        b.then = (resolve: (v: unknown) => unknown) => resolve(resultado);
+        return b;
+      },
+    } as unknown as SupabaseClient;
+    return { supabase, llamadas };
+  }
+
+  it("conFoto es el count de product_photos con is_primary = true (una principal por repuesto)", async () => {
+    const { supabase, llamadas } = fakeTotals();
+    const totales = await fetchInventoryTotals(supabase);
+
+    expect(totales.conFoto).toBe(17);
+    expect(totales.productos).toBe(7);
+    const deFotos = llamadas.filter((c) => c.tabla === "product_photos");
+    expect(deFotos).toEqual([
+      { tabla: "product_photos", method: "select", args: ["id", { count: "exact", head: true }] },
+      { tabla: "product_photos", method: "eq", args: ["is_primary", true] },
+    ]);
+  });
+
+  it("«Bajo stock» del contador usa lte('stock_quantity', 5)", async () => {
+    const { supabase, llamadas } = fakeTotals();
+    await fetchInventoryTotals(supabase);
+
+    expect(llamadas.filter((c) => c.method === "lte" && c.args[1] === 5)).toEqual([
+      { tabla: "products", method: "lte", args: ["stock_quantity", 5] },
+    ]);
+  });
+
+  it("si el conteo de fotos falla, el error se propaga (no se disfraza de cero)", async () => {
+    const { supabase } = fakeTotals({ message: "boom" });
+    await expect(fetchInventoryTotals(supabase)).rejects.toEqual({ message: "boom" });
   });
 });

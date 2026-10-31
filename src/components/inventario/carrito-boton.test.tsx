@@ -43,6 +43,7 @@ const PRODUCTO: Product = {
   saintCode: null,
   saintAddedAt: null,
   saintRemovedAt: null,
+  fotos: [],
   shippingFeeUsd: null,
   precioDivisaUsd: null,
 };

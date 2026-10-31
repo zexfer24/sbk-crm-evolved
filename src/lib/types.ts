@@ -1100,6 +1100,19 @@ export interface ProductCompatibility {
   motoModel: string;
 }
 
+/**
+ * Una foto de un repuesto (30/10/2026, plan «Cada repuesto con su foto»). Vive
+ * en la tabla `product_photos` y en el bucket público `product-photos`; `url`
+ * es la URL pública (no vence) que arma `productPhotoUrl`.
+ */
+export interface ProductPhoto {
+  id: string;
+  storagePath: string;
+  url: string;
+  isPrimary: boolean;
+  position: number;
+}
+
 export interface Product {
   id: string;
   name: string;
@@ -1129,6 +1142,11 @@ export interface Product {
    * 0 o un negativo tampoco es un precio (ver `precioDivisaDisplay`).
    */
   precioDivisaUsd: number | null;
+  /**
+   * Fotos del repuesto, la principal primero y luego por `position`
+   * (`ordenarFotos`). Vacío = sin foto (30/10/2026, plan «Cada repuesto con su foto»).
+   */
+  fotos: ProductPhoto[];
   /**
    * Código de Saint, extraído por `saint.sync_products()` del `Código ERP: …`
    * que traía `description` (T1, plan "El inventario llega de Saint y no se

@@ -1956,7 +1956,7 @@ export async function fetchCart(
     addedBy: row.added_by,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
-    product: mapProduct(row.product),
+    product: mapProduct(row.product, supabase),
   }));
 }
 

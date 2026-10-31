@@ -2,6 +2,7 @@ import type { SupabaseClient } from "@supabase/supabase-js";
 import type { MotoCatalogSummary, Product, ProductCurrency } from "@/lib/types";
 import { productSearchFilter } from "@/lib/inventory-search";
 import { inventoryPageRange, LOW_STOCK_THRESHOLD, type InventoryParams } from "@/lib/inventory";
+import { ordenarFotos, productPhotoUrl } from "@/lib/product-photos";
 
 /**
  * Consultas de la sección Inventario.
@@ -30,8 +31,22 @@ export const SIN_PESO_FILTRO = "weight_kg.is.null,weight_kg.eq.0";
 export const PRODUCT_SELECT = `
   id, name, brand, price, currency, stock_quantity, description,
   is_active, updated_at, weight_kg, tarifa_envio_usd, precio_divisa_usd, saint_code, saint_added_at, saint_removed_at,
-  product_compatibility(id, moto_brand, moto_model)
+  product_compatibility(id, moto_brand, moto_model),
+  product_photos(id, storage_path, is_primary, position)
 `;
+
+/**
+ * Alias del anti-join de «Sin foto» (30/10/2026, plan «Cada repuesto con su
+ * foto», T2): un embed `!left` de las fotos bajo otro nombre, que solo se suma
+ * al select cuando el filtro es `sin-foto`. Con `.is("sin_foto", null)` deja
+ * los repuestos cuyo embed quedó vacío (ninguna foto). Va aparte del embed
+ * `product_photos(...)` de `PRODUCT_SELECT` porque ese trae las fotos y este
+ * solo sirve para filtrar. ADVERTENCIA: la forma del anti-join (alias + `!left`
+ * + `is.null`) es la documentada por PostgREST, pero hay que comprobarla contra
+ * un PostgREST real con la tabla de T1 antes de fusionar — los tests solo
+ * prueban que la consulta se arma así, no que el servidor la entienda.
+ */
+const SIN_FOTO_SELECT = "sin_foto:product_photos!left(id)";
 
 export interface RawProduct {
   id: string;
@@ -62,9 +77,21 @@ export interface RawProduct {
   saint_added_at: string | null;
   saint_removed_at: string | null;
   product_compatibility: { id: string; moto_brand: string; moto_model: string }[] | null;
+  /**
+   * Embed de `product_photos` (30/10/2026, plan «Cada repuesto con su foto»).
+   * Va tipado a mano porque la tabla todavía no está en `database.types.ts`.
+   */
+  product_photos: { id: string; storage_path: string; is_primary: boolean; position: number }[] | null;
 }
 
-export function mapProduct(row: RawProduct): Product {
+/**
+ * Pasa una fila cruda de PostgREST a `Product`. Recibe el cliente de Supabase
+ * (30/10/2026, plan «Cada repuesto con su foto», T2) solo para armar la URL
+ * pública de cada foto con `getPublicUrl`, que es texto puro y no hace red;
+ * se pasó el cliente y no el host del bucket para que la URL salga siempre de
+ * la misma función (`productPhotoUrl`) y no haya dos formas de armarla.
+ */
+export function mapProduct(row: RawProduct, supabase: SupabaseClient): Product {
   return {
     id: row.id,
     name: row.name,
@@ -86,6 +113,15 @@ export function mapProduct(row: RawProduct): Product {
       motoBrand: c.moto_brand,
       motoModel: c.moto_model,
     })),
+    fotos: ordenarFotos(
+      (row.product_photos ?? []).map((f) => ({
+        id: f.id,
+        storagePath: f.storage_path,
+        url: productPhotoUrl(supabase, f.storage_path),
+        isPrimary: f.is_primary,
+        position: f.position,
+      }))
+    ),
   };
 }
 
@@ -100,12 +136,13 @@ export interface ProductsPage {
  * cada una armara sus filtros por su cuenta, el total del reconteo podría no
  * ser el de la lista (13/10/2026).
  */
-/** Los cuatro métodos de filtro que usa `aplicarFiltros`; el tipo completo del builder de PostgREST es demasiado profundo para inferirlo genérico (TS2589). */
+/** Los cinco métodos de filtro que usa `aplicarFiltros`; el tipo completo del builder de PostgREST es demasiado profundo para inferirlo genérico (TS2589). */
 interface Filtrable {
   or(filters: string): Filtrable;
   eq(column: string, value: boolean): Filtrable;
   lte(column: string, value: number): Filtrable;
   gt(column: string, value: number): Filtrable;
+  is(column: string, value: null): Filtrable;
 }
 
 function aplicarFiltros<T>(consulta: T, { query, filter }: InventoryParams): T {
@@ -131,6 +168,13 @@ function aplicarFiltros<T>(consulta: T, { query, filter }: InventoryParams): T {
     request = request.eq("is_active", false);
   } else if (filter === "sin-peso") {
     request = request.eq("is_active", true).or(SIN_PESO_FILTRO);
+  } else if (filter === "sin-foto") {
+    // Anti-join (30/10/2026, T2): el alias `sin_foto` lo suma `fetchProductsPage`
+    // al select SOLO con este filtro; aquí se queda con los repuestos cuyo embed
+    // vino vacío. Solo activos, igual que «Sin peso» (corrección del orquestador,
+    // 30/10/2026): sirve para saber a qué repuesto le falta foto, y uno que Saint
+    // dio de baja no importa. El total `conFoto` NO lleva este corte. Ver `SIN_FOTO_SELECT`.
+    request = request.eq("is_active", true).is("sin_foto", null);
   }
   return request as unknown as T;
 }
@@ -148,7 +192,8 @@ function esRangoFueraDeLimite(error: unknown): boolean {
 
 export async function fetchProductsPage(supabase: SupabaseClient, params: InventoryParams): Promise<ProductsPage> {
   const { sort, page } = params;
-  let request = aplicarFiltros(supabase.from("products").select(PRODUCT_SELECT, { count: "exact" }), params);
+  const select = params.filter === "sin-foto" ? `${PRODUCT_SELECT}, ${SIN_FOTO_SELECT}` : PRODUCT_SELECT;
+  let request = aplicarFiltros(supabase.from("products").select(select, { count: "exact" }), params);
 
   if (sort === "stock") request = request.order("stock_quantity", { ascending: true });
   else if (sort === "precio") request = request.order("price", { ascending: false });
@@ -172,7 +217,9 @@ export async function fetchProductsPage(supabase: SupabaseClient, params: Invent
   // la página pueda redirigir a la última página real.
   if (error && esRangoFueraDeLimite(error)) {
     const recuento = await aplicarFiltros(
-      supabase.from("products").select("id", { count: "exact", head: true }),
+      supabase
+        .from("products")
+        .select(params.filter === "sin-foto" ? `id, ${SIN_FOTO_SELECT}` : "id", { count: "exact", head: true }),
       params
     );
     if (recuento.error) throw recuento.error;
@@ -180,14 +227,14 @@ export async function fetchProductsPage(supabase: SupabaseClient, params: Invent
   }
   if (error) throw error;
 
-  const products = ((data ?? []) as unknown as RawProduct[]).map(mapProduct);
+  const products = ((data ?? []) as unknown as RawProduct[]).map((row) => mapProduct(row, supabase));
   return { products, total: count ?? products.length };
 }
 
 export async function fetchProduct(supabase: SupabaseClient, productId: string): Promise<Product | null> {
   const { data, error } = await supabase.from("products").select(PRODUCT_SELECT).eq("id", productId).maybeSingle();
   if (error) throw error;
-  return data ? mapProduct(data as unknown as RawProduct) : null;
+  return data ? mapProduct(data as unknown as RawProduct, supabase) : null;
 }
 
 /**
@@ -205,7 +252,7 @@ export async function fetchProductsByIds(supabase: SupabaseClient, ids: string[]
 
   const { data, error } = await supabase.from("products").select(PRODUCT_SELECT).in("id", unicos);
   if (error) throw error;
-  return ((data ?? []) as unknown as RawProduct[]).map(mapProduct);
+  return ((data ?? []) as unknown as RawProduct[]).map((row) => mapProduct(row, supabase));
 }
 
 /**
@@ -222,6 +269,12 @@ export interface InventoryTotals {
   /** Activos sin peso cargado — el conteo que Cashea obliga a bajar a cero (T4, 8/9/2026). */
   withoutWeight: number;
   /**
+   * Repuestos con foto principal (30/10/2026, plan «Cada repuesto con su
+   * foto»): cuenta las filas `is_primary = true` de `product_photos`, que son
+   * una por repuesto (índice único parcial), así que es "repuestos con foto".
+   */
+  conFoto: number;
+  /**
    * El `updated_at` más reciente de todo el catálogo, o null si no hay
    * ninguno. Desde el 25/9/2026 `updated_at` significa "última vez
    * confirmado contra Saint" (ver `inventory-freshness.ts`): si el más
@@ -234,16 +287,17 @@ export interface InventoryTotals {
 export async function fetchInventoryTotals(supabase: SupabaseClient): Promise<InventoryTotals> {
   const countOnly = () => supabase.from("products").select("id", { count: "exact", head: true });
 
-  const [productos, activos, agotados, bajos, sinPeso, ultimo] = await Promise.all([
+  const [productos, activos, agotados, bajos, sinPeso, conFoto, ultimo] = await Promise.all([
     countOnly(),
     countOnly().eq("is_active", true),
     countOnly().eq("is_active", true).lte("stock_quantity", 0),
     countOnly().eq("is_active", true).gt("stock_quantity", 0).lte("stock_quantity", LOW_STOCK_THRESHOLD),
     countOnly().eq("is_active", true).or(SIN_PESO_FILTRO),
+    supabase.from("product_photos").select("id", { count: "exact", head: true }).eq("is_primary", true),
     supabase.from("products").select("updated_at").order("updated_at", { ascending: false }).limit(1).maybeSingle(),
   ]);
 
-  for (const result of [productos, activos, agotados, bajos, sinPeso]) {
+  for (const result of [productos, activos, agotados, bajos, sinPeso, conFoto]) {
     if (result.error) throw result.error;
   }
 
@@ -253,6 +307,7 @@ export async function fetchInventoryTotals(supabase: SupabaseClient): Promise<In
     agotados: agotados.count ?? 0,
     bajos: bajos.count ?? 0,
     withoutWeight: sinPeso.count ?? 0,
+    conFoto: conFoto.count ?? 0,
     // La antigüedad es un dato de apoyo: si esta consulta falla, la sección
     // tiene que abrir igual y decir que no se sabe de cuándo son los datos.
     updatedAt: (ultimo.data as { updated_at: string } | null)?.updated_at ?? null,
@@ -334,7 +389,7 @@ export async function searchActiveProducts(
     .range(offset, offset + limit - 1);
 
   if (error) throw error;
-  return ((data ?? []) as unknown as RawProduct[]).map(mapProduct);
+  return ((data ?? []) as unknown as RawProduct[]).map((row) => mapProduct(row, supabase));
 }
 
 /**
@@ -384,5 +439,5 @@ export async function searchProductsForLookup(
     .range(offset, offset + limit - 1);
 
   if (error) throw error;
-  return ((data ?? []) as unknown as RawProduct[]).map(mapProduct);
+  return ((data ?? []) as unknown as RawProduct[]).map((row) => mapProduct(row, supabase));
 }

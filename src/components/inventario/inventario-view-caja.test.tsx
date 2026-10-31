@@ -71,6 +71,7 @@ const PRODUCTO: Product = {
   saintCode: null,
   saintAddedAt: null,
   saintRemovedAt: null,
+  fotos: [],
   shippingFeeUsd: null,
   precioDivisaUsd: null,
 };
@@ -81,7 +82,7 @@ function pintar(role: Agent["role"]) {
       currentAgent={agente(role)}
       products={[PRODUCTO]}
       total={1}
-      totals={{ productos: 1, activos: 1, agotados: 0, bajos: 0, withoutWeight: 1, updatedAt: new Date().toISOString() }}
+      totals={{ productos: 1, activos: 1, agotados: 0, bajos: 0, withoutWeight: 1, conFoto: 0, updatedAt: new Date().toISOString() }}
       catalog={{ engineFamilies: 1, commercialModels: 1, modelEngineLinks: 1, compatibilityRules: 1, searchSynonyms: 1 }}
       params={{ query: "", filter: "todos", sort: "nombre", page: 1 }}
       bcvRate={{ rate: 40, rateDate: "2026-10-13", isStale: false }}
@@ -150,7 +151,7 @@ describe("InventarioView — la caja no ve el precio estándar", () => {
         currentAgent={agente("caja")}
         products={[{ ...PRODUCTO, weightKg: 1, shippingFeeUsd: 1.4 }]}
         total={1}
-        totals={{ productos: 1, activos: 1, agotados: 0, bajos: 0, withoutWeight: 0, updatedAt: new Date().toISOString() }}
+        totals={{ productos: 1, activos: 1, agotados: 0, bajos: 0, withoutWeight: 0, conFoto: 0, updatedAt: new Date().toISOString() }}
         catalog={{ engineFamilies: 1, commercialModels: 1, modelEngineLinks: 1, compatibilityRules: 1, searchSynonyms: 1 }}
         params={{ query: "", filter: "todos", sort: "nombre", page: 1 }}
         bcvRate={{ rate: 40, rateDate: "2026-10-13", isStale: false }}

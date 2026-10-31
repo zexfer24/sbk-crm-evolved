@@ -79,6 +79,7 @@ function product(over: Partial<Product> = {}): Product {
     saintCode: null,
     saintAddedAt: null,
     saintRemovedAt: null,
+    fotos: [],
     ...over,
   };
 }

@@ -60,11 +60,11 @@ function numeroONull(valor: number | string | null): number | null {
   return valor === null ? null : Number(valor);
 }
 
-function mapItem(row: RawPresupuestoItem): PresupuestoItem {
+function mapItem(row: RawPresupuestoItem, supabase: SupabaseClient): PresupuestoItem {
   return {
     id: row.id,
     productId: row.product_id,
-    product: mapProduct(row.product),
+    product: mapProduct(row.product, supabase),
     quantity: row.quantity,
     // Defensivo: solo "estandar" cobra el envío; cualquier otra cosa es promoción.
     priceKind: row.price_kind === "estandar" ? "estandar" : "promocion",
@@ -72,7 +72,7 @@ function mapItem(row: RawPresupuestoItem): PresupuestoItem {
   };
 }
 
-function mapPresupuesto(row: RawPresupuesto): Presupuesto {
+function mapPresupuesto(row: RawPresupuesto, supabase: SupabaseClient): Presupuesto {
   // La base no garantiza el orden del embed: por fecha de alta y, como los
   // renglones de un mismo guardado comparten `created_at`, el id desempata.
   const items = [...(row.items ?? [])].sort(
@@ -91,7 +91,7 @@ function mapPresupuesto(row: RawPresupuesto): Presupuesto {
     creadoPorNombre: row.creador?.full_name ?? row.creador?.display_name ?? null,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
-    items: items.map(mapItem),
+    items: items.map((item) => mapItem(item, supabase)),
   };
 }
 
@@ -114,7 +114,7 @@ export async function fetchPresupuestos(
 
   const { data, error } = await consulta.order("updated_at", { ascending: false }).limit(LIMITE_PRESUPUESTOS);
   if (error) throw error;
-  return ((data ?? []) as unknown as RawPresupuesto[]).map(mapPresupuesto);
+  return ((data ?? []) as unknown as RawPresupuesto[]).map((row) => mapPresupuesto(row, supabase));
 }
 
 export interface GuardarPresupuestoInput {

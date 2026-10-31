@@ -18,8 +18,13 @@ import { usdFromBs } from "@/lib/usd-price";
  * retiraron.
  */
 
-/** Por debajo o igual a esto, el repuesto se muestra en amarillo. */
-export const LOW_STOCK_THRESHOLD = 3;
+/**
+ * Por debajo o igual a esto (y por encima de 0), el repuesto se muestra en
+ * naranja. Pasó de 3 a 5 el 30/10/2026 por pedido del operador (plan «Cada
+ * repuesto con su foto», D6): más de 5 verde, de 1 a 5 naranja, 0 rojo. La IA
+ * no usa este umbral; solo la lista, el filtro «Bajo stock» y su contador.
+ */
+export const LOW_STOCK_THRESHOLD = 5;
 
 export type StockLevel = "agotado" | "bajo" | "disponible";
 
@@ -325,6 +330,27 @@ export function formatWeightInput(weightKg: number | null): string {
 }
 
 // ---------------------------------------------------------------------------
+// Listo para Cashea
+// ---------------------------------------------------------------------------
+
+/**
+ * Qué le falta a un repuesto para salir en Cashea con envío gratis (30/10/2026,
+ * plan «Cada repuesto con su foto»). Cuatro criterios, en este orden —el orden
+ * en que se le dice al asesor qué cargar—: foto principal, peso, precio divisa
+ * de SAINT y activo en Saint. El peso usa la misma regla que «Sin peso»
+ * (`sinPeso`: null y 0 cuentan como sin cargar) y el precio divisa la misma que
+ * `precioDivisaDisplay` (null, 0 o negativo no es un precio).
+ */
+export function casheaReadiness(product: Product): { listo: boolean; faltan: string[] } {
+  const faltan: string[] = [];
+  if (product.fotos.length === 0) faltan.push("Foto principal");
+  if (sinPeso(product.weightKg)) faltan.push("Peso cargado");
+  if (precioDivisaDisplay(product).estado !== "ok") faltan.push("Precio divisa en SAINT");
+  if (!product.isActive) faltan.push("Activo en Saint");
+  return { listo: faltan.length === 0, faltan };
+}
+
+// ---------------------------------------------------------------------------
 // Resumen de la página visible
 // ---------------------------------------------------------------------------
 
@@ -378,7 +404,7 @@ export function summarizeInventory(products: Product[]): InventorySummary {
 // Estado de la lista, leído de la URL
 // ---------------------------------------------------------------------------
 
-export type InventoryFilter = "todos" | "agotados" | "bajo-stock" | "inactivos" | "sin-peso";
+export type InventoryFilter = "todos" | "agotados" | "bajo-stock" | "inactivos" | "sin-peso" | "sin-foto";
 /**
  * `existencia` (13/10/2026, plan "Inventario y caja", T4) es el orden POR
  * DEFECTO del filtro «Sin peso» —lo que más hay en el mostrador primero—, no
@@ -389,7 +415,7 @@ export type InventoryFilter = "todos" | "agotados" | "bajo-stock" | "inactivos" 
  */
 export type InventorySort = "nombre" | "stock" | "precio" | "existencia";
 
-const FILTERS: InventoryFilter[] = ["todos", "agotados", "bajo-stock", "inactivos", "sin-peso"];
+const FILTERS: InventoryFilter[] = ["todos", "agotados", "bajo-stock", "inactivos", "sin-peso", "sin-foto"];
 const SORTS: InventorySort[] = ["nombre", "stock", "precio", "existencia"];
 
 /**
@@ -415,6 +441,7 @@ export const INVENTORY_FILTER_LABELS: Record<InventoryFilter, string> = {
   "bajo-stock": "Bajo stock",
   inactivos: "Fuera de Saint",
   "sin-peso": "Sin peso",
+  "sin-foto": "Sin foto",
 };
 
 export const INVENTORY_SORT_LABELS: Record<InventorySort, string> = {
@@ -425,6 +452,20 @@ export const INVENTORY_SORT_LABELS: Record<InventorySort, string> = {
 };
 
 export const INVENTORY_PAGE_SIZE = 40;
+
+/**
+ * Cookie donde se recuerda la última vista que eligió cada asesor (30/10/2026,
+ * plan «Cada repuesto con su foto», D4). Va en cookie y no en `localStorage`
+ * para que el servidor pinte la vista correcta en el primer render, sin parpadeo.
+ */
+export const INVENTORY_VIEW_COOKIE = "sbk-inventario-vista";
+
+export type InventoryView = "lista" | "cuadricula";
+
+/** La vista inicial es Lista (D4): solo «cuadricula» exacto la cambia, cualquier otra cosa cae en lista. */
+export function parseInventoryView(valor: string | undefined | null): InventoryView {
+  return valor === "cuadricula" ? "cuadricula" : "lista";
+}
 
 export interface InventoryParams {
   query: string;

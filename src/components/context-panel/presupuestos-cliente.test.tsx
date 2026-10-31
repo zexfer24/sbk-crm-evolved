@@ -61,6 +61,7 @@ function product(over: Partial<Product> = {}): Product {
     saintCode: "A-100",
     saintAddedAt: null,
     saintRemovedAt: null,
+    fotos: [],
     ...over,
   };
 }

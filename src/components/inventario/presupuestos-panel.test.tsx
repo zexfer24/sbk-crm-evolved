@@ -79,6 +79,7 @@ function producto(over: Partial<Product> = {}): Product {
     saintCode: "SA-001",
     saintAddedAt: null,
     saintRemovedAt: null,
+    fotos: [],
     shippingFeeUsd: null,
     precioDivisaUsd: null,
     ...over,

@@ -1,10 +1,14 @@
 import { describe, expect, it } from "vitest";
+import type { SupabaseClient } from "@supabase/supabase-js";
 import type { Product } from "@/lib/types";
 import {
+  INVENTORY_FILTER_LABELS,
   INVENTORY_PAGE_SIZE,
+  INVENTORY_VIEW_COOKIE,
   LOW_STOCK_THRESHOLD,
   NEW_FROM_SAINT_DAYS,
   aiVisibility,
+  casheaReadiness,
   formatWeightInput,
   inventoryFilterHref,
   inventoryHref,
@@ -14,6 +18,7 @@ import {
   ordenPorDefecto,
   paginaFueraDeRango,
   parseInventoryParams,
+  parseInventoryView,
   parseWeightInput,
   precioDivisaDisplay,
   priceDisplay,
@@ -62,6 +67,7 @@ function product(over: Partial<Product> = {}): Product {
     saintCode: null,
     saintAddedAt: null,
     saintRemovedAt: null,
+    fotos: [],
     ...over,
   };
 }
@@ -72,13 +78,22 @@ describe("stockLevel", () => {
     expect(stockLevel(product({ stockQuantity: -2 }))).toBe("agotado");
   });
 
-  it("marca bajo hasta el umbral inclusive", () => {
+  // 30/10/2026 (plan «Cada repuesto con su foto»): el umbral sube de 3 a 5 por
+  // pedido del operador — más de 5 verde, 1 a 5 naranja, 0 rojo. Los límites van
+  // con LITERALES, no con el símbolo: probar el tope contra su propia constante
+  // no detecta que alguien cambie el número (trampa del 20/9/2026).
+  it("marca bajo de 1 a 5 inclusive", () => {
     expect(stockLevel(product({ stockQuantity: 1 }))).toBe("bajo");
-    expect(stockLevel(product({ stockQuantity: LOW_STOCK_THRESHOLD }))).toBe("bajo");
+    expect(stockLevel(product({ stockQuantity: 3 }))).toBe("bajo");
+    expect(stockLevel(product({ stockQuantity: 5 }))).toBe("bajo");
   });
 
-  it("marca disponible por encima del umbral", () => {
-    expect(stockLevel(product({ stockQuantity: LOW_STOCK_THRESHOLD + 1 }))).toBe("disponible");
+  it("marca disponible con 6 o más", () => {
+    expect(stockLevel(product({ stockQuantity: 6 }))).toBe("disponible");
+  });
+
+  it("el umbral exportado vale 5", () => {
+    expect(LOW_STOCK_THRESHOLD).toBe(5);
   });
 });
 
@@ -318,6 +333,18 @@ describe("standardPriceAmounts", () => {
   });
 });
 
+/**
+ * Doble mínimo de Supabase para `mapProduct`: solo `storage.from(bucket).getPublicUrl`,
+ * que es lo único que toca (arma el texto de la URL, no hace red).
+ */
+const fakeStorageSupabase = {
+  storage: {
+    from: (bucket: string) => ({
+      getPublicUrl: (path: string) => ({ data: { publicUrl: `https://sb.test/storage/v1/object/public/${bucket}/${path}` } }),
+    }),
+  },
+} as unknown as SupabaseClient;
+
 describe("mapProduct / PRODUCT_SELECT (tarifa MRW)", () => {
   const raw = (over: Partial<RawProduct> = {}): RawProduct => ({
     id: "p1",
@@ -336,16 +363,17 @@ describe("mapProduct / PRODUCT_SELECT (tarifa MRW)", () => {
     saint_added_at: null,
     saint_removed_at: null,
     product_compatibility: null,
+    product_photos: null,
     ...over,
   });
 
   it("convierte la tarifa que PostgREST entrega como texto", () => {
-    expect(mapProduct(raw({ tarifa_envio_usd: "1.40" })).shippingFeeUsd).toBe(1.4);
-    expect(mapProduct(raw({ tarifa_envio_usd: 2.5 })).shippingFeeUsd).toBe(2.5);
+    expect(mapProduct(raw({ tarifa_envio_usd: "1.40" }), fakeStorageSupabase).shippingFeeUsd).toBe(1.4);
+    expect(mapProduct(raw({ tarifa_envio_usd: 2.5 }), fakeStorageSupabase).shippingFeeUsd).toBe(2.5);
   });
 
   it("null se queda null", () => {
-    expect(mapProduct(raw({ tarifa_envio_usd: null })).shippingFeeUsd).toBeNull();
+    expect(mapProduct(raw({ tarifa_envio_usd: null }), fakeStorageSupabase).shippingFeeUsd).toBeNull();
   });
 
   it("el select pide tarifa_envio_usd", () => {
@@ -355,16 +383,48 @@ describe("mapProduct / PRODUCT_SELECT (tarifa MRW)", () => {
   // 30/10/2026 (plan "Precio divisa desde SAINT"): campo calculado de PostgREST,
   // `numeric` que puede llegar como texto.
   it("convierte el precio divisa que PostgREST entrega como texto o número", () => {
-    expect(mapProduct(raw({ precio_divisa_usd: "12.35" })).precioDivisaUsd).toBe(12.35);
-    expect(mapProduct(raw({ precio_divisa_usd: 7 })).precioDivisaUsd).toBe(7);
+    expect(mapProduct(raw({ precio_divisa_usd: "12.35" }), fakeStorageSupabase).precioDivisaUsd).toBe(12.35);
+    expect(mapProduct(raw({ precio_divisa_usd: 7 }), fakeStorageSupabase).precioDivisaUsd).toBe(7);
   });
 
   it("precio divisa null se queda null (nunca 0)", () => {
-    expect(mapProduct(raw({ precio_divisa_usd: null })).precioDivisaUsd).toBeNull();
+    expect(mapProduct(raw({ precio_divisa_usd: null }), fakeStorageSupabase).precioDivisaUsd).toBeNull();
   });
 
   it("el select pide precio_divisa_usd", () => {
     expect(PRODUCT_SELECT).toContain("precio_divisa_usd");
+  });
+
+  // 30/10/2026 (plan «Cada repuesto con su foto», T2).
+  it("el select trae las fotos con product_photos(id, storage_path, is_primary, position)", () => {
+    expect(PRODUCT_SELECT).toContain("product_photos(id, storage_path, is_primary, position)");
+  });
+
+  it("sin fotos (null o vacío) el repuesto trae fotos: []", () => {
+    expect(mapProduct(raw({ product_photos: null }), fakeStorageSupabase).fotos).toEqual([]);
+    expect(mapProduct(raw({ product_photos: [] }), fakeStorageSupabase).fotos).toEqual([]);
+  });
+
+  it("ordena las fotos (principal primero, luego position) y arma la URL pública de cada una", () => {
+    const fotos = mapProduct(
+      raw({
+        product_photos: [
+          { id: "b", storage_path: "p1/b.jpg", is_primary: false, position: 2 },
+          { id: "a", storage_path: "p1/a.jpg", is_primary: true, position: 3 },
+          { id: "c", storage_path: "p1/c.jpg", is_primary: false, position: 1 },
+        ],
+      }),
+      fakeStorageSupabase
+    ).fotos;
+
+    expect(fotos.map((f) => f.id)).toEqual(["a", "c", "b"]);
+    expect(fotos[0]).toEqual({
+      id: "a",
+      storagePath: "p1/a.jpg",
+      url: "https://sb.test/storage/v1/object/public/product-photos/p1/a.jpg",
+      isPrimary: true,
+      position: 3,
+    });
   });
 });
 
@@ -453,6 +513,74 @@ describe("summarizeInventory", () => {
       product({ id: "c", weightKg: null, isActive: false }),
     ]);
     expect(resumen.withoutWeight).toBe(1);
+  });
+});
+
+// 30/10/2026 (plan «Cada repuesto con su foto», T2): lo que Cashea exige para
+// el envío gratis, en el orden en que se le dice al asesor qué le falta.
+describe("casheaReadiness", () => {
+  const foto = { id: "f1", storagePath: "p1/f1.jpg", url: "https://x/f1.jpg", isPrimary: true, position: 0 };
+  const listo = (over: Partial<Product> = {}) =>
+    product({ fotos: [foto], weightKg: 1.5, precioDivisaUsd: 12, isActive: true, ...over });
+
+  it("con foto, peso, precio divisa y activo está listo", () => {
+    expect(casheaReadiness(listo())).toEqual({ listo: true, faltan: [] });
+  });
+
+  it("sin foto falta «Foto principal»", () => {
+    expect(casheaReadiness(listo({ fotos: [] }))).toEqual({ listo: false, faltan: ["Foto principal"] });
+  });
+
+  it("peso null o 0 falta «Peso cargado»; uno positivo no", () => {
+    expect(casheaReadiness(listo({ weightKg: null })).faltan).toEqual(["Peso cargado"]);
+    expect(casheaReadiness(listo({ weightKg: 0 })).faltan).toEqual(["Peso cargado"]);
+    expect(casheaReadiness(listo({ weightKg: 0.001 })).faltan).toEqual([]);
+  });
+
+  it("precio divisa null o 0 falta «Precio divisa en SAINT»", () => {
+    expect(casheaReadiness(listo({ precioDivisaUsd: null })).faltan).toEqual(["Precio divisa en SAINT"]);
+    expect(casheaReadiness(listo({ precioDivisaUsd: 0 })).faltan).toEqual(["Precio divisa en SAINT"]);
+  });
+
+  it("inactivo falta «Activo en Saint»", () => {
+    expect(casheaReadiness(listo({ isActive: false }))).toEqual({ listo: false, faltan: ["Activo en Saint"] });
+  });
+
+  it("varios faltantes salen en el orden foto, peso, precio divisa, activo", () => {
+    const r = casheaReadiness(product({ fotos: [], weightKg: null, precioDivisaUsd: null, isActive: false }));
+    expect(r).toEqual({
+      listo: false,
+      faltan: ["Foto principal", "Peso cargado", "Precio divisa en SAINT", "Activo en Saint"],
+    });
+  });
+});
+
+describe("parseInventoryView", () => {
+  it("solo «cuadricula» devuelve cuadrícula", () => {
+    expect(parseInventoryView("cuadricula")).toBe("cuadricula");
+  });
+
+  it("«lista», vacío, undefined, null y basura devuelven lista (D4: la vista inicial es Lista)", () => {
+    expect(parseInventoryView("lista")).toBe("lista");
+    expect(parseInventoryView("")).toBe("lista");
+    expect(parseInventoryView(undefined)).toBe("lista");
+    expect(parseInventoryView(null)).toBe("lista");
+    expect(parseInventoryView("basura")).toBe("lista");
+  });
+
+  it("la cookie se llama sbk-inventario-vista", () => {
+    expect(INVENTORY_VIEW_COOKIE).toBe("sbk-inventario-vista");
+  });
+});
+
+describe("filtro «Sin foto»", () => {
+  it("parseInventoryParams lo acepta y su etiqueta es «Sin foto»", () => {
+    expect(parseInventoryParams({ filtro: "sin-foto" }).filter).toBe("sin-foto");
+    expect(INVENTORY_FILTER_LABELS["sin-foto"]).toBe("Sin foto");
+  });
+
+  it("no cambia el orden por defecto: nombre", () => {
+    expect(parseInventoryParams({ filtro: "sin-foto" }).sort).toBe("nombre");
   });
 });
 

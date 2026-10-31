@@ -70,6 +70,7 @@ const BUJIA: Product = {
   saintCode: null,
   saintAddedAt: null,
   saintRemovedAt: null,
+  fotos: [],
 };
 
 // T8 (28/9/2026, D6): el carrito guarda producto y cantidad, y el precio es el
