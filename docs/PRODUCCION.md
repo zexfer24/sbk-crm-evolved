@@ -3137,6 +3137,53 @@ calculadora. No registra usos de mensajes rápidos, porque no tiene chat.
 
 ---
 
+### Fotos de los repuestos (30/10/2026)
+
+Plan «Cada repuesto con su foto» (`docs/planes/2026-10-30-fotos-de-repuestos.md`).
+La entrega sale de `bd4d98e`, que ya necesita `20261030010000` (precio divisa)
+aplicada. Suma una sola migración, `20261031010000_fotos_de_productos.sql`, y
+ninguna variable de entorno.
+
+**Cómo aplicar la migración:** antes del código, igual que las demás, en una
+sola transacción:
+
+```bash
+PGOPTIONS="-c lock_timeout=5s" psql -1 -v ON_ERROR_STOP=1 -f supabase/migrations/20261031010000_fotos_de_productos.sql
+```
+
+Sin `-1` la guarda de la migración aborta con un mensaje explícito. Crea la tabla
+`product_photos`, el bucket `product-photos` y su política de subida, y termina
+con su propia autoverificación y `notify pgrst`.
+
+**Verificación SQL tras aplicar:**
+
+- `select public, file_size_limit, allowed_mime_types from storage.buckets where id = 'product-photos';` → `true | 5242880 | {image/jpeg,image/png}`
+- `select relrowsecurity from pg_class where relname = 'product_photos';` → `true`
+- `select has_table_privilege('anon', 'public.product_photos', 'select');` → `false`
+
+**Verificación con curl desde el VPS:** después de subir una foto de prueba desde
+la app (con una cuenta de supervisor), el Storage tiene que servir la URL pública
+sin sesión, con 200:
+
+```bash
+curl -s -o /dev/null -w '%{http_code}\n' "https://<dominio supabase>/storage/v1/object/public/product-photos/<ruta>"
+```
+
+`<ruta>` es el `storage_path` de la fila: `select storage_path from product_photos order by created_at desc limit 1;`.
+
+**Riesgo antes de anunciar la función:** hacer un envío real de una foto a un
+número del equipo (desde el buscador del chat, «Enviar foto») y mirar el access
+log de Traefik buscando el user agent `facebookexternalua`. El 21/9 una descarga
+de Meta murió en Traefik antes de llegar a Envoy (ver §12). No anunciar la función
+a los asesores hasta verlo.
+
+**Rollback:** el código viejo ignora la tabla y el bucket, así que no hace falta
+revertir la migración. Revertir solo el código (a `bd4d98e`) deja la tabla vacía e
+inerte. Lo que NO se puede hacer es desplegar el código nuevo sin la migración:
+`PRODUCT_SELECT` pide `product_photos` y PostgREST responde 400.
+
+---
+
 ## Comprobación final
 
 Con todo configurado, esta lista debe pasar entera:

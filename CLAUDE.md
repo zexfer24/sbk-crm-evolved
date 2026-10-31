@@ -3190,6 +3190,17 @@ dejar rastro es lo que hacía desaparecer leads.
   cliente. Es USD de SAINT, no pasa por `usdFromBs`. `PRODUCT_SELECT` lo pide
   siempre: sin la migración, el inventario entero da 400.
 
+- **Las fotos de los repuestos viven en `public.product_photos` (migración
+  `20261031010000`, 30/10/2026): una principal por repuesto y tope de 6, por
+  trigger.** El bucket es PÚBLICO (`product-photos`); solo supervisor y admin
+  escriben (RLS y política de storage); la caja las lee por `can_read_inventory()`.
+  Son JPEG (≤ 1600 px, ≤ 1 MB), nunca WebP: Meta no lo acepta. Borrar una foto
+  borra la fila, NO el objeto, porque los mensajes enviados lo referencian;
+  reemplazar hace UPDATE de la misma fila y deja el objeto anterior. El pie al
+  enviar sale de `formatQuote`, nunca dice «envío». `LOW_STOCK_THRESHOLD` vale 5
+  (verde >5, naranja 1–5, rojo 0); solo lo usa la interfaz. La vista
+  Lista/Cuadrícula va en la cookie `sbk-inventario-vista`, que lee `page.tsx`.
+
 ---
 
 # RTK (Rust Token Killer) - Token-Optimized Commands
