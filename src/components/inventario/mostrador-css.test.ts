@@ -152,8 +152,8 @@ describe("la hoja de estilos del mostrador", () => {
     expect(
       barra,
       "el `top` suma el alto de la calculadora, que el componente publica en --inv-calc-alto",
-    ).toMatch(/top:[^;]*var\(--inv-calc-alto/);
-    expect(barra, "sin fondo propio las filas se verían a través de la barra").toMatch(/background:/);
+    ).toMatch(/--inv-barra-top:[^;]*var\(--inv-calc-alto/);
+    expect(barra).toMatch(/top:\s*var\(--inv-barra-top\)\s*;/);
     const zBarra = /z-index:\s*(\d+)\s*;/.exec(barra);
     const zCalc = /z-index:\s*(\d+)\s*;/.exec(bloque(css, ".inv-calc"));
     expect(zBarra, "la barra sticky necesita z-index para quedar sobre las filas").not.toBeNull();
@@ -163,16 +163,49 @@ describe("la hoja de estilos del mostrador", () => {
     );
   });
 
+  /**
+   * 30/10/2026: pegada, la barra dejaba ver las filas por el hueco de arriba
+   * (los 16px del `top`, o los 8px bajo la calculadora) y por las esquinas
+   * redondeadas, y el asesor confundía esas filas con las de la lista. Una capa
+   * del color de la página tapa el hueco y las esquinas; otra, redondeada, es el
+   * fondo de la barra. Las dos quedan DEBAJO del contenido de la barra
+   * (z-index negativo dentro de su propio contexto, que abre el sticky + z-index).
+   */
+  it("pegada, no deja ver las filas por el hueco de arriba ni por las esquinas", async () => {
+    const css = await leerCss();
+    const tapa = bloque(css, ".inv-panel-lista > .cli-toolbar::before");
+    const fondo = bloque(css, ".inv-panel-lista > .cli-toolbar::after");
+
+    expect(tapa).toMatch(/position:\s*absolute\s*;/);
+    expect(tapa, "la tapa es del color de la página, no de la barra").toMatch(/background:\s*var\(--lm-canvas\)\s*;/);
+    expect(tapa, "arranca donde termina el `top`").toMatch(/top:\s*calc\(-1\s*\*\s*var\(--inv-barra-top\)\)\s*;/);
+    expect(tapa, "cubre el hueco Y el alto de las esquinas").toMatch(
+      /height:\s*calc\(var\(--inv-barra-top\)\s*\+\s*var\(--lm-radius-panel\)\)\s*;/,
+    );
+    expect(tapa).toMatch(/z-index:\s*-2\s*;/);
+
+    expect(fondo).toMatch(/position:\s*absolute\s*;/);
+    expect(fondo).toMatch(/inset:\s*0\s*;/);
+    expect(fondo).toMatch(/background:\s*var\(--lm-surface\)\s*;/);
+    expect(fondo).toMatch(/border-radius:\s*var\(--lm-radius-panel\)\s+var\(--lm-radius-panel\)\s+0\s+0\s*;/);
+    expect(fondo, "el fondo va sobre la tapa").toMatch(/z-index:\s*-1\s*;/);
+  });
+
   it("desde 1720px la barra de la lista se pega a 16px: la calculadora está al costado, no encima", async () => {
     const ancho = media(await leerCss(), "min-width: 1720px");
 
-    expect(ancho).toMatch(/\.inv-panel-lista\s*>\s*\.cli-toolbar\s*\{[^}]*top:\s*16px\s*;/);
+    expect(ancho).toMatch(/\.inv-panel-lista\s*>\s*\.cli-toolbar\s*\{[^}]*--inv-barra-top:\s*16px\s*;/);
   });
 
   it("hasta 760px la barra de la lista no es sticky, igual que la calculadora: taparía filas en el celular", async () => {
     const angosto = media(await leerCss(), "max-width: 760px");
 
     expect(angosto).toMatch(/\.inv-panel-lista\s*>\s*\.cli-toolbar\s*\{[^}]*position:\s*static\s*;/);
+    // Sin sticky no hay hueco que tapar, y una tapa absoluta taparía la calculadora de encima.
+    expect(angosto).toMatch(/\.inv-panel-lista\s*>\s*\.cli-toolbar\s*\{[^}]*background:\s*var\(--lm-surface\)\s*;/);
+    expect(angosto).toMatch(
+      /\.inv-panel-lista\s*>\s*\.cli-toolbar::before,\s*\.inv-panel-lista\s*>\s*\.cli-toolbar::after\s*\{[^}]*display:\s*none\s*;/,
+    );
   });
 
   it("en la barra los niveles caben en una sola fila de seis", async () => {

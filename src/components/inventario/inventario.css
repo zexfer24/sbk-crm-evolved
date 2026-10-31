@@ -50,8 +50,8 @@
  * estados) a `.inv-acciones`, dos botones apilados; 140px alcanzan para «En
  * carrito ×99» (ícono de 14px + 6px de hueco + ~80px de texto a 12px + el
  * padding de la píldora). A 160px, las insignias que quedan en `.inv-status`
- * ("La IA lo ofrece", "Sin peso", "Nuevo desde Saint") bajan de línea si no
- * caben juntas, como ya hacían.
+ * ("Sin stock", "Sin peso", "Nuevo desde Saint") bajan de línea si no
+ * caben juntas, como ya hacían. ("La IA lo ofrece" se quitó el 30/10/2026.)
  *
  * 30/10/2026 (plan "Precio divisa desde SAINT"): suma OTRA columna fija,
  * la de Precio divisa, entre promoción y estándar (mismo motivo: una columna
