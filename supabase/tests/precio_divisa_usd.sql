@@ -1,15 +1,22 @@
 -- ===========================================================================
 -- Precio divisa desde SAINT (30/10/2026, migración
--- 20261030010000_precio_divisa_saint.sql).
+-- 20261030010000_precio_divisa_saint.sql; corregido el 31/10/2026 por
+-- 20261031020000_precio_divisa_precioi3.sql).
 --
--- Fija: (1) que `precio_divisa_usd(products)` devuelva `round(precio1, 2)` de
+-- Historia: la primera versión leía `saprod.precio1`, que en SAINT vale 0; el
+-- precio divisa real es `PrecioI3` (= Precio3 / tasa). Este test mide la
+-- función FINAL (las dos migraciones aplicadas, en ese orden).
+--
+-- Fija: (1) que `precio_divisa_usd(products)` devuelva `round(precioi3, 2)` de
 -- la réplica de SAINT (`saprod`), incluidos 0 y negativos (la interfaz decide
--- que <= 0 es "sin precio", la función no lo oculta); (2) que devuelva null
--- sin tabla, sin columna, sin fila, sin `saint_code` o cuando quien llama con
--- rol `authenticated` no tiene fila en `agents` (la caja SÍ ve el precio
--- divisa: es `can_read_inventory()`, no `is_agent()`); (3) que `saint.saprod`
--- gane a `public.saprod`, la misma prioridad que `saint.sync_products()`;
--- (4) que `anon` no pueda ejecutarla; (5) que re-ejecutar la migración sea
+-- que <= 0 es "sin precio", la función no lo oculta) y que IGNORE `precio1`
+-- (caso de la bujía: precio1 = 0, precioi3 = 1.500 -> 1.50); (2) que devuelva
+-- null sin tabla, sin columna `precioi3` (aunque exista `precio1`: nunca cae a
+-- ella), sin fila, sin `saint_code` o cuando quien llama con rol
+-- `authenticated` no tiene fila en `agents` (la caja SÍ ve el precio divisa:
+-- es `can_read_inventory()`, no `is_agent()`); (3) que `saint.saprod` gane a
+-- `public.saprod`, la misma prioridad que `saint.sync_products()`; (4) que
+-- `anon` no pueda ejecutarla; (5) que re-ejecutar las migraciones sea
 -- idempotente y le cierre `saprod` a `anon`/`authenticated`.
 --
 -- NECESITA UNA BASE SIN `saprod` (local y CI no la tienen: la crea y administra
@@ -74,15 +81,22 @@ end $$;
 -- 1. Sin tabla saprod -> null.
 select pg_temp.esperar('1 sin tabla saprod', pg_temp.divisa('A2TEST-1'), 'null');
 
--- 2. Tabla sin columna precio1 -> null.
+-- 2. Tabla sin columna precioi3 -> null. Con `precio1` pero sin `precioi3`
+--    también null: la función NUNCA cae a la columna vieja.
 create table public.saprod (codprod text primary key, descrip text);
 insert into public.saprod (codprod, descrip) values ('A2TEST-1', 'Producto de prueba');
-select pg_temp.esperar('2 saprod sin precio1', pg_temp.divisa('A2TEST-1'), 'null');
-
--- 3. Con precio1 -> round(,2), como postgres y como service_role.
+select pg_temp.esperar('2 saprod sin precioi3', pg_temp.divisa('A2TEST-1'), 'null');
 alter table public.saprod add column precio1 numeric(28, 4);
-update public.saprod set precio1 = 12.3456 where codprod = 'A2TEST-1';
-select pg_temp.esperar('3 postgres', pg_temp.divisa('A2TEST-1'), '12.35');
+update public.saprod set precio1 = 99 where codprod = 'A2TEST-1';
+select pg_temp.esperar('2 saprod con precio1 = 99 y sin precioi3', pg_temp.divisa('A2TEST-1'), 'null');
+
+-- 3. Con precioi3 -> round(,2), como postgres y como service_role. Caso de la
+--    bujía: precio1 = 0 (así viene de SAINT) y precioi3 = 1.500 -> 1.50.
+alter table public.saprod add column precioi3 numeric(28, 4);
+update public.saprod set precio1 = 0, precioi3 = 1.500 where codprod = 'A2TEST-1';
+select pg_temp.esperar('3 bujía: precio1 = 0 y precioi3 = 1.500', pg_temp.divisa('A2TEST-1'), '1.50');
+update public.saprod set precio1 = 99, precioi3 = 12.3456 where codprod = 'A2TEST-1';
+select pg_temp.esperar('3 postgres (ignora precio1 = 99)', pg_temp.divisa('A2TEST-1'), '12.35');
 -- Además, vista sobre la fila real de products (como lo pide PostgREST).
 select pg_temp.esperar('3 fila real de products',
   (select coalesce(public.precio_divisa_usd(p)::text, 'null') from public.products p where p.id = 'd9d9d9d9-1000-0000-0000-000000000001'),
@@ -92,15 +106,15 @@ set local role service_role;
 select pg_temp.esperar('3 service_role', pg_temp.divisa('A2TEST-1'), '12.35');
 reset role;
 
--- 4. precio1 null -> null; precio1 = 0 -> 0 (la función no lo oculta);
---    negativo -> tal cual.
-update public.saprod set precio1 = null where codprod = 'A2TEST-1';
-select pg_temp.esperar('4 precio1 null', pg_temp.divisa('A2TEST-1'), 'null');
-update public.saprod set precio1 = 0 where codprod = 'A2TEST-1';
-select pg_temp.esperar('4 precio1 = 0', pg_temp.divisa('A2TEST-1'), '0.00');
-update public.saprod set precio1 = -1.5 where codprod = 'A2TEST-1';
-select pg_temp.esperar('4 precio1 negativo', pg_temp.divisa('A2TEST-1'), '-1.50');
-update public.saprod set precio1 = 12.3456 where codprod = 'A2TEST-1';
+-- 4. precioi3 null -> null; precioi3 = 0 -> 0 (la función no lo oculta);
+--    negativo -> tal cual. (precio1 se queda en 99: no influye.)
+update public.saprod set precioi3 = null where codprod = 'A2TEST-1';
+select pg_temp.esperar('4 precioi3 null', pg_temp.divisa('A2TEST-1'), 'null');
+update public.saprod set precioi3 = 0 where codprod = 'A2TEST-1';
+select pg_temp.esperar('4 precioi3 = 0', pg_temp.divisa('A2TEST-1'), '0.00');
+update public.saprod set precioi3 = -1.5 where codprod = 'A2TEST-1';
+select pg_temp.esperar('4 precioi3 negativo', pg_temp.divisa('A2TEST-1'), '-1.50');
+update public.saprod set precioi3 = 12.3456 where codprod = 'A2TEST-1';
 
 -- 5. Sin fila en saprod -> null; sin saint_code -> null.
 select pg_temp.esperar('5 sin fila en saprod', pg_temp.divisa('A2TEST-SIN-FILA'), 'null');
@@ -127,23 +141,31 @@ select pg_temp.esperar('7 authenticated', has_function_privilege('authenticated'
 select pg_temp.esperar('7 service_role', has_function_privilege('service_role', 'public.precio_divisa_usd(public.products)', 'EXECUTE')::text, 'true');
 
 -- 8. saint.saprod gana a public.saprod (misma prioridad que sync_products).
-create table saint.saprod (codprod text primary key, precio1 numeric(28, 4));
+create table saint.saprod (codprod text primary key, precioi3 numeric(28, 4));
 insert into saint.saprod values ('A2TEST-1', 99.999);
 select pg_temp.esperar('8 saint.saprod gana', pg_temp.divisa('A2TEST-1'), '100.00');
 drop table saint.saprod;
 select pg_temp.esperar('8 vuelve a public.saprod', pg_temp.divisa('A2TEST-1'), '12.35');
 
--- 9. La migración cierra saprod y es idempotente.
+-- 9. Las migraciones cierran saprod y son idempotentes. Se reaplican en el
+--    orden real (la corrección 20261031020000 va después y deja la función
+--    final: los casos siguientes siguen midiendo precioi3).
 grant select, insert on public.saprod to anon, authenticated;
 select pg_temp.esperar('9 antes: anon tiene select', has_table_privilege('anon', 'public.saprod', 'SELECT')::text, 'true');
 \i supabase/migrations/20261030010000_precio_divisa_saint.sql
+\i supabase/migrations/20261031020000_precio_divisa_precioi3.sql
 select pg_temp.esperar('9 anon sin select', has_table_privilege('anon', 'public.saprod', 'SELECT')::text, 'false');
 select pg_temp.esperar('9 anon sin insert', has_table_privilege('anon', 'public.saprod', 'INSERT')::text, 'false');
 select pg_temp.esperar('9 authenticated sin select', has_table_privilege('authenticated', 'public.saprod', 'SELECT')::text, 'false');
 select pg_temp.esperar('9 authenticated sin insert', has_table_privilege('authenticated', 'public.saprod', 'INSERT')::text, 'false');
 -- Segunda ejecución: idempotente (ON_ERROR_STOP aborta si falla).
 \i supabase/migrations/20261030010000_precio_divisa_saint.sql
+\i supabase/migrations/20261031020000_precio_divisa_precioi3.sql
 select pg_temp.esperar('9 tras 2ª ejecución', pg_temp.divisa('A2TEST-1'), '12.35');
+-- Y la función final es la de precioi3: reaplicar SOLO la nueva sobre una
+-- función ya corregida no la devuelve a precio1.
+select pg_temp.esperar('9 la función final ignora precio1',
+  (select (pg_get_functiondef('public.precio_divisa_usd(public.products)'::regprocedure) like '%precioi3%')::text), 'true');
 
 do $$
 declare
