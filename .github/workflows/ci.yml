@@ -574,6 +574,15 @@ jobs:
         run: |
           psql "postgresql://postgres:postgres@127.0.0.1:54322/postgres"             -v ON_ERROR_STOP=1             -f supabase/tests/saint_telefono_opcional_y_contacto.sql
 
+      # Cada repuesto con su foto T1 (20261031010000, 30/10/2026): la tabla
+      # product_photos (tope de 6, una sola principal, promoción al borrar), su
+      # RLS (lee la caja incluida; escribe solo supervisor/admin) y el bucket
+      # PÚBLICO product-photos (solo supervisor/admin insertan). Corre como
+      # `authenticated` con la RLS real y termina en rollback.
+      - name: fotos_de_productos -- fotos del repuesto, RLS y bucket público
+        run: |
+          psql "postgresql://postgres:postgres@127.0.0.1:54322/postgres"             -v ON_ERROR_STOP=1             -f supabase/tests/fotos_de_productos.sql
+
       # A2 T7, plan "Seba no cotiza lo que no es" (30/9/2026): el ARNÉS del
       # catálogo. Corre el `buildCatalogTool` REAL de Seba sobre los ~149 casos de
       # `casos-a2.ts` contra la base que este mismo job acaba de reconstruir desde
