@@ -1,6 +1,11 @@
 # Entrega «Cada repuesto con su foto» (31/10/2026)
 
-Rama `entrega/fotos-de-repuestos`, partida de `main` = `bd4d98e`. Lleva **UNA migración** (`20261031010000_fotos_de_productos.sql`) y ninguna variable de entorno nueva. Toca la base, el Storage (un bucket público nuevo), la interfaz y los tests.
+Rama `entrega/fotos-de-repuestos`, partida de `main` = `bd4d98e`. Lleva **UNA migración propia** (`20261031010000_fotos_de_productos.sql`) y ninguna variable de entorno nueva. Toca la base, el Storage (un bucket público nuevo), la interfaz y los tests.
+
+**Producción está en `a1db46c` (lo confirmó el operador el 30/10/2026).** Por eso esta entrega despliega, además de las fotos, los 5 commits del precio divisa (`51d86ce..bd4d98e`), que `main` ya tiene pero producción no. Las dos migraciones del rango se aplican **en este orden**:
+
+1. `20261030010000_precio_divisa_saint.sql`. Puede estar ya aplicada: el operador la estaba aplicando el 30/10. El Paso 0 lo comprueba. Si no lo está, se aplica siguiendo `docs/entregas/2026-10-30-precio-divisa.md`.
+2. `20261031010000_fotos_de_productos.sql`.
 
 Qué hace: cada repuesto puede tener hasta 6 fotos, con una sola principal. Solo supervisor y admin las suben, reemplazan, borran y marcan como principal; asesores y caja solo las ven. En `/inventario` la vista es Lista (por defecto) o Cuadrícula, con la caja «Ordenar por», la ficha del repuesto, el filtro «Sin foto», el total «Con foto» y el bajo stock de 1 a 5 unidades. En el buscador del chat, «Enviar foto» manda la principal al cliente con el pie «nombre — $X BCV (Bs. Y)», el mismo formato de Seba; nunca dice «envío».
 
@@ -18,7 +23,7 @@ Plan: `docs/planes/2026-10-30-fotos-de-repuestos.md`.
    git diff --name-only <produccion>..entrega/fotos-de-repuestos -- supabase/migrations
    ```
 
-   Debe salir UNA sola: `20261031010000_fotos_de_productos.sql`. Si aparece `20261028010000` («Facturar en SAINT», teléfono opcional) y no está aplicada en producción, **NO aplicarla con esta entrega**: sigue esperando la confirmación de LiminalReplicant (ver `docs/entregas/2026-10-30-precio-divisa.md`).
+   Con `<produccion>` = `a1db46c` salen DOS: `20261030010000_precio_divisa_saint.sql` y `20261031010000_fotos_de_productos.sql` (comprobado por el orquestador el 30/10/2026). Si aparece `20261028010000` («Facturar en SAINT», teléfono opcional) y no está aplicada en producción, **NO aplicarla con esta entrega**: sigue esperando la confirmación de LiminalReplicant (ver `docs/entregas/2026-10-30-precio-divisa.md`).
 
 2. Consultas de solo lectura:
 
@@ -40,7 +45,7 @@ Plan: `docs/planes/2026-10-30-fotos-de-repuestos.md`.
 Cómo leerlo:
 - `tabla` o `bucket` distintos de null o de 0: ya existe algo. **NO aplicar** sin hablarlo con el operador. La migración es re-ejecutable, pero hay que saber qué quedó.
 - Falta una de las dos funciones: **NO aplicar**. La migración aborta al crear las políticas.
-- `precio_divisa_aplicada` = false: **NO aplicar**. Primero debe estar `20261030010000`.
+- `precio_divisa_aplicada` = false: **todavía NO aplicar la de fotos**. Primero aplicar `20261030010000` siguiendo su propio reporte (`docs/entregas/2026-10-30-precio-divisa.md`, con su Paso 0), volver a correr esta consulta y recién con `true` seguir con `20261031010000`.
 
 ## Pasos en el VPS
 
