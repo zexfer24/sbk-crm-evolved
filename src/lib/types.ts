@@ -1135,8 +1135,10 @@ export interface Product {
    */
   shippingFeeUsd: number | null;
   /**
-   * Precio divisa en USD: el `Precio1` de SAINT (`SAPROD`), que calcula la base
-   * (campo calculado de PostgREST `precio_divisa_usd`, migración 20261030010000).
+   * Precio divisa en USD: el `PrecioI3` de SAINT (`SAPROD`, = Precio3 / tasa, lo
+   * calcula SAINT; corregido el 31/10/2026: no es `Precio1`, que en SAINT vale 0),
+   * que la base expone como campo calculado de PostgREST `precio_divisa_usd`
+   * (migración 20261030010000, corregida a `precioi3` en 20261031020000).
    * Solo informativo (30/10/2026, plan "Precio divisa desde SAINT"): no entra al
    * carrito, presupuestos, factura ni a Seba. `null` = SAINT no trae precio; un
    * 0 o un negativo tampoco es un precio (ver `precioDivisaDisplay`).

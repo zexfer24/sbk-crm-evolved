@@ -63,10 +63,12 @@ const LISTA_BLANCA = new Set(["is_agent", "is_supervisor_or_admin"]);
 
 // Las 32 funciones `security definer` conocidas (31 + precio_divisa_usd,
 // 20261030010000, 30/10/2026: campo calculado de PostgREST sobre `products`
-// que lee `precio1` de la réplica de SAINT (`saprod`) para que el CRM no
-// necesite ningún permiso directo sobre ella; acceso chequeado UNA vez con
+// que lee la réplica de SAINT (`saprod`) para que el CRM no necesite ningún
+// permiso directo sobre ella; acceso chequeado UNA vez con
 // `can_read_inventory()` [la caja SÍ ve el precio divisa], los dos revokes y
-// grant a authenticated/service_role, nunca a LISTA_BLANCA). Las 31
+// grant a authenticated/service_role, nunca a LISTA_BLANCA. Lo que lee era
+// `precio1`, pero SAINT lo deja en 0: 20261031020000 (31/10/2026) la reemplaza
+// leyendo `precioi3`, con los dos revokes de nuevo). Las 31
 // anteriores: 30 + quick_replies_mas_usados,
 // 20261021020000, 21/10/2026: el ranking «Más usados» de los mensajes rápidos
 // lee `quick_reply_uses`, tabla con RLS sin política de select, con
@@ -207,9 +209,11 @@ const FUNCIONES_SECURITY_DEFINER_CONOCIDAS = [
   // fila sobre `quick_reply_uses` (crece cientos de filas por día).
   "quick_replies_mas_usados",
   // 30/10/2026 (20261030010000_precio_divisa_saint.sql): precio divisa =
-  // SAPROD.Precio1 de la réplica de SAINT, leído en vivo; definer para que
+  // SAPROD.PrecioI3 de la réplica de SAINT (corregido el 31/10/2026: era
+  // Precio1, que SAINT deja en 0), leído en vivo; definer para que
   // `authenticated` no necesite permiso sobre `saprod` (que esa misma
-  // migración le cierra), con los dos revokes.
+  // migración le cierra), con los dos revokes. 20261031020000 la reemplaza
+  // leyendo `precioi3`, con los dos revokes de nuevo.
   "precio_divisa_usd",
 ].sort();
 

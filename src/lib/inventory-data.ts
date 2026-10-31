@@ -68,8 +68,9 @@ export interface RawProduct {
   tarifa_envio_usd: number | string | null;
   /**
    * Campo calculado de PostgREST (30/10/2026, plan "Precio divisa desde SAINT",
-   * migración 20261030010000): el `Precio1` de SAINT en USD, ya redondeado a 2
-   * decimales. No es columna de `products` ni está en `database.types.ts`, por
+   * migración 20261030010000, corregida a `PrecioI3` en 20261031020000): el
+   * `PrecioI3` de SAINT en USD (no `Precio1`, que vale 0 en SAINT), ya redondeado
+   * a 2 decimales. No es columna de `products` ni está en `database.types.ts`, por
    * eso se tipa a mano. `numeric` puede llegar como texto.
    */
   precio_divisa_usd: number | string | null;

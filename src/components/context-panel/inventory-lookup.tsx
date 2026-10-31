@@ -597,8 +597,9 @@ export function InventoryLookup({
                           </span>
                           {price.pie !== null && <span className="lm-num crm-lookup-price-alt">{price.pie}</span>}
                         </div>
-                        {/* Divisa (30/10/2026, plan "Precio divisa desde SAINT"): Precio1 de
-                            SAINT en USD, solo informativo — sin botón de agregar. */}
+                        {/* Divisa (30/10/2026, plan "Precio divisa desde SAINT"): PrecioI3 de
+                            SAINT en USD (corregido el 31/10/2026: no es Precio1), solo
+                            informativo — sin botón de agregar. */}
                         <div className="crm-lookup-item-price" data-kind="divisa">
                           <span className="crm-lookup-price-label">Divisa</span>
                           {divisa.estado === "ok" ? (

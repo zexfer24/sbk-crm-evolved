@@ -429,7 +429,8 @@ describe("mapProduct / PRODUCT_SELECT (tarifa MRW)", () => {
 });
 
 // 30/10/2026 (plan "Precio divisa desde SAINT"): el precio divisa es
-// `SAPROD.Precio1` de SAINT, ya en USD. Solo informativo: no se convierte con la tasa.
+// `SAPROD.PrecioI3` de SAINT, ya en USD (corregido el 31/10/2026: no es `Precio1`,
+// que en SAINT vale 0). Solo informativo: no se convierte con la tasa.
 describe("precioDivisaDisplay", () => {
   it("un precio real se pinta con el mismo formato '$ 12.35' que el pie de priceDisplay", () => {
     expect(precioDivisaDisplay({ precioDivisaUsd: 12.35 })).toEqual({ estado: "ok", principal: "$ 12.35" });

@@ -894,8 +894,9 @@ describe("InventoryLookup", () => {
 });
 
 /**
- * 30/10/2026 (plan "Precio divisa desde SAINT"): el Precio1 de SAINT en USD va
- * entre Promoción y Estándar, solo informativo: sin botón de agregar.
+ * 30/10/2026 (plan "Precio divisa desde SAINT"): el PrecioI3 de SAINT en USD va
+ * entre Promoción y Estándar, solo informativo: sin botón de agregar. (Corregido
+ * el 31/10/2026: no es Precio1, que en SAINT vale 0.)
  */
 describe("InventoryLookup — Divisa", () => {
   async function buscarUno(p: Product) {

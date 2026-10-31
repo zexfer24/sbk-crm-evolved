@@ -3184,8 +3184,11 @@ dejar rastro es lo que hacía desaparecer leads.
   `products.precio_divisa_usd`, y la app nunca toca `saprod` con la sesión
   del usuario** (30/10/2026, migración `20261030010000`). La función es
   `security definer` (misma resolución `saint.saprod` → `public.saprod` que
-  `sync_products`), devuelve `round(precio1, 2)` tal cual y la UI lee ≤ 0
-  como «Sin precio en SAINT». La misma migración revoca todo sobre `saprod` a
+  `sync_products`), devuelve `round(precioi3, 2)` tal cual y la UI lee ≤ 0
+  como «Sin precio en SAINT». **Es `PrecioI3`, nunca `Precio1`**, que en SAINT
+  vale 0 (corregido el 31/10/2026, `20261031020000`: la primera versión leía
+  `precio1` y todo salía «Sin precio en SAINT»). No calcular `precio3 / tasa`
+  en el CRM. La misma migración revoca todo sobre `saprod` a
   `anon`/`authenticated`: no agregar `saprod` a Realtime ni leerla desde el
   cliente. Es USD de SAINT, no pasa por `usdFromBs`. `PRODUCT_SELECT` lo pide
   siempre: sin la migración, el inventario entero da 400.

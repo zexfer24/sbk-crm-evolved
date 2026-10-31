@@ -768,8 +768,9 @@ describe("ProductoFila — el color del stock", () => {
   });
 });
 
-// 30/10/2026 (plan "Precio divisa desde SAINT"): el Precio1 de SAINT (USD) va entre
-// promoción y estándar, solo informativo.
+// 30/10/2026 (plan "Precio divisa desde SAINT"): el PrecioI3 de SAINT (USD) va entre
+// promoción y estándar, solo informativo (corregido el 31/10/2026: no es Precio1,
+// que en SAINT vale 0).
 describe("ProductoFila — el Precio divisa", () => {
   it("las etiquetas salen en el orden Precio promoción, Precio divisa, Precio estándar", () => {
     render(<ProductoFila product={product({ precioDivisaUsd: 12.35 })} bcvRate={40} />);

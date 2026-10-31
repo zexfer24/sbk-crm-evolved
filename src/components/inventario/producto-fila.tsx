@@ -347,7 +347,8 @@ export function ProductoFila({
 
       {/*
        * Precio divisa (30/10/2026, plan "Precio divisa desde SAINT"): el
-       * `Precio1` de SAINT, ya en USD, entre promoción y estándar. Solo
+       * `PrecioI3` de SAINT (corregido el 31/10/2026: no es `Precio1`, que en
+       * SAINT vale 0), ya en USD, entre promoción y estándar. Solo
        * informativo: sin botón ni conversión con la tasa. Lo ve también la caja
        * (decisión del operador), por eso va FUERA del `!soloLectura` — y por eso
        * cada plantilla de `.inv-row` en `inventario.css` suma su columna fija de
