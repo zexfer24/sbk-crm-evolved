@@ -366,11 +366,14 @@ export function ProductoFila({
       )}
 
       <div className="inv-status">
+        {/* 30/10/2026: «La IA lo ofrece» se quitó a pedido del operador; solo se avisa lo anormal. */}
         {visibility.visible ? (
-          <span className="ac-badge" data-tone={visibility.warning ? "wait" : "good"} title={visibility.warning ?? undefined}>
-            {visibility.warning ? <TriangleAlert size={11} /> : null}
-            {visibility.warning ? "Sin stock" : "La IA lo ofrece"}
-          </span>
+          visibility.warning && (
+            <span className="ac-badge" data-tone="wait" title={visibility.warning}>
+              <TriangleAlert size={11} />
+              Sin stock
+            </span>
+          )
         ) : (
           <span className="ac-badge" data-tone="muted" title={visibility.warning ?? undefined}>
             <EyeOff size={11} />

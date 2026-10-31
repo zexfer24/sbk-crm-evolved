@@ -165,11 +165,13 @@ export function InventarioView({
               <div className="dash-header">
                 <div>
                   <h1 className="dash-title dash-display">Inventario</h1>
-                  <p className="dash-subtitle">
-                    {soloLectura
-                      ? "Esto es exactamente lo que la IA consulta al cotizarle a un cliente. Nombre, precio y existencia llegan de Saint cada minuto: acá es solo consulta de precios, existencia y Cashea."
-                      : "Esto es exactamente lo que la IA consulta al cotizarle a un cliente. Nombre, precio y existencia llegan de Saint cada minuto y no se editan acá; lo único que se carga a mano es el peso."}
-                  </p>
+                  {/* 30/10/2026: el subtítulo de admin/supervisor se quitó a pedido del operador; la caja conserva el suyo. */}
+                  {soloLectura && (
+                    <p className="dash-subtitle">
+                      Esto es exactamente lo que la IA consulta al cotizarle a un cliente. Nombre, precio y existencia
+                      llegan de Saint cada minuto: acá es solo consulta de precios, existencia y Cashea.
+                    </p>
+                  )}
                 </div>
               </div>
 

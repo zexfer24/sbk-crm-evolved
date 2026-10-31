@@ -172,12 +172,12 @@ describe("InventarioView — la caja usa los presupuestos y la calculadora (D4)"
 });
 
 describe("InventarioView — un asesor sigue viendo todo", () => {
-  it("rail completo, campo de peso y el subtítulo de siempre", () => {
+  it("rail completo, campo de peso y sin subtítulo (se quitó el 30/10/2026)", () => {
     const { container } = pintar("agent");
 
     expect(container.querySelectorAll(".dash-rail-btn[href]").length).toBeGreaterThan(1);
     expect(screen.getByLabelText("Peso de Carburador PZ27")).toBeInTheDocument();
-    expect(screen.getByText(/lo único que se carga a mano es el peso/i)).toBeInTheDocument();
+    expect(container.querySelector(".dash-subtitle")).toBeNull();
     expect(
       screen.getByText("Cashea lo exige para el envío gratis, y sin peso no hay precio estándar.")
     ).toBeInTheDocument();

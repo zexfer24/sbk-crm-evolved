@@ -118,10 +118,14 @@ describe("InventarioView — Sin peso", () => {
  * baja el repuesto, no un asesor desde acá.
  */
 describe("InventarioView — textos de Saint", () => {
-  it("el subtítulo explica que Saint sincroniza nombre, precio y existencia cada minuto", () => {
+  // 30/10/2026: el operador pidió quitar el subtítulo de admin/supervisor
+  // ("Esto es exactamente lo que la IA consulta…"). La caja conserva el suyo
+  // (inventario-view-caja.test.tsx).
+  it("sin subtítulo para admin/supervisor", () => {
     pintar(haceDias(0));
 
-    expect(screen.getByText(/llegan de Saint cada minuto/i)).toBeInTheDocument();
+    expect(screen.queryByText(/lo que la IA consulta/i)).toBeNull();
+    expect(document.querySelector(".dash-subtitle")).toBeNull();
   });
 
   it("la píldora del filtro se llama «Fuera de Saint», no «Desactivados»", () => {

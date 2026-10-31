@@ -259,6 +259,29 @@ describe("ProductoFila — sin botón Activar/Desactivar", () => {
  * (decisión: más claro para un lector de pantalla que un "—" atenuado, que
  * puede leerse como "guion" o quedar mudo).
  */
+/**
+ * 30/10/2026: el operador pidió quitar la insignia «La IA lo ofrece». Un
+ * producto visible con stock queda sin insignia de visibilidad; «Sin stock» y
+ * «Oculto a la IA» siguen, porque avisan de algo.
+ */
+describe("ProductoFila — sin insignia «La IA lo ofrece»", () => {
+  it("un producto activo con stock no la muestra", () => {
+    render(<ProductoFila product={product({ stockQuantity: 10 })} bcvRate={40} />);
+    expect(screen.queryByText("La IA lo ofrece")).toBeNull();
+    expect(document.querySelector('.inv-status .ac-badge[data-tone="good"]')).toBeNull();
+  });
+
+  it("sin stock sigue mostrando «Sin stock»", () => {
+    render(<ProductoFila product={product({ stockQuantity: 0 })} bcvRate={40} />);
+    expect(screen.getByText("Sin stock")).toBeInTheDocument();
+  });
+
+  it("fuera de Saint sigue mostrando «Oculto a la IA»", () => {
+    render(<ProductoFila product={product({ isActive: false })} bcvRate={40} />);
+    expect(screen.getByText("Oculto a la IA")).toBeInTheDocument();
+  });
+});
+
 describe("ProductoFila — código Saint", () => {
   it("pinta el código Saint en fuente numérica, con un aria-label que lo nombra", () => {
     render(<ProductoFila product={product({ saintCode: "8842" })} bcvRate={40} />);
