@@ -3203,6 +3203,12 @@ dejar rastro es lo que hacía desaparecer leads.
   enviar sale de `formatQuote`, nunca dice «envío». `LOW_STOCK_THRESHOLD` vale 5
   (verde >5, naranja 1–5, rojo 0); solo lo usa la interfaz. La vista
   Lista/Cuadrícula va en la cookie `sbk-inventario-vista`, que lee `page.tsx`.
+- **El peso total del carrito nunca se muestra parcial** (5/11/2026).
+  `cartTotals`/`totalesCarrito` dan `pesoKg = null` si a CUALQUIER renglón le
+  falta peso: el pie dice «Faltan pesos (N)», sin ningún número. La casilla
+  «Peso total» de la copia nace APAGADA y, con el peso incompleto, omite la
+  línea: al cliente nunca le llega «faltan». En /inventario `.aviso-peso` pide
+  su propia regla (`.inv-carrito-total-fila > span.aviso-peso`), o `span:last-child` la sube a 15 px.
 
 ---
 
