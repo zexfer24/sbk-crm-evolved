@@ -88,8 +88,14 @@ describe("varianteCerrarVenta", () => {
 });
 
 describe("contarCamposCopia", () => {
-  it("con todo encendido cuenta el nombre más las seis casillas del chat: 7 de 7", () => {
-    expect(contarCamposCopia(OPCIONES_COPIA_INICIALES)).toEqual({ marcados: 7, total: 7 });
+  // 5/11/2026: «Peso total» es la séptima casilla del chat y nace apagada, así
+  // que con las opciones iniciales el contador dice 7 de 8.
+  it("con las iniciales cuenta el nombre más las seis casillas encendidas: 7 de 8", () => {
+    expect(contarCamposCopia(OPCIONES_COPIA_INICIALES)).toEqual({ marcados: 7, total: 8 });
+  });
+
+  it("con «Peso total» encendida también, todo marcado: 8 de 8", () => {
+    expect(contarCamposCopia({ ...OPCIONES_COPIA_INICIALES, pesoTotal: true })).toEqual({ marcados: 8, total: 8 });
   });
 
   it("el nombre siempre cuenta, aunque se apague todo", () => {
@@ -101,18 +107,19 @@ describe("contarCamposCopia", () => {
       totalUsd: false,
       totalBs: false,
       planCashea: false,
+      pesoTotal: false,
     };
-    expect(contarCamposCopia(todoApagado)).toEqual({ marcados: 1, total: 7 });
+    expect(contarCamposCopia(todoApagado)).toEqual({ marcados: 1, total: 8 });
   });
 
   it("«Plan Cashea» no entra: el chat no lo ofrece", () => {
-    expect(contarCamposCopia({ ...OPCIONES_COPIA_INICIALES, planCashea: false })).toEqual({ marcados: 7, total: 7 });
+    expect(contarCamposCopia({ ...OPCIONES_COPIA_INICIALES, planCashea: false })).toEqual({ marcados: 7, total: 8 });
   });
 
   it("cada casilla apagada resta una", () => {
     expect(contarCamposCopia({ ...OPCIONES_COPIA_INICIALES, codigo: false, totalBs: false })).toEqual({
       marcados: 5,
-      total: 7,
+      total: 8,
     });
   });
 });

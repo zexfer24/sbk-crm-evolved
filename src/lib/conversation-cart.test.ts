@@ -198,7 +198,8 @@ describe("cartTotals — el total en $ es la suma de lo que se factura", () => {
       ],
       40
     );
-    expect(cartTotals(lines)).toEqual({ usd: 55, bs: 2200, unpricedCount: 0 });
+    // Sin pesos cargados (`weightKg: null` en la fábrica) el peso total es null.
+    expect(cartTotals(lines)).toEqual({ usd: 55, bs: 2200, unpricedCount: 0, pesoKg: null, sinPesoCount: 2 });
   });
 
   it("no vuelve a redondear el total: suma los dólares ya redondeados por renglón", () => {
@@ -235,7 +236,60 @@ describe("cartTotals — el total en $ es la suma de lo que se factura", () => {
   });
 
   it("un carrito vacío suma cero", () => {
-    expect(cartTotals(priceCartLines([], 40))).toEqual({ usd: 0, bs: 0, unpricedCount: 0 });
+    expect(cartTotals(priceCartLines([], 40))).toEqual({ usd: 0, bs: 0, unpricedCount: 0, pesoKg: 0, sinPesoCount: 0 });
+  });
+});
+
+// 5/11/2026: el cliente usa el peso del carrito para cotizar el envío y hoy lo
+// suma a mano. Si falta el peso de UN renglón no hay total: un total parcial
+// haría cobrar el envío por menos de lo que pesa el paquete.
+describe("cartTotals — peso total", () => {
+  const conPeso = (id: string, weightKg: number | null, quantity = 1) =>
+    item({ id, productId: id, product: product({ id, weightKg }), quantity });
+  const pesos = (items: ConversationCartItem[]) => cartTotals(priceCartLines(items, 40));
+
+  it("suma peso × cantidad de cada renglón", () => {
+    const totals = pesos([conPeso("a", 1.5, 2), conPeso("b", 3.2, 1)]);
+    expect(totals.pesoKg).toBe(6.2);
+    expect(totals.sinPesoCount).toBe(0);
+  });
+
+  it("no arrastra colas de coma flotante: tres renglones de 0,1 kg dan exactamente 0,3", () => {
+    expect(pesos([conPeso("a", 0.1), conPeso("b", 0.1), conPeso("c", 0.1)]).pesoKg).toBe(0.3);
+    expect(pesos([conPeso("a", 0.1, 3)]).pesoKg).toBe(0.3);
+  });
+
+  it("un renglón sin peso anula el total y se cuenta", () => {
+    const totals = pesos([conPeso("a", 1.5), conPeso("b", null)]);
+    expect(totals.pesoKg).toBeNull();
+    expect(totals.sinPesoCount).toBe(1);
+  });
+
+  it("un peso de 0 cuenta como sin peso (igual que sinPeso)", () => {
+    const totals = pesos([conPeso("a", 2), conPeso("b", 0)]);
+    expect(totals.pesoKg).toBeNull();
+    expect(totals.sinPesoCount).toBe(1);
+  });
+
+  it("cuenta todos los renglones sin peso, no solo el primero", () => {
+    expect(pesos([conPeso("a", null), conPeso("b", 0), conPeso("c", 1)]).sinPesoCount).toBe(2);
+  });
+
+  it("un carrito vacío pesa 0 y no le falta nada", () => {
+    const totals = pesos([]);
+    expect(totals.pesoKg).toBe(0);
+    expect(totals.sinPesoCount).toBe(0);
+  });
+
+  it("el peso no depende del precio: un renglón sin precio igual pesa", () => {
+    const totals = cartTotals(
+      priceCartLines(
+        [item({ product: product({ currency: "VES", price: 101, weightKg: 2 }), quantity: 2 })],
+        0
+      )
+    );
+    expect(totals.unpricedCount).toBe(1);
+    expect(totals.pesoKg).toBe(4);
   });
 });
 
@@ -511,6 +565,69 @@ describe("cartSummaryText — el resumen del carrito para el cliente", () => {
 
     it("un carrito vacío sigue sin resumen con cualquier combinación", () => {
       expect(resumen([], 40, sin("precioUnitario", "subtotal", "totalUsd", "totalBs"))).toBeNull();
+    });
+  });
+
+  // 5/11/2026: casilla «Peso total», APAGADA por defecto. El cliente final
+  // nunca debe leer un «faltan pesos»: con el peso incompleto la línea no sale.
+  describe("casilla «Peso total»", () => {
+    const CON_PESO = [
+      item({ id: "a", product: product({ id: "p1", name: "Caucho 90/90-18 Kenda", price: 25, saintCode: "12345", weightKg: 1.5 }), quantity: 2 }),
+      item({ id: "b", product: product({ id: "p2", name: "Casco LS2 FF353", price: 40, saintCode: "67890", weightKg: 3.2 }), quantity: 1 }),
+    ];
+    const encendida: OpcionesCopia = { ...OPCIONES_COPIA_INICIALES, pesoTotal: true };
+
+    it("nace apagada: con las opciones iniciales el texto no menciona el peso", () => {
+      expect(OPCIONES_COPIA_INICIALES.pesoTotal).toBe(false);
+      expect(resumen(CON_PESO)).not.toContain("Peso");
+    });
+
+    it("encendida y con el peso completo, la línea va al final, después de los totales", () => {
+      const text = resumen(CON_PESO, 40, encendida) as string;
+
+      expect(text.endsWith("Total en bolívares: Bs. 3.600,00\nPeso total: 6,2 kg")).toBe(true);
+      expect(text).toBe(`${resumen(CON_PESO) as string}\nPeso total: 6,2 kg`);
+    });
+
+    it("encendida con el peso incompleto, el texto es idéntico al de la casilla apagada", () => {
+      const incompleto = [
+        CON_PESO[0],
+        item({ id: "c", product: product({ id: "p3", name: "Guante", price: 10, weightKg: null }) }),
+      ];
+
+      const apagada = resumen(incompleto) as string;
+      expect(resumen(incompleto, 40, encendida)).toBe(apagada);
+      expect(apagada).not.toContain("Peso");
+      expect(apagada).not.toContain("Faltan");
+    });
+
+    it("sin ningún total encendido, el pie es solo la línea del peso", () => {
+      const text = resumen(CON_PESO, 40, { ...encendida, totalUsd: false, totalBs: false }) as string;
+
+      expect(text.endsWith("\n\nPeso total: 6,2 kg")).toBe(true);
+      expect(text).not.toContain("Total");
+    });
+
+    it("el peso no depende del precio: con todo lo de precio apagado y un renglón sin precio, sigue habiendo resumen", () => {
+      const items = [
+        item({ id: "a", product: product({ id: "p1", name: "Caucho", weightKg: 1 }) }),
+        item({ id: "b", product: product({ id: "p2", name: "Casco", currency: "VES", price: 101, weightKg: 2 }), quantity: 2 }),
+      ];
+      const opciones: OpcionesCopia = {
+        ...sin("precioUnitario", "subtotal", "totalUsd", "totalBs"),
+        pesoTotal: true,
+      };
+
+      // Sin tasa, "Casco" no tiene precio en dólares; el peso (1 + 2 × 2 = 5) igual sale.
+      expect(resumen(items, 0, opciones)).toBe(
+        ["Caucho", "SKU: sin código", "", "Casco (x2)", "SKU: sin código", "", "Peso total: 5 kg"].join("\n")
+      );
+    });
+
+    it("la casilla encendida no destapa un carrito vacío ni uno cuyo precio sí hace falta", () => {
+      expect(resumen([], 40, encendida)).toBeNull();
+      const sinPrecio = [item({ product: product({ currency: "VES", price: 101, weightKg: 1 }) })];
+      expect(resumen(sinPrecio, 0, encendida)).toBeNull();
     });
   });
 });

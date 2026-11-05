@@ -6,6 +6,7 @@ import { Drawer, toast } from "@heroui/react";
 import type { AgentRole } from "@/lib/types";
 import type { PricedCartLine } from "@/lib/conversation-cart";
 import { formatBs, formatUsd, toCents } from "@/lib/cashea";
+import { formatPesoKg } from "@/lib/inventory";
 import {
   avisosRenglon,
   textoCarritoParaCliente,
@@ -20,6 +21,7 @@ import { CasheaControles } from "@/components/cashea/cashea-controles";
 import { CasheaResumen } from "@/components/cashea/cashea-resumen";
 import { useInventarioCarrito } from "@/components/inventario/inventario-carrito-context";
 import { GuardarPresupuestoModal, type DatosPresupuestoForm } from "@/components/presupuestos/guardar-presupuesto-modal";
+import { AvisoFaltanPesos, NotaPesoNoIncluido } from "@/components/presupuestos/aviso-peso";
 import { OpcionesCopiaCasillas } from "@/components/presupuestos/opciones-copia";
 import { useOpcionesCopia } from "@/components/presupuestos/use-opciones-copia";
 import { EnviarASaint } from "@/components/saint/enviar-a-saint";
@@ -397,6 +399,9 @@ export function CarritoPanel({
                               mostrarCashea={true}
                               idPrefix="carrito-inv-copia"
                             />
+                            {texto !== null && opcionesCopia.pesoTotal && totales.pesoKg === null && (
+                              <NotaPesoNoIncluido cantidad={totales.sinPesoCount} />
+                            )}
                             {texto === null ? (
                               <p className="inv-carrito-nota" role="status">
                                 Completa el precio de los renglones marcados para copiar.
@@ -422,6 +427,14 @@ export function CarritoPanel({
                       <span className="lm-num">
                         {totales.unpricedCount > 0 ? "Sin tasa" : formatUsd(toCents(totales.usd))}
                       </span>
+                    </div>
+                    <div className="inv-carrito-total-fila">
+                      <span>Peso total</span>
+                      {totales.pesoKg === null ? (
+                        <AvisoFaltanPesos cantidad={totales.sinPesoCount} />
+                      ) : (
+                        <span className="lm-num">{formatPesoKg(totales.pesoKg)} kg</span>
+                      )}
                     </div>
                     {totales.cashea && <CasheaResumen plan={totales.cashea} bcvRate={bcvRate} notaCadencia />}
                   </div>

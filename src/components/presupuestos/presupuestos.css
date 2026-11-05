@@ -46,3 +46,35 @@
   color: var(--lm-muted);
   cursor: default;
 }
+
+/* 5/11/2026 (pedido del cliente, «Peso total» del carrito): los dos avisos de
+   un peso incompleto, compartidos por el chat y /inventario. Tono de espera
+   del tema (`--lm-wait*`, que cambia en oscuro); icono + texto, nunca solo
+   color. */
+.aviso-peso {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 2px 9px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--lm-wait) 14%, transparent);
+  color: var(--lm-wait-ink);
+  font-size: 11.5px;
+  font-weight: 700;
+  line-height: 1.4;
+  white-space: nowrap;
+}
+
+/* Bajo la vista previa: texto corrido que envuelve (no es una píldora). */
+.aviso-nota {
+  margin: 0;
+  font-size: 11.5px;
+  line-height: 1.4;
+  color: var(--lm-wait-ink);
+}
+
+.aviso-nota-icono {
+  display: inline-block;
+  margin-right: 4px;
+  vertical-align: -2px;
+}

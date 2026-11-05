@@ -444,4 +444,50 @@ describe("textoCarritoParaCliente", () => {
     expect(textoCarritoParaCliente(sinTasa)).toBeNull();
     expect(textoCarritoParaCliente(totalesCarrito([], 100, SIN_CASHEA))).toBeNull();
   });
+
+  // 5/11/2026: la línea del peso va pegada a los totales y ANTES del bloque
+  // Cashea, porque Cashea es un párrafo aparte («Financiado con…») que cierra
+  // el mensaje; el peso es dato del envío y se lee junto al total que lo cobra.
+  describe("«Peso total»", () => {
+    const CASCO_PESADO = product({ id: "casco", name: "Casco LS2", currency: "VES", price: 11800, saintCode: "C-001", weightKg: 1.5 });
+    const GUANTE_PESADO = product({ id: "guante", name: "Guante", currency: "VES", price: 5000, saintCode: "G-002", weightKg: 0.25 });
+    const CARRITO_PESADO = [linea(CASCO_PESADO, 1), linea(GUANTE_PESADO, 2)];
+    const conPeso = { ...OPCIONES_COPIA_INICIALES, pesoTotal: true };
+
+    it("totalesCarrito propaga el peso total y los renglones sin peso", () => {
+      const completo = totalesCarrito(CARRITO_PESADO, 100, SIN_CASHEA);
+      expect(completo.pesoKg).toBe(2);
+      expect(completo.sinPesoCount).toBe(0);
+
+      const incompleto = totalesCarrito([...CARRITO_PESADO, linea(product({ id: "sin", weightKg: null }))], 100, SIN_CASHEA);
+      expect(incompleto.pesoKg).toBeNull();
+      expect(incompleto.sinPesoCount).toBe(1);
+    });
+
+    it("encendida: la línea sale después del total en bolívares", () => {
+      const texto = textoCarritoParaCliente(totalesCarrito(CARRITO_PESADO, 100, SIN_CASHEA), conPeso);
+      expect(texto).toBe(
+        "Casco LS2\nSKU: C-001\nPrecio: $118.00\n\n" +
+          "Guante (x2)\nSKU: G-002\nPrecio: $50.00 c/u · $100.00\n\n" +
+          "Total: $218.00\nTotal en bolívares: Bs. 21.800,00\nPeso total: 2 kg",
+      );
+    });
+
+    it("con Cashea, el peso queda pegado a los totales y el plan va al final", () => {
+      const texto = textoCarritoParaCliente(totalesCarrito(CARRITO_PESADO, 100, conCashea()), conPeso) as string;
+      expect(texto.indexOf("Peso total: 2 kg")).toBeGreaterThan(texto.indexOf("Total en bolívares"));
+      expect(texto.indexOf("Peso total: 2 kg")).toBeLessThan(texto.indexOf("Financiado con Cashea"));
+      expect(texto).toContain("Total en bolívares: Bs. 21.800,00\nPeso total: 2 kg\n\nFinanciado con Cashea (nivel 4):");
+    });
+
+    it("apagada (o con las iniciales) no se menciona; con peso incompleto tampoco, aunque esté encendida", () => {
+      const totales = totalesCarrito(CARRITO_PESADO, 100, SIN_CASHEA);
+      expect(textoCarritoParaCliente(totales)).not.toContain("Peso");
+
+      const incompleto = totalesCarrito([...CARRITO_PESADO, linea(product({ id: "sin", name: "Sin peso", price: 1, weightKg: null }))], 100, SIN_CASHEA);
+      const texto = textoCarritoParaCliente(incompleto, conPeso) as string;
+      expect(texto).toBe(textoCarritoParaCliente(incompleto) as string);
+      expect(texto).not.toContain("Peso");
+    });
+  });
 });

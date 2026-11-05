@@ -1285,12 +1285,31 @@
   color: var(--lm-ink-soft);
 }
 
+/* Notas internas del panel del chat (5/11/2026, pedido del cliente): se leen en
+   verde para no confundirlas con los mensajes. Tinte del verde del tema, barra
+   a la izquierda y la esquina de ese lado casi recta (la "pestaña" de la nota).
+   `.crm-note` solo lo usa `context-panel.tsx`; la ficha del cliente tiene sus
+   propias notas (`.cli-note`, clientes.css) y NO cambia, ni la burbuja ámbar
+   del chat. Todo con tokens, que ya tienen su valor en el tema oscuro. */
 .crm-note {
   padding: 11px 13px;
-  border-radius: 14px;
-  background: var(--lm-sunken);
+  border-left: 3px solid var(--lm-good);
+  border-radius: 4px 14px 14px 4px;
+  background: rgb(var(--lm-good-rgb) / 0.12);
+  color: var(--lm-ink);
   font-size: 12.5px;
   line-height: 1.5;
+}
+
+.crm-note-body {
+  margin: 0;
+  white-space: pre-wrap;
+}
+
+.crm-note-empty {
+  margin: 0;
+  color: var(--lm-muted);
+  font-size: 12px;
 }
 
 .crm-note-meta {
@@ -1311,7 +1330,9 @@
   margin: 0;
   font-size: 11.5px;
   font-weight: 700;
-  color: var(--lm-ink-soft);
+  /* --lm-stock-in-ink y no --lm-good-ink: sobre el tinte verde, el segundo mide
+     4,66:1 en claro (justo sobre AA) y el primero 5,9:1. */
+  color: var(--lm-stock-in-ink);
 }
 
 .crm-note-actions {
@@ -1590,48 +1611,183 @@
   white-space: nowrap;
 }
 
-/* Promoción y Estándar (14/10/2026): dos líneas etiquetadas, una debajo de la
-   otra, al lado del botón «Agregar». La etiqueta tiene ancho fijo para que las
-   dos cifras arranquen alineadas. Ocupa la fila entera: con `auto`, «Agregar»
-   saltaba entre el costado y abajo según el largo de cada cifra; así queda
-   siempre debajo, a la derecha, en todos los resultados. */
+/* Precios del resultado (5/11/2026, pedido del cliente, propuesta A2
+   «Tarjetitas» aprobada en mockups/peso-notas-precios; reemplaza a la A1 de
+   «filas con barra»). Promoción y Estándar son los dos precios que se pueden
+   agregar al carrito: cada uno es una TARJETA (grilla de dos columnas iguales)
+   con su información arriba y su botón «+ Promoción» / «+ Estándar» al pie, así
+   el vínculo precio→botón es físico y no hay que leer para saber qué agrega
+   cada uno. Divisa solo informa: una línea gris debajo de las tarjetas.
+   «Enviar foto» va en su propia fila al final. Todo con tokens de theme.css,
+   que ya cambian solos en el tema oscuro. `--acc-ink` es el color del TEXTO
+   sobre el tinte (--lm-link-ink / --lm-stock-in-ink, no --lm-good-ink, que
+   sobre el tinte verde baja de 4,5:1 — ver theme.css); `--acc-line` es el del
+   filete superior y los bordes. */
 .crm-lookup-prices {
   display: flex;
   flex: 1 1 100%;
   flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+  padding-top: 2px;
+}
+
+/* `align-items: stretch` + el botón con `margin-top: auto` dejan los dos
+   botones a la misma altura aunque solo una tarjeta lleve «incluye envío». */
+.crm-lookup-tiles {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  align-items: stretch;
+  gap: 6px;
+}
+
+.crm-lookup-item-price[data-kind="promo"],
+.crm-lookup-add[data-kind="promo"] {
+  --acc-ink: var(--lm-link-ink);
+  --acc-line: var(--lm-link);
+  --acc-tint: color-mix(in srgb, var(--lm-link) 10%, transparent);
+}
+
+.crm-lookup-item-price[data-kind="estandar"],
+.crm-lookup-add[data-kind="estandar"] {
+  --acc-ink: var(--lm-stock-in-ink);
+  --acc-line: var(--lm-good);
+  --acc-tint: rgb(var(--lm-good-rgb) / 0.12);
+}
+
+.crm-lookup-item-price[data-kind="promo"],
+.crm-lookup-item-price[data-kind="estandar"] {
+  display: flex;
+  flex-direction: column;
+  flex-wrap: nowrap;
+  align-items: stretch;
+  gap: 0;
+  padding: 7px 8px 8px;
+  border-radius: 10px;
+  background: var(--acc-tint);
+  box-shadow: inset 0 2px 0 var(--acc-line);
+  font-size: 12.5px;
+}
+
+/* Estándar sin precio: la tarjeta pierde el tinte y queda como un recuadro
+   hueco con el motivo (mismo texto de siempre); su botón sigue deshabilitado. */
+.crm-lookup-item-price[data-kind="estandar"][data-vacia="true"] {
+  background: transparent;
+  box-shadow: inset 0 0 0 1px var(--lm-line);
+}
+
+.crm-lookup-item-price[data-kind="estandar"][data-vacia="true"] .crm-lookup-price-label {
+  color: var(--lm-muted);
+}
+
+.crm-lookup-price-info {
+  display: flex;
+  flex-direction: column;
   gap: 2px;
   min-width: 0;
+  padding-bottom: 8px;
 }
 
 .crm-lookup-price-label {
   flex-shrink: 0;
-  width: 62px;
   font-size: 11px;
-  font-weight: 500;
-  color: var(--lm-muted);
+  font-weight: 700;
+  color: var(--acc-ink);
 }
 
-/* Motivo por el que no hay estándar: puede partir línea (la columna mide 300 px).
-   Lleva el padre en el selector para ganarle en especificidad al nowrap de
-   `.crm-lookup-item-price > span`, que sigue valiendo para los importes. */
-.crm-lookup-item-price > .crm-lookup-price-missing {
+/* La cifra en Bs. nunca se recorta: un monto grande baja de línea en vez de
+   desbordar la tarjeta (el `$` ya va siempre en su propia línea). */
+.crm-lookup-price-fig {
+  font-size: 13px;
+  font-weight: 700;
+  letter-spacing: -0.03em;
+  line-height: 1.25;
   white-space: normal;
-  font-size: 11.5px;
-  font-weight: 500;
-  font-style: italic;
-  color: var(--lm-muted);
-}
-
-/* «incluye envío MRW $ X»: alineado bajo las cifras (ancho de la etiqueta + gap). */
-.crm-lookup-fee {
-  padding-left: 70px;
-  font-size: 11px;
-  color: var(--lm-muted);
+  overflow-wrap: anywhere;
 }
 
 .crm-lookup-price-alt {
   font-weight: 500;
+  color: var(--lm-ink-soft);
+}
+
+/* Motivo por el que no hay estándar: parte línea dentro de la tarjeta. Lleva
+   el padre en el selector para ganarle en especificidad a cualquier nowrap. */
+.crm-lookup-item-price .crm-lookup-price-missing {
+  white-space: normal;
+  font-size: 11.5px;
+  font-weight: 500;
+  font-style: italic;
+  line-height: 1.3;
   color: var(--lm-muted);
+}
+
+/* «incluye envío $ X»: pegado bajo el $ de Estándar, dentro de su tarjeta. */
+.crm-lookup-fee {
+  margin-top: 1px;
+  font-size: 10.5px;
+  line-height: 1.3;
+  color: var(--lm-ink-soft);
+}
+
+/* Botón de la tarjeta: ancho completo, pegado abajo, misma altura en las dos.
+   El texto nunca se parte (`nowrap`): con el panel a 268 px (pantalla de 1280)
+   la tarjeta mide 103 px y el botón 87, y con 9 px de relleno a cada lado solo
+   le quedaban 67 px a «+ Promoción», que bajaba de línea (46,5 px de alto
+   contra 29,3 de «+ Estándar») y desalineaba los dos botones. Con 4 px de
+   relleno le quedan 77 px y la fuente sigue en 11,5 px. */
+.crm-lookup-item-price > .crm-lookup-add {
+  justify-content: center;
+  width: 100%;
+  min-height: 28px;
+  margin-top: auto;
+  padding: 5px 4px;
+  white-space: nowrap;
+}
+
+/* Divisa: una línea gris bajo las tarjetas, sangrada con el texto de ellas. */
+.crm-lookup-item-price[data-kind="divisa"] {
+  flex-wrap: nowrap;
+  gap: 0 6px;
+  padding: 0 8px;
+  font-size: 11.5px;
+  font-weight: 500;
+  color: var(--lm-muted);
+}
+
+.crm-lookup-item-price[data-kind="divisa"] .crm-lookup-price-label {
+  width: auto;
+  font-weight: 500;
+  color: var(--lm-muted);
+}
+
+.crm-lookup-item-price[data-kind="divisa"] > .lm-num {
+  font-size: 12px;
+}
+
+/* «Enviar foto»: su propia fila, pegada al borde izquierdo de las tarjetas. */
+.crm-lookup-photo-row {
+  display: flex;
+  justify-content: flex-start;
+  min-width: 0;
+}
+
+.crm-lookup-photo-row > .crm-lookup-add {
+  min-height: 28px;
+  padding: 5px 12px;
+}
+
+.crm-lookup-add[data-kind="promo"],
+.crm-lookup-add[data-kind="estandar"] {
+  border-color: color-mix(in srgb, var(--acc-line) 55%, transparent);
+  color: var(--acc-ink);
+}
+
+.crm-lookup-add[data-kind="promo"]:hover:not(:disabled),
+.crm-lookup-add[data-kind="estandar"]:hover:not(:disabled) {
+  background: var(--acc-tint);
+  border-color: var(--acc-line);
+  color: var(--acc-ink);
 }
 
 /* --------------------------------------------------------------------------
@@ -1751,6 +1907,14 @@
   color: var(--lm-muted);
 }
 
+/* 5/11/2026 (pedido del cliente): marca del renglón al que le falta el peso,
+   para saber cuál cargar. Mismo tono de espera que `.crm-pcart-change`. */
+.crm-pcart-sinpeso {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--lm-wait-ink);
+}
+
 .crm-pcart-warning {
   margin: 0;
   font-size: 11.5px;
@@ -1820,18 +1984,6 @@
   align-items: center;
   justify-content: space-between;
   gap: 4px 8px;
-  min-width: 0;
-}
-
-/* 14/10/2026: dos botones por resultado («+ Promoción» / «+ Estándar»). El
-   empuje a la derecha que tenía el botón único pasa al grupo, y envuelve para
-   que en la columna de 268 px no se salgan si los dos no caben en la fila. */
-.crm-lookup-add-group {
-  display: flex;
-  flex-wrap: wrap;
-  justify-content: flex-end;
-  gap: 6px;
-  margin-left: auto;
   min-width: 0;
 }
 
@@ -3694,6 +3846,22 @@ button.crm-bubble-quote:hover {
   font-weight: 700;
   letter-spacing: -0.01em;
   line-height: 1.1;
+}
+
+/* 5/11/2026 (pedido del cliente): fila «Peso total» bajo el Total. Misma
+   estructura (etiqueta 13/600 a la izquierda, valor a la derecha) pero el
+   valor es de 15 px, MÁS CHICO que el total en dólares (20 px), que sigue
+   siendo la cifra principal. `baseline` y no `flex-start`: con la píldora
+   «Faltan pesos» la etiqueta y el aviso se alinean por el texto. */
+.crm-pcart-foot-peso {
+  align-items: baseline;
+}
+
+.crm-pcart-foot-peso-valor {
+  font-size: 15px;
+  font-weight: 700;
+  line-height: 1.2;
+  color: var(--lm-ink);
 }
 
 /* El estado del envío (ya con su propio margen superior) y el botón principal

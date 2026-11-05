@@ -41,7 +41,18 @@ describe("OpcionesCopiaCasillas", () => {
   it("una casilla por campo, en el orden pedido y con id prefijo-clave", () => {
     montar();
     const etiquetas = screen.getAllByRole("checkbox").map((c) => c.closest("label")?.textContent?.trim());
-    expect(etiquetas).toEqual(["Nombre", "Código", "Cantidad", "Precio unitario", "Subtotal", "Total $", "Total Bs"]);
+    // 5/11/2026: «Peso total» va al final y nace apagada.
+    expect(etiquetas).toEqual([
+      "Nombre",
+      "Código",
+      "Cantidad",
+      "Precio unitario",
+      "Subtotal",
+      "Total $",
+      "Total Bs",
+      "Peso total",
+    ]);
+    expect(screen.getByRole("checkbox", { name: "Peso total" })).not.toBeChecked();
     expect(screen.getByRole("checkbox", { name: "Código" }).id).toBe("carrito-codigo");
     expect(screen.getByRole("checkbox", { name: "Precio unitario" }).id).toBe("carrito-precioUnitario");
     expect(screen.getByRole("checkbox", { name: "Total Bs" }).id).toBe("carrito-totalBs");

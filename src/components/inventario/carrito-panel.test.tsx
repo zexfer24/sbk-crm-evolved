@@ -91,6 +91,9 @@ function product(over: Partial<Product> = {}): Product {
 const PA = product({ id: "a", name: "Carburador PZ27", price: 11800, saintCode: "SA-001" });
 const PB = product({ id: "b", name: "Bujía NGK", price: 5000, saintCode: null });
 const PC = product({ id: "c", name: "Cadena 428", price: 2000, saintCode: "SA-003" });
+// 5/11/2026: con peso cargado, para el «Peso total» (A y B no lo tienen).
+const PW1 = product({ id: "w1", name: "Disco con peso", price: 1000, saintCode: "SA-W1", weightKg: 3 });
+const PW2 = product({ id: "w2", name: "Cable con peso", price: 1000, saintCode: "SA-W2", weightKg: 6.5 });
 
 /** Botones mínimos para manejar el contexto desde el test. */
 function Arnes() {
@@ -101,6 +104,8 @@ function Arnes() {
       <button onClick={() => carrito.agregar(PA)}>agregar A</button>
       <button onClick={() => carrito.agregar(PB)}>agregar B</button>
       <button onClick={() => carrito.agregar(PC)}>agregar C</button>
+      <button onClick={() => carrito.agregar(PW1)}>agregar W1</button>
+      <button onClick={() => carrito.agregar(PW2)}>agregar W2</button>
       <button onClick={() => carrito.agregar(product({ id: "x", name: "Inactivo", isActive: false }))}>
         agregar inactivo
       </button>
@@ -835,5 +840,85 @@ describe("la persistencia del carrito", () => {
     }
     render(<Sonda />);
     expect(screen.getByTestId("sonda")).toHaveTextContent("null");
+  });
+});
+
+// 5/11/2026 (pedido del cliente): «Peso total» en los totales, después de
+// «Total en dólares» y antes del bloque Cashea. Con algún renglón sin peso no
+// hay número: solo «Faltan pesos (N)». Los renglones no llevan «Sin peso».
+describe("el panel del carrito — peso total", () => {
+  it("con todos los pesos muestra «Peso total» y «12,5 kg» (2 × 3 + 1 × 6,5)", async () => {
+    const user = montar();
+    await user.click(screen.getByText("agregar W1"));
+    await user.click(screen.getByText("agregar W1"));
+    await user.click(screen.getByText("agregar W2"));
+    await user.click(screen.getByText("abrir carrito"));
+
+    const fila = await within(totales()).findByText("Peso total");
+    expect(fila.closest(".inv-carrito-total-fila")).toHaveTextContent("12,5 kg");
+    expect(within(totales()).queryByText(/faltan pesos/i)).toBeNull();
+  });
+
+  it("la fila va después de «Total en dólares» y antes del bloque Cashea", async () => {
+    const user = montar();
+    await user.click(screen.getByText("agregar W1"));
+    await user.click(screen.getByText("abrir carrito"));
+    await abrirOpciones(user);
+    await user.click(await screen.findByRole("switch", { name: "Financiar con Cashea" }));
+
+    const t = within(totales());
+    const bs = t.getByText("Total en bolívares");
+    const usd = t.getByText("Total en dólares");
+    const peso = t.getByText("Peso total");
+    const cashea = totales().querySelector<HTMLElement>(".inv-carrito-total-fila ~ :not(.inv-carrito-total-fila)");
+    const despues = Node.DOCUMENT_POSITION_FOLLOWING;
+    expect(bs.compareDocumentPosition(usd) & despues).toBeTruthy();
+    expect(usd.compareDocumentPosition(peso) & despues).toBeTruthy();
+    expect(cashea).not.toBeNull();
+    expect(peso.compareDocumentPosition(cashea!) & despues).toBeTruthy();
+  });
+
+  it("con renglones sin peso dice «Faltan pesos (2)» y no escribe ningún peso", async () => {
+    const user = montar();
+    await user.click(screen.getByText("agregar W1"));
+    await user.click(screen.getByText("agregar A"));
+    await user.click(screen.getByText("agregar B"));
+    await user.click(screen.getByText("abrir carrito"));
+
+    const fila = (await within(totales()).findByText("Peso total")).closest(".inv-carrito-total-fila") as HTMLElement;
+    expect(fila).toHaveTextContent("Faltan pesos (2)");
+    expect(fila.textContent).not.toMatch(/kg/i);
+  });
+
+  it("los renglones del carrito de /inventario no llevan «Sin peso»", async () => {
+    const user = montar();
+    await user.click(screen.getByText("agregar A"));
+    await user.click(screen.getByText("abrir carrito"));
+
+    const lista = await screen.findByRole("list", { name: "Productos del carrito" });
+    expect(within(lista).queryByText("Sin peso")).toBeNull();
+  });
+
+  describe("aviso bajo la vista previa", () => {
+    it("con «Peso total» encendida y pesos faltantes avisa; el texto no cambia", async () => {
+      const user = montar();
+      await user.click(screen.getByText("agregar W1"));
+      await user.click(screen.getByText("agregar A"));
+      await user.click(screen.getByText("abrir carrito"));
+      await abrirOpciones(user);
+      await user.click(await screen.findByLabelText("Peso total"));
+
+      expect(screen.getByText(/no se incluye «peso total»: faltan pesos \(1\)/i)).toBeInTheDocument();
+      expect(screen.getByLabelText("Vista previa del texto").textContent).not.toContain("Peso total");
+    });
+
+    it("con la casilla apagada no avisa", async () => {
+      const user = montar();
+      await user.click(screen.getByText("agregar A"));
+      await user.click(screen.getByText("abrir carrito"));
+      await abrirOpciones(user);
+
+      expect(screen.queryByText(/no se incluye «peso total»/i)).toBeNull();
+    });
   });
 });

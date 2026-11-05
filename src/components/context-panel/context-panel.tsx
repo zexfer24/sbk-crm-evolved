@@ -386,7 +386,7 @@ export function ContextPanel({
                       </div>
                     </div>
                   ) : (
-                    <p style={{ margin: 0, whiteSpace: "pre-wrap" }}>{note.content}</p>
+                    <p className="crm-note-body">{note.content}</p>
                   )}
 
                   <p className="crm-note-meta">{formatFullDateTime(note.createdAt)}</p>
@@ -394,7 +394,7 @@ export function ContextPanel({
               );
             })}
             {notes.length === 0 && (
-              <p style={{ color: "var(--lm-muted)", fontSize: 12, margin: 0 }}>Sin notas todavía.</p>
+              <p className="crm-note-empty">Sin notas todavía.</p>
             )}
           </div>
         </section>

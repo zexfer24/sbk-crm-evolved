@@ -21,9 +21,13 @@ afterEach(() => {
 });
 
 describe("OPCIONES_COPIA_INICIALES y CAMPOS_COPIA", () => {
-  it("arranca con todas las casillas encendidas", () => {
-    expect(Object.values(OPCIONES_COPIA_INICIALES).every((v) => v === true)).toBe(true);
-    expect(Object.keys(OPCIONES_COPIA_INICIALES)).toHaveLength(7);
+  it("arranca con todas las casillas encendidas salvo «Peso total», que nace apagada", () => {
+    // 5/11/2026: el peso es un dato para el envío; el cliente final no lo pidió
+    // en cada cotización, así que el asesor lo enciende cuando lo necesita.
+    const apagadas = Object.entries(OPCIONES_COPIA_INICIALES).filter(([, v]) => v === false);
+    expect(apagadas).toEqual([["pesoTotal", false]]);
+    expect(OPCIONES_COPIA_INICIALES.pesoTotal).toBe(false);
+    expect(Object.keys(OPCIONES_COPIA_INICIALES)).toHaveLength(8);
   });
 
   it("lista los campos en el orden y con las etiquetas pedidas; solo Cashea es del Inventario", () => {
@@ -35,6 +39,7 @@ describe("OPCIONES_COPIA_INICIALES y CAMPOS_COPIA", () => {
       ["totalUsd", "Total $"],
       ["totalBs", "Total Bs"],
       ["planCashea", "Plan Cashea"],
+      ["pesoTotal", "Peso total"],
     ]);
     expect(CAMPOS_COPIA.filter((c) => c.soloInventario).map((c) => c.clave)).toEqual(["planCashea"]);
   });
@@ -62,6 +67,28 @@ describe("leerOpcionesCopia", () => {
   it("completa con las iniciales las claves que faltan", () => {
     window.localStorage.setItem(`${COPIA_STORAGE_PREFIX}agente-1`, JSON.stringify({ codigo: false }));
     expect(leerOpcionesCopia("agente-1")).toEqual({ ...OPCIONES_COPIA_INICIALES, codigo: false });
+  });
+
+  it("un valor guardado antes de existir «Peso total» la deja apagada, sin tocar lo demás", () => {
+    // Lo que escribía la versión del 21/10/2026: siete claves, ninguna `pesoTotal`.
+    const viejo = {
+      codigo: true,
+      cantidad: false,
+      precioUnitario: true,
+      subtotal: true,
+      totalUsd: true,
+      totalBs: false,
+      planCashea: true,
+    };
+    window.localStorage.setItem(`${COPIA_STORAGE_PREFIX}agente-1`, JSON.stringify(viejo));
+    const opciones = leerOpcionesCopia("agente-1");
+    expect(opciones.pesoTotal).toBe(false);
+    expect(opciones).toEqual({ ...viejo, pesoTotal: false });
+  });
+
+  it("respeta «Peso total» encendida cuando el asesor la dejó así", () => {
+    guardarOpcionesCopia("agente-1", { ...OPCIONES_COPIA_INICIALES, pesoTotal: true });
+    expect(leerOpcionesCopia("agente-1").pesoTotal).toBe(true);
   });
 
   it("ignora los valores que no son booleanos y las claves desconocidas", () => {

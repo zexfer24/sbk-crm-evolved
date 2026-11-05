@@ -24,6 +24,13 @@ export interface OpcionesCopia {
   totalBs: boolean;
   /** Solo existe en el carrito de /inventario (el chat no calcula Cashea). */
   planCashea: boolean;
+  /**
+   * 5/11/2026, pedido del cliente: el peso total del carrito para cotizar el
+   * envío. Nace APAGADA (único valor inicial en `false`): es un dato de envío
+   * que el asesor enciende cuando el cliente lo necesita. Con algún renglón
+   * sin peso la línea no sale, nunca un total parcial.
+   */
+  pesoTotal: boolean;
 }
 
 export const OPCIONES_COPIA_INICIALES: Readonly<OpcionesCopia> = Object.freeze({
@@ -34,6 +41,7 @@ export const OPCIONES_COPIA_INICIALES: Readonly<OpcionesCopia> = Object.freeze({
   totalUsd: true,
   totalBs: true,
   planCashea: true,
+  pesoTotal: false,
 });
 
 /** Orden y etiquetas de las casillas. El nombre del producto no está: siempre va. */
@@ -45,6 +53,7 @@ export const CAMPOS_COPIA: ReadonlyArray<{ clave: keyof OpcionesCopia; etiqueta:
   { clave: "totalUsd", etiqueta: "Total $" },
   { clave: "totalBs", etiqueta: "Total Bs" },
   { clave: "planCashea", etiqueta: "Plan Cashea", soloInventario: true },
+  { clave: "pesoTotal", etiqueta: "Peso total" },
 ];
 
 export const COPIA_STORAGE_PREFIX = "sbk:copia-carrito:v1:";

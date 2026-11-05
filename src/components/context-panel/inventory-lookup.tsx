@@ -10,6 +10,7 @@ import { fetchProduct, searchProductsForLookup } from "@/lib/inventory-data";
 import { updateProductWeight } from "@/lib/mutations";
 import { configErrorMessage } from "@/lib/config-write";
 import {
+  formatPesoKg,
   formatWeightInput,
   motivoSinEstandar,
   parseWeightInput,
@@ -142,11 +143,6 @@ interface InventoryLookupProps {
   enviarFotoDeshabilitado?: string;
 }
 
-/** «3,2»: el peso para leer, con coma y sin ceros de relleno (el campo editable usa `formatWeightInput`). */
-function pesoLegible(weightKg: number): string {
-  return String(weightKg).replace(".", ",");
-}
-
 interface PesoDelResultadoProps {
   product: Product;
   puedeEditar: boolean;
@@ -274,7 +270,7 @@ function PesoDelResultado({ product, puedeEditar, onGuardado }: PesoDelResultado
   return (
     <div className="crm-lookup-weight">
       <span className="crm-lookup-weight-text" data-empty={faltaPeso ? "true" : undefined}>
-        {faltaPeso ? "Sin peso" : `Peso ${pesoLegible(product.weightKg as number)} kg`}
+        {faltaPeso ? "Sin peso" : `Peso ${formatPesoKg(product.weightKg as number)} kg`}
       </span>
       {puedeEditar && (
         <button
@@ -590,12 +586,75 @@ export function InventoryLookup({
                     />
                     <div className="crm-lookup-item-actions">
                       <div className="crm-lookup-prices">
-                        <div className="crm-lookup-item-price" data-kind="promo">
-                          <span className="crm-lookup-price-label">Promoción</span>
-                          <span className="lm-num" aria-label={`Precio promoción de ${product.name}`}>
-                            {price.principal}
-                          </span>
-                          {price.pie !== null && <span className="lm-num crm-lookup-price-alt">{price.pie}</span>}
+                        {/* Propuesta A2 «Tarjetitas» (5/11/2026, pedido del cliente): Promoción y
+                            Estándar son dos tarjetas con su botón de agregar al pie (dentro de lo
+                            que agrega); Divisa, que solo informa, baja a una línea gris; y
+                            «Enviar foto» va en su propia fila. */}
+                        <div className="crm-lookup-tiles">
+                          <div className="crm-lookup-item-price" data-kind="promo">
+                            <div className="crm-lookup-price-info">
+                              <span className="crm-lookup-price-label">Promoción</span>
+                              <span
+                                className="lm-num crm-lookup-price-fig"
+                                aria-label={`Precio promoción de ${product.name}`}
+                              >
+                                {price.principal}
+                              </span>
+                              {price.pie !== null && <span className="lm-num crm-lookup-price-alt">{price.pie}</span>}
+                            </div>
+                            {onAdd && product.isActive && (
+                              <button
+                                type="button"
+                                className="crm-lookup-add"
+                                data-kind="promo"
+                                onClick={() => onAdd(product, "promocion")}
+                                disabled={addDisabled}
+                                aria-label={`Agregar ${product.name} a precio de promoción`}
+                              >
+                                + Promoción
+                              </button>
+                            )}
+                          </div>
+                          <div
+                            className="crm-lookup-item-price"
+                            data-kind="estandar"
+                            data-vacia={estandar.estado === "ok" ? undefined : "true"}
+                          >
+                            <div className="crm-lookup-price-info">
+                              <span className="crm-lookup-price-label">Estándar</span>
+                              {estandar.estado === "ok" ? (
+                                <>
+                                  <span
+                                    className="lm-num crm-lookup-price-fig"
+                                    aria-label={`Precio estándar de ${product.name}`}
+                                  >
+                                    {estandar.principal}
+                                  </span>
+                                  {estandar.pie !== null && (
+                                    <span className="lm-num crm-lookup-price-alt">{estandar.pie}</span>
+                                  )}
+                                  <span className="crm-lookup-fee">incluye envío {estandar.tarifa}</span>
+                                </>
+                              ) : (
+                                <span className="crm-lookup-price-missing" data-empty="true">
+                                  {motivoSinEstandar(estandar.estado)}
+                                </span>
+                              )}
+                            </div>
+                            {onAdd && product.isActive && (
+                              <button
+                                type="button"
+                                className="crm-lookup-add"
+                                data-kind="estandar"
+                                onClick={() => onAdd(product, "estandar")}
+                                disabled={addDisabled || estandar.estado !== "ok"}
+                                title={estandar.estado === "ok" ? undefined : motivoSinEstandar(estandar.estado)}
+                                aria-label={`Agregar ${product.name} a precio estándar`}
+                              >
+                                + Estándar
+                              </button>
+                            )}
+                          </div>
                         </div>
                         {/* Divisa (30/10/2026, plan "Precio divisa desde SAINT"): PrecioI3 de
                             SAINT en USD (corregido el 31/10/2026: no es Precio1), solo
@@ -612,62 +671,17 @@ export function InventoryLookup({
                             </span>
                           )}
                         </div>
-                        <div className="crm-lookup-item-price" data-kind="estandar">
-                          <span className="crm-lookup-price-label">Estándar</span>
-                          {estandar.estado === "ok" ? (
-                            <>
-                              <span className="lm-num" aria-label={`Precio estándar de ${product.name}`}>
-                                {estandar.principal}
-                              </span>
-                              {estandar.pie !== null && (
-                                <span className="lm-num crm-lookup-price-alt">{estandar.pie}</span>
-                              )}
-                            </>
-                          ) : (
-                            <span className="crm-lookup-price-missing" data-empty="true">
-                              {motivoSinEstandar(estandar.estado)}
-                            </span>
-                          )}
-                        </div>
-                        {estandar.estado === "ok" && (
-                          <span className="crm-lookup-fee">incluye envío {estandar.tarifa}</span>
-                        )}
-                      </div>
-                      {((onAdd && product.isActive) || onEnviarFoto) && (
-                        <div className="crm-lookup-add-group">
-                          {onEnviarFoto && (
+                        {onEnviarFoto && (
+                          <div className="crm-lookup-photo-row">
                             <EnviarFotoBoton
                               product={product}
                               caption={conPie ? productPhotoCaption(product, rate) : null}
                               onEnviarFoto={onEnviarFoto}
                               motivoDeshabilitado={enviarFotoDeshabilitado}
                             />
-                          )}
-                          {onAdd && product.isActive && (
-                            <>
-                              <button
-                                type="button"
-                                className="crm-lookup-add"
-                                onClick={() => onAdd(product, "promocion")}
-                                disabled={addDisabled}
-                                aria-label={`Agregar ${product.name} a precio de promoción`}
-                              >
-                                + Promoción
-                              </button>
-                              <button
-                                type="button"
-                                className="crm-lookup-add"
-                                onClick={() => onAdd(product, "estandar")}
-                                disabled={addDisabled || estandar.estado !== "ok"}
-                                title={estandar.estado === "ok" ? undefined : motivoSinEstandar(estandar.estado)}
-                                aria-label={`Agregar ${product.name} a precio estándar`}
-                              >
-                                + Estándar
-                              </button>
-                            </>
-                          )}
-                        </div>
-                      )}
+                          </div>
+                        )}
+                      </div>
                     </div>
                   </li>
                 );

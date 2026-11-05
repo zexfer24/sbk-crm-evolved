@@ -6,12 +6,14 @@ import { Button, toast } from "@heroui/react";
 import type { CedulaType, ConversationCartItem } from "@/lib/types";
 import { createClient } from "@/lib/supabase/client";
 import { cartSummaryText, cartTotals, priceCartLines } from "@/lib/conversation-cart";
+import { formatPesoKg } from "@/lib/inventory";
 import { guardarPresupuesto } from "@/lib/presupuestos-data";
 import { renglonesParaGuardar, separarNombreContacto } from "@/lib/presupuestos";
 import { CartLines } from "@/components/context-panel/cart-lines";
 import { PresupuestosCliente } from "@/components/context-panel/presupuestos-cliente";
 import type { CartActions } from "@/components/context-panel/use-cart-actions";
 import { GuardarPresupuestoModal, type DatosPresupuestoForm } from "@/components/presupuestos/guardar-presupuesto-modal";
+import { AvisoFaltanPesos, NotaPesoNoIncluido } from "@/components/presupuestos/aviso-peso";
 import { OpcionesCopiaCasillas } from "@/components/presupuestos/opciones-copia";
 import { useOpcionesCopia } from "@/components/presupuestos/use-opciones-copia";
 import { EnviarASaint } from "@/components/saint/enviar-a-saint";
@@ -204,7 +206,7 @@ export function ConversationCartBlock({
             ))}
           </ol>
 
-          <CartLines cart={cart} bcvRate={bcvRate} actions={actions} mostrarTotal={false} />
+          <CartLines cart={cart} bcvRate={bcvRate} actions={actions} mostrarTotal={false} mostrarSinPeso />
 
           <div className="crm-pcart-foot">
             <div className="crm-pcart-foot-total" data-testid="cart-total">
@@ -213,6 +215,21 @@ export function ConversationCartBlock({
                 <span className="crm-pcart-foot-usd">${totals.usd.toFixed(2)}</span>
                 {totals.bs !== null && <span className="crm-pcart-total-bs">Bs. {totals.bs.toFixed(2)}</span>}
               </span>
+            </div>
+
+            {/* 5/11/2026: el peso total para calcular el envío. Con algún
+                renglón sin peso no hay número: solo cuántos faltan. */}
+            <div
+              className="crm-pcart-foot-total crm-pcart-foot-peso"
+              data-testid="cart-weight"
+              data-state={totals.pesoKg === null ? "incompleto" : "completo"}
+            >
+              <span>Peso total</span>
+              {totals.pesoKg === null ? (
+                <AvisoFaltanPesos cantidad={totals.sinPesoCount} />
+              ) : (
+                <span className="lm-num crm-pcart-foot-peso-valor">{formatPesoKg(totals.pesoKg)} kg</span>
+              )}
             </div>
 
             <EnviarASaint
@@ -304,6 +321,11 @@ export function ConversationCartBlock({
                   idPrefix="carrito-chat-copia"
                 />
                 {/* El mismo string que copian «Copiar» y «Al chat»: lo que se ve es lo que sale. */}
+                {/* Con «Peso total» encendida y pesos faltantes la línea no se escribe;
+                    esto se lo dice al asesor, fuera de la vista previa. */}
+                {summary !== null && opcionesCopia.pesoTotal && totals.pesoKg === null && (
+                  <NotaPesoNoIncluido cantidad={totals.sinPesoCount} />
+                )}
                 {summary === null ? (
                   <p className="crm-pcart-preview-vacia">No hay vista previa: {MOTIVO_SIN_VISTA_PREVIA}</p>
                 ) : (

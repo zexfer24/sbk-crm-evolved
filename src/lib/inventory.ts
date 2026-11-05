@@ -330,6 +330,21 @@ export function formatWeightInput(weightKg: number | null): string {
   return weightKg === null ? "" : weightKg.toFixed(3);
 }
 
+/**
+ * El peso para LEER: coma decimal, como mucho dos decimales y sin ceros de
+ * cola («3,2», «12,5», «2»). 5/11/2026, pedido del cliente: el peso total del
+ * carrito se copia al texto del cliente y se muestra en el panel, y las dos
+ * salidas tienen que decirlo igual (antes `inventory-lookup.tsx` tenía su
+ * propia copia, que solo cambiaba el punto por la coma y habría pintado
+ * «0,30000000000000004» con un total sumado en coma flotante). Se pasa por
+ * gramos enteros para que 1.255 redondee a «1,26»: `toFixed(2)` y
+ * `Math.round(kg * 100)` lo dejan en 1,25 porque 1.255 no es exacto en binario.
+ */
+export function formatPesoKg(kg: number): string {
+  const centesimas = Math.round(Math.round(kg * 1000) / 10);
+  return String(centesimas / 100).replace(".", ",");
+}
+
 // ---------------------------------------------------------------------------
 // Listo para Cashea
 // ---------------------------------------------------------------------------

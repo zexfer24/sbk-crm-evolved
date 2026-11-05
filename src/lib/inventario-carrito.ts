@@ -183,6 +183,10 @@ export interface TotalesCarritoInventario {
   usd: number;
   bs: number | null;
   unpricedCount: number;
+  /** Peso total en kg; `null` si algún renglón no tiene peso (ver `CartTotals.pesoKg`). */
+  pesoKg: number | null;
+  /** Renglones sin peso (5/11/2026): el aviso «Faltan pesos (N)» de la pantalla. */
+  sinPesoCount: number;
   unidades: number;
   renglones: number;
   /** `null` si Cashea está apagado, si no hay renglones o si algún renglón no tiene precio en dólares. */
@@ -200,7 +204,7 @@ export function totalesCarrito(
   // El total en dólares SUMA los dólares ya redondeados por renglón
   // (`usdFromBs`, hacia arriba al décimo): jamás se convierte el total en
   // bolívares, que regalaría los décimos que el redondeo cobra.
-  const { usd, bs, unpricedCount } = cartTotals(priced);
+  const { usd, bs, unpricedCount, pesoKg, sinPesoCount } = cartTotals(priced);
 
   // Con un renglón sin precio el total en dólares es falso (le falta ese
   // renglón): financiar sobre él engañaría al cliente, así que no hay plan.
@@ -219,6 +223,8 @@ export function totalesCarrito(
     usd,
     bs,
     unpricedCount,
+    pesoKg,
+    sinPesoCount,
     unidades: lineas.reduce((suma, l) => suma + l.quantity, 0),
     renglones: lineas.length,
     cashea: plan,
@@ -265,6 +271,11 @@ export function avisosRenglon(linea: PricedCartLine<LineaCarritoInventario>): st
  * `cartSummaryText`— y el plan Cashea sale solo con `planCashea` encendida.
  * `totales.cashea` ya es `null` cuando algún renglón no tiene precio, así que
  * el plan nunca se agrega sobre un total falso.
+ *
+ * 5/11/2026: con la casilla «Peso total» encendida, la línea del peso viene de
+ * `cartSummaryText` y por lo tanto queda ANTES del bloque Cashea: pegada a los
+ * totales (el peso se lee junto al total que lo cobra) y el plan de
+ * financiamiento sigue siendo el párrafo aparte que cierra el mensaje.
  */
 export function textoCarritoParaCliente(
   totales: TotalesCarritoInventario,
@@ -272,7 +283,13 @@ export function textoCarritoParaCliente(
 ): string | null {
   const base = cartSummaryText(
     totales.lineas,
-    { usd: totales.usd, bs: totales.bs, unpricedCount: totales.unpricedCount },
+    {
+      usd: totales.usd,
+      bs: totales.bs,
+      unpricedCount: totales.unpricedCount,
+      pesoKg: totales.pesoKg,
+      sinPesoCount: totales.sinPesoCount,
+    },
     opciones,
   );
   if (base === null) return null;

@@ -1,6 +1,6 @@
 import type { CartPriceKind, ConversationCartItem } from "@/lib/types";
 import type { SaleLineItem } from "@/lib/mutations";
-import { priceInBs, standardPriceAmounts } from "@/lib/inventory";
+import { formatPesoKg, priceInBs, sinPeso, standardPriceAmounts } from "@/lib/inventory";
 import { productPriceUsd } from "@/lib/sale-cart";
 import { formatBs } from "@/lib/cashea";
 import { OPCIONES_COPIA_INICIALES, type OpcionesCopia } from "@/lib/copia-carrito";
@@ -70,6 +70,16 @@ export interface CartTotals {
   bs: number | null;
   /** Renglones sin precio en dólares: no entran al total y el cierre de venta no debe permitirse con ellos. */
   unpricedCount: number;
+  /**
+   * Peso total del carrito en kg (peso × cantidad de cada renglón), pedido del
+   * cliente el 5/11/2026 para cotizar el envío, que hasta entonces sumaba a
+   * mano. `null` si ALGÚN renglón no tiene peso (`sinPeso`: null o ≤ 0), y `0`
+   * con el carrito vacío. Nunca es un total parcial: sumar solo los renglones
+   * con peso haría cobrar el envío por menos de lo que pesa el paquete.
+   */
+  pesoKg: number | null;
+  /** Renglones sin peso: es el «Faltan pesos (N)» que muestra el panel; al cliente nunca le llega. */
+  sinPesoCount: number;
 }
 
 /** Los precios llevan dos decimales: sumarlos sin redondear deja colas de coma flotante (0.1 * 3). */
@@ -107,6 +117,10 @@ export function cartTotals(lines: PricedCartLine<PriceableCartItem>[]): CartTota
   let usd = 0;
   let bs: number | null = 0;
   let unpricedCount = 0;
+  // El peso se suma en GRAMOS ENTEROS y se divide una sola vez al final: tres
+  // renglones de 0,1 kg dan 0.3 exacto en vez de 0.30000000000000004.
+  let gramos = 0;
+  let sinPesoCount = 0;
 
   for (const line of lines) {
     if (line.subtotalUsd === null) unpricedCount += 1;
@@ -114,9 +128,19 @@ export function cartTotals(lines: PricedCartLine<PriceableCartItem>[]): CartTota
 
     if (line.subtotalBs === null) bs = null;
     else if (bs !== null) bs += line.subtotalBs;
+
+    const { weightKg } = line.item.product;
+    if (sinPeso(weightKg)) sinPesoCount += 1;
+    else gramos += Math.round((weightKg as number) * 1000) * line.item.quantity;
   }
 
-  return { usd: round2(usd), bs: bs === null ? null : round2(bs), unpricedCount };
+  return {
+    usd: round2(usd),
+    bs: bs === null ? null : round2(bs),
+    unpricedCount,
+    pesoKg: sinPesoCount > 0 ? null : gramos / 1000,
+    sinPesoCount,
+  };
 }
 
 /** «cotizado $18.00 · hoy $20.00» — solo si el precio de hoy no es el que cotizó Seba. */
@@ -156,6 +180,14 @@ function formatUsd(value: number): string {
  * de nombres sale aunque falte algún precio: no se está diciendo ninguno. Los
  * montos son los VIGENTES (`priceCartLines`, D6), ya redondeados por
  * `usdFromBs`: aquí no se recalcula ni se redondea nada.
+ *
+ * 5/11/2026 (pedido del cliente): la casilla «Peso total» (`pesoTotal`, nace
+ * APAGADA) agrega al pie, después de las líneas de total, «Peso total: 6,2 kg».
+ * Con algún renglón sin peso (`totals.pesoKg === null`) la línea se OMITE: al
+ * cliente nunca le llega un «faltan pesos» (eso es aviso interno del panel). El
+ * peso no depende del precio, así que no entra en `dependeDelPrecio` y nunca
+ * hace que la función devuelva `null`; si es lo único del pie, el pie es esa
+ * línea.
  */
 export function cartSummaryText(
   lines: PricedCartLine<PriceableCartItem>[],
@@ -192,6 +224,7 @@ export function cartSummaryText(
   const footer: string[] = [];
   if (opciones.totalUsd) footer.push(`Total: ${formatUsd(totals.usd)}`);
   if (opciones.totalBs && totals.bs !== null) footer.push(`Total en bolívares: ${formatBs(totals.bs)}`);
+  if (opciones.pesoTotal && totals.pesoKg !== null) footer.push(`Peso total: ${formatPesoKg(totals.pesoKg)} kg`);
 
   const body = blocks.join("\n\n");
   return footer.length > 0 ? `${body}\n\n${footer.join("\n")}` : body;

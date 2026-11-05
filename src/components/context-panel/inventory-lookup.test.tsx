@@ -646,6 +646,132 @@ describe("InventoryLookup", () => {
       expect(screen.getByLabelText("Precio estándar de Bujía CR7HSA")).toHaveTextContent("Bs. 87.00");
       expect(screen.getByText("+ $ 1.40 envío")).toBeInTheDocument();
     });
+
+    /**
+     * 5/11/2026 (pedido del cliente, propuesta A1): el orden es Promoción →
+     * Estándar (con «incluye envío» pegado debajo) → Divisa. La Divisa pasa al
+     * final como dato de referencia; el envío no puede quedar separado del
+     * Estándar al que pertenece.
+     */
+    it("ordena Promoción → Estándar → «incluye envío» → Divisa en el DOM", async () => {
+      await buscarUno(product({ weightKg: 1, shippingFeeUsd: 1.4 }));
+
+      const fila = (kind: string) => document.querySelector<HTMLElement>(`[data-kind="${kind}"].crm-lookup-item-price`)!;
+      const promo = fila("promo");
+      const estandar = fila("estandar");
+      const divisa = fila("divisa");
+      const envio = screen.getByText("incluye envío $ 1.40");
+
+      const despues = (a: Element, b: Element) =>
+        Boolean(a.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING);
+      expect(despues(promo, estandar), "Estándar va después de Promoción").toBe(true);
+      expect(despues(estandar, envio), "«incluye envío» va después de Estándar").toBe(true);
+      expect(despues(envio, divisa), "Divisa va después de «incluye envío»").toBe(true);
+    });
+
+    it("sin estándar, Divisa igual queda al final", async () => {
+      await buscarUno(product({ weightKg: null, shippingFeeUsd: null }));
+
+      const estandar = document.querySelector<HTMLElement>('[data-kind="estandar"].crm-lookup-item-price')!;
+      const divisa = document.querySelector<HTMLElement>('[data-kind="divisa"].crm-lookup-item-price')!;
+      expect(Boolean(estandar.compareDocumentPosition(divisa) & Node.DOCUMENT_POSITION_FOLLOWING)).toBe(true);
+    });
+  });
+
+  /**
+   * 5/11/2026 (pedido del cliente, propuesta A2 «Tarjetitas»): Promoción y
+   * Estándar son dos tarjetas y CADA UNA lleva su botón de agregar al pie, para
+   * que el vínculo precio→botón sea físico (el botón está dentro de lo que
+   * agrega). Divisa baja a una línea debajo de las tarjetas y «Enviar foto» va
+   * en su propia fila al final. Estos tests miran el DOM, no el layout: el
+   * layout lo fija `precios-y-notas-css.test.ts`.
+   */
+  describe("tarjetas Promoción y Estándar (propuesta A2)", () => {
+    const tarjeta = (kind: string) =>
+      document.querySelector<HTMLElement>(`.crm-lookup-item-price[data-kind="${kind}"]`)!;
+    const despues = (a: Element, b: Element) =>
+      Boolean(a.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING);
+
+    async function buscarConBotones(p: Product) {
+      searchProductsForLookup.mockResolvedValue([p]);
+      render(
+        <InventoryLookup
+          bcvRate={RATE}
+          onAdd={vi.fn()}
+          onEnviarFoto={vi.fn().mockResolvedValue(undefined)}
+        />
+      );
+      type("bujia");
+      flush();
+      await flushPromises();
+    }
+
+    it("«+ Promoción» vive DENTRO de la tarjeta de Promoción y «+ Estándar» dentro de la de Estándar", async () => {
+      await buscarConBotones(product({ weightKg: 1, shippingFeeUsd: 1.4 }));
+
+      const promo = screen.getByRole("button", { name: "Agregar Bujía CR7HSA a precio de promoción" });
+      const estandar = screen.getByRole("button", { name: "Agregar Bujía CR7HSA a precio estándar" });
+
+      expect(tarjeta("promo").contains(promo)).toBe(true);
+      expect(tarjeta("estandar").contains(estandar)).toBe(true);
+      expect(tarjeta("promo").contains(estandar), "cada botón en SU tarjeta").toBe(false);
+      expect(tarjeta("estandar").contains(promo), "cada botón en SU tarjeta").toBe(false);
+      // La cifra de cada precio sigue dentro de su misma tarjeta.
+      expect(tarjeta("promo").contains(screen.getByLabelText("Precio promoción de Bujía CR7HSA"))).toBe(true);
+      expect(tarjeta("estandar").contains(screen.getByLabelText("Precio estándar de Bujía CR7HSA"))).toBe(true);
+    });
+
+    it("las dos tarjetas comparten el mismo contenedor (la grilla) y «incluye envío» queda en la de Estándar", async () => {
+      await buscarConBotones(product({ weightKg: 1, shippingFeeUsd: 1.4 }));
+
+      expect(tarjeta("promo").parentElement).toBe(tarjeta("estandar").parentElement);
+      expect(tarjeta("estandar").contains(screen.getByText("incluye envío $ 1.40"))).toBe(true);
+      expect(tarjeta("promo").textContent).not.toMatch(/incluye envío/);
+    });
+
+    it("Divisa queda después de las dos tarjetas y fuera de ellas", async () => {
+      await buscarConBotones(product({ weightKg: 1, shippingFeeUsd: 1.4 }));
+
+      const divisa = tarjeta("divisa");
+      expect(despues(tarjeta("promo"), divisa)).toBe(true);
+      expect(despues(tarjeta("estandar"), divisa)).toBe(true);
+      expect(tarjeta("promo").contains(divisa)).toBe(false);
+      expect(tarjeta("estandar").contains(divisa)).toBe(false);
+    });
+
+    it("«Enviar foto» queda después de la Divisa", async () => {
+      await buscarConBotones(product({ weightKg: 1, shippingFeeUsd: 1.4 }));
+
+      const foto = screen.getByRole("button", { name: /enviar foto/i });
+      expect(despues(tarjeta("divisa"), foto)).toBe(true);
+      expect(tarjeta("promo").contains(foto)).toBe(false);
+      expect(tarjeta("estandar").contains(foto)).toBe(false);
+    });
+
+    it("Estándar sin precio: el motivo y el botón DESHABILITADO siguen dentro de su tarjeta", async () => {
+      await buscarConBotones(product({ weightKg: null, shippingFeeUsd: null }));
+
+      const estandar = tarjeta("estandar");
+      const boton = screen.getByRole("button", { name: "Agregar Bujía CR7HSA a precio estándar" });
+      expect(estandar.contains(boton)).toBe(true);
+      expect(boton).toBeDisabled();
+      expect(estandar.contains(screen.getByText("Sin peso cargado"))).toBe(true);
+      // Y «+ Promoción» sigue disponible en la suya.
+      expect(
+        screen.getByRole("button", { name: "Agregar Bujía CR7HSA a precio de promoción" })
+      ).toBeEnabled();
+    });
+
+    it("sin onAdd (o con el repuesto retirado) las tarjetas no llevan botones", async () => {
+      searchProductsForLookup.mockResolvedValue([product({ isActive: false })]);
+      render(<InventoryLookup bcvRate={RATE} onAdd={vi.fn()} />);
+      type("bujia");
+      flush();
+      await flushPromises();
+
+      expect(tarjeta("promo").querySelector("button")).toBeNull();
+      expect(tarjeta("estandar").querySelector("button")).toBeNull();
+    });
   });
 
   /**

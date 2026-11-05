@@ -4,7 +4,7 @@ import { useState } from "react";
 import { Minus, Plus, Sparkles, Trash2, UserPen } from "lucide-react";
 import type { CartPriceKind, ConversationCartItem } from "@/lib/types";
 import { cartTotals, priceCartLines, quoteComparisonLabel, type PricedCartLine } from "@/lib/conversation-cart";
-import { motivoSinEstandar, standardPriceDisplay } from "@/lib/inventory";
+import { motivoSinEstandar, sinPeso, standardPriceDisplay } from "@/lib/inventory";
 import type { CartActions } from "@/components/context-panel/use-cart-actions";
 import { StockPill } from "@/components/context-panel/stock-pill";
 
@@ -44,6 +44,14 @@ interface CartLinesProps {
    * en SAINT sale del fondo del panel», T2); el modal «Cerrar venta» lo deja.
    */
   mostrarTotal?: boolean;
+  /**
+   * Marca «Sin peso» en el renglón al que le falta (5/11/2026, pedido del
+   * cliente: el peso total del carrito). Apagada por defecto: SOLO el carrito
+   * del chat la enciende, porque ahí el pie avisa «Faltan pesos (N)» y el
+   * asesor necesita saber cuál cargar; el modal «Cerrar venta» comparte estos
+   * renglones y no cambia.
+   */
+  mostrarSinPeso?: boolean;
 }
 
 /**
@@ -127,7 +135,7 @@ function PriceKindToggle({ line, bcvRate, actions }: { line: PricedCartLine; bcv
   );
 }
 
-export function CartLines({ cart, bcvRate, actions, mostrarTotal = true }: CartLinesProps) {
+export function CartLines({ cart, bcvRate, actions, mostrarTotal = true, mostrarSinPeso = false }: CartLinesProps) {
   const lines = priceCartLines(cart, bcvRate);
   const totals = cartTotals(lines);
   // Un renglón estándar sin tarifa MRW no tiene precio por otra causa que la
@@ -215,6 +223,9 @@ export function CartLines({ cart, bcvRate, actions, mostrarTotal = true }: CartL
                   <span className="crm-pcart-price lm-num">
                     {line.unitPriceUsd === null ? (sinTarifa(line) ? "Sin precio" : "Sin tasa") : `$${line.unitPriceUsd.toFixed(2)} c/u`}
                   </span>
+                  {mostrarSinPeso && sinPeso(item.product.weightKg) && (
+                    <span className="crm-pcart-sinpeso">Sin peso</span>
+                  )}
                 </div>
 
                 <div className="crm-pcart-col-total">

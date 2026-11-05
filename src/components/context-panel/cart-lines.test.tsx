@@ -161,3 +161,26 @@ describe("CartLines — mostrarTotal", () => {
     expect(screen.queryByTestId("cart-total")).toBeNull();
   });
 });
+
+// 5/11/2026 (pedido del cliente): «Sin peso» marca el renglón al que le falta
+// el peso, pero SOLO donde se pide (`mostrarSinPeso`): el carrito del chat. El
+// modal «Cerrar venta» comparte estos renglones y no cambia.
+describe("CartLines — «Sin peso» por renglón", () => {
+  it("sin la prop no aparece, aunque al producto le falte el peso (así lo ve el modal «Cerrar venta»)", () => {
+    render(<CartLines cart={[item({ product: product({ weightKg: null }) })]} bcvRate={40} actions={makeActions()} />);
+    expect(screen.queryByText("Sin peso")).toBeNull();
+  });
+
+  it("con la prop aparece solo en los renglones sin peso (null o 0)", () => {
+    const cart = [
+      item({ id: "a", product: product({ id: "pa", name: "Con peso", weightKg: 2 }) }),
+      item({ id: "b", product: product({ id: "pb", name: "Sin cargar", weightKg: null }) }),
+      item({ id: "c", product: product({ id: "pc", name: "En cero", weightKg: 0 }) }),
+    ];
+    render(<CartLines cart={cart} bcvRate={40} actions={makeActions()} mostrarSinPeso />);
+
+    expect(screen.getAllByText("Sin peso")).toHaveLength(2);
+    const conPeso = screen.getByText("Con peso").closest("li") as HTMLElement;
+    expect(within(conPeso).queryByText("Sin peso")).toBeNull();
+  });
+});

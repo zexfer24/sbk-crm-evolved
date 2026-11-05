@@ -1527,6 +1527,16 @@
   font-weight: 700;
 }
 
+/* 5/11/2026 (pedido del cliente): la píldora «Faltan pesos (N)» es el último
+   <span> de esta fila y heredaba los 15 px del total de arriba (0,2,1 contra
+   el 0,1,0 de `.aviso-peso`, que vive en presupuestos.css). Debe medir lo mismo
+   que en el chat: 11,5 px / 700. Esta regla empata en especificidad (0,2,1) y
+   va DESPUÉS, así que gana sin recurrir a `!important`. */
+.inv-carrito-total-fila > span.aviso-peso {
+  font-size: 11.5px;
+  font-weight: 700;
+}
+
 /* Acciones: «Enviar a SAINT» a fila completa y debajo la fila de píldoras. */
 .inv-carrito-acciones {
   display: flex;

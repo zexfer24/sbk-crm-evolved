@@ -901,16 +901,17 @@ describe("ConversationCartBlock — el pie y los atajos", () => {
 describe("ConversationCartBlock — «Qué copiar» con vista previa", () => {
   const renglon = () => item({ quantity: 1, product: product({ saintCode: "A-100" }) });
 
-  it("el contador «N de 7» sale de los datos y baja al desmarcar una casilla", async () => {
+  it("el contador «N de 8» sale de los datos y baja al desmarcar una casilla", async () => {
+    // 5/11/2026: «Peso total» suma una casilla y nace apagada: 7 de 8 de entrada.
     const { user } = setup([renglon()]);
     const toggle = screen.getByRole("button", { name: /qué copiar/i });
 
-    expect(toggle).toHaveTextContent("7 de 7");
+    expect(toggle).toHaveTextContent("7 de 8");
 
     await user.click(toggle);
     await user.click(screen.getByLabelText("Código"));
 
-    expect(toggle).toHaveTextContent("6 de 7");
+    expect(toggle).toHaveTextContent("6 de 8");
   });
 
   it("está FUERA y DESPUÉS del pie, no pegado a él", () => {
@@ -962,5 +963,106 @@ describe("ConversationCartBlock — «Qué copiar» con vista previa", () => {
 
     expect(screen.queryByLabelText("Vista previa del texto")).not.toBeInTheDocument();
     expect(screen.getByText(/no hay vista previa/i)).toHaveTextContent(/sin precio/i);
+  });
+});
+
+// 5/11/2026 (pedido del cliente): el peso total del carrito, para calcular el
+// envío. La fila vive en el pie, debajo del Total; con algún renglón sin peso
+// NO hay ningún número (un peso incompleto parece un peso real) y el aviso
+// dice cuántos faltan. «Sin peso» marca los renglones afectados.
+describe("ConversationCartBlock — peso total", () => {
+  const conPeso = (id: string, kg: number | null, over: Partial<ConversationCartItem> = {}) =>
+    item({ id, product: product({ id: `p-${id}`, name: `Producto ${id}`, weightKg: kg }), ...over });
+
+  it("con todos los pesos muestra «Peso total» y «12,5 kg» (2 × 3 + 1 × 6,5)", () => {
+    setup([conPeso("a", 3, { quantity: 2 }), conPeso("b", 6.5, { quantity: 1 })]);
+
+    const fila = screen.getByTestId("cart-weight");
+    expect(fila).toHaveAttribute("data-state", "completo");
+    expect(fila).toHaveTextContent("Peso total");
+    expect(fila).toHaveTextContent("12,5 kg");
+    expect(within(fila).queryByText(/faltan pesos/i)).not.toBeInTheDocument();
+    expect(screen.queryByText("Sin peso")).not.toBeInTheDocument();
+  });
+
+  it("la fila va debajo del Total y antes de «Facturar en SAINT»", () => {
+    setup([conPeso("a", 3)]);
+
+    const total = screen.getByTestId("cart-total");
+    const fila = screen.getByTestId("cart-weight");
+    const saint = screen.getByRole("button", { name: /facturar en saint/i });
+    expect(total.compareDocumentPosition(fila) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(fila.compareDocumentPosition(saint) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    // Dentro del pie, no suelta: el pie es lo que se queda pegado abajo.
+    expect(fila.closest(".crm-pcart-foot")).not.toBeNull();
+  });
+
+  it("con renglones sin peso dice «Faltan pesos (2)» y NO escribe ningún peso", () => {
+    setup([conPeso("a", 3), conPeso("b", null), conPeso("c", 0)]);
+
+    const fila = screen.getByTestId("cart-weight");
+    expect(fila).toHaveAttribute("data-state", "incompleto");
+    expect(fila).toHaveTextContent("Faltan pesos (2)");
+    expect(fila.textContent).not.toMatch(/kg/i);
+    expect(fila.textContent).not.toMatch(/\d,\d/);
+  });
+
+  it("«Sin peso» sale solo en el renglón al que le falta, no en los demás", () => {
+    setup([conPeso("a", 3), conPeso("b", null)]);
+
+    const marcas = screen.getAllByText("Sin peso");
+    expect(marcas).toHaveLength(1);
+    expect(marcas[0].closest("li")).toHaveTextContent("Producto b");
+    const conocido = screen.getByText("Producto a").closest("li") as HTMLElement;
+    expect(within(conocido).queryByText("Sin peso")).not.toBeInTheDocument();
+  });
+
+  it("con el carrito vacío no hay fila de peso", () => {
+    setup([]);
+
+    expect(screen.queryByTestId("cart-weight")).not.toBeInTheDocument();
+  });
+
+  it("no cambia el texto copiado: «Peso total» sigue apagada por defecto", async () => {
+    const { user, onSendToComposer } = setup([conPeso("a", 3)]);
+
+    await user.click(screen.getByRole("button", { name: /enviar al chat/i }));
+
+    expect(onSendToComposer.mock.calls[0][0]).not.toContain("Peso total");
+  });
+
+  describe("aviso bajo la vista previa", () => {
+    const AVISO = "No se incluye «Peso total»: faltan pesos (2)";
+
+    it("con la casilla encendida y pesos faltantes lo dice, y el texto copiado no trae la línea", async () => {
+      const { user, onSendToComposer } = setup([conPeso("a", 3), conPeso("b", null), conPeso("c", null)]);
+      await user.click(screen.getByRole("button", { name: /qué copiar/i }));
+      await user.click(screen.getByLabelText("Peso total"));
+
+      const aviso = screen.getByText(AVISO, { exact: false });
+      expect(aviso).toBeInTheDocument();
+      // Es para el asesor: va fuera de la vista previa y no cambia el texto.
+      expect(screen.getByLabelText("Vista previa del texto")).not.toContainElement(aviso);
+      expect(screen.getByLabelText("Vista previa del texto").textContent).not.toContain("Peso total");
+      await user.click(screen.getByRole("button", { name: /enviar al chat/i }));
+      expect(onSendToComposer.mock.calls[0][0]).not.toContain("Peso total");
+      expect(onSendToComposer.mock.calls[0][0]).not.toContain("faltan pesos");
+    });
+
+    it("con la casilla apagada no avisa", async () => {
+      const { user } = setup([conPeso("a", 3), conPeso("b", null), conPeso("c", null)]);
+      await user.click(screen.getByRole("button", { name: /qué copiar/i }));
+
+      expect(screen.queryByText(/no se incluye «peso total»/i)).not.toBeInTheDocument();
+    });
+
+    it("con la casilla encendida y el peso completo no avisa y la línea sí sale", async () => {
+      const { user } = setup([conPeso("a", 3)]);
+      await user.click(screen.getByRole("button", { name: /qué copiar/i }));
+      await user.click(screen.getByLabelText("Peso total"));
+
+      expect(screen.queryByText(/no se incluye «peso total»/i)).not.toBeInTheDocument();
+      expect(screen.getByLabelText("Vista previa del texto").textContent).toContain("Peso total: 6 kg");
+    });
   });
 });

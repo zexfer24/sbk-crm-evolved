@@ -9,6 +9,7 @@ import {
   NEW_FROM_SAINT_DAYS,
   aiVisibility,
   casheaReadiness,
+  formatPesoKg,
   formatWeightInput,
   inventoryFilterHref,
   inventoryHref,
@@ -475,6 +476,23 @@ describe("formatWeightInput", () => {
     expect(formatWeightInput(null)).toBe("");
     expect(formatWeightInput(0.25)).toBe("0.250");
     expect(formatWeightInput(2)).toBe("2.000");
+  });
+});
+
+// 5/11/2026: el peso para LEER (y para el texto que se copia al cliente) lleva
+// coma, como mucho dos decimales y ningún cero de cola; el campo editable usa
+// `formatWeightInput`, que es otra cosa.
+describe("formatPesoKg", () => {
+  it.each([
+    [3.2, "3,2"],
+    [12.5, "12,5"],
+    [0.3, "0,3"],
+    [2, "2"],
+    [0.25, "0,25"],
+    [1.255, "1,26"],
+    [0.3 + 0.1 + 0.1 - 0.1, "0,4"],
+  ])("%s kg se lee «%s»", (kg, esperado) => {
+    expect(formatPesoKg(kg)).toBe(esperado);
   });
 });
 
