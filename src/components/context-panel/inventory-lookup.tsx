@@ -1,7 +1,7 @@
 "use client";
 
 import { useId, useRef, useState, type KeyboardEvent } from "react";
-import { Camera, ChevronDown, ChevronRight, Search, X } from "lucide-react";
+import { Camera, ChevronDown, ChevronRight, Images, Search, X } from "lucide-react";
 import { flushSync } from "react-dom";
 import { toast } from "@heroui/react";
 import type { CartPriceKind, Product } from "@/lib/types";
@@ -23,8 +23,10 @@ import {
 import { useDebouncedCallback } from "@/lib/use-debounced-callback";
 import { fotoPrincipal } from "@/lib/product-photos";
 import { productPhotoCaption } from "@/lib/product-photo-caption";
+import { ProductoFicha } from "@/components/inventario/producto-ficha";
 import { StockPill } from "@/components/context-panel/stock-pill";
 import type { BcvRateSummary } from "@/components/inbox/bcv-rate-chip";
+import "@/components/context-panel/inventory-lookup-fotos.css";
 
 /**
  * Búsqueda de inventario dentro del panel derecho del chat (T6, plan "El
@@ -139,6 +141,13 @@ interface InventoryLookupProps {
    * esto no hay miniaturas, casilla ni botón «Enviar foto».
    */
   onEnviarFoto?: (product: Product, caption: string | null) => Promise<void>;
+  /**
+   * 6/11/2026, pedido del cliente («modificar la imagen desde el sidebar»):
+   * supervisor y admin ven «Fotos» en cada resultado, que abre la ficha de
+   * /inventario. La RLS de `product_photos` es la barrera real; esto solo evita
+   * ofrecer un botón que la base rechazaría. Solo se pinta junto a `onEnviarFoto`.
+   */
+  puedeEditarFotos?: boolean;
   /** Motivo por el que NO se puede enviar (p. ej. ventana de 24 h cerrada): deshabilita el botón y va en su `title`. */
   enviarFotoDeshabilitado?: string;
 }
@@ -346,8 +355,10 @@ export function InventoryLookup({
   desplegable = false,
   onEnviarFoto,
   enviarFotoDeshabilitado,
+  puedeEditarFotos = false,
 }: InventoryLookupProps) {
   const bodyId = useId();
+  const [fichaId, setFichaId] = useState<string | null>(null);
   // Sin `desplegable` siempre abierto; con él, la preferencia guardada (o cerrado).
   const [abierto, setAbierto] = useState<boolean>(() => (desplegable ? readOpenPreference() : true));
   const [text, setText] = useState("");
@@ -455,6 +466,19 @@ export function InventoryLookup({
     );
   }
 
+  // La ficha ya avisó con su toast el resultado de la mutación de fotos; acá
+  // solo se relee el producto para que la miniatura y «Enviar foto» reflejen la
+  // galería nueva. Si falla, la lista queda como estaba (no hay nada que decir).
+  async function refrescarProducto(id: string | null) {
+    if (!id) return;
+    try {
+      const fresco = await fetchProduct(createClient(), id);
+      if (fresco) reemplazarProducto(fresco);
+    } catch (error) {
+      console.error("No se pudo releer el repuesto tras cambiar sus fotos", error);
+    }
+  }
+
   // Alternar guarda la preferencia (en try/catch: la UI funciona sin storage).
   // Al ABRIR el foco va al input; el cuerpo sigue montado (solo `hidden`), pero un
   // elemento `hidden` no admite foco hasta que el render lo muestra: `flushSync`
@@ -473,6 +497,12 @@ export function InventoryLookup({
   }
 
   const rate = bcvRate?.rate ?? 0;
+  // Siempre sale de la lista por id (no de una copia) para que, al refrescar,
+  // la galería de la ficha pinte la foto nueva.
+  const productoFicha =
+    puedeEditarFotos && fichaId !== null && state.status === "ok"
+      ? (state.products.find((p) => p.id === fichaId) ?? null)
+      : null;
 
   return (
     <section className="crm-context-section">
@@ -679,6 +709,17 @@ export function InventoryLookup({
                               onEnviarFoto={onEnviarFoto}
                               motivoDeshabilitado={enviarFotoDeshabilitado}
                             />
+                            {puedeEditarFotos && (
+                              <button
+                                type="button"
+                                className="crm-lookup-add crm-lookup-photo-btn"
+                                aria-label={`Gestionar fotos de ${product.name}`}
+                                onClick={() => setFichaId(product.id)}
+                              >
+                                <Images size={12} aria-hidden="true" />
+                                Fotos
+                              </button>
+                            )}
                           </div>
                         )}
                       </div>
@@ -687,6 +728,21 @@ export function InventoryLookup({
                 );
               })}
             </ul>
+
+            {puedeEditarFotos && (
+              <ProductoFicha
+                product={productoFicha}
+                bcvRate={rate}
+                soloLectura={false}
+                puedeEditarFotos
+                mostrarAcciones={false}
+                isOpen={fichaId !== null && productoFicha !== null}
+                onOpenChange={(abierta) => {
+                  if (!abierta) setFichaId(null);
+                }}
+                onCambio={() => void refrescarProducto(fichaId)}
+              />
+            )}
 
             {/* Fuera de la lista que scrollea: el botón siempre está a la vista,
                 no hay que llegar al fondo de la lista para descubrirlo. */}

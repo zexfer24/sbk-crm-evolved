@@ -37,6 +37,16 @@ vi.mock("@heroui/react", async (importOriginal) => {
   return { ...real, toast: { success: vi.fn(), danger: vi.fn(), warning: vi.fn(), info: vi.fn() } };
 });
 
+// 6/11/2026: la ficha de fotos (abierta desde «Fotos») guarda con estas
+// mutaciones; acá basta que terminen para que avise y el buscador relea.
+const uploadProductPhoto = vi.fn();
+vi.mock("@/lib/product-photo-mutations", () => ({
+  uploadProductPhoto: (...args: unknown[]) => uploadProductPhoto(...args),
+  replaceProductPhoto: vi.fn(),
+  deleteProductPhoto: vi.fn(),
+  setPrimaryProductPhoto: vi.fn(),
+}));
+
 vi.mock("@/lib/supabase/client", () => ({ createClient: vi.fn(() => ({})) }));
 
 function product(overrides: Partial<Product> = {}): Product {
@@ -1272,5 +1282,72 @@ describe("InventoryLookup — enviar foto", () => {
 
     expect(document.querySelector("img")).toBeNull();
     expect(document.querySelector(".crm-lookup-thumb[data-empty='true']")).not.toBeNull();
+  });
+});
+
+describe("InventoryLookup — gestionar fotos desde el chat", () => {
+  const NUEVA = {
+    id: "foto-9",
+    storagePath: "prod-1/nueva.jpg",
+    url: "https://x.supabase.co/storage/v1/object/public/product-photos/prod-1/nueva.jpg",
+    isPrimary: true,
+    position: 0,
+  };
+
+  async function buscar(products: Product[]) {
+    searchProductsForLookup.mockResolvedValue(products);
+    type("bujia");
+    flush();
+    await flushPromises();
+  }
+
+  const enviar = vi.fn().mockResolvedValue(undefined);
+
+  it("con puedeEditarFotos cada resultado ofrece «Gestionar fotos» y abre la ficha del repuesto", async () => {
+    render(<InventoryLookup bcvRate={RATE} onEnviarFoto={enviar} puedeEditarFotos />);
+    await buscar([product(), product({ id: "prod-2", name: "Filtro de aceite" })]);
+
+    expect(screen.getAllByRole("button", { name: /gestionar fotos de/i })).toHaveLength(2);
+    fireEvent.click(screen.getByRole("button", { name: "Gestionar fotos de Filtro de aceite" }));
+    await flushPromises();
+
+    expect(screen.getByRole("dialog", { name: "Ficha de Filtro de aceite" })).toBeInTheDocument();
+    // En el chat la ficha no trae el pie de carrito/Cashea.
+    expect(screen.queryByRole("button", { name: /^Cashea$/ })).not.toBeInTheDocument();
+  });
+
+  it("también se ofrece en un repuesto sin foto o retirado", async () => {
+    render(<InventoryLookup bcvRate={RATE} onEnviarFoto={enviar} puedeEditarFotos />);
+    await buscar([product({ fotos: [], isActive: false })]);
+
+    expect(screen.getByRole("button", { name: "Gestionar fotos de Bujía CR7HSA" })).toBeEnabled();
+  });
+
+  it("sin puedeEditarFotos no hay botón", async () => {
+    render(<InventoryLookup bcvRate={RATE} onEnviarFoto={enviar} />);
+    await buscar([product()]);
+
+    expect(screen.queryByRole("button", { name: /gestionar fotos/i })).not.toBeInTheDocument();
+  });
+
+  it("al guardar una foto relee el repuesto y la miniatura pasa a la foto nueva", async () => {
+    uploadProductPhoto.mockReset().mockResolvedValue(NUEVA);
+    fetchProduct.mockResolvedValue(product({ fotos: [NUEVA] }));
+    render(<InventoryLookup bcvRate={RATE} onEnviarFoto={enviar} puedeEditarFotos />);
+    await buscar([product({ fotos: [] })]);
+    expect(document.querySelector(".crm-lookup-results img")).toBeNull();
+
+    fireEvent.click(screen.getByRole("button", { name: "Gestionar fotos de Bujía CR7HSA" }));
+    await flushPromises();
+    const input = document.querySelector<HTMLInputElement>('input[type="file"]');
+    expect(input).not.toBeNull();
+    const archivo = new File(["x"], "foto.jpg", { type: "image/jpeg" });
+    fireEvent.change(input!, { target: { files: [archivo] } });
+    await flushPromises();
+    await flushPromises();
+
+    expect(uploadProductPhoto).toHaveBeenCalledWith(expect.anything(), "prod-1", archivo);
+    expect(fetchProduct).toHaveBeenCalledWith(expect.anything(), "prod-1");
+    expect(document.querySelector(".crm-lookup-results img")).toHaveAttribute("src", NUEVA.url);
   });
 });

@@ -102,7 +102,13 @@ function conCarrito(children: ReactNode) {
 
 function renderFicha(
   over: Partial<Product> = {},
-  props: { soloLectura?: boolean; puedeEditarFotos?: boolean; carrito?: boolean; isOpen?: boolean } = {}
+  props: {
+    soloLectura?: boolean;
+    puedeEditarFotos?: boolean;
+    mostrarAcciones?: boolean;
+    carrito?: boolean;
+    isOpen?: boolean;
+  } = {}
 ) {
   const { carrito = true, ...resto } = props;
   const onCambio = vi.fn();
@@ -479,5 +485,16 @@ describe("ProductoFicha — el pie", () => {
     renderFicha({}, { puedeEditarFotos: true });
     expect(screen.queryByText(/Enviar foto/i)).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /Enviar/i })).not.toBeInTheDocument();
+  });
+});
+
+describe("ProductoFicha — sin acciones de venta (chat)", () => {
+  it("con mostrarAcciones={false} no hay pie: ni «Agregar al carrito» ni «Cashea»", () => {
+    renderFicha({}, { mostrarAcciones: false, puedeEditarFotos: true });
+    expect(screen.queryByRole("button", { name: /Agregar al carrito/ })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /^Cashea$/ })).not.toBeInTheDocument();
+    expect(document.querySelector(".ficha-pie")).toBeNull();
+    // La galería sigue gestionable.
+    expect(screen.getByRole("button", { name: "Agregar otra foto" })).toBeInTheDocument();
   });
 });

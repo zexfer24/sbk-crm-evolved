@@ -84,6 +84,7 @@ export function ProductoFicha({
   bcvRate,
   soloLectura = false,
   puedeEditarFotos = false,
+  mostrarAcciones = true,
   isOpen,
   onOpenChange,
   onCambio,
@@ -94,6 +95,13 @@ export function ProductoFicha({
   soloLectura?: boolean;
   /** Supervisor y admin (D1). */
   puedeEditarFotos?: boolean;
+  /**
+   * 6/11/2026, pedido del cliente («modificar la imagen desde el sidebar»): en
+   * el chat la ficha se abre solo para gestionar fotos. Allí el carrito se
+   * agrega desde el propio buscador y la calculadora Cashea no es parte del
+   * pedido, así que con `false` no se pinta el pie.
+   */
+  mostrarAcciones?: boolean;
   isOpen: boolean;
   onOpenChange: (open: boolean) => void;
   onCambio: () => void;
@@ -434,6 +442,7 @@ export function ProductoFicha({
                 </section>
               </Drawer.Body>
 
+              {mostrarAcciones && (
               <Drawer.Footer className="ficha-pie">
                 {carrito && (
                   <button
@@ -452,6 +461,7 @@ export function ProductoFicha({
                   Cashea
                 </button>
               </Drawer.Footer>
+              )}
             </Drawer.Dialog>
           </Drawer.Content>
         </Drawer.Backdrop>

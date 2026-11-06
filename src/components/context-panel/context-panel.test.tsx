@@ -604,3 +604,34 @@ describe("ContextPanel — Enviar foto desde el buscador", () => {
     expect(sendMediaMessageMock).not.toHaveBeenCalled();
   });
 });
+
+/**
+ * 6/11/2026: gestionar fotos desde el buscador del chat. Solo supervisor y
+ * admin (misma regla que la RLS de product_photos).
+ */
+describe("ContextPanel — fotos desde el buscador", () => {
+  function renderConRol(role: Agent["role"]) {
+    return render(
+      <ContextPanel
+        conversation={buildConversation()}
+        messages={[]}
+        notes={[]}
+        allTags={ALL_TAGS}
+        currentAgent={{ ...AGENT, role }}
+        bcvRate={RATE}
+        cart={[]}
+        onCartChanged={() => {}}
+      />
+    );
+  }
+
+  it.each(["admin", "supervisor"] as const)("%s recibe puedeEditarFotos", (role) => {
+    renderConRol(role);
+    expect(inventoryLookupProps.mock.calls.at(-1)?.[0]).toMatchObject({ puedeEditarFotos: true });
+  });
+
+  it.each(["agent", "caja"] as const)("%s no lo recibe", (role) => {
+    renderConRol(role);
+    expect(inventoryLookupProps.mock.calls.at(-1)?.[0]).toMatchObject({ puedeEditarFotos: false });
+  });
+});

@@ -288,6 +288,9 @@ export function ContextPanel({
           desplegable
           // 30/10/2026: enviar la foto principal del repuesto a ESTA conversación.
           onEnviarFoto={enviarFotoDelRepuesto}
+          // 6/11/2026: gestionar las fotos desde el buscador; la RLS de
+          // product_photos solo deja a supervisor y admin, el botón se alinea.
+          puedeEditarFotos={currentAgent.role === "supervisor" || currentAgent.role === "admin"}
           enviarFotoDeshabilitado={ventanaAbierta ? undefined : "La ventana de 24 h está cerrada"}
         />
 

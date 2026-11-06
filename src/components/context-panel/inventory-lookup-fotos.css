@@ -1,0 +1,6 @@
+/* 6/11/2026: con «Fotos» junto a «Enviar foto» la fila necesita separación y
+   salto de línea en el panel angosto. Vive aparte para no tocar crm.css. */
+.crm-lookup-photo-row {
+  gap: 6px;
+  flex-wrap: wrap;
+}
