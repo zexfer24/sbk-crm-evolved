@@ -3217,6 +3217,11 @@ dejar rastro es lo que hacía desaparecer leads.
   camino tiene que pasar por `bsConRecargo`/`usdConRecargo`. La tarifa MRW NO
   lleva recargo. Es invisible: ni la UI ni el prompt dicen «IVA», «16 %» ni
   «recargo». La factura de SAINT no lo trae: los totales del CRM y los de SAINT difieren a propósito.
+- **El interruptor «BCV | Divisa» de los dos carritos es solo VISTA y TEXTO COPIADO** (6/11/2026).
+  Lo que se guarda o se manda (presupuesto, Enviar/Facturar en SAINT, Cerrar venta) sale siempre de las líneas BCV, nunca de la divisa.
+  En divisa no hay total parcial: si falta alguna divisa el total dice «Falta divisa (N)» y Copiar / Al chat se deshabilitan.
+  La divisa (`precioDivisaUsd`) ya trae el 16 % de `mapProduct`: `precioDivisaRenglon` (`carrito-divisa.ts`) no la recarga otra vez.
+  El estándar en divisa es divisa + tarifa MRW. Cashea no se calcula en divisa (queda `null` y el switch deshabilitado), y el interruptor no se recuerda: arranca en BCV en cada carrito.
 
 ---
 
