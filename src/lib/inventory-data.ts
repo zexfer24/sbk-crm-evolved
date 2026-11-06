@@ -3,6 +3,7 @@ import type { MotoCatalogSummary, Product, ProductCurrency } from "@/lib/types";
 import { productSearchFilter } from "@/lib/inventory-search";
 import { inventoryPageRange, LOW_STOCK_THRESHOLD, type InventoryParams } from "@/lib/inventory";
 import { ordenarFotos, productPhotoUrl } from "@/lib/product-photos";
+import { bsConRecargo, usdConRecargo } from "@/lib/recargo-precio";
 
 /**
  * Consultas de la sección Inventario.
@@ -97,7 +98,11 @@ export function mapProduct(row: RawProduct, supabase: SupabaseClient): Product {
     id: row.id,
     name: row.name,
     brand: row.brand,
-    price: Number(row.price),
+    // 6/11/2026 (hotfix del recargo, pedido del cliente): el precio crudo de
+    // Saint se recarga acá, en la entrada, para que todo lo que se deriva
+    // (dólares, estándar, carrito, presupuestos, cierre de venta) parta del
+    // número que de verdad se cobra. Ver `recargo-precio.ts`.
+    price: row.currency === "USD" ? usdConRecargo(Number(row.price)) : bsConRecargo(Number(row.price)),
     currency: row.currency,
     stockQuantity: row.stock_quantity,
     description: row.description,
@@ -105,7 +110,9 @@ export function mapProduct(row: RawProduct, supabase: SupabaseClient): Product {
     updatedAt: row.updated_at,
     weightKg: row.weight_kg === null ? null : Number(row.weight_kg),
     shippingFeeUsd: row.tarifa_envio_usd == null ? null : Number(row.tarifa_envio_usd),
-    precioDivisaUsd: row.precio_divisa_usd == null ? null : Number(row.precio_divisa_usd),
+    // También lleva el recargo (6/11/2026); null sigue null y <= 0 sigue siendo
+    // «Sin precio en SAINT».
+    precioDivisaUsd: row.precio_divisa_usd == null ? null : usdConRecargo(Number(row.precio_divisa_usd)),
     saintCode: row.saint_code,
     saintAddedAt: row.saint_added_at,
     saintRemovedAt: row.saint_removed_at,

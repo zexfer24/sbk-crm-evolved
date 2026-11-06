@@ -122,7 +122,8 @@ describe("fetchCart", () => {
     expect(item.product).toMatchObject({
       id: "prod-1",
       name: "Carburador PZ27",
-      price: 20,
+      // 6/11/2026 (recargo): 20 x 1,16 = 23,20 (`mapProduct`).
+      price: 23.2,
       currency: "USD",
       stockQuantity: 5,
       saintCode: "A123",

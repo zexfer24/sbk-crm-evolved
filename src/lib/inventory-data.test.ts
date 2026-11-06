@@ -5,6 +5,7 @@ import {
   fetchInventoryTotals,
   fetchProductsByIds,
   fetchProductsPage,
+  mapProduct,
   searchActiveProducts,
   searchProductsForLookup,
 } from "@/lib/inventory-data";
@@ -404,7 +405,7 @@ describe("fetchProductsByIds — restaurar el carrito del Inventario (12/10/2026
     expect(calls.find((c) => c.method === "select")?.args[0]).toBe(PRODUCT_SELECT);
   });
 
-  it("mapea cada fila a Product (stock_quantity → stockQuantity, price → número)", async () => {
+  it("mapea cada fila a Product (stock_quantity → stockQuantity, price → número ya recargado)", async () => {
     const { builder } = fakeProductsQuery({ data: [rawProductRow()] });
     const result = await fetchProductsByIds(fakeSupabase(builder), ["p-1"]);
 
@@ -412,7 +413,8 @@ describe("fetchProductsByIds — restaurar el carrito del Inventario (12/10/2026
     expect(result[0]).toMatchObject({
       id: "p-1",
       name: "PASTILLA FRENO DELANTERA",
-      price: 12.5,
+      // 12,5 x 1,16 = 14,5 (recargo del 6/11/2026: `mapProduct` lo aplica).
+      price: 14.5,
       currency: "USD",
       stockQuantity: 7,
       saintCode: "PF-01",
@@ -600,5 +602,59 @@ describe("fetchInventoryTotals — conFoto", () => {
   it("si el conteo de fotos falla, el error se propaga (no se disfraza de cero)", async () => {
     const { supabase } = fakeTotals({ message: "boom" });
     await expect(fetchInventoryTotals(supabase)).rejects.toEqual({ message: "boom" });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 6/11/2026 (hotfix del recargo, pedido del cliente): `mapProduct` es uno de
+// los DOS únicos puntos por donde el precio de producto entra a la app (el
+// otro es `cotizar` de `ai/tools.ts`). Todos los números van con literales.
+// ---------------------------------------------------------------------------
+describe("mapProduct — el recargo sobre todo precio de producto", () => {
+  const storage = {
+    storage: { from: () => ({ getPublicUrl: (path: string) => ({ data: { publicUrl: `https://sb.test/${path}` } }) }) },
+  } as unknown as SupabaseClient;
+
+  const raw = (over: Record<string, unknown> = {}) =>
+    ({
+      ...rawProductRow(),
+      price: 100,
+      currency: "VES",
+      tarifa_envio_usd: null,
+      precio_divisa_usd: null,
+      product_photos: null,
+      ...over,
+    }) as unknown as Parameters<typeof mapProduct>[0];
+
+  it("un precio de 100 Bs queda en 116 Bs", () => {
+    expect(mapProduct(raw(), storage).price).toBe(116);
+  });
+
+  it("un precio en USD de 10 queda en $11,60 (hacia arriba al $0,10)", () => {
+    expect(mapProduct(raw({ price: 10, currency: "USD" }), storage).price).toBe(11.6);
+  });
+
+  it("el precio que PostgREST entrega como texto también se recarga", () => {
+    expect(mapProduct(raw({ price: "100.00" }), storage).price).toBe(116);
+  });
+
+  it("el precio divisa de 9,95 queda en $11,60", () => {
+    expect(mapProduct(raw({ precio_divisa_usd: 9.95 }), storage).precioDivisaUsd).toBe(11.6);
+    expect(mapProduct(raw({ precio_divisa_usd: "9.95" }), storage).precioDivisaUsd).toBe(11.6);
+  });
+
+  it("precio divisa null sigue null y 0 sigue 0 (la UI los lee como «Sin precio en SAINT»)", () => {
+    expect(mapProduct(raw({ precio_divisa_usd: null }), storage).precioDivisaUsd).toBeNull();
+    expect(mapProduct(raw({ precio_divisa_usd: 0 }), storage).precioDivisaUsd).toBe(0);
+  });
+
+  it("un precio en 0 sigue en 0", () => {
+    expect(mapProduct(raw({ price: 0 }), storage).price).toBe(0);
+  });
+
+  it("la tarifa de envío MRW NO lleva recargo", () => {
+    expect(mapProduct(raw({ tarifa_envio_usd: "1.40" }), storage).shippingFeeUsd).toBe(1.4);
+    expect(mapProduct(raw({ tarifa_envio_usd: 2.5 }), storage).shippingFeeUsd).toBe(2.5);
+    expect(mapProduct(raw({ tarifa_envio_usd: null }), storage).shippingFeeUsd).toBeNull();
   });
 });

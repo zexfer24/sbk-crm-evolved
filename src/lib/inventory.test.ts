@@ -384,8 +384,10 @@ describe("mapProduct / PRODUCT_SELECT (tarifa MRW)", () => {
   // 30/10/2026 (plan "Precio divisa desde SAINT"): campo calculado de PostgREST,
   // `numeric` que puede llegar como texto.
   it("convierte el precio divisa que PostgREST entrega como texto o número", () => {
-    expect(mapProduct(raw({ precio_divisa_usd: "12.35" }), fakeStorageSupabase).precioDivisaUsd).toBe(12.35);
-    expect(mapProduct(raw({ precio_divisa_usd: 7 }), fakeStorageSupabase).precioDivisaUsd).toBe(7);
+    // 6/11/2026: `mapProduct` suma el recargo (x 1,16, hacia arriba al $0,10):
+    // 12,35 -> 14,40 y 7 -> 8,20.
+    expect(mapProduct(raw({ precio_divisa_usd: "12.35" }), fakeStorageSupabase).precioDivisaUsd).toBe(14.4);
+    expect(mapProduct(raw({ precio_divisa_usd: 7 }), fakeStorageSupabase).precioDivisaUsd).toBe(8.2);
   });
 
   it("precio divisa null se queda null (nunca 0)", () => {

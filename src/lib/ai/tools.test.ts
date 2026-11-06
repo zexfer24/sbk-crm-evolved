@@ -304,8 +304,9 @@ describe("buildCatalogTool — registro de cotizaciones", () => {
       conversation_id: "conv-1",
       product_id: "prod-1",
       product_name: "Carburador PZ27",
-      price_usd: 18,
-      price_bs: 720,
+      // 6/11/2026 (recargo): 18 x 1,16 = 20,88 -> $20,90; x 40 = 836 Bs.
+      price_usd: 20.9,
+      price_bs: 836,
       bcv_rate: 40,
     });
   });
@@ -342,7 +343,8 @@ describe("buildCatalogTool — registro de cotizaciones", () => {
 
     // T4 (25-26/9/2026, mismo plan): `formatQuote` suma "BCV" después del
     // dólar -- ver precio.ts/precio.test.ts.
-    expect(result.results[0].precio).toBe("$18,50 BCV (Bs. 740,00)");
+    // 6/11/2026 (recargo): 18,5 x 1,16 = 21,46 -> $21,50; x 40 = 860 Bs.
+    expect(result.results[0].precio).toBe("$21,50 BCV (Bs. 860,00)");
     expect(result.results[0]).not.toHaveProperty("precioUsd");
     expect(result.results[0]).not.toHaveProperty("precioBs");
   });
@@ -379,8 +381,60 @@ describe("buildCatalogTool — registro de cotizaciones", () => {
       results: { precio: string }[];
     };
 
-    expect(result.results[0].precio).toBe("$2,20 BCV (Bs. 87,00)");
-    expect(insertedQuotes[0]).toMatchObject({ price_usd: 2.2, price_bs: 87, bcv_rate: 40 });
+    // 6/11/2026 (recargo): 87 x 1,16 = 100,92 Bs; 100,92 / 40 = 2,523 -> 2,60.
+    expect(result.results[0].precio).toBe("$2,60 BCV (Bs. 100,92)");
+    expect(insertedQuotes[0]).toMatchObject({ price_usd: 2.6, price_bs: 100.92, bcv_rate: 40 });
+  });
+
+  /**
+   * 6/11/2026 (hotfix del recargo, pedido del cliente): el precio que sale de
+   * la RPC `buscar_productos` es el crudo de Saint; la herramienta lo
+   * recarga ANTES de convertirlo. Los números van con literales: 100 Bs x 1,16
+   * = 116 Bs, y 116 / 40 = 2,90 -- sin el recargo saldría 2,50.
+   */
+  it("un repuesto de 100 Bs se cotiza a 116 Bs y a usdFromBs(116, 40) = $2,90, y eso es lo que se guarda", async () => {
+    const { client, insertedQuotes } = createFakeSupabase([
+      { id: "prod-ves-2", name: "Carburador PZ27", brand: "Genérico", price: 100, currency: "VES", stock_quantity: 5 },
+    ]);
+    const catalogOutcome = nuevoCatalogOutcome();
+
+    const tool = buildCatalogTool({
+      // @ts-expect-error -- fake mínimo
+      supabase: client,
+      conversationId: "conv-1",
+      contactId: "contact-1",
+    }, catalogOutcome);
+
+    // @ts-expect-error -- firma simplificada del test
+    const result = (await tool.execute({ query: "carburador" }, { toolCallId: "t1", messages: [] })) as {
+      results: { precio: string }[];
+    };
+
+    expect(result.results[0].precio).toBe("$2,90 BCV (Bs. 116,00)");
+    expect(insertedQuotes[0]).toMatchObject({ price_usd: 2.9, price_bs: 116, bcv_rate: 40 });
+    expect(catalogOutcome.cotizacion?.[0]).toMatchObject({ precioUsd: 2.9, precioBs: 116 });
+  });
+
+  it("un repuesto en USD de 10 se cotiza a $11,60 (hacia arriba al $0,10) y sus bolívares salen del precio ya recargado", async () => {
+    const { client, insertedQuotes } = createFakeSupabase([
+      { id: "prod-usd-2", name: "Carburador PZ27", brand: "Genérico", price: 10, currency: "USD", stock_quantity: 5 },
+    ]);
+
+    const tool = buildCatalogTool({
+      // @ts-expect-error -- fake mínimo
+      supabase: client,
+      conversationId: "conv-1",
+      contactId: "contact-1",
+    }, nuevoCatalogOutcome());
+
+    // @ts-expect-error -- firma simplificada del test
+    const result = (await tool.execute({ query: "carburador" }, { toolCallId: "t1", messages: [] })) as {
+      results: { precio: string }[];
+    };
+
+    // 11,60 x 40 = 464,00 Bs.
+    expect(result.results[0].precio).toBe("$11,60 BCV (Bs. 464,00)");
+    expect(insertedQuotes[0]).toMatchObject({ price_usd: 11.6, price_bs: 464 });
   });
 
   it("no inserta nada en conversation_quotes si la búsqueda no encontró resultados", async () => {
@@ -3218,9 +3272,10 @@ describe("buildCatalogTool — lo que la herramienta deja en el CatalogOutcome (
 
     await correr(herramienta(client, catalogOutcome), { query: "aceite inca 20w50" });
 
-    // 87 Bs / 40 = 2,175 -> 2,20 (usdFromBs, hacia arriba al $0,10).
+    // 87 Bs x 1,16 = 100,92 Bs (recargo del 6/11/2026); 100,92 / 40 = 2,523 ->
+    // 2,60 (usdFromBs, hacia arriba al $0,10).
     expect(catalogOutcome.cotizacion).toEqual([
-      { productId: "p1", nombre: "Aceite Inca 20W50 4T", precioUsd: 2.2, precioBs: 87, stock: 6, productoPedido: null },
+      { productId: "p1", nombre: "Aceite Inca 20W50 4T", precioUsd: 2.6, precioBs: 100.92, stock: 6, productoPedido: null },
     ]);
   });
 
@@ -3265,7 +3320,8 @@ describe("buildCatalogTool — lo que la herramienta deja en el CatalogOutcome (
         corregido: null,
         correccionDescartada: null,
         decision: "moto SBR 200 calza: cotizó 1 (1 con existencia de 1)",
-        cotizados: [{ productId: "p1", nombre: "ASIENTO SBR NEGRO", stock: 3, precioUsd: 10 }],
+        // 6/11/2026 (recargo): fila() cuesta 10 USD -> 10 x 1,16 = 11,60.
+        cotizados: [{ productId: "p1", nombre: "ASIENTO SBR NEGRO", stock: 3, precioUsd: 11.6 }],
         conteos: { calzan: 1, conStock: 1, nombranMoto: 1, universales: 0 },
         resultado: "con_existencia",
       },

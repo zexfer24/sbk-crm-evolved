@@ -179,7 +179,8 @@ describe("fetchPresupuestos", () => {
     expect(b.quantity).toBe(2);
     expect(b.priceKind).toBe("estandar");
     expect(b.productId).toBe("p2");
-    expect(b.product.price).toBe(25.5);
+    // 6/11/2026 (recargo): 25,5 x 1,16 = 29,58 -> $29,60 (`mapProduct`).
+    expect(b.product.price).toBe(29.6);
     expect(b.product.shippingFeeUsd).toBe(2.5);
     expect(b.product.weightKg).toBe(1.25);
     expect(p.items[1].precioCotizadoUsd).toBeNull();

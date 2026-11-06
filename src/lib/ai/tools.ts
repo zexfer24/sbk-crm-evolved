@@ -43,6 +43,7 @@ import {
 } from "@/lib/ai/seba";
 import { inventoryAgeInstruction, inventoryFreshness } from "@/lib/inventory-freshness";
 import { usdFromBs } from "@/lib/usd-price";
+import { bsConRecargo, usdConRecargo } from "@/lib/recargo-precio";
 import { errorText, log } from "@/lib/log";
 import type { BusinessHours, BusinessStatus } from "@/lib/business-hours";
 // F (20/9/2026, "El resguardo antes del push", C3): mismo escapado de
@@ -1252,22 +1253,30 @@ export function buildCatalogTool(
     /** Precio ya calculado (`usdFromBs`) de las filas que se muestran. */
     const cotizar = async (mostrados: FilaBusqueda[], alternativas: FilaBusqueda[] = []): Promise<Cotizado[]> => {
       const { rate } = await leerTasa();
-      const armar = (r: FilaBusqueda, esAlternativa: boolean): Cotizado => ({
-        id: r.id,
-        nombre: r.name,
-        marca: r.brand,
-        // 27/9/2026 ("El mostrador busca sin salir del chat", D1/D3): el
-        // dólar de un repuesto en VES se redondea hacia arriba con
-        // `usdFromBs`, la MISMA regla que Inventario y el carrito del cierre
-        // de venta -- si no, el asesor cotiza $2,60 y Seba $2,54 por el
-        // mismo repuesto. `getBcvRate` nunca devuelve una tasa <= 0 (lanza
-        // antes), así que `usdFromBs` no da null acá.
-        precioUsd: r.currency === "USD" ? r.price : (usdFromBs(r.price, rate) as number),
-        precioBs: r.currency === "USD" ? Number((r.price * rate).toFixed(2)) : r.price,
-        stock: r.stock_quantity,
-        compatibleCon: r.compatibilidad.map((c) => `${c.moto_brand} ${c.moto_model}`),
-        ...(esAlternativa ? { esAlternativa: true } : {}),
-      });
+      const armar = (r: FilaBusqueda, esAlternativa: boolean): Cotizado => {
+        const precioRecargado = r.currency === "USD" ? usdConRecargo(r.price) : bsConRecargo(r.price);
+        return {
+          id: r.id,
+          nombre: r.name,
+          marca: r.brand,
+          // 27/9/2026 ("El mostrador busca sin salir del chat", D1/D3): el
+          // dólar de un repuesto en VES se redondea hacia arriba con
+          // `usdFromBs`, la MISMA regla que Inventario y el carrito del cierre
+          // de venta -- si no, el asesor cotiza $2,60 y Seba $2,54 por el
+          // mismo repuesto. `getBcvRate` nunca devuelve una tasa <= 0 (lanza
+          // antes), así que `usdFromBs` no da null acá.
+          //
+          // 6/11/2026 (hotfix del recargo, pedido del cliente): `r.price` es el
+          // precio crudo de Saint; se recarga ANTES de convertir, igual que
+          // `mapProduct` en la pantalla del asesor (`recargo-precio.ts`), para
+          // que los dos cotizen el mismo número.
+          precioUsd: r.currency === "USD" ? precioRecargado : (usdFromBs(precioRecargado, rate) as number),
+          precioBs: r.currency === "USD" ? Number((precioRecargado * rate).toFixed(2)) : precioRecargado,
+          stock: r.stock_quantity,
+          compatibleCon: r.compatibilidad.map((c) => `${c.moto_brand} ${c.moto_model}`),
+          ...(esAlternativa ? { esAlternativa: true } : {}),
+        };
+      };
       return [...mostrados.map((r) => armar(r, false)), ...alternativas.map((r) => armar(r, true))];
     };
 
