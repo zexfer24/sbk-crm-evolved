@@ -1,6 +1,6 @@
 /** @vitest-environment jsdom */
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { toast } from "@heroui/react";
 import { ConversationCartBlock } from "@/components/context-panel/conversation-cart-block";
@@ -112,6 +112,7 @@ function makeActions(over: Partial<CartActions> = {}): CartActions {
     setQuantity: vi.fn().mockResolvedValue(undefined),
     setPriceKind: vi.fn().mockResolvedValue(undefined),
     remove: vi.fn().mockResolvedValue(undefined),
+    clear: vi.fn().mockResolvedValue(undefined),
     ...over,
   };
 }
@@ -1064,5 +1065,134 @@ describe("ConversationCartBlock — peso total", () => {
       expect(screen.queryByText(/no se incluye «peso total»/i)).not.toBeInTheDocument();
       expect(screen.getByLabelText("Vista previa del texto").textContent).toContain("Peso total: 6 kg");
     });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 6/11/2026 (pedido del cliente): interruptor «BCV | Divisa» y «Vaciar».
+// ---------------------------------------------------------------------------
+describe("ConversationCartBlock — moneda divisa y Vaciar", () => {
+  const dosConDivisa = () => [
+    item({ id: "a", productId: "a", quantity: 2, product: product({ id: "a", name: "Bujía", precioDivisaUsd: 4.6 }) }),
+    item({ id: "b", productId: "b", quantity: 1, product: product({ id: "b", name: "Kit", precioDivisaUsd: 30 }) }),
+  ];
+  const unoSinDivisa = () => [
+    dosConDivisa()[0],
+    item({ id: "b", productId: "b", quantity: 1, product: product({ id: "b", name: "Kit", precioDivisaUsd: null }) }),
+  ];
+
+  it("el interruptor arranca en BCV", () => {
+    setup(dosConDivisa());
+    expect(screen.getByRole("radio", { name: "BCV" })).toHaveAttribute("aria-checked", "true");
+    expect(screen.getByTestId("cart-total")).toHaveAttribute("data-moneda", "bcv");
+  });
+
+  it("al elegir Divisa el total pasa a $39.20 con «Divisa» y sin Bs.", async () => {
+    const { user } = setup(dosConDivisa());
+    await user.click(screen.getByRole("radio", { name: "Divisa" }));
+    const total = screen.getByTestId("cart-total");
+    expect(total).toHaveAttribute("data-moneda", "divisa");
+    expect(within(total).getByText("$39.20")).toBeInTheDocument();
+    expect(within(total).getByText("Divisa")).toBeInTheDocument();
+    expect(within(total).queryByText(/Bs\./)).toBeNull();
+  });
+
+  it("al elegir Divisa los renglones pasan a precio divisa y sin Bs.", async () => {
+    const { user } = setup(dosConDivisa());
+    await user.click(screen.getByRole("radio", { name: "Divisa" }));
+    expect(screen.getByText("$4.60 c/u")).toBeInTheDocument();
+    expect(screen.getByText("$9.20")).toBeInTheDocument();
+    expect(screen.queryByText(/Bs\./)).toBeNull();
+  });
+
+  it("Copiar en divisa escribe «Total en divisa: $39.20»", async () => {
+    const { user } = setup(dosConDivisa());
+    const writeText = vi.spyOn(navigator.clipboard, "writeText");
+    await user.click(screen.getByRole("radio", { name: "Divisa" }));
+    await user.click(screen.getByRole("button", { name: "Copiar" }));
+    await waitFor(() => expect(writeText).toHaveBeenCalledTimes(1));
+    expect(writeText.mock.calls[0][0]).toContain("Total en divisa: $39.20");
+    expect(writeText.mock.calls[0][0]).not.toContain("Total en bolívares");
+  });
+
+  it("con un renglón sin divisa, Copiar y Al chat quedan deshabilitados y la vista previa dice el motivo", async () => {
+    const { user } = setup(unoSinDivisa());
+    await user.click(screen.getByRole("radio", { name: "Divisa" }));
+    expect(screen.getByRole("button", { name: "Copiar" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Enviar al chat" })).toBeDisabled();
+    expect(within(screen.getByTestId("cart-total")).getByText("Falta divisa (1)")).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: /Qué copiar/ }));
+    expect(screen.getByText(/No hay vista previa: hay productos sin precio divisa\./)).toBeInTheDocument();
+  });
+
+  it("Guardar en divisa guarda los mismos items que en BCV", async () => {
+    const guardar = async (divisa: boolean) => {
+      guardarPresupuesto.mockClear();
+      const { user } = setup(dosConDivisa());
+      if (divisa) await user.click(screen.getByRole("radio", { name: "Divisa" }));
+      await user.click(screen.getByRole("button", { name: "Guardar presupuesto" }));
+      await screen.findByLabelText(/^Nombre/);
+      await user.click(screen.getByRole("button", { name: "Guardar" }));
+      await waitFor(() => expect(guardarPresupuesto).toHaveBeenCalledTimes(1));
+      const items = guardarPresupuesto.mock.calls[0][1].items;
+      cleanup();
+      return items;
+    };
+    const enBcv = await guardar(false);
+    const enDivisa = await guardar(true);
+    expect(enDivisa).toEqual(enBcv);
+  });
+
+  it("al cambiar de conversación vuelve a BCV", async () => {
+    const props = {
+      cart: dosConDivisa(),
+      bcvRate: 40,
+      actions: makeActions(),
+      onSendToComposer: vi.fn(),
+      agentId: "agent-1",
+      contactId: "contact-1",
+      contactDisplayName: "María José Pérez",
+      contactPhone: "04141234567",
+      contactCedulaType: "V" as const,
+      contactCedulaNumber: "12345678",
+      onCartChanged: vi.fn(),
+      ultimoEnvio: null,
+      ahora: AHORA,
+      onEnviosRecargar: vi.fn(),
+      isDealWon: false,
+    };
+    const user = userEvent.setup({ delay: null, pointerEventsCheck: 0 });
+    const { rerender } = render(<ConversationCartBlock {...props} conversationId="conv-1" />);
+    await user.click(screen.getByRole("radio", { name: "Divisa" }));
+    expect(screen.getByRole("radio", { name: "Divisa" })).toHaveAttribute("aria-checked", "true");
+    rerender(<ConversationCartBlock {...props} conversationId="conv-2" />);
+    expect(screen.getByRole("radio", { name: "BCV" })).toHaveAttribute("aria-checked", "true");
+  });
+
+  it("«Vaciar el carrito» abre el diálogo y «Sí, vaciar» llama a clear una vez", async () => {
+    const { user, actions } = setup(dosConDivisa());
+    await user.click(screen.getByRole("button", { name: "Vaciar el carrito" }));
+    expect(await screen.findByText("¿Vaciar el carrito?")).toBeInTheDocument();
+    expect(screen.getByText(/Se quitan los 2 productos de esta conversación/)).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Sí, vaciar" }));
+    await waitFor(() => expect(actions.clear).toHaveBeenCalledTimes(1));
+  });
+
+  it("«Cancelar» no llama a clear", async () => {
+    const { user, actions } = setup(dosConDivisa());
+    await user.click(screen.getByRole("button", { name: "Vaciar el carrito" }));
+    await user.click(await screen.findByRole("button", { name: "Cancelar" }));
+    expect(actions.clear).not.toHaveBeenCalled();
+  });
+
+  it("con un solo producto el diálogo habla del único producto", async () => {
+    const { user } = setup([dosConDivisa()[0]]);
+    await user.click(screen.getByRole("button", { name: "Vaciar el carrito" }));
+    expect(await screen.findByText(/Se quita el único producto de esta conversación/)).toBeInTheDocument();
+  });
+
+  it("con el carrito vacío no hay botón «Vaciar el carrito»", () => {
+    setup([]);
+    expect(screen.queryByRole("button", { name: "Vaciar el carrito" })).toBeNull();
   });
 });

@@ -491,3 +491,39 @@ describe("textoCarritoParaCliente", () => {
     });
   });
 });
+
+describe("carrito en divisa (6/11/2026)", () => {
+  const A = product({ id: "a", name: "Bujía", precioDivisaUsd: 4.6, weightKg: 0.5 });
+  const B = product({ id: "b", name: "Cable", precioDivisaUsd: 30, weightKg: 1 });
+  const SIN = product({ id: "s", name: "Sin divisa", precioDivisaUsd: null });
+
+  it("con Cashea activo no hay plan, inicial ni cuota, y el texto no menciona Cashea", () => {
+    const t = totalesCarrito([linea(A, 2), linea(B, 1)], 100, conCashea(), "divisa");
+    expect(t.usd).toBe(39.2);
+    expect(t.bs).toBeNull();
+    expect(t.unpricedCount).toBe(0);
+    expect(t.cashea).toBeNull();
+    expect(t.inicialBs).toBeNull();
+    expect(t.cuotaBs).toBeNull();
+    expect(t.unidades).toBe(3);
+    expect(t.renglones).toBe(2);
+    const texto = textoCarritoParaCliente(t, { ...OPCIONES_COPIA_INICIALES, planCashea: true }, "divisa");
+    expect(texto).toContain("Total en divisa: $39.20");
+    expect(texto).not.toContain("Cashea");
+  });
+
+  it("sin moneda sigue siendo BCV", () => {
+    const t = totalesCarrito([linea(A, 1)], 100, SIN_CASHEA);
+    expect(t.usd).toBe(20);
+    expect(t.bs).toBe(2000);
+  });
+
+  it("avisosRenglon: sin divisa y estándar sin tarifa", () => {
+    const [sinDivisa] = totalesCarrito([linea(SIN)], 100, SIN_CASHEA, "divisa").lineas;
+    expect(avisosRenglon(sinDivisa, "divisa")).toEqual(["Sin precio divisa en SAINT"]);
+
+    const sinTarifa = product({ id: "e", precioDivisaUsd: 4.6, weightKg: 2, shippingFeeUsd: null });
+    const [est] = totalesCarrito([linea(sinTarifa, 1, "estandar")], 100, SIN_CASHEA, "divisa").lineas;
+    expect(avisosRenglon(est, "divisa")[0]).toMatch(/^Sin precio estándar: /);
+  });
+});

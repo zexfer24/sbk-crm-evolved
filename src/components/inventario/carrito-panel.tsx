@@ -7,6 +7,7 @@ import type { AgentRole } from "@/lib/types";
 import type { PricedCartLine } from "@/lib/conversation-cart";
 import { formatBs, formatUsd, toCents } from "@/lib/cashea";
 import { formatPesoKg } from "@/lib/inventory";
+import type { MonedaCarrito } from "@/lib/carrito-divisa";
 import {
   avisosRenglon,
   textoCarritoParaCliente,
@@ -22,6 +23,7 @@ import { CasheaResumen } from "@/components/cashea/cashea-resumen";
 import { useInventarioCarrito } from "@/components/inventario/inventario-carrito-context";
 import { GuardarPresupuestoModal, type DatosPresupuestoForm } from "@/components/presupuestos/guardar-presupuesto-modal";
 import { AvisoFaltanPesos, NotaPesoNoIncluido } from "@/components/presupuestos/aviso-peso";
+import { AvisoFaltaDivisa, MonedaToggle } from "@/components/presupuestos/moneda-toggle";
 import { OpcionesCopiaCasillas } from "@/components/presupuestos/opciones-copia";
 import { useOpcionesCopia } from "@/components/presupuestos/use-opciones-copia";
 import { EnviarASaint } from "@/components/saint/enviar-a-saint";
@@ -66,6 +68,14 @@ import "@/components/inventario/inventario.css";
  * del formulario de SAINT, y envía ese presupuesto (`prepararOrigen`). SAINT
  * pone su propio precio: con estándar en el carrito una nota avisa que el envío
  * por peso no viaja.
+ *
+ * 6/11/2026, pedido del cliente («Puede ser un botón que al darle cambie los
+ * precios y refleje la divisa»): el interruptor «BCV | Divisa», el mismo del
+ * carrito del chat, va siempre visible al inicio de la zona de ajustes. En
+ * Divisa los renglones, el total y el texto copiado salen en precio divisa,
+ * sin bolívares; Cashea se calcula sobre el $ BCV, así que su interruptor
+ * queda deshabilitado (conserva su estado). Es SOLO vista y texto copiado:
+ * «Guardar presupuesto» y «Enviar a SAINT» guardan siempre las líneas BCV.
  */
 
 const SIN_MONTO = "—";
@@ -122,15 +132,17 @@ function CampoCantidad({
 
 function Renglon({
   linea,
+  moneda,
   onCantidad,
   onQuitar,
 }: {
   linea: PricedCartLine<LineaCarritoInventario>;
+  moneda: MonedaCarrito;
   onCantidad: (cantidad: number) => void;
   onQuitar: () => void;
 }) {
   const { product, quantity } = linea.item;
-  const avisos = avisosRenglon(linea);
+  const avisos = avisosRenglon(linea, moneda);
 
   return (
     <li className="inv-carrito-renglon">
@@ -160,10 +172,12 @@ function Renglon({
           onCambiar={onCantidad}
         />
         <span className="inv-carrito-unitario lm-num">
-          c/u {bsOSinPrecio(linea.unitPriceBs)} · {usdOSinPrecio(linea.unitPriceUsd)}
+          {moneda === "divisa"
+            ? `c/u ${usdOSinPrecio(linea.unitPriceUsd)}`
+            : `c/u ${bsOSinPrecio(linea.unitPriceBs)} · ${usdOSinPrecio(linea.unitPriceUsd)}`}
         </span>
         <span className="inv-carrito-subtotal lm-num">
-          <span>{bsOSinPrecio(linea.subtotalBs)}</span>
+          {moneda === "bcv" && <span>{bsOSinPrecio(linea.subtotalBs)}</span>}
           <span>{usdOSinPrecio(linea.subtotalUsd)}</span>
         </span>
       </div>
@@ -195,6 +209,9 @@ export function CarritoPanel({
   const [guardando, setGuardando] = useState(false);
   const [opcionesCopia, setOpcionesCopia] = useOpcionesCopia(agentId);
   const [opcionesAbiertas, setOpcionesAbiertas] = useState(false);
+  // No se recuerda (ni en localStorage): el carrito arranca siempre en BCV mientras la página esté
+  // montada, para que nadie le copie al siguiente cliente un precio en divisa sin darse cuenta.
+  const [moneda, setMoneda] = useState<MonedaCarrito>("bcv");
   // Antes del `return null` de abajo (reglas de los hooks): fuera del provider no hay presupuesto que mirar.
   const presupuestoParaSaint = carrito?.presupuestoActivo ?? null;
   const { porOrigen: envios, ahora, recargar: recargarEnvios } = useBorradoresSaint(
@@ -206,8 +223,13 @@ export function CarritoPanel({
   if (!carrito) return null;
 
   const { lineas, abierto, cerrar, cashea, setCashea, presupuestoActivo, priceKind } = carrito;
-  const totales = totalesCarrito(lineas, bcvRate, cashea);
-  const texto = textoCarritoParaCliente(totales, opcionesCopia);
+  // Lo que se GUARDA y se manda a SAINT sale siempre de `totalesBcv`; lo que se MUESTRA y se COPIA, de `totales`.
+  const totalesBcv = totalesCarrito(lineas, bcvRate, cashea);
+  const totales = moneda === "divisa" ? totalesCarrito(lineas, bcvRate, cashea, "divisa") : totalesBcv;
+  const enDivisa = moneda === "divisa";
+  const faltaDivisa = enDivisa && totales.unpricedCount > 0;
+  // Sin total parcial: con un renglón sin divisa no se copia nada.
+  const texto = faltaDivisa ? null : textoCarritoParaCliente(totales, opcionesCopia, moneda);
   const vacio = lineas.length === 0;
   const estandarEncendido = priceKind === "estandar";
   const hayEstandar = priceKind === "estandar" || priceKind === "mixto";
@@ -245,7 +267,7 @@ export function CarritoPanel({
       conversationId: null,
       origen: "inventario",
       nota: datos.nota || null,
-      items: renglonesParaGuardar(totales.lineas),
+      items: renglonesParaGuardar(totalesBcv.lineas),
     });
     carrito.marcarPresupuestoGuardado({
       id,
@@ -316,6 +338,7 @@ export function CarritoPanel({
                     <Renglon
                       key={linea.item.product.id}
                       linea={linea}
+                      moneda={moneda}
                       onCantidad={(cantidad) => carrito.cambiarCantidad(linea.item.product.id, cantidad)}
                       onQuitar={() => carrito.quitar(linea.item.product.id)}
                     />
@@ -327,6 +350,8 @@ export function CarritoPanel({
             {!vacio && (
               <Drawer.Footer className="inv-carrito-pie">
                 <div className="inv-carrito-pie-ajustes">
+                  <MonedaToggle value={moneda} onChange={setMoneda} />
+
                   <div className="inv-carrito-opciones">
                     <button
                       type="button"
@@ -338,7 +363,7 @@ export function CarritoPanel({
                     >
                       <span>Opciones de cotización</span>
                       {!opcionesAbiertas && hayEstandar && !esCaja && <span className="inv-carrito-marca">Estándar</span>}
-                      {!opcionesAbiertas && cashea.activo && <span className="inv-carrito-marca">Cashea</span>}
+                      {!opcionesAbiertas && cashea.activo && !enDivisa && <span className="inv-carrito-marca">Cashea</span>}
                       <ChevronDown size={14} className="inv-carrito-opciones-chevron" aria-hidden="true" />
                     </button>
 
@@ -374,10 +399,17 @@ export function CarritoPanel({
                               aria-checked={cashea.activo}
                               aria-label="Financiar con Cashea"
                               data-on={cashea.activo}
+                              disabled={enDivisa}
+                              aria-disabled={enDivisa}
                               onClick={() => setCashea({ ...cashea, activo: !cashea.activo })}
                             />
                           </div>
-                          {cashea.activo &&
+                          {enDivisa && (
+                            <p className="inv-carrito-nota" role="status">
+                              Cashea se calcula con el precio BCV.
+                            </p>
+                          )}
+                          {!enDivisa && cashea.activo &&
                             (totales.unpricedCount > 0 ? (
                               <p className="inv-carrito-nota" role="status">
                                 Falta la tasa BCV para un producto: no se puede financiar un total incompleto.
@@ -404,7 +436,9 @@ export function CarritoPanel({
                             )}
                             {texto === null ? (
                               <p className="inv-carrito-nota" role="status">
-                                Completa el precio de los renglones marcados para copiar.
+                                {faltaDivisa
+                                  ? "Completa el precio divisa de los renglones marcados para copiar."
+                                  : "Completa el precio de los renglones marcados para copiar."}
                               </p>
                             ) : (
                               <pre className="inv-carrito-previa" aria-label="Vista previa del texto">
@@ -418,16 +452,29 @@ export function CarritoPanel({
                   </div>
 
                   <div className="inv-carrito-totales" aria-label="Totales" role="group">
-                    <div className="inv-carrito-total-fila">
-                      <span>Total en bolívares</span>
-                      <span className="lm-num">{totales.bs === null ? "Sin tasa" : formatBs(totales.bs)}</span>
-                    </div>
-                    <div className="inv-carrito-total-fila">
-                      <span>Total en dólares</span>
-                      <span className="lm-num">
-                        {totales.unpricedCount > 0 ? "Sin tasa" : formatUsd(toCents(totales.usd))}
-                      </span>
-                    </div>
+                    {enDivisa ? (
+                      <div className="inv-carrito-total-fila">
+                        <span>Total en divisa</span>
+                        {faltaDivisa ? (
+                          <AvisoFaltaDivisa cantidad={totales.unpricedCount} />
+                        ) : (
+                          <span className="lm-num">{formatUsd(toCents(totales.usd))}</span>
+                        )}
+                      </div>
+                    ) : (
+                      <>
+                        <div className="inv-carrito-total-fila">
+                          <span>Total en bolívares</span>
+                          <span className="lm-num">{totales.bs === null ? "Sin tasa" : formatBs(totales.bs)}</span>
+                        </div>
+                        <div className="inv-carrito-total-fila">
+                          <span>Total en dólares</span>
+                          <span className="lm-num">
+                            {totales.unpricedCount > 0 ? "Sin tasa" : formatUsd(toCents(totales.usd))}
+                          </span>
+                        </div>
+                      </>
+                    )}
                     <div className="inv-carrito-total-fila">
                       <span>Peso total</span>
                       {totales.pesoKg === null ? (
@@ -436,7 +483,7 @@ export function CarritoPanel({
                         <span className="lm-num">{formatPesoKg(totales.pesoKg)} kg</span>
                       )}
                     </div>
-                    {totales.cashea && <CasheaResumen plan={totales.cashea} bcvRate={bcvRate} notaCadencia />}
+                    {!enDivisa && totales.cashea && <CasheaResumen plan={totales.cashea} bcvRate={bcvRate} notaCadencia />}
                   </div>
                 </div>
 

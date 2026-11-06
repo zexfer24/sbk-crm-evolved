@@ -1,7 +1,7 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import type { ConversationQuote } from "@/lib/types";
-import { addQuotesToCart, addToCart, removeFromCart, setCartPriceKind, setCartQuantity } from "@/lib/mutations";
+import { addQuotesToCart, addToCart, clearCart, removeFromCart, setCartPriceKind, setCartQuantity } from "@/lib/mutations";
 
 // ---------------------------------------------------------------------------
 // T8, plan "Seba encuentra, no insiste, y el mostrador no deja a nadie
@@ -522,5 +522,46 @@ describe("addQuotesToCart — «Agregar cotizaciones de Seba»", () => {
 
     const upsert = log.find((l) => l.op === "upsert");
     expect(upsert?.options).toMatchObject({ onConflict: "conversation_id,product_id", ignoreDuplicates: true });
+  });
+});
+
+// 6/11/2026, pedido del cliente: «botón de borrar carrito en general».
+describe("clearCart — vacía el carrito de una conversación", () => {
+  const otra = { ...ROW, id: "cart-x", conversation_id: "conv-2" };
+
+  it("borra todos los renglones de esa conversación y no toca los de otra, filtrando por conversation_id", async () => {
+    const { client, rows, log } = createCartFake([
+      ROW,
+      { ...ROW, id: "cart-2", product_id: "prod-2" },
+      { ...ROW, id: "cart-3", product_id: "prod-3" },
+      otra,
+    ]);
+
+    const n = await clearCart(client, ROW.conversation_id);
+
+    expect(n).toBe(3);
+    expect(rows.map((r) => r.id)).toEqual(["cart-x"]);
+    const del = log.find((l) => l.op === "delete");
+    expect(del?.filters).toEqual([["conversation_id", ROW.conversation_id]]);
+  });
+
+  it("un carrito ya vacío devuelve 0 sin lanzar", async () => {
+    const { client } = createCartFake([otra]);
+
+    await expect(clearCart(client, "conv-1")).resolves.toBe(0);
+  });
+
+  it("si la base rechaza el borrado lanza el error de PostgREST", async () => {
+    const { client } = createCartFake([ROW], { failDeleteWith: { message: "permission denied" } });
+
+    await expect(clearCart(client, ROW.conversation_id)).rejects.toMatchObject({ message: "permission denied" });
+  });
+
+  it("sin id de conversación lanza sin tocar la base", async () => {
+    const from = vi.fn();
+    const client = { from } as unknown as SupabaseClient;
+
+    await expect(clearCart(client, "")).rejects.toThrow("Falta la conversación del carrito.");
+    expect(from).not.toHaveBeenCalled();
   });
 });

@@ -4,6 +4,8 @@ import { useState } from "react";
 import { Minus, Plus, Sparkles, Trash2, UserPen } from "lucide-react";
 import type { CartPriceKind, ConversationCartItem } from "@/lib/types";
 import { cartTotals, priceCartLines, quoteComparisonLabel, type PricedCartLine } from "@/lib/conversation-cart";
+import { lineasEnDivisa, type MonedaCarrito } from "@/lib/carrito-divisa";
+import { AvisoFaltaDivisa } from "@/components/presupuestos/moneda-toggle";
 import { motivoSinEstandar, sinPeso, standardPriceDisplay } from "@/lib/inventory";
 import type { CartActions } from "@/components/context-panel/use-cart-actions";
 import { StockPill } from "@/components/context-panel/stock-pill";
@@ -52,6 +54,16 @@ interface CartLinesProps {
    * renglones y no cambia.
    */
   mostrarSinPeso?: boolean;
+  /**
+   * Moneda en que se PINTA el carrito (6/11/2026, pedido del cliente: ver el
+   * precio divisa en cada producto y en el total). `"bcv"` (default) es el de
+   * siempre. En `"divisa"` los renglones y el total salen del precio divisa
+   * (`lineasEnDivisa`), sin bolívares ni aviso de cotización; un renglón sin
+   * divisa dice «Sin divisa» y el total no se muestra como número (sin total
+   * parcial: «Falta divisa (N)»). Solo cambia la pantalla: lo que se guarda y
+   * se factura sigue siendo BCV.
+   */
+  moneda?: MonedaCarrito;
 }
 
 /**
@@ -135,14 +147,25 @@ function PriceKindToggle({ line, bcvRate, actions }: { line: PricedCartLine; bcv
   );
 }
 
-export function CartLines({ cart, bcvRate, actions, mostrarTotal = true, mostrarSinPeso = false }: CartLinesProps) {
-  const lines = priceCartLines(cart, bcvRate);
+export function CartLines({
+  cart,
+  bcvRate,
+  actions,
+  mostrarTotal = true,
+  mostrarSinPeso = false,
+  moneda = "bcv",
+}: CartLinesProps) {
+  const enDivisa = moneda === "divisa";
+  const lines = enDivisa ? lineasEnDivisa(priceCartLines(cart, bcvRate)) : priceCartLines(cart, bcvRate);
   const totals = cartTotals(lines);
   // Un renglón estándar sin tarifa MRW no tiene precio por otra causa que la
   // tasa: tiene su propio aviso y no entra a la cuenta del aviso de tasa.
   const sinTarifa = (line: PricedCartLine) =>
     line.item.priceKind === "estandar" && line.item.product.shippingFeeUsd === null;
-  const sinTasaCount = lines.filter((line) => line.unitPriceUsd === null && !sinTarifa(line)).length;
+  // En divisa la tasa no interviene: el aviso de tasa no se pinta.
+  const sinPrecioTexto = (line: PricedCartLine) =>
+    sinTarifa(line) ? "Sin precio" : enDivisa ? "Sin divisa" : "Sin tasa";
+  const sinTasaCount = enDivisa ? 0 : lines.filter((line) => line.unitPriceUsd === null && !sinTarifa(line)).length;
 
   return (
     <div className="crm-pcart">
@@ -221,7 +244,7 @@ export function CartLines({ cart, bcvRate, actions, mostrarTotal = true, mostrar
                     </button>
                   </div>
                   <span className="crm-pcart-price lm-num">
-                    {line.unitPriceUsd === null ? (sinTarifa(line) ? "Sin precio" : "Sin tasa") : `$${line.unitPriceUsd.toFixed(2)} c/u`}
+                    {line.unitPriceUsd === null ? sinPrecioTexto(line) : `$${line.unitPriceUsd.toFixed(2)} c/u`}
                   </span>
                   {mostrarSinPeso && sinPeso(item.product.weightKg) && (
                     <span className="crm-pcart-sinpeso">Sin peso</span>
@@ -230,7 +253,7 @@ export function CartLines({ cart, bcvRate, actions, mostrarTotal = true, mostrar
 
                 <div className="crm-pcart-col-total">
                   <span className="crm-pcart-subtotal lm-num">
-                    {line.subtotalUsd === null ? (sinTarifa(line) ? "Sin precio" : "Sin tasa") : `$${line.subtotalUsd.toFixed(2)}`}
+                    {line.subtotalUsd === null ? sinPrecioTexto(line) : `$${line.subtotalUsd.toFixed(2)}`}
                   </span>
                   {line.subtotalBs !== null && (
                     <span className="crm-pcart-bs lm-num">Bs. {line.subtotalBs.toFixed(2)}</span>
@@ -260,7 +283,11 @@ export function CartLines({ cart, bcvRate, actions, mostrarTotal = true, mostrar
         <div className="crm-quote-total" data-testid="cart-total">
           <span>Total</span>
           <span className="lm-num crm-pcart-total-values">
-            <span>${totals.usd.toFixed(2)}</span>
+            {enDivisa && totals.unpricedCount > 0 ? (
+              <AvisoFaltaDivisa cantidad={totals.unpricedCount} />
+            ) : (
+              <span>${totals.usd.toFixed(2)}</span>
+            )}
             {totals.bs !== null && <span className="crm-pcart-total-bs">Bs. {totals.bs.toFixed(2)}</span>}
           </span>
         </div>

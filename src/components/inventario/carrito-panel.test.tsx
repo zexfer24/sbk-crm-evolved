@@ -922,3 +922,161 @@ describe("el panel del carrito — peso total", () => {
     });
   });
 });
+
+/**
+ * 6/11/2026, pedido del cliente («Puede ser un botón que al darle cambie los
+ * precios y refleje la divisa»): el interruptor «BCV | Divisa» del carrito de
+ * /inventario. Es solo vista y texto copiado; lo que se guarda no cambia.
+ */
+describe("el interruptor BCV | Divisa del carrito", () => {
+  const PD1 = product({ id: "d1", name: "Pastilla con divisa", price: 5000, saintCode: "SA-D1", precioDivisaUsd: 4.6 });
+  const PD2 = product({ id: "d2", name: "Cadena con divisa", price: 4000, saintCode: "SA-D2", precioDivisaUsd: 30 });
+
+  function ArnesDivisa() {
+    const carrito = useInventarioCarrito();
+    if (!carrito) return null;
+    return (
+      <div>
+        <button onClick={() => carrito.agregar(PD1)}>agregar D1</button>
+        <button onClick={() => carrito.agregar(PD2)}>agregar D2</button>
+        <button onClick={() => carrito.agregar(PA)}>agregar A</button>
+        <button onClick={carrito.abrir}>abrir carrito</button>
+      </div>
+    );
+  }
+
+  function montarDivisa(role: "agent" | "caja" = "agent") {
+    const user = userEvent.setup({ delay: null, pointerEventsCheck: 0 });
+    render(
+      <InventarioCarritoProvider agentId={AGENTE} bcvRate={TASA} soloLectura={role === "caja"} role={role}>
+        <ArnesDivisa />
+      </InventarioCarritoProvider>,
+    );
+    return user;
+  }
+
+  /** D1 ×2 (4,60) + D2 ×1 (30) = 39,20. */
+  async function abrirConDivisa(user: ReturnType<typeof userEvent.setup>) {
+    await user.click(screen.getByText("agregar D1"));
+    await user.click(screen.getByText("agregar D1"));
+    await user.click(screen.getByText("agregar D2"));
+    await user.click(screen.getByText("abrir carrito"));
+  }
+
+  async function elegirDivisa(user: ReturnType<typeof userEvent.setup>) {
+    await user.click(await screen.findByRole("radio", { name: "Divisa" }));
+  }
+
+  it("el interruptor está visible con «Opciones de cotización» cerrado y arranca en BCV", async () => {
+    const user = montarDivisa();
+    await abrirConDivisa(user);
+
+    const grupo = await screen.findByRole("radiogroup", { name: "Moneda del carrito" });
+    expect(grupo).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Opciones de cotización/ })).toHaveAttribute("aria-expanded", "false");
+    expect(screen.getByRole("radio", { name: "BCV" })).toHaveAttribute("aria-checked", "true");
+    expect(screen.getByRole("radio", { name: "Divisa" })).toHaveAttribute("aria-checked", "false");
+    expect(within(totales()).getByText("Total en bolívares")).toBeInTheDocument();
+  });
+
+  it("en Divisa los renglones y el total salen en $ sin bolívares", async () => {
+    const user = montarDivisa();
+    await abrirConDivisa(user);
+    await elegirDivisa(user);
+
+    const lista = await screen.findByRole("list", { name: "Productos del carrito" });
+    expect(within(lista).getByText(/^c\/u \$\s?4,60$/)).toBeInTheDocument();
+    expect(lista.textContent).not.toMatch(/Bs\./);
+    const fila = within(totales()).getByText("Total en divisa").closest(".inv-carrito-total-fila");
+    expect(fila).toHaveTextContent(/\$\s?39,20/);
+    expect(within(totales()).queryByText("Total en bolívares")).toBeNull();
+    expect(within(totales()).queryByText("Total en dólares")).toBeNull();
+    expect(within(totales()).getByText("Peso total")).toBeInTheDocument();
+  });
+
+  it("con un producto sin divisa: «Falta divisa (1)», Copiar deshabilitado y el aviso de la vista previa", async () => {
+    const user = montarDivisa();
+    await user.click(screen.getByText("agregar D1"));
+    await user.click(screen.getByText("agregar A")); // sin precio divisa
+    await user.click(screen.getByText("abrir carrito"));
+    await elegirDivisa(user);
+    await abrirOpciones(user);
+
+    expect(within(totales()).getByText(/Falta divisa \(1\)/)).toBeInTheDocument();
+    expect(within(totales()).queryByText(/\$\s?\d/)).toBeNull();
+    expect(screen.getByRole("button", { name: "Copiar" })).toBeDisabled();
+    expect(
+      screen.getByText("Completa el precio divisa de los renglones marcados para copiar."),
+    ).toBeInTheDocument();
+  });
+
+  it("con Cashea activo: en Divisa su switch queda deshabilitado con la nota y sin resumen; al volver a BCV regresa", async () => {
+    const user = montarDivisa();
+    await user.click(screen.getByText("agregar A"));
+    await user.click(screen.getByText("abrir carrito"));
+    await abrirOpciones(user);
+    await user.click(await screen.findByRole("switch", { name: "Financiar con Cashea" }));
+    const resumen = () => totales().querySelector(".inv-carrito-total-fila ~ :not(.inv-carrito-total-fila)");
+    expect(resumen()).not.toBeNull();
+
+    await elegirDivisa(user);
+    const interruptor = screen.getByRole("switch", { name: "Financiar con Cashea" });
+    expect(interruptor).toBeDisabled();
+    expect(interruptor).toHaveAttribute("aria-checked", "true");
+    expect(screen.getByText("Cashea se calcula con el precio BCV.")).toBeInTheDocument();
+    expect(resumen()).toBeNull();
+
+    await user.click(screen.getByRole("radio", { name: "BCV" }));
+    expect(screen.getByRole("switch", { name: "Financiar con Cashea" })).toBeEnabled();
+    expect(screen.queryByText("Cashea se calcula con el precio BCV.")).toBeNull();
+    expect(resumen()).not.toBeNull();
+  });
+
+  it("Copiar en Divisa escribe un texto con «Total en divisa»", async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    const user = montarDivisa();
+    Object.defineProperty(navigator, "clipboard", { value: { writeText }, configurable: true });
+    await abrirConDivisa(user);
+    await elegirDivisa(user);
+
+    await user.click(await screen.findByRole("button", { name: "Copiar" }));
+
+    expect(writeText).toHaveBeenCalledTimes(1);
+    const texto = writeText.mock.calls[0][0] as string;
+    expect(texto).toContain("Total en divisa");
+    expect(texto).not.toMatch(/Bs\./);
+  });
+
+  it("«Guardar presupuesto» en Divisa guarda los mismos items que en BCV", async () => {
+    const user = montarDivisa();
+    await abrirConDivisa(user);
+
+    async function guardar() {
+      await user.click(await screen.findByRole("button", { name: /Guardar presupuesto/ }));
+      const nombre = await screen.findByLabelText("Nombre");
+      await user.clear(nombre);
+      await user.type(nombre, "Ana");
+      await user.clear(screen.getByLabelText("Apellido"));
+      await user.type(screen.getByLabelText("Apellido"), "Gómez");
+      await user.click(screen.getByRole("button", { name: /^Guardar$|Guardar como nuevo|Guardar presupuesto/, hidden: false }));
+    }
+    await guardar();
+    await waitFor(() => expect(guardarPresupuesto).toHaveBeenCalledTimes(1));
+    const itemsBcv = guardarPresupuesto.mock.calls[0][1].items;
+
+    guardarPresupuesto.mockClear();
+    await waitFor(() => expect(screen.queryByLabelText("Nombre")).toBeNull());
+    await elegirDivisa(user);
+    await guardar();
+    await waitFor(() => expect(guardarPresupuesto).toHaveBeenCalledTimes(1));
+    expect(guardarPresupuesto.mock.calls[0][1].items).toEqual(itemsBcv);
+  });
+
+  it("la caja ve el interruptor y no tiene Copiar", async () => {
+    const user = montarDivisa("caja");
+    await abrirConDivisa(user);
+
+    expect(await screen.findByRole("radiogroup", { name: "Moneda del carrito" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Copiar" })).toBeNull();
+  });
+});

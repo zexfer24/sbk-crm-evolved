@@ -64,6 +64,7 @@ function makeActions(over: Partial<CartActions> = {}): CartActions {
     setQuantity: vi.fn().mockResolvedValue(undefined),
     setPriceKind: vi.fn().mockResolvedValue(undefined),
     remove: vi.fn().mockResolvedValue(undefined),
+    clear: vi.fn().mockResolvedValue(undefined),
     ...over,
   };
 }
@@ -182,5 +183,80 @@ describe("CartLines — «Sin peso» por renglón", () => {
     expect(screen.getAllByText("Sin peso")).toHaveLength(2);
     const conPeso = screen.getByText("Con peso").closest("li") as HTMLElement;
     expect(within(conPeso).queryByText("Sin peso")).toBeNull();
+  });
+});
+
+// 6/11/2026 (pedido del cliente: precio divisa en el carrito): `moneda="divisa"`
+// repinta renglones y total con el precio divisa, sin bolívares.
+describe("CartLines — moneda divisa", () => {
+  const conDivisa = (id: string, nombre: string, divisa: number | null, quantity: number, over: Partial<ConversationCartItem> = {}) =>
+    item({
+      id,
+      productId: id,
+      quantity,
+      priceKind: "promocion",
+      product: product({ id, name: nombre, price: 20, precioDivisaUsd: divisa }),
+      ...over,
+    });
+
+  it("pinta c/u, subtotales y total en divisa, sin ningún Bs.", () => {
+    render(
+      <CartLines
+        cart={[conDivisa("a", "Bujía", 4.6, 2), conDivisa("b", "Kit", 30, 1)]}
+        bcvRate={40}
+        actions={makeActions()}
+        moneda="divisa"
+      />,
+    );
+    expect(screen.getByText("$4.60 c/u")).toBeInTheDocument();
+    expect(screen.getByText("$9.20")).toBeInTheDocument();
+    expect(screen.getByText("$30.00")).toBeInTheDocument();
+    expect(screen.queryByText(/Bs\./)).toBeNull();
+    expect(within(screen.getByTestId("cart-total")).getByText("$39.20")).toBeInTheDocument();
+  });
+
+  it("un producto sin divisa dice «Sin divisa» y el total pasa a «Falta divisa (1)»", () => {
+    render(
+      <CartLines
+        cart={[conDivisa("a", "Bujía", 4.6, 2), conDivisa("b", "Kit", null, 1)]}
+        bcvRate={40}
+        actions={makeActions()}
+        moneda="divisa"
+      />,
+    );
+    expect(screen.getAllByText("Sin divisa")).toHaveLength(2);
+    const total = screen.getByTestId("cart-total");
+    expect(within(total).getByText("Falta divisa (1)")).toBeInTheDocument();
+    expect(within(total).queryByText(/^\$/)).toBeNull();
+    // El aviso de tasa no aplica en divisa.
+    expect(screen.queryByText(/falta la tasa del BCV/)).toBeNull();
+  });
+
+  it("no muestra «cotizado … hoy …» en divisa, pero sí en BCV", () => {
+    const viejo = conDivisa("a", "Bujía", 4.6, 1, { quotedPriceUsd: 10, origin: "quote" });
+    const { unmount } = render(<CartLines cart={[viejo]} bcvRate={40} actions={makeActions()} moneda="divisa" />);
+    expect(screen.queryByText(/cotizado/)).toBeNull();
+    unmount();
+    render(<CartLines cart={[viejo]} bcvRate={40} actions={makeActions()} />);
+    expect(screen.getByText(/cotizado/)).toBeInTheDocument();
+  });
+
+  it("estándar sin tarifa sigue diciendo «Sin precio» en divisa", () => {
+    render(
+      <CartLines
+        cart={[conDivisa("a", "Bujía", 4.6, 1, { priceKind: "estandar" })]}
+        bcvRate={40}
+        actions={makeActions()}
+        moneda="divisa"
+      />,
+    );
+    expect(screen.getAllByText("Sin precio").length).toBeGreaterThan(0);
+    expect(screen.getByText(/Sin tarifa MRW/)).toBeInTheDocument();
+  });
+
+  it("sin la prop todo queda como hoy: con bolívares", () => {
+    render(<CartLines cart={[conDivisa("a", "Bujía", 4.6, 2)]} bcvRate={40} actions={makeActions()} />);
+    expect(screen.getAllByText(/Bs\./).length).toBeGreaterThan(0);
+    expect(screen.getByText("$20.00 c/u")).toBeInTheDocument();
   });
 });

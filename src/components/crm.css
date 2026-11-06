@@ -4142,3 +4142,34 @@ button.crm-bubble-quote:hover {
 .crm-lookup-body[hidden] {
   display: none;
 }
+
+/* 6/11/2026 (pedido del cliente: «botón de borrar carrito en general»):
+   cabecera del carrito del chat con «Vaciar» a la derecha del título. */
+.crm-pcart-cabecera {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.crm-pcart-vaciar {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 4px;
+  border: 0;
+  background: transparent;
+  color: var(--lm-muted);
+  font-size: 11.5px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.crm-pcart-vaciar:hover:not(:disabled) {
+  color: var(--lm-danger, #c0392b);
+}
+
+.crm-pcart-vaciar:disabled {
+  opacity: 0.5;
+  cursor: default;
+}

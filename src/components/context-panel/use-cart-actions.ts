@@ -5,7 +5,7 @@ import { toast } from "@heroui/react";
 import type { CartPriceKind, ConversationQuote, Product } from "@/lib/types";
 import { createClient } from "@/lib/supabase/client";
 import { fetchConversationQuotes } from "@/lib/data";
-import { addQuotesToCart, addToCart, removeFromCart, setCartPriceKind, setCartQuantity } from "@/lib/mutations";
+import { addQuotesToCart, addToCart, clearCart, removeFromCart, setCartPriceKind, setCartQuantity } from "@/lib/mutations";
 import { standardPriceAmounts } from "@/lib/inventory";
 import { productPriceUsd } from "@/lib/sale-cart";
 
@@ -34,6 +34,8 @@ export interface CartActions {
   /** Cambia a qué precio se cobra un renglón que ya está en el carrito. */
   setPriceKind: (itemId: string, priceKind: CartPriceKind) => Promise<void>;
   remove: (itemId: string) => Promise<void>;
+  /** Vacía el carrito entero de la conversación (6/11/2026). */
+  clear: () => Promise<void>;
 }
 
 interface UseCartActionsInput {
@@ -157,5 +159,11 @@ export function useCartActions({ conversationId, bcvRate, onCartChanged }: UseCa
     [run]
   );
 
-  return { busy, addProduct, addQuote, addAllQuotes, setQuantity, setPriceKind, remove };
+  const clear = useCallback(async () => {
+    await run("No se pudo vaciar el carrito.", async () => {
+      await clearCart(createClient(), conversationId);
+    });
+  }, [conversationId, run]);
+
+  return { busy, addProduct, addQuote, addAllQuotes, setQuantity, setPriceKind, remove, clear };
 }

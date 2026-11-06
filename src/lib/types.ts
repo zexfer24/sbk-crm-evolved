@@ -1139,8 +1139,10 @@ export interface Product {
    * calcula SAINT; corregido el 31/10/2026: no es `Precio1`, que en SAINT vale 0),
    * que la base expone como campo calculado de PostgREST `precio_divisa_usd`
    * (migración 20261030010000, corregida a `precioi3` en 20261031020000).
-   * Solo informativo (30/10/2026, plan "Precio divisa desde SAINT"): no entra al
-   * carrito, presupuestos, factura ni a Seba. `null` = SAINT no trae precio; un
+   * Informativo desde el 30/10/2026 (plan "Precio divisa desde SAINT"). Desde el
+   * 6/11/2026 el carrito puede MOSTRARLO y COPIARLO con el interruptor
+   * «BCV | Divisa» (`carrito-divisa.ts`), pero sigue sin cobrarse ni guardarse:
+   * presupuesto, cierre de venta, factura y Seba usan BCV. `null` = SAINT no trae precio; un
    * 0 o un negativo tampoco es un precio (ver `precioDivisaDisplay`).
    */
   precioDivisaUsd: number | null;

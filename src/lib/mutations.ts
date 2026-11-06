@@ -970,6 +970,23 @@ export async function removeFromCart(supabase: SupabaseClient, itemId: string): 
   assertRowsAffected(data, CART_ITEM_GONE_MESSAGE);
 }
 
+/**
+ * Vacía el carrito entero de una conversación (6/11/2026, pedido del cliente: «borrar
+ * carrito en general» desde el panel del chat). Devuelve cuántos renglones borró.
+ * 0 NO es error: otro asesor pudo vaciarlo un instante antes (el carrito es compartido
+ * en vivo). Lanza el error de PostgREST si la base lo rechaza.
+ */
+export async function clearCart(supabase: SupabaseClient, conversationId: string): Promise<number> {
+  if (!conversationId) throw new Error("Falta la conversación del carrito.");
+  const { data, error } = await supabase
+    .from("conversation_cart_items")
+    .delete()
+    .eq("conversation_id", conversationId)
+    .select("id");
+  if (error) throw error;
+  return data?.length ?? 0;
+}
+
 export async function verifySale(supabase: SupabaseClient, conversationId: string, agent: Agent) {
   const { error } = await supabase
     .from("conversations")

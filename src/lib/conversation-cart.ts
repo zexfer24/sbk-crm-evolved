@@ -4,6 +4,7 @@ import { formatPesoKg, priceInBs, sinPeso, standardPriceAmounts } from "@/lib/in
 import { productPriceUsd } from "@/lib/sale-cart";
 import { formatBs } from "@/lib/cashea";
 import { OPCIONES_COPIA_INICIALES, type OpcionesCopia } from "@/lib/copia-carrito";
+import type { MonedaCarrito } from "@/lib/carrito-divisa";
 
 /**
  * Precios y totales del carrito persistente de una conversación (T8, plan
@@ -188,11 +189,18 @@ function formatUsd(value: number): string {
  * peso no depende del precio, así que no entra en `dependeDelPrecio` y nunca
  * hace que la función devuelva `null`; si es lo único del pie, el pie es esa
  * línea.
+ *
+ * 6/11/2026 (pedido del cliente): con `moneda = "divisa"` la línea del total
+ * dice «Total en divisa: $X» en vez de «Total: $X» y la línea «Total en
+ * bolívares» NO se agrega aunque la casilla esté encendida. Esta función no
+ * reprecia nada: las líneas ya llegan en divisa (`lineasEnDivisa`,
+ * `carrito-divisa.ts`). Con `"bcv"` u omitido el texto es el de siempre.
  */
 export function cartSummaryText(
   lines: PricedCartLine<PriceableCartItem>[],
   totals: CartTotals,
-  opciones: OpcionesCopia = OPCIONES_COPIA_INICIALES
+  opciones: OpcionesCopia = OPCIONES_COPIA_INICIALES,
+  moneda: MonedaCarrito = "bcv"
 ): string | null {
   if (lines.length === 0) return null;
   const dependeDelPrecio =
@@ -222,8 +230,8 @@ export function cartSummaryText(
   });
 
   const footer: string[] = [];
-  if (opciones.totalUsd) footer.push(`Total: ${formatUsd(totals.usd)}`);
-  if (opciones.totalBs && totals.bs !== null) footer.push(`Total en bolívares: ${formatBs(totals.bs)}`);
+  if (opciones.totalUsd) footer.push(`${moneda === "divisa" ? "Total en divisa" : "Total"}: ${formatUsd(totals.usd)}`);
+  if (moneda === "bcv" && opciones.totalBs && totals.bs !== null) footer.push(`Total en bolívares: ${formatBs(totals.bs)}`);
   if (opciones.pesoTotal && totals.pesoKg !== null) footer.push(`Peso total: ${formatPesoKg(totals.pesoKg)} kg`);
 
   const body = blocks.join("\n\n");

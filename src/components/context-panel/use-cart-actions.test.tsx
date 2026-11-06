@@ -19,12 +19,14 @@ const addQuotesToCart = vi.fn();
 const setCartQuantity = vi.fn();
 const setCartPriceKind = vi.fn();
 const removeFromCart = vi.fn();
+const clearCart = vi.fn();
 vi.mock("@/lib/mutations", () => ({
   addToCart: (...args: unknown[]) => addToCart(...args),
   addQuotesToCart: (...args: unknown[]) => addQuotesToCart(...args),
   setCartQuantity: (...args: unknown[]) => setCartQuantity(...args),
   setCartPriceKind: (...args: unknown[]) => setCartPriceKind(...args),
   removeFromCart: (...args: unknown[]) => removeFromCart(...args),
+  clearCart: (...args: unknown[]) => clearCart(...args),
 }));
 
 const fetchConversationQuotes = vi.fn();
@@ -86,7 +88,7 @@ function setup(bcvRate = 40) {
 }
 
 beforeEach(() => {
-  for (const fn of [addToCart, addQuotesToCart, setCartQuantity, setCartPriceKind, removeFromCart, fetchConversationQuotes, onCartChanged]) {
+  for (const fn of [addToCart, addQuotesToCart, setCartQuantity, setCartPriceKind, removeFromCart, clearCart, fetchConversationQuotes, onCartChanged]) {
     fn.mockReset();
     fn.mockResolvedValue(undefined);
   }
@@ -302,6 +304,28 @@ describe("useCartActions — cambiar la cantidad y quitar", () => {
     await act(() => result.current.remove("cart-1"));
 
     expect(toast.danger).toHaveBeenCalledWith("Ese renglón ya no está en el carrito");
+    expect(onCartChanged).toHaveBeenCalledTimes(1);
+  });
+});
+
+// 6/11/2026, pedido del cliente: «botón de borrar carrito en general».
+describe("useCartActions — vaciar el carrito", () => {
+  it("vacía el carrito de ESTA conversación y refresca", async () => {
+    const { result } = setup();
+
+    await act(() => result.current.clear());
+
+    expect(clearCart).toHaveBeenCalledWith(CLIENT, "conv-1");
+    expect(onCartChanged).toHaveBeenCalledTimes(1);
+  });
+
+  it("si la base rechaza con un objeto plano avisa con el texto genérico y refresca igual", async () => {
+    clearCart.mockRejectedValueOnce({ code: "42501" });
+    const { result } = setup();
+
+    await act(() => result.current.clear());
+
+    expect(toast.danger).toHaveBeenCalledWith("No se pudo vaciar el carrito.");
     expect(onCartChanged).toHaveBeenCalledTimes(1);
   });
 });

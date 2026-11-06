@@ -70,3 +70,18 @@ describe("el pie del carrito del chat", () => {
     expect(regla).toMatch(/font-family:[^;]*mono/i);
   });
 });
+
+// 6/11/2026 (pedido del cliente: «botón de borrar carrito en general»).
+describe("la cabecera del carrito del chat con «Vaciar»", () => {
+  it(".crm-pcart-cabecera pone el título a la izquierda y «Vaciar» a la derecha", async () => {
+    const regla = bloque(await leerCss(), ".crm-pcart-cabecera");
+    expect(regla).toMatch(/display:\s*flex\s*;/);
+    expect(regla).toMatch(/justify-content:\s*space-between\s*;/);
+  });
+
+  it(".crm-pcart-vaciar es un botón de texto, sin caja", async () => {
+    const regla = bloque(await leerCss(), ".crm-pcart-vaciar");
+    expect(regla).toMatch(/background:\s*transparent\s*;/);
+    expect(regla).toMatch(/cursor:\s*pointer\s*;/);
+  });
+});

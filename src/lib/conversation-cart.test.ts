@@ -8,6 +8,7 @@ import {
   priceCartLines,
   quoteComparisonLabel,
 } from "@/lib/conversation-cart";
+import { lineasEnDivisa } from "@/lib/carrito-divisa";
 
 function product(over: Partial<Product> = {}): Product {
   return {
@@ -629,5 +630,23 @@ describe("cartSummaryText — el resumen del carrito para el cliente", () => {
       const sinPrecio = [item({ product: product({ currency: "VES", price: 101, weightKg: 1 }) })];
       expect(resumen(sinPrecio, 0, encendida)).toBeNull();
     });
+  });
+});
+
+describe("cartSummaryText — en divisa (6/11/2026)", () => {
+  const conDivisa = (id: string, quantity: number, d: number | null) =>
+    item({ id, quantity, product: product({ id, name: `P-${id}`, precioDivisaUsd: d }) });
+
+  it("dice «Total en divisa» y omite el total en bolívares aunque la casilla esté encendida", () => {
+    const lineas = lineasEnDivisa(priceCartLines([conDivisa("a", 2, 4.6), conDivisa("b", 1, 30)], 40));
+    const texto = cartSummaryText(lineas, cartTotals(lineas), { ...OPCIONES_COPIA_INICIALES, totalBs: true, totalUsd: true }, "divisa");
+    expect(texto).toContain("Total en divisa: $39.20");
+    expect(texto).not.toContain("Total en bolívares");
+    expect(texto).not.toContain("Total: $");
+  });
+
+  it("con un renglón sin divisa y casillas de precio encendidas no hay texto", () => {
+    const lineas = lineasEnDivisa(priceCartLines([conDivisa("a", 1, 4.6), conDivisa("b", 1, null)], 40));
+    expect(cartSummaryText(lineas, cartTotals(lineas), OPCIONES_COPIA_INICIALES, "divisa")).toBeNull();
   });
 });

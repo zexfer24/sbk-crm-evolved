@@ -1,11 +1,12 @@
 "use client";
 
 import { useState } from "react";
-import { Check, ChevronDown, ChevronRight, Copy, MessageSquarePlus, Save, TriangleAlert } from "lucide-react";
+import { Check, ChevronDown, ChevronRight, Copy, MessageSquarePlus, Save, Trash2, TriangleAlert } from "lucide-react";
 import { Button, toast } from "@heroui/react";
 import type { CedulaType, ConversationCartItem } from "@/lib/types";
 import { createClient } from "@/lib/supabase/client";
 import { cartSummaryText, cartTotals, priceCartLines } from "@/lib/conversation-cart";
+import { lineasEnDivisa, MOTIVO_COPIA_SIN_DIVISA, type MonedaCarrito } from "@/lib/carrito-divisa";
 import { formatPesoKg } from "@/lib/inventory";
 import { guardarPresupuesto } from "@/lib/presupuestos-data";
 import { renglonesParaGuardar, separarNombreContacto } from "@/lib/presupuestos";
@@ -14,6 +15,8 @@ import { PresupuestosCliente } from "@/components/context-panel/presupuestos-cli
 import type { CartActions } from "@/components/context-panel/use-cart-actions";
 import { GuardarPresupuestoModal, type DatosPresupuestoForm } from "@/components/presupuestos/guardar-presupuesto-modal";
 import { AvisoFaltanPesos, NotaPesoNoIncluido } from "@/components/presupuestos/aviso-peso";
+import { AvisoFaltaDivisa, MonedaToggle } from "@/components/presupuestos/moneda-toggle";
+import { ConfirmDialog } from "@/components/confirm-dialog";
 import { OpcionesCopiaCasillas } from "@/components/presupuestos/opciones-copia";
 import { useOpcionesCopia } from "@/components/presupuestos/use-opciones-copia";
 import { EnviarASaint } from "@/components/saint/enviar-a-saint";
@@ -58,6 +61,16 @@ import type { BorradorSaint } from "@/lib/saint-borradores";
  * reloj y la recarga ya no salen de acá: `ContextPanel` llama una sola vez a
  * `useBorradoresSaint` (una sola suscripción Realtime) y se los pasa, porque
  * «Cerrar venta» necesita mirar el mismo envío para decidir su énfasis.
+ *
+ * 6/11/2026 (pedido del cliente: «Al agregar al carrito aquí, no me sale el
+ * precio divisa… los clientes después que se les arma todo van y preguntan por
+ * divisa», y «botón de borrar carrito en general»): (1) un interruptor «BCV |
+ * Divisa» en el pie pasa renglones, total y texto de Copiar / Al chat a precio
+ * divisa; solo cambia lo que se VE y se copia — «Guardar», «Facturar en SAINT»
+ * y «Cerrar venta» siguen con las líneas BCV. (2) «Vaciar» en la cabecera,
+ * con confirmación. Va con diálogo y no con la confirmación en línea de
+ * /inventario porque este carrito es compartido en vivo entre asesores: vaciarlo
+ * por un clic suelto le borra el trabajo a otro.
  */
 
 interface ConversationCartBlockProps {
@@ -135,12 +148,33 @@ export function ConversationCartBlock({
   const [guardarAbierto, setGuardarAbierto] = useState(false);
   // Sube al guardar un presupuesto para que `PresupuestosCliente` relea su lista.
   const [recargarClave, setRecargarClave] = useState(0);
+  const [vaciarAbierto, setVaciarAbierto] = useState(false);
+  // La moneda NO se recuerda y vuelve a BCV al cambiar de conversación, para
+  // que nadie le copie al siguiente cliente un precio en divisa sin darse
+  // cuenta. Se ajusta DURANTE el render (guardar el id previo y comparar), no
+  // en un efecto: `react-hooks/set-state-in-effect` lo prohíbe y un efecto
+  // pintaría un cuadro con la moneda vieja.
+  const [moneda, setMoneda] = useState<MonedaCarrito>("bcv");
+  const [monedaDeConversacion, setMonedaDeConversacion] = useState(conversationId);
+  if (monedaDeConversacion !== conversationId) {
+    setMonedaDeConversacion(conversationId);
+    setMoneda("bcv");
+  }
+  const enDivisa = moneda === "divisa";
 
   // El mismo cálculo que pinta `CartLines`; `null` si el carrito está vacío o
-  // algún renglón no tiene precio en dólares.
-  const lines = priceCartLines(cart, bcvRate);
-  const totals = cartTotals(lines);
-  const summary = cartSummaryText(lines, totals, opcionesCopia);
+  // algún renglón no tiene precio en dólares. `linesBcv` es lo que se guarda;
+  // `lineasVista`/`totalsVista` lo que se ve y se copia.
+  const linesBcv = priceCartLines(cart, bcvRate);
+  const lineasVista = enDivisa ? lineasEnDivisa(linesBcv) : linesBcv;
+  const totalsVista = cartTotals(lineasVista);
+  const totals = totalsVista;
+  // En divisa no se copia un carrito al que le falta algún precio divisa,
+  // aunque las casillas de precio estén apagadas.
+  const summary =
+    enDivisa && totalsVista.unpricedCount > 0
+      ? null
+      : cartSummaryText(lineasVista, totalsVista, opcionesCopia, moneda);
   const camposCopia = contarCamposCopia(opcionesCopia);
   const pasos = pasosDeVenta({
     hayRenglones: cart.length > 0,
@@ -149,7 +183,7 @@ export function ConversationCartBlock({
   });
 
   // Deshabilitado por falta de precio: el `title` dice por qué.
-  const motivo = summary === null ? SIN_PRECIO : undefined;
+  const motivo = summary === null ? (enDivisa ? MOTIVO_COPIA_SIN_DIVISA : SIN_PRECIO) : undefined;
 
   async function handleCopy() {
     if (summary === null) return;
@@ -172,7 +206,7 @@ export function ConversationCartBlock({
       conversationId,
       origen: "chat",
       nota: datos.nota === "" ? null : datos.nota,
-      items: renglonesParaGuardar(lines),
+      items: renglonesParaGuardar(linesBcv),
     });
     toast.success(`Presupuesto de ${datos.nombre} ${datos.apellido} guardado`);
     setRecargarClave((k) => k + 1);
@@ -180,7 +214,21 @@ export function ConversationCartBlock({
 
   return (
     <section className="crm-context-section">
-      <p className="lm-eyebrow">Lo que lleva el cliente</p>
+      <div className="crm-pcart-cabecera">
+        <p className="lm-eyebrow">Lo que lleva el cliente</p>
+        {cart.length > 0 && (
+          <button
+            type="button"
+            className="crm-pcart-vaciar"
+            aria-label="Vaciar el carrito"
+            disabled={actions.busy}
+            onClick={() => setVaciarAbierto(true)}
+          >
+            <Trash2 size={12} aria-hidden="true" />
+            Vaciar
+          </button>
+        )}
+      </div>
 
       {cart.length === 0 ? (
         <p className="crm-lookup-hint">
@@ -206,14 +254,29 @@ export function ConversationCartBlock({
             ))}
           </ol>
 
-          <CartLines cart={cart} bcvRate={bcvRate} actions={actions} mostrarTotal={false} mostrarSinPeso />
+          <CartLines cart={cart} bcvRate={bcvRate} actions={actions} mostrarTotal={false} mostrarSinPeso moneda={moneda} />
 
           <div className="crm-pcart-foot">
-            <div className="crm-pcart-foot-total" data-testid="cart-total">
+            <MonedaToggle value={moneda} onChange={setMoneda} disabled={actions.busy} />
+
+            <div className="crm-pcart-foot-total" data-testid="cart-total" data-moneda={moneda}>
               <span>Total</span>
               <span className="lm-num crm-pcart-total-values">
-                <span className="crm-pcart-foot-usd">${totals.usd.toFixed(2)}</span>
-                {totals.bs !== null && <span className="crm-pcart-total-bs">Bs. {totals.bs.toFixed(2)}</span>}
+                {enDivisa ? (
+                  totals.unpricedCount > 0 ? (
+                    <AvisoFaltaDivisa cantidad={totals.unpricedCount} />
+                  ) : (
+                    <>
+                      <span className="crm-pcart-foot-usd">${totals.usd.toFixed(2)}</span>
+                      <span className="crm-pcart-total-bs">Divisa</span>
+                    </>
+                  )
+                ) : (
+                  <>
+                    <span className="crm-pcart-foot-usd">${totals.usd.toFixed(2)}</span>
+                    {totals.bs !== null && <span className="crm-pcart-total-bs">Bs. {totals.bs.toFixed(2)}</span>}
+                  </>
+                )}
               </span>
             </div>
 
@@ -327,7 +390,9 @@ export function ConversationCartBlock({
                   <NotaPesoNoIncluido cantidad={totals.sinPesoCount} />
                 )}
                 {summary === null ? (
-                  <p className="crm-pcart-preview-vacia">No hay vista previa: {MOTIVO_SIN_VISTA_PREVIA}</p>
+                  <p className="crm-pcart-preview-vacia">
+                    No hay vista previa: {enDivisa ? "hay productos sin precio divisa." : MOTIVO_SIN_VISTA_PREVIA}
+                  </p>
                 ) : (
                   <pre className="crm-pcart-preview" aria-label="Vista previa del texto">
                     {summary}
@@ -361,6 +426,22 @@ export function ConversationCartBlock({
           onGuardar={handleGuardarPresupuesto}
         />
       )}
+
+      <ConfirmDialog
+        isOpen={vaciarAbierto}
+        onOpenChange={setVaciarAbierto}
+        titulo="¿Vaciar el carrito?"
+        descripcion={
+          cart.length === 1
+            ? "Se quita el único producto de esta conversación, también para los demás asesores. Los presupuestos guardados no se tocan."
+            : `Se quitan los ${cart.length} productos de esta conversación, también para los demás asesores. Los presupuestos guardados no se tocan.`
+        }
+        confirmarEtiqueta="Sí, vaciar"
+        peligro
+        // Sin toast de éxito: la lista vacía es la confirmación, y `clear` ya
+        // avisa sus errores.
+        onConfirmar={() => actions.clear()}
+      />
 
       <PresupuestosCliente
         contactId={contactId}

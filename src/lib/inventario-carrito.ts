@@ -5,6 +5,7 @@ import {
   priceCartLines,
   type PricedCartLine,
 } from "@/lib/conversation-cart";
+import { lineasEnDivisa, type MonedaCarrito } from "@/lib/carrito-divisa";
 import { OPCIONES_COPIA_INICIALES, type OpcionesCopia } from "@/lib/copia-carrito";
 import { motivoSinEstandar, standardPriceDisplay } from "@/lib/inventory";
 import {
@@ -195,12 +196,19 @@ export interface TotalesCarritoInventario {
   cuotaBs: number | null;
 }
 
+/**
+ * 6/11/2026 (pedido del cliente): con `moneda = "divisa"` los renglones y los
+ * totales salen en precio divisa (`lineasEnDivisa`) y Cashea/inicial/cuota son
+ * `null`. Solo es vista: lo que se cobra y se guarda sigue en BCV.
+ */
 export function totalesCarrito(
   lineas: LineaCarritoInventario[],
   bcvRate: number,
   cashea: OpcionesCashea,
+  moneda: MonedaCarrito = "bcv",
 ): TotalesCarritoInventario {
-  const priced = priceCartLines(lineas, bcvRate);
+  const enDivisa = moneda === "divisa";
+  const priced = enDivisa ? lineasEnDivisa(priceCartLines(lineas, bcvRate)) : priceCartLines(lineas, bcvRate);
   // El total en dólares SUMA los dólares ya redondeados por renglón
   // (`usdFromBs`, hacia arriba al décimo): jamás se convierte el total en
   // bolívares, que regalaría los décimos que el redondeo cobra.
@@ -208,7 +216,8 @@ export function totalesCarrito(
 
   // Con un renglón sin precio el total en dólares es falso (le falta ese
   // renglón): financiar sobre él engañaría al cliente, así que no hay plan.
-  const hayPlan = cashea.activo && lineas.length > 0 && unpricedCount === 0;
+  // 6/11/2026: en divisa no hay plan —Cashea se calcula sobre el $ BCV.
+  const hayPlan = !enDivisa && cashea.activo && lineas.length > 0 && unpricedCount === 0;
   const plan = hayPlan
     ? calcularCashea({
         montoCents: toCents(usd),
@@ -240,7 +249,10 @@ export function totalesCarrito(
  * (`motivoSinEstandar`); si la tarifa existe y lo que falta es la tasa (un
  * producto en bolívares), sigue el aviso de siempre.
  */
-export function avisosRenglon(linea: PricedCartLine<LineaCarritoInventario>): string[] {
+export function avisosRenglon(
+  linea: PricedCartLine<LineaCarritoInventario>,
+  moneda: MonedaCarrito = "bcv",
+): string[] {
   const { product, quantity } = linea.item;
   const avisos: string[] = [];
   if (!product.isActive) avisos.push("Saint lo dio de baja");
@@ -251,6 +263,9 @@ export function avisosRenglon(linea: PricedCartLine<LineaCarritoInventario>): st
     const estandar = linea.item.priceKind === "estandar" ? standardPriceDisplay(product, 0) : null;
     if (estandar && estandar.estado !== "ok") {
       avisos.push(`Sin precio estándar: ${motivoSinEstandar(estandar.estado)}`);
+    } else if (moneda === "divisa") {
+      // 6/11/2026: en divisa lo que falta no es la tasa sino el precio de SAINT.
+      avisos.push("Sin precio divisa en SAINT");
     } else {
       avisos.push("Sin precio (falta la tasa)");
     }
@@ -280,6 +295,7 @@ export function avisosRenglon(linea: PricedCartLine<LineaCarritoInventario>): st
 export function textoCarritoParaCliente(
   totales: TotalesCarritoInventario,
   opciones: OpcionesCopia = OPCIONES_COPIA_INICIALES,
+  moneda: MonedaCarrito = "bcv",
 ): string | null {
   const base = cartSummaryText(
     totales.lineas,
@@ -291,11 +307,13 @@ export function textoCarritoParaCliente(
       sinPesoCount: totales.sinPesoCount,
     },
     opciones,
+    moneda,
   );
   if (base === null) return null;
 
   let texto = base;
-  if (opciones.planCashea && totales.cashea) {
+  // 6/11/2026: en divisa no se agrega el bloque Cashea (se calcula sobre el $ BCV).
+  if (moneda === "bcv" && opciones.planCashea && totales.cashea) {
     const plan = totales.cashea;
     texto += `\n\nFinanciado con Cashea (nivel ${plan.nivel}):\n${lineaInicial(plan)}\n${lineaResto(plan)}`;
   }
