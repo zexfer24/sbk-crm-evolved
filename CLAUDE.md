@@ -3209,6 +3209,14 @@ dejar rastro es lo que hacía desaparecer leads.
   «Peso total» de la copia nace APAGADA y, con el peso incompleto, omite la
   línea: al cliente nunca le llega «faltan». En /inventario `.aviso-peso` pide
   su propia regla (`.inv-carrito-total-fila > span.aviso-peso`), o `span:last-child` la sube a 15 px.
+- **El 16 % sobre todo precio de producto vive en `recargo-precio.ts`**
+  (hotfix del 6/11/2026, pedido del cliente; sin migración, SAINT intacto).
+  Solo dos puntos de entrada recargan: `mapProduct` (`inventory-data.ts`:
+  `price` y `precioDivisaUsd`) y `cotizar` (`ai/tools.ts`, el `r.price` crudo
+  de `buscar_productos`, ANTES de `usdFromBs`); un precio que entre por otro
+  camino tiene que pasar por `bsConRecargo`/`usdConRecargo`. La tarifa MRW NO
+  lleva recargo. Es invisible: ni la UI ni el prompt dicen «IVA», «16 %» ni
+  «recargo». La factura de SAINT no lo trae: los totales del CRM y los de SAINT difieren a propósito.
 
 ---
 
