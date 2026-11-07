@@ -3195,8 +3195,10 @@ dejar rastro es lo que hacía desaparecer leads.
 
 - **Las fotos de los repuestos viven en `public.product_photos` (migración
   `20261031010000`, 30/10/2026): una principal por repuesto y tope de 6, por
-  trigger.** El bucket es PÚBLICO (`product-photos`); solo supervisor y admin
-  escriben (RLS y política de storage); la caja las lee por `can_read_inventory()`.
+  trigger.** El bucket es PÚBLICO (`product-photos`); escriben asesor,
+  supervisor y admin (`is_agent()` en RLS y storage desde el hotfix
+  `20261107010000`, 7/11/2026; antes solo supervisor/admin) y la caja solo lee
+  por `can_read_inventory()`. En la UI decide `puedeEditarFotos(role)`.
   Son JPEG (≤ 1600 px, ≤ 1 MB), nunca WebP: Meta no lo acepta. Borrar una foto
   borra la fila, NO el objeto, porque los mensajes enviados lo referencian;
   reemplazar hace UPDATE de la misma fila y deja el objeto anterior. El pie al
