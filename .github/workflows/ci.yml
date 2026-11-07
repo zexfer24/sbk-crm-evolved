@@ -576,8 +576,9 @@ jobs:
 
       # Cada repuesto con su foto T1 (20261031010000, 30/10/2026): la tabla
       # product_photos (tope de 6, una sola principal, promoción al borrar), su
-      # RLS (lee la caja incluida; escribe solo supervisor/admin) y el bucket
-      # PÚBLICO product-photos (solo supervisor/admin insertan). Corre como
+      # RLS (lee la caja incluida; escriben asesor, supervisor y admin desde el
+      # hotfix 20261107010000, 7/11/2026) y el bucket PÚBLICO product-photos
+      # (la caja no sube). Corre como
       # `authenticated` con la RLS real y termina en rollback.
       - name: fotos_de_productos -- fotos del repuesto, RLS y bucket público
         run: |

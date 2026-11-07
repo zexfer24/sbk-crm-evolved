@@ -2,20 +2,22 @@
 -- Fotos de los repuestos (30/10/2026, migración
 -- 20261031010000_fotos_de_productos.sql, plan "Cada repuesto con su foto", T1).
 --
--- Contexto: cada repuesto puede tener hasta 6 fotos, una sola principal. Solo
--- supervisor y admin suben, reemplazan, borran y marcan la principal (D1); la
--- caja y los asesores solo ven. Las fotos viven en el bucket PÚBLICO
+-- Contexto: cada repuesto puede tener hasta 6 fotos, una sola principal. Hasta
+-- el 6/11/2026 solo supervisor y admin las gestionaban (D1); desde el hotfix
+-- del 7/11/2026 (migración 20261107010000) también los asesores. La caja solo
+-- ve. Las fotos viven en el bucket PÚBLICO
 -- `product-photos` (D5): la caja las ve sin pasar por /api (que le da 403) y
 -- Meta las descarga directo por una URL que no vence.
 --
 -- Qué fija:
 --   a. Supervisor inserta una foto: 1 fila y la primera nace principal.
---   b. Asesor y caja NO insertan (42501) y su UPDATE/DELETE afecta 0 filas.
+--   b. La caja NO inserta (42501) y su UPDATE/DELETE afecta 0 filas.
+--   b'. El asesor inserta, marca la principal, borra y sube al bucket.
 --   c. Asesor, caja y supervisor LEEN las mismas filas (can_read_inventory).
 --   d. Marcar otra como principal desmarca la anterior; borrar la principal
 --      promueve la de menor `position`; la séptima da el error del tope.
 --   e. La ruta tiene que empezar con el id del producto.
---   f. Storage: supervisor sube a `product-photos`; asesor y caja reciben
+--   f. Storage: supervisor y asesor suben a `product-photos`; la caja recibe
 --      42501; el bucket es público; anon no toca la tabla.
 --
 -- Corre como `authenticated` con la `sub` de un usuario real -- como
@@ -24,7 +26,7 @@
 -- 0 filas SIN error: por eso cada rechazo se mide con el conteo de filas.
 --
 -- Ojo con el orden: los triggers BEFORE corren ANTES del WITH CHECK de la RLS.
--- Los rechazos de asesor/caja se prueban sobre un producto SIN fotos; sobre uno
+-- Los rechazos de la caja se prueban sobre un producto SIN fotos; sobre uno
 -- con 6, el trigger del tope contestaría 23514 antes de que la RLS diera 42501.
 -- ===========================================================================
 
@@ -43,7 +45,8 @@ insert into auth.users (id, email, raw_user_meta_data, raw_app_meta_data) values
 insert into public.products (id, name, price, currency, stock_quantity) values
   ('f0f07000-4000-0000-0000-000000000001', 'Producto fotos 1', 10, 'USD', 5),
   ('f0f07000-4000-0000-0000-000000000002', 'Producto fotos 2', 20, 'USD', 5),
-  ('f0f07000-4000-0000-0000-000000000003', 'Producto fotos 3', 30, 'USD', 5);
+  ('f0f07000-4000-0000-0000-000000000003', 'Producto fotos 3', 30, 'USD', 5),
+  ('f0f07000-4000-0000-0000-000000000004', 'Producto fotos 4', 40, 'USD', 5);
 
 -- Ejecuta una sentencia con los privilegios del rol que la llame y devuelve
 -- "filas=N" o "error <sqlstate>: <mensaje>".
@@ -182,6 +185,32 @@ select pg_temp.esperar('supervisor: sube a product-photos',
 reset role;
 reset "request.jwt.claim.sub";
 
+-- ---------------------------------------------------------------------------
+-- Caso b' · el asesor gestiona fotos (hotfix 7/11/2026)
+-- ---------------------------------------------------------------------------
+set local role authenticated;
+set local "request.jwt.claim.sub" = 'f0f07000-0000-0000-0000-0000000000a1';
+
+do $$
+declare
+  p4 constant uuid := 'f0f07000-4000-0000-0000-000000000004';
+  r text;
+begin
+  r := pg_temp.probar(format($q$insert into public.product_photos (product_id, storage_path, position) values (%L, %L, 0)$q$, p4, p4 || '/asesor1.jpg'));
+  perform pg_temp.esperar('asesor: inserta una foto', r, '^filas=1$');
+  r := pg_temp.probar(format($q$insert into public.product_photos (product_id, storage_path, position) values (%L, %L, 1)$q$, p4, p4 || '/asesor2.jpg'));
+  perform pg_temp.esperar('asesor: inserta la segunda', r, '^filas=1$');
+  r := pg_temp.probar(format($q$update public.product_photos set is_primary = true where storage_path = %L$q$, p4 || '/asesor2.jpg'));
+  perform pg_temp.esperar('asesor: marca la principal', r, '^filas=1$');
+  r := pg_temp.probar(format($q$delete from public.product_photos where storage_path = %L$q$, p4 || '/asesor1.jpg'));
+  perform pg_temp.esperar('asesor: borra una foto', r, '^filas=1$');
+  r := pg_temp.probar(format($q$insert into storage.objects (bucket_id, name) values ('product-photos', %L)$q$, p4 || '/asesor2.jpg'));
+  perform pg_temp.esperar('asesor: sube a product-photos', r, '^filas=1$');
+end $$;
+
+reset role;
+reset "request.jwt.claim.sub";
+
 -- Total que cada rol debe ver (se mide como postgres, sin RLS).
 create temporary table _esperado (total bigint);
 insert into _esperado select count(*) from public.product_photos;
@@ -189,13 +218,13 @@ grant select on _esperado to authenticated;
 
 do $$
 begin
-  if (select total from _esperado) <> 8 then
-    insert into _errores(msg) values (format('Preparación: se esperaban 8 fotos en total (6 de P1 + 2 de P3) y hay %s.', (select total from _esperado)));
+  if (select total from _esperado) <> 9 then
+    insert into _errores(msg) values (format('Preparación: se esperaban 9 fotos en total (6 de P1 + 2 de P3 + 1 de P4 del asesor) y hay %s.', (select total from _esperado)));
   end if;
 end $$;
 
 -- ---------------------------------------------------------------------------
--- Caso b/c/f · el asesor y la caja
+-- Caso b/c/f · la caja (el asesor ya gestiona: solo se mide que lea todo)
 -- ---------------------------------------------------------------------------
 do $$
 declare
@@ -215,6 +244,11 @@ begin
     -- c. Lectura de todo.
     r := pg_temp.contar('select 1 from public.product_photos');
     perform pg_temp.esperar(rol.nombre || ': lee las fotos', r, '^filas=' || esperado || '$');
+
+    if rol.nombre = 'asesor' then
+      execute 'reset role';
+      continue;
+    end if;
 
     -- b. Insertar: 42501 (sobre P2, sin fotos: ver el comentario del encabezado).
     r := pg_temp.probar($q$insert into public.product_photos (product_id, storage_path) values ('f0f07000-4000-0000-0000-000000000002', 'f0f07000-4000-0000-0000-000000000002/z.jpg')$q$);
@@ -246,18 +280,18 @@ do $$
 declare
   n bigint;
 begin
-  -- Nada de lo que intentaron asesor y caja cambió nada.
+  -- Nada de lo que intentó la caja cambió nada.
   select count(*) into n from public.product_photos;
   if n <> (select total from _esperado) then
     insert into _errores(msg) values (format('Estado final: había %s fotos y ahora hay %s.', (select total from _esperado), n));
   end if;
   select count(*) into n from public.product_photos where position = 99 or storage_path like '%/z.jpg';
   if n <> 0 then
-    insert into _errores(msg) values ('Estado final: asesor o caja lograron modificar o insertar una foto.');
+    insert into _errores(msg) values ('Estado final: la caja logró modificar o insertar una foto.');
   end if;
   select count(*) into n from storage.objects where bucket_id = 'product-photos';
-  if n <> 1 then
-    insert into _errores(msg) values (format('Estado final: debía haber 1 objeto en product-photos (el del supervisor) y hay %s.', n));
+  if n <> 2 then
+    insert into _errores(msg) values (format('Estado final: debía haber 2 objetos en product-photos (supervisor y asesor) y hay %s.', n));
   end if;
 
   -- anon no toca la tabla.
