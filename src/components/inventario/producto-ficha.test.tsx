@@ -277,12 +277,12 @@ describe("ProductoFicha — agregar", () => {
   });
 
   it("un rechazo de permisos muestra el mensaje claro del error", async () => {
-    uploadProductPhoto.mockRejectedValue(new ConfigWriteDeniedError("Solo un supervisor o administrador puede cambiar las fotos."));
+    uploadProductPhoto.mockRejectedValue(new ConfigWriteDeniedError("Tu usuario no puede cambiar las fotos."));
     const user = userEvent.setup({ delay: null });
     renderFicha({ fotos: fotos(2) }, { puedeEditarFotos: true });
     await user.upload(inputArchivo(), archivo());
     await waitFor(() =>
-      expect(toastDanger).toHaveBeenCalledWith("Solo un supervisor o administrador puede cambiar las fotos.")
+      expect(toastDanger).toHaveBeenCalledWith("Tu usuario no puede cambiar las fotos.")
     );
   });
 
@@ -375,7 +375,7 @@ describe("ProductoFicha — sin fotos", () => {
   it("sin permiso dice que todavía no tiene foto", () => {
     renderFicha({ fotos: [] }, { puedeEditarFotos: false });
     expect(screen.getByText("Este repuesto todavía no tiene foto")).toBeInTheDocument();
-    expect(screen.getByText("Un supervisor puede cargarla desde aquí.")).toBeInTheDocument();
+    expect(screen.getByText("Un asesor puede cargarla desde aquí.")).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /Agregar la primera foto/ })).not.toBeInTheDocument();
   });
 });

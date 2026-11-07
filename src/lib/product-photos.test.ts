@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import type { ProductPhoto } from "@/lib/types";
-import { PRODUCT_PHOTOS_BUCKET, fotoPrincipal, ordenarFotos, productPhotoUrl } from "@/lib/product-photos";
+import { PRODUCT_PHOTOS_BUCKET, fotoPrincipal, ordenarFotos, productPhotoUrl, puedeEditarFotos } from "@/lib/product-photos";
 
 function foto(over: Partial<ProductPhoto> = {}): ProductPhoto {
   return { id: "f1", storagePath: "p1/f1.jpg", url: "https://x/f1.jpg", isPrimary: false, position: 0, ...over };
@@ -63,5 +63,19 @@ describe("fotoPrincipal", () => {
 
   it("null si el repuesto no tiene fotos", () => {
     expect(fotoPrincipal({ fotos: [] })).toBeNull();
+  });
+});
+
+/**
+ * Hotfix del 7/11/2026: los asesores también gestionan las fotos. La única
+ * cuenta que solo mira es la caja (misma regla que `is_agent()` en la RLS).
+ */
+describe("puedeEditarFotos", () => {
+  it.each(["agent", "supervisor", "admin"] as const)("%s puede", (role) => {
+    expect(puedeEditarFotos(role)).toBe(true);
+  });
+
+  it("la caja no", () => {
+    expect(puedeEditarFotos("caja")).toBe(false);
   });
 });

@@ -1,5 +1,5 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
-import type { Product, ProductPhoto } from "@/lib/types";
+import type { Agent, Product, ProductPhoto } from "@/lib/types";
 
 /**
  * Fotos de los repuestos (30/10/2026, plan «Cada repuesto con su foto», T2).
@@ -9,6 +9,17 @@ import type { Product, ProductPhoto } from "@/lib/types";
  * URL que no vence. La ruta de cada objeto es `<product_id>/<uuid>.jpg`.
  */
 export const PRODUCT_PHOTOS_BUCKET = "product-photos";
+
+/**
+ * Quién sube, reemplaza, borra y marca la foto principal. Hasta el 6/11/2026
+ * eran solo supervisor y admin (D1); el hotfix del 7/11/2026 se lo abrió a los
+ * asesores. La caja solo mira. Espeja `is_agent()` de la RLS de
+ * `product_photos` (migración 20261107010000), que es la barrera real: esto
+ * solo evita ofrecer botones que la base rechazaría.
+ */
+export function puedeEditarFotos(role: Agent["role"]): boolean {
+  return role !== "caja";
+}
 
 /**
  * URL pública de una foto. `getPublicUrl` solo arma el texto (no hace red ni

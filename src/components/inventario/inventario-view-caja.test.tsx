@@ -229,8 +229,8 @@ describe("InventarioView — la caja en la lista nueva", () => {
     expect(screen.queryByRole("button", { name: /Agregar foto a/ })).toBeNull();
   });
 
-  it("un supervisor sí ve «Agregar foto a …» en la miniatura vacía", () => {
-    pintar("supervisor");
+  it.each(["supervisor", "agent"] as const)("un %s sí ve «Agregar foto a …» en la miniatura vacía", (role) => {
+    pintar(role);
     expect(screen.getByRole("button", { name: "Agregar foto a Carburador PZ27" })).toBeInTheDocument();
   });
 

@@ -68,7 +68,8 @@ const AYUDA_FOTOS =
  * `ProductoFila`/`ProductoTarjeta`: una ficha que calculara distinto mostraría
  * tres precios para el mismo repuesto.
  *
- * Quién gestiona las fotos (D1): solo supervisor y admin; la vista lo decide
+ * Quién gestiona las fotos: todos menos la caja (hotfix 7/11/2026; D1 decía solo
+ * supervisor y admin); la vista lo decide
  * y pasa `puedeEditarFotos`. La RLS de `product_photos` es la barrera real, la
  * interfaz solo evita ofrecer botones que la base rechazaría. NO hay «Enviar
  * foto al chat» (D3): el mockup lo traía y se descartó — la foto se manda
@@ -341,7 +342,7 @@ export function ProductoFicha({
                     <div className="dropzone" data-solo-lectura="true">
                       <Camera size={30} aria-hidden="true" />
                       <strong>Este repuesto todavía no tiene foto</strong>
-                      <span>Un supervisor puede cargarla desde aquí.</span>
+                      <span>Un asesor puede cargarla desde aquí.</span>
                     </div>
                   )}
                 </section>

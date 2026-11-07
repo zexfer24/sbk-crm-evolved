@@ -7,7 +7,7 @@ import type { Agent, Conversation, ConversationCartItem, Message, Note, Product,
 import { createClient } from "@/lib/supabase/client";
 import { addNote, deleteNote, removeTagFromContact, sendMediaMessage, updateNote } from "@/lib/mutations";
 import { isComposerWindowOpen } from "@/lib/whatsapp-window";
-import { fotoPrincipal } from "@/lib/product-photos";
+import { fotoPrincipal, puedeEditarFotos } from "@/lib/product-photos";
 import { formatFullDateTime } from "@/lib/format";
 import { CloseSaleModal } from "@/components/context-panel/close-sale-modal";
 import { ManageTagsModal } from "@/components/context-panel/manage-tags-modal";
@@ -290,7 +290,7 @@ export function ContextPanel({
           onEnviarFoto={enviarFotoDelRepuesto}
           // 6/11/2026: gestionar las fotos desde el buscador; la RLS de
           // product_photos solo deja a supervisor y admin, el botón se alinea.
-          puedeEditarFotos={currentAgent.role === "supervisor" || currentAgent.role === "admin"}
+          puedeEditarFotos={puedeEditarFotos(currentAgent.role)}
           enviarFotoDeshabilitado={ventanaAbierta ? undefined : "La ventana de 24 h está cerrada"}
         />
 

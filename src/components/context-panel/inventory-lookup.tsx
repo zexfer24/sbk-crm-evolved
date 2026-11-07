@@ -143,7 +143,7 @@ interface InventoryLookupProps {
   onEnviarFoto?: (product: Product, caption: string | null) => Promise<void>;
   /**
    * 6/11/2026, pedido del cliente («modificar la imagen desde el sidebar»):
-   * supervisor y admin ven «Fotos» en cada resultado, que abre la ficha de
+   * todos menos la caja (hotfix 7/11/2026; antes solo supervisor y admin) ven «Fotos» en cada resultado, que abre la ficha de
    * /inventario. La RLS de `product_photos` es la barrera real; esto solo evita
    * ofrecer un botón que la base rechazaría. Solo se pinta junto a `onEnviarFoto`.
    */

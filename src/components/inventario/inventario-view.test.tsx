@@ -449,11 +449,11 @@ describe("InventarioView — lista o cuadrícula", () => {
     expect(screen.getByText("El catálogo está vacío")).toBeInTheDocument();
   });
 
-  it("la lista ofrece permiso de fotos solo a supervisor y admin (D1)", () => {
+  it("la lista ofrece permiso de fotos a asesor, supervisor y admin; la caja no (hotfix 7/11/2026)", () => {
     for (const [role, esperado] of [
       ["supervisor", "true"],
       ["admin", "true"],
-      ["agent", "false"],
+      ["agent", "true"],
       ["caja", "false"],
     ] as const) {
       const { unmount } = pintarConProductos([producto("a")], { vista: "lista", role });
@@ -466,7 +466,7 @@ describe("InventarioView — lista o cuadrícula", () => {
     pintarConProductos([producto("a")], { vista: "cuadricula", role: "admin" });
     expect(screen.getByTestId("tarjeta")).toHaveAttribute("data-puede-fotos", "true");
     cleanup();
-    pintarConProductos([producto("a")], { vista: "cuadricula", role: "agent" });
+    pintarConProductos([producto("a")], { vista: "cuadricula", role: "caja" });
     expect(screen.getByTestId("tarjeta")).toHaveAttribute("data-puede-fotos", "false");
   });
 });

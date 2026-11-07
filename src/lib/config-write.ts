@@ -41,10 +41,11 @@ export const PRODUCT_WEIGHT_NOT_SAVED_MESSAGE =
 
 /**
  * Fotos de los repuestos (T3, plan «Cada repuesto con su foto», 30/10/2026):
- * `product_photos` y la subida al bucket `product-photos` las escriben solo
- * supervisor/admin; un UPDATE/DELETE de otro rol afecta 0 filas sin error.
+ * `product_photos` y la subida al bucket `product-photos` las escriben todos
+ * menos la caja (hotfix 7/11/2026, `is_agent()`); un UPDATE/DELETE de la caja
+ * afecta 0 filas sin error.
  */
-export const PRODUCT_PHOTO_DENIED_MESSAGE = "Solo un supervisor o administrador puede cambiar las fotos.";
+export const PRODUCT_PHOTO_DENIED_MESSAGE = "Tu usuario no puede cambiar las fotos.";
 
 /** La escritura llegó a la base y no cambió nada: casi siempre, la RLS la ignoró. */
 export class ConfigWriteDeniedError extends Error {

@@ -226,7 +226,7 @@ describe("uploadProductPhoto", () => {
     });
     const error = await uploadProductPhoto(client, PRODUCT, FILE).catch((e) => e);
     expect(error).toBeInstanceOf(ConfigWriteDeniedError);
-    expect(error.message).toBe("Solo un supervisor o administrador puede cambiar las fotos.");
+    expect(error.message).toBe("Tu usuario no puede cambiar las fotos.");
     expect(calls.some((c) => c.kind === "insert")).toBe(false);
   });
 
@@ -253,7 +253,7 @@ describe("uploadProductPhoto", () => {
     });
     const error = await uploadProductPhoto(client, PRODUCT, FILE).catch((e) => e);
     expect(error).toBeInstanceOf(ConfigWriteDeniedError);
-    expect(error.message).toBe("Solo un supervisor o administrador puede cambiar las fotos.");
+    expect(error.message).toBe("Tu usuario no puede cambiar las fotos.");
   });
 
   it("si el insert falla NO intenta borrar el objeto (el bucket no tiene política de borrado)", async () => {
@@ -282,7 +282,7 @@ describe("deleteProductPhoto", () => {
     const { client } = fakeSupabase({ rows: [] });
     const error = await deleteProductPhoto(client, "p-1").catch((e) => e);
     expect(error).toBeInstanceOf(ConfigWriteDeniedError);
-    expect(error.message).toBe("Solo un supervisor o administrador puede cambiar las fotos.");
+    expect(error.message).toBe("Tu usuario no puede cambiar las fotos.");
   });
 
   it("NO toca el storage: los mensajes ya enviados referencian el objeto", async () => {
@@ -367,7 +367,7 @@ describe("replaceProductPhoto", () => {
     const { client } = fakeSupabase({ rows: [] });
     const error = await replaceProductPhoto(client, OLD_PRIMARY, PRODUCT, FILE).catch((e) => e);
     expect(error).toBeInstanceOf(ConfigWriteDeniedError);
-    expect(error.message).toBe("Solo un supervisor o administrador puede cambiar las fotos.");
+    expect(error.message).toBe("Tu usuario no puede cambiar las fotos.");
   });
 
   it("si el update da error lo lanza, y no toca la fila vieja ni el storage", async () => {

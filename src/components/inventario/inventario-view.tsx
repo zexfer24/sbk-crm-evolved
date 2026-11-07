@@ -4,6 +4,7 @@ import { useState } from "react";
 import { useRouter } from "next/navigation";
 import { Package } from "lucide-react";
 import type { Agent, MotoCatalogSummary, Product } from "@/lib/types";
+import { puedeEditarFotos as puedeEditarFotosDelRol } from "@/lib/product-photos";
 import { BUSINESS_NAME } from "@/lib/brand";
 import {
   INVENTORY_FILTER_LABELS,
@@ -161,10 +162,9 @@ export function InventarioView({
   // peso; la pantalla no le ofrece los campos, el rail le deja solo Inventario.
   const soloLectura = currentAgent.role === "caja";
 
-  // Subir, reemplazar, borrar y marcar la foto principal: solo supervisor y admin
-  // (D1, 30/10/2026). La barrera real es la RLS de `product_photos`; esto solo evita
-  // ofrecer botones que la base rechazaría.
-  const puedeEditarFotos = currentAgent.role === "supervisor" || currentAgent.role === "admin";
+  // Subir, reemplazar, borrar y marcar la foto principal: todos menos la caja
+  // (hotfix 7/11/2026; antes solo supervisor y admin). La barrera real es la RLS.
+  const puedeEditarFotos = puedeEditarFotosDelRol(currentAgent.role);
 
   // Avance de la carga de fotos para la barra de «Con foto», con una décima de precisión.
   const avanceFotos =
