@@ -28,6 +28,7 @@ exige tocar las dos puntas y este archivo en el mismo commit.
     "tienda": { "...": "misma forma" }
   },
   "serie": [ { "t": "2026-11-13T08:00:00-04:00", "online": 0, "tienda": 0, "envios_online": 0, "envios_tienda": 0 } ],
+  "perfil_horario": [ { "dia": "2026-11-12", "online": [0], "tienda": [0] } ],
   "personas": [ { "agent_id": "uuid", "nombre": "Asesor 4", "rol": "agent", "canal": "tienda", "ingresos": 0, "envios": 0, "unidades": 0 } ],
   "top_repuestos": [ { "codprod": "LF09", "nombre": "…", "unidades": 0, "ingresos": 0, "unidades_online": 0, "unidades_tienda": 0 } ],
   "tipo_precio": { "online": { "promocion": 0, "estandar": 0 }, "tienda": { "promocion": 0, "estandar": 0 } },
@@ -37,6 +38,8 @@ exige tocar las dos puntas y este archivo en el mismo commit.
 ```
 - `granularidad`: `hora` si el rango es ≤ 1 día; `mes` si es > 92 días; si no, `dia`. La serie trae TODOS
   los tramos del rango (con 0), en orden.
+- `perfil_horario`: solo cuando `granularidad = 'dia'` (si no, `[]`): un elemento por día del rango, en orden, con
+  24 montos por hora de Caracas por canal (0 si no hubo ventas). Alimenta la curva horaria de la proyección.
 - `ingresos` = suma de `monto_usd` (null si todas las ventas del canal tienen `monto_usd` null; si solo
   algunas, suma las que tienen y cuenta las otras en `sin_monto`). `ticket` = ingresos / envíos con monto, o null.
 - `personas`: por `enviado_por`, una fila por (persona, canal). Orden: ingresos desc.

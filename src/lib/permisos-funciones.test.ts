@@ -61,7 +61,10 @@ import { describe, expect, it } from "vitest";
 
 const LISTA_BLANCA = new Set(["is_agent", "is_supervisor_or_admin"]);
 
-// Las 33 funciones `security definer` conocidas (32 + ventas_saint_foto,
+// Las 38 funciones `security definer` conocidas (33 + las cinco RPC de lectura
+// de los paneles, 20261113040000, 13/11/2026: panel_ventas, panel_conversaciones,
+// panel_asesores, panel_cola y panel_ventas_activas, ver su entrada más abajo).
+// Las 33 anteriores: 32 + ventas_saint_foto,
 // 20261113010000, 13/11/2026: ver su entrada más abajo). Las 32 anteriores: 31 + precio_divisa_usd,
 // 20261030010000, 30/10/2026: campo calculado de PostgREST sobre `products`
 // que lee la réplica de SAINT (`saprod`) para que el CRM no necesite ningún
@@ -225,6 +228,19 @@ const FUNCIONES_SECURITY_DEFINER_CONOCIDAS = [
   // ningún grant: nadie la invoca por RPC. `precio_venta_usd` y su base son
   // security invoker y no cuentan acá.
   "ventas_saint_foto",
+  // 13/11/2026 (20261113040000_paneles_lectura.sql, plan "Paneles", M4): las
+  // cinco RPC de lectura de Dashboard de ventas, Analíticas y Asesores. Definer
+  // para comprobar `is_supervisor_or_admin()` UNA vez en vez de pagar una
+  // política por fila sobre `messages` (la trampa de
+  // search_conversations_by_message, 21/9/2026) y leer `ventas_saint`, que no
+  // tiene ningún grant a la API. Los dos revokes y grant a
+  // authenticated/service_role; ninguna entra a LISTA_BLANCA. Quien no es
+  // supervisor/admin recibe 42501.
+  "panel_ventas",
+  "panel_conversaciones",
+  "panel_asesores",
+  "panel_cola",
+  "panel_ventas_activas",
 ].sort();
 
 const DIR_MIGRACIONES = path.resolve(__dirname, "../../supabase/migrations");
@@ -358,8 +374,8 @@ describe("permisos de funciones security definer (guardián estático)", () => {
     .map(([nombre]) => nombre)
     .sort();
 
-  it("detecta exactamente las 33 funciones security definer conocidas", () => {
-    // Si esto falla con MENOS de las 33, el parser se está comiendo alguna
+  it("detecta exactamente las 38 funciones security definer conocidas", () => {
+    // Si esto falla con MENOS de las 38, el parser se está comiendo alguna
     // (regex de cabecera roto, `$$` no encontrado, etc.) y el resto de este
     // archivo no protege nada aunque pase en verde. Si falla con MÁS,
     // apareció una función security definer nueva: hay que sumarla a esta

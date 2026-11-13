@@ -584,6 +584,35 @@ jobs:
         run: |
           psql "postgresql://postgres:postgres@127.0.0.1:54322/postgres"             -v ON_ERROR_STOP=1             -f supabase/tests/fotos_de_productos.sql
 
+      # Plan "Paneles" (13/11/2026), cuatro migraciones nuevas, cuatro pasos. Todos
+      # corren como `authenticated`/postgres con la RLS real y terminan en rollback.
+      #
+      # M1 (20261113010000): la foto de cada envío a SAINT (`ventas_saint`), el
+      # precio de venta en SQL contra los casos dorados de TypeScript y que la foto
+      # NUNCA aborte un envío.
+      - name: ventas_saint -- foto de cada envío, precio de venta y foto que no aborta
+        run: |
+          psql "postgresql://postgres:postgres@127.0.0.1:54322/postgres"             -v ON_ERROR_STOP=1             -f supabase/tests/ventas_saint.sql
+
+      # M2 (20261113020000): la meta diaria por canal con historia, solo supervisor/admin.
+      - name: metas_venta -- meta diaria por canal con historia y RLS de supervisor
+        run: |
+          psql "postgresql://postgres:postgres@127.0.0.1:54322/postgres"             -v ON_ERROR_STOP=1             -f supabase/tests/metas_venta.sql
+
+      # M3 (20261113030000): los dos índices parciales de `messages` para los paneles.
+      - name: indices_mensajes -- índices parciales de messages para los paneles
+        run: |
+          psql "postgresql://postgres:postgres@127.0.0.1:54322/postgres"             -v ON_ERROR_STOP=1             -f supabase/tests/indices_mensajes.sql
+
+      # M4 (20261113040000): las cinco RPC de lectura (panel_ventas,
+      # panel_conversaciones, panel_asesores, panel_cola y panel_ventas_activas):
+      # el contrato del jsonb contra conteos a mano, los permisos (42501 al asesor
+      # y a la caja, anon sin EXECUTE) y la validación de rangos (22023). El
+      # rendimiento (`paneles_rendimiento.sql`, 300 mil mensajes) NO corre en CI.
+      - name: paneles -- RPC de lectura de los paneles, permisos y rangos
+        run: |
+          psql "postgresql://postgres:postgres@127.0.0.1:54322/postgres"             -v ON_ERROR_STOP=1             -f supabase/tests/paneles.sql
+
       # A2 T7, plan "Seba no cotiza lo que no es" (30/9/2026): el ARNÉS del
       # catálogo. Corre el `buildCatalogTool` REAL de Seba sobre los ~149 casos de
       # `casos-a2.ts` contra la base que este mismo job acaba de reconstruir desde

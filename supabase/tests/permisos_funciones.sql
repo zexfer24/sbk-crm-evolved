@@ -184,7 +184,17 @@ declare
     -- can_read_inventory (13/10/2026, migración 20261013010000): la invocan,
     -- como authenticated, las políticas de SELECT del Inventario (rol caja);
     -- cerrada a anon, abierta a authenticated y service_role.
-    'public.can_read_inventory()'
+    'public.can_read_inventory()',
+    -- Las cinco RPC de lectura de los paneles (13/11/2026, migración
+    -- 20261113040000, plan "Paneles", M4): la pantalla las llama con sesión de
+    -- supervisor/admin; security definer con is_supervisor_or_admin() UNA vez
+    -- (quien no lo es recibe 42501). Cerradas a anon, abiertas a authenticated y
+    -- service_role.
+    'public.panel_ventas(timestamptz, timestamptz)',
+    'public.panel_conversaciones(timestamptz, timestamptz)',
+    'public.panel_asesores(timestamptz, timestamptz)',
+    'public.panel_cola()',
+    'public.panel_ventas_activas()'
   ];
   f text;
   errores text := '';
