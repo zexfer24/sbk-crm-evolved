@@ -61,7 +61,8 @@ import { describe, expect, it } from "vitest";
 
 const LISTA_BLANCA = new Set(["is_agent", "is_supervisor_or_admin"]);
 
-// Las 32 funciones `security definer` conocidas (31 + precio_divisa_usd,
+// Las 33 funciones `security definer` conocidas (32 + ventas_saint_foto,
+// 20261113010000, 13/11/2026: ver su entrada más abajo). Las 32 anteriores: 31 + precio_divisa_usd,
 // 20261030010000, 30/10/2026: campo calculado de PostgREST sobre `products`
 // que lee la réplica de SAINT (`saprod`) para que el CRM no necesite ningún
 // permiso directo sobre ella; acceso chequeado UNA vez con
@@ -215,6 +216,15 @@ const FUNCIONES_SECURITY_DEFINER_CONOCIDAS = [
   // migración le cierra), con los dos revokes. 20261031020000 la reemplaza
   // leyendo `precioi3`, con los dos revokes de nuevo.
   "precio_divisa_usd",
+  // 13/11/2026 (20261113010000_ventas_saint.sql, plan "Paneles", M1): la
+  // función del trigger AFTER INSERT sobre liminal.saint_borradores que deja la
+  // foto de cada envío en `ventas_saint`. Definer porque escribe en una tabla
+  // sin ningún grant a la API (RLS sin políticas, revoke all a todos) y lee
+  // shipping_rates/agents saltándose su RLS (la caja no recibe tarifa_mrw_usd y
+  // la foto igual tiene que llevar el estándar completo). Los dos revokes y
+  // ningún grant: nadie la invoca por RPC. `precio_venta_usd` y su base son
+  // security invoker y no cuentan acá.
+  "ventas_saint_foto",
 ].sort();
 
 const DIR_MIGRACIONES = path.resolve(__dirname, "../../supabase/migrations");
@@ -348,8 +358,8 @@ describe("permisos de funciones security definer (guardián estático)", () => {
     .map(([nombre]) => nombre)
     .sort();
 
-  it("detecta exactamente las 32 funciones security definer conocidas", () => {
-    // Si esto falla con MENOS de las 32, el parser se está comiendo alguna
+  it("detecta exactamente las 33 funciones security definer conocidas", () => {
+    // Si esto falla con MENOS de las 33, el parser se está comiendo alguna
     // (regex de cabecera roto, `$$` no encontrado, etc.) y el resto de este
     // archivo no protege nada aunque pase en verde. Si falla con MÁS,
     // apareció una función security definer nueva: hay que sumarla a esta

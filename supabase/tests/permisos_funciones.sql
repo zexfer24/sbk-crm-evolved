@@ -237,7 +237,12 @@ declare
   funciones text[] := array[
     'public.handle_new_message()',
     'public.handle_message_status_change()',
-    'public.log_product_weight_change()'
+    'public.log_product_weight_change()',
+    -- ventas_saint_foto() (13/11/2026, migración 20261113010000, plan
+    -- "Paneles", M1): el trigger AFTER INSERT sobre liminal.saint_borradores
+    -- que deja la foto de cada envío en `ventas_saint` (tabla sin ningún grant
+    -- a la API). Nadie más que el propio disparador la invoca.
+    'public.ventas_saint_foto()'
   ];
   f text;
   errores text := '';
