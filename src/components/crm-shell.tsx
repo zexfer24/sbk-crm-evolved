@@ -73,6 +73,7 @@ import type { BcvRateSummary } from "@/components/inbox/bcv-rate-chip";
 import { ChatPanel } from "@/components/chat/chat-panel";
 import { ContextPanel } from "@/components/context-panel/context-panel";
 import { AppRail } from "@/components/app-rail";
+import { puedeVerPaneles } from "@/lib/paneles/acceso";
 import "@/components/crm.css";
 
 interface CrmShellProps {
@@ -1571,7 +1572,7 @@ export function CrmShell({
 
   return (
     <div className="crm" data-view={mobileView}>
-      <AppRail active="bandeja" variant="crm" />
+      <AppRail active="bandeja" variant="crm" verPaneles={puedeVerPaneles(currentAgent.role)} />
 
       <div className="crm-columns">
         <section className="crm-column crm-inbox">

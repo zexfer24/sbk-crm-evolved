@@ -17,19 +17,26 @@ import type { RailSection } from "@/components/app-rail";
 export function SectionSkeleton({
   active,
   rows = 6,
+  verPaneles = false,
 }: {
   active: RailSection;
   rows?: number;
+  /**
+   * Los paneles (13/11/2026) solo los abre un supervisor/admin, así que su
+   * `loading.tsx` pasa `true`: el rail del esqueleto tiene que traer el mismo
+   * botón «Paneles» que el rail de la pantalla real, o el botón parpadearía.
+   */
+  verPaneles?: boolean;
 }) {
   return (
     <div className="dash">
       <div className="dash-frame">
-        <AppRail active={active} />
+        <AppRail active={active} verPaneles={verPaneles} />
         <main className="dash-main">
           <div className="dash-content" role="status" aria-busy="true" aria-label="Cargando la sección">
             <div className="skel-topbar">
               <span className="skel skel-title" />
-              <AppTopNav active={active} />
+              <AppTopNav active={active} verPaneles={verPaneles} />
             </div>
             <div className="skel-rows">
               {Array.from({ length: rows }, (_, i) => (

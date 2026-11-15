@@ -19,6 +19,7 @@ import {
 import { initials } from "@/lib/dashboard";
 import { formatConversationTimestamp } from "@/lib/format";
 import { AppRail, AppTopNav } from "@/components/app-rail";
+import { puedeVerPaneles } from "@/lib/paneles/acceso";
 import { UrlSearchBox } from "@/components/url-search-box";
 import "@/components/dashboard/dashboard.css";
 import "@/components/agent-control/agent-control.css";
@@ -88,7 +89,7 @@ export function ClientesView({ currentAgent, customers, total, params }: Cliente
   return (
     <div className="dash">
       <div className="dash-frame">
-        <AppRail active="clientes" />
+        <AppRail active="clientes" verPaneles={puedeVerPaneles(currentAgent.role)} />
 
         <main className="dash-main">
           <div className="dash-content">
@@ -100,7 +101,7 @@ export function ClientesView({ currentAgent, customers, total, params }: Cliente
                 <span className="dash-brand-name">{BUSINESS_NAME}</span>
               </p>
 
-              <AppTopNav active="clientes" />
+              <AppTopNav active="clientes" verPaneles={puedeVerPaneles(currentAgent.role)} />
 
               <div className="dash-topbar-actions">
                 <span className="dash-icon-btn dash-icon-static" title={currentAgent.displayName}>

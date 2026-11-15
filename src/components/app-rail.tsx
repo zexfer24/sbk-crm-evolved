@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { Bot, Inbox, LogOut, Package, Receipt, Route, SquareKanban, Users } from "lucide-react";
+import { Bot, Inbox, LayoutDashboard, LogOut, Package, Receipt, Route, SquareKanban, Users } from "lucide-react";
 import { createClient } from "@/lib/supabase/client";
 import { SbkMark } from "@/components/sbk-logo";
 import { ThemeToggle } from "@/components/theme-toggle";
@@ -28,7 +28,10 @@ export type RailSection =
   | "casos"
   | "ventas"
   | "inventario"
-  | "control";
+  | "control"
+  // Los tres paneles de ventas, analíticas y asesores (plan "Paneles",
+  // 13/11/2026). Solo supervisor/admin: ver `verPaneles` más abajo.
+  | "paneles";
 
 const SECTIONS: { id: RailSection; href: string; label: string; Icon: typeof Route }[] = [
   { id: "recorrido", href: "/", label: "Recorrido", Icon: Route },
@@ -39,6 +42,7 @@ const SECTIONS: { id: RailSection; href: string; label: string; Icon: typeof Rou
   { id: "ventas", href: "/ventas", label: "Ventas", Icon: Receipt },
   { id: "inventario", href: "/inventario", label: "Inventario", Icon: Package },
   { id: "control", href: "/agent-control", label: "Control de IA", Icon: Bot },
+  { id: "paneles", href: "/panel", label: "Paneles", Icon: LayoutDashboard },
 ];
 
 /**
@@ -46,8 +50,12 @@ const SECTIONS: { id: RailSection; href: string; label: string; Icon: typeof Rou
  * sección y se le oculta el resto. Es de pantalla; el candado de verdad es la
  * RLS y el middleware (`rutaPermitidaParaCaja`).
  */
-function seccionesVisibles(soloInventario: boolean) {
-  return soloInventario ? SECTIONS.filter((s) => s.id === "inventario") : SECTIONS;
+function seccionesVisibles(soloInventario: boolean, verPaneles: boolean) {
+  if (soloInventario) return SECTIONS.filter((s) => s.id === "inventario");
+  // «Paneles» (13/11/2026) solo para supervisor/admin: sin la prop se oculta,
+  // así una pantalla que olvide pasarla falla cerrada. Es de pantalla; el
+  // candado de verdad es el layout de /panel y las RPC (`is_supervisor_or_admin`).
+  return verPaneles ? SECTIONS : SECTIONS.filter((s) => s.id !== "paneles");
 }
 
 interface AppRailProps {
@@ -59,11 +67,18 @@ interface AppRailProps {
    * rail es el de siempre.
    */
   soloInventario?: boolean;
+  /**
+   * `true` para supervisor/admin: suma la sección «Paneles» (`/panel`). Falsa
+   * por defecto, y la caja (`soloInventario`) nunca la ve aunque se pase. Cada
+   * vista la calcula con `puedeVerPaneles(currentAgent.role)` desde el agente
+   * que YA cargó, sin una lectura nueva.
+   */
+  verPaneles?: boolean;
   /** `crm` en la bandeja a pantalla completa; `dash` en las pantallas enmarcadas. */
   variant?: "crm" | "dash";
 }
 
-export function AppRail({ active, variant = "dash", soloInventario = false }: AppRailProps) {
+export function AppRail({ active, variant = "dash", soloInventario = false, verPaneles = false }: AppRailProps) {
   const router = useRouter();
 
   async function signOut() {
@@ -81,7 +96,7 @@ export function AppRail({ active, variant = "dash", soloInventario = false }: Ap
           <SbkMark size={32} />
         </span>
 
-        {seccionesVisibles(soloInventario).map(({ id, href, label, Icon }) => (
+        {seccionesVisibles(soloInventario, verPaneles).map(({ id, href, label, Icon }) => (
           <Link
             key={id}
             className={`${variant}-rail-btn`}
@@ -114,10 +129,18 @@ export function AppRail({ active, variant = "dash", soloInventario = false }: Ap
 }
 
 /** Los mismos destinos, para la barra de navegación superior de las pantallas enmarcadas. */
-export function AppTopNav({ active, soloInventario = false }: { active: RailSection; soloInventario?: boolean }) {
+export function AppTopNav({
+  active,
+  soloInventario = false,
+  verPaneles = false,
+}: {
+  active: RailSection;
+  soloInventario?: boolean;
+  verPaneles?: boolean;
+}) {
   return (
     <nav className="dash-nav" aria-label="Navegación principal">
-      {seccionesVisibles(soloInventario).map(({ id, href, label }) => (
+      {seccionesVisibles(soloInventario, verPaneles).map(({ id, href, label }) => (
         <Link key={id} className="dash-nav-link" href={href} {...(active === id ? { "aria-current": "page" as const } : {})}>
           {label}
         </Link>

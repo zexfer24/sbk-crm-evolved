@@ -27,6 +27,7 @@ import {
   ticketQueue,
 } from "@/lib/dashboard";
 import { AppRail } from "@/components/app-rail";
+import { puedeVerPaneles } from "@/lib/paneles/acceso";
 import { ActivityChart } from "@/components/dashboard/activity-chart";
 import { JourneyBoard } from "@/components/dashboard/journey-board";
 import { TicketQueuePanel } from "@/components/dashboard/ticket-queue";
@@ -200,7 +201,7 @@ export function DashboardView({
   return (
     <div className="dash">
       <div className="dash-frame">
-        <AppRail active="recorrido" />
+        <AppRail active="recorrido" verPaneles={puedeVerPaneles(currentAgent.role)} />
 
         <main className="dash-main">
           <div className="dash-content">

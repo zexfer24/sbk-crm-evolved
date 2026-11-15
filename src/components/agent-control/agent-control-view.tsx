@@ -87,6 +87,7 @@ import { PlaybooksPanel } from "@/components/agent-control/playbooks-panel";
 import { FilterScroller } from "@/components/inbox/filter-scroller";
 import { SlidingPills } from "@/components/sliding-pills";
 import { AppRail, AppTopNav } from "@/components/app-rail";
+import { puedeVerPaneles } from "@/lib/paneles/acceso";
 import { ChannelHealthPanel } from "@/components/agent-control/channel-health-panel";
 import { SpendCapPanel } from "@/components/agent-control/spend-cap-panel";
 import { BusinessHoursPanel } from "@/components/agent-control/business-hours-panel";
@@ -795,7 +796,7 @@ export function AgentControlView({
   return (
     <div className="dash">
       <div className="dash-frame">
-        <AppRail active="control" />
+        <AppRail active="control" verPaneles={puedeVerPaneles(currentAgent.role)} />
 
         <main className="dash-main">
           <div className="dash-content">
@@ -807,7 +808,7 @@ export function AgentControlView({
                 <span className="dash-brand-name">{BUSINESS_NAME}</span>
               </p>
 
-              <AppTopNav active="control" />
+              <AppTopNav active="control" verPaneles={puedeVerPaneles(currentAgent.role)} />
 
               <div className="dash-topbar-actions">
                 <span className="dash-icon-btn dash-icon-static" title={currentAgent.displayName}>

@@ -6,6 +6,7 @@ import { customerLocation, customerName, formatCedula, isProfileIncomplete } fro
 import { initials } from "@/lib/dashboard";
 import { formatConversationTimestamp, formatFullDateTime } from "@/lib/format";
 import { AppRail, AppTopNav } from "@/components/app-rail";
+import { puedeVerPaneles } from "@/lib/paneles/acceso";
 import { ClienteDatosPanel } from "@/components/clientes/cliente-datos-panel";
 import { ClienteEtiquetas } from "@/components/clientes/cliente-etiquetas";
 import { ClienteNotas } from "@/components/clientes/cliente-notas";
@@ -30,7 +31,7 @@ export function ClienteFicha({ currentAgent, detail, allTags }: ClienteFichaProp
   return (
     <div className="dash">
       <div className="dash-frame">
-        <AppRail active="clientes" />
+        <AppRail active="clientes" verPaneles={puedeVerPaneles(currentAgent.role)} />
 
         <main className="dash-main">
           <div className="dash-content">
@@ -42,7 +43,7 @@ export function ClienteFicha({ currentAgent, detail, allTags }: ClienteFichaProp
                 <span className="dash-brand-name">{BUSINESS_NAME}</span>
               </p>
 
-              <AppTopNav active="clientes" />
+              <AppTopNav active="clientes" verPaneles={puedeVerPaneles(currentAgent.role)} />
 
               <div className="dash-topbar-actions">
                 <span className="dash-icon-btn dash-icon-static" title={currentAgent.displayName}>

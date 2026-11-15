@@ -159,6 +159,50 @@ describe("AppRail con soloInventario (rol caja)", () => {
   });
 });
 
+// Plan "Paneles" (13/11/2026): los tres paneles de ventas/analíticas/asesores
+// viven bajo /panel y solo los ven supervisor y admin. La pantalla los muestra
+// con la prop `verPaneles` (la calcula cada vista desde el rol que ya cargó);
+// el candado de verdad es el layout de /panel y las RPC.
+describe("AppRail con verPaneles", () => {
+  it("sin la prop no aparece «Paneles»", () => {
+    render(<AppRail active="ventas" />);
+    expect(screen.queryByLabelText("Paneles")).toBeNull();
+  });
+
+  it("verPaneles={false} es igual que no pasarla", () => {
+    render(<AppRail active="ventas" verPaneles={false} />);
+    expect(screen.queryByLabelText("Paneles")).toBeNull();
+  });
+
+  it("con la prop suma «Paneles» → /panel después de las siete secciones", () => {
+    const { container } = render(<AppRail active="ventas" verPaneles />);
+
+    expect(screen.getByLabelText("Paneles").getAttribute("href")).toBe("/panel");
+    const orden = Array.from(container.querySelectorAll(".dash-rail-btn[href]")).map((a) => a.getAttribute("aria-label"));
+    expect(orden).toEqual([...SECCIONES.map(([label]) => label), "Paneles"]);
+  });
+
+  it("marca «Paneles» cuando es la sección activa", () => {
+    render(<AppRail active="paneles" verPaneles />);
+    expect(screen.getByLabelText("Paneles").getAttribute("data-active")).toBe("true");
+    expect(screen.getByLabelText("Paneles").getAttribute("aria-current")).toBe("page");
+  });
+
+  it("la caja nunca la ve, aunque se le pase verPaneles", () => {
+    const { container } = render(<AppRail active="inventario" soloInventario verPaneles />);
+
+    expect(screen.queryByLabelText("Paneles")).toBeNull();
+    const links = Array.from(container.querySelectorAll(".dash-rail-btn[href]")).map((a) => a.getAttribute("aria-label"));
+    expect(links).toEqual(["Inventario"]);
+  });
+
+  it("sigue entregando un solo hijo directo (el <nav>)", () => {
+    const { container } = render(<AppRail active="paneles" verPaneles />);
+    expect(container.childElementCount).toBe(1);
+    expect(container.firstElementChild?.tagName).toBe("NAV");
+  });
+});
+
 describe("AppTopNav", () => {
   it("lleva las mismas secciones que el rail", () => {
     render(<AppTopNav active="ventas" />);
@@ -172,6 +216,19 @@ describe("AppTopNav", () => {
     render(<AppTopNav active="ventas" />);
     expect(screen.getByText("Ventas").getAttribute("aria-current")).toBe("page");
     expect(screen.getByText("Clientes").getAttribute("aria-current")).toBeNull();
+  });
+
+  it("«Paneles» aparece solo con verPaneles y nunca para la caja", () => {
+    const { unmount } = render(<AppTopNav active="ventas" />);
+    expect(screen.queryByText("Paneles")).toBeNull();
+    unmount();
+
+    const { unmount: desmontar } = render(<AppTopNav active="ventas" verPaneles />);
+    expect(screen.getByText("Paneles").getAttribute("href")).toBe("/panel");
+    desmontar();
+
+    render(<AppTopNav active="inventario" soloInventario verPaneles />);
+    expect(screen.queryByText("Paneles")).toBeNull();
   });
 
   it("con soloInventario lleva solo el enlace a Inventario", () => {

@@ -20,6 +20,7 @@ import type { InventoryTotals } from "@/lib/inventory-data";
 import { freshnessNote, freshnessValue, inventoryFreshness } from "@/lib/inventory-freshness";
 import { initials } from "@/lib/dashboard";
 import { AppRail, AppTopNav } from "@/components/app-rail";
+import { puedeVerPaneles } from "@/lib/paneles/acceso";
 import { UrlSearchBox } from "@/components/url-search-box";
 import { ProductoFila } from "@/components/inventario/producto-fila";
 import { ProductoTarjeta } from "@/components/inventario/producto-tarjeta";
@@ -189,7 +190,7 @@ export function InventarioView({
     >
       <div className="dash">
         <div className="dash-frame">
-          <AppRail active="inventario" soloInventario={soloLectura} />
+          <AppRail active="inventario" soloInventario={soloLectura} verPaneles={puedeVerPaneles(currentAgent.role)} />
 
           <main className="dash-main">
             <div className="dash-content">
@@ -201,7 +202,7 @@ export function InventarioView({
                   <span className="dash-brand-name">{BUSINESS_NAME}</span>
                 </p>
 
-                <AppTopNav active="inventario" soloInventario={soloLectura} />
+                <AppTopNav active="inventario" soloInventario={soloLectura} verPaneles={puedeVerPaneles(currentAgent.role)} />
 
                 <div className="dash-topbar-actions">
                   <span className="dash-icon-btn dash-icon-static" title={currentAgent.displayName}>

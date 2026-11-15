@@ -16,6 +16,7 @@ import { formatFullDateTime } from "@/lib/format";
 import { formatDayKey, salesDayHistory, salesOnDay, shiftDayKey, summarizeSalesDay, todayKey } from "@/lib/sales-day";
 import { SaleDetailModal } from "@/components/sales/sale-detail-modal";
 import { AppRail, AppTopNav } from "@/components/app-rail";
+import { puedeVerPaneles } from "@/lib/paneles/acceso";
 import "@/components/dashboard/dashboard.css";
 import "@/components/agent-control/agent-control.css";
 import "@/components/clientes/clientes.css";
@@ -193,7 +194,7 @@ export function SalesView({ currentAgent, initialSales, bcvRate }: SalesViewProp
   return (
     <div className="dash">
       <div className="dash-frame">
-        <AppRail active="ventas" />
+        <AppRail active="ventas" verPaneles={puedeVerPaneles(currentAgent.role)} />
 
         <main className="dash-main">
           <div className="dash-content">
@@ -205,7 +206,7 @@ export function SalesView({ currentAgent, initialSales, bcvRate }: SalesViewProp
                 <span className="dash-brand-name">{BUSINESS_NAME}</span>
               </p>
 
-              <AppTopNav active="ventas" />
+              <AppTopNav active="ventas" verPaneles={puedeVerPaneles(currentAgent.role)} />
 
               <div className="dash-topbar-actions">
                 <span className="dash-icon-btn dash-icon-static" title={currentAgent.displayName}>

@@ -28,6 +28,7 @@ import {
   type CaseColumn,
 } from "@/lib/case-board";
 import { AppRail, AppTopNav } from "@/components/app-rail";
+import { puedeVerPaneles } from "@/lib/paneles/acceso";
 import "@/components/dashboard/dashboard.css";
 import "@/components/casos/case-board.css";
 
@@ -309,7 +310,7 @@ export function CaseBoardView({
   return (
     <div className="dash">
       <div className="dash-frame">
-        <AppRail active="casos" />
+        <AppRail active="casos" verPaneles={puedeVerPaneles(currentAgent.role)} />
 
         <main className="dash-main">
           <div className="dash-content cb-content">
@@ -321,7 +322,7 @@ export function CaseBoardView({
                 <span className="dash-brand-name">{BUSINESS_NAME}</span>
               </p>
 
-              <AppTopNav active="casos" />
+              <AppTopNav active="casos" verPaneles={puedeVerPaneles(currentAgent.role)} />
 
               <div className="dash-topbar-actions">
                 <span className="dash-icon-btn dash-icon-static" title={currentAgent.displayName}>
