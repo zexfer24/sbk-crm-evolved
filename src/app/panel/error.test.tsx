@@ -15,6 +15,7 @@ const rutaActual = vi.hoisted(() => ({ valor: "/panel" }));
 vi.mock("next/navigation", () => ({
   useRouter: () => ({ push: vi.fn(), replace: vi.fn(), refresh: vi.fn() }),
   usePathname: () => rutaActual.valor,
+  useSearchParams: () => new URLSearchParams(),
 }));
 
 function fakeChannel() {

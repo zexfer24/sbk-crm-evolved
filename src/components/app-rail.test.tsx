@@ -3,8 +3,14 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { render, screen } from "@testing-library/react";
 import { AppRail, AppTopNav } from "@/components/app-rail";
 
+// Con `verPaneles` el rail lee la URL (`usePathname`/`useSearchParams`) para que
+// las tres entradas de los paneles arrastren el período y el canal elegidos
+// (15/11/2026). Cada test fija la ruta con `ubicacion`.
+const ubicacion = vi.hoisted(() => ({ ruta: "/ventas", consulta: "" }));
 vi.mock("next/navigation", () => ({
   useRouter: () => ({ push: vi.fn(), replace: vi.fn(), refresh: vi.fn() }),
+  usePathname: () => ubicacion.ruta,
+  useSearchParams: () => new URLSearchParams(ubicacion.consulta),
 }));
 
 // AppRail monta AssignmentNotifier (T6), que abre su propio canal de
@@ -70,6 +76,11 @@ const PANELES = [
   ["Asesores", "/panel/asesores"],
 ] as const;
 const MENU_SUPERVISOR = [...PANELES, ...SECCIONES] as const;
+
+beforeEach(() => {
+  ubicacion.ruta = "/ventas";
+  ubicacion.consulta = "";
+});
 
 describe("AppRail", () => {
   // El rail estaba copiado en cuatro pantallas; el punto de extraerlo es que
@@ -237,6 +248,141 @@ describe("AppRail con verPaneles", () => {
     const { container } = render(<AppRail active="dashboard" verPaneles />);
     expect(container.childElementCount).toBe(1);
     expect(container.firstElementChild?.tagName).toBe("NAV");
+  });
+});
+
+// 15/11/2026: la cápsula del rail (rediseño pedido por el operador). El nav lleva
+// la marca FUERA y UNA cápsula con, en orden: los tres paneles, un separador,
+// las secciones, un separador y el grupo de abajo (tema y cerrar sesión). Ya no
+// hay un spacer que empuje ese grupo al fondo.
+describe("AppRail: la cápsula y sus separadores", () => {
+  const hijos = (nav: Element) =>
+    Array.from(nav.children).map((el) =>
+      el.matches('[aria-hidden="true"].dash-rail-sep')
+        ? "|"
+        : (el.getAttribute("aria-label") ?? el.className)
+    );
+
+  it("la marca queda fuera de la cápsula y la cápsula es lo único más que lleva el nav", () => {
+    const { container } = render(<AppRail active="ventas" verPaneles />);
+    const nav = container.querySelector("nav.dash-rail")!;
+
+    expect(nav.children.length).toBe(2);
+    expect(nav.children[0]).toHaveClass("dash-rail-brand");
+    expect(nav.children[1]).toHaveClass("dash-rail-capsule");
+    expect(nav.querySelector(".dash-rail-capsule .dash-rail-brand")).toBeNull();
+    expect(nav.querySelector(".dash-rail-spacer")).toBeNull();
+  });
+
+  it("con verPaneles: paneles, separador, secciones, separador, tema y salir", () => {
+    const { container } = render(<AppRail active="ventas" verPaneles />);
+    const capsula = container.querySelector(".dash-rail-capsule")!;
+
+    expect(hijos(capsula)).toEqual([
+      "Dashboard",
+      "Analíticas",
+      "Asesores",
+      "|",
+      "Bandeja",
+      "Clientes",
+      "Casos",
+      "Ventas",
+      "Inventario",
+      "Control de IA",
+      "Recorrido",
+      "|",
+      expect.stringMatching(/Cambiar a modo/),
+      "Cerrar sesión",
+    ]);
+  });
+
+  it("sin verPaneles no hay separador entre secciones, solo el de antes del grupo de abajo", () => {
+    const { container } = render(<AppRail active="ventas" />);
+    const capsula = container.querySelector(".dash-rail-capsule")!;
+
+    const orden = hijos(capsula);
+    expect(orden.filter((h) => h === "|").length).toBe(1);
+    expect(orden[0]).toBe("Bandeja");
+    expect(orden.slice(-3)).toEqual(["|", expect.stringMatching(/Cambiar a modo/), "Cerrar sesión"]);
+  });
+
+  it("los separadores son aria-hidden y el primero va justo después de Asesores", () => {
+    const { container } = render(<AppRail active="ventas" verPaneles />);
+    const seps = container.querySelectorAll(".dash-rail-sep");
+
+    expect(seps.length).toBe(2);
+    seps.forEach((sep) => expect(sep.getAttribute("aria-hidden")).toBe("true"));
+    expect(screen.getByLabelText("Asesores").nextElementSibling).toBe(seps[0]);
+    expect(seps[0].nextElementSibling).toBe(screen.getByLabelText("Bandeja"));
+  });
+
+  it("la caja (soloInventario) no ve el separador de los paneles: Inventario, separador, tema y salir", () => {
+    const { container } = render(<AppRail active="inventario" soloInventario verPaneles />);
+    const capsula = container.querySelector(".dash-rail-capsule")!;
+
+    expect(hijos(capsula)).toEqual(["Inventario", "|", expect.stringMatching(/Cambiar a modo/), "Cerrar sesión"]);
+  });
+
+  it("la variante crm usa sus propias clases (crm-rail-capsule, crm-rail-sep)", () => {
+    const { container } = render(<AppRail active="bandeja" variant="crm" verPaneles />);
+
+    expect(container.querySelector("nav.crm-rail > .crm-rail-capsule")).not.toBeNull();
+    expect(container.querySelectorAll(".crm-rail-capsule > .crm-rail-sep").length).toBe(2);
+    expect(container.querySelector(".dash-rail-sep")).toBeNull();
+  });
+
+  it("AppTopNav NO lleva separador", () => {
+    const { container } = render(<AppTopNav active="ventas" verPaneles />);
+    expect(container.querySelector('[class*="rail-sep"]')).toBeNull();
+    expect(container.querySelector('[aria-hidden="true"]')).toBeNull();
+  });
+});
+
+// 15/11/2026: se quitaron las pestañas internas de los paneles y su trabajo
+// (no perder el período ni el canal al cambiar de panel) pasó a estas tres
+// entradas, SOLO estando ya en un panel.
+describe("las entradas de los paneles arrastran período y canal", () => {
+  const hrefs = () => ({
+    dashboard: screen.getByLabelText("Dashboard").getAttribute("href"),
+    analiticas: screen.getByLabelText("Analíticas").getAttribute("href"),
+    asesores: screen.getByLabelText("Asesores").getAttribute("href"),
+  });
+
+  it("fuera de los paneles los href quedan limpios, aunque la URL traiga ?periodo", () => {
+    ubicacion.ruta = "/ventas";
+    ubicacion.consulta = "periodo=7d&vista=online";
+    render(<AppRail active="ventas" verPaneles />);
+
+    expect(hrefs()).toEqual({ dashboard: "/panel", analiticas: "/panel/analiticas", asesores: "/panel/asesores" });
+  });
+
+  it("dentro de un panel llevan el período y, a Dashboard y Analíticas, la vista", () => {
+    ubicacion.ruta = "/panel";
+    ubicacion.consulta = "periodo=7d&vista=online";
+    render(<AppRail active="dashboard" verPaneles />);
+
+    expect(hrefs()).toEqual({
+      dashboard: "/panel?periodo=7d&vista=online",
+      analiticas: "/panel/analiticas?periodo=7d&vista=online",
+      asesores: "/panel/asesores?periodo=7d",
+    });
+  });
+
+  it("la barra superior hace lo mismo que el rail", () => {
+    ubicacion.ruta = "/panel/analiticas";
+    ubicacion.consulta = "periodo=30d&vista=tienda";
+    render(<AppTopNav active="analiticas" verPaneles />);
+
+    expect(screen.getByText("Asesores").getAttribute("href")).toBe("/panel/asesores?periodo=30d");
+    expect(screen.getByText("Dashboard").getAttribute("href")).toBe("/panel?periodo=30d&vista=tienda");
+  });
+
+  it("sin verPaneles no lee la URL (un asesor no paga los hooks)", () => {
+    ubicacion.ruta = "/panel";
+    ubicacion.consulta = "periodo=7d";
+    render(<AppRail active="ventas" />);
+
+    expect(screen.queryByLabelText("Dashboard")).toBeNull();
   });
 });
 

@@ -117,39 +117,6 @@
   display: none;
 }
 
-.pn-pestanas {
-  display: flex;
-  align-items: center;
-  gap: 2px;
-  min-width: 0;
-  max-width: 100%;
-  overflow-x: auto;
-  scrollbar-width: none;
-}
-.pn-pestanas::-webkit-scrollbar {
-  display: none;
-}
-.pn-pestana {
-  padding: 9px 17px;
-  border-radius: 999px;
-  color: var(--lm-ink-soft);
-  font-size: 14px;
-  font-weight: 500;
-  white-space: nowrap;
-  text-decoration: none;
-  transition:
-    background 160ms ease,
-    color 160ms ease;
-}
-.pn-pestana:hover {
-  background: var(--lm-wash);
-  color: var(--lm-ink);
-}
-.pn-pestana[aria-current="page"] {
-  background: var(--lm-ink);
-  color: var(--lm-on-ink);
-}
-
 @media (max-width: 760px) {
   .pn-cab__controles {
     flex-direction: column;

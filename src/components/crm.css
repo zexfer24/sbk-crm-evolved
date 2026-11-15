@@ -23,8 +23,38 @@
   padding: 20px 0 24px;
 }
 
-.crm-rail-spacer {
-  flex: 1;
+/* La cápsula (15/11/2026, rediseño del rail): una pastilla vertical flotante,
+   casi negra en claro y una superficie elevada en oscuro (tokens `--lm-rail-*`
+   de theme.css), que abraza sus botones en vez de ocupar todo el alto. En
+   ventanas bajas se desplaza por dentro y nunca corta un botón sin dejarlo
+   alcanzable: `max-height` descuenta el padding del rail y la marca. */
+.crm-rail-capsule {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  box-sizing: border-box;
+  width: 56px;
+  padding: 8px;
+  border: 1px solid var(--lm-rail-border);
+  border-radius: 999px;
+  background: var(--lm-rail-bg);
+  box-shadow: var(--lm-rail-shadow);
+  max-height: calc(100vh - 100px);
+  overflow-y: auto;
+  scrollbar-width: none;
+}
+
+.crm-rail-capsule::-webkit-scrollbar {
+  display: none;
+}
+
+/* Línea fina que divide grupos dentro de la cápsula: aria-hidden en el JSX. */
+.crm-rail-sep {
+  flex: none;
+  width: 24px;
+  height: 1px;
+  background: rgb(var(--lm-rail-fg-rgb) / 0.15);
 }
 
 /* La placa SBK que encabeza el rail, igual que en las pantallas enmarcadas. */
@@ -40,15 +70,16 @@
 .crm-rail-btn {
   display: grid;
   place-items: center;
-  width: 42px;
-  height: 42px;
+  flex: none;
+  width: 40px;
+  height: 40px;
   border: 0;
   border-radius: 999px;
   background: transparent;
-  color: var(--lm-muted);
+  color: rgb(var(--lm-rail-fg-rgb) / 0.7);
   cursor: pointer;
   text-decoration: none;
-  transition: background 160ms ease, color 160ms ease, box-shadow 160ms ease,
+  transition: background 160ms ease, color 160ms ease,
     transform 120ms var(--lm-ease-out);
 }
 
@@ -57,11 +88,22 @@
   transform: scale(0.92);
 }
 
-.crm-rail-btn:hover,
+.crm-rail-btn:hover {
+  background: rgb(var(--lm-rail-fg-rgb) / 0.08);
+  color: rgb(var(--lm-rail-fg-rgb) / 0.95);
+}
+
 .crm-rail-btn[data-active="true"] {
-  background: var(--lm-surface);
-  color: var(--lm-ink);
-  box-shadow: var(--lm-shadow-sm);
+  background: rgb(var(--lm-rail-fg-rgb) / 0.18);
+  color: rgb(var(--lm-rail-fg-rgb));
+}
+
+/* Anillo claro sobre la cápsula oscura. Va con `.crm` delante para ganarle al
+   foco genérico de abajo (`.crm a:focus-visible`, azul `--lm-link`), que sobre
+   negro casi no se lee. */
+.crm .crm-rail-btn:focus-visible {
+  outline: 2px solid rgb(var(--lm-rail-fg-rgb) / 0.85);
+  outline-offset: 2px;
 }
 
 /* Foco de teclado, consistente en toda la bandeja/chat/panel: sin esto,
@@ -2611,6 +2653,24 @@
     flex-direction: row;
     gap: 4px;
     padding: 10px 12px 0;
+  }
+
+  /* La cápsula también se acuesta (15/11/2026): fila de botones con
+     separadores verticales, que se desliza en horizontal si no caben (con los
+     paneles son doce botones: más de lo que entra a 390 px). */
+  .crm-rail-capsule {
+    flex-direction: row;
+    width: auto;
+    min-width: 0;
+    max-height: none;
+    padding: 6px 8px;
+    overflow-x: auto;
+    overflow-y: hidden;
+  }
+
+  .crm-rail-sep {
+    width: 1px;
+    height: 24px;
   }
 
   .crm-columns {

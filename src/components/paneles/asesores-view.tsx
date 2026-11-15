@@ -55,7 +55,7 @@ export function AsesoresView({ periodo, ahora, rango, asesores, conversaciones, 
   const filas = useMemo(() => (asesores.ok ? cruzarConversion(asesores.dato.personas, conversion) : []), [asesores, conversion]);
 
   return (
-    <PanelMarco panel="asesores" titulo="Asesores" ahora={ahora} periodo={periodo} controles={<ControlPeriodoAsesores periodo={periodo} />}>
+    <PanelMarco panel="asesores" titulo="Asesores" ahora={ahora} controles={<ControlPeriodoAsesores periodo={periodo} />}>
       <div className="as-pagina">
         <div className="as-sube" style={{ "--i": 0 } as CSSProperties}>
           <PanelBloque bloque={cola} nombre="Mensaje más viejo sin responder">

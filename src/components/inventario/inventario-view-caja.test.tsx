@@ -17,6 +17,9 @@ import { InventarioView } from "@/components/inventario/inventario-view";
 
 vi.mock("next/navigation", () => ({
   useRouter: () => ({ push: vi.fn(), replace: vi.fn(), refresh: vi.fn() }),
+  // Con `verPaneles` (supervisor) el rail lee la URL (15/11/2026).
+  usePathname: () => "/inventario",
+  useSearchParams: () => new URLSearchParams(),
 }));
 
 vi.mock("@/lib/supabase/client", () => ({

@@ -103,8 +103,38 @@
   padding: 22px 0 26px;
 }
 
-.dash-rail-spacer {
-  flex: 1;
+/* La cápsula (15/11/2026, rediseño del rail): una pastilla vertical flotante,
+   casi negra en claro y una superficie elevada en oscuro (tokens `--lm-rail-*`
+   de theme.css), que abraza sus botones en vez de ocupar todo el alto. En
+   ventanas bajas se desplaza por dentro y nunca corta un botón sin dejarlo
+   alcanzable: `max-height` descuenta el padding del rail y la marca. */
+.dash-rail-capsule {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  box-sizing: border-box;
+  width: 56px;
+  padding: 8px;
+  border: 1px solid var(--lm-rail-border);
+  border-radius: 999px;
+  background: var(--lm-rail-bg);
+  box-shadow: var(--lm-rail-shadow);
+  max-height: calc(100vh - 100px);
+  overflow-y: auto;
+  scrollbar-width: none;
+}
+
+.dash-rail-capsule::-webkit-scrollbar {
+  display: none;
+}
+
+/* Línea fina que divide grupos dentro de la cápsula: aria-hidden en el JSX. */
+.dash-rail-sep {
+  flex: none;
+  width: 24px;
+  height: 1px;
+  background: rgb(var(--lm-rail-fg-rgb) / 0.15);
 }
 
 /* La placa SBK que encabeza el rail. La sombra la despega apenas del lienzo,
@@ -121,24 +151,24 @@
 .dash-rail-btn {
   display: grid;
   place-items: center;
-  width: 42px;
-  height: 42px;
+  flex: none;
+  width: 40px;
+  height: 40px;
   border: 0;
   border-radius: 999px;
   background: transparent;
-  color: var(--lm-muted);
+  color: rgb(var(--lm-rail-fg-rgb) / 0.7);
   cursor: pointer;
   text-decoration: none;
   /* transform en la lista: sin él, el scale del :active entra y sale a
      golpe seco en vez de hundirse y volver. */
-  transition: background 160ms ease, color 160ms ease, box-shadow 160ms ease,
+  transition: background 160ms ease, color 160ms ease,
     transform 120ms var(--lm-ease-out);
 }
 
 .dash-rail-btn:hover {
-  background: var(--lm-surface);
-  color: var(--lm-ink);
-  box-shadow: var(--lm-shadow-sm);
+  background: rgb(var(--lm-rail-fg-rgb) / 0.08);
+  color: rgb(var(--lm-rail-fg-rgb) / 0.95);
 }
 
 .dash-rail-btn:active {
@@ -146,9 +176,25 @@
 }
 
 .dash-rail-btn[data-active="true"] {
-  background: var(--lm-surface);
-  color: var(--lm-ink);
-  box-shadow: var(--lm-shadow-sm);
+  background: rgb(var(--lm-rail-fg-rgb) / 0.18);
+  color: rgb(var(--lm-rail-fg-rgb));
+}
+
+/* Anillo claro: sobre la cápsula oscura el foco por defecto no se ve. El
+   offset de 2 px cabe en el padding de 8 px de la cápsula, que recorta. */
+.dash-rail-btn:focus-visible {
+  outline: 2px solid rgb(var(--lm-rail-fg-rgb) / 0.85);
+  outline-offset: 2px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .dash-rail-btn {
+    transition: none;
+  }
+
+  .dash-rail-btn:active {
+    transform: none;
+  }
 }
 
 /* --------------------------------------------------------------------------

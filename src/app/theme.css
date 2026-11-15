@@ -66,6 +66,16 @@
      un paso más oscuro en oscuro. Siempre "se aleja del fondo". */
   --lm-ink-hover: #23252f;
 
+  /* La cápsula del rail (15/11/2026, rediseño del rail lateral). En claro es
+     casi negra, con íconos claros encima. `--lm-rail-fg-rgb` va como
+     componentes sueltos —igual que --lm-on-ink-rgb— para que cada regla
+     ponga su propia opacidad: inactivo .7, hover .08, activo .18, separador
+     .15. Blanco en los dos temas: la cápsula es oscura en ambos. */
+  --lm-rail-bg: #0c0d12;
+  --lm-rail-border: rgb(255 255 255 / 0.06);
+  --lm-rail-shadow: 0 10px 24px -12px rgba(12, 13, 18, 0.45), 0 2px 6px rgba(12, 13, 18, 0.18);
+  --lm-rail-fg-rgb: 255 255 255;
+
   /* Halo del borde superior del lienzo y velo de hover sobre él. Los dos son
      luz: en oscuro no se invierten, se apagan. */
   --lm-glow: #f2f3fa;
@@ -166,6 +176,14 @@
   /* Sobre --lm-ink (ahora casi blanco) va el lienzo, no blanco. */
   --lm-on-ink-rgb: 11 12 18;
   --lm-ink-hover: #dcdee9;
+
+  /* La cápsula del rail en oscuro: sobre un lienzo casi negro una cápsula
+     negra desaparece, así que sube a una superficie elevada (por encima de
+     --lm-surface), con un borde de 1 px y una sombra que la despegan. */
+  --lm-rail-bg: #20232f;
+  --lm-rail-border: rgb(255 255 255 / 0.1);
+  --lm-rail-shadow: 0 12px 28px -12px rgba(0, 0, 0, 0.8), 0 2px 6px rgba(0, 0, 0, 0.5);
+  --lm-rail-fg-rgb: 255 255 255;
 
   /* Rellenos sólidos: acá sí se separan de las variantes "-ink". Estos
      llevan --lm-on-fill (blanco) encima, así que siguen siendo oscuros

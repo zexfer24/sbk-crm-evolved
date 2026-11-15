@@ -78,8 +78,6 @@ export function DashboardView(props: DashboardViewProps) {
       panel="dashboard"
       titulo="Dashboard de ventas"
       ahora={ahora}
-      periodo={periodo}
-      vista={vista}
       controles={
         <>
           <ControlVista vista={vista} />

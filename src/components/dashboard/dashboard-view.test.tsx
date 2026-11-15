@@ -40,8 +40,11 @@ vi.mock("@/lib/supabase/client", () => ({
   createClient: () => fake.supabase,
 }));
 
+// `usePathname`/`useSearchParams`: con `verPaneles` el rail los lee (15/11/2026).
 vi.mock("next/navigation", () => ({
   useRouter: () => ({ push: vi.fn() }),
+  usePathname: () => "/recorrido",
+  useSearchParams: () => new URLSearchParams(),
 }));
 
 // `AppRail` (montado de verdad por `DashboardView`, sin mock) trae el aviso

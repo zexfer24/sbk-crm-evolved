@@ -1,7 +1,6 @@
 "use client";
 
 import type { ReactNode } from "react";
-import Link from "next/link";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { AlertTriangle, RefreshCw } from "lucide-react";
 import { AppRail } from "@/components/app-rail";
@@ -27,6 +26,10 @@ import "@/components/paneles/paneles.css";
  * En el teléfono el rail no se ve: la barra superior (`PanelBarraSuperior`, 15/11/2026)
  * va DENTRO del `main`, nunca como tercer hijo del grid.
  *
+ * Sin pestañas internas (15/11/2026): el menú —rail y barra superior— ya tiene
+ * una entrada por panel, y esas entradas arrastran el período y el canal
+ * (`lib/paneles/hrefs.ts`). Por eso el marco ya no recibe `periodo` ni `vista`.
+ *
  * Los controles de período y de vista NO guardan estado propio: cambian los
  * `searchParams` con `router.replace(..., { scroll: false })` y el servidor
  * vuelve a leer — la URL es la fuente de verdad y se puede compartir.
@@ -39,13 +42,6 @@ export function formatoUsd(valor: number | null | undefined): string {
   if (valor === null || valor === undefined || !Number.isFinite(valor)) return "—";
   return `$${valor.toLocaleString("es-VE", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 }
-
-const PESTANAS: { id: PanelId; etiqueta: string; ruta: string; conVista: boolean }[] = [
-  { id: "dashboard", etiqueta: "Dashboard", ruta: "/panel", conVista: true },
-  { id: "analiticas", etiqueta: "Analíticas", ruta: "/panel/analiticas", conVista: true },
-  // Asesores es por persona, no por canal: no arrastra la vista.
-  { id: "asesores", etiqueta: "Asesores", ruta: "/panel/asesores", conVista: false },
-];
 
 /** «viernes, 13 de noviembre»: hoy en hora de Caracas, sea cual sea la zona del navegador. */
 export function fechaLargaDeHoy(ahora: Date): string {
@@ -61,8 +57,6 @@ export function PanelMarco({
   panel,
   titulo,
   ahora,
-  periodo,
-  vista,
   controles,
   children,
 }: {
@@ -70,9 +64,6 @@ export function PanelMarco({
   titulo: string;
   /** El instante de la lectura (lo fija el servidor: cliente y servidor pintan la misma fecha). */
   ahora: Date;
-  /** Las pestañas lo arrastran para que cambiar de panel no pierda el período elegido. */
-  periodo: PeriodoId;
-  vista?: Vista;
   /** Slot de controles (período, vista…) a la derecha de la cabecera. */
   controles?: ReactNode;
   children: ReactNode;
@@ -92,23 +83,6 @@ export function PanelMarco({
               </div>
               {controles && <div className="pn-cab__controles">{controles}</div>}
             </header>
-
-            <nav className="pn-pestanas" aria-label="Paneles">
-              {PESTANAS.map((p) => {
-                const consulta = new URLSearchParams({ periodo });
-                if (p.conVista && vista) consulta.set("vista", vista);
-                return (
-                  <Link
-                    key={p.id}
-                    className="pn-pestana"
-                    href={`${p.ruta}?${consulta.toString()}`}
-                    {...(p.id === panel ? { "aria-current": "page" as const } : {})}
-                  >
-                    {p.etiqueta}
-                  </Link>
-                );
-              })}
-            </nav>
 
             {children}
           </div>

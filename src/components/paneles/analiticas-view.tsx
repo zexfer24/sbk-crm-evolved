@@ -90,8 +90,6 @@ export function AnaliticasView({
       panel="analiticas"
       titulo="Analíticas"
       ahora={ahora}
-      periodo={periodo}
-      vista={vista}
       controles={
         <>
           <ControlVista vista={vista} />

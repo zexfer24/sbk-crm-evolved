@@ -12,7 +12,12 @@ import AnaliticasLoading from "@/app/panel/analiticas/loading";
 import AsesoresLoading from "@/app/panel/asesores/loading";
 
 // El rail cierra sesión con el router, que fuera de Next no existe.
-vi.mock("next/navigation", () => ({ useRouter: () => ({ push: vi.fn(), refresh: vi.fn() }) }));
+// `usePathname`/`useSearchParams`: con `verPaneles` el rail los lee (15/11/2026).
+vi.mock("next/navigation", () => ({
+  useRouter: () => ({ push: vi.fn(), refresh: vi.fn() }),
+  usePathname: () => "/panel",
+  useSearchParams: () => new URLSearchParams(),
+}));
 
 // AppRail monta AssignmentNotifier (T6): abre su propio canal de realtime y
 // resuelve el agente actual con `auth.getSession()`. Sin esas dos piezas acá

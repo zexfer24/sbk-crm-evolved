@@ -1,6 +1,6 @@
 /** @vitest-environment jsdom */
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { render, screen, within } from "@testing-library/react";
+import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { BUSINESS_NAME } from "@/lib/brand";
 import { ControlPeriodo, ControlVista, PanelBloque, PanelMarco } from "@/components/paneles/panel-marco";
@@ -43,7 +43,7 @@ beforeEach(() => {
 describe("PanelMarco", () => {
   it("entrega AppRail y main como únicos hijos directos de .dash-frame", () => {
     const { container } = render(
-      <PanelMarco panel="dashboard" titulo="Dashboard de ventas" ahora={AHORA} periodo="hoy">
+      <PanelMarco panel="dashboard" titulo="Dashboard de ventas" ahora={AHORA}>
         <p>contenido</p>
       </PanelMarco>
     );
@@ -61,7 +61,7 @@ describe("PanelMarco", () => {
   // del `main`: si fuera hijo directo de `.dash-frame` rompería el grid.
   it("monta la navegación superior con su panel activo dentro del main, no en el grid", () => {
     const { container } = render(
-      <PanelMarco panel="dashboard" titulo="Dashboard de ventas" ahora={AHORA} periodo="hoy">
+      <PanelMarco panel="dashboard" titulo="Dashboard de ventas" ahora={AHORA}>
         <p>contenido</p>
       </PanelMarco>
     );
@@ -85,7 +85,7 @@ describe("PanelMarco", () => {
     ["asesores", "Asesores"],
   ] as const)("el panel «%s» marca su propia entrada en el rail y en la barra superior", (panel, titulo) => {
     render(
-      <PanelMarco panel={panel} titulo={titulo} ahora={AHORA} periodo="hoy">
+      <PanelMarco panel={panel} titulo={titulo} ahora={AHORA}>
         <p>contenido</p>
       </PanelMarco>
     );
@@ -95,7 +95,7 @@ describe("PanelMarco", () => {
 
   it("pone la fecha de hoy en Caracas como eyebrow y el título como h1", () => {
     render(
-      <PanelMarco panel="dashboard" titulo="Dashboard de ventas" ahora={AHORA} periodo="hoy">
+      <PanelMarco panel="dashboard" titulo="Dashboard de ventas" ahora={AHORA}>
         <p>contenido</p>
       </PanelMarco>
     );
@@ -106,47 +106,30 @@ describe("PanelMarco", () => {
   it("la fecha usa la zona de Caracas aunque el instante ya sea otro día en UTC", () => {
     // 23:30 en Caracas del 13/11 = 03:30 UTC del 14/11.
     render(
-      <PanelMarco panel="asesores" titulo="Asesores" ahora={new Date("2026-11-14T03:30:00Z")} periodo="hoy">
+      <PanelMarco panel="asesores" titulo="Asesores" ahora={new Date("2026-11-14T03:30:00Z")}>
         <p>contenido</p>
       </PanelMarco>
     );
     expect(screen.getByText(/viernes.*13.*noviembre/i)).toBeInTheDocument();
   });
 
-  it("las pestañas son enlaces a los tres paneles y solo la actual lleva aria-current", () => {
-    render(
-      <PanelMarco panel="analiticas" titulo="Analíticas" ahora={AHORA} periodo="hoy">
+  // 15/11/2026: las pestañas internas «Dashboard / Analíticas / Asesores» se
+  // quitaron; el menú (rail y barra superior) ya tiene una entrada por panel y
+  // ellas arrastran el período y el canal (`hrefsDePaneles`).
+  it("ya no hay pestañas internas de paneles", () => {
+    const { container } = render(
+      <PanelMarco panel="analiticas" titulo="Analíticas" ahora={AHORA}>
         <p>contenido</p>
       </PanelMarco>
     );
-    const nav = screen.getByRole("navigation", { name: "Paneles" });
-    const enlaces = within(nav).getAllByRole("link");
-    expect(enlaces.map((a) => a.textContent)).toEqual(["Dashboard", "Analíticas", "Asesores"]);
-    expect(enlaces.map((a) => a.getAttribute("href"))).toEqual([
-      "/panel?periodo=hoy",
-      "/panel/analiticas?periodo=hoy",
-      "/panel/asesores?periodo=hoy",
-    ]);
-    expect(enlaces.map((a) => a.getAttribute("aria-current"))).toEqual([null, "page", null]);
-  });
-
-  it("las pestañas arrastran el periodo elegido y la vista, si la hay", () => {
-    render(
-      <PanelMarco panel="dashboard" titulo="Dashboard de ventas" ahora={AHORA} periodo="7d" vista="online">
-        <p>contenido</p>
-      </PanelMarco>
-    );
-    const nav = screen.getByRole("navigation", { name: "Paneles" });
-    expect(within(nav).getByRole("link", { name: "Asesores" })).toHaveAttribute("href", "/panel/asesores?periodo=7d");
-    expect(within(nav).getByRole("link", { name: "Analíticas" })).toHaveAttribute(
-      "href",
-      "/panel/analiticas?periodo=7d&vista=online"
-    );
+    expect(container.querySelector('nav[aria-label="Paneles"]')).toBeNull();
+    expect(container.querySelector(".pn-pestanas, .pn-pestana")).toBeNull();
+    expect(screen.queryByRole("navigation", { name: "Paneles" })).toBeNull();
   });
 
   it("pinta el slot de controles y el contenido", () => {
     render(
-      <PanelMarco panel="dashboard" titulo="T" ahora={AHORA} periodo="hoy" controles={<button type="button">Un control</button>}>
+      <PanelMarco panel="dashboard" titulo="T" ahora={AHORA} controles={<button type="button">Un control</button>}>
         <p>contenido propio</p>
       </PanelMarco>
     );
