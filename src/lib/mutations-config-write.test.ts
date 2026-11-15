@@ -12,6 +12,7 @@ import {
   deletePlaybook,
   deleteSticker,
   deleteCatalogLink,
+  guardarMetaVenta,
   markSuggestionReviewed,
   setAgentActive,
   setAgentToolEnabled,
@@ -199,6 +200,9 @@ const CASES: {
   { name: "updateCatalogLink", table: "catalog_links", op: "update", denied: /supervisor o administrador/, run: (c) => updateCatalogLink(c, SUPERVISOR, "link-1", CATALOG_DRAFT) },
   { name: "deleteCatalogLink", table: "catalog_links", op: "delete", denied: /supervisor o administrador/, run: (c) => deleteCatalogLink(c, "link-1") },
   { name: "setCatalogLinkActive", table: "catalog_links", op: "update", denied: /supervisor o administrador/, run: (c) => setCatalogLinkActive(c, SUPERVISOR, "link-1", false) },
+  // Plan "Paneles" (13/11/2026): la meta diaria de un canal. Un `agent` no puede ni insertar ni
+  // actualizar `metas_venta` (RLS de supervisor/admin): el upsert que no devuelve fila no es un guardado.
+  { name: "guardarMetaVenta", table: "metas_venta", op: "upsert", denied: /supervisor o administrador/, run: (c) => guardarMetaVenta(c, "online", 2600, "2026-11-13") },
   { name: "deleteSticker", table: "stickers", op: "delete", denied: /subió el sticker o un supervisor/, run: (c) => deleteSticker(c, STICKER) },
   // Fuera de la lista original del plan, mismo defecto: `notes_update`/`notes_delete` exigen ser el autor o supervisor.
   { name: "updateNote", table: "notes", op: "update", denied: /autor de la nota o un supervisor/, run: (c) => updateNote(c, "n-1", "texto") },
@@ -252,6 +256,34 @@ describe.each(CASES)("$name — el guardado que la RLS ignora ya no pasa por bue
     const { client } = fakeSupabase({ rows: null, error: new Error("connection reset") });
 
     await expect(run(client)).rejects.toThrow(/connection reset/);
+  });
+});
+
+describe("guardarMetaVenta — plan Paneles, 13/11/2026", () => {
+  it("escribe (canal, vigente_desde, monto_usd) con upsert sobre la clave (canal, vigente_desde)", async () => {
+    const { client, writes } = fakeSupabase({ rows: [{ canal: "tienda" }] });
+
+    await guardarMetaVenta(client, "tienda", 1800.5, "2026-11-13");
+
+    const w = writes.find((x) => x.table === "metas_venta");
+    expect(w?.op).toBe("upsert");
+    expect(w?.payload).toEqual({ canal: "tienda", vigente_desde: "2026-11-13", monto_usd: 1800.5 });
+  });
+
+  it.each([0, -5, Number.NaN, Number.POSITIVE_INFINITY])("monto %s: error en español y NO llama a Supabase", async (monto) => {
+    const { client, writes } = fakeSupabase({ rows: [{ canal: "online" }] });
+
+    await expect(guardarMetaVenta(client, "online", monto, "2026-11-13")).rejects.toThrow(/meta.*mayor que cero/i);
+
+    expect(writes).toHaveLength(0);
+  });
+
+  it("un día que no es YYYY-MM-DD tampoco escribe", async () => {
+    const { client, writes } = fakeSupabase({ rows: [{ canal: "online" }] });
+
+    await expect(guardarMetaVenta(client, "online", 100, "13/11/2026")).rejects.toThrow(/día/i);
+
+    expect(writes).toHaveLength(0);
   });
 });
 

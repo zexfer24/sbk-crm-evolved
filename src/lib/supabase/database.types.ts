@@ -1400,6 +1400,38 @@ export type Database = {
           },
         ]
       }
+      metas_venta: {
+        Row: {
+          canal: string
+          created_at: string
+          created_by: string | null
+          monto_usd: number
+          vigente_desde: string
+        }
+        Insert: {
+          canal: string
+          created_at?: string
+          created_by?: string | null
+          monto_usd: number
+          vigente_desde: string
+        }
+        Update: {
+          canal?: string
+          created_at?: string
+          created_by?: string | null
+          monto_usd?: number
+          vigente_desde?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "metas_venta_created_by_fkey"
+            columns: ["created_by"]
+            isOneToOne: false
+            referencedRelation: "agents"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       model_pricing: {
         Row: {
           input_price_per_million: number

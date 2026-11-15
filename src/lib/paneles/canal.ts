@@ -11,3 +11,8 @@ export const VISTAS: { id: Vista; etiqueta: string; contexto: string }[] = [
   { id: "online", etiqueta: "Online", contexto: "Ventas armadas desde el chat por los asesores" },
   { id: "tienda", etiqueta: "En tienda", contexto: "Ventas del flujo de Inventario (caja)" },
 ];
+
+/** La vista que viene en `?vista=`; cualquier valor desconocido es "resumen". */
+export function vistaDesdeParam(valor: string | undefined): Vista {
+  return VISTAS.find((v) => v.id === valor)?.id ?? "resumen";
+}

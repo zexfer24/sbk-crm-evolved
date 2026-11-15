@@ -94,6 +94,12 @@ export interface PanelVentas {
   granularidad: "hora" | "dia" | "mes";
   canales: Record<CanalId, CanalVentas>;
   serie: { t: string; online: number; tienda: number; envios_online: number; envios_tienda: number }[];
+  /**
+   * Solo con `granularidad = 'dia'` (si no, `[]`): un elemento por día del
+   * rango, con 24 montos por hora de Caracas y canal. Alimenta la curva horaria
+   * de la proyección del Dashboard.
+   */
+  perfil_horario: { dia: string; online: number[]; tienda: number[] }[];
   personas: {
     agent_id: string;
     nombre: string;
@@ -179,6 +185,15 @@ export function parsePanelVentas(json: unknown): PanelVentas {
         tienda: numeroONull(f.tienda, `${ruta}.tienda`) ?? 0,
         envios_online: numero(f.envios_online, `${ruta}.envios_online`),
         envios_tienda: numero(f.envios_tienda, `${ruta}.envios_tienda`),
+      };
+    }),
+    perfil_horario: lista(o.perfil_horario, `${base}.perfil_horario`).map((fila, i) => {
+      const ruta = `${base}.perfil_horario[${i}]`;
+      const f = objeto(fila, ruta);
+      return {
+        dia: texto(f.dia, `${ruta}.dia`),
+        online: vectorDeNumeros(f.online, `${ruta}.online`, 24),
+        tienda: vectorDeNumeros(f.tienda, `${ruta}.tienda`, 24),
       };
     }),
     personas: lista(o.personas, `${base}.personas`).map((fila, i) => {

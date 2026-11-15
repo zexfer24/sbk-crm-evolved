@@ -1101,6 +1101,44 @@ export async function setDailySpendCap(supabase: SupabaseClient, agent: Agent, c
 }
 
 /**
+ * Cambia la meta diaria de un canal desde `dia` en adelante (plan "Paneles",
+ * 13/11/2026). `metas_venta` guarda HISTORIA: cada fila vale desde su
+ * `vigente_desde` hasta que otra posterior la reemplaza, así que escribir la
+ * de hoy no reescribe el avance de ayer; si ya existe una fila de ese mismo
+ * día, se sobrescribe (misma clave `canal, vigente_desde`).
+ *
+ * Solo supervisor/admin en RLS (insert y update). Un `agent` recibe 42501 en
+ * el insert del upsert; si alguna vez la política ignora la escritura sin
+ * error, `assertRowsAffected` lo convierte en el mensaje de siempre.
+ *
+ * El monto se valida ANTES de escribir (la tabla tiene `check (monto_usd > 0)`,
+ * pero un error de constraint en el toast no le dice nada al supervisor).
+ */
+export async function guardarMetaVenta(
+  supabase: SupabaseClient,
+  canal: "online" | "tienda",
+  montoUsd: number,
+  dia: string
+): Promise<void> {
+  if (!Number.isFinite(montoUsd) || montoUsd <= 0) {
+    throw new Error("La meta tiene que ser un monto en dólares mayor que cero.");
+  }
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(dia)) {
+    throw new Error("El día de la meta tiene que venir como AAAA-MM-DD.");
+  }
+
+  const { data, error } = await supabase
+    .from("metas_venta")
+    .upsert(
+      { canal, vigente_desde: dia, monto_usd: Math.round(montoUsd * 100) / 100 },
+      { onConflict: "canal,vigente_desde" }
+    )
+    .select("canal");
+  if (error) throw error;
+  assertRowsAffected(data);
+}
+
+/**
  * Interruptor "Reasignar si el asesor tarda" (T10b-5, plan "Seba encuentra…",
  * 29/9/2026, columnas de la migración 20260929020000). Solo supervisor/admin
  * en RLS (`agent_settings_update`).

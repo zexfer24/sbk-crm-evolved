@@ -21,6 +21,13 @@ const ventasValidas = () => ({
   serie: [
     { t: "2026-11-13T00:00:00-04:00", online: 100, tienda: 200, envios_online: 1, envios_tienda: 2 },
   ],
+  perfil_horario: [
+    {
+      dia: "2026-11-13",
+      online: Array.from({ length: 24 }, (_, h) => (h === 9 ? 100 : 0)),
+      tienda: Array.from({ length: 24 }, (_, h) => (h === 10 ? 200 : 0)),
+    },
+  ],
   personas: [
     { agent_id: "11111111-1111-1111-1111-111111111111", nombre: "Asesor 4", rol: "agent", canal: "tienda", ingresos: 700, envios: 7, unidades: 9 },
   ],
@@ -80,6 +87,36 @@ describe("parsePanelVentas", () => {
     expect(() => parsePanelVentas(sinCanales)).toThrow(/canales/);
     const granularidadRara = { ...ventasValidas(), granularidad: "semana" };
     expect(() => parsePanelVentas(granularidadRara)).toThrow(/granularidad/);
+  });
+
+  // 13/11/2026: el contrato ganó `perfil_horario` (24 montos por hora de Caracas,
+  // por canal y día). Alimenta la curva horaria de la proyección del Dashboard.
+  it("lee el perfil horario: un elemento por día con 24 montos por canal", () => {
+    const v = parsePanelVentas(ventasValidas());
+    expect(v.perfil_horario).toHaveLength(1);
+    expect(v.perfil_horario[0].dia).toBe("2026-11-13");
+    expect(v.perfil_horario[0].online).toHaveLength(24);
+    expect(v.perfil_horario[0].online[9]).toBe(100);
+    expect(v.perfil_horario[0].tienda[10]).toBe(200);
+  });
+
+  it("perfil_horario vacío es válido (granularidad hora o mes)", () => {
+    const j = { ...ventasValidas(), granularidad: "hora", perfil_horario: [] };
+    expect(parsePanelVentas(j).perfil_horario).toEqual([]);
+  });
+
+  it("perfil_horario convierte los numeric en string y exige 24 valores", () => {
+    const j = ventasValidas() as Record<string, any>;
+    j.perfil_horario[0].online[9] = "100.50";
+    expect(parsePanelVentas(j).perfil_horario[0].online[9]).toBe(100.5);
+
+    const corto = ventasValidas() as Record<string, any>;
+    corto.perfil_horario[0].tienda = [1, 2, 3];
+    expect(() => parsePanelVentas(corto)).toThrow(/perfil_horario.*24/);
+
+    const sinClave = ventasValidas() as Record<string, any>;
+    delete sinClave.perfil_horario;
+    expect(() => parsePanelVentas(sinClave)).toThrow(/perfil_horario/);
   });
 
   it("lanza si un número obligatorio no es número", () => {
