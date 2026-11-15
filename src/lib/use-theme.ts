@@ -1,6 +1,8 @@
 "use client";
 
 import { useCallback, useSyncExternalStore } from "react";
+import { flushSync } from "react-dom";
+import { cambiarConTransicionCircular } from "@/lib/theme-transition";
 
 /**
  * Tema claro u oscuro, con la preferencia del sistema como punto de partida.
@@ -113,31 +115,27 @@ function getServerSnapshot(): ThemePreference {
 export function useTheme() {
   const preference = useSyncExternalStore(subscribe, getSnapshot, getServerSnapshot);
 
-  const setPreference = useCallback((next: ThemePreference) => {
+  const setPreference = useCallback((next: ThemePreference, origen?: { x: number; y: number }) => {
     try {
       if (next === "system") localStorage.removeItem(THEME_STORAGE_KEY);
       else localStorage.setItem(THEME_STORAGE_KEY, next);
     } catch {
       // Sin almacenamiento el cambio vale para esta pestaña y nada más.
     }
+    // `data-theme` queda escrito de forma SÍNCRONA dentro del callback de la
+    // transición (el navegador toma la foto nueva al terminar); `flushSync`
+    // deja también al estado de React (etiqueta del botón) al día en ese mismo
+    // instante.
     const apply = () => {
       applyTheme(resolveTheme(next));
-      notify();
+      flushSync(notify);
     };
 
-    // Fundido cruzado del documento al cambiar el tema: sin él, toda la
-    // pantalla cambia de color en un fotograma, que es el golpe visual más
-    // brusco que da la app. Solo en el interruptor —los cambios que llegan
-    // del sistema o de otra pestaña no ocurren delante del usuario y no hay
-    // nada que amortiguar—, y solo si el navegador sabe hacerlo.
-    const doc = document as Document & { startViewTransition?: (cb: () => void) => unknown };
-    const reduceMotion =
-      typeof matchMedia === "function" && matchMedia("(prefers-reduced-motion: reduce)").matches;
-    if (doc.startViewTransition && !reduceMotion) {
-      doc.startViewTransition(apply);
-    } else {
-      apply();
-    }
+    // Solo en el interruptor —los cambios que llegan del sistema o de otra
+    // pestaña no ocurren delante del usuario y no hay nada que animar—. Desde
+    // el 15/11/2026 es la transición circular M22 desde el botón (ver
+    // `theme-transition.ts`); antes era un fundido cruzado del documento.
+    void cambiarConTransicionCircular(apply, origen);
   }, []);
 
   return { preference, resolved: resolveTheme(preference), setPreference };

@@ -87,6 +87,35 @@ describe.each(VARIANTES)("la cápsula del rail ($nombre)", ({ nombre, hoja }) =>
     expect(reglaCon(css, `.${nombre}-rail-btn:focus-visible`, new RegExp(`outline:\\s*2px\\s+solid\\s+${FG}`))).toBe(true);
   });
 
+  // 15/11/2026: la cápsula queda FIJA y centrada en vertical respecto de la
+  // VENTANA: al hacer scroll se queda en su lugar y la página corre por detrás.
+  // Sale del flujo, así que el <nav> sigue entregando un solo hijo al grid (la
+  // marca) y la columna del rail no cambia de alto.
+  it("está fija y centrada en la ventana, a 16 px del borde izquierdo, bajo los diálogos", async () => {
+    const regla = bloque(await leer(hoja), `.${nombre}-rail-capsule`);
+
+    expect(regla).toMatch(/position:\s*fixed\s*;/);
+    expect(regla).toMatch(/top:\s*50%\s*;/);
+    expect(regla).toMatch(/transform:\s*translateY\(-50%\)\s*;/);
+    expect(regla).toMatch(/left:\s*16px\s*;/);
+    // HeroUI pinta overlays en z-index 50 y los visores/menús de la bandeja en 60.
+    const z = /z-index:\s*(\d+)\s*;/.exec(regla);
+    expect(z, "la cápsula necesita z-index propio sobre el contenido").not.toBeNull();
+    expect(Number(z![1])).toBeGreaterThan(0);
+    expect(Number(z![1])).toBeLessThan(50);
+  });
+
+  it("deja la marca visible: la cápsula nunca sube hasta la placa SBK (max-height descuenta 72 px arriba y abajo)", async () => {
+    const regla = bloque(await leer(hoja), `.${nombre}-rail-capsule`);
+    expect(regla).toMatch(/max-height:\s*calc\(100vh\s*-\s*144px\)\s*;/);
+  });
+
+  it("la columna del rail es de 88 px: la cápsula (16 + 56) deja aire hasta el contenido", async () => {
+    const css = await leer(hoja);
+    const grid = nombre === "dash" ? ".dash-frame" : ".crm";
+    expect(bloque(css, grid)).toMatch(/grid-template-columns:\s*88px\s+minmax\(0,\s*1fr\)\s*;/);
+  });
+
   it("respeta prefers-reduced-motion en los botones del rail", async () => {
     const css = await leer(hoja);
     const bloques = [...css.matchAll(/@media\s*\(prefers-reduced-motion:\s*reduce\)\s*\{([\s\S]*?)\n\}/g)].map((m) => m[1]);
@@ -106,6 +135,11 @@ describe("el rail de la bandeja a ≤820 px", () => {
     expect(capsula).toMatch(/overflow-y:\s*hidden\s*;/);
     expect(capsula).toMatch(/max-height:\s*none\s*;/);
     expect(capsula).toMatch(/min-width:\s*0\s*;/);
+
+    // A ≤820 px NO se fija ni se centra: vuelve al flujo, dentro de la fila del rail.
+    expect(capsula).toMatch(/position:\s*static\s*;/);
+    expect(capsula).toMatch(/transform:\s*none\s*;/);
+    expect(capsula).not.toMatch(/position:\s*fixed/);
 
     const sep = bloque(css, ".crm-rail-sep", desde);
     expect(sep).toMatch(/width:\s*1px\s*;/);

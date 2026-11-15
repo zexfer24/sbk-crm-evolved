@@ -497,6 +497,16 @@
    theme-toggle.tsx: el servidor no sabe qué tema toca) y acá se muestra el
    que corresponde. El icono enseña a dónde lleva el botón: luna en claro,
    sol en oscuro. */
+/* Cambio de tema (M22, 15/11/2026): la animación la hace el `clip-path` circular
+   de `theme-transition.ts` sobre ::view-transition-new(root). Hay que apagar la
+   animación por defecto del navegador (fundido cruzado) y su mezcla, o el
+   círculo se vería sobre un fundido. */
+::view-transition-old(root),
+::view-transition-new(root) {
+  animation: none;
+  mix-blend-mode: normal;
+}
+
 .lm-icon-sun {
   display: none;
 }

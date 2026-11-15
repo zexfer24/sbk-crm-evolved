@@ -6,7 +6,7 @@
 
 .crm {
   display: grid;
-  grid-template-columns: 72px minmax(0, 1fr);
+  grid-template-columns: 88px minmax(0, 1fr);
   height: 100vh;
   overflow: hidden;
   background:
@@ -40,7 +40,23 @@
   border-radius: 999px;
   background: var(--lm-rail-bg);
   box-shadow: var(--lm-rail-shadow);
-  max-height: calc(100vh - 100px);
+  /* Fija y centrada en la VENTANA (15/11/2026, pedido del operador): al hacer
+     scroll se queda en su lugar y la página corre por detrás. Sale del flujo,
+     así que el <nav> sigue entregando un solo hijo al grid (la marca) y la
+     columna de 88 px no cambia de alto. 16 + 56 deja ~16 px hasta el
+     contenido (antes 8) y centra la cápsula con la placa SBK (columna de 88 px).
+     z-index por encima del contenido (sticky de 15 a 20) y
+     por debajo de drawers y modales (30 en Inventario, 50 en HeroUI, 60 en
+     visores y menús).
+     `max-height` descuenta 72 px arriba y abajo: la placa SBK (22 + 32 px de
+     alto) queda siempre libre aunque la ventana sea baja, y la cápsula se
+     desplaza por dentro. */
+  position: fixed;
+  top: 50%;
+  left: 16px;
+  transform: translateY(-50%);
+  z-index: 10;
+  max-height: calc(100vh - 144px);
   overflow-y: auto;
   scrollbar-width: none;
 }
@@ -2659,6 +2675,10 @@
      separadores verticales, que se desliza en horizontal si no caben (con los
      paneles son doce botones: más de lo que entra a 390 px). */
   .crm-rail-capsule {
+    /* A ≤820 px NO se fija ni se centra: vuelve al flujo, dentro de la fila del rail. */
+    position: static;
+    transform: none;
+    z-index: auto;
     flex-direction: row;
     width: auto;
     min-width: 0;
