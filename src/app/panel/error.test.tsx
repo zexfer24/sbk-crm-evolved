@@ -61,6 +61,19 @@ describe("PanelError", () => {
     spy.mockRestore();
   });
 
+  // 15/11/2026 (code-review): en el teléfono el rail no se ve; sin la barra
+  // superior, un fallo dejaba al supervisor sin forma de salir de /panel.
+  it("monta la navegación superior con Paneles activo, dentro del main", () => {
+    const { container } = render(<PanelError error={new Error("boom")} retry={vi.fn()} />);
+
+    const barra = container.querySelector("main header.dash-topbar");
+    expect(barra).not.toBeNull();
+    const nav = barra!.querySelector("nav.dash-nav");
+    expect(nav).not.toBeNull();
+    const activo = nav!.querySelector('[aria-current="page"]');
+    expect(activo).toHaveTextContent("Paneles");
+  });
+
   // Trampa del 9/9/2026: `.dash-frame` es un grid de dos columnas fijas
   // (`72px minmax(0, 1fr)`); un tercer hijo directo le roba la columna al
   // contenido y desarma la pantalla entera. `AppRail` ya se prueba solo en

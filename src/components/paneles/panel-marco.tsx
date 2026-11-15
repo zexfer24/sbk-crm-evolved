@@ -5,6 +5,7 @@ import Link from "next/link";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { AlertTriangle, RefreshCw } from "lucide-react";
 import { AppRail } from "@/components/app-rail";
+import { PanelBarraSuperior } from "@/components/paneles/panel-barra-superior";
 import { SlidingPills } from "@/components/sliding-pills";
 import { PERIODOS, type PeriodoId } from "@/lib/paneles/periodos";
 import { VISTAS, type Vista } from "@/lib/paneles/canal";
@@ -22,6 +23,9 @@ import "@/components/paneles/paneles.css";
  * del FRAGMENTO de CLAUDE.md, 9/9/2026: un tercer hijo le roba la columna al
  * contenido y desarma la pantalla; jsdom no lo ve, por eso `panel-marco.test`
  * cuenta los hijos).
+ *
+ * En el teléfono el rail no se ve: la barra superior (`PanelBarraSuperior`, 15/11/2026)
+ * va DENTRO del `main`, nunca como tercer hijo del grid.
  *
  * Los controles de período y de vista NO guardan estado propio: cambian los
  * `searchParams` con `router.replace(..., { scroll: false })` y el servidor
@@ -80,6 +84,7 @@ export function PanelMarco({
 
         <main className="dash-main">
           <div className="dash-content pn-contenido">
+            <PanelBarraSuperior />
             <header className="pn-cab">
               <div className="pn-cab__titulos">
                 <p className="pn-eyebrow">{fechaLargaDeHoy(ahora)}</p>

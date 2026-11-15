@@ -143,6 +143,19 @@ describe("panel/page.tsx (Dashboard)", () => {
     expect(fetchPanelConversaciones).toHaveBeenCalledTimes(1);
   });
 
+  // 15/11/2026 (code-review): con «Hoy» el período y «hoy» son el mismo rango, y
+  // con «Este año» el período y el año; pedirlos dos veces duplica una RPC pesada.
+  it.each(["hoy", "anio"])("?periodo=%s: período y su rango gemelo comparten UNA lectura (4 RPC, no 5)", async (valor) => {
+    const p = await propsDe("dashboard", { periodo: valor });
+    const r = p.rangos as ReturnType<typeof rangosDelDashboard>;
+    expect(fetchPanelVentas).toHaveBeenCalledTimes(4);
+    const gemelo = valor === "hoy" ? p.ventasHoy : p.ventasAnio;
+    expect(p.ventas).toBe(gemelo);
+    expect(marcaDe(p.ventas)).toBe(marca(r.periodo.desde, r.periodo.hasta));
+    expect(marcaDe(p.ventasPrevio)).toBe(marca(r.previo.desde, r.previo.hasta));
+    expect(marcaDe(p.ventasHistoria)).toBe(marca(r.historia.desde, r.historia.hasta));
+  });
+
   it("la historia de 40 días termina donde empieza hoy, y el año arranca el 1/1 de Caracas", async () => {
     const p = await propsDe("dashboard", {});
     const r = p.rangos as ReturnType<typeof rangosDelDashboard>;

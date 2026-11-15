@@ -27,7 +27,10 @@ vi.mock("next/navigation", () => ({
   usePathname: () => "/panel/analiticas",
   useSearchParams: () => new URLSearchParams("periodo=30d"),
 }));
-vi.mock("@/components/app-rail", () => ({ AppRail: () => <nav data-testid="rail" /> }));
+vi.mock("@/components/app-rail", () => ({
+  AppRail: () => <nav data-testid="rail" />,
+  AppTopNav: () => <nav data-testid="topnav" />,
+}));
 
 const AHORA = new Date("2026-11-15T12:00:00-04:00");
 const scrollIntoView = vi.fn();

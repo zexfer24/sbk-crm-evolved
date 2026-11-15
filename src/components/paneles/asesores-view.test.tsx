@@ -24,6 +24,7 @@ vi.mock("next/navigation", () => ({
 }));
 vi.mock("@/components/app-rail", () => ({
   AppRail: () => <nav data-testid="rail" />,
+  AppTopNav: () => <nav data-testid="topnav" />,
 }));
 
 // Viernes 13/11/2026, 3:00 p. m. en Caracas (L–V 08:00–18:00).

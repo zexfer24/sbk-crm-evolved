@@ -35,6 +35,7 @@ vi.mock("next/navigation", () => ({
 
 vi.mock("@/components/app-rail", () => ({
   AppRail: () => <nav data-testid="rail" />,
+  AppTopNav: () => <nav data-testid="topnav" />,
 }));
 
 const clienteFalso = { __cliente: true };

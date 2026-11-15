@@ -2,6 +2,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import { BUSINESS_NAME } from "@/lib/brand";
 import { ControlPeriodo, ControlVista, PanelBloque, PanelMarco } from "@/components/paneles/panel-marco";
 
 /**
@@ -25,6 +26,9 @@ vi.mock("next/navigation", () => ({
 vi.mock("@/components/app-rail", () => ({
   AppRail: ({ active, verPaneles }: { active: string; verPaneles?: boolean }) => (
     <nav data-testid="rail" data-active={active} data-ver-paneles={String(Boolean(verPaneles))} />
+  ),
+  AppTopNav: ({ active, verPaneles }: { active: string; verPaneles?: boolean }) => (
+    <nav data-testid="topnav" data-active={active} data-ver-paneles={String(Boolean(verPaneles))} />
   ),
 }));
 
@@ -50,6 +54,27 @@ describe("PanelMarco", () => {
     expect(frame!.children[1].tagName).toBe("MAIN");
     expect(screen.getByTestId("rail")).toHaveAttribute("data-active", "paneles");
     expect(screen.getByTestId("rail")).toHaveAttribute("data-ver-paneles", "true");
+  });
+
+  // 15/11/2026 (code-review): en el teléfono `.dash-rail` es `display: none`, así
+  // que sin la barra superior un supervisor no podía salir de /panel. Va DENTRO
+  // del `main`: si fuera hijo directo de `.dash-frame` rompería el grid.
+  it("monta la navegación superior con Paneles activo dentro del main, no en el grid", () => {
+    const { container } = render(
+      <PanelMarco panel="dashboard" titulo="Dashboard de ventas" ahora={AHORA} periodo="hoy">
+        <p>contenido</p>
+      </PanelMarco>
+    );
+    const barra = container.querySelector("header.dash-topbar");
+    expect(barra).not.toBeNull();
+    expect(container.querySelector(".dash-frame > .dash-topbar")).toBeNull();
+    expect(container.querySelector("main")!.contains(barra)).toBe(true);
+    const nav = screen.getByTestId("topnav");
+    expect(barra!.contains(nav)).toBe(true);
+    expect(nav).toHaveAttribute("data-active", "paneles");
+    expect(nav).toHaveAttribute("data-ver-paneles", "true");
+    expect(barra).toHaveTextContent(BUSINESS_NAME);
+    expect(container.querySelector(".dash-frame")!.childElementCount).toBe(2);
   });
 
   it("pone la fecha de hoy en Caracas como eyebrow y el título como h1", () => {

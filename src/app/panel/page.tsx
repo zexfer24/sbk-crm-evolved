@@ -33,6 +33,11 @@ export default async function PanelDashboardPage({ searchParams }: { searchParam
 
   const ahora = new Date();
   const rangos = rangosDelDashboard(periodo, ahora);
+  // 15/11/2026 (code-review): con «Hoy» el período y «hoy» son el mismo rango, y
+  // con «Este año» el período y el año; la misma promesa sirve a las dos props.
+  const mismoRango = (a: { desde: Date; hasta: Date }, b: { desde: Date; hasta: Date }) =>
+    a.desde.getTime() === b.desde.getTime() && a.hasta.getTime() === b.hasta.getTime();
+  const ventasDelPeriodo = fetchPanelVentas(supabase, rangos.periodo.desde, rangos.periodo.hasta);
   const [
     ventas,
     ventasPrevio,
@@ -45,11 +50,15 @@ export default async function PanelDashboardPage({ searchParams }: { searchParam
     conversaciones,
     tasaBcv,
   ] = await Promise.all([
-    fetchPanelVentas(supabase, rangos.periodo.desde, rangos.periodo.hasta),
+    ventasDelPeriodo,
     fetchPanelVentas(supabase, rangos.previo.desde, rangos.previo.hasta),
-    fetchPanelVentas(supabase, rangos.hoy.desde, rangos.hoy.hasta),
+    mismoRango(rangos.periodo, rangos.hoy)
+      ? ventasDelPeriodo
+      : fetchPanelVentas(supabase, rangos.hoy.desde, rangos.hoy.hasta),
     fetchPanelVentas(supabase, rangos.historia.desde, rangos.historia.hasta),
-    fetchPanelVentas(supabase, rangos.anio.desde, rangos.anio.hasta),
+    mismoRango(rangos.periodo, rangos.anio)
+      ? ventasDelPeriodo
+      : fetchPanelVentas(supabase, rangos.anio.desde, rangos.anio.hasta),
     fetchPanelVentasActivas(supabase),
     fetchMetasVenta(supabase),
     fetchBusinessHours(supabase),

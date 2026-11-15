@@ -4,6 +4,7 @@ import { useEffect } from "react";
 import { AlertTriangle, RefreshCw } from "lucide-react";
 import { Button } from "@heroui/react";
 import { AppRail } from "@/components/app-rail";
+import { PanelBarraSuperior } from "@/components/paneles/panel-barra-superior";
 // Igual que `ventas/error.tsx` y `agent-control/error.tsx` (19/9/2026): `.dash`,
 // `.dash-frame` y `.dash-empty*` los define esta hoja, y el componente de vista
 // que la importaba NO se monta cuando la página lanza antes de renderizarlo.
@@ -41,6 +42,8 @@ export default function PanelError({
 
         <main className="dash-main">
           <div className="dash-content">
+            {/* 15/11/2026: en el teléfono el rail no se ve; sin esto no hay cómo salir. */}
+            <PanelBarraSuperior />
             <div className="dash-empty" role="alert">
               <AlertTriangle size={28} aria-hidden="true" />
               <p className="dash-empty-title">Los paneles no pudieron cargar</p>
