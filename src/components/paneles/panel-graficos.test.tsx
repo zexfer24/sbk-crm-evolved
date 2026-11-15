@@ -1,6 +1,6 @@
 /** @vitest-environment jsdom */
-import { describe, expect, it } from "vitest";
-import { fireEvent, render, screen } from "@testing-library/react";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { act, fireEvent, render, screen } from "@testing-library/react";
 import { Anillo, BarraApilada100, BarrasVerticales, LineaArea, Sparkline, type SerieGrafico } from "./panel-graficos";
 
 /**
@@ -267,5 +267,113 @@ describe("BarraApilada100", () => {
 
     expect(container.innerHTML).not.toMatch(/NaN/);
     expect(screen.getByText(/sin datos/i)).toBeInTheDocument();
+  });
+});
+
+/**
+ * 15/11/2026: los gráficos de línea y de barras dibujaban sobre un `viewBox`
+ * fijo de 600 px que se estiraba al contenedor, y el texto de los ejes
+ * escalaba con él: medido con Playwright, los rótulos medían 30 px de alto a
+ * 1440 px y 8 px a 390 px, contra los 11 px del resto de la interfaz. Ahora el
+ * `viewBox` mide lo mismo que el contenedor (1 unidad = 1 px de pantalla) y el
+ * texto y los trazos conservan su tamaño. jsdom no calcula layout ni trae
+ * `ResizeObserver`: este sustituto deja al test decidir qué ancho "midió".
+ */
+describe("el viewBox sigue al ancho medido del contenedor", () => {
+  const observadores: Array<(entradas: unknown[]) => void> = [];
+
+  class FakeResizeObserver {
+    constructor(callback: (entradas: unknown[]) => void) {
+      observadores.push(callback);
+    }
+    observe() {}
+    unobserve() {}
+    disconnect() {}
+  }
+
+  const medir = (ancho: number) =>
+    act(() => {
+      for (const callback of observadores) callback([{ contentRect: { width: ancho } }]);
+    });
+
+  beforeEach(() => {
+    observadores.length = 0;
+    vi.stubGlobal("ResizeObserver", FakeResizeObserver);
+  });
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  const viewBoxDe = (container: HTMLElement) => container.querySelector("svg.pn-svg")?.getAttribute("viewBox");
+  const etiquetasX = (container: HTMLElement) => Array.from(container.querySelectorAll(".pn-eje-x")).map((t) => t.textContent);
+
+  const dias = Array.from({ length: 30 }, (_, i) => ({ etiqueta: `${i + 1} oct`, valores: [i * 10] }));
+  const meses = ["ene", "feb", "mar", "abr", "may", "jun", "jul", "ago", "sep", "oct", "nov", "dic"].map((etiqueta, i) => ({
+    etiqueta,
+    valores: [(i + 1) * 100],
+  }));
+
+  it("LineaArea: el viewBox toma el ancho medido y el alto fijo", () => {
+    const { container } = render(<LineaArea puntos={dias} series={[ONLINE]} ariaLabel="x" alto={180} />);
+    medir(1000);
+    expect(viewBoxDe(container)).toBe("0 0 1000 180");
+    medir(390);
+    expect(viewBoxDe(container)).toBe("0 0 390 180");
+  });
+
+  it("BarrasVerticales: el viewBox toma el ancho medido y el alto fijo", () => {
+    const { container } = render(<BarrasVerticales categorias={meses} series={[ONLINE]} ariaLabel="x" alto={200} />);
+    medir(1440);
+    expect(viewBoxDe(container)).toBe("0 0 1440 200");
+  });
+
+  it("sin medida (SSR, jsdom) cae a un ancho inicial razonable", () => {
+    const { container } = render(<LineaArea puntos={dias} series={[ONLINE]} ariaLabel="x" alto={180} />);
+    expect(viewBoxDe(container)).toBe("0 0 600 180");
+  });
+
+  it("un ancho medido de 0 (contenedor oculto) no deja un viewBox degenerado", () => {
+    const { container } = render(<LineaArea puntos={dias} series={[ONLINE]} ariaLabel="x" />);
+    medir(0);
+    expect(viewBoxDe(container)).not.toMatch(/ 0 \d+$/);
+    expect(container.innerHTML).not.toMatch(/NaN|Infinity/);
+  });
+
+  it("LineaArea: a 390 px los rótulos del eje X no se encimen (cada uno cabe en su tramo)", () => {
+    const { container } = render(<LineaArea puntos={dias} series={[ONLINE]} formato={usd} ariaLabel="x" />);
+    medir(390);
+    const rotulos = etiquetasX(container);
+    expect(rotulos.length).toBeGreaterThanOrEqual(2);
+    // "17 oct" mide ~6 caracteres de 6,6 px: ni el doble de rótulos de los que caben.
+    expect(rotulos.length * 40).toBeLessThanOrEqual(390);
+  });
+
+  it("LineaArea: a 1440 px caben más rótulos que a 390", () => {
+    const { container } = render(<LineaArea puntos={dias} series={[ONLINE]} formato={usd} ariaLabel="x" />);
+    medir(390);
+    const angosto = etiquetasX(container).length;
+    medir(1440);
+    expect(etiquetasX(container).length).toBeGreaterThan(angosto);
+  });
+
+  it("BarrasVerticales: con 12 meses a 1440 px caben todos los rótulos", () => {
+    const { container } = render(<BarrasVerticales categorias={meses} series={[ONLINE]} formato={usd} ariaLabel="x" />);
+    medir(1440);
+    expect(etiquetasX(container)).toHaveLength(12);
+  });
+
+  it("BarrasVerticales: con 12 meses a 390 px no se muestran todos (se encimarían)", () => {
+    const { container } = render(<BarrasVerticales categorias={meses} series={[ONLINE]} formato={usd} ariaLabel="x" />);
+    medir(390);
+    expect(etiquetasX(container).length).toBeLessThan(12);
+  });
+
+  it("el cursor por puntero sigue funcionando con el ancho medido", () => {
+    const { container } = render(<LineaArea puntos={dias} series={[ONLINE]} formato={usd} ariaLabel="x" />);
+    medir(800);
+    const zona = container.querySelector(".pn-zona-cursor") as SVGRectElement;
+    zona.getBoundingClientRect = () => ({ left: 0, right: 100, top: 0, bottom: 10, width: 100, height: 10, x: 0, y: 0, toJSON: () => ({}) });
+    fireEvent.pointerMove(zona, { clientX: 100 });
+    expect(screen.getByRole("tooltip")).toHaveTextContent("30 oct");
   });
 });

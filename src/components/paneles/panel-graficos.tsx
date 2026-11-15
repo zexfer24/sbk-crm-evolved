@@ -1,7 +1,8 @@
 "use client";
 
-import { useState, type KeyboardEvent, type PointerEvent, type ReactNode } from "react";
-import { gridValuesFor } from "@/lib/chart-scale";
+import { useState, type KeyboardEvent, type PointerEvent, type ReactNode, type RefObject } from "react";
+import { anchoDeEtiqueta, gridValuesFor, pasoDeEtiquetas } from "@/lib/chart-scale";
+import { useAnchoMedido } from "@/components/paneles/use-ancho-medido";
 
 /**
  * Primitivas de gráficos SVG de los tres paneles (plan "Paneles", 13/11/2026).
@@ -23,6 +24,14 @@ import { gridValuesFor } from "@/lib/chart-scale";
  *
  * jsdom no calcula layout: el mapeo puntero → punto usa el rectángulo de la
  * zona sensible, y un rectángulo de ancho 0 se ignora en vez de dar NaN.
+ *
+ * Píxeles reales (15/11/2026): las barras y la línea dibujan sobre un `viewBox`
+ * del MISMO ancho que su contenedor (`useAnchoMedido`), no sobre uno fijo de
+ * 600 que el navegador estiraba. Con el viewBox fijo el texto de los ejes
+ * medía 30 px de alto a 1440 px y 8 px a 390 px (medido con Playwright, contra
+ * los 11 px del resto de la interfaz) y los trazos se engordaban. Ahora 1
+ * unidad del SVG = 1 px de pantalla; cuántos rótulos del eje X caben y el
+ * margen de los rótulos del eje Y salen del ancho medido y del texto real.
  */
 
 export interface SerieGrafico {
@@ -32,9 +41,7 @@ export interface SerieGrafico {
   color: string;
 }
 
-const ANCHO = 600;
-const MARGEN_IZQ = 44;
-const MARGEN_DER = 10;
+const MARGEN_DER_MIN = 10;
 const MARGEN_SUP = 10;
 const MARGEN_INF = 24;
 
@@ -48,6 +55,20 @@ function picoBonito(max: number): number {
   const n = max / potencia;
   const paso = n <= 1 ? 1 : n <= 2 ? 2 : n <= 2.5 ? 2.5 : n <= 5 ? 5 : 10;
   return paso * potencia;
+}
+
+/**
+ * Márgenes laterales según los rótulos que de verdad hay que pintar: el eje Y
+ * necesita lo que mide su rótulo más ancho ("$12.500" no cabe en 44 px) y, en
+ * una línea, los rótulos del eje X van centrados en el primer y el último
+ * punto, así que sobresalen media etiqueta hacia cada lado.
+ */
+function margenesDe(pico: number, formato: (n: number) => string, etiquetasX: string[], centradasEnLosBordes: boolean) {
+  const anchoY = Math.max(0, ...gridValuesFor(pico).map((v) => anchoDeEtiqueta(formato(v))));
+  const mitadX = Math.max(0, ...etiquetasX.map((e) => anchoDeEtiqueta(e))) / 2;
+  const izq = Math.ceil(Math.max(32, anchoY + 10, centradasEnLosBordes ? mitadX + 2 : 0));
+  const der = Math.ceil(Math.max(MARGEN_DER_MIN, centradasEnLosBordes ? mitadX + 2 : 0));
+  return { izq, der };
 }
 
 // ---------------------------------------------------------------------------
@@ -132,6 +153,7 @@ function MarcoGrafico({
   posicion,
   onKeyDown,
   onSoltar,
+  lienzoRef,
   children,
 }: {
   ariaLabel: string;
@@ -140,11 +162,13 @@ function MarcoGrafico({
   posicion: number;
   onKeyDown: (evento: KeyboardEvent<HTMLElement>) => void;
   onSoltar: () => void;
+  /** El elemento cuyo ancho mide `useAnchoMedido`. */
+  lienzoRef: RefObject<HTMLDivElement | null>;
   children: ReactNode;
 }) {
   return (
     <div className="pn-graf" onPointerLeave={onSoltar}>
-      <div className="pn-graf__lienzo" role="img" aria-label={ariaLabel} tabIndex={0} onKeyDown={onKeyDown}>
+      <div ref={lienzoRef} className="pn-graf__lienzo" role="img" aria-label={ariaLabel} tabIndex={0} onKeyDown={onKeyDown}>
         {children}
       </div>
       {lectura && <Tooltip lectura={lectura} posicion={posicion} />}
@@ -204,15 +228,27 @@ export function Sparkline({
 // Ejes compartidos por barras y líneas
 // ---------------------------------------------------------------------------
 
-function Rejilla({ pico, plotW, plotH, formato }: { pico: number; plotW: number; plotH: number; formato: (n: number) => string }) {
+function Rejilla({
+  pico,
+  izq,
+  plotW,
+  plotH,
+  formato,
+}: {
+  pico: number;
+  izq: number;
+  plotW: number;
+  plotH: number;
+  formato: (n: number) => string;
+}) {
   return (
     <g className="pn-rejilla" aria-hidden="true">
       {gridValuesFor(pico).map((valor) => {
         const y = MARGEN_SUP + plotH - (valor / pico) * plotH;
         return (
           <g key={valor}>
-            <line x1={MARGEN_IZQ} x2={MARGEN_IZQ + plotW} y1={y} y2={y} />
-            <text x={MARGEN_IZQ - 6} y={y + 3.5} textAnchor="end">
+            <line x1={izq} x2={izq + plotW} y1={y} y2={y} />
+            <text x={izq - 6} y={y + 3.5} textAnchor="end">
               {formato(valor)}
             </text>
           </g>
@@ -242,14 +278,9 @@ export function BarrasVerticales({
   alto?: number;
 }) {
   const { activa, setActiva, alTeclear, soltar } = useCursor(categorias.length);
+  const { ref: lienzoRef, ancho } = useAnchoMedido();
 
-  const plotW = ANCHO - MARGEN_IZQ - MARGEN_DER;
-  const plotH = alto - MARGEN_SUP - MARGEN_INF;
   const n = Math.max(categorias.length, 1);
-  const banda = plotW / n;
-  const relleno = banda * 0.22;
-  const interior = banda - relleno;
-  const anchoBarra = apiladas ? interior : interior / Math.max(series.length, 1);
 
   const valorDe = (categoria: { valores: number[] }, i: number) => Math.max(0, categoria.valores[i] ?? 0);
   const totalDe = (categoria: { valores: number[] }) => series.reduce((suma, _s, i) => suma + valorDe(categoria, i), 0);
@@ -259,8 +290,16 @@ export function BarrasVerticales({
     0
   );
   const pico = picoBonito(maximo);
+  const { izq, der } = margenesDe(pico, formato, [], false);
+  const plotW = ancho - izq - der;
+  const plotH = alto - MARGEN_SUP - MARGEN_INF;
+  const banda = plotW / n;
+  const relleno = banda * 0.22;
+  const interior = banda - relleno;
+  const anchoBarra = apiladas ? interior : interior / Math.max(series.length, 1);
   const altoDe = (v: number) => (v / pico) * plotH;
-  const pasoEtiqueta = Math.max(1, Math.ceil(categorias.length / 8));
+  // Cada rótulo va centrado en su banda: caben los que entren en `banda` px.
+  const pasoEtiqueta = pasoDeEtiquetas(banda, Math.max(0, ...categorias.map((c) => anchoDeEtiqueta(c.etiqueta))));
 
   let lectura: Lectura | null = null;
   if (activa !== null && categorias[activa]) {
@@ -274,14 +313,14 @@ export function BarrasVerticales({
     if (apiladas) lineas.push({ id: "total", nombre: "Total", color: null, texto: formato(totalDe(categoria)), destacada: true });
     lectura = { titulo: categoria.etiqueta, lineas };
   }
-  const posicion = activa === null ? 50 : ((MARGEN_IZQ + banda * (activa + 0.5)) / ANCHO) * 100;
+  const posicion = activa === null ? 50 : ((izq + banda * (activa + 0.5)) / ancho) * 100;
 
   return (
-    <MarcoGrafico ariaLabel={ariaLabel} lectura={lectura} posicion={posicion} onKeyDown={alTeclear} onSoltar={soltar}>
-      <svg className="pn-svg" viewBox={`0 0 ${ANCHO} ${alto}`} aria-hidden="true">
-        <Rejilla pico={pico} plotW={plotW} plotH={plotH} formato={formato} />
+    <MarcoGrafico ariaLabel={ariaLabel} lectura={lectura} posicion={posicion} onKeyDown={alTeclear} onSoltar={soltar} lienzoRef={lienzoRef}>
+      <svg className="pn-svg" viewBox={`0 0 ${ancho} ${alto}`} aria-hidden="true">
+        <Rejilla pico={pico} izq={izq} plotW={plotW} plotH={plotH} formato={formato} />
         {categorias.map((categoria, c) => {
-          const x0 = MARGEN_IZQ + c * banda;
+          const x0 = izq + c * banda;
           let acumulado = 0;
           return (
             <g key={`${categoria.etiqueta}-${c}`}>
@@ -351,9 +390,8 @@ export function LineaArea({
   alto?: number;
 }) {
   const { activa, setActiva, alTeclear, soltar } = useCursor(puntos.length);
+  const { ref: lienzoRef, ancho } = useAnchoMedido();
 
-  const plotW = ANCHO - MARGEN_IZQ - MARGEN_DER;
-  const plotH = alto - MARGEN_SUP - MARGEN_INF;
   const n = puntos.length;
 
   const valorDe = (punto: { valores: number[] }, i: number) => punto.valores[i] ?? 0;
@@ -363,13 +401,20 @@ export function LineaArea({
     ...(previa ? previa.valores : [])
   );
   const pico = picoBonito(maximo);
+  const { izq, der } = margenesDe(pico, formato, puntos.map((p) => p.etiqueta), true);
+  const plotW = ancho - izq - der;
+  const plotH = alto - MARGEN_SUP - MARGEN_INF;
 
-  const xDe = (i: number) => (n <= 1 ? MARGEN_IZQ + plotW / 2 : MARGEN_IZQ + (i / (n - 1)) * plotW);
+  const xDe = (i: number) => (n <= 1 ? izq + plotW / 2 : izq + (i / (n - 1)) * plotW);
   const yDe = (v: number) => MARGEN_SUP + plotH - (Math.max(0, v) / pico) * plotH;
   const trazo = (valores: number[]) =>
     valores.map((v, i) => `${i === 0 ? "M" : "L"}${xDe(i).toFixed(1)} ${yDe(v).toFixed(1)}`).join(" ");
   const base = MARGEN_SUP + plotH;
-  const pasoEtiqueta = Math.max(1, Math.ceil(n / 7));
+  // Los rótulos van centrados en cada punto: entre dos consecutivos hay `plotW / (n - 1)` px.
+  const pasoEtiqueta = pasoDeEtiquetas(
+    n <= 1 ? plotW : plotW / (n - 1),
+    Math.max(0, ...puntos.map((p) => anchoDeEtiqueta(p.etiqueta)))
+  );
 
   function elegirPorPuntero(evento: PointerEvent<SVGRectElement>) {
     const caja = evento.currentTarget.getBoundingClientRect();
@@ -390,12 +435,12 @@ export function LineaArea({
     if (previa) lineas.push({ id: "previa", nombre: previa.nombre, color: null, texto: formato(previa.valores[activa] ?? 0) });
     lectura = { titulo: punto.etiqueta, lineas };
   }
-  const posicion = activa === null ? 50 : (xDe(activa) / ANCHO) * 100;
+  const posicion = activa === null ? 50 : (xDe(activa) / ancho) * 100;
 
   return (
-    <MarcoGrafico ariaLabel={ariaLabel} lectura={lectura} posicion={posicion} onKeyDown={alTeclear} onSoltar={soltar}>
-      <svg className="pn-svg" viewBox={`0 0 ${ANCHO} ${alto}`} aria-hidden="true">
-        <Rejilla pico={pico} plotW={plotW} plotH={plotH} formato={formato} />
+    <MarcoGrafico ariaLabel={ariaLabel} lectura={lectura} posicion={posicion} onKeyDown={alTeclear} onSoltar={soltar} lienzoRef={lienzoRef}>
+      <svg className="pn-svg" viewBox={`0 0 ${ancho} ${alto}`} aria-hidden="true">
+        <Rejilla pico={pico} izq={izq} plotW={plotW} plotH={plotH} formato={formato} />
         {puntos.map((punto, i) =>
           i % pasoEtiqueta === 0 ? (
             <text key={`${punto.etiqueta}-${i}`} className="pn-eje-x" x={xDe(i)} y={alto - 6} textAnchor="middle">
@@ -454,7 +499,7 @@ export function LineaArea({
 
         <rect
           className="pn-zona-cursor"
-          x={MARGEN_IZQ}
+          x={izq}
           y={MARGEN_SUP}
           width={plotW}
           height={plotH}

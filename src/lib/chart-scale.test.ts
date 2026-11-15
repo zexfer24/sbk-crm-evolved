@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { gridValuesFor } from "@/lib/chart-scale";
+import { anchoDeEtiqueta, gridValuesFor, pasoDeEtiquetas } from "@/lib/chart-scale";
 
 describe("gridValuesFor", () => {
   /**
@@ -36,5 +36,29 @@ describe("gridValuesFor", () => {
         expect(Number.isInteger(value)).toBe(true);
       }
     }
+  });
+});
+
+describe("anchoDeEtiqueta y pasoDeEtiquetas (15/11/2026)", () => {
+  it("el ancho estimado crece con la cantidad de caracteres (fuente mono de 11 px)", () => {
+    expect(anchoDeEtiqueta("ene")).toBeLessThan(anchoDeEtiqueta("17 oct"));
+    expect(anchoDeEtiqueta("")).toBe(0);
+  });
+
+  it("si la etiqueta cabe entre un punto y el siguiente, se muestran todas (paso 1)", () => {
+    expect(pasoDeEtiquetas(115, anchoDeEtiqueta("ene"))).toBe(1);
+  });
+
+  it("si no cabe, salta de a las que hagan falta para que no se encimen", () => {
+    const ancho = anchoDeEtiqueta("17 oct");
+    const paso = pasoDeEtiquetas(10, ancho);
+    expect(paso).toBeGreaterThan(1);
+    expect(paso * 10).toBeGreaterThanOrEqual(ancho);
+  });
+
+  it("una separación inválida (0, negativa o infinita) no revienta: paso 1", () => {
+    expect(pasoDeEtiquetas(0, 40)).toBe(1);
+    expect(pasoDeEtiquetas(-5, 40)).toBe(1);
+    expect(pasoDeEtiquetas(Number.NaN, 40)).toBe(1);
   });
 });

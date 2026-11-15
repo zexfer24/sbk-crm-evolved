@@ -1,7 +1,8 @@
 "use client";
 
 import { useState, type KeyboardEvent, type PointerEvent } from "react";
-import { gridValuesFor } from "@/lib/chart-scale";
+import { anchoDeEtiqueta, gridValuesFor, pasoDeEtiquetas } from "@/lib/chart-scale";
+import { useAnchoMedido } from "@/components/paneles/use-ancho-medido";
 import { formatoUsd } from "@/components/paneles/panel-marco";
 
 /**
@@ -13,11 +14,14 @@ import { formatoUsd } from "@/components/paneles/panel-marco";
  * Mismas reglas de los gráficos de `panel-graficos.tsx`: `role="img"` con el
  * resumen en texto, lectura exacta por puntero y por teclado (flechas, Inicio,
  * Fin, Esc) y colores solo por `var(--pn-hero-*)`.
+ *
+ * Píxeles reales (15/11/2026): igual que `LineaArea`, dibuja sobre un `viewBox`
+ * del mismo ancho que su contenedor (`useAnchoMedido`) y no sobre uno fijo de
+ * 600 estirado, que escalaba el texto de los ejes (30 px de alto a 1440 px, 8 px
+ * a 390 px) y engordaba los trazos. Cuántas horas se rotulan sale del ancho.
  */
 
-const ANCHO = 600;
 const ALTO = 170;
-const MARGEN_IZQ = 46;
 const MARGEN_DER = 10;
 const MARGEN_SUP = 10;
 const MARGEN_INF = 24;
@@ -42,14 +46,20 @@ export function GraficoRitmo({
   ariaLabel: string;
 }) {
   const [activa, setActiva] = useState<number | null>(null);
+  const { ref: lienzoRef, ancho } = useAnchoMedido();
 
   const horas = Array.from({ length: Math.max(hastaHora - desdeHora + 1, 1) }, (_, i) => desdeHora + i);
-  const plotW = ANCHO - MARGEN_IZQ - MARGEN_DER;
-  const plotH = ALTO - MARGEN_SUP - MARGEN_INF;
 
   const maximo = Math.max(...horas.map((h) => meta[h] ?? 0), ...real, 1);
   const pico = Math.ceil(maximo / 100) * 100 || 1;
-  const xDe = (h: number) => MARGEN_IZQ + (horas.length <= 1 ? plotW / 2 : ((h - desdeHora) / (horas.length - 1)) * plotW);
+  const etiquetaY = (valor: number) => formatoUsd(valor).replace(",00", "");
+  const anchoY = Math.max(0, ...gridValuesFor(pico).map((v) => anchoDeEtiqueta(etiquetaY(v))));
+  const margenIzq = Math.ceil(Math.max(32, anchoY + 10));
+  const plotW = ancho - margenIzq - MARGEN_DER;
+  const plotH = ALTO - MARGEN_SUP - MARGEN_INF;
+  // Rótulos de hora ("08") centrados en cada hora: caben los que entren entre dos horas consecutivas.
+  const pasoHoras = pasoDeEtiquetas(horas.length <= 1 ? plotW : plotW / (horas.length - 1), anchoDeEtiqueta("00"));
+  const xDe = (h: number) => margenIzq + (horas.length <= 1 ? plotW / 2 : ((h - desdeHora) / (horas.length - 1)) * plotW);
   const yDe = (v: number) => MARGEN_SUP + plotH - (Math.max(0, v) / pico) * plotH;
 
   const trazo = (valores: { h: number; v: number }[]) =>
@@ -106,19 +116,19 @@ export function GraficoRitmo({
 
   return (
     <div className="pd-ritmo" onPointerLeave={() => setActiva(null)}>
-      <div className="pn-graf__lienzo" role="img" aria-label={ariaLabel} tabIndex={0} onKeyDown={alTeclear}>
-        <svg className="pn-svg" viewBox={`0 0 ${ANCHO} ${ALTO}`} aria-hidden="true">
+      <div ref={lienzoRef} className="pn-graf__lienzo" role="img" aria-label={ariaLabel} tabIndex={0} onKeyDown={alTeclear}>
+        <svg className="pn-svg" viewBox={`0 0 ${ancho} ${ALTO}`} aria-hidden="true">
           <g className="pd-ritmo__rejilla">
             {gridValuesFor(pico).map((valor) => (
               <g key={valor}>
-                <line x1={MARGEN_IZQ} x2={MARGEN_IZQ + plotW} y1={yDe(valor)} y2={yDe(valor)} />
-                <text x={MARGEN_IZQ - 6} y={yDe(valor) + 3.5} textAnchor="end">
-                  {formatoUsd(valor).replace(",00", "")}
+                <line x1={margenIzq} x2={margenIzq + plotW} y1={yDe(valor)} y2={yDe(valor)} />
+                <text x={margenIzq - 6} y={yDe(valor) + 3.5} textAnchor="end">
+                  {etiquetaY(valor)}
                 </text>
               </g>
             ))}
             {horas.map((h, i) =>
-              i % 2 === 0 ? (
+              i % pasoHoras === 0 ? (
                 <text key={h} x={xDe(h)} y={ALTO - 6} textAnchor="middle">
                   {String(h).padStart(2, "0")}
                 </text>
@@ -137,7 +147,7 @@ export function GraficoRitmo({
             </g>
           )}
           <rect
-            x={MARGEN_IZQ}
+            x={margenIzq}
             y={MARGEN_SUP}
             width={plotW}
             height={plotH}
