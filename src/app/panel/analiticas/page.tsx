@@ -1,4 +1,4 @@
-import { createClient } from "@/lib/supabase/server";
+import { exigirAccesoPaneles } from "../acceso-servidor";
 import { fetchBusinessHours, fetchLatestBcvRate } from "@/lib/data";
 import {
   fetchMetasVenta,
@@ -17,17 +17,17 @@ import { primero, type ParametrosDePagina } from "../params";
  * y del previo (para comparar), el año (tablero mensual), los últimos 40 días
  * (calendario de rendimiento), ventas en curso, metas, horario y tasa BCV.
  * Misma regla que el Dashboard: todo se lee acá, la vista no toca esta página,
- * y el candado de rol vive en el layout y en las RPC.
+ * y el rol se verifica antes de leer (`exigirAccesoPaneles`, 15/11/2026) además
+ * de en el layout y en las RPC.
  */
 export default async function PanelAnaliticasPage({ searchParams }: { searchParams: ParametrosDePagina }) {
+  const { supabase } = await exigirAccesoPaneles();
   const params = await searchParams;
   const periodo = periodoDesdeParam(primero(params.periodo));
   const vista = vistaDesdeParam(primero(params.vista));
 
   const ahora = new Date();
   const rangos = rangosDeAnaliticas(periodo, ahora);
-  const supabase = await createClient();
-
   const [
     ventas,
     ventasPrevio,

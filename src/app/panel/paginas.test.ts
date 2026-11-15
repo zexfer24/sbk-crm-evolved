@@ -8,8 +8,11 @@ import { rangoDe, rangoPrevio } from "@/lib/paneles/periodos";
  * components que leen TODO lo que su panel va a necesitar y se lo pasan a la
  * vista por props. Así las vistas finales (C4–C6) no tienen que tocar
  * `page.tsx`. Lo que se prueba acá es el cableado: qué rango lee cada bloque,
- * cómo se interpretan `?periodo=` y `?vista=` y que NINGUNA página repite la
- * consulta del agente (la hace el layout).
+ * cómo se interpretan `?periodo=` y `?vista=` y, desde el 15/11/2026, que CADA
+ * página verifica el rol ANTES de leer nada (ver el último `describe`): el
+ * layout y la página se renderizan en paralelo, así que un asesor que abría
+ * `/panel` igual disparaba las ~10 RPC `panel_*` y el servidor registraba un
+ * `no autorizado` por intento.
  *
  * Cada lectura se mockea devolviendo una marca con el rango pedido: si una
  * página cruzara dos bloques (p. ej. pasar el período previo como el de hoy)
@@ -31,6 +34,18 @@ vi.mock("@/lib/paneles-data", () => ({
   fetchPanelCola: (...a: unknown[]) => fetchPanelCola(...a),
   fetchPanelVentasActivas: (...a: unknown[]) => fetchPanelVentasActivas(...a),
   fetchMetasVenta: (...a: unknown[]) => fetchMetasVenta(...a),
+}));
+
+class Redireccion extends Error {
+  constructor(public destino: string) {
+    super(`redirect:${destino}`);
+  }
+}
+// `redirect` de Next LANZA para cortar el render; el mock hace lo mismo.
+vi.mock("next/navigation", () => ({
+  redirect: (destino: string) => {
+    throw new Redireccion(destino);
+  },
 }));
 
 const fetchCurrentAgent = vi.fn();
@@ -59,6 +74,8 @@ function marca(desde: Date, hasta: Date): string {
 }
 
 beforeEach(() => {
+  // Las páginas verifican el rol ellas mismas; salvo que un test diga otra cosa, quien mira es supervisor.
+  fetchCurrentAgent.mockResolvedValue({ id: "a-1", role: "supervisor" });
   vi.useFakeTimers();
   vi.setSystemTime(AHORA);
   fetchPanelVentas.mockImplementation(async (_sb: unknown, desde: Date, hasta: Date) => ({
@@ -145,11 +162,6 @@ describe("panel/page.tsx (Dashboard)", () => {
     expect(repetido.vista).toBe("tienda");
   });
 
-  it("no vuelve a consultar al agente: eso es del layout", async () => {
-    await propsDe("dashboard", {});
-    expect(fetchCurrentAgent).not.toHaveBeenCalled();
-  });
-
   it("un bloque degradado llega tal cual a la vista, sin tumbar a los demás", async () => {
     fetchPanelCola.mockResolvedValue({ ok: false, motivo: "error", detalle: "x" });
     fetchPanelVentasActivas.mockResolvedValue({ ok: false, motivo: "no_disponible", detalle: "y" });
@@ -223,5 +235,68 @@ describe("panel/asesores/page.tsx", () => {
   it("un periodo desconocido es hoy", async () => {
     const p = await propsDe("asesores", { periodo: "xyz" });
     expect(p.periodo).toBe("hoy");
+  });
+});
+
+/**
+ * 15/11/2026: el candado de rol ya no es solo del layout. En el App Router el
+ * layout y la página se renderizan EN PARALELO, y un layout no se vuelve a
+ * ejecutar al navegar entre páginas hermanas desde el cliente (la doc de Next:
+ * "Layouts and auth checks"). Antes un asesor que abría `/panel` redirigía por
+ * el layout, pero la página igual lanzaba sus RPC `panel_*`, respondían 42501 y
+ * quedaba un `no autorizado` en el log por cada intento. Ahora la página llama
+ * a `exigirAccesoPaneles` ANTES del `Promise.all`.
+ */
+describe("el rol se verifica en cada página, antes de leer nada", () => {
+  const PAGINAS = ["dashboard", "analiticas", "asesores"] as const;
+
+  /** Ninguna lectura de datos puede haber salido: ni las RPC `panel_*` ni las auxiliares. */
+  function ningunaLectura() {
+    for (const lectura of [
+      fetchPanelVentas,
+      fetchPanelConversaciones,
+      fetchPanelAsesores,
+      fetchPanelCola,
+      fetchPanelVentasActivas,
+      fetchMetasVenta,
+      fetchBusinessHours,
+      fetchLatestBcvRate,
+    ]) {
+      expect(lectura).not.toHaveBeenCalled();
+    }
+  }
+
+  it.each(PAGINAS)("%s: un agent es redirigido a / y no se llama ninguna lectura", async (ruta) => {
+    fetchCurrentAgent.mockResolvedValue({ id: "a-2", role: "agent" });
+
+    await expect(propsDe(ruta, {})).rejects.toMatchObject({ destino: "/" });
+    ningunaLectura();
+  });
+
+  it.each(PAGINAS)("%s: la caja tampoco lee (fallar cerrado)", async (ruta) => {
+    fetchCurrentAgent.mockResolvedValue({ id: "a-3", role: "caja" });
+
+    await expect(propsDe(ruta, {})).rejects.toMatchObject({ destino: "/" });
+    ningunaLectura();
+  });
+
+  it.each(PAGINAS)("%s: sin sesión va a /login y no lee nada", async (ruta) => {
+    fetchCurrentAgent.mockResolvedValue(null);
+
+    await expect(propsDe(ruta, {})).rejects.toMatchObject({ destino: "/login" });
+    ningunaLectura();
+  });
+
+  it.each(PAGINAS)("%s: un admin lee igual que un supervisor", async (ruta) => {
+    fetchCurrentAgent.mockResolvedValue({ id: "a-4", role: "admin" });
+
+    const p = await propsDe(ruta, {});
+    expect(p.periodo).toBe("hoy");
+    expect(fetchPanelVentas).toHaveBeenCalled();
+  });
+
+  it.each(PAGINAS)("%s: las lecturas usan el cliente que devolvió el candado", async (ruta) => {
+    await propsDe(ruta, {});
+    expect(fetchPanelVentas.mock.calls[0][0]).toBe(SUPABASE);
   });
 });

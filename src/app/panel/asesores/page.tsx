@@ -1,4 +1,4 @@
-import { createClient } from "@/lib/supabase/server";
+import { exigirAccesoPaneles } from "../acceso-servidor";
 import { fetchBusinessHours } from "@/lib/data";
 import {
   fetchPanelAsesores,
@@ -15,17 +15,16 @@ import { primero, type ParametrosDePagina } from "../params";
  * del período (para cruzar la conversión), ventas del período (el mostrador por
  * persona), la cola de pendientes de AHORA y el horario (para medir el pendiente
  * más viejo en minutos laborales). No lleva `vista`: este panel es por persona,
- * no por canal. Misma regla que los otros dos: el candado vive en el layout y
- * en las RPC.
+ * no por canal. Misma regla que los otros dos: el rol se verifica antes de leer
+ * (`exigirAccesoPaneles`, 15/11/2026), además del layout y las RPC.
  */
 export default async function PanelAsesoresPage({ searchParams }: { searchParams: ParametrosDePagina }) {
+  const { supabase } = await exigirAccesoPaneles();
   const params = await searchParams;
   const periodo = periodoDesdeParam(primero(params.periodo));
 
   const ahora = new Date();
   const rango = rangoDe(periodo, ahora);
-  const supabase = await createClient();
-
   const [asesores, conversaciones, ventas, cola, horario] = await Promise.all([
     fetchPanelAsesores(supabase, rango.desde, rango.hasta),
     fetchPanelConversaciones(supabase, rango.desde, rango.hasta),

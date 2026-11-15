@@ -1,8 +1,5 @@
 import type { ReactNode } from "react";
-import { redirect } from "next/navigation";
-import { createClient } from "@/lib/supabase/server";
-import { fetchCurrentAgent } from "@/lib/data";
-import { puedeVerPaneles } from "@/lib/paneles/acceso";
+import { exigirAccesoPaneles } from "./acceso-servidor";
 
 /**
  * Candado de los tres paneles (plan "Paneles", 13/11/2026): `/panel`,
@@ -13,14 +10,12 @@ import { puedeVerPaneles } from "@/lib/paneles/acceso";
  * Esto es la primera puerta y la de pantalla; la definitiva está en las RPC
  * `panel_*` (`is_supervisor_or_admin()`, 42501) y en la RLS de `metas_venta`.
  * Un layout se salta en las navegaciones del lado del cliente entre páginas
- * hermanas, así que NO se confía solo en esto: cada RPC se vuelve a verificar.
+ * hermanas y, además, se renderiza EN PARALELO con la página (15/11/2026): por
+ * eso cada `page.tsx` llama también a `exigirAccesoPaneles` antes de leer, y el
+ * `cache` de React hace que las dos compartan una sola consulta del agente.
  */
 export default async function PanelLayout({ children }: { children: ReactNode }) {
-  const supabase = await createClient();
-  const agente = await fetchCurrentAgent(supabase);
-
-  if (!agente) redirect("/login");
-  if (!puedeVerPaneles(agente.role)) redirect("/");
+  await exigirAccesoPaneles();
 
   return <>{children}</>;
 }

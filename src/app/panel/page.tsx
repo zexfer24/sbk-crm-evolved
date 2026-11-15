@@ -1,4 +1,4 @@
-import { createClient } from "@/lib/supabase/server";
+import { exigirAccesoPaneles } from "./acceso-servidor";
 import { fetchBusinessHours, fetchLatestBcvRate } from "@/lib/data";
 import {
   fetchMetasVenta,
@@ -20,18 +20,19 @@ import { primero, type ParametrosDePagina } from "./params";
  * no tenga que tocar esta página. Cada lectura degrada por su cuenta
  * (`paneles-data.ts`): una que falle pinta "No disponible" solo en su bloque.
  *
- * No consulta al agente ni el rol: el `layout.tsx` de `/panel` ya lo hizo y las
+ * Antes de leer nada verifica el rol (`exigirAccesoPaneles`, 15/11/2026): el
+ * layout se renderiza en paralelo con esta página, así que sin esto un asesor
+ * disparaba las RPC igual. Comparte la consulta del agente con el layout. Las
  * RPC lo vuelven a verificar (42501, que SÍ se relanza y atrapa `error.tsx`).
  */
 export default async function PanelDashboardPage({ searchParams }: { searchParams: ParametrosDePagina }) {
+  const { supabase } = await exigirAccesoPaneles();
   const params = await searchParams;
   const periodo = periodoDesdeParam(primero(params.periodo));
   const vista = vistaDesdeParam(primero(params.vista));
 
   const ahora = new Date();
   const rangos = rangosDelDashboard(periodo, ahora);
-  const supabase = await createClient();
-
   const [
     ventas,
     ventasPrevio,
