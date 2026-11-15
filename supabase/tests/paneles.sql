@@ -6,7 +6,7 @@
 -- Qué fija:
 --   1. panel_ventas: ingresos/envíos/unidades por canal = cuenta a mano;
 --      `pendiente` va a tránsito y no a ingresos; `error` aparte; un
---      `posible_duplicado` no cuenta; la granularidad (hora/día/mes) sale del
+--      `duplicado` (vista `ventas_saint_estado`) no cuenta; la granularidad (hora/día/mes) sale del
 --      rango; la serie trae tramos vacíos; perfil_horario (solo en `dia`);
 --      personas, top de repuestos, tipo de precio, estado, recurrentes.
 --   2. Un genérico (>= 20 ventas del mismo `codclie` en los 30 días que
@@ -524,6 +524,88 @@ select pg_temp.eq('Recurrentes online: regresan (200 con venta previa, 300 ya ex
 select pg_temp.eq('Recurrentes tienda: compradores (400 y 500; el genérico no)', 'v_dia', '{recurrentes,tienda,compradores}', '2');
 select pg_temp.eq('Recurrentes tienda: regresan (500 ya existía)', 'v_dia', '{recurrentes,tienda,regresan}', '1');
 select pg_temp.eq('Recurrentes: genéricos excluidos', 'v_dia', '{recurrentes,genericos_excluidos}', '1');
+
+-- ---------------------------------------------------------------------------
+-- 3b · El duplicado se decide AL LEER, contra el estado ACTUAL (15/11/2026,
+--      corrección del code-review del plan "Paneles"). Junio de 2031, un día por
+--      caso. Un envío `creado` es duplicado solo si existe OTRO envío `creado`
+--      anterior (o del mismo instante con `borrador_id` menor) del mismo origen
+--      o de la misma conversación, con las mismas líneas y a menos de 24 h.
+--      Un `error` o un envío en tránsito nunca vuelve duplicado a otro.
+--   (a) error -> reenvío idéntico `creado`: cuenta como venta (el bug real:
+--       el cliente corrige la cédula y reenvía, y la venta desaparecía).
+--   (b) dos `creado` idénticos en 24 h: cuenta uno.
+--   (c) tres `creado` idénticos: cuenta uno.
+--   (d) anterior en tránsito + posterior `creado`: cuenta el posterior; si el
+--       anterior pasa a `creado`, cuenta el anterior: siempre uno.
+--   (e) a más de 24 h, los dos cuentan.
+--   (f) el anterior cae FUERA del rango consultado: el posterior sigue siendo
+--       duplicado (la regla no depende de la ventana de la pantalla).
+-- ---------------------------------------------------------------------------
+select pg_temp.conv(n) from generate_series(61, 66) n;
+select pg_temp.carrito(n, '2020-01-01', '[{"p":"d","q":1}]') from generate_series(61, 66) n;
+select pg_temp.pres(61, 'chat', pg_temp.cid(64), '2020-01-01', '[{"p":"d","q":1}]');
+
+-- (a)
+select pg_temp.borrador('carrito', pg_temp.cid(61), 'd0a4e100-0000-0000-0000-0000000000a1', '610', 'error',  '2031-06-01 10:00-04', null,  null, '[{"codprod":"PN-D","cantidad":1}]');
+select pg_temp.borrador('carrito', pg_temp.cid(61), 'd0a4e100-0000-0000-0000-0000000000a1', '610', 'creado', '2031-06-01 10:30-04', 'C610', true, '[{"codprod":"PN-D","cantidad":1}]');
+-- (b)
+select pg_temp.borrador('carrito', pg_temp.cid(62), 'd0a4e100-0000-0000-0000-0000000000a1', '620', 'creado', '2031-06-02 10:00-04', 'C620', true, '[{"codprod":"PN-D","cantidad":1}]');
+select pg_temp.borrador('carrito', pg_temp.cid(62), 'd0a4e100-0000-0000-0000-0000000000a1', '620', 'creado', '2031-06-02 11:00-04', 'C620', true, '[{"codprod":"PN-D","cantidad":1}]');
+-- (c)
+select pg_temp.borrador('carrito', pg_temp.cid(63), 'd0a4e100-0000-0000-0000-0000000000a1', '630', 'creado', '2031-06-03 10:00-04', 'C630', true, '[{"codprod":"PN-D","cantidad":1}]');
+select pg_temp.borrador('carrito', pg_temp.cid(63), 'd0a4e100-0000-0000-0000-0000000000a1', '630', 'creado', '2031-06-03 11:00-04', 'C630', true, '[{"codprod":"PN-D","cantidad":1}]');
+select pg_temp.borrador('carrito', pg_temp.cid(63), 'd0a4e100-0000-0000-0000-0000000000a1', '630', 'creado', '2031-06-03 12:00-04', 'C630', true, '[{"codprod":"PN-D","cantidad":1}]');
+-- (d) el presupuesto de chat (anterior, en tránsito) y el carrito de la MISMA conversación.
+select pg_temp.borrador('presupuesto', pg_temp.prid(61), 'd0a4e100-0000-0000-0000-0000000000a1', '640', 'pendiente', '2031-06-04 09:00-04', null, null, '[{"codprod":"PN-D","cantidad":1}]');
+select pg_temp.borrador('carrito', pg_temp.cid(64), 'd0a4e100-0000-0000-0000-0000000000a1', '640', 'creado', '2031-06-04 10:00-04', 'C640', true, '[{"codprod":"PN-D","cantidad":1}]');
+-- (e) 25 horas entre uno y otro.
+select pg_temp.borrador('carrito', pg_temp.cid(65), 'd0a4e100-0000-0000-0000-0000000000a1', '650', 'creado', '2031-06-05 10:00-04', 'C650', true, '[{"codprod":"PN-D","cantidad":1}]');
+select pg_temp.borrador('carrito', pg_temp.cid(65), 'd0a4e100-0000-0000-0000-0000000000a1', '650', 'creado', '2031-06-06 11:00-04', 'C650', true, '[{"codprod":"PN-D","cantidad":1}]');
+-- (f) el primero a las 23:50 del 8, el reenvío a las 00:20 del 9.
+select pg_temp.borrador('carrito', pg_temp.cid(66), 'd0a4e100-0000-0000-0000-0000000000a1', '660', 'creado', '2031-06-08 23:50-04', 'C660', true, '[{"codprod":"PN-D","cantidad":1}]');
+select pg_temp.borrador('carrito', pg_temp.cid(66), 'd0a4e100-0000-0000-0000-0000000000a1', '660', 'creado', '2031-06-09 00:20-04', 'C660', true, '[{"codprod":"PN-D","cantidad":1}]');
+
+set local role authenticated;
+set local "request.jwt.claim.sub" = 'd0a4e100-0000-0000-0000-0000000000b1';
+insert into _r select 'dup_a', public.panel_ventas('2031-06-01 00:00-04', '2031-06-02 00:00-04');
+insert into _r select 'dup_b', public.panel_ventas('2031-06-02 00:00-04', '2031-06-03 00:00-04');
+insert into _r select 'dup_c', public.panel_ventas('2031-06-03 00:00-04', '2031-06-04 00:00-04');
+insert into _r select 'dup_d1', public.panel_ventas('2031-06-04 00:00-04', '2031-06-05 00:00-04');
+insert into _r select 'dup_e', public.panel_ventas('2031-06-05 00:00-04', '2031-06-07 00:00-04');
+insert into _r select 'dup_f', public.panel_ventas('2031-06-09 00:00-04', '2031-06-10 00:00-04');
+reset role;
+
+-- (d) el anterior (el presupuesto) pasa a `creado`: ahora cuenta el anterior.
+update liminal.saint_borradores
+   set estado = 'creado', codclie = 'C640', cliente_creado = true, numero_saint = 'F-dup-d', procesado_at = '2031-06-04 09:05-04'
+ where origen = 'presupuesto' and origen_id = pg_temp.prid(61);
+
+set local role authenticated;
+set local "request.jwt.claim.sub" = 'd0a4e100-0000-0000-0000-0000000000b1';
+insert into _r select 'dup_d2', public.panel_ventas('2031-06-04 00:00-04', '2031-06-05 00:00-04');
+reset role;
+
+select pg_temp.eq('Duplicado (a): error + reenvío creado = una venta', 'dup_a', '{canales,online,envios}', '1');
+select pg_temp.eq('Duplicado (a): su ingreso es el del reenvío', 'dup_a', '{canales,online,ingresos}', '5.80');
+select pg_temp.eq('Duplicado (a): el error sigue contado como error', 'dup_a', '{estado,error,envios}', '1');
+select pg_temp.eq('Duplicado (a): no hay duplicados', 'dup_a', '{estado,duplicados}', '0');
+select pg_temp.eq('Duplicado (b): dos creado idénticos = una venta', 'dup_b', '{canales,online,envios}', '1');
+select pg_temp.eq('Duplicado (b): ingreso de uno solo', 'dup_b', '{canales,online,ingresos}', '5.80');
+select pg_temp.eq('Duplicado (b): un duplicado', 'dup_b', '{estado,duplicados}', '1');
+select pg_temp.eq('Duplicado (c): tres creado idénticos = una venta', 'dup_c', '{canales,online,envios}', '1');
+select pg_temp.eq('Duplicado (c): dos duplicados', 'dup_c', '{estado,duplicados}', '2');
+select pg_temp.eq('Duplicado (d1): anterior en tránsito + posterior creado = una venta', 'dup_d1', '{canales,online,envios}', '1');
+select pg_temp.eq('Duplicado (d1): el anterior sigue en tránsito', 'dup_d1', '{estado,transito,envios}', '1');
+select pg_temp.eq('Duplicado (d1): sin duplicados mientras uno está en tránsito', 'dup_d1', '{estado,duplicados}', '0');
+select pg_temp.eq('Duplicado (d2): al pasar el anterior a creado sigue siendo una venta', 'dup_d2', '{canales,online,envios}', '1');
+select pg_temp.eq('Duplicado (d2): ahora el posterior es el duplicado', 'dup_d2', '{estado,duplicados}', '1');
+select pg_temp.eq('Duplicado (d2): ya nada en tránsito', 'dup_d2', '{estado,transito,envios}', '0');
+select pg_temp.eq('Duplicado (e): a más de 24 h cuentan los dos', 'dup_e', '{canales,online,envios}', '2');
+select pg_temp.eq('Duplicado (e): ingreso de los dos', 'dup_e', '{canales,online,ingresos}', '11.60');
+select pg_temp.eq('Duplicado (e): sin duplicados', 'dup_e', '{estado,duplicados}', '0');
+select pg_temp.eq('Duplicado (f): el anterior fuera del rango igual lo vuelve duplicado', 'dup_f', '{canales,online,envios}', '0');
+select pg_temp.eq('Duplicado (f): cuenta como duplicado en su rango', 'dup_f', '{estado,duplicados}', '1');
 
 -- ---------------------------------------------------------------------------
 -- 4 · Siembra de panel_conversaciones (abril de 2031).

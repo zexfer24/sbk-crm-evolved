@@ -29,6 +29,12 @@
 --     00:00:00 exactas de p_hasta cae en el rango siguiente.
 --   * Una "venta" se fecha por `ventas_saint.created_at` (el momento del envío a
 --     SAINT, copia de `saint_borradores.created_at`), no por `procesado_at`.
+--   * Una venta es un envío `creado` que NO es duplicado, y el duplicado lo
+--     decide la vista `public.ventas_saint_estado` (M1) AL LEER, contra el estado
+--     ACTUAL de cada envío (corrección del 15/11/2026): `creado` con otro
+--     `creado` anterior del mismo origen o conversación, mismos ítems y menos
+--     de 24 h. Marcarlo al insertar hacía desaparecer la venta de quien corregía
+--     una cédula y reenviaba tras un `error`. Ninguna RPC repite la regla.
 --   * `canales.*.ingresos` vale 0 si no hubo ventas y null si las hubo pero
 --     ninguna tiene monto. En el resto (`personas`, `monto` de asesores, de
 --     tránsito y de las activas) null = "no hay nada que sumar" y la pantalla
@@ -111,18 +117,33 @@ begin
   v_step := ('1 ' || v_unit)::interval;
 
   with
+  -- La vista `ventas_saint_estado` se lee UNA sola vez por llamada (15/11/2026):
+  -- calcular `duplicado` es una pasada sobre todo el historial (ver M1), y leerla
+  -- tres veces (el rango, los clientes genéricos, las compras previas) triplicaba
+  -- el costo. De aquí salen las tres: columnas angostas, todo el historial hasta
+  -- p_hasta.
+  hist as materialized (
+    select e.borrador_id, e.created_at, e.estado, e.duplicado, e.codclie,
+           e.cedula_tipo, e.cedula_numero, e.cliente_creado
+      from public.ventas_saint_estado e
+     where e.created_at < p_hasta
+  ),
   -- Toda foto del rango con el estado de su borrador (y los datos del cliente).
+  -- Las columnas anchas (renglones, montos) salen de la tabla por su clave: la
+  -- regla de venta/duplicado sigue viniendo solo de la vista.
   v as materialized (
     select vs.borrador_id, vs.created_at, vs.canal, vs.enviado_por, vs.unidades, vs.monto_usd,
-           vs.estimado, vs.lineas, vs.posible_duplicado,
-           b.estado, b.cedula_tipo, b.cedula_numero, b.codclie, b.cliente_creado
-      from public.ventas_saint vs
-      join liminal.saint_borradores b on b.id = vs.borrador_id
-     where vs.created_at >= p_desde and vs.created_at < p_hasta
+           vs.estimado, vs.lineas, hi.duplicado,
+           hi.estado, hi.cedula_tipo, hi.cedula_numero, hi.codclie, hi.cliente_creado
+      from hist hi
+      join public.ventas_saint vs on vs.borrador_id = hi.borrador_id
+     where hi.created_at >= p_desde
   ),
-  -- Venta = `creado` (factura en espera en SAINT) y no duplicado.
+  -- Venta = `creado` (factura en espera en SAINT) y no duplicado. El duplicado
+  -- lo decide la vista `ventas_saint_estado` contra el estado ACTUAL de cada
+  -- envío (15/11/2026): un `error` o un envío en tránsito nunca lo causa.
   ventas as materialized (
-    select * from v where estado = 'creado' and not posible_duplicado
+    select * from v where estado = 'creado' and not duplicado
   ),
   canal_agg as (
     select c.canal,
@@ -228,12 +249,11 @@ begin
   -- Recurrentes. Genérico = un `codclie` con 20 o más ventas en los 30 días que
   -- terminan en p_hasta (el cliente "varios" de la caja): no es un comprador.
   gen as materialized (
-    select b.codclie
-      from public.ventas_saint vs
-      join liminal.saint_borradores b on b.id = vs.borrador_id
-     where b.estado = 'creado' and not vs.posible_duplicado and b.codclie is not null
-       and vs.created_at >= p_hasta - interval '30 days' and vs.created_at < p_hasta
-     group by b.codclie
+    select hi.codclie
+      from hist hi
+     where hi.estado = 'creado' and not hi.duplicado and hi.codclie is not null
+       and hi.created_at >= p_hasta - interval '30 days'
+     group by hi.codclie
     having count(*) >= 20
   ),
   compradores as materialized (
@@ -250,11 +270,10 @@ begin
   ),
   -- O tuvo una venta antes del rango.
   previas as materialized (
-    select distinct upper(btrim(b.cedula_tipo || b.cedula_numero)) as k
-      from public.ventas_saint vs
-      join liminal.saint_borradores b on b.id = vs.borrador_id
-     where b.estado = 'creado' and not vs.posible_duplicado and vs.created_at < p_desde
-       and upper(btrim(b.cedula_tipo || b.cedula_numero)) in (select c.k from compradores c)
+    select distinct upper(btrim(hi.cedula_tipo || hi.cedula_numero)) as k
+      from hist hi
+     where hi.estado = 'creado' and not hi.duplicado and hi.created_at < p_desde
+       and upper(btrim(hi.cedula_tipo || hi.cedula_numero)) in (select c.k from compradores c)
   ),
   recurrentes_agg as (
     select c.canal, c.k,
@@ -326,10 +345,10 @@ begin
                  'envios', count(*)::int,
                  'monto', case when count(x.monto_usd) = 0 then null else sum(x.monto_usd) end)
           from v x
-         where x.estado in ('pendiente', 'procesando') and not x.posible_duplicado
+         where x.estado in ('pendiente', 'procesando')
       ),
       'error', jsonb_build_object(
-        'envios', (select count(*)::int from v x where x.estado = 'error' and not x.posible_duplicado)
+        'envios', (select count(*)::int from v x where x.estado = 'error')
       ),
       -- Envíos del rango que no dejaron foto (los de antes de la M1 o los que el
       -- trigger no alcanzó a escribir): el backfill los recupera.
@@ -339,7 +358,7 @@ begin
          where b.created_at >= p_desde and b.created_at < p_hasta
            and not exists (select 1 from public.ventas_saint vs where vs.borrador_id = b.id)
       ),
-      'duplicados', (select count(*)::int from v x where x.posible_duplicado)
+      'duplicados', (select count(*)::int from v x where x.duplicado)
     ),
     'recurrentes', jsonb_build_object(
       'online', jsonb_build_object(
@@ -412,10 +431,9 @@ begin
   -- Ventas del chat con 7 días de cola para medir la conversión tras la respuesta.
   ventas_ventana as materialized (
     select vs.conversation_id, vs.created_at
-      from public.ventas_saint vs
-      join liminal.saint_borradores b on b.id = vs.borrador_id
+      from public.ventas_saint_estado vs
      where vs.conversation_id is not null
-       and b.estado = 'creado' and not vs.posible_duplicado
+       and vs.estado = 'creado' and not vs.duplicado
        and vs.created_at >= p_desde and vs.created_at < p_hasta + interval '7 days'
   ),
   resp as (
@@ -610,10 +628,9 @@ begin
   ),
   ventas_r as materialized (
     select vs.enviado_por, vs.canal, vs.monto_usd, vs.unidades
-      from public.ventas_saint vs
-      join liminal.saint_borradores b on b.id = vs.borrador_id
+      from public.ventas_saint_estado vs
      where vs.created_at >= p_desde and vs.created_at < p_hasta
-       and b.estado = 'creado' and not vs.posible_duplicado
+       and vs.estado = 'creado' and not vs.duplicado
   ),
   -- Línea de tiempo por conversación: mensajes del cliente (k = 0) y salidas
   -- reales (k = 1). `k` es smallint y `ia` boolean a propósito: ordenar 300 mil

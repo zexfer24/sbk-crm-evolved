@@ -14,7 +14,16 @@ exige tocar las dos puntas y este archivo en el mismo commit.
 - Dinero en USD con 2 decimales (`numeric` → número JSON). `null` = "no se puede calcular": la pantalla
   pinta "—", nunca 0.
 - **Venta** = fila de `public.ventas_saint` cuyo borrador está en `estado = 'creado'` y que NO es
-  `posible_duplicado`. Lo `pendiente`/`procesando` es "en tránsito"; `error` va aparte.
+  duplicado. Lo `pendiente`/`procesando` es "en tránsito"; `error` va aparte.
+- **Duplicado** (se decide AL LEER, contra el estado ACTUAL; vista `public.ventas_saint_estado`, columna
+  `duplicado`; corrección del 15/11/2026): un envío `creado` es duplicado si existe OTRO envío `creado`
+  anterior —por `created_at`; a igual instante, el de `borrador_id` menor— del mismo `origen_id` o de la
+  misma `conversation_id` (no nula), con la misma firma de ítems (`ventas_saint.firma_items`,
+  `codprod:cantidad` por código) y a menos de 24 h. Un envío en `error` o en tránsito NUNCA vuelve duplicado
+  a otro (error → reenvío idéntico `creado` es UNA venta). Con tres `creado` iguales cuenta el primero; si el
+  anterior estaba en tránsito cuenta el posterior, y si luego el anterior pasa a `creado` cuenta el anterior:
+  siempre uno. El anterior se busca en toda la tabla, no solo en el rango consultado. `ventas_saint` ya no
+  tiene `posible_duplicado`. `estado.duplicados` cuenta los duplicados del rango según esta regla.
 - **Canal**: el que guardó la foto (`ventas_saint.canal`), nunca recalculado en la lectura.
 - Tope de rango: las RPC que leen `messages` (`panel_conversaciones`, `panel_asesores`) rechazan rangos de más
   de 92 días con `errcode = '22023'`. `panel_ventas` no tiene tope.

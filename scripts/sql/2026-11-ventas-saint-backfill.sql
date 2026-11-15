@@ -90,13 +90,16 @@
 --     (`notice`) y el resumen del modo de prueba lo repite: revísalo, un
 --     cliente corporativo con 20 pedidos al mes lo haría pasar por mostrador.
 --
---   `posible_duplicado`: la misma regla de M1 (otro envío del mismo origen, o
---     de la misma conversación, con las mismas líneas codprod+cantidad y menos
---     de 24 h antes). Se compara contra TODOS los borradores, con o sin foto, y
---     un empate exacto de instante lo desempata el id (el trigger de M1 solo
---     ve lo anterior: dos envíos idénticos del mismo segundo se marcarían
---     entre sí). `rol_envia` es el rol ACTUAL del agente: el de entonces no se
---     guardó.
+--   Duplicados: este script YA NO los decide (corrección del 15/11/2026). Solo
+--     calcula `firma_items` con la MISMA expresión que el trigger de M1
+--     (`codprod:cantidad` por código, separados por coma, desde `items`); la
+--     vista `public.ventas_saint_estado` decide al leer, contra el estado ACTUAL
+--     de cada envío, cuál es un duplicado (un `creado` con otro `creado`
+--     anterior del mismo origen o conversación, mismos ítems y menos de 24 h; el
+--     empate exacto de instante lo desempata el id). Marcarlo aquí, como hacía
+--     la primera versión, hacía desaparecer la venta de quien corregía una
+--     cédula y reenviaba tras un `error`. `rol_envia` es el rol ACTUAL del
+--     agente: el de entonces no se guardó.
 --
 -- PARA QUE LA PRUEBA LOCAL REUTILICE ESTE CUERPO sin que `commit` lo cierre,
 -- el archivo acepta `\set ya_en_transaccion true`: entonces no abre ni cierra
@@ -405,16 +408,7 @@ with fotos as (
               limit 1)
            else b.pres_creador
          end as armado_por,
-         exists (
-           select 1
-             from _bf_base o
-            where o.id <> b.id
-              and (o.created_at, o.id) < (b.created_at, b.id)
-              and o.created_at > b.created_at - interval '24 hours'
-              and (o.origen_id = b.origen_id
-                   or (b.conversation_id is not null and o.conversation_id = b.conversation_id))
-              and o.firma = b.firma
-         ) as dup
+         b.firma
     from _bf_pend b
     cross join _bf_ajustes a
     cross join lateral (
@@ -440,7 +434,7 @@ nuevas as (
   insert into public.ventas_saint (
     borrador_id, created_at, origen, canal, canal_fuente, conversation_id, presupuesto_id,
     armado_por, enviado_por, rol_envia, unidades, monto_usd, monto_bs, tasa_bcv,
-    lineas, lineas_sin_precio, estimado, posible_duplicado
+    lineas, lineas_sin_precio, estimado, firma_items
   )
   select f.id, f.created_at, f.origen, f.canal, f.canal_fuente, f.conversation_id,
          case when f.origen = 'presupuesto' then f.origen_id end,
@@ -448,7 +442,7 @@ nuevas as (
          (select ag.role from public.agents ag where ag.id = f.creado_por),
          f.unidades, f.monto,
          case when f.monto is null or f.tasa is null then null else round(f.monto * f.tasa, 2) end,
-         f.tasa, f.lineas, f.sin_precio, true, f.dup
+         f.tasa, f.lineas, f.sin_precio, true, f.firma
     from fotos f
   on conflict (borrador_id) do nothing
   returning borrador_id
@@ -483,8 +477,8 @@ select (select count(*) from _bf_base) as borradores_en_total,
        (select count(*) from _bf_creadas) as fotos_que_crea_esta_corrida,
        (select count(*) from _bf_creadas c join public.ventas_saint v on v.borrador_id = c.borrador_id
          where v.monto_usd is null) as sin_precio_completo,
-       (select count(*) from _bf_creadas c join public.ventas_saint v on v.borrador_id = c.borrador_id
-         where v.posible_duplicado) as posibles_duplicados,
+       (select count(*) from _bf_creadas c join public.ventas_saint_estado v on v.borrador_id = c.borrador_id
+         where v.duplicado) as duplicados_segun_la_vista,
        (select count(*) from _bf_creadas c join public.ventas_saint v on v.borrador_id = c.borrador_id
          where v.created_at < (select instante from _bf_ajustes)) as anteriores_al_recargo;
 

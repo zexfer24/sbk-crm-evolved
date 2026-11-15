@@ -23,7 +23,15 @@
 --   6. Foto rota (un CHECK que rechaza el insert completo, o la tabla renombrada)
 --      -> el envío PASA; con el CHECK queda la fila mínima con `foto_error`.
 --   7. `authenticated` no lee ni escribe `ventas_saint` (error de permiso).
---   8. Reenvío idéntico -> segunda foto con `posible_duplicado`.
+--   8. El duplicado se decide AL LEER (vista `ventas_saint_estado`, corrección del
+--      15/11/2026): un `creado` es duplicado solo si existe OTRO `creado`
+--      anterior del mismo origen o conversación, mismos ítems y menos de 24 h.
+--      (a) error -> reenvío idéntico creado: NO es duplicado; (b) dos creado: el
+--      segundo sí; (c) tres creado: dos duplicados; (d) anterior en tránsito de
+--      OTRO origen de la misma conversación: el posterior no lo es, y al pasar el
+--      anterior a creado sí; (e) a 25 h no lo es; (f) mismo instante: solo uno;
+--      (g) otras cantidades: no lo es. La foto guarda `firma_items` y ya no
+--      tiene `posible_duplicado`.
 --   9. El 23505 de "un solo envío en curso por origen" sigue igual.
 --  10. `precio_venta_usd` contra los casos dorados.
 --
@@ -210,8 +218,9 @@ begin
   if v.lineas_sin_precio is distinct from p_sin_precio then
     insert into _errores(msg) values (format('%s: lineas_sin_precio %s, se esperaba %s.', etiqueta, v.lineas_sin_precio, p_sin_precio));
   end if;
-  if v.posible_duplicado is distinct from p_duplicado then
-    insert into _errores(msg) values (format('%s: posible_duplicado %s, se esperaba %s.', etiqueta, v.posible_duplicado, p_duplicado));
+  if (select e.duplicado from public.ventas_saint_estado e where e.borrador_id = id_b) is distinct from p_duplicado then
+    insert into _errores(msg) values (format('%s: duplicado %s, se esperaba %s.', etiqueta,
+      (select e.duplicado from public.ventas_saint_estado e where e.borrador_id = id_b), p_duplicado));
   end if;
   if v.foto_error is not null or v.estimado then
     insert into _errores(msg) values (format('%s: una foto sana no debía traer foto_error (%L) ni estimado (%s).', etiqueta, v.foto_error, v.estimado));
@@ -273,9 +282,21 @@ insert into _ids select 'p5', public.enviar_borrador_saint('presupuesto', 'c0f07
 reset role;
 reset "request.jwt.claim.sub";
 
+-- Dentro de una transacción `now()` es el mismo instante para todos: sin esto los
+-- tres envíos del carrito 1 nacerían con el MISMO `created_at` y el orden entre
+-- ellos lo decidiría el id al azar. Se adelanta el pasado de un envío ya hecho
+-- (borrador y foto, que copia su fecha) para que cada reenvío sea posterior.
+create or replace function pg_temp.atrasar(p_clave text, p_antes interval) returns void
+language plpgsql as $$
+begin
+  update liminal.saint_borradores set created_at = created_at - p_antes where id = (select id from _ids where clave = p_clave);
+  update public.ventas_saint set created_at = created_at - p_antes where borrador_id = (select id from _ids where clave = p_clave);
+end $$;
+
 -- 8 · el agente cierra el primer envío del carrito 1 (simulado como postgres) y
 -- S lo reenvía idéntico: la segunda foto sale marcada.
 update liminal.saint_borradores set estado = 'creado', numero_saint = 'F-1' where id = (select id from _ids where clave = 'c1');
+select pg_temp.atrasar('c1', interval '2 hours');
 
 set local role authenticated;
 set local "request.jwt.claim.sub" = 'c0f070a0-0000-0000-0000-0000000000b1';
@@ -285,6 +306,7 @@ reset "request.jwt.claim.sub";
 
 -- Un tercer envío con OTRAS cantidades no es duplicado.
 update liminal.saint_borradores set estado = 'creado', numero_saint = 'F-2' where id = (select id from _ids where clave = 'c1b');
+select pg_temp.atrasar('c1b', interval '1 hour');
 update public.conversation_cart_items set quantity = 5
  where conversation_id = 'c0f070a0-3000-0000-0000-000000000001' and product_id = 'c0f070a0-4000-0000-0000-00000000000a';
 
@@ -379,6 +401,116 @@ select pg_temp.esperar_num('Caso 9: fotos del carrito 1 (el 23505 no dejó ningu
   (select count(*) from public.ventas_saint where conversation_id = 'c0f070a0-3000-0000-0000-000000000001'), 3);
 
 -- ---------------------------------------------------------------------------
+-- Caso 8 (15/11/2026) · el duplicado se decide AL LEER, con la vista
+-- `ventas_saint_estado`. Los envíos se insertan como postgres (el agente de
+-- SAINT los pasa a su estado final). Cada escenario usa un origen propio.
+-- ---------------------------------------------------------------------------
+-- La firma que guarda la foto: codprod:cantidad por código, separados por coma.
+select pg_temp.esperar('Caso 8: firma_items del carrito 1',
+  coalesce((select firma_items from public.ventas_saint where borrador_id = (select id from _ids where clave = 'c1')), '<null>'),
+  '^VS-A:2,VS-B:1$');
+
+-- Un envío del escenario: nace `pendiente` (el trigger toma la foto) y pasa a su estado.
+create or replace function pg_temp.env(p_clave text, p_origen text, p_origen_id uuid, p_estado text, p_creado timestamptz, p_items jsonb)
+returns void
+language plpgsql as $$
+declare
+  v_id uuid;
+begin
+  insert into liminal.saint_borradores (origen, origen_id, creado_por, cedula_tipo, cedula_numero, nombre, apellido, telefono, items, estado, created_at)
+  values (p_origen, p_origen_id, 'c0f070a0-0000-0000-0000-0000000000a1', 'V', '12345678', 'Ana', 'Dup', '+584141234567', p_items, 'pendiente', p_creado)
+  returning id into v_id;
+  insert into _ids values (p_clave, v_id);
+  if p_estado <> 'pendiente' then
+    update liminal.saint_borradores
+       set estado = p_estado, numero_saint = case when p_estado = 'creado' then 'F-' || left(v_id::text, 8) end,
+           error = case when p_estado = 'error' then 'falló en la prueba' end
+     where id = v_id;
+  end if;
+end $$;
+
+create or replace function pg_temp.dup(p_clave text, p_esperado boolean) returns void
+language plpgsql as $$
+declare
+  v boolean;
+begin
+  select e.duplicado into v from public.ventas_saint_estado e where e.borrador_id = (select id from _ids where clave = p_clave);
+  if v is distinct from p_esperado then
+    insert into _errores(msg) values (format('Caso 8 [%s]: duplicado %s, se esperaba %s.', p_clave, coalesce(v::text, 'null'), p_esperado));
+  end if;
+end $$;
+
+-- (a) error -> reenvío idéntico creado.
+select pg_temp.env('a1', 'presupuesto', 'c0f070a0-5000-0000-0000-0000000000d1', 'error',  '2031-07-01 10:00+00', '[{"codprod":"VS-D","cantidad":1}]');
+select pg_temp.env('a2', 'presupuesto', 'c0f070a0-5000-0000-0000-0000000000d1', 'creado', '2031-07-01 10:30+00', '[{"codprod":"VS-D","cantidad":1}]');
+-- (b) dos creado idénticos.
+select pg_temp.env('b1', 'presupuesto', 'c0f070a0-5000-0000-0000-0000000000d2', 'creado', '2031-07-02 10:00+00', '[{"codprod":"VS-D","cantidad":1}]');
+select pg_temp.env('b2', 'presupuesto', 'c0f070a0-5000-0000-0000-0000000000d2', 'creado', '2031-07-02 11:00+00', '[{"codprod":"VS-D","cantidad":1}]');
+-- (c) tres creado idénticos.
+select pg_temp.env('c1x', 'presupuesto', 'c0f070a0-5000-0000-0000-0000000000d3', 'creado', '2031-07-03 10:00+00', '[{"codprod":"VS-D","cantidad":1}]');
+select pg_temp.env('c2x', 'presupuesto', 'c0f070a0-5000-0000-0000-0000000000d3', 'creado', '2031-07-03 11:00+00', '[{"codprod":"VS-D","cantidad":1}]');
+select pg_temp.env('c3x', 'presupuesto', 'c0f070a0-5000-0000-0000-0000000000d3', 'creado', '2031-07-03 12:00+00', '[{"codprod":"VS-D","cantidad":1}]');
+-- (e) 25 horas entre uno y otro.
+select pg_temp.env('e1', 'presupuesto', 'c0f070a0-5000-0000-0000-0000000000d5', 'creado', '2031-07-05 10:00+00', '[{"codprod":"VS-D","cantidad":1}]');
+select pg_temp.env('e2', 'presupuesto', 'c0f070a0-5000-0000-0000-0000000000d5', 'creado', '2031-07-06 11:00+00', '[{"codprod":"VS-D","cantidad":1}]');
+-- (f) mismo instante exacto: de los dos cuenta uno.
+select pg_temp.env('f1', 'presupuesto', 'c0f070a0-5000-0000-0000-0000000000d6', 'creado', '2031-07-07 10:00+00', '[{"codprod":"VS-D","cantidad":1}]');
+select pg_temp.env('f2', 'presupuesto', 'c0f070a0-5000-0000-0000-0000000000d6', 'creado', '2031-07-07 10:00+00', '[{"codprod":"VS-D","cantidad":1}]');
+-- (g) otras cantidades: no es el mismo pedido.
+select pg_temp.env('g1', 'presupuesto', 'c0f070a0-5000-0000-0000-0000000000d7', 'creado', '2031-07-08 10:00+00', '[{"codprod":"VS-D","cantidad":1}]');
+select pg_temp.env('g2', 'presupuesto', 'c0f070a0-5000-0000-0000-0000000000d7', 'creado', '2031-07-08 11:00+00', '[{"codprod":"VS-D","cantidad":2}]');
+-- (d) anterior en tránsito (presupuesto de chat de la conversación 2) y posterior
+--     creado de OTRO origen (el carrito de esa misma conversación).
+select pg_temp.env('d1', 'presupuesto', 'c0f070a0-5000-0000-0000-0000000000d4', 'pendiente', '2031-07-04 10:00+00', '[{"codprod":"VS-D","cantidad":1}]');
+update public.ventas_saint set conversation_id = 'c0f070a0-3000-0000-0000-000000000002'
+ where borrador_id = (select id from _ids where clave = 'd1');
+select pg_temp.env('d2', 'carrito', 'c0f070a0-3000-0000-0000-000000000002', 'creado', '2031-07-04 11:00+00', '[{"codprod":"VS-D","cantidad":1}]');
+
+select pg_temp.dup('a1', false);
+select pg_temp.dup('a2', false);
+select pg_temp.dup('b1', false);
+select pg_temp.dup('b2', true);
+select pg_temp.dup('c1x', false);
+select pg_temp.dup('c2x', true);
+select pg_temp.dup('c3x', true);
+select pg_temp.dup('e1', false);
+select pg_temp.dup('e2', false);
+select pg_temp.dup('g1', false);
+select pg_temp.dup('g2', false);
+-- (f) uno y solo uno de los dos del mismo instante es duplicado.
+select pg_temp.esperar_num('Caso 8 (f): de dos creado simultáneos cuenta uno',
+  (select count(*) from public.ventas_saint_estado e where e.borrador_id in (select id from _ids where clave in ('f1', 'f2')) and e.duplicado), 1);
+-- (h) mismo instante exacto: el duplicado es SIEMPRE el de `borrador_id` mayor, no
+-- el que la base devuelva primero (15/11/2026: la vista calcula el anterior con
+-- `lag`, y el desempate por `borrador_id` es lo que lo vuelve determinista). Dos
+-- parejas, una insertada con el id mayor primero y otra con el menor primero, para
+-- que el orden físico contradiga al de la regla en una de las dos sea cual sea el
+-- plan que elija la base.
+insert into liminal.saint_borradores (id, origen, origen_id, creado_por, cedula_tipo, cedula_numero, nombre, apellido, telefono, items, estado, created_at) values
+  ('c0f070a0-6000-0000-0000-0000000000f2', 'presupuesto', 'c0f070a0-5000-0000-0000-0000000000d8', 'c0f070a0-0000-0000-0000-0000000000a1', 'V', '12345678', 'Ana', 'Dup', '+584141234567', '[{"codprod":"VS-D","cantidad":1}]', 'creado', '2031-07-09 10:00+00'),
+  ('c0f070a0-6000-0000-0000-0000000000f1', 'presupuesto', 'c0f070a0-5000-0000-0000-0000000000d8', 'c0f070a0-0000-0000-0000-0000000000a1', 'V', '12345678', 'Ana', 'Dup', '+584141234567', '[{"codprod":"VS-D","cantidad":1}]', 'creado', '2031-07-09 10:00+00'),
+  ('c0f070a0-6000-0000-0000-0000000000f3', 'presupuesto', 'c0f070a0-5000-0000-0000-0000000000d9', 'c0f070a0-0000-0000-0000-0000000000a1', 'V', '12345678', 'Ana', 'Dup', '+584141234567', '[{"codprod":"VS-D","cantidad":1}]', 'creado', '2031-07-10 10:00+00'),
+  ('c0f070a0-6000-0000-0000-0000000000f4', 'presupuesto', 'c0f070a0-5000-0000-0000-0000000000d9', 'c0f070a0-0000-0000-0000-0000000000a1', 'V', '12345678', 'Ana', 'Dup', '+584141234567', '[{"codprod":"VS-D","cantidad":1}]', 'creado', '2031-07-10 10:00+00');
+insert into _ids values
+  ('h1', 'c0f070a0-6000-0000-0000-0000000000f1'), ('h2', 'c0f070a0-6000-0000-0000-0000000000f2'),
+  ('h3', 'c0f070a0-6000-0000-0000-0000000000f3'), ('h4', 'c0f070a0-6000-0000-0000-0000000000f4');
+select pg_temp.dup('h1', false);
+select pg_temp.dup('h2', true);
+select pg_temp.dup('h3', false);
+select pg_temp.dup('h4', true);
+-- (d) con el anterior en tránsito, el posterior no es duplicado ni el anterior tampoco.
+select pg_temp.dup('d1', false);
+select pg_temp.dup('d2', false);
+-- (d) el anterior pasa a creado: ahora el posterior es el duplicado.
+update liminal.saint_borradores set estado = 'creado', numero_saint = 'F-d1' where id = (select id from _ids where clave = 'd1');
+select pg_temp.dup('d1', false);
+select pg_temp.dup('d2', true);
+
+-- La marca vieja ya no existe, y la firma de un envío en `error` se guarda igual.
+select pg_temp.esperar_num('Caso 8: la columna posible_duplicado ya no existe',
+  (select count(*) from pg_attribute where attrelid = 'public.ventas_saint'::regclass and attname = 'posible_duplicado' and not attisdropped), 0);
+
+-- ---------------------------------------------------------------------------
 -- Caso 7 · authenticated no lee ni escribe la tabla.
 -- ---------------------------------------------------------------------------
 set local role authenticated;
@@ -403,6 +535,11 @@ begin
      or has_table_privilege('anon', 'public.ventas_saint', 'SELECT')
      or has_table_privilege('authenticated', 'public.ventas_saint', 'SELECT') then
     insert into _errores(msg) values ('Caso 7: anon, authenticated o service_role pueden leer ventas_saint.');
+  end if;
+  if has_table_privilege('service_role', 'public.ventas_saint_estado', 'SELECT')
+     or has_table_privilege('anon', 'public.ventas_saint_estado', 'SELECT')
+     or has_table_privilege('authenticated', 'public.ventas_saint_estado', 'SELECT') then
+    insert into _errores(msg) values ('Caso 7: anon, authenticated o service_role pueden leer la vista ventas_saint_estado.');
   end if;
   if not exists (select 1 from pg_class where oid = 'public.ventas_saint'::regclass and relrowsecurity) then
     insert into _errores(msg) values ('Caso 7: ventas_saint no tiene RLS habilitada.');

@@ -95,12 +95,17 @@ select gen_random_uuid(),
        'C' || (n % 12000), n % 2 = 0,
        now() - (random() * interval '60 days')
   from generate_series(1, 30000) n;
-insert into public.ventas_saint (borrador_id, created_at, origen, canal, canal_fuente, conversation_id, enviado_por, unidades, monto_usd, monto_bs, tasa_bcv, lineas)
+-- `firma_items` igual para todos (el peor caso de la vista de duplicados: cada
+-- candidato del mismo origen o conversación pasa el filtro de la firma) y
+-- `presupuesto_id` en los de origen presupuesto (15/11/2026: el duplicado ya no
+-- se marca al insertar, lo decide la vista `ventas_saint_estado` al leer).
+insert into public.ventas_saint (borrador_id, created_at, origen, canal, canal_fuente, conversation_id, presupuesto_id, enviado_por, unidades, monto_usd, monto_bs, tasa_bcv, firma_items, lineas)
 select b.id, b.created_at, b.origen,
        case when b.origen = 'carrito' then 'online' else 'tienda' end,
        'registro',
        case when b.origen = 'carrito' then ('d0a4e200-3000-0000-0000-' || lpad((1 + abs(hashtext(b.id::text)) % 15000)::text, 12, '0'))::uuid end,
-       b.creado_por, 6, 40 + (random() * 100)::numeric(8, 2), null, 40,
+       case when b.origen = 'presupuesto' then b.origen_id end,
+       b.creado_por, 6, 40 + (random() * 100)::numeric(8, 2), null, 40, 'PN-R:2',
        jsonb_build_array(
          jsonb_build_object('product_id', gen_random_uuid(), 'codprod', 'PN-R' || (random() * 200)::int, 'nombre', 'Repuesto', 'cantidad', 2, 'precio_usd', 10, 'price_kind', 'promocion'),
          jsonb_build_object('product_id', gen_random_uuid(), 'codprod', 'PN-R' || (random() * 200)::int, 'nombre', 'Repuesto', 'cantidad', 4, 'precio_usd', 5, 'price_kind', 'estandar'))

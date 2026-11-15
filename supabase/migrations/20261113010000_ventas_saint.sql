@@ -29,6 +29,34 @@
 --      todo el cuerpo va dentro de un bloque con `exception when others` y, si
 --      falla, deja una fila mínima con `foto_error` (también protegida) y sigue.
 --
+--   4. La vista `public.ventas_saint_estado`: la ÚNICA definición de "venta" y de
+--      "duplicado" para los paneles (corrección del 15/11/2026, ver abajo).
+--
+-- DUPLICADO: SE DECIDE AL LEER, NO AL INSERTAR (corrección del 15/11/2026, hallazgo
+-- del `code-review` del plan "Paneles"). La primera versión marcaba
+-- `posible_duplicado` AL INSERTAR si ya existía otra foto del mismo origen (o de
+-- la misma conversación) con las mismas líneas en las 24 h previas, SIN mirar el
+-- estado de ese envío anterior: un asesor enviaba el carrito, SAINT lo rechazaba
+-- (`error`, p. ej. una cédula mal), corregía y reenviaba los mismos ítems -> el
+-- segundo quedaba `creado` pero nacía "duplicado" y la venta desaparecía de
+-- Ingresos, de la conversión y de los envíos por persona. Marcarlo al insertar
+-- no tiene arreglo completo: en ese instante el envío anterior puede estar
+-- `pendiente` y terminar en `error` después. Ahora la foto solo guarda la FIRMA
+-- de sus ítems (`firma_items`) y la vista decide, contra el estado ACTUAL:
+--
+--   Un envío `creado` es duplicado si existe OTRO envío `creado` ANTERIOR (por
+--   `created_at`; a igual instante, el de `borrador_id` menor, para que de dos
+--   simultáneos cuente uno) del mismo origen o de la misma conversación (no
+--   nula), con la misma firma de ítems y a menos de 24 h. Un envío en `error` o
+--   en tránsito NUNCA vuelve duplicado a otro. Con tres `creado` iguales cuenta
+--   uno (el primero: no hace falta recursión, el primero de un grupo nunca tiene
+--   un anterior). Si el anterior estaba en tránsito y el posterior quedó
+--   `creado`, cuenta el posterior; si luego el anterior también pasa a `creado`,
+--   cuenta el anterior y el posterior pasa a duplicado: siempre uno.
+--
+-- `posible_duplicado` se QUITÓ de la tabla (M1 y M4 aún no estaban en producción):
+-- dejarla sin usar habría invitado a leerla.
+--
 -- Canal (decisión del operador, "por flujo"): el carrito del chat es `online`; un
 -- presupuesto es `online` si nació en el chat y `tienda` si nació en Inventario.
 --
@@ -157,6 +185,11 @@ grant execute on function public.precio_venta_usd(public.products, text, numeric
 -- ---------------------------------------------------------------------------
 -- 2. La tabla de fotos
 -- ---------------------------------------------------------------------------
+-- La vista depende de las columnas de la tabla (`vs.*`): se suelta primero para
+-- poder quitar `posible_duplicado` en una base donde la primera versión de esta
+-- migración ya corrió (la local); se vuelve a crear en la sección 4.
+drop view if exists public.ventas_saint_estado;
+
 create table if not exists public.ventas_saint (
   -- Id del borrador de `liminal.saint_borradores`. Sin FK: el esquema `liminal`
   -- es del replicador y un borrador borrado allá no debe arrastrar la foto.
@@ -178,21 +211,40 @@ create table if not exists public.ventas_saint (
   lineas jsonb not null default '[]'::jsonb,
   lineas_sin_precio int not null default 0,
   estimado boolean not null default false,
-  posible_duplicado boolean not null default false,
+  -- Firma canónica de los ítems del borrador: `codprod:cantidad` ordenados por
+  -- código y separados por coma. null en la fila mínima de una foto rota.
+  firma_items text null,
   foto_error text null
 );
 
+-- Una base donde la primera versión de esta migración ya corrió (la local):
+-- agrega la firma, la rellena desde los ítems de cada borrador y quita la marca
+-- de duplicado, que ahora decide la vista al leer.
+alter table public.ventas_saint add column if not exists firma_items text null;
+alter table public.ventas_saint drop column if exists posible_duplicado;
+update public.ventas_saint vs
+   set firma_items = (
+     select string_agg(i.codprod || ':' || i.cantidad, ',' order by i.codprod)
+       from jsonb_to_recordset(b.items) as i(codprod text, cantidad int))
+  from liminal.saint_borradores b
+ where b.id = vs.borrador_id and vs.firma_items is null and vs.foto_error is null;
+
 comment on table public.ventas_saint is
-  'Foto de cada envío a SAINT (plan "Paneles", M1, 13/11/2026): monto en USD y Bs con el precio y la tasa del momento del envío, canal (online/tienda) y quién armó y envió. La escribe el trigger ventas_saint_foto_after_insert sobre liminal.saint_borradores; se lee solo por RPC security definer. monto_usd es null si algún renglón no tiene precio (nunca un total parcial). estimado y posible_duplicado marcan filas poco fiables; foto_error, una foto que no pudo calcularse.';
+  'Foto de cada envío a SAINT (plan "Paneles", M1, 13/11/2026): monto en USD y Bs con el precio y la tasa del momento del envío, canal (online/tienda) y quién armó y envió. La escribe el trigger ventas_saint_foto_after_insert sobre liminal.saint_borradores; se lee solo por RPC security definer (y por la vista ventas_saint_estado, que decide qué envío es una venta y cuál un duplicado). monto_usd es null si algún renglón no tiene precio (nunca un total parcial). estimado marca filas poco fiables; foto_error, una foto que no pudo calcularse.';
 comment on column public.ventas_saint.canal_fuente is
   '''registro'': el canal salió del origen del pedido (carrito = online; presupuesto según presupuestos.origen). ''inferido'': se dedujo a mano o por la fila mínima de una foto rota.';
 comment on column public.ventas_saint.rol_envia is
   'agents.role de quien envió, COPIADO al enviar (el rol puede cambiar después).';
-comment on column public.ventas_saint.posible_duplicado is
-  'true si ya existía otra foto del mismo origen (o de la misma conversación) con las mismas líneas (codprod + cantidad) y menos de 24 h antes.';
+comment on column public.ventas_saint.firma_items is
+  'Firma de los ítems del borrador (codprod:cantidad ordenados por código, separados por coma). La vista ventas_saint_estado la compara para decidir los duplicados al leer, contra el estado ACTUAL de cada envío (15/11/2026).';
 
 create index if not exists ventas_saint_created_at_idx on public.ventas_saint (created_at);
 create index if not exists ventas_saint_conversation_idx on public.ventas_saint (conversation_id);
+-- (15/11/2026) El índice parcial por `presupuesto_id` que existía para el
+-- `exists` de la vista de duplicados se retiró: la vista ahora hace una pasada de
+-- conjunto con `lag` y no consulta por presupuesto. Se suelta por si la base
+-- local ya lo tenía.
+drop index if exists public.ventas_saint_presupuesto_idx;
 create index if not exists ventas_saint_enviado_por_idx on public.ventas_saint (enviado_por, created_at);
 
 -- El `alter default privileges` de Supabase le da ALL a anon/authenticated/
@@ -224,7 +276,6 @@ declare
   v_monto numeric;
   v_monto_bs numeric;
   v_firma text;
-  v_dup boolean;
   v_error text;
 begin
   -- TODO el cuerpo va protegido: una foto que falla nunca aborta el envío.
@@ -316,32 +367,21 @@ begin
 
     v_monto_bs := case when v_monto is null or v_tasa is null then null else round(v_monto * v_tasa, 2) end;
 
-    -- Posible duplicado: otra foto del mismo origen (o de la misma conversación)
-    -- con las mismas líneas (codprod + cantidad) de menos de 24 h antes.
+    -- La firma de los ítems (codprod:cantidad, ordenados por código). El
+    -- duplicado ya NO se decide aquí: lo decide la vista `ventas_saint_estado` al
+    -- leer, contra el estado actual de cada envío (ver la cabecera).
     select string_agg(i.codprod || ':' || i.cantidad, ',' order by i.codprod)
       into v_firma
       from jsonb_to_recordset(new.items) as i(codprod text, cantidad int);
 
-    select exists (
-      select 1
-        from public.ventas_saint v
-        join liminal.saint_borradores b on b.id = v.borrador_id
-       where v.borrador_id <> new.id
-         and v.created_at <= new.created_at
-         and v.created_at > new.created_at - interval '24 hours'
-         and (b.origen_id = new.origen_id or (v_conv is not null and v.conversation_id = v_conv))
-         and (select string_agg(i.codprod || ':' || i.cantidad, ',' order by i.codprod)
-                from jsonb_to_recordset(b.items) as i(codprod text, cantidad int)) = v_firma
-    ) into v_dup;
-
     insert into public.ventas_saint (
       borrador_id, created_at, origen, canal, canal_fuente, conversation_id, presupuesto_id,
       armado_por, enviado_por, rol_envia, unidades, monto_usd, monto_bs, tasa_bcv,
-      lineas, lineas_sin_precio, posible_duplicado
+      lineas, lineas_sin_precio, firma_items
     ) values (
       new.id, new.created_at, new.origen, v_canal, v_fuente, v_conv, v_pres,
       v_armado, new.creado_por, v_rol, v_unidades, v_monto, v_monto_bs, v_tasa,
-      v_lineas, v_sin_precio, coalesce(v_dup, false)
+      v_lineas, v_sin_precio, v_firma
     )
     on conflict (borrador_id) do nothing;
   exception when others then
@@ -386,7 +426,87 @@ create trigger ventas_saint_foto_after_insert
   for each row execute function public.ventas_saint_foto();
 
 -- ---------------------------------------------------------------------------
--- 4. Autoverificación contra el catálogo real
+-- 4. La vista que decide qué es una venta y qué un duplicado
+-- ---------------------------------------------------------------------------
+-- Una fila por foto, con el estado ACTUAL de su borrador, los datos del cliente
+-- que las RPC de los paneles necesitan y `duplicado` (solo puede ser true si el
+-- envío está `creado`; ver la regla en la cabecera). Una venta es
+-- `estado = 'creado' and not duplicado`: TODAS las RPC de M4 usan esta vista y
+-- ninguna repite la regla.
+--
+-- CÓMO se calcula `duplicado` (15/11/2026, segunda corrección, medida): la
+-- primera versión de la corrección lo calculaba con un `exists` correlacionado
+-- por fila, con un `or` entre conversación y presupuesto, y esa forma costaba el
+-- doble de lo que cuestan los paneles SIN calcularlo (con 30 mil envíos:
+-- `panel_asesores` a 30 días, 1,2 s contra 0,6 s; a 92 días, 2,3 s contra 1,1 s).
+-- Dos razones: el `or` impide usar un solo índice, y `panel_conversaciones` y
+-- `panel_asesores` corren con `enable_nestloop = off` (ver M4), que castiga el
+-- `join` con `saint_borradores` DENTRO de cada subconsulta, una vez por fila.
+-- Ahora es una sola pasada, de conjunto, sin bucles por fila: el "anterior
+-- inmediato" con `lag` por partición (conversación + firma, y aparte presupuesto
+-- + firma), sobre los envíos `creado` con firma ordenados por (`created_at`,
+-- `borrador_id`). Es EQUIVALENTE a la regla de arriba: si el `creado` anterior
+-- más cercano de un grupo está a 24 h o más, ninguno de los anteriores (todos
+-- más lejanos) está a menos; y a igual `created_at` el predecesor inmediato es
+-- el de `borrador_id` menor, con diferencia 0 (< 24 h). Un `creado` solo entra
+-- como "anterior" si su estado ACTUAL es `creado`, porque la ventana solo recorre
+-- esos. La ventana mira TODA la tabla, no el rango que consulta la pantalla: un
+-- reenvío a las 00:20 sigue siendo duplicado de un envío de las 23:50 del día
+-- anterior aunque el rango arranque a medianoche. Por eso no hay filtro de fecha
+-- que empujar adentro, y por eso cuesta una pasada completa (~45 ms con 30 mil
+-- envíos): cada RPC de M4 lee la vista UNA vez por consulta (`panel_ventas`
+-- la lee una sola vez y de ahí saca el rango, los clientes genéricos y las
+-- compras previas).
+--
+-- Vista del dueño (`postgres`, no `security_invoker`): la leen solo funciones
+-- `security definer`; sin ningún grant a la API (mismo criterio que la tabla).
+create view public.ventas_saint_estado as
+select vs.*,
+       b.estado,
+       b.cedula_tipo,
+       b.cedula_numero,
+       b.codclie,
+       b.cliente_creado,
+       (d.borrador_id is not null) as duplicado
+  from public.ventas_saint vs
+  join liminal.saint_borradores b on b.id = vs.borrador_id
+  left join (
+    -- Duplicados por conversación (no nula) y firma.
+    select x.borrador_id
+      from (
+        select a.borrador_id,
+               a.created_at - lag(a.created_at) over (
+                 partition by a.conversation_id, a.firma_items
+                 order by a.created_at, a.borrador_id) as desde_el_anterior
+          from public.ventas_saint a
+          join liminal.saint_borradores ab on ab.id = a.borrador_id
+         where ab.estado = 'creado' and a.firma_items is not null and a.conversation_id is not null
+      ) x
+     where x.desde_el_anterior < interval '24 hours'
+    union
+    -- Duplicados por presupuesto (no nulo) y firma. `union` (no `all`): un envío
+    -- que lo es por las dos vías entra una sola vez y el `left join` no lo
+    -- multiplica.
+    select y.borrador_id
+      from (
+        select a.borrador_id,
+               a.created_at - lag(a.created_at) over (
+                 partition by a.presupuesto_id, a.firma_items
+                 order by a.created_at, a.borrador_id) as desde_el_anterior
+          from public.ventas_saint a
+          join liminal.saint_borradores ab on ab.id = a.borrador_id
+         where ab.estado = 'creado' and a.firma_items is not null and a.presupuesto_id is not null
+      ) y
+     where y.desde_el_anterior < interval '24 hours'
+  ) d on d.borrador_id = vs.borrador_id;
+
+comment on view public.ventas_saint_estado is
+  'Cada foto de ventas_saint con el estado ACTUAL de su borrador de SAINT y `duplicado` (plan "Paneles", M1, corrección del 15/11/2026): un envío creado es duplicado si existe OTRO envío creado anterior (a igual instante, el de borrador_id menor) del mismo origen o de la misma conversación, con la misma firma de ítems y a menos de 24 h. Un envío en error o en tránsito nunca vuelve duplicado a otro. Una venta es estado = creado y not duplicado. Se calcula en una pasada de conjunto (lag por conversacion+firma y por presupuesto+firma, 15/11/2026), no con una subconsulta por fila. Solo la leen las RPC security definer de los paneles.';
+
+revoke all on public.ventas_saint_estado from public, anon, authenticated, service_role;
+
+-- ---------------------------------------------------------------------------
+-- 5. Autoverificación contra el catálogo real
 -- ---------------------------------------------------------------------------
 do $$
 declare
@@ -405,6 +525,17 @@ begin
      or has_table_privilege('authenticated', 'public.ventas_saint', 'INSERT')
      or has_table_privilege('service_role', 'public.ventas_saint', 'SELECT') then
     raise exception '20261113010000: algún rol de la API puede tocar public.ventas_saint';
+  end if;
+  if has_table_privilege('anon', 'public.ventas_saint_estado', 'SELECT')
+     or has_table_privilege('authenticated', 'public.ventas_saint_estado', 'SELECT')
+     or has_table_privilege('service_role', 'public.ventas_saint_estado', 'SELECT') then
+    raise exception '20261113010000: algún rol de la API puede leer public.ventas_saint_estado';
+  end if;
+  if exists (
+    select 1 from pg_attribute
+     where attrelid = 'public.ventas_saint'::regclass and attname = 'posible_duplicado' and not attisdropped
+  ) then
+    raise exception '20261113010000: public.ventas_saint no debía conservar posible_duplicado (el duplicado se decide al leer)';
   end if;
 
   foreach f in array array[

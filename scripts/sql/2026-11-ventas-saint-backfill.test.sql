@@ -18,9 +18,12 @@
 --      sigue sumando la tarifa MRW.
 --   6. Un código que ya no existe en `products` -> monto null y una línea sin
 --      precio (nunca un total parcial).
---   7. Reenvío idéntico (misma conversación, mismas líneas, 1 h después) ->
---      `posible_duplicado` solo el segundo; y con dos envíos del MISMO instante
---      exacto, el id desempata (solo uno se marca).
+--   7. El duplicado ya NO se decide en el script (15/11/2026): la foto guarda
+--      `firma_items` (igual que el trigger de M1) y la vista `ventas_saint_estado`
+--      lo decide al leer. Reenvío idéntico (misma conversación, mismas líneas, 1 h
+--      después, los dos `creado`) -> duplicado solo el segundo; con dos envíos del
+--      MISMO instante exacto, el id desempata (solo uno cuenta como duplicado); y
+--      un `error` seguido de un reenvío idéntico `creado` NO es duplicado.
 --   8. Modo de prueba (`dry_run = true`) NO deja ninguna fila; el real sí.
 --   9. Idempotencia: correr el script dos veces no cambia nada.
 --
@@ -99,7 +102,9 @@ insert into public.presupuesto_items (presupuesto_id, product_id, quantity, pric
 --   B5 carrito conv 2, PA x1 + PD x1, 5/3/2001 (ANTES del recargo, tasa 40)
 --   B7 presupuesto borrado, un código que no existe, 21/3/2001
 --   B9 y B10 presupuesto borrado idéntico, MISMO instante exacto (el desempate
---       por id: solo uno de los dos es "posible duplicado")
+--       por id: solo uno de los dos es duplicado)
+--   B11 y B12 presupuesto borrado: B11 `error` y B12 `creado` idénticos, una hora
+--       después (el error nunca vuelve duplicado al reenvío)
 insert into liminal.saint_borradores
   (id, origen, origen_id, creado_por, cedula_tipo, cedula_numero, nombre, apellido, telefono, items, estado, created_at, codclie)
 values
@@ -122,7 +127,11 @@ values
   ('b0fb1111-0000-0000-0000-000000000009', 'presupuesto', 'b0fb2222-0000-0000-0000-000000000009',
    'c0f070c0-0000-0000-0000-0000000000b1', 'V', '9', 'Ana', 'Nueve', '', '[{"codprod":"BF-D","cantidad":1}]', 'creado', '2001-03-22 10:00-04', 'BF-NORMAL'),
   ('b0fb1111-0000-0000-0000-00000000000a', 'presupuesto', 'b0fb2222-0000-0000-0000-000000000009',
-   'c0f070c0-0000-0000-0000-0000000000b1', 'V', '9', 'Ana', 'Nueve', '', '[{"codprod":"BF-D","cantidad":1}]', 'creado', '2001-03-22 10:00-04', 'BF-NORMAL');
+   'c0f070c0-0000-0000-0000-0000000000b1', 'V', '9', 'Ana', 'Nueve', '', '[{"codprod":"BF-D","cantidad":1}]', 'creado', '2001-03-22 10:00-04', 'BF-NORMAL'),
+  ('b0fb1111-0000-0000-0000-00000000000b', 'presupuesto', 'b0fb2222-0000-0000-0000-00000000000b',
+   'c0f070c0-0000-0000-0000-0000000000b1', 'V', '11', 'Ana', 'Once', '', '[{"codprod":"BF-D","cantidad":1}]', 'error', '2001-03-23 10:00-04', null),
+  ('b0fb1111-0000-0000-0000-00000000000c', 'presupuesto', 'b0fb2222-0000-0000-0000-00000000000b',
+   'c0f070c0-0000-0000-0000-0000000000b1', 'V', '11', 'Ana', 'Once', '', '[{"codprod":"BF-D","cantidad":1}]', 'creado', '2001-03-23 11:00-04', 'BF-NORMAL');
 
 -- El codclie genérico del mostrador: 20 envíos `creado` en los últimos 30 días.
 insert into liminal.saint_borradores
@@ -151,11 +160,11 @@ having count(*) <> 0;
 \set dry_run false
 \i scripts/sql/2026-11-ventas-saint-backfill.sql
 
--- Las 10 de fixture + las 20 del codclie genérico.
+-- Las 12 de fixture + las 20 del codclie genérico.
 insert into _errores
-select 'real: fotos de fixture = ' || count(*) || ' (esperaba 10)'
+select 'real: fotos de fixture = ' || count(*) || ' (esperaba 12)'
   from public.ventas_saint where borrador_id::text like 'b0fb1111-%'
-having count(*) <> 10;
+having count(*) <> 12;
 insert into _errores
 select 'real: fotos de relleno genérico = ' || count(*) || ' (esperaba 20)'
   from public.ventas_saint v join liminal.saint_borradores b on b.id = v.borrador_id
@@ -184,30 +193,38 @@ select 'B1: ' || coalesce(to_jsonb(v)::text, 'sin foto')
             and v.enviado_por = 'c0f070c0-0000-0000-0000-0000000000b1'
             and v.rol_envia = 'agent'
             and v.unidades = 2 and v.monto_usd = 46.40 and v.monto_bs = 2320.00 and v.tasa_bcv = 50
-            and v.lineas_sin_precio = 0 and v.estimado and not v.posible_duplicado
+            and v.lineas_sin_precio = 0 and v.estimado and v.firma_items = 'BF-A:2'
             and v.created_at = '2001-03-15 12:00-04'
             and (v.lineas -> 0 ->> 'precio_usd')::numeric = 23.20
             and v.lineas -> 0 ->> 'price_kind' = 'promocion');
 
--- 7. B6: el reenvío idéntico es el único duplicado.
+-- 7. B6: el reenvío idéntico es el único duplicado (lo decide la vista al leer).
 insert into _errores
-select 'B6: debía ser posible_duplicado y online'
+select 'B6: debía ser duplicado y online'
   from (select 1) x
-  left join public.ventas_saint v on v.borrador_id = 'b0fb1111-0000-0000-0000-000000000006'
- where v.borrador_id is null or not (v.posible_duplicado and v.canal = 'online' and v.monto_usd = 46.40);
+  left join public.ventas_saint_estado v on v.borrador_id = 'b0fb1111-0000-0000-0000-000000000006'
+ where v.borrador_id is null or not (v.duplicado and v.canal = 'online' and v.monto_usd = 46.40);
 insert into _errores
-select 'otro envío marcado posible_duplicado: ' || borrador_id
-  from public.ventas_saint
- where borrador_id::text like 'b0fb1111-%' and posible_duplicado
+select 'otro envío duplicado: ' || borrador_id
+  from public.ventas_saint_estado
+ where borrador_id::text like 'b0fb1111-%' and duplicado
    and borrador_id not in ('b0fb1111-0000-0000-0000-000000000006', 'b0fb1111-0000-0000-0000-00000000000a');
 
--- 7b. Dos envíos idénticos del MISMO instante: el desempate es el id, así que
---     solo el segundo se marca (con `<=` se marcarían entre sí).
+-- 7c. B11 (error) y B12 (creado), idénticos: el error no vuelve duplicado al
+--     reenvío, y las dos fotos llevan la misma firma.
 insert into _errores
-select 'empate exacto: debía marcarse solo b...0a y quedó ' || coalesce(string_agg(right(borrador_id::text, 2), ','), 'ninguno')
-  from public.ventas_saint
+select 'B11/B12: ' || coalesce(string_agg(right(v.borrador_id::text, 2) || '=' || v.duplicado || '/' || coalesce(v.firma_items, 'null'), ', ' order by v.borrador_id), 'sin fotos')
+  from public.ventas_saint_estado v
+ where v.borrador_id in ('b0fb1111-0000-0000-0000-00000000000b', 'b0fb1111-0000-0000-0000-00000000000c')
+having count(*) <> 2 or bool_or(v.duplicado) or count(distinct v.firma_items) <> 1 or bool_or(v.firma_items is distinct from 'BF-D:1');
+
+-- 7b. Dos envíos idénticos del MISMO instante: el desempate es el id, así que
+--     solo el segundo cuenta como duplicado (con `<=` se marcarían entre sí).
+insert into _errores
+select 'empate exacto: debía ser duplicado solo b...0a y quedó ' || coalesce(string_agg(right(borrador_id::text, 2), ','), 'ninguno')
+  from public.ventas_saint_estado
  where borrador_id in ('b0fb1111-0000-0000-0000-000000000009', 'b0fb1111-0000-0000-0000-00000000000a')
-   and posible_duplicado
+   and duplicado
 having coalesce(string_agg(right(borrador_id::text, 2), ','), '') <> '0a';
 
 -- 2. B2: presupuesto vivo de Inventario -> tienda/registro. PD (USD 5,00) estándar,

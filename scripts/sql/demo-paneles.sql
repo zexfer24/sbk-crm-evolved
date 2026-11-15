@@ -664,9 +664,10 @@ begin
     reset role;
     update _plan set borrador_id = v_bid where ord = p.ord;
 
-    -- Un reenvío idéntico del mismo carrito (el trigger lo marca como posible
-    -- duplicado: el primero tiene que estar 'creado' antes, por el índice de
-    -- "un envío en curso por origen").
+    -- Un reenvío idéntico del mismo carrito (la vista ventas_saint_estado lo
+    -- cuenta como duplicado al leer, porque el primero queda 'creado'; el primero
+    -- tiene que estar 'creado' antes, por el índice de "un envío en curso por
+    -- origen").
     if p.ord = 30 then
       update liminal.saint_borradores set estado = 'creado' where id = v_bid;
       perform set_config('request.jwt.claims',
@@ -771,14 +772,14 @@ union all select '  creado', count(*) from liminal.saint_borradores b where b.no
 union all select '  pendiente', count(*) from liminal.saint_borradores b where b.nombre = 'Demo' and b.estado = 'pendiente'
 union all select '  error', count(*) from liminal.saint_borradores b where b.nombre = 'Demo' and b.estado = 'error'
 union all select 'fotos (ventas_saint)', count(*) from public.ventas_saint v join liminal.saint_borradores b on b.id = v.borrador_id where b.nombre = 'Demo'
-union all select '  posible duplicado', count(*) from public.ventas_saint v join liminal.saint_borradores b on b.id = v.borrador_id where b.nombre = 'Demo' and v.posible_duplicado
+union all select '  duplicado (lo decide la vista al leer)', count(*) from public.ventas_saint_estado v join liminal.saint_borradores b on b.id = v.borrador_id where b.nombre = 'Demo' and v.duplicado
 union all select '  sin monto', count(*) from public.ventas_saint v join liminal.saint_borradores b on b.id = v.borrador_id where b.nombre = 'Demo' and v.monto_usd is null
 union all select 'tasas BCV demo agregadas', count(*) from public.exchange_rates where source = 'demo-paneles';
 
-select b.estado, v.canal, count(*) as envios, round(sum(v.monto_usd), 2) as usd
-  from public.ventas_saint v join liminal.saint_borradores b on b.id = v.borrador_id
- where b.nombre = 'Demo' and not v.posible_duplicado
- group by b.estado, v.canal
- order by b.estado, v.canal;
+select v.estado, v.canal, count(*) as envios, round(sum(v.monto_usd), 2) as usd
+  from public.ventas_saint_estado v join liminal.saint_borradores b on b.id = v.borrador_id
+ where b.nombre = 'Demo' and not v.duplicado
+ group by v.estado, v.canal
+ order by v.estado, v.canal;
 
 commit;
