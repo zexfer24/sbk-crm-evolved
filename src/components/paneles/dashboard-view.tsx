@@ -1,25 +1,31 @@
 "use client";
 
+import { useState, type CSSProperties, type ReactNode } from "react";
 import type { BusinessHours } from "@/lib/business-hours";
 import type { Bloque, BloqueConTope } from "@/lib/paneles-data";
 import type { Vista } from "@/lib/paneles/canal";
 import type { PeriodoId } from "@/lib/paneles/periodos";
 import type { RangosDelDashboard } from "@/lib/paneles/rangos";
-import {
-  sumaCanales,
-  type CanalVentas,
-  type MetaVenta,
-  type PanelConversaciones,
-  type PanelVentas,
-  type PanelVentasActivas,
-} from "@/lib/paneles/parse";
-import { ControlPeriodo, ControlVista, PanelBloque, PanelMarco, formatoUsd } from "@/components/paneles/panel-marco";
+import type { MetaVenta, PanelConversaciones, PanelVentas, PanelVentasActivas } from "@/lib/paneles/parse";
+import { ControlPeriodo, ControlVista, PanelBloque, PanelMarco } from "@/components/paneles/panel-marco";
+import { periodoTocaAntesDeEnvios } from "@/components/paneles/dashboard/calculos";
+import { HojaConversion, HojaEnviado, HojaUnidades, HojaVentasActivas } from "@/components/paneles/dashboard/hojas";
+import { KpiConversion, KpiEnviado, KpiUnidades, KpiVentasActivas } from "@/components/paneles/dashboard/kpis";
+import { LoMasViejo } from "@/components/paneles/dashboard/lo-mas-viejo";
+import { ConversionPorPersona, EnviosPorPersona } from "@/components/paneles/dashboard/por-persona";
+import { TableroMensual } from "@/components/paneles/dashboard/tablero-mensual";
+import { TarjetaRendimiento } from "@/components/paneles/dashboard/tarjeta-rendimiento";
+import "@/components/paneles/dashboard/dashboard.css";
 
 /**
- * Dashboard de ventas (plan "Paneles", 13/11/2026). VISTA PROVISIONAL de C2/C3:
- * un resumen simple con los datos que ya llegan por props, para que la ruta y su
- * marco se puedan abrir y verificar. C4 la reemplaza entera; las props de abajo
- * son el contrato con `src/app/panel/page.tsx` y NO cambian.
+ * Dashboard de ventas (`/panel`, plan "Paneles", C4, 13/11/2026): el bento de
+ * la propuesta A · Mostrador con datos reales. `page.tsx` lee todo y llega por
+ * las props de abajo (contrato que NO cambia); acá solo se arma la pantalla.
+ *
+ * Cada tarjeta vive en su propio `PanelBloque`: una lectura caída pinta el
+ * degradado con Reintentar en ESE hueco y las demás siguen. Cambiar de vista o
+ * de período no remonta nada: `page.tsx` vuelve a pasar props y las cifras
+ * (`Cifra`) viajan del valor anterior al nuevo.
  */
 export interface DashboardViewProps {
   periodo: PeriodoId;
@@ -47,13 +53,25 @@ export interface DashboardViewProps {
   tasaBcv: number;
 }
 
-/** Los totales del canal elegido: "resumen" suma los dos. */
-function canalDeVista(v: PanelVentas, vista: Vista): CanalVentas {
-  return vista === "resumen" ? sumaCanales(v) : v.canales[vista];
+type HojaId = "activas" | "enviado" | "unidades" | "conversion";
+
+/** Una celda del bento: lleva su lugar en la grilla y su turno de entrada (`--i`, escalonado). */
+function Celda({ ancho, indice, clase, children }: { ancho: string; indice: number; clase: string; children: ReactNode }) {
+  return (
+    <div className={`${ancho} pd-celda ${clase}`} style={{ "--i": indice } as CSSProperties}>
+      {children}
+    </div>
+  );
 }
 
 export function DashboardView(props: DashboardViewProps) {
-  const { periodo, vista, ahora, ventas, ventasPrevio, ventasHoy, ventasActivas, conversaciones } = props;
+  const { periodo, vista, ahora, rangos, ventas, ventasPrevio, ventasHoy, ventasActivas, conversaciones } = props;
+  const [hoja, setHoja] = useState<HojaId | null>(null);
+  const cerrar = () => setHoja(null);
+
+  const previo = ventasPrevio.ok ? ventasPrevio.dato : null;
+  const [anio, mes] = rangos.hoyClave.split("-").map(Number);
+  const enTienda = vista === "tienda";
 
   return (
     <PanelMarco
@@ -69,73 +87,119 @@ export function DashboardView(props: DashboardViewProps) {
         </>
       }
     >
-      <div className="pn-bento">
-        <div className="pn-c6">
-          <PanelBloque bloque={ventas} nombre="Ventas del período">
-            {(dato) => {
-              const canal = canalDeVista(dato, vista);
-              return (
-                <section className="pn-card pn-card--hero">
-                  <p className="pn-eyebrow">Ventas · {props.rangos.periodo.etiqueta}</p>
-                  <p className="pn-kpi__cifra">{formatoUsd(canal.ingresos)}</p>
-                  <p className="pn-subtitulo">
-                    {canal.envios} envíos a SAINT · ticket {formatoUsd(canal.ticket)}
-                  </p>
-                  {ventasPrevio.ok && (
-                    <p className="pn-subtitulo">
-                      {props.rangos.previo.etiqueta}: {formatoUsd(canalDeVista(ventasPrevio.dato, vista).ingresos)}
-                    </p>
-                  )}
-                </section>
-              );
-            }}
+      <div className="pn-bento pd">
+        <Celda ancho="pn-c3" indice={0} clase="pd-celda--activas">
+          <PanelBloque bloque={ventasActivas} nombre="Ventas activas">
+            {(dato) => <KpiVentasActivas datos={dato} vista={vista} ahora={ahora} onAbrir={() => setHoja("activas")} />}
           </PanelBloque>
-        </div>
+        </Celda>
 
-        <div className="pn-c6">
-          <PanelBloque bloque={ventasHoy} nombre="Ventas de hoy">
-            {(dato) => {
-              const canal = canalDeVista(dato, vista);
-              return (
-                <section className="pn-card">
-                  <p className="pn-eyebrow">Hoy</p>
-                  <p className="pn-kpi__cifra">{formatoUsd(canal.ingresos)}</p>
-                  <p className="pn-subtitulo">{canal.envios} envíos</p>
-                </section>
-              );
-            }}
-          </PanelBloque>
-        </div>
-
-        <div className="pn-c6">
-          <PanelBloque bloque={ventasActivas} nombre="Ventas en curso">
+        <Celda ancho="pn-c3" indice={1} clase="pd-celda--enviado">
+          <PanelBloque bloque={ventas} nombre="Enviado a SAINT">
             {(dato) => (
-              <section className="pn-card">
-                <p className="pn-eyebrow">En curso</p>
-                <p className="pn-kpi__cifra">{formatoUsd(dato.total)}</p>
-                <p className="pn-subtitulo">
-                  {dato.presupuestos.cantidad} presupuestos · {dato.carritos.cantidad} carritos
-                </p>
-              </section>
+              <KpiEnviado
+                ventas={dato}
+                previo={previo}
+                etiquetaPrevio={rangos.previo.etiqueta}
+                vista={vista}
+                tasaBcv={props.tasaBcv}
+                avisarInicioDeEnvios={periodoTocaAntesDeEnvios(rangos.periodo.desde)}
+                onAbrir={() => setHoja("enviado")}
+              />
             )}
           </PanelBloque>
-        </div>
+        </Celda>
 
-        <div className="pn-c6">
-          <PanelBloque bloque={conversaciones} nombre="Conversaciones">
+        <Celda ancho="pn-c3" indice={2} clase="pd-celda--unidades">
+          <PanelBloque bloque={ventas} nombre="Unidades vendidas">
             {(dato) => (
-              <section className="pn-card">
-                <p className="pn-eyebrow">Chat</p>
-                <p className="pn-kpi__cifra">{dato.embudo.escribieron}</p>
-                <p className="pn-subtitulo">
-                  escribieron · {dato.embudo.compraron} compraron
-                  {conversaciones.recortado ? " (últimos 92 días)" : ""}
-                </p>
-              </section>
+              <KpiUnidades
+                ventas={dato}
+                previo={previo}
+                etiquetaPrevio={rangos.previo.etiqueta}
+                vista={vista}
+                onAbrir={() => setHoja("unidades")}
+              />
             )}
           </PanelBloque>
-        </div>
+        </Celda>
+
+        <Celda ancho="pn-c3" indice={3} clase="pd-celda--conversion">
+          {enTienda ? (
+            <KpiConversion conversaciones={null} recortado={false} enTienda />
+          ) : (
+            <PanelBloque bloque={conversaciones} nombre="Tasa de conversión">
+              {(dato) => (
+                <KpiConversion
+                  conversaciones={dato}
+                  recortado={conversaciones.recortado}
+                  enTienda={false}
+                  onAbrir={() => setHoja("conversion")}
+                />
+              )}
+            </PanelBloque>
+          )}
+        </Celda>
+
+        <Celda ancho="pn-c5" indice={4} clase="pd-celda--rendimiento">
+          <PanelBloque bloque={ventasHoy} nombre="Rendimiento de ventas">
+            {(dato) => (
+              <TarjetaRendimiento
+                hoy={dato}
+                historia={props.ventasHistoria}
+                metas={props.metas}
+                horario={props.horario}
+                vista={vista}
+                ahora={ahora}
+                hoyClave={rangos.hoyClave}
+              />
+            )}
+          </PanelBloque>
+        </Celda>
+
+        <Celda ancho="pn-c7" indice={5} clase="pd-celda--persona">
+          {enTienda ? (
+            <PanelBloque bloque={ventas} nombre="Envíos por persona">
+              {(dato) => <EnviosPorPersona ventas={dato} />}
+            </PanelBloque>
+          ) : (
+            <PanelBloque bloque={conversaciones} nombre="Conversión por persona">
+              {(dato) => <ConversionPorPersona conversaciones={dato} vista={vista} recortado={conversaciones.recortado} />}
+            </PanelBloque>
+          )}
+        </Celda>
+
+        <Celda ancho="pn-c8" indice={6} clase="pd-celda--tablero">
+          <PanelBloque bloque={props.ventasAnio} nombre="Ingresos por mes">
+            {(dato) => <TableroMensual ventas={dato} vista={vista} anio={anio} mesActual={mes} />}
+          </PanelBloque>
+        </Celda>
+
+        <Celda ancho="pn-c4" indice={7} clase="pd-celda--viejo">
+          <PanelBloque bloque={ventasActivas} nombre="Lo más viejo sin procesar">
+            {(dato) => <LoMasViejo datos={dato} vista={vista} ahora={ahora} onVerTodas={() => setHoja("activas")} />}
+          </PanelBloque>
+        </Celda>
       </div>
+
+      {ventasActivas.ok && (
+        <HojaVentasActivas
+          abierta={hoja === "activas"}
+          onCerrar={cerrar}
+          datos={ventasActivas.dato}
+          vista={vista}
+          ahora={ahora}
+        />
+      )}
+      {ventas.ok && (
+        <>
+          <HojaEnviado abierta={hoja === "enviado"} onCerrar={cerrar} ventas={ventas.dato} vista={vista} />
+          <HojaUnidades abierta={hoja === "unidades"} onCerrar={cerrar} ventas={ventas.dato} vista={vista} />
+        </>
+      )}
+      {conversaciones.ok && !enTienda && (
+        <HojaConversion abierta={hoja === "conversion"} onCerrar={cerrar} conversaciones={conversaciones.dato} />
+      )}
     </PanelMarco>
   );
 }

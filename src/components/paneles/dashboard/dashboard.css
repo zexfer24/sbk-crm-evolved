@@ -1,0 +1,674 @@
+/* ==========================================================================
+   Dashboard de ventas (`/panel`) — plan "Paneles", C4, 13/11/2026.
+   Lo propio del Dashboard encima de `paneles.css` (componentes base `pn-*`).
+   Prefijo `pd-` (`dash-` ya es del marco del CRM). Solo tokens `--lm-*` y
+   `--pn-*`: ningún color literal, así que el tema oscuro sale solo.
+   ========================================================================== */
+
+/* --------------------------------------------------------------------------
+   Entrada y movimiento: subidas cortas de 240 ms, escalonadas por `--i`.
+   `backwards` y no `both`: al terminar, el transform vuelve a ser del hover.
+   -------------------------------------------------------------------------- */
+@keyframes pd-sube {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+}
+@keyframes pd-crece {
+  from {
+    height: 0;
+  }
+}
+
+.pd-celda {
+  min-width: 0;
+  animation: pd-sube 240ms var(--lm-ease-out) backwards;
+  animation-delay: calc(var(--i, 0) * 45ms);
+}
+.pd-celda > section,
+.pd-celda > .pn-degradado {
+  height: 100%;
+}
+
+/* Móvil: lo que se mira primero va primero (rendimiento, enviado, ventas activas…). */
+@media (max-width: 700px) {
+  .pd-celda--rendimiento { order: 1; }
+  .pd-celda--enviado { order: 2; }
+  .pd-celda--activas { order: 3; }
+  .pd-celda--unidades { order: 4; }
+  .pd-celda--conversion { order: 5; }
+  .pd-celda--persona { order: 6; }
+  .pd-celda--tablero { order: 7; }
+  .pd-celda--viejo { order: 8; }
+}
+
+/* --------------------------------------------------------------------------
+   Tarjetas pequeñas
+   -------------------------------------------------------------------------- */
+.pd-kpi {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.pd-abrir {
+  min-width: 0;
+  padding: 2px 0;
+  border: 0;
+  background: none;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+  border-radius: 6px;
+}
+.pd-abrir:focus-visible {
+  outline: 2px solid var(--lm-ink);
+  outline-offset: 3px;
+}
+.pd-eyebrow {
+  margin: 0;
+}
+.pd-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.pd-bs {
+  margin: -2px 0 0;
+  font-size: 12.5px;
+  color: var(--lm-muted);
+}
+.pd-transito {
+  margin: 0;
+  font-size: 12.5px;
+  color: var(--lm-ink-soft);
+}
+.pd-transito b {
+  font-weight: 600;
+  color: var(--lm-ink);
+}
+
+/* Ventas activas: presupuestos contra carritos */
+.pd-apilada {
+  display: flex;
+  height: 10px;
+  gap: 2px;
+  border-radius: 999px;
+  overflow: hidden;
+  background: var(--lm-sunken);
+}
+.pd-apilada i {
+  display: block;
+  height: 100%;
+  min-width: 0;
+  transition: width 0.6s var(--lm-ease-out);
+}
+.pd-apilada__a,
+.pd-sw-presupuesto {
+  background: var(--lm-ink);
+}
+.pd-apilada__b,
+.pd-sw-carrito {
+  background: var(--lm-muted);
+}
+.pd-sw-online {
+  background: var(--pn-online);
+}
+.pd-sw-tienda {
+  background: var(--pn-tienda);
+}
+.pd-leyenda {
+  margin-top: 8px;
+}
+
+/* Unidades: mini barras de los envíos de cada tramo */
+.pd-minibarras {
+  display: flex;
+  align-items: flex-end;
+  gap: 2px;
+  height: 40px;
+}
+.pd-minibarras__b {
+  display: block;
+  flex: 1 1 0;
+  min-width: 1px;
+  background: var(--pn-online);
+  border-radius: 3px 3px 0 0;
+  opacity: 0.85;
+  transition: height 0.5s var(--lm-ease-out);
+}
+.pd-minibarras__b:last-child {
+  opacity: 1;
+}
+
+/* Conversión: cifra y anillo */
+.pd-conv {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+.pd-conv__txt {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.pd-conv .pn-anillo {
+  flex-shrink: 0;
+}
+.pd .pn-anillo__arco {
+  transition: stroke-dasharray 0.9s var(--lm-ease-out);
+}
+
+/* --------------------------------------------------------------------------
+   Rendimiento de ventas (tarjeta oscura)
+   -------------------------------------------------------------------------- */
+.pd-hero {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+.pd-hero .pn-card__cab {
+  margin-bottom: 0;
+}
+.pd-hero__top {
+  display: flex;
+  align-items: center;
+  gap: 22px;
+  flex-wrap: wrap;
+}
+.pd-hero .pn-anillo {
+  flex-shrink: 0;
+}
+.pd-hero .pn-anillo__cifra {
+  font-size: 26px;
+}
+.pd-hero__datos {
+  flex: 1 1 200px;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.pd-logrado {
+  display: block;
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+  letter-spacing: -0.03em;
+  font-size: clamp(28px, 3vw, 38px);
+  line-height: 1.05;
+}
+.pd-etq {
+  margin: 2px 0 0;
+  font-size: 12.5px;
+  color: var(--pn-hero-soft);
+}
+.pd-meta {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  font-size: 13px;
+  color: var(--pn-hero-soft);
+}
+.pd-meta__valor {
+  font-weight: 600;
+  font-size: 15px;
+  color: var(--pn-hero-fg);
+}
+.pd-lapiz {
+  display: inline-grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  border: 0;
+  border-radius: 999px;
+  background: var(--pn-hero-chip);
+  color: var(--pn-hero-fg);
+  cursor: pointer;
+  transition: background-color 0.2s;
+}
+.pd-lapiz:hover {
+  background: var(--pn-hero-pista);
+}
+
+/* Edición de la meta */
+.pd-meta-form {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.pd-meta-form__campo {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 12.5px;
+  color: var(--pn-hero-soft);
+}
+.pd-meta-form__input {
+  width: 100%;
+  max-width: 200px;
+  padding: 8px 10px;
+  border: 1px solid var(--pn-hero-linea);
+  border-radius: 10px;
+  background: var(--pn-hero-chip);
+  color: var(--pn-hero-fg);
+  font-family: var(--font-mono);
+  font-size: 15px;
+}
+.pd-meta-form__input:focus-visible {
+  outline: 2px solid var(--pn-hero-fg);
+  outline-offset: 2px;
+}
+.pd-meta-form__error {
+  margin: 0;
+  font-size: 12.5px;
+  color: var(--pn-hero-critico);
+}
+.pd-meta-form__acciones {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.pn-card--hero .pd-boton-hero {
+  background: var(--pn-hero-chip);
+  color: var(--pn-hero-fg);
+}
+.pn-card--hero .pd-boton-hero:hover:not(:disabled) {
+  background: var(--pn-hero-pista);
+}
+.pd-boton-hero:disabled {
+  opacity: 0.6;
+  cursor: progress;
+}
+
+.pd-cerrado {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 18px 0 6px;
+}
+.pd-cerrado__txt {
+  margin: 0;
+  font-family: var(--font-display);
+  font-style: italic;
+  font-weight: 600;
+  font-size: 26px;
+  letter-spacing: -0.02em;
+}
+
+.pd-proyeccion {
+  margin: 0;
+  font-size: 13px;
+  color: var(--pn-hero-soft);
+}
+.pd-proyeccion b {
+  font-weight: 600;
+  color: var(--pn-hero-fg);
+}
+
+/* Ritmo por hora */
+.pd-ritmo-bloque {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.pd-ritmo-bloque__tit {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.pd-ritmo-bloque .pn-eyebrow {
+  margin: 0;
+}
+.pd-leyenda-ritmo {
+  display: inline-flex;
+  gap: 14px;
+  font-size: 12px;
+  color: var(--pn-hero-soft);
+}
+.pd-leyenda-ritmo > span::before {
+  content: "";
+  display: inline-block;
+  width: 16px;
+  margin-right: 6px;
+  vertical-align: middle;
+  border-top: 2.5px solid var(--pn-hero-bien);
+}
+.pd-leyenda-ritmo > .pd-leyenda-ritmo__meta::before {
+  border-top: 2px dashed var(--pn-hero-fg);
+}
+.pd-ritmo {
+  position: relative;
+}
+.pd-ritmo .pn-graf__lienzo:focus-visible {
+  outline: 2px solid var(--pn-hero-fg);
+}
+.pd-ritmo__rejilla line {
+  stroke: var(--pn-hero-linea);
+  stroke-width: 1;
+}
+.pd-ritmo__rejilla text {
+  fill: var(--pn-hero-soft);
+  font-size: 11px;
+  font-family: var(--font-mono);
+}
+.pd-ritmo__real {
+  stroke: var(--pn-hero-bien);
+}
+.pd-ritmo__meta {
+  stroke: var(--pn-hero-fg);
+  opacity: 0.75;
+}
+.pd-ritmo__cursor {
+  stroke: var(--pn-hero-soft);
+  stroke-width: 1;
+  stroke-dasharray: 3 3;
+}
+.pd-ritmo__punto-real {
+  fill: var(--pn-hero-bien);
+  stroke: var(--pn-hero-bg);
+  stroke-width: 2;
+}
+.pd-ritmo__punto-meta {
+  fill: var(--pn-hero-fg);
+  stroke: var(--pn-hero-bg);
+  stroke-width: 2;
+}
+.pd-ritmo__lectura {
+  min-height: 18px;
+  margin: 4px 0 0;
+  font-size: 12px;
+  font-family: var(--font-mono);
+  color: var(--pn-hero-soft);
+}
+
+.pd-racha {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  flex-wrap: wrap;
+  padding-top: 12px;
+  border-top: 1px solid var(--pn-hero-linea);
+}
+.pd-racha__txt {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  font-weight: 600;
+}
+.pd-puntos {
+  display: inline-flex;
+  gap: 5px;
+}
+.pd-punto {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  border: 2px solid var(--pn-hero-soft);
+}
+.pd-punto--si {
+  border-color: var(--pn-hero-bien);
+  background: var(--pn-hero-bien);
+}
+
+/* --------------------------------------------------------------------------
+   Por persona
+   -------------------------------------------------------------------------- */
+.pd-persona {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.pd-prom-tag {
+  font-size: 12.5px;
+  color: var(--lm-ink-soft);
+}
+.pd-prom-tag b {
+  font-weight: 600;
+  color: var(--lm-ink);
+}
+.pd-personas {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+.pd-persona-fila {
+  display: grid;
+  grid-template-columns: 34px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 12px;
+}
+.pd-persona-fila--vacia {
+  opacity: 0.7;
+}
+.pd-persona-fila__centro {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.pd-persona-fila__linea {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  min-width: 0;
+}
+.pd-persona-fila__linea b {
+  font-size: 13.5px;
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.pd-persona-fila__linea small {
+  font-size: 12px;
+  color: var(--lm-muted);
+  white-space: nowrap;
+}
+.pd-persona-fila__pct {
+  min-width: 56px;
+  text-align: right;
+  font-weight: 600;
+  font-size: 14px;
+}
+.pd-pista {
+  position: relative;
+  height: 10px;
+  border-radius: 999px;
+  background: var(--lm-sunken);
+}
+.pd-pista__relleno {
+  display: block;
+  height: 100%;
+  border-radius: 999px;
+  background: var(--pn-online);
+  transition: width 0.6s var(--lm-ease-out);
+}
+.pd-pista__relleno--ia {
+  background: var(--pn-seba);
+}
+.pd-pista__relleno--tienda {
+  background: var(--pn-tienda);
+}
+/* El promedio del equipo: una marca vertical en cada pista */
+.pd-pista__prom {
+  position: absolute;
+  top: -3px;
+  bottom: -3px;
+  width: 2px;
+  margin-left: -1px;
+  border-radius: 2px;
+  background: var(--pn-meta);
+}
+
+/* --------------------------------------------------------------------------
+   Tablero mensual
+   -------------------------------------------------------------------------- */
+.pd-tablero {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.pd-tablero__lectura {
+  min-height: 20px;
+  margin: 0;
+  font-size: 13px;
+  color: var(--lm-ink-soft);
+}
+.pd-meses {
+  display: grid;
+  grid-template-columns: repeat(12, minmax(0, 1fr));
+  gap: 6px;
+  align-items: end;
+}
+.pd-mes {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 6px;
+  min-width: 0;
+  padding: 4px 0;
+  border-radius: 10px;
+}
+.pd-mes--leido {
+  background: var(--lm-sunken);
+}
+.pd-mes__columna {
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+  height: 150px;
+  padding: 0 3px;
+}
+.pd-mes__barra {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  width: 100%;
+  max-width: 34px;
+  min-height: 0;
+  transition: height 0.6s var(--lm-ease-out);
+  animation: pd-crece 0.5s var(--lm-ease-out) backwards;
+}
+.pd-mes__seg {
+  display: block;
+  flex-basis: 0;
+  min-height: 2px;
+}
+.pd-mes__seg:first-child {
+  border-radius: 4px 4px 1px 1px;
+}
+.pd-mes__seg:last-child {
+  border-radius: 1px 1px 0 0;
+}
+.pd-mes__seg:only-child {
+  border-radius: 4px 4px 0 0;
+}
+.pd-mes__seg--online {
+  background: var(--pn-online);
+}
+.pd-mes__seg--tienda {
+  background: var(--pn-tienda);
+}
+.pd-mes__etq {
+  text-align: center;
+  font-size: 11px;
+  color: var(--lm-muted);
+}
+.pd-mes--actual .pd-mes__etq {
+  color: var(--lm-ink);
+  font-weight: 700;
+}
+.pd-mes--actual .pd-mes__etq::after {
+  content: "";
+  display: block;
+  width: 5px;
+  height: 5px;
+  margin: 3px auto 0;
+  border-radius: 50%;
+  background: var(--lm-ink);
+}
+.pd-mes--futuro .pd-mes__etq {
+  opacity: 0.55;
+}
+.pd-marca-actual {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--lm-ink);
+  flex-shrink: 0;
+}
+
+/* --------------------------------------------------------------------------
+   Lo más viejo
+   -------------------------------------------------------------------------- */
+.pd-viejo {
+  display: flex;
+  flex-direction: column;
+}
+.pd-viejo .pn-lista {
+  flex: 1 1 auto;
+}
+.pd-viejo__der {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 2px;
+  flex-shrink: 0;
+}
+.pd-viejo__der b {
+  font-size: 13.5px;
+  font-weight: 600;
+}
+.pd-viejo__der small {
+  font-size: 12px;
+  color: var(--lm-muted);
+}
+.pd-viejo__pie {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-top: 12px;
+}
+.pd-viejo__pie .pn-kpi__pie {
+  min-width: 0;
+}
+
+/* Subtítulo de una sección dentro de una hoja */
+.pd-hoja-sub {
+  margin: 18px 0 8px;
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--lm-muted);
+}
+
+/* --------------------------------------------------------------------------
+   Movimiento reducido: estado final directo, sin entradas ni crecimientos.
+   -------------------------------------------------------------------------- */
+@media (prefers-reduced-motion: reduce) {
+  .pd-celda,
+  .pd-mes__barra {
+    animation: none;
+  }
+  .pd-apilada i,
+  .pd-minibarras__b,
+  .pd-pista__relleno,
+  .pd-mes__barra,
+  .pd .pn-anillo__arco {
+    transition: none;
+  }
+}
