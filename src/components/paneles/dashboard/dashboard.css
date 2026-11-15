@@ -315,6 +315,18 @@
   font-weight: 600;
   color: var(--pn-hero-fg);
 }
+/* El lápiz de la meta (15/11/2026) queda pegado al valor, alineado al centro de su línea; si no cabe, baja. */
+.pd-cerrado__meta {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+/* Editando en un día cerrado el formulario ocupa el lugar de «Meta de ese día», sin pasarse del ancho de la tarjeta. */
+.pd-cerrado > .pd-meta-form {
+  margin-top: 12px;
+  min-width: 0;
+}
 
 .pd-proyeccion {
   margin: 0;

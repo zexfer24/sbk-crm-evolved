@@ -257,12 +257,50 @@ describe("DashboardView: rendimiento de ventas", () => {
     expect(hero).not.toHaveTextContent("cerrarías");
   });
 
-  it("un día cerrado dice que la tienda no abre y no deja editar la meta", () => {
+  it("un día cerrado dice que la tienda no abre y sí deja editar la meta", () => {
+    // 15/11/2026: la fila nueva rige desde hoy, así que en un día cerrado fija la meta del próximo día hábil.
     const rangos = rangosDelDashboard("hoy", AHORA_DOMINGO);
     render(<DashboardView {...propsBase({ ahora: AHORA_DOMINGO, rangos })} />);
     const hero = seccion("Rendimiento de ventas");
     expect(within(hero).getByText("Hoy la tienda no abre")).toBeInTheDocument();
-    expect(within(hero).queryByRole("button", { name: /Editar la meta/ })).toBeNull();
+    expect(within(hero).getByRole("button", { name: "Editar la meta diaria" })).toBeInTheDocument();
+  });
+
+  it("en un día cerrado, editar la meta de un canal llama a guardarMetaVenta con el día de hoy y refresca", async () => {
+    const user = userEvent.setup({ delay: null, pointerEventsCheck: 0 });
+    const rangos = rangosDelDashboard("hoy", AHORA_DOMINGO);
+    expect(rangos.hoyClave).toBe("2026-11-15");
+    render(<DashboardView {...propsBase({ ahora: AHORA_DOMINGO, rangos, vista: "online" })} />);
+    const hero = seccion("Rendimiento de ventas");
+
+    await user.click(within(hero).getByRole("button", { name: "Editar la meta diaria" }));
+    const campo = within(hero).getByLabelText("Meta del día (USD)");
+    await user.clear(campo);
+    await user.type(campo, "2500");
+    await user.click(within(hero).getByRole("button", { name: "Guardar meta" }));
+
+    await waitFor(() => expect(guardarMetaVenta).toHaveBeenCalledTimes(1));
+    expect(guardarMetaVenta).toHaveBeenCalledWith(clienteFalso, "online", 2500, "2026-11-15");
+    await waitFor(() => expect(refresh).toHaveBeenCalled());
+  });
+
+  it("en un día cerrado, el lápiz del resumen abre los dos campos (online y tienda)", async () => {
+    const user = userEvent.setup({ delay: null, pointerEventsCheck: 0 });
+    const rangos = rangosDelDashboard("hoy", AHORA_DOMINGO);
+    render(<DashboardView {...propsBase({ ahora: AHORA_DOMINGO, rangos })} />);
+    const hero = seccion("Rendimiento de ventas");
+
+    await user.click(within(hero).getByRole("button", { name: "Editar la meta diaria" }));
+    expect(within(hero).getByLabelText("Meta online (USD)")).toHaveValue(2000);
+    expect(within(hero).getByLabelText("Meta en tienda (USD)")).toHaveValue(1000);
+    expect(within(hero).getByRole("button", { name: "Cancelar" })).toBeInTheDocument();
+
+    const tienda = within(hero).getByLabelText("Meta en tienda (USD)");
+    await user.clear(tienda);
+    await user.type(tienda, "1200");
+    await user.click(within(hero).getByRole("button", { name: "Guardar meta" }));
+    await waitFor(() => expect(guardarMetaVenta).toHaveBeenCalledTimes(1));
+    expect(guardarMetaVenta).toHaveBeenCalledWith(clienteFalso, "tienda", 1200, "2026-11-15");
   });
 
   it("en un día cerrado la tarjeta sigue siendo útil: próxima apertura, la meta que regirá y la racha", () => {
@@ -287,7 +325,7 @@ describe("DashboardView: rendimiento de ventas", () => {
     expect(within(hero).getByText(/Racha: 3 días/)).toBeInTheDocument();
     // Lo del día abierto no se pinta: ni anillo, ni «logrado hoy», ni ritmo.
     expect(hero).not.toHaveTextContent("logrado hoy");
-    expect(within(hero).queryByRole("button", { name: /Editar la meta/ })).toBeNull();
+    expect(within(hero).getByRole("button", { name: "Editar la meta diaria" })).toBeInTheDocument();
   });
 
   it("en un día cerrado, lo que no se puede calcular es «—»: sin metas leídas no hay meta del lunes", () => {
@@ -297,6 +335,8 @@ describe("DashboardView: rendimiento de ventas", () => {
     expect(within(hero).getByText("el lunes a las 8:00 am")).toBeInTheDocument();
     expect(within(hero).getByText("Meta de ese día").parentElement).toHaveTextContent("—");
     expect(hero).not.toHaveTextContent("Racha");
+    // Sin metas leídas tampoco hay lápiz: igual que en un día abierto, solo con la lista.
+    expect(within(hero).queryByRole("button", { name: /Editar la meta/ })).toBeNull();
   });
 
   it("en un día abierto no aparece nada de la próxima apertura", () => {

@@ -41,8 +41,12 @@ import { GraficoRitmo } from "@/components/paneles/dashboard/grafico-ritmo";
  * - En el Resumen la meta es la SUMA de las dos y no se puede escribir una
  *   suma: el lápiz abre dos campos (online y tienda) y solo guarda el que
  *   cambió.
- * - Con la tienda cerrada hoy no se edita (la meta de hoy no existe): se
- *   edita el próximo día hábil.
+ * - Con la tienda cerrada hoy SÍ se edita (15/11/2026; hasta ese día el lápiz
+ *   se ocultaba porque "la meta de hoy no existe"): `guardarMetaVenta` escribe
+ *   `vigente_desde = hoy` y esa fila rige desde hoy en adelante, así que un
+ *   domingo fija justo la «Meta de ese día» del lunes que la tarjeta muestra.
+ *   Un supervisor que mira el tablero el fin de semana tiene que poder fijarla.
+ *   El formulario es el mismo que el del día abierto (`formularioMeta`).
  * - Un día cerrado ya no es un hueco con una frase (15/11/2026): dice cuándo
  *   abre, la meta que regirá ese día (`metaDelDia` sobre la fecha de la próxima
  *   apertura) y deja la racha, que no depende de que hoy sea hábil. Lo que no se
@@ -177,6 +181,63 @@ export function TarjetaRendimiento({
     }
   }
 
+  // El lápiz y el formulario de la meta los comparten el día abierto y el cerrado (15/11/2026):
+  // un solo JSX, para que las dos ramas no se desalineen. El lápiz solo existe con las metas leídas.
+  function botonLapiz() {
+    if (!lista) return null;
+    return (
+      <button type="button" className="pd-lapiz" aria-label="Editar la meta diaria" onClick={abrirEdicion}>
+        <Pencil size={14} aria-hidden="true" />
+      </button>
+    );
+  }
+
+  function formularioMeta() {
+    return (
+      <form className="pd-meta-form" onSubmit={guardar} noValidate>
+        {canalesEditables.map((canal) => {
+          const etiqueta =
+            canalesEditables.length === 1
+              ? "Meta del día (USD)"
+              : canal === "online"
+                ? "Meta online (USD)"
+                : "Meta en tienda (USD)";
+          return (
+            <label key={canal} className="pd-meta-form__campo" htmlFor={`${idCampo}-${canal}`}>
+              <span>{etiqueta}</span>
+              <input
+                id={`${idCampo}-${canal}`}
+                className="pd-meta-form__input"
+                type="number"
+                inputMode="decimal"
+                min="0"
+                step="0.01"
+                value={campos[canal]}
+                onChange={(e) => setCampos((previos) => ({ ...previos, [canal]: e.target.value }))}
+                disabled={guardando}
+              />
+            </label>
+          );
+        })}
+        {error && (
+          <p className="pd-meta-form__error" role="alert">
+            {error}
+          </p>
+        )}
+        <div className="pd-meta-form__acciones">
+          <button type="submit" className="pn-boton pd-boton-hero" disabled={guardando}>
+            <Check size={14} aria-hidden="true" />
+            Guardar meta
+          </button>
+          <button type="button" className="pn-boton pd-boton-hero" onClick={() => setEditando(false)} disabled={guardando}>
+            <X size={14} aria-hidden="true" />
+            Cancelar
+          </button>
+        </div>
+      </form>
+    );
+  }
+
   // El eje del ritmo: del inicio de la atención al cierre (incluye una hora de gracia si se vende después).
   const desdeHora = ventana ? Math.floor(ventana.desde) : 0;
   const hastaHora = ventana ? Math.min(23, Math.ceil(ventana.hasta)) : 23;
@@ -205,13 +266,17 @@ export function TarjetaRendimiento({
               <dt className="pn-eyebrow">Próxima apertura</dt>
               <dd>{apertura ? `${apertura.etiqueta} a las ${apertura.hora}` : "—"}</dd>
             </div>
-            <div>
-              <dt className="pn-eyebrow">Meta de ese día</dt>
-              <dd>
-                <Cifra valor={metaApertura} formato={formatoUsd} className="lm-num" />
-              </dd>
-            </div>
+            {!editando && (
+              <div>
+                <dt className="pn-eyebrow">Meta de ese día</dt>
+                <dd className="pd-cerrado__meta">
+                  <Cifra valor={metaApertura} formato={formatoUsd} className="lm-num" />
+                  {botonLapiz()}
+                </dd>
+              </div>
+            )}
           </dl>
+          {editando && formularioMeta()}
         </div>
       ) : (
         <>
@@ -229,56 +294,12 @@ export function TarjetaRendimiento({
               </div>
 
               {editando ? (
-                <form className="pd-meta-form" onSubmit={guardar} noValidate>
-                  {canalesEditables.map((canal) => {
-                    const etiqueta =
-                      canalesEditables.length === 1
-                        ? "Meta del día (USD)"
-                        : canal === "online"
-                          ? "Meta online (USD)"
-                          : "Meta en tienda (USD)";
-                    return (
-                      <label key={canal} className="pd-meta-form__campo" htmlFor={`${idCampo}-${canal}`}>
-                        <span>{etiqueta}</span>
-                        <input
-                          id={`${idCampo}-${canal}`}
-                          className="pd-meta-form__input"
-                          type="number"
-                          inputMode="decimal"
-                          min="0"
-                          step="0.01"
-                          value={campos[canal]}
-                          onChange={(e) => setCampos((previos) => ({ ...previos, [canal]: e.target.value }))}
-                          disabled={guardando}
-                        />
-                      </label>
-                    );
-                  })}
-                  {error && (
-                    <p className="pd-meta-form__error" role="alert">
-                      {error}
-                    </p>
-                  )}
-                  <div className="pd-meta-form__acciones">
-                    <button type="submit" className="pn-boton pd-boton-hero" disabled={guardando}>
-                      <Check size={14} aria-hidden="true" />
-                      Guardar meta
-                    </button>
-                    <button type="button" className="pn-boton pd-boton-hero" onClick={() => setEditando(false)} disabled={guardando}>
-                      <X size={14} aria-hidden="true" />
-                      Cancelar
-                    </button>
-                  </div>
-                </form>
+                formularioMeta()
               ) : (
                 <div className="pd-meta">
                   <span>Meta diaria</span>
                   <Cifra valor={meta} formato={formatoUsd} className="pd-meta__valor lm-num" />
-                  {lista && (
-                    <button type="button" className="pd-lapiz" aria-label="Editar la meta diaria" onClick={abrirEdicion}>
-                      <Pencil size={14} aria-hidden="true" />
-                    </button>
-                  )}
+                  {botonLapiz()}
                 </div>
               )}
 
