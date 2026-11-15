@@ -44,6 +44,19 @@ export interface SerieGrafico {
 const MARGEN_DER_MIN = 10;
 const MARGEN_SUP = 10;
 const MARGEN_INF = 24;
+/**
+ * Ancho máximo de una barra, en píxeles (15/11/2026). El ancho salía de dividir
+ * la banda entre las barras sin tope: en «Ingresos mes a mes» de Analíticas, con
+ * dos meses de datos, cada barra medía ~600 px a 1440 px de pantalla y eran dos
+ * bloques que no se leían como un gráfico de barras. 56 px es lo bastante
+ * ancho para que una barra se vea sólida y lo bastante angosto para que dos
+ * barras sigan siendo barras; la banda (puntero, tooltip y rótulo del eje X)
+ * conserva todo su ancho. Con 24 horas o 30 días las barras ya son más angostas
+ * que esto y el tope no las toca.
+ */
+const ANCHO_MAX_BARRA = 56;
+/** Separación entre barras vecinas de un mismo grupo (barras agrupadas). */
+const SEPARACION_BARRAS = 2;
 
 const redondear = (n: number) => String(Math.round(n));
 
@@ -296,7 +309,14 @@ export function BarrasVerticales({
   const banda = plotW / n;
   const relleno = banda * 0.22;
   const interior = banda - relleno;
-  const anchoBarra = apiladas ? interior : interior / Math.max(series.length, 1);
+  const separacion = apiladas ? 0 : SEPARACION_BARRAS;
+  const anchoCasilla = apiladas ? interior : interior / Math.max(series.length, 1);
+  // Cada barra visible mide a lo sumo `ANCHO_MAX_BARRA`; la casilla incluye su separación.
+  const anchoBarra = Math.min(anchoCasilla, ANCHO_MAX_BARRA + separacion);
+  const topada = anchoBarra < anchoCasilla;
+  const anchoGrupo = apiladas ? anchoBarra : series.length * anchoBarra - separacion;
+  // Sin tope, el relleno se reparte a los lados como siempre; con tope, el grupo se centra en su banda.
+  const sangria = topada ? (banda - anchoGrupo) / 2 : relleno / 2;
   const altoDe = (v: number) => (v / pico) * plotH;
   // Cada rótulo va centrado en su banda: caben los que entren en `banda` px.
   const pasoEtiqueta = pasoDeEtiquetas(banda, Math.max(0, ...categorias.map((c) => anchoDeEtiqueta(c.etiqueta))));
@@ -328,7 +348,7 @@ export function BarrasVerticales({
               {series.map((serie, s) => {
                 const valor = valorDe(categoria, s);
                 const h = altoDe(valor);
-                const x = apiladas ? x0 + relleno / 2 : x0 + relleno / 2 + s * anchoBarra;
+                const x = apiladas ? x0 + sangria : x0 + sangria + s * anchoBarra;
                 const y = apiladas ? MARGEN_SUP + plotH - altoDe(acumulado + valor) : MARGEN_SUP + plotH - h;
                 if (apiladas) acumulado += valor;
                 return (
@@ -338,7 +358,7 @@ export function BarrasVerticales({
                     data-serie={serie.id}
                     x={x}
                     y={y}
-                    width={Math.max(anchoBarra - (apiladas ? 0 : 2), 1)}
+                    width={Math.max(anchoBarra - separacion, 1)}
                     height={h}
                     rx={3}
                     fill={serie.color}

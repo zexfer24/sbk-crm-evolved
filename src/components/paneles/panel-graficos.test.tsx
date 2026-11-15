@@ -14,6 +14,8 @@ import { Anillo, BarraApilada100, BarrasVerticales, LineaArea, Sparkline, type S
 const ONLINE: SerieGrafico = { id: "online", nombre: "Online", color: "var(--pn-online)" };
 const TIENDA: SerieGrafico = { id: "tienda", nombre: "Tienda", color: "var(--pn-tienda)" };
 const usd = (n: number) => `$${n.toFixed(0)}`;
+/** El tope de ancho de una barra (el mismo que `ANCHO_MAX_BARRA` de `panel-graficos.tsx`). */
+const ANCHO_MAX_BARRA = 56;
 
 describe("Sparkline", () => {
   it("es una imagen con su resumen y traza un punto por valor", () => {
@@ -366,6 +368,72 @@ describe("el viewBox sigue al ancho medido del contenedor", () => {
     const { container } = render(<BarrasVerticales categorias={meses} series={[ONLINE]} formato={usd} ariaLabel="x" />);
     medir(390);
     expect(etiquetasX(container).length).toBeLessThan(12);
+  });
+
+  /**
+   * 15/11/2026: en `/panel/analiticas?periodo=30d`, «Ingresos mes a mes» solo
+   * tenía dos meses y cada barra medía ~600 px a 1440 px (el ancho de la barra
+   * salía de dividir el ancho entre la cantidad de barras): dos bloques que no
+   * se leían como gráfico de barras. Ahora la barra tiene un ancho máximo y se
+   * centra en su banda; la banda (puntero y rótulo) sigue ocupando todo el tramo.
+   */
+  const rectas = (container: HTMLElement, selector: string) =>
+    Array.from(container.querySelectorAll<SVGRectElement>(selector)).map((r) => ({
+      x: Number(r.getAttribute("x")),
+      ancho: Number(r.getAttribute("width")),
+    }));
+
+  it("BarrasVerticales: con 2 barras a 1264 px ninguna supera el máximo y cada una queda centrada en su banda", () => {
+    const { container } = render(
+      <BarrasVerticales
+        categorias={[
+          { etiqueta: "oct", valores: [100] },
+          { etiqueta: "nov", valores: [300] },
+        ]}
+        series={[ONLINE]}
+        ariaLabel="x"
+      />
+    );
+    medir(1264);
+
+    const barras = rectas(container, ".pn-barra");
+    const bandas = rectas(container, ".pn-zona");
+    expect(barras).toHaveLength(2);
+    expect(bandas[0].ancho).toBeGreaterThan(500); // la banda sigue ancha
+    barras.forEach((barra, i) => {
+      expect(barra.ancho).toBeLessThanOrEqual(ANCHO_MAX_BARRA);
+      expect(barra.ancho).toBeGreaterThan(20); // y no se vuelve un hilo
+      expect(barra.x + barra.ancho / 2).toBeCloseTo(bandas[i].x + bandas[i].ancho / 2, 1);
+    });
+  });
+
+  it("BarrasVerticales: dos series agrupadas con pocas barras también se topan y quedan centradas como grupo", () => {
+    const { container } = render(
+      <BarrasVerticales categorias={[{ etiqueta: "oct", valores: [100, 50] }]} series={[ONLINE, TIENDA]} ariaLabel="x" />
+    );
+    medir(1264);
+
+    const barras = rectas(container, ".pn-barra");
+    const [banda] = rectas(container, ".pn-zona");
+    barras.forEach((barra) => expect(barra.ancho).toBeLessThanOrEqual(ANCHO_MAX_BARRA));
+    const izquierda = barras[0].x;
+    const derecha = barras[1].x + barras[1].ancho;
+    // El grupo (con los 2 px de separación entre barras) cae en el centro de la banda.
+    expect((izquierda + derecha) / 2).toBeCloseTo(banda.x + banda.ancho / 2, 0);
+  });
+
+  it("BarrasVerticales: con 24 barras a 390 px el ancho no cambia (siguen angostas, 78 % de la banda)", () => {
+    const horas = Array.from({ length: 24 }, (_, i) => ({ etiqueta: String(i).padStart(2, "0"), valores: [i + 1] }));
+    const { container } = render(<BarrasVerticales categorias={horas} series={[ONLINE]} ariaLabel="x" />);
+    medir(390);
+
+    const barras = rectas(container, ".pn-barra");
+    const [banda] = rectas(container, ".pn-zona");
+    // Mismo cálculo de siempre: la barra ocupa la banda menos un 22 % de relleno
+    // y 2 px de separación entre barras agrupadas.
+    expect(barras[0].ancho).toBeCloseTo(banda.ancho * 0.78 - 2, 5);
+    expect(barras[0].x).toBeCloseTo(banda.x + banda.ancho * 0.11, 5);
+    expect(barras[0].ancho).toBeLessThan(ANCHO_MAX_BARRA);
   });
 
   it("el cursor por puntero sigue funcionando con el ancho medido", () => {
