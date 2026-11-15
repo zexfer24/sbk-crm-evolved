@@ -104,7 +104,13 @@ select b.id, b.created_at, b.origen,
        jsonb_build_array(
          jsonb_build_object('product_id', gen_random_uuid(), 'codprod', 'PN-R' || (random() * 200)::int, 'nombre', 'Repuesto', 'cantidad', 2, 'precio_usd', 10, 'price_kind', 'promocion'),
          jsonb_build_object('product_id', gen_random_uuid(), 'codprod', 'PN-R' || (random() * 200)::int, 'nombre', 'Repuesto', 'cantidad', 4, 'precio_usd', 5, 'price_kind', 'estandar'))
-  from liminal.saint_borradores b;
+  from liminal.saint_borradores b
+ -- Solo los borradores sembrados aquí: la base local puede traer otros envíos con su foto (datos demo), y repetirlos choca con la clave de ventas_saint (14/11/2026).
+ where b.creado_por in (
+   'd0a4e200-0000-0000-0000-0000000000a1'::uuid,
+   'd0a4e200-0000-0000-0000-0000000000a2'::uuid,
+   'd0a4e200-0000-0000-0000-0000000000a3'::uuid,
+   'd0a4e200-0000-0000-0000-0000000000a4'::uuid);
 
 set local session_replication_role = origin;
 analyze public.messages;
