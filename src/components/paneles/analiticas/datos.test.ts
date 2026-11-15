@@ -9,6 +9,7 @@ import {
   fraseDelEmbudo,
   horasDeAtencion,
   mesesDelAnio,
+  mesesDesdeElPrimerEnvio,
   resumenDeRendimiento,
   serieDeMedida,
   tasaDeConversion,
@@ -178,6 +179,33 @@ describe("mesesDelAnio", () => {
     expect(meses[8]).toMatchObject({ clave: "2026-09", online: 30, tienda: 5, envios: 4, enCurso: false });
     expect(meses[9]).toMatchObject({ clave: "2026-10", online: 0, tienda: 0, envios: 0 });
     expect(meses[10]).toMatchObject({ clave: "2026-11", enCurso: true, online: 7 });
+  });
+});
+
+describe("mesesDesdeElPrimerEnvio", () => {
+  const ahora = new Date("2026-11-15T12:00:00-04:00");
+
+  it("descarta los meses anteriores al primero con algún envío (no tienen registro, no son ceros)", () => {
+    const serie = [{ t: "2026-10-28T00:00:00-04:00", online: 10, tienda: 0, envios_online: 1, envios_tienda: 0 }];
+    const meses = mesesDesdeElPrimerEnvio(mesesDelAnio(serie, ahora));
+    expect(meses.map((m) => m.clave)).toEqual(["2026-10", "2026-11"]);
+  });
+
+  it("un mes vacío entre dos con envíos se conserva: ahí sí hay registro y fue cero", () => {
+    const serie = [
+      { t: "2026-08-02T00:00:00-04:00", online: 10, tienda: 0, envios_online: 1, envios_tienda: 0 },
+      { t: "2026-11-02T00:00:00-04:00", online: 5, tienda: 0, envios_online: 1, envios_tienda: 0 },
+    ];
+    expect(mesesDesdeElPrimerEnvio(mesesDelAnio(serie, ahora)).map((m) => m.clave)).toEqual([
+      "2026-08",
+      "2026-09",
+      "2026-10",
+      "2026-11",
+    ]);
+  });
+
+  it("sin ningún envío devuelve una lista vacía", () => {
+    expect(mesesDesdeElPrimerEnvio(mesesDelAnio([], ahora))).toEqual([]);
   });
 });
 

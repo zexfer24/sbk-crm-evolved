@@ -1,4 +1,4 @@
-import type { BusinessHours, DayKey } from "@/lib/business-hours";
+import { businessStatus, type BusinessHours, type DayKey } from "@/lib/business-hours";
 import type { Vista } from "@/lib/paneles/canal";
 import {
   sumaCanales,
@@ -7,7 +7,7 @@ import {
   type PanelVentas,
   type PanelVentasActivas,
 } from "@/lib/paneles/parse";
-import { crmDayKey } from "@/lib/sales-day";
+import { crmDayKey, shiftDayKey, todayKey } from "@/lib/sales-day";
 import { crmMinuteOfDay, crmWeekday } from "@/lib/time-zone";
 
 /**
@@ -160,6 +160,33 @@ export function ventanaDeHoy(horario: BusinessHours, ahora: Date): { desde: numb
     desde: Math.min(...franjas.map(([inicio]) => aHoras(inicio))),
     hasta: Math.max(...franjas.map(([, fin]) => aHoras(fin))),
   };
+}
+
+/**
+ * La próxima apertura de la tienda (15/11/2026, para la tarjeta de rendimiento
+ * en un día cerrado): el día `YYYY-MM-DD` de Caracas en que abre y cómo decirlo
+ * («el lunes», «8:00 am»). El texto sale de `businessStatus` —que ya sabe leer el
+ * horario y no se duplica—; acá solo se le añade la fecha, que la tarjeta
+ * necesita para preguntarle a `metaDelDia` qué meta regirá ese día. `null` si la
+ * tienda está abierta ahora o si no abre ningún día de la semana.
+ */
+export function proximaApertura(
+  horario: BusinessHours,
+  ahora: Date
+): { dia: string; etiqueta: string; hora: string } | null {
+  const apertura = businessStatus(ahora, horario).nextOpening;
+  if (!apertura) return null;
+
+  const hoy = todayKey(ahora);
+  if (apertura.dayLabel === "hoy") return { dia: hoy, etiqueta: apertura.dayLabel, hora: apertura.time };
+
+  const semana = crmWeekday(ahora);
+  for (let desplazamiento = 1; desplazamiento <= 7; desplazamiento++) {
+    if (horario[DIA_POR_SEMANA[(semana + desplazamiento) % 7]].length > 0) {
+      return { dia: shiftDayKey(hoy, desplazamiento), etiqueta: apertura.dayLabel, hora: apertura.time };
+    }
+  }
+  return null;
 }
 
 /** Un horario que abre todos los días: para leer la meta vigente de HOY aunque hoy sea cerrado. */

@@ -9,6 +9,7 @@ import {
   itemsDeVista,
   metaAcumuladaPorHora,
   periodoTocaAntesDeEnvios,
+  proximaApertura,
   serieDeVista,
   variacion,
   ventanaDeHoy,
@@ -97,6 +98,28 @@ describe("ventanaDeHoy", () => {
   it("une varias franjas del mismo día", () => {
     const partido = { ...DEFAULT_BUSINESS_HOURS, fri: [["08:00", "12:00"], ["14:30", "18:00"]] as [string, string][] };
     expect(ventanaDeHoy(partido, AHORA)).toEqual({ desde: 8, hasta: 18 });
+  });
+});
+
+describe("proximaApertura", () => {
+  it("un domingo cerrado apunta al lunes con su fecha y su hora de apertura", () => {
+    expect(proximaApertura(DEFAULT_BUSINESS_HOURS, AHORA_DOMINGO)).toEqual({
+      dia: "2026-11-16",
+      etiqueta: "el lunes",
+      hora: "8:00 am",
+    });
+  });
+  it("un viernes ya cerrado salta el fin de semana", () => {
+    expect(proximaApertura(DEFAULT_BUSINESS_HOURS, AHORA)).toEqual({ dia: "2026-11-16", etiqueta: "el lunes", hora: "8:00 am" });
+  });
+  it("antes de abrir el mismo día, la próxima apertura es hoy", () => {
+    const madrugada = new Date("2026-11-13T06:00:00-04:00");
+    expect(proximaApertura(DEFAULT_BUSINESS_HOURS, madrugada)).toEqual({ dia: "2026-11-13", etiqueta: "hoy", hora: "8:00 am" });
+  });
+  it("con la tienda abierta ahora, o sin ningún día abierto, no hay próxima apertura: null", () => {
+    expect(proximaApertura(DEFAULT_BUSINESS_HOURS, new Date("2026-11-13T10:00:00-04:00"))).toBeNull();
+    const cerrada = { mon: [], tue: [], wed: [], thu: [], fri: [], sat: [], sun: [] };
+    expect(proximaApertura(cerrada, AHORA_DOMINGO)).toBeNull();
   });
 });
 

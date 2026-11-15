@@ -298,6 +298,23 @@
   font-size: 26px;
   letter-spacing: -0.02em;
 }
+/* Día cerrado (15/11/2026): próxima apertura y meta que regirá, en dos columnas que pasan a una en pantallas angostas. */
+.pd-cerrado__datos {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+  gap: 14px 24px;
+  margin: 12px 0 0;
+}
+.pd-cerrado__datos dt {
+  margin: 0 0 4px;
+  color: var(--pn-hero-soft);
+}
+.pd-cerrado__datos dd {
+  margin: 0;
+  font-size: 16px;
+  font-weight: 600;
+  color: var(--pn-hero-fg);
+}
 
 .pd-proyeccion {
   margin: 0;

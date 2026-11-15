@@ -264,6 +264,47 @@ describe("DashboardView: rendimiento de ventas", () => {
     expect(within(hero).queryByRole("button", { name: /Editar la meta/ })).toBeNull();
   });
 
+  it("en un día cerrado la tarjeta sigue siendo útil: próxima apertura, la meta que regirá y la racha", () => {
+    // Domingo 15/11/2026: tres días hábiles seguidos (mié a vie) por encima de la meta de 3.000 → racha de 3.
+    const dia = (n: number) => ({
+      t: `2026-11-${n}T00:00:00-04:00`,
+      online: 2000,
+      tienda: 1000,
+      envios_online: 4,
+      envios_tienda: 2,
+    });
+    const conRacha = { ...historia(12), serie: [dia(11), dia(12), dia(13)] };
+    const rangos = rangosDelDashboard("hoy", AHORA_DOMINGO);
+    render(<DashboardView {...propsBase({ ahora: AHORA_DOMINGO, rangos, ventasHistoria: ok(conRacha) })} />);
+    const hero = seccion("Rendimiento de ventas");
+    expect(within(hero).getByText("Hoy la tienda no abre")).toBeInTheDocument();
+    expect(within(hero).getByText("Próxima apertura")).toBeInTheDocument();
+    expect(within(hero).getByText("el lunes a las 8:00 am")).toBeInTheDocument();
+    // La meta del lunes 16/11 (resumen: 2.000 + 1.000), no la de hoy.
+    expect(within(hero).getByText("Meta de ese día")).toBeInTheDocument();
+    expect(within(hero).getByText("$3.000,00")).toBeInTheDocument();
+    expect(within(hero).getByText(/Racha: 3 días/)).toBeInTheDocument();
+    // Lo del día abierto no se pinta: ni anillo, ni «logrado hoy», ni ritmo.
+    expect(hero).not.toHaveTextContent("logrado hoy");
+    expect(within(hero).queryByRole("button", { name: /Editar la meta/ })).toBeNull();
+  });
+
+  it("en un día cerrado, lo que no se puede calcular es «—»: sin metas leídas no hay meta del lunes", () => {
+    const rangos = rangosDelDashboard("hoy", AHORA_DOMINGO);
+    render(<DashboardView {...propsBase({ ahora: AHORA_DOMINGO, rangos, metas: caido("No se pudo leer las metas.") })} />);
+    const hero = seccion("Rendimiento de ventas");
+    expect(within(hero).getByText("el lunes a las 8:00 am")).toBeInTheDocument();
+    expect(within(hero).getByText("Meta de ese día").parentElement).toHaveTextContent("—");
+    expect(hero).not.toHaveTextContent("Racha");
+  });
+
+  it("en un día abierto no aparece nada de la próxima apertura", () => {
+    render(<DashboardView {...propsBase()} />);
+    const hero = seccion("Rendimiento de ventas");
+    expect(hero).not.toHaveTextContent("Próxima apertura");
+    expect(hero).not.toHaveTextContent("Meta de ese día");
+  });
+
   it("sin meta definida el porcentaje es «—», no 0 %", () => {
     render(<DashboardView {...propsBase({ metas: ok([]) })} />);
     const hero = seccion("Rendimiento de ventas");

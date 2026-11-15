@@ -22,6 +22,7 @@ import {
   canalDeVista,
   horaEnteraDeCaracas,
   metaAcumuladaPorHora,
+  proximaApertura,
   serieDeVista,
   ventanaDeHoy,
 } from "@/components/paneles/dashboard/calculos";
@@ -42,6 +43,10 @@ import { GraficoRitmo } from "@/components/paneles/dashboard/grafico-ritmo";
  *   cambió.
  * - Con la tienda cerrada hoy no se edita (la meta de hoy no existe): se
  *   edita el próximo día hábil.
+ * - Un día cerrado ya no es un hueco con una frase (15/11/2026): dice cuándo
+ *   abre, la meta que regirá ese día (`metaDelDia` sobre la fecha de la próxima
+ *   apertura) y deja la racha, que no depende de que hoy sea hábil. Lo que no se
+ *   pueda calcular (metas sin leer, horario sin ningún día abierto) es «—».
  */
 
 const DIA_FALLO = "La meta tiene que ser un monto en dólares mayor que cero.";
@@ -87,6 +92,8 @@ export function TarjetaRendimiento({
   const meta = lista ? metaDelDia(lista, vista, hoyClave, horario) : null;
   const pct = porcentaje(logrado, meta);
   const falta = faltante(logrado, meta);
+  const apertura = abre ? null : proximaApertura(horario, ahora);
+  const metaApertura = lista && apertura ? metaDelDia(lista, vista, apertura.dia, horario) : null;
   const cumplida = meta !== null && logrado !== null && logrado >= meta;
 
   const horaActual = crmMinuteOfDay(ahora) / 60;
@@ -193,6 +200,18 @@ export function TarjetaRendimiento({
           {logrado !== null && logrado > 0 && (
             <p className="pn-subtitulo">Aun así se enviaron {formatoUsd(logrado)} a SAINT.</p>
           )}
+          <dl className="pd-cerrado__datos">
+            <div>
+              <dt className="pn-eyebrow">Próxima apertura</dt>
+              <dd>{apertura ? `${apertura.etiqueta} a las ${apertura.hora}` : "—"}</dd>
+            </div>
+            <div>
+              <dt className="pn-eyebrow">Meta de ese día</dt>
+              <dd>
+                <Cifra valor={metaApertura} formato={formatoUsd} className="lm-num" />
+              </dd>
+            </div>
+          </dl>
         </div>
       ) : (
         <>
@@ -315,29 +334,29 @@ export function TarjetaRendimiento({
               />
             </div>
           )}
-
-          {seguidos !== null && (
-            <div className="pd-racha">
-              <span className="pd-racha__txt">
-                <Flame size={16} aria-hidden="true" />
-                {seguidos === 0 ? (
-                  "Sin racha todavía"
-                ) : (
-                  <>
-                    Racha: {seguidos} {plural(seguidos, "día", "días")}
-                  </>
-                )}
-              </span>
-              {ultimosDias.length > 0 && (
-                <span className="pd-puntos" aria-hidden="true">
-                  {ultimosDias.map((d) => (
-                    <i key={d.dia} className={d.logrado >= (d.meta ?? Infinity) ? "pd-punto pd-punto--si" : "pd-punto"} />
-                  ))}
-                </span>
-              )}
-            </div>
-          )}
         </>
+      )}
+
+      {seguidos !== null && (
+        <div className="pd-racha">
+          <span className="pd-racha__txt">
+            <Flame size={16} aria-hidden="true" />
+            {seguidos === 0 ? (
+              "Sin racha todavía"
+            ) : (
+              <>
+                Racha: {seguidos} {plural(seguidos, "día", "días")}
+              </>
+            )}
+          </span>
+          {ultimosDias.length > 0 && (
+            <span className="pd-puntos" aria-hidden="true">
+              {ultimosDias.map((d) => (
+                <i key={d.dia} className={d.logrado >= (d.meta ?? Infinity) ? "pd-punto pd-punto--si" : "pd-punto"} />
+              ))}
+            </span>
+          )}
+        </div>
       )}
     </section>
   );

@@ -376,6 +376,27 @@ describe("AnaliticasView · tipo de precio, repuestos y mes a mes", () => {
     expect(within(seccion).getByText("En curso")).toBeInTheDocument();
     expect(within(seccion).getByText(/desde el 26\/10\/2026/)).toBeInTheDocument();
   });
+
+  it("la tabla arranca en el primer mes con envíos: de enero a septiembre no hay filas en $0,00", () => {
+    // 15/11/2026: los envíos del fixture empiezan en octubre. Enero a septiembre no tienen registro, no son «cero ventas».
+    render(<AnaliticasView {...props()} />);
+    const seccion = document.getElementById("mensual")!;
+    const filas = within(within(seccion).getByRole("table")).getAllByRole("row").slice(1);
+    expect(filas.map((f) => within(f).getAllByRole("rowheader")[0].textContent)).toEqual(["Octubre", "Noviembre En curso"]);
+    for (const mes of ["Enero", "Febrero", "Marzo", "Abril", "Mayo", "Junio", "Julio", "Agosto", "Septiembre"]) {
+      expect(within(seccion).queryByRole("rowheader", { name: new RegExp(mes) })).toBeNull();
+    }
+    // La nota dice por qué la tabla no empieza en enero.
+    expect(within(seccion).getByText(/la tabla empieza en octubre/i)).toBeInTheDocument();
+  });
+
+  it("sin ningún envío en el año, dice que todavía no hay envíos en vez de pintar doce meses en cero", () => {
+    render(<AnaliticasView {...props({ ventasAnio: ok(ventas({ serie: [] })) })} />);
+    const seccion = document.getElementById("mensual")!;
+    expect(within(seccion).getByText(/Todavía no hay envíos a SAINT este año/)).toBeInTheDocument();
+    expect(within(seccion).queryByRole("table")).toBeNull();
+    expect(within(seccion).getByText(/desde el 26\/10\/2026/)).toBeInTheDocument();
+  });
 });
 
 describe("AnaliticasView · mapa de calor", () => {
