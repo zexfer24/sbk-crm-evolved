@@ -3184,6 +3184,99 @@ inerte. Lo que NO se puede hacer es desplegar el código nuevo sin la migración
 
 ---
 
+## 20. Paneles de ventas, analíticas y asesores (15/11/2026)
+
+Tres pantallas nuevas (`/panel`, `/panel/analiticas`, `/panel/asesores`), solo para
+supervisor y admin, y una FOTO de cada envío a SAINT (`ventas_saint`) que empieza a
+juntarse desde que se aplica M1, aunque el código se despliegue después. Cuatro
+migraciones y un script revisado. Reporte por commit:
+`docs/entregas/2026-11-15-paneles.md`.
+
+**El orden importa, y las migraciones van ANTES y por separado del código.** El
+código no puede desplegarse hasta que el build de producción esté sano (roto desde
+el 8/11 por `next/font/google`, tarea aparte). Ninguna de las cuatro depende de
+`20261028010000` (que sigue esperando a LiminalReplicant).
+
+### 1. Los índices de `messages`, a mano y con `concurrently`
+
+`messages` es la tabla más grande y recibe escrituras todo el día: un `create index`
+común la bloquearía mientras dura. Fuera de una transacción (sin `-1`) y de a uno:
+
+```bash
+psql "<url>" -v ON_ERROR_STOP=1 -c "create index concurrently if not exists messages_salientes_fecha_idx on public.messages (created_at) include (sender_agent_id, conversation_id) where sender_type in ('agent', 'ai') and not is_internal_note;"
+psql "<url>" -v ON_ERROR_STOP=1 -c "create index concurrently if not exists messages_entrantes_fecha_idx on public.messages (created_at) include (conversation_id) where sender_type = 'customer';"
+```
+
+Verificar `select c.relname, i.indisvalid from pg_index i join pg_class c on c.oid = i.indexrelid where c.relname like 'messages_%_fecha_idx';`
+→ dos filas con `true`. Un `concurrently` que falló deja el índice INVÁLIDO con el
+mismo nombre: `drop index concurrently <nombre>;` y repetir. M3 aborta si encuentra
+uno inválido.
+
+### 2. M1 → M4, en orden, fuera de hora pico
+
+```bash
+for m in 20261113010000_ventas_saint 20261113020000_metas_venta \
+         20261113030000_indices_mensajes_paneles 20261113040000_paneles_lectura; do
+  PGOPTIONS="-c lock_timeout=5s" psql "<url>" -1 -v ON_ERROR_STOP=1 \
+    -f "supabase/migrations/$m.sql" || break
+done
+```
+
+Registrar cada una en `supabase_migrations.schema_migrations` como en §7. M1 crea un
+trigger sobre `liminal.saint_borradores` (toma un lock corto de esa tabla: si el
+replicador está escribiendo, el `lock_timeout` la aborta y se reintenta). M3 queda sin
+efecto (los índices ya existen) y solo corre su autoverificación.
+
+**Verificar contra la base real:**
+
+- `select tgname from pg_trigger where tgrelid = 'liminal.saint_borradores'::regclass and not tgisinternal;` → incluye `ventas_saint_foto_after_insert`.
+- `select has_table_privilege('authenticated', 'public.ventas_saint', 'select'), has_table_privilege('authenticated', 'public.ventas_saint_estado', 'select');` → `false | false` (se leen solo por RPC; la vista decide qué envío es un duplicado, contra el estado actual de cada borrador).
+- `select canal, vigente_desde, monto_usd from metas_venta;` → online 2600 y tienda 1800 desde el 1/11/2026 (editables desde el Dashboard).
+- `select has_function_privilege('anon', 'public.panel_ventas(timestamptz, timestamptz)', 'execute');` → `false`.
+- Como `authenticated` con el `sub` de un asesor (dentro de una transacción con `rollback`), `select public.panel_cola();` → error 42501. Con el `sub` de un supervisor, devuelve el jsonb.
+- Después del primer envío a SAINT real: `select canal, monto_usd, foto_error from ventas_saint order by created_at desc limit 1;` → canal y monto, `foto_error` nulo.
+
+### 3. El backfill de los envíos anteriores (script revisado)
+
+`scripts/sql/2026-11-ventas-saint-backfill.sql`: crea la foto `estimado` de cada
+borrador que no la tiene. Completar sus dos huecos con datos de producción —
+`<<INSTANTE_RECARGO>>` (el deploy del hotfix del 16 %, ~6/11/2026, con zona) y
+`<<CUENTAS_MOSTRADOR>>` (los `agents.id` de las cuentas que atienden el mostrador; el
+relevamiento del 13/11 nombró a «Asesor 4»)— con `-v` en la línea de comandos. Primero
+la prueba, que no escribe (es el valor por defecto); mirar el resumen; recién entonces
+`-v dry_run=false`. Sin `-1` (el archivo abre y cierra su propia transacción). Es
+idempotente.
+
+### 4. Avisar a LiminalReplicant
+
+El trigger nuevo no cambia columnas ni la firma de `enviar_borrador_saint`, y nunca
+aborta un INSERT del agente (si la foto falla, deja una fila con `foto_error`). Igual
+hay que avisarle: hay un trigger AFTER INSERT donde antes no había ninguno.
+
+### 5. El código (cuando el build esté sano)
+
+Toca la UI: rebuild completo (~5 min) y el corte de ~22 s de siempre. Sin variables de
+entorno nuevas. Desplegado sin las migraciones no se cae: cada bloque pinta «No
+disponible» (la RPC o la tabla no existen) y el resto del CRM sigue igual.
+
+**Verificar después del deploy:**
+
+- Un supervisor ve la entrada «Paneles» en el rail y las tres pantallas con datos; un
+  asesor no ve la entrada y, si escribe `/panel` a mano, vuelve a la bandeja.
+- Rendimiento con volumen real, como `authenticated` (CLAUDE.md, trampa del 21/9):
+  `explain (analyze, buffers) select public.panel_asesores(now() - interval '30 days', now());`
+  por debajo de 1,5 s. Medido en local con 300 mil mensajes: 0,7–0,9 s.
+- `reasignadas_desde` recorre `conversation_handoffs` (575 mil filas) por razón y
+  fecha sin índice propio: si `panel_asesores` pasa de 1,5 s, crear con `concurrently`
+  `(created_at) where reason = 'reasignada_por_demora'`.
+
+**Rollback:** el código viejo no conoce estas tablas ni funciones. Si el trigger
+causara problemas: `drop trigger if exists ventas_saint_foto_after_insert on
+liminal.saint_borradores;` (los envíos siguen funcionando; se pierde la foto de los
+que entren mientras esté quitado).
+
+---
+
 ## Comprobación final
 
 Con todo configurado, esta lista debe pasar entera:

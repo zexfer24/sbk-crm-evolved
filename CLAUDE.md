@@ -3224,6 +3224,16 @@ dejar rastro es lo que hacía desaparecer leads.
   En divisa no hay total parcial: si falta alguna divisa el total dice «Falta divisa (N)» y Copiar / Al chat se deshabilitan.
   La divisa (`precioDivisaUsd`) ya trae el 16 % de `mapProduct`: `precioDivisaRenglon` (`carrito-divisa.ts`) no la recarga otra vez.
   El estándar en divisa es divisa + tarifa MRW. Cashea no se calcula en divisa (queda `null` y el switch deshabilitado), y el interruptor no se recuerda: arranca en BCV en cada carrito.
+- **Cada envío a SAINT deja una FOTO en `ventas_saint`, y su precio sale de `precio_venta_usd`, la copia en SQL del precio del CRM** (plan «Paneles», 13/11/2026, migración `20261113010000`).
+  El borrador no guarda precio: un trigger AFTER INSERT sobre `liminal.saint_borradores` escribe monto, canal y quién armó y envió, en la misma transacción, y NUNCA aborta el envío (deja una fila mínima con `foto_error`).
+  Un cambio en `recargo-precio.ts`, `usd-price.ts` o el precio estándar exige tocar `precio_venta_usd` en una migración: `precio-venta-paridad.test.ts` y `supabase/tests/ventas_saint.sql` los atan con casos dorados.
+  Venta = borrador `creado` (factura EN ESPERA, no cobrada) y no `duplicado`; las anteriores al 13/11 son `estimado` (backfill). `ventas_saint` no tiene políticas ni grants: se lee solo por las RPC `panel_*`.
+  **El duplicado se decide AL LEER, en la vista `ventas_saint_estado`, contra el estado ACTUAL** (15/11/2026): marcarlo al insertar contaba como duplicado el reenvío de un envío que SAINT rechazó (`error`), y la venta real desaparecía. Duplicado = hubo otro `creado` anterior del mismo origen o conversación, con la misma `firma_items`, a menos de 24 h.
+- **Las RPC `panel_*` llevan `set plan_cache_mode = force_custom_plan`, y dos de ellas `set enable_nestloop = off`** (M4, `20261113040000`).
+  Sin el primero, plpgsql pasa al plan genérico a la sexta llamada y `panel_asesores` saltó de 1,4 s a 163 s (13/11/2026, 300 mil mensajes); sin el segundo, el planificador estima en 1 fila los CTE de episodios y elige bucles anidados.
+  No quitarlos sin medir con `supabase/tests/paneles_rendimiento.sql` (como `authenticated`; corre a mano, no en CI).
+- **Los paneles son solo de supervisor y admin, y la puerta está en la base** (14-15/11/2026). Las RPC lanzan 42501 y `paneles-data.ts` lo relanza (no lo esconde en un bloque vacío).
+  En pantalla, `exigirAccesoPaneles` (`src/app/panel/acceso-servidor.ts`) la llaman el layout Y cada `page.tsx` antes de leer: el layout y la página se renderizan en paralelo, y un layout no vuelve a correr al navegar entre páginas hermanas.
 
 ---
 
