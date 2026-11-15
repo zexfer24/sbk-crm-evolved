@@ -6,7 +6,8 @@ import type { PanelVentas } from "@/lib/paneles/parse";
 import { todayKey } from "@/lib/sales-day";
 import { PanelBloque } from "@/components/paneles/panel-marco";
 import { BarrasVerticales, type SerieGrafico } from "@/components/paneles/panel-graficos";
-import { MESES_LARGOS, mesesDelAnio, mesesDesdeElPrimerEnvio, variacionPct, type MesDelAnio } from "./datos";
+import { mesesDesdeElPrimerEnvio } from "@/lib/paneles/meses";
+import { MESES_LARGOS, mesesDelAnio, variacionPct, type MesDelAnio } from "./datos";
 import { formatoEntero, formatoUsd, textoVariacion, usdGrafico } from "./formato";
 
 /**

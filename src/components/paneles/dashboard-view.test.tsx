@@ -389,13 +389,62 @@ describe("DashboardView: rendimiento de ventas", () => {
 });
 
 describe("DashboardView: tablero mensual", () => {
+  const anioDesdeOctubre = () =>
+    ok(
+      ventas({
+        granularidad: "dia",
+        serie: [
+          { t: "2026-10-28T00:00:00-04:00", online: 2000, tienda: 800, envios_online: 20, envios_tienda: 8 },
+          { t: "2026-11-12T00:00:00-04:00", online: 800, tienda: 434.5, envios_online: 8, envios_tienda: 5 },
+        ],
+      })
+    );
+  const mesesDeLaTabla = (tablero: HTMLElement) =>
+    within(tablero)
+      .getAllByRole("rowheader")
+      .map((c) => c.textContent);
+
   it("agrupa por mes, marca el mes en curso y aclara desde cuándo hay envíos", () => {
-    render(<DashboardView {...propsBase()} />);
+    render(<DashboardView {...propsBase({ ventasAnio: anioDesdeOctubre() })} />);
     const tablero = seccion("Ingresos por mes");
     expect(within(tablero).getByText(/mes en curso/i)).toBeInTheDocument();
     expect(within(tablero).getByText(/se registran desde el 26 de octubre/)).toBeInTheDocument();
-    // La tabla de lectura trae los 12 meses.
-    expect(within(tablero).getAllByRole("row")).toHaveLength(13);
+  });
+
+  it("parte del primer mes con envíos: de enero a septiembre no hay columnas ni filas (15/11/2026)", () => {
+    render(<DashboardView {...propsBase({ ventasAnio: anioDesdeOctubre() })} />);
+    const tablero = seccion("Ingresos por mes");
+    // Octubre, noviembre (en curso) y diciembre (futuro): ningún mes sin registro.
+    expect(mesesDeLaTabla(tablero)).toEqual(["octubre", "noviembre", "diciembre"]);
+    for (const etiqueta of ["Ene", "Feb", "Mar", "Abr", "May", "Jun", "Jul", "Ago", "Sep"]) {
+      expect(within(tablero).queryByText(etiqueta)).not.toBeInTheDocument();
+    }
+    expect(within(tablero).getByText("Oct")).toBeInTheDocument();
+    expect(within(tablero).getByText("Nov")).toBeInTheDocument();
+  });
+
+  it("el primer mes sale de todos los canales, no del que filtra la vista", () => {
+    // Septiembre solo tiene tienda; la vista online debe seguir arrancando en septiembre.
+    const anio = ok(
+      ventas({
+        granularidad: "dia",
+        serie: [
+          { t: "2026-09-15T00:00:00-04:00", online: 0, tienda: 300, envios_online: 0, envios_tienda: 3 },
+          { t: "2026-11-12T00:00:00-04:00", online: 800, tienda: 0, envios_online: 8, envios_tienda: 0 },
+        ],
+      })
+    );
+    render(<DashboardView {...propsBase({ vista: "online", ventasAnio: anio })} />);
+    expect(mesesDeLaTabla(seccion("Ingresos por mes"))[0]).toBe("septiembre");
+  });
+
+  it("sin envíos en el año muestra un estado vacío honesto, sin columnas ni tabla", () => {
+    render(<DashboardView {...propsBase({ ventasAnio: ok(ventas({ granularidad: "dia", serie: [] })) })} />);
+    const tablero = seccion("Ingresos por mes");
+    expect(within(tablero).getByText(/todavía no hay envíos a SAINT este año/i)).toBeInTheDocument();
+    expect(within(tablero).queryByRole("table")).not.toBeInTheDocument();
+    expect(within(tablero).queryByText("Ene")).not.toBeInTheDocument();
+    expect(within(tablero).getByText(/se registran desde el 26 de octubre/)).toBeInTheDocument();
   });
 });
 

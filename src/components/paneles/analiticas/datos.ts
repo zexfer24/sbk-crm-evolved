@@ -318,18 +318,6 @@ export function mesesDelAnio(serie: PanelVentas["serie"], ahora: Date): MesDelAn
   return meses;
 }
 
-/**
- * Los meses desde el primero con algún envío a SAINT (15/11/2026). Los envíos se
- * registran desde el 26/10/2026: enero a septiembre no tienen registro y pintados
- * como $0,00 parecían «no vendimos nada». Un mes vacío DESPUÉS del primero con
- * envíos sí se conserva (ahí hay registro y el cero es verdad). Sin ningún envío
- * en el año, lista vacía.
- */
-export function mesesDesdeElPrimerEnvio(meses: MesDelAnio[]): MesDelAnio[] {
-  const primero = meses.findIndex((m) => m.envios > 0 || m.online > 0 || m.tienda > 0);
-  return primero === -1 ? [] : meses.slice(primero);
-}
-
 // ---------------------------------------------------------------------------
 // Rendimiento: calendario de metas
 // ---------------------------------------------------------------------------

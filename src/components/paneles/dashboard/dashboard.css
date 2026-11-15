@@ -545,7 +545,10 @@
 }
 .pd-meses {
   display: grid;
-  grid-template-columns: repeat(12, minmax(0, 1fr));
+  /* Tantas columnas como meses con registro (15/11/2026), con un ancho máximo y
+     centradas: con 2 o 3 meses no se vuelven columnas enormes a 1440 px. */
+  grid-template-columns: repeat(var(--pd-n-meses, 12), minmax(0, 88px));
+  justify-content: center;
   gap: 6px;
   align-items: end;
 }
