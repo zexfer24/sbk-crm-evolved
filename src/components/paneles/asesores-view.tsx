@@ -1,15 +1,33 @@
 "use client";
 
+import { useMemo, type CSSProperties } from "react";
 import type { BusinessHours } from "@/lib/business-hours";
 import type { Bloque, BloqueConTope } from "@/lib/paneles-data";
 import type { PeriodoId, RangoPanel } from "@/lib/paneles/periodos";
 import type { PanelAsesores, PanelCola, PanelConversaciones, PanelVentas } from "@/lib/paneles/parse";
-import { ControlPeriodo, PanelBloque, PanelMarco, formatoUsd } from "@/components/paneles/panel-marco";
+import { PanelBloque, PanelMarco } from "@/components/paneles/panel-marco";
+import { AvisoMasViejo } from "@/components/paneles/asesores/aviso-mas-viejo";
+import { ColaPendientes } from "@/components/paneles/asesores/cola-pendientes";
+import { ControlPeriodoAsesores } from "@/components/paneles/asesores/control-periodo";
+import { KpisEquipo } from "@/components/paneles/asesores/kpis-equipo";
+import { cruzarConversion } from "@/components/paneles/asesores/ordenar";
+import { TablaPersonas } from "@/components/paneles/asesores/tabla-personas";
+import { TarjetaMostrador, TarjetaSeba } from "@/components/paneles/asesores/tarjetas-laterales";
+import { useReloj } from "@/components/paneles/asesores/use-reloj";
+import "@/components/paneles/asesores/asesores.css";
 
 /**
- * Asesores (plan "Paneles", 13/11/2026). VISTA PROVISIONAL de C2/C3: lista
- * simple por persona y resumen de la cola. C6 la reemplaza; las props de abajo
- * son el contrato con `src/app/panel/asesores/page.tsx` y NO cambian.
+ * Asesores (plan "Paneles", 13/11/2026, C6). De arriba abajo: el aviso del
+ * mensaje más viejo sin responder, el resumen del equipo, la tabla por persona
+ * (con Seba y el mostrador al lado) y la cola de pendientes.
+ *
+ * Las props son el contrato con `src/app/panel/asesores/page.tsx` y no cambian.
+ * Cada lectura cae por separado: un bloque que falla pinta su "No disponible"
+ * con Reintentar y los demás siguen.
+ *
+ * Un solo reloj (`useReloj`, un `setInterval` de 1 s detenido con la pestaña
+ * oculta) alimenta TODOS los contadores en vivo: el del aviso y la espera de
+ * cada fila de la cola. Solo corre si hay pendientes que medir.
  */
 export interface AsesoresViewProps {
   periodo: PeriodoId;
@@ -29,49 +47,50 @@ export interface AsesoresViewProps {
   horario: BusinessHours;
 }
 
-export function AsesoresView({ periodo, ahora, rango, asesores, cola }: AsesoresViewProps) {
+export function AsesoresView({ periodo, ahora, rango, asesores, conversaciones, ventas, cola, horario }: AsesoresViewProps) {
+  const hayPendientes = cola.ok && cola.dato.pendientes > 0;
+  const ahoraVivo = useReloj(ahora, hayPendientes);
+
+  const conversion = conversaciones.ok ? conversaciones.dato.conversion.personas : null;
+  const filas = useMemo(() => (asesores.ok ? cruzarConversion(asesores.dato.personas, conversion) : []), [asesores, conversion]);
+
   return (
-    <PanelMarco panel="asesores" titulo="Asesores" ahora={ahora} periodo={periodo} controles={<ControlPeriodo periodo={periodo} />}>
-      <div className="pn-bento">
-        <div className="pn-c8">
+    <PanelMarco panel="asesores" titulo="Asesores" ahora={ahora} periodo={periodo} controles={<ControlPeriodoAsesores periodo={periodo} />}>
+      <div className="as-pagina">
+        <div className="as-sube" style={{ "--i": 0 } as CSSProperties}>
+          <PanelBloque bloque={cola} nombre="Mensaje más viejo sin responder">
+            {(dato) => <AvisoMasViejo dato={dato} ahoraVivo={ahoraVivo} horario={horario} />}
+          </PanelBloque>
+        </div>
+
+        <div className="as-sube" style={{ "--i": 1 } as CSSProperties}>
+          <KpisEquipo asesores={asesores} cola={cola} ventas={ventas} />
+        </div>
+
+        <div className="as-cuerpo as-sube" style={{ "--i": 2 } as CSSProperties}>
           <PanelBloque bloque={asesores} nombre="Actividad de los asesores">
             {(dato) => (
-              <section className="pn-card">
-                <p className="pn-eyebrow">Equipo · {rango.etiqueta}</p>
-                {dato.personas.length === 0 ? (
-                  <p className="pn-vacio">Sin actividad en este período.</p>
-                ) : (
-                  <ul className="pn-lista">
-                    {dato.personas.map((p) => (
-                      <li key={p.agent_id} className="pn-lista__fila">
-                        <span className="pn-lista__txt">
-                          <b>{p.nombre}</b>
-                          <small>
-                            {p.mensajes} mensajes · {p.envios} envíos · {formatoUsd(p.monto)}
-                          </small>
-                        </span>
-                      </li>
-                    ))}
-                  </ul>
-                )}
-              </section>
+              <>
+                <TablaPersonas
+                  filas={filas}
+                  etiquetaRango={rango.etiqueta}
+                  recortado={asesores.recortado}
+                  conversionDisponible={conversaciones.ok}
+                />
+                <aside className="as-lado" aria-label="Seba y mostrador">
+                  <TarjetaSeba seba={dato.seba} />
+                  <TarjetaMostrador personas={dato.personas} ventas={ventas} />
+                </aside>
+              </>
             )}
           </PanelBloque>
         </div>
 
-        <div className="pn-c4">
-          <PanelBloque bloque={cola} nombre="Cola de pendientes">
-            {(dato) => (
-              <section className="pn-card">
-                <p className="pn-eyebrow">Pendientes ahora</p>
-                <p className="pn-kpi__cifra">{dato.pendientes}</p>
-                <p className="pn-subtitulo">
-                  {dato.sin_dueno} sin dueño · {dato.con_dueno} con dueño
-                </p>
-              </section>
-            )}
-          </PanelBloque>
-        </div>
+        {cola.ok && (
+          <div className="as-sube" style={{ "--i": 3 } as CSSProperties}>
+            <ColaPendientes dato={cola.dato} ahoraVivo={ahoraVivo} horario={horario} />
+          </div>
+        )}
       </div>
     </PanelMarco>
   );

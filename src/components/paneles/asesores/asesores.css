@@ -1,0 +1,610 @@
+/* ==========================================================================
+   Asesores (plan "Paneles", 13/11/2026, C6). Lo común de los paneles vive en
+   `paneles.css` (tarjeta, chip, avatar, lista, hoja, degradado…); acá solo lo
+   propio de esta pantalla. Solo tokens `--lm-*` / `--pn-*`: nada de colores
+   literales, y claro/oscuro salen solos del tema.
+   ========================================================================== */
+
+.as-pagina {
+  display: flex;
+  flex-direction: column;
+  gap: var(--pn-gap);
+  min-width: 0;
+}
+
+/* Entrada: subida corta y escalonada (240 ms, 50 ms entre bloques) */
+.as-sube {
+  min-width: 0;
+  animation: as-sube 240ms var(--lm-ease-out) backwards;
+  animation-delay: calc(var(--i, 0) * 50ms);
+}
+@keyframes as-sube {
+  from {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+}
+
+/* --- Aviso del mensaje más viejo ------------------------------------------ */
+.as-aviso {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px 24px;
+  align-items: center;
+  border-left: 4px solid var(--lm-line);
+  scroll-margin-top: 90px;
+}
+.as-aviso--alerta {
+  border-left-color: var(--lm-wait);
+}
+.as-aviso--critico {
+  border-left-color: var(--lm-hot);
+}
+.as-aviso--vacio {
+  border-left-color: var(--pn-bien);
+  grid-template-columns: minmax(0, 1fr);
+}
+.as-aviso__cuerpo {
+  min-width: 0;
+}
+.as-aviso__tit {
+  margin: 0;
+  font-size: 16px;
+  font-weight: 500;
+  line-height: 1.5;
+  color: var(--lm-ink);
+}
+.as-reloj {
+  display: inline-block;
+  margin-left: 6px;
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+  letter-spacing: -0.03em;
+  font-size: clamp(24px, 2.6vw, 32px);
+  vertical-align: -3px;
+  white-space: nowrap;
+}
+.as-aviso__lab {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 6px 0 0;
+  font-size: 13.5px;
+  color: var(--lm-ink-soft);
+}
+.as-aviso__quien {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px 10px;
+  margin-top: 14px;
+  min-width: 0;
+}
+.as-aviso__quien b {
+  font-size: 14px;
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+.as-aviso__enlace {
+  align-self: start;
+}
+.as-aviso__vacio {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+}
+.as-aviso__ico {
+  display: inline-grid;
+  place-items: center;
+  width: 40px;
+  height: 40px;
+  border-radius: 999px;
+  flex-shrink: 0;
+}
+.as-aviso__ico--bien {
+  background: rgb(var(--lm-good-rgb) / 0.14);
+  color: var(--lm-good-ink);
+}
+.as-nota {
+  grid-column: 1 / -1;
+  margin: 4px 0 0;
+  font-size: 12.5px;
+  color: var(--lm-muted);
+}
+@media (max-width: 700px) {
+  .as-aviso {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .as-aviso__enlace {
+    justify-self: start;
+  }
+}
+
+/* --- Resumen del equipo ----------------------------------------------------- */
+.as-kpis {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: var(--pn-gap);
+}
+/* El grupo de las tres tarjetas de `asesores` no es una caja propia: sus
+   tarjetas son celdas de la grilla. */
+.as-kpis__grupo {
+  display: contents;
+}
+.as-kpi {
+  color: inherit;
+  text-decoration: none;
+}
+.as-kpi .pn-kpi__cifra {
+  margin: 0;
+  white-space: nowrap;
+}
+.as-kpi .pn-eyebrow {
+  margin: 0;
+}
+.as-kpi:focus-visible,
+.as-nombre:focus-visible,
+.as-th:focus-visible,
+.as-orden-movil select:focus-visible {
+  outline: 2px solid var(--lm-link);
+  outline-offset: 2px;
+}
+@media (max-width: 1100px) {
+  .as-kpis {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+}
+@media (max-width: 700px) {
+  .as-kpis {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 12px;
+  }
+  .as-kpis > :last-child {
+    grid-column: 1 / -1;
+  }
+  .as-kpi .pn-kpi__cifra {
+    font-size: 24px;
+  }
+}
+
+/* --- Cuerpo: tabla por persona + columna lateral ---------------------------- */
+.as-cuerpo {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 300px;
+  gap: var(--pn-gap);
+  align-items: start;
+}
+.as-cuerpo > .pn-degradado {
+  grid-column: 1 / -1;
+}
+@media (max-width: 1100px) {
+  .as-cuerpo {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+.as-lado {
+  display: flex;
+  flex-direction: column;
+  gap: var(--pn-gap);
+  min-width: 0;
+}
+.as-lado-card__cab {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 14px;
+}
+.as-lado-card__cab > div {
+  min-width: 0;
+}
+.as-lado-card__cab b {
+  display: block;
+  font-family: var(--font-display);
+  font-style: italic;
+  font-weight: 600;
+  font-size: 18px;
+  letter-spacing: -0.02em;
+}
+.as-lado-card__cab small {
+  font-size: 12px;
+  color: var(--lm-muted);
+}
+.as-lado-card__chip {
+  margin-left: auto;
+}
+.as-apagada {
+  margin: 0;
+  padding: 10px 14px;
+  border-radius: 14px;
+  background: var(--lm-sunken);
+  font-size: 13.5px;
+  color: var(--lm-ink-soft);
+}
+.as-monto {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+  font-size: 13.5px;
+  letter-spacing: -0.02em;
+  white-space: nowrap;
+}
+
+/* --- Tabla por persona -------------------------------------------------------- */
+.as-tabla-card {
+  padding: 22px 18px;
+}
+.as-orden-movil {
+  display: none;
+}
+.as-orden-movil select {
+  font: inherit;
+  font-size: 13px;
+  max-width: 100%;
+  padding: 6px 10px;
+  border: 1px solid var(--lm-line);
+  border-radius: 999px;
+  background: var(--lm-surface);
+  color: var(--lm-ink);
+}
+.as-tabla {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+.as-tabla th {
+  padding: 8px 6px;
+  text-align: right;
+  white-space: nowrap;
+  border-bottom: 1px solid var(--lm-line);
+}
+.as-tabla th:first-child,
+.as-tabla td:first-child {
+  text-align: left;
+}
+.as-th {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin: 0 -4px;
+  padding: 3px 4px;
+  border: 0;
+  border-radius: 8px;
+  background: none;
+  cursor: pointer;
+  font: inherit;
+  font-size: 10.5px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--lm-muted);
+}
+.as-th:hover {
+  color: var(--lm-ink);
+  background: var(--lm-sunken);
+}
+.as-th [data-flecha] {
+  flex-shrink: 0;
+  opacity: 0;
+  transition:
+    opacity 0.2s,
+    transform 0.25s var(--lm-ease-out);
+}
+th[aria-sort] .as-th {
+  color: var(--lm-ink);
+}
+th[aria-sort] [data-flecha] {
+  opacity: 1;
+}
+th[aria-sort="ascending"] [data-flecha] {
+  transform: rotate(180deg);
+}
+.as-tabla td {
+  padding: 10px 6px;
+  text-align: right;
+  vertical-align: middle;
+  border-bottom: 1px solid var(--lm-line);
+  font-variant-numeric: tabular-nums;
+}
+.as-tabla tbody tr {
+  cursor: pointer;
+  transition: background-color 0.2s;
+}
+.as-tabla tbody tr:last-child td {
+  border-bottom: 0;
+}
+@media (hover: hover) {
+  .as-tabla tbody tr:hover {
+    background: var(--lm-sunken);
+  }
+}
+.as-v {
+  font-family: var(--font-mono);
+  font-weight: 600;
+  font-size: 13.5px;
+  letter-spacing: -0.02em;
+}
+.as-v--fecha {
+  font-size: 12px;
+  white-space: nowrap;
+}
+.as-tabla td small {
+  display: block;
+  margin-left: auto;
+  font-size: 11.5px;
+  line-height: 1.3;
+  color: var(--lm-muted);
+}
+.as-ag {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 190px;
+  text-align: left;
+}
+.as-ag > div {
+  min-width: 0;
+}
+.as-ag small {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 4px 6px;
+  margin: 0;
+}
+.as-reparto {
+  padding: 1px 7px;
+  font-size: 10.5px;
+}
+.as-nombre {
+  display: block;
+  padding: 0;
+  border: 0;
+  background: none;
+  font: inherit;
+  font-weight: 600;
+  font-size: 13.5px;
+  color: var(--lm-ink);
+  text-align: left;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.as-nombre:hover {
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+.as-conv {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+}
+.as-conv__pista {
+  position: relative;
+  flex-shrink: 0;
+  width: 40px;
+  height: 8px;
+  border-radius: 999px;
+  background: var(--lm-sunken);
+  overflow: hidden;
+}
+.as-conv__fill {
+  position: absolute;
+  inset: 0;
+  border-radius: 999px;
+  background: var(--pn-online);
+  transform-origin: left center;
+  transition: transform 0.6s var(--lm-ease-out);
+}
+
+@media (max-width: 700px) {
+  .as-orden-movil {
+    display: inline-flex;
+  }
+  .as-tabla thead {
+    display: none;
+  }
+  .as-tabla,
+  .as-tabla tbody {
+    display: block;
+  }
+  .as-tabla tbody tr {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 12px 14px;
+    margin-bottom: 10px;
+    padding: 14px;
+    border-radius: 16px;
+    background: var(--lm-sunken);
+  }
+  .as-tabla td {
+    display: block;
+    min-width: 0;
+    padding: 0;
+    border: 0;
+    text-align: left;
+  }
+  .as-tabla td::before {
+    content: attr(data-label);
+    display: block;
+    margin-bottom: 3px;
+    font-size: 10.5px;
+    font-weight: 600;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    color: var(--lm-muted);
+  }
+  .as-tabla td:first-child {
+    grid-column: 1 / -1;
+  }
+  .as-tabla td:first-child::before {
+    display: none;
+  }
+  .as-ag {
+    min-width: 0;
+  }
+  .as-conv {
+    justify-content: flex-start;
+  }
+  .as-conv__pista {
+    background: var(--lm-surface);
+  }
+  .as-tabla td small {
+    margin-left: 0;
+  }
+}
+
+/* --- Cola de pendientes ---------------------------------------------------------- */
+.as-cola {
+  scroll-margin-top: 90px;
+}
+.as-cola:target {
+  animation: as-resalte 1.8s var(--lm-ease-out);
+}
+@keyframes as-resalte {
+  0%,
+  35% {
+    box-shadow:
+      0 0 0 3px var(--lm-link),
+      var(--lm-shadow-sm);
+  }
+}
+.as-cola__bien {
+  flex-direction: row;
+  justify-content: center;
+  color: var(--lm-good-ink);
+}
+.as-cola__cuerpo {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 260px;
+  gap: 8px 32px;
+  align-items: start;
+}
+@media (max-width: 1100px) {
+  .as-cola__cuerpo {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+.as-cola__pie {
+  margin-top: 10px;
+}
+.as-espera {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  flex-shrink: 0;
+  min-width: 82px;
+  justify-content: center;
+}
+.as-antig__lista {
+  list-style: none;
+  margin: 8px 0 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.as-antig__fila {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 4px 12px;
+  align-items: center;
+  font-size: 13px;
+  color: var(--lm-ink-soft);
+}
+.as-antig__fila b {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  color: var(--lm-ink);
+}
+.as-antig__pista {
+  grid-column: 1 / -1;
+  display: block;
+  height: 8px;
+  border-radius: 999px;
+  background: var(--lm-sunken);
+  overflow: hidden;
+}
+.as-antig__pista i {
+  display: block;
+  height: 100%;
+  border-radius: 999px;
+  background: var(--lm-ink);
+  transform-origin: left center;
+  transition: width 0.5s var(--lm-ease-out);
+  animation: as-crece 0.6s var(--lm-ease-out) backwards;
+}
+@keyframes as-crece {
+  from {
+    transform: scaleX(0);
+  }
+}
+
+/* --- Contenido de la hoja de una persona ----------------------------------------- */
+.hj-cab {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 14px;
+}
+.hj-cab b {
+  display: block;
+  font-size: 15px;
+}
+.hj-cab small {
+  color: var(--lm-muted);
+  font-size: 12.5px;
+}
+.hj-resumen {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+.hj-dato {
+  min-width: 0;
+  padding: 10px 12px;
+  border-radius: 14px;
+  background: var(--lm-sunken);
+}
+.hj-dato span {
+  display: block;
+  font-size: 10.5px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--lm-muted);
+}
+.hj-dato b {
+  display: block;
+  margin-top: 2px;
+  font-family: var(--font-mono);
+  font-weight: 600;
+  font-size: 16px;
+  letter-spacing: -0.02em;
+}
+.hj-dato small {
+  display: block;
+  font-size: 11.5px;
+  color: var(--lm-muted);
+}
+.hj-tit {
+  margin: 20px 0 6px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--lm-muted);
+}
+
+/* Movimiento reducido: estado final directo */
+@media (prefers-reduced-motion: reduce) {
+  .as-sube,
+  .as-antig__pista i,
+  .as-cola:target {
+    animation: none;
+  }
+  .as-conv__fill,
+  .as-antig__pista i,
+  .as-th [data-flecha] {
+    transition: none;
+  }
+}
