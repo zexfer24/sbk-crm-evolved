@@ -217,6 +217,14 @@ describe("AsesoresView · control de período", () => {
     expect(screen.queryByRole("group", { name: "Canal" })).toBeNull();
   });
 
+  it("la lista de períodos es siempre la misma: no pinta ninguna opción extra", () => {
+    // 15/11/2026: la página ya no deja pasar mes/anio, así que el control no
+    // tiene rama para "un período fuera de la lista".
+    render(<AsesoresView {...props({ periodo: "30d" })} />);
+    const grupo = screen.getByRole("group", { name: "Período" });
+    expect(within(grupo).getAllByRole("button").map((b) => b.textContent)).toEqual(["Hoy", "7 días", "30 días"]);
+  });
+
   it("cambiar de período reemplaza la URL sin recargar", async () => {
     render(<AsesoresView {...props()} />);
     await userEvent.click(within(screen.getByRole("group", { name: "Período" })).getByRole("button", { name: "30 días" }));

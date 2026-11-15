@@ -6,7 +6,7 @@ import {
   fetchPanelConversaciones,
   fetchPanelVentas,
 } from "@/lib/paneles-data";
-import { periodoDesdeParam, rangoDe } from "@/lib/paneles/periodos";
+import { periodoDeAsesores, rangoDe } from "@/lib/paneles/periodos";
 import { AsesoresView } from "@/components/paneles/asesores-view";
 import { primero, type ParametrosDePagina } from "../params";
 
@@ -21,7 +21,7 @@ import { primero, type ParametrosDePagina } from "../params";
 export default async function PanelAsesoresPage({ searchParams }: { searchParams: ParametrosDePagina }) {
   const { supabase } = await exigirAccesoPaneles();
   const params = await searchParams;
-  const periodo = periodoDesdeParam(primero(params.periodo));
+  const periodo = periodoDeAsesores(primero(params.periodo));
 
   const ahora = new Date();
   const rango = rangoDe(periodo, ahora);

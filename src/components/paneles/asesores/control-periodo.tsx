@@ -2,7 +2,7 @@
 
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { SlidingPills } from "@/components/sliding-pills";
-import { PERIODOS, type PeriodoId } from "@/lib/paneles/periodos";
+import { PERIODOS, PERIODOS_ASESORES, type PeriodoId } from "@/lib/paneles/periodos";
 
 /**
  * Período de Asesores (plan "Paneles", 13/11/2026): solo Hoy / 7 días / 30 días.
@@ -10,18 +10,15 @@ import { PERIODOS, type PeriodoId } from "@/lib/paneles/periodos";
  * persona «Este año» no tiene sentido (la actividad por mensajes tiene tope de
  * 92 días). Misma mecánica que el del marco: no guarda estado, cambia la URL.
  *
- * Si la URL trae un período que Asesores no ofrece (`?periodo=mes`, que la
- * página acepta porque lo comparte con las otras dos), se muestra también como
- * opción activa para que el control diga la verdad de lo que se está viendo.
+ * Desde el 15/11/2026 la página usa `periodoDeAsesores`, que nunca devuelve
+ * `mes` ni `anio`: ya no existe la "opción activa extra" para un período fuera
+ * de la lista, y el control siempre pinta exactamente estos tres.
  */
-const PERIODOS_ASESORES: PeriodoId[] = ["hoy", "7d", "30d"];
 
 export function ControlPeriodoAsesores({ periodo }: { periodo: PeriodoId }) {
   const router = useRouter();
   const pathname = usePathname();
   const actuales = useSearchParams();
-
-  const ids = PERIODOS_ASESORES.includes(periodo) ? PERIODOS_ASESORES : [...PERIODOS_ASESORES, periodo];
 
   return (
     <div className="pn-scroll">
@@ -34,7 +31,7 @@ export function ControlPeriodoAsesores({ periodo }: { periodo: PeriodoId }) {
           params.set("periodo", v);
           router.replace(`${pathname}?${params.toString()}`, { scroll: false });
         }}
-        items={ids.map((id) => ({ value: id, label: PERIODOS.find((p) => p.id === id)?.etiqueta ?? id }))}
+        items={PERIODOS_ASESORES.map((id) => ({ value: id, label: PERIODOS.find((p) => p.id === id)?.etiqueta ?? id }))}
       />
     </div>
   );

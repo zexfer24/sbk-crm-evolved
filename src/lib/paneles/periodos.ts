@@ -142,3 +142,16 @@ export function topeMensajes(
 export function periodoDesdeParam(valor: string | undefined): PeriodoId {
   return PERIODOS.find((p) => p.id === valor)?.id ?? "hoy";
 }
+
+/**
+ * Los únicos períodos que ofrece Asesores (15/11/2026). `panel_asesores` lee
+ * `messages` y a 92 días tarda 1,3–1,5 s con 300 mil mensajes (a 30 días,
+ * 0,7–0,9 s): un `?periodo=anio` pedía un año entero, la RPC lo recortaba a
+ * 92 días y el control pintaba una opción que la pantalla no ofrece.
+ */
+export const PERIODOS_ASESORES: PeriodoId[] = ["hoy", "7d", "30d"];
+
+/** El período de Asesores: solo hoy / 7d / 30d; `mes`, `anio` y lo desconocido caen en "hoy". */
+export function periodoDeAsesores(valor: string | undefined): PeriodoId {
+  return PERIODOS_ASESORES.find((id) => id === valor) ?? "hoy";
+}

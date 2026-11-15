@@ -236,6 +236,18 @@ describe("panel/asesores/page.tsx", () => {
     const p = await propsDe("asesores", { periodo: "xyz" });
     expect(p.periodo).toBe("hoy");
   });
+
+  // 15/11/2026: las RPC de Asesores recortan a 92 días y el control solo ofrece
+  // hoy/7d/30d; "mes" y "anio" valen en los otros paneles pero acá caen en hoy.
+  it.each(["anio", "mes"])("?periodo=%s lee el rango de hoy, no un mes ni un año", async (valor) => {
+    const p = await propsDe("asesores", { periodo: valor });
+    const hoy = rangoDe("hoy", AHORA);
+    expect(p.periodo).toBe("hoy");
+    expect(p.rango).toEqual(hoy);
+    expect(marcaDe(p.asesores)).toBe(marca(hoy.desde, hoy.hasta));
+    expect(marcaDe(p.conversaciones)).toBe(marca(hoy.desde, hoy.hasta));
+    expect(marcaDe(p.ventas)).toBe(marca(hoy.desde, hoy.hasta));
+  });
 });
 
 /**

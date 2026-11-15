@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { PERIODOS, periodoDesdeParam, rangoDe, rangoPrevio, topeMensajes } from "./periodos";
+import { PERIODOS, PERIODOS_ASESORES, periodoDeAsesores, periodoDesdeParam, rangoDe, rangoPrevio, topeMensajes } from "./periodos";
 
 // Caracas es UTC-4 todo el año (sin horario de verano). Fechas fijas siempre:
 // ningún test de este archivo lee el reloj real (trampa de CLAUDE.md).
@@ -137,5 +137,23 @@ describe("periodoDesdeParam", () => {
     expect(periodoDesdeParam("")).toBe("hoy");
     expect(periodoDesdeParam("semana")).toBe("hoy");
     expect(periodoDesdeParam("7D")).toBe("hoy");
+  });
+});
+
+describe("periodoDeAsesores", () => {
+  it("ofrece exactamente hoy, 7d y 30d", () => {
+    expect(PERIODOS_ASESORES).toEqual(["hoy", "7d", "30d"]);
+  });
+
+  it("acepta los tres períodos de Asesores", () => {
+    for (const id of ["hoy", "7d", "30d"]) expect(periodoDeAsesores(id)).toBe(id);
+  });
+
+  it("mes y anio (válidos para los otros paneles) y cualquier otra cosa caen en hoy", () => {
+    expect(periodoDeAsesores("mes")).toBe("hoy");
+    expect(periodoDeAsesores("anio")).toBe("hoy");
+    expect(periodoDeAsesores(undefined)).toBe("hoy");
+    expect(periodoDeAsesores("")).toBe("hoy");
+    expect(periodoDeAsesores("30D")).toBe("hoy");
   });
 });
