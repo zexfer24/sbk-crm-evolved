@@ -168,26 +168,27 @@
   }
 }
 
-/* --- Cuerpo: tabla por persona + columna lateral ---------------------------- */
+/* --- Cuerpo: tabla por persona + fila de Seba y Mostrador --------------------- */
+/* 15/11/2026: antes la columna lateral (300 px) iba AL LADO de la tabla y a 1440
+   px la tabla (1204 px) quedaba en un contenedor de 964 px, con «Reasignadas»
+   cortada. Ahora la tabla ocupa todo el ancho y el lateral baja a su propia fila. */
 .as-cuerpo {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 300px;
+  grid-template-columns: minmax(0, 1fr);
   gap: var(--pn-gap);
   align-items: start;
 }
-.as-cuerpo > .pn-degradado {
-  grid-column: 1 / -1;
+.as-lado {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--pn-gap);
+  align-items: start;
+  min-width: 0;
 }
-@media (max-width: 1100px) {
-  .as-cuerpo {
+@media (max-width: 700px) {
+  .as-lado {
     grid-template-columns: minmax(0, 1fr);
   }
-}
-.as-lado {
-  display: flex;
-  flex-direction: column;
-  gap: var(--pn-gap);
-  min-width: 0;
 }
 .as-lado-card__cab {
   display: flex;
@@ -262,6 +263,23 @@
 .as-tabla td:first-child {
   text-align: left;
 }
+/* Con la tabla scrolleando (≈1024 px) la persona se queda a la vista. Solo
+   por encima del ancho de tarjetas: en móvil la fila es una grilla. */
+@media (min-width: 701px) {
+  .as-tabla th:first-child {
+    position: sticky;
+    left: 0;
+    z-index: 1;
+    background: var(--lm-surface);
+  }
+  .as-tabla td:first-child {
+    position: sticky;
+    left: 0;
+    z-index: 1;
+    background: var(--lm-surface);
+    transition: background-color 0.2s;
+  }
+}
 .as-th {
   display: inline-flex;
   align-items: center;
@@ -314,7 +332,8 @@ th[aria-sort="ascending"] [data-flecha] {
   border-bottom: 0;
 }
 @media (hover: hover) {
-  .as-tabla tbody tr:hover {
+  .as-tabla tbody tr:hover,
+  .as-tabla tbody tr:hover td:first-child {
     background: var(--lm-sunken);
   }
 }
@@ -325,8 +344,13 @@ th[aria-sort="ascending"] [data-flecha] {
   letter-spacing: -0.02em;
 }
 .as-v--fecha {
+  /* Parte en dos líneas («14 nov,» / «3:45 p. m.») para no ensanchar la tabla:
+     11ch en mono es justo lo que cabe la hora; la fecha va arriba. */
+  display: inline-block;
+  max-width: 11ch;
   font-size: 12px;
-  white-space: nowrap;
+  line-height: 1.35;
+  white-space: normal;
 }
 .as-tabla td small {
   display: block;
@@ -339,7 +363,7 @@ th[aria-sort="ascending"] [data-flecha] {
   display: flex;
   align-items: center;
   gap: 10px;
-  min-width: 190px;
+  min-width: 170px;
   text-align: left;
 }
 .as-ag > div {
