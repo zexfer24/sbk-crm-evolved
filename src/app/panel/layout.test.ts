@@ -3,7 +3,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 /**
  * Plan "Paneles" (13/11/2026): `/panel` es solo de supervisor y admin. El
  * layout es el primer candado (el definitivo está en las RPC, con 42501); un
- * asesor que escribe la URL a mano termina en `/`, y quien no tiene sesión en
+ * asesor que escribe la URL a mano termina en `/recorrido` (antes `/`; desde el 15/11/2026 se ahorra el salto), y quien no tiene sesión en
  * `/login`. La caja no llega acá: la frena el middleware. Desde el 15/11/2026 la
  * lógica vive en `acceso-servidor.ts` (la comparten el layout y cada página,
  * ver `paginas.test.ts`); acá se prueba que el layout la use.
@@ -51,11 +51,11 @@ describe("panel/layout.tsx", () => {
     await expect(correrLayout()).rejects.toMatchObject({ destino: "/login" });
   });
 
-  it.each(["agent", "caja"])("un %s es redirigido a /", async (role) => {
+  it.each(["agent", "caja"])("un %s es redirigido a /recorrido", async (role) => {
     fetchCurrentAgentMock.mockResolvedValue({ id: "a-1", role });
 
-    await expect(correrLayout()).rejects.toMatchObject({ destino: "/" });
-    expect(redirectMock).toHaveBeenCalledWith("/");
+    await expect(correrLayout()).rejects.toMatchObject({ destino: "/recorrido" });
+    expect(redirectMock).toHaveBeenCalledWith("/recorrido");
   });
 
   it("si la consulta del agente falla, el error se propaga: ni deja pasar ni redirige", async () => {

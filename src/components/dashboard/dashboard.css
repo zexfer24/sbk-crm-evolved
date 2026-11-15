@@ -187,7 +187,10 @@
   align-items: center;
   gap: 2px;
   flex: 1;
-  justify-content: center;
+  /* `safe`: centra si caben, alinea al inicio si desbordan. Con `center` a secas
+     el desborde se reparte a los dos lados y lo de la izquierda queda fuera del
+     área desplazable (15/11/2026: «Dashboard» inalcanzable a 1024 px). */
+  justify-content: safe center;
   min-width: 0;
   overflow-x: auto;
   scrollbar-width: none;

@@ -52,14 +52,14 @@ describe("PanelMarco", () => {
     expect(frame!.childElementCount).toBe(2);
     expect(frame!.children[0]).toBe(screen.getByTestId("rail"));
     expect(frame!.children[1].tagName).toBe("MAIN");
-    expect(screen.getByTestId("rail")).toHaveAttribute("data-active", "paneles");
+    expect(screen.getByTestId("rail")).toHaveAttribute("data-active", "dashboard");
     expect(screen.getByTestId("rail")).toHaveAttribute("data-ver-paneles", "true");
   });
 
   // 15/11/2026 (code-review): en el teléfono `.dash-rail` es `display: none`, así
   // que sin la barra superior un supervisor no podía salir de /panel. Va DENTRO
   // del `main`: si fuera hijo directo de `.dash-frame` rompería el grid.
-  it("monta la navegación superior con Paneles activo dentro del main, no en el grid", () => {
+  it("monta la navegación superior con su panel activo dentro del main, no en el grid", () => {
     const { container } = render(
       <PanelMarco panel="dashboard" titulo="Dashboard de ventas" ahora={AHORA} periodo="hoy">
         <p>contenido</p>
@@ -71,10 +71,26 @@ describe("PanelMarco", () => {
     expect(container.querySelector("main")!.contains(barra)).toBe(true);
     const nav = screen.getByTestId("topnav");
     expect(barra!.contains(nav)).toBe(true);
-    expect(nav).toHaveAttribute("data-active", "paneles");
+    expect(nav).toHaveAttribute("data-active", "dashboard");
     expect(nav).toHaveAttribute("data-ver-paneles", "true");
     expect(barra).toHaveTextContent(BUSINESS_NAME);
     expect(container.querySelector(".dash-frame")!.childElementCount).toBe(2);
+  });
+
+  // 15/11/2026: la entrada única «Paneles» se partió en tres; cada pantalla marca
+  // SU entrada en el rail y en la barra superior, no una genérica.
+  it.each([
+    ["dashboard", "Dashboard de ventas"],
+    ["analiticas", "Analíticas"],
+    ["asesores", "Asesores"],
+  ] as const)("el panel «%s» marca su propia entrada en el rail y en la barra superior", (panel, titulo) => {
+    render(
+      <PanelMarco panel={panel} titulo={titulo} ahora={AHORA} periodo="hoy">
+        <p>contenido</p>
+      </PanelMarco>
+    );
+    expect(screen.getByTestId("rail")).toHaveAttribute("data-active", panel);
+    expect(screen.getByTestId("topnav")).toHaveAttribute("data-active", panel);
   });
 
   it("pone la fecha de hoy en Caracas como eyebrow y el título como h1", () => {

@@ -170,6 +170,52 @@ function stageSection(container: HTMLElement, label: string): HTMLElement {
   return section as HTMLElement;
 }
 
+// 15/11/2026 (plan "Paneles"): el Recorrido se mudó a `/recorrido` y su barra
+// superior era una copia escrita a mano del menú (sin Casos ni los paneles, con
+// `href="/"`). Ahora usa `AppTopNav`: mismo orden que el rail, con el Recorrido
+// AL FINAL y sus dos anclas (Actividad, Reclamos) a continuación.
+describe("DashboardView: barra superior", () => {
+  const SUPERVISOR: Agent = { ...AGENT, role: "supervisor" };
+
+  function enlaces(container: HTMLElement) {
+    return Array.from(container.querySelectorAll("nav.dash-nav > a")).map((a) => [
+      a.textContent,
+      a.getAttribute("href"),
+    ]);
+  }
+
+  it("un asesor ve el menú sin los paneles, con el Recorrido (activo, /recorrido) al final y las anclas después", () => {
+    const { container } = renderView();
+
+    expect(enlaces(container)).toEqual([
+      ["Bandeja", "/inbox"],
+      ["Clientes", "/clientes"],
+      ["Casos", "/casos"],
+      ["Ventas", "/ventas"],
+      ["Inventario", "/inventario"],
+      ["Control de IA", "/agent-control"],
+      ["Recorrido", "/recorrido"],
+      ["Actividad", "#actividad"],
+      ["Reclamos", "#reclamos"],
+    ]);
+    const activo = container.querySelector('nav.dash-nav [aria-current="page"]');
+    expect(activo).toHaveTextContent("Recorrido");
+    expect(container.querySelector('nav.dash-nav a[href="/"]')).toBeNull();
+  });
+
+  it("un supervisor suma Dashboard, Analíticas y Asesores al principio", () => {
+    const { container } = renderView({ currentAgent: SUPERVISOR });
+
+    expect(enlaces(container).slice(0, 4)).toEqual([
+      ["Dashboard", "/panel"],
+      ["Analíticas", "/panel/analiticas"],
+      ["Asesores", "/panel/asesores"],
+      ["Bandeja", "/inbox"],
+    ]);
+    expect(enlaces(container).at(-3)).toEqual(["Recorrido", "/recorrido"]);
+  });
+});
+
 describe("DashboardView", () => {
   // Tarde de Caracas del 10/9/2026 (America/Caracas = UTC-4): mismo patrón
   // que `dashboard.test.ts` ("HOY" en `describe("buildJourney con dayStart")`).

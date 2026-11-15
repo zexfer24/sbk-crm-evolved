@@ -1,5 +1,5 @@
 /** @vitest-environment jsdom */
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { render, screen } from "@testing-library/react";
 import { AppRail, AppTopNav } from "@/components/app-rail";
 
@@ -47,8 +47,10 @@ vi.mock("@/components/assignment-notifier", () => ({
   },
 }));
 
+// Orden del menú desde el 15/11/2026 (plan "Paneles"): el Recorrido se mudó a
+// `/recorrido` y quedó AL FINAL; para un asesor (sin `verPaneles`) este es el
+// menú completo.
 const SECCIONES = [
-  ["Recorrido", "/"],
   ["Bandeja", "/inbox"],
   ["Clientes", "/clientes"],
   // «Casos» (T7, plan "La ronda del cliente", 30/9/2026): el tablero Kanban
@@ -57,12 +59,22 @@ const SECCIONES = [
   ["Ventas", "/ventas"],
   ["Inventario", "/inventario"],
   ["Control de IA", "/agent-control"],
+  ["Recorrido", "/recorrido"],
 ] as const;
+
+// Las tres entradas de los paneles, que reemplazan a la «Paneles» única: van al
+// PRINCIPIO y solo las ve un supervisor/admin (`verPaneles`).
+const PANELES = [
+  ["Dashboard", "/panel"],
+  ["Analíticas", "/panel/analiticas"],
+  ["Asesores", "/panel/asesores"],
+] as const;
+const MENU_SUPERVISOR = [...PANELES, ...SECCIONES] as const;
 
 describe("AppRail", () => {
   // El rail estaba copiado en cuatro pantallas; el punto de extraerlo es que
   // agregar una sección no dependa de acordarse de editar las cuatro.
-  it("ofrece las siete secciones con su destino, en orden", () => {
+  it("ofrece las siete secciones con su destino, en orden, con el Recorrido al final", () => {
     render(<AppRail active="clientes" />);
 
     for (const [label, href] of SECCIONES) {
@@ -164,40 +176,65 @@ describe("AppRail con soloInventario (rol caja)", () => {
 // con la prop `verPaneles` (la calcula cada vista desde el rol que ya cargó);
 // el candado de verdad es el layout de /panel y las RPC.
 describe("AppRail con verPaneles", () => {
-  it("sin la prop no aparece «Paneles»", () => {
-    render(<AppRail active="ventas" />);
+  const etiquetas = (c: HTMLElement) =>
+    Array.from(c.querySelectorAll(".dash-rail-btn[href]")).map((a) => a.getAttribute("aria-label"));
+
+  it("sin la prop no aparece ninguna de las tres entradas de paneles ni la vieja «Paneles»", () => {
+    const { container } = render(<AppRail active="ventas" />);
+    for (const [label] of PANELES) expect(screen.queryByLabelText(label)).toBeNull();
     expect(screen.queryByLabelText("Paneles")).toBeNull();
+    expect(etiquetas(container)).toEqual(SECCIONES.map(([label]) => label));
   });
 
   it("verPaneles={false} es igual que no pasarla", () => {
-    render(<AppRail active="ventas" verPaneles={false} />);
-    expect(screen.queryByLabelText("Paneles")).toBeNull();
+    const { container } = render(<AppRail active="ventas" verPaneles={false} />);
+    expect(etiquetas(container)).toEqual(SECCIONES.map(([label]) => label));
   });
 
-  it("con la prop suma «Paneles» → /panel después de las siete secciones", () => {
+  it("para un supervisor/admin el orden exacto es Dashboard, Analíticas, Asesores, … y el Recorrido al final", () => {
     const { container } = render(<AppRail active="ventas" verPaneles />);
 
-    expect(screen.getByLabelText("Paneles").getAttribute("href")).toBe("/panel");
-    const orden = Array.from(container.querySelectorAll(".dash-rail-btn[href]")).map((a) => a.getAttribute("aria-label"));
-    expect(orden).toEqual([...SECCIONES.map(([label]) => label), "Paneles"]);
+    expect(etiquetas(container)).toEqual([
+      "Dashboard",
+      "Analíticas",
+      "Asesores",
+      "Bandeja",
+      "Clientes",
+      "Casos",
+      "Ventas",
+      "Inventario",
+      "Control de IA",
+      "Recorrido",
+    ]);
+    for (const [label, href] of MENU_SUPERVISOR) {
+      expect(screen.getByLabelText(label).getAttribute("href")).toBe(href);
+    }
+    // La entrada única «Paneles» desapareció: la reemplazan las tres.
+    expect(screen.queryByLabelText("Paneles")).toBeNull();
   });
 
-  it("marca «Paneles» cuando es la sección activa", () => {
-    render(<AppRail active="paneles" verPaneles />);
-    expect(screen.getByLabelText("Paneles").getAttribute("data-active")).toBe("true");
-    expect(screen.getByLabelText("Paneles").getAttribute("aria-current")).toBe("page");
+  it.each([
+    ["dashboard", "Dashboard"],
+    ["analiticas", "Analíticas"],
+    ["asesores", "Asesores"],
+    ["recorrido", "Recorrido"],
+  ] as const)("marca solo «%s» cuando es la sección activa", (id, label) => {
+    const { container } = render(<AppRail active={id} verPaneles />);
+
+    expect(screen.getByLabelText(label).getAttribute("data-active")).toBe("true");
+    expect(screen.getByLabelText(label).getAttribute("aria-current")).toBe("page");
+    expect(container.querySelectorAll("[data-active]").length).toBe(1);
   });
 
-  it("la caja nunca la ve, aunque se le pase verPaneles", () => {
+  it("la caja nunca las ve, aunque se le pase verPaneles", () => {
     const { container } = render(<AppRail active="inventario" soloInventario verPaneles />);
 
-    expect(screen.queryByLabelText("Paneles")).toBeNull();
-    const links = Array.from(container.querySelectorAll(".dash-rail-btn[href]")).map((a) => a.getAttribute("aria-label"));
-    expect(links).toEqual(["Inventario"]);
+    for (const [label] of PANELES) expect(screen.queryByLabelText(label)).toBeNull();
+    expect(etiquetas(container)).toEqual(["Inventario"]);
   });
 
   it("sigue entregando un solo hijo directo (el <nav>)", () => {
-    const { container } = render(<AppRail active="paneles" verPaneles />);
+    const { container } = render(<AppRail active="dashboard" verPaneles />);
     expect(container.childElementCount).toBe(1);
     expect(container.firstElementChild?.tagName).toBe("NAV");
   });
@@ -218,17 +255,101 @@ describe("AppTopNav", () => {
     expect(screen.getByText("Clientes").getAttribute("aria-current")).toBeNull();
   });
 
-  it("«Paneles» aparece solo con verPaneles y nunca para la caja", () => {
-    const { unmount } = render(<AppTopNav active="ventas" />);
+  it("las tres entradas de paneles aparecen solo con verPaneles, antes que todo, y nunca para la caja", () => {
+    const etiquetasNav = (c: HTMLElement) => Array.from(c.querySelectorAll("a")).map((a) => a.textContent);
+
+    const { container, unmount } = render(<AppTopNav active="ventas" />);
+    for (const [label] of PANELES) expect(screen.queryByText(label)).toBeNull();
     expect(screen.queryByText("Paneles")).toBeNull();
+    expect(etiquetasNav(container)).toEqual(SECCIONES.map(([label]) => label));
     unmount();
 
-    const { unmount: desmontar } = render(<AppTopNav active="ventas" verPaneles />);
-    expect(screen.getByText("Paneles").getAttribute("href")).toBe("/panel");
+    const { container: conPaneles, unmount: desmontar } = render(<AppTopNav active="ventas" verPaneles />);
+    expect(etiquetasNav(conPaneles)).toEqual(MENU_SUPERVISOR.map(([label]) => label));
+    for (const [label, href] of PANELES) {
+      expect(screen.getByText(label).getAttribute("href")).toBe(href);
+    }
     desmontar();
 
     render(<AppTopNav active="inventario" soloInventario verPaneles />);
-    expect(screen.queryByText("Paneles")).toBeNull();
+    for (const [label] of PANELES) expect(screen.queryByText(label)).toBeNull();
+  });
+
+  it("marca la entrada activa de un panel por su id", () => {
+    render(<AppTopNav active="analiticas" verPaneles />);
+    expect(screen.getByText("Analíticas").getAttribute("aria-current")).toBe("page");
+    expect(screen.getByText("Dashboard").getAttribute("aria-current")).toBeNull();
+  });
+
+  // El Recorrido pinta aquí sus anclas (Actividad, Reclamos) a continuación de su
+  // propia entrada, que ahora es la última.
+  it("`extra` va dentro del <nav>, después de las secciones", () => {
+    const { container } = render(
+      <AppTopNav active="recorrido" extra={<a href="#actividad">Actividad</a>} />
+    );
+    const enlaces = Array.from(container.querySelectorAll("nav.dash-nav > a")).map((a) => a.textContent);
+    expect(enlaces).toEqual([...SECCIONES.map(([label]) => label), "Actividad"]);
+  });
+
+  // 15/11/2026: con el menú nuevo la barra no cabe a 1024 px y el enlace activo
+  // (p. ej. «Recorrido», el último) quedaba fuera, a la derecha. jsdom no calcula
+  // layout: se simulan los rectángulos y se espía `scrollIntoView`.
+  describe("lleva el enlace activo a la vista", () => {
+    const original = Element.prototype.scrollIntoView;
+    const rectOriginal = Element.prototype.getBoundingClientRect;
+    const scrollIntoView = vi.fn();
+
+    function rect(left: number, right: number): DOMRect {
+      return { left, right, top: 0, bottom: 40, width: right - left, height: 40, x: left, y: 0, toJSON: () => ({}) };
+    }
+
+    /** La barra ocupa 0–800 px; el enlace activo se coloca donde diga cada caso. */
+    function simularLayout(izquierdaDelActivo: number, derechaDelActivo: number) {
+      Element.prototype.getBoundingClientRect = function (this: Element) {
+        if (this.matches("nav.dash-nav")) return rect(0, 800);
+        if (this.matches('[aria-current="page"]')) return rect(izquierdaDelActivo, derechaDelActivo);
+        return rect(0, 0);
+      };
+    }
+
+    beforeEach(() => {
+      scrollIntoView.mockClear();
+      Element.prototype.scrollIntoView = scrollIntoView;
+    });
+    afterEach(() => {
+      Element.prototype.scrollIntoView = original;
+      Element.prototype.getBoundingClientRect = rectOriginal;
+    });
+
+    it("si el enlace activo queda fuera, a la derecha, lo trae con scrollIntoView sin tocar el scroll vertical", () => {
+      simularLayout(900, 1000);
+      render(<AppTopNav active="recorrido" />);
+
+      expect(scrollIntoView).toHaveBeenCalledTimes(1);
+      expect(scrollIntoView).toHaveBeenCalledWith({ block: "nearest", inline: "nearest" });
+      expect(scrollIntoView.mock.contexts[0]).toBe(screen.getByText("Recorrido"));
+    });
+
+    it("si queda cortado a la izquierda también lo trae", () => {
+      simularLayout(-120, -20);
+      render(<AppTopNav active="dashboard" verPaneles />);
+
+      expect(scrollIntoView).toHaveBeenCalledTimes(1);
+    });
+
+    it("si ya está dentro del área visible de la barra no mueve nada", () => {
+      simularLayout(100, 200);
+      render(<AppTopNav active="ventas" />);
+
+      expect(scrollIntoView).not.toHaveBeenCalled();
+    });
+
+    it("sin `scrollIntoView` (jsdom, navegadores viejos) no lanza", () => {
+      simularLayout(900, 1000);
+      // @ts-expect-error simula un entorno sin la API
+      Element.prototype.scrollIntoView = undefined;
+      expect(() => render(<AppTopNav active="recorrido" />)).not.toThrow();
+    });
   });
 
   it("con soloInventario lleva solo el enlace a Inventario", () => {

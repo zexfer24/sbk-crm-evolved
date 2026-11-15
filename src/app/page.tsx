@@ -1,47 +1,25 @@
 import { redirect } from "next/navigation";
 import { createClient } from "@/lib/supabase/server";
-import {
-  fetchAgents,
-  fetchBusinessHours,
-  fetchCurrentAgent,
-  fetchDashboardConversations,
-  fetchTodayActivity,
-} from "@/lib/data";
-import { fetchLeadTotal } from "@/lib/dashboard-data";
-import { CRM_TIME_ZONE } from "@/lib/time-zone";
-import { DashboardView } from "@/components/dashboard/dashboard-view";
+import { fetchCurrentAgent } from "@/lib/data";
+import { puedeVerPaneles } from "@/lib/paneles/acceso";
 
-export default async function DashboardPage() {
+/**
+ * La raíz `/` no pinta nada: decide por rol adónde cae cada quien al entrar
+ * (15/11/2026, plan "Paneles"; antes era el Recorrido). Supervisor y admin
+ * abren el Dashboard de ventas (`/panel`); los asesores siguen entrando al
+ * Recorrido, que ahora vive en `/recorrido`; sin sesión, `/login`.
+ *
+ * Así siguen funcionando sin tocarlos el `router.push("/")` de `login-form.tsx`,
+ * el `redirect("/")` de `login/page.tsx` y el del proxy cuando un usuario ya
+ * logueado pide `/login`. La caja no llega acá: el proxy la manda a `/inventario`.
+ *
+ * Una sola lectura (el agente actual): las del Recorrido las hace su propia página.
+ */
+export default async function RaizPage() {
   const supabase = await createClient();
+  const agente = await fetchCurrentAgent(supabase);
 
-  const [currentAgent, agents, dashboard, activity, businessHours, leadTotal] = await Promise.all([
-    fetchCurrentAgent(supabase),
-    fetchAgents(supabase),
-    fetchDashboardConversations(supabase),
-    fetchTodayActivity(supabase, CRM_TIME_ZONE),
-    // Lectura liviana y a prueba de fallos: sin el RPC de gasto que trae
-    // fetchAgentSettings (no hace falta acá) y con el horario por defecto si
-    // la fila no se puede leer, para que un tropiezo acá nunca tumbe la
-    // bandeja (Frente B3, "El reloj dice la verdad", 5/9/2026).
-    fetchBusinessHours(supabase),
-    // "Total de leads" (T2, corrida "Los números del día", 10/9/2026).
-    fetchLeadTotal(supabase),
-  ]);
-
-  if (!currentAgent) {
-    redirect("/login");
-  }
-
-  return (
-    <DashboardView
-      currentAgent={currentAgent}
-      agents={agents}
-      initialConversations={dashboard.conversations}
-      initialTicketTags={dashboard.ticketTags}
-      initialActivity={activity}
-      initialLeadTotal={leadTotal}
-      timeZone={CRM_TIME_ZONE}
-      businessHours={businessHours}
-    />
-  );
+  if (!agente) redirect("/login");
+  if (puedeVerPaneles(agente.role)) redirect("/panel");
+  redirect("/recorrido");
 }

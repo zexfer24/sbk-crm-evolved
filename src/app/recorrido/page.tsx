@@ -1,0 +1,54 @@
+import { redirect } from "next/navigation";
+import { createClient } from "@/lib/supabase/server";
+import {
+  fetchAgents,
+  fetchBusinessHours,
+  fetchCurrentAgent,
+  fetchDashboardConversations,
+  fetchTodayActivity,
+} from "@/lib/data";
+import { fetchLeadTotal } from "@/lib/dashboard-data";
+import { CRM_TIME_ZONE } from "@/lib/time-zone";
+import { DashboardView } from "@/components/dashboard/dashboard-view";
+
+/**
+ * El Recorrido. Vivía en `/` (`src/app/page.tsx`); desde el 15/11/2026 (plan
+ * "Paneles") se mudó acá y la raíz decide por rol adónde mandar a cada quien
+ * (supervisor/admin al Dashboard de ventas, asesores aquí). Lo que lee y lo
+ * que pinta no cambió. Su esqueleto de carga sigue siendo el `app/loading.tsx`
+ * raíz, que Next hereda a esta ruta.
+ */
+export default async function RecorridoPage() {
+  const supabase = await createClient();
+
+  const [currentAgent, agents, dashboard, activity, businessHours, leadTotal] = await Promise.all([
+    fetchCurrentAgent(supabase),
+    fetchAgents(supabase),
+    fetchDashboardConversations(supabase),
+    fetchTodayActivity(supabase, CRM_TIME_ZONE),
+    // Lectura liviana y a prueba de fallos: sin el RPC de gasto que trae
+    // fetchAgentSettings (no hace falta acá) y con el horario por defecto si
+    // la fila no se puede leer, para que un tropiezo acá nunca tumbe la
+    // bandeja (Frente B3, "El reloj dice la verdad", 5/9/2026).
+    fetchBusinessHours(supabase),
+    // "Total de leads" (T2, corrida "Los números del día", 10/9/2026).
+    fetchLeadTotal(supabase),
+  ]);
+
+  if (!currentAgent) {
+    redirect("/login");
+  }
+
+  return (
+    <DashboardView
+      currentAgent={currentAgent}
+      agents={agents}
+      initialConversations={dashboard.conversations}
+      initialTicketTags={dashboard.ticketTags}
+      initialActivity={activity}
+      initialLeadTotal={leadTotal}
+      timeZone={CRM_TIME_ZONE}
+      businessHours={businessHours}
+    />
+  );
+}

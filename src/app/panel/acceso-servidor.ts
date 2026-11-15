@@ -30,7 +30,9 @@ export const exigirAccesoPaneles = cache(async () => {
   const agente = await fetchCurrentAgent(supabase);
 
   if (!agente) redirect("/login");
-  if (!puedeVerPaneles(agente.role)) redirect("/");
+  // 15/11/2026: directo al Recorrido y no a `/`: la raíz ahora redirige por rol
+  // y el asesor pagaría un salto de más.
+  if (!puedeVerPaneles(agente.role)) redirect("/recorrido");
 
   return { supabase, agente };
 });

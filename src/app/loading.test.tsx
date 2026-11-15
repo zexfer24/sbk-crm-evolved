@@ -7,6 +7,9 @@ import VentasLoading from "@/app/ventas/loading";
 import InventarioLoading from "@/app/inventario/loading";
 import ControlLoading from "@/app/agent-control/loading";
 import RecorridoLoading from "@/app/loading";
+import DashboardLoading from "@/app/panel/loading";
+import AnaliticasLoading from "@/app/panel/analiticas/loading";
+import AsesoresLoading from "@/app/panel/asesores/loading";
 
 // El rail cierra sesión con el router, que fuera de Next no existe.
 vi.mock("next/navigation", () => ({ useRouter: () => ({ push: vi.fn(), refresh: vi.fn() }) }));
@@ -63,5 +66,31 @@ describe("esqueletos de carga", () => {
     // El rail no espera a los datos: se puede saltar a otra sección sin que
     // la anterior haya terminado de llegar.
     expect(screen.getAllByRole("link", { name: /bandeja/i }).length).toBeGreaterThan(0);
+  });
+});
+
+// 15/11/2026 (plan "Paneles"): «Paneles» se partió en tres entradas del menú,
+// así que cada ruta de `/panel` necesita su propio esqueleto para marcar la suya
+// en el rail (un `loading.tsx` único marcaba siempre la misma). Solo
+// supervisor/admin llegan acá, y el rail trae las tres entradas.
+describe("esqueletos de los paneles", () => {
+  it.each([
+    ["dashboard", DashboardLoading, "Dashboard"],
+    ["analíticas", AnaliticasLoading, "Analíticas"],
+    ["asesores", AsesoresLoading, "Asesores"],
+  ] as const)("%s marca su propia entrada del rail", (_nombre, Loading, etiqueta) => {
+    const { container } = render(<Loading />);
+
+    expect(screen.getByLabelText(etiqueta).getAttribute("data-active")).toBe("true");
+    expect(container.querySelectorAll(".dash-rail [data-active]").length).toBe(1);
+    // El rail del esqueleto trae las tres entradas, igual que el de la pantalla real.
+    for (const otra of ["Dashboard", "Analíticas", "Asesores"]) {
+      expect(screen.getByLabelText(otra)).toBeTruthy();
+    }
+  });
+
+  it("el Recorrido (esqueleto raíz) marca Recorrido, no un panel", () => {
+    render(<RecorridoLoading />);
+    expect(screen.getByLabelText("Recorrido").getAttribute("data-active")).toBe("true");
   });
 });

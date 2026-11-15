@@ -1,9 +1,11 @@
 "use client";
 
 import { useEffect } from "react";
+import { usePathname } from "next/navigation";
 import { AlertTriangle, RefreshCw } from "lucide-react";
 import { Button } from "@heroui/react";
 import { AppRail } from "@/components/app-rail";
+import { panelActivoDeRuta } from "@/lib/paneles/panel-activo";
 import { PanelBarraSuperior } from "@/components/paneles/panel-barra-superior";
 // Igual que `ventas/error.tsx` y `agent-control/error.tsx` (19/9/2026): `.dash`,
 // `.dash-frame` y `.dash-empty*` los define esta hoja, y el componente de vista
@@ -22,6 +24,9 @@ import "@/components/dashboard/dashboard.css";
  * Marco `.dash > .dash-frame > AppRail + main`: DOS hijos directos, por la
  * trampa del FRAGMENTO del 9/9/2026. Solo supervisor/admin llegan a `/panel`
  * (el layout lo exige), así que el rail lleva `verPaneles`.
+ *
+ * Qué entrada marca (15/11/2026): el menú tiene una por panel y este boundary
+ * es de las tres rutas, así que la deduce del `pathname` (`panelActivoDeRuta`).
  */
 export default function PanelError({
   error,
@@ -30,6 +35,8 @@ export default function PanelError({
   error: Error & { digest?: string };
   retry: () => void;
 }) {
+  const activo = panelActivoDeRuta(usePathname());
+
   useEffect(() => {
     // Boundary de cliente: no hay `lib/log.ts` (es `server-only`).
     console.error("No se pudieron cargar los paneles:", error);
@@ -38,12 +45,12 @@ export default function PanelError({
   return (
     <div className="dash">
       <div className="dash-frame">
-        <AppRail active="paneles" verPaneles />
+        <AppRail active={activo} verPaneles />
 
         <main className="dash-main">
           <div className="dash-content">
             {/* 15/11/2026: en el teléfono el rail no se ve; sin esto no hay cómo salir. */}
-            <PanelBarraSuperior />
+            <PanelBarraSuperior activo={activo} />
             <div className="dash-empty" role="alert">
               <AlertTriangle size={28} aria-hidden="true" />
               <p className="dash-empty-title">Los paneles no pudieron cargar</p>

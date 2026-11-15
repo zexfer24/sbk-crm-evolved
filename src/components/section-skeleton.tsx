@@ -24,7 +24,7 @@ export function SectionSkeleton({
   /**
    * Los paneles (13/11/2026) solo los abre un supervisor/admin, así que su
    * `loading.tsx` pasa `true`: el rail del esqueleto tiene que traer el mismo
-   * botón «Paneles» que el rail de la pantalla real, o el botón parpadearía.
+   * tres entradas de paneles que el rail de la pantalla real, o parpadearían.
    */
   verPaneles?: boolean;
 }) {

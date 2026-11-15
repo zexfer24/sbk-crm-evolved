@@ -80,11 +80,11 @@ export function PanelMarco({
   return (
     <div className="dash">
       <div className="dash-frame">
-        <AppRail active="paneles" verPaneles />
+        <AppRail active={panel} verPaneles />
 
         <main className="dash-main">
           <div className="dash-content pn-contenido">
-            <PanelBarraSuperior />
+            <PanelBarraSuperior activo={panel} />
             <header className="pn-cab">
               <div className="pn-cab__titulos">
                 <p className="pn-eyebrow">{fechaLargaDeHoy(ahora)}</p>

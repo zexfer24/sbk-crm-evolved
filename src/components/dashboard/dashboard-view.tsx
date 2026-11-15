@@ -1,7 +1,6 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useState } from "react";
-import Link from "next/link";
 import { RefreshCw, Route, TriangleAlert } from "lucide-react";
 import type { Agent, BoardConversation, HourlyActivity, TicketTagsByContact } from "@/lib/types";
 import { BUSINESS_NAME } from "@/lib/brand";
@@ -26,7 +25,7 @@ import {
   isActive,
   ticketQueue,
 } from "@/lib/dashboard";
-import { AppRail } from "@/components/app-rail";
+import { AppRail, AppTopNav } from "@/components/app-rail";
 import { puedeVerPaneles } from "@/lib/paneles/acceso";
 import { ActivityChart } from "@/components/dashboard/activity-chart";
 import { JourneyBoard } from "@/components/dashboard/journey-board";
@@ -213,32 +212,23 @@ export function DashboardView({
                 <span className="dash-brand-name">{BUSINESS_NAME}</span>
               </p>
 
-              <nav className="dash-nav" aria-label="Navegación principal">
-                <Link className="dash-nav-link" href="/" aria-current="page">
-                  Recorrido
-                </Link>
-                <Link className="dash-nav-link" href="/inbox">
-                  Bandeja
-                </Link>
-                <a className="dash-nav-link" href="#actividad">
-                  Actividad
-                </a>
-                <a className="dash-nav-link" href="#reclamos">
-                  Reclamos
-                </a>
-                <Link className="dash-nav-link" href="/clientes">
-                  Clientes
-                </Link>
-                <Link className="dash-nav-link" href="/ventas">
-                  Ventas
-                </Link>
-                <Link className="dash-nav-link" href="/inventario">
-                  Inventario
-                </Link>
-                <Link className="dash-nav-link" href="/agent-control">
-                  Control IA
-                </Link>
-              </nav>
+              {/* 15/11/2026: era una copia a mano del menú (sin Casos ni los
+                  paneles, con `href="/"`). Ahora es la barra compartida, con el
+                  Recorrido al final y sus dos anclas a continuación. */}
+              <AppTopNav
+                active="recorrido"
+                verPaneles={puedeVerPaneles(currentAgent.role)}
+                extra={
+                  <>
+                    <a className="dash-nav-link" href="#actividad">
+                      Actividad
+                    </a>
+                    <a className="dash-nav-link" href="#reclamos">
+                      Reclamos
+                    </a>
+                  </>
+                }
+              />
 
               <div className="dash-topbar-actions">
                 <button

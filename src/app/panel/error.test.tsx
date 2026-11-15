@@ -1,5 +1,5 @@
 /** @vitest-environment jsdom */
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { render, screen, fireEvent } from "@testing-library/react";
 import PanelError from "./error";
 
@@ -9,8 +9,12 @@ import PanelError from "./error";
 // acá `@heroui/react` necesita quedarse con el `Button` REAL (el botón
 // "Reintentar" de esta pantalla lo usa) y solo pisar `toast`, así que se
 // mockea con `importOriginal` en vez del mock casero de `app-rail.test.tsx`.
+// `error.tsx` es la pantalla compartida de las tres rutas: sabe cuál es la
+// suya por `usePathname` (15/11/2026, cuando «Paneles» se partió en tres).
+const rutaActual = vi.hoisted(() => ({ valor: "/panel" }));
 vi.mock("next/navigation", () => ({
   useRouter: () => ({ push: vi.fn(), replace: vi.fn(), refresh: vi.fn() }),
+  usePathname: () => rutaActual.valor,
 }));
 
 function fakeChannel() {
@@ -35,11 +39,29 @@ vi.mock("@heroui/react", async (importOriginal) => {
 });
 
 describe("PanelError", () => {
+  beforeEach(() => {
+    rutaActual.valor = "/panel";
+  });
+
   it("muestra el mensaje en español y el rail de secciones", () => {
     render(<PanelError error={new Error("boom")} retry={vi.fn()} />);
 
     expect(screen.getByText("Los paneles no pudieron cargar")).toBeInTheDocument();
-    expect(screen.getByLabelText("Paneles").getAttribute("data-active")).toBe("true");
+    expect(screen.getByLabelText("Dashboard").getAttribute("data-active")).toBe("true");
+  });
+
+  it.each([
+    ["/panel", "Dashboard"],
+    ["/panel/analiticas", "Analíticas"],
+    ["/panel/asesores", "Asesores"],
+  ])("en %s marca «%s» en el rail y en la barra superior (no una entrada genérica)", (ruta, etiqueta) => {
+    rutaActual.valor = ruta;
+    const { container } = render(<PanelError error={new Error("boom")} retry={vi.fn()} />);
+
+    expect(screen.getByLabelText(etiqueta).getAttribute("data-active")).toBe("true");
+    expect(container.querySelectorAll(".dash-rail [data-active]").length).toBe(1);
+    const activo = container.querySelector('nav.dash-nav [aria-current="page"]');
+    expect(activo).toHaveTextContent(etiqueta);
   });
 
   it("el botón Reintentar llama a retry()", () => {
@@ -63,7 +85,7 @@ describe("PanelError", () => {
 
   // 15/11/2026 (code-review): en el teléfono el rail no se ve; sin la barra
   // superior, un fallo dejaba al supervisor sin forma de salir de /panel.
-  it("monta la navegación superior con Paneles activo, dentro del main", () => {
+  it("monta la navegación superior con el panel activo, dentro del main", () => {
     const { container } = render(<PanelError error={new Error("boom")} retry={vi.fn()} />);
 
     const barra = container.querySelector("main header.dash-topbar");
@@ -71,7 +93,7 @@ describe("PanelError", () => {
     const nav = barra!.querySelector("nav.dash-nav");
     expect(nav).not.toBeNull();
     const activo = nav!.querySelector('[aria-current="page"]');
-    expect(activo).toHaveTextContent("Paneles");
+    expect(activo).toHaveTextContent("Dashboard");
   });
 
   // Trampa del 9/9/2026: `.dash-frame` es un grid de dos columnas fijas

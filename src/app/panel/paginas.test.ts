@@ -291,17 +291,17 @@ describe("el rol se verifica en cada página, antes de leer nada", () => {
     }
   }
 
-  it.each(PAGINAS)("%s: un agent es redirigido a / y no se llama ninguna lectura", async (ruta) => {
+  it.each(PAGINAS)("%s: un agent es redirigido a /recorrido y no se llama ninguna lectura", async (ruta) => {
     fetchCurrentAgent.mockResolvedValue({ id: "a-2", role: "agent" });
 
-    await expect(propsDe(ruta, {})).rejects.toMatchObject({ destino: "/" });
+    await expect(propsDe(ruta, {})).rejects.toMatchObject({ destino: "/recorrido" });
     ningunaLectura();
   });
 
   it.each(PAGINAS)("%s: la caja tampoco lee (fallar cerrado)", async (ruta) => {
     fetchCurrentAgent.mockResolvedValue({ id: "a-3", role: "caja" });
 
-    await expect(propsDe(ruta, {})).rejects.toMatchObject({ destino: "/" });
+    await expect(propsDe(ruta, {})).rejects.toMatchObject({ destino: "/recorrido" });
     ningunaLectura();
   });
 

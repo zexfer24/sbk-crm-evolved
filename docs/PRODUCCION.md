@@ -3261,8 +3261,10 @@ disponible» (la RPC o la tabla no existen) y el resto del CRM sigue igual.
 
 **Verificar después del deploy:**
 
-- Un supervisor ve la entrada «Paneles» en el rail y las tres pantallas con datos; un
-  asesor no ve la entrada y, si escribe `/panel` a mano, vuelve a la bandeja.
+- Un supervisor que inicia sesión cae en el Dashboard de ventas (`/panel`), ve en el rail
+  Dashboard, Analíticas y Asesores primero y el Recorrido al final (en `/recorrido`), y las
+  tres pantallas con datos. Un asesor entra al Recorrido, no ve los paneles y, si escribe
+  `/panel` a mano, vuelve al Recorrido.
 - Rendimiento con volumen real, como `authenticated` (CLAUDE.md, trampa del 21/9):
   `explain (analyze, buffers) select public.panel_asesores(now() - interval '30 days', now());`
   por debajo de 1,5 s. Medido en local con 300 mil mensajes: 0,7–0,9 s.
