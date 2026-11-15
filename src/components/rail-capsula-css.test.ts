@@ -97,7 +97,10 @@ describe.each(VARIANTES)("la cápsula del rail ($nombre)", ({ nombre, hoja }) =>
     expect(regla).toMatch(/position:\s*fixed\s*;/);
     expect(regla).toMatch(/top:\s*50%\s*;/);
     expect(regla).toMatch(/transform:\s*translateY\(-50%\)\s*;/);
-    expect(regla).toMatch(/left:\s*16px\s*;/);
+    // `.crm`: el hueco ES la columna y 16 la centra. `.dash`: el centro sigue al hueco
+    // entre el borde de la ventana y el contenido (`rail-hueco-css.test.ts`).
+    if (nombre === "crm") expect(regla).toMatch(/left:\s*16px\s*;/);
+    else expect(regla).toMatch(/left:\s*calc\(var\(--dash-hueco-centro\)\s*-\s*28px\)\s*;/);
     // HeroUI pinta overlays en z-index 50 y los visores/menús de la bandeja en 60.
     const z = /z-index:\s*(\d+)\s*;/.exec(regla);
     expect(z, "la cápsula necesita z-index propio sobre el contenido").not.toBeNull();
@@ -113,7 +116,9 @@ describe.each(VARIANTES)("la cápsula del rail ($nombre)", ({ nombre, hoja }) =>
   it("la columna del rail es de 88 px: la cápsula (16 + 56) deja aire hasta el contenido", async () => {
     const css = await leer(hoja);
     const grid = nombre === "dash" ? ".dash-frame" : ".crm";
-    expect(bloque(css, grid)).toMatch(/grid-template-columns:\s*88px\s+minmax\(0,\s*1fr\)\s*;/);
+    const columna = nombre === "dash" ? String.raw`var\(--dash-rail-w\)` : "88px";
+    expect(bloque(css, grid)).toMatch(new RegExp(String.raw`grid-template-columns:\s*${columna}\s+minmax\(0,\s*1fr\)\s*;`));
+    if (nombre === "dash") expect(bloque(css, grid)).toMatch(/--dash-rail-w:\s*88px\s*;/);
   });
 
   it("respeta prefers-reduced-motion en los botones del rail", async () => {

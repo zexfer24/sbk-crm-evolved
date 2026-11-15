@@ -153,4 +153,19 @@ describe("la hoja global de las View Transitions", () => {
     expect(regla![1]).toMatch(/animation:\s*none\s*;/);
     expect(regla![1]).toMatch(/mix-blend-mode:\s*normal\s*;/);
   });
+
+  // Igual que `Base/src/styles/base.css` del laboratorio: mientras el círculo crece,
+  // la foto NUEVA tiene que pintarse siempre ENCIMA de la vieja. Sin estos z-index
+  // el orden de las dos capas queda a criterio del navegador y el círculo puede
+  // revelar la pantalla vieja en vez de la nueva.
+  it("pone la foto nueva encima de la vieja: old z-index 1, new z-index 2", async () => {
+    const { readFile } = await import("node:fs/promises");
+    const { join } = await import("node:path");
+    const css = await readFile(join(process.cwd(), "src/app/theme.css"), "utf8");
+
+    const cuerpos = (pseudo: string) =>
+      [...css.matchAll(new RegExp(String.raw`::view-transition-${pseudo}\(root\)\s*\{([^}]*)\}`, "g"))].map((m) => m[1]);
+    expect(cuerpos("old").some((c) => /z-index:\s*1\s*;/.test(c)), "falta ::view-transition-old(root) con z-index: 1").toBe(true);
+    expect(cuerpos("new").some((c) => /z-index:\s*2\s*;/.test(c)), "falta ::view-transition-new(root) con z-index: 2").toBe(true);
+  });
 });

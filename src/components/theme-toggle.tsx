@@ -54,9 +54,13 @@ export function ThemeToggle({ variant = "dash" }: { variant?: "crm" | "dash" }) 
   // regeneraba el árbol entero en cada carga. El CSS sí acierta desde el
   // primer pintado, porque el script del <head> ya dejó `data-theme` puesto.
   //
-  // `suppressHydrationWarning`: la etiqueta y aria-pressed siguen calculados
-  // en el cliente y difieren del HTML del servidor un instante; son atributos
-  // (no estructura), así que basta con silenciar el aviso en este botón.
+  // Sin `suppressHydrationWarning` (15/11/2026): antes se usaba para callar el
+  // desajuste de la etiqueta y `aria-pressed`, y de paso tapaba un bug —con el
+  // sistema en oscuro el botón se quedaba con «modo oscuro» del servidor para
+  // siempre—. Ahora `useTheme` entrega "light" en la hidratación (lo mismo que
+  // pinta el servidor, que no conoce el tema) y el render siguiente, ya con el
+  // tema real, parchea esos atributos: no hay desajuste que silenciar, y si algún
+  // día vuelve a haberlo, React lo avisa en vez de esconderlo.
   return (
     <button
       className={`${variant}-rail-btn`}
@@ -71,7 +75,6 @@ export function ThemeToggle({ variant = "dash" }: { variant?: "crm" | "dash" }) 
       aria-label={label}
       title={label}
       aria-pressed={isDark}
-      suppressHydrationWarning
     >
       <Sun size={17} className="lm-icon-sun" aria-hidden="true" />
       <Moon size={17} className="lm-icon-moon" aria-hidden="true" />

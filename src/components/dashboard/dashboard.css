@@ -34,14 +34,36 @@
    -------------------------------------------------------------------------- */
 
 .dash-frame {
+  /* Las tres medidas que fijan dónde empieza el contenido; las usan la grilla,
+     `.dash-main`, `.dash-content` y la fórmula de la cápsula del rail (15/11/2026):
+     un número cambiado en uno solo descentraría la cápsula. */
+  --dash-rail-w: 88px;
+  --dash-pad-x: 26px;
+  --dash-content-max: 1560px;
+  /* Centro horizontal del HUECO entre el borde izquierdo de la ventana y el
+     borde izquierdo del contenido: borde = rail + padding + el margen
+     automático de `.dash-content` (max(0, (ancho − rail − 2·padding − máx) / 2)).
+     `100%` es el ancho del viewport SIN la barra de scroll cuando lo resuelve un
+     elemento `fixed` (la cápsula) o uno `absolute` dentro de este marco (la
+     marca); `100vw` incluiría la barra (~15 px en Windows) y descentraría. */
+  --dash-hueco-centro: calc(
+    (
+        var(--dash-rail-w) + var(--dash-pad-x) +
+          max(0px, (100% - var(--dash-rail-w) - 2 * var(--dash-pad-x) - var(--dash-content-max)) / 2)
+      ) / 2
+  );
+  /* Contenedor de la marca SBK (`position: absolute`, ver `.dash-rail-brand`):
+     un `position: relative` no es contenedor de los `fixed`, la cápsula sigue
+     siendo de la ventana. */
+  position: relative;
   display: grid;
-  grid-template-columns: 88px minmax(0, 1fr);
+  grid-template-columns: var(--dash-rail-w) minmax(0, 1fr);
   min-height: 100vh;
 }
 
 .dash-main {
   min-width: 0;
-  padding: 18px 26px 40px;
+  padding: 18px var(--dash-pad-x) 40px;
 }
 
 .dash-content {
@@ -49,7 +71,7 @@
   flex-direction: column;
   gap: 22px;
   margin: 0 auto;
-  max-width: 1560px;
+  max-width: var(--dash-content-max);
 }
 
 /* Entrada de sección: los bloques suben apenas y en orden de lectura. Corta
@@ -133,7 +155,7 @@
      desplaza por dentro. */
   position: fixed;
   top: 50%;
-  left: 16px;
+  left: calc(var(--dash-hueco-centro) - 28px);
   transform: translateY(-50%);
   z-index: 10;
   max-height: calc(100vh - 144px);
@@ -156,6 +178,14 @@
 /* La placa SBK que encabeza el rail. La sombra la despega apenas del lienzo,
    como a los botones activos, para que se lea parte del mismo material. */
 .dash-rail-brand {
+  /* 15/11/2026: absoluta dentro de `.dash-frame` (relative), no en el flujo del
+     <nav>. Ahí `left` en % se resuelve contra el ancho útil de la ventana y la
+     marca comparte con la cápsula el MISMO centro (`--dash-hueco-centro`); en el
+     flujo del <nav> (88 px) no hay forma de centrarla en el hueco. Sigue sin
+     fijarse: se va con el scroll, como antes. `top` es el padding-top del rail. */
+  position: absolute;
+  top: 22px;
+  left: calc(var(--dash-hueco-centro) - 16px);
   display: grid;
   place-items: center;
   margin-bottom: 10px;

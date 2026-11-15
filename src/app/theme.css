@@ -506,6 +506,16 @@
   animation: none;
   mix-blend-mode: normal;
 }
+/* Orden de capas (igual que `Base/src/styles/base.css` del laboratorio): mientras
+   el círculo crece, la foto NUEVA tiene que pintarse siempre ENCIMA de la vieja.
+   Sin esto el orden queda a criterio del navegador y el círculo podría revelar
+   la pantalla vieja en vez de la nueva. */
+::view-transition-old(root) {
+  z-index: 1;
+}
+::view-transition-new(root) {
+  z-index: 2;
+}
 
 .lm-icon-sun {
   display: none;

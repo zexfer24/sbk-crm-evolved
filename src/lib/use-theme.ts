@@ -68,8 +68,15 @@ function notify() {
   for (const listener of listeners) listener();
 }
 
-function subscribe(listener: () => void) {
-  listeners.add(listener);
+/**
+ * Los avisos externos (sistema y otra pestaña) se registran UNA sola vez por
+ * página, mientras haya algún suscriptor (15/11/2026). `useTheme` tiene ahora
+ * dos `useSyncExternalStore` (preferencia y tema resuelto) y suele haber varios
+ * consumidores (el botón del rail, el selector de emojis): con un registro por
+ * suscripción, un cambio del sistema disparaba la transición circular varias
+ * veces.
+ */
+function suscribirAvisosExternos() {
 
   // Dos cosas más pueden cambiar el tema por fuera de este botón: que el
   // sistema pase a modo oscuro, y que el usuario lo cambie en otra pestaña.
@@ -78,8 +85,15 @@ function subscribe(listener: () => void) {
   const media = typeof matchMedia === "function" ? matchMedia("(prefers-color-scheme: dark)") : null;
   const onSystemChange = () => {
     if (readPreference() === "system") {
-      applyTheme(systemTheme());
-      notify();
+      // 15/11/2026: el cambio del sistema operativo con la página abierta
+      // (atardecer) también entra por el círculo M22, desde el centro de la
+      // ventana —como el laboratorio sin origen— y respetando
+      // prefers-reduced-motion. El `storage` de otra pestaña de abajo NO: la
+      // persona no hizo clic aquí y esa pestaña suele estar oculta.
+      void cambiarConTransicionCircular(() => {
+        applyTheme(systemTheme());
+        flushSync(notify);
+      });
     }
   };
   const onStorage = (event: StorageEvent) => {
@@ -92,9 +106,23 @@ function subscribe(listener: () => void) {
   addEventListener("storage", onStorage);
 
   return () => {
-    listeners.delete(listener);
     media?.removeEventListener("change", onSystemChange);
     removeEventListener("storage", onStorage);
+  };
+}
+
+let quitarAvisosExternos: (() => void) | null = null;
+
+function subscribe(listener: () => void) {
+  listeners.add(listener);
+  if (listeners.size === 1) quitarAvisosExternos = suscribirAvisosExternos();
+
+  return () => {
+    listeners.delete(listener);
+    if (listeners.size === 0) {
+      quitarAvisosExternos?.();
+      quitarAvisosExternos = null;
+    }
   };
 }
 
@@ -112,8 +140,30 @@ function getServerSnapshot(): ThemePreference {
   return "system";
 }
 
+/**
+ * El tema RESUELTO (claro/oscuro), con su propio snapshot de servidor.
+ *
+ * 15/11/2026: antes `resolved` salía de `resolveTheme(preference)`, y durante la
+ * hidratación `preference` vale "system" (`getServerSnapshot`) pero `resolveTheme`
+ * corre en el CLIENTE, donde `matchMedia` sí existe: con el sistema en oscuro daba
+ * "dark" mientras el servidor, sin `matchMedia`, había pintado "light". El botón
+ * quedaba con la etiqueta del servidor («modo oscuro») para siempre, porque el
+ * render posterior calculaba lo mismo que el de la hidratación y React no volvía
+ * a tocar el DOM. El render de hidratación tiene que calcular EXACTAMENTE lo que
+ * el servidor ("light", el único tema que puede suponer) para que el siguiente,
+ * con el snapshot de cliente, sí parchee los atributos.
+ */
+function getResolvedSnapshot(): ResolvedTheme {
+  return resolveTheme(readPreference());
+}
+
+function getResolvedServerSnapshot(): ResolvedTheme {
+  return "light";
+}
+
 export function useTheme() {
   const preference = useSyncExternalStore(subscribe, getSnapshot, getServerSnapshot);
+  const resolved = useSyncExternalStore(subscribe, getResolvedSnapshot, getResolvedServerSnapshot);
 
   const setPreference = useCallback((next: ThemePreference, origen?: { x: number; y: number }) => {
     try {
@@ -138,5 +188,5 @@ export function useTheme() {
     void cambiarConTransicionCircular(apply, origen);
   }, []);
 
-  return { preference, resolved: resolveTheme(preference), setPreference };
+  return { preference, resolved, setPreference };
 }
