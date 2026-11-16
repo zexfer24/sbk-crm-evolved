@@ -121,6 +121,8 @@ function conversation(over: {
   aiEnabled?: boolean;
   lastReplyAt?: string | null;
   lastReplySender?: "agent" | "ai" | null;
+  /** 16/11/2026: lo que mira `case "area"` de `matchesFilter`. */
+  escalationArea?: Conversation["escalationArea"];
 }): Conversation {
   return {
     id: over.id,
@@ -148,6 +150,7 @@ function conversation(over: {
     assignedAgent: over.assignedAgent ?? null,
     journeyStage: over.journeyStage ?? null,
     aiEnabled: over.aiEnabled ?? true,
+    escalationArea: over.escalationArea ?? null,
     lastMessagePreview: "hola",
     lastMessageDirection: "inbound",
     lastMessageStatus: null,
@@ -251,7 +254,7 @@ function irATodos() {
 }
 
 describe("InboxSidebar — qué filtros ve cada rol", () => {
-  it("al administrador le ofrece las seis píldoras, en ese orden", () => {
+  it("al administrador le ofrece las siete píldoras, en ese orden", () => {
     renderSidebar(JEFA);
     expect(pillLabels()).toEqual([
       "Pendientes",
@@ -259,11 +262,12 @@ describe("InboxSidebar — qué filtros ve cada rol", () => {
       "Escaladas",
       "No leídas",
       "Mías",
+      "Área",
       "Todos",
     ]);
   });
 
-  it("al asesor le ofrece las mismas seis píldoras", () => {
+  it("al asesor le ofrece las mismas siete píldoras", () => {
     renderSidebar(ANA);
     expect(pillLabels()).toEqual([
       "Pendientes",
@@ -271,6 +275,7 @@ describe("InboxSidebar — qué filtros ve cada rol", () => {
       "Escaladas",
       "No leídas",
       "Mías",
+      "Área",
       "Todos",
     ]);
   });
@@ -2259,6 +2264,192 @@ describe('InboxSidebar — "Más antiguas" resuelve en el servidor (T1.3)', () =
     await waitFor(() => expect(visibleIds(container)).toContain("pendiente-vieja-servidor"));
     // La de "recent" no sobrevive al cambio de sesión.
     expect(visibleIds(container)).not.toContain("pendiente-reciente-servidor");
+  });
+});
+
+/**
+ * La píldora «Área» y su fila de chips (16/11/2026, rework de Seba v2).
+ * Resuelve contra la base (`escalationArea`) Y se vuelve a comprobar en
+ * memoria, igual que «Mías»; el chip elegido viaja en el `sessionKey` del
+ * paginador para que cambiar de chip vuelva a pedir la página.
+ */
+describe("InboxSidebar — la píldora «Área» y sus chips", () => {
+  const PAGOS = conversation({ id: "caso-pagos", escalationArea: "pagos" });
+  const VENTAS = conversation({ id: "caso-ventas", escalationArea: "ventas" });
+
+  function chipsGroup(): HTMLElement | null {
+    return screen.queryByRole("group", { name: "Elegir área" });
+  }
+
+  /** Mismo patrón que `pillLabels`: SlidingPills duplica la fila. */
+  function chipLabels(): string[] {
+    const grupo = chipsGroup();
+    if (!grupo) return [];
+    const vistos = new Set<string>();
+    for (const button of within(grupo).getAllByRole("button", { hidden: true })) {
+      if (button.textContent) vistos.add(button.textContent);
+    }
+    return [...vistos];
+  }
+
+  function activeChipLabel(): string | undefined {
+    const grupo = chipsGroup();
+    if (!grupo) return undefined;
+    return (
+      within(grupo)
+        .getAllByRole("button", { hidden: true })
+        .find((b) => b.getAttribute("aria-pressed") === "true")?.textContent ?? undefined
+    );
+  }
+
+  function irAChip(nombre: string) {
+    const grupo = chipsGroup() as HTMLElement;
+    fireEvent.click(within(grupo).getAllByRole("button", { name: nombre })[0]);
+  }
+
+  function mockArea() {
+    vi.mocked(fetchConversations).mockImplementation(async (_supabase, options) => {
+      if (!options?.escalationArea) return [];
+      const todas = [PAGOS, VENTAS];
+      return options.escalationArea === "todas"
+        ? todas
+        : todas.filter((c) => c.escalationArea === options.escalationArea);
+    });
+  }
+
+  function fakeStorage() {
+    const store = new Map<string, string>();
+    return {
+      getItem: (key: string) => (store.has(key) ? (store.get(key) as string) : null),
+      setItem: (key: string, value: string) => {
+        store.set(key, value);
+      },
+      removeItem: (key: string) => {
+        store.delete(key);
+      },
+      clear: () => store.clear(),
+      key: () => null,
+      get length() {
+        return store.size;
+      },
+    } satisfies Storage;
+  }
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("al pasar a «Área», pide escalationArea «todas» con la primera página", () => {
+    renderSidebar(JEFA);
+    irA("Área");
+
+    expect(fetchConversations).toHaveBeenCalledWith(expect.anything(), {
+      escalationArea: "todas",
+      limit: INBOX_PAGE_SIZE,
+    });
+  });
+
+  it("los chips no existen con otra píldora activa y aparecen al elegir «Área»", () => {
+    renderSidebar(JEFA);
+    expect(chipsGroup()).toBeNull();
+
+    irA("Mías");
+    expect(chipsGroup()).toBeNull();
+
+    irA("Área");
+    expect(chipLabels()).toEqual(["Todas", "Pagos", "Ventas", "Envíos", "Reclamos"]);
+    expect(activeChipLabel()).toBe("Todas");
+
+    irATodos();
+    expect(chipsGroup()).toBeNull();
+  });
+
+  it("al pulsar el chip «Pagos» vuelve a pedir la página con escalationArea «pagos» y solo muestra esa área", async () => {
+    mockArea();
+    const { container } = renderSidebar(JEFA);
+    irA("Área");
+    await waitFor(() => expect(visibleIds(container).sort()).toEqual(["caso-pagos", "caso-ventas"]));
+
+    irAChip("Pagos");
+
+    expect(fetchConversations).toHaveBeenCalledWith(expect.anything(), {
+      escalationArea: "pagos",
+      limit: INBOX_PAGE_SIZE,
+    });
+    expect(activeChipLabel()).toBe("Pagos");
+    await waitFor(() => expect(visibleIds(container)).toEqual(["caso-pagos"]));
+  });
+
+  // El bug C1 de «Sin dueño»: la lista mezcla lo que devolvió la consulta con
+  // la ventana viva; sin la comprobación en memoria la ventana entera (aquí,
+  // tres chats SIN área) se colaría en la píldora.
+  it("las conversaciones de la ventana viva sin área no se cuelan en la píldora", async () => {
+    mockArea();
+    const { container } = renderSidebar(JEFA);
+    irA("Área");
+
+    await waitFor(() => expect(visibleIds(container)).toContain("caso-pagos"));
+    expect(visibleIds(container)).not.toContain("con-vip");
+    expect(visibleIds(container)).not.toContain("de-ana");
+  });
+
+  it("con «Todas» sin ningún caso, dice que ninguna conversación tiene área todavía", async () => {
+    renderSidebar(JEFA);
+    irA("Área");
+
+    expect(await screen.findByText("Ninguna conversación tiene un área asignada todavía.")).toBeTruthy();
+  });
+
+  it("con un área sin casos, dice que no hay conversaciones en el área de esa", async () => {
+    renderSidebar(JEFA);
+    irA("Área");
+    irAChip("Envíos");
+
+    expect(await screen.findByText("No hay conversaciones en el área de envíos.")).toBeTruthy();
+  });
+
+  it("el chip elegido se guarda en localStorage y se restaura al volver a montar", async () => {
+    const storage = fakeStorage();
+    vi.stubGlobal("localStorage", storage);
+
+    const primera = renderSidebar(JEFA);
+    irA("Área");
+    irAChip("Reclamos");
+    await waitFor(() => {
+      const raw = storage.getItem(`sbk:inbox:${JEFA.id}`);
+      expect(JSON.parse(raw as string)).toEqual({ filter: "area", sort: "recent", area: "reclamos" });
+    });
+    primera.unmount();
+    vi.mocked(fetchConversations).mockClear();
+
+    renderSidebar(JEFA);
+    await waitFor(() =>
+      expect(fetchConversations).toHaveBeenCalledWith(expect.anything(), {
+        escalationArea: "reclamos",
+        limit: INBOX_PAGE_SIZE,
+      })
+    );
+    expect(activePillLabel()).toBe("Área");
+    expect(activeChipLabel()).toBe("Reclamos");
+  });
+
+  it("un área guardada que ya no existe cae a «Todas»", async () => {
+    const storage = fakeStorage();
+    storage.setItem(
+      `sbk:inbox:${JEFA.id}`,
+      JSON.stringify({ filter: "area", sort: "recent", area: "cobranzas" })
+    );
+    vi.stubGlobal("localStorage", storage);
+
+    renderSidebar(JEFA);
+
+    await waitFor(() =>
+      expect(fetchConversations).toHaveBeenCalledWith(expect.anything(), {
+        escalationArea: "todas",
+        limit: INBOX_PAGE_SIZE,
+      })
+    );
+    expect(activeChipLabel()).toBe("Todas");
   });
 });
 

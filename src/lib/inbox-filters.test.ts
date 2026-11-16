@@ -4,10 +4,15 @@ import {
   applyInboxFilters,
   DEFAULT_INBOX_FILTER,
   filtersForRole,
+  DEFAULT_INBOX_AREA,
+  INBOX_AREA_CHOICES,
+  INBOX_AREA_LABELS,
   INBOX_FILTER_LABELS,
   isUnassignedLead,
   isUnread,
+  matchesArea,
   matchesDay,
+  parseInboxAreaChoice,
   passesDayCut,
   type HandoffKind,
 } from "@/lib/inbox-filters";
@@ -47,6 +52,8 @@ function conversation(over: {
   journeyStage?: Conversation["journeyStage"];
   /** T1.5 (5/9/2026): default `true` — "no escalada" es el caso común del resto de este archivo. */
   aiEnabled?: boolean;
+  /** 16/11/2026: lo que mira `case "area"`. Sin él, `undefined` = sin área. */
+  escalationArea?: Conversation["escalationArea"];
 }): Conversation {
   return {
     id: over.id,
@@ -65,6 +72,7 @@ function conversation(over: {
     lastReplySender: over.lastReplySender ?? null,
     journeyStage: over.journeyStage ?? null,
     aiEnabled: over.aiEnabled ?? true,
+    escalationArea: over.escalationArea,
     contact: {
       id: `c-${over.id}`,
       phoneNumber: "+58000",
@@ -82,13 +90,14 @@ function conversation(over: {
 }
 
 describe("filtersForRole", () => {
-  it("le da al administrador las seis píldoras, en ese orden", () => {
+  it("le da al administrador las siete píldoras, en ese orden", () => {
     expect(filtersForRole("admin")).toEqual([
       "pending",
       "unassigned",
       "escalated",
       "unread",
       "mine",
+      "area",
       "all",
     ]);
   });
@@ -97,7 +106,7 @@ describe("filtersForRole", () => {
     expect(filtersForRole("supervisor")).toEqual(filtersForRole("admin"));
   });
 
-  it("al asesor le ofrece las mismas seis píldoras", () => {
+  it("al asesor le ofrece las mismas siete píldoras", () => {
     expect(filtersForRole("agent")).toEqual(filtersForRole("admin"));
   });
 
@@ -140,9 +149,16 @@ describe("filtersForRole", () => {
   // lo escalado a un humano que sigue sin una respuesta REAL de alguien del
   // equipo. El tope sube otra vez porque hay, de nuevo, una decisión de
   // producto explícita detrás — no porque el guardia se haya relajado.
-  it("ningún rol vuelve a tener más de seis píldoras", () => {
+  //
+  // De seis a siete el 16/11/2026 (decisión del operador, rework de Seba v2:
+  // «7ª píldora Área + chips»): "Área" lista lo que la IA derivó a un área del
+  // negocio (pagos, ventas, envíos, reclamos) para que cada área vea sus casos.
+  // No es un corte reciclado: `conversations.escalation_area` es una columna
+  // nueva y ninguna de las seis píldoras anteriores la mira. Misma vara de
+  // siempre: el tope sube porque hay una decisión de producto detrás.
+  it("ningún rol vuelve a tener más de siete píldoras", () => {
     for (const role of ["admin", "supervisor", "agent"] as const) {
-      expect(filtersForRole(role).length).toBeLessThanOrEqual(6);
+      expect(filtersForRole(role).length).toBeLessThanOrEqual(7);
     }
   });
 });
@@ -1021,5 +1037,110 @@ describe("applyInboxFilters — el corte de 'hoy' (T1, 8/9/2026)", () => {
       viewer: ANA,
     });
     expect(result.map((c) => c.id).sort()).toEqual(["hoy", "semana-pasada"]);
+  });
+});
+
+/**
+ * La píldora «Área» (16/11/2026, rework de Seba v2). `escalation_area` se
+ * resuelve contra la base (`escalationArea` de `fetchConversations`) Y se
+ * vuelve a comprobar en memoria, igual que «Mías».
+ */
+describe("matchesArea", () => {
+  it("un área concreta solo calza con esa área", () => {
+    expect(matchesArea({ escalationArea: "pagos" }, "pagos")).toBe(true);
+    expect(matchesArea({ escalationArea: "ventas" }, "pagos")).toBe(false);
+  });
+
+  it('"todas" calza con cualquier área', () => {
+    expect(matchesArea({ escalationArea: "reclamos" }, "todas")).toBe(true);
+  });
+
+  it("sin área (null o undefined) nunca calza, ni con \"todas\"", () => {
+    expect(matchesArea({ escalationArea: null }, "todas")).toBe(false);
+    expect(matchesArea({ escalationArea: undefined }, "todas")).toBe(false);
+    expect(matchesArea({}, "pagos")).toBe(false);
+  });
+});
+
+describe("parseInboxAreaChoice", () => {
+  it("conoce las cinco opciones", () => {
+    for (const choice of INBOX_AREA_CHOICES) {
+      expect(parseInboxAreaChoice(choice)).toBe(choice);
+    }
+  });
+
+  it("lo desconocido o roto cae a «todas»", () => {
+    expect(parseInboxAreaChoice("cobranzas")).toBe("todas");
+    expect(parseInboxAreaChoice(undefined)).toBe("todas");
+    expect(parseInboxAreaChoice(7)).toBe("todas");
+    expect(DEFAULT_INBOX_AREA).toBe("todas");
+  });
+});
+
+describe("opciones de área", () => {
+  it("van en este orden, con su etiqueta en español", () => {
+    expect(INBOX_AREA_CHOICES).toEqual(["todas", "pagos", "ventas", "envios", "reclamos"]);
+    expect(INBOX_AREA_CHOICES.map((choice) => INBOX_AREA_LABELS[choice])).toEqual([
+      "Todas",
+      "Pagos",
+      "Ventas",
+      "Envíos",
+      "Reclamos",
+    ]);
+    expect(INBOX_FILTER_LABELS.area).toBe("Área");
+  });
+});
+
+describe("applyInboxFilters — 'area'", () => {
+  const pagos = conversation({ id: "pagos", escalationArea: "pagos" });
+  const ventas = conversation({ id: "ventas", escalationArea: "ventas" });
+  const sinArea = conversation({ id: "sin-area", escalationArea: null });
+  const sinCampo = conversation({ id: "sin-campo" });
+  const todas = [pagos, ventas, sinArea, sinCampo];
+
+  function ids(area?: Parameters<typeof matchesArea>[1]) {
+    return applyInboxFilters(todas, {
+      filter: "area",
+      area,
+      search: "",
+      tagId: null,
+      sort: "recent",
+      viewer: ANA,
+    })
+      .map((c) => c.id)
+      .sort();
+  }
+
+  it('con "todas" deja las que tienen cualquier área', () => {
+    expect(ids("todas")).toEqual(["pagos", "ventas"]);
+  });
+
+  it("sin el criterio `area` usa «todas» por defecto", () => {
+    expect(ids(undefined)).toEqual(["pagos", "ventas"]);
+  });
+
+  it("con un área concreta deja solo esa", () => {
+    expect(ids("pagos")).toEqual(["pagos"]);
+    expect(ids("reclamos")).toEqual([]);
+  });
+
+  // Mismo bug C1 de «Sin dueño» (5/9/2026): la lista mezcla las filas que
+  // devolvió la consulta con la ventana viva de la bandeja, y sin la
+  // comprobación en memoria la ventana entera se colaría en la píldora.
+  it("las filas de la ventana viva que no son de esa área se quedan fuera (bug C1)", () => {
+    const ventana = [
+      ...todas,
+      conversation({ id: "otra-1" }),
+      conversation({ id: "otra-2", escalationArea: null }),
+    ];
+    const result = applyInboxFilters(ventana, {
+      filter: "area",
+      area: "todas",
+      search: "",
+      tagId: null,
+      sort: "recent",
+      viewer: ANA,
+    });
+    expect(result.map((c) => c.id).sort()).toEqual(["pagos", "ventas"]);
   });
 });

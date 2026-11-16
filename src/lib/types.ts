@@ -1,5 +1,6 @@
 import type { BusinessHours } from "@/lib/business-hours";
 import type { ImageFields, StoredReadingStatus } from "@/lib/media-reading-fields";
+import type { Area } from "@/lib/seba-v2-config";
 
 /**
  * `caja` (13/10/2026): cuentas que solo VEN el Inventario. No son asesores: no
@@ -209,6 +210,13 @@ export interface ConversationSummary extends BoardConversation {
   lastMessageDirection: MessageDirection | null;
   /** Estado de entrega del último mensaje saliente: null en los entrantes. */
   lastMessageStatus: WhatsappMessageStatus | null;
+  /**
+   * El área a la que Seba v2 derivó el caso (16/11/2026, píldora «Área»).
+   * OPCIONAL a propósito: hay decenas de fixtures de conversación en los
+   * tests y `undefined` se trata igual que `null` — sin área. Nadie la escribe
+   * todavía (lo hará la entrega 3 de Seba v2).
+   */
+  escalationArea?: Area | null;
 }
 
 /**
@@ -672,8 +680,20 @@ export interface CatalogLink {
  * `awaiting_reply` pero no vino de un humano— de la que ya recibió una
  * respuesta suya y dejó de esperar. Ver `matchesFilter` (inbox-filters.ts)
  * para la fórmula exacta y el porqué de `lastReplySender`.
+ *
+ * Séptima el 16/11/2026 (decisión del operador, rework de Seba v2): "Área"
+ * (`area`) — las conversaciones que la IA derivó a un área del negocio
+ * (`conversations.escalation_area`: pagos, ventas, envíos, reclamos), con una
+ * fila de chips para elegir cuál. Pedido para que cada área vea sus casos.
  */
-export type InboxFilter = "pending" | "unread" | "mine" | "all" | "unassigned" | "escalated";
+export type InboxFilter =
+  | "pending"
+  | "unread"
+  | "mine"
+  | "all"
+  | "unassigned"
+  | "escalated"
+  | "area";
 
 export type InboxSort = "recent" | "oldest";
 

@@ -203,6 +203,32 @@ describe("buildInboxSections — mine", () => {
   });
 });
 
+// «Área» (16/11/2026): mismo tratamiento que «Mías» — dos secciones por lectura.
+describe("buildInboxSections — area", () => {
+  it("arma dos secciones: Sin leer y Leídas, con ids propios", () => {
+    const noLeido = conversation({ id: "no-leido", unreadCount: 2 });
+    const apartada = conversation({ id: "apartada", manuallyUnread: true });
+    const leido = conversation({ id: "leido", unreadCount: 0 });
+
+    const sections = buildInboxSections("area", [noLeido, leido, apartada], NOW);
+
+    expect(sections).toHaveLength(2);
+    expect(sections[0]).toMatchObject({
+      id: "area-sin-leer",
+      label: "Sin leer",
+      conversations: [noLeido, apartada],
+    });
+    expect(sections[1]).toMatchObject({ id: "area-leidas", label: "Leídas", conversations: [leido] });
+  });
+
+  it("una sección vacía no produce entrada", () => {
+    const leida = conversation({ id: "leida" });
+    const sections = buildInboxSections("area", [leida], NOW);
+    expect(sections).toHaveLength(1);
+    expect(sections[0].label).toBe("Leídas");
+  });
+});
+
 describe("buildInboxSections — all", () => {
   it("arma una sola sección sin etiqueta", () => {
     const uno = conversation({ id: "uno" });

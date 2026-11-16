@@ -4,7 +4,7 @@ import { conversationsWrittenByHumans } from "@/lib/ai/human-handled";
 import { DEFAULT_BUSINESS_HOURS, parseBusinessHours, type BusinessHours } from "@/lib/business-hours";
 import { freeformWindowCutoff, isTicketTag } from "@/lib/dashboard";
 import { CASE_BOARD_LIMIT } from "@/lib/case-board";
-import { isUnassignedLead } from "@/lib/inbox-filters";
+import { isUnassignedLead, type InboxAreaChoice } from "@/lib/inbox-filters";
 import type { ConversationCursor } from "@/lib/inbox-paging";
 import { normalizeForSearch } from "@/lib/message-search";
 import { mapMessageReading } from "@/lib/media-reading-map";
@@ -13,7 +13,7 @@ import { failureReason } from "@/lib/whatsapp/failure-reason";
 import { mapProduct, PRODUCT_SELECT, type RawProduct } from "@/lib/inventory-data";
 // Entrega 2 de Seba v2 (16/11/2026): import aparte, en su propia línea, para no tocar el bloque de abajo.
 import type { PaymentMethodConfig, PaymentMethodCurrency } from "@/lib/payment-methods";
-import { parseAreas, parseSebaV2Mode, type Area, type SebaV2Config } from "@/lib/seba-v2-config";
+import { isArea, parseAreas, parseSebaV2Mode, type Area, type SebaV2Config } from "@/lib/seba-v2-config";
 import type {
   Agent,
   AgentMetrics,
@@ -158,6 +158,8 @@ interface RawConversationSummary extends RawBoardConversation {
   last_message_preview: string | null;
   last_message_direction: Conversation["lastMessageDirection"];
   last_message_status: Conversation["lastMessageStatus"];
+  /** Área derivada por Seba v2 (píldora «Área», 16/11/2026). Texto libre en la base: se valida al mapear. */
+  escalation_area?: string | null;
   contact: RawContactSummary;
 }
 
@@ -204,6 +206,8 @@ interface RawConversation {
   intent: string | null;
   active_tool: string | null;
   welcome_sent_at: string | null;
+  /** Área derivada por Seba v2 (16/11/2026); ver `RawConversationSummary`. */
+  escalation_area?: string | null;
   /** De qué anuncio "Click to WhatsApp" vino, para el banner de la cabecera del chat (T3.2, 5/9/2026). */
   referral: Conversation["referral"];
   contact: RawContact;
@@ -371,6 +375,8 @@ function mapConversationSummary(row: RawConversationSummary): ConversationSummar
     lastMessagePreview: row.last_message_preview,
     lastMessageDirection: row.last_message_direction,
     lastMessageStatus: row.last_message_status,
+    // Un valor que no sea un área conocida se trata como sin área.
+    escalationArea: isArea(row.escalation_area) ? row.escalation_area : null,
   };
 }
 
@@ -448,6 +454,7 @@ function mapConversation(row: RawConversation): Conversation {
     activeTool: row.active_tool,
     welcomeSentAt: row.welcome_sent_at,
     referral: row.referral,
+    escalationArea: isArea(row.escalation_area) ? row.escalation_area : null,
   };
 }
 
@@ -557,10 +564,18 @@ const CONVERSATION_BOARD_SELECT = `
   assigned_agent:agents!conversations_assigned_agent_id_fkey(id, display_name)
 `;
 
-/** La fila de la bandeja: la del tablero más lo que pinta una línea de chat. */
+/**
+ * La fila de la bandeja: la del tablero más lo que pinta una línea de chat.
+ *
+ * ADVERTENCIA (16/11/2026, píldora «Área»): `escalation_area` entra acá y en
+ * `CONVERSATION_DETAIL_SELECT`, no en las columnas del tablero (el Recorrido
+ * no usa el área). Desde este cambio la bandeja ENTERA depende de la migración
+ * `20261116030000`: sin la columna, PostgREST responde 400 a toda la lista. Por
+ * eso la migración se aplica antes de que el código llegue a producción.
+ */
 const CONVERSATION_LIST_SELECT = `
   ${CONVERSATION_BOARD_COLUMNS},
-  last_message_preview, last_message_direction, last_message_status,
+  last_message_preview, last_message_direction, last_message_status, escalation_area,
   contact:contacts(id, phone_number, display_name, profile_name, avatar_url,
     contact_tags(tag:tags(id, label, color))),
   assigned_agent:agents!conversations_assigned_agent_id_fkey(id, display_name)
@@ -572,7 +587,7 @@ const CONVERSATION_DETAIL_SELECT = `
   deal_payment_proof_url, deal_verified, deal_verified_at, deal_payment_method,
   last_customer_message_at, last_message_at, last_reply_at, last_reply_sender, last_message_preview,
   last_message_direction, last_message_status, has_reply, created_at,
-  journey_stage, intent, active_tool, welcome_sent_at, referral,
+  journey_stage, intent, active_tool, welcome_sent_at, referral, escalation_area,
   order:orders(total_amount, currency),
   contact:contacts(id, phone_number, display_name, profile_name, avatar_url,
     cedula_type, cedula_number, state, city, address,
@@ -811,6 +826,13 @@ export interface FetchConversationsOptions {
    */
   assignedTo?: string;
   /**
+   * Solo lo derivado a un área: la píldora "Área" (16/11/2026, rework de Seba
+   * v2). `"todas"` = cualquier área (`escalation_area is not null`); un área
+   * concreta = `escalation_area = <área>`. Sin condición de estado, igual que
+   * `assignedTo`. Usa el índice parcial `conversations_escalation_area_idx`.
+   */
+  escalationArea?: InboxAreaChoice;
+  /**
    * Solo la píldora "Escaladas" (T1.5 del plan "La bandeja que no pierde",
    * 5/9/2026): `journey_stage = 'assigned' and ai_enabled = false and
    * status <> 'closed' and (last_reply_sender is distinct from 'agent' or
@@ -949,6 +971,7 @@ async function fetchConversationRows<Raw extends CursorableRow>(
     ids,
     unreadOnly,
     assignedTo,
+    escalationArea,
     escalatedOnly,
     embedLatestHandoff,
     tagId,
@@ -1044,6 +1067,8 @@ async function fetchConversationRows<Raw extends CursorableRow>(
     if (resolvedContactIds) request = request.in("contact_id", resolvedContactIds);
     if (ids) request = request.in("id", ids);
     if (assignedTo) request = request.eq("assigned_agent_id", assignedTo);
+    if (escalationArea === "todas") request = request.not("escalation_area", "is", null);
+    else if (escalationArea) request = request.eq("escalation_area", escalationArea);
     if (escalatedOnly) {
       request = request
         .eq("journey_stage", "assigned")

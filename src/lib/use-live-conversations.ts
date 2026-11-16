@@ -5,6 +5,7 @@ import type { Dispatch, SetStateAction } from "react";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import type { BoardConversation, ConversationSummary } from "@/lib/types";
 import { useLiveRefresh } from "@/lib/use-live-refresh";
+import { isArea } from "@/lib/seba-v2-config";
 import { nextRealtimeAction, type RealtimeStatus } from "@/lib/realtime-status";
 
 export interface UseLiveConversationsOptions<T extends BoardConversation> {
@@ -179,6 +180,9 @@ export function useLiveConversations<T extends BoardConversation>(
         intent: row.intent as string | null,
         activeTool: row.active_tool as string | null,
         welcomeSentAt: row.welcome_sent_at as string | null,
+        // Píldora «Área» (16/11/2026): un valor que no sea un área conocida,
+        // o una fila sin la columna, se trata como sin área.
+        escalationArea: isArea(row.escalation_area) ? row.escalation_area : null,
       };
 
       return current.map((c) => (c.id === id ? ({ ...c, ...patch } as T) : c));

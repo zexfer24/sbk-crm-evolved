@@ -25,11 +25,16 @@ import { useInboxPager, type InboxPagerView } from "@/lib/use-inbox-pager";
 import { initials } from "@/lib/dashboard";
 import {
   applyInboxFilters,
+  DEFAULT_INBOX_AREA,
   DEFAULT_INBOX_FILTER,
   filtersForRole,
+  INBOX_AREA_CHOICES,
+  INBOX_AREA_LABELS,
   INBOX_FILTER_LABELS,
   INBOX_SORT_LABELS,
   isUnread,
+  parseInboxAreaChoice,
+  type InboxAreaChoice,
 } from "@/lib/inbox-filters";
 import { buildInboxSections } from "@/lib/inbox-sections";
 import {
@@ -73,6 +78,12 @@ function inboxPrefsStorageKey(agentId: string): string {
 interface StoredInboxPrefs {
   filter?: string;
   sort?: string;
+  /**
+   * El chip de la píldora «Área» (16/11/2026). Solo se escribe cuando no es el
+   * default ("todas"): así la preferencia de quien nunca usó «Área» queda
+   * byte por byte como antes. Al leer pasa por `parseInboxAreaChoice`.
+   */
+  area?: string;
 }
 
 /**
@@ -125,7 +136,8 @@ function pillQueryOptions(
   cursor: ConversationCursor | null | undefined,
   tagId: string | null,
   sort: InboxSort,
-  since: string | undefined
+  since: string | undefined,
+  area: InboxAreaChoice
 ): FetchConversationsOptions {
   const page = {
     limit: INBOX_PAGE_SIZE,
@@ -146,6 +158,11 @@ function pillQueryOptions(
       return { ...page, unreadOnly: true };
     case "mine":
       return { ...page, assignedTo: agentId };
+    // "Área" (16/11/2026): el chip elegido viaja como `escalationArea`
+    // ("todas" = cualquier área). Se compone con etiqueta, día y orden como
+    // cualquier otra píldora; `matchesFilter` vuelve a comprobarlo en memoria.
+    case "area":
+      return { ...page, escalationArea: area };
     // "Escaladas" (T1.5, 5/9/2026): `escalatedOnly` arma en `data.ts` el
     // mismo predicado que vuelve a comprobar `matchesFilter`
     // (inbox-filters.ts) en memoria — journey_stage/ai_enabled/status/
@@ -323,6 +340,9 @@ export function InboxSidebar({
   const [search, setSearch] = useState("");
   const [sort, setSort] = useState<InboxSort>("recent");
   const [tagId, setTagId] = useState<string | null>(null);
+  // El chip elegido bajo la píldora "Área" (16/11/2026). Vive aunque la píldora
+  // no esté activa: volver a "Área" recuerda el último chip.
+  const [area, setArea] = useState<InboxAreaChoice>(DEFAULT_INBOX_AREA);
 
   /**
    * Recordar la píldora y el orden entre sesiones (T2.2, 5/9/2026). Se lee
@@ -355,6 +375,8 @@ export function InboxSidebar({
         if (stored.sort === "recent" || stored.sort === "oldest") {
           setSort(stored.sort);
         }
+        // Un valor roto o viejo cae a "todas" (`parseInboxAreaChoice`).
+        setArea(parseInboxAreaChoice(stored.area));
       }
     } catch {
       // Modo incógnito o almacenamiento bloqueado: se queda en
@@ -374,12 +396,15 @@ export function InboxSidebar({
     try {
       localStorage.setItem(
         inboxPrefsStorageKey(currentAgent.id),
-        JSON.stringify({ filter, sort } satisfies StoredInboxPrefs)
+        JSON.stringify(
+          // El área solo viaja cuando no es el default: ver `StoredInboxPrefs`.
+          (area === DEFAULT_INBOX_AREA ? { filter, sort } : { filter, sort, area }) satisfies StoredInboxPrefs
+        )
       );
     } catch {
       // Sin almacenamiento, la preferencia vale solo para esta pestaña.
     }
-  }, [currentAgent.id, filter, sort]);
+  }, [currentAgent.id, filter, sort, area]);
 
   // Qué conversación abrió el menú y dónde. Se guarda la conversación entera
   // y no solo su id porque el menú necesita saber si ya está sin leer para
@@ -555,6 +580,9 @@ export function InboxSidebar({
     filter === "pending" ||
     filter === "unread" ||
     filter === "mine" ||
+    // "Área" (16/11/2026): corta por una columna que la ventana cargada no
+    // garantiza tener representada, igual que "Mías".
+    filter === "area" ||
     filter === "unassigned" ||
     // "Escaladas" (T1.5, 5/9/2026): mismo motivo que "Pendientes"/"No
     // leídas"/"Mías" — el corte mira columnas que la ventana cargada no
@@ -638,7 +666,13 @@ export function InboxSidebar({
     // (`useInboxDay` cambia de valor), abre sesión nueva — sin esto las
     // filas ya cargadas bajo el corte de ayer seguirían pegadas en
     // `serverRows` tras el cambio.
-    sessionKey: `${filter}:${currentAgent.id}:${activeTagId ?? ""}:${sort}:${dayStart ?? ""}`,
+    //
+    // El chip de "Área" entra SOLO con esa píldora activa (16/11/2026): cambiar
+    // de chip tiene que volver a pedir la página, y para las demás píldoras la
+    // clave queda byte por byte como antes.
+    sessionKey: `${filter}:${currentAgent.id}:${activeTagId ?? ""}:${sort}:${dayStart ?? ""}${
+      filter === "area" ? `:${area}` : ""
+    }`,
     pageSize: INBOX_PAGE_SIZE,
     fetchPage: (cursor) =>
       // "Sin dueño" no pagina por cursor: su consulta resuelve el conjunto
@@ -657,7 +691,7 @@ export function InboxSidebar({
             })
         : fetchConversations(
             supabase,
-            pillQueryOptions(filter, currentAgent.id, cursor, activeTagId, sort, dayStart ?? undefined)
+            pillQueryOptions(filter, currentAgent.id, cursor, activeTagId, sort, dayStart ?? undefined, area)
           ),
     onPage: (rows, mode) =>
       setServerRows((current) => {
@@ -765,6 +799,8 @@ export function InboxSidebar({
     // junto con `pillFilter` para que, si el visor toca "Ver todo" mientras
     // esta cabecera viaja, la respuesta se pinte con el corte que la pidió.
     const pillDayStart = dayStart;
+    // El chip de "Área" capturado igual (16/11/2026).
+    const pillArea = area;
 
     const esSinDueno = pillFilter === "unassigned";
     const consulta = esSinDueno
@@ -774,7 +810,15 @@ export function InboxSidebar({
         })
       : fetchConversations(
           supabase,
-          pillQueryOptions(pillFilter, currentAgent.id, null, pillTagId, pillSort, pillDayStart ?? undefined)
+          pillQueryOptions(
+            pillFilter,
+            currentAgent.id,
+            null,
+            pillTagId,
+            pillSort,
+            pillDayStart ?? undefined,
+            pillArea
+          )
         );
 
     consulta
@@ -800,6 +844,7 @@ export function InboxSidebar({
     activeTagId,
     sort,
     dayStart,
+    area,
     currentAgent.id,
     supabase,
   ]);
@@ -880,6 +925,7 @@ export function InboxSidebar({
         pinnedIds,
         unassignedIds,
         dayStart,
+        area,
         // D2 del plan "Nada sin leer…" (18/9/2026): la conversación abierta
         // no se esfuma del corte de "hoy" al marcarse leída mientras el
         // asesor la sigue mirando (ver `passesDayCut`, inbox-filters.ts).
@@ -896,6 +942,7 @@ export function InboxSidebar({
       pinnedIds,
       unassignedIds,
       dayStart,
+      area,
       selectedId,
     ]
   );
@@ -1207,6 +1254,22 @@ export function InboxSidebar({
             className="crm-inbox-pills"
           />
         </FilterScroller>
+
+        {/* La fila de chips de "Área" (16/11/2026): un filtro secundario, solo
+            mientras esa píldora está activa. Su propio carril con scroll, por
+            la misma razón que el de arriba — a 390px no entra, y la tira
+            `.lm-pills` nunca lleva `overflow` directo (ver CLAUDE.md). */}
+        {filter === "area" && (
+          <FilterScroller className="crm-inbox-pills-scroll crm-inbox-area-scroll no-scrollbar">
+            <SlidingPills
+              items={INBOX_AREA_CHOICES.map((value) => ({ value, label: INBOX_AREA_LABELS[value] }))}
+              value={area}
+              onChange={setArea}
+              ariaLabel="Elegir área"
+              className="crm-inbox-area-chips"
+            />
+          </FilterScroller>
+        )}
       </div>
 
       <div className="crm-list" ref={listRef}>
@@ -1269,7 +1332,12 @@ export function InboxSidebar({
                         // es un logro del día, a diferencia de vaciar "No
                         // leídas".
                         "No tienes conversaciones asignadas."
-                      : "No hay conversaciones en este filtro."}
+                      : filter === "area"
+                        ? // Vacío neutro, igual que "Mías" (16/11/2026).
+                          area === "todas"
+                          ? "Ninguna conversación tiene un área asignada todavía."
+                          : `No hay conversaciones en el área de ${INBOX_AREA_LABELS[area].toLowerCase()}.`
+                        : "No hay conversaciones en este filtro."}
           </p>
         )}
 

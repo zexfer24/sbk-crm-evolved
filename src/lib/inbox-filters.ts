@@ -1,6 +1,7 @@
 import type { Agent, AgentRole, ConversationSummary, InboxFilter, InboxSort } from "@/lib/types";
 import { awaitingReply, contactName } from "@/lib/dashboard";
 import { normalizeForSearch } from "@/lib/message-search";
+import { AREA_LABELS, isArea, type Area } from "@/lib/seba-v2-config";
 
 /**
  * Qué bandejas ve cada quien.
@@ -35,12 +36,17 @@ import { normalizeForSearch } from "@/lib/message-search";
 // asesor a cargo (`journeyStage === "assigned"`) que todavía no le escribió
 // de verdad al cliente. Antes de "No leídas"/"Mías"/"Todos" porque, igual
 // que "Pendientes" y "Sin dueño", es cola de trabajo que espera, no archivo.
+//
+// "Área" (16/11/2026, decisión del operador, rework de Seba v2) va después de
+// "Mías": las dos son "lo que me toca mirar" —una por dueño, otra por área
+// del negocio— y "Todos" sigue cerrando la fila a la derecha.
 const DEFAULT_FILTERS: InboxFilter[] = [
   "pending",
   "unassigned",
   "escalated",
   "unread",
   "mine",
+  "area",
   "all",
 ];
 
@@ -56,8 +62,50 @@ export const INBOX_FILTER_LABELS: Record<InboxFilter, string> = {
   escalated: "Escaladas",
   unread: "No leídas",
   mine: "Mías",
+  area: "Área",
   all: "Todos",
 };
+
+/**
+ * Los chips de la píldora "Área" (16/11/2026): "todas" = cualquier área, y
+ * después las cuatro de `AREAS` (seba-v2-config.ts) en su orden.
+ */
+export type InboxAreaChoice = Area | "todas";
+
+export const INBOX_AREA_CHOICES: readonly InboxAreaChoice[] = [
+  "todas",
+  "pagos",
+  "ventas",
+  "envios",
+  "reclamos",
+];
+
+export const INBOX_AREA_LABELS: Record<InboxAreaChoice, string> = {
+  todas: "Todas",
+  ...AREA_LABELS,
+};
+
+export const DEFAULT_INBOX_AREA: InboxAreaChoice = "todas";
+
+/** Lo que no sea una opción conocida cae a "todas" (un valor viejo o roto en localStorage). */
+export function parseInboxAreaChoice(value: unknown): InboxAreaChoice {
+  if (value === "todas") return "todas";
+  return isArea(value) ? value : DEFAULT_INBOX_AREA;
+}
+
+/**
+ * ¿La conversación pertenece al área elegida? "todas" = tiene cualquier área.
+ * Sin área (`null`/`undefined`) nunca pertenece: `escalationArea` es opcional
+ * en `ConversationSummary` y `undefined` se trata como "sin área".
+ */
+export function matchesArea(
+  conversation: Pick<ConversationSummary, "escalationArea">,
+  area: InboxAreaChoice
+): boolean {
+  const own = conversation.escalationArea;
+  if (!own) return false;
+  return area === "todas" || own === area;
+}
 
 /**
  * Al entrar a la bandeja se ve el trabajo pendiente de respuesta —no lo sin
@@ -223,6 +271,13 @@ export interface InboxCriteria {
   /** Quién está mirando la bandeja: define qué es "mío". */
   viewer: Agent;
   /**
+   * El chip elegido bajo la píldora "Área" (16/11/2026). Solo lo mira
+   * `case "area"`; sin él rige `DEFAULT_INBOX_AREA` ("todas"). Opcional y sin
+   * default en el tipo, mismo motivo que `dayStart`: los llamadores que no
+   * ejercitan esta píldora no tienen que conocerlo.
+   */
+  area?: InboxAreaChoice;
+  /**
    * Conversaciones fijadas por QUIEN MIRA (T2.2 del plan "La bandeja que no
    * pierde", 5/9/2026, hasta tres por agente — `conversation_pins`,
    * `fetchPinnedIds` en data.ts). Van primero, como grupo, sin alterar el
@@ -269,7 +324,8 @@ function matchesFilter(
   conversation: ConversationSummary,
   filter: InboxFilter,
   viewer: Agent,
-  unassignedIds: ReadonlySet<string> | null | undefined
+  unassignedIds: ReadonlySet<string> | null | undefined,
+  area: InboxAreaChoice
 ): boolean {
   switch (filter) {
     case "all":
@@ -295,6 +351,13 @@ function matchesFilter(
       return unassignedIds?.has(conversation.id) ?? false;
     case "mine":
       return conversation.assignedAgent?.id === viewer.id;
+    // "Área" (16/11/2026): se vuelve a comprobar en memoria aunque la base ya
+    // haya filtrado (`escalationArea` en data.ts), por la misma razón que
+    // "Mías": la lista mezcla las filas de la consulta con la ventana viva de
+    // la bandeja, y sin esta comparación la ventana entera se colaría en la
+    // píldora (el bug C1 de "Sin dueño", ver `unassignedIds`).
+    case "area":
+      return matchesArea(conversation, area);
     // Se vuelve a comprobar en memoria aunque la base ya haya filtrado
     // (`unreadOnly` en data.ts), porque la lista mezcla filas de la consulta
     // con filas vivas de la bandeja: si alguien lee el chat mientras la
@@ -426,13 +489,14 @@ export function applyInboxFilters(
     unassignedIds,
     dayStart,
     keepId,
+    area,
   }: InboxCriteria
 ): ConversationSummary[] {
   const query = normalizeForSearch(search).trim();
 
   const list = conversations.filter(
     (conversation) =>
-      matchesFilter(conversation, filter, viewer, unassignedIds) &&
+      matchesFilter(conversation, filter, viewer, unassignedIds, area ?? DEFAULT_INBOX_AREA) &&
       matchesTag(conversation, tagId) &&
       matchesSearch(conversation, query, messageHitIds) &&
       // La búsqueda mira TODO el historial (decisión del operador, T1,

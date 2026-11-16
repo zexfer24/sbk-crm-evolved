@@ -3004,6 +3004,22 @@
   font-size: 12px;
 }
 
+/* Los chips de la píldora "Área" (16/11/2026, rework de Seba v2): un filtro
+   SECUNDARIO bajo las píldoras, así que va un escalón más chico que ellas
+   (11.5px contra 12px, menos relleno). Reusa el carril con scroll de arriba
+   (`.crm-inbox-pills-scroll`, que ya trae `min-width: 0`, el overflow y el
+   degradado) porque cinco chips no entran en 316px ni mucho menos a 390px: la
+   tira `.lm-pills` nunca lleva `overflow` directo, la copia activa
+   (`position: absolute; inset: 0`) mediría solo la parte visible. */
+.crm-inbox-area-scroll {
+  padding-bottom: 1px;
+}
+
+.crm-inbox-area-chips .lm-pill {
+  padding: 4px 10px;
+  font-size: 11.5px;
+}
+
 /* Filtro por categoría: un botón al lado del de orden que despliega la lista.
    Antes era una fila de píldoras bajo el buscador; pasadas cinco o seis se
    partía en tres renglones y se comía la lista de conversaciones. */

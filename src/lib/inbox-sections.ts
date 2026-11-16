@@ -112,6 +112,18 @@ export function buildInboxSections(filter: InboxFilter, conversations: Conversat
       );
     }
 
+    // "Área" (16/11/2026, rework de Seba v2): mismo tratamiento que "Mías",
+    // partida por LECTURA — dentro de un área lo que importa es si alguien ya
+    // abrió el chat. Ids propios (como "pending") para no repetir los de "mine".
+    case "area": {
+      const sinLeer = conversations.filter(isUnread);
+      const leidas = conversations.filter((c) => !isUnread(c));
+
+      return [section("area-sin-leer", "Sin leer", sinLeer), section("area-leidas", "Leídas", leidas)].filter(
+        (s): s is InboxSection => s !== null
+      );
+    }
+
     case "all":
       // Una sola sección sin encabezado: "Todos" no subdivide la lista.
       return [{ id: "todas", label: null, conversations }];

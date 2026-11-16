@@ -157,6 +157,49 @@ describe("useLiveConversations — el evento se aplica en memoria cuando alcanza
     expect(result.current.conversations[0].lastReplySender).toBe("agent");
   });
 
+  // 16/11/2026, píldora «Área»: el área viaja en el patch fijo del evento.
+  it("un UPDATE con escalation_area la aplica en memoria, sin pedir la lista", async () => {
+    const { result } = montar();
+
+    act(() => {
+      fake.trigger("conversations", "UPDATE", filaDeConversacion({ escalation_area: "reclamos" }));
+    });
+    await act(async () => {
+      vi.advanceTimersByTime(750);
+    });
+    expect(fetcherMock).not.toHaveBeenCalled();
+    expect(result.current.conversations[0].escalationArea).toBe("reclamos");
+  });
+
+  it("un UPDATE con escalation_area null limpia el área que la fila tenía", async () => {
+    const { result } = renderHook(() =>
+      useLiveConversations(fake.supabase, [buildConversation({ escalationArea: "pagos" })], {
+        fetcher: fetcherMock,
+      })
+    );
+    expect(result.current.conversations[0].escalationArea).toBe("pagos");
+
+    act(() => {
+      fake.trigger("conversations", "UPDATE", filaDeConversacion({ escalation_area: null }));
+    });
+    await act(async () => {
+      vi.advanceTimersByTime(750);
+    });
+    expect(result.current.conversations[0].escalationArea).toBeNull();
+  });
+
+  it("un área desconocida en el evento se trata como sin área", async () => {
+    const { result } = montar();
+
+    act(() => {
+      fake.trigger("conversations", "UPDATE", filaDeConversacion({ escalation_area: "cobranzas" }));
+    });
+    await act(async () => {
+      vi.advanceTimersByTime(750);
+    });
+    expect(result.current.conversations[0].escalationArea).toBeNull();
+  });
+
   it("cambiar de agente asignado obliga a pedirla: el evento no trae quién es", async () => {
     montar();
 

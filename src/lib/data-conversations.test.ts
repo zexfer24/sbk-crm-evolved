@@ -58,6 +58,9 @@ function makeRow(index: number) {
     intent: null,
     active_tool: null,
     welcome_sent_at: null,
+    // El área a la que la IA derivó el caso (16/11/2026, píldora «Área»).
+    // `null` = sin área, como toda fila antes de que alguien la escriba.
+    escalation_area: null as string | null,
     contact: {
       id: `contact-${index}`,
       phone_number: `5840000${index}`,
@@ -258,6 +261,18 @@ function createFakeSupabase(rows: Row[], onRange?: (callIndex: number) => void) 
         filters.push({ op: "is", column, value });
         return builder(
           [...preds, (row) => ((row as Record<string, unknown>)[column] ?? null) === value],
+          sorts
+        );
+      },
+      // `.not(columna, "is", null)` de PostgREST (píldora «Área», 16/11/2026):
+      // solo se entiende el operador `is`, el único que la bandeja emite así.
+      not(column: string, operator: string, value: unknown) {
+        if (operator !== "is") {
+          throw new Error(`operador "${operator}" no soportado por el fake de .not()`);
+        }
+        filters.push({ op: "not.is", column, value });
+        return builder(
+          [...preds, (row) => ((row as Record<string, unknown>)[column] ?? null) !== value],
           sorts
         );
       },
@@ -595,6 +610,66 @@ describe("fetchConversations", () => {
 
     expect(filters).toContainEqual({ op: "eq", column: "assigned_agent_id", value: "ana" });
     expect(result.map((c) => c.id).sort()).toEqual(["conv-0", "conv-2"]);
+  });
+
+  /**
+   * La píldora «Área» (16/11/2026, rework de Seba v2): `escalation_area` se
+   * resuelve contra la base como «Mías» resuelve `assigned_agent_id`.
+   */
+  describe("escalationArea (píldora «Área»)", () => {
+    const rows = () => [
+      { ...makeRow(0), escalation_area: "pagos" },
+      { ...makeRow(1), escalation_area: "ventas" },
+      { ...makeRow(2), escalation_area: null },
+      { ...makeRow(3), escalation_area: "pagos" },
+    ];
+
+    it("con un área concreta emite eq(escalation_area, área) y devuelve solo esa área", async () => {
+      const { client, filters } = createFakeSupabase(rows());
+
+      const result = await fetchConversations(client, { escalationArea: "pagos" });
+
+      expect(filters).toContainEqual({ op: "eq", column: "escalation_area", value: "pagos" });
+      expect(result.map((c) => c.id).sort()).toEqual(["conv-0", "conv-3"]);
+    });
+
+    it('con "todas" emite not(escalation_area, is, null) y devuelve las que tienen cualquier área', async () => {
+      const { client, filters } = createFakeSupabase(rows());
+
+      const result = await fetchConversations(client, { escalationArea: "todas" });
+
+      expect(filters).toContainEqual({ op: "not.is", column: "escalation_area", value: null });
+      expect(filters.some((f) => f.op === "eq" && f.column === "escalation_area")).toBe(false);
+      expect(result.map((c) => c.id).sort()).toEqual(["conv-0", "conv-1", "conv-3"]);
+    });
+
+    it("sin la opción no filtra por escalation_area", async () => {
+      const { client, filters } = createFakeSupabase(rows());
+
+      const result = await fetchConversations(client, {});
+
+      expect(filters.some((f) => f.column === "escalation_area")).toBe(false);
+      expect(result).toHaveLength(4);
+    });
+
+    it("el select de la lista pide escalation_area y el mapper entrega escalationArea", async () => {
+      const { client, selects } = createFakeSupabase(rows());
+
+      const result = await fetchConversations(client, {});
+
+      expect(selects[0]).toContain("escalation_area");
+      const byId = new Map(result.map((c) => [c.id, c.escalationArea]));
+      expect(byId.get("conv-0")).toBe("pagos");
+      expect(byId.get("conv-2")).toBeNull();
+    });
+
+    it("un área desconocida en la base se trata como sin área", async () => {
+      const { client } = createFakeSupabase([{ ...makeRow(0), escalation_area: "cobranzas" }]);
+
+      const result = await fetchConversations(client, {});
+
+      expect(result[0].escalationArea).toBeNull();
+    });
   });
 
   describe("reordenamiento durante la paginación (bug de producción, 29/8/2026)", () => {
