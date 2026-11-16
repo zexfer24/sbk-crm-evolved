@@ -9,6 +9,10 @@
  * 15/11/2026) `use-theme.ts` llamaba a `startViewTransition` solo para ese
  * fundido.
  *
+ * Desde el 16/11/2026 el círculo también depende de la marca `data-transicion-tema`
+ * (ver `ATRIBUTO_TRANSICION_TEMA`): sin ella la regla de HeroUI deja al root sin
+ * foto y la animación no se ve.
+ *
  * Sin la API, o con `prefers-reduced-motion: reduce`, el cambio es directo. El
  * Next 16.3 de este repo no activa `experimental.viewTransition`, así que nada
  * más usa `startViewTransition` y la regla global no choca con otra transición.
@@ -18,6 +22,26 @@
 export const DURACION_CLIP_TEMA_MS = 620;
 export const EASING_CLIP_TEMA = "cubic-bezier(.65,0,.35,1)";
 export const PSEUDOELEMENTO_TEMA = "::view-transition-new(root)";
+
+/**
+ * Marca que se pone en `<html>` SOLO mientras dura el cambio de tema (16/11/2026).
+ * HeroUI trae `:root { view-transition-name: none }` (en `@layer base`) para que la
+ * página siga usable mientras animan sus toasts; el efecto secundario es que el
+ * root no tiene foto, no existe `::view-transition-new(root)` y el círculo se
+ * animaba sin pintarse: el tema cambiaba de golpe. `theme.css` devuelve el nombre
+ * `root` solo con esta marca, así los toasts se comportan como siempre el resto
+ * del tiempo. Tiene que estar puesta ANTES de `startViewTransition`: el navegador
+ * lee `view-transition-name` al capturar la foto vieja.
+ */
+export const ATRIBUTO_TRANSICION_TEMA = "data-transicion-tema";
+
+/**
+ * La transición que hoy es dueña de la marca. Si llega un segundo cambio (doble
+ * clic) el navegador salta la vieja y su `finished` se resuelve en ese instante:
+ * sin esta referencia ese `finished` viejo quitaría la marca a media animación de
+ * la nueva y el círculo desaparecería.
+ */
+let transicionVigente: unknown = null;
 
 type ConViewTransitions = Document & {
   startViewTransition?: (cb: () => void) => { ready: Promise<unknown>; finished: Promise<unknown> };
@@ -48,7 +72,23 @@ export function cambiarConTransicionCircular(
   // Distancia a la esquina más lejana: el círculo termina de cubrir la ventana.
   const radio = Math.hypot(Math.max(x, innerWidth - x), Math.max(y, innerHeight - y));
 
-  const transicion = doc.startViewTransition(aplicar);
+  // Si ya hay una transición en curso, ella sigue siendo dueña de la marca.
+  const habiaVigente = transicionVigente !== null;
+  const raiz = document.documentElement;
+  raiz.setAttribute(ATRIBUTO_TRANSICION_TEMA, "");
+
+  let transicion: ReturnType<NonNullable<ConViewTransitions["startViewTransition"]>>;
+  try {
+    transicion = doc.startViewTransition(aplicar);
+  } catch {
+    // El contrato es no lanzar nunca: sin transición, cambio directo y sin marca
+    // (salvo que otra transición viva todavía la necesite: ella la quitará).
+    if (!habiaVigente) raiz.removeAttribute(ATRIBUTO_TRANSICION_TEMA);
+    aplicar();
+    return Promise.resolve();
+  }
+  transicionVigente = transicion;
+
   return transicion.ready
     .then(() => {
       document.documentElement.animate(
@@ -58,5 +98,12 @@ export function cambiarConTransicionCircular(
       return transicion.finished;
     })
     .then(() => undefined)
-    .catch(() => undefined);
+    .catch(() => undefined)
+    .finally(() => {
+      // Resuelta o saltada, la marca se quita solo si esta sigue siendo la vigente.
+      if (transicionVigente === transicion) {
+        transicionVigente = null;
+        raiz.removeAttribute(ATRIBUTO_TRANSICION_TEMA);
+      }
+    });
 }

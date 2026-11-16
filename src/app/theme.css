@@ -506,6 +506,17 @@
   animation: none;
   mix-blend-mode: normal;
 }
+/* 16/11/2026: HeroUI trae `:root { view-transition-name: none }` dentro de
+   `@layer base` (base.css) para que la página siga usable mientras animan sus
+   toasts. Con el root sin nombre no existe ::view-transition-new(root) y el
+   círculo de arriba animaba un pseudo-elemento que nunca se pintaba: el tema
+   cambiaba de golpe. Esta regla va SIN `@layer` a propósito (una regla de autor
+   sin capa le gana a una con capa, sin importar la especificidad) y solo vale
+   mientras `theme-transition.ts` tiene puesta la marca en <html>, o sea los
+   ~620 ms del cambio de tema; el resto del tiempo los toasts siguen como antes. */
+:root[data-transicion-tema] {
+  view-transition-name: root;
+}
 /* Orden de capas (igual que `Base/src/styles/base.css` del laboratorio): mientras
    el círculo crece, la foto NUEVA tiene que pintarse siempre ENCIMA de la vieja.
    Sin esto el orden queda a criterio del navegador y el círculo podría revelar
