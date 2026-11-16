@@ -198,7 +198,7 @@ export interface RitmoOptions {
   reintentos?: number;
 }
 
-async function conRitmo<T>(options: RitmoOptions, ejecutar: () => PromiseLike<T>): Promise<T> {
+export async function conRitmo<T>(options: RitmoOptions, ejecutar: () => PromiseLike<T>): Promise<T> {
   const reintentos = options.reintentos ?? 0;
 
   for (let intento = 0; ; intento++) {

@@ -100,27 +100,42 @@ function resolveProvider(modelId: string, override?: string): AiProvider {
   return modelId.startsWith("gemini") ? "google" : "openai";
 }
 
-interface AgentModel {
+export interface AgentModel {
   model: LanguageModel;
   providerOptions?: SharedV4ProviderOptions;
 }
 
-interface BuildOptions {
-  /**
-   * Qué fase del turno pide este modelo. Va, sin cambios, al control de ritmo
-   * (`RitmoOptions.fase`, rate-limit.ts, solo para sus registros) Y al
-   * middleware de telemetría (T4, plan "Nada se pierde en un corte ni en un
-   * deploy", 21-22/9/2026) como el `phase` de cada fila de
-   * `agent_turn_calls` -- por eso el tipo pasa de `string` a
-   * `AgentTurnCallPhase`: las cuatro fases que reconoce el CHECK de la base
-   * son EXACTAMENTE las cuatro que hoy pasan por acá (escenario, clasificar,
-   * redactar, identidad).
-   */
-  fase: AgentTurnCallPhase;
+interface BuildOptionsBase {
   reintentos?: number;
   /** Override explícito del proveedor. Solo lo usa el agente. */
   providerOverride?: string;
 }
+
+/**
+ * Unión discriminada por `sinTelemetria`: la fase `"vision"` solo existe sin
+ * telemetría (plan "Seba lee fotos y audios", 16/11/2026). `AgentTurnCallPhase`
+ * es un tipo cerrado que espeja el CHECK de `agent_turn_calls`, y la lectura
+ * de un adjunto corre FUERA de un turno y anota su costo en otra tabla
+ * (`message_readings`): una fase `"vision"` no cabe en esa tabla y no debe
+ * colarse en ella. Con los tipos así, pedir `fase: "vision"` sin
+ * `sinTelemetria: true` (o al revés) no compila.
+ */
+type BuildOptions =
+  | (BuildOptionsBase & {
+      sinTelemetria?: false;
+      /**
+       * Qué fase del turno pide este modelo. Va, sin cambios, al control de
+       * ritmo (`RitmoOptions.fase`, rate-limit.ts, solo para sus registros) Y
+       * al middleware de telemetría (T4, plan "Nada se pierde en un corte ni
+       * en un deploy", 21-22/9/2026) como el `phase` de cada fila de
+       * `agent_turn_calls` -- por eso el tipo es `AgentTurnCallPhase` y no
+       * `string`: las cuatro fases que reconoce el CHECK de la base son
+       * EXACTAMENTE las cuatro que pasan por acá (escenario, clasificar,
+       * redactar, identidad).
+       */
+      fase: AgentTurnCallPhase;
+    })
+  | (BuildOptionsBase & { sinTelemetria: true; fase: "vision" });
 
 function build(modelId: string, effort: ReasoningEffort, options: BuildOptions): AgentModel {
   const provider = resolveProvider(modelId, options.providerOverride);
@@ -129,16 +144,18 @@ function build(modelId: string, effort: ReasoningEffort, options: BuildOptions):
   // `telemetry` va SEGUNDO (queda por DENTRO, pegada al modelo base) --
   // `duration_ms` tiene que medir la llamada real al proveedor, no la espera
   // del control de ritmo.
-  const middleware = [
-    rateLimitMiddleware({ fase: options.fase, reintentos: options.reintentos }),
-    telemetryMiddleware(options.fase),
-  ];
+  const rateLimit = rateLimitMiddleware({ fase: options.fase, reintentos: options.reintentos });
+  const middleware = options.sinTelemetria ? [rateLimit] : [rateLimit, telemetryMiddleware(options.fase)];
 
   if (provider === "google") {
     return { model: wrapLanguageModel({ model: google(modelId), middleware }) };
   }
 
   const model = wrapLanguageModel({ model: openai(modelId), middleware });
+
+  // Visión: el apagado del razonamiento es EXPLÍCITO y no depende de
+  // `AI_AGENT_REASONING` (ver `getVisionModel`).
+  if (options.sinTelemetria) return { model, providerOptions: { openai: { reasoningEffort: "none" } } };
 
   const modo = reasoningMode();
 
@@ -198,6 +215,39 @@ export function getClassifierModel(fase: AgentTurnCallPhase): AgentModel {
   return propio === null
     ? build(resolveModelId(), "low", { fase, reintentos: 2, providerOverride: process.env.AI_AGENT_PROVIDER })
     : build(propio, "low", { fase, reintentos: 2 });
+}
+
+/**
+ * Id del modelo que lee fotos (plan "Seba lee fotos y audios", 16/11/2026).
+ * Un id de OpenRouter, con el prefijo del fabricante.
+ */
+export function visionModelId(): string {
+  return process.env.AI_VISION_MODEL?.trim() || "openai/gpt-5.4";
+}
+
+/**
+ * Modelo que lee la imagen de un adjunto del cliente.
+ *
+ * Manda `reasoningEffort: "none"` SIEMPRE, valga lo que valga
+ * `AI_AGENT_REASONING`: con `off` (producción) `build()` no manda
+ * `providerOptions` y el proveedor razona con su default (medium) -- la
+ * trampa de la cabecera de este archivo --, que para describir una foto es
+ * lento y caro sin mejorar la lectura. Por eso esta ruta no pasa por la
+ * decisión de `reasoningMode()`.
+ *
+ * Siempre por el proveedor openai (OpenRouter, vía `OPENAI_BASE_URL`): el id
+ * lleva prefijo de fabricante y el override `AI_AGENT_PROVIDER` es del agente.
+ * Sin telemetría de turno (la lectura corre fuera de un turno y su costo va a
+ * `message_readings`), y con UN reintento ante rate limit: leer una imagen no
+ * le escribe nada al cliente, repetirla no duplica nada.
+ */
+export function getVisionModel(): AgentModel {
+  return build(visionModelId(), "none", {
+    fase: "vision",
+    reintentos: 1,
+    sinTelemetria: true,
+    providerOverride: "openai",
+  });
 }
 
 export function currentAgentModelLabel(): string {

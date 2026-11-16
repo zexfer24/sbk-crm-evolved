@@ -52,15 +52,29 @@ vi.mock("ai", async (importOriginal) => ({
   // porqué del orden: `duration_ms` tiene que medir la llamada real al
   // proveedor, no la espera del control de ritmo.
   wrapLanguageModel: ({ model, middleware }: { model: unknown; middleware: unknown[] }) => {
-    if (!Array.isArray(middleware) || middleware.length !== 2) {
-      throw new Error("build() tiene que envolver el modelo con exactamente [rateLimitMiddleware, telemetryMiddleware]");
+    if (!Array.isArray(middleware)) {
+      throw new Error("build() tiene que envolver el modelo con un arreglo de middlewares");
     }
     const [primero, segundo] = middleware as { __origen?: string }[];
     const rateLimitOptions = rateLimitOptionsPorMiddleware.get(middleware[0] as object);
-    const telemetryFase = telemetryFasePorMiddleware.get(middleware[1] as object);
     if (primero?.__origen !== "rate-limit" || !rateLimitOptions) {
       throw new Error("el primer middleware del arreglo no es el del ritmo -- el orden importa (rate-limit por fuera)");
     }
+    // Plan "Seba lee fotos y audios" (16/11/2026): el modelo de visión, y
+    // SOLO él (fase "vision"), va sin telemetría -- su fase no cabe en el
+    // CHECK de `agent_turn_calls` y su costo se anota en otra tabla. Todo lo
+    // demás sigue exigiendo exactamente los dos, sin aflojar nada.
+    if (rateLimitOptions.fase === "vision") {
+      if (middleware.length !== 1) {
+        throw new Error("el modelo de visión tiene que envolverse con exactamente [rateLimitMiddleware], sin telemetría");
+      }
+      envueltos.push({ modelo: model, ...rateLimitOptions });
+      return { envuelto: model };
+    }
+    if (middleware.length !== 2) {
+      throw new Error("build() tiene que envolver el modelo con exactamente [rateLimitMiddleware, telemetryMiddleware]");
+    }
+    const telemetryFase = telemetryFasePorMiddleware.get(middleware[1] as object);
     if (segundo?.__origen !== "telemetry" || telemetryFase === undefined) {
       throw new Error("el segundo middleware del arreglo no es el de telemetría -- el orden importa (telemetría por dentro)");
     }
@@ -72,9 +86,15 @@ vi.mock("ai", async (importOriginal) => ({
   },
 }));
 
-import { currentAgentModelLabel, getAgentModel, getClassifierModel } from "@/lib/ai/model";
+import { currentAgentModelLabel, getAgentModel, getClassifierModel, getVisionModel, visionModelId } from "@/lib/ai/model";
 
-const VARIABLES = ["AI_AGENT_MODEL", "AI_AGENT_PROVIDER", "AI_CLASSIFIER_MODEL", "AI_AGENT_REASONING"] as const;
+const VARIABLES = [
+  "AI_AGENT_MODEL",
+  "AI_AGENT_PROVIDER",
+  "AI_CLASSIFIER_MODEL",
+  "AI_AGENT_REASONING",
+  "AI_VISION_MODEL",
+] as const;
 const original: Record<string, string | undefined> = {};
 
 beforeEach(() => {
@@ -351,5 +371,74 @@ describe("telemetría por llamada", () => {
     getAgentModel("medium");
 
     expect(envueltos[0].fase).toBe("redactar");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Plan "Seba lee fotos y audios" (16/11/2026): el modelo de visión.
+//
+// El test que más importa de este bloque es el de `reasoningEffort: "none"`:
+// con `AI_AGENT_REASONING=off` (producción) `build()` no manda
+// `providerOptions` y el proveedor razona con su default (medium), que para
+// leer una foto es lento y caro sin mejorar nada. La visión tiene que mandar
+// el apagado explícito SIEMPRE, sin mirar esa variable.
+// ---------------------------------------------------------------------------
+describe("modelo de visión", () => {
+  it.each(["off", "on", "none"])(
+    "con AI_AGENT_REASONING=%s manda siempre reasoningEffort: 'none'",
+    (valor) => {
+      process.env.AI_AGENT_REASONING = valor;
+
+      const modelo = getVisionModel();
+
+      expect(modelo.providerOptions).toEqual({ openai: { reasoningEffort: "none" } });
+    },
+  );
+
+  it("sin AI_AGENT_REASONING también manda 'none'", () => {
+    expect(getVisionModel().providerOptions).toEqual({ openai: { reasoningEffort: "none" } });
+  });
+
+  it("usa openai/gpt-5.4 por defecto y el id de AI_VISION_MODEL si existe", () => {
+    expect(visionModelId()).toBe("openai/gpt-5.4");
+    getVisionModel();
+    expect(openaiMock).toHaveBeenCalledWith("openai/gpt-5.4");
+
+    process.env.AI_VISION_MODEL = "  google/gemini-3.1-flash  ";
+    expect(visionModelId()).toBe("google/gemini-3.1-flash");
+    getVisionModel();
+    expect(openaiMock).toHaveBeenLastCalledWith("google/gemini-3.1-flash");
+  });
+
+  /**
+   * Un id con prefijo de fabricante es de OpenRouter: va por el proveedor
+   * openai (que habla contra OPENAI_BASE_URL) aunque diga "gemini" -- y
+   * AI_AGENT_PROVIDER=google del agente no lo mueve.
+   */
+  it("va siempre por el proveedor openai, sin importar AI_AGENT_PROVIDER ni el id", () => {
+    process.env.AI_AGENT_PROVIDER = "google";
+    process.env.AI_VISION_MODEL = "gemini-3.1-flash";
+
+    getVisionModel();
+
+    expect(openaiMock).toHaveBeenCalledWith("gemini-3.1-flash");
+    expect(googleMock).not.toHaveBeenCalled();
+  });
+
+  it("su único middleware es el de ritmo, fase 'vision' y un reintento", () => {
+    getVisionModel();
+
+    // El mock de wrapLanguageModel ya exigió el arreglo de UN solo
+    // middleware (el de ritmo); acá se confirma con qué opciones.
+    expect(envueltos).toHaveLength(1);
+    expect(envueltos[0].fase).toBe("vision");
+    expect(envueltos[0].reintentos).toBe(1);
+  });
+
+  it("los modelos del agente y la clasificación siguen exigiendo los dos middlewares", () => {
+    // Si alguno saliera con uno solo, el mock de wrapLanguageModel lanzaría
+    // ("exactamente [rateLimitMiddleware, telemetryMiddleware]").
+    expect(() => getAgentModel("medium")).not.toThrow();
+    expect(() => getClassifierModel("clasificar")).not.toThrow();
   });
 });
