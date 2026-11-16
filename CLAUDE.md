@@ -3249,6 +3249,11 @@ dejar rastro es lo que hacía desaparecer leads.
   Las líneas `[Nota de voz del cliente, transcrita: …]` y `[Foto del cliente: …]` las arma `historyLine`; `messages.content` sigue siendo solo lo que el cliente escribió. Un comprobante o una orden de Cashea escala en código con `comprobante_pago`, y lo leído (monto, referencia) va a la nota del asesor, nunca al modelo.
   Una fila `pendiente` puede quedar huérfana tras un deploy: el chat y `esperarLecturas` la ignoran pasados 2 min. `scheduleMessagesRefresh` no sirve para aplicar una lectura en vivo (recorta el historial ya cargado): se aplica en el sitio y `conservarLecturasResueltas` evita que un refresco la pise.
 
+- **Las formas de pago de contado viven en `payment_methods` y las escribe solo supervisor/admin, en RLS** (16/11/2026, entrega 2 de Seba v2, migración `20261116020000`). El repo es público: la migración no inserta filas y los datos reales los carga el VPS. La clave `cashea` está prohibida por CHECK y una clave no se edita. El tipo se llama `PaymentMethodConfig`; `PaymentMethod` (`types.ts`) es el método del cierre de venta.
+- **`agent_settings.seba_v2_modo` nace `apagado` y nadie lo lee hasta la entrega 3** (16/11/2026, migración `20261116030000`). La config de Seba v2 y las áreas se leen APARTE (`fetchSebaV2Config`, `fetchAgentAreas`: `null` solo ante 42703), no en `fetchAgentSettings` ni `fetchAllAgents`, para que Control IA abra aunque falte la migración; `null` se pinta «No disponible», nunca campos vacíos.
+- **`agents.areas` las cambia solo supervisor/admin: el trigger `agents_role_guard` ahora cubre `role, id, areas`** (16/11/2026). Sin él, `agents_update_self` dejaba a un asesor cambiarse las suyas. Las casillas van en «Agentes», no en «Equipo».
+- **La píldora «Área» es la séptima de la bandeja y se comprueba en la base Y en memoria** (16/11/2026; el tope del test subió a siete por decisión del operador). `CONVERSATION_LIST_SELECT` pide `escalation_area`: sin la migración `20261116030000` toda la bandeja da 400. Nadie escribe el área hasta la entrega 3.
+
 ---
 
 # RTK (Rust Token Killer) - Token-Optimized Commands
