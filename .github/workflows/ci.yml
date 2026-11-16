@@ -613,6 +613,12 @@ jobs:
         run: |
           psql "postgresql://postgres:postgres@127.0.0.1:54322/postgres"             -v ON_ERROR_STOP=1             -f supabase/tests/paneles.sql
 
+      # M1 (20261116010000, plan "Seba lee fotos y audios"): lecturas de audio e
+      # imagen, lectura solo para agentes, y el tope de gasto cuenta su costo.
+      - name: lecturas_de_media -- message_readings de solo lectura y gasto diario que las suma
+        run: |
+          psql "postgresql://postgres:postgres@127.0.0.1:54322/postgres"             -v ON_ERROR_STOP=1             -f supabase/tests/lecturas_de_media.sql
+
       # A2 T7, plan "Seba no cotiza lo que no es" (30/9/2026): el ARNÉS del
       # catálogo. Corre el `buildCatalogTool` REAL de Seba sobre los ~149 casos de
       # `casos-a2.ts` contra la base que este mismo job acaba de reconstruir desde

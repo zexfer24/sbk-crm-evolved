@@ -1312,6 +1312,75 @@ export type Database = {
           },
         ]
       }
+      message_readings: {
+        Row: {
+          audio_seconds: number | null
+          conversation_id: string
+          cost_usd: number | null
+          created_at: string
+          duration_ms: number | null
+          error: string | null
+          fields: Json | null
+          input_tokens: number | null
+          kind: string
+          message_id: string
+          model: string | null
+          output_tokens: number | null
+          status: string
+          text: string | null
+          updated_at: string
+        }
+        Insert: {
+          audio_seconds?: number | null
+          conversation_id: string
+          cost_usd?: number | null
+          created_at?: string
+          duration_ms?: number | null
+          error?: string | null
+          fields?: Json | null
+          input_tokens?: number | null
+          kind: string
+          message_id: string
+          model?: string | null
+          output_tokens?: number | null
+          status: string
+          text?: string | null
+          updated_at?: string
+        }
+        Update: {
+          audio_seconds?: number | null
+          conversation_id?: string
+          cost_usd?: number | null
+          created_at?: string
+          duration_ms?: number | null
+          error?: string | null
+          fields?: Json | null
+          input_tokens?: number | null
+          kind?: string
+          message_id?: string
+          model?: string | null
+          output_tokens?: number | null
+          status?: string
+          text?: string | null
+          updated_at?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "message_readings_message_id_fkey"
+            columns: ["message_id"]
+            isOneToOne: true
+            referencedRelation: "messages"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "message_readings_conversation_id_fkey"
+            columns: ["conversation_id"]
+            isOneToOne: false
+            referencedRelation: "conversations"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       messages: {
         Row: {
           content: string | null
