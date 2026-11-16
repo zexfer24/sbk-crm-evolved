@@ -33,6 +33,15 @@ vi.mock("@/lib/ai/agent", () => ({
   runAgentTurn: vi.fn(async () => {}),
 }));
 
+// media-reading-store arrastra el SDK de IA (modelo de visión + Whisper) y
+// este test no ejercita la lectura de adjuntos: se corta el grafo acá. Espejo
+// de route.test.ts (plan "Seba lee fotos y audios", M3, 16/11/2026).
+vi.mock("@/lib/ai/media-reading-store", () => ({
+  kindDeLectura: (tipo: string | null | undefined) => (tipo === "audio" || tipo === "image" ? tipo : null),
+  registrarLectura: vi.fn(async () => {}),
+  registrarFalloDeDescarga: vi.fn(async () => {}),
+}));
+
 // Espejo de route.test.ts (ver CLAUDE.md, Trampas): el importOriginal de la
 // fábrica de @/lib/ai/queue cargaba ioredis real por esta vía. El webhook no
 // debe tocar Redis: si lo intenta, que lo delate.

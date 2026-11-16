@@ -44,6 +44,15 @@ vi.mock("@/lib/redis", () => ({
   }),
 }));
 
+// media-reading-store arrastra el SDK de IA (modelo de visión + Whisper); acá
+// solo importa CUÁNDO el webhook lo llama y con qué (plan "Seba lee fotos y
+// audios", M3, 16/11/2026). `kindDeLectura` es pura: se deja la regla real.
+vi.mock("@/lib/ai/media-reading-store", () => ({
+  kindDeLectura: (tipo: string | null | undefined) => (tipo === "audio" || tipo === "image" ? tipo : null),
+  registrarLectura: vi.fn(async () => {}),
+  registrarFalloDeDescarga: vi.fn(async () => {}),
+}));
+
 vi.mock("@/lib/whatsapp/meta-client", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@/lib/whatsapp/meta-client")>();
   return {
@@ -187,6 +196,11 @@ function createFakeAdminClient() {
   const forceMessageInsertErrorFor = new Map<string, { code?: string; message: string }>();
   /** Fuerza el UPDATE de whatsapp_status a fallar (webhook_error_actualizar_estado). */
   let forceStatusUpdateError: { code?: string; message: string } | null = null;
+  /**
+   * M3 (16/11/2026): hace que la subida a Storage falle, para probar que el
+   * webhook deja constancia de la lectura fallida (`fallo/descarga`).
+   */
+  let forceUploadError: { message: string } | null = null;
 
   const client = {
     from(table: string) {
@@ -563,6 +577,7 @@ function createFakeAdminClient() {
       from() {
         return {
           upload: async (path: string) => {
+            if (forceUploadError) return { error: forceUploadError };
             uploadedPaths.push(path);
             return { error: null };
           },
@@ -634,6 +649,9 @@ function createFakeAdminClient() {
       if (error) forceMessageInsertErrorFor.set(wamid, error);
       else forceMessageInsertErrorFor.delete(wamid);
     },
+    setForceUploadError: (error: { message: string } | null) => {
+      forceUploadError = error;
+    },
     setForceStatusUpdateError: (error: { code?: string; message: string } | null) => {
       forceStatusUpdateError = error;
     },
@@ -645,6 +663,7 @@ function createFakeAdminClient() {
       forceConversationInsertErrorFor = null;
       forceMessageInsertErrorFor.clear();
       forceStatusUpdateError = null;
+      forceUploadError = null;
     },
   };
 }
@@ -674,6 +693,7 @@ const {
   setForceConversationInsertError,
   setForceMessageInsertError,
   setForceStatusUpdateError,
+  setForceUploadError,
   resetExtraConversations,
 } = createFakeAdminClient();
 
@@ -838,6 +858,10 @@ let DEBOUNCE_SHORT_SECONDS: typeof import("@/lib/ai/queue").DEBOUNCE_SHORT_SECON
 // nota de voz, sin afectar al resto (que dependen del default `image/jpeg`).
 let getMetaMediaUrl: typeof import("@/lib/whatsapp/meta-client").getMetaMediaUrl;
 let downloadMetaMedia: typeof import("@/lib/whatsapp/meta-client").downloadMetaMedia;
+// M3 (16/11/2026): los dos puntos de entrada de la lectura de adjuntos, ya
+// mockeados arriba.
+let registrarLectura: typeof import("@/lib/ai/media-reading-store").registrarLectura;
+let registrarFalloDeDescarga: typeof import("@/lib/ai/media-reading-store").registrarFalloDeDescarga;
 
 // 29/8/2026: bajo inanición extrema de CPU la carga en frío del grafo
 // (cuatro fábricas con importOriginal) superó los 15 s del hookTimeout; el
@@ -848,6 +872,7 @@ beforeAll(async () => {
     "@/lib/ai/queue"
   ));
   ({ getMetaMediaUrl, downloadMetaMedia } = await import("@/lib/whatsapp/meta-client"));
+  ({ registrarLectura, registrarFalloDeDescarga } = await import("@/lib/ai/media-reading-store"));
 }, 30_000);
 
 /** Limpieza uniforme del estado compartido a nivel de módulo, antes de cada prueba. */
@@ -871,6 +896,10 @@ beforeEach(() => {
   resetExtraConversations();
   vi.mocked(enqueueAgentTurns).mockClear();
   vi.mocked(processAfterDebounce).mockClear();
+  // `mockReset` y no `mockClear`: un test pisa la implementación (rechazo) y
+  // no debe filtrarse al siguiente.
+  vi.mocked(registrarLectura).mockReset().mockResolvedValue(undefined);
+  vi.mocked(registrarFalloDeDescarga).mockReset().mockResolvedValue(undefined);
 });
 
 describe("POST /api/webhooks/whatsapp — idempotencia", () => {
@@ -1420,6 +1449,160 @@ describe("POST /api/webhooks/whatsapp — media asíncrona", () => {
     } finally {
       process.env.WHATSAPP_ACCESS_TOKEN = previousToken;
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// M3, plan "Seba lee fotos y audios" (16/11/2026): el webhook le pasa los
+// bytes recién subidos a `registrarLectura` (solo audio e imagen) y deja
+// constancia con `registrarFalloDeDescarga` si no hubo archivo que leer.
+// Nada de esto puede cambiar la respuesta del webhook ni el `media_url`.
+// ---------------------------------------------------------------------------
+describe("POST /api/webhooks/whatsapp — lectura de adjuntos", () => {
+  /** Mensaje de media de cualquier tipo, con la forma que manda Meta. */
+  function mediaBody(waMessageId: string, type: "image" | "audio" | "video" | "document" | "sticker", mime: string) {
+    const base = webhookImageBody(waMessageId);
+    const message = base.entry[0].changes[0].value.messages[0] as Record<string, unknown>;
+    delete message.image;
+    message.type = type;
+    message[type] = { id: `meta-media-${type}`, mime_type: mime };
+    return base;
+  }
+
+  /** Espera a que la tarea de descarga termine de verdad (el `media_url` ya se actualizó). */
+  async function esperarMediaUrl(waMessageId: string) {
+    const id = insertedMessages.get(waMessageId)!.id;
+    await vi.waitFor(() => expect(mediaUpdates.some((u) => u.id === id)).toBe(true), { timeout: 5000 });
+    // Un tick más: lo que viene DESPUÉS del update (la lectura) corre en la
+    // misma tarea, y un "no se llamó" no debe pasar por haber mirado antes.
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    return id;
+  }
+
+  beforeEach(() => {
+    vi.stubEnv("WHATSAPP_ACCESS_TOKEN", "test-token");
+  });
+
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
+  it("una nota de voz: registra la lectura con el id del mensaje, la conversación, los bytes y el mime", async () => {
+    vi.mocked(getMetaMediaUrl).mockResolvedValueOnce({
+      url: "https://meta.example/audio-file",
+      mimeType: "audio/ogg; codecs=opus",
+    });
+    const waMessageId = "wamid.lectura-audio-1";
+
+    const response = await POST(fakeRequest(mediaBody(waMessageId, "audio", "audio/ogg; codecs=opus")));
+    expect(response.status).toBe(200);
+
+    const messageId = await esperarMediaUrl(waMessageId);
+    expect(registrarLectura).toHaveBeenCalledTimes(1);
+    expect(registrarLectura).toHaveBeenCalledWith(expect.anything(), {
+      messageId,
+      conversationId: "conv-1",
+      kind: "audio",
+      bytes: new Uint8Array([1, 2, 3]),
+      mime: "audio/ogg; codecs=opus",
+    });
+    expect(registrarFalloDeDescarga).not.toHaveBeenCalled();
+  });
+
+  it("una imagen: registra la lectura con kind image", async () => {
+    const waMessageId = "wamid.lectura-imagen-1";
+
+    const response = await POST(fakeRequest(webhookImageBody(waMessageId)));
+    expect(response.status).toBe(200);
+
+    const messageId = await esperarMediaUrl(waMessageId);
+    expect(registrarLectura).toHaveBeenCalledTimes(1);
+    expect(registrarLectura).toHaveBeenCalledWith(expect.anything(), {
+      messageId,
+      conversationId: "conv-1",
+      kind: "image",
+      bytes: new Uint8Array([1, 2, 3]),
+      mime: "image/jpeg",
+    });
+  });
+
+  it.each([
+    ["sticker", "image/webp"],
+    ["video", "video/mp4"],
+    ["document", "application/pdf"],
+  ] as const)("un %s no se lee: no se llama a ninguna de las dos funciones", async (type, mime) => {
+    vi.mocked(getMetaMediaUrl).mockResolvedValueOnce({ url: "https://meta.example/f", mimeType: mime });
+    const waMessageId = `wamid.lectura-${type}-1`;
+
+    const response = await POST(fakeRequest(mediaBody(waMessageId, type, mime)));
+    expect(response.status).toBe(200);
+
+    await esperarMediaUrl(waMessageId);
+    expect(registrarLectura).not.toHaveBeenCalled();
+    expect(registrarFalloDeDescarga).not.toHaveBeenCalled();
+  });
+
+  it("si la subida a storage falla: deja fallo de descarga y no lee", async () => {
+    setForceUploadError({ message: "Bucket no disponible" });
+    const waMessageId = "wamid.lectura-subida-falla-1";
+
+    const response = await POST(fakeRequest(webhookImageBody(waMessageId)));
+    expect(response.status).toBe(200);
+
+    const messageId = insertedMessages.get(waMessageId)!.id;
+    await vi.waitFor(() => expect(registrarFalloDeDescarga).toHaveBeenCalledTimes(1), { timeout: 5000 });
+    expect(registrarFalloDeDescarga).toHaveBeenCalledWith(expect.anything(), {
+      messageId,
+      conversationId: "conv-1",
+      kind: "image",
+    });
+    expect(registrarLectura).not.toHaveBeenCalled();
+    expect(mediaUpdates.some((u) => u.id === messageId)).toBe(false);
+  });
+
+  it("si la descarga lanza: deja fallo de descarga", async () => {
+    vi.mocked(downloadMetaMedia).mockRejectedValueOnce(new Error("410 Gone"));
+    vi.mocked(getMetaMediaUrl).mockResolvedValueOnce({
+      url: "https://meta.example/audio-file",
+      mimeType: "audio/ogg",
+    });
+    const waMessageId = "wamid.lectura-descarga-falla-1";
+
+    const response = await POST(fakeRequest(mediaBody(waMessageId, "audio", "audio/ogg")));
+    expect(response.status).toBe(200);
+
+    const messageId = insertedMessages.get(waMessageId)!.id;
+    await vi.waitFor(() => expect(registrarFalloDeDescarga).toHaveBeenCalledTimes(1), { timeout: 5000 });
+    expect(registrarFalloDeDescarga).toHaveBeenCalledWith(expect.anything(), {
+      messageId,
+      conversationId: "conv-1",
+      kind: "audio",
+    });
+    expect(registrarLectura).not.toHaveBeenCalled();
+  });
+
+  it("un sticker cuya descarga falla no deja ninguna fila de lectura", async () => {
+    vi.mocked(downloadMetaMedia).mockRejectedValueOnce(new Error("410 Gone"));
+    const waMessageId = "wamid.lectura-sticker-descarga-falla-1";
+
+    const response = await POST(fakeRequest(mediaBody(waMessageId, "sticker", "image/webp")));
+    expect(response.status).toBe(200);
+
+    await vi.waitFor(() => expect(downloadMetaMedia).toHaveBeenCalled(), { timeout: 5000 });
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(registrarFalloDeDescarga).not.toHaveBeenCalled();
+  });
+
+  it("si registrarLectura rechaza, el webhook responde igual y el media_url ya quedó actualizado", async () => {
+    vi.mocked(registrarLectura).mockRejectedValueOnce(new Error("explotó la lectura"));
+    const waMessageId = "wamid.lectura-rechaza-1";
+
+    const response = await POST(fakeRequest(webhookImageBody(waMessageId)));
+    expect(response.status).toBe(200);
+
+    const messageId = await esperarMediaUrl(waMessageId);
+    expect(mediaUpdates).toContainEqual({ id: messageId, mediaUrl: `/api/media/conv-1/${waMessageId}.jpg` });
+    expect(registrarLectura).toHaveBeenCalledTimes(1);
   });
 });
 

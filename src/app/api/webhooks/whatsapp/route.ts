@@ -14,6 +14,7 @@ import {
 import { whatsappCredentials, whatsappProvider, type WhatsappCredentials } from "@/lib/whatsapp/provider";
 import { debounceSecondsFor, enqueueAgentTurns, processAfterDebounce } from "@/lib/ai/queue";
 import { recordHandoff } from "@/lib/ai/handoffs";
+import { kindDeLectura, registrarFalloDeDescarga, registrarLectura } from "@/lib/ai/media-reading-store";
 import { MEDIA_BUCKET, mediaUrlFor } from "@/lib/storage";
 import { phoneNumberFromWaId } from "@/lib/whatsapp/phone";
 import { extensionForMime } from "@/lib/whatsapp/media-extension";
@@ -1571,6 +1572,11 @@ export async function POST(request: Request) {
           const waMessageId = message.id;
           const mediaId = pendingMediaId;
           const direct = credentials.provider === "360dialog" ? pendingMediaDirect : null;
+          // Plan "Seba lee fotos y audios" (M3, 16/11/2026): solo un audio o una
+          // imagen se leen; video, documento y sticker pasan por esta misma
+          // closure y quedan como siempre. Constante propia porque
+          // `messageType` es un `let` del bucle y la closure corre después.
+          const lecturaKind = kindDeLectura(messageType);
           mediaDownloadTasks.push(async () => {
             try {
               let mimeType: string | undefined;
@@ -1611,16 +1617,44 @@ export async function POST(request: Request) {
                   whatsappMessageId: waMessageId,
                   detail: errorText(uploadError),
                 });
+                if (lecturaKind) {
+                  await registrarFalloDeDescarga(supabase, {
+                    messageId: messageDbId,
+                    conversationId: convId,
+                    kind: lecturaKind,
+                  });
+                }
                 return;
               }
 
               await supabase.from("messages").update({ media_url: mediaUrlFor(path) }).eq("id", messageDbId);
+
+              // Los bytes ya están en memoria: la lectura no vuelve a bajar el
+              // archivo. Tarda 1-4 s y el turno espera 6 s de silencio para un
+              // adjunto sin pie, así que en el caso normal llega antes que el
+              // turno. Nunca lanza: lo que pase acá no cambia el webhook.
+              if (lecturaKind) {
+                await registrarLectura(supabase, {
+                  messageId: messageDbId,
+                  conversationId: convId,
+                  kind: lecturaKind,
+                  bytes,
+                  mime: mimeType,
+                });
+              }
             } catch (err) {
               log.error("webhook_media_no_descargada", {
                 conversationId: convId,
                 whatsappMessageId: waMessageId,
                 detail: errorText(err),
               });
+              if (lecturaKind) {
+                await registrarFalloDeDescarga(supabase, {
+                  messageId: messageDbId,
+                  conversationId: convId,
+                  kind: lecturaKind,
+                });
+              }
             }
           });
         }
