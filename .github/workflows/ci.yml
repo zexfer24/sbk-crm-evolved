@@ -619,6 +619,13 @@ jobs:
         run: |
           psql "postgresql://postgres:postgres@127.0.0.1:54322/postgres"             -v ON_ERROR_STOP=1             -f supabase/tests/lecturas_de_media.sql
 
+      # T1 (20261116020000, plan "Entrega 2 de Seba v2"): formas de pago de
+      # contado; cualquier asesor las lee y solo el supervisor/admin las escribe
+      # (el UPDATE de un asesor afecta 0 filas), con sus CHECK de clave y moneda.
+      - name: formas_de_pago -- payment_methods: el asesor lee y solo el supervisor escribe
+        run: |
+          psql "postgresql://postgres:postgres@127.0.0.1:54322/postgres"             -v ON_ERROR_STOP=1             -f supabase/tests/formas_de_pago.sql
+
       # A2 T7, plan "Seba no cotiza lo que no es" (30/9/2026): el ARNÉS del
       # catálogo. Corre el `buildCatalogTool` REAL de Seba sobre los ~149 casos de
       # `casos-a2.ts` contra la base que este mismo job acaba de reconstruir desde

@@ -1712,6 +1712,52 @@ export type Database = {
           },
         ]
       }
+      // 16/11/2026 (migración 20261116020000, plan "Entrega 2 de Seba v2"):
+      // formas de pago de contado. Cashea no va aquí (CHECK sobre `key`).
+      payment_methods: {
+        Row: {
+          currency: string
+          instructions: string
+          is_active: boolean
+          key: string
+          label: string
+          seba_entrega: boolean
+          sort_order: number
+          updated_at: string
+          updated_by: string | null
+        }
+        Insert: {
+          currency: string
+          instructions: string
+          is_active?: boolean
+          key: string
+          label: string
+          seba_entrega?: boolean
+          sort_order?: number
+          updated_at?: string
+          updated_by?: string | null
+        }
+        Update: {
+          currency?: string
+          instructions?: string
+          is_active?: boolean
+          key?: string
+          label?: string
+          seba_entrega?: boolean
+          sort_order?: number
+          updated_at?: string
+          updated_by?: string | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "payment_methods_updated_by_fkey"
+            columns: ["updated_by"]
+            isOneToOne: false
+            referencedRelation: "agents"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       // 21/10/2026 (migración 20261021010000, plan "Presupuestos y mensajes
       // rápidos"): renglones de un presupuesto guardado. No se actualizan, se
       // reemplazan (sin grant de UPDATE). La caja no puede guardar 'estandar'.

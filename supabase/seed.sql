@@ -177,6 +177,15 @@ insert into public.quick_replies (label, content) values
   ('Horario de atención', 'Nuestro horario de atención es de lunes a viernes de 8am a 6pm.');
 
 -- ============================================================================
+-- FORMAS DE PAGO (datos INVENTADOS: el repo es público; las reales las carga el VPS)
+-- ============================================================================
+insert into public.payment_methods (key, label, currency, instructions, seba_entrega, is_active, sort_order) values
+  ('pago_movil', 'Pago móvil', 'VES', E'Pago móvil\n0000-0000000 · J-00000000-0 · Banco de prueba', true, true, 10),
+  ('transferencia', 'Transferencia', 'VES', E'Transferencia bancaria\nBanco de prueba · Cuenta corriente 0000-0000-00-0000000000\nSBK de prueba, C.A. · J-00000000-0', true, true, 20),
+  ('binance', 'Binance', 'USD', 'Binance Pay: usuario de prueba (el monto en divisa lo confirma un asesor)', false, true, 30)
+on conflict (key) do nothing;
+
+-- ============================================================================
 -- CATÁLOGO DE REPUESTOS (para que el agente de IA tenga qué buscar)
 -- ============================================================================
 insert into public.products (id, name, brand, price, currency, stock_quantity, description) values
