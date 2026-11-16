@@ -1032,6 +1032,97 @@
   min-width: 260px;
 }
 
+/* Lectura automática de un audio o una imagen del cliente (plan "Seba lee
+   fotos y audios", 16/11/2026). Va DENTRO de la burbuja del cliente (fondo
+   `--lm-sunken`), así que no puede usar ese mismo fondo: se separa del
+   adjunto con una línea fina (`--lm-line`) y la pastilla lleva borde propio.
+   El texto largo no ensancha la burbuja: se parte por donde sea y se recorta
+   a 6 líneas (el texto completo va en `title`). */
+.crm-reading {
+  display: flex;
+  min-width: 0;
+  max-width: 100%;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 3px;
+  margin-top: 6px;
+  padding-top: 6px;
+  border-top: 1px solid var(--lm-line);
+  font-size: 13px;
+  line-height: 1.4;
+  color: var(--lm-ink);
+}
+
+.crm-reading-prefix {
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  color: var(--lm-ink);
+}
+
+.crm-reading-label {
+  font-size: 11px;
+  font-weight: 500;
+  letter-spacing: 0.02em;
+  color: var(--lm-muted);
+}
+
+/* La etiqueta de "Transcripción automática" va sola en su línea; la de
+   "Lectura automática:" corre dentro del párrafo de la descripción. */
+.crm-reading[data-kind="audio"] .crm-reading-label {
+  text-transform: uppercase;
+}
+
+.crm-reading-text {
+  display: -webkit-box;
+  max-width: 100%;
+  margin: 0;
+  overflow: hidden;
+  overflow-wrap: anywhere;
+  white-space: pre-line;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 6;
+  line-clamp: 6;
+}
+
+.crm-reading-pill {
+  display: inline-flex;
+  align-items: center;
+  margin-top: 2px;
+  padding: 1px 8px;
+  border: 1px solid rgb(var(--lm-good-rgb) / 0.4);
+  border-radius: 999px;
+  background: rgb(var(--lm-good-rgb) / 0.14);
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 1.5;
+  color: var(--lm-stock-in-ink);
+  white-space: nowrap;
+}
+
+.crm-reading-detail {
+  max-width: 100%;
+  font-size: 12px;
+  color: var(--lm-muted);
+  overflow-wrap: anywhere;
+}
+
+/* Lista de lecturas de una galería: debajo de las miniaturas, sin pasar del
+   ancho de la galería. */
+.crm-readings {
+  display: flex;
+  min-width: 0;
+  max-width: 100%;
+  flex-direction: column;
+  gap: 2px;
+  padding: 0 4px;
+}
+
+.crm-readings > .crm-reading {
+  margin-top: 4px;
+  padding-top: 4px;
+}
+
 .crm-audio-retry {
   display: inline-flex;
   align-items: center;

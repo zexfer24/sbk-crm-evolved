@@ -1,4 +1,5 @@
 import type { BusinessHours } from "@/lib/business-hours";
+import type { ImageFields, StoredReadingStatus } from "@/lib/media-reading-fields";
 
 /**
  * `caja` (13/10/2026): cuentas que solo VEN el Inventario. No son asesores: no
@@ -413,6 +414,24 @@ export interface Message {
    * anuncio, o el tipo real de Meta cuando `messageType === 'unsupported'`.
    */
   payload: MessagePayload | null;
+  /**
+   * Lectura automática del adjunto del cliente (plan "Seba lee fotos y
+   * audios", 16/11/2026): la transcripción de un audio o la descripción de
+   * una imagen, con su estado. Opcional a propósito: la lista de mensajes
+   * llega de varios lados y hay muchos objetos `Message` armados a mano.
+   */
+  reading?: MessageReading | null;
+  createdAt: string;
+}
+
+/** Una fila de `message_readings` ya mapeada para la interfaz. */
+export interface MessageReading {
+  kind: "audio" | "image";
+  status: StoredReadingStatus;
+  /** Transcripción (audio) o descripción (imagen). */
+  text: string | null;
+  /** Solo imagen: lo que el modelo leyó, ya validado. */
+  fields: ImageFields | null;
   createdAt: string;
 }
 

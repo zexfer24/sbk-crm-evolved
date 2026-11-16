@@ -2,7 +2,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { render, screen, fireEvent } from "@testing-library/react";
 import { MediaGroup } from "@/components/chat/media-group";
-import type { Message, MessageType } from "@/lib/types";
+import type { Message, MessageReading, MessageType } from "@/lib/types";
 
 let reloj = 0;
 
@@ -107,5 +107,58 @@ describe("MediaGroup — citar una foto concreta", () => {
     for (const foto of fotos) {
       expect(container.querySelector(`[data-message-id="${foto.id}"]`)).not.toBeNull();
     }
+  });
+});
+
+describe("MediaGroup — lectura automática de cada foto", () => {
+  const lecturaDeFoto = (text: string): MessageReading => ({
+    kind: "image",
+    status: "ok",
+    text,
+    fields: null,
+    createdAt: new Date().toISOString(),
+  });
+
+  it("lista la lectura de la foto que la tiene, con su número", () => {
+    render(
+      <MediaGroup
+        messages={[media(), media({ reading: lecturaDeFoto("Un kit de arrastre") }), media()]}
+      />
+    );
+
+    expect(screen.getByText("Foto 2")).toBeInTheDocument();
+    expect(screen.getByText("Un kit de arrastre")).toBeInTheDocument();
+    expect(screen.queryByText("Foto 1")).not.toBeInTheDocument();
+    expect(screen.queryByText("Foto 3")).not.toBeInTheDocument();
+  });
+
+  it("sin ninguna lectura no pinta la lista", () => {
+    const { container } = render(<MediaGroup messages={[media(), media()]} />);
+
+    expect(container.querySelector(".crm-reading")).toBeNull();
+    expect(container.querySelector(".crm-readings")).toBeNull();
+  });
+
+  it("una lectura fallida no se lista", () => {
+    const { container } = render(
+      <MediaGroup
+        messages={[media(), media({ reading: { ...lecturaDeFoto("x"), status: "fallo" } })]}
+      />
+    );
+
+    expect(container.querySelector(".crm-reading")).toBeNull();
+  });
+
+  it("las fotos que mandó el asesor no listan lectura", () => {
+    const { container } = render(
+      <MediaGroup
+        messages={[
+          media({ direction: "outbound", senderType: "agent", reading: lecturaDeFoto("Lo que mandé") }),
+          media({ direction: "outbound", senderType: "agent" }),
+        ]}
+      />
+    );
+
+    expect(container.querySelector(".crm-reading")).toBeNull();
   });
 });

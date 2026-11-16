@@ -2090,3 +2090,167 @@ describe("CrmShell — red de seguridad contra la deriva", () => {
     }
   });
 });
+
+/**
+ * Plan "Seba lee fotos y audios" (16/11/2026): la lectura automática de un
+ * audio o una imagen llega por `message_readings` 1-4 s DESPUÉS del mensaje.
+ * Se aplica en el sitio, sin volver a pedir los últimos 100 mensajes (eso
+ * recortaría el historial viejo que el asesor ya cargó con "Ver anteriores").
+ */
+describe("CrmShell — la lectura automática de un adjunto llega en vivo", () => {
+  function audioDelCliente(over: Partial<Message> = {}): Message {
+    return {
+      id: "msg-audio-1",
+      conversationId: "conv-1",
+      direction: "inbound",
+      senderType: "customer",
+      senderAgent: null,
+      messageType: "audio",
+      content: null,
+      templateName: null,
+      mediaUrl: "https://example.com/nota.ogg",
+      isInternalNote: false,
+      whatsappStatus: null,
+      whatsappError: null,
+      whatsappErrorCode: null,
+      reactionEmoji: null,
+      replyToMessageId: null,
+      payload: null,
+      reading: {
+        kind: "audio",
+        status: "pendiente",
+        text: null,
+        fields: null,
+        createdAt: new Date().toISOString(),
+      },
+      createdAt: new Date().toISOString(),
+      ...over,
+    };
+  }
+
+  function filaDeLectura(over: Record<string, unknown> = {}) {
+    return {
+      message_id: "msg-audio-1",
+      conversation_id: "conv-1",
+      kind: "audio",
+      status: "ok",
+      text: "necesito pastillas para una Bera",
+      fields: null,
+      created_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+      ...over,
+    };
+  }
+
+  it("al abrir el chat se suscribe a message_readings de esa conversación", async () => {
+    await renderWithOpenConversation();
+
+    expect(fake.filtersFor("message_readings")).toEqual(["conversation_id=eq.conv-1"]);
+  });
+
+  it("un UPDATE con la transcripción la pinta en la burbuja SIN volver a pedir los mensajes", async () => {
+    fetchMessagesMock.mockResolvedValue([audioDelCliente()]);
+    await renderWithOpenConversation();
+    expect(screen.getByText("Leyendo…")).toBeInTheDocument();
+
+    act(() => {
+      fake.trigger("message_readings", "UPDATE", filaDeLectura());
+    });
+    await act(async () => {
+      vi.advanceTimersByTime(2000);
+    });
+
+    expect(screen.getByText("Transcripción automática")).toBeInTheDocument();
+    expect(screen.getByText("necesito pastillas para una Bera")).toBeInTheDocument();
+    expect(screen.queryByText("Leyendo…")).not.toBeInTheDocument();
+    expect(fetchMessagesMock).not.toHaveBeenCalled();
+  });
+
+  it("el evento de un mensaje que todavía no está en la lista pide los mensajes de siempre", async () => {
+    fetchMessagesMock.mockResolvedValue([audioDelCliente()]);
+    await renderWithOpenConversation();
+
+    act(() => {
+      fake.trigger("message_readings", "INSERT", filaDeLectura({ message_id: "msg-que-no-esta" }));
+    });
+    await act(async () => {
+      vi.advanceTimersByTime(750);
+    });
+
+    expect(fetchMessagesMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("una fila que no se entiende no toca la lista ni la recarga", async () => {
+    fetchMessagesMock.mockResolvedValue([audioDelCliente()]);
+    await renderWithOpenConversation();
+
+    act(() => {
+      fake.trigger("message_readings", "UPDATE", { message_id: "msg-audio-1", kind: "video", status: "ok" });
+    });
+    await act(async () => {
+      vi.advanceTimersByTime(2000);
+    });
+
+    expect(screen.getByText("Leyendo…")).toBeInTheDocument();
+    expect(fetchMessagesMock).not.toHaveBeenCalled();
+  });
+});
+
+describe("CrmShell — un refresco no pisa una lectura ya resuelta", () => {
+  it("si el refresco trae la lectura aún pendiente, la burbuja conserva la transcripción", async () => {
+    const pendiente = {
+      kind: "audio" as const,
+      status: "pendiente" as const,
+      text: null,
+      fields: null,
+      createdAt: new Date().toISOString(),
+    };
+    const audio = {
+      id: "msg-audio-2",
+      conversationId: "conv-1",
+      direction: "inbound" as const,
+      senderType: "customer" as const,
+      senderAgent: null,
+      messageType: "audio" as const,
+      content: null,
+      templateName: null,
+      mediaUrl: "https://example.com/nota2.ogg",
+      isInternalNote: false,
+      whatsappStatus: null,
+      whatsappError: null,
+      whatsappErrorCode: null,
+      reactionEmoji: null,
+      replyToMessageId: null,
+      payload: null,
+      reading: pendiente,
+      createdAt: new Date().toISOString(),
+    };
+    fetchMessagesMock.mockResolvedValue([audio]);
+    await renderWithOpenConversation();
+
+    act(() => {
+      fake.trigger("message_readings", "UPDATE", {
+        message_id: "msg-audio-2",
+        conversation_id: "conv-1",
+        kind: "audio",
+        status: "ok",
+        text: "quiero una bujía",
+        fields: null,
+        created_at: new Date().toISOString(),
+      });
+    });
+    expect(screen.getByText("quiero una bujía")).toBeInTheDocument();
+
+    // El refresco de mensajes se pidió ANTES de la lectura y responde después.
+    act(() => {
+      fake.trigger("messages", "UPDATE", { conversation_id: "conv-1", direction: "outbound" });
+    });
+    await act(async () => {
+      vi.advanceTimersByTime(750);
+    });
+
+    expect(fetchMessagesMock).toHaveBeenCalledTimes(1);
+    expect(screen.getByText("quiero una bujía")).toBeInTheDocument();
+    expect(screen.queryByText("Leyendo…")).not.toBeInTheDocument();
+  });
+});

@@ -27,6 +27,7 @@ import { MediaThumb } from "@/components/chat/media-lightbox";
 import { DeliveryCheck } from "@/components/chat/delivery-check";
 import { MessageContextMenu } from "@/components/chat/message-context-menu";
 import { FormattedText } from "@/components/chat/formatted-text";
+import { MediaReading } from "@/components/chat/media-reading";
 import { QuotedText, QuotedThumb } from "@/components/chat/quoted-content";
 
 // MediaError.MEDIA_ERR_SRC_NOT_SUPPORTED no siempre está disponible como
@@ -492,6 +493,13 @@ export function MessageBubble({
             </div>
           )}
           <MediaContent message={message} />
+          {/* La lectura automática (plan "Seba lee fotos y audios",
+              16/11/2026) es de lo que MANDÓ EL CLIENTE: un audio o una foto
+              del asesor no se lee, y una fila de lectura en otro mensaje
+              sería un dato que no corresponde pintar. */}
+          {isCustomer && (message.messageType === "audio" || message.messageType === "image") && (
+            <MediaReading reading={message.reading} />
+          )}
           {/* El contenido crudo ya se muestra distinto para estos dos tipos —
               el chip "Respondió a" y la tarjeta de pedido de arriba— así que
               acá se omite para no repetir la misma frase dos veces. */}

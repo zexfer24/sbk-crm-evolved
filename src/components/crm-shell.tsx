@@ -16,6 +16,8 @@ import type {
   WhatsappTemplate,
 } from "@/lib/types";
 import { useInboxDay } from "@/lib/use-inbox-day";
+import { conservarLecturasResueltas, mapMessageReading } from "@/lib/media-reading-map";
+import { nombreCanalUnico } from "@/lib/realtime-channel-name";
 import { createClient } from "@/lib/supabase/client";
 import {
   CHAT_MESSAGES_WINDOW,
@@ -712,6 +714,13 @@ export function CrmShell({
     /** No queda nada más viejo que traer en este hilo. */
     reachedStart: boolean;
   } | null>(null);
+  // Lo último guardado en `loadedThread`, para que un handler de Realtime sepa
+  // si un mensaje ya está en la lista SIN meter la decisión dentro de un
+  // updater de `setState` (que no puede tener efectos).
+  const loadedThreadRef = useRef(loadedThread);
+  useEffect(() => {
+    loadedThreadRef.current = loadedThread;
+  }, [loadedThread]);
   const [templates, setTemplates] = useState<WhatsappTemplate[]>([]);
   const [quickReplies, setQuickReplies] = useState<QuickReply[]>(initialQuickReplies);
   const [catalogLinks, setCatalogLinks] = useState<CatalogLink[]>(initialCatalogLinks);
@@ -1331,8 +1340,12 @@ export function CrmShell({
         messagesRefreshTimeout = null;
         fetchMessages(supabase, conversationId, { limit: CHAT_MESSAGES_WINDOW }).then((data) => {
           if (cancelled) return;
+          // Un refresco pedido antes de que llegara una lectura no puede
+          // devolverla a "pendiente" (ver `conservarLecturasResueltas`).
           setLoadedThread((current) =>
-            current?.conversationId === conversationId ? { ...current, messages: data } : current
+            current?.conversationId === conversationId
+              ? { ...current, messages: conservarLecturasResueltas(current.messages, data) }
+              : current
           );
         });
       }, REALTIME_DEBOUNCE_MS);
@@ -1468,8 +1481,53 @@ export function CrmShell({
       )
       .subscribe(realtimeStatusHandler(`messages-${selectedId}`, () => scheduleMessagesRefresh()));
 
+    // La lectura automática de los audios e imágenes del cliente (plan "Seba
+    // lee fotos y audios", 16/11/2026, tabla `message_readings`, publicada en
+    // `supabase_realtime`). El webhook inserta la fila `pendiente` y 1-4 s
+    // después la completa. Se aplica EN EL SITIO sobre el mensaje ya cargado:
+    // `scheduleMessagesRefresh` vuelve a pedir solo los últimos 100 y
+    // REEMPLAZA la lista, así que usarlo por cada lectura recortaría el
+    // historial viejo que el asesor ya trajo con "Ver mensajes anteriores".
+    // Solo si el mensaje todavía no está en la lista (el evento le ganó al
+    // refresco de mensajes) se usa ese refresco, que ya trae la lectura
+    // embebida. Nombre de canal único por suscripción: ver
+    // `realtime-channel-name.ts` (trampa del 29/10/2026).
+    const readingsChannelName = nombreCanalUnico(`readings-${selectedId}`);
+    const readingsChannel = supabase
+      .channel(readingsChannelName)
+      .on(
+        "postgres_changes",
+        { event: "*", schema: "public", table: "message_readings", filter: `conversation_id=eq.${selectedId}` },
+        (payload) => {
+          const row = payload.new as Record<string, unknown> | null;
+          const messageId = typeof row?.message_id === "string" ? row.message_id : null;
+          const reading = mapMessageReading(row);
+          // Un DELETE (sin fila nueva) o una fila que no se entiende no
+          // cambia nada que se pueda pintar.
+          if (!messageId || !reading) return;
+
+          const thread = loadedThreadRef.current;
+          const known =
+            thread?.conversationId === conversationId && thread.messages.some((m) => m.id === messageId);
+          if (!known) {
+            scheduleMessagesRefresh();
+            return;
+          }
+          setLoadedThread((current) =>
+            current?.conversationId === conversationId
+              ? {
+                  ...current,
+                  messages: current.messages.map((m) => (m.id === messageId ? { ...m, reading } : m)),
+                }
+              : current
+          );
+        }
+      )
+      .subscribe(realtimeStatusHandler(readingsChannelName, () => scheduleMessagesRefresh()));
+
     return () => {
       cancelled = true;
+      supabase.removeChannel(readingsChannel);
       if (messagesRefreshTimeout) clearTimeout(messagesRefreshTimeout);
       if (detailRefreshTimeout) clearTimeout(detailRefreshTimeout);
       document.removeEventListener("visibilitychange", onPresenceReturn);

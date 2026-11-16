@@ -6,6 +6,8 @@ import type { Message } from "@/lib/types";
 import { formatMessageTime } from "@/lib/format";
 import { MediaThumb, type MediaItem } from "@/components/chat/media-lightbox";
 import { MessageContextMenu } from "@/components/chat/message-context-menu";
+import { MediaReading } from "@/components/chat/media-reading";
+import { vistaDeLectura } from "@/lib/media-reading-view";
 import { useLongPress } from "@/lib/use-long-press";
 
 function cx(...classes: (string | false | null | undefined)[]) {
@@ -67,6 +69,20 @@ export function MediaGroup({ messages, onReply, highlightedMessageId = null }: M
 
   const enCamino = messages.length - items.length;
 
+  // La lectura automática de cada foto del CLIENTE (plan "Seba lee fotos y
+  // audios", 16/11/2026), numerada por su lugar en la galería: sin el número
+  // no se sabría de cuál foto habla cada línea. Se juzga contra una sola hora
+  // para que todas las pendientes se midan igual.
+  const [ahoraAlMontar] = useState(() => Date.now());
+  const lecturas = isCustomer
+    ? messages
+        .map((message, posicion) => ({ message, prefijo: `Foto ${posicion + 1}` }))
+        .filter(
+          ({ message }) =>
+            message.messageType === "image" && vistaDeLectura(message.reading, ahoraAlMontar).tipo !== "nada"
+        )
+    : [];
+
   return (
     <div className={cx("crm-msg flex flex-col gap-1", isCustomer ? "items-start self-start" : "items-end self-end")}>
       <div className="crm-gallery no-scrollbar">
@@ -111,6 +127,18 @@ export function MediaGroup({ messages, onReply, highlightedMessageId = null }: M
           onReply={onReply}
           onClose={() => setMenu(null)}
         />
+      )}
+      {lecturas.length > 0 && (
+        <div className="crm-readings">
+          {lecturas.map(({ message, prefijo }) => (
+            <MediaReading
+              key={message.id}
+              reading={message.reading}
+              ahoraMs={ahoraAlMontar}
+              prefijo={prefijo}
+            />
+          ))}
+        </div>
       )}
       <span className="px-1 text-[11px] text-muted">
         {nombreDelMonton(messages)}

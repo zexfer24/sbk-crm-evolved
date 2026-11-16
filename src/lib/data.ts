@@ -7,6 +7,7 @@ import { CASE_BOARD_LIMIT } from "@/lib/case-board";
 import { isUnassignedLead } from "@/lib/inbox-filters";
 import type { ConversationCursor } from "@/lib/inbox-paging";
 import { normalizeForSearch } from "@/lib/message-search";
+import { mapMessageReading } from "@/lib/media-reading-map";
 import { CRM_TIME_ZONE, currentDayRange } from "@/lib/time-zone";
 import { failureReason } from "@/lib/whatsapp/failure-reason";
 import { mapProduct, PRODUCT_SELECT, type RawProduct } from "@/lib/inventory-data";
@@ -226,6 +227,11 @@ interface RawMessage {
   payload: Message["payload"];
   created_at: string;
   sender_agent: RawAgent | null;
+  /**
+   * Lectura automática del adjunto (`message_readings`, uno a uno): PostgREST
+   * la embebe como objeto o `null`; por defensa se acepta un arreglo.
+   */
+  reading?: unknown;
 }
 
 interface RawQuickReply {
@@ -442,6 +448,9 @@ function mapConversation(row: RawConversation): Conversation {
   };
 }
 
+// Reexportada para quien lee `data.ts` como la puerta de los mapeos.
+export { mapMessageReading };
+
 function mapMessage(row: RawMessage): Message {
   return {
     id: row.id,
@@ -460,6 +469,7 @@ function mapMessage(row: RawMessage): Message {
     reactionEmoji: row.reaction_emoji,
     replyToMessageId: row.reply_to_message_id,
     payload: row.payload,
+    reading: mapMessageReading(row.reading),
     createdAt: row.created_at,
   };
 }
@@ -1777,6 +1787,7 @@ const MESSAGES_PAGE_SIZE = 1000;
 const MESSAGE_SELECT = `id, conversation_id, direction, sender_type, message_type, content, template_name,
          media_url, is_internal_note, whatsapp_status, whatsapp_error_code, whatsapp_error_detail,
          reaction_emoji, reply_to_message_id, payload, created_at,
+         reading:message_readings(kind, status, text, fields, created_at),
          sender_agent:agents(id, display_name, full_name, avatar_url, role, is_active)`;
 
 /**

@@ -4,7 +4,7 @@ import { render, screen, fireEvent, act } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { AudioContent, MediaContent, MessageBubble } from "@/components/chat/message-bubble";
 import { AI_NAME } from "@/lib/brand";
-import type { Agent, Message } from "@/lib/types";
+import type { Agent, Message, MessageReading } from "@/lib/types";
 
 const AUDIO_URL = "https://example.com/nota-de-voz.ogg";
 
@@ -665,5 +665,131 @@ describe("MessageBubble — el doble check con 'played' (nota de voz reproducida
 
     expect(screen.getByLabelText("Reproducido")).toBeInTheDocument();
     expect(screen.queryByLabelText("Leído")).not.toBeInTheDocument();
+  });
+});
+
+// Plan "Seba lee fotos y audios" (16/11/2026): la lectura automática va debajo
+// del adjunto, solo en lo que mandó el cliente.
+describe("MessageBubble — lectura automática del adjunto", () => {
+  function lectura(over: Partial<MessageReading> = {}): MessageReading {
+    return {
+      kind: "audio",
+      status: "ok",
+      text: "quiero el precio del casco",
+      fields: null,
+      createdAt: new Date().toISOString(),
+      ...over,
+    };
+  }
+
+  const audio = (reading: MessageReading | null | undefined, over: Partial<Message> = {}) =>
+    baseMessage({ messageType: "audio", mediaUrl: AUDIO_URL, reading, ...over });
+
+  const camposVacios = {
+    tipo: "otro" as const,
+    es_comprobante_pago: false,
+    texto_visible: "",
+    producto_visible: null,
+    marca_visible: null,
+    modelo_moto_visible: null,
+    medida_visible: null,
+    comprobante: null,
+    orden_cashea: null,
+  };
+
+  it("un audio con lectura ok muestra la etiqueta y la transcripción", () => {
+    render(<MessageBubble message={audio(lectura())} />);
+
+    expect(screen.getByText("Transcripción automática")).toBeInTheDocument();
+    expect(screen.getByText("quiero el precio del casco")).toBeInTheDocument();
+  });
+
+  it("una lectura pendiente reciente muestra Leyendo…", () => {
+    render(<MessageBubble message={audio(lectura({ status: "pendiente", text: null }))} />);
+
+    expect(screen.getByText("Leyendo…")).toBeInTheDocument();
+  });
+
+  it.each(["vacio", "alucinacion", "fallo"] as const)("una lectura %s no muestra nada", (status) => {
+    render(<MessageBubble message={audio(lectura({ status, text: "Suscríbete al canal" }))} />);
+
+    expect(screen.queryByText("Transcripción automática")).not.toBeInTheDocument();
+    expect(screen.queryByText("Suscríbete al canal")).not.toBeInTheDocument();
+    expect(screen.queryByText("Leyendo…")).not.toBeInTheDocument();
+  });
+
+  it("un audio SALIENTE con lectura no muestra nada", () => {
+    render(
+      <MessageBubble message={audio(lectura(), { direction: "outbound", senderType: "agent" })} />
+    );
+
+    expect(screen.queryByText("Transcripción automática")).not.toBeInTheDocument();
+    expect(screen.queryByText("quiero el precio del casco")).not.toBeInTheDocument();
+  });
+
+  it("un mensaje de texto del cliente con lectura (dato raro) tampoco la muestra", () => {
+    render(<MessageBubble message={baseMessage({ content: "hola", reading: lectura() })} />);
+
+    expect(screen.queryByText("Transcripción automática")).not.toBeInTheDocument();
+  });
+
+  it("un audio sin reading se ve como siempre", () => {
+    render(<MessageBubble message={audio(undefined)} />);
+
+    expect(document.querySelector("audio")).toBeInTheDocument();
+    expect(screen.queryByText("Transcripción automática")).not.toBeInTheDocument();
+    expect(screen.queryByText("Leyendo…")).not.toBeInTheDocument();
+  });
+
+  it("una imagen ok muestra la lectura, la descripción y el texto visible", () => {
+    render(
+      <MessageBubble
+        message={baseMessage({
+          messageType: "image",
+          mediaUrl: "/api/media/foto.jpg",
+          reading: lectura({
+            kind: "image",
+            text: "Un casco integral negro",
+            fields: { ...camposVacios, tipo: "casco_o_accesorio", texto_visible: "LS2 FF320" },
+          }),
+        })}
+      />
+    );
+
+    expect(screen.getByText("Lectura automática:")).toBeInTheDocument();
+    expect(screen.getByText("Un casco integral negro")).toBeInTheDocument();
+    expect(screen.getByText('Texto visible: "LS2 FF320"')).toBeInTheDocument();
+    expect(screen.queryByText("Posible comprobante")).not.toBeInTheDocument();
+  });
+
+  it("un comprobante muestra la pastilla y el detalle", () => {
+    render(
+      <MessageBubble
+        message={baseMessage({
+          messageType: "image",
+          mediaUrl: "/api/media/pago.jpg",
+          reading: lectura({
+            kind: "image",
+            text: "Captura de un pago móvil",
+            fields: {
+              ...camposVacios,
+              tipo: "comprobante_pago",
+              es_comprobante_pago: true,
+              comprobante: { monto: 1234.5, moneda: "VES", referencia: "456789", banco: "Banesco", fecha: null },
+            },
+          }),
+        })}
+      />
+    );
+
+    expect(screen.getByText("Posible comprobante")).toBeInTheDocument();
+    expect(screen.getByText("Bs 1.234,50 · ref. …456789 · Banesco")).toBeInTheDocument();
+  });
+
+  it("el texto largo lleva el texto completo en title para el recorte", () => {
+    const largo = "palabra ".repeat(80).trim();
+    render(<MessageBubble message={audio(lectura({ text: largo }))} />);
+
+    expect(screen.getByTitle(largo)).toBeInTheDocument();
   });
 });
