@@ -60,6 +60,10 @@ next-env.d.ts
 /.claude/skills/
 skills-lock.json
 
+# Material privado del rework de Seba (conversaciones reales, casos del arnés,
+# pautas con identificadores de chats): el repositorio es público.
+/privado/
+
 # Credenciales del equipo: contraseñas en texto plano, nunca al repositorio.
 CREDENCIALES.txt
 .liminal/

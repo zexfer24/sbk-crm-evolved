@@ -3241,6 +3241,13 @@ dejar rastro es lo que hacía desaparecer leads.
 - **El build no le pide nada a Google Fonts** (16/11/2026). `next/font/google` rompía el build de producción desde el 8/11: según el servidor y el momento, Google sirve las fuentes como `https://fonts.gstatic.com/l/font?kit=…&skey=…` y el Turbopack de Next 16.3.1 parte esa URL por `&`
   (`next/font/google queries have exactly one entry`); la caché de `.next` lo escondía y en local pasó y falló con el mismo commit. Geist, Geist Mono y Familjen Grotesk viven ahora en `src/app/fuentes/` (woff2 latinos, bytes idénticos a los de Google, con sus OFL) y `layout.tsx` las sirve con `next/font/local`.
   `src/app/fuentes.test.ts` rechaza cualquier `next/font/google` en `src/` y fija los sha256. Letras fuera del latín caen al respaldo Arial. Un build que valide esto se corre con `.next` BORRADA, o la caché lo vuelve a esconder.
+- **La lectura de fotos y audios vive en `message_readings` y la escribe solo el webhook** (16/11/2026, plan «Seba lee fotos y audios», migración `20261116010000`). NO depende de `ai_globally_enabled`: también le sirve al asesor en el chat con Seba apagada.
+  `MESSAGE_SELECT` y `loadHistory` embeben `message_readings`: sin la migración el chat entero da 400 (la migración va SIEMPRE antes que el código).
+  La cortan el tope de gasto (`agent_spend_today()` ya suma el `cost_usd` de las lecturas) y `AI_MEDIA_READING=off`. El costo de una imagen sale de la fila de `model_pricing` con la clave EXACTA de `AI_VISION_MODEL`: sin esa fila la lectura se hace igual y no cuenta para el tope.
+  El modelo de visión manda `reasoningEffort: "none"` SIEMPRE (`getVisionModel`, `model.ts`), valga lo que valga `AI_AGENT_REASONING`, y va sin telemetría de turno: su fase no cabe en el CHECK de `agent_turn_calls`.
+  Whisper inventa frases sobre silencio («Subtítulos realizados por la comunidad de Amara.org», medido el 24/10): las descarta `esAlucinacionWhisper`. No quitar ese filtro por un falso positivo: ampliar la lista con test.
+  Las líneas `[Nota de voz del cliente, transcrita: …]` y `[Foto del cliente: …]` las arma `historyLine`; `messages.content` sigue siendo solo lo que el cliente escribió. Un comprobante o una orden de Cashea escala en código con `comprobante_pago`, y lo leído (monto, referencia) va a la nota del asesor, nunca al modelo.
+  Una fila `pendiente` puede quedar huérfana tras un deploy: el chat y `esperarLecturas` la ignoran pasados 2 min. `scheduleMessagesRefresh` no sirve para aplicar una lectura en vivo (recorta el historial ya cargado): se aplica en el sitio y `conservarLecturasResueltas` evita que un refresco la pise.
 
 ---
 

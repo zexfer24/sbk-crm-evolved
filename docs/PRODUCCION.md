@@ -33,6 +33,9 @@ Para producción, copia `.env.production.example`. Las que **no pueden faltar**:
 | `AGENT_QUEUE_MAX_PER_RUN` | Default 30 (antes fijo en diez, sin variable). Turnos que una sola pasada de la cola atiende. Ver "Rampa de los topes" |
 | `AI_MAX_CONCURRENT_REQUESTS` | Default 12 (antes 3). Peticiones al proveedor en vuelo a la vez. Tiene que subir junto con `AGENT_MAX_TURNS_PER_MINUTE`, ver "Rampa de los topes" |
 | `AI_MAX_REQUESTS_PER_MINUTE` | Default 120 (antes 15). El "15 contra 20" viejo era el techo de la cuenta gratuita de OpenRouter; en producción `is_free_tier: false` y `limit: null`. Tiene que subir junto con `AGENT_MAX_TURNS_PER_MINUTE`, ver "Rampa de los topes" |
+| `AI_TRANSCRIBE_MODEL` | Modelo de transcripción de las notas de voz de los clientes (16/11/2026, "Seba lee fotos y audios"). Default `openai/whisper-1`. Alternativa probada: `openai/gpt-4o-transcribe`. |
+| `AI_VISION_MODEL` | Modelo que lee las imágenes de los clientes (16/11/2026). Default `openai/gpt-5.4`. Su costo se calcula con la fila de `model_pricing` cuya clave es EXACTAMENTE este valor: si se cambia el modelo sin cargar su tarifa, la lectura se hace igual pero no cuenta para el tope de gasto. |
+| `AI_MEDIA_READING` | Interruptor de emergencia (16/11/2026). `off` apaga la lectura de fotos y audios (el webhook no escribe `message_readings` y el turno no espera lecturas). Cualquier otro valor, o la variable ausente, la deja encendida. No depende del interruptor global de la IA. |
 
 **El token de Meta caduca.** El que da el panel de desarrollo dura 24 horas.
 Genera uno permanente desde un System User en Business Manager, o la IA dejará
@@ -3297,3 +3300,12 @@ Con todo configurado, esta lista debe pasar entera:
 - [ ] `/agent-control` sigue mostrando las métricas por asesor (es lo que se
       rompe si alguien revoca `authenticated` de `agent_metrics` por error,
       creyendo que hay que cerrarla igual que las del lock de turno)
+
+## 21. Lectura de fotos y audios (16/11/2026)
+
+- Migración `20261116010000_lecturas_de_media.sql`: se aplica ANTES del código, con `psql -1 -v ON_ERROR_STOP=1`. Crea `message_readings`, la publica en Realtime, redefine `agent_spend_today()` para sumar el costo de las lecturas y carga la tarifa de `openai/gpt-5.4`. **El código NO puede llegar antes que la migración:** la consulta de mensajes del chat (`MESSAGE_SELECT`) y el historial del turno (`loadHistory`) embeben `message_readings`, y sin la tabla PostgREST responde 400: el chat no carga los mensajes y Seba se queda sin historial. (El webhook sí lo tolera: deja `lectura_no_registrada` en el log y no llama al proveedor.) Volver atrás el código con la migración ya aplicada no rompe nada.
+- La lectura corre con la IA apagada: le sirve al asesor en el chat. La cortan el tope de gasto diario y `AI_MEDIA_READING=off`.
+- Las lecturas pasan por el mismo freno de ritmo que los turnos de Seba (`AI_MAX_CONCURRENT_REQUESTS`, `AI_MAX_REQUESTS_PER_MINUTE`): una por audio o imagen. Si con la IA encendida aparece `ia_ritmo_al_tope` después de esta entrega, se suben las cinco variables de ritmo juntas, como siempre.
+- Las imágenes y los audios de los clientes viajan a OpenRouter. El código no pide `provider.data_collection = "deny"` (el SDK no lo permite sin un `fetch` propio): se configura en la privacidad de la cuenta de OpenRouter.
+- Qué medir después del deploy: que cada audio o imagen nuevo tenga su fila; el p50 de `duration_ms`; el costo por día (`select sum(cost_usd) from message_readings where created_at >= current_date`); el porcentaje de `alucinacion` y de `fallo` por `error`; y una lectura manual de 30 transcripciones y 30 descripciones.
+- Eventos de log: `lectura_media` (por lectura, sin contenido), `lectura_no_registrada`, `lectura_no_guardada`, `lectura_sin_tarifa`, `lectura_tope_no_consultable`, `turno_espero_lecturas`, `espera_lecturas_fallo`.
