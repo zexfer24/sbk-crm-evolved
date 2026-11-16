@@ -1,27 +1,40 @@
 import type { Metadata, Viewport } from "next";
-import { Familjen_Grotesk, Geist, Geist_Mono } from "next/font/google";
+import localFont from "next/font/local";
 import { Toast } from "@heroui/react";
 import "./globals.css";
 import { APP_TITLE } from "@/lib/brand";
 import { THEME_BOOT_SCRIPT } from "@/lib/use-theme";
 
-const geistSans = Geist({
+// Las tres fuentes se sirven desde `src/app/fuentes/`, no desde Google Fonts.
+// Con `next/font/google` el build de producción estuvo roto desde el 8/11/2026:
+// según el servidor y el momento, Google responde URLs `/l/font?kit=…&skey=…`
+// y el Turbopack de Next 16.3.1 las parte por `&` ("queries have exactly one
+// entry"); la caché de `.next` lo escondía. Los woff2 son los mismos bytes que
+// precargaba Google (solo el subconjunto latino); fuera del latín, la letra cae
+// a la fuente de respaldo (Arial). `weight: "500 700"` en Familjen reproduce las
+// caras 500/600/700 de antes (un 400 sigue cayendo a 500). `display` y `preload`
+// quedan en su default (swap, true), igual que antes.
+const geistSans = localFont({
   variable: "--font-geist-sans",
-  subsets: ["latin"],
+  src: "./fuentes/geist-latin.woff2",
+  weight: "100 900",
+  style: "normal",
 });
 
-const geistMono = Geist_Mono({
+const geistMono = localFont({
   variable: "--font-geist-mono",
-  subsets: ["latin"],
+  src: "./fuentes/geist-mono-latin.woff2",
+  weight: "100 900",
+  style: "normal",
 });
 
 // Voz de titular del dashboard: se usa solo en itálica y solo para el título
 // de la página, para que no compita con la Geist del resto de la interfaz.
-const familjenGrotesk = Familjen_Grotesk({
+const familjenGrotesk = localFont({
   variable: "--font-familjen-grotesk",
-  subsets: ["latin"],
-  style: ["italic"],
-  weight: ["500", "600", "700"],
+  src: "./fuentes/familjen-grotesk-italic-latin.woff2",
+  weight: "500 700",
+  style: "italic",
 });
 
 export const metadata: Metadata = {

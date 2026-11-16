@@ -3238,6 +3238,9 @@ dejar rastro es lo que hacía desaparecer leads.
   Sin nombre en el root no existe `::view-transition-new(root)`: el círculo del cambio de tema (M22, `theme-transition.ts`) se creaba y no se pintaba, y el tema cambiaba de golpe.
   El nombre `root` se devuelve SOLO durante el cambio de tema, con `data-transicion-tema` en `<html>` y una regla fuera de `@layer` en `theme.css`. Toda View Transition nueva sobre el root necesita lo mismo.
   **Una animación se verifica con píxeles, no con `getAnimations()`:** el objeto `Animation` existe aunque su pseudo-elemento no se pinte. Así se dio por buena el 15/11 sin funcionar. Receta: Playwright, `Animation.setPlaybackRate` 0.1 por CDP y muestrear píxeles lejos del origen a mitad de la transición.
+- **El build no le pide nada a Google Fonts** (16/11/2026). `next/font/google` rompía el build de producción desde el 8/11: según el servidor y el momento, Google sirve las fuentes como `https://fonts.gstatic.com/l/font?kit=…&skey=…` y el Turbopack de Next 16.3.1 parte esa URL por `&`
+  (`next/font/google queries have exactly one entry`); la caché de `.next` lo escondía y en local pasó y falló con el mismo commit. Geist, Geist Mono y Familjen Grotesk viven ahora en `src/app/fuentes/` (woff2 latinos, bytes idénticos a los de Google, con sus OFL) y `layout.tsx` las sirve con `next/font/local`.
+  `src/app/fuentes.test.ts` rechaza cualquier `next/font/google` en `src/` y fija los sha256. Letras fuera del latín caen al respaldo Arial. Un build que valide esto se corre con `.next` BORRADA, o la caché lo vuelve a esconder.
 
 ---
 
