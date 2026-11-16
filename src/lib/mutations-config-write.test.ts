@@ -12,9 +12,12 @@ import {
   deletePlaybook,
   deleteSticker,
   deleteCatalogLink,
+  createPaymentMethod,
+  deletePaymentMethod,
   guardarMetaVenta,
   markSuggestionReviewed,
   setAgentActive,
+  setAgentAreas,
   setAgentToolEnabled,
   setAiGloballyEnabled,
   setCatalogLinkActive,
@@ -22,15 +25,22 @@ import {
   setDemoraActiva,
   setKnowledgeEntryActive,
   setLessonActive,
+  setPaymentMethodActive,
   setPlaybookActive,
+  setSebaV2Mode,
   updateBusinessHours,
+  updateCasheaSettings,
   updateCatalogLink,
   updateKnowledgeEntry,
   updateModelPricing,
   updateNote,
+  updatePaymentMethod,
   updatePlaybook,
+  updateShadowLimits,
+  updateWelcomeTexts,
   type PlaybookDraft,
 } from "@/lib/mutations";
+import type { PaymentMethodDraft } from "@/lib/payment-methods";
 import type { BusinessHours } from "@/lib/business-hours";
 
 /**
@@ -170,6 +180,23 @@ const ENTRY_DRAFT = { categoryId: "cat-1", title: "Garantía", content: "Texto",
 
 const CATALOG_DRAFT = { key: "cascos", label: "Cascos", url: "https://drive.google.com/file/d/1abc" };
 
+const PAYMENT_DRAFT: PaymentMethodDraft = {
+  key: "pago_movil",
+  label: "Pago móvil",
+  currency: "VES",
+  instructions: "Banco X, cédula Y, teléfono Z.",
+  sebaEntrega: true,
+};
+const PAYMENT_EDIT = {
+  label: PAYMENT_DRAFT.label,
+  currency: PAYMENT_DRAFT.currency,
+  instructions: PAYMENT_DRAFT.instructions,
+  sebaEntrega: PAYMENT_DRAFT.sebaEntrega,
+};
+
+const WELCOME_DRAFT = { welcomeText: "Hola, buen día", followups: ["Una frase", "Otra frase"] };
+const CASHEA_SETTINGS = { datosText: "Dame tu cédula", minimoUsd: 25, seisCuotasDesdeUsd: 100 };
+
 /** Una fila por mutación de configuración que escribe con UPDATE/DELETE/UPSERT. */
 const CASES: {
   name: string;
@@ -200,6 +227,15 @@ const CASES: {
   { name: "updateCatalogLink", table: "catalog_links", op: "update", denied: /supervisor o administrador/, run: (c) => updateCatalogLink(c, SUPERVISOR, "link-1", CATALOG_DRAFT) },
   { name: "deleteCatalogLink", table: "catalog_links", op: "delete", denied: /supervisor o administrador/, run: (c) => deleteCatalogLink(c, "link-1") },
   { name: "setCatalogLinkActive", table: "catalog_links", op: "update", denied: /supervisor o administrador/, run: (c) => setCatalogLinkActive(c, SUPERVISOR, "link-1", false) },
+  // Entrega 2 de Seba v2 (16/11/2026): formas de pago, bienvenida, modo, límites, Cashea y áreas.
+  { name: "updatePaymentMethod", table: "payment_methods", op: "update", denied: /supervisor o administrador/, run: (c) => updatePaymentMethod(c, SUPERVISOR, "pago_movil", PAYMENT_EDIT) },
+  { name: "setPaymentMethodActive", table: "payment_methods", op: "update", denied: /supervisor o administrador/, run: (c) => setPaymentMethodActive(c, SUPERVISOR, "pago_movil", false) },
+  { name: "deletePaymentMethod", table: "payment_methods", op: "delete", denied: /supervisor o administrador/, run: (c) => deletePaymentMethod(c, "pago_movil") },
+  { name: "updateWelcomeTexts", table: "agent_settings", op: "update", denied: /supervisor o administrador/, run: (c) => updateWelcomeTexts(c, SUPERVISOR, WELCOME_DRAFT) },
+  { name: "setSebaV2Mode", table: "agent_settings", op: "update", denied: /supervisor o administrador/, run: (c) => setSebaV2Mode(c, SUPERVISOR, "sombra") },
+  { name: "updateShadowLimits", table: "agent_settings", op: "update", denied: /supervisor o administrador/, run: (c) => updateShadowLimits(c, SUPERVISOR, { capUsd: 5, samplePct: 40 }) },
+  { name: "updateCasheaSettings", table: "agent_settings", op: "update", denied: /supervisor o administrador/, run: (c) => updateCasheaSettings(c, SUPERVISOR, CASHEA_SETTINGS) },
+  { name: "setAgentAreas", table: "agents", op: "update", denied: /supervisor o administrador/, run: (c) => setAgentAreas(c, "agent-2", ["pagos", "ventas"]) },
   // Plan "Paneles" (13/11/2026): la meta diaria de un canal. Un `agent` no puede ni insertar ni
   // actualizar `metas_venta` (RLS de supervisor/admin): el upsert que no devuelve fila no es un guardado.
   { name: "guardarMetaVenta", table: "metas_venta", op: "upsert", denied: /supervisor o administrador/, run: (c) => guardarMetaVenta(c, "online", 2600, "2026-11-13") },
@@ -359,5 +395,278 @@ describe("updatePlaybook — las etiquetas también", () => {
     });
 
     await expect(updatePlaybook(client, "pb-1", { ...DRAFT_PLAYBOOK, tagIds: [] })).resolves.toBeUndefined();
+  });
+});
+
+describe("Seba v2 (16/11/2026)", () => {
+  describe("createPaymentMethod", () => {
+    it("escribe con insert, con la etiqueta y las instrucciones recortadas y quién la creó", async () => {
+      const { client, writes } = fakeSupabase({ rows: [] });
+
+      await createPaymentMethod(
+        client,
+        SUPERVISOR,
+        { ...PAYMENT_DRAFT, label: "  Pago móvil ", instructions: " Banco X \n" },
+        30
+      );
+
+      expect(writes).toHaveLength(1);
+      expect(writes[0].table).toBe("payment_methods");
+      expect(writes[0].selected).toBe("insert");
+      expect(writes[0].payload).toEqual({
+        key: "pago_movil",
+        label: "Pago móvil",
+        currency: "VES",
+        instructions: "Banco X",
+        seba_entrega: true,
+        sort_order: 30,
+        updated_by: "sup-1",
+      });
+    });
+
+    it("un 23505 (clave repetida) se traduce al mensaje del panel", async () => {
+      const { client } = fakeSupabase({ error: { code: "23505", message: "duplicate key" } });
+
+      await expect(createPaymentMethod(client, SUPERVISOR, PAYMENT_DRAFT, 10)).rejects.toThrow(
+        "Ya existe una forma de pago con esa clave."
+      );
+    });
+
+    it("un 42501 (RLS: no es supervisor) se traduce a ConfigWriteDeniedError", async () => {
+      const { client } = fakeSupabase({ error: { code: "42501", message: "new row violates row-level security" } });
+
+      const error = await createPaymentMethod(client, SUPERVISOR, PAYMENT_DRAFT, 10).catch((e) => e);
+
+      expect(error).toBeInstanceOf(ConfigWriteDeniedError);
+      expect(error.message).toBe(CONFIG_WRITE_DENIED_MESSAGE);
+    });
+
+    it("cualquier otro error sube tal cual", async () => {
+      const original = { code: "57014", message: "statement timeout" };
+      const { client } = fakeSupabase({ error: original });
+
+      await expect(createPaymentMethod(client, SUPERVISOR, PAYMENT_DRAFT, 10)).rejects.toBe(original);
+    });
+
+    it.each([
+      ["clave inválida", { key: "Pago Movil" }, /clave usa solo minúsculas/],
+      ["clave reservada", { key: "cashea" }, /se configura aparte/],
+      ["etiqueta vacía", { label: "  " }, /nombre de la forma de pago/],
+      ["instrucciones vacías", { instructions: "" }, /datos que recibe el cliente/],
+    ])("%s: la segunda barrera lanza y NO llama a Supabase", async (_nombre, cambio, mensaje) => {
+      const { client, writes } = fakeSupabase({ rows: [] });
+
+      await expect(createPaymentMethod(client, SUPERVISOR, { ...PAYMENT_DRAFT, ...cambio }, 10)).rejects.toThrow(mensaje);
+
+      expect(writes).toHaveLength(0);
+    });
+  });
+
+  describe("payload y filtro de cada guardado", () => {
+    it("updatePaymentMethod: no toca la clave, filtra por ella y deja quién lo cambió", async () => {
+      const { client, writes } = fakeSupabase({ rows: [{ key: "pago_movil" }] });
+
+      await updatePaymentMethod(client, SUPERVISOR, "pago_movil", {
+        ...PAYMENT_EDIT,
+        label: " Pago móvil nuevo ",
+        currency: "USD",
+        sebaEntrega: false,
+      });
+
+      expect(writes).toHaveLength(1);
+      expect(writes[0]).toMatchObject({ table: "payment_methods", op: "update", selected: "key" });
+      expect(writes[0].payload).toEqual({
+        label: "Pago móvil nuevo",
+        currency: "USD",
+        instructions: "Banco X, cédula Y, teléfono Z.",
+        seba_entrega: false,
+        updated_by: "sup-1",
+      });
+      expect(writes[0].payload).not.toHaveProperty("key");
+      expect(writes[0].filters).toEqual([["key", "pago_movil"]]);
+    });
+
+    it("updatePaymentMethod con un borrador inválido: lanza y NO escribe", async () => {
+      const { client, writes } = fakeSupabase({ rows: [{ key: "x" }] });
+
+      await expect(
+        updatePaymentMethod(client, SUPERVISOR, "pago_movil", { ...PAYMENT_EDIT, instructions: "   " })
+      ).rejects.toThrow(/datos que recibe el cliente/);
+      await expect(updatePaymentMethod(client, SUPERVISOR, "cashea", PAYMENT_EDIT)).rejects.toThrow(
+        /se configura aparte/
+      );
+
+      expect(writes).toHaveLength(0);
+    });
+
+    it("setPaymentMethodActive", async () => {
+      const { client, writes } = fakeSupabase({ rows: [{ key: "zelle" }] });
+
+      await setPaymentMethodActive(client, SUPERVISOR, "zelle", false);
+
+      expect(writes[0]).toMatchObject({ table: "payment_methods", op: "update", selected: "key" });
+      expect(writes[0].payload).toEqual({ is_active: false, updated_by: "sup-1" });
+      expect(writes[0].filters).toEqual([["key", "zelle"]]);
+    });
+
+    it("deletePaymentMethod borra por clave", async () => {
+      const { client, writes } = fakeSupabase({ rows: [{ key: "zelle" }] });
+
+      await deletePaymentMethod(client, "zelle");
+
+      expect(writes[0]).toMatchObject({ table: "payment_methods", op: "delete", selected: "key" });
+      expect(writes[0].filters).toEqual([["key", "zelle"]]);
+    });
+
+    it("updateWelcomeTexts guarda el borrador NORMALIZADO sobre la fila única", async () => {
+      const { client, writes } = fakeSupabase({ rows: [{ id: true }] });
+
+      await updateWelcomeTexts(client, SUPERVISOR, { welcomeText: "  Hola\nbuen día ", followups: [" Uno ", "Dos  "] });
+
+      expect(writes[0]).toMatchObject({ table: "agent_settings", op: "update", selected: "id" });
+      expect(writes[0].payload).toEqual({
+        welcome_text: "Hola\nbuen día",
+        welcome_followups: ["Uno", "Dos"],
+        updated_by: "sup-1",
+        updated_at: expect.any(String),
+      });
+      expect(writes[0].filters).toEqual([["id", true]]);
+    });
+
+    it("setSebaV2Mode", async () => {
+      const { client, writes } = fakeSupabase({ rows: [{ id: true }] });
+
+      await setSebaV2Mode(client, SUPERVISOR, "copiloto");
+
+      expect(writes[0].payload).toEqual({ seba_v2_modo: "copiloto", updated_by: "sup-1", updated_at: expect.any(String) });
+      expect(writes[0].filters).toEqual([["id", true]]);
+    });
+
+    it("updateShadowLimits", async () => {
+      const { client, writes } = fakeSupabase({ rows: [{ id: true }] });
+
+      await updateShadowLimits(client, SUPERVISOR, { capUsd: 12.5, samplePct: 30 });
+
+      expect(writes[0].payload).toEqual({
+        shadow_daily_cap_usd: 12.5,
+        shadow_sample_pct: 30,
+        updated_by: "sup-1",
+        updated_at: expect.any(String),
+      });
+      expect(writes[0].filters).toEqual([["id", true]]);
+    });
+
+    it("updateCasheaSettings", async () => {
+      const { client, writes } = fakeSupabase({ rows: [{ id: true }] });
+
+      await updateCasheaSettings(client, SUPERVISOR, CASHEA_SETTINGS);
+
+      expect(writes[0].payload).toEqual({
+        cashea_datos_text: "Dame tu cédula",
+        cashea_minimo_usd: 25,
+        cashea_seis_cuotas_desde_usd: 100,
+        updated_by: "sup-1",
+        updated_at: expect.any(String),
+      });
+      expect(writes[0].filters).toEqual([["id", true]]);
+    });
+  });
+
+  describe("setAgentAreas", () => {
+    it("normaliza con parseAreas: un valor ajeno no viaja, y filtra por el asesor", async () => {
+      const { client, writes } = fakeSupabase({ rows: [{ id: "agent-2" }] });
+
+      await setAgentAreas(client, "agent-2", ["reclamos", "cobranza", "pagos", "pagos"] as never);
+
+      expect(writes[0]).toMatchObject({ table: "agents", op: "update", selected: "id" });
+      expect(writes[0].payload).toEqual({ areas: ["pagos", "reclamos"] });
+      expect(writes[0].filters).toEqual([["id", "agent-2"]]);
+    });
+
+    it("sin ningún área escribe un arreglo vacío (un asesor puede quedar sin áreas)", async () => {
+      const { client, writes } = fakeSupabase({ rows: [{ id: "agent-2" }] });
+
+      await setAgentAreas(client, "agent-2", []);
+
+      expect(writes[0].payload).toEqual({ areas: [] });
+    });
+
+    it("un 42501 (el trigger: un asesor cambiando SUS áreas) se traduce a ConfigWriteDeniedError", async () => {
+      const { client } = fakeSupabase({ error: { code: "42501", message: "solo un supervisor" } });
+
+      const error = await setAgentAreas(client, "agent-1", ["pagos"]).catch((e) => e);
+
+      expect(error).toBeInstanceOf(ConfigWriteDeniedError);
+      expect(error.message).toBe(CONFIG_WRITE_DENIED_MESSAGE);
+    });
+  });
+
+  describe("segundas barreras: lanzan y NO escriben", () => {
+    it("updateWelcomeTexts con errores de validateWelcomeDraft", async () => {
+      const { client, writes } = fakeSupabase({ rows: [{ id: true }] });
+
+      await expect(updateWelcomeTexts(client, SUPERVISOR, { welcomeText: "", followups: ["a", "b"] })).rejects.toThrow(
+        "Escribe el mensaje de bienvenida."
+      );
+      await expect(updateWelcomeTexts(client, SUPERVISOR, { welcomeText: "Hola", followups: ["solo una"] })).rejects.toThrow(
+        /al menos 2 frases/
+      );
+      await expect(
+        updateWelcomeTexts(client, SUPERVISOR, { welcomeText: "Hola", followups: ["a", "x".repeat(161)] })
+      ).rejects.toThrow("La frase no puede pasar de 160 caracteres.");
+
+      expect(writes).toHaveLength(0);
+    });
+
+    it("setSebaV2Mode con un modo desconocido", async () => {
+      const { client, writes } = fakeSupabase({ rows: [{ id: true }] });
+
+      await expect(setSebaV2Mode(client, SUPERVISOR, "turbo" as never)).rejects.toThrow("Modo de Seba v2 desconocido.");
+
+      expect(writes).toHaveLength(0);
+    });
+
+    it.each([
+      [{ capUsd: -1, samplePct: 10 }],
+      [{ capUsd: Number.NaN, samplePct: 10 }],
+      [{ capUsd: Number.POSITIVE_INFINITY, samplePct: 10 }],
+      [{ capUsd: 5, samplePct: 101 }],
+      [{ capUsd: 5, samplePct: -1 }],
+      [{ capUsd: 5, samplePct: 50.5 }],
+      [{ capUsd: 5, samplePct: Number.NaN }],
+    ])("updateShadowLimits %j", async (limits) => {
+      const { client, writes } = fakeSupabase({ rows: [{ id: true }] });
+
+      await expect(updateShadowLimits(client, SUPERVISOR, limits)).rejects.toThrow(
+        "Los límites de la sombra no son válidos."
+      );
+
+      expect(writes).toHaveLength(0);
+    });
+
+    it("updateShadowLimits acepta los bordes 0 y 100", async () => {
+      const { client, writes } = fakeSupabase({ rows: [{ id: true }] });
+
+      await updateShadowLimits(client, SUPERVISOR, { capUsd: 0, samplePct: 0 });
+      await updateShadowLimits(client, SUPERVISOR, { capUsd: 5, samplePct: 100 });
+
+      expect(writes).toHaveLength(2);
+    });
+
+    it.each([
+      [{ ...CASHEA_SETTINGS, datosText: "   " }],
+      [{ ...CASHEA_SETTINGS, datosText: "a".repeat(1001) }],
+      [{ ...CASHEA_SETTINGS, minimoUsd: -1 }],
+      [{ ...CASHEA_SETTINGS, minimoUsd: Number.NaN }],
+      [{ ...CASHEA_SETTINGS, seisCuotasDesdeUsd: Number.POSITIVE_INFINITY }],
+    ])("updateCasheaSettings %#", async (settings) => {
+      const { client, writes } = fakeSupabase({ rows: [{ id: true }] });
+
+      await expect(updateCasheaSettings(client, SUPERVISOR, settings)).rejects.toThrow(
+        "Los datos de Cashea no son válidos."
+      );
+
+      expect(writes).toHaveLength(0);
+    });
   });
 });

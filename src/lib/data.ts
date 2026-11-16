@@ -11,6 +11,9 @@ import { mapMessageReading } from "@/lib/media-reading-map";
 import { CRM_TIME_ZONE, currentDayRange } from "@/lib/time-zone";
 import { failureReason } from "@/lib/whatsapp/failure-reason";
 import { mapProduct, PRODUCT_SELECT, type RawProduct } from "@/lib/inventory-data";
+// Entrega 2 de Seba v2 (16/11/2026): import aparte, en su propia línea, para no tocar el bloque de abajo.
+import type { PaymentMethodConfig, PaymentMethodCurrency } from "@/lib/payment-methods";
+import { parseAreas, parseSebaV2Mode, type Area, type SebaV2Config } from "@/lib/seba-v2-config";
 import type {
   Agent,
   AgentMetrics,
@@ -3337,4 +3340,125 @@ export async function fetchActiveCatalogLinks(supabase: SupabaseClient): Promise
     console.error("No se pudieron leer los enlaces de catálogo, se sigue sin ninguno:", error);
     return [];
   }
+}
+
+// ---------------------------------------------------------------------------
+// Seba v2: formas de pago, bienvenida, modo, Cashea y áreas (Entrega 2 de Seba
+// v2, "Los datos del negocio", 16/11/2026). Tipos y validación en
+// `payment-methods.ts` y `seba-v2-config.ts`; columnas en las migraciones
+// 20261116020000 (`payment_methods`) y 20261116030000 (`agent_settings` y
+// `agents.areas`).
+// ---------------------------------------------------------------------------
+
+interface RawPaymentMethod {
+  key: string;
+  label: string;
+  currency: PaymentMethodCurrency;
+  instructions: string;
+  seba_entrega: boolean;
+  is_active: boolean;
+  sort_order: number;
+  updated_at: string;
+}
+
+/**
+ * Todas las formas de pago de contado, activas e inactivas (el panel necesita
+ * ver las apagadas para volver a encenderlas), por `sort_order` y luego por
+ * nombre. Lanza ante un error: un supervisor mirando el panel tiene que
+ * enterarse de que la lectura falló, no ver una lista vacía como si no
+ * hubiera ninguna cargada.
+ */
+export async function fetchPaymentMethods(supabase: SupabaseClient): Promise<PaymentMethodConfig[]> {
+  const { data, error } = await supabase
+    .from("payment_methods")
+    .select("key, label, currency, instructions, seba_entrega, is_active, sort_order, updated_at")
+    .order("sort_order")
+    .order("label");
+
+  if (error) throw error;
+  return (data as RawPaymentMethod[]).map((row) => ({
+    key: row.key,
+    label: row.label,
+    currency: row.currency,
+    instructions: row.instructions,
+    sebaEntrega: row.seba_entrega,
+    isActive: row.is_active,
+    sortOrder: row.sort_order,
+    updatedAt: row.updated_at,
+  }));
+}
+
+/** Postgres `undefined_column`: la base todavía no tiene la migración 20261116030000. */
+const UNDEFINED_COLUMN = "42703";
+
+/**
+ * La configuración de Seba v2 (modo, límites de la sombra, bienvenida, Cashea).
+ *
+ * Devuelve `null` SOLO cuando la base todavía no tiene las columnas (42703:
+ * falta aplicar la migración 20261116030000); cualquier otro error se lanza.
+ * Por eso estas columnas NO se sumaron al `select` de `fetchAgentSettings`:
+ * Control IA tiene que seguir abriendo —el interruptor global de la IA vive
+ * ahí— aunque el código llegue antes que la migración. Y `null` no es
+ * "vacío": el panel lo pinta como "no disponible", nunca como un texto o un
+ * modo en blanco que parezca configurado.
+ */
+export async function fetchSebaV2Config(supabase: SupabaseClient): Promise<SebaV2Config | null> {
+  const { data, error } = await supabase
+    .from("agent_settings")
+    .select(
+      "seba_v2_modo, shadow_daily_cap_usd, shadow_sample_pct, welcome_text, welcome_followups, cashea_datos_text, cashea_minimo_usd, cashea_seis_cuotas_desde_usd"
+    )
+    .eq("id", true)
+    .single();
+
+  if (error) {
+    if ((error as { code?: string }).code === UNDEFINED_COLUMN) {
+      console.error(
+        "No se pudo leer la configuración de Seba v2: falta aplicar la migración 20261116030000 en la base.",
+        error
+      );
+      return null;
+    }
+    throw error;
+  }
+
+  return {
+    modo: parseSebaV2Mode(data.seba_v2_modo),
+    // `numeric` llega como string o como number según el cliente: se normaliza.
+    shadowDailyCapUsd: Number(data.shadow_daily_cap_usd),
+    shadowSamplePct: Number(data.shadow_sample_pct),
+    welcomeText: data.welcome_text,
+    welcomeFollowups: Array.isArray(data.welcome_followups) ? (data.welcome_followups as string[]) : [],
+    casheaDatosText: data.cashea_datos_text,
+    casheaMinimoUsd: Number(data.cashea_minimo_usd),
+    casheaSeisCuotasDesdeUsd: Number(data.cashea_seis_cuotas_desde_usd),
+  };
+}
+
+/**
+ * Áreas de cada asesor, por id. `null` SOLO cuando falta la columna (42703,
+ * migración 20261116030000); otro error se lanza. Va aparte de `fetchAllAgents`
+ * y de los demás `select` de `agents` por el mismo motivo que
+ * `fetchSebaV2Config`: sumar `areas` a esos `select` tumbaría la bandeja entera
+ * si el código llega antes que la migración.
+ */
+export async function fetchAgentAreas(supabase: SupabaseClient): Promise<Record<string, Area[]> | null> {
+  const { data, error } = await supabase.from("agents").select("id, areas");
+
+  if (error) {
+    if ((error as { code?: string }).code === UNDEFINED_COLUMN) {
+      console.error(
+        "No se pudieron leer las áreas de los asesores: falta aplicar la migración 20261116030000 en la base.",
+        error
+      );
+      return null;
+    }
+    throw error;
+  }
+
+  const areasPorAsesor: Record<string, Area[]> = {};
+  for (const row of data as { id: string; areas: unknown }[]) {
+    areasPorAsesor[row.id] = parseAreas(row.areas);
+  }
+  return areasPorAsesor;
 }

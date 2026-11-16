@@ -49,6 +49,8 @@ import { fetchOrderItems, INVOICE_SELECT, mapInvoice, type RawInvoice } from "@/
 // se reexportan para que quien ya importa de este módulo no tenga que cambiar nada.
 import {
   assertRowsAffected,
+  CONFIG_WRITE_DENIED_MESSAGE,
+  ConfigWriteDeniedError,
   ONLY_AUTHOR_LESSON_MESSAGE,
   ONLY_AUTHOR_NOTE_MESSAGE,
   ONLY_AUTHOR_STICKER_MESSAGE,
@@ -56,6 +58,19 @@ import {
   QUICK_REPLY_NOT_YOURS_MESSAGE,
 } from "@/lib/config-write";
 export { assertRowsAffected, CONFIG_WRITE_DENIED_MESSAGE, ConfigWriteDeniedError, configErrorMessage } from "@/lib/config-write";
+// Entrega 2 de Seba v2 (16/11/2026): imports aparte, en sus propias líneas, para no tocar los bloques de arriba.
+import { validatePaymentMethodDraft, type PaymentMethodDraft } from "@/lib/payment-methods";
+import {
+  CASHEA_TEXT_MAX,
+  SEBA_V2_MODES,
+  USD_AMOUNT_MAX,
+  normalizeWelcomeDraft,
+  parseAreas,
+  validateWelcomeDraft,
+  type Area,
+  type SebaV2Mode,
+  type WelcomeDraft,
+} from "@/lib/seba-v2-config";
 
 async function insertSystemEvent(
   supabase: SupabaseClient,
@@ -2313,5 +2328,218 @@ export async function setCatalogLinkActive(supabase: SupabaseClient, agent: Agen
     .eq("id", id)
     .select("id");
   if (error) throw error;
+  assertRowsAffected(data);
+}
+
+// ---------------------------------------------------------------------------
+// Seba v2: formas de pago, bienvenida, modo, Cashea y áreas (16/11/2026)
+//
+// Entrega 2 de Seba v2, "Los datos del negocio". Tipos y validación en
+// `payment-methods.ts` y `seba-v2-config.ts`; las tablas y sus candados, en las
+// migraciones 20261116020000 y 20261116030000. Todas escriben solo
+// supervisor/admin EN RLS (salvo `setAgentAreas`, que además tiene un trigger),
+// así que cada UPDATE/DELETE pide las filas afectadas y pasa por
+// `assertRowsAffected` (un UPDATE que la política ignora afecta 0 filas SIN
+// error). El INSERT no lo necesita: una política de INSERT que rechaza SÍ
+// lanza 42501.
+//
+// Cada mutación repite la validación del módulo puro como SEGUNDA barrera: el
+// panel ya validó, pero estas funciones se pueden llamar desde cualquier otro
+// lado y un error de constraint en un toast no le dice nada al supervisor.
+// ---------------------------------------------------------------------------
+
+function firstMessage(errors: Record<string, unknown>): string {
+  const first = Object.values(errors)[0];
+  return typeof first === "string" ? first : "Revisa los datos.";
+}
+
+/**
+ * Crea una forma de pago de contado. `sortOrder` lo decide el llamador
+ * (`nextPaymentMethodSortOrder`): la nueva va al final. La clave no se podrá
+ * cambiar después, porque la referencia la herramienta de pago de Seba.
+ */
+export async function createPaymentMethod(
+  supabase: SupabaseClient,
+  agent: Agent,
+  draft: PaymentMethodDraft,
+  sortOrder: number
+): Promise<void> {
+  const errors = validatePaymentMethodDraft(draft);
+  if (Object.keys(errors).length > 0) throw new Error(firstMessage(errors));
+
+  const { error } = await supabase.from("payment_methods").insert({
+    key: draft.key,
+    label: draft.label.trim(),
+    currency: draft.currency,
+    instructions: draft.instructions.trim(),
+    seba_entrega: draft.sebaEntrega,
+    sort_order: sortOrder,
+    updated_by: agent.id,
+  });
+  if (error) {
+    const code = (error as { code?: string }).code;
+    // 23505: la clave ya existe (la validación del panel mira la lista que cargó,
+    // pero otro supervisor pudo crearla un segundo antes).
+    if (code === "23505") throw new Error("Ya existe una forma de pago con esa clave.");
+    // 42501: la RLS de INSERT la rechazó (no es supervisor ni admin).
+    if (code === "42501") throw new ConfigWriteDeniedError(CONFIG_WRITE_DENIED_MESSAGE);
+    throw error;
+  }
+}
+
+/** La clave NO se cambia nunca (la referencia la herramienta de pago de Seba): solo el resto del borrador. */
+export async function updatePaymentMethod(
+  supabase: SupabaseClient,
+  agent: Agent,
+  key: string,
+  draft: Omit<PaymentMethodDraft, "key">
+): Promise<void> {
+  const errors = validatePaymentMethodDraft({ ...draft, key });
+  if (Object.keys(errors).length > 0) throw new Error(firstMessage(errors));
+
+  const { data, error } = await supabase
+    .from("payment_methods")
+    .update({
+      label: draft.label.trim(),
+      currency: draft.currency,
+      instructions: draft.instructions.trim(),
+      seba_entrega: draft.sebaEntrega,
+      updated_by: agent.id,
+    })
+    .eq("key", key)
+    .select("key");
+  if (error) throw error;
+  assertRowsAffected(data);
+}
+
+/** Apagarla la saca de lo que Seba entrega sin perder los datos guardados. */
+export async function setPaymentMethodActive(supabase: SupabaseClient, agent: Agent, key: string, isActive: boolean) {
+  const { data, error } = await supabase
+    .from("payment_methods")
+    .update({ is_active: isActive, updated_by: agent.id })
+    .eq("key", key)
+    .select("key");
+  if (error) throw error;
+  assertRowsAffected(data);
+}
+
+export async function deletePaymentMethod(supabase: SupabaseClient, key: string) {
+  const { data, error } = await supabase.from("payment_methods").delete().eq("key", key).select("key");
+  if (error) throw error;
+  assertRowsAffected(data);
+}
+
+/** Guarda el texto de bienvenida y sus frases de seguimiento, ya normalizados (sin espacios en los bordes). */
+export async function updateWelcomeTexts(supabase: SupabaseClient, agent: Agent, draft: WelcomeDraft) {
+  const errors = validateWelcomeDraft(draft);
+  const first = errors.welcomeText ?? errors.followups ?? Object.values(errors.followupItems ?? {})[0];
+  if (first) throw new Error(first);
+
+  const { welcomeText, followups } = normalizeWelcomeDraft(draft);
+  const { data, error } = await supabase
+    .from("agent_settings")
+    .update({
+      welcome_text: welcomeText,
+      welcome_followups: followups,
+      updated_by: agent.id,
+      updated_at: new Date().toISOString(),
+    })
+    .eq("id", true)
+    .select("id");
+  if (error) throw error;
+  assertRowsAffected(data);
+}
+
+/**
+ * Cambia el modo de Seba v2. El panel pide confirmación antes de los dos modos
+ * en que le escribe sola al cliente (`modeNeedsConfirmation`); acá solo se
+ * frena un valor que la base rechazaría con un error de constraint.
+ */
+export async function setSebaV2Mode(supabase: SupabaseClient, agent: Agent, modo: SebaV2Mode) {
+  if (!(SEBA_V2_MODES as readonly string[]).includes(modo)) throw new Error("Modo de Seba v2 desconocido.");
+
+  const { data, error } = await supabase
+    .from("agent_settings")
+    .update({ seba_v2_modo: modo, updated_by: agent.id, updated_at: new Date().toISOString() })
+    .eq("id", true)
+    .select("id");
+  if (error) throw error;
+  assertRowsAffected(data);
+}
+
+/** Tope de gasto diario de la sombra (USD) y porcentaje de conversaciones que se muestrea (entero 0-100). */
+export async function updateShadowLimits(
+  supabase: SupabaseClient,
+  agent: Agent,
+  limits: { capUsd: number; samplePct: number }
+) {
+  const { capUsd, samplePct } = limits;
+  const capOk = Number.isFinite(capUsd) && capUsd >= 0 && capUsd <= USD_AMOUNT_MAX;
+  const pctOk = Number.isInteger(samplePct) && samplePct >= 0 && samplePct <= 100;
+  if (!capOk || !pctOk) throw new Error("Los límites de la sombra no son válidos.");
+
+  const { data, error } = await supabase
+    .from("agent_settings")
+    .update({
+      shadow_daily_cap_usd: capUsd,
+      shadow_sample_pct: samplePct,
+      updated_by: agent.id,
+      updated_at: new Date().toISOString(),
+    })
+    .eq("id", true)
+    .select("id");
+  if (error) throw error;
+  assertRowsAffected(data);
+}
+
+/** Texto que pide los datos de Cashea y sus dos montos (mínimo de compra y desde cuánto se ofrecen seis cuotas). */
+export async function updateCasheaSettings(
+  supabase: SupabaseClient,
+  agent: Agent,
+  settings: { datosText: string; minimoUsd: number; seisCuotasDesdeUsd: number }
+) {
+  const datosText = settings.datosText.trim();
+  const montoOk = (n: number) => Number.isFinite(n) && n >= 0 && n <= USD_AMOUNT_MAX;
+  if (
+    !datosText ||
+    datosText.length > CASHEA_TEXT_MAX ||
+    !montoOk(settings.minimoUsd) ||
+    !montoOk(settings.seisCuotasDesdeUsd)
+  ) {
+    throw new Error("Los datos de Cashea no son válidos.");
+  }
+
+  const { data, error } = await supabase
+    .from("agent_settings")
+    .update({
+      cashea_datos_text: datosText,
+      cashea_minimo_usd: settings.minimoUsd,
+      cashea_seis_cuotas_desde_usd: settings.seisCuotasDesdeUsd,
+      updated_by: agent.id,
+      updated_at: new Date().toISOString(),
+    })
+    .eq("id", true)
+    .select("id");
+  if (error) throw error;
+  assertRowsAffected(data);
+}
+
+/**
+ * Áreas de un asesor (pagos, ventas, envíos, reclamos). Un trigger de la base
+ * lanza 42501 si un asesor intenta cambiar SUS PROPIAS áreas; cambiar las de
+ * otro asesor sin ser supervisor afecta 0 filas sin error. Los dos casos
+ * terminan en `ConfigWriteDeniedError`. Lo que viaja pasa por `parseAreas`:
+ * un valor ajeno o repetido no llega a la base.
+ */
+export async function setAgentAreas(supabase: SupabaseClient, agentId: string, areas: readonly Area[]) {
+  const { data, error } = await supabase
+    .from("agents")
+    .update({ areas: parseAreas(areas) })
+    .eq("id", agentId)
+    .select("id");
+  if (error) {
+    if ((error as { code?: string }).code === "42501") throw new ConfigWriteDeniedError(CONFIG_WRITE_DENIED_MESSAGE);
+    throw error;
+  }
   assertRowsAffected(data);
 }
