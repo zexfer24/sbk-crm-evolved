@@ -44,6 +44,13 @@ interface FakeState {
      * `undefined` de fábrica para los tests que no la ejercitan.
      */
     id?: string;
+    /**
+     * M4, plan "Seba lee fotos y audios" (16/11/2026): la lectura que el
+     * webhook dejó en `message_readings` para un adjunto — PostgREST la
+     * embebe como OBJETO (relación uno a uno) o `null`. `undefined` de
+     * fábrica: el adjunto aún no tiene lectura (el marcador de siempre).
+     */
+    message_readings?: { status: string; text: string | null; fields: unknown } | null;
   }[];
   historyOrderAscending: boolean | null;
   /** Claves encendidas en public.agent_tools. */
@@ -981,13 +988,30 @@ vi.mock("@/lib/ai/knowledge", () => ({
   buildKnowledgeTool: () => ({}),
 }));
 
+/**
+ * M6, plan "Seba lee fotos y audios" (16/11/2026): la espera de lecturas
+ * (`wait-readings.ts`) tiene su propio test con un fake de `messages` hecho a
+ * su medida; acá se finge para contar cuántas veces se llama y en qué orden
+ * respecto de la lectura del historial.
+ */
+const esperarLecturasMock = vi.fn<(...args: unknown[]) => Promise<{ esperadoMs: number; pendientes: number }>>(
+  async () => ({ esperadoMs: 0, pendientes: 0 })
+);
+vi.mock("@/lib/ai/wait-readings", () => ({ esperarLecturas: (...args: unknown[]) => esperarLecturasMock(...args) }));
+
 /** "Escribiendo…" hacia Meta (T3.1, 4/9/2026): nunca lanza, así que el mock tampoco. */
 const sendTypingIndicatorMock = vi.fn().mockResolvedValue(undefined);
 vi.mock("@/lib/whatsapp/meta-client", () => ({
   sendTypingIndicator: (...args: unknown[]) => sendTypingIndicatorMock(...args),
 }));
 
-import { DESPEDIDA_MEDIA, DESPEDIDA_SIN_ASESOR, despedidaConAsesor, runAgentTurn } from "@/lib/ai/agent";
+import {
+  DESPEDIDA_MEDIA,
+  DESPEDIDA_SIN_ASESOR,
+  despedidaConAsesor,
+  runAgentTurn,
+  textoComprobante,
+} from "@/lib/ai/agent";
 import { OFF_TOPIC_REPLY, SYSTEM_PROMPT } from "@/lib/ai/prompt";
 import { revealsIdentity } from "@/lib/ai/identity-guard";
 import { playbookMessageText } from "@/lib/ai/send";
@@ -998,6 +1022,8 @@ import {
   sebaGreeting,
   sebaGreetingFollowUp,
   TEXTO_ASESOR_CONFIRMA,
+  TEXTO_COMPROBANTE_RECIBIDO,
+  isSebaGreeting,
   TEXTO_CONFIRMAR_INVENTARIO,
   TEXTO_NO_IDENTIFICADO,
   TEXTO_PRECIO_A_CONFIRMAR,
@@ -2343,7 +2369,10 @@ describe("runAgentTurn — camino 'espera abierta' con escalada abierta (T5, 22-
  * `mediaStreakWithoutText` lo lea.
  */
 describe("runAgentTurn — al segundo adjunto sin texto, la IA pasa el caso (Tarea 6, 14/9/2026)", () => {
-  it("(a) foto → la IA pregunta → foto: escala con 'seguimiento' y manda DESPEDIDA_MEDIA con is_auto_reply", async () => {
+  // M4 (16/11/2026, "Seba lee fotos y audios"): el motivo de esta escalada
+  // pasó de `seguimiento` a `no_pudo_leer` (el asesor tiene que saber que el
+  // cliente mandó adjuntos que nadie pudo leer) y el summary lo nombra.
+  it("(a) foto → la IA pregunta → foto: escala con 'no_pudo_leer' y manda DESPEDIDA_MEDIA con is_auto_reply", async () => {
     state.history = [
       { sender_type: "customer", content: null, is_internal_note: false, message_type: "image" },
       { sender_type: "ai", content: "¿De qué moto es el repuesto que buscas?", is_internal_note: false },
@@ -2358,7 +2387,7 @@ describe("runAgentTurn — al segundo adjunto sin texto, la IA pasa el caso (Tar
     expect(escalateConversationMock.mock.calls[0][1]).toMatchObject({
       conversationId: "conv-1",
       contactId: "contact-1",
-      motivo: "seguimiento",
+      motivo: "no_pudo_leer",
       businessHours: DEFAULT_BUSINESS_HOURS,
     });
     expect((escalateConversationMock.mock.calls[0][1] as { resumen: string }).resumen).toContain("2 adjuntos");
@@ -2373,6 +2402,8 @@ describe("runAgentTurn — al segundo adjunto sin texto, la IA pasa el caso (Tar
 
     expect(agentTurnInserts).toHaveLength(1);
     expect(agentTurnInserts[0]).toMatchObject({ intent: null, action: "escalated" });
+    // El summary lleva "Motivo: <motivo>." que `escalationReasonOf` (data.ts) extrae.
+    expect((agentTurnInserts[0] as { summary: string }).summary).toContain("Motivo: no_pudo_leer.");
   });
 
   it("(b) foto → foto, SIN que la IA haya respondido en medio: turno normal", async () => {
@@ -2402,6 +2433,341 @@ describe("runAgentTurn — al segundo adjunto sin texto, la IA pasa el caso (Tar
 
   it("(d) DESPEDIDA_MEDIA pasa la guarda de identidad", () => {
     expect(revealsIdentity(DESPEDIDA_MEDIA)).toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// M4/M6, plan "Seba lee fotos y audios" (16/11/2026): el historial del turno
+// trae lo que el webhook LEYÓ del adjunto; un comprobante de pago o una orden
+// de Cashea escalan en código, sin modelo; la racha de adjuntos ilegibles
+// escala con motivo propio (`no_pudo_leer`, ver el describe de arriba).
+//
+// Las filas se escriben DESCENDENTES (lo más nuevo primero), como el resto del
+// archivo: `loadHistory` las invierte.
+// ---------------------------------------------------------------------------
+function camposDeImagen(parcial: Record<string, unknown>): Record<string, unknown> {
+  return {
+    tipo: "repuesto",
+    es_comprobante_pago: false,
+    texto_visible: "",
+    producto_visible: null,
+    marca_visible: null,
+    modelo_moto_visible: null,
+    medida_visible: null,
+    comprobante: null,
+    orden_cashea: null,
+    ...parcial,
+  };
+}
+
+/** Una foto del cliente con lectura `ok` y los campos dados. */
+function fotoLeida(text: string, fields: Record<string, unknown>, extra: { id?: string; created_at?: string } = {}) {
+  return {
+    sender_type: "customer",
+    content: null,
+    is_internal_note: false,
+    message_type: "image",
+    message_readings: { status: "ok", text, fields },
+    ...extra,
+  };
+}
+
+const CAMPOS_COMPROBANTE = camposDeImagen({
+  tipo: "comprobante_pago",
+  es_comprobante_pago: true,
+  comprobante: { monto: 1234.5, moneda: "VES", referencia: "456789", banco: "Banesco", fecha: "16/11/2026" },
+});
+
+describe("runAgentTurn — comprobante de pago y orden de Cashea escalan en código (M4)", () => {
+  it("un comprobante en la ráfaga: escala con comprobante_pago, manda TEXTO_COMPROBANTE_RECIBIDO con is_auto_reply y no llama a ningún modelo", async () => {
+    state.history = [fotoLeida("Captura de una transferencia", CAMPOS_COMPROBANTE)];
+
+    await runAgentTurn("conv-1");
+
+    expect(matchPlaybookMock).not.toHaveBeenCalled();
+    expect(classifyIntentMock).not.toHaveBeenCalled();
+    expect(generateMock).not.toHaveBeenCalled();
+
+    expect(escalateConversationMock).toHaveBeenCalledTimes(1);
+    expect(escalateConversationMock.mock.calls[0][1]).toMatchObject({
+      conversationId: "conv-1",
+      contactId: "contact-1",
+      motivo: "comprobante_pago",
+      businessHours: DEFAULT_BUSINESS_HOURS,
+    });
+    const resumen = (escalateConversationMock.mock.calls[0][1] as { resumen: string }).resumen;
+    expect(resumen).toContain("El cliente envió un comprobante de pago.");
+    expect(resumen).toContain("Bs 1.234,50");
+    expect(resumen).toContain("ref. …456789");
+    expect(resumen).toContain("Verificar antes de confirmar: Seba no validó el pago.");
+
+    expect(sendAgentTextMock).toHaveBeenCalledTimes(1);
+    expect(sendAgentTextMock).toHaveBeenCalledWith(expect.anything(), expect.anything(), TEXTO_COMPROBANTE_RECIBIDO, {
+      isAutoReply: true,
+    });
+
+    expect(agentTurnInserts).toHaveLength(1);
+    expect(agentTurnInserts[0]).toMatchObject({ intent: null, action: "escalated" });
+    // "Motivo: comprobante_pago." es lo que `escalationReasonOf` (data.ts) extrae del summary.
+    expect((agentTurnInserts[0] as { summary: string }).summary).toBe("Comprobante recibido → María. Motivo: comprobante_pago.");
+  });
+
+  it("deja la marca 'visto hasta' al atender: un segundo turno sobre lo mismo no vuelve a escalar", async () => {
+    state.history = [
+      fotoLeida("Captura de una transferencia", CAMPOS_COMPROBANTE, { id: "m-comp", created_at: "2026-11-16T14:00:00.000Z" }),
+    ];
+
+    await runAgentTurn("conv-1");
+    expect(escalateConversationMock).toHaveBeenCalledTimes(1);
+    expect(redisSeenStore.has("turno:visto:conv-1")).toBe(true);
+
+    escalateConversationMock.mockClear();
+    sendAgentTextMock.mockClear();
+    await runAgentTurn("conv-1");
+
+    expect(escalateConversationMock).not.toHaveBeenCalled();
+    expect(sendAgentTextMock).not.toHaveBeenCalled();
+  });
+
+  it("una orden de Cashea escala igual, y con retiro en tienda el resumen trae el OJO", async () => {
+    state.history = [
+      fotoLeida(
+        "Orden de Cashea",
+        camposDeImagen({ tipo: "orden_cashea", orden_cashea: { modalidad: "retiro", total_usd: 45 } })
+      ),
+    ];
+
+    await runAgentTurn("conv-1");
+
+    expect(classifyIntentMock).not.toHaveBeenCalled();
+    expect(escalateConversationMock.mock.calls[0][1]).toMatchObject({ motivo: "comprobante_pago" });
+    const resumen = (escalateConversationMock.mock.calls[0][1] as { resumen: string }).resumen;
+    expect(resumen).toContain("El cliente envió una orden de Cashea.");
+    expect(resumen).toContain("OJO: la orden quedó con RETIRO EN TIENDA");
+    expect(sendAgentTextMock).toHaveBeenCalledWith(expect.anything(), expect.anything(), TEXTO_COMPROBANTE_RECIBIDO, {
+      isAutoReply: true,
+    });
+  });
+
+  it("un comprobante que NO es la última línea pero sigue pendiente (texto después) también escala", async () => {
+    // Con fechas: sin ellas `customerBurst` corta la ráfaga en la línea más
+    // nueva (conservador, hallazgo 4 del 19/9/2026).
+    state.history = [
+      {
+        sender_type: "customer",
+        content: "ya pagué",
+        is_internal_note: false,
+        message_type: "text",
+        created_at: "2026-11-16T14:00:20.000Z",
+        id: "m-2",
+      },
+      fotoLeida("Captura de una transferencia", CAMPOS_COMPROBANTE, { id: "m-1", created_at: "2026-11-16T14:00:00.000Z" }),
+    ];
+
+    await runAgentTurn("conv-1");
+
+    expect(escalateConversationMock.mock.calls[0][1]).toMatchObject({ motivo: "comprobante_pago" });
+    expect(classifyIntentMock).not.toHaveBeenCalled();
+  });
+
+  it("sin asesor disponible, el texto lleva el cierre de siempre (DESPEDIDA_SIN_ASESOR)", async () => {
+    escalateConversationMock.mockImplementationOnce(async () => ({
+      escalated: true,
+      assignedAgentName: null,
+      unassigned: true,
+    }));
+    state.history = [fotoLeida("Captura de una transferencia", CAMPOS_COMPROBANTE)];
+
+    await runAgentTurn("conv-1");
+
+    expect(sendAgentTextMock).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.anything(),
+      `${TEXTO_COMPROBANTE_RECIBIDO} ${DESPEDIDA_SIN_ASESOR}`,
+      { isAutoReply: true }
+    );
+    expect((agentTurnInserts[0] as { summary: string }).summary).toBe(
+      "Comprobante recibido → (sin asesor disponible). Motivo: comprobante_pago."
+    );
+  });
+
+  it("una foto de un producto con lectura ok NO escala por comprobante: el modelo la ve como [Foto del cliente: …]", async () => {
+    state.history = [fotoLeida("Casco integral negro.", camposDeImagen({ tipo: "casco_o_accesorio" }))];
+
+    await runAgentTurn("conv-1");
+
+    expect(escalateConversationMock).not.toHaveBeenCalled();
+    expect(classifyIntentMock).toHaveBeenCalledTimes(1);
+    const historialRecibido = classifyIntentMock.mock.calls[0][0] as { role: string; content: string }[];
+    expect(historialRecibido).toEqual([{ role: "user", content: "[Foto del cliente: Casco integral negro]" }]);
+    expect(generateMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("una lectura que no es 'ok' (fallo/vacio) nunca cuenta como comprobante", async () => {
+    state.history = [
+      {
+        sender_type: "customer",
+        content: null,
+        is_internal_note: false,
+        message_type: "image",
+        message_readings: { status: "fallo", text: null, fields: CAMPOS_COMPROBANTE },
+      },
+    ];
+
+    await runAgentTurn("conv-1");
+
+    expect(escalateConversationMock).not.toHaveBeenCalled();
+    const historialRecibido = classifyIntentMock.mock.calls[0][0] as { content: string }[];
+    expect(historialRecibido[0].content).toBe("[El cliente envió una foto sin texto; no puedes verla]");
+  });
+
+  it("un comprobante que el turno anterior ya atendió (vive atrás de la marca) no vuelve a escalar", async () => {
+    state.history = [
+      { sender_type: "customer", content: "gracias", is_internal_note: false, message_type: "text", created_at: "2026-11-16T14:05:00.000Z", id: "m-3" },
+      { sender_type: "ai", content: TEXTO_COMPROBANTE_RECIBIDO, is_internal_note: false, message_type: "text", created_at: "2026-11-16T14:01:00.000Z", id: "m-2" },
+      fotoLeida("Captura de una transferencia", CAMPOS_COMPROBANTE, { id: "m-1", created_at: "2026-11-16T14:00:00.000Z" }),
+    ];
+    redisSeenStore.set(
+      "turno:visto:conv-1",
+      JSON.stringify({ hasta: "2026-11-16T14:00:00.000Z", ids: ["m-1"] })
+    );
+
+    await runAgentTurn("conv-1");
+
+    expect(escalateConversationMock).not.toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ motivo: "comprobante_pago" })
+    );
+  });
+
+  it("en el primer contacto, la presentación de Seba sale ANTES del texto del comprobante (dos mensajes, en ese orden)", async () => {
+    state.conversation = { ...state.conversation, welcome_sent_at: null };
+    state.history = [fotoLeida("Captura de una transferencia", CAMPOS_COMPROBANTE)];
+
+    await runAgentTurn("conv-1");
+
+    expect(sendAgentTextMock).toHaveBeenCalledTimes(2);
+    expect(isSebaGreeting(sendAgentTextMock.mock.calls[0][2] as string)).toBe(true);
+    expect(sendAgentTextMock.mock.calls[1][2]).toBe(TEXTO_COMPROBANTE_RECIBIDO);
+    expect(escalateConversationMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("TEXTO_COMPROBANTE_RECIBIDO pasa la guarda de identidad y no confirma ni valida nada (decisión D3)", () => {
+    expect(revealsIdentity(TEXTO_COMPROBANTE_RECIBIDO)).toBeNull();
+    for (const texto of [TEXTO_COMPROBANTE_RECIBIDO, textoComprobante(true), textoComprobante(false)]) {
+      expect(texto.toLowerCase()).not.toContain("gracias por tu compra");
+      expect(texto.toLowerCase()).not.toContain("verificado");
+      expect(texto.toLowerCase()).not.toContain("aprobado");
+      expect(texto.toLowerCase()).not.toContain("confirmado");
+    }
+  });
+
+  it("textoComprobante agrega los mismos cierres que DESPEDIDA_MEDIA (sin asesor; tienda cerrada con o sin próxima apertura)", () => {
+    expect(textoComprobante(false)).toBe(TEXTO_COMPROBANTE_RECIBIDO);
+    expect(textoComprobante(undefined, { open: true } as never)).toBe(TEXTO_COMPROBANTE_RECIBIDO);
+    expect(textoComprobante(true)).toBe(`${TEXTO_COMPROBANTE_RECIBIDO} ${DESPEDIDA_SIN_ASESOR}`);
+    expect(textoComprobante(false, { open: false, nextOpening: null } as never)).toBe(
+      `${TEXTO_COMPROBANTE_RECIBIDO} Eso sí, la tienda está cerrada ahora; en cuanto vuelva a abrir, el asesor te escribe.`
+    );
+    expect(
+      textoComprobante(false, { open: false, nextOpening: { dayLabel: "mañana", time: "8:00 am" } } as never)
+    ).toBe(
+      `${TEXTO_COMPROBANTE_RECIBIDO} Eso sí, la tienda está cerrada ahora — te escribe mañana a partir de las 8:00 am.`
+    );
+  });
+});
+
+describe("runAgentTurn — lo que el historial dice de un adjunto leído (M4)", () => {
+  it("un audio ok: agent_turns.customer_message guarda la transcripción, no los corchetes", async () => {
+    state.history = [
+      {
+        sender_type: "customer",
+        content: null,
+        is_internal_note: false,
+        message_type: "audio",
+        message_readings: { status: "ok", text: "tienen aceite 20w50", fields: null },
+      },
+    ];
+
+    await runAgentTurn("conv-1");
+
+    expect(agentTurnInserts[0]).toMatchObject({ customer_message: "tienen aceite 20w50" });
+    // Y el modelo ve la línea con corchetes, no el texto pelado.
+    const historialRecibido = classifyIntentMock.mock.calls[0][0] as { content: string }[];
+    expect(historialRecibido[0].content).toBe('[Nota de voz del cliente, transcrita: "tienen aceite 20w50"]');
+  });
+
+  it("un audio transcrito que solo dice 'hola, buenas' cuenta como saludo: el turno responde con la presentación de Seba y nada más", async () => {
+    state.conversation = { ...state.conversation, welcome_sent_at: null };
+    state.history = [
+      {
+        sender_type: "customer",
+        content: null,
+        is_internal_note: false,
+        message_type: "audio",
+        message_readings: { status: "ok", text: "Hola, buenas", fields: null },
+      },
+    ];
+
+    await runAgentTurn("conv-1");
+
+    expect(sendAgentTextMock).toHaveBeenCalledTimes(1);
+    expect(classifyIntentMock).not.toHaveBeenCalled();
+    expect(generateMock).not.toHaveBeenCalled();
+  });
+
+  it("dos audios en 'fallo' con la pregunta de Seba en el medio: DESPEDIDA_MEDIA con motivo no_pudo_leer", async () => {
+    const fallo = { status: "fallo", text: null, fields: null };
+    state.history = [
+      { sender_type: "customer", content: null, is_internal_note: false, message_type: "audio", message_readings: fallo },
+      { sender_type: "ai", content: "¿Me lo puedes escribir por acá?", is_internal_note: false },
+      { sender_type: "customer", content: null, is_internal_note: false, message_type: "audio", message_readings: fallo },
+    ];
+
+    await runAgentTurn("conv-1");
+
+    expect(escalateConversationMock.mock.calls[0][1]).toMatchObject({ motivo: "no_pudo_leer" });
+    expect(sendAgentTextMock).toHaveBeenCalledWith(expect.anything(), expect.anything(), DESPEDIDA_MEDIA, {
+      isAutoReply: true,
+    });
+    expect((agentTurnInserts[0] as { summary: string }).summary).toContain("Motivo: no_pudo_leer.");
+  });
+
+  it("un audio ok entre dos adjuntos ilegibles corta la racha: no escala por no_pudo_leer", async () => {
+    const fallo = { status: "fallo", text: null, fields: null };
+    state.history = [
+      { sender_type: "customer", content: null, is_internal_note: false, message_type: "audio", message_readings: fallo },
+      {
+        sender_type: "customer",
+        content: null,
+        is_internal_note: false,
+        message_type: "audio",
+        message_readings: { status: "ok", text: "busco una bomba de aceite", fields: null },
+      },
+      { sender_type: "ai", content: "¿Me lo puedes escribir por acá?", is_internal_note: false },
+      { sender_type: "customer", content: null, is_internal_note: false, message_type: "audio", message_readings: fallo },
+    ];
+
+    await runAgentTurn("conv-1");
+
+    expect(escalateConversationMock).not.toHaveBeenCalled();
+    expect(classifyIntentMock).toHaveBeenCalled();
+  });
+
+  it("esperarLecturas se llama UNA vez por turno, ANTES de leer el historial", async () => {
+    let historialLeidoAlEsperar: boolean | null | undefined;
+    esperarLecturasMock.mockImplementationOnce(async () => {
+      // `historyOrderAscending` es null hasta que `loadHistory` lee `messages`.
+      historialLeidoAlEsperar = state.historyOrderAscending;
+      return { esperadoMs: 0, pendientes: 0 };
+    });
+
+    await runAgentTurn("conv-1");
+
+    expect(esperarLecturasMock).toHaveBeenCalledTimes(1);
+    expect(esperarLecturasMock.mock.calls[0][1]).toBe("conv-1");
+    expect(historialLeidoAlEsperar).toBeNull();
+    expect(state.historyOrderAscending).toBe(false);
   });
 });
 

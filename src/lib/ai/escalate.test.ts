@@ -522,7 +522,10 @@ describe("escalateConversation — el chat ya tenía asesor asignado", () => {
  * el mismo comportamiento que ya tenían `devolucion`/`queja`/`seguimiento`.
  */
 describe("escalateConversation — acepta los tres motivos nuevos del catálogo", () => {
-  it.each(["confirmar_inventario", "sin_stock", "no_identificado"] as const)(
+  // M4 (16/11/2026, "Seba lee fotos y audios") suma `comprobante_pago` y
+  // `no_pudo_leer`: mismo trato, sin CHECK en la base ni razón de traspaso
+  // nueva — el motivo solo viaja en la nota y en `agent_turns.summary`.
+  it.each(["confirmar_inventario", "sin_stock", "no_identificado", "comprobante_pago", "no_pudo_leer"] as const)(
     "motivo '%s': asigna, y la nota interna lo nombra tal cual",
     async (motivo) => {
       claimNextAvailableAgentMock.mockResolvedValue({ id: "agent-1", displayName: "María" });

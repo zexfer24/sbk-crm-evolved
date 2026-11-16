@@ -8,8 +8,11 @@ import {
   isHistoryMarker,
   latestCustomerMarker,
   mediaStreakWithoutText,
+  pendingCustomerEntries,
   pendingCustomerLines,
   previousConversationCutoff,
+  textoLeido,
+  type HistoryReading,
   type HistoryRow,
   type SeenMarker,
 } from "@/lib/ai/history-line";
@@ -771,5 +774,318 @@ describe("los marcadores nunca calzan con la guarda de identidad", () => {
       const linea = historyLine(fila);
       expect(revealsIdentity(linea!.content)).toBeNull();
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// M4, plan "Seba lee fotos y audios" (16/11/2026): el historial del turno
+// trae lo que el sistema LEYÓ del adjunto (transcripción o descripción) en vez
+// de "no puedes verla". Los marcadores de hoy no cambian byte a byte.
+// ---------------------------------------------------------------------------
+function lectura(parcial: Partial<HistoryReading>): HistoryReading {
+  return { status: "ok", text: null, fields: null, ...parcial };
+}
+
+function camposImagen(parcial: Record<string, unknown>): Record<string, unknown> {
+  return {
+    tipo: "repuesto",
+    es_comprobante_pago: false,
+    texto_visible: "",
+    producto_visible: null,
+    marca_visible: null,
+    modelo_moto_visible: null,
+    medida_visible: null,
+    comprobante: null,
+    orden_cashea: null,
+    ...parcial,
+  };
+}
+
+describe("historyLine — nota de voz con lectura", () => {
+  it("ok con texto → transcripción entre corchetes", () => {
+    expect(
+      historyLine({ ...row({ message_type: "audio" }), reading: lectura({ text: "hola, buenas, tienen aceite" }) })
+    ).toEqual({
+      role: "user",
+      content: '[Nota de voz del cliente, transcrita: "hola, buenas, tienen aceite"]',
+      marcador: true,
+    });
+  });
+
+  it("las comillas dobles de la transcripción pasan a simples para no romper el marco", () => {
+    const linea = historyLine({ ...row({ message_type: "audio" }), reading: lectura({ text: 'dijo "ya voy" y colgó' }) });
+    expect(linea?.content).toBe(`[Nota de voz del cliente, transcrita: "dijo 'ya voy' y colgó"]`);
+  });
+
+  it("recorta la transcripción a 1.000 caracteres", () => {
+    const linea = historyLine({ ...row({ message_type: "audio" }), reading: lectura({ text: "a".repeat(1500) }) });
+    expect(linea?.content).toBe(`[Nota de voz del cliente, transcrita: "${"a".repeat(1000)}"]`);
+  });
+
+  it("vacio → nota de voz sin palabras reconocibles", () => {
+    expect(historyLine({ ...row({ message_type: "audio" }), reading: lectura({ status: "vacio" }) })?.content).toBe(
+      "[El cliente envió una nota de voz sin palabras reconocibles]"
+    );
+  });
+
+  it.each(["alucinacion", "fallo", "pendiente"])("%s → el marcador de hoy, sin cambios", (status) => {
+    expect(historyLine({ ...row({ message_type: "audio" }), reading: lectura({ status, text: "texto" }) })?.content).toBe(
+      "[El cliente envió una nota de voz; no puedes escucharla]"
+    );
+  });
+
+  it("sin lectura (undefined o null) → el marcador de hoy", () => {
+    expect(historyLine(row({ message_type: "audio" }))?.content).toBe("[El cliente envió una nota de voz; no puedes escucharla]");
+    expect(historyLine({ ...row({ message_type: "audio" }), reading: null })?.content).toBe(
+      "[El cliente envió una nota de voz; no puedes escucharla]"
+    );
+  });
+
+  it("ok pero sin texto → el marcador de hoy", () => {
+    expect(historyLine({ ...row({ message_type: "audio" }), reading: lectura({ text: "  " }) })?.content).toBe(
+      "[El cliente envió una nota de voz; no puedes escucharla]"
+    );
+  });
+});
+
+describe("historyLine — foto con lectura", () => {
+  it("ok con descripción y texto visible", () => {
+    const linea = historyLine({
+      ...row({ message_type: "image" }),
+      reading: lectura({
+        text: "Kit de arrastre de moto.",
+        fields: camposImagen({ texto_visible: "DID 428 · 118 eslabones" }),
+      }),
+    });
+    expect(linea).toEqual({
+      role: "user",
+      content: '[Foto del cliente: Kit de arrastre de moto. Texto visible: "DID 428 · 118 eslabones"]',
+      marcador: true,
+    });
+  });
+
+  it("la descripción va sin punto final", () => {
+    const linea = historyLine({
+      ...row({ message_type: "image" }),
+      reading: lectura({ text: "casco integral negro.", fields: camposImagen({ tipo: "casco_o_accesorio" }) }),
+    });
+    expect(linea?.content).toBe("[Foto del cliente: casco integral negro]");
+  });
+
+  it("sin texto visible no agrega esa parte", () => {
+    const linea = historyLine({
+      ...row({ message_type: "image" }),
+      reading: lectura({ text: "pastillas de freno", fields: camposImagen({}) }),
+    });
+    expect(linea?.content).toBe("[Foto del cliente: pastillas de freno]");
+  });
+
+  it("con pie del cliente lo agrega antes del corchete de cierre", () => {
+    const linea = historyLine({
+      ...row({ message_type: "image", content: "tienen este?" }),
+      reading: lectura({ text: "casco integral negro", fields: camposImagen({}) }),
+    });
+    expect(linea?.content).toBe("[Foto del cliente: casco integral negro. Pie: tienen este?]");
+  });
+
+  it("con texto visible y pie, el pie va al final", () => {
+    const linea = historyLine({
+      ...row({ message_type: "image", content: "cuánto?" }),
+      reading: lectura({ text: "caja de aceite", fields: camposImagen({ texto_visible: "MOTUL 5100" }) }),
+    });
+    expect(linea?.content).toBe('[Foto del cliente: caja de aceite. Texto visible: "MOTUL 5100". Pie: cuánto?]');
+  });
+
+  it("comprobante de pago → línea sin campos leídos", () => {
+    const linea = historyLine({
+      ...row({ message_type: "image", content: "ya pagué" }),
+      reading: lectura({
+        text: "Captura de transferencia",
+        fields: camposImagen({
+          tipo: "comprobante_pago",
+          es_comprobante_pago: true,
+          comprobante: { monto: 1234.5, moneda: "VES", referencia: "123456789", banco: "Banesco", fecha: "16/11/2026" },
+        }),
+      }),
+    });
+    expect(linea?.content).toBe("[Foto del cliente: comprobante de pago. Pie: ya pagué]");
+  });
+
+  it("la línea de un comprobante NO contiene ningún dígito aunque los campos traigan monto y referencia", () => {
+    const linea = historyLine({
+      ...row({ message_type: "image" }),
+      reading: lectura({
+        text: "Captura de transferencia 1234",
+        fields: camposImagen({
+          es_comprobante_pago: true,
+          comprobante: { monto: 1234.5, moneda: "VES", referencia: "123456", banco: "Banesco 0134", fecha: "16/11/2026" },
+        }),
+      }),
+    });
+    expect(linea?.content).toBe("[Foto del cliente: comprobante de pago]");
+    expect(linea?.content).not.toMatch(/\d/);
+  });
+
+  it("orden de Cashea", () => {
+    const linea = historyLine({
+      ...row({ message_type: "image" }),
+      reading: lectura({
+        text: "Orden de Cashea",
+        fields: camposImagen({ tipo: "orden_cashea", orden_cashea: { modalidad: "retiro", total_usd: 45 } }),
+      }),
+    });
+    expect(linea?.content).toBe("[Foto del cliente: orden de Cashea]");
+  });
+
+  it.each(["vacio", "alucinacion", "fallo", "pendiente"])("%s → el marcador de hoy", (status) => {
+    expect(
+      historyLine({ ...row({ message_type: "image" }), reading: lectura({ status, text: "algo", fields: camposImagen({}) }) })?.content
+    ).toBe("[El cliente envió una foto sin texto; no puedes verla]");
+  });
+
+  it("con pie y lectura fallida → el marcador de hoy con su pie", () => {
+    expect(
+      historyLine({ ...row({ message_type: "image", content: "este" }), reading: lectura({ status: "fallo" }) })?.content
+    ).toBe("[El cliente envió una foto. Pie: este]");
+  });
+
+  it("ok sin descripción (ni comprobante) → el marcador de hoy", () => {
+    expect(
+      historyLine({ ...row({ message_type: "image" }), reading: lectura({ text: "", fields: camposImagen({}) }) })?.content
+    ).toBe("[El cliente envió una foto sin texto; no puedes verla]");
+  });
+
+  it("una lectura en un mensaje del ASESOR se ignora: su marcador no cambia", () => {
+    expect(
+      historyLine({ ...row({ sender_type: "agent", message_type: "image" }), reading: lectura({ text: "algo" }) })?.content
+    ).toBe("[El asesor envió una foto]");
+  });
+
+  it("una lectura en un video/documento se ignora", () => {
+    expect(historyLine({ ...row({ message_type: "video" }), reading: lectura({ text: "algo" }) })?.content).toBe(
+      "[El cliente envió un video sin texto; no puedes verlo]"
+    );
+  });
+});
+
+describe("textoLeido", () => {
+  it("devuelve la transcripción de una nota de voz", () => {
+    expect(textoLeido('[Nota de voz del cliente, transcrita: "hola, buenas"]')).toBe("hola, buenas");
+  });
+
+  it("devuelve todo lo de adentro de una foto: descripción, texto visible y pie", () => {
+    expect(textoLeido('[Foto del cliente: caja de aceite. Texto visible: "MOTUL 5100". Pie: cuánto?]')).toBe(
+      'caja de aceite. Texto visible: "MOTUL 5100". Pie: cuánto?'
+    );
+  });
+
+  it.each([
+    "[El cliente envió una foto sin texto; no puedes verla]",
+    "[El cliente envió una nota de voz sin palabras reconocibles]",
+    "[El asesor envió una foto]",
+    "hola, buenas",
+    "",
+  ])("%j → null", (texto) => {
+    expect(textoLeido(texto)).toBeNull();
+  });
+});
+
+describe("las líneas leídas no son 'sin texto'", () => {
+  const leidas = [
+    '[Nota de voz del cliente, transcrita: "hola"]',
+    "[Foto del cliente: casco integral negro]",
+    "[Foto del cliente: comprobante de pago]",
+  ];
+
+  it.each(leidas)("isHistoryMarker(%s) es false", (linea) => {
+    expect(isHistoryMarker(linea)).toBe(false);
+  });
+
+  it("mediaStreakWithoutText no cuenta un audio ok y lo trata como texto del cliente (corta la racha)", () => {
+    const racha = mediaStreakWithoutText([
+      { role: "user", content: "[El cliente envió una foto sin texto; no puedes verla]" },
+      { role: "assistant", content: "¿qué repuesto buscas?" },
+      { role: "user", content: '[Nota de voz del cliente, transcrita: "busco pastillas"]' },
+      { role: "user", content: "[El cliente envió una foto sin texto; no puedes verla]" },
+    ]);
+    expect(racha.adjuntos).toBe(1);
+    expect(racha.yaPreguntamos).toBe(false);
+  });
+
+  it("mediaStreakWithoutText SÍ cuenta la nota de voz sin palabras reconocibles", () => {
+    const racha = mediaStreakWithoutText([
+      { role: "user", content: "[El cliente envió una nota de voz sin palabras reconocibles]" },
+      { role: "assistant", content: "¿me lo escribes?" },
+      { role: "user", content: "[El cliente envió una nota de voz sin palabras reconocibles]" },
+    ]);
+    expect(racha).toEqual({ adjuntos: 2, yaPreguntamos: true, tipos: ["una nota de voz", "una nota de voz"] });
+  });
+});
+
+describe("la ráfaga y los pendientes ven el texto leído, no los corchetes", () => {
+  it("customerBurst devuelve la transcripción en vez de la línea con corchetes", () => {
+    expect(
+      customerBurst([
+        { role: "user", content: '[Nota de voz del cliente, transcrita: "hola, buenas"]', createdAt: "2026-11-16T10:00:00.000Z" },
+        { role: "user", content: "[Foto del cliente: casco integral negro. Pie: este]", createdAt: "2026-11-16T10:00:20.000Z" },
+      ])
+    ).toEqual(["hola, buenas", "casco integral negro. Pie: este"]);
+  });
+
+  it("pendingCustomerLines también (con y sin marca)", () => {
+    const historial = [
+      { role: "user", content: "viejo", createdAt: "2026-11-16T09:00:00.000Z", id: "a" },
+      { role: "assistant", content: "ok", createdAt: "2026-11-16T09:01:00.000Z", id: "b" },
+      {
+        role: "user",
+        content: '[Nota de voz del cliente, transcrita: "tienen aceite"]',
+        createdAt: "2026-11-16T10:00:00.000Z",
+        id: "c",
+      },
+    ];
+    expect(pendingCustomerLines(historial, null)).toEqual(["tienen aceite"]);
+    expect(pendingCustomerLines(historial, { hasta: "2026-11-16T09:00:00.000Z", ids: ["a"] })).toEqual(["tienen aceite"]);
+  });
+
+  it("el `content` que viaja al modelo en el historial no cambia: el arreglo original conserva los corchetes", () => {
+    const historial = [{ role: "user", content: '[Nota de voz del cliente, transcrita: "hola"]', id: "c" }];
+    pendingCustomerLines(historial, null);
+    expect(historial[0].content).toBe('[Nota de voz del cliente, transcrita: "hola"]');
+  });
+});
+
+describe("pendingCustomerEntries", () => {
+  const historial = [
+    { role: "user", content: "primero", createdAt: "2026-11-16T09:00:00.000Z", id: "a", lectura: "L-a" },
+    { role: "assistant", content: "ok", createdAt: "2026-11-16T09:01:00.000Z", id: "b", lectura: null },
+    { role: "user", content: "[El cliente envió un sticker]", createdAt: "2026-11-16T10:00:00.000Z", id: "s", lectura: null },
+    {
+      role: "user",
+      content: "[Foto del cliente: comprobante de pago]",
+      createdAt: "2026-11-16T10:00:10.000Z",
+      id: "c",
+      lectura: "L-c",
+    },
+    { role: "user", content: "gracias", createdAt: "2026-11-16T10:00:20.000Z", id: "d", lectura: null },
+  ];
+
+  const marcas: (SeenMarker | null)[] = [
+    null,
+    { hasta: "2026-11-16T09:00:00.000Z", ids: ["a"] },
+    { hasta: "2026-11-16T10:00:10.000Z", ids: ["c"] },
+    { hasta: "2026-11-16T10:00:20.000Z", ids: ["d"] },
+  ];
+
+  it.each(marcas.map((m, i) => [i, m] as const))("misma selección que pendingCustomerLines (marca #%i)", (_i, marca) => {
+    const entradas = pendingCustomerEntries(historial, marca);
+    const lineas = pendingCustomerLines(historial, marca);
+    expect(entradas.map((e) => textoLeido(e.content) ?? e.content)).toEqual(lineas);
+  });
+
+  it("devuelve las entradas ORIGINALES (con sus campos extra), no copias recortadas", () => {
+    const entradas = pendingCustomerEntries(historial, null);
+    expect(entradas.map((e) => e.id)).toEqual(["c", "d"]);
+    expect(entradas[0]).toBe(historial[3]);
+    expect(entradas[0].lectura).toBe("L-c");
   });
 });

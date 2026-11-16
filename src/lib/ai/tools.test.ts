@@ -1195,6 +1195,24 @@ describe("buildEscalateTool — el esquema acepta el motivo seguimiento", () => 
     // No hay `consulta_generica`: ese caso pide una pregunta y NO escala.
     expect(() => schema.parse("consulta_generica")).toThrow();
   });
+
+  // M4, plan "Seba lee fotos y audios" (16/11/2026): el cliente que manda el
+  // comprobante (o dice que ya pagó) y el adjunto que no se pudo leer ya
+  // tienen motivo propio — antes caían en `seguimiento`/`intencion_compra` y
+  // el asesor no sabía a qué venía el caso.
+  it("el zod schema de 'motivo' acepta comprobante_pago y no_pudo_leer", () => {
+    const tool = buildEscalateTool(
+      // @ts-expect-error -- fake mínimo: no se ejecuta nada, solo se lee el esquema.
+      { supabase: {}, conversationId: "conv-1", contactId: "contact-1" },
+      { escalated: false }
+    );
+
+    const schema = (tool as unknown as { inputSchema: { shape: { motivo: { parse: (v: unknown) => unknown } } } })
+      .inputSchema.shape.motivo;
+
+    expect(() => schema.parse("comprobante_pago")).not.toThrow();
+    expect(() => schema.parse("no_pudo_leer")).not.toThrow();
+  });
 });
 
 describe("buildEscalateTool — intencion_compra escala con el primer aviso", () => {
@@ -1418,10 +1436,17 @@ describe("buildEscalateTool — modo restringido con asesor asignado (T2, 21/9/2
       .inputSchema.shape.motivo;
   }
 
-  it("el esquema SOLO acepta intencion_compra: rechaza los seis motivos restantes", () => {
+  // 16/11/2026 (M4, "Seba lee fotos y audios"): el modo restringido pasó de UN
+  // motivo a TRES — con asesor asignado el modelo todavía puede marcar la
+  // compra (`intencion_compra`), avisar que el cliente ya pagó
+  // (`comprobante_pago`) y pasar un adjunto ilegible (`no_pudo_leer`). Antes
+  // este test se llamaba "SOLO acepta intencion_compra".
+  it("el esquema acepta intencion_compra, comprobante_pago y no_pudo_leer, y rechaza los seis restantes", () => {
     const schema = schemaDeMotivoRestringido();
 
     expect(() => schema.parse("intencion_compra")).not.toThrow();
+    expect(() => schema.parse("comprobante_pago")).not.toThrow();
+    expect(() => schema.parse("no_pudo_leer")).not.toThrow();
     expect(() => schema.parse("devolucion")).toThrow();
     expect(() => schema.parse("queja")).toThrow();
     expect(() => schema.parse("seguimiento")).toThrow();
@@ -1430,7 +1455,7 @@ describe("buildEscalateTool — modo restringido con asesor asignado (T2, 21/9/2
     expect(() => schema.parse("no_identificado")).toThrow();
   });
 
-  it("sin restrictedToPurchase (u omitido), el esquema conserva los siete motivos de siempre", () => {
+  it("sin restrictedToPurchase (u omitido), el esquema conserva los siete motivos de siempre más los dos de M4", () => {
     const tool = buildEscalateTool(
       // @ts-expect-error -- fake mínimo
       { supabase: {}, conversationId: "conv-1", contactId: "contact-1" },
@@ -1447,9 +1472,48 @@ describe("buildEscalateTool — modo restringido con asesor asignado (T2, 21/9/2
       "confirmar_inventario",
       "sin_stock",
       "no_identificado",
+      "comprobante_pago",
+      "no_pudo_leer",
     ]) {
       expect(() => schema.parse(motivo)).not.toThrow();
     }
+  });
+
+  it("la descripción del modo restringido nombra los tres motivos posibles", () => {
+    const tool = buildEscalateTool(
+      // @ts-expect-error -- fake mínimo
+      { supabase: {}, conversationId: "conv-1", contactId: "contact-1" },
+      { escalated: false },
+      { restrictedToPurchase: true }
+    );
+    const description = (tool as unknown as { description: string }).description;
+
+    expect(description).toContain("intencion_compra");
+    expect(description).toContain("comprobante_pago");
+    expect(description).toContain("no_pudo_leer");
+  });
+
+  it("la descripción de `motivo` (modo completo y restringido) explica comprobante_pago y no_pudo_leer", () => {
+    const completo = buildEscalateTool(
+      // @ts-expect-error -- fake mínimo
+      { supabase: {}, conversationId: "conv-1", contactId: "contact-1" },
+      { escalated: false }
+    );
+    const restringido = buildEscalateTool(
+      // @ts-expect-error -- fake mínimo
+      { supabase: {}, conversationId: "conv-1", contactId: "contact-1" },
+      { escalated: false },
+      { restrictedToPurchase: true }
+    );
+    const describeDe = (t: unknown) =>
+      (t as { inputSchema: { shape: { motivo: { description?: string } } } }).inputSchema.shape.motivo.description ?? "";
+
+    for (const descripcion of [describeDe(completo), describeDe(restringido)]) {
+      expect(descripcion).toContain("comprobante_pago");
+      expect(descripcion).toContain("no_pudo_leer");
+    }
+    // La prosa del modo completo dice el porqué: nunca confirmes el pago.
+    expect(describeDe(completo)).toMatch(/nunca le confirmes el pago/i);
   });
 
   it("la descripción de la herramienta avisa que el chat ya tiene asesor y que es solo para marcar la compra", () => {

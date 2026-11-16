@@ -44,8 +44,11 @@ import {
   isHistoryMarker,
   latestCustomerMarker,
   mediaStreakWithoutText,
+  pendingCustomerEntries,
   pendingCustomerLines,
   previousConversationCutoff,
+  textoLeido,
+  type HistoryReading,
 } from "@/lib/ai/history-line";
 import { readSeen, writeSeen } from "@/lib/ai/turn-seen";
 import { clearCessionCounter, shouldCedeDraft } from "@/lib/ai/turn-cession";
@@ -63,10 +66,14 @@ import {
 import { recordHandoff, escalationOpen } from "@/lib/ai/handoffs";
 import { isCourtesyOnly, isFarewellPlaybook, isGreetingOnly } from "@/lib/ai/saludo";
 import { debeCederAlInventario, type DecisionCesionInventario } from "@/lib/ai/catalog-request";
+import { esComprobante, esOrdenCashea, parseImageFields, type ImageFields } from "@/lib/media-reading-fields";
+import { resumenDeComprobante } from "@/lib/ai/comprobante-nota";
+import { esperarLecturas } from "@/lib/ai/wait-readings";
 import {
   isSebaGreeting,
   sebaGreeting,
   sebaGreetingFollowUp,
+  TEXTO_COMPROBANTE_RECIBIDO,
   TEXTO_CONFIRMAR_INVENTARIO,
   TEXTO_NO_IDENTIFICADO,
   PREGUNTA_FILTRO,
@@ -342,11 +349,33 @@ const HISTORY_LIMIT = 15;
  * "Seba no habla de más mientras el cliente espera al asesor", 22-23/9/2026
  * — el `id` real de `messages`, que hace falta para desempatar dos
  * fragmentos del cliente con el mismo `created_at` de segundo).
+ *
+ * M4, plan "Seba lee fotos y audios" (16/11/2026): un cuarto arreglo paralelo,
+ * `lecturas` — la fila de `message_readings` de cada mensaje (`null` si no
+ * tiene, que es lo normal para todo lo que no es una foto o una nota de voz).
+ * No viaja al modelo: `runTurnPhases` lo usa para saber si en la ráfaga
+ * pendiente llegó un comprobante de pago o una orden de Cashea (el campo
+ * `fields`, que el historial deliberadamente NO muestra).
  */
 interface LoadedHistory {
   messages: ModelMessage[];
   createdAt: (string | null)[];
   ids: (string | null)[];
+  lecturas: (HistoryReading | null)[];
+}
+
+/**
+ * La lectura embebida de una fila de `messages`. `message_readings` es una
+ * relación uno a uno (`message_id` es la PK de la tabla): PostgREST la devuelve
+ * como objeto, o `null` si el adjunto no tiene lectura (todavía, o nunca). Por
+ * si algún día llegara como arreglo de un elemento, se toma el primero.
+ */
+function lecturaDeFila(embed: unknown): HistoryReading | null {
+  const lectura = Array.isArray(embed) ? embed[0] : embed;
+  if (typeof lectura !== "object" || lectura === null) return null;
+  const { status, text, fields } = lectura as { status?: unknown; text?: unknown; fields?: unknown };
+  if (typeof status !== "string") return null;
+  return { status, text: typeof text === "string" ? text : null, fields };
 }
 
 /**
@@ -359,7 +388,9 @@ interface LoadedHistory {
 async function loadHistory(supabase: SupabaseClient<Database>, conversationId: string): Promise<LoadedHistory> {
   const { data } = await supabase
     .from("messages")
-    .select("sender_type, content, is_internal_note, message_type, created_at, id")
+    // `message_readings(...)` al final y no en medio: M4 (16/11/2026) la suma
+    // para que la línea de un adjunto traiga lo que el webhook leyó de él.
+    .select("sender_type, content, is_internal_note, message_type, created_at, id, message_readings(status, text, fields)")
     .eq("conversation_id", conversationId)
     .order("created_at", { ascending: false })
     .limit(HISTORY_LIMIT);
@@ -367,6 +398,7 @@ async function loadHistory(supabase: SupabaseClient<Database>, conversationId: s
   const messages: ModelMessage[] = [];
   const createdAt: (string | null)[] = [];
   const ids: (string | null)[] = [];
+  const lecturas: (HistoryReading | null)[] = [];
   for (const row of [...(data ?? [])].reverse()) {
     // 'unsupported' (T3.2, 5/9/2026) es Meta avisando de un tipo que el CRM
     // no sabe representar: `content` ya queda null en la base, pero el
@@ -384,17 +416,18 @@ async function loadHistory(supabase: SupabaseClient<Database>, conversationId: s
     // avisarle al modelo que algo llegó sin sintetizar nada en
     // `messages.content`: la fila de la base no se toca, el marcador vive
     // solo en memoria.
-    const linea = historyLine(row);
+    const lectura = lecturaDeFila(row.message_readings);
+    const linea = historyLine({ ...row, reading: lectura });
     if (!linea) continue;
     messages.push({ role: linea.role, content: linea.content });
-    // `row.created_at`/`row.id` salen de la misma fila que ya pasó
-    // `historyLine`, así que el índice de estos dos arreglos calza siempre
-    // con el de `messages` — ninguna fila descartada deja un hueco entre
-    // los tres.
+    // `row.created_at`/`row.id`/`lectura` salen de la misma fila que ya pasó
+    // `historyLine`, así que el índice de estos arreglos calza siempre con el
+    // de `messages` — ninguna fila descartada deja un hueco entre los cuatro.
     createdAt.push(row.created_at ?? null);
     ids.push(row.id ?? null);
+    lecturas.push(lectura);
   }
-  return { messages, createdAt, ids };
+  return { messages, createdAt, ids, lecturas };
 }
 
 /**
@@ -417,6 +450,13 @@ function lastCustomerMessage(history: ModelMessage[]): string | null {
   for (let i = history.length - 1; i >= 0; i--) {
     const message = history[i];
     if (message.role === "user" && typeof message.content === "string") {
+      // M4 (16/11/2026, pauta P12 del plan "Seba lee fotos y audios"): una
+      // línea LEÍDA —la transcripción de una nota de voz, la descripción de
+      // una foto— es lo que el cliente dijo o mostró, y es lo que tiene que
+      // quedar en la bitácora para poder crear el escenario que faltó; no los
+      // corchetes que arma `historyLine` para el modelo.
+      const leido = textoLeido(message.content);
+      if (leido !== null) return leido;
       return isHistoryMarker(message.content) ? captionOfCustomerMarker(message.content) : message.content;
     }
   }
@@ -999,6 +1039,9 @@ type SendPhase =
   | "fuera_de_tema"
   | "redaccion"
   | "adjuntos_sin_texto"
+  // M4 (16/11/2026, "Seba lee fotos y audios"): el acuse de un comprobante de pago
+  // o una orden de Cashea, fijo y sin modelo.
+  | "comprobante_recibido"
   // T6, plan "Seba no habla de más mientras el cliente espera al asesor"
   // (22-23/9/2026): el saludo fijo del segundo intento (`sebaGreetingFollowUp`).
   | "saludo_suelto";
@@ -1346,12 +1389,35 @@ export const DESPEDIDA_MEDIA =
  * pide prestada.
  */
 function despedidaMedia(unassigned: boolean | undefined, status?: BusinessStatus): string {
-  if (unassigned) return `${DESPEDIDA_MEDIA} ${DESPEDIDA_SIN_ASESOR}`;
-  if (!status || status.open) return DESPEDIDA_MEDIA;
+  return conCierreDeEscalada(DESPEDIDA_MEDIA, unassigned, status);
+}
+
+/**
+ * El texto base de una salida de código que escala, con los cierres de
+ * siempre (M4, 16/11/2026): sin asesor, el de `DESPEDIDA_SIN_ASESOR`; con la
+ * tienda cerrada, cuándo vuelve a abrir. Es la lógica que tenía
+ * `despedidaMedia` sola, generalizada para que el texto del comprobante diga
+ * lo mismo sin copiar las tres ramas: el cliente no puede enterarse del
+ * horario por dos fuentes con redacción distinta. Para `DESPEDIDA_MEDIA`
+ * devuelve exactamente lo de antes.
+ */
+function conCierreDeEscalada(base: string, unassigned: boolean | undefined, status?: BusinessStatus): string {
+  if (unassigned) return `${base} ${DESPEDIDA_SIN_ASESOR}`;
+  if (!status || status.open) return base;
   if (!status.nextOpening) {
-    return `${DESPEDIDA_MEDIA} Eso sí, la tienda está cerrada ahora; en cuanto vuelva a abrir, el asesor te escribe.`;
+    return `${base} Eso sí, la tienda está cerrada ahora; en cuanto vuelva a abrir, el asesor te escribe.`;
   }
-  return `${DESPEDIDA_MEDIA} Eso sí, la tienda está cerrada ahora — te escribe ${status.nextOpening.dayLabel} a partir de las ${status.nextOpening.time}.`;
+  return `${base} Eso sí, la tienda está cerrada ahora — te escribe ${status.nextOpening.dayLabel} a partir de las ${status.nextOpening.time}.`;
+}
+
+/**
+ * El texto que recibe el cliente cuando manda un comprobante de pago o una
+ * orden de Cashea (M4, 16/11/2026): `TEXTO_COMPROBANTE_RECIBIDO` más el cierre
+ * de horario/asesor. Exportada para el test, que fija que ninguna de sus
+ * ramas confirma ni valida un pago (decisión D3).
+ */
+export function textoComprobante(unassigned: boolean | undefined, status?: BusinessStatus): string {
+  return conCierreDeEscalada(TEXTO_COMPROBANTE_RECIBIDO, unassigned, status);
 }
 
 /**
@@ -1839,7 +1905,16 @@ export async function runTurnPhases(
   // `loadHistory` calcule, así que se lee en paralelo con ella — el mismo
   // criterio que ya usa el resto del turno para no encadenar lecturas que no
   // dependen una de la otra.
-  const [{ messages: history, createdAt: historyCreatedAt, ids: historyIds }, seen] = await Promise.all([
+  //
+  // M6, plan "Seba lee fotos y audios" (16/11/2026): ANTES de cargar el
+  // historial, una espera acotada (≤ 8 s) a que el webhook termine de leer los
+  // adjuntos recién llegados — sin ella, un turno que arranca mientras la
+  // lectura sigue en vuelo ve "no puedes verla" y le pide al cliente que
+  // escriba lo que acaba de decir. Una sola vez por turno y también en el turno
+  // por demora (ya dentro del lock de la conversación). Nunca lanza.
+  await esperarLecturas(supabase, conversationId);
+
+  const [{ messages: history, createdAt: historyCreatedAt, ids: historyIds, lecturas: historyLecturas }, seen] = await Promise.all([
     loadHistory(supabase, conversationId),
     // Turno por demora: NO se lee la marca. El mensaje del cliente puede estar
     // "visto" por un turno anterior que solo lo anotó para el asesor
@@ -1884,6 +1959,8 @@ export async function runTurnPhases(
     // dos — el reintento tiene que ver EXACTAMENTE el historial que vio el
     // primer intento, incluido qué `id` tenía cada línea.
     historyIds.pop();
+    // M4 (16/11/2026): cuarto arreglo paralelo, mismo motivo.
+    historyLecturas.pop();
     introducedThisTurn = true;
     saludoPendienteDeRespuesta = true;
   }
@@ -1943,6 +2020,9 @@ export async function runTurnPhases(
     content: message.content,
     createdAt: historyCreatedAt[i],
     id: historyIds[i],
+    // M4 (16/11/2026): la lectura del adjunto, para saber qué llegó en la
+    // ráfaga pendiente (`pendingCustomerEntries`) sin pasar por el modelo.
+    lectura: historyLecturas[i],
   }));
 
   // T1, plan "Seba no habla de más mientras el cliente espera al asesor"
@@ -1955,6 +2035,12 @@ export async function runTurnPhases(
   // Ver el comentario de cabecera de `pendingCustomerLines` en
   // history-line.ts para el caso real que motivó esto.
   const rafagaCliente = pendingCustomerLines(zipped, seen);
+
+  // M4 (16/11/2026): las ENTRADAS de esa misma ráfaga (misma selección que
+  // `rafagaCliente`, `pendingCustomerLines` se arma sobre esta función), con la
+  // lectura de cada adjunto pegada. Es de donde sale "¿llegó un comprobante de
+  // pago o una orden de Cashea en lo que falta por atender?".
+  const lecturasDeLaRafaga = pendingCustomerEntries(zipped, seen).map((entrada) => entrada.lectura);
 
   // T4, plan "Seba no habla de más mientras el cliente espera al asesor"
   // (22-23/9/2026, "el historial viejo marcado"): dónde termina, si termina,
@@ -2589,13 +2675,84 @@ export async function runTurnPhases(
   // OTRO adjunto sin escribir nada, insistir una vez más no sirve: se escala
   // en código, directo, sin gastar fase 0/1 ni el tool loop —tres llamadas al
   // proveedor que un cuarto "¿qué es esto?" no iba a mejorar—.
+  //
+  // M4 (16/11/2026): `mediaStreakWithoutText` ya no cuenta lo que el sistema
+  // pudo LEER (un audio transcrito, una foto descrita): eso es texto del
+  // cliente y corta la racha. Lo que queda contando son los adjuntos que nadie
+  // pudo leer — por eso el motivo pasó de `seguimiento` a `no_pudo_leer`.
+
+  // Comprobante de pago / orden de Cashea (M4, plan "Seba lee fotos y audios",
+  // 16/11/2026, decisión D3 del operador). ANTES de la racha y de fase 0/1,
+  // mismo criterio que la racha: si el webhook ya leyó que el cliente mandó el
+  // comprobante de su pago o la orden de Cashea, lo que sigue no es una
+  // conversación sino un trámite que le toca a un asesor — y el modelo no
+  // tiene nada que aportar (Seba NUNCA confirma ni valida un pago). Se escala
+  // en código, sin gastar fase 0/1 ni el tool loop, con los campos leídos en el
+  // resumen que lee el asesor (`resumenDeComprobante`; no pasan por el
+  // historial del modelo) y se acusa recibo con un texto fijo.
+  //
+  // Solo lecturas `ok` de la ráfaga PENDIENTE (`lecturasDeLaRafaga`): un
+  // comprobante que un turno anterior ya atendió queda detrás de la marca
+  // "visto hasta" y no vuelve a escalar. Y con una escalada abierta el turno ya
+  // retornó arriba (camino "espera abierta": queda anotado para el asesor).
+  // Un turno por demora nunca escala en código (T10b-3).
+  const camposDeComprobantes: ImageFields[] = [];
+  if (!modoDemora) {
+    for (const lectura of lecturasDeLaRafaga) {
+      if (!lectura || lectura.status !== "ok") continue;
+      const campos = parseImageFields(lectura.fields);
+      if (campos && (esComprobante(campos) || esOrdenCashea(campos))) camposDeComprobantes.push(campos);
+    }
+  }
+  if (camposDeComprobantes.length > 0) {
+    const forced = await escalateConversation(supabase, {
+      conversationId,
+      contactId: target.contactId,
+      motivo: "comprobante_pago",
+      resumen: resumenDeComprobante(camposDeComprobantes),
+      businessHours,
+    });
+
+    const salida = await deliver(
+      supabase,
+      target,
+      entrega,
+      lease,
+      tiempos,
+      "comprobante_recibido",
+      convo.last_customer_message_at,
+      () =>
+        sendAgentText(supabase, target, textoComprobante(forced.unassigned, forced.businessStatus), {
+          isAutoReply: true,
+        })
+    );
+    if (!salida) return;
+    // Mismo motivo que el bloque de la racha: `escalateConversation` ya dejó su
+    // traspaso antes del envío, si Meta lo rechaza no se pisa con uno nuevo.
+    if (await deliveryFailed(supabase, conversationId, salida, convo.assigned_agent_id, true)) return;
+
+    await marcarTurnoVisto();
+
+    await logTurn(supabase, conversationId, {
+      intent: null,
+      action: "escalated",
+      // "Motivo: <motivo>." es el formato que `escalationReasonOf` (data.ts)
+      // extrae del summary para el panel.
+      summary: `Comprobante recibido → ${forced.assignedAgentName ?? "(sin asesor disponible)"}. Motivo: comprobante_pago.`,
+      tokens: null,
+      customerMessage,
+      tiempos,
+    });
+    return;
+  }
+
   const racha = mediaStreakWithoutText(history);
   // T10b-3: un turno por demora nunca escala en código.
   if (!modoDemora && racha.adjuntos >= 2 && racha.yaPreguntamos) {
     const forced = await escalateConversation(supabase, {
       conversationId,
       contactId: target.contactId,
-      motivo: "seguimiento",
+      motivo: "no_pudo_leer",
       resumen: `El cliente mandó ${racha.adjuntos} adjuntos sin texto (fotos/notas de voz) y ya se le pidió que escribiera. Revisar en el chat qué mandó.`,
       businessHours,
     });
@@ -2627,7 +2784,7 @@ export async function runTurnPhases(
     await logTurn(supabase, conversationId, {
       intent: null,
       action: "escalated",
-      summary: `Segundo adjunto sin texto → ${forced.assignedAgentName ?? "(sin asesor disponible)"}.`,
+      summary: `Segundo adjunto sin texto → ${forced.assignedAgentName ?? "(sin asesor disponible)"}. Motivo: no_pudo_leer.`,
       tokens: null,
       customerMessage,
       tiempos,

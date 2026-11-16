@@ -24,10 +24,30 @@
 // textos de este archivo tienen que coincidir EXACTAMENTE con lo que
 // `MEDIA_RULES` describe.
 //
+// M4, plan "Seba lee fotos y audios" (16/11/2026): cuando el webhook ya leyó
+// el adjunto (`message_readings`: la transcripción de una nota de voz, la
+// descripción de una foto) la línea del cliente trae ESO en vez de "no puedes
+// verla" — ver `lineaLeida` más abajo. Los marcadores de hoy no cambian ni un
+// byte cuando no hay lectura utilizable (pendiente, fallo, alucinación…).
+//
 // Módulo PURO a propósito, igual que identity-guard.ts: sin `server-only` y
-// sin más import que tipos, para que lo puedan usar tanto agent.ts (servidor)
-// como cualquier test sin arrastrar el mundo del SDK de IA.
+// sin más import que `media-reading-fields.ts` (también puro: solo funciones
+// sobre un jsonb), para que lo puedan usar tanto agent.ts (servidor) como
+// cualquier test sin arrastrar el mundo del SDK de IA.
 // ---------------------------------------------------------------------------
+
+import { esComprobante, esOrdenCashea, parseImageFields } from "@/lib/media-reading-fields";
+
+/**
+ * Lo que se lee de `message_readings` para armar la línea de un adjunto del
+ * cliente. `fields` llega como `unknown` (jsonb): `parseImageFields` lo
+ * interpreta sin lanzar.
+ */
+export interface HistoryReading {
+  status: string;
+  text: string | null;
+  fields: unknown;
+}
 
 /** Las columnas de `messages` que hacen falta para decidir la línea de historial. */
 export interface HistoryRow {
@@ -35,6 +55,8 @@ export interface HistoryRow {
   content: string | null;
   is_internal_note: boolean | null;
   message_type: string | null;
+  /** La lectura del adjunto (M4); ausente o `null` si no hay (todavía) ninguna. */
+  reading?: HistoryReading | null;
 }
 
 export interface HistoryLine {
@@ -86,6 +108,84 @@ function asesorMarker(messageType: MediaType, caption: string | null): string {
   return caption ? `${base}. Pie: ${caption}]` : `${base}]`;
 }
 
+// ---------------------------------------------------------------------------
+// Líneas LEÍDAS (M4, 16/11/2026). Dos formas, y `textoLeido` las deshace:
+//
+//   [Nota de voz del cliente, transcrita: "<texto>"]
+//   [Foto del cliente: <descripción>[. Texto visible: "<texto>"][. Pie: <pie>]]
+//
+// No empiezan por "[El cliente envió ", así que `isHistoryMarker` no las
+// reconoce — a propósito: son TEXTO del cliente (lo que dijo o mostró), no un
+// aviso de que algo llegó sin poder leerse. Por eso `mediaStreakWithoutText`
+// no las cuenta y cortan la racha como cualquier mensaje.
+//
+// Un comprobante de pago o una orden de Cashea NO llevan sus campos leídos
+// (monto, referencia…) al historial: el modelo no tiene por qué ver cifras
+// que no puede verificar (decisión D3 del operador: Seba nunca confirma un
+// pago). Esos campos viajan por el camino de código (agent.ts) hacia la nota
+// del asesor, nunca hacia el modelo.
+// ---------------------------------------------------------------------------
+
+/** Tope de caracteres de una transcripción dentro del historial del modelo. */
+const MAX_TRANSCRIPCION_CHARS = 1000;
+
+/** Las comillas dobles del texto leído pasan a simples: no rompen el marco `"…"` ni `textoLeido`. */
+function sinComillasDobles(texto: string): string {
+  return texto.replace(/"/g, "'");
+}
+
+/** La descripción de una foto sin espacios sobrantes ni punto final (se le agregan más partes después). */
+function sinPuntoFinal(texto: string): string {
+  return texto.trim().replace(/[.\s]+$/, "");
+}
+
+/**
+ * La línea con el contenido leído, o `null` si no hay una lectura utilizable
+ * (entonces el llamador cae al marcador de siempre). Solo audio e imagen.
+ */
+function lineaLeida(messageType: MediaType, caption: string | null, reading: HistoryReading | null | undefined): string | null {
+  if (!reading) return null;
+
+  if (messageType === "audio") {
+    if (reading.status === "vacio") return "[El cliente envió una nota de voz sin palabras reconocibles]";
+    if (reading.status !== "ok") return null;
+    const texto = reading.text?.trim();
+    if (!texto) return null;
+    return `[Nota de voz del cliente, transcrita: "${sinComillasDobles(texto.slice(0, MAX_TRANSCRIPCION_CHARS))}"]`;
+  }
+
+  if (messageType === "image") {
+    if (reading.status !== "ok") return null;
+    const campos = parseImageFields(reading.fields);
+    const sufijoPie = caption ? `. Pie: ${caption}` : "";
+    if (esComprobante(campos)) return `[Foto del cliente: comprobante de pago${sufijoPie}]`;
+    if (esOrdenCashea(campos)) return `[Foto del cliente: orden de Cashea${sufijoPie}]`;
+
+    const descripcion = reading.text ? sinPuntoFinal(reading.text) : "";
+    if (!descripcion) return null;
+    const visible = campos?.texto_visible.trim();
+    const textoVisible = visible ? `. Texto visible: "${sinComillasDobles(visible)}"` : "";
+    return `[Foto del cliente: ${descripcion}${textoVisible}${sufijoPie}]`;
+  }
+
+  return null;
+}
+
+/**
+ * Lo que dice una línea leída por dentro, o `null` si el texto no es una
+ * (M4, 16/11/2026): la transcripción de una nota de voz, o TODO lo de adentro
+ * de una foto (descripción, texto visible y pie). Lo usan `customerBurst`/
+ * `pendingCustomerLines` (la ráfaga que ven las guardas del turno es lo que
+ * el cliente dijo, no los corchetes) y la bitácora (`customer_message`).
+ * Acoplada a `lineaLeida`.
+ */
+export function textoLeido(content: string): string | null {
+  const voz = /^\[Nota de voz del cliente, transcrita: "([\s\S]*)"\]$/.exec(content);
+  if (voz) return voz[1];
+  const foto = /^\[Foto del cliente: ([\s\S]+)\]$/.exec(content);
+  return foto ? foto[1] : null;
+}
+
 /**
  * Convierte una fila de `messages` en la línea que ve el modelo, o `null` si
  * la fila se salta (comportamiento igual al `loadHistory` de antes para las
@@ -102,7 +202,11 @@ export function historyLine(row: HistoryRow): HistoryLine | null {
 
   if (messageType && MEDIA_TYPES.has(messageType)) {
     const caption = pie(row.content);
-    const content = role === "user" ? clienteMarker(messageType as MediaType, caption) : asesorMarker(messageType as MediaType, caption);
+    // M4: solo el CLIENTE tiene lectura; si no hay una utilizable, el marcador
+    // de siempre (el modelo sigue sabiendo que algo llegó).
+    const leida = role === "user" ? lineaLeida(messageType as MediaType, caption, row.reading) : null;
+    const content =
+      leida ?? (role === "user" ? clienteMarker(messageType as MediaType, caption) : asesorMarker(messageType as MediaType, caption));
     return { role, content, marcador: true };
   }
 
@@ -159,6 +263,10 @@ const SIN_PIE_MARKERS: Record<string, string> = {
   "[El cliente envió una foto sin texto; no puedes verla]": "una foto",
   "[El cliente envió un video sin texto; no puedes verlo]": "un video",
   "[El cliente envió una nota de voz; no puedes escucharla]": "una nota de voz",
+  // M4 (16/11/2026): una nota que se leyó pero no trae palabras (ruido,
+  // silencio) sigue siendo un adjunto del que no hay nada que atender: cuenta
+  // igual que la que no se pudo leer.
+  "[El cliente envió una nota de voz sin palabras reconocibles]": "una nota de voz",
   "[El cliente envió un documento; no puedes abrirlo]": "un documento",
 };
 
@@ -350,14 +458,14 @@ function parseTimestamp(value: string | null | undefined): number | null {
  * tanto `HistoryLine` (este archivo) como el `ModelMessage` de `loadHistory`
  * (agent.ts) sin adaptar nada — `createdAt` es opcional, ver `StreakEntry`.
  */
-export function customerBurst(history: StreakEntry[]): string[] {
+export function customerBurst(history: readonly StreakEntry[]): string[] {
   // T4 (22-23/9/2026): el algoritmo en sí vive ahora en
   // `customerBurstCandidates` (más abajo en este archivo, junto al resto de
   // la maquinaria de "pendientes" que necesita conservar el `id` de cada
   // línea) — `StreakEntry` es estructuralmente compatible con `PendingEntry`
   // (el `id` que pide esa forma es opcional), así que este refactor no
   // cambia el comportamiento de ningún llamador existente.
-  return customerBurstCandidates(history).map((entry) => entry.content);
+  return customerBurstCandidates(history).map((entry) => textoLeido(entry.content) ?? entry.content);
 }
 
 // ---------------------------------------------------------------------------
@@ -478,10 +586,17 @@ interface PendingCandidate {
   content: string;
   id: string | null;
   ms: number | null;
+  /**
+   * Posición de la línea en el arreglo que recibió la función (M4,
+   * 16/11/2026): `pendingCustomerEntries` devuelve las entradas ORIGINALES, con
+   * los campos extra que el llamador les pegó (la lectura del adjunto), y para
+   * eso necesita saber cuál era cuál sin volver a buscarla por `id`.
+   */
+  index: number;
 }
 
 /** Mismo algoritmo que `customerBurst`, pero conservando `id`/`ms` de cada línea. */
-function customerBurstCandidates(history: PendingEntry[]): PendingCandidate[] {
+function customerBurstCandidates(history: readonly PendingEntry[]): PendingCandidate[] {
   const rafaga: PendingCandidate[] = [];
   let referencia: number | null = null;
 
@@ -497,7 +612,7 @@ function customerBurstCandidates(history: PendingEntry[]): PendingCandidate[] {
       if ((referencia - actual) / 60000 > CUSTOMER_BURST_GAP_MINUTES) break;
     }
 
-    rafaga.unshift({ content: message.content, id: message.id ?? null, ms: actual });
+    rafaga.unshift({ content: message.content, id: message.id ?? null, ms: actual, index: i });
     referencia = actual;
   }
 
@@ -505,7 +620,7 @@ function customerBurstCandidates(history: PendingEntry[]): PendingCandidate[] {
 }
 
 /** Mismo algoritmo que `pendingCustomerLines`, pero conservando `id`/`ms` de cada línea (ver `PendingCandidate`). */
-function pendingCustomerCandidates(history: PendingEntry[], seen: SeenMarker | null): PendingCandidate[] {
+function pendingCustomerCandidates(history: readonly PendingEntry[], seen: SeenMarker | null): PendingCandidate[] {
   if (seen === null) return customerBurstCandidates(history);
 
   const hastaMs = parseTimestamp(seen.hasta);
@@ -534,7 +649,7 @@ function pendingCustomerCandidates(history: PendingEntry[], seen: SeenMarker | n
       esPendiente = ms > hastaMs || (ms === hastaMs && !idsVistos.has(message.id ?? ""));
     }
 
-    if (esPendiente) pendientes.push({ content: message.content, id: message.id ?? null, ms });
+    if (esPendiente) pendientes.push({ content: message.content, id: message.id ?? null, ms, index: i });
   }
 
   // Mismo corte por hueco que customerBurst, pero sobre los PENDIENTES: dos
@@ -555,8 +670,30 @@ function pendingCustomerCandidates(history: PendingEntry[], seen: SeenMarker | n
   return resultado;
 }
 
-export function pendingCustomerLines(history: PendingEntry[], seen: SeenMarker | null): string[] {
-  return pendingCustomerCandidates(history, seen).map((entry) => entry.content);
+/**
+ * Las ENTRADAS (las del arreglo original, con todos sus campos) de exactamente
+ * los mismos mensajes que `pendingCustomerLines` devuelve como texto (M4,
+ * 16/11/2026). `agent.ts` zipea la lectura de cada adjunto en cada entrada y
+ * necesita saber cuáles de esas lecturas pertenecen a la ráfaga pendiente
+ * (¿llegó un comprobante en lo que falta por atender?). `pendingCustomerLines`
+ * se implementa SOBRE esta función para que las dos no puedan divergir.
+ */
+export function pendingCustomerEntries<T extends PendingEntry>(history: readonly T[], seen: SeenMarker | null): T[] {
+  return pendingCustomerCandidates(history, seen).map((candidato) => history[candidato.index]);
+}
+
+/**
+ * Las líneas de CLIENTE pendientes, como texto: una línea leída (nota de voz
+ * transcrita, foto descrita) sale como lo que dice por dentro (`textoLeido`),
+ * no con sus corchetes — un audio "hola, buenas" cuenta como saludo, y la
+ * búsqueda de catálogo ve lo que el cliente pidió. El `content` que viaja al
+ * modelo en el historial NO pasa por acá: conserva los corchetes.
+ */
+export function pendingCustomerLines(history: readonly PendingEntry[], seen: SeenMarker | null): string[] {
+  return pendingCustomerEntries(history, seen).map((entry) => {
+    const contenido = entry.content as string;
+    return textoLeido(contenido) ?? contenido;
+  });
 }
 
 /**

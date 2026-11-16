@@ -198,6 +198,23 @@ export function textoEsperaDemora(status?: BusinessStatus): string {
   return `Gracias por escribirnos. La tienda está cerrada ahora; un asesor te responde por acá ${status.nextOpening.dayLabel} a partir de las ${status.nextOpening.time}.`;
 }
 
+/**
+ * M4, plan "Seba lee fotos y audios" (16/11/2026, decisión D3 del operador): el
+ * texto fijo cuando el cliente manda un comprobante de pago o una orden de
+ * Cashea. Lo manda el CÓDIGO (`agent.ts`, camino "comprobante", sin modelo)
+ * apenas el webhook lee la imagen.
+ *
+ * Seba NUNCA confirma ni valida un pago, ni dice "gracias por tu compra": una
+ * captura no prueba que el dinero llegó, y eso lo dice el asesor DESPUÉS de
+ * verificar. Por eso el texto solo acusa recibo y pide lo que el asesor va a
+ * necesitar para facturar —la cédula del titular de la compra y, si es casco
+ * o ropa, la talla—, y avisa que "un asesor la verifica". Ninguna palabra de
+ * confirmación (verificado/aprobado/confirmado): el test lo fija. Se le suma
+ * el cierre de horario de siempre (`textoComprobante`, agent.ts).
+ */
+export const TEXTO_COMPROBANTE_RECIBIDO =
+  "Recibido 🙌 Pásame la cédula del titular de la compra (y la talla, si es casco o ropa) y un asesor la verifica.";
+
 // ---------------------------------------------------------------------------
 // A2 T5 (30/9/2026, plan "Seba no cotiza lo que no es"): los textos fijos de
 // los AVISOS de la búsqueda. Los pinta `quote-message.ts` tal cual; nunca los

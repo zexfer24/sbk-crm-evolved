@@ -30,6 +30,16 @@ export type ReclamoCategory = (typeof RECLAMO_CATEGORIES)[number];
  * `motivo` no tiene CHECK en la base (viaja solo en el texto del
  * `system_event` y en `agent_turns.summary`, hallazgo 7 del plan): sumar un
  * valor acá no exige migración.
+ *
+ * M4, plan "Seba lee fotos y audios" (16/11/2026): suma `comprobante_pago` (el
+ * cliente mandó el comprobante, una orden de Cashea o dice que ya pagó —
+ * Seba nunca confirma el pago, lo verifica un asesor) y `no_pudo_leer` (mandó
+ * adjuntos que no se pudieron leer y ya se le pidió que los escribiera). Antes
+ * los dos caían en `seguimiento`/`intencion_compra` y el asesor no sabía a qué
+ * venía el caso. Mismo trato que los demás: sin CHECK en la base y SIN razón
+ * de traspaso nueva (`HandoffReason`) — el traspaso es el de siempre
+ * (`escalada`/`escalada_sin_asesor`), el motivo solo viaja en la nota y en
+ * `agent_turns.summary` (`escalationReasonOf`, data.ts).
  */
 export type EscalationMotivo =
   | "devolucion"
@@ -38,7 +48,9 @@ export type EscalationMotivo =
   | "seguimiento"
   | "confirmar_inventario"
   | "sin_stock"
-  | "no_identificado";
+  | "no_identificado"
+  | "comprobante_pago"
+  | "no_pudo_leer";
 
 /**
  * E (20/9/2026, "El resguardo antes del push", C3): la rama `yaAsignado` de

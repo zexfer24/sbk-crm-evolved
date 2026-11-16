@@ -586,6 +586,40 @@ describe("sección 7 — lo que llega sin texto", () => {
     expect(texto).toContain("documento");
     expect(texto).toContain("corchetes");
   });
+
+  // M4, plan "Seba lee fotos y audios" (16/11/2026): cuando el sistema ya
+  // leyó el adjunto, el historial trae su contenido y el modelo tiene que
+  // contestarlo como si el cliente lo hubiera escrito.
+  describe("líneas leídas (M4)", () => {
+    it("trae la regla de las líneas leídas, literal, dentro del prefijo estático", () => {
+      const regla =
+        "Las líneas [Nota de voz del cliente, transcrita: …] y [Foto del cliente: …] son lo que el cliente mandó, leído por el sistema: responde a su contenido como si lo hubiera escrito. Nunca digas que no puedes ver o escuchar.";
+
+      expect(MEDIA_RULES).toContain(regla);
+      expect(SYSTEM_PROMPT).toContain(regla);
+    });
+
+    it("'pregunta qué es' y 'pídele que te lo escriba' valen solo cuando la línea dice que no puedes verla o escucharla", () => {
+      expect(MEDIA_RULES).toMatch(/solo cuando la línea (diga|dice) que no puedes (verla|ver)/i);
+    });
+
+    it("un producto en una foto no significa que haya existencia: siempre se consulta el catálogo", () => {
+      expect(MEDIA_RULES).toMatch(/aparezca en una foto[^.]*no (quiere decir|significa)[^.]*existencia/i);
+      expect(MEDIA_RULES).toMatch(/siempre[^.]*catálogo/i);
+    });
+
+    it("el comprobante y la orden de Cashea: no confirmes el pago ni agradezcas la compra, lo verifica un asesor", () => {
+      expect(MEDIA_RULES).toContain("[Foto del cliente: comprobante de pago]");
+      expect(MEDIA_RULES).toContain("orden de Cashea");
+      expect(MEDIA_RULES).toMatch(/no confirmes el pago/i);
+      expect(MEDIA_RULES).toMatch(/agradezcas la compra/i);
+      expect(MEDIA_RULES).toMatch(/lo verifica un asesor/i);
+    });
+
+    it("el guion nombra comprobante_pago: cuando el cliente dice que ya pagó o ya compró, se pasa el caso", () => {
+      expect(SYSTEM_PROMPT).toMatch(/ya pagó o ya compró[^.]*comprobante_pago/i);
+    });
+  });
 });
 
 /**

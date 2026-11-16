@@ -42,7 +42,16 @@ interface FakeState {
   canRunError: { message: string } | null;
   conversation: Record<string, unknown> | null;
   /** Descendente (lo más nuevo primero), como lo devuelve la consulta real. */
-  history: { sender_type: string; content: string | null; is_internal_note: boolean; message_type?: string; created_at?: string; id?: string }[];
+  history: {
+    sender_type: string;
+    content: string | null;
+    is_internal_note: boolean;
+    message_type?: string;
+    created_at?: string;
+    id?: string;
+    /** M4: la lectura embebida de un adjunto (`message_readings`), como la devuelve PostgREST. */
+    message_readings?: { status: string; text: string | null; fields: unknown } | null;
+  }[];
   /** Mensajes con `sender_type = 'agent'` (asesores humanos). */
   agentMessages: AgentMessageRow[];
   enabledToolKeys: string[];
@@ -398,11 +407,17 @@ vi.mock("@/lib/ai/tools", () => ({
 vi.mock("@/lib/ai/knowledge", () => ({ buildKnowledgeTool: () => ({}) }));
 vi.mock("@/lib/whatsapp/meta-client", () => ({ sendTypingIndicator: vi.fn().mockResolvedValue(undefined) }));
 
+// M6 (16/11/2026, "Seba lee fotos y audios"): el turno espera las lecturas de adjuntos antes de cargar
+// el historial (`wait-readings.ts`); este archivo no prueba eso y su fake de `messages` no
+// conoce esa consulta, así que la espera se finge sin pendientes.
+vi.mock("@/lib/ai/wait-readings", () => ({ esperarLecturas: async () => ({ esperadoMs: 0, pendientes: 0 }) }));
+
 import { runAgentTurn } from "@/lib/ai/agent";
 import { runDelayTurn } from "@/lib/ai/delay-turn";
 import { cacheablePrefix } from "@/lib/ai/prompt";
 import { revealsIdentity } from "@/lib/ai/identity-guard";
 import {
+  TEXTO_COMPROBANTE_RECIBIDO,
   TEXTO_CONFIRMAR_INVENTARIO,
   TEXTO_ESPERA_DEMORA,
   TEXTO_PRECIO_A_CONFIRMAR,
@@ -784,6 +799,40 @@ describe("runDelayTurn — sin escalada en ningún camino (D2)", () => {
 
     expect(escalateConversationMock).not.toHaveBeenCalled();
     expect(resultado.enviado).toBe(true);
+  });
+
+  // M4 (16/11/2026, "Seba lee fotos y audios"): el camino del comprobante de
+  // pago escala en código en el turno normal, pero el turno por demora NUNCA
+  // escala (D2): un comprobante leído no cambia eso. El modelo lo ve como
+  // `[Foto del cliente: comprobante de pago]` y responde con el texto de espera.
+  it("un comprobante de pago leído tampoco escala en código: el turno sigue y responde", async () => {
+    const lcma = hace(12, NOW_ABIERTO);
+    state.history = [
+      {
+        sender_type: "customer",
+        content: null,
+        is_internal_note: false,
+        message_type: "image",
+        created_at: lcma,
+        id: "m1",
+        message_readings: {
+          status: "ok",
+          text: "Captura de una transferencia",
+          fields: {
+            tipo: "comprobante_pago",
+            es_comprobante_pago: true,
+            texto_visible: "",
+            comprobante: { monto: 100, moneda: "USD", referencia: "123456", banco: "Banesco", fecha: null },
+          },
+        },
+      },
+    ];
+
+    const resultado = await correr();
+
+    expect(escalateConversationMock).not.toHaveBeenCalled();
+    expect(resultado.enviado).toBe(true);
+    expect(textosEnviados()).not.toContain(TEXTO_COMPROBANTE_RECIBIDO);
   });
 });
 

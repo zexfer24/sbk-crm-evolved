@@ -1952,7 +1952,10 @@ function escalationInstruction(status: BusinessStatus | undefined, assignedName:
   return `No hay ningún asesor conectado ahora y la tienda está cerrada. Dile al cliente, con calidez, que su caso quedó registrado y que un asesor le escribe ${status.nextOpening.dayLabel} a partir de las ${status.nextOpening.time}; agradécele la paciencia. NO prometas que lo atienden enseguida.${RECORDATORIO_SALUDO}`;
 }
 
-/** Los siete motivos de siempre, sin asesor asignado todavía. */
+/**
+ * Los siete motivos de siempre más los dos de M4 ("Seba lee fotos y audios",
+ * 16/11/2026: `comprobante_pago` y `no_pudo_leer`), sin asesor asignado todavía.
+ */
 const MOTIVOS_COMPLETOS = [
   "devolucion",
   "queja",
@@ -1961,6 +1964,8 @@ const MOTIVOS_COMPLETOS = [
   "confirmar_inventario",
   "sin_stock",
   "no_identificado",
+  "comprobante_pago",
+  "no_pudo_leer",
 ] as const;
 
 /**
@@ -1976,8 +1981,15 @@ const MOTIVOS_COMPLETOS = [
  * este único valor: la única razón real para volver a tocar la herramienta
  * es que el cliente ACABA de confirmar que quiere comprar (deja
  * `deal_status: "in_progress"`, ver `escalate.ts`), no repetir el pase.
+ *
+ * M4 (16/11/2026, "Seba lee fotos y audios"): suma dos motivos que SÍ aportan
+ * algo nuevo aunque el chat ya tenga dueño — el cliente avisa que ya pagó
+ * (`comprobante_pago`: el asesor tiene que verificarlo, y Seba nunca lo
+ * confirma) o mandó adjuntos que no se pudieron leer (`no_pudo_leer`). Siguen
+ * sin volver a asignar a nadie (`escalate.ts`, rama `yaAsignado`: solo deja una
+ * nota), pero la nota le dice al asesor a qué viene el aviso.
  */
-const MOTIVOS_RESTRINGIDOS = ["intencion_compra"] as const;
+const MOTIVOS_RESTRINGIDOS = ["intencion_compra", "comprobante_pago", "no_pudo_leer"] as const;
 
 const RESUMEN_DESCRIBE =
   // T1 (21/9/2026): tope de 600 caracteres — las dos espirales medidas en
@@ -2120,12 +2132,12 @@ export function buildEscalateTool(
       // única forma de pasar el caso" (ya está pasado) y pasa a ser
       // solamente el gatillo para marcar que el cliente confirmó la compra.
       description:
-        "Este chat YA tiene un asesor asignado que todavía no le escribió al cliente. Úsala SOLO cuando el cliente ACABA de confirmar que quiere comprar (motivo intencion_compra), para dejar marcada la venta en curso — no la llames para volver a pasar el caso ni para pedir que lo atiendan: el asesor ya lo tiene.",
+        "Este chat YA tiene un asesor asignado que todavía no le escribió al cliente. Úsala SOLO en tres casos: el cliente ACABA de confirmar que quiere comprar (motivo intencion_compra, deja marcada la venta en curso), el cliente avisa que ya pagó o ya compró (motivo comprobante_pago), o mandó una foto o un audio que no se pudo leer y ya se le pidió que lo escribiera (motivo no_pudo_leer). No la llames para volver a pasar el caso ni para pedir que lo atiendan: el asesor ya lo tiene.",
       inputSchema: z.object({
         motivo: z
           .enum(MOTIVOS_RESTRINGIDOS)
           .describe(
-            "El único motivo posible en este chat: intencion_compra, cuando el cliente acaba de confirmar que quiere comprar. Deja marcada la venta en curso; no vuelve a pasar el caso, el asesor ya lo tiene."
+            "Los únicos motivos posibles en este chat: intencion_compra (el cliente acaba de confirmar que quiere comprar; deja marcada la venta en curso), comprobante_pago (el cliente mandó el comprobante o dice que ya pagó o ya compró; nunca le confirmes el pago ni le agradezcas la compra: lo verifica un asesor) y no_pudo_leer (mandó una foto o un audio que no se pudo leer y ya se le pidió que lo escribiera). No vuelven a pasar el caso, el asesor ya lo tiene."
           ),
         resumen: z.string().max(600).describe(RESUMEN_DESCRIBE),
         categoriaReclamo: categoriaReclamoField(),
@@ -2172,7 +2184,7 @@ export function buildEscalateTool(
       motivo: z
         .enum(MOTIVOS_COMPLETOS)
         .describe(
-          "Por qué se escala: devolucion (quiere devolver o cambiar algo que ya compró), queja (reclamo), intencion_compra (quiere comprar y hay que cobrarle), seguimiento (avisar cuando llegue un repuesto agotado, una lista larga o de mayoreo, o cualquier postventa que no sea devolución ni queja), confirmar_inventario (el catálogo mostró un repuesto con existencia y hay que confirmar el inventario físico), sin_stock (el catálogo marca cero unidades), no_identificado (no se encontró el repuesto en el catálogo, o no quedó claro cuál es)."
+          "Por qué se escala: devolucion (quiere devolver o cambiar algo que ya compró), queja (reclamo), intencion_compra (quiere comprar y hay que cobrarle), seguimiento (avisar cuando llegue un repuesto agotado, una lista larga o de mayoreo, o cualquier postventa que no sea devolución ni queja), confirmar_inventario (el catálogo mostró un repuesto con existencia y hay que confirmar el inventario físico), sin_stock (el catálogo marca cero unidades), no_identificado (no se encontró el repuesto en el catálogo, o no quedó claro cuál es), comprobante_pago (el cliente mandó el comprobante o dice que ya pagó o ya compró; nunca le confirmes el pago ni le agradezcas la compra: lo verifica un asesor), no_pudo_leer (mandó una foto o un audio que no se pudo leer y ya se le pidió que lo escribiera)."
         ),
       resumen: z.string().max(600).describe(RESUMEN_DESCRIBE),
       categoriaReclamo: categoriaReclamoField(),

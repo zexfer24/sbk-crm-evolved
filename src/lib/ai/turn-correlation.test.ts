@@ -279,6 +279,11 @@ vi.mock("@/lib/ai/tools", () => ({
 
 vi.mock("@/lib/ai/knowledge", () => ({ buildKnowledgeTool: () => ({}) }));
 
+// M6 (16/11/2026, "Seba lee fotos y audios"): el turno espera las lecturas de adjuntos antes de cargar
+// el historial (`wait-readings.ts`); este archivo no prueba eso y su fake de `messages` no
+// conoce esa consulta, así que la espera se finge sin pendientes.
+vi.mock("@/lib/ai/wait-readings", () => ({ esperarLecturas: async () => ({ esperadoMs: 0, pendientes: 0 }) }));
+
 import { runAgentTurn } from "@/lib/ai/agent";
 import { NonRetryableTurnError } from "@/lib/ai/turn-delivery";
 import { buildTurnTarget, TurnIdentityError, type AgentConversation } from "@/lib/ai/turn-target";
