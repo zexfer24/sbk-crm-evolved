@@ -38,34 +38,60 @@ export type Database = {
         Row: {
           ai_globally_enabled: boolean
           business_hours: Json
+          // T2 (16/11/2026, migración 20261116030000): configuración de Seba v2.
+          // `seba_v2_modo` nace 'apagado' y nadie lo lee hasta la entrega 3.
+          cashea_datos_text: string
+          cashea_minimo_usd: number
+          cashea_seis_cuotas_desde_usd: number
           daily_spend_cap_usd: number | null
           // T10a (29/9/2026, migración 20260929020000): interruptor de la demora
           // del asesor. Nace apagado; `demora_activa_desde` es el corte del backlog.
           demora_activa: boolean
           demora_activa_desde: string | null
           id: boolean
+          seba_v2_modo: string
+          shadow_daily_cap_usd: number
+          shadow_sample_pct: number
           updated_at: string
           updated_by: string | null
+          welcome_followups: string[]
+          welcome_text: string
         }
         Insert: {
           ai_globally_enabled?: boolean
           business_hours?: Json
+          cashea_datos_text?: string
+          cashea_minimo_usd?: number
+          cashea_seis_cuotas_desde_usd?: number
           daily_spend_cap_usd?: number | null
           demora_activa?: boolean
           demora_activa_desde?: string | null
           id?: boolean
+          seba_v2_modo?: string
+          shadow_daily_cap_usd?: number
+          shadow_sample_pct?: number
           updated_at?: string
           updated_by?: string | null
+          welcome_followups?: string[]
+          welcome_text?: string
         }
         Update: {
           ai_globally_enabled?: boolean
           business_hours?: Json
+          cashea_datos_text?: string
+          cashea_minimo_usd?: number
+          cashea_seis_cuotas_desde_usd?: number
           daily_spend_cap_usd?: number | null
           demora_activa?: boolean
           demora_activa_desde?: string | null
           id?: boolean
+          seba_v2_modo?: string
+          shadow_daily_cap_usd?: number
+          shadow_sample_pct?: number
           updated_at?: string
           updated_by?: string | null
+          welcome_followups?: string[]
+          welcome_text?: string
         }
         Relationships: [
           {
@@ -374,6 +400,9 @@ export type Database = {
       }
       agents: {
         Row: {
+          // T2 (16/11/2026, migración 20261116030000): áreas que atiende el asesor;
+          // solo un supervisor/admin las cambia (trigger agents_role_guard).
+          areas: string[]
           avatar_url: string | null
           created_at: string
           display_name: string
@@ -385,6 +414,7 @@ export type Database = {
           updated_at: string
         }
         Insert: {
+          areas?: string[]
           avatar_url?: string | null
           created_at?: string
           display_name: string
@@ -396,6 +426,7 @@ export type Database = {
           updated_at?: string
         }
         Update: {
+          areas?: string[]
           avatar_url?: string | null
           created_at?: string
           display_name?: string
@@ -941,6 +972,9 @@ export type Database = {
           deal_verified: boolean
           deal_verified_at: string | null
           deal_verified_by: string | null
+          // T2 (16/11/2026, migración 20261116030000): las escribirá Seba v2 en la
+          // entrega 3; hoy nadie las escribe.
+          escalation_area: string | null
           handoff_confirmation_pending_at: string | null
           id: string
           intent: string | null
@@ -964,6 +998,7 @@ export type Database = {
           new_since_ai_resume: boolean | null
           order_id: string | null
           referral: Json | null
+          seba_pedido: Json | null
           status: string
           manually_unread: boolean
           unread_count: number
@@ -990,6 +1025,7 @@ export type Database = {
           deal_verified?: boolean
           deal_verified_at?: string | null
           deal_verified_by?: string | null
+          escalation_area?: string | null
           handoff_confirmation_pending_at?: string | null
           id?: string
           intent?: string | null
@@ -1003,6 +1039,7 @@ export type Database = {
           last_reply_sender?: string | null
           order_id?: string | null
           referral?: Json | null
+          seba_pedido?: Json | null
           status?: string
           manually_unread?: boolean
           unread_count?: number
@@ -1029,6 +1066,7 @@ export type Database = {
           deal_verified?: boolean
           deal_verified_at?: string | null
           deal_verified_by?: string | null
+          escalation_area?: string | null
           handoff_confirmation_pending_at?: string | null
           id?: string
           intent?: string | null
@@ -1042,6 +1080,7 @@ export type Database = {
           last_reply_sender?: string | null
           order_id?: string | null
           referral?: Json | null
+          seba_pedido?: Json | null
           status?: string
           manually_unread?: boolean
           unread_count?: number
