@@ -1085,6 +1085,29 @@
   line-clamp: 6;
 }
 
+/* "Ver más": abre el texto completo de una lectura recortada (16/11/2026).
+   El foco de teclado lo da la regla genérica `.crm button:focus-visible`. */
+.crm-reading-text[data-abierto="true"] {
+  display: block;
+  overflow: visible;
+  -webkit-line-clamp: unset;
+  line-clamp: unset;
+}
+
+.crm-reading-more {
+  padding: 0;
+  border: 0;
+  background: none;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--lm-muted);
+  cursor: pointer;
+}
+
+.crm-reading-more:hover {
+  text-decoration: underline;
+}
+
 .crm-reading-pill {
   display: inline-flex;
   align-items: center;

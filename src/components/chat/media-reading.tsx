@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import type { MessageReading } from "@/lib/types";
 import { LECTURA_PENDIENTE_VIGENTE_MS, vistaDeLectura } from "@/lib/media-reading-view";
 
@@ -10,6 +10,53 @@ interface MediaReadingProps {
   ahoraMs?: number;
   /** "Foto 2": en la galería, qué foto es la que se lee. */
   prefijo?: string;
+}
+
+/**
+ * Un párrafo de lectura recortado a 6 líneas por CSS. Si el texto no cabe, un
+ * botón "Ver más" lo abre completo (antes solo se veía en el `title`, un
+ * tooltip: una transcripción larga de una nota de voz no se podía leer).
+ * Se mide después de pintar (jsdom no calcula layout: los tests definen las
+ * medidas a mano) y se vuelve a medir si cambia el texto.
+ */
+function TextoRecortable({ title, children }: { title: string; children: ReactNode }) {
+  const ref = useRef<HTMLParagraphElement>(null);
+  const [recortado, setRecortado] = useState(false);
+  const [abierto, setAbierto] = useState(false);
+
+  useLayoutEffect(() => {
+    const el = ref.current;
+    if (!el || abierto) return;
+    setRecortado(el.scrollHeight > el.clientHeight + 1);
+  }, [title, abierto]);
+
+  return (
+    <>
+      <p
+        ref={ref}
+        className="crm-reading-text"
+        title={title}
+        data-abierto={abierto ? "true" : undefined}
+      >
+        {children}
+      </p>
+      {(recortado || abierto) && (
+        <button
+          type="button"
+          className="crm-reading-more"
+          aria-expanded={abierto}
+          onClick={(event) => {
+            // Un clic aquí no debe llegar a la burbuja (menú, selección, etc.).
+            event.stopPropagation();
+            setAbierto((valor) => !valor);
+          }}
+          onContextMenu={(event) => event.stopPropagation()}
+        >
+          {abierto ? "Ver menos" : "Ver más"}
+        </button>
+      )}
+    </>
+  );
 }
 
 /**
@@ -57,9 +104,7 @@ export function MediaReading({ reading, ahoraMs, prefijo }: MediaReadingProps) {
       <div className="crm-reading" data-kind="audio">
         {encabezado}
         <span className="crm-reading-label">Transcripción automática</span>
-        <p className="crm-reading-text" title={vista.texto}>
-          {vista.texto}
-        </p>
+        <TextoRecortable title={vista.texto}>{vista.texto}</TextoRecortable>
       </div>
     );
   }
@@ -67,13 +112,13 @@ export function MediaReading({ reading, ahoraMs, prefijo }: MediaReadingProps) {
   return (
     <div className="crm-reading" data-kind="image">
       {encabezado}
-      <p className="crm-reading-text" title={vista.descripcion}>
+      <TextoRecortable title={vista.descripcion}>
         <span className="crm-reading-label">Lectura automática:</span> {vista.descripcion}
-      </p>
+      </TextoRecortable>
       {vista.textoVisible && (
-        <p className="crm-reading-text" title={vista.textoVisible}>
+        <TextoRecortable title={vista.textoVisible}>
           Texto visible: &quot;{vista.textoVisible}&quot;
-        </p>
+        </TextoRecortable>
       )}
       {vista.pastilla && <span className="crm-reading-pill">{vista.pastilla}</span>}
       {vista.detalle && <span className="crm-reading-detail">{vista.detalle}</span>}

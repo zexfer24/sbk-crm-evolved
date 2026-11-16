@@ -34,6 +34,7 @@ Es el bloque M (M1 a M6) de los briefs del VPS. La entrega 0 (T0, el build) ya e
 | 5 | El asesor ve la transcripción y la lectura bajo cada audio e imagen del cliente, y aparecen en vivo | No | No | UI |
 | 6 | Las correcciones de la revisión de código | No | No | Servidor y UI |
 | 7 | El glosario, CLAUDE.md, la guía de producción y este reporte | No | No | Documentos |
+| 8 | Una lectura larga se puede abrir completa con «Ver más» | No | No | UI |
 
 Costo de despliegue: **rebuild completo (~5 min)**, porque toca la UI.
 
@@ -107,10 +108,20 @@ Costo de despliegue: **rebuild completo (~5 min)**, porque toca la UI.
   leído) y los datos que salen al proveedor.
 - **`code-review` en nivel high:** 10 hallazgos; 7 corregidos en el commit 6 y 3 anotados abajo.
 
-**Pendiente:** la revisión visual del panel en el navegador (los cuatro estados, claro y oscuro,
-390 px). No se hizo porque Docker estaba en pausa y sin base local no hay chat que mirar; jsdom no
-calcula layout. El CI no corre sobre ramas `entrega/`: el job de migraciones corre cuando `main`
-avance.
+- **Revisión en el navegador** (`next dev` contra la base local, con siete mensajes de prueba y sus
+  lecturas sembradas por SQL, borrados al terminar):
+  - los estados: audio leído, «Leyendo…», audio fallido (no muestra nada), foto de repuesto con
+    texto visible, comprobante con su pastilla y lo leído, y una galería con «Foto 1» y «Foto 2»;
+  - modo oscuro y claro a 1440 px, con captura; la pastilla se distingue en los dos;
+  - a 390 px las lecturas caben en la burbuja y nada desborda (medido en el DOM: la captura a ese
+    ancho no salió porque la ventana estaba oculta);
+  - **en vivo:** una lectura pasada por SQL de `fallo` a `pendiente` y a `ok` cambió la burbuja a
+    «Leyendo…» y después a la transcripción, sin recargar, sin volver a pedir mensajes y sin errores
+    en la consola. Eso prueba la RLS de lectura y la publicación en Realtime contra Supabase real;
+  - una transcripción larga se cortaba a 6 líneas con el texto completo solo en el tooltip: se
+    agregó «Ver más» (commit 8) y se comprobó que abre y cierra.
+
+El CI no corre sobre ramas `entrega/`: el job de migraciones corre cuando `main` avance.
 
 ## Lo que no se pudo verificar acá
 
