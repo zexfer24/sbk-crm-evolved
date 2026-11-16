@@ -221,4 +221,22 @@ describe("SebaV2Panel — solo lectura, no disponible y datos nuevos", () => {
     rerender(<SebaV2Panel {...props} config={{ modo: "sombra", shadowDailyCapUsd: 8, shadowSamplePct: 30 }} />);
     expect(screen.getByLabelText("Muestreo (%)")).toHaveValue("205");
   });
+
+  it("tras guardar «7,5» el borrador queda igual a lo guardado y un refresco posterior con 10 sí lo actualiza (R1/C2, 16/11/2026)", async () => {
+    const user = setup();
+    const { rerender } = renderPanel();
+    const props = { canEdit: true, onModeChange, onSaveLimits };
+
+    const tope = screen.getByLabelText("Tope diario de la sombra (USD)");
+    await user.clear(tope);
+    await user.type(tope, "7,5");
+    await user.click(screen.getByRole("button", { name: "Guardar límites" }));
+    await waitFor(() => expect(onSaveLimits).toHaveBeenCalledWith({ capUsd: 7.5, samplePct: 100 }));
+
+    rerender(<SebaV2Panel {...props} config={{ ...CONFIG, shadowDailyCapUsd: 7.5 }} />);
+    expect(screen.getByLabelText("Tope diario de la sombra (USD)")).toHaveValue("7.5");
+
+    rerender(<SebaV2Panel {...props} config={{ ...CONFIG, shadowDailyCapUsd: 10 }} />);
+    expect(screen.getByLabelText("Tope diario de la sombra (USD)")).toHaveValue("10");
+  });
 });

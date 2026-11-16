@@ -148,6 +148,11 @@ export function SebaV2Panel({ config, canEdit, onModeChange, onSaveLimits }: Seb
     setIsSavingLimits(true);
     try {
       await onSaveLimits({ capUsd: parsed.capUsd, samplePct: parsed.samplePct });
+      // 16/11/2026 (revisión de código): el borrador pasa a la forma canónica de
+      // lo guardado ("7,5" → "7.5"). Si se queda con lo tecleado, el padre
+      // devuelve 7.5, el borrador ("7,5") parece "cambios sin guardar" para
+      // siempre y los refrescos del servidor ya no lo actualizan.
+      setLimits({ capUsd: String(parsed.capUsd), samplePct: String(parsed.samplePct) });
       toast.success("Límites de la sombra guardados.");
     } catch (error) {
       toast.danger(configErrorMessage(error, "No se pudieron guardar los límites de la sombra."));

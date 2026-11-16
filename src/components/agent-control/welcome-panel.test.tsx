@@ -235,4 +235,25 @@ describe("WelcomePanel — datos nuevos del padre", () => {
     );
     expect(screen.getByLabelText("Texto de bienvenida")).toHaveValue("Texto nuevo más");
   });
+
+  it("tras guardar con espacios en los bordes, el borrador queda igual a lo guardado y un refresco posterior sí lo actualiza (R1/C1, 16/11/2026)", async () => {
+    const user = setup();
+    const { rerender } = renderPanel();
+
+    const texto = screen.getByLabelText("Texto de bienvenida");
+    await user.clear(texto);
+    await user.type(texto, "Hola ");
+    await user.click(screen.getByRole("button", { name: "Guardar bienvenida" }));
+    await waitFor(() => expect(onSave).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(toastSuccess).toHaveBeenCalled());
+
+    // El padre vuelve a pasar lo guardado (normalizado, sin el espacio final).
+    rerender(<WelcomePanel config={{ ...CONFIG, welcomeText: "Hola" }} canEdit onSave={onSave} />);
+    expect(screen.getByLabelText("Texto de bienvenida")).toHaveValue("Hola");
+    expect(screen.getByRole("button", { name: "Guardar bienvenida" })).toBeDisabled();
+
+    // Y sin cambios sin guardar, un texto nuevo del servidor sí entra.
+    rerender(<WelcomePanel config={{ ...CONFIG, welcomeText: "Texto del servidor" }} canEdit onSave={onSave} />);
+    expect(screen.getByLabelText("Texto de bienvenida")).toHaveValue("Texto del servidor");
+  });
 });

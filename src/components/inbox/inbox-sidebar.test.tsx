@@ -1,6 +1,6 @@
 /** @vitest-environment jsdom */
 import { describe, expect, it, vi, beforeEach, afterEach } from "vitest";
-import { render, screen, fireEvent, within, waitFor } from "@testing-library/react";
+import { render, screen, fireEvent, within, waitFor, act } from "@testing-library/react";
 import type { ComponentProps } from "react";
 import type { Agent, Conversation, Tag } from "@/lib/types";
 import { fetchConversations, fetchPinnedIds, fetchUnassignedConversations, INBOX_PAGE_SIZE } from "@/lib/data";
@@ -2450,6 +2450,82 @@ describe("InboxSidebar — la píldora «Área» y sus chips", () => {
       })
     );
     expect(activeChipLabel()).toBe("Todas");
+  });
+
+  // R1/C5 (revisión de código, 16/11/2026): `serverRows` solo guardaba la
+  // píldora, no el chip; al cambiar de chip las filas del chip anterior seguían
+  // contando como "ya resuelto" y, filtradas en memoria, daban un vacío falso.
+  it("al cambiar de chip con la consulta en vuelo muestra «Buscando…», no el vacío del área; al resolver vacía, sí", async () => {
+    let resolverReclamos: (rows: Conversation[]) => void = () => {};
+    vi.mocked(fetchConversations).mockImplementation(async (_supabase, options) => {
+      if (options?.escalationArea === "reclamos") {
+        return new Promise<Conversation[]>((resolve) => {
+          resolverReclamos = resolve;
+        });
+      }
+      if (options?.escalationArea === "pagos") return [PAGOS];
+      return [PAGOS, VENTAS];
+    });
+    const { container } = renderSidebar(JEFA);
+    irA("Área");
+    irAChip("Pagos");
+    await waitFor(() => expect(visibleIds(container)).toEqual(["caso-pagos"]));
+
+    irAChip("Reclamos");
+
+    expect(screen.getByText("Buscando…")).toBeTruthy();
+    expect(screen.queryByText("No hay conversaciones en el área de reclamos.")).toBeNull();
+
+    await act(async () => {
+      resolverReclamos([]);
+    });
+    expect(await screen.findByText("No hay conversaciones en el área de reclamos.")).toBeTruthy();
+    expect(screen.queryByText("Buscando…")).toBeNull();
+  });
+
+  // R1/C6 (revisión de código, 16/11/2026): la cabecera del eco del pulso se
+  // pide con el chip activo en ese instante; si el chip cambia mientras viaja,
+  // su respuesta es de OTRO chip y no puede pisar las filas del nuevo.
+  it("el eco de un pulso pedido con otro chip se descarta al resolver y no pisa la lista del chip nuevo", async () => {
+    const PAGOS_2 = conversation({ id: "caso-pagos-2", escalationArea: "pagos" });
+    let resolverEco: (rows: Conversation[]) => void = () => {};
+    let llamadasTodas = 0;
+    vi.mocked(fetchConversations).mockImplementation(async (_supabase, options) => {
+      if (options?.escalationArea === "pagos") return [PAGOS_2, PAGOS];
+      if (options?.escalationArea === "todas") {
+        llamadasTodas += 1;
+        if (llamadasTodas === 1) return [VENTAS, PAGOS, PAGOS_2];
+        // El eco del pulso: su cabecera de «Todas» queda en vuelo.
+        return new Promise<Conversation[]>((resolve) => {
+          resolverEco = resolve;
+        });
+      }
+      return [];
+    });
+    const props = {
+      conversations: CONVERSATIONS,
+      selectedId: null,
+      onSelect: () => {},
+      currentAgent: JEFA,
+      allTags: ALL_TAGS,
+      bcvRate: null,
+    };
+    const { container, rerender } = render(<InboxSidebar {...props} livePulse={0} />);
+    irA("Área");
+    await waitFor(() => expect(visibleIds(container).sort()).toEqual(["caso-pagos", "caso-pagos-2", "caso-ventas"]));
+
+    rerender(<InboxSidebar {...props} livePulse={1} />);
+    await waitFor(() => expect(llamadasTodas).toBe(2));
+
+    irAChip("Pagos");
+    await waitFor(() => expect(visibleIds(container).sort()).toEqual(["caso-pagos", "caso-pagos-2"]));
+
+    // La cabecera vieja de «Todas» no trae a PAGOS_2 (hay filas más recientes
+    // de otras áreas): aplicada sobre «Pagos» la sacaría de la lista.
+    await act(async () => {
+      resolverEco([VENTAS, PAGOS]);
+    });
+    expect(visibleIds(container).sort()).toEqual(["caso-pagos", "caso-pagos-2"]);
   });
 });
 

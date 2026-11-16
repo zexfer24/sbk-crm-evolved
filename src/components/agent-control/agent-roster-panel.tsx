@@ -28,8 +28,13 @@ interface AgentsRosterPanelProps {
    * casilla, porque cuatro vacías parecerían "sin áreas" cuando es "no sé".
    */
   areasByAgent: Record<string, Area[]> | null;
-  /** El asesor cuyas áreas se están guardando: sus casillas se deshabilitan hasta que termine. */
-  savingAreasAgentId: string | null;
+  /**
+   * Los asesores cuyas áreas se están guardando: sus casillas se deshabilitan
+   * hasta que termine SU guardado. Es un conjunto y no un id suelto porque dos
+   * guardados pueden estar en vuelo a la vez (16/11/2026, revisión de código):
+   * con un solo id, terminar el de uno liberaba las casillas del otro.
+   */
+  savingAreasAgentIds: ReadonlySet<string>;
   onToggleArea: (agent: Agent, area: Area, on: boolean) => void;
 }
 
@@ -52,7 +57,7 @@ export function AgentsRosterPanel({
   currentAgentId,
   onToggleActive,
   areasByAgent,
-  savingAreasAgentId,
+  savingAreasAgentIds,
   onToggleArea,
 }: AgentsRosterPanelProps) {
   // La caja (13/10/2026) solo ve el Inventario y no entra al reparto: no es un
@@ -105,7 +110,7 @@ export function AgentsRosterPanel({
             // A diferencia del interruptor del reparto, las áreas SOLO las cambia
             // un supervisor o admin (un trigger lo impone en la base): ni el
             // propio asesor puede tocar las suyas.
-            const areasLocked = !canManageAll || savingAreasAgentId === agent.id;
+            const areasLocked = !canManageAll || savingAreasAgentIds.has(agent.id);
 
             return (
               <div className="ac-agent-card" key={agent.id}>

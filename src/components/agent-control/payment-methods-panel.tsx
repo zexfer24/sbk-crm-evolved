@@ -138,6 +138,14 @@ export function PaymentMethodsPanel({
     }
   }
 
+  // Y para que, si esa misma clave reaparece más tarde, el formulario viejo no
+  // resucite, el estado huérfano se descarta durante el render (mismo patrón
+  // «ajustar estado» de arriba; sin useEffect).
+  if (form !== null && form.editingKey !== null && !methods.some((m) => m.key === form.editingKey)) {
+    setForm(null);
+    setErrors({});
+  }
+
   const id = (name: string) => `${uid}-${name}`;
 
   // ----------------------------- formas de contado -----------------------------
@@ -395,6 +403,14 @@ export function PaymentMethodsPanel({
         minimoUsd: parsed.minimoUsd,
         seisCuotasDesdeUsd: parsed.seisCuotasDesdeUsd,
       });
+      // 16/11/2026 (revisión de código): el borrador pasa a la forma canónica de
+      // lo guardado ("25,5" → "25.5"); si no, queda como "cambios sin guardar"
+      // para siempre y los refrescos del servidor ya no lo actualizan.
+      setCasheaDraft({
+        datosText: parsed.datosText,
+        minimoUsd: String(parsed.minimoUsd),
+        seisCuotasDesdeUsd: String(parsed.seisCuotasDesdeUsd),
+      });
       toast.success("Datos de Cashea guardados.");
     } catch (error) {
       toast.danger(configErrorMessage(error, "No se pudieron guardar los datos de Cashea."));
@@ -405,7 +421,12 @@ export function PaymentMethodsPanel({
 
   // --------------------------------- vista ----------------------------------
 
-  const editingKey = form?.editingKey ?? null;
+  // 16/11/2026 (revisión de código): si el formulario edita una forma que ya no
+  // está en la lista (otro supervisor la borró y llegó el refresco), se trata
+  // como cerrado: antes el formulario desaparecía de la lista pero `form`
+  // seguía no nulo y «Nueva forma de pago» quedaba oculto sin forma de volver.
+  const formVisible = form !== null && (form.editingKey === null || methods.some((m) => m.key === form.editingKey));
+  const editingKey = formVisible ? form.editingKey : null;
 
   return (
     <section className="dash-panel ac-sv-pay">
@@ -416,7 +437,7 @@ export function PaymentMethodsPanel({
       <div className="ac-sv-body">
         <p className="ac-sv-note">Lo que Seba le entrega al cliente cuando elige cómo pagar de contado.</p>
 
-        {canEdit && form === null && (
+        {canEdit && !formVisible && (
           <div className="ac-sv-actions">
             <Button variant="secondary" size="sm" onPress={startCreate}>
               <Plus size={14} />
@@ -425,7 +446,7 @@ export function PaymentMethodsPanel({
           </div>
         )}
 
-        {canEdit && form !== null && editingKey === null && renderForm()}
+        {canEdit && formVisible && editingKey === null && renderForm()}
 
         {methods.length === 0 ? (
           <div className="dash-empty">
@@ -534,7 +555,7 @@ export function PaymentMethodsPanel({
                     id={id("cashea-texto")}
                     value={casheaDraft.datosText}
                     onChange={(e) => handleCasheaChange("datosText", e.target.value)}
-                    rows={6}
+                    rows={8}
                     disabled={!canEdit}
                     fullWidth
                   />

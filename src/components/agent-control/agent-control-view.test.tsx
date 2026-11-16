@@ -23,7 +23,7 @@ import type { Agent, AgentSettings, AgentTurn, Conversation, ModelUsageSummary }
 const stubs = vi.hoisted(() => ({
   roster: null as null | {
     areasByAgent: Record<string, string[]> | null;
-    savingAreasAgentId: string | null;
+    savingAreasAgentIds: ReadonlySet<string>;
     onToggleArea: (agent: { id: string; displayName: string }, area: string, on: boolean) => void;
   },
   seba: null as null | {
@@ -922,6 +922,21 @@ describe("AgentControlView — pestaña «Seba v2» (Entrega 2, 16/11/2026)", ()
     await vi.waitFor(() => expect(stubs.pagos?.methods).toEqual([{ key: "zelle" }]), { timeout: 5000 });
     expect(stubs.seba?.config?.modo).toBe("apagado");
   });
+
+  it("un re-render de la vista que no cambia la configuración conserva la IDENTIDAD de cashea (R1/C8, 16/11/2026)", async () => {
+    await abrirSeba();
+    const antes = stubs.pagos?.cashea;
+    expect(antes).not.toBeNull();
+
+    // La lectura de la configuración falla (queda el estado anterior) pero la
+    // de formas de pago sí resuelve: la vista se vuelve a pintar sin tocar sebaV2Config.
+    fetchSebaV2ConfigMock.mockRejectedValueOnce(new Error("timeout"));
+    fetchPaymentMethodsMock.mockResolvedValueOnce([{ key: "zelle" }]);
+    realtime.handlers["agent_settings"]();
+    await vi.waitFor(() => expect(stubs.pagos?.methods).toEqual([{ key: "zelle" }]), { timeout: 5000 });
+
+    expect(stubs.pagos?.cashea).toBe(antes);
+  });
 });
 
 describe("AgentControlView — áreas por asesor (Entrega 2, 16/11/2026)", () => {
@@ -949,7 +964,7 @@ describe("AgentControlView — áreas por asesor (Entrega 2, 16/11/2026)", () =>
 
     expect(setAgentAreasMock).toHaveBeenCalledWith(expect.anything(), "agent-1", ["ventas", "envios", "reclamos"]);
     expect(stubs.roster?.areasByAgent?.["agent-1"]).toEqual(["ventas", "envios", "reclamos"]);
-    expect(stubs.roster?.savingAreasAgentId).toBeNull();
+    expect(stubs.roster?.savingAreasAgentIds.size).toBe(0);
   });
 
   it("si la base rechaza (ConfigWriteDeniedError) el toast dice por qué y las áreas vuelven a las cuatro", async () => {
@@ -964,7 +979,7 @@ describe("AgentControlView — áreas por asesor (Entrega 2, 16/11/2026)", () =>
       expect(toastDangerMock).toHaveBeenCalledWith("Solo un supervisor o administrador puede cambiar esto.")
     );
     expect(stubs.roster?.areasByAgent?.["agent-1"]).toEqual(["pagos", "ventas", "envios", "reclamos"]);
-    expect(stubs.roster?.savingAreasAgentId).toBeNull();
+    expect(stubs.roster?.savingAreasAgentIds.size).toBe(0);
   });
 
   it("sin lectura de áreas (null) alternar no escribe nada", async () => {
@@ -976,5 +991,55 @@ describe("AgentControlView — áreas por asesor (Entrega 2, 16/11/2026)", () =>
 
     expect(setAgentAreasMock).not.toHaveBeenCalled();
     expect(stubs.roster?.areasByAgent).toBeNull();
+  });
+
+  it("el candado de guardado es por asesor: terminar con uno no libera las casillas del otro (R1/C7, 16/11/2026)", async () => {
+    const beto = { ...currentAgent, id: "agent-2", displayName: "Beto" };
+    const pendientes = new Map<string, () => void>();
+    setAgentAreasMock.mockImplementation(
+      (_supabase: unknown, agentId: unknown) =>
+        new Promise<void>((resolver) => {
+          pendientes.set(agentId as string, resolver);
+        })
+    );
+    await abrirAgentes({
+      initialAgentAreas: { "agent-1": [...TODAS_LAS_AREAS], "agent-2": [...TODAS_LAS_AREAS] },
+    });
+
+    act(() => {
+      stubs.roster?.onToggleArea(currentAgent, "pagos", false);
+    });
+    act(() => {
+      stubs.roster?.onToggleArea(beto, "ventas", false);
+    });
+    expect(stubs.roster?.savingAreasAgentIds.has("agent-1")).toBe(true);
+    expect(stubs.roster?.savingAreasAgentIds.has("agent-2")).toBe(true);
+
+    await act(async () => {
+      pendientes.get("agent-1")?.();
+    });
+    expect(stubs.roster?.savingAreasAgentIds.has("agent-1")).toBe(false);
+    expect(stubs.roster?.savingAreasAgentIds.has("agent-2")).toBe(true);
+    // Cada asesor conserva SU cambio: uno no pisa al otro.
+    expect(stubs.roster?.areasByAgent?.["agent-1"]).toEqual(["ventas", "envios", "reclamos"]);
+    expect(stubs.roster?.areasByAgent?.["agent-2"]).toEqual(["pagos", "envios", "reclamos"]);
+
+    await act(async () => {
+      pendientes.get("agent-2")?.();
+    });
+    expect(stubs.roster?.savingAreasAgentIds.size).toBe(0);
+  });
+
+  it("dos cambios seguidos sobre el MISMO asesor, antes de repintar, no se pisan (R1/C7, 16/11/2026)", async () => {
+    await abrirAgentes();
+
+    await act(async () => {
+      stubs.roster?.onToggleArea(currentAgent, "pagos", false);
+      stubs.roster?.onToggleArea(currentAgent, "ventas", false);
+    });
+
+    expect(setAgentAreasMock).toHaveBeenNthCalledWith(1, expect.anything(), "agent-1", ["ventas", "envios", "reclamos"]);
+    expect(setAgentAreasMock).toHaveBeenNthCalledWith(2, expect.anything(), "agent-1", ["envios", "reclamos"]);
+    expect(stubs.roster?.areasByAgent?.["agent-1"]).toEqual(["envios", "reclamos"]);
   });
 });

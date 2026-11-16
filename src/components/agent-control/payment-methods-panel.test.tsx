@@ -429,4 +429,51 @@ describe("PaymentMethodsPanel — Cashea", () => {
     rerender(<PaymentMethodsPanel {...props} cashea={{ ...CASHEA, minimoUsd: 99 }} />);
     expect(screen.getByLabelText("Compra mínima (USD)")).toHaveValue("405");
   });
+
+  it("tras guardar «25,5» el borrador queda igual a lo guardado y un refresco posterior con 40 sí lo actualiza (R1/C3, 16/11/2026)", async () => {
+    const user = setup();
+    const { rerender } = renderPanel();
+    const props = { methods: [], canEdit: true, onCreate, onUpdate, onDelete, onToggleActive, onSaveCashea };
+
+    const minimo = screen.getByLabelText("Compra mínima (USD)");
+    await user.clear(minimo);
+    await user.type(minimo, "25,5");
+    await user.click(screen.getByRole("button", { name: "Guardar Cashea" }));
+    await waitFor(() => expect(onSaveCashea).toHaveBeenCalledTimes(1));
+
+    rerender(<PaymentMethodsPanel {...props} cashea={{ ...CASHEA, minimoUsd: 25.5 }} />);
+    expect(screen.getByLabelText("Compra mínima (USD)")).toHaveValue("25.5");
+
+    rerender(<PaymentMethodsPanel {...props} cashea={{ ...CASHEA, minimoUsd: 40 }} />);
+    expect(screen.getByLabelText("Compra mínima (USD)")).toHaveValue("40");
+  });
+});
+
+describe("PaymentMethodsPanel — formulario de edición huérfano", () => {
+  it("si otro supervisor borra la forma que se edita, el formulario se cierra solo y «Nueva forma de pago» abre un alta vacía (R1/C4, 16/11/2026)", async () => {
+    const user = setup();
+    const { rerender } = renderPanel({ methods: [method()] });
+
+    await user.click(screen.getByRole("button", { name: "Editar Pago móvil" }));
+    expect(screen.getByLabelText("Nombre")).toHaveValue("Pago móvil");
+
+    rerender(
+      <PaymentMethodsPanel
+        methods={[]}
+        cashea={CASHEA}
+        canEdit
+        onCreate={onCreate}
+        onUpdate={onUpdate}
+        onDelete={onDelete}
+        onToggleActive={onToggleActive}
+        onSaveCashea={onSaveCashea}
+      />
+    );
+
+    expect(screen.queryByLabelText("Nombre")).not.toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Nueva forma de pago" }));
+    expect(screen.getByLabelText("Nombre")).toHaveValue("");
+    expect(screen.getByLabelText("Clave")).toBeEnabled();
+    expect(screen.getByLabelText("Clave")).toHaveValue("");
+  });
 });

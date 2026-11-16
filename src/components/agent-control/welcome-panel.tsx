@@ -135,7 +135,14 @@ export function WelcomePanel({ config, canEdit, onSave }: WelcomePanelProps) {
     setErrors({});
     setIsSaving(true);
     try {
-      await onSave(normalizeWelcomeDraft(draft));
+      const normalizado = normalizeWelcomeDraft(draft);
+      await onSave(normalizado);
+      // 16/11/2026 (revisión de código): el borrador se iguala a lo guardado.
+      // Sin esto, un texto con espacios en los bordes quedaba "distinto" de lo
+      // que el padre devuelve ya normalizado, Guardar seguía habilitado y el
+      // borrador se leía como cambios sin guardar: los refrescos del servidor
+      // dejaban de entrar.
+      setDraft(normalizado);
       toast.success("Bienvenida guardada.");
     } catch (error) {
       // El borrador queda tal cual: nada se pierde.
@@ -174,7 +181,7 @@ export function WelcomePanel({ config, canEdit, onSave }: WelcomePanelProps) {
                     id={id("texto")}
                     value={draft.welcomeText}
                     onChange={(e) => handleTextChange(e.target.value)}
-                    rows={6}
+                    rows={8}
                     disabled={!canEdit}
                     fullWidth
                   />

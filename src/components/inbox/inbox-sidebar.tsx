@@ -613,14 +613,23 @@ export function InboxSidebar({
    */
   const [serverRows, setServerRows] = useState<{
     filter: InboxFilter;
+    /**
+     * El chip de «Área» con el que se pidió esta respuesta; `null` con
+     * cualquier otra píldora. 16/11/2026 (revisión de código): sin esto, al
+     * cambiar de chip las filas del chip anterior seguían contando como "ya
+     * resuelto" (mismo `filter`) y, filtradas en memoria, daban un vacío falso
+     * en vez de «Buscando…».
+     */
+    area: InboxAreaChoice | null;
     rows: ConversationSummary[];
-  } | null>(initialPendingRows ? { filter: "pending", rows: initialPendingRows } : null);
+  } | null>(initialPendingRows ? { filter: "pending", area: null, rows: initialPendingRows } : null);
 
   // Solo el estado que corresponde a la píldora activa: si `serverRows`
   // quedó con la respuesta de la píldora anterior (la consulta nueva sigue
   // en vuelo), se trata como si no hubiera nada todavía y la lista muestra
   // "Buscando…" en vez de las filas de la píldora que se acaba de dejar.
-  const resolvedState = serverRows?.filter === filter ? serverRows : null;
+  const resolvedState =
+    serverRows?.filter === filter && (filter !== "area" || serverRows.area === area) ? serverRows : null;
   const resolvedRows = resolvedState?.rows ?? null;
 
   /**
@@ -695,9 +704,11 @@ export function InboxSidebar({
           ),
     onPage: (rows, mode) =>
       setServerRows((current) => {
-        if (mode === "first") return { filter, rows };
-        if (!current || current.filter !== filter) return current;
-        return { filter, rows: mergeById(current.rows, rows) };
+        const rowsArea = filter === "area" ? area : null;
+        if (mode === "first") return { filter, area: rowsArea, rows };
+        // Una página siguiente de otro chip (o de otra píldora) no tiene dónde pegarse.
+        if (!current || current.filter !== filter || current.area !== rowsArea) return current;
+        return { filter, area: rowsArea, rows: mergeById(current.rows, rows) };
       }),
   });
 
@@ -827,8 +838,13 @@ export function InboxSidebar({
           // Cambié de píldora (o esta ya no es la consulta activa) mientras
           // la cabecera viajaba: esta respuesta no tiene dónde pintarse.
           if (!current || current.filter !== pillFilter) return current;
+          // Cambié de chip de «Área» mientras la cabecera viajaba (16/11/2026,
+          // revisión de código): su respuesta es de OTRO chip y reconciliarla
+          // sacaría de la lista filas del chip nuevo que su cabecera no alcanza.
+          if (pillFilter === "area" && current.area !== pillArea) return current;
           return {
             filter: pillFilter,
+            area: current.area,
             rows: reconcileHead(fresh, current.rows, { freshIsComplete: esSinDueno }),
           };
         });

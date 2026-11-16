@@ -63,7 +63,7 @@ describe("AgentsRosterPanel — la caja Sin asignar ya no se pinta", () => {
         currentAgentId="a1"
         onToggleActive={vi.fn()}
         areasByAgent={null}
-        savingAreasAgentId={null}
+        savingAreasAgentIds={new Set<string>()}
         onToggleArea={vi.fn()}
       />
     );
@@ -86,7 +86,7 @@ describe("AgentsRosterPanel — la caja Sin asignar ya no se pinta", () => {
         currentAgentId="a1"
         onToggleActive={vi.fn()}
         areasByAgent={null}
-        savingAreasAgentId={null}
+        savingAreasAgentIds={new Set<string>()}
         onToggleArea={vi.fn()}
       />
     );
@@ -110,7 +110,7 @@ describe("AgentsRosterPanel — la caja Sin asignar ya no se pinta", () => {
         currentAgentId="a1"
         onToggleActive={vi.fn()}
         areasByAgent={null}
-        savingAreasAgentId={null}
+        savingAreasAgentIds={new Set<string>()}
         onToggleArea={vi.fn()}
       />
     );
@@ -132,7 +132,7 @@ describe("AgentsRosterPanel — la caja Sin asignar ya no se pinta", () => {
         currentAgentId="a1"
         onToggleActive={vi.fn()}
         areasByAgent={null}
-        savingAreasAgentId={null}
+        savingAreasAgentIds={new Set<string>()}
         onToggleArea={vi.fn()}
       />
     );
@@ -160,7 +160,7 @@ describe("AgentsRosterPanel — la caja Sin asignar ya no se pinta", () => {
         currentAgentId="a1"
         onToggleActive={vi.fn()}
         areasByAgent={null}
-        savingAreasAgentId={null}
+        savingAreasAgentIds={new Set<string>()}
         onToggleArea={vi.fn()}
       />
     );
@@ -195,7 +195,7 @@ describe("AgentsRosterPanel — el reparto solo lo cambia quien puede", () => {
         currentAgentId="a1"
         onToggleActive={vi.fn()}
         areasByAgent={null}
-        savingAreasAgentId={null}
+        savingAreasAgentIds={new Set<string>()}
         onToggleArea={vi.fn()}
       />
     );
@@ -216,7 +216,7 @@ describe("AgentsRosterPanel — el reparto solo lo cambia quien puede", () => {
         currentAgentId="a1"
         onToggleActive={vi.fn()}
         areasByAgent={null}
-        savingAreasAgentId={null}
+        savingAreasAgentIds={new Set<string>()}
         onToggleArea={vi.fn()}
       />
     );
@@ -245,7 +245,7 @@ describe("AgentsRosterPanel — el rol caja no es un asesor", () => {
         currentAgentId="a1"
         onToggleActive={vi.fn()}
         areasByAgent={null}
-        savingAreasAgentId={null}
+        savingAreasAgentIds={new Set<string>()}
         onToggleArea={vi.fn()}
       />
     );
@@ -282,7 +282,7 @@ describe("AgentsRosterPanel — áreas por asesor", () => {
         currentAgentId="a1"
         onToggleActive={vi.fn()}
         areasByAgent={areas}
-        savingAreasAgentId={null}
+        savingAreasAgentIds={new Set<string>()}
         onToggleArea={onToggleArea}
         {...props}
       />
@@ -340,7 +340,7 @@ describe("AgentsRosterPanel — áreas por asesor", () => {
   });
 
   it("mientras se guardan las áreas de un asesor, sus casillas se deshabilitan y las del otro no", () => {
-    montar({ savingAreasAgentId: "a2" });
+    montar({ savingAreasAgentIds: new Set(["a2"]) });
 
     expect(screen.getByRole("checkbox", { name: "Pagos: Beto" })).toBeDisabled();
     expect(screen.getByRole("checkbox", { name: "Pagos: Ana" })).toBeEnabled();

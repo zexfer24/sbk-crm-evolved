@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Button, Modal, toast } from "@heroui/react";
 import { BookOpen, Bot, GraduationCap, KeyRound, Search, ShieldAlert, Sparkles, Users, Wrench, Zap } from "lucide-react";
 import type { BacklogCounts } from "@/lib/data";
@@ -356,7 +356,30 @@ export function AgentControlView({
   const [paymentMethods, setPaymentMethods] = useState(initialPaymentMethods);
   const [sebaV2Config, setSebaV2Config] = useState(initialSebaV2Config);
   const [agentAreas, setAgentAreasState] = useState(initialAgentAreas);
-  const [savingAreasAgentId, setSavingAreasAgentId] = useState<string | null>(null);
+  // 16/11/2026 (revisión de código): el candado de guardado es POR ASESOR. Con
+  // un solo id, un segundo guardado en vuelo pisaba al primero y terminar uno
+  // liberaba las casillas del otro. El Set se actualiza de forma inmutable.
+  const [savingAreasAgentIds, setSavingAreasAgentIds] = useState<ReadonlySet<string>>(() => new Set());
+  // Espejo del estado de áreas para que dos cambios seguidos, antes de que React
+  // repinte, parta cada uno de lo último y no de la copia vieja de su cierre.
+  const agentAreasRef = useRef(agentAreas);
+  useEffect(() => {
+    agentAreasRef.current = agentAreas;
+  }, [agentAreas]);
+  // 16/11/2026 (revisión de código): `cashea` conserva su identidad mientras no
+  // cambie la configuración; un objeto nuevo en cada render hacía que el panel
+  // de formas de pago lo viera como "datos nuevos del padre" sin que lo fueran.
+  const casheaSettings = useMemo(
+    () =>
+      sebaV2Config
+        ? {
+            datosText: sebaV2Config.casheaDatosText,
+            minimoUsd: sebaV2Config.casheaMinimoUsd,
+            seisCuotasDesdeUsd: sebaV2Config.casheaSeisCuotasDesdeUsd,
+          }
+        : null,
+    [sebaV2Config]
+  );
   const [togglingKillSwitch, setTogglingKillSwitch] = useState(false);
   const [confirmingAiOn, setConfirmingAiOn] = useState(false);
   // null mientras se cuenta. El diálogo no deja encender hasta tener el
@@ -841,18 +864,27 @@ export function AgentControlView({
    * migración) o sin ese asesor no hay nada que cambiar.
    */
   async function toggleAgentArea(agent: Agent, area: Area, on: boolean) {
-    if (!agentAreas || !agentAreas[agent.id]) return;
-    setSavingAreasAgentId(agent.id);
-    const anterior = agentAreas[agent.id];
+    const actuales = agentAreasRef.current;
+    if (!actuales || !actuales[agent.id]) return;
+    setSavingAreasAgentIds((prev) => new Set(prev).add(agent.id));
+    const anterior = actuales[agent.id];
     const siguiente = toggleArea(anterior, area, on);
+    agentAreasRef.current = { ...actuales, [agent.id]: siguiente };
     setAgentAreasState((prev) => (prev ? { ...prev, [agent.id]: siguiente } : prev));
     try {
       await setAgentAreas(supabase, agent.id, siguiente);
     } catch (error) {
+      const revertidas = agentAreasRef.current;
+      if (revertidas) agentAreasRef.current = { ...revertidas, [agent.id]: anterior };
       setAgentAreasState((prev) => (prev ? { ...prev, [agent.id]: anterior } : prev));
       toast.danger(configErrorMessage(error, "No se pudieron cambiar las áreas de este asesor."));
     } finally {
-      setSavingAreasAgentId(null);
+      // Solo se quita el id propio: el guardado de otro asesor sigue en vuelo.
+      setSavingAreasAgentIds((prev) => {
+        const next = new Set(prev);
+        next.delete(agent.id);
+        return next;
+      });
     }
   }
 
@@ -1529,15 +1561,7 @@ export function AgentControlView({
                 <WelcomePanel config={sebaV2Config} canEdit={canEditConfig} onSave={saveWelcome} />
                 <PaymentMethodsPanel
                   methods={paymentMethods}
-                  cashea={
-                    sebaV2Config
-                      ? {
-                          datosText: sebaV2Config.casheaDatosText,
-                          minimoUsd: sebaV2Config.casheaMinimoUsd,
-                          seisCuotasDesdeUsd: sebaV2Config.casheaSeisCuotasDesdeUsd,
-                        }
-                      : null
-                  }
+                  cashea={casheaSettings}
                   canEdit={canEditConfig}
                   onCreate={createPaymentMethodEntry}
                   onUpdate={updatePaymentMethodEntry}
@@ -1567,7 +1591,7 @@ export function AgentControlView({
                 currentAgentId={currentAgent.id}
                 onToggleActive={toggleAgentActive}
                 areasByAgent={agentAreas}
-                savingAreasAgentId={savingAreasAgentId}
+                savingAreasAgentIds={savingAreasAgentIds}
                 onToggleArea={toggleAgentArea}
               />
             )}
