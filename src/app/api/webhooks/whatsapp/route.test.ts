@@ -1581,6 +1581,48 @@ describe("POST /api/webhooks/whatsapp — lectura de adjuntos", () => {
     expect(registrarLectura).not.toHaveBeenCalled();
   });
 
+  // C6, corrección de la revisión de código (16/11/2026): la tarea de descarga
+  // solo se encolaba con `pendingMediaId && credentials`. Un audio o una imagen
+  // SIN id de media (o de un canal sin credenciales) nunca se baja, así que
+  // nunca dejaba una fila en `message_readings`, y el turno esperaba hasta 8 s
+  // una lectura que no existe (`esperarLecturas` cuenta como pendiente un
+  // adjunto sin fila de menos de 20 s).
+  it("una imagen SIN id de media nunca se baja: deja el fallo de descarga y no intenta leer", async () => {
+    const waMessageId = "wamid.lectura-sin-id-1";
+    vi.mocked(downloadMetaMedia).mockClear();
+    const cuerpo = webhookImageBody(waMessageId);
+    const mensaje = cuerpo.entry[0].changes[0].value.messages[0] as unknown as { image: Record<string, unknown> };
+    delete mensaje.image.id;
+
+    const response = await POST(fakeRequest(cuerpo));
+    expect(response.status).toBe(200);
+
+    const messageId = insertedMessages.get(waMessageId)!.id;
+    await vi.waitFor(() => expect(registrarFalloDeDescarga).toHaveBeenCalledTimes(1), { timeout: 5000 });
+    expect(registrarFalloDeDescarga).toHaveBeenCalledWith(expect.anything(), {
+      messageId,
+      conversationId: "conv-1",
+      kind: "image",
+    });
+    expect(registrarLectura).not.toHaveBeenCalled();
+    // No hay descarga de ningún tipo: el adjunto no existe del lado de Meta.
+    expect(downloadMetaMedia).not.toHaveBeenCalled();
+  });
+
+  it("un sticker SIN id de media no deja ninguna fila de lectura (no es un adjunto que se lea)", async () => {
+    const waMessageId = "wamid.lectura-sticker-sin-id-1";
+    const cuerpo = mediaBody(waMessageId, "sticker", "image/webp");
+    const mensaje = cuerpo.entry[0].changes[0].value.messages[0] as unknown as { sticker: Record<string, unknown> };
+    delete mensaje.sticker.id;
+
+    const response = await POST(fakeRequest(cuerpo));
+    expect(response.status).toBe(200);
+
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(registrarFalloDeDescarga).not.toHaveBeenCalled();
+    expect(registrarLectura).not.toHaveBeenCalled();
+  });
+
   it("un sticker cuya descarga falla no deja ninguna fila de lectura", async () => {
     vi.mocked(downloadMetaMedia).mockRejectedValueOnce(new Error("410 Gone"));
     const waMessageId = "wamid.lectura-sticker-descarga-falla-1";

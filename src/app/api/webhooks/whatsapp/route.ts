@@ -1566,17 +1566,18 @@ export async function POST(request: Request) {
           continue;
         }
 
+        // Plan "Seba lee fotos y audios" (M3, 16/11/2026): solo un audio o una
+        // imagen se leen; video, documento y sticker pasan por la closure de
+        // descarga y quedan como siempre. Constante propia porque `messageType`
+        // es un `let` del bucle y las closures corren después.
+        const lecturaKind = kindDeLectura(messageType);
+
         if (pendingMediaId && credentials) {
           const messageDbId = insertedMessage.id;
           const convId = conversationId;
           const waMessageId = message.id;
           const mediaId = pendingMediaId;
           const direct = credentials.provider === "360dialog" ? pendingMediaDirect : null;
-          // Plan "Seba lee fotos y audios" (M3, 16/11/2026): solo un audio o una
-          // imagen se leen; video, documento y sticker pasan por esta misma
-          // closure y quedan como siempre. Constante propia porque
-          // `messageType` es un `let` del bucle y la closure corre después.
-          const lecturaKind = kindDeLectura(messageType);
           mediaDownloadTasks.push(async () => {
             try {
               let mimeType: string | undefined;
@@ -1656,6 +1657,25 @@ export async function POST(request: Request) {
                 });
               }
             }
+          });
+        } else if (lecturaKind) {
+          // Revisión de código del 16/11/2026 (C6): un audio o una imagen que
+          // NUNCA se va a bajar —el adjunto vino sin id de media, o el canal no
+          // tiene credenciales— no entra a la closure de arriba y por eso no
+          // dejaba ninguna fila en `message_readings`. El turno cuenta como
+          // "pendiente" un adjunto sin fila de menos de 20 s
+          // (`esperarLecturas`), así que esperaba hasta 8 s por una lectura que
+          // no existe. La constancia de fallo la cierra al instante. El insert
+          // del mensaje ya salió bien (si falló, el `continue` de arriba),
+          // así que `insertedMessage.id` existe.
+          const messageDbId = insertedMessage.id;
+          const convId = conversationId;
+          mediaDownloadTasks.push(async () => {
+            await registrarFalloDeDescarga(supabase, {
+              messageId: messageDbId,
+              conversationId: convId,
+              kind: lecturaKind,
+            });
           });
         }
 

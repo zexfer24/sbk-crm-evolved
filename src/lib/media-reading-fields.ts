@@ -135,3 +135,48 @@ export function ultimosSeisDigitos(referencia: string | null | undefined): strin
   const digitos = referencia.replace(/\D/g, "");
   return digitos === "" ? null : digitos.slice(-6);
 }
+
+// ---------------------------------------------------------------------------
+// Cómo se escribe lo leído de un comprobante o de una orden de Cashea (revisión
+// de código del 16/11/2026, C5).
+//
+// Antes vivía copiado en la vista que pinta el asesor (`media-reading-view.ts`)
+// y en la nota que le llega con el traspaso (`ai/comprobante-nota.ts`), y las
+// dos copias ya habían divergido: `$ 1.234,50` en la burbuja y `$1.234,50` en
+// la nota, para el mismo monto de la misma captura. Un formato, en el único
+// módulo que las dos pueden importar sin arrastrar nada del servidor.
+// ---------------------------------------------------------------------------
+
+/** 1234.5 → "1.234,50". A mano: el agrupado de `Intl` en español varía según el ICU del Node o del navegador. */
+export function formatoMontoVE(valor: number): string {
+  const [entera, decimales] = Math.abs(valor).toFixed(2).split(".");
+  const conMiles = entera.replace(/\B(?=(\d{3})+(?!\d))/g, ".");
+  return `${valor < 0 ? "-" : ""}${conMiles},${decimales}`;
+}
+
+/**
+ * Las partes legibles de un comprobante, solo las que se leyeron:
+ * `["Bs 1.234,50", "ref. …456789", "Banesco", "16/11/2026"]`. USD va como
+ * `$1.234,50` (sin espacio); sin moneda el monto va sin símbolo — no se inventa
+ * una.
+ */
+export function partesDeComprobante(c: ComprobanteLeido): string[] {
+  const partes: string[] = [];
+  if (c.monto !== null) {
+    const simbolo = c.moneda === "VES" ? "Bs " : c.moneda === "USD" ? "$" : "";
+    partes.push(`${simbolo}${formatoMontoVE(c.monto)}`);
+  }
+  if (c.referencia) partes.push(`ref. …${c.referencia}`);
+  if (c.banco) partes.push(c.banco);
+  if (c.fecha) partes.push(c.fecha);
+  return partes;
+}
+
+/** Las partes legibles de una orden de Cashea: `["Envío" | "Retiro en tienda", "total $45,00"]`, solo las leídas. */
+export function partesDeOrdenCashea(o: OrdenCasheaLeida): string[] {
+  const partes: string[] = [];
+  if (o.modalidad === "envio") partes.push("Envío");
+  if (o.modalidad === "retiro") partes.push("Retiro en tienda");
+  if (o.total_usd !== null) partes.push(`total $${formatoMontoVE(o.total_usd)}`);
+  return partes;
+}

@@ -109,6 +109,55 @@ describe("vistaDeLectura · imagen", () => {
     expect(sin).toMatchObject({ tipo: "imagen", textoVisible: null });
   });
 
+  // C4, corrección de la revisión de código (16/11/2026): `vistaDeLectura`
+  // devolvía `nada` apenas la descripción venía vacía, antes de mirar los
+  // campos — pero el turno sí trata esa imagen como comprobante y escala. El
+  // asesor recibía el traspaso y, en la burbuja, ni la pastilla ni lo leído.
+  it("un comprobante SIN descripción igual muestra su pastilla y su detalle, con descripción genérica", () => {
+    const vista = vistaDeLectura(
+      imagen({
+        text: "",
+        fields: campos({
+          tipo: "comprobante_pago",
+          es_comprobante_pago: true,
+          comprobante: { monto: 20, moneda: "USD", referencia: null, banco: null, fecha: null },
+        }),
+      }),
+      AHORA
+    );
+    expect(vista).toEqual({
+      tipo: "imagen",
+      descripcion: "Comprobante de pago",
+      textoVisible: null,
+      pastilla: "Posible comprobante",
+      detalle: "$20,00",
+    });
+  });
+
+  it("una orden de Cashea SIN descripción igual muestra su pastilla y su detalle, con descripción genérica", () => {
+    const vista = vistaDeLectura(
+      imagen({
+        text: null,
+        fields: campos({ tipo: "orden_cashea", orden_cashea: { modalidad: "envio", total_usd: 45 } }),
+      }),
+      AHORA
+    );
+    expect(vista).toEqual({
+      tipo: "imagen",
+      descripcion: "Orden de Cashea",
+      textoVisible: null,
+      pastilla: "Posible orden de Cashea",
+      detalle: "Envío · total $45,00",
+    });
+  });
+
+  it("una imagen ok SIN descripción que no es comprobante ni orden sigue sin mostrar nada", () => {
+    expect(vistaDeLectura(imagen({ text: "  ", fields: campos({ tipo: "repuesto" }) }), AHORA)).toEqual({
+      tipo: "nada",
+    });
+    expect(vistaDeLectura(imagen({ text: null, fields: null }), AHORA)).toEqual({ tipo: "nada" });
+  });
+
   it("sin campos igual muestra la descripción", () => {
     expect(vistaDeLectura(imagen({ fields: null }), AHORA)).toMatchObject({
       tipo: "imagen",
@@ -150,7 +199,7 @@ describe("vistaDeLectura · imagen", () => {
       }),
       AHORA
     );
-    expect(vista).toMatchObject({ pastilla: "Posible comprobante", detalle: "$ 20,00" });
+    expect(vista).toMatchObject({ pastilla: "Posible comprobante", detalle: "$20,00" });
   });
 
   it("un comprobante sin ningún dato legible deja el detalle en null", () => {

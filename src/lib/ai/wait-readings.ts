@@ -110,23 +110,36 @@ export async function esperarLecturas(
   const ahora = opciones.ahora ?? Date.now;
   const dormir = opciones.dormir ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
 
-  // Se cuenta por pasos y no con el reloj: lo que se devuelve (y se loguea) es
-  // lo que el turno de verdad durmió, y un `dormir` que no avanza el reloj no
-  // puede dejar el bucle sin salida.
+  // Dos topes a la vez (corrección de la revisión de código, C3, 16/11/2026):
+  //   - por PASOS (`esperadoMs`, lo dormido): un `dormir` inyectado que no
+  //     avanza el reloj no puede dejar el bucle sin salida;
+  //   - por RELOJ (`ahora() - inicio`): antes el corte miraba solo lo dormido, y
+  //     con consultas lentas (PostgREST bajo carga) la espera real pasaba de los
+  //     8 s que promete `maxMs` — 20 pasos de 400 ms más 21 consultas de medio
+  //     segundo son ~18 s con el cliente esperando.
+  // Lo que se devuelve (y se loguea) es el mayor de los dos: lo que de verdad
+  // se esperó. Sin ninguna pausa (nada pendiente a la primera consulta) se
+  // devuelve 0: con el reloj real, los milisegundos de esa única consulta no son
+  // una espera y harían loguear `turno_espero_lecturas` en cada turno. Límite
+  // conocido: una consulta en vuelo no se interrumpe, así que el total puede
+  // pasar de `maxMs` por lo que tarde esa última consulta.
+  const inicio = ahora();
   let esperadoMs = 0;
   let pendientes = 0;
+  const esperadoReal = () => (esperadoMs > 0 ? Math.max(esperadoMs, ahora() - inicio) : 0);
   try {
     for (;;) {
       pendientes = await contarPendientes(admin, conversationId, ahora);
-      if (pendientes === 0 || esperadoMs + pasoMs > maxMs) break;
+      if (pendientes === 0 || esperadoMs + pasoMs > maxMs || ahora() - inicio + pasoMs > maxMs) break;
       await dormir(pasoMs);
       esperadoMs += pasoMs;
     }
   } catch (err) {
     log.warn("espera_lecturas_fallo", { conversationId, detail: errorText(err) });
-    return { esperadoMs, pendientes: 0 };
+    return { esperadoMs: esperadoReal(), pendientes: 0 };
   }
 
+  esperadoMs = esperadoReal();
   if (esperadoMs > 0) log.info("turno_espero_lecturas", { conversationId, esperadoMs, pendientes });
   return { esperadoMs, pendientes };
 }

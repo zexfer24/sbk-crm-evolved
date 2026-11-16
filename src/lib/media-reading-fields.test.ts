@@ -3,7 +3,10 @@ import {
   IMAGE_TIPOS,
   esComprobante,
   esOrdenCashea,
+  formatoMontoVE,
   parseImageFields,
+  partesDeComprobante,
+  partesDeOrdenCashea,
   ultimosSeisDigitos,
   type ImageFields,
 } from "@/lib/media-reading-fields";
@@ -128,5 +131,63 @@ describe("esComprobante / esOrdenCashea", () => {
     expect(esOrdenCashea(campos({ tipo: "orden_cashea" }))).toBe(true);
     expect(esOrdenCashea(campos({ tipo: "captura_de_chat_o_publicacion" }))).toBe(false);
     expect(esOrdenCashea(null)).toBe(false);
+  });
+});
+
+// C5, corrección de la revisión de código (16/11/2026): el formato de lo leído
+// de un comprobante vivía copiado en la vista del asesor y en la nota que lee
+// el asesor al recibir el traspaso, y las dos copias ya habían divergido
+// (`$ 1.234,50` contra `$1.234,50`). Ahora hay una sola.
+describe("formatoMontoVE", () => {
+  it("agrupa miles con punto y decimales con coma, siempre con dos decimales", () => {
+    expect(formatoMontoVE(1234.5)).toBe("1.234,50");
+    expect(formatoMontoVE(0)).toBe("0,00");
+    expect(formatoMontoVE(20)).toBe("20,00");
+    expect(formatoMontoVE(1234567.891)).toBe("1.234.567,89");
+  });
+
+  it("un negativo lleva el signo delante", () => {
+    expect(formatoMontoVE(-1234.5)).toBe("-1.234,50");
+  });
+});
+
+describe("partesDeComprobante", () => {
+  it("un comprobante completo en bolívares: monto con 'Bs ', referencia, banco y fecha", () => {
+    expect(
+      partesDeComprobante({ monto: 1234.5, moneda: "VES", referencia: "456789", banco: "Banesco", fecha: "16/11/2026" }),
+    ).toEqual(["Bs 1.234,50", "ref. …456789", "Banesco", "16/11/2026"]);
+  });
+
+  it("en dólares el símbolo va pegado al monto, sin espacio", () => {
+    expect(partesDeComprobante({ monto: 1234.5, moneda: "USD", referencia: null, banco: null, fecha: null })).toEqual([
+      "$1.234,50",
+    ]);
+  });
+
+  it("sin moneda el monto va sin símbolo", () => {
+    expect(partesDeComprobante({ monto: 20, moneda: null, referencia: null, banco: null, fecha: null })).toEqual(["20,00"]);
+  });
+
+  it("omite lo que es null, y un comprobante vacío da una lista vacía", () => {
+    expect(partesDeComprobante({ monto: null, moneda: "VES", referencia: "123456", banco: null, fecha: null })).toEqual([
+      "ref. …123456",
+    ]);
+    expect(partesDeComprobante({ monto: null, moneda: null, referencia: null, banco: null, fecha: null })).toEqual([]);
+  });
+});
+
+describe("partesDeOrdenCashea", () => {
+  it("modalidad capitalizada y total pegado al signo $", () => {
+    expect(partesDeOrdenCashea({ modalidad: "envio", total_usd: 45 })).toEqual(["Envío", "total $45,00"]);
+    expect(partesDeOrdenCashea({ modalidad: "retiro", total_usd: 1234.5 })).toEqual([
+      "Retiro en tienda",
+      "total $1.234,50",
+    ]);
+  });
+
+  it("omite lo que es null, y una orden vacía da una lista vacía", () => {
+    expect(partesDeOrdenCashea({ modalidad: "retiro", total_usd: null })).toEqual(["Retiro en tienda"]);
+    expect(partesDeOrdenCashea({ modalidad: null, total_usd: 45 })).toEqual(["total $45,00"]);
+    expect(partesDeOrdenCashea({ modalidad: null, total_usd: null })).toEqual([]);
   });
 });

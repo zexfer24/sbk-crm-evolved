@@ -11,7 +11,13 @@
 // leer" en cada audio ruidoso sería ruido, no información.
 // ---------------------------------------------------------------------------
 
-import { esComprobante, esOrdenCashea, type ImageFields } from "@/lib/media-reading-fields";
+import {
+  esComprobante,
+  esOrdenCashea,
+  partesDeComprobante,
+  partesDeOrdenCashea,
+  type ImageFields,
+} from "@/lib/media-reading-fields";
 import type { MessageReading } from "@/lib/types";
 
 /**
@@ -34,34 +40,15 @@ export type VistaDeLectura =
       detalle: string | null;
     };
 
-/** 1234.5 → "1.234,50". A mano: el agrupado de `Intl` en español varía según el ICU. */
-function formatoEsVE(valor: number): string {
-  const [entera, decimales] = Math.abs(valor).toFixed(2).split(".");
-  const conMiles = entera.replace(/\B(?=(\d{3})+(?!\d))/g, ".");
-  return `${valor < 0 ? "-" : ""}${conMiles},${decimales}`;
-}
-
+// El formato de lo leído vive en `media-reading-fields.ts` (C5, revisión de
+// código del 16/11/2026): la misma lista de partes que usa la nota al asesor.
 function detalleDeComprobante(fields: ImageFields): string | null {
-  const c = fields.comprobante;
-  if (!c) return null;
-  const partes: string[] = [];
-  if (c.monto !== null) {
-    const simbolo = c.moneda === "VES" ? "Bs " : c.moneda === "USD" ? "$ " : "";
-    partes.push(`${simbolo}${formatoEsVE(c.monto)}`);
-  }
-  if (c.referencia) partes.push(`ref. …${c.referencia}`);
-  if (c.banco) partes.push(c.banco);
-  if (c.fecha) partes.push(c.fecha);
+  const partes = fields.comprobante ? partesDeComprobante(fields.comprobante) : [];
   return partes.length > 0 ? partes.join(" · ") : null;
 }
 
 function detalleDeOrdenCashea(fields: ImageFields): string | null {
-  const o = fields.orden_cashea;
-  if (!o) return null;
-  const partes: string[] = [];
-  if (o.modalidad === "envio") partes.push("Envío");
-  if (o.modalidad === "retiro") partes.push("Retiro en tienda");
-  if (o.total_usd !== null) partes.push(`total $${formatoEsVE(o.total_usd)}`);
+  const partes = fields.orden_cashea ? partesDeOrdenCashea(fields.orden_cashea) : [];
   return partes.length > 0 ? partes.join(" · ") : null;
 }
 
@@ -80,18 +67,25 @@ export function vistaDeLectura(
   if (reading.status !== "ok") return { tipo: "nada" };
 
   const texto = reading.text?.trim() ?? "";
-  if (texto === "") return { tipo: "nada" };
-
-  if (reading.kind === "audio") return { tipo: "audio", texto };
-
   const fields = reading.fields;
-  const textoVisible = fields?.texto_visible.trim() ? fields.texto_visible.trim() : null;
   const comprobante = esComprobante(fields);
   const orden = !comprobante && esOrdenCashea(fields);
 
+  // Una descripción vacía solo tapa la burbuja si la imagen no es nada que el
+  // asesor deba ver. Revisión de código del 16/11/2026 (C4): antes esto
+  // devolvía `nada` ANTES de mirar los campos, pero el turno sí trata esa
+  // imagen como comprobante (u orden de Cashea) y escala — el asesor recibía el
+  // traspaso y en la burbuja no veía ni la pastilla ni lo leído. Un audio sin
+  // texto sigue sin mostrar nada.
+  if (texto === "" && (reading.kind === "audio" || (!comprobante && !orden))) return { tipo: "nada" };
+
+  if (reading.kind === "audio") return { tipo: "audio", texto };
+
+  const textoVisible = fields?.texto_visible.trim() ? fields.texto_visible.trim() : null;
+
   return {
     tipo: "imagen",
-    descripcion: texto,
+    descripcion: texto !== "" ? texto : comprobante ? "Comprobante de pago" : "Orden de Cashea",
     textoVisible,
     pastilla: comprobante ? "Posible comprobante" : orden ? "Posible orden de Cashea" : null,
     detalle: !fields

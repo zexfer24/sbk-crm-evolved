@@ -386,7 +386,7 @@ function lecturaDeFila(embed: unknown): HistoryReading | null {
  * conversación de hace semanas y no veía el mensaje que tenía que responder.
  */
 async function loadHistory(supabase: SupabaseClient<Database>, conversationId: string): Promise<LoadedHistory> {
-  const { data } = await supabase
+  const { data, error } = await supabase
     .from("messages")
     // `message_readings(...)` al final y no en medio: M4 (16/11/2026) la suma
     // para que la línea de un adjunto traiga lo que el webhook leyó de él.
@@ -394,6 +394,18 @@ async function loadHistory(supabase: SupabaseClient<Database>, conversationId: s
     .eq("conversation_id", conversationId)
     .order("created_at", { ascending: false })
     .limit(HISTORY_LIMIT);
+
+  // Revisión de código del 16/11/2026 (C1): con ese embed, la consulta falla
+  // (400 de PostgREST) si la migración de `message_readings` no está aplicada
+  // o su caché de esquema está viejo. Antes `data` quedaba `null`, el historial
+  // vacío, y el turno salía por "sin contenido legible" sin que nada dijera que
+  // la causa era la base. Se lanza como `turno_conversacion_no_consultable`:
+  // `loadHistory` corre antes de cualquier entrega (`entrega.intentado` sigue en
+  // `false`), así que la cola reintenta sin riesgo de doble envío.
+  if (error) {
+    log.error("turno_historial_no_consultable", { conversationId, detail: errorText(error) });
+    throw new Error(`historial no consultable: ${errorText(error)}`, { cause: error });
+  }
 
   const messages: ModelMessage[] = [];
   const createdAt: (string | null)[] = [];
@@ -2042,6 +2054,24 @@ export async function runTurnPhases(
   // pago o una orden de Cashea en lo que falta por atender?".
   const lecturasDeLaRafaga = pendingCustomerEntries(zipped, seen).map((entrada) => entrada.lectura);
 
+  // Comprobante de pago / orden de Cashea en la ráfaga pendiente (M4, plan
+  // "Seba lee fotos y audios", 16/11/2026). Se calcula ACÁ, una sola vez y
+  // antes de la presentación (revisión de código, C2): la presentación de más
+  // abajo tiene que saber si el cliente abrió el chat con la captura de su
+  // compra, y el bloque que escala en código (después de la racha de adjuntos)
+  // usa este mismo arreglo. Solo lecturas `ok` de la ráfaga PENDIENTE: un
+  // comprobante que un turno anterior ya atendió queda detrás de la marca
+  // "visto hasta" y no vuelve a contar. Un turno por demora nunca escala en
+  // código (T10b-3).
+  const camposDeComprobantes: ImageFields[] = [];
+  if (!modoDemora) {
+    for (const lectura of lecturasDeLaRafaga) {
+      if (!lectura || lectura.status !== "ok") continue;
+      const campos = parseImageFields(lectura.fields);
+      if (campos && (esComprobante(campos) || esOrdenCashea(campos))) camposDeComprobantes.push(campos);
+    }
+  }
+
   // T4, plan "Seba no habla de más mientras el cliente espera al asesor"
   // (22-23/9/2026, "el historial viejo marcado"): dónde termina, si termina,
   // una conversación anterior ya atendida — `previousConversationCutoff`
@@ -2189,7 +2219,15 @@ export async function runTurnPhases(
   // cliente lleva minutos en la conversación --, y `welcome_sent_at` no se
   // toca: si nadie se presentó, la presentación sigue siendo asunto del
   // próximo turno normal.
-  if (!modoDemora && convo.welcome_sent_at === null) {
+  //
+  // Revisión de código del 16/11/2026 (C2): con un comprobante de pago o una
+  // orden de Cashea en la ráfaga pendiente NO se presenta. Quien abre el chat
+  // con la captura de su compra recibía "mi nombre es Seba… ¿cómo puedo
+  // ayudarte?" y enseguida "Recibido 🙌 Pásame la cédula…": un saludo que
+  // pregunta qué necesita a alguien que ya lo dijo con la imagen. El acuse del
+  // comprobante (más abajo) es la respuesta; `welcome_sent_at` queda sin
+  // reclamar y la presentación sigue siendo asunto del próximo turno normal.
+  if (!modoDemora && convo.welcome_sent_at === null && camposDeComprobantes.length === 0) {
     const claimed = await claimPresentation(supabase, conversationId);
     if (claimed) {
       // "Solo saludó" decide si hace falta seguir redactando: un "hola" (o
@@ -2691,19 +2729,10 @@ export async function runTurnPhases(
   // resumen que lee el asesor (`resumenDeComprobante`; no pasan por el
   // historial del modelo) y se acusa recibo con un texto fijo.
   //
-  // Solo lecturas `ok` de la ráfaga PENDIENTE (`lecturasDeLaRafaga`): un
-  // comprobante que un turno anterior ya atendió queda detrás de la marca
-  // "visto hasta" y no vuelve a escalar. Y con una escalada abierta el turno ya
-  // retornó arriba (camino "espera abierta": queda anotado para el asesor).
-  // Un turno por demora nunca escala en código (T10b-3).
-  const camposDeComprobantes: ImageFields[] = [];
-  if (!modoDemora) {
-    for (const lectura of lecturasDeLaRafaga) {
-      if (!lectura || lectura.status !== "ok") continue;
-      const campos = parseImageFields(lectura.fields);
-      if (campos && (esComprobante(campos) || esOrdenCashea(campos))) camposDeComprobantes.push(campos);
-    }
-  }
+  // Los campos salen de `camposDeComprobantes`, calculado arriba (justo después
+  // de `lecturasDeLaRafaga`: solo lecturas `ok` de la ráfaga PENDIENTE, sin
+  // turno por demora). Con una escalada abierta el turno ya retornó antes
+  // (camino "espera abierta": queda anotado para el asesor).
   if (camposDeComprobantes.length > 0) {
     const forced = await escalateConversation(supabase, {
       conversationId,

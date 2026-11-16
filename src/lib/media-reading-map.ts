@@ -5,7 +5,8 @@
 // Vive aparte de `data.ts` porque `crm-shell.tsx` la necesita para aplicar la
 // fila cruda de un evento Realtime, y los tests de ese componente mockean
 // `@/lib/data` entero: importarla de ahí obligaría a duplicarla en el mock.
-// `data.ts` la reexporta, y su test (`data-messages-window.test.ts`) la prueba.
+// `data.ts` la reexporta; sus tests viven en `media-reading-map.test.ts` y
+// `data-messages-window.test.ts` solo prueba que `data.ts` la usa.
 // ---------------------------------------------------------------------------
 
 import { parseImageFields, type StoredReadingStatus } from "@/lib/media-reading-fields";

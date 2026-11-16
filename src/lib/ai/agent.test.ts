@@ -21,6 +21,14 @@ interface FakeState {
    * conversación no existe" y el turno se callaba sin traspaso ni log.
    */
   conversationError: { message: string } | null;
+  /**
+   * Corrección de la revisión de código (16/11/2026, plan "Seba lee fotos y
+   * audios", C1): el error que devuelve el `select` de `messages` de
+   * `loadHistory` (que ahora embebe `message_readings`: PostgREST responde 400
+   * si la migración no está aplicada o su caché de esquema está vieja). `null`
+   * de fábrica: la lectura se comporta como siempre.
+   */
+  historyError: { message: string } | null;
   history: {
     sender_type: string;
     content: string | null;
@@ -241,6 +249,7 @@ const state: FakeState = {
   agentSettingsError: null,
   agentCanRunError: null,
   conversationError: null,
+  historyError: null,
   agentTurnInsertError: null,
   intentUpdateError: null,
   lastHandoffRow: null,
@@ -470,7 +479,12 @@ function createFakeSupabase() {
               // mensajes MÁS RECIENTES, no los más antiguos.
               order: (_col: string, opts: { ascending: boolean }) => {
                 state.historyOrderAscending = opts.ascending;
-                return { limit: async () => ({ data: state.history }) };
+                return {
+                  limit: async () =>
+                    state.historyError
+                      ? { data: null, error: state.historyError }
+                      : { data: state.history, error: null },
+                };
               },
               // Segundo .eq(): dos consumidores distintos comparten esta forma
               // (conversation_id + un segundo filtro) y se distinguen por las
@@ -1113,6 +1127,7 @@ beforeEach(() => {
   state.agentSettingsError = null;
   state.agentCanRunError = null;
   state.conversationError = null;
+  state.historyError = null;
   state.agentTurnInsertError = null;
   state.intentUpdateError = null;
   state.lastHandoffRow = null;
@@ -1649,6 +1664,41 @@ describe("runAgentTurn — salidas silenciosas de apertura", () => {
     expect(matchPlaybookMock).not.toHaveBeenCalled();
     expect(sendAgentTextMock).not.toHaveBeenCalled();
     expect(sendPlaybookReplyMock).not.toHaveBeenCalled();
+  });
+
+  /**
+   * C1, corrección de la revisión de código (16/11/2026, plan "Seba lee fotos
+   * y audios"): `loadHistory` desestructuraba `{ data }` sin mirar `error`.
+   * Desde M4 su `select` embebe `message_readings(...)`: si la migración no
+   * está aplicada, o el caché de esquema de PostgREST está viejo, la consulta
+   * responde 400, `data` queda `null`, el historial queda vacío y el turno
+   * salía mudo sin rastro (la salida "sin contenido legible"). Mismo patrón
+   * que `turno_conversacion_no_consultable`: lanza ANTES de entregar nada, así
+   * la cola reintenta sin riesgo de doble envío.
+   */
+  it("con error al leer el historial: lanza, deja el log, y no manda nada ni llama al modelo", async () => {
+    const error = vi.spyOn(log, "error");
+    state.history = [{ sender_type: "customer", content: "hola quiero un casco", is_internal_note: false }];
+    state.historyError = { message: "Could not find a relationship between 'messages' and 'message_readings'" };
+
+    await expect(runAgentTurn("conv-1")).rejects.toThrow(/historial no consultable/);
+
+    expect(error).toHaveBeenCalledWith(
+      "turno_historial_no_consultable",
+      expect.objectContaining({
+        conversationId: "conv-1",
+        detail: "Could not find a relationship between 'messages' and 'message_readings'",
+      })
+    );
+    expect(sendAgentTextMock).not.toHaveBeenCalled();
+    expect(sendPlaybookReplyMock).not.toHaveBeenCalled();
+    expect(matchPlaybookMock).not.toHaveBeenCalled();
+    expect(classifyIntentMock).not.toHaveBeenCalled();
+    expect(generateMock).not.toHaveBeenCalled();
+    // Una salida muda con traspaso "sin contenido legible" sería lo que este
+    // caso evita: ninguna escalada ni traspaso de silencio.
+    expect(escalateConversationMock).not.toHaveBeenCalled();
+    expect(handoffCalls).toHaveLength(0);
   });
 
   /**
@@ -2640,15 +2690,24 @@ describe("runAgentTurn — comprobante de pago y orden de Cashea escalan en cód
     );
   });
 
-  it("en el primer contacto, la presentación de Seba sale ANTES del texto del comprobante (dos mensajes, en ese orden)", async () => {
+  // C2, corrección de la revisión de código (16/11/2026): este test fijaba lo
+  // contrario ("la presentación sale ANTES del texto del comprobante, dos
+  // mensajes"). Quien abre el chat con la captura de su compra recibía "Hola,
+  // buen día, mi nombre es Seba… ¿cómo puedo ayudarte?" y enseguida "Recibido
+  // 🙌 Pásame la cédula…": un saludo preguntando qué necesita, a alguien que
+  // ya lo dijo con la imagen. Ahora un comprobante en la ráfaga pendiente
+  // reemplaza la presentación: UN solo mensaje y `welcome_sent_at` sin reclamar
+  // (la presentación sigue siendo asunto del próximo turno que no sea trámite).
+  it("en el primer contacto con un comprobante NO hay presentación: un solo mensaje (el del comprobante) y welcome_sent_at sin reclamar", async () => {
     state.conversation = { ...state.conversation, welcome_sent_at: null };
     state.history = [fotoLeida("Captura de una transferencia", CAMPOS_COMPROBANTE)];
 
     await runAgentTurn("conv-1");
 
-    expect(sendAgentTextMock).toHaveBeenCalledTimes(2);
-    expect(isSebaGreeting(sendAgentTextMock.mock.calls[0][2] as string)).toBe(true);
-    expect(sendAgentTextMock.mock.calls[1][2]).toBe(TEXTO_COMPROBANTE_RECIBIDO);
+    expect(sendAgentTextMock).toHaveBeenCalledTimes(1);
+    expect(sendAgentTextMock.mock.calls[0][2]).toBe(TEXTO_COMPROBANTE_RECIBIDO);
+    expect(isSebaGreeting(sendAgentTextMock.mock.calls[0][2] as string)).toBe(false);
+    expect(conversationUpdates.some((u) => "welcome_sent_at" in u)).toBe(false);
     expect(escalateConversationMock).toHaveBeenCalledTimes(1);
   });
 

@@ -136,6 +136,27 @@ describe("esperarLecturas", () => {
     expect(logInfo).toHaveBeenCalledWith("turno_espero_lecturas", { conversationId: "c1", esperadoMs: 8000, pendientes: 1 });
   });
 
+  // C3, corrección de la revisión de código (16/11/2026): el corte contaba solo
+  // lo DORMIDO. Con consultas lentas (PostgREST bajo carga), 20 pasos de 400 ms
+  // más 21 consultas de medio segundo eran ~18 s de espera real, no los 8 que
+  // promete el tope. Ahora también corta por el reloj.
+  it("con consultas lentas (500 ms cada una) el tiempo REAL transcurrido no pasa de 8.000 ms", async () => {
+    const reloj = relojFalso();
+    const { supabase, llamadas } = crearFake(() => {
+      reloj.avanzar(500);
+      return { data: [fila({ message_readings: { status: "pendiente" } })], error: null };
+    });
+
+    const resultado = await esperarLecturas(supabase, "c1", { ahora: reloj.ahora, dormir: reloj.dormir });
+
+    const transcurrido = reloj.ahora() - AHORA;
+    expect(transcurrido).toBeLessThanOrEqual(8000);
+    expect(llamadas.length).toBeLessThan(20);
+    // Lo devuelto cuenta el tiempo real (dormido + consultas), no solo las pausas.
+    expect(resultado.esperadoMs).toBe(transcurrido);
+    expect(resultado.pendientes).toBe(1);
+  });
+
   it("maxMs y pasoMs se pueden pasar", async () => {
     const reloj = relojFalso();
     const { supabase } = crearFake(() => ({
