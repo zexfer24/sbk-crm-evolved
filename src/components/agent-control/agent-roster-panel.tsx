@@ -6,6 +6,7 @@ import { MailWarning, MessageSquare } from "lucide-react";
 import type { Agent, AgentMetrics, BoardConversation } from "@/lib/types";
 import { contactName, initials } from "@/lib/dashboard";
 import { AgentMetricsRow } from "@/components/agent-control/agent-metrics-row";
+import { AREAS, AREA_LABELS, type Area } from "@/lib/seba-v2-config";
 
 interface AgentsRosterPanelProps {
   agents: Agent[];
@@ -21,6 +22,15 @@ interface AgentsRosterPanelProps {
    */
   currentAgentId: string;
   onToggleActive: (agent: Agent) => void;
+  /**
+   * Áreas de cada asesor (Entrega 2 de Seba v2, 16/11/2026). `null` = la base
+   * todavía no tiene la columna (falta la migración): no se pinta ninguna
+   * casilla, porque cuatro vacías parecerían "sin áreas" cuando es "no sé".
+   */
+  areasByAgent: Record<string, Area[]> | null;
+  /** El asesor cuyas áreas se están guardando: sus casillas se deshabilitan hasta que termine. */
+  savingAreasAgentId: string | null;
+  onToggleArea: (agent: Agent, area: Area, on: boolean) => void;
 }
 
 /** Asesores primero: son los que se revisan a diario para repartir carga. */
@@ -41,6 +51,9 @@ export function AgentsRosterPanel({
   canManageAll,
   currentAgentId,
   onToggleActive,
+  areasByAgent,
+  savingAreasAgentId,
+  onToggleArea,
 }: AgentsRosterPanelProps) {
   // La caja (13/10/2026) solo ve el Inventario y no entra al reparto: no es un
   // asesor, así que no tiene tarjeta aquí. La pestaña «Equipo» la administra.
@@ -88,6 +101,11 @@ export function AgentsRosterPanel({
             const unanswered = assigned.filter((c) => c.unreadCount > 0);
             const isToggling = togglingAgentId === agent.id;
             const canToggle = canManageAll || agent.id === currentAgentId;
+            const agentAreas = areasByAgent?.[agent.id];
+            // A diferencia del interruptor del reparto, las áreas SOLO las cambia
+            // un supervisor o admin (un trigger lo impone en la base): ni el
+            // propio asesor puede tocar las suyas.
+            const areasLocked = !canManageAll || savingAreasAgentId === agent.id;
 
             return (
               <div className="ac-agent-card" key={agent.id}>
@@ -136,6 +154,29 @@ export function AgentsRosterPanel({
                     {unanswered.length} sin responder
                   </span>
                 </div>
+
+                {agentAreas && (
+                  <fieldset className="ac-agent-card-areas">
+                    <legend>Áreas</legend>
+                    <div className="ac-agent-card-areas-list">
+                      {AREAS.map((area) => (
+                        <label key={area} className="ac-agent-card-area">
+                          <input
+                            type="checkbox"
+                            checked={agentAreas.includes(area)}
+                            disabled={areasLocked}
+                            onChange={(e) => onToggleArea(agent, area, e.target.checked)}
+                            aria-label={`${AREA_LABELS[area]}: ${agent.displayName}`}
+                          />
+                          {AREA_LABELS[area]}
+                        </label>
+                      ))}
+                    </div>
+                    {canManageAll && agentAreas.length === 0 && (
+                      <p className="ac-agent-card-areas-hint">Sin áreas: Seba no le pasa casos por área.</p>
+                    )}
+                  </fieldset>
+                )}
 
                 <AgentMetricsRow metrics={metricsByAgent.get(agent.id)} role={agent.role} />
 

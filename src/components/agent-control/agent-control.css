@@ -393,6 +393,53 @@
   flex-wrap: wrap;
 }
 
+/* Áreas por asesor (Entrega 2 de Seba v2, 16/11/2026): casillas nativas en
+   fila que envuelve; el fieldset no trae borde ni relleno de fábrica. */
+.ac-agent-card-areas {
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.ac-agent-card-areas > legend {
+  padding: 0;
+  margin-bottom: 6px;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--lm-muted);
+}
+
+.ac-agent-card-areas-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 14px;
+  min-width: 0;
+}
+
+.ac-agent-card-area {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--lm-ink-soft);
+  cursor: pointer;
+}
+
+.ac-agent-card-area:has(input:disabled) {
+  cursor: default;
+  opacity: 0.7;
+}
+
+.ac-agent-card-areas-hint {
+  margin: 0;
+  font-size: 11px;
+  color: var(--lm-muted);
+}
+
 .ac-agent-card-chats {
   display: flex;
   flex-direction: column;

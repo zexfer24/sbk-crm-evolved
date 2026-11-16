@@ -1,7 +1,10 @@
 /** @vitest-environment jsdom */
 import { describe, expect, it, vi, beforeEach } from "vitest";
 import { render, screen, fireEvent, waitFor, act } from "@testing-library/react";
+import type { ComponentProps } from "react";
 import { AgentControlView } from "@/components/agent-control/agent-control-view";
+import { ConfigWriteDeniedError } from "@/lib/config-write";
+import type { Area, SebaV2Config } from "@/lib/seba-v2-config";
 import type { Agent, AgentSettings, AgentTurn, Conversation, ModelUsageSummary } from "@/lib/types";
 
 /**
@@ -14,7 +17,70 @@ import type { Agent, AgentSettings, AgentTurn, Conversation, ModelUsageSummary }
 
 // Los paneles vecinos no pintan nada en estos tests; lo que se prueba vive
 // en el propio view (el interruptor y su diálogo).
-vi.mock("@/components/agent-control/agent-roster-panel", () => ({ AgentsRosterPanel: () => null }));
+// Entrega 2 de Seba v2 (16/11/2026): el roster y los tres paneles nuevos son
+// stubs que EXPONEN sus props (como `pills`), para probar el cableado de la
+// vista sin pintar los paneles, que tienen sus propios tests.
+const stubs = vi.hoisted(() => ({
+  roster: null as null | {
+    areasByAgent: Record<string, string[]> | null;
+    savingAreasAgentId: string | null;
+    onToggleArea: (agent: { id: string; displayName: string }, area: string, on: boolean) => void;
+  },
+  seba: null as null | {
+    config: { modo: string; shadowDailyCapUsd: number; shadowSamplePct: number } | null;
+    canEdit: boolean;
+    onModeChange: (modo: string) => Promise<void>;
+    onSaveLimits: (limits: { capUsd: number; samplePct: number }) => Promise<void>;
+  },
+  welcome: null as null | {
+    config: { welcomeText: string; welcomeFollowups: string[] } | null;
+    canEdit: boolean;
+    onSave: (draft: { welcomeText: string; followups: string[] }) => Promise<void>;
+  },
+  pagos: null as null | {
+    methods: unknown[];
+    cashea: { datosText: string; minimoUsd: number; seisCuotasDesdeUsd: number } | null;
+    canEdit: boolean;
+    onCreate: (draft: unknown, sortOrder: number) => Promise<void>;
+    onUpdate: (key: string, draft: unknown) => Promise<void>;
+    onDelete: (key: string) => Promise<void>;
+    onToggleActive: (key: string, isActive: boolean) => Promise<void>;
+    onSaveCashea: (settings: { datosText: string; minimoUsd: number; seisCuotasDesdeUsd: number }) => Promise<void>;
+  },
+}));
+vi.mock("@/components/agent-control/agent-roster-panel", () => ({
+  AgentsRosterPanel: (props: NonNullable<typeof stubs.roster>) => {
+    stubs.roster = props;
+    return null;
+  },
+}));
+vi.mock("@/components/agent-control/seba-v2-panel", () => ({
+  SebaV2Panel: (props: NonNullable<typeof stubs.seba>) => {
+    stubs.seba = props;
+    return <div data-testid="panel-seba-v2" />;
+  },
+}));
+vi.mock("@/components/agent-control/welcome-panel", () => ({
+  WelcomePanel: (props: NonNullable<typeof stubs.welcome>) => {
+    stubs.welcome = props;
+    return <div data-testid="panel-bienvenida" />;
+  },
+}));
+vi.mock("@/components/agent-control/payment-methods-panel", () => ({
+  PaymentMethodsPanel: (props: NonNullable<typeof stubs.pagos>) => {
+    stubs.pagos = props;
+    return <div data-testid="panel-pagos" />;
+  },
+}));
+// `toast` real pinta en un Toast.Provider que estos tests no montan: se espía.
+const toastDangerMock = vi.hoisted(() => vi.fn());
+vi.mock("@heroui/react", async (importOriginal) => {
+  const original = await importOriginal<typeof import("@heroui/react")>();
+  return {
+    ...original,
+    toast: Object.assign(vi.fn(), { danger: toastDangerMock, info: vi.fn(), warning: vi.fn(), success: vi.fn() }),
+  };
+});
 vi.mock("@/components/agent-control/agent-tools-panel", () => ({ AgentToolsPanel: () => null }));
 vi.mock("@/components/agent-control/knowledge-panel", () => ({ KnowledgePanel: () => null }));
 vi.mock("@/components/agent-control/lessons-panel", () => ({ LessonsPanel: () => null }));
@@ -84,6 +150,10 @@ const fetchSearchSummaryMock = vi.fn(async (supabase: unknown, desde: string) =>
   return { busquedas: 7 } as { busquedas: number } | null;
 });
 
+const fetchPaymentMethodsMock = vi.fn(async () => [] as unknown[]);
+const fetchSebaV2ConfigMock = vi.fn(async () => null as unknown);
+const fetchAgentAreasMock = vi.fn(async () => null as unknown);
+
 vi.mock("@/lib/data", () => ({
   fetchAgentSettings: vi.fn(async () => ({ aiGloballyEnabled: true, dailySpendCapUsd: null, spentTodayUsd: 0 })),
   fetchBacklogCounts: () => fetchBacklogCountsMock(),
@@ -115,6 +185,10 @@ vi.mock("@/lib/data", () => ({
   // abajo sobrescribe la resolución para probar la tabla "Por fase".
   fetchTurnCallsByPhase: () => fetchTurnCallsByPhaseMock(),
   fetchSearchSummary: (supabase: unknown, desde: string) => fetchSearchSummaryMock(supabase, desde),
+  // Entrega 2 de Seba v2 (16/11/2026).
+  fetchPaymentMethods: () => fetchPaymentMethodsMock(),
+  fetchSebaV2Config: () => fetchSebaV2ConfigMock(),
+  fetchAgentAreas: () => fetchAgentAreasMock(),
 }));
 
 const setAiGloballyEnabledMock = vi.fn(async (...args: unknown[]) => {
@@ -125,7 +199,26 @@ const setDemoraActivaMock = vi.fn(async (...args: unknown[]) => {
   return null as string | null;
 });
 
+const setSebaV2ModeMock = vi.fn(async (...args: unknown[]) => {
+  void args;
+});
+const createPaymentMethodMock = vi.fn(async (...args: unknown[]) => {
+  void args;
+});
+const setAgentAreasMock = vi.fn(async (...args: unknown[]) => {
+  void args;
+});
+
 vi.mock("@/lib/mutations", () => ({
+  setSebaV2Mode: (...args: unknown[]) => setSebaV2ModeMock(...args),
+  createPaymentMethod: (...args: unknown[]) => createPaymentMethodMock(...args),
+  setAgentAreas: (...args: unknown[]) => setAgentAreasMock(...args),
+  updateShadowLimits: vi.fn(async () => {}),
+  updateWelcomeTexts: vi.fn(async () => {}),
+  updateCasheaSettings: vi.fn(async () => {}),
+  updatePaymentMethod: vi.fn(async () => {}),
+  setPaymentMethodActive: vi.fn(async () => {}),
+  deletePaymentMethod: vi.fn(async () => {}),
   createAgentSuggestion: vi.fn(async () => {}),
   createCatalogLink: vi.fn(async () => {}),
   deleteCatalogLink: vi.fn(async () => {}),
@@ -208,6 +301,18 @@ function liveConversation(id: string): Conversation {
   };
 }
 
+const TODAS_LAS_AREAS: Area[] = ["pagos", "ventas", "envios", "reclamos"];
+const SEBA_V2_CONFIG: SebaV2Config = {
+  modo: "apagado",
+  shadowDailyCapUsd: 2,
+  shadowSamplePct: 100,
+  welcomeText: "Hola, soy Seba.",
+  welcomeFollowups: ["¿Qué buscas?", "¿Para qué moto?"],
+  casheaDatosText: "Datos de Cashea",
+  casheaMinimoUsd: 25,
+  casheaSeisCuotasDesdeUsd: 200,
+};
+
 function montar(
   settings: AgentSettings,
   turns: AgentTurn[] = [],
@@ -217,7 +322,9 @@ function montar(
     byModel: ModelUsageSummary[];
   }> = {},
   /** T7 (28/9/2026): el rol de quien mira; por defecto, la supervisora de siempre. */
-  agent: Agent = currentAgent
+  agent: Agent = currentAgent,
+  /** Props nuevas de la Entrega 2 de Seba v2; los defaults son una base ya migrada. */
+  extras: Partial<ComponentProps<typeof AgentControlView>> = {}
 ) {
   render(
     <AgentControlView
@@ -248,7 +355,11 @@ function montar(
       initialKnowledgeEntries={[]}
       initialLessons={[]}
       initialCatalogLinks={[]}
+      initialPaymentMethods={[]}
+      initialSebaV2Config={SEBA_V2_CONFIG}
+      initialAgentAreas={{ [currentAgent.id]: [...TODAS_LAS_AREAS] }}
       modelLabel="modelo-de-prueba"
+      {...extras}
     />
   );
 }
@@ -659,5 +770,211 @@ describe("AgentControlView — pestaña «Equipo» (T6, Ronda del cliente, 30/9/
 
     fireEvent.click(screen.getByRole("button", { name: "renombrar" }));
     await waitFor(() => expect(panel).toHaveTextContent("Supervisora Renombrada"));
+  });
+});
+
+/**
+ * Entrega 2 de Seba v2 (16/11/2026): pestaña «Seba v2» y áreas por asesor.
+ * Los callbacks que la vista le pasa a los paneles tienen que LANZAR si la
+ * escritura falla: los paneles atrapan el error y muestran el toast, y un
+ * callback que se lo traga haría creer que se guardó.
+ */
+describe("AgentControlView — pestaña «Seba v2» (Entrega 2, 16/11/2026)", () => {
+  beforeEach(() => {
+    pills.items = [];
+    stubs.roster = null;
+    stubs.seba = null;
+    stubs.welcome = null;
+    stubs.pagos = null;
+    setSebaV2ModeMock.mockReset();
+    setSebaV2ModeMock.mockResolvedValue(undefined);
+    createPaymentMethodMock.mockReset();
+    createPaymentMethodMock.mockResolvedValue(undefined);
+    setAgentAreasMock.mockReset();
+    setAgentAreasMock.mockResolvedValue(undefined);
+    fetchPaymentMethodsMock.mockClear();
+    toastDangerMock.mockClear();
+  });
+
+  async function abrirSeba(agent: Agent = currentAgent, extras: Partial<ComponentProps<typeof AgentControlView>> = {}) {
+    montar(encendida, [], {}, agent, extras);
+    await waitFor(() => expect(pills.items.length).toBeGreaterThan(0));
+    act(() => pills.onChange("seba"));
+    await screen.findByTestId("panel-seba-v2");
+  }
+
+  it.each(["agent", "supervisor", "admin"] as const)(
+    "la pestaña existe para el rol %s y es la segunda, justo después de «Control de IA»",
+    async (role) => {
+      montar(encendida, [], {}, { ...currentAgent, role });
+      await waitFor(() => expect(pills.items.length).toBeGreaterThan(0));
+
+      expect(pills.items[0].value).toBe("ia");
+      expect(pills.items[1].value).toBe("seba");
+      expect(pills.items[1].label).toBe("Seba v2");
+      expect(pills.items[1].count).toBeUndefined();
+    }
+  );
+
+  it("al abrirla monta los tres paneles en orden, con canEdit true para un supervisor", async () => {
+    await abrirSeba();
+
+    const [seba, bienvenida, pagos] = ["panel-seba-v2", "panel-bienvenida", "panel-pagos"].map((id) =>
+      screen.getByTestId(id)
+    );
+    expect(seba.compareDocumentPosition(bienvenida) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(bienvenida.compareDocumentPosition(pagos) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(stubs.seba?.canEdit).toBe(true);
+    expect(stubs.welcome?.canEdit).toBe(true);
+    expect(stubs.pagos?.canEdit).toBe(true);
+    expect(screen.getByRole("heading", { level: 1 })).toHaveTextContent("Seba v2");
+  });
+
+  it("para un asesor los tres paneles reciben canEdit false", async () => {
+    await abrirSeba({ ...currentAgent, role: "agent" });
+
+    expect(stubs.seba?.canEdit).toBe(false);
+    expect(stubs.welcome?.canEdit).toBe(false);
+    expect(stubs.pagos?.canEdit).toBe(false);
+  });
+
+  it("cambiar el modo llama setSebaV2Mode con el asesor actual y el panel recibe el modo nuevo", async () => {
+    await abrirSeba();
+    expect(stubs.seba?.config?.modo).toBe("apagado");
+
+    await act(async () => {
+      await stubs.seba?.onModeChange("sombra");
+    });
+
+    expect(setSebaV2ModeMock).toHaveBeenCalledWith(expect.anything(), currentAgent, "sombra");
+    expect(stubs.seba?.config?.modo).toBe("sombra");
+  });
+
+  it("si setSebaV2Mode rechaza, el callback RECHAZA (no se traga el error) y el modo no cambia", async () => {
+    setSebaV2ModeMock.mockRejectedValue(new ConfigWriteDeniedError("Solo un supervisor o administrador puede cambiar esto."));
+    await abrirSeba();
+
+    let error: unknown = null;
+    await act(async () => {
+      await stubs.seba?.onModeChange("sombra").catch((e: unknown) => {
+        error = e;
+      });
+    });
+
+    expect(error).toBeInstanceOf(ConfigWriteDeniedError);
+    expect(stubs.seba?.config?.modo).toBe("apagado");
+  });
+
+  it("crear una forma de pago llama createPaymentMethod y después vuelve a pedir la lista", async () => {
+    await abrirSeba();
+    fetchPaymentMethodsMock.mockClear();
+    const nueva = [{ key: "zelle", label: "Zelle" }];
+    fetchPaymentMethodsMock.mockResolvedValueOnce(nueva);
+    const draft = { key: "zelle", label: "Zelle" };
+
+    await act(async () => {
+      await stubs.pagos?.onCreate(draft, 3);
+    });
+
+    expect(createPaymentMethodMock).toHaveBeenCalledWith(expect.anything(), currentAgent, draft, 3);
+    expect(fetchPaymentMethodsMock).toHaveBeenCalledTimes(1);
+    expect(stubs.pagos?.methods).toEqual(nueva);
+  });
+
+  it("si createPaymentMethod rechaza, el callback rechaza y NO se vuelve a pedir la lista", async () => {
+    createPaymentMethodMock.mockRejectedValue(new Error("rls"));
+    await abrirSeba();
+    fetchPaymentMethodsMock.mockClear();
+
+    let error: unknown = null;
+    await act(async () => {
+      await stubs.pagos?.onCreate({ key: "x" }, 1).catch((e: unknown) => {
+        error = e;
+      });
+    });
+
+    expect(error).toBeInstanceOf(Error);
+    expect(fetchPaymentMethodsMock).not.toHaveBeenCalled();
+  });
+
+  it("sin la migración (initialSebaV2Config null) los paneles reciben config y cashea en null", async () => {
+    await abrirSeba(currentAgent, { initialSebaV2Config: null });
+
+    expect(stubs.seba?.config).toBeNull();
+    expect(stubs.welcome?.config).toBeNull();
+    expect(stubs.pagos?.cashea).toBeNull();
+  });
+
+  it("con la configuración cargada, cashea sale de los tres campos de Cashea", async () => {
+    await abrirSeba();
+
+    expect(stubs.pagos?.cashea).toEqual({ datosText: "Datos de Cashea", minimoUsd: 25, seisCuotasDesdeUsd: 200 });
+  });
+
+  it("un refresco que falla en alguna de las tres lecturas deja el estado anterior, no lo vacía", async () => {
+    await abrirSeba();
+    fetchSebaV2ConfigMock.mockRejectedValueOnce(new Error("timeout"));
+    fetchPaymentMethodsMock.mockResolvedValueOnce([{ key: "zelle" }]);
+
+    realtime.handlers["agent_settings"]();
+
+    // La lectura de formas de pago que sí resolvió se aplica; la de la configuración, que falló, no borra la anterior.
+    await vi.waitFor(() => expect(stubs.pagos?.methods).toEqual([{ key: "zelle" }]), { timeout: 5000 });
+    expect(stubs.seba?.config?.modo).toBe("apagado");
+  });
+});
+
+describe("AgentControlView — áreas por asesor (Entrega 2, 16/11/2026)", () => {
+  beforeEach(() => {
+    pills.items = [];
+    stubs.roster = null;
+    setAgentAreasMock.mockReset();
+    setAgentAreasMock.mockResolvedValue(undefined);
+    toastDangerMock.mockClear();
+  });
+
+  async function abrirAgentes(extras: Partial<ComponentProps<typeof AgentControlView>> = {}) {
+    montar(encendida, [], {}, currentAgent, extras);
+    await waitFor(() => expect(pills.items.length).toBeGreaterThan(0));
+    act(() => pills.onChange("agentes"));
+    await waitFor(() => expect(stubs.roster).not.toBeNull());
+  }
+
+  it("desmarcar «Pagos» guarda las tres áreas que quedan, en el orden de siempre", async () => {
+    await abrirAgentes();
+
+    await act(async () => {
+      stubs.roster?.onToggleArea(currentAgent, "pagos", false);
+    });
+
+    expect(setAgentAreasMock).toHaveBeenCalledWith(expect.anything(), "agent-1", ["ventas", "envios", "reclamos"]);
+    expect(stubs.roster?.areasByAgent?.["agent-1"]).toEqual(["ventas", "envios", "reclamos"]);
+    expect(stubs.roster?.savingAreasAgentId).toBeNull();
+  });
+
+  it("si la base rechaza (ConfigWriteDeniedError) el toast dice por qué y las áreas vuelven a las cuatro", async () => {
+    setAgentAreasMock.mockRejectedValue(new ConfigWriteDeniedError("Solo un supervisor o administrador puede cambiar esto."));
+    await abrirAgentes();
+
+    await act(async () => {
+      stubs.roster?.onToggleArea(currentAgent, "pagos", false);
+    });
+
+    await waitFor(() =>
+      expect(toastDangerMock).toHaveBeenCalledWith("Solo un supervisor o administrador puede cambiar esto.")
+    );
+    expect(stubs.roster?.areasByAgent?.["agent-1"]).toEqual(["pagos", "ventas", "envios", "reclamos"]);
+    expect(stubs.roster?.savingAreasAgentId).toBeNull();
+  });
+
+  it("sin lectura de áreas (null) alternar no escribe nada", async () => {
+    await abrirAgentes({ initialAgentAreas: null });
+
+    await act(async () => {
+      stubs.roster?.onToggleArea(currentAgent, "pagos", false);
+    });
+
+    expect(setAgentAreasMock).not.toHaveBeenCalled();
+    expect(stubs.roster?.areasByAgent).toBeNull();
   });
 });

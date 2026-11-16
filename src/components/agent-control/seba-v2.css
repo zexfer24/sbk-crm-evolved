@@ -1,0 +1,355 @@
+/* Seba v2: los datos del negocio (formas de pago, Cashea, bienvenida).
+   Entrega 2, 16/11/2026. Complementa agent-control.css y dashboard.css, no los
+   pisa: reutiliza .ac-switch, .ac-badge, .ac-pb-card*, .ac-agent-card-toggle y
+   los tokens --lm-*; nada de colores literales ni anchos fijos (a 390 px todo
+   se apila). */
+
+/* --------------------------------------------------------------------------
+   Vista previa de WhatsApp (whatsapp-preview.tsx)
+   -------------------------------------------------------------------------- */
+
+/* Un fondo de chat tenue con la burbuja saliente pegada a la derecha, con los
+   mismos tokens y la misma esquina recortada que `.crm-bubble[data-from="agent"]`
+   (crm.css): lo que se ve acá es lo que el asesor ve en la conversación. */
+.ac-sv-preview {
+  display: flex;
+  justify-content: flex-end;
+  min-width: 0;
+  padding: 10px;
+  border-radius: 12px;
+  background: var(--lm-sunken);
+}
+
+.ac-sv-bubble {
+  min-width: 0;
+  max-width: 92%;
+  padding: 9px 14px;
+  border-radius: 18px;
+  border-bottom-right-radius: 6px;
+  background: var(--lm-ink);
+  color: var(--lm-on-ink);
+  font-size: 13.5px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.ac-sv-bubble a {
+  color: inherit;
+  text-decoration: underline;
+}
+
+/* Sin texto no hay burbuja: queda el borde punteado y la pista, para no
+   confundir una vista vacía con un mensaje real. */
+.ac-sv-bubble[data-empty="true"] {
+  background: transparent;
+  border: 1px dashed var(--lm-line);
+  color: var(--lm-muted);
+  font-style: italic;
+}
+
+/* --------------------------------------------------------------------------
+   Panel «Formas de pago» (payment-methods-panel.tsx)
+   -------------------------------------------------------------------------- */
+
+/* Los 26px laterales son la columna de texto del panel (los fija
+   .dash-panel-head): todo lo de abajo cuelga de este contenedor. */
+.ac-sv-body {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  min-width: 0;
+  padding: 0 26px 24px;
+}
+
+.ac-sv-note {
+  margin: 0;
+  max-width: 74ch;
+  color: var(--lm-muted);
+  font-size: 12.5px;
+  line-height: 1.5;
+}
+
+.ac-sv-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.ac-sv-list {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(min(100%, 320px), 1fr));
+  gap: 10px;
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+}
+
+.ac-sv-list > * {
+  min-width: 0;
+}
+
+/* El formulario de edición ocupa el lugar de su tarjeta, a lo ancho. */
+.ac-sv-list > .ac-sv-form {
+  grid-column: 1 / -1;
+}
+
+.ac-sv-key {
+  color: var(--lm-muted);
+  font-family: var(--font-mono), ui-monospace, monospace;
+  font-size: 11px;
+  overflow-wrap: anywhere;
+}
+
+.ac-sv-badges {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+/* Un texto de 1500 caracteres no puede estirar la tarjeta sin tope. */
+.ac-sv-method .ac-sv-preview {
+  max-height: 15rem;
+  overflow-y: auto;
+}
+
+/* --------------------------------------------------------------------------
+   Formulario en línea (alta y edición de una forma, texto de Cashea)
+   -------------------------------------------------------------------------- */
+
+.ac-sv-form {
+  gap: 14px;
+}
+
+.ac-sv-field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+}
+
+.ac-sv-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+
+.ac-sv-row > .ac-sv-field {
+  flex: 1 1 200px;
+}
+
+/* El texto que se escribe y, al lado, cómo le llega: se apilan si no caben. */
+.ac-sv-compose {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 260px), 1fr));
+  gap: 12px;
+  align-items: start;
+}
+
+.ac-sv-compose > * {
+  min-width: 0;
+}
+
+.ac-sv-count[data-over="true"] {
+  color: var(--lm-hot-ink);
+}
+
+.ac-sv-check {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  color: var(--lm-ink);
+  font-size: 13px;
+  line-height: 1.45;
+  cursor: pointer;
+}
+
+.ac-sv-check input {
+  flex-shrink: 0;
+  margin-top: 3px;
+  accent-color: var(--lm-link);
+}
+
+.ac-sv-check input:focus-visible {
+  outline: 2px solid var(--lm-link);
+  outline-offset: 2px;
+}
+
+/* --------------------------------------------------------------------------
+   Bloque Cashea (subsección del mismo panel)
+   -------------------------------------------------------------------------- */
+
+.ac-sv-section {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  min-width: 0;
+  padding-top: 18px;
+  border-top: 1px solid var(--lm-line);
+}
+
+.ac-sv-section-title {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+}
+
+.ac-sv-unavailable {
+  margin: 0;
+  padding: 10px 12px;
+  border: 1px dashed var(--lm-line);
+  border-radius: 10px;
+  background: var(--lm-sunken);
+  color: var(--lm-wait-ink);
+  font-size: 12.5px;
+  line-height: 1.5;
+}
+
+/* --------------------------------------------------------------------------
+   Panel «Bienvenida» (welcome-panel.tsx), T5, 16/11/2026
+   -------------------------------------------------------------------------- */
+
+/* La primera subsección va justo bajo la nota del panel: sin raya ni aire extra. */
+.ac-sv-section.ac-sv-section-first {
+  padding-top: 0;
+  border-top: 0;
+}
+
+/* Las frases del mensaje 2: una fila por frase con su contador y, debajo, su
+   error. Lista sin viñetas; cada frase se parte en dos líneas si no cabe. */
+.ac-sv-followups {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.ac-sv-followup {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+
+.ac-sv-followup-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+/* El campo se queda con el ancho que haya; «Quitar» cae debajo en pantallas
+   angostas en vez de aplastarlo. */
+.ac-sv-followup-row > :first-child {
+  flex: 1 1 220px;
+  min-width: 0;
+}
+
+/* --------------------------------------------------------------------------
+   Panel «Seba v2» (seba-v2-panel.tsx), T5, 16/11/2026
+   -------------------------------------------------------------------------- */
+
+/* Aviso permanente: el modo TODAVÍA no rige nada. Tono informativo (azul del
+   sistema), con la raya lateral para que no se lea como una nota más. */
+.ac-sv-aviso {
+  margin: 0;
+  max-width: 74ch;
+  padding: 10px 14px;
+  border: 1px solid color-mix(in srgb, var(--lm-link) 35%, var(--lm-line));
+  border-left-width: 4px;
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--lm-link) 9%, var(--lm-surface));
+  color: var(--lm-ink-soft);
+  font-size: 12.5px;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+
+.ac-sv-modes {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+
+.ac-sv-modes > legend {
+  padding: 0;
+  margin-bottom: 8px;
+}
+
+/* Cada modo es una fila clicable entera. El elegido se distingue por el borde
+   doble (borde + sombra interior del mismo color), el fondo teñido y la
+   etiqueta en negrita —no solo por el color—, así se lee igual en oscuro. */
+.ac-sv-mode-option {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  min-width: 0;
+  padding: 12px 14px;
+  border: 1px solid var(--lm-line);
+  border-radius: 12px;
+  background: var(--lm-surface);
+  cursor: pointer;
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .ac-sv-mode-option {
+    transition: background-color 0.15s ease, border-color 0.15s ease, box-shadow 0.15s ease;
+  }
+}
+
+.ac-sv-mode-option:hover {
+  background: var(--lm-sunken);
+}
+
+.ac-sv-mode-option[data-selected="true"] {
+  border-color: var(--lm-link);
+  box-shadow: inset 0 0 0 1px var(--lm-link);
+  background: color-mix(in srgb, var(--lm-link) 9%, var(--lm-surface));
+}
+
+.ac-sv-mode-option:has(input:focus-visible) {
+  outline: 2px solid var(--lm-link);
+  outline-offset: 2px;
+}
+
+.ac-sv-mode-option:has(input:disabled) {
+  cursor: default;
+}
+
+.ac-sv-mode-option input {
+  flex-shrink: 0;
+  margin-top: 3px;
+  accent-color: var(--lm-link);
+}
+
+.ac-sv-mode-text {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.ac-sv-mode-label {
+  color: var(--lm-ink);
+  font-size: 14px;
+  font-weight: 500;
+}
+
+.ac-sv-mode-option[data-selected="true"] .ac-sv-mode-label {
+  font-weight: 700;
+}
+
+.ac-sv-mode-desc {
+  color: var(--lm-muted);
+  font-size: 12.5px;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}

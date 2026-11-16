@@ -1,8 +1,9 @@
 /** @vitest-environment jsdom */
 import { describe, expect, it, vi } from "vitest";
-import { render, screen } from "@testing-library/react";
+import { fireEvent, render, screen, within } from "@testing-library/react";
 import { AgentsRosterPanel } from "@/components/agent-control/agent-roster-panel";
 import type { Agent, BoardConversation } from "@/lib/types";
+import type { Area } from "@/lib/seba-v2-config";
 
 /**
  * La tarjeta "Sin asignar" listaba TODOS los chats abiertos sin asesor, uno
@@ -61,6 +62,9 @@ describe("AgentsRosterPanel — la caja Sin asignar ya no se pinta", () => {
         canManageAll
         currentAgentId="a1"
         onToggleActive={vi.fn()}
+        areasByAgent={null}
+        savingAreasAgentId={null}
+        onToggleArea={vi.fn()}
       />
     );
 
@@ -81,6 +85,9 @@ describe("AgentsRosterPanel — la caja Sin asignar ya no se pinta", () => {
         canManageAll
         currentAgentId="a1"
         onToggleActive={vi.fn()}
+        areasByAgent={null}
+        savingAreasAgentId={null}
+        onToggleArea={vi.fn()}
       />
     );
 
@@ -102,6 +109,9 @@ describe("AgentsRosterPanel — la caja Sin asignar ya no se pinta", () => {
         canManageAll
         currentAgentId="a1"
         onToggleActive={vi.fn()}
+        areasByAgent={null}
+        savingAreasAgentId={null}
+        onToggleArea={vi.fn()}
       />
     );
 
@@ -121,6 +131,9 @@ describe("AgentsRosterPanel — la caja Sin asignar ya no se pinta", () => {
         canManageAll
         currentAgentId="a1"
         onToggleActive={vi.fn()}
+        areasByAgent={null}
+        savingAreasAgentId={null}
+        onToggleArea={vi.fn()}
       />
     );
 
@@ -146,6 +159,9 @@ describe("AgentsRosterPanel — la caja Sin asignar ya no se pinta", () => {
         canManageAll
         currentAgentId="a1"
         onToggleActive={vi.fn()}
+        areasByAgent={null}
+        savingAreasAgentId={null}
+        onToggleArea={vi.fn()}
       />
     );
 
@@ -178,6 +194,9 @@ describe("AgentsRosterPanel — el reparto solo lo cambia quien puede", () => {
         canManageAll={false}
         currentAgentId="a1"
         onToggleActive={vi.fn()}
+        areasByAgent={null}
+        savingAreasAgentId={null}
+        onToggleArea={vi.fn()}
       />
     );
 
@@ -196,6 +215,9 @@ describe("AgentsRosterPanel — el reparto solo lo cambia quien puede", () => {
         canManageAll
         currentAgentId="a1"
         onToggleActive={vi.fn()}
+        areasByAgent={null}
+        savingAreasAgentId={null}
+        onToggleArea={vi.fn()}
       />
     );
 
@@ -222,11 +244,115 @@ describe("AgentsRosterPanel — el rol caja no es un asesor", () => {
         canManageAll
         currentAgentId="a1"
         onToggleActive={vi.fn()}
+        areasByAgent={null}
+        savingAreasAgentId={null}
+        onToggleArea={vi.fn()}
       />
     );
 
     expect(screen.getByText("Ana")).toBeInTheDocument();
     expect(screen.queryByText("Cajero Principal")).not.toBeInTheDocument();
     expect(screen.getByText(/1 en total · 1 en el reparto/)).toBeInTheDocument();
+  });
+});
+
+/**
+ * Entrega 2 de Seba v2 (16/11/2026): cuatro casillas de área por asesor. Solo
+ * un supervisor o admin las cambia (en la base lo impone un trigger): a
+ * diferencia del interruptor del reparto, ni el propio asesor puede tocar las
+ * suyas. Sin lectura de áreas (falta la migración) no se pinta nada: cuatro
+ * casillas vacías parecerían "sin ningún área" cuando es "no sabemos".
+ */
+describe("AgentsRosterPanel — áreas por asesor", () => {
+  const agents = [agente("a1", "Ana"), agente("a2", "Beto")];
+  const areas: Record<string, Area[]> = {
+    a1: ["pagos", "ventas", "envios", "reclamos"],
+    a2: ["ventas"],
+  };
+
+  function montar(props: Partial<React.ComponentProps<typeof AgentsRosterPanel>> = {}) {
+    const onToggleArea = vi.fn();
+    render(
+      <AgentsRosterPanel
+        agents={agents}
+        conversations={[]}
+        metrics={[]}
+        togglingAgentId={null}
+        canManageAll
+        currentAgentId="a1"
+        onToggleActive={vi.fn()}
+        areasByAgent={areas}
+        savingAreasAgentId={null}
+        onToggleArea={onToggleArea}
+        {...props}
+      />
+    );
+    return { onToggleArea };
+  }
+
+  it("pinta las cuatro casillas de cada asesor con el estado de areasByAgent", () => {
+    montar();
+
+    const grupos = screen.getAllByRole("group", { name: "Áreas" });
+    expect(grupos).toHaveLength(2);
+
+    const deAna = within(grupos[0]).getAllByRole("checkbox");
+    expect(deAna.map((c) => (c as HTMLInputElement).checked)).toEqual([true, true, true, true]);
+
+    const deBeto = within(grupos[1]);
+    expect(deBeto.getByRole("checkbox", { name: "Pagos: Beto" })).not.toBeChecked();
+    expect(deBeto.getByRole("checkbox", { name: "Ventas: Beto" })).toBeChecked();
+    expect(deBeto.getByRole("checkbox", { name: "Envíos: Beto" })).not.toBeChecked();
+    expect(deBeto.getByRole("checkbox", { name: "Reclamos: Beto" })).not.toBeChecked();
+  });
+
+  it("con canManageAll, desmarcar «Pagos» llama onToggleArea(agente, 'pagos', false)", () => {
+    const { onToggleArea } = montar();
+
+    fireEvent.click(screen.getByRole("checkbox", { name: "Pagos: Ana" }));
+
+    expect(onToggleArea).toHaveBeenCalledTimes(1);
+    expect(onToggleArea).toHaveBeenCalledWith(expect.objectContaining({ id: "a1" }), "pagos", false);
+  });
+
+  it("sin canManageAll todas las casillas están deshabilitadas, también las del propio asesor", () => {
+    montar({ canManageAll: false });
+
+    for (const casilla of screen.getAllByRole("checkbox")) {
+      expect(casilla).toBeDisabled();
+    }
+    expect(screen.getByRole("checkbox", { name: "Pagos: Ana" })).toBeDisabled();
+  });
+
+  it("con areasByAgent null no pinta ningún grupo «Áreas»", () => {
+    montar({ areasByAgent: null });
+
+    expect(screen.queryByRole("group", { name: "Áreas" })).not.toBeInTheDocument();
+    expect(screen.queryAllByRole("checkbox")).toHaveLength(0);
+  });
+
+  it("un asesor que no viene en areasByAgent no pinta casillas, y los demás sí", () => {
+    montar({ areasByAgent: { a2: ["ventas"] } });
+
+    expect(screen.getAllByRole("group", { name: "Áreas" })).toHaveLength(1);
+    expect(screen.queryByRole("checkbox", { name: "Pagos: Ana" })).not.toBeInTheDocument();
+    expect(screen.getByRole("checkbox", { name: "Pagos: Beto" })).toBeInTheDocument();
+  });
+
+  it("mientras se guardan las áreas de un asesor, sus casillas se deshabilitan y las del otro no", () => {
+    montar({ savingAreasAgentId: "a2" });
+
+    expect(screen.getByRole("checkbox", { name: "Pagos: Beto" })).toBeDisabled();
+    expect(screen.getByRole("checkbox", { name: "Pagos: Ana" })).toBeEnabled();
+  });
+
+  it("un asesor sin ninguna área y canManageAll muestra la pista; sin canManageAll, no", () => {
+    montar({ areasByAgent: { a1: [], a2: ["ventas"] } });
+    expect(screen.getByText("Sin áreas: Seba no le pasa casos por área.")).toBeInTheDocument();
+  });
+
+  it("sin canManageAll no se muestra la pista de «Sin áreas»", () => {
+    montar({ areasByAgent: { a1: [], a2: ["ventas"] }, canManageAll: false });
+    expect(screen.queryByText("Sin áreas: Seba no le pasa casos por área.")).not.toBeInTheDocument();
   });
 });

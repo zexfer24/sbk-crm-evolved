@@ -63,6 +63,11 @@ vi.mock("@/lib/data", () => ({
   fetchTags: vi.fn(async () => marker("tags")),
   fetchWhatsappChannelHealth: vi.fn(async () => marker("channelHealth")),
   fetchCatalogLinks: vi.fn(async () => marker("catalogLinks")),
+  // Entrega 2 de Seba v2 (16/11/2026): las dos últimas devuelven `null` si
+  // falta la migración 20261116030000; la lista va envuelta.
+  fetchPaymentMethods: vi.fn(async () => marker("paymentMethods")),
+  fetchSebaV2Config: vi.fn(async () => marker("sebaV2Config")),
+  fetchAgentAreas: vi.fn(async () => marker("agentAreas")),
 }));
 
 describe("agent-control/page.tsx — cableado de readListIfTableExists", () => {
@@ -70,16 +75,40 @@ describe("agent-control/page.tsx — cableado de readListIfTableExists", () => {
     readListIfTableExistsMock.mockClear();
   });
 
-  it("envuelve EXACTAMENTE fetchLessons y fetchCatalogLinks, y ninguna otra lectura", async () => {
+  it("envuelve EXACTAMENTE fetchLessons, fetchCatalogLinks y fetchPaymentMethods, y ninguna otra lectura", async () => {
     const { default: AgentControlPage } = await import("./page");
     await AgentControlPage();
 
-    expect(readListIfTableExistsMock).toHaveBeenCalledTimes(2);
+    expect(readListIfTableExistsMock).toHaveBeenCalledTimes(3);
 
     const wrapped = await Promise.all(
       readListIfTableExistsMock.mock.calls.map(([promise]) => promise)
     );
     const names = (wrapped as Array<{ __marker: string }>).map((v) => v.__marker).sort();
-    expect(names).toEqual(["catalogLinks", "lessons"]);
+    expect(names).toEqual(["catalogLinks", "lessons", "paymentMethods"]);
+  });
+
+  it("le pasa a la vista las formas de pago, la configuración de Seba v2 y las áreas de los asesores", async () => {
+    const { default: AgentControlPage } = await import("./page");
+    // El Server Component devuelve el elemento sin renderizarlo: sus props son lo que se prueba.
+    const element = (await AgentControlPage()) as { props: Record<string, unknown> };
+    const capturedViewProps = element.props;
+
+    expect(capturedViewProps.initialPaymentMethods).toEqual({ __marker: "paymentMethods" });
+    expect(capturedViewProps.initialSebaV2Config).toEqual({ __marker: "sebaV2Config" });
+    expect(capturedViewProps.initialAgentAreas).toEqual({ __marker: "agentAreas" });
+  });
+
+  it("si faltan las migraciones (lecturas en null), la vista recibe null y no se cae", async () => {
+    const data = await import("@/lib/data");
+    vi.mocked(data.fetchSebaV2Config).mockResolvedValueOnce(null);
+    vi.mocked(data.fetchAgentAreas).mockResolvedValueOnce(null);
+
+    const { default: AgentControlPage } = await import("./page");
+    const element = (await AgentControlPage()) as { props: Record<string, unknown> };
+    const capturedViewProps = element.props;
+
+    expect(capturedViewProps.initialSebaV2Config).toBeNull();
+    expect(capturedViewProps.initialAgentAreas).toBeNull();
   });
 });

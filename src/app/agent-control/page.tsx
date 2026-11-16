@@ -2,6 +2,7 @@ import { redirect } from "next/navigation";
 import { createClient } from "@/lib/supabase/server";
 import {
   fetchAgentSettings,
+  fetchAgentAreas,
   fetchAgentMetrics,
   fetchAgentSuggestions,
   fetchAgentTools,
@@ -14,7 +15,9 @@ import {
   fetchKnowledgeEntries,
   fetchLessons,
   fetchModelPricing,
+  fetchPaymentMethods,
   fetchPlaybooks,
+  fetchSebaV2Config,
   fetchQuickReplies,
   fetchTags,
   fetchTokenUsageSummary,
@@ -48,6 +51,9 @@ export default async function AgentControlPage() {
     tags,
     channelHealth,
     catalogLinks,
+    paymentMethods,
+    sebaV2Config,
+    agentAreas,
   ] = await Promise.all([
     fetchCurrentAgent(supabase),
     // Solo el trabajo vivo: el panel muestra la cola de la IA y el roster,
@@ -79,6 +85,14 @@ export default async function AgentControlPage() {
     fetchTags(supabase),
     fetchWhatsappChannelHealth(supabase),
     readListIfTableExists(fetchCatalogLinks(supabase), "los enlaces de catálogo"),
+    // Entrega 2 de Seba v2 (16/11/2026): las dos últimas lecturas ya devuelven
+    // `null` solas si falta la migración 20261116030000 (columnas nuevas de
+    // `agent_settings` y `agents.areas`), así que no necesitan envoltorio; la
+    // lista de formas de pago sí va envuelta porque `payment_methods` es una
+    // tabla nueva (20261116020000) que LANZA si falta.
+    readListIfTableExists(fetchPaymentMethods(supabase), "las formas de pago"),
+    fetchSebaV2Config(supabase),
+    fetchAgentAreas(supabase),
   ]);
 
   if (!currentAgent) {
@@ -106,6 +120,9 @@ export default async function AgentControlPage() {
       initialTags={tags}
       initialCatalogLinks={catalogLinks}
       initialChannelHealth={channelHealth}
+      initialPaymentMethods={paymentMethods}
+      initialSebaV2Config={sebaV2Config}
+      initialAgentAreas={agentAreas}
       modelLabel={currentAgentModelLabel()}
     />
   );

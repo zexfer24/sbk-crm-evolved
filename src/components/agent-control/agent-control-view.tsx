@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { Button, Modal, toast } from "@heroui/react";
-import { BookOpen, Bot, GraduationCap, KeyRound, Search, ShieldAlert, Users, Wrench, Zap } from "lucide-react";
+import { BookOpen, Bot, GraduationCap, KeyRound, Search, ShieldAlert, Sparkles, Users, Wrench, Zap } from "lucide-react";
 import type { BacklogCounts } from "@/lib/data";
 import { BUSINESS_NAME } from "@/lib/brand";
 import type {
@@ -35,6 +35,7 @@ import {
   fetchAgentTools,
   fetchAgentTurns,
   fetchAgentMetrics,
+  fetchAgentAreas,
   fetchAllAgents,
   fetchBoardConversationRow,
   fetchBoardConversations,
@@ -44,8 +45,10 @@ import {
   fetchLessons,
   fetchModelPricing,
   fetchBacklogCounts,
+  fetchPaymentMethods,
   fetchPlaybooks,
   fetchSearchSummary,
+  fetchSebaV2Config,
   fetchTokenUsageSummary,
   fetchTurnCallsByPhase,
   fetchUnmatchedTurns,
@@ -54,21 +57,32 @@ import { readListIfTableExists } from "@/app/agent-control/degradable-reads";
 import {
   createAgentSuggestion,
   createCatalogLink,
+  createPaymentMethod,
   deleteCatalogLink,
+  deletePaymentMethod,
   intervene,
   markSuggestionReviewed,
   setAgentActive,
+  setAgentAreas,
   setAgentToolEnabled,
   setAiEnabled,
   setAiGloballyEnabled,
   setCatalogLinkActive,
   setDailySpendCap,
   setDemoraActiva,
+  setPaymentMethodActive,
+  setSebaV2Mode,
   updateBusinessHours,
+  updateCasheaSettings,
   updateCatalogLink,
   updateModelPricing,
+  updatePaymentMethod,
+  updateShadowLimits,
+  updateWelcomeTexts,
 } from "@/lib/mutations";
 import type { CatalogLinkDraft } from "@/lib/catalog-links";
+import type { PaymentMethodConfig, PaymentMethodDraft } from "@/lib/payment-methods";
+import { toggleArea, type Area, type SebaV2Config, type SebaV2Mode, type WelcomeDraft } from "@/lib/seba-v2-config";
 import { configErrorMessage } from "@/lib/config-write";
 import { contactName, initials } from "@/lib/dashboard";
 import type { BusinessHours } from "@/lib/business-hours";
@@ -79,6 +93,9 @@ import { useLiveRefresh } from "@/lib/use-live-refresh";
 import { AgentsRosterPanel } from "@/components/agent-control/agent-roster-panel";
 import { TeamPanel } from "@/components/agent-control/team-panel";
 import { AgentToolsPanel } from "@/components/agent-control/agent-tools-panel";
+import { SebaV2Panel } from "@/components/agent-control/seba-v2-panel";
+import { WelcomePanel } from "@/components/agent-control/welcome-panel";
+import { PaymentMethodsPanel } from "@/components/agent-control/payment-methods-panel";
 import { KnowledgePanel } from "@/components/agent-control/knowledge-panel";
 import { LessonsPanel } from "@/components/agent-control/lessons-panel";
 import { CatalogSearchesPanel } from "@/components/agent-control/catalog-searches-panel";
@@ -138,11 +155,21 @@ interface AgentControlViewProps {
    * realtime propio) y los tests existentes de esta vista no la pasan.
    */
   initialChannelHealth?: WhatsappChannelHealth | null;
+  /**
+   * Entrega 2 de Seba v2 (16/11/2026): las formas de pago de contado (tabla
+   * nueva `payment_methods`, `page.tsx` la degrada a `[]` si falta).
+   */
+  initialPaymentMethods: PaymentMethodConfig[];
+  /** `null` = falta la migración 20261116030000 (columnas nuevas de `agent_settings`). */
+  initialSebaV2Config: SebaV2Config | null;
+  /** Áreas por asesor, por id; `null` = falta la misma migración (`agents.areas`). */
+  initialAgentAreas: Record<string, Area[]> | null;
   modelLabel: string;
 }
 
 type AgentControlTab =
   | "ia"
+  | "seba"
   | "respuestas"
   | "biblioteca"
   | "lecciones"
@@ -212,6 +239,7 @@ const PHASE_LABEL: Record<string, string> = {
 
 const TAB_TITLE: Record<AgentControlTab, string> = {
   ia: "Control del agente de IA",
+  seba: "Seba v2",
   respuestas: "Respuestas predeterminadas",
   biblioteca: "Biblioteca de conocimiento",
   lecciones: "Lecciones de Seba",
@@ -223,6 +251,7 @@ const TAB_TITLE: Record<AgentControlTab, string> = {
 
 const TAB_SUBTITLE: Record<AgentControlTab, string> = {
   ia: "Interruptor general, qué está haciendo la IA ahora mismo, y un simulador para probarla sin necesidad de WhatsApp real.",
+  seba: "El modo de la Seba nueva, la bienvenida que recibe cada cliente y las formas de pago que entrega. Todavía no atiende chats: llega en la próxima entrega.",
   respuestas:
     "Los casos que la IA ya sabe resolver con un texto tuyo, y los mensajes de clientes que todavía no calzan con ninguno.",
   biblioteca:
@@ -262,6 +291,9 @@ export function AgentControlView({
   initialTags,
   initialCatalogLinks,
   initialChannelHealth = null,
+  initialPaymentMethods,
+  initialSebaV2Config,
+  initialAgentAreas,
   modelLabel,
 }: AgentControlViewProps) {
   const supabase = useMemo(() => createClient(), []);
@@ -318,6 +350,13 @@ export function AgentControlView({
   // `undefined` = sin dato (la RPC falló o falta la migración): sin contador.
   const [searchesToday, setSearchesToday] = useState<number | undefined>(undefined);
   const [searchesRefreshToken, setSearchesRefreshToken] = useState(0);
+  // Entrega 2 de Seba v2 (16/11/2026). `sebaV2Config` y `agentAreas` en `null`
+  // significan "falta la migración": los paneles lo pintan como «No
+  // disponible» y el roster no pinta casillas, nunca valores en cero.
+  const [paymentMethods, setPaymentMethods] = useState(initialPaymentMethods);
+  const [sebaV2Config, setSebaV2Config] = useState(initialSebaV2Config);
+  const [agentAreas, setAgentAreasState] = useState(initialAgentAreas);
+  const [savingAreasAgentId, setSavingAreasAgentId] = useState<string | null>(null);
   const [togglingKillSwitch, setTogglingKillSwitch] = useState(false);
   const [confirmingAiOn, setConfirmingAiOn] = useState(false);
   // null mientras se cuenta. El diálogo no deja encender hasta tener el
@@ -358,6 +397,26 @@ export function AgentControlView({
       // Mismo criterio que el catch de `refresh`: el siguiente cambio en
       // tiempo real reintentará la sincronización.
     }
+  }, [supabase]);
+
+  /**
+   * Entrega 2 de Seba v2 (16/11/2026): las tres lecturas de la pestaña «Seba
+   * v2» y de las áreas del roster corren APARTE del `Promise.all` de `refresh`,
+   * igual que `refreshTurnCallsByPhase`: en una base sin migrar fallan y no
+   * pueden tumbar el refresco del resto. Cada una que resuelva actualiza su
+   * estado (un `null` legítimo —falta la migración— SÍ se guarda); una que
+   * falle (timeout, 5xx) deja el estado anterior, nunca lo vacía: pintar un
+   * panel en blanco por un corte de red sería mentir.
+   */
+  const refreshSebaV2 = useCallback(async () => {
+    const [metodos, config, areas] = await Promise.allSettled([
+      readListIfTableExists(fetchPaymentMethods(supabase), "las formas de pago"),
+      fetchSebaV2Config(supabase),
+      fetchAgentAreas(supabase),
+    ]);
+    if (metodos.status === "fulfilled") setPaymentMethods(metodos.value);
+    if (config.status === "fulfilled") setSebaV2Config(config.value);
+    if (areas.status === "fulfilled") setAgentAreasState(areas.value);
   }, [supabase]);
 
   // Todo lo del panel menos las conversaciones, que van por su propio carril.
@@ -416,6 +475,7 @@ export function AgentControlView({
       // reflejar los cambios reales del panel.
     }
     await refreshTurnCallsByPhase();
+    await refreshSebaV2();
     // Aparte y fuera del `Promise.all` de arriba, igual que `turnCallsByPhase`:
     // la RPC `resumen_busquedas` puede faltar en una base sin migrar y no
     // puede tumbar el refresco de todo lo demás. El panel de Búsquedas pide
@@ -427,7 +487,7 @@ export function AgentControlView({
       setSearchesToday(undefined);
     }
     setSearchesRefreshToken((token) => token + 1);
-  }, [supabase, refreshTurnCallsByPhase]);
+  }, [supabase, refreshTurnCallsByPhase, refreshSebaV2]);
 
   // Agrupado y consciente de la pestaña: los eventos de estas tablas no
   // deben costar trece consultas cada uno en un panel que nadie está mirando.
@@ -718,6 +778,84 @@ export function AgentControlView({
     await refresh();
   }
 
+  // Entrega 2 de Seba v2 (16/11/2026). Todos estos callbacks LANZAN si la
+  // escritura falla: los paneles atrapan el error y muestran su toast, y un
+  // callback que se lo tragara haría creer que se guardó. Lo que vive en
+  // `agent_settings` parcha el objeto en estado (mismo patrón que
+  // `saveSpendCap`); la lista de formas de pago se vuelve a pedir entera.
+  async function changeSebaV2Mode(modo: SebaV2Mode) {
+    await setSebaV2Mode(supabase, currentAgent, modo);
+    setSebaV2Config((c) => (c ? { ...c, modo } : c));
+  }
+
+  async function saveShadowLimits(limits: { capUsd: number; samplePct: number }) {
+    await updateShadowLimits(supabase, currentAgent, limits);
+    setSebaV2Config((c) => (c ? { ...c, shadowDailyCapUsd: limits.capUsd, shadowSamplePct: limits.samplePct } : c));
+  }
+
+  async function saveWelcome(draft: WelcomeDraft) {
+    await updateWelcomeTexts(supabase, currentAgent, draft);
+    setSebaV2Config((c) =>
+      c ? { ...c, welcomeText: draft.welcomeText, welcomeFollowups: draft.followups } : c
+    );
+  }
+
+  async function saveCashea(settings: { datosText: string; minimoUsd: number; seisCuotasDesdeUsd: number }) {
+    await updateCasheaSettings(supabase, currentAgent, settings);
+    setSebaV2Config((c) =>
+      c
+        ? {
+            ...c,
+            casheaDatosText: settings.datosText,
+            casheaMinimoUsd: settings.minimoUsd,
+            casheaSeisCuotasDesdeUsd: settings.seisCuotasDesdeUsd,
+          }
+        : c
+    );
+  }
+
+  async function createPaymentMethodEntry(draft: PaymentMethodDraft, sortOrder: number) {
+    await createPaymentMethod(supabase, currentAgent, draft, sortOrder);
+    setPaymentMethods(await fetchPaymentMethods(supabase));
+  }
+
+  async function updatePaymentMethodEntry(key: string, draft: Omit<PaymentMethodDraft, "key">) {
+    await updatePaymentMethod(supabase, currentAgent, key, draft);
+    setPaymentMethods(await fetchPaymentMethods(supabase));
+  }
+
+  async function deletePaymentMethodEntry(key: string) {
+    await deletePaymentMethod(supabase, key);
+    setPaymentMethods(await fetchPaymentMethods(supabase));
+  }
+
+  async function togglePaymentMethodEntry(key: string, isActive: boolean) {
+    await setPaymentMethodActive(supabase, currentAgent, key, isActive);
+    setPaymentMethods(await fetchPaymentMethods(supabase));
+  }
+
+  /**
+   * Casilla de área de un asesor: optimista, con reversión si la base la
+   * rechaza (un asesor corriente recibe 42501 del trigger, que `setAgentAreas`
+   * traduce a `ConfigWriteDeniedError`). Sin lectura de áreas (`null`, falta la
+   * migración) o sin ese asesor no hay nada que cambiar.
+   */
+  async function toggleAgentArea(agent: Agent, area: Area, on: boolean) {
+    if (!agentAreas || !agentAreas[agent.id]) return;
+    setSavingAreasAgentId(agent.id);
+    const anterior = agentAreas[agent.id];
+    const siguiente = toggleArea(anterior, area, on);
+    setAgentAreasState((prev) => (prev ? { ...prev, [agent.id]: siguiente } : prev));
+    try {
+      await setAgentAreas(supabase, agent.id, siguiente);
+    } catch (error) {
+      setAgentAreasState((prev) => (prev ? { ...prev, [agent.id]: anterior } : prev));
+      toast.danger(configErrorMessage(error, "No se pudieron cambiar las áreas de este asesor."));
+    } finally {
+      setSavingAreasAgentId(null);
+    }
+  }
+
   async function pauseAi(conversationId: string) {
     setBusyConversationId(conversationId);
     try {
@@ -824,7 +962,7 @@ export function AgentControlView({
               </div>
             </div>
 
-            {/* Carril que scrollea: a 390 px las siete pestañas (ocho para un admin) no caben (ver agent-control.css). */}
+            {/* Carril que scrollea: a 390 px las ocho pestañas (nueve para un admin) no caben (ver agent-control.css). */}
             <FilterScroller className="ac-tabs-scroll no-scrollbar">
               <SlidingPills
                 className="ac-tabs"
@@ -835,6 +973,7 @@ export function AgentControlView({
                 onChange={setTab}
                 items={[
                   { value: "ia", label: "Control de IA" },
+                  { value: "seba", label: "Seba v2", icon: <Sparkles size={13} /> },
                   { value: "respuestas", label: "Respuestas", icon: <Zap size={13} />, count: playbooks.length },
                   {
                     value: "biblioteca",
@@ -1379,6 +1518,36 @@ export function AgentControlView({
               />
             )}
 
+            {tab === "seba" && (
+              <>
+                <SebaV2Panel
+                  config={sebaV2Config}
+                  canEdit={canEditConfig}
+                  onModeChange={changeSebaV2Mode}
+                  onSaveLimits={saveShadowLimits}
+                />
+                <WelcomePanel config={sebaV2Config} canEdit={canEditConfig} onSave={saveWelcome} />
+                <PaymentMethodsPanel
+                  methods={paymentMethods}
+                  cashea={
+                    sebaV2Config
+                      ? {
+                          datosText: sebaV2Config.casheaDatosText,
+                          minimoUsd: sebaV2Config.casheaMinimoUsd,
+                          seisCuotasDesdeUsd: sebaV2Config.casheaSeisCuotasDesdeUsd,
+                        }
+                      : null
+                  }
+                  canEdit={canEditConfig}
+                  onCreate={createPaymentMethodEntry}
+                  onUpdate={updatePaymentMethodEntry}
+                  onDelete={deletePaymentMethodEntry}
+                  onToggleActive={togglePaymentMethodEntry}
+                  onSaveCashea={saveCashea}
+                />
+              </>
+            )}
+
             {tab === "herramientas" && (
               <AgentToolsPanel
                 tools={agentTools}
@@ -1397,6 +1566,9 @@ export function AgentControlView({
                 canManageAll={canEditConfig}
                 currentAgentId={currentAgent.id}
                 onToggleActive={toggleAgentActive}
+                areasByAgent={agentAreas}
+                savingAreasAgentId={savingAreasAgentId}
+                onToggleArea={toggleAgentArea}
               />
             )}
 
