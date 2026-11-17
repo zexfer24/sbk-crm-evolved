@@ -230,6 +230,19 @@ interface FakeState {
    * problema salvo que un test la ponga.
    */
   noteInsertError: { message: string } | null;
+  /**
+   * S9b, la costura de Seba v2 (17/11/2026): lo que devuelve la lectura APARTE
+   * de `agent_settings.seba_v2_modo, shadow_sample_pct` que hace el turno al
+   * abrir. `"apagado"` de fábrica: con el modo de fábrica la costura no puede
+   * cambiar nada de lo que el turno hacía antes de existir.
+   */
+  sebaV2Modo: string;
+  shadowSamplePct: number;
+  /** Si viene con mensaje, esa lectura falla (migración sin aplicar): el turno cae a `apagado`. */
+  sebaV2ConfigError: { message: string } | null;
+  /** Lo que devuelve la RPC `shadow_can_run` y su error opcional. */
+  shadowCanRun: boolean;
+  shadowCanRunError: { message: string } | null;
 }
 
 const state: FakeState = {
@@ -272,7 +285,14 @@ const state: FakeState = {
   cessionLastCustomerMessageAt: null,
   cessionLastCustomerMessageAtError: null,
   noteInsertError: null,
+  sebaV2Modo: "apagado",
+  shadowSamplePct: 100,
+  sebaV2ConfigError: null,
+  shadowCanRun: true,
+  shadowCanRunError: null,
 };
+/** Cada llamada a la RPC `shadow_can_run` (S9b): con el modo `apagado` no debe haber ninguna. */
+const shadowCanRunCalls: number[] = [];
 const conversationUpdates: Record<string, unknown>[] = [];
 /** Tarea 3 (14/9/2026): columnas pedidas en cada `select()` sobre `conversations`, para probar que trae display_name/profile_name. */
 const conversationSelectColumns: string[] = [];
@@ -320,6 +340,13 @@ function createFakeSupabase() {
       // Lock por conversación (conversation-lock.ts): siempre libre, siempre
       // se puede renovar y soltar. Este archivo prueba UN solo turno a la
       // vez, así que el lock nunca es el protagonista acá.
+      // S9b (17/11/2026): la costura de Seba v2 pregunta por la sombra solo en
+      // los modos `sombra`/`copiloto`.
+      if (fn === "shadow_can_run") {
+        shadowCanRunCalls.push(1);
+        if (state.shadowCanRunError) return Promise.resolve({ data: null, error: state.shadowCanRunError });
+        return Promise.resolve({ data: state.shadowCanRun, error: null });
+      }
       if (fn === "ai_turn_lock_acquire") return Promise.resolve({ data: true, error: null });
       if (fn === "ai_turn_lock_renew") {
         return state.turnLockRenewResult.error
@@ -345,14 +372,27 @@ function createFakeSupabase() {
     from(table: string) {
       if (table === "agent_settings") {
         return {
-          select: () => ({
+          select: (columns?: string) => ({
             eq: () => ({
-              maybeSingle: async () => ({
-                data: state.agentSettingsError
-                  ? null
-                  : { ai_globally_enabled: state.aiGloballyEnabled, business_hours: state.agentSettingsBusinessHours },
-                error: state.agentSettingsError,
-              }),
+              maybeSingle: async () => {
+                // S9b (17/11/2026): la config de Seba v2 se lee en una consulta
+                // APARTE de la del horario (así una migración sin aplicar no se
+                // lleva puesto el horario): se distinguen por columnas.
+                if (columns?.includes("seba_v2_modo")) {
+                  return {
+                    data: state.sebaV2ConfigError
+                      ? null
+                      : { seba_v2_modo: state.sebaV2Modo, shadow_sample_pct: state.shadowSamplePct },
+                    error: state.sebaV2ConfigError,
+                  };
+                }
+                return {
+                  data: state.agentSettingsError
+                    ? null
+                    : { ai_globally_enabled: state.aiGloballyEnabled, business_hours: state.agentSettingsBusinessHours },
+                  error: state.agentSettingsError,
+                };
+              },
             }),
           }),
         };
@@ -1013,6 +1053,22 @@ const esperarLecturasMock = vi.fn<(...args: unknown[]) => Promise<{ esperadoMs: 
 );
 vi.mock("@/lib/ai/wait-readings", () => ({ esperarLecturas: (...args: unknown[]) => esperarLecturasMock(...args) }));
 
+/**
+ * S9b (17/11/2026): la costura de Seba v2 se prueba con la sombra y el turno en
+ * vivo FINGIDOS — cada uno tiene su propio archivo de tests (`sombra.test.ts`,
+ * `vivo.test.ts`) y sus módulos arrastran el turno de v2 entero.
+ * `SOMBRA_ESPERA_MAX_MS` se repite acá porque la fábrica reemplaza el módulo.
+ */
+const correrSombraMock = vi.fn<(...args: unknown[]) => Promise<void>>(async () => undefined);
+const correrSeba2EnVivoMock = vi.fn<(...args: unknown[]) => Promise<unknown>>(async () => ({ accion: "answered" }));
+vi.mock("@/lib/seba2/sombra", () => ({
+  SOMBRA_ESPERA_MAX_MS: 60_000,
+  correrSombra: (...args: unknown[]) => correrSombraMock(...args),
+}));
+vi.mock("@/lib/seba2/vivo", () => ({
+  correrSeba2EnVivo: (...args: unknown[]) => correrSeba2EnVivoMock(...args),
+}));
+
 /** "Escribiendo…" hacia Meta (T3.1, 4/9/2026): nunca lanza, así que el mock tampoco. */
 const sendTypingIndicatorMock = vi.fn().mockResolvedValue(undefined);
 vi.mock("@/lib/whatsapp/meta-client", () => ({
@@ -1048,6 +1104,7 @@ import {
 } from "@/lib/ai/seba";
 import type { ConsultaCatalogo, LineaCotizada } from "@/lib/ai/tools";
 import { GreetingAwaitsQuestionError } from "@/lib/ai/greeting-wait";
+import { NonRetryableTurnError } from "@/lib/ai/turn-delivery";
 import { log } from "@/lib/log";
 /**
  * T4, plan "Nada se pierde en un corte ni en un deploy" (21-22/9/2026): SIN
@@ -1150,6 +1207,12 @@ beforeEach(() => {
   state.cessionLastCustomerMessageAt = null;
   state.cessionLastCustomerMessageAtError = null;
   state.noteInsertError = null;
+  state.sebaV2Modo = "apagado";
+  state.shadowSamplePct = 100;
+  state.sebaV2ConfigError = null;
+  state.shadowCanRun = true;
+  state.shadowCanRunError = null;
+  shadowCanRunCalls.length = 0;
   redisSeenStore.clear();
   redisCedidoStore.clear();
   redisFailing = false;
@@ -1167,6 +1230,8 @@ beforeEach(() => {
   agentOptions.length = 0;
   getAgentModelCalls.length = 0;
   vi.clearAllMocks();
+  correrSombraMock.mockImplementation(async () => undefined);
+  correrSeba2EnVivoMock.mockImplementation(async () => ({ accion: "answered" }));
   fetchActivePlaybooksMock.mockResolvedValue([]);
   generateTextMock.mockResolvedValue({
     text: "texto reescrito limpio",
@@ -8677,5 +8742,559 @@ describe("runAgentTurn — el modo demora no se filtra al turno normal (T10b-3, 
 
     expect(agentOptions[0].instructions).toMatch(/YA está asignado a un asesor/);
     expect(agentOptions[0].instructions).not.toMatch(/MODO ESPERA/);
+  });
+});
+
+/**
+ * RESGUARDO de la costura de Seba v2 (S9b, 17/11/2026): se escribió ANTES de
+ * tocar `agent.ts` y fija lo que el turno hace hoy con la IA apagada. Con el
+ * modo `apagado` (el de fábrica) la costura no puede cambiar NADA de esto.
+ */
+describe("runAgentTurn — con la IA sin poder correr (resguardo de la costura de Seba v2)", () => {
+  it("deja el traspaso agente_no_puede_correr y no llama al modelo ni envía nada", async () => {
+    state.canRun = false;
+
+    await expect(runAgentTurn("conv-1")).resolves.toBeUndefined();
+
+    const traspasos = handoffCalls.filter((h) => h.p_reason === "agente_no_puede_correr");
+    expect(traspasos).toHaveLength(1);
+    expect(traspasos[0]).toMatchObject({ p_conversation_id: "conv-1", p_to_kind: "unassigned" });
+    expect(handoffCalls).toHaveLength(1);
+    expect(matchPlaybookMock).not.toHaveBeenCalled();
+    expect(classifyIntentMock).not.toHaveBeenCalled();
+    expect(generateMock).not.toHaveBeenCalled();
+    expect(generateTextMock).not.toHaveBeenCalled();
+    expect(sendAgentTextMock).not.toHaveBeenCalled();
+    expect(sendPlaybookReplyMock).not.toHaveBeenCalled();
+    expect(agentTurnInserts).toHaveLength(0);
+  });
+});
+
+/**
+ * La costura de Seba v2 (S9b, 17/11/2026): `runAgentTurn` decide entre Seba v1,
+ * Seba v2 en vivo y Seba v2 sin enviar (sombra/copiloto). `correrSombra` y
+ * `correrSeba2EnVivo` están fingidos (cada uno tiene su archivo de tests): acá
+ * se prueba QUÉ llama la costura, con qué y en qué orden, y que la sombra nunca
+ * cambia el resultado del turno de v1.
+ */
+describe("runAgentTurn — la costura de Seba v2 (S9b, 17/11/2026)", () => {
+  const OUTCOME_FALLIDO = {
+    ...OUTCOME_NO_ENVIADO,
+    whatsapp_status: "failed" as const,
+    whatsapp_error_code: "131047",
+    origenDelFallo: "meta" as const,
+  };
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  function modo(valor: string, pct = 100) {
+    state.sebaV2Modo = valor;
+    state.shadowSamplePct = pct;
+  }
+
+  describe("con el modo apagado (el de fábrica)", () => {
+    it("no pregunta por la sombra, no la corre ni corre a Seba v2: el turno es el de siempre", async () => {
+      await runAgentTurn("conv-1");
+
+      expect(shadowCanRunCalls).toHaveLength(0);
+      expect(correrSombraMock).not.toHaveBeenCalled();
+      expect(correrSeba2EnVivoMock).not.toHaveBeenCalled();
+      expect(sendAgentTextMock).toHaveBeenCalledTimes(1);
+      expect(agentOptions).toHaveLength(1);
+    });
+
+    it("con la IA apagada tampoco consulta nada de v2: solo deja agente_no_puede_correr", async () => {
+      state.canRun = false;
+
+      await runAgentTurn("conv-1");
+
+      expect(shadowCanRunCalls).toHaveLength(0);
+      expect(correrSombraMock).not.toHaveBeenCalled();
+      expect(handoffCalls.map((h) => h.p_reason)).toEqual(["agente_no_puede_correr"]);
+    });
+
+    it("sin la config de v2 en la base (migración sin aplicar): cae a apagado y avisa, sin perder el horario", async () => {
+      const warn = vi.spyOn(log, "warn");
+      state.sebaV2ConfigError = { message: "column agent_settings.seba_v2_modo does not exist" };
+      state.agentSettingsBusinessHours = { mon: [], tue: [], wed: [], thu: [], fri: [], sat: [], sun: [] };
+
+      await runAgentTurn("conv-1");
+
+      expect(warn).toHaveBeenCalledWith(
+        "turno_modo_v2_no_legible",
+        expect.objectContaining({ conversationId: "conv-1" })
+      );
+      expect(correrSeba2EnVivoMock).not.toHaveBeenCalled();
+      expect(correrSombraMock).not.toHaveBeenCalled();
+      // El horario sigue llegando: la lectura nueva es aparte de la suya.
+      expect(agentOptions[0].instructions).toContain("Ahora mismo: CERRADA.");
+    });
+
+    it("un modo desconocido que llegue de la base se lee como apagado", async () => {
+      modo("modo_inventado");
+
+      await runAgentTurn("conv-1");
+
+      expect(shadowCanRunCalls).toHaveLength(0);
+      expect(correrSombraMock).not.toHaveBeenCalled();
+      expect(correrSeba2EnVivoMock).not.toHaveBeenCalled();
+    });
+  });
+
+  describe("sombra y copiloto (v2 redacta sin enviar)", () => {
+    it("con la IA global apagada corre la sombra (iaGlobal: false) y el traspaso agente_no_puede_correr se escribe igual; nada se envía", async () => {
+      modo("sombra");
+      state.canRun = false;
+
+      await runAgentTurn("conv-1");
+
+      expect(shadowCanRunCalls).toHaveLength(1);
+      expect(correrSombraMock).toHaveBeenCalledTimes(1);
+      expect(correrSombraMock.mock.calls[0][0]).toMatchObject({
+        conversationId: "conv-1",
+        modo: "sombra",
+        iaGlobal: false,
+        asesorAsignado: false,
+      });
+      expect(handoffCalls.map((h) => h.p_reason)).toEqual(["agente_no_puede_correr"]);
+      expect(sendAgentTextMock).not.toHaveBeenCalled();
+      expect(sendPlaybookReplyMock).not.toHaveBeenCalled();
+      expect(generateMock).not.toHaveBeenCalled();
+      expect(correrSeba2EnVivoMock).not.toHaveBeenCalled();
+    });
+
+    it("con la IA encendida v1 atiende como siempre Y la sombra corre a la par, con lo que el turno ya leyó", async () => {
+      modo("copiloto");
+      state.conversation = { ...state.conversation, assigned_agent_id: "agente-1" };
+      state.globalLessons = ["Una lección global"];
+      state.agentSettingsBusinessHours = { mon: [], tue: [], wed: [], thu: [], fri: [], sat: [], sun: [] };
+
+      await runAgentTurn("conv-1");
+
+      expect(correrSombraMock).toHaveBeenCalledTimes(1);
+      const entrada = correrSombraMock.mock.calls[0][0] as Record<string, unknown>;
+      expect(entrada).toMatchObject({
+        conversationId: "conv-1",
+        modo: "copiloto",
+        iaGlobal: true,
+        asesorAsignado: true,
+        businessHours: { mon: [], sun: [] },
+      });
+      expect(typeof entrada.cargarHistorial).toBe("function");
+      expect(entrada.lessons).toBeDefined();
+      expect(sendAgentTextMock).toHaveBeenCalledTimes(1);
+      expect(correrSeba2EnVivoMock).not.toHaveBeenCalled();
+    });
+
+    it("la sombra arranca ANTES de que v1 termine (corre a la par, no después)", async () => {
+      modo("sombra");
+      const orden: string[] = [];
+      correrSombraMock.mockImplementation(async () => {
+        orden.push("sombra_arranca");
+      });
+      sendAgentTextMock.mockImplementation(async () => {
+        orden.push("v1_envia");
+        return OUTCOME_NO_ENVIADO;
+      });
+
+      await runAgentTurn("conv-1");
+
+      expect(orden).toEqual(["sombra_arranca", "v1_envia"]);
+    });
+
+    it("sin muestreo (shadow_sample_pct = 0) no hay sombra, y ni siquiera se pregunta si puede correr", async () => {
+      modo("sombra", 0);
+
+      await runAgentTurn("conv-1");
+
+      expect(correrSombraMock).not.toHaveBeenCalled();
+      expect(sendAgentTextMock).toHaveBeenCalledTimes(1);
+    });
+
+    it("si shadow_can_run dice que no (tope de gasto de la sombra), no hay sombra", async () => {
+      modo("sombra");
+      state.shadowCanRun = false;
+
+      await runAgentTurn("conv-1");
+
+      expect(shadowCanRunCalls).toHaveLength(1);
+      expect(correrSombraMock).not.toHaveBeenCalled();
+      expect(sendAgentTextMock).toHaveBeenCalledTimes(1);
+    });
+
+    it("si shadow_can_run no se puede consultar, no hay sombra, avisa y v1 sigue", async () => {
+      const warn = vi.spyOn(log, "warn");
+      modo("sombra");
+      state.shadowCanRunError = { message: "función shadow_can_run no existe" };
+
+      await runAgentTurn("conv-1");
+
+      expect(warn).toHaveBeenCalledWith(
+        "turno_sombra_no_consultable",
+        expect.objectContaining({ conversationId: "conv-1" })
+      );
+      expect(correrSombraMock).not.toHaveBeenCalled();
+      expect(sendAgentTextMock).toHaveBeenCalledTimes(1);
+    });
+
+    it("el mismo chat cae SIEMPRE en la misma muestra el mismo día", async () => {
+      modo("sombra", 50);
+      vi.useFakeTimers({ toFake: ["Date"] });
+      vi.setSystemTime(new Date("2026-11-17T15:00:00.000Z"));
+      state.conversation = { ...state.conversation, last_customer_message_at: new Date().toISOString() };
+
+      await runAgentTurn("conv-1");
+      const primera = correrSombraMock.mock.calls.length;
+      await runAgentTurn("conv-1");
+      const segunda = correrSombraMock.mock.calls.length - primera;
+
+      expect(segunda).toBe(primera);
+    });
+
+    it("una sombra que rechaza no cambia el resultado del turno de v1", async () => {
+      modo("sombra");
+      correrSombraMock.mockRejectedValue(new Error("la sombra reventó"));
+
+      await expect(runAgentTurn("conv-1")).resolves.toBeUndefined();
+
+      expect(sendAgentTextMock).toHaveBeenCalledTimes(1);
+    });
+
+    it("una sombra que lanza de forma síncrona tampoco", async () => {
+      modo("sombra");
+      correrSombraMock.mockImplementation(() => {
+        throw new Error("la sombra reventó sin promesa");
+      });
+
+      await expect(runAgentTurn("conv-1")).resolves.toBeUndefined();
+
+      expect(sendAgentTextMock).toHaveBeenCalledTimes(1);
+    });
+
+    it("el turno de v1 espera a la sombra antes de resolver", async () => {
+      modo("sombra");
+      let terminarSombra!: () => void;
+      correrSombraMock.mockImplementation(
+        () =>
+          new Promise<void>((resolve) => {
+            terminarSombra = resolve;
+          })
+      );
+      let resuelto = false;
+
+      const turno = runAgentTurn("conv-1").then(() => {
+        resuelto = true;
+      });
+      await vi.waitFor(() => expect(sendAgentTextMock).toHaveBeenCalledTimes(1), { timeout: 5000 });
+      await new Promise((resolve) => setTimeout(resolve, 30));
+      expect(resuelto).toBe(false);
+
+      terminarSombra();
+      await turno;
+      expect(resuelto).toBe(true);
+    });
+
+    it("también espera a la sombra cuando el turno de v1 LANZA, y el error sale tal cual", async () => {
+      modo("sombra");
+      let terminarSombra!: () => void;
+      correrSombraMock.mockImplementation(
+        () =>
+          new Promise<void>((resolve) => {
+            terminarSombra = resolve;
+          })
+      );
+      // `loadHistory` lanza antes de cualquier entrega: el turno de v1 revienta y es reintentable.
+      state.historyError = { message: "el historial no responde" };
+      let terminado: "no" | "rechazado" = "no";
+
+      const turno = runAgentTurn("conv-1").catch((err: Error) => {
+        terminado = "rechazado";
+        return err;
+      });
+      await vi.waitFor(() => expect(correrSombraMock).toHaveBeenCalled(), { timeout: 5000 });
+      await new Promise((resolve) => setTimeout(resolve, 30));
+      expect(terminado).toBe("no");
+
+      terminarSombra();
+      const err = await turno;
+      expect(terminado).toBe("rechazado");
+      expect((err as Error).message).toMatch(/historial no consultable/);
+    });
+
+    it("una sombra que nunca resuelve no deja colgado el turno: sale tras el tope y avisa", async () => {
+      const warn = vi.spyOn(log, "warn");
+      modo("sombra");
+      correrSombraMock.mockImplementation(() => new Promise<void>(() => undefined));
+      // Solo los temporizadores: el resto del turno (Date, microtareas) sigue real.
+      vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+      let resuelto = false;
+
+      const turno = runAgentTurn("conv-1").then(() => {
+        resuelto = true;
+      });
+      await vi.advanceTimersByTimeAsync(0);
+      await vi.advanceTimersByTimeAsync(59_000);
+      expect(sendAgentTextMock).toHaveBeenCalledTimes(1);
+      expect(resuelto).toBe(false);
+
+      await vi.advanceTimersByTimeAsync(1_000);
+      await turno;
+
+      expect(resuelto).toBe(true);
+      expect(warn).toHaveBeenCalledWith(
+        "sombra_tiempo_agotado",
+        expect.objectContaining({ conversationId: "conv-1" })
+      );
+    });
+  });
+
+  describe("fuera_de_horario y siempre (v2 atiende en vivo)", () => {
+    it("siempre con la IA encendida: corre Seba v2 y NO el camino de v1", async () => {
+      modo("siempre");
+      state.conversation = { ...state.conversation, assigned_agent_id: null };
+      state.globalLessons = ["Una lección global"];
+
+      await runAgentTurn("conv-1");
+
+      expect(correrSeba2EnVivoMock).toHaveBeenCalledTimes(1);
+      const entrada = correrSeba2EnVivoMock.mock.calls[0][0] as Record<string, unknown>;
+      expect(entrada).toMatchObject({
+        conversationId: "conv-1",
+        contactId: "contact-1",
+        assignedAgentId: null,
+        target: expect.objectContaining({ conversationId: "conv-1" }),
+      });
+      for (const clave of ["entregar", "alFallarEnvio", "escribiendo", "registrarTurno", "cargarHistorial"]) {
+        expect(typeof entrada[clave]).toBe("function");
+      }
+      expect(entrada.lessons).toBeDefined();
+      expect(entrada.businessHours).toBeDefined();
+      // Ni fase 0, ni fase 1, ni tool loop de v1.
+      expect(agentOptions).toHaveLength(0);
+      expect(matchPlaybookMock).not.toHaveBeenCalled();
+      expect(classifyIntentMock).not.toHaveBeenCalled();
+      expect(generateMock).not.toHaveBeenCalled();
+      expect(sendAgentTextMock).not.toHaveBeenCalled();
+      expect(correrSombraMock).not.toHaveBeenCalled();
+      expect(shadowCanRunCalls).toHaveLength(0);
+    });
+
+    it("con la IA apagada en ese chat las guardas de apertura cortan igual y v2 no corre", async () => {
+      modo("siempre");
+      state.conversation = { ...state.conversation, ai_enabled: false };
+
+      await runAgentTurn("conv-1");
+
+      expect(correrSeba2EnVivoMock).not.toHaveBeenCalled();
+      expect(handoffCalls.map((h) => h.p_reason)).toEqual(["pausada"]);
+    });
+
+    it("con un asesor que ya escribió, la guarda de humano corta y v2 no corre", async () => {
+      modo("siempre");
+      state.humanMessages = [{ created_at: new Date().toISOString() }];
+
+      await runAgentTurn("conv-1");
+
+      expect(correrSeba2EnVivoMock).not.toHaveBeenCalled();
+      expect(handoffCalls.map((h) => h.p_reason)).toEqual(["humano_intervino"]);
+    });
+
+    it("siempre con la IA global apagada: ninguno — v2 no corre y queda agente_no_puede_correr", async () => {
+      modo("siempre");
+      state.canRun = false;
+
+      await runAgentTurn("conv-1");
+
+      expect(correrSeba2EnVivoMock).not.toHaveBeenCalled();
+      expect(handoffCalls.map((h) => h.p_reason)).toEqual(["agente_no_puede_correr"]);
+    });
+
+    it("fuera_de_horario con la tienda CERRADA atiende v2", async () => {
+      modo("fuera_de_horario");
+      // Sábado 21/11/2026 11:00 en Caracas: el horario de fábrica es de lunes a viernes.
+      vi.useFakeTimers({ toFake: ["Date"] });
+      vi.setSystemTime(new Date("2026-11-21T15:00:00.000Z"));
+      state.conversation = { ...state.conversation, last_customer_message_at: new Date().toISOString() };
+
+      await runAgentTurn("conv-1");
+
+      expect(correrSeba2EnVivoMock).toHaveBeenCalledTimes(1);
+      expect(generateMock).not.toHaveBeenCalled();
+    });
+
+    it("fuera_de_horario con la tienda ABIERTA atiende v1", async () => {
+      modo("fuera_de_horario");
+      // Martes 17/11/2026 11:00 en Caracas.
+      vi.useFakeTimers({ toFake: ["Date"] });
+      vi.setSystemTime(new Date("2026-11-17T15:00:00.000Z"));
+      state.conversation = { ...state.conversation, last_customer_message_at: new Date().toISOString() };
+
+      await runAgentTurn("conv-1");
+
+      expect(correrSeba2EnVivoMock).not.toHaveBeenCalled();
+      expect(sendAgentTextMock).toHaveBeenCalledTimes(1);
+    });
+
+    it("v2 lanza SIN haber intentado entregar: el error sale tal cual (reintentable) y no hay entrega_fallida", async () => {
+      modo("siempre");
+      const error = new Error("el modelo de v2 se cayó");
+      correrSeba2EnVivoMock.mockRejectedValue(error);
+
+      await expect(runAgentTurn("conv-1")).rejects.toBe(error);
+
+      expect(handoffCalls.map((h) => h.p_reason)).not.toContain("entrega_fallida");
+    });
+
+    it("v2 lanza DESPUÉS de entregar: entrega_fallida y NonRetryableTurnError (no se reintenta)", async () => {
+      modo("siempre");
+      correrSeba2EnVivoMock.mockImplementation(async (entrada) => {
+        const e = entrada as { entregar: (enviar: () => Promise<unknown>) => Promise<unknown> };
+        await e.entregar(async () => OUTCOME_NO_ENVIADO);
+        throw new Error("falló después de enviar");
+      });
+
+      await expect(runAgentTurn("conv-1")).rejects.toBeInstanceOf(NonRetryableTurnError);
+
+      expect(handoffCalls.filter((h) => h.p_reason === "entrega_fallida")).toHaveLength(1);
+    });
+
+    it("entregar es la puerta de v1: el envío que la cruza devuelve su resultado y deja el turno como intentado", async () => {
+      modo("siempre");
+      let resultado: unknown;
+      correrSeba2EnVivoMock.mockImplementation(async (entrada) => {
+        const e = entrada as { entregar: (enviar: () => Promise<unknown>) => Promise<unknown> };
+        resultado = await e.entregar(async () => OUTCOME_NO_ENVIADO);
+        return { accion: "answered" };
+      });
+
+      await runAgentTurn("conv-1");
+
+      expect(resultado).toBe(OUTCOME_NO_ENVIADO);
+    });
+
+    it("entregar respeta la guarda de humano: si un asesor se adelantó, devuelve null y no envía", async () => {
+      modo("siempre");
+      let resultado: unknown = "sin llamar";
+      const enviar = vi.fn(async () => OUTCOME_NO_ENVIADO);
+      correrSeba2EnVivoMock.mockImplementation(async (entrada) => {
+        const e = entrada as { entregar: (enviar: () => Promise<unknown>) => Promise<unknown> };
+        // Un asesor escribe en el hueco entre abrir el turno y enviar.
+        state.humanMessages = [{ created_at: new Date().toISOString() }];
+        resultado = await e.entregar(enviar);
+        return { accion: "answered" };
+      });
+
+      await runAgentTurn("conv-1");
+
+      expect(resultado).toBeNull();
+      expect(enviar).not.toHaveBeenCalled();
+      expect(handoffCalls.map((h) => h.p_reason)).toContain("humano_se_adelanto");
+    });
+
+    it("alFallarEnvio deja el mismo traspaso que v1 ante un rechazo de Meta", async () => {
+      modo("siempre");
+      correrSeba2EnVivoMock.mockImplementation(async (entrada) => {
+        const e = entrada as { alFallarEnvio: (entrega: unknown, yaEscalada: boolean) => Promise<void> };
+        await e.alFallarEnvio(OUTCOME_FALLIDO, false);
+        return { accion: "error" };
+      });
+
+      await runAgentTurn("conv-1");
+
+      expect(handoffCalls.map((h) => h.p_reason)).toEqual(["rechazado_por_meta"]);
+    });
+
+    it("alFallarEnvio con la escalada ya hecha no pisa su traspaso", async () => {
+      modo("siempre");
+      correrSeba2EnVivoMock.mockImplementation(async (entrada) => {
+        const e = entrada as { alFallarEnvio: (entrega: unknown, yaEscalada: boolean) => Promise<void> };
+        await e.alFallarEnvio(OUTCOME_FALLIDO, true);
+        return { accion: "error" };
+      });
+
+      await runAgentTurn("conv-1");
+
+      expect(handoffCalls).toHaveLength(0);
+    });
+  });
+
+  describe("la bitácora del turno (agent_turns)", () => {
+    const RESUMEN_V2 = {
+      accion: "escalated",
+      resumen: "Pasó a ventas por listo_para_comprar.",
+      rafaga: ["quiero el casco", "el negro talla M"],
+      triggerMessageId: "m-9",
+      estadoAntes: null,
+      estadoDespues: null,
+      herramientas: [],
+      productos: [],
+      guardas: [],
+      contexto: { iaGlobal: true, asesorAsignado: false, asesorEscribioHaceMin: null },
+      tokens: { input: 100, output: 40, cachedInput: 30, reasoning: 12 },
+      modelo: "fake/modelo",
+      duracionMs: 900,
+    };
+
+    it("registrarTurno de v2 escribe agent_version, escalation_motivo y escalation_area, con el mapeo del resumen", async () => {
+      modo("siempre");
+      correrSeba2EnVivoMock.mockImplementation(async (entrada) => {
+        const e = entrada as {
+          registrarTurno: (resumen: unknown, pase: { area: string; motivo: string } | null) => Promise<void>;
+        };
+        await e.registrarTurno(RESUMEN_V2, { area: "ventas", motivo: "listo_para_comprar" });
+        return RESUMEN_V2;
+      });
+
+      await runAgentTurn("conv-1");
+
+      expect(agentTurnInserts).toHaveLength(1);
+      expect(agentTurnInserts[0]).toMatchObject({
+        conversation_id: "conv-1",
+        agent_version: "v2",
+        escalation_motivo: "listo_para_comprar",
+        escalation_area: "ventas",
+        intent: null,
+        action: "escalated",
+        summary: "Pasó a ventas por listo_para_comprar.",
+        input_tokens: 100,
+        output_tokens: 40,
+        total_tokens: 140,
+        cached_input_tokens: 30,
+        reasoning_tokens: 12,
+        customer_message: "el negro talla M",
+      });
+    });
+
+    it("un turno de v2 sin pase deja escalation_motivo y escalation_area en null", async () => {
+      modo("siempre");
+      correrSeba2EnVivoMock.mockImplementation(async (entrada) => {
+        const e = entrada as { registrarTurno: (resumen: unknown, pase: null) => Promise<void> };
+        await e.registrarTurno({ ...RESUMEN_V2, accion: "answered", tokens: null, rafaga: [] }, null);
+        return RESUMEN_V2;
+      });
+
+      await runAgentTurn("conv-1");
+
+      expect(agentTurnInserts[0]).toMatchObject({
+        agent_version: "v2",
+        escalation_motivo: null,
+        escalation_area: null,
+        customer_message: null,
+        input_tokens: null,
+      });
+    });
+
+    it("un turno de v1 NO lleva esas tres claves en el insert (la base pone su default 'v1')", async () => {
+      await runAgentTurn("conv-1");
+
+      expect(agentTurnInserts.length).toBeGreaterThan(0);
+      for (const insert of agentTurnInserts) {
+        expect(insert).not.toHaveProperty("agent_version");
+        expect(insert).not.toHaveProperty("escalation_motivo");
+        expect(insert).not.toHaveProperty("escalation_area");
+      }
+    });
   });
 });

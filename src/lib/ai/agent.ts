@@ -92,6 +92,11 @@ import { withinFreeformWindow } from "@/lib/dashboard";
 import { isWithin24hWindow } from "@/lib/whatsapp-window";
 import { sendTypingIndicator } from "@/lib/whatsapp/meta-client";
 import { whatsappCredentials } from "@/lib/whatsapp/provider";
+import { todayKey } from "@/lib/sales-day";
+import { parseSebaV2Mode } from "@/lib/seba-v2-config";
+import { decidirVersion, muestraDeConversacion, type DecisionDeVersion } from "@/lib/seba2/costura";
+import { SOMBRA_ESPERA_MAX_MS, correrSombra, type EntradaDeSombra } from "@/lib/seba2/sombra";
+import { correrSeba2EnVivo } from "@/lib/seba2/vivo";
 
 // ---------------------------------------------------------------------------
 // Orquestador del turno del agente. Dos tiempos:
@@ -683,6 +688,15 @@ interface LogTurnParams {
    * `deliver()` al menos una vez (lo mide `deliver`, no `logTurn`).
    */
   tiempos: TurnTiming;
+  /**
+   * S9b, la costura de Seba v2 (17/11/2026): solo el turno de v2 en vivo lo
+   * pasa. Con `"v2"`, el insert suma `agent_version`, `escalation_motivo` y
+   * `escalation_area`; sin esto el payload queda byte por byte como antes de
+   * v2 y la base pone su default `'v1'`.
+   */
+  version?: "v2";
+  escalationMotivo?: string | null;
+  escalationArea?: string | null;
 }
 
 /**
@@ -796,6 +810,16 @@ async function logTurn(supabase: SupabaseClient<Database>, conversationId: strin
       classification_ms: params.tiempos.clasificacionMs,
       generation_ms: params.tiempos.redaccionMs,
       delivery_ms: params.tiempos.envioMs,
+      // S9b (17/11/2026): solo v2 escribe estas tres columnas (migración
+      // 20261117010000). Con v1 ni siquiera viajan: `agent_version` queda en
+      // su default 'v1' y el insert es el de siempre.
+      ...(params.version === "v2"
+        ? {
+            agent_version: "v2",
+            escalation_motivo: params.escalationMotivo ?? null,
+            escalation_area: params.escalationArea ?? null,
+          }
+        : {}),
     })
     .select("id")
     .single();
@@ -4028,6 +4052,7 @@ async function runAgentTurnBody(conversationId: string, options: { vencioEn?: nu
     { data: settingsRow, error: settingsError },
     lessons,
     links,
+    { data: v2Row, error: v2Error },
   ] = await Promise.all([
     // agent_can_run junta el interruptor global y el tope de gasto del día.
     // La decisión vive en la base para que sea la misma la pregunte quien la
@@ -4075,6 +4100,11 @@ async function runAgentTurnBody(conversationId: string, options: { vencioEn?: nu
     // porque también la usa el navegador (`crm-shell.tsx`) y no puede
     // importar `lib/log.ts` sin arrastrarlo al bundle del cliente.
     fetchTurnCatalogLinks(supabase, conversationId),
+    // La config de Seba v2 (S9b, 17/11/2026): sexta lectura, APARTE de la de
+    // `business_hours` a propósito. Si la base todavía no tiene estas columnas
+    // (migración sin aplicar: el código no depende de ella en `apagado`), esta
+    // consulta falla sola y NO se lleva puesto el horario de la de arriba.
+    supabase.from("agent_settings").select("seba_v2_modo, shadow_sample_pct").eq("id", true).maybeSingle(),
   ]);
 
   // Tarea 5 (14/9/2026): un ERROR de la RPC (base caída, red cortada) no es
@@ -4120,6 +4150,125 @@ async function runAgentTurnBody(conversationId: string, options: { vencioEn?: nu
   // salida silenciosa de este turno que no deja bitácora, y es correcto.
   if (!convo) return;
 
+  // La costura de Seba v2 (S9b, entrega 3 del rework, 17/11/2026). Decide, con lo
+  // que el turno ya leyó, quién habla (v1, v2 o nadie) y si además corre v2 SIN
+  // ENVIAR (sombra/copiloto). Va ANTES de `!canRun` a propósito: con la IA
+  // global apagada la sombra igual tiene que medirse (el webhook encola el turno
+  // cuando `shadow_can_run()` lo permite), y su arranque no puede depender de un
+  // `return` que viene después.
+  if (v2Error) {
+    // Con `apagado` el turno es el de siempre; lo que se avisa es que no se pudo leer.
+    log.warn("turno_modo_v2_no_legible", { conversationId, detail: v2Error.message });
+  }
+  const modoV2 = parseSebaV2Mode(v2Row?.seba_v2_modo);
+  const samplePct = Number(v2Row?.shadow_sample_pct ?? 0);
+  const ahoraTurno = new Date();
+
+  // Solo en sombra/copiloto se pregunta por el interruptor de la sombra (otro
+  // interruptor y otro tope de gasto que `agent_can_run`); en cualquier otro
+  // modo no hay ni un viaje de más a la base.
+  let shadowCanRun = false;
+  if (modoV2 === "sombra" || modoV2 === "copiloto") {
+    const { data, error } = await supabase.rpc("shadow_can_run");
+    if (error) {
+      log.warn("turno_sombra_no_consultable", { conversationId, detail: errorText(error) });
+    } else {
+      shadowCanRun = data === true;
+    }
+  }
+
+  const decision = decidirVersion({
+    modo: modoV2,
+    canRun: canRun === true,
+    shadowCanRun,
+    tiendaAbierta: modoV2 === "fuera_de_horario" ? businessStatus(ahoraTurno, businessHours).open : true,
+    muestra: muestraDeConversacion(conversationId, todayKey(ahoraTurno)),
+    samplePct: Number.isFinite(samplePct) ? samplePct : 0,
+  });
+
+  // La sombra arranca SIN esperarla: corre a la par del camino de siempre. Se la
+  // espera en el `finally` de abajo, antes de CUALQUIER salida (return o
+  // excepción), con un tope: un proveedor colgado no deja el turno sin cerrar.
+  // Nunca cambia el resultado de v1: `lanzarSombra` no lanza ni rechaza.
+  const sombra = decision.sinEnviar
+    ? lanzarSombra({
+        supabase,
+        conversationId,
+        modo: decision.sinEnviar,
+        iaGlobal: canRun === true,
+        asesorAsignado: Boolean(convo.assigned_agent_id),
+        businessHours,
+        lessons,
+        cargarHistorial: loadHistory,
+      })
+    : null;
+
+  try {
+    await atenderTurnoEnVivo({ supabase, conversationId, options, canRun, convo, businessHours, links, lessons, decision });
+  } finally {
+    if (sombra) await esperarSombra(sombra, conversationId);
+  }
+}
+
+/**
+ * Arranca la sombra sin dejar que ni su promesa ni un fallo síncrono lleguen al
+ * turno de v1. `correrSombra` ya promete no rechazar; esto es la red de más.
+ */
+function lanzarSombra(entrada: EntradaDeSombra): Promise<void> {
+  try {
+    return Promise.resolve(correrSombra(entrada)).catch((err: unknown) => {
+      log.warn("sombra_fallo", { conversationId: entrada.conversationId, detail: errorText(err) });
+    });
+  } catch (err) {
+    log.warn("sombra_fallo", { conversationId: entrada.conversationId, detail: errorText(err) });
+    return Promise.resolve();
+  }
+}
+
+/** Espera a la sombra hasta `SOMBRA_ESPERA_MAX_MS`; pasado el tope el turno sale igual. Nunca lanza. */
+async function esperarSombra(sombra: Promise<void>, conversationId: string): Promise<void> {
+  let temporizador: ReturnType<typeof setTimeout> | undefined;
+  const vencido = new Promise<"vencido">((resolve) => {
+    temporizador = setTimeout(() => resolve("vencido"), SOMBRA_ESPERA_MAX_MS);
+    // El temporizador no debe retener al proceso si todo lo demás ya terminó.
+    temporizador.unref?.();
+  });
+  try {
+    const gano = await Promise.race([sombra.then(() => "terminada" as const), vencido]);
+    if (gano === "vencido") log.warn("sombra_tiempo_agotado", { conversationId, topeMs: SOMBRA_ESPERA_MAX_MS });
+  } finally {
+    clearTimeout(temporizador);
+  }
+}
+
+/**
+ * Todo lo que el turno hace DESPUÉS de leer la conversación: las guardas de
+ * apertura, el lock y el camino de v1 o de v2 en vivo. Se mudó acá SIN cambiar
+ * una línea de lógica (S9b, 17/11/2026) para que `runAgentTurnBody` pueda
+ * envolverlo en el `try/finally` que espera a la sombra; el cuerpo conserva su
+ * sangría y sus nombres de variable.
+ */
+async function atenderTurnoEnVivo({
+  supabase,
+  conversationId,
+  options,
+  canRun,
+  convo,
+  businessHours,
+  links,
+  lessons,
+  decision,
+}: {
+  supabase: SupabaseClient<Database>;
+  conversationId: string;
+  options: { vencioEn?: number };
+  canRun: boolean | null;
+  convo: AgentConversation;
+  businessHours: BusinessHours;
+  links: CatalogLink[];
+  lessons: TurnLessons;
+  decision: DecisionDeVersion;
+}): Promise<void> {
   // Guardrail duro: si algo dice que la IA no debe correr, no se llama al
   // modelo. No depende de que el prompt "se acuerde" de quedarse callado.
   // Acá abajo `canRun` es SIEMPRE una respuesta real (`true`/`false`): el
@@ -4309,7 +4458,54 @@ async function runAgentTurnBody(conversationId: string, options: { vencioEn?: nu
     const arranque = Date.now();
 
     try {
-      await runTurnPhases(supabase, target, convo, entrega, lease, tiempos, businessHours, links, lessons);
+      if (decision.vivo === "v2") {
+        // Seba v2 atiende en lugar de v1, dentro del MISMO lock y tras las mismas
+        // guardas de apertura. El `try/catch/finally` de acá envuelve a los dos.
+        await correrSeba2EnVivo({
+          supabase,
+          conversationId,
+          contactId: convo.contact_id,
+          target,
+          assignedAgentId: convo.assigned_agent_id,
+          businessHours,
+          lessons,
+          cargarHistorial: loadHistory,
+          // La puerta de envío de v1, cerrada sobre este turno. "redaccion" es la
+          // fase de lo que el modelo redacta: v2 no tiene las otras (escenario,
+          // fuera de tema…) y manda su saludo y sus textos fijos por la misma puerta.
+          entregar: (enviar) =>
+            deliver(supabase, target, entrega, lease, tiempos, "redaccion", convo.last_customer_message_at, enviar),
+          alFallarEnvio: async (salida, yaEscalada) => {
+            await deliveryFailed(supabase, conversationId, salida, convo.assigned_agent_id, yaEscalada);
+          },
+          escribiendo: () => {
+            fireTypingIndicator(supabase, target, convo.last_customer_message_at);
+          },
+          registrarTurno: (resumen, pase) =>
+            logTurn(supabase, conversationId, {
+              intent: null,
+              action: resumen.accion,
+              summary: resumen.resumen,
+              tokens: resumen.tokens
+                ? {
+                    inputTokens: resumen.tokens.input,
+                    outputTokens: resumen.tokens.output,
+                    totalTokens: resumen.tokens.input + resumen.tokens.output,
+                    cachedInputTokens: resumen.tokens.cachedInput,
+                    reasoningTokens: resumen.tokens.reasoning,
+                  }
+                : null,
+              customerMessage: resumen.rafaga.at(-1) ?? null,
+              consultasCatalogo: resumen.consultasCatalogo,
+              tiempos,
+              version: "v2",
+              escalationMotivo: pase?.motivo ?? null,
+              escalationArea: pase?.area ?? null,
+            }),
+        });
+      } else {
+        await runTurnPhases(supabase, target, convo, entrega, lease, tiempos, businessHours, links, lessons);
+      }
     } catch (err) {
       // T12, plan "Seba sale sin pisar a nadie" (19/9/2026, cierra la
       // decisión abierta #1): única excepción a "si `entrega.intentado`, no
