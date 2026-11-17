@@ -62,7 +62,14 @@ skills-lock.json
 
 # Material privado del rework de Seba (conversaciones reales, casos del arnés,
 # pautas con identificadores de chats): el repositorio es público.
-/privado/
+# Excepción (17/11/2026): el ejemplo sintético del arnés de turnos, con casos
+# INVENTADOS, sí se versiona. Se ignora el contenido de `privado/` y de
+# `privado/seba-v2/` por separado: git no puede reincluir un archivo dentro de
+# un directorio ya ignorado entero.
+/privado/*
+!/privado/seba-v2/
+/privado/seba-v2/*
+!/privado/seba-v2/ejemplo.sintetico.jsonl
 
 # Credenciales del equipo: contraseñas en texto plano, nunca al repositorio.
 CREDENCIALES.txt

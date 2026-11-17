@@ -12,7 +12,8 @@
     "lint": "eslint",
     "test": "vitest run",
     "test:watch": "vitest",
-    "test:arnes": "vitest run --config vitest.arnes.config.ts"
+    "test:arnes": "vitest run --config vitest.arnes.config.ts",
+    "test:arnes-turnos": "vitest run --config vitest.arnes-turnos.config.ts"
   },
   "dependencies": {
     "@ai-sdk/google": "^4.0.45",

@@ -16,7 +16,12 @@ export default defineConfig({
     // 30/9/2026 (A2 T7): el arnés del catálogo necesita la base y Redis reales y
     // toca `products` (carga y borra un fixture): no es una prueba de la suite.
     // Se corre aparte, con `npm run test:arnes` (vitest.arnes.config.ts).
-    exclude: [...configDefaults.exclude, "scripts/arnes-catalogo-a2.test.ts"],
+    //
+    // 17/11/2026: el arnés de TURNOS de Seba v2 llama al modelo de verdad (cuesta
+    // dinero y necesita una base real): también se corre aparte, con
+    // `npm run test:arnes-turnos`. Sus chequeos, sus casos y su espía son puros y
+    // SÍ corren en la suite normal (`scripts/arnes-turnos-v2.*.test.ts`).
+    exclude: [...configDefaults.exclude, "scripts/arnes-catalogo-a2.test.ts", "scripts/arnes-turnos-v2.test.ts"],
     // 28/8/2026: de los ~79 archivos de test solo ~19 tocan el DOM; los demás
     // construían un jsdom que nunca usaban, pagando su costo de CPU en cada
     // proceso del pool de forks. El default pasa a "node" y las pruebas que
