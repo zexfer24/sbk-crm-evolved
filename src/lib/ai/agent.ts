@@ -716,6 +716,9 @@ async function logTurnCalls(
       tool_choice: call.toolChoice,
       finish_reason: call.finishReason,
       duration_ms: call.durationMs,
+      // S9a (17/11/2026): el modelo que atendió ESA llamada -- v2 puede usar
+      // otro que v1.
+      model: call.model ?? null,
     }))
   );
 

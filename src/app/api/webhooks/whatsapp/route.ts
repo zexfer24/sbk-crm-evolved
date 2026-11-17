@@ -814,6 +814,29 @@ function hasValidWebhookToken(tokenHeader: string | null, secret: string): boole
 }
 
 /**
+ * ¿Puede correr la sombra de Seba v2 aunque la IA global no pueda? (S9a,
+ * 17/11/2026). Solo se llama cuando `agent_can_run()` dijo `false`: con la IA
+ * encendida no se gasta ni un viaje de más a la base. Falla CERRADO: un error
+ * de la RPC (o una excepción de red) deja `webhook_sombra_no_consultable` y
+ * devuelve `false`, o sea el comportamiento de siempre con la IA apagada --
+ * no encolar y dejar el traspaso --, nunca encolar a ciegas. `shadow_can_run`
+ * solo la ejecuta `service_role`, que es el cliente de este webhook.
+ */
+async function sombraPuedeCorrer(supabase: SupabaseClient): Promise<boolean> {
+  try {
+    const { data, error } = await supabase.rpc("shadow_can_run");
+    if (error) {
+      log.warn("webhook_sombra_no_consultable", { detail: errorText(error) });
+      return false;
+    }
+    return data === true;
+  } catch (err) {
+    log.warn("webhook_sombra_no_consultable", { detail: errorText(err) });
+    return false;
+  }
+}
+
+/**
  * La respuesta final del POST, que depende de `persistenciaFallida` (D1,
  * plan "Nada se pierde en un corte ni en un deploy", 21-22/9/2026): sin
  * pérdidas, 200 de siempre; con alguna pérdida TRANSITORIA en este lote, 503
@@ -1770,6 +1793,18 @@ export async function POST(request: Request) {
         conversaciones: touchedByCustomer.size,
         detail: errorText(canRunError),
       });
+    } else if (!canRun && (await sombraPuedeCorrer(supabase))) {
+      // S9a, entrega 3 del rework de Seba (17/11/2026): la IA global está
+      // apagada (el estado de producción ese día) pero la SOMBRA de Seba v2
+      // puede correr -- modo sombra/copiloto con su propio tope de gasto
+      // (`shadow_can_run()`). Sin esta rama el `return` de abajo salía antes
+      // de encolar y la sombra no corría jamás. Se encola como si la IA
+      // estuviera encendida y NO se escribe el traspaso aquí: el turno
+      // (`runAgentTurn`) vuelve a preguntar `agent_can_run()`, ve `false`
+      // y deja él mismo `agente_no_puede_correr` -- escribirlo también en el
+      // webhook lo duplicaría. Lo que de verdad le llegue al cliente lo
+      // decide el turno, nunca esta rama: aquí solo se evita descartar.
+      log.info("webhook_encola_para_sombra", { conversaciones: touchedByCustomer.size });
     } else if (!canRun) {
       log.info("webhook_no_encola_ia_apagada", { conversaciones: touchedByCustomer.size });
 

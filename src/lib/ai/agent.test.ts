@@ -5221,7 +5221,7 @@ describe("runAgentTurn — telemetría por llamada (T4, 'Nada se pierde en un co
           throw new Error("no se usa en este test");
         },
         params: { maxOutputTokens: 1500, toolChoice: { type: "none" }, prompt: [] } as never,
-        model: {} as never,
+        model: { modelId: "gpt-5.6-luna" } as never,
       });
       return {
         text: "listo, ya te escaló con un asesor",
@@ -5250,6 +5250,8 @@ describe("runAgentTurn — telemetría por llamada (T4, 'Nada se pierde en un co
       input_tokens: 900,
       output_tokens: 40,
       finish_reason: "stop",
+      // S9a (17/11/2026): el modelo que atendió ESA llamada viaja a la fila.
+      model: "gpt-5.6-luna",
     });
   });
 

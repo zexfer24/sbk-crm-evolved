@@ -76,6 +76,13 @@ export interface AgentTurnCallRecord {
   /** `"error"` es un valor propio del CRM (no del proveedor): `doGenerate` lanzó antes de terminar. */
   finishReason: string | null;
   durationMs: number;
+  /**
+   * El id del modelo que atendió ESTA llamada (S9a, 17/11/2026: Seba v2 puede
+   * usar otro modelo que v1, y el clasificador también puede ir aparte). Sale
+   * del `model.modelId` que el SDK le pasa al middleware, no de una variable
+   * de entorno. `null` si el modelo no trae un id legible.
+   */
+  model: string | null;
 }
 
 interface RegistroDeLlamadas {
@@ -124,6 +131,16 @@ function normalizeToolChoice(toolChoice: unknown): string | null {
 }
 
 /**
+ * El id del modelo base que envuelve el middleware (`LanguageModelV4.modelId`).
+ * Defensivo: un modelo sin `modelId` string (o vacío) da `null`.
+ */
+function modelIdOf(model: unknown): string | null {
+  if (typeof model !== "object" || model === null) return null;
+  const id = (model as { modelId?: unknown }).modelId;
+  return typeof id === "string" && id !== "" ? id : null;
+}
+
+/**
  * Construye la fila a partir de los `params` que el SDK resolvió y del
  * resultado (o del error) de `doGenerate`. Función pura, sin acceso al
  * registro -- así se puede probar sin `AsyncLocalStorage` de por medio (ver
@@ -133,6 +150,7 @@ function buildRecord(
   phase: AgentTurnCallPhase,
   sequence: number,
   params: { maxOutputTokens?: number; toolChoice?: unknown },
+  model: unknown,
   resultado:
     | { ok: true; usage: { inputTokens?: { total?: number; cacheRead?: number }; outputTokens?: { total?: number; reasoning?: number } }; finishReason?: { unified?: string; raw?: string } }
     | { ok: false },
@@ -144,6 +162,7 @@ function buildRecord(
     maxOutputTokens: params.maxOutputTokens ?? null,
     toolChoice: normalizeToolChoice(params.toolChoice),
     durationMs,
+    model: modelIdOf(model),
   };
 
   if (!resultado.ok) {
@@ -195,7 +214,7 @@ function registrar(record: AgentTurnCallRecord): void {
  */
 export function telemetryMiddleware(phase: AgentTurnCallPhase): LanguageModelMiddleware {
   return {
-    wrapGenerate: async ({ doGenerate, params }) => {
+    wrapGenerate: async ({ doGenerate, params, model }) => {
       const registro = almacen.getStore();
       // Sin turno activo, ni vale la pena cronometrar: se deja pasar tal
       // cual, como si el middleware no existiera.
@@ -209,13 +228,14 @@ export function telemetryMiddleware(phase: AgentTurnCallPhase): LanguageModelMid
             phase,
             registro.calls.length + 1,
             params,
+            model,
             { ok: true, usage: result.usage, finishReason: result.finishReason },
             Date.now() - t0
           )
         );
         return result;
       } catch (err) {
-        registrar(buildRecord(phase, registro.calls.length + 1, params, { ok: false }, Date.now() - t0));
+        registrar(buildRecord(phase, registro.calls.length + 1, params, model, { ok: false }, Date.now() - t0));
         throw err;
       }
     },

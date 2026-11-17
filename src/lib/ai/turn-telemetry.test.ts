@@ -240,6 +240,77 @@ describe("telemetryMiddleware — con un turno activo", () => {
   });
 });
 
+/**
+ * S9a, entrega 3 del rework de Seba (17/11/2026): Seba v2 puede usar otro
+ * modelo que v1, así que cada fila de `agent_turn_calls` guarda el modelo QUE
+ * ATENDIÓ ESA LLAMADA. Se lee del `model` que el SDK le pasa al middleware (el
+ * modelo base que envuelve), no de una variable de entorno: dos llamadas del
+ * mismo turno pueden ir a modelos distintos (clasificador aparte, v2).
+ */
+describe("telemetryMiddleware — el modelo de cada llamada", () => {
+  it("anota el modelId del modelo que atendió la llamada", async () => {
+    const registradas = await conTelemetriaDeTurno(async () => {
+      await telemetryMiddleware("redactar").wrapGenerate!({
+        doGenerate: async () => fakeResult({ inputTotal: 10, outputTotal: 5, finishUnified: "stop" }),
+        doStream: async () => {
+          throw new Error("no se usa en este test");
+        },
+        params: { prompt: [] } as never,
+        model: { modelId: "gpt-5.6-luna", provider: "openai.responses" } as never,
+      });
+      await telemetryMiddleware("clasificar").wrapGenerate!({
+        doGenerate: async () => fakeResult({ inputTotal: 10, outputTotal: 5, finishUnified: "stop" }),
+        doStream: async () => {
+          throw new Error("no se usa en este test");
+        },
+        params: { prompt: [] } as never,
+        model: { modelId: "gemini-3.1-flash-lite", provider: "google.generative-ai" } as never,
+      });
+      return turnCallsSnapshot();
+    });
+
+    expect(registradas.map((f) => f.model)).toEqual(["gpt-5.6-luna", "gemini-3.1-flash-lite"]);
+  });
+
+  it("también lo anota cuando la llamada falla", async () => {
+    const registradas = await conTelemetriaDeTurno(async () => {
+      try {
+        await telemetryMiddleware("redactar").wrapGenerate!({
+          doGenerate: async () => {
+            throw new Error("el proveedor está caído");
+          },
+          doStream: async () => {
+            throw new Error("no se usa en este test");
+          },
+          params: { prompt: [] } as never,
+          model: { modelId: "gpt-5.6-luna" } as never,
+        });
+      } catch {
+        // esperado
+      }
+      return turnCallsSnapshot();
+    });
+
+    expect(registradas[0]).toMatchObject({ finishReason: "error", model: "gpt-5.6-luna" });
+  });
+
+  it("queda null si el modelo no trae un id (nunca una cadena inventada)", async () => {
+    const registradas = await conTelemetriaDeTurno(async () => {
+      await telemetryMiddleware("redactar").wrapGenerate!({
+        doGenerate: async () => fakeResult({ inputTotal: 1, outputTotal: 1, finishUnified: "stop" }),
+        doStream: async () => {
+          throw new Error("no se usa en este test");
+        },
+        params: { prompt: [] } as never,
+        model: {} as never,
+      });
+      return turnCallsSnapshot();
+    });
+
+    expect(registradas[0].model).toBeNull();
+  });
+});
+
 describe("telemetryMiddleware — sin turno activo", () => {
   /**
    * Tests viejos que llaman al modelo sin pasar por `runAgentTurn`
