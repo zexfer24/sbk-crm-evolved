@@ -17,6 +17,7 @@
 --
 -- Migración que comprueba:
 --   20261117010000_seba_v2_sombra.sql
+--   20261117020000_sombra_consumo_y_preparacion.sql
 --
 -- Y, al principio, lo mínimo de las tres migraciones del 16/11 de las que
 -- depende (si falta alguna, correr antes
@@ -167,6 +168,18 @@ begin
     faltan := array_append(faltan, 'falta el CHECK conversation_cart_items_origin_check'::text);
   elsif v_def not like '%seba%' then
     faltan := array_append(faltan, 'el CHECK de conversation_cart_items.origin no acepta ''seba'': Seba v2 no podría guardar su carrito'::text);
+  end if;
+
+  -- 20261117020000: el resumen de consumo y preparación de la pestaña «Sombra».
+  if to_regprocedure('public.sombra_resumen(timestamptz, timestamptz)') is null then
+    faltan := array_append(faltan, 'falta la función public.sombra_resumen(timestamptz, timestamptz) (20261117020000)'::text);
+  else
+    if has_function_privilege('anon', 'public.sombra_resumen(timestamptz, timestamptz)', 'execute') then
+      faltan := array_append(faltan, 'anon puede ejecutar sombra_resumen()'::text);
+    end if;
+    if not has_function_privilege('authenticated', 'public.sombra_resumen(timestamptz, timestamptz)', 'execute') then
+      faltan := array_append(faltan, 'authenticated no puede ejecutar sombra_resumen(): el panel no podría leerla'::text);
+    end if;
   end if;
 
   if cardinality(faltan) > 0 then

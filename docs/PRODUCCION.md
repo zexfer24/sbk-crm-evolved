@@ -3337,6 +3337,8 @@ Con `apagado` **nada cambia**: v1 atiende igual que ayer, el webhook encola igua
 docker exec -i supabase-db env PGOPTIONS="-c lock_timeout=5s" psql -U postgres -d postgres \
   -1 -v ON_ERROR_STOP=1 \
   < supabase/migrations/20261117010000_seba_v2_sombra.sql
+PGOPTIONS="-c lock_timeout=5s" psql "<url>" -1 -v ON_ERROR_STOP=1 \
+  < supabase/migrations/20261117020000_sombra_consumo_y_preparacion.sql
 ```
 
 Es idempotente: aplicarla dos veces no falla. Termina con `notify pgrst`. Crea `agent_shadow_drafts` y `shadow_reviews`, las funciones `shadow_spend_today()` y `shadow_can_run()`, las columnas `agent_turns.agent_version`/`escalation_motivo`/`escalation_area` y `agent_turn_calls.model`, y deja que el carrito acepte el origen `seba`.
@@ -3411,6 +3413,7 @@ select public.shadow_spend_today();
    - **Seba v2 respeta los interruptores por herramienta** de Control IA → «Herramientas». Con «Consulta de productos» apagada no busca, no cotiza ni prepara pagos: casi todo termina en un pase. Para que la sombra mida algo útil, ese interruptor tiene que estar encendido (con el modo en `sombra` no le llega nada al cliente).
    - **El tope de gasto depende de `model_pricing`**: si el modelo de `agent_shadow_drafts.model` no tiene su fila de tarifa, `shadow_spend_today()` da 0 y el tope no corta nunca. Comprobarlo con el primer borrador.
 6. **Revisar** (supervisor): en la pestaña «Sombra», abrir cada borrador, ver lo que escribió el cliente, lo que Seba habría enviado y lo que contestó el asesor, y dejar la revisión (veredicto, tipo de error, corrección, destino). Ese es el material para decidir si se pasa al siguiente escalón.
+7. **Decidir con números** (migración `20261117020000`): la misma pestaña muestra «Preparación para desplegar» y «Consumo». La preparación es un porcentaje por eje (búsqueda de repuestos, conversación, montos y pago) que sale SOLO de las revisiones del paso 6; un eje no muestra número hasta tener 30, 30 y 10 revisiones, el número general es el del eje más flojo y con 90 % en los tres la sombra está lista para el copiloto. **La sombra no aprende sola**: el porcentaje sube cuando las correcciones se convierten en lecciones (Control IA → «Lecciones») o en ajustes del guion, no por dejarla correr. El consumo trae el gasto por día, el costo por borrador y lo que costaría al 100 % de muestreo.
 
 ### 23.6 Paso «copiloto»
 
