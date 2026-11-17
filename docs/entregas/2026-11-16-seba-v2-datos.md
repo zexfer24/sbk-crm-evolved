@@ -30,6 +30,112 @@ Son los briefs N1, N4 y N5 del VPS. **No cambia el comportamiento de Seba:** no 
    `cashea` está prohibida y una clave no se puede cambiar después.
 6. Se puede avanzar `main` de una vez hasta esta rama (trae la entrega 1 adentro) o en dos pasos.
 
+## Pasos del VPS, para copiar y pegar
+
+Con esto hecho, lo único que queda es avanzar `main`. Todo corre desde el checkout del VPS; `<url>` es
+la cadena de conexión de producción.
+
+**1. Traer la rama y mirar el rango real.**
+
+```bash
+git fetch origin
+git diff --name-only <produccion>..origin/entrega/seba-v2-datos -- supabase/migrations
+```
+
+Con producción en `371a8ca` salen tres archivos (`20261116010000`, `20261116020000`, `20261116030000`).
+Si además aparecen las cuatro de los paneles (`20261113…`), van primero, con su relleno
+(`docs/entregas/2026-11-15-paneles.md`).
+
+**2. Respaldo y simulacro**, como en cada entrega con migración.
+
+**3. Las tres migraciones, en orden, fuera de hora pico.**
+
+```bash
+# Los archivos salen de la rama, sin mover `main` todavía.
+git worktree add ../seba-v2-datos origin/entrega/seba-v2-datos && cd ../seba-v2-datos
+for m in 20261116010000_lecturas_de_media 20261116020000_formas_de_pago          20261116030000_seba_v2_configuracion; do
+  PGOPTIONS="-c lock_timeout=5s" psql "<url>" -1 -v ON_ERROR_STOP=1     -f "supabase/migrations/$m.sql" || break
+done
+```
+
+Registrar cada una en `supabase_migrations.schema_migrations` como en `docs/PRODUCCION.md` §7. Las tres
+son idempotentes: si una corta por `lock_timeout`, se vuelve a correr desde esa. La tercera es la que
+toma candado sobre `agents` y `conversations`.
+
+**4. Verificar contra la base real** (todo esto antes de tocar `main`):
+
+```sql
+select to_regclass('public.message_readings'), to_regclass('public.payment_methods');
+-- las dos con nombre, ninguna null
+select seba_v2_modo, shadow_daily_cap_usd, shadow_sample_pct, cardinality(welcome_followups),
+       cashea_minimo_usd, cashea_seis_cuotas_desde_usd
+  from public.agent_settings;
+-- apagado | 5.00 | 100 | 4 | 25.00 | 100.00
+select count(*) filter (where areas is null), count(*) filter (where cardinality(areas) = 4)
+  from public.agents;
+-- 0 | todos los asesores
+select pg_get_triggerdef(oid) from pg_trigger
+ where tgrelid = 'public.agents'::regclass and tgname = 'agents_role_guard';
+-- ... BEFORE UPDATE OF role, id, areas ...
+select has_table_privilege('anon', 'public.payment_methods', 'select'),
+       has_table_privilege('authenticated', 'public.payment_methods', 'select');
+-- false | true
+select count(*) from pg_policies where tablename = 'payment_methods';
+-- 4
+select indexname from pg_indexes where indexname = 'conversations_escalation_area_idx';
+-- una fila
+select count(*) from public.conversations where escalation_area is not null or seba_pedido is not null;
+-- 0: nadie las escribe todavía
+```
+
+Opcional, con el `sub` de un asesor corriente dentro de una transacción con `rollback`:
+`update public.agents set areas = '{pagos}' where id = auth.uid();` tiene que fallar con «Solo un
+supervisor o admin puede cambiar las áreas de un agente».
+
+**5. Avanzar `main`.** Es un fast-forward limpio (`371a8ca` es ancestro de la rama):
+
+```bash
+git checkout main
+git merge --ff-only origin/entrega/seba-v2-datos
+git push origin main
+```
+
+Después, el deploy desde Dokploy: rebuild completo (~5 min) y el corte de ~22 s de siempre. Sin
+variables de entorno nuevas. (La entrega 1 sí trae tres variables **opcionales**, con defaults:
+`docs/entregas/2026-11-16-seba-v2-lectura.md`.)
+
+**6. Verificar después del deploy.**
+
+- La bandeja abre y lista conversaciones. Si diera 400, falta `20261116030000` o PostgREST no recargó
+  el esquema: `notify pgrst, 'reload schema';`.
+- Aparece la píldora «Área» después de «Mías», y queda vacía.
+- Control IA → «Seba v2»: el modo dice «Apagado», la bienvenida muestra el texto aprobado y «Formas de
+  pago» está vacía. Como asesor, la misma pestaña sin ningún botón de edición.
+- Control IA → «Agentes»: cada asesor con sus cuatro áreas marcadas.
+- El CI de GitHub sobre `main` en verde, con los dos pasos nuevos (`formas_de_pago` y
+  `seba_v2_configuracion`).
+
+**7. Cargar las tres formas de pago reales** desde «Formas de pago» con un supervisor (o por SQL). No
+hay apuro: nadie las lee hasta la entrega 3.
+
+**Rollback.** El código viejo no conoce nada de esto: volver atrás el código con las migraciones
+aplicadas no rompe nada. Si el trigger de áreas causara problemas, se reaplica la definición anterior
+(`supabase/migrations/20260928050000_agentes_no_se_ascienden_solos.sql`, sección 2).
+
+### Mensaje para el Claude del VPS
+
+```text
+Entrega 2 del rework de Seba («Los datos del negocio»): rama origin/entrega/seba-v2-datos, apilada
+sobre la entrega 1 (origin/entrega/seba-v2-lectura). Lee docs/entregas/2026-11-16-seba-v2-datos.md en
+esa rama y sigue «Pasos del VPS, para copiar y pegar»: confirma en qué commit está producción, aplica
+en orden 20261116010000, 20261116020000 y 20261116030000 con psql -1 -v ON_ERROR_STOP=1, verifica
+contra la base real con las consultas del paso 4 y recién entonces haz el fast-forward de main y el
+deploy. Las migraciones van ANTES que el código: sin conversations.escalation_area la bandeja entera
+responde 400, y sin message_readings el chat no carga mensajes. No cambia el comportamiento de Seba
+(seba_v2_modo nace apagado y nadie lo lee). Después del deploy, carga las tres formas de pago reales
+desde Control IA y repórtame qué viste en cada verificación.
+```
+
 ## Commits
 
 | # | SHA | Título | ¿Migración? | ¿UI o servidor? |
@@ -40,7 +146,9 @@ Son los briefs N1, N4 y N5 del VPS. **No cambia el comportamiento de Seba:** no 
 | 4 | `e80eb22` | Control IA gana la pestaña «Seba v2» y cada asesor tiene sus áreas en «Agentes» | No | UI |
 | 5 | `38fad71` | La bandeja filtra por área con una píldora nueva | No | UI |
 | 6 | `6434533` | Las correcciones de la revisión de código | No | UI |
-| 7 | (la punta) | El glosario, CLAUDE.md, la guía de producción y este reporte | No | Documentos |
+| 7 | `4faaaa5` | El glosario, CLAUDE.md, la guía de producción y este reporte | No | Documentos |
+| 8 | `717a0f3` | El paso nuevo del CI deja de romper el YAML del flujo | No | Solo CI |
+| 9 | (la punta) | Los pasos del VPS para copiar y pegar, y lo que mostró el CI reproducido en Linux | No | Documentos |
 
 Variables de entorno nuevas: **ninguna**. Costo de despliegue: **rebuild completo (~5 min)**, porque
 toca la UI.
@@ -130,6 +238,15 @@ toca la UI.
   116 migraciones y los tres seeds sin error, y sobre ella pasaron `formas_de_pago.sql`,
   `seba_v2_configuracion.sql`, `agents_rol_sin_autoascenso.sql`, `config_solo_supervisor.sql`,
   `lecturas_de_media.sql` y `permisos_funciones.sql`.
+- **El CI reproducido en Linux con Node 22** (contenedor `node:22`, los mismos pasos del job
+  `verificar`: `npm ci`, `next typegen`, `tsc`, lint, la suite con `--no-file-parallelism` y el build):
+  todo en verde salvo dos tests de `scripts/verificar-respaldo.test.ts`, que fallaron por un artefacto
+  de la copia (el `.sh` viajó con finales de línea de Windows; en el CI real ese job está en verde
+  sobre `371a8ca` y esta entrega no toca ese script). 7.174 tests pasaron.
+- **El YAML del CI.** El primer push de la rama dejó en GitHub una corrida en fallo sin ningún job: el
+  nombre del paso `formas_de_pago` llevaba dos puntos (`payment_methods: el asesor…`) y el archivo
+  entero dejaba de ser YAML válido. Habría roto el CI de `main`. Corregido en el commit 8 y validado
+  con un parser: 2 jobs, 52 pasos en `migraciones`, los tres tests SQL nuevos cableados.
 - **Mutaciones** (cada una puso en rojo su test y se restauró desde una copia): política de UPDATE de
   `payment_methods` abierta a `is_agent()`; trigger sin la rama de `areas`; una letra cambiada en el
   texto de bienvenida de la migración; `setSebaV2Mode` sin `assertRowsAffected`; `deletePaymentMethod`
@@ -152,7 +269,8 @@ toca la UI.
 ## Lo que no se pudo verificar acá
 
 - El CI no corre en ramas `entrega/**`: los dos pasos nuevos de `ci.yml` se ejecutan recién cuando
-  `main` avance.
+  `main` avance. Lo más parecido que se pudo hacer acá fue la base reconstruida desde cero y el job
+  `verificar` reproducido en Linux; el arnés del catálogo no se corrió (esta entrega no toca la búsqueda).
 - No hay datos reales: las formas de pago del seed son inventadas, y `escalation_area` se cargó a mano
   en nueve conversaciones locales para ver la píldora.
 
@@ -165,6 +283,15 @@ toca la UI.
   `presupuestos`, `presupuesto_items`, `product_photos` y `saint_borradores`) y **no está cableado en
   `ci.yml`**. Es anterior a esta entrega y no toca nada de lo que cambió: quedó viejo frente a las
   migraciones de presupuestos y de fotos.
+- **El CI de `main` ya venía en rojo** en `371a8ca`, y no por el código: el job `migraciones` falló en
+  `supabase/setup-cli@v1` con «Failed to resolve latest Supabase CLI release: rate limit exceeded»
+  (`version: latest` se resuelve contra la API de GitHub sin token). Es intermitente y se arregla
+  relanzando el job; para que no vuelva, fijar una versión de la CLI en `ci.yml` (acá se usó la 3.2.0).
+  No se tocó: queda como tarea aparte.
+- Nueve tests de `supabase/tests/` no tienen paso en `ci.yml` (todos anteriores a esta entrega):
+  `carrito_precio_elegido`, `mensajes_rapidos_usos`, `paneles_rendimiento` (a propósito),
+  `precio_divisa_usd`, `presupuestos`, `quick_replies_personales`, `respuestas_rapidas_con_fotos`,
+  `rol_caja` y `traspaso_sin_mensaje_nuevo`.
 - Un refresco en vivo que llegue a mitad de un guardado optimista de áreas puede mostrar un instante el
   valor anterior; se corrige solo con el evento del propio guardado.
 - La fila de frases del mensaje 2 a 390 px pone «Quitar» debajo de cada campo: se lee bien, pero ocupa.
