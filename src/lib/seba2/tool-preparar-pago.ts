@@ -144,6 +144,16 @@ function fusionarLineas(lineas: EntradaDePrepararPago["lineas"]): { productId: s
 }
 
 /**
+ * La forma de un id de producto: 8-4-4-4-12 hexadecimales, SIN exigir versión ni
+ * variante. Con `z.uuid()` el esquema que ve el modelo solo admite UUID «válidos»
+ * (v1 a v8), y un id que no lo es (los del catálogo de demostración,
+ * «eeeeeeee-0000-0000-…») el modelo lo «corregía» a un v4 inventado: el producto
+ * dejaba de existir y el pago terminaba con un asesor (prueba real, 17/11/2026).
+ * La validación de verdad no es la forma: es que el id esté entre lo cotizado.
+ */
+const FORMA_DE_ID = /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/;
+
+/**
  * La lógica de `execute`, exportada para probarla sin el SDK. Devuelve el texto
  * que recibe el MODELO (nunca el que recibe el cliente).
  */
@@ -156,16 +166,18 @@ export async function ejecutarPrepararPago(
 
   const lineasFusionadas = fusionarLineas(entrada.lineas);
   const ids = lineasFusionadas.map((l) => l.productId);
-  const [cargados, bcvRate, cotizadosAntes] = await Promise.all([
-    deps.cargarProductos(ids),
-    deps.leerTasa(),
-    effects.productosYaCotizados(),
-  ]);
+  const [bcvRate, cotizadosAntes] = await Promise.all([deps.leerTasa(), effects.productosYaCotizados()]);
   // Lo cotizado en ESTE turno también cuenta. En sombra la búsqueda no inserta
   // en `conversation_quotes` (el cliente nunca vio esa cotización), así que la
   // base no lo sabe: el turno lo anota en `sesion.productos` (17/11/2026).
   const yaCotizados = new Set<string>([...cotizadosAntes, ...sesion.productos]);
 
+  // Un id que no está en lo cotizado se rechaza ANTES de ir a la base: el id lo
+  // escribe el modelo, y en la prueba real del 17/11/2026 llegó uno que no era el
+  // del producto. Lo que no se cotizó no se consulta.
+  if (ids.some((id) => !yaCotizados.has(id))) return instruccionDeRechazo("producto_no_buscado", "", metodos);
+
+  const cargados = await deps.cargarProductos(ids);
   const porId = new Map(cargados.map((p) => [p.id, p]));
   // Un id que la base no devuelve es, para el modelo, un producto que nunca se buscó.
   if (ids.some((id) => !porId.has(id))) return instruccionDeRechazo("producto_no_buscado", "", metodos);
@@ -370,7 +382,7 @@ export function buildPrepararPagoTool(deps: DepsDePrepararPago) {
       lineas: z
         .array(
           z.object({
-            productId: z.string().uuid().describe("El id del producto: el de «Pedido» en TURNO ACTUAL o el que devolvió buscarRepuesto."),
+            productId: z.string().regex(FORMA_DE_ID).describe("El id del producto: el de «Pedido» en TURNO ACTUAL o el que devolvió buscarRepuesto."),
             cantidad: z.number().int().min(1).max(20).describe("Unidades que lleva el cliente."),
           }),
         )

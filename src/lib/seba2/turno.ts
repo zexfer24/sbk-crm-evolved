@@ -593,6 +593,13 @@ function contextoDelPrompt(c: Corrida, renglones: RenglonDelEstado[]): Seba2Cont
  * una parte del paso y el bucle SIGUE, así que sin esto el turno nunca se enteraría
  * (el caso real: `prepararPago` envió el resumen y el pase del caso falló).
  */
+/** Lo que una herramienta le devolvió al modelo, recortado para el log: el texto, o su `instruccionParaTuRespuesta`. */
+function resumenDeSalida(salida: unknown): string {
+  if (typeof salida === "string") return salida.slice(0, 300);
+  const instruccion = (salida as { instruccionParaTuRespuesta?: unknown } | null)?.instruccionParaTuRespuesta;
+  return typeof instruccion === "string" ? instruccion.slice(0, 300) : "";
+}
+
 function vigilar<T extends object>(c: Corrida, nombre: string, herramienta: T): T {
   const original = (herramienta as { execute?: (i: unknown, o: unknown) => unknown }).execute;
   if (!original) return herramienta;
@@ -600,9 +607,23 @@ function vigilar<T extends object>(c: Corrida, nombre: string, herramienta: T): 
     ...herramienta,
     execute: async (entrada: unknown, opciones: unknown) => {
       try {
-        return await original(entrada, opciones);
+        const salida = await original(entrada, opciones);
+        // Qué le contestó la herramienta al modelo (17/11/2026): en la prueba real `prepararPago` no
+        // armó el pedido y sin esto no había forma de saber por qué. Las herramientas de v2 devuelven
+        // una instrucción corta, sin datos del cliente; la búsqueda devuelve un objeto y solo se anota su instrucción.
+        log.info("seba2_herramienta", {
+          conversationId: c.entrada.conversationId,
+          herramienta: nombre,
+          respuesta: resumenDeSalida(salida),
+        });
+        return salida;
       } catch (error) {
         c.errorDeHerramienta = { nombre, error };
+        log.warn("seba2_herramienta_fallo", {
+          conversationId: c.entrada.conversationId,
+          herramienta: nombre,
+          detail: errorText(error),
+        });
         throw error;
       }
     },

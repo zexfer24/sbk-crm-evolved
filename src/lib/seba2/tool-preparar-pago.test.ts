@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import type { PaymentMethodConfig } from "@/lib/payment-methods";
 import type { Product } from "@/lib/types";
 import { crearEffectsDeMemoria, type GuionDeMemoria } from "./effects-memoria";
@@ -326,6 +326,17 @@ describe("prepararPago — rechazos: no envía nada y le explica al modelo", () 
     expect(fx.registro.secuencia.length).toBeGreaterThan(0);
   });
 
+  it("un id que nunca se cotizó se rechaza SIN ir a la base a buscarlo", async () => {
+    // Prueba real del 17/11/2026: el modelo llegó a mandar un id que no era el del producto. Lo que
+    // no está en lo cotizado no se consulta: ni un viaje a la base con un id que escribió un modelo.
+    const cargarProductos = vi.fn(async () => [producto()]);
+    const { deps, fx } = montar([producto()], { yaCotizados: [] }, { cargarProductos });
+    const salida = await ejecutarPrepararPago(deps, pedir(ID, "pago_movil"));
+    expect(salida).toContain("no se ha cotizado");
+    expect(cargarProductos).not.toHaveBeenCalled();
+    expect(fx.registro.secuencia).toEqual([]);
+  });
+
   it("un id que la base no devuelve cuenta como producto no buscado", async () => {
     const { deps, fx } = montar([], { yaCotizados: [ID] });
     const salida = await ejecutarPrepararPago(deps, pedir(ID, "pago_movil"));
@@ -386,6 +397,12 @@ describe("prepararPago — la herramienta del SDK", () => {
     const muchas = Array.from({ length: 16 }, () => ({ productId: ID, cantidad: 1 }));
     expect(esquema().safeParse({ ...valida, lineas: muchas }).success).toBe(false);
     expect(esquema().safeParse({ ...valida, lineas: [{ productId: "no-es-uuid", cantidad: 1 }] }).success).toBe(false);
+    // Un id con forma de UUID pero que no es v4 (los del catálogo de demostración: «eeeeeeee-0000-0000-…»)
+    // tiene que pasar tal cual. Con `z.uuid()` el modelo, obligado por el formato, lo «corregía» a un v4
+    // válido (…-4000-8000-…) y el producto dejaba de existir (prueba real del 17/11/2026).
+    expect(
+      esquema().safeParse({ ...valida, lineas: [{ productId: "eeeeeeee-0000-0000-0000-000000000005", cantidad: 1 }] }).success
+    ).toBe(true);
     expect(esquema().safeParse({ ...valida, entrega: "drone" }).success).toBe(false);
   });
 
