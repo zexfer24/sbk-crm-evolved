@@ -2,7 +2,7 @@
 
 import { useState } from "react";
 import { Minus, Plus, Sparkles, Trash2, UserPen } from "lucide-react";
-import type { CartPriceKind, ConversationCartItem } from "@/lib/types";
+import type { CartPriceKind, ConversationCartItem, SaleItemOrigin } from "@/lib/types";
 import { cartTotals, priceCartLines, quoteComparisonLabel, type PricedCartLine } from "@/lib/conversation-cart";
 import { lineasEnDivisa, type MonedaCarrito } from "@/lib/carrito-divisa";
 import { AvisoFaltaDivisa } from "@/components/presupuestos/moneda-toggle";
@@ -65,6 +65,18 @@ interface CartLinesProps {
    */
   moneda?: MonedaCarrito;
 }
+
+/**
+ * Rótulo y ayuda de cada origen de un renglón. `Record` exhaustivo a propósito:
+ * un origen nuevo en `SaleItemOrigin` rompe `tsc` acá en vez de caer en silencio
+ * en el rótulo equivocado. 17/11/2026 (entrega 3 de Seba v2): `seba` es lo que
+ * Seba v2 pone al preparar el pago.
+ */
+const ORIGEN_DEL_RENGLON: Record<SaleItemOrigin, { etiqueta: string; titulo: string }> = {
+  quote: { etiqueta: "Cotizado por Seba", titulo: "Seba le cotizó este repuesto al cliente en el chat" },
+  inventory: { etiqueta: "Agregado por un asesor", titulo: "Lo agregó un asesor desde el inventario" },
+  seba: { etiqueta: "Seba", titulo: "Seba lo puso en el carrito al preparar el pago" },
+};
 
 /**
  * Cantidad editable. Guarda el borrador localmente y escribe en la base al
@@ -199,16 +211,9 @@ export function CartLines({
               </div>
 
               <div className="crm-pcart-meta">
-                <span
-                  className="crm-cart-origin"
-                  title={
-                    item.origin === "quote"
-                      ? "Seba le cotizó este repuesto al cliente en el chat"
-                      : "Lo agregó un asesor desde el inventario"
-                  }
-                >
-                  {item.origin === "quote" ? <Sparkles size={10} /> : <UserPen size={10} />}
-                  {item.origin === "quote" ? "Cotizado por Seba" : "Agregado por un asesor"}
+                <span className="crm-cart-origin" title={ORIGEN_DEL_RENGLON[item.origin].titulo}>
+                  {item.origin === "inventory" ? <UserPen size={10} /> : <Sparkles size={10} />}
+                  {ORIGEN_DEL_RENGLON[item.origin].etiqueta}
                 </span>
                 <StockPill quantity={item.product.stockQuantity} />
                 {comparison && (

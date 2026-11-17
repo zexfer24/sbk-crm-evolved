@@ -87,6 +87,16 @@ describe("CartLines — la tarjeta del artículo", () => {
     expect(origen.compareDocumentPosition(toggle) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   });
 
+  // 17/11/2026 (entrega 3 de Seba v2): un renglón que Seba v2 puso al preparar
+  // el pago trae `origin: "seba"` y se rotula «Seba», sin confundirse con los
+  // otros dos orígenes.
+  it("un renglón con origen 'seba' muestra «Seba» y no los rótulos de los otros orígenes", () => {
+    render(<CartLines cart={[item({ origin: "seba" })]} bcvRate={40} actions={makeActions()} />);
+    expect(screen.getByText("Seba")).toBeTruthy();
+    expect(screen.queryByText("Agregado por un asesor")).toBeNull();
+    expect(screen.queryByText("Cotizado por Seba")).toBeNull();
+  });
+
   it("el precio c/u queda dentro de la columna de la cantidad, no de la del subtotal", () => {
     const { container } = render(<CartLines cart={[conTarifa()]} bcvRate={40} actions={makeActions()} />);
     const colCantidad = container.querySelector<HTMLElement>(".crm-pcart-col-qty");

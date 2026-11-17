@@ -24,7 +24,7 @@ import {
   type CorreccionTermino,
   type DiagnosticoGrupo,
 } from "@/lib/ai/catalog-correction";
-import { guardarPedido, leerPedido } from "@/lib/ai/catalog-memory";
+import { guardarPedido, leerPedido, type PedidoCatalogo } from "@/lib/ai/catalog-memory";
 import { pideVerOpciones, pideVerTodo } from "@/lib/ai/catalog-request";
 import { formatQuote } from "@/lib/ai/precio";
 import {
@@ -228,10 +228,27 @@ function instruccionDeRelajo(terminos: readonly string[]): string {
 export const PREGUNTA_QUE_BUSCA_INSTRUCTION =
   "El cliente todavía no dijo qué repuesto o producto busca: haz UNA sola pregunta para saber qué necesita y NO escales ni prometas un asesor en este turno. Con la respuesta vuelves a buscar.";
 
-interface ToolDeps {
+/**
+ * 17/11/2026 (entrega 3 de Seba v2, S2c): qué deja `buscarRepuesto` fuera de
+ * `catalogOutcome` cuando cotiza.
+ *   - `"normal"`: lo de siempre (inserta en `conversation_quotes` y usa la
+ *     memoria del pedido de la conversación).
+ *   - `"sombra"`: un turno que NO se le manda al cliente (Seba v2 en modo
+ *     sombra) y corre en paralelo con el real. No inserta cotizaciones (saldrían
+ *     en «Agregar cotizaciones de Seba» sin que el cliente las haya visto) y su
+ *     memoria vive en su propia clave de Redis, para no pisar la del turno real.
+ *   - `"ninguna"`: ni cotizaciones ni Redis (el arnés de pruebas): se comporta
+ *     como «sin Redis».
+ * En los tres, `catalogOutcome` se llena igual.
+ */
+export type PersistenciaDeCatalogo = "normal" | "sombra" | "ninguna";
+
+export interface ToolDeps {
   supabase: SupabaseClient<Database>;
   conversationId: string;
   contactId: string;
+  /** Default `"normal"`; ver `PersistenciaDeCatalogo`. Solo la lee `buildCatalogTool`. */
+  persistencia?: PersistenciaDeCatalogo;
   /**
    * Horario de la tienda (Frente B4, "El reloj dice la verdad", 5/9/2026):
    * solo lo usa `buildEscalateTool` para saber cuándo prometer que un asesor
@@ -731,7 +748,7 @@ interface ResultadoUno {
 }
 
 export function buildCatalogTool(
-  { supabase, conversationId, rafagaCliente }: ToolDeps,
+  { supabase, conversationId, rafagaCliente, persistencia = "normal" }: ToolDeps,
   catalogOutcome: CatalogOutcome
 ) {
   /**
@@ -1508,6 +1525,14 @@ export function buildCatalogTool(
     }
   }
 
+  // S2c (17/11/2026): la memoria del pedido según la persistencia. `"ninguna"`
+  // ni siquiera pide `getRedis()`: se comporta como «sin Redis».
+  const ambitoDeMemoria = persistencia === "sombra" ? "sombra" : "normal";
+  const leerMemoria = (): Promise<PedidoCatalogo | null> =>
+    persistencia === "ninguna" ? Promise.resolve(null) : leerPedido(conversationId, ambitoDeMemoria);
+  const guardarMemoria = (pedido: PedidoCatalogo): Promise<void> =>
+    persistencia === "ninguna" ? Promise.resolve() : guardarPedido(conversationId, pedido, ambitoDeMemoria);
+
   /**
    * El monto de una venta sale de lo que se cotizó acá, no de un número que
    * el agente escriba a mano al cerrar -- por eso se deja registro de cada
@@ -1515,6 +1540,8 @@ export function buildCatalogTool(
    * momento de la cotización. Un genérico no cotiza nada (`quoted` vacío).
    */
   async function guardarCotizaciones(quoted: Cotizado[], rate: number): Promise<void> {
+    // S2c (17/11/2026): la sombra y el arnés no dejan cotizaciones en la base.
+    if (persistencia !== "normal") return;
     if (quoted.length === 0) return;
     await supabase.from("conversation_quotes").insert(
       quoted.map((q) => ({
@@ -1638,7 +1665,7 @@ export function buildCatalogTool(
         return { results: [], instruccionParaTuRespuesta: PREGUNTA_QUE_BUSCA_INSTRUCTION };
       }
 
-      const pedido = await leerPedido(conversationId);
+      const pedido = await leerMemoria();
       const verTodo = pideVerTodo(rafagaCliente ?? []);
       // A2 T5, D6: solo el pedido EXPLÍCITO de ver opciones saca hasta tres.
       const verOpciones = pideVerOpciones(rafagaCliente ?? []);
@@ -1707,7 +1734,7 @@ export function buildCatalogTool(
           .flatMap((r) => r.consulta.corregido ?? []);
         const avisoCorreccion = correccionesDeLista.length > 0 ? instruccionDeCorreccion(correccionesDeLista) : null;
 
-        await guardarPedido(conversationId, {
+        await guardarMemoria({
           ultimoQuery: pedido?.ultimoQuery ?? null,
           moto: motoEntrada.moto.length > 0 ? motoEntrada.moto : (pedido?.moto ?? []),
           cilindrada: motoDelModelo.cilindrada.length > 0 ? motoDelModelo.cilindrada : (pedido?.cilindrada ?? []),
@@ -1782,7 +1809,7 @@ export function buildCatalogTool(
       const tieneProducto = r.consulta.grupos.some(esGrupoDeProducto);
       const sePregunto = r.estado === "generico" && r.preguntaFiltro !== null;
       if (sePregunto) preguntadosEnEsteTurno.add(r.clave);
-      await guardarPedido(conversationId, {
+      await guardarMemoria({
         ultimoQuery: tieneProducto ? texto : (pedido?.ultimoQuery ?? null),
         moto: r.moto.length > 0 ? r.moto : (pedido?.moto ?? []),
         cilindrada: r.cilindrada.length > 0 ? r.cilindrada : (pedido?.cilindrada ?? []),

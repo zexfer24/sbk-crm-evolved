@@ -134,6 +134,37 @@ describe("guardarPedido / leerPedido", () => {
   });
 });
 
+// 17/11/2026 (entrega 3 de Seba v2, S2c): la sombra corre en paralelo con el
+// turno real sobre la MISMA conversación; con una sola clave, la sombra anotaría
+// «ya pregunté» y el turno real dejaría de hacer su pregunta de filtro.
+describe("ámbito de la memoria: normal y sombra no se ven entre sí", () => {
+  it("con ámbito 'sombra' la clave es 'catalogo:pedido:sombra:<id>' con el mismo TTL", async () => {
+    await guardarPedido("conv-1", pedido, "sombra");
+
+    expect(redis.setCalls).toHaveLength(1);
+    expect(redis.setCalls[0].key).toBe("catalogo:pedido:sombra:conv-1");
+    expect(redis.setCalls[0].args).toEqual(["EX", 21600]);
+  });
+
+  it("lo guardado en sombra no se ve desde el ámbito normal, ni al revés", async () => {
+    await guardarPedido("conv-1", pedido, "sombra");
+    expect(await leerPedido("conv-1")).toBeNull();
+    expect(await leerPedido("conv-1", "sombra")).toEqual(pedido);
+
+    await guardarPedido("conv-2", pedido);
+    expect(await leerPedido("conv-2", "sombra")).toBeNull();
+    expect(await leerPedido("conv-2", "normal")).toEqual(pedido);
+  });
+
+  it("sin ámbito (o 'normal') la clave es la de siempre, byte por byte", async () => {
+    await guardarPedido("conv-1", pedido);
+    await guardarPedido("conv-1", pedido, "normal");
+    expect(redis.setCalls.map((c) => c.key)).toEqual(["catalogo:pedido:conv-1", "catalogo:pedido:conv-1"]);
+    await leerPedido("conv-1");
+    expect(redis.getCalls).toEqual(["catalogo:pedido:conv-1"]);
+  });
+});
+
 describe("Redis caído o sin REDIS_URL: nunca lanza, avisa con log.warn", () => {
   it("leerPedido con Redis caído da null y deja log.warn con el detalle", async () => {
     const warn = vi.spyOn(log, "warn").mockImplementation(() => {});

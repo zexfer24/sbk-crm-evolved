@@ -67,8 +67,17 @@ export interface PedidoCatalogo {
   preguntaTipo: "moto" | "producto" | null;
 }
 
-function pedidoKey(conversationId: string): string {
-  return `catalogo:pedido:${conversationId}`;
+/**
+ * 17/11/2026 (entrega 3 de Seba v2, S2c): `"sombra"` es el turno de Seba v2 que
+ * corre EN PARALELO con el real sobre la misma conversación pero no se le manda
+ * al cliente. Con una sola clave, la sombra anotaría «ya pregunté» y el turno
+ * real dejaría de hacer su pregunta de filtro (y al revés): cada ámbito tiene la
+ * suya, con el mismo TTL. `"normal"` es la clave de siempre, byte por byte.
+ */
+export type AmbitoDePedido = "normal" | "sombra";
+
+function pedidoKey(conversationId: string, ambito: AmbitoDePedido = "normal"): string {
+  return ambito === "sombra" ? `catalogo:pedido:sombra:${conversationId}` : `catalogo:pedido:${conversationId}`;
 }
 
 function esGruposDeTexto(value: unknown): value is string[][] {
@@ -108,9 +117,12 @@ function comoPedidoCatalogo(value: unknown): PedidoCatalogo | null {
  * El pedido guardado de esta conversación, o `null` si no hay: nunca se
  * escribió, venció, la clave está corrupta o Redis no respondió (nunca lanza).
  */
-export async function leerPedido(conversationId: string): Promise<PedidoCatalogo | null> {
+export async function leerPedido(
+  conversationId: string,
+  ambito: AmbitoDePedido = "normal"
+): Promise<PedidoCatalogo | null> {
   try {
-    const raw = await getRedis().get(pedidoKey(conversationId));
+    const raw = await getRedis().get(pedidoKey(conversationId, ambito));
     if (raw === null) return null;
     return comoPedidoCatalogo(JSON.parse(raw) as unknown);
   } catch (err) {
@@ -120,9 +132,13 @@ export async function leerPedido(conversationId: string): Promise<PedidoCatalogo
 }
 
 /** Deja el pedido de esta conversación, con TTL de 6 h. Nunca lanza. */
-export async function guardarPedido(conversationId: string, pedido: PedidoCatalogo): Promise<void> {
+export async function guardarPedido(
+  conversationId: string,
+  pedido: PedidoCatalogo,
+  ambito: AmbitoDePedido = "normal"
+): Promise<void> {
   try {
-    await getRedis().set(pedidoKey(conversationId), JSON.stringify(pedido), "EX", CATALOGO_PEDIDO_TTL_SECONDS);
+    await getRedis().set(pedidoKey(conversationId, ambito), JSON.stringify(pedido), "EX", CATALOGO_PEDIDO_TTL_SECONDS);
   } catch (err) {
     log.warn("catalogo_pedido_no_escrito", { conversationId, detail: errorText(err) });
   }

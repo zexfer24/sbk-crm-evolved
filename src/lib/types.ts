@@ -1231,9 +1231,11 @@ export interface MotoCatalogSummary {
  * De dónde salió un renglón de la venta: de una cotización real que la IA le
  * dio al cliente en el chat, o agregado a mano por el asesor desde el
  * inventario. En los dos casos el precio viene del catálogo — nunca se
- * escribe a mano.
+ * escribe a mano. 17/11/2026 (entrega 3 de Seba v2): `seba` es el renglón que
+ * Seba v2 puso al preparar el pago (la base ya lo acepta desde
+ * `20261117010000`); `addToCart` sigue escribiendo solo `quote`/`inventory`.
  */
-export type SaleItemOrigin = "quote" | "inventory";
+export type SaleItemOrigin = "quote" | "inventory" | "seba";
 
 /**
  * A qué precio se cobra un renglón del carrito (14/10/2026): `promocion` es el

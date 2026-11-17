@@ -50,6 +50,7 @@ import {
   RECORDATORIO_SALUDO,
   type CatalogOutcome,
   type EscalationOutcome,
+  type PersistenciaDeCatalogo,
 } from "@/lib/ai/tools";
 import type { BusinessHours } from "@/lib/business-hours";
 import { revealsIdentity } from "@/lib/ai/identity-guard";
@@ -2561,11 +2562,17 @@ interface ResultadoCatalogo {
 function herramienta(
   client: unknown,
   outcome: CatalogOutcome,
-  extra: { rafagaCliente?: string[]; conversationId?: string } = {}
+  extra: { rafagaCliente?: string[]; conversationId?: string; persistencia?: PersistenciaDeCatalogo } = {}
 ) {
   return buildCatalogTool(
-    // @ts-expect-error -- fake mínimo
-    { supabase: client, conversationId: extra.conversationId ?? "conv-1", contactId: "contact-1", rafagaCliente: extra.rafagaCliente },
+    {
+      // @ts-expect-error -- fake mínimo
+      supabase: client,
+      conversationId: extra.conversationId ?? "conv-1",
+      contactId: "contact-1",
+      rafagaCliente: extra.rafagaCliente,
+      ...(extra.persistencia ? { persistencia: extra.persistencia } : {}),
+    },
     outcome
   );
 }
@@ -4104,5 +4111,100 @@ describe("buildCatalogTool — A2 T5: D1, D2 y D6 en los bordes", () => {
     expect(outcome.avisos).toEqual([{ tipo: "moto_sin_calce", productoPedido: "parrilla", moto: "SOCIALISTA" }]);
     expect(outcome.motivoForzado).toBe("confirmar_inventario");
     expect(result.instruccionParaTuRespuesta).toContain(TEXTO_CONFIRMAR_INVENTARIO);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 17/11/2026 (entrega 3 de Seba v2, S2c): `persistencia` deja correr la
+// herramienta «en sombra» --un turno que NO se le manda al cliente-- sin
+// contaminar lo del turno real: ni `conversation_quotes` (aparecería en «Agregar
+// cotizaciones de Seba» del carrito sin que el cliente la haya visto) ni la
+// memoria del pedido en Redis (la sombra anotaría «ya pregunté» y el turno real
+// dejaría de hacer su pregunta de filtro).
+// ---------------------------------------------------------------------------
+describe("buildCatalogTool — persistencia (normal | sombra | ninguna)", () => {
+  /** Un redis que cuenta cada get/set, para probar el modo «ninguna» de verdad. */
+  function redisContado() {
+    const redis = new FakeRedis();
+    const getSpy = vi.spyOn(redis, "get");
+    const setSpy = vi.spyOn(redis, "set");
+    redisEstado.redis = redis;
+    return { redis, getSpy, setSpy };
+  }
+
+  const filas = () => [fila("p1", "ASIENTO SBR", 6, 12)];
+
+  it("normal (y sin el campo): inserta la cotización y escribe la memoria con la clave de siempre", async () => {
+    const { setSpy } = redisContado();
+    const sinCampo = createFakeSupabase(filas());
+    await correr(herramienta(sinCampo.client, nuevoCatalogOutcome()), { query: "asiento sbr" });
+    expect(sinCampo.insertedQuotes).toHaveLength(1);
+
+    const normal = createFakeSupabase(filas());
+    await correr(herramienta(normal.client, nuevoCatalogOutcome(), { persistencia: "normal" }), { query: "asiento sbr" });
+    expect(normal.insertedQuotes).toHaveLength(1);
+
+    expect(setSpy.mock.calls.map((c) => c[0])).toEqual(["catalogo:pedido:conv-1", "catalogo:pedido:conv-1"]);
+  });
+
+  it("sombra: NO inserta en conversation_quotes, la cotización del turno queda igual y la memoria va por la clave de sombra", async () => {
+    const normal = createFakeSupabase(filas());
+    const outNormal = nuevoCatalogOutcome();
+    await correr(herramienta(normal.client, outNormal), { query: "asiento sbr" });
+
+    const { redis, setSpy } = redisContado();
+    const sombra = createFakeSupabase(filas());
+    const outSombra = nuevoCatalogOutcome();
+    const result = await correr(herramienta(sombra.client, outSombra, { persistencia: "sombra" }), { query: "asiento sbr" });
+
+    expect(sombra.insertedQuotes).toHaveLength(0);
+    expect(outSombra.cotizacion).toEqual(outNormal.cotizacion);
+    expect(outSombra.cotizacion[0].productId).toBe("p1");
+    expect(result.results).toHaveLength(1);
+    expect(setSpy.mock.calls.map((c) => c[0])).toEqual(["catalogo:pedido:sombra:conv-1"]);
+    // La clave del turno real no se tocó.
+    expect(await redis.get("catalogo:pedido:conv-1")).toBeNull();
+    expect(await redis.get("catalogo:pedido:sombra:conv-1")).not.toBeNull();
+  });
+
+  it("sombra con una lista de productos: tampoco inserta cotizaciones", async () => {
+    const { client, insertedQuotes } = createFakeSupabase([fila("p1", "ASIENTO SBR", 6), fila("p2", "CADENA 428", 4)]);
+    const outcome = nuevoCatalogOutcome();
+    await correr(herramienta(client, outcome, { persistencia: "sombra" }), { query: "", productos: ["asiento", "cadena"] });
+
+    expect(insertedQuotes).toHaveLength(0);
+    expect(outcome.cotizacion.map((l) => l.productId).sort()).toEqual(["p1", "p2"]);
+  });
+
+  it("ninguna: ni inserta cotizaciones ni toca Redis (ni para leer ni para escribir), y el outcome se llena igual", async () => {
+    const { getSpy, setSpy } = redisContado();
+    const { client, insertedQuotes } = createFakeSupabase(filas());
+    const outcome = nuevoCatalogOutcome();
+    const result = await correr(herramienta(client, outcome, { persistencia: "ninguna" }), { query: "asiento sbr" });
+
+    expect(insertedQuotes).toHaveLength(0);
+    expect(getSpy).not.toHaveBeenCalled();
+    expect(setSpy).not.toHaveBeenCalled();
+    expect(outcome.cotizacion.map((l) => l.productId)).toEqual(["p1"]);
+    expect(outcome.consultas).toHaveLength(1);
+    expect(result.results).toHaveLength(1);
+  });
+
+  it("sombra no lee la memoria del turno real: una respuesta suelta guardada en el ámbito normal no se combina", async () => {
+    const { redis } = redisContado();
+    await redis.set(
+      "catalogo:pedido:conv-1",
+      JSON.stringify({ ultimoQuery: "asiento sbr", moto: [["sbr"]], cilindrada: [], anio: [], preguntaHechaPara: null, preguntaTipo: null }),
+      "EX",
+      60
+    );
+    const { client, getAppliedRpcArgs } = (() => {
+      const f = createFakeSupabase(filas());
+      return { client: f.client, getAppliedRpcArgs: f.getAppliedRpcArgs };
+    })();
+    // "negro" sola es una respuesta suelta: con memoria normal se combinaría con "asiento sbr".
+    await correr(herramienta(client, nuevoCatalogOutcome(), { persistencia: "sombra" }), { query: "negro" });
+    const args = JSON.stringify(getAppliedRpcArgs());
+    expect(args).not.toContain("asiento");
   });
 });
