@@ -9,10 +9,12 @@ interface FakeAgentRow {
   last_assigned_at: string | null;
   /** Ausente = "agent". La caja (13/10/2026) solo ve el Inventario. */
   role?: string;
+  /** Áreas del asesor (`agents.areas`, 16/11/2026). Ausente = ninguna. */
+  areas?: string[];
 }
 
 /** Filtros que el código aplicó a la consulta de candidatos: operador + columna + valor. */
-type Filtro = { op: "eq" | "neq"; col: string; val: unknown };
+type Filtro = { op: "eq" | "neq" | "contains"; col: string; val: unknown };
 
 /**
  * Fake que simula el comportamiento atómico real de Postgres para
@@ -44,6 +46,11 @@ function createFakeSupabase(agents: FakeAgentRow[]) {
               filtros.push({ op: "neq", col, val });
               return builder;
             },
+            contains(col: string, val: unknown[]) {
+              aplicados.push({ op: "contains", col, val });
+              filtros.push({ op: "contains", col, val });
+              return builder;
+            },
             order() {
               return {
                 limit(n: number) {
@@ -54,6 +61,11 @@ function createFakeSupabase(agents: FakeAgentRow[]) {
                     .filter((r) =>
                       aplicados.every((f) => {
                         const actual = (r as unknown as Record<string, unknown>)[f.col] ?? (f.col === "role" ? "agent" : undefined);
+                        if (f.op === "contains") {
+                          // Como el `@>` de Postgres: el arreglo de la fila contiene todos los valores pedidos.
+                          const fila = Array.isArray(actual) ? actual : [];
+                          return (f.val as unknown[]).every((v) => fila.includes(v));
+                        }
                         return f.op === "eq" ? actual === f.val : actual !== f.val;
                       })
                     )
@@ -233,6 +245,51 @@ describe("claimNextAvailableAgent", () => {
 
       expect(sinOpciones?.id).toBe("a2");
       expect(listaVacia?.id).toBe("a2");
+    });
+  });
+
+  // Seba v2 (17/11/2026, S6): con `area`, solo compiten los asesores que la
+  // atienden (`agents.areas @> {area}`). Sin ella el reparto no cambia.
+  describe("area (Seba v2)", () => {
+    it("la consulta de candidatos lleva contains('areas', [area]): operador, columna y valor", async () => {
+      const { client, filtros } = createFakeSupabase([
+        { id: "a1", display_name: "Ana", is_active: true, last_assigned_at: null, areas: ["pagos"] },
+      ]);
+
+      await claimNextAvailableAgent(client, { area: "pagos" });
+
+      expect(filtros).toContainEqual({ op: "contains", col: "areas", val: ["pagos"] });
+    });
+
+    it("no elige a un asesor sin esa área, aunque tenga el last_assigned_at más antiguo", async () => {
+      const { client, rows } = createFakeSupabase([
+        { id: "a1", display_name: "Ana", is_active: true, last_assigned_at: null, areas: ["ventas"] },
+        { id: "a2", display_name: "Beto", is_active: true, last_assigned_at: "2026-01-01T00:00:00Z", areas: ["pagos", "ventas"] },
+      ]);
+
+      const claimed = await claimNextAvailableAgent(client, { area: "pagos" });
+
+      expect(claimed?.id).toBe("a2");
+      expect(rows.get("a1")?.last_assigned_at).toBeNull();
+    });
+
+    it("si nadie atiende el área, devuelve null", async () => {
+      const { client } = createFakeSupabase([
+        { id: "a1", display_name: "Ana", is_active: true, last_assigned_at: null, areas: ["ventas"] },
+      ]);
+
+      expect(await claimNextAvailableAgent(client, { area: "reclamos" })).toBeNull();
+    });
+
+    it("sin area, la consulta NO filtra por áreas y reparte entre todos", async () => {
+      const { client, filtros } = createFakeSupabase([
+        { id: "a1", display_name: "Ana", is_active: true, last_assigned_at: null, areas: ["ventas"] },
+      ]);
+
+      const claimed = await claimNextAvailableAgent(client);
+
+      expect(claimed?.id).toBe("a1");
+      expect(filtros.some((f) => f.op === "contains")).toBe(false);
     });
   });
 });

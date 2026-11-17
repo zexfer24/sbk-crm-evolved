@@ -1,6 +1,7 @@
 import "server-only";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import type { Database } from "@/lib/supabase/database.types";
+import type { Area } from "@/lib/seba-v2-config";
 
 export interface ClaimedAgent {
   id: string;
@@ -31,13 +32,20 @@ export interface ClaimedAgent {
  * Nunca reparte al rol `caja` (filtro en la consulta, no en memoria).
  * Si todos los activos están excluidos devuelve `null`, igual que sin
  * asesores. Sin `excluir` (o vacío) el comportamiento es el de siempre.
+ *
+ * `area` (S6, Seba v2, 17/11/2026): solo compiten los asesores que atienden esa
+ * área (`agents.areas @> {area}`, filtro en la consulta, no en memoria: así el
+ * límite del pool cuenta solo candidatos válidos). Sin `area` no se filtra por
+ * áreas y el reparto es exactamente el de antes. Si nadie del área está
+ * disponible devuelve `null`; reintentar sin área es decisión de quien llama
+ * (`escalateConversation`).
  */
 export async function claimNextAvailableAgent(
   supabase: SupabaseClient<Database>,
-  opciones: { excluir?: string[] } = {}
+  opciones: { excluir?: string[]; area?: Area } = {}
 ): Promise<ClaimedAgent | null> {
   const excluidos = new Set(opciones.excluir ?? []);
-  const { data: candidates } = await supabase
+  let consulta = supabase
     .from("agents")
     .select("id, display_name, last_assigned_at")
     .eq("is_active", true)
@@ -45,7 +53,9 @@ export async function claimNextAvailableAgent(
     // false y no puede abrir conversaciones. Una cuenta de caja nace
     // `is_active = false`, pero si alguien la activa, repartirle una escalada
     // de WhatsApp la dejaría asignada a quien no puede leerla (lead invisible).
-    .neq("role", "caja")
+    .neq("role", "caja");
+  if (opciones.area) consulta = consulta.contains("areas", [opciones.area]);
+  const { data: candidates } = await consulta
     .order("last_assigned_at", { ascending: true, nullsFirst: true })
     .limit(5 + excluidos.size);
 

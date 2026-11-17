@@ -5,6 +5,8 @@ import { claimNextAvailableAgent } from "@/lib/ai/claim-agent";
 import { recordHandoff } from "@/lib/ai/handoffs";
 import { businessStatus, DEFAULT_BUSINESS_HOURS, type BusinessHours, type BusinessStatus } from "@/lib/business-hours";
 import { log } from "@/lib/log";
+import type { Area } from "@/lib/seba-v2-config";
+import { categoriaDeReclamo, esMotivoV2, MOTIVOS_DE_VENTA_EN_CURSO, type MotivoV2 } from "@/lib/seba2/motivos";
 
 // ---------------------------------------------------------------------------
 // Lógica compartida de escalamiento: la usa la herramienta que el modelo
@@ -64,12 +66,17 @@ export type EscalationMotivo =
  */
 async function tagAsReclamoIfNeeded(
   supabase: SupabaseClient<Database>,
-  motivo: EscalationMotivo,
+  motivo: EscalationMotivo | MotivoV2,
   categoriaReclamo: ReclamoCategory | undefined,
   contactId: string
 ) {
-  if (motivo !== "queja") return;
-  const label = `Reclamo · ${categoriaReclamo ?? "Atención"}`;
+  // Seba v2 (S6, 17/11/2026): además de la `queja` de v1 (con su categoría),
+  // los motivos de reclamo de v2 etiquetan con la categoría que les fija
+  // `categoriaDeReclamo` (garantía → «Reclamo · Garantía»). Un motivo de v2 sin
+  // categoría (pedido_en_camino…) no etiqueta nada.
+  const categoria = motivo === "queja" ? (categoriaReclamo ?? "Atención") : esMotivoV2(motivo) ? categoriaDeReclamo(motivo) : null;
+  if (!categoria) return;
+  const label = `Reclamo · ${categoria}`;
   const { data: tag } = await supabase.from("tags").select("id").eq("label", label).maybeSingle();
   if (tag) {
     await supabase.from("contact_tags").upsert({ contact_id: contactId, tag_id: tag.id });
@@ -119,9 +126,17 @@ export async function escalateConversation(
   params: {
     conversationId: string;
     contactId: string;
-    motivo: EscalationMotivo;
+    /** Los nueve de v1 o los de Seba v2 (`MotivoV2`); `motivo` no tiene CHECK en la base. */
+    motivo: EscalationMotivo | MotivoV2;
     resumen: string;
     categoriaReclamo?: ReclamoCategory;
+    /**
+     * S6, Seba v2 (17/11/2026): área que atiende el caso. Se guarda en
+     * `conversations.escalation_area` y el reclamo del asesor solo considera a
+     * los de esa área (con un reintento sin área si no hay nadie). Sin `area`
+     * todo es como en v1.
+     */
+    area?: Area;
     /** Default: horario de lunes a viernes 8 am–6 pm (`DEFAULT_BUSINESS_HOURS`). */
     businessHours?: BusinessHours;
     /** Inyectable en tests; en producción es el reloj real. */
@@ -134,9 +149,14 @@ export async function escalateConversation(
     motivo,
     resumen,
     categoriaReclamo,
+    area,
     businessHours = DEFAULT_BUSINESS_HOURS,
     now = new Date(),
   } = params;
+
+  // `intencion_compra` (v1) y los motivos de venta en curso de v2 dejan la venta «en progreso».
+  const dejaVentaEnCurso =
+    motivo === "intencion_compra" || (esMotivoV2(motivo) && MOTIVOS_DE_VENTA_EN_CURSO.includes(motivo));
 
   // Se calcula una sola vez, con el reloj y el horario de ESTE llamado, para
   // que el sufijo del evento y la instrucción que arma `buildEscalateTool`
@@ -181,8 +201,15 @@ export async function escalateConversation(
       log.warn("escalada_repetida_con_ia_silenciada", { conversationId });
     }
 
-    if (motivo === "intencion_compra") {
+    if (dejaVentaEnCurso) {
       await supabase.from("conversations").update({ deal_status: "in_progress" }).eq("id", conversationId);
+    }
+
+    // S6: si el caso ya tenía asesor pero cambió de área (un comprobante sobre
+    // un chat de ventas), solo se corrige el área — UPDATE propio de esa
+    // columna, sin tocar a quién lo tiene ni dejar traspaso.
+    if (area) {
+      await supabase.from("conversations").update({ escalation_area: area }).eq("id", conversationId);
     }
 
     await supabase.from("messages").insert({
@@ -191,7 +218,7 @@ export async function escalateConversation(
       sender_type: "system",
       message_type: "system_event",
       is_internal_note: true,
-      content: `IA reiteró la escalada a ${yaAsignado.displayName}. Motivo: ${motivo}. ${resumen}`,
+      content: `IA reiteró la escalada a ${yaAsignado.displayName}${area ? ` (área ${area})` : ""}. Motivo: ${motivo}. ${resumen}`,
     });
 
     // E (20/9/2026): la queja SÍ se etiqueta también en esta rama — ver el
@@ -205,7 +232,15 @@ export async function escalateConversation(
     return { escalated: true, assignedAgentName: yaAsignado.displayName, alreadyAssigned: true, businessStatus: estadoHorario };
   }
 
-  const candidate = await claimNextAvailableAgent(supabase);
+  // S6: con área se prueba primero con los asesores de esa área; si no hay
+  // nadie disponible se reintenta UNA vez sin área — mejor un asesor de otra
+  // área que un lead sin dueño. La nota deja dicho que hubo ese desvío.
+  let candidate = await claimNextAvailableAgent(supabase, area ? { area } : {});
+  let fueraDeArea = false;
+  if (!candidate && area) {
+    candidate = await claimNextAvailableAgent(supabase);
+    fueraDeArea = candidate !== null;
+  }
 
   // D2 (18/9/2026, "Seba atiende el mostrador", requisito 6 del cliente): el
   // UPDATE deja de tocar `ai_enabled`. Hasta esta corrida se apagaba acá
@@ -223,7 +258,10 @@ export async function escalateConversation(
     assigned_agent_id: candidate?.id ?? null,
     journey_stage: "assigned",
   };
-  if (motivo === "intencion_compra") conversationUpdate.deal_status = "in_progress";
+  if (dejaVentaEnCurso) conversationUpdate.deal_status = "in_progress";
+  // El área queda guardada aunque nadie la tome todavía: el supervisor ve a qué
+  // equipo le corresponde el lead sin dueño.
+  if (area) conversationUpdate.escalation_area = area;
 
   await supabase.from("conversations").update(conversationUpdate).eq("id", conversationId);
 
@@ -234,8 +272,10 @@ export async function escalateConversation(
     message_type: "system_event",
     is_internal_note: true,
     content: candidate
-      ? `IA escaló a ${candidate.displayName}. Motivo: ${motivo}. ${resumen}`
-      : `IA escaló sin asesores disponibles: nadie tiene asignada esta conversación todavía. Motivo: ${motivo}. ${resumen} (${estadoHorario.open ? "en horario" : "fuera de horario"})`,
+      ? `IA escaló a ${candidate.displayName}${area ? ` (área ${area})` : ""}. Motivo: ${motivo}. ${resumen}${
+          fueraDeArea ? ` (sin asesores disponibles en el área de ${area}; se asignó a ${candidate.displayName})` : ""
+        }`
+      : `IA escaló sin asesores disponibles: nadie tiene asignada esta conversación todavía${area ? ` (área ${area})` : ""}. Motivo: ${motivo}. ${resumen} (${estadoHorario.open ? "en horario" : "fuera de horario"})`,
   });
 
   // T0.3: el escalamiento es una salida silenciosa más de la IA (la

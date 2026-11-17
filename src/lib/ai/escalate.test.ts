@@ -1,8 +1,10 @@
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const claimNextAvailableAgentMock = vi.fn();
+// S6 (17/11/2026): el mock deja pasar los argumentos para poder afirmar qué
+// `area`/`excluir` recibió el reclamo; los tests viejos no los miran.
 vi.mock("@/lib/ai/claim-agent", () => ({
-  claimNextAvailableAgent: () => claimNextAvailableAgentMock(),
+  claimNextAvailableAgent: (...args: unknown[]) => claimNextAvailableAgentMock(...args),
 }));
 
 import { escalateConversation } from "@/lib/ai/escalate";
@@ -636,5 +638,173 @@ describe("escalateConversation — horario de la tienda al escalar sin asesores"
 
     expect(estado.notas[0]).toMatch(/\(en horario\)|\(fuera de horario\)/);
     expect(result.businessStatus).toBeDefined();
+  });
+});
+
+/**
+ * S6, Seba v2 (17/11/2026): `area` y los motivos nuevos. Sin `area` y con un
+ * motivo de v1 todo se comporta como antes (los describe de arriba lo fijan).
+ */
+describe("escalateConversation — áreas y motivos de Seba v2", () => {
+  beforeEach(() => {
+    claimNextAvailableAgentMock.mockReset();
+  });
+
+  it("con area, el UPDATE que asigna lleva escalation_area y el reclamo se pide con esa area", async () => {
+    claimNextAvailableAgentMock.mockResolvedValue({ id: "agent-1", displayName: "María" });
+    const { client, estado } = createFakeSupabase();
+
+    // @ts-expect-error -- fake mínimo
+    await escalateConversation(client, { ...PARAMS, motivo: "comprobante_pago" as const, area: "pagos" as const });
+
+    expect(estado.conversationUpdates).toHaveLength(1);
+    expect(estado.conversationUpdates[0]).toMatchObject({
+      assigned_agent_id: "agent-1",
+      journey_stage: "assigned",
+      escalation_area: "pagos",
+    });
+    expect(claimNextAvailableAgentMock).toHaveBeenCalledTimes(1);
+    expect(claimNextAvailableAgentMock.mock.calls[0][1]).toMatchObject({ area: "pagos" });
+  });
+
+  it("sin area, el UPDATE NO trae escalation_area y el reclamo no filtra por área", async () => {
+    claimNextAvailableAgentMock.mockResolvedValue({ id: "agent-1", displayName: "María" });
+    const { client, estado } = createFakeSupabase();
+
+    // @ts-expect-error -- fake mínimo
+    await escalateConversation(client, PARAMS);
+
+    expect(estado.conversationUpdates[0]).not.toHaveProperty("escalation_area");
+    expect(claimNextAvailableAgentMock.mock.calls[0][1]?.area).toBeUndefined();
+  });
+
+  it("la nota nombra el área cuando la hay", async () => {
+    claimNextAvailableAgentMock.mockResolvedValue({ id: "agent-1", displayName: "María" });
+    const { client, estado } = createFakeSupabase();
+
+    // @ts-expect-error -- fake mínimo
+    await escalateConversation(client, { ...PARAMS, motivo: "garantia" as const, area: "reclamos" as const });
+
+    expect(estado.notas[0]).toContain("IA escaló a María (área reclamos). Motivo: garantia.");
+    expect(estado.notas[0]).toContain(PARAMS.resumen);
+  });
+
+  it("sin candidatos del área reintenta UNA vez sin área, asigna y la nota lo dice", async () => {
+    claimNextAvailableAgentMock
+      .mockResolvedValueOnce(null)
+      .mockResolvedValueOnce({ id: "agent-2", displayName: "Pedro" });
+    const { client, estado } = createFakeSupabase();
+
+    // @ts-expect-error -- fake mínimo
+    const result = await escalateConversation(client, { ...PARAMS, motivo: "comprobante_pago" as const, area: "pagos" as const });
+
+    expect(claimNextAvailableAgentMock).toHaveBeenCalledTimes(2);
+    expect(claimNextAvailableAgentMock.mock.calls[0][1]).toMatchObject({ area: "pagos" });
+    expect(claimNextAvailableAgentMock.mock.calls[1][1]?.area).toBeUndefined();
+    expect(result).toMatchObject({ escalated: true, assignedAgentName: "Pedro" });
+    expect(estado.conversationUpdates[0]).toMatchObject({ assigned_agent_id: "agent-2", escalation_area: "pagos" });
+    expect(estado.notas[0]).toContain("sin asesores disponibles en el área de pagos; se asignó a Pedro");
+    expect(estado.handoffs[0]).toMatchObject({ p_to_kind: "human", p_to_id: "agent-2", p_reason: "escalada" });
+  });
+
+  it("si tampoco hay nadie sin área, queda sin asignar pero con el área guardada", async () => {
+    claimNextAvailableAgentMock.mockResolvedValue(null);
+    const { client, estado } = createFakeSupabase();
+
+    // @ts-expect-error -- fake mínimo
+    const result = await escalateConversation(client, { ...PARAMS, motivo: "garantia" as const, area: "reclamos" as const });
+
+    expect(claimNextAvailableAgentMock).toHaveBeenCalledTimes(2);
+    expect(result).toMatchObject({ escalated: true, assignedAgentName: null, unassigned: true });
+    expect(estado.conversationUpdates[0]).toMatchObject({ assigned_agent_id: null, escalation_area: "reclamos" });
+    expect(estado.handoffs[0]).toMatchObject({ p_to_kind: "unassigned", p_reason: "escalada_sin_asesor" });
+  });
+
+  it.each(["listo_para_comprar", "comprobante_pago"] as const)("motivo '%s' deja deal_status in_progress", async (motivo) => {
+    claimNextAvailableAgentMock.mockResolvedValue({ id: "agent-1", displayName: "María" });
+    const { client, estado } = createFakeSupabase();
+
+    // @ts-expect-error -- fake mínimo
+    await escalateConversation(client, { ...PARAMS, motivo });
+
+    expect(estado.conversationUpdates[0]).toMatchObject({ deal_status: "in_progress" });
+  });
+
+  it("un motivo que no es de venta en curso NO toca deal_status", async () => {
+    claimNextAvailableAgentMock.mockResolvedValue({ id: "agent-1", displayName: "María" });
+    const { client, estado } = createFakeSupabase();
+
+    // @ts-expect-error -- fake mínimo
+    await escalateConversation(client, { ...PARAMS, motivo: "pedido_en_camino" as const, area: "envios" as const });
+
+    expect(estado.conversationUpdates[0]).not.toHaveProperty("deal_status");
+  });
+
+  it("garantia etiqueta «Reclamo · Garantía»", async () => {
+    claimNextAvailableAgentMock.mockResolvedValue({ id: "agent-1", displayName: "María" });
+    const { client, estado } = createFakeSupabase();
+    estado.tagsByLabel["Reclamo · Garantía"] = { id: "tag-garantia" };
+
+    // @ts-expect-error -- fake mínimo
+    await escalateConversation(client, { ...PARAMS, motivo: "garantia" as const, area: "reclamos" as const });
+
+    expect(estado.tagUpserts).toEqual([{ contact_id: PARAMS.contactId, tag_id: "tag-garantia" }]);
+  });
+
+  it("un motivo de v2 sin categoría de reclamo no etiqueta aunque la etiqueta exista", async () => {
+    claimNextAvailableAgentMock.mockResolvedValue({ id: "agent-1", displayName: "María" });
+    const { client, estado } = createFakeSupabase();
+    estado.tagsByLabel["Reclamo · Atención"] = { id: "tag-atencion" };
+
+    // @ts-expect-error -- fake mínimo
+    await escalateConversation(client, { ...PARAMS, motivo: "pedido_en_camino" as const, area: "envios" as const });
+
+    expect(estado.tagUpserts).toHaveLength(0);
+  });
+
+  describe("el chat ya tenía asesor", () => {
+    const conAsesor = (estado: Estado) => {
+      estado.currentConversation = {
+        assigned_agent_id: "agent-9",
+        ai_enabled: true,
+        assigned_agent: { id: "agent-9", display_name: "Pedro" },
+      };
+    };
+
+    it("con area actualiza SOLO escalation_area, deja la nota de reiteración y ningún traspaso", async () => {
+      const { client, estado } = createFakeSupabase();
+      conAsesor(estado);
+
+      // @ts-expect-error -- fake mínimo
+      await escalateConversation(client, { ...PARAMS, motivo: "problema_de_pago" as const, area: "pagos" as const });
+
+      expect(claimNextAvailableAgentMock).not.toHaveBeenCalled();
+      expect(estado.conversationUpdates).toEqual([{ escalation_area: "pagos" }]);
+      expect(estado.notas).toHaveLength(1);
+      expect(estado.notas[0]).toContain("IA reiteró la escalada a Pedro");
+      expect(estado.notas[0]).toContain("área pagos");
+      expect(estado.handoffs).toHaveLength(0);
+    });
+
+    it("con area y venta en curso hace el UPDATE de deal_status y otro aparte para el área", async () => {
+      const { client, estado } = createFakeSupabase();
+      conAsesor(estado);
+
+      // @ts-expect-error -- fake mínimo
+      await escalateConversation(client, { ...PARAMS, motivo: "comprobante_pago" as const, area: "pagos" as const });
+
+      expect(estado.conversationUpdates).toEqual([{ deal_status: "in_progress" }, { escalation_area: "pagos" }]);
+    });
+
+    it("garantia, ya asignado: también etiqueta el reclamo", async () => {
+      const { client, estado } = createFakeSupabase();
+      conAsesor(estado);
+      estado.tagsByLabel["Reclamo · Garantía"] = { id: "tag-garantia" };
+
+      // @ts-expect-error -- fake mínimo
+      await escalateConversation(client, { ...PARAMS, motivo: "garantia" as const, area: "reclamos" as const });
+
+      expect(estado.tagUpserts).toHaveLength(1);
+    });
   });
 });
