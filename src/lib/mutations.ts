@@ -71,6 +71,14 @@ import {
   type SebaV2Mode,
   type WelcomeDraft,
 } from "@/lib/seba-v2-config";
+// Entrega 3 de Seba v2 (17/11/2026): sombra y copiloto.
+import {
+  DESTINOS,
+  ERROR_TIPOS,
+  validateShadowReview,
+  type ShadowVerdict,
+  type SuggestionState,
+} from "@/lib/shadow";
 
 async function insertSystemEvent(
   supabase: SupabaseClient,
@@ -2490,6 +2498,93 @@ export async function updateShadowLimits(
     .select("id");
   if (error) throw error;
   assertRowsAffected(data);
+}
+
+// ---------------------------------------------------------------------------
+// Sombra y copiloto de Seba v2 (entrega 3, 17/11/2026). Corren en el navegador
+// con la sesión del agente: la RLS decide quién puede.
+// ---------------------------------------------------------------------------
+
+/**
+ * Guarda (o corrige) la revisión de un supervisor sobre un borrador de sombra:
+ * una por borrador (`draft_id` es la clave), `reviewed_by` = quien guarda. Solo
+ * supervisor/admin en RLS; un UPDATE ignorado afecta 0 filas y lanza el mensaje
+ * de siempre. La validación se repite acá (segunda barrera): el panel ya la
+ * corrió, pero esta función se puede llamar desde cualquier otro lado.
+ */
+export async function saveShadowReview(
+  supabase: SupabaseClient,
+  agent: Agent,
+  draftId: string,
+  review: { veredicto: ShadowVerdict; errorTipo: string | null; correccion: string | null; destino: string | null }
+) {
+  const errors = validateShadowReview({
+    veredicto: review.veredicto,
+    errorTipo: review.errorTipo ?? "",
+    correccion: review.correccion ?? "",
+    destino: review.destino ?? "",
+  });
+  const first = errors.veredicto ?? errors.errorTipo ?? errors.correccion;
+  if (first) throw new Error(first);
+  if (review.errorTipo && !ERROR_TIPOS.some((e) => e.value === review.errorTipo)) {
+    throw new Error("El tipo de error no es uno de los conocidos.");
+  }
+  if (review.destino && !DESTINOS.some((d) => d.value === review.destino)) {
+    throw new Error("El destino de la corrección no es uno de los conocidos.");
+  }
+
+  const correccion = review.correccion?.trim() ?? "";
+  const { data, error } = await supabase
+    .from("shadow_reviews")
+    .upsert(
+      {
+        draft_id: draftId,
+        veredicto: review.veredicto,
+        error_tipo: review.errorTipo || null,
+        correccion: correccion || null,
+        destino: review.destino || null,
+        reviewed_by: agent.id,
+        reviewed_at: new Date().toISOString(),
+      },
+      { onConflict: "draft_id" }
+    )
+    .select("draft_id");
+  if (error) throw error;
+  assertRowsAffected(data);
+}
+
+/**
+ * Resuelve la sugerencia de copiloto de un borrador. Devuelve `true` si ESTA
+ * llamada la resolvió y `false` si ya no estaba pendiente (otro asesor llegó
+ * antes: es la carrera normal entre dos asesores mirando el mismo chat, no un
+ * error, así que NO lanza). La condición `sugerencia_estado = 'pendiente'` es
+ * el candado: sin ella, el segundo asesor pisaría el estado del primero y
+ * mandaría la misma sugerencia dos veces. El UPDATE toca solo las tres
+ * columnas de la sugerencia: el grant de columna de la migración no le deja
+ * más a un asesor.
+ */
+export async function resolveSuggestion(
+  supabase: SupabaseClient,
+  agent: Agent,
+  draftId: string,
+  estado: Exclude<SuggestionState, "pendiente">
+): Promise<boolean> {
+  if (!["enviada", "editada", "descartada", "vencida"].includes(estado)) {
+    throw new Error("Estado de sugerencia desconocido.");
+  }
+
+  const { data, error } = await supabase
+    .from("agent_shadow_drafts")
+    .update({
+      sugerencia_estado: estado,
+      sugerencia_resuelta_por: agent.id,
+      sugerencia_resuelta_at: new Date().toISOString(),
+    })
+    .eq("id", draftId)
+    .eq("sugerencia_estado", "pendiente")
+    .select("id");
+  if (error) throw error;
+  return Array.isArray(data) && data.length > 0;
 }
 
 /** Texto que pide los datos de Cashea y sus dos montos (mínimo de compra y desde cuánto se ofrecen seis cuotas). */

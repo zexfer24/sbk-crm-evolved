@@ -17,12 +17,12 @@ import "@/components/agent-control/seba-v2.css";
 
 // ---------------------------------------------------------------------------
 // «Seba v2» (T5, Entrega 2 de Seba v2: "Los datos del negocio", 16/11/2026).
-// Selector del modo de Seba v2 y límites de la sombra. IMPORTANTE: Seba v2
-// TODAVÍA NO TIENE EFECTO —llega en la próxima entrega—; hoy el valor solo
-// queda guardado, y el panel lo dice con un aviso siempre visible para que
-// nadie crea que encendió algo. Los dos modos que le escriben al cliente sin un
-// asesor en medio (`modeNeedsConfirmation`) piden confirmación antes de
-// guardarse. Un supervisor edita; un asesor lo ve en solo lectura.
+// Selector del modo de Seba v2 y límites de la sombra. Hasta la entrega 2 el modo
+// no tenía efecto y un aviso fijo lo decía; desde la entrega 3 (17/11/2026:
+// sombra y copiloto) SÍ lo tiene y el aviso se quitó: la línea explicativa de
+// cada modo (`SEBA_V2_MODE_DESCRIPTIONS`) dice qué hace. Los dos modos que le
+// escriben al cliente sin un asesor en medio (`modeNeedsConfirmation`) piden
+// confirmación antes de guardarse. Un supervisor edita; un asesor lo ve en solo lectura.
 //
 // El panel solo recibe props y callbacks; los callbacks LANZAN si el guardado
 // falla (RLS, red): acá se atrapan y se muestran con `toast`.
@@ -170,11 +170,6 @@ export function SebaV2Panel({ config, canEdit, onModeChange, onSaveLimits }: Seb
       </div>
 
       <div className="ac-sv-body">
-        <p role="note" className="ac-sv-aviso">
-          Seba v2 todavía no está instalada. El modo queda guardado y empieza a regir cuando llegue su entrega; hoy no
-          cambia nada en los chats.
-        </p>
-
         {config === null ? (
           <p className="ac-sv-unavailable">No disponible: falta aplicar la migración de Seba v2.</p>
         ) : (

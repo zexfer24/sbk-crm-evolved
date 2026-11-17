@@ -14,7 +14,38 @@ vi.mock("@/lib/mutations", () => ({
   setAiEnabled: vi.fn(),
   unassign: vi.fn(),
 }));
-vi.mock("@/components/chat/composer", () => ({ Composer: () => null }));
+// El composer captura sus props: la sugerencia de copiloto se entera de que el asesor envió por su `onSendText`.
+const composerProps = vi.fn();
+vi.mock("@/components/chat/composer", () => ({
+  Composer: (props: unknown) => {
+    composerProps(props);
+    return null;
+  },
+}));
+
+// Entrega 3 de Seba v2 (17/11/2026): el hook y la tarjeta de la sugerencia tienen sus propios tests;
+// acá solo se prueba el cableado de ChatPanel con ellos.
+const suggestionApi = {
+  draft: null as null | { id: string },
+  editing: false,
+  hide: vi.fn(),
+  beginEdit: vi.fn(),
+  notifyAdvisorSent: vi.fn(),
+};
+const useSebaSuggestionMock = vi.fn();
+vi.mock("@/components/chat/use-seba-suggestion", () => ({
+  useSebaSuggestion: (args: unknown) => {
+    useSebaSuggestionMock(args);
+    return suggestionApi;
+  },
+}));
+const sebaSuggestionProps = vi.fn();
+vi.mock("@/components/chat/seba-suggestion", () => ({
+  SebaSuggestion: (props: unknown) => {
+    sebaSuggestionProps(props);
+    return <div data-testid="seba-suggestion" />;
+  },
+}));
 
 // El modal en sí ya tiene su propio archivo de tests (teach-seba-modal.test.tsx);
 // acá solo se prueba que ChatPanel lo abre y le pasa el mensaje correcto.
@@ -58,7 +89,13 @@ function renderPanel(
   extra: Partial<
     Pick<
       Parameters<typeof ChatPanel>[0],
-      "outboxItems" | "onRetryOutbox" | "onDiscardOutbox" | "conversation" | "onOpenConversationByPhone"
+      | "outboxItems"
+      | "onRetryOutbox"
+      | "onDiscardOutbox"
+      | "conversation"
+      | "onOpenConversationByPhone"
+      | "onSendText"
+      | "onInsertText"
     >
   > = {}
 ) {
@@ -79,6 +116,11 @@ function renderPanel(
 }
 
 beforeEach(() => {
+  suggestionApi.draft = null;
+  suggestionApi.editing = false;
+  for (const fn of [composerProps, useSebaSuggestionMock, sebaSuggestionProps, suggestionApi.hide, suggestionApi.beginEdit, suggestionApi.notifyAdvisorSent]) {
+    fn.mockClear();
+  }
   dangerToast.mockClear();
   teachSebaModalProps.mockClear();
   // jsdom no trae scrollIntoView, y el panel lo llama al montar para dejar
@@ -385,5 +427,88 @@ describe("ChatPanel — le pasa a AiStatusBanner el waitingForHuman real, según
 
     expect(screen.getByText("La IA sigue respondiendo automáticamente")).toBeInTheDocument();
     expect(screen.queryByText(/solo contesta con un escenario armado/i)).not.toBeInTheDocument();
+  });
+});
+
+/**
+ * Entrega 3 de Seba v2 (17/11/2026): la sugerencia de copiloto vive sobre el
+ * composer. ChatPanel solo la cablea: le da al hook la fecha del último mensaje
+ * REAL de un asesor, manda sus textos por la misma cola de envío y le avisa
+ * cuando el asesor envía desde el cuadro.
+ */
+describe("ChatPanel — sugerencia de copiloto", () => {
+  const borrador = { id: "d1" };
+
+  it("sin sugerencia no monta la tarjeta", () => {
+    renderPanel([mensaje({})]);
+
+    expect(screen.queryByTestId("seba-suggestion")).not.toBeInTheDocument();
+  });
+
+  it("con sugerencia monta la tarjeta, con el asesor y el estado de edición", () => {
+    suggestionApi.draft = borrador;
+    suggestionApi.editing = true;
+    renderPanel([mensaje({})]);
+
+    expect(screen.getByTestId("seba-suggestion")).toBeInTheDocument();
+    expect(sebaSuggestionProps).toHaveBeenCalledWith(
+      expect.objectContaining({ draft: borrador, agent: AGENTE, editing: true, onResolved: suggestionApi.hide })
+    );
+  });
+
+  it("al hook le llega la conversación y la fecha del último mensaje REAL de un asesor (ni notas ni IA)", () => {
+    renderPanel([
+      mensaje({ id: "m1", senderType: "agent", direction: "outbound", createdAt: "2026-11-17T10:00:00.000Z" }),
+      mensaje({ id: "m2", senderType: "agent", direction: "outbound", createdAt: "2026-11-17T10:05:00.000Z" }),
+      mensaje({ id: "m3", senderType: "agent", direction: "outbound", isInternalNote: true, createdAt: "2026-11-17T10:30:00.000Z" }),
+      mensaje({ id: "m4", senderType: "ai", direction: "outbound", createdAt: "2026-11-17T10:40:00.000Z" }),
+      mensaje({ id: "m5", senderType: "customer", direction: "inbound", createdAt: "2026-11-17T10:50:00.000Z" }),
+    ]);
+
+    expect(useSebaSuggestionMock).toHaveBeenLastCalledWith({
+      conversationId: "conv-1",
+      agent: AGENTE,
+      lastAgentMessageAt: "2026-11-17T10:05:00.000Z",
+    });
+  });
+
+  it("sin mensajes de un asesor la fecha es null", () => {
+    renderPanel([mensaje({})]);
+
+    expect(useSebaSuggestionMock).toHaveBeenLastCalledWith(expect.objectContaining({ lastAgentMessageAt: null }));
+  });
+
+  it("«Enviar» manda cada texto por la cola de envío del chat, en orden y sin cita", () => {
+    suggestionApi.draft = borrador;
+    const onSendText = vi.fn();
+    renderPanel([mensaje({})], { onSendText });
+
+    act(() => sebaSuggestionProps.mock.calls.at(-1)?.[0].onSend(["uno", "dos"]));
+
+    expect(onSendText.mock.calls).toEqual([
+      ["uno", null],
+      ["dos", null],
+    ]);
+  });
+
+  it("«Editar» deja la tarjeta en edición y lleva el texto al cuadro de mensaje", () => {
+    suggestionApi.draft = borrador;
+    const onInsertText = vi.fn();
+    renderPanel([mensaje({})], { onInsertText });
+
+    act(() => sebaSuggestionProps.mock.calls.at(-1)?.[0].onEdit("texto sugerido"));
+
+    expect(suggestionApi.beginEdit).toHaveBeenCalledTimes(1);
+    expect(onInsertText).toHaveBeenCalledWith("texto sugerido");
+  });
+
+  it("cuando el asesor envía desde el composer, el envío sale igual y la sugerencia se entera", () => {
+    const onSendText = vi.fn();
+    renderPanel([mensaje({})], { onSendText });
+
+    act(() => composerProps.mock.calls.at(-1)?.[0].onSendText("mi texto", "m-9"));
+
+    expect(onSendText).toHaveBeenCalledWith("mi texto", "m-9");
+    expect(suggestionApi.notifyAdvisorSent).toHaveBeenCalledTimes(1);
   });
 });

@@ -105,6 +105,13 @@ vi.mock("@/components/sliding-pills", () => ({
 vi.mock("@/components/agent-control/catalog-searches-panel", () => ({
   CatalogSearchesPanel: (props: { refreshToken: number }) => <div data-testid="panel-busquedas" data-token={props.refreshToken} />,
 }));
+// Entrega 3 de Seba v2 (17/11/2026): el panel «Sombra» tiene su propio test; acá solo interesa
+// quién ve la pestaña y qué le pasa la vista.
+vi.mock("@/components/agent-control/shadow-panel", () => ({
+  ShadowPanel: (props: { dailyCapUsd: number | null; currentAgent: { id: string } }) => (
+    <div data-testid="panel-sombra" data-tope={String(props.dailyCapUsd)} data-agente={props.currentAgent.id} />
+  ),
+}));
 vi.mock("@/components/app-rail", () => ({ AppRail: () => null, AppTopNav: () => null }));
 // T6, "Ronda del cliente" (30/9/2026): el panel «Equipo» tiene su propio
 // test; acá solo interesa que la vista lo monte para un admin y le pase los agentes.
@@ -1041,5 +1048,55 @@ describe("AgentControlView — áreas por asesor (Entrega 2, 16/11/2026)", () =>
     expect(setAgentAreasMock).toHaveBeenNthCalledWith(1, expect.anything(), "agent-1", ["ventas", "envios", "reclamos"]);
     expect(setAgentAreasMock).toHaveBeenNthCalledWith(2, expect.anything(), "agent-1", ["envios", "reclamos"]);
     expect(stubs.roster?.areasByAgent?.["agent-1"]).toEqual(["envios", "reclamos"]);
+  });
+});
+
+/**
+ * Entrega 3 de Seba v2 (17/11/2026): la pestaña «Sombra» es solo de supervisor y
+ * admin. Los borradores los lee únicamente quien pasa la RLS de
+ * `agent_shadow_drafts`; a un asesor ni se le ofrece la pestaña.
+ */
+describe("AgentControlView — pestaña «Sombra» (entrega 3, 17/11/2026)", () => {
+  beforeEach(() => {
+    pills.items = [];
+  });
+
+  it("un asesor NO ve la pestaña", async () => {
+    montar(encendida, [], {}, { ...currentAgent, role: "agent" });
+    await waitFor(() => expect(pills.items.length).toBeGreaterThan(0));
+
+    expect(pills.items.some((item) => item.value === "sombra")).toBe(false);
+    expect(screen.queryByTestId("panel-sombra")).not.toBeInTheDocument();
+  });
+
+  it.each(["supervisor", "admin"] as const)("un %s la ve, justo después de «Seba v2»", async (role) => {
+    montar(encendida, [], {}, { ...currentAgent, role });
+    await waitFor(() => expect(pills.items.length).toBeGreaterThan(0));
+
+    const values = pills.items.map((item) => item.value);
+    expect(values.indexOf("sombra")).toBe(values.indexOf("seba") + 1);
+    expect(pills.items.find((item) => item.value === "sombra")?.label).toBe("Sombra");
+  });
+
+  it("al elegirla monta el panel con el agente y el tope diario de la configuración, y el título cambia", async () => {
+    montar(encendida);
+    await waitFor(() => expect(pills.items.some((item) => item.value === "sombra")).toBe(true));
+    expect(screen.queryByTestId("panel-sombra")).not.toBeInTheDocument();
+
+    act(() => pills.onChange("sombra"));
+
+    const panel = await screen.findByTestId("panel-sombra");
+    expect(panel).toHaveAttribute("data-tope", "2");
+    expect(panel).toHaveAttribute("data-agente", currentAgent.id);
+    expect(screen.getByRole("heading", { level: 1 })).toHaveTextContent("Sombra de Seba v2");
+  });
+
+  it("sin la configuración de Seba v2 (migración sin aplicar) el tope llega null, no 0", async () => {
+    montar(encendida, [], {}, currentAgent, { initialSebaV2Config: null });
+    await waitFor(() => expect(pills.items.some((item) => item.value === "sombra")).toBe(true));
+
+    act(() => pills.onChange("sombra"));
+
+    expect(await screen.findByTestId("panel-sombra")).toHaveAttribute("data-tope", "null");
   });
 });

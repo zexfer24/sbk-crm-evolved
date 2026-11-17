@@ -1695,6 +1695,16 @@ export function CrmShell({
               onRetryOutbox={retryOutboxItem}
               onDiscardOutbox={discardOutboxItem}
               onOpenConversationByPhone={handleOpenConversationByPhone}
+              // «Editar» de la sugerencia de copiloto (entrega 3 de Seba v2,
+              // 17/11/2026): reutiliza la señal del carrito, con su `seq` y su
+              // filtro por conversación.
+              onInsertText={(text) =>
+                setComposerInsert((prev) => ({
+                  text,
+                  seq: (prev?.seq ?? 0) + 1,
+                  conversationId: selectedConversation.id,
+                }))
+              }
             />
           ) : selectedId ? (
             // El detalle del hilo está en camino. Sin este estado intermedio,

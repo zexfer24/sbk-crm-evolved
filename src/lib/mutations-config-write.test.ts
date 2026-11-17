@@ -16,6 +16,8 @@ import {
   deletePaymentMethod,
   guardarMetaVenta,
   markSuggestionReviewed,
+  resolveSuggestion,
+  saveShadowReview,
   setAgentActive,
   setAgentAreas,
   setAgentToolEnabled,
@@ -239,6 +241,8 @@ const CASES: {
   // Plan "Paneles" (13/11/2026): la meta diaria de un canal. Un `agent` no puede ni insertar ni
   // actualizar `metas_venta` (RLS de supervisor/admin): el upsert que no devuelve fila no es un guardado.
   { name: "guardarMetaVenta", table: "metas_venta", op: "upsert", denied: /supervisor o administrador/, run: (c) => guardarMetaVenta(c, "online", 2600, "2026-11-13") },
+  // Entrega 3 de Seba v2 (17/11/2026): la revisión de un borrador de sombra es solo de supervisor/admin.
+  { name: "saveShadowReview", table: "shadow_reviews", op: "upsert", denied: /supervisor o administrador/, run: (c) => saveShadowReview(c, SUPERVISOR, "d-1", { veredicto: "no", errorTipo: "precio", correccion: "Era $12", destino: "leccion" }) },
   { name: "deleteSticker", table: "stickers", op: "delete", denied: /subió el sticker o un supervisor/, run: (c) => deleteSticker(c, STICKER) },
   // Fuera de la lista original del plan, mismo defecto: `notes_update`/`notes_delete` exigen ser el autor o supervisor.
   { name: "updateNote", table: "notes", op: "update", denied: /autor de la nota o un supervisor/, run: (c) => updateNote(c, "n-1", "texto") },
@@ -666,6 +670,95 @@ describe("Seba v2 (16/11/2026)", () => {
         "Los datos de Cashea no son válidos."
       );
 
+      expect(writes).toHaveLength(0);
+    });
+  });
+});
+
+describe("Sombra y copiloto de Seba v2 (17/11/2026)", () => {
+  const ASESOR: Agent = { ...SUPERVISOR, id: "ase-1", role: "agent" };
+
+  describe("saveShadowReview", () => {
+    it("hace upsert por draft_id con el agente actual como revisor y pide la fila afectada", async () => {
+      const { client, writes } = fakeSupabase({ rows: [{ draft_id: "d-1" }] });
+
+      await saveShadowReview(client, SUPERVISOR, "d-1", {
+        veredicto: "cambio_menor",
+        errorTipo: "tono",
+        correccion: "  Más cercano  ",
+        destino: "prompt",
+      });
+
+      const write = writes.find((w) => w.table === "shadow_reviews");
+      expect(write?.op).toBe("upsert");
+      expect(write?.selected).toBeTruthy();
+      expect(write?.payload).toMatchObject({
+        draft_id: "d-1",
+        veredicto: "cambio_menor",
+        error_tipo: "tono",
+        correccion: "Más cercano",
+        destino: "prompt",
+        reviewed_by: "sup-1",
+      });
+    });
+
+    it("«igual» guarda sin tipo de error ni corrección (null, no texto vacío)", async () => {
+      const { client, writes } = fakeSupabase({ rows: [{ draft_id: "d-1" }] });
+
+      await saveShadowReview(client, SUPERVISOR, "d-1", { veredicto: "igual", errorTipo: null, correccion: null, destino: null });
+
+      expect(writes[0].payload).toMatchObject({ veredicto: "igual", error_tipo: null, correccion: null, destino: null });
+    });
+
+    it("segunda barrera: «no» sin corrección lanza y NO escribe", async () => {
+      const { client, writes } = fakeSupabase({ rows: [{ draft_id: "d-1" }] });
+
+      await expect(
+        saveShadowReview(client, SUPERVISOR, "d-1", { veredicto: "no", errorTipo: "precio", correccion: "  ", destino: null })
+      ).rejects.toThrow("Escribe cómo debió responder Seba.");
+      await expect(
+        saveShadowReview(client, SUPERVISOR, "d-1", { veredicto: "no", errorTipo: "inventado", correccion: "x", destino: null })
+      ).rejects.toThrow(/tipo de error/);
+      expect(writes).toHaveLength(0);
+    });
+  });
+
+  describe("resolveSuggestion", () => {
+    it("actualiza SOLO las tres columnas de la sugerencia y SOLO si sigue pendiente", async () => {
+      const { client, writes } = fakeSupabase({ rows: [{ id: "d-1" }] });
+
+      const resuelta = await resolveSuggestion(client, ASESOR, "d-1", "enviada");
+
+      expect(resuelta).toBe(true);
+      const write = writes.find((w) => w.table === "agent_shadow_drafts");
+      expect(write?.op).toBe("update");
+      expect(write?.selected).toBeTruthy();
+      expect(Object.keys(write?.payload as object).sort()).toEqual([
+        "sugerencia_estado",
+        "sugerencia_resuelta_at",
+        "sugerencia_resuelta_por",
+      ]);
+      expect(write?.payload).toMatchObject({ sugerencia_estado: "enviada", sugerencia_resuelta_por: "ase-1" });
+      expect(write?.filters).toContainEqual(["id", "d-1"]);
+      expect(write?.filters).toContainEqual(["sugerencia_estado", "pendiente"]);
+    });
+
+    it("con 0 filas devuelve false (otro asesor ya la resolvió) y NO lanza", async () => {
+      const { client } = fakeSupabase({ rows: [] });
+
+      await expect(resolveSuggestion(client, ASESOR, "d-1", "descartada")).resolves.toBe(false);
+    });
+
+    it("un error real de la base sí lanza", async () => {
+      const { client } = fakeSupabase({ rows: null, error: new Error("connection reset") });
+
+      await expect(resolveSuggestion(client, ASESOR, "d-1", "vencida")).rejects.toThrow(/connection reset/);
+    });
+
+    it("un estado que no es de resolución (pendiente) no escribe", async () => {
+      const { client, writes } = fakeSupabase({ rows: [{ id: "d-1" }] });
+
+      await expect(resolveSuggestion(client, ASESOR, "d-1", "pendiente" as never)).rejects.toThrow(/Estado de sugerencia/);
       expect(writes).toHaveLength(0);
     });
   });

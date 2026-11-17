@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Button, Modal, toast } from "@heroui/react";
-import { BookOpen, Bot, GraduationCap, KeyRound, Search, ShieldAlert, Sparkles, Users, Wrench, Zap } from "lucide-react";
+import { BookOpen, Bot, Eye, GraduationCap, KeyRound, Search, ShieldAlert, Sparkles, Users, Wrench, Zap } from "lucide-react";
 import type { BacklogCounts } from "@/lib/data";
 import { BUSINESS_NAME } from "@/lib/brand";
 import type {
@@ -94,6 +94,7 @@ import { AgentsRosterPanel } from "@/components/agent-control/agent-roster-panel
 import { TeamPanel } from "@/components/agent-control/team-panel";
 import { AgentToolsPanel } from "@/components/agent-control/agent-tools-panel";
 import { SebaV2Panel } from "@/components/agent-control/seba-v2-panel";
+import { ShadowPanel } from "@/components/agent-control/shadow-panel";
 import { WelcomePanel } from "@/components/agent-control/welcome-panel";
 import { PaymentMethodsPanel } from "@/components/agent-control/payment-methods-panel";
 import { KnowledgePanel } from "@/components/agent-control/knowledge-panel";
@@ -170,6 +171,7 @@ interface AgentControlViewProps {
 type AgentControlTab =
   | "ia"
   | "seba"
+  | "sombra"
   | "respuestas"
   | "biblioteca"
   | "lecciones"
@@ -240,6 +242,7 @@ const PHASE_LABEL: Record<string, string> = {
 const TAB_TITLE: Record<AgentControlTab, string> = {
   ia: "Control del agente de IA",
   seba: "Seba v2",
+  sombra: "Sombra de Seba v2",
   respuestas: "Respuestas predeterminadas",
   biblioteca: "Biblioteca de conocimiento",
   lecciones: "Lecciones de Seba",
@@ -251,7 +254,9 @@ const TAB_TITLE: Record<AgentControlTab, string> = {
 
 const TAB_SUBTITLE: Record<AgentControlTab, string> = {
   ia: "Interruptor general, qué está haciendo la IA ahora mismo, y un simulador para probarla sin necesidad de WhatsApp real.",
-  seba: "El modo de la Seba nueva, la bienvenida que recibe cada cliente y las formas de pago que entrega. Todavía no atiende chats: llega en la próxima entrega.",
+  seba: "El modo de la Seba nueva, la bienvenida que recibe cada cliente y las formas de pago que entrega.",
+  sombra:
+    "Lo que Seba v2 habría respondido, al lado de lo que contestó el asesor. Revisa cada borrador y deja dicho qué estuvo mal.",
   respuestas:
     "Los casos que la IA ya sabe resolver con un texto tuyo, y los mensajes de clientes que todavía no calzan con ninguno.",
   biblioteca:
@@ -1006,6 +1011,10 @@ export function AgentControlView({
                 items={[
                   { value: "ia", label: "Control de IA" },
                   { value: "seba", label: "Seba v2", icon: <Sparkles size={13} /> },
+                  // Entrega 3 de Seba v2 (17/11/2026): los borradores solo los lee
+                  // un supervisor o admin (RLS), así que a un asesor la pestaña ni
+                  // se le ofrece.
+                  ...(canEditConfig ? [{ value: "sombra" as const, label: "Sombra", icon: <Eye size={13} /> }] : []),
                   { value: "respuestas", label: "Respuestas", icon: <Zap size={13} />, count: playbooks.length },
                   {
                     value: "biblioteca",
@@ -1570,6 +1579,12 @@ export function AgentControlView({
                   onSaveCashea={saveCashea}
                 />
               </>
+            )}
+
+            {tab === "sombra" && canEditConfig && (
+              // Carga perezosa: el panel pide sus datos al montarse, o sea recién
+              // al abrir la pestaña (no suma lecturas al `refresh` del panel).
+              <ShadowPanel currentAgent={currentAgent} dailyCapUsd={sebaV2Config?.shadowDailyCapUsd ?? null} />
             )}
 
             {tab === "herramientas" && (

@@ -253,22 +253,6 @@
    Panel «Seba v2» (seba-v2-panel.tsx), T5, 16/11/2026
    -------------------------------------------------------------------------- */
 
-/* Aviso permanente: el modo TODAVÍA no rige nada. Tono informativo (azul del
-   sistema), con la raya lateral para que no se lea como una nota más. */
-.ac-sv-aviso {
-  margin: 0;
-  max-width: 74ch;
-  padding: 10px 14px;
-  border: 1px solid color-mix(in srgb, var(--lm-link) 35%, var(--lm-line));
-  border-left-width: 4px;
-  border-radius: 10px;
-  background: color-mix(in srgb, var(--lm-link) 9%, var(--lm-surface));
-  color: var(--lm-ink-soft);
-  font-size: 12.5px;
-  line-height: 1.5;
-  overflow-wrap: anywhere;
-}
-
 .ac-sv-modes {
   display: flex;
   flex-direction: column;

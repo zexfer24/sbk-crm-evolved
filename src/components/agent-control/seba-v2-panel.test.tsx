@@ -35,7 +35,7 @@ beforeEach(() => {
 });
 
 describe("SebaV2Panel — carga", () => {
-  it("pinta los cinco modos con su descripción, el guardado marcado y el aviso de que todavía no está instalada", () => {
+  it("pinta los cinco modos con su descripción, el guardado marcado y SIN el aviso de que no tiene efecto (desde la entrega 3, 17/11/2026, sí lo tiene)", () => {
     renderPanel({ config: { ...CONFIG, modo: "copiloto" } });
 
     expect(screen.getAllByRole("radio")).toHaveLength(5);
@@ -46,7 +46,11 @@ describe("SebaV2Panel — carga", () => {
     expect(screen.getByRole("radio", { name: "Copiloto" })).toBeChecked();
     expect(screen.getByRole("radio", { name: "Apagado" })).not.toBeChecked();
 
-    expect(screen.getByRole("note")).toHaveTextContent("Seba v2 todavía no está instalada.");
+    // Hasta la entrega 2 un aviso decía que el modo "todavía no tiene efecto"; desde la
+    // entrega 3 (sombra y copiloto) sí lo tiene, y la línea explicativa de cada modo basta.
+    expect(screen.queryByRole("note")).not.toBeInTheDocument();
+    expect(screen.queryByText(/todavía no está instalada/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/no cambia nada en los chats/)).not.toBeInTheDocument();
   });
 });
 
@@ -198,11 +202,10 @@ describe("SebaV2Panel — solo lectura, no disponible y datos nuevos", () => {
     expect(screen.getByText("Solo un supervisor o admin puede cambiar el modo.")).toBeInTheDocument();
   });
 
-  it("con config=null dice «No disponible», conserva el aviso y no pinta modos ni campos", () => {
+  it("con config=null dice «No disponible» y no pinta modos ni campos", () => {
     renderPanel({ config: null });
 
     expect(screen.getByText(/No disponible/)).toBeInTheDocument();
-    expect(screen.getByRole("note")).toBeInTheDocument();
     expect(screen.queryByRole("radio")).not.toBeInTheDocument();
     expect(screen.queryByLabelText("Muestreo (%)")).not.toBeInTheDocument();
   });

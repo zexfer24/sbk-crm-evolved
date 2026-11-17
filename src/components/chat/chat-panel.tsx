@@ -21,6 +21,8 @@ import { MessageBubble } from "@/components/chat/message-bubble";
 import { MediaGroup } from "@/components/chat/media-group";
 import { OutboxBubble } from "@/components/chat/outbox-bubble";
 import { Composer } from "@/components/chat/composer";
+import { SebaSuggestion } from "@/components/chat/seba-suggestion";
+import { useSebaSuggestion } from "@/components/chat/use-seba-suggestion";
 import { TeachSebaModal } from "@/components/chat/teach-seba-modal";
 
 /**
@@ -91,6 +93,14 @@ interface ChatPanelProps {
    * `Composer`; no se recalcula en ningún otro sitio. Opcional.
    */
   masUsadosHasta?: string | null;
+  /**
+   * Deja un texto en el cuadro de mensaje SIN enviarlo (entrega 3 de Seba v2,
+   * 17/11/2026): el botón «Editar» de la sugerencia de copiloto lo usa.
+   * `crm-shell.tsx` lo cablea al mismo `composerInsert` que ya usa el carrito
+   * del panel derecho (misma señal con `seq`, filtrada por conversación).
+   * Opcional: sin él, «Editar» no tiene a dónde llevar el texto.
+   */
+  onInsertText?: (text: string) => void;
 }
 
 export function ChatPanel({
@@ -114,6 +124,7 @@ export function ChatPanel({
   onOpenConversationByPhone,
   insertTextSignal,
   masUsadosHasta,
+  onInsertText,
 }: ChatPanelProps) {
   const [isIntervening, setIsIntervening] = useState(false);
   const [replyingTo, setReplyingTo] = useState<Message | null>(null);
@@ -244,6 +255,26 @@ export function ChatPanel({
       toast.danger("No se pudo reabrir la conversación.");
     }
   }
+
+  /**
+   * Fecha del último mensaje REAL de un asesor en este chat (no notas internas,
+   * no mensajes de la IA): la sugerencia de copiloto deja de valer si una
+   * persona escribió después de ella (entrega 3 de Seba v2, 17/11/2026).
+   */
+  const lastAgentMessageAt = useMemo(() => {
+    let latest: string | null = null;
+    for (const message of messages) {
+      if (message.senderType !== "agent" || message.direction !== "outbound" || message.isInternalNote) continue;
+      if (latest === null || message.createdAt > latest) latest = message.createdAt;
+    }
+    return latest;
+  }, [messages]);
+
+  const suggestion = useSebaSuggestion({
+    conversationId: conversation.id,
+    agent: currentAgent,
+    lastAgentMessageAt,
+  });
 
   const name = contactName(conversation);
 
@@ -394,6 +425,22 @@ export function ChatPanel({
         <div ref={bottomRef} />
       </div>
 
+      {suggestion.draft && (
+        <SebaSuggestion
+          draft={suggestion.draft}
+          agent={currentAgent}
+          editing={suggestion.editing}
+          // Cada texto va por la misma cola de envío que el cuadro de mensaje:
+          // burbuja provisional, reintento y orden de siempre.
+          onSend={(texts) => texts.forEach((text) => onSendText(text, null))}
+          onEdit={(text) => {
+            suggestion.beginEdit();
+            onInsertText?.(text);
+          }}
+          onResolved={suggestion.hide}
+        />
+      )}
+
       <Composer
         conversation={conversation}
         messages={messages}
@@ -403,7 +450,12 @@ export function ChatPanel({
         currentAgent={currentAgent}
         replyingTo={replyingTo}
         onCancelReply={() => setReplyingTo(null)}
-        onSendText={onSendText}
+        onSendText={(content, replyToMessageId) => {
+          onSendText(content, replyToMessageId);
+          // Si el asesor había pulsado «Editar», lo que acaba de enviar es la
+          // sugerencia editada: se marca como tal.
+          suggestion.notifyAdvisorSent();
+        }}
         openTemplateModalSignal={templateModalSignal}
         insertTextSignal={insertTextSignal}
         masUsadosHasta={masUsadosHasta}

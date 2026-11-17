@@ -1,0 +1,98 @@
+/* --------------------------------------------------------------------------
+   Tarjeta de la sugerencia de copiloto (seba-suggestion.tsx), entrega 3 de
+   Seba v2, 17/11/2026. Vive entre la lista de mensajes y el composer: es una
+   franja compacta, no un panel. Tiene un alto máximo y el scroll es INTERNO a
+   su cuerpo —los botones se quedan siempre a la vista—, así que a 390 px una
+   sugerencia larga no empuja ni tapa el cuadro de mensaje. Un solo acento: el
+   borde izquierdo con el color de la burbuja de Seba (la misma tinta oscura de
+   la vista previa de «Seba v2»), para que se lea como "esto lo redactó Seba y
+   todavía no salió".
+   -------------------------------------------------------------------------- */
+
+.sbk-sug {
+  display: flex;
+  flex-direction: column;
+  flex-shrink: 0;
+  gap: 8px;
+  max-height: min(42vh, 300px);
+  min-width: 0;
+  margin: 0 16px 8px;
+  padding: 10px 12px;
+  border: 1px solid var(--lm-line);
+  border-left: 4px solid var(--lm-ink);
+  border-radius: 14px;
+  background: var(--lm-surface);
+}
+
+.sbk-sug-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--lm-ink-soft);
+}
+
+.sbk-sug-title {
+  margin: 0;
+  font-size: 12.5px;
+  font-weight: 600;
+}
+
+.sbk-sug-body {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+.sbk-sug-bubble {
+  align-self: flex-start;
+  max-width: 100%;
+  margin: 0;
+  padding: 7px 12px;
+  border-radius: 14px;
+  border-bottom-left-radius: 5px;
+  background: var(--lm-sunken);
+  font-size: 13.5px;
+  line-height: 1.45;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.sbk-sug-pase {
+  margin: 0;
+  padding: 8px 10px;
+  border-radius: 10px;
+  background: rgba(231, 154, 36, 0.15);
+  color: var(--lm-wait-ink);
+  font-size: 13px;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+
+.sbk-sug-note {
+  margin: 0;
+  color: var(--lm-muted);
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.sbk-sug-actions {
+  display: flex;
+  flex-wrap: wrap;
+  flex-shrink: 0;
+  gap: 8px;
+}
+
+.sbk-sug .crm-pill:focus-visible {
+  outline: 2px solid var(--lm-link);
+  outline-offset: 2px;
+}
+
+@media (max-width: 760px) {
+  .sbk-sug {
+    margin-inline: 12px;
+    max-height: min(36vh, 240px);
+  }
+}

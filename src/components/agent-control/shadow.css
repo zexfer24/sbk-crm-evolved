@@ -1,0 +1,473 @@
+/* --------------------------------------------------------------------------
+   Pestaña «Sombra» de Control IA (entrega 3 de Seba v2, 17/11/2026). Dos
+   paneles (.dash-panel de dashboard.css) dentro de UN solo contenedor: el
+   padre (.dash-content) es una columna flex y un fragmento le entregaría N
+   hijos —trampa del 9/9/2026 en CLAUDE.md—.
+
+   Un borrador abierto se lee como una conversación en tres columnas: el
+   cliente a la izquierda, lo que habría enviado Seba (burbuja oscura, la misma
+   de la vista previa de «Seba v2») en el centro y lo que de verdad contestó el
+   asesor a la derecha. Las columnas se apilan en pantallas angostas. Todo lo
+   que puede crecer con el texto envuelve (`overflow-wrap`) y nada fuerza
+   scroll horizontal en un teléfono. Prefijo `ac-sh-`.
+   -------------------------------------------------------------------------- */
+
+.ac-sh {
+  display: flex;
+  flex-direction: column;
+  gap: 22px;
+  min-width: 0;
+}
+
+.ac-sh-head {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px 14px;
+  padding: 22px 26px 14px;
+}
+
+.ac-sh-head .dash-panel-title {
+  min-width: 0;
+}
+
+.ac-sh-periods {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.ac-sh-body {
+  padding: 0 26px 24px;
+  min-width: 0;
+}
+
+.ac-sh-muted {
+  margin: 0;
+  color: var(--lm-muted);
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+.ac-sh-error {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px;
+  padding: 12px 14px;
+  border-radius: 12px;
+  background: rgb(var(--lm-hot-rgb) / 0.08);
+  color: var(--lm-hot-ink);
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+/* Cabecera: números del período */
+.ac-sh-stats {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+  gap: 10px;
+}
+
+.ac-sh-stat {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+  padding: 12px 14px;
+  border: 1px solid var(--lm-line);
+  border-radius: 14px;
+  background: var(--lm-surface);
+}
+
+.ac-sh-stat-n {
+  font-size: 22px;
+  font-weight: 600;
+  letter-spacing: -0.02em;
+  font-variant-numeric: tabular-nums;
+  overflow-wrap: anywhere;
+}
+
+.ac-sh-stat-label {
+  color: var(--lm-muted);
+  font-size: 12px;
+  line-height: 1.35;
+}
+
+.ac-sh-stat-sub {
+  color: var(--lm-muted);
+  font-size: 11.5px;
+  line-height: 1.35;
+}
+
+/* Filtros */
+.ac-sh-filters {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  padding: 0 26px 14px;
+}
+
+.ac-sh-filters .lm-select {
+  max-width: 100%;
+}
+
+/* Lista */
+.ac-sh-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 0;
+  padding: 0 26px 24px;
+  list-style: none;
+}
+
+.ac-sh-row {
+  min-width: 0;
+  border: 1px solid var(--lm-line);
+  border-radius: 14px;
+  background: var(--lm-surface);
+}
+
+.ac-sh-row-head {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  padding: 12px 14px;
+  border: 0;
+  border-radius: 14px;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.ac-sh-row-head:focus-visible {
+  outline: 2px solid var(--lm-link);
+  outline-offset: 2px;
+}
+
+.ac-sh-row-main {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.ac-sh-row-msg {
+  font-size: 13.5px;
+  font-weight: 500;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ac-sh-row-time {
+  color: var(--lm-muted);
+  font-size: 12px;
+}
+
+.ac-sh-row-tags {
+  display: flex;
+  flex: 0 1 auto;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 4px;
+  max-width: 46%;
+}
+
+.ac-sh-chevron {
+  flex-shrink: 0;
+  color: var(--lm-muted);
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .ac-sh-chevron {
+    transition: transform 160ms ease;
+  }
+}
+
+.ac-sh-row[data-open="true"] .ac-sh-chevron {
+  transform: rotate(180deg);
+}
+
+/* Borrador abierto */
+.ac-sh-detail {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding: 0 14px 14px;
+  min-width: 0;
+}
+
+.ac-sh-cols {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 230px), 1fr));
+  gap: 10px;
+  min-width: 0;
+}
+
+.ac-sh-col {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+  padding: 12px;
+  border-radius: 12px;
+  background: var(--lm-sunken);
+}
+
+.ac-sh-col-title {
+  margin: 0;
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--lm-ink-soft);
+}
+
+.ac-sh-msg {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.ac-sh-bubble {
+  margin: 0;
+  max-width: 100%;
+  padding: 8px 12px;
+  border-radius: 14px;
+  background: var(--lm-surface);
+  border: 1px solid var(--lm-line);
+  font-size: 13.5px;
+  line-height: 1.45;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+/* Lo que Seba habría enviado: la misma burbuja oscura de la vista previa. */
+.ac-sh-bubble[data-from="seba"] {
+  border-color: transparent;
+  background: var(--lm-ink);
+  color: var(--lm-on-ink);
+}
+
+.ac-sh-origin {
+  color: var(--lm-muted);
+  font-size: 11px;
+  padding-inline: 4px;
+}
+
+.ac-sh-photo {
+  display: inline-block;
+  margin-right: 6px;
+  padding: 0 6px;
+  border-radius: 6px;
+  background: rgb(255 255 255 / 0.18);
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.ac-sh-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.ac-sh-chip {
+  display: inline-flex;
+  padding: 1px 8px;
+  border: 1px solid var(--lm-line);
+  border-radius: 999px;
+  background: var(--lm-surface);
+  font-family: var(--font-mono), ui-monospace, monospace;
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+
+.ac-sh-pase {
+  margin: 0;
+  padding: 8px 10px;
+  border-radius: 10px;
+  background: rgba(231, 154, 36, 0.15);
+  color: var(--lm-wait-ink);
+  font-size: 12.5px;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+
+.ac-sh-guards {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  color: var(--lm-hot-ink);
+  font-size: 12.5px;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+}
+
+.ac-sh-meta {
+  margin: 0;
+  color: var(--lm-muted);
+  font-size: 11.5px;
+  line-height: 1.4;
+}
+
+/* Formulario de revisión */
+.ac-sh-form {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  min-width: 0;
+  padding-top: 14px;
+  border-top: 1px solid var(--lm-line);
+}
+
+.ac-sh-label {
+  padding: 0;
+  color: var(--lm-ink-soft);
+  font-size: 12.5px;
+  font-weight: 600;
+}
+
+.ac-sh-verdicts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+
+.ac-sh-verdicts > legend {
+  width: 100%;
+  margin-bottom: 4px;
+}
+
+/* El elegido se distingue por borde doble, fondo teñido y negrita —no solo por color—. */
+.ac-sh-verdict {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 14px;
+  border: 1px solid var(--lm-line);
+  border-radius: 12px;
+  background: var(--lm-surface);
+  font-size: 13.5px;
+  cursor: pointer;
+}
+
+.ac-sh-verdict:hover {
+  background: var(--lm-sunken);
+}
+
+.ac-sh-verdict[data-selected="true"] {
+  border-color: var(--lm-link);
+  box-shadow: inset 0 0 0 1px var(--lm-link);
+  background: color-mix(in srgb, var(--lm-link) 9%, var(--lm-surface));
+  font-weight: 700;
+}
+
+.ac-sh-verdict:has(input:focus-visible) {
+  outline: 2px solid var(--lm-link);
+  outline-offset: 2px;
+}
+
+.ac-sh-verdict input {
+  accent-color: var(--lm-link);
+}
+
+.ac-sh-form-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+
+.ac-sh-form-row > .ac-sh-field {
+  flex: 1 1 200px;
+}
+
+.ac-sh-field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+}
+
+.ac-sh-textarea {
+  width: 100%;
+  min-height: 84px;
+  padding: 10px 14px;
+  border: 0;
+  border-radius: 14px;
+  background: var(--lm-sunken);
+  color: var(--lm-ink);
+  font: inherit;
+  font-size: 13.5px;
+  line-height: 1.5;
+  resize: vertical;
+}
+
+.ac-sh-textarea:focus-visible {
+  outline: 2px solid var(--lm-link);
+  outline-offset: 2px;
+}
+
+.ac-sh-count {
+  align-self: flex-end;
+  color: var(--lm-muted);
+  font-size: 11.5px;
+  font-variant-numeric: tabular-nums;
+}
+
+.ac-sh-count[data-over="true"] {
+  color: var(--lm-hot-ink);
+  font-weight: 600;
+}
+
+.ac-sh-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px 14px;
+}
+
+@media (max-width: 760px) {
+  .ac-sh {
+    gap: 16px;
+  }
+
+  .ac-sh-head {
+    padding: 18px 16px 12px;
+  }
+
+  .ac-sh-body {
+    padding: 0 16px 18px;
+  }
+
+  .ac-sh-filters {
+    padding: 0 16px 12px;
+  }
+
+  .ac-sh-list {
+    padding: 0 16px 18px;
+  }
+
+  .ac-sh-row-head {
+    flex-wrap: wrap;
+  }
+
+  .ac-sh-row-tags {
+    flex-basis: 100%;
+    order: 3;
+    justify-content: flex-start;
+    max-width: none;
+  }
+}
