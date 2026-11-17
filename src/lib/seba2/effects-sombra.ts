@@ -5,7 +5,7 @@ import type { SeenMarker } from "@/lib/ai/history-line";
 import { turnCallsSnapshot } from "@/lib/ai/turn-telemetry";
 import { businessStatus, type BusinessHours, type BusinessStatus } from "@/lib/business-hours";
 import { errorText, log } from "@/lib/log";
-import type { TurnEffects } from "./effects";
+import type { RazonDeSilencio, TurnEffects } from "./effects";
 import type { MotivoV2 } from "./motivos";
 import {
   estadoVigente,
@@ -74,6 +74,8 @@ export function crearEffectsDeSombra(deps: DepsDeEffectsDeSombra): TurnEffects {
   let carrito: LineaDeCarrito[] | null = null;
   let estadoGuardado: EstadoSeba | null = null;
   let visto: SeenMarker | null = null;
+  let silencio: RazonDeSilencio | null = null;
+  const notas: string[] = [];
 
   function acumular(mensaje: Omit<MensajeDeTurno, "orden">): void {
     mensajes.push({ orden: mensajes.length + 1, ...mensaje });
@@ -107,6 +109,16 @@ export function crearEffectsDeSombra(deps: DepsDeEffectsDeSombra): TurnEffects {
 
     async guardarCarrito(lineas: LineaDeCarrito[]) {
       carrito = lineas;
+    },
+
+    // S8c (17/11/2026): el silencio y las notas del turno viajan en `contexto` del
+    // borrador; la sombra no escribe traspasos ni notas reales en la conversación.
+    async registrarSilencio(razon: RazonDeSilencio) {
+      silencio = razon;
+    },
+
+    async anotarParaAsesor(texto: string) {
+      notas.push(texto);
     },
 
     async leerEstado(): Promise<EstadoSeba | null> {
@@ -206,6 +218,12 @@ export function crearEffectsDeSombra(deps: DepsDeEffectsDeSombra): TurnEffects {
     },
 
     async cerrar(resumen: ResumenDeTurno) {
+      // Un turno que solo constató «no hay nada nuevo que contestar» no deja borrador:
+      // no hay qué comparar y llenaría el panel de filas vacías (una por cada reintento
+      // del reconciliador). `cortesia_tras_escalada` SÍ lo deja: el borrador lleva la
+      // marca «visto» de la que la sombra lee dónde se quedó en el turno siguiente.
+      if (silencio === "sin_mensaje_nuevo" && mensajes.length === 0) return;
+
       try {
         const llamadas = (deps.llamadas ?? turnCallsSnapshot)();
         const fila: Database["public"]["Tables"]["agent_shadow_drafts"]["Insert"] = {
@@ -233,6 +251,9 @@ export function crearEffectsDeSombra(deps: DepsDeEffectsDeSombra): TurnEffects {
             carrito: carrito as unknown as Json,
             accion: resumen.accion,
             resumen: resumen.resumen,
+            // Solo si los hubo: un borrador de un turno que habló no necesita las claves vacías.
+            ...(silencio !== null ? { silencio } : {}),
+            ...(notas.length > 0 ? { notas } : {}),
           },
           model: resumen.modelo,
           input_tokens: resumen.tokens?.input ?? 0,

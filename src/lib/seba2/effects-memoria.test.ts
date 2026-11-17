@@ -178,3 +178,31 @@ describe("efectos de memoria: estado y cierre", () => {
     await expect(fx.cerrar(resumen())).rejects.toThrow("cerrar se llamó dos veces");
   });
 });
+
+describe("efectos de memoria: silencios y notas para el asesor", () => {
+  it("registra cada silencio y cada nota, en orden y en la secuencia", async () => {
+    const fx = crearEffectsDeMemoria();
+
+    await fx.registrarSilencio("cortesia_tras_escalada");
+    await fx.anotarParaAsesor("Mientras espera al asesor, el cliente agregó: «es para una SBR»");
+    await fx.registrarSilencio("sin_mensaje_nuevo");
+
+    expect(fx.registro.silencios).toEqual(["cortesia_tras_escalada", "sin_mensaje_nuevo"]);
+    expect(fx.registro.notas).toEqual(["Mientras espera al asesor, el cliente agregó: «es para una SBR»"]);
+    expect(fx.registro.secuencia).toEqual(["registrarSilencio", "anotarParaAsesor", "registrarSilencio"]);
+  });
+
+  it("sin llamadas, ambos registros arrancan vacíos", () => {
+    const fx = crearEffectsDeMemoria();
+    expect(fx.registro.silencios).toEqual([]);
+    expect(fx.registro.notas).toEqual([]);
+  });
+
+  it("notaLanza hace rechazar a anotarParaAsesor y no registra la nota (el intento sí queda en la secuencia)", async () => {
+    const error = new Error("no se pudo escribir");
+    const fx = crearEffectsDeMemoria({ notaLanza: error });
+    await expect(fx.anotarParaAsesor("algo")).rejects.toBe(error);
+    expect(fx.registro.notas).toEqual([]);
+    expect(fx.registro.secuencia).toEqual(["anotarParaAsesor"]);
+  });
+});

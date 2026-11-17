@@ -1,5 +1,5 @@
 import type { SeenMarker } from "@/lib/ai/history-line";
-import type { TurnEffects } from "./effects";
+import type { RazonDeSilencio, TurnEffects } from "./effects";
 import type { MotivoV2 } from "./motivos";
 import type {
   Area,
@@ -30,6 +30,8 @@ export interface GuionDeMemoria {
   pase?: Partial<ResultadoDePase>;
   /** Si está, `pasarAAsesor` rechaza con este error. */
   paseLanza?: Error;
+  /** Si está, `anotarParaAsesor` rechaza con este error (y no registra la nota). */
+  notaLanza?: Error;
   /** Si `true`, los envíos devuelven `{ ok: false }` y NO registran el mensaje. */
   envioFalla?: boolean;
   /**
@@ -47,6 +49,10 @@ export interface RegistroDeMemoria {
   /** Veces que se llamó a `escribiendo`. */
   escribiendo: number;
   pases: { area: Area; motivo: MotivoV2; nota: string }[];
+  /** Razones de silencio registradas, en orden. */
+  silencios: RazonDeSilencio[];
+  /** Notas internas para el asesor, en orden. */
+  notas: string[];
   /** La última llamada a `guardarCarrito`. */
   carrito: LineaDeCarrito[] | null;
   /** El último guardado (o el del guion si nunca se guardó). */
@@ -79,6 +85,8 @@ export function crearEffectsDeMemoria(
     mensajes: [],
     escribiendo: 0,
     pases: [],
+    silencios: [],
+    notas: [],
     carrito: null,
     estado: guion.estado ?? null,
     bienvenidasReclamadas: 0,
@@ -122,6 +130,17 @@ export function crearEffectsDeMemoria(
       if (guion.paseLanza) throw guion.paseLanza;
       registro.pases.push({ area: i.area, motivo: i.motivo, nota: i.nota });
       return { ...PASE_POR_DEFECTO, ...guion.pase };
+    },
+
+    async registrarSilencio(razon) {
+      registro.secuencia.push("registrarSilencio");
+      registro.silencios.push(razon);
+    },
+
+    async anotarParaAsesor(texto) {
+      registro.secuencia.push("anotarParaAsesor");
+      if (guion.notaLanza) throw guion.notaLanza;
+      registro.notas.push(texto);
     },
 
     async guardarCarrito(lineas) {

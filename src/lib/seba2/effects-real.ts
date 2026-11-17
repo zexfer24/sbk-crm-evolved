@@ -10,7 +10,7 @@ import { writeSeen } from "@/lib/ai/turn-seen";
 import { businessStatus, type BusinessHours, type BusinessStatus } from "@/lib/business-hours";
 import { errorText, log } from "@/lib/log";
 import { escribirCarritoDeSeba } from "./carrito-servidor";
-import type { TurnEffects } from "./effects";
+import type { RazonDeSilencio, TurnEffects } from "./effects";
 import type { MotivoV2 } from "./motivos";
 import {
   estadoVigente,
@@ -45,8 +45,13 @@ export interface DepsDeEffectsReales {
   target: TurnTarget;
   businessHours: BusinessHours;
   ahora: () => Date;
-  /** Había asesor asignado al abrir el turno: toda salida es `is_auto_reply` (el cliente espera a esa persona). */
-  asesorAsignadoAlAbrir: boolean;
+  /**
+   * Asesor asignado al abrir el turno, o `null`. Con asesor, toda salida es
+   * `is_auto_reply` (el cliente espera a esa persona) y el traspaso de un
+   * silencio decidido va a `human` y a su id (S8c, 17/11/2026: reemplaza al
+   * booleano `asesorAsignadoAlAbrir`, que no alcanzaba para escribir ese traspaso).
+   */
+  assignedAgentId: string | null;
   /** La puerta de envío de v1 (`deliver`) ya cerrada sobre el turno. `null` = una guarda frenó (y ya dejó su traspaso). */
   entregar: (enviar: () => Promise<DeliveryOutcome>) => Promise<DeliveryOutcome | null>;
   /** Qué hace v1 cuando un envío sale `failed` (`deliveryFailed`): deja traspaso y resetea la etapa. */
@@ -116,7 +121,7 @@ export function crearEffectsReales(deps: DepsDeEffectsReales): TurnEffects {
   ): Promise<{ ok: boolean }> {
     if (detenido) return { ok: false };
 
-    const isAutoReply = deps.asesorAsignadoAlAbrir || pasadoAAsesor;
+    const isAutoReply = deps.assignedAgentId !== null || pasadoAAsesor;
     let filaId: string | null = null;
     const entrega = await deps.entregar(() =>
       hacer(isAutoReply, (id) => {
@@ -221,6 +226,44 @@ export function crearEffectsReales(deps: DepsDeEffectsReales): TurnEffects {
         cuandoAbre: cuandoAbre(status),
         yaTeniaAsesor,
       };
+    },
+
+    // Mismo traspaso que escribe v1 en cada caso (agent.ts): con asesor asignado va
+    // a `human`, sin él a `unassigned`. Es lo que evita que un `return` mudo deje un
+    // lead invisible, y lo que `RAZONES_DE_SILENCIO_DECIDIDO` usa para que el
+    // reconciliador no reencole el mismo mensaje cada minuto.
+    async registrarSilencio(razon: RazonDeSilencio) {
+      try {
+        const escrito = await recordHandoff(supabase, {
+          conversationId,
+          reason: razon,
+          toKind: deps.assignedAgentId ? "human" : "unassigned",
+          toId: deps.assignedAgentId ?? null,
+        });
+        if (!escrito) log.error("seba2_silencio_no_registrado", { conversationId, razon, detail: "traspaso rechazado" });
+      } catch (err) {
+        // El silencio ya se decidió: no puede tumbar el turno.
+        log.error("seba2_silencio_no_registrado", { conversationId, razon, detail: errorText(err) });
+      }
+    },
+
+    // Misma nota interna que deja v1 con la escalada abierta. `sender_type = 'system'`
+    // A PROPÓSITO: un mensaje de asesor dispararía `handle_agent_message_silences_ai`
+    // y apagaría la IA. Si falla LANZA (como v1): lo que el cliente agregó no puede
+    // perderse, y el turno se reintenta antes de marcar «visto».
+    async anotarParaAsesor(texto: string) {
+      const { error } = await supabase.from("messages").insert({
+        conversation_id: conversationId,
+        direction: "outbound",
+        sender_type: "system",
+        message_type: "system_event",
+        is_internal_note: true,
+        content: texto,
+      });
+      if (error) {
+        log.error("seba2_nota_no_escrita", { conversationId, detail: error.message });
+        throw new Error(`No se pudo dejar la nota para el asesor: ${error.message}`, { cause: error });
+      }
     },
 
     async guardarCarrito(lineas: LineaDeCarrito[]) {

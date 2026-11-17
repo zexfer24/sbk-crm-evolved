@@ -191,7 +191,7 @@ function crear(extra: Partial<DepsDeEffectsReales> = {}, responder?: (op: Operac
     target: TARGET,
     businessHours: DEFAULT_BUSINESS_HOURS,
     ahora: () => AHORA,
-    asesorAsignadoAlAbrir: false,
+    assignedAgentId: null,
     entregar: vi.fn(async (enviar: () => Promise<DeliveryOutcome>) => enviar()),
     alFallarEnvio: vi.fn(async () => undefined),
     escribiendo: vi.fn(),
@@ -311,7 +311,7 @@ describe("efectos reales: is_auto_reply", () => {
   });
 
   it("con asesor asignado al abrir el turno, todo envío es automático (texto e imagen)", async () => {
-    const { efectos } = crear({ asesorAsignadoAlAbrir: true });
+    const { efectos } = crear({ assignedAgentId: "agente-1" });
     await efectos.enviarTexto("hola", "modelo");
     await efectos.enviarImagen("https://x/y.jpg", null);
     expect(sendTextMock.mock.calls[0][3]).toMatchObject({ isAutoReply: true });
@@ -353,7 +353,7 @@ describe("efectos reales: is_auto_reply", () => {
   });
 
   it("con asesor asignado al abrir no hay nada que marcar después del pase", async () => {
-    const { efectos, operaciones } = crear({ asesorAsignadoAlAbrir: true });
+    const { efectos, operaciones } = crear({ assignedAgentId: "agente-1" });
     await efectos.enviarTexto("uno", "modelo");
     await efectos.pasarAAsesor({ area: "ventas", motivo: "listo_para_comprar", nota: "n" });
     expect(operaciones.filter((o) => o.tabla === "messages")).toHaveLength(0);
@@ -735,5 +735,78 @@ describe("efectos reales: cerrar", () => {
 
     await expect(efectos.cerrar(resumen())).resolves.toBeUndefined();
     expect(logError).toHaveBeenCalledWith("seba2_bitacora_no_escrita", expect.objectContaining({ conversationId: CONV }));
+  });
+});
+
+describe("efectos reales: silencio decidido", () => {
+  it("sin asesor asignado deja el traspaso a «unassigned» con la MISMA razón que v1", async () => {
+    const { efectos } = crear();
+
+    await efectos.registrarSilencio("sin_mensaje_nuevo");
+    await efectos.registrarSilencio("cortesia_tras_escalada");
+
+    expect(recordHandoffMock).toHaveBeenCalledTimes(2);
+    expect(recordHandoffMock.mock.calls[0][1]).toEqual({
+      conversationId: CONV,
+      reason: "sin_mensaje_nuevo",
+      toKind: "unassigned",
+      toId: null,
+    });
+    expect(recordHandoffMock.mock.calls[1][1]).toEqual({
+      conversationId: CONV,
+      reason: "cortesia_tras_escalada",
+      toKind: "unassigned",
+      toId: null,
+    });
+  });
+
+  it("con asesor asignado el traspaso va a «human» y a su id", async () => {
+    const { efectos } = crear({ assignedAgentId: "agente-7" });
+
+    await efectos.registrarSilencio("cortesia_tras_escalada");
+
+    expect(recordHandoffMock.mock.calls[0][1]).toEqual({
+      conversationId: CONV,
+      reason: "cortesia_tras_escalada",
+      toKind: "human",
+      toId: "agente-7",
+    });
+  });
+
+  it("nunca lanza: si el traspaso se rechaza o revienta, queda en el log", async () => {
+    const { efectos } = crear();
+    recordHandoffMock.mockRejectedValueOnce(new Error("base caída"));
+    await expect(efectos.registrarSilencio("sin_mensaje_nuevo")).resolves.toBeUndefined();
+    expect(logError).toHaveBeenCalledWith("seba2_silencio_no_registrado", expect.any(Object));
+
+    logError.mockClear();
+    recordHandoffMock.mockResolvedValueOnce(false);
+    await expect(efectos.registrarSilencio("sin_mensaje_nuevo")).resolves.toBeUndefined();
+    expect(logError).toHaveBeenCalledWith("seba2_silencio_no_registrado", expect.any(Object));
+  });
+});
+
+describe("efectos reales: nota para el asesor", () => {
+  it("inserta una nota interna de SISTEMA (nunca 'agent': apagaría la IA por trigger)", async () => {
+    const { efectos, operaciones } = crear();
+
+    await efectos.anotarParaAsesor("Mientras espera al asesor, el cliente agregó: «es para una SBR»");
+
+    const insert = operaciones.find((o) => o.tabla === "messages" && o.op === "insert")!;
+    expect(insert.payload).toEqual({
+      conversation_id: CONV,
+      direction: "outbound",
+      sender_type: "system",
+      message_type: "system_event",
+      is_internal_note: true,
+      content: "Mientras espera al asesor, el cliente agregó: «es para una SBR»",
+    });
+  });
+
+  it("LANZA si no se pudo escribir: un pendiente del cliente no puede perderse", async () => {
+    const { efectos } = crear({}, (op) => (op.tabla === "messages" ? { error: { message: "no se pudo" } } : {}));
+
+    await expect(efectos.anotarParaAsesor("algo")).rejects.toThrow(/nota/i);
+    expect(logError).toHaveBeenCalledWith("seba2_nota_no_escrita", expect.any(Object));
   });
 });

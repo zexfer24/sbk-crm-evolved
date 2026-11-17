@@ -10,6 +10,15 @@ import type {
 } from "./tipos";
 
 /**
+ * Por qué un turno decidió NO escribirle al cliente y lo deja dicho (S8c,
+ * 17/11/2026). Son las dos razones de «silencio decidido» de v1 que aplican a
+ * v2 (`sin_mensaje_nuevo` y `cortesia_tras_escalada`, `handoffs.ts`): un turno
+ * que se calla sin dejar una de estas dos filas rompe la invariante «ningún lead
+ * invisible».
+ */
+export type RazonDeSilencio = "sin_mensaje_nuevo" | "cortesia_tras_escalada";
+
+/**
  * TODO lo que un turno de Seba v2 escribe pasa por esta interfaz (17/11/2026).
  *
  * El turno es UNO solo y corre en cuatro modos que difieren únicamente en los
@@ -37,6 +46,20 @@ export interface TurnEffects {
   pasarAAsesor(i: { area: Area; motivo: MotivoV2; nota: string }): Promise<ResultadoDePase>;
 
   guardarCarrito(lineas: LineaDeCarrito[]): Promise<void>;
+
+  /**
+   * El turno decidió no escribirle al cliente: deja el rastro (el traspaso de
+   * silencio decidido que ya usa v1). Nunca lanza: un rastro que no se pudo
+   * escribir queda en el log, no tumba al turno.
+   */
+  registrarSilencio(razon: RazonDeSilencio): Promise<void>;
+
+  /**
+   * Nota interna para el asesor (el cliente no la ve): lo que el cliente agregó
+   * mientras espera. LANZA si no se pudo escribir —igual que v1—: un pendiente
+   * del cliente no puede perderse en silencio.
+   */
+  anotarParaAsesor(texto: string): Promise<void>;
 
   leerEstado(): Promise<EstadoSeba | null>;
   guardarEstado(estado: EstadoSeba): Promise<void>;

@@ -478,3 +478,64 @@ describe("leerVistoDeSombra", () => {
     expect(logWarn).toHaveBeenCalledWith("sombra_visto_no_legible", expect.any(Object));
   });
 });
+
+describe("efectos de sombra: silencios y notas para el asesor", () => {
+  it("guardan silencio y notas dentro de contexto del borrador, sin escribir nada más", async () => {
+    const { efectos, escrituras } = crear();
+
+    await efectos.registrarSilencio("cortesia_tras_escalada");
+    await efectos.anotarParaAsesor("Mientras espera al asesor, el cliente agregó: «es para una SBR 2020»");
+    await efectos.anotarParaAsesor("Mientras espera al asesor, el cliente agregó: «gracias»");
+    await efectos.marcarVisto({ hasta: "2026-11-17T14:59:00.000Z", ids: ["m9"] });
+    await efectos.cerrar(resumen({ accion: "skipped", resumen: "Cortesía con la escalada abierta." }));
+
+    expect(escrituras()).toHaveLength(1);
+    const fila = escrituras()[0].payload as Record<string, unknown>;
+    const contexto = fila.contexto as Record<string, unknown>;
+    expect(contexto.silencio).toBe("cortesia_tras_escalada");
+    expect(contexto.notas).toEqual([
+      "Mientras espera al asesor, el cliente agregó: «es para una SBR 2020»",
+      "Mientras espera al asesor, el cliente agregó: «gracias»",
+    ]);
+    // La marca «visto» sigue viajando: es de donde la sombra la lee en el turno siguiente.
+    expect(contexto.visto).toEqual({ hasta: "2026-11-17T14:59:00.000Z", ids: ["m9"] });
+  });
+
+  it("sin silencio ni notas, `contexto` no trae esas claves", async () => {
+    const { efectos, escrituras } = crear();
+    await efectos.enviarTexto("Hola", "fijo");
+    await efectos.cerrar(resumen());
+    const contexto = (escrituras()[0].payload as Record<string, unknown>).contexto as Record<string, unknown>;
+    expect(contexto).not.toHaveProperty("silencio");
+    expect(contexto).not.toHaveProperty("notas");
+  });
+
+  it("cortesia_tras_escalada sin mensajes SÍ inserta borrador (lleva la marca «visto» del turno siguiente)", async () => {
+    const { efectos, escrituras } = crear();
+    await efectos.registrarSilencio("cortesia_tras_escalada");
+    await efectos.cerrar(resumen({ accion: "skipped" }));
+    expect(escrituras()).toHaveLength(1);
+  });
+
+  it("sin_mensaje_nuevo y ningún mensaje: NO inserta borrador (nada que comparar, solo ruido en el panel)", async () => {
+    const { efectos, escrituras, operaciones } = crear();
+    await efectos.registrarSilencio("sin_mensaje_nuevo");
+    await efectos.cerrar(resumen({ accion: "skipped" }));
+    expect(escrituras()).toHaveLength(0);
+    expect(operaciones.filter((o) => o.op === "insert")).toHaveLength(0);
+  });
+
+  it("sin_mensaje_nuevo pero CON un mensaje enviado: sí inserta (el silencio no manda si el turno habló)", async () => {
+    const { efectos, escrituras } = crear();
+    await efectos.registrarSilencio("sin_mensaje_nuevo");
+    await efectos.enviarTexto("Hola", "fijo");
+    await efectos.cerrar(resumen());
+    expect(escrituras()).toHaveLength(1);
+  });
+
+  it("anotarParaAsesor no lanza ni escribe en la base: la sombra solo lo guarda en memoria", async () => {
+    const { efectos, operaciones } = crear();
+    await expect(efectos.anotarParaAsesor("nota")).resolves.toBeUndefined();
+    expect(operaciones).toHaveLength(0);
+  });
+});
