@@ -471,3 +471,300 @@
     max-width: none;
   }
 }
+
+/* --------------------------------------------------------------------------
+   Preparación para desplegar y consumo (P1, 17/11/2026). Dos paneles más
+   dentro del mismo contenedor `.ac-sh` (un solo hijo para `.dash-content`).
+
+   La pieza que se recuerda es la barra de cada eje con su marca fija en el
+   90 %: el operador no lee un porcentaje suelto, lee a qué distancia está de
+   la línea que decide el siguiente escalón. Todo lo demás es discreto. Un eje
+   sin revisiones suficientes deja la barra vacía (sin relleno): ni un 0 % ni
+   un 100 % que parezca medido. El estado no depende solo del color: el
+   porcentaje está escrito y el relleno tiene longitud.
+   -------------------------------------------------------------------------- */
+
+.ac-sh-prep {
+  display: grid;
+  grid-template-columns: minmax(190px, 250px) minmax(0, 1fr);
+  gap: 18px 28px;
+  align-items: start;
+}
+
+/* El número general */
+.ac-sh-general {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+  padding: 18px 18px 16px;
+  border: 1px solid var(--lm-line);
+  border-radius: 18px;
+  background: var(--lm-sunken);
+}
+
+.ac-sh-general-n {
+  font-size: 46px;
+  font-weight: 600;
+  line-height: 1;
+  letter-spacing: -0.03em;
+  font-variant-numeric: tabular-nums;
+  color: var(--lm-muted);
+}
+
+.ac-sh-general[data-nivel="listo"] .ac-sh-general-n {
+  color: var(--lm-good-ink);
+}
+
+.ac-sh-general[data-nivel="cerca"] .ac-sh-general-n {
+  color: var(--lm-wait-ink);
+}
+
+.ac-sh-general[data-nivel="lejos"] .ac-sh-general-n {
+  color: var(--lm-hot-ink);
+}
+
+.ac-sh-general-label {
+  color: var(--lm-ink-soft);
+  font-size: 12.5px;
+  font-weight: 600;
+}
+
+.ac-sh-motivo {
+  margin: 8px 0 0;
+  font-size: 13px;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+
+/* Los tres ejes */
+.ac-sh-ejes-col {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  min-width: 0;
+}
+
+.ac-sh-ejes {
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.ac-sh-eje {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  min-width: 0;
+}
+
+.ac-sh-eje-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.ac-sh-eje-name {
+  font-size: 14px;
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
+.ac-sh-eje-pct {
+  flex-shrink: 0;
+  font-size: 18px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  color: var(--lm-muted);
+}
+
+.ac-sh-eje-pct[data-nivel="listo"] {
+  color: var(--lm-good-ink);
+}
+
+.ac-sh-eje-pct[data-nivel="cerca"] {
+  color: var(--lm-wait-ink);
+}
+
+.ac-sh-eje-pct[data-nivel="lejos"] {
+  color: var(--lm-hot-ink);
+}
+
+/* La barra: pista hundida, relleno y la marca del umbral que la cruza. */
+.ac-sh-meter {
+  position: relative;
+  height: 10px;
+  border-radius: 999px;
+  background: var(--lm-sunken);
+  box-shadow: inset 0 0 0 1px var(--lm-line);
+}
+
+.ac-sh-meter-fill {
+  position: absolute;
+  inset: 0 auto 0 0;
+  border-radius: 999px;
+  background: var(--lm-muted);
+}
+
+.ac-sh-meter-fill[data-nivel="listo"] {
+  background: var(--lm-good);
+}
+
+.ac-sh-meter-fill[data-nivel="cerca"] {
+  background: var(--lm-wait);
+}
+
+.ac-sh-meter-fill[data-nivel="lejos"] {
+  background: var(--lm-hot);
+}
+
+.ac-sh-meter-marca {
+  position: absolute;
+  top: -4px;
+  bottom: -4px;
+  width: 2px;
+  margin-left: -1px;
+  border-radius: 1px;
+  background: var(--lm-ink);
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .ac-sh-meter-fill {
+    transition: width 420ms var(--lm-ease-out);
+  }
+}
+
+.ac-sh-eje-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 2px 12px;
+  margin: 0;
+  color: var(--lm-muted);
+  font-size: 12.5px;
+  line-height: 1.4;
+}
+
+.ac-sh-eje-faltan {
+  color: var(--lm-wait-ink);
+  font-weight: 600;
+}
+
+.ac-sh-leyenda {
+  margin: 0;
+  color: var(--lm-muted);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+/* Señales automáticas y la línea fija */
+.ac-sh-senales {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 16px;
+  margin: 18px 0 0;
+  padding-top: 14px;
+  border-top: 1px solid var(--lm-line);
+  color: var(--lm-ink-soft);
+  font-size: 12.5px;
+  line-height: 1.4;
+}
+
+.ac-sh-senales-titulo {
+  color: var(--lm-muted);
+}
+
+.ac-sh-nota-fija {
+  max-width: 68ch;
+  margin: 10px 0 0;
+  color: var(--lm-muted);
+  font-size: 12.5px;
+  line-height: 1.5;
+}
+
+/* Consumo */
+.ac-sh-consumo {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.ac-sh-proyeccion {
+  margin: 0;
+  font-size: 13.5px;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+
+.ac-sh-aviso {
+  margin: 0;
+  padding: 10px 12px;
+  border-radius: 12px;
+  background: rgba(231, 154, 36, 0.15);
+  color: var(--lm-wait-ink);
+  font-size: 13px;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+
+/* La tabla por día lleva su propio scroll horizontal: nunca la página. */
+.ac-sh-table-scroll {
+  max-width: 100%;
+  overflow-x: auto;
+  border: 1px solid var(--lm-line);
+  border-radius: 14px;
+}
+
+.ac-sh-table-scroll:focus-visible {
+  outline: 2px solid var(--lm-link);
+  outline-offset: 2px;
+}
+
+.ac-sh-table {
+  width: 100%;
+  min-width: 460px;
+  border-collapse: collapse;
+  font-size: 13px;
+  font-variant-numeric: tabular-nums;
+}
+
+.ac-sh-table th,
+.ac-sh-table td {
+  padding: 9px 14px;
+  text-align: right;
+  white-space: nowrap;
+}
+
+.ac-sh-table thead th {
+  color: var(--lm-muted);
+  font-size: 12px;
+  font-weight: 600;
+  background: var(--lm-sunken);
+}
+
+.ac-sh-table th:first-child {
+  text-align: left;
+}
+
+.ac-sh-table tbody th {
+  font-weight: 600;
+}
+
+.ac-sh-table tbody tr + tr th,
+.ac-sh-table tbody tr + tr td {
+  border-top: 1px solid var(--lm-line);
+}
+
+@media (max-width: 760px) {
+  .ac-sh-prep {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 16px;
+  }
+
+  .ac-sh-general-n {
+    font-size: 40px;
+  }
+}

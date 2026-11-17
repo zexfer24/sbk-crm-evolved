@@ -5,7 +5,7 @@ import userEvent from "@testing-library/user-event";
 import { ShadowPanel } from "@/components/agent-control/shadow-panel";
 import { ConfigWriteDeniedError } from "@/lib/config-write";
 import type { Agent } from "@/lib/types";
-import type { ShadowDraft, ShadowReview } from "@/lib/shadow";
+import { sombraResumenFromRow, type EjeDePreparacion, type ShadowDraft, type ShadowReview, type SombraResumen } from "@/lib/shadow";
 
 /**
  * Pestaña «Sombra» de Control IA (entrega 3 de Seba v2, 17/11/2026). Las
@@ -18,11 +18,13 @@ const fetchShadowDraftsMock = vi.fn();
 const fetchShadowReviewsMock = vi.fn();
 const fetchAdvisorFollowupsMock = vi.fn();
 const fetchShadowSpendTodayMock = vi.fn();
+const fetchSombraResumenMock = vi.fn();
 vi.mock("@/lib/shadow-data", () => ({
   fetchShadowDrafts: (...args: unknown[]) => fetchShadowDraftsMock(...args),
   fetchShadowReviews: (...args: unknown[]) => fetchShadowReviewsMock(...args),
   fetchAdvisorFollowups: (...args: unknown[]) => fetchAdvisorFollowupsMock(...args),
   fetchShadowSpendToday: (...args: unknown[]) => fetchShadowSpendTodayMock(...args),
+  fetchSombraResumen: (...args: unknown[]) => fetchSombraResumenMock(...args),
 }));
 
 const saveShadowReviewMock = vi.fn();
@@ -84,6 +86,36 @@ function review(draftId: string, veredicto: ShadowReview["veredicto"]): ShadowRe
   return { draftId, veredicto, errorTipo: null, correccion: null, destino: null, reviewedBy: "sup-1", reviewedAt: "2026-11-17T16:00:00.000Z" };
 }
 
+/** El resumen de la RPC `sombra_resumen`, ya mapeado, con los tres ejes a medida. */
+function resumen(
+  ejes: Partial<Record<EjeDePreparacion, [number, number, number, number]>> = {},
+  consumo: Record<string, unknown> = {}
+): SombraResumen {
+  const eje = (nombre: EjeDePreparacion) => {
+    const [poblacion, revisados, reprobados, cambiosMenores] = ejes[nombre] ?? [0, 0, 0, 0];
+    return { eje: nombre, poblacion, revisados, reprobados, cambios_menores: cambiosMenores };
+  };
+  const out = sombraResumenFromRow({
+    consumo: {
+      dias: [
+        { dia: "2026-11-17", borradores: 12, input_tokens: 1_200_000, output_tokens: 300_000, cached_input_tokens: 0, costo_usd: 3.5 },
+        { dia: "2026-11-16", borradores: 8, input_tokens: 800_000, output_tokens: 200_000, cached_input_tokens: 0, costo_usd: null },
+      ],
+      total: { borradores: 20, input_tokens: 2_000_000, output_tokens: 500_000, cached_input_tokens: 0, costo_usd: 3.5, sin_tarifa: 0 },
+      hoy_usd: 3.5,
+      tope_usd: 5,
+      muestreo_pct: 100,
+      ...consumo,
+    },
+    preparacion: {
+      ejes: [eje("busqueda"), eje("conversacion"), eje("pago")],
+      senales: { total: 20, con_guardas: 2, pasarian_a_asesor: 3, sin_mensajes: 1 },
+    },
+  });
+  if (!out) throw new Error("el resumen de prueba debía mapear");
+  return out;
+}
+
 const DRAFTS = [
   draft("d1", { durationMs: 2000 }),
   draft("d2", {
@@ -100,6 +132,7 @@ const DRAFTS = [
 ];
 
 beforeEach(() => {
+  fetchSombraResumenMock.mockReset().mockResolvedValue(resumen());
   fetchShadowDraftsMock.mockReset().mockResolvedValue(DRAFTS);
   fetchShadowReviewsMock.mockReset().mockResolvedValue([review("d1", "igual"), review("d3", "no")]);
   fetchAdvisorFollowupsMock.mockReset().mockResolvedValue({ messages: [], minutesToFirst: null });
@@ -428,5 +461,242 @@ describe("ShadowPanel — formulario de revisión", () => {
     expect(screen.getByLabelText("Tipo de error")).toHaveValue("tono");
     expect(screen.getByLabelText("Corrección")).toHaveValue("Más cálido");
     expect(screen.getByLabelText("Destino de la corrección")).toHaveValue("prompt");
+  });
+});
+
+// ----------------- Preparación para desplegar y consumo (P1, 17/11/2026) -----------------
+
+describe("ShadowPanel — preparación para desplegar", () => {
+  it("pinta los tres ejes con su porcentaje, sus revisados y el número general (el menor)", async () => {
+    fetchSombraResumenMock.mockResolvedValue(
+      resumen({ busqueda: [40, 35, 3, 2], conversacion: [100, 50, 5, 1], pago: [12, 10, 1, 0] })
+    );
+    await montar();
+
+    const bloque = await screen.findByRole("region", { name: "Preparación para desplegar" });
+    // (35-3)/35 = 91; (50-5)/50 = 90; (10-1)/10 = 90.
+    expect(within(bloque).getByTestId("prep-eje-busqueda")).toHaveTextContent("Búsqueda de repuestos");
+    expect(within(bloque).getByTestId("prep-eje-busqueda")).toHaveTextContent("91 %");
+    expect(within(bloque).getByTestId("prep-eje-busqueda")).toHaveTextContent("35 revisados de 40");
+    expect(within(bloque).getByTestId("prep-eje-conversacion")).toHaveTextContent("Conversación");
+    expect(within(bloque).getByTestId("prep-eje-conversacion")).toHaveTextContent("90 %");
+    expect(within(bloque).getByTestId("prep-eje-conversacion")).toHaveTextContent("50 revisados de 100");
+    expect(within(bloque).getByTestId("prep-eje-pago")).toHaveTextContent("Montos y pago");
+    expect(within(bloque).getByTestId("prep-eje-pago")).toHaveTextContent("90 %");
+
+    expect(within(bloque).getByTestId("prep-general")).toHaveTextContent("90 %");
+    expect(within(bloque).getByTestId("prep-motivo")).toHaveTextContent(
+      "Los tres ejes llegan al 90 %: lista para el siguiente escalón"
+    );
+  });
+
+  it("cada barra es un medidor accesible con el porcentaje en su nombre y la marca del 90 %", async () => {
+    fetchSombraResumenMock.mockResolvedValue(
+      resumen({ busqueda: [40, 35, 3, 2], conversacion: [100, 50, 5, 1], pago: [12, 10, 1, 0] })
+    );
+    await montar();
+
+    const medidor = await screen.findByRole("meter", { name: "Búsqueda de repuestos: 91 %" });
+    expect(medidor).toHaveAttribute("aria-valuenow", "91");
+    expect(medidor).toHaveAttribute("aria-valuemin", "0");
+    expect(medidor).toHaveAttribute("aria-valuemax", "100");
+    expect(screen.getAllByRole("meter")).toHaveLength(3);
+    expect(within(medidor).getByTestId("prep-marca-90")).toBeInTheDocument();
+  });
+
+  it("con revisiones que faltan: «—» en el general, el motivo con lo que falta y los ejes con su «faltan K»", async () => {
+    fetchSombraResumenMock.mockResolvedValue(
+      resumen({ busqueda: [40, 12, 0, 0], conversacion: [100, 30, 1, 0], pago: [8, 3, 0, 0] })
+    );
+    await montar();
+
+    expect(await screen.findByTestId("prep-general")).toHaveTextContent("—");
+    expect(screen.getByTestId("prep-general")).not.toHaveTextContent("%");
+    expect(screen.getByTestId("prep-motivo")).toHaveTextContent("Faltan revisiones: búsqueda 12 de 30, pago 3 de 10");
+
+    expect(screen.getByTestId("prep-eje-busqueda")).toHaveTextContent("faltan 18 revisiones");
+    expect(screen.getByTestId("prep-eje-pago")).toHaveTextContent("faltan 7 revisiones");
+    expect(screen.getByTestId("prep-eje-conversacion")).not.toHaveTextContent("faltan");
+    // Un eje con su mínimo pinta su porcentaje aunque el general no exista.
+    expect(screen.getByTestId("prep-eje-conversacion")).toHaveTextContent("97 %");
+    // Uno sin el mínimo no inventa porcentaje (el 100 % de 12 casos sería mentira).
+    expect(screen.getByTestId("prep-eje-busqueda")).toHaveTextContent("—");
+    expect(screen.getByTestId("prep-eje-busqueda")).not.toHaveTextContent("100 %");
+  });
+
+  it("sin ninguna revisión no hay 0 % ni 100 %: «—» en todo y la línea fija de que la sombra no aprende sola", async () => {
+    await montar();
+
+    const bloque = await screen.findByRole("region", { name: "Preparación para desplegar" });
+    expect(within(bloque).getByTestId("prep-general")).toHaveTextContent("—");
+    expect(within(bloque).queryByText(/\b0 %/)).not.toBeInTheDocument();
+    expect(within(bloque).getByTestId("prep-eje-pago")).toHaveTextContent("todavía no hubo ningún borrador con pago");
+    expect(bloque).toHaveTextContent(
+      "Este número sale de las revisiones de los supervisores. La sombra no aprende sola: mejora cuando una corrección se convierte en lección o en un ajuste del guion."
+    );
+  });
+
+  it("las señales automáticas, sin revisión", async () => {
+    await montar();
+
+    const senales = await screen.findByTestId("prep-senales");
+    expect(senales).toHaveTextContent("2 con guardas");
+    expect(senales).toHaveTextContent("3 pasarían a un asesor");
+    expect(senales).toHaveTextContent("1 sin mensajes");
+  });
+
+  it("un general por debajo del umbral nombra el eje más flojo", async () => {
+    fetchSombraResumenMock.mockResolvedValue(
+      resumen({ busqueda: [40, 30, 0, 0], conversacion: [100, 30, 0, 0], pago: [12, 10, 2, 0] })
+    );
+    await montar();
+
+    expect(await screen.findByTestId("prep-general")).toHaveTextContent("80 %");
+    expect(screen.getByTestId("prep-motivo")).toHaveTextContent(
+      "El eje más flojo es Montos y pago (80 %): todavía no llega al 90 %"
+    );
+  });
+});
+
+describe("ShadowPanel — consumo", () => {
+  it("pinta hoy contra el tope, el total del período, el costo por borrador y el promedio diario", async () => {
+    await montar();
+
+    const bloque = await screen.findByRole("region", { name: "Consumo" });
+    expect(within(bloque).getByTestId("stat-gasto")).toHaveTextContent("$0,42 de $2,00");
+    expect(within(bloque).getByTestId("consumo-borradores")).toHaveTextContent("20");
+    expect(within(bloque).getByTestId("consumo-costo")).toHaveTextContent("$3,50");
+    expect(within(bloque).getByTestId("consumo-tokens")).toHaveTextContent("2.000.000");
+    expect(within(bloque).getByTestId("consumo-tokens")).toHaveTextContent("500.000");
+    expect(within(bloque).getByTestId("consumo-por-borrador")).toHaveTextContent("$0,175");
+    // 3,50 USD repartidos en 2 días con borradores.
+    expect(within(bloque).getByTestId("consumo-promedio")).toHaveTextContent("$1,75");
+  });
+
+  it("la tabla por día: del más reciente al más viejo, con tokens con separador de miles y «—» en un día sin tarifa", async () => {
+    await montar();
+
+    const tabla = await screen.findByRole("table", { name: "Consumo por día" });
+    const filas = within(tabla).getAllByRole("row");
+    // Encabezado + 2 días.
+    expect(filas).toHaveLength(3);
+    expect(filas[1]).toHaveTextContent("17 nov");
+    expect(filas[1]).toHaveTextContent("12");
+    expect(filas[1]).toHaveTextContent("1.200.000");
+    expect(filas[1]).toHaveTextContent("300.000");
+    expect(filas[1]).toHaveTextContent("$3,50");
+    expect(filas[2]).toHaveTextContent("16 nov");
+    expect(filas[2]).toHaveTextContent("—");
+    expect(filas[2]).not.toHaveTextContent("$0,00");
+  });
+
+  it("la tabla va en un contenedor con su propio scroll horizontal, enfocable con teclado", async () => {
+    await montar();
+
+    const tabla = await screen.findByRole("table", { name: "Consumo por día" });
+    const contenedor = tabla.closest(".ac-sh-table-scroll") as HTMLElement;
+    expect(contenedor).not.toBeNull();
+    expect(contenedor).toHaveAttribute("tabindex", "0");
+  });
+
+  it("avisa de los borradores sin tarifa: no suman costo y el tope no los frena", async () => {
+    fetchSombraResumenMock.mockResolvedValue(
+      resumen({}, { total: { borradores: 20, input_tokens: 1, output_tokens: 1, cached_input_tokens: 0, costo_usd: 3.5, sin_tarifa: 3 } })
+    );
+    await montar();
+
+    expect(await screen.findByTestId("consumo-aviso-sin-tarifa")).toHaveTextContent(
+      "3 borradores sin tarifa: el modelo no tiene fila en model_pricing, su costo no se cuenta y el tope no los frena"
+    );
+  });
+
+  it("con un solo borrador sin tarifa, el aviso va en singular; sin ninguno, no hay aviso", async () => {
+    fetchSombraResumenMock.mockResolvedValue(
+      resumen({}, { total: { borradores: 20, input_tokens: 1, output_tokens: 1, cached_input_tokens: 0, costo_usd: 3.5, sin_tarifa: 1 } })
+    );
+    await montar();
+    expect(await screen.findByTestId("consumo-aviso-sin-tarifa")).toHaveTextContent("1 borrador sin tarifa:");
+  });
+
+  it("sin borradores sin tarifa no hay aviso", async () => {
+    await montar();
+    await screen.findByRole("region", { name: "Consumo" });
+    expect(screen.queryByTestId("consumo-aviso-sin-tarifa")).not.toBeInTheDocument();
+  });
+
+  it("la proyección al 100 % de muestreo aparece solo si el muestreo es menor que 100", async () => {
+    fetchSombraResumenMock.mockResolvedValue(resumen({}, { muestreo_pct: 20 }));
+    await montar();
+
+    // 1,75 por día con el 20 % de las conversaciones: al 100 % serían 8,75.
+    expect(await screen.findByTestId("consumo-proyeccion")).toHaveTextContent(
+      "Al 100 % de muestreo serían ≈ $8,75 por día"
+    );
+  });
+
+  it("con el muestreo al 100 % no hay proyección que mostrar", async () => {
+    await montar();
+    await screen.findByRole("region", { name: "Consumo" });
+    expect(screen.queryByTestId("consumo-proyeccion")).not.toBeInTheDocument();
+  });
+
+  it("con muestreo 0 tampoco hay proyección (no se puede dividir)", async () => {
+    fetchSombraResumenMock.mockResolvedValue(resumen({}, { muestreo_pct: 0 }));
+    await montar();
+    await screen.findByRole("region", { name: "Consumo" });
+    expect(screen.queryByTestId("consumo-proyeccion")).not.toBeInTheDocument();
+  });
+
+  it("sin borradores en el período lo dice y no pinta una tabla vacía", async () => {
+    fetchSombraResumenMock.mockResolvedValue(
+      resumen(
+        {},
+        { dias: [], total: { borradores: 0, input_tokens: 0, output_tokens: 0, cached_input_tokens: 0, costo_usd: 0, sin_tarifa: 0 } }
+      )
+    );
+    await montar();
+
+    expect(await screen.findByText("Sin borradores en este período.")).toBeInTheDocument();
+    expect(screen.queryByRole("table", { name: "Consumo por día" })).not.toBeInTheDocument();
+    expect(screen.getByTestId("consumo-por-borrador")).toHaveTextContent("—");
+  });
+});
+
+describe("ShadowPanel — el resumen no se pudo leer", () => {
+  it("resumen null (falta la migración): «No disponible» con el nombre de la migración, en los dos bloques", async () => {
+    fetchSombraResumenMock.mockResolvedValue(null);
+    await montar();
+
+    const avisos = await screen.findAllByText("No disponible: falta aplicar la migración 20261117020000");
+    expect(avisos).toHaveLength(2);
+    expect(screen.queryByRole("meter")).not.toBeInTheDocument();
+    // Lo que no depende del resumen sigue: los borradores y el gasto de hoy.
+    expect(screen.getByTestId("stat-gasto")).toHaveTextContent("$0,42 de $2,00");
+  });
+
+  it("un error de lectura se avisa y se puede reintentar", async () => {
+    fetchSombraResumenMock.mockRejectedValueOnce({ code: "57014" });
+    await montar();
+
+    const bloque = await screen.findByRole("region", { name: "Preparación para desplegar" });
+    expect(await within(bloque).findByRole("alert")).toHaveTextContent(/No se pudo cargar la preparación y el consumo/);
+    await userEvent.setup().click(within(bloque).getByRole("button", { name: "Reintentar" }));
+    expect(await screen.findAllByRole("meter")).toHaveLength(3);
+  });
+
+  it("cambiar el período vuelve a pedir el resumen, con el rango nuevo", async () => {
+    await montar();
+    await waitFor(() => expect(fetchSombraResumenMock).toHaveBeenCalled());
+    const antes = fetchSombraResumenMock.mock.calls.length;
+    const primero = fetchSombraResumenMock.mock.calls[0];
+    expect(primero[0]).toBe(FAKE_CLIENT);
+    expect(primero[1]).toEqual({ desde: expect.any(String), hasta: expect.any(String) });
+    expect(new Date(primero[1].hasta).getTime()).toBeGreaterThan(new Date(primero[1].desde).getTime());
+
+    await userEvent.setup().click(screen.getByRole("button", { name: "30 días" }));
+    await waitFor(() => expect(fetchSombraResumenMock.mock.calls.length).toBeGreaterThan(antes));
+    const ultimo = fetchSombraResumenMock.mock.calls.at(-1);
+    // 30 días hacia atrás empieza antes que el «hoy» del primer pedido.
+    expect(new Date(ultimo?.[1].desde).getTime()).toBeLessThan(new Date(primero[1].desde).getTime());
   });
 });

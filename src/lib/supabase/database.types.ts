@@ -2799,6 +2799,13 @@ export type Database = {
       // sesión de asesor/supervisor; la primera solo service_role.
       shadow_can_run: { Args: never; Returns: boolean }
       shadow_spend_today: { Args: never; Returns: number }
+      // P1 (17/11/2026, migración 20261117020000): consumo y preparación de la
+      // pestaña «Sombra»; solo supervisor/admin (42501). Lo mapea
+      // `sombraResumenFromRow`.
+      sombra_resumen: {
+        Args: { p_desde: string; p_hasta: string }
+        Returns: Json
+      }
       unassigned_waiting_count: {
         Args: Record<PropertyKey, never>
         Returns: number

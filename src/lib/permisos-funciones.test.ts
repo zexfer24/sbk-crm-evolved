@@ -61,10 +61,13 @@ import { describe, expect, it } from "vitest";
 
 const LISTA_BLANCA = new Set(["is_agent", "is_supervisor_or_admin"]);
 
-// Las 40 funciones `security definer` conocidas (38 + shadow_spend_today y
-// shadow_can_run, 20261117010000, 17/11/2026: el gasto de la sombra de Seba v2
-// y su interruptor, con los dos revokes; ver su entrada más abajo). Las 38
-// anteriores: 33 + las cinco RPC de lectura
+// Las 41 funciones `security definer` conocidas (40 + sombra_resumen,
+// 20261117020000, 17/11/2026: el consumo de la sombra y los conteos de
+// preparación para desplegar de la pestaña «Sombra», con
+// is_supervisor_or_admin() UNA vez y los dos revokes; ver su entrada más
+// abajo). Las 40 anteriores: 38 + shadow_spend_today y shadow_can_run,
+// 20261117010000, 17/11/2026: el gasto de la sombra de Seba v2 y su
+// interruptor, con los dos revokes. Las 38 anteriores: 33 + las cinco RPC de lectura
 // de los paneles, 20261113040000, 13/11/2026: panel_ventas, panel_conversaciones,
 // panel_asesores, panel_cola y panel_ventas_activas, ver su entrada más abajo).
 // Las 33 anteriores: 32 + ventas_saint_foto,
@@ -253,6 +256,13 @@ const FUNCIONES_SECURITY_DEFINER_CONOCIDAS = [
   // solo a service_role.
   "shadow_spend_today",
   "shadow_can_run",
+  // 17/11/2026 (20261117020000_sombra_consumo_y_preparacion.sql, P1): la pestaña
+  // «Sombra» de Control IA pide consumo por día y conteos de preparación. Definer
+  // porque `agent_shadow_drafts` y `shadow_reviews` pagarían
+  // `is_supervisor_or_admin()` POR FILA (la trampa de 20260921030000); el rol se
+  // comprueba UNA vez y quien no es supervisor/admin recibe 42501. Los dos
+  // revokes y grant a authenticated/service_role; nunca a LISTA_BLANCA.
+  "sombra_resumen",
 ].sort();
 
 const DIR_MIGRACIONES = path.resolve(__dirname, "../../supabase/migrations");
@@ -386,8 +396,8 @@ describe("permisos de funciones security definer (guardián estático)", () => {
     .map(([nombre]) => nombre)
     .sort();
 
-  it("detecta exactamente las 40 funciones security definer conocidas", () => {
-    // Si esto falla con MENOS de las 40, el parser se está comiendo alguna
+  it("detecta exactamente las 41 funciones security definer conocidas", () => {
+    // Si esto falla con MENOS de las 41, el parser se está comiendo alguna
     // (regex de cabecera roto, `$$` no encontrado, etc.) y el resto de este
     // archivo no protege nada aunque pase en verde. Si falla con MÁS,
     // apareció una función security definer nueva: hay que sumarla a esta

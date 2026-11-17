@@ -202,7 +202,12 @@ declare
     -- shadow_spend_today (20261117010000, S1): el panel de Seba v2 muestra el
     -- gasto de la sombra contra su tope con sesión de supervisor; cerrada a anon,
     -- abierta a authenticated y service_role.
-    'public.shadow_spend_today()'
+    'public.shadow_spend_today()',
+    -- sombra_resumen (20261117020000, P1): la pestaña «Sombra» la llama con sesión
+    -- de supervisor/admin (security definer con is_supervisor_or_admin() UNA vez;
+    -- quien no lo es recibe 42501); cerrada a anon, abierta a authenticated y
+    -- service_role.
+    'public.sombra_resumen(timestamptz, timestamptz)'
   ];
   f text;
   errores text := '';

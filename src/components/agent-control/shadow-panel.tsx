@@ -10,6 +10,7 @@ import {
   fetchShadowDrafts,
   fetchShadowReviews,
   fetchShadowSpendToday,
+  fetchSombraResumen,
   type AdvisorFollowups,
 } from "@/lib/shadow-data";
 import { saveShadowReview } from "@/lib/mutations";
@@ -19,19 +20,28 @@ import { AREAS, AREA_LABELS } from "@/lib/seba-v2-config";
 import {
   CORRECCION_MAX,
   DESTINOS,
+  EJE_LABELS,
+  EJE_SIN_POBLACION,
   EMPTY_SHADOW_FILTERS,
   ERROR_TIPOS,
+  UMBRAL_DE_PREPARACION,
   VERDICTS,
   guardNames,
   hasActiveShadowFilters,
   matchesShadowFilters,
+  medirPreparacion,
+  proyectarConsumo,
   shadowStats,
   validateShadowReview,
+  type EjeMedido,
+  type PreparacionDeSombra,
+  type ProyeccionDeConsumo,
   type ShadowDraft,
   type ShadowFilters,
   type ShadowReview,
   type ShadowReviewErrors,
   type ShadowVerdict,
+  type SombraResumen,
 } from "@/lib/shadow";
 import { CRM_TIME_ZONE } from "@/lib/time-zone";
 import "@/components/agent-control/shadow.css";
@@ -94,8 +104,24 @@ function seconds(ms: number | null): string {
   return ms === null ? DASH : `${decimal(ms / 1000, 1)} s`;
 }
 
-function usd(value: number): string {
-  return `$${decimal(value, 2)}`;
+function usd(value: number, digits = 2): string {
+  return `$${decimal(value, digits)}`;
+}
+
+/** Separador de miles con punto, sin depender de la ICU de quien corre esto. */
+function miles(value: number): string {
+  return Math.round(value)
+    .toString()
+    .replace(/\B(?=(\d{3})+(?!\d))/g, ".");
+}
+
+const MESES_CORTOS = ["ene", "feb", "mar", "abr", "may", "jun", "jul", "ago", "sep", "oct", "nov", "dic"];
+
+/** `2026-11-17` → «17 nov». El día ya viene cortado en hora de Caracas por la base. */
+function diaCorto(dia: string): string {
+  const [, mes, numero] = dia.split("-").map(Number);
+  if (!mes || !numero || mes < 1 || mes > 12) return dia;
+  return `${numero} ${MESES_CORTOS[mes - 1]}`;
 }
 
 function plural(count: number, one: string, many: string): string {
@@ -463,6 +489,277 @@ function DraftRow({
   );
 }
 
+// ------------------- Preparación para desplegar y consumo -------------------
+//
+// P1, 17/11/2026 (pedido del operador). Dos bloques que siguen el selector de
+// período y se alimentan de UNA sola lectura (`sombra_resumen`): cuánto cuesta
+// la sombra y qué tan lista está Seba v2 en tres ejes. El porcentaje sale de
+// las revisiones de los supervisores —la sombra no aprende sola—, así que sin
+// revisiones suficientes se pinta «—» con lo que falta, nunca un 0 % ni un
+// 100 % que parezca medido.
+
+/** `undefined` = cargando; `null` = la RPC no existe todavía (falta la migración). */
+type ResumenState = SombraResumen | null | undefined;
+
+const MIGRACION_RESUMEN = "20261117020000";
+
+function nivelDeEje(pct: number | null): "listo" | "cerca" | "lejos" | "sin_dato" {
+  if (pct === null) return "sin_dato";
+  if (pct >= UMBRAL_DE_PREPARACION) return "listo";
+  return pct >= UMBRAL_DE_PREPARACION - 10 ? "cerca" : "lejos";
+}
+
+function EjeFila({ eje }: { eje: EjeMedido }) {
+  const label = EJE_LABELS[eje.eje];
+  // Un eje por debajo de su mínimo de revisiones no enseña porcentaje: con 12
+  // casos un solo error mueve el número ocho puntos y parecería medido.
+  const pct = eje.suficiente ? eje.pct : null;
+  const nivel = nivelDeEje(pct);
+  const faltantes = `faltan ${eje.faltan} ${eje.faltan === 1 ? "revisión" : "revisiones"}`;
+
+  return (
+    <li className="ac-sh-eje" data-testid={`prep-eje-${eje.eje}`}>
+      <div className="ac-sh-eje-head">
+        <span className="ac-sh-eje-name">{label}</span>
+        <span className="ac-sh-eje-pct" data-nivel={nivel}>
+          {pct === null ? DASH : `${pct} %`}
+        </span>
+      </div>
+
+      <div
+        className="ac-sh-meter"
+        role="meter"
+        aria-label={pct === null ? `${label}: sin porcentaje todavía` : `${label}: ${pct} %`}
+        aria-valuemin={0}
+        aria-valuemax={100}
+        aria-valuenow={pct ?? 0}
+        aria-valuetext={pct === null ? `Sin porcentaje todavía: ${faltantes}` : `${pct} %`}
+      >
+        <span className="ac-sh-meter-fill" data-nivel={nivel} style={{ width: `${pct ?? 0}%` }} />
+        <span
+          className="ac-sh-meter-marca"
+          data-testid="prep-marca-90"
+          style={{ left: `${UMBRAL_DE_PREPARACION}%` }}
+          aria-hidden="true"
+        />
+      </div>
+
+      <p className="ac-sh-eje-meta">
+        {eje.poblacion === 0 ? (
+          <span>Sin datos: {EJE_SIN_POBLACION[eje.eje]}.</span>
+        ) : (
+          <>
+            <span>
+              {eje.revisados} {eje.revisados === 1 ? "revisado" : "revisados"} de {eje.poblacion}{" "}
+              {eje.poblacion === 1 ? "borrador" : "borradores"}
+            </span>
+            {!eje.suficiente && <strong className="ac-sh-eje-faltan">{faltantes}</strong>}
+            {eje.revisados > 0 && (
+              <span className="ac-sh-eje-detalle">
+                {eje.reprobados} {eje.reprobados === 1 ? "reprobado" : "reprobados"}, {eje.cambiosMenores} con cambio
+                menor
+              </span>
+            )}
+          </>
+        )}
+      </p>
+    </li>
+  );
+}
+
+function PreparacionBlock({
+  resumen,
+  preparacion,
+  error,
+  onRetry,
+}: {
+  resumen: ResumenState;
+  preparacion: PreparacionDeSombra | null;
+  error: boolean;
+  onRetry: () => void;
+}) {
+  return (
+    <section className="dash-panel" aria-label="Preparación para desplegar">
+      <div className="ac-sh-head">
+        <h2 className="dash-panel-title">Preparación para desplegar</h2>
+      </div>
+      <div className="ac-sh-body">
+        {error ? (
+          <div className="ac-sh-error" role="alert">
+            <span>No se pudo cargar la preparación y el consumo. Reintenta en un momento.</span>
+            <button type="button" className="crm-pill" onClick={onRetry}>
+              Reintentar
+            </button>
+          </div>
+        ) : resumen === undefined ? (
+          <p className="ac-sh-muted">Cargando…</p>
+        ) : resumen === null || preparacion === null ? (
+          <p className="ac-sh-muted">No disponible: falta aplicar la migración {MIGRACION_RESUMEN}</p>
+        ) : (
+          <>
+            <div className="ac-sh-prep">
+              <div className="ac-sh-general" data-nivel={nivelDeEje(preparacion.general)}>
+                <span className="ac-sh-general-n" data-testid="prep-general">
+                  {preparacion.general === null ? DASH : `${preparacion.general} %`}
+                </span>
+                <span className="ac-sh-general-label">Preparación general</span>
+                <p className="ac-sh-motivo" data-testid="prep-motivo">
+                  {preparacion.motivo}
+                </p>
+              </div>
+
+              <div className="ac-sh-ejes-col">
+                <ul className="ac-sh-ejes">
+                  {preparacion.ejes.map((eje) => (
+                    <EjeFila key={eje.eje} eje={eje} />
+                  ))}
+                </ul>
+                <p className="ac-sh-leyenda">
+                  La marca vertical es el {UMBRAL_DE_PREPARACION} %. El número general es el del eje más flojo: un
+                  vendedor está tan listo como su punto más débil.
+                </p>
+              </div>
+            </div>
+
+            <p className="ac-sh-senales" data-testid="prep-senales">
+              <span className="ac-sh-senales-titulo">
+                Señales sin revisión, de {miles(resumen.preparacion.senales.total)} borradores:
+              </span>
+              <span>{miles(resumen.preparacion.senales.conGuardas)} con guardas</span>
+              <span>{miles(resumen.preparacion.senales.pasarianAAsesor)} pasarían a un asesor</span>
+              <span>{miles(resumen.preparacion.senales.sinMensajes)} sin mensajes</span>
+            </p>
+
+            <p className="ac-sh-nota-fija">
+              Este número sale de las revisiones de los supervisores. La sombra no aprende sola: mejora cuando una
+              corrección se convierte en lección o en un ajuste del guion.
+            </p>
+          </>
+        )}
+      </div>
+    </section>
+  );
+}
+
+function ConsumoBlock({
+  resumen,
+  proyeccion,
+  error,
+  spendText,
+}: {
+  resumen: ResumenState;
+  proyeccion: ProyeccionDeConsumo | null;
+  error: boolean;
+  spendText: string;
+}) {
+  return (
+    <section className="dash-panel" aria-label="Consumo">
+      <div className="ac-sh-head">
+        <h2 className="dash-panel-title">Consumo</h2>
+      </div>
+      <div className="ac-sh-body ac-sh-consumo">
+        {/* Hoy contra el tope no depende del período ni del resumen: sigue visible aunque la RPC falte. */}
+        <div className="ac-sh-stats">
+          <Stat testId="stat-gasto" value={spendText} label="Gasto de la sombra hoy" sub="contra el tope diario" />
+          {resumen && proyeccion && (
+            <>
+              <Stat
+                testId="consumo-borradores"
+                value={miles(resumen.consumo.total.borradores)}
+                label="Borradores del período"
+              />
+              <Stat
+                testId="consumo-costo"
+                value={resumen.consumo.total.costoUsd === null ? DASH : usd(resumen.consumo.total.costoUsd)}
+                label="Costo del período"
+                sub={resumen.consumo.total.sinTarifa > 0 ? "sin contar los de modelos sin tarifa" : undefined}
+              />
+              <Stat
+                testId="consumo-tokens"
+                value={miles(resumen.consumo.total.inputTokens)}
+                label="Tokens de entrada"
+                sub={`${miles(resumen.consumo.total.outputTokens)} de salida`}
+              />
+              <Stat
+                testId="consumo-por-borrador"
+                value={proyeccion.costoPorBorradorUsd === null ? DASH : usd(proyeccion.costoPorBorradorUsd, 3)}
+                label="Costo por borrador"
+              />
+              <Stat
+                testId="consumo-promedio"
+                value={proyeccion.promedioDiarioUsd === null ? DASH : usd(proyeccion.promedioDiarioUsd)}
+                label="Promedio por día"
+                sub={`sobre ${plural(proyeccion.diasEnElPeriodo, "día con borradores", "días con borradores")}`}
+              />
+            </>
+          )}
+        </div>
+
+        {error ? (
+          <p className="ac-sh-muted">No se pudo cargar el consumo del período.</p>
+        ) : resumen === undefined ? (
+          <p className="ac-sh-muted">Cargando…</p>
+        ) : resumen === null || proyeccion === null ? (
+          <p className="ac-sh-muted">No disponible: falta aplicar la migración {MIGRACION_RESUMEN}</p>
+        ) : (
+          <>
+            {proyeccion.alCienPorCientoUsd !== null &&
+              resumen.consumo.muestreoPct !== null &&
+              resumen.consumo.muestreoPct < 100 && (
+                <p className="ac-sh-proyeccion" data-testid="consumo-proyeccion">
+                  Al 100 % de muestreo serían ≈ {usd(proyeccion.alCienPorCientoUsd)} por día (hoy se muestrea el{" "}
+                  {resumen.consumo.muestreoPct} % de los turnos).
+                </p>
+              )}
+
+            {resumen.consumo.total.sinTarifa > 0 && (
+              <p className="ac-sh-aviso" role="status" data-testid="consumo-aviso-sin-tarifa">
+                {plural(resumen.consumo.total.sinTarifa, "borrador sin tarifa", "borradores sin tarifa")}: el modelo no
+                tiene fila en model_pricing, su costo no se cuenta y el tope no los frena.
+              </p>
+            )}
+
+            {resumen.consumo.dias.length === 0 ? (
+              <p className="ac-sh-muted">Sin borradores en este período.</p>
+            ) : (
+              <div className="ac-sh-table-scroll" role="group" aria-label="Tabla de consumo por día, desplazable" tabIndex={0}>
+                <table className="ac-sh-table" aria-label="Consumo por día">
+                  <thead>
+                    <tr>
+                      <th scope="col">Día</th>
+                      <th scope="col">Borradores</th>
+                      <th scope="col">Tokens de entrada</th>
+                      <th scope="col">Tokens de salida</th>
+                      <th scope="col">Costo</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {resumen.consumo.dias.map((dia) => (
+                      <tr key={dia.dia}>
+                        <th scope="row">{diaCorto(dia.dia)}</th>
+                        <td>{miles(dia.borradores)}</td>
+                        <td>{miles(dia.inputTokens)}</td>
+                        <td>{miles(dia.outputTokens)}</td>
+                        <td>
+                          {dia.costoUsd === null ? (
+                            <span title="Ningún borrador de este día tiene tarifa de modelo">{DASH}</span>
+                          ) : (
+                            usd(dia.costoUsd)
+                          )}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </>
+        )}
+      </div>
+    </section>
+  );
+}
+
 // ------------------------------- Panel -------------------------------------
 
 interface ShadowPanelProps {
@@ -483,6 +780,11 @@ export function ShadowPanel({ currentAgent, dailyCapUsd }: ShadowPanelProps) {
   const [loaded, setLoaded] = useState<Loaded | undefined>(undefined);
   const [loadError, setLoadError] = useState(false);
   const [spend, setSpend] = useState<number | null | undefined>(undefined);
+  // El resumen (consumo y preparación) tiene su propia lectura y su propio
+  // Reintentar: que falle o falte la migración no debe tumbar la lista de borradores.
+  const [resumen, setResumen] = useState<ResumenState>(undefined);
+  const [resumenError, setResumenError] = useState(false);
+  const [retryResumen, setRetryResumen] = useState(0);
   const [filters, setFilters] = useState<ShadowFilters>(EMPTY_SHADOW_FILTERS);
   const [openId, setOpenId] = useState<string | null>(null);
 
@@ -510,6 +812,25 @@ export function ShadowPanel({ currentAgent, dailyCapUsd }: ShadowPanelProps) {
     };
   }, [period, retry]);
 
+  // Consumo y preparación del período (P1, 17/11/2026): una sola RPC. Inline,
+  // con `.then()` y bandera `cancelado` (react-hooks/set-state-in-effect).
+  useEffect(() => {
+    let cancelado = false;
+    fetchSombraResumen(createClient(), { desde: periodStart(period), hasta: new Date().toISOString() })
+      .then((next) => {
+        if (cancelado) return;
+        setResumen(next);
+        setResumenError(false);
+      })
+      .catch((error: unknown) => {
+        console.error("No se pudo cargar el consumo y la preparación de la sombra:", error);
+        if (!cancelado) setResumenError(true);
+      });
+    return () => {
+      cancelado = true;
+    };
+  }, [period, retryResumen]);
+
   // El gasto de hoy no depende del período.
   useEffect(() => {
     let cancelado = false;
@@ -536,12 +857,23 @@ export function ShadowPanel({ currentAgent, dailyCapUsd }: ShadowPanelProps) {
     [loaded, reviewByDraft, filters]
   );
 
+  const preparacion = useMemo(() => (resumen ? medirPreparacion(resumen) : null), [resumen]);
+  const proyeccion = useMemo(() => (resumen ? proyectarConsumo(resumen) : null), [resumen]);
+
   function changePeriod(next: SearchPeriod) {
     if (next === period) return;
     setPeriod(next);
     setLoaded(undefined);
     setLoadError(false);
+    setResumen(undefined);
+    setResumenError(false);
     setOpenId(null);
+  }
+
+  function retryLoadResumen() {
+    setResumen(undefined);
+    setResumenError(false);
+    setRetryResumen((n) => n + 1);
   }
 
   function setFilter<K extends keyof ShadowFilters>(key: K, value: ShadowFilters[K]) {
@@ -598,10 +930,13 @@ export function ShadowPanel({ currentAgent, dailyCapUsd }: ShadowPanelProps) {
               sub="sobre los revisados"
             />
             <Stat testId="stat-mediana" value={loaded ? seconds(stats.medianaMs) : DASH} label="Duración mediana" />
-            <Stat testId="stat-gasto" value={spendText} label="Gasto de la sombra hoy" sub="contra el tope diario" />
           </div>
         </div>
       </section>
+
+      <PreparacionBlock resumen={resumen} preparacion={preparacion} error={resumenError} onRetry={retryLoadResumen} />
+
+      <ConsumoBlock resumen={resumen} proyeccion={proyeccion} error={resumenError} spendText={spendText} />
 
       <section className="dash-panel" aria-label="Borradores">
         <div className="ac-sh-head">

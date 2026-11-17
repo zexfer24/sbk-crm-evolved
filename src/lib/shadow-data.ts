@@ -2,8 +2,10 @@ import type { SupabaseClient } from "@supabase/supabase-js";
 import {
   shadowDraftFromRow,
   shadowReviewFromRow,
+  sombraResumenFromRow,
   type ShadowDraft,
   type ShadowReview,
+  type SombraResumen,
 } from "@/lib/shadow";
 
 // ---------------------------------------------------------------------------
@@ -134,4 +136,30 @@ export async function fetchPendingSuggestion(
   if (error) throw error;
   const row = ((data ?? []) as Record<string, unknown>[])[0];
   return row ? shadowDraftFromRow(row) : null;
+}
+
+/**
+ * Consumo de la sombra y conteos de preparación para desplegar del período
+ * (P1, 17/11/2026, RPC `sombra_resumen`, migración 20261117020000).
+ *
+ *  - 42501 (quien llama no es supervisor ni admin) se RELANZA: esconderlo
+ *    pintaría un panel vacío como si no hubiera datos.
+ *  - Función inexistente (42883 de Postgres, PGRST202 de PostgREST: la
+ *    migración todavía no se aplicó) devuelve `null`; el panel pinta «No
+ *    disponible» y dice qué migración falta.
+ *  - Cualquier otro error se relanza: el panel ofrece Reintentar.
+ */
+export async function fetchSombraResumen(
+  supabase: SupabaseClient,
+  options: { desde: string; hasta: string }
+): Promise<SombraResumen | null> {
+  const { data, error } = await supabase.rpc("sombra_resumen", { p_desde: options.desde, p_hasta: options.hasta });
+  if (error) {
+    if (error.code === "42883" || error.code === "PGRST202") {
+      console.error("sombra_resumen no existe todavía (falta aplicar la migración 20261117020000):", error);
+      return null;
+    }
+    throw error;
+  }
+  return sombraResumenFromRow(data);
 }

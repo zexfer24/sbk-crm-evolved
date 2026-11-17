@@ -15,7 +15,15 @@ import {
   EMPTY_SHADOW_FILTERS,
   validateShadowReview,
   CORRECCION_MAX,
+  EJE_LABELS,
+  MINIMO_DE_REVISIONES,
+  UMBRAL_DE_PREPARACION,
+  medirPreparacion,
+  proyectarConsumo,
+  sombraResumenFromRow,
+  type EjeDePreparacion,
   type ShadowDraft,
+  type SombraResumen,
   type ShadowFilters,
   type ShadowReview,
 } from "@/lib/shadow";
@@ -361,5 +369,254 @@ describe("validateShadowReview", () => {
     expect(CORRECCION_MAX).toBe(2000);
     expect(validateShadowReview({ ...ok, correccion: "x".repeat(2000) })).toEqual({});
     expect(validateShadowReview({ ...ok, correccion: "x".repeat(2001) }).correccion).toBeTruthy();
+  });
+});
+
+
+// ---------------- Consumo y preparación para desplegar (P1, 17/11/2026) ----------------
+
+/** El jsonb tal cual lo devuelve `sombra_resumen`, con los tres ejes a medida. */
+function filaResumen(
+  ejes: Partial<Record<EjeDePreparacion, [number, number, number, number]>> = {},
+  consumo: Record<string, unknown> = {}
+) {
+  const eje = (nombre: EjeDePreparacion) => {
+    const [poblacion, revisados, reprobados, cambiosMenores] = ejes[nombre] ?? [0, 0, 0, 0];
+    return { eje: nombre, poblacion, revisados, reprobados, cambios_menores: cambiosMenores };
+  };
+  return {
+    consumo: {
+      dias: [
+        { dia: "2026-11-17", borradores: 10, input_tokens: 1_000_000, output_tokens: 200_000, cached_input_tokens: 5, costo_usd: 3 },
+        { dia: "2026-11-16", borradores: 10, input_tokens: 1_000_000, output_tokens: 200_000, cached_input_tokens: 0, costo_usd: 1 },
+      ],
+      total: { borradores: 20, input_tokens: 2_000_000, output_tokens: 400_000, cached_input_tokens: 5, costo_usd: 4, sin_tarifa: 0 },
+      hoy_usd: 3,
+      tope_usd: 5,
+      muestreo_pct: 100,
+      ...consumo,
+    },
+    preparacion: {
+      ejes: [eje("busqueda"), eje("conversacion"), eje("pago")],
+      senales: { total: 20, con_guardas: 2, pasarian_a_asesor: 3, sin_mensajes: 1 },
+    },
+  };
+}
+
+function resumen(
+  ejes: Partial<Record<EjeDePreparacion, [number, number, number, number]>> = {},
+  consumo: Record<string, unknown> = {}
+): SombraResumen {
+  const out = sombraResumenFromRow(filaResumen(ejes, consumo));
+  if (!out) throw new Error("la fila de prueba debía mapear");
+  return out;
+}
+
+describe("constantes de la preparación (literales)", () => {
+  it("mínimos de revisiones por eje y umbral", () => {
+    expect(MINIMO_DE_REVISIONES).toEqual({ busqueda: 30, conversacion: 30, pago: 10 });
+    expect(UMBRAL_DE_PREPARACION).toBe(90);
+    expect(EJE_LABELS).toEqual({
+      busqueda: "Búsqueda de repuestos",
+      conversacion: "Conversación",
+      pago: "Montos y pago",
+    });
+  });
+});
+
+describe("sombraResumenFromRow", () => {
+  it("mapea el jsonb de la RPC a camelCase", () => {
+    const out = resumen({ busqueda: [40, 35, 3, 2] });
+    expect(out.consumo.dias[0]).toEqual({
+      dia: "2026-11-17",
+      borradores: 10,
+      inputTokens: 1_000_000,
+      outputTokens: 200_000,
+      cachedInputTokens: 5,
+      costoUsd: 3,
+    });
+    expect(out.consumo.total).toMatchObject({ borradores: 20, costoUsd: 4, sinTarifa: 0 });
+    expect(out.consumo).toMatchObject({ hoyUsd: 3, topeUsd: 5, muestreoPct: 100 });
+    expect(out.preparacion.ejes.find((e) => e.eje === "busqueda")).toEqual({
+      eje: "busqueda",
+      poblacion: 40,
+      revisados: 35,
+      reprobados: 3,
+      cambiosMenores: 2,
+    });
+    expect(out.preparacion.senales).toEqual({ total: 20, conGuardas: 2, pasarianAAsesor: 3, sinMensajes: 1 });
+  });
+
+  it("un costo null se queda null (no se vuelve 0) y los números en texto se aceptan", () => {
+    const out = resumen(
+      {},
+      {
+        dias: [{ dia: "2026-11-17", borradores: "4", input_tokens: 1, output_tokens: 1, cached_input_tokens: 0, costo_usd: null }],
+        total: { borradores: 4, input_tokens: 1, output_tokens: 1, cached_input_tokens: 0, costo_usd: null, sin_tarifa: 4 },
+        hoy_usd: null,
+        tope_usd: null,
+      }
+    );
+    expect(out.consumo.dias[0].costoUsd).toBeNull();
+    expect(out.consumo.dias[0].borradores).toBe(4);
+    expect(out.consumo.total.costoUsd).toBeNull();
+    expect(out.consumo.hoyUsd).toBeNull();
+    expect(out.consumo.topeUsd).toBeNull();
+  });
+
+  it.each([null, undefined, "x", 3, [], {}, { consumo: 1, preparacion: 2 }, { consumo: {}, preparacion: null }])(
+    "un jsonb raro (%j) da null",
+    (valor) => {
+      expect(sombraResumenFromRow(valor)).toBeNull();
+    }
+  );
+
+  it("un día o un eje mal formado se descarta sin tumbar el resto", () => {
+    const fila = filaResumen({ pago: [5, 5, 0, 0] });
+    (fila.consumo.dias as unknown[]).push("raro", null, { dia: 7 });
+    (fila.preparacion.ejes as unknown[]).push({ eje: "inventado", poblacion: 9 });
+    const out = sombraResumenFromRow(fila);
+    expect(out?.consumo.dias).toHaveLength(2);
+    expect(out?.preparacion.ejes).toHaveLength(3);
+  });
+});
+
+describe("medirPreparacion", () => {
+  const ORDEN: EjeDePreparacion[] = ["busqueda", "conversacion", "pago"];
+
+  it("sin revisiones: el porcentaje de cada eje es null, el general también, y el motivo dice lo que falta", () => {
+    const r = medirPreparacion(resumen({ busqueda: [12, 0, 0, 0], conversacion: [50, 0, 0, 0], pago: [4, 0, 0, 0] }));
+
+    expect(r.ejes.map((e) => e.eje)).toEqual(ORDEN);
+    for (const e of r.ejes) {
+      expect(e.pct).toBeNull();
+      expect(e.suficiente).toBe(false);
+    }
+    expect(r.ejes.map((e) => e.faltan)).toEqual([30, 30, 10]);
+    expect(r.general).toBeNull();
+    expect(r.ejeMasFlojo).toBeNull();
+    expect(r.lista).toBe(false);
+    expect(r.motivo).toBe("Faltan revisiones: búsqueda 0 de 30, conversación 0 de 30, pago 0 de 10");
+  });
+
+  it("el motivo cuenta lo revisado y no menciona los ejes que ya tienen su mínimo", () => {
+    const r = medirPreparacion(resumen({ busqueda: [40, 12, 0, 0], conversacion: [60, 30, 1, 0], pago: [8, 3, 0, 0] }));
+
+    expect(r.motivo).toBe("Faltan revisiones: búsqueda 12 de 30, pago 3 de 10");
+    expect(r.ejes[1]).toMatchObject({ suficiente: true, faltan: 0 });
+    expect(r.general).toBeNull();
+  });
+
+  it("un eje sin ninguna población (nadie pagó todavía) cuenta como no suficiente y el motivo lo dice", () => {
+    const r = medirPreparacion(resumen({ busqueda: [40, 30, 0, 0], conversacion: [60, 30, 0, 0], pago: [0, 0, 0, 0] }));
+
+    expect(r.ejes[2]).toMatchObject({ poblacion: 0, pct: null, suficiente: false, faltan: 10 });
+    expect(r.general).toBeNull();
+    expect(r.motivo).toBe("Faltan revisiones: pago (todavía no hubo ningún borrador con pago)");
+  });
+
+  it("el porcentaje es (revisados - reprobados) / revisados, redondeado; los cambios menores no restan", () => {
+    const r = medirPreparacion(resumen({ busqueda: [50, 32, 3, 9], conversacion: [50, 30, 0, 0], pago: [20, 12, 1, 0] }));
+
+    // (32 - 3) / 32 = 90,625 → 91
+    expect(r.ejes[0].pct).toBe(91);
+    expect(r.ejes[1].pct).toBe(100);
+    // (12 - 1) / 12 = 91,67 → 92
+    expect(r.ejes[2].pct).toBe(92);
+  });
+
+  it("con los tres ejes suficientes, el general es el MENOR de los tres (no el promedio)", () => {
+    const r = medirPreparacion(resumen({ busqueda: [50, 40, 2, 0], conversacion: [50, 30, 0, 0], pago: [20, 10, 2, 0] }));
+
+    expect(r.ejes.map((e) => e.pct)).toEqual([95, 100, 80]);
+    // El promedio sería 91: el general tiene que ser 80.
+    expect(r.general).toBe(80);
+    expect(r.ejeMasFlojo).toBe("pago");
+    expect(r.lista).toBe(false);
+    expect(r.motivo).toBe("El eje más flojo es Montos y pago (80 %): todavía no llega al 90 %");
+  });
+
+  it("exactamente 90 % en los tres ejes: lista; 89 %: no lista", () => {
+    const lista = medirPreparacion(resumen({ busqueda: [50, 30, 3, 0], conversacion: [50, 30, 3, 0], pago: [20, 10, 1, 0] }));
+    expect(lista.ejes.map((e) => e.pct)).toEqual([90, 90, 90]);
+    expect(lista.general).toBe(90);
+    expect(lista.lista).toBe(true);
+    expect(lista.motivo).toBe("Los tres ejes llegan al 90 %: lista para el siguiente escalón");
+
+    // (100 - 11) / 100 = 89 en el eje de conversación.
+    const casi = medirPreparacion(resumen({ busqueda: [50, 30, 3, 0], conversacion: [200, 100, 11, 0], pago: [20, 10, 1, 0] }));
+    expect(casi.ejes[1].pct).toBe(89);
+    expect(casi.general).toBe(89);
+    expect(casi.ejeMasFlojo).toBe("conversacion");
+    expect(casi.lista).toBe(false);
+  });
+
+  it("29 revisiones de búsqueda con 100 % no alcanzan: el mínimo manda sobre el porcentaje", () => {
+    const r = medirPreparacion(resumen({ busqueda: [50, 29, 0, 0], conversacion: [50, 30, 0, 0], pago: [20, 10, 0, 0] }));
+    expect(r.ejes[0]).toMatchObject({ pct: 100, suficiente: false, faltan: 1 });
+    expect(r.general).toBeNull();
+    expect(r.lista).toBe(false);
+  });
+
+  it("un resumen sin ninguna fila de eje no inventa porcentajes", () => {
+    const fila = filaResumen();
+    fila.preparacion.ejes = [];
+    const vacio = sombraResumenFromRow(fila);
+    expect(vacio).not.toBeNull();
+    const r = medirPreparacion(vacio as SombraResumen);
+    expect(r.ejes.map((e) => e.pct)).toEqual([null, null, null]);
+    expect(r.general).toBeNull();
+  });
+});
+
+describe("proyectarConsumo", () => {
+  it("costo por borrador, promedio diario y proyección al 100 % con el muestreo al 20 %", () => {
+    const p = proyectarConsumo(resumen({}, { muestreo_pct: 20 }));
+
+    // 4 USD en 20 borradores, repartidos en 2 días.
+    expect(p.costoPorBorradorUsd).toBeCloseTo(0.2);
+    expect(p.diasEnElPeriodo).toBe(2);
+    expect(p.promedioDiarioUsd).toBeCloseTo(2);
+    // Con el 20 % de las conversaciones: al 100 % serían cinco veces más.
+    expect(p.alCienPorCientoUsd).toBeCloseTo(10);
+  });
+
+  it("con muestreo 100 la proyección es el propio promedio diario", () => {
+    expect(proyectarConsumo(resumen()).alCienPorCientoUsd).toBeCloseTo(2);
+  });
+
+  it("muestreo 0 no se puede proyectar: null, no infinito", () => {
+    const p = proyectarConsumo(resumen({}, { muestreo_pct: 0 }));
+    expect(p.alCienPorCientoUsd).toBeNull();
+    expect(p.promedioDiarioUsd).toBeCloseTo(2);
+  });
+
+  it("muestreo desconocido tampoco se proyecta", () => {
+    expect(proyectarConsumo(resumen({}, { muestreo_pct: null })).alCienPorCientoUsd).toBeNull();
+  });
+
+  it("sin costo (todo sin tarifa) no hay costo por borrador ni proyección", () => {
+    const p = proyectarConsumo(
+      resumen(
+        {},
+        { total: { borradores: 20, input_tokens: 1, output_tokens: 1, cached_input_tokens: 0, costo_usd: null, sin_tarifa: 20 } }
+      )
+    );
+    expect(p.costoPorBorradorUsd).toBeNull();
+    expect(p.promedioDiarioUsd).toBeNull();
+    expect(p.alCienPorCientoUsd).toBeNull();
+  });
+
+  it("sin borradores ni días: todo null y cero días", () => {
+    const p = proyectarConsumo(
+      resumen(
+        {},
+        {
+          dias: [],
+          total: { borradores: 0, input_tokens: 0, output_tokens: 0, cached_input_tokens: 0, costo_usd: 0, sin_tarifa: 0 },
+        }
+      )
+    );
+    expect(p).toEqual({ costoPorBorradorUsd: null, alCienPorCientoUsd: null, diasEnElPeriodo: 0, promedioDiarioUsd: null });
   });
 });

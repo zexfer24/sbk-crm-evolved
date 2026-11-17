@@ -6,6 +6,7 @@ import {
   fetchShadowDrafts,
   fetchShadowReviews,
   fetchShadowSpendToday,
+  fetchSombraResumen,
 } from "@/lib/shadow-data";
 
 /**
@@ -181,5 +182,52 @@ describe("fetchPendingSuggestion", () => {
   it("sin borradores devuelve null", async () => {
     const { client } = fakeSupabase({ data: [] });
     expect(await fetchPendingSuggestion(client, "c1")).toBeNull();
+  });
+});
+
+describe("fetchSombraResumen", () => {
+  const RANGO = { desde: "2026-11-10T04:00:00.000Z", hasta: "2026-11-17T20:00:00.000Z" };
+  const FILA = {
+    consumo: {
+      dias: [{ dia: "2026-11-17", borradores: 2, input_tokens: 10, output_tokens: 5, cached_input_tokens: 0, costo_usd: 0.5 }],
+      total: { borradores: 2, input_tokens: 10, output_tokens: 5, cached_input_tokens: 0, costo_usd: 0.5, sin_tarifa: 0 },
+      hoy_usd: 0.5,
+      tope_usd: 5,
+      muestreo_pct: 100,
+    },
+    preparacion: { ejes: [], senales: { total: 2, con_guardas: 0, pasarian_a_asesor: 0, sin_mensajes: 0 } },
+  };
+
+  it("llama a la RPC con los dos parámetros y devuelve el resumen mapeado", async () => {
+    const { client, rpcCalls } = fakeSupabase({}, { data: FILA });
+    const out = await fetchSombraResumen(client, RANGO);
+
+    expect(rpcCalls).toEqual([{ fn: "sombra_resumen", args: { p_desde: RANGO.desde, p_hasta: RANGO.hasta } }]);
+    expect(out?.consumo.total.costoUsd).toBe(0.5);
+    expect(out?.consumo.dias[0].dia).toBe("2026-11-17");
+  });
+
+  it("un 42501 (no es supervisor ni admin) se RELANZA: no se esconde como si no hubiera datos", async () => {
+    const { client } = fakeSupabase({}, { error: { code: "42501", message: "no autorizado" } });
+    await expect(fetchSombraResumen(client, RANGO)).rejects.toMatchObject({ code: "42501" });
+  });
+
+  it.each(["42883", "PGRST202"])("función inexistente (%s: falta aplicar la migración) devuelve null y deja el error en consola", async (code) => {
+    const spy = vi.spyOn(console, "error").mockImplementation(() => {});
+    const { client } = fakeSupabase({}, { error: { code, message: "no existe" } });
+
+    expect(await fetchSombraResumen(client, RANGO)).toBeNull();
+    expect(spy).toHaveBeenCalled();
+    spy.mockRestore();
+  });
+
+  it("cualquier otro error se relanza", async () => {
+    const { client } = fakeSupabase({}, { error: { code: "57014", message: "statement timeout" } });
+    await expect(fetchSombraResumen(client, RANGO)).rejects.toMatchObject({ code: "57014" });
+  });
+
+  it("una respuesta que no tiene la forma esperada da null", async () => {
+    const { client } = fakeSupabase({}, { data: { cualquier: "cosa" } });
+    expect(await fetchSombraResumen(client, RANGO)).toBeNull();
   });
 });
