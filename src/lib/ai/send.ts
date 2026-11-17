@@ -156,6 +156,29 @@ export interface SendAgentTextOptions {
    * contando como respuesta real, como siempre.
    */
   isAutoReply?: boolean;
+  /**
+   * Seba v2 (S2b, 17/11/2026): recibe el id de la fila de `messages` recién
+   * insertada (`null` si el insert no devolvió fila). `DeliveryOutcome` solo trae
+   * el id de WhatsApp, que en un canal simulado es `null`; el efecto real de v2
+   * necesita el id de la FILA para marcar `is_auto_reply` después de un pase a
+   * asesor. Opt-in: sin esta opción el insert es el de siempre, sin `select`.
+   */
+  alGuardar?: (mensajeId: string | null) => void;
+}
+
+/** Inserta la fila y, solo si alguien pidió el id (`alGuardar`), lo lee de vuelta. */
+async function insertarMensaje(
+  supabase: SupabaseClient<Database>,
+  fila: Database["public"]["Tables"]["messages"]["Insert"],
+  alGuardar: ((mensajeId: string | null) => void) | undefined
+): Promise<void> {
+  const insercion = supabase.from("messages").insert(fila);
+  if (!alGuardar) {
+    await insercion;
+    return;
+  }
+  const { data } = await insercion.select("id").single();
+  alGuardar(data?.id ?? null);
 }
 
 export async function sendAgentText(
@@ -168,15 +191,65 @@ export async function sendAgentText(
     sendWhatsappText(target.phoneNumberId!, credentials, target.phoneNumber, text)
   );
 
-  await supabase.from("messages").insert({
-    conversation_id: target.conversationId,
-    direction: "outbound",
-    sender_type: "ai",
-    message_type: "text",
-    content: text,
-    is_auto_reply: opciones?.isAutoReply ?? false,
-    ...columnasDeEntrega(entrega),
+  await insertarMensaje(
+    supabase,
+    {
+      conversation_id: target.conversationId,
+      direction: "outbound",
+      sender_type: "ai",
+      message_type: "text",
+      content: text,
+      is_auto_reply: opciones?.isAutoReply ?? false,
+      ...columnasDeEntrega(entrega),
+    },
+    opciones?.alGuardar
+  );
+
+  return entrega;
+}
+
+/**
+ * Manda UNA imagen con pie (la foto de un producto, Seba v2, S2b, 17/11/2026):
+ * por `link` y con `caption`, como `sendAgentText` guarda la fila en `messages`
+ * aunque el canal sea simulado. El pie va en `content` (o `null`): es lo que la
+ * burbuja pinta bajo la foto. Mismo contrato de fallo que el texto (`failed` +
+ * `origenDelFallo`), para que el turno trate los dos envíos igual.
+ */
+export async function sendAgentImage(
+  supabase: SupabaseClient<Database>,
+  target: TurnTarget,
+  mediaUrl: string,
+  caption: string | null,
+  opciones?: SendAgentTextOptions
+): Promise<DeliveryOutcome> {
+  const entrega = await entregar(target, async (credentials) => {
+    const link = await signedUrlForSending(mediaUrl, { conversationId: target.conversationId });
+    if (!link) throw new Error(`No se pudo preparar la imagen ${mediaUrl} para enviarla.`);
+
+    return sendWhatsappMedia(
+      target.phoneNumberId!,
+      credentials,
+      target.phoneNumber,
+      "image",
+      link,
+      caption ?? undefined
+    );
   });
+
+  await insertarMensaje(
+    supabase,
+    {
+      conversation_id: target.conversationId,
+      direction: "outbound",
+      sender_type: "ai",
+      message_type: "image",
+      content: caption,
+      media_url: mediaUrl,
+      is_auto_reply: opciones?.isAutoReply ?? false,
+      ...columnasDeEntrega(entrega),
+    },
+    opciones?.alGuardar
+  );
 
   return entrega;
 }

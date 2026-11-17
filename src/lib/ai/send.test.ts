@@ -10,7 +10,7 @@ vi.mock("@/lib/whatsapp/meta-client", async (importOriginal) => ({
   sendWhatsappMedia: (...args: unknown[]) => sendWhatsappMediaMock(...(args as [])),
 }));
 
-import { sendAgentText, sendPlaybookReply } from "@/lib/ai/send";
+import { sendAgentImage, sendAgentText, sendPlaybookReply } from "@/lib/ai/send";
 import { MetaApiError } from "@/lib/whatsapp/meta-client";
 import type { TurnTarget } from "@/lib/ai/turn-target";
 
@@ -29,7 +29,12 @@ function createFakeSupabase() {
       return {
         insert(row: InsertedMessage) {
           inserted.push(row);
-          return Promise.resolve({ data: null, error: null });
+          const n = inserted.length;
+          // Sigue siendo una promesa a secas para los llamadores de siempre; solo quien
+          // pide el id de la fila (`alGuardar`, 17/11/2026) encadena `.select().single()`.
+          return Object.assign(Promise.resolve({ data: null, error: null }), {
+            select: () => ({ single: async () => ({ data: { id: `msg-${n}` }, error: null }) }),
+          });
         },
       };
     },
@@ -482,5 +487,127 @@ describe("sendPlaybookReply — el outcome que vuelve es el del texto, no el del
     );
 
     expect(outcome).toMatchObject({ whatsapp_status: "sent", whatsapp_message_id: "wamid.texto-ok" });
+  });
+});
+
+/**
+ * Seba v2 (S2b, 17/11/2026): `sendAgentImage` manda una imagen (la foto de un
+ * producto) con su pie, y `alGuardar` le entrega a quien llama el id de la fila de
+ * `messages` — lo necesita el efecto real para marcar `is_auto_reply` después de un
+ * pase a asesor, y `DeliveryOutcome` solo trae el id de WhatsApp (null en un canal
+ * simulado).
+ */
+describe("sendAgentImage", () => {
+  it("en un canal simulado guarda una fila de imagen con el pie en content y sin llamar a Meta", async () => {
+    const { client, inserted } = createFakeSupabase();
+    sendWhatsappMediaMock.mockClear();
+
+    // @ts-expect-error -- fake mínimo
+    const outcome = await sendAgentImage(client, conversation(false), "https://sbk.example/foto.jpg", "Casco LS2 negro");
+
+    expect(sendWhatsappMediaMock).not.toHaveBeenCalled();
+    expect(inserted).toHaveLength(1);
+    expect(inserted[0]).toMatchObject({
+      conversation_id: "conv-1",
+      direction: "outbound",
+      sender_type: "ai",
+      message_type: "image",
+      content: "Casco LS2 negro",
+      media_url: "https://sbk.example/foto.jpg",
+      is_auto_reply: false,
+    });
+    expect(outcome.whatsapp_status).toBeNull();
+  });
+
+  it("en un canal conectado la manda a WhatsApp como imagen por link, con su pie como caption", async () => {
+    const { client } = createFakeSupabase();
+    process.env.WHATSAPP_ACCESS_TOKEN = "token-de-prueba";
+    sendWhatsappMediaMock.mockClear();
+    sendWhatsappMediaMock.mockResolvedValueOnce({ whatsappMessageId: "wamid.img" });
+
+    // @ts-expect-error -- fake mínimo
+    const outcome = await sendAgentImage(client, conversation(true), "https://sbk.example/foto.jpg", "Casco LS2 negro");
+
+    expect(sendWhatsappMediaMock).toHaveBeenCalledTimes(1);
+    const args = sendWhatsappMediaMock.mock.calls[0] as unknown as unknown[];
+    expect(args[0]).toBe("pnid-1");
+    expect(args[2]).toBe("+584121112233");
+    expect(args[3]).toBe("image");
+    expect(args[4]).toBe("https://sbk.example/foto.jpg");
+    expect(args[5]).toBe("Casco LS2 negro");
+    expect(outcome).toMatchObject({ whatsapp_status: "sent", whatsapp_message_id: "wamid.img" });
+  });
+
+  it("sin pie guarda content null y no manda caption", async () => {
+    const { client, inserted } = createFakeSupabase();
+    process.env.WHATSAPP_ACCESS_TOKEN = "token-de-prueba";
+    sendWhatsappMediaMock.mockClear();
+
+    // @ts-expect-error -- fake mínimo
+    await sendAgentImage(client, conversation(true), "https://sbk.example/foto.jpg", null);
+
+    expect(inserted[0].content).toBeNull();
+    const args = sendWhatsappMediaMock.mock.calls[0] as unknown as unknown[];
+    expect(args[5]).toBeUndefined();
+  });
+
+  it("isAutoReply viaja a la fila", async () => {
+    const { client, inserted } = createFakeSupabase();
+
+    // @ts-expect-error -- fake mínimo
+    await sendAgentImage(client, conversation(false), "https://sbk.example/foto.jpg", null, { isAutoReply: true });
+
+    expect(inserted[0].is_auto_reply).toBe(true);
+  });
+
+  it("si Meta la rechaza, deja la fila 'failed' con su origen y la devuelve", async () => {
+    const { client, inserted } = createFakeSupabase();
+    process.env.WHATSAPP_ACCESS_TOKEN = "token-de-prueba";
+    sendWhatsappMediaMock.mockClear();
+    sendWhatsappMediaMock.mockRejectedValueOnce(
+      new MetaApiError("Media upload error", 400, { error: { code: 131053 } })
+    );
+
+    // @ts-expect-error -- fake mínimo
+    const outcome = await sendAgentImage(client, conversation(true), "https://sbk.example/foto.jpg", "pie");
+
+    expect(outcome).toMatchObject({ whatsapp_status: "failed", whatsapp_error_code: 131053, origenDelFallo: "meta" });
+    expect(inserted[0]).toMatchObject({ message_type: "image", whatsapp_status: "failed" });
+  });
+
+  it("alGuardar recibe el id de la fila insertada", async () => {
+    const { client } = createFakeSupabase();
+    const ids: (string | null)[] = [];
+
+    // @ts-expect-error -- fake mínimo
+    await sendAgentImage(client, conversation(false), "https://sbk.example/foto.jpg", null, {
+      alGuardar: (id: string | null) => ids.push(id),
+    });
+
+    expect(ids).toEqual(["msg-1"]);
+  });
+});
+
+describe("sendAgentText — alGuardar", () => {
+  it("entrega el id de la fila insertada", async () => {
+    const { client } = createFakeSupabase();
+    const ids: (string | null)[] = [];
+
+    // @ts-expect-error -- fake mínimo
+    await sendAgentText(client, conversation(false), "hola", { alGuardar: (id: string | null) => ids.push(id) });
+
+    expect(ids).toEqual(["msg-1"]);
+  });
+
+  it("sin alGuardar el insert no pide ningún select (comportamiento de siempre)", async () => {
+    const { client } = createFakeSupabase();
+    const insert = vi.fn(() => Promise.resolve({ data: null, error: null }));
+    const sinSelect = { from: () => ({ insert }) };
+
+    // @ts-expect-error -- fake mínimo
+    await sendAgentText(sinSelect, conversation(false), "hola");
+    void client;
+
+    expect(insert).toHaveBeenCalledTimes(1);
   });
 });
