@@ -62,7 +62,15 @@ Registrar cada una en `supabase_migrations.schema_migrations` como en `docs/PROD
 son idempotentes: si una corta por `lock_timeout`, se vuelve a correr desde esa. La tercera es la que
 toma candado sobre `agents` y `conversations`.
 
-**4. Verificar contra la base real** (todo esto antes de tocar `main`):
+**4. Verificar contra la base real** (todo esto antes de tocar `main`). De un solo golpe, con el
+verificador de solo lectura (termina en error y lista lo que falte):
+
+```bash
+psql "<url>" -v ON_ERROR_STOP=1 -f scripts/sql/2026-11-16-verificar-seba-v2.sql
+```
+
+Tiene que imprimir «la base tiene todo lo que el código pide. Se puede avanzar main.» Y a mano, los
+valores:
 
 ```sql
 select to_regclass('public.message_readings'), to_regclass('public.payment_methods');
@@ -148,7 +156,8 @@ desde Control IA y repórtame qué viste en cada verificación.
 | 6 | `6434533` | Las correcciones de la revisión de código | No | UI |
 | 7 | `4faaaa5` | El glosario, CLAUDE.md, la guía de producción y este reporte | No | Documentos |
 | 8 | `717a0f3` | El paso nuevo del CI deja de romper el YAML del flujo | No | Solo CI |
-| 9 | (la punta) | Los pasos del VPS para copiar y pegar, y lo que mostró el CI reproducido en Linux | No | Documentos |
+| 9 | `c4ead73` | Los pasos del VPS para copiar y pegar, y lo que mostró el CI reproducido en Linux | No | Documentos |
+| 10 | (la punta) | Un verificador de solo lectura que dice si la base ya está lista para avanzar `main` | No | Script SQL y documentos |
 
 Variables de entorno nuevas: **ninguna**. Costo de despliegue: **rebuild completo (~5 min)**, porque
 toca la UI.
