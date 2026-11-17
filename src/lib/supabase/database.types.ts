@@ -103,6 +103,120 @@ export type Database = {
           },
         ]
       }
+      // S1, entrega 3 del rework de Seba (17/11/2026, migración 20261117010000):
+      // borradores de Seba v2 en sombra/copiloto. Escribe solo service_role.
+      agent_shadow_drafts: {
+        Row: {
+          area: string | null
+          cached_input_tokens: number
+          contexto: Json
+          conversation_id: string
+          created_at: string
+          duration_ms: number | null
+          escalaria: boolean
+          estado_antes: Json | null
+          estado_despues: Json | null
+          guardas: Json
+          herramientas: Json
+          id: string
+          input_tokens: number
+          llamadas: Json
+          mensajes: Json
+          model: string | null
+          modo: string
+          motivo: string | null
+          nota: string | null
+          output_tokens: number
+          productos: string[]
+          rafaga: Json
+          reasoning_tokens: number
+          sugerencia_estado: string | null
+          sugerencia_resuelta_at: string | null
+          sugerencia_resuelta_por: string | null
+          trigger_message_id: string | null
+        }
+        Insert: {
+          area?: string | null
+          cached_input_tokens?: number
+          contexto: Json
+          conversation_id: string
+          created_at?: string
+          duration_ms?: number | null
+          escalaria?: boolean
+          estado_antes?: Json | null
+          estado_despues?: Json | null
+          guardas?: Json
+          herramientas?: Json
+          id?: string
+          input_tokens?: number
+          llamadas?: Json
+          mensajes: Json
+          model?: string | null
+          modo: string
+          motivo?: string | null
+          nota?: string | null
+          output_tokens?: number
+          productos?: string[]
+          rafaga: Json
+          reasoning_tokens?: number
+          sugerencia_estado?: string | null
+          sugerencia_resuelta_at?: string | null
+          sugerencia_resuelta_por?: string | null
+          trigger_message_id?: string | null
+        }
+        Update: {
+          area?: string | null
+          cached_input_tokens?: number
+          contexto?: Json
+          conversation_id?: string
+          created_at?: string
+          duration_ms?: number | null
+          escalaria?: boolean
+          estado_antes?: Json | null
+          estado_despues?: Json | null
+          guardas?: Json
+          herramientas?: Json
+          id?: string
+          input_tokens?: number
+          llamadas?: Json
+          mensajes?: Json
+          model?: string | null
+          modo?: string
+          motivo?: string | null
+          nota?: string | null
+          output_tokens?: number
+          productos?: string[]
+          rafaga?: Json
+          reasoning_tokens?: number
+          sugerencia_estado?: string | null
+          sugerencia_resuelta_at?: string | null
+          sugerencia_resuelta_por?: string | null
+          trigger_message_id?: string | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "agent_shadow_drafts_conversation_id_fkey"
+            columns: ["conversation_id"]
+            isOneToOne: false
+            referencedRelation: "conversations"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "agent_shadow_drafts_sugerencia_resuelta_por_fkey"
+            columns: ["sugerencia_resuelta_por"]
+            isOneToOne: false
+            referencedRelation: "agents"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "agent_shadow_drafts_trigger_message_id_fkey"
+            columns: ["trigger_message_id"]
+            isOneToOne: false
+            referencedRelation: "messages"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       agent_suggestions: {
         Row: {
           agent_id: string
@@ -240,6 +354,8 @@ export type Database = {
           id: string
           input_tokens: number
           max_output_tokens: number | null
+          // S1 (17/11/2026, migración 20261117010000): qué modelo atendió la llamada.
+          model: string | null
           output_tokens: number
           phase: string
           reasoning_tokens: number | null
@@ -256,6 +372,7 @@ export type Database = {
           id?: string
           input_tokens?: number
           max_output_tokens?: number | null
+          model?: string | null
           output_tokens?: number
           phase: string
           reasoning_tokens?: number | null
@@ -272,6 +389,7 @@ export type Database = {
           id?: string
           input_tokens?: number
           max_output_tokens?: number | null
+          model?: string | null
           output_tokens?: number
           phase?: string
           reasoning_tokens?: number | null
@@ -299,6 +417,12 @@ export type Database = {
       agent_turns: {
         Row: {
           action: string
+          // S1, entrega 3 del rework de Seba (17/11/2026, migración
+          // 20261117010000): qué agente atendió el turno EN VIVO ('v1' por
+          // defecto, también lo anterior; 'v2'). Los turnos en sombra no escriben
+          // en esta tabla: viven en `agent_shadow_drafts`. Mismo estilo que
+          // `reasoning_tokens` (not null default), sin `| null` en Row.
+          agent_version: string
           cached_input_tokens: number | null
           // T6, plan "Seba encuentra, no insiste, y el mostrador no deja a nadie
           // esperando" (28/9/2026, migración 20260928040000): arreglo de
@@ -314,6 +438,8 @@ export type Database = {
           created_at: string
           customer_message: string | null
           delivery_ms: number | null
+          escalation_area: string | null
+          escalation_motivo: string | null
           generation_ms: number | null
           id: string
           input_tokens: number | null
@@ -337,6 +463,7 @@ export type Database = {
         }
         Insert: {
           action: string
+          agent_version?: string
           cached_input_tokens?: number | null
           catalog_queries?: Json | null
           classification_ms?: number | null
@@ -344,6 +471,8 @@ export type Database = {
           created_at?: string
           customer_message?: string | null
           delivery_ms?: number | null
+          escalation_area?: string | null
+          escalation_motivo?: string | null
           generation_ms?: number | null
           id?: string
           input_tokens?: number | null
@@ -360,6 +489,7 @@ export type Database = {
         }
         Update: {
           action?: string
+          agent_version?: string
           cached_input_tokens?: number | null
           catalog_queries?: Json | null
           classification_ms?: number | null
@@ -367,6 +497,8 @@ export type Database = {
           created_at?: string
           customer_message?: string | null
           delivery_ms?: number | null
+          escalation_area?: string | null
+          escalation_motivo?: string | null
           generation_ms?: number | null
           id?: string
           input_tokens?: number | null
@@ -2144,6 +2276,53 @@ export type Database = {
           },
         ]
       }
+      // S1 (17/11/2026, migración 20261117010000): revisión de un supervisor
+      // sobre un borrador de sombra/copiloto. Una por borrador.
+      shadow_reviews: {
+        Row: {
+          correccion: string | null
+          destino: string | null
+          draft_id: string
+          error_tipo: string | null
+          reviewed_at: string
+          reviewed_by: string
+          veredicto: string
+        }
+        Insert: {
+          correccion?: string | null
+          destino?: string | null
+          draft_id: string
+          error_tipo?: string | null
+          reviewed_at?: string
+          reviewed_by: string
+          veredicto: string
+        }
+        Update: {
+          correccion?: string | null
+          destino?: string | null
+          draft_id?: string
+          error_tipo?: string | null
+          reviewed_at?: string
+          reviewed_by?: string
+          veredicto?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "shadow_reviews_draft_id_fkey"
+            columns: ["draft_id"]
+            isOneToOne: true
+            referencedRelation: "agent_shadow_drafts"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "shadow_reviews_reviewed_by_fkey"
+            columns: ["reviewed_by"]
+            isOneToOne: false
+            referencedRelation: "agents"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       sinonimos_busqueda: {
         Row: {
           created_at: string
@@ -2616,6 +2795,10 @@ export type Database = {
           message_id: string
         }[]
       }
+      // S1 (17/11/2026, migración 20261117010000): la segunda la lee el panel con
+      // sesión de asesor/supervisor; la primera solo service_role.
+      shadow_can_run: { Args: never; Returns: boolean }
+      shadow_spend_today: { Args: never; Returns: number }
       unassigned_waiting_count: {
         Args: Record<PropertyKey, never>
         Returns: number

@@ -634,6 +634,14 @@ jobs:
         run: |
           psql "postgresql://postgres:postgres@127.0.0.1:54322/postgres"             -v ON_ERROR_STOP=1             -f supabase/tests/seba_v2_configuracion.sql
 
+      # S1 (20261117010000, entrega 3 del rework de Seba): borradores de sombra y
+      # copiloto (el asesor lee solo los de copiloto y resuelve la sugerencia por
+      # permiso de columna), revisiones solo de supervisor/admin, gasto de la
+      # sombra aparte del gasto en vivo y la versión de agente en agent_turns.
+      - name: seba_v2_sombra -- borradores de sombra y copiloto, revisiones y gasto separado
+        run: |
+          psql "postgresql://postgres:postgres@127.0.0.1:54322/postgres"             -v ON_ERROR_STOP=1             -f supabase/tests/seba_v2_sombra.sql
+
       # A2 T7, plan "Seba no cotiza lo que no es" (30/9/2026): el ARNÉS del
       # catálogo. Corre el `buildCatalogTool` REAL de Seba sobre los ~149 casos de
       # `casos-a2.ts` contra la base que este mismo job acaba de reconstruir desde

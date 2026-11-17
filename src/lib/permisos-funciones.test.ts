@@ -61,7 +61,10 @@ import { describe, expect, it } from "vitest";
 
 const LISTA_BLANCA = new Set(["is_agent", "is_supervisor_or_admin"]);
 
-// Las 38 funciones `security definer` conocidas (33 + las cinco RPC de lectura
+// Las 40 funciones `security definer` conocidas (38 + shadow_spend_today y
+// shadow_can_run, 20261117010000, 17/11/2026: el gasto de la sombra de Seba v2
+// y su interruptor, con los dos revokes; ver su entrada más abajo). Las 38
+// anteriores: 33 + las cinco RPC de lectura
 // de los paneles, 20261113040000, 13/11/2026: panel_ventas, panel_conversaciones,
 // panel_asesores, panel_cola y panel_ventas_activas, ver su entrada más abajo).
 // Las 33 anteriores: 32 + ventas_saint_foto,
@@ -241,6 +244,15 @@ const FUNCIONES_SECURITY_DEFINER_CONOCIDAS = [
   "panel_asesores",
   "panel_cola",
   "panel_ventas_activas",
+  // 17/11/2026 (20261117010000_seba_v2_sombra.sql, S1, entrega 3 del rework de
+  // Seba): el gasto de la sombra/copiloto de Seba v2, calculado desde
+  // `agent_shadow_drafts` (separado del gasto en vivo), y el interruptor que dice
+  // si la sombra puede correr. Definer porque el panel (authenticated) lee el
+  // gasto sin tener acceso a la tabla de borradores de sombra; los dos revokes.
+  // `shadow_spend_today` se abre a authenticated/service_role; `shadow_can_run`
+  // solo a service_role.
+  "shadow_spend_today",
+  "shadow_can_run",
 ].sort();
 
 const DIR_MIGRACIONES = path.resolve(__dirname, "../../supabase/migrations");
@@ -374,8 +386,8 @@ describe("permisos de funciones security definer (guardián estático)", () => {
     .map(([nombre]) => nombre)
     .sort();
 
-  it("detecta exactamente las 38 funciones security definer conocidas", () => {
-    // Si esto falla con MENOS de las 38, el parser se está comiendo alguna
+  it("detecta exactamente las 40 funciones security definer conocidas", () => {
+    // Si esto falla con MENOS de las 40, el parser se está comiendo alguna
     // (regex de cabecera roto, `$$` no encontrado, etc.) y el resto de este
     // archivo no protege nada aunque pase en verde. Si falla con MÁS,
     // apareció una función security definer nueva: hay que sumarla a esta

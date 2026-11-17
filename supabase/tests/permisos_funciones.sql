@@ -122,7 +122,11 @@ declare
     -- fabricar traspasos falsos. La Etapa 2 (botones reclamar/cerrar/devolver
     -- a IA, que sí corren como authenticated) la moverá al otro grupo en la
     -- misma migración que le dé el grant.
-    'public.record_handoff(uuid, text, text, text, uuid, uuid, text)'
+    'public.record_handoff(uuid, text, text, text, uuid, uuid, text)',
+    -- shadow_can_run (20261117010000, S1, entrega 3 del rework de Seba): la
+    -- llama solo el servidor (webhook/turno) con createAdminClient() para decidir
+    -- si corre la sombra; cerrada a anon y authenticated.
+    'public.shadow_can_run()'
   ];
   f text;
   errores text := '';
@@ -194,7 +198,11 @@ declare
     'public.panel_conversaciones(timestamptz, timestamptz)',
     'public.panel_asesores(timestamptz, timestamptz)',
     'public.panel_cola()',
-    'public.panel_ventas_activas()'
+    'public.panel_ventas_activas()',
+    -- shadow_spend_today (20261117010000, S1): el panel de Seba v2 muestra el
+    -- gasto de la sombra contra su tope con sesión de supervisor; cerrada a anon,
+    -- abierta a authenticated y service_role.
+    'public.shadow_spend_today()'
   ];
   f text;
   errores text := '';
