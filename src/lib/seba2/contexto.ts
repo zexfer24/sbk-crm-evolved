@@ -1,6 +1,7 @@
 import "server-only";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import type { ModelMessage } from "ai";
+import { TOOL_KEYS, fetchEnabledToolKeys } from "@/lib/ai/agent-tools";
 import { escalationOpen } from "@/lib/ai/handoffs";
 import { customerFirstName } from "@/lib/ai/customer-name";
 import {
@@ -89,6 +90,13 @@ export interface DatosDeTurno {
   esperaDeAsesor: { area: Area; minutos: number } | null;
   /** Minutos desde el último mensaje real de un asesor al cliente (saliente, no nota interna); null si nunca. */
   asesorEscribioHaceMin: number | null;
+  /**
+   * Los interruptores por herramienta de Control IA (`agent_tools`), los mismos que respeta v1. R2/C1 (17/11/2026):
+   * v2 ofrecía `buscarRepuesto` siempre y, con «Consulta de productos» apagada —la orden del operador de que la IA
+   * no afirme existencia ni precio—, cotizaba igual. `catalogo` = `buscar_repuesto`; `biblioteca` =
+   * `consultar_biblioteca`. Ante un error de lectura, `fetchEnabledToolKeys` enciende todas (como v1).
+   */
+  herramientas: { catalogo: boolean; biblioteca: boolean };
 }
 
 // ------------------------------- Carga -------------------------------------
@@ -132,15 +140,65 @@ function normalizar(texto: string): string {
 }
 
 /**
+ * Palabras que un primer token de `agents.display_name` puede ser SIN ser un nombre propio (R2/C2, 17/11/2026).
+ * Con asesores llamados «ASESOR 2», «ADMIN PRUEBA» o «Ventas SBK», el primer token entraba a `nombresDeAsesores` y la
+ * guarda `nombre_interno` frenaba cualquier texto que dijera «asesor», «admin» o «ventas»: en la prueba real
+ * bloqueó dos veces una respuesta correcta por la palabra «asesor». Lista cerrada, sin tildes ni mayúsculas
+ * (se compara con `normalizar`); una palabra nueva se agrega acá con su test.
+ */
+export const PALABRAS_QUE_NO_SON_NOMBRE: ReadonlySet<string> = new Set([
+  "asesor",
+  "asesora",
+  "asesores",
+  "admin",
+  "administrador",
+  "administradora",
+  "ventas",
+  "vendedor",
+  "vendedora",
+  "caja",
+  "cajero",
+  "cajera",
+  "soporte",
+  "supervisor",
+  "supervisora",
+  "gerente",
+  "tienda",
+  "equipo",
+  "pagos",
+  "envios",
+  "reclamos",
+  "atencion",
+  "cliente",
+  "clientes",
+  "sbk",
+  "motors",
+  "motos",
+  "prueba",
+  "demo",
+  "test",
+  "usuario",
+  "sistema",
+  "almacen",
+  "despacho",
+  "taller",
+  "repuestos",
+]);
+
+/**
  * El primer nombre de un asesor tal como se lo escribe a un cliente: el primer
  * token del nombre visible, sin signos pegados, y solo si tiene 3 letras o más
- * (un «Al» o un «J.» suelto no sirve para detectar que Seba nombró a un asesor).
+ * (un «Al» o un «J.» suelto no sirve para detectar que Seba nombró a un asesor)
+ * y no es una palabra genérica de `PALABRAS_QUE_NO_SON_NOMBRE`. Un token sin
+ * ninguna letra («2») tampoco es nombre. «ASESOR2» se compara por sus letras.
  */
 function primerNombre(nombreVisible: string): string | null {
   const primero = nombreVisible.trim().split(/\s+/)[0] ?? "";
   const limpio = primero.replace(/^[^\p{L}]+|[^\p{L}]+$/gu, "");
   const letras = limpio.replace(/[^\p{L}]/gu, "");
-  return letras.length >= 3 ? limpio : null;
+  if (letras.length < 3) return null;
+  if (PALABRAS_QUE_NO_SON_NOMBRE.has(normalizar(letras))) return null;
+  return limpio;
 }
 
 /**
@@ -179,7 +237,17 @@ export async function cargarDatosDeTurno(
   ahora: Date,
   precargado?: { lessons?: TurnLessons; businessHours?: BusinessHours }
 ): Promise<DatosDeTurno> {
-  const [conversacion, config, metodos, lessons, escaladaAbierta, agentes, ultimoAsesor, traspasoDeEscalada] =
+  const [
+    conversacion,
+    config,
+    metodos,
+    lessons,
+    escaladaAbierta,
+    agentes,
+    ultimoAsesor,
+    traspasoDeEscalada,
+    herramientasEncendidas,
+  ] =
     await Promise.all([
       supabase
         .from("conversations")
@@ -230,6 +298,8 @@ export async function cargarDatosDeTurno(
           .limit(1)
           .maybeSingle()
       ),
+      // Los interruptores del panel: la MISMA función que v1 (ante un error corre con todas encendidas).
+      fetchEnabledToolKeys(supabase),
     ]);
 
   // Sin estos tres Seba v2 no puede atender: lanzan y quien llama decide (la cola reintenta un corte transitorio).
@@ -323,6 +393,10 @@ export async function cargarDatosDeTurno(
     escaladaAbierta,
     esperaDeAsesor: escaladaAbierta ? { area: areaDeLaConversacion ?? "ventas", minutos: minutosDeEscalada ?? 0 } : null,
     asesorEscribioHaceMin: ultimoAsesor ? minutosDesde(ultimoAsesor.created_at, ahora) : null,
+    herramientas: {
+      catalogo: herramientasEncendidas.has(TOOL_KEYS.catalog),
+      biblioteca: herramientasEncendidas.has(TOOL_KEYS.knowledge),
+    },
   };
 }
 

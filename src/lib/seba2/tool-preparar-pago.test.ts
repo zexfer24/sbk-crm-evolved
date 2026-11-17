@@ -393,6 +393,14 @@ describe("prepararPago — la herramienta del SDK", () => {
     expect(esquema().safeParse({ ...valida, ciudad: "x".repeat(61) }).success).toBe(false);
   });
 
+  it("R2/C3: la descripción dice de dónde salen los productId y que no hace falta buscar de nuevo lo que ya está en el pedido", () => {
+    const { deps } = montar();
+    const { description } = buildPrepararPagoTool(deps) as unknown as { description: string };
+    expect(description).toContain("«Pedido» en TURNO ACTUAL");
+    expect(description).toContain("buscarRepuesto");
+    expect(description).toMatch(/NO hace falta buscar de nuevo un producto que ya está en el pedido/);
+  });
+
   it("el execute del SDK corre la misma lógica", async () => {
     const { deps, fx } = montar();
     const t = buildPrepararPagoTool(deps) as unknown as {

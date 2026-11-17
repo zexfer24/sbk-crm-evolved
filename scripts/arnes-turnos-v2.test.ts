@@ -44,12 +44,13 @@ import path from "node:path";
 import { generateText } from "ai";
 import { createClient, type SupabaseClient } from "@supabase/supabase-js";
 import { afterAll, describe, expect, it } from "vitest";
+import { TOOL_KEYS, fetchEnabledToolKeys } from "@/lib/ai/agent-tools";
 import { fetchTurnLessons } from "@/lib/ai/lessons";
 import { buildCatalogTool } from "@/lib/ai/tools";
 import { businessStatus, parseBusinessHours } from "@/lib/business-hours";
 import type { PaymentMethodConfig, PaymentMethodCurrency } from "@/lib/payment-methods";
 import type { Database } from "@/lib/supabase/database.types";
-import type { DatosDeTurno } from "@/lib/seba2/contexto";
+import { PALABRAS_QUE_NO_SON_NOMBRE, type DatosDeTurno } from "@/lib/seba2/contexto";
 import { crearEffectsDeMemoria } from "@/lib/seba2/effects-memoria";
 import { runSeba2Turn, type DepsDeTurno } from "@/lib/seba2/turno";
 import { type CasoArnes, faltantesDelEntorno, historialDeCaso, parseCasos } from "./arnes-turnos-v2.caso";
@@ -166,11 +167,17 @@ interface FilaMetodo {
   updated_at: string;
 }
 
-/** Primer nombre de un asesor tal como lo usa `cargarDatosDeTurno` (3 letras o más). */
+/**
+ * Primer nombre de un asesor tal como lo usa `cargarDatosDeTurno` (3 letras o más y que no sea una palabra
+ * genérica como «asesor» o «ventas»: R2/C2, 17/11/2026).
+ */
 function primerNombre(nombreVisible: string): string | null {
   const primero = nombreVisible.trim().split(/\s+/)[0] ?? "";
   const limpio = primero.replace(/^[^\p{L}]+|[^\p{L}]+$/gu, "");
-  return limpio.replace(/[^\p{L}]/gu, "").length >= 3 ? limpio : null;
+  const letras = limpio.replace(/[^\p{L}]/gu, "");
+  if (letras.length < 3) return null;
+  const sinTildes = letras.normalize("NFD").replace(/\p{M}/gu, "").toLowerCase();
+  return PALABRAS_QUE_NO_SON_NOMBRE.has(sinTildes) ? null : limpio;
 }
 
 /**
@@ -185,7 +192,7 @@ async function cargarDatosDeArnes(
   conversationId: string,
   ahora: Date
 ): Promise<DatosDeTurno> {
-  const [config, metodos, lessons, agentes] = await Promise.all([
+  const [config, metodos, lessons, agentes, herramientasEncendidas] = await Promise.all([
     supabase
       .from("agent_settings")
       .select("welcome_text, welcome_followups, cashea_datos_text, cashea_minimo_usd, cashea_seis_cuotas_desde_usd, business_hours")
@@ -199,6 +206,8 @@ async function cargarDatosDeArnes(
       .order("label"),
     fetchTurnLessons(supabase, conversationId),
     supabase.from("agents").select("display_name").eq("is_active", true).neq("role", "caja"),
+    // Los interruptores del panel (R2/C1, 17/11/2026): el arnés los respeta como el turno real. Solo `select`.
+    fetchEnabledToolKeys(supabase),
   ]);
 
   if (config.error || !config.data) {
@@ -261,6 +270,10 @@ async function cargarDatosDeArnes(
     escaladaAbierta,
     esperaDeAsesor: escaladaAbierta ? { area: "ventas", minutos: 5 } : null,
     asesorEscribioHaceMin: haceDeAsesor.length > 0 ? Math.min(...haceDeAsesor) : null,
+    herramientas: {
+      catalogo: herramientasEncendidas.has(TOOL_KEYS.catalog),
+      biblioteca: herramientasEncendidas.has(TOOL_KEYS.knowledge),
+    },
   };
 }
 

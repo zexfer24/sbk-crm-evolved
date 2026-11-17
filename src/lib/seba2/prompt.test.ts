@@ -233,6 +233,31 @@ describe("sufijo del turno", () => {
     expect(s).toContain("\nPedido: 2 × PASTILLAS FRENO BERA SBR; 1 × CASCO LS2 NEGRO\n");
   });
 
+  it("R2/C3: cada renglón con productId lo escribe entre paréntesis, y el que no lo trae queda como siempre", () => {
+    const ID_A = "11111111-1111-4111-8111-111111111111";
+    const ID_B = "22222222-2222-4222-8222-222222222222";
+    const s = sufijo(
+      contexto({
+        pedido: [
+          { cantidad: 2, nombre: "PASTILLAS FRENO BERA SBR", productId: ID_A },
+          { cantidad: 1, nombre: "CASCO LS2 NEGRO", productId: ID_B },
+          { cantidad: 1, nombre: "GUANTES" },
+        ],
+      })
+    );
+    expect(s).toContain(
+      `\nPedido: 2 × PASTILLAS FRENO BERA SBR (productId: ${ID_A}); 1 × CASCO LS2 NEGRO (productId: ${ID_B}); 1 × GUANTES\n`
+    );
+  });
+
+  it("R2/C3: el pedido vacío sigue diciendo «vacío» y un solo renglón con id lleva el formato exacto", () => {
+    expect(sufijo(contexto({ pedido: [] }))).toContain("\nPedido: vacío\n");
+    const ID = "11111111-1111-4111-8111-111111111111";
+    expect(linea(sufijo(contexto({ pedido: [{ cantidad: 1, nombre: "CASCO LS2", productId: ID }] })), "Pedido:")).toBe(
+      `Pedido: 1 × CASCO LS2 (productId: ${ID})`
+    );
+  });
+
   it("Pago y Entrega en todas sus variantes", () => {
     expect(linea(sufijo(contexto()), "Pago:")).toBe("Pago: sin definir · Entrega: sin definir");
     expect(

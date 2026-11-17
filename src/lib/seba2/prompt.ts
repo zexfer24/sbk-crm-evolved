@@ -245,8 +245,14 @@ export interface Seba2Context {
   apertura: boolean;
   customerName: string | null;
   estado: EstadoSeba | null;
-  /** Renglones del pedido ya resueltos a nombre (el estado solo guarda ids). */
-  pedido: { cantidad: number; nombre: string }[];
+  /**
+   * Renglones del pedido ya resueltos a nombre (el estado solo guarda ids). `productId` es el id del producto ya
+   * cotizado: el sufijo lo escribe para que `prepararPago` se pueda llamar en un turno POSTERIOR al de la
+   * cotización sin volver a buscar (R2/C3, 17/11/2026: el cliente dijo «sí lo quiero, pago móvil y retiro en
+   * tienda», el modelo no conocía el id, buscó de nuevo con la moto, no lo encontró y el caso terminó pasado a
+   * ventas en vez de recibir los datos de pago). Es un uuid interno, no un dato de pago ni algo que el cliente vea.
+   */
+  pedido: { cantidad: number; nombre: string; productId?: string }[];
   /** Etiquetas de las formas de contado activas (NUNCA sus instrucciones, cuentas ni teléfonos). */
   formasDeContado: string[];
   /** Etiqueta de la forma elegida, si el cliente ya eligió («Cashea», «Pago móvil»…); null si no. */
@@ -266,7 +272,9 @@ function montoCashea(monto: number): string {
 
 function lineaPedido(pedido: Seba2Context["pedido"]): string {
   if (pedido.length === 0) return "Pedido: vacío";
-  return `Pedido: ${pedido.map((renglon) => `${renglon.cantidad} × ${renglon.nombre}`).join("; ")}`;
+  return `Pedido: ${pedido
+    .map((renglon) => `${renglon.cantidad} × ${renglon.nombre}${renglon.productId ? ` (productId: ${renglon.productId})` : ""}`)
+    .join("; ")}`;
 }
 
 function textoEntrega(estado: EstadoSeba | null): string {

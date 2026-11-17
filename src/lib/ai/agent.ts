@@ -4481,8 +4481,14 @@ async function atenderTurnoEnVivo({
           escribiendo: () => {
             fireTypingIndicator(supabase, target, convo.last_customer_message_at);
           },
-          registrarTurno: (resumen, pase) =>
-            logTurn(supabase, conversationId, {
+          registrarTurno: (resumen, pase) => {
+            // R2/C4 (17/11/2026): un turno de v2 quedaba en `agent_turns` con `tools_used` vacío (nadie lo llenaba:
+            // en v1 lo llena el tool loop) y no se podía medir qué herramientas gastaba. Se copian del resumen, sin
+            // repetir y en el orden en que corrieron. `steps` (`tiempos.pasos`) se queda en null A PROPÓSITO: v2 no
+            // lleva la cuenta de pasos del bucle del modelo, y una llamada a herramienta no es un paso (un paso
+            // puede llamar a varias); poner ahí la cantidad de herramientas mentiría sobre lo que esa columna mide.
+            tiempos.herramientas = [...new Set(resumen.herramientas)].join(",");
+            return logTurn(supabase, conversationId, {
               intent: null,
               action: resumen.accion,
               summary: resumen.resumen,
@@ -4501,7 +4507,8 @@ async function atenderTurnoEnVivo({
               version: "v2",
               escalationMotivo: pase?.motivo ?? null,
               escalationArea: pase?.area ?? null,
-            }),
+            });
+          },
         });
       } else {
         await runTurnPhases(supabase, target, convo, entrega, lease, tiempos, businessHours, links, lessons);

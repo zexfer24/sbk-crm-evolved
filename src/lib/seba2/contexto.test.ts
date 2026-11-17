@@ -20,6 +20,7 @@ vi.mock("@/lib/log", () => ({
 }));
 
 import {
+  PALABRAS_QUE_NO_SON_NOMBRE,
   cargarDatosDeTurno,
   derivarRafaga,
   recortarHastaElCliente,
@@ -165,6 +166,7 @@ interface Escenario {
   agentes?: Respuesta;
   ultimoAsesor?: Respuesta;
   escalada?: Respuesta;
+  herramientas?: Respuesta;
 }
 
 function fakeDeEscenario(e: Escenario = {}) {
@@ -182,6 +184,9 @@ function fakeDeEscenario(e: Escenario = {}) {
         return e.ultimoAsesor ?? { data: null };
       case "conversation_handoffs":
         return e.escalada ?? { data: null };
+      case "agent_tools":
+        // De fábrica, las dos herramientas que v2 ofrece están encendidas (como en una base recién sembrada).
+        return e.herramientas ?? { data: [{ key: "buscar_repuesto" }, { key: "consultar_biblioteca" }] };
       default:
         throw new Error(`tabla no simulada: ${op.tabla}`);
     }
@@ -379,6 +384,115 @@ describe("cargarDatosDeTurno", () => {
 
       expect(datos.customerName).toBeNull();
       expect(datos.nombresDeAsesores).toEqual(["José"]);
+    });
+  });
+
+  describe("herramientas (interruptores del panel, R2/C1, 17/11/2026)", () => {
+    it("lee agent_tools con el filtro real (select key, is_enabled = true) en la misma carga", async () => {
+      const { client, operaciones } = fakeDeEscenario();
+
+      await cargarDatosDeTurno(client, CONV, AHORA);
+
+      const op = operaciones.find((o) => o.tabla === "agent_tools")!;
+      expect(op.columnas).toBe("key");
+      expect(filtroDe(op, "eq", "is_enabled")?.valor).toBe(true);
+    });
+
+    it("las dos encendidas: catálogo y biblioteca true", async () => {
+      const { client } = fakeDeEscenario();
+
+      const datos = await cargarDatosDeTurno(client, CONV, AHORA);
+
+      expect(datos.herramientas).toEqual({ catalogo: true, biblioteca: true });
+    });
+
+    it("solo la consulta de productos apagada: catálogo false, biblioteca true", async () => {
+      const { client } = fakeDeEscenario({ herramientas: { data: [{ key: "consultar_biblioteca" }] } });
+
+      const datos = await cargarDatosDeTurno(client, CONV, AHORA);
+
+      expect(datos.herramientas).toEqual({ catalogo: false, biblioteca: true });
+    });
+
+    it("solo la biblioteca apagada: catálogo true, biblioteca false", async () => {
+      const { client } = fakeDeEscenario({
+        herramientas: { data: [{ key: "buscar_repuesto" }, { key: "buscar_historial_compras" }] },
+      });
+
+      const datos = await cargarDatosDeTurno(client, CONV, AHORA);
+
+      expect(datos.herramientas).toEqual({ catalogo: true, biblioteca: false });
+    });
+
+    it("las dos apagadas (ninguna fila encendida): las dos false", async () => {
+      const { client } = fakeDeEscenario({ herramientas: { data: [] } });
+
+      const datos = await cargarDatosDeTurno(client, CONV, AHORA);
+
+      expect(datos.herramientas).toEqual({ catalogo: false, biblioteca: false });
+    });
+
+    it("un error leyendo agent_tools corre con TODAS encendidas, igual que v1, y avisa", async () => {
+      const consola = vi.spyOn(console, "error").mockImplementation(() => undefined);
+      const { client } = fakeDeEscenario({ herramientas: { error: { message: "boom" } } });
+
+      const datos = await cargarDatosDeTurno(client, CONV, AHORA);
+
+      expect(datos.herramientas).toEqual({ catalogo: true, biblioteca: true });
+      expect(consola).toHaveBeenCalled();
+      consola.mockRestore();
+    });
+  });
+
+  describe("nombresDeAsesores: palabras genéricas (R2/C2, 17/11/2026)", () => {
+    it("«ASESOR 2», «ADMIN PRUEBA» y «Ventas SBK» no aportan nombres; «María José» aporta «María»", async () => {
+      const { client } = fakeDeEscenario({
+        agentes: {
+          data: [
+            { display_name: "ASESOR 2" },
+            { display_name: "ADMIN PRUEBA" },
+            { display_name: "Ventas SBK" },
+            { display_name: "María José" },
+          ],
+        },
+      });
+
+      const datos = await cargarDatosDeTurno(client, CONV, AHORA);
+
+      expect(datos.nombresDeAsesores).toEqual(["María"]);
+    });
+
+    it("compara sin tildes ni mayúsculas: «Atención», «ENVÍOS» y «Almacén» tampoco son nombres", async () => {
+      const { client } = fakeDeEscenario({
+        agentes: {
+          data: [{ display_name: "Atención al cliente" }, { display_name: "ENVÍOS" }, { display_name: "Almacén 3" }, { display_name: "Luis" }],
+        },
+      });
+
+      const datos = await cargarDatosDeTurno(client, CONV, AHORA);
+
+      expect(datos.nombresDeAsesores).toEqual(["Luis"]);
+    });
+
+    it("un primer token sin letras («2», «123») no es nombre aunque sea largo", async () => {
+      const { client } = fakeDeEscenario({
+        agentes: { data: [{ display_name: "2 Pedro" }, { display_name: "12345 Ana" }, { display_name: "Pedro" }] },
+      });
+
+      const datos = await cargarDatosDeTurno(client, CONV, AHORA);
+
+      expect(datos.nombresDeAsesores).toEqual(["Pedro"]);
+    });
+
+    it("la lista cerrada, con su literal", () => {
+      expect([...PALABRAS_QUE_NO_SON_NOMBRE].sort()).toEqual(
+        [
+          "asesor", "asesora", "asesores", "admin", "administrador", "administradora", "ventas", "vendedor",
+          "vendedora", "caja", "cajero", "cajera", "soporte", "supervisor", "supervisora", "gerente", "tienda",
+          "equipo", "pagos", "envios", "reclamos", "atencion", "cliente", "clientes", "sbk", "motors", "motos",
+          "prueba", "demo", "test", "usuario", "sistema", "almacen", "despacho", "taller", "repuestos",
+        ].sort()
+      );
     });
   });
 

@@ -365,12 +365,12 @@ export function buildPrepararPagoTool(deps: DepsDePrepararPago) {
   const formasActivas = deps.metodos.filter((m) => m.isActive).map((m) => m.key);
   return tool({
     description:
-      "Arma el pedido del cliente y le envía el resumen con el total (y los datos de pago, si aplica). Llámala UNA vez, cuando el cliente ya aceptó el producto y dijo cómo va a pagar y cómo lo quiere recibir (envío, retiro en tienda o delivery). El total y los datos de pago los escribe el sistema: NO escribas montos, cuentas ni datos de pago por tu cuenta, ni antes ni después de llamarla. Con envío necesitas la ciudad; si falta, pregúntala antes. Solo puedes pedir productos que ya cotizaste en esta conversación.",
+      "Arma el pedido del cliente y le envía el resumen con el total (y los datos de pago, si aplica). Llámala UNA vez, cuando el cliente ya aceptó el producto y dijo cómo va a pagar y cómo lo quiere recibir (envío, retiro en tienda o delivery). El total y los datos de pago los escribe el sistema: NO escribas montos, cuentas ni datos de pago por tu cuenta, ni antes ni después de llamarla. Con envío necesitas la ciudad; si falta, pregúntala antes. Solo puedes pedir productos que ya cotizaste en esta conversación. Los productId salen de la línea «Pedido» en TURNO ACTUAL (cada renglón trae el suyo) o de lo que devolvió buscarRepuesto; NO hace falta buscar de nuevo un producto que ya está en el pedido: llámala directamente con ese id.",
     inputSchema: z.object({
       lineas: z
         .array(
           z.object({
-            productId: z.string().uuid().describe("El id del producto, tal como lo devolvió buscarRepuesto."),
+            productId: z.string().uuid().describe("El id del producto: el de «Pedido» en TURNO ACTUAL o el que devolvió buscarRepuesto."),
             cantidad: z.number().int().min(1).max(20).describe("Unidades que lleva el cliente."),
           }),
         )

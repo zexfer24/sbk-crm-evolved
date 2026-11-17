@@ -529,17 +529,21 @@ type ModeloGenerar = (
   opciones: Record<string, unknown>
 ) => Promise<{ text?: string; usage?: unknown; finishReason?: string }>;
 
+/** Un renglón de la nota con el id del producto: el sufijo del prompt lo escribe para que el modelo pueda pagar sin buscar de nuevo. */
+type RenglonDelEstado = RenglonDeNota & { productId: string };
+
 /** El pedido del estado con el nombre real, el código de SAINT y la existencia. Un fallo de lectura no tumba el turno. */
-async function renglonesDelEstado(c: Corrida): Promise<RenglonDeNota[]> {
+async function renglonesDelEstado(c: Corrida): Promise<RenglonDelEstado[]> {
   const lineas = c.sesion.estado.lineas;
   if (lineas.length === 0) return [];
   const productos = await cargarProductosSinFallar(c, lineas.map((l) => l.productId));
   const porId = new Map(productos.map((p) => [p.id, p]));
-  const renglones: RenglonDeNota[] = [];
+  const renglones: RenglonDelEstado[] = [];
   for (const linea of lineas) {
     const producto = porId.get(linea.productId);
     if (!producto) continue;
     renglones.push({
+      productId: linea.productId,
       cantidad: linea.cantidad,
       nombre: producto.name,
       saintCode: producto.saintCode,
@@ -564,7 +568,7 @@ function etiquetaDeForma(forma: string | null, datos: DatosDeTurno): string | nu
   return datos.metodos.find((m) => m.key === forma)?.label ?? forma;
 }
 
-function contextoDelPrompt(c: Corrida, renglones: RenglonDeNota[]): Seba2Context {
+function contextoDelPrompt(c: Corrida, renglones: RenglonDelEstado[]): Seba2Context {
   const { datos, rafaga, sesion } = c;
   return {
     now: c.entrada.ahora,
@@ -572,7 +576,7 @@ function contextoDelPrompt(c: Corrida, renglones: RenglonDeNota[]): Seba2Context
     apertura: c.aperturaEnviada,
     customerName: datos.customerName,
     estado: sesion.estado,
-    pedido: renglones.map((r) => ({ cantidad: r.cantidad, nombre: r.nombre })),
+    pedido: renglones.map((r) => ({ cantidad: r.cantidad, nombre: r.nombre, productId: r.productId })),
     formasDeContado: datos.metodos.map((m) => m.label),
     formaElegida: etiquetaDeForma(sesion.estado.forma, datos),
     casheaMinimoUsd: datos.config.casheaMinimoUsd,
@@ -605,47 +609,64 @@ function vigilar<T extends object>(c: Corrida, nombre: string, herramienta: T): 
   };
 }
 
+/**
+ * Las herramientas que el modelo recibe en este turno. Respetan los interruptores del panel de Control IA
+ * (`datos.herramientas`, la tabla `agent_tools` que también lee v1; R2/C1, 17/11/2026): en la prueba real v2 ofrecía
+ * `buscarRepuesto` siempre y cotizó con «Consulta de productos» apagada, que es la orden del operador de que la IA
+ * no afirme existencia ni precio. Sin catálogo no se ofrecen `buscarRepuesto` NI `prepararPago` (sin inventario no
+ * hay cotización ni cobro; el guion ya dice que si falta la herramienta que se necesita, no se improvisa y se pasa
+ * el caso); sin biblioteca no se ofrece `consultarBiblioteca`, tampoco en el modo «solo biblioteca» de la escalada
+ * abierta (ahí el modelo queda sin herramientas y, si no deja texto válido, rige la nota para el asesor).
+ * `recibirComprobante` y `pasarAAsesor` no tienen interruptor: escalar es la única salida hacia una persona.
+ */
 function construirHerramientas(c: Corrida, renglones: RenglonDeNota[], soloBiblioteca: boolean): ToolSet {
   const { entrada, datos, rafaga, sesion, deps } = c;
+  const herramientas: Record<string, unknown> = {};
 
   // La biblioteca: lo que devuelve es fuente de lo que el modelo cite en este turno (una política, un enlace).
-  const biblioteca = deps.construirBiblioteca({ supabase: entrada.supabase, conversationId: entrada.conversationId });
-  const consultarBiblioteca = vigilar(c, NOMBRE_CONSULTAR_BIBLIOTECA, {
-    ...biblioteca,
-    execute: async (tema: unknown, opciones: unknown) => {
-      sesion.herramientas.push(NOMBRE_CONSULTAR_BIBLIOTECA);
-      const salida = await (biblioteca as unknown as { execute: (i: unknown, o: unknown) => Promise<unknown> }).execute(
-        tema,
-        opciones
-      );
-      sesion.fuentes.push(JSON.stringify(salida));
-      return salida;
-    },
-  });
-  if (soloBiblioteca) return { [NOMBRE_CONSULTAR_BIBLIOTECA]: consultarBiblioteca } as unknown as ToolSet;
+  if (datos.herramientas.biblioteca) {
+    const biblioteca = deps.construirBiblioteca({ supabase: entrada.supabase, conversationId: entrada.conversationId });
+    herramientas[NOMBRE_CONSULTAR_BIBLIOTECA] = vigilar(c, NOMBRE_CONSULTAR_BIBLIOTECA, {
+      ...biblioteca,
+      execute: async (tema: unknown, opciones: unknown) => {
+        sesion.herramientas.push(NOMBRE_CONSULTAR_BIBLIOTECA);
+        const salida = await (
+          biblioteca as unknown as { execute: (i: unknown, o: unknown) => Promise<unknown> }
+        ).execute(tema, opciones);
+        sesion.fuentes.push(JSON.stringify(salida));
+        return salida;
+      },
+    });
+  }
+  if (soloBiblioteca) return herramientas as unknown as ToolSet;
 
-  const buscarRepuesto = buildBuscarRepuestoV2({
-    supabase: entrada.supabase,
-    conversationId: entrada.conversationId,
-    contactId: datos.conversacion.contactId,
-    rafaga: rafaga.lineas,
-    persistencia: entrada.persistencia,
-    sesion,
-    catalogOutcome: c.catalogOutcome,
-    construir: deps.construirCatalogo,
-  });
-  const prepararPago = buildPrepararPagoTool({
-    effects: c.fx,
-    sesion,
-    metodos: datos.metodos,
-    cashea: {
-      datosText: datos.config.casheaDatosText,
-      minimoUsd: datos.config.casheaMinimoUsd,
-      seisCuotasDesdeUsd: datos.config.casheaSeisCuotasDesdeUsd,
-    },
-    cargarProductos: deps.cargarProductos,
-    leerTasa: deps.leerTasa,
-  });
+  if (datos.herramientas.catalogo) {
+    const buscarRepuesto = buildBuscarRepuestoV2({
+      supabase: entrada.supabase,
+      conversationId: entrada.conversationId,
+      contactId: datos.conversacion.contactId,
+      rafaga: rafaga.lineas,
+      persistencia: entrada.persistencia,
+      sesion,
+      catalogOutcome: c.catalogOutcome,
+      construir: deps.construirCatalogo,
+    });
+    const prepararPago = buildPrepararPagoTool({
+      effects: c.fx,
+      sesion,
+      metodos: datos.metodos,
+      cashea: {
+        datosText: datos.config.casheaDatosText,
+        minimoUsd: datos.config.casheaMinimoUsd,
+        seisCuotasDesdeUsd: datos.config.casheaSeisCuotasDesdeUsd,
+      },
+      cargarProductos: deps.cargarProductos,
+      leerTasa: deps.leerTasa,
+    });
+    herramientas[NOMBRE_BUSCAR_REPUESTO] = vigilar(c, NOMBRE_BUSCAR_REPUESTO, buscarRepuesto);
+    herramientas[NOMBRE_PREPARAR_PAGO] = vigilar(c, NOMBRE_PREPARAR_PAGO, prepararPago);
+  }
+
   const recibirComprobanteTool = buildRecibirComprobanteTool({
     effects: c.fx,
     sesion,
@@ -660,14 +681,10 @@ function construirHerramientas(c: Corrida, renglones: RenglonDeNota[], soloBibli
     rafaga: rafaga.lineas,
     nombresDeAsesores: datos.nombresDeAsesores,
   });
+  herramientas[NOMBRE_RECIBIR_COMPROBANTE] = vigilar(c, NOMBRE_RECIBIR_COMPROBANTE, recibirComprobanteTool);
+  herramientas[NOMBRE_PASAR_A_ASESOR] = vigilar(c, NOMBRE_PASAR_A_ASESOR, pasarAAsesor);
 
-  return {
-    [NOMBRE_BUSCAR_REPUESTO]: vigilar(c, NOMBRE_BUSCAR_REPUESTO, buscarRepuesto),
-    [NOMBRE_CONSULTAR_BIBLIOTECA]: consultarBiblioteca,
-    [NOMBRE_PREPARAR_PAGO]: vigilar(c, NOMBRE_PREPARAR_PAGO, prepararPago),
-    [NOMBRE_RECIBIR_COMPROBANTE]: vigilar(c, NOMBRE_RECIBIR_COMPROBANTE, recibirComprobanteTool),
-    [NOMBRE_PASAR_A_ASESOR]: vigilar(c, NOMBRE_PASAR_A_ASESOR, pasarAAsesor),
-  } as unknown as ToolSet;
+  return herramientas as unknown as ToolSet;
 }
 
 function sumarUso(c: Corrida, usage: unknown): void {

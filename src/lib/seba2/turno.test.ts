@@ -133,6 +133,7 @@ function datos(extra: Partial<DatosDeTurno> = {}): DatosDeTurno {
     escaladaAbierta: false,
     esperaDeAsesor: null,
     asesorEscribioHaceMin: null,
+    herramientas: { catalogo: true, biblioteca: true },
     ...extra,
   };
 }
@@ -1772,5 +1773,166 @@ describe("R1 (17/11/2026): cinco correcciones al turno halladas en la revisión 
       expect(textos(m)).toEqual(["La compra mínima con Cashea es de 25 $."]);
       expect(m.generar).toHaveBeenCalledTimes(1);
     });
+  });
+});
+
+// ============================================ R2 (17/11/2026): correcciones de la prueba real
+
+describe("R2/C1: los interruptores por herramienta del panel (agent_tools)", () => {
+  const PREGUNTA = [...CONVERSACION_VIVA, cliente("m1", "¿tienen el casco negro?", 1)];
+
+  it.each([
+    {
+      caso: "las dos encendidas: las cinco",
+      herramientas: { catalogo: true, biblioteca: true },
+      esperadas: ["buscarRepuesto", "consultarBiblioteca", "pasarAAsesor", "prepararPago", "recibirComprobante"],
+    },
+    {
+      caso: "catálogo apagado: ni buscarRepuesto NI prepararPago (sin inventario no hay cotización ni cobro)",
+      herramientas: { catalogo: false, biblioteca: true },
+      esperadas: ["consultarBiblioteca", "pasarAAsesor", "recibirComprobante"],
+    },
+    {
+      caso: "biblioteca apagada: sin consultarBiblioteca",
+      herramientas: { catalogo: true, biblioteca: false },
+      esperadas: ["buscarRepuesto", "pasarAAsesor", "prepararPago", "recibirComprobante"],
+    },
+    {
+      caso: "las dos apagadas: solo las que no tienen interruptor",
+      herramientas: { catalogo: false, biblioteca: false },
+      esperadas: ["pasarAAsesor", "recibirComprobante"],
+    },
+  ])("$caso", async ({ herramientas, esperadas }) => {
+    const m = montar({ historial: PREGUNTA, datos: { herramientas }, modelo: [{ texto: "Dime." }] });
+
+    await m.correr();
+
+    expect(herramientasDe(m.llamadas[0])).toEqual([...esperadas].sort());
+  });
+
+  it("con la escalada abierta (solo biblioteca): con la biblioteca encendida la tiene; apagada, el modelo queda sin herramientas", async () => {
+    const espera = { escaladaAbierta: true, esperaDeAsesor: { area: "ventas" as const, minutos: 12 } };
+
+    const con = montar({
+      historial: PREGUNTA,
+      datos: { ...espera, herramientas: { catalogo: true, biblioteca: true } },
+      modelo: [{ texto: "" }],
+    });
+    await con.correr();
+    expect(herramientasDe(con.llamadas[0])).toEqual(["consultarBiblioteca"]);
+
+    const sin = montar({
+      historial: PREGUNTA,
+      datos: { ...espera, herramientas: { catalogo: true, biblioteca: false } },
+      modelo: [{ texto: "" }],
+    });
+    await sin.correr();
+    expect(herramientasDe(sin.llamadas[0])).toEqual([]);
+  });
+
+  it("con la escalada abierta, sin biblioteca y sin texto válido rige la nota para el asesor de siempre", async () => {
+    const m = montar({
+      historial: PREGUNTA,
+      datos: {
+        escaladaAbierta: true,
+        esperaDeAsesor: { area: "ventas", minutos: 12 },
+        herramientas: { catalogo: true, biblioteca: false },
+      },
+      modelo: [{ texto: "" }],
+    });
+
+    await m.correr();
+
+    expect(textos(m)).toEqual([]);
+    expect(m.efectos.registro.notas).toHaveLength(1);
+    expect(m.efectos.registro.notas[0]).toContain("Mientras espera al asesor");
+  });
+
+  it("con el catálogo apagado un «¿tienen X?» termina en pase a un asesor, sin cotizar ni tocar el inventario", async () => {
+    const buscar = vi.fn(cotiza([linea(ID_CASCO, "CASCO NEGRO", 5)]));
+    const m = montar({
+      historial: PREGUNTA,
+      datos: { herramientas: { catalogo: false, biblioteca: true } },
+      catalogo: (outcome) => buscar(outcome),
+      modelo: [
+        {
+          herramientas: [
+            {
+              nombre: "pasarAAsesor",
+              entrada: {
+                motivo: "otro",
+                nota: "El cliente pregunta si hay casco negro; la consulta de productos está apagada.",
+                mensajeAlCliente: "Ya pasé tu consulta al equipo de ventas, te escriben por este mismo chat.",
+              },
+            },
+          ],
+          texto: "",
+        },
+      ],
+    });
+
+    const resumen = await m.correr();
+
+    expect(buscar).not.toHaveBeenCalled();
+    expect(resumen.productos).toEqual([]);
+    expect(resumen.herramientas).toEqual(["pasarAAsesor"]);
+    expect(m.efectos.registro.pases).toHaveLength(1);
+    expect(textos(m).join(" ")).not.toContain("$");
+    expect(resumen.accion).toBe("escalated");
+  });
+});
+
+describe("R2/C3: el modelo tiene el id del producto ya cotizado al pagar", () => {
+  const ESTADO_COTIZADO: EstadoSeba = {
+    etapa: "cotizado",
+    lineas: [{ productId: ID_CASCO, cantidad: 1 }],
+    forma: null,
+    entrega: null,
+    ciudad: null,
+    totalUsd: null,
+    totalBs: null,
+    priceKind: null,
+    complementoSugerido: false,
+    ultimaFraseApertura: null,
+    actualizadoEn: AHORA.toISOString(),
+  };
+
+  it("turno 2 con estado cotizado: el system trae «productId: <id>» y prepararPago arma el pago sin llamar a buscarRepuesto", async () => {
+    const buscar = vi.fn(sinResultados);
+    const m = montar({
+      historial: [
+        ...CONVERSACION_VIVA,
+        cliente("m1", "precio del impermeable", 20),
+        bot("b1", "IMPERMEABLE GIVI TALLA L · $30,00 BCV", 19),
+        cliente("m2", "sí lo quiero, pago móvil y retiro en tienda", 1),
+      ],
+      efectos: { estado: ESTADO_COTIZADO, yaCotizados: [ID_CASCO] },
+      catalogo: (outcome) => buscar(outcome),
+      modelo: [
+        {
+          herramientas: [
+            {
+              nombre: "prepararPago",
+              entrada: {
+                lineas: [{ productId: ID_CASCO, cantidad: 1 }],
+                formaDePago: "pago_movil",
+                entrega: "retiro",
+              },
+            },
+          ],
+          texto: "",
+        },
+      ],
+    });
+
+    const resumen = await m.correr();
+
+    expect(String(m.llamadas[0].system)).toContain(`1 × IMPERMEABLE GIVI TALLA L (productId: ${ID_CASCO})`);
+    expect(buscar).not.toHaveBeenCalled();
+    expect(resumen.herramientas).toEqual(["prepararPago"]);
+    expect(resumen.estadoDespues?.etapa).toBe("datos_enviados");
+    expect(textos(m)).toHaveLength(1);
+    expect(textos(m)[0]).toContain("Total: $30,00 BCV");
+    expect(textos(m)[0]).toContain("Banco X");
   });
 });

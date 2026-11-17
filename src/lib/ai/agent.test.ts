@@ -9286,6 +9286,36 @@ describe("runAgentTurn — la costura de Seba v2 (S9b, 17/11/2026)", () => {
       });
     });
 
+    it("R2/C4 (17/11/2026): tools_used lleva las herramientas del resumen sin repetir, y steps queda null (no hay conteo de pasos)", async () => {
+      modo("siempre");
+      correrSeba2EnVivoMock.mockImplementation(async (entrada) => {
+        const e = entrada as { registrarTurno: (resumen: unknown, pase: null) => Promise<void> };
+        await e.registrarTurno(
+          { ...RESUMEN_V2, accion: "answered", herramientas: ["buscarRepuesto", "prepararPago", "buscarRepuesto"] },
+          null
+        );
+        return RESUMEN_V2;
+      });
+
+      await runAgentTurn("conv-1");
+
+      expect(agentTurnInserts).toHaveLength(1);
+      expect(agentTurnInserts[0]).toMatchObject({ tools_used: "buscarRepuesto,prepararPago", steps: null });
+    });
+
+    it("R2/C4: un turno de v2 que no usó herramientas deja tools_used vacío (corrió y no usó ninguna), no null", async () => {
+      modo("siempre");
+      correrSeba2EnVivoMock.mockImplementation(async (entrada) => {
+        const e = entrada as { registrarTurno: (resumen: unknown, pase: null) => Promise<void> };
+        await e.registrarTurno({ ...RESUMEN_V2, accion: "answered", herramientas: [] }, null);
+        return RESUMEN_V2;
+      });
+
+      await runAgentTurn("conv-1");
+
+      expect(agentTurnInserts[0]).toMatchObject({ tools_used: "" });
+    });
+
     it("un turno de v1 NO lleva esas tres claves en el insert (la base pone su default 'v1')", async () => {
       await runAgentTurn("conv-1");
 
