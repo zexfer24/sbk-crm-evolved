@@ -1,4 +1,5 @@
 import "server-only";
+import { randomUUID } from "node:crypto";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import type { Database } from "@/lib/supabase/database.types";
 import type { TurnLessons } from "@/lib/ai/lessons";
@@ -30,9 +31,18 @@ export const SOMBRA_LOCK_SEGUNDOS = 90;
  */
 export const SOMBRA_ESPERA_MAX_MS = 60_000;
 
-/** Lo único que la sombra le pide a Redis: el `SET … EX … NX` del candado. */
+/** Lo único que la sombra le pide a Redis: el `SET … EX … NX` del candado y, para liberarlo, `get` y `del`. */
 interface RedisDeCandado {
   set(key: string, value: string, ex: "EX", segundos: number, nx: "NX"): Promise<unknown>;
+  get(key: string): Promise<string | null>;
+  del(key: string): Promise<unknown>;
+}
+
+/** Un candado tomado: lo que hace falta para liberarlo solo si sigue siendo el propio. */
+interface CandadoTomado {
+  redis: RedisDeCandado;
+  clave: string;
+  valor: string;
 }
 
 export interface EntradaDeSombra {
@@ -54,13 +64,14 @@ export interface EntradaDeSombra {
 }
 
 /**
- * Toma el candado `sombra:<conversationId>` (`SET … NX EX 90`). `true` si el turno
- * puede correr: lo ganó, o no había Redis (corre igual, sin candado: peor un borrador
- * duplicado que ninguno). `false` solo si otro disparo del mismo turno ya lo tiene.
- * No se libera al terminar: vence solo, y esa es justo la protección contra dos
- * disparos seguidos del mismo turno.
+ * Toma el candado `sombra:<conversationId>` (`SET … NX EX 90`) con un valor aleatorio PROPIO. Devuelve:
+ *   - un `CandadoTomado` si lo ganó (hay que liberarlo al terminar),
+ *   - `"sin_candado"` si no había Redis o falló (corre igual, sin candado: peor un borrador duplicado que ninguno),
+ *   - `false` solo si otro disparo del mismo turno ya lo tiene.
+ * Se libera al terminar (`liberarCandado`); el vencimiento de 90 s es solo la red de seguridad si el proceso muere
+ * a mitad del turno.
  */
-async function tomarCandado(entrada: EntradaDeSombra): Promise<boolean> {
+async function tomarCandado(entrada: EntradaDeSombra): Promise<CandadoTomado | "sin_candado" | false> {
   const { conversationId } = entrada;
   let redis: RedisDeCandado | null;
   try {
@@ -68,29 +79,53 @@ async function tomarCandado(entrada: EntradaDeSombra): Promise<boolean> {
   } catch (err) {
     // `getRedis` LANZA sin `REDIS_URL`.
     log.warn("sombra_sin_candado", { conversationId, detail: errorText(err) });
-    return true;
+    return "sin_candado";
   }
   if (!redis) {
     log.warn("sombra_sin_candado", { conversationId, detail: "sin Redis" });
-    return true;
+    return "sin_candado";
   }
 
+  const clave = `sombra:${conversationId}`;
+  const valor = randomUUID();
   try {
-    const puesto = await redis.set(`sombra:${conversationId}`, "1", "EX", SOMBRA_LOCK_SEGUNDOS, "NX");
-    if (puesto === "OK") return true;
+    const puesto = await redis.set(clave, valor, "EX", SOMBRA_LOCK_SEGUNDOS, "NX");
+    if (puesto === "OK") return { redis, clave, valor };
     log.info("sombra_ya_en_curso", { conversationId });
     return false;
   } catch (err) {
     log.warn("sombra_sin_candado", { conversationId, detail: errorText(err) });
-    return true;
+    return "sin_candado";
+  }
+}
+
+/**
+ * Libera el candado al terminar el turno, y solo si el valor sigue siendo el propio: si venció a los 90 s y otro
+ * disparo tomó el suyo mientras este turno seguía corriendo, no se le borra. NUNCA lanza: un candado que no se pudo
+ * liberar vence solo a los 90 s.
+ *
+ * Caso real (R1/C2, 17/11/2026): el candado no se liberaba y un cliente que escribía «hola» y 30 s después su
+ * pregunta real veía el segundo turno salir por `sombra_ya_en_curso`: esa pregunta no dejaba borrador. La
+ * comprobación `get` + `del` no es atómica (un disparo podría tomar el candado entre las dos); la ventana es de
+ * milisegundos y el peor caso es borrar el candado de otro turno, que a lo sumo deja correr un disparo repetido.
+ */
+async function liberarCandado(candado: CandadoTomado, conversationId: string): Promise<void> {
+  try {
+    const actual = await candado.redis.get(candado.clave);
+    if (actual === candado.valor) await candado.redis.del(candado.clave);
+  } catch (err) {
+    log.warn("sombra_candado_no_liberado", { conversationId, detail: errorText(err) });
   }
 }
 
 /** Corre el turno sin enviar. NUNCA lanza ni rechaza: cualquier fallo queda en `log.warn("sombra_fallo")`. */
 export async function correrSombra(entrada: EntradaDeSombra): Promise<void> {
   const { supabase, conversationId, modo } = entrada;
+  let candado: CandadoTomado | null = null;
   try {
-    if (!(await tomarCandado(entrada))) return;
+    const tomado = await tomarCandado(entrada);
+    if (tomado === false) return;
+    if (tomado !== "sin_candado") candado = tomado;
 
     const correrTurno = entrada.deps?.correrTurno ?? runSeba2Turn;
     const ahora = entrada.deps?.ahora ?? (() => new Date());
@@ -126,5 +161,8 @@ export async function correrSombra(entrada: EntradaDeSombra): Promise<void> {
     log.info("sombra_turno", { conversationId, modo, accion: resumen.accion, duracionMs: Date.now() - inicio });
   } catch (err) {
     log.warn("sombra_fallo", { conversationId, modo, detail: errorText(err) });
+  } finally {
+    // También si el turno lanzó: un candado de un turno que ya terminó solo estorba al siguiente (R1/C2).
+    if (candado) await liberarCandado(candado, conversationId);
   }
 }

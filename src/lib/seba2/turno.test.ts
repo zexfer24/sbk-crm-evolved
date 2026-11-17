@@ -252,6 +252,8 @@ interface PasoDeModelo {
   /** Imita al SDK: un error de herramienta no lanza, queda como parte del paso y el bucle sigue hasta `stopWhen`. */
   tragaErrores?: boolean;
   uso?: { input?: number; output?: number; cache?: number; razonamiento?: number };
+  /** Por qué terminó la generación; `"length"` = la cortó el tope de tokens (texto a medias). Default «stop». */
+  finishReason?: string;
 }
 
 type CondicionDeParada = (o: { steps: unknown[] }) => boolean;
@@ -280,6 +282,7 @@ function crearGenerar(pasos: PasoDeModelo[]) {
 
     return {
       text: paso.texto ?? "",
+      finishReason: paso.finishReason ?? "stop",
       steps,
       usage: {
         inputTokens: paso.uso?.input ?? 100,
@@ -1040,11 +1043,12 @@ describe("El turno de Seba v2: las guardas de salida", () => {
     expect(m.efectos.registro.mensajes[1].origen).toBe("modelo");
     expect(resumen.guardas).toHaveLength(1);
 
-    // La reescritura: sin herramientas, con el modelo de «identidad», tope de 300 tokens y el mismo system y mensajes.
+    // La reescritura: sin herramientas, con el modelo de «identidad», tope de 500 tokens (R1/C4, 17/11/2026: con un
+    // modelo que razona el tope incluye el razonamiento) y el mismo system y mensajes.
     expect(m.generar).toHaveBeenCalledTimes(2);
     const reescritura = m.llamadas[1];
     expect(reescritura.tools).toBeUndefined();
-    expect(reescritura.maxOutputTokens).toBe(300);
+    expect(reescritura.maxOutputTokens).toBe(500);
     expect(reescritura.model).toBe("modelo-identidad");
     expect(reescritura.system).toBe(m.llamadas[0].system);
     const mensajes = reescritura.messages as { role: string; content: string }[];
@@ -1093,9 +1097,11 @@ describe("El turno de Seba v2: las guardas de salida", () => {
     expect(r1.herramientas).toContain("consultarBiblioteca");
     expect(r1.guardas).toEqual([]);
 
+    // 17/11/2026 (R1/C5): el 25 de la compra mínima de Cashea ya es fuente (lo trae el sufijo del prompt); la
+    // prueba de «sin fuente» usa una cifra que no está en ninguna parte del turno.
     const sinFuente = montar({
       historial: [...CONVERSACION_VIVA, cliente("m1", "cuál es la compra mínima?", 1)],
-      modelo: [{ texto: "La compra mínima con Cashea es de $25 BCV." }, { texto: "Son $25 BCV de mínimo." }],
+      modelo: [{ texto: "La compra mínima con Cashea es de $40 BCV." }, { texto: "Son $40 BCV de mínimo." }],
     });
     const r2 = await sinFuente.correr();
     expect(r2.guardas.map((g) => g.guarda)).toEqual(["cifra_sin_fuente", "cifra_sin_fuente"]);
@@ -1570,4 +1576,201 @@ describe("Las pautas del operador (P1-P11)", () => {
   it.todo(
     "P11: un escenario no se repite en la conversación — Seba v2 no usa escenarios (fase 0 queda fuera: el guion es el prompt), así que la pauta se cumple por diseño; lo comprobable aquí es que la bienvenida no se repite (P8)"
   );
+});
+
+describe("R1 (17/11/2026): cinco correcciones al turno halladas en la revisión de código", () => {
+  describe("C1: la cesión compara contra la ráfaga de ESTE turno, no contra la marca del turno anterior", () => {
+    it("pregunta por mensajes nuevos con el marcador de la ráfaga actual (no con entrada.visto) y, sin mensajes nuevos, envía", async () => {
+      // La marca del turno anterior es vieja: el mensaje m1 que este turno contesta es POSTERIOR a ella. Antes el
+      // efecto real comparaba contra esa marca vieja, m1 contaba como «nuevo» y el turno cedía siempre.
+      const vistoDelTurnoAnterior: SeenMarker = {
+        hasta: new Date(AHORA.getTime() - 30 * 60_000).toISOString(),
+        ids: ["m0"],
+      };
+      const historialDelCaso = [...CONVERSACION_VIVA, cliente("m1", "precio del impermeable", 1)];
+      const m = montar({
+        historial: historialDelCaso,
+        visto: vistoDelTurnoAnterior,
+        catalogo: cotiza([linea(ID_CASCO, "IMPERMEABLE GIVI TALLA L", 5)]),
+        modelo: [{ herramientas: [{ nombre: "buscarRepuesto", entrada: { query: "impermeable" } }], texto: "" }],
+      });
+      // Imita la consulta real: «¿hay un mensaje del cliente en `desde.hasta` o después, fuera de `desde.ids`?».
+      // Sin parámetro (el turno viejo) cae en la marca del turno anterior, como hacía el efecto real.
+      const lineasDelCliente = historialDelCaso.filter((l) => l.rol === "user");
+      m.efectos.hayMensajeNuevoDelCliente = async (desde) => {
+        m.efectos.registro.consultasDeMensajeNuevo.push(desde ?? null);
+        const marca = desde ?? vistoDelTurnoAnterior;
+        return lineasDelCliente.some(
+          (l) => new Date(AHORA.getTime() - l.hace * 60_000).toISOString() >= marca.hasta && !marca.ids.includes(l.id)
+        );
+      };
+
+      const resumen = await m.correr();
+
+      expect(m.efectos.registro.consultasDeMensajeNuevo.length).toBeGreaterThan(0);
+      for (const desde of m.efectos.registro.consultasDeMensajeNuevo) {
+        expect(desde).toEqual({ hasta: new Date(AHORA.getTime() - 1 * 60_000).toISOString(), ids: ["m1"] });
+        expect(desde).not.toEqual(vistoDelTurnoAnterior);
+      }
+      expect(textos(m).length).toBeGreaterThan(0);
+      expect(resumen.accion).toBe("answered");
+    });
+  });
+
+  describe("C3: con la escalada abierta el turno avisa que el cliente ya espera a una persona", () => {
+    it("con la escalada abierta llama a clienteEsperaPersona UNA vez, antes de enviar nada", async () => {
+      const m = montar({
+        historial: [...CONVERSACION_VIVA, cliente("m1", "a qué hora abren?", 1)],
+        datos: { escaladaAbierta: true, esperaDeAsesor: { area: "ventas", minutos: 12 } },
+        modelo: [{ texto: "Abrimos de lunes a viernes." }],
+      });
+
+      await m.correr();
+
+      expect(m.efectos.registro.esperaPersona).toBe(true);
+      const secuencia = m.efectos.registro.secuencia;
+      expect(secuencia.filter((x) => x === "clienteEsperaPersona")).toHaveLength(1);
+      expect(secuencia.indexOf("clienteEsperaPersona")).toBeLessThan(secuencia.indexOf("enviarTexto"));
+    });
+
+    it("sin escalada abierta no se llama", async () => {
+      const m = montar({
+        historial: [...CONVERSACION_VIVA, cliente("m1", "hmm", 1)],
+        modelo: [{ texto: "Dime qué necesitas." }],
+      });
+
+      await m.correr();
+
+      expect(m.efectos.registro.esperaPersona).toBe(false);
+      expect(m.efectos.registro.secuencia).not.toContain("clienteEsperaPersona");
+    });
+  });
+
+  describe("C4: un texto cortado por el tope de tokens no se envía", () => {
+    const CORTADO = "Para pagar con *Cashea*, el envío es gratis y";
+
+    it("redactar: el texto con finishReason «length» se descarta y rige el respaldo (pase por código), con aviso", async () => {
+      const m = montar({
+        historial: [...CONVERSACION_VIVA, cliente("m1", "cómo pago con cashea?", 1)],
+        modelo: [{ texto: CORTADO, finishReason: "length" }],
+      });
+
+      const resumen = await m.correr();
+
+      expect(textos(m)).not.toContain(CORTADO);
+      expect(textos(m).join(" ")).not.toContain("el envío es gratis y");
+      expect(textos(m)).toEqual([TEXTO_PASE.ventas]);
+      expect(m.efectos.registro.pases).toHaveLength(1);
+      expect(resumen.accion).toBe("escalated");
+      expect(logWarn).toHaveBeenCalledWith(
+        "seba2_texto_cortado",
+        expect.objectContaining({ conversationId: "conv-1", fase: "redactar" })
+      );
+    });
+
+    it("reescribir: una reescritura cortada cuenta como fallida aunque pasara las guardas, y rige el respaldo", async () => {
+      const m = montar({
+        historial: [...CONVERSACION_VIVA, cliente("m1", "precio del impermeable", 1)],
+        catalogo: cotiza([linea(ID_CASCO, "IMPERMEABLE GIVI TALLA L", 5)]),
+        modelo: [
+          {
+            herramientas: [{ nombre: "buscarRepuesto", entrada: { query: "impermeable" } }],
+            texto: "Soy Seba, ¿lo quieres llevar?",
+          },
+          { texto: "¿Lo quieres llevar o prefieres que te", finishReason: "length" },
+        ],
+      });
+
+      const resumen = await m.correr();
+
+      expect(textos(m).join(" ")).not.toContain("prefieres que te");
+      expect(m.efectos.registro.mensajes[1]).toMatchObject({ texto: LINEA_CIERRE_COTIZACION, origen: "fijo" });
+      expect(resumen.guardas).toHaveLength(1);
+      expect(logWarn).toHaveBeenCalledWith(
+        "seba2_texto_cortado",
+        expect.objectContaining({ conversationId: "conv-1", fase: "reescribir" })
+      );
+    });
+
+    it("un texto que terminó por «stop» sale tal cual (el descarte no toca lo completo)", async () => {
+      const m = montar({
+        historial: [...CONVERSACION_VIVA, cliente("m1", "hmm", 1)],
+        modelo: [{ texto: "Dime qué necesitas.", finishReason: "stop" }],
+      });
+
+      await m.correr();
+
+      expect(textos(m)).toEqual(["Dime qué necesitas."]);
+      expect(logWarn).not.toHaveBeenCalledWith("seba2_texto_cortado", expect.anything());
+    });
+  });
+
+  describe("C5: los montos de Cashea del sufijo del prompt son fuente de la guarda de cifras", () => {
+    const historialCashea = [...CONVERSACION_VIVA, cliente("m1", "cómo es lo de cashea?", 1)];
+
+    it("«la compra mínima es de 25 $» sale tal cual, sin reescritura (una sola llamada al modelo)", async () => {
+      const m = montar({
+        historial: historialCashea,
+        modelo: [{ texto: "Con Cashea la compra mínima es de 25 $ y el envío es gratis." }],
+      });
+
+      const resumen = await m.correr();
+
+      expect(m.generar).toHaveBeenCalledTimes(1);
+      expect(textos(m)).toEqual(["Con Cashea la compra mínima es de 25 $ y el envío es gratis."]);
+      expect(resumen.guardas).toEqual([]);
+    });
+
+    it("cubre las formas en que el modelo escribe el monto («$25», «25$», «100 $» de las seis cuotas)", async () => {
+      for (const texto of [
+        "La compra mínima con Cashea es de $25.",
+        "La compra mínima con Cashea es de 25$.",
+        "Puedes pagar en seis cuotas desde 100 $.",
+      ]) {
+        const m = montar({ historial: historialCashea, modelo: [{ texto }] });
+        const resumen = await m.correr();
+        expect(resumen.guardas).toEqual([]);
+        expect(textos(m)).toEqual([texto]);
+        expect(m.generar).toHaveBeenCalledTimes(1);
+      }
+    });
+
+    it("un monto con decimales se escribe como en el sufijo («25,50»)", async () => {
+      const m = montar({
+        historial: historialCashea,
+        datos: { config: { ...datos().config, casheaMinimoUsd: 25.5 } },
+        modelo: [{ texto: "La compra mínima con Cashea es de 25,50 $." }],
+      });
+
+      const resumen = await m.correr();
+
+      expect(resumen.guardas).toEqual([]);
+      expect(m.generar).toHaveBeenCalledTimes(1);
+    });
+
+    it("una cifra que NO está en ninguna fuente («30 $») sigue disparando la guarda", async () => {
+      const m = montar({
+        historial: historialCashea,
+        modelo: [{ texto: "Con Cashea la compra mínima es de 30 $." }, { texto: "Son 30 $ de mínimo." }],
+      });
+
+      const resumen = await m.correr();
+
+      expect(resumen.guardas.map((g) => g.guarda)).toEqual(["cifra_sin_fuente", "cifra_sin_fuente"]);
+      expect(m.generar).toHaveBeenCalledTimes(2);
+    });
+
+    it("con la escalada abierta (solo biblioteca) el sufijo también trae el monto y también es fuente", async () => {
+      const m = montar({
+        historial: historialCashea,
+        datos: { escaladaAbierta: true, esperaDeAsesor: { area: "ventas", minutos: 12 } },
+        modelo: [{ texto: "La compra mínima con Cashea es de 25 $." }],
+      });
+
+      await m.correr();
+
+      expect(textos(m)).toEqual(["La compra mínima con Cashea es de 25 $."]);
+      expect(m.generar).toHaveBeenCalledTimes(1);
+    });
+  });
 });

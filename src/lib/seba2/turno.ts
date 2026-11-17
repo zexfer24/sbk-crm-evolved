@@ -97,8 +97,11 @@ export const SEBA2_MAX_PASOS = 5;
  */
 export const SEBA2_MAX_OUTPUT_TOKENS = 700;
 
-/** La reescritura de una guarda no necesita más que una línea o dos. */
-const REESCRITURA_MAX_TOKENS = 300;
+/**
+ * La reescritura de una guarda no necesita más que una línea o dos, pero con un modelo que razona el tope INCLUYE
+ * el razonamiento: con 300 se cortaba (R1/C4, 17/11/2026: 500) y un texto cortado se descarta, no se envía.
+ */
+const REESCRITURA_MAX_TOKENS = 500;
 
 /** Un bloque de cotización de hasta este largo cabe en el pie de una foto. */
 const PIE_MAX_CARACTERES = 1000;
@@ -269,6 +272,10 @@ async function prepararCorrida(
     ahora: entrada.ahora,
   });
 
+  // Con una escalada abierta el cliente ya espera a una persona aunque nadie la haya tomado: toda salida de este
+  // turno es automática (R1/C3, 17/11/2026), o una respuesta informativa apagaría `awaiting_reply`.
+  if (datos.escaladaAbierta) effects.clienteEsperaPersona();
+
   const corrida: Corrida = {
     entrada,
     deps,
@@ -361,7 +368,8 @@ function envolverEfectos(c: Corrida): TurnEffects {
     reclamarBienvenida: () => effects.reclamarBienvenida(),
     marcarVisto: (marker) => effects.marcarVisto(marker),
     productosYaCotizados: () => effects.productosYaCotizados(),
-    hayMensajeNuevoDelCliente: () => effects.hayMensajeNuevoDelCliente(),
+    hayMensajeNuevoDelCliente: (desde) => effects.hayMensajeNuevoDelCliente(desde),
+    clienteEsperaPersona: () => effects.clienteEsperaPersona(),
     cerrar: (resumen) => effects.cerrar(resumen),
   };
 }
@@ -465,8 +473,8 @@ async function abrir(c: Corrida, decision: DecisionDeApertura): Promise<"sigue" 
       // Otro turno ya dio la bienvenida de esta ventana: ni ella ni la frase fija se repiten.
       if (!(await c.fx.reclamarBienvenida())) return "sigue";
       const enviado = await c.fx.enviarTexto(decision.mensaje1, "fijo");
-      c.aperturaEnviada = true;
       if (!enviado.ok) return "termina";
+      c.aperturaEnviada = true;
     }
 
     if (decision.mensaje2Fijo !== null) {
@@ -517,7 +525,9 @@ async function recibirComprobantePorCodigo(c: Corrida): Promise<ResumenDeTurno> 
 
 // --------------------------------- 7. Modelo --------------------------------
 
-type ModeloGenerar = (opciones: Record<string, unknown>) => Promise<{ text?: string; usage?: unknown }>;
+type ModeloGenerar = (
+  opciones: Record<string, unknown>
+) => Promise<{ text?: string; usage?: unknown; finishReason?: string }>;
 
 /** El pedido del estado con el nombre real, el código de SAINT y la existencia. Un fallo de lectura no tumba el turno. */
 async function renglonesDelEstado(c: Corrida): Promise<RenglonDeNota[]> {
@@ -676,6 +686,24 @@ function sumarUso(c: Corrida, usage: unknown): void {
   };
 }
 
+/** 25 → «25»; 25.5 → «25,50»: el mismo formato con que `prompt.ts` escribe los montos de Cashea en el sufijo. */
+function montoCashea(monto: number): string {
+  return Number.isInteger(monto) ? String(monto) : monto.toFixed(2).replace(".", ",");
+}
+
+/**
+ * Los montos de Cashea que el sufijo del prompt le da al modelo (compra mínima y desde cuánto hay seis cuotas) y
+ * que el guion le permite decir son FUENTE de la guarda de cifras: sin esto `cifra_sin_fuente` frenaba una
+ * respuesta correcta («la compra mínima es de 25 $»), provocaba una reescritura y a veces un pase innecesario
+ * (observado en el arnés, R1/C5, 17/11/2026). La guarda compara el NÚMERO sin importar la forma («25 $», «$25»,
+ * «25$»), así que una sola línea con los dos montos cubre cómo los escriba el modelo. Una vez por turno.
+ */
+function agregarFuenteDeCashea(c: Corrida): void {
+  const { casheaMinimoUsd, casheaSeisCuotasDesdeUsd } = c.datos.config;
+  const linea = `Cashea: envío gratis · compra mínima ${montoCashea(casheaMinimoUsd)} $ · seis cuotas desde ${montoCashea(casheaSeisCuotasDesdeUsd)} $`;
+  if (!c.sesion.fuentes.includes(linea)) c.sesion.fuentes.push(linea);
+}
+
 /**
  * Llama al modelo con el guion de v2 y devuelve lo que escribió (`""` si el turno ya se resolvió por
  * código). Si `generar` LANZA: sin nada enviado todavía, relanza (quien llama reintenta; no hay texto a
@@ -685,6 +713,7 @@ function sumarUso(c: Corrida, usage: unknown): void {
 async function redactar(c: Corrida, opciones: { soloBiblioteca: boolean }): Promise<string> {
   const renglones = await renglonesDelEstado(c);
   c.system = buildSeba2Instructions(contextoDelPrompt(c, renglones));
+  agregarFuenteDeCashea(c);
   const tools = construirHerramientas(c, renglones, opciones.soloBiblioteca);
   const modelo = c.deps.modelo("redactar");
   const generar = c.deps.generar as unknown as ModeloGenerar;
@@ -715,6 +744,13 @@ async function redactar(c: Corrida, opciones: { soloBiblioteca: boolean }): Prom
   // quedó con nadie. Se trata igual que un fallo del proveedor con algo ya enviado.
   if (c.errorDeHerramienta !== null && c.sesion.terminado && c.sesion.paso === null) {
     await recuperarPorCodigo(c, c.errorDeHerramienta.error);
+    return "";
+  }
+  // El tope de tokens cortó la generación (con un modelo que razona, el tope incluye el razonamiento): el texto
+  // quedó a medias y NO se envía. Caso real del arnés (R1/C4, 17/11/2026): «Para pagar con *Cashea*, el envío es
+  // gratis y». Sin texto rigen los respaldos de siempre (línea fija, pregunta fija o la red de «vacío»).
+  if (resultado.finishReason === "length") {
+    log.warn("seba2_texto_cortado", { conversationId: c.entrada.conversationId, fase: "redactar" });
     return "";
   }
   return resultado.text ?? "";
@@ -808,6 +844,11 @@ async function reescribir(
       maxRetries: 0,
     });
     sumarUso(c, resultado.usage);
+    if (resultado.finishReason === "length") {
+      // Una reescritura a medias no se envía: cuenta como una que no pasó y rige el respaldo (R1/C4).
+      log.warn("seba2_texto_cortado", { conversationId: c.entrada.conversationId, fase: "reescribir" });
+      return null;
+    }
     const limpio = (resultado.text ?? "").trim();
     return limpio === "" ? null : limpio;
   } catch (err) {
@@ -1026,7 +1067,9 @@ async function enviarItems(c: Corrida, items: Item[]): Promise<Item[]> {
 
   const salieron: Item[] = [];
   for (const item of porEnviar) {
-    if (await c.fx.hayMensajeNuevoDelCliente()) {
+    // Contra la marca de ESTA ráfaga (todo lo que el turno ya vio), nunca contra la «visto» del turno anterior: con
+    // esa, los mensajes que se están contestando contaban como nuevos y el turno cedía siempre (R1/C1, 17/11/2026).
+    if (await c.fx.hayMensajeNuevoDelCliente(c.rafaga.marcador)) {
       c.cedio = true;
       c.detalle.push("Cedió: el cliente escribió de nuevo y el turno siguiente contesta todo junto.");
       log.info("seba2_turno_cedido", { conversationId: c.entrada.conversationId, enviados: c.enviados.length });

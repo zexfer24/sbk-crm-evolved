@@ -71,9 +71,11 @@ describe("correrSeba2EnVivo", () => {
       alFallarEnvio: e.alFallarEnvio,
       escribiendo: e.escribiendo,
       registrarTurno: e.registrarTurno,
-      visto: VISTO,
       redisDisponible: true,
     });
+    // R1/C1 (17/11/2026): los efectos reales ya no reciben la marca del turno anterior (el turno le pasa a
+    // `hayMensajeNuevoDelCliente` la de su ráfaga); la marca sigue viajando al TURNO como `entrada.visto`.
+    expect(deps).not.toHaveProperty("visto");
     expect(deps.ahora()).toEqual(AHORA);
   });
 
@@ -107,7 +109,7 @@ describe("correrSeba2EnVivo", () => {
     await correrSeba2EnVivo(entrada({ deps: { correrTurno } }));
 
     expect(readSeenMock).not.toHaveBeenCalled();
-    expect(crearEffectsMock.mock.calls[0][0]).toMatchObject({ visto: null, redisDisponible: false });
+    expect(crearEffectsMock.mock.calls[0][0]).toMatchObject({ redisDisponible: false });
     expect(correrTurno.mock.calls[0][0]).toMatchObject({ visto: null });
   });
 

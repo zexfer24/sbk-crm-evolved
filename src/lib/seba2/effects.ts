@@ -73,10 +73,23 @@ export interface TurnEffects {
   productosYaCotizados(): Promise<Set<string>>;
 
   /**
-   * ¿Entró un mensaje nuevo del cliente desde que el turno cargó su historial? En
-   * modo real decide si el turno cede.
+   * ¿Entró un mensaje del cliente que NO está en `desde`? En modo real decide si el
+   * turno cede. `desde` es la marca de TODO lo que este turno ya vio (el marcador de su
+   * ráfaga, `RafagaDeTurno.marcador`), nunca la marca «visto» del turno anterior:
+   * comparar contra la del turno anterior hacía que los mensajes que el turno estaba
+   * contestando contaran como «nuevos» y el turno cediera SIEMPRE, sin enviar nada
+   * (R1/C1, 17/11/2026). Con `null` no hay contra qué comparar y la respuesta es `false`.
    */
-  hayMensajeNuevoDelCliente(): Promise<boolean>;
+  hayMensajeNuevoDelCliente(desde: SeenMarker | null): Promise<boolean>;
+
+  /**
+   * El cliente ya espera a una persona (hay una escalada abierta que nadie tomó o un
+   * asesor asignado): toda salida de este turno es automática (`is_auto_reply`), para
+   * que una respuesta informativa no apague `awaiting_reply` y el chat no desaparezca
+   * de «Pendientes» y «Sin dueño» (R1/C3, 17/11/2026). El turno la llama una vez, al
+   * cargar los datos. Síncrona y sin efecto externo.
+   */
+  clienteEsperaPersona(): void;
 
   /** Registra el turno. En sombra y copiloto escribe el borrador. Se llama UNA vez. */
   cerrar(resumen: ResumenDeTurno): Promise<void>;

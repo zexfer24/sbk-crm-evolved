@@ -55,27 +55,61 @@ beforeEach(() => {
   });
 });
 
+/**
+ * Un Redis de mentira con la semántica que importa del candado: `SET … NX` solo pone si no hay valor, y `get`/`del`
+ * leen y borran. Sin vencimiento (los tests no esperan 90 s): lo que vence solo se prueba con `SOMBRA_LOCK_SEGUNDOS`.
+ */
+function redisFalso() {
+  const guardado = new Map<string, string>();
+  const set = vi.fn(async (...args: [key: string, value: string, ex: "EX", segundos: number, nx: "NX"]) => {
+    const [key, value] = args;
+    if (guardado.has(key)) return null;
+    guardado.set(key, value);
+    return "OK";
+  });
+  const get = vi.fn(async (key: string) => guardado.get(key) ?? null);
+  const del = vi.fn(async (key: string) => (guardado.delete(key) ? 1 : 0));
+  return { set, get, del, guardado };
+}
+
+/** Una promesa que se resuelve a mano: sirve para dejar un turno «en curso» mientras otro intenta entrar. */
+function diferida<T>() {
+  let resolver!: (valor: T) => void;
+  let rechazar!: (error: unknown) => void;
+  const promesa = new Promise<T>((res, rej) => {
+    resolver = res;
+    rechazar = rej;
+  });
+  return { promesa, resolver, rechazar };
+}
+
 describe("correrSombra — el candado anti-duplicado", () => {
-  it("toma sombra:<id> con SET NX EX 90 y corre el turno", async () => {
-    const set = vi.fn().mockResolvedValue("OK");
+  it("toma sombra:<id> con un valor propio, SET NX EX 90, y corre el turno", async () => {
+    const redis = redisFalso();
     const correrTurno = vi.fn().mockResolvedValue(RESUMEN);
 
-    await correrSombra(entrada({ deps: { correrTurno, redis: () => ({ set }), ahora: () => AHORA } }));
+    await correrSombra(entrada({ deps: { correrTurno, redis: () => redis, ahora: () => AHORA } }));
 
     expect(SOMBRA_LOCK_SEGUNDOS).toBe(90);
-    expect(set).toHaveBeenCalledWith("sombra:conv-1", "1", "EX", 90, "NX");
+    expect(redis.set).toHaveBeenCalledWith("sombra:conv-1", expect.any(String), "EX", 90, "NX");
+    // El valor es aleatorio por disparo (no un «1» compartido): solo así se puede reconocer el candado propio.
+    expect(redis.set.mock.calls[0][1]).not.toBe("1");
     expect(correrTurno).toHaveBeenCalledTimes(1);
   });
 
   it("con el candado tomado no corre y lo deja dicho", async () => {
-    const set = vi.fn().mockResolvedValue(null);
+    const redis = redisFalso();
+    redis.guardado.set("sombra:conv-1", "de-otro-disparo");
     const correrTurno = vi.fn();
 
-    await correrSombra(entrada({ deps: { correrTurno, redis: () => ({ set }) } }));
+    await correrSombra(entrada({ deps: { correrTurno, redis: () => redis } }));
 
     expect(correrTurno).not.toHaveBeenCalled();
     expect(leerVistoMock).not.toHaveBeenCalled();
     expect(logInfo).toHaveBeenCalledWith("sombra_ya_en_curso", expect.objectContaining({ conversationId: "conv-1" }));
+    // El candado ajeno no se toca: ni se pisa ni se borra.
+    expect(redis.guardado.get("sombra:conv-1")).toBe("de-otro-disparo");
+    expect(redis.del).not.toHaveBeenCalled();
   });
 
   it("sin Redis (getRedis lanza) corre igual, sin candado, y avisa", async () => {
@@ -88,23 +122,115 @@ describe("correrSombra — el candado anti-duplicado", () => {
   });
 
   it("si Redis responde con error al tomar el candado, corre igual y avisa", async () => {
-    const set = vi.fn().mockRejectedValue(new Error("redis caído"));
+    const redis = { ...redisFalso(), set: vi.fn().mockRejectedValue(new Error("redis caído")) };
     const correrTurno = vi.fn().mockResolvedValue(RESUMEN);
 
-    await correrSombra(entrada({ deps: { correrTurno, redis: () => ({ set }) } }));
+    await correrSombra(entrada({ deps: { correrTurno, redis: () => redis } }));
 
     expect(correrTurno).toHaveBeenCalledTimes(1);
     expect(logWarn).toHaveBeenCalledWith("sombra_sin_candado", expect.objectContaining({ detail: "redis caído" }));
+    // Sin candado tomado no hay nada que liberar.
+    expect(redis.del).not.toHaveBeenCalled();
   });
 
   it("usa getRedis cuando no se inyecta Redis", async () => {
-    const set = vi.fn().mockResolvedValue("OK");
-    getRedisMock.mockReturnValue({ set });
+    const redis = redisFalso();
+    getRedisMock.mockReturnValue(redis);
     const correrTurno = vi.fn().mockResolvedValue(RESUMEN);
 
     await correrSombra(entrada({ deps: { correrTurno } }));
 
-    expect(set).toHaveBeenCalledWith("sombra:conv-1", "1", "EX", 90, "NX");
+    expect(redis.set).toHaveBeenCalledWith("sombra:conv-1", expect.any(String), "EX", 90, "NX");
+  });
+
+  // 17/11/2026 (R1/C2): el candado vivía 90 s aunque el turno ya hubiera terminado. Un cliente que escribía «hola» y
+  // 30 s después su pregunta real veía el segundo turno salir por `sombra_ya_en_curso`: esa pregunta no dejaba borrador.
+  it("al terminar el turno libera el candado, y una segunda corrida inmediata SÍ corre", async () => {
+    const redis = redisFalso();
+    const correrTurno = vi.fn().mockResolvedValue(RESUMEN);
+    const deps = { correrTurno, redis: () => redis };
+
+    await correrSombra(entrada({ deps }));
+    expect(redis.guardado.has("sombra:conv-1")).toBe(false);
+
+    await correrSombra(entrada({ deps }));
+
+    expect(correrTurno).toHaveBeenCalledTimes(2);
+    expect(logInfo).not.toHaveBeenCalledWith("sombra_ya_en_curso", expect.anything());
+  });
+
+  it("mientras la primera corrida sigue en curso, la segunda NO corre (dos disparos simultáneos: uno solo)", async () => {
+    const redis = redisFalso();
+    const enCurso = diferida<ResumenDeTurno>();
+    const correrTurno = vi.fn().mockReturnValueOnce(enCurso.promesa).mockResolvedValue(RESUMEN);
+    const deps = { correrTurno, redis: () => redis };
+
+    const primera = correrSombra(entrada({ deps }));
+    await vi.waitFor(() => expect(correrTurno).toHaveBeenCalledTimes(1));
+
+    await correrSombra(entrada({ deps }));
+    expect(correrTurno).toHaveBeenCalledTimes(1);
+    expect(logInfo).toHaveBeenCalledWith("sombra_ya_en_curso", expect.objectContaining({ conversationId: "conv-1" }));
+
+    enCurso.resolver(RESUMEN);
+    await primera;
+    expect(redis.guardado.has("sombra:conv-1")).toBe(false);
+  });
+
+  it("si el turno lanza, el candado se libera igual", async () => {
+    const redis = redisFalso();
+    const correrTurno = vi.fn().mockRejectedValue(new Error("el modelo se cayó"));
+
+    await expect(correrSombra(entrada({ deps: { correrTurno, redis: () => redis } }))).resolves.toBeUndefined();
+
+    expect(redis.guardado.has("sombra:conv-1")).toBe(false);
+    expect(logWarn).toHaveBeenCalledWith("sombra_fallo", expect.objectContaining({ detail: "el modelo se cayó" }));
+  });
+
+  it("si lo que lanza es leerVistoDeSombra, el candado también se libera", async () => {
+    const redis = redisFalso();
+    leerVistoMock.mockRejectedValue(new Error("base caída"));
+
+    await correrSombra(entrada({ deps: { correrTurno: vi.fn(), redis: () => redis } }));
+
+    expect(redis.guardado.has("sombra:conv-1")).toBe(false);
+  });
+
+  it("no borra un candado ajeno: si el valor ya no es el propio (venció y otro disparo lo tomó), lo deja", async () => {
+    const redis = redisFalso();
+    const correrTurno = vi.fn(async () => {
+      // El candado propio venció a los 90 s y otro disparo tomó el suyo mientras este turno seguía corriendo.
+      redis.guardado.set("sombra:conv-1", "valor-de-otro-disparo");
+      return RESUMEN;
+    });
+
+    await correrSombra(entrada({ deps: { correrTurno, redis: () => redis } }));
+
+    expect(redis.guardado.get("sombra:conv-1")).toBe("valor-de-otro-disparo");
+    expect(redis.del).not.toHaveBeenCalled();
+  });
+
+  it("un fallo al liberar (del) no rechaza: queda en sombra_candado_no_liberado", async () => {
+    const redis = redisFalso();
+    redis.del.mockRejectedValue(new Error("redis caído"));
+    const correrTurno = vi.fn().mockResolvedValue(RESUMEN);
+
+    await expect(correrSombra(entrada({ deps: { correrTurno, redis: () => redis } }))).resolves.toBeUndefined();
+
+    expect(logWarn).toHaveBeenCalledWith(
+      "sombra_candado_no_liberado",
+      expect.objectContaining({ conversationId: "conv-1", detail: "redis caído" })
+    );
+  });
+
+  it("un fallo al leer el candado para liberarlo (get) tampoco rechaza", async () => {
+    const redis = redisFalso();
+    redis.get.mockRejectedValue(new Error("redis caído"));
+    const correrTurno = vi.fn().mockResolvedValue(RESUMEN);
+
+    await expect(correrSombra(entrada({ deps: { correrTurno, redis: () => redis } }))).resolves.toBeUndefined();
+
+    expect(logWarn).toHaveBeenCalledWith("sombra_candado_no_liberado", expect.objectContaining({ conversationId: "conv-1" }));
   });
 });
 

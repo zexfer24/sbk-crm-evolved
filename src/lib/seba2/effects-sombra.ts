@@ -217,6 +217,10 @@ export function crearEffectsDeSombra(deps: DepsDeEffectsDeSombra): TurnEffects {
       return false;
     },
 
+    clienteEsperaPersona() {
+      // La sombra no envía nada: no hay mensaje que marcar como automático.
+    },
+
     async cerrar(resumen: ResumenDeTurno) {
       // Un turno que solo constató «no hay nada nuevo que contestar» no deja borrador:
       // no hay qué comparar y llenaría el panel de filas vacías (una por cada reintento

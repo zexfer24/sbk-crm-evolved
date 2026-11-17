@@ -94,6 +94,8 @@ function registro(over: Partial<RegistroDeMemoria> = {}): RegistroDeMemoria {
     estado: null,
     bienvenidasReclamadas: 0,
     vistos: [],
+    consultasDeMensajeNuevo: [],
+    esperaPersona: false,
     cierre: null,
     secuencia: [],
     ...over,

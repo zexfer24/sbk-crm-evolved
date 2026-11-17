@@ -60,8 +60,6 @@ export interface DepsDeEffectsReales {
   escribiendo: () => void;
   /** Escribe la bitácora del turno (`logTurn` con `agent_version = 'v2'`). */
   registrarTurno: (resumen: ResumenDeTurno, pase: { area: Area; motivo: MotivoV2 } | null) => Promise<void>;
-  /** Marca «visto hasta» con la que abrió el turno: sirve para saber si llegó un mensaje nuevo mientras redactaba. */
-  visto: SeenMarker | null;
   /**
    * ¿Hay Redis para la marca «visto hasta»? (`REDIS_URL` configurada.) `writeSeen`
    * (turn-seen.ts) abre su propia conexión compartida, así que no hace falta pasar
@@ -96,6 +94,12 @@ export function crearEffectsReales(deps: DepsDeEffectsReales): TurnEffects {
   let detenido = false;
   /** Ya se le pasó (o ya tenía) un asesor: lo que se mande desde aquí es una cortesía mientras espera. */
   let pasadoAAsesor = false;
+  /**
+   * El turno avisó que el cliente ya espera a una persona (escalada abierta sin dueño, R1/C3, 17/11/2026): toda
+   * salida es automática aunque no haya asesor asignado ni pase en este turno. Caso: Seba contestaba el horario
+   * con una `escalada_sin_asesor` abierta, el mensaje salía como respuesta real y el trigger apagaba `awaiting_reply`.
+   */
+  let clienteEsperando = false;
   /** Ids de fila de `messages` enviados SIN `is_auto_reply`: el pase los marca cuando ya sabe que el cliente espera a una persona. */
   let sinMarcar: string[] = [];
   let ultimoPase: { area: Area; motivo: MotivoV2 } | null = null;
@@ -121,7 +125,7 @@ export function crearEffectsReales(deps: DepsDeEffectsReales): TurnEffects {
   ): Promise<{ ok: boolean }> {
     if (detenido) return { ok: false };
 
-    const isAutoReply = deps.assignedAgentId !== null || pasadoAAsesor;
+    const isAutoReply = deps.assignedAgentId !== null || pasadoAAsesor || clienteEsperando;
     let filaId: string | null = null;
     const entrega = await deps.entregar(() =>
       hacer(isAutoReply, (id) => {
@@ -350,8 +354,11 @@ export function crearEffectsReales(deps: DepsDeEffectsReales): TurnEffects {
       return ids;
     },
 
-    async hayMensajeNuevoDelCliente(): Promise<boolean> {
-      if (!deps.visto) return false;
+    async hayMensajeNuevoDelCliente(desde: SeenMarker | null): Promise<boolean> {
+      // `desde` es la marca de lo que ESTE turno ya vio (su ráfaga), no la del turno anterior: con la del turno
+      // anterior los mensajes que el turno está contestando contaban como «nuevos» y el turno cedía siempre,
+      // sin enviar nada (R1/C1, 17/11/2026).
+      if (!desde) return false;
       // `gte` y no `gt`: Meta fecha al segundo (ver `SeenMarker`), así que lo del
       // MISMO segundo cuenta como nuevo salvo que su id ya esté entre los vistos.
       let consulta = supabase
@@ -360,14 +367,18 @@ export function crearEffectsReales(deps: DepsDeEffectsReales): TurnEffects {
         .eq("conversation_id", conversationId)
         .eq("direction", "inbound")
         .neq("message_type", "unsupported")
-        .gte("created_at", deps.visto.hasta);
-      if (deps.visto.ids.length > 0) consulta = consulta.not("id", "in", `(${deps.visto.ids.join(",")})`);
+        .gte("created_at", desde.hasta);
+      if (desde.ids.length > 0) consulta = consulta.not("id", "in", `(${desde.ids.join(",")})`);
       const { data, error } = await consulta.limit(1);
       if (error) {
         log.warn("seba2_mensaje_nuevo_no_consultable", { conversationId, detail: error.message });
         return false;
       }
       return (data?.length ?? 0) > 0;
+    },
+
+    clienteEsperaPersona() {
+      clienteEsperando = true;
     },
 
     async cerrar(resumen: ResumenDeTurno) {

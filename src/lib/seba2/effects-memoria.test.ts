@@ -109,23 +109,33 @@ describe("efectos de memoria: fallas guionadas", () => {
 describe("efectos de memoria: mensaje nuevo del cliente", () => {
   it("mensajeNuevoTrasEnvios = 1 da false antes del primer envío y true después", async () => {
     const fx = crearEffectsDeMemoria({ mensajeNuevoTrasEnvios: 1 });
-    expect(await fx.hayMensajeNuevoDelCliente()).toBe(false);
+    expect(await fx.hayMensajeNuevoDelCliente(null)).toBe(false);
     await fx.enviarTexto("uno", "modelo");
-    expect(await fx.hayMensajeNuevoDelCliente()).toBe(true);
+    expect(await fx.hayMensajeNuevoDelCliente(null)).toBe(true);
   });
 
   it("un envío que falla no cuenta", async () => {
     const fx = crearEffectsDeMemoria({ mensajeNuevoTrasEnvios: 1, envioFalla: true });
     await fx.enviarTexto("uno", "modelo");
-    expect(await fx.hayMensajeNuevoDelCliente()).toBe(false);
+    expect(await fx.hayMensajeNuevoDelCliente(null)).toBe(false);
+  });
+
+  it("registra la marca con la que se preguntó, en orden, para poder afirmarla (R1/C1, 17/11/2026)", async () => {
+    const fx = crearEffectsDeMemoria();
+    const marca = { hasta: "2026-11-17T14:00:00Z", ids: ["m1"] };
+    await fx.hayMensajeNuevoDelCliente(marca);
+    await fx.hayMensajeNuevoDelCliente(null);
+    expect(fx.registro.consultasDeMensajeNuevo).toEqual([marca, null]);
+    // Una lectura pura: no ensucia la secuencia de efectos que escriben.
+    expect(fx.registro.secuencia).toEqual([]);
   });
 
   it("null (o sin definir) nunca da true", async () => {
     const fx = crearEffectsDeMemoria({ mensajeNuevoTrasEnvios: null });
     await fx.enviarTexto("uno", "modelo");
     await fx.enviarTexto("dos", "modelo");
-    expect(await fx.hayMensajeNuevoDelCliente()).toBe(false);
-    expect(await crearEffectsDeMemoria().hayMensajeNuevoDelCliente()).toBe(false);
+    expect(await fx.hayMensajeNuevoDelCliente(null)).toBe(false);
+    expect(await crearEffectsDeMemoria().hayMensajeNuevoDelCliente(null)).toBe(false);
   });
 });
 
@@ -176,6 +186,16 @@ describe("efectos de memoria: estado y cierre", () => {
     const fx = crearEffectsDeMemoria();
     await fx.cerrar(resumen());
     await expect(fx.cerrar(resumen())).rejects.toThrow("cerrar se llamó dos veces");
+  });
+});
+
+describe("efectos de memoria: el cliente ya espera a una persona (R1/C3, 17/11/2026)", () => {
+  it("clienteEsperaPersona queda registrado y en la secuencia; sin llamarlo, no", async () => {
+    const fx = crearEffectsDeMemoria();
+    expect(fx.registro.esperaPersona).toBe(false);
+    fx.clienteEsperaPersona();
+    expect(fx.registro.esperaPersona).toBe(true);
+    expect(fx.registro.secuencia).toEqual(["clienteEsperaPersona"]);
   });
 });
 

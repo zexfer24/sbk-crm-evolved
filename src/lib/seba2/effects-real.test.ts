@@ -196,7 +196,6 @@ function crear(extra: Partial<DepsDeEffectsReales> = {}, responder?: (op: Operac
     alFallarEnvio: vi.fn(async () => undefined),
     escribiendo: vi.fn(),
     registrarTurno: vi.fn(async () => undefined),
-    visto: null,
     redisDisponible: true,
     ...extra,
   };
@@ -316,6 +315,24 @@ describe("efectos reales: is_auto_reply", () => {
     await efectos.enviarImagen("https://x/y.jpg", null);
     expect(sendTextMock.mock.calls[0][3]).toMatchObject({ isAutoReply: true });
     expect(sendImageMock.mock.calls[0][4]).toMatchObject({ isAutoReply: true });
+  });
+
+  // 17/11/2026 (R1/C3): con una escalada ABIERTA que nadie tomó (`escalada_sin_asesor`) el cliente también espera a
+  // una persona; si Seba le contestaba el horario sin esta marca, el trigger apagaba `awaiting_reply` y el chat
+  // desaparecía de «Pendientes» y de «Sin dueño».
+  it("tras clienteEsperaPersona(), un envío sin asesor asignado ni pase es automático (texto e imagen)", async () => {
+    const { efectos } = crear();
+    efectos.clienteEsperaPersona();
+    await efectos.enviarTexto("Abrimos de lunes a viernes.", "modelo");
+    await efectos.enviarImagen("https://x/y.jpg", null);
+    expect(sendTextMock.mock.calls[0][3]).toMatchObject({ isAutoReply: true });
+    expect(sendImageMock.mock.calls[0][4]).toMatchObject({ isAutoReply: true });
+  });
+
+  it("sin llamar a clienteEsperaPersona() el envío sigue siendo respuesta real", async () => {
+    const { efectos } = crear();
+    await efectos.enviarTexto("hola", "modelo");
+    expect(sendTextMock.mock.calls[0][3]).toMatchObject({ isAutoReply: false });
   });
 
   it("después de un pase, los envíos siguientes son automáticos", async () => {
@@ -674,11 +691,11 @@ describe("efectos reales: marcarVisto, productosYaCotizados y mensajes nuevos", 
     expect(logWarn).toHaveBeenCalledWith("seba2_cotizados_no_legibles", expect.any(Object));
   });
 
-  it("hayMensajeNuevoDelCliente filtra por la marca y excluye los ids ya vistos", async () => {
-    const visto = { hasta: "2026-11-17T14:59:30.000Z", ids: ["m1", "m2"] };
-    const { efectos, operaciones } = crear({ visto }, () => ({ data: [{ id: "m3" }] }));
+  it("hayMensajeNuevoDelCliente filtra por la marca que recibe y excluye los ids ya vistos", async () => {
+    const desde = { hasta: "2026-11-17T14:59:30.000Z", ids: ["m1", "m2"] };
+    const { efectos, operaciones } = crear({}, () => ({ data: [{ id: "m3" }] }));
 
-    expect(await efectos.hayMensajeNuevoDelCliente()).toBe(true);
+    expect(await efectos.hayMensajeNuevoDelCliente(desde)).toBe(true);
 
     const consulta = operaciones[0];
     expect(consulta.tabla).toBe("messages");
@@ -692,19 +709,34 @@ describe("efectos reales: marcarVisto, productosYaCotizados y mensajes nuevos", 
     expect(consulta.limite).toBe(1);
   });
 
-  it("hayMensajeNuevoDelCliente: false si no hay filas, false sin marca (sin consultar), false con error", async () => {
-    const visto = { hasta: "2026-11-17T14:59:30.000Z", ids: [] };
-    const { efectos, operaciones } = crear({ visto }, () => ({ data: [] }));
-    expect(await efectos.hayMensajeNuevoDelCliente()).toBe(false);
+  it("hayMensajeNuevoDelCliente: false si no hay filas, false con desde null (sin consultar), false con error", async () => {
+    const desde = { hasta: "2026-11-17T14:59:30.000Z", ids: [] };
+    const { efectos, operaciones } = crear({}, () => ({ data: [] }));
+    expect(await efectos.hayMensajeNuevoDelCliente(desde)).toBe(false);
     // Sin ids vistos no se agrega el `not in ()` (sería una lista vacía inválida).
     expect(operaciones[0].filtros.some((f) => f.operador === "not")).toBe(false);
 
-    const { efectos: sinMarca, operaciones: ops2 } = crear({ visto: null });
-    expect(await sinMarca.hayMensajeNuevoDelCliente()).toBe(false);
+    const { efectos: sinMarca, operaciones: ops2 } = crear();
+    expect(await sinMarca.hayMensajeNuevoDelCliente(null)).toBe(false);
     expect(ops2).toHaveLength(0);
 
-    const { efectos: conError } = crear({ visto }, () => ({ error: { message: "x" } }));
-    expect(await conError.hayMensajeNuevoDelCliente()).toBe(false);
+    const { efectos: conError } = crear({}, () => ({ error: { message: "x" } }));
+    expect(await conError.hayMensajeNuevoDelCliente(desde)).toBe(false);
+  });
+
+  // 17/11/2026 (R1/C1): el turno antes comparaba contra la marca del turno ANTERIOR (`deps.visto`) y los mensajes
+  // de la ráfaga que estaba contestando contaban como «nuevos»: cedía siempre y el cliente no recibía nada.
+  it("hayMensajeNuevoDelCliente solo mira la marca que recibe: una `visto` vieja de las deps no entra en la consulta", async () => {
+    const vistoDelTurnoAnterior = { hasta: "2026-11-17T10:00:00.000Z", ids: ["viejo"] };
+    const desde = { hasta: "2026-11-17T14:59:30.000Z", ids: ["m9"] };
+    const { efectos, operaciones } = crear({ visto: vistoDelTurnoAnterior } as never, () => ({ data: [] }));
+
+    expect(await efectos.hayMensajeNuevoDelCliente(desde)).toBe(false);
+
+    const filtros = operaciones[0].filtros;
+    expect(filtros).toContainEqual({ operador: "gte", columna: "created_at", valor: desde.hasta });
+    expect(filtros).toContainEqual({ operador: "not", columna: "id", valor: ["in", "(m9)"] });
+    expect(JSON.stringify(filtros)).not.toContain("viejo");
   });
 });
 

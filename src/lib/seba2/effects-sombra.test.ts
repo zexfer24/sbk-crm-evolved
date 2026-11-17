@@ -445,7 +445,13 @@ describe("efectos de sombra: lecturas", () => {
 
   it("hayMensajeNuevoDelCliente: siempre false, sin consultar nada (la sombra no cede)", async () => {
     const { efectos, operaciones } = crear();
-    expect(await efectos.hayMensajeNuevoDelCliente()).toBe(false);
+    expect(await efectos.hayMensajeNuevoDelCliente(null)).toBe(false);
+    expect(operaciones).toHaveLength(0);
+  });
+
+  it("clienteEsperaPersona no hace nada: la sombra no envía, así que no hay nada que marcar (R1/C3)", () => {
+    const { efectos, operaciones } = crear();
+    expect(() => efectos.clienteEsperaPersona()).not.toThrow();
     expect(operaciones).toHaveLength(0);
   });
 });

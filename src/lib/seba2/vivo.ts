@@ -80,7 +80,6 @@ export async function correrSeba2EnVivo(entrada: EntradaDeVivo): Promise<Resumen
     alFallarEnvio: entrada.alFallarEnvio,
     escribiendo: entrada.escribiendo,
     registrarTurno: entrada.registrarTurno,
-    visto,
     redisDisponible,
   });
 

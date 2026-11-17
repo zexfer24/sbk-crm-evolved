@@ -60,6 +60,10 @@ export interface RegistroDeMemoria {
   /** Bienvenidas CONCEDIDAS (las que devolvieron `true`), no intentos. */
   bienvenidasReclamadas: number;
   vistos: SeenMarker[];
+  /** La marca con la que se llamó a `hayMensajeNuevoDelCliente`, en orden (R1/C1): para afirmar que el turno compara contra su ráfaga. */
+  consultasDeMensajeNuevo: (SeenMarker | null)[];
+  /** `clienteEsperaPersona` se llamó (R1/C3). */
+  esperaPersona: boolean;
   cierre: ResumenDeTurno | null;
   /**
    * Nombre de cada efecto que ESCRIBE o consume algo, en el orden en que ocurrió
@@ -91,6 +95,8 @@ export function crearEffectsDeMemoria(
     estado: guion.estado ?? null,
     bienvenidasReclamadas: 0,
     vistos: [],
+    consultasDeMensajeNuevo: [],
+    esperaPersona: false,
     cierre: null,
     secuencia: [],
   };
@@ -176,10 +182,16 @@ export function crearEffectsDeMemoria(
       return new Set(guion.yaCotizados ?? []);
     },
 
-    async hayMensajeNuevoDelCliente() {
+    async hayMensajeNuevoDelCliente(desde) {
+      registro.consultasDeMensajeNuevo.push(desde);
       const umbral = guion.mensajeNuevoTrasEnvios;
       if (umbral === null || umbral === undefined) return false;
       return registro.mensajes.length >= umbral;
+    },
+
+    clienteEsperaPersona() {
+      registro.secuencia.push("clienteEsperaPersona");
+      registro.esperaPersona = true;
     },
 
     async cerrar(resumen) {
