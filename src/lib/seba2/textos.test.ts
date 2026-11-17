@@ -7,11 +7,13 @@ import {
   ETIQUETA_TOTAL,
   ETIQUETA_TOTAL_CON_ENVIO,
   LINEA_ASESOR_BINANCE,
+  LINEA_CIERRE_COTIZACION,
   LINEA_ENVIO_GRATIS_CASHEA,
   LINEA_PEDIR_COMPROBANTE,
   TEXTO_COMPROBANTE_RECIBIDO,
   TEXTO_NO_PUDE_LEER,
   TEXTO_PASE,
+  PREGUNTA_QUE_BUSCA,
   TEXTO_UN_ASESOR_TE_CONFIRMA,
   lineaCedulaCashea,
   lineaTiendaCerrada,
@@ -104,6 +106,13 @@ describe("textos de respaldo", () => {
   it("no explican el motivo interno", () => {
     expect(TEXTO_UN_ASESOR_TE_CONFIRMA).toBe("Un asesor te lo confirma por este mismo chat.");
     expect(TEXTO_NO_PUDE_LEER).toBe("No pude ver bien lo que enviaste. ¿Me lo escribes, por favor?");
+  });
+});
+
+describe("textos de la búsqueda de repuestos (S8b)", () => {
+  it("el cierre de la cotización y la pregunta de qué busca", () => {
+    expect(LINEA_CIERRE_COTIZACION).toBe("¿Lo quieres llevar? Puedes pagar con Cashea o de contado.");
+    expect(PREGUNTA_QUE_BUSCA).toBe("¿Qué repuesto o accesorio estás buscando?");
   });
 });
 

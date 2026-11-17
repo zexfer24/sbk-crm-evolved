@@ -432,3 +432,50 @@ describe("notaDeBusquedas — los renglones para el asesor", () => {
     expect(notaDeBusquedas([])).toBe("");
   });
 });
+
+// S8b, entrega 3 de Seba v2 (17/11/2026). El guion de v2 manda «Nunca digas
+// cuántas unidades hay. Solo "es el último" cuando la herramienta lo marque»:
+// con `existencia: "sin_cantidad"` el bloque no cuenta unidades.
+describe("armarCotizacion con existencia «sin_cantidad» (Seba v2)", () => {
+  const SIN = { existencia: "sin_cantidad" } as const;
+
+  it("con existencia no dice cuántas hay: ni la cifra ni «disponibles»", () => {
+    // 7 en existencia; el precio no lleva ningún 7 para que la aserción sea exacta.
+    const bloque = armarCotizacion([{ ...inca, precioBs: 88, stock: 7 }], SIN);
+    expect(bloque).toBe(`• ACEITE INCA 20W50 4T: ${formatQuote(2.2, 88)}`);
+    expect(bloque).not.toContain("7");
+    expect(bloque).not.toContain("disponibles");
+  });
+
+  it("con una sola unidad dice «Última unidad»", () => {
+    expect(armarCotizacion([{ ...inca, stock: 1 }], SIN)).toBe(
+      `• ACEITE INCA 20W50 4T: ${formatQuote(2.2, 87)} — Última unidad`,
+    );
+  });
+
+  it("en cero sigue diciendo «Agotado»", () => {
+    expect(armarCotizacion([casco], SIN)).toBe(`• CASCO LS2 FF353 NEGRO M: ${formatQuote(95, 3800)} — Agotado`);
+  });
+
+  it("en una lista aplica igual a cada renglón, alternativas incluidas", () => {
+    const a = { ...inca, productId: "a", nombre: "BATERIA GEL 12V", productoPedido: "bateria", stock: 9 };
+    const b = { ...inca, productId: "b", nombre: "MOTOR DE ARRANQUE", productoPedido: "arranque", stock: 1 };
+    const c = { ...inca, productId: "c", nombre: "CASCO ROJO", productoPedido: "casco", stock: 0 };
+    const d = { ...inca, productId: "d", nombre: "CASCO AZUL", productoPedido: "casco", stock: 4, esAlternativa: true };
+
+    const bloque = armarCotizacion([a, b, c, d], SIN);
+
+    expect(bloque).not.toContain("disponibles");
+    expect(bloque).not.toMatch(/ — \d/);
+    expect(bloque).toContain(`• BATERIA GEL 12V: ${formatQuote(2.2, 87)}\n`.trimEnd());
+    expect(bloque).toContain("• MOTOR DE ARRANQUE: " + formatQuote(2.2, 87) + " — Última unidad");
+    expect(bloque).toContain("• CASCO ROJO: " + formatQuote(2.2, 87) + " — Agotado");
+    expect(bloque).toContain("• CASCO AZUL: " + formatQuote(2.2, 87));
+  });
+
+  it("sin la opción (o con «cantidad») la salida es la de siempre, byte a byte", () => {
+    const lineas = [{ ...inca, stock: 7 }, { ...inca, productId: "p9", nombre: "OTRO", stock: 1 }, casco];
+    expect(armarCotizacion(lineas, { existencia: "cantidad" })).toBe(armarCotizacion(lineas));
+    expect(armarCotizacion(lineas)).toContain("— 7 disponibles");
+  });
+});

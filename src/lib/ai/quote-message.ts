@@ -74,11 +74,27 @@ export interface OpcionesCotizacion {
    * renglones) no aparece en `lineas`, y sin este orden iría al final.
    */
   ordenProductos?: readonly string[];
+  /**
+   * S8b (17/11/2026, entrega 3 de Seba v2): cómo se dice la existencia.
+   * `"cantidad"` (default, la de v1): "6 disponibles" / "1 disponible" /
+   * "Agotado". `"sin_cantidad"` (v2): el guion de Seba v2 manda «Nunca digas
+   * cuántas unidades hay. Solo "es el último" cuando la herramienta lo
+   * marque», así que con existencia el renglón no dice nada de unidades,
+   * con una sola dice "Última unidad" y en cero sigue diciendo "Agotado". Sin
+   * la opción la salida es idéntica a la de antes de S8b.
+   */
+  existencia?: ModoDeExistencia;
 }
 
-/** "6 disponibles" / "1 disponible" / "Agotado". */
-function existencia(stock: number): string {
+export type ModoDeExistencia = "cantidad" | "sin_cantidad";
+
+/**
+ * "6 disponibles" / "1 disponible" / "Agotado" (modo `cantidad`); `null` si no
+ * hay nada que agregar al renglón (modo `sin_cantidad` con existencia).
+ */
+function existencia(stock: number, modo: ModoDeExistencia): string | null {
   if (stock <= 0) return "Agotado";
+  if (modo === "sin_cantidad") return stock === 1 ? "Última unidad" : null;
   return stock === 1 ? "1 disponible" : `${stock} disponibles`;
 }
 
@@ -92,8 +108,10 @@ function encabezado(producto: string): string {
   return `*${limpio.slice(0, MAX_ENCABEZADO_CARACTERES).trim()}*`;
 }
 
-function renglon(linea: LineaCotizada): string {
-  return `• ${linea.nombre}: ${formatQuote(linea.precioUsd, linea.precioBs)} — ${existencia(linea.stock)}`;
+function renglon(linea: LineaCotizada, modo: ModoDeExistencia): string {
+  const base = `• ${linea.nombre}: ${formatQuote(linea.precioUsd, linea.precioBs)}`;
+  const dicha = existencia(linea.stock, modo);
+  return dicha === null ? base : `${base} — ${dicha}`;
 }
 
 /**
@@ -130,7 +148,8 @@ function lineaDeAviso(aviso: AvisoCatalogo, nCotizadas: number): string | null {
 function bloqueDeProducto(
   producto: string | null,
   lineas: readonly LineaCotizada[],
-  avisos: readonly AvisoCatalogo[]
+  avisos: readonly AvisoCatalogo[],
+  modo: ModoDeExistencia
 ): string {
   const normales = lineas.filter((l) => !l.esAlternativa);
   const alternativas = lineas.filter((l) => l.esAlternativa === true);
@@ -141,8 +160,8 @@ function bloqueDeProducto(
   return [
     producto ? encabezado(producto) : null,
     ...lineasDeAvisos,
-    ...normales.map(renglon),
-    ...(alternativas.length > 0 ? [OTRA_OPCION_CON_EXISTENCIA, ...alternativas.map(renglon)] : []),
+    ...normales.map((l) => renglon(l, modo)),
+    ...(alternativas.length > 0 ? [OTRA_OPCION_CON_EXISTENCIA, ...alternativas.map((l) => renglon(l, modo))] : []),
   ]
     .filter((x): x is string => x !== null)
     .join("\n");
@@ -159,11 +178,12 @@ function bloqueDeProducto(
 export function armarCotizacion(lineas: readonly LineaCotizada[], opciones: OpcionesCotizacion = {}): string {
   let bloques: string[] = [];
   const avisos = opciones.avisos ?? [];
+  const modo = opciones.existencia ?? "cantidad";
 
   const esLista = lineas.some((l) => l.productoPedido !== null) || avisos.some((a) => a.productoPedido !== null);
   if (!esLista) {
     if (lineas.length > 0 || avisos.length > 0) {
-      bloques.push(bloqueDeProducto(null, lineas, avisos));
+      bloques.push(bloqueDeProducto(null, lineas, avisos, modo));
     }
   } else {
     const grupos = new Map<string, LineaCotizada[]>();
@@ -193,7 +213,8 @@ export function armarCotizacion(lineas: readonly LineaCotizada[], opciones: Opci
       bloqueDeProducto(
         clave || null,
         grupos.get(clave) ?? [],
-        avisos.filter((a) => (a.productoPedido ?? "") === clave)
+        avisos.filter((a) => (a.productoPedido ?? "") === clave),
+        modo
       )
     );
   }
@@ -296,6 +317,8 @@ export function armarMensajeDeCotizacion(params: {
   correcciones?: readonly CorreccionTermino[];
   avisos?: readonly AvisoCatalogo[];
   ordenProductos?: readonly string[];
+  /** S8b: ver `OpcionesCotizacion.existencia`. Default `"cantidad"`. */
+  existencia?: ModoDeExistencia;
 }): { texto: string; preambulo: string | null } {
   const avisos = params.avisos ?? [];
   if (params.lineas.length === 0 && avisos.length === 0) return { texto: "", preambulo: null };
@@ -310,6 +333,7 @@ export function armarMensajeDeCotizacion(params: {
     correcciones: params.correcciones,
     avisos,
     ordenProductos: params.ordenProductos,
+    existencia: params.existencia,
   });
   const textoFijo = textoFijoDeCierre(params.lineas, avisos);
 

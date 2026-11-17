@@ -61,3 +61,14 @@ export const TEXTO_NO_PUDE_LEER = "No pude ver bien lo que enviaste. ¿Me lo esc
  * y lo recoge el reconciliador / «Sin dueño», pero el cliente no se queda callado.
  */
 export const TEXTO_SEGUIMOS_POR_AQUI = "Dame un momento, ya te confirmo por este mismo chat.";
+
+/**
+ * Cierre de una cotización de Seba v2 (S8b, 17/11/2026). Lo agrega el CÓDIGO
+ * debajo del bloque con el nombre exacto y el precio: v2 vende hasta el
+ * comprobante, así que la cotización cierra preguntando si lo lleva, no
+ * prometiendo un asesor (v1 usa `TEXTO_CONFIRMAR_INVENTARIO`, que sí lo hace).
+ */
+export const LINEA_CIERRE_COTIZACION = "¿Lo quieres llevar? Puedes pagar con Cashea o de contado.";
+
+/** La pregunta cuando el cliente todavía no nombró ningún repuesto (S8b). */
+export const PREGUNTA_QUE_BUSCA = "¿Qué repuesto o accesorio estás buscando?";
