@@ -622,7 +622,7 @@ jobs:
       # T1 (20261116020000, plan "Entrega 2 de Seba v2"): formas de pago de
       # contado; cualquier asesor las lee y solo el supervisor/admin las escribe
       # (el UPDATE de un asesor afecta 0 filas), con sus CHECK de clave y moneda.
-      - name: formas_de_pago -- payment_methods: el asesor lee y solo el supervisor escribe
+      - name: formas_de_pago -- payment_methods, el asesor lee y solo el supervisor escribe
         run: |
           psql "postgresql://postgres:postgres@127.0.0.1:54322/postgres"             -v ON_ERROR_STOP=1             -f supabase/tests/formas_de_pago.sql
 
