@@ -3384,7 +3384,9 @@ update public.agent_settings set seba_v2_modo = 'sombra' where id;
    - `webhook_encola_para_sombra`: el webhook encoló turnos con la IA global apagada porque la sombra puede correr.
    - `sombra_turno` (con `accion` y `duracionMs`): un turno de sombra terminó y dejó su borrador.
    - `sombra_fallo`: la sombra falló (el turno de v1 no se entera; nunca lanza hacia v1). Si son muchos, hay un problema del proveedor o de la base.
-   - `sombra_ya_en_curso`: un disparo duplicado del mismo turno encontró el candado de Redis `sombra:<id>` (90 s) y no corrió. Normal en reintentos.
+   - `sombra_ya_en_curso`: un disparo simultáneo del mismo turno encontró el candado de Redis `sombra:<id>` y no corrió. El candado se libera cuando el turno termina (y vence solo a los 90 s si algo lo deja colgado).
+   - `seba2_herramienta` (con `herramienta` y `respuesta`): qué le contestó cada herramienta al modelo. Es lo primero que hay que mirar cuando un pago no se arma o una búsqueda termina en un pase.
+   - `seba2_texto_cortado`: el modelo llegó al tope de tokens y su texto se descartó (salió el respaldo). Si aparece seguido, hay que subir el tope o revisar el razonamiento del modelo.
    - `sombra_tiempo_agotado`: el turno de v1 dejó de esperar a la sombra (tope de 60 s) y salió sin ella.
    - La pestaña «Sombra» de Control IA: la lista de borradores, y el gasto del día contra el tope en su cabecera.
 4. **Consulta de control** (conteo de borradores por día, y el gasto de la sombra de hoy):
@@ -3406,6 +3408,8 @@ select public.shadow_spend_today();
    - **La sombra duplica las llamadas al proveedor** (varias por turno) solo en las conversaciones muestreadas. Vigilar `ia_ritmo_al_tope` y el gasto del proveedor; si aparece, bajar el muestreo antes que subir los topes de ritmo.
    - **El reconciliador no reencola turnos de sombra perdidos**: un borrador que no se escribió (un corte, un deploy) no se recupera; la sombra mide una muestra, no es una cola.
    - La sombra **no escribe en `agent_turns`**: su gasto, sus tokens y sus llamadas viven en `agent_shadow_drafts`. `agent_spend_today()` y el tope de la IA en vivo no cambian.
+   - **Seba v2 respeta los interruptores por herramienta** de Control IA → «Herramientas». Con «Consulta de productos» apagada no busca, no cotiza ni prepara pagos: casi todo termina en un pase. Para que la sombra mida algo útil, ese interruptor tiene que estar encendido (con el modo en `sombra` no le llega nada al cliente).
+   - **El tope de gasto depende de `model_pricing`**: si el modelo de `agent_shadow_drafts.model` no tiene su fila de tarifa, `shadow_spend_today()` da 0 y el tope no corta nunca. Comprobarlo con el primer borrador.
 6. **Revisar** (supervisor): en la pestaña «Sombra», abrir cada borrador, ver lo que escribió el cliente, lo que Seba habría enviado y lo que contestó el asesor, y dejar la revisión (veredicto, tipo de error, corrección, destino). Ese es el material para decidir si se pasa al siguiente escalón.
 
 ### 23.6 Paso «copiloto»
