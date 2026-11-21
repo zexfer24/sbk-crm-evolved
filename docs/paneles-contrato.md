@@ -26,7 +26,21 @@ exige tocar las dos puntas y este archivo en el mismo commit.
   tiene `posible_duplicado`. `estado.duplicados` cuenta los duplicados del rango según esta regla.
 - **Canal**: el que guardó la foto (`ventas_saint.canal`), nunca recalculado en la lectura.
 - Tope de rango: las RPC que leen `messages` (`panel_conversaciones`, `panel_asesores`) rechazan rangos de más
-  de 92 días con `errcode = '22023'`. `panel_ventas` no tiene tope.
+  de 92 días con `errcode = '22023'`. `panel_ventas` no tiene tope. El tope se mide sobre el rango ya recortado
+  por el piso de datos (sección siguiente).
+- **Piso de datos** (migración `20261121020000`, 21/11/2026): `public.paneles_inicio()` devuelve el lunes
+  16/11/2026 00:00 de Caracas (`2026-11-16 04:00:00+00`; mismo valor que `INICIO_PANELES` en
+  `src/lib/paneles/periodos.ts`, un test los compara). `panel_ventas`, `panel_conversaciones` y
+  `panel_asesores` hacen `p_desde := greatest(p_desde, public.paneles_inicio())` justo después de validar la
+  entrada: un rango nulo o invertido sigue siendo `22023`, y lo anterior al piso no se lee (el backfill del
+  16/11 dejó 205 fotos `estimado = true` valuadas al precio de ese día). La granularidad de `panel_ventas` y el
+  tope de 92 días se calculan sobre el rango YA recortado, así que pedir `10/11–17/11` es pedir `16/11–17/11`
+  (los dos salen por hora). Un rango ENTERO anterior al piso no es un error: devuelve la forma vacía de esa RPC
+  (mismas claves que un rango válido sin datos, contadores en 0, y en `panel_ventas` `serie` y
+  `perfil_horario` en `[]`). Las firmas no cambian: el código anterior al piso sigue llamando igual. Lo que
+  NO se recorta, a propósito: `hist` de `panel_ventas` (la historia de cada cliente y el duplicado se deciden
+  contra lo anterior al piso: una compra del 10/11 hace que ese cliente «regrese» el 18/11), los genéricos de
+  los 30 días previos a `p_hasta` y `panel_cola` / `panel_ventas_activas`, que leen el estado actual.
 
 ## `panel_ventas(p_desde timestamptz, p_hasta timestamptz) → jsonb`
 ```json

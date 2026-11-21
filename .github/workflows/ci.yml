@@ -613,6 +613,15 @@ jobs:
         run: |
           psql "postgresql://postgres:postgres@127.0.0.1:54322/postgres"             -v ON_ERROR_STOP=1             -f supabase/tests/paneles.sql
 
+      # 20261121020000 (21/11/2026): el piso de datos de los paneles. Pedir desde
+      # antes del lunes 16/11/2026 es pedir desde el piso (jsonb idéntico, también
+      # cuando cambia la granularidad o se excedían los 92 días), un rango entero
+      # anterior da la forma vacía del contrato, las firmas no cambian (A1) y la
+      # historia anterior al piso sigue contando para "regresan" y los duplicados.
+      - name: paneles_inicio -- piso de datos de los paneles (16/11/2026)
+        run: |
+          psql "postgresql://postgres:postgres@127.0.0.1:54322/postgres"             -v ON_ERROR_STOP=1             -f supabase/tests/paneles_inicio.sql
+
       # 20261121010000 (21/11/2026): el estado de la lectura de la tasa BCV. La
       # RPC suma y reinicia el contador de fallos de forma atómica, solo
       # service_role la ejecuta, y agentes/caja leen la fila sin poder escribirla.
