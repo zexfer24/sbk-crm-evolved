@@ -1,5 +1,8 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { VISTAS, vistaDesdeParam } from "./canal";
+
+// Estos tests describen el canal «tienda» visible (D1, 21/11/2026: hoy está oculto); `tienda-oculta.test.tsx` cubre el caso oculto.
+vi.mock("@/lib/paneles/canal-config", () => ({ CANAL_TIENDA_VISIBLE: true }));
 
 describe("VISTAS", () => {
   it("tiene Resumen, Online y En tienda con las líneas de contexto del mockup A", () => {

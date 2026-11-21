@@ -6,6 +6,9 @@ import { AsesoresView, type AsesoresViewProps } from "@/components/paneles/aseso
 import { DEFAULT_BUSINESS_HOURS } from "@/lib/business-hours";
 import type { PanelAsesores, PanelCola, PanelConversaciones, PanelVentas, PersonaAsesores } from "@/lib/paneles/parse";
 
+// Estos tests describen el canal «tienda» visible (D1, 21/11/2026: hoy está oculto); `tienda-oculta.test.tsx` cubre el caso oculto.
+vi.mock("@/lib/paneles/canal-config", () => ({ CANAL_TIENDA_VISIBLE: true }));
+
 /**
  * Plan "Paneles" (13/11/2026), C6: la pantalla de Asesores con un fixture que
  * respeta `docs/paneles-contrato.md`. jsdom no calcula layout: la revisión

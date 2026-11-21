@@ -1,6 +1,7 @@
 "use client";
 
 import { BarrasVerticales, type SerieGrafico } from "@/components/paneles/panel-graficos";
+import { tiendaVisible } from "@/lib/paneles/canal";
 import { formatoUsd } from "@/components/paneles/panel-marco";
 import { avatarDe, etiquetaRol } from "./persona";
 import { formatoFechaHora, formatoMinutos, formatoPorcentaje, iniciales } from "./formato";
@@ -61,7 +62,7 @@ export function HojaPersona({ fila, etiquetaRango }: { fila: FilaPersona; etique
           nota={p.primera_resp_p90_min !== null ? `p90 ${formatoMinutos(p.primera_resp_p90_min)}` : undefined}
         />
         <Dato etiqueta="Respondidas en ≤ 5 min" valor={formatoPorcentaje(p.en_5min)} />
-        <Dato etiqueta="Envíos a SAINT" valor={p.envios.toLocaleString("es-VE")} nota={`${p.envios_online} online · ${p.envios_tienda} tienda`} />
+        <Dato etiqueta="Envíos a SAINT" valor={p.envios.toLocaleString("es-VE")} nota={tiendaVisible() ? `${p.envios_online} online · ${p.envios_tienda} tienda` : undefined} />
         <Dato etiqueta="Monto enviado" valor={formatoUsd(p.monto)} nota={`${p.unidades.toLocaleString("es-VE")} unidades`} />
         <Dato
           etiqueta="Conversión"

@@ -104,6 +104,44 @@
   color: var(--lm-muted);
 }
 
+/* Línea de lectura bajo el título: «Actualizado a las 9:42 a. m.» + botón de refresco
+   (T5, 21/11/2026). Va DENTRO de .pn-cab__titulos, nunca como hijo del grid. */
+.pn-cab__lectura-fila {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 4px;
+  min-width: 0;
+}
+.pn-cab__lectura {
+  margin: 0;
+  font-size: 12px;
+  color: var(--lm-muted);
+  min-width: 0;
+}
+.pn-boton--refrescar {
+  flex-shrink: 0;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  color: var(--lm-muted);
+}
+.pn-boton--refrescar:hover:not(:disabled) {
+  color: var(--lm-ink);
+}
+.pn-boton--refrescar:disabled {
+  cursor: progress;
+}
+.pn-boton--refrescar[data-refrescando="true"] > svg {
+  animation: pn-girar 0.9s linear infinite;
+}
+@keyframes pn-girar {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
 /* Un segmentado que no cabe desliza en horizontal en vez de ensanchar la página */
 .pn-scroll {
   max-width: 100%;
@@ -763,5 +801,9 @@
   .pn-card--click:hover,
   .pn-card--click:active {
     transform: none;
+  }
+  /* El ícono de refrescar no gira: el «en curso» queda en el cursor y en aria-busy */
+  .pn-boton--refrescar[data-refrescando="true"] > svg {
+    animation: none;
   }
 }

@@ -1,9 +1,10 @@
 "use client";
 
 import type { ReactNode } from "react";
-import { AlertTriangle, Banknote, Clock, Package, ShoppingCart, Users } from "lucide-react";
+import { AlertTriangle, Banknote, Clock, Minus, Package, ShoppingCart, Users } from "lucide-react";
 import { formatBs } from "@/lib/cashea";
-import type { Vista } from "@/lib/paneles/canal";
+import { enviosDeTiendaOcultos, textoTiendaOculta, type Vista } from "@/lib/paneles/canal";
+import { TEXTO_INICIO_PANELES, TEXTO_SIN_PREVIO } from "@/lib/paneles/periodos";
 import type { PanelConversaciones, PanelVentas, PanelVentasActivas } from "@/lib/paneles/parse";
 import { Anillo, Sparkline } from "@/components/paneles/panel-graficos";
 import { formatoUsd } from "@/components/paneles/panel-marco";
@@ -147,7 +148,8 @@ export function KpiEnviado({
   etiquetaPrevio,
   vista,
   tasaBcv,
-  avisarInicioDeEnvios,
+  avisarInicioDePaneles,
+  sinPrevio = false,
   onAbrir,
 }: {
   ventas: PanelVentas;
@@ -156,7 +158,10 @@ export function KpiEnviado({
   etiquetaPrevio: string;
   vista: Vista;
   tasaBcv: number;
-  avisarInicioDeEnvios: boolean;
+  /** El piso de datos recortó el período (`rangos.periodoRecortado`): la tarjeta lo avisa. */
+  avisarInicioDePaneles: boolean;
+  /** No existe un período anterior comparable (arrancaría antes del piso): chip neutro en vez de variación. */
+  sinPrevio?: boolean;
   onAbrir: () => void;
 }) {
   const canal = canalDeVista(ventas, vista);
@@ -165,6 +170,8 @@ export function KpiEnviado({
   const { transito, error } = ventas.estado;
   const sobreTodos = vista === "resumen" ? "" : " · todos los canales";
   const serie = serieDeVista(ventas, vista, "ingresos");
+  // D1 (21/11/2026): con la tienda oculta, el total del resumen ya suma sus envíos; se avisa cuántos son.
+  const enviosTienda = vista === "resumen" ? enviosDeTiendaOcultos(ventas.canales.tienda.envios) : 0;
 
   return (
     <TarjetaKpi nombre="Enviado a SAINT" eyebrow="Enviado a SAINT" icono={<Banknote size={16} />} onAbrir={onAbrir}>
@@ -172,7 +179,8 @@ export function KpiEnviado({
       <p className="pn-kpi__sub">en espera de facturar</p>
       <p className="pd-bs lm-num">{bs === null ? "Bs. —" : formatBs(bs)}</p>
       <div className="pd-chips">
-        {previo && <ChipVariacion variacion={delta} contra={etiquetaPrevio} />}
+        {sinPrevio ? <ChipSinPrevio /> : previo && <ChipVariacion variacion={delta} contra={etiquetaPrevio} />}
+        {enviosTienda > 0 && <span className="pn-chip pn-chip--alerta">{textoTiendaOculta(enviosTienda)}</span>}
         {canal.estimados > 0 && (
           <>
             <span className="pn-chip pn-chip--alerta" title={TEXTO_ESTIMADO} aria-describedby="pd-estimado">
@@ -208,10 +216,18 @@ export function KpiEnviado({
           </span>
         </div>
       )}
-      {avisarInicioDeEnvios && (
-        <p className="pn-kpi__pie">Los envíos a SAINT se registran desde el 26 de octubre de 2026.</p>
-      )}
+      {avisarInicioDePaneles && <p className="pn-kpi__pie">{TEXTO_INICIO_PANELES}.</p>}
     </TarjetaKpi>
+  );
+}
+
+/** El chip neutro que ocupa el lugar de la variación cuando no hay período anterior comparable. */
+function ChipSinPrevio() {
+  return (
+    <span className="pn-chip pn-chip--neutro">
+      <Minus size={13} aria-hidden="true" />
+      {TEXTO_SIN_PREVIO}
+    </span>
   );
 }
 
@@ -227,12 +243,15 @@ export function KpiUnidades({
   previo,
   etiquetaPrevio,
   vista,
+  sinPrevio = false,
   onAbrir,
 }: {
   ventas: PanelVentas;
   previo: PanelVentas | null;
   etiquetaPrevio: string;
   vista: Vista;
+  /** No existe un período anterior comparable (arrancaría antes del piso): chip neutro en vez de variación. */
+  sinPrevio?: boolean;
   onAbrir: () => void;
 }) {
   const canal = canalDeVista(ventas, vista);
@@ -251,7 +270,9 @@ export function KpiUnidades({
   return (
     <TarjetaKpi nombre="Unidades vendidas" eyebrow="Unidades vendidas" icono={<Package size={16} />} onAbrir={onAbrir}>
       <Cifra valor={canal.unidades} formato={formatoEntero} className="pn-kpi__cifra" />
-      <div className="pd-chips">{previo && <ChipVariacion variacion={delta} contra={etiquetaPrevio} />}</div>
+      <div className="pd-chips">
+        {sinPrevio ? <ChipSinPrevio /> : previo && <ChipVariacion variacion={delta} contra={etiquetaPrevio} />}
+      </div>
       <div className="pn-kpi__viz">
         {/* El contrato no trae unidades por tramo: las barras son los ENVÍOS de cada tramo. */}
         <div

@@ -1,7 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ReactElement } from "react";
 import { rangosDeAnaliticas, rangosDelDashboard } from "@/lib/paneles/rangos";
-import { rangoDe, rangoPrevio } from "@/lib/paneles/periodos";
+import { INICIO_PANELES, rangoDe, rangoPrevio, TEXTO_INICIO_PANELES } from "@/lib/paneles/periodos";
+
+// Estos tests describen el canal «tienda» visible (D1, 21/11/2026: hoy está oculto); `tienda-oculta.test.tsx` cubre el caso oculto.
+vi.mock("@/lib/paneles/canal-config", () => ({ CANAL_TIENDA_VISIBLE: true }));
 
 /**
  * Plan "Paneles" (13/11/2026), C2/C3: las tres páginas de `/panel` son server
@@ -17,9 +20,20 @@ import { rangoDe, rangoPrevio } from "@/lib/paneles/periodos";
  * Cada lectura se mockea devolviendo una marca con el rango pedido: si una
  * página cruzara dos bloques (p. ej. pasar el período previo como el de hoy)
  * la marca no calzaría con la esperada.
+ *
+ * 21/11/2026 (plan "Los paneles cuentan desde el lunes 16/11/2026"): el reloj
+ * de estos tests pasó al 21/11 09:20 de Caracas, DESPUÉS del piso de datos
+ * (16/11), para ejercitar el comportamiento real: ningún rango arranca antes
+ * del piso, el período previo desaparece (`null`, sin llamar a su RPC) y un
+ * rango vacío no llama a su RPC. Otros tests fijan el reloj el 13/11 (antes
+ * del piso) y el 30/11 (con un previo comparable).
  */
 
-const AHORA = new Date("2026-11-13T18:30:00-04:00");
+const AHORA = new Date("2026-11-21T09:20:00-04:00");
+// Después del piso con un previo comparable completo: 7 días anteriores = 17/11 -> 23/11 10:00.
+const AHORA_CON_PREVIO = new Date("2026-11-30T10:00:00-04:00");
+// Antes del piso: todo rango queda vacío.
+const AHORA_ANTES_DEL_PISO = new Date("2026-11-13T18:30:00-04:00");
 
 const fetchPanelVentas = vi.fn();
 const fetchPanelConversaciones = vi.fn();
@@ -27,14 +41,21 @@ const fetchPanelAsesores = vi.fn();
 const fetchPanelCola = vi.fn();
 const fetchPanelVentasActivas = vi.fn();
 const fetchMetasVenta = vi.fn();
-vi.mock("@/lib/paneles-data", () => ({
-  fetchPanelVentas: (...a: unknown[]) => fetchPanelVentas(...a),
-  fetchPanelConversaciones: (...a: unknown[]) => fetchPanelConversaciones(...a),
-  fetchPanelAsesores: (...a: unknown[]) => fetchPanelAsesores(...a),
-  fetchPanelCola: (...a: unknown[]) => fetchPanelCola(...a),
-  fetchPanelVentasActivas: (...a: unknown[]) => fetchPanelVentasActivas(...a),
-  fetchMetasVenta: (...a: unknown[]) => fetchMetasVenta(...a),
-}));
+// Los dos helpers de bloque vacío son puros: se usan los de verdad para que el
+// test compruebe el objeto que de verdad le llega a la vista.
+vi.mock("@/lib/paneles-data", async () => {
+  const real = await vi.importActual<typeof import("@/lib/paneles-data")>("@/lib/paneles-data");
+  return {
+    bloqueAntesDelInicio: real.bloqueAntesDelInicio,
+    bloqueConTopeAntesDelInicio: real.bloqueConTopeAntesDelInicio,
+    fetchPanelVentas: (...a: unknown[]) => fetchPanelVentas(...a),
+    fetchPanelConversaciones: (...a: unknown[]) => fetchPanelConversaciones(...a),
+    fetchPanelAsesores: (...a: unknown[]) => fetchPanelAsesores(...a),
+    fetchPanelCola: (...a: unknown[]) => fetchPanelCola(...a),
+    fetchPanelVentasActivas: (...a: unknown[]) => fetchPanelVentasActivas(...a),
+    fetchMetasVenta: (...a: unknown[]) => fetchMetasVenta(...a),
+  };
+});
 
 class Redireccion extends Error {
   constructor(public destino: string) {
@@ -127,7 +148,7 @@ describe("panel/page.tsx (Dashboard)", () => {
     expect(p.periodo).toBe("7d");
     expect(p.vista).toBe("online");
     expect(marcaDe(p.ventas)).toBe(marca(r.periodo.desde, r.periodo.hasta));
-    expect(marcaDe(p.ventasPrevio)).toBe(marca(r.previo.desde, r.previo.hasta));
+    expect(p.ventasPrevio).toBeNull();
     expect(marcaDe(p.ventasHoy)).toBe(marca(r.hoy.desde, r.hoy.hasta));
     expect(marcaDe(p.ventasHistoria)).toBe(marca(r.historia.desde, r.historia.hasta));
     expect(marcaDe(p.ventasAnio)).toBe(marca(r.anio.desde, r.anio.hasta));
@@ -138,31 +159,75 @@ describe("panel/page.tsx (Dashboard)", () => {
     expect((p.ahora as Date).getTime()).toBe(AHORA.getTime());
     expect(p.rangos).toEqual(r);
 
-    // Cinco lecturas de ventas (período, previo, hoy, historia, año), una de conversaciones.
-    expect(fetchPanelVentas).toHaveBeenCalledTimes(5);
+    // Tres lecturas de ventas (período, hoy, historia): el previo no existe y el
+    // año (16/11 -> ahora) es el mismo rango que «7 días», así que comparte su promesa.
+    expect(p.ventasAnio).toBe(p.ventas);
+    expect(fetchPanelVentas).toHaveBeenCalledTimes(3);
     expect(fetchPanelConversaciones).toHaveBeenCalledTimes(1);
+  });
+
+  it("con un previo comparable (30/11, «7 días») lo lee con SU rango: 5 RPC de ventas", async () => {
+    vi.setSystemTime(AHORA_CON_PREVIO);
+    const p = await propsDe("dashboard", { periodo: "7d" });
+    const r = rangosDelDashboard("7d", AHORA_CON_PREVIO);
+    expect(r.previo).not.toBeNull();
+    expect(r.previo!.desde.toISOString()).toBe("2026-11-17T04:00:00.000Z");
+    expect(marcaDe(p.ventasPrevio)).toBe(marca(r.previo!.desde, r.previo!.hasta));
+    expect(marcaDe(p.ventas)).toBe(marca(r.periodo.desde, r.periodo.hasta));
+    expect(fetchPanelVentas).toHaveBeenCalledTimes(5);
+  });
+
+  it("con el previo anterior al piso NO se llama a la RPC del previo y la vista recibe null", async () => {
+    const p = await propsDe("dashboard", { periodo: "hoy" });
+    expect(p.ventasPrevio).toBeNull();
+    expect((p.rangos as ReturnType<typeof rangosDelDashboard>).previo).toBeNull();
+    const rangosPedidos = fetchPanelVentas.mock.calls.map(([, desde, hasta]) => marca(desde as Date, hasta as Date));
+    const previoDeCalendario = rangoPrevio("hoy", AHORA, null)!;
+    expect(rangosPedidos).not.toContain(marca(previoDeCalendario.desde, previoDeCalendario.hasta));
+  });
+
+  it("con un reloj anterior al piso los rangos quedan vacíos: ninguna RPC con rango y la vista recibe bloqueAntesDelInicio()", async () => {
+    vi.setSystemTime(AHORA_ANTES_DEL_PISO);
+    const p = await propsDe("dashboard", { periodo: "7d" });
+    const sinDatos = { ok: false, motivo: "no_disponible", detalle: TEXTO_INICIO_PANELES };
+    expect(fetchPanelVentas).not.toHaveBeenCalled();
+    expect(fetchPanelConversaciones).not.toHaveBeenCalled();
+    for (const bloque of [p.ventas, p.ventasHoy, p.ventasHistoria, p.ventasAnio]) {
+      expect(bloque).toEqual(sinDatos);
+    }
+    expect(p.ventasPrevio).toBeNull();
+    expect(p.conversaciones).toEqual({ ...sinDatos, recortado: false });
+    // Lo que no depende del piso se lee igual.
+    expect(marcaDe(p.ventasActivas)).toBe("activas");
+    expect(p.tasaBcv).toBe(48.5);
   });
 
   // 15/11/2026 (code-review): con «Hoy» el período y «hoy» son el mismo rango, y
   // con «Este año» el período y el año; pedirlos dos veces duplica una RPC pesada.
-  it.each(["hoy", "anio"])("?periodo=%s: período y su rango gemelo comparten UNA lectura (4 RPC, no 5)", async (valor) => {
-    const p = await propsDe("dashboard", { periodo: valor });
-    const r = p.rangos as ReturnType<typeof rangosDelDashboard>;
-    expect(fetchPanelVentas).toHaveBeenCalledTimes(4);
-    const gemelo = valor === "hoy" ? p.ventasHoy : p.ventasAnio;
-    expect(p.ventas).toBe(gemelo);
-    expect(marcaDe(p.ventas)).toBe(marca(r.periodo.desde, r.periodo.hasta));
-    expect(marcaDe(p.ventasPrevio)).toBe(marca(r.previo.desde, r.previo.hasta));
-    expect(marcaDe(p.ventasHistoria)).toBe(marca(r.historia.desde, r.historia.hasta));
-  });
+  // Desde el 21/11/2026 el piso hace que «7 días», «30 días», «Este mes» y «Este año»
+  // arranquen todos el 16/11: son el mismo rango que el año y comparten su lectura.
+  it.each(["hoy", "7d", "30d", "mes", "anio"])(
+    "?periodo=%s: el período y su rango gemelo comparten UNA lectura (3 RPC de ventas, sin previo)",
+    async (valor) => {
+      const p = await propsDe("dashboard", { periodo: valor });
+      const r = p.rangos as ReturnType<typeof rangosDelDashboard>;
+      expect(fetchPanelVentas).toHaveBeenCalledTimes(3);
+      const gemelo = valor === "hoy" ? p.ventasHoy : p.ventasAnio;
+      expect(p.ventas).toBe(gemelo);
+      expect(marcaDe(p.ventas)).toBe(marca(r.periodo.desde, r.periodo.hasta));
+      expect(p.ventasPrevio).toBeNull();
+      expect(marcaDe(p.ventasHistoria)).toBe(marca(r.historia.desde, r.historia.hasta));
+    }
+  );
 
-  it("la historia de 40 días termina donde empieza hoy, y el año arranca el 1/1 de Caracas", async () => {
+  it("la historia va del piso a la medianoche de hoy, y el año arranca el 16/11 de Caracas", async () => {
     const p = await propsDe("dashboard", {});
     const r = p.rangos as ReturnType<typeof rangosDelDashboard>;
     expect(r.historia.hasta.getTime()).toBe(r.hoy.desde.getTime());
-    expect(r.hoy.desde.getTime() - r.historia.desde.getTime()).toBe(40 * 24 * 3600 * 1000);
-    expect(r.anio.desde.toISOString()).toBe("2026-01-01T04:00:00.000Z");
-    expect(r.hoyClave).toBe("2026-11-13");
+    expect(r.historia.desde.toISOString()).toBe(INICIO_PANELES.toISOString());
+    expect(r.anio.desde.toISOString()).toBe("2026-11-16T04:00:00.000Z");
+    expect(r.piso).toEqual(INICIO_PANELES);
+    expect(r.hoyClave).toBe("2026-11-21");
   });
 
   it("un periodo o una vista desconocidos caen en hoy y resumen; un parámetro repetido usa el primero", async () => {
@@ -192,31 +257,69 @@ describe("panel/analiticas/page.tsx", () => {
     expect(p.periodo).toBe("30d");
     expect(p.vista).toBe("tienda");
     expect(marcaDe(p.ventas)).toBe(marca(r.periodo.desde, r.periodo.hasta));
-    expect(marcaDe(p.ventasPrevio)).toBe(marca(r.previo.desde, r.previo.hasta));
+    expect(p.ventasPrevio).toBeNull();
     expect(marcaDe(p.conversaciones)).toBe(marca(r.periodo.desde, r.periodo.hasta));
-    expect(marcaDe(p.conversacionesPrevio)).toBe(marca(r.previo.desde, r.previo.hasta));
+    expect(p.conversacionesPrevio).toBeNull();
     expect(marcaDe(p.ventasAnio)).toBe(marca(r.anio.desde, r.anio.hasta));
     expect(marcaDe(p.ventasUltimos40)).toBe(marca(r.ultimos40.desde, r.ultimos40.hasta));
     expect(marcaDe(p.ventasActivas)).toBe("activas");
     expect(p.horario).toBe(HORARIO);
     expect(p.tasaBcv).toBe(48.5);
     expect(p.rangos).toEqual(r);
+    // Ventas: período, año y últimos 40 días (el previo no existe). Conversaciones: solo el período.
+    expect(fetchPanelVentas).toHaveBeenCalledTimes(3);
+    expect(fetchPanelConversaciones).toHaveBeenCalledTimes(1);
+  });
+
+  it("con un previo comparable (30/11, «7 días») lee ventas y conversaciones del previo: 4 y 2 RPC", async () => {
+    vi.setSystemTime(AHORA_CON_PREVIO);
+    const p = await propsDe("analiticas", { periodo: "7d" });
+    const previo = rangoPrevio("7d", AHORA_CON_PREVIO)!;
+    expect(marcaDe(p.ventasPrevio)).toBe(marca(previo.desde, previo.hasta));
+    expect(marcaDe(p.conversacionesPrevio)).toBe(marca(previo.desde, previo.hasta));
     expect(fetchPanelVentas).toHaveBeenCalledTimes(4);
     expect(fetchPanelConversaciones).toHaveBeenCalledTimes(2);
   });
 
-  it("los últimos 40 días incluyen hoy y cubren exactamente 40 días de Caracas", async () => {
+  it("con el previo anterior al piso NO se llama a la RPC del previo y la vista recibe null en los dos", async () => {
+    const p = await propsDe("analiticas", { periodo: "hoy" });
+    expect(p.ventasPrevio).toBeNull();
+    expect(p.conversacionesPrevio).toBeNull();
+    expect((p.rangos as ReturnType<typeof rangosDeAnaliticas>).previo).toBeNull();
+    const previoDeCalendario = rangoPrevio("hoy", AHORA, null)!;
+    for (const llamada of [...fetchPanelVentas.mock.calls, ...fetchPanelConversaciones.mock.calls]) {
+      expect(marca(llamada[1] as Date, llamada[2] as Date)).not.toBe(
+        marca(previoDeCalendario.desde, previoDeCalendario.hasta)
+      );
+    }
+  });
+
+  it("con un reloj anterior al piso los rangos quedan vacíos: ninguna RPC con rango y llega bloqueAntesDelInicio()", async () => {
+    vi.setSystemTime(AHORA_ANTES_DEL_PISO);
+    const p = await propsDe("analiticas", { periodo: "30d" });
+    const sinDatos = { ok: false, motivo: "no_disponible", detalle: TEXTO_INICIO_PANELES };
+    expect(fetchPanelVentas).not.toHaveBeenCalled();
+    expect(fetchPanelConversaciones).not.toHaveBeenCalled();
+    for (const bloque of [p.ventas, p.ventasAnio, p.ventasUltimos40]) expect(bloque).toEqual(sinDatos);
+    expect(p.conversaciones).toEqual({ ...sinDatos, recortado: false });
+    expect(p.ventasPrevio).toBeNull();
+    expect(p.conversacionesPrevio).toBeNull();
+  });
+
+  it("los últimos 40 días incluyen hoy y no arrancan antes del piso", async () => {
     const p = await propsDe("analiticas", {});
     const r = p.rangos as ReturnType<typeof rangosDeAnaliticas>;
     expect(r.ultimos40.hasta.getTime()).toBe(AHORA.getTime());
-    expect(r.ultimos40.desde.toISOString()).toBe("2026-10-05T04:00:00.000Z");
+    expect(r.ultimos40.desde.toISOString()).toBe("2026-11-16T04:00:00.000Z");
+    expect(r.piso).toEqual(INICIO_PANELES);
   });
 
-  it("el periodo previo usa la misma regla que el resto de los paneles", async () => {
+  it("el periodo «Este mes» arranca en el piso (16/11), no el 1/11", async () => {
     const p = await propsDe("analiticas", { periodo: "mes" });
-    const previo = rangoPrevio("mes", AHORA);
-    expect(marcaDe(p.ventasPrevio)).toBe(marca(previo.desde, previo.hasta));
-    expect(rangoDe("mes", AHORA).desde.toISOString()).toBe("2026-11-01T04:00:00.000Z");
+    expect(rangoDe("mes", AHORA).desde.toISOString()).toBe("2026-11-16T04:00:00.000Z");
+    expect((p.rangos as ReturnType<typeof rangosDeAnaliticas>).periodo.desde.toISOString()).toBe(
+      "2026-11-16T04:00:00.000Z"
+    );
   });
 });
 
@@ -236,6 +339,19 @@ describe("panel/asesores/page.tsx", () => {
     expect(fetchPanelVentas).toHaveBeenCalledTimes(1);
     expect(fetchPanelConversaciones).toHaveBeenCalledTimes(1);
     expect(fetchPanelAsesores).toHaveBeenCalledTimes(1);
+  });
+
+  it("con un reloj anterior al piso el rango queda vacío: ninguna RPC con rango y llega bloqueAntesDelInicio(); la cola se lee igual", async () => {
+    vi.setSystemTime(AHORA_ANTES_DEL_PISO);
+    const p = await propsDe("asesores", { periodo: "30d" });
+    const sinDatos = { ok: false, motivo: "no_disponible", detalle: TEXTO_INICIO_PANELES };
+    expect(fetchPanelVentas).not.toHaveBeenCalled();
+    expect(fetchPanelConversaciones).not.toHaveBeenCalled();
+    expect(fetchPanelAsesores).not.toHaveBeenCalled();
+    expect(p.ventas).toEqual(sinDatos);
+    expect(p.asesores).toEqual({ ...sinDatos, recortado: false });
+    expect(p.conversaciones).toEqual({ ...sinDatos, recortado: false });
+    expect(marcaDe(p.cola)).toBe("cola");
   });
 
   it("no pide metas, ventas en curso ni la tasa BCV: no las usa", async () => {

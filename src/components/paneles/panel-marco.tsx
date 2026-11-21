@@ -9,6 +9,7 @@ import { SlidingPills } from "@/components/sliding-pills";
 import { PERIODOS, type PeriodoId } from "@/lib/paneles/periodos";
 import { VISTAS, type Vista } from "@/lib/paneles/canal";
 import { CRM_TIME_ZONE } from "@/lib/time-zone";
+import { useRefrescoDelPanel } from "@/components/paneles/use-refresco-del-panel";
 import type { Bloque } from "@/lib/paneles-data";
 // `.dash`, `.dash-frame`, `.dash-main`, `.dash-content`, `.dash-title`: el marco
 // de siempre del CRM. `paneles.css` pone encima lo propio de los paneles.
@@ -53,6 +54,22 @@ export function fechaLargaDeHoy(ahora: Date): string {
   }).format(ahora);
 }
 
+/**
+ * «9:42 a. m.»: la hora de la lectura en Caracas. Los espacios que mete el ICU
+ * (U+00A0 y U+202F, el estrecho de Node 20+) se normalizan a un espacio común
+ * para que el texto sea el mismo en cualquier navegador y se pueda buscar.
+ */
+export function horaDeLectura(ahora: Date): string {
+  return new Intl.DateTimeFormat("es-VE", {
+    timeZone: CRM_TIME_ZONE,
+    hour: "numeric",
+    minute: "2-digit",
+    hour12: true,
+  })
+    .format(ahora)
+    .replace(/[  ]/g, " ");
+}
+
 export function PanelMarco({
   panel,
   titulo,
@@ -68,6 +85,8 @@ export function PanelMarco({
   controles?: ReactNode;
   children: ReactNode;
 }) {
+  // Relectura automática cada 60 s con la pestaña visible (T5, 21/11/2026).
+  const { refrescar, refrescando } = useRefrescoDelPanel();
   return (
     <div className="dash">
       <div className="dash-frame">
@@ -80,6 +99,20 @@ export function PanelMarco({
               <div className="pn-cab__titulos">
                 <p className="pn-eyebrow">{fechaLargaDeHoy(ahora)}</p>
                 <h1 className="dash-title dash-display">{titulo}</h1>
+                <div className="pn-cab__lectura-fila">
+                  <p className="pn-cab__lectura">Actualizado a las {horaDeLectura(ahora)}</p>
+                  <button
+                    type="button"
+                    className="pn-boton pn-boton--refrescar"
+                    aria-label="Refrescar ahora"
+                    aria-busy={refrescando}
+                    data-refrescando={refrescando ? "true" : undefined}
+                    onClick={refrescar}
+                    disabled={refrescando}
+                  >
+                    <RefreshCw size={13} aria-hidden="true" />
+                  </button>
+                </div>
               </div>
               {controles && <div className="pn-cab__controles">{controles}</div>}
             </header>

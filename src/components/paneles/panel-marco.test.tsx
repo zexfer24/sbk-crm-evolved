@@ -3,7 +3,16 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { BUSINESS_NAME } from "@/lib/brand";
-import { ControlPeriodo, ControlVista, PanelBloque, PanelMarco } from "@/components/paneles/panel-marco";
+import {
+  ControlPeriodo,
+  ControlVista,
+  PanelBloque,
+  PanelMarco,
+  horaDeLectura,
+} from "@/components/paneles/panel-marco";
+
+// Estos tests describen el canal «tienda» visible (D1, 21/11/2026: hoy está oculto); `tienda-oculta.test.tsx` cubre el caso oculto.
+vi.mock("@/lib/paneles/canal-config", () => ({ CANAL_TIENDA_VISIBLE: true }));
 
 /**
  * Plan "Paneles" (13/11/2026), C3: el marco común de los tres paneles.
@@ -125,6 +134,46 @@ describe("PanelMarco", () => {
     expect(container.querySelector('nav[aria-label="Paneles"]')).toBeNull();
     expect(container.querySelector(".pn-pestanas, .pn-pestana")).toBeNull();
     expect(screen.queryByRole("navigation", { name: "Paneles" })).toBeNull();
+  });
+
+  // T5 (21/11/2026): la cabecera dice a qué hora se leyó y deja refrescar a mano.
+  it("pinta «Actualizado a las …» con la hora de Caracas de `ahora`", () => {
+    render(
+      <PanelMarco panel="dashboard" titulo="T" ahora={new Date("2026-11-21T13:42:00Z")}>
+        <p>contenido</p>
+      </PanelMarco>
+    );
+    expect(screen.getByText("Actualizado a las 9:42 a. m.")).toBeInTheDocument();
+  });
+
+  it("horaDeLectura usa la zona de Caracas y un espacio común", () => {
+    expect(horaDeLectura(new Date("2026-11-21T13:42:00Z"))).toBe("9:42 a. m.");
+    expect(horaDeLectura(new Date("2026-11-21T22:05:00Z"))).toBe("6:05 p. m.");
+    // 03:30 UTC del 22/11 sigue siendo la noche del 21/11 en Caracas.
+    expect(horaDeLectura(new Date("2026-11-22T03:30:00Z"))).toBe("11:30 p. m.");
+    expect(horaDeLectura(AHORA)).not.toMatch(/[  ]/);
+  });
+
+  it("el botón «Refrescar ahora» vuelve a pedir la página al servidor", async () => {
+    render(
+      <PanelMarco panel="asesores" titulo="T" ahora={AHORA}>
+        <p>contenido</p>
+      </PanelMarco>
+    );
+    await userEvent.setup({ delay: null, pointerEventsCheck: 0 }).click(screen.getByRole("button", { name: "Refrescar ahora" }));
+    expect(refresh).toHaveBeenCalledTimes(1);
+  });
+
+  it("la línea de lectura y el botón viven dentro de la cabecera, no en el grid", () => {
+    const { container } = render(
+      <PanelMarco panel="dashboard" titulo="T" ahora={AHORA}>
+        <p>contenido</p>
+      </PanelMarco>
+    );
+    const cab = container.querySelector("header.pn-cab");
+    expect(cab!.querySelector(".pn-cab__lectura")).not.toBeNull();
+    expect(cab!.contains(screen.getByRole("button", { name: "Refrescar ahora" }))).toBe(true);
+    expect(container.querySelector(".dash-frame")!.childElementCount).toBe(2);
   });
 
   it("pinta el slot de controles y el contenido", () => {

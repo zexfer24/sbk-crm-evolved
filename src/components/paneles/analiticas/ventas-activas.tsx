@@ -3,7 +3,7 @@
 import { useState } from "react";
 import { Clock } from "lucide-react";
 import type { Bloque } from "@/lib/paneles-data";
-import type { Vista } from "@/lib/paneles/canal";
+import { tiendaVisible, type Vista } from "@/lib/paneles/canal";
 import type { PanelVentasActivas } from "@/lib/paneles/parse";
 import { PanelBloque } from "@/components/paneles/panel-marco";
 import { SlidingPills } from "@/components/sliding-pills";
@@ -32,7 +32,7 @@ const TIPOS: { value: FiltroActivas["tipo"]; label: string }[] = [
   { value: "presupuesto", label: "Presupuestos" },
   { value: "carrito", label: "Carritos" },
 ];
-const CANALES: { value: Vista; label: string }[] = [
+const TODOS_LOS_CANALES: { value: Vista; label: string }[] = [
   { value: "resumen", label: "Todos" },
   { value: "online", label: "Online" },
   { value: "tienda", label: "En tienda" },
@@ -49,6 +49,9 @@ function Tabla({ dato, vistaInicial, ahora }: { dato: PanelVentasActivas; vistaI
   const [canal, setCanal] = useState<Vista>(vistaInicial);
   const [antiguedad, setAntiguedad] = useState<FiltroActivas["antiguedad"]>("todas");
   const [verTodas, setVerTodas] = useState(false);
+  // D1 (21/11/2026): sin el canal «tienda» no hay pastilla «En tienda», ni columna ni chip de canal por ítem.
+  const conTienda = tiendaVisible();
+  const CANALES = conTienda ? TODOS_LOS_CANALES : TODOS_LOS_CANALES.filter((c) => c.value !== "tienda");
 
   const filas = filtrarActivas(dato.items, { tipo, canal, antiguedad }, ahora);
   const visibles = verTodas ? filas : filas.slice(0, FILAS_INICIALES);
@@ -101,9 +104,11 @@ function Tabla({ dato, vistaInicial, ahora }: { dato: PanelVentasActivas; vistaI
                 <th scope="col" className="an-oculta-m">
                   Tipo
                 </th>
-                <th scope="col" className="an-oculta-m">
-                  Canal
-                </th>
+                {conTienda && (
+                  <th scope="col" className="an-oculta-m">
+                    Canal
+                  </th>
+                )}
                 <th scope="col" className="an-oculta-m">
                   Quién
                 </th>
@@ -121,9 +126,11 @@ function Tabla({ dato, vistaInicial, ahora }: { dato: PanelVentasActivas; vistaI
                   <tr key={`${item.tipo}-${item.id}`}>
                     <td className="pn-corto">{item.cliente ?? "—"}</td>
                     <td className="an-oculta-m">{item.tipo === "presupuesto" ? "Presupuesto" : "Carrito"}</td>
-                    <td className="an-oculta-m">
-                      <span className={`pn-chip pn-chip--${item.canal}`}>{nombreDeCanal(item.canal)}</span>
-                    </td>
+                    {conTienda && (
+                      <td className="an-oculta-m">
+                        <span className={`pn-chip pn-chip--${item.canal}`}>{nombreDeCanal(item.canal)}</span>
+                      </td>
+                    )}
                     <td className="pn-corto an-oculta-m">{item.responsable ?? "—"}</td>
                     <td>
                       <span className={`pn-chip pn-chip--${nivel} an-edad`}>

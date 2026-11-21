@@ -17,14 +17,6 @@ import { crmMinuteOfDay, crmWeekday } from "@/lib/time-zone";
  * calcular" y la pantalla pinta «—», nunca un 0 que parezca verdad.
  */
 
-/** Los envíos a SAINT se registran desde esta fecha (medianoche de Caracas del 26/10/2026). */
-export const FECHA_INICIO_ENVIOS = new Date("2026-10-26T04:00:00Z");
-
-/** Un período que arranca antes del 26/10 incluye días sin envíos registrados: la pantalla lo avisa. */
-export function periodoTocaAntesDeEnvios(desde: Date): boolean {
-  return desde.getTime() < FECHA_INICIO_ENVIOS.getTime();
-}
-
 function centavos(n: number): number {
   return Math.round(n * 100) / 100;
 }

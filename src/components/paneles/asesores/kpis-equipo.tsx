@@ -3,6 +3,7 @@
 import { Gauge, Inbox, Send, Timer, Users } from "lucide-react";
 import type { ReactNode } from "react";
 import type { Bloque } from "@/lib/paneles-data";
+import { enviosDeTiendaOcultos, textoTiendaOculta } from "@/lib/paneles/canal";
 import { sumaCanales, type PanelAsesores, type PanelCola, type PanelVentas } from "@/lib/paneles/parse";
 import { PanelBloque, formatoUsd } from "@/components/paneles/panel-marco";
 import { Cifra, entero } from "./cifra";
@@ -106,6 +107,8 @@ export function KpisEquipo({
       <PanelBloque bloque={ventas} nombre="Envíos a SAINT del equipo">
         {(dato) => {
           const total = sumaCanales(dato);
+          // D1 (21/11/2026): con la tienda oculta el total ya suma sus envíos; se avisa cuántos son.
+          const enviosTienda = enviosDeTiendaOcultos(dato.canales.tienda.envios);
           return (
             <Tarjeta
               icono={<Send size={16} />}
@@ -113,13 +116,18 @@ export function KpisEquipo({
               cifra={formatoUsd(total.ingresos)}
               sub={`${total.envios.toLocaleString("es-VE")} envíos · en espera de facturar`}
               pie={
-                total.estimados > 0 ? (
-                  <span
-                    className="pn-chip pn-chip--alerta"
-                    title="Incluye envíos cuyo monto es una estimación: la foto de la venta no pudo calcularse con el precio exacto."
-                  >
-                    Estimado
-                  </span>
+                total.estimados > 0 || enviosTienda > 0 ? (
+                  <>
+                    {total.estimados > 0 && (
+                      <span
+                        className="pn-chip pn-chip--alerta"
+                        title="Incluye envíos cuyo monto es una estimación: la foto de la venta no pudo calcularse con el precio exacto."
+                      >
+                        Estimado
+                      </span>
+                    )}
+                    {enviosTienda > 0 && <span className="pn-chip pn-chip--alerta">{textoTiendaOculta(enviosTienda)}</span>}
+                  </>
                 ) : undefined
               }
             />

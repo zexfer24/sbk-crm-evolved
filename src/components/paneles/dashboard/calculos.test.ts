@@ -8,7 +8,6 @@ import {
   ingresosPorMes,
   itemsDeVista,
   metaAcumuladaPorHora,
-  periodoTocaAntesDeEnvios,
   proximaApertura,
   serieDeVista,
   variacion,
@@ -169,9 +168,3 @@ describe("ingresosPorMes", () => {
   });
 });
 
-describe("periodoTocaAntesDeEnvios", () => {
-  it("es verdadero si el período empieza antes del 26/10/2026", () => {
-    expect(periodoTocaAntesDeEnvios(new Date("2026-10-17T04:00:00Z"))).toBe(true);
-    expect(periodoTocaAntesDeEnvios(new Date("2026-11-01T04:00:00Z"))).toBe(false);
-  });
-});

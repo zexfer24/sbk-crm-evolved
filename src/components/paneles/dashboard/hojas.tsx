@@ -1,7 +1,7 @@
 "use client";
 
 import type { ReactNode } from "react";
-import type { Vista } from "@/lib/paneles/canal";
+import { tiendaVisible, type Vista } from "@/lib/paneles/canal";
 import type { PanelConversaciones, PanelVentas, PanelVentasActivas } from "@/lib/paneles/parse";
 import { PanelHoja } from "@/components/paneles/panel-hoja";
 import { formatoUsd } from "@/components/paneles/panel-marco";
@@ -45,6 +45,8 @@ export function HojaVentasActivas({
   ahora: Date;
 }) {
   const items = itemsDeVista(datos, vista);
+  // D1 (21/11/2026): sin el canal «tienda» la columna «Canal» no distingue nada.
+  const conCanal = tiendaVisible();
   return (
     <PanelHoja abierta={abierta} titulo="Ventas activas" onCerrar={onCerrar}>
       <p className="pn-subtitulo">
@@ -58,7 +60,7 @@ export function HojaVentasActivas({
           <thead>
             <tr>
               <th scope="col">Tipo</th>
-              <th scope="col">Canal</th>
+              {conCanal && <th scope="col">Canal</th>}
               <th scope="col">Responsable</th>
               <th scope="col">Cliente</th>
               <th scope="col" className="pn-der">
@@ -73,7 +75,7 @@ export function HojaVentasActivas({
             {items.map((i) => (
               <tr key={i.id}>
                 <td>{i.tipo === "carrito" ? "Carrito" : "Presupuesto"}</td>
-                <td>{ETIQUETA_CANAL[i.canal]}</td>
+                {conCanal && <td>{ETIQUETA_CANAL[i.canal]}</td>}
                 <td className="pn-corto">{i.responsable ?? "—"}</td>
                 <td className="pn-corto">{i.cliente ?? "—"}</td>
                 <td className="pn-der lm-num">{formatoUsd(i.monto)}</td>
@@ -197,6 +199,8 @@ export function HojaUnidades({
     .map((r) => ({ ...r, cuantas: unidadesDe(r, vista) }))
     .filter((r) => r.cuantas > 0)
     .sort((a, b) => b.cuantas - a.cuantas);
+  // D1 (21/11/2026): sin el canal «tienda» el desglose online/tienda desaparece: una sola columna.
+  const desglosar = tiendaVisible();
 
   return (
     <PanelHoja abierta={abierta} titulo="Unidades vendidas" onCerrar={onCerrar}>
@@ -208,14 +212,18 @@ export function HojaUnidades({
           <thead>
             <tr>
               <th scope="col">Repuesto</th>
+              {desglosar && (
+                <>
+                  <th scope="col" className="pn-der">
+                    Online
+                  </th>
+                  <th scope="col" className="pn-der">
+                    En tienda
+                  </th>
+                </>
+              )}
               <th scope="col" className="pn-der">
-                Online
-              </th>
-              <th scope="col" className="pn-der">
-                En tienda
-              </th>
-              <th scope="col" className="pn-der">
-                Total
+                {desglosar ? "Total" : "Unidades"}
               </th>
             </tr>
           </thead>
@@ -223,8 +231,12 @@ export function HojaUnidades({
             {repuestos.map((r) => (
               <tr key={r.codprod}>
                 <td>{r.nombre}</td>
-                <td className="pn-der lm-num">{r.unidades_online}</td>
-                <td className="pn-der lm-num">{r.unidades_tienda}</td>
+                {desglosar && (
+                  <>
+                    <td className="pn-der lm-num">{r.unidades_online}</td>
+                    <td className="pn-der lm-num">{r.unidades_tienda}</td>
+                  </>
+                )}
                 <td className="pn-der lm-num">{r.cuantas}</td>
               </tr>
             ))}

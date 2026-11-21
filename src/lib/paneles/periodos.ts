@@ -31,6 +31,43 @@ export interface RangoPanel {
 const DIA_MS = 24 * 60 * 60 * 1000;
 
 /**
+ * Medianoche de Caracas del lunes 16/11/2026 (`2026-11-16T00:00:00-04:00`): el
+ * primer instante con datos que los paneles aceptan contar. Atado por test a
+ * `public.paneles_inicio()` (`paneles-inicio-paridad.test.ts`).
+ *
+ * Historia: el 16/11/2026 a las 16:55 UTC se hizo un backfill de 205 fotos
+ * `estimado = true` en `ventas_saint`, todas valuadas al precio de ESE día; las
+ * ventas reales empiezan el 16/11. Con «7 días» el panel comparaba reales
+ * contra estimados, y «Este mes», «30 días» y «Este año» comparaban contra $0.
+ * Decisión D4 del operador (21/11/2026): un piso fijo, sin tabla ni
+ * configuración; ningún período ni historia lee antes de él.
+ */
+export const INICIO_PANELES = new Date("2026-11-16T04:00:00Z");
+export const TEXTO_INICIO_PANELES = "Los paneles cuentan desde el lunes 16/11/2026";
+export const TEXTO_SIN_PREVIO = "Sin período anterior comparable (los datos empiezan el 16/11)";
+
+/** «16/11» para un instante, en hora de Caracas (el día del piso en los avisos). */
+export function etiquetaDiaMes(instante: Date): string {
+  const [, mes, dia] = todayKey(instante).split("-");
+  return `${dia}/${mes}`;
+}
+
+/** Un rango sin tramo (`hasta <= desde`): el período entero cae antes del piso. */
+export function esRangoVacio(r: { desde: Date; hasta: Date }): boolean {
+  return r.hasta.getTime() <= r.desde.getTime();
+}
+
+/**
+ * Recorta `desde` al piso. Si eso deja un tramo vacío (el instante `hasta` no
+ * llega al piso), el rango queda bien formado con `desde = hasta`.
+ */
+export function recortarAlPiso(desde: Date, hasta: Date, piso: Date | null): Date {
+  if (piso === null) return desde;
+  const recortado = desde.getTime() < piso.getTime() ? piso : desde;
+  return recortado.getTime() >= hasta.getTime() ? hasta : recortado;
+}
+
+/**
  * Instante de la medianoche de Caracas del día `YYYY-MM-DD`. Se pide el rango
  * del mediodía UTC de esa fecha: en cualquier zona del mundo ese instante cae
  * dentro del mismo día calendario, así que `currentDayRange` devuelve la
@@ -71,9 +108,18 @@ function desdeDe(id: PeriodoId, ahora: Date): Date {
   }
 }
 
-/** La ventana del período, en hora de Caracas: desde su inicio hasta `ahora`. */
-export function rangoDe(id: PeriodoId, ahora: Date = new Date()): RangoPanel {
-  return { desde: desdeDe(id, ahora), hasta: ahora, etiqueta: etiquetaDe(id) };
+/**
+ * La ventana del período, en hora de Caracas: desde su inicio hasta `ahora`,
+ * sin leer antes de `piso`. El piso es un parámetro (default `INICIO_PANELES`)
+ * y no una constante leída por dentro para que los tests de calendario con un
+ * reloj anterior al 16/11 pasen `null` y sigan probando la aritmética pura.
+ */
+export function rangoDe(
+  id: PeriodoId,
+  ahora: Date = new Date(),
+  piso: Date | null = INICIO_PANELES
+): RangoPanel {
+  return { desde: recortarAlPiso(desdeDe(id, ahora), ahora, piso), hasta: ahora, etiqueta: etiquetaDe(id) };
 }
 
 const ETIQUETAS_PREVIAS: Record<PeriodoId, string> = {
@@ -94,8 +140,23 @@ const ETIQUETAS_PREVIAS: Record<PeriodoId, string> = {
  *   transcurrida; si el período anterior es más corto (31 de marzo contra
  *   febrero) el tope es el inicio del período actual, nunca un traslape.
  */
-export function rangoPrevio(id: PeriodoId, ahora: Date = new Date()): RangoPanel {
-  const actual = rangoDe(id, ahora);
+export function rangoPrevio(
+  id: PeriodoId,
+  ahora: Date = new Date(),
+  piso: Date | null = INICIO_PANELES
+): RangoPanel | null {
+  // El previo se calcula SIEMPRE desde el período sin recortar: el recorte al
+  // piso acortaría el tramo y comparar «7 días recortados» contra «7 días
+  // enteros» es la trampa de «día parcial contra día completo».
+  const previo = rangoPrevioCrudo(id, ahora);
+  // Un previo que arranca antes del piso no se compara, aunque termine después:
+  // un tramo recortado contra uno entero es la misma trampa.
+  if (piso !== null && previo.desde.getTime() < piso.getTime()) return null;
+  return previo;
+}
+
+function rangoPrevioCrudo(id: PeriodoId, ahora: Date): RangoPanel {
+  const actual = rangoDe(id, ahora, null);
   const etiqueta = ETIQUETAS_PREVIAS[id];
 
   if (id === "hoy" || id === "7d") {

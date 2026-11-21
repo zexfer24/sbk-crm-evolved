@@ -1,6 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import {
+  bloqueAntesDelInicio,
+  bloqueConTopeAntesDelInicio,
   fetchMetasVenta,
   fetchPanelAsesores,
   fetchPanelCola,
@@ -181,5 +183,24 @@ describe("fetchMetasVenta", () => {
   it("cualquier otro error es motivo 'error'", async () => {
     const { sb } = fakeTabla({ data: null, error: { code: "08006", message: "connection failure" } });
     expect(await fetchMetasVenta(sb)).toMatchObject({ ok: false, motivo: "error" });
+  });
+});
+
+describe("bloques para un rango anterior al piso de datos (21/11/2026)", () => {
+  it("bloqueAntesDelInicio es un no_disponible con el texto del piso, sin tocar la base", () => {
+    expect(bloqueAntesDelInicio()).toEqual({
+      ok: false,
+      motivo: "no_disponible",
+      detalle: "Los paneles cuentan desde el lunes 16/11/2026",
+    });
+  });
+
+  it("bloqueConTopeAntesDelInicio suma recortado: false para las lecturas con tope de 92 días", () => {
+    expect(bloqueConTopeAntesDelInicio()).toEqual({
+      ok: false,
+      motivo: "no_disponible",
+      detalle: "Los paneles cuentan desde el lunes 16/11/2026",
+      recortado: false,
+    });
   });
 });

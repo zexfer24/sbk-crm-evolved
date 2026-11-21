@@ -62,18 +62,27 @@ export function KpisDeAnaliticas({
   conversacionesPrevio,
   vista,
   comparar,
+  sinPrevio = false,
   tasaBcv,
 }: {
   ventas: Bloque<PanelVentas>;
-  previo: Bloque<PanelVentas>;
+  previo: Bloque<PanelVentas> | null;
   conversaciones: BloqueConTope<PanelConversaciones>;
-  conversacionesPrevio: BloqueConTope<PanelConversaciones>;
+  conversacionesPrevio: BloqueConTope<PanelConversaciones> | null;
   vista: Vista;
   comparar: boolean;
+  /** No hay período anterior comparable: los chips lo dicen en vez de no pintarse. */
+  sinPrevio?: boolean;
   tasaBcv: number;
 }) {
   const conversion = (
-    <KpiConversion conversaciones={conversaciones} previo={conversacionesPrevio} vista={vista} comparar={comparar} />
+    <KpiConversion
+      conversaciones={conversaciones}
+      previo={conversacionesPrevio}
+      vista={vista}
+      comparar={comparar}
+      sinPrevio={sinPrevio}
+    />
   );
   // Sin ventas caen cuatro de los cinco: un solo aviso (no cuatro) y la conversión, que viene de otra lectura, sigue.
   if (!ventas.ok) {
@@ -90,8 +99,8 @@ export function KpisDeAnaliticas({
     <PanelBloque bloque={ventas} nombre="Ventas del período">
       {(dato) => {
         const canal = canalesDeVista(dato, vista);
-        const anterior = comparar && previo.ok ? canalesDeVista(previo.dato, vista) : null;
-        const hayPrevio = comparar && previo.ok;
+        const anterior = comparar && previo?.ok ? canalesDeVista(previo.dato, vista) : null;
+        const hayPrevio = !sinPrevio && comparar && previo?.ok;
         const regreso = tasaDeRegreso(dato.recurrentes, vista);
         const regresoPrevio = hayPrevio ? tasaDeRegreso(previo.dato.recurrentes, vista).fraccion : null;
         const bs = formatoBs(canal.ingresos, tasaBcv);
@@ -118,7 +127,11 @@ export function KpisDeAnaliticas({
                       Estimado
                     </span>
                   )}
-                  {hayPrevio && <ChipVariacion actual={canal.ingresos} previo={anterior?.ingresos ?? null} />}
+                  {sinPrevio ? (
+                    <ChipVariacion actual={null} previo={null} sinPrevio />
+                  ) : (
+                    hayPrevio && <ChipVariacion actual={canal.ingresos} previo={anterior?.ingresos ?? null} />
+                  )}
                 </>
               }
               viz={<Sparkline valores={valoresPrevios(dato, vista, "ingresos")} ariaLabel="Ingresos del período, por tramo" />}
@@ -128,7 +141,13 @@ export function KpisDeAnaliticas({
               nombre="Envíos"
               cifra={<Cifra valor={canal.envios} formato={formatoEntero} />}
               sub={`${formatoEntero(canal.unidades)} unidades`}
-              chips={hayPrevio && <ChipVariacion actual={canal.envios} previo={anterior?.envios ?? null} />}
+              chips={
+                sinPrevio ? (
+                  <ChipVariacion actual={null} previo={null} sinPrevio />
+                ) : (
+                  hayPrevio && <ChipVariacion actual={canal.envios} previo={anterior?.envios ?? null} />
+                )
+              }
               viz={<Sparkline valores={valoresPrevios(dato, vista, "envios")} ariaLabel="Envíos del período, por tramo" />}
             />
             <Kpi
@@ -136,7 +155,13 @@ export function KpisDeAnaliticas({
               nombre="Ticket promedio"
               cifra={<Cifra valor={canal.ticket} formato={formatoUsd} />}
               sub="por envío con monto"
-              chips={hayPrevio && <ChipVariacion actual={canal.ticket} previo={anterior?.ticket ?? null} />}
+              chips={
+                sinPrevio ? (
+                  <ChipVariacion actual={null} previo={null} sinPrevio />
+                ) : (
+                  hayPrevio && <ChipVariacion actual={canal.ticket} previo={anterior?.ticket ?? null} />
+                )
+              }
             />
             {conversion}
             <Kpi
@@ -148,7 +173,13 @@ export function KpisDeAnaliticas({
                   ? `${formatoEntero(regreso.regresan)} de ${formatoEntero(regreso.compradores)} ya eran clientes`
                   : "Sin compradores en el período"
               }
-              chips={hayPrevio && <ChipPuntos actual={regreso.fraccion} previo={regresoPrevio} />}
+              chips={
+                sinPrevio ? (
+                  <ChipPuntos actual={null} previo={null} sinPrevio />
+                ) : (
+                  hayPrevio && <ChipPuntos actual={regreso.fraccion} previo={regresoPrevio} />
+                )
+              }
             />
           </>
         );
@@ -162,11 +193,13 @@ function KpiConversion({
   previo,
   vista,
   comparar,
+  sinPrevio,
 }: {
   conversaciones: BloqueConTope<PanelConversaciones>;
-  previo: BloqueConTope<PanelConversaciones>;
+  previo: BloqueConTope<PanelConversaciones> | null;
   vista: Vista;
   comparar: boolean;
+  sinPrevio: boolean;
 }) {
   // La caja no registra a quien no compra: en tienda no hay conversión que calcular.
   if (vista === "tienda") {
@@ -178,7 +211,7 @@ function KpiConversion({
     <PanelBloque bloque={conversaciones} nombre="Conversaciones">
       {(dato) => {
         const tasa = tasaDeConversion(dato.conversion.equipo);
-        const anterior = comparar && previo.ok ? tasaDeConversion(previo.dato.conversion.equipo).fraccion : null;
+        const anterior = comparar && previo?.ok ? tasaDeConversion(previo.dato.conversion.equipo).fraccion : null;
         return (
           <Kpi
             indice={3}
@@ -192,7 +225,11 @@ function KpiConversion({
             chips={
               <>
                 {conversaciones.recortado && <span className="pn-chip pn-chip--neutro">Últimos 92 días</span>}
-                {comparar && previo.ok && <ChipPuntos actual={tasa.fraccion} previo={anterior} />}
+                {sinPrevio ? (
+                  <ChipPuntos actual={null} previo={null} sinPrevio />
+                ) : (
+                  comparar && previo?.ok && <ChipPuntos actual={tasa.fraccion} previo={anterior} />
+                )}
               </>
             }
           />

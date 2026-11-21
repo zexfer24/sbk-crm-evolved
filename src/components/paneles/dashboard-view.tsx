@@ -8,7 +8,6 @@ import type { PeriodoId } from "@/lib/paneles/periodos";
 import type { RangosDelDashboard } from "@/lib/paneles/rangos";
 import type { MetaVenta, PanelConversaciones, PanelVentas, PanelVentasActivas } from "@/lib/paneles/parse";
 import { ControlPeriodo, ControlVista, PanelBloque, PanelMarco } from "@/components/paneles/panel-marco";
-import { periodoTocaAntesDeEnvios } from "@/components/paneles/dashboard/calculos";
 import { HojaConversion, HojaEnviado, HojaUnidades, HojaVentasActivas } from "@/components/paneles/dashboard/hojas";
 import { KpiConversion, KpiEnviado, KpiUnidades, KpiVentasActivas } from "@/components/paneles/dashboard/kpis";
 import { LoMasViejo } from "@/components/paneles/dashboard/lo-mas-viejo";
@@ -35,8 +34,8 @@ export interface DashboardViewProps {
   rangos: RangosDelDashboard;
   /** Ventas del período elegido. */
   ventas: Bloque<PanelVentas>;
-  /** Ventas del período previo equivalente (para el chip de variación). */
-  ventasPrevio: Bloque<PanelVentas>;
+  /** Ventas del período previo equivalente (para el chip de variación). `null` si no hay previo comparable (empieza antes del piso de datos). */
+  ventasPrevio: Bloque<PanelVentas> | null;
   /** Ventas de hoy, granularidad por hora (avance del día). */
   ventasHoy: Bloque<PanelVentas>;
   /** Los 40 días anteriores a hoy, por día: su `perfil_horario` alimenta la curva y su `serie`, la racha. */
@@ -69,7 +68,9 @@ export function DashboardView(props: DashboardViewProps) {
   const [hoja, setHoja] = useState<HojaId | null>(null);
   const cerrar = () => setHoja(null);
 
-  const previo = ventasPrevio.ok ? ventasPrevio.dato : null;
+  const previo = ventasPrevio?.ok ? ventasPrevio.dato : null;
+  // 21/11/2026: sin período anterior comparable (arrancaría antes del 16/11) las tarjetas lo dicen en vez de mostrar una variación.
+  const sinPrevio = rangos.previo === null || ventasPrevio === null;
   const [anio, mes] = rangos.hoyClave.split("-").map(Number);
   const enTienda = vista === "tienda";
 
@@ -98,10 +99,11 @@ export function DashboardView(props: DashboardViewProps) {
               <KpiEnviado
                 ventas={dato}
                 previo={previo}
-                etiquetaPrevio={rangos.previo.etiqueta}
+                etiquetaPrevio={rangos.previo?.etiqueta ?? ""}
                 vista={vista}
                 tasaBcv={props.tasaBcv}
-                avisarInicioDeEnvios={periodoTocaAntesDeEnvios(rangos.periodo.desde)}
+                avisarInicioDePaneles={rangos.periodoRecortado}
+                sinPrevio={sinPrevio}
                 onAbrir={() => setHoja("enviado")}
               />
             )}
@@ -114,8 +116,9 @@ export function DashboardView(props: DashboardViewProps) {
               <KpiUnidades
                 ventas={dato}
                 previo={previo}
-                etiquetaPrevio={rangos.previo.etiqueta}
+                etiquetaPrevio={rangos.previo?.etiqueta ?? ""}
                 vista={vista}
+                sinPrevio={sinPrevio}
                 onAbrir={() => setHoja("unidades")}
               />
             )}
@@ -150,6 +153,7 @@ export function DashboardView(props: DashboardViewProps) {
                 vista={vista}
                 ahora={ahora}
                 hoyClave={rangos.hoyClave}
+                piso={rangos.piso}
               />
             )}
           </PanelBloque>
@@ -169,7 +173,7 @@ export function DashboardView(props: DashboardViewProps) {
 
         <Celda ancho="pn-c8" indice={6} clase="pd-celda--tablero">
           <PanelBloque bloque={props.ventasAnio} nombre="Ingresos por mes">
-            {(dato) => <TableroMensual ventas={dato} vista={vista} anio={anio} mesActual={mes} />}
+            {(dato) => <TableroMensual ventas={dato} vista={vista} anio={anio} mesActual={mes} piso={rangos.piso} />}
           </PanelBloque>
         </Celda>
 

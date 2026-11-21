@@ -151,7 +151,7 @@ export const METAS: MetaVenta[] = [
 ];
 
 export function propsBase(extra: Partial<DashboardViewProps> = {}): DashboardViewProps {
-  const rangos = rangosDelDashboard("hoy", AHORA);
+  const rangos = rangosDelDashboard("hoy", AHORA, null);
   const horario: BusinessHours = DEFAULT_BUSINESS_HOURS;
   return {
     periodo: "hoy",

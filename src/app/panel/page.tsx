@@ -1,14 +1,17 @@
 import { exigirAccesoPaneles } from "./acceso-servidor";
 import { fetchBusinessHours, fetchLatestBcvRate } from "@/lib/data";
 import {
+  bloqueAntesDelInicio,
+  bloqueConTopeAntesDelInicio,
   fetchMetasVenta,
   fetchPanelConversaciones,
   fetchPanelVentas,
   fetchPanelVentasActivas,
 } from "@/lib/paneles-data";
 import { vistaDesdeParam } from "@/lib/paneles/canal";
-import { periodoDesdeParam } from "@/lib/paneles/periodos";
+import { esRangoVacio, periodoDesdeParam } from "@/lib/paneles/periodos";
 import { rangosDelDashboard } from "@/lib/paneles/rangos";
+import type { PanelConversaciones, PanelVentas } from "@/lib/paneles/parse";
 import { DashboardView } from "@/components/paneles/dashboard-view";
 import { primero, type ParametrosDePagina } from "./params";
 
@@ -24,6 +27,12 @@ import { primero, type ParametrosDePagina } from "./params";
  * layout se renderiza en paralelo con esta página, así que sin esto un asesor
  * disparaba las RPC igual. Comparte la consulta del agente con el layout. Las
  * RPC lo vuelven a verificar (42501, que SÍ se relanza y atrapa `error.tsx`).
+ *
+ * 21/11/2026 (plan "Los paneles cuentan desde el lunes 16/11/2026"): los
+ * rangos nunca arrancan antes del piso de datos. Un rango que queda vacío
+ * (todo cae antes del piso) NO llama a su RPC y la vista recibe
+ * `bloqueAntesDelInicio()`; si no hay período previo comparable
+ * (`rangos.previo === null`) tampoco se lee y la vista recibe `null`.
  */
 export default async function PanelDashboardPage({ searchParams }: { searchParams: ParametrosDePagina }) {
   const { supabase } = await exigirAccesoPaneles();
@@ -37,7 +46,9 @@ export default async function PanelDashboardPage({ searchParams }: { searchParam
   // con «Este año» el período y el año; la misma promesa sirve a las dos props.
   const mismoRango = (a: { desde: Date; hasta: Date }, b: { desde: Date; hasta: Date }) =>
     a.desde.getTime() === b.desde.getTime() && a.hasta.getTime() === b.hasta.getTime();
-  const ventasDelPeriodo = fetchPanelVentas(supabase, rangos.periodo.desde, rangos.periodo.hasta);
+  const leerVentas = (r: { desde: Date; hasta: Date }) =>
+    esRangoVacio(r) ? Promise.resolve(bloqueAntesDelInicio<PanelVentas>()) : fetchPanelVentas(supabase, r.desde, r.hasta);
+  const ventasDelPeriodo = leerVentas(rangos.periodo);
   const [
     ventas,
     ventasPrevio,
@@ -51,18 +62,16 @@ export default async function PanelDashboardPage({ searchParams }: { searchParam
     tasaBcv,
   ] = await Promise.all([
     ventasDelPeriodo,
-    fetchPanelVentas(supabase, rangos.previo.desde, rangos.previo.hasta),
-    mismoRango(rangos.periodo, rangos.hoy)
-      ? ventasDelPeriodo
-      : fetchPanelVentas(supabase, rangos.hoy.desde, rangos.hoy.hasta),
-    fetchPanelVentas(supabase, rangos.historia.desde, rangos.historia.hasta),
-    mismoRango(rangos.periodo, rangos.anio)
-      ? ventasDelPeriodo
-      : fetchPanelVentas(supabase, rangos.anio.desde, rangos.anio.hasta),
+    rangos.previo === null ? Promise.resolve(null) : leerVentas(rangos.previo),
+    mismoRango(rangos.periodo, rangos.hoy) ? ventasDelPeriodo : leerVentas(rangos.hoy),
+    leerVentas(rangos.historia),
+    mismoRango(rangos.periodo, rangos.anio) ? ventasDelPeriodo : leerVentas(rangos.anio),
     fetchPanelVentasActivas(supabase),
     fetchMetasVenta(supabase),
     fetchBusinessHours(supabase),
-    fetchPanelConversaciones(supabase, rangos.periodo.desde, rangos.periodo.hasta),
+    esRangoVacio(rangos.periodo)
+      ? Promise.resolve(bloqueConTopeAntesDelInicio<PanelConversaciones>())
+      : fetchPanelConversaciones(supabase, rangos.periodo.desde, rangos.periodo.hasta),
     fetchLatestBcvRate(supabase),
   ]);
 

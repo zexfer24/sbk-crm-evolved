@@ -33,8 +33,32 @@ function claseDe(delta: number): string {
   return "pn-chip pn-chip--neutro";
 }
 
-/** Variación porcentual contra el período anterior; sin base previa lo dice, no inventa 0 %. */
-export function ChipVariacion({ actual, previo }: { actual: number | null; previo: number | null }) {
+/**
+ * Texto corto del chip cuando NO existe un período anterior comparable (21/11/2026:
+ * el previo arrancaría antes del 16/11/2026). El largo, con el porqué, va en el
+ * chip de contexto («Contra: …») y en el bloque «Variación» de Ingresos.
+ */
+export const TEXTO_SIN_PERIODO_ANTERIOR = "Sin período anterior comparable";
+
+function ChipSinPeriodoAnterior() {
+  return <span className="pn-chip pn-chip--neutro">{TEXTO_SIN_PERIODO_ANTERIOR}</span>;
+}
+
+/**
+ * Variación porcentual contra el período anterior; sin base previa lo dice, no
+ * inventa 0 %. Con `sinPrevio` (no hay período anterior comparable) dice eso, y
+ * nunca calcula un porcentaje contra nada.
+ */
+export function ChipVariacion({
+  actual,
+  previo,
+  sinPrevio = false,
+}: {
+  actual: number | null;
+  previo: number | null;
+  sinPrevio?: boolean;
+}) {
+  if (sinPrevio) return <ChipSinPeriodoAnterior />;
   const pct = variacionPct(actual, previo);
   if (pct === null) return <span className="pn-chip pn-chip--neutro">Sin base previa</span>;
   return (
@@ -46,7 +70,16 @@ export function ChipVariacion({ actual, previo }: { actual: number | null; previ
 }
 
 /** Diferencia en puntos porcentuales entre dos tasas (conversión, clientes que regresan). */
-export function ChipPuntos({ actual, previo }: { actual: number | null; previo: number | null }) {
+export function ChipPuntos({
+  actual,
+  previo,
+  sinPrevio = false,
+}: {
+  actual: number | null;
+  previo: number | null;
+  sinPrevio?: boolean;
+}) {
+  if (sinPrevio) return <ChipSinPeriodoAnterior />;
   if (actual === null || previo === null) return <span className="pn-chip pn-chip--neutro">Sin base previa</span>;
   const delta = actual - previo;
   return (

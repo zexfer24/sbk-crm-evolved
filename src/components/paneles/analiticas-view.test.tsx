@@ -138,7 +138,7 @@ function props(parcial: Partial<AnaliticasViewProps> = {}): AnaliticasViewProps 
     periodo: "30d",
     vista: "resumen",
     ahora: AHORA,
-    rangos: rangosDeAnaliticas("30d", AHORA),
+    rangos: rangosDeAnaliticas("30d", AHORA, null),
     ventas: ok(ventas()),
     ventasPrevio: ok(
       ventas({
@@ -373,11 +373,11 @@ describe("AnaliticasView · tipo de precio, repuestos y mes a mes", () => {
     expect(within(within(seccion).getByRole("table")).getByText("9")).toBeInTheDocument();
   });
 
-  it("el año se agrupa por mes y deja una nota de que SAINT se registra desde el 26/10/2026", () => {
+  it("el año se agrupa por mes y ya no habla del 26/10/2026", () => {
     render(<AnaliticasView {...props()} />);
     const seccion = document.getElementById("mensual")!;
     expect(within(seccion).getByText("En curso")).toBeInTheDocument();
-    expect(within(seccion).getByText(/desde el 26\/10\/2026/)).toBeInTheDocument();
+    expect(within(seccion).queryByText(/26\/10\/2026/)).toBeNull();
   });
 
   it("la tabla arranca en el primer mes con envíos: de enero a septiembre no hay filas en $0,00", () => {
@@ -389,8 +389,8 @@ describe("AnaliticasView · tipo de precio, repuestos y mes a mes", () => {
     for (const mes of ["Enero", "Febrero", "Marzo", "Abril", "Mayo", "Junio", "Julio", "Agosto", "Septiembre"]) {
       expect(within(seccion).queryByRole("rowheader", { name: new RegExp(mes) })).toBeNull();
     }
-    // La nota dice por qué la tabla no empieza en enero.
-    expect(within(seccion).getByText(/la tabla empieza en octubre/i)).toBeInTheDocument();
+    // Sin piso no hay nota de inicio (la explica el piso, ver piso-en-pantalla.test.tsx).
+    expect(within(seccion).queryByText(/la tabla empieza en/i)).toBeNull();
   });
 
   it("sin ningún envío en el año, dice que todavía no hay envíos en vez de pintar doce meses en cero", () => {
@@ -398,7 +398,7 @@ describe("AnaliticasView · tipo de precio, repuestos y mes a mes", () => {
     const seccion = document.getElementById("mensual")!;
     expect(within(seccion).getByText(/Todavía no hay envíos a SAINT este año/)).toBeInTheDocument();
     expect(within(seccion).queryByRole("table")).toBeNull();
-    expect(within(seccion).getByText(/desde el 26\/10\/2026/)).toBeInTheDocument();
+    expect(within(seccion).queryByText(/26\/10\/2026/)).toBeNull();
   });
 });
 

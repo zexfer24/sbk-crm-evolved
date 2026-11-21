@@ -2,7 +2,7 @@
 
 import { useState } from "react";
 import type { Bloque } from "@/lib/paneles-data";
-import type { Vista } from "@/lib/paneles/canal";
+import { tiendaVisible, type Vista } from "@/lib/paneles/canal";
 import type { RangosDeAnaliticas } from "@/lib/paneles/rangos";
 import type { PanelVentas } from "@/lib/paneles/parse";
 import { PanelBloque } from "@/components/paneles/panel-marco";
@@ -10,6 +10,7 @@ import { LineaArea } from "@/components/paneles/panel-graficos";
 import { SlidingPills } from "@/components/sliding-pills";
 import { canalesDeVista, etiquetaDeTramo, serieDeMedida, valoresPrevios, type Medida } from "./datos";
 import { formatoEntero, formatoUsd, usdGrafico } from "./formato";
+import { TEXTO_SIN_PREVIO } from "@/lib/paneles/periodos";
 import { ChipVariacion } from "./piezas";
 
 /**
@@ -41,12 +42,15 @@ export function IngresosEnElTiempo({
   vista,
   comparar,
   rangos,
+  sinPrevio = false,
 }: {
   ventas: Bloque<PanelVentas>;
-  previo: Bloque<PanelVentas>;
+  previo: Bloque<PanelVentas> | null;
   vista: Vista;
   comparar: boolean;
   rangos: RangosDeAnaliticas;
+  /** No hay período anterior comparable: ni línea previa ni variación, y lo dice. */
+  sinPrevio?: boolean;
 }) {
   const [medida, setMedida] = useState<Medida>("ingresos");
 
@@ -54,7 +58,7 @@ export function IngresosEnElTiempo({
     <div className="pn-c12">
       <PanelBloque bloque={ventas} nombre="Ingresos en el tiempo">
         {(dato) => {
-          const conPrevio = comparar && previo.ok ? previo.dato : null;
+          const conPrevio = !sinPrevio && comparar && previo?.ok ? previo.dato : null;
           const { series, valores } = serieDeMedida(dato, vista, medida, conPrevio !== null && vista === "resumen");
           const puntos = dato.serie.map((fila, i) => ({
             etiqueta: etiquetaDeTramo(fila.t, dato.granularidad),
@@ -62,7 +66,7 @@ export function IngresosEnElTiempo({
           }));
           const previa = conPrevio
             ? {
-                nombre: rangos.previo.etiqueta,
+                nombre: rangos.previo?.etiqueta ?? "",
                 // Alineada por posición; si el período previo tiene menos tramos, la línea previa es más corta.
                 valores: valoresPrevios(conPrevio, vista, medida).slice(0, puntos.length),
               }
@@ -105,11 +109,15 @@ export function IngresosEnElTiempo({
                       <small>{POR_TRAMO[dato.granularidad].promedio}</small>
                       <b>{promedio === null ? "—" : medida === "ingresos" ? formatoUsd(promedio) : promedio.toLocaleString("es-VE", { maximumFractionDigits: 1 })}</b>
                     </div>
-                    {conPrevio && (
+                    {(conPrevio || sinPrevio) && (
                       <div>
                         <small>Variación</small>
                         <span style={{ marginTop: 4 }}>
-                          <ChipVariacion actual={total} previo={totalPrevio} />
+                          {conPrevio ? (
+                            <ChipVariacion actual={total} previo={totalPrevio} />
+                          ) : (
+                            <span className="pn-chip pn-chip--neutro">{TEXTO_SIN_PREVIO}</span>
+                          )}
                         </span>
                       </div>
                     )}
@@ -143,7 +151,7 @@ export function IngresosEnElTiempo({
                   </li>
                 )}
               </ul>
-              {comparar && vista === "resumen" && (
+              {comparar && vista === "resumen" && tiendaVisible() && (
                 <p className="pn-subtitulo" style={{ marginTop: 6 }}>
                   Al comparar, el resumen suma online y tienda en una sola línea.
                 </p>

@@ -1,4 +1,6 @@
 import type { BusinessHours, DayKey } from "@/lib/business-hours";
+import { todayKey } from "@/lib/sales-day";
+import { canalesVisibles } from "./canal";
 import type { CanalId, MetaVenta } from "./parse";
 
 /**
@@ -17,6 +19,11 @@ function diaDeSemana(dia: string): DayKey {
   return DIA_POR_SEMANA[new Date(Date.UTC(anio, mes - 1, d)).getUTCDay()];
 }
 
+/** ¿El horario de atención tiene abierto ese día (`YYYY-MM-DD`)? Un día sin ningún tramo es cerrado. */
+export function diaAbierto(dia: string, horario: BusinessHours): boolean {
+  return horario[diaDeSemana(dia)].length > 0;
+}
+
 function metaVigente(metas: MetaVenta[], canal: CanalId, dia: string): number | null {
   let elegida: MetaVenta | null = null;
   for (const meta of metas) {
@@ -31,8 +38,10 @@ function metaVigente(metas: MetaVenta[], canal: CanalId, dia: string): number | 
  * La meta de ventas de un día. La vigente de un canal es la fila con el
  * `vigente_desde` más alto que no pase de ese día. Un día cerrado según el
  * horario de atención no tiene meta (`null`), igual que un día anterior a
- * toda meta. "resumen" suma las de los dos canales y, si solo uno tiene meta,
- * vale esa: no hay razón para esconder la meta que sí existe.
+ * toda meta. "resumen" suma las de los canales VISIBLES y, si solo uno tiene
+ * meta, vale esa: no hay razón para esconder la meta que sí existe. Con la
+ * tienda oculta (D1, 21/11/2026) "resumen" es la meta online sola, aunque haya
+ * una meta de tienda guardada: esa fila no se toca, solo no se suma.
  */
 export function metaDelDia(
   metas: MetaVenta[],
@@ -40,48 +49,74 @@ export function metaDelDia(
   dia: string,
   horario: BusinessHours
 ): number | null {
-  if (horario[diaDeSemana(dia)].length === 0) return null;
+  if (!diaAbierto(dia, horario)) return null;
 
   if (canal !== "resumen") return metaVigente(metas, canal, dia);
 
-  const online = metaVigente(metas, "online", dia);
-  const tienda = metaVigente(metas, "tienda", dia);
-  if (online === null && tienda === null) return null;
-  return (online ?? 0) + (tienda ?? 0);
+  const vigentes = canalesVisibles()
+    .map((c) => metaVigente(metas, c, dia))
+    .filter((m): m is number => m !== null);
+  if (vigentes.length === 0) return null;
+  return vigentes.reduce((suma, m) => suma + m, 0);
 }
 
-/** Días hábiles con ventas que hacen falta para fiarse de la forma del día. */
-const MIN_DIAS_CURVA = 10;
+/** Días con ventas que hacen falta para fiarse de la forma del día. */
+export const MIN_DIAS_CURVA = 10;
+
+type DiaDeHistoria = { dia: string; porHora: number[] };
 
 /**
- * La proporción acumulada del día por hora, a partir de días hábiles con
- * ventas: `curva[h]` es la fracción de las ventas del día que ya se había
- * hecho al CERRAR la hora `h` (0 = 00:00–00:59), 24 valores de 0 a 1.
+ * ÚNICA función que decide qué día de la historia sirve para la curva (D2 y A2,
+ * 21/11/2026): una forma de 24 horas, con ventas (total > 0) y, si hay piso, de
+ * ese día en adelante (`YYYY-MM-DD` ordena igual como texto que como fecha).
+ * `curvaHoraria` y `diasConVentasParaCurva` pasan las dos por acá: así el «van N»
+ * de la pantalla nunca puede contar un día que la curva descartaría.
+ */
+function diasValidosParaCurva(historia: DiaDeHistoria[], piso: Date | null): DiaDeHistoria[] {
+  const desde = piso === null ? null : todayKey(piso);
+  return historia.filter(({ dia, porHora }) => {
+    if (desde !== null && dia < desde) return false;
+    if (porHora.length !== 24) return false;
+    return porHora.reduce((suma, v) => suma + v, 0) > 0;
+  });
+}
+
+/**
+ * Cuántos días de la historia cuentan para la curva: CON VENTAS (no días
+ * corridos: un día con total 0 no cuenta) y desde el piso de datos. Es el «van N»
+ * del Dashboard.
+ */
+export function diasConVentasParaCurva(historia: DiaDeHistoria[], piso: Date | null = null): number {
+  return diasValidosParaCurva(historia, piso).length;
+}
+
+/**
+ * La proporción acumulada del día por hora, a partir de días con ventas:
+ * `curva[h]` es la fracción de las ventas del día que ya se había hecho al
+ * CERRAR la hora `h` (0 = 00:00–00:59), 24 valores de 0 a 1.
  *
  * Cada día aporta su propia forma y se promedian las formas, no los montos:
- * así un día excepcional (una venta enorme) no aplasta a los demás. Un día sin
- * ventas, o con una forma que no es de 24 horas, no cuenta. Con menos de 10
- * días válidos devuelve `null`: una curva con poca historia proyectaría
- * disparates y es mejor no proyectar.
+ * así un día excepcional (una venta enorme) no aplasta a los demás. La regla es
+ * «días CON VENTAS», no días corridos: un día sin ventas, o con una forma que no
+ * es de 24 horas, no cuenta. Con `piso`, tampoco cuenta un día anterior a él (el
+ * 16/11/2026 no hay datos comparables antes; la forma horaria de antes del piso
+ * no se usa, decisión D2). Con menos de `MIN_DIAS_CURVA` días válidos devuelve
+ * `null`: una curva con poca historia proyectaría disparates y es mejor no
+ * proyectar.
  */
-export function curvaHoraria(historia: { dia: string; porHora: number[] }[]): number[] | null {
-  const formas: number[][] = [];
+export function curvaHoraria(historia: DiaDeHistoria[], piso: Date | null = null): number[] | null {
+  const validos = diasValidosParaCurva(historia, piso);
+  if (validos.length < MIN_DIAS_CURVA) return null;
 
-  for (const { porHora } of historia) {
-    if (porHora.length !== 24) continue;
+  const formas = validos.map(({ porHora }) => {
     const total = porHora.reduce((suma, v) => suma + v, 0);
-    if (!(total > 0)) continue;
-
     let acumulado = 0;
-    formas.push(
-      porHora.map((v) => {
-        acumulado += v;
-        return acumulado / total;
-      })
-    );
-  }
+    return porHora.map((v) => {
+      acumulado += v;
+      return acumulado / total;
+    });
+  });
 
-  if (formas.length < MIN_DIAS_CURVA) return null;
   return Array.from({ length: 24 }, (_, h) => formas.reduce((suma, forma) => suma + forma[h], 0) / formas.length);
 }
 

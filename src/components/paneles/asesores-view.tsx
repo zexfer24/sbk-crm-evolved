@@ -3,6 +3,7 @@
 import { useMemo, type CSSProperties } from "react";
 import type { BusinessHours } from "@/lib/business-hours";
 import type { Bloque, BloqueConTope } from "@/lib/paneles-data";
+import { tiendaVisible } from "@/lib/paneles/canal";
 import type { PeriodoId, RangoPanel } from "@/lib/paneles/periodos";
 import type { PanelAsesores, PanelCola, PanelConversaciones, PanelVentas } from "@/lib/paneles/parse";
 import { PanelBloque, PanelMarco } from "@/components/paneles/panel-marco";
@@ -77,9 +78,10 @@ export function AsesoresView({ periodo, ahora, rango, asesores, conversaciones, 
                   recortado={asesores.recortado}
                   conversionDisponible={conversaciones.ok}
                 />
-                <aside className="as-lado" aria-label="Seba y mostrador">
+                {/* D1 (21/11/2026): el mostrador no pasa por el CRM; su tarjeta no se monta mientras el canal esté oculto. */}
+                <aside className="as-lado" aria-label={tiendaVisible() ? "Seba y mostrador" : "Seba"}>
                   <TarjetaSeba seba={dato.seba} />
-                  <TarjetaMostrador personas={dato.personas} ventas={ventas} />
+                  {tiendaVisible() && <TarjetaMostrador personas={dato.personas} ventas={ventas} />}
                 </aside>
               </>
             )}

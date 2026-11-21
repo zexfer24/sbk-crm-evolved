@@ -19,6 +19,9 @@ import {
   ventasHoy,
 } from "@/components/paneles/dashboard/dashboard-fixtures";
 
+// Estos tests describen el canal «tienda» visible (D1, 21/11/2026: hoy está oculto); `tienda-oculta.test.tsx` cubre el caso oculto.
+vi.mock("@/lib/paneles/canal-config", () => ({ CANAL_TIENDA_VISIBLE: true }));
+
 /**
  * Plan "Paneles" (13/11/2026), C4: el Dashboard de ventas (`/panel`). Los datos
  * respetan `docs/paneles-contrato.md`. jsdom no calcula layout: la revisión
@@ -119,12 +122,12 @@ describe("DashboardView: las cifras principales", () => {
     expect(within(enviado).getByText(/1 con error/)).toBeInTheDocument();
   });
 
-  it("avisa que los envíos a SAINT existen desde el 26/10 en los períodos que lo cruzan", () => {
+  it("ya no habla del 26/10: el aviso de inicio es el del piso, y sin piso no hay ninguno", () => {
     const { rerender } = render(<DashboardView {...propsBase()} />);
-    expect(within(seccion("Enviado a SAINT")).queryByText(/se registran desde el 26 de octubre/)).toBeNull();
+    expect(within(seccion("Enviado a SAINT")).queryByText(/26 de octubre|Los paneles cuentan/)).toBeNull();
 
-    rerender(<DashboardView {...propsBase({ periodo: "30d", rangos: rangosDelDashboard("30d", AHORA) })} />);
-    expect(within(seccion("Enviado a SAINT")).getByText(/se registran desde el 26 de octubre/)).toBeInTheDocument();
+    rerender(<DashboardView {...propsBase({ periodo: "30d", rangos: rangosDelDashboard("30d", AHORA, null) })} />);
+    expect(within(seccion("Enviado a SAINT")).queryByText(/26 de octubre|Los paneles cuentan/)).toBeNull();
   });
 });
 
@@ -253,13 +256,13 @@ describe("DashboardView: rendimiento de ventas", () => {
   it("oculta la proyección sin curva y explica cuándo aparece", () => {
     render(<DashboardView {...propsBase({ ventasHistoria: ok(historia(5)) })} />);
     const hero = seccion("Rendimiento de ventas");
-    expect(within(hero).getByText("La proyección aparece con 10 días hábiles de historia.")).toBeInTheDocument();
+    expect(within(hero).getByText("La proyección aparece con 10 días con ventas (van 5)")).toBeInTheDocument();
     expect(hero).not.toHaveTextContent("cerrarías");
   });
 
   it("un día cerrado dice que la tienda no abre y sí deja editar la meta", () => {
     // 15/11/2026: la fila nueva rige desde hoy, así que en un día cerrado fija la meta del próximo día hábil.
-    const rangos = rangosDelDashboard("hoy", AHORA_DOMINGO);
+    const rangos = rangosDelDashboard("hoy", AHORA_DOMINGO, null);
     render(<DashboardView {...propsBase({ ahora: AHORA_DOMINGO, rangos })} />);
     const hero = seccion("Rendimiento de ventas");
     expect(within(hero).getByText("Hoy la tienda no abre")).toBeInTheDocument();
@@ -268,7 +271,7 @@ describe("DashboardView: rendimiento de ventas", () => {
 
   it("en un día cerrado, editar la meta de un canal llama a guardarMetaVenta con el día de hoy y refresca", async () => {
     const user = userEvent.setup({ delay: null, pointerEventsCheck: 0 });
-    const rangos = rangosDelDashboard("hoy", AHORA_DOMINGO);
+    const rangos = rangosDelDashboard("hoy", AHORA_DOMINGO, null);
     expect(rangos.hoyClave).toBe("2026-11-15");
     render(<DashboardView {...propsBase({ ahora: AHORA_DOMINGO, rangos, vista: "online" })} />);
     const hero = seccion("Rendimiento de ventas");
@@ -286,7 +289,7 @@ describe("DashboardView: rendimiento de ventas", () => {
 
   it("en un día cerrado, el lápiz del resumen abre los dos campos (online y tienda)", async () => {
     const user = userEvent.setup({ delay: null, pointerEventsCheck: 0 });
-    const rangos = rangosDelDashboard("hoy", AHORA_DOMINGO);
+    const rangos = rangosDelDashboard("hoy", AHORA_DOMINGO, null);
     render(<DashboardView {...propsBase({ ahora: AHORA_DOMINGO, rangos })} />);
     const hero = seccion("Rendimiento de ventas");
 
@@ -313,7 +316,7 @@ describe("DashboardView: rendimiento de ventas", () => {
       envios_tienda: 2,
     });
     const conRacha = { ...historia(12), serie: [dia(11), dia(12), dia(13)] };
-    const rangos = rangosDelDashboard("hoy", AHORA_DOMINGO);
+    const rangos = rangosDelDashboard("hoy", AHORA_DOMINGO, null);
     render(<DashboardView {...propsBase({ ahora: AHORA_DOMINGO, rangos, ventasHistoria: ok(conRacha) })} />);
     const hero = seccion("Rendimiento de ventas");
     expect(within(hero).getByText("Hoy la tienda no abre")).toBeInTheDocument();
@@ -329,7 +332,7 @@ describe("DashboardView: rendimiento de ventas", () => {
   });
 
   it("en un día cerrado, lo que no se puede calcular es «—»: sin metas leídas no hay meta del lunes", () => {
-    const rangos = rangosDelDashboard("hoy", AHORA_DOMINGO);
+    const rangos = rangosDelDashboard("hoy", AHORA_DOMINGO, null);
     render(<DashboardView {...propsBase({ ahora: AHORA_DOMINGO, rangos, metas: caido("No se pudo leer las metas.") })} />);
     const hero = seccion("Rendimiento de ventas");
     expect(within(hero).getByText("el lunes a las 8:00 am")).toBeInTheDocument();
@@ -444,11 +447,12 @@ describe("DashboardView: tablero mensual", () => {
       .getAllByRole("rowheader")
       .map((c) => c.textContent);
 
-  it("agrupa por mes, marca el mes en curso y aclara desde cuándo hay envíos", () => {
+  it("agrupa por mes y marca el mes en curso", () => {
     render(<DashboardView {...propsBase({ ventasAnio: anioDesdeOctubre() })} />);
     const tablero = seccion("Ingresos por mes");
     expect(within(tablero).getByText(/mes en curso/i)).toBeInTheDocument();
-    expect(within(tablero).getByText(/se registran desde el 26 de octubre/)).toBeInTheDocument();
+    // Sin piso no hay nota de inicio, y la del 26/10 ya no existe.
+    expect(within(tablero).queryByText(/26 de octubre|Los paneles cuentan/)).toBeNull();
   });
 
   it("parte del primer mes con envíos: de enero a septiembre no hay columnas ni filas (15/11/2026)", () => {
@@ -484,7 +488,7 @@ describe("DashboardView: tablero mensual", () => {
     expect(within(tablero).getByText(/todavía no hay envíos a SAINT este año/i)).toBeInTheDocument();
     expect(within(tablero).queryByRole("table")).not.toBeInTheDocument();
     expect(within(tablero).queryByText("Ene")).not.toBeInTheDocument();
-    expect(within(tablero).getByText(/se registran desde el 26 de octubre/)).toBeInTheDocument();
+    expect(within(tablero).queryByText(/26 de octubre/)).toBeNull();
   });
 });
 

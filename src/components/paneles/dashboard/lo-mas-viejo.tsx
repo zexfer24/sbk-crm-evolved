@@ -1,7 +1,7 @@
 "use client";
 
 import { FileText, ShoppingCart } from "lucide-react";
-import type { Vista } from "@/lib/paneles/canal";
+import { tiendaVisible, type Vista } from "@/lib/paneles/canal";
 import type { PanelVentasActivas } from "@/lib/paneles/parse";
 import { formatoUsd } from "@/components/paneles/panel-marco";
 import { antiguedadTexto, desgloseActivas, itemsDeVista } from "@/components/paneles/dashboard/calculos";
@@ -27,6 +27,8 @@ export function LoMasViejo({
 }) {
   const items = itemsDeVista(datos, vista);
   const total = desgloseActivas(datos, vista).cantidad;
+  // D1 (21/11/2026): sin el canal «tienda» el chip de canal por ítem no distingue nada.
+  const conCanal = tiendaVisible();
 
   return (
     <section aria-label="Lo más viejo sin procesar" className="pn-card pn-card--panel pd-viejo">
@@ -50,9 +52,11 @@ export function LoMasViejo({
                 <b>{item.cliente ?? "Sin cliente"}</b>
                 <small>
                   <span>{item.tipo === "carrito" ? "Carrito" : "Presupuesto"}</span>
-                  <span className={item.canal === "online" ? "pn-chip pn-chip--online" : "pn-chip pn-chip--tienda"}>
-                    {item.canal === "online" ? "Online" : "En tienda"}
-                  </span>
+                  {conCanal && (
+                    <span className={item.canal === "online" ? "pn-chip pn-chip--online" : "pn-chip pn-chip--tienda"}>
+                      {item.canal === "online" ? "Online" : "En tienda"}
+                    </span>
+                  )}
                   <span>{item.responsable ?? "Sin responsable"}</span>
                 </small>
               </div>
