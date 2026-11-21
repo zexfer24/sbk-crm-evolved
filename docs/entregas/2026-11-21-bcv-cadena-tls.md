@@ -1,6 +1,6 @@
 # Entrega «La tasa BCV no vuelve a quedarse sin leer» (21/11/2026)
 
-Rama `entrega/bcv-cadena-tls`, commit `<<commit>>`. Trae **una migración** (`20261121010000`), sin
+Rama `entrega/bcv-cadena-tls`, avanzada a `main` (base `371a8ca`): commits `00f2cf5` y `e57d45a`, más este reporte. Trae **una migración** (`20261121010000`), sin
 variables de entorno nuevas y sin cambios en la interfaz de los asesores salvo el chip de la bandeja y
 una nota en `/inventario`. El procedimiento completo con las consultas de verificación está en
 `docs/PRODUCCION.md` §21.
@@ -24,8 +24,8 @@ R36, que era la única embebida en el código. Nadie lo vio en dos días: el ún
 
 ## Orden de aplicación
 
-1. **Deploy del código** (`<<commit>>`), como cualquier entrega.
-2. **Migración**, con `psql -1 -v ON_ERROR_STOP=1`, fuera de hora pico (aunque es una tabla nueva y
+1. **Deploy del código** (`e57d45a` o posterior), como cualquier entrega.
+2. **Migración**, recién cuando el paso `bcv_fetch_status` del CI de este push esté en verde (el test SQL NO se pudo correr en local: Docker no arrancó en la máquina de desarrollo), con `psql -1 -v ON_ERROR_STOP=1`, fuera de hora pico (aunque es una tabla nueva y
    chica):
 
    ```bash
@@ -42,10 +42,10 @@ Si el procedimiento del VPS registra las migraciones en `schema_migrations`, reg
 
 ## Commits
 
-| # | Hash y título (provisional, lo fija el orquestador) | ¿Migración? | ¿Variable de entorno? | ¿UI o servidor? |
+| # | Hash y título | ¿Migración? | ¿Variable de entorno? | ¿UI o servidor? |
 |---|---|---|---|---|
-| 1 | `<<commit>>` [migración] Estado de la lectura de la tasa BCV en la base | **Sí**, `20261121010000_bcv_fetch_status.sql` | No | Base |
-| 2 | `<<commit>>` La tasa BCV vuelve a leerse aunque el BCV cambie de certificado (cadena TLS, logs, alerta, chip y nota de Inventario) | No | No (`CRON_SECRET` ya existe) | Servidor y UI |
+| 1 | `00f2cf5` [migración] La base guarda si la última lectura de la tasa BCV salió bien, y desde cuándo falla | **Sí**, `20261121010000_bcv_fetch_status.sql` | No | Base |
+| 2 | `e57d45a` La tasa BCV se vuelve a leer aunque el BCV cambie de certificado, y si igual falla se ve en la bandeja el mismo día | No | No (`CRON_SECRET` ya existe) | Servidor y UI |
 
 El código de la fila 2 tolera que la tabla de la fila 1 no exista; la migración puede aplicarse después del
 deploy.
