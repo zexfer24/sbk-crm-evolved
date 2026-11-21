@@ -613,6 +613,13 @@ jobs:
         run: |
           psql "postgresql://postgres:postgres@127.0.0.1:54322/postgres"             -v ON_ERROR_STOP=1             -f supabase/tests/paneles.sql
 
+      # 20261121010000 (21/11/2026): el estado de la lectura de la tasa BCV. La
+      # RPC suma y reinicia el contador de fallos de forma atómica, solo
+      # service_role la ejecuta, y agentes/caja leen la fila sin poder escribirla.
+      - name: bcv_fetch_status -- estado de la lectura BCV y permisos
+        run: |
+          psql "postgresql://postgres:postgres@127.0.0.1:54322/postgres"             -v ON_ERROR_STOP=1             -f supabase/tests/bcv_fetch_status.sql
+
       # A2 T7, plan "Seba no cotiza lo que no es" (30/9/2026): el ARNÉS del
       # catálogo. Corre el `buildCatalogTool` REAL de Seba sobre los ~149 casos de
       # `casos-a2.ts` contra la base que este mismo job acaba de reconstruir desde
