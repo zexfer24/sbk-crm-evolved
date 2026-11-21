@@ -3279,6 +3279,91 @@ que entren mientras esté quitado).
 
 ---
 
+## 21. La tasa BCV no vuelve a quedarse sin leer (21/11/2026)
+
+El 19/11/2026 el BCV renovó el certificado de `bcv.org.ve` (lo firma ahora Sectigo
+OV R36, que el contenedor no traía) y desde esa hora cada lectura falló con
+`unable to verify the first certificate`. Nadie lo vio en dos días: el único aviso era
+un `console.error` por minuto. Las tasas del 20/11 (918,7662) y del 24/11 (919,8227) se
+cargaron a mano. Esta entrega arregla la cadena y deja el fallo visible. Reporte para el
+Claude del VPS: `docs/entregas/2026-11-21-bcv-cadena-tls.md`.
+
+**El código va ANTES que la migración.** Sin la tabla `bcv_fetch_status` todo sigue igual,
+con un contador en memoria. La migración puede aplicarse después del deploy, en cualquier
+momento antes de mirar el chip de la bandeja.
+
+### Migración
+
+```bash
+psql -1 -v ON_ERROR_STOP=1 -f supabase/migrations/20261121010000_bcv_fetch_status.sql
+```
+
+Crea la tabla de una fila `bcv_fetch_status`, la RPC `bcv_registrar_intento` (solo
+service_role) y el backfill de `last_success_at` con el último `fetched_at` de
+`source = 'bcv.org.ve'`. Las filas manuales NO cuentan. Si el procedimiento del VPS
+registra las migraciones en `schema_migrations`, hacerlo igual que con las anteriores.
+
+### Verificación, en este orden
+
+1. **Sin el error de cadena en los logs** (en el contenedor de la app, desde el deploy):
+
+   ```bash
+   docker logs <contenedor-app> --since 30m 2>&1 | grep -cE "unable to verify the first certificate|bcv_lectura_fallida|bcv_aia_fallo"
+   ```
+
+   Debe dar `0`.
+
+2. **La tasa se relee.** En la base, la fila más reciente de BCV:
+
+   ```sql
+   select rate_date, usd_to_ves, fetched_at
+   from exchange_rates
+   where source = 'bcv.org.ve'
+   order by fetched_at desc
+   limit 3;
+   ```
+
+   `fetched_at` tiene que moverse en el siguiente horario de lectura (00, 06, 12 o 18 hora de
+   Venezuela). Una tasa nueva de `rate_date` aparece cuando el BCV la publica.
+
+3. **El simulacro de la cadena por AIA.** Arma la cadena con las raíces del sistema y SOLO
+   el intermedio DV R36 (sin el OV), busca por AIA y NO escribe en la base:
+
+   ```bash
+   curl -s -X POST "https://<tu-dominio>/api/cron/bcv-refresh?simulacro=aia" \
+     -H "Authorization: Bearer $CRON_SECRET"
+   ```
+
+   Respuesta esperada: HTTP 200 con `"simulacro":"aia"`, `"ok":true` y
+   `"armadoPorAia":true`. Medido en local el 21/11/2026 contra el BCV real, el intermedio
+   que encontró por AIA tiene sha256
+   `65:42:D1:76:BE:D5:0F:19:3C:0C:E2:97:AE:44:EC:D8:A0:A8:6B:EC:2E:DE:68:27:69:34:40:59:B4:E7:85:30`.
+   Un 502 significa que el AIA no alcanzó: revisar `bcv_intermedio_descargado` y los hosts
+   permitidos (`.sectigo.com`, `.usertrust.com`, `.comodoca.com`).
+
+4. **El estado de la lectura.** Tras la primera lectura buena:
+
+   ```sql
+   select last_attempt_at, last_success_at, last_failure_at, consecutive_failures
+   from bcv_fetch_status;
+   ```
+
+   `consecutive_failures = 0` y `last_success_at` reciente.
+
+5. **Los logs de la lectura.** `bcv_lectura_recuperada` aparece una vez tras el primer éxito
+   después de los fallos. Si `bcv_sin_actualizar` aparece, quiere decir que hubo 240 fallos
+   seguidos (~4 h de cron) y el chip de la bandeja ya debería estar rojo.
+
+### Lo que esta entrega NO hace
+
+- **El aviso a Seba (la IA) sobre la tasa vieja queda fuera**, por decisión del operador.
+  Como nota técnica pendiente: la cotización la arma el código (`quote-message.ts`) y
+  reemplaza el texto del modelo, así que haría falta una línea fija ahí. Con una tasa
+  vieja lo que se desfasa es el "$ BCV" (Bs ÷ tasa), no el Bs de SAINT.
+- **No hay variables de entorno nuevas.** El simulacro usa el mismo `CRON_SECRET` de siempre.
+
+---
+
 ## Comprobación final
 
 Con todo configurado, esta lista debe pasar entera:

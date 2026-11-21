@@ -27,8 +27,8 @@ async function loadRate(
   supabase: Awaited<ReturnType<typeof createClient>>
 ): Promise<BcvRateSummary | null> {
   try {
-    const { rate, rateDate, isStale } = await getBcvRate(supabase);
-    return { rate, rateDate, isStale };
+    const { rate, rateDate, isStale, alerta } = await getBcvRate(supabase);
+    return { rate, rateDate, isStale, alerta };
   } catch {
     return null;
   }

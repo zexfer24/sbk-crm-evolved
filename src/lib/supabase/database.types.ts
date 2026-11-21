@@ -577,6 +577,36 @@ export type Database = {
         }
         Relationships: []
       }
+      bcv_fetch_status: {
+        Row: {
+          consecutive_failures: number
+          id: boolean
+          last_attempt_at: string | null
+          last_error: string | null
+          last_failure_at: string | null
+          last_success_at: string | null
+          updated_at: string
+        }
+        Insert: {
+          consecutive_failures?: number
+          id?: boolean
+          last_attempt_at?: string | null
+          last_error?: string | null
+          last_failure_at?: string | null
+          last_success_at?: string | null
+          updated_at?: string
+        }
+        Update: {
+          consecutive_failures?: number
+          id?: boolean
+          last_attempt_at?: string | null
+          last_error?: string | null
+          last_failure_at?: string | null
+          last_success_at?: string | null
+          updated_at?: string
+        }
+        Relationships: []
+      }
       catalog_links: {
         Row: {
           created_at: string
@@ -2235,6 +2265,17 @@ export type Database = {
       ai_turn_lock_renew: {
         Args: { p_conversation_id: string; p_lease_seconds: number; p_token: string }
         Returns: boolean
+      }
+      // Plan "La tasa BCV deja de fallar en silencio" (21/11/2026, migración
+      // 20261121010000): registra un intento de lectura en `bcv_fetch_status`
+      // de forma atómica; solo service_role la ejecuta.
+      bcv_registrar_intento: {
+        Args: { p_ok: boolean; p_error?: string }
+        Returns: {
+          consecutive_failures: number
+          previous_failures: number
+          previous_error: string | null
+        }[]
       }
       // T2, plan "La búsqueda encuentra lo que el cliente pide" (25-26/9/2026,
       // migración 20260926010000): busca por grupos de alternativas (un grupo

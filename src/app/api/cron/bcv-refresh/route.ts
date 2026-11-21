@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { timingSafeEqual } from "node:crypto";
-import { getBcvRate } from "@/lib/ai/bcv";
+import { BCV_URL, getBcvRate } from "@/lib/ai/bcv";
+import { simularArmadoPorAia } from "@/lib/ai/bcv-fetch";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { errorText, log } from "@/lib/log";
 
@@ -54,6 +55,16 @@ export async function POST(request: Request) {
 
   if (!provided || !tokenMatches(provided, secret)) {
     return NextResponse.json({ error: "No autorizado." }, { status: 401 });
+  }
+
+  // Simulacro de la cadena TLS (21/11/2026): la verificación que corre el VPS
+  // tras el deploy. Comprueba que, con solo las raíces del sistema y el
+  // intermedio DV R36 (sin el OV que el BCV dejó de enviar), la cadena de
+  // bcv.org.ve se arme sola por AIA. No lee ni escribe la tasa: no crea ni el
+  // cliente de la base. Llega detrás del mismo portón de siempre.
+  if (new URL(request.url).searchParams.get("simulacro") === "aia") {
+    const resultado = await simularArmadoPorAia(BCV_URL);
+    return NextResponse.json({ simulacro: "aia", ...resultado }, { status: resultado.ok ? 200 : 502 });
   }
 
   try {

@@ -2225,6 +2225,13 @@ dejar rastro es lo que hacía desaparecer leads.
   el cron (`/api/cron/bcv-refresh`) la ignora con `ignoreFailureBackoff`.
   `fetched_on` sigue escribiéndose en cada upsert pero ya no decide nada;
   borrarla es otra ola, con su propia migración.
+- **La tasa BCV: el GET nunca baja la verificación; leer la hoja es la única
+  excepción** (21/11/2026). Desde el 19/11 bcv.org.ve firma con Sectigo OV R36 y
+  nadie lo vio en dos días. Si la cadena falla: se lee la hoja sin verificar, se
+  baja el intermedio del AIA (solo Sectigo, USERTrust o Comodo), se verifica y
+  recién entonces se reintenta el GET verificado. `bcv_intermedio_descargado` es
+  la señal para embeberlo. La alerta mira `bcv_fetch_status.last_success_at` (más
+  de 8 h), no `exchange_rates`; las filas manuales no cuentan. Sin la tabla, todo sigue igual.
 - **La búsqueda del catálogo ordena y cuenta en SQL; nunca `.limit()` sin
   `order` sobre `products`** (T1/T2, plan "La búsqueda encuentra lo que el
   cliente pide", 25-26/9/2026). Hasta esta ola, `tools.ts` pedía 31 filas

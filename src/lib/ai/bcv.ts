@@ -3,8 +3,9 @@ import type { SupabaseClient } from "@supabase/supabase-js";
 import type { Database } from "@/lib/supabase/database.types";
 import { daysBetween, shouldRefetchBcv, venezuelaDate } from "@/lib/bcv-schedule";
 import { fetchBcvHtml } from "@/lib/ai/bcv-fetch";
-import { BCV_LEAF_EXPIRES_ON } from "@/lib/ai/bcv-intermediate-ca";
-import { log } from "@/lib/log";
+import { leerEstadoBcv, registrarIntentoBcv } from "@/lib/ai/bcv-status";
+import { alertaDeTasa, type BcvAlerta, type BcvEstadoLectura } from "@/lib/bcv-alerta";
+import { errorText, log } from "@/lib/log";
 
 // ---------------------------------------------------------------------------
 // Tasa oficial del BCV, leída directo de bcv.org.ve (sin servicios de
@@ -18,7 +19,8 @@ import { log } from "@/lib/log";
 // tasa del día hábil siguiente, y sin la fecha no habría forma de saberlo.
 // ---------------------------------------------------------------------------
 
-const BCV_URL = "https://www.bcv.org.ve/";
+/** Exportada para el simulacro del cron (`?simulacro=aia`), que prueba la misma URL que se lee. */
+export const BCV_URL = "https://www.bcv.org.ve/";
 
 /** "775,33560000" -> 775.3356 (formato venezolano: coma decimal). */
 function parseVenezuelanNumber(raw: string): number {
@@ -83,6 +85,17 @@ export interface BcvRate {
    * frenó el intento, o la lectura falló y se devolvió lo guardado.
    */
   refreshed: boolean;
+  /**
+   * Alerta de "la tasa lleva demasiado sin actualizarse" (T3, 21/11/2026):
+   * no-null cuando el último ÉXITO registrado de lectura del BCV tiene más
+   * de 8 h (`alertaDeTasa`, `bcv-alerta.ts`). Es independiente de `isStale`:
+   * el 19/11/2026 se cargó la tasa a mano en `exchange_rates` y con eso
+   * `isStale` quedó en false mientras la lectura llevaba dos días rota; esta
+   * alerta mira el estado de la LECTURA (`bcv_fetch_status`), no la fila de
+   * la tasa. Siempre `null` tras un refresco exitoso y cuando el estado no
+   * existe (tabla aún sin migrar): ahí la app se comporta como antes.
+   */
+  alerta: BcvAlerta | null;
 }
 
 /**
@@ -98,11 +111,31 @@ export interface BcvRate {
  */
 export const BCV_FAILURE_BACKOFF_MS = 5 * 60_000;
 
+/**
+ * Fallos seguidos a partir de los cuales el log sube a `error`
+ * (`bcv_sin_actualizar`). El cron reintenta cada minuto, así que 240 son
+ * ~4 h sin una lectura buena: ya se perdió el horario de las 00/06/12/18 que
+ * tocaba. Se avisa UNA vez, justo al cruzar el umbral, no en cada minuto.
+ */
+export const BCV_FALLOS_PARA_ALERTA = 240;
+
+/** Mientras dura una racha, el `warn` se repite cada tantos fallos seguidos. */
+const FALLOS_ENTRE_AVISOS = 60;
+
 let lastFailureAt: number | null = null;
 
-/** Solo para tests: la ventana de fallo es una variable de módulo, y un test que la deje encendida contamina al siguiente. */
+// Contador de respaldo, solo si `bcv_fetch_status` no está disponible (el
+// código se despliega ANTES que la migración, o la tabla falla): con la tabla
+// el contador vive en la base y sobrevive a los reinicios; sin ella, esto da
+// el mismo umbral y la misma regla de aviso dentro del proceso.
+let fallosEnMemoria = 0;
+let errorEnMemoria: string | null = null;
+
+/** Solo para tests: la ventana de fallo y el contador de respaldo son variables de módulo, y un test que las deje encendidas contamina al siguiente. */
 export function resetBcvFailureBackoffForTests(): void {
   lastFailureAt = null;
+  fallosEnMemoria = 0;
+  errorEnMemoria = null;
 }
 
 interface CachedBcvRow {
@@ -110,39 +143,108 @@ interface CachedBcvRow {
   usd_to_ves: number;
 }
 
+interface ResultadoDelIntento {
+  fallosSeguidos: number;
+  fallosPrevios: number;
+  errorPrevio: string | null;
+}
+
 /**
- * Une el manejo de "la lectura en vivo no sirvió" en sus dos formas: una
- * excepción de verdad (red caída, HTML sin el bloque esperado) y la página
- * que respondió pero sin "Fecha Valor". Las dos cuentan para la ventana de
- * fallo y las dos devuelven la fila guardada si existe.
+ * Anota el intento en `bcv_fetch_status` y, si esa tabla no responde, en el
+ * contador de memoria del proceso. Nunca lanza: registrar no puede demorar ni
+ * romper la respuesta de la tasa (se espera, pero todo va envuelto).
  */
-function reportFailedFetch(cached: CachedBcvRow | null, err?: unknown): BcvRate {
+async function registrarIntento(ok: boolean, motivo: string | null): Promise<ResultadoDelIntento> {
+  let registro: ResultadoDelIntento | null = null;
+  try {
+    registro = await registrarIntentoBcv(ok, motivo);
+  } catch {
+    registro = null;
+  }
+
+  if (registro) {
+    // La base manda: el contador de respaldo no debe arrastrar una racha vieja
+    // si la tabla aparece (o reaparece) a mitad de vida del proceso.
+    fallosEnMemoria = 0;
+    errorEnMemoria = null;
+    return registro;
+  }
+
+  const fallosPrevios = fallosEnMemoria;
+  const errorPrevio = errorEnMemoria;
+  if (ok) {
+    fallosEnMemoria = 0;
+    errorEnMemoria = null;
+    return { fallosSeguidos: 0, fallosPrevios, errorPrevio };
+  }
+  fallosEnMemoria = fallosPrevios + 1;
+  errorEnMemoria = motivo;
+  return { fallosSeguidos: fallosEnMemoria, fallosPrevios, errorPrevio };
+}
+
+/**
+ * Une el manejo de "la lectura en vivo no sirvió" en todas sus formas: una
+ * excepción de verdad (red, TLS, HTML sin el bloque esperado), la página que
+ * respondió pero sin "Fecha Valor" y el upsert que la base rechazó. Todas
+ * cuentan para la ventana de fallo, todas se registran y todas devuelven la
+ * fila guardada si existe.
+ *
+ * El log ya no grita en cada intento: hasta el 21/11/2026 era un
+ * `console.error` por minuto (1.400 al día) con la lectura rota, y por eso
+ * nadie lo leyó en dos días. Ahora: un `warn` al primer fallo, o si cambia el
+ * motivo, o cada 60 seguidos; y un único `error` al llegar a
+ * `BCV_FALLOS_PARA_ALERTA`.
+ */
+async function reportFailedFetch(
+  cached: CachedBcvRow | null,
+  motivo: string,
+  estado: BcvEstadoLectura | null,
+  ahora: Date
+): Promise<BcvRate> {
   lastFailureAt = Date.now();
 
+  const { fallosSeguidos, errorPrevio } = await registrarIntento(false, motivo);
+
   if (!cached) {
-    console.error(
-      "[BCV] Lectura en vivo fallida y no hay ninguna tasa guardada: no se puede cotizar en bolívares.",
-      err
-    );
+    log.error("bcv_sin_tasa_guardada", { motivo });
     throw new Error("No hay ninguna tasa BCV guardada y la lectura en vivo falló. No se puede cotizar en bolívares.");
   }
 
-  // El aviso lleva la antigüedad porque es lo que distingue "el BCV tardó un
-  // segundo de más" de "llevamos días cotizando con una tasa muerta". Sin ese
-  // número, los dos casos se leen igual en el log — y el segundo pasó tres
-  // días sin que nadie lo notara.
-  const staleDays = daysBetween(cached.rate_date, venezuelaDate());
-  console.error(
-    `[BCV] Lectura en vivo fallida: se cotiza con la tasa del ${cached.rate_date}` +
-      `, ${staleDays} día(s) de antigüedad.` +
-      (staleDays >= 2
-        ? ` ATENCIÓN: son precios viejos. Si se repite, revisar la cadena TLS` +
-          ` (src/lib/ai/bcv-intermediate-ca.ts; la hoja del BCV caduca ${BCV_LEAF_EXPIRES_ON}).`
-        : ""),
-    err
-  );
+  // La antigüedad va en el aviso porque es lo que distingue "el BCV tardó un
+  // segundo de más" de "llevamos días cotizando con una tasa muerta".
+  const diasDeAntiguedad = daysBetween(cached.rate_date, venezuelaDate());
 
-  return { rate: Number(cached.usd_to_ves), rateDate: cached.rate_date, isStale: true, refreshed: false };
+  if (fallosSeguidos === 1 || motivo !== errorPrevio || fallosSeguidos % FALLOS_ENTRE_AVISOS === 0) {
+    log.warn("bcv_lectura_fallida", { fallosSeguidos, motivo, tasaDe: cached.rate_date, diasDeAntiguedad });
+  }
+
+  if (fallosSeguidos === BCV_FALLOS_PARA_ALERTA) {
+    log.error("bcv_sin_actualizar", {
+      fallosSeguidos,
+      ultimoExito: estado?.lastSuccessAt ?? null,
+      motivo,
+      tasaDe: cached.rate_date,
+    });
+  }
+
+  // El estado se leyó ANTES de este intento: se le suma lo que acaba de pasar
+  // para que la alerta muestre el error de ahora y no el de hace un minuto.
+  const estadoConEsteIntento: BcvEstadoLectura | null = estado
+    ? {
+        ...estado,
+        lastFailureAt: ahora.toISOString(),
+        lastError: motivo,
+        consecutiveFailures: fallosSeguidos,
+      }
+    : null;
+
+  return {
+    rate: Number(cached.usd_to_ves),
+    rateDate: cached.rate_date,
+    isStale: true,
+    refreshed: false,
+    alerta: alertaDeTasa(estadoConEsteIntento, ahora),
+  };
 }
 
 /**
@@ -161,6 +263,12 @@ function reportFailedFetch(cached: CachedBcvRow | null, err?: unknown): BcvRate 
  * vez—, se usa la última tasa guardada en vez de romper el turno del
  * agente, y no se vuelve a intentar por `BCV_FAILURE_BACKOFF_MS` (salvo
  * `opts.ignoreFailureBackoff`, que usa el cron).
+ *
+ * Cada intento REAL a la red (y solo esos: no cuando no tocaba leer ni
+ * cuando la ventana de fallo lo frenó) deja su resultado en
+ * `bcv_fetch_status`, y la respuesta trae `alerta` cuando el último éxito
+ * tiene más de 8 h (T3, 21/11/2026; ver `BcvRate.alerta`). Si esa tabla
+ * todavía no existe, la tasa se lee exactamente igual que antes.
  */
 export async function getBcvRate(
   supabase: SupabaseClient<Database>,
@@ -171,16 +279,25 @@ export async function getBcvRate(
   // Normalmente son la misma fila, pero no hay que depender de eso — un
   // upsert que llegue con un rate_date menor al ya guardado (la tasa del
   // sábado sigue rigiendo el lunes) dejaría la fila "más nueva" con una
-  // lectura vieja si se leyera una sola columna de una sola fila.
-  const [{ data: cached }, { data: lastFetch }] = await Promise.all([
+  // lectura vieja si se leyera una sola columna de una sola fila. La tercera
+  // lectura (el estado de la lectura) viaja en paralelo y nunca lanza.
+  const [{ data: cached }, { data: lastFetch }, estado] = await Promise.all([
     supabase.from("exchange_rates").select("rate_date, usd_to_ves").order("rate_date", { ascending: false }).limit(1).maybeSingle(),
     supabase.from("exchange_rates").select("fetched_at").order("fetched_at", { ascending: false }).limit(1).maybeSingle(),
+    leerEstadoBcv(supabase),
   ]);
 
+  const ahora = new Date();
   const lastFetchedAt = lastFetch?.fetched_at ? new Date(lastFetch.fetched_at) : null;
 
-  if (cached && !shouldRefetchBcv(new Date(), lastFetchedAt)) {
-    return { rate: Number(cached.usd_to_ves), rateDate: cached.rate_date, isStale: false, refreshed: false };
+  if (cached && !shouldRefetchBcv(ahora, lastFetchedAt)) {
+    return {
+      rate: Number(cached.usd_to_ves),
+      rateDate: cached.rate_date,
+      isStale: false,
+      refreshed: false,
+      alerta: alertaDeTasa(estado, ahora),
+    };
   }
 
   // Toca leer, pero si el BCV falló hace poco no hay que volver a golpearlo
@@ -193,40 +310,67 @@ export async function getBcvRate(
     Date.now() - lastFailureAt < BCV_FAILURE_BACKOFF_MS &&
     !opts.ignoreFailureBackoff
   ) {
-    return { rate: Number(cached.usd_to_ves), rateDate: cached.rate_date, isStale: true, refreshed: false };
+    return {
+      rate: Number(cached.usd_to_ves),
+      rateDate: cached.rate_date,
+      isStale: true,
+      refreshed: false,
+      alerta: alertaDeTasa(estado, ahora),
+    };
   }
 
-  try {
-    const { rate, valueDate } = await fetchLiveBcvRate();
+  let motivoDelFallo: string;
+  let lectura: LiveBcvRate | null = null;
 
-    if (valueDate === null) {
+  try {
+    const live = await fetchLiveBcvRate();
+
+    if (live.valueDate === null) {
       // La lectura salió bien pero sin fecha de vigencia: no hay forma de
       // saber si esta tasa rige HOY o desde mañana. Guardarla con la fecha
       // de hoy (lo que se hacía hasta el 24/9/2026) podía pisar la tasa
       // buena del día en curso con la del día siguiente. Se trata como
       // cualquier otra lectura fallida: se devuelve lo guardado y se anota
       // en la ventana de fallo.
-      log.warn("bcv_sin_fecha_valor", { rate });
-      return reportFailedFetch(cached);
+      log.warn("bcv_sin_fecha_valor", { rate: live.rate });
+      motivoDelFallo = "La página del BCV no trajo «Fecha Valor».";
+    } else {
+      const { error: upsertError } = await supabase.from("exchange_rates").upsert({
+        rate_date: live.valueDate,
+        usd_to_ves: live.rate,
+        source: "bcv.org.ve",
+        // Ya no decide nada (la regla de relectura mira `fetched_at`), pero se
+        // sigue escribiendo para no dejar la columna a medias.
+        fetched_on: venezuelaDate(),
+        // Sin esto la regla por horario volvía a leer en cada request: la
+        // columna tiene `default now()`, así que un upsert que no la tocara
+        // solo guardaba cuándo NACIÓ la fila — medido el 24/9/2026, la fila
+        // decía 19/9 con lecturas exitosas posteriores de por medio.
+        fetched_at: new Date().toISOString(),
+      });
+
+      if (upsertError) {
+        // Hasta el 21/11/2026 este error no se miraba: una tasa leída que la
+        // base rechazaba (permiso, red) se daba por guardada y `refreshed`
+        // salía en true sin que la fila hubiera cambiado.
+        motivoDelFallo = `No se pudo guardar la tasa leída: ${errorText(upsertError)}`;
+      } else {
+        lectura = live;
+        motivoDelFallo = "";
+      }
     }
-
-    await supabase.from("exchange_rates").upsert({
-      rate_date: valueDate,
-      usd_to_ves: rate,
-      source: "bcv.org.ve",
-      // Ya no decide nada (la regla de relectura mira `fetched_at`), pero se
-      // sigue escribiendo para no dejar la columna a medias.
-      fetched_on: venezuelaDate(),
-      // Sin esto la regla por horario volvía a leer en cada request: la
-      // columna tiene `default now()`, así que un upsert que no la tocara
-      // solo guardaba cuándo NACIÓ la fila — medido el 24/9/2026, la fila
-      // decía 19/9 con lecturas exitosas posteriores de por medio.
-      fetched_at: new Date().toISOString(),
-    });
-
-    lastFailureAt = null;
-    return { rate, rateDate: valueDate, isStale: false, refreshed: true };
   } catch (err) {
-    return reportFailedFetch(cached, err);
+    motivoDelFallo = errorText(err);
   }
+
+  if (lectura && lectura.valueDate !== null) {
+    lastFailureAt = null;
+    const { fallosPrevios } = await registrarIntento(true, null);
+    if (fallosPrevios > 0) {
+      log.info("bcv_lectura_recuperada", { fallosPrevios });
+    }
+    return { rate: lectura.rate, rateDate: lectura.valueDate, isStale: false, refreshed: true, alerta: null };
+  }
+
+  return reportFailedFetch(cached, motivoDelFallo, estado, ahora);
 }
