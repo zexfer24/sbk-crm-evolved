@@ -23,6 +23,10 @@
 # misc
 .DS_Store
 *.pem
+# Certificados PÚBLICOS de prueba de la cadena TLS del BCV (21/11/2026): sin
+# esta excepción el CI no los recibía y los tests de bcv-fetch/bcv-chain caían
+# con ENOENT. Las llaves privadas nunca se guardan (el script las borra).
+!src/lib/ai/__fixtures__/bcv-certs/*.pem
 
 # debug
 npm-debug.log*
