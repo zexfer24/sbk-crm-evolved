@@ -259,10 +259,15 @@ export function estaAbierto(horario: BusinessHours, diaSemana: number, hora: num
 export interface FiltroActivas {
   tipo: "todos" | "presupuesto" | "carrito";
   canal: Vista;
-  antiguedad: "todas" | "24h" | "3d" | "7d";
+  /** Rol de quien armó la venta (no el canal). Un ítem sin dato de equipo no pasa un filtro distinto de «todos». */
+  equipo: "todos" | "online" | "tienda";
+  /** Estado de la ventana de WhatsApp; excluyentes (Abierta = solo abierta). */
+  ventana: "todas" | "abierta" | "por_cerrar" | "cerrada";
+  /** Más viejo que N horas (movido hace más de N horas). */
+  antiguedad: "todas" | "12h" | "24h";
 }
 
-const HORAS_MINIMAS: Record<FiltroActivas["antiguedad"], number> = { todas: 0, "24h": 24, "3d": 72, "7d": 168 };
+const HORAS_MINIMAS: Record<FiltroActivas["antiguedad"], number> = { todas: 0, "12h": 12, "24h": 24 };
 
 export function filtrarActivas(
   items: PanelVentasActivas["items"],
@@ -273,6 +278,8 @@ export function filtrarActivas(
     (item) =>
       (filtro.tipo === "todos" || item.tipo === filtro.tipo) &&
       (filtro.canal === "resumen" || item.canal === filtro.canal) &&
+      (filtro.equipo === "todos" || item.equipo === filtro.equipo) &&
+      (filtro.ventana === "todas" || item.ventana === filtro.ventana) &&
       (filtro.antiguedad === "todas" || horasDesde(item.desde, ahora) > HORAS_MINIMAS[filtro.antiguedad])
   );
 }

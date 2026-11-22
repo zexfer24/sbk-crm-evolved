@@ -121,6 +121,69 @@
   margin-top: 8px;
 }
 
+/* Ventas activas: el tercer origen (presupuestos del chat) usa el azul de «online», que se lee en claro y en oscuro */
+.pd-apilada__c,
+.pd-sw-presupuesto-chat {
+  background: var(--pn-online);
+}
+
+/* Ventas activas: los tres bloques del desglose (De dónde / Quién lo armó / Se puede escribir) */
+.pd-bloque__titulo {
+  margin: 8px 0 3px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--lm-muted);
+}
+.pd-desglose {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 2px;
+  font-size: 12px;
+  color: var(--lm-ink-soft);
+}
+.pd-desglose__fila {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  align-items: baseline;
+  column-gap: 8px;
+}
+.pd-desglose__etiqueta {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.pd-desglose__fila b {
+  font-weight: 600;
+  text-align: right;
+  color: var(--lm-ink);
+}
+.pd-desglose__monto {
+  min-width: 7ch;
+  text-align: right;
+  color: var(--lm-muted);
+}
+
+/* Ventas activas: la ventana de WhatsApp de cada venta (chip + enlace al chat) */
+.pd-ventana {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 8px;
+}
+.pd-ventana__chat {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--lm-ink);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
 /* Unidades: mini barras de los envíos de cada tramo */
 .pd-minibarras {
   display: flex;
@@ -678,6 +741,11 @@
   min-width: 0;
 }
 
+/* Filtro de ventana sobre la lista de la hoja de ventas activas */
+.pd-hoja-filtro {
+  margin: 14px 0 10px;
+}
+
 /* Subtítulo de una sección dentro de una hoja */
 .pd-hoja-sub {
   margin: 18px 0 8px;
@@ -703,4 +771,11 @@
   .pd .pn-anillo__arco {
     transition: none;
   }
+}
+
+/* Ventas activas a 390 px: «quedan 2 h» o «3 · $200,00» partidos en dos renglones
+   se leían como dos datos; la tabla ya scrollea dentro de su contenedor. */
+.pd-ventana .pn-chip,
+.pd-matriz__celda {
+  white-space: nowrap;
 }

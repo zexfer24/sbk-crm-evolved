@@ -7,6 +7,7 @@ import {
   etapasDelEmbudo,
   etiquetaDeTramo,
   filtrarActivas,
+  type FiltroActivas,
   fraseDelEmbudo,
   horasDeAtencion,
   mesesDelAnio,
@@ -146,7 +147,14 @@ describe("horasDeAtencion", () => {
 
 describe("filtrarActivas", () => {
   const ahora = new Date("2026-11-15T12:00:00-04:00");
-  const item = (id: string, tipo: "presupuesto" | "carrito", canal: "online" | "tienda", desde: string) => ({
+  type Fila = Parameters<typeof filtrarActivas>[0][number];
+  const item = (
+    id: string,
+    tipo: "presupuesto" | "carrito",
+    canal: "online" | "tienda",
+    desde: string,
+    extra: Partial<Fila> = {}
+  ): Fila => ({
     tipo,
     id,
     canal,
@@ -155,18 +163,51 @@ describe("filtrarActivas", () => {
     monto: null,
     unidades: 1,
     desde,
+    origen: null,
+    equipo: null,
+    ventana: null,
+    ventana_hasta: null,
+    conversation_id: null,
+    ...extra,
   });
   const items = [
-    item("a", "presupuesto", "tienda", "2026-11-01T12:00:00-04:00"),
-    item("b", "carrito", "online", "2026-11-10T12:00:00-04:00"),
-    item("c", "carrito", "online", "2026-11-15T10:00:00-04:00"),
+    item("a", "presupuesto", "tienda", "2026-11-01T12:00:00-04:00", { origen: "presupuesto_inventario", equipo: "tienda", ventana: "no_aplica" }),
+    item("b", "carrito", "online", "2026-11-10T12:00:00-04:00", { origen: "carrito_chat", equipo: "online", ventana: "cerrada" }),
+    item("c", "carrito", "online", "2026-11-15T10:00:00-04:00", { origen: "carrito_chat", equipo: "online", ventana: "abierta" }),
+    // 13 h de antigüedad: pasa «+12 h» pero no «+24 h».
+    item("d", "presupuesto", "online", "2026-11-14T23:00:00-04:00", { origen: "presupuesto_chat", equipo: "sin_dato", ventana: "por_cerrar" }),
+    // Sin ningún dato nuevo (base vieja): nunca pasa un filtro de equipo ni de ventana.
+    item("e", "carrito", "online", "2026-11-15T11:00:00-04:00"),
   ];
-  it("filtra por tipo, canal y antigüedad", () => {
-    const ids = (f: Parameters<typeof filtrarActivas>[1]) => filtrarActivas(items, f, ahora).map((i) => i.id);
-    expect(ids({ tipo: "carrito", canal: "resumen", antiguedad: "todas" })).toEqual(["b", "c"]);
-    expect(ids({ tipo: "todos", canal: "tienda", antiguedad: "todas" })).toEqual(["a"]);
-    expect(ids({ tipo: "todos", canal: "resumen", antiguedad: "7d" })).toEqual(["a"]);
-    expect(ids({ tipo: "todos", canal: "resumen", antiguedad: "24h" })).toEqual(["a", "b"]);
+  const base: FiltroActivas = { tipo: "todos", canal: "resumen", equipo: "todos", ventana: "todas", antiguedad: "todas" };
+  const ids = (f: Partial<FiltroActivas>) => filtrarActivas(items, { ...base, ...f }, ahora).map((i) => i.id);
+
+  it("sin filtros deja pasar todo, también lo que no trae datos nuevos", () => {
+    expect(ids({})).toEqual(["a", "b", "c", "d", "e"]);
+  });
+  it("filtra por tipo y por canal", () => {
+    expect(ids({ tipo: "carrito" })).toEqual(["b", "c", "e"]);
+    expect(ids({ tipo: "presupuesto" })).toEqual(["a", "d"]);
+    expect(ids({ canal: "tienda" })).toEqual(["a"]);
+    expect(ids({ canal: "online" })).toEqual(["b", "c", "d", "e"]);
+  });
+  it("antigüedad: más viejo que 12 h o que 24 h", () => {
+    expect(ids({ antiguedad: "12h" })).toEqual(["a", "b", "d"]);
+    expect(ids({ antiguedad: "24h" })).toEqual(["a", "b"]);
+  });
+  it("equipo exige igualdad exacta; un ítem sin dato de equipo no pasa", () => {
+    expect(ids({ equipo: "online" })).toEqual(["b", "c"]);
+    expect(ids({ equipo: "tienda" })).toEqual(["a"]);
+  });
+  it("las ventanas son excluyentes: Abierta es solo abierta", () => {
+    expect(ids({ ventana: "abierta" })).toEqual(["c"]);
+    expect(ids({ ventana: "por_cerrar" })).toEqual(["d"]);
+    expect(ids({ ventana: "cerrada" })).toEqual(["b"]);
+  });
+  it("los filtros se combinan", () => {
+    expect(ids({ tipo: "carrito", equipo: "online", antiguedad: "24h" })).toEqual(["b"]);
+    expect(ids({ canal: "online", ventana: "cerrada", antiguedad: "12h" })).toEqual(["b"]);
+    expect(ids({ tipo: "presupuesto", equipo: "online" })).toEqual([]);
   });
 });
 

@@ -13,6 +13,7 @@ import type {
   PanelVentasActivas,
 } from "@/lib/paneles/parse";
 import { AnaliticasView, type AnaliticasViewProps } from "@/components/paneles/analiticas-view";
+import { AHORA_ACTIVAS, activasComoHoy, activasConDesglose } from "@/components/paneles/dashboard/dashboard-fixtures";
 
 /**
  * Plan "Paneles" (13/11/2026), C5: la pantalla de Analíticas completa con un
@@ -117,10 +118,11 @@ const ACTIVAS: PanelVentasActivas = {
     { tramo: "7d", monto: 200, cantidad: 1 },
     { tramo: "30d", monto: 200, cantidad: 1 },
   ],
+  desglose: null,
   items: [
-    { tipo: "presupuesto", id: "p1", canal: "tienda", responsable: "Caja Uno", cliente: "Pedro Gómez", monto: 300, unidades: 3, desde: "2026-10-30T10:00:00-04:00" },
-    { tipo: "carrito", id: "c1", canal: "online", responsable: "Ana Pérez", cliente: "Lucía Rojas", monto: 150, unidades: 2, desde: "2026-11-10T10:00:00-04:00" },
-    { tipo: "carrito", id: "c2", canal: "online", responsable: "Ana Pérez", cliente: "Mario Díaz", monto: 50, unidades: 1, desde: "2026-11-15T09:00:00-04:00" },
+    { tipo: "presupuesto", id: "p1", canal: "tienda", responsable: "Caja Uno", cliente: "Pedro Gómez", monto: 300, unidades: 3, desde: "2026-10-30T10:00:00-04:00", origen: null, equipo: null, ventana: null, ventana_hasta: null, conversation_id: null },
+    { tipo: "carrito", id: "c1", canal: "online", responsable: "Ana Pérez", cliente: "Lucía Rojas", monto: 150, unidades: 2, desde: "2026-11-10T10:00:00-04:00", origen: null, equipo: null, ventana: null, ventana_hasta: null, conversation_id: null },
+    { tipo: "carrito", id: "c2", canal: "online", responsable: "Ana Pérez", cliente: "Mario Díaz", monto: 50, unidades: 1, desde: "2026-11-15T09:00:00-04:00", origen: null, equipo: null, ventana: null, ventana_hasta: null, conversation_id: null },
   ],
 };
 
@@ -342,6 +344,93 @@ describe("AnaliticasView · ventas activas", () => {
     await usuario.click(within(seccion).getByRole("button", { name: "Carritos" }));
     expect(within(seccion).queryByText("Pedro Gómez")).not.toBeInTheDocument();
     expect(within(seccion).getByText("Lucía Rojas")).toBeInTheDocument();
+  });
+});
+
+describe("AnaliticasView · ventas activas con desglose", () => {
+  const conDesglose = (extra: Partial<AnaliticasViewProps> = {}) =>
+    props({ ahora: AHORA_ACTIVAS, ventasActivas: ok(activasConDesglose()), ...extra });
+  const seccionActivas = () => document.getElementById("ventas-activas")!;
+  const clientes = () =>
+    within(seccionActivas())
+      .getAllByRole("row")
+      .slice(1)
+      .map((f) => within(f).getAllByRole("cell")[0].textContent);
+
+  it("el subtítulo dice que cuenta lo movido en las últimas 48 h", () => {
+    render(<AnaliticasView {...conDesglose()} />);
+    expect(within(seccionActivas()).getByText("$700,00 en 7 sin enviar, movidos en las últimas 48 h, al precio de hoy.")).toBeInTheDocument();
+  });
+
+  it("filtra por equipo: online incluye el presupuesto de Inventario de un asesor; tienda es solo lo de la caja", async () => {
+    const usuario = userEvent.setup({ delay: null, pointerEventsCheck: 0 });
+    render(<AnaliticasView {...conDesglose()} />);
+    const grupo = within(seccionActivas()).getByRole("group", { name: "Equipo de la venta activa" });
+    expect(within(grupo).getAllByRole("button").map((b) => b.textContent)).toEqual(["Todos", "Online", "Tienda (caja)"]);
+
+    await usuario.click(within(grupo).getByRole("button", { name: "Online" }));
+    expect(clientes()).toEqual(["Luis Rojas", "Ana Gómez", "Marta Silva", "Julia Pino", "—"]);
+
+    await usuario.click(within(grupo).getByRole("button", { name: "Tienda (caja)" }));
+    expect(clientes()).toEqual(["Pedro Pérez"]);
+  });
+
+  it("filtra por ventana, con estados excluyentes", async () => {
+    const usuario = userEvent.setup({ delay: null, pointerEventsCheck: 0 });
+    render(<AnaliticasView {...conDesglose()} />);
+    const grupo = within(seccionActivas()).getByRole("group", { name: "Ventana de la venta activa" });
+    expect(within(grupo).getAllByRole("button").map((b) => b.textContent)).toEqual(["Todas", "Abierta", "Por cerrar", "Cerrada"]);
+
+    await usuario.click(within(grupo).getByRole("button", { name: "Abierta" }));
+    expect(clientes()).toEqual(["Marta Silva", "Julia Pino", "—"]);
+    await usuario.click(within(grupo).getByRole("button", { name: "Por cerrar" }));
+    expect(clientes()).toEqual(["Ana Gómez"]);
+    await usuario.click(within(grupo).getByRole("button", { name: "Cerrada" }));
+    expect(clientes()).toEqual(["Rosa Díaz"]);
+  });
+
+  it("la tabla suma las columnas Equipo y Ventana, y «Abrir chat» solo cuando todavía se le puede escribir al cliente", () => {
+    render(<AnaliticasView {...conDesglose()} />);
+    const seccion = seccionActivas();
+    expect(within(seccion).getByRole("columnheader", { name: "Equipo" })).toBeInTheDocument();
+    expect(within(seccion).getByRole("columnheader", { name: "Ventana" })).toBeInTheDocument();
+
+    const filaDe = (cliente: string) => within(seccion).getByText(cliente).closest("tr")!;
+    expect(filaDe("Marta Silva")).toHaveTextContent("quedan 10 h");
+    expect(within(filaDe("Marta Silva")).getByRole("link", { name: "Abrir chat" })).toHaveAttribute(
+      "href",
+      "/inbox?conversation=conv-p-chat"
+    );
+    expect(within(filaDe("Ana Gómez")).getByText("quedan 2 h").className).toMatch(/pn-chip--alerta/);
+    expect(within(filaDe("Ana Gómez")).getByRole("link", { name: "Abrir chat" })).toBeInTheDocument();
+    expect(within(filaDe("Rosa Díaz")).queryByRole("link", { name: "Abrir chat" })).toBeNull();
+    expect(filaDe("Rosa Díaz")).toHaveTextContent("Cerrada");
+    expect(within(filaDe("Luis Rojas")).queryByRole("link", { name: "Abrir chat" })).toBeNull();
+    expect(filaDe("Luis Rojas")).toHaveTextContent("Sin chat");
+    expect(filaDe("Pedro Pérez")).toHaveTextContent("Tienda (caja)");
+  });
+
+  it("la edad es alerta pasadas las 24 h y neutra antes; ya no hay nivel crítico a los 7 días", () => {
+    render(<AnaliticasView {...conDesglose()} />);
+    const edad = (cliente: string) => within(within(seccionActivas()).getByText(cliente).closest("tr")!).getByText(/^\d+ ?(h|d)$/);
+    expect(edad("Rosa Díaz").className).toMatch(/pn-chip--alerta/); // 30 h
+    expect(edad("Julia Pino").className).toMatch(/pn-chip--neutro/); // 3 h
+    expect(seccionActivas().querySelector(".pn-chip--critico")).toBeNull();
+  });
+
+  it("con la base vieja no hay filtros de equipo ni de ventana, ni esas columnas", () => {
+    render(<AnaliticasView {...props()} />);
+    const seccion = seccionActivas();
+    expect(within(seccion).queryByRole("group", { name: "Equipo de la venta activa" })).toBeNull();
+    expect(within(seccion).queryByRole("group", { name: "Ventana de la venta activa" })).toBeNull();
+    expect(within(seccion).queryByRole("columnheader", { name: "Equipo" })).toBeNull();
+    expect(within(seccion).queryByRole("columnheader", { name: "Ventana" })).toBeNull();
+  });
+
+  it("con la tienda oculta y sin nada de la caja, el filtro Equipo no ofrece «Tienda (caja)»", () => {
+    render(<AnaliticasView {...conDesglose({ ventasActivas: ok(activasComoHoy()) })} />);
+    const grupo = within(seccionActivas()).getByRole("group", { name: "Equipo de la venta activa" });
+    expect(within(grupo).getAllByRole("button").map((b) => b.textContent)).toEqual(["Todos", "Online"]);
   });
 });
 

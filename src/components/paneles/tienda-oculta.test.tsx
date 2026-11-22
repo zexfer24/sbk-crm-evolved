@@ -13,8 +13,11 @@ import { DashboardView } from "@/components/paneles/dashboard-view";
 import { ControlVista } from "@/components/paneles/panel-marco";
 import {
   AHORA,
+  AHORA_ACTIVAS,
   METAS,
   activas,
+  activasComoHoy,
+  activasConDesglose,
   canal,
   conversaciones,
   ok,
@@ -155,6 +158,53 @@ describe("canal «tienda» oculto: Dashboard", () => {
     sinRastroDeTienda(hojaActivas);
   });
 
+  it("ventas activas como están hoy (0 de la caja): ni la tarjeta ni la hoja traen «Tienda (caja)» ni rastro de tienda", async () => {
+    const user = userEvent.setup({ delay: null, pointerEventsCheck: 0 });
+    const { container } = render(
+      <DashboardView {...propsBase({ ahora: AHORA_ACTIVAS, ventasActivas: ok(activasComoHoy()) })} />
+    );
+    const tarjeta = seccion("Ventas activas");
+    expect(within(tarjeta).getByText("Asesores online")).toBeInTheDocument();
+    expect(tarjeta.textContent).not.toMatch(/Tienda \(caja\)/);
+    expect(tarjeta.textContent).not.toMatch(/la tienda está oculta/);
+    sinRastroDeTienda(container);
+
+    await user.click(within(tarjeta).getByRole("button", { name: /abrir detalle/i }));
+    const hoja = await screen.findByRole("dialog", { name: "Ventas activas" });
+    expect(hoja.textContent).not.toMatch(/Tienda \(caja\)/);
+    expect(within(hoja).queryByRole("columnheader", { name: "Canal" })).toBeNull();
+    expect(within(hoja).getByRole("columnheader", { name: "Equipo" })).toBeInTheDocument();
+    sinRastroDeTienda(hoja);
+  });
+
+  it("si una caja armó un presupuesto, aparece «Tienda (caja)» y un chip avisa que la tienda está oculta", async () => {
+    const user = userEvent.setup({ delay: null, pointerEventsCheck: 0 });
+    render(<DashboardView {...propsBase({ ahora: AHORA_ACTIVAS, ventasActivas: ok(activasConDesglose()) })} />);
+    const tarjeta = seccion("Ventas activas");
+    const filaCaja = within(tarjeta).getByText("Tienda (caja)").closest("li")!;
+    expect(within(filaCaja).getByText("$150,00")).toBeInTheDocument();
+    expect(within(tarjeta).getByText("1 armado por la caja (la tienda está oculta)")).toBeInTheDocument();
+
+    await user.click(within(tarjeta).getByRole("button", { name: /abrir detalle/i }));
+    const hoja = await screen.findByRole("dialog", { name: "Ventas activas" });
+    const matriz = within(hoja).getByRole("table", { name: "De dónde y quién lo armó" });
+    expect(within(matriz).getByRole("columnheader", { name: "Tienda (caja)" })).toBeInTheDocument();
+  });
+
+  it("con varias armadas por la caja el chip va en plural", () => {
+    const base = activasConDesglose();
+    const dg = base.desglose!;
+    render(
+      <DashboardView
+        {...propsBase({
+          ahora: AHORA_ACTIVAS,
+          ventasActivas: ok({ ...base, desglose: { ...dg, por_equipo: { ...dg.por_equipo, tienda: { monto: 300, cantidad: 3 } } } }),
+        })}
+      />
+    );
+    expect(within(seccion("Ventas activas")).getByText("3 armados por la caja (la tienda está oculta)")).toBeInTheDocument();
+  });
+
   it("el tablero mensual del resumen es una sola serie «Total», sin segmento de tienda", () => {
     render(<DashboardView {...propsBase()} />);
     const tablero = seccion("Ingresos por mes");
@@ -230,6 +280,21 @@ describe("canal «tienda» oculto: Analíticas", () => {
     expect(within(seccion("Enviado a SAINT")).getByText("$1.234,50")).toBeInTheDocument();
     // La tipo de precio del resumen es una sola barra con los dos canales sumados.
     expect(screen.getByRole("img", { name: "Total: 3 unidades con precio de promoción y 10 con precio estándar." })).toBeInTheDocument();
+  });
+
+  it("ventas activas con el desglose: el filtro Equipo no ofrece «Tienda (caja)» si no hay nada de la caja, y sin rastro de tienda", () => {
+    const { container } = render(<AnaliticasView {...propsAnaliticas({ ahora: AHORA_ACTIVAS, ventasActivas: ok(activasComoHoy()) })} />);
+    const seccion = document.getElementById("ventas-activas")!;
+    const equipo = within(seccion).getByRole("group", { name: "Equipo de la venta activa" });
+    expect(within(equipo).getAllByRole("button").map((b) => b.textContent)).toEqual(["Todos", "Online"]);
+    expect(seccion.textContent).not.toMatch(/Tienda \(caja\)/);
+    sinRastroDeTienda(container);
+  });
+
+  it("si hay algo armado por la caja, el filtro Equipo sí ofrece «Tienda (caja)»", () => {
+    render(<AnaliticasView {...propsAnaliticas({ ahora: AHORA_ACTIVAS, ventasActivas: ok(activasConDesglose()) })} />);
+    const equipo = within(document.getElementById("ventas-activas")!).getByRole("group", { name: "Equipo de la venta activa" });
+    expect(within(equipo).getAllByRole("button").map((b) => b.textContent)).toEqual(["Todos", "Online", "Tienda (caja)"]);
   });
 
   it("el resumen con «Comparar» no explica una suma de canales que ya no existe", () => {

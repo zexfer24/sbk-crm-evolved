@@ -22,6 +22,17 @@ export function tiendaVisible(): boolean {
   return CANAL_TIENDA_VISIBLE;
 }
 
+/**
+ * ¿Se pinta la fila/columna/opción «Tienda (caja)» del EQUIPO en ventas activas?
+ * Con la tienda oculta (D1) solo si hay algo que mostrar (`cantidad > 0`: un
+ * presupuesto hecho por una caja no puede desaparecer); con la tienda visible,
+ * siempre, aunque sea 0. No confundir equipo (rol de quien armó la venta) con
+ * canal (flujo): ese lo decide `tiendaVisible()`.
+ */
+export function mostrarEquipoTienda(cantidad: number): boolean {
+  return CANAL_TIENDA_VISIBLE || cantidad > 0;
+}
+
 /** Los canales que se pintan, en orden. */
 export function canalesVisibles(): CanalId[] {
   return CANAL_TIENDA_VISIBLE ? ["online", "tienda"] : ["online"];
@@ -62,4 +73,13 @@ export function textoTiendaOculta(n: number): string {
   return n === 1
     ? "1 envío de tienda incluido en el total (el canal está oculto)"
     : `${n} envíos de tienda incluidos en el total (el canal está oculto)`;
+}
+
+/**
+ * El chip de la tarjeta «Ventas activas» cuando la tienda está oculta (D1) pero
+ * una caja armó presupuestos: el equipo «Tienda (caja)» no puede desaparecer
+ * del desglose, y el chip recuerda por qué no hay canal «tienda».
+ */
+export function textoEquipoTiendaOculto(n: number): string {
+  return n === 1 ? "1 armado por la caja (la tienda está oculta)" : `${n} armados por la caja (la tienda está oculta)`;
 }

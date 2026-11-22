@@ -7,8 +7,11 @@ import { rangosDelDashboard } from "@/lib/paneles/rangos";
 import { ConfigWriteDeniedError } from "@/lib/config-write";
 import {
   AHORA,
+  AHORA_ACTIVAS,
   AHORA_DOMINGO,
   activas,
+  activasComoHoy,
+  activasConDesglose,
   caido,
   canal,
   conversaciones,
@@ -69,7 +72,7 @@ describe("DashboardView: las cifras principales", () => {
 
     const activasSec = seccion("Ventas activas");
     expect(within(activasSec).getByText("$600,00")).toBeInTheDocument();
-    expect(within(activasSec).getByText("5 presupuestos y carritos sin enviar")).toBeInTheDocument();
+    expect(within(activasSec).getByText("5 sin enviar")).toBeInTheDocument();
 
     const enviado = seccion("Enviado a SAINT");
     expect(within(enviado).getByText("$1.234,50")).toBeInTheDocument();
@@ -187,12 +190,26 @@ describe("DashboardView: ventas activas", () => {
     render(<DashboardView {...propsBase({ vista: "tienda" })} />);
     const sec = seccion("Ventas activas");
     expect(within(sec).getByText("$250,00")).toBeInTheDocument();
-    expect(within(sec).getByText("2 presupuestos y carritos sin enviar")).toBeInTheDocument();
+    expect(within(sec).getByText("2 sin enviar")).toBeInTheDocument();
   });
 
-  it("marca con un chip lo que lleva más de 7 días", () => {
+  it("marca con un chip lo que está por vencer (más de 24 h sin moverse)", () => {
     render(<DashboardView {...propsBase()} />);
-    expect(within(seccion("Ventas activas")).getByText(/Hay 1 de más de 7 días/)).toBeInTheDocument();
+    const sec = seccion("Ventas activas");
+    // Sin desglose se cuentan los ítems de la vista con más de 24 h: p-viejo, c-medio y p-medio.
+    expect(within(sec).getByText("3 por vencer")).toBeInTheDocument();
+    expect(sec.textContent).toMatch(/a las 48 h salen del conteo \(no se borran\)/);
+    expect(sec.textContent).not.toMatch(/de más de 7 días/);
+  });
+
+  it("sin desglose (base vieja) la tarjeta conserva el reparto presupuestos/carritos y no inventa bloques", () => {
+    render(<DashboardView {...propsBase()} />);
+    const sec = seccion("Ventas activas");
+    expect(within(sec).getByRole("img", { name: "Reparto entre presupuestos (3) y carritos (2)" })).toBeInTheDocument();
+    expect(within(sec).queryByText("De dónde")).toBeNull();
+    expect(within(sec).queryByText("Quién lo armó")).toBeNull();
+    expect(within(sec).queryByText("Se puede escribir")).toBeNull();
+    expect(within(sec).getByText("Ahora mismo · no depende del período")).toBeInTheDocument();
   });
 
   it("la hoja lista los ítems del más viejo al más nuevo", async () => {
@@ -502,5 +519,277 @@ describe("DashboardView: la hoja de Enviado a SAINT", () => {
     expect(within(dialogo).getByText("Pastillas de freno SBR")).toBeInTheDocument();
     expect(within(dialogo).getByText("Asesor 1")).toBeInTheDocument();
     expect(within(dialogo).getByText("Caja 1")).toBeInTheDocument();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Ventas activas con el desglose de la base (22/11/2026)
+// ---------------------------------------------------------------------------
+
+/** La fila (<li>) de un bloque de la tarjeta, buscada por su etiqueta. */
+const fila = (contenedor: HTMLElement, etiqueta: string) => {
+  const li = within(contenedor).getByText(etiqueta).closest("li");
+  if (!li) throw new Error(`No hay una fila «${etiqueta}».`);
+  return li as HTMLElement;
+};
+
+const propsConDesglose = (extra: Parameters<typeof propsBase>[0] = {}) =>
+  propsBase({ ahora: AHORA_ACTIVAS, ventasActivas: ok(activasConDesglose()), ...extra });
+
+const abrirHojaDeActivas = async (user: ReturnType<typeof userEvent.setup>) => {
+  await user.click(within(seccion("Ventas activas")).getByRole("button", { name: /abrir detalle/i }));
+  return screen.findByRole("dialog", { name: "Ventas activas" });
+};
+
+describe("DashboardView: ventas activas con desglose", () => {
+  it("«De dónde» da la cantidad y el monto de cada origen, y la barra los reparte", () => {
+    render(<DashboardView {...propsConDesglose()} />);
+    const sec = seccion("Ventas activas");
+    expect(within(sec).getByText("$700,00")).toBeInTheDocument();
+    expect(within(sec).getByText("7 sin enviar")).toBeInTheDocument();
+
+    expect(within(fila(sec, "Carritos del chat")).getByText("4")).toBeInTheDocument();
+    expect(within(fila(sec, "Carritos del chat")).getByText("$260,00")).toBeInTheDocument();
+    expect(within(fila(sec, "Presupuestos del chat")).getByText("$200,00")).toBeInTheDocument();
+    expect(within(fila(sec, "Presupuestos de Inventario")).getByText("2")).toBeInTheDocument();
+    expect(within(fila(sec, "Presupuestos de Inventario")).getByText("$240,00")).toBeInTheDocument();
+
+    expect(
+      within(sec).getByRole("img", {
+        name: "Reparto por origen: Carritos del chat (4), Presupuestos del chat (1), Presupuestos de Inventario (2)",
+      })
+    ).toBeInTheDocument();
+  });
+
+  it("«Quién lo armó» separa por el rol de quien armó la venta, no por el canal", () => {
+    render(<DashboardView {...propsConDesglose()} />);
+    const sec = seccion("Ventas activas");
+    expect(within(fila(sec, "Asesores online")).getByText("5")).toBeInTheDocument();
+    expect(within(fila(sec, "Asesores online")).getByText("$490,00")).toBeInTheDocument();
+    expect(within(fila(sec, "Tienda (caja)")).getByText("$150,00")).toBeInTheDocument();
+    expect(within(fila(sec, "Sin dato")).getByText("$60,00")).toBeInTheDocument();
+  });
+
+  it("«Se puede escribir» suma abierta y por cerrar, avisa lo que cierra pronto y cuenta aparte lo cerrado y lo sin chat", () => {
+    render(<DashboardView {...propsConDesglose()} />);
+    const sec = seccion("Ventas activas");
+    const abierta = fila(sec, "Ventana abierta");
+    expect(within(abierta).getByText("4")).toBeInTheDocument();
+    expect(within(abierta).getByText("$400,00")).toBeInTheDocument();
+    expect(within(sec).getByText("1 cierra en menos de 4 h")).toBeInTheDocument();
+    expect(within(fila(sec, "Ventana cerrada (solo plantilla)")).getByText("$60,00")).toBeInTheDocument();
+    expect(within(fila(sec, "Sin chat")).getByText("$240,00")).toBeInTheDocument();
+  });
+
+  it("en plural el aviso dice «N cierran en menos de 4 h»", () => {
+    const base = activasConDesglose();
+    const dg = base.desglose!;
+    render(
+      <DashboardView
+        {...propsConDesglose({
+          ventasActivas: ok({
+            ...base,
+            desglose: { ...dg, por_ventana: { ...dg.por_ventana, por_cerrar: { monto: 160, cantidad: 2 } } },
+          }),
+        })}
+      />
+    );
+    expect(within(seccion("Ventas activas")).getByText("2 cierran en menos de 4 h")).toBeInTheDocument();
+  });
+
+  it("el pie dice que cuenta lo movido en 48 h y cuántos más viejos quedaron fuera (sin borrarlos)", () => {
+    render(<DashboardView {...propsConDesglose()} />);
+    expect(seccion("Ventas activas").textContent).toMatch(
+      /Ahora mismo · movidos en las últimas 48 h · 6 más viejos fuera del conteo \(no se borraron\)/
+    );
+  });
+
+  it("sin nada fuera del conteo el pie no menciona más viejos", () => {
+    const base = activasConDesglose();
+    const dg = base.desglose!;
+    const sinFuera = { carritos: 0, presupuestos: 0, por_origen: { carrito_chat: 0, presupuesto_chat: 0, presupuesto_inventario: 0 } };
+    render(<DashboardView {...propsConDesglose({ ventasActivas: ok({ ...base, desglose: { ...dg, fuera_de_ventana: sinFuera } }) })} />);
+    const texto = seccion("Ventas activas").textContent ?? "";
+    expect(texto).toMatch(/Ahora mismo · movidos en las últimas 48 h/);
+    expect(texto).not.toMatch(/fuera del conteo/);
+  });
+
+  it("«por vencer» sale del tramo de 48 h de la base", () => {
+    render(<DashboardView {...propsConDesglose()} />);
+    expect(within(seccion("Ventas activas")).getByText("2 por vencer")).toBeInTheDocument();
+  });
+
+  it("en la vista Online no aparece el presupuesto de Inventario y «Quién lo armó» solo cuenta orígenes online", () => {
+    render(<DashboardView {...propsConDesglose({ vista: "online" })} />);
+    const sec = seccion("Ventas activas");
+    expect(within(sec).queryByText("Presupuestos de Inventario")).toBeNull();
+    expect(within(sec).getByText("5 sin enviar")).toBeInTheDocument();
+    // El presupuesto de Inventario armado por un asesor NO suma al equipo online de esta vista (4, no 5).
+    expect(within(fila(sec, "Asesores online")).getByText("4")).toBeInTheDocument();
+    expect(within(fila(sec, "Asesores online")).getByText("$400,00")).toBeInTheDocument();
+    expect(within(sec).getByRole("img", { name: "Reparto por origen: Carritos del chat (4), Presupuestos del chat (1)" })).toBeInTheDocument();
+  });
+
+  it("como está hoy en producción: todo son carritos del chat, sin fila de presupuestos del chat ni de sin dato", () => {
+    render(<DashboardView {...propsBase({ ahora: AHORA_ACTIVAS, ventasActivas: ok(activasComoHoy()) })} />);
+    const sec = seccion("Ventas activas");
+    expect(within(sec).getByText("4 sin enviar")).toBeInTheDocument();
+    expect(within(fila(sec, "Carritos del chat")).getByText("$260,00")).toBeInTheDocument();
+    expect(within(sec).queryByText("Presupuestos del chat")).toBeNull();
+    expect(within(sec).queryByText("Sin dato")).toBeNull();
+    // Inventario sí es origen del Resumen, aunque esté en 0.
+    expect(within(fila(sec, "Presupuestos de Inventario")).getByText("0")).toBeInTheDocument();
+    expect(within(sec).getByText("1 cierra en menos de 4 h")).toBeInTheDocument();
+  });
+
+  it("la hoja explica el conteo de 48 h", async () => {
+    const user = userEvent.setup({ delay: null, pointerEventsCheck: 0 });
+    render(<DashboardView {...propsConDesglose()} />);
+    const hoja = await abrirHojaDeActivas(user);
+    expect(hoja.textContent).toMatch(/movidos en las últimas 48 h/);
+    expect(hoja.textContent).toMatch(/sigue en el chat y en Inventario, pero no cuenta acá/);
+  });
+
+  it("la hoja trae la matriz «De dónde y quién lo armó» con celdas «N · $X»", async () => {
+    const user = userEvent.setup({ delay: null, pointerEventsCheck: 0 });
+    render(<DashboardView {...propsConDesglose()} />);
+    const hoja = await abrirHojaDeActivas(user);
+
+    const matriz = within(hoja).getByRole("table", { name: "De dónde y quién lo armó" });
+    expect(within(matriz).getAllByRole("columnheader").map((c) => c.textContent)).toEqual([
+      "Origen",
+      "Online",
+      "Tienda (caja)",
+      "Sin dato",
+      "Total",
+    ]);
+    const carritos = within(matriz).getByText("Carritos del chat").closest("tr")!;
+    expect(within(carritos).getAllByRole("cell").map((c) => c.textContent)).toEqual([
+      "3 · $200,00",
+      "0",
+      "1 · $60,00",
+      "4 · $260,00",
+    ]);
+    const inventario = within(matriz).getByText("Presupuestos de Inventario").closest("tr")!;
+    expect(within(inventario).getAllByRole("cell").map((c) => c.textContent)).toEqual([
+      "1 · $90,00",
+      "1 · $150,00",
+      "0",
+      "2 · $240,00",
+    ]);
+  });
+
+  it("la hoja trae la tabla «Ventana de WhatsApp» con cada estado", async () => {
+    const user = userEvent.setup({ delay: null, pointerEventsCheck: 0 });
+    render(<DashboardView {...propsConDesglose()} />);
+    const hoja = await abrirHojaDeActivas(user);
+
+    const tabla = within(hoja).getByRole("table", { name: "Ventana de WhatsApp" });
+    const celdas = (nombre: string) =>
+      within(within(tabla).getByRole("rowheader", { name: nombre }).closest("tr")!)
+        .getAllByRole("cell")
+        .map((c) => c.textContent);
+    expect(celdas("Abierta")).toEqual(["3", "$320,00"]);
+    expect(celdas("Por cerrar")).toEqual(["1", "$80,00"]);
+    expect(celdas("Cerrada")).toEqual(["1", "$60,00"]);
+    expect(celdas("Sin chat")).toEqual(["2", "$240,00"]);
+  });
+
+  it("la lista suma Equipo y Ventana («quedan N h») y «Abrir chat» solo en abierta y por cerrar", async () => {
+    const user = userEvent.setup({ delay: null, pointerEventsCheck: 0 });
+    render(<DashboardView {...propsConDesglose()} />);
+    const hoja = await abrirHojaDeActivas(user);
+
+    const lista = within(hoja).getByRole("table", { name: "Presupuestos y carritos sin enviar" });
+    expect(within(lista).getAllByRole("columnheader").map((c) => c.textContent)).toEqual([
+      "Tipo",
+      "Canal",
+      "Responsable",
+      "Equipo",
+      "Cliente",
+      "Monto",
+      "Antigüedad",
+      "Ventana",
+    ]);
+
+    const filaDe = (cliente: string) => within(lista).getByText(cliente).closest("tr")!;
+    // Abierta: dice cuánto le queda y enlaza al chat.
+    const abierta = filaDe("Marta Silva");
+    expect(abierta).toHaveTextContent("quedan 10 h");
+    expect(within(abierta).getByRole("link", { name: "Abrir chat" })).toHaveAttribute("href", "/inbox?conversation=conv-p-chat");
+    // Por cerrar: chip de alerta y enlace.
+    const porCerrar = filaDe("Ana Gómez");
+    expect(within(porCerrar).getByText("quedan 2 h").className).toMatch(/pn-chip--alerta/);
+    expect(within(porCerrar).getByRole("link", { name: "Abrir chat" })).toHaveAttribute(
+      "href",
+      "/inbox?conversation=conv-c-por-cerrar"
+    );
+    // Cerrada: se dice, pero ya no se le puede escribir: sin enlace.
+    const cerrada = filaDe("Rosa Díaz");
+    expect(cerrada).toHaveTextContent("Cerrada");
+    expect(within(cerrada).queryByRole("link", { name: "Abrir chat" })).toBeNull();
+    // Sin chat (presupuesto de Inventario): sin enlace y con su texto.
+    const sinChat = filaDe("Luis Rojas");
+    expect(sinChat).toHaveTextContent("Sin chat");
+    expect(within(sinChat).queryByRole("link", { name: "Abrir chat" })).toBeNull();
+    // El equipo se dice con palabras de negocio.
+    expect(filaDe("Pedro Pérez")).toHaveTextContent("Tienda (caja)");
+    expect(abierta).toHaveTextContent("Online");
+    expect(cerrada).toHaveTextContent("Sin dato");
+  });
+
+  it("el filtro de ventana de la hoja deja solo el estado elegido", async () => {
+    const user = userEvent.setup({ delay: null, pointerEventsCheck: 0 });
+    render(<DashboardView {...propsConDesglose()} />);
+    const hoja = await abrirHojaDeActivas(user);
+    const lista = () => within(hoja).getByRole("table", { name: "Presupuestos y carritos sin enviar" });
+
+    expect(within(lista()).getAllByRole("row")).toHaveLength(1 + 7);
+    await user.click(within(hoja).getByRole("button", { name: "Por cerrar" }));
+    expect(within(lista()).getAllByRole("row")).toHaveLength(1 + 1);
+    expect(within(lista()).getByText("Ana Gómez")).toBeInTheDocument();
+    await user.click(within(hoja).getByRole("button", { name: "Abierta" }));
+    expect(within(lista()).getAllByRole("row")).toHaveLength(1 + 3);
+    await user.click(within(hoja).getByRole("button", { name: "Cerrada" }));
+    expect(within(lista()).getByText("Rosa Díaz")).toBeInTheDocument();
+    expect(within(lista()).getAllByRole("row")).toHaveLength(1 + 1);
+  });
+
+  it("la hoja muestra 8 filas y «Ver todas (N)» abre el resto; con 300 avisa que son los más viejos", async () => {
+    const user = userEvent.setup({ delay: null, pointerEventsCheck: 0 });
+    const base = activasConDesglose();
+    const muchos = Array.from({ length: 300 }, (_, i) => ({ ...base.items[5], id: `extra-${i}`, cliente: `Cliente ${i}` }));
+    render(<DashboardView {...propsConDesglose({ ventasActivas: ok({ ...base, items: muchos }) })} />);
+    const hoja = await abrirHojaDeActivas(user);
+    const lista = () => within(hoja).getByRole("table", { name: "Presupuestos y carritos sin enviar" });
+
+    expect(within(lista()).getAllByRole("row")).toHaveLength(1 + 8);
+    expect(hoja.textContent).toMatch(/Se muestran los 300 más viejos\./);
+    await user.click(within(hoja).getByRole("button", { name: "Ver todas (300)" }));
+    expect(within(lista()).getAllByRole("row")).toHaveLength(1 + 300);
+    await user.click(within(hoja).getByRole("button", { name: "Ver menos" }));
+    expect(within(lista()).getAllByRole("row")).toHaveLength(1 + 8);
+  });
+
+  it("la hoja de una base vieja no pinta matriz, ni columnas de equipo y ventana, ni filtro", async () => {
+    const user = userEvent.setup({ delay: null, pointerEventsCheck: 0 });
+    render(<DashboardView {...propsBase()} />);
+    const hoja = await abrirHojaDeActivas(user);
+    expect(within(hoja).queryByRole("table", { name: "De dónde y quién lo armó" })).toBeNull();
+    expect(within(hoja).queryByRole("table", { name: "Ventana de WhatsApp" })).toBeNull();
+    expect(within(hoja).queryByRole("columnheader", { name: "Equipo" })).toBeNull();
+    expect(within(hoja).queryByRole("columnheader", { name: "Ventana" })).toBeNull();
+    expect(within(hoja).queryByRole("button", { name: "Por cerrar" })).toBeNull();
+  });
+});
+
+describe("DashboardView: «Tienda (caja)» con el canal visible", () => {
+  it("la fila aparece aunque la caja no haya armado nada: un 0 es información", () => {
+    render(<DashboardView {...propsBase({ ahora: AHORA_ACTIVAS, ventasActivas: ok(activasComoHoy()) })} />);
+    const sec = seccion("Ventas activas");
+    const filaCaja = within(sec).getByText("Tienda (caja)").closest("li")!;
+    expect(within(filaCaja).getByText("0")).toBeInTheDocument();
+    // Con la tienda visible no hace falta ningún aviso de «tienda oculta».
+    expect(sec.textContent).not.toMatch(/la tienda está oculta/);
   });
 });

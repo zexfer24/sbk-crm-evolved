@@ -366,6 +366,144 @@ describe("parsePanelVentasActivas", () => {
   });
 });
 
+const celda = (monto: number | null, cantidad: number) => ({ monto, cantidad });
+const porEquipo = () => ({ online: celda(100, 1), tienda: celda(null, 0), sin_dato: celda(null, 0) });
+const porVentana = () => ({
+  abierta: celda(100, 1),
+  por_cerrar: celda(null, 0),
+  cerrada: celda(null, 0),
+  no_aplica: celda(null, 0),
+});
+
+/** La forma de la RPC con las claves nuevas del desglose (22/11/2026). */
+const activasConDesgloseJson = () => ({
+  ...activasValidas(),
+  tramos_48h: [
+    { tramo: "12h", monto: 100, cantidad: 1 },
+    { tramo: "24h", monto: null, cantidad: 0 },
+    { tramo: "48h", monto: null, cantidad: 0 },
+  ],
+  fuera_de_ventana: {
+    carritos: 1,
+    presupuestos: 2,
+    por_origen: { carrito_chat: 1, presupuesto_chat: 1, presupuesto_inventario: 1 },
+  },
+  por_origen: {
+    carrito_chat: { monto: 100, cantidad: 1, sin_precio: 0 },
+    presupuesto_chat: { monto: null, cantidad: 0, sin_precio: 0 },
+    presupuesto_inventario: { monto: null, cantidad: 0, sin_precio: 0 },
+  },
+  por_equipo: porEquipo(),
+  por_origen_equipo: {
+    carrito_chat: porEquipo(),
+    presupuesto_chat: { online: celda(null, 0), tienda: celda(null, 0), sin_dato: celda(null, 0) },
+    presupuesto_inventario: { online: celda(null, 0), tienda: celda(null, 0), sin_dato: celda(null, 0) },
+  },
+  por_ventana: porVentana(),
+  por_canal_ventana: { online: porVentana(), tienda: { abierta: celda(null, 0), por_cerrar: celda(null, 0), cerrada: celda(null, 0), no_aplica: celda(null, 0) } },
+  items: [
+    {
+      tipo: "carrito",
+      id: "c1",
+      canal: "online",
+      responsable: "Asesor 1",
+      cliente: "Ana",
+      monto: 100,
+      unidades: 1,
+      desde: "2026-11-13T08:00:00-04:00",
+      origen: "carrito_chat",
+      equipo: "online",
+      ventana: "abierta",
+      ventana_hasta: "2026-11-14T08:00:00-04:00",
+      conversation_id: "11111111-1111-1111-1111-111111111111",
+    },
+  ],
+});
+
+describe("parsePanelVentasActivas: desglose de la ventana de 48 h (22/11/2026)", () => {
+  it("lee la forma completa nueva: desglose e ítems con origen, equipo y ventana", () => {
+    const a = parsePanelVentasActivas(activasConDesgloseJson());
+    expect(a.desglose).not.toBeNull();
+    expect(a.desglose!.tramos_48h.map((t) => t.tramo)).toEqual(["12h", "24h", "48h"]);
+    expect(a.desglose!.fuera_de_ventana).toEqual({
+      carritos: 1,
+      presupuestos: 2,
+      por_origen: { carrito_chat: 1, presupuesto_chat: 1, presupuesto_inventario: 1 },
+    });
+    expect(a.desglose!.por_origen.carrito_chat).toEqual({ monto: 100, cantidad: 1, sin_precio: 0 });
+    expect(a.desglose!.por_equipo.tienda.monto).toBeNull();
+    expect(a.desglose!.por_origen_equipo.carrito_chat.online).toEqual({ monto: 100, cantidad: 1 });
+    expect(a.desglose!.por_ventana.abierta.cantidad).toBe(1);
+    expect(a.desglose!.por_canal_ventana.online.abierta.monto).toBe(100);
+    expect(a.items[0]).toMatchObject({
+      origen: "carrito_chat",
+      equipo: "online",
+      ventana: "abierta",
+      ventana_hasta: "2026-11-14T08:00:00-04:00",
+      conversation_id: "11111111-1111-1111-1111-111111111111",
+    });
+  });
+
+  it("base vieja (sin claves nuevas): desglose null e ítems con los campos nuevos en null", () => {
+    const a = parsePanelVentasActivas(activasValidas());
+    expect(a.desglose).toBeNull();
+    expect(a.items[0]).toMatchObject({ origen: null, equipo: null, ventana: null, ventana_hasta: null, conversation_id: null });
+  });
+
+  it("base vieja: no mira ninguna otra clave nueva si por_origen no viene", () => {
+    const j = { ...activasValidas(), por_equipo: "basura", tramos_48h: 7 };
+    expect(parsePanelVentasActivas(j).desglose).toBeNull();
+  });
+
+  it("desglose a medias (por_origen sí, falta otra clave): lanza nombrando la ruta", () => {
+    for (const clave of ["tramos_48h", "fuera_de_ventana", "por_equipo", "por_origen_equipo", "por_ventana", "por_canal_ventana"]) {
+      const j = activasConDesgloseJson() as Record<string, any>;
+      delete j[clave];
+      expect(() => parsePanelVentasActivas(j), clave).toThrow(new RegExp(clave));
+    }
+  });
+
+  it("lanza con una celda rota dentro del desglose, con la ruta completa", () => {
+    const j = activasConDesgloseJson() as Record<string, any>;
+    delete j.por_origen_equipo.presupuesto_chat.tienda;
+    expect(() => parsePanelVentasActivas(j)).toThrow(/por_origen_equipo\.presupuesto_chat\.tienda/);
+  });
+
+  it("lanza con un origen o una ventana inválidos en un ítem", () => {
+    const a = activasConDesgloseJson() as Record<string, any>;
+    a.items[0].origen = "otro";
+    expect(() => parsePanelVentasActivas(a)).toThrow(/origen/);
+    const b = activasConDesgloseJson() as Record<string, any>;
+    b.items[0].ventana = "medio-abierta";
+    expect(() => parsePanelVentasActivas(b)).toThrow(/ventana/);
+    const c = activasConDesgloseJson() as Record<string, any>;
+    c.items[0].equipo = "cajero";
+    expect(() => parsePanelVentasActivas(c)).toThrow(/equipo/);
+  });
+
+  it("un campo nuevo de ítem en null queda null (no se confunde con inválido)", () => {
+    const j = activasConDesgloseJson() as Record<string, any>;
+    j.items[0].ventana = null;
+    j.items[0].ventana_hasta = null;
+    j.items[0].conversation_id = null;
+    const a = parsePanelVentasActivas(j);
+    expect(a.items[0]).toMatchObject({ ventana: null, ventana_hasta: null, conversation_id: null });
+  });
+
+  it("acepta montos como string numérico en el desglose", () => {
+    const j = activasConDesgloseJson() as Record<string, any>;
+    j.por_origen.carrito_chat.monto = "100.50";
+    j.por_equipo.online.monto = "100.50";
+    j.tramos_48h[0].monto = "100.50";
+    j.por_canal_ventana.online.abierta.monto = "100.50";
+    const a = parsePanelVentasActivas(j);
+    expect(a.desglose!.por_origen.carrito_chat.monto).toBe(100.5);
+    expect(a.desglose!.por_equipo.online.monto).toBe(100.5);
+    expect(a.desglose!.tramos_48h[0].monto).toBe(100.5);
+    expect(a.desglose!.por_canal_ventana.online.abierta.monto).toBe(100.5);
+  });
+});
+
 describe("parseMetasVenta", () => {
   it("lee las filas de metas y convierte el monto que llegue como string", () => {
     const metas = parseMetasVenta([

@@ -3,24 +3,45 @@
 import type { ReactNode } from "react";
 import { AlertTriangle, Banknote, Clock, Minus, Package, ShoppingCart, Users } from "lucide-react";
 import { formatBs } from "@/lib/cashea";
-import { enviosDeTiendaOcultos, textoTiendaOculta, type Vista } from "@/lib/paneles/canal";
+import {
+  enviosDeTiendaOcultos,
+  mostrarEquipoTienda,
+  textoEquipoTiendaOculto,
+  textoTiendaOculta,
+  tiendaVisible,
+  type Vista,
+} from "@/lib/paneles/canal";
 import { TEXTO_INICIO_PANELES, TEXTO_SIN_PREVIO } from "@/lib/paneles/periodos";
-import type { PanelConversaciones, PanelVentas, PanelVentasActivas } from "@/lib/paneles/parse";
+import type {
+  EquipoActiva,
+  MontoCantidad,
+  OrigenActiva,
+  PanelConversaciones,
+  PanelVentas,
+  PanelVentasActivas,
+  VentanaActiva,
+} from "@/lib/paneles/parse";
 import { Anillo, Sparkline } from "@/components/paneles/panel-graficos";
 import { formatoUsd } from "@/components/paneles/panel-marco";
 import {
   canalDeVista,
-  cantidadItemsViejos,
+  cantidadPorVencer,
   desgloseActivas,
+  ETIQUETA_EQUIPO,
+  ETIQUETA_ORIGEN,
+  ETIQUETA_VENTANA,
+  origenesConFila,
+  origenesDeVista,
   serieDeVista,
   variacion,
+  ventanaEscribible,
+  type DesgloseActivas,
 } from "@/components/paneles/dashboard/calculos";
 import {
   ChipVariacion,
   Cifra,
   formatoEntero,
   formatoPorcentaje,
-  plural,
 } from "@/components/paneles/dashboard/cifra";
 
 /**
@@ -73,6 +94,114 @@ function TarjetaKpi({
 // Ventas activas
 // ---------------------------------------------------------------------------
 
+const TEXTO_POR_VENCER = "Llevan más de 24 h sin moverse: a las 48 h salen del conteo (no se borran).";
+
+/** La clase de cada origen en la barra apilada y en su muestra de color. */
+const CLASES_ORIGEN: Record<OrigenActiva, { barra: string; muestra: string }> = {
+  presupuesto_inventario: { barra: "pd-apilada__a", muestra: "pd-sw-presupuesto" },
+  carrito_chat: { barra: "pd-apilada__b", muestra: "pd-sw-carrito" },
+  presupuesto_chat: { barra: "pd-apilada__c", muestra: "pd-sw-presupuesto-chat" },
+};
+
+/** Una fila de los bloques del desglose: etiqueta, cantidad y monto («—» si no se pudo calcular). */
+function FilaDesglose({ etiqueta, celda, muestra }: { etiqueta: string; celda: MontoCantidad; muestra?: string }) {
+  return (
+    <li className="pd-desglose__fila">
+      <span className="pd-desglose__etiqueta">
+        {muestra && <i className={`pn-leyenda__sw ${muestra}`} aria-hidden="true" />}
+        {etiqueta}
+      </span>
+      <b className="lm-num">{celda.cantidad}</b>
+      <span className="lm-num pd-desglose__monto">{formatoUsd(celda.monto)}</span>
+    </li>
+  );
+}
+
+/**
+ * Cuánto pesa cada origen en la barra: por monto si todos los que tienen algo
+ * traen monto (y suman más que cero), si no por cantidad, como antes. Solo los
+ * orígenes con peso > 0 pintan un tramo.
+ */
+function pesosDeOrigenes(porOrigen: Record<OrigenActiva, MontoCantidad>, orden: readonly OrigenActiva[]) {
+  const conAlgo = orden.filter((o) => porOrigen[o].cantidad > 0);
+  const montos = conAlgo.map((o) => porOrigen[o].monto);
+  const porMonto = montos.every((m) => m !== null) && montos.reduce<number>((t, m) => t + (m ?? 0), 0) > 0;
+  return orden
+    .map((o) => ({ origen: o, cantidad: porOrigen[o].cantidad, peso: porMonto ? (porOrigen[o].monto ?? 0) : porOrigen[o].cantidad }))
+    .filter((p) => p.peso > 0);
+}
+
+/** Las tres preguntas de la tarjeta con el desglose de la base: de dónde sale, quién lo armó y si se le puede escribir. */
+function DesgloseDeActivas({
+  d,
+  porOrigen,
+  porEquipo,
+  porVentana,
+  vista,
+}: {
+  d: DesgloseActivas;
+  porOrigen: Record<OrigenActiva, MontoCantidad>;
+  porEquipo: Record<EquipoActiva, MontoCantidad>;
+  porVentana: Record<VentanaActiva, MontoCantidad>;
+  vista: Vista;
+}) {
+  const tramos = pesosDeOrigenes(porOrigen, origenesDeVista(vista));
+  const totalPeso = tramos.reduce((t, p) => t + p.peso, 0);
+  const filas = origenesConFila(d, vista);
+  const { tienda, sin_dato: sinDato } = porEquipo;
+  const escribible = ventanaEscribible(porVentana);
+  const porCerrar = porVentana.por_cerrar.cantidad;
+  // D1: con la tienda oculta una caja que armó presupuestos no desaparece del desglose; un chip recuerda por qué.
+  const cajaConTiendaOculta = !tiendaVisible() && tienda.cantidad > 0;
+
+  return (
+    <>
+      <div
+        className="pd-apilada"
+        role="img"
+        aria-label={`Reparto por origen: ${tramos.map((t) => `${ETIQUETA_ORIGEN[t.origen]} (${t.cantidad})`).join(", ")}`}
+      >
+        {tramos.map((t) => (
+          <i key={t.origen} className={CLASES_ORIGEN[t.origen].barra} style={{ width: `${(t.peso * 100) / totalPeso}%` }} />
+        ))}
+      </div>
+
+      <h3 className="pd-bloque__titulo">De dónde</h3>
+      <ul className="pd-desglose">
+        {filas.map((o) => (
+          <FilaDesglose key={o} etiqueta={ETIQUETA_ORIGEN[o]} celda={porOrigen[o]} muestra={CLASES_ORIGEN[o].muestra} />
+        ))}
+      </ul>
+
+      <h3 className="pd-bloque__titulo">Quién lo armó</h3>
+      <ul className="pd-desglose">
+        <FilaDesglose etiqueta={ETIQUETA_EQUIPO.online} celda={porEquipo.online} />
+        {mostrarEquipoTienda(tienda.cantidad) && <FilaDesglose etiqueta={ETIQUETA_EQUIPO.tienda} celda={tienda} />}
+        {sinDato.cantidad > 0 && <FilaDesglose etiqueta={ETIQUETA_EQUIPO.sin_dato} celda={sinDato} />}
+      </ul>
+      {cajaConTiendaOculta && (
+        <div>
+          <span className="pn-chip pn-chip--alerta">{textoEquipoTiendaOculto(tienda.cantidad)}</span>
+        </div>
+      )}
+
+      <h3 className="pd-bloque__titulo">Se puede escribir</h3>
+      <ul className="pd-desglose">
+        <FilaDesglose etiqueta="Ventana abierta" celda={escribible} />
+        <FilaDesglose etiqueta="Ventana cerrada (solo plantilla)" celda={porVentana.cerrada} />
+        {porVentana.no_aplica.cantidad > 0 && <FilaDesglose etiqueta={ETIQUETA_VENTANA.no_aplica} celda={porVentana.no_aplica} />}
+      </ul>
+      {porCerrar > 0 && (
+        <div>
+          <span className="pn-chip pn-chip--alerta">
+            {porCerrar === 1 ? "1 cierra en menos de 4 h" : `${porCerrar} cierran en menos de 4 h`}
+          </span>
+        </div>
+      )}
+    </>
+  );
+}
+
 export function KpiVentasActivas({
   datos,
   vista,
@@ -85,9 +214,9 @@ export function KpiVentasActivas({
   onAbrir: () => void;
 }) {
   const d = desgloseActivas(datos, vista);
-  const viejos = cantidadItemsViejos(datos, vista, ahora);
+  const porVencer = cantidadPorVencer(datos, vista, ahora);
 
-  // La barra reparte por monto; si algún monto no se puede calcular, por cantidad.
+  // Sin desglose (base vieja) la barra reparte presupuestos contra carritos, por monto o, si no se puede, por cantidad.
   const porMonto = d.presupuestos.monto !== null && d.carritos.monto !== null && d.presupuestos.monto + d.carritos.monto > 0;
   const pesoPresupuestos = porMonto ? (d.presupuestos.monto ?? 0) : d.presupuestos.cantidad;
   const pesoCarritos = porMonto ? (d.carritos.monto ?? 0) : d.carritos.cantidad;
@@ -96,44 +225,59 @@ export function KpiVentasActivas({
   return (
     <TarjetaKpi nombre="Ventas activas" eyebrow="Ventas activas" icono={<ShoppingCart size={16} />} onAbrir={onAbrir}>
       <Cifra valor={d.monto} formato={formatoUsd} className="pn-kpi__cifra" />
-      <p className="pn-kpi__sub">
-        {d.cantidad} {plural(d.cantidad, "presupuesto o carrito sin enviar", "presupuestos y carritos sin enviar")}
-      </p>
+      <p className="pn-kpi__sub">{d.cantidad} sin enviar</p>
       <div className="pn-kpi__viz">
-        <div
-          className="pd-apilada"
-          role="img"
-          aria-label={`Reparto entre presupuestos (${d.presupuestos.cantidad}) y carritos (${d.carritos.cantidad})`}
-        >
-          {totalPeso > 0 && (
-            <>
-              <i className="pd-apilada__a" style={{ width: `${(pesoPresupuestos * 100) / totalPeso}%` }} />
-              <i className="pd-apilada__b" style={{ width: `${(pesoCarritos * 100) / totalPeso}%` }} />
-            </>
-          )}
-        </div>
-        <ul className="pn-leyenda pd-leyenda">
-          <li className="pn-leyenda__item">
-            <span className="pn-leyenda__sw pd-sw-presupuesto" aria-hidden="true" />
-            <span>Presupuestos</span>
-            <b className="lm-num">{d.presupuestos.cantidad}</b>
-          </li>
-          <li className="pn-leyenda__item">
-            <span className="pn-leyenda__sw pd-sw-carrito" aria-hidden="true" />
-            <span>Carritos</span>
-            <b className="lm-num">{d.carritos.cantidad}</b>
-          </li>
-        </ul>
+        {d.porOrigen && d.porEquipo && d.porVentana ? (
+          <DesgloseDeActivas d={d} porOrigen={d.porOrigen} porEquipo={d.porEquipo} porVentana={d.porVentana} vista={vista} />
+        ) : (
+          <>
+            <div
+              className="pd-apilada"
+              role="img"
+              aria-label={`Reparto entre presupuestos (${d.presupuestos.cantidad}) y carritos (${d.carritos.cantidad})`}
+            >
+              {totalPeso > 0 && (
+                <>
+                  <i className="pd-apilada__a" style={{ width: `${(pesoPresupuestos * 100) / totalPeso}%` }} />
+                  <i className="pd-apilada__b" style={{ width: `${(pesoCarritos * 100) / totalPeso}%` }} />
+                </>
+              )}
+            </div>
+            <ul className="pn-leyenda pd-leyenda">
+              <li className="pn-leyenda__item">
+                <span className="pn-leyenda__sw pd-sw-presupuesto" aria-hidden="true" />
+                <span>Presupuestos</span>
+                <b className="lm-num">{d.presupuestos.cantidad}</b>
+              </li>
+              <li className="pn-leyenda__item">
+                <span className="pn-leyenda__sw pd-sw-carrito" aria-hidden="true" />
+                <span>Carritos</span>
+                <b className="lm-num">{d.carritos.cantidad}</b>
+              </li>
+            </ul>
+          </>
+        )}
       </div>
-      {viejos > 0 && (
+      {porVencer > 0 && (
         <div>
-          <span className="pn-chip pn-chip--alerta">
+          <span className="pn-chip pn-chip--alerta" title={TEXTO_POR_VENCER} aria-describedby="pd-por-vencer">
             <Clock size={13} aria-hidden="true" />
-            Hay {viejos} de más de 7 días
+            {porVencer} por vencer
+          </span>
+          <span id="pd-por-vencer" className="pn-sr">
+            {TEXTO_POR_VENCER}
           </span>
         </div>
       )}
-      <p className="pn-kpi__pie">Ahora mismo · no depende del período</p>
+      <p className="pn-kpi__pie">
+        {d.fuera === null
+          ? "Ahora mismo · no depende del período"
+          : `Ahora mismo · movidos en las últimas 48 h${
+              d.fuera > 0
+                ? ` · ${d.fuera} ${d.fuera === 1 ? "más viejo" : "más viejos"} fuera del conteo (no se borraron)`
+                : ""
+            }`}
+      </p>
     </TarjetaKpi>
   );
 }
