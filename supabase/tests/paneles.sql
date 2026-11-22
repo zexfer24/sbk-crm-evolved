@@ -22,10 +22,13 @@
 --   5. panel_cola: una espera de 3 días cuenta; una de 20 días va a
 --      `abandonadas`; el reloj corre desde el primer mensaje del cliente
 --      posterior a la última respuesta; un chat cerrado no cuenta.
---   6. panel_ventas_activas: presupuesto sin enviar cuenta; uno con `creado` o
---      en tránsito no; carrito cambiado hace 4 días cuenta, hace 10 no; carrito
---      sin cambios desde su envío no; presupuesto `chat` + carrito de la misma
---      conversación cuentan 1; un renglón sin precio nunca deja un parcial.
+--   6. panel_ventas_activas (ventana de 48 h desde 20261122010000): presupuesto
+--      sin enviar cuenta; uno con `creado` o en tránsito no; carrito cambiado
+--      hace 40 h cuenta, hace 10 días no; carrito sin cambios desde su envío no;
+--      presupuesto `chat` + carrito de la misma conversación cuentan 1; un
+--      renglón sin precio nunca deja un parcial. La fecha de un presupuesto es
+--      `updated_at`. El desglose por origen, equipo y ventana de WhatsApp tiene
+--      su propio test: `paneles_ventas_activas.sql`.
 --   7. Permisos: un asesor y una cuenta caja reciben 42501; anon no tiene
 --      EXECUTE; un rango de más de 92 días en las dos que leen `messages`
 --      y un rango invertido dan 22023.
@@ -176,11 +179,13 @@ begin
 end $$;
 
 -- Un presupuesto con ítems: p_items = [{"p":"a","q":1,"k":"promocion"}, ...]
+-- La fecha que cuenta para las activas es `updated_at` (`guardar_presupuesto` la
+-- pone en now() al reemplazar los renglones): se fija igual que `created_at`.
 create or replace function pg_temp.pres(n int, p_origen text, p_conv uuid, p_creado timestamptz, p_items jsonb) returns uuid
 language plpgsql as $$
 begin
-  insert into public.presupuestos (id, cliente_nombre, cliente_apellido, conversation_id, origen, created_by, created_at)
-  values (pg_temp.prid(n), 'Cli', 'Paneles ' || n, p_conv, p_origen, 'd0a4e100-0000-0000-0000-0000000000a1', p_creado);
+  insert into public.presupuestos (id, cliente_nombre, cliente_apellido, conversation_id, origen, created_by, created_at, updated_at)
+  values (pg_temp.prid(n), 'Cli', 'Paneles ' || n, p_conv, p_origen, 'd0a4e100-0000-0000-0000-0000000000a1', p_creado, p_creado);
   insert into public.presupuesto_items (presupuesto_id, product_id, quantity, price_kind)
   select pg_temp.prid(n), pg_temp.pid(i ->> 'p'), (i ->> 'q')::int, coalesce(i ->> 'k', 'promocion')
     from jsonb_array_elements(p_items) i;
@@ -260,28 +265,28 @@ select pg_temp.conv(112);
 select pg_temp.conv(113);
 select pg_temp.conv(114);
 select pg_temp.conv(115);
--- PR1 inventario hace 2 días: A + D = 29,00 + 5,80 = 34,80 (tienda, tramo 3d).
-select pg_temp.pres(1, 'inventario', null, now() - interval '2 days', '[{"p":"a","q":1},{"p":"d","q":1}]');
+-- PR1 inventario hace 30 h: A + D = 29,00 + 5,80 = 34,80 (tienda, tramo 3d).
+select pg_temp.pres(1, 'inventario', null, now() - interval '30 hours', '[{"p":"a","q":1},{"p":"d","q":1}]');
 -- PR2 con un borrador `creado`: ya se vendió, no cuenta.
 select pg_temp.pres(2, 'inventario', null, now() - interval '1 day', '[{"p":"d","q":1}]');
 -- PR3 del chat (conv 111) hace 10 h: D x2 = 11,60 (online, 24h). El carrito de
 -- la conv 111 NO suma: cuenta solo el presupuesto.
 select pg_temp.pres(3, 'chat', pg_temp.cid(111), now() - interval '10 hours', '[{"p":"d","q":2}]');
--- PR4 hace 40 días: fuera de los 30 días.
+-- PR4 hace 40 días: fuera de la ventana de 48 h.
 select pg_temp.pres(4, 'inventario', null, now() - interval '40 days', '[{"p":"d","q":1}]');
 -- PR5 con un renglón sin precio (PN-X): suma a sin_precio y su monto queda null.
-select pg_temp.pres(5, 'inventario', null, now() - interval '5 days', '[{"p":"f","q":1}]');
+select pg_temp.pres(5, 'inventario', null, now() - interval '36 hours', '[{"p":"f","q":1}]');
 -- PR6 con un borrador en tránsito: no cuenta.
 select pg_temp.pres(6, 'inventario', null, now() - interval '1 day', '[{"p":"d","q":1}]');
 select pg_temp.carrito(111, now() - interval '1 day', '[{"p":"a","q":1}]');
--- G2: carrito cambiado hace 2 días: A + B = 32,00 (online, 3d).
-select pg_temp.carrito(112, now() - interval '2 days', '[{"p":"a","q":1},{"p":"b","q":1}]');
--- G3: carrito cambiado hace 10 días: fuera de los 7 días.
+-- G2: carrito cambiado hace 40 h: A + B = 32,00 (online, 3d).
+select pg_temp.carrito(112, now() - interval '40 hours', '[{"p":"a","q":1},{"p":"b","q":1}]');
+-- G3: carrito cambiado hace 10 días: fuera de la ventana de 48 h.
 select pg_temp.carrito(113, now() - interval '10 days', '[{"p":"d","q":1}]');
--- G4: cambiado hace 4 días y enviado (creado) hace 1 día, DESPUÉS del cambio: no cuenta.
-select pg_temp.carrito(114, now() - interval '4 days', '[{"p":"d","q":1}]');
--- G5: cambiado hace 4 días; su envío fue hace 5 días, ANTES del cambio: cuenta (5,80, 7d).
-select pg_temp.carrito(115, now() - interval '4 days', '[{"p":"d","q":1}]');
+-- G4: cambiado hace 40 h y enviado (creado) hace 1 día, DESPUÉS del cambio: no cuenta.
+select pg_temp.carrito(114, now() - interval '40 hours', '[{"p":"d","q":1}]');
+-- G5: cambiado hace 36 h; su envío fue hace 5 días, ANTES del cambio: cuenta (5,80, 3d).
+select pg_temp.carrito(115, now() - interval '36 hours', '[{"p":"d","q":1}]');
 
 select pg_temp.borrador('presupuesto', pg_temp.prid(2), 'd0a4e100-0000-0000-0000-0000000000a1', '1', 'creado', now() - interval '12 hours', 'X1', true, '[{"codprod":"PN-D","cantidad":1}]');
 select pg_temp.borrador('presupuesto', pg_temp.prid(6), 'd0a4e100-0000-0000-0000-0000000000a1', '1', 'pendiente', now() - interval '1 hour', null, null, '[{"codprod":"PN-D","cantidad":1}]');
@@ -337,10 +342,10 @@ select pg_temp.delta('Activas: tienda monto (PR5 sin precio no suma)', 'act_base
 select pg_temp.delta('Activas: tienda cantidad', 'act_base', 'act_post', '{por_canal,tienda,cantidad}', 2);
 select pg_temp.delta('Activas: tramo 24h cantidad', 'act_base', 'act_post', '{antiguedad,0,cantidad}', 1);
 select pg_temp.delta('Activas: tramo 24h monto', 'act_base', 'act_post', '{antiguedad,0,monto}', 11.60);
-select pg_temp.delta('Activas: tramo 3d cantidad', 'act_base', 'act_post', '{antiguedad,1,cantidad}', 2);
-select pg_temp.delta('Activas: tramo 3d monto', 'act_base', 'act_post', '{antiguedad,1,monto}', 66.80);
-select pg_temp.delta('Activas: tramo 7d cantidad', 'act_base', 'act_post', '{antiguedad,2,cantidad}', 2);
-select pg_temp.delta('Activas: tramo 7d monto', 'act_base', 'act_post', '{antiguedad,2,monto}', 5.80);
+select pg_temp.delta('Activas: tramo 3d cantidad (PR1, PR5, G2, G5)', 'act_base', 'act_post', '{antiguedad,1,cantidad}', 4);
+select pg_temp.delta('Activas: tramo 3d monto', 'act_base', 'act_post', '{antiguedad,1,monto}', 72.60);
+select pg_temp.delta('Activas: tramo 7d cantidad (con 48 h ya no se llena)', 'act_base', 'act_post', '{antiguedad,2,cantidad}', 0);
+select pg_temp.delta('Activas: tramo 7d monto', 'act_base', 'act_post', '{antiguedad,2,monto}', 0);
 select pg_temp.delta('Activas: tramo 30d cantidad', 'act_base', 'act_post', '{antiguedad,3,cantidad}', 0);
 do $$
 declare
@@ -358,12 +363,18 @@ begin
     if jsonb_array_length(v_post -> 'items') <> 5 then
       insert into _errores(msg) values (format('Activas: items debía traer 5 y trae %s.', jsonb_array_length(v_post -> 'items')));
     end if;
-    -- El más viejo primero: PR5 (5 días), sin monto por el renglón sin precio.
-    if v_post #>> '{items,0,id}' is distinct from pg_temp.prid(5)::text
-       or v_post #> '{items,0,monto}' is distinct from 'null'::jsonb
-       or v_post #>> '{items,0,tipo}' is distinct from 'presupuesto' then
-      insert into _errores(msg) values (format('Activas: el primer ítem debía ser el PR5 sin monto y salió %s.', v_post #> '{items,0}'));
+    -- El más viejo primero: G2 (40 h, carrito de la conversación 112).
+    if v_post #>> '{items,0,id}' is distinct from pg_temp.cid(112)::text
+       or v_post #>> '{items,0,tipo}' is distinct from 'carrito' then
+      insert into _errores(msg) values (format('Activas: el primer ítem debía ser el carrito G2 y salió %s.', v_post #> '{items,0}'));
     end if;
+  end if;
+  -- PR5 trae un renglón sin precio: su ítem queda sin monto (nunca un parcial).
+  if not exists (
+       select 1 from jsonb_array_elements(v_post -> 'items') e
+        where e ->> 'id' = pg_temp.prid(5)::text
+          and e -> 'monto' = 'null'::jsonb and e ->> 'tipo' = 'presupuesto') then
+    insert into _errores(msg) values ('Activas: el ítem de PR5 debía estar y quedar sin monto.');
   end if;
 end $$;
 

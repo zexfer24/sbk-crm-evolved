@@ -136,23 +136,82 @@ Solo chat (online). Base: conversaciones con al menos un mensaje del cliente (`s
 - `mas_viejo` es null si no hay pendientes. `lista`: las 20 más viejas.
 
 ## `panel_ventas_activas() → jsonb`
+Desde 20261122010000 (22/11/2026) cuenta solo lo movido en las últimas 48 h. Ninguna clave anterior cambió de
+nombre ni de forma; las claves nuevas se AGREGAN (`tramos_48h` … `por_canal_ventana`, y seis campos por ítem).
 ```json
 {
   "total": null,
   "presupuestos": { "monto": null, "cantidad": 0, "sin_precio": 0 },
   "carritos": { "monto": null, "cantidad": 0, "sin_precio": 0 },
   "por_canal": { "online": { "monto": null, "cantidad": 0 }, "tienda": { "monto": null, "cantidad": 0 } },
-  "antiguedad": [ { "tramo": "24h", "monto": null, "cantidad": 0 } ],
-  "items": [ { "tipo": "presupuesto", "id": "uuid", "canal": "tienda", "responsable": "…", "cliente": "…", "monto": null, "unidades": 0, "desde": "iso" } ]
+  "antiguedad": [ { "tramo": "24h", "monto": null, "cantidad": 0 }, { "tramo": "3d", "monto": null, "cantidad": 0 },
+                  { "tramo": "7d", "monto": null, "cantidad": 0 }, { "tramo": "30d", "monto": null, "cantidad": 0 } ],
+  "tramos_48h": [ { "tramo": "12h", "monto": null, "cantidad": 0 }, { "tramo": "24h", "monto": null, "cantidad": 0 },
+                  { "tramo": "48h", "monto": null, "cantidad": 0 } ],
+  "fuera_de_ventana": { "carritos": 0, "presupuestos": 0,
+                        "por_origen": { "carrito_chat": 0, "presupuesto_chat": 0, "presupuesto_inventario": 0 } },
+  "por_origen": {
+    "carrito_chat": { "monto": null, "cantidad": 0, "sin_precio": 0 },
+    "presupuesto_chat": { "monto": null, "cantidad": 0, "sin_precio": 0 },
+    "presupuesto_inventario": { "monto": null, "cantidad": 0, "sin_precio": 0 }
+  },
+  "por_equipo": {
+    "online": { "monto": null, "cantidad": 0 }, "tienda": { "monto": null, "cantidad": 0 },
+    "sin_dato": { "monto": null, "cantidad": 0 }
+  },
+  "por_origen_equipo": {
+    "carrito_chat": { "online": { "monto": null, "cantidad": 0 }, "tienda": { "monto": null, "cantidad": 0 }, "sin_dato": { "monto": null, "cantidad": 0 } },
+    "presupuesto_chat": { "online": { "monto": null, "cantidad": 0 }, "tienda": { "monto": null, "cantidad": 0 }, "sin_dato": { "monto": null, "cantidad": 0 } },
+    "presupuesto_inventario": { "online": { "monto": null, "cantidad": 0 }, "tienda": { "monto": null, "cantidad": 0 }, "sin_dato": { "monto": null, "cantidad": 0 } }
+  },
+  "por_ventana": {
+    "abierta": { "monto": null, "cantidad": 0 }, "por_cerrar": { "monto": null, "cantidad": 0 },
+    "cerrada": { "monto": null, "cantidad": 0 }, "no_aplica": { "monto": null, "cantidad": 0 }
+  },
+  "por_canal_ventana": {
+    "online": { "abierta": { "monto": null, "cantidad": 0 }, "por_cerrar": { "monto": null, "cantidad": 0 }, "cerrada": { "monto": null, "cantidad": 0 }, "no_aplica": { "monto": null, "cantidad": 0 } },
+    "tienda": { "abierta": { "monto": null, "cantidad": 0 }, "por_cerrar": { "monto": null, "cantidad": 0 }, "cerrada": { "monto": null, "cantidad": 0 }, "no_aplica": { "monto": null, "cantidad": 0 } }
+  },
+  "items": [ {
+    "tipo": "presupuesto", "id": "uuid", "canal": "tienda", "origen": "presupuesto_inventario", "equipo": "online",
+    "responsable": "…", "cliente": "…", "monto": null, "unidades": 0, "desde": "iso",
+    "conversation_id": "uuid|null", "ventana_hasta": "iso|null", "ventana": "no_aplica"
+  } ]
 }
 ```
-- Presupuestos: creados hace ≤ 30 días y sin un borrador `creado` (o en tránsito) con su `origen_id`.
-  Canal por `presupuestos.origen` (`inventario` → tienda, `chat` → online).
-- Carritos del chat (online): conversaciones con ítems cuyo último cambio (`max(updated_at)`) tiene ≤ 7 días y
-  no tienen un borrador `creado`/en tránsito de origen `carrito` posterior a ese cambio. Si la conversación tiene
-  además un presupuesto `chat` activo, cuenta solo el presupuesto.
+- **Ventana de 48 h.** Solo cuenta lo movido hace ≤ 48 h; lo anterior sale del panel (no se borra ni se vacía nada).
+  - Presupuestos: fecha = `presupuestos.updated_at` (no `created_at`). `guardar_presupuesto` es la única que escribe
+    `presupuestos` y al reemplazar los renglones pone `updated_at = now()`, así que cambiar un renglón mueve la
+    fecha. Excluye los que tienen un borrador `creado` (o en tránsito) con su `origen_id`.
+  - Carritos del chat (online): conversaciones con ítems cuyo último cambio (`max(updated_at)`) tiene ≤ 48 h y que
+    no tienen un borrador `creado`/en tránsito de origen `carrito` posterior a ese cambio. Si la conversación
+    tiene además un presupuesto `chat` activo, cuenta solo el presupuesto.
+- **Origen** (`origen` del ítem, `por_origen`): `carrito_chat`, `presupuesto_chat`, `presupuesto_inventario`.
+- **Canal vs equipo: dos ejes distintos.** `canal` es por FLUJO (`presupuestos.origen`: `inventario` → `tienda`,
+  `chat` → `online`; un carrito es `online`) y no cambió. `equipo` es por QUIÉN lo armó, según el rol: `caja` →
+  `tienda`, cualquier otro rol → `online`, sin agente (`created_by` / `added_by` null o agente inexistente) →
+  `sin_dato`. En un carrito es el agente del renglón con `updated_at` más reciente (el mismo que da `responsable`).
+  Un presupuesto de Inventario armado por un asesor es `canal = tienda` y `equipo = online`.
+- **Ventana de WhatsApp de 24 h** (`ventana`, `ventana_hasta`, `por_ventana`, `por_canal_ventana`). Sale de
+  `conversations.last_customer_message_at` (la misma fuente que `isWithin24hWindow`; un rechazo 131047 ya la empuja
+  hacia atrás). `ventana_hasta` = esa fecha + 24 h (null si no hay conversación o no hay fecha). Estados:
+  `no_aplica` (el ítem no tiene conversación; hoy los presupuestos de Inventario, que la app guarda con
+  `conversation_id` null), `cerrada` (sin mensajes del cliente, o `ventana_hasta` ≤ ahora), `por_cerrar` (quedan
+  menos de 4 h) y `abierta`. Un presupuesto con `conversation_id` mide la ventana de esa conversación.
+- **`fuera_de_ventana`** (solo cantidades, sin valuar): lo que cumpliría todo lo anterior salvo estar a más de 48 h.
+  Presupuestos: `updated_at` anterior a 48 h y sin borrador. Carritos: último cambio anterior a 48 h, sin envío
+  posterior y SIN ningún presupuesto `chat` sin enviar (de cualquier fecha) en su conversación — así una conversación
+  no se cuenta dos veces: la representa su presupuesto.
+- **Tramos.** `tramos_48h`: `12h` (`desde` ≥ ahora − 12 h), `24h` (12 a 24 h) y `48h` (24 a 48 h). `antiguedad` conserva
+  sus cuatro tramos (`24h`, `3d`, `7d`, `30d`) porque `parse.ts` desplegado los valida; con la ventana de 48 h solo se
+  llenan `24h` y `3d`.
+- **Regla del null.** Todas las celdas `{monto, cantidad}` salen siempre presentes (vacías: `monto: null, cantidad:
+  0`) y `monto` es null solo si NINGÚN ítem de la celda tiene monto; así los montos de `por_origen` (null como 0) suman
+  `total` y las cantidades suman `presupuestos.cantidad + carritos.cantidad` (igual `por_equipo`, `por_ventana`,
+  `tramos_48h`, cada fila de `por_origen_equipo` contra su `por_origen`, y `por_canal_ventana.<canal>` contra
+  `por_canal.<canal>`). `sin_precio` de `por_origen` cuenta renglones sin precio.
 - Valuación al precio de hoy con `public.precio_venta_usd`; un renglón sin precio suma a `sin_precio` y deja el
-  monto del ítem en null (nunca un parcial). `tramo` ∈ `24h`, `3d`, `7d`, `30d`. `items`: los 30 más viejos.
+  monto del ítem en null (nunca un parcial). `items`: los 300 más viejos, ordenados por `desde, id`.
 
 ## Metas (`public.metas_venta`, lectura directa con RLS de supervisor/admin)
 Filas `(canal 'online'|'tienda', vigente_desde date, monto_usd)`. La meta de un día es la fila de ese canal
