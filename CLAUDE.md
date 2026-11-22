@@ -3248,6 +3248,9 @@ dejar rastro es lo que hacía desaparecer leads.
 - **El build no le pide nada a Google Fonts** (16/11/2026). `next/font/google` rompía el build de producción desde el 8/11: según el servidor y el momento, Google sirve las fuentes como `https://fonts.gstatic.com/l/font?kit=…&skey=…` y el Turbopack de Next 16.3.1 parte esa URL por `&`
   (`next/font/google queries have exactly one entry`); la caché de `.next` lo escondía y en local pasó y falló con el mismo commit. Geist, Geist Mono y Familjen Grotesk viven ahora en `src/app/fuentes/` (woff2 latinos, bytes idénticos a los de Google, con sus OFL) y `layout.tsx` las sirve con `next/font/local`.
   `src/app/fuentes.test.ts` rechaza cualquier `next/font/google` en `src/` y fija los sha256. Letras fuera del latín caen al respaldo Arial. Un build que valide esto se corre con `.next` BORRADA, o la caché lo vuelve a esconder.
+- **Los paneles cuentan desde el lunes 16/11/2026** (21/11/2026, plan «Los paneles cuentan desde el lunes 16/11/2026 y se refrescan solos»). Antes de esa fecha los envíos a SAINT no tienen foto fiable. El piso vive en `INICIO_PANELES` (`periodos.ts`) y en `public.paneles_inicio()` (migración `20261121020000`), atados por `paneles-inicio-paridad.test.ts`; en TS es un PARÁMETRO con default de `rangoDe`/`rangoPrevio`/`rangosDe…`, así que un test que fije el reloj antes del 16/11 tiene que pasar `piso: null`.
+  Sin previo comparable (`rangoPrevio` → `null`) o con rango vacío no se llama a la RPC (`bloqueAntesDelInicio`). `hist`/`previas` no se recortan: «regresan» y duplicado cuentan historia previa.
+  El canal tienda se esconde con `CANAL_TIENDA_VISIBLE` (`canal-config.ts`, módulo aparte para mockearlo en tests): las RPC siguen devolviendo `tienda`, solo la pantalla la oculta y el Resumen suma los dos canales. Los paneles se refrescan solos cada 60 s con la pestaña visible (`use-refresco-del-panel.ts`).
 
 ---
 
