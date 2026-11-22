@@ -3251,6 +3251,9 @@ dejar rastro es lo que hacía desaparecer leads.
 - **Los paneles cuentan desde el lunes 16/11/2026** (21/11/2026, plan «Los paneles cuentan desde el lunes 16/11/2026 y se refrescan solos»). Antes de esa fecha los envíos a SAINT no tienen foto fiable. El piso vive en `INICIO_PANELES` (`periodos.ts`) y en `public.paneles_inicio()` (migración `20261121020000`), atados por `paneles-inicio-paridad.test.ts`; en TS es un PARÁMETRO con default de `rangoDe`/`rangoPrevio`/`rangosDe…`, así que un test que fije el reloj antes del 16/11 tiene que pasar `piso: null`.
   Sin previo comparable (`rangoPrevio` → `null`) o con rango vacío no se llama a la RPC (`bloqueAntesDelInicio`). `hist`/`previas` no se recortan: «regresan» y duplicado cuentan historia previa.
   El canal tienda se esconde con `CANAL_TIENDA_VISIBLE` (`canal-config.ts`, módulo aparte para mockearlo en tests): las RPC siguen devolviendo `tienda`, solo la pantalla la oculta y el Resumen suma los dos canales. Los paneles se refrescan solos cada 60 s con la pestaña visible (`use-refresco-del-panel.ts`).
+- **Ventas activas cuenta lo movido en 48 h, y «equipo» no es «canal»** (22/11/2026, migración `20261122010000`). Lo de más de 48 h solo sale del panel: no se borra ni se vacía nada, y se cuenta aparte en `fuera_de_ventana`. La fecha de un presupuesto es `updated_at` (la mueve `guardar_presupuesto` al reemplazar renglones), no `created_at`.
+  `canal` es el flujo (`presupuesto_inventario` → tienda) y `equipo` el ROL de quien lo armó (`caja` → tienda): un presupuesto de Inventario hecho por un asesor es canal tienda y equipo online. Con la tienda oculta, «Tienda (caja)» aparece solo si es > 0 (`mostrarEquipoTienda`).
+  La ventana de WhatsApp del panel usa `last_customer_message_at + 24 h`, la misma regla que la caja de texto del chat: no inventes otra. `items` trae los 300 más viejos.
 
 ---
 
